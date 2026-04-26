@@ -516,46 +516,41 @@ ok64 SNIFFExec(cli *c) {
         CLIFlag(commit_msg, c, "-m");
         u8cs commit_author = {};
         CLIFlag(commit_author, c, "--author");
-        //  Default identity: assemble `<name> <<email>>` from
-        //  <root>/.dogs/config (`[user] name = "..." email = "..."`).
-        //  Fall back to a bland sentinel if config has neither — keeps
-        //  posts working in test fixtures without a seeded config.
+        //  Default identity: assemble `<name> <<email>>` from the wt's
+        //  `<root>/.dogs/config` (TOML — `[user] name = "..." email =
+        //  "..."`).  Falls back to the legacy sniff sentinel only when
+        //  config has neither field (test fixtures without a seeded
+        //  identity).
         a_pad(u8, author_buf, 512);
+        a_pad(u8, name_buf,   256);
+        a_pad(u8, email_buf,  256);
         if (!$ok(commit_author)) {
-            u8s name_v  = {u8bIdleHead(author_buf), u8bIdleHead(author_buf)};
-            a_path(name_p);
-            { a_cstr(s_user, "user"); call(PATHu8bPush, name_p, s_user); }
-            { a_cstr(s_name, "name"); call(PATHu8bPush, name_p, s_name); }
-            u8s name_dst = {u8bIdleHead(author_buf), Blastp(author_buf)};
-            ok64 no = HOMEGetConfig(SNIFF.h, name_dst, $path(name_p));
-            if (no == OK) {
-                name_v[1] = name_dst[0];
-                u8bFed(author_buf, $len(name_v));
-            }
-
-            a_cstr(sp, " <");
-            u8bFeed(author_buf, sp);
-
-            u8s email_v = {u8bIdleHead(author_buf), u8bIdleHead(author_buf)};
-            a_path(email_p);
-            { a_cstr(s_user, "user"); call(PATHu8bPush, email_p, s_user); }
-            { a_cstr(s_em,  "email"); call(PATHu8bPush, email_p, s_em); }
-            u8s email_dst = {u8bIdleHead(author_buf), Blastp(author_buf)};
-            ok64 eo = HOMEGetConfig(SNIFF.h, email_dst, $path(email_p));
-            if (eo == OK) {
-                email_v[1] = email_dst[0];
-                u8bFed(author_buf, $len(email_v));
-            }
-
-            a_cstr(close, ">");
-            u8bFeed(author_buf, close);
-
-            //  If neither field resolved, the buffer is just " <>" —
-            //  use the legacy sentinel so the commit object still parses.
-            if ($len(name_v) == 0 && $len(email_v) == 0) {
-                u8bReset(author_buf);
+            a_cstr(user_s,  "user");
+            a_cstr(name_s,  "name");
+            a_cstr(email_s, "email");
+            a_path(name_p,  user_s, name_s);
+            a_path(email_p, user_s, email_s);
+            u8 *n_start = u8bIdleHead(name_buf);
+            u8 *e_start = u8bIdleHead(email_buf);
+            u8s ndst = {n_start, name_buf[3]};
+            u8s edst = {e_start, email_buf[3]};
+            (void)HOMEGetConfig(SNIFF.h, ndst, $path(name_p));
+            (void)HOMEGetConfig(SNIFF.h, edst, $path(email_p));
+            //  HOMEGetConfig advances ndst[0] / edst[0] past the
+            //  bytes it wrote; the value lives in [start, ndst[0]).
+            u8cs name  = {n_start, ndst[0]};
+            u8cs email = {e_start, edst[0]};
+            if ($empty(name) && $empty(email)) {
                 a_cstr(def, "sniff <sniff@dogs>");
                 u8bFeed(author_buf, def);
+            } else {
+                if (!$empty(name)) {
+                    u8bFeed(author_buf, name);
+                    u8bFeed1(author_buf, ' ');
+                }
+                u8bFeed1(author_buf, '<');
+                if (!$empty(email)) u8bFeed(author_buf, email);
+                u8bFeed1(author_buf, '>');
             }
             commit_author[0] = u8bDataHead(author_buf);
             commit_author[1] = u8bIdleHead(author_buf);

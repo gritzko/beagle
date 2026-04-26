@@ -21,6 +21,7 @@ set -eu
 
 BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
 SNIFF="$BIN/sniff"
+KEEPER="$BIN/keeper"
 
 TMP=${TMP:-$HOME/tmp}
 TEST_ID=${TEST_ID:-SNIFFworkflow}
@@ -186,5 +187,28 @@ cp -r "$D5b/.dogs" .
 want_missing a.txt
 want_file b.txt "bravo"
 note "a.txt removed by implicit-delete sweep"
+
+# ------------------------------------------------------------------
+# Scenario 7: pre-seeded `.dogs/config` supplies the commit author —
+# `[user] name`/`email` end up in the commit object as
+# `<name> <<email>>`, not the bland `sniff <sniff@dogs>` fallback.
+# ------------------------------------------------------------------
+echo "=== 7. .dogs/config drives the commit author ==="
+D7="$TMP/r7"; mkdir -p "$D7/.dogs"; cd "$D7"
+cat > .dogs/config <<'EOF'
+[user]
+name = "Test User"
+email = "test@example.com"
+EOF
+echo hello > README.md
+"$SNIFF" post -m "config-author" >/dev/null
+C7=$(head_hex)
+[ -n "$C7" ] || fail "HEAD unset after post"
+body=$("$KEEPER" get ".#$C7" 2>/dev/null)
+echo "$body" | grep -q '^author Test User <test@example.com> ' \
+    || fail "author line missing identity from .dogs/config (got: $(echo "$body" | grep ^author))"
+echo "$body" | grep -q '^committer Test User <test@example.com> ' \
+    || fail "committer line missing identity from .dogs/config"
+note "commit author = Test User <test@example.com>"
 
 echo "=== all workflow scenarios passed ==="
