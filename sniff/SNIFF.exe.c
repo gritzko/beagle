@@ -19,6 +19,7 @@
 #include "dog/AT.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
+#include "dog/HOME.h"
 #include "dog/IGNO.h"
 #include "keeper/REFS.h"
 
@@ -515,10 +516,49 @@ ok64 SNIFFExec(cli *c) {
         CLIFlag(commit_msg, c, "-m");
         u8cs commit_author = {};
         CLIFlag(commit_author, c, "--author");
+        //  Default identity: assemble `<name> <<email>>` from
+        //  <root>/.dogs/config (`[user] name = "..." email = "..."`).
+        //  Fall back to a bland sentinel if config has neither — keeps
+        //  posts working in test fixtures without a seeded config.
+        a_pad(u8, author_buf, 512);
         if (!$ok(commit_author)) {
-            a_cstr(def, "sniff <sniff@dogs>");
-            commit_author[0] = def[0];
-            commit_author[1] = def[1];
+            u8s name_v  = {u8bIdleHead(author_buf), u8bIdleHead(author_buf)};
+            a_path(name_p);
+            { a_cstr(s_user, "user"); call(PATHu8bPush, name_p, s_user); }
+            { a_cstr(s_name, "name"); call(PATHu8bPush, name_p, s_name); }
+            u8s name_dst = {u8bIdleHead(author_buf), Blastp(author_buf)};
+            ok64 no = HOMEGetConfig(SNIFF.h, name_dst, $path(name_p));
+            if (no == OK) {
+                name_v[1] = name_dst[0];
+                u8bFed(author_buf, $len(name_v));
+            }
+
+            a_cstr(sp, " <");
+            u8bFeed(author_buf, sp);
+
+            u8s email_v = {u8bIdleHead(author_buf), u8bIdleHead(author_buf)};
+            a_path(email_p);
+            { a_cstr(s_user, "user"); call(PATHu8bPush, email_p, s_user); }
+            { a_cstr(s_em,  "email"); call(PATHu8bPush, email_p, s_em); }
+            u8s email_dst = {u8bIdleHead(author_buf), Blastp(author_buf)};
+            ok64 eo = HOMEGetConfig(SNIFF.h, email_dst, $path(email_p));
+            if (eo == OK) {
+                email_v[1] = email_dst[0];
+                u8bFed(author_buf, $len(email_v));
+            }
+
+            a_cstr(close, ">");
+            u8bFeed(author_buf, close);
+
+            //  If neither field resolved, the buffer is just " <>" —
+            //  use the legacy sentinel so the commit object still parses.
+            if ($len(name_v) == 0 && $len(email_v) == 0) {
+                u8bReset(author_buf);
+                a_cstr(def, "sniff <sniff@dogs>");
+                u8bFeed(author_buf, def);
+            }
+            commit_author[0] = u8bDataHead(author_buf);
+            commit_author[1] = u8bIdleHead(author_buf);
         }
 
         //  Pick the first URI with a non-empty query as a label target

@@ -1270,10 +1270,10 @@ ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
         }
     }
 
-    //  16. Pretty-print every committed path in grey (TTY only) so
-    //  the user sees what landed in the tree.  Skip dirs and dropped
-    //  entries; print rewrites and keeps (the union = "in the new
-    //  tree").  Uses raw ANSI; SGR 90 = grey, SGR 0 = reset.
+    //  16. Pretty-print actually-changed paths in grey (TTY only) —
+    //  the same M/A/D set the dry-run prints.  KEEP entries are silent
+    //  (their content is unchanged from baseline); printing them would
+    //  flood the output with the entire tree on every commit.
     {
         b8 tty = isatty(STDERR_FILENO) ? YES : NO;
         char const *on  = tty ? "\033[90m" : "";
@@ -1281,13 +1281,15 @@ ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
         u32 n_now = SNIFFCount();
         for (u32 i = 0; i < n_now && i < cap; i++) {
             u8 f = ctx.flag[i];
-            if (f & POST_DROP) continue;
-            if (!(f & (POST_REWRITE | POST_KEEP))) continue;
             if (SNIFFIsDir(i)) continue;
+            char code = 0;
+            if (f & POST_DROP)         code = 'D';
+            else if (f & POST_REWRITE) code = (f & POST_IN_BASE) ? 'M' : 'A';
+            if (code == 0) continue;
             u8cs rel = {};
             if (SNIFFPath(rel, i) != OK) continue;
-            fprintf(stderr, "  %s%.*s%s\n",
-                    on, (int)$len(rel), (char *)rel[0], off);
+            fprintf(stderr, "%s%c %.*s%s\n",
+                    on, code, (int)$len(rel), (char *)rel[0], off);
         }
     }
 
