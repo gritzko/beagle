@@ -260,52 +260,14 @@ static b8 refs_host_match(u8csc host, u8csc needle) {
     return NO;
 }
 
-//  True if the query string is a trunk alias per DOGCanonURI rules:
-//  empty, or `master`/`main`/`trunk`, or `heads/<those>`.  Used
-//  below to match any trunk-alias lookup against any trunk-alias
-//  stored row (so canonical `?` rows and legacy `?heads/main` rows
-//  answer the same `sniff get ?heads/master` query).
-static b8 refs_is_trunk_alias(u8csc q) {
-    size_t l = (size_t)u8csLen(q);
-    if (l == 0) return YES;
-    if (l == 6  && memcmp(q[0], "master",       6) == 0) return YES;
-    if (l == 4  && memcmp(q[0], "main",         4) == 0) return YES;
-    if (l == 5  && memcmp(q[0], "trunk",        5) == 0) return YES;
-    if (l == 12 && memcmp(q[0], "heads/master", 12) == 0) return YES;
-    if (l == 10 && memcmp(q[0], "heads/main",   10) == 0) return YES;
-    if (l == 11 && memcmp(q[0], "heads/trunk",  11) == 0) return YES;
-    return NO;
-}
-
-//  in_query="heads/X" matches r_query="heads/X".
-//  in_query="X"       matches r_query in {"X","heads/X","tags/X"}
-//                     (bare short-ref fallback).
-//  in_query=""        matches only trunk rows (r_query is a
-//                     trunk alias per refs_is_trunk_alias).
-//  Any trunk alias matches any other trunk alias — covers both
-//  the canonical `?` row and legacy `?heads/main` stored rows.
+//  Local query is an opaque path: trunk = empty, anything else is a
+//  literal branch path.  Plain string equality, no name aliasing —
+//  git refname conventions live behind keeper/GIT.h and apply at the
+//  wire boundary only.
 static b8 refs_query_match(u8csc in_query, u8csc r_query) {
-    if (refs_is_trunk_alias(in_query) && refs_is_trunk_alias(r_query))
-        return YES;
-    if (u8csEmpty(in_query)) return NO;
-    if (u8csLen(in_query) == u8csLen(r_query) &&
-        memcmp(in_query[0], r_query[0], u8csLen(in_query)) == 0)
-        return YES;
-    a_pad(u8, hbuf, 128);
-    a_cstr(heads_pfx, "heads/");
-    u8bFeed(hbuf, heads_pfx);
-    u8bFeed(hbuf, in_query);
-    a_dup(u8c, h, u8bData(hbuf));
-    if (u8csLen(h) == u8csLen(r_query) &&
-        memcmp(h[0], r_query[0], u8csLen(h)) == 0) return YES;
-    a_pad(u8, tbuf, 128);
-    a_cstr(tags_pfx, "tags/");
-    u8bFeed(tbuf, tags_pfx);
-    u8bFeed(tbuf, in_query);
-    a_dup(u8c, t, u8bData(tbuf));
-    if (u8csLen(t) == u8csLen(r_query) &&
-        memcmp(t[0], r_query[0], u8csLen(t)) == 0) return YES;
-    return NO;
+    if (u8csLen(in_query) != u8csLen(r_query)) return NO;
+    if (u8csEmpty(in_query)) return YES;
+    return memcmp(in_query[0], r_query[0], u8csLen(in_query)) == 0;
 }
 
 static b8 refs_match_pred(uricp u, void *ctx) {
@@ -339,16 +301,13 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     sane($ok(dir) && $ok(input) && resolved != NULL && arena != NULL);
     memset(resolved, 0, sizeof(*resolved));
 
-    //  Parse the input URI.  Strip `refs/` from the query; the
-    //  variant fallback in refs_query_match (plus its trunk-alias
-    //  bidirectional match) handles canonicalisation equivalence
-    //  without us needing to rewrite the input.
+    //  Parse the input URI.  Query is opaque (local branch path); no
+    //  `refs/` strip, no name aliasing.  Wire-side translation is
+    //  GITParseRef/GITFeedRef's job.
     uri in = {};
     in.data[0] = input[0]; in.data[1] = input[1];
     call(URILexer, &in);
     u8cs in_query = {in.query[0], in.query[1]};
-    if ($len(in_query) > 5 && memcmp(in_query[0], "refs/", 5) == 0)
-        u8csUsed(in_query, 5);
 
     match_ctx m = {};
     //  Presence test (not emptiness): input `?` = match trunk only;

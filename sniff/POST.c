@@ -51,6 +51,9 @@ enum post_flag {
     POST_REWRITE  = 1 << 4,  // fate: pull content from wt, emit new blob
     POST_KEEP     = 1 << 5,  // fate: reuse baseline sha
     POST_DROP     = 1 << 6,  // fate: omit from new tree
+    POST_MAYBE    = 1 << 7,  // tracked + mtime-unknown: hash needed to
+                             // decide REWRITE (content differs) vs KEEP
+                             // (content matches old_sha — re-stamp file).
 };
 
 typedef struct {
@@ -472,19 +475,23 @@ static ok64 post_decide(post_ctx *c, u32 idx) {
     if (SNIFFAtKnown(mtime_r)) {
         //  Clean: keep baseline sha if present.
         if (f & POST_IN_BASE) c->flag[idx] |= POST_KEEP;
-        //  Otherwise: untracked clean (shouldn't happen but ignore).
+        //  Otherwise: untracked clean (shouldn't happen) — ignore.
     } else if (f & POST_IN_BASE) {
-        //  Tracked + dirty → restage from disk.
-        c->flag[idx] |= POST_REWRITE;
+        //  Tracked + mtime-unknown.  Defer the decision: post_hash_one
+        //  will read the file, compare its sha to old_sha, and flip
+        //  this to POST_REWRITE (real change) or POST_KEEP (mtime
+        //  drifted but content is identical — re-stamp the file so
+        //  next time the fast path skips it).
+        c->flag[idx] |= POST_MAYBE;
     } else if (!c->has_base) {
-        //  Fresh-repo first commit (no baseline exists yet): auto-stage
-        //  every dirty file.  Once any baseline lands, implicit
-        //  `be post -m` reverts to "tracked-only" semantics — a new
+        //  Fresh-repo first commit (no baseline tree exists yet):
+        //  auto-stage every dirty file.  Once a baseline lands,
+        //  implicit `be post -m` reverts to tracked-only — a new
         //  untracked file then needs an explicit `be put`.
         c->flag[idx] |= POST_REWRITE;
     }
     //  Else: untracked + dirty + already-have-a-baseline → ignore in
-    //  implicit mode.  Side-checkouts (abc/, build/, scratch *.diff)
+    //  implicit mode.  Side-checkouts (abc/, build/, *.diff scratch)
     //  don't leak into commits that way; the user names them via
     //  `be put <path>` if they really want to add new tracked paths.
     return OK;
@@ -492,11 +499,23 @@ static ok64 post_decide(post_ctx *c, u32 idx) {
 
 // --- Hashing new blobs ---
 
+//  Hash the on-disk content of a single tracked path.  Used for both
+//  POST_REWRITE entries (new content needed for the pack) and
+//  POST_MAYBE entries (mtime drifted off the stamp set; we hash to
+//  decide whether anything actually changed).  For MAYBE: if the
+//  fresh sha equals the baseline `old_sha`, flip to POST_KEEP and
+//  drop the content buffer (no pack write); otherwise flip to
+//  POST_REWRITE and keep the content for the tree-build phase.
 static ok64 post_hash_one(post_ctx *c, u32 idx) {
     sane(c);
     post_rec *r = &c->rec[idx];
     u8 f = c->flag[idx];
     if (!(f & POST_REWRITE)) done;
+    //  Idempotent: skip if content was already populated upstream
+    //  (e.g. by post_resolve_maybe taking the fall-through symlink
+    //  path).  The presence of an allocated content buffer is the
+    //  marker that this path has already been processed.
+    if (u8bOK(r->content)) done;
 
     u8cs rel = {};
     call(SNIFFPath, rel, idx);
@@ -511,7 +530,14 @@ static ok64 post_hash_one(post_ctx *c, u32 idx) {
         done;
     }
 
-    call(u8bAllocate, r->content, 1UL << 20);
+    //  Size the content buffer to the file (or readlink max for
+    //  symlinks).  A fixed cap silently truncates large blobs and
+    //  produces a wrong sha — checked-in PNGs / large fixtures then
+    //  get reported as modified on every post.
+    u64 cap = S_ISLNK(lsb.st_mode)
+        ? 4096
+        : (u64)lsb.st_size + 1;
+    call(u8bAllocate, r->content, cap);
 
     if (S_ISLNK(lsb.st_mode)) {
         char target[1024];
@@ -530,6 +556,59 @@ static ok64 post_hash_one(post_ctx *c, u32 idx) {
     }
 
     KEEPObjSha(&r->new_sha, DOG_OBJ_BLOB, u8bDataC(r->content));
+    done;
+}
+
+//  Hash a tracked-but-mtime-dirty file via mmap to decide MAYBE.
+//  No alloc, no read-loop: FILEMapRO drops the file's bytes into the
+//  kernel page cache and we hand the slice straight to KEEPObjSha.
+//  On match (file unchanged, mtime drifted) flip to POST_KEEP; on
+//  mismatch flip to POST_REWRITE so post_hash_one re-reads it into
+//  r->content for the pack-feed phase.  Symlinks fall back to the
+//  full read+hash path (readlink doesn't compose with mmap).
+static ok64 post_resolve_maybe(post_ctx *c, u32 idx) {
+    sane(c);
+    post_rec *r = &c->rec[idx];
+    if (!(c->flag[idx] & POST_MAYBE)) done;
+    c->flag[idx] &= ~POST_MAYBE;
+
+    u8cs rel = {};
+    call(SNIFFPath, rel, idx);
+    a_path(fp);
+    call(SNIFFFullpath, fp, c->reporoot, rel);
+
+    struct stat lsb = {};
+    if (lstat((char const *)u8bDataHead(fp), &lsb) != 0) {
+        c->flag[idx] |= POST_DROP;
+        done;
+    }
+    if (S_ISLNK(lsb.st_mode)) {
+        //  Defer to the standard hash path; symlinks are tiny.
+        c->flag[idx] |= POST_REWRITE;
+        ok64 ho = post_hash_one(c, idx);
+        if (ho == OK && sha1eq(&r->new_sha, &r->old_sha)) {
+            //  Identical → flip back to KEEP, drop the buffer.
+            u8bFree(r->content);
+            r->new_sha = (sha1){};
+            c->flag[idx] &= ~POST_REWRITE;
+            c->flag[idx] |= POST_KEEP;
+        }
+        return ho;
+    }
+
+    u8bp mapped = NULL;
+    ok64 mo = FILEMapRO(&mapped, $path(fp));
+    if (mo != OK) return mo;
+    sha1 disk_sha = {};
+    KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
+    FILEUnMap(mapped);
+
+    if (sha1eq(&disk_sha, &r->old_sha)) {
+        c->flag[idx] |= POST_KEEP;
+    } else {
+        c->flag[idx] |= POST_REWRITE;
+        //  post_hash_one will re-read the bytes for the pack feed.
+    }
     done;
 }
 
@@ -690,11 +769,12 @@ static ok64 post_parent_sha(keeper *k, u8cs parent_hex, sha1 *out) {
 #define POST_MAX_PARENTS 16
 
 //  Read the latest baseline (`get`/`post`/`patch`) row.  Fills `out`
-//  with the first REF spec from its query (the branch name), and
-//  `parents[]` with every 40-hex SHA spec — these are the parents the
-//  next commit must inherit.  `*nparents_out` is set to the count.
-//  `*had_baseline_out` is YES iff a baseline row exists (so callers
-//  can distinguish a fresh repo from a corrupt one).
+//  with the be-branch path (row's query), and `parents[]` with the
+//  current commit (row's `#fragment`) plus any extra 40-hex SHAs that
+//  appear in the query as `&`-chained specs (patch in-progress carries
+//  its `theirs` parents that way).  `*had_baseline_out` is YES iff a
+//  baseline row exists (so callers can distinguish a fresh repo from
+//  a corrupt one).
 //
 //  Returns OK in both the "baseline exists" and "no baseline" cases —
 //  callers branch on `*had_baseline_out`.  Non-OK reflects ULOG /
@@ -712,6 +792,20 @@ static ok64 post_collect_parents(u8bp out, sha1 *parents, u32 *nparents_out,
     if (r != OK) return r;
     *had_baseline_out = YES;
 
+    //  Current commit lives in the row's `#fragment` (canonical form).
+    {
+        u8cs frag = {u.fragment[0], u.fragment[1]};
+        if (u8csLen(frag) == 40 && *nparents_out < cap) {
+            sha1 ph = {};
+            u8s bin = {ph.data, ph.data + 20};
+            a_dup(u8c, hx, frag);
+            if (HEXu8sDrainSome(bin, hx) == OK && bin[0] == ph.data + 20)
+                parents[(*nparents_out)++] = ph;
+        }
+    }
+
+    //  Walk the query's `&`-chain.  First non-SHA spec is the branch
+    //  path; any 40-hex specs are extra parents (patch's `theirs`).
     a_dup(u8c, q, u.query);
     while (!$empty(q)) {
         qref spec = {};
@@ -766,7 +860,128 @@ static ok64 post_baseline_branch(u8bp out, u8bp hex_out) {
     done;
 }
 
+// --- Shared scan: produce the change-set into a post_ctx ---
+//
+//  Steps 2..5 of POSTCommit, lifted so a dry-run print path can run
+//  the same scan without committing.  Caller pre-fills `c->reporoot`,
+//  `c->k`, `c->cap`, `c->rec`, `c->flag`, `c->last_post_ts`; this
+//  function drives the baseline walk + put/delete scan + wt scan +
+//  dir-row expansion + per-path decide.  On return, `c->flag[idx]`
+//  carries the POST_REWRITE / POST_KEEP / POST_DROP fate per path,
+//  and `*base_tree_sha` / `*have_base` reflect the baseline tree (if
+//  any) so the caller can reuse them for tree-build.
+static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
+                                b8 *have_base) {
+    sane(c && base_tree_sha && have_base);
+
+    //  2. Baseline walk.
+    call(post_load_baseline, c, base_tree_sha, have_base);
+
+    //  3. Put/delete scan since last post.
+    call(SNIFFAtScanPutDelete, c->last_post_ts, post_pd_cb, c);
+
+    //  4. Worktree scan.
+    call(post_scan_wt, c);
+
+    //  4b. Expand dir-level put/delete rows into file-level flags.
+    //      The wt-root .gitignore is already loaded into SNIFF.ignores
+    //      at SNIFFOpen time, so every op consults the same set.
+    call(post_expand_dir_rows, c, &SNIFF.ignores);
+
+    //  5. Decide fate per path.
+    u32 n_now = SNIFFCount();
+    for (u32 i = 0; i < n_now && i < c->cap; i++) {
+        call(post_decide, c, i);
+    }
+
+    //  5c. Resolve POST_MAYBE entries by hashing the on-disk content
+    //  via mmap (no alloc, no read-loop) and comparing to the baseline
+    //  sha.  post_resolve_maybe flips each MAYBE to REWRITE (content
+    //  differs) or KEEP (mtime drifted but bytes are identical).  This
+    //  is the single source of "is this file actually modified?" truth
+    //  — both POSTCommit and the dry-run printer rely on it.
+    for (u32 i = 0; i < n_now && i < c->cap; i++) {
+        if (!(c->flag[i] & POST_MAYBE)) continue;
+        call(post_resolve_maybe, c, i);
+    }
+    done;
+}
+
+//  Allocate parallel arrays + initialise the post_ctx for a scan.
+//  Caller provides the two Bu8 backing buffers and the reporoot;
+//  on success `c->rec` / `c->flag` / `c->cap` are wired and zeroed.
+//  On failure the buffers are freed before return.
+static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k,
+                          Bu8 rec_buf, Bu8 flag_buf) {
+    sane(c);
+    u32 npath0 = SNIFFCount();
+    u32 cap = npath0 + (1u << 20);
+
+    ok64 ro = u8bAllocate(rec_buf, (u64)cap * sizeof(post_rec));
+    if (ro != OK) return ro;
+    memset(u8bDataHead(rec_buf), 0, (u64)cap * sizeof(post_rec));
+    ok64 fo = u8bAllocate(flag_buf, cap);
+    if (fo != OK) { u8bFree(rec_buf); return fo; }
+    memset(u8bDataHead(flag_buf), 0, cap);
+
+    *c = (post_ctx){
+        .k = k, .rec = (post_rec *)u8bDataHead(rec_buf),
+        .flag = u8bDataHead(flag_buf), .cap = cap,
+        .last_post_ts = SNIFFAtLastPostTs(),
+    };
+    c->reporoot[0] = reporoot[0];
+    c->reporoot[1] = reporoot[1];
+    done;
+}
+
 // --- Public API ---
+
+ok64 POSTPrintStatus(u8cs reporoot) {
+    sane($ok(reporoot));
+    keeper *k = &KEEP;
+
+    Bu8 rec_buf = {};
+    Bu8 flag_buf = {};
+    post_ctx ctx = {};
+    call(post_ctx_init, &ctx, reporoot, k, rec_buf, flag_buf);
+
+    sha1 base_tree_sha = {};
+    b8   have_base = NO;
+    ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
+    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return so; }
+
+    //  Walk the registry, print one line per changed path.
+    //  Codes mirror git's `status --short`: `M` modified, `A` added,
+    //  `D` deleted.  KEEP rows are silent (no change).
+    u32 n_now = SNIFFCount();
+    u32 changed = 0;
+    for (u32 i = 0; i < n_now && i < ctx.cap; i++) {
+        u8 f = ctx.flag[i];
+        if (SNIFFIsDir(i)) continue;
+        char code = 0;
+        if (f & POST_DROP)        code = 'D';
+        else if (f & POST_REWRITE) code = (f & POST_IN_BASE) ? 'M' : 'A';
+        if (code == 0) continue;
+        u8cs rel = {};
+        if (SNIFFPath(rel, i) != OK) continue;
+        fprintf(stdout, "%c %.*s\n",
+                code, (int)$len(rel), (char *)rel[0]);
+        changed++;
+    }
+    fflush(stdout);
+    fprintf(stderr, "sniff: %u change(s)\n", changed);
+
+    //  post_scan_changeset hashed POST_MAYBE entries via post_hash_one,
+    //  which allocates a content buffer per file.  Free them — the
+    //  dry-run path doesn't feed any pack and has nothing else to do
+    //  with the bytes.
+    for (u32 i = 0; i < n_now && i < ctx.cap; i++) {
+        if (u8bOK(ctx.rec[i].content)) u8bFree(ctx.rec[i].content);
+    }
+    u8bFree(rec_buf);
+    u8bFree(flag_buf);
+    done;
+}
 
 ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
@@ -795,66 +1010,23 @@ ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
                 "on push)\n");
         return SNIFFFAIL;
     }
-    if (u8bDataLen(brbuf) == 0) {
-        a_cstr(def, "heads/master");
-        u8bFeed(brbuf, def);
-    }
+    //  No baseline branch recovered → default to trunk (empty be-side
+    //  query).  Locally trunk has no name; the wire layer aliases it
+    //  to refs/heads/main.  brbuf left empty signals "trunk" to the
+    //  ULOG/REFS writers below.
 
-    //  Per-path arrays sized to current registry + head-room for
-    //  paths interned during wt scan.  The registry is shared with
-    //  keeper, so indices are globally stable once assigned.
-    u32 npath0 = SNIFFCount();
-    u32 cap = npath0 + (1u << 20);
-
-    post_rec *rec = NULL;
+    //  Steps 2..5 — the change-set scan — share their entire body
+    //  with POSTPrintStatus's dry-run path.  See post_scan_changeset.
     Bu8 rec_buf = {};
-    call(u8bAllocate, rec_buf, (u64)cap * sizeof(post_rec));
-    memset(u8bDataHead(rec_buf), 0, (u64)cap * sizeof(post_rec));
-    rec = (post_rec *)u8bDataHead(rec_buf);
-
     Bu8 flag_buf = {};
-    call(u8bAllocate, flag_buf, cap);
-    memset(u8bDataHead(flag_buf), 0, cap);
+    post_ctx ctx = {};
+    call(post_ctx_init, &ctx, reporoot, k, rec_buf, flag_buf);
+    u32 cap = ctx.cap;
 
-    post_ctx ctx = {
-        .k = k, .rec = rec,
-        .flag = u8bDataHead(flag_buf), .cap = cap,
-        .last_post_ts = SNIFFAtLastPostTs(),
-    };
-    ctx.reporoot[0] = reporoot[0];
-    ctx.reporoot[1] = reporoot[1];
-
-    //  2. Baseline walk.
     sha1 base_tree_sha = {};
-    b8 have_base = NO;
-    ok64 lo = post_load_baseline(&ctx, &base_tree_sha, &have_base);
-    if (lo != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return lo; }
-
-    //  3. Put/delete scan since last post.
-    call(SNIFFAtScanPutDelete, ctx.last_post_ts, post_pd_cb, &ctx);
-
-    //  4. Worktree scan.
-    call(post_scan_wt, &ctx);
-
-    //  4b. Expand dir-level put/delete rows into file-level flags.
-    //      The wt-root .gitignore is already loaded into SNIFF.ignores
-    //      at SNIFFOpen time, so every op consults the same set.
-    {
-        ok64 xr = post_expand_dir_rows(&ctx, &SNIFF.ignores);
-        if (xr != OK) {
-            u8bFree(rec_buf); u8bFree(flag_buf);
-            return xr;
-        }
-    }
-
-    //  5. Decide fate per path.
-    {
-        u32 n_now = SNIFFCount();
-        for (u32 i = 0; i < n_now && i < cap; i++) {
-            ok64 dr = post_decide(&ctx, i);
-            if (dr != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return dr; }
-        }
-    }
+    b8   have_base = NO;
+    ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
+    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return so; }
 
     //  5b. For every file explicitly deleted since last post, unlink
     //      it from disk — otherwise `be delete foo && be post` leaves
@@ -1034,53 +1206,44 @@ ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
 
     call(KEEPPackClose, k, &p);
 
-    //  14. Advance keeper REFS for the branch (if we have one).
-    //      `brbuf` is the bare ref (e.g. `heads/main`).  Build a
-    //      canonical key via DOGCanonURIFeed — collapses the trunk
-    //      aliases {master, main, trunk} (with or without `heads/`)
-    //      to bare `?`.  Value is bare 40-hex.
+    //  14. Advance keeper REFS for the be-branch the wt is currently
+    //      on.  `brbuf` carries the be-side branch path (literal,
+    //      opaque); empty = trunk.  REFS key is `?<branch>` (or just
+    //      `?` for trunk).  Value is bare 40-hex.
     a_pad(u8, out_hex, 40);
     {
         a_rawc(osha, *sha_out);
         HEXu8sFeedSome(out_hex_idle, osha);
     }
     {
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_pad(u8, keybuf, 128);
+        u8bFeed1(keybuf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
-        if (!u8csEmpty(branch)) {
-            a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        if (!u8csEmpty(branch)) u8bFeed(keybuf, branch);
+        a_dup(u8c, refkey, u8bData(keybuf));
 
-            uri uk = {};
-            uk.query[0] = branch[0];
-            uk.query[1] = branch[1];
-            a_pad(u8, keybuf, 128);
-            call(DOGCanonURIFeed, keybuf, &uk);
-            a_dup(u8c, refkey, u8bData(keybuf));
+        a_dup(u8c, val, u8bDataC(out_hex));
 
-            a_dup(u8c, val, u8bDataC(out_hex));
-
-            (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
-        }
+        (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
     }
 
     //  15. Append `post` ULOG row with stamp ts; futimens written
-    //      files so they become clean under the new stamp.  Row URI
-    //      puts the ref and the new tip sha into the query, chained
-    //      as `<branch>&<40hex>` per dog/QURY; fragment stays empty
-    //      (reserved for dog/FRAG content-locator syntax).
-    a_pad(u8, qbuf, 256);
-    {
-        a_dup(u8c, branch, u8bData(brbuf));
-        if (!u8csEmpty(branch)) {
-            u8bFeed(qbuf, branch);
-            u8bFeed1(qbuf, '&');
-        }
-        u8bFeed(qbuf, u8bDataC(out_hex));
-    }
+    //      files so they become clean under the new stamp.  Canonical
+    //      at-log shape: `?<branch>#<curhash>` — query is the
+    //      be-branch (empty for trunk), fragment is the new tip sha.
+    //      Mirrors the REFS row format so readers walk the same shape.
     uri urow = {};
     {
-        a_dup(u8c, q, u8bData(qbuf));
-        urow.query[0] = q[0];
-        urow.query[1] = q[1];
+        a_dup(u8c, branch, u8bData(brbuf));
+        urow.query[0] = u8bDataHead(brbuf);
+        urow.query[1] = u8bIdleHead(brbuf);
+        (void)branch;
+    }
+    {
+        a_dup(u8c, h, u8bDataC(out_hex));
+        urow.fragment[0] = h[0];
+        urow.fragment[1] = h[1];
     }
 
     ron60 ts = 0;
@@ -1107,7 +1270,28 @@ ok64 POSTCommit(u8cs reporoot, u8cs message, u8cs author, sha1 *sha_out) {
         }
     }
 
-    //  16. Clean up.
+    //  16. Pretty-print every committed path in grey (TTY only) so
+    //  the user sees what landed in the tree.  Skip dirs and dropped
+    //  entries; print rewrites and keeps (the union = "in the new
+    //  tree").  Uses raw ANSI; SGR 90 = grey, SGR 0 = reset.
+    {
+        b8 tty = isatty(STDERR_FILENO) ? YES : NO;
+        char const *on  = tty ? "\033[90m" : "";
+        char const *off = tty ? "\033[0m"  : "";
+        u32 n_now = SNIFFCount();
+        for (u32 i = 0; i < n_now && i < cap; i++) {
+            u8 f = ctx.flag[i];
+            if (f & POST_DROP) continue;
+            if (!(f & (POST_REWRITE | POST_KEEP))) continue;
+            if (SNIFFIsDir(i)) continue;
+            u8cs rel = {};
+            if (SNIFFPath(rel, i) != OK) continue;
+            fprintf(stderr, "  %s%.*s%s\n",
+                    on, (int)$len(rel), (char *)rel[0], off);
+        }
+    }
+
+    //  17. Clean up.
     {
         u32 n_now = SNIFFCount();
         for (u32 i = 0; i < n_now && i < cap; i++) {

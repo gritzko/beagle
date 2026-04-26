@@ -43,40 +43,22 @@ static void tmp_rm(char const *path) {
     (void)_;
 }
 
-//  Append one canonical "?heads/<name>" → "?<40-hex>" entry to the
-//  trunk REFS via REFSAppend.  `hex_sha` must be 40 hex chars.
-static ok64 push_head(u8csc keepdir, char const *name, char const *hex_sha) {
+//  Append one local-branch entry to the trunk REFS via REFSAppend.
+//  Local key form: `?<branch>` (or bare `?` for trunk).  Wire-side
+//  alias (trunk⇔main, all other branches → refs/heads/<X>) is applied
+//  by REFADV.  `hex_sha` must be 40 hex chars.
+static ok64 push_branch(u8csc keepdir, char const *branch,
+                        char const *hex_sha) {
     sane(keepdir);
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
-    a_cstr(heads, "heads/");
-    u8bFeed(kbuf, heads);
-    a_cstr(name_s, name);
-    u8bFeed(kbuf, name_s);
+    if (branch && *branch) {
+        a_cstr(name_s, branch);
+        u8bFeed(kbuf, name_s);
+    }
     a_dup(u8c, key, u8bData(kbuf));
 
     a_pad(u8, vbuf, 64);
-    u8bFeed1(vbuf, '?');
-    a_cstr(sha_s, hex_sha);
-    u8bFeed(vbuf, sha_s);
-    a_dup(u8c, val, u8bData(vbuf));
-
-    call(REFSAppend, keepdir, key, val);
-    done;
-}
-
-static ok64 push_tag(u8csc keepdir, char const *name, char const *hex_sha) {
-    sane(keepdir);
-    a_pad(u8, kbuf, 256);
-    u8bFeed1(kbuf, '?');
-    a_cstr(tags, "tags/");
-    u8bFeed(kbuf, tags);
-    a_cstr(name_s, name);
-    u8bFeed(kbuf, name_s);
-    a_dup(u8c, key, u8bData(kbuf));
-
-    a_pad(u8, vbuf, 64);
-    u8bFeed1(vbuf, '?');
     a_cstr(sha_s, hex_sha);
     u8bFeed(vbuf, sha_s);
     a_dup(u8c, val, u8bData(vbuf));
@@ -162,10 +144,11 @@ ok64 REFADVtest_single_trunk() {
     call(HOMEOpen, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    //  REFS lives at <root>/.dogs.
+    //  REFS lives at <root>/.dogs.  Local trunk row (`?`) advertises
+    //  on the wire as `refs/heads/main` (the only wire-side alias).
     a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
     char const *hex = "0123456789abcdef0123456789abcdef01234567";
-    call(push_head, $path(keepdir), "main", hex);
+    call(push_branch, $path(keepdir), "", hex);
 
     refadv adv = {};
     call(REFADVOpen, &adv, &KEEP);
@@ -178,7 +161,7 @@ ok64 REFADVtest_single_trunk() {
     want(u8csLen(adv.ents[0].refname) == u8csLen(want_refname));
     want(memcmp(adv.ents[0].refname[0], want_refname[0],
                 u8csLen(want_refname)) == 0);
-    //  heads/main → trunk → empty dir.
+    //  Trunk → empty shard dir.
     want(u8csLen(adv.ents[0].dir) == 0);
 
     u8 *bytes = NULL;
@@ -228,36 +211,36 @@ ok64 REFADVtest_multi() {
     call(KEEPOpen, &h, YES);
 
     a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
-    char const *hex_main = "1111111111111111111111111111111111111111";
-    char const *hex_tag  = "2222222222222222222222222222222222222222";
-    call(push_head, $path(keepdir), "main",  hex_main);
-    call(push_tag,  $path(keepdir), "v1.0", hex_tag);
+    char const *hex_trunk = "1111111111111111111111111111111111111111";
+    char const *hex_feat  = "2222222222222222222222222222222222222222";
+    call(push_branch, $path(keepdir), "",     hex_trunk);
+    call(push_branch, $path(keepdir), "feat", hex_feat);
 
     refadv adv = {};
     call(REFADVOpen, &adv, &KEEP);
     want(adv.count == 2);
 
     //  Find which entry is which (REFS order is undefined).
-    refadv_entry const *main_ent = NULL;
-    refadv_entry const *tag_ent  = NULL;
+    refadv_entry const *trunk_ent = NULL;
+    refadv_entry const *feat_ent  = NULL;
     for (u32 i = 0; i < adv.count; i++) {
         a_cstr(rh, "refs/heads/main");
-        a_cstr(rt, "refs/tags/v1.0");
+        a_cstr(rf, "refs/heads/feat");
         if (u8csLen(adv.ents[i].refname) == u8csLen(rh) &&
             memcmp(adv.ents[i].refname[0], rh[0], u8csLen(rh)) == 0)
-            main_ent = &adv.ents[i];
-        if (u8csLen(adv.ents[i].refname) == u8csLen(rt) &&
-            memcmp(adv.ents[i].refname[0], rt[0], u8csLen(rt)) == 0)
-            tag_ent  = &adv.ents[i];
+            trunk_ent = &adv.ents[i];
+        if (u8csLen(adv.ents[i].refname) == u8csLen(rf) &&
+            memcmp(adv.ents[i].refname[0], rf[0], u8csLen(rf)) == 0)
+            feat_ent  = &adv.ents[i];
     }
-    want(main_ent != NULL);
-    want(tag_ent  != NULL);
-    //  heads/main → trunk dir = empty; tags/v1.0 → "tags/v1.0".
-    want(u8csLen(main_ent->dir) == 0);
-    a_cstr(want_tag_dir, "tags/v1.0");
-    want(u8csLen(tag_ent->dir) == u8csLen(want_tag_dir));
-    want(memcmp(tag_ent->dir[0], want_tag_dir[0],
-                u8csLen(want_tag_dir)) == 0);
+    want(trunk_ent != NULL);
+    want(feat_ent  != NULL);
+    //  Trunk → empty shard dir; "feat" → "feat".
+    want(u8csLen(trunk_ent->dir) == 0);
+    a_cstr(want_feat_dir, "feat");
+    want(u8csLen(feat_ent->dir) == u8csLen(want_feat_dir));
+    want(memcmp(feat_ent->dir[0], want_feat_dir[0],
+                u8csLen(want_feat_dir)) == 0);
 
     u8 *bytes = NULL;
     size_t blen = 0;
@@ -301,28 +284,28 @@ ok64 REFADVtest_tip_lookup() {
     call(KEEPOpen, &h, YES);
 
     a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
-    char const *hex_main = "deadbeef00000000000000000000000000000000";
-    char const *hex_tag  = "00000000000000000000000000000000beadeed0";
-    call(push_head, $path(keepdir), "main",  hex_main);
-    call(push_tag,  $path(keepdir), "v0.9", hex_tag);
+    char const *hex_trunk = "deadbeef00000000000000000000000000000000";
+    char const *hex_feat  = "00000000000000000000000000000000beadeed0";
+    call(push_branch, $path(keepdir), "",     hex_trunk);
+    call(push_branch, $path(keepdir), "feat", hex_feat);
 
     refadv adv = {};
     call(REFADVOpen, &adv, &KEEP);
     want(adv.count == 2);
 
-    sha1 sha_main = {};
-    hex_to_sha(&sha_main, hex_main);
+    sha1 sha_trunk = {};
+    hex_to_sha(&sha_trunk, hex_trunk);
     u8cs dirs[4] = {};
-    u32 m = REFADVTipDirs(&adv, &sha_main, dirs, 4);
+    u32 m = REFADVTipDirs(&adv, &sha_trunk, dirs, 4);
     want(m == 1);
-    //  main → trunk → empty dir.
+    //  Trunk shard → empty dir.
     want(u8csLen(dirs[0]) == 0);
 
-    sha1 sha_tag = {};
-    hex_to_sha(&sha_tag, hex_tag);
-    m = REFADVTipDirs(&adv, &sha_tag, dirs, 4);
+    sha1 sha_feat = {};
+    hex_to_sha(&sha_feat, hex_feat);
+    m = REFADVTipDirs(&adv, &sha_feat, dirs, 4);
     want(m == 1);
-    a_cstr(want_dir, "tags/v0.9");
+    a_cstr(want_dir, "feat");
     want(u8csLen(dirs[0]) == u8csLen(want_dir));
     want(memcmp(dirs[0][0], want_dir[0], u8csLen(want_dir)) == 0);
 
@@ -356,9 +339,9 @@ ok64 REFADVtest_round_trip() {
     char const *hex_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     char const *hex_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     char const *hex_c = "cccccccccccccccccccccccccccccccccccccccc";
-    call(push_head, $path(keepdir), "main",  hex_a);
-    call(push_head, $path(keepdir), "feat",  hex_b);
-    call(push_tag,  $path(keepdir), "v2.0", hex_c);
+    call(push_branch, $path(keepdir), "",     hex_a);  // trunk
+    call(push_branch, $path(keepdir), "feat", hex_b);
+    call(push_branch, $path(keepdir), "v2.0", hex_c);  // literal branch
 
     refadv adv = {};
     call(REFADVOpen, &adv, &KEEP);

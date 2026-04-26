@@ -34,19 +34,13 @@ want_file() {
 }
 want_missing() { [ ! -e "$1" ] || fail "$1 should be gone"; }
 
-#  Latest `post` row's URI query carries the HEAD sha as the last
-#  `&`-separated 40-hex spec (dog/QURY).  Pull it out via awk.
+#  Latest `post` row's URI carries the HEAD sha as the `#fragment`
+#  (canonical `?<branch>#<curhash>` shape).
 head_hex() {
     awk -F'\t' '$2 == "post" { last = $3 } END {
-        q = last
-        sub(/^[^?]*\?/, "", q)   # strip everything up to (and past) "?"
-        sub(/#.*$/, "", q)       # drop any fragment (FRAG territory)
-        n = split(q, parts, "&")
-        for (i = n; i > 0; i--) {
-            if (length(parts[i]) == 40 && parts[i] ~ /^[0-9a-f]+$/) {
-                print parts[i]; exit
-            }
-        }
+        h = last
+        sub(/^[^#]*#/, "", h)
+        if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
     }' .sniff
 }
 

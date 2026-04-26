@@ -703,43 +703,50 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     call(patch_walk, reporoot, root,
          &lca_sha, &our_sha, &thr_sha, &st);
 
-    //  Append a `patch` ULOG row whose fragment extends the prior
-    //  baseline fragment with the new `theirs` sha.  The row is
-    //  composed via abc/URI: parse baseline → edit fragment → feed.
+    //  Append a `patch` ULOG row.  Canonical at-log shape is
+    //  `?<branch>#<curhash>` everywhere; `patch` extends the query
+    //  with `&<theirs>` so the next `post` (squash-merge) finds the
+    //  extra parent commit there.  Result: `?<branch>&<theirs>#<ours>`.
     uri baseline_u = {};
     {
         ron60 bts = 0, bverb = 0;
         ok64 br = SNIFFAtBaseline(&bts, &bverb, &baseline_u);
         if (br != OK) {
-            //  No prior baseline: treat `theirs` alone as the
-            //  fragment of a fresh URI.
+            //  No prior baseline: rare (you can't patch into a fresh
+            //  worktree), but be defensive — emit `?#<ours>` with no
+            //  branch and `theirs` chained below.
             memset(&baseline_u, 0, sizeof(baseline_u));
         }
     }
 
-    //  Extend the baseline query by appending the new tip as an
-    //  additional SHA spec: `<prior>&<new-hex>` (or just `<new-hex>`
-    //  if there was no prior query).  Per dog/QURY, refs and SHAs
-    //  coexist in the query `&`-chain, so `heads/main&<ours>` becomes
-    //  `heads/main&<ours>&<theirs>` after this pass.
+    //  Build the query: copy prior baseline query (branch + any prior
+    //  `&<theirs>` chain), then append the new `&<theirs>`.
     a_pad(u8, qbuf, 512);
     if (!u8csEmpty(baseline_u.query)) {
         u8cs oldq = {baseline_u.query[0], baseline_u.query[1]};
         u8bFeed(qbuf, oldq);
-        u8bFeed1(qbuf, '&');
     }
+    u8bFeed1(qbuf, '&');
     a_pad(u8, thex, 40);
     a_rawc(tsha, thr_sha);
     HEXu8sFeedSome(thex_idle, tsha);
     u8bFeed(qbuf, u8bDataC(thex));
 
-    //  Compose the new `patch` row's URI — query only; fragment stays
-    //  empty.  ULOGAppendAt calls URIutf8Feed under the hood.
+    //  Fragment carries `ours` — the current tree the wt is on.
+    a_pad(u8, ohex, 40);
+    a_rawc(osha, our_sha);
+    HEXu8sFeedSome(ohex_idle, osha);
+
     uri urow = {};
     {
         a_dup(u8c, q, u8bData(qbuf));
         urow.query[0] = q[0];
         urow.query[1] = q[1];
+    }
+    {
+        a_dup(u8c, h, u8bDataC(ohex));
+        urow.fragment[0] = h[0];
+        urow.fragment[1] = h[1];
     }
 
     ron60 verb = SNIFFAtVerbPatch();

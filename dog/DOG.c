@@ -207,30 +207,16 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
 ok64 DOGCanonURI(urip u) {
     sane(u != NULL);
 
+    //  Query is an opaque hierarchical local branch path.  Trunk =
+    //  empty (`?`) or a lone `/` (`?/`) — the latter folds to the
+    //  former so the on-disk key is unique.  No name-aware aliasing
+    //  (no `refs/`, `heads/`, `main`/`master`/`trunk` collapsing) —
+    //  git refname conventions live behind keeper/GIT.h's
+    //  GITParseRef / GITFeedRef and apply only on the wire.
     if (!u8csEmpty(u->query)) {
         u8cs q = {u->query[0], u->query[1]};
-        if ($len(q) >= 5 && memcmp(q[0], "refs/", 5) == 0)
-            u8csUsed(q, 5);
-
-        b8 collapse = NO;
-        if ($len(q) == 12 && memcmp(q[0], "heads/master", 12) == 0)
-            collapse = YES;
-        else if ($len(q) == 10 && memcmp(q[0], "heads/main", 10) == 0)
-            collapse = YES;
-        else if ($len(q) == 11 && memcmp(q[0], "heads/trunk", 11) == 0)
-            collapse = YES;
-        else if ($len(q) ==  6 && memcmp(q[0], "master",       6) == 0)
-            collapse = YES;
-        else if ($len(q) ==  4 && memcmp(q[0], "main",         4) == 0)
-            collapse = YES;
-        else if ($len(q) ==  5 && memcmp(q[0], "trunk",        5) == 0)
-            collapse = YES;
-
-        if (collapse) {
+        if ($len(q) == 1 && *q[0] == '/') {
             u->query[0] = q[1];
-            u->query[1] = q[1];
-        } else {
-            u->query[0] = q[0];
             u->query[1] = q[1];
         }
     }

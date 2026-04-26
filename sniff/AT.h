@@ -137,13 +137,14 @@ void SNIFFAtPathBytes(uri const *u, u8cs out);
 typedef ok64 (*sniff_at_pd_cb)(ron60 verb, u8cs path, ron60 ts, void *ctx);
 ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx);
 
-//  Extract the first 40-hex commit SHA from a baseline URI's query.
-//  The query is a `&`-separated list of QURY specs (ref names plus
-//  one-or-more SHAs); baseline SHAs are always written full-length
-//  (40 hex chars) so the walker filters by that exact length.
-//  Copies the 40 bytes into `out_hex40` on success.  Returns
-//  ULOGNONE when no such spec is present (fresh worktree, or a row
-//  that has only a ref in its query).
+//  Extract the current 40-hex commit SHA from a baseline URI.  The
+//  canonical at-log row is `?<branch>#<curhash>` — fragment carries
+//  the current sha, query carries the be-branch path.  For a `patch`
+//  row mid-merge the query may also chain extra `&<theirs>` SHAs as
+//  additional parents; this helper returns the row's "current" sha
+//  (fragment first, then the first 40-hex spec in the query for
+//  legacy rows).  Copies the 40 bytes into `out_hex40` on success.
+//  Returns ULOGNONE when no such spec is present.
 ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40);
 
 #endif

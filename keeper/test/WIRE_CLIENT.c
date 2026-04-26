@@ -100,8 +100,9 @@ static ok64 slurp_file(char const *path, u8 *buf, size_t cap, size_t *out_len) {
 }
 
 //  Ingest `pack_path` into a fresh keeper at `keeper_root`, plus seed
-//  a REFS entry refs/heads/<branch> → hex.  Used to pre-load the
-//  "server" repo for fetch tests and the "source" repo for push.
+//  a REFS entry for the named be-branch → hex.  `branch` is be-side
+//  (use `""` for the trunk shard; on the wire trunk maps to
+//  `refs/heads/main`).
 static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
                                char const *branch, char const *hex_40) {
     sane(keeper_root && pack_path && branch && hex_40);
@@ -121,17 +122,13 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
-    a_cstr(heads_pfx, "heads/");
-    u8bFeed(kbuf, heads_pfx);
-    u8csc br = {(u8cp)branch, (u8cp)branch + strlen(branch)};
-    u8bFeed(kbuf, br);
+    if (branch && *branch) {
+        u8csc br = {(u8cp)branch, (u8cp)branch + strlen(branch)};
+        u8bFeed(kbuf, br);
+    }
     a_dup(u8c, key, u8bData(kbuf));
 
-    a_pad(u8, vbuf, 64);
-    u8bFeed1(vbuf, '?');
-    u8csc hex_cs = {(u8cp)hex_40, (u8cp)hex_40 + 40};
-    u8bFeed(vbuf, hex_cs);
-    a_dup(u8c, val, u8bData(vbuf));
+    u8csc val = {(u8cp)hex_40, (u8cp)hex_40 + 40};
 
     call(REFSAppend, $path(keepdir), key, val);
 
@@ -140,8 +137,8 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     done;
 }
 
-//  Look up the REFS tip for refs/heads/<branch> in a keeper, copying
-//  40 hex bytes into out_41.  Returns NO if missing.
+//  Look up the REFS tip for be-branch `branch` (`""` = trunk) in a
+//  keeper, copying 40 hex bytes into out_41.  Returns NO if missing.
 static b8 lookup_local_ref(char const *keeper_root, char const *branch,
                            char *out_41) {
     a_cstr(root_s, keeper_root);
@@ -152,10 +149,10 @@ static b8 lookup_local_ref(char const *keeper_root, char const *branch,
 
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
-    a_cstr(heads_pfx, "heads/");
-    u8bFeed(kbuf, heads_pfx);
-    u8csc br = {(u8cp)branch, (u8cp)branch + strlen(branch)};
-    u8bFeed(kbuf, br);
+    if (branch && *branch) {
+        u8csc br = {(u8cp)branch, (u8cp)branch + strlen(branch)};
+        u8bFeed(kbuf, br);
+    }
     a_dup(u8c, key, u8bData(kbuf));
 
     a_pad(u8, arena, 256);
@@ -193,13 +190,15 @@ ok64 WIRECLIENTtest_fetch_smoke() {
     want(mkdtemp(clientdir) != NULL);
 
     //  Build a real one-commit pack and ingest it into the "server"
-    //  keeper, then advertise it under refs/heads/main.
+    //  keeper, then put it under the trunk shard.  Trunk advertises
+    //  on the wire as `refs/heads/main` (the only wire alias).
     char hex[41];
     char packpath[1024];
     call(stage_git_commit, gitdir, "alpha\\n", hex, packpath, sizeof(packpath));
-    call(stage_local_keeper, serverdir, packpath, "main", hex);
+    call(stage_local_keeper, serverdir, packpath, "", hex);
 
-    //  Fetch from server into a fresh client keeper.
+    //  Fetch from server into a fresh client keeper.  Empty want
+    //  selects the trunk (peer's HEAD-mapped branch).
     {
         a_cstr(client_root_s, clientdir);
         home h = {};
@@ -207,8 +206,7 @@ ok64 WIRECLIENTtest_fetch_smoke() {
         call(KEEPOpen, &h, YES);
 
         FILE_URI(uri, serverdir);
-        a_cstr(want_s, "heads/main");
-        u8csc want_cs = {want_s[0], want_s[1]};
+        u8csc want_cs = {NULL, NULL};
         ok64 fo = WIREFetch(&KEEP, uri, want_cs);
         want(fo == OK);
 
@@ -216,9 +214,9 @@ ok64 WIRECLIENTtest_fetch_smoke() {
         HOMEClose(&h);
     }
 
-    //  Verify the client REFS now holds the same tip.
+    //  Verify the client REFS now holds the same tip on its trunk.
     char got[41];
-    want(lookup_local_ref(clientdir, "main", got));
+    want(lookup_local_ref(clientdir, "", got));
     want(memcmp(got, hex, 40) == 0);
 
     tmp_rm(gitdir);
@@ -240,13 +238,13 @@ ok64 WIRECLIENTtest_push_smoke() {
     char dstdir[]    = "/tmp/wcli-push-dst-XXXXXX";
     want(mkdtemp(dstdir) != NULL);
 
-    //  Source keeper: a fresh commit ingested + REFS heads/feat → tip.
+    //  Source keeper: a fresh commit ingested under be-branch "feat".
     char hex[41];
     char packpath[1024];
     call(stage_git_commit, gitdir, "alpha\\n", hex, packpath, sizeof(packpath));
     call(stage_local_keeper, srcdir, packpath, "feat", hex);
 
-    //  Push from source to destination.
+    //  Push from source to destination.  local_branch is be-side.
     {
         a_cstr(src_root_s, srcdir);
         home h = {};
@@ -254,7 +252,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         call(KEEPOpen, &h, YES);
 
         FILE_URI(uri, dstdir);
-        a_cstr(branch_s, "heads/feat");
+        a_cstr(branch_s, "feat");
         u8csc branch_cs = {branch_s[0], branch_s[1]};
         ok64 po = WIREPush(&KEEP, uri, branch_cs);
         want(po == OK);
@@ -263,7 +261,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         HOMEClose(&h);
     }
 
-    //  Destination should now have refs/heads/feat → hex.
+    //  Destination should now have be-branch "feat" → hex.
     char got[41];
     want(lookup_local_ref(dstdir, "feat", got));
     want(memcmp(got, hex, 40) == 0);
@@ -294,10 +292,10 @@ ok64 WIRECLIENTtest_round_trip() {
     call(stage_git_commit, gitdir, "round-trip\\n", hex, packpath,
          sizeof(packpath));
 
-    //  A holds the commit + refs/heads/main → hex.
-    call(stage_local_keeper, Adir, packpath, "main", hex);
+    //  A holds the commit on its trunk (wire-side `refs/heads/main`).
+    call(stage_local_keeper, Adir, packpath, "", hex);
 
-    //  Push A → B.
+    //  Push A → B (trunk → wire main).
     {
         a_cstr(A_root_s, Adir);
         home h = {};
@@ -305,8 +303,7 @@ ok64 WIRECLIENTtest_round_trip() {
         call(KEEPOpen, &h, YES);
 
         FILE_URI(uri, Bdir);
-        a_cstr(branch_s, "heads/main");
-        u8csc branch_cs = {branch_s[0], branch_s[1]};
+        u8csc branch_cs = {NULL, NULL};
         ok64 po = WIREPush(&KEEP, uri, branch_cs);
         want(po == OK);
 
@@ -322,8 +319,7 @@ ok64 WIRECLIENTtest_round_trip() {
         call(KEEPOpen, &h, YES);
 
         FILE_URI(uri, Adir);
-        a_cstr(want_s, "heads/main");
-        u8csc want_cs = {want_s[0], want_s[1]};
+        u8csc want_cs = {NULL, NULL};
         ok64 fo = WIREFetch(&KEEP, uri, want_cs);
         want(fo == OK);
 
@@ -331,11 +327,11 @@ ok64 WIRECLIENTtest_round_trip() {
         HOMEClose(&h);
     }
 
-    //  Both B and C agree with A.
+    //  Both B and C agree with A on the trunk tip.
     char gotB[41], gotC[41];
-    want(lookup_local_ref(Bdir, "main", gotB));
+    want(lookup_local_ref(Bdir, "", gotB));
     want(memcmp(gotB, hex, 40) == 0);
-    want(lookup_local_ref(Cdir, "main", gotC));
+    want(lookup_local_ref(Cdir, "", gotC));
     want(memcmp(gotC, hex, 40) == 0);
 
     tmp_rm(gitdir);

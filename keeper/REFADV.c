@@ -11,44 +11,15 @@
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "keeper/GIT.h"
 #include "keeper/PKT.h"
 #include "keeper/REFS.h"
-
-// --- prefixes / capability advertisement ---
-
-static u8c const REFADV_PFX_HEADS[] = {'?', 'h', 'e', 'a', 'd', 's', '/'};
-static u8c const REFADV_PFX_TAGS[]  = {'?', 't', 'a', 'g', 's', '/'};
-static u8c const REFADV_REFS_HEADS[] = "refs/heads/";   // 11 chars
-static u8c const REFADV_REFS_TAGS[]  = "refs/tags/";    // 10 chars
-static u8c const REFADV_TAGS_DIR[]   = "tags/";         // 5 chars
 
 //  Capability list — see WIRE.md Phase 3.
 //  No `side-band-64k`: without it git reads the raw pack after NAK
 //  exactly as WIREServeUpload emits it (PSTRWrite writes unframed).
 static u8c const REFADV_CAPS[] =
     "multi_ack_detailed ofs-delta agent=dogs-keeper";
-
-//  Trunk-aliased branches (heads/<name> entries that resolve to the
-//  trunk dir, i.e. dir = "").  Mirrors the alias set enforced by
-//  KEEPBranchDrop.
-static b8 refadv_is_trunk_alias(u8csc name) {
-    a_cstr(main_s,   "main");
-    a_cstr(master_s, "master");
-    a_cstr(trunk_s,  "trunk");
-    u8c *const *aliases[3] = {main_s, master_s, trunk_s};
-    for (int i = 0; i < 3; i++) {
-        u8csc a = {aliases[i][0], aliases[i][1]};
-        if (u8csLen(name) != u8csLen(a)) continue;
-        if (memcmp(name[0], a[0], u8csLen(a)) == 0) return YES;
-    }
-    return NO;
-}
-
-//  Slice [head, term) prefix-match against a literal byte sequence.
-static b8 refadv_starts_with(u8csc s, u8c const *pfx, size_t plen) {
-    if ((size_t)u8csLen(s) < plen) return NO;
-    return memcmp(s[0], pfx, plen) == 0;
-}
 
 //  Decode a REFS value into a sha1.  Canonical form is bare 40-hex;
 //  also accept legacy `?<40-hex>` (41 chars) for read-path tolerance.
@@ -75,9 +46,19 @@ typedef struct {
     refadv *adv;
 } refadv_ctx;
 
-//  Per-ref callback fed by REFSEach.  Recognises `?heads/<name>` and
-//  `?tags/<name>` keys with terminal `?<40-hex>` values; everything
-//  else (aliases, alias chains, peer-tracking entries) is skipped.
+//  Per-ref callback fed by REFSEach.  Local rows have keys of the
+//  form `?<branch-path>` (`?` for trunk).  Peer-prefixed rows
+//  (`<peer-uri>?<branch>`) are observations of someone else's tip and
+//  must NOT be advertised as ours — skip them.
+//
+//  Wire mapping at this boundary (the only place the trunk⇔main
+//  alias lives):
+//      `?`         → refname `refs/heads/main`,  shard dir = ""
+//      `?<X>`      → refname `refs/heads/<X>`,   shard dir = "<X>"
+//
+//  No tag handling — locally there is no tag/branch distinction; each
+//  REFS row is just a branch shard tip.  (Re-introduce tag-as-tag
+//  semantics with a separate verb / refkind field if/when needed.)
 static ok64 refadv_each_cb(refcp r, void *vctx) {
     sane(r && vctx);
     refadv_ctx *ctx = (refadv_ctx *)vctx;
@@ -86,73 +67,40 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     u8cs key = {r->key[0], r->key[1]};
     u8cs val = {r->val[0], r->val[1]};
 
-    //  Find the first `?` — the key may be either bare (`?heads/X`)
-    //  or peer-URI-prefixed (`ssh://host/path?heads/X`).  Everything
-    //  after that `?` is the query we want to classify.
-    u8cs q = {key[1], key[1]};
-    for (u8cp p = key[0]; p < key[1]; p++) {
-        if (*p == '?') { q[0] = p; q[1] = key[1]; break; }
-    }
-    if (q[0] == key[1]) done;  //  no `?` — skip
-
-    b8  is_heads = refadv_starts_with(q, REFADV_PFX_HEADS,
-                                      sizeof(REFADV_PFX_HEADS));
-    b8  is_tags  = refadv_starts_with(q, REFADV_PFX_TAGS,
-                                      sizeof(REFADV_PFX_TAGS));
-    if (!is_heads && !is_tags) done;
+    //  Local-only filter: a key that doesn't *start* with `?` carries
+    //  a peer URI prefix and represents a remote-observed tip.
+    if ($empty(key) || *key[0] != '?') done;
+    u8cs branch = {key[0] + 1, key[1]};
 
     sha1 tip = {};
     if (!refadv_decode_terminal(&tip, val)) done;
 
-    //  Strip the `?heads/` or `?tags/` prefix to get the bare name.
+    //  Wire alias: empty branch (trunk) advertises as `main`.
+    a_cstr(main_s, "main");
     u8cs name = {};
-    if (is_heads) {
-        name[0] = q[0] + sizeof(REFADV_PFX_HEADS);
-    } else {
-        name[0] = q[0] + sizeof(REFADV_PFX_TAGS);
-    }
-    name[1] = q[1];
-    if (u8csLen(name) == 0) done;
+    u8csMv(name, $empty(branch) ? main_s : branch);
 
     if (adv->count >= REFADV_MAX_ENTRIES) done;
     refadv_entry *ent = &adv->ents[adv->count];
     ent->tip = tip;
 
-    //  Build refname = "refs/heads/<name>" or "refs/tags/<name>" into
-    //  the arena, then capture an arena-owned slice.
+    //  Build refname into the arena via GITFeedRef so the wire form
+    //  (refs/heads/<name>) is built in exactly one place.
     u8 *refname_start = u8bIdleHead(adv->arena);
-    if (is_heads) {
-        u8csc pfx = {REFADV_REFS_HEADS,
-                     REFADV_REFS_HEADS + sizeof(REFADV_REFS_HEADS) - 1};
-        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(pfx) + u8csLen(name))
-            return BNOROOM;
-        u8bFeed(adv->arena, pfx);
-        u8bFeed(adv->arena, name);
-    } else {
-        u8csc pfx = {REFADV_REFS_TAGS,
-                     REFADV_REFS_TAGS + sizeof(REFADV_REFS_TAGS) - 1};
-        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(pfx) + u8csLen(name))
-            return BNOROOM;
-        u8bFeed(adv->arena, pfx);
-        u8bFeed(adv->arena, name);
+    {
+        ok64 fo = GITFeedRef(adv->arena, GITREF_BRANCH, name);
+        if (fo != OK) return fo;
     }
     ent->refname[0] = refname_start;
     ent->refname[1] = u8bIdleHead(adv->arena);
 
-    //  Build dir slice.  heads/<trunk-alias> → empty; heads/<other> →
-    //  <other>; tags/<n> → tags/<n>.
+    //  Shard dir: trunk → ""; other → "<branch>".  Stored as an
+    //  arena-owned slice so the caller can keep it past REFSEach.
     u8 *dir_start = u8bIdleHead(adv->arena);
-    if (is_tags) {
-        u8csc pfx = {REFADV_TAGS_DIR,
-                     REFADV_TAGS_DIR + sizeof(REFADV_TAGS_DIR) - 1};
-        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(pfx) + u8csLen(name))
+    if (!$empty(branch)) {
+        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(branch))
             return BNOROOM;
-        u8bFeed(adv->arena, pfx);
-        u8bFeed(adv->arena, name);
-    } else if (!refadv_is_trunk_alias(name)) {
-        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(name))
-            return BNOROOM;
-        u8bFeed(adv->arena, name);
+        u8bFeed(adv->arena, branch);
     }
     ent->dir[0] = dir_start;
     ent->dir[1] = u8bIdleHead(adv->arena);

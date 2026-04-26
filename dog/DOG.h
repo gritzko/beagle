@@ -71,11 +71,11 @@ ok64 DOGParseURI(urip uri, u8csc text);
 // carries redundant or ambiguous spellings.
 //
 //   Query (slice mutated on `u`):
-//     - strip leading `refs/`
-//     - collapse `heads/master`, `heads/main`, `heads/trunk` to empty
-//     - collapse bare `master`, `main`, `trunk` to empty
-//     - the trunk is the empty query (`?` with nothing after)
-//     - `tags/*`, `heads/<other>`, SHAs, ranges, sets — left alone
+//     - opaque hierarchical local branch path (no `refs/`, no `heads/`
+//       prefix — those are git wire conventions handled by
+//       keeper/GIT.h GITParseRef/GITFeedRef, not by us)
+//     - trunk = empty query (`?`); bare `?/` folds to `?`
+//     - everything else left alone
 //
 //   Fragment (slice mutated on `u`):
 //     - strip a single leading `?` (value is bare 40-hex SHA or empty)

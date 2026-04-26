@@ -325,29 +325,26 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     }
 
     //  Everything else: resolve the (canonicalised) URI against REFS
-    //  and check out the resulting sha.  REFSResolve handles:
-    //    * `?heads/main` / `?main` / `?refs/heads/master` → trunk row
-    //    * `<peer>?heads/feat` → peer's observation of that branch
-    //    * `//host/path` (fresh clone, no query) → matches the peer's
-    //      canonical trunk row `<peer>?#<sha>`
-    //    * raw `?<40hex>` SHA query (after worktree rewrite)
-    if (!$empty(u->query) || !$empty(u->authority)) {
+    //  and check out the resulting sha.  Treat *presence* of `?` —
+    //  even with an empty query (`?` for trunk) — as an explicit ref
+    //  lookup, distinct from "no query at all" (which falls through
+    //  to the at-log branch resume below).
+    b8 has_q = (u->query[0] != NULL);
+    if (has_q || !$empty(u->authority)) {
         a_pad(u8, arena1, 1024);
         uri resolved = {};
         ok64 o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
         if (o == OK && !$empty(resolved.query)) {
             a_pad(u8, src, 256);
             u8bFeed1(src, '?');
-            if (!$empty(u->query)) {
-                u8bFeed(src, u->query);
+            if (has_q) {
+                if (!$empty(u->query)) u8bFeed(src, u->query);
             } else if (!$empty(resolved.fragment)) {
                 //  Fresh-clone path: user gave no `?ref` (e.g.
                 //  `be get ssh://sniff/src/dogs`).  Carry the matched
                 //  row's refname (`heads/<branch>`) into the at-log so
                 //  SNIFFAtBaseline → POSTCommit → keeper REFS chain
-                //  records branch-keyed local moves; otherwise REFADV
-                //  never advances `?heads/<branch>` past the fetched
-                //  tip and `WIREPush` short-circuits on stale equality.
+                //  records branch-keyed local moves.
                 u8bFeed(src, resolved.fragment);
             }
             a_dup(u8c, source, u8bData(src));
@@ -362,6 +359,10 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             a_dup(u8c, qkey, u8bData(qbuf));
             return GETCheckout(reporoot, u->query, qkey);
         }
+        //  Present-but-empty query (`?`, trunk): explicit fail rather
+        //  than falling through to the at-log resume below — the user
+        //  asked for trunk and the row isn't there.
+        if (has_q) fail(SNIFFFAIL);
     }
 
     //  Bare `be get` (no URI args at all): resume the worktree's
@@ -527,8 +528,10 @@ ok64 SNIFFExec(cli *c) {
             if (!$empty(c->uris[i].query)) { label_uri = &c->uris[i]; break; }
 
         if (!$ok(commit_msg) && label_uri == NULL) {
-            fprintf(stderr, "sniff: post needs -m <msg> or ?<label>\n");
-            ret = SNIFFFAIL;
+            //  Bare `sniff post` (no -m, no ?label) → dry run:
+            //  list the change-set the next commit would produce
+            //  without writing anything.
+            ret = POSTPrintStatus(reporoot);
         } else {
             //  POSTCommit does its own wt scan + change-set resolve;
             //  no pre-pass needed anymore.

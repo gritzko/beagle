@@ -17,6 +17,13 @@
 ok64 POSTCommit(u8cs reporoot,
                 u8cs message, u8cs author, sha1 *sha_out);
 
+//  Dry run: walk the same change-set the next POSTCommit would
+//  build, print one line per changed path to stdout (`M/A/D path`),
+//  and a `sniff: <n> change(s)` summary to stderr.  No commit, no
+//  REFS, no ULOG mutation.  Wired to bare `sniff post` (no -m,
+//  no `?label`) so the user can sanity-check before committing.
+ok64 POSTPrintStatus(u8cs reporoot);
+
 //  Record `ref_uri → ?<sha_hex>` in keeper/refs via REFSAppend.
 //  `ref_uri` is the URI the user typed on the CLI — e.g. `?heads/main`
 //  or `?tags/v0.0.1` — passed straight through (`c->uris[i].data`).

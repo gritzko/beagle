@@ -124,7 +124,12 @@ ok64 DOGTestDOGParseURI() {
 // pipeline: classification (query/fragment/path), dog normalisations
 // (scheme→authority, port-fixup, @host split), and canonicalisation
 // (scheme-stripping for transports, `file:` preservation, `//`+path,
-// `refs/` strip, trunk-name collapse, `?` strip from fragment).
+// `?/` → `?` trunk fold, `?` strip from fragment).
+//
+// The query is an opaque local branch path — no `refs/` strip, no
+// `heads/main`/`master`/`trunk` aliasing.  Git refname conventions
+// live behind keeper/GIT.h's GITParseRef/GITFeedRef and apply only
+// at the wire boundary.
 typedef struct {
     const char *input;
     const char *expect;   // DOGCanonURIFeed(norm_arg)
@@ -132,41 +137,35 @@ typedef struct {
 
 static const CanonCase CANON_CASES[] = {
     // Scheme preserved — ssh/https/git/file/be all pass through.
-    // `master` collapses to trunk (present-empty query).
-    {"ssh://localhost/src/repo?master",    "ssh://localhost/src/repo?"},
-    {"https://localhost/src/repo?master",  "https://localhost/src/repo?"},
-    {"git://localhost/src/repo?master",    "git://localhost/src/repo?"},
+    {"ssh://localhost/src/repo?master",    "ssh://localhost/src/repo?master"},
+    {"https://localhost/src/repo?master",  "https://localhost/src/repo?master"},
+    {"git://localhost/src/repo?master",    "git://localhost/src/repo?master"},
     // `file:` preserved.
     {"file:///etc/passwd",                 "file:///etc/passwd"},
     // Scp-like form: `host:path`, non-numeric port glued back.
-    {"ssh://localhost:src/repo?master",    "ssh://localhost/src/repo?"},
-    {"localhost:src/repo?master",          "//localhost/src/repo?"},
+    {"ssh://localhost:src/repo?master",    "ssh://localhost/src/repo?master"},
+    {"localhost:src/repo?master",          "//localhost/src/repo?master"},
     // User@host form — no `//`, promoted via the @-split rule.
-    {"gritzko@pm.me/proj?main",            "//gritzko@pm.me/proj?"},
-    {"gritzko@pm.me?main",                 "//gritzko@pm.me?"},
+    {"gritzko@pm.me/proj?main",            "//gritzko@pm.me/proj?main"},
+    {"gritzko@pm.me?main",                 "//gritzko@pm.me?main"},
     // Already canonical.
-    {"//localhost/src/repo?master",        "//localhost/src/repo?"},
+    {"//localhost/src/repo?master",        "//localhost/src/repo?master"},
     // Path-only.
     {"/absolute/path",                     "/absolute/path"},
-    // Bare ref name — classified as query; trunk alias collapses.
-    {"master",                             "?"},
-    {"main",                               "?"},
-    {"trunk",                              "?"},
-    // Non-trunk branch — kept.
+    // Bare ref name — classified as query; kept literally (no aliasing).
+    {"master",                             "?master"},
+    {"main",                               "?main"},
+    {"trunk",                              "?trunk"},
     {"feature",                            "?feature"},
-    // `refs/heads/<trunk-alias>` collapses.
-    {"?refs/heads/master",                 "?"},
-    {"?refs/heads/main",                   "?"},
-    {"?refs/heads/trunk",                  "?"},
-    // `heads/<trunk-alias>` collapses.
-    {"?heads/master",                      "?"},
-    {"?heads/main",                        "?"},
-    // `refs/` strip on non-trunk paths.
-    {"?refs/tags/v1.0",                    "?tags/v1.0"},
-    {"?refs/heads/feat",                   "?heads/feat"},
-    // `tags/<name>` kept.
+    // No `refs/` strip — query is opaque.
+    {"?refs/heads/main",                   "?refs/heads/main"},
+    {"?heads/main",                        "?heads/main"},
+    {"?refs/tags/v1.0",                    "?refs/tags/v1.0"},
     {"?tags/v2.8.6",                       "?tags/v2.8.6"},
-    // 40-hex SHA — classified as query, no collapse.
+    // Trunk: `?` and `?/` both fold to `?`.
+    {"?",                                  "?"},
+    {"?/",                                 "?"},
+    // 40-hex SHA — classified as query, kept.
     {"0123456789abcdef0123456789abcdef01234567",
         "?0123456789abcdef0123456789abcdef01234567"},
     // Whitespace — classified as fragment (commit msg).
@@ -187,11 +186,10 @@ static const CanonCase CANON_CASES[] = {
         "ssh://peer/src/repo?heads/feat#0123456789abcdef0123456789abcdef01234567"},
     // Deletion row: `?branch#` — non-empty query, empty-but-present fragment.
     {"?feature/fix1#",                     "?feature/fix1#"},
-    // View projectors round-trip with scheme preserved.  Trunk alias
-    // in a projector's ref still collapses to bare `?`.
+    // View projectors round-trip with scheme preserved.
     {"ls:subdir",                          "ls:subdir"},
     {"ls:?heads/feat",                     "ls:?heads/feat"},
-    {"ls:?heads/master",                   "ls:?"},
+    {"ls:?master",                         "ls:?master"},
     {"tree:src/?heads/feat",               "tree:src/?heads/feat"},
     {"sha1:?heads/feat",                   "sha1:?heads/feat"},
 };

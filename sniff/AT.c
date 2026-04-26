@@ -211,12 +211,22 @@ ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
 
 ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40) {
     sane(u && out_hex40);
+
+    //  Canonical at-log row: `?<branch>#<curhash>` — fragment is the
+    //  current sha.  Take it directly when present.
+    {
+        u8cs frag = {u->fragment[0], u->fragment[1]};
+        if (u8csLen(frag) == 40) {
+            memcpy(out_hex40, frag[0], 40);
+            done;
+        }
+    }
+
+    //  Legacy rows kept the sha in the query (`?<branch>&<sha>`) —
+    //  walk the `&`-chain and pick the first 40-hex spec.  Tolerate
+    //  empty leading specs (`&<sha>`) by skipping bare separators.
     a_dup(u8c, q, u->query);
     while (!$empty(q)) {
-        //  Skip empty specs (leading or consecutive `&`).  Canonical
-        //  trunk rows are shaped `&<sha>` — an empty first REF slot —
-        //  which QURYu8sDrain reports as QURYFAIL, not QURY_NONE.
-        //  Treat "`&` with nothing before it" as a skippable separator.
         if (*q[0] == '&') { u8csUsed1(q); continue; }
         qref spec = {};
         if (QURYu8sDrain(q, &spec) != OK) break;

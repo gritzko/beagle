@@ -1,17 +1,17 @@
 #!/bin/sh
-#  squash.sh — squash a sub-branch with multiple commits into one
-#  linear commit on the parent branch.
+#  squash.sh — squash a side branch's multiple commits into one
+#  linear commit on trunk.
 #
 #  Workflow exercised:
-#    1. Fresh repo; initial commit on heads/master touching a+b.
-#    2. Label that tip as heads/master/feat (sub-branch ref).
-#    3. Switch to feat via `sniff get ?heads/master/feat`;
-#       make two "turbulent" commits (modify a, add c).
-#    4. Switch back to master; make a concurrent commit (modify b).
-#    5. From master: `sniff patch ?heads/master/feat` does a 3-way
-#       merge (ours=master tip, theirs=feat tip, lca=initial).
+#    1. Fresh repo; initial commit on trunk (?) touching a+b.
+#    2. Label that tip as `?feat` (a side-branch pointer).
+#    3. Switch to feat via `sniff get ?feat`; two "turbulent"
+#       commits (modify a, add c).
+#    4. Switch back to trunk; make a concurrent commit (modify b).
+#    5. From trunk: `sniff patch ?feat` does a 3-way merge
+#       (ours=trunk tip, theirs=feat tip, lca=initial).
 #    6. `sniff post -m "squash feat"` lands the merged wt as ONE new
-#       commit on master whose parent is master's concurrent tip.
+#       commit on trunk whose parent is trunk's concurrent tip.
 #
 #  Verifies:
 #    * The squash commit includes every expected file (a modified by
@@ -41,23 +41,14 @@ WT="$TMP/wt"
 mkdir -p "$WT"
 cd "$WT"
 
-#  Last sha recorded in .sniff — walk the query of the most recent
-#  get/post/patch row (dog/QURY: `&`-separated ref/SHA specs) and
-#  pick the first 40-hex SHA segment.  For a multi-SHA merge state
-#  that's the "ours" sha, matching resolve_ours / post_load_baseline.
+#  Current commit recorded in .sniff — `?<branch>#<curhash>` shape:
+#  fragment of the most recent get/post/patch row holds the sha.
 head_hex() {
     awk -F'\t' '$2=="post" || $2=="get" || $2=="patch" { last=$3 }
                 END {
-                    q = last
-                    sub(/^[^?]*\?/, "", q)
-                    sub(/#.*$/, "", q)
-                    n = split(q, parts, "&")
-                    for (i = 1; i <= n; i++) {
-                        if (length(parts[i]) == 40 &&
-                            parts[i] ~ /^[0-9a-f]+$/) {
-                            print parts[i]; exit
-                        }
-                    }
+                    h = last
+                    sub(/^[^#]*#/, "", h)
+                    if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
                 }' .sniff
 }
 
@@ -88,25 +79,25 @@ ref_tip() {
         }'
 }
 
-# --- step 1: base commit on heads/master ------------------------------
-echo "=== 1. base commit on master ==="
+# --- step 1: base commit on trunk ------------------------------------
+echo "=== 1. base commit on trunk ==="
 echo "a line 1" > a.txt
 echo "b line 1" > b.txt
 sniff post -m "base" >/dev/null
 BASE=$(head_hex)
 [ -n "$BASE" ] || fail "no base sha"
-note "master BASE=$BASE"
+note "trunk BASE=$BASE"
 
-# --- step 2: label same tip as heads/master/feat ----------------------
-echo "=== 2. label heads/master/feat at BASE ==="
-sniff post "?heads/master/feat" >/dev/null
-FEAT_REF=$(ref_tip "?heads/master/feat")
+# --- step 2: label same tip as ?feat (side branch) -------------------
+echo "=== 2. label ?feat at BASE ==="
+sniff post "?feat" >/dev/null
+FEAT_REF=$(ref_tip "?feat")
 [ "$FEAT_REF" = "$BASE" ] || fail "feat ref not at BASE (got=$FEAT_REF)"
-note "heads/master/feat -> $FEAT_REF"
+note "?feat -> $FEAT_REF"
 
 # --- step 3: switch to feat, two turbulent commits --------------------
 echo "=== 3. feat branch: modify a, then add c ==="
-sniff get "?heads/master/feat" >/dev/null
+sniff get "?feat" >/dev/null
 sleep 1
 echo "a line 1 (feat mod)" > a.txt
 sniff post -m "feat: rewrite a" >/dev/null
@@ -115,34 +106,32 @@ note "feat tip after rewrite=$FEAT1"
 
 sleep 1
 echo "c line 1" > c.txt
-#  c.txt is untracked relative to FEAT1's baseline; implicit `sniff
-#  post -m` no longer auto-stages strangers (post_decide rule:
-#  "with no put/delete, post commits only tracked files").  Name the
-#  new path explicitly.
+#  c.txt is untracked — implicit `sniff post -m` skips strangers
+#  once a baseline exists.  Stage it explicitly.
 sniff put c.txt >/dev/null
 sniff post -m "feat: add c" >/dev/null
 FEAT2=$(head_hex)
 [ "$FEAT2" != "$FEAT1" ] || fail "feat tip didn't advance"
 note "feat tip after add c=$FEAT2"
 
-# --- step 4: switch back to master, concurrent commit -----------------
-echo "=== 4. master: concurrent modify b ==="
-sniff get "?heads/master" >/dev/null
-#  After this get the wt reflects master tip (a=base, b=base, c=gone).
-[ -f a.txt ] || fail "a.txt missing after switch to master"
-[ ! -f c.txt ] || fail "c.txt should be pruned on switch to master"
-grep -qF 'a line 1' a.txt || fail "a.txt not base content on master"
+# --- step 4: switch back to trunk, concurrent commit -----------------
+echo "=== 4. trunk: concurrent modify b ==="
+sniff get "?" >/dev/null
+#  After this get the wt reflects trunk tip (a=base, b=base, c=gone).
+[ -f a.txt ] || fail "a.txt missing after switch to trunk"
+[ ! -f c.txt ] || fail "c.txt should be pruned on switch to trunk"
+grep -qF 'a line 1' a.txt || fail "a.txt not base content on trunk"
 
 sleep 1
 echo "b line 1 (trunk mod)" > b.txt
 sniff post -m "trunk: rewrite b" >/dev/null
-MASTER1=$(head_hex)
-[ "$MASTER1" != "$BASE" ] || fail "master tip didn't advance"
-note "master tip after rewrite b=$MASTER1"
+TRUNK1=$(head_hex)
+[ "$TRUNK1" != "$BASE" ] || fail "trunk tip didn't advance"
+note "trunk tip after rewrite b=$TRUNK1"
 
-# --- step 5: squash feat into master ----------------------------------
-echo "=== 5. patch feat into master wt ==="
-sniff patch "?heads/master/feat" 2>&1 | sed 's/^/  | /'
+# --- step 5: squash feat into trunk ----------------------------------
+echo "=== 5. patch feat into trunk wt ==="
+sniff patch "?feat" 2>&1 | sed 's/^/  | /'
 [ -f c.txt ] || fail "patch did not bring in c.txt from feat"
 grep -qF '(feat mod)'  a.txt || fail "patch did not merge feat's a"
 grep -qF '(trunk mod)' b.txt || fail "patch clobbered trunk's b"
@@ -151,23 +140,22 @@ grep -qF 'c line 1'    c.txt || fail "patch's c.txt has wrong content"
     || fail "unexpected conflict markers on disjoint edits"
 note "merged wt: a(feat), b(trunk), c(feat)"
 
-echo "=== 6. squash commit on master ==="
-sniff post -m "squash feat into master" >/dev/null
+echo "=== 6. squash commit on trunk ==="
+sniff post -m "squash feat into trunk" >/dev/null
 SQUASH=$(head_hex)
-[ "$SQUASH" != "$MASTER1" ] || fail "no new commit after squash post"
+[ "$SQUASH" != "$TRUNK1" ] || fail "no new commit after squash post"
 note "squash commit=$SQUASH"
 
-#  `?heads/master` canonicalises to bare `?` (trunk).
-MASTER_REF=$(ref_tip "?")
-[ "$MASTER_REF" = "$SQUASH" ] \
-    || fail "heads/master not advanced to squash ($MASTER_REF vs $SQUASH)"
-note "heads/master -> $SQUASH"
+TRUNK_REF=$(ref_tip "?")
+[ "$TRUNK_REF" = "$SQUASH" ] \
+    || fail "trunk not advanced to squash ($TRUNK_REF vs $SQUASH)"
+note "trunk -> $SQUASH"
 
-#  History check: squash's parent must be master's concurrent tip.
+#  History check: squash's parent must be trunk's concurrent tip.
 SQUASH_PARENT=$(parent_of "$SQUASH")
-[ "$SQUASH_PARENT" = "$MASTER1" ] \
-    || fail "squash parent is $SQUASH_PARENT, expected MASTER1=$MASTER1"
-note "squash parent = MASTER1 (linear history on master)"
+[ "$SQUASH_PARENT" = "$TRUNK1" ] \
+    || fail "squash parent is $SQUASH_PARENT, expected TRUNK1=$TRUNK1"
+note "squash parent = TRUNK1 (linear history on trunk)"
 
 #  A fresh checkout of the squash tip should materialise the merged
 #  tree (a=feat, b=trunk, c=feat).

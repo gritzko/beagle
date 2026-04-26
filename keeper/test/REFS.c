@@ -154,22 +154,27 @@ ok64 REFStest_resolve_table() {
     fixture fx = {};
     call(fixture_open, &fx, "/tmp/refs-rt-XXXXXX");
 
-    //  Peer names are preserved in wire-observed rows (canonicalisation
-    //  is for user CLI input, not the wire layer).  Local rows get the
-    //  short-ref fallback via refs_query_match.
-    call(append, &fx, "?heads/main",
+    //  Local query is an opaque branch path — plain string equality, no
+    //  name aliasing.  Trunk = empty (`?`); other branches keep their
+    //  literal path.  Wire-side aliasing (heads/main ⇔ trunk) is the
+    //  job of keeper/GIT.h GITParseRef/GITFeedRef and lives in the
+    //  WIRE layer, not here.
+    call(append, &fx, "?feature",
          "cafef00dcafef00dcafef00dcafef00dcafef00d");
-    call(append, &fx, "https://github.com/torvalds/linux.git?heads/master",
+    call(append, &fx, "https://github.com/torvalds/linux.git?master",
          "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 
     resolve_case const cases[] = {
-        {"?heads/main",                "cafef00dcafef00dcafef00dcafef00dcafef00d", NULL,    "heads/main"},
-        {"?main",                      "cafef00dcafef00dcafef00dcafef00dcafef00d", NULL,    "heads/main"},
-        {"//github?master",            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "https", "heads/master"},
-        //  Authority-only lookup: `be post //github` recovers the refname
-        //  from the most recent matching row's `?query`.
-        {"//github",                   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "https", "heads/master"},
-        {"?heads/nonexistent",          NULL,                                      NULL,    NULL},
+        //  Literal local-branch hit.
+        {"?feature",         "cafef00dcafef00dcafef00dcafef00dcafef00d", NULL,    "feature"},
+        //  Same local key under a peer-prefixed query.
+        {"//github?master",  "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "https", "master"},
+        //  Authority-only lookup (no `?`): wildcard over peer rows; the
+        //  most recent matching row's `?query` is recovered.
+        {"//github",         "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "https", "master"},
+        //  Misses: literal mismatch and unknown branch.
+        {"?heads/feature",   NULL,                                       NULL,    NULL},
+        {"?nonexistent",     NULL,                                       NULL,    NULL},
     };
 
     for (size_t i = 0; i < sizeof(cases)/sizeof(*cases); i++) {

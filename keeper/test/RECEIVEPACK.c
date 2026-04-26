@@ -15,6 +15,7 @@
 //    4. Non-FF rejection: pre-seed REFS with tip A, send B → C
 //       (B != A), expect `ng … non-fast-forward`, REFS unchanged.
 
+#include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/PKT.h"
 #include "keeper/REFS.h"
@@ -167,9 +168,25 @@ static ok64 stage_git_commit(char const *workdir, char const *content,
     done;
 }
 
-//  Pre-seed a REFS entry.  refname looks like "refs/heads/main"; we map
-//  it to the keeper REFS key "?heads/main" (via the receive-pack
-//  refname→key convention).
+//  Map a wire refname (e.g. "refs/heads/main", "refs/heads/feat") to
+//  the local be-side REFS key ("?", "?feat") — same translation the
+//  receiver applies in recv_build_key, so seed/update round-trip.
+static void wire_to_be_key(u8b out, char const *refname) {
+    u8csc rn = {(u8cp)refname, (u8cp)refname + strlen(refname)};
+    gitref_kind k = GITREF_NONE;
+    u8cs name = {};
+    (void)GITParseRef(rn, &k, name);
+    u8bFeed1(out, '?');
+    if (k != GITREF_BRANCH) return;
+    a_cstr(main_s, "main");
+    if (u8csLen(name) == u8csLen(main_s) &&
+        memcmp(name[0], main_s[0], (size_t)u8csLen(main_s)) == 0)
+        return;  //  trunk
+    u8bFeed(out, name);
+}
+
+//  Pre-seed a REFS entry.  refname looks like "refs/heads/main"; we
+//  translate it to the local be-side key the receiver would produce.
 static ok64 seed_ref(char const *tmpdir, char const *refname,
                      char const *hex_40) {
     sane(tmpdir && refname && hex_40);
@@ -179,13 +196,8 @@ static ok64 seed_ref(char const *tmpdir, char const *refname,
     call(KEEPOpen, &h, YES);
     a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
 
-    //  Peer-observed ref: preserve name (only strip `refs/`).  Val
-    //  is bare 40-hex (canonical fragment form).
     a_pad(u8, kbuf, 256);
-    u8bFeed1(kbuf, '?');
-    char const *short_name = refname + 5;  // skip "refs/"
-    u8csc s = {(u8cp)short_name, (u8cp)short_name + strlen(short_name)};
-    u8bFeed(kbuf, s);
+    wire_to_be_key(kbuf, refname);
     a_dup(u8c, key, u8bData(kbuf));
 
     u8csc val = {(u8cp)hex_40, (u8cp)hex_40 + 40};
@@ -206,10 +218,7 @@ static b8 lookup_ref(char const *tmpdir, char const *refname, char *out_41) {
     a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
 
     a_pad(u8, kbuf, 256);
-    u8bFeed1(kbuf, '?');
-    char const *short_name = refname + 5;  // skip "refs/"
-    u8csc s = {(u8cp)short_name, (u8cp)short_name + strlen(short_name)};
-    u8bFeed(kbuf, s);
+    wire_to_be_key(kbuf, refname);
     a_dup(u8c, key, u8bData(kbuf));
 
     a_pad(u8, arena, 256);

@@ -446,7 +446,7 @@ static ok64 BEPatch(cli *c, b8 seq) {
 //  `be post`:
 //    -m <msg>  → sniff makes a local commit (always).
 //    <uri>     → keeper pushes the current commit to that remote.
-//  Bare `be post` with neither is a no-op shell; flags decide what runs.
+//    bare     → sniff does a dry-run change-set print; no commit, no push.
 static ok64 BEPost(cli *c, b8 seq) {
     sane(c);
     uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
@@ -458,7 +458,10 @@ static ok64 BEPost(cli *c, b8 seq) {
     }
     dog_step steps[2];
     u32 nsteps = 0;
-    if (has_msg) {
+    //  Sniff runs whenever we have something to commit (-m), something
+    //  to label (a URI with `?ref`), or nothing — bare invocation prints
+    //  the would-be change-set and exits.
+    if (has_msg || u != NULL || !has_remote) {
         steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("post"), NO};
     }
     if (has_remote) {

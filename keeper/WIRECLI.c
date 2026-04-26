@@ -255,80 +255,77 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     return FILESpawn(ssh_path_s, argv, wfd, rfd, pid);
 }
 
-// --- ref-name normalisation --------------------------------------------
+// --- be ↔ git wire ref translation -------------------------------------
+//
+//  Be-side branches are opaque local paths (`""` = trunk, `"feature"`,
+//  `"feat/fix"`, …).  Git wire-side refnames are `refs/heads/<X>`.  The
+//  one wire alias: trunk (`""`) ⇔ git's default `refs/heads/main`.
+//  Tag / remote / OTHER ref kinds are not exposed locally yet — they
+//  flow through unchanged when we record a peer-observed row but have
+//  no first-class be-branch counterpart.
 
-//  Build the local REFS key for a `want_ref` of one of these shapes:
-//      "heads/<X>"   -> "?heads/<X>"
-//      "tags/<X>"    -> "?tags/<X>"
-//      "refs/heads/<X>" or "refs/tags/<X>" -> "?heads/<X>" / "?tags/<X>"
-//  Returns OK on success.  Caller passes a pre-reset u8b.
-static ok64 wcli_refkey(u8b out, u8csc want_ref) {
+//  be branch → wire refname into `out`.  Pre-reset.
+//      ""        → "refs/heads/main"
+//      "X"       → "refs/heads/X"
+static ok64 wcli_be_to_wire(u8b out, u8csc be_branch) {
     sane(u8bOK(out));
-    a_cstr(refs_pfx, "refs/");
-    u8cs r = {want_ref[0], want_ref[1]};
-    if (wcli_starts_with(r, refs_pfx[0], (size_t)$len(refs_pfx)))
-        r[0] += (size_t)$len(refs_pfx);
-    if (u8csEmpty(r)) return WIRECLIFAIL;
-    u8bFeed1(out, '?');
-    u8bFeed(out, r);
-    done;
+    a_cstr(main_s, "main");
+    u8cs name = {};
+    u8csMv(name, $empty(be_branch) ? main_s : be_branch);
+    return GITFeedRef(out, GITREF_BRANCH, name);
 }
 
-//  Build the wire refname (refs/heads/X or refs/tags/X) from a short
-//  ref like "heads/X" / "tags/X" / "refs/heads/X".  Pre-reset u8b.
-static ok64 wcli_wirerefname(u8b out, u8csc short_ref) {
-    sane(u8bOK(out));
-    a_cstr(refs_pfx, "refs/");
-    u8cs r = {short_ref[0], short_ref[1]};
-    if (wcli_starts_with(r, refs_pfx[0], (size_t)$len(refs_pfx))) {
-        u8bFeed(out, r);
+//  Wire refname → be branch.  Sets *kind_out to the parsed kind so
+//  callers can decide what to do with non-branch refs (tags, HEAD, …).
+//  For BRANCH: returns the bare name; trunk alias `main` collapses to
+//  empty (be-side trunk).  Unsupported kinds set name to `bare`.
+static ok64 wcli_wire_to_be(u8csc wire_refname, gitref_kind *kind_out,
+                            u8csp name_out) {
+    sane(kind_out && name_out);
+    name_out[0] = name_out[1] = NULL;
+    *kind_out = GITREF_NONE;
+    u8cs bare = {};
+    ok64 po = GITParseRef(wire_refname, kind_out, bare);
+    if (po != OK) return po;
+    if (*kind_out != GITREF_BRANCH) {
+        u8csMv(name_out, bare);
         done;
     }
-    u8bFeed(out, refs_pfx);
-    u8bFeed(out, r);
+    //  Trunk alias: wire-side `main` is the be-side empty branch.
+    a_cstr(main_s, "main");
+    if (u8csLen(bare) == u8csLen(main_s) &&
+        memcmp(bare[0], main_s[0], (size_t)u8csLen(main_s)) == 0) {
+        name_out[0] = bare[1];
+        name_out[1] = bare[1];
+        done;
+    }
+    u8csMv(name_out, bare);
     done;
 }
 
-//  Match a candidate advertised refname against `want_ref`.  Treats
-//  "heads/main" as matching "refs/heads/main", "main" as matching
-//  "refs/heads/main", and an exact "refs/..." string as itself.
-static b8 wcli_refname_match(u8csc adv_name, u8csc want_ref) {
-    if (u8csEmpty(want_ref)) return NO;
-    if (u8csLen(adv_name) == u8csLen(want_ref) &&
-        memcmp(adv_name[0], want_ref[0], (size_t)u8csLen(want_ref)) == 0)
-        return YES;
-    a_cstr(refs_pfx, "refs/");
-    if (wcli_starts_with(want_ref, refs_pfx[0], (size_t)$len(refs_pfx)))
-        return NO;
-    a_pad(u8, full, 256);
-    a_cstr(rp, "refs/");
-    u8bFeed(full, rp);
-    u8bFeed(full, want_ref);
-    if (u8csLen(adv_name) == (ssize_t)u8bDataLen(full) &&
-        memcmp(adv_name[0], u8bDataHead(full),
-               u8bDataLen(full)) == 0)
-        return YES;
-    //  Bare "main" → "refs/heads/main".
-    a_pad(u8, full2, 256);
-    a_cstr(hp, "refs/heads/");
-    u8bFeed(full2, hp);
-    u8bFeed(full2, want_ref);
-    if (u8csLen(adv_name) == (ssize_t)u8bDataLen(full2) &&
-        memcmp(adv_name[0], u8bDataHead(full2),
-               u8bDataLen(full2)) == 0)
-        return YES;
-    return NO;
+//  Match a peer-advertised wire refname against a be-side want_branch.
+//  Both go through the be ↔ wire translator so spelling differences
+//  don't matter.  `want_branch` is be-side (empty = trunk).
+static b8 wcli_refname_match(u8csc adv_name, u8csc want_branch) {
+    gitref_kind k = GITREF_NONE;
+    u8cs adv_be = {};
+    if (wcli_wire_to_be(adv_name, &k, adv_be) != OK) return NO;
+    if (k != GITREF_BRANCH) return NO;
+    if (u8csLen(adv_be) != u8csLen(want_branch)) return NO;
+    if ($empty(want_branch)) return $empty(adv_be);
+    return memcmp(adv_be[0], want_branch[0],
+                  (size_t)u8csLen(want_branch)) == 0;
 }
 
 // --- WIREFetch ---------------------------------------------------------
 
 //  Drain a peer's refs advertisement, looking for the entry that
-//  matches `want_ref`.  Sets *out_sha on success and copies the matched
-//  refname (without the leading "refs/" prefix, e.g. "heads/master") into
-//  `name_out`.  If `want_ref` is empty, the entry that follows the
-//  symref `HEAD` (matching by sha) wins — matching git's `clone`
+//  matches `want_branch` (be-side; empty = trunk).  Sets *out_sha on
+//  success and copies the matched be-side branch into `name_out`
+//  (empty bytes for trunk).  If `want_branch` is empty, the wire entry
+//  that follows the symref HEAD (matching by sha) wins — git's `clone`
 //  default-branch discovery; falls back to the first non-HEAD entry.
-static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_ref,
+static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
                               sha1 *out_sha, u8b name_out) {
     sane(rfd >= 0 && out_sha && u8bOK(name_out));
     u8cs adv = {u8bDataHead(buf), u8bDataHead(buf)};
@@ -339,15 +336,19 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_ref,
     u8cs first_name = {NULL, NULL};
     b8   first_seen = NO;
     a_cstr(head_lit, "HEAD");
-    a_cstr(refs_pfx, "refs/");
 
-    //  Helper: strip "refs/" and copy into name_out.
+    //  Helper: translate the wire refname to its be-side branch and
+    //  capture it.  Trunk wire-name `main` collapses to empty bytes.
+    //  Unsupported kinds (TAG, REMOTE, OTHER, HEAD) leave name_out
+    //  empty — caller must not call this for them.
     #define WCLI_RECORD_NAME(name) do {                                      \
         u8bReset(name_out);                                                  \
-        u8cs _n = {(name)[0], (name)[1]};                                    \
-        if (wcli_starts_with(_n, refs_pfx[0], (size_t)$len(refs_pfx)))       \
-            _n[0] += (size_t)$len(refs_pfx);                                 \
-        u8bFeed(name_out, _n);                                               \
+        gitref_kind _k = GITREF_NONE;                                        \
+        u8cs _be = {};                                                       \
+        if (wcli_wire_to_be((u8csc){(name)[0], (name)[1]},                   \
+                            &_k, _be) == OK) {                               \
+            if (!$empty(_be)) u8bFeed(name_out, _be);                        \
+        }                                                                    \
     } while (0)
 
     for (;;) {
@@ -408,21 +409,23 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_ref,
             first_name[1] = name[1];
             first_seen = YES;
         }
-        if (u8csEmpty(want_ref)) {
-            //  Match the branch that shares HEAD's sha.
+        //  Caller wants trunk (empty) and didn't bind to a specific
+        //  branch: take the entry whose sha matches the symref HEAD.
+        //  Otherwise compare be-side branch names via the translator.
+        if ($empty(want_branch)) {
             if (have_head && sha1eq(&sha, &head_sha)) {
                 *out_sha = sha;
                 WCLI_RECORD_NAME(name);
                 picked = YES;
             }
-        } else if (wcli_refname_match(name, want_ref)) {
+        } else if (wcli_refname_match(name, want_branch)) {
             *out_sha = sha;
             WCLI_RECORD_NAME(name);
             picked = YES;
         }
     }
     if (!picked) {
-        if (u8csEmpty(want_ref) && first_seen) {
+        if ($empty(want_branch) && first_seen) {
             *out_sha = first_sha;
             u8cs fn = {first_name[0], first_name[1]};
             WCLI_RECORD_NAME(fn);
@@ -547,29 +550,29 @@ static void wcli_strip_status(u8cs out, u8cs data) {
     }
 }
 
-//  Append `<peer-uri>?<stripped-want-ref> → <40-hex>` to local REFS.
-//  Peer's scheme/authority/path land in the row so later lookups
-//  (`be get //peer`) can filter by host.  Peer ref name is preserved
-//  (wire operations are name-based; canonicalisation is for user CLI
-//  input).  Val is bare 40-hex.
-static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc want_ref,
+//  Append `<peer-uri>?<be-branch> → <40-hex>` to local REFS.
+//  `be_branch` is be-side (empty for trunk).  Peer's scheme / authority
+//  / path land in the row so later lookups (`be get //peer`) can filter
+//  by host.  No canonicalisation aliasing — the query is stored as the
+//  literal be-branch path (DOGCanonURIFeed only folds shape, not name).
+static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
                              sha1 const *new_sha) {
     sane(k);
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
-    //  Parse remote_uri to pick up scheme/authority/path, then
-    //  overwrite its query with the `refs/`-stripped want_ref and
-    //  emit canonical bytes via DOGCanonURIFeed.
     uri pu = {};
     pu.data[0] = remote_uri[0];
     pu.data[1] = remote_uri[1];
     (void)URILexer(&pu);
 
-    a_cstr(refs_pfx, "refs/");
-    u8cs r = {want_ref[0], want_ref[1]};
-    if (wcli_starts_with(r, refs_pfx[0], (size_t)$len(refs_pfx)))
-        r[0] += (size_t)$len(refs_pfx);
-    u8csMv(pu.query, r);
+    //  Always present (even if empty) so DOGCanonURIFeed emits the `?`
+    //  separator — `<peer-uri>?` is the trunk-on-peer key.
+    if ($empty(be_branch)) {
+        pu.query[0] = remote_uri[1];
+        pu.query[1] = remote_uri[1];
+    } else {
+        u8csMv(pu.query, be_branch);
+    }
     pu.fragment[0] = NULL;
     pu.fragment[1] = NULL;
 
@@ -910,15 +913,14 @@ static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
     done;
 }
 
-//  Look up our local tip for `local_branch` via REFADV.  Sets *have=YES
-//  if found, *out filled.  `local_branch` accepts the same shapes as
-//  WIREFetch's `want_ref` argument.
+//  Look up our local tip for `local_branch` via REFADV.  `local_branch`
+//  is be-side (empty for trunk).  Sets *have=YES if found, *out filled.
 static void wpush_local_tip(refadvcp adv, u8csc local_branch,
                             sha1 *out, b8 *have) {
     *have = NO;
     if (!adv) return;
     a_pad(u8, full, 256);
-    if (wcli_wirerefname(full, local_branch) != OK) return;
+    if (wcli_be_to_wire(full, local_branch) != OK) return;
     u8cs target = {u8bDataHead(full), u8bIdleHead(full)};
     for (u32 i = 0; i < adv->count; i++) {
         u8cs r = {adv->ents[i].refname[0], adv->ents[i].refname[1]};
@@ -1049,8 +1051,9 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
 
 ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch) {
     sane(k);
-    if (u8csEmpty(remote_uri) || u8csEmpty(local_branch))
-        return WIRECLIFAIL;
+    //  `local_branch` is be-side; empty (NULL or zero-length) selects
+    //  the trunk shard, which goes on the wire as `refs/heads/main`.
+    if (u8csEmpty(remote_uri)) return WIRECLIFAIL;
 
     //  Resolve our local tip via REFADV (one-shot snapshot).
     sha1 local_tip = {};
@@ -1064,9 +1067,9 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch) {
     }
     if (!have_local) return WIRECLINOREF;
 
-    //  Build the wire refname (refs/heads/X) once.
+    //  Build the wire refname (refs/heads/X, trunk → main) once.
     a_pad(u8, refname_buf, 256);
-    call(wcli_wirerefname, refname_buf, local_branch);
+    call(wcli_be_to_wire, refname_buf, local_branch);
     u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
 
     //  Spawn receive-pack on the peer.

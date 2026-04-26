@@ -13,6 +13,7 @@
 #include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
+#include "keeper/GIT.h"
 #include "keeper/PKT.h"
 #include "keeper/REFS.h"
 
@@ -285,37 +286,24 @@ ok64 RECVIngestPack(keeper *k, int in_fd, u8csc tail) {
 
 // --- updates application ---
 
-//  Build the from-URI key for a given refname.  Maps (peer names are
-//  preserved — the git wire protocol is name-based, canonicalisation
-//  is for local user input, not peer observations):
-//    refs/heads/<X>   → `?heads/<X>`
-//    refs/tags/<X>    → `?tags/<X>`
-//  Returns OK on success, RECVBADREF for unsupported refname shapes.
+//  Build the local REFS key for a wire-side refname.  Maps:
+//    refs/heads/main → `?`           (trunk; the only wire alias)
+//    refs/heads/<X>  → `?<X>`        (literal local branch path)
+//  Tags / remotes / OTHER kinds are not first-class locally yet —
+//  reject with RECVBADREF.
 static ok64 recv_build_key(u8b out, u8csc refname) {
     sane(u8bOK(out));
-    a_cstr(heads_pfx, "refs/heads/");
-    a_cstr(tags_pfx,  "refs/tags/");
-    if (recv_starts_with(refname, heads_pfx[0],
-                         (size_t)$len(heads_pfx))) {
-        u8cs name = {refname[0] + (size_t)$len(heads_pfx), refname[1]};
-        if (u8csLen(name) == 0) return RECVBADREF;
-        u8bFeed1(out, '?');
-        a_cstr(heads_q, "heads/");
-        u8bFeed(out, heads_q);
-        u8bFeed(out, name);
-        done;
-    }
-    if (recv_starts_with(refname, tags_pfx[0],
-                         (size_t)$len(tags_pfx))) {
-        u8cs name = {refname[0] + (size_t)$len(tags_pfx), refname[1]};
-        if (u8csLen(name) == 0) return RECVBADREF;
-        u8bFeed1(out, '?');
-        a_cstr(tags_q, "tags/");
-        u8bFeed(out, tags_q);
-        u8bFeed(out, name);
-        done;
-    }
-    return RECVBADREF;
+    gitref_kind k = GITREF_NONE;
+    u8cs name = {};
+    if (GITParseRef(refname, &k, name) != OK) return RECVBADREF;
+    if (k != GITREF_BRANCH) return RECVBADREF;
+    u8bFeed1(out, '?');
+    a_cstr(main_s, "main");
+    if (u8csLen(name) == u8csLen(main_s) &&
+        memcmp(name[0], main_s[0], (size_t)u8csLen(main_s)) == 0)
+        done;  //  trunk: bare `?`
+    u8bFeed(out, name);
+    done;
 }
 
 //  Compose the to-URI value: bare 40-hex (canonical fragment form).

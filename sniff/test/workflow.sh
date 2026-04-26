@@ -42,20 +42,14 @@ want_missing() {
     [ ! -e "$1" ] || fail "$1 should be gone"
 }
 
-#  Current worktree commit = last `&`-separated 40-hex SHA spec in
-#  the query of the latest `post` row (dog/QURY).  Rows are
+#  Current worktree commit = the `#fragment` of the latest `post`
+#  row (canonical `?<branch>#<curhash>` shape).  Rows are
 #  `<ron60-ts>\t<verb>\t<uri>`.
 head_hex() {
     awk -F'\t' '$2 == "post" { last = $3 } END {
-        q = last
-        sub(/^[^?]*\?/, "", q)   # strip up to and past "?"
-        sub(/#.*$/, "", q)       # drop fragment (FRAG territory)
-        n = split(q, parts, "&")
-        for (i = n; i > 0; i--) {
-            if (length(parts[i]) == 40 && parts[i] ~ /^[0-9a-f]+$/) {
-                print parts[i]; exit
-            }
-        }
+        h = last
+        sub(/^[^#]*#/, "", h)
+        if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
     }' .sniff
 }
 
