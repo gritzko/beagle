@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#include "abc/FILE.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/QURY.h"
 
@@ -237,4 +239,48 @@ ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40) {
         }
     }
     fail(ULOGNONE);
+}
+
+// --- SNIFFAtScanDirty -------------------------------------------------
+
+typedef struct {
+    u8cs              reporoot;
+    sniff_at_dirty_cb cb;
+    void             *user_ctx;
+    ok64              cb_err;
+} at_dirty_scan_ctx;
+
+static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
+    sane(varg && path);
+    at_dirty_scan_ctx *c = (at_dirty_scan_ctx *)varg;
+
+    a_dup(u8c, full, u8bData(path));
+    u8cs rel = {};
+    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (SNIFFSkipMeta(rel))                         return OK;
+
+    struct stat sb = {};
+    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
+                          .tv_nsec = sb.st_mtim.tv_nsec};
+    if (SNIFFAtKnown(SNIFFAtOfTimespec(ts))) return OK;
+
+    ok64 o = c->cb(rel, c->user_ctx);
+    if (o != OK) c->cb_err = o;
+    return o;
+}
+
+ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
+    sane($ok(reporoot) && cb != NULL);
+    at_dirty_scan_ctx sc = {.cb = cb, .user_ctx = ctx, .cb_err = OK};
+    u8csMv(sc.reporoot, reporoot);
+    a_path(wp);
+    u8bFeed(wp, reporoot);
+    call(PATHu8bTerm, wp);
+    ok64 so = FILEScan(wp,
+                       (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
+                                   FILE_SCAN_DEEP),
+                       at_dirty_scan_cb, &sc);
+    if (sc.cb_err != OK) return sc.cb_err;
+    return so;
 }

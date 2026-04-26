@@ -622,29 +622,14 @@ static ok64 resolve_ours(sha1 *out) {
 
 //  Worktree scan: any file whose mtime is not in the ULOG stamp-set
 //  counts as dirty.  Mirrors `git merge`'s "your local changes would
-//  be overwritten" guard.  Metadata entries (`.sniff`, `.dogs`) are
-//  skipped via SNIFFSkipMeta.
+//  be overwritten" guard.
 
-typedef struct { u32 dirty; u8cs reporoot; } dirty_ctx;
-
-static ok64 dirty_scan_cb(void *varg, path8bp path) {
-    sane(varg && path);
-    dirty_ctx *c = (dirty_ctx *)varg;
+static ok64 patch_dirty_report(u8cs rel, void *ctx) {
+    sane(ctx);
     enum { MAX_DIRTY_REPORT = 8 };
-
-    a_dup(u8c, full, u8bData(path));
-    u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
-    if (SNIFFSkipMeta(rel))                         return OK;
-
-    struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
-    struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 r = SNIFFAtOfTimespec(ts);
-    if (SNIFFAtKnown(r)) return OK;
-    c->dirty++;
-    if (c->dirty <= MAX_DIRTY_REPORT)
+    u32 *n = (u32 *)ctx;
+    (*n)++;
+    if (*n <= MAX_DIRTY_REPORT)
         fprintf(stderr, "sniff: patch: dirty %.*s\n",
                 (int)$len(rel), (char *)rel[0]);
     return OK;
@@ -652,18 +637,11 @@ static ok64 dirty_scan_cb(void *varg, path8bp path) {
 
 static ok64 refuse_if_dirty(u8cs reporoot) {
     sane($ok(reporoot));
-    dirty_ctx ctx = {.dirty = 0};
-    ctx.reporoot[0] = reporoot[0];
-    ctx.reporoot[1] = reporoot[1];
-    a_path(root_path);
-    u8bFeed(root_path, reporoot);
-    call(PATHu8bTerm, root_path);
-    call(FILEScan, root_path,
-         (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
-         dirty_scan_cb, &ctx);
-    if (ctx.dirty == 0) return OK;
+    u32 dirty = 0;
+    call(SNIFFAtScanDirty, reporoot, patch_dirty_report, &dirty);
+    if (dirty == 0) return OK;
     fprintf(stderr, "sniff: patch: refusing merge — %u dirty file(s). "
-                    "stash or commit first.\n", ctx.dirty);
+                    "stash or commit first.\n", dirty);
     return PATCHDIRTY;
 }
 

@@ -23,6 +23,11 @@
 con ok64 REFSFAIL  = 0x6ce3dc3ca495;
 con ok64 REFSNONE  = 0x6ce3dc5d85ce;
 con ok64 REFSBAD   = 0x1b38f70b28d;
+//  Stop-iteration sentinel: a REFSEach callback may return this to
+//  short-circuit the walk without signalling an error.  REFSEach
+//  swallows it and returns OK; real failures still surface as their
+//  own non-OK codes.
+con ok64 REFSSTOP  = 0x1b38f7619397;
 
 #define REFS_FILE      "refs"
 #define REFS_MAX_CHAIN 8
@@ -107,7 +112,10 @@ ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs);
 //  The ULOG file is closed before return.
 ok64 REFSLoad(refp arr, u32p out_n, u32 max, u8b arena, u8csc dir);
 
-//  Iterate latest (per key) entries; stops on first non-OK from `cb`.
+//  Iterate latest (per key) entries.  The walk stops on the first
+//  non-OK return from `cb`; `REFSSTOP` is treated as "stop, no
+//  error" and converted to OK on return, so callbacks can use it to
+//  short-circuit without polluting the iterator's error channel.
 typedef ok64 (*refs_cb)(refcp r, void *ctx);
 ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx);
 

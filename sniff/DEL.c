@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "abc/BUF.h"
+#include "abc/OK.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "keeper/REFS.h"
@@ -32,7 +33,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
 
 //  Iteration callback: any active key whose query is a strict path
 //  prefix of `target` + '/' counts as a descendant.  Hitting one
-//  flips `dirty` and short-circuits the walk via REFSEACH_STOP.
+//  sets `has_descendant` and short-circuits the walk via REFSSTOP.
 typedef struct {
     u8cs target;
     b8   has_descendant;
@@ -47,7 +48,7 @@ static ok64 del_descendant_cb(refcp r, void *ctx) {
     //  query is `<target>/<sub>` (sub-branch).  Parse the URI to get
     //  its query slice; ignore non-local (host-prefixed) rows.
     uri ku = {};
-    ku.data[0] = r->key[0]; ku.data[1] = r->key[1];
+    u8csMv(ku.data, r->key);
     ok64 lo = URILexer(&ku);
     if (lo != OK) done;
     if (!u8csEmpty(ku.host)) done;          // remote observation
@@ -61,7 +62,7 @@ static ok64 del_descendant_cb(refcp r, void *ctx) {
     if (q[0][tl] != '/') done;
 
     d->has_descendant = YES;
-    return REFSFAIL;                       // short-circuit walk
+    return REFSSTOP;                       // short-circuit walk
 }
 
 //  Forty ASCII '0' chars — the tombstone fragment.
@@ -108,7 +109,13 @@ ok64 DELBranch(uri const *u) {
     {
         del_descendant_ctx dctx = {.target = {target[0], target[1]},
                                    .has_descendant = NO};
-        (void)REFSEach($path(keepdir), del_descendant_cb, &dctx);
+        ok64 eo = REFSEach($path(keepdir), del_descendant_cb, &dctx);
+        if (eo != OK) {
+            fprintf(stderr,
+                    "sniff: delete: REFS scan failed (%s)\n",
+                    ok64str(eo));
+            fail(SNIFFFAIL);
+        }
         if (dctx.has_descendant) {
             fprintf(stderr,
                     "sniff: delete: `%.*s` has active descendant "

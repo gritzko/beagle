@@ -259,10 +259,13 @@ ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx) {
         o = cb(&arr[i], ctx);
         if (o != OK) break;
     }
+    //  Convert the stop-sentinel to OK so callers can distinguish a
+    //  real iteration failure from a deliberate early-out.
+    if (o == REFSSTOP) o = OK;
 
     free(arr);
     u8bUnMap(arena);
-    done;
+    return o;
 }
 
 // --- resolve ---

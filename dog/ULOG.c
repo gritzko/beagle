@@ -256,7 +256,6 @@ ok64 ULOGAppendAt(ulogp l, ron60 ts, ron60 verb, uricp u) {
 
     kv64 ent = {.key = ts, .val = off};
     call(kv64bPush, l->idx, &ent);
-    l->dirty = YES;
     done;
 }
 
@@ -545,6 +544,5 @@ ok64 ULOGTruncate(ulogp l, u32 keep_n) {
     if (new_idle < old_idle) memset(new_idle, 0, (size_t)(old_idle - new_idle));
     *data_idle = new_idle;
 
-    l->dirty = YES;
     done;
 }

@@ -1,14 +1,14 @@
 
-/* #line 1 "dog/QURY.c.rl" */
+/* #line 1 "QURY.c.rl" */
 #include "QURY.h"
 #include <string.h>
 
 
-/* #line 33 "dog/QURY.c.rl" */
+/* #line 33 "QURY.c.rl" */
 
 
 
-/* #line 7 "dog/QURY.rl.c" */
+/* #line 7 "QURY.rl.c" */
 static const char _qury_actions[] = {
 	0, 1, 0, 1, 1, 1, 4, 1, 
 	6, 2, 1, 2, 2, 1, 3, 2, 
@@ -74,7 +74,7 @@ static const int qury_start = 1;
 static const int qury_en_main = 1;
 
 
-/* #line 36 "dog/QURY.c.rl" */
+/* #line 36 "QURY.c.rl" */
 
 static b8 qury_is_sha(u8cs s) {
     if ($len(s) < QURY_MIN_SHA) return NO;
@@ -116,14 +116,14 @@ ok64 QURYu8sDrain(u8cs input, qrefp out) {
     int cs = 0;
 
     
-/* #line 111 "dog/QURY.rl.c" */
+/* #line 111 "QURY.rl.c" */
 	{
 	cs = qury_start;
 	}
 
-/* #line 77 "dog/QURY.c.rl" */
+/* #line 77 "QURY.c.rl" */
     
-/* #line 114 "dog/QURY.rl.c" */
+/* #line 114 "QURY.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -198,34 +198,34 @@ _match:
 		switch ( *_acts++ )
 		{
 	case 0:
-/* #line 7 "dog/QURY.c.rl" */
+/* #line 7 "QURY.c.rl" */
 	{ body_mark = p; }
 	break;
 	case 1:
-/* #line 8 "dog/QURY.c.rl" */
+/* #line 8 "QURY.c.rl" */
 	{ out->body[0] = body_mark; out->body[1] = p; }
 	break;
 	case 2:
-/* #line 9 "dog/QURY.c.rl" */
+/* #line 9 "QURY.c.rl" */
 	{ out->anc_type = '~'; }
 	break;
 	case 3:
-/* #line 10 "dog/QURY.c.rl" */
+/* #line 10 "QURY.c.rl" */
 	{ out->anc_type = '^'; }
 	break;
 	case 4:
-/* #line 11 "dog/QURY.c.rl" */
+/* #line 11 "QURY.c.rl" */
 	{ out->ancestry = out->ancestry * 10 + (*p - '0'); }
 	break;
 	case 5:
-/* #line 12 "dog/QURY.c.rl" */
+/* #line 12 "QURY.c.rl" */
 	{ out->rel = QURY_REL_DOWN; }
 	break;
 	case 6:
-/* #line 13 "dog/QURY.c.rl" */
+/* #line 13 "QURY.c.rl" */
 	{ out->rel = QURY_REL_UP; }
 	break;
-/* #line 208 "dog/QURY.rl.c" */
+/* #line 208 "QURY.rl.c" */
 		}
 	}
 
@@ -242,14 +242,14 @@ _again:
 	while ( __nacts-- > 0 ) {
 		switch ( *__acts++ ) {
 	case 1:
-/* #line 8 "dog/QURY.c.rl" */
+/* #line 8 "QURY.c.rl" */
 	{ out->body[0] = body_mark; out->body[1] = p; }
 	break;
 	case 6:
-/* #line 13 "dog/QURY.c.rl" */
+/* #line 13 "QURY.c.rl" */
 	{ out->rel = QURY_REL_UP; }
 	break;
-/* #line 229 "dog/QURY.rl.c" */
+/* #line 229 "QURY.rl.c" */
 		}
 	}
 	}
@@ -257,7 +257,7 @@ _again:
 	_out: {}
 	}
 
-/* #line 78 "dog/QURY.c.rl" */
+/* #line 78 "QURY.c.rl" */
 
     // Advance input past spec and separator
     input[0] = (specend < input[1]) ? specend + 1 : specend;
@@ -279,35 +279,23 @@ ok64 QURYBuildAbsolute(u8bp out, qrefcp spec, u8cs current) {
         return OK;
     }
 
-    //  parent_len: index of the byte after the parent's last char.
-    //  For QURY_REL_DOWN, parent = current (full).  For
-    //  QURY_REL_UP, parent = dirname(current) — bytes up to (but
-    //  not including) the last '/' in current; 0 if no '/' (which
+    //  parent slice.  For QURY_REL_DOWN, parent = current (full).
+    //  For QURY_REL_UP, parent = dirname(current) — bytes up to (but
+    //  not including) the last '/' in current; empty if no '/' (which
     //  means current is a top-level branch and parent is trunk).
-    u32 parent_len = 0;
+    u8cs parent = {current[0], current[0]};
     if (spec->rel == QURY_REL_DOWN) {
-        parent_len = (u32)$len(current);
+        parent[1] = current[1];
     } else {
-        // QURY_REL_UP
-        if ($empty(current)) {
-            parent_len = 0;
-        } else {
-            u8cp last_slash = NULL;
-            $for(u8c, p, current)
-                if (*p == '/') last_slash = p;
-            parent_len = last_slash
-                ? (u32)(last_slash - current[0])
-                : 0;
-        }
+        $rof(u8c, p, current)
+            if (*p == '/') { parent[1] = p; break; }
     }
 
-    if (parent_len > 0) {
-        u8cs pfx = {current[0], current[0] + parent_len};
-        u8bFeed(out, pfx);
-    }
+    if (!u8csEmpty(parent))
+        u8bFeed(out, parent);
 
-    if (!$empty(spec->body)) {
-        if (parent_len > 0) u8bFeed1(out, '/');
+    if (!u8csEmpty(spec->body)) {
+        if (!u8csEmpty(parent)) u8bFeed1(out, '/');
         u8bFeed(out, spec->body);
     }
 

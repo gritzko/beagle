@@ -137,6 +137,17 @@ void SNIFFAtPathBytes(uri const *u, u8cs out);
 typedef ok64 (*sniff_at_pd_cb)(ron60 verb, u8cs path, ron60 ts, void *ctx);
 ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx);
 
+//  Walk the wt rooted at `reporoot` and invoke `cb(rel, ctx)` for
+//  every non-meta file whose mtime is NOT in the ULOG stamp-set
+//  (i.e. user-edited / unattributed).  `rel` is the on-disk path
+//  relative to `reporoot`; its bytes live in FILEScan's iteration
+//  buffer and are valid only for the duration of the callback.
+//  Used by `sniff status`, GET's cross-branch refusal, and PATCH's
+//  refuse-if-dirty pre-flight — every consumer of the stamp-set
+//  membership rule.  Stops early on the first non-OK from `cb`.
+typedef ok64 (*sniff_at_dirty_cb)(u8cs rel, void *ctx);
+ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx);
+
 //  Extract the current 40-hex commit SHA from a baseline URI.  The
 //  canonical at-log row is `?<branch>#<curhash>` — fragment carries
 //  the current sha, query carries the be-branch path.  For a `patch`

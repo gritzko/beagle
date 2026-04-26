@@ -96,35 +96,23 @@ ok64 QURYBuildAbsolute(u8bp out, qrefcp spec, u8cs current) {
         return OK;
     }
 
-    //  parent_len: index of the byte after the parent's last char.
-    //  For QURY_REL_DOWN, parent = current (full).  For
-    //  QURY_REL_UP, parent = dirname(current) — bytes up to (but
-    //  not including) the last '/' in current; 0 if no '/' (which
+    //  parent slice.  For QURY_REL_DOWN, parent = current (full).
+    //  For QURY_REL_UP, parent = dirname(current) — bytes up to (but
+    //  not including) the last '/' in current; empty if no '/' (which
     //  means current is a top-level branch and parent is trunk).
-    u32 parent_len = 0;
+    u8cs parent = {current[0], current[0]};
     if (spec->rel == QURY_REL_DOWN) {
-        parent_len = (u32)$len(current);
+        parent[1] = current[1];
     } else {
-        // QURY_REL_UP
-        if ($empty(current)) {
-            parent_len = 0;
-        } else {
-            u8cp last_slash = NULL;
-            $for(u8c, p, current)
-                if (*p == '/') last_slash = p;
-            parent_len = last_slash
-                ? (u32)(last_slash - current[0])
-                : 0;
-        }
+        $rof(u8c, p, current)
+            if (*p == '/') { parent[1] = p; break; }
     }
 
-    if (parent_len > 0) {
-        u8cs pfx = {current[0], current[0] + parent_len};
-        u8bFeed(out, pfx);
-    }
+    if (!u8csEmpty(parent))
+        u8bFeed(out, parent);
 
-    if (!$empty(spec->body)) {
-        if (parent_len > 0) u8bFeed1(out, '/');
+    if (!u8csEmpty(spec->body)) {
+        if (!u8csEmpty(parent)) u8bFeed1(out, '/');
         u8bFeed(out, spec->body);
     }
 

@@ -206,51 +206,22 @@ static ok64 get_prune(get_ctx *g) {
 //  Walks every non-meta file in the wt; if any has an mtime that
 //  isn't in sniff's stamp-set, the wt is considered dirty and a
 //  cross-branch GET must refuse.  Same membership rule as
-//  `sniff status`.
+//  `sniff status` (shared via SNIFFAtScanDirty).
 
-typedef struct {
-    u8cs reporoot;
-    b8   dirty;
-    u32  count;
-} get_wt_dirty_ctx;
-
-static ok64 get_wt_dirty_cb(void *varg, path8bp path) {
-    sane(varg);
-    get_wt_dirty_ctx *d = (get_wt_dirty_ctx *)varg;
-    a_dup(u8c, full, u8bData(path));
-
-    u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, d->reporoot, full)) return OK;
-    if (SNIFFSkipMeta(rel))                          return OK;
-
-    struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
-    struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 r = SNIFFAtOfTimespec(ts);
-    if (!SNIFFAtKnown(r)) {
-        if (d->count < 5) {
-            fprintf(stderr, "sniff: dirty %.*s\n",
-                    (int)$len(rel), (char *)rel[0]);
-        }
-        d->count++;
-        d->dirty = YES;
-    }
+static ok64 get_wt_dirty_cb(u8cs rel, void *ctx) {
+    sane(ctx);
+    u32 *count = (u32 *)ctx;
+    if (*count < 5)
+        fprintf(stderr, "sniff: dirty %.*s\n",
+                (int)$len(rel), (char *)rel[0]);
+    (*count)++;
     return OK;
 }
 
 static b8 get_wt_dirty(u8cs reporoot) {
-    get_wt_dirty_ctx ctx = {.dirty = NO, .count = 0};
-    ctx.reporoot[0] = reporoot[0];
-    ctx.reporoot[1] = reporoot[1];
-    a_path(wp);
-    u8bFeed(wp, reporoot);
-    if (PATHu8bTerm(wp) != OK) return NO;
-    (void)FILEScan(wp,
-                   (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                               FILE_SCAN_DEEP),
-                   get_wt_dirty_cb, &ctx);
-    return ctx.dirty;
+    u32 count = 0;
+    (void)SNIFFAtScanDirty(reporoot, get_wt_dirty_cb, &count);
+    return count > 0;
 }
 
 // --- Public API ---
@@ -363,8 +334,7 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     //  --- end pre-flight gate ------------------------------------
 
     get_ctx ctx = {.k = k, .error = OK};
-    ctx.reporoot[0] = reporoot[0];
-    ctx.reporoot[1] = reporoot[1];
+    u8csMv(ctx.reporoot, reporoot);
     SNIFFAtNow(&ctx.ts, &ctx.tv);
 
     //  Size the target bitmap: SNIFFCount() grows during the walk as

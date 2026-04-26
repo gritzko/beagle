@@ -233,40 +233,19 @@ static ok64 sniff_stop(u8cs reporoot) {
 //  without a baseline walk — to be revisited once status is actually
 //  exercised by tests).
 
-typedef struct { u8cs reporoot; u32 dirty; } status_ctx;
-
-static ok64 status_cb(void *varg, path8bp path) {
-    sane(varg);
-    status_ctx *c = (status_ctx *)varg;
-    a_dup(u8c, full, u8bData(path));
-
-    u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
-    if (SNIFFSkipMeta(rel))                         return OK;
-
-    struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
-    struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 r = SNIFFAtOfTimespec(ts);
-    if (SNIFFAtKnown(r)) return OK;
+static ok64 status_cb(u8cs rel, void *ctx) {
+    sane(ctx);
+    u32 *dirty = (u32 *)ctx;
     printf("M %.*s\n", (int)$len(rel), (char *)rel[0]);
-    c->dirty++;
+    (*dirty)++;
     return OK;
 }
 
 static ok64 sniff_status(u8cs reporoot) {
     sane(1);
-    status_ctx ctx = {.dirty = 0};
-    ctx.reporoot[0] = reporoot[0];
-    ctx.reporoot[1] = reporoot[1];
-    a_path(wp);
-    u8bFeed(wp, reporoot);
-    call(PATHu8bTerm, wp);
-    call(FILEScan, wp,
-         (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
-         status_cb, &ctx);
-    fprintf(stderr, "sniff: %u dirty file(s)\n", ctx.dirty);
+    u32 dirty = 0;
+    call(SNIFFAtScanDirty, reporoot, status_cb, &dirty);
+    fprintf(stderr, "sniff: %u dirty file(s)\n", dirty);
     done;
 }
 
@@ -286,11 +265,11 @@ static ok64 sniff_checkout(u8cs reporoot, u8cs hex) {
 //  current branch from `.sniff` baseline and writes the absolute
 //  branch path into `qbuf`; rebuilds the URI's `data` slice as
 //  `?<absolute>` in `databuf`.  Both buffers must outlive the
-//  caller's use of `u`.  Sets `*was_relative_out = YES` if the
-//  input had a relative prefix (caller can use this to enable
-//  create-on-miss).
-static ok64 sniff_resolve_rel_(uri *u, u8b qbuf, u8b databuf,
-                               b8 *was_relative_out) {
+//  caller's use of `u`.  When `was_relative_out` is non-NULL it
+//  receives YES iff the input had a relative prefix (callers use
+//  this to enable create-on-miss).
+static ok64 sniff_resolve_rel(uri *u, u8b qbuf, u8b databuf,
+                              b8 *was_relative_out) {
     sane(u);
     if (was_relative_out) *was_relative_out = NO;
     if (u->query[0] == NULL || $empty(u->query)) done;
@@ -306,26 +285,16 @@ static ok64 sniff_resolve_rel_(uri *u, u8b qbuf, u8b databuf,
     uri bu = {};
     u8cs current = {};
     if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-        current[0] = bu.query[0];
-        current[1] = bu.query[1];
+        u8csMv(current, bu.query);
     }
 
     if (QURYBuildAbsolute(qbuf, &qspec, current) != OK) fail(SNIFFFAIL);
 
     u8bFeed1(databuf, '?');
     u8bFeed(databuf, u8bDataC(qbuf));
-    u->query[0] = u8bDataHead(qbuf);
-    u->query[1] = u8bIdleHead(qbuf);
-    u->data[0]  = u8bDataHead(databuf);
-    u->data[1]  = u8bIdleHead(databuf);
+    u8csMv(u->query, u8bDataC(qbuf));
+    u8csMv(u->data,  u8bDataC(databuf));
     done;
-}
-
-//  Wrapper that drops the was-relative flag for callers that don't
-//  care.  Existing call sites use this; create-on-miss callers use
-//  the underscore variant directly.
-static ok64 sniff_resolve_rel(uri *u, u8b qbuf, u8b databuf) {
-    return sniff_resolve_rel_(u, qbuf, databuf, NULL);
 }
 
 // Checkout from a parsed URI: resolve ?ref via keeper REFS, then checkout.
@@ -388,7 +357,7 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     a_pad(u8, abs_qbuf,    256);
     a_pad(u8, abs_databuf, 260);
     b8 was_relative = NO;
-    if (sniff_resolve_rel_(u, abs_qbuf, abs_databuf, &was_relative)
+    if (sniff_resolve_rel(u, abs_qbuf, abs_databuf, &was_relative)
         != OK)
         fail(SNIFFFAIL);
 
@@ -666,8 +635,8 @@ ok64 SNIFFExec(cli *c) {
         a_pad(u8, label_qbuf,    256);
         a_pad(u8, label_databuf, 260);
         if (label_uri != NULL) {
-            if (sniff_resolve_rel(label_uri, label_qbuf, label_databuf)
-                != OK) {
+            if (sniff_resolve_rel(label_uri, label_qbuf, label_databuf,
+                                  NULL) != OK) {
                 ret = SNIFFFAIL;
             }
         }
@@ -739,7 +708,7 @@ ok64 SNIFFExec(cli *c) {
         //    * path-form (`<file>`)    — stage a file removal.
         //  Bare `sniff delete` (no URIs) is the legacy "sweep
         //  missing tracked files" path; route through DELStage.
-        u32 branch_n = 0, path_n = 0;
+        u32 path_n = 0;
         if (c->nuris == 0) {
             ret = DELStage(0, NULL);
         } else {
@@ -755,10 +724,11 @@ ok64 SNIFFExec(cli *c) {
                     //  Resolve relative `?./X`, `?../X`, `?..` first.
                     a_pad(u8, del_qbuf,    256);
                     a_pad(u8, del_databuf, 260);
-                    if (sniff_resolve_rel(u, del_qbuf, del_databuf)
-                        != OK) { ret = SNIFFFAIL; break; }
+                    if (sniff_resolve_rel(u, del_qbuf, del_databuf,
+                                          NULL) != OK) {
+                        ret = SNIFFFAIL; break;
+                    }
                     ret = DELBranch(u);
-                    if (ret == OK) branch_n++;
                 } else {
                     ret = DELStage(1, u);
                     if (ret == OK) path_n++;
@@ -767,7 +737,6 @@ ok64 SNIFFExec(cli *c) {
         }
         if (ret == OK && path_n > 0)
             fprintf(stderr, "sniff: staged %u delete row(s)\n", path_n);
-        (void)branch_n;
     } else if (is_checkout) {
         if (c->nuris < 1) {
             fprintf(stderr, "sniff: get/checkout requires a URI or hex\n");

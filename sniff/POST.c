@@ -1051,15 +1051,31 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                               refkey_s);
         if (ro == OK && !$empty(resolved.query)) {
             //  Decode the target's 40-hex tip into a sha1 so we can
-            //  feed it to GRAFLca alongside parents[0].
+            //  feed it to GRAFLca alongside parents[0].  A REFS row
+            //  whose value isn't a clean 40-hex tip is corrupt — bail
+            //  with a diagnostic rather than silently zero-decoding,
+            //  which would fall through to a confusing non-ff refusal.
             u8cs tip_hex = {resolved.query[0], resolved.query[1]};
-            if ($len(tip_hex) > 0 && *tip_hex[0] == '?')
-                tip_hex[0]++;
+            if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?')
+                u8csUsed(tip_hex, 1);
+            if ($len(tip_hex) != 40) {
+                fprintf(stderr,
+                        "sniff: post: REFS row for `?%.*s` has malformed "
+                        "tip (%zu bytes, want 40 hex)\n",
+                        (int)u8csLen(branch), (char *)branch[0],
+                        (size_t)$len(tip_hex));
+                return SNIFFFAIL;
+            }
             sha1 tip_sha = {};
-            if ($len(tip_hex) == 40) {
-                u8s bin = {tip_sha.data, tip_sha.data + 20};
-                a_dup(u8c, hx, tip_hex);
-                (void)HEXu8sDrainSome(bin, hx);
+            u8s bin = {tip_sha.data, tip_sha.data + 20};
+            a_dup(u8c, hx, tip_hex);
+            ok64 ho = HEXu8sDrainSome(bin, hx);
+            if (ho != OK) {
+                fprintf(stderr,
+                        "sniff: post: REFS row for `?%.*s` has non-hex "
+                        "tip\n",
+                        (int)u8csLen(branch), (char *)branch[0]);
+                return SNIFFFAIL;
             }
 
             //  ff iff tip is an ancestor of (or equal to) parents[0].
