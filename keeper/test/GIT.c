@@ -223,6 +223,141 @@ ok64 GITtest8() {
     done;
 }
 
+// ---- Test 9: GITParseRef table ----
+
+typedef struct {
+    char const *in;
+    gitref_kind kind;
+    char const *name;   // NULL => expect GITBADFMT
+} parse_case;
+
+static parse_case const PARSE_CASES[] = {
+    //  Explicit prefixes
+    {"HEAD",                GITREF_HEAD,   "HEAD"},
+    {"refs/heads/main",     GITREF_BRANCH, "main"},
+    {"heads/main",          GITREF_BRANCH, "main"},
+    {"refs/heads/feat/fix", GITREF_BRANCH, "feat/fix"},
+    {"heads/feat/fix",      GITREF_BRANCH, "feat/fix"},
+    {"refs/tags/v1.0",      GITREF_TAG,    "v1.0"},
+    {"tags/v1.0",           GITREF_TAG,    "v1.0"},
+    {"refs/remotes/origin/dogs-sniff", GITREF_REMOTE, "origin/dogs-sniff"},
+    {"remotes/origin/main", GITREF_REMOTE, "origin/main"},
+    {"refs/notes/commits",  GITREF_OTHER,  "notes/commits"},
+
+    //  Bare-name disambiguation
+    {"main",                GITREF_BRANCH, "main"},
+    {"feature",             GITREF_BRANCH, "feature"},
+    {"v1.2.3",              GITREF_TAG,    "v1.2.3"},
+    {"v0",                  GITREF_TAG,    "v0"},
+    {"vagrant",             GITREF_BRANCH, "vagrant"},   // 'v' not v\d
+    {"origin/main",         GITREF_REMOTE, "origin/main"},
+    {"feature/fix",         GITREF_REMOTE, "feature/fix"},
+
+    //  Errors
+    {"",                    GITREF_NONE,   NULL},
+    {"refs/",               GITREF_NONE,   NULL},
+    {"refs/heads/",         GITREF_NONE,   NULL},
+    {"heads/",              GITREF_NONE,   NULL},
+};
+
+ok64 GITtest9() {
+    sane(1);
+    size_t n = sizeof(PARSE_CASES) / sizeof(PARSE_CASES[0]);
+    for (size_t i = 0; i < n; i++) {
+        parse_case const *c = &PARSE_CASES[i];
+        u8cs in = {(u8cp)c->in, (u8cp)c->in + strlen(c->in)};
+        gitref_kind k = GITREF_NONE;
+        u8cs nm = {};
+        ok64 o = GITParseRef(in, &k, nm);
+        if (c->name == NULL) {
+            want(o == GITBADFMT);
+            continue;
+        }
+        want(o == OK);
+        want(k == c->kind);
+        size_t exp_len = strlen(c->name);
+        want((size_t)$len(nm) == exp_len);
+        want(memcmp(nm[0], c->name, exp_len) == 0);
+    }
+    done;
+}
+
+// ---- Test 10: GITFeedRef table ----
+
+typedef struct {
+    gitref_kind kind;
+    char const *name;
+    char const *expect;   // NULL => expect GITBADFMT
+} feed_case;
+
+static feed_case const FEED_CASES[] = {
+    {GITREF_HEAD,   "",                 "HEAD"},
+    {GITREF_HEAD,   "anything",         "HEAD"},   //  name ignored
+    {GITREF_BRANCH, "main",             "refs/heads/main"},
+    {GITREF_BRANCH, "feat/fix",         "refs/heads/feat/fix"},
+    {GITREF_TAG,    "v1.0",             "refs/tags/v1.0"},
+    {GITREF_REMOTE, "origin/main",      "refs/remotes/origin/main"},
+    {GITREF_OTHER,  "notes/commits",    "refs/notes/commits"},
+
+    {GITREF_BRANCH, "",                 NULL},
+    {GITREF_TAG,    "",                 NULL},
+    {GITREF_NONE,   "x",                NULL},
+};
+
+ok64 GITtest10() {
+    sane(1);
+    size_t n = sizeof(FEED_CASES) / sizeof(FEED_CASES[0]);
+    for (size_t i = 0; i < n; i++) {
+        feed_case const *c = &FEED_CASES[i];
+        u8cs nm = {(u8cp)c->name, (u8cp)c->name + strlen(c->name)};
+        a_pad(u8, buf, 256);
+        ok64 o = GITFeedRef(buf, c->kind, nm);
+        if (c->expect == NULL) {
+            want(o == GITBADFMT);
+            continue;
+        }
+        want(o == OK);
+        size_t el = strlen(c->expect);
+        want(u8bDataLen(buf) == el);
+        want(memcmp(u8bDataHead(buf), c->expect, el) == 0);
+    }
+    done;
+}
+
+// ---- Test 11: round-trip Parse → Feed → Parse ----
+
+ok64 GITtest11() {
+    sane(1);
+    char const *inputs[] = {
+        "HEAD",
+        "refs/heads/main",
+        "heads/feat/fix",
+        "main",
+        "v1.2.3",
+        "origin/dogs-sniff",
+        "refs/notes/commits",
+        NULL,
+    };
+    for (size_t i = 0; inputs[i]; i++) {
+        u8cs in = {(u8cp)inputs[i], (u8cp)inputs[i] + strlen(inputs[i])};
+        gitref_kind k1 = GITREF_NONE;
+        u8cs n1 = {};
+        want(GITParseRef(in, &k1, n1) == OK);
+
+        a_pad(u8, wire, 256);
+        want(GITFeedRef(wire, k1, n1) == OK);
+
+        u8cs wire_cs = {u8bDataHead(wire), u8bIdleHead(wire)};
+        gitref_kind k2 = GITREF_NONE;
+        u8cs n2 = {};
+        want(GITParseRef(wire_cs, &k2, n2) == OK);
+        want(k2 == k1);
+        want($len(n2) == $len(n1));
+        want(memcmp(n2[0], n1[0], (size_t)$len(n1)) == 0);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(GITtest1);
@@ -233,6 +368,9 @@ ok64 maintest() {
     call(GITtest6);
     call(GITtest7);
     call(GITtest8);
+    call(GITtest9);
+    call(GITtest10);
+    call(GITtest11);
     done;
 }
 

@@ -80,3 +80,94 @@ ok64 GITu8sCommitTree(u8cs commit, u8 tree_sha[20]) {
     }
     return GITBADFMT;
 }
+
+// --- Refname parser / emitter -----------------------------------------
+
+//  Try to consume `pfx` from the head of `s`.  Returns YES on match
+//  (and advances `s` past the prefix); NO leaves `s` untouched.
+static b8 git_eat_prefix(u8cs s, char const *pfx, size_t plen) {
+    if ((size_t)$len(s) < plen) return NO;
+    if (memcmp(s[0], pfx, plen) != 0) return NO;
+    u8csUsed(s, plen);
+    return YES;
+}
+
+ok64 GITParseRef(u8csc in, gitref_kind *kind, u8csp name) {
+    sane(kind && name);
+    *kind = GITREF_NONE;
+    name[0] = name[1] = NULL;
+    if (!$ok(in) || $empty(in)) return GITBADFMT;
+
+    u8cs s = {in[0], in[1]};
+
+    //  "HEAD" (only as the bare literal — "refs/HEAD" is not a thing
+    //  in modern git advertisements).
+    if ($len(s) == 4 && memcmp(s[0], "HEAD", 4) == 0) {
+        *kind = GITREF_HEAD;
+        name[0] = s[0];
+        name[1] = s[1];
+        done;
+    }
+
+    //  Optional `refs/` prefix.  Once stripped, a `<sub>/...` head whose
+    //  `<sub>` is none of {heads, tags, remotes} routes to OTHER (the
+    //  whole remainder, including `<sub>/`, becomes the name).
+    b8 had_refs = git_eat_prefix(s, "refs/", 5);
+    if (had_refs && $empty(s)) return GITBADFMT;
+
+    if (git_eat_prefix(s, "heads/", 6)) {
+        if ($empty(s)) return GITBADFMT;
+        *kind = GITREF_BRANCH;
+    } else if (git_eat_prefix(s, "tags/", 5)) {
+        if ($empty(s)) return GITBADFMT;
+        *kind = GITREF_TAG;
+    } else if (git_eat_prefix(s, "remotes/", 8)) {
+        if ($empty(s)) return GITBADFMT;
+        *kind = GITREF_REMOTE;
+    } else if (had_refs) {
+        //  `refs/<other>/...` — keep the whole remainder as name.
+        *kind = GITREF_OTHER;
+    } else {
+        //  Bare name disambiguation.
+        //    "vN..." (v\d.*)   → TAG
+        //    contains '/'      → REMOTE
+        //    otherwise         → BRANCH
+        b8 v_tag = ($len(s) >= 2 && s[0][0] == 'v' &&
+                    s[0][1] >= '0' && s[0][1] <= '9');
+        b8 has_slash = NO;
+        $for(u8c, p, s) {
+            if (*p == '/') { has_slash = YES; break; }
+        }
+        if (v_tag)          *kind = GITREF_TAG;
+        else if (has_slash) *kind = GITREF_REMOTE;
+        else                *kind = GITREF_BRANCH;
+    }
+
+    name[0] = s[0];
+    name[1] = s[1];
+    done;
+}
+
+ok64 GITFeedRef(u8b out, gitref_kind kind, u8csc name) {
+    sane(u8bOK(out));
+
+    if (kind == GITREF_HEAD) {
+        a_cstr(head_s, "HEAD");
+        u8bFeed(out, head_s);
+        done;
+    }
+
+    if (!$ok(name) || $empty(name)) return GITBADFMT;
+
+    a_cstr(refs_s, "refs/");
+    u8bFeed(out, refs_s);
+    switch (kind) {
+        case GITREF_BRANCH: { a_cstr(p, "heads/");   u8bFeed(out, p); break; }
+        case GITREF_TAG:    { a_cstr(p, "tags/");    u8bFeed(out, p); break; }
+        case GITREF_REMOTE: { a_cstr(p, "remotes/"); u8bFeed(out, p); break; }
+        case GITREF_OTHER:  break;  // name carries "<sub>/..."
+        default:            return GITBADFMT;
+    }
+    u8bFeed(out, name);
+    done;
+}

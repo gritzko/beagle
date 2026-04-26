@@ -1,7 +1,7 @@
 #ifndef KEEPER_GIT_H
 #define KEEPER_GIT_H
 
-//  GIT: parsers for git objects (blob, tree, commit)
+//  GIT: parsers for git objects (blob, tree, commit) and git refnames.
 //
 //  Blob: raw content, no parsing needed.
 //
@@ -12,13 +12,60 @@
 //  GITu8sDrainCommit() consumes one header per call;
 //  on the blank line separator it returns empty field
 //  and the commit body as value.
+//
+//  Refnames: GITParseRef / GITFeedRef are the single point of
+//  translation between be-style ref strings and git's wire form
+//  (`refs/heads/<X>` etc.).  Callers above this layer treat the
+//  query slice as opaque; only the wire boundary uses these.
 
+#include "abc/B.h"
 #include "abc/INT.h"
+#include "abc/OK.h"
+#include "abc/S.h"
 
 #define GIT_SHA1_LEN 20
 
 con ok64 GITFAIL = 0x1049d3ca495;
 con ok64 GITBADFMT = 0x1049d2ca34f59d;
+
+//  Kind of a git ref.  GITREF_NONE = unparseable / empty input.
+typedef enum {
+    GITREF_NONE   = 0,
+    GITREF_HEAD,    //  "HEAD"
+    GITREF_BRANCH,  //  refs/heads/<name>          (name may contain '/')
+    GITREF_TAG,     //  refs/tags/<name>
+    GITREF_REMOTE,  //  refs/remotes/<remote>/<branch>  (name = "<r>/<b>")
+    GITREF_OTHER,   //  refs/<sub>/<name>  for sub ∉ {heads,tags,remotes}
+} gitref_kind;
+
+//  Parse any refname shape into (kind, bare-name).  `name` is a
+//  sub-slice of `in`; no allocation.
+//
+//    "HEAD"                 → (HEAD,   "HEAD")
+//    "refs/heads/X"         → (BRANCH, "X")
+//    "heads/X"              → (BRANCH, "X")
+//    "refs/tags/X"          → (TAG,    "X")
+//    "tags/X"               → (TAG,    "X")
+//    "refs/remotes/o/b"     → (REMOTE, "o/b")
+//    "remotes/o/b"          → (REMOTE, "o/b")
+//    "refs/<sub>/X"         → (OTHER,  "<sub>/X")
+//    bare "vN..." (v\d.*)   → (TAG,    "vN...")
+//    bare "X/Y..."          → (REMOTE, "X/Y...")
+//    bare "X" (no '/')      → (BRANCH, "X")
+//
+//  Returns OK on success, GITBADFMT for empty / malformed input.
+ok64 GITParseRef(u8csc in, gitref_kind *kind, u8csp name);
+
+//  Emit the canonical wire form of a (kind, name) pair into `out`:
+//    HEAD                   → "HEAD"
+//    (BRANCH, X)            → "refs/heads/X"
+//    (TAG, X)               → "refs/tags/X"
+//    (REMOTE, o/b)          → "refs/remotes/o/b"
+//    (OTHER, sub/X)         → "refs/sub/X"
+//
+//  `out` is a pre-reset buffer.  Returns GITBADFMT if name is empty
+//  for a kind that requires it, or kind is unrecognised.
+ok64 GITFeedRef(u8b out, gitref_kind kind, u8csc name);
 
 //  Drain one tree entry: file mode+name into `file`, raw SHA1 into `sha1`.
 //  Advances `obj`; returns NODATA when exhausted.
