@@ -48,9 +48,18 @@ ok64 DOGAtTail(u8bp branch_out, u8bp sha_out, u8cs reporoot) {
         ok64 ro = ULOGRow(&l, i, &ts, &verb, &u);
         if (ro != OK) continue;
 
-        //  Split query specs: first REF → branch, first 40-hex SHA
-        //  → tip.  Skip the row if no SHA is present.
+        //  Canonical at-log shape: `?<branch>#<curhash>` — fragment
+        //  carries the sha, query carries the be-branch (empty for
+        //  trunk).  Legacy rows kept the sha as a query spec; fall
+        //  through and walk the `&`-chain when the fragment is empty.
         u8cs ref_body = {}, sha_body = {};
+        {
+            u8cs frag = {u.fragment[0], u.fragment[1]};
+            if (u8csLen(frag) == 40) {
+                sha_body[0] = frag[0];
+                sha_body[1] = frag[1];
+            }
+        }
         a_dup(u8c, q, u.query);
         while (!$empty(q)) {
             qref spec = {};

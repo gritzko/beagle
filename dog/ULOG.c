@@ -204,14 +204,35 @@ ok64 ULOGOpen(ulogp l, path8s path) {
     return ULOGOpenBooked(l, path, ULOG_BOOK_DEFAULT, ULOG_INIT_DEFAULT);
 }
 
+ok64 ULOGOpenRO(ulogp l, path8s path) {
+    sane(l && $ok(path));
+    memset(l, 0, sizeof(*l));
+
+    //  RO map only — fails if file is missing (no implicit create).
+    call(FILEBookRO, &l->data, path, ULOG_BOOK_DEFAULT);
+
+    call(kv64bAllocate, l->idx, 1024);
+
+    ok64 so = ulog_rebuild_idx(l);
+    if (so != OK) {
+        kv64bFree(l->idx);
+        if (l->data) FILEUnBook(l->data);
+        memset(l, 0, sizeof(*l));
+        return so;
+    }
+    done;
+}
+
 ok64 ULOGClose(ulogp l) {
     sane(l);
     if (l->data) {
-        //  Trim only when this handle dirtied the log.  FILEBook's
-        //  reopen pads back to page-aligned so the next writer's
-        //  mmap is fully file-backed; a read-only reader closing
-        //  doesn't need to do anything and must not shrink the file
-        //  under an RW owner.
+        //  Trim only when this handle dirtied the log.  RW opens
+        //  page-align via FILEBook's ftruncate so the next writer's
+        //  mmap is fully file-backed; FILETrimBook here restores the
+        //  on-disk length to the real data tail.  RO consumers go
+        //  through FILEBookRO, which never grew the file in the
+        //  first place — there's nothing to trim, and trimming
+        //  would race a concurrent RW owner.
         if (l->dirty) FILETrimBook(l->data);
         FILEUnBook(l->data);
     }

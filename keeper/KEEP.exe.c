@@ -459,14 +459,13 @@ static ok64 keeper_post(keeper *k, cli *c) {
     }
 
     //  2. Target branch.  Precedence:
-    //       a. explicit URI `?query`           — user said which ref.
+    //       a. explicit URI `?query`           — user said which branch.
     //       b. refs-log host-prefix match      — `be post //sniff` after
-    //          a prior `be get ssh://sniff/...?heads/X` recovers
-    //          `heads/X` from `<store>/refs` via REFSResolve.
+    //          a prior `be get ssh://sniff/...?feat` recovers `feat`
+    //          from `<store>/refs` via REFSResolve.
     //       c. worktree current branch (DOGAtTail) — last-resort default.
-    //     Inputs get their `heads/` prefix stripped — the local_branch
-    //     build below re-adds it exactly once, so the WIREPush arg
-    //     ends up `heads/<name>` regardless of input shape.
+    //     Branch is be-side and may be empty (= trunk).  WIREPush's
+    //     wcli_be_to_wire applies the trunk⇔refs/heads/main alias.
     a_pad(u8, peer_arena, 1024);
     u8cs peer_refname = {};
     if (u8csEmpty(g->query) && !u8csEmpty(g->authority)) {
@@ -483,7 +482,6 @@ static ok64 keeper_post(keeper *k, cli *c) {
     }
     a_pad(u8, branch_buf, 256);
     {
-        a_cstr(heads_pfx, "heads/");
         u8cs src = {};
         if (!u8csEmpty(peer_refname)) {
             src[0] = peer_refname[0];
@@ -495,22 +493,15 @@ static ok64 keeper_post(keeper *k, cli *c) {
             src[0] = g->query[0];
             src[1] = g->query[1];
         }
-        if ($len(src) > 6 && memcmp(src[0], heads_pfx[0], 6) == 0)
-            u8csUsed(src, 6);
-        u8bFeed(branch_buf, src);
+        if (!u8csEmpty(src)) u8bFeed(branch_buf, src);
     }
     a_dup(u8c, branch, u8bData(branch_buf));
-    if (u8csEmpty(branch)) {
-        fprintf(stderr, "keeper: post: cannot determine branch to push\n");
-        return KEEPFAIL;
-    }
+    //  Empty branch = trunk; WIREPush handles it (wire alias to main).
 
-    //  Build the WIREPush local_branch arg as "heads/<branch>".
-    a_pad(u8, lb_buf, 256);
-    a_cstr(heads_pfx_s, "heads/");
-    u8bFeed(lb_buf, heads_pfx_s);
-    u8bFeed(lb_buf, branch);
-    a_dup(u8c, local_branch, u8bData(lb_buf));
+    //  WIREPush takes the be-side branch directly — it walks REFADV
+    //  and translates to refs/heads/<X> (or refs/heads/main for trunk)
+    //  internally via wcli_be_to_wire.
+    a_dup(u8c, local_branch, branch);
 
     //  3. Build the remote transport URI (substring-resolved origin).
     Bu8 rarena = {};
@@ -528,19 +519,14 @@ static ok64 keeper_post(keeper *k, cli *c) {
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 
-    //  5. Advance local //host/path?heads/<branch> → <new-sha> so
+    //  5. Advance local `<peer-uri>?<branch> → <new-sha>` so
     //     subsequent fetches know the peer's tip.  Use the RESOLVED
     //     transport URI (host+path from alias resolution), not `g`:
     //     `be post //sniff` arrives with empty path, and recording a
-    //     pathless `//sniff?heads/X` row would mask the original
-    //     `ssh://sniff/src/dogs?heads/X` row in later REFSResolve
-    //     lookups, breaking subsequent pushes.  DOGCanonURIFeed drops
-    //     the transport scheme and collapses heads/{master,main,trunk}
-    //     to empty.
-    a_pad(u8, qbuf, 256);
-    a_cstr(heads_pfx2, "heads/");
-    u8bFeed(qbuf, heads_pfx2);
-    u8bFeed(qbuf, branch);
+    //     pathless `//sniff?<branch>` row would mask the original
+    //     `ssh://sniff/src/dogs?<branch>` row in later REFSResolve
+    //     lookups, breaking subsequent pushes.  Branch is be-side
+    //     (empty for trunk → key ends in bare `?`).
     uri gk = {};
     {
         a_dup(u8c, ru, remote_uri);
@@ -550,16 +536,25 @@ static ok64 keeper_post(keeper *k, cli *c) {
         gk.data[0] = ru[0];
         gk.data[1] = ru[1];
     }
-    u8csMv(gk.query, u8bData(qbuf));
+    if ($empty(branch)) {
+        //  Present-but-empty query so DOGCanonURIFeed emits the `?`.
+        gk.query[0] = remote_uri[1];
+        gk.query[1] = remote_uri[1];
+    } else {
+        u8csMv(gk.query, branch);
+    }
     gk.fragment[0] = NULL;
     gk.fragment[1] = NULL;
     a_pad(u8, rkey, 1280);
     call(DOGCanonURIFeed, rkey, &gk);
     a_dup(u8c, remote_key, u8bData(rkey));
     a_dup(u8c, v, u8bDataC(at_sha));
-    REFSAppend($path(keepdir), remote_key, v);
+    //  Push is a local move (we updated the peer's tip), so record
+    //  with verb `post`, not the back-compat `get` shim.
+    REFSAppendVerb($path(keepdir), REFSVerbPost(), remote_key, v);
 
-    fprintf(stdout, "keeper: pushed %.*s → %.*s\n",
+    fprintf(stdout, "keeper: pushed %s%.*s → %.*s\n",
+            $empty(branch) ? "(trunk)" : "?",
             (int)$len(branch), (char *)branch[0],
             (int)u8bDataLen(at_sha), (char *)u8bDataHead(at_sha));
     done;

@@ -51,6 +51,12 @@ typedef ulog const *ulogcp;
 //  ULOGBADFMT on malformed lines.
 ok64 ULOGOpen(ulogp l, path8s path);
 
+//  Read-only open: maps PROT_READ via FILEBookRO so the file is
+//  never extended.  Appends fail; use for status / list / dry-run
+//  consumers that scan but never mutate.  Missing file is an error
+//  (no implicit create).
+ok64 ULOGOpenRO(ulogp l, path8s path);
+
 //  Variant with explicit book sizing; use when you expect the log to
 //  grow past ULOG_BOOK_DEFAULT or want a smaller reservation.
 ok64 ULOGOpenBooked(ulogp l, path8s path,

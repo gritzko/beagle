@@ -87,11 +87,15 @@ ok64 SNIFFOpen(home *h, b8 rw) {
 
     //  The ULOG lives at `<wt>/.sniff` — one plain file, the whole of
     //  sniff's per-worktree state.  `h->wt` points at the worktree
-    //  root; for colocated setups it equals `h->root`.
+    //  root; for colocated setups it equals `h->root`.  RW callers
+    //  page-align the file via FILEBook (ULOGClose trims on dirty
+    //  close); RO callers (status, list, dry-run post) go through
+    //  ULOGOpenRO which never extends the on-disk size.
     a_dup(u8c, wt_root, u8bDataC(h->wt));
     a_cstr(sniffname, SNIFF_FILE);
     a_path(atpath, wt_root, sniffname);
-    ok64 uo = ULOGOpen(&s->log, $path(atpath));
+    ok64 uo = rw ? ULOGOpen(&s->log, $path(atpath))
+                 : ULOGOpenRO(&s->log, $path(atpath));
     if (uo != OK) { zerop(s); return uo; }
 
     //  Row-0 `repo` anchor.  Bootstrap on a fresh log (writes the

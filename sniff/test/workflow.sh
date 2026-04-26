@@ -65,6 +65,22 @@ H1=$(head_hex)
 [ -n "$H1" ] || fail "HEAD unset after post"
 note "HEAD=$H1"
 
+# .sniff must be trimmed to actual content on close — FILEBook
+# page-aligns on open, ULOGClose's FILETrimBook reverses it.
+sz=$(wc -c < .sniff)
+content_sz=$(awk 'END{print c} {c+=length($0)+1}' .sniff)
+[ "$sz" = "$content_sz" ] \
+    || fail ".sniff not trimmed: file=$sz content=$content_sz"
+note ".sniff trimmed to $sz bytes"
+
+# Bare `sniff post` (dry run) must NOT grow .sniff either —
+# RO open path keeps the file at its existing length.
+"$SNIFF" post >/dev/null
+sz2=$(wc -c < .sniff)
+[ "$sz2" = "$sz" ] \
+    || fail "dry-run post grew .sniff: was=$sz now=$sz2"
+note "dry-run post left .sniff at $sz2 bytes"
+
 # ------------------------------------------------------------------
 # Scenario 2: checkout the commit into a fresh dir, files reappear
 # ------------------------------------------------------------------

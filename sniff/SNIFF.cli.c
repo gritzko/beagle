@@ -60,12 +60,26 @@ ok64 sniffcli() {
 
     // rw for anything that mutates the ULOG at `<wt>/.sniff` or the
     // store.  View projectors (verbless `sniff <proj>:<URI>`) are
-    // always RO per VERBS.md §"View projectors are pure".
+    // always RO per VERBS.md §"View projectors are pure".  Bare
+    // `sniff post` (no -m, no `?label`) is a dry-run change-set
+    // print — also RO; otherwise FILEBook's page-align grows .sniff
+    // and ULOGClose can't trim under a non-dirty handle.
     a_cstr(v_status, "status");
     a_cstr(v_list,   "list");
+    a_cstr(v_post,   "post");
+    a_cstr(v_commit, "commit");
+    a_cstr(v_mflag,  "-m");
     b8 is_projector = $empty(c.verb) && c.nuris > 0 &&
                       DOGIsProjector(c.uris[0].scheme);
-    b8 ro = $eq(c.verb, v_status) || $eq(c.verb, v_list) || is_projector;
+    b8 is_post_dryrun = ($eq(c.verb, v_post) || $eq(c.verb, v_commit));
+    if (is_post_dryrun) {
+        for (u32 fi = 0; fi + 1 < c.nflags; fi += 2)
+            if ($eq(c.flags[fi], v_mflag)) { is_post_dryrun = NO; break; }
+        for (u32 i = 0; i < c.nuris; i++)
+            if (!$empty(c.uris[i].query)) { is_post_dryrun = NO; break; }
+    }
+    b8 ro = $eq(c.verb, v_status) || $eq(c.verb, v_list) || is_projector
+         || is_post_dryrun;
     b8 rw = !ro;
 
     home h = {};
