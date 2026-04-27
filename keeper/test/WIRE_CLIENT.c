@@ -254,7 +254,11 @@ ok64 WIRECLIENTtest_push_smoke() {
         FILE_URI(uri, dstdir);
         a_cstr(branch_s, "feat");
         u8csc branch_cs = {branch_s[0], branch_s[1]};
-        ok64 po = WIREPush(&KEEP, uri, branch_cs);
+        sha1 tip = {};
+        u8s bin = {tip.data, tip.data + 20};
+        u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
+        want(HEXu8sDrainSome(bin, hx) == OK);
+        ok64 po = WIREPush(&KEEP, uri, branch_cs, &tip);
         want(po == OK);
 
         KEEPClose();
@@ -304,7 +308,11 @@ ok64 WIRECLIENTtest_round_trip() {
 
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
-        ok64 po = WIREPush(&KEEP, uri, branch_cs);
+        sha1 tip = {};
+        u8s bin = {tip.data, tip.data + 20};
+        u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
+        want(HEXu8sDrainSome(bin, hx) == OK);
+        ok64 po = WIREPush(&KEEP, uri, branch_cs, &tip);
         want(po == OK);
 
         KEEPClose();

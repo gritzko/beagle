@@ -81,3 +81,4 @@
 15. Read abc/S.md abc/B.md for the idiomatic slice manipulation functions
 16. Propagate errors. Check error codes where correcting action is possible.
     Use sane()/call()/try()/done cycle from PRO.h in .c files.
+17. When fixing a bug, first make a repro test, then fix a bug.

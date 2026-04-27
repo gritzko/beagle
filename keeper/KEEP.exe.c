@@ -516,7 +516,22 @@ static ok64 keeper_post(keeper *k, cli *c) {
     a_dup(u8c, remote_uri, u8bData(ubuf));
 
     //  4. Push.  WIREPush handles peer-tip advert + pack build + status.
-    ok64 pu = WIREPush(k, remote_uri, local_branch);
+    //  We pass at_sha (decoded from sniff's at-log) as the authoritative
+    //  local_tip — keeper REFS may lag, and a stale REFADV would make
+    //  WIREPush's peer==local short-circuit no-op a real push.
+    sha1 at_tip = {};
+    {
+        u8s bin = {at_tip.data, at_tip.data + 20};
+        a_dup(u8c, hx, u8bDataC(at_sha));
+        if (HEXu8sDrainSome(bin, hx) != OK || bin[0] != at_tip.data + 20) {
+            fprintf(stderr,
+                    "keeper: post: bad at_sha (%llu bytes)\n",
+                    (unsigned long long)u8bDataLen(at_sha));
+            u8bUnMap(rarena);
+            return KEEPFAIL;
+        }
+    }
+    ok64 pu = WIREPush(k, remote_uri, local_branch, &at_tip);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 

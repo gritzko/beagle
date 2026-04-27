@@ -14,8 +14,8 @@
 
 #include "KEEP.h"
 
-con ok64 PROJFAIL = 0xb1083ca495;
-con ok64 PROJNONE = 0xb1085d85ce;
+con ok64 PROJFAIL = 0x65b6133ca495;
+con ok64 PROJNONE = 0x65b6135d85ce;
 
 //  tree:[<path>]?<ref|sha>  — list one directory's entries
 //  (mode, type, sha, name).  Non-recursive.

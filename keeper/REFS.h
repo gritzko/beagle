@@ -27,7 +27,7 @@ con ok64 REFSBAD   = 0x1b38f70b28d;
 //  short-circuit the walk without signalling an error.  REFSEach
 //  swallows it and returns OK; real failures still surface as their
 //  own non-OK codes.
-con ok64 REFSSTOP  = 0x1b38f7619397;
+con ok64 REFSSTOP  = 0x6ce3dc71d619;
 
 #define REFS_FILE      "refs"
 #define REFS_MAX_CHAIN 8

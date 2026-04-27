@@ -349,4 +349,43 @@ want_missing side/inner/n.txt
 want_missing top.txt
 note "commit tree carries the modified tracked file; untracked subtree stayed out"
 
+# ------------------------------------------------------------------
+# Scenario 12: bare `be put` is content-driven, not stamp-set-driven.
+#
+#   After a successful bare put, the staged files carry put-row stamps
+#   (mtime ∈ stamp-set).  But their content still differs from the
+#   baseline blob — they are not "clean".  Running bare put a second
+#   time without any further changes must NOT report "no changes":
+#   the right answer is either re-emit (idempotent) or recognise
+#   "already staged".  "no changes" is wrong because mtime is just an
+#   optimization; SHA-1 vs baseline is the actual dirtiness criterion.
+#
+#   Repro for the user-reported bug where the fast path skipped on any
+#   stamp-set hit, so put-stamped files were misclassified as baseline-
+#   clean and a second bare put returned PUTNONE.
+# ------------------------------------------------------------------
+echo "=== 12. bare be put is content-driven (mtime is just an optimization) ==="
+D12="$TMP/r12"; mkdir -p "$D12"; cd "$D12"
+echo v1 > foo.c
+"$BE" post seed >/dev/null
+C12a=$(head_hex)
+note "baseline HEAD=$C12a"
+
+sleep 1
+echo v2 > foo.c                            # modify tracked
+"$BE" put >/dev/null
+awk -F'\t' '$2 == "put" && $3 == "foo.c"' .sniff | grep -q . \
+    || fail "first bare put did not stage foo.c"
+note "first bare put staged foo.c (now put-stamped, content != baseline)"
+
+# Second bare put with no further wt changes.  foo.c is still dirty
+# vs baseline (sha differs).  The put-stamp mtime is an optimization
+# only — the operation must verify content via SHA-1 and either
+# re-emit the put row or report "already staged", but NEVER claim
+# "no changes" while a tracked file's content differs from baseline.
+out=$("$BE" put 2>&1) || true
+echo "$out" | grep -q 'no changes' && \
+    fail "second bare put falsely reported 'no changes' (foo.c is still dirty vs baseline)"
+note "second bare put correctly avoided false-clean refusal"
+
 echo "=== all be-dispatch scenarios passed ==="

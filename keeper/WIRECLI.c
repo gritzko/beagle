@@ -1049,23 +1049,21 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
     return (unpack_ok && ref_ok) ? OK : WIRECLFL;
 }
 
-ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch) {
+ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
+              sha1 const *local_tip_in) {
     sane(k);
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
     //  the trunk shard, which goes on the wire as `refs/heads/main`.
     if (u8csEmpty(remote_uri)) return WIRECLFL;
+    if (!local_tip_in || sha1empty(local_tip_in)) return WIRECLNRF;
 
-    //  Resolve our local tip via REFADV (one-shot snapshot).
-    sha1 local_tip = {};
-    b8   have_local = NO;
-    {
-        refadv adv = {};
-        ok64 ao = REFADVOpen(&adv, k);
-        if (ao != OK) return ao;
-        wpush_local_tip(&adv, local_branch, &local_tip, &have_local);
-        REFADVClose(&adv);
-    }
-    if (!have_local) return WIRECLNRF;
+    //  Caller-supplied tip is authoritative.  We do NOT re-derive it
+    //  from keeper REFS / REFADV — the worktree's at-log can be ahead
+    //  of REFS (e.g. when sniff POST's REFSAppendVerb append is lost),
+    //  and pulling local_tip from the lagging side made the
+    //  `local_tip == peer_tip` short-circuit fire falsely, no-op'ing
+    //  real pushes while still claiming success.
+    sha1 local_tip = *local_tip_in;
 
     //  Build the wire refname (refs/heads/X, trunk → main) once.
     a_pad(u8, refname_buf, 256);

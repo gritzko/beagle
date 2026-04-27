@@ -30,6 +30,7 @@
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
+#include "keeper/SHA1.h"
 
 #include "AT.h"
 
@@ -39,17 +40,28 @@ typedef struct {
     u8cs   reporoot;
     ron60  ts;            // bumped after each emit so rows stay strictly increasing
     ron60  verb_put;
+    ron60  baseline_ts;   // ts of the most recent get/post — used to
+                          // re-stamp files that hash-match baseline so
+                          // future mtime fast-paths skip them.
     u32    emitted;
     ok64   err;
 } put_walk_ctx;
 
-//  Per-tracked-path: lstat the wt file, skip if absent or mtime
-//  matches a stamp (clean, baseline-attributed).  Otherwise append a
-//  put row and stamp the file with the row's ts.
+//  Per-tracked-path:
+//    1. lstat — skip if absent.
+//    2. mtime ∈ stamp-set → clean (fast path).
+//    3. Otherwise mmap+hash and compare to the baseline blob sha:
+//       * equal → file content matches baseline; re-stamp with
+//         baseline_ts so the mtime fast-path picks it up next time.
+//       * differs → emit a put row and stamp with put ts.
+//
+//  mtimes are an optimization; the SHA-1 comparison is the actual
+//  dirtiness test.  Without this, a `.sniff` carried over from
+//  another checkout (where every wt mtime is foreign) would put-stage
+//  the entire baseline tree even though nothing actually changed.
 static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
                               void0p vctx) {
     sane(vctx);
-    (void)esha;
     (void)blob;
     put_walk_ctx *c = (put_walk_ctx *)vctx;
 
@@ -67,7 +79,53 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                            .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 mr = SNIFFAtOfTimespec(mts);
-    if (SNIFFAtKnown(mr)) return OK;       // clean — skip
+
+    //  Fast path: mtime equals some `get` or `post` row's ts → sniff
+    //  wrote this file as part of materialising a tree, the user
+    //  hasn't touched it since.  Either the row's tree at this path
+    //  IS the current baseline blob (typical case) or it differs in
+    //  a way invisible to bare put — staging a baseline-equal file
+    //  again is a no-op POST will skip, so suppressing here is safe.
+    //  put / patch / older-mod stamps don't carry the "user untouched"
+    //  guarantee, so they fall through to the SHA compare.
+    if (SNIFFAtKnown(mr)) {
+        ron60 ow_verb = 0;
+        uri ow_u = {};
+        if (SNIFFAtRowAtTs(mr, &ow_verb, &ow_u) == OK) {
+            ron60 vg = SNIFFAtVerbGet();
+            ron60 vp = SNIFFAtVerbPost();
+            if (ow_verb == vg || ow_verb == vp) return OK;
+        }
+    }
+
+    //  Slow path: hash on-disk content and compare to baseline blob
+    //  sha.  Symlinks resolve via readlink; regular/exec via mmap.
+    sha1 disk_sha = {};
+    sha1 base_sha = {};
+    memcpy(base_sha.data, esha, 20);
+
+    if (kind == WALK_KIND_LNK) {
+        char tgt[1024];
+        ssize_t tlen = readlink((char const *)u8bDataHead(fp),
+                                tgt, sizeof(tgt));
+        if (tlen <= 0) return OK;
+        u8cs lv = {(u8cp)tgt, (u8cp)tgt + tlen};
+        KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, lv);
+    } else {
+        u8bp mapped = NULL;
+        ok64 mo = FILEMapRO(&mapped, $path(fp));
+        if (mo != OK) return OK;            // can't read → leave alone
+        KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
+        FILEUnMap(mapped);
+    }
+
+    if (sha1eq(&disk_sha, &base_sha)) {
+        //  Content matches baseline.  Re-stamp with baseline_ts so the
+        //  next mtime check fast-paths this file.  No put row.
+        if (c->baseline_ts != 0)
+            (void)SNIFFAtStampPath(fp, c->baseline_ts);
+        return OK;
+    }
 
     uri urow = {};
     urow.path[0] = path[0];
@@ -143,7 +201,15 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         }
         if (bo != OK) return bo;
 
-        put_walk_ctx wc = {.ts = ts, .verb_put = verb_put, .err = OK};
+        //  Re-stamp ts: the latest get/post row's ts.  Files whose
+        //  content matches the baseline get re-stamped to this so the
+        //  next bare put fast-paths them via SNIFFAtKnown.
+        ron60 base_ts = 0, base_verb = 0;
+        uri base_u = {};
+        (void)SNIFFAtBaseline(&base_ts, &base_verb, &base_u);
+
+        put_walk_ctx wc = {.ts = ts, .verb_put = verb_put,
+                           .baseline_ts = base_ts, .err = OK};
         u8csMv(wc.reporoot, reporoot);
         ok64 wo = WALKTreeLazy(&KEEP, tree_sha.data,
                                put_visit_tracked, &wc);

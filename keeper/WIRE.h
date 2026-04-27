@@ -154,8 +154,15 @@ ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref);
 //  `local_branch` is the local refname to push, e.g. "heads/main" or
 //  "main".  The same name is offered to the peer (`refs/heads/<X>`).
 //
-//  Returns OK on success, WIRECLNRF if the local branch has no
-//  REFS entry, WIRECLFL on transport / pack-build / refusal.
-ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch);
+//  `local_tip` is the authoritative sha to push.  Callers in the
+//  worktree path (sniff at-log driven) read it from `.sniff` and
+//  pass it down — keeper-side REFS may lag if the wt advanced via
+//  a sniff path that didn't reach REFS-append, so the wt's at_sha
+//  is the source of truth, not REFADV.
+//
+//  Returns OK on success, WIRECLNRF if local_tip is zero,
+//  WIRECLFL on transport / pack-build / refusal.
+ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
+              sha1 const *local_tip);
 
 #endif
