@@ -43,6 +43,11 @@ foreach(vc
         be-get-create-on-miss
         be-get-absolute-miss
         be-get-restore-wiped
+        be-get-overlay-clean
+        be-get-overlay-real
+        be-get-overlay-delete-dirty
+        be-get-overlay-delete-clean
+        be-get-overlay-no-baseline
         be-post-ff
         be-post-empty
         be-post-nonff

@@ -220,10 +220,129 @@ ok64 WALKtest2() {
     done;
 }
 
+// ---- Test 3: KEEPTreeListLeaves materialises (paths, meta) ----
+//
+// Same root tree as WALKtest2 (hello.txt REG, run.sh EXE, sub/nested.txt
+// REG).  Verifies:
+//   * paths buffer == "hello.txt\nrun.sh\nsub/nested.txt\n"
+//   * meta buffer is 3 × 21 bytes, kind bytes match, sha bytes match
+//   * cursor over paths drained against itself via KEEPu8ssDrain yields
+//     exactly 3 lines, each with mask == 0b11 (both inputs contributed).
+
+ok64 WALKtest3() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/walktest3-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    a_cstr(root, tmp);
+    home h = {};
+    call(HOMEOpen, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &KEEP, &p);
+    p.strict_order = NO;
+
+    // Two top-level blobs.
+    a_cstr(hi_content, "hi\n");
+    sha1 hi_sha = {};
+    u8csc nopath_h = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, hi_content, nopath_h, 0,
+         &hi_sha);
+
+    a_cstr(run_content, "#!/bin/sh\n");
+    sha1 run_sha = {};
+    u8csc nopath_r = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, run_content, nopath_r, 0,
+         &run_sha);
+
+    // sub/nested.txt → inner tree.
+    a_cstr(nested_mn, "100644 nested.txt");
+    a_cstr(nested_content, "deep\n");
+    sha1 sub_sha = {};
+    call(build_leaf_tree, &KEEP, &p, nested_mn, nested_content, &sub_sha);
+
+    // Inner tree's sole blob sha: rebuild to capture for the assert.
+    sha1 nested_blob_sha = {};
+    u8csc nopath_n = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, nested_content, nopath_n, 0,
+         &nested_blob_sha);
+
+    // Root tree.
+    a_pad(u8, rtb, 512);
+    a_cstr(e1, "100644 hello.txt"); call(u8bFeed, rtb, e1);
+    u8bFeed1(rtb, 0); a_rawc(hi_ss, hi_sha); call(u8bFeed, rtb, hi_ss);
+    a_cstr(e2, "100755 run.sh"); call(u8bFeed, rtb, e2);
+    u8bFeed1(rtb, 0); a_rawc(run_ss, run_sha); call(u8bFeed, rtb, run_ss);
+    a_cstr(e3, "40000 sub"); call(u8bFeed, rtb, e3);
+    u8bFeed1(rtb, 0); a_rawc(sub_ss, sub_sha); call(u8bFeed, rtb, sub_ss);
+
+    a_dup(u8c, rtc, u8bData(rtb));
+    sha1 root_sha = {};
+    u8csc nopath_rt = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, rtc, nopath_rt, 0,
+         &root_sha);
+
+    call(KEEPPackClose, &KEEP, &p);
+
+    Bu8 paths = {}, meta = {};
+    call(u8bAllocate, paths, 1UL << 16);
+    call(u8bAllocate, meta,  1UL << 16);
+    call(KEEPTreeListLeaves, &KEEP, root_sha.data, paths, meta);
+
+    a_cstr(want_paths, "hello.txt\nrun.sh\nsub/nested.txt\n");
+    want(u8bDataLen(paths) == (size_t)$len(want_paths));
+    want(memcmp(u8bDataHead(paths), want_paths[0],
+                (size_t)$len(want_paths)) == 0);
+
+    want(u8bDataLen(meta) == 3 * 21);
+    u8 const *m = u8bDataHead(meta);
+    want(m[0]  == WALK_KIND_REG);
+    want(m[21] == WALK_KIND_EXE);
+    want(m[42] == WALK_KIND_REG);
+    want(memcmp(m + 1,  hi_sha.data,           20) == 0);
+    want(memcmp(m + 22, run_sha.data,          20) == 0);
+    want(memcmp(m + 43, nested_blob_sha.data,  20) == 0);
+
+    // Drain against a duplicate cursor — every line should be in both.
+    {
+        a_dup(u8c, view_a, u8bData(paths));
+        a_dup(u8c, view_b, u8bData(paths));
+        a_pad(u8cs, ins, 2);
+        u8cssFeed1(ins_idle, view_a);
+        u8cssFeed1(ins_idle, view_b);
+        a_dup(u8cs, view, u8csbData(ins));
+        u32 drained = 0;
+        for (;;) {
+            u8cs got = {};
+            u64 mask = 0;
+            ok64 r = KEEPu8ssDrain(view, got, &mask);
+            if (r != OK) break;
+            want(mask == 0x3);
+            drained++;
+        }
+        want(drained == 3);
+    }
+
+    u8bFree(paths);
+    u8bFree(meta);
+
+    call(KEEPClose);
+    HOMEClose(&h);
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
+        system(cmd);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(WALKtest1);
     call(WALKtest2);
+    call(WALKtest3);
     done;
 }
 

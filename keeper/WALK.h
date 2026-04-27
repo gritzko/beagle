@@ -68,4 +68,14 @@ ok64 WALKTreeLazy(keeper *k, u8cp tree_sha, walk_tree_fn visit,
 ok64 KEEPLsFiles(keeper *k, uricp target,
                  walk_tree_fn visit, void0p ctx);
 
+//  Materialise a tree's leaf entries (REG/EXE/LNK/SUB) in DFS order
+//  into two parallel buffers:
+//    out_paths — newline-terminated full paths in lex order, suitable
+//                as a KEEPu8ssDrain input cursor.
+//    out_meta  — flat sequence of 21-byte records {u8 kind, u8 sha[20]}
+//                indexed by line number in out_paths.
+//  Both buffers are reset before writing.  Caller owns them.
+ok64 KEEPTreeListLeaves(keeper *k, u8cp tree_sha,
+                        u8bp out_paths, u8bp out_meta);
+
 #endif

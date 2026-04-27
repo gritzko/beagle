@@ -324,3 +324,49 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out) {
     if (btype != DOG_OBJ_BLOB) fail(KEEPNONE);
     done;
 }
+
+// --- KEEPTreeListLeaves: materialise (paths, meta) for N-way merge ---
+
+typedef struct {
+    u8bp paths;
+    u8bp meta;
+    ok64 err;
+} listleaves_ctx;
+
+static ok64 listleaves_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
+                              void0p vctx) {
+    (void)blob;
+    listleaves_ctx *c = (listleaves_ctx *)vctx;
+
+    //  Root DIR carries an empty path; we just need the recursion.
+    //  Subtree DIRs are also unrecorded — only file-like leaves matter
+    //  for the merge.
+    if (kind == WALK_KIND_DIR) return OK;
+
+    ok64 o = u8bFeed(c->paths, path);
+    if (o == OK) o = u8bFeed1(c->paths, '\n');
+    if (o == OK) o = u8bFeed1(c->meta, kind);
+    if (o == OK) {
+        sha1 sh = {};
+        memcpy(sh.data, esha, 20);
+        a_rawc(ss, sh);
+        o = u8bFeed(c->meta, ss);
+    }
+    if (o != OK) { c->err = o; return WALKSTOP; }
+
+    //  Submodule entries are leaves but not recursable; tell the
+    //  walker to skip so we don't try to fetch a tree that isn't there.
+    if (kind == WALK_KIND_SUB) return WALKSKIP;
+    return OK;
+}
+
+ok64 KEEPTreeListLeaves(keeper *k, u8cp tree_sha,
+                        u8bp out_paths, u8bp out_meta) {
+    sane(k && tree_sha && out_paths && out_meta);
+    u8bReset(out_paths);
+    u8bReset(out_meta);
+    listleaves_ctx c = {.paths = out_paths, .meta = out_meta, .err = OK};
+    ok64 o = WALKTreeLazy(k, tree_sha, listleaves_visit, &c);
+    if (o != OK) return o;
+    return c.err;
+}

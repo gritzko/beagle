@@ -64,7 +64,7 @@ scan; no new ULOG verb required.
 |--------|------|
 | SNIFF.h | Singleton state (open/close, ULOG handle, per-process sorted path index), path-registry wrappers over keeper (`SNIFFIntern` / `SNIFFPath` / `SNIFFCount` / `SNIFFRootIdx` / `SNIFFInternDir` / `SNIFFIsDir` / `SNIFFFullpath` / `SNIFFSort`). |
 | AT.h | ULOG façade: verb constants (`SNIFFAtVerbGet/Post/Patch/Put/Delete`), append (`SNIFFAtAppend`, `SNIFFAtAppendAt`), baseline/post-ts/scan lookups (`SNIFFAtBaseline`, `SNIFFAtLastPostTs`, `SNIFFAtScanPutDelete`), stamp I/O (`SNIFFAtNow`, `SNIFFAtStampPath`, `SNIFFAtOfTimespec`, `SNIFFAtKnown`). |
-| GET.h | Checkout: walk target tree via keeper → materialise files, dirty-protect via stamp-set, futimens every write to a shared ts, append one `get` row, prune any stamped wt file not in the new tree. |
+| GET.h | Checkout: resolve baseline tree from latest get/post/patch row, run a 2-input merge (`KEEPTreeListLeaves` + `KEEPu8ssDrain`) against the target tree to classify each path as no-op overlay / real change / add / delete; refuse on dirty ∩ real-change.  Then walk target via keeper → materialise files (skipping no-op overlays so dirty wt content is preserved), futimens every write to a shared ts, append one `get` row, prune any stamped wt file not in the new tree. |
 | PUT.h | `put <path>` — one row per URI, no pack I/O, no tree work. |
 | DEL.h | `delete <path>` — mirror of PUT. |
 | POST.h | Commit: resolve baseline URI, fetch baseline tree, scan wt (`FILEScan`), compute change-set per the rules above, pre-hash blobs, build dirty-spine trees, emit one pack `commit → trees → blobs`, advance keeper REFS, unlink explicit-deletes, append `post` row, stamp surviving files. |

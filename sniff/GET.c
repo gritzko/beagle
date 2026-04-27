@@ -45,9 +45,12 @@ typedef struct {
                                 // legitimately checked-out submodule.
     u32            target_cap;
     ok64           error;
-    b8             dryrun;      // pre-flight: don't write blobs; instead
-                                // count overlap-with-dirty conflicts.
-    u32            conflicts;   // populated in dryrun mode.
+    //  Newline-separated, lex-sorted path list (subset of the target
+    //  tree) where the target sha matches the baseline sha.  WALKTreeLazy
+    //  visits the target in the same order, so we advance this cursor
+    //  in lockstep: a path matching the head means "no-op overlay —
+    //  preserve whatever bytes are on disk" (including dirty user edits).
+    u8cs           noop_cursor;
 } get_ctx;
 
 static void get_mark_target(get_ctx *g, u32 idx) {
@@ -95,9 +98,9 @@ static b8 get_under_gitlink(get_ctx const *g, u8cs rel) {
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
 //  symlink if link; then stamp it with ctx->tv.  Caller is
-//  responsible for the dirty-overlap pre-flight (see get_visit's
-//  dryrun branch and GETCheckout); reaching here means no dirty
-//  collision was detected.
+//  responsible for the dirty-overlap pre-flight (see get_overlap_check
+//  and GETCheckout); reaching here means no dirty collision was
+//  detected.
 static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     sane(g);
     keeper *k = g->k;
@@ -137,27 +140,6 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     done;
 }
 
-//  In dryrun mode: lstat the target path; if it exists with an
-//  unknown mtime, count it as an overlap conflict.  No writes.
-static ok64 get_check_overlap_one(get_ctx *g, u8cs path) {
-    sane(g);
-    a_path(fp);
-    call(SNIFFFullpath, fp, g->reporoot, path);
-    struct stat xb = {};
-    if (lstat((char *)u8bDataHead(fp), &xb) != 0) done;
-    struct timespec xt = {.tv_sec = xb.st_mtim.tv_sec,
-                          .tv_nsec = xb.st_mtim.tv_nsec};
-    ron60 xr = SNIFFAtOfTimespec(xt);
-    if (!SNIFFAtKnown(xr)) {
-        if (g->conflicts < 5) {
-            fprintf(stderr, "sniff: dirty overlap %.*s\n",
-                    (int)$len(path), (char *)path[0]);
-        }
-        g->conflicts++;
-    }
-    done;
-}
-
 static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
                       void0p vctx) {
     (void)blob;  // lazy mode
@@ -175,7 +157,6 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     }
 
     if (kind == WALK_KIND_DIR) {
-        if (g->dryrun) return OK;       // pre-flight: skip dir creation
         if ($empty(path)) return OK;    // root; walker recurses
         a_path(dp);
         SNIFFFullpath(dp, g->reporoot, path);
@@ -190,15 +171,151 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
         get_mark_target(g, idx);
     }
 
-    if (g->dryrun) {
-        ok64 o = get_check_overlap_one(g, path);
-        if (o != OK) g->error = o;
-        return o;
+    //  No-op overlay: target's content at this path equals baseline's;
+    //  pre-flight cleared the merged path list in lockstep with this
+    //  walk's order.  Skip the write so dirty user edits aren't
+    //  clobbered by a rewrite of identical bytes.  Don't stamp either —
+    //  the file's mtime stays whatever the user left it as.
+    //
+    //  Exception: if the file was wiped from disk (lstat fails), there
+    //  is nothing to preserve — fall through and recreate it.
+    if (!u8csEmpty(g->noop_cursor)) {
+        u8cs head = {};
+        a_dup(u8c, peek, g->noop_cursor);
+        if (u8csDrainLine(peek, head) == OK
+            && $len(head) == $len(path)
+            && memcmp(head[0], path[0], (size_t)$len(head)) == 0) {
+            (void)u8csDrainLine(g->noop_cursor, head);
+            a_path(probe);
+            if (SNIFFFullpath(probe, g->reporoot, path) == OK) {
+                struct stat sb = {};
+                if (lstat((char *)u8bDataHead(probe), &sb) == 0)
+                    return OK;     // present on disk — preserve it
+            }
+            //  File missing → fall through to get_write_one.
+        }
     }
 
     ok64 o = get_write_one(g, path, kind, esha);
     if (o != OK) g->error = o;
     return o;
+}
+
+// --- Pre-flight overlap check via baseline ↔ target N-way merge.
+//
+//  Materialise both trees as sorted (path, meta) pairs (meta = 21-byte
+//  records {kind, sha[20]}), then drain via KEEPu8ssDrain.  For each
+//  emitted path:
+//    * both sides + identical {kind,sha} → no-op overlay: append to
+//      `noop_out` so the WRITE pass can skip the rewrite (preserving
+//      any dirty user content), no dirty check needed
+//    * either side is SUB                → gitlink change, no wt-file
+//                                           write → skip
+//    * else (real change, add, or delete) → lstat; conflict if mtime
+//                                            ∉ stamp-set.
+//  Returns SNIFFOVRL when conflicts > 0 (printing up to 5 paths and a
+//  summary line).  `noop_out` is reset on entry; on success it carries
+//  newline-separated lex-sorted paths (subset of the target tree).
+//
+//  `base_tree` may be NULL — first-checkout / no-baseline case.  Then
+//  every drained path has mask 0b10 (target only) and is treated as
+//  incoming, matching the pre-merge per-target-path overlap check;
+//  `noop_out` ends up empty.
+static ok64 get_overlap_check(keeper *k, u8cs reporoot,
+                              u8cp base_tree, u8cp tgt_tree,
+                              u8bp noop_out) {
+    sane(k && tgt_tree && noop_out);
+    u8bReset(noop_out);
+    Bu8 bp = {}, bm = {}, tp = {}, tm = {};
+    call(u8bAllocate, bp, 1UL << 20);
+    call(u8bAllocate, bm, 1UL << 20);
+    call(u8bAllocate, tp, 1UL << 20);
+    call(u8bAllocate, tm, 1UL << 20);
+
+    ok64 r = OK;
+    if (base_tree) r = KEEPTreeListLeaves(k, base_tree, bp, bm);
+    if (r == OK)   r = KEEPTreeListLeaves(k, tgt_tree, tp, tm);
+    if (r != OK) {
+        u8bFree(bp); u8bFree(bm); u8bFree(tp); u8bFree(tm);
+        return r;
+    }
+
+    a_dup(u8c, view_b, u8bData(bp));
+    a_dup(u8c, view_t, u8bData(tp));
+    a_pad(u8cs, ins, 2);
+    u8cssFeed1(ins_idle, view_b);
+    u8cssFeed1(ins_idle, view_t);
+    a_dup(u8cs, view, u8csbData(ins));
+
+    u8 const *bm_base = u8bDataHead(bm);
+    u8 const *tm_base = u8bDataHead(tm);
+    size_t b_idx = 0, t_idx = 0;
+    u32 conflicts = 0;
+
+    for (;;) {
+        u8cs path = {};
+        u64 mask = 0;
+        ok64 dr = KEEPu8ssDrain(view, path, &mask);
+        if (dr != OK) break;
+
+        b8 in_base = (mask & 1) != 0;
+        b8 in_tgt  = (mask & 2) != 0;
+        u8cs br = {};
+        u8cs tr = {};
+        if (in_base) {
+            br[0] = bm_base + b_idx * 21;
+            br[1] = bm_base + (b_idx + 1) * 21;
+        }
+        if (in_tgt) {
+            tr[0] = tm_base + t_idx * 21;
+            tr[1] = tm_base + (t_idx + 1) * 21;
+        }
+        u8 b_kind = in_base ? br[0][0] : 0;
+        u8 t_kind = in_tgt  ? tr[0][0] : 0;
+
+        b8 changed = !in_base || !in_tgt
+                  || u8cscmp(&br, &tr) != 0;
+        b8 is_sub  = (b_kind == WALK_KIND_SUB) || (t_kind == WALK_KIND_SUB);
+
+        if (!changed && in_tgt && !is_sub) {
+            //  No-op overlay: record the path so the WRITE pass skips it.
+            u8bFeed(noop_out, path);
+            u8bFeed1(noop_out, '\n');
+        } else if (changed && !is_sub) {
+            a_path(fp);
+            ok64 fo = SNIFFFullpath(fp, reporoot, path);
+            if (fo == OK) {
+                struct stat sb = {};
+                if (lstat((char *)u8bDataHead(fp), &sb) == 0) {
+                    struct timespec mts = {.tv_sec = sb.st_mtim.tv_sec,
+                                           .tv_nsec = sb.st_mtim.tv_nsec};
+                    ron60 mr = SNIFFAtOfTimespec(mts);
+                    if (!SNIFFAtKnown(mr)) {
+                        if (conflicts < 5)
+                            fprintf(stderr,
+                                    "sniff: dirty overlap %.*s\n",
+                                    (int)$len(path),
+                                    (char *)path[0]);
+                        conflicts++;
+                    }
+                }
+            }
+        }
+
+        if (in_base) b_idx++;
+        if (in_tgt)  t_idx++;
+    }
+
+    u8bFree(bp); u8bFree(bm); u8bFree(tp); u8bFree(tm);
+
+    if (conflicts > 0) {
+        fprintf(stderr,
+                "sniff: GET refused — %u dirty file(s) overlap with "
+                "incoming changes; commit, stash, or reset before "
+                "checkout\n", conflicts);
+        return SNIFFOVRL;
+    }
+    done;
 }
 
 // --- Prune: unlink any wt file that sniff wrote before but isn't in
@@ -386,9 +503,48 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     }
     //  --- end pre-flight gate ------------------------------------
 
+    //  Resolve the baseline tree from the latest get/post/patch row.
+    //  Used by the overlap pre-flight to distinguish "incoming change"
+    //  from "no-op overlay".  Absent baseline (fresh wt) → NULL pointer
+    //  passes through, every target path is treated as incoming.
+    sha1 base_tree = {};
+    b8 has_base_tree = NO;
+    {
+        ron60 bts = 0, bverb = 0;
+        uri bu = {};
+        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+            u8 hex40[40];
+            if (SNIFFAtQueryFirstSha(&bu, hex40) == OK) {
+                u8cs hex_s = {hex40, hex40 + 40};
+                u64 bhashlet = WHIFFHexHashlet60(hex_s);
+                Bu8 cbuf = {};
+                if (u8bAllocate(cbuf, 1UL << 24) == OK) {
+                    u8 ctype = 0;
+                    if (KEEPGet(k, bhashlet, 40, cbuf, &ctype) == OK &&
+                        ctype == DOG_OBJ_COMMIT) {
+                        u8cs cbody = {u8bDataHead(cbuf),
+                                      u8bIdleHead(cbuf)};
+                        if (GITu8sCommitTree(cbody, base_tree.data) == OK)
+                            has_base_tree = YES;
+                    }
+                    u8bFree(cbuf);
+                }
+            }
+        }
+    }
+
+    Bu8 noop = {};
+    call(u8bAllocate, noop, 1UL << 20);
+    o = get_overlap_check(k, reporoot,
+                          has_base_tree ? base_tree.data : NULL,
+                          tree_sha.data, noop);
+    if (o != OK) { u8bFree(noop); return o; }
+
     get_ctx ctx = {.k = k, .error = OK};
     u8csMv(ctx.reporoot, reporoot);
     SNIFFAtNow(&ctx.ts, &ctx.tv);
+    ctx.noop_cursor[0] = u8bDataHead(noop);
+    ctx.noop_cursor[1] = u8bIdleHead(noop);
 
     //  Size the target/gitlink bitmaps: SNIFFCount() grows during the
     //  walk as keeper interns new tree paths, so pad generously.
@@ -398,32 +554,17 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     call(u8bAllocate, ctx.gitlink, ctx.target_cap);
     memset(u8bDataHead(ctx.gitlink), 0, ctx.target_cap);
 
-    //  Pre-flight overlap pass: walk the target tree without writing
-    //  any blobs; count files that exist on disk with an unknown
-    //  mtime (would clobber user edits).  Bitmap marks are kept and
-    //  reused by the real walk below.
-    ctx.dryrun = YES;
     o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
-    if (o != OK) { u8bFree(ctx.target); u8bFree(ctx.gitlink); return o; }
-    if (ctx.conflicts > 0) {
-        fprintf(stderr,
-                "sniff: GET refused — %u dirty file(s) in target "
-                "tree; commit, stash, or reset before checkout\n",
-                ctx.conflicts);
-        u8bFree(ctx.target); u8bFree(ctx.gitlink);
-        fail(SNIFFOVRL);
+    if (o != OK) {
+        u8bFree(noop); u8bFree(ctx.target); u8bFree(ctx.gitlink);
+        return o;
     }
-    ctx.dryrun = NO;
-
-    o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
-    if (o == OK && ctx.error != OK) o = ctx.error;
-    if (o != OK) { u8bFree(ctx.target); u8bFree(ctx.gitlink); return o; }
 
     //  Prune: any path on disk that was sniff-stamped but isn't in the
     //  new target tree.
     (void)get_prune(&ctx);
-    u8bFree(ctx.target); u8bFree(ctx.gitlink);
+    u8bFree(ctx.target); u8bFree(ctx.gitlink); u8bFree(noop);
 
     //  Compose the `get` row URI via abc/URI.  Canonical at-log form:
     //  `?<branch>#<curhash>` — query carries the be-branch path

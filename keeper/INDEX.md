@@ -199,6 +199,11 @@ Types: `walk` (walker state), `walk_fn` (visitor callback).
   - `WALKTree`         DFS tree walk over KEEP — eager (blobs resolved), path-aware visitor
   - `WALKTreeLazy`     DFS tree walk over KEEP — lazy (blobs empty, pulled on demand)
   - `WALKu8sModeKind`  classify git tree-entry mode → `WALK_KIND_*`
+  - `KEEPLsFiles`      ls-files on a URI-resolved tree (lazy walk + path prefix)
+  - `KEEPTreeListLeaves`  materialise a tree's leaf entries as `(paths, meta)` —
+                       newline-sep paths in lex order + parallel 21-byte
+                       `{kind, sha[20]}` records.  Feeds `KEEPu8ssDrain` for
+                       N-way tree merges (sniff/GET overlap pre-flight uses it).
   - Commit-graph traversal lives in `graf/`, not here.
 
 ### DELT.h — git delta instruction applier + encoder
