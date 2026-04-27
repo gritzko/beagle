@@ -1031,17 +1031,36 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
         ok64 d = wcli_read_pkt(rfd, buf, adv, line);
         if (d == PKTFLUSH) break;
         if (d == PKTDELIM) continue;
-        if (d != OK) break;
-        if (u8csLen(line) >= 9 && memcmp(line[0], "unpack ok", 9) == 0)
+        if (d != OK) {
+            fprintf(stderr, "wpush: drain read returned %llx\n",
+                    (unsigned long long)d);
+            break;
+        }
+        //  Strip a trailing newline so our own prints stay tidy.
+        u8cs ln = {line[0], line[1]};
+        if (!$empty(ln) && *u8csLast(ln) == '\n') ln[1]--;
+
+        if (u8csLen(ln) >= 9 && memcmp(ln[0], "unpack ok", 9) == 0) {
             unpack_ok = YES;
-        if (u8csLen(line) >= (ssize_t)u8csLen(ok_match) &&
-            memcmp(line[0], ok_match[0],
-                   (size_t)u8csLen(ok_match)) == 0)
+        } else if (u8csLen(ln) >= 7 && memcmp(ln[0], "unpack ", 7) == 0) {
+            //  "unpack <reason>" — remote refused the pack itself.
+            fprintf(stderr, "wpush: remote unpack failed: %.*s\n",
+                    (int)$len(ln) - 7, (char const *)ln[0] + 7);
+        } else if (u8csLen(ln) >= (ssize_t)u8csLen(ok_match) &&
+                   memcmp(ln[0], ok_match[0],
+                          (size_t)u8csLen(ok_match)) == 0) {
             ref_ok = YES;
-        if (u8csLen(line) >= (ssize_t)u8csLen(ng_match) &&
-            memcmp(line[0], ng_match[0],
-                   (size_t)u8csLen(ng_match)) == 0) {
-            //  ng — keep draining but flag failure.
+        } else if (u8csLen(ln) >= (ssize_t)u8csLen(ng_match) &&
+                   memcmp(ln[0], ng_match[0],
+                          (size_t)u8csLen(ng_match)) == 0) {
+            //  "ng <ref> <reason>" — remote refused the ref update.
+            //  Body after "ng " is "<ref> <reason>"; trim "<ref> " for
+            //  the user-facing message.
+            size_t skip = u8csLen(ng_match);
+            if ((ssize_t)skip < $len(ln) && ln[0][skip] == ' ') skip++;
+            fprintf(stderr, "wpush: remote rejected ref update: %.*s\n",
+                    (int)($len(ln) - (ssize_t)skip),
+                    (char const *)ln[0] + skip);
             ref_ok = NO;
         }
     }
