@@ -36,6 +36,13 @@ typedef struct {
     Bu8            target;      // bitmap: target[idx] = 1 iff path idx is
                                 // in the new tree (set during walk, read
                                 // during prune).
+    Bu8            gitlink;     // bitmap: gitlink[idx] = 1 iff path idx is
+                                // a submodule entry (mode 160000) in the
+                                // new tree.  Prune does not descend into
+                                // any path whose ancestor is a gitlink —
+                                // sniff doesn't manage submodule contents,
+                                // so wiping files there would corrupt a
+                                // legitimately checked-out submodule.
     u32            target_cap;
     ok64           error;
     b8             dryrun;      // pre-flight: don't write blobs; instead
@@ -53,6 +60,37 @@ static b8 get_is_target(get_ctx const *g, u32 idx) {
     if (idx >= g->target_cap) return NO;
     u8 const *base = u8bDataHead(g->target);
     return base[idx] != 0;
+}
+
+static void get_mark_gitlink(get_ctx *g, u32 idx) {
+    if (idx >= g->target_cap) return;
+    u8 *base = u8bDataHead(g->gitlink);
+    base[idx] = 1;
+}
+
+static b8 get_is_gitlink(get_ctx const *g, u32 idx) {
+    if (idx >= g->target_cap) return NO;
+    u8 const *base = u8bDataHead(g->gitlink);
+    return base[idx] != 0;
+}
+
+//  YES iff `rel` lives strictly beneath any path the new tree marks
+//  as a gitlink (submodule).  Walks rel left-to-right, interning each
+//  `<prefix-up-to-slash>` and checking the gitlink bitmap.  Used by
+//  prune to leave the submodule's own contents alone.
+static b8 get_under_gitlink(get_ctx const *g, u8cs rel) {
+    u8c const *start = rel[0];
+    u8c const *end   = rel[1];
+    u8c const *cur   = start;
+    while (cur < end) {
+        if (*cur == '/') {
+            u8cs prefix = {start, cur};
+            u32 idx = SNIFFIntern(prefix);
+            if (get_is_gitlink(g, idx)) return YES;
+        }
+        cur++;
+    }
+    return NO;
 }
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
@@ -125,7 +163,16 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     (void)blob;  // lazy mode
     get_ctx *g = (get_ctx *)vctx;
 
-    if (kind == WALK_KIND_SUB) return WALKSKIP;
+    if (kind == WALK_KIND_SUB) {
+        //  Submodule (gitlink, mode 160000).  Mark the path so prune
+        //  treats it as part of the target tree (don't unlink the
+        //  submodule directory itself), and record the gitlink prefix
+        //  so prune doesn't descend into the submodule's own files.
+        u32 idx = SNIFFIntern(path);
+        get_mark_target(g, idx);
+        get_mark_gitlink(g, idx);
+        return WALKSKIP;
+    }
 
     if (kind == WALK_KIND_DIR) {
         if (g->dryrun) return OK;       // pre-flight: skip dir creation
@@ -169,6 +216,12 @@ static ok64 get_prune_cb(void *varg, path8bp path) {
     u8cs rel = {};
     if (!SNIFFRelFromFull(&rel, g->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
+
+    //  Don't descend into a submodule the new tree carries as a
+    //  gitlink.  The submodule's own files (mtimes ≠ sniff stamps in
+    //  the normal case, but stale leaks from a corrupted commit can
+    //  still carry sniff stamps) are not ours to manage.
+    if (get_under_gitlink(g, rel)) return OK;
 
     u32 idx = SNIFFIntern(rel);
     if (get_is_target(g, idx)) return OK;
@@ -337,11 +390,13 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     u8csMv(ctx.reporoot, reporoot);
     SNIFFAtNow(&ctx.ts, &ctx.tv);
 
-    //  Size the target bitmap: SNIFFCount() grows during the walk as
-    //  keeper interns new tree paths, so pad generously.
+    //  Size the target/gitlink bitmaps: SNIFFCount() grows during the
+    //  walk as keeper interns new tree paths, so pad generously.
     ctx.target_cap = SNIFFCount() + (1u << 20);
     call(u8bAllocate, ctx.target, ctx.target_cap);
     memset(u8bDataHead(ctx.target), 0, ctx.target_cap);
+    call(u8bAllocate, ctx.gitlink, ctx.target_cap);
+    memset(u8bDataHead(ctx.gitlink), 0, ctx.target_cap);
 
     //  Pre-flight overlap pass: walk the target tree without writing
     //  any blobs; count files that exist on disk with an unknown
@@ -350,25 +405,25 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     ctx.dryrun = YES;
     o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
-    if (o != OK) { u8bFree(ctx.target); return o; }
+    if (o != OK) { u8bFree(ctx.target); u8bFree(ctx.gitlink); return o; }
     if (ctx.conflicts > 0) {
         fprintf(stderr,
                 "sniff: GET refused — %u dirty file(s) in target "
                 "tree; commit, stash, or reset before checkout\n",
                 ctx.conflicts);
-        u8bFree(ctx.target);
+        u8bFree(ctx.target); u8bFree(ctx.gitlink);
         fail(SNIFFOVRL);
     }
     ctx.dryrun = NO;
 
     o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
-    if (o != OK) { u8bFree(ctx.target); return o; }
+    if (o != OK) { u8bFree(ctx.target); u8bFree(ctx.gitlink); return o; }
 
     //  Prune: any path on disk that was sniff-stamped but isn't in the
     //  new target tree.
     (void)get_prune(&ctx);
-    u8bFree(ctx.target);
+    u8bFree(ctx.target); u8bFree(ctx.gitlink);
 
     //  Compose the `get` row URI via abc/URI.  Canonical at-log form:
     //  `?<branch>#<curhash>` — query carries the be-branch path
