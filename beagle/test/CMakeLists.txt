@@ -32,6 +32,35 @@ add_test(NAME BEhistory
 set_tests_properties(BEhistory PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEhistory")
 
+# --- verbcheck-driven verb matrix --------------------------------------
+# Snapshot-and-diff per-verb tests built on verbcheck.sh.  Each
+# be-<verb>-<case>.sh exercises one cell of the verb × scenario
+# matrix; predicates are uniform (vc_assert_* helpers in verbcheck.sh).
+foreach(vc
+        be-get-dirty-cross
+        be-get-dirty-overlap
+        be-get-clean-switch
+        be-get-create-on-miss
+        be-get-absolute-miss
+        be-get-restore-wiped
+        be-post-ff
+        be-post-empty
+        be-post-nonff
+        be-post-cross-create
+        be-put-path
+        be-delete-path
+        be-delete-branch
+        be-delete-branch-wt-on-it
+        be-delete-branch-descendants
+        be-delete-branch-resurrect
+        be-patch-clean)
+    add_test(NAME ${vc}
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/${vc}.sh
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    set_tests_properties(${vc} PROPERTIES
+        ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=${vc}")
+endforeach()
+
 if (WITH_SSH)
     # roundtrip.sh — full git <-> be flow: seed origin, clone over ssh,
     # make a worktree, edit, commit, push, diff.
