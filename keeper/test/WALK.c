@@ -12,10 +12,12 @@
 
 #include "abc/FILE.h"
 #include "abc/HEX.h"
+#include "abc/LSM.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 #include "dog/DOG.h"
+#include "dog/ULOG.h"
 
 // ---- Test 1: WALKu8sModeKind table-driven ----
 
@@ -338,11 +340,133 @@ ok64 WALKtest3() {
     done;
 }
 
+// ---- Test 4: KEEPTreeULog round-trip via ULOGu8ssDrainHeap ----
+//
+// Same tree shape as WALKtest3.  Verifies:
+//   * KEEPTreeULog emits 3 well-formed ULOG rows in lex-by-path order
+//   * each row carries the right (mode, hex-sha) pair in (?query, #fragment)
+//   * heap-drained back through ULOGu8ssDrainHeap with ULOGu8csZbyUri
+//     yields the same 3 records in the same order
+
+ok64 WALKtest4() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/walktest4-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    a_cstr(root, tmp);
+    home h = {};
+    call(HOMEOpen, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &KEEP, &p);
+    p.strict_order = NO;
+
+    a_cstr(hi_content, "hi\n");
+    sha1 hi_sha = {};
+    u8csc nopath_h = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, hi_content, nopath_h, 0,
+         &hi_sha);
+
+    a_cstr(run_content, "#!/bin/sh\n");
+    sha1 run_sha = {};
+    u8csc nopath_r = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, run_content, nopath_r, 0,
+         &run_sha);
+
+    a_cstr(nested_mn, "100644 nested.txt");
+    a_cstr(nested_content, "deep\n");
+    sha1 sub_sha = {};
+    call(build_leaf_tree, &KEEP, &p, nested_mn, nested_content, &sub_sha);
+
+    sha1 nested_blob_sha = {};
+    u8csc nopath_n = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, nested_content, nopath_n, 0,
+         &nested_blob_sha);
+
+    a_pad(u8, rtb, 512);
+    a_cstr(e1, "100644 hello.txt"); call(u8bFeed, rtb, e1);
+    u8bFeed1(rtb, 0); a_rawc(hi_ss, hi_sha); call(u8bFeed, rtb, hi_ss);
+    a_cstr(e2, "100755 run.sh"); call(u8bFeed, rtb, e2);
+    u8bFeed1(rtb, 0); a_rawc(run_ss, run_sha); call(u8bFeed, rtb, run_ss);
+    a_cstr(e3, "40000 sub"); call(u8bFeed, rtb, e3);
+    u8bFeed1(rtb, 0); a_rawc(sub_ss, sub_sha); call(u8bFeed, rtb, sub_ss);
+
+    a_dup(u8c, rtc, u8bData(rtb));
+    sha1 root_sha = {};
+    u8csc nopath_rt = {NULL,NULL};
+    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, rtc, nopath_rt, 0,
+         &root_sha);
+
+    call(KEEPPackClose, &KEEP, &p);
+
+    Bu8 ulog_buf = {};
+    call(u8bAllocate, ulog_buf, 1UL << 16);
+
+    a_cstr(verb_name_s, "leaf");
+    a_dup(u8c, verb_dup, verb_name_s);
+    ron60 verb = 0;
+    call(RONutf8sDrain, &verb, verb_dup);
+
+    call(KEEPTreeULog, &KEEP, root_sha.data, 0, verb, ulog_buf);
+
+    //  Drain back via the heap with one cursor.
+    a_dup(u8c, view, u8bData(ulog_buf));
+    a_pad(u8cs, ins, 1);
+    u8cssFeed1(ins_idle, view);
+    a_dup(u8cs, cursors, u8csbData(ins));
+    u8cssHeapZ(cursors, ULOGu8csZbyUri);
+
+    char const *expect_path[3] = {"hello.txt", "run.sh", "sub/nested.txt"};
+    char const *expect_mode[3] = {"100644",    "100755", "100644"};
+    sha1 expect_sha[3] = {hi_sha, run_sha, nested_blob_sha};
+
+    for (u32 i = 0; i < 3; i++) {
+        ulogrec g = {};
+        call(ULOGu8ssDrainHeap, cursors, ULOGu8csZbyUri, &g);
+        want(g.verb == verb);
+
+        size_t pl = strlen(expect_path[i]);
+        want((size_t)u8csLen(g.uri.path) == pl);
+        want(memcmp(g.uri.path[0], expect_path[i], pl) == 0);
+
+        want(u8csLen(g.uri.query) == 6);
+        want(memcmp(g.uri.query[0], expect_mode[i], 6) == 0);
+
+        //  Decode the 40-hex fragment back to 20 raw bytes and compare.
+        want(u8csLen(g.uri.fragment) == 40);
+        u8 bin[20] = {};
+        u8s bin_s = {bin, bin + 20};
+        a_dup(u8c, frag, g.uri.fragment);
+        call(HEXu8sDrainSome, bin_s, frag);
+        want(memcmp(bin, expect_sha[i].data, 20) == 0);
+    }
+
+    //  Heap exhausted.
+    {
+        ulogrec g = {};
+        want(ULOGu8ssDrainHeap(cursors, ULOGu8csZbyUri, &g) == ULOGNONE);
+    }
+
+    u8bFree(ulog_buf);
+
+    call(KEEPClose);
+    HOMEClose(&h);
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
+        system(cmd);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(WALKtest1);
     call(WALKtest2);
     call(WALKtest3);
+    call(WALKtest4);
     done;
 }
 

@@ -784,6 +784,109 @@ ok64 SNIFFWtListPathsTest() {
     done;
 }
 
+// --- SNIFFMergeWalk: 3-way grouping by path-key ---------------------
+
+typedef struct {
+    ron60 v_base, v_ours, v_theirs;
+    u32   n;                  // step count
+    u32   sizes[16];
+    char  paths[16][64];
+    u32   base[16], ours[16], theirs[16];
+} merge_ctx;
+
+static ok64 merge_step(ulogreccp recs, u32 n, void *vctx) {
+    merge_ctx *c = (merge_ctx *)vctx;
+    if (c->n >= 16) fail(FAIL);
+    size_t L = u8csLen(recs[0].uri.path);
+    if (L >= sizeof(c->paths[0])) L = sizeof(c->paths[0]) - 1;
+    memcpy(c->paths[c->n], recs[0].uri.path[0], L);
+    c->paths[c->n][L] = 0;
+    c->sizes[c->n] = n;
+    u32 nb = 0, no = 0, nt = 0;
+    for (u32 i = 0; i < n; i++) {
+        ron60 v = recs[i].verb;
+        if      (v == c->v_base)   nb++;
+        else if (v == c->v_ours)   no++;
+        else if (v == c->v_theirs) nt++;
+    }
+    c->base[c->n]   = nb;
+    c->ours[c->n]   = no;
+    c->theirs[c->n] = nt;
+    c->n++;
+    return OK;
+}
+
+static ok64 SNIFFMergeWalkTest(void) {
+    sane(1);
+
+    //  Build three sorted ULOG buffers, one per "side":
+    //    base : a, b, c
+    //    ours : a, b
+    //    theirs : b, c
+    //  Expected steps: a (base, ours), b (base, ours, theirs), c (base, theirs).
+    Bu8 b_base = {}, b_ours = {}, b_theirs = {};
+    call(u8bAllocate, b_base,   1024);
+    call(u8bAllocate, b_ours,   1024);
+    call(u8bAllocate, b_theirs, 1024);
+
+    a_cstr(s_base,   "base");   a_dup(u8c, dup_b, s_base);
+    a_cstr(s_ours,   "ours");   a_dup(u8c, dup_o, s_ours);
+    a_cstr(s_theirs, "theirs"); a_dup(u8c, dup_t, s_theirs);
+    ron60 v_base = 0, v_ours = 0, v_theirs = 0;
+    call(RONutf8sDrain, &v_base,   dup_b);
+    call(RONutf8sDrain, &v_ours,   dup_o);
+    call(RONutf8sDrain, &v_theirs, dup_t);
+
+    //  Helper: feed one row with given (verb, path bytes) — empty mode/sha.
+    #define EMIT(buf, vv, txt)                                          \
+        do {                                                            \
+            a_cstr(_p, txt);                                            \
+            uri _u = {};                                                \
+            _u.path[0] = _p[0]; _u.path[1] = _p[1];                     \
+            ulogrec _r = {.ts = 0, .verb = (vv), .uri = _u};            \
+            call(ULOGu8sFeed, u8bIdle(buf), &_r);                       \
+        } while (0)
+
+    EMIT(b_base,   v_base,   "a.txt");
+    EMIT(b_base,   v_base,   "b.txt");
+    EMIT(b_base,   v_base,   "c.txt");
+    EMIT(b_ours,   v_ours,   "a.txt");
+    EMIT(b_ours,   v_ours,   "b.txt");
+    EMIT(b_theirs, v_theirs, "b.txt");
+    EMIT(b_theirs, v_theirs, "c.txt");
+    #undef EMIT
+
+    a_dup(u8c, view_b, u8bData(b_base));
+    a_dup(u8c, view_o, u8bData(b_ours));
+    a_dup(u8c, view_t, u8bData(b_theirs));
+    a_pad(u8cs, ins, 3);
+    u8cssFeed1(ins_idle, view_b);
+    u8cssFeed1(ins_idle, view_o);
+    u8cssFeed1(ins_idle, view_t);
+    a_dup(u8cs, cursors, u8csbData(ins));
+
+    merge_ctx mctx = {.v_base = v_base, .v_ours = v_ours, .v_theirs = v_theirs};
+    call(SNIFFMergeWalk, cursors, merge_step, &mctx);
+
+    want(mctx.n == 3);
+    want(strcmp(mctx.paths[0], "a.txt") == 0);
+    want(mctx.sizes[0] == 2);
+    want(mctx.base[0] == 1 && mctx.ours[0] == 1 && mctx.theirs[0] == 0);
+
+    want(strcmp(mctx.paths[1], "b.txt") == 0);
+    want(mctx.sizes[1] == 3);
+    want(mctx.base[1] == 1 && mctx.ours[1] == 1 && mctx.theirs[1] == 1);
+
+    want(strcmp(mctx.paths[2], "c.txt") == 0);
+    want(mctx.sizes[2] == 2);
+    want(mctx.base[2] == 1 && mctx.ours[2] == 0 && mctx.theirs[2] == 1);
+
+    u8bFree(b_base);
+    u8bFree(b_ours);
+    u8bFree(b_theirs);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "SNIFFInternPath...\n");
@@ -794,6 +897,8 @@ ok64 maintest() {
     call(SNIFFCheckoutCommit);
     fprintf(stderr, "SNIFFWtListPaths...\n");
     call(SNIFFWtListPathsTest);
+    fprintf(stderr, "SNIFFMergeWalk...\n");
+    call(SNIFFMergeWalkTest);
     fprintf(stderr, "all passed\n");
     done;
 }

@@ -11,6 +11,7 @@
 //  pulls content on demand via `KEEPGetExact`).
 
 #include "abc/INT.h"
+#include "abc/RON.h"
 #include "KEEP.h"
 
 con ok64 WALKFAIL	= 0x80a5543ca495;
@@ -77,5 +78,16 @@ ok64 KEEPLsFiles(keeper *k, uricp target,
 //  Both buffers are reset before writing.  Caller owns them.
 ok64 KEEPTreeListLeaves(keeper *k, u8cp tree_sha,
                         u8bp out_paths, u8bp out_meta);
+
+//  Materialise a tree's leaf entries as ULOG rows for the heap-merge
+//  pipeline: one row per leaf, `<ts>\t<verb>\t<path>?<mode>#<hex-sha>\n`,
+//  sorted by path (DFS == lex order on paths).
+//    ts   — caller-provided (commit ts, or 0 if irrelevant).
+//    verb — caller-provided (e.g. SNIFFAtVerbOf("base"|"ours"|"theirs")).
+//    mode — git octal: 100644 / 100755 / 120000 / 160000 (no DIR rows).
+//    sha  — 40 hex chars (HEXu8sFeed-encoded leaf sha).
+//  `out` is reset before writing.  Caller owns it.
+ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
+                  ron60 ts, ron60 verb, u8bp out);
 
 #endif

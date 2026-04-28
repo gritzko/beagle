@@ -209,7 +209,7 @@ ok64 SNIFFCheckClock(void) {
                 "sniff: clock skew — system clock is before the latest "
                 ".sniff row; refusing every command until clock catches "
                 "up\n");
-        return SNIFFCLOCKBAD;
+        return CLOCKBAD;
     }
     done;
 }
@@ -371,6 +371,88 @@ ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta) {
                              (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                          FILE_SCAN_DEEP),
                              scratch, FILEentryZ, at_list_cb, &c);
+    u8bFree(scratch);
+    if (c.err != OK) return c.err;
+    return so;
+}
+
+// --- SNIFFWtULog: emit wt entries as ULOG rows ----------------------
+
+typedef struct {
+    u8cs  reporoot;
+    u8bp  out;
+    ron60 verb;
+    ok64  err;
+} at_ulog_ctx;
+
+static b8 wt_mode_str(u8 kind, u8cs out) {
+    static u8c const m_reg[6] = "100644";
+    static u8c const m_exe[6] = "100755";
+    static u8c const m_lnk[6] = "120000";
+    u8c const *p = NULL;
+    switch (kind) {
+        case WALK_KIND_REG: p = m_reg; break;
+        case WALK_KIND_EXE: p = m_exe; break;
+        case WALK_KIND_LNK: p = m_lnk; break;
+        default:            return NO;
+    }
+    out[0] = p; out[1] = p + 6;
+    return YES;
+}
+
+static ok64 at_ulog_cb(void *varg, path8bp path) {
+    sane(varg && path);
+    at_ulog_ctx *c = (at_ulog_ctx *)varg;
+
+    a_dup(u8c, full, u8bData(path));
+    u8cs rel = {};
+    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (SNIFFSkipMeta(rel))                         return OK;
+
+    struct stat sb = {};
+    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    u8 kind;
+    if      (S_ISLNK(sb.st_mode))     kind = WALK_KIND_LNK;
+    else if (sb.st_mode & S_IXUSR)    kind = WALK_KIND_EXE;
+    else                              kind = WALK_KIND_REG;
+
+    u8cs mode_s = {};
+    if (!wt_mode_str(kind, mode_s)) return OK;
+
+    //  ts = file mtime as ron60 (round-trips through SNIFFAtKnown).
+    //  fragment is empty: hash on demand only when classification needs it.
+    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
+                           .tv_nsec = sb.st_mtim.tv_nsec};
+    ron60 ts = SNIFFAtOfTimespec(mts);
+
+    uri u = {};
+    u.path[0]  = rel[0];     u.path[1]  = rel[1];
+    u.query[0] = mode_s[0];  u.query[1] = mode_s[1];
+    //  fragment left empty (no sha yet)
+
+    ulogrec rec = {.ts = ts, .verb = c->verb, .uri = u};
+    ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
+    if (o != OK) { c->err = o; return o; }
+    return OK;
+}
+
+ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out) {
+    sane($ok(reporoot) && out);
+    u8bReset(out);
+    at_ulog_ctx c = {.out = out, .verb = verb, .err = OK};
+    u8csMv(c.reporoot, reporoot);
+
+    a_path(wp);
+    u8bFeed(wp, reporoot);
+    call(PATHu8bTerm, wp);
+
+    Bu8 scratch = {};
+    call(u8bAllocate, scratch, 1UL << 20);
+
+    ok64 so = FILEScanSorted(wp,
+                             (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
+                                         FILE_SCAN_DEEP),
+                             scratch, FILEentryZ, at_ulog_cb, &c);
     u8bFree(scratch);
     if (c.err != OK) return c.err;
     return so;

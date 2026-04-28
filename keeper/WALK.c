@@ -5,9 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
+#include "dog/ULOG.h"
 #include "GIT.h"
 
 u8 WALKu8sModeKind(u8cs mode) {
@@ -367,6 +369,80 @@ ok64 KEEPTreeListLeaves(keeper *k, u8cp tree_sha,
     u8bReset(out_meta);
     listleaves_ctx c = {.paths = out_paths, .meta = out_meta, .err = OK};
     ok64 o = WALKTreeLazy(k, tree_sha, listleaves_visit, &c);
+    if (o != OK) return o;
+    return c.err;
+}
+
+// --- KEEPTreeULog: emit leaves as ULOG rows -------------------------
+
+typedef struct {
+    u8bp  out;
+    ron60 ts;
+    ron60 verb;
+    ok64  err;
+} treeulog_ctx;
+
+//  Map WALK_KIND_* to git octal mode bytes.  Fills `out`; returns NO
+//  for kinds that don't have a leaf mode (DIR or unknown).
+static b8 treeulog_mode(u8 kind, u8cs out) {
+    static u8c const m_reg[6] = "100644";
+    static u8c const m_exe[6] = "100755";
+    static u8c const m_lnk[6] = "120000";
+    static u8c const m_sub[6] = "160000";
+    u8c const *p = NULL;
+    switch (kind) {
+        case WALK_KIND_REG: p = m_reg; break;
+        case WALK_KIND_EXE: p = m_exe; break;
+        case WALK_KIND_LNK: p = m_lnk; break;
+        case WALK_KIND_SUB: p = m_sub; break;
+        default:            return NO;
+    }
+    out[0] = p;
+    out[1] = p + 6;
+    return YES;
+}
+
+static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
+                           void0p vctx) {
+    (void)blob;
+    treeulog_ctx *c = (treeulog_ctx *)vctx;
+
+    if (kind == WALK_KIND_DIR) return OK;       // root + subtrees skipped
+    u8cs mode = {};
+    if (!treeulog_mode(kind, mode)) return OK;  // unknown kind, skip
+
+    //  Compose URI components and emit one ULOG row.
+    uri u = {};
+    u.path[0]     = path[0];      u.path[1]     = path[1];
+    u.query[0]    = mode[0];      u.query[1]    = mode[1];
+
+    //  Hex-encode the 20-byte leaf sha into a stack buffer used as the
+    //  fragment slice.  HEXu8sFeed advances the idle slice; capture
+    //  begin/end before/after.
+    a_pad(u8, hex_buf, 40);
+    {
+        u8cs bin = {esha, esha + 20};
+        a_dup(u8c, bin_dup, bin);
+        HEXu8sFeedSome(u8bIdle(hex_buf), bin_dup);
+    }
+    u8cs hex = {u8bDataHead(hex_buf), u8bIdleHead(hex_buf)};
+    u.fragment[0] = hex[0];       u.fragment[1] = hex[1];
+
+    ulogrec rec = {.ts = c->ts, .verb = c->verb, .uri = u};
+    ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
+    if (o != OK) { c->err = o; return WALKSTOP; }
+
+    //  Submodule entries are leaves but not recursable.
+    if (kind == WALK_KIND_SUB) return WALKSKIP;
+    return OK;
+}
+
+ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
+                  ron60 ts, ron60 verb, u8bp out) {
+    sane(k && tree_sha && out);
+    u8bReset(out);
+    treeulog_ctx c = {.out = out, .ts = ts, .verb = verb, .err = OK};
+    ok64 o = WALKTreeLazy(k, tree_sha, treeulog_visit, &c);
     if (o != OK) return o;
     return c.err;
 }

@@ -9,7 +9,9 @@
 
 #include <string.h>
 
+#include "abc/BUF.h"
 #include "abc/FILE.h"
+#include "abc/LSM.h"     // u8cssHeapZ for SNIFFMergeWalk
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "keeper/PATHS.h"
@@ -260,5 +262,61 @@ ok64 SNIFFSort(void) {
     }
     for (u32 i = 0; i < n; i++) u32bFeed1(s->sorted, i);
     qsort(u32bDataHead(s->sorted), n, sizeof(u32), sniff_cmp_idx);
+    done;
+}
+
+// --- N-way ULOG-row merge -------------------------------------------
+
+//  Compare two ulogrec URIs by path-key (same rule as ULOGu8csZbyUri,
+//  applied directly to parsed records — no peek-drain needed since
+//  the records are already in hand).
+static b8 merge_path_eq(ulogreccp a, ulogreccp b) {
+    u8cs ka = {}, kb = {};
+    if (u8csEmpty(a->uri.path)) u8csMv(ka, a->uri.query);
+    else                        u8csMv(ka, a->uri.path);
+    if (u8csEmpty(b->uri.path)) u8csMv(kb, b->uri.query);
+    else                        u8csMv(kb, b->uri.path);
+    if (u8csLen(ka) != u8csLen(kb)) return NO;
+    return memcmp(ka[0], kb[0], u8csLen(ka)) == 0;
+}
+
+ok64 SNIFFMergeWalk(u8css cursors, sniff_step_fn cb, void *ctx) {
+    sane(cursors && cb);
+    if ($empty(cursors)) done;
+
+    //  Heapify in place — cursors[0] becomes the root (smallest URI key).
+    u8cssHeapZ(cursors, ULOGu8csZbyUri);
+
+    ulogrec group[LSM_MAX_INPUTS];
+    u32     n = 0;
+
+    for (;;) {
+        ulogrec next = {};
+        ok64 d = ULOGu8ssDrainHeap(cursors, ULOGu8csZbyUri, &next);
+        if (d == ULOGNONE) break;
+        if (d != OK) return d;
+
+        if (n == 0) {
+            group[0] = next;
+            n = 1;
+            continue;
+        }
+        if (merge_path_eq(&group[0], &next)) {
+            if (n < LSM_MAX_INPUTS) group[n++] = next;
+            continue;
+        }
+        //  Mismatch: fire current group, then seed the next group with
+        //  `next` as its first member.
+        ok64 cr = cb(group, n, ctx);
+        if (cr != OK) return cr;
+        group[0] = next;
+        n = 1;
+    }
+
+    //  Flush trailing group, if any.
+    if (n > 0) {
+        ok64 cr = cb(group, n, ctx);
+        if (cr != OK) return cr;
+    }
     done;
 }

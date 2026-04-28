@@ -21,6 +21,7 @@
 
 #include "abc/BUF.h"
 #include "abc/INT.h"
+#include "abc/LSM.h"   // LSM_MAX_INPUTS for SNIFFMergeWalk's group cap
 #include "abc/PATH.h"
 #include "dog/CLI.h"
 #include "dog/HOME.h"
@@ -35,11 +36,12 @@ con ok64 SNIFFOPRO     = 0x1c5d23cf6196d8;
 con ok64 SNIFFDRTY     = 0x1c5d23cf35b762;
 con ok64 SNIFFOVRL     = 0x1c5d23cf61f6d5;
 con ok64 SNIFFNOFF     = 0x1c5d23cf5d83cf;
-con ok64 SNIFFNOOP     = 0x1c5d23cf5d8619;     // legacy alias, prefer SNIFFPOSTNONE
-con ok64 SNIFFCLOCKBAD = 0x23cf31560c50b28d;
-con ok64 SNIFFPUTNONE  = 0x748f3d979d5d85ce;
-con ok64 SNIFFDELDIRTY = 0x23cf34e54d49b762;
-con ok64 SNIFFPOSTNONE = 0x23cf65871d5d85ce;
+con ok64 SNIFFNOOP     = 0x1c5d23cf5d8619;     // legacy alias, prefer POSTNONE
+con ok64 CLOCKBAD      = 0x31560c50b28d;
+con ok64 PUTNONE       = 0x1979d5d85ce;
+con ok64 DELDIRTY      = 0x34e54d49b762;
+con ok64 POSTNONE      = 0x65871d5d85ce;
+con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 
 #define SNIFF_FILE ".sniff"
 
@@ -106,5 +108,31 @@ b8   SNIFFSkipMeta(u8cs rel);
 //  resolves to the wt root itself.  `full` is the NUL-terminated
 //  absolute path FILEScan delivers (via path8bp → u8bData).
 b8   SNIFFRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
+
+// --- N-way ULOG-row merge -------------------------------------------
+//
+//  Heap-walk a set of ULOG-shaped path/mode/sha streams, fan into a
+//  per-path-key step callback.  Each input cursor is a `u8cs` view
+//  over a sorted ULOG row buffer (one row per leaf,
+//  `<ts>\t<verb>\t<path>?<mode>#<sha>\n`, produced by `KEEPTreeULog`,
+//  `SNIFFWtULog`, or sliced from the `.sniff` log).  Inputs are
+//  distinguished by their row verb — callers normally emit each
+//  source with its own verb (`base`, `ours`, `theirs`, `wt`, `put`,
+//  …) so the step callback can dispatch per record.
+//
+//  Capacity: $len(cursors) ≤ LSM_MAX_INPUTS (64).  Tie groups are
+//  bounded by the same — one row per cursor per step.
+
+//  Step callback.  `recs[0..n)` are all the records whose paths are
+//  equal under `ULOGu8csZbyUri` for this step.  Order within the
+//  group is heap-pop order (not the input-array order).  Caller
+//  dispatches on `recs[i].verb` to identify each contributor.
+//  A non-OK return aborts the walk.
+typedef ok64 (*sniff_step_fn)(ulogreccp recs, u32 n, void *ctx);
+
+//  Drain `cursors` to exhaustion, calling `cb` once per distinct
+//  path-key.  `cursors` must have capacity for in-place heap ops
+//  (the function calls `u8cssHeapZ` and mutates the array).
+ok64 SNIFFMergeWalk(u8css cursors, sniff_step_fn cb, void *ctx);
 
 #endif

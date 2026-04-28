@@ -4,7 +4,7 @@
 //  delete happened, and the next POST drops the path from the new
 //  tree.
 //
-//  Dirty-safety: refuse SNIFFDELDIRTY if `mtime ∉ stamp-set`
+//  Dirty-safety: refuse DELDIRTY if `mtime ∉ stamp-set`
 //  (file was user-edited since any owning row).  v1 doesn't run
 //  the content-equality fallback the spec calls for on mtime drift
 //  — TODO once we expose a baseline-tree path → sha lookup.
@@ -36,7 +36,7 @@
 // --- Dir-form recursive delete --------------------------------------
 
 //  Two-pass walker:
-//   * pass 1 (preflight)  — refuse SNIFFDELDIRTY on the first
+//   * pass 1 (preflight)  — refuse DELDIRTY on the first
 //                           descendant whose mtime ∉ stamp-set.
 //   * pass 2 (apply)      — unlink each descendant.
 //  Both passes use the same callback driven by a `mode` flag.
@@ -71,7 +71,7 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
                     "stage with `be put` or revert before deleting\n",
                     (int)$len(rel), (char *)rel[0]);
             c->dirty++;
-            return SNIFFDELDIRTY;     // short-circuit FILEScan
+            return DELDIRTY;     // short-circuit FILEScan
         }
         return OK;
     }
@@ -105,7 +105,7 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
                        (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                    FILE_SCAN_DEEP),
                        del_dir_cb, &ctx);
-    if (ctx.dirty > 0) return SNIFFDELDIRTY;
+    if (ctx.dirty > 0) return DELDIRTY;
     if (pf != OK) return pf;
 
     //  Apply: unlink every descendant.  Empty dirs are not removed —
@@ -147,7 +147,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         if (u8csEmpty(raw)) continue;
 
         //  Trailing-slash dir form: atomic recursive delete.  Refuses
-        //  SNIFFDELDIRTY on the first dirty descendant; otherwise
+        //  DELDIRTY on the first dirty descendant; otherwise
         //  unlinks every file under the prefix and appends one
         //  `delete <dir>/` row.  POST drops the whole subtree from
         //  the new commit's tree.
@@ -185,7 +185,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
                         "sniff: delete: %.*s has unstamped changes — "
                         "stage with `be put` or revert before deleting\n",
                         (int)$len(raw), (char *)raw[0]);
-                return SNIFFDELDIRTY;
+                return DELDIRTY;
             }
 
             if (unlink((char const *)u8bDataHead(fp)) != 0) {

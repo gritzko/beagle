@@ -6,12 +6,12 @@
 //  emits a row+stamp for each tracked file whose mtime ∉ stamp-set.
 //  Untracked paths are NEVER staged by the bare form — the user
 //  names them explicitly with `be put <path>`.  Empty walk →
-//  SNIFFPUTNONE.
+//  PUTNONE.
 //
 //  Per-uri `be put <path>` validates each path:
-//    * missing on disk        → SNIFFPUTNONE (caller can't stage what
+//    * missing on disk        → PUTNONE (caller can't stage what
 //                                isn't there)
-//    * mtime ∈ get/post stamp → SNIFFPUTNONE (already baseline-clean;
+//    * mtime ∈ get/post stamp → PUTNONE (already baseline-clean;
 //                                re-stamping under `put` would shift
 //                                provenance for no semantic gain)
 //    * otherwise              → append row, stamp file
@@ -197,7 +197,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             fprintf(stderr,
                     "sniff: put: no baseline (fresh repo); name "
                     "files explicitly\n");
-            return SNIFFPUTNONE;
+            return PUTNONE;
         }
         if (bo != OK) return bo;
 
@@ -217,7 +217,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         if (wo != OK) return wo;
         if (wc.emitted == 0) {
             fprintf(stderr, "sniff: put: no changes\n");
-            return SNIFFPUTNONE;
+            return PUTNONE;
         }
         fprintf(stderr, "sniff: staged %u put row(s)\n", wc.emitted);
         done;
@@ -233,14 +233,14 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         if (SNIFFFullpath(fp, reporoot, raw) != OK) {
             fprintf(stderr, "sniff: put: cannot resolve %.*s\n",
                     (int)$len(raw), (char *)raw[0]);
-            return SNIFFPUTNONE;
+            return PUTNONE;
         }
 
         struct stat sb = {};
         if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
             fprintf(stderr, "sniff: put: %.*s does not exist\n",
                     (int)$len(raw), (char *)raw[0]);
-            return SNIFFPUTNONE;
+            return PUTNONE;
         }
 
         //  Refuse PUTNONE for a file that is already baseline-clean
@@ -257,7 +257,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 (ow_verb == verb_get || ow_verb == verb_post)) {
                 fprintf(stderr, "sniff: put: %.*s is unchanged\n",
                         (int)$len(raw), (char *)raw[0]);
-                return SNIFFPUTNONE;
+                return PUTNONE;
             }
         }
 
