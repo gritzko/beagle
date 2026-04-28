@@ -83,33 +83,34 @@ static ok64 T_roundtrip(void) {
     rm_tmp("/tmp/ulog-rt.log");
     LOGPATH(path, "/tmp/ulog-rt.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
-    want(ULOGCount(&l) == 0);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
+    want(ULOGCount(l_idx) == 0);
 
     saved_uri s1 = {}, s2 = {}, s3 = {};
     call(parse_uri_lit, &s1, "//localhost/repo?heads/master");
     call(parse_uri_lit, &s2, "//localhost/repo?staging/abcd1234");
     call(parse_uri_lit, &s3, "?heads/main");
 
-    call(ULOGAppendAt, &l, 1000, verb_of("get"),
+    call(ULOGAppendAt, l_data, l_idx, 1000, verb_of("get"),
          saved_uri_for_append(&s1));
-    call(ULOGAppendAt, &l, 1001, verb_of("put"),
+    call(ULOGAppendAt, l_data, l_idx, 1001, verb_of("put"),
          saved_uri_for_append(&s2));
-    call(ULOGAppendAt, &l, 1002, verb_of("post"),
+    call(ULOGAppendAt, l_data, l_idx, 1002, verb_of("post"),
          saved_uri_for_append(&s3));
-    want(ULOGCount(&l) == 3);
+    want(ULOGCount(l_idx) == 3);
 
     ron60 ts = 0, verb = 0;
     uri got = {};
-    call(ULOGHead, &l, &ts, &verb, &got);
+    call(ULOGHead, l_data, l_idx, &ts, &verb, &got);
     want(verb == verb_of("get"));
     want(uri_serializes_to(&got, "//localhost/repo?heads/master"));
-    call(ULOGTail, &l, &ts, &verb, &got);
+    call(ULOGTail, l_data, l_idx, &ts, &verb, &got);
     want(verb == verb_of("post"));
     want(uri_serializes_to(&got, "?heads/main"));
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     done;
 }
 
@@ -117,17 +118,18 @@ static ok64 T_persist(void) {
     sane(1);
     LOGPATH(path, "/tmp/ulog-rt.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
-    want(ULOGCount(&l) == 3);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
+    want(ULOGCount(l_idx) == 3);
 
     ron60 ts = 0, verb = 0;
     uri got = {};
-    call(ULOGRow, &l, 1, &ts, &verb, &got);
+    call(ULOGRow, l_data, l_idx, 1, &ts, &verb, &got);
     want(verb == verb_of("put"));
     want(uri_serializes_to(&got, "//localhost/repo?staging/abcd1234"));
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-rt.log");
     done;
 }
@@ -137,30 +139,31 @@ static ok64 T_seek(void) {
     rm_tmp("/tmp/ulog-sk.log");
     LOGPATH(path, "/tmp/ulog-sk.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     ron60 stamps[] = {100, 200, 300, 400};
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
     for (u32 i = 0; i < 4; i++)
-        call(ULOGAppendAt, &l, stamps[i], verb_of("get"),
+        call(ULOGAppendAt, l_data, l_idx, stamps[i], verb_of("get"),
              saved_uri_for_append(&s));
-    want(ULOGCount(&l) == 4);
+    want(ULOGCount(l_idx) == 4);
 
     u32 i = 99;
-    call(ULOGSeek, &l, 250, &i);    want(i == 2);
-    call(ULOGSeek, &l, 200, &i);    want(i == 1);
-    call(ULOGSeek, &l, 500, &i);    want(i == 4);
-    call(ULOGSeek, &l, 50,  &i);    want(i == 0);
+    call(ULOGSeek, l_idx, 250, &i);    want(i == 2);
+    call(ULOGSeek, l_idx, 200, &i);    want(i == 1);
+    call(ULOGSeek, l_idx, 500, &i);    want(i == 4);
+    call(ULOGSeek, l_idx, 50,  &i);    want(i == 0);
 
-    call(ULOGFind, &l, 300, &i);    want(i == 2);
-    want(ULOGHas(&l, 100) == YES);
-    want(ULOGHas(&l, 250) == NO);
-    want(ULOGHas(&l, 400) == YES);
-    want(ULOGFind(&l, 250, &i) == ULOGNONE);
+    call(ULOGFind, l_idx, 300, &i);    want(i == 2);
+    want(ULOGHas(l_idx, 100) == YES);
+    want(ULOGHas(l_idx, 250) == NO);
+    want(ULOGHas(l_idx, 400) == YES);
+    want(ULOGFind(l_idx, 250, &i) == ULOGNONE);
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-sk.log");
     done;
 }
@@ -170,23 +173,24 @@ static ok64 T_clock(void) {
     rm_tmp("/tmp/ulog-ck.log");
     LOGPATH(path, "/tmp/ulog-ck.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
-    call(ULOGAppendAt, &l, 1000, verb_of("get"),
+    call(ULOGAppendAt, l_data, l_idx, 1000, verb_of("get"),
          saved_uri_for_append(&s));
 
-    want(ULOGAppendAt(&l, 1000, verb_of("get"),
+    want(ULOGAppendAt(l_data, l_idx, 1000, verb_of("get"),
                       saved_uri_for_append(&s)) == ULOGCLOCK);
-    want(ULOGAppendAt(&l,  999, verb_of("get"),
+    want(ULOGAppendAt(l_data, l_idx,  999, verb_of("get"),
                       saved_uri_for_append(&s)) == ULOGCLOCK);
-    call(ULOGAppendAt, &l, 1001, verb_of("get"),
+    call(ULOGAppendAt, l_data, l_idx, 1001, verb_of("get"),
          saved_uri_for_append(&s));
-    want(ULOGCount(&l) == 2);
+    want(ULOGCount(l_idx) == 2);
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-ck.log");
     done;
 }
@@ -196,8 +200,9 @@ static ok64 T_findverb(void) {
     rm_tmp("/tmp/ulog-fv.log");
     LOGPATH(path, "/tmp/ulog-fv.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     saved_uri s1 = {}, s2 = {}, s3 = {}, s4 = {};
     call(parse_uri_lit, &s1, "?heads/master");
@@ -205,24 +210,24 @@ static ok64 T_findverb(void) {
     call(parse_uri_lit, &s3, "?heads/main");
     call(parse_uri_lit, &s4, "?staging/cafef00d");
 
-    call(ULOGAppendAt, &l, 10, verb_of("get"),  saved_uri_for_append(&s1));
-    call(ULOGAppendAt, &l, 20, verb_of("put"),  saved_uri_for_append(&s2));
-    call(ULOGAppendAt, &l, 30, verb_of("post"), saved_uri_for_append(&s3));
-    call(ULOGAppendAt, &l, 40, verb_of("put"),  saved_uri_for_append(&s4));
+    call(ULOGAppendAt, l_data, l_idx, 10, verb_of("get"),  saved_uri_for_append(&s1));
+    call(ULOGAppendAt, l_data, l_idx, 20, verb_of("put"),  saved_uri_for_append(&s2));
+    call(ULOGAppendAt, l_data, l_idx, 30, verb_of("post"), saved_uri_for_append(&s3));
+    call(ULOGAppendAt, l_data, l_idx, 40, verb_of("put"),  saved_uri_for_append(&s4));
 
     ron60 ts = 0;
     uri got = {};
-    call(ULOGFindVerb, &l, verb_of("put"), &ts, &got);
+    call(ULOGFindVerb, l_data, l_idx, verb_of("put"), &ts, &got);
     want(ts == 40);
     want(uri_serializes_to(&got, "?staging/cafef00d"));
 
-    call(ULOGFindVerb, &l, verb_of("post"), &ts, &got);
+    call(ULOGFindVerb, l_data, l_idx, verb_of("post"), &ts, &got);
     want(ts == 30);
     want(uri_serializes_to(&got, "?heads/main"));
 
-    want(ULOGFindVerb(&l, verb_of("patch"), &ts, &got) == ULOGNONE);
+    want(ULOGFindVerb(l_data, l_idx, verb_of("patch"), &ts, &got) == ULOGNONE);
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-fv.log");
     done;
 }
@@ -232,36 +237,38 @@ static ok64 T_truncate(void) {
     rm_tmp("/tmp/ulog-tr.log");
     LOGPATH(path, "/tmp/ulog-tr.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
     for (u32 i = 0; i < 5; i++)
-        call(ULOGAppendAt, &l, (ron60)(100 + i), verb_of("get"),
+        call(ULOGAppendAt, l_data, l_idx, (ron60)(100 + i), verb_of("get"),
              saved_uri_for_append(&s));
-    want(ULOGCount(&l) == 5);
+    want(ULOGCount(l_idx) == 5);
 
-    call(ULOGTruncate, &l, 3);
-    want(ULOGCount(&l) == 3);
+    call(ULOGTruncate, l_data, l_idx, 3);
+    want(ULOGCount(l_idx) == 3);
 
     ron60 ts = 0, verb = 0;
     uri got = {};
-    call(ULOGTail, &l, &ts, &verb, &got);
+    call(ULOGTail, l_data, l_idx, &ts, &verb, &got);
     want(ts == 102);
 
-    call(ULOGAppendAt, &l, 200, verb_of("get"),
+    call(ULOGAppendAt, l_data, l_idx, 200, verb_of("get"),
          saved_uri_for_append(&s));
-    want(ULOGCount(&l) == 4);
+    want(ULOGCount(l_idx) == 4);
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
 
-    ulog l2 = {};
-    call(ULOGOpen, &l2, path);
-    want(ULOGCount(&l2) == 4);
-    call(ULOGTail, &l2, &ts, &verb, &got);
+    u8bp  l2_data = NULL;
+    Bkv64 l2_idx  = {};
+    call(ULOGOpen, &l2_data, l2_idx, path);
+    want(ULOGCount(l2_idx) == 4);
+    call(ULOGTail, l2_data, l2_idx, &ts, &verb, &got);
     want(ts == 200);
-    call(ULOGClose, &l2);
+    call(ULOGClose, l2_data, l2_idx, YES);
     rm_tmp("/tmp/ulog-tr.log");
     done;
 }
@@ -362,8 +369,9 @@ static ok64 T_each_latest(void) {
     rm_tmp("/tmp/ulog-el.log");
     LOGPATH(path, "/tmp/ulog-el.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     //  Two keys, three revisions: main@1, feat@2, main@3, main@4, feat@5.
     //  Plus one `get` row to verify verb filter (`set` only).
@@ -376,17 +384,17 @@ static ok64 T_each_latest(void) {
     call(parse_uri_lit, &g6, "?heads/main#?6666");
 
     ron60 set_v = verb_of("set"), get_v = verb_of("get");
-    call(ULOGAppendAt, &l, 1, set_v, saved_uri_for_append(&m1));
-    call(ULOGAppendAt, &l, 2, set_v, saved_uri_for_append(&f2));
-    call(ULOGAppendAt, &l, 3, set_v, saved_uri_for_append(&m3));
-    call(ULOGAppendAt, &l, 4, set_v, saved_uri_for_append(&m4));
-    call(ULOGAppendAt, &l, 5, set_v, saved_uri_for_append(&f5));
-    call(ULOGAppendAt, &l, 6, get_v, saved_uri_for_append(&g6));
+    call(ULOGAppendAt, l_data, l_idx, 1, set_v, saved_uri_for_append(&m1));
+    call(ULOGAppendAt, l_data, l_idx, 2, set_v, saved_uri_for_append(&f2));
+    call(ULOGAppendAt, l_data, l_idx, 3, set_v, saved_uri_for_append(&m3));
+    call(ULOGAppendAt, l_data, l_idx, 4, set_v, saved_uri_for_append(&m4));
+    call(ULOGAppendAt, l_data, l_idx, 5, set_v, saved_uri_for_append(&f5));
+    call(ULOGAppendAt, l_data, l_idx, 6, get_v, saved_uri_for_append(&g6));
 
     //  Filter = `set`: expect (feat@5) then (main@4) — reverse order,
     //  one row per key, get_v row skipped entirely.
     each_collect c = {};
-    call(ULOGeachLatest, &l, set_v, each_cb, &c);
+    call(ULOGeachLatest, l_data, l_idx, set_v, each_cb, &c);
     want(c.n == 2);
     want(c.ts[0] == 5);
     want(strcmp(c.uri[0], "?heads/feat#?bbbb") == 0);
@@ -396,7 +404,7 @@ static ok64 T_each_latest(void) {
     //  No filter: the `get` row appears too — still its own (verb, key)
     //  so it dedups independently of set's rows.
     each_collect c_all = {};
-    call(ULOGeachLatest, &l, 0, each_cb, &c_all);
+    call(ULOGeachLatest, l_data, l_idx, 0, each_cb, &c_all);
     want(c_all.n == 3);        // get/main@6, set/feat@5, set/main@4
     want(c_all.verb[0] == get_v);
     want(c_all.ts[0] == 6);
@@ -405,7 +413,7 @@ static ok64 T_each_latest(void) {
     want(c_all.verb[2] == set_v);
     want(c_all.ts[2] == 4);
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-el.log");
     done;
 }
@@ -415,8 +423,9 @@ static ok64 T_compact_latest(void) {
     rm_tmp("/tmp/ulog-cl.log");
     LOGPATH(path, "/tmp/ulog-cl.log");
 
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpen, &l_data, l_idx, path);
 
     saved_uri s[5] = {};
     call(parse_uri_lit, &s[0], "?heads/main#?1111");
@@ -427,23 +436,23 @@ static ok64 T_compact_latest(void) {
 
     ron60 set_v = verb_of("set");
     for (u32 i = 0; i < 5; i++)
-        call(ULOGAppendAt, &l, 10 + i, set_v, saved_uri_for_append(&s[i]));
-    want(ULOGCount(&l) == 5);
+        call(ULOGAppendAt, l_data, l_idx, 10 + i, set_v, saved_uri_for_append(&s[i]));
+    want(ULOGCount(l_idx) == 5);
 
-    call(ULOGCompactLatest, &l, path, set_v);
-    want(ULOGCount(&l) == 2);
+    call(ULOGCompactLatest, &l_data, l_idx, path, set_v);
+    want(ULOGCount(l_idx) == 2);
 
     //  Survivors in ts order: main@12, feat@14.
     ron60 ts = 0, v = 0;
     uri u = {};
-    call(ULOGRow, &l, 0, &ts, &v, &u);
+    call(ULOGRow, l_data, l_idx, 0, &ts, &v, &u);
     want(ts == 12);
     want(uri_serializes_to(&u, "?heads/main#?2222"));
-    call(ULOGRow, &l, 1, &ts, &v, &u);
+    call(ULOGRow, l_data, l_idx, 1, &ts, &v, &u);
     want(ts == 14);
     want(uri_serializes_to(&u, "?heads/feat#?cccc"));
 
-    call(ULOGClose, &l);
+    call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-cl.log");
     rm_tmp("/tmp/ulog-cl.log.tmp");
     done;

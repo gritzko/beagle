@@ -19,7 +19,7 @@
 static ok64 at_check_row0(ron60 verb) {
     sane(SNIFF.h);
     ron60 vrepo = SNIFFAtVerbRepo();
-    u32 n = ULOGCount(&SNIFF.log);
+    u32 n = ULOGCount(SNIFF.log_idx);
     if (n == 0 && verb != vrepo) fail(SNIFFFAIL);
     if (n > 0 && verb == vrepo)  fail(SNIFFFAIL);
     done;
@@ -28,18 +28,18 @@ static ok64 at_check_row0(ron60 verb) {
 ok64 SNIFFAtAppend(ron60 verb, uricp u) {
     sane(SNIFF.h && u);
     call(at_check_row0, verb);
-    return ULOGAppend(&SNIFF.log, verb, u);
+    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, verb, u);
 }
 
 ok64 SNIFFAtAppendAt(ron60 ts, ron60 verb, uricp u) {
     sane(SNIFF.h && u);
     call(at_check_row0, verb);
-    return ULOGAppendAt(&SNIFF.log, ts, verb, u);
+    return ULOGAppendAt(SNIFF.log_data, SNIFF.log_idx, ts, verb, u);
 }
 
 b8 SNIFFAtKnown(ron60 mtime) {
     if (!SNIFF.h) return NO;
-    return ULOGHas(&SNIFF.log, mtime);
+    return ULOGHas(SNIFF.log_idx, mtime);
 }
 
 void SNIFFAtPathBytes(uri const *u, u8cs out) {
@@ -93,9 +93,9 @@ ron60 SNIFFAtVerbMod(void) {
 
 ok64 SNIFFAtRepo(urip u_out) {
     sane(SNIFF.h && u_out);
-    if (ULOGCount(&SNIFF.log) == 0) return ULOGNONE;
+    if (ULOGCount(SNIFF.log_idx) == 0) return ULOGNONE;
     ron60 ts = 0, verb = 0;
-    call(ULOGRow, &SNIFF.log, 0, &ts, &verb, u_out);
+    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &ts, &verb, u_out);
     if (verb != SNIFFAtVerbRepo()) fail(SNIFFFAIL);
     done;
 }
@@ -107,11 +107,12 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
-    u32 n = ULOGCount(&SNIFF.log);
+    u32 n = ULOGCount(SNIFF.log_idx);
     for (u32 i = n; i > 0; i--) {
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(&SNIFF.log, i - 1, &ts, &verb, &u);
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx,
+                         i - 1, &ts, &verb, &u);
         if (o != OK) return o;
         if (verb == vg || verb == vp || verb == vx) {
             *ts_out = ts;
@@ -128,11 +129,16 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
 ron60 SNIFFAtLastPostTs(void) {
     if (!SNIFF.h) return 0;
     ron60 vp = SNIFFAtVerbPost();
-    ron60 ts = 0;
-    uri u = {};
-    ok64 o = ULOGFindVerb(&SNIFF.log, vp, &ts, &u);
-    if (o != OK) return 0;
-    return ts;
+    u32 n = ULOGCount(SNIFF.log_idx);
+    for (u32 i = n; i > 0; ) {
+        i--;
+        ron60 ts = 0, verb = 0;
+        uri u = {};
+        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx,
+                    i, &ts, &verb, &u) != OK) return 0;
+        if (verb == vp) return ts;
+    }
+    return 0;
 }
 
 // --- Put/delete forward scan since floor ---
@@ -174,7 +180,8 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
     if (SNIFF.h) {
         ron60 tail_ts = 0, tail_verb = 0;
         uri tu = {};
-        if (ULOGTail(&SNIFF.log, &tail_ts, &tail_verb, &tu) == OK) {
+        if (ULOGTail(SNIFF.log_data, SNIFF.log_idx,
+                     &tail_ts, &tail_verb, &tu) == OK) {
             if (now <= tail_ts) now = tail_ts + 1;
         }
     }
@@ -185,11 +192,11 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
 ok64 SNIFFAtRowAtTs(ron60 mtime, ron60 *verb_out, urip u_out) {
     sane(SNIFF.h && verb_out && u_out);
     u32 i = 0;
-    ok64 fo = ULOGFind(&SNIFF.log, mtime, &i);
+    ok64 fo = ULOGFind(SNIFF.log_idx, mtime, &i);
     if (fo != OK) return fo;
     ron60 ts = 0, verb = 0;
     uri u = {};
-    call(ULOGRow, &SNIFF.log, i, &ts, &verb, &u);
+    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &ts, &verb, &u);
     *verb_out = verb;
     *u_out = u;
     done;
@@ -200,7 +207,8 @@ ok64 SNIFFCheckClock(void) {
     if (!SNIFF.h) done;                       // no log yet, nothing to compare
     ron60 tail_ts = 0, tail_verb = 0;
     uri tu = {};
-    if (ULOGTail(&SNIFF.log, &tail_ts, &tail_verb, &tu) != OK) done;
+    if (ULOGTail(SNIFF.log_data, SNIFF.log_idx,
+                 &tail_ts, &tail_verb, &tu) != OK) done;
     ron60 now = RONNow();
     if (now < tail_ts) {
         fprintf(stderr,
@@ -224,15 +232,16 @@ ok64 SNIFFAtStampPath(path8b path, ron60 ts) {
 ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
     sane(SNIFF.h && cb);
     u32 start = 0;
-    ok64 s = ULOGSeek(&SNIFF.log, floor, &start);
+    ok64 s = ULOGSeek(SNIFF.log_idx, floor, &start);
     if (s != OK && s != ULOGNONE) return s;
-    u32 n = ULOGCount(&SNIFF.log);
+    u32 n = ULOGCount(SNIFF.log_idx);
     ron60 vput = SNIFFAtVerbPut();
     ron60 vdel = SNIFFAtVerbDelete();
     for (u32 i = start; i < n; i++) {
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(&SNIFF.log, i, &ts, &verb, &u);
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx,
+                         i, &ts, &verb, &u);
         if (o != OK) return o;
         if (ts <= floor) continue;
         if (verb != vput && verb != vdel) continue;

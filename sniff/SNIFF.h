@@ -46,10 +46,12 @@ con ok64 SNIFFPOSTNONE = 0x23cf65871d5d85ce;
 // --- State ---
 
 typedef struct {
-    home   *h;       // borrowed
-    ulog    log;     // <wt>/.sniff (persistent URI log)
-    Bu32    sorted;  // per-process path-index sort (rebuilt each call)
-    igno    ignores; // wt-root .gitignore, loaded once at SNIFFOpen
+    home   *h;        // borrowed
+    u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.sniff
+    Bkv64   log_idx;  // ts → byte-offset index over log_data
+    b8      log_rw;   // YES iff log was opened RW (Close must trim)
+    Bu32    sorted;   // per-process path-index sort (rebuilt each call)
+    igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;
 
 extern sniff SNIFF;

@@ -122,21 +122,21 @@ ok64 ULOGu8sDrain(u8cs scan,
 // --- helpers ---------------------------------------------------------
 
 //  Scan the mmap'd text, populate the kv64 index, enforce strict
-//  monotonicity.  Uses ULOGu8sDrain so the on-disk and streaming
-//  paths share a single grammar.
-static ok64 ulog_rebuild_idx(ulog *l) {
-    sane(l);
+//  monotonicity.  `idx` may be NULL (skip the build).
+static ok64 ulog_rebuild_idx(u8bp data, kv64bp idx) {
+    sane(data);
     //  FILEBook places the whole mmap'd file content in the IDLE
     //  region (past = data = idle = map, end = map + page-aligned
     //  size).  We scan [past, end) forward, indexing each row, and
     //  then position IDLE's head past the last complete row so
     //  subsequent appends land on the right offset.  Tail zero-fill
     //  from page alignment terminates the scan at the first NUL.
-    u8 *base = (u8 *)l->data[0];
-    u8 *end  = (u8 *)l->data[3];
+    u8 *base = (u8 *)data[0];
+    u8 *end  = (u8 *)data[3];
     u8cs scan = {base, end};
     u8 *last_nl_plus_one = base;
     ron60 prev = 0;
+    b8 have_idx = (idx != NULL);
     while (scan[0] < scan[1]) {
         if (*scan[0] == 0) break;                             // zero-pad tail
         if (*scan[0] == '\n') {
@@ -150,24 +150,26 @@ static ok64 ulog_rebuild_idx(ulog *l) {
         if (o == NODATA) break;
         if (o != OK) return o;
 
-        if (kv64bDataLen(l->idx) > 0 && ts <= prev) fail(ULOGCLOCK);
-        kv64 ent = {.key = ts, .val = off};
-        call(kv64bPush, l->idx, &ent);
+        if (have_idx && kv64bDataLen(idx) > 0 && ts <= prev) fail(ULOGCLOCK);
+        if (have_idx) {
+            kv64 ent = {.key = ts, .val = off};
+            call(kv64bPush, idx, &ent);
+        }
         prev = ts;
         last_nl_plus_one = (u8 *)scan[0];
     }
 
-    u8 **data_head = (u8 **)&l->data[1];
-    u8 **idle_head = (u8 **)&l->data[2];
+    u8 **data_head = (u8 **)&data[1];
+    u8 **idle_head = (u8 **)&data[2];
     *data_head = base;
     *idle_head = last_nl_plus_one;
     done;
 }
 
 //  Lower-bound on the kv64 index by timestamp key.
-static u32 ulog_lower_bound(ulogcp l, ron60 ts) {
-    kv64 const *a = (kv64 const *)l->idx[0];
-    u32 n = (u32)kv64bDataLen(l->idx);
+static u32 ulog_lower_bound(kv64b idx, ron60 ts) {
+    kv64 const *a = (kv64 const *)idx[0];
+    u32 n = (u32)kv64bDataLen(idx);
     u32 lo = 0, hi = n;
     while (lo < hi) {
         u32 mid = lo + (hi - lo) / 2;
@@ -179,160 +181,134 @@ static u32 ulog_lower_bound(ulogcp l, ron60 ts) {
 
 // --- public API ------------------------------------------------------
 
-ok64 ULOGOpenBooked(ulogp l, path8s path, size_t book_size, size_t init_size) {
-    sane(l && $ok(path));
-    memset(l, 0, sizeof(*l));
+ok64 ULOGOpenBooked(u8bp *data, kv64bp idx, path8s path,
+                    size_t book_size, size_t init_size) {
+    sane(data && $ok(path));
 
-    ok64 o = FILEBook(&l->data, path, book_size);
+    ok64 o = FILEBook(data, path, book_size);
     if (o != OK) {
-        call(FILEBookCreate, &l->data, path, book_size, init_size);
+        call(FILEBookCreate, data, path, book_size, init_size);
     }
-    l->rw = YES;        // FILEBook page-aligned; Close must trim.
 
-    call(kv64bAllocate, l->idx, 1024);
+    if (idx) call(kv64bAllocate, idx, 1024);
 
-    ok64 so = ulog_rebuild_idx(l);
+    ok64 so = ulog_rebuild_idx(*data, idx);
     if (so != OK) {
-        kv64bFree(l->idx);
-        if (l->data) FILEUnBook(l->data);
-        memset(l, 0, sizeof(*l));
+        if (idx && idx[0]) kv64bFree(idx);
+        if (*data && (*data)[0]) FILEUnBook(*data);
         return so;
     }
     done;
 }
 
-ok64 ULOGOpen(ulogp l, path8s path) {
-    return ULOGOpenBooked(l, path, ULOG_BOOK_DEFAULT, ULOG_INIT_DEFAULT);
+ok64 ULOGOpen(u8bp *data, kv64bp idx, path8s path) {
+    return ULOGOpenBooked(data, idx, path,
+                          ULOG_BOOK_DEFAULT, ULOG_INIT_DEFAULT);
 }
 
-ok64 ULOGOpenRO(ulogp l, path8s path) {
-    sane(l && $ok(path));
-    memset(l, 0, sizeof(*l));
+ok64 ULOGOpenRO(u8bp *data, kv64bp idx, path8s path) {
+    sane(data && $ok(path));
 
     //  RO map only — fails if file is missing (no implicit create).
-    call(FILEBookRO, &l->data, path, ULOG_BOOK_DEFAULT);
+    call(FILEBookRO, data, path, ULOG_BOOK_DEFAULT);
 
-    call(kv64bAllocate, l->idx, 1024);
+    if (idx) call(kv64bAllocate, idx, 1024);
 
-    ok64 so = ulog_rebuild_idx(l);
+    ok64 so = ulog_rebuild_idx(*data, idx);
     if (so != OK) {
-        kv64bFree(l->idx);
-        if (l->data) FILEUnBook(l->data);
-        memset(l, 0, sizeof(*l));
+        if (idx && idx[0]) kv64bFree(idx);
+        if (*data && (*data)[0]) FILEUnBook(*data);
         return so;
     }
     done;
 }
 
-ok64 ULOGClose(ulogp l) {
-    sane(l);
-    if (l->data) {
+ok64 ULOGClose(u8bp data, kv64bp idx, b8 rw) {
+    sane(data);
+    if (data[0]) {
         //  Any RW open page-aligned the file via FILEBook's
         //  ftruncate, so Close must trim back regardless of
         //  whether anything was actually appended.  Otherwise an
         //  early-fail RW SNIFFExec leaves trailing pad bytes
         //  visible to the next reader.  RO opens (FILEBookRO)
-        //  never grew the file — `rw` stays NO — and trimming
-        //  one would race a concurrent RW owner, so skip.
-        if (l->rw) FILETrimBook(l->data);
-        FILEUnBook(l->data);
+        //  never grew the file — skip the trim.
+        if (rw) FILETrimBook(data);
+        FILEUnBook(data);     // also nullifies the buffer slots
     }
-    if (l->idx[0]) kv64bFree(l->idx);
-    memset(l, 0, sizeof(*l));
+    if (idx && idx[0]) kv64bFree(idx);   // also nullifies
     done;
 }
 
-ok64 ULOGAppendAt(ulogp l, ron60 ts, ron60 verb, uricp u) {
-    sane(l && u);
-    size_t n = kv64bDataLen(l->idx);
+ok64 ULOGAppendAt(u8bp data, kv64bp idx, ron60 ts, ron60 verb, uricp u) {
+    sane(data && idx && u);
+    size_t n = kv64bDataLen(idx);
     if (n > 0) {
-        kv64 const *last = ((kv64 const *)l->idx[0]) + (n - 1);
+        kv64 const *last = ((kv64 const *)idx[0]) + (n - 1);
         if (ts <= last->key) fail(ULOGCLOCK);
     }
-    call(FILEBookEnsure, l->data, 2048);
+    call(FILEBookEnsure, data, 2048);
 
-    u64 off = (u64)u8bDataLen(l->data);
-    call(ULOGu8sFeed, u8bIdle(l->data), ts, verb, u);
+    u64 off = (u64)u8bDataLen(data);
+    call(ULOGu8sFeed, u8bIdle(data), ts, verb, u);
 
     kv64 ent = {.key = ts, .val = off};
-    call(kv64bPush, l->idx, &ent);
+    call(kv64bPush, idx, &ent);
     done;
 }
 
-ok64 ULOGAppend(ulogp l, ron60 verb, uricp u) {
+ok64 ULOGAppend(u8bp data, kv64bp idx, ron60 verb, uricp u) {
     //  Clamp to max(RONNow(), tail+1) so rapid same-ms appends
     //  still land instead of tripping ULOGCLOCK.  Mirrors the
     //  pattern keeper/REFS.c uses in refs_next_ts().
+    sane(data && idx);
     ron60 now = RONNow();
-    size_t n = kv64bDataLen(l->idx);
+    size_t n = kv64bDataLen(idx);
     if (n > 0) {
-        kv64 const *last = ((kv64 const *)l->idx[0]) + (n - 1);
+        kv64 const *last = ((kv64 const *)idx[0]) + (n - 1);
         if (now <= last->key) now = last->key + 1;
     }
-    return ULOGAppendAt(l, now, verb, u);
+    return ULOGAppendAt(data, idx, now, verb, u);
 }
 
-u32 ULOGCount(ulogcp l) {
-    return (u32)kv64bDataLen(l->idx);
-}
-
-ok64 ULOGRow(ulogcp l, u32 i,
+ok64 ULOGRow(u8b data, kv64b idx, u32 i,
              ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(l && ts_out && verb_out && u_out);
-    if (i >= ULOGCount(l)) fail(ULOGNONE);
-    kv64 const *a = (kv64 const *)l->idx[0];
-    a_dup(u8c, data, u8bDataC(l->data));
+    sane(data && idx && ts_out && verb_out && u_out);
+    if (i >= ULOGCount(idx)) fail(ULOGNONE);
+    kv64 const *a = (kv64 const *)idx[0];
+    a_dup(u8c, dview, u8bDataC(data));
 
-    u8cs scan = {data[0] + a[i].val, data[1]};
+    u8cs scan = {dview[0] + a[i].val, dview[1]};
     return ULOGu8sDrain(scan, ts_out, verb_out, u_out);
 }
 
-ok64 ULOGHead(ulogcp l, ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(l);
-    if (ULOGCount(l) == 0) fail(ULOGNONE);
-    return ULOGRow(l, 0, ts_out, verb_out, u_out);
-}
-
-ok64 ULOGTail(ulogcp l, ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(l);
-    u32 n = ULOGCount(l);
-    if (n == 0) fail(ULOGNONE);
-    return ULOGRow(l, n - 1, ts_out, verb_out, u_out);
-}
-
-ok64 ULOGSeek(ulogcp l, ron60 ts, u32 *i_out) {
-    sane(l && i_out);
-    *i_out = ulog_lower_bound(l, ts);
+ok64 ULOGSeek(kv64b idx, ron60 ts, u32 *i_out) {
+    sane(idx && i_out);
+    *i_out = ulog_lower_bound(idx, ts);
     done;
 }
 
-ok64 ULOGFind(ulogcp l, ron60 ts, u32 *i_out) {
-    sane(l && i_out);
-    u32 i = ulog_lower_bound(l, ts);
-    u32 n = ULOGCount(l);
+ok64 ULOGFind(kv64b idx, ron60 ts, u32 *i_out) {
+    sane(idx && i_out);
+    u32 i = ulog_lower_bound(idx, ts);
+    u32 n = ULOGCount(idx);
     if (i >= n) fail(ULOGNONE);
-    kv64 const *a = (kv64 const *)l->idx[0];
+    kv64 const *a = (kv64 const *)idx[0];
     if (a[i].key != ts) fail(ULOGNONE);
     *i_out = i;
     done;
 }
 
-b8 ULOGHas(ulogcp l, ron60 ts) {
-    u32 i = 0;
-    return ULOGFind(l, ts, &i) == OK;
-}
-
-ok64 ULOGFindVerb(ulogcp l, ron60 verb,
-                  ron60 *ts_out, urip u_out) {
-    sane(l && ts_out && u_out);
-    u32 n = ULOGCount(l);
+ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
+                    ron60 *ts_out, urip u_out) {
+    sane(data && idx && pred && ts_out && u_out);
+    u32 n = ULOGCount(idx);
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, v = 0;
+        ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(l, i, &ts, &v, &u);
+        ok64 o = ULOGRow(data, idx, i, &ts, &verb, &u);
         if (o != OK) return o;
-        if (v == verb) {
+        if (pred(&u, ctx)) {
             *ts_out = ts;
             *u_out  = u;
             done;
@@ -341,17 +317,17 @@ ok64 ULOGFindVerb(ulogcp l, ron60 verb,
     fail(ULOGNONE);
 }
 
-ok64 ULOGFindLatest(ulogcp l, ulog_pred pred, void *ctx,
-                    ron60 *ts_out, urip u_out) {
-    sane(l && pred && ts_out && u_out);
-    u32 n = ULOGCount(l);
+ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb,
+                  ron60 *ts_out, urip u_out) {
+    sane(data && idx && ts_out && u_out);
+    u32 n = ULOGCount(idx);
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, verb = 0;
+        ron60 ts = 0, v = 0;
         uri u = {};
-        ok64 o = ULOGRow(l, i, &ts, &verb, &u);
+        ok64 o = ULOGRow(data, idx, i, &ts, &v, &u);
         if (o != OK) return o;
-        if (pred(&u, ctx)) {
+        if (v == verb) {
             *ts_out = ts;
             *u_out  = u;
             done;
@@ -365,11 +341,11 @@ ok64 ULOGFindLatest(ulogcp l, ulog_pred pred, void *ctx,
 //  Compute the key slice for row `i`: the URI bytes up to (but not
 //  including) the first `#`.  Walks the raw row text in the mmap —
 //  O(row length) — avoiding URIutf8Feed's component reassembly.
-static void ulog_row_key_bytes(ulogcp l, u32 i, u8csp out) {
-    kv64 const *a = (kv64 const *)l->idx[0];
-    u8cp base = (u8cp)l->data[0];
+static void ulog_row_key_bytes(u8b data, kv64b idx, u32 i, u8csp out) {
+    kv64 const *a = (kv64 const *)idx[0];
+    u8cp base = (u8cp)data[0];
     u8cp row  = base + a[i].val;
-    u8cp end  = (u8cp)l->data[2];  // idle head = first byte past data
+    u8cp end  = (u8cp)data[2];  // idle head = first byte past data
     u8cp nl = row;
     while (nl < end && *nl != '\n') nl++;
 
@@ -400,10 +376,10 @@ static b8 seen_contains(Bu64 seen, u64 h) {
     return NO;
 }
 
-ok64 ULOGeachLatest(ulogcp l, ron60 verb_filter,
+ok64 ULOGeachLatest(u8b data, kv64b idx, ron60 verb_filter,
                     ulog_each_fn cb, void *ctx) {
-    sane(l && cb);
-    u32 n = ULOGCount(l);
+    sane(data && idx && cb);
+    u32 n = ULOGCount(idx);
     if (n == 0) done;
 
     Bu64 seen = {};
@@ -414,12 +390,12 @@ ok64 ULOGeachLatest(ulogcp l, ron60 verb_filter,
         i--;
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(l, i, &ts, &verb, &u);
+        ok64 o = ULOGRow(data, idx, i, &ts, &verb, &u);
         if (o != OK) { rc = o; break; }
         if (verb_filter && verb != verb_filter) continue;
 
         u8cs key = {};
-        ulog_row_key_bytes(l, i, key);
+        ulog_row_key_bytes(data, idx, i, key);
         //  Dedup key includes verb: seed the hash with verb so two
         //  different verbs over the same URI-minus-fragment hash to
         //  different slots.
@@ -439,10 +415,11 @@ ok64 ULOGeachLatest(ulogcp l, ron60 verb_filter,
 
 //  Two-pass compaction: mark keep-bits on a reverse walk, then append
 //  kept rows forward into a fresh tmp log and rename over the original.
-ok64 ULOGCompactLatest(ulogp l, path8s path, ron60 verb_filter) {
-    sane(l && $ok(path));
+ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
+                       ron60 verb_filter) {
+    sane(data && idx && $ok(path));
 
-    u32 n = ULOGCount(l);
+    u32 n = ULOGCount(idx);
     if (n == 0) done;
 
     b8 *keep = (b8 *)calloc((size_t)n, 1);
@@ -457,7 +434,7 @@ ok64 ULOGCompactLatest(ulogp l, path8s path, ron60 verb_filter) {
         i--;
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(l, i, &ts, &verb, &u);
+        ok64 o = ULOGRow(*data, idx, i, &ts, &verb, &u);
         if (o != OK) { u64bFree(seen); free(keep); return o; }
 
         if (verb_filter && verb != verb_filter) {
@@ -465,7 +442,7 @@ ok64 ULOGCompactLatest(ulogp l, path8s path, ron60 verb_filter) {
             continue;
         }
         u8cs key = {};
-        ulog_row_key_bytes(l, i, key);
+        ulog_row_key_bytes(*data, idx, i, key);
         //  Dedup key includes verb: seed the hash with verb so two
         //  different verbs over the same URI-minus-fragment hash to
         //  different slots.
@@ -485,8 +462,9 @@ ok64 ULOGCompactLatest(ulogp l, path8s path, ron60 verb_filter) {
     a_dup(u8c, tmp_path, u8bDataC(tmp_buf));
     (void)unlink((char const *)tmp_path[0]);
 
-    ulog tmp = {};
-    ok64 oo = ULOGOpen(&tmp, tmp_path);
+    u8bp  tmp_data = NULL;
+    Bkv64 tmp_idx  = {};
+    ok64 oo = ULOGOpen(&tmp_data, tmp_idx, tmp_path);
     if (oo != OK) { free(keep); return oo; }
 
     //  Pass 2: forward walk, re-append kept rows into tmp.
@@ -494,41 +472,47 @@ ok64 ULOGCompactLatest(ulogp l, path8s path, ron60 verb_filter) {
         if (!keep[i]) continue;
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 o = ULOGRow(l, i, &ts, &verb, &u);
-        if (o != OK) { ULOGClose(&tmp); free(keep); return o; }
-        ok64 ao = ULOGAppendAt(&tmp, ts, verb, &u);
-        if (ao != OK) { ULOGClose(&tmp); free(keep); return ao; }
+        ok64 o = ULOGRow(*data, idx, i, &ts, &verb, &u);
+        if (o != OK) {
+            ULOGClose(tmp_data, tmp_idx, YES);
+            free(keep); return o;
+        }
+        ok64 ao = ULOGAppendAt(tmp_data, tmp_idx, ts, verb, &u);
+        if (ao != OK) {
+            ULOGClose(tmp_data, tmp_idx, YES);
+            free(keep); return ao;
+        }
     }
     free(keep);
-    ULOGClose(&tmp);
+    ULOGClose(tmp_data, tmp_idx, YES);
 
     //  Swap files: close source, rename tmp → path, reopen source.
-    ULOGClose(l);
+    ULOGClose(*data, idx, YES);
     ok64 ro = FILERename(tmp_path, path);
     if (ro != OK) {
         //  Best-effort recovery: try to reopen the original (still intact).
-        (void)ULOGOpen(l, path);
+        (void)ULOGOpen(data, idx, path);
         return ro;
     }
-    call(ULOGOpen, l, path);
+    call(ULOGOpen, data, idx, path);
     done;
 }
 
-ok64 ULOGTruncate(ulogp l, u32 keep_n) {
-    sane(l);
-    u32 n = ULOGCount(l);
+ok64 ULOGTruncate(u8bp data, kv64bp idx, u32 keep_n) {
+    sane(data && idx);
+    u32 n = ULOGCount(idx);
     if (keep_n > n) fail(ULOGFAIL);
     if (keep_n == n) done;
 
     u64 cut_off = 0;
     if (keep_n > 0) {
-        kv64 const *a = (kv64 const *)l->idx[0];
+        kv64 const *a = (kv64 const *)idx[0];
         cut_off = a[keep_n].val;
     }
 
     //  Shrink the kv64 index to `keep_n` entries.
-    kv64 **idle_idx = kv64bIdle(l->idx);
-    kv64 *base = (kv64 *)l->idx[0];
+    kv64 **idle_idx = kv64bIdle(idx);
+    kv64 *base = (kv64 *)idx[0];
     *idle_idx = base + keep_n;
 
     //  Drop the tail bytes of the data book.  Zero the discarded
@@ -537,8 +521,8 @@ ok64 ULOGTruncate(ulogp l, u32 keep_n) {
     //  page-aligned is what lets subsequent MAP_SHARED writes land on
     //  strict filesystems (ext4 silently drops writes past EOF even
     //  within a page-aligned mmap).
-    u8 *data_base  = (u8 *)l->data[0];
-    u8 **data_idle = u8bIdle(l->data);
+    u8 *data_base  = (u8 *)data[0];
+    u8 **data_idle = u8bIdle(data);
     u8 *old_idle   = *data_idle;
     u8 *new_idle   = data_base + cut_off;
     if (new_idle < old_idle) memset(new_idle, 0, (size_t)(old_idle - new_idle));

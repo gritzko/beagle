@@ -48,10 +48,11 @@ static u32 count_rows(u8cs dir) {
     a_cstr(fname, "refs");
     a_path(pbuf, dir, fname);
     a_dup(u8c, path, u8bDataC(pbuf));
-    ulog l = {};
-    if (ULOGOpen(&l, path) != OK) return 0;
-    u32 n = ULOGCount(&l);
-    ULOGClose(&l);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    if (ULOGOpen(&data, idx, path) != OK) return 0;
+    u32 n = ULOGCount(idx);
+    ULOGClose(data, idx, YES);
     return n;
 }
 
@@ -279,17 +280,18 @@ ok64 REFStest_monotonic_ts() {
     a_cstr(fname, "refs");
     a_path(pbuf, fx.dir_s, fname);
     a_dup(u8c, path, u8bDataC(pbuf));
-    ulog l = {};
-    call(ULOGOpen, &l, path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    call(ULOGOpen, &data, idx, path);
     ron60 prev = 0;
-    for (u32 i = 0; i < ULOGCount(&l); i++) {
+    for (u32 i = 0; i < ULOGCount(idx); i++) {
         ron60 ts = 0, verb = 0;
         uri u = {};
-        call(ULOGRow, &l, i, &ts, &verb, &u);
+        call(ULOGRow, data, idx, i, &ts, &verb, &u);
         want(ts > prev);
         prev = ts;
     }
-    ULOGClose(&l);
+    ULOGClose(data, idx, YES);
 
     fixture_close(&fx);
     done;

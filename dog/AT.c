@@ -33,19 +33,20 @@ ok64 DOGAtTail(u8bp branch_out, u8bp sha_out, u8cs reporoot) {
 
     //  The log is already a well-formed ULOG; read-only open +
     //  backward scan.
-    ulog l = {};
-    ok64 o = ULOGOpen(&l, $path(apath));
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    ok64 o = ULOGOpen(&data, idx, $path(apath));
     if (o != OK) fail(DOGATNONE);
 
-    u32 n = ULOGCount(&l);
-    if (n == 0) { ULOGClose(&l); fail(DOGATNONE); }
+    u32 n = ULOGCount(idx);
+    if (n == 0) { ULOGClose(data, idx, YES); fail(DOGATNONE); }
 
     ron60 ts = 0, verb = 0;
     uri u = {};
     b8 found = NO;
     for (u32 i = n; i > 0; ) {
         i--;
-        ok64 ro = ULOGRow(&l, i, &ts, &verb, &u);
+        ok64 ro = ULOGRow(data, idx, i, &ts, &verb, &u);
         if (ro != OK) continue;
 
         //  Canonical at-log shape: `?<branch>#<curhash>` — fragment
@@ -86,7 +87,7 @@ ok64 DOGAtTail(u8bp branch_out, u8bp sha_out, u8cs reporoot) {
         found = YES;
         break;
     }
-    ULOGClose(&l);
+    ULOGClose(data, idx, YES);
     if (!found) fail(DOGATNONE);
     done;
 }

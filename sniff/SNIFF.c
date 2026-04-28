@@ -52,7 +52,7 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
         urow.path[1] = pb[1];
     }
     ron60 vrepo = SNIFFAtVerbRepo();
-    return ULOGAppend(&SNIFF.log, vrepo, &urow);
+    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, vrepo, &urow);
 }
 
 //  Resolve the store root from the repo-row URI.  The URI's path is
@@ -94,9 +94,10 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     a_dup(u8c, wt_root, u8bDataC(h->wt));
     a_cstr(sniffname, SNIFF_FILE);
     a_path(atpath, wt_root, sniffname);
-    ok64 uo = rw ? ULOGOpen(&s->log, $path(atpath))
-                 : ULOGOpenRO(&s->log, $path(atpath));
+    ok64 uo = rw ? ULOGOpen  (&s->log_data, s->log_idx, $path(atpath))
+                 : ULOGOpenRO(&s->log_data, s->log_idx, $path(atpath));
     if (uo != OK) { zerop(s); return uo; }
+    s->log_rw = rw;
 
     //  Wall-clock guard: refuse on entry if the system clock is before
     //  the latest log row.  RW only — read-only paths (status, list)
@@ -104,21 +105,27 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     //  corrupt anything they observe.
     if (rw) {
         ok64 co = SNIFFCheckClock();
-        if (co != OK) { ULOGClose(&s->log); zerop(s); return co; }
+        if (co != OK) {
+            ULOGClose(s->log_data, s->log_idx, s->log_rw);
+            zerop(s); return co;
+        }
     }
 
     //  Row-0 `repo` anchor.  Bootstrap on a fresh log (writes the
     //  colocated default `file:///<wt>/.dogs/`); honour an existing
     //  anchor for secondary worktrees by redirecting h->root to the
     //  store before keeper opens.
-    if (ULOGCount(&s->log) == 0) {
+    if (ULOGCount(s->log_idx) == 0) {
         if (!rw) {
             //  Read-only open against an empty log — there is no state
             //  yet; leave the row unwritten and treat h->root as the
             //  colocated default.
         } else {
             ok64 wr = sniff_write_repo_row(wt_root);
-            if (wr != OK) { ULOGClose(&s->log); zerop(s); return wr; }
+            if (wr != OK) {
+                ULOGClose(s->log_data, s->log_idx, s->log_rw);
+                zerop(s); return wr;
+            }
         }
     }
 
@@ -144,7 +151,8 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     //  redirected as appropriate.
     ok64 kr = KEEPOpen(h, rw);
     if (kr != OK && kr != KEEPOPEN) {
-        ULOGClose(&s->log); zerop(s); return kr;
+        ULOGClose(s->log_data, s->log_idx, s->log_rw);
+        zerop(s); return kr;
     }
     sniff_opened_keep = (kr == OK);
 
@@ -165,7 +173,7 @@ ok64 SNIFFClose(void) {
     sane(1);
     if (!sniff_is_open()) return OK;
     sniff *s = &SNIFF;
-    ULOGClose(&s->log);
+    ULOGClose(s->log_data, s->log_idx, s->log_rw);
     u32bFree(s->sorted);
     IGNOFree(&s->ignores);
     zerop(s);

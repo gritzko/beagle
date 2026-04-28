@@ -165,7 +165,7 @@ ok64 SNIFFAtHelpers() {
         call(SNIFFAtRepo, &ru);
         //  Re-fetch ts/verb via ULOGRow(0) — SNIFFAtRepo only yields
         //  the URI.
-        call(ULOGRow, &SNIFF.log, 0, &t_repo, &v_repo, &ru);
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &t_repo, &v_repo, &ru);
         want(v_repo == vr);
         //  URI path is `/…/.dogs/`.
         a_dup(u8c, rp, ru.path);

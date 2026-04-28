@@ -104,13 +104,13 @@ static ok64 refs_uri_for_row(urip u_out, u8csc from, u8csc to,
 //  Return max(RONNow(), tail_ts + 1).  ULOG enforces strict
 //  monotonicity; RONNow()'s ms resolution means two rapid appends
 //  would collide, so clamp past the tail.
-static ron60 refs_next_ts(ulogcp l) {
+static ron60 refs_next_ts(u8b data, kv64cp idx) {
     ron60 now = RONNow();
-    u32 n = ULOGCount(l);
+    u32 n = ULOGCount(idx);
     if (n == 0) return now;
     ron60 ts = 0, verb = 0;
     uri u = {};
-    if (ULOGTail(l, &ts, &verb, &u) != OK) return now;
+    if (ULOGTail(data, idx, &ts, &verb, &u) != OK) return now;
     return now > ts ? now : ts + 1;
 }
 
@@ -121,18 +121,19 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
     if (u8csEmpty(from_uri)) fail(REFSBAD);
 
     REFS_LOG_PATH(log_path, dir);
-    ulog l = {};
-    call(ULOGOpen, &l, log_path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    call(ULOGOpen, &data, idx, log_path);
 
     a_pad(u8, fragb, 256);
     uri u = {};
     size_t fl = 0;
     ok64 bo = refs_uri_for_row(&u, from_uri, to_uri,
                                u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
-    if (bo != OK) { ULOGClose(&l); return bo; }
+    if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
 
-    ok64 o = ULOGAppendAt(&l, refs_next_ts(&l), verb, &u);
-    ULOGClose(&l);
+    ok64 o = ULOGAppendAt(data, idx, refs_next_ts(data, idx), verb, &u);
+    ULOGClose(data, idx, YES);
     return o;
 }
 
@@ -147,10 +148,11 @@ ok64 REFSAppend(u8csc dir, u8csc from_uri, u8csc to_uri) {
 ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs) {
     sane($ok(dir) && nrefs > 0);
     REFS_LOG_PATH(log_path, dir);
-    ulog l = {};
-    call(ULOGOpen, &l, log_path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    call(ULOGOpen, &data, idx, log_path);
 
-    ron60 ts = refs_next_ts(&l);
+    ron60 ts = refs_next_ts(data, idx);
     ron60 verb_get = REFSVerbGet();
     for (u32 i = 0; i < nrefs; i++) {
         u8csc from = {arr[i].key[0], arr[i].key[1]};
@@ -160,11 +162,11 @@ ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs) {
         size_t fl = 0;
         ok64 bo = refs_uri_for_row(&u, from, to,
                                    u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
-        if (bo != OK) { ULOGClose(&l); return bo; }
-        ok64 ao = ULOGAppendAt(&l, ts++, verb_get, &u);
-        if (ao != OK) { ULOGClose(&l); return ao; }
+        if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
+        ok64 ao = ULOGAppendAt(data, idx, ts++, verb_get, &u);
+        if (ao != OK) { ULOGClose(data, idx, YES); return ao; }
     }
-    ULOGClose(&l);
+    ULOGClose(data, idx, YES);
     done;
 }
 
@@ -226,8 +228,9 @@ ok64 REFSLoad(refp arr, u32p out_n, u32 max, u8b arena, u8csc dir) {
     *out_n = 0;
 
     REFS_LOG_PATH(log_path, dir);
-    ulog l = {};
-    ok64 oo = ULOGOpen(&l, log_path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    ok64 oo = ULOGOpen(&data, idx, log_path);
     if (oo != OK) done;  // missing file ⇒ 0 refs, not an error
 
     refs_load_ctx ctx = {arr, 0, max, arena};
@@ -235,8 +238,8 @@ ok64 REFSLoad(refp arr, u32p out_n, u32 max, u8b arena, u8csc dir) {
     //  Dedup keys on the URI-minus-fragment, so peer-observed (get)
     //  and local-move (post) rows dedup separately per their distinct
     //  URI keys.
-    ok64 eo = ULOGeachLatest(&l, 0, refs_each_store, &ctx);
-    ULOGClose(&l);
+    ok64 eo = ULOGeachLatest(data, idx, 0, refs_each_store, &ctx);
+    ULOGClose(data, idx, YES);
     if (eo != OK) return eo;
     *out_n = ctx.cnt;
     done;
@@ -370,20 +373,21 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
         fail(REFSNONE);
 
     REFS_LOG_PATH(log_path, dir);
-    ulog l = {};
-    ok64 oo = ULOGOpen(&l, log_path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    ok64 oo = ULOGOpen(&data, idx, log_path);
     if (oo != OK) fail(REFSNONE);
 
     ron60 ts = 0;
     uri u = {};
-    ok64 fo = ULOGFindLatest(&l, refs_match_pred, &m, &ts, &u);
-    if (fo != OK) { ULOGClose(&l); fail(REFSNONE); }
+    ok64 fo = ULOGFindLatest(data, idx, refs_match_pred, &m, &ts, &u);
+    if (fo != OK) { ULOGClose(data, idx, YES); fail(REFSNONE); }
 
     //  Fill resolved.query = fragment bytes (minus leading `?`).
     u8cs frag = {u.fragment[0], u.fragment[1]};
     if (!u8csEmpty(frag) && frag[0][0] == '?') u8csUsed(frag, 1);
     //  Zero-sha tombstone: branch was deleted; report as absent.
-    if (refs_is_tombstone(frag)) { ULOGClose(&l); fail(REFSNONE); }
+    if (refs_is_tombstone(frag)) { ULOGClose(data, idx, YES); fail(REFSNONE); }
     if (!u8csEmpty(frag))
         call(refs_capture_cs, arena, frag, resolved->query);
     if (!u8csEmpty(u.scheme))
@@ -401,7 +405,7 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     if (!u8csEmpty(r_query))
         call(refs_capture_cs, arena, r_query, resolved->fragment);
 
-    ULOGClose(&l);
+    ULOGClose(data, idx, YES);
     done;
 }
 
@@ -410,13 +414,14 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
 ok64 REFSCompact(u8csc dir) {
     sane($ok(dir));
     REFS_LOG_PATH(log_path, dir);
-    ulog l = {};
-    ok64 oo = ULOGOpen(&l, log_path);
+    u8bp  data = NULL;
+    Bkv64 idx  = {};
+    ok64 oo = ULOGOpen(&data, idx, log_path);
     if (oo != OK) done;  // nothing to compact
 
     //  verb_filter=0: compact across get/post/set; keeps latest per
     //  URI-minus-fragment key regardless of verb.
-    ok64 co = ULOGCompactLatest(&l, log_path, 0);
-    ULOGClose(&l);
+    ok64 co = ULOGCompactLatest(&data, idx, log_path, 0);
+    ULOGClose(data, idx, YES);
     return co;
 }
