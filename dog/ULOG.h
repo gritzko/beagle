@@ -21,8 +21,8 @@
 //                   only consumers); random-access functions require
 //                   a non-NULL idx.
 //
-//  URI slices returned by ULOGRow / ULOGTail / etc. point into the
-//  mmap and stay valid until ULOGClose / ULOGTruncate.
+//  URI slices returned via `ulogrec.uri` point into the mmap and stay
+//  valid until ULOGClose / ULOGTruncate.
 //
 //  Streaming primitives (`ULOGu8sFeed`, `ULOGu8sDrain`) are stateless —
 //  use them when you have no file (encoding to a wire buffer, parsing
@@ -47,25 +47,35 @@ con ok64 ULOGBADFMT = 0x7956102ca34f59d;
 #define ULOG_BOOK_DEFAULT (1UL << 30)
 #define ULOG_INIT_DEFAULT 4096
 
+// --- one parsed row -------------------------------------------------
+
+typedef struct {
+    ron60 ts;
+    ron60 verb;
+    uri   uri;     // URILexer-parsed; component slices point into the
+                   // mmap (stable until ULOGClose / ULOGTruncate)
+} ulogrec;
+typedef ulogrec       *ulogrecp;
+typedef ulogrec const *ulogreccp;
+
 // --- streaming primitives (stateless) -------------------------------
 
 //  Encode one row into `into`'s idle.  URI bytes are produced via
-//  URIutf8Feed from `u`'s components.  Returns BNOROOM if idle space
-//  is insufficient.  Monotonicity is the caller's responsibility.
-ok64 ULOGu8sFeed(u8s into, ron60 ts, ron60 verb, uricp u);
+//  URIutf8Feed from `rec->uri`'s components.  Returns BNOROOM if idle
+//  space is insufficient.  Monotonicity is the caller's responsibility.
+ok64 ULOGu8sFeed(u8s into, ulogreccp rec);
 
-//  Drain one complete row (through the trailing '\n') from `scan`.
-//  On OK, `scan[0]` is advanced past the row, `*ts_out` / `*verb_out`
-//  are filled, and URILexer is run against the row's URI slice —
-//  `u_out`'s component slices point into the input buffer; `u_out->data`
-//  is the consumed input.  Field separator: one or more SP/TAB bytes.
+//  Drain one complete row (through the trailing '\n') from `scan` into
+//  `*out`.  On OK, `scan[0]` is advanced past the row and URILexer is
+//  run against the row's URI slice — `out->uri` component slices point
+//  into the input buffer; `out->uri.data` is the consumed input.
+//  Field separator: one or more SP/TAB bytes.
 //
 //  Returns:
 //    OK         one row parsed, scan advanced.
 //    NODATA     no complete row yet (no '\n' in scan); scan unchanged.
 //    ULOGBADFMT malformed row; scan advanced past the bad line's '\n'.
-ok64 ULOGu8sDrain(u8cs scan,
-                  ron60 *ts_out, ron60 *verb_out, urip u_out);
+ok64 ULOGu8sDrain(u8cs scan, ulogrecp out);
 
 // --- open / close ----------------------------------------------------
 
@@ -90,12 +100,14 @@ ok64 ULOGClose(u8bp data, kv64bp idx, b8 rw);
 
 // --- append ----------------------------------------------------------
 
-//  Append a row using `RONNow()` clamped to `tail+1` ms.  Requires a
-//  non-NULL idx (used for monotonicity check + offset push).
-ok64 ULOGAppend  (u8bp data, kv64bp idx,           ron60 verb, uricp u);
+//  Append a row using `RONNow()` clamped to `tail+1` ms.  On return,
+//  `rec->ts` is overwritten with the stamp that was actually used.
+//  Requires a non-NULL idx (used for monotonicity check + offset push).
+ok64 ULOGAppend  (u8bp data, kv64bp idx, ulogrecp  rec);
 
-//  Append with explicit ts.  Refuses ULOGCLOCK if `ts <= tail`.
-ok64 ULOGAppendAt(u8bp data, kv64bp idx, ron60 ts, ron60 verb, uricp u);
+//  Append with explicit ts (`rec->ts`).  Refuses ULOGCLOCK if
+//  `rec->ts <= tail`.
+ok64 ULOGAppendAt(u8bp data, kv64bp idx, ulogreccp rec);
 
 // --- random access (require non-NULL idx) ---------------------------
 
@@ -103,8 +115,7 @@ ok64 ULOGAppendAt(u8bp data, kv64bp idx, ron60 ts, ron60 verb, uricp u);
 fun u32 ULOGCount(kv64b idx) { return (u32)kv64bDataLen(idx); }
 
 //  Random access, 0-indexed.
-ok64 ULOGRow(u8b data, kv64b idx, u32 i,
-             ron60 *ts_out, ron60 *verb_out, urip u_out);
+ok64 ULOGRow(u8b data, kv64b idx, u32 i, ulogrecp out);
 
 //  Lower-bound: smallest index i such that idx[i].key >= ts.
 //  Writes the count if ts is past the tail.
@@ -114,17 +125,15 @@ ok64 ULOGSeek(kv64b idx, ron60 ts, u32 *i_out);
 ok64 ULOGFind(kv64b idx, ron60 ts, u32 *i_out);
 
 //  First / last row convenience (inline over ULOGRow).
-fun ok64 ULOGHead(u8b data, kv64b idx,
-                  ron60 *ts_out, ron60 *verb_out, urip u_out) {
+fun ok64 ULOGHead(u8b data, kv64b idx, ulogrecp out) {
     if (ULOGCount(idx) == 0) return ULOGNONE;
-    return ULOGRow(data, idx, 0, ts_out, verb_out, u_out);
+    return ULOGRow(data, idx, 0, out);
 }
 
-fun ok64 ULOGTail(u8b data, kv64b idx,
-                  ron60 *ts_out, ron60 *verb_out, urip u_out) {
+fun ok64 ULOGTail(u8b data, kv64b idx, ulogrecp out) {
     u32 n = ULOGCount(idx);
     if (n == 0) return ULOGNONE;
-    return ULOGRow(data, idx, n - 1, ts_out, verb_out, u_out);
+    return ULOGRow(data, idx, n - 1, out);
 }
 
 //  Cheap `ts ∈ log` predicate (binary search).
@@ -139,16 +148,15 @@ fun b8 ULOGHas(kv64b idx, ron60 ts) {
 //  accepts.  ULOGNONE if no row matches.
 typedef b8 (*ulog_pred)(uricp u, void *ctx);
 ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
-                    ron60 *ts_out, urip u_out);
+                    ulogrecp out);
 
 //  Latest row whose verb matches `verb`.  Reverse scan; stops at first
 //  match.  ULOGNONE if no row carries that verb.
-ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb,
-                  ron60 *ts_out, urip u_out);
+ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb, ulogrecp out);
 
 //  Iteration callback for `ULOGeachLatest`.  A non-OK return aborts
 //  the walk and is propagated out.
-typedef ok64 (*ulog_each_fn)(ron60 ts, ron60 verb, uricp u, void *ctx);
+typedef ok64 (*ulog_each_fn)(ulogreccp rec, void *ctx);
 
 //  Walk in reverse chronological order, invoking `cb` at most ONCE per
 //  unique (verb, URI-minus-fragment) key — always with the latest row
@@ -166,5 +174,24 @@ ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
 
 //  Compaction — keep rows [0, keep_n), discard the rest.
 ok64 ULOGTruncate(u8bp data, kv64bp idx, u32 keep_n);
+
+// --- K-way heap merge over ULOG cursors -----------------------------
+
+//  Stock comparators for `u8cssHeapZ`.  Each peeks the head row of
+//  `*a` and `*b` (a_dup + ULOGu8sDrain on copies, no advance) and
+//  returns YES iff *a sorts before *b.  Empty cursors compare as
+//  +infinity (sink to heap tail).
+b8 ULOGu8csZbyTs (u8cs const *a, u8cs const *b);  // chronological
+b8 ULOGu8csZbyUri(u8cs const *a, u8cs const *b);  // URI path lex
+
+//  K-way merge driver.  Caller heapifies cursors first:
+//      u8cssHeapZ(cursors, ULOGu8csZbyUri);
+//  Each call drains one row from the root (smallest) cursor into
+//  `*out`, advances that cursor, and re-sifts.  Empty cursors are
+//  swap-removed from the heap tail.  Returns ULOGNONE when every
+//  cursor is empty.  Ties under `cmp` surface as consecutive equal-key
+//  returns; caller dedups locally.
+//  $len(cursors) capped at LSM_MAX_INPUTS (64).
+ok64 ULOGu8ssDrainHeap(u8css cursors, u8csz cmp, ulogrecp out);
 
 #endif

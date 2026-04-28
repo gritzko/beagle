@@ -104,14 +104,13 @@ static ok64 refs_uri_for_row(urip u_out, u8csc from, u8csc to,
 //  Return max(RONNow(), tail_ts + 1).  ULOG enforces strict
 //  monotonicity; RONNow()'s ms resolution means two rapid appends
 //  would collide, so clamp past the tail.
-static ron60 refs_next_ts(u8b data, kv64cp idx) {
+static ron60 refs_next_ts(u8b data, kv64b idx) {
     ron60 now = RONNow();
     u32 n = ULOGCount(idx);
     if (n == 0) return now;
-    ron60 ts = 0, verb = 0;
-    uri u = {};
-    if (ULOGTail(data, idx, &ts, &verb, &u) != OK) return now;
-    return now > ts ? now : ts + 1;
+    ulogrec r = {};
+    if (ULOGTail(data, idx, &r) != OK) return now;
+    return now > r.ts ? now : r.ts + 1;
 }
 
 ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
@@ -132,7 +131,8 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
                                u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
     if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
 
-    ok64 o = ULOGAppendAt(data, idx, refs_next_ts(data, idx), verb, &u);
+    ulogrec rec = {.ts = refs_next_ts(data, idx), .verb = verb, .uri = u};
+    ok64 o = ULOGAppendAt(data, idx, &rec);
     ULOGClose(data, idx, YES);
     return o;
 }
@@ -163,7 +163,8 @@ ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs) {
         ok64 bo = refs_uri_for_row(&u, from, to,
                                    u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
         if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
-        ok64 ao = ULOGAppendAt(data, idx, ts++, verb_get, &u);
+        ulogrec rec = {.ts = ts++, .verb = verb_get, .uri = u};
+        ok64 ao = ULOGAppendAt(data, idx, &rec);
         if (ao != OK) { ULOGClose(data, idx, YES); return ao; }
     }
     ULOGClose(data, idx, YES);
@@ -181,11 +182,11 @@ typedef struct {
 
 //  Callback fed by ULOGeachLatest: capture (key = URI minus fragment,
 //  val = fragment bytes) into the caller's arena, push a `ref` entry.
-static ok64 refs_each_store(ron60 ts, ron60 verb, uricp u, void *ctx) {
-    sane(u && ctx);
-    (void)verb;
+static ok64 refs_each_store(ulogreccp rec, void *ctx) {
+    sane(rec && ctx);
     refs_load_ctx *c = (refs_load_ctx *)ctx;
     if (c->cnt >= c->max) done;
+    uri const *u = &rec->uri;
 
     //  Skip tombstoned keys: zero-sha fragment means the branch was
     //  deleted (`?<branch>#0000…`).  Loaders/advertisers must not
@@ -216,7 +217,7 @@ static ok64 refs_each_store(ron60 ts, ron60 verb, uricp u, void *ctx) {
     u8cs val_s = {vb, ve};
 
     ref *e = &c->arr[c->cnt++];
-    e->time   = ts;
+    e->time   = rec->ts;
     e->type   = REF_SHA;
     e->key[0] = key_s[0]; e->key[1] = key_s[1];
     e->val[0] = val_s[0]; e->val[1] = val_s[1];
@@ -378,30 +379,30 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     ok64 oo = ULOGOpen(&data, idx, log_path);
     if (oo != OK) fail(REFSNONE);
 
-    ron60 ts = 0;
-    uri u = {};
-    ok64 fo = ULOGFindLatest(data, idx, refs_match_pred, &m, &ts, &u);
+    ulogrec rec = {};
+    ok64 fo = ULOGFindLatest(data, idx, refs_match_pred, &m, &rec);
     if (fo != OK) { ULOGClose(data, idx, YES); fail(REFSNONE); }
+    uri *u = &rec.uri;
 
     //  Fill resolved.query = fragment bytes (minus leading `?`).
-    u8cs frag = {u.fragment[0], u.fragment[1]};
+    u8cs frag = {u->fragment[0], u->fragment[1]};
     if (!u8csEmpty(frag) && frag[0][0] == '?') u8csUsed(frag, 1);
     //  Zero-sha tombstone: branch was deleted; report as absent.
     if (refs_is_tombstone(frag)) { ULOGClose(data, idx, YES); fail(REFSNONE); }
     if (!u8csEmpty(frag))
         call(refs_capture_cs, arena, frag, resolved->query);
-    if (!u8csEmpty(u.scheme))
-        call(refs_capture_cs, arena, u.scheme, resolved->scheme);
-    u8cs r_host = {u.host[0], u.host[1]};
+    if (!u8csEmpty(u->scheme))
+        call(refs_capture_cs, arena, u->scheme, resolved->scheme);
+    u8cs r_host = {u->host[0], u->host[1]};
     if (!u8csEmpty(r_host))
         call(refs_capture_cs, arena, r_host, resolved->host);
-    if (!u8csEmpty(u.path))
-        call(refs_capture_cs, arena, u.path, resolved->path);
+    if (!u8csEmpty(u->path))
+        call(refs_capture_cs, arena, u->path, resolved->path);
     //  Matched row's `?query` (peer-side refname, e.g. `heads/main`)
     //  → resolved->fragment.  Lets remote-target callers recover the
     //  branch name when the input URI omits `?ref` (e.g.
     //  `be post //sniff` after a prior `be get //sniff?heads/feat`).
-    u8cs r_query = {u.query[0], u.query[1]};
+    u8cs r_query = {u->query[0], u->query[1]};
     if (!u8csEmpty(r_query))
         call(refs_capture_cs, arena, r_query, resolved->fragment);
 

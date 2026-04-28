@@ -28,13 +28,15 @@ static ok64 at_check_row0(ron60 verb) {
 ok64 SNIFFAtAppend(ron60 verb, uricp u) {
     sane(SNIFF.h && u);
     call(at_check_row0, verb);
-    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, verb, u);
+    ulogrec rec = {.verb = verb, .uri = *u};
+    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
 ok64 SNIFFAtAppendAt(ron60 ts, ron60 verb, uricp u) {
     sane(SNIFF.h && u);
     call(at_check_row0, verb);
-    return ULOGAppendAt(SNIFF.log_data, SNIFF.log_idx, ts, verb, u);
+    ulogrec rec = {.ts = ts, .verb = verb, .uri = *u};
+    return ULOGAppendAt(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
 b8 SNIFFAtKnown(ron60 mtime) {
@@ -94,9 +96,10 @@ ron60 SNIFFAtVerbMod(void) {
 ok64 SNIFFAtRepo(urip u_out) {
     sane(SNIFF.h && u_out);
     if (ULOGCount(SNIFF.log_idx) == 0) return ULOGNONE;
-    ron60 ts = 0, verb = 0;
-    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &ts, &verb, u_out);
-    if (verb != SNIFFAtVerbRepo()) fail(SNIFFFAIL);
+    ulogrec rec = {};
+    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &rec);
+    if (rec.verb != SNIFFAtVerbRepo()) fail(SNIFFFAIL);
+    *u_out = rec.uri;
     done;
 }
 
@@ -109,15 +112,13 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     ron60 vx = SNIFFAtVerbPatch();
     u32 n = ULOGCount(SNIFF.log_idx);
     for (u32 i = n; i > 0; i--) {
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx,
-                         i - 1, &ts, &verb, &u);
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
         if (o != OK) return o;
-        if (verb == vg || verb == vp || verb == vx) {
-            *ts_out = ts;
-            *verb_out = verb;
-            *u_out = u;
+        if (rec.verb == vg || rec.verb == vp || rec.verb == vx) {
+            *ts_out   = rec.ts;
+            *verb_out = rec.verb;
+            *u_out    = rec.uri;
             done;
         }
     }
@@ -132,11 +133,9 @@ ron60 SNIFFAtLastPostTs(void) {
     u32 n = ULOGCount(SNIFF.log_idx);
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx,
-                    i, &ts, &verb, &u) != OK) return 0;
-        if (verb == vp) return ts;
+        ulogrec rec = {};
+        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec) != OK) return 0;
+        if (rec.verb == vp) return rec.ts;
     }
     return 0;
 }
@@ -178,11 +177,9 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
     ron60 now = RONNow();
     //  Guard monotonicity against the ULOG tail.
     if (SNIFF.h) {
-        ron60 tail_ts = 0, tail_verb = 0;
-        uri tu = {};
-        if (ULOGTail(SNIFF.log_data, SNIFF.log_idx,
-                     &tail_ts, &tail_verb, &tu) == OK) {
-            if (now <= tail_ts) now = tail_ts + 1;
+        ulogrec tail = {};
+        if (ULOGTail(SNIFF.log_data, SNIFF.log_idx, &tail) == OK) {
+            if (now <= tail.ts) now = tail.ts + 1;
         }
     }
     *ts_out = now;
@@ -194,23 +191,20 @@ ok64 SNIFFAtRowAtTs(ron60 mtime, ron60 *verb_out, urip u_out) {
     u32 i = 0;
     ok64 fo = ULOGFind(SNIFF.log_idx, mtime, &i);
     if (fo != OK) return fo;
-    ron60 ts = 0, verb = 0;
-    uri u = {};
-    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &ts, &verb, &u);
-    *verb_out = verb;
-    *u_out = u;
+    ulogrec rec = {};
+    call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &rec);
+    *verb_out = rec.verb;
+    *u_out    = rec.uri;
     done;
 }
 
 ok64 SNIFFCheckClock(void) {
     sane(1);
     if (!SNIFF.h) done;                       // no log yet, nothing to compare
-    ron60 tail_ts = 0, tail_verb = 0;
-    uri tu = {};
-    if (ULOGTail(SNIFF.log_data, SNIFF.log_idx,
-                 &tail_ts, &tail_verb, &tu) != OK) done;
+    ulogrec tail = {};
+    if (ULOGTail(SNIFF.log_data, SNIFF.log_idx, &tail) != OK) done;
     ron60 now = RONNow();
-    if (now < tail_ts) {
+    if (now < tail.ts) {
         fprintf(stderr,
                 "sniff: clock skew — system clock is before the latest "
                 ".sniff row; refusing every command until clock catches "
@@ -238,15 +232,13 @@ ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
     ron60 vput = SNIFFAtVerbPut();
     ron60 vdel = SNIFFAtVerbDelete();
     for (u32 i = start; i < n; i++) {
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx,
-                         i, &ts, &verb, &u);
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
         if (o != OK) return o;
-        if (ts <= floor) continue;
-        if (verb != vput && verb != vdel) continue;
-        a_dup(u8c, path, u.path);
-        ok64 cr = cb(verb, path, ts, ctx);
+        if (rec.ts <= floor) continue;
+        if (rec.verb != vput && rec.verb != vdel) continue;
+        a_dup(u8c, path, rec.uri.path);
+        ok64 cr = cb(rec.verb, path, rec.ts, ctx);
         if (cr != OK) return cr;
     }
     done;

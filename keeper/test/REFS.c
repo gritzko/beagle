@@ -285,11 +285,10 @@ ok64 REFStest_monotonic_ts() {
     call(ULOGOpen, &data, idx, path);
     ron60 prev = 0;
     for (u32 i = 0; i < ULOGCount(idx); i++) {
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        call(ULOGRow, data, idx, i, &ts, &verb, &u);
-        want(ts > prev);
-        prev = ts;
+        ulogrec r = {};
+        call(ULOGRow, data, idx, i, &r);
+        want(r.ts > prev);
+        prev = r.ts;
     }
     ULOGClose(data, idx, YES);
 

@@ -77,6 +77,12 @@ static ron60 verb_of(char const *s) {
     return v;
 }
 
+//  Compose a ulogrec from saved_uri + ts + verb (caller-provided).
+static ulogrec rec_of(ron60 ts, ron60 verb, saved_uri *s) {
+    ulogrec r = {.ts = ts, .verb = verb, .uri = *saved_uri_for_append(s)};
+    return r;
+}
+
 static ok64 T_roundtrip(void) {
     sane(1);
     call(FILEInit);
@@ -93,22 +99,21 @@ static ok64 T_roundtrip(void) {
     call(parse_uri_lit, &s2, "//localhost/repo?staging/abcd1234");
     call(parse_uri_lit, &s3, "?heads/main");
 
-    call(ULOGAppendAt, l_data, l_idx, 1000, verb_of("get"),
-         saved_uri_for_append(&s1));
-    call(ULOGAppendAt, l_data, l_idx, 1001, verb_of("put"),
-         saved_uri_for_append(&s2));
-    call(ULOGAppendAt, l_data, l_idx, 1002, verb_of("post"),
-         saved_uri_for_append(&s3));
+    ulogrec r1 = rec_of(1000, verb_of("get"),  &s1);
+    ulogrec r2 = rec_of(1001, verb_of("put"),  &s2);
+    ulogrec r3 = rec_of(1002, verb_of("post"), &s3);
+    call(ULOGAppendAt, l_data, l_idx, &r1);
+    call(ULOGAppendAt, l_data, l_idx, &r2);
+    call(ULOGAppendAt, l_data, l_idx, &r3);
     want(ULOGCount(l_idx) == 3);
 
-    ron60 ts = 0, verb = 0;
-    uri got = {};
-    call(ULOGHead, l_data, l_idx, &ts, &verb, &got);
-    want(verb == verb_of("get"));
-    want(uri_serializes_to(&got, "//localhost/repo?heads/master"));
-    call(ULOGTail, l_data, l_idx, &ts, &verb, &got);
-    want(verb == verb_of("post"));
-    want(uri_serializes_to(&got, "?heads/main"));
+    ulogrec g = {};
+    call(ULOGHead, l_data, l_idx, &g);
+    want(g.verb == verb_of("get"));
+    want(uri_serializes_to(&g.uri, "//localhost/repo?heads/master"));
+    call(ULOGTail, l_data, l_idx, &g);
+    want(g.verb == verb_of("post"));
+    want(uri_serializes_to(&g.uri, "?heads/main"));
 
     call(ULOGClose, l_data, l_idx, YES);
     done;
@@ -123,11 +128,10 @@ static ok64 T_persist(void) {
     call(ULOGOpen, &l_data, l_idx, path);
     want(ULOGCount(l_idx) == 3);
 
-    ron60 ts = 0, verb = 0;
-    uri got = {};
-    call(ULOGRow, l_data, l_idx, 1, &ts, &verb, &got);
-    want(verb == verb_of("put"));
-    want(uri_serializes_to(&got, "//localhost/repo?staging/abcd1234"));
+    ulogrec g = {};
+    call(ULOGRow, l_data, l_idx, 1, &g);
+    want(g.verb == verb_of("put"));
+    want(uri_serializes_to(&g.uri, "//localhost/repo?staging/abcd1234"));
 
     call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-rt.log");
@@ -146,9 +150,10 @@ static ok64 T_seek(void) {
     ron60 stamps[] = {100, 200, 300, 400};
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
-    for (u32 i = 0; i < 4; i++)
-        call(ULOGAppendAt, l_data, l_idx, stamps[i], verb_of("get"),
-             saved_uri_for_append(&s));
+    for (u32 i = 0; i < 4; i++) {
+        ulogrec r = rec_of(stamps[i], verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
     want(ULOGCount(l_idx) == 4);
 
     u32 i = 99;
@@ -179,15 +184,22 @@ static ok64 T_clock(void) {
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
-    call(ULOGAppendAt, l_data, l_idx, 1000, verb_of("get"),
-         saved_uri_for_append(&s));
-
-    want(ULOGAppendAt(l_data, l_idx, 1000, verb_of("get"),
-                      saved_uri_for_append(&s)) == ULOGCLOCK);
-    want(ULOGAppendAt(l_data, l_idx,  999, verb_of("get"),
-                      saved_uri_for_append(&s)) == ULOGCLOCK);
-    call(ULOGAppendAt, l_data, l_idx, 1001, verb_of("get"),
-         saved_uri_for_append(&s));
+    {
+        ulogrec r = rec_of(1000, verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
+    {
+        ulogrec r = rec_of(1000, verb_of("get"), &s);
+        want(ULOGAppendAt(l_data, l_idx, &r) == ULOGCLOCK);
+    }
+    {
+        ulogrec r = rec_of(999, verb_of("get"), &s);
+        want(ULOGAppendAt(l_data, l_idx, &r) == ULOGCLOCK);
+    }
+    {
+        ulogrec r = rec_of(1001, verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
     want(ULOGCount(l_idx) == 2);
 
     call(ULOGClose, l_data, l_idx, YES);
@@ -210,22 +222,26 @@ static ok64 T_findverb(void) {
     call(parse_uri_lit, &s3, "?heads/main");
     call(parse_uri_lit, &s4, "?staging/cafef00d");
 
-    call(ULOGAppendAt, l_data, l_idx, 10, verb_of("get"),  saved_uri_for_append(&s1));
-    call(ULOGAppendAt, l_data, l_idx, 20, verb_of("put"),  saved_uri_for_append(&s2));
-    call(ULOGAppendAt, l_data, l_idx, 30, verb_of("post"), saved_uri_for_append(&s3));
-    call(ULOGAppendAt, l_data, l_idx, 40, verb_of("put"),  saved_uri_for_append(&s4));
+    {
+        ulogrec r = rec_of(10, verb_of("get"),  &s1); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(20, verb_of("put"),  &s2); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(30, verb_of("post"), &s3); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(40, verb_of("put"),  &s4); call(ULOGAppendAt, l_data, l_idx, &r);
+    }
 
-    ron60 ts = 0;
-    uri got = {};
-    call(ULOGFindVerb, l_data, l_idx, verb_of("put"), &ts, &got);
-    want(ts == 40);
-    want(uri_serializes_to(&got, "?staging/cafef00d"));
+    ulogrec g = {};
+    call(ULOGFindVerb, l_data, l_idx, verb_of("put"), &g);
+    want(g.ts == 40);
+    want(uri_serializes_to(&g.uri, "?staging/cafef00d"));
 
-    call(ULOGFindVerb, l_data, l_idx, verb_of("post"), &ts, &got);
-    want(ts == 30);
-    want(uri_serializes_to(&got, "?heads/main"));
+    call(ULOGFindVerb, l_data, l_idx, verb_of("post"), &g);
+    want(g.ts == 30);
+    want(uri_serializes_to(&g.uri, "?heads/main"));
 
-    want(ULOGFindVerb(l_data, l_idx, verb_of("patch"), &ts, &got) == ULOGNONE);
+    want(ULOGFindVerb(l_data, l_idx, verb_of("patch"), &g) == ULOGNONE);
 
     call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-fv.log");
@@ -243,21 +259,23 @@ static ok64 T_truncate(void) {
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
-    for (u32 i = 0; i < 5; i++)
-        call(ULOGAppendAt, l_data, l_idx, (ron60)(100 + i), verb_of("get"),
-             saved_uri_for_append(&s));
+    for (u32 i = 0; i < 5; i++) {
+        ulogrec r = rec_of((ron60)(100 + i), verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
     want(ULOGCount(l_idx) == 5);
 
     call(ULOGTruncate, l_data, l_idx, 3);
     want(ULOGCount(l_idx) == 3);
 
-    ron60 ts = 0, verb = 0;
-    uri got = {};
-    call(ULOGTail, l_data, l_idx, &ts, &verb, &got);
-    want(ts == 102);
+    ulogrec g = {};
+    call(ULOGTail, l_data, l_idx, &g);
+    want(g.ts == 102);
 
-    call(ULOGAppendAt, l_data, l_idx, 200, verb_of("get"),
-         saved_uri_for_append(&s));
+    {
+        ulogrec r = rec_of(200, verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
     want(ULOGCount(l_idx) == 4);
 
     call(ULOGClose, l_data, l_idx, YES);
@@ -266,8 +284,8 @@ static ok64 T_truncate(void) {
     Bkv64 l2_idx  = {};
     call(ULOGOpen, &l2_data, l2_idx, path);
     want(ULOGCount(l2_idx) == 4);
-    call(ULOGTail, l2_data, l2_idx, &ts, &verb, &got);
-    want(ts == 200);
+    call(ULOGTail, l2_data, l2_idx, &g);
+    want(g.ts == 200);
     call(ULOGClose, l2_data, l2_idx, YES);
     rm_tmp("/tmp/ulog-tr.log");
     done;
@@ -283,32 +301,35 @@ static ok64 T_stream(void) {
     call(parse_uri_lit, &s1, "//host/path?heads/main");
     call(parse_uri_lit, &s2, "?staging/0123");
 
-    call(ULOGu8sFeed, u8bIdle(buf), 1000, verb_of("get"),
-         saved_uri_for_append(&s1));
-    call(ULOGu8sFeed, u8bIdle(buf), 1001, verb_of("put"),
-         saved_uri_for_append(&s2));
+    {
+        ulogrec r = rec_of(1000, verb_of("get"), &s1);
+        call(ULOGu8sFeed, u8bIdle(buf), &r);
+    }
+    {
+        ulogrec r = rec_of(1001, verb_of("put"), &s2);
+        call(ULOGu8sFeed, u8bIdle(buf), &r);
+    }
 
     a_dup(u8c, data, u8bData(buf));
     u8cs scan = {data[0], data[1]};
 
-    ron60 ts = 0, verb = 0;
-    uri got = {};
-    call(ULOGu8sDrain, scan, &ts, &verb, &got);
-    want(ts == 1000 && verb == verb_of("get"));
-    want(uri_serializes_to(&got, "//host/path?heads/main"));
+    ulogrec g = {};
+    call(ULOGu8sDrain, scan, &g);
+    want(g.ts == 1000 && g.verb == verb_of("get"));
+    want(uri_serializes_to(&g.uri, "//host/path?heads/main"));
 
-    call(ULOGu8sDrain, scan, &ts, &verb, &got);
-    want(ts == 1001 && verb == verb_of("put"));
-    want(uri_serializes_to(&got, "?staging/0123"));
+    call(ULOGu8sDrain, scan, &g);
+    want(g.ts == 1001 && g.verb == verb_of("put"));
+    want(uri_serializes_to(&g.uri, "?staging/0123"));
 
     want(u8csEmpty(scan) == YES);
-    want(ULOGu8sDrain(scan, &ts, &verb, &got) == NODATA);
+    want(ULOGu8sDrain(scan, &g) == NODATA);
 
     //  Partial row (no '\n') → NODATA, scan unchanged.
     u8c partial[] = "1000\tget\thttp://x";
     u8cs pscan = {partial, partial + sizeof(partial) - 1};
     u8cp pstart = pscan[0];
-    want(ULOGu8sDrain(pscan, &ts, &verb, &got) == NODATA);
+    want(ULOGu8sDrain(pscan, &g) == NODATA);
     want(pscan[0] == pstart);
     done;
 }
@@ -324,18 +345,19 @@ static ok64 T_whitespace(void) {
     a_pad(u8, canon, 256);
     saved_uri su = {};
     call(parse_uri_lit, &su, "//host/path");
-    call(ULOGu8sFeed, u8bIdle(canon), 1000, verb_of("post"),
-         saved_uri_for_append(&su));
+    {
+        ulogrec r = rec_of(1000, verb_of("post"), &su);
+        call(ULOGu8sFeed, u8bIdle(canon), &r);
+    }
 
     u8c wide_row[] = "Fd  \t post \t\t //host/path\n";
     u8cs wide_scan = {wide_row, wide_row + sizeof(wide_row) - 1};
 
-    ron60 ts = 0, verb = 0;
-    uri got = {};
-    call(ULOGu8sDrain, wide_scan, &ts, &verb, &got);
-    want(ts == 1000);
-    want(verb == verb_of("post"));
-    want(uri_serializes_to(&got, "//host/path"));
+    ulogrec g = {};
+    call(ULOGu8sDrain, wide_scan, &g);
+    want(g.ts == 1000);
+    want(g.verb == verb_of("post"));
+    want(uri_serializes_to(&g.uri, "//host/path"));
     done;
 }
 
@@ -348,14 +370,15 @@ typedef struct {
     char   uri[16][128];
 } each_collect;
 
-static ok64 each_cb(ron60 ts, ron60 verb, uricp u, void *ctx) {
-    sane(ctx && u);
+static ok64 each_cb(ulogreccp rec, void *ctx) {
+    sane(rec && ctx);
     each_collect *c = (each_collect *)ctx;
     if (c->n >= 16) fail(FAIL);
-    c->ts[c->n]   = ts;
-    c->verb[c->n] = verb;
+    c->ts[c->n]   = rec->ts;
+    c->verb[c->n] = rec->verb;
     a_pad(u8, buf, 128);
-    call(URIutf8Feed, u8bIdle(buf), u);
+    uri u = rec->uri;
+    call(URIutf8Feed, u8bIdle(buf), &u);
     size_t L = u8bDataLen(buf);
     if (L >= sizeof(c->uri[0])) L = sizeof(c->uri[0]) - 1;
     memcpy(c->uri[c->n], u8bDataHead(buf), L);
@@ -384,12 +407,19 @@ static ok64 T_each_latest(void) {
     call(parse_uri_lit, &g6, "?heads/main#?6666");
 
     ron60 set_v = verb_of("set"), get_v = verb_of("get");
-    call(ULOGAppendAt, l_data, l_idx, 1, set_v, saved_uri_for_append(&m1));
-    call(ULOGAppendAt, l_data, l_idx, 2, set_v, saved_uri_for_append(&f2));
-    call(ULOGAppendAt, l_data, l_idx, 3, set_v, saved_uri_for_append(&m3));
-    call(ULOGAppendAt, l_data, l_idx, 4, set_v, saved_uri_for_append(&m4));
-    call(ULOGAppendAt, l_data, l_idx, 5, set_v, saved_uri_for_append(&f5));
-    call(ULOGAppendAt, l_data, l_idx, 6, get_v, saved_uri_for_append(&g6));
+    {
+        ulogrec r = rec_of(1, set_v, &m1); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(2, set_v, &f2); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(3, set_v, &m3); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(4, set_v, &m4); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(5, set_v, &f5); call(ULOGAppendAt, l_data, l_idx, &r);
+    } {
+        ulogrec r = rec_of(6, get_v, &g6); call(ULOGAppendAt, l_data, l_idx, &r);
+    }
 
     //  Filter = `set`: expect (feat@5) then (main@4) — reverse order,
     //  one row per key, get_v row skipped entirely.
@@ -435,22 +465,23 @@ static ok64 T_compact_latest(void) {
     call(parse_uri_lit, &s[4], "?heads/feat#?cccc");
 
     ron60 set_v = verb_of("set");
-    for (u32 i = 0; i < 5; i++)
-        call(ULOGAppendAt, l_data, l_idx, 10 + i, set_v, saved_uri_for_append(&s[i]));
+    for (u32 i = 0; i < 5; i++) {
+        ulogrec r = rec_of(10 + i, set_v, &s[i]);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
     want(ULOGCount(l_idx) == 5);
 
     call(ULOGCompactLatest, &l_data, l_idx, path, set_v);
     want(ULOGCount(l_idx) == 2);
 
     //  Survivors in ts order: main@12, feat@14.
-    ron60 ts = 0, v = 0;
-    uri u = {};
-    call(ULOGRow, l_data, l_idx, 0, &ts, &v, &u);
-    want(ts == 12);
-    want(uri_serializes_to(&u, "?heads/main#?2222"));
-    call(ULOGRow, l_data, l_idx, 1, &ts, &v, &u);
-    want(ts == 14);
-    want(uri_serializes_to(&u, "?heads/feat#?cccc"));
+    ulogrec g = {};
+    call(ULOGRow, l_data, l_idx, 0, &g);
+    want(g.ts == 12);
+    want(uri_serializes_to(&g.uri, "?heads/main#?2222"));
+    call(ULOGRow, l_data, l_idx, 1, &g);
+    want(g.ts == 14);
+    want(uri_serializes_to(&g.uri, "?heads/feat#?cccc"));
 
     call(ULOGClose, l_data, l_idx, YES);
     rm_tmp("/tmp/ulog-cl.log");

@@ -52,7 +52,8 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
         urow.path[1] = pb[1];
     }
     ron60 vrepo = SNIFFAtVerbRepo();
-    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, vrepo, &urow);
+    ulogrec rec = {.verb = vrepo, .uri = urow};
+    return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
 //  Resolve the store root from the repo-row URI.  The URI's path is

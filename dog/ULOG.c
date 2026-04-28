@@ -9,24 +9,26 @@
 
 #include "abc/BUF.h"
 #include "abc/FILE.h"
+#include "abc/LSM.h"     // brings HEAPx<u8cs> primitives
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RAP.h"
 
 // --- streaming primitives --------------------------------------------
 
-ok64 ULOGu8sFeed(u8s into, ron60 ts, ron60 verb, uricp u) {
-    sane(into && u);
+ok64 ULOGu8sFeed(u8s into, ulogreccp rec) {
+    sane(into && rec);
     //  Rough capacity check.  URIutf8Feed stops with its own failure
     //  if the component data doesn't fit; here we just make sure the
     //  fixed parts (ts + verb + two tabs + '\n') have room.  Assume
     //  at least 48 idle bytes available for those.
     if ((size_t)$len(into) < 48) return BNOROOM;
-    call(RONutf8sFeed, into, ts);
+    call(RONutf8sFeed, into, rec->ts);
     call(u8sFeed1, into, '\t');
-    call(RONutf8sFeed, into, verb);
+    call(RONutf8sFeed, into, rec->verb);
     call(u8sFeed1, into, '\t');
-    call(URIutf8Feed, into, u);
+    uri u = rec->uri;
+    call(URIutf8Feed, into, &u);
     call(u8sFeed1, into, '\n');
     done;
 }
@@ -54,9 +56,8 @@ static u8cp ulog_find_ws(u8cp p, u8cp e) {
     return p;
 }
 
-ok64 ULOGu8sDrain(u8cs scan,
-                  ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(scan && ts_out && verb_out && u_out);
+ok64 ULOGu8sDrain(u8cs scan, ulogrecp out) {
+    sane(scan && out);
 
     //  Need a terminating '\n' to have a complete row.
     u8cp nl = scan[0];
@@ -105,16 +106,16 @@ ok64 ULOGu8sDrain(u8cs scan,
         ulog_skip_line(scan);
         fail(ULOGBADFMT);
     }
-    memset(u_out, 0, sizeof(*u_out));
-    u_out->data[0] = uri_head;
-    u_out->data[1] = uri_term;
-    if (URILexer(u_out) != OK) {
+    memset(out, 0, sizeof(*out));
+    out->uri.data[0] = uri_head;
+    out->uri.data[1] = uri_term;
+    if (URILexer(&out->uri) != OK) {
         ulog_skip_line(scan);
         fail(ULOGBADFMT);
     }
 
-    *ts_out   = ts;
-    *verb_out = verb;
+    out->ts   = ts;
+    out->verb = verb;
     scan[0]   = nl + 1;
     done;
 }
@@ -144,18 +145,17 @@ static ok64 ulog_rebuild_idx(u8bp data, kv64bp idx) {
         }
 
         u64 off = (u64)(scan[0] - base);
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGu8sDrain(scan, &ts, &verb, &u);
+        ulogrec rec = {};
+        ok64 o = ULOGu8sDrain(scan, &rec);
         if (o == NODATA) break;
         if (o != OK) return o;
 
-        if (have_idx && kv64bDataLen(idx) > 0 && ts <= prev) fail(ULOGCLOCK);
+        if (have_idx && kv64bDataLen(idx) > 0 && rec.ts <= prev) fail(ULOGCLOCK);
         if (have_idx) {
-            kv64 ent = {.key = ts, .val = off};
+            kv64 ent = {.key = rec.ts, .val = off};
             call(kv64bPush, idx, &ent);
         }
-        prev = ts;
+        prev = rec.ts;
         last_nl_plus_one = (u8 *)scan[0];
     }
 
@@ -239,46 +239,46 @@ ok64 ULOGClose(u8bp data, kv64bp idx, b8 rw) {
     done;
 }
 
-ok64 ULOGAppendAt(u8bp data, kv64bp idx, ron60 ts, ron60 verb, uricp u) {
-    sane(data && idx && u);
+ok64 ULOGAppendAt(u8bp data, kv64bp idx, ulogreccp rec) {
+    sane(data && idx && rec);
     size_t n = kv64bDataLen(idx);
     if (n > 0) {
         kv64 const *last = ((kv64 const *)idx[0]) + (n - 1);
-        if (ts <= last->key) fail(ULOGCLOCK);
+        if (rec->ts <= last->key) fail(ULOGCLOCK);
     }
     call(FILEBookEnsure, data, 2048);
 
     u64 off = (u64)u8bDataLen(data);
-    call(ULOGu8sFeed, u8bIdle(data), ts, verb, u);
+    call(ULOGu8sFeed, u8bIdle(data), rec);
 
-    kv64 ent = {.key = ts, .val = off};
+    kv64 ent = {.key = rec->ts, .val = off};
     call(kv64bPush, idx, &ent);
     done;
 }
 
-ok64 ULOGAppend(u8bp data, kv64bp idx, ron60 verb, uricp u) {
+ok64 ULOGAppend(u8bp data, kv64bp idx, ulogrecp rec) {
+    sane(data && idx && rec);
     //  Clamp to max(RONNow(), tail+1) so rapid same-ms appends
     //  still land instead of tripping ULOGCLOCK.  Mirrors the
     //  pattern keeper/REFS.c uses in refs_next_ts().
-    sane(data && idx);
     ron60 now = RONNow();
     size_t n = kv64bDataLen(idx);
     if (n > 0) {
         kv64 const *last = ((kv64 const *)idx[0]) + (n - 1);
         if (now <= last->key) now = last->key + 1;
     }
-    return ULOGAppendAt(data, idx, now, verb, u);
+    rec->ts = now;
+    return ULOGAppendAt(data, idx, rec);
 }
 
-ok64 ULOGRow(u8b data, kv64b idx, u32 i,
-             ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(data && idx && ts_out && verb_out && u_out);
+ok64 ULOGRow(u8b data, kv64b idx, u32 i, ulogrecp out) {
+    sane(data && idx && out);
     if (i >= ULOGCount(idx)) fail(ULOGNONE);
     kv64 const *a = (kv64 const *)idx[0];
     a_dup(u8c, dview, u8bDataC(data));
 
     u8cs scan = {dview[0] + a[i].val, dview[1]};
-    return ULOGu8sDrain(scan, ts_out, verb_out, u_out);
+    return ULOGu8sDrain(scan, out);
 }
 
 ok64 ULOGSeek(kv64b idx, ron60 ts, u32 *i_out) {
@@ -299,37 +299,32 @@ ok64 ULOGFind(kv64b idx, ron60 ts, u32 *i_out) {
 }
 
 ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
-                    ron60 *ts_out, urip u_out) {
-    sane(data && idx && pred && ts_out && u_out);
+                    ulogrecp out) {
+    sane(data && idx && pred && out);
     u32 n = ULOGCount(idx);
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(data, idx, i, &ts, &verb, &u);
+        ulogrec r = {};
+        ok64 o = ULOGRow(data, idx, i, &r);
         if (o != OK) return o;
-        if (pred(&u, ctx)) {
-            *ts_out = ts;
-            *u_out  = u;
+        if (pred(&r.uri, ctx)) {
+            *out = r;
             done;
         }
     }
     fail(ULOGNONE);
 }
 
-ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb,
-                  ron60 *ts_out, urip u_out) {
-    sane(data && idx && ts_out && u_out);
+ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb, ulogrecp out) {
+    sane(data && idx && out);
     u32 n = ULOGCount(idx);
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, v = 0;
-        uri u = {};
-        ok64 o = ULOGRow(data, idx, i, &ts, &v, &u);
+        ulogrec r = {};
+        ok64 o = ULOGRow(data, idx, i, &r);
         if (o != OK) return o;
-        if (v == verb) {
-            *ts_out = ts;
-            *u_out  = u;
+        if (r.verb == verb) {
+            *out = r;
             done;
         }
     }
@@ -388,22 +383,21 @@ ok64 ULOGeachLatest(u8b data, kv64b idx, ron60 verb_filter,
     ok64 rc = OK;
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(data, idx, i, &ts, &verb, &u);
+        ulogrec r = {};
+        ok64 o = ULOGRow(data, idx, i, &r);
         if (o != OK) { rc = o; break; }
-        if (verb_filter && verb != verb_filter) continue;
+        if (verb_filter && r.verb != verb_filter) continue;
 
         u8cs key = {};
         ulog_row_key_bytes(data, idx, i, key);
         //  Dedup key includes verb: seed the hash with verb so two
-        //  different verbs over the same URI-minus-fragment hash to
-        //  different slots.
-        u64 h = RAPHashSeed(key, (u64)verb);
+        //  different verbs over the same URI-minus-fragment key hash
+        //  to different slots.
+        u64 h = RAPHashSeed(key, (u64)r.verb);
         if (seen_contains(seen, h)) continue;
         u64bFeed1(seen, h);
 
-        rc = cb(ts, verb, &u, ctx);
+        rc = cb(&r, ctx);
         if (rc != OK) break;
     }
 
@@ -432,21 +426,20 @@ ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
     //  Pass 1: reverse walk, mark rows that survive compaction.
     for (u32 i = n; i > 0; ) {
         i--;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(*data, idx, i, &ts, &verb, &u);
+        ulogrec r = {};
+        ok64 o = ULOGRow(*data, idx, i, &r);
         if (o != OK) { u64bFree(seen); free(keep); return o; }
 
-        if (verb_filter && verb != verb_filter) {
+        if (verb_filter && r.verb != verb_filter) {
             keep[i] = 1;
             continue;
         }
         u8cs key = {};
         ulog_row_key_bytes(*data, idx, i, key);
         //  Dedup key includes verb: seed the hash with verb so two
-        //  different verbs over the same URI-minus-fragment hash to
-        //  different slots.
-        u64 h = RAPHashSeed(key, (u64)verb);
+        //  different verbs over the same URI-minus-fragment key hash
+        //  to different slots.
+        u64 h = RAPHashSeed(key, (u64)r.verb);
         if (seen_contains(seen, h)) continue;
         u64bFeed1(seen, h);
         keep[i] = 1;
@@ -470,14 +463,13 @@ ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
     //  Pass 2: forward walk, re-append kept rows into tmp.
     for (u32 i = 0; i < n; i++) {
         if (!keep[i]) continue;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        ok64 o = ULOGRow(*data, idx, i, &ts, &verb, &u);
+        ulogrec r = {};
+        ok64 o = ULOGRow(*data, idx, i, &r);
         if (o != OK) {
             ULOGClose(tmp_data, tmp_idx, YES);
             free(keep); return o;
         }
-        ok64 ao = ULOGAppendAt(tmp_data, tmp_idx, ts, verb, &u);
+        ok64 ao = ULOGAppendAt(tmp_data, tmp_idx, &r);
         if (ao != OK) {
             ULOGClose(tmp_data, tmp_idx, YES);
             free(keep); return ao;
@@ -529,4 +521,62 @@ ok64 ULOGTruncate(u8bp data, kv64bp idx, u32 keep_n) {
     *data_idle = new_idle;
 
     done;
+}
+
+// --- K-way heap merge over ULOG cursors -----------------------------
+
+//  Peek the head row of a cursor without advancing it.
+static ok64 ulog_peek_row(u8cs scan, ulogrecp out) {
+    a_dup(u8c, dup, scan);
+    return ULOGu8sDrain(dup, out);
+}
+
+b8 ULOGu8csZbyTs(u8cs const *a, u8cs const *b) {
+    a_dup(u8c, da, *a);
+    a_dup(u8c, db, *b);
+    if (u8csEmpty(da)) return NO;
+    if (u8csEmpty(db)) return YES;
+    ulogrec ra = {}, rb = {};
+    if (ulog_peek_row(da, &ra) != OK) return NO;
+    if (ulog_peek_row(db, &rb) != OK) return YES;
+    return ra.ts < rb.ts;
+}
+
+b8 ULOGu8csZbyUri(u8cs const *a, u8cs const *b) {
+    a_dup(u8c, da, *a);
+    a_dup(u8c, db, *b);
+    if (u8csEmpty(da)) return NO;
+    if (u8csEmpty(db)) return YES;
+    ulogrec ra = {}, rb = {};
+    if (ulog_peek_row(da, &ra) != OK) return NO;
+    if (ulog_peek_row(db, &rb) != OK) return YES;
+    //  URI key = path component.  Falls back to query when path is
+    //  empty (bare `?ref` URIs from REFS rows).
+    u8cs ka = {}, kb = {};
+    if (u8csEmpty(ra.uri.path)) u8csMv(ka, ra.uri.query);
+    else                        u8csMv(ka, ra.uri.path);
+    if (u8csEmpty(rb.uri.path)) u8csMv(kb, rb.uri.query);
+    else                        u8csMv(kb, rb.uri.path);
+    return u8csZ(&ka, &kb);
+}
+
+ok64 ULOGu8ssDrainHeap(u8css cursors, u8csz cmp, ulogrecp out) {
+    sane(cursors && cmp && out);
+    while (!$empty(cursors)) {
+        u8cs *root = $head(cursors);
+        if (u8csEmpty(*root)) {
+            //  Swap-remove the empty root from the heap, sift, retry.
+            u8csSwap(root, $last(cursors));
+            --$term(cursors);
+            if ($empty(cursors)) break;
+            u8cssDownZ(cursors, cmp);
+            continue;
+        }
+        ok64 d = ULOGu8sDrain(*root, out);
+        //  Re-sift: the root cursor advanced, its head may have
+        //  grown larger than other heap members.
+        u8cssDownZ(cursors, cmp);
+        return d;
+    }
+    return ULOGNONE;
 }
