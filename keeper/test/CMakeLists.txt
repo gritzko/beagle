@@ -69,12 +69,6 @@ target_compile_options(KEEPtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(KEEPtest keeplib gitcompat dog abc-core)
 add_test(NAME KEEPtest COMMAND KEEPtest)
 
-add_executable(MERGEtest MERGE.c)
-target_link_options(MERGEtest PRIVATE ${TEST_LDD_FLAGS})
-target_compile_options(MERGEtest PRIVATE ${TEST_CXX_FLAGS})
-target_link_libraries(MERGEtest keeplib gitcompat dog abc-core)
-add_test(NAME MERGEtest COMMAND MERGEtest)
-
 add_executable(UNPKtest UNPK.c)
 target_link_options(UNPKtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(UNPKtest PRIVATE ${TEST_CXX_FLAGS})

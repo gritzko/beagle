@@ -52,7 +52,6 @@ typedef struct {
     u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.sniff
     Bkv64   log_idx;  // ts → byte-offset index over log_data
     b8      log_rw;   // YES iff log was opened RW (Close must trim)
-    Bu32    sorted;   // per-process path-index sort (rebuilt each call)
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;
 
@@ -90,11 +89,6 @@ fun ok64 SNIFFFullpath(path8b out, u8cs reporoot, u8cs rel) {
     u8bFeed(out, rel);
     return PATHu8bTerm(out);
 }
-
-//  Sort the keeper path registry by lexical path.  Rebuilt per
-//  invocation; no persistence.  POST/DEL walk sorted indices to
-//  assemble tree objects bottom-up.
-ok64 SNIFFSort(void);
 
 //  YES iff `rel` names one of sniff/keeper's on-disk metadata
 //  entries (`.sniff`, `.dogs`) — either exactly or as a directory

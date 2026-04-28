@@ -72,6 +72,8 @@ typedef struct {
     post_rec   *rec;
     u8         *flag;
     u32         cap;
+    Bu32        sorted_idx;     // intern indices in path-lex order
+                                // (populated by post_classify_step)
     b8          any_pd;     // any put/delete rows since last post
     b8          base_is_patch;  // baseline row is a `patch`, not get/post
     b8          has_base;   // baseline row exists (any get/post/patch)
@@ -345,6 +347,12 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     u8cs path = {recs[0].uri.path[0], recs[0].uri.path[1]};
     u32 idx = SNIFFIntern(path);
     if (idx >= c->cap) return OK;
+
+    //  Record this idx in sorted-by-lex order — SNIFFMergeWalk fires
+    //  cb once per distinct path-key in lex order, so just append.
+    //  Replaces the post-classify SNIFFSort/qsort that walked the
+    //  intern table to rebuild a lex permutation.
+    u32bFeed1(c->sorted_idx, idx);
 
     for (u32 i = 0; i < n; i++) {
         ulogreccp r = &recs[i];
@@ -663,11 +671,11 @@ typedef struct {
 
 //  Locate the end of the range whose sorted paths all start with
 //  `prefix` (exclusive).  Caller guarantees [lo..hi) is sorted.
-static u32 post_range_end(u32 lo, u32 hi, u8cs prefix) {
+static u32 post_range_end(post_ctx *c, u32 lo, u32 hi, u8cs prefix) {
     u32 end = lo;
     while (end < hi) {
         u8cs p = {};
-        u32 idx = *u32bDataAtP(SNIFF.sorted, end);
+        u32 idx = *u32bDataAtP(c->sorted_idx, end);
         if (SNIFFPath(p, idx) != OK) { end++; continue; }
         size_t plen = $len(prefix);
         if ($len(p) < plen) break;
@@ -691,7 +699,7 @@ static ok64 post_build_tree(post_ctx *c, u32 lo, u32 hi, u8cs prefix,
 
     u32 i = lo;
     while (i < hi) {
-        u32 idx = *u32bDataAtP(SNIFF.sorted, i);
+        u32 idx = *u32bDataAtP(c->sorted_idx, i);
         u8cs rel = {};
         if (SNIFFPath(rel, idx) != OK) { i++; continue; }
 
@@ -717,7 +725,7 @@ static ok64 post_build_tree(post_ctx *c, u32 lo, u32 hi, u8cs prefix,
             u8bFeed1(subprefix, '/');
             u8cs sub = {u8bDataHead(subprefix), subprefix[2]};
 
-            u32 sub_hi = post_range_end(i, hi, sub);
+            u32 sub_hi = post_range_end(c, i, hi, sub);
 
             sha1 sub_sha = {};
             ok64 so = post_build_tree(c, i, sub_hi, sub, &sub_sha,
@@ -1129,6 +1137,12 @@ static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k,
     };
     c->reporoot[0] = reporoot[0];
     c->reporoot[1] = reporoot[1];
+
+    //  Lex-sorted intern-index buffer.  Populated by post_classify_step
+    //  (one push per distinct path the merge sees) — replaces the old
+    //  SNIFFSort/qsort over the intern table.
+    ok64 so = u32bAllocate(c->sorted_idx, npath0 + 1024);
+    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return so; }
     done;
 }
 
@@ -1146,7 +1160,7 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     sha1 base_tree_sha = {};
     b8   have_base = NO;
     ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
-    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return so; }
+    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx); return so; }
 
     //  Walk the registry, print one line per changed path.
     //  Codes mirror git's `status --short`: `M` modified, `A` added,
@@ -1178,6 +1192,7 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     }
     u8bFree(rec_buf);
     u8bFree(flag_buf);
+    u32bFree(ctx.sorted_idx);
     done;
 }
 
@@ -1317,7 +1332,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     sha1 base_tree_sha = {};
     b8   have_base = NO;
     ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
-    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return so; }
+    if (so != OK) { u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx); return so; }
 
     //  5b. For every file explicitly deleted since last post, unlink
     //      it from disk — otherwise `be delete foo && be post` leaves
@@ -1343,7 +1358,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         u32 n_now = SNIFFCount();
         for (u32 i = 0; i < n_now && i < cap; i++) {
             ok64 hr = post_hash_one(&ctx, i);
-            if (hr != OK) { u8bFree(rec_buf); u8bFree(flag_buf); return hr; }
+            if (hr != OK) { u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx); return hr; }
         }
     }
 
@@ -1355,14 +1370,14 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         ok64 pp = post_add_patch_parents(&ctx, parents, &nparents,
                                          POST_MAX_PARENTS);
         if (pp != OK) {
-            u8bFree(rec_buf); u8bFree(flag_buf);
+            u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
             return pp;
         }
     }
 
-    //  7. Sort paths, then build trees bottom-up.
-    call(SNIFFSort);
-
+    //  7. Build trees bottom-up over the lex-sorted intern indices the
+    //     classification merge populated in `ctx.sorted_idx` — no
+    //     separate sort pass.
     sha1 root_tree = {};
     b8 have_root = NO;
     Bu8 tree_bodies = {};
@@ -1370,13 +1385,13 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     u32 tree_count = 0;
 
     {
-        u32 n_sorted = u32bDataLen(SNIFF.sorted);
+        u32 n_sorted = u32bDataLen(ctx.sorted_idx);
         u8cs no_prefix = {};
         ok64 bo = post_build_tree(&ctx, 0, n_sorted, no_prefix,
                                   &root_tree, tree_bodies, &tree_count);
         if (bo != OK) {
             u8bFree(tree_bodies);
-            u8bFree(rec_buf); u8bFree(flag_buf);
+            u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
             return bo;
         }
         have_root = !sha1empty(&root_tree);
@@ -1393,7 +1408,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                 "sniff: post: no changes since base — refusing empty "
                 "commit\n");
         u8bFree(tree_bodies);
-        u8bFree(rec_buf); u8bFree(flag_buf);
+        u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
         return SNIFFNOOP;
     }
 
@@ -1474,7 +1489,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     if (fo != OK) {
         KEEPPackClose(k, &p);
         u8bFree(tree_bodies);
-        u8bFree(rec_buf); u8bFree(flag_buf);
+        u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
         return fo;
     }
 
@@ -1494,7 +1509,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             if (to != OK) {
                 KEEPPackClose(k, &p);
                 u8bFree(tree_bodies);
-                u8bFree(rec_buf); u8bFree(flag_buf);
+                u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
                 return to;
             }
         }
@@ -1525,7 +1540,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             if (bo != OK) {
                 KEEPPackClose(k, &p);
                 u8bFree(tree_bodies);
-                u8bFree(rec_buf); u8bFree(flag_buf);
+                u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
                 return bo;
             }
         }
@@ -1628,7 +1643,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         }
     }
     u8bFree(tree_bodies);
-    u8bFree(rec_buf); u8bFree(flag_buf);
+    u8bFree(rec_buf); u8bFree(flag_buf); u32bFree(ctx.sorted_idx);
 
     fprintf(stderr, "sniff: commit %.*s\n",
             (int)u8bDataLen(out_hex), (char *)u8bDataHead(out_hex));

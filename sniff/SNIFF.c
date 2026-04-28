@@ -177,7 +177,6 @@ ok64 SNIFFClose(void) {
     if (!sniff_is_open()) return OK;
     sniff *s = &SNIFF;
     ULOGClose(s->log_data, s->log_idx, s->log_rw);
-    u32bFree(s->sorted);
     IGNOFree(&s->ignores);
     zerop(s);
     sniff_is_rw = NO;
@@ -239,30 +238,6 @@ b8 SNIFFRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full) {
     rel_out[0] = rel[0];
     rel_out[1] = rel[1];
     return YES;
-}
-
-// --- Sort (per-invocation) ---
-
-static int sniff_cmp_idx(void const *a, void const *b) {
-    u8cs pa = {}, pb = {};
-    SNIFFPath(pa, *(u32 const *)a);
-    SNIFFPath(pb, *(u32 const *)b);
-    return u8cscmp(&pa, &pb);
-}
-
-ok64 SNIFFSort(void) {
-    sane(1);
-    sniff *s = &SNIFF;
-    u32 n = SNIFFCount();
-    if (u32bDataLen(s->sorted) > 0) u32bReset(s->sorted);
-    if (n == 0) done;
-    if (u32bLen(s->sorted) < n) {
-        u32bFree(s->sorted);
-        call(u32bAllocate, s->sorted, n);
-    }
-    for (u32 i = 0; i < n; i++) u32bFeed1(s->sorted, i);
-    qsort(u32bDataHead(s->sorted), n, sizeof(u32), sniff_cmp_idx);
-    done;
 }
 
 // --- N-way ULOG-row merge -------------------------------------------

@@ -334,19 +334,4 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_out);
 //  in keeper/PATHS.h.  Its backing fields (paths_log, paths_offs,
 //  paths_hash) live on the `keeper` struct above.
 
-//  N-way merge cursor over sorted newline-separated path lists.
-//
-//  Each input cursor in `inputs` is a u8cs spanning the unconsumed
-//  tail of one tree's path list (each WALKTreeLazy run materialises
-//  one such tail into a `Bu8`; the cursor is the data view).  On OK,
-//  `path_out` is a slice into the contributing input(s) holding the
-//  smallest head path across them, and `*mask_out` has bit `i` set
-//  iff `inputs[i]` carried that path at its head.  Every contributor
-//  is advanced past the path + its newline; non-contributors keep
-//  their position.  Exhausted inputs become empty u8cs slices —
-//  indices in `inputs` never shift.  Returns KEEPNONE when every
-//  input is empty.  Caller MUST cap `$len(inputs)` at 64 (one bit
-//  per input in the mask).
-ok64 KEEPu8ssDrain(u8css inputs, u8csp path_out, u64 *mask_out);
-
 #endif

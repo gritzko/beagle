@@ -7,8 +7,10 @@
 #include "abc/BUF.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 
 #include "dog/HUNK.h"
+#include "dog/ULOG.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 
@@ -28,38 +30,42 @@ static void ls_emit_line(Bu8 out, u8cs path, b8 is_dir) {
     (void)u8bFeed1(out, '\n');
 }
 
-// --- Mode: wt listing from the path registry ---
+// --- Mode: wt listing via SNIFFWtULog ---
 //
-//  Iterate the keeper-owned path registry.  `prefix` (possibly empty)
-//  filters to entries whose path starts with it — "entries of this
-//  subdir" semantics.  The registry stores dir names with a trailing
-//  '/'; we peel it before emit and ls_emit_line re-adds.
-//
-//  Note: the registry accumulates every path sniff/graf/spot have
-//  ever seen, not strictly "what's on disk now".  For MVP that's
-//  close enough to `git ls-files`; a stat()-backed filter can follow.
+//  Walk the wt as a sorted ULOG row buffer (`SNIFFWtULog`) and emit
+//  one line per file.  `prefix` (possibly empty) filters to entries
+//  whose path starts with it — recursive listing under the subdir,
+//  matching `git ls-files <prefix>` shape.
 
 static ok64 ls_wt(Bu8 out, u8cs prefix) {
     sane(1);
-    call(SNIFFSort);
-    sniff *s = &SNIFF;
-    u32 const *idx = u32bDataHead(s->sorted);
-    u32 nsorted = (u32)u32bDataLen(s->sorted);
-    for (u32 k = 0; k < nsorted; k++) {
-        u32 i = idx[k];
-        u8cs path = {};
-        if (SNIFFPath(path, i) != OK) continue;
+    a_dup(u8c, root, u8bDataC(SNIFF.h->wt));
+
+    a_cstr(s_wt, "wt"); a_dup(u8c, dw, s_wt);
+    ron60 v_wt = 0;
+    call(RONutf8sDrain, &v_wt, dw);
+
+    Bu8 wu = {};
+    call(u8bAllocate, wu, 1UL << 20);
+    ok64 wo = SNIFFWtULog(root, v_wt, wu);
+    if (wo != OK) { u8bFree(wu); return wo; }
+
+    a_dup(u8c, scan, u8bData(wu));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
         if ($empty(path)) continue;
         if (!$empty(prefix)) {
             if ((size_t)$len(path) < (size_t)$len(prefix)) continue;
             if (memcmp(path[0], prefix[0],
                        (size_t)$len(prefix)) != 0) continue;
         }
-        b8 is_dir = *$last(path) == '/';
-        u8cs view = {path[0], path[1]};
-        if (is_dir) view[1]--;
-        ls_emit_line(out, view, is_dir);
+        ls_emit_line(out, path, NO);
     }
+    u8bFree(wu);
     done;
 }
 
