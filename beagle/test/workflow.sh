@@ -388,4 +388,43 @@ echo "$out" | grep -q 'no changes' && \
     fail "second bare put falsely reported 'no changes' (foo.c is still dirty vs baseline)"
 note "second bare put correctly avoided false-clean refusal"
 
+# ------------------------------------------------------------------
+# Scenario 13: be post leaves untouched files alone (incl. mtime).
+#
+#   Two-file baseline.  Modify only `b.txt` and post.  `a.txt` was not
+#   put, not deleted, content unchanged — POST has no business
+#   touching it.  The current implementation re-stamps every surviving
+#   file with the post ts; after the decision-list refactor, only
+#   `add` rows get stamped.  This test pins down the desired end-state:
+#   KEEP files retain their old mtime + content byte-for-byte.
+# ------------------------------------------------------------------
+echo "=== 13. be post leaves untouched files alone (mtime + bytes) ==="
+D13="$TMP/r13"; mkdir -p "$D13"; cd "$D13"
+echo a-v1 > a.txt
+echo b-v1 > b.txt
+"$BE" post seed two >/dev/null
+C13a=$(head_hex)
+note "baseline HEAD=$C13a"
+
+#  %.Y is seconds.nanoseconds — captures the millisecond-resolution
+#  mtime that POST writes via futimens, so a re-stamp shows up here
+#  even when the post happens within the same wall-clock second.
+a_mtime_before=$(stat -c %.Y a.txt)
+a_bytes_before=$(cat a.txt)
+
+usleep 10000
+echo b-v2 > b.txt                          # modify only b.txt
+"$BE" post b only >/dev/null
+C13b=$(head_hex)
+[ "$C13b" != "$C13a" ] || fail "HEAD unchanged after b.txt modify"
+
+a_mtime_after=$(stat -c %.Y a.txt)
+a_bytes_after=$(cat a.txt)
+
+[ "$a_mtime_before" = "$a_mtime_after" ] \
+    || fail "post re-stamped a.txt (mtime $a_mtime_before → $a_mtime_after); KEEP files should retain their stamp"
+[ "$a_bytes_before" = "$a_bytes_after" ] \
+    || fail "a.txt bytes changed across post"
+note "untouched a.txt: mtime + bytes preserved across post"
+
 echo "=== all be-dispatch scenarios passed ==="

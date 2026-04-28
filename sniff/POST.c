@@ -40,58 +40,42 @@
 
 #include "AT.h"
 
-// --- Per-path state ---
+//  Cap on the per-commit ULOG-shaped buffers (decisions, leaves,
+//  recs).  32 MiB is enough for tens of thousands of distinct paths
+//  per commit at ~100 bytes per row.  A repo that exceeds this at
+//  commit time has bigger problems than the cap.
+#define POST_TREE_ULOG_MAX (32UL << 20)
+
+// --- Per-commit decision stream ---
 //
-//  Dense per-step records produced by `post_classify_step` — one entry
-//  per distinct path the merge sees.  Allocated/freed per POST scan;
-//  no intern-table indexing.
-
-enum post_flag {
-    POST_IN_BASE  = 1 << 0,  // path had an entry in the baseline tree
-    POST_ON_DISK  = 1 << 1,  // path currently exists on disk
-    POST_EXPL_PUT = 1 << 2,  // explicit `put <path>` since last post
-    POST_EXPL_DEL = 1 << 3,  // explicit `delete <path>` since last post
-    POST_REWRITE  = 1 << 4,  // fate: pull content from wt, emit new blob
-    POST_KEEP     = 1 << 5,  // fate: reuse baseline sha
-    POST_DROP     = 1 << 6,  // fate: omit from new tree
-    POST_MAYBE    = 1 << 7,  // tracked + mtime-unknown: hash needed to
-                             // decide REWRITE (content differs) vs KEEP
-                             // (content matches old_sha — re-stamp file).
-};
-
-typedef struct {
-    u8cs   path;        // slice into ctx.path_arena (lex-sorted globally)
-    sha1   old_sha;     // from baseline (empty if POST_IN_BASE unset)
-    sha1   new_sha;     // final sha (empty if dropped)
-    u16    old_mode;    // from baseline
-    u16    new_mode;    // final
-    u8     flag;        // POST_* bits
-    u8     _pad[5];     // align Bu8 (32 bytes) to 8-byte boundary
-    Bu8    content;     // blob content for rewrites (freed at end)
-} post_step_rec;
+//  `post_classify_step` runs the merge / decide / hash inline and
+//  writes one decision ULOG row per distinct path into `ctx.decisions`.
+//  Verbs in the stream:
+//    keep    : carry baseline sha+mode verbatim (M/A/D printer is
+//              silent on KEEP).
+//    unlink  : drop from tree + unlink from disk.
+//    add     : new content (freshly hashed); query optionally chains
+//              `&<old_sha>` so the M/A/D printer can distinguish add
+//              ("A") from rewrite ("M") and the blob feed can build
+//              an OFS/REF_DELTA against the baseline blob.
+//
+//  Every consumer (tree-build, unlink loop, blob feed, stamp,
+//  patch-parents, M/A/D print) drains `decisions`.
 
 typedef struct {
     keeper        *k;
     u8cs           reporoot;
-    Bu8            path_arena;   // backing bytes for rec.path slices
-    Bu8            recs;         // u8b of post_step_rec (dense, lex-sorted)
+    Bu8            decisions;    // ULOG-shaped: <ts>\t<verb>\t<path>?<query>#<frag>
+    ron60          v_keep;       // verb constants emitted into `decisions`
+    ron60          v_unlink;
+    ron60          v_add;
+    ron60          stamp_ts;     // single per-commit stamp (post ts)
     b8             any_pd;       // any put/delete rows since last post
     b8             base_is_patch;// baseline row is a `patch`, not get/post
     b8             has_base;     // baseline row exists (any get/post/patch)
     ron60          last_post_ts;
     ok64           error;
 } post_ctx;
-
-//  Accessors over the dense recs buffer.
-fun post_step_rec *post_recs_head(post_ctx *c) {
-    return (post_step_rec *)u8bDataHead(c->recs);
-}
-fun u32 post_recs_count(post_ctx *c) {
-    return (u32)(u8bDataLen(c->recs) / sizeof(post_step_rec));
-}
-fun post_step_rec *post_recs_at(post_ctx *c, u32 i) {
-    return post_recs_head(c) + i;
-}
 
 // --- git mode helpers ---
 
@@ -113,6 +97,40 @@ static void post_mode_feed(Bu8 tree, u16 mode) {
     int n = snprintf(buf, sizeof(buf), "%o", (unsigned)mode);
     u8cs m = {(u8cp)buf, (u8cp)buf + n};
     u8bFeed(tree, m);
+}
+
+// --- Forward decls ---
+
+static ok64 post_emit_decision(post_ctx *c, ron60 verb,
+                               u8cs path, u16 mode,
+                               sha1 const *old_sha,
+                               sha1 const *frag_sha);
+
+// --- Hash a wt file (mmap or readlink) into a sha1 ---
+
+//  Compute the git-blob sha for a wt file.  Symlinks (mode 120000)
+//  go through `readlink`; everything else uses `FILEMapRO`.  Output
+//  written into `*out`.  Errors propagate (file gone, mmap fail).
+static ok64 post_hash_path(u8cs reporoot, u8cs path, u16 mode, sha1 *out) {
+    sane($ok(reporoot) && out);
+    a_path(fp);
+    if (SNIFFFullpath(fp, reporoot, path) != OK) fail(SNIFFFAIL);
+
+    if (mode == 0120000) {
+        char target[1024];
+        ssize_t tlen = readlink((char const *)u8bDataHead(fp),
+                                target, sizeof(target));
+        if (tlen <= 0) fail(SNIFFFAIL);
+        u8cs tv = {(u8cp)target, (u8cp)target + tlen};
+        KEEPObjSha(out, DOG_OBJ_BLOB, tv);
+        done;
+    }
+
+    u8bp mapped = NULL;
+    call(FILEMapRO, &mapped, $path(fp));
+    KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(mapped));
+    FILEUnMap(mapped);
+    done;
 }
 
 // --- ULOG scans ---
@@ -348,59 +366,184 @@ typedef struct {
     ron60     v_del;
 } post_classify_step_ctx;
 
-//  SNIFFMergeWalk step callback.  Each `recs[i]` shares the same path
-//  but carries a different verb identifying its source (base / wt /
-//  put / del).  Pushes one fresh `post_step_rec` (path bytes copied
-//  into ctx.path_arena) and folds each merge contributor into it.
+//  SNIFFMergeWalk step callback.  Inspects the tie group (one record
+//  per source verb) for one path, decides the fate, hashes the wt
+//  file when the fate is `add`, and emits exactly one decision row
+//  into c->decisions.
+//
+//  Verbs in the output stream: keep / unlink / add (see post_emit_*).
 static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     post_classify_step_ctx *cctx = (post_classify_step_ctx *)vctx;
     post_ctx *c = cctx->c;
 
-    //  Stash the path bytes into the arena so the slice survives the
-    //  lifetime of bu/wu/put_buf/del_buf (freed in post_scan_changeset
-    //  while ctx.recs lives until POSTCommit / POSTPrintStatus end).
-    u8cs src = {recs[0].uri.path[0], recs[0].uri.path[1]};
-    if ($empty(src)) return OK;
-    u8c *path_start = u8bIdleHead(c->path_arena);
-    ok64 fo = u8bFeed(c->path_arena, src);
-    if (fo != OK) return fo;
-    u8c *path_end = u8bIdleHead(c->path_arena);
+    u8cs path = {recs[0].uri.path[0], recs[0].uri.path[1]};
+    if ($empty(path)) return OK;
 
-    //  Push a zeroed post_step_rec; SNIFFMergeWalk fires us in lex
-    //  order, so appending preserves the sort.
-    post_step_rec blank = {};
-    blank.path[0] = path_start;
-    blank.path[1] = path_end;
-    a_dup(u8c, blank_view,
-          ((u8cs){(u8c *)&blank, (u8c *)&blank + sizeof(blank)}));
-    fo = u8bFeed(c->recs, blank_view);
-    if (fo != OK) return fo;
-    post_step_rec *r =
-        post_recs_at(c, post_recs_count(c) - 1);
-
+    //  Inspect sources contributing to this path.
+    ulogreccp src_base = NULL, src_wt = NULL;
+    b8 has_put = NO, has_del = NO;
     for (u32 i = 0; i < n; i++) {
         ulogreccp m = &recs[i];
-        if (m->verb == cctx->v_base) {
-            u8cs mode_s = {m->uri.query[0], m->uri.query[1]};
-            u16  mode   = post_parse_octal_mode(mode_s);
-            r->flag    |= POST_IN_BASE;
-            r->old_mode = mode;
-            u8s bin_s = {r->old_sha.data, r->old_sha.data + 20};
-            a_dup(u8c, frag_dup, m->uri.fragment);
-            HEXu8sDrainSome(bin_s, frag_dup);
-            //  Gitlink (160000): carry through verbatim — no on-disk
-            //  file expected; POST_KEEP short-circuits post_decide.
-            if (mode == 0160000) r->flag |= POST_KEEP;
-        } else if (m->verb == cctx->v_wt) {
-            u8cs mode_s = {m->uri.query[0], m->uri.query[1]};
-            r->flag     |= POST_ON_DISK;
-            r->new_mode  = post_parse_octal_mode(mode_s);
-        } else if (m->verb == cctx->v_put) {
-            r->flag |= POST_EXPL_PUT;
-        } else if (m->verb == cctx->v_del) {
-            r->flag |= POST_EXPL_DEL;
-        }
+        if      (m->verb == cctx->v_base) src_base = m;
+        else if (m->verb == cctx->v_wt)   src_wt   = m;
+        else if (m->verb == cctx->v_put)  has_put  = YES;
+        else if (m->verb == cctx->v_del)  has_del  = YES;
     }
+
+    //  Pull baseline mode + sha (when present).
+    u16 base_mode = 0;
+    sha1 base_sha = {};
+    if (src_base) {
+        u8cs ms = {src_base->uri.query[0], src_base->uri.query[1]};
+        base_mode = post_parse_octal_mode(ms);
+        u8s bin_s = {base_sha.data, base_sha.data + 20};
+        a_dup(u8c, frag_dup, src_base->uri.fragment);
+        HEXu8sDrainSome(bin_s, frag_dup);
+    }
+    //  Pull wt mode (when on disk).
+    u16 wt_mode = 0;
+    if (src_wt) {
+        u8cs ms = {src_wt->uri.query[0], src_wt->uri.query[1]};
+        wt_mode = post_parse_octal_mode(ms);
+    }
+
+    //  --- Decision ladder (mirrors the old post_decide) ---
+
+    //  Gitlink: carry through verbatim — no on-disk file expected.
+    if (base_mode == 0160000) {
+        return post_emit_decision(c, c->v_keep, path, base_mode,
+                                  NULL, &base_sha);
+    }
+
+    //  Explicit delete row: drop unconditionally.  Unlink iff the
+    //  path was tracked or currently exists on disk.
+    if (has_del) {
+        if (src_base || src_wt) {
+            return post_emit_decision(c, c->v_unlink, path,
+                                      0, NULL, NULL);
+        }
+        return OK;
+    }
+
+    //  Explicit put row.
+    if (has_put) {
+        if (!src_wt) {
+            //  Explicit put of a missing file: drop, unlink if tracked.
+            if (src_base) {
+                return post_emit_decision(c, c->v_unlink, path,
+                                          0, NULL, NULL);
+            }
+            return OK;
+        }
+        sha1 new_sha = {};
+        if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+            return OK;
+        sha1 const *old = src_base ? &base_sha : NULL;
+        return post_emit_decision(c, c->v_add, path, wt_mode,
+                                  old, &new_sha);
+    }
+
+    //  No explicit rule.  Branches by (in baseline?) × (on disk?).
+
+    //  Missing from wt.
+    if (!src_wt) {
+        //  Gitignored baseline files: keep verbatim — we don't see
+        //  them on disk because SNIFFWtULog filters via SNIFFSkipMeta.
+        if (src_base && SNIFFSkipMeta(path)) {
+            return post_emit_decision(c, c->v_keep, path, base_mode,
+                                      NULL, &base_sha);
+        }
+        if (c->any_pd) {
+            //  Selective mode: keep baseline entries unchanged.
+            if (src_base) {
+                return post_emit_decision(c, c->v_keep, path, base_mode,
+                                          NULL, &base_sha);
+            }
+            return OK;
+        }
+        //  Implicit mode: missing tracked file is a deletion.
+        if (src_base) {
+            return post_emit_decision(c, c->v_unlink, path,
+                                      0, NULL, NULL);
+        }
+        return OK;
+    }
+
+    //  On disk, no explicit rule.  Untracked + selective = ignore.
+    if (!src_base && c->any_pd) return OK;
+
+    a_path(fp);
+    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    struct stat sb = {};
+    if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
+        if (src_base) {
+            return post_emit_decision(c, c->v_unlink, path,
+                                      0, NULL, NULL);
+        }
+        return OK;
+    }
+    struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
+                          .tv_nsec = sb.st_mtim.tv_nsec};
+    ron60 mtime_r = SNIFFAtOfTimespec(ts);
+
+    if (SNIFFAtKnown(mtime_r)) {
+        //  Per-file stamp lookup: who owns this mtime?
+        //    get/post → KEEP (baseline-clean)
+        //    patch/put/mod → REWRITE (current bytes; patch row's
+        //                    `theirs` joins parents via patch_parents)
+        ron60 ow_verb = 0;
+        uri ow_u = {};
+        ok64 lo = SNIFFAtRowAtTs(mtime_r, &ow_verb, &ow_u);
+        if (lo == OK) {
+            ron60 vg = SNIFFAtVerbGet();
+            ron60 vp = SNIFFAtVerbPost();
+            if (ow_verb == vg || ow_verb == vp) {
+                if (src_base) {
+                    return post_emit_decision(c, c->v_keep, path,
+                                              base_mode, NULL,
+                                              &base_sha);
+                }
+                return OK;  // untracked clean — shouldn't happen
+            }
+            //  patch / put / mod stamp owns this mtime → add.
+            sha1 new_sha = {};
+            if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+                return OK;
+            sha1 const *old = src_base ? &base_sha : NULL;
+            return post_emit_decision(c, c->v_add, path, wt_mode,
+                                      old, &new_sha);
+        }
+        //  ts known but row not found (corrupt log?) — fallback keep.
+        if (src_base) {
+            return post_emit_decision(c, c->v_keep, path, base_mode,
+                                      NULL, &base_sha);
+        }
+        return OK;
+    }
+
+    //  mtime unknown.
+    if (src_base) {
+        //  Tracked + dirty: hash to determine real change.
+        sha1 disk_sha = {};
+        if (post_hash_path(c->reporoot, path, wt_mode, &disk_sha) != OK)
+            return OK;
+        if (sha1eq(&disk_sha, &base_sha)) {
+            //  Identical → KEEP (mtime drifted but bytes match).
+            return post_emit_decision(c, c->v_keep, path, base_mode,
+                                      NULL, &base_sha);
+        }
+        return post_emit_decision(c, c->v_add, path, wt_mode,
+                                  &base_sha, &disk_sha);
+    }
+    if (!c->has_base) {
+        //  Fresh-repo first commit: auto-stage every dirty file.
+        sha1 new_sha = {};
+        if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+            return OK;
+        return post_emit_decision(c, c->v_add, path, wt_mode,
+                                  NULL, &new_sha);
+    }
+    //  Untracked + dirty + has-base → ignore in implicit mode.
     return OK;
 }
 
@@ -436,275 +579,121 @@ static ok64 post_classify_via_merge(post_ctx *c,
     return SNIFFMergeWalk(cursors, post_classify_step, &cctx);
 }
 
-// --- Change-set resolution ---
-
-static ok64 post_decide(post_ctx *c, post_step_rec *r) {
-    sane(c && r);
-    u8 f = r->flag;
-
-    if (!(f & (POST_IN_BASE | POST_ON_DISK))) return OK;
-
-    //  Gitlinks (submodule entries, mode 0160000) are carried through
-    //  verbatim — POST_KEEP was already set by classify_step.  The
-    //  on-disk presence rule below would otherwise see "no file at
-    //  path" (the gitlink references a different repo, not a file in
-    //  this one) and drop the entry.  Skip the rest of the logic.
-    if (r->old_mode == 0160000) {
-        r->flag |= POST_KEEP;
-        return OK;
-    }
-
-    //  Explicit rules win.
-    if (f & POST_EXPL_DEL) {
-        r->flag |= POST_DROP;
-        return OK;
-    }
-    if (f & POST_EXPL_PUT) {
-        if (!(f & POST_ON_DISK)) {   // explicit put of a missing file
-            r->flag |= POST_DROP;
-            return OK;
-        }
-        r->flag |= POST_REWRITE;
-        return OK;
-    }
-
-    //  Missing from wt — only drop when implicit mode and the path is
-    //  visible to the wt scan.  Gitignored baseline files (e.g. `.be`,
-    //  `.gitignore`-listed) are filtered out by `SNIFFWtULog` →
-    //  `SNIFFSkipMeta`, so they never get POST_ON_DISK even though the
-    //  bytes are right there on disk.  Treating them as deletions
-    //  silently strips them from history.  Honor the gitignore by
-    //  keeping the baseline entry verbatim.
-    if (!(f & POST_ON_DISK)) {
-        if ((f & POST_IN_BASE) && SNIFFSkipMeta(r->path)) {
-            r->flag |= POST_KEEP;
-            return OK;
-        }
-        if (c->any_pd) {
-            //  No explicit rule for this path and we are in selective
-            //  mode: keep the baseline entry unchanged.
-            if (f & POST_IN_BASE) r->flag |= POST_KEEP;
-        } else {
-            //  Implicit mode: a missing file is a deletion.
-            r->flag |= POST_DROP;
-        }
-        return OK;
-    }
-
-    //  On disk, no explicit rule.  Selective and implicit modes share
-    //  the same logic here: tracked files get the auto-mtime check
-    //  (KEEP if clean, REWRITE if dirty), untracked files are ignored
-    //  unless `be put` named them (handled above as POST_EXPL_PUT).
-    //  In selective mode this is critical — without it, `be put X` on
-    //  one new file would silently drop in-flight modifications to
-    //  every other tracked file.
-    if (!(f & POST_IN_BASE) && c->any_pd) {
-        //  Untracked + selective mode + no put = ignore.  (Implicit
-        //  mode falls through to handle fresh-repo first-commit and
-        //  base-is-patch cases below.)
-        return OK;
-    }
-
-    a_path(fp);
-    call(SNIFFFullpath, fp, c->reporoot, r->path);
-    struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
-        r->flag |= POST_DROP;
-        return OK;
-    }
-    struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 mtime_r = SNIFFAtOfTimespec(ts);
-    if (SNIFFAtKnown(mtime_r)) {
-        //  Per-file stamp-lookup: who owns this mtime?
-        //    get/post stamp → KEEP (matches baseline)
-        //    patch    stamp → REWRITE (current bytes; row's `theirs`
-        //                     joins parents via post_add_patch_parents)
-        //    put      stamp → REWRITE (user explicitly staged it)
-        ron60 ow_verb = 0;
-        uri ow_u = {};
-        ok64 lo = SNIFFAtRowAtTs(mtime_r, &ow_verb, &ow_u);
-        if (lo == OK) {
-            ron60 vg = SNIFFAtVerbGet();
-            ron60 vp = SNIFFAtVerbPost();
-            if (ow_verb == vg || ow_verb == vp) {
-                if (f & POST_IN_BASE) r->flag |= POST_KEEP;
-                //  else: untracked clean (shouldn't happen) — ignore.
-            } else {
-                //  patch / put / mod owns this stamp → REWRITE.
-                r->flag |= POST_REWRITE;
-            }
-        } else {
-            //  ts-known but row-not-found (corrupt log?) — fall back to
-            //  the conservative KEEP-if-tracked behaviour.
-            if (f & POST_IN_BASE) r->flag |= POST_KEEP;
-        }
-    } else if (f & POST_IN_BASE) {
-        //  Tracked + mtime-unknown.  Defer the decision: post_hash_one
-        //  will read the file, compare its sha to old_sha, and flip
-        //  this to POST_REWRITE (real change) or POST_KEEP (mtime
-        //  drifted but content is identical — re-stamp the file so
-        //  next time the fast path skips it).
-        r->flag |= POST_MAYBE;
-    } else if (!c->has_base) {
-        //  Fresh-repo first commit (no baseline tree exists yet):
-        //  auto-stage every dirty file.  Once a baseline lands,
-        //  implicit `be post -m` reverts to tracked-only — a new
-        //  untracked file then needs an explicit `be put`.
-        r->flag |= POST_REWRITE;
-    }
-    //  Else: untracked + dirty + already-have-a-baseline → ignore in
-    //  implicit mode.  Side-checkouts (abc/, build/, *.diff scratch)
-    //  don't leak into commits that way; the user names them via
-    //  `be put <path>` if they really want to add new tracked paths.
-    return OK;
-}
-
-// --- Hashing new blobs ---
-
-//  Hash the on-disk content of a single tracked path.  Used for both
-//  POST_REWRITE entries (new content needed for the pack) and
-//  POST_MAYBE entries (mtime drifted off the stamp set; we hash to
-//  decide whether anything actually changed).  For MAYBE: if the
-//  fresh sha equals the baseline `old_sha`, flip to POST_KEEP and
-//  drop the content buffer (no pack write); otherwise flip to
-//  POST_REWRITE and keep the content for the tree-build phase.
-static ok64 post_hash_one(post_ctx *c, post_step_rec *r) {
-    sane(c && r);
-    if (!(r->flag & POST_REWRITE)) done;
-    //  Idempotent: skip if content was already populated upstream
-    //  (e.g. by post_resolve_maybe taking the fall-through symlink
-    //  path).  The presence of an allocated content buffer is the
-    //  marker that this path has already been processed.
-    if (u8bOK(r->content)) done;
-
-    a_path(fp);
-    call(SNIFFFullpath, fp, c->reporoot, r->path);
-
-    struct stat lsb = {};
-    if (lstat((char const *)u8bDataHead(fp), &lsb) != 0) {
-        //  Disappeared between scan and hash — treat as drop.
-        r->flag &= ~POST_REWRITE;
-        r->flag |= POST_DROP;
-        done;
-    }
-
-    //  Size the content buffer to the file (or readlink max for
-    //  symlinks).  A fixed cap silently truncates large blobs and
-    //  produces a wrong sha — checked-in PNGs / large fixtures then
-    //  get reported as modified on every post.
-    u64 cap = S_ISLNK(lsb.st_mode)
-        ? 4096
-        : (u64)lsb.st_size + 1;
-    call(u8bAllocate, r->content, cap);
-
-    if (S_ISLNK(lsb.st_mode)) {
-        char target[1024];
-        ssize_t tlen = readlink((char const *)u8bDataHead(fp),
-                                target, sizeof(target));
-        if (tlen > 0) {
-            u8cs tv = {(u8cp)target, (u8cp)target + tlen};
-            u8bFeed(r->content, tv);
-        }
-    } else {
-        int fd = -1;
-        ok64 oo = FILEOpen(&fd, $path(fp), O_RDONLY);
-        if (oo != OK) return oo;
-        FILEdrainall(u8bIdle(r->content), fd);
-        FILEClose(&fd);
-    }
-
-    KEEPObjSha(&r->new_sha, DOG_OBJ_BLOB, u8bDataC(r->content));
-    done;
-}
-
-//  Hash a tracked-but-mtime-dirty file via mmap to decide MAYBE.
-//  No alloc, no read-loop: FILEMapRO drops the file's bytes into the
-//  kernel page cache and we hand the slice straight to KEEPObjSha.
-//  On match (file unchanged, mtime drifted) flip to POST_KEEP; on
-//  mismatch flip to POST_REWRITE so post_hash_one re-reads it into
-//  r->content for the pack-feed phase.  Symlinks fall back to the
-//  full read+hash path (readlink doesn't compose with mmap).
-static ok64 post_resolve_maybe(post_ctx *c, post_step_rec *r) {
-    sane(c && r);
-    if (!(r->flag & POST_MAYBE)) done;
-    r->flag &= ~POST_MAYBE;
-
-    a_path(fp);
-    call(SNIFFFullpath, fp, c->reporoot, r->path);
-
-    struct stat lsb = {};
-    if (lstat((char const *)u8bDataHead(fp), &lsb) != 0) {
-        r->flag |= POST_DROP;
-        done;
-    }
-    if (S_ISLNK(lsb.st_mode)) {
-        //  Defer to the standard hash path; symlinks are tiny.
-        r->flag |= POST_REWRITE;
-        ok64 ho = post_hash_one(c, r);
-        if (ho == OK && sha1eq(&r->new_sha, &r->old_sha)) {
-            //  Identical → flip back to KEEP, drop the buffer.
-            u8bFree(r->content);
-            r->new_sha = (sha1){};
-            r->flag &= ~POST_REWRITE;
-            r->flag |= POST_KEEP;
-        }
-        return ho;
-    }
-
-    u8bp mapped = NULL;
-    ok64 mo = FILEMapRO(&mapped, $path(fp));
-    if (mo != OK) return mo;
-    sha1 disk_sha = {};
-    KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
-    FILEUnMap(mapped);
-
-    if (sha1eq(&disk_sha, &r->old_sha)) {
-        r->flag |= POST_KEEP;
-    } else {
-        r->flag |= POST_REWRITE;
-        //  post_hash_one will re-read the bytes for the pack feed.
-    }
-    done;
-}
-
 // --- Tree building (bottom-up from sorted paths) ---
+
+//  Per-leaf row consumed by post_build_tree.  Built once from the
+//  decisions buffer (filtered to keep+add) and walked by lo/hi range.
+typedef struct {
+    u8cs path;     // slice into ctx.decisions (mmap-stable until POST exit)
+    u16  mode;
+    sha1 sha;
+} post_leaf;
 
 typedef struct {
     u32    lo, hi;    // sorted-index range
     u8cs   prefix;    // directory prefix these entries live under (with trailing '/')
 } tree_range;
 
+//  Inline accessors over a Bu8 of post_leaf records.
+fun post_leaf *post_leaves_head(u8b leaves) {
+    return (post_leaf *)u8bDataHead(leaves);
+}
+fun u32 post_leaves_count(u8b leaves) {
+    return (u32)(u8bDataLen(leaves) / sizeof(post_leaf));
+}
+fun post_leaf *post_leaves_at(u8b leaves, u32 i) {
+    return post_leaves_head(leaves) + i;
+}
+
+//  Parse octal mode bytes from an `add`/`keep` decision row's
+//  uri.query.  Stops at the optional `&<old_sha>` chain.
+static u16 post_decision_mode(uricp u) {
+    u8cs s = {u->query[0], u->query[1]};
+    //  Truncate at first '&' if present.
+    for (u8c const *p = s[0]; p < s[1]; p++) {
+        if (*p == '&') { s[1] = p; break; }
+    }
+    return post_parse_octal_mode(s);
+}
+
+//  Decode the optional `&<40-hex>` old-sha chain in an add row's
+//  uri.query.  Returns YES + fills *out on success; NO if absent.
+static b8 post_decision_old_sha(uricp u, sha1 *out) {
+    if (!u || !out) return NO;
+    u8cs s = {u->query[0], u->query[1]};
+    u8c const *amp = NULL;
+    for (u8c const *p = s[0]; p < s[1]; p++) {
+        if (*p == '&') { amp = p; break; }
+    }
+    if (!amp) return NO;
+    u8cs hex = {amp + 1, s[1]};
+    if (u8csLen(hex) != 40) return NO;
+    u8s bin = {out->data, out->data + 20};
+    a_dup(u8c, hex_dup, hex);
+    return HEXu8sDrainSome(bin, hex_dup) == OK;
+}
+
+//  Build the leaf array from the decisions buffer (keep + add only,
+//  skipping unlinks).  Decisions are emitted in lex order, so the
+//  resulting array is already sorted by path.
+static ok64 post_build_leaves(post_ctx *c, u8b leaves) {
+    sane(c && leaves);
+    u8bReset(leaves);
+    a_dup(u8c, scan, u8bData(c->decisions));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if (rec.verb != c->v_keep && rec.verb != c->v_add) continue;
+
+        post_leaf leaf = {};
+        leaf.path[0] = rec.uri.path[0];
+        leaf.path[1] = rec.uri.path[1];
+        leaf.mode    = post_decision_mode(&rec.uri);
+        if (u8csLen(rec.uri.fragment) == 40) {
+            u8s bin_s = {leaf.sha.data, leaf.sha.data + 20};
+            a_dup(u8c, frag_dup, rec.uri.fragment);
+            HEXu8sDrainSome(bin_s, frag_dup);
+        }
+        a_dup(u8c, leaf_view,
+              ((u8cs){(u8c *)&leaf, (u8c *)&leaf + sizeof(leaf)}));
+        ok64 fo = u8bFeed(leaves, leaf_view);
+        if (fo != OK) return fo;
+    }
+    done;
+}
+
 //  Locate the end of the range whose sorted paths all start with
 //  `prefix` (exclusive).  Caller guarantees [lo..hi) is sorted.
-static u32 post_range_end(post_ctx *c, u32 lo, u32 hi, u8cs prefix) {
+static u32 post_range_end(u8b leaves, u32 lo, u32 hi, u8cs prefix) {
     u32 end = lo;
     while (end < hi) {
-        post_step_rec *r = post_recs_at(c, end);
+        post_leaf *l = post_leaves_at(leaves, end);
         size_t plen = $len(prefix);
-        if ($len(r->path) < plen) break;
-        if (memcmp(r->path[0], prefix[0], plen) != 0) break;
+        if ($len(l->path) < plen) break;
+        if (memcmp(l->path[0], prefix[0], plen) != 0) break;
         end++;
     }
     return end;
 }
 
-static ok64 post_build_tree(post_ctx *c, u32 lo, u32 hi, u8cs prefix,
+static ok64 post_build_tree(u8b leaves, u32 lo, u32 hi, u8cs prefix,
                             sha1 *tree_out, Bu8 tree_body_list,
                             u32 *emit_count) {
     //  Recursively build a tree for paths in [lo, hi) under `prefix`.
     //  Emits serialized tree body bytes (prefixed by u32 length) into
     //  `tree_body_list`.  The caller replays the list later to feed
     //  keeper in the pack's expected commit→trees→blobs order.
-    sane(c && tree_out);
+    sane(leaves && tree_out);
 
     Bu8 tree = {};
     call(u8bAllocate, tree, (u64)(hi - lo) * 80);
 
     u32 i = lo;
     while (i < hi) {
-        post_step_rec *r = post_recs_at(c, i);
-        u8cs rel = {r->path[0], r->path[1]};
+        post_leaf *l = post_leaves_at(leaves, i);
+        u8cs rel = {l->path[0], l->path[1]};
 
         size_t plen = $len(prefix);
         if ($len(rel) <= plen) { i++; continue; }
@@ -728,10 +717,10 @@ static ok64 post_build_tree(post_ctx *c, u32 lo, u32 hi, u8cs prefix,
             u8bFeed1(subprefix, '/');
             u8cs sub = {u8bDataHead(subprefix), subprefix[2]};
 
-            u32 sub_hi = post_range_end(c, i, hi, sub);
+            u32 sub_hi = post_range_end(leaves, i, hi, sub);
 
             sha1 sub_sha = {};
-            ok64 so = post_build_tree(c, i, sub_hi, sub, &sub_sha,
+            ok64 so = post_build_tree(leaves, i, sub_hi, sub, &sub_sha,
                                       tree_body_list, emit_count);
             if (so != OK) { u8bFree(tree); return so; }
 
@@ -747,15 +736,12 @@ static ok64 post_build_tree(post_ctx *c, u32 lo, u32 hi, u8cs prefix,
             continue;
         }
 
-        //  Direct-child file entry.
-        u8 f = r->flag;
-        if (f & POST_DROP) { i++; continue; }
-        if (!(f & (POST_KEEP | POST_REWRITE))) { i++; continue; }
-
-        sha1 entry_sha = (f & POST_REWRITE) ? r->new_sha : r->old_sha;
+        //  Direct-child file entry.  Leaves filtered to keep+add at
+        //  build_leaves time, so every record here is tree-bound.
+        sha1 entry_sha = l->sha;
         if (sha1empty(&entry_sha)) { i++; continue; }
 
-        u16 mode = (f & POST_REWRITE) ? r->new_mode : r->old_mode;
+        u16 mode = l->mode;
         if (mode == 0) mode = 0100644;
 
         post_mode_feed(tree, mode);
@@ -916,16 +902,20 @@ static ok64 post_add_patch_parents(post_ctx *c, sha1 *parents,
                                    u32 *nparents, u32 cap) {
     sane(c && parents && nparents);
     ron60 v_patch = SNIFFAtVerbPatch();
-    u32 n = post_recs_count(c);
 
-    for (u32 i = 0; i < n; i++) {
-        post_step_rec *r = post_recs_at(c, i);
-        u8 f = r->flag;
-        if (!(f & POST_REWRITE)) continue;
-        if (!(f & POST_ON_DISK)) continue;
+    //  Drain `add` decisions — every rewrite-or-add row is a potential
+    //  patch contributor.  unlink/keep rows have no patch ancestry.
+    a_dup(u8c, scan, u8bData(c->decisions));
+    while (!u8csEmpty(scan)) {
+        ulogrec drec = {};
+        ok64 dr = ULOGu8sDrain(scan, &drec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if (drec.verb != c->v_add) continue;
 
+        u8cs path = {drec.uri.path[0], drec.uri.path[1]};
         a_path(fp);
-        if (SNIFFFullpath(fp, c->reporoot, r->path) != OK) continue;
+        if (SNIFFFullpath(fp, c->reporoot, path) != OK) continue;
 
         struct stat sb = {};
         if (lstat((char const *)u8bDataHead(fp), &sb) != 0) continue;
@@ -995,7 +985,7 @@ static ok64 post_baseline_branch(u8bp out, u8bp hex_out) {
 //  `c->k`, `c->cap`, `c->rec`, `c->flag`, `c->last_post_ts`; this
 //  function drives the baseline walk + put/delete scan + wt scan +
 //  dir-row expansion + per-path decide.  On return, `c->flag[idx]`
-//  carries the POST_REWRITE / POST_KEEP / POST_DROP fate per path,
+//  carries the keep/unlink/add decision per path in `c->decisions`,
 //  and `*base_tree_sha` / `*have_base` reflect the baseline tree (if
 //  any) so the caller can reuse them for tree-build.
 static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
@@ -1091,23 +1081,9 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     if (cr != OK) return cr;
 #undef PD_FREE_ALL
 
-    //  6. Decide fate per path.
-    u32 n = post_recs_count(c);
-    for (u32 i = 0; i < n; i++) {
-        call(post_decide, c, post_recs_at(c, i));
-    }
-
-    //  5c. Resolve POST_MAYBE entries by hashing the on-disk content
-    //  via mmap (no alloc, no read-loop) and comparing to the baseline
-    //  sha.  post_resolve_maybe flips each MAYBE to REWRITE (content
-    //  differs) or KEEP (mtime drifted but bytes are identical).  This
-    //  is the single source of "is this file actually modified?" truth
-    //  — both POSTCommit and the dry-run printer rely on it.
-    for (u32 i = 0; i < n; i++) {
-        post_step_rec *r = post_recs_at(c, i);
-        if (!(r->flag & POST_MAYBE)) continue;
-        call(post_resolve_maybe, c, r);
-    }
+    //  classify_step inlined the per-path decide+resolve+hash and
+    //  emitted one decision row per distinct path.  Downstream
+    //  consumers drain c->decisions.
     done;
 }
 
@@ -1122,25 +1098,101 @@ static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k) {
     c->reporoot[0] = reporoot[0];
     c->reporoot[1] = reporoot[1];
 
-    //  Path arena: ~1 MB initial; each path contributes its bytes only.
-    call(u8bAllocate, c->path_arena, 1UL << 20);
-    //  Dense recs: cap ~64K entries × ~96 B = ~6 MB.  Grown as needed.
-    ok64 ro = u8bAllocate(c->recs,
-                          (u64)(1u << 16) * sizeof(post_step_rec));
-    if (ro != OK) { u8bFree(c->path_arena); return ro; }
+    //  Decisions buffer holds the full per-commit ULOG-row stream.
+    call(u8bAllocate, c->decisions, POST_TREE_ULOG_MAX);
+
+    //  Decision verbs (cached ron60).
+    a_cstr(s_keep,   "keep");   a_dup(u8c, dk, s_keep);
+    a_cstr(s_unlink, "unlink"); a_dup(u8c, du, s_unlink);
+    a_cstr(s_add,    "add");    a_dup(u8c, da, s_add);
+    call(RONutf8sDrain, &c->v_keep,   dk);
+    call(RONutf8sDrain, &c->v_unlink, du);
+    call(RONutf8sDrain, &c->v_add,    da);
+
+    //  Single per-commit stamp ts; carried in every decision row.
+    struct timespec _tv = {};
+    SNIFFAtNow(&c->stamp_ts, &_tv);
     done;
 }
 
-//  Free everything post_ctx_init / classify allocated.
+//  Emit one decision ULOG row into c->decisions.
+//
+//  Row shape (all variants):     <ts>\t<verb>\t<path>?<query>#<fragment>\n
+//
+//    keep    : query = <mode>,                 fragment = <old_sha>
+//    add     : query = <mode>[&<old_sha>],     fragment = <new_sha>
+//              (the optional &<old_sha> chain is present iff the path
+//              had a baseline entry — distinguishing "M" from "A".)
+//    unlink  : query empty, fragment empty.
+static ok64 post_emit_decision(post_ctx *c, ron60 verb,
+                               u8cs path, u16 mode,
+                               sha1 const *old_sha, sha1 const *frag_sha) {
+    sane(c && verb);
+
+    //  Mode bytes (octal ASCII) into the query, optionally chained with
+    //  &<old_sha_hex> for modified add.
+    a_pad(u8, query_buf, 256);
+    if (mode != 0) {
+        char tmp[8];
+        int n = snprintf(tmp, sizeof(tmp), "%o", (unsigned)mode);
+        u8cs ms = {(u8cp)tmp, (u8cp)tmp + n};
+        u8bFeed(query_buf, ms);
+    }
+    if (old_sha && !sha1empty(old_sha)) {
+        u8bFeed1(query_buf, '&');
+        a_rawc(bin, *old_sha);
+        HEXu8sFeedSome(u8bIdle(query_buf), bin);
+    }
+
+    a_pad(u8, hex_buf, 40);
+    if (frag_sha && !sha1empty(frag_sha)) {
+        a_rawc(bin, *frag_sha);
+        HEXu8sFeedSome(hex_buf_idle, bin);
+    }
+
+    uri u = {};
+    u.path[0] = path[0]; u.path[1] = path[1];
+    if (u8bDataLen(query_buf) > 0) {
+        u.query[0] = u8bDataHead(query_buf);
+        u.query[1] = u8bIdleHead(query_buf);
+    }
+    if (u8bDataLen(hex_buf) > 0) {
+        u.fragment[0] = u8bDataHead(hex_buf);
+        u.fragment[1] = u8bIdleHead(hex_buf);
+    }
+
+    ulogrec rec = {.ts = c->stamp_ts, .verb = verb, .uri = u};
+    return ULOGu8sFeed(u8bIdle(c->decisions), &rec);
+}
+
+//  Iterate the decisions buffer, invoking `cb` for every row whose
+//  verb is in `verb_mask` (bitmask: 1=keep, 2=unlink, 4=add).  cb sees
+//  the parsed ulogrec and can pull path/mode/sha from rec->uri.
+typedef ok64 (*post_decision_cb)(post_ctx *c, ulogreccp rec, void *ctx);
+static ok64 post_walk_decisions(post_ctx *c, u32 verb_mask,
+                                post_decision_cb cb, void *cbctx) {
+    sane(c && cb);
+    a_dup(u8c, scan, u8bData(c->decisions));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        u32 bit = 0;
+        if      (rec.verb == c->v_keep)   bit = 1;
+        else if (rec.verb == c->v_unlink) bit = 2;
+        else if (rec.verb == c->v_add)    bit = 4;
+        if (!(verb_mask & bit)) continue;
+        ok64 cr = cb(c, &rec, cbctx);
+        if (cr != OK) return cr;
+    }
+    done;
+}
+
+//  Free everything post_ctx_init allocated.
 static void post_ctx_free(post_ctx *c) {
     if (!c) return;
-    u32 n = post_recs_count(c);
-    for (u32 i = 0; i < n; i++) {
-        post_step_rec *r = post_recs_at(c, i);
-        if (u8bOK(r->content)) u8bFree(r->content);
-    }
-    u8bFree(c->recs);
-    u8bFree(c->path_arena);
+    u8bFree(c->decisions);
 }
 
 // --- Public API ---
@@ -1157,20 +1209,24 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
     if (so != OK) { post_ctx_free(&ctx); return so; }
 
-    //  Walk the dense recs in lex order, print one line per changed
-    //  path.  Codes mirror git's `status --short`: `M` modified,
-    //  `A` added, `D` deleted.  KEEP rows are silent (no change).
-    u32 n = post_recs_count(&ctx);
+    //  Walk decisions, print one line per changed path.
     u32 changed = 0;
-    for (u32 i = 0; i < n; i++) {
-        post_step_rec *r = post_recs_at(&ctx, i);
-        u8 f = r->flag;
+    a_dup(u8c, scan, u8bData(ctx.decisions));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
         char code = 0;
-        if (f & POST_DROP)        code = 'D';
-        else if (f & POST_REWRITE) code = (f & POST_IN_BASE) ? 'M' : 'A';
+        if (rec.verb == ctx.v_unlink)      code = 'D';
+        else if (rec.verb == ctx.v_add) {
+            sha1 old = {};
+            code = post_decision_old_sha(&rec.uri, &old) ? 'M' : 'A';
+        }
         if (code == 0) continue;
         fprintf(stdout, "%c %.*s\n",
-                code, (int)$len(r->path), (char *)r->path[0]);
+                code, (int)u8csLen(rec.uri.path),
+                (char *)rec.uri.path[0]);
         changed++;
     }
     fflush(stdout);
@@ -1315,30 +1371,22 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
     if (so != OK) { post_ctx_free(&ctx); return so; }
 
-    //  5b. For every file explicitly deleted since last post, unlink
-    //      it from disk — otherwise `be delete foo && be post` leaves
-    //      foo on disk, and subsequent auto-stage passes would
-    //      re-add it.  This is the mtime-attribution fix for
-    //      BEhistory / the "deleted-file re-added" regression.
+    //  5b. Unlink files marked for delete on disk (drain `unlink`
+    //      decisions).  Done BEFORE the pack feed so a follow-up `be
+    //      post` doesn't pick them up via auto-stage; mtime-attribution
+    //      fix for the BEhistory "deleted-file re-added" regression.
     {
-        u32 n = post_recs_count(&ctx);
-        for (u32 i = 0; i < n; i++) {
-            post_step_rec *r = post_recs_at(&ctx, i);
-            if (!(r->flag & POST_EXPL_DEL)) continue;
-            if (!(r->flag & POST_ON_DISK)) continue;
+        a_dup(u8c, scan, u8bData(ctx.decisions));
+        while (!u8csEmpty(scan)) {
+            ulogrec rec = {};
+            ok64 dr = ULOGu8sDrain(scan, &rec);
+            if (dr == NODATA) break;
+            if (dr != OK) continue;
+            if (rec.verb != ctx.v_unlink) continue;
+            u8cs path = {rec.uri.path[0], rec.uri.path[1]};
             a_path(fp);
-            if (SNIFFFullpath(fp, reporoot, r->path) != OK) continue;
+            if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
             (void)FILEUnLink($path(fp));
-            r->flag &= ~POST_ON_DISK;
-        }
-    }
-
-    //  6. Hash blobs for rewrite entries.
-    {
-        u32 n = post_recs_count(&ctx);
-        for (u32 i = 0; i < n; i++) {
-            ok64 hr = post_hash_one(&ctx, post_recs_at(&ctx, i));
-            if (hr != OK) { post_ctx_free(&ctx); return hr; }
         }
     }
 
@@ -1360,13 +1408,24 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     call(u8bAllocate, tree_bodies, 1UL << 20);
     u32 tree_count = 0;
 
+    Bu8 leaves = {};
+    call(u8bAllocate, leaves, POST_TREE_ULOG_MAX);
     {
-        u32 n_recs = post_recs_count(&ctx);
+        ok64 lo = post_build_leaves(&ctx, leaves);
+        if (lo != OK) {
+            u8bFree(leaves); u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return lo;
+        }
+    }
+
+    {
+        u32 n_leaves = post_leaves_count(leaves);
         u8cs no_prefix = {};
-        ok64 bo = post_build_tree(&ctx, 0, n_recs, no_prefix,
+        ok64 bo = post_build_tree(leaves, 0, n_leaves, no_prefix,
                                   &root_tree, tree_bodies, &tree_count);
         if (bo != OK) {
-            u8bFree(tree_bodies);
+            u8bFree(leaves); u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return bo;
         }
@@ -1383,7 +1442,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         fprintf(stderr,
                 "sniff: post: no changes since base — refusing empty "
                 "commit\n");
-        u8bFree(tree_bodies);
+        u8bFree(leaves); u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return SNIFFNOOP;
     }
@@ -1464,7 +1523,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     u8bFree(com);
     if (fo != OK) {
         KEEPPackClose(k, &p);
-        u8bFree(tree_bodies);
+        u8bFree(leaves); u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return fo;
     }
@@ -1484,36 +1543,71 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             walk += tlen;
             if (to != OK) {
                 KEEPPackClose(k, &p);
-                u8bFree(tree_bodies);
+                u8bFree(leaves); u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return to;
             }
         }
     }
 
-    //  13. Feed all new blobs.
+    //  13. Feed all new blobs.  Drains `add` decisions; for each row
+    //      reads the wt file (mmap for regular/exec, readlink for
+    //      symlink) and feeds the bytes into the pack.  Delta base:
+    //      when the row carries an `&<old_sha>` chain, use that sha
+    //      as the OFS/REF_DELTA target so small edits ride bsdiff
+    //      instead of a fresh zlib-of-everything.
     {
-        u32 n = post_recs_count(&ctx);
-        for (u32 i = 0; i < n; i++) {
-            post_step_rec *r = post_recs_at(&ctx, i);
-            if (!(r->flag & POST_REWRITE)) continue;
-            if (!u8bOK(r->content)) continue;
-            u8csc bpath = {r->path[0], r->path[1]};
-            a_dup(u8c, body, u8bData(r->content));
-            //  Delta base: when this path was in the baseline tree, the
-            //  prior blob sha is the natural OFS/REF_DELTA target —
-            //  small edits then ride the wire / pack as a bsdiff
-            //  rather than a fresh zlib-of-everything.  No baseline
-            //  → no base → KEEPPackFeed stores the full content.
-            u64 base_hl = 0;
-            if (r->flag & POST_IN_BASE)
-                base_hl = WHIFFHashlet60(&r->old_sha);
+        a_dup(u8c, scan, u8bData(ctx.decisions));
+        while (!u8csEmpty(scan)) {
+            ulogrec drec = {};
+            ok64 dr = ULOGu8sDrain(scan, &drec);
+            if (dr == NODATA) break;
+            if (dr != OK) continue;
+            if (drec.verb != ctx.v_add) continue;
+
+            u8cs path = {drec.uri.path[0], drec.uri.path[1]};
+            u16  mode = post_decision_mode(&drec.uri);
+            sha1 old_sha = {};
+            b8   has_old = post_decision_old_sha(&drec.uri, &old_sha);
+
+            a_path(fp);
+            if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
+
+            //  Read the bytes into a scratch buffer.  Symlinks via
+            //  readlink (mmap doesn't compose); regular/exec via
+            //  FILEMapRO.
+            Bu8 body_buf = {};
+            u8bp mapped = NULL;
+            u8cs body = {};
+            if (mode == 0120000) {
+                char target[1024];
+                ssize_t tlen = readlink(
+                    (char const *)u8bDataHead(fp),
+                    target, sizeof(target));
+                if (tlen <= 0) continue;
+                ok64 ao = u8bAllocate(body_buf, (u64)tlen);
+                if (ao != OK) continue;
+                u8cs tv = {(u8cp)target, (u8cp)target + tlen};
+                u8bFeed(body_buf, tv);
+                body[0] = u8bDataHead(body_buf);
+                body[1] = u8bIdleHead(body_buf);
+            } else {
+                ok64 mo = FILEMapRO(&mapped, $path(fp));
+                if (mo != OK) continue;
+                body[0] = u8bDataHead(mapped);
+                body[1] = u8bIdleHead(mapped);
+            }
+
+            u8csc bpath = {path[0], path[1]};
+            u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
             sha1 bsha = {};
             ok64 bo = KEEPPackFeed(k, &p, DOG_OBJ_BLOB, body,
                                    bpath, base_hl, &bsha);
+            if (mapped) FILEUnMap(mapped);
+            if (u8bOK(body_buf)) u8bFree(body_buf);
             if (bo != OK) {
                 KEEPPackClose(k, &p);
-                u8bFree(tree_bodies);
+                u8bFree(leaves); u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return bo;
             }
@@ -1569,43 +1663,54 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     ok64 ar = SNIFFAtAppendAt(ts, verb, &urow);
     (void)ar;
 
-    //  Stamp every file that survived into the new commit (rewrites +
-    //  keeps on disk) with the post row's timestamp.
+    //  Stamp only `add` files (drain add decisions).  KEEP files keep
+    //  their previous get/post stamp — re-stamping them is redundant.
     {
-        u32 n = post_recs_count(&ctx);
-        for (u32 i = 0; i < n; i++) {
-            post_step_rec *r = post_recs_at(&ctx, i);
-            u8 f = r->flag;
-            if (f & POST_DROP) continue;
-            if (!(f & POST_ON_DISK)) continue;
+        a_dup(u8c, scan, u8bData(ctx.decisions));
+        while (!u8csEmpty(scan)) {
+            ulogrec rec = {};
+            ok64 dr = ULOGu8sDrain(scan, &rec);
+            if (dr == NODATA) break;
+            if (dr != OK) continue;
+            if (rec.verb != ctx.v_add) continue;
+            u8cs path = {rec.uri.path[0], rec.uri.path[1]};
             a_path(fp);
-            if (SNIFFFullpath(fp, reporoot, r->path) != OK) continue;
+            if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
             (void)SNIFFAtStampPath(fp, ts);
         }
     }
 
-    //  16. Pretty-print actually-changed paths in grey (TTY only) —
-    //  the same M/A/D set the dry-run prints.  KEEP entries are silent
-    //  (their content is unchanged from baseline); printing them would
-    //  flood the output with the entire tree on every commit.
+    //  16. Pretty-print actually-changed paths in grey (TTY only).
+    //  Drains the decisions buffer:
+    //    add (with old-sha chain)    → 'M'
+    //    add (without old-sha chain) → 'A'
+    //    unlink                      → 'D'
+    //    keep                        → silent
     {
         b8 tty = isatty(STDERR_FILENO) ? YES : NO;
         char const *on  = tty ? "\033[90m" : "";
         char const *off = tty ? "\033[0m"  : "";
-        u32 n = post_recs_count(&ctx);
-        for (u32 i = 0; i < n; i++) {
-            post_step_rec *r = post_recs_at(&ctx, i);
-            u8 f = r->flag;
+        a_dup(u8c, scan, u8bData(ctx.decisions));
+        while (!u8csEmpty(scan)) {
+            ulogrec rec = {};
+            ok64 dr = ULOGu8sDrain(scan, &rec);
+            if (dr == NODATA) break;
+            if (dr != OK) continue;
             char code = 0;
-            if (f & POST_DROP)         code = 'D';
-            else if (f & POST_REWRITE) code = (f & POST_IN_BASE) ? 'M' : 'A';
+            if (rec.verb == ctx.v_unlink)          code = 'D';
+            else if (rec.verb == ctx.v_add) {
+                sha1 old = {};
+                code = post_decision_old_sha(&rec.uri, &old) ? 'M' : 'A';
+            }
             if (code == 0) continue;
             fprintf(stderr, "%s%c %.*s%s\n",
-                    on, code, (int)$len(r->path), (char *)r->path[0], off);
+                    on, code, (int)u8csLen(rec.uri.path),
+                    (char *)rec.uri.path[0], off);
         }
     }
 
     //  17. Clean up.
+    u8bFree(leaves);
     u8bFree(tree_bodies);
     post_ctx_free(&ctx);
     fprintf(stderr, "sniff: commit %.*s\n",
