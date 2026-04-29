@@ -177,6 +177,20 @@ static void keep_recompute_next_seqno(keeper *k) {
         if (p->key >= k->next_seqno) k->next_seqno = p->key + 1;
 }
 
+// Largest seqno currently in the packs registry, or 0 if empty.  Used
+// to pick the file_id of the tail pack to append to — distinct from
+// next_seqno, which spans both packs and puppies.  When puppies has
+// advanced past packs (e.g. an incremental idx run was added without
+// a fresh pack), next_seqno - 1 no longer points at the tail pack.
+static u32 keep_packs_max_seqno(keeper const *k) {
+    u32 max = 0;
+    kv32 const *db = (kv32 const *)kv32bDataHead(k->packs);
+    kv32 const *de = (kv32 const *)kv32bIdleHead(k->packs);
+    for (kv32 const *p = db; p < de; p++)
+        if (p->key > max) max = p->key;
+    return max;
+}
+
 //  Linear-scan the keeper-level pack registry for the (seqno=file_id)
 //  entry; return the mmap'd buffer via FILE_WANT_BUFS[fd], or NULL
 //  when not present or the slot has been released.
@@ -1276,7 +1290,7 @@ ok64 KEEPPackOpen(keeper *k, keep_pack *p) {
     //  (stripped: one PACK header at offset 0, no trailers, no
     //  per-pack headers).  See keeper/LOG.md.
     b8 appending = (kv32bDataLen(k->packs) > 0);
-    p->file_id = appending ? (k->next_seqno - 1) : k->next_seqno;
+    p->file_id = appending ? keep_packs_max_seqno(k) : k->next_seqno;
 
     call(wh128bAllocate, p->entries, KEEP_PACK_MAX_OBJS);
     call(u8bMap, p->delta_base,  KEEP_BUFSZ);
@@ -1910,7 +1924,7 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
 
     //  Append to existing tail log, or create the very first one.
     b8  appending = (kv32bDataLen(k->packs) > 0);
-    u32 file_id = appending ? (k->next_seqno - 1) : k->next_seqno;
+    u32 file_id = appending ? keep_packs_max_seqno(k) : k->next_seqno;
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(keep_pack_path, packpath, $path(kdir), file_id);
 
@@ -2696,7 +2710,7 @@ got_pack:
     // Open or create pack log file for appending.
     // Estimate VA reservation from object count (~256 bytes/obj).
     b8 appending = (kv32bDataLen(k->packs) > 0);
-    u32 file_id = appending ? (k->next_seqno - 1) : k->next_seqno;
+    u32 file_id = appending ? keep_packs_max_seqno(k) : k->next_seqno;
     u64 pack_book = 16ULL << 30;  // 16GB VA reservation
     u8bp packbuf = NULL;
     u64 append_offset = 0;  // where new objects start in the log

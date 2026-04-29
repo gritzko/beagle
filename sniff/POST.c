@@ -1431,7 +1431,14 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
     //  8. If the result has no files, fall back to the empty-tree sha.
     keep_pack p = {};
-    call(KEEPPackOpen, k, &p);
+    {
+        ok64 po = KEEPPackOpen(k, &p);
+        if (po != OK) {
+            u8bFree(leaves); u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return po;
+        }
+    }
     p.strict_order = NO;
 
     if (!have_root) {
