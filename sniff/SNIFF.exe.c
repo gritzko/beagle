@@ -411,13 +411,10 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  Pre-resolve relative refs (`?./X`, `?../X`, `?..`).  Storage
     //  must outlive the call (REFSResolve and GETCheckout both
     //  consume slices into u->query / u->data); _reluri rebases
-    //  those into our stack-local buffer.  `was_relative` enables
-    //  create-on-miss below.
+    //  those into our stack-local buffer.
     a_pad(u8, abs_qbuf,    256);
     a_pad(u8, abs_databuf, 260);
-    b8 was_relative = NO;
-    if (sniff_resolve_rel(u, abs_qbuf, abs_databuf, &was_relative)
-        != OK)
+    if (sniff_resolve_rel(u, abs_qbuf, abs_databuf, NULL) != OK)
         fail(SNIFFFAIL);
 
     if (has_q || !$empty(u->authority)) {
@@ -425,31 +422,9 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
         uri resolved = {};
         ok64 o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
 
-        //  Create-on-miss: relative refs (`?./X`, `?../X`) fork a new
-        //  branch at the wt's current tip when the resolved absolute
-        //  ref doesn't exist.  Bare `?A` (absolute) deliberately
-        //  errors on miss — explicit-only creation, per VERBS.md.
-        if (o != OK && was_relative) {
-            ron60 bts = 0, bverb = 0;
-            uri bu = {};
-            u8 hex40[40];
-            if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK &&
-                SNIFFAtQueryFirstSha(&bu, hex40) == OK) {
-                a_dup(u8c, ref_uri, u->data);
-                u8cs hex_in = {hex40, hex40 + 40};
-                ok64 lo = POSTSetLabel(ref_uri, hex_in);
-                if (lo == OK) {
-                    fprintf(stderr, "sniff: created %.*s at %.*s\n",
-                            (int)$len(u->query),
-                            (char *)u->query[0],
-                            40, (char *)hex40);
-                    //  Retry the resolve.
-                    o = REFSResolve(&resolved, arena1, $path(keepdir),
-                                    u->data);
-                }
-            }
-        }
-
+        //  GET never creates branches on miss — absolute and relative
+        //  refs alike error out when REFS has no row.  `be post ?./X`
+        //  is the spec-aligned create path (per VERBS.md).
         if (o == OK && !$empty(resolved.query)) {
             a_pad(u8, src, 256);
             u8bFeed1(src, '?');

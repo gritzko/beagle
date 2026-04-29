@@ -145,6 +145,43 @@ ok64 REFSAppend(u8csc dir, u8csc from_uri, u8csc to_uri) {
     return REFSAppendVerb(dir, REFSVerbGet(), from_uri, to_uri);
 }
 
+//  Compare-and-swap append.  Resolve current value of `key` and only
+//  append a new `post` row when it matches `expected_old`.  Tombstoned
+//  rows resolve to REFSNONE in REFSResolve, so they are folded into
+//  the "absent" branch here automatically — empty `expected_old`
+//  accepts both never-written and deleted keys.
+ok64 REFSCompareAndAppend(u8csc dir, u8csc key, u8csc expected_old,
+                          u8csc new_val) {
+    sane($ok(dir) && $ok(key) && $ok(expected_old) && $ok(new_val));
+    if (u8csEmpty(key)) fail(REFSBAD);
+
+    Bu8 arena = {};
+    call(u8bMap, arena, 4096);
+
+    uri resolved = {};
+    ok64 ro = REFSResolve(&resolved, arena, dir, key);
+
+    b8 absent = (ro == REFSNONE);
+    if (!absent && ro != OK) { u8bUnMap(arena); return ro; }
+
+    b8 want_absent = u8csEmpty(expected_old);
+    if (want_absent) {
+        if (!absent) { u8bUnMap(arena); fail(REFSCAS); }
+    } else {
+        if (absent) { u8bUnMap(arena); fail(REFSCAS); }
+        u8cs cur = {resolved.query[0], resolved.query[1]};
+        if (u8csLen(cur) != u8csLen(expected_old) ||
+            memcmp(cur[0], expected_old[0],
+                   (size_t)u8csLen(expected_old)) != 0) {
+            u8bUnMap(arena);
+            fail(REFSCAS);
+        }
+    }
+    u8bUnMap(arena);
+
+    return REFSAppendVerb(dir, REFSVerbPost(), key, new_val);
+}
+
 ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs) {
     sane($ok(dir) && nrefs > 0);
     REFS_LOG_PATH(log_path, dir);

@@ -553,11 +553,50 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
 
 // --- Ref resolution -----------------------------------------------
 
+//  Forward decl: needed by absolutise_query (which calls into the
+//  baseline reader) and by resolve_parent_tip below.
+static ok64 resolve_current_branch(u8cs out_branch);
+
+//  Materialise the target's absolute branch path when `target_query`
+//  uses a relative prefix (`./X`, `../X`, `..`).  On entry `qbuf` is
+//  reset; on success `*out_q` is the slice the caller should use for
+//  REFS lookup — either pointing into `qbuf` (when relative) or back
+//  into the original `target_query` (when absolute / SHA / unparsable).
+//  Mirrors sniff/SNIFF.exe.c:sniff_resolve_rel which does the same
+//  dance for POST/GET.  Output slice's lifetime matches qbuf's data.
+static ok64 absolutise_query(u8cs out_q, u8b qbuf, u8cs target_query) {
+    sane(out_q && qbuf);
+    out_q[0] = target_query[0];
+    out_q[1] = target_query[1];
+    if ($empty(target_query)) done;
+
+    a_dup(u8c, q_in, target_query);
+    qref qspec = {};
+    if (QURYu8sDrain(q_in, &qspec) != OK) done;
+    if (qspec.type != QURY_REF || qspec.rel == QURY_REL_NONE) done;
+
+    u8cs current = {};
+    (void)resolve_current_branch(current);
+    u8bReset(qbuf);
+    if (QURYBuildAbsolute(qbuf, &qspec, current) != OK) fail(PATCHFAIL);
+    u8csMv(out_q, u8bDataC(qbuf));
+    done;
+}
+
 //  Resolve `target_query` ("heads/main", "tags/v1", or a 40-hex
 //  commit sha) to the 20-byte commit sha.  Annotated tags are
-//  dereferenced.
-static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query) {
-    sane(out && $ok(target_query));
+//  dereferenced.  Relative refs (`./X`, `../X`, `..`) are absolutised
+//  against the wt's current branch before REFS lookup.
+static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
+    sane(out && $ok(target_query_in));
+
+    //  Absolutise `?./X` / `?../X` / `?..` before any further
+    //  processing so the rest of the function sees a canonical query.
+    //  abs_qbuf must outlive every use of target_query below — keep it
+    //  in this stack frame.
+    a_pad(u8, abs_qbuf, 256);
+    u8cs target_query = {};
+    call(absolutise_query, target_query, abs_qbuf, target_query_in);
 
     //  Full 40-hex input: decode directly.
     if ($len(target_query) == 40) {

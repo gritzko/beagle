@@ -23,6 +23,9 @@
 con ok64 REFSFAIL  = 0x6ce3dc3ca495;
 con ok64 REFSNONE  = 0x6ce3dc5d85ce;
 con ok64 REFSBAD   = 0x1b38f70b28d;
+//  REFSCompareAndAppend: actual current value did not match expected_old.
+//  Caller is expected to re-resolve and retry.
+con ok64 REFSCAS   = 0x1b38f70c29c;
 //  Stop-iteration sentinel: a REFSEach callback may return this to
 //  short-circuit the walk without signalling an error.  REFSEach
 //  swallows it and returns OK; real failures still surface as their
@@ -84,6 +87,19 @@ ok64 REFSAppend(u8csc dir, u8csc from_uri, u8csc to_uri);
 //  Append with an explicit verb — `REFSVerbGet()` for remote
 //  observations, `REFSVerbPost()` for local moves.  See REF.md.
 ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri);
+
+//  Compare-and-swap append: append a new `post` row for `key` with
+//  value `new` only when the current resolved value of `key` matches
+//  `expected_old` (byte-equality on the bare 40-hex SHA).  Empty
+//  `expected_old` means "key must be absent or tombstoned"; non-empty
+//  means the current resolved value must match exactly.  On mismatch,
+//  returns REFSCAS without writing; caller is expected to re-resolve
+//  and retry.  Tombstoned keys are treated as absent (mirrors
+//  REFSResolve which collapses zero-sha rows to REFSNONE).  This is a
+//  best-effort serialization-of-intent — there is no extra lock, the
+//  read-then-append window has the same race surface as any other
+//  append in this module.
+ok64 REFSCompareAndAppend(u8csc dir, u8csc key, u8csc expected_old, u8csc new_val);
 
 //  Cached RON60 of the three verbs REFS knows about.
 ron60 REFSVerbGet(void);

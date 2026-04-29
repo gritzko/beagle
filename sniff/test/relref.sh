@@ -8,9 +8,9 @@
 #    * `sniff get  ?feat`    switches to feat (absolute).
 #    * `sniff get  ?..`      switches back to trunk (parent of feat).
 #    * `sniff post ?../sib`  labels sibling branch off trunk.
-#
-#  Not covered (follow-up): `sniff get ?./X` create-on-miss when X
-#  is not yet labelled — today GET refuses on KEEPNONE.
+#    * `sniff get  ?./sub`   on a missing label errors (GET never creates).
+#    * `sniff post ?./sub` then `sniff get ?./sub` is the spec-aligned
+#      create-then-switch idiom.
 #
 #  Run: BIN=build-debug/bin sh sniff/test/relref.sh
 set -eu
@@ -94,18 +94,27 @@ TIP_SIB=$(ref_tip "?sib")
     || fail "?../sib from feat did not create root-level sib"
 note "sib labelled at $TIP_SIB (../sib from feat → sib)"
 
-# --- step 5: get ?./X create-on-miss forks a new child branch --------
-echo "=== 5. get ?./X create-on-miss ==="
+# --- step 5: get ?./X on a missing label errors; post then get works -
+echo "=== 5. get ?./sub miss errors; post + get creates and switches ==="
 sniff get "?feat" >/dev/null
 [ "$(cur_branch)" = "feat" ] || fail "couldn't return to feat"
-#  feat/sub doesn't exist yet; `sniff get ?./sub` should fork it at
-#  feat's current tip and switch the wt onto the new label.
+#  feat/sub doesn't exist yet; GET must NOT auto-create.
+if sniff get "?./sub" 2>/dev/null; then
+    fail "get ?./sub should error on miss (POST creates, GET switches)"
+fi
+[ "$(cur_branch)" = "feat" ] \
+    || fail "failed get ?./sub must not move the wt off feat"
+[ -z "$(ref_tip '?feat/sub')" ] \
+    || fail "failed get ?./sub must not register feat/sub in REFS"
+note "get ?./sub on miss errors cleanly"
+#  Spec-aligned create-then-switch idiom.
+sniff post "?./sub" >/dev/null
+TIP_SUB=$(ref_tip "?feat/sub")
+[ -n "$TIP_SUB" ] || fail "post ?./sub did not register feat/sub in REFS"
 sniff get "?./sub" >/dev/null
 [ "$(cur_branch)" = "feat/sub" ] \
-    || fail "wt not on feat/sub after get ?./sub (got '$(cur_branch)')"
-TIP_SUB=$(ref_tip "?feat/sub")
-[ -n "$TIP_SUB" ] || fail "feat/sub not registered in REFS"
-note "feat/sub forked at $TIP_SUB"
+    || fail "wt not on feat/sub after post + get ?./sub (got '$(cur_branch)')"
+note "feat/sub created via post then switched via get at $TIP_SUB"
 
 # --- step 6: bare ?A (absolute) on miss must NOT create --------------
 echo "=== 6. get ?ghost (absolute miss) errors ==="

@@ -1,7 +1,7 @@
 #!/bin/sh
 #  be-get-absolute-miss.sh — `be get ?ghost` on a non-existent
-#  absolute branch errors out.  All observables intact (no implicit
-#  create — only relative refs auto-fork).
+#  absolute branch errors out.  All observables intact (GET never
+#  creates — POST is the only branch-creator, per VERBS.md).
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

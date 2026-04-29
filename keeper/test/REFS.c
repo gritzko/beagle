@@ -296,6 +296,117 @@ ok64 REFStest_monotonic_ts() {
     done;
 }
 
+// --- 10. CompareAndAppend ---------------------------------------------
+
+//  Helper: read the resolved 40-hex SHA for a key, or "" if absent.
+static ok64 cas_resolved_sha(fixture *fx, char const *key, char *out40) {
+    sane(fx && key && out40);
+    SL(ks, key);
+    Bu8 arena = {};
+    call(u8bMap, arena, 4096);
+    uri res = {};
+    ok64 o = REFSResolve(&res, arena, fx->dir_s, ks);
+    if (o == REFSNONE) {
+        out40[0] = 0;
+        u8bUnMap(arena);
+        done;
+    }
+    if (o != OK) { u8bUnMap(arena); return o; }
+    size_t n = (size_t)u8csLen(res.query);
+    if (n > 40) n = 40;
+    memcpy(out40, res.query[0], n);
+    out40[n] = 0;
+    u8bUnMap(arena);
+    done;
+}
+
+ok64 REFStest_cas() {
+    sane(1); call(FILEInit);
+    fixture fx = {};
+    call(fixture_open, &fx, "/tmp/refs-cas-XXXXXX");
+
+    char const *V1 = "1111111111111111111111111111111111111111";
+    char const *V2 = "2222222222222222222222222222222222222222";
+    char const *V3 = "3333333333333333333333333333333333333333";
+    char const *ZERO = "0000000000000000000000000000000000000000";
+
+    //  (c) Key absent + expected_old empty → OK; subsequent resolve
+    //      returns new.
+    {
+        SL(k, "?heads/main"); SL(empty, ""); SL(v1, V1);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, empty, v1);
+        want(o == OK);
+        char cur[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/main", cur);
+        want(strcmp(cur, V1) == 0);
+    }
+
+    //  (a) Match → OK; subsequent REFSResolve returns new.
+    {
+        SL(k, "?heads/main"); SL(old, V1); SL(v2, V2);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, old, v2);
+        want(o == OK);
+        char cur[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/main", cur);
+        want(strcmp(cur, V2) == 0);
+    }
+
+    //  (b) Mismatch → REFSCAS; current value untouched.
+    {
+        SL(k, "?heads/main"); SL(wrong, V1); SL(v3, V3);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, wrong, v3);
+        want(o == REFSCAS);
+        char cur[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/main", cur);
+        want(strcmp(cur, V2) == 0);  // unchanged
+    }
+
+    //  (d) Key absent + expected_old non-empty → REFSCAS.
+    {
+        SL(k, "?heads/ghost"); SL(old, V1); SL(v2, V2);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, old, v2);
+        want(o == REFSCAS);
+        char cur[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/ghost", cur);
+        want(cur[0] == 0);  // still absent
+    }
+
+    //  (e) Tombstoned key + expected_old empty → OK (treated like absent).
+    //      First write a real value, then tombstone it (40 zeros), then
+    //      CAS-with-empty must succeed.
+    {
+        SL(k, "?heads/feat"); SL(v1, V1); SL(zeros, ZERO);
+        call(append, &fx, "?heads/feat", V1);
+        //  Tombstone via plain append (verb=get is fine; tombstone
+        //  detection is by zero-sha shape, not verb).
+        call(append, &fx, "?heads/feat", ZERO);
+        char cur[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/feat", cur);
+        want(cur[0] == 0);  // resolves as absent
+        SL(empty, ""); SL(v3, V3);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, empty, v3);
+        want(o == OK);
+        char after[64] = {};
+        call(cas_resolved_sha, &fx, "?heads/feat", after);
+        want(strcmp(after, V3) == 0);
+        (void)v1; (void)zeros;
+    }
+
+    //  Bonus: tombstoned + expected_old non-empty → REFSCAS.
+    {
+        SL(k, "?heads/dead"); SL(zeros, ZERO);
+        call(append, &fx, "?heads/dead", V1);
+        call(append, &fx, "?heads/dead", ZERO);
+        SL(old, V1); SL(v2, V2);
+        ok64 o = REFSCompareAndAppend(fx.dir_s, k, old, v2);
+        want(o == REFSCAS);
+        (void)zeros;
+    }
+
+    fixture_close(&fx);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "REFStest_empty...\n");          call(REFStest_empty);
@@ -303,6 +414,7 @@ ok64 maintest() {
     fprintf(stderr, "REFStest_resolve_table...\n");  call(REFStest_resolve_table);
     fprintf(stderr, "REFStest_sync_compact...\n");   call(REFStest_sync_compact);
     fprintf(stderr, "REFStest_monotonic_ts...\n");   call(REFStest_monotonic_ts);
+    fprintf(stderr, "REFStest_cas...\n");            call(REFStest_cas);
     fprintf(stderr, "all passed\n");
     done;
 }
