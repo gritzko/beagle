@@ -69,14 +69,18 @@ static ok64 refs_print_cb(refcp r, void *ctx) {
 
 static ok64 keeper_status(keeper *k) {
     sane(k);
+    u32 nruns = DOGPupCount(k->shards[0].puppies);
     fprintf(stdout, "keeper: %u pack file(s), %u index run(s)\n",
-            k->shards[0].npacks, k->shards[0].nruns);
+            k->shards[0].npacks, nruns);
     u64 total_pack = 0;
     for (u32 i = 0; i < k->shards[0].npacks; i++)
         total_pack += (u64)u8bDataLen(k->shards[0].packs[i]);
     u64 total_idx = 0;
-    for (u32 i = 0; i < k->shards[0].nruns; i++)
-        total_idx += (u64)wh128csLen(k->shards[0].runs[i]) * sizeof(wh128);
+    for (u32 i = 0; i < nruns; i++) {
+        u8cs raw = {NULL, NULL};
+        DOGPupData(raw, k->shards[0].puppies, i);
+        total_idx += (u64)(raw[1] - raw[0]);
+    }
     fprintf(stdout, "  packs: %llu bytes\n", (unsigned long long)total_pack);
     fprintf(stdout, "  index: %llu entries\n",
             (unsigned long long)(total_idx / sizeof(wh128)));

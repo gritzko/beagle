@@ -425,83 +425,45 @@ u32 DAGPathVers(graf_pathver *out, u32 maxvers,
 static ok64 dag_compact(u8cs dagdir) {
     sane($ok(dagdir));
 
-    dag_stack st = {};
-    call(dag_stack_open, &st, dagdir);
-    if (st.n < 2) { dag_stack_close(&st); done; }
+    a_cstr(ext, DAG_IDX_EXT);
+    Bkv32 pups = {};
+    call(kv32bAllocate, pups, FILE_MAX_OPEN);
+    call(DOGPupOpenAll, pups, dagdir, ext);
 
-    wh128css stack = {st.runs, st.runs + st.n};
-    if (HITwh128IsCompact(stack)) { dag_stack_close(&st); done; }
+    u32 nfiles = DOGPupCount(pups);
+    if (nfiles < 2) { DOGPupClose(pups); done; }
+
+    //  Build typed view from puppy data slices.
+    wh128cs runs[MSET_MAX_LEVELS] = {};
+    for (u32 i = 0; i < nfiles && i < MSET_MAX_LEVELS; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, pups, i);
+        runs[i][0] = (wh128cp)raw[0];
+        runs[i][1] = (wh128cp)raw[1];
+    }
+    wh128css stack = {runs, runs + nfiles};
+
+    if (HITwh128IsCompact(stack)) { DOGPupClose(pups); done; }
 
     size_t total = 0;
-    for (u32 i = 0; i < st.n; i++)
-        total += (size_t)(st.runs[i][1] - st.runs[i][0]);
+    for (u32 i = 0; i < nfiles; i++)
+        total += (size_t)(runs[i][1] - runs[i][0]);
 
     Bwh128 cbuf = {};
     call(wh128bAllocate, cbuf, total);
-
-    //  HITCompact merges the youngest violators in-place against the
-    //  stack, advancing `into` past the new run.  We need the merged
-    //  slice for the .idx write; capture `into[0]` before the call so
-    //  the [base, into[0]) range identifies the merged run after.
     wh128 *base = cbuf[0];
     wh128s into = {cbuf[0], cbuf[3]};
     size_t before_len = $len(stack);
     call(HITwh128Compact, stack, into);
     size_t m = before_len - $len(stack) + 1;
-    if (m < 2) {
-        wh128bFree(cbuf);
-        dag_stack_close(&st);
-        done;
-    }
+    if (m < 2) { wh128bFree(cbuf); DOGPupClose(pups); done; }
 
-    u64 seqno = 0;
-    call(dag_next_seqno, &seqno, dagdir);
-    wh128cs merged = {(wh128cp)base, (wh128cp)(into[0])};
-    call(dag_index_write, dagdir, merged, seqno);
-
-    // Collect and unlink the old files (skip the one we just wrote).
-    char fnames[MSET_MAX_LEVELS][64];
-    u32 fcount = 0;
-    {
-        a_path(dpat);
-        call(PATHu8bFeed, dpat, dagdir);
-        DIR *d2 = opendir((char *)u8bDataHead(dpat));
-        if (d2) {
-            struct dirent *e2;
-            while ((e2 = readdir(d2)) != NULL && fcount < MSET_MAX_LEVELS) {
-                size_t nlen = strlen(e2->d_name);
-                if (nlen != DAG_SEQNO_W + 4) continue;
-                if (memcmp(e2->d_name + DAG_SEQNO_W, DAG_IDX_EXT, 4) != 0) continue;
-                memcpy(fnames[fcount], e2->d_name, nlen + 1);
-                fcount++;
-            }
-            closedir(d2);
-        }
-    }
-    for (u32 i = 0; i + 1 < fcount; i++)
-        for (u32 j = i + 1; j < fcount; j++)
-            if (strcmp(fnames[i], fnames[j]) > 0) {
-                char tmp[64];
-                memcpy(tmp, fnames[i], 64);
-                memcpy(fnames[i], fnames[j], 64);
-                memcpy(fnames[j], tmp, 64);
-            }
-
-    dag_stack_close(&st);
-
-    u32 unlinked = 0;
-    for (u32 i = 0; i < fcount && unlinked < m; i++) {
-        u8cs numslice = {(u8cp)fnames[i], (u8cp)fnames[i] + DAG_SEQNO_W};
-        u64 fseq = 0;
-        RONutf8sDrain(&fseq, numslice);
-        if (fseq == seqno) continue;
-        u8cs fn = {(u8cp)fnames[i], (u8cp)fnames[i] + strlen(fnames[i])};
-        a_path(ulpath, dagdir, fn);
-        unlink((char *)u8bDataHead(ulpath));
-        unlinked++;
-    }
+    u8cs merged = {(u8cp)base, (u8cp)(into[0])};
+    call(DOGPupThinTail, pups, dagdir, ext, (u32)m);
+    call(DOGPupCreate, pups, dagdir, ext, merged);
 
     wh128bFree(cbuf);
+    DOGPupClose(pups);
     done;
 }
 

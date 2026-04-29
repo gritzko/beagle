@@ -323,9 +323,9 @@ static u32 dog_pup_parse_seqno(char const *name, size_t nlen, u8cs ext) {
     size_t elen = (size_t)$len(ext);
     if (nlen != DOG_PUP_SEQNO_W + elen) return 0;
     if (memcmp(name + DOG_PUP_SEQNO_W, ext[0], elen) != 0) return 0;
-    u8c const *p = (u8c const *)name;
+    u8cs slice = {(u8cp)name, (u8cp)name + DOG_PUP_SEQNO_W};
     ok64 v = 0;
-    if (RONutf8sDrain(&v, &p) != OK) return 0;
+    if (RONutf8sDrain(&v, slice) != OK) return 0;
     return (u32)v;
 }
 

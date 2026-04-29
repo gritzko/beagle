@@ -176,12 +176,8 @@ ok64 WIREReadRequest(int in_fd, wire_reqp req) {
 static ok64 wire_pack_path(path8b out, u8csc kdir, u32 file_id) {
     sane(u8bOK(out) && !u8csEmpty(kdir));
     a_pad(u8, fname, KEEP_SEQNO_W + sizeof(KEEP_PACK_EXT));
-    //  5 hex digits, lower-case, zero padded.
-    a_cstr(digits, "0123456789abcdef");
-    for (int i = KEEP_SEQNO_W - 1; i >= 0; i--) {
-        u8 nib = (u8)((file_id >> (i * 4)) & 0xf);
-        u8bFeed1(fname, digits[0][nib]);
-    }
+    call(RONu8sFeedPad, u8bIdle(fname), (ok64)file_id, KEEP_SEQNO_W);
+    ((u8 **)fname)[2] += KEEP_SEQNO_W;
     a_cstr(ext, KEEP_PACK_EXT);
     u8bFeed(fname, ext);
     call(PATHu8bDup, out, kdir);
@@ -199,9 +195,9 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
     u32  best_count = 0;
     u32  best_len  = 0;
     b8   any = NO;
-    for (u32 r = 0; r < k->shards[0].nruns; r++) {
-        wh128cp base = k->shards[0].runs[r][0];
-        wh128cp term = k->shards[0].runs[r][1];
+    for (u32 r = 0, _nr_ = DOGPupCount(k->shards[0].puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->shards[0].puppies, r);
+        wh128cp base = (wh128cp)_raw_[0];
+        wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
@@ -230,9 +226,9 @@ static ok64 wire_tail_pack(keeper *k, u32 file_id,
     u32  best_count = 0;
     u32  best_len  = 0;
     b8   any = NO;
-    for (u32 r = 0; r < k->shards[0].nruns; r++) {
-        wh128cp base = k->shards[0].runs[r][0];
-        wh128cp term = k->shards[0].runs[r][1];
+    for (u32 r = 0, _nr_ = DOGPupCount(k->shards[0].puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->shards[0].puppies, r);
+        wh128cp base = (wh128cp)_raw_[0];
+        wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
@@ -255,9 +251,9 @@ static ok64 wire_tail_pack(keeper *k, u32 file_id,
 //  offset is in [from, to).
 static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {
     u64 total = 0;
-    for (u32 r = 0; r < k->shards[0].nruns; r++) {
-        wh128cp base = k->shards[0].runs[r][0];
-        wh128cp term = k->shards[0].runs[r][1];
+    for (u32 r = 0, _nr_ = DOGPupCount(k->shards[0].puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->shards[0].puppies, r);
+        wh128cp base = (wh128cp)_raw_[0];
+        wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
@@ -281,9 +277,9 @@ static ok64 wire_locate_sha(keeper *k, sha1 const *sha,
     u64 key_lo = keepKeyPack(KEEP_OBJ_COMMIT, hashlet60);
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG, hashlet60);
 
-    for (u32 r = 0; r < k->shards[0].nruns; r++) {
-        wh128cp base = k->shards[0].runs[r][0];
-        size_t  len  = (size_t)(k->shards[0].runs[r][1] - base);
+    for (u32 r = 0, _nr_ = DOGPupCount(k->shards[0].puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->shards[0].puppies, r);
+        wh128cp base = (wh128cp)_raw_[0];
+        size_t  len  = (size_t)((wh128cp)_raw_[1] - base);
         if (len == 0) continue;
         size_t lo = 0, hi = len;
         while (lo < hi) {

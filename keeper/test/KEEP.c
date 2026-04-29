@@ -77,7 +77,7 @@ ok64 KEEPempty() {
     
     call(KEEPOpen, &h, YES);
     want(KEEP.shards[0].npacks == 0);
-    want(KEEP.shards[0].nruns == 0);
+    want(DOGPupCount(KEEP.shards[0].puppies) == 0);
 
     a_cstr(_h, "abcdef");
     u64 hashlet = WHIFFHexHashlet60(_h);
@@ -123,7 +123,7 @@ ok64 KEEPput() {
 
     call(KEEPPut, &KEEP, objs, wh, 2);
     want(KEEP.shards[0].npacks == 1);
-    want(KEEP.shards[0].nruns == 1);
+    want(DOGPupCount(KEEP.shards[0].puppies) == 1);
 
     // Both whiffs should have valid types
     want(wh64Type(wh[0]) == DOG_OBJ_BLOB);
@@ -217,7 +217,7 @@ ok64 KEEPpackIncremental() {
 
     call(KEEPPackClose, &KEEP, &p);
     want(KEEP.shards[0].npacks == 1);
-    want(KEEP.shards[0].nruns == 1);
+    want(DOGPupCount(KEEP.shards[0].puppies) == 1);
 
     // Retrieve blob by 7-char prefix (git default)
     u64 blob_hashlet = WHIFFHashlet60(&blob_sha);

@@ -98,8 +98,8 @@ fun u32 keepPackBmLen(u64 val)   { return (u32)val; }
 #define KEEP_MAX_SHARDS  16              // Phase 1a hard-caps usage to 1
 #define KEEP_DIR         ".dogs"
 #define KEEP_PACK_EXT    ".keeper"       // pack logs live next to indexes
-#define KEEP_IDX_EXT     ".idx"
-#define KEEP_SEQNO_W     5               // 20-bit wh64 file_id → 5 hex chars
+#define KEEP_IDX_EXT     ".keeper.idx"
+#define KEEP_SEQNO_W     DOG_PUP_SEQNO_W // 10-char RON64 (matches DOGPup*)
 
 //  Per-branch object store.  Each shard owns the mmap'd pack log files
 //  and the LSM index runs for one branch-dir.  Phase 1a keeps the on-
@@ -111,10 +111,9 @@ typedef struct {
     int     lock_fd;                    // flock on <shard>/.lock; -1 = none
     u8bp    packs[KEEP_MAX_FILES];      // mmap'd log files
     u32     npacks;
-    wh128cs runs[KEEP_MAX_LEVELS];      // LSM index runs
-    u8bp    run_maps[KEEP_MAX_LEVELS];
-    Bu32    run_seqnos;                 // `<seqno>.idx` per run, parallels runs[]
-    u32     nruns;
+    Bkv32   puppies;                    // LSM index runs as DOGPup* stack:
+                                        //   key = seqno of <seqno>.keeper.idx
+                                        //   val = fd into FILE_WANT_BUFS
 } keeper_shard;
 
 typedef struct {

@@ -361,17 +361,25 @@ ok64 CAPOStackClose(u8bp *maps, u32 nfiles) {
 ok64 CAPOCompact(u8csc dir) {
     sane($ok(dir));
 
-    u64cs runs[CAPO_MAX_LEVELS] = {};
-    u64css stack = {runs, runs};
-    u8bp mmaps[CAPO_MAX_LEVELS] = {};
-    u32 nfiles = 0;
-    call(CAPOStackOpen, stack, mmaps, &nfiles, dir);
-    stack[1] = stack[0] + nfiles;
+    a_cstr(ext, CAPO_IDX_EXT);
+    Bkv32 pups = {};
+    call(kv32bAllocate, pups, FILE_MAX_OPEN);
+    call(DOGPupOpenAll, pups, dir, ext);
 
-    if (nfiles < 2 || HITu64IsCompact(stack)) {
-        CAPOStackClose(mmaps, nfiles);
-        done;
+    u32 nfiles = DOGPupCount(pups);
+    if (nfiles < 2) { DOGPupClose(pups); done; }
+
+    //  Build typed view from puppy data slices.
+    u64cs runs[CAPO_MAX_LEVELS] = {};
+    for (u32 i = 0; i < nfiles && i < CAPO_MAX_LEVELS; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, pups, i);
+        runs[i][0] = (u64cp)raw[0];
+        runs[i][1] = (u64cp)raw[1];
     }
+    u64css stack = {runs, runs + nfiles};
+
+    if (HITu64IsCompact(stack)) { DOGPupClose(pups); done; }
 
     size_t total = 0;
     for (u32 i = 0; i < nfiles; i++) total += $len(runs[i]);
@@ -383,33 +391,16 @@ ok64 CAPOCompact(u8csc dir) {
     size_t before_len = $len(stack);
     call(HITu64Compact, stack, into);
     size_t m = before_len - $len(stack) + 1;
-    if (m < 2) {
-        u64bFree(cbuf);
-        CAPOStackClose(mmaps, nfiles);
-        done;
-    }
+    if (m < 2) { u64bFree(cbuf); DOGPupClose(pups); done; }
 
-    u64 seqno = 0;
-    call(CAPONextSeqno, &seqno, dir);
-    u64cs merged = {(u64cp)base, (u64cp)(into[0])};
-    call(CAPOIndexWrite, dir, merged, seqno);
-
-    char fnames[CAPO_MAX_LEVELS][64];
-    u32 fcount = CAPOListIdx(fnames, CAPO_MAX_LEVELS, dir);
-
-    CAPOStackClose(mmaps, nfiles);
-
-    u32 unlinked = 0;
-    for (u32 i = fcount; i > 0 && unlinked < m; i--) {
-        if (i == fcount) continue;
-        u8cs ulfn = {(u8cp)fnames[i - 1],
-                     (u8cp)fnames[i - 1] + strlen(fnames[i - 1])};
-        a_path(ulpath, dir, ulfn);
-        unlink((char *)u8bDataHead(ulpath));
-        unlinked++;
-    }
+    u8cs merged = {(u8cp)base, (u8cp)(into[0])};
+    //  Order matters: thin first (unlinks the m sources), then create
+    //  (writes the new run with seqno = max(remaining)+1).
+    call(DOGPupThinTail, pups, dir, ext, (u32)m);
+    call(DOGPupCreate, pups, dir, ext, merged);
 
     u64bFree(cbuf);
+    DOGPupClose(pups);
     done;
 }
 
