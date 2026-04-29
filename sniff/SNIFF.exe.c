@@ -76,20 +76,75 @@ static ok64 sniff_drain_cb(u8cs path, void *ctx) {
     (void)path; (void)ctx; return OK;
 }
 
-//  The watch daemon emits `mod <relpath>` ULOG rows for every file
-//  whose mtime is outside the ULOG stamp-set (i.e. user-edited since
-//  the last get/post/patch).  It scans the wt on every inotify batch
-//  and dedupes via an in-memory `path_idx → last_emitted_mtime` table
-//  so repeated events on the same already-dirty file don't flood the
-//  log.  The rows are advisory; POST's change-set resolver still does
-//  its own wt-scan as the authoritative check.
+//  The watch daemon emits one `mod <dir/>` ULOG row per directory
+//  containing dirty files (mtime ∉ stamp set).  Dedup is via .sniff
+//  itself: a directory whose `mod <dir/>` row already exists since the
+//  most recent baseline (get/post/patch) is skipped.  Coarse-grained
+//  by design — POST does its own wt scan; the row is just an advisory
+//  "something happened in this area" signal for external tools.
 
 typedef struct {
     u8cs   reporoot;
-    u64   *last_mtime;   // indexed by path_idx
-    u32    cap;
-    u32    emitted;      // rows appended this scan (for logging)
+    Bu8   *seen_dirs;    // newline-sep set of dir paths already mod'd
 } watch_scan_ctx;
+
+//  YES iff `dir` already appears in `*seen` (linear scan; the set is
+//  bounded by the number of distinct dirs touched between two
+//  get/post events — small in practice).
+static b8 watch_dir_seen(Bu8 *seen, u8cs dir) {
+    a_dup(u8c, scan, u8bData(*seen));
+    while (!u8csEmpty(scan)) {
+        u8cs line = {};
+        if (u8csDrainLine(scan, line) != OK) break;
+        if (u8csLen(line) == u8csLen(dir) &&
+            memcmp(line[0], dir[0], u8csLen(dir)) == 0) return YES;
+    }
+    return NO;
+}
+
+static void watch_dir_remember(Bu8 *seen, u8cs dir) {
+    u8bFeed(*seen, dir);
+    u8bFeed1(*seen, '\n');
+}
+
+//  Compute the parent dir slice (with trailing '/') for `rel` into
+//  `out`.  Files at the wt root use "/".
+static void watch_parent_dir(u8cs rel, Bu8 out) {
+    u8bReset(out);
+    u8c const *slash_last = NULL;
+    for (u8c const *p = rel[0]; p < rel[1]; p++) {
+        if (*p == '/') slash_last = p;
+    }
+    if (slash_last) {
+        u8cs parent = {rel[0], slash_last + 1};   // include trailing '/'
+        u8bFeed(out, parent);
+    } else {
+        u8bFeed1(out, '/');                       // root marker
+    }
+}
+
+//  Seed `*seen` from the .sniff log: every `mod <dir/>` row whose ts
+//  is past the most recent get/post/patch baseline contributes its
+//  path.
+static ok64 watch_seed_seen(Bu8 *seen) {
+    sane(seen);
+    u8bReset(*seen);
+    ron60 base_ts = 0, bv = 0;
+    uri bu = {};
+    if (SNIFFAtBaseline(&base_ts, &bv, &bu) != OK) base_ts = 0;
+    ron60 v_mod = SNIFFAtVerbMod();
+    u32 n = ULOGCount(SNIFF.log_idx);
+    for (u32 i = 0; i < n; i++) {
+        ulogrec rec = {};
+        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec) != OK) continue;
+        if (rec.ts <= base_ts) continue;
+        if (rec.verb != v_mod) continue;
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
+        if ($empty(path)) continue;
+        if (!watch_dir_seen(seen, path)) watch_dir_remember(seen, path);
+    }
+    done;
+}
 
 static ok64 watch_scan_cb(void *varg, path8bp path) {
     sane(varg && path);
@@ -116,27 +171,33 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
     //  Clean against some baseline → nothing to log.
     if (SNIFFAtKnown(mtime)) return OK;
 
-    u32 idx = SNIFFIntern(rel);
-    if (idx >= w->cap) return OK;
-    if (w->last_mtime[idx] == (u64)mtime) return OK;  // dedup
+    a_pad(u8, dirbuf, 1024);
+    watch_parent_dir(rel, dirbuf);
+    a_dup(u8c, dir, u8bData(dirbuf));
+    if (watch_dir_seen(w->seen_dirs, dir)) return OK;
 
-    //  Append one `mod <rel>` row via the usual URI-struct path.
+    //  Append one `mod <dir/>` row via the usual URI-struct path.
     uri urow = {};
-    urow.path[0] = rel[0];
-    urow.path[1] = rel[1];
+    urow.path[0] = dir[0];
+    urow.path[1] = dir[1];
     ron60 vmod = SNIFFAtVerbMod();
     if (SNIFFAtAppend(vmod, &urow) == OK) {
-        w->last_mtime[idx] = (u64)mtime;
-        w->emitted++;
+        watch_dir_remember(w->seen_dirs, dir);
     }
     return OK;
 }
 
-static ok64 watch_rescan(u8cs reporoot, u64 *last_mtime, u32 cap) {
-    sane($ok(reporoot) && last_mtime);
-    watch_scan_ctx wc = {.last_mtime = last_mtime, .cap = cap, .emitted = 0};
+static ok64 watch_rescan(u8cs reporoot, Bu8 *seen_dirs) {
+    sane($ok(reporoot) && seen_dirs);
+    //  Rebuild the seen set from .sniff each scan — the baseline may
+    //  have advanced (get/post/patch) since the last invocation,
+    //  invalidating prior `mod` rows.
+    call(watch_seed_seen, seen_dirs);
+
+    watch_scan_ctx wc = {.seen_dirs = seen_dirs};
     wc.reporoot[0] = reporoot[0];
     wc.reporoot[1] = reporoot[1];
+
     a_path(wp);
     u8bFeed(wp, reporoot);
     call(PATHu8bTerm, wp);
@@ -145,8 +206,6 @@ static ok64 watch_rescan(u8cs reporoot, u64 *last_mtime, u32 cap) {
          watch_scan_cb, &wc);
     done;
 }
-
-#define WATCH_CAP (1u << 18)   // 256 k paths, ~2 MB of last-mtime table
 
 static ok64 sniff_daemon(u8cs reporoot) {
     sane(1);
@@ -180,24 +239,24 @@ static ok64 sniff_daemon(u8cs reporoot) {
                  sniff_watchdir_cb, &wctx);
     }
 
-    //  Per-path last-emitted-mtime table for `mod`-row dedup.
-    Bu8 mt_buf = {};
-    call(u8bAllocate, mt_buf, (u64)WATCH_CAP * sizeof(u64));
-    memset(u8bDataHead(mt_buf), 0, (u64)WATCH_CAP * sizeof(u64));
-    u64 *last_mtime = (u64 *)u8bDataHead(mt_buf);
+    //  Newline-sep set of directories whose `mod <dir/>` row has
+    //  already been written since the most recent baseline.  Rebuilt
+    //  per scan in watch_rescan().
+    Bu8 seen_dirs = {};
+    call(u8bAllocate, seen_dirs, 1UL << 16);
 
     //  Seed scan: emit mod rows for anything already dirty when the
     //  daemon starts.
-    (void)watch_rescan(reporoot, last_mtime, WATCH_CAP);
+    (void)watch_rescan(reporoot, &seen_dirs);
 
     while (!sniff_quit) {
         ok64 o = FSWPoll(wfd, 1000);
         if (o != OK) continue;
         FSWDrain(wfd, sniff_drain_cb, NULL);
-        (void)watch_rescan(reporoot, last_mtime, WATCH_CAP);
+        (void)watch_rescan(reporoot, &seen_dirs);
     }
 
-    u8bFree(mt_buf);
+    u8bFree(seen_dirs);
     FSWClose(wfd);
     sniff_rm_pid(reporoot);
     done;
@@ -447,20 +506,6 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     fail(SNIFFFAIL);
 }
 
-// --- Mode: List ---
-
-static ok64 sniff_list(void) {
-    sane(1);
-    u32 n = SNIFFCount();
-    for (u32 i = 0; i < n; i++) {
-        u8cs path = {};
-        if (SNIFFPath(path, i) != OK) continue;
-        printf("%.*s\n", (int)$len(path), (char *)path[0]);
-    }
-    fprintf(stderr, "sniff: %u path(s)\n", n);
-    done;
-}
-
 // --- Usage ---
 
 static void sniff_usage(void) {
@@ -503,7 +548,7 @@ static void sniff_usage(void) {
 
 char const *const SNIFF_VERBS[] = {
     "index", "update", "status", "checkout",
-    "commit", "watch", "stop", "list", "help",
+    "commit", "watch", "stop", "help",
     "get", "post", "put", "delete", "patch", NULL
 };
 
@@ -526,7 +571,6 @@ ok64 SNIFFExec(cli *c) {
     a_cstr(v_commit, "commit");
     a_cstr(v_watch, "watch");
     a_cstr(v_stop, "stop");
-    a_cstr(v_list, "list");
     a_cstr(v_get, "get");
     a_cstr(v_post, "post");
     a_cstr(v_put, "put");
@@ -547,7 +591,6 @@ ok64 SNIFFExec(cli *c) {
     b8 is_update = $eq(c->verb, v_update);
     b8 is_watch = $eq(c->verb, v_watch);
     b8 is_status = $eq(c->verb, v_status);
-    b8 is_list = $eq(c->verb, v_list);
 
     //  Verb-less projector invocation (VERBS.md §"View projectors"):
     //  `sniff <proj>:<URI>` — no verb.  Scheme selects the projector;
@@ -780,8 +823,6 @@ ok64 SNIFFExec(cli *c) {
         ret = sniff_daemon(reporoot);
     } else if (is_status) {
         ret = sniff_status(reporoot);
-    } else if (is_list) {
-        ret = sniff_list();
     } else if (is_projector) {
         //  URI scheme picks the projector; `--tlv` switches the
         //  emitter from HUNKu8sFeedText to HUNKu8sFeed.

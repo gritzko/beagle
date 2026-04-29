@@ -50,58 +50,6 @@ static void rm_tmpdir(void) {
     system(cmd);
 }
 
-// --- Test: intern + path round-trip ---
-
-ok64 SNIFFInternPath() {
-    sane(1);
-    call(FILEInit);
-    call(make_tmpdir);
-
-    a_cstr(root, g_tmpdir);
-    home h = {};
-    call(HOMEOpen, &h, root, YES);
-    
-    call(KEEPOpen, &h, YES);
-    sniff s = {};
-    call(SNIFFOpen, &h, YES);
-
-    a_cstr(p1, "src/foo.c");
-    a_cstr(p2, "src/bar.c");
-    a_cstr(p3, "README.md");
-
-    u32 i1 = SNIFFIntern(p1);
-    u32 i2 = SNIFFIntern(p2);
-    u32 i3 = SNIFFIntern(p3);
-
-    // Distinct indices
-    want(i1 != i2);
-    want(i1 != i3);
-    want(i2 != i3);
-
-    // Re-intern returns same index
-    want(SNIFFIntern(p1) == i1);
-    want(SNIFFIntern(p2) == i2);
-
-    // Path round-trip
-    u8cs out = {};
-    call(SNIFFPath, out, i1);
-    want($len(out) == $len(p1));
-    want(memcmp(out[0], p1[0], $len(p1)) == 0);
-
-    call(SNIFFPath, out, i3);
-    want($len(out) == $len(p3));
-    want(memcmp(out[0], p3[0], $len(p3)) == 0);
-
-    // Count includes reserved root-dir index "/".
-    want(SNIFFCount() == 4);
-
-    call(SNIFFClose);
-    KEEPClose();
-    HOMEClose(&h);
-    rm_tmpdir();
-    done;
-}
-
 // --- Test: AT helpers (verb constants, baseline, last-post, scan) ---
 
 typedef struct { u32 n; ron60 verbs[8]; u8 paths[8][32]; u8 lens[8]; } pd_capture;
@@ -889,8 +837,6 @@ static ok64 SNIFFMergeWalkTest(void) {
 
 ok64 maintest() {
     sane(1);
-    fprintf(stderr, "SNIFFInternPath...\n");
-    call(SNIFFInternPath);
     fprintf(stderr, "SNIFFAtHelpers...\n");
     call(SNIFFAtHelpers);
     fprintf(stderr, "SNIFFCheckoutCommit...\n");
