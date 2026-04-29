@@ -1343,6 +1343,7 @@ static ok64 CAPOFlushRun(u64bp entries, u8csc dirslice, u64p seqno) {
 typedef struct {
     spot   *s;
     keeper *k;
+    Bkv64   seen_pairs;   // key=(hashlet30<<32|path_hash), dedup the walk
 } capo_close_ctx;
 
 static ok64 capo_close_visit(u8cs path, u8 kind, u8cp esha,
@@ -1361,6 +1362,18 @@ static ok64 capo_close_visit(u8cs path, u8 kind, u8cp esha,
     //  Try staged bytes first (zero-copy view into blob_stage).
     u32 hashlet32 = 0;
     memcpy(&hashlet32, esha, sizeof(u32));
+
+    //  Dedup: skip if (hashlet30, path_hash) already tokenised this
+    //  Close-pass.  Multiple commits sharing an unchanged file would
+    //  otherwise re-tokenise it once per commit.
+    u32 phash0 = CAPOPathHash(path);
+    u32 hl30_0 = hashlet32 & 0x3FFFFFFFu;
+    u64 pair_key = ((u64)hl30_0 << 32) | (u64)phash0;
+    {
+        kv64s tbl = {cx->seen_pairs[0], cx->seen_pairs[3]};
+        kv64 probe = {.key = pair_key, .val = 0};
+        if (HASHkv64Get(&probe, tbl) == OK) return OK;
+    }
     u8cs source = {};
     Bu8 fetched = {};
     {
@@ -1393,10 +1406,16 @@ static ok64 capo_close_visit(u8cs path, u8 kind, u8cp esha,
     (void)CAPOIndexFile(s->entries, source, ext, path);
 
     //  Emit pair record for LSM-level dedup of repeat (blob, path).
-    u32 phash = CAPOPathHash(path);
-    u32 hl30 = hashlet32 & 0x3FFFFFFFu;
-    idx64 pair = CAPOPairEntry(hl30, phash);
+    idx64 pair = CAPOPairEntry(hl30_0, phash0);
     (void)u64bPush(s->entries, &pair);
+
+    //  Record the pair in the per-walk seen set so subsequent commits
+    //  visiting the same (blob, path) skip the tokeniser.
+    {
+        kv64s tbl = {cx->seen_pairs[0], cx->seen_pairs[3]};
+        kv64 e = {.key = pair_key, .val = 1};
+        HASHkv64Put(tbl, &e);
+    }
 
     if (!BNULL(fetched)) u8bFree(fetched);
     return OK;
@@ -1408,7 +1427,19 @@ static ok64 capo_close_pass(spot *s) {
     a_dup(u8c, commits, u8bData(s->pending_commits));
     if ($empty(commits)) done;
 
-    capo_close_ctx cx = {s, &KEEP};
+    capo_close_ctx cx = {s, &KEEP, {}};
+    //  Sized for the union of (blob, path) pairs across all commits in
+    //  this Close-pass.  16x the staged-blob count is a safe upper bound
+    //  (most blobs land at ≤16 distinct paths via renames over history).
+    u64 pair_cap = (u64)kv64bDataLen(s->blob_offsets) * 16;
+    if (pair_cap < 4096) pair_cap = 4096;
+    pair_cap = (pair_cap + 15) & ~(u64)15;
+    call(kv64bAllocate, cx.seen_pairs, pair_cap);
+    memset(cx.seen_pairs[0], 0,
+           (size_t)(cx.seen_pairs[3] - cx.seen_pairs[0]) * sizeof(kv64));
+    cx.seen_pairs[1] = cx.seen_pairs[0];
+    cx.seen_pairs[2] = cx.seen_pairs[3];
+
     for (u8cp p = commits[0]; p + 20 <= commits[1]; p += 20) {
         a_pad(u8, hexbuf, 41);
         u8s hs = {u8bIdleHead(hexbuf), u8bTerm(hexbuf)};
@@ -1422,6 +1453,7 @@ static ok64 capo_close_pass(spot *s) {
         u.fragment[1] = hex[1];
         (void)KEEPLsFiles(&KEEP, &u, capo_close_visit, &cx);
     }
+    if (!BNULL(cx.seen_pairs)) kv64bFree(cx.seen_pairs);
     done;
 }
 
