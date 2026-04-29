@@ -122,8 +122,8 @@ if sniff post "?feat" should fail 2>/tmp/cross.err; then
     cat /tmp/cross.err
     fail "non-ff cross-branch POST should have been refused"
 fi
-grep -q "non-ff" /tmp/cross.err \
-    || fail "expected non-ff message; got: $(cat /tmp/cross.err)"
+grep -q "rebase aborted" /tmp/cross.err \
+    || fail "expected rebase aborted message; got: $(cat /tmp/cross.err)"
 note "non-ff cross-branch POST refused"
 
 echo "=== all cross-post scenarios passed ==="

@@ -95,8 +95,8 @@ if sniff post -m "should fail" 2>/tmp/postff.err; then
     cat /tmp/postff.err
     fail "non-ff POST should have been refused"
 fi
-grep -q "non-ff" /tmp/postff.err \
-    || fail "expected non-ff message; got: $(cat /tmp/postff.err)"
+grep -q "rebase aborted" /tmp/postff.err \
+    || fail "expected rebase aborted message; got: $(cat /tmp/postff.err)"
 [ "$(last_row)" = "$before_tail" ] \
     || fail ".sniff tail row changed after refused non-ff POST"
 note "non-ff POST refused; .sniff intact"

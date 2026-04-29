@@ -33,6 +33,7 @@
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
+#include "graf/REBASE.h"
 #include "keeper/GIT.h"
 #include "keeper/REFS.h"
 #include "keeper/SHA1.h"
@@ -796,30 +797,19 @@ static ok64 post_parent_sha(keeper *k, u8cs parent_hex, sha1 *out) {
 
 // --- Baseline branch query (from ULOG) ---
 
-#define POST_MAX_PARENTS 16
-
 //  Read the latest baseline (`get`/`post`/`patch`) row.  Fills `out`
-//  with the be-branch path (row's query), and `parents[]` with the
-//  current commit (row's `#fragment`) plus any extra 40-hex SHAs that
-//  appear in the query as `&`-chained specs (patch in-progress carries
-//  its `theirs` parents that way).  `*had_baseline_out` is YES iff a
-//  baseline row exists (so callers can distinguish a fresh repo from
-//  a corrupt one).
+//  with the be-branch path (row's query), and `*parent_out` with the
+//  current commit's sha (row's `#fragment`).  `*had_baseline_out` is
+//  YES iff a baseline row exists.
 //
-//  Returns OK in both the "baseline exists" and "no baseline" cases —
-//  callers branch on `*had_baseline_out`.  Non-OK reflects ULOG /
-//  parse failures upstream.
-//
-//  Per the new model, this collects only `ours` (parent[0]).  Patch
-//  parents (extra SHAs from prior `&<theirs>` chain entries) are added
-//  later by `post_add_patch_parents`, but only for files actually
-//  committed and only when their owning patch's ts stamps them — so
-//  cherry-pick / selective commits get a single parent.
-static ok64 post_collect_parents(u8bp out, sha1 *parents, u32 *nparents_out,
-                                 u32 cap, b8 *had_baseline_out) {
-    sane(out && parents && nparents_out && had_baseline_out);
+//  Single-parent everywhere on the write path: after the PATCH rewrite
+//  the baseline query no longer chains `&<theirs>` SHAs; one ours sha
+//  is the only parent the new commit gets.
+static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
+                                 b8 *had_baseline_out) {
+    sane(out && parent_out && has_parent_out && had_baseline_out);
     u8bReset(out);
-    *nparents_out = 0;
+    *has_parent_out = NO;
     *had_baseline_out = NO;
     ron60 ts = 0, verb = 0;
     uri u = {};
@@ -833,18 +823,20 @@ static ok64 post_collect_parents(u8bp out, sha1 *parents, u32 *nparents_out,
     //  handles transparently.
     {
         u8 hex40[40];
-        if (SNIFFAtQueryFirstSha(&u, hex40) == OK && cap > 0) {
+        if (SNIFFAtQueryFirstSha(&u, hex40) == OK) {
             sha1 ph = {};
             u8s bin = {ph.data, ph.data + 20};
             u8cs hx = {hex40, hex40 + 40};
-            if (HEXu8sDrainSome(bin, hx) == OK && bin[0] == ph.data + 20)
-                parents[(*nparents_out)++] = ph;
+            if (HEXu8sDrainSome(bin, hx) == OK && bin[0] == ph.data + 20) {
+                *parent_out = ph;
+                *has_parent_out = YES;
+            }
         }
     }
 
-    //  Walk the query for the branch (first QURY_REF).  Query SHAs are
-    //  intentionally ignored here — they're patch-recorded `theirs`
-    //  candidates, surfaced per-file in `post_add_patch_parents`.
+    //  Walk the query for the branch (first QURY_REF).  Single-parent
+    //  invariant: any extra SHAs in the query are legacy artefacts from
+    //  pre-rewrite PATCH rows; they're ignored.
     a_dup(u8c, q, u.query);
     while (!$empty(q)) {
         qref spec = {};
@@ -861,87 +853,10 @@ static ok64 post_collect_parents(u8bp out, sha1 *parents, u32 *nparents_out,
     done;
 }
 
-//  Pull the `theirs` sha THIS patch row contributed.  PATCH appends
-//  one new `&<theirs>` to the prior baseline's query each time, so
-//  the most recent patch row's last query SHA is the one it added.
-//  Returns OK + 40 hex bytes copied into `hex_out` on success.
-static ok64 post_patch_theirs(uri const *u, u8 hex_out[40]) {
-    sane(u && hex_out);
-    a_dup(u8c, q, u->query);
-    b8 found = NO;
-    u8 last[40];
-    while (!$empty(q)) {
-        qref spec = {};
-        if (QURYu8sDrain(q, &spec) != OK) break;
-        if (spec.type == QURY_NONE) {
-            if ($empty(q)) break;
-            continue;
-        }
-        if (spec.type == QURY_SHA && $len(spec.body) == 40) {
-            memcpy(last, spec.body[0], 40);
-            found = YES;
-        }
-    }
-    if (!found) fail(ULOGNONE);
-    memcpy(hex_out, last, 40);
-    done;
-}
-
-//  Walk every path that POST is rewriting (REWRITE, on disk).  For
-//  each, look up its owning ULOG row by mtime; if the row is a `patch`
-//  then its contributed `theirs` becomes a parent of the new commit
-//  (de-duped against existing parents).  Implicit mode only — selective
-//  commits stay single-parent ("cherry-pick") even when they touch
-//  patched files.
-static ok64 post_add_patch_parents(post_ctx *c, sha1 *parents,
-                                   u32 *nparents, u32 cap) {
-    sane(c && parents && nparents);
-    ron60 v_patch = SNIFFAtVerbPatch();
-
-    //  Drain `add` decisions — every rewrite-or-add row is a potential
-    //  patch contributor.  unlink/keep rows have no patch ancestry.
-    a_dup(u8c, scan, u8bData(c->decisions));
-    while (!u8csEmpty(scan)) {
-        ulogrec drec = {};
-        ok64 dr = ULOGu8sDrain(scan, &drec);
-        if (dr == NODATA) break;
-        if (dr != OK) continue;
-        if (drec.verb != c->v_add) continue;
-
-        u8cs path = {drec.uri.path[0], drec.uri.path[1]};
-        a_path(fp);
-        if (SNIFFFullpath(fp, c->reporoot, path) != OK) continue;
-
-        struct stat sb = {};
-        if (lstat((char const *)u8bDataHead(fp), &sb) != 0) continue;
-        struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                               .tv_nsec = sb.st_mtim.tv_nsec};
-        ron60 mr = SNIFFAtOfTimespec(mts);
-
-        ron60 ow_verb = 0;
-        uri ow_u = {};
-        if (SNIFFAtRowAtTs(mr, &ow_verb, &ow_u) != OK) continue;
-        if (ow_verb != v_patch) continue;
-
-        u8 hex40[40];
-        if (post_patch_theirs(&ow_u, hex40) != OK) continue;
-        sha1 ph = {};
-        u8s bin = {ph.data, ph.data + 20};
-        u8cs hx = {hex40, hex40 + 40};
-        if (HEXu8sDrainSome(bin, hx) != OK) continue;
-        if (bin[0] != ph.data + 20) continue;
-
-        //  Dedupe against the existing parent list (multiple files may
-        //  share the same patch row).
-        b8 dup = NO;
-        for (u32 p = 0; p < *nparents; p++)
-            if (sha1eq(&parents[p], &ph)) { dup = YES; break; }
-        if (dup) continue;
-        if (*nparents >= cap) break;
-        parents[(*nparents)++] = ph;
-    }
-    done;
-}
+//  Single-parent invariant: the multi-parent injection helpers
+//  `post_patch_theirs` / `post_add_patch_parents` were removed when
+//  PATCH stopped chaining `&<theirs>` onto baseline.  See VERBS.md
+//  §POST: parents = [ours] only on the write path.
 
 // --- Shared scan: produce the change-set into a post_ctx ---
 //
@@ -1213,6 +1128,43 @@ static void post_ctx_free(post_ctx *c) {
     u8bFree(c->decisions);
 }
 
+// --- Rebase emit pipeline (Stage 2 phase-2 promote) ---
+//
+//  When POSTCommit detects a non-ff against the same branch (REFS tip
+//  diverges from cur's parent), it builds the new commit normally and
+//  then replays it onto the live REFS tip via GRAFRebase.  The rebase
+//  callback funnels every emitted (type, sha, body) tuple straight into
+//  the active keeper pack so persistence is automatic.  The last commit
+//  emit's sha becomes the new tip.
+//
+//  Atomicity: rebase runs after the first KEEPPackClose, in a second
+//  pack opened just for the replay.  GRAFCNFL aborts mid-emit; the
+//  caller closes the partial pack (orphan objects are harmless — they
+//  are not referenced by REFS) and surfaces GRAFCNFL.  Cascade rebase
+//  for descendants is not yet wired; see TODO(spec) at the call site.
+
+typedef struct {
+    keeper    *k;
+    keep_pack *p;
+    sha1       last_commit_sha;   //  most recent emitted commit
+    b8         have_last_commit;
+} post_rebase_ctx;
+
+static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
+                                sha1 const *sha, u8csc body) {
+    sane(vctx && sha);
+    post_rebase_ctx *rc = (post_rebase_ctx *)vctx;
+    sha1 fed = {};
+    ok64 fo = KEEPPackFeed(rc->k, rc->p, obj_type, body, 0, &fed);
+    if (fo != OK) return fo;
+    //  Record the last commit sha — that's our rebased tip.
+    if (obj_type == DOG_OBJ_COMMIT) {
+        rc->last_commit_sha = *sha;
+        rc->have_last_commit = YES;
+    }
+    return OK;
+}
+
 // --- Public API ---
 
 ok64 POSTPrintStatus(u8cs reporoot) {
@@ -1243,23 +1195,19 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     sane($ok(message) && $ok(author) && sha_out);
     keeper *k = &KEEP;
 
-    //  1. Resolve baseline parents.  Three cases:
+    //  1. Resolve baseline parent.  Single-parent invariant on the
+    //     write path (see VERBS.md §POST):
     //       * no baseline row at all  → root commit (0 parents, OK).
-    //       * baseline + 1+ parents   → normal / merge commit.
-    //       * baseline + 0 parents    → corrupt at-log; refuse.
-    //     The third case used to silently produce a parentless commit,
-    //     which on push replaces the peer's history with a single
-    //     dangling root.  See AT.md §"Baseline rule" + the patch row's
-    //     extending `<prior>&<theirs>` query for why a baseline row
-    //     should always carry at least one 40-hex SHA spec.
+    //       * baseline + parent sha   → normal commit.
+    //       * baseline + no sha       → corrupt at-log; refuse.
     a_pad(u8, brbuf, 256);
-    sha1  parents[POST_MAX_PARENTS] = {};
-    u32   nparents = 0;
+    sha1  parent     = {};
+    b8    has_parent = NO;
     b8    had_baseline = NO;
-    ok64  br = post_collect_parents(brbuf, parents, &nparents,
-                                    POST_MAX_PARENTS, &had_baseline);
+    ok64  br = post_collect_parents(brbuf, &parent, &has_parent,
+                                    &had_baseline);
     if (br != OK) return br;
-    if (had_baseline && nparents == 0) {
+    if (had_baseline && !has_parent) {
         fprintf(stderr,
                 "sniff: post: baseline at-log row has no parent SHA — "
                 "refusing parentless commit (would orphan peer history "
@@ -1290,7 +1238,19 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  and let the user resolve manually (`be patch ?<branch>` for
     //  same-branch divergence, or `be delete ?<branch>` followed by
     //  recreate for cross-branch reset).
-    if (had_baseline && nparents > 0) {
+    //  Resolve target REFS tip up-front.  When present and != parent,
+    //  the post-pack-feed REFS write below uses CAS on `expected_old =
+    //  <tip>` so concurrent posters see REFSCAS.  Today this is a
+    //  legacy ff-only pre-flight: we still bail with SNIFFNOFF on
+    //  non-ff, the rebase-or-promote pathway is implemented in the
+    //  caller (sniff post phase 2).  See VERBS.md §POST for the
+    //  ff-or-rebase shape that replaces it.
+    sha1 expected_tip_sha = {};
+    b8   has_expected_tip = NO;
+    b8   needs_rebase     = NO;   //  set when REFS tip diverges from cur's
+                                  //  parent — replay the just-built commit
+                                  //  onto REFS tip after the pack feed.
+    if (had_baseline && has_parent) {
         a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
         a_pad(u8, refkey_buf, 128);
         u8bFeed1(refkey_buf, '?');
@@ -1303,11 +1263,6 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         ok64 ro = REFSResolve(&resolved, arena, $path(keepdir),
                               refkey_s);
         if (ro == OK && !$empty(resolved.query)) {
-            //  Decode the target's 40-hex tip into a sha1 so we can
-            //  feed it to GRAFLca alongside parents[0].  A REFS row
-            //  whose value isn't a clean 40-hex tip is corrupt — bail
-            //  with a diagnostic rather than silently zero-decoding,
-            //  which would fall through to a confusing non-ff refusal.
             u8cs tip_hex = {resolved.query[0], resolved.query[1]};
             if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?')
                 u8csUsed(tip_hex, 1);
@@ -1319,8 +1274,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                         (size_t)$len(tip_hex));
                 return SNIFFFAIL;
             }
-            sha1 tip_sha = {};
-            u8s bin = {tip_sha.data, tip_sha.data + 20};
+            u8s bin = {expected_tip_sha.data, expected_tip_sha.data + 20};
             a_dup(u8c, hx, tip_hex);
             ok64 ho = HEXu8sDrainSome(bin, hx);
             if (ho != OK) {
@@ -1330,34 +1284,22 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                         (int)u8csLen(branch), (char *)branch[0]);
                 return SNIFFFAIL;
             }
+            has_expected_tip = YES;
 
-            //  ff iff tip is an ancestor of (or equal to) parents[0].
-            //  Identity short-circuit: GRAFLca treats the ancestor
-            //  set as strict ancestors, so LCA(X, X) returns 0 for
-            //  matching shas — handle equality up front.
-            //  Otherwise: tip is an ancestor of parents[0] iff
-            //  LCA(parents[0], tip) == tip.  GRAFLca zeroes `out`
-            //  for unrelated histories — also non-ff.
+            //  ff iff tip is an ancestor of (or equal to) parent.
             b8 ff_ok = NO;
-            if (sha1eq(&parents[0], &tip_sha)) {
+            if (sha1eq(&parent, &expected_tip_sha)) {
                 ff_ok = YES;
             } else {
                 sha1 lca = {};
-                (void)GRAFLca(&lca, &parents[0], &tip_sha);
-                if (sha1eq(&lca, &tip_sha)) ff_ok = YES;
+                (void)GRAFLca(&lca, &parent, &expected_tip_sha);
+                if (sha1eq(&lca, &expected_tip_sha)) ff_ok = YES;
             }
             if (!ff_ok) {
-                a_pad(u8, p0_hex, 40);
-                a_rawc(p0_sha, parents[0]);
-                HEXu8sFeedSome(p0_hex_idle, p0_sha);
-                fprintf(stderr,
-                        "sniff: post: target `?%.*s` tip %.*s is "
-                        "not an ancestor of wt's base %.*s — "
-                        "non-ff\n",
-                        (int)u8csLen(branch), (char *)branch[0],
-                        (int)$len(tip_hex), (char *)tip_hex[0],
-                        40, (char *)u8bDataHead(p0_hex));
-                return SNIFFNOFF;
+                //  Same-branch divergence: defer the SNIFFNOFF bail —
+                //  the new commit will be rebased onto REFS tip after
+                //  the pack feed (Stage 2 phase-2 promote).
+                needs_rebase = YES;
             }
         }
     }
@@ -1379,15 +1321,9 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //      "deleted-file re-added" regression.
     post_walk_decisions(&ctx, POST_VM_UNLINK, post_drain_unlink_cb, NULL);
 
-    //  6b. Per-file patch parents: in implicit (commit-all) mode, every
-    //  patch row whose ts stamps a committed file contributes its
-    //  `theirs` to the parent set.  Selective mode skips this — a
-    //  cherry-pick is intentionally single-parent.  See VERBS.md §POST.
-    if (!ctx.any_pd) {
-        ok64 pp = post_add_patch_parents(&ctx, parents, &nparents,
-                                         POST_MAX_PARENTS);
-        if (pp != OK) { post_ctx_free(&ctx); return pp; }
-    }
+    //  6b. Single-parent invariant on the write path.  PATCH no longer
+    //      records `&<theirs>` in baseline; the new commit takes the
+    //      one parent recorded in `parent` (set by post_collect_parents).
 
     //  7. Build trees bottom-up over the dense lex-sorted recs the
     //     classification merge populated.
@@ -1433,7 +1369,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                 "commit\n");
         u8bFree(leaves); u8bFree(tree_bodies);
         post_ctx_free(&ctx);
-        return SNIFFNOOP;
+        return POSTNONE;
     }
 
     //  8. If the result has no files, fall back to the empty-tree sha.
@@ -1456,9 +1392,9 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //     `parents[]` already holds the decoded sha1 bytes from the
     //     baseline row's QURY scan; `post_parent_sha` re-runs the
     //     keeper lookup as a sanity check.
-    for (u32 i = 0; i < nparents; i++) {
+    if (has_parent) {
         a_pad(u8, hx_buf, 40);
-        a_rawc(psha_in, parents[i]);
+        a_rawc(psha_in, parent);
         HEXu8sFeedSome(hx_buf_idle, psha_in);
         a_dup(u8c, ph, u8bDataC(hx_buf));
         sha1 ps = {};
@@ -1469,10 +1405,11 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                     (int)u8csLen(ph), (char const *)ph[0]);
             return SNIFFFAIL;
         }
-        parents[i] = ps;
+        parent = ps;
     }
 
-    //  10. Build commit body.
+    //  10. Build commit body.  Single-parent invariant: at most one
+    //      `parent <hex>\n` line.
     Bu8 com = {};
     call(u8bAllocate, com, 4096);
     a_cstr(tree_label, "tree ");
@@ -1483,11 +1420,11 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     u8bFeed(com, u8bDataC(thex));
     u8bFeed1(com, '\n');
 
-    for (u32 i = 0; i < nparents; i++) {
+    if (has_parent) {
         a_cstr(par_label, "parent ");
         u8bFeed(com, par_label);
         a_pad(u8, par_hex, 40);
-        a_rawc(psha, parents[i]);
+        a_rawc(psha, parent);
         HEXu8sFeedSome(par_hex_idle, psha);
         u8bFeed(com, u8bDataC(par_hex));
         u8bFeed1(com, '\n');
@@ -1610,10 +1547,65 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
     call(KEEPPackClose, k, &p);
 
+    //  13b. Phase-2 promote: rebase the just-built commit onto the
+    //       live REFS tip when the branch diverged out from under us.
+    //       Same-branch case only — cross-branch rebase + cascade walker
+    //       are TODO(spec) below.
+    //
+    //       Invariant: on entry needs_rebase ⇒ has_expected_tip and
+    //       has_parent (the early pre-flight only sets needs_rebase
+    //       when both were observed).  GRAFRebase replays parent..sha_out
+    //       onto expected_tip_sha; emitted objects feed straight into a
+    //       fresh pack.  GRAFCNFL → propagate, leaving orphan objects
+    //       in the pack (REFS unchanged ⇒ they are unreachable).
+    //
+    //       TODO(spec): cross-branch promote (target_branch != cur's
+    //       baseline branch) and the descendant cascade walker — both
+    //       deferred to a follow-up.  Today cross-branch non-ff still
+    //       reports SNIFFNOFF via the early pre-flight on the OTHER
+    //       branch's REFS row, since needs_rebase is gated by the
+    //       baseline-branch lookup above.
+    if (needs_rebase) {
+        keep_pack p2 = {};
+        ok64 po2 = KEEPPackOpen(k, &p2);
+        if (po2 != OK) {
+            u8bFree(leaves); u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return po2;
+        }
+        p2.strict_order = NO;
+        post_rebase_ctx rctx = {.k = k, .p = &p2};
+        ok64 rb = GRAFRebase(&parent, &expected_tip_sha, sha_out,
+                             post_rebase_emit_cb, &rctx);
+        ok64 cl = KEEPPackClose(k, &p2);
+        if (rb != OK) {
+            fprintf(stderr,
+                    "sniff: post: rebase aborted (%s)\n",
+                    rb == GRAFCNFL ? "merge conflict" : "error");
+            u8bFree(leaves); u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return rb;
+        }
+        if (cl != OK) {
+            u8bFree(leaves); u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return cl;
+        }
+        if (rctx.have_last_commit) {
+            *sha_out = rctx.last_commit_sha;
+        } else {
+            //  Trivial rebase fast-path: parent..child was empty, so
+            //  the rebased tip is base_new itself.
+            *sha_out = expected_tip_sha;
+        }
+    }
+
     //  14. Advance keeper REFS for the be-branch the wt is currently
-    //      on.  `brbuf` carries the be-side branch path (literal,
-    //      opaque); empty = trunk.  REFS key is `?<branch>` (or just
-    //      `?` for trunk).  Value is bare 40-hex.
+    //      on via REFSCompareAndAppend.  Atomic check-and-set on the
+    //      *expected* tip (the REFS row we read at pre-flight time, or
+    //      empty when no row existed yet — a fresh branch).  Concurrent
+    //      posters who advanced the branch since pre-flight see REFSCAS
+    //      and surface it to the caller.
     a_pad(u8, out_hex, 40);
     {
         a_rawc(osha, *sha_out);
@@ -1629,7 +1621,25 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
         a_dup(u8c, val, u8bDataC(out_hex));
 
-        (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
+        a_pad(u8, exp_hex, 40);
+        a_cstr(empty_s, "");
+        u8cs expected = {empty_s[0], empty_s[1]};
+        if (has_expected_tip) {
+            a_rawc(esha, expected_tip_sha);
+            HEXu8sFeedSome(exp_hex_idle, esha);
+            expected[0] = u8bDataHead(exp_hex);
+            expected[1] = u8bIdleHead(exp_hex);
+        }
+        ok64 cr = REFSCompareAndAppend($path(keepdir), refkey, expected, val);
+        if (cr == REFSCAS) {
+            fprintf(stderr,
+                    "sniff: post: REFS for `?%.*s` advanced concurrently — "
+                    "retry\n",
+                    (int)u8csLen(branch), (char *)branch[0]);
+            //  Best-effort: don't undo the pack feed.  Caller may retry
+            //  POST against the new tip.
+            return REFSCAS;
+        }
     }
 
     //  15. Append `post` ULOG row with stamp ts; futimens written

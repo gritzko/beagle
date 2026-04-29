@@ -1,8 +1,12 @@
 #!/bin/sh
-#  be-post-nonff.sh — `be post msg` refuses with SNIFFNOFF when the
-#  target's REFS tip is on an unrelated lineage (GRAFLca returns 0,
-#  so it's not an ancestor of wt.base).  Simulated by appending a
-#  fake `?#deadbeef…` row to .dogs/refs.
+#  be-post-nonff.sh — `be post msg` against a REFS tip on an unrelated
+#  lineage (no common ancestor) cannot be rebased and surfaces as a
+#  rebase-aborted failure.  Stage 2 phase-2 promote: same-branch
+#  divergence triggers GRAFRebase; unrelated-lineage tips fail the
+#  parent-chain walk and the rebase aborts.  Pre-Stage-2 this returned
+#  SNIFFNOFF; post-Stage-2 the same poison input still fails (no merge
+#  base ⇒ GRAFFAIL surfaces from rebase).
+#  Simulated by appending a fake `?#deadbeef…` row to .dogs/refs.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"
@@ -22,7 +26,7 @@ vc_run nonff "$BE" post v3
 vc_snapshot after
 
 vc_assert_exit nonzero
-vc_assert_stderr nonff "non-ff"
+vc_assert_stderr nonff "rebase aborted"
 vc_assert_unchanged sniff
 vc_assert_unchanged refs
 vc_assert_unchanged baseline

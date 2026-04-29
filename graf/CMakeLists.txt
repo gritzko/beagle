@@ -13,6 +13,7 @@ list(APPEND GRAF_HEADERS
     DAG.h
     JOIN.h
     NEIL.h
+    REBASE.h
     TDIFF.h
     WEAVE.h
 )
@@ -30,6 +31,7 @@ list(APPEND GRAF_SOURCES
     JOIN.c
     MERGE.c
     NEIL.c
+    REBASE.c
     TDIFF.c
     WEAVE.c
 )

@@ -447,10 +447,54 @@ static ok64 BEPatch(cli *c, b8 seq) {
 //    <free-form tail> → fragment carries the commit message; sniff
 //                       commits locally.  (Legacy `-m <msg>` flag still
 //                       works as a fallback.)
-//    <uri>            → keeper pushes the current commit to that remote.
+//    ?<branch>        → promote: phase 1 commits cur, phase 2 ff-or-
+//                       rebases the named branch.
+//    //<host>?<ref>   → keeper pushes the current commit to that remote.
 //    bare             → sniff prints the dry-run change-set; no commit.
+//
+//  Path-form URIs (`be post abc/foo`, `be post .`, `be post x.txt`)
+//  are spec-illegal: POST takes only branch URIs.  Refuse early with a
+//  hint to use `be put` first.
+//
+//  Detection: the token is path-form when its raw bytes (u->data) carry
+//  no `?` sigil AND either contain a `/` or `.` OR have an explicit
+//  uri.path slice (URILexer-classified path).  This catches both
+//  `be post abc/foo` (uri.path) and `be post x.txt` (DOGNormalizeArg
+//  classified as ref_safe-bare-token, query-only no path).  Pure-letter
+//  branch tokens (`?feat`, `feat`) and remote URIs (`//host?ref`) skip
+//  the check.
+static b8 be_post_is_path_form(uri *u) {
+    if (!$empty(u->authority)) return NO;
+    if (!$empty(u->path)) return YES;
+    //  Bare token classified as query-only: refuse if it looks like a
+    //  filesystem path (contains `.` or `/` and is not preceded by `?`
+    //  in the raw bytes).
+    u8cs raw = {u->data[0], u->data[1]};
+    if ($empty(raw)) return NO;
+    if (raw[0][0] == '?') return NO;
+    $for(u8c, p, raw) {
+        if (*p == '/' || *p == '.') return YES;
+    }
+    return NO;
+}
+
 static ok64 BEPost(cli *c, b8 seq) {
     sane(c);
+    for (u32 i = 0; i < c->nuris; i++) {
+        uri *u = &c->uris[i];
+        //  URIs with a non-empty fragment but empty path/query/authority
+        //  are pure commit-message tails synthesised by CLIParse — skip.
+        if ($empty(u->path) && $empty(u->query) && $empty(u->authority) &&
+            !$empty(u->fragment)) continue;
+        if (be_post_is_path_form(u)) {
+            fprintf(stderr,
+                "be: post: path-form URI `%.*s` not allowed — use "
+                "`be put %.*s` first, then `be post <msg>`\n",
+                (int)u8csLen(u->data), (char *)u->data[0],
+                (int)u8csLen(u->data), (char *)u->data[0]);
+            fail(BEFAIL);
+        }
+    }
     b8 has_remote = NO;
     for (u32 i = 0; i < c->nuris; i++) {
         if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }

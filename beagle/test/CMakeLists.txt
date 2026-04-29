@@ -71,7 +71,9 @@ foreach(vc
         be-post-ff
         be-post-empty
         be-post-nonff
+        be-post-rebase
         be-post-cross-create
+        be-post-path-reject
         be-put-path
         be-delete-path
         be-delete-branch

@@ -1,15 +1,22 @@
 #ifndef SNIFF_POST_H
 #define SNIFF_POST_H
 
-//  POST: commit the current base tree.
+//  POST: two-phase commit-and-promote (see VERBS.md §POST).
 //
-//  Wraps the root-dir SNIFF_TREE hashlet into a commit object with
-//  parent = current HEAD and updates HEAD to the new commit.
+//  Phase 1 — Commit-if-staged: any wt edits or PATCH-staged content
+//  produces one new single-parent commit on cur (trailing words become
+//  the message).  Selective vs implicit (commit-all) mode is determined
+//  by presence of put/delete rows in scope.
 //
-//  If the base tree is unset or equals the HEAD commit's tree (i.e.
-//  no prior PUT/DELETE has staged anything), POSTCommit first calls
-//  PUTStage(s, k, reporoot, NULL) to auto-stage everything dirty on
-//  disk.  This matches `git commit -a` ergonomics.
+//  Phase 2 — Promote: when the URI names another branch, ff-or-rebase
+//  cur's stack onto that branch's tip via REFSCompareAndAppend on the
+//  expected base.  Concurrent posters that move the target see REFSCAS.
+//  Bare `post msg` runs only phase 1.
+//
+//  Single-parent invariant on the write path: every commit POST emits
+//  has exactly one parent.  PATCH no longer chains `&<theirs>` onto
+//  baseline; the multi-parent commit body builder has been removed
+//  along with `POST_MAX_PARENTS` and `post_add_patch_parents`.
 
 #include "SNIFF.h"
 #include "keeper/KEEP.h"
