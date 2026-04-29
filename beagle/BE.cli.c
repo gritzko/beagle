@@ -561,6 +561,17 @@ ok64 becli() {
 
     b8 seq = CLIHas(&c, "--seq");
 
+    //  Projector URIs are pure views (VERBS.md Invariant 7).  Route
+    //  them through BEProjector regardless of verb — `be get diff:f?r`
+    //  must land in graf's diff machinery, not in BEGet's keeper+sniff
+    //  checkout pipeline.  GET is the canonical projector verb per
+    //  VERBS.md, but the table only specifies the read-only intent;
+    //  any verb on a projector URI is treated as GET-equivalent here.
+    if (u != NULL && DOGIsProjector(u->scheme)) {
+        call(BEProjector, &c, u);
+        done;
+    }
+
     // No verb → view/search mode.  Projector schemes (ls:, tree:, …)
     // are verb-less by design per VERBS.md §"View projectors"; route
     // them first so `be ls:?` doesn't get mistaken for a bare URI view.

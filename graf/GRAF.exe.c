@@ -6,6 +6,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/file.h>
 #include <unistd.h>
 
@@ -13,6 +14,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/CLI.h"
+#include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "keeper/KEEP.h"
@@ -49,11 +51,17 @@ static void graf_usage(void) {
 }
 
 // --- Bro pager setup ---
-
-static pid_t graf_start_pager(b8 tty_out) {
+//
+//  Three output shapes:
+//    tty_out=YES               → spawn bro, emit HUNK TLV into the pipe
+//    tty_out=NO, force_tlv=YES → write HUNK TLV to stdout (BE→bro pipe
+//                                 already wired upstream; we're a producer)
+//    tty_out=NO, force_tlv=NO  → write plain text to stdout (scripts, redirects)
+static pid_t graf_start_pager(b8 tty_out, b8 force_tlv) {
     if (!tty_out) {
         graf_out_fd = STDOUT_FILENO;
-        graf_emit   = HUNKu8sFeedText;
+        graf_emit   = force_tlv ? HUNKu8sFeed : HUNKu8sFeedText;
+        if (force_tlv) signal(SIGPIPE, SIG_IGN);
         return -1;
     }
     a_path(bropath);
@@ -116,10 +124,30 @@ ok64 GRAFExec(cli *c) {
         graf_usage(); done;
     }
 
+    //  Verb-less projector invocation (VERBS.md §"View projectors"):
+    //  `graf <proj>:<URI>` — no verb.  The URI's scheme must resolve
+    //  through DOG_PROJECTORS to "graf"; today that's only `diff:`.
+    //  We synthesize the matching verb so the existing dispatch below
+    //  runs unchanged.  BE wires this up by spawning `graf [--tlv] <URI>`
+    //  on `be get diff:<URI>` (and verb-less `be diff:<URI>`).
+    a_cstr(s_diff, "diff");
+    if ($empty(c->verb) && c->nuris > 0) {
+        uri *pu = &c->uris[0];
+        char const *dog = DOGProjectorDog(pu->scheme);
+        if (dog != NULL && strcmp(dog, "graf") == 0) {
+            if ($eq(pu->scheme, s_diff)) u8csMv(c->verb, s_diff);
+        }
+    }
+
     if ($empty(c->verb)) {
         graf_usage();
         return FAILSANITY;
     }
+
+    //  `--tlv` (or `-t`) forces HUNK TLV emission on a non-TTY stdout.
+    //  Used when BE pipes graf's stdout into bro on a TTY: graf sees a
+    //  pipe (not a TTY) but must still emit TLV so bro can render.
+    b8 force_tlv = CLIHas(c, "--tlv") || CLIHas(c, "-t");
 
     u8cs reporoot = {};
     u8csMv(reporoot, c->repo);
@@ -154,7 +182,7 @@ ok64 GRAFExec(cli *c) {
                     "graf: diff requires 2 files, or 1 URI with ?ref\n");
                 return FAILSANITY;
             }
-            pid_t pager = graf_start_pager(c->tty_out);
+            pid_t pager = graf_start_pager(c->tty_out, force_tlv);
             u8cs op = {}, np = {};
             graf_uri_path(op, &c->uris[0]);
             graf_uri_path(np, &c->uris[1]);
@@ -224,7 +252,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out);
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         u8cs path = {};
         graf_uri_path(path, &c->uris[0]);
         // tip_h=0 for now: unscoped blame (no ancestry filter).
@@ -240,7 +268,7 @@ ok64 GRAFExec(cli *c) {
         //    has "..", no path    → tree ref-to-ref
         //    no "..", has path    → file ref vs wt
         //    no "..", no path     → tree ref vs wt
-        pid_t pager = graf_start_pager(c->tty_out);
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         uri *u = &c->uris[0];
         u8cs wf = {}, wt = {};
         a_dup(u8c, q, u->query);
@@ -277,7 +305,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out);
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         uri *u = &c->uris[0];
         u8cs wf = {}, wt = {};
         if (!u8csEmpty(u->query)) {
