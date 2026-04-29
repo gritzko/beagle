@@ -28,7 +28,7 @@ set -eu
 
 # ----- environment ---------------------------------------------------
 
-BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
+BIN=${BIN:-@CMAKE_BINARY_DIR@/bin}
 BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 KEEPER="$BIN/keeper"

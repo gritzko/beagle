@@ -7,7 +7,7 @@
 #  Run: BIN=build-debug/bin sh sniff/test/branchdel.sh
 set -eu
 
-BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
+BIN=${BIN:-@CMAKE_BINARY_DIR@/bin}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 

@@ -34,7 +34,7 @@
 
 set -eu
 
-BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
+BIN=${BIN:-@CMAKE_BINARY_DIR@/bin}
 #  Absolute path — `be` gets invoked from several different cwds below.
 BIN=$(cd "$BIN" && pwd)
 export PATH="$BIN:$PATH"

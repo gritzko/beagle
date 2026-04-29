@@ -9,7 +9,7 @@
 set -e
 
 <<<<<<< HEAD
-BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
+BIN=${BIN:-@CMAKE_BINARY_DIR@/bin}
 BIN=$(cd "$BIN" && pwd)
 =======
 BIN=${BIN:-$(cd "$(dirname "$0")/../../build-debug/bin" && pwd)}

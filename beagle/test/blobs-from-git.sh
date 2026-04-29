@@ -16,7 +16,7 @@
 
 set -eu
 
-BIN=${BIN:-$(dirname "$0")/../../build-debug/bin}
+BIN=${BIN:-@CMAKE_BINARY_DIR@/bin}
 BIN=$(cd "$BIN" && pwd)
 export PATH="$BIN:$PATH"
 export DOG_REMOTE_PATH="$BIN"
