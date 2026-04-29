@@ -13,7 +13,7 @@ echo "d v1"     > d.txt
 "$BE" post v1 >/dev/null
 T1=$(sp_head_hex)
 
-usleep 10000
+sleep 0.1
 "$BE" delete d.txt >/dev/null
 "$BE" post v2 >/dev/null
 T2=$(sp_head_hex)

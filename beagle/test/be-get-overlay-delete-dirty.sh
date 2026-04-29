@@ -16,14 +16,14 @@ echo "d v1"     > d.txt
 T1=$(sp_head_hex)
 
 #  Drop d.txt and post: T2 has only k.txt.
-usleep 10000
+sleep 0.1
 "$BE" delete d.txt >/dev/null
 "$BE" post v2 >/dev/null
 T2=$(sp_head_hex)
 
 #  Switch back to T1 so the wt has d.txt again, then dirty it.
 "$BE" get "$T1" >/dev/null
-usleep 10000
+sleep 0.1
 echo "d user edit $(date +%N)" >> d.txt
 
 vc_snapshot before

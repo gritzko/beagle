@@ -14,12 +14,12 @@ echo "b stable" > b.txt
 "$BE" post v1 >/dev/null
 T1=$(sp_head_hex)
 
-usleep 10000
+sleep 0.1
 echo "a v2" > a.txt
 "$BE" post v2 >/dev/null
 T2=$(sp_head_hex)
 
-usleep 10000
+sleep 0.1
 echo "a user edit $(date +%N)" >> a.txt
 
 vc_snapshot before

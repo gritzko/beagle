@@ -72,7 +72,7 @@ note "trunk base = $TRUNK_BASE"
 #  doesn't exist yet, so this is a create-on-miss path (no ff check).
 #  Idiomatic syntax: URI first, message words follow and fold into
 #  the URI's #fragment.
-usleep 10000
+sleep 0.1
 echo "x feat" > x.txt
 sniff post "?feat" feat work >/dev/null
 
@@ -116,7 +116,7 @@ FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 TS=$(awk 'END { print $1 }' .dogs/refs)
 printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .dogs/refs
 
-usleep 10000
+sleep 0.1
 echo "x v2" > x.txt
 if sniff post "?feat" should fail 2>/tmp/cross.err; then
     cat /tmp/cross.err

@@ -105,13 +105,13 @@ note "?feat -> $FEAT_REF"
 # --- step 3: switch to feat, two turbulent commits --------------------
 echo "=== 3. feat branch: modify a, then add c ==="
 sniff get "?feat" >/dev/null
-usleep 10000
+sleep 0.1
 echo "a line 1 (feat mod)" > a.txt
 sniff post -m "feat: rewrite a" >/dev/null
 FEAT1=$(head_hex)
 note "feat tip after rewrite=$FEAT1"
 
-usleep 10000
+sleep 0.1
 echo "c line 1" > c.txt
 #  c.txt is untracked — implicit `sniff post -m` skips strangers
 #  once a baseline exists.  Stage it explicitly.
@@ -129,7 +129,7 @@ sniff get "?" >/dev/null
 [ ! -f c.txt ] || fail "c.txt should be pruned on switch to trunk"
 grep -qF 'a line 1' a.txt || fail "a.txt not base content on trunk"
 
-usleep 10000
+sleep 0.1
 echo "b line 1 (trunk mod)" > b.txt
 sniff post -m "trunk: rewrite b" >/dev/null
 TRUNK1=$(head_hex)

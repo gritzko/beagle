@@ -15,7 +15,7 @@ sp_poison_refs "?"        # trunk now has a fake unrelated tip
 vc_snapshot before
 
 vc_step "be post v3 — non-ff against unrelated REFS tip → refused"
-usleep 10000
+sleep 0.1
 echo "x v3" > x.txt
 vc_run nonff "$BE" post v3
 

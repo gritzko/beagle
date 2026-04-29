@@ -73,7 +73,7 @@ echo "x" > x.txt
 sniff post -m "v1" >/dev/null
 T1=$(head_hex)
 
-usleep 10000
+sleep 0.1
 echo "x v2" > x.txt
 sniff post -m "v2" >/dev/null
 T2=$(head_hex)
@@ -89,7 +89,7 @@ printf '%sz\tpost\t?#%s\n' "$TS" "$FAKE" >> .dogs/refs
 note "REFS poisoned with unrelated tip $FAKE; wt.base still $T2"
 
 before_tail=$(last_row)
-usleep 10000
+sleep 0.1
 echo "x v3" > x.txt
 if sniff post -m "should fail" 2>/tmp/postff.err; then
     cat /tmp/postff.err

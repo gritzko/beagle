@@ -15,13 +15,13 @@ echo "b stable" > b.txt
 "$BE" post v1 >/dev/null
 T1=$(sp_head_hex)
 
-usleep 10000
+sleep 0.1
 echo "a v2" > a.txt
 "$BE" post v2 >/dev/null
 T2=$(sp_head_hex)
 
 #  Make b.txt dirty: append unique bytes so its sha differs from baseline.
-usleep 10000
+sleep 0.1
 echo "b user edit $(date +%N)" >> b.txt
 DIRTY_B_SHA=$(sha1sum b.txt | awk '{print $1}')
 
