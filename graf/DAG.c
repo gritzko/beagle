@@ -68,7 +68,7 @@ static u64 dag_obj_hashlet(u8 obj_type, sha1 const *sha, u8cs body) {
 
 // --- Constants ---
 
-#define DAG_DIR         ".dogs/graf"
+#define DAG_DIR         ".dogs"
 #define GRAF_IDX_EXT    ".graf.idx"
 #define DAG_SEQNO_W     10
 #define DAG_BATCH       (1 << 18)   // 256K entries per flush
@@ -110,7 +110,7 @@ static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     u8bReset(out);
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
-    a_cstr(rel, ".dogs/graf");
+    a_cstr(rel, ".dogs");
     call(PATHu8bAdd, out, rel);
     if (!u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);

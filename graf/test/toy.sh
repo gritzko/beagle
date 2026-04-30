@@ -102,14 +102,14 @@ note "index holds ${ENTRIES} entries across 3 commits"
 #       index files under .dogs/ after three `be post`s + `graf index`.
 #       The lock file alone doesn't count; require ≥1 *.idx.
 # ------------------------------------------------------------------
-GRAF_IDX_N=$(find "$R/.dogs/graf" -maxdepth 1 -name '*.idx' 2>/dev/null | wc -l)
+GRAF_IDX_N=$(find "$R/.dogs" -maxdepth 1 -name '*.graf.idx' 2>/dev/null | wc -l)
 [ "$GRAF_IDX_N" -ge 1 ] \
-    || fail "graf: no .idx under .dogs/graf/ (found only: $(ls -A "$R/.dogs/graf" 2>/dev/null | tr '\n' ' '))"
+    || fail "graf: no .graf.idx under .dogs/ (found only: $(ls -A "$R/.dogs" 2>/dev/null | tr '\n' ' '))"
 note "graf has $GRAF_IDX_N index run(s) on disk"
 
-SPOT_IDX_N=$(find "$R/.dogs/spot" -maxdepth 1 -name '*.idx' 2>/dev/null | wc -l)
+SPOT_IDX_N=$(find "$R/.dogs" -maxdepth 1 -name '*.spot.idx' 2>/dev/null | wc -l)
 [ "$SPOT_IDX_N" -ge 1 ] \
-    || fail "spot: no .idx under .dogs/spot/ (found only: $(ls -A "$R/.dogs/spot" 2>/dev/null | tr '\n' ' '))"
+    || fail "spot: no .spot.idx under .dogs/ (found only: $(ls -A "$R/.dogs" 2>/dev/null | tr '\n' ' '))"
 note "spot has $SPOT_IDX_N index run(s) on disk"
 
 # ------------------------------------------------------------------

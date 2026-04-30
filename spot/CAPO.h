@@ -32,10 +32,14 @@ extern b8 CAPO_TERM;   // stderr is a terminal
         }                                                                \
     }
 
-#define CAPO_DIR ".dogs/spot"
-#define CAPO_IDX_EXT ".idx"
+#define CAPO_DIR ".dogs"
+#define CAPO_IDX_EXT ".spot.idx"
+#define CAPO_LOCK_S  ".lock.spot"
 #define CAPO_SEQNO_WIDTH 10
 #define CAPO_MAX_LEVELS 24
+#define SPOT_LEAF_BRANCH_MAX 1024
+//  Missing prefix dir along the trunk → leaf branch path.
+con ok64 SPOTNOPATH = 0x71961d5d864a751;
 //  In-RAM sort-and-dedup scratch.  `CAPO_FLUSH_AT` is the trigger
 //  size: once data in `s->entries` reaches it, we sort + dedup in
 //  place, and — if the dedup leaves ≥ 50 % unique — flush to a new
@@ -76,19 +80,21 @@ fun u64 CAPOEntry(u8cs tri, u8cs path) {
 // Index a single source file: parse, extract trigrams, append u64 entries
 ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path);
 
-// Write a sorted run to .dogs/spot/SEQNO.idx
-ok64 CAPOIndexWrite(u8csc dir, u64cs run, u64 seqno);
-
-// Load index stack from .dogs/spot/*.idx files (mmap each)
-// stack: output array of runs; maps: output array of mapped buffers
-// Returns number of files loaded in *nfiles
+// Load index stack as a typed view over SPOT.puppies (no fs scan,
+// no per-call mmap; the puppy stack is owned by the singleton).
+// `dir` is ignored — kept for API stability.  Each `<seqno>.spot.idx`
+// along trunk → leaf appears as one run in `stack[0..nfiles)`.
 ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir);
 
-// Unmap all stack files
+// No-op: SPOT.puppies owns the mmaps now.
 ok64 CAPOStackClose(u8bp *maps, u32 nfiles);
 
-// Compact the LSM stack, unlink merged files
-ok64 CAPOCompact(u8csc dir);
+typedef struct spot_ spot;
+
+// Compact the LSM stack at the leaf branch dir, unlink merged
+// sources via DOGPupThinTail and write the merged run via
+// DOGPupCreate.  Mirrors KEEPCompact / dag_compact.
+ok64 CAPOCompact(spot *s);
 
 // Next available sequence number (max existing + 1)
 ok64 CAPONextSeqno(u64p seqno, u8csc dir);
@@ -117,8 +123,9 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
 ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
                    u8css files, uri const *ref);
 
-// Compact all .idx files into a single run
-ok64 CAPOCompactAll(u8csc dir);
+// Compact all .spot.idx files into a single run at the leaf branch
+// dir.  Uses SPOT.puppies and writes to SPOT.leaf_branch.
+ok64 CAPOCompactAll(spot *s);
 
 // Resolve spot index dir from reporoot (<reporoot>/.dogs/spot)
 ok64 CAPOResolveDir(path8b out, u8csc reporoot);
@@ -177,9 +184,9 @@ fun idx64 CAPOPairEntry(u32 blob_hashlet30, u32 path_hash) {
 #include "dog/HUNK.h"
 #include "spot/LESS.h"
 
-typedef struct {
+struct spot_ {
     home    *h;                     // borrowed
-    int      lock_fd;               // flock on .dogs/spot/.lock; -1 = none
+    int      lock_fd;               // flock on leaf dir's .lock; -1 = ro
 
     Bu8      arena;
     hunk     hunks[LESS_MAX_HUNKS];
@@ -191,10 +198,18 @@ typedef struct {
     int          out_fd;
     spot_emit_fn emit;
 
+    //  Puppy stack: (seqno → fd) for every `<seqno>.spot.idx` along
+    //  trunk → leaf.  Mmaps live in FILE_WANT_BUFS[fd].  Mirrors
+    //  keeper's `k->puppies` and graf's `g->puppies`.  Reads fan out
+    //  across the whole path; writes (DOGPupCreate) and compactions
+    //  (DOGPupThinTail+DOGPupCreate) only land in the leaf dir.
+    Bkv32    puppies;
+    Bu8      leaf_branch;           // canonical leaf-branch path
+                                    // (trailing '/'; empty for trunk).
+
     //  Ingestion scratch (rw only): postings accumulated by SPOTUpdate,
-    //  flushed to a new .idx run when len >= CAPO_FLUSH_AT or on close.
+    //  flushed to a new puppy when len >= CAPO_FLUSH_AT or on close.
     Bu64     entries;
-    u64      seqno;                 // next run seqno
 
     //  Blob staging (rw only).  SPOTUpdate(BLOB) appends decompressed
     //  bytes here keyed on hashlet32, so the Close-pass tree walk can
@@ -211,7 +226,7 @@ typedef struct {
     b8 color;
     b8 term;
     b8 rw;
-} spot;
+};
 
 typedef spot *spotp;
 typedef spot const *spotcp;

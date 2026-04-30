@@ -12,6 +12,10 @@
 b8 CAPO_COLOR = NO;
 b8 CAPO_TERM = NO;
 
+// --- Forward decls used before their definitions further below ---
+static b8   spot_is_open(void);
+static ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
+
 // Guard against assert() crashes in library code
 static sigjmp_buf capo_jmpbuf;
 static volatile sig_atomic_t capo_in_match = 0;
@@ -82,8 +86,8 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
         call(PATHu8bFeed, out, r);
     } else {
         home rh = {};
-        u8cs none = {};
-        call(HOMEOpen, &rh, none, NO);
+        uri none = {};
+        call(HOMEOpen, &rh, &none, NO);
         a_dup(u8c, r, u8bDataC(rh.root));
         ok64 fo = PATHu8bFeed(out, r);
         HOMEClose(&rh);
@@ -91,8 +95,6 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
     }
     a_cstr(dotdogs, ".dogs");
     call(PATHu8bPush, out, dotdogs);
-    a_cstr(spotname, "spot");
-    call(PATHu8bPush, out, spotname);
     done;
 }
 
@@ -193,196 +195,68 @@ ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
     done;
 }
 
-// --- File I/O ---
-
-ok64 CAPOIndexWrite(u8csc dir, u64cs run, u64 seqno) {
-    sane($ok(dir));
-    if ($empty(run)) done;
-
-    a_cstr(idxext, CAPO_IDX_EXT);
-    a_cstr(tmpsuf, ".tmp");
-
-    //  Atomic publication: write to <seqno>.idx.tmp, rename to
-    //  <seqno>.idx.  Concurrent lockless readers (CAPOStackOpen)
-    //  only see a fully-written file — the directory-listing
-    //  filter in CAPOListIdxCB keys on the ".idx" suffix, so
-    //  the tmp file is invisible during the brief write window.
-    a_pad(u8, path, FILE_PATH_MAX_LEN);
-    call(u8bFeed, path, dir);
-    call(u8bFeed1, path, '/');
-    call(RONu8sFeedPad, u8bIdle(path), seqno, CAPO_SEQNO_WIDTH);
-    call(u8bFed, path, CAPO_SEQNO_WIDTH);  // RONu8sFeedPad wrote into IDLE
-    call(u8bFeed, path, idxext);
-    call(PATHu8bTerm, path);
-
-    a_pad(u8, tmppath, FILE_PATH_MAX_LEN);
-    call(u8bFeed, tmppath, dir);
-    call(u8bFeed1, tmppath, '/');
-    call(RONu8sFeedPad, u8bIdle(tmppath), seqno, CAPO_SEQNO_WIDTH);
-    call(u8bFed, tmppath, CAPO_SEQNO_WIDTH);
-    call(u8bFeed, tmppath, idxext);
-    call(u8bFeed, tmppath, tmpsuf);
-    call(PATHu8bTerm, tmppath);
-
-    int fd = -1;
-    call(FILECreate, &fd, $path(tmppath));
-    size_t bytes = $len(run) * sizeof(u64);
-    u8cs data = {(u8cp)run[0], (u8cp)run[0] + bytes};
-    call(FILEFeedAll, fd, data);
-    close(fd);
-    call(FILERename, $path(tmppath), $path(path));
-    done;
-}
-
-// Callback context for listing .idx files
-typedef struct {
-    char (*names)[64];
-    u32 maxn;
-    u32 count;
-} CAPOListIdxCtx;
-
-static ok64 CAPOListIdxCB(void0p arg, path8p path) {
-    CAPOListIdxCtx *ctx = (CAPOListIdxCtx *)arg;
-    if (ctx->count >= ctx->maxn) return OK;
-    u8cs base = {};
-    a_dup(u8c, pdata, u8bDataC(path));
-    PATHu8sBase(base, pdata);
-    size_t nlen = (size_t)$len(base);
-    if (nlen < 5 || nlen > 63) return OK;
-    if (memcmp(base[1] - 4, CAPO_IDX_EXT, 4) != 0) return OK;
-    memcpy(ctx->names[ctx->count], base[0], nlen);
-    ctx->names[ctx->count][nlen] = 0;
-    ctx->count++;
-    return OK;
-}
-
-// List .idx files in a directory, sorted by name.
-// Returns count; names stored in out[0..count)[0..64).
-static u32 CAPOListIdx(char out[][64], u32 maxn, u8csc dir) {
-    a_path(dpat);
-    if (PATHu8bFeed(dpat, dir) != OK) return 0;
-
-    CAPOListIdxCtx ctx = {.names = out, .maxn = maxn, .count = 0};
-    FILEScanDir(dpat, CAPOListIdxCB, &ctx);
-
-    // Sort by name
-    if (ctx.count > 1)
-        qsort(out, ctx.count, 64,
-              (int (*)(const void *, const void *))strcmp);
-    return ctx.count;
-}
-
-ok64 CAPONextSeqno(u64p seqno, u8csc dir) {
-    sane(seqno != NULL && $ok(dir));
-    *seqno = 1;
-    char names[CAPO_MAX_LEVELS][64];
-    u32 n = CAPOListIdx(names, CAPO_MAX_LEVELS, dir);
-    u64 maxseq = 0;
-    for (u32 i = 0; i < n; i++) {
-        size_t nlen = strlen(names[i]);
-        size_t numlen = nlen - 4;
-        u8cs numslice = {(u8cp)names[i], (u8cp)names[i] + numlen};
-        ok64 val = 0;
-        ok64 r = RONutf8sDrain(&val, numslice);
-        if (r == OK && val > maxseq) maxseq = val;
-    }
-    *seqno = maxseq + 1;
-    done;
-}
-
 // --- Stack management ---
+//
+//  The puppy stack is owned by the SPOT singleton (set up by
+//  SPOTOpenBranch walking trunk → … → leaf).  CAPOStackOpen builds a
+//  typed `u64cs[]` view over `SPOT.puppies` — no per-call fs scan,
+//  no per-call mmap.  `dir` is ignored (kept for API stability;
+//  every caller already targets the spot dir resolved from the
+//  same singleton's home).  The matching CAPOStackClose is a no-op:
+//  mappings are unmapped at SPOTClose.
 
 ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir) {
     sane($ok(stack) && maps != NULL && nfiles != NULL && $ok(dir));
-
-    //  Lockless reader: list + mmap is racy against a concurrent
-    //  CAPOCompact that unlinks the old runs after writing the new
-    //  merged one.  If a file we just listed has been unlinked
-    //  before we mmap it, the listing is stale — drop everything
-    //  and retry.  After compaction the new merged run subsumes
-    //  everything we might have missed, so a fresh scan is correct.
-    //  Bounded retries to guard against a pathological writer.
-    ok64 last = OK;
-    for (u32 attempt = 0; attempt < 4; attempt++) {
-        *nfiles = 0;
-        char names[CAPO_MAX_LEVELS][64];
-        u32 count = CAPOListIdx(names, CAPO_MAX_LEVELS, dir);
-
-        b8 retry = NO;
-        for (u32 i = 0; i < count; i++) {
-            u8cs fn = {(u8cp)names[i], (u8cp)names[i] + strlen(names[i])};
-            a_path(fpath, dir, fn);
-
-            u8bp mapped = NULL;
-            ok64 mo = FILEMapRO(&mapped, $path(fpath));
-            if (mo == FILENOENT) {
-                //  Compaction race: this run was unlinked between
-                //  listing and mmap.  Unmap what we have and relist.
-                for (u32 j = 0; j < *nfiles; j++) {
-                    if (maps[j] != NULL) FILEUnMap(maps[j]);
-                    maps[j] = NULL;
-                }
-                *nfiles = 0;
-                retry = YES;
-                break;
-            }
-            if (mo != OK) { last = mo; goto fail; }
-
-            size_t nbytes = u8bIdleHead(mapped) - u8bDataHead(mapped);
-            size_t nentries = nbytes / sizeof(u64);
-            u64cp base = (u64cp)u8bDataHead(mapped);
-
-            stack[0][*nfiles][0] = base;
-            stack[0][*nfiles][1] = base + nentries;
-            maps[*nfiles] = mapped;
-            (*nfiles)++;
-        }
-        if (!retry) done;
-        last = FILENOENT;
-    }
-fail:
-    for (u32 j = 0; j < *nfiles; j++) {
-        if (maps[j] != NULL) FILEUnMap(maps[j]);
-        maps[j] = NULL;
-    }
+    (void)dir;
     *nfiles = 0;
-    return last;
+    if (!spot_is_open()) done;
+    spot *s = &SPOT;
+    u32 n = DOGPupCount(s->puppies);
+    for (u32 i = 0; i < n && *nfiles < CAPO_MAX_LEVELS; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, s->puppies, i);
+        if (raw[0] == NULL) continue;
+        u64cp base = (u64cp)raw[0];
+        size_t bytes = (size_t)(raw[1] - raw[0]);
+        stack[0][*nfiles][0] = base;
+        stack[0][*nfiles][1] = base + bytes / sizeof(u64);
+        maps[*nfiles] = NULL;  // owned by SPOT.puppies; not per-call
+        (*nfiles)++;
+    }
+    done;
 }
 
 ok64 CAPOStackClose(u8bp *maps, u32 nfiles) {
-    for (u32 i = 0; i < nfiles; i++) {
-        if (maps[i] != NULL) FILEUnMap(maps[i]);
-    }
+    //  No-op: SPOT.puppies owns the mmaps now.
+    (void)maps; (void)nfiles;
     return OK;
 }
 
 // --- Compaction ---
 
-ok64 CAPOCompact(u8csc dir) {
-    sane($ok(dir));
+ok64 CAPOCompact(spot *s) {
+    sane(s);
 
-    a_cstr(ext, CAPO_IDX_EXT);
-    Bkv32 pups = {};
-    call(kv32bAllocate, pups, FILE_MAX_OPEN);
-    call(DOGPupOpenAll, pups, dir, ext);
-
-    u32 nfiles = DOGPupCount(pups);
-    if (nfiles < 2) { DOGPupClose(pups); done; }
+    u32 nfiles = DOGPupCount(s->puppies);
+    if (nfiles < 2) done;
 
     //  Build typed view from puppy data slices.
     u64cs runs[CAPO_MAX_LEVELS] = {};
-    for (u32 i = 0; i < nfiles && i < CAPO_MAX_LEVELS; i++) {
+    u32 nview = 0;
+    for (u32 i = 0; i < nfiles && nview < CAPO_MAX_LEVELS; i++) {
         u8cs raw = {};
-        DOGPupData(raw, pups, i);
-        runs[i][0] = (u64cp)raw[0];
-        runs[i][1] = (u64cp)raw[1];
+        DOGPupData(raw, s->puppies, i);
+        if (raw[0] == NULL) continue;
+        runs[nview][0] = (u64cp)raw[0];
+        runs[nview][1] = (u64cp)raw[1];
+        nview++;
     }
-    u64css stack = {runs, runs + nfiles};
+    u64css stack = {runs, runs + nview};
 
-    if (HITu64IsCompact(stack)) { DOGPupClose(pups); done; }
+    if (HITu64IsCompact(stack)) done;
 
     size_t total = 0;
-    for (u32 i = 0; i < nfiles; i++) total += $len(runs[i]);
+    for (u32 i = 0; i < nview; i++) total += $len(runs[i]);
 
     Bu64 cbuf = {};
     call(u64bAlloc, cbuf, total);
@@ -391,77 +265,69 @@ ok64 CAPOCompact(u8csc dir) {
     size_t before_len = $len(stack);
     call(HITu64Compact, stack, into);
     size_t m = before_len - $len(stack) + 1;
-    if (m < 2) { u64bFree(cbuf); DOGPupClose(pups); done; }
+    if (m < 2) { u64bFree(cbuf); done; }
 
+    a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
+    a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
+    call(spot_branch_dir, leafdir, s->h, leaf);
+    a_cstr(ext, CAPO_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};
-    //  Order matters: thin first (unlinks the m sources), then create
-    //  (writes the new run with seqno = max(remaining)+1).
-    call(DOGPupThinTail, pups, dir, ext, (u32)m);
-    call(DOGPupCreate, pups, dir, ext, merged);
+    //  Thin first (unlinks the m sources), then create.
+    call(DOGPupThinTail, s->puppies, $path(leafdir), ext, (u32)m);
+    call(DOGPupCreate,   s->puppies, $path(leafdir), ext, merged);
 
     u64bFree(cbuf);
-    DOGPupClose(pups);
     done;
 }
 
 
 // --- Compact all into one ---
 
-ok64 CAPOCompactAll(u8csc dir) {
-    sane($ok(dir));
+ok64 CAPOCompactAll(spot *s) {
+    sane(s);
 
-    for (;;) {
-        u64cs runs[CAPO_MAX_LEVELS] = {};
-        u64css stack = {runs, runs};
-        u8bp mmaps[CAPO_MAX_LEVELS] = {};
-        u32 nfiles = 0;
-        call(CAPOStackOpen, stack, mmaps, &nfiles, dir);
-        stack[1] = stack[0] + nfiles;
+    u32 nfiles = DOGPupCount(s->puppies);
+    if (nfiles <= 1) done;
 
-        if (nfiles <= 1) {
-            CAPOStackClose(mmaps, nfiles);
-            done;
-        }
-
-        size_t total = 0;
-        for (u32 i = 0; i < nfiles; i++) total += $len(runs[i]);
-        fprintf(stderr, "spot: merging %u runs, %zu total entries\n",
-                nfiles, total);
-
-        Bu64 mbuf = {};
-        call(u64bMap, mbuf, total);
-        u64s into = {u64bIdleHead(mbuf), mbuf[3]};
-
-        HITu64Start(stack);
-        u64p out = into[0];
-        HITu64Merge(stack, &out);
-        into[0] = out;
-
-        u64 seqno = 0;
-        call(CAPONextSeqno, &seqno, dir);
-        fprintf(stderr, "spot: next seqno = %" PRIu64 " (dir = '" U8SFMT "')\n",
-                seqno, u8sFmt(dir));
-        u64cs merged = {(u64cp)mbuf[0], (u64cp)into[0]};
-        fprintf(stderr, "spot: writing %zu deduplicated entries (seqno %" PRIu64 ")\n",
-                $len(merged), seqno);
-        call(CAPOIndexWrite, dir, merged, seqno);
-
-        CAPOStackClose(mmaps, nfiles);
-        u64bUnMap(mbuf);
-
-        {
-            char fnames[CAPO_MAX_LEVELS][64];
-            u32 fcount = CAPOListIdx(fnames, CAPO_MAX_LEVELS, dir);
-            for (u32 i = 0; i + 1 < fcount; i++) {
-                u8cs ulfn = {(u8cp)fnames[i],
-                             (u8cp)fnames[i] + strlen(fnames[i])};
-                a_path(ulpath, dir, ulfn);
-                unlink((char *)u8bDataHead(ulpath));
-            }
-        }
-
-        break;
+    //  Build typed view over the whole stack.
+    u64cs runs[CAPO_MAX_LEVELS] = {};
+    u32 nview = 0;
+    size_t total = 0;
+    for (u32 i = 0; i < nfiles && nview < CAPO_MAX_LEVELS; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, s->puppies, i);
+        if (raw[0] == NULL) continue;
+        runs[nview][0] = (u64cp)raw[0];
+        runs[nview][1] = (u64cp)raw[1];
+        total += $len(runs[nview]);
+        nview++;
     }
+    u64css stack = {runs, runs + nview};
+    fprintf(stderr, "spot: merging %u runs, %zu total entries\n",
+            nview, total);
+
+    Bu64 mbuf = {};
+    call(u64bMap, mbuf, total);
+    u64s into = {u64bIdleHead(mbuf), mbuf[3]};
+
+    HITu64Start(stack);
+    u64p out = into[0];
+    HITu64Merge(stack, &out);
+    into[0] = out;
+
+    u8cs merged = {(u8cp)mbuf[0], (u8cp)out};
+    fprintf(stderr, "spot: writing %zu deduplicated entries\n",
+            $len(merged) / sizeof(u64));
+
+    a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
+    a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
+    call(spot_branch_dir, leafdir, s->h, leaf);
+    a_cstr(ext, CAPO_IDX_EXT);
+    //  Drop ALL existing puppies, then create the merged single run.
+    call(DOGPupThinTail, s->puppies, $path(leafdir), ext, nview);
+    call(DOGPupCreate,   s->puppies, $path(leafdir), ext, merged);
+
+    u64bUnMap(mbuf);
     done;
 }
 
@@ -1236,22 +1102,103 @@ spot SPOT = {};
 static b8 spot_is_open(void) { return SPOT.h != NULL; }
 static b8 spot_is_rw = NO;
 
-ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
-    a_pad(u8, nb, 256);
-    call(DPATHBranchNormFeed, nb, branch);
-    if (u8bDataLen(nb) != 0) return SPOTNOBR;
-    ok64 o = HOMEOpenBranch(h, branch, rw);
-    if (o != OK && o != HOMEOPEN) return o;
-    return SPOTOpen(h, rw);
+// --- Branch-dir composition ---
+
+//  Compose `<root>/.dogs/spot/<leaf_branch>` into `out`
+//  (NUL-terminated).  Mirrors `keep_branch_dir` /
+//  `graf_branch_dir`.
+static ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
+    sane(h && out);
+    u8bReset(out);
+    a_dup(u8c, root_s, u8bDataC(h->root));
+    call(PATHu8bFeed, out, root_s);
+    a_cstr(rel, CAPO_DIR);
+    call(PATHu8bAdd, out, rel);
+    if ($ok(leaf_branch) && !u8csEmpty(leaf_branch)) {
+        a_dup(u8c, br, leaf_branch);
+        if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
+        if (!$empty(br)) call(PATHu8bAdd, out, br);
+    }
+    call(PATHu8bTerm, out);
+    done;
 }
 
-ok64 SPOTOpen(home *h, b8 rw) {
-    sane(h != NULL);
+//  YES iff `path` is an existing directory.
+static b8 spot_dir_exists(path8s path) {
+    struct stat st = {};
+    if (FILEStat(&st, path) != OK) return NO;
+    return (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+typedef ok64 (*spot_dir_cb)(spot *s, u8cs dir, void0p ctx);
+
+//  Walk one branch path component at a time, calling `cb` per prefix
+//  dir (trunk first → leaf last).  Mirrors `keep_walk_branch` /
+//  `graf_walk_branch`.
+static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
+                              void0p ctx) {
+    sane(s && cb);
+    a_pad(u8, sdir, FILE_PATH_MAX_LEN);
+    a_dup(u8c, root_s, u8bDataC(s->h->root));
+    call(PATHu8bFeed, sdir, root_s);
+    a_cstr(rel, CAPO_DIR);
+    call(PATHu8bAdd, sdir, rel);
+    call(PATHu8bTerm, sdir);
+    {
+        a_pad(u8, d, FILE_PATH_MAX_LEN);
+        a_dup(u8c, sd, u8bDataC(sdir));
+        call(PATHu8bFeed, d, sd);
+        call(PATHu8bTerm, d);
+        call(cb, s, $path(d), ctx);
+    }
+    if (u8csEmpty(leaf)) done;
+    a_pad(u8, d, FILE_PATH_MAX_LEN);
+    a_dup(u8c, sd, u8bDataC(sdir));
+    call(PATHu8bFeed, d, sd);
+    u8cp p = leaf[0];
+    u8cp seg_start = p;
+    while (p <= leaf[1]) {
+        b8 at_end = (p == leaf[1]);
+        if (at_end || *p == '/') {
+            if (p > seg_start) {
+                u8cs seg = {seg_start, p};
+                call(PATHu8bPush, d, seg);
+                call(PATHu8bTerm, d);
+                call(cb, s, $path(d), ctx);
+                ((u8 **)d)[2]--;  // drop the terminator NUL
+            }
+            seg_start = p + 1;
+        }
+        p++;
+    }
+    done;
+}
+
+static ok64 spot_open_dir_cb(spot *s, u8cs dir, void0p ctx) {
+    (void)ctx;
+    if (!spot_dir_exists(dir)) return SPOTNOPATH;
+    a_cstr(ext, CAPO_IDX_EXT);
+    return DOGPupOpenAll(s->puppies, dir, ext);
+}
+
+ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
+    sane(h != NULL && $ok(branch));
 
     if (spot_is_open()) {
         if (rw && !spot_is_rw) return SPOTOPENRO;
         return SPOTOPEN;
+    }
+
+    //  Normalize: trunk aliases → empty; non-trunk gains trailing '/'.
+    a_pad(u8, nb, SPOT_LEAF_BRANCH_MAX);
+    call(DPATHBranchNormFeed, nb, branch);
+    a_dup(u8c, norm, u8bDataC(nb));
+
+    //  Register on home (idempotent re-opens absorbed).
+    {
+        ok64 o = HOMEOpenBranch(h, branch, rw);
+        if (o != OK && o != HOMEOPEN && o != HOMEROBR && o != HOMEMAX)
+            return o;
     }
 
     spot *s = &SPOT;
@@ -1264,23 +1211,53 @@ ok64 SPOTOpen(home *h, b8 rw) {
     s->color = isatty(STDOUT_FILENO) ? YES : NO;
     s->term = (isatty(STDERR_FILENO) && isatty(STDOUT_FILENO)) ? YES : NO;
 
-    // Worktree sharing: `.dogs/spot` may be a symlink.  flock on
-    // `.dogs/spot/.lock` serializes writers only.  Readers open
-    // lockless — every `.idx` is published atomically via
-    // tmp → rename in CAPOIndexWrite, and CAPOStackOpen retries
-    // on ENOENT to ride out compaction unlinks, so a reader never
-    // has to wait for a writer.
+    call(kv32bAllocate, s->puppies, FILE_MAX_OPEN);
+
+    if (u8csLen(norm) >= SPOT_LEAF_BRANCH_MAX) return CAPONOROOM;
+    call(u8bAllocate, s->leaf_branch, SPOT_LEAF_BRANCH_MAX);
+    call(PATHu8bTerm, s->leaf_branch);
+    if (!u8csEmpty(norm)) call(PATHu8bFeed, s->leaf_branch, norm);
+
+    //  Trunk dir always exists after this — first writer creates it.
+    a_pad(u8, trunkdir, FILE_PATH_MAX_LEN);
     {
-        a_dup(u8c, root_s, u8bDataC(h->root));
-        a_cstr(rel, ".dogs/spot");
-        a_path(dir, root_s, rel);
-        call(FILEMakeDirP, $path(dir));
-        if (rw) {
-            a_cstr(lockrel, ".lock");
-            a_path(lockpath, $path(dir), lockrel);
-            call(FILECreate, &s->lock_fd, $path(lockpath));
-            call(FILELock, &s->lock_fd, rw);
+        u8cs empty = {};
+        ok64 to = spot_branch_dir(trunkdir, h, empty);
+        if (to != OK) {
+            DOGPupClose(s->puppies);
+            u8bFree(s->leaf_branch);
+            zerop(s); spot_is_rw = NO;
+            return to;
         }
+    }
+    call(FILEMakeDirP, $path(trunkdir));
+
+    //  Walk trunk → leaf, scanning each dir for `<seqno>.spot.idx`.
+    {
+        a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
+        ok64 wo = spot_walk_branch(s, leaf, spot_open_dir_cb, NULL);
+        if (wo != OK) {
+            DOGPupClose(s->puppies);
+            u8bFree(s->leaf_branch);
+            zerop(s); spot_is_rw = NO;
+            return wo;
+        }
+    }
+
+    //  Lock the LEAF dir on rw (writes only land deepest).  Readers
+    //  go lockless — DOGPupCreate publishes via tmp+rename.
+    if (rw) {
+        a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
+        a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
+        call(spot_branch_dir, leafdir, h, leaf);
+        a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
+        a_dup(u8c, lds, u8bDataC(leafdir));
+        call(PATHu8bFeed, lockpath, lds);
+        a_cstr(lockrel, CAPO_LOCK_S);
+        call(PATHu8bAdd, lockpath, lockrel);
+        call(PATHu8bTerm, lockpath);
+        call(FILECreate, &s->lock_fd, $path(lockpath));
+        call(FILELock,   &s->lock_fd, rw);
     }
 
     call(u8bMap, s->arena, LESS_ARENA_SIZE);
@@ -1292,8 +1269,9 @@ ok64 SPOTOpen(home *h, b8 rw) {
     CAPO_COLOR = s->color;
     CAPO_TERM  = s->term;
 
-    //  Allocate ingestion scratch and load next run seqno.  Only when
-    //  opened rw — read-only spot never writes to the index stack.
+    //  Allocate ingestion scratch.  rw only — read-only spot never
+    //  writes to the index stack.  Seqno is owned by the puppy stack
+    //  itself (DOGPupCreate picks max+1), so no separate counter.
     if (rw) {
         call(u64bMap, s->entries, CAPO_SCRATCH_LEN);
         call(u8bMap,  s->blob_stage, CAPO_BLOB_STAGE_LEN);
@@ -1304,29 +1282,35 @@ ok64 SPOTOpen(home *h, b8 rw) {
         s->blob_offsets[1] = s->blob_offsets[0];
         s->blob_offsets[2] = s->blob_offsets[3];
         call(u8bMap, s->pending_commits, CAPO_PENDING_COMMITS_LEN);
-        a_path(capodir);
-        a_dup(u8c, root_s, u8bDataC(h->root));
-        call(CAPOResolveDir, capodir, root_s);
-        a_dup(u8c, dirslice, u8bDataC(capodir));
-        call(CAPONextSeqno, &s->seqno, dirslice);
     }
 
     done;
 }
 
-//  Sort + dedup pending postings and write them out as a new
-//  `.idx` run.  Caller chooses the dir slice and bumps seqno.
-//  Leaves `entries` reset.
-static ok64 CAPOFlushRun(u64bp entries, u8csc dirslice, u64p seqno) {
-    sane(entries != NULL && $ok(dirslice) && seqno != NULL);
-    if (u64bDataLen(entries) == 0) done;
-    u64sp data = u64bData(entries);
+ok64 SPOTOpen(home *h, b8 rw) {
+    static u8c const _zero = 0;
+    u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
+    return SPOTOpenBranch(h, trunk, rw);
+}
+
+//  Sort + dedup pending postings and write them out as a new puppy
+//  in the leaf branch dir.  Leaves `entries` reset.  Seqno is owned
+//  by the puppy stack — DOGPupCreate picks max(seqno)+1 internally.
+static ok64 CAPOFlushRun(spot *s) {
+    sane(s);
+    if (u64bDataLen(s->entries) == 0) done;
+    u64sp data = u64bData(s->entries);
     u64sSort(data);
     u64sDedup(data);
-    u64cs run = {(u64cp)data[0], (u64cp)data[1]};
-    call(CAPOIndexWrite, dirslice, run, *seqno);
-    (*seqno)++;
-    u64bReset(entries);
+    a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
+    a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
+    call(spot_branch_dir, leafdir, s->h, leaf);
+    call(FILEMakeDirP, $path(leafdir));
+    a_cstr(ext, CAPO_IDX_EXT);
+    size_t bytes = (size_t)((u8cp)data[1] - (u8cp)data[0]);
+    u8cs raw = {(u8cp)data[0], (u8cp)data[0] + bytes};
+    call(DOGPupCreate, s->puppies, $path(leafdir), ext, raw);
+    u64bReset(s->entries);
     done;
 }
 
@@ -1462,17 +1446,12 @@ void SPOTClose(void) {
     spot *s = &SPOT;
     if (s->rw && s->entries[0]) {
         (void)capo_close_pass(s);
-        a_dup(u8c, root_s, u8bDataC(s->h->root));
-        a_path(capodir);
-        if (CAPOResolveDir(capodir, root_s) == OK) {
-            a_dup(u8c, dirslice, u8bDataC(capodir));
-            CAPOFlushRun(s->entries, dirslice, &s->seqno);
-            //  Maintain the LSM 1/8 ladder: each fresh run on top of
-            //  comparable-sized older runs needs to merge them.  Without
-            //  this, every fetch dropped a new ~17MB run on disk and
-            //  the stack grew unbounded (12 tags → 12 same-size runs).
-            CAPOCompact(dirslice);
-        }
+        CAPOFlushRun(s);
+        //  Maintain the LSM 1/8 ladder: each fresh run on top of
+        //  comparable-sized older runs needs to merge them.  Without
+        //  this, every fetch dropped a new ~17MB run on disk and
+        //  the stack grew unbounded.
+        CAPOCompact(s);
         u64bUnMap(s->entries);
         if (!BNULL(s->blob_stage))      u8bUnMap(s->blob_stage);
         if (!BNULL(s->blob_offsets))    kv64bFree(s->blob_offsets);
@@ -1482,6 +1461,8 @@ void SPOTClose(void) {
         if (s->toks[i][0] != NULL) u32bUnMap(s->toks[i]);
         if (s->maps[i] != NULL)    FILEUnMap(s->maps[i]);
     }
+    if (!BNULL(s->puppies))     DOGPupClose(s->puppies);
+    if (!BNULL(s->leaf_branch)) u8bFree(s->leaf_branch);
     if (s->arena[0]) u8bUnMap(s->arena);
     if (s->lock_fd >= 0) FILEClose(&s->lock_fd);
     s->nhunks = 0;

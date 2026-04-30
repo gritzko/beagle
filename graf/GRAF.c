@@ -27,8 +27,9 @@ static b8 graf_is_rw = NO;
 
 // --- GRAFOpenBranch / GRAFOpen / GRAFClose ---
 
-#define GRAF_DIR_S       ".dogs/graf"
+#define GRAF_DIR_S       ".dogs"
 #define GRAF_IDX_EXT     ".graf.idx"
+#define GRAF_LOCK_S      ".lock.graf"
 #define GRAF_LEAF_BRANCH_MAX 1024
 
 //  Compose `<root>/.dogs/graf/<branch>` (with `<branch>` empty for
@@ -216,7 +217,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
         a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
         a_dup(u8c, lds, u8bDataC(leafdir));
         call(PATHu8bFeed, lockpath, lds);
-        a_cstr(lockrel, ".lock");
+        a_cstr(lockrel, GRAF_LOCK_S);
         call(PATHu8bAdd, lockpath, lockrel);
         call(PATHu8bTerm, lockpath);
         call(FILECreate, &g->lock_fd, $path(lockpath));

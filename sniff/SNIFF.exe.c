@@ -456,9 +456,26 @@ static ok64 sniff_status(u8cs reporoot) {
     if (b.del_n > 0) status_dump_rows(b.del_buf, "del", STATUS_ANSI_DEL, tty);
     if (b.mis_n > 0) status_dump_rows(b.mis_buf, "mis", STATUS_ANSI_MIS, tty);
     if (b.unk_n > 0) status_dump_rows(b.unk_buf, "unk", STATUS_ANSI_UNK, tty);
-    fprintf(stdout,
-            "sniff: %u ok, %u put, %u new, %u mod, %u del, %u mis, %u unk\n",
-            b.ok_n, b.put_n, b.new_n, b.mod_n, b.del_n, b.mis_n, b.unk_n);
+    //  Color the count + tag pair when the count is non-zero, on tty
+    //  only.  `ok` is uncolored — its tag is informational, never
+    //  surfaced as a row above.
+    #define STATUS_PAINT(n, tag, ansi)                                  \
+        do {                                                            \
+            if (tty && (n) > 0)                                         \
+                fprintf(stdout, ", " ansi "%u %s" STATUS_ANSI_OFF,      \
+                        (n), (tag));                                    \
+            else                                                        \
+                fprintf(stdout, ", %u %s", (n), (tag));                 \
+        } while (0)
+    fprintf(stdout, "sniff: %u ok", b.ok_n);
+    STATUS_PAINT(b.put_n, "put", STATUS_ANSI_PUT);
+    STATUS_PAINT(b.new_n, "new", STATUS_ANSI_NEW);
+    STATUS_PAINT(b.mod_n, "mod", STATUS_ANSI_MOD);
+    STATUS_PAINT(b.del_n, "del", STATUS_ANSI_DEL);
+    STATUS_PAINT(b.mis_n, "mis", STATUS_ANSI_MIS);
+    STATUS_PAINT(b.unk_n, "unk", STATUS_ANSI_UNK);
+    fprintf(stdout, "\n");
+    #undef STATUS_PAINT
     fflush(stdout);
 
     u8bFree(b.put_buf); u8bFree(b.new_buf);
