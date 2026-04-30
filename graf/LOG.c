@@ -4,8 +4,11 @@
 //    log:?<ref>#<N>           — branch history; walks parent chain
 //                               from tip via the COMMIT_PARENT DAG.
 //    log:./path/file.c?<ref>#<N>
-//                             — file history; uses graf's PATH_VER index
-//                               filtered by the tip's ancestor set.
+//                             — file history; topo-walks the tip's
+//                               ancestor closure newest-first, fetches
+//                               the blob at `path` for each commit, and
+//                               emits a row only when the blob bytes
+//                               differ from the next-walked commit.
 //
 //  Output: one line per commit, "<sha7> <5-date> <message> (<author>)".
 //
@@ -18,6 +21,7 @@
 //  break the walk.
 //
 #include "GRAF.h"
+#include "BLOB.h"
 #include "DAG.h"
 
 #include <errno.h>
@@ -70,8 +74,9 @@ typedef struct {
 // --- Helpers -----------------------------------------------------------
 
 //  Resolve URI's `#hex`, `?ref`, or absent-query (use the wt's current
-//  tip from sniff/at.log) to a 20-byte commit SHA-1.
-static ok64 graflog_resolve_tip(keeper *k, uricp u, sha1 *out) {
+//  tip from sniff/at.log) to a 20-byte commit SHA-1.  Public so other
+//  graf verbs (blame, etc.) can reuse the same resolution policy.
+ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
@@ -265,9 +270,10 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
     done;
 }
 
-//  File-history: PATH_VER hits inside the tip's ancestor closure,
-//  newest-first.  Bounded by `count` and an array cap (file-history
-//  arrays size with maxvers, so the ceiling matters here).
+//  File-history: walk the tip's ancestor closure newest-first,
+//  emit a row for each commit whose blob at `path` differs from the
+//  previously-kept commit's blob bytes (or whose path didn't exist
+//  in that commit — fetch failures are skipped).  Bounded by `count`.
 static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
                          u8cs path, u32 count) {
     sane(k && tip && $ok(path));
@@ -276,35 +282,78 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
 
     Bwh128 ancestors = {};
     call(wh128bAllocate, ancestors, LOG_ANC_SIZE);
-    DAGAncestors(ancestors, &GRAF.idx, tip_h40, 0);
+    DAGAncestors(ancestors, &GRAF.idx, tip_h40);
 
-    //  DAGPathVers truncates *before* sorting (it stops scanning once
-    //  it has filled `maxvers` entries, then sorts what it gathered),
-    //  so a tight cap = `count` returns the oldest matches, not the
-    //  newest.  Always pull a generous batch and truncate after.
-    u32 maxvers = LOG_FILE_VERS_CAP;
-    graf_pathver *vers = (graf_pathver *)calloc(maxvers, sizeof(*vers));
-    if (!vers) {
+    //  Topo-sort parents-before-children, then walk in reverse for
+    //  newest-first emission.
+    size_t anc_cap = (size_t)(wh128bTerm(ancestors) - wh128bHead(ancestors));
+    Bu8 ord_buf = {};
+    if (u8bMap(ord_buf, anc_cap * sizeof(u64)) != OK) {
         if (wh128bHead(ancestors) != wh128bTerm(ancestors))
             wh128bFree(ancestors);
         fail(GRAFFAIL);
     }
-    u32 nvers = DAGPathVers(vers, maxvers, &GRAF.idx, path, ancestors);
+    u64 *ordered = (u64 *)u8bDataHead(ord_buf);
+    u32 nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors, &GRAF.idx);
 
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, LOG_OBJ_BUF) != OK) {
-        free(vers);
+    //  Walk parents-first, dedup each commit's blob against its parent's
+    //  bytes; collect "touching" commit hashlets into `keep[]`.  The
+    //  parent in topological order is just the previously-walked commit
+    //  along a linear chain — for branchy histories it's the parent in
+    //  the topo numbering, which is approximate but matches what
+    //  PATH_VER captured at ingest time.  Then walk `keep[]` in reverse
+    //  to emit newest-first.
+    Bu8 cbuf = {}, blob_a = {}, blob_b = {}, keep_buf = {};
+    if (u8bMap(cbuf,     LOG_OBJ_BUF)         != OK ||
+        u8bMap(blob_a,   LOG_OBJ_BUF)         != OK ||
+        u8bMap(blob_b,   LOG_OBJ_BUF)         != OK ||
+        u8bMap(keep_buf, anc_cap * sizeof(u64)) != OK) {
+        if (cbuf[0])     u8bUnMap(cbuf);
+        if (blob_a[0])   u8bUnMap(blob_a);
+        if (blob_b[0])   u8bUnMap(blob_b);
+        if (keep_buf[0]) u8bUnMap(keep_buf);
+        u8bUnMap(ord_buf);
         if (wh128bHead(ancestors) != wh128bTerm(ancestors))
             wh128bFree(ancestors);
         fail(GRAFFAIL);
     }
+    u64 *keep = (u64 *)u8bDataHead(keep_buf);
+    u32 nkeep = 0;
 
-    u32 emitted = 0;
-    for (u32 i = 0; i < nvers && emitted < count; i++) {
-        if (graf_out_fd < 0) break;
+    Bu8 *cur_blob = &blob_a, *prev_blob = &blob_b;
+    b8 have_prev = NO;
 
-        u64 h40 = vers[i].commit_hashlet;
+    for (u32 i = 0; i < nord; i++) {
+        u64 h40 = ordered[i];
         if (h40 == 0) continue;
+
+        u8bReset(*cur_blob);
+        ok64 fo = GRAFBlobAtCommit(*cur_blob, k, h40, path);
+        if (fo != OK) {
+            //  Path absent in this commit — treat as "not changing
+            //  the file" for dedup purposes (carry prev forward).
+            continue;
+        }
+
+        if (have_prev) {
+            size_t cl = u8bDataLen(*cur_blob);
+            size_t pl = u8bDataLen(*prev_blob);
+            if (cl == pl && (cl == 0 ||
+                memcmp(u8bDataHead(*cur_blob),
+                       u8bDataHead(*prev_blob), cl) == 0)) continue;
+        }
+
+        if (nkeep < anc_cap) keep[nkeep++] = h40;
+
+        Bu8 *tmp = cur_blob; cur_blob = prev_blob; prev_blob = tmp;
+        have_prev = YES;
+    }
+
+    //  Emit newest-first.
+    u32 emitted = 0;
+    for (u32 ki = nkeep; ki > 0 && emitted < count; ki--) {
+        if (graf_out_fd < 0) break;
+        u64 h40 = keep[ki - 1];
         u8bReset(cbuf);
         u8 ot = 0;
         if (KEEPGet(k, DAGh40ToKeeperPrefix(h40), DAG_H40_HEXLEN,
@@ -315,8 +364,12 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
         if (graflog_emit_one(lx, &csha, body) != OK) break;
         emitted++;
     }
+
+    u8bUnMap(blob_a);
+    u8bUnMap(blob_b);
     u8bUnMap(cbuf);
-    free(vers);
+    u8bUnMap(keep_buf);
+    u8bUnMap(ord_buf);
     if (wh128bHead(ancestors) != wh128bTerm(ancestors))
         wh128bFree(ancestors);
     done;
@@ -333,7 +386,7 @@ ok64 GRAFLog(keeper *k, uricp u) {
     call(GRAFArenaInit);
 
     sha1 tip = {};
-    call(graflog_resolve_tip, k, u, &tip);
+    call(GRAFResolveTip, k, u, &tip);
 
     u32 count = graflog_count_from_frag(u);
 

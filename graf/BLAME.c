@@ -31,6 +31,11 @@
 #define BLAME_MAX_VERS 256
 #define BLAME_MAX_AUTHORS 256
 
+//  Sentinel `src` for the worktree shadow version (uncommitted edits).
+//  Real WHIFFHashlet40 truncations land in the bottom 32 bits — full
+//  0xFFFFFFFF is overwhelmingly likely to be free.
+#define BLAME_WT_SRC 0xFFFFFFFFu
+
 // --- Author table: gen → author + date ---
 
 typedef struct {
@@ -152,12 +157,12 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath);
 
 #define BLAME_ANC_SIZE  (1u << 18)   // 256K slots ≈ 4MB, power of 2
 
-// --- Find author for a gen in the author table ---
+// --- Find author for a token by its u32 hashlet (low 32 of commit_hashlet) ---
 
-static blame_author const *blame_lookup_gen(blame_author const *authors,
-                                             u32 nauthors, u32 gen) {
+static blame_author const *blame_lookup_in(blame_author const *authors,
+                                            u32 nauthors, u32 in_h32) {
     for (u32 i = 0; i < nauthors; i++)
-        if (authors[i].gen == gen) return &authors[i];
+        if ((u32)authors[i].commit_hashlet == in_h32) return &authors[i];
     return NULL;
 }
 
@@ -179,34 +184,47 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return go;
 
-    // Ancestry filter — thin wrapper over DAGAncestors.  tip_h == 0
-    // leaves the set empty; blame_walk_history treats empty as "no
-    // filter".
+    //  Ancestor closure of the tip, topologically sorted parents-first.
+    //  No PATH_VER pre-filter — the blob fetch loop below skips commits
+    //  where the path is absent and dedups byte-identical adjacent
+    //  versions.  When tip_h == 0 (caller couldn't resolve a tip), fall
+    //  back to all commits recorded in the index.
+    u64 vers[BLAME_MAX_VERS];
+    u32 nvers = 0;
     Bwh128 ancestors = {};
+    call(wh128bAllocate, ancestors, BLAME_ANC_SIZE);
     if (tip_h != 0) {
-        call(wh128bAllocate, ancestors, BLAME_ANC_SIZE);
-        DAGAncestors(ancestors, &GRAF.idx, tip_h, 0);
+        DAGAncestors(ancestors, &GRAF.idx, tip_h);
+    } else {
+        DAGAllCommits(ancestors, &GRAF.idx);
     }
 
-    graf_pathver vers[BLAME_MAX_VERS];
-    u32 nvers = DAGPathVers(vers, BLAME_MAX_VERS, &GRAF.idx,
-                            filepath, ancestors);
-
-    // Reverse to oldest first.  Byte-level dedup happens in the
-    // fetch loop below (collision or unchanged-path commits produce
-    // identical bytes and are skipped there).
-    for (u32 i = 0; i < nvers / 2; i++) {
-        graf_pathver tmp = vers[i];
-        vers[i] = vers[nvers - 1 - i];
-        vers[nvers - 1 - i] = tmp;
+    size_t anc_cap = (size_t)(wh128bTerm(ancestors) -
+                              wh128bHead(ancestors));
+    Bu8 ord_buf = {};
+    if (u8bMap(ord_buf, anc_cap * sizeof(u64)) == OK) {
+        u64 *ordered = (u64 *)u8bDataHead(ord_buf);
+        u32 nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors,
+                               &GRAF.idx);
+        if (nord > BLAME_MAX_VERS) nord = BLAME_MAX_VERS;
+        memcpy(vers, ordered, nord * sizeof(u64));
+        nvers = nord;
+        u8bUnMap(ord_buf);
     }
 
     // Build author table + fetch blob bytes + build weave
     blame_author authors[BLAME_MAX_AUTHORS] = {};
     u32 nauthors = 0;
 
-    weave wv = {};
-    call(WEAVEInit, &wv, 0);
+    //  Three weave instances per the WEAVE.h API: src holds the
+    //  accumulated history, dst receives each step's composition,
+    //  nu is rebuilt fresh for every blob version.  After WEAVEDiff,
+    //  we swap src/dst so src always points at the latest state.
+    weave wA = {}, wB = {}, wnu = {};
+    call(WEAVEInit, &wA);
+    call(WEAVEInit, &wB);
+    call(WEAVEInit, &wnu);
+    weave *wsrc = &wA, *wdst = &wB;
 
     // Two mapped blob buffers, swap each iteration
     #define BLAME_BLOB_MAX (16UL << 20)  // 16 MB per blob
@@ -220,50 +238,84 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
 
     b8 have_prev = NO;
     for (u32 i = 0; i < nvers; i++) {
+        u64 commit_h = vers[i];
         u8bReset(*cur_blob);
-        // Resolve (commit, filepath) → blob via keeper.  Drops
-        // false-positive PATH_VER hits (collisions, or commits
-        // where the path doesn't actually exist).
-        ok64 fo = GRAFBlobAtCommit(*cur_blob, k,
-                                    vers[i].commit_hashlet, filepath);
+        ok64 fo = GRAFBlobAtCommit(*cur_blob, k, commit_h, filepath);
         if (fo != OK) continue;
 
-        // Byte-level dedup: if this blob is identical to the
-        // immediately-preceding kept version, skip — same content,
-        // no new weave event.  This catches rollbacks where the
-        // path's blob hash reverts to a prior value.
+        // Byte-level dedup: skip blobs identical to last kept version.
         if (have_prev) {
             size_t cl = u8bDataLen(*cur_blob);
             size_t pl = u8bDataLen(*prev_blobp);
             if (cl == pl && (cl == 0 ||
                 memcmp(u8bDataHead(*cur_blob),
-                       u8bDataHead(*prev_blobp), cl) == 0)) {
-                continue;
-            }
+                       u8bDataHead(*prev_blobp), cl) == 0)) continue;
         }
 
-        if (vers[i].commit_hashlet && nauthors < BLAME_MAX_AUTHORS) {
-            authors[nauthors].gen = vers[i].gen;
-            authors[nauthors].commit_hashlet = vers[i].commit_hashlet;
-            blame_fetch_author(&authors[nauthors], k,
-                               vers[i].commit_hashlet);
+
+        if (commit_h && nauthors < BLAME_MAX_AUTHORS) {
+            authors[nauthors].gen = 0;
+            authors[nauthors].commit_hashlet = commit_h;
+            blame_fetch_author(&authors[nauthors], k, commit_h);
             nauthors++;
         }
 
-        u8cs old_data = {};
-        if (have_prev) {
-            old_data[0] = u8bDataHead(*prev_blobp);
-            old_data[1] = u8bDataHead(*prev_blobp) + u8bDataLen(*prev_blobp);
-        }
         u8cs new_data = {u8bDataHead(*cur_blob),
                          u8bDataHead(*cur_blob) + u8bDataLen(*cur_blob)};
 
-        call(WEAVEAdd, &wv, old_data, new_data, ext, vers[i].gen);
+        u32 sc = (u32)commit_h;
+        call(WEAVEFromBlob, &wnu, new_data, ext, sc);
+        call(WEAVEDiff, wdst, wsrc, &wnu, sc);
+        weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
 
-        // Swap
+        // Swap blob buffers (prev kept for next iter's byte-dedup).
         Bu8 *tmp = cur_blob; cur_blob = prev_blobp; prev_blobp = tmp;
         have_prev = YES;
     }
+
+    //  --- Worktree shadow version ---
+    //  Read the on-disk file at reporoot/filepath, fold it into the
+    //  weave with src=BLAME_WT_SRC.  Skipped silently if the file is
+    //  missing (deleted in worktree) or identical to the last kept
+    //  committed version.
+    {
+        a_path(wt_path, reporoot, filepath);
+        u8bp wt_mapped = NULL;
+        ok64 wto = FILEMapRO(&wt_mapped, $path(wt_path));
+        if (wto == OK && wt_mapped) {
+            u8cs wt_data = {u8bDataHead(wt_mapped),
+                            u8bDataHead(wt_mapped) + u8bDataLen(wt_mapped)};
+            b8 same = NO;
+            if (have_prev) {
+                size_t cl = (size_t)$len(wt_data);
+                size_t pl = u8bDataLen(*prev_blobp);
+                if (cl == pl && (cl == 0 || memcmp(wt_data[0],
+                                                   u8bDataHead(*prev_blobp),
+                                                   cl) == 0))
+                    same = YES;
+            }
+            if (!same) {
+                if (nauthors < BLAME_MAX_AUTHORS) {
+                    authors[nauthors].gen = 0;
+                    authors[nauthors].commit_hashlet = (u64)BLAME_WT_SRC;
+                    snprintf(authors[nauthors].author,
+                             sizeof(authors[nauthors].author),
+                             "(worktree)");
+                    authors[nauthors].date[0] = 0;
+                    nauthors++;
+                }
+                ok64 fbo = WEAVEFromBlob(&wnu, wt_data, ext, BLAME_WT_SRC);
+                if (fbo == OK) {
+                    ok64 dfo = WEAVEDiff(wdst, wsrc, &wnu, BLAME_WT_SRC);
+                    if (dfo == OK) {
+                        weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
+                    }
+                }
+            }
+            u8bUnMap(wt_mapped);
+        }
+    }
+
     u8bUnMap(blob_a);
     u8bUnMap(blob_b);
 
@@ -282,14 +334,18 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
     int cur_year = tm ? tm->tm_year + 1900 : 2026;
     b8 tty = graf_out_fd >= 0 && graf_emit == HUNKu8sFeed;
 
-    u32 wlen = WEAVELen(&wv);
-    wtokcp wtoks = WEAVETokens(&wv);
+    u32cp w_toks   = (u32cp)wsrc->toks[1];
+    u32cp w_toks_e = (u32cp)wsrc->toks[2];
+    u32   wlen     = (u32)(w_toks_e - w_toks);
+    inrmcp w_irm   = (inrmcp)wsrc->inrm[1];
+    u8cp  w_text   = (u8cp)wsrc->text[1];
 
     Bu8 outbuf = {};
     call(u8bMap, outbuf, 16UL << 20);
 
-    char const *prev_author = NULL;
-    b8 at_bol = YES;
+    u32 prev_in = 0;        // 0 means "no previous row yet"
+    b8  have_prev_in = NO;
+    b8  at_bol = YES;
 
     char blank_pre[BLAME_PW + 1];
     memset(blank_pre, ' ', BLAME_PW);
@@ -301,21 +357,25 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
     } while(0)
 
     for (u32 wi = 0; wi < wlen; wi++) {
-        if (wtoks[wi].del_gen != 0) continue;
+        if (w_irm[wi].rm != 0) continue;
 
-        u8cp tp = wtoks[wi].tok[0];
-        u8cp te = wtoks[wi].tok[1];
+        u32 tlo = (wi == 0) ? 0 : tok32Offset(w_toks[wi - 1]);
+        u32 thi = tok32Offset(w_toks[wi]);
+        u8cp tp = w_text + tlo;
+        u8cp te = w_text + thi;
 
         if (at_bol) {
-            u32 tgen = wtoks[wi].intro_gen;
-            blame_author const *ba = blame_lookup_gen(authors, nauthors, tgen);
+            blame_author const *ba = blame_lookup_in(authors, nauthors, w_irm[wi].in);
             if (!ba) ba = &blame_unknown;
-            b8 diff_auth = !prev_author || strcmp(prev_author, ba->author) != 0;
+            b8 diff_commit = !have_prev_in || prev_in != w_irm[wi].in;
 
             char pre[256];
-            if (diff_auth) {
+            if (diff_commit) {
                 char hexlet[12] = "       ";
-                if (ba->commit_hashlet) {
+                if (ba->commit_hashlet == (u64)BLAME_WT_SRC) {
+                    snprintf(hexlet, sizeof(hexlet), "wt     ");
+                    hexlet[BLAME_HW] = 0;
+                } else if (ba->commit_hashlet) {
                     snprintf(hexlet, sizeof(hexlet), "%010llx",
                              (unsigned long long)ba->commit_hashlet);
                     hexlet[BLAME_HW] = 0;
@@ -332,7 +392,8 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
                              fhash, fname, fdate);
                 else
                     snprintf(pre, sizeof(pre), "%s%s%s", fhash, fname, fdate);
-                prev_author = ba->author;
+                prev_in = w_irm[wi].in;
+                have_prev_in = YES;
             } else {
                 snprintf(pre, sizeof(pre), "%s", blank_pre);
             }
@@ -380,7 +441,9 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
     }
 
     u8bUnMap(outbuf);
-    WEAVEFree(&wv);
+    WEAVEFree(&wA);
+    WEAVEFree(&wB);
+    WEAVEFree(&wnu);
     if (wh128bHead(ancestors) != wh128bTerm(ancestors)) wh128bFree(ancestors);
     if (own_open) GRAFClose();
     GRAFArenaCleanup();

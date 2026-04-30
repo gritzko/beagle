@@ -103,6 +103,10 @@ ok64 GRAFIndex(keeper *k);
 //   tip_h: 40-bit commit hashlet bounding the history (0 = no filter).
 ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot);
 
+// Resolve a URI's `#hex` / `?ref` / absent-query to a 20-byte commit
+// SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
+ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out);
+
 // Weave diff between two commits (reads blobs from keeper).
 ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to);

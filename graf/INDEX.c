@@ -1,18 +1,15 @@
 //  INDEX: drive graf's streaming DAG ingest from keeper's pack store.
 //
-//  `graf index` enumerates keeper's LSM runs, pulls each object body
-//  via KEEPGet, and replays the DOG.md §8 streaming contract:
-//      GRAFDagUpdate(COMMIT, body, empty)   (in topological order)
-//      GRAFDagUpdate(TREE,   body, empty)
-//      GRAFDagUpdate(BLOB,   body, empty)
-//      GRAFDagFinish()
+//  `graf index` enumerates keeper's LSM runs, pulls each commit body
+//  via KEEPGet, and feeds them to graf:
+//      GRAFDagUpdate(COMMIT, sha, body)   (commit → parent + tree edges)
+//      GRAFDagFinish()                    (flush + compact)
 //
-//  Commits are fed in *pack-offset order*, which for sniff/be-post
-//  flows is identical to topological order — a commit's parents are
-//  always written to keeper before the commit itself.  If that
-//  invariant ever breaks (e.g. out-of-order sync ingest), gen numbers
-//  on a first pass may be low; subsequent `graf index` runs converge
-//  because parents then reside in the persistent LSM.
+//  Trees and blobs are not indexed — the commit→tree edge and the
+//  on-disk keeper objects are sufficient to descend to any path at
+//  query time.  Commits are fed in pack-offset order, which is fine
+//  even when not strictly topological: the LSM ingest is order-
+//  independent (every record is a child→parent or child→tree edge).
 
 #include "GRAF.h"
 #include "DAG.h"
@@ -113,14 +110,10 @@ ok64 GRAFIndex(keeper *k) {
     Bu8 body = {};
     call(u8bMap, body, GRAF_INGEST_BUFSZ);
 
-    //  Phase order (enforced by DAG ingest state machine):
-    //  commits in pack-offset order, then trees, then blobs.
+    //  Only commits are needed — every record we emit is a commit edge.
     ok64 rc = OK;
     if ((rc = graf_feed_type(k, DOG_OBJ_COMMIT, YES, body)) != OK) goto out;
-    if ((rc = graf_feed_type(k, DOG_OBJ_TREE,   NO,  body)) != OK) goto out;
-    if ((rc = graf_feed_type(k, DOG_OBJ_BLOB,   NO,  body)) != OK) goto out;
 
-    //  Finish walks each new commit's tree and emits PATH_VER entries.
     rc = GRAFDagFinish();
 
 out:

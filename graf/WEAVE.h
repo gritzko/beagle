@@ -1,83 +1,82 @@
 #ifndef GRAF_WEAVE_H
 #define GRAF_WEAVE_H
 
-//  WEAVE: interleaved token-level file history.
+//  WEAVE: token-level history of one file as a single sequence.
 //
-//  A weave merges all versions of a file into a single token sequence.
-//  Each token carries the generation that introduced it and the
-//  generation that deleted it (0 = still alive).  Token text is stored
-//  in a side buffer; wtok slices point into it.
+//  Per token, four parallel arrays of equal length N:
+//    text     — token bytes, indexed by tok32 cumulative end-offset.
+//               Token i spans tok32Offset(toks[i-1]) .. tok32Offset(toks[i]).
+//    toks     — tok32(tag, end_offset_in_text).
+//    hashlets — RAPHash of the token's bytes; used for u64 token diffing.
+//    inrm     — (in, rm) pair of 32-bit commit hashlets.
+//                 in == 0 → token predates the timeframe (NCA bootstrap).
+//                 rm == 0 → token still alive.
 //
-//  Built incrementally by diffing adjacent blob versions along the
-//  PREV_BLOB chain.  Two wtok buffers are swapped each step to avoid
-//  splicing.
+//  A weave is rebuilt fresh by every operation: WEAVEFromBlob (one-version
+//  weave from raw bytes), WEAVEDiff (linear chain step), WEAVEMerge
+//  (concurrent branches).  Each writes into a destination weave that
+//  the caller has reset.  Three weave instances (src, nu, dst) is the
+//  typical caller pattern for incremental builds along a blob chain.
 //
-//  To extract version at gen G: scan the weave, emit tokens where
-//  intro_gen <= G && (del_gen == 0 || del_gen > G).
+//  Splice canonicalization (compose-time invariant):
+//    Within any maximal run of non-EQ EDL ops between two EQs,
+//    all INS tokens precede all DEL tokens in the output.  No
+//    rm-then-in adjacency, no in-rm-in alternation.
 
 #include "abc/INT.h"
 #include "abc/RAP.h"
 #include "dog/TOK.h"
 
-con ok64 WEAVEFAIL   = 0x2038a7ce3ca495;
-con ok64 WEAVNOROM = 0x2038a7d761b616;
-
-// --- wtok: one token in the weave ---
+con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 
 typedef struct {
-    u8cs tok;        // slice into text buffer
-    u32  intro_gen;  // gen of the commit that introduced this token
-    u32  del_gen;    // gen of the commit that deleted it (0 = alive)
-} wtok;
+    u32 in;
+    u32 rm;
+} inrm;
 
-typedef wtok const wtokc;
-typedef wtok *wtokp;
-typedef wtok const *wtokcp;
+typedef inrm const inrmc;
+typedef inrm *inrmp;
+typedef inrm const *inrmcp;
 
-fun int wtokcmp(wtokcp a, wtokcp b) {
-    if (a->intro_gen < b->intro_gen) return -1;
-    if (a->intro_gen > b->intro_gen) return 1;
+fun int inrmcmp(inrmcp a, inrmcp b) {
+    if (a->in != b->in) return (a->in < b->in) ? -1 : 1;
+    if (a->rm != b->rm) return (a->rm < b->rm) ? -1 : 1;
     return 0;
 }
 
-fun b8 wtokZ(wtokcp a, wtokcp b) {
-    return a->intro_gen < b->intro_gen;
+fun b8 inrmZ(inrmcp a, inrmcp b) {
+    return a->in < b->in || (a->in == b->in && a->rm < b->rm);
 }
 
-#define X(M, name) M##wtok##name
+#define X(M, name) M##inrm##name
 #include "abc/Bx.h"
 #undef X
 
-// --- Weave state ---
-
 typedef struct {
-    Bu8   text;     // token text storage (append-only)
-    Bwtok src;      // current weave (read side of double buffer)
-    Bwtok dst;      // next weave (write side of double buffer)
+    Bu8    text;
+    Bu32   toks;
+    Bu64   hashlets;
+    Binrm  inrm;
 } weave;
 
-//  Initialize weave buffers.
-ok64 WEAVEInit(weave *w, size_t est_tokens);
+ok64 WEAVEInit (weave *w);
+void WEAVEReset(weave *w);
+void WEAVEFree (weave *w);
 
-//  Add a version to the weave by diffing old_data → new_data.
-//  ext: file extension for tokenizer selection.
-//  gen: commit generation of new_data.
-//  If the weave is empty, old_data should be empty and all tokens
-//  of new_data are inserted as the initial version.
-ok64 WEAVEAdd(weave *w, u8cs old_data, u8cs new_data,
-              u8cs ext, u32 gen);
+//  Build a one-version weave from raw blob bytes.  Tokenizes `data`
+//  with the lexer for `ext`, hashes each token, stamps every token
+//  with inrm = {src, 0}.  Pass src=0 to mark all tokens as
+//  pre-timeframe (NCA bootstrap).
+ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src);
 
-//  Number of tokens in the weave (alive + deleted).
-fun u32 WEAVELen(weave const *w) {
-    return (u32)wtokbDataLen(w->src);
-}
+//  dst = src diffed against nu.  `nu` is a one-version weave produced
+//  by WEAVEFromBlob; tokens that the diff classifies as INS are copied
+//  from nu into dst with in=src_commit, rm=0.  dst is reset before
+//  composition.  src and nu are read-only.
+ok64 WEAVEDiff (weave *dst, weave const *src, weave const *nu, u32 src_commit);
 
-//  Access the weave token array (read-only).
-fun wtokcp WEAVETokens(weave const *w) {
-    return wtokbDataHead(w->src);
-}
-
-//  Cleanup.
-void WEAVEFree(weave *w);
+//  dst = a merged with b (concurrent branches sharing an ancestor).
+//  Stub for now.
+ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b);
 
 #endif

@@ -90,12 +90,11 @@ echo "$SOUT" | grep -qE '^graf: [0-9]+ index run\(s\), [0-9]+ entries$' \
     || fail "status: unexpected output shape — $SOUT"
 
 #  After three commits the LSM must contain at least:
-#    3 COMMIT_GEN + 2 COMMIT_PARENT + 3 COMMIT_TREE + 1 PATH_VER for f.c
-#    (sniff also stages a handful of siblings → more PATH_VERs).
-#  Be lenient on the exact count; require ≥ 9 as a sanity floor.
+#    2 COMMIT_PARENT (root has no parent) + 3 COMMIT_TREE = 5
+#  Be lenient on the exact count; require ≥ 5 as a sanity floor.
 ENTRIES=$(echo "$SOUT" | sed -n 's/.*run(s), \([0-9]*\) entries.*/\1/p')
-[ "$ENTRIES" -ge 9 ] \
-    || fail "status: only ${ENTRIES} entries after 3 commits (want ≥ 9)"
+[ "$ENTRIES" -ge 5 ] \
+    || fail "status: only ${ENTRIES} entries after 3 commits (want ≥ 5)"
 note "index holds ${ENTRIES} entries across 3 commits"
 
 # ------------------------------------------------------------------

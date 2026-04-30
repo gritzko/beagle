@@ -259,7 +259,7 @@ ok64 GRAFMap(uricp u) {
             return ao;
         }
         kept[i].anc_init = YES;
-        DAGAncestors(kept[i].ancestors, &GRAF.idx, kept[i].tip_h40, 0);
+        DAGAncestors(kept[i].ancestors, &GRAF.idx, kept[i].tip_h40);
     }
 
     //  Union all hashlets.  The deepest-claiming branch owns each.

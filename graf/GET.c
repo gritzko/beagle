@@ -68,7 +68,7 @@ static ok64 get_resolve_qref(get_tip *out, qref const *q) {
     u8bFree(cbuf);
 
     out->h40 = WHIFFHashlet40(&out->sha);
-    out->gen = DAGCommitGen(&GRAF.idx, out->h40);
+    out->gen = 0;            //  gen is no longer indexed
     done;
 }
 
@@ -128,46 +128,59 @@ static ok64 get_append_blob_at(u8b into, u64 commit_h40, u8cs path) {
 
 // --- LCA of two commits in the DAG -----------------------------------
 //
-//  Intersects each tip's ancestor set and returns the member with
-//  the highest `gen`.  Returns 0 when:
-//    * the DAG index is empty (graf hasn't indexed yet), or
-//    * the two tips share no ancestors (unlikely for a real repo,
-//      but tolerated — callers fall back to `ours`).
+//  Intersects each tip's ancestor set; returns the deepest member of
+//  the intersection (the LCA closest to the tips).  Without gen we
+//  topologically sort the intersection and pick the *last* commit —
+//  in DFS post-order over parent edges, the last-emitted node is the
+//  one farthest from the roots.
 //
-//  Iteration peeks at the raw hash-table slots: DAGAncestors inserts
-//  with `key = wh64Pack(0, 0, h40)`, so any slot whose 40-bit hashlet
-//  bits (`DAGHashlet`) are non-zero is an occupied entry.
+//  Returns 0 when:
+//    * the DAG index is empty (graf hasn't indexed yet), or
+//    * the two tips share no ancestors.
 
 static u64 get_lca(u64 a_h40, u64 b_h40) {
     if (a_h40 == 0 || b_h40 == 0) return 0;
 
-    Bwh128 set_a = {}, set_b = {};
+    Bwh128 set_a = {}, set_b = {}, set_c = {};
     if (wh128bAllocate(set_a, GET_ANC_SIZE) != OK) return 0;
     if (wh128bAllocate(set_b, GET_ANC_SIZE) != OK) {
         wh128bFree(set_a); return 0;
     }
+    if (wh128bAllocate(set_c, GET_ANC_SIZE) != OK) {
+        wh128bFree(set_a); wh128bFree(set_b); return 0;
+    }
 
-    ok64 oa = DAGAncestors(set_a, &GRAF.idx, a_h40, 0);
-    ok64 ob = DAGAncestors(set_b, &GRAF.idx, b_h40, 0);
+    ok64 oa = DAGAncestors(set_a, &GRAF.idx, a_h40);
+    ok64 ob = DAGAncestors(set_b, &GRAF.idx, b_h40);
     if (oa != OK || ob != OK) {
-        wh128bFree(set_a); wh128bFree(set_b);
+        wh128bFree(set_a); wh128bFree(set_b); wh128bFree(set_c);
         return 0;
     }
 
-    u64 best = 0;
-    u32 best_gen = 0;
+    //  Build the intersection (common ancestors).
     wh128cp cells = wh128bHead(set_a);
     wh128cp cells_end = wh128bTerm(set_a);
     for (wh128cp c = cells; c < cells_end; c++) {
         u64 h = DAGHashlet(c->key);
         if (h == 0) continue;
         if (!DAGAncestorsHas(set_b, h)) continue;
-        u32 g = DAGCommitGen(&GRAF.idx, h);
-        if (g > best_gen) { best_gen = g; best = h; }
+        dag_anc_put(set_c, h);
+    }
+
+    //  Topo-sort the intersection; LCA = last (deepest) entry.
+    u64 best = 0;
+    size_t cap = (size_t)(wh128bTerm(set_c) - wh128bHead(set_c));
+    Bu8 ord_buf = {};
+    if (cap > 0 && u8bMap(ord_buf, cap * sizeof(u64)) == OK) {
+        u64 *ordered = (u64 *)u8bDataHead(ord_buf);
+        u32 nord = DAGTopoSort(ordered, (u32)cap, set_c, &GRAF.idx);
+        if (nord > 0) best = ordered[nord - 1];
+        u8bUnMap(ord_buf);
     }
 
     wh128bFree(set_a);
     wh128bFree(set_b);
+    wh128bFree(set_c);
     return best;
 }
 
@@ -272,9 +285,22 @@ static ok64 get_weave_union(u8b into, u8cs path,
     ok64 ao = DAGAncestorsOfMany(anc, &GRAF.idx, tip_hs, ntips);
     if (ao != OK) { wh128bFree(anc); return ao; }
 
-    //  Per-path PATH_VER hits inside the union (newest-first).
-    graf_pathver vers[GET_MAX_VERS];
-    u32 nvers = DAGPathVers(vers, GET_MAX_VERS, &GRAF.idx, path, anc);
+    //  Topo-sort the ancestor union parents-before-children.  No
+    //  PATH_VER pre-filter — the blob fetch loop below skips commits
+    //  where the path is absent and dedups byte-identical adjacent
+    //  versions.
+    u64 vers[GET_MAX_VERS];
+    u32 nvers = 0;
+    size_t anc_cap = (size_t)(wh128bTerm(anc) - wh128bHead(anc));
+    Bu8 ord_buf = {};
+    if (anc_cap > 0 && u8bMap(ord_buf, anc_cap * sizeof(u64)) == OK) {
+        u64 *ordered = (u64 *)u8bDataHead(ord_buf);
+        u32 nord = DAGTopoSort(ordered, (u32)anc_cap, anc, &GRAF.idx);
+        if (nord > GET_MAX_VERS) nord = GET_MAX_VERS;
+        memcpy(vers, ordered, nord * sizeof(u64));
+        nvers = nord;
+        u8bUnMap(ord_buf);
+    }
     wh128bFree(anc);
 
     //  Fall-back: no DAG entries — fetch the blob at the first tip
@@ -284,23 +310,23 @@ static ok64 get_weave_union(u8b into, u8cs path,
         return get_append_blob_at(into, tips[0].h40, path);
     }
 
-    //  Reverse to oldest-first (gen ascending).
-    for (u32 i = 0; i < nvers / 2; i++) {
-        graf_pathver tmp = vers[i];
-        vers[i] = vers[nvers - 1 - i];
-        vers[nvers - 1 - i] = tmp;
-    }
-
     //  Tokenizer extension driven by path's suffix — trailing '/'
     //  already routed to tree mode, so path ends on a file name.
     u8cs ext = {};
     PATHu8sExt(ext, path);
 
-    weave wv = {};
-    call(WEAVEInit, &wv, 0);
+    //  Three weave instances: src holds the accumulated history, dst
+    //  receives each WEAVEDiff result, nu is rebuilt fresh for every
+    //  blob version.  After WEAVEDiff we swap src/dst so src always
+    //  points at the latest state.
+    weave wA = {}, wB = {}, wnu = {};
+    call(WEAVEInit, &wA);
+    call(WEAVEInit, &wB);
+    call(WEAVEInit, &wnu);
+    weave *wsrc = &wA, *wdst = &wB;
 
-    //  Two blob buffers swapped per version; `prev` holds the most
-    //  recently fed content for WEAVEAdd's diff basis.
+    //  Two blob buffers swapped per version; `prev` is kept for
+    //  byte-level dedup of identical-bytes versions.
     Bu8 blob_a = {}, blob_b = {};
     call(u8bMap, blob_a, GET_BLOB_MAX);
     call(u8bMap, blob_b, GET_BLOB_MAX);
@@ -308,9 +334,9 @@ static ok64 get_weave_union(u8b into, u8cs path,
 
     b8 have_prev = NO;
     for (u32 i = 0; i < nvers; i++) {
+        u64 commit_h = vers[i];
         u8bReset(*cur);
-        ok64 fo = GRAFBlobAtCommit(*cur, &KEEP,
-                                   vers[i].commit_hashlet, path);
+        ok64 fo = GRAFBlobAtCommit(*cur, &KEEP, commit_h, path);
         if (fo != OK) continue;
 
         //  Byte-level dedup: skip versions whose bytes match the
@@ -324,15 +350,17 @@ static ok64 get_weave_union(u8b into, u8cs path,
                 continue;
         }
 
-        u8cs old_data = {};
-        if (have_prev) {
-            old_data[0] = u8bDataHead(*prev);
-            old_data[1] = u8bDataHead(*prev) + u8bDataLen(*prev);
-        }
         u8cs new_data = {u8bDataHead(*cur),
                          u8bDataHead(*cur) + u8bDataLen(*cur)};
 
-        WEAVEAdd(&wv, old_data, new_data, ext, vers[i].gen);
+        u32 sc = (u32)commit_h;
+        ok64 fbo = WEAVEFromBlob(&wnu, new_data, ext, sc);
+        if (fbo == OK) {
+            ok64 dfo = WEAVEDiff(wdst, wsrc, &wnu, sc);
+            if (dfo == OK) {
+                weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
+            }
+        }
 
         Bu8 *tmp = cur; cur = prev; prev = tmp;
         have_prev = YES;
@@ -346,16 +374,26 @@ static ok64 get_weave_union(u8b into, u8cs path,
     //  linear histories; for diverged branches this is a first-pass
     //  approximation — correctness of true octopus merges lands in
     //  follow-up work (see graf/GET.md).
-    u32 wlen = WEAVELen(&wv);
-    wtokcp wtoks = WEAVETokens(&wv);
+    u32cp w_toks   = (u32cp)wsrc->toks[1];
+    u32cp w_toks_e = (u32cp)wsrc->toks[2];
+    u32   wlen     = (u32)(w_toks_e - w_toks);
+    inrmcp w_irm   = (inrmcp)wsrc->inrm[1];
+    u8cp  w_text   = (u8cp)wsrc->text[1];
     for (u32 i = 0; i < wlen; i++) {
-        if (wtoks[i].del_gen != 0) continue;
-        a_dup(u8c, ts, wtoks[i].tok);
+        if (w_irm[i].rm != 0) continue;
+        u32 lo = (i == 0) ? 0 : tok32Offset(w_toks[i - 1]);
+        u32 hi = tok32Offset(w_toks[i]);
+        u8cs ts = {w_text + lo, w_text + hi};
         ok64 o = u8bFeed(into, ts);
-        if (o != OK) { WEAVEFree(&wv); return o; }
+        if (o != OK) {
+            WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
+            return o;
+        }
     }
 
-    WEAVEFree(&wv);
+    WEAVEFree(&wA);
+    WEAVEFree(&wB);
+    WEAVEFree(&wnu);
     done;
 }
 

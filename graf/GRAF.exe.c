@@ -149,16 +149,20 @@ ok64 GRAFExec(cli *c) {
     //  We synthesize the matching verb so the existing dispatch below
     //  runs unchanged.  BE wires this up by spawning `graf [--tlv] <URI>`
     //  on `be get diff:<URI>` (and verb-less `be diff:<URI>`).
-    a_cstr(s_diff, "diff");
-    a_cstr(s_log,  "log");
-    a_cstr(s_map,  "map");
+    a_cstr(s_diff,  "diff");
+    a_cstr(s_log,   "log");
+    a_cstr(s_map,   "map");
+    a_cstr(s_blame, "blame");
+    a_cstr(s_weave, "weave");
     if ($empty(c->verb) && c->nuris > 0) {
         uri *pu = &c->uris[0];
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "graf") == 0) {
-            if ($eq(pu->scheme, s_diff))     u8csMv(c->verb, s_diff);
-            else if ($eq(pu->scheme, s_log)) u8csMv(c->verb, s_log);
-            else if ($eq(pu->scheme, s_map)) u8csMv(c->verb, s_map);
+            if      ($eq(pu->scheme, s_diff))  u8csMv(c->verb, s_diff);
+            else if ($eq(pu->scheme, s_log))   u8csMv(c->verb, s_log);
+            else if ($eq(pu->scheme, s_map))   u8csMv(c->verb, s_map);
+            else if ($eq(pu->scheme, s_blame)) u8csMv(c->verb, s_blame);
+            else if ($eq(pu->scheme, s_weave)) u8csMv(c->verb, s_weave);
         }
     }
 
@@ -278,10 +282,16 @@ ok64 GRAFExec(cli *c) {
         pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         u8cs path = {};
         graf_uri_path(path, &c->uris[0]);
-        // tip_h=0 for now: unscoped blame (no ancestry filter).
-        // A ref-scoped entry point can resolve URI ?ref → commit
-        // hashlet and pass it here.
-        ret = GRAFBlame(&KEEP, path, 0, reporoot);
+        //  Resolve URI's #hex/?ref/absent-query to a tip commit
+        //  hashlet so blame can scope its history walk.  A failure
+        //  here just yields an unscoped (full-index) blame.
+        u64 tip_h = 0;
+        {
+            sha1 tip = {};
+            if (GRAFResolveTip(&KEEP, &c->uris[0], &tip) == OK)
+                tip_h = WHIFFHashlet40(&tip);
+        }
+        ret = GRAFBlame(&KEEP, path, tip_h, reporoot);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_diff)) {
