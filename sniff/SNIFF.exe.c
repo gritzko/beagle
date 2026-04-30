@@ -299,18 +299,21 @@ static ok64 sniff_stop(u8cs reporoot) {
 //  time is rendered human-readable via DOGutf8sFeedDate (5-char
 //  relative form: `now`, `-15m`, `-1hr`, `Tue`, `23Apr`, `Apr25`).
 //
-//  Six statuses, 3-char marker + colour on a tty:
+//  Seven statuses, 3-char marker + colour on a tty (groups in
+//  output order — clean state first, then staged, then unstaged,
+//  then untracked):
 //
-//    put  blue   in baseline + put row since last post (staged mod)
-//    new  green  not in baseline + put row             (staged add)
-//    mod  yellow in baseline + mtime ∉ stamp-set, no put/del row
-//    del  brown  del row since last post               (staged remove)
-//    mis  red    in baseline, file gone, no del row    (rm without `be delete`)
-//    unk  grey   wt only, no put row                   (untracked)
+//    ok   default in baseline + on disk + mtime ∈ stamp-set (clean)
+//    put  blue    in baseline + put row since last post (staged mod)
+//    new  green   not in baseline + put row             (staged add)
+//    mod  yellow  in baseline + mtime ∉ stamp-set, no put/del row
+//    del  brown   del row since last post               (staged remove)
+//    mis  red     in baseline, file gone, no del row    (rm without `be delete`)
+//    unk  grey    wt only, no put row                   (untracked)
 //
 //  Per-row time source: put/new → put_rec->ts; del → del_rec->ts;
-//  mod/unk → wt_rec->ts (file's mtime); mis → 0 ("?").  Submodules
-//  are filtered upstream by SNIFFClassify.
+//  ok/mod/unk → wt_rec->ts (file's mtime); mis → 0 ("?").
+//  Submodules are filtered upstream by SNIFFClassify.
 
 #define STATUS_ANSI_PUT "\033[34m"        // dark blue
 #define STATUS_ANSI_NEW "\033[32m"        // dark green
@@ -321,11 +324,11 @@ static ok64 sniff_stop(u8cs reporoot) {
 #define STATUS_ANSI_OFF "\033[0m"
 
 typedef struct {
-    //  Each row buffered as `<5-char-date>\t<path>\n`.  Status
-    //  marker is emitted by the dumper when flushing the bucket,
-    //  not stored per-row.
+    //  Each listed row buffered as `<5-char-date>\t<path>\n`.  The
+    //  `ok` group never lists rows — clean tracked files would
+    //  flood the output — so it's a counter only.
     Bu8 put_buf, new_buf, mod_buf, del_buf, mis_buf, unk_buf;
-    u32 put_n, new_n, mod_n, del_n, mis_n, unk_n;
+    u32 ok_n, put_n, new_n, mod_n, del_n, mis_n, unk_n;
     i64 now;          // unix epoch seconds, for relative-date format
 } status_buckets;
 
@@ -389,10 +392,11 @@ static ok64 status_step(class_step const *step, void *ctx) {
             break;
         case CLASS_BOTH:
             //  mtime fast-path: file last touched by a tracked op
-            //  → unchanged from baseline content.
-            if (SNIFFAtKnown(step->wt_rec->ts)) break;
-            status_push(b->mod_buf, step->path,
-                        step->wt_rec->ts, b->now, &b->mod_n);
+            //  → unchanged from baseline content (counted as `ok`).
+            //  Otherwise the file was edited since last get/post.
+            if (SNIFFAtKnown(step->wt_rec->ts)) b->ok_n++;
+            else status_push(b->mod_buf, step->path,
+                             step->wt_rec->ts, b->now, &b->mod_n);
             break;
     }
     return OK;
@@ -446,6 +450,8 @@ static ok64 sniff_status(u8cs reporoot) {
         return cr;
     }
 
+    //  `ok` rows are noise — every tracked file at baseline content
+    //  prints there.  Surface only the count in the trailing summary.
     b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
     if (b.put_n > 0) status_dump_rows(b.put_buf, "put", STATUS_ANSI_PUT, tty);
     if (b.new_n > 0) status_dump_rows(b.new_buf, "new", STATUS_ANSI_NEW, tty);
@@ -454,8 +460,8 @@ static ok64 sniff_status(u8cs reporoot) {
     if (b.mis_n > 0) status_dump_rows(b.mis_buf, "mis", STATUS_ANSI_MIS, tty);
     if (b.unk_n > 0) status_dump_rows(b.unk_buf, "unk", STATUS_ANSI_UNK, tty);
     fprintf(stdout,
-            "sniff: %u put, %u new, %u mod, %u del, %u mis, %u unk\n",
-            b.put_n, b.new_n, b.mod_n, b.del_n, b.mis_n, b.unk_n);
+            "sniff: %u ok, %u put, %u new, %u mod, %u del, %u mis, %u unk\n",
+            b.ok_n, b.put_n, b.new_n, b.mod_n, b.del_n, b.mis_n, b.unk_n);
     fflush(stdout);
 
     u8bFree(b.put_buf); u8bFree(b.new_buf);
