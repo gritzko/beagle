@@ -60,7 +60,7 @@ static void graf_usage(void) {
 static pid_t graf_start_pager(b8 tty_out, b8 force_tlv) {
     if (!tty_out) {
         graf_out_fd = STDOUT_FILENO;
-        graf_emit   = force_tlv ? HUNKu8sFeed : HUNKu8sFeedText;
+        graf_emit   = force_tlv ? HUNKu8sFeed : HUNKu8sFeedLineBased;
         if (force_tlv) signal(SIGPIPE, SIG_IGN);
         return -1;
     }
@@ -74,7 +74,7 @@ static pid_t graf_start_pager(b8 tty_out, b8 force_tlv) {
     int wfd = -1;
     if (FILESpawn($path(bropath), argv, &wfd, NULL, &pid) != OK) {
         graf_out_fd = STDOUT_FILENO;
-        graf_emit   = HUNKu8sFeedText;
+        graf_emit   = HUNKu8sFeedLineBased;
         return -1;
     }
     graf_out_fd = wfd;

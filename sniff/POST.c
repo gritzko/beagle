@@ -41,6 +41,7 @@
 #include "keeper/WALK.h"
 
 #include "AT.h"
+#include "GET.h"
 
 //  Cap on the per-commit ULOG-shaped buffers (decisions, leaves,
 //  recs).  32 MiB is enough for tens of thousands of distinct paths
@@ -1158,10 +1159,21 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
     sha1 fed = {};
     ok64 fo = KEEPPackFeed(rc->k, rc->p, obj_type, body, 0, &fed);
     if (fo != OK) return fo;
-    //  Record the last commit sha — that's our rebased tip.
     if (obj_type == DOG_OBJ_COMMIT) {
+        //  Record the last commit sha — that's our rebased tip.
         rc->last_commit_sha = *sha;
         rc->have_last_commit = YES;
+        //  Close + reopen the pack so the just-emitted objects become
+        //  visible to KEEPGetExact for the next rebase iteration.
+        //  GRAFRebase's loop fetches the previous-emit's commit/tree/
+        //  blob bodies on the next pass; without this checkpoint they
+        //  sit in a booked-but-unindexed pack and aren't resolvable.
+        ok64 cl = KEEPPackClose(rc->k, rc->p);
+        if (cl != OK) return cl;
+        zerop(rc->p);
+        ok64 op = KEEPPackOpen(rc->k, rc->p);
+        if (op != OK) return op;
+        rc->p->strict_order = NO;
     }
     return OK;
 }
@@ -1767,25 +1779,39 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
         }
     }
 
-    //  --- 7. Run GRAFRebase, capture new tip via emit_cb. ---
+    //  --- 7. Fast-forward early-out.  If base_old == base_new, target
+    //  hasn't moved since cur was forked: the "rebase" reduces to
+    //  "advance target REFS to child_tip" with no replay needed.
+    //  Skipping GRAFRebase here avoids spinning up a pack for the
+    //  trivial case (and dodges any rebase-loop edge cases for it).
+    sha1 target_new_tip = {};
+    b8   stack_was_rewritten = NO;
+    post_rebase_ctx rctx = {};
     keep_pack pp = {};
-    call(KEEPPackOpen, k, &pp);
-    pp.strict_order = NO;
-    post_rebase_ctx rctx = {.k = k, .p = &pp};
-    ok64 rb = GRAFRebase(&base_old, &base_new, &child_tip,
-                         post_rebase_emit_cb, &rctx);
-    ok64 cl = KEEPPackClose(k, &pp);
-    if (rb != OK) {
-        fprintf(stderr,
-                "sniff: post: cross-branch rebase aborted (%s)\n",
-                rb == GRAFCNFL ? "merge conflict" : "error");
-        return rb;
-    }
-    if (cl != OK) return cl;
-
-    sha1 target_new_tip = rctx.have_last_commit
+    if (sha1eq(&base_old, &base_new)) {
+        target_new_tip = child_tip;
+        //  No new objects emitted — child_tip already exists in keeper.
+        stack_was_rewritten = NO;
+    } else {
+        call(KEEPPackOpen, k, &pp);
+        pp.strict_order = NO;
+        rctx.k = k;
+        rctx.p = &pp;
+        ok64 rb = GRAFRebase(&base_old, &base_new, &child_tip,
+                             post_rebase_emit_cb, &rctx);
+        ok64 cl = KEEPPackClose(k, &pp);
+        if (rb != OK) {
+            fprintf(stderr,
+                    "sniff: post: cross-branch rebase aborted (%s)\n",
+                    rb == GRAFCNFL ? "merge conflict" : "error");
+            return rb;
+        }
+        if (cl != OK) return cl;
+        target_new_tip = rctx.have_last_commit
                             ? rctx.last_commit_sha
                             : base_new;
+        stack_was_rewritten = rctx.have_last_commit;
+    }
 
     //  --- 8. Cascade walk on the *target* side. ---
     //  After target's stack got rewritten (if anything was replayed),
@@ -1793,7 +1819,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
     //  cascade walker is generalised — it takes a starting branch and
     //  the (old, new) tip pair; we just hand it the target's view.
     cascade_ctx casc = {};
-    if (rctx.have_last_commit) {
+    if (stack_was_rewritten) {
         keep_pack p3 = {};
         call(KEEPPackOpen, k, &p3);
         p3.strict_order = NO;
@@ -1881,6 +1907,21 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
             //  Don't surface — target already advanced; cur staleness
             //  is recoverable.
         } else if (cas != OK) return cas;
+        else if (stack_was_rewritten) {
+            //  Cur's REFS now points at target_new_tip but the wt
+            //  still holds the pre-rebase tree.  Materialize the new
+            //  tree on disk so the caller doesn't need an explicit
+            //  follow-up `be get`.  Source URI = `?<cur_branch>`.
+            a_pad(u8, hex_buf, 40);
+            a_rawc(nsha2, target_new_tip);
+            HEXu8sFeedSome(hex_buf_idle, nsha2);
+            a_dup(u8c, hex_cs, u8bDataC(hex_buf));
+            a_pad(u8, src_buf, 260);
+            u8bFeed1(src_buf, '?');
+            if (!u8csEmpty(cur_branch)) u8bFeed(src_buf, cur_branch);
+            a_dup(u8c, src_cs, u8bDataC(src_buf));
+            (void)GETCheckout(reporoot, hex_cs, src_cs);
+        }
     }
 
     //  Done.  Pretty-print the resulting tip for the user.
@@ -2097,9 +2138,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //      (no baseline tree to compare against).
     if (had_baseline && have_root && have_base &&
         memcmp(root_tree.data, base_tree_sha.data, 20) == 0) {
-        fprintf(stderr,
-                "sniff: post: no changes since base — refusing empty "
-                "commit\n");
+        fprintf(stderr, "POSTNONE: no changes since base\n");
         u8bFree(leaves); u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return POSTNONE;

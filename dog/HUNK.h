@@ -50,6 +50,16 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk);
 // A blank line is appended after the hunk.  Advances into[0].
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk);
 
+// Render a hunk as proper line-based unified diff: a line with mixed
+// INS+DEL spans is emitted as a `-<old>` + `+<new>` pair where <old>
+// reconstructs the line without INS bytes and <new> reconstructs it
+// without DEL bytes.  Pure-INS lines are `+<line>`, pure-DEL are
+// `-<line>`, untagged are ` <line>` (context).  Suitable for piping
+// to `git apply` / `patch` / IDEs that expect classic unified diff —
+// what `HUNKu8sFeedText` does within a single line is too token-level
+// for that audience.  Advances into[0].
+ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk);
+
 // Clip file-level toks to [lo,hi), arena-write rebased entries.
 // Output slice points into `arena` after this returns.
 void HUNKu32sClip(Bu8 arena, u32cs out, u32cs toks, u32 lo, u32 hi);

@@ -76,10 +76,7 @@ static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
         return BEDOGSIG;
     }
     if (r != OK) return r;
-    if (rc != 0) {
-        fprintf(stderr, "be: " U8SFMT " exited %d\n", u8sFmt(tool), rc);
-        return BEDOGEXIT;
-    }
+    if (rc != 0) return BEDOGEXIT;
     done;
 }
 
@@ -135,16 +132,8 @@ drain_done:
     int pager_rc = 0;
     (void)FILEReap(prod_pid, &prod_rc);
     (void)FILEReap(pager_pid, &pager_rc);
-    if (prod_rc != 0) {
-        fprintf(stderr, "be: " U8SFMT " exited %d\n",
-                u8sFmt(prod), prod_rc);
-        return BEDOGEXIT;
-    }
-    if (pager_rc != 0) {
-        fprintf(stderr, "be: " U8SFMT " exited %d\n",
-                u8sFmt(pager), pager_rc);
-        return BEDOGEXIT;
-    }
+    if (prod_rc != 0) return BEDOGEXIT;
+    if (pager_rc != 0) return BEDOGEXIT;
     done;
 }
 

@@ -112,6 +112,117 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     done;
 }
 
+// Reconstruct one logical version of a line by walking the merged
+// text and skipping bytes whose hili tag matches `skip`.  Used by
+// HUNKu8sFeedLineBased for mixed-INS/DEL lines: pass skip='I' to
+// produce the "old" version, skip='D' for the "new" version.  Emits
+// `prefix` then the reconstructed bytes followed by '\n'.
+static ok64 hunk_emit_recon(u8s into, u8 prefix, u32 line_lo, u32 line_hi,
+                            hunk const *hk, u8 skip) {
+    sane(u8sOK(into) && hk != NULL);
+    u8c *base = hk->text[0];
+    int  n_hili = (int)$len(hk->hili);
+
+    u8sFeed1(into, prefix);
+    u32 cursor = line_lo;
+    for (int i = 0; i < n_hili; i++) {
+        u32 span_lo = (i > 0) ? tok32Offset(hk->hili[0][i - 1]) : 0;
+        u32 span_hi = tok32Offset(hk->hili[0][i]);
+        if (span_hi <= cursor) continue;
+        if (span_lo >= line_hi) break;
+        u32 lo = span_lo > cursor ? span_lo : cursor;
+        u32 hi = span_hi < line_hi ? span_hi : line_hi;
+        if (cursor < lo) {
+            u8cs untagged = {base + cursor, base + lo};
+            u8sFeed(into, untagged);
+        }
+        u8 tag = tok32Tag(hk->hili[0][i]);
+        if (tag != skip) {
+            u8cs span = {base + lo, base + hi};
+            u8sFeed(into, span);
+        }
+        cursor = hi;
+    }
+    if (cursor < line_hi) {
+        u8cs tail = {base + cursor, base + line_hi};
+        u8sFeed(into, tail);
+    }
+    u8sFeed1(into, '\n');
+    done;
+}
+
+ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk != NULL);
+    if (!$empty(hk->uri)) {
+        a_cstr(pfx, "--- ");
+        u8sFeed(into, pfx);
+        u8sFeed(into, hk->uri);
+        a_cstr(sfx, " ---\n");
+        u8sFeed(into, sfx);
+    }
+
+    if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
+
+    if ($empty(hk->hili)) {
+        u8cs t = {hk->text[0], hk->text[1]};
+        u8sFeed(into, t);
+        if (*$last(t) != '\n') u8sFeed1(into, '\n');
+        u8sFeed1(into, '\n');
+        done;
+    }
+
+    u8c *base = hk->text[0];
+    u8c *end  = hk->text[1];
+    int  n_hili = (int)$len(hk->hili);
+
+    u8c *cur = base;
+    while (cur < end) {
+        u8c *line_start = cur;
+        while (cur < end && *cur != '\n') cur++;
+        u8c *line_end = cur;            // exclusive of '\n'
+        if (cur < end && *cur == '\n') cur++;
+
+        u32 line_lo = (u32)(line_start - base);
+        u32 line_hi = (u32)(line_end - base);
+
+        b8 has_ins = NO, has_del = NO;
+        for (int i = 0; i < n_hili; i++) {
+            u32 span_lo = (i > 0) ? tok32Offset(hk->hili[0][i - 1]) : 0;
+            u32 span_hi = tok32Offset(hk->hili[0][i]);
+            if (span_hi <= line_lo) continue;
+            if (span_lo >= line_hi) break;
+            u8 tag = tok32Tag(hk->hili[0][i]);
+            if (tag == 'I') has_ins = YES;
+            else if (tag == 'D') has_del = YES;
+            if (has_ins && has_del) break;
+        }
+
+        u8cs line = {line_start, line_end};
+        if (!has_ins && !has_del) {
+            u8sFeed1(into, ' ');
+            u8sFeed(into, line);
+            u8sFeed1(into, '\n');
+        } else if (has_ins && !has_del) {
+            u8sFeed1(into, '+');
+            u8sFeed(into, line);
+            u8sFeed1(into, '\n');
+        } else if (has_del && !has_ins) {
+            u8sFeed1(into, '-');
+            u8sFeed(into, line);
+            u8sFeed1(into, '\n');
+        } else {
+            // Mixed INS+DEL within a line: split into '-old' / '+new'
+            // by reconstructing each version (skip the other side's
+            // bytes).  Skip emitting the '-old' if it'd be empty after
+            // dropping INS, and similarly for '+new'.
+            call(hunk_emit_recon, into, '-', line_lo, line_hi, hk, 'I');
+            call(hunk_emit_recon, into, '+', line_lo, line_hi, hk, 'D');
+        }
+    }
+    u8sFeed1(into, '\n');
+    done;
+}
+
 void HUNKu32sClip(Bu8 arena, u32cs out, u32cs toks, u32 lo, u32 hi) {
     out[0] = NULL;
     out[1] = NULL;
