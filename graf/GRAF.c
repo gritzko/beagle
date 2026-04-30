@@ -1,5 +1,6 @@
 #include "GRAF.h"
 
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -128,7 +129,15 @@ ok64 GRAFHunkEmit(hunk const *hk, void *ctx) {
     u8cs ser = {start, u8bIdleHead(graf_arena)};
     while (!$empty(ser)) {
         ssize_t w = write(graf_out_fd, ser[0], $len(ser));
-        if (w <= 0) break;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            //  Pager exited — close our end so subsequent emits early-
+            //  return at the top guard.  Streaming producers (LOG.c)
+            //  poll graf_out_fd to break their walk.
+            if (errno == EPIPE) graf_out_fd = -1;
+            break;
+        }
+        if (w == 0) break;
         u8csFed(ser, (size_t)w);
     }
 

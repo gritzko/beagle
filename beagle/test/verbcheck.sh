@@ -45,6 +45,21 @@ vc_fail() { echo "FAIL ($TEST_ID): $*" >&2; exit 1; }
 vc_note() { echo "  - $*"; }
 vc_step() { echo "=== $* ==="; }
 
+# ----- worktree setup -------------------------------------------------
+#
+#  vc_fresh_wt creates a wt subdir under $TMP (which is itself
+#  $TMP_ROOT/$TEST_ID) and cd's into it.  Wipes any leftover state so
+#  back-to-back ctest invocations against the same configure-time
+#  $TMP_ROOT can't inherit a torn .sniff / .dogs from a prior run.
+
+vc_fresh_wt() {
+    name=${1:-wt}
+    wt="$TMP/$name"
+    rm -rf "$wt"
+    mkdir -p "$wt"
+    cd "$wt"
+}
+
 # ----- snapshot ------------------------------------------------------
 #
 #  Caller's cwd must be the wt root.  Output goes to $TMP/snap.<name>.
@@ -259,12 +274,5 @@ vc_diff() {
 }
 
 # ----- per-test bootstrap -------------------------------------------
-
-#  Make a fresh wt dir under $TMP and cd into it.  Caller usually
-#  follows up with one of the setup-primitives.sh helpers.
-vc_fresh_wt() {
-    name=${1:-wt}
-    wt="$TMP/$name"
-    mkdir -p "$wt"
-    cd "$wt"
-}
+#
+#  vc_fresh_wt is defined above (single definition, with rm -rf).

@@ -23,7 +23,7 @@
 
 char const *const KEEP_CLI_VERBS[] = {
     "get", "put", "post", "status", "import", "verify",
-    "refs", "ls-files",
+    "refs", "tips", "ls-files",
     "upload-pack", "receive-pack",
     "help", NULL
 };
@@ -158,6 +158,31 @@ static ok64 keeper_refs(keeper *k) {
     if (o != OK && o != REFSNONE)
         fprintf(stderr, "keeper: refs: %s\n", ok64str(o));
     fprintf(stdout, "keeper: %d ref(s)\n", rcount);
+    done;
+}
+
+// --- Verb: tips ---
+//
+//  Print every local-branch tip via KEEPEachTip.  Trunk renders as a
+//  bare `?` row; child branches as `?<path>`.  One row per branch,
+//  tab-separated `<path>\t<sha40>`, terminated by `keeper: N tip(s)`.
+
+static ok64 keeper_tips_print_cb(keep_tipcp t, void *ctx) {
+    int *n = (int *)ctx;
+    fprintf(stdout, "?%.*s\t%.*s\n",
+            (int)$len(t->path), (char *)t->path[0],
+            (int)$len(t->sha),  (char *)t->sha[0]);
+    (*n)++;
+    return OK;
+}
+
+static ok64 keeper_tips(keeper *k) {
+    sane(k);
+    int n = 0;
+    ok64 o = KEEPEachTip(k, keeper_tips_print_cb, &n);
+    if (o != OK && o != REFSNONE)
+        fprintf(stderr, "keeper: tips: %s\n", ok64str(o));
+    fprintf(stdout, "keeper: %d tip(s)\n", n);
     done;
 }
 
@@ -610,6 +635,7 @@ ok64 KEEPExec(keeper *k, cli *c) {
     a_cstr(v_import, "import");
     a_cstr(v_verify, "verify");
     a_cstr(v_refs,   "refs");
+    a_cstr(v_tips,   "tips");
 
     if ($eq(c->verb, v_help) || CLIHas(c, "-h") || CLIHas(c, "--help")) {
         keep_usage(); done;
@@ -637,6 +663,7 @@ ok64 KEEPExec(keeper *k, cli *c) {
 
     if ($eq(c->verb, v_status))  return keeper_status(k);
     if ($eq(c->verb, v_refs))    return keeper_refs(k);
+    if ($eq(c->verb, v_tips))    return keeper_tips(k);
 
     //  `be://` and `file://` dispatch.  Phase 8: route through WIRE
     //  (git wire protocol) so client and server are symmetric across

@@ -363,4 +363,26 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_out);
 
 //  KEEPLsFiles is declared in keeper/WALK.h (takes a walk_tree_fn).
 
+// --- Branch-tip enumeration ------------------------------------------
+//
+//  One entry per local branch.  `path` is the branch path with the
+//  leading `?` stripped — trunk → empty slice, child → "feat",
+//  grandchild → "feat/fix1".  `sha` is 40 hex chars.  Slices borrow
+//  bytes from REFSLoad's arena; valid only while the iteration
+//  callback runs.
+typedef struct {
+    u8cs path;
+    u8cs sha;
+} keep_tip;
+typedef keep_tip const *keep_tipcp;
+
+typedef ok64 (*KEEPTipCb)(keep_tipcp t, void *ctx);
+
+//  Iterate every local-branch tip in the store's REFS log (latest
+//  per key).  Skips remote-tracking rows (URI has authority), alias
+//  rows (host-only keys), and tombstones (zero-sha values).  Walk
+//  stops on a non-OK return from `cb`; `REFSSTOP` is treated as
+//  stop-without-error and converted to OK on return.
+ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx);
+
 #endif

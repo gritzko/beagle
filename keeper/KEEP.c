@@ -3293,3 +3293,46 @@ push_fail:
     return KEEPFAIL;
 }
 
+// =====================================================================
+//  KEEPEachTip — list every local branch's tip (path, sha).
+// =====================================================================
+
+typedef struct {
+    KEEPTipCb cb;
+    void     *ctx;
+} keep_tip_walk;
+
+static ok64 keep_tip_filter(refcp r, void *ctx_) {
+    keep_tip_walk *w = (keep_tip_walk *)ctx_;
+
+    //  Local-branch keys are exactly `?<path>` — no scheme, no
+    //  authority.  Anything else (`//host?ref`, `ssh://…`) is a
+    //  remote-tracking row or a host alias.
+    u8cs k = {r->key[0], r->key[1]};
+    if ($empty(k) || *k[0] != '?') return OK;
+
+    //  Value slot is the fragment bytes (sha hex).  Older / current
+    //  REFSLoad emits the bare 40 hex chars; tolerate a stray leading
+    //  `?` for forward-compatibility with raw-fragment writers.
+    u8cs v = {r->val[0], r->val[1]};
+    if ($empty(v)) return OK;
+    if (*v[0] == '?') v[0]++;
+    if (u8csLen(v) != 40) return OK;
+    b8 tomb = YES;
+    $for(u8c, p, v) if (*p != '0') { tomb = NO; break; }
+    if (tomb) return OK;
+
+    keep_tip t = {};
+    t.path[0] = k[0] + 1;   //  strip leading '?'
+    t.path[1] = k[1];
+    t.sha[0]  = v[0];
+    t.sha[1]  = v[1];
+    return w->cb(&t, w->ctx);
+}
+
+ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx) {
+    sane(k && cb);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    keep_tip_walk w = {.cb = cb, .ctx = ctx};
+    return REFSEach($path(keepdir), keep_tip_filter, &w);
+}
