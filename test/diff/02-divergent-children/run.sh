@@ -37,11 +37,11 @@ touch -d "2026-04-20 12:03:00" foo.c
 #  --- diff fix1..fix2 (forward) -------------------------------------
 "$BE" get 'diff:foo.c?fix1..fix2' \
     >04.diff_fix1_fix2.got.out 2>04.diff_fix1_fix2.got.err
-match "$CASE/04.diff_fix1_fix2.want.out" 04.diff_fix1_fix2.got.out
+match "$CASE/04.diff_fix1_fix2.want.txt" 04.diff_fix1_fix2.got.out
 empty 04.diff_fix1_fix2.got.err
 
 #  --- diff fix2..fix1 (reverse) -------------------------------------
 "$BE" get 'diff:foo.c?fix2..fix1' \
     >05.diff_fix2_fix1.got.out 2>05.diff_fix2_fix1.got.err
-match "$CASE/05.diff_fix2_fix1.want.out" 05.diff_fix2_fix1.got.out
+match "$CASE/05.diff_fix2_fix1.want.txt" 05.diff_fix2_fix1.got.out
 empty 05.diff_fix2_fix1.got.err

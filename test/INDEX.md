@@ -29,14 +29,14 @@ migrated.)
         └── NN-<name>/
             ├── run.sh                # the case driver
             ├── NN.<role>.txt         # input file for step NN
-            ├── NN.<role>.want.out    # byte-exact expected stdout
-            └── NN.<role>.want.err    # line-by-line regex expected stderr
+            ├── NN.<role>.want.txt    # byte-exact expected stdout
+            └── NN.<role>.err.txt    # line-by-line regex expected stderr
 
 ## Filename roles
 
 * `NN.<role>.txt` (or any non-`want.` / `got.` extension) — input.
-* `NN.<role>.want.out` — byte-exact expected stdout.  Compared with `match`.
-* `NN.<role>.want.err` — line-per-regex expected stderr.  Compared with
+* `NN.<role>.want.txt` — byte-exact expected stdout.  Compared with `match`.
+* `NN.<role>.err.txt` — line-per-regex expected stderr.  Compared with
   `match_re`.  Empty file ⇒ stderr must be empty (use `empty` directly
   for clarity).
 * `NN.<role>.got.out` / `.got.err` — written by the case driver during
