@@ -5,7 +5,11 @@
 #include "abc/URI.h"
 #include "dog/HOME.h"
 
-#define CLI_MAX_URIS  16
+//  CLI_MAX_URIS — caps the URI count per invocation.  Glob expansions
+//  (`be put test/*/*/*.txt`) routinely produce dozens of paths, so 16
+//  was too tight; bumped to 1024.  uri is ~80B so the cli struct is
+//  ~80KB on stack — large but fine for the entry frame.
+#define CLI_MAX_URIS  1024
 #define CLI_MAX_FLAGS 32  // pairs: 16 flags max
 
 // Parsed CLI state.

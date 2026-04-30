@@ -1,5 +1,6 @@
 #include "CLI.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -176,7 +177,13 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
         } else if (cli_uri_shaped(a)) {
             // URI: has a structural sigil (one of /.:?#).  Hand to
             // DOGNormalizeArg for full classification.
-            if (c->nuris >= CLI_MAX_URIS) continue;
+            if (c->nuris >= CLI_MAX_URIS) {
+                fprintf(stderr,
+                    "cli: too many URIs (cap %u) — dropping %.*s\n",
+                    (unsigned)CLI_MAX_URIS,
+                    (int)$len(a), (char *)a[0]);
+                continue;
+            }
             uri *u = &c->uris[c->nuris];
             DOGNormalizeArg(u, a);
             $mv(u->data, a);    // restore original data slice

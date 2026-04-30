@@ -11,7 +11,7 @@ match "$CASE/01.put.err.txt" 01.put.got.err
 # + "sniff: commit <sha>" — sha varies with author/committer time, so
 # match it as a regex.
 "$BE" post v1 > 02.post.got.out 2> 02.post.got.err
-match    "$CASE/02.post.want.txt" 02.post.got.out
+empty    02.post.got.out
 match_re "$CASE/02.post.err.txt" 02.post.got.err
 
 # 03: switch the wt to the branch tip (no-op on a clean wt — exercises
@@ -20,7 +20,7 @@ match_re "$CASE/02.post.err.txt" 02.post.got.err
 # stable across builds, so we filter.  stdout must be empty.
 "$BE" get '?' > 03.tree.got.out 2> 03.tree.got.err.raw
 grep -E '^sniff: checkout done$' 03.tree.got.err.raw > 03.tree.got.err || true
-match "$CASE/03.tree.want.txt" 03.tree.got.out
+empty 03.tree.got.out
 [ -s 03.tree.got.err ] || {
     echo "step 03: did not see 'sniff: checkout done' in stderr" >&2
     cat 03.tree.got.err.raw >&2

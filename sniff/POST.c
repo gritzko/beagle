@@ -118,6 +118,17 @@ static ok64 post_hash_path(u8cs reporoot, u8cs path, u16 mode, sha1 *out) {
         done;
     }
 
+    //  Empty regular file: mmap refuses 0-byte mappings, so stat
+    //  ahead and hash the empty content directly (gives the canonical
+    //  empty-blob sha e69de29b…).  Without this, FILEMapRO returns
+    //  non-OK and the caller silently drops the file from the commit.
+    struct stat sb = {};
+    if (lstat((char const *)u8bDataHead(fp), &sb) == 0 && sb.st_size == 0) {
+        u8cs empty = {NULL, NULL};
+        KEEPObjSha(out, DOG_OBJ_BLOB, empty);
+        done;
+    }
+
     u8bp mapped = NULL;
     call(FILEMapRO, &mapped, $path(fp));
     KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(mapped));

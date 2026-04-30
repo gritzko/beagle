@@ -19,5 +19,5 @@ cp "$CASE/04.new.txt"      new.txt
 # is success because at least one file was staged.
 "$BE" put *.txt >05.put.got.out 2>05.put.got.err
 
-match    "$CASE/05.put.want.txt" 05.put.got.out
+empty    05.put.got.out
 match_re "$CASE/05.put.err.txt" 05.put.got.err
