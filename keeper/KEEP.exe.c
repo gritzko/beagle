@@ -614,7 +614,9 @@ static ok64 keeper_post(keeper *k, cli *c) {
     a_pad(u8, rkey, 1280);
     call(DOGCanonURIFeed, rkey, &gk);
     a_dup(u8c, remote_key, u8bData(rkey));
-    a_dup(u8c, v, u8bDataC(at_sha));
+    //  `at_sha` is a slice (a_dup u8c *[2]), not a Bu8 — copy by
+    //  slice, not by buffer, and read its length / head accordingly.
+    a_dup(u8c, v, at_sha);
     //  Push is a local move (we updated the peer's tip), so record
     //  with verb `post`, not the back-compat `get` shim.
     REFSAppendVerb($path(keepdir), REFSVerbPost(), remote_key, v);
@@ -622,7 +624,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
     fprintf(stdout, "keeper: pushed %s%.*s → %.*s\n",
             $empty(branch) ? "(trunk)" : "?",
             (int)$len(branch), (char *)branch[0],
-            (int)u8bDataLen(at_sha), (char *)u8bDataHead(at_sha));
+            (int)$len(at_sha), (char *)at_sha[0]);
     done;
 }
 
