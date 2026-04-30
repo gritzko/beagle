@@ -18,6 +18,7 @@ graf diff   old new                token-level colored diff (files on disk)
 graf merge  base ours theirs       3-way merge; -o <file> to write out
 graf blame  path                   token-level blame (reads keeper + DAG)
 graf weave  path?from..to          weave diff across a ref range
+graf log    [path]?ref[#N]         commit history, one per line
 graf index                         no-op; indexing is pushed by keeper
 graf status                        index run/entry counts
 ```
@@ -41,6 +42,7 @@ graf status                        index run/entry counts
 | `MERGE.c`     | `GRAFMerge` — 3-way merge using `JOIN`, writes resolved bytes to file or stdout |
 | `BLAME.c`     | `GRAFBlame` + `GRAFWeaveDiff` — walks DAG, pulls blobs via keeper, builds weave |
 | `WEAVE.{h,c}` | Double-buffered weave of token versions with intro/del gens |
+| `LOG.c`       | `GRAFLog` — `be log:[path]?ref[#N]` projector. Branch history walks COMMIT_PARENT via the DAG index; file history (`./path/file?ref`) reads PATH_VER under the tip's ancestor set. Commit body fetched from keeper for the `<sha7> <date> <author> <summary>` render |
 
 ## Pager
 

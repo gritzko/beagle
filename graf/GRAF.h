@@ -129,6 +129,12 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot);
 // state via &GRAF — callers must have both singletons open.
 ok64 GRAFGet(u8b into, u8csc uri);
 
+// Render commit history one-per-line for `be log:[path]?<ref>#<N>`.
+// Branch-only URI (no path) walks the COMMIT_PARENT chain via the DAG
+// index; path-bearing URI uses PATH_VER + ancestor filter.  Output
+// rides graf_emit (TLV via bro on TTY, raw text otherwise).
+ok64 GRAFLog(keeper *k, uricp u);
+
 // Latest common ancestor of two commits.  Intersects each tip's
 // `DAGAncestors` set, picks the member with the highest `gen`, then
 // recovers the full 20-byte commit sha via `KEEPGet`.  `out` left

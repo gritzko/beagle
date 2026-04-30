@@ -23,7 +23,7 @@
 
 char const *const GRAF_CLI_VERBS[] = {
     "get", "diff", "merge", "blame", "weave", "index",
-    "status", "help", NULL
+    "log", "status", "help", NULL
 };
 
 char const GRAF_CLI_VAL_FLAGS[] = "-o\0";
@@ -40,6 +40,7 @@ static void graf_usage(void) {
         "    merge base ours theirs       3-way merge\n"
         "    blame file                   token-level blame\n"
         "    weave file?from..to          weave diff between refs\n"
+        "    log [path]?ref[#N]           commit history (one per line)\n"
         "    index                        index object graph from keeper\n"
         "    status                       show index stats\n"
         "    help                         this message\n"
@@ -117,6 +118,7 @@ ok64 GRAFExec(cli *c) {
     a_cstr(v_blame,  "blame");
     a_cstr(v_weave,  "weave");
     a_cstr(v_index,  "index");
+    a_cstr(v_log,    "log");
     a_cstr(v_status, "status");
     a_cstr(v_help,   "help");
 
@@ -131,11 +133,13 @@ ok64 GRAFExec(cli *c) {
     //  runs unchanged.  BE wires this up by spawning `graf [--tlv] <URI>`
     //  on `be get diff:<URI>` (and verb-less `be diff:<URI>`).
     a_cstr(s_diff, "diff");
+    a_cstr(s_log,  "log");
     if ($empty(c->verb) && c->nuris > 0) {
         uri *pu = &c->uris[0];
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "graf") == 0) {
-            if ($eq(pu->scheme, s_diff)) u8csMv(c->verb, s_diff);
+            if ($eq(pu->scheme, s_diff))     u8csMv(c->verb, s_diff);
+            else if ($eq(pu->scheme, s_log)) u8csMv(c->verb, s_log);
         }
     }
 
@@ -297,6 +301,16 @@ ok64 GRAFExec(cli *c) {
                 ret = GRAFDiffTreeWT(&KEEP, wt, reporoot);
             }
         }
+        graf_stop_pager(pager);
+
+    } else if ($eq(c->verb, v_log)) {
+        if (c->nuris < 1) {
+            fprintf(stderr, "graf: log requires a URI\n");
+            KEEPClose();
+            return FAILSANITY;
+        }
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        ret = GRAFLog(&KEEP, &c->uris[0]);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_weave)) {

@@ -85,27 +85,29 @@ Select **where** the resource lives.
 
 ### View projectors
 
-Read-only views.  Orthogonal to the verb — the verb still says
-what to do, the projector says **what shape of bytes to emit**
-instead of performing the action.
+Read-only verbs in their own right.  GET is repo→worktree
+(clone / checkout / switch branch) and never appears with a
+projector — the projector scheme **is** the verb.  Each one
+emits a stream the bro/worker arch displays: the worker (graf,
+keeper, …) emits `dog/HUNK` TLV, bro pages it.
 
 | Scheme    | Emits                                            | Example |
 |-----------|--------------------------------------------------|---------|
-| `sha1:`   | 40-hex sha of the resource                       | `be get sha1:?feat` |
-| `blob:`   | raw bytes of a blob                              | `be get blob:file.c?123abc` |
-| `tree:`   | tree listing (mode, sha, name)                   | `be get tree:src/?feat` |
-| `commit:` | commit object body                               | `be get commit:?123abc` |
-| `log:`    | `REFS` tail, newest-first (`@N` = last N)        | `be get log:?feat@10` |
-| `refs:`   | list refs under a dir (`**` = recursive)         | `be get refs:?**` |
-| `diff:`   | unified diff of wt vs ref                        | `be get diff:file.c?main` |
-| `size:`   | byte size of the resource                        | `be get size:?#abc1234` |
-| `type:`   | object type (`commit`/`tree`/`blob`/`tag`)       | `be get type:?#abc1234` |
+| `sha1:`   | 40-hex sha of the resource                       | `be sha1:?feat` |
+| `blob:`   | raw bytes of a blob                              | `be blob:file.c?123abc` |
+| `tree:`   | tree listing (mode, sha, name)                   | `be tree:src/?feat` |
+| `commit:` | commit object body                               | `be commit:?123abc` |
+| `log:`    | `REFS` tail, newest-first, one commit per line (`#N` = last N) | `be log:?feat#10` |
+| `refs:`   | list refs under a dir (`**` = recursive)         | `be refs:?**` |
+| `diff:`   | unified diff of wt vs ref                        | `be diff:file.c?main` |
+| `size:`   | byte size of the resource                        | `be size:?#abc1234` |
+| `type:`   | object type (`commit`/`tree`/`blob`/`tag`)       | `be type:?#abc1234` |
 
 Projectors are pure — they never mutate.  They compose with
-`//auth` (`be get sha1://origin?main` is a cheap reachability
-probe that requests just the tip sha) and with `path+ref` (the
-path says what, the ref says from where, the projector says in
-what form).
+`//auth` (`be sha1://origin?main` is a cheap reachability probe
+that requests just the tip sha) and with `path+ref` (the path
+says what, the ref says from where, the projector says in what
+form).
 
 ##  Remote resolution is lazy
 
@@ -126,11 +128,12 @@ Alias lookup walks up the dir tree to the store root, same as
 
 ##  GET — repo → worktree
 
-GET reads from the repo into the worktree, or projects a view of
-a repo resource.  GET is **repo-read-only**: it never modifies a
+GET reads from the repo into the worktree: clone, checkout,
+switch branch.  GET is **repo-read-only**: it never modifies a
 branch's history.  Like git, GET refuses if any wt file with
 local edits would be overwritten — abort up front, no partial
-reset.
+reset.  Projector views are **not** GET — see §"View projectors";
+each one (`sha1:`, `blob:`, `log:`, …) is its own verb.
 
 For the **remote** forms (`be get //origin`, `be get //origin?A`),
 GET is also **fast-forward-only** on the *local branch's tip*:
@@ -150,13 +153,6 @@ branch from its remote counterpart, not to local branch switches.
 | `be get ssh://host/path?feat`  | Explicit URL; same effect, registers an alias on first use. |
 | `be get file:../proj?feat`     | **Local worktree**: wire this empty cwd as a wt sharing `../proj`'s store, reset files to `feat`'s tip. |
 | `be get //origin?*`            | Fetch every branch origin advertises (opt-in bulk form). |
-| `be get sha1:?feat`            | Print tip sha of `feat`. |
-| `be get sha1:file.c`           | Print sha-1 of the wt file's on-disk bytes (git-hash-object). |
-| `be get sha1:file.c?`          | Print sha-1 of the tracked blob (per sniff's index). |
-| `be get blob:file.c?abc1234`   | Cat file contents at that commit. |
-| `be get tree:?feat`            | List the branch-tip tree. |
-| `be get log:?feat@20`          | Last 20 `REFS` entries on feat. |
-| `be get refs:?**`              | List every branch recursively. |
 
 After a successful GET, `.sniff` records the new base as
 `(branch, tip-sha)` and clears any pending PATCH parents.  Bare
@@ -450,11 +446,11 @@ another wt to actually drop the branch.
 | `git cherry-pick <sha>`                | `be patch ?<sha>^..?<sha>` |
 | `git push`                             | `be post //origin` |
 | `git push -d origin feat`              | `be delete //origin?feat` |
-| `git rev-parse HEAD`                   | `be get sha1:?` |
-| `git cat-file -p <sha>:file.c`         | `be get blob:file.c?<sha>` |
-| `git log -n 20 feat`                   | `be get log:?feat@20` |
-| `git branch -a`                        | `be get refs:?**` |
-| `git ls-remote origin main`            | `be get sha1://origin?main` |
+| `git rev-parse HEAD`                   | `be sha1:?` |
+| `git cat-file -p <sha>:file.c`         | `be blob:file.c?<sha>` |
+| `git log -n 20 feat`                   | `be log:?feat#20` |
+| `git branch -a`                        | `be refs:?**` |
+| `git ls-remote origin main`            | `be sha1://origin?main` |
 
 ##  Design invariants
 
@@ -517,10 +513,9 @@ another wt to actually drop the branch.
     parents-before-children, per the delta-dependency DAG
     (`keeper/README.md`); the client walks the ancestor chain
     and runs N upload-pack sessions (`keeper/WIRE.md`).
-  - **Projector on non-`get` verbs** — treat as read-only even
-    there (e.g. `be post sha1:?feat` = "print what would be
-    committed" without committing).  Not specified yet; keep the
-    shape reserved.
+  - **Projector + mutating verb** — `be post sha1:?feat` etc. is
+    not a thing; projectors are their own verbs (read-only).
+    "What would be committed" is a separate dry-run concern.
   - **PATCH-on-PATCH state.**  Today PATCH treats files
     previously merged by an earlier PATCH as "dirty," so multi-
     PATCH only works on disjoint file sets.  TODO: distinguish

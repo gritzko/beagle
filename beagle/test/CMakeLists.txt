@@ -52,6 +52,14 @@ add_test(NAME be-diff-projector
 set_tests_properties(be-diff-projector PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-diff-projector")
 
+# be-log-projector.sh — VERBS.md `log:` projector (branch parent-chain
+# walk and per-file PATH_VER walk), one commit per line.
+add_test(NAME be-log-projector
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-log-projector.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-log-projector PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-log-projector")
+
 # --- verbcheck-driven verb matrix --------------------------------------
 # Snapshot-and-diff per-verb tests built on verbcheck.sh.  Each
 # be-<verb>-<case>.sh exercises one cell of the verb × scenario

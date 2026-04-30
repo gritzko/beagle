@@ -256,11 +256,67 @@ ok64 DOGTestPathHash() {
     done;
 }
 
+// --- DOGutf8sFeedDate: short relative date format -----------------
+//
+// All cases anchor on `now = 2025-04-30 12:00:00 UTC` (1746014400, a
+// Wednesday) so the table reads as wall-clock minus a known reference.
+
+typedef struct {
+    i64         ts;
+    char const *expect;
+} DateCase;
+
+static i64 const DOG_DATE_NOW = 1746014400;  // 2025-04-30 12:00:00 UTC (Wed)
+
+static DateCase const DATE_CASES[] = {
+    {DOG_DATE_NOW,            "now"},     // exact now
+    {DOG_DATE_NOW - 30,       "now"},     // 30s ago
+    {DOG_DATE_NOW - 120,      "-2m"},     // 2 min
+    {DOG_DATE_NOW - 59 * 60,  "-59m"},    // just under 1hr
+    {DOG_DATE_NOW - 3600,     "-1hr"},    // 1 hr
+    {DOG_DATE_NOW - 23*3600,  "-23hr"},   // 23 hr
+    //  3 days back from Wed = Sun 2025-04-27.
+    {DOG_DATE_NOW - 3*86400,  "Sun"},
+    //  10 days back: same year → "DDMon".  2025-04-20 → "20Apr".
+    {DOG_DATE_NOW - 10*86400, "20Apr"},
+    //  Different year → "MonYY".  2024-02-19 12:00 UTC.
+    {1708344000,              "Feb24"},
+    //  ts <= 0: "?"
+    {0,                       "?"},
+    {-1,                      "?"},
+};
+
+#define NDATE (sizeof(DATE_CASES) / sizeof(DATE_CASES[0]))
+
+ok64 DOGTestFeedDate() {
+    sane(1);
+    for (size_t i = 0; i < NDATE; i++) {
+        DateCase const *tc = &DATE_CASES[i];
+        a_pad(u8, buf, 16);
+        call(DOGutf8sFeedDate, u8bIdle(buf), tc->ts, DOG_DATE_NOW);
+        a_dup(u8c, got, u8bData(buf));
+        a_cstr(want, tc->expect);
+        if ($len(got) > 5) {
+            fprintf(stderr, "FAIL [%zu] ts=%lld: '%.*s' exceeds 5 chars\n",
+                    i, (long long)tc->ts, (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+        if (!$eq(got, want)) {
+            fprintf(stderr, "FAIL [%zu] ts=%lld:\n  got    '%.*s'\n  expect '%s'\n",
+                    i, (long long)tc->ts,
+                    (int)$len(got), (char *)got[0], tc->expect);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
 ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
     call(DOGTestCanonical);
     call(DOGTestPathHash);
+    call(DOGTestFeedDate);
     done;
 }
 

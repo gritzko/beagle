@@ -1,7 +1,9 @@
 #include "DOG.h"
 
 #include <dirent.h>
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "abc/B.h"
@@ -21,7 +23,7 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"blob",   "keeper"},
     {"tree",   "keeper"},
     {"commit", "keeper"},
-    {"log",    "keeper"},
+    {"log",    "graf"},
     {"refs",   "keeper"},
     {"size",   "keeper"},
     {"type",   "keeper"},
@@ -445,6 +447,69 @@ ok64 DOGPupClose(kv32b pups) {
     }
     kv32bFree(pups);
     done;
+}
+
+// =============================================================
+// --- Short human date formatter ---
+// =============================================================
+
+static char const *const DOG_MONS[12] = {
+    "Jan","Feb","Mar","Apr","May","Jun",
+    "Jul","Aug","Sep","Oct","Nov","Dec"
+};
+static char const *const DOG_WDAYS[7] = {
+    "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
+};
+
+ok64 DOGutf8sFeedDate(u8s into, i64 ts, i64 now) {
+    sane($ok(into));
+
+    char buf[8];
+    int n = 0;
+    i64 diff = now - ts;
+
+    if (ts > 0 && diff >= 0 && diff < 60) {
+        n = snprintf(buf, sizeof(buf), "now");
+    } else if (ts > 0 && diff > 0 && diff < 3600) {
+        int m = (int)(diff / 60);
+        if (m < 1) m = 1;
+        n = snprintf(buf, sizeof(buf), "-%dm", m);
+    } else if (ts > 0 && diff > 0 && diff < 86400) {
+        n = snprintf(buf, sizeof(buf), "-%dhr", (int)(diff / 3600));
+    } else if (ts > 0 && diff > 0 && diff < 7 * 86400) {
+        time_t t = (time_t)ts;
+        struct tm *tm = gmtime(&t);
+        n = tm ? snprintf(buf, sizeof(buf), "%s", DOG_WDAYS[tm->tm_wday])
+               : snprintf(buf, sizeof(buf), "?");
+    } else if (ts > 0) {
+        time_t t  = (time_t)ts;
+        time_t tn = (time_t)now;
+        //  gmtime returns a pointer to a shared static buffer; copy
+        //  the result of the first call before invoking the second
+        //  or it gets clobbered.
+        struct tm tt = {}, tnn = {};
+        b8 ok_t = NO, ok_n = NO;
+        struct tm *p = gmtime(&t);
+        if (p) { tt = *p; ok_t = YES; }
+        p = gmtime(&tn);
+        if (p) { tnn = *p; ok_n = YES; }
+        if (!ok_t) {
+            n = snprintf(buf, sizeof(buf), "?");
+        } else if (ok_n && tt.tm_year == tnn.tm_year) {
+            n = snprintf(buf, sizeof(buf), "%d%s",
+                         tt.tm_mday, DOG_MONS[tt.tm_mon]);
+        } else {
+            n = snprintf(buf, sizeof(buf), "%s%02d",
+                         DOG_MONS[tt.tm_mon], tt.tm_year % 100);
+        }
+    } else {
+        n = snprintf(buf, sizeof(buf), "?");
+    }
+
+    if (n < 0) n = 0;
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    u8cs sl = {(u8 const *)buf, (u8 const *)buf + n};
+    return u8sFeed(into, sl);
 }
 
 void DOGPupData(u8csp out, kv32b pups, u32 i) {
