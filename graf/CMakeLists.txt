@@ -30,6 +30,7 @@ list(APPEND GRAF_SOURCES
     INDEX.c
     JOIN.c
     LOG.c
+    MAP.c
     MERGE.c
     NEIL.c
     REBASE.c

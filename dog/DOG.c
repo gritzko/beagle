@@ -28,6 +28,7 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"size",   "keeper"},
     {"type",   "keeper"},
     {"diff",   "graf"},
+    {"map",    "graf"},
     {"ls",     "sniff"},
     {NULL,     NULL}
 };

@@ -344,26 +344,26 @@ static ok64 BEProjector(cli *c, uri *u) {
     return BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
 }
 
+//  `be get` is a flat forward to sniff.  Sniff is the verb owner and
+//  calls KEEPGetRemote internally on a remote URI before checkout.
+//  be only does URI normalisation and the fresh-clone .dogs/ bootstrap
+//  (a pre-routing step both keeper and sniff need a cwd-rooted store
+//  to land in).
 static ok64 BEGet(cli *c, b8 seq) {
     sane(c);
     static dog_step const steps[] = {
-        {u8slit("keeper"), u8slit("get"), NO},
-        {u8slit("sniff"),  u8slit("get"), NO},
+        {u8slit("sniff"), u8slit("get"), NO},
     };
-    u32 nsteps = sizeof(steps) / sizeof(steps[0]);
-    // Skip keeper fetch if no remote (no authority)
     uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
+    b8  remote = (u != NULL && !$empty(u->authority));
 
-    u32 start = (u != NULL && !$empty(u->authority)) ? 0 : 1;
-
-    // Local-path URI → worktree from a sibling repo.
+    //  Local file: URI → wire this cwd as a worktree of a sibling repo.
     call(BEGetWorktree, u);
 
-    // Bootstrap: when cloning into a fresh dir (remote URI, no existing
-    // .dogs/ anywhere up to /), create .dogs/ in cwd so each dog can
-    // place its own subdir. Without this, every dog fails with
-    // KEEPFAIL/SNIFFFAIL/etc. before printing anything useful.
-    if (start == 0) {
+    //  Fresh-clone bootstrap: a remote URI with no .dogs/ anywhere up
+    //  to / needs an empty .dogs/ in cwd so the downstream dog can
+    //  place its subdir.  Local URIs already have a HOME.
+    if (remote) {
         home probe_h = {};
         u8cs at = {};
         ok64 ho = HOMEOpen(&probe_h, at, NO);
@@ -377,7 +377,7 @@ static ok64 BEGet(cli *c, b8 seq) {
             }
         }
     }
-    return BEDispatch(c, steps + start, nsteps - start, seq);
+    return BEDispatch(c, steps, 1, seq);
 }
 
 //  `be put` stages a new base tree locally — no commit object and no

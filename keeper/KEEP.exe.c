@@ -246,9 +246,9 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
 
 //  `keeper get //remote[?ref]` — fetch via WIREFetch.  Empty ?ref means
 //  fast-forward the current worktree branch (per VERBS.md `be get //origin`).
-static ok64 keeper_get_remote(keeper *k, cli *c, uri *g) {
-    sane(k && g);
-    (void)c;
+ok64 KEEPGetRemote(uri *g) {
+    sane(g);
+    keeper *k = &KEEP;
 
     Bu8 rarena = {};
     call(u8bMap, rarena, (size_t)REFS_MAX_REFS * 320);
@@ -389,7 +389,7 @@ static ok64 keeper_get(keeper *k, cli *c) {
     uri *g = &c->uris[0];
 
     if (!u8csEmpty(g->authority))
-        return keeper_get_remote(k, c, g);
+        return KEEPGetRemote(g);
     if (!u8csEmpty(g->fragment))
         return keeper_get_object(k, g->fragment);
     //  path+query (no authority) is a blob projector: resolve `path` in
@@ -677,7 +677,7 @@ ok64 KEEPExec(keeper *k, cli *c) {
         a_cstr(keeper_sch, "keeper");
         b8 plain = $eq(u->scheme, be_sch) || $eq(u->scheme, file_sch) ||
                    $eq(u->scheme, keeper_sch);
-        if (plain && $eq(c->verb, v_get))  return keeper_get_remote(k, c, u);
+        if (plain && $eq(c->verb, v_get))  return KEEPGetRemote(u);
         if (plain && $eq(c->verb, v_post)) return keeper_post(k, c);
     }
 

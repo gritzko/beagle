@@ -135,6 +135,13 @@ ok64 GRAFGet(u8b into, u8csc uri);
 // rides graf_emit (TLV via bro on TTY, raw text otherwise).
 ok64 GRAFLog(keeper *k, uricp u);
 
+// Subway-map view of the branch tree for `be map:`.  Reads from the
+// keeper + graf singletons; caller has already opened both.  Phase 1
+// emits one indented row per branch within the current branch's
+// ancestors+descendants window; Phase 2/3 will replace the indent
+// with subway glyphs and weave in commit-timeline rows.
+ok64 GRAFMap(uricp u);
+
 // Latest common ancestor of two commits.  Intersects each tip's
 // `DAGAncestors` set, picks the member with the highest `gen`, then
 // recovers the full 20-byte commit sha via `KEEPGet`.  `out` left

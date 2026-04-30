@@ -23,7 +23,7 @@
 
 char const *const GRAF_CLI_VERBS[] = {
     "get", "diff", "merge", "blame", "weave", "index",
-    "log", "status", "help", NULL
+    "log", "map", "status", "help", NULL
 };
 
 char const GRAF_CLI_VAL_FLAGS[] = "-o\0";
@@ -119,6 +119,7 @@ ok64 GRAFExec(cli *c) {
     a_cstr(v_weave,  "weave");
     a_cstr(v_index,  "index");
     a_cstr(v_log,    "log");
+    a_cstr(v_map,    "map");
     a_cstr(v_status, "status");
     a_cstr(v_help,   "help");
 
@@ -134,12 +135,14 @@ ok64 GRAFExec(cli *c) {
     //  on `be get diff:<URI>` (and verb-less `be diff:<URI>`).
     a_cstr(s_diff, "diff");
     a_cstr(s_log,  "log");
+    a_cstr(s_map,  "map");
     if ($empty(c->verb) && c->nuris > 0) {
         uri *pu = &c->uris[0];
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "graf") == 0) {
             if ($eq(pu->scheme, s_diff))     u8csMv(c->verb, s_diff);
             else if ($eq(pu->scheme, s_log)) u8csMv(c->verb, s_log);
+            else if ($eq(pu->scheme, s_map)) u8csMv(c->verb, s_map);
         }
     }
 
@@ -301,6 +304,11 @@ ok64 GRAFExec(cli *c) {
                 ret = GRAFDiffTreeWT(&KEEP, wt, reporoot);
             }
         }
+        graf_stop_pager(pager);
+
+    } else if ($eq(c->verb, v_map)) {
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        ret = GRAFMap(c->nuris > 0 ? &c->uris[0] : NULL);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_log)) {

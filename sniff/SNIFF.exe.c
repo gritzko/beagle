@@ -390,6 +390,14 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     keeper *k = &KEEP;
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
+    //  Remote URI (`//host?ref`, `ssh://host/path?ref`, …): pull the
+    //  reachable closure into the local keeper before resolving.  be
+    //  no longer pre-fetches as a separate dispatch step — sniff is
+    //  the verb owner and orchestrates downstream calls itself.
+    if (!u8csEmpty(u->authority)) {
+        call(KEEPGetRemote, u);
+    }
+
     //  Path-only URI (no authority, no query) → `be get <hex>` or
     //  `be get <local-dir>` (the latter is rewritten by BEGetWorktree
     //  to a query-only URI before we get here).

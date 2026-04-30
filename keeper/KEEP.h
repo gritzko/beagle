@@ -363,6 +363,15 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_out);
 
 //  KEEPLsFiles is declared in keeper/WALK.h (takes a walk_tree_fn).
 
+// --- Remote fetch ----------------------------------------------------
+//
+//  Wire-protocol fetch from a remote URI.  `g` carries the authority
+//  (alias or full transport URL) and optionally a `?ref` to fetch.
+//  When `?ref` is empty the worktree's current branch is used.  Reads
+//  / appends through the keeper singleton (caller has KEEPOpen-ed);
+//  records the tip in REFS on success.
+ok64 KEEPGetRemote(uri *g);
+
 // --- Branch-tip enumeration ------------------------------------------
 //
 //  One entry per local branch.  `path` is the branch path with the

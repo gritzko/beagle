@@ -14,17 +14,10 @@ cp "$CASE/04.new.txt"      new.txt
 # Stage 3: re-`put` all three via a glob.  Expansion is sorted:
 #   new.txt  to-modify.txt  unchanged.txt
 #
-# TODO(spec): the original spec predicted `be put` would print
-# "sniff: staged 2 put row(s)" on stdout (modified + new staged,
-# unchanged silently skipped).  Actual behavior: `be put` aborts on
-# the first unchanged path with `PUTNONE` and exits non-zero, BEFORE
-# staging the modified / new entries that come after it on the cmd
-# line.  Captured-as-is below; revisit once `be put` learns to
-# tolerate (or warn-and-skip) unchanged paths in a multi-arg list.
-"$BE" put *.txt >05.put.got.out 2>05.put.got.err && {
-    echo "TODO: be put unexpectedly succeeded; spec needs an update" >&2
-    exit 1
-}
+# `be put` now warn-and-skips unchanged paths in a multi-arg list,
+# staging the modified + new entries on the same invocation.  Exit
+# is success because at least one file was staged.
+"$BE" put *.txt >05.put.got.out 2>05.put.got.err
 
 match    "$CASE/05.put.want.out" 05.put.got.out
 match_re "$CASE/05.put.want.err" 05.put.got.err
