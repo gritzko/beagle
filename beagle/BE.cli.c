@@ -516,41 +516,19 @@ static ok64 BEPost(cli *c, b8 seq) {
 
 // --- Bare `be`: --update all dogs, then --status each ---
 
+//  Bare `be` — overview of the working tree.  Forwards to bare
+//  `sniff`, which lists Changed: and Untracked: against the baseline
+//  tree (untracked-but-gitignored filtered).  spot / graf / keeper
+//  dogs aren't surfaced here — they're index/storage layers without
+//  user-relevant state to print.  Adding their summaries back is a
+//  one-liner per dog if it ever matters.
 static ok64 BEDefault(void) {
     sane(1);
-    char dogs[16][64] = {};
-    u32 ndogs = BEReadDogs(dogs, 16);
-    if (ndogs == 0) {
-        static const char *pack[] = {"spot", "graf", "sniff"};
-        for (u32 i = 0; i < 3; i++)
-            memcpy(dogs[i], pack[i], strlen(pack[i]) + 1);
-        ndogs = 3;
-    }
-    // Run --update on every dog; remember the worst error so a crashing
-    // or non-zero-exiting dog is surfaced after status output completes.
-    ok64 worst = OK;
-    u8cs upd = u8slit("--update");
-    u8cs sta = u8slit("--status");
-    for (u32 i = 0; i < ndogs; i++) {
-        a_cstr(dog_s, dogs[i]);
-        a_pad(u8cs, args, 2);
-        u8csbFeed1(args, dog_s);
-        u8csbFeed1(args, upd);
-        a_dup(u8cs, argv, u8csbData(args));
-        ok64 r = BERun(dog_s, argv, NO);
-        if (r != OK && worst == OK) worst = r;
-    }
-    for (u32 i = 0; i < ndogs; i++) {
-        a_cstr(dog_s, dogs[i]);
-        a_pad(u8cs, args, 2);
-        u8csbFeed1(args, dog_s);
-        u8csbFeed1(args, sta);
-        a_dup(u8cs, argv, u8csbData(args));
-        ok64 r = BERun(dog_s, argv, NO);
-        if (r != OK && worst == OK) worst = r;
-    }
-    if (worst != OK) fail(worst);
-    done;
+    a_cstr(sniff_s, "sniff");
+    a_pad(u8cs, args, 1);
+    u8csbFeed1(args, sniff_s);
+    a_dup(u8cs, argv, u8csbData(args));
+    return BERun(sniff_s, argv, NO);
 }
 
 // --- Main ---

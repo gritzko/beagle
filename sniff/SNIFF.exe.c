@@ -22,10 +22,15 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/IGNO.h"
+#include "keeper/GIT.h"
+#include "keeper/KEEP.h"
 #include "keeper/REFS.h"
+#include "keeper/WALK.h"
 
+#include "abc/B.h"
 #include "abc/FILE.h"
 #include "abc/FSW.h"
+#include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/UTF8.h"
@@ -287,24 +292,207 @@ static ok64 sniff_stop(u8cs reporoot) {
 
 // --- Mode: Status ---
 //
-//  wt scan + mtime-against-stamp-set dirtiness check.  No per-path
-//  cache, no "D" deletion markers (we don't know what "tracked" means
-//  without a baseline walk — to be revisited once status is actually
-//  exercised by tests).
+//  Bare `sniff` — overview of the working tree.  Walks the wt with
+//  the standard IGNO + meta-skip filter (`SNIFFAtScanDirty`), then
+//  classifies each hit against the baseline tree and prints one row
+//  per file, status-first, path-second:
+//
+//    M  <path>     in baseline tree, mtime ∉ stamp-set (modified)
+//    ?? <path>     not in baseline tree (untracked, not gitignored)
+//
+//  When stdout is a terminal each marker is colourised — yellow for
+//  M, red for ?? — so the eye picks out status before path.  Submodule
+//  paths (and anything under them) are skipped entirely; gitlinks are
+//  handed off to the embedded repo by design.
 
-static ok64 status_cb(u8cs rel, void *ctx) {
-    sane(ctx);
-    u32 *dirty = (u32 *)ctx;
-    printf("M %.*s\n", (int)$len(rel), (char *)rel[0]);
-    (*dirty)++;
+#define STATUS_ANSI_M   "\033[33m"   // yellow  — modified
+#define STATUS_ANSI_U   "\033[31m"   // red     — untracked
+#define STATUS_ANSI_OFF "\033[0m"
+
+//  Tracked-set: newline-separated paths from the baseline tree, plus
+//  a parallel list of submodule directory prefixes (each ends with
+//  '/').  Tiny in typical repos so a linear membership check is fine.
+
+typedef struct {
+    Bu8 paths;     // every tracked file path (no submodule contents)
+    Bu8 subdirs;   // submodule dir prefixes, each '/'-terminated
+    u32 count;
+    u32 nsubs;
+} status_tracked;
+
+static ok64 status_collect_tracked(u8cs path, u8 kind, u8cp esha,
+                                   u8cs blob, void0p vctx) {
+    (void)esha; (void)blob;
+    status_tracked *t = (status_tracked *)vctx;
+    if ($empty(path)) return OK;
+    if (kind == WALK_KIND_DIR) return OK;     //  trees handled by recursion
+    if (kind == WALK_KIND_SUB) {
+        //  Record the submodule's mount path so wt-scan hits under
+        //  it can be filtered out.  Append a trailing '/' for prefix
+        //  comparison.
+        (void)u8bFeed(t->subdirs, path);
+        (void)u8bFeed1(t->subdirs, '/');
+        (void)u8bFeed1(t->subdirs, '\n');
+        t->nsubs++;
+        return OK;
+    }
+    (void)u8bFeed(t->paths, path);
+    (void)u8bFeed1(t->paths, '\n');
+    t->count++;
     return OK;
+}
+
+static b8 status_tracked_has(status_tracked const *t, u8cs path) {
+    if (t->count == 0) return NO;
+    u8cs scan = {u8bDataHead(t->paths), u8bIdleHead(t->paths)};
+    while (!$empty(scan)) {
+        u8cp nl = scan[0];
+        while (nl < scan[1] && *nl != '\n') nl++;
+        if ((size_t)(nl - scan[0]) == (size_t)$len(path) &&
+            memcmp(scan[0], path[0], (size_t)$len(path)) == 0)
+            return YES;
+        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    }
+    return NO;
+}
+
+//  YES iff `path` lies inside any recorded submodule prefix (matched
+//  as `<prefix>/` against the path's leading bytes).
+static b8 status_in_submodule(status_tracked const *t, u8cs path) {
+    if (t->nsubs == 0) return NO;
+    u8cs scan = {u8bDataHead(t->subdirs), u8bIdleHead(t->subdirs)};
+    size_t pl = (size_t)$len(path);
+    while (!$empty(scan)) {
+        u8cp nl = scan[0];
+        while (nl < scan[1] && *nl != '\n') nl++;
+        size_t prl = (size_t)(nl - scan[0]);
+        if (prl > 0 && prl <= pl &&
+            memcmp(scan[0], path[0], prl) == 0)
+            return YES;
+        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    }
+    return NO;
+}
+
+//  Resolve baseline tree-sha from sniff's at-log.  ULOGNONE on a
+//  fresh log; on OK the 20-byte tree sha lands in *out.  Mirrors
+//  PUT.c put_baseline_tree (kept local to avoid exposing internals).
+static ok64 status_baseline_tree(sha1 *out) {
+    sane(out);
+    ron60 ts = 0, verb = 0;
+    uri u = {};
+    ok64 br = SNIFFAtBaseline(&ts, &verb, &u);
+    if (br != OK) return br;
+    u8 hex40[40];
+    if (SNIFFAtQueryFirstSha(&u, hex40) != OK) return ULOGNONE;
+
+    sha1 commit_sha = {};
+    a_raw(csha_bin, commit_sha);
+    u8cs h40 = {hex40, hex40 + 40};
+    HEXu8sDrainSome(csha_bin, h40);
+
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 20);
+    u8 ctype = 0;
+    ok64 go = KEEPGetExact(&KEEP, &commit_sha, cbuf, &ctype);
+    if (go != OK || ctype != DOG_OBJ_COMMIT) {
+        u8bFree(cbuf);
+        return ULOGNONE;
+    }
+    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+    ok64 to = GITu8sCommitTree(body, out->data);
+    u8bFree(cbuf);
+    return to;
+}
+
+typedef struct {
+    status_tracked *tracked;
+    Bu8 changed_buf;     //  paths only (newline-terminated), per group
+    Bu8 untracked_buf;
+    u32 changed_n;
+    u32 untracked_n;
+    u32 sub_skipped;     //  rows under a submodule (silent)
+} status_split;
+
+static ok64 status_split_cb(u8cs rel, void *ctx_) {
+    status_split *s = (status_split *)ctx_;
+    if (status_in_submodule(s->tracked, rel)) {
+        s->sub_skipped++;
+        return OK;
+    }
+    if (status_tracked_has(s->tracked, rel)) {
+        (void)u8bFeed(s->changed_buf, rel);
+        (void)u8bFeed1(s->changed_buf, '\n');
+        s->changed_n++;
+    } else {
+        (void)u8bFeed(s->untracked_buf, rel);
+        (void)u8bFeed1(s->untracked_buf, '\n');
+        s->untracked_n++;
+    }
+    return OK;
+}
+
+//  Walk a newline-terminated path buffer, emitting one row per path
+//  prefixed with `marker` (2 chars) and a trailing space.  When `tty`
+//  is YES the marker is wrapped in ANSI colour escapes so status
+//  pops out visually; on a pipe / non-tty stdout we stay plain.
+static void status_dump_rows(Bu8 paths, char const *marker,
+                             char const *ansi, b8 tty) {
+    a_dup(u8c, b, u8bData(paths));
+    u8cs scan = {b[0], b[1]};
+    while (!$empty(scan)) {
+        u8cp nl = scan[0];
+        while (nl < scan[1] && *nl != '\n') nl++;
+        if (tty) fputs(ansi, stdout);
+        fputs(marker, stdout);
+        if (tty) fputs(STATUS_ANSI_OFF, stdout);
+        fputc(' ', stdout);
+        fwrite(scan[0], 1, (size_t)(nl - scan[0]), stdout);
+        fputc('\n', stdout);
+        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    }
 }
 
 static ok64 sniff_status(u8cs reporoot) {
     sane(1);
-    u32 dirty = 0;
-    call(SNIFFAtScanDirty, reporoot, status_cb, &dirty);
-    fprintf(stderr, "sniff: %u dirty file(s)\n", dirty);
+
+    //  Build the tracked-set from the baseline tree.  Empty / no-baseline
+    //  → tracked stays empty, so everything dirty surfaces as Untracked
+    //  (which matches `git status` on a fresh repo).
+    status_tracked tracked = {};
+    call(u8bAllocate, tracked.paths,   1UL << 16);
+    call(u8bAllocate, tracked.subdirs, 1UL << 12);
+    sha1 tree_sha = {};
+    ok64 bt = status_baseline_tree(&tree_sha);
+    if (bt == OK) {
+        (void)WALKTreeLazy(&KEEP, tree_sha.data,
+                           status_collect_tracked, &tracked);
+    }
+
+    status_split split = {.tracked = &tracked};
+    call(u8bAllocate, split.changed_buf,   1UL << 14);
+    call(u8bAllocate, split.untracked_buf, 1UL << 14);
+
+    call(SNIFFAtScanDirty, reporoot, status_split_cb, &split);
+
+    b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
+
+    //  Modified rows first, then untracked — same order git-porcelain
+    //  uses; readers scan top-down for "what's interesting".  Trailing
+    //  summary on stdout (not stderr) so it stays in order with the
+    //  list when piped — overview output isn't an error stream.
+    if (split.changed_n > 0)
+        status_dump_rows(split.changed_buf,   "M ",  STATUS_ANSI_M, tty);
+    if (split.untracked_n > 0)
+        status_dump_rows(split.untracked_buf, "??", STATUS_ANSI_U, tty);
+    fprintf(stdout, "sniff: %u changed, %u untracked\n",
+            split.changed_n, split.untracked_n);
+    fflush(stdout);
+
+    u8bFree(split.changed_buf);
+    u8bFree(split.untracked_buf);
+    u8bFree(tracked.paths);
+    u8bFree(tracked.subdirs);
     done;
 }
 
@@ -573,7 +761,12 @@ ok64 SNIFFExec(cli *c) {
     b8 is_put = $eq(c->verb, v_put);
     b8 is_update = $eq(c->verb, v_update);
     b8 is_watch = $eq(c->verb, v_watch);
-    b8 is_status = $eq(c->verb, v_status);
+    //  Bare `sniff` (no verb, no URI, no `--status` flag) defaults
+    //  to status — same overview an interactive user expects.  Any
+    //  URI or projector still routes through their own arms below.
+    b8 is_status = $eq(c->verb, v_status)
+                || CLIHas(c, "--status")
+                || ($empty(c->verb) && c->nuris == 0);
 
     //  Verb-less projector invocation (VERBS.md §"View projectors"):
     //  `sniff <proj>:<URI>` — no verb.  Scheme selects the projector;

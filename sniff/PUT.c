@@ -223,7 +223,11 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         done;
     }
 
+    //  Per-path loop: warn-and-skip rather than abort, so a multi-arg
+    //  `put` ("touched + untouched mixed") still stages every file
+    //  that did change.  Only fail with PUTNONE when nothing landed.
     u32 emitted = 0;
+    u32 skipped = 0;
     for (u32 i = 0; i < nuris; i++) {
         u8cs raw = {};
         SNIFFAtPathBytes(&uris[i], raw);
@@ -231,22 +235,24 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
 
         a_path(fp);
         if (SNIFFFullpath(fp, reporoot, raw) != OK) {
-            fprintf(stderr, "sniff: put: cannot resolve %.*s\n",
+            fprintf(stderr, "sniff: put: cannot resolve %.*s — skipped\n",
                     (int)$len(raw), (char *)raw[0]);
-            return PUTNONE;
+            skipped++;
+            continue;
         }
 
         struct stat sb = {};
         if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
-            fprintf(stderr, "sniff: put: %.*s does not exist\n",
+            fprintf(stderr, "sniff: put: %.*s does not exist — skipped\n",
                     (int)$len(raw), (char *)raw[0]);
-            return PUTNONE;
+            skipped++;
+            continue;
         }
 
-        //  Refuse PUTNONE for a file that is already baseline-clean
-        //  (mtime owned by a `get` or `post` row).  PATCH and PUT
-        //  stamps fall through — re-staging a patched file is OK,
-        //  re-staging an existing put just refreshes the ts.
+        //  Skip a file that's already baseline-clean (mtime owned by
+        //  a `get` or `post` row).  PATCH and PUT stamps fall through —
+        //  re-staging a patched file is OK, re-staging an existing
+        //  put just refreshes the ts.
         struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                                .tv_nsec = sb.st_mtim.tv_nsec};
         ron60 mr = SNIFFAtOfTimespec(mts);
@@ -255,9 +261,10 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             uri ow_u = {};
             if (SNIFFAtRowAtTs(mr, &ow_verb, &ow_u) == OK &&
                 (ow_verb == verb_get || ow_verb == verb_post)) {
-                fprintf(stderr, "sniff: put: %.*s is unchanged\n",
+                fprintf(stderr, "sniff: put: %.*s is unchanged — skipped\n",
                         (int)$len(raw), (char *)raw[0]);
-                return PUTNONE;
+                skipped++;
+                continue;
             }
         }
 
@@ -270,7 +277,13 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         emitted++;
     }
 
-    if (emitted > 0)
-        fprintf(stderr, "sniff: staged %u put row(s)\n", emitted);
+    if (emitted == 0) {
+        //  Every named path was skipped — surface PUTNONE so the
+        //  exit status reflects that nothing was staged.
+        if (skipped > 0)
+            fprintf(stderr, "sniff: put: no eligible paths\n");
+        return PUTNONE;
+    }
+    fprintf(stderr, "sniff: staged %u put row(s)\n", emitted);
     done;
 }

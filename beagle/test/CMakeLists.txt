@@ -16,16 +16,10 @@ add_test(NAME BEworkflow
 set_tests_properties(BEworkflow PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEworkflow")
 
-# workflow-branches.sh — branch lifecycle through `be` (increment 1):
-# create child via POST, switch via GET, commit on child, switch back,
-# delete branch.  Squash (PATCH) and rebase (POST cascade) are
-# deferred to follow-up increments.  See the file header for the
-# spec-deviation TODO list.
-add_test(NAME BEworkflowBranches
-    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/workflow-branches.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-set_tests_properties(BEworkflowBranches PROPERTIES
-    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEworkflowBranches")
+# workflow-branches.sh has been split into 9 parallel-friendly cases
+# under test/branches/01..09 (run via test/run.sh + xargs -P).  The
+# monolith is retired; each cluster is a self-contained run.sh that
+# the verbcheck-style harness picks up through CMakeLists test/branches.
 
 # worktree.sh — `be get <localdir>` clones a local primary.
 # Worktree layout: `.dogs` symlink to primary + local `.sniff` file.
@@ -59,6 +53,15 @@ add_test(NAME be-log-projector
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(be-log-projector PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-log-projector")
+
+# be-map-projector.sh — VERBS.md `map:` projector (branch tree filter:
+# trunk + current branch + ancestors-up-to-trunk + descendants;
+# siblings excluded).
+add_test(NAME be-map-projector
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-map-projector.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-map-projector PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-map-projector")
 
 # --- verbcheck-driven verb matrix --------------------------------------
 # Snapshot-and-diff per-verb tests built on verbcheck.sh.  Each
