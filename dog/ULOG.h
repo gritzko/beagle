@@ -30,6 +30,8 @@
 //
 //  See dog/ULOG.md for the format and design notes.
 
+#include <time.h>
+
 #include "abc/BUF.h"
 #include "abc/KV.h"
 #include "abc/OK.h"
@@ -176,6 +178,19 @@ ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
 ok64 ULOGTruncate(u8bp data, kv64bp idx, u32 keep_n);
 
 // --- K-way heap merge over ULOG cursors -----------------------------
+//
+//  `ULOGMergeWalk` is the merge-and-fan-out primitive shared by every
+//  consumer that diffs/classifies parallel ULOG streams (sniff status,
+//  POST commit-time classify, graf tree diff, ...).  Each input is a
+//  sorted ULOG-row cursor; `cb` fires once per distinct path-key with
+//  every record whose URI key matches under `ULOGu8csZbyUri`.  Tied-
+//  group capacity is `LSM_MAX_INPUTS`.
+//
+//  Callback shape: `(ulogreccp recs, u32 n, void *ctx) -> ok64`.  The
+//  caller dispatches by `recs[i].verb` (which row came from which
+//  source).  Records share the same path under the heap's compare —
+//  use `recs[0].verb` to identify the lead row, then scan to find the
+//  others.  Any non-OK return aborts the walk.
 
 //  Stock comparators for `u8cssHeapZ`.  Each peeks the head row of
 //  `*a` and `*b` (a_dup + ULOGu8sDrain on copies, no advance) and
@@ -193,5 +208,38 @@ b8 ULOGu8csZbyUri(u8cs const *a, u8cs const *b);  // URI path lex
 //  returns; caller dedups locally.
 //  $len(cursors) capped at LSM_MAX_INPUTS (64).
 ok64 ULOGu8ssDrainHeap(u8css cursors, u8csz cmp, ulogrecp out);
+
+typedef ok64 (*ulog_step_fn)(ulogreccp recs, u32 n, void *ctx);
+
+ok64 ULOGMergeWalk(u8css cursors, ulog_step_fn cb, void *ctx);
+
+// --- Path utilities for wt-walking emitters -------------------------
+
+//  Strip a `<reporoot>` prefix from the NUL-terminated absolute path
+//  `full` (as delivered by `FILEScan`/`path8b`), yielding the trailing
+//  relative slice into `*rel_out` (no leading slash).  Returns NO when
+//  `full` is outside `reporoot` or names the wt root itself.
+b8 ULOGu8sRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
+
+//  Convert a `struct timespec` (typically a file's mtime) into the
+//  ron60 stamp used by ULOG row timestamps.  Truncates nanoseconds to
+//  milliseconds.  `localtime`-aligned to round-trip with `RONNow`.
+ron60 ULOGtsOfTimespec(struct timespec tsp);
+
+// --- Generic worktree scanner emitting ULOG rows --------------------
+//
+//  Walk `reporoot` (recursive, sorted, files + symlinks), emit one
+//  ULOG row per leaf into `out`:
+//      <mtime-ron60>\t<verb>\t<rel-path>?<git-mode>\n
+//  fragment is left empty (callers hash blobs on demand).  Output is
+//  reset before writing.  `skip`, when non-NULL, is called per relative
+//  path; returning YES drops the entry.  Use it for repo-meta filters
+//  (`.dogs/`, `.sniff*`) and per-repo ignore lists; the dog layer is
+//  agnostic to either.
+typedef b8 (*ulog_skip_fn)(u8cs rel, void *ctx);
+
+ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
+                   ulog_skip_fn skip, void *skip_ctx,
+                   u8bp out);
 
 #endif

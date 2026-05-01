@@ -2,22 +2,31 @@
 //  Companion to DIFF.c (file-pair) and BLAME.c (weave).
 //
 #include "GRAF.h"
+#include "graf/BLOB.h"
+#include "graf/WEAVE.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
+#include "dog/IGNO.h"
+#include "dog/ULOG.h"
 #include "graf/TDIFF.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 
-#define DIFFREF_MAX_FILES 512
 #define DIFFREF_PATH_MAX  256
+//  Cap for the ref-vs-ref tree diff (`diff:?h1..h2`).  The wt-vs-base
+//  path streams from the visitor (no cap), but ref-vs-ref needs both
+//  trees in memory to pair entries by path before diffing.
+#define DIFFREF_MAX_FILES 8192
 
 typedef struct {
     char path[DIFFREF_PATH_MAX];
@@ -45,12 +54,12 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
     done;
 }
 
-//  Compose `<lead><ref>` into `ubuf` where `lead` is `#` for a bare
-//  40-hex sha, `?` otherwise.  KEEPResolveTree's fragment branch is the
-//  fast path for 40-hex; the query branch goes through REFS which has
-//  no bare-sha entries — so we have to dispatch here.
-static b8 ref_is_hex40(u8cs ref) {
-    if ($len(ref) != 40) return NO;
+//  Compose `<lead><ref>` into `ubuf`.  `#` for an all-hex ref (full or
+//  short sha — KEEPResolveTree's fragment branch handles both, with
+//  `WHIFFHexHashlet60` driving keeper's prefix lookup); `?` for ref
+//  names (`tags/v1`, `heads/main`) which go through REFS.
+static b8 ref_is_hex(u8cs ref) {
+    if ($empty(ref)) return NO;
     for (u8cp p = ref[0]; p < ref[1]; p++) {
         u8 c = *p;
         b8 d = (c >= '0' && c <= '9');
@@ -63,7 +72,7 @@ static b8 ref_is_hex40(u8cs ref) {
 
 static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
     sane(ubuf);
-    u8 lead = ref_is_hex40(ref) ? '#' : '?';
+    u8 lead = ref_is_hex(ref) ? '#' : '?';
     call(u8bFeed1, ubuf, lead);
     call(u8bFeed,  ubuf, ref);
     done;
@@ -137,10 +146,16 @@ static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
 
 // --- wt-vs-base diff: weave-based ---------------------------------
 //
-//  `wt` is the next version after the base sha.  Build the file's
-//  weave with `tip_h = base_h40`, fold the wt bytes as a final layer
-//  tagged `WEAVE_WT_SRC`, then walk the weave: tokens introduced by
-//  wt are 'I', tokens removed by wt are 'D', survivors are context.
+//  Two-layer weave: base blob (fetched once via keeper) + wt bytes
+//  (mmap from disk).  No file-history walk — this is wt-vs-base, not
+//  blame, so we don't need per-token attribution beyond the base/wt
+//  split.  WEAVEDiff handles the LCS + NEIL cleanup; WEAVEEmitDiff
+//  classifies tokens with the wt predicates and emits hunks.
+//
+//  Sentinel ids: base layer uses `WEAVE_BASE_SRC` (any value other
+//  than `WEAVE_WT_SRC` works); wt layer uses `WEAVE_WT_SRC`.
+
+#define WEAVE_BASE_SRC 1u
 
 static b8 wt_in_from(u32 c, void *ctx) {
     (void)ctx;
@@ -154,38 +169,81 @@ static b8 wt_in_to(u32 c, void *ctx) {
 ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot) {
     sane(k && $ok(filepath) && $ok(reporoot));
 
-    call(GRAFArenaInit);
-
-    weave wA = {}, wB = {}, wnu = {};
-    call(WEAVEInit, &wA);
-    call(WEAVEInit, &wB);
-    call(WEAVEInit, &wnu);
-
-    weave *final = NULL;
-    ok64 fwo = GRAFFileWeave(&wA, &wB, &wnu, &final, k, filepath, base_h40,
-                              reporoot, WEAVE_WT_SRC, NULL, NULL);
-    ok64 ret = OK;
-    if (fwo == OK && final) {
-        ret = WEAVEEmitDiff(final, filepath,
-                            wt_in_from, NULL,
-                            wt_in_to,   NULL,
-                            GRAFHunkEmit, NULL);
-    } else if (fwo != OK) {
-        ret = fwo;
+    //  1. Fetch base blob (one keeper round-trip).
+    Bu8 base_buf = {};
+    call(u8bMap, base_buf, 16UL << 20);
+    ok64 bo = GRAFBlobAtCommit(base_buf, k, base_h40, filepath);
+    u8cs base_data = {};
+    if (bo == OK) {
+        base_data[0] = u8bDataHead(base_buf);
+        base_data[1] = u8bIdleHead(base_buf);
     }
 
+    //  2. mmap wt file (may be missing → wt-deletion case).
+    a_path(wt_path, reporoot, filepath);
+    u8bp wt_mapped = NULL;
+    u8cs wt_data = {};
+    ok64 wto = FILEMapRO(&wt_mapped, $path(wt_path));
+    if (wto == OK && wt_mapped) {
+        wt_data[0] = u8bDataHead(wt_mapped);
+        wt_data[1] = u8bIdleHead(wt_mapped);
+    }
+
+    //  3. Fast skip on byte-identical content (the common case across
+    //     a tree walk: most files haven't changed in the wt).
+    ok64 ret = OK;
+    if ($len(base_data) == $len(wt_data) &&
+        ($len(base_data) == 0 ||
+         memcmp(base_data[0], wt_data[0],
+                (size_t)$len(base_data)) == 0)) {
+        if (wt_mapped) FILEUnMap(wt_mapped);
+        u8bUnMap(base_buf);
+        return OK;
+    }
+
+    //  4. Build the 2-layer weave.
+    call(GRAFArenaInit);
+    u8cs ext = {};
+    PATHu8sExt(ext, filepath);
+
+    weave wA = {}, wB = {}, wnu = {};
+    if (WEAVEInit(&wA)  != OK ||
+        WEAVEInit(&wB)  != OK ||
+        WEAVEInit(&wnu) != OK) {
+        ret = NOROOM; goto cleanup;
+    }
+    weave *wsrc = &wA, *wdst = &wB;
+
+    //  Layer 1: base.  WEAVEFromBlob handles empty data (no-op reset).
+    ret = WEAVEFromBlob(wsrc, base_data, ext, WEAVE_BASE_SRC);
+    if (ret != OK) goto cleanup;
+
+    //  Layer 2: wt, folded via WEAVEDiff (which runs DIFFu64s + NEIL
+    //  internally).  Even for an empty wt (deleted file) we run the
+    //  diff so every base token gets `rm = WT_SRC` → renders as `D`.
+    ret = WEAVEFromBlob(&wnu, wt_data, ext, WEAVE_WT_SRC);
+    if (ret != OK) goto cleanup;
+    ret = WEAVEDiff(wdst, wsrc, &wnu, WEAVE_WT_SRC);
+    if (ret != OK) goto cleanup;
+    wsrc = wdst;
+
+    //  5. Emit hunks.
+    ret = WEAVEEmitDiff(wsrc, filepath,
+                        wt_in_from, NULL,
+                        wt_in_to,   NULL,
+                        GRAFHunkEmit, NULL);
+
+cleanup:
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
     GRAFArenaCleanup();
+    if (wt_mapped) FILEUnMap(wt_mapped);
+    u8bUnMap(base_buf);
     return ret;
 }
 
-// --- Whole tree, wt vs base ---------------------------------------
-//
-//  Walks the base tree, collecting (path, blob_sha) pairs.  Then
-//  per-file weave diff against the wt.  Files only present in the wt
-//  (untracked additions) are not yet emitted — same TODO as before.
+// --- Shared collect-into-set visitor (ref-vs-ref tree path) -------
 
 typedef struct {
     diffref_set *set;
@@ -202,31 +260,194 @@ static ok64 diffref_collect_visit(u8cs path, u8 kind, u8cp esha,
     return OK;
 }
 
+// --- Whole tree, wt vs base ---------------------------------------
+//
+//  Two ULOG streams — base via `KEEPTreeULog`, wt via `ULOGu8bScanWt`
+//  — heap-merged by URI key with `ULOGMergeWalk`.  Per distinct path:
+//    BOTH       compare base sha (in base row's `#fragment`) against a
+//               freshly-computed wt sha; equal → skip, differ → run
+//               the 2-layer weave diff.
+//    BASE_ONLY  file deleted in wt → 2-layer weave diff with empty wt.
+//    WT_ONLY    file added in wt   → 2-layer weave diff with empty base.
+//
+//  Sha-skip pays for every unchanged file: one mmap + one SHA1 vs a
+//  full keeper blob fetch + tokenize + diff.
+
+//  Skip predicate for the wt scanner.  `IGNOMatch` already handles
+//  unconditional `.git/.dogs/.sniff` skipping (at any depth, including
+//  nested submodule `.git/`s) AND any `.gitignore` patterns the
+//  caller loaded into the `igno` struct via `IGNOLoad(reporoot)`.
+static b8 diffref_wt_skip(u8cs rel, void *ctx) {
+    return IGNOMatch((ignocp)ctx, rel, NO);
+}
+
+typedef struct {
+    keeper *k;
+    u64     base_h40;
+    u8cs    reporoot;
+    ron60   v_base;
+    ron60   v_wt;
+    Bu8     sub_prefixes;   // newline-separated `<path>/`
+    b8      sub_init;
+} diffref_wt_ctx;
+
+//  Submodule descendant filter — same pattern as sniff/CLASS.c.  When
+//  the merge surfaces a gitlink row (mode `160000` in the base tree),
+//  we remember `<path>/` and drop every subsequent step whose path
+//  starts with that prefix.  Lex order guarantees the gitlink row
+//  arrives before any of its descendants, so a single forward scan of
+//  remembered prefixes is sufficient.
+
+static b8 diffref_under_submodule(diffref_wt_ctx const *c, u8cs path) {
+    if (!c->sub_init) return NO;
+    u8cs scan = {u8bDataHead(c->sub_prefixes),
+                 u8bIdleHead(c->sub_prefixes)};
+    size_t pl = (size_t)$len(path);
+    while (!$empty(scan)) {
+        u8cp nl = scan[0];
+        while (nl < scan[1] && *nl != '\n') nl++;
+        size_t prl = (size_t)(nl - scan[0]);
+        if (prl > 0 && prl <= pl &&
+            memcmp(scan[0], path[0], prl) == 0)
+            return YES;
+        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    }
+    return NO;
+}
+
+static ok64 diffref_remember_submodule(diffref_wt_ctx *c, u8cs path) {
+    if (!c->sub_init) {
+        ok64 ao = u8bAllocate(c->sub_prefixes, 1UL << 12);
+        if (ao != OK) return ao;
+        c->sub_init = YES;
+    }
+    (void)u8bFeed(c->sub_prefixes, path);
+    (void)u8bFeed1(c->sub_prefixes, '/');
+    (void)u8bFeed1(c->sub_prefixes, '\n');
+    return OK;
+}
+
+static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
+    diffref_wt_ctx *c = (diffref_wt_ctx *)ctx_;
+    ulogreccp base = NULL, wt = NULL;
+    for (u32 i = 0; i < n; i++) {
+        if      (recs[i].verb == c->v_base) base = &recs[i];
+        else if (recs[i].verb == c->v_wt)   wt   = &recs[i];
+    }
+    ulogreccp src = base ? base : wt;
+    if (!src) return OK;
+
+    u8cs path = {};
+    path[0] = src->uri.path[0];
+    path[1] = src->uri.path[1];
+    if ($empty(path) || $len(path) >= DIFFREF_PATH_MAX) return OK;
+
+    //  Drop wt-side rows that descend into a previously-recorded
+    //  submodule (the embedded repo's own files have no business in
+    //  this tree's diff).
+    if (diffref_under_submodule(c, path)) return OK;
+
+    //  Submodules / gitlink trees: remember the path as a prefix to
+    //  filter, then drop the row itself.
+    if (base != NULL) {
+        u8cs mode = {base->uri.query[0], base->uri.query[1]};
+        a_cstr(gitlink, "160000");
+        if ($eq(mode, gitlink)) {
+            (void)diffref_remember_submodule(c, path);
+            return OK;
+        }
+    }
+
+    //  BOTH: sha-skip.  Hash wt bytes once and compare with the base
+    //  entry's `#<sha>` fragment.  Equal → no diff.
+    if (base != NULL && wt != NULL) {
+        a_path(wt_path, c->reporoot, path);
+        u8bp wt_mapped = NULL;
+        if (FILEMapRO(&wt_mapped, $path(wt_path)) == OK && wt_mapped) {
+            a_dup(u8c, wd, u8bData(wt_mapped));
+            sha1 wt_sha = {};
+            KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, wd);
+            u8 base_sha_bin[20] = {};
+            u8s sb = {base_sha_bin, base_sha_bin + 20};
+            a_dup(u8c, hx, base->uri.fragment);
+            b8 same = (HEXu8sDrainSome(sb, hx) == OK &&
+                       memcmp(wt_sha.data, base_sha_bin, 20) == 0);
+            FILEUnMap(wt_mapped);
+            if (same) return OK;
+        }
+    }
+
+    //  Real diff.  GRAFDiffWtFile handles the empty-base / empty-wt
+    //  edge cases internally (deletion / addition both emit hunks).
+    (void)GRAFDiffWtFile(c->k, path, c->base_h40, c->reporoot);
+    return OK;
+}
+
+#define DIFFREF_WT_BASE_BUF (1UL << 20)
+#define DIFFREF_WT_WT_BUF   (1UL << 20)
+
 ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
     sane(k && $ok(base_hex) && $ok(reporoot));
 
+    //  Resolve base hex to its tree sha.
     a_pad(u8, ubuf, 256);
     call(diffref_compose_ref_uri, ubuf, base_hex);
     a_dup(u8c, udata, u8bData(ubuf));
     uri target = {};
     call(URIutf8Drain, udata, &target);
+    sha1 base_tree = {};
+    call(KEEPResolveTree, k, &target, &base_tree);
 
-    diffref_entry entries[DIFFREF_MAX_FILES];
-    diffref_set set = {.v = entries, .cap = DIFFREF_MAX_FILES};
-    diffref_collect_ctx cctx = {.set = &set};
-    call(KEEPLsFiles, k, &target, diffref_collect_visit, &cctx);
-
-    if (set.overflow) {
-        fprintf(stderr, "graf: diff-tree: %u files skipped (>%u limit)\n",
-                set.overflow, (u32)DIFFREF_MAX_FILES);
+    a_cstr(s_base, "base");
+    a_cstr(s_wt,   "wt");
+    ron60 v_base = 0, v_wt = 0;
+    {
+        a_dup(u8c, sb, s_base); RONutf8sDrain(&v_base, sb);
+        a_dup(u8c, sw, s_wt);   RONutf8sDrain(&v_wt,   sw);
     }
 
-    for (u32 i = 0; i < set.n; i++) {
-        u8cs path = {(u8cp)set.v[i].path,
-                     (u8cp)set.v[i].path + set.v[i].path_len};
-        GRAFDiffWtFile(k, path, base_h40, reporoot);
+    Bu8 bu = {}, wu = {};
+    ok64 mb = u8bMap(bu, DIFFREF_WT_BASE_BUF);
+    ok64 mw = u8bMap(wu, DIFFREF_WT_WT_BUF);
+    if (mb != OK || mw != OK) {
+        if (bu[0]) u8bUnMap(bu);
+        if (wu[0]) u8bUnMap(wu);
+        return (mb != OK) ? mb : mw;
     }
-    done;
+
+    //  Base side: keeper tree → ULOG rows (`<ts>\t<verb>\t<path>?<mode>#<hex-sha>\n`).
+    ok64 to = KEEPTreeULog(k, base_tree.data, 0, v_base, bu);
+    if (to != OK) { u8bUnMap(bu); u8bUnMap(wu); return to; }
+
+    //  Wt side: filesystem walk → ULOG rows (no sha; computed on demand).
+    //  Load reporoot's `.gitignore` so build/Corpus/etc. drop out; the
+    //  meta dirs (`.git/.dogs/.sniff`) are filtered by IGNOMatch
+    //  unconditionally even with no `.gitignore` present.
+    igno ig = {};
+    a_dup(u8c, ig_root, reporoot);
+    (void)IGNOLoad(&ig, ig_root);
+    ok64 wo = ULOGu8bScanWt(reporoot, v_wt,
+                             diffref_wt_skip, &ig, wu);
+    if (wo != OK) { IGNOFree(&ig); u8bUnMap(bu); u8bUnMap(wu); return wo; }
+
+    //  Heap-merge by URI key, fan to the per-path step.
+    a_dup(u8c, view_b, u8bData(bu));
+    a_dup(u8c, view_w, u8bData(wu));
+    a_pad(u8cs, ins, 2);
+    u8csbFeed1(ins, view_b);
+    u8csbFeed1(ins, view_w);
+    a_dup(u8cs, cursors, u8csbData(ins));
+
+    diffref_wt_ctx ctx = {.k = k, .base_h40 = base_h40,
+                          .reporoot = {}, .v_base = v_base, .v_wt = v_wt};
+    u8csMv(ctx.reporoot, reporoot);
+    ok64 mr = ULOGMergeWalk(cursors, diffref_wt_step, &ctx);
+
+    if (ctx.sub_init) u8bFree(ctx.sub_prefixes);
+    IGNOFree(&ig);
+    u8bUnMap(bu);
+    u8bUnMap(wu);
+    return mr;
 }
 
 // --- Whole tree, ref vs ref ---------------------------------------

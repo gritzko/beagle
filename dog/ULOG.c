@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "abc/BUF.h"
@@ -13,6 +14,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RAP.h"
+#include "abc/URI.h"
 
 // --- streaming primitives --------------------------------------------
 
@@ -579,4 +581,157 @@ ok64 ULOGu8ssDrainHeap(u8css cursors, u8csz cmp, ulogrecp out) {
         return d;
     }
     return ULOGNONE;
+}
+
+// --- ULOGMergeWalk: heap-merge over parallel ULOG cursors -----------
+
+static b8 ulog_path_eq(ulogreccp a, ulogreccp b) {
+    u8cs ka = {}, kb = {};
+    if (u8csEmpty(a->uri.path)) u8csMv(ka, a->uri.query);
+    else                        u8csMv(ka, a->uri.path);
+    if (u8csEmpty(b->uri.path)) u8csMv(kb, b->uri.query);
+    else                        u8csMv(kb, b->uri.path);
+    if (u8csLen(ka) != u8csLen(kb)) return NO;
+    return memcmp(ka[0], kb[0], u8csLen(ka)) == 0;
+}
+
+ok64 ULOGMergeWalk(u8css cursors, ulog_step_fn cb, void *ctx) {
+    sane(cursors && cb);
+    if ($empty(cursors)) done;
+
+    //  Heapify in place — cursors[0] becomes the root (smallest URI key).
+    u8cssHeapZ(cursors, ULOGu8csZbyUri);
+
+    ulogrec group[LSM_MAX_INPUTS];
+    u32     n = 0;
+
+    for (;;) {
+        ulogrec next = {};
+        ok64 d = ULOGu8ssDrainHeap(cursors, ULOGu8csZbyUri, &next);
+        if (d == ULOGNONE) break;
+        if (d != OK) return d;
+
+        if (n == 0) {
+            group[0] = next;
+            n = 1;
+            continue;
+        }
+        if (ulog_path_eq(&group[0], &next)) {
+            if (n < LSM_MAX_INPUTS) group[n++] = next;
+            continue;
+        }
+        //  Mismatch: fire current group, then seed the next group with
+        //  `next` as its first member.
+        ok64 cr = cb(group, n, ctx);
+        if (cr != OK) return cr;
+        group[0] = next;
+        n = 1;
+    }
+
+    //  Flush trailing group, if any.
+    if (n > 0) {
+        ok64 cr = cb(group, n, ctx);
+        if (cr != OK) return cr;
+    }
+    done;
+}
+
+// --- Path utilities -------------------------------------------------
+
+b8 ULOGu8sRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full) {
+    if (!rel_out) return NO;
+    size_t rlen = $len(reporoot);
+    if ($len(full) <= rlen) return NO;
+    if (memcmp(full[0], reporoot[0], rlen) != 0) return NO;
+    u8cs rel = {$atp(full, rlen), full[1]};
+    //  Skip leading slash(es) between reporoot and the first segment.
+    while (!$empty(rel) && *rel[0] == '/') u8csUsed1(rel);
+    if ($empty(rel)) return NO;
+    rel_out[0] = rel[0];
+    rel_out[1] = rel[1];
+    return YES;
+}
+
+ron60 ULOGtsOfTimespec(struct timespec tsp) {
+    struct tm tm = {};
+    time_t sec = tsp.tv_sec;
+    //  RONNow uses localtime, so match that for round-trip.
+    localtime_r(&sec, &tm);
+    u32 ms = (u32)(tsp.tv_nsec / 1000000);
+    if (ms > 999) ms = 999;
+    ron60 r = 0;
+    if (RONOfTime(&r, &tm, ms) != OK) r = 0;
+    return r;
+}
+
+// --- ULOGu8bScanWt: walk reporoot → ULOG rows -----------------------
+
+typedef struct {
+    u8cs         reporoot;
+    u8bp         out;
+    ron60        verb;
+    ulog_skip_fn skip;
+    void        *skip_ctx;
+    ok64         err;
+} ulog_wt_ctx;
+
+static u8c const ULOG_MODE_REG[6] = "100644";
+static u8c const ULOG_MODE_EXE[6] = "100755";
+static u8c const ULOG_MODE_LNK[6] = "120000";
+
+static ok64 ulog_wt_cb(void *varg, path8bp path) {
+    sane(varg && path);
+    ulog_wt_ctx *c = (ulog_wt_ctx *)varg;
+
+    a_dup(u8c, full, u8bData(path));
+    u8cs rel = {};
+    if (!ULOGu8sRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (c->skip && c->skip(rel, c->skip_ctx))         return OK;
+
+    struct stat sb = {};
+    if (lstat((char const *)full[0], &sb) != 0) return OK;
+
+    u8c const *mode_p = ULOG_MODE_REG;
+    if      (S_ISLNK(sb.st_mode))     mode_p = ULOG_MODE_LNK;
+    else if (sb.st_mode & S_IXUSR)    mode_p = ULOG_MODE_EXE;
+    u8cs mode_s = {mode_p, mode_p + 6};
+
+    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
+                           .tv_nsec = sb.st_mtim.tv_nsec};
+    ron60 ts = ULOGtsOfTimespec(mts);
+
+    uri u = {};
+    u.path[0]  = rel[0];     u.path[1]  = rel[1];
+    u.query[0] = mode_s[0];  u.query[1] = mode_s[1];
+    //  fragment left empty (no sha yet)
+
+    ulogrec rec = {.ts = ts, .verb = c->verb, .uri = u};
+    ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
+    if (o != OK) { c->err = o; return o; }
+    return OK;
+}
+
+ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
+                   ulog_skip_fn skip, void *skip_ctx,
+                   u8bp out) {
+    sane($ok(reporoot) && out);
+    u8bReset(out);
+    ulog_wt_ctx c = {.out = out, .verb = verb, .err = OK,
+                     .skip = skip, .skip_ctx = skip_ctx};
+    u8csMv(c.reporoot, reporoot);
+
+    a_path(wp);
+    u8bFeed(wp, reporoot);
+    call(PATHu8bTerm, wp);
+
+    Bu8 scratch = {};
+    call(u8bAllocate, scratch, 1UL << 20);
+
+    ok64 so = FILEScanSorted(wp,
+                             (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
+                                         FILE_SCAN_DEEP),
+                             scratch, FILEentryZ, ulog_wt_cb, &c);
+    u8bFree(scratch);
+    if (c.err != OK) return c.err;
+    return so;
 }
