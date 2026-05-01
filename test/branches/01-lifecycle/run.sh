@@ -8,7 +8,7 @@ WT="$SCRATCH"
 # 1. seed trunk
 echo "=== 1. trunk baseline ==="
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(head_hex)
 [ -n "$T1" ] || fail "no trunk tip after first post"
 [ "$(cur_branch)" = "" ] || fail "expected trunk (empty branch), got '$(cur_branch)'"
@@ -46,7 +46,7 @@ note "x.txt modified on ?fix1"
 # 5. stage + commit on the child
 echo "=== 5. be put + be post on ?fix1 ==="
 "$BE" put x.txt >/dev/null || fail "be put x.txt on ?fix1 failed"
-"$BE" post fix1 v2 >/dev/null || fail "be post on ?fix1 failed"
+"$BE" post 'fix1 v2' >/dev/null || fail "be post on ?fix1 failed"
 T2=$(head_hex)
 [ -n "$T2" ] || fail "no tip after post on ?fix1"
 [ "$T2" != "$T1" ] || fail "post on ?fix1 did not advance tip"

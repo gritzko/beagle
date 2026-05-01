@@ -8,7 +8,7 @@ WT="$SCRATCH"
 
 # --- setup: trunk baseline (T1) ---
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(head_hex)
 [ -n "$T1" ] || fail "no trunk tip after seed post"
 note "trunk T1=$T1"
@@ -22,14 +22,14 @@ echo "=== 10. rebuild ?fix1 with a 2-commit stack ==="
 sleep 0.01
 echo "a v1 (fix1)" > a.txt
 "$BE" put a.txt >/dev/null || fail "be put a.txt on ?fix1 failed"
-"$BE" post fix1 c1 >/dev/null || fail "be post fix1 c1 failed"
+"$BE" post 'fix1 c1' >/dev/null || fail "be post fix1 c1 failed"
 C1=$(head_hex)
 [ -n "$C1" ] && [ "$C1" != "$T1" ] || fail "C1 not advanced past T1 (got '$C1')"
 
 sleep 0.01
 echo "b v1 (fix1)" > b.txt
 "$BE" put b.txt >/dev/null || fail "be put b.txt on ?fix1 failed"
-"$BE" post fix1 c2 >/dev/null || fail "be post fix1 c2 failed"
+"$BE" post 'fix1 c2' >/dev/null || fail "be post fix1 c2 failed"
 C2=$(head_hex)
 [ -n "$C2" ] && [ "$C2" != "$C1" ] || fail "C2 not advanced past C1"
 note "?fix1 stack: T1 -> C1=$C1 -> C2=$C2"
@@ -64,7 +64,7 @@ note "patch landed a.txt + b.txt in wt; trunk REFS still T_pre"
 echo "=== 13. be put a.txt + be put b.txt + be post squash ==="
 "$BE" put a.txt >/dev/null || fail "be put a.txt (post-patch) failed"
 "$BE" put b.txt >/dev/null || fail "be put b.txt (post-patch) failed"
-"$BE" post squash >/dev/null || fail "be post squash failed"
+"$BE" post 'squash msg' >/dev/null || fail "be post squash failed"
 T_squash=$(head_hex)
 [ -n "$T_squash" ] || fail "no trunk tip after post squash"
 [ "$T_squash" != "$T_pre" ] || fail "post squash did not advance trunk tip"

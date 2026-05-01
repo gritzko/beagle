@@ -57,7 +57,7 @@ echo "=== 1. WT1 seed: T1 ==="
 WT1="$TMP/wt1"
 mkdir -p "$WT1"; cd "$WT1"
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(head_hex)
 [ -n "$T1" ] || fail "WT1: no T1 after first post"
 note "T1=$T1"
@@ -88,7 +88,7 @@ sleep 0.1
 echo "y v1" > y.txt
 "$BE" put y.txt >/dev/null \
     || fail "WT1: be put y.txt failed"
-"$BE" post v2 >/dev/null
+"$BE" post 'v2 msg' >/dev/null
 T2=$(head_hex)
 [ -n "$T2" ] && [ "$T2" != "$T1" ] || fail "T2 didn't advance"
 note "T2=$T2"
@@ -103,7 +103,7 @@ sleep 0.1
 echo "z v1" > z.txt
 "$BE" put z.txt >/dev/null \
     || fail "WT2: be put z.txt failed"
-"$BE" post wt2-z 2>"$TMP/post.err" >/dev/null \
+"$BE" post 'wt2-z msg' 2>"$TMP/post.err" >/dev/null \
     || { cat "$TMP/post.err"; fail "WT2: be post should have rebased"; }
 T3=$(head_hex)
 [ -n "$T3" ] || fail "WT2: no tip after rebase post"

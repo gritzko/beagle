@@ -83,7 +83,7 @@ note "clone edited a.txt; worktree adds c.txt, modifies b.txt, removes a.txt"
 # --- 5. be post in the worktree (msg in fragment) ---
 echo "=== 5. be post (local commit) ==="
 cd "$WT"
-"$BE" post --seq worktree commit >/dev/null 2>&1 \
+"$BE" post --seq 'worktree commit' >/dev/null 2>&1 \
     || fail "be post failed"
 # Read the committed SHA from the tail of .sniff.  Rows are
 # `<ts>\t<verb>\t<uri>`; the canonical format is `?<branch>#<sha>` —

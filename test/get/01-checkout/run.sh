@@ -10,7 +10,7 @@ match "$CASE/01.put.err.txt" 01.put.got.err
 # 02: commit it.  stdout is empty (byte-exact); stderr is "A <path>"
 # + "sniff: commit <sha>" — sha varies with author/committer time, so
 # match it as a regex.
-"$BE" post v1 > 02.post.got.out 2> 02.post.got.err
+"$BE" post 'v1 msg' > 02.post.got.out 2> 02.post.got.err
 empty    02.post.got.out
 match_re "$CASE/02.post.err.txt" 02.post.got.err
 

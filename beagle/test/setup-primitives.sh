@@ -42,7 +42,7 @@ sp_ref_tip() {
 #    T1 — the commit sha.
 sp_seed_trunk() {
     echo "x v1" > x.txt
-    "$BE" post v1 >/dev/null
+    "$BE" post 'v1 msg' >/dev/null
     T1=$(sp_head_hex)
     [ -n "$T1" ] || { echo "sp_seed_trunk: no T1" >&2; exit 1; }
 }
@@ -54,7 +54,7 @@ sp_seed_two_tips() {
     sp_seed_trunk
     sleep 0.1
     echo "x v2" > x.txt
-    "$BE" post v2 >/dev/null
+    "$BE" post 'v2 msg' >/dev/null
     T2=$(sp_head_hex)
     [ -n "$T2" ] && [ "$T2" != "$T1" ] \
         || { echo "sp_seed_two_tips: no T2 (got '$T2')" >&2; exit 1; }

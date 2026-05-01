@@ -165,7 +165,7 @@ done
 # 4. `be post sync` — single-parent commit on ?fix2 carrying the
 #    merged tree.
 # ------------------------------------------------------------------
-must "$BE" post sync \
+must "$BE" post 'sync msg' \
     > "$LOGS/03.post.out" 2> "$LOGS/03.post.err"
 
 POST_TIP=$(head_hex)

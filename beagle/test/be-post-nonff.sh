@@ -21,7 +21,7 @@ vc_snapshot before
 vc_step "be post v3 — non-ff against unrelated REFS tip → refused"
 sleep 0.1
 echo "x v3" > x.txt
-vc_run nonff "$BE" post v3
+vc_run nonff "$BE" post 'v3 msg'
 
 vc_snapshot after
 

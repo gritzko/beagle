@@ -152,11 +152,12 @@ static const CanonCase CANON_CASES[] = {
     {"//localhost/src/repo?master",        "//localhost/src/repo?master"},
     // Path-only.
     {"/absolute/path",                     "/absolute/path"},
-    // Bare ref name — classified as query; kept literally (no aliasing).
-    {"master",                             "?master"},
-    {"main",                               "?main"},
-    {"trunk",                              "?trunk"},
-    {"feature",                            "?feature"},
+    // Bare token — RFC 3986 path-noscheme; verbs that expect a ref
+    // (post, patch) demote path → query themselves.
+    {"master",                             "master"},
+    {"main",                               "main"},
+    {"trunk",                              "trunk"},
+    {"feature",                            "feature"},
     // No `refs/` strip — query is opaque.
     {"?refs/heads/main",                   "?refs/heads/main"},
     {"?heads/main",                        "?heads/main"},
@@ -165,9 +166,9 @@ static const CanonCase CANON_CASES[] = {
     // Trunk: `?` and `?/` both fold to `?`.
     {"?",                                  "?"},
     {"?/",                                 "?"},
-    // 40-hex SHA — classified as query, kept.
+    // 40-hex SHA — bare path; verbs that expect a sha demote.
     {"0123456789abcdef0123456789abcdef01234567",
-        "?0123456789abcdef0123456789abcdef01234567"},
+        "0123456789abcdef0123456789abcdef01234567"},
     // Whitespace — classified as fragment (commit msg).
     {"fix the typo",                       "#fix the typo"},
     // Bare fragment.

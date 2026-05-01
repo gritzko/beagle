@@ -98,7 +98,7 @@ mkdir -p "$WT"; cd "$WT"
 # ------------------------------------------------------------------
 echo "=== 1. trunk baseline ==="
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(head_hex)
 [ -n "$T1" ] || fail "no trunk tip after first post"
 [ "$(cur_branch)" = "" ] || fail "expected trunk (empty branch), got '$(cur_branch)'"
@@ -160,7 +160,7 @@ note "x.txt modified on ?fix1"
 echo "=== 5. be put + be post on ?fix1 ==="
 "$BE" put x.txt >/dev/null \
     || fail "be put x.txt on ?fix1 failed"
-"$BE" post fix1 v2 >/dev/null \
+"$BE" post 'fix1 v2' >/dev/null \
     || fail "be post on ?fix1 failed"
 T2=$(head_hex)
 [ -n "$T2" ] || fail "no tip after post on ?fix1"
@@ -244,7 +244,7 @@ sleep 0.2
 echo "a v1 (fix1)" > a.txt
 "$BE" put a.txt >/dev/null \
     || fail "be put a.txt on ?fix1 failed"
-"$BE" post fix1 c1 >/dev/null \
+"$BE" post 'fix1 c1' >/dev/null \
     || fail "be post fix1 c1 failed"
 C1=$(head_hex)
 [ -n "$C1" ] && [ "$C1" != "$T1" ] \
@@ -254,7 +254,7 @@ sleep 0.2
 echo "b v1 (fix1)" > b.txt
 "$BE" put b.txt >/dev/null \
     || fail "be put b.txt on ?fix1 failed"
-"$BE" post fix1 c2 >/dev/null \
+"$BE" post 'fix1 c2' >/dev/null \
     || fail "be post fix1 c2 failed"
 C2=$(head_hex)
 [ -n "$C2" ] && [ "$C2" != "$C1" ] \
@@ -306,7 +306,7 @@ echo "=== 13. be put a.txt + be put b.txt + be post squash ==="
     || fail "be put a.txt (post-patch) failed"
 "$BE" put b.txt >/dev/null \
     || fail "be put b.txt (post-patch) failed"
-"$BE" post squash >/dev/null \
+"$BE" post 'squash msg' >/dev/null \
     || fail "be post squash failed"
 T_squash=$(head_hex)
 [ -n "$T_squash" ] || fail "no trunk tip after post squash"
@@ -380,7 +380,7 @@ sleep 0.2
 echo "racing-1" > racing.txt
 "$BE" put racing.txt >/dev/null \
     || fail "WT: be put racing.txt failed"
-"$BE" post racing-first >/dev/null \
+"$BE" post 'racing-first msg' >/dev/null \
     || fail "WT: be post racing-first failed"
 T_advance=$(head_hex)
 [ "$T_advance" != "$T_pre_rebase" ] \
@@ -396,7 +396,7 @@ sleep 0.2
 echo "wt2-only" > wt2.txt
 "$BE" put wt2.txt >/dev/null \
     || fail "WT2: be put wt2.txt failed"
-"$BE" post wt2-rebase 2>"$TMP/wt2-rebase.err" >/dev/null \
+"$BE" post 'wt2-rebase msg' 2>"$TMP/wt2-rebase.err" >/dev/null \
     || { cat "$TMP/wt2-rebase.err"; fail "WT2: be post should have rebased"; }
 T_rebased=$(head_hex)
 [ -n "$T_rebased" ] && [ "$T_rebased" != "$T_advance" ] \
@@ -458,7 +458,7 @@ cd "$WT"
 sleep 0.2
 echo "L1 v1" > l1.txt
 "$BE" put l1.txt >/dev/null
-"$BE" post L1 c1 >/dev/null \
+"$BE" post 'L1 c1' >/dev/null \
     || fail "be post on ?L1 failed"
 C_L1=$(head_hex)
 [ -n "$C_L1" ] || fail "no L1 tip"
@@ -474,7 +474,7 @@ echo "=== 21. setup ?L1/L2 with a commit ==="
 sleep 0.2
 echo "L2 v1" > l2.txt
 "$BE" put l2.txt >/dev/null
-"$BE" post L2 c1 >/dev/null \
+"$BE" post 'L2 c1' >/dev/null \
     || fail "be post on ?L1/L2 failed"
 C_L2=$(head_hex)
 [ -n "$C_L2" ] && [ "$C_L2" != "$C_L1" ] || fail "C_L2 didn't advance"
@@ -498,7 +498,7 @@ sleep 0.2
 echo "L1 v2 (advance)" > l1b.txt
 "$BE" put l1b.txt >/dev/null \
     || fail "be put l1b.txt on ?L1 failed"
-"$BE" post L1 advance >/dev/null \
+"$BE" post 'L1 advance' >/dev/null \
     || fail "be post advance on ?L1 failed"
 C_L1b=$(head_hex)
 [ -n "$C_L1b" ] && [ "$C_L1b" != "$C_L1" ] \
@@ -511,7 +511,7 @@ sleep 0.2
 echo "L1 v3 wtl1" > l1c.txt
 "$BE" put l1c.txt >/dev/null \
     || fail "WTL1: be put l1c.txt failed"
-"$BE" post L1 wtl1 2>"$TMP/wtl1.err" >/dev/null \
+"$BE" post 'L1 wtl1' 2>"$TMP/wtl1.err" >/dev/null \
     || { cat "$TMP/wtl1.err"; fail "WTL1: be post should rebase + cascade"; }
 C_L1c=$(head_hex)
 [ -n "$C_L1c" ] && [ "$C_L1c" != "$C_L1b" ] && [ "$C_L1c" != "$C_L1" ] \
@@ -573,7 +573,7 @@ note "§25: trunk pre = $T25_pre"
 sleep 0.2
 echo "fix1-25 v1" > f25.txt
 "$BE" put f25.txt >/dev/null
-"$BE" post fix1-25 c1 >/dev/null \
+"$BE" post 'fix1-25 c1' >/dev/null \
     || fail "§25: be post fix1-25 c1 failed"
 F25_C1=$(head_hex)
 [ -n "$F25_C1" ] && [ "$F25_C1" != "$T25_pre" ] \
@@ -588,7 +588,7 @@ ln -s "$WT/.dogs" "$WT25/.dogs"
     || fail "§25: WT25 be get ? failed"
 ( cd "$WT25" && sleep 0.2 && echo "trunk advance 25" > tr25.txt \
     && "$BE" put tr25.txt >/dev/null \
-    && "$BE" post trunk-advance-25 >/dev/null ) \
+    && "$BE" post 'trunk-advance-25 msg' >/dev/null ) \
     || fail "§25: WT25 trunk advance failed"
 
 T25_advance=$(ref_tip "?")
@@ -638,7 +638,7 @@ cd "$WT"
 sleep 0.2
 echo "fix1-26 v1" > f1_26.txt
 "$BE" put f1_26.txt >/dev/null
-"$BE" post fix1-26 c1 >/dev/null \
+"$BE" post 'fix1-26 c1' >/dev/null \
     || fail "§26: be post fix1-26 c1 failed"
 F1_TIP=$(head_hex)
 [ -n "$F1_TIP" ] || fail "§26: no fix1 tip"
@@ -653,7 +653,7 @@ F1_TIP=$(head_hex)
 sleep 0.2
 echo "fix2-26 v1" > f2_26.txt
 "$BE" put f2_26.txt >/dev/null
-"$BE" post fix2-26 c1 >/dev/null \
+"$BE" post 'fix2-26 c1' >/dev/null \
     || fail "§26: be post fix2-26 c1 failed"
 F2_TIP_BEFORE=$(head_hex)
 [ -n "$F2_TIP_BEFORE" ] && [ "$F2_TIP_BEFORE" != "$F1_TIP" ] \
@@ -712,7 +712,7 @@ cd "$WT"
 sleep 0.2
 echo "fix2-27 v1" > f27_2.txt
 "$BE" put f27_2.txt >/dev/null
-"$BE" post fix2-27 c1 >/dev/null \
+"$BE" post 'fix2-27 c1' >/dev/null \
     || fail "§27: be post fix2-27 c1 failed"
 F2_TIP_PRE=$(ref_tip "?fix2")
 [ -n "$F2_TIP_PRE" ] || fail "§27: no ?fix2 tip"
@@ -723,7 +723,7 @@ F2_TIP_PRE=$(ref_tip "?fix2")
 sleep 0.2
 echo "fix1-27 v1" > f27_1.txt
 "$BE" put f27_1.txt >/dev/null
-"$BE" post fix1-27 c1 >/dev/null \
+"$BE" post 'fix1-27 c1' >/dev/null \
     || fail "§27: be post fix1-27 c1 failed"
 F1_TIP_PRE=$(ref_tip "?fix1")
 TRUNK_PRE_27=$(ref_tip "?")
@@ -775,7 +775,7 @@ echo "=== 28a. POST on clean wt → POSTNONE ==="
 T28a_pre=$(ref_tip "?")
 [ -n "$T28a_pre" ] || fail "§28a: no trunk tip"
 set +e
-"$BE" post 28a-msg 2>"$TMP/p28a.err" >/dev/null
+"$BE" post '28a-msg msg' 2>"$TMP/p28a.err" >/dev/null
 EC=$?
 set -e
 [ "$EC" != "0" ] || fail "§28a: POST with msg + no changes should fail (exit was 0)"
@@ -794,7 +794,7 @@ echo "a v28b" > a28.txt
 echo "b v28b" > b28.txt
 "$BE" put a28.txt b28.txt >/dev/null \
     || fail "§28b: stage initial baseline failed"
-"$BE" post 28b-base >/dev/null \
+"$BE" post '28b-base msg' >/dev/null \
     || fail "§28b: baseline commit failed"
 T28b_base=$(head_hex)
 
@@ -809,7 +809,7 @@ echo "a edited 28b" > a28.txt
 echo "b edited 28b" > b28.txt
 "$BE" put a28.txt >/dev/null \
     || fail "§28b: be put a28.txt failed"
-"$BE" post 28b-selective >/dev/null \
+"$BE" post '28b-selective msg' >/dev/null \
     || fail "§28b: be post 28b-selective failed"
 T28b_sel=$(head_hex)
 [ "$T28b_sel" != "$T28b_base" ] || fail "§28b: tip didn't advance"
@@ -835,7 +835,7 @@ echo "a v28c base" > a28c.txt
 echo "b v28c base" > b28c.txt
 "$BE" put a28c.txt b28c.txt >/dev/null \
     || fail "§28c: stage initial baseline failed"
-"$BE" post 28c-base >/dev/null \
+"$BE" post '28c-base msg' >/dev/null \
     || fail "§28c: baseline commit failed"
 T28c_base=$(head_hex)
 B28C_BASE_BLOB=$("$KEEPER" ls-files ".#$T28c_base" 2>/dev/null \
@@ -845,7 +845,7 @@ B28C_BASE_BLOB=$("$KEEPER" ls-files ".#$T28c_base" 2>/dev/null \
 sleep 0.2
 echo "a edited 28c" > a28c.txt
 echo "b edited 28c" > b28c.txt
-"$BE" post 28c-implicit >/dev/null \
+"$BE" post '28c-implicit msg' >/dev/null \
     || fail "§28c: be post 28c-implicit failed"
 T28c_imp=$(head_hex)
 [ "$T28c_imp" != "$T28c_base" ] || fail "§28c: tip didn't advance"
@@ -865,7 +865,7 @@ rm -f a28.txt b28.txt a28c.txt b28c.txt
 "$BE" delete b28.txt    >/dev/null 2>&1 || true
 "$BE" delete a28c.txt   >/dev/null 2>&1 || true
 "$BE" delete b28c.txt   >/dev/null 2>&1 || true
-"$BE" post 28-cleanup   >/dev/null 2>&1 || true
+"$BE" post '28-cleanup msg'   >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------
 # === 29. patch-id dedup E2E ===
@@ -898,7 +898,7 @@ echo "fix base" > fix29.txt
 echo "other base" > other29.txt
 "$BE" put fix29.txt other29.txt >/dev/null \
     || fail "§29: stage baseline failed"
-"$BE" post 29-base >/dev/null \
+"$BE" post '29-base msg' >/dev/null \
     || fail "§29: baseline commit failed"
 T29_T1=$(head_hex)
 note "§29: T1=$T29_T1"
@@ -912,14 +912,14 @@ sleep 0.2
 echo "fix changed" > fix29.txt
 "$BE" put fix29.txt >/dev/null \
     || fail "§29: put fix29.txt on ?fix1 failed"
-"$BE" post fix1c1 >/dev/null \
+"$BE" post 'fix1c1 msg' >/dev/null \
     || fail "§29: post fix1c1 failed"
 F29_C1=$(head_hex)
 sleep 0.2
 echo "other changed" > other29.txt
 "$BE" put other29.txt >/dev/null \
     || fail "§29: put other29.txt on ?fix1 failed"
-"$BE" post fix1c2 >/dev/null \
+"$BE" post 'fix1c2 msg' >/dev/null \
     || fail "§29: post fix1c2 failed"
 F29_C2=$(head_hex)
 note "§29: ?fix1 stack T1=$T29_T1 -> C1=$F29_C1 -> C2=$F29_C2"
@@ -938,7 +938,7 @@ sleep 0.2
 echo "fix changed" > fix29.txt
 "$BE" put fix29.txt >/dev/null \
     || fail "§29: put fix29.txt on ?fix2 failed"
-"$BE" post fix2c1prime >/dev/null \
+"$BE" post 'fix2c1prime msg' >/dev/null \
     || fail "§29: post fix2c1prime failed"
 F29_C1P=$(head_hex)
 [ "$F29_C1P" != "$F29_C1" ] \
@@ -984,7 +984,7 @@ note "§29 OK: C1 deduped against C1'; ?fix2 advanced by exactly 1 commit"
 rm -f fix29.txt other29.txt
 "$BE" delete fix29.txt   >/dev/null 2>&1 || true
 "$BE" delete other29.txt >/dev/null 2>&1 || true
-"$BE" post 29-cleanup    >/dev/null 2>&1 || true
+"$BE" post '29-cleanup msg'    >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------
 # === 30. cross-branch promote conflict abort ===
@@ -1009,7 +1009,7 @@ sleep 0.2
 printf 'the quick fox\n' > conflict30.txt
 "$BE" put conflict30.txt >/dev/null \
     || fail "§30: put conflict30.txt failed"
-"$BE" post 30-base >/dev/null \
+"$BE" post '30-base msg' >/dev/null \
     || fail "§30: post 30-base failed"
 T30_BASE=$(head_hex)
 
@@ -1022,7 +1022,7 @@ sleep 0.2
 printf 'the QUICK fox\n' > conflict30.txt
 "$BE" put conflict30.txt >/dev/null \
     || fail "§30: put OURS on ?fix1 failed"
-"$BE" post fix1-ours >/dev/null \
+"$BE" post 'fix1-ours msg' >/dev/null \
     || fail "§30: post fix1-ours failed"
 F1_OURS=$(head_hex)
 F1_REFS_PRE=$(ref_tip "?fix1")
@@ -1035,7 +1035,7 @@ ln -s "$WT/.dogs" "$WT30/.dogs"
     || fail "§30: WT30 trunk checkout failed"
 ( cd "$WT30" && sleep 0.2 && printf 'the slow fox\n' > conflict30.txt \
     && "$BE" put conflict30.txt >/dev/null \
-    && "$BE" post 30-theirs >/dev/null ) \
+    && "$BE" post '30-theirs msg' >/dev/null ) \
     || fail "§30: WT30 trunk advance failed"
 T30_NEW=$(ref_tip "?")
 [ "$T30_NEW" != "$T30_BASE" ] || fail "§30: trunk didn't advance"
@@ -1071,7 +1071,7 @@ note "§30 OK: conflict aborted; REFS + wt unchanged"
 rm -rf "$WT30"
 rm -f conflict30.txt
 "$BE" delete conflict30.txt >/dev/null 2>&1 || true
-"$BE" post 30-cleanup       >/dev/null 2>&1 || true
+"$BE" post '30-cleanup msg'       >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------
 # === 31. cascade conflict in descendant — SKIPPED ===
@@ -1112,7 +1112,7 @@ cd "$WT"
 sleep 0.2
 echo "x32" > x32.txt
 "$BE" put x32.txt >/dev/null
-"$BE" post 32-base >/dev/null \
+"$BE" post '32-base msg' >/dev/null \
     || fail "§32: base post failed"
 T32_TRUNK=$(ref_tip "?")
 
@@ -1125,7 +1125,7 @@ T32_TRUNK=$(ref_tip "?")
 sleep 0.2
 echo "fix1 work 32" > fwork32.txt
 "$BE" put fwork32.txt >/dev/null
-"$BE" post fix1-32 >/dev/null \
+"$BE" post 'fix1-32 msg' >/dev/null \
     || fail "§32: post fix1-32 failed"
 F1_TIP_32=$(ref_tip "?fix1")
 FEAT_TIP_32=$(ref_tip "?feat")
@@ -1165,7 +1165,7 @@ note "§32 OK: ?feat/new created at $NEW32 (parent chain to ?feat=$FEAT_TIP_32)"
 rm -f x32.txt fwork32.txt
 "$BE" delete x32.txt    >/dev/null 2>&1 || true
 "$BE" delete fwork32.txt >/dev/null 2>&1 || true
-"$BE" post 32-cleanup   >/dev/null 2>&1 || true
+"$BE" post '32-cleanup msg'   >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------
 # === 33. dispatcher arm: ?<absolute>/ trailing-slash basename reuse ===
@@ -1181,7 +1181,7 @@ cd "$WT"
 sleep 0.2
 echo "x33" > x33.txt
 "$BE" put x33.txt >/dev/null
-"$BE" post 33-base >/dev/null \
+"$BE" post '33-base msg' >/dev/null \
     || fail "§33: base post failed"
 
 "$BE" post "?./feat" >/dev/null \
@@ -1193,7 +1193,7 @@ echo "x33" > x33.txt
 sleep 0.2
 echo "fix1-33" > f33.txt
 "$BE" put f33.txt >/dev/null
-"$BE" post fix1-33 >/dev/null \
+"$BE" post 'fix1-33 msg' >/dev/null \
     || fail "§33: post fix1-33 failed"
 F1_PRE_33=$(ref_tip "?fix1")
 FEAT_PRE_33=$(ref_tip "?feat")
@@ -1228,7 +1228,7 @@ note "§33 OK: trailing-slash rewrote to ?feat/fix1 ($NEW33)"
 rm -f x33.txt f33.txt
 "$BE" delete x33.txt >/dev/null 2>&1 || true
 "$BE" delete f33.txt >/dev/null 2>&1 || true
-"$BE" post 33-cleanup >/dev/null 2>&1 || true
+"$BE" post '33-cleanup msg' >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------
 # === 34. tree-parent absolute auto-syncs cur (mirror of §25) ===
@@ -1245,7 +1245,7 @@ cd "$WT"
 sleep 0.2
 echo "x34" > x34.txt
 "$BE" put x34.txt >/dev/null
-"$BE" post 34-base >/dev/null \
+"$BE" post '34-base msg' >/dev/null \
     || fail "§34: base post failed"
 
 "$BE" post "?./feat" >/dev/null \
@@ -1259,7 +1259,7 @@ echo "x34" > x34.txt
 sleep 0.2
 echo "feat/fix work" > ff34.txt
 "$BE" put ff34.txt >/dev/null
-"$BE" post feat-fix-c1 >/dev/null \
+"$BE" post 'feat-fix-c1 msg' >/dev/null \
     || fail "§34: post feat-fix-c1 failed"
 FF_PRE_34=$(ref_tip "?feat/fix")
 
@@ -1282,6 +1282,6 @@ note "§34 OK: cur (?feat/fix) auto-synced to ?feat=$FEAT_AFTER_34"
 rm -f x34.txt ff34.txt
 "$BE" delete x34.txt >/dev/null 2>&1 || true
 "$BE" delete ff34.txt >/dev/null 2>&1 || true
-"$BE" post 34-cleanup >/dev/null 2>&1 || true
+"$BE" post '34-cleanup msg' >/dev/null 2>&1 || true
 
 echo "=== workflow-branches: increment 1 + 2 + 3 + 4 OK ==="

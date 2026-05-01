@@ -10,12 +10,12 @@ vc_step "setup: T1 (d.txt + k.txt), T2 (k.txt only); wt at T1, d.txt clean"
 vc_fresh_wt
 echo "k stable" > k.txt
 echo "d v1"     > d.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 
 sleep 0.1
 "$BE" delete d.txt >/dev/null
-"$BE" post v2 >/dev/null
+"$BE" post 'v2 msg' >/dev/null
 T2=$(sp_head_hex)
 
 #  Restore T1 so d.txt is on disk and stamped (clean).

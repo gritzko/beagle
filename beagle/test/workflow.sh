@@ -50,7 +50,7 @@ head_hex() {
 echo "=== 1. be post (auto-stage) on a fresh worktree ==="
 D1="$TMP/r1"; mkdir -p "$D1"; cd "$D1"
 echo hello > README
-"$BE" post initial >/dev/null
+"$BE" post 'initial msg' >/dev/null
 H1=$(head_hex)
 [ -n "$H1" ] || fail "HEAD unset after be post"
 note "HEAD=$H1"
@@ -97,7 +97,7 @@ echo late > late.txt
 mkdir -p side/inner
 echo nested > side/inner/n.txt
 
-"$BE" post a plus b >/dev/null
+"$BE" post 'a plus b' >/dev/null
 C3=$(head_hex)
 note "HEAD=$C3"
 
@@ -121,7 +121,7 @@ echo "=== 4. modify + bare be post (implicit all-dirty) ==="
 cd "$D3b"
 sleep 0.2                          # force distinct mtime
 echo alpha-v2 > a.txt
-"$BE" post a v2 >/dev/null
+"$BE" post 'a v2' >/dev/null
 C4=$(head_hex)
 [ "$C4" != "$C3" ] || fail "HEAD unchanged after modify + post"
 note "HEAD=$C4"
@@ -139,7 +139,7 @@ note "a.txt updated on disk after be get"
 echo "=== 5. be delete a.txt ==="
 cd "$D4b"
 "$BE" delete a.txt >/dev/null
-"$BE" post drop a >/dev/null
+"$BE" post 'drop a' >/dev/null
 want_missing a.txt                    # POST must unlink explicit deletes
 C5=$(head_hex)
 
@@ -160,7 +160,7 @@ want_file a.txt "alpha"
 want_file b.txt "bravo"
 rm a.txt                              # vanish one without a `delete` row
 "$BE" delete >/dev/null               # no-op (bare); sweep happens at post
-"$BE" post auto delete >/dev/null
+"$BE" post 'auto delete' >/dev/null
 C6=$(head_hex)
 
 D6b="$TMP/r6b"; mkdir -p "$D6b"; cd "$D6b"
@@ -185,7 +185,7 @@ echo bravo    > lib/sub/b.txt
 echo untracked > top.txt                 # not put → should not appear
 
 "$BE" put lib/ >/dev/null
-"$BE" post put lib >/dev/null
+"$BE" post 'put lib' >/dev/null
 C7=$(head_hex)
 [ -n "$C7" ] || fail "HEAD unset after be post"
 note "HEAD=$C7"
@@ -214,7 +214,7 @@ echo deep       > mk/sub/inner.txt
 echo deep-gone  > mk/sub/inner.tmp
 
 "$BE" put mk/ >/dev/null
-"$BE" post put mk with igno >/dev/null
+"$BE" post 'put mk with igno' >/dev/null
 C8=$(head_hex)
 note "HEAD=$C8"
 
@@ -244,7 +244,7 @@ echo v1 > src/foo.c
 echo top > README
 "$BE" put src/foo.c >/dev/null           # baseline: just src/foo.c
 "$BE" put README   >/dev/null
-"$BE" post baseline >/dev/null
+"$BE" post 'baseline msg' >/dev/null
 C9a=$(head_hex)
 note "baseline HEAD=$C9a"
 
@@ -252,7 +252,7 @@ sleep 0.2
 echo v2 > src/foo.c                      # modify tracked
 echo stray > src/bar.c                   # add untracked
 "$BE" put src/ >/dev/null
-"$BE" post tracked only src >/dev/null
+"$BE" post 'tracked only src' >/dev/null
 C9b=$(head_hex)
 [ "$C9b" != "$C9a" ] || fail "HEAD unchanged after modify+put dir"
 note "updated HEAD=$C9b"
@@ -278,12 +278,12 @@ D10="$TMP/r10"; mkdir -p "$D10/dd/inner"; cd "$D10"
 echo a > dd/a.txt
 echo b > dd/inner/b.txt
 echo k > keep.txt
-"$BE" post seed dd >/dev/null       # implicit: all three land
+"$BE" post 'seed dd' >/dev/null       # implicit: all three land
 C10a=$(head_hex)
 note "baseline HEAD=$C10a"
 
 "$BE" delete dd/ >/dev/null
-"$BE" post drop dd >/dev/null
+"$BE" post 'drop dd' >/dev/null
 C10b=$(head_hex)
 [ "$C10b" != "$C10a" ] || fail "HEAD unchanged after delete dir"
 want_missing dd/a.txt
@@ -316,7 +316,7 @@ note "commit tree excludes the deleted subtree"
 echo "=== 11. bare be put stages tracked-only (no untracked leak) ==="
 D11="$TMP/r11"; mkdir -p "$D11/lib"; cd "$D11"
 echo v1 > lib/foo.c
-"$BE" post seed lib >/dev/null
+"$BE" post 'seed lib' >/dev/null
 C11a=$(head_hex)
 note "baseline HEAD=$C11a"
 
@@ -335,7 +335,7 @@ awk -F'\t' '$2 == "put" && $3 == "top.txt"' .sniff | grep -q . \
     && fail "bare put leaked untracked top.txt into the ULOG"
 note "bare put staged lib/foo.c only; untracked side/ + top.txt absent from ULOG"
 
-"$BE" post tracked-only modify >/dev/null
+"$BE" post 'tracked-only modify' >/dev/null
 C11b=$(head_hex)
 [ "$C11b" != "$C11a" ] || fail "HEAD unchanged after bare-put + post"
 note "updated HEAD=$C11b"
@@ -367,7 +367,7 @@ note "commit tree carries the modified tracked file; untracked subtree stayed ou
 echo "=== 12. bare be put is content-driven (mtime is just an optimization) ==="
 D12="$TMP/r12"; mkdir -p "$D12"; cd "$D12"
 echo v1 > foo.c
-"$BE" post seed >/dev/null
+"$BE" post 'seed msg' >/dev/null
 C12a=$(head_hex)
 note "baseline HEAD=$C12a"
 
@@ -402,7 +402,7 @@ echo "=== 13. be post leaves untouched files alone (mtime + bytes) ==="
 D13="$TMP/r13"; mkdir -p "$D13"; cd "$D13"
 echo a-v1 > a.txt
 echo b-v1 > b.txt
-"$BE" post seed two >/dev/null
+"$BE" post 'seed two' >/dev/null
 C13a=$(head_hex)
 note "baseline HEAD=$C13a"
 
@@ -414,7 +414,7 @@ a_bytes_before=$(cat a.txt)
 
 sleep 0.2
 echo b-v2 > b.txt                          # modify only b.txt
-"$BE" post b only >/dev/null
+"$BE" post 'b only' >/dev/null
 C13b=$(head_hex)
 [ "$C13b" != "$C13a" ] || fail "HEAD unchanged after b.txt modify"
 
@@ -439,14 +439,14 @@ note "untouched a.txt: mtime + bytes preserved across post"
 echo "=== 14. rename keeps content searchable at the new path ==="
 D14="$TMP/r14"; mkdir -p "$D14"; cd "$D14"
 printf 'int rendezvous_alpha(void) { return 42; }\n' > old_name.c
-"$BE" post seed >/dev/null
+"$BE" post 'seed msg' >/dev/null
 mv old_name.c new_name.c
 #  Sniff's PUT refuses a content-unchanged-but-renamed file, so
 #  perturb the byte-stream slightly to force a fresh commit.  The
 #  symbol we search for is unchanged, which is the point.
 printf 'int rendezvous_alpha(void) { return 43; }\n' > new_name.c
 "$BE" put new_name.c >/dev/null
-"$BE" post rename >/dev/null
+"$BE" post 'rename msg' >/dev/null
 
 # spot finds the symbol; output must mention the new path.
 hits=$("$BE" '#rendezvous_alpha' 2>/dev/null || true)

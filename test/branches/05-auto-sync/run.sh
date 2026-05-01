@@ -7,7 +7,7 @@ WT="$SCRATCH"
 
 # --- setup: trunk with one commit ---
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T25_pre=$(head_hex)
 [ -n "$T25_pre" ] || fail "no trunk tip after seed post"
 note "§25: trunk pre = $T25_pre"
@@ -19,7 +19,7 @@ echo "=== 25. ?.. auto-sync ==="
 sleep 0.01
 echo "fix1-25 v1" > f25.txt
 "$BE" put f25.txt >/dev/null
-"$BE" post fix1-25 c1 >/dev/null || fail "§25: be post fix1-25 c1 failed"
+"$BE" post 'fix1-25 c1' >/dev/null || fail "§25: be post fix1-25 c1 failed"
 F25_C1=$(head_hex)
 [ -n "$F25_C1" ] && [ "$F25_C1" != "$T25_pre" ] \
     || fail "§25: ?fix1 didn't advance"
@@ -33,7 +33,7 @@ ln -s "$WT/.dogs" "$WT25/.dogs"
     || fail "§25: WT25 be get ? failed"
 ( cd "$WT25" && sleep 0.01 && echo "trunk advance 25" > tr25.txt \
     && "$BE" put tr25.txt >/dev/null \
-    && "$BE" post trunk-advance-25 >/dev/null ) \
+    && "$BE" post 'trunk-advance-25 msg' >/dev/null ) \
     || fail "§25: WT25 trunk advance failed"
 
 T25_advance=$(ref_tip "?")
@@ -67,7 +67,7 @@ cd "$WT"
 sleep 0.01
 echo "fix1-26 v1" > f1_26.txt
 "$BE" put f1_26.txt >/dev/null
-"$BE" post fix1-26 c1 >/dev/null || fail "§26: be post fix1-26 c1 failed"
+"$BE" post 'fix1-26 c1' >/dev/null || fail "§26: be post fix1-26 c1 failed"
 F1_TIP=$(head_hex)
 [ -n "$F1_TIP" ] || fail "§26: no fix1 tip"
 
@@ -77,7 +77,7 @@ F1_TIP=$(head_hex)
 sleep 0.01
 echo "fix2-26 v1" > f2_26.txt
 "$BE" put f2_26.txt >/dev/null
-"$BE" post fix2-26 c1 >/dev/null || fail "§26: be post fix2-26 c1 failed"
+"$BE" post 'fix2-26 c1' >/dev/null || fail "§26: be post fix2-26 c1 failed"
 F2_TIP_BEFORE=$(head_hex)
 [ -n "$F2_TIP_BEFORE" ] && [ "$F2_TIP_BEFORE" != "$F1_TIP" ] \
     || fail "§26: ?fix1/fix2 didn't advance"
@@ -113,7 +113,7 @@ cd "$WT"
 sleep 0.01
 echo "fix2-27 v1" > f27_2.txt
 "$BE" put f27_2.txt >/dev/null
-"$BE" post fix2-27 c1 >/dev/null || fail "§27: be post fix2-27 c1 failed"
+"$BE" post 'fix2-27 c1' >/dev/null || fail "§27: be post fix2-27 c1 failed"
 F2_TIP_PRE=$(ref_tip "?fix2")
 [ -n "$F2_TIP_PRE" ] || fail "§27: no ?fix2 tip"
 
@@ -121,7 +121,7 @@ F2_TIP_PRE=$(ref_tip "?fix2")
 sleep 0.01
 echo "fix1-27 v1" > f27_1.txt
 "$BE" put f27_1.txt >/dev/null
-"$BE" post fix1-27 c1 >/dev/null || fail "§27: be post fix1-27 c1 failed"
+"$BE" post 'fix1-27 c1' >/dev/null || fail "§27: be post fix1-27 c1 failed"
 F1_TIP_PRE=$(ref_tip "?fix1")
 TRUNK_PRE_27=$(ref_tip "?")
 [ "$(cur_branch)" = "fix1" ] || fail "§27: wt should be on ?fix1"

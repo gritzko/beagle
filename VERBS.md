@@ -53,10 +53,10 @@ A `?ref` resolves in this order:
  3. Sha prefix (`?abc1234`) ⇒ object lookup; attaches as a
     detached wt.
 
-Branch creation is **POST-only**.  `be post ?./fix` forks a
-child at the current tip; `be post ?feat/new` or `be post ?feat/`
-creates a new leaf under existing `feat`.  GET never creates —
-unresolved refs (relative, absolute, or sha) are errors.
+Branch creation is **PUT-only**.  `be put ?./fix` forks a child
+at the current tip; `be put ?feat/new` or `be put ?feat/`
+creates a new leaf under existing `feat`.  GET and POST never
+create — unresolved refs are errors.
 
 | URI | From branch `feature` |
 |---|---|
@@ -65,7 +65,37 @@ unresolved refs (relative, absolute, or sha) are errors.
 | `?..`               | Parent branch (the trunk if `feature` is top-level). |
 | `?fix`              | Absolute lookup of root-level branch `fix`; error if missing. |
 | `?feat/fix`         | Absolute path; same regardless of current branch. |
-| `?feat/`            | Absolute path with **trailing slash**: in POST, "create a leaf under `feat` reusing cur's basename"; elsewhere, error. |
+| `?feat/`            | Absolute path with **trailing slash**: in PUT, "create a leaf under `feat` reusing cur's basename"; elsewhere, error. |
+
+##  Verb × URI aspect
+
+Each URI component contributes one aspect; verbs combine them
+orthogonally.  Pick the verb, then each populated URI part adds
+its effect.
+
+|        | `?branch`             | `./path`                | `//remote`                | `#frag`                          |
+|--------|-----------------------|-------------------------|---------------------------|----------------------------------|
+| POST   | advance branch        | —                       | advance remote (push)     | new commit (msg = frag)          |
+| GET    | switch wt to branch   | restore file in wt      | fetch from remote         | sha pin / detach                 |
+| PUT    | create branch         | stage file/dir          | register remote alias     | —                                |
+| DELETE | drop branch           | unlink + stage delete   | drop alias / push delete  | —                                |
+| PATCH  | absorb branch (3-way) | restrict merge to file  | fetch + absorb            | spot rewrite (`#'old'->'new'.c`) |
+
+The default for an empty `?branch` slot is **cur** (current
+branch).  So `be post #msg` ≡ "advance cur with a new commit",
+and `be post ?br#msg` ≡ "advance br with a new commit (parent =
+cur.tip), cur untouched".  The verb only modifies the named ref;
+cur is just the current-tip pointer that serves as the new
+commit's parent.
+
+Argument shape: every non-flag argv token becomes one URI via
+`DOGNormalizeArg`.  Tokens with whitespace classify as fragment
+(commit messages: `be post 'fix the typo'`).  Tokens with `?`,
+`#`, `/`, or a known scheme go through the URI lexer.  Bare
+tokens (`README`, `feat`, `v1.2.3`) are paths by default;
+ref-expecting verbs (POST, PATCH, GET) promote a path to query
+when the bytes match the QURY ref grammar.  Single-word commit
+messages need explicit `#`: `be post '#fix'`.
 
 ##  Schemes
 
@@ -121,7 +151,7 @@ When a verb takes a remote:
   - `be get //origin` — fast-forward the **current branch** from
     origin's counterpart.
   - `be get ?A` — **local**: resolve per §"Ref resolution"; no
-    network.  The relative forms `?./A` / `?../A` create on miss.
+    network.  Unresolved refs are errors (PUT creates).
 
 Alias lookup walks up the dir tree to the store root, same as
 `<store>/ALIAS` in `keeper/REF.md`.
@@ -144,8 +174,8 @@ branch from its remote counterpart, not to local branch switches.
 | Form | Effect |
 |---|---|
 | `be get ?feat`                 | Switch the wt to branch `feat`, reset files from its tip.  Refuses on dirty overlap. |
-| `be get ?./fix`                | Switch the wt to child branch `fix`; error if missing (POST creates). |
-| `be get ?../fix`               | Switch the wt to sibling branch `fix`; error if missing. |
+| `be get ?./fix`                | Switch the wt to child branch `fix`; error if missing (PUT creates). |
+| `be get ?../fix`               | Switch the wt to sibling branch `fix`; error if missing (PUT creates). |
 | `be get ?abc1234`              | Detached checkout on a sha.  `post`/`patch` refuse until re-attached. |
 | `be get file.c?feat`           | Overwrite one file in the wt from another branch's tip (no staging). |
 | `be get //origin`              | Fast-forward the **current branch** from its `//origin` counterpart.  Refuses on divergence — resolve with `be patch //origin`. |
@@ -158,28 +188,33 @@ After a successful GET, `.sniff` records the new base as
 `(branch, tip-sha)` and clears any pending PATCH parents.  Bare
 `be get` (no ref, no remote) is a no-op status.
 
-##  POST — publish, with history
+##  POST — advance / commit
 
-POST advances a branch with cur's content, **preserving commit
-history** (ff or rebase, never a merge commit).  Two phases per
-invocation:
+POST has three orthogonal aspects (see §"Verb × URI aspect"):
 
-  1. **Commit-if-staged**: any wt edits or PATCH-staged content
-     land first as a new single-parent commit on cur (trailing
-     words = message).  `commit_all`, `commit`, and the merged
-     tree from prior PATCHes all collapse into one new commit.
-  2. **Promote**: if the URI names another branch, rebase cur's
-     stack onto that branch's tip and ff it.  When the URI is
-     bare or names cur, only phase 1 runs.
+  - **`#frag`** — make a new commit (msg = fragment).  No
+    fragment ⇒ no commit.
+  - **`?branch`** — the named branch advances (default: cur).
+    Cur is not modified unless cur *is* the named branch.
+  - **`//remote`** — also push the result to the remote.
 
-POST does **fast-forward when the target tip is at the expected
-base, otherwise rebases** cur's stack on top of the new tip.
-The CAS is on the *expected* tip — concurrent posters that
-move the target between fetch and post are rejected and the
-client retries.  Force-rewrite of a non-trunk branch is via
-`be delete ?<branch>` then `be post` (explicit).  Empty POSTs
-(no commit to make, no promotion possible) are refused with
-`POSTNONE`.
+The new commit's parent is always cur.tip.  POST never produces
+a merge commit; every commit is single-parent.  When the named
+branch and cur diverge, POST rebases cur's stack onto the named
+branch's tip with patch-id dedup; cur's old SHAs are not
+rewritten — the rebased copies live on the named branch as new
+commits appended on top.  POST is **always append-only** on the
+named target; descendants of either branch stay valid.
+
+The CAS is on the named branch's expected tip — concurrent
+posters that move it between fetch and post are rejected and
+the client retries.  Empty POSTs (no commit, no ref move,
+nothing to push) are refused with `POSTNONE`.
+
+**Branch creation lives in PUT, not POST.**  `be put ?./fix`
+makes the branch; POST only advances existing refs.  Force-
+rewrite is `be delete ?<branch>` then `be put ?<branch>`
+(explicit).
 
 ### Per-file classification via stamps
 
@@ -228,58 +263,61 @@ with `CLOCKBAD` if the system clock has moved backwards.  One
 `ts` is reserved per command, shared by every row + file stamp
 written in that invocation.
 
-After a successful POST that promoted cur into another branch,
-cur's `fork_commit` advances iff the target was cur's upstream
-(parent or self) — otherwise cur is unchanged and the target
-holds rebased copies of cur's commits (which dedup via patch-id
-on later flows).  Whether the wt re-binds to the target or stays
-on cur depends on the URI: see the form table below.
-
-Free-form trailing words after the verb (and any URI) are joined
-with `' '` and folded into the URI's `#fragment` — that's where
-the commit message lives for the commit-if-staged step.  No
-quoting tricks, no `-m` flag.  A token counts as a URI only if
-it contains one of `/`, `.`, `:`, `?`, `#`, or is a 40-hex
-object id; otherwise it kicks off the message tail.  Bare names
-like `README` need a leading `./` to be parsed as paths.
-(Legacy: `-m "msg"` is still accepted.)
+Commit-message channel: a quoted whitespace-bearing arg
+classifies as fragment automatically (`be post 'fix the typo'`).
+Single-word messages need explicit `#`: `be post '#fix'`.
+Legacy `-m "msg"` is still accepted.
 
 | Form | Effect |
 |---|---|
-| `be post fix the parser`           | Bare: commit-if-staged on cur, single-parent, message = trailing words.  No promotion. |
-| `be post ?..`                      | Commit-if-staged, then promote cur into parent (rebase + ff parent).  Cur auto-syncs to parent's new tip. |
-| `be post ?./fix`                   | Commit-if-staged, then pull child `fix` up onto cur (rebase fix's stack onto cur's tip, ff fix).  Cur unchanged. |
-| `be post ?./fix`  *(missing)*      | Create child branch `fix` at cur's tip, content = cur's stack.  Cur unchanged. |
-| `be post ?feat`                    | Promote cur into existing branch `feat` (rebase + ff feat).  Cur auto-syncs only if `feat` is cur's upstream. |
-| `be post ?feat/new`                | Create new leaf `feat/new` under existing `feat`, content = cur's stack rebased on `feat`'s tip.  Cur unchanged. |
-| `be post ?feat/`                   | Same; leaf name reused from cur's basename. |
-| `be post //origin`                 | Push current branch to origin via `keeper receive-pack` (`keeper/WIRE.md`).  Ff or rebase, same rules as local. |
-| `be post //origin?feat`            | Push that branch specifically. |
+| `be post`                          | No-op (no commit, no ref move).  Status / dry-run. |
+| `be post 'fix the typo'`           | Commit on cur (msg = "fix the typo"); cur advances. |
+| `be post '#fix'`                   | Commit on cur (msg = "fix"); cur advances. |
+| `be post ?feat`                    | Advance feat to cur.tip (label move; ff if linear, rebase otherwise).  Cur untouched. |
+| `be post ?feat#msg`                | New commit (parent = cur.tip), advance feat to it.  Cur untouched. |
+| `be post ?./stash#wip`             | (Requires `be put ?./stash` first.)  New commit (parent = cur.tip) lands on stash; cur clean.  Stash idiom. |
+| `be post ?..`                      | Advance parent to cur.tip (ff or rebase).  Cur untouched. |
+| `be post //origin`                 | Push cur to origin via `keeper receive-pack` (`keeper/WIRE.md`). |
+| `be post //origin?feat`            | Advance feat locally to cur.tip and push to origin. |
+| `be post //origin?feat#msg`        | New commit, advance feat, push. |
 
 Each POST appends one or more entries to the target branch's
-`REFS` — one for the commit-if-staged step on cur, plus the
-rebased equivalents when promoting onto a target.  Every commit
-written is single-parent.  When cur's stack is rebased over
+`REFS` — one for the new commit (when `#frag` is present), plus
+rebased equivalents when cur's stack diverged from the target.
+Every commit is single-parent.  When cur's stack is rebased over
 existing commits on the target, **patch-id dedup** silently
 skips replays whose normalized diff is already reachable from
-the target tip.  See §"Cascade rebase" (TODO) for what happens
-to descendants of a branch whose stack got rewritten.
+the target tip.  No descendant invalidation: POST always
+appends, never rewrites a branch's stack.
 
-##  PUT — stage additions
+##  PUT — create / stage / register
 
-PUT records explicit staging intent.  Each `put` row also stamps
-its file via `utimensat` to the row's ts, so the file's mtime
-points back to the put row that owns its content.
+PUT has three orthogonal aspects (see §"Verb × URI aspect"):
+
+  - **`?branch`** — create the named branch as a label at
+    cur.tip (no commit).
+  - **`./path`** — stage that file or dir into the next commit.
+  - **`//remote`** — register the URL as a remote alias.
+
+Bare `be put` (no URI) stages every tracked-and-dirty file.
+Each `put` row stamps its file via `utimensat` to the row's
+ts, so the file's mtime points back to the put row that owns
+its content.
 
 | Form | Effect |
 |---|---|
-| `be put`          | Walk the wt; stage every tracked-and-dirty file (one `put` row per path).  Refuses with `PUTNONE` if no tracked file is dirty. |
-| `be put file.c`   | Stage one file.  Refuses with `PUTNONE` if the file is missing, or if it is already clean and matches baseline.  Re-stamps the file. |
-| `be put src/`     | Stage a subtree.  If `src/` is **tracked** (any baseline entry under it): tracked-dirty files only.  If **untracked**: every non-ignored file under it. |
+| `be put`                | Stage every tracked-and-dirty file (one `put` row per path).  Refuses with `PUTNONE` if no tracked file is dirty. |
+| `be put file.c`         | Stage one file.  Refuses with `PUTNONE` if missing or already clean.  Re-stamps the file. |
+| `be put src/`           | Stage a subtree.  Tracked dir: dirty files only.  Untracked: every non-ignored file under it. |
+| `be put ?./fix`         | Create child branch `fix` at cur.tip (label move; no commit). |
+| `be put ?../sib`        | Create sibling branch `sib` at the parent's tip. |
+| `be put ?feat/new`      | Create absolute leaf `feat/new` under existing `feat`. |
+| `be put ?feat/`         | Same; leaf name reused from cur's basename. |
+| `be put ssh://host/path`| Register as a remote alias (name from host, or `--as=name`). |
 
-PUT only writes to `<wt>/.sniff` (the ULOG) and stamps files;
-no pack writes happen until POST.  Pushing to a peer is POST's
-job.
+PUT writes to `<wt>/.sniff` (the ULOG, for `./path` rows),
+`.dogs/REFS` (for `?branch` create), or `.dogs/ALIAS` (for
+`//remote`); no pack writes happen until POST.
 
 A `put` on a clean baseline-stamped file is refused — re-stamping
 it under a `put` row would shift its provenance from baseline to
@@ -300,8 +338,10 @@ absent paths are an OK no-op.
 |---|---|
 | `be delete file.c`                  | Unlink the file (refused as `DELDIRTY` if user-edited); append `delete file.c` row. |
 | `be delete src/`                    | Atomic pre-flight: scan all descendants; refuse if **any** is dirty.  On pass, unlink all + append one `delete src/` row. |
-| `be delete ?feat/fix1`              | **Drop a branch dir.**  Leaf-only; refused if descendants exist or any wt's `.sniff` records this branch as base.  Reclaims unreachable shards (current GC path).  See `keeper/README.md` §"Delta-dependency DAG" and `sniff/AT.md`. |
+| `be delete ?feat/fix1`              | **Drop a branch dir.**  Leaf-only by default; refused with `DELDESC` if descendants exist or any wt's `.sniff` records this branch as base.  Reclaims unreachable shards (current GC path).  See `keeper/README.md` §"Delta-dependency DAG" and `sniff/AT.md`. |
+| `be delete -r ?feat` / `--force`    | Drop the branch *and* every descendant, depth-first (leaves first).  Still refused if any wt has it as base. |
 | `be delete //origin?feat`           | Push a delete (`<old-sha> 000…0 refs/heads/feat`) via `keeper receive-pack` — same wire git uses for `git push -d`. |
+| `be delete //origin`                | Drop the remote alias entry from `<store>/ALIAS`.  No network. |
 
 ##  PATCH — absorb, history erased
 
@@ -332,7 +372,7 @@ them; hand-edit, or use a `diff:?` projection to enumerate.
 | `be patch ?./fix`                   | Absorb child branch `fix` (its stack) into cur. |
 | `be patch ?feat/fix`                | Absorb absolute branch `feat/fix` into cur as one commit. |
 | `be patch ?trunk`                   | Absorb trunk's stack into cur (sync from trunk). |
-| `be patch ?feat..?feat2`            | Apply a range diff to the wt (replay another branch's delta between two named refs). |
+| `be patch ?feat..feat2`             | Apply a range diff to the wt (replay another branch's delta between two named refs). |
 | `be patch //origin?main`            | Fetch + absorb remote branch into wt.  ≈ `git pull --squash --no-commit`. |
 | `be patch file.c?feat`              | Absorb one file's version from another branch into the wt. |
 | `be patch #'Old'->'New'.c`          | Delegated to spot: in-place structural rewrite across `.c` files. |
@@ -404,16 +444,16 @@ the same thing by heuristic (path points at an existing store).
 ```sh
 # on trunk wt
 cd proj
-be post ?./feat             # POST creates child branch `feat` at trunk's tip
+be put ?./feat              # PUT creates child branch `feat` at trunk's tip
 be get ?./feat              # GET switches the wt to it
 echo patch > new.c
-be put . && be post feat stub  # stage + commit on `feat`
+be put . && be post '#feat stub'  # stage + commit on `feat`
 be post //origin            # push the branch
 
 # back on trunk
 be get ?..                  # parent of `feat` is the trunk
 be patch ?./feat            # absorb feat's delta into trunk's wt (history erased)
-be post sync feat           # single-parent commit on trunk with feat's content folded in
+be post '#sync feat'        # single-parent commit on trunk with feat's content folded in
 ```
 
 ### Example 4 — close a worktree
@@ -427,6 +467,22 @@ Closing a wt is just removing its dir.  Branch dirs (packs,
 REFS) stay put in the primary store.  Use `be delete ?feat` from
 another wt to actually drop the branch.
 
+### Example 5 — stash dirty wt and switch
+
+```sh
+# on cur with dirty wt; want to switch to otherbranch
+be put ?./stash             # create stash branch at cur.tip
+be post ?./stash#wip        # commit dirty on stash; cur stays clean
+be get ?otherbranch         # switch (wt now clean)
+
+# come back later
+be get ?./stash             # pick up the stashed work
+```
+
+The stash idiom relies on POST's aspect rule: with `?./stash`
+present, the new commit lands on stash only — cur is the new
+commit's parent but doesn't advance.
+
 ##  Common-task cheat sheet
 
 | git | be |
@@ -434,16 +490,16 @@ another wt to actually drop the branch.
 | `git clone URL`                        | `be get //URL` |
 | `git fetch`                            | `be get //origin?*` |
 | `git pull --ff-only`                   | `be get //origin` |
-| `git pull`                             | `be patch //origin` then `be post sync` (single-parent absorb, not a merge commit) |
-| `git checkout -b feat` (child of trunk)| `be post ?./feat` then `be get ?./feat` (POST creates, GET switches) |
+| `git pull`                             | `be patch //origin && be post '#sync'` (single-parent absorb, not a merge commit) |
+| `git checkout -b feat` (child of trunk)| `be put ?./feat && be get ?./feat` (PUT creates, GET switches) |
 | `git checkout feat`                    | `be get ?feat` |
 | `git worktree add ../feat feat`        | `cd ../feat && be get file:../proj?feat` |
-| `git add file && git commit -m`        | `be put ./file && be post msg` |
-| `git commit -am "…"`                   | `be put . && be post msg` |
-| `git rm file && commit`                | `be delete ./file && be post msg` |
+| `git add file && git commit -m`        | `be put ./file && be post '#msg'` |
+| `git commit -am "…"`                   | `be put . && be post 'msg with space'` |
+| `git rm file && commit`                | `be delete ./file && be post '#msg'` |
 | `git branch -d feat`                   | `be delete ?feat` |
-| `git merge trunk`                      | `be patch ?trunk && be post sync trunk` (single-parent on cur; no merge commit) |
-| `git cherry-pick <sha>`                | `be patch ?<sha>^..?<sha>` |
+| `git merge trunk`                      | `be patch ?trunk && be post '#sync trunk'` (single-parent on cur; no merge commit) |
+| `git cherry-pick <sha>`                | `be patch ?<sha>~..<sha>` |
 | `git push`                             | `be post //origin` |
 | `git push -d origin feat`              | `be delete //origin?feat` |
 | `git rev-parse HEAD`                   | `be sha1:?` |
@@ -467,15 +523,17 @@ another wt to actually drop the branch.
     its remote form, refuses non-ff (use `be patch //origin` to
     absorb divergence).  POST does fast-forward when the target
     is at the expected base, otherwise rebases cur's stack onto
-    the new tip.  CAS on the expected tip; concurrent posters
-    that move the target are rejected and retry.  Force-rewrite
-    of a non-trunk branch is `be delete ?<branch>` then
-    `be post`.  Empty POSTs are refused.
- 4. **Tree-sharded branches; POST creates, GET reads.**
-    Sub-branch creation: `be post ?./A` (child), `be post ?../A`
-    (sibling), `be post ?feat/new` or `be post ?feat/` (absolute
+    the new tip — but only the named target advances; cur is
+    untouched unless cur *is* the target.  CAS on the expected
+    tip; concurrent posters that move the target are rejected
+    and retry.  Force-rewrite of a non-trunk branch is
+    `be delete ?<branch>` then `be put ?<branch>`.  Empty POSTs
+    are refused.
+ 4. **Tree-sharded branches; PUT creates, GET reads, POST advances.**
+    Sub-branch creation: `be put ?./A` (child), `be put ?../A`
+    (sibling), `be put ?feat/new` or `be put ?feat/` (absolute
     under existing parent).  Bare `?A` is absolute (≡ `?/A`).
-    GET never auto-creates — unresolved refs are errors.
+    GET and POST never auto-create — unresolved refs are errors.
  5. **One store per machine, many worktrees.**  Per-wt state
     lives in `<wt>/.sniff` (base branch, base tip, pending PATCH
     parents).  Secondary wts symlink `.dogs` back to the
@@ -525,30 +583,6 @@ another wt to actually drop the branch.
     branch" (drops shards reachable only from that branch dir).
     A real squash (consolidate a branch's REFS into a single
     commit without dropping the branch) is TODO.
-  - **Cascade rebase.**  When a POST rewrites branch B's stack
-    (the rebase case, not ff), every descendant of B holds a
-    stale `fork_commit` pointing at an orphaned SHA.  The
-    cascade walks descendants depth-first: for each child C,
-    replay C's stack `(C.fork_commit..C.tip)` onto B's new tip
-    via per-commit 3-way merge (base = `tree(parent(Cᵢ))`,
-    ours = running HEAD starting at B's new tip, theirs =
-    `tree(Cᵢ)`); patch-id check against ancestors of B's new
-    tip skips already-present commits; update C's record
-    (`fork_commit = B.new_tip`, `tip = last replayed`); recurse
-    into C's children.  **Atomic**: any conflict during the
-    cascade rejects the entire POST — the offending branch and
-    conflict paths are returned, no partial-cascade state is
-    persisted, the user resolves the named child locally
-    (typically by `be post`-ing it first to absorb the conflict
-    explicitly) and retries.  Trigger condition is narrow —
-    cascade runs only when the POST actually rewrote B's stack
-    (i.e., when `that` is `this`'s upstream, the same predicate
-    that drives auto-sync of cur); ff posts and posts to a
-    sibling/cousin/new-branch leave B's stack untouched, so
-    descendants stay valid.  Cost is dominated by leaf branches
-    (no descendants → no-op); deep subtrees pay one rebase per
-    descendant, with patch-id dedup keeping per-step cost near
-    zero when descendants share commits with the new spine.
   - **Trunk for git peers.**  First contact reads the remote's
     `HEAD`; if absent, prefer `main` then `master`.  Re-binding
     on a remote default-branch rename is TODO (today the alias

@@ -12,7 +12,7 @@ cd "$WT"
 sleep 0.01
 printf 'the quick fox\n' > conflict30.txt
 "$BE" put conflict30.txt >/dev/null || fail "§30: put conflict30.txt failed"
-"$BE" post 30-base >/dev/null || fail "§30: post 30-base failed"
+"$BE" post '30-base msg' >/dev/null || fail "§30: post 30-base failed"
 T30_BASE=$(head_hex)
 
 # Create ?fix1 with the OURS edit ("QUICK").
@@ -21,7 +21,7 @@ T30_BASE=$(head_hex)
 sleep 0.01
 printf 'the QUICK fox\n' > conflict30.txt
 "$BE" put conflict30.txt >/dev/null || fail "§30: put OURS on ?fix1 failed"
-"$BE" post fix1-ours >/dev/null || fail "§30: post fix1-ours failed"
+"$BE" post 'fix1-ours msg' >/dev/null || fail "§30: post fix1-ours failed"
 F1_OURS=$(head_hex)
 F1_REFS_PRE=$(ref_tip "?fix1")
 
@@ -33,7 +33,7 @@ ln -s "$WT/.dogs" "$WT30/.dogs"
     || fail "§30: WT30 trunk checkout failed"
 ( cd "$WT30" && sleep 0.01 && printf 'the slow fox\n' > conflict30.txt \
     && "$BE" put conflict30.txt >/dev/null \
-    && "$BE" post 30-theirs >/dev/null ) \
+    && "$BE" post '30-theirs msg' >/dev/null ) \
     || fail "§30: WT30 trunk advance failed"
 T30_NEW=$(ref_tip "?")
 [ "$T30_NEW" != "$T30_BASE" ] || fail "§30: trunk didn't advance"

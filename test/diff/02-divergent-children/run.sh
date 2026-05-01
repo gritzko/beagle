@@ -15,7 +15,7 @@
 cp "$CASE/01.foo.c" foo.c
 touch -d "2026-04-20 12:01:00" foo.c
 "$BE" put foo.c >/dev/null 2>&1
-"$BE" post -m baseline >/dev/null 2>&1
+"$BE" post 'baseline msg' >/dev/null 2>&1
 
 #  --- create + switch to ?fix1, edit, post --------------------------
 "$BE" post '?./fix1' >/dev/null 2>&1
@@ -23,7 +23,7 @@ touch -d "2026-04-20 12:01:00" foo.c
 cp "$CASE/02.foo.fix1.c" foo.c
 touch -d "2026-04-20 12:02:00" foo.c
 "$BE" put foo.c >/dev/null 2>&1
-"$BE" post c1 >/dev/null 2>&1
+"$BE" post 'c1 msg' >/dev/null 2>&1
 
 #  --- back to trunk, create + switch to ?fix2, edit, post -----------
 "$BE" get  '?..'     >/dev/null 2>&1
@@ -32,7 +32,7 @@ touch -d "2026-04-20 12:02:00" foo.c
 cp "$CASE/03.foo.fix2.c" foo.c
 touch -d "2026-04-20 12:03:00" foo.c
 "$BE" put foo.c >/dev/null 2>&1
-"$BE" post c1 >/dev/null 2>&1
+"$BE" post 'c1 msg' >/dev/null 2>&1
 
 #  --- diff fix1..fix2 (forward) -------------------------------------
 "$BE" get 'diff:foo.c?fix1..fix2' \

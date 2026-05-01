@@ -31,12 +31,12 @@ mkdir -p "$OUT"
 #  the original `dog/ULOG.h` had at commits 4806969 and 1861cb6.
 cp "$CASE/01.foo.old.h" foo.h
 "$BE" put  foo.h    >/dev/null 2>&1
-"$BE" post v1       >/dev/null 2>&1
+"$BE" post 'v1 msg'       >/dev/null 2>&1
 OLD_SHA=$(grep -oE '#[0-9a-f]{40}' .sniff | tail -1 | tr -d '#')
 
 cp "$CASE/02.foo.new.h" foo.h
 "$BE" put  foo.h    >/dev/null 2>&1
-"$BE" post v2       >/dev/null 2>&1
+"$BE" post 'v2 msg'       >/dev/null 2>&1
 NEW_SHA=$(grep -oE '#[0-9a-f]{40}' .sniff | tail -1 | tr -d '#')
 
 "$BE" "diff:foo.h?${OLD_SHA}..${NEW_SHA}" \

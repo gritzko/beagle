@@ -13,7 +13,7 @@ sp_seed_trunk
 vc_snapshot before
 
 vc_step "be post noop — should refuse (no changes since base)"
-vc_run noop "$BE" post noop
+vc_run noop "$BE" post 'noop msg'
 
 vc_snapshot after
 

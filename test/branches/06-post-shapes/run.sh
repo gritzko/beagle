@@ -7,7 +7,7 @@ WT="$SCRATCH"
 
 # --- setup: trunk with seed commit ---
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 
 echo "=== 28. baseline POST shapes ==="
 
@@ -16,7 +16,7 @@ echo "=== 28a. POST on clean wt → POSTNONE ==="
 T28a_pre=$(ref_tip "?")
 [ -n "$T28a_pre" ] || fail "§28a: no trunk tip"
 set +e
-"$BE" post 28a-msg 2>"$ETMP/p28a.err" >/dev/null
+"$BE" post '28a-msg msg' 2>"$ETMP/p28a.err" >/dev/null
 EC=$?
 set -e
 [ "$EC" != "0" ] || fail "§28a: POST with msg + no changes should fail"
@@ -34,7 +34,7 @@ echo "a v28b" > a28.txt
 echo "b v28b" > b28.txt
 "$BE" put a28.txt b28.txt >/dev/null \
     || fail "§28b: stage initial baseline failed"
-"$BE" post 28b-base >/dev/null \
+"$BE" post '28b-base msg' >/dev/null \
     || fail "§28b: baseline commit failed"
 T28b_base=$(head_hex)
 
@@ -47,7 +47,7 @@ echo "a edited 28b" > a28.txt
 echo "b edited 28b" > b28.txt
 "$BE" put a28.txt >/dev/null \
     || fail "§28b: be put a28.txt failed"
-"$BE" post 28b-selective >/dev/null \
+"$BE" post '28b-selective msg' >/dev/null \
     || fail "§28b: be post 28b-selective failed"
 T28b_sel=$(head_hex)
 [ "$T28b_sel" != "$T28b_base" ] || fail "§28b: tip didn't advance"
@@ -70,7 +70,7 @@ echo "a v28c base" > a28c.txt
 echo "b v28c base" > b28c.txt
 "$BE" put a28c.txt b28c.txt >/dev/null \
     || fail "§28c: stage initial baseline failed"
-"$BE" post 28c-base >/dev/null \
+"$BE" post '28c-base msg' >/dev/null \
     || fail "§28c: baseline commit failed"
 T28c_base=$(head_hex)
 B28C_BASE_BLOB=$("$KEEPER" ls-files ".#$T28c_base" 2>/dev/null \
@@ -79,7 +79,7 @@ B28C_BASE_BLOB=$("$KEEPER" ls-files ".#$T28c_base" 2>/dev/null \
 sleep 0.01
 echo "a edited 28c" > a28c.txt
 echo "b edited 28c" > b28c.txt
-"$BE" post 28c-implicit >/dev/null \
+"$BE" post '28c-implicit msg' >/dev/null \
     || fail "§28c: be post 28c-implicit failed"
 T28c_imp=$(head_hex)
 [ "$T28c_imp" != "$T28c_base" ] || fail "§28c: tip didn't advance"

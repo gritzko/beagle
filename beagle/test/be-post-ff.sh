@@ -17,7 +17,7 @@ echo "x v2" > x.txt
 
 vc_snapshot before
 
-vc_run ffpost "$BE" post v2
+vc_run ffpost "$BE" post 'v2 msg'
 
 vc_snapshot after
 

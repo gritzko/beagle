@@ -19,7 +19,7 @@ WT="$SCRATCH"
 
 # 1. primary trunk seed
 echo "v1" > x.txt
-"$BE" post seed >/dev/null || fail "primary seed post failed"
+"$BE" post 'seed msg' >/dev/null || fail "primary seed post failed"
 T1=$(head_hex)
 [ -n "$T1" ] || fail "no trunk tip after seed"
 [ "$(cur_branch)" = "" ] || fail "primary should be on trunk"
@@ -61,7 +61,7 @@ note "WT2 switched to ?fix1"
 # 4. sibling commits on ?fix1
 ( cd "$WT2" && sleep 0.01 && echo "extra" > extra.txt \
     && "$BE" put extra.txt >/dev/null \
-    && "$BE" post fix1 c1 >/dev/null ) \
+    && "$BE" post 'fix1 c1' >/dev/null ) \
     || fail "WT2: edit/put/post on ?fix1 failed"
 FIX1_TIP=$(ref_tip "?fix1")
 [ -n "$FIX1_TIP" ] && [ "$FIX1_TIP" != "$T1" ] \
@@ -85,7 +85,7 @@ note "patch landed extra.txt in trunk wt; trunk REFS still T1"
 # 7. primary: put + post merge — single-parent commit on trunk
 "$BE" put extra.txt >/dev/null \
     || fail "be put extra.txt failed"
-"$BE" post merge fix1 >/dev/null \
+"$BE" post 'merge fix1' >/dev/null \
     || fail "be post merge fix1 failed"
 T_MERGE=$(head_hex)
 [ -n "$T_MERGE" ] && [ "$T_MERGE" != "$T1" ] \

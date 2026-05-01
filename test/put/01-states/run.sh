@@ -5,7 +5,7 @@
 cp "$CASE/01.unchanged.txt" unchanged.txt
 cp "$CASE/02.to-modify.txt" to-modify.txt
 "$BE" put unchanged.txt to-modify.txt >/dev/null 2>&1
-"$BE" post baseline >/dev/null 2>&1
+"$BE" post 'baseline msg' >/dev/null 2>&1
 
 # Stage 2: mutate one file, drop in a new one, leave one alone.
 cp "$CASE/03.modified.txt" to-modify.txt

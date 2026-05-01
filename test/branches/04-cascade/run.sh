@@ -7,7 +7,7 @@ WT="$SCRATCH"
 
 # --- setup: trunk with one commit ---
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 note "trunk seeded"
 
 echo "=== 20. setup ?L1 with a commit ==="
@@ -16,7 +16,7 @@ echo "=== 20. setup ?L1 with a commit ==="
 sleep 0.01
 echo "L1 v1" > l1.txt
 "$BE" put l1.txt >/dev/null
-"$BE" post L1 c1 >/dev/null || fail "be post on ?L1 failed"
+"$BE" post 'L1 c1' >/dev/null || fail "be post on ?L1 failed"
 C_L1=$(head_hex)
 [ -n "$C_L1" ] || fail "no L1 tip"
 note "?L1 at C_L1=$C_L1"
@@ -28,7 +28,7 @@ echo "=== 21. setup ?L1/L2 with a commit ==="
 sleep 0.01
 echo "L2 v1" > l2.txt
 "$BE" put l2.txt >/dev/null
-"$BE" post L2 c1 >/dev/null || fail "be post on ?L1/L2 failed"
+"$BE" post 'L2 c1' >/dev/null || fail "be post on ?L1/L2 failed"
 C_L2=$(head_hex)
 [ -n "$C_L2" ] && [ "$C_L2" != "$C_L1" ] || fail "C_L2 didn't advance"
 note "?L1/L2 at C_L2=$C_L2"
@@ -47,7 +47,7 @@ echo "=== 23. WT advances ?L1 to C_L1b ==="
 sleep 0.01
 echo "L1 v2 (advance)" > l1b.txt
 "$BE" put l1b.txt >/dev/null || fail "be put l1b.txt on ?L1 failed"
-"$BE" post L1 advance >/dev/null || fail "be post advance on ?L1 failed"
+"$BE" post 'L1 advance' >/dev/null || fail "be post advance on ?L1 failed"
 C_L1b=$(head_hex)
 [ -n "$C_L1b" ] && [ "$C_L1b" != "$C_L1" ] || fail "C_L1b didn't advance"
 note "?L1 advanced to C_L1b=$C_L1b"
@@ -57,7 +57,7 @@ cd "$WTL1"
 sleep 0.01
 echo "L1 v3 wtl1" > l1c.txt
 "$BE" put l1c.txt >/dev/null || fail "WTL1: be put l1c.txt failed"
-"$BE" post L1 wtl1 2>"$ETMP/wtl1.err" >/dev/null \
+"$BE" post 'L1 wtl1' 2>"$ETMP/wtl1.err" >/dev/null \
     || { cat "$ETMP/wtl1.err"; fail "WTL1: be post should rebase + cascade"; }
 C_L1c=$(head_hex)
 [ -n "$C_L1c" ] && [ "$C_L1c" != "$C_L1b" ] && [ "$C_L1c" != "$C_L1" ] \

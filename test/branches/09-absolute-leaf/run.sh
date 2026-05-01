@@ -13,7 +13,7 @@ cd "$WT"
 sleep 0.01
 echo "x32" > x32.txt
 "$BE" put x32.txt >/dev/null
-"$BE" post 32-base >/dev/null || fail "§32: base post failed"
+"$BE" post '32-base msg' >/dev/null || fail "§32: base post failed"
 T32_TRUNK=$(ref_tip "?")
 
 "$BE" post "?./feat" >/dev/null || fail "§32: create ?feat failed"
@@ -22,7 +22,7 @@ T32_TRUNK=$(ref_tip "?")
 sleep 0.01
 echo "fix1 work 32" > fwork32.txt
 "$BE" put fwork32.txt >/dev/null
-"$BE" post fix1-32 >/dev/null || fail "§32: post fix1-32 failed"
+"$BE" post 'fix1-32 msg' >/dev/null || fail "§32: post fix1-32 failed"
 F1_TIP_32=$(ref_tip "?fix1")
 FEAT_TIP_32=$(ref_tip "?feat")
 
@@ -56,7 +56,7 @@ note "§32 OK: ?feat/new created at $NEW32"
 rm -f x32.txt fwork32.txt
 "$BE" delete x32.txt    >/dev/null 2>&1 || true
 "$BE" delete fwork32.txt >/dev/null 2>&1 || true
-"$BE" post 32-cleanup   >/dev/null 2>&1 || true
+"$BE" post '32-cleanup msg'   >/dev/null 2>&1 || true
 
 # === 33. ?<absolute>/ trailing-slash reuse ===
 echo "=== 33. ?<absolute>/ trailing-slash reuse ==="
@@ -64,7 +64,7 @@ cd "$WT"
 sleep 0.01
 echo "x33" > x33.txt
 "$BE" put x33.txt >/dev/null
-"$BE" post 33-base >/dev/null || fail "§33: base post failed"
+"$BE" post '33-base msg' >/dev/null || fail "§33: base post failed"
 
 "$BE" post "?./feat" >/dev/null || fail "§33: create ?feat failed"
 "$BE" post "?./fix1" >/dev/null || fail "§33: create ?fix1 failed"
@@ -72,7 +72,7 @@ echo "x33" > x33.txt
 sleep 0.01
 echo "fix1-33" > f33.txt
 "$BE" put f33.txt >/dev/null
-"$BE" post fix1-33 >/dev/null || fail "§33: post fix1-33 failed"
+"$BE" post 'fix1-33 msg' >/dev/null || fail "§33: post fix1-33 failed"
 F1_PRE_33=$(ref_tip "?fix1")
 FEAT_PRE_33=$(ref_tip "?feat")
 
@@ -104,7 +104,7 @@ note "§33 OK: trailing-slash rewrote to ?feat/fix1 ($NEW33)"
 rm -f x33.txt f33.txt
 "$BE" delete x33.txt >/dev/null 2>&1 || true
 "$BE" delete f33.txt >/dev/null 2>&1 || true
-"$BE" post 33-cleanup >/dev/null 2>&1 || true
+"$BE" post '33-cleanup msg' >/dev/null 2>&1 || true
 
 # === 34. tree-parent absolute auto-syncs cur ===
 echo "=== 34. absolute tree-parent auto-syncs cur ==="
@@ -112,7 +112,7 @@ cd "$WT"
 sleep 0.01
 echo "x34" > x34.txt
 "$BE" put x34.txt >/dev/null
-"$BE" post 34-base >/dev/null || fail "§34: base post failed"
+"$BE" post '34-base msg' >/dev/null || fail "§34: base post failed"
 
 "$BE" post "?./feat" >/dev/null || fail "§34: create ?feat failed"
 "$BE" get "?feat" >/dev/null || fail "§34: switch ?feat failed"
@@ -121,7 +121,7 @@ echo "x34" > x34.txt
 sleep 0.01
 echo "feat/fix work" > ff34.txt
 "$BE" put ff34.txt >/dev/null
-"$BE" post feat-fix-c1 >/dev/null || fail "§34: post feat-fix-c1 failed"
+"$BE" post 'feat-fix-c1 msg' >/dev/null || fail "§34: post feat-fix-c1 failed"
 FF_PRE_34=$(ref_tip "?feat/fix")
 
 "$BE" post "?feat" 2>"$ETMP/p34.err" >/dev/null \

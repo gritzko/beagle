@@ -20,7 +20,7 @@ mkdir -p "$OUT"
 cp "$CASE/01.a.txt" a.txt
 cp "$CASE/02.b.txt" b.txt
 "$BE" put a.txt b.txt >/dev/null 2>&1
-"$BE" post baseline   >/dev/null 2>&1
+"$BE" post 'baseline msg'   >/dev/null 2>&1
 
 # Step 2: fork ?fix1 (cur stays on trunk)
 "$BE" post '?./fix1' >/dev/null 2>&1
@@ -29,10 +29,10 @@ cp "$CASE/02.b.txt" b.txt
 "$BE" get '?fix1' >/dev/null 2>&1
 cp "$CASE/03.a-fix1-c1.txt" a.txt
 "$BE" put a.txt >/dev/null 2>&1
-"$BE" post c1   >/dev/null 2>&1
+"$BE" post 'c1 msg'   >/dev/null 2>&1
 cp "$CASE/04.a-fix1-c2.txt" a.txt
 "$BE" put a.txt >/dev/null 2>&1
-"$BE" post c2   >/dev/null 2>&1
+"$BE" post 'c2 msg'   >/dev/null 2>&1
 
 # Step 4: back to trunk, fork ?fix2
 "$BE" get '?..'      >/dev/null 2>&1
@@ -42,10 +42,10 @@ cp "$CASE/04.a-fix1-c2.txt" a.txt
 "$BE" get '?fix2' >/dev/null 2>&1
 cp "$CASE/05.b-fix2-c1.txt" b.txt
 "$BE" put b.txt >/dev/null 2>&1
-"$BE" post c1   >/dev/null 2>&1
+"$BE" post 'c1 msg'   >/dev/null 2>&1
 cp "$CASE/06.b-fix2-c2.txt" b.txt
 "$BE" put b.txt >/dev/null 2>&1
-"$BE" post c2   >/dev/null 2>&1
+"$BE" post 'c2 msg'   >/dev/null 2>&1
 
 # Step 6: from fix2, promote into trunk via `be post ?..`.
 # Trunk hasn't moved since fix2 forked — fast-forward path.

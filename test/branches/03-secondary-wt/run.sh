@@ -7,7 +7,7 @@ WT="$SCRATCH"
 
 # --- setup: trunk with one commit (T_pre_rebase) ---
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T_pre_rebase=$(head_hex)
 [ -n "$T_pre_rebase" ] || fail "no trunk tip after seed post"
 
@@ -23,7 +23,7 @@ echo "=== 17. WT advances trunk: a new commit lands first ==="
 sleep 0.01
 echo "racing-1" > racing.txt
 "$BE" put racing.txt >/dev/null || fail "WT: be put racing.txt failed"
-"$BE" post racing-first >/dev/null || fail "WT: be post racing-first failed"
+"$BE" post 'racing-first msg' >/dev/null || fail "WT: be post racing-first failed"
 T_advance=$(head_hex)
 [ "$T_advance" != "$T_pre_rebase" ] || fail "WT advance didn't change tip"
 note "WT advanced trunk to T_advance=$T_advance"
@@ -33,7 +33,7 @@ cd "$WT2"
 sleep 0.01
 echo "wt2-only" > wt2.txt
 "$BE" put wt2.txt >/dev/null || fail "WT2: be put wt2.txt failed"
-"$BE" post wt2-rebase 2>"$ETMP/wt2-rebase.err" >/dev/null \
+"$BE" post 'wt2-rebase msg' 2>"$ETMP/wt2-rebase.err" >/dev/null \
     || { cat "$ETMP/wt2-rebase.err"; fail "WT2: be post should rebase"; }
 T_rebased=$(head_hex)
 [ -n "$T_rebased" ] && [ "$T_rebased" != "$T_advance" ] \

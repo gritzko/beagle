@@ -6,6 +6,6 @@ cp "$CASE/01.greet.txt" greet.txt
 empty 01.put.got.out
 match "$CASE/01.put.err.txt" 01.put.got.err
 
-"$BE" post initial > 02.post.got.out 2> 02.post.got.err
+"$BE" post '#initial' > 02.post.got.out 2> 02.post.got.err
 empty    02.post.got.out
 match_re "$CASE/02.post.err.txt" 02.post.got.err

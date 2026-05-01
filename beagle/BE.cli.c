@@ -13,6 +13,7 @@
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
+#include "dog/QURY.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
 
@@ -254,6 +255,8 @@ static ok64 BEDispatch(cli *c, dog_step const *steps, u32 nsteps,
 // "?<40-hex-sha>" points every downstream dog at the primary's HEAD.
 static u8 wt_uri_text[42];  // '?' + 40 hex + NUL
 
+static b8 be_promote_to_ref(uri *u);
+
 static ok64 BEGetWorktree(uri *u) {
     sane(1);
     if (u == NULL || !u8csEmpty(u->authority)) done;
@@ -385,6 +388,11 @@ static ok64 BEProjector(cli *c, uri *u) {
 //  to land in).
 static ok64 BEGet(cli *c, b8 seq) {
     sane(c);
+    //  GET is ref-expecting (checkout, fetch, switch branch): promote
+    //  bare `be get other/branch` to query=other/branch just like POST
+    //  and PATCH.  Path views (`be VERBS.md`) are the verbless form,
+    //  not GET — so promotion here is unambiguous.
+    for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
     static dog_step const steps[] = {
         {u8slit("sniff"), u8slit("get"), NO},
     };
@@ -450,12 +458,44 @@ static ok64 BEDiff(cli *c, b8 seq) {
     return BEDispatch(c, steps + start, nsteps - start, seq);
 }
 
+//  Ref-expecting verbs (post, patch) may read path/fragment as the query
+//  when it fits QURY's
+//  ref grammar — `be post feat` (path) and `be post '#feat'` (fragment)
+//  both yield query=feat.  Promotion only happens when query is empty
+//  (caller hasn't explicitly set a ref).  Returns YES if anything moved.
+static b8 be_promote_to_ref(uri *u) {
+    if (!$empty(u->query)) return NO;
+    qref qr = {};
+    if (!$empty(u->path)) {
+        u8cs s = {u->path[0], u->path[1]};
+        if (QURYu8sDrain(s, &qr) == OK &&
+            (qr.type == QURY_REF || qr.type == QURY_SHA)) {
+            u8csMv(u->query, s);
+            u->path[0] = u->path[1] = NULL;
+            return YES;
+        }
+    }
+    if (!$empty(u->fragment)) {
+        u8cs s = {u->fragment[0], u->fragment[1]};
+        if (QURYu8sDrain(s, &qr) == OK &&
+            (qr.type == QURY_REF || qr.type == QURY_SHA)) {
+            u8csMv(u->query, s);
+            u->fragment[0] = u->fragment[1] = NULL;
+            return YES;
+        }
+    }
+    return NO;
+}
+
 //  `be patch <uri>` — 3-way merge `uri`'s target ref/sha into the
 //  worktree.  If the URI has an authority we first `keeper get` to
 //  fetch the target's reachable closure, then hand off to
 //  `sniff patch`.  See VERBS.md §PATCH.
 static ok64 BEPatch(cli *c, b8 seq) {
     sane(c);
+    //  PATCH is ref-expecting (absorbs another branch's stack): promote
+    //  bare `be patch feat` to query=feat just like POST.
+    for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
     static dog_step const steps[] = {
         {u8slit("keeper"), u8slit("get"),   NO},
         {u8slit("sniff"),  u8slit("patch"), NO},
@@ -505,8 +545,11 @@ static ok64 BEPost(cli *c, b8 seq) {
     sane(c);
     for (u32 i = 0; i < c->nuris; i++) {
         uri *u = &c->uris[i];
-        //  URIs with a non-empty fragment but empty path/query/authority
-        //  are pure commit-message tails synthesised by CLIParse — skip.
+        //  POST is ref-expecting: bare `be post feat` should target ref
+        //  feat, not be rejected as path-form.  Promote first.
+        be_promote_to_ref(u);
+        //  Pure-fragment URIs (commit-message via `#msg` or whitespace
+        //  arg) — skip the path-form check, they're message-only.
         if ($empty(u->path) && $empty(u->query) && $empty(u->authority) &&
             !$empty(u->fragment)) continue;
         if (be_post_is_path_form(u)) {

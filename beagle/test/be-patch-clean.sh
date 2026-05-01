@@ -15,13 +15,13 @@ sp_switch_feat            # wt on feat
 sleep 0.1
 echo "y" > y.txt
 "$BE" put y.txt >/dev/null
-"$BE" post add y on feat >/dev/null
+"$BE" post 'add y on feat' >/dev/null
 FEAT_HEAD=$(awk -F'\t' '$2=="post"{h=$3;sub(/^[^#]*#/,"",h);last=h} END{print last}' .sniff)
 
 "$BE" get "?" >/dev/null  # back on trunk
 sleep 0.1
 echo "x v2" > x.txt
-"$BE" post v2 on trunk >/dev/null
+"$BE" post 'v2 on trunk' >/dev/null
 
 vc_snapshot before
 
@@ -41,7 +41,7 @@ pp=$(printf '%s\n' "$b" | awk -F= '$1=="patch_parents"{print $2}')
 vc_note ".sniff baseline single-tip after PATCH (history erased)"
 
 vc_step "be post merge feat — emit a single-parent commit on cur"
-vc_run merge "$BE" post merge feat
+vc_run merge "$BE" post 'merge feat'
 
 vc_snapshot after_post
 

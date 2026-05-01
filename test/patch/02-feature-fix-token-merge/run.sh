@@ -36,7 +36,7 @@ mkdir -p "$OUT"
 cp "$CASE/01.lib.baseline.txt"   lib.txt
 cp "$CASE/02.notes.baseline.txt" notes.txt
 "$BE" put lib.txt notes.txt >/dev/null 2>&1
-"$BE" post baseline         >/dev/null 2>&1
+"$BE" post 'baseline msg'         >/dev/null 2>&1
 
 # --- 2. fork feature off trunk and switch to it ---------------------
 "$BE" post '?./feature' >/dev/null 2>&1
@@ -45,7 +45,7 @@ cp "$CASE/02.notes.baseline.txt" notes.txt
 # --- 3. feat-one on feature: ALPHA ----------------------------------
 cp "$CASE/03.lib.feat1.txt" lib.txt
 "$BE" put lib.txt   >/dev/null 2>&1
-"$BE" post feat-one >/dev/null 2>&1
+"$BE" post 'feat-one msg' >/dev/null 2>&1
 
 # --- 4. fork fix off feature ----------------------------------------
 "$BE" post '?./fix' >/dev/null 2>&1
@@ -54,13 +54,13 @@ cp "$CASE/03.lib.feat1.txt" lib.txt
 "$BE" get '?feature/fix' >/dev/null 2>&1
 cp "$CASE/04.lib.fix1.txt" lib.txt
 "$BE" put lib.txt  >/dev/null 2>&1
-"$BE" post fix-one >/dev/null 2>&1
+"$BE" post 'fix-one msg' >/dev/null 2>&1
 
 # --- 6. back to feature, feat-two: DELTA (divergence) ---------------
 "$BE" get  '?feature' >/dev/null 2>&1
 cp "$CASE/05.lib.feat2.txt" lib.txt
 "$BE" put lib.txt   >/dev/null 2>&1
-"$BE" post feat-two >/dev/null 2>&1
+"$BE" post 'feat-two msg' >/dev/null 2>&1
 
 # --- 7. feature wt edit on a file fix never touched -----------------
 #  Stage with `be put` so PATCH's dirty-file gate accepts.  The bytes

@@ -12,7 +12,7 @@ vc_step "setup: build a tip in one wt; create a fresh wt sharing the store"
 #  Build a commit and capture its sha in a primary wt.
 vc_fresh_wt
 echo "x v1" > x.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 PRIMARY_DOGS="$(pwd)/.dogs"
 

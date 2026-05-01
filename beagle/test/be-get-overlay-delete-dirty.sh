@@ -12,13 +12,13 @@ vc_step "setup: T1 (d.txt + k.txt), T2 (k.txt only); wt at T1 with d.txt dirty"
 vc_fresh_wt
 echo "k stable" > k.txt
 echo "d v1"     > d.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 
 #  Drop d.txt and post: T2 has only k.txt.
 sleep 0.1
 "$BE" delete d.txt >/dev/null
-"$BE" post v2 >/dev/null
+"$BE" post 'v2 msg' >/dev/null
 T2=$(sp_head_hex)
 
 #  Switch back to T1 so the wt has d.txt again, then dirty it.

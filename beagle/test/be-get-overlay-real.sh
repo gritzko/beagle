@@ -11,12 +11,12 @@ vc_step "setup: T1 (a v1, b stable), T2 (a v2, b stable); wt at T2 with a.txt di
 vc_fresh_wt
 echo "a v1" > a.txt
 echo "b stable" > b.txt
-"$BE" post v1 >/dev/null
+"$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 
 sleep 0.1
 echo "a v2" > a.txt
-"$BE" post v2 >/dev/null
+"$BE" post 'v2 msg' >/dev/null
 T2=$(sp_head_hex)
 
 sleep 0.1

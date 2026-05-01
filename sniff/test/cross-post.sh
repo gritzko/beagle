@@ -74,7 +74,7 @@ note "trunk base = $TRUNK_BASE"
 #  the URI's #fragment.
 sleep 0.1
 echo "x feat" > x.txt
-sniff post "?feat" feat work >/dev/null
+sniff post "?feat" 'feat work' >/dev/null
 
 #  feat now has the new commit; trunk should NOT have advanced.
 TRUNK_REF=$(ref_tip "?")
@@ -118,7 +118,7 @@ printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .dogs/refs
 
 sleep 0.1
 echo "x v2" > x.txt
-if sniff post "?feat" should fail 2>/tmp/cross.err; then
+if sniff post "?feat" 'should fail' 2>/tmp/cross.err; then
     cat /tmp/cross.err
     fail "non-ff cross-branch POST should have been refused"
 fi

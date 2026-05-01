@@ -47,13 +47,13 @@ R="$TMP/r"; mkdir -p "$R"; cd "$R"
 git init --quiet .
 echo "alpha v1" > hello.txt
 echo "stable"   > other.txt
-"$BE" post "?tags/v0.0.1" v1 >/dev/null
+"$BE" post "?tags/v0.0.1" 'v1 msg' >/dev/null
 note "v0.0.1 labeled"
 
 # --- 2. v2 (delete hello.txt) ----------------------------------------
 echo "=== 2. delete hello.txt, tag v0.0.2 ==="
 "$BE" delete hello.txt >/dev/null
-"$BE" post "?tags/v0.0.2" v2 >/dev/null
+"$BE" post "?tags/v0.0.2" 'v2 msg' >/dev/null
 note "v0.0.2 labeled"
 
 # --- 3. v3 (edit other.txt + add extra.txt) --------------------------
@@ -66,7 +66,7 @@ echo "new file" > extra.txt
 #  be put-staged or the modification gets ignored.
 "$BE" put other.txt >/dev/null
 "$BE" put extra.txt >/dev/null
-"$BE" post "?tags/v0.0.3" v3 >/dev/null
+"$BE" post "?tags/v0.0.3" 'v3 msg' >/dev/null
 note "v0.0.3 labeled"
 
 # --- 4. verify each version -------------------------------------------

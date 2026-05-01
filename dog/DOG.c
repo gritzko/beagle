@@ -192,36 +192,16 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
         return DOGParseURI(u, arg);
     }
 
-    // Bare single token — classify.
-    b8 is_hex40 = ($len(arg) == 40);
-    if (is_hex40) {
-        $for(u8c, p, arg) {
-            u8 c = *p;
-            if (!((c >= '0' && c <= '9') ||
-                  (c >= 'a' && c <= 'f') ||
-                  (c >= 'A' && c <= 'F'))) { is_hex40 = NO; break; }
-        }
-    }
-    b8 ref_safe = !$empty(arg);
-    $for(u8c, p, arg) {
-        u8 c = *p;
-        if (!((c >= 'A' && c <= 'Z') ||
-              (c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') ||
-              c == '_' || c == '-' || c == '.')) {
-            ref_safe = NO; break;
-        }
-    }
-
+    // Bare single token — RFC 3986 path-noscheme.  No charset-based
+    // classification here: a bare `README`, `VERBS.md`, or 40-hex
+    // string all parse as path.  Verbs that expect a ref (post,
+    // patch) or a sha (size:, blob:) demote path → query/fragment
+    // themselves; verbs that expect a path (put, delete, bro) take
+    // it as-is.  Keeps the parser disambiguation-free.
     u->data[0] = arg[0];
     u->data[1] = arg[1];
-    if (is_hex40 || ref_safe) {
-        u->query[0] = arg[0];
-        u->query[1] = arg[1];
-    } else {
-        u->fragment[0] = arg[0];
-        u->fragment[1] = arg[1];
-    }
+    u->path[0] = arg[0];
+    u->path[1] = arg[1];
     done;
 }
 

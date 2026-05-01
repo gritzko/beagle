@@ -66,7 +66,7 @@ ref_tip() {
 cp "$CASE/01.a.txt" a.txt
 cp "$CASE/02.b.txt" b.txt
 must "$BE" put a.txt b.txt > "$LOGS/01.put.out" 2> "$LOGS/01.put.err"
-must "$BE" post baseline   > "$LOGS/02.post.out" 2> "$LOGS/02.post.err"
+must "$BE" post 'baseline msg'   > "$LOGS/02.post.out" 2> "$LOGS/02.post.err"
 T1=$(head_hex)
 [ -n "$T1" ] || { echo "no T1 after baseline post" >&2; exit 1; }
 
@@ -85,7 +85,7 @@ must "$BE" get "?fix1" > "$LOGS/04.get-fix1.out" 2> "$LOGS/04.get-fix1.err"
 sleep 0.2                             # distinct mtime
 cp "$CASE/03.a-fix1.txt" a.txt
 must "$BE" put a.txt    > "$LOGS/05.put.out" 2> "$LOGS/05.put.err"
-must "$BE" post fix1 c1 > "$LOGS/06.post.out" 2> "$LOGS/06.post.err"
+must "$BE" post 'fix1 c1' > "$LOGS/06.post.out" 2> "$LOGS/06.post.err"
 FIX1_C1=$(head_hex)
 [ -n "$FIX1_C1" ] && [ "$FIX1_C1" != "$T1" ] \
     || { echo "?fix1 didn't advance past T1" >&2; exit 1; }
@@ -97,7 +97,7 @@ must "$BE" get "?.." > "$LOGS/07.get-trunk.out" 2> "$LOGS/07.get-trunk.err"
 sleep 0.2
 cp "$CASE/04.b-trunk.txt" b.txt
 must "$BE" put b.txt   > "$LOGS/08.put.out" 2> "$LOGS/08.put.err"
-must "$BE" post t2     > "$LOGS/09.post.out" 2> "$LOGS/09.post.err"
+must "$BE" post 't2 msg'     > "$LOGS/09.post.out" 2> "$LOGS/09.post.err"
 T2=$(head_hex)
 [ -n "$T2" ] && [ "$T2" != "$T1" ] \
     || { echo "trunk T2 didn't advance past T1=$T1" >&2; exit 1; }

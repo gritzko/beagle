@@ -15,7 +15,7 @@ echo "fix base" > fix29.txt
 echo "other base" > other29.txt
 "$BE" put fix29.txt other29.txt >/dev/null \
     || fail "§29: stage baseline failed"
-"$BE" post 29-base >/dev/null \
+"$BE" post '29-base msg' >/dev/null \
     || fail "§29: baseline commit failed"
 T29_T1=$(head_hex)
 note "§29: T1=$T29_T1"
@@ -26,12 +26,12 @@ note "§29: T1=$T29_T1"
 sleep 0.01
 echo "fix changed" > fix29.txt
 "$BE" put fix29.txt >/dev/null || fail "§29: put fix29.txt on ?fix1 failed"
-"$BE" post fix1c1 >/dev/null || fail "§29: post fix1c1 failed"
+"$BE" post 'fix1c1 msg' >/dev/null || fail "§29: post fix1c1 failed"
 F29_C1=$(head_hex)
 sleep 0.01
 echo "other changed" > other29.txt
 "$BE" put other29.txt >/dev/null || fail "§29: put other29.txt on ?fix1 failed"
-"$BE" post fix1c2 >/dev/null || fail "§29: post fix1c2 failed"
+"$BE" post 'fix1c2 msg' >/dev/null || fail "§29: post fix1c2 failed"
 F29_C2=$(head_hex)
 note "§29: ?fix1 stack T1=$T29_T1 -> C1=$F29_C1 -> C2=$F29_C2"
 
@@ -42,7 +42,7 @@ note "§29: ?fix1 stack T1=$T29_T1 -> C1=$F29_C1 -> C2=$F29_C2"
 sleep 0.01
 echo "fix changed" > fix29.txt
 "$BE" put fix29.txt >/dev/null || fail "§29: put fix29.txt on ?fix2 failed"
-"$BE" post fix2c1prime >/dev/null || fail "§29: post fix2c1prime failed"
+"$BE" post 'fix2c1prime msg' >/dev/null || fail "§29: post fix2c1prime failed"
 F29_C1P=$(head_hex)
 [ "$F29_C1P" != "$F29_C1" ] \
     || fail "§29: C1' should be a distinct commit object"
