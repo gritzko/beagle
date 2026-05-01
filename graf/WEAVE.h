@@ -84,8 +84,45 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src);
 ok64 WEAVEDiff (weave *dst, weave const *src, weave const *nu, u32 src_commit);
 
 //  dst = a merged with b (concurrent branches sharing an ancestor).
-//  Stub for now.
+//  Both inputs must be weaves built incrementally from a common
+//  ancestor (typically via `WEAVEFromBlob` + `WEAVEDiff`); their full
+//  hashlet streams (including dead tokens) are run through `DIFFu64s`
+//  + NEIL cleanup to recover the shared spine, then EQ runs reconcile
+//  `inrm` per-token (deleter wins; alive-on-both keeps the lower
+//  `in` for determinism), and non-EQ runs canonicalize as INS-then-DEL
+//  with each side's tokens carrying their original `inrm`.  When both
+//  sides have *alive* tokens at the same logical slot whose bytes
+//  agree, the alive token is dedup'd (one copy with `in = min`).
+//  When the alive bytes differ, both sides' tokens are emitted in
+//  order with their original `inrm` — the weave records both
+//  histories.  Conflict-marker bytes (`<<<<` etc.) are NEVER stored
+//  in the weave; producing them is a render-time concern (a renderer
+//  walking dst can detect concurrent-alive divergence by inrm and
+//  emit framing bytes in its output stream).  dst is reset before
+//  composition.
 ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b);
+
+//  WEAVEReplay: build a weave for a known merge commit.
+//
+//  Given N parent weaves and the result blob the merge commit shipped,
+//  produce dst = WEAVEMerge of all parents pairwise, then WEAVEDiff
+//  against the result.  The merge step combines histories; the diff
+//  step reconciles toward the actually-shipped bytes — INS tokens
+//  (manual conflict-resolution bytes, no parent had them) get
+//  `in = merge_in`, DEL tokens (dropped at the merge) get
+//  `rm = merge_in`.  The output weave's alive byte sequence equals
+//  `result_blob` exactly.
+//
+//  No conflict markers are ever stored: WEAVEMerge produces a
+//  marker-free weave, and the WEAVEDiff resolves divergence into the
+//  shipped bytes directly.
+//
+//  parents[] must be non-NULL with nparents >= 1.  N == 1 reduces to
+//  WEAVEDiff(dst, parents[0], blob_weave, merge_in).
+ok64 WEAVEReplay(weave *dst,
+                 weave const *const *parents, u32 nparents,
+                 u8cs result_blob, u8cs ext,
+                 u32 merge_in);
 
 // --- Diff emission ---
 //

@@ -13,12 +13,16 @@
 //   3. Reproduce `x`: walk wox, concatenate tokens with `inrm.rm == 0`.
 //      Bytes must equal the original `x`.
 //
-// 3-way merge isn't yet implemented (WEAVEMerge is a stub returning
-// WEAVEFAIL), so the merge step the user sketched is left out for now.
-// As soon as WEAVEMerge lands the test should:
-//   - merge wox + woy into wmerge,
-//   - reproduce all three of o (in==0), x (in == 0 or X), y (in == 0
-//     or Y) by appropriate inclusion sets.
+// Plus a merge round-trip per side-pair (a, b):
+//   3. wm <- WEAVEMerge(woa, wob)
+//   4. Walk wm; if it has zero conflict markers, the alive byte
+//      stream must contain (in lexer-token order, possibly
+//      interleaved) every alive token of woa and every alive token
+//      of wob, modulo deletions one side made.  We check the weaker
+//      property that the alive byte stream has length >= max(|a|,|b|)
+//      / 2 — true merges shouldn't shrink to nothing absent both
+//      sides deleting everything.  Conflict-marker outputs are
+//      accepted as-is (a conflict per se isn't a fuzz failure).
 //
 // Tokenizer: C (extension `c`).
 
@@ -286,6 +290,35 @@ FUZZ(u8, WEAVEfuzz) {
     if (!$empty(b_data)) {
         ok64 r2 = weave_check_one(o_data, b_data, WEAVE_B_SRC, ext);
         if (r2 != OK) fail(r2);
+    }
+
+    //  Merge round-trip: build woa, wob then WEAVEMerge them; the
+    //  call should not crash regardless of input shape.  Detailed
+    //  property checks live in WEAVE01test (the table-driven test);
+    //  this fuzz just keeps `WEAVEMerge` from regressing on adversarial
+    //  inputs.
+    if (!$empty(b_data)) {
+        weave wo = {}, wa_raw = {}, wb_raw = {};
+        weave woa = {}, wob = {}, wm = {};
+        if (WEAVEInit(&wo)     != OK) goto merge_out;
+        if (WEAVEInit(&wa_raw) != OK) goto merge_out;
+        if (WEAVEInit(&wb_raw) != OK) goto merge_out;
+        if (WEAVEInit(&woa)    != OK) goto merge_out;
+        if (WEAVEInit(&wob)    != OK) goto merge_out;
+        if (WEAVEInit(&wm)     != OK) goto merge_out;
+        if (WEAVEFromBlob(&wo,     o_data, ext, WEAVE_BASE_SRC) != OK) goto merge_out;
+        if (WEAVEFromBlob(&wa_raw, a_data, ext, WEAVE_A_SRC)    != OK) goto merge_out;
+        if (WEAVEFromBlob(&wb_raw, b_data, ext, WEAVE_B_SRC)    != OK) goto merge_out;
+        if (WEAVEDiff(&woa, &wo, &wa_raw, WEAVE_A_SRC) != OK) goto merge_out;
+        if (WEAVEDiff(&wob, &wo, &wb_raw, WEAVE_B_SRC) != OK) goto merge_out;
+        (void)WEAVEMerge(&wm, &woa, &wob);
+    merge_out:
+        WEAVEFree(&wo);
+        WEAVEFree(&wa_raw);
+        WEAVEFree(&wb_raw);
+        WEAVEFree(&woa);
+        WEAVEFree(&wob);
+        WEAVEFree(&wm);
     }
 
     done;

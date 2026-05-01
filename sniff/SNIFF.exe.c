@@ -427,35 +427,21 @@ static void status_dump_rows(Bu8 paths, char const *marker,
     }
 }
 
-static ok64 sniff_status(u8cs reporoot) {
-    sane(1);
-    (void)reporoot;
-
-    status_buckets b = {.now = (i64)time(NULL)};
-    call(u8bAllocate, b.put_buf, 1UL << 14);
-    call(u8bAllocate, b.new_buf, 1UL << 14);
-    call(u8bAllocate, b.mod_buf, 1UL << 14);
-    call(u8bAllocate, b.del_buf, 1UL << 14);
-    call(u8bAllocate, b.mis_buf, 1UL << 12);
-    call(u8bAllocate, b.unk_buf, 1UL << 14);
-
-    ok64 cr = SNIFFClassify(status_step, &b);
-    if (cr != OK) {
-        u8bFree(b.put_buf); u8bFree(b.new_buf);
-        u8bFree(b.mod_buf); u8bFree(b.del_buf);
-        u8bFree(b.mis_buf); u8bFree(b.unk_buf);
-        return cr;
-    }
+//  Worker: assumes b's buckets are already mapped.  Returns the
+//  classification result; never frees.
+static ok64 sniff_status_work(status_buckets *b) {
+    sane(b);
+    call(SNIFFClassify, status_step, b);
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
     b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
-    if (b.put_n > 0) status_dump_rows(b.put_buf, "put", STATUS_ANSI_PUT, tty);
-    if (b.new_n > 0) status_dump_rows(b.new_buf, "new", STATUS_ANSI_NEW, tty);
-    if (b.mod_n > 0) status_dump_rows(b.mod_buf, "mod", STATUS_ANSI_MOD, tty);
-    if (b.del_n > 0) status_dump_rows(b.del_buf, "del", STATUS_ANSI_DEL, tty);
-    if (b.mis_n > 0) status_dump_rows(b.mis_buf, "mis", STATUS_ANSI_MIS, tty);
-    if (b.unk_n > 0) status_dump_rows(b.unk_buf, "unk", STATUS_ANSI_UNK, tty);
+    if (b->put_n > 0) status_dump_rows(b->put_buf, "put", STATUS_ANSI_PUT, tty);
+    if (b->new_n > 0) status_dump_rows(b->new_buf, "new", STATUS_ANSI_NEW, tty);
+    if (b->mod_n > 0) status_dump_rows(b->mod_buf, "mod", STATUS_ANSI_MOD, tty);
+    if (b->del_n > 0) status_dump_rows(b->del_buf, "del", STATUS_ANSI_DEL, tty);
+    if (b->mis_n > 0) status_dump_rows(b->mis_buf, "mis", STATUS_ANSI_MIS, tty);
+    if (b->unk_n > 0) status_dump_rows(b->unk_buf, "unk", STATUS_ANSI_UNK, tty);
     //  Color the count + tag pair when the count is non-zero, on tty
     //  only.  `ok` is uncolored — its tag is informational, never
     //  surfaced as a row above.
@@ -467,21 +453,41 @@ static ok64 sniff_status(u8cs reporoot) {
             else                                                        \
                 fprintf(stdout, ", %u %s", (n), (tag));                 \
         } while (0)
-    fprintf(stdout, "sniff: %u ok", b.ok_n);
-    STATUS_PAINT(b.put_n, "put", STATUS_ANSI_PUT);
-    STATUS_PAINT(b.new_n, "new", STATUS_ANSI_NEW);
-    STATUS_PAINT(b.mod_n, "mod", STATUS_ANSI_MOD);
-    STATUS_PAINT(b.del_n, "del", STATUS_ANSI_DEL);
-    STATUS_PAINT(b.mis_n, "mis", STATUS_ANSI_MIS);
-    STATUS_PAINT(b.unk_n, "unk", STATUS_ANSI_UNK);
+    fprintf(stdout, "sniff: %u ok", b->ok_n);
+    STATUS_PAINT(b->put_n, "put", STATUS_ANSI_PUT);
+    STATUS_PAINT(b->new_n, "new", STATUS_ANSI_NEW);
+    STATUS_PAINT(b->mod_n, "mod", STATUS_ANSI_MOD);
+    STATUS_PAINT(b->del_n, "del", STATUS_ANSI_DEL);
+    STATUS_PAINT(b->mis_n, "mis", STATUS_ANSI_MIS);
+    STATUS_PAINT(b->unk_n, "unk", STATUS_ANSI_UNK);
     fprintf(stdout, "\n");
     #undef STATUS_PAINT
     fflush(stdout);
-
-    u8bFree(b.put_buf); u8bFree(b.new_buf);
-    u8bFree(b.mod_buf); u8bFree(b.del_buf);
-    u8bFree(b.mis_buf); u8bFree(b.unk_buf);
     done;
+}
+
+//  Entry: maps the buckets, runs the worker, releases regardless.
+//  4 MB per bucket — mmap-backed so VA cost is paid lazily.  Real-
+//  world wts (~/dogs etc.) routinely produce tens of thousands of
+//  `unk` rows; the prior 16 KB caps tripped BNOROOM on bare `be`.
+static ok64 sniff_status(u8cs reporoot) {
+    sane(1);
+    (void)reporoot;
+
+    status_buckets b = {.now = (i64)time(NULL)};
+    call(u8bMap, b.put_buf, 1UL << 22);
+    call(u8bMap, b.new_buf, 1UL << 22);
+    call(u8bMap, b.mod_buf, 1UL << 22);
+    call(u8bMap, b.del_buf, 1UL << 22);
+    call(u8bMap, b.mis_buf, 1UL << 22);
+    call(u8bMap, b.unk_buf, 1UL << 22);
+
+    ok64 r = sniff_status_work(&b);
+
+    u8bUnMap(b.put_buf); u8bUnMap(b.new_buf);
+    u8bUnMap(b.mod_buf); u8bUnMap(b.del_buf);
+    u8bUnMap(b.mis_buf); u8bUnMap(b.unk_buf);
+    return r;
 }
 
 // --- Mode: Checkout ---

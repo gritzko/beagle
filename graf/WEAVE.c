@@ -416,12 +416,403 @@ cleanup:
     return __;
 }
 
-// --- WEAVEMerge: stub ---
+// --- WEAVEMerge ---
+//
+//  3-way merge of two weaves derived from a shared ancestor history.
+//  See WEAVE.h for the doc comment.  Algorithm:
+//
+//    1. Diff the *full* hashlet streams of a and b (dead tokens are
+//       part of the spine — both sides' WEAVEDiff outputs preserve them
+//       so they align by hashlet).  NEIL cleanup runs on the EDL with
+//       the same text+toks views WEAVEDiff uses.
+//    2. Walk the EDL.  For each EQ token, reconcile (in, rm) per the
+//       table below.  For each non-EQ run, gather a-only DELs and
+//       b-only INSs.  When both sides have *alive* tokens whose bytes
+//       agree, dedup to one copy with `in = min`.  When they differ,
+//       emit both sides' tokens in order (a then b) with their
+//       original inrm — the weave records both histories.  No marker
+//       bytes ever land in dst.
+//
+//  EQ reconciliation (per-token):
+//
+//    | a.rm | b.rm |  out                                            |
+//    |------|------|-------------------------------------------------|
+//    |  0   |  0   |  rm=0, in = min(a.in, b.in)  (deterministic)    |
+//    |  X   |  X   |  rm=X, in = min(a.in, b.in)                     |
+//    |  X   |  0   |  rm=X (a deleted; deleter wins)                 |
+//    |  0   |  X   |  rm=X (b deleted)                               |
+//    |  X   |  Y   |  rm = min(X, Y) (both deleted, dedup; arbitrary |
+//    |      |      |               but deterministic)                |
+//
+//  In all cases hashlet/text/tag come from a (they are byte-equal by
+//  hashlet).  Splice canonicalization within non-EQ runs: a's tokens
+//  precede b's tokens — same shape as WEAVEDiff.
+
+//  Total byte length of `count` consecutive tokens starting at `start`
+//  in (text, toks); NULL-safe by virtue of count==0 short-circuit.
+static u32 weave_byte_span(u8cp text, u32cp toks, u32 start, u32 count) {
+    if (count == 0) return 0;
+    u32 lo = (start == 0) ? 0 : tok32Offset(toks[start - 1]);
+    u32 hi = tok32Offset(toks[start + count - 1]);
+    (void)text;
+    return hi - lo;
+}
+
+//  Returns YES iff the byte sequences of `acount` tokens of (a_text,
+//  a_toks) starting at ai equal those of `bcount` tokens of (b_text,
+//  b_toks) starting at bi.
+static b8 weave_byte_equal(u8cp a_text, u32cp a_toks, u32 ai, u32 acount,
+                           u8cp b_text, u32cp b_toks, u32 bi, u32 bcount) {
+    u32 alen = weave_byte_span(a_text, a_toks, ai, acount);
+    u32 blen = weave_byte_span(b_text, b_toks, bi, bcount);
+    if (alen != blen) return NO;
+    if (alen == 0) return YES;
+    u32 a_lo = (ai == 0) ? 0 : tok32Offset(a_toks[ai - 1]);
+    u32 b_lo = (bi == 0) ? 0 : tok32Offset(b_toks[bi - 1]);
+    return memcmp(a_text + a_lo, b_text + b_lo, alen) == 0;
+}
 
 ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
     sane(dst);
-    (void)a; (void)b;
-    return WEAVEFAIL;  // TODO: concurrent-branch weave merge
+    if (!a || !b) return FAILSANITY;
+    WEAVEReset(dst);
+
+    u32cp  a_toks   = (u32cp)a->toks[1];
+    u32cp  a_toks_e = (u32cp)a->toks[2];
+    u32    a_len    = (u32)(a_toks_e - a_toks);
+    u8cp   a_text   = (u8cp)a->text[1];
+    u64cp  a_hash   = (u64cp)a->hashlets[1];
+    inrmcp a_irm    = (inrmcp)a->inrm[1];
+
+    u32cp  b_toks   = (u32cp)b->toks[1];
+    u32cp  b_toks_e = (u32cp)b->toks[2];
+    u32    b_len    = (u32)(b_toks_e - b_toks);
+    u8cp   b_text   = (u8cp)b->text[1];
+    u64cp  b_hash   = (u64cp)b->hashlets[1];
+    inrmcp b_irm    = (inrmcp)b->inrm[1];
+
+    //  Trivial: one side empty — copy the other verbatim.
+    if (a_len == 0) {
+        for (u32 i = 0; i < b_len; i++) {
+            __ = weave_append(dst, b_text, b_toks, b_hash, i, b_irm[i]);
+            if (__ != OK) return __;
+        }
+        done;
+    }
+    if (b_len == 0) {
+        for (u32 i = 0; i < a_len; i++) {
+            __ = weave_append(dst, a_text, a_toks, a_hash, i, a_irm[i]);
+            if (__ != OK) return __;
+        }
+        done;
+    }
+
+    Bi32 work   = {};
+    Bu32 edlbuf = {};
+    Bu64 ah_buf = {};   // synthetic hashlets keyed on (hash, in)
+    Bu64 bh_buf = {};
+
+    u64 olen = (u64)a_len;
+    u64 nlen = (u64)b_len;
+    u64 work_sz = DIFFWorkSize(olen, nlen);
+    u64 edl_sz  = DIFFEdlMaxEntries(olen, nlen);
+
+    if (work_sz > 0) { __ = i32bAllocate(work,   work_sz); if (__ != OK) goto cleanup; }
+    if (edl_sz  > 0) { __ = u32bAllocate(edlbuf, edl_sz);  if (__ != OK) goto cleanup; }
+    __ = u64bAlloc(ah_buf, olen + 1); if (__ != OK) goto cleanup;
+    __ = u64bAlloc(bh_buf, nlen + 1); if (__ != OK) goto cleanup;
+
+    //  Bias the LCS toward provenance-aware matches: encode `in` into
+    //  the hashlet so tokens only LCS-match when they share BOTH the
+    //  byte content AND the introducing-commit stamp.  This stops
+    //  Myers from spuriously aligning a-only `int` (in=A) with the
+    //  base `int` (in=0) just because the bytes match — the spine
+    //  recovers cleanly when both weaves were built off a common
+    //  base via WEAVEDiff (they share the base's in-stamps).
+    //
+    //  Mixing function: `hash * 0x9e3779b97f4a7c15 + in`.  Cheap,
+    //  collision-resistant enough for diff alignment.
+    for (u32 i = 0; i < a_len; i++) {
+        u64 h = a_hash[i] * 0x9e3779b97f4a7c15ULL + (u64)a_irm[i].in;
+        __ = u64bFeed1(ah_buf, h); if (__ != OK) goto cleanup;
+    }
+    for (u32 i = 0; i < b_len; i++) {
+        u64 h = b_hash[i] * 0x9e3779b97f4a7c15ULL + (u64)b_irm[i].in;
+        __ = u64bFeed1(bh_buf, h); if (__ != OK) goto cleanup;
+    }
+
+    u64cs ah = {u64bDataHead(ah_buf), u64bDataHead(ah_buf) + olen};
+    u64cs bh = {u64bDataHead(bh_buf), u64bDataHead(bh_buf) + nlen};
+
+    e32g edlg = {edlbuf[0], edlbuf[3], edlbuf[0]};
+    i32s ws = {i32bHead(work), i32bTerm(work)};
+    ok64 diff_o = DIFFu64s(edlg, ws, ah, bh);
+    if (diff_o != OK) {
+        //  Fallback: replace a wholesale.
+        edlg[1] = edlg[0];
+        if (olen > 0) { *edlg[1]++ = DIFF_ENTRY(DIFF_DEL, (u32)olen); }
+        if (nlen > 0) { *edlg[1]++ = DIFF_ENTRY(DIFF_INS, (u32)nlen); }
+    } else {
+        //  NEIL on the full streams: kills false short EQs (lone
+        //  `int` / whitespace tokens that the LCS happily matches
+        //  across unrelated regions), then lossless boundary shift
+        //  to align edits with line/word breaks.  Same pipeline as
+        //  WEAVEDiff.
+        u32cs at_view = {a_toks, a_toks_e};
+        u32cs bt_view = {b_toks, b_toks_e};
+        u8cs  at_text = {a_text, a_text + (size_t)u8bDataLen(a->text)};
+        u8cs  bt_text = {b_text, b_text + (size_t)u8bDataLen(b->text)};
+        NEILCleanup(edlg, at_view, bt_view, at_text, bt_text);
+        NEILShift  (edlg, at_view, bt_view, at_text, bt_text);
+    }
+
+    e32c *ep = edlbuf[0];
+    e32c *ee = edlg[0];
+
+    u32 ai = 0;  // cursor in a
+    u32 bi = 0;  // cursor in b
+
+    while (ep < ee) {
+        u32 op  = DIFF_OP(*ep);
+        u32 len = DIFF_LEN(*ep);
+
+        if (op == DIFF_EQ) {
+            for (u32 j = 0; j < len; j++) {
+                if (ai >= a_len || bi >= b_len) break;
+                inrm ea = a_irm[ai];
+                inrm eb = b_irm[bi];
+                inrm out;
+                //  Reconcile (in, rm) per the table in the header
+                //  comment.  in = min for determinism; rm: deleter
+                //  wins, both-deleted dedup to min.
+                out.in = (ea.in < eb.in) ? ea.in : eb.in;
+                if (ea.rm == 0 && eb.rm == 0) {
+                    out.rm = 0;
+                } else if (ea.rm != 0 && eb.rm == 0) {
+                    out.rm = ea.rm;
+                } else if (ea.rm == 0 && eb.rm != 0) {
+                    out.rm = eb.rm;
+                } else {
+                    out.rm = (ea.rm < eb.rm) ? ea.rm : eb.rm;
+                }
+                __ = weave_append(dst, a_text, a_toks, a_hash, ai, out);
+                if (__ != OK) goto cleanup;
+                ai++;
+                bi++;
+            }
+            ep++;
+            continue;
+        }
+
+        //  Non-EQ run: gather a-only DELs and b-only INSs.
+        u32 sum_del = 0, sum_ins = 0;
+        while (ep < ee && DIFF_OP(*ep) != DIFF_EQ) {
+            u32 l = DIFF_LEN(*ep);
+            if (DIFF_OP(*ep) == DIFF_INS) sum_ins += l;
+            else                           sum_del += l;
+            ep++;
+        }
+
+        //  Count alive (rm == 0) tokens on each side of the run.
+        u32 a_alive = 0, b_alive = 0;
+        for (u32 j = 0; j < sum_del && ai + j < a_len; j++)
+            if (a_irm[ai + j].rm == 0) a_alive++;
+        for (u32 j = 0; j < sum_ins && bi + j < b_len; j++)
+            if (b_irm[bi + j].rm == 0) b_alive++;
+
+        //  Detect alive-byte agreement to dedup; otherwise both
+        //  sides' tokens go into dst with their original inrm and the
+        //  renderer (not us) decides whether to wrap them in markers.
+        b8 alive_agree = NO;
+        if (a_alive > 0 && b_alive > 0) {
+            //  Quick path: no dead intermixed → direct memcmp.
+            if (sum_del == a_alive && sum_ins == b_alive &&
+                weave_byte_equal(a_text, a_toks, ai, sum_del,
+                                 b_text, b_toks, bi, sum_ins)) {
+                alive_agree = YES;
+            } else {
+                //  Alive-only byte-equality: walk paired alive tokens.
+                u32 ja = 0, jb = 0;
+                u32 acnt = 0, bcnt = 0;
+                b8 same = YES;
+                while (acnt < a_alive || bcnt < b_alive) {
+                    while (ja < sum_del && a_irm[ai + ja].rm != 0) ja++;
+                    while (jb < sum_ins && b_irm[bi + jb].rm != 0) jb++;
+                    if (ja >= sum_del || jb >= sum_ins) break;
+                    if (!weave_byte_equal(a_text, a_toks, ai + ja, 1,
+                                          b_text, b_toks, bi + jb, 1)) {
+                        same = NO; break;
+                    }
+                    ja++; jb++; acnt++; bcnt++;
+                }
+                alive_agree = same;
+            }
+        }
+
+        if (a_alive > 0 && b_alive > 0 && alive_agree) {
+            //  Both sides alive but byte-equal — emit a's tokens
+            //  (one copy), reconciling `in` to the lower commit per
+            //  alive pair to keep determinism.  Dead tokens from
+            //  each side carry through verbatim.
+            u32 ja = 0, jb = 0;
+            //  Emit a's dead-prefix
+            while (ja < sum_del && a_irm[ai + ja].rm != 0) {
+                __ = weave_append(dst, a_text, a_toks, a_hash,
+                                  ai + ja, a_irm[ai + ja]);
+                if (__ != OK) goto cleanup;
+                ja++;
+            }
+            //  Emit b's dead-prefix
+            while (jb < sum_ins && b_irm[bi + jb].rm != 0) {
+                __ = weave_append(dst, b_text, b_toks, b_hash,
+                                  bi + jb, b_irm[bi + jb]);
+                if (__ != OK) goto cleanup;
+                jb++;
+            }
+            //  Emit alive pairs (a's bytes, in = min)
+            u32 acnt = 0;
+            while (acnt < a_alive && ja < sum_del && jb < sum_ins) {
+                while (ja < sum_del && a_irm[ai + ja].rm != 0) {
+                    __ = weave_append(dst, a_text, a_toks, a_hash,
+                                      ai + ja, a_irm[ai + ja]);
+                    if (__ != OK) goto cleanup;
+                    ja++;
+                }
+                while (jb < sum_ins && b_irm[bi + jb].rm != 0) {
+                    //  b's interspersed dead tokens: skip (keeping
+                    //  one copy from a is enough; b's deads were
+                    //  already aligned in the EQ run, but if they
+                    //  ended up in this run they'd duplicate text;
+                    //  drop them).
+                    jb++;
+                }
+                if (ja >= sum_del || jb >= sum_ins) break;
+                inrm ea = a_irm[ai + ja];
+                inrm eb = b_irm[bi + jb];
+                inrm out = {.in = (ea.in < eb.in) ? ea.in : eb.in,
+                            .rm = 0};
+                __ = weave_append(dst, a_text, a_toks, a_hash,
+                                  ai + ja, out);
+                if (__ != OK) goto cleanup;
+                ja++; jb++; acnt++;
+            }
+            //  Drain any remaining dead from either side.
+            while (ja < sum_del) {
+                if (a_irm[ai + ja].rm != 0) {
+                    __ = weave_append(dst, a_text, a_toks, a_hash,
+                                      ai + ja, a_irm[ai + ja]);
+                    if (__ != OK) goto cleanup;
+                }
+                ja++;
+            }
+            while (jb < sum_ins) {
+                if (b_irm[bi + jb].rm != 0) {
+                    __ = weave_append(dst, b_text, b_toks, b_hash,
+                                      bi + jb, b_irm[bi + jb]);
+                    if (__ != OK) goto cleanup;
+                }
+                jb++;
+            }
+            ai += sum_del;
+            bi += sum_ins;
+        } else {
+            //  Disjoint inserts (or pure deletes) — no overlap, no
+            //  conflict.  Canonical splice order: a's tokens first,
+            //  then b's, with each side's original inrm.
+            for (u32 j = 0; j < sum_del && ai < a_len; j++, ai++) {
+                __ = weave_append(dst, a_text, a_toks, a_hash, ai, a_irm[ai]);
+                if (__ != OK) goto cleanup;
+            }
+            for (u32 j = 0; j < sum_ins && bi < b_len; j++, bi++) {
+                __ = weave_append(dst, b_text, b_toks, b_hash, bi, b_irm[bi]);
+                if (__ != OK) goto cleanup;
+            }
+        }
+    }
+
+    //  Drain any tail (typically empty if the EDL was complete).
+    while (ai < a_len) {
+        __ = weave_append(dst, a_text, a_toks, a_hash, ai, a_irm[ai]);
+        if (__ != OK) goto cleanup;
+        ai++;
+    }
+    while (bi < b_len) {
+        __ = weave_append(dst, b_text, b_toks, b_hash, bi, b_irm[bi]);
+        if (__ != OK) goto cleanup;
+        bi++;
+    }
+
+cleanup:
+    i32bFree(work);
+    u32bFree(edlbuf);
+    u64bFree(ah_buf);
+    u64bFree(bh_buf);
+    return __;
+}
+
+// --- WEAVEReplay ---
+//
+//  See WEAVE.h.  Algorithm:
+//
+//    work = parents[0]
+//    for k in 1..nparents:  work = WEAVEMerge(work, parents[k])
+//    nu   = WEAVEFromBlob(result_blob, ext, merge_in)
+//    dst  = WEAVEDiff(work, nu, merge_in)
+//
+//  WEAVEMerge combines histories without storing markers.  WEAVEDiff
+//  resolves the combined-but-possibly-divergent merge against the
+//  actually-shipped bytes: bytes the human added stamp `in=merge_in`
+//  via the INS path; tokens the human dropped stamp `rm=merge_in`
+//  via the DEL path.
+
+ok64 WEAVEReplay(weave *dst,
+                 weave const *const *parents, u32 nparents,
+                 u8cs result_blob, u8cs ext,
+                 u32 merge_in) {
+    sane(dst);
+    if (!parents || nparents == 0) return FAILSANITY;
+    WEAVEReset(dst);
+
+    weave work = {}, swap = {}, nu = {};
+    __ = WEAVEInit(&work);
+    if (__ != OK) return __;
+    __ = WEAVEInit(&swap);
+    if (__ != OK) { WEAVEFree(&work); return __; }
+    __ = WEAVEInit(&nu);
+    if (__ != OK) { WEAVEFree(&work); WEAVEFree(&swap); return __; }
+
+    //  Pairwise reduce parents into `work`.  Bootstrap by merging the
+    //  first parent with itself (clean copy with reconciled inrm).
+    if (parents[0] == NULL) { __ = FAILSANITY; goto cleanup; }
+    __ = WEAVEMerge(&work, parents[0], parents[0]);
+    if (__ != OK) goto cleanup;
+
+    for (u32 k = 1; k < nparents; k++) {
+        if (parents[k] == NULL) continue;
+        __ = WEAVEMerge(&swap, &work, parents[k]);
+        if (__ != OK) goto cleanup;
+        //  Swap the buffer headers between work and swap so the next
+        //  iteration writes into a fresh (reset-on-entry) dst.  The
+        //  weave struct is plain (4 buffer arrays of pointers); copy
+        //  by memcpy to avoid array-assignment quirks.
+        weave tmp;
+        memcpy(&tmp,  &work, sizeof(weave));
+        memcpy(&work, &swap, sizeof(weave));
+        memcpy(&swap, &tmp,  sizeof(weave));
+    }
+
+    //  Build a one-version weave for the result blob.
+    __ = WEAVEFromBlob(&nu, result_blob, ext, merge_in);
+    if (__ != OK) goto cleanup;
+
+    //  WEAVEDiff(work, nu, merge_in) reconciles into dst.
+    __ = WEAVEDiff(dst, &work, &nu, merge_in);
+
+cleanup:
+    WEAVEFree(&work);
+    WEAVEFree(&swap);
+    WEAVEFree(&nu);
+    return __;
 }
 
 // --- WEAVEEmitDiff ---

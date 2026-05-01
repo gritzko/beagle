@@ -4,6 +4,12 @@ target_compile_options(JOIN01test PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(JOIN01test graflib dog abc-core)
 add_test(NAME JOIN01test COMMAND JOIN01test)
 
+add_executable(WEAVE01test WEAVE01.c)
+target_link_options(WEAVE01test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WEAVE01test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WEAVE01test graflib dog abc-core)
+add_test(NAME WEAVE01test COMMAND WEAVE01test)
+
 add_executable(REBASE01test REBASE01.c)
 target_link_options(REBASE01test PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(REBASE01test PRIVATE ${TEST_CXX_FLAGS})

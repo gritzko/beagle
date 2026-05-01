@@ -466,17 +466,17 @@ ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta) {
     u8bFeed(wp, reporoot);
     call(PATHu8bTerm, wp);
 
-    //  FILEScanSorted needs scratch buffer for per-dir entry stacks.
-    //  Sized at 1 MB — large enough for tens of thousands of entries
-    //  per dir, well beyond anything reasonable.
+    //  Same sizing rationale as `SNIFFWtULog`: ignored mega-dirs
+    //  (Corpus/, .git/objects/, build/) still get sorted before the
+    //  per-file callback gets to skip them.
     Bu8 scratch = {};
-    call(u8bAllocate, scratch, 1UL << 20);
+    call(u8bMap, scratch, 1UL << 24);
 
     ok64 so = FILEScanSorted(wp,
                              (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                          FILE_SCAN_DEEP),
                              scratch, FILEentryZ, at_list_cb, &c);
-    u8bFree(scratch);
+    u8bUnMap(scratch);
     if (c.err != OK) return c.err;
     return so;
 }
@@ -551,14 +551,19 @@ ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out) {
     u8bFeed(wp, reporoot);
     call(PATHu8bTerm, wp);
 
+    //  FILEScanSorted sorts each visited dir's entries in scratch
+    //  space; ignored dirs (Corpus/, .git/objects/, build/) can hold
+    //  tens of thousands of entries even though no row will be
+    //  emitted for them.  Use a 16 MB mmap region — VA only, paged
+    //  on demand — to comfortably handle the worst real-world dir.
     Bu8 scratch = {};
-    call(u8bAllocate, scratch, 1UL << 20);
+    call(u8bMap, scratch, 1UL << 24);
 
     ok64 so = FILEScanSorted(wp,
                              (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                          FILE_SCAN_DEEP),
                              scratch, FILEentryZ, at_ulog_cb, &c);
-    u8bFree(scratch);
+    u8bUnMap(scratch);
     if (c.err != OK) return c.err;
     return so;
 }

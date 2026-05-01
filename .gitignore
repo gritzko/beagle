@@ -1,6 +1,7 @@
 # Build directories
 build/
 build-*/
+run-*/
 cmake-build-*/
 node_modules/
 

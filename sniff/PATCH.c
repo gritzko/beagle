@@ -805,21 +805,29 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     //  ancestor between the parent branch and the target branch.
     //  This excludes ancestor commits already in cur's history,
     //  which a plain `LCA(our, theirs)` would otherwise re-revert.
+    //
+    //  Fallback: when the target has no parent branch in the dogs
+    //  hierarchy (e.g. peer-imported flat git branches), drop down
+    //  to `LCA(our, theirs)`.  The WEAVE-based merge engine in graf
+    //  no longer needs an exact base — its inrm provenance recovers
+    //  the spine — so the fork_sha here only steers the per-path
+    //  classification in `patch_walk` (only-ours / only-theirs /
+    //  diverged) and is forgiving of an over-inclusive base.
     sha1 parent_tip = {};
+    sha1 fork_sha = {};
     {
         ok64 pr = resolve_parent_tip(&parent_tip, reporoot, target_query);
-        if (pr != OK) {
-            fprintf(stderr,
-                "sniff: patch: cannot resolve target's fork point "
-                "(target has no parent branch, or it is on trunk)\n");
-            fail(PATCHURELT);
+        if (pr == OK) {
+            call(GRAFLca, &fork_sha, &parent_tip, &thr_sha);
         }
     }
-
-    sha1 fork_sha = {};
-    call(GRAFLca, &fork_sha, &parent_tip, &thr_sha);
     {
         u8 zero[20] = {};
+        if (memcmp(fork_sha.data, zero, 20) == 0) {
+            //  No parent-branch base, or LCA returned zero.  Fall
+            //  back to direct DAG-LCA of ours and theirs.
+            call(GRAFLca, &fork_sha, &our_sha, &thr_sha);
+        }
         if (memcmp(fork_sha.data, zero, 20) == 0) {
             fprintf(stderr, "sniff: patch: no common ancestor\n");
             fail(PATCHURELT);

@@ -214,85 +214,96 @@ ok64 GRAFLca(sha1 *out, sha1 const *a, sha1 const *b) {
     done;
 }
 
-// --- 2-way blob merge via JOIN (3-way with LCA as base) --------------
+// --- 2-way blob merge via WEAVE -------------------------------------
 
+//  Forward decls — implementations live further down with
+//  `get_weave_union`'s helpers.
+static ok64 build_tip_weave(weave *out, u8cs path, u8cs ext,
+                            u64 const *tip_hs, u32 ntips);
+static ok64 emit_alive_bytes(u8b into, weave const *w);
+
+//  WEAVE-based 3-way merge.  Builds an ancestor-aware weave per tip
+//  via `build_tip_weave`, then `WEAVEMerge` reconciles them into a
+//  single weave whose alive tokens are emitted as the merged bytes.
+//
+//  No explicit base argument: per-token inrm provenance recovers the
+//  shared spine, so multi-LCA (criss-cross) histories resolve
+//  naturally — the algorithm doesn't pick one LCA and lose info from
+//  the other.  Concurrent-alive divergence keeps both sides' tokens
+//  in the storage; render-time marker emission (a follow-up) wraps
+//  them with `<<<<` / `||||` / `>>>>` in the output stream when
+//  appropriate.  Until that lands the alive bytes for a divergent
+//  region read as a-side-then-b-side concatenation.
 static ok64 get_merge_2way(u8b into, u8cs path, get_tip const *tips) {
     sane(into && tips);
 
-    u64 lca_h = get_lca(tips[0].h40, tips[1].h40);
-
-    //  Tokenizer extension from the file's name.
     u8cs ext = {};
     PATHu8sExt(ext, path);
 
-    Bu8 bbuf = {}, obuf = {}, tbuf = {};
-    call(u8bMap, bbuf, GET_BLOB_MAX);
-    call(u8bMap, obuf, GET_BLOB_MAX);
-    call(u8bMap, tbuf, GET_BLOB_MAX);
-
-    //  Fetch base: missing path at LCA (file new on both branches)
-    //  leaves `bbuf` empty — JOINMerge handles that by degenerating
-    //  to "take ours", which is the best we can do without history.
-    if (lca_h != 0) GRAFBlobAtCommit(bbuf, &KEEP, lca_h, path);
-
-    ok64 oo = GRAFBlobAtCommit(obuf, &KEEP, tips[0].h40, path);
-    ok64 to = GRAFBlobAtCommit(tbuf, &KEEP, tips[1].h40, path);
-
+    weave wours = {}, wtheirs = {}, wmerge = {};
     ok64 ret = OK;
-    if (oo != OK && to != OK) {
-        ret = GETFAIL;
-    } else if (oo != OK) {
-        //  path present only at tips[1] — emit its bytes.
-        a_dup(u8c, tb, u8bData(tbuf));
-        ret = u8bFeed(into, tb);
-    } else if (to != OK) {
-        //  path present only at tips[0] — emit its bytes.
-        a_dup(u8c, ob, u8bData(obuf));
-        ret = u8bFeed(into, ob);
-    } else {
-        //  Full 3-way: tokenize base/ours/theirs and run JOIN.
-        JOINfile bjf = {}, ojf = {}, tjf = {};
-        a_dup(u8c, bdata, u8bData(bbuf));
-        a_dup(u8c, odata, u8bData(obuf));
-        a_dup(u8c, tdata, u8bData(tbuf));
+    if ((ret = WEAVEInit(&wours))   != OK) return ret;
+    if ((ret = WEAVEInit(&wtheirs)) != OK) goto cleanup;
+    if ((ret = WEAVEInit(&wmerge))  != OK) goto cleanup;
 
-        ret = JOINTokenize(&bjf, bdata, ext);
-        if (ret == OK) ret = JOINTokenize(&ojf, odata, ext);
-        if (ret == OK) ret = JOINTokenize(&tjf, tdata, ext);
-        if (ret == OK) ret = JOINMerge(into, &bjf, &ojf, &tjf);
+    u64 ours_tip   = tips[0].h40;
+    u64 theirs_tip = tips[1].h40;
 
-        JOINFree(&bjf);
-        JOINFree(&ojf);
-        JOINFree(&tjf);
-    }
+    ret = build_tip_weave(&wours,   path, ext, &ours_tip,   1);
+    if (ret != OK) goto cleanup;
+    ret = build_tip_weave(&wtheirs, path, ext, &theirs_tip, 1);
+    if (ret != OK) goto cleanup;
 
-    u8bUnMap(bbuf);
-    u8bUnMap(obuf);
-    u8bUnMap(tbuf);
+    //  Empty-tip degeneracy: if either side has no alive tokens
+    //  (path absent at that tip's history), emit the other side's
+    //  alive bytes verbatim.  Mirrors the legacy JOIN behaviour for
+    //  add/del cases.
+    u32 ours_n   = (u32)((u32cp)wours.toks[2]   - (u32cp)wours.toks[1]);
+    u32 theirs_n = (u32)((u32cp)wtheirs.toks[2] - (u32cp)wtheirs.toks[1]);
+    if (ours_n == 0 && theirs_n == 0) { ret = GETFAIL; goto cleanup; }
+    if (ours_n == 0)   { ret = emit_alive_bytes(into, &wtheirs); goto cleanup; }
+    if (theirs_n == 0) { ret = emit_alive_bytes(into, &wours);   goto cleanup; }
+
+    ret = WEAVEMerge(&wmerge, &wours, &wtheirs);
+    if (ret != OK) goto cleanup;
+
+    ret = emit_alive_bytes(into, &wmerge);
+
+cleanup:
+    WEAVEFree(&wours);
+    WEAVEFree(&wtheirs);
+    WEAVEFree(&wmerge);
     return ret;
 }
 
-// --- Weave-replay the path history over the ancestor union ---
+// --- Weave-replay helpers: shared by N-tip union and 2-way merge ---
 
-static ok64 get_weave_union(u8b into, u8cs path,
-                            get_tip const *tips, u32 ntips) {
-    sane(into && ntips > 0);
+//  Build a weave by replaying `path`'s blob versions across the
+//  ancestor union of `tip_hs[0..ntips)` in topo order.  The result
+//  weave's inrm carries provenance per token; alive tokens reproduce
+//  the path's content at the most recent ancestor where it was last
+//  written.  Caller owns `out` (must be inited and reset).
+//
+//  This is a first-pass approximation for histories with multi-parent
+//  commits — they're treated as linear WEAVEDiff steps off whatever
+//  came before in topo order, not recursive WEAVEReplay.  Good enough
+//  for case-A merges where both sides feed into WEAVEMerge; correct
+//  case-B (importing a multi-parent commit) is a follow-up that swaps
+//  the per-step WEAVEDiff for WEAVEReplay when the topo step has >1
+//  parent.
+static ok64 build_tip_weave(weave *out, u8cs path, u8cs ext,
+                            u64 const *tip_hs, u32 ntips) {
+    sane(out && ntips > 0);
 
-    //  Ancestor union across all tips.
+    //  Ancestor union across the supplied tips.
     Bwh128 anc = {};
     call(wh128bAllocate, anc, GET_ANC_SIZE);
-
-    u64 tip_hs[GET_MAX_TIPS] = {};
-    for (u32 i = 0; i < ntips; i++) tip_hs[i] = tips[i].h40;
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
     ok64 ao = DAGAncestorsOfMany(anc, runs, tip_hs, ntips);
     if (ao != OK) { wh128bFree(anc); return ao; }
 
-    //  Topo-sort the ancestor union parents-before-children.  No
-    //  PATH_VER pre-filter — the blob fetch loop below skips commits
-    //  where the path is absent and dedups byte-identical adjacent
-    //  versions.
+    //  Topo-sort: parents-before-children.
     u64 vers[GET_MAX_VERS];
     u32 nvers = 0;
     size_t anc_cap = (size_t)(wh128bTerm(anc) - wh128bHead(anc));
@@ -307,33 +318,34 @@ static ok64 get_weave_union(u8b into, u8cs path,
     }
     wh128bFree(anc);
 
-    //  Fall-back: no DAG entries — fetch the blob at the first tip
-    //  directly.  Covers freshly-imported repos where GRAFIndex
-    //  hasn't run, and isolated blob-URI cases.
+    //  No DAG entries (fresh import without GRAFIndex, isolated blob
+    //  URI): fall back to the tip's own blob bytes as a single-version
+    //  weave so callers still get something sensible.
     if (nvers == 0) {
-        return get_append_blob_at(into, tips[0].h40, path);
+        Bu8 fallback = {};
+        call(u8bMap, fallback, GET_BLOB_MAX);
+        ok64 fo = get_append_blob_at(fallback, tip_hs[0], path);
+        if (fo == OK) {
+            a_dup(u8c, fb, u8bData(fallback));
+            fo = WEAVEFromBlob(out, fb, ext, (u32)tip_hs[0]);
+        }
+        u8bUnMap(fallback);
+        return fo;
     }
 
-    //  Tokenizer extension driven by path's suffix — trailing '/'
-    //  already routed to tree mode, so path ends on a file name.
-    u8cs ext = {};
-    PATHu8sExt(ext, path);
-
-    //  Three weave instances: src holds the accumulated history, dst
-    //  receives each WEAVEDiff result, nu is rebuilt fresh for every
-    //  blob version.  After WEAVEDiff we swap src/dst so src always
-    //  points at the latest state.
+    //  Three weave instances: src accumulates history, dst receives
+    //  each WEAVEDiff, nu is rebuilt fresh per blob version.  After
+    //  WEAVEDiff we swap so src always carries the latest state.
     weave wA = {}, wB = {}, wnu = {};
-    call(WEAVEInit, &wA);
-    call(WEAVEInit, &wB);
-    call(WEAVEInit, &wnu);
+    ok64 r = OK;
+    if ((r = WEAVEInit(&wA))  != OK) { goto out; }
+    if ((r = WEAVEInit(&wB))  != OK) { WEAVEFree(&wA); goto out; }
+    if ((r = WEAVEInit(&wnu)) != OK) { WEAVEFree(&wA); WEAVEFree(&wB); goto out; }
     weave *wsrc = &wA, *wdst = &wB;
 
-    //  Two blob buffers swapped per version; `prev` is kept for
-    //  byte-level dedup of identical-bytes versions.
     Bu8 blob_a = {}, blob_b = {};
-    call(u8bMap, blob_a, GET_BLOB_MAX);
-    call(u8bMap, blob_b, GET_BLOB_MAX);
+    if ((r = u8bMap(blob_a, GET_BLOB_MAX)) != OK) goto cleanup_w;
+    if ((r = u8bMap(blob_b, GET_BLOB_MAX)) != OK) { u8bUnMap(blob_a); goto cleanup_w; }
     Bu8 *cur = &blob_a, *prev = &blob_b;
 
     b8 have_prev = NO;
@@ -343,8 +355,6 @@ static ok64 get_weave_union(u8b into, u8cs path,
         ok64 fo = GRAFBlobAtCommit(*cur, &KEEP, commit_h, path);
         if (fo != OK) continue;
 
-        //  Byte-level dedup: skip versions whose bytes match the
-        //  immediately previous kept version.
         if (have_prev) {
             size_t cl = u8bDataLen(*cur);
             size_t pl = u8bDataLen(*prev);
@@ -356,7 +366,6 @@ static ok64 get_weave_union(u8b into, u8cs path,
 
         u8cs new_data = {u8bDataHead(*cur),
                          u8bDataHead(*cur) + u8bDataLen(*cur)};
-
         u32 sc = (u32)commit_h;
         ok64 fbo = WEAVEFromBlob(&wnu, new_data, ext, sc);
         if (fbo == OK) {
@@ -369,36 +378,62 @@ static ok64 get_weave_union(u8b into, u8cs path,
         Bu8 *tmp = cur; cur = prev; prev = tmp;
         have_prev = YES;
     }
-    u8bUnMap(blob_a);
-    u8bUnMap(blob_b);
 
-    //  Projection: token alive iff del_gen == 0.  Every fed gen
-    //  lives in the ancestor union by construction, so "still alive
-    //  at the end of the linear replay" is the union projection for
-    //  linear histories; for diverged branches this is a first-pass
-    //  approximation — correctness of true octopus merges lands in
-    //  follow-up work (see graf/GET.md).
-    u32cp w_toks   = (u32cp)wsrc->toks[1];
-    u32cp w_toks_e = (u32cp)wsrc->toks[2];
-    u32   wlen     = (u32)(w_toks_e - w_toks);
-    inrmcp w_irm   = (inrmcp)wsrc->inrm[1];
-    u8cp  w_text   = (u8cp)wsrc->text[1];
-    for (u32 i = 0; i < wlen; i++) {
-        if (w_irm[i].rm != 0) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(w_toks[i - 1]);
-        u32 hi = tok32Offset(w_toks[i]);
-        u8cs ts = {w_text + lo, w_text + hi};
-        ok64 o = u8bFeed(into, ts);
-        if (o != OK) {
-            WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
-            return o;
-        }
+    //  Move wsrc's contents into out (caller's buffer).  Cheapest
+    //  route: copy the four buffer headers; wsrc's mappings now
+    //  belong to out, and we replace wsrc/wdst before freeing so we
+    //  don't double-free.
+    if (wsrc == &wA) {
+        memcpy(out, &wA, sizeof(weave));
+        memset(&wA, 0, sizeof(weave));
+    } else {
+        memcpy(out, &wB, sizeof(weave));
+        memset(&wB, 0, sizeof(weave));
     }
 
+    u8bUnMap(blob_a);
+    u8bUnMap(blob_b);
+cleanup_w:
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
+out:
+    return r;
+}
+
+//  Render `w`'s alive tokens into `into` in weave order.
+static ok64 emit_alive_bytes(u8b into, weave const *w) {
+    sane(into && w);
+    u32cp toks   = (u32cp)w->toks[1];
+    u32cp toks_e = (u32cp)w->toks[2];
+    u32   ntok   = (u32)(toks_e - toks);
+    inrmcp irm   = (inrmcp)w->inrm[1];
+    u8cp   text  = (u8cp)w->text[1];
+    for (u32 i = 0; i < ntok; i++) {
+        if (irm[i].rm != 0) continue;
+        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
+        u32 hi = tok32Offset(toks[i]);
+        u8cs ts = {text + lo, text + hi};
+        call(u8bFeed, into, ts);
+    }
     done;
+}
+
+static ok64 get_weave_union(u8b into, u8cs path,
+                            get_tip const *tips, u32 ntips) {
+    sane(into && ntips > 0);
+    u8cs ext = {};
+    PATHu8sExt(ext, path);
+
+    u64 tip_hs[GET_MAX_TIPS] = {};
+    for (u32 i = 0; i < ntips; i++) tip_hs[i] = tips[i].h40;
+
+    weave w = {};
+    call(WEAVEInit, &w);
+    ok64 r = build_tip_weave(&w, path, ext, tip_hs, ntips);
+    if (r == OK) r = emit_alive_bytes(into, &w);
+    WEAVEFree(&w);
+    return r;
 }
 
 // --- Resolve commit_h40 + dir-path → tree sha ---

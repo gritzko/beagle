@@ -141,6 +141,26 @@ static b8 wcli_path_is_git(u8csc path) {
     return memcmp(tail, WCLI_GIT_DOT_S, sizeof(WCLI_GIT_DOT_S) - 1) == 0;
 }
 
+//  On-disk layout sniff for the local-exec branch: returns YES when
+//  `path` looks like a git repo even without the `.git` suffix.
+//      bare:   <path>/objects/ + <path>/refs/
+//      worktree: <path>/.git/objects/
+//  Falls through to the keeper code path on anything else (incl. non-
+//  existent paths — the keeper binary will produce its own diagnostic).
+static b8 wcli_path_is_git_layout(u8csc path) {
+    if (u8csEmpty(path)) return NO;
+    a_cstr(objects_s, "objects");
+    a_cstr(refs_s,    "refs");
+    a_cstr(dotgit_s,  ".git");
+    a_path(objp, path, objects_s);
+    a_path(refp, path, refs_s);
+    if (FILEisdir($path(objp)) == OK && FILEisdir($path(refp)) == OK)
+        return YES;
+    a_path(wtobjp, path, dotgit_s, objects_s);
+    if (FILEisdir($path(wtobjp)) == OK) return YES;
+    return NO;
+}
+
 static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
                        int *wfd, int *rfd, pid_t *pid) {
     sane(verb && wfd && rfd && pid);
@@ -170,6 +190,25 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     if (is_file || (is_keeper && (!has_host ||
                                   wcli_eq_lit(u.host, (u8c *)"local", 5))) ||
         (!has_host && u8csEmpty(u.scheme))) {
+        //  Detect a local git repo (suffix `.git` or on-disk layout).
+        //  When found, exec `git-<verb> <path>` so vanilla bare/working
+        //  git repos served via file:// keep working — symmetric to the
+        //  ssh branch's git-<verb> dispatch below.
+        b8 local_is_git = wcli_path_is_git(path) ||
+                          wcli_path_is_git_layout(path);
+        if (local_is_git) {
+            a_pad(u8, gitverb, 32);
+            a_cstr(git_dash, "git-");
+            u8bFeed(gitverb, git_dash);
+            u8bFeed(gitverb, verb_s);
+            u8cs argv_arr[2] = {
+                {u8bDataHead(gitverb), u8bIdleHead(gitverb)},
+                {path[0], path[1]},
+            };
+            u8css argv = {argv_arr, argv_arr + 2};
+            u8csc gbin = {u8bDataHead(gitverb), u8bIdleHead(gitverb)};
+            return FILESpawn(gbin, argv, wfd, rfd, pid);
+        }
         u8cs kbin = {};
         wcli_keeper_bin(kbin);
         u8cs argv_arr[3] = {

@@ -16,10 +16,14 @@
 #include "AT.h"
 #include "SNIFF.h"
 
-#define CLASS_PD_BUF (1UL << 16)
+#define CLASS_PD_BUF (1UL << 20)
 
-#define CLASS_BU_BUF (1UL << 20)
-#define CLASS_WU_BUF (1UL << 20)
+//  Baseline tree + wt scan can grow into the tens of thousands of
+//  ULOG rows for real-world wts (full repo at /home/gritzko/dogs has
+//  ~700 tracked paths after gitignore, plus the baseline tree's
+//  per-path entries).  4 MB each, mmap-backed (lazy paging).
+#define CLASS_BU_BUF (1UL << 22)
+#define CLASS_WU_BUF (1UL << 22)
 
 // --- Resolve baseline tree sha (mirror of POST/PUT/DEL helpers) ---
 
@@ -239,17 +243,17 @@ ok64 SNIFFClassify(class_cb cb, void *ctx) {
 
     Bu8 bu = {}, wu = {}, pu_unsorted = {}, du_unsorted = {};
     Bu8 pu = {}, du = {};
-    call(u8bAllocate, bu, CLASS_BU_BUF);
-    call(u8bAllocate, wu, CLASS_WU_BUF);
-    call(u8bAllocate, pu_unsorted, CLASS_PD_BUF);
-    call(u8bAllocate, du_unsorted, CLASS_PD_BUF);
-    call(u8bAllocate, pu, CLASS_PD_BUF);
-    call(u8bAllocate, du, CLASS_PD_BUF);
+    call(u8bMap, bu, CLASS_BU_BUF);
+    call(u8bMap, wu, CLASS_WU_BUF);
+    call(u8bMap, pu_unsorted, CLASS_PD_BUF);
+    call(u8bMap, du_unsorted, CLASS_PD_BUF);
+    call(u8bMap, pu, CLASS_PD_BUF);
+    call(u8bMap, du, CLASS_PD_BUF);
 
 #define CLASS_FREE_ALL()                          \
-    do { u8bFree(bu); u8bFree(wu);                \
-         u8bFree(pu_unsorted); u8bFree(du_unsorted); \
-         u8bFree(pu); u8bFree(du); } while (0)
+    do { u8bUnMap(bu); u8bUnMap(wu);              \
+         u8bUnMap(pu_unsorted); u8bUnMap(du_unsorted); \
+         u8bUnMap(pu); u8bUnMap(du); } while (0)
 
     sha1 base_tree = {};
     b8 have_base = NO;
