@@ -41,7 +41,7 @@ graf status                        index run/entry counts
 | `DIFF.c`      | `GRAFDiff` — maps two files, calls `DIFFu8cs` with `GRAFHunkEmit` as callback |
 | `MERGE.c`     | `GRAFMerge` — 3-way merge using `JOIN`, writes resolved bytes to file or stdout |
 | `BLAME.c`     | `GRAFFileWeave` (shared file-history weave builder: ancestor-closure walk, byte-dedup, optional wt-as-final-layer with `WEAVE_WT_SRC`, per-layer step callback) + `GRAFBlame` (renders attribution rows over the built weave) + `GRAFWeaveDiff` |
-| `WEAVE.{h,c}` | Double-buffered weave of token versions with intro/del gens; `WEAVEEmitDiff` walks a built weave and emits one HUNK with `I`/`D`/` ` hili spans per token, classified by caller-supplied `(in_from, in_to)` reachability predicates |
+| `WEAVE.{h,c}` | Double-buffered weave of token versions with intro/del gens.  `WEAVEDiff` runs `DIFFu64s` over alive-src vs nu hashlets, then `NEIL.Cleanup` + `NEIL.Shift` over the EDL (alive-only text/toks views are materialised once per step) so spurious whitespace/punctuation EQ matches between unrelated lines don't pollute the weave's `inrm` attributions.  `WEAVEEmitDiff` walks a built weave and emits unified-diff hunks with context (3 lines on each side, clusters merge through gaps ≤ 2×CTX) classified by caller-supplied `(in_from, in_to)` predicates.  Each hunk carries `text` + `toks` (lexer syntax tags from the weave) + `hili` (`I`/`D`/`' '`) |
 | `LOG.c`       | `GRAFLog` — `be log:[path]?ref[#N]` projector. Branch history walks COMMIT_PARENT via the DAG index; file history (`./path/file?ref`) reads PATH_VER under the tip's ancestor set. Commit body fetched from keeper for the `<sha7> <date> <author> <summary>` render |
 
 ## Pager

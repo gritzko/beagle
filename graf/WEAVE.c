@@ -10,6 +10,7 @@
 
 #include "abc/DIFF.h"
 #include "abc/PRO.h"
+#include "graf/NEIL.h"
 
 // u64 diff specialization for token hashlets.
 #define X(M, name) M##u64##name
@@ -153,15 +154,38 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
         done;
     }
 
-    //  Project alive src hashlets for diff input.
-    Bu64 alive_h = {};
-    Bi32 work    = {};
-    Bu32 edlbuf  = {};
+    //  Project alive src into three parallel views — hashlets (for the
+    //  LCS), text bytes, and tok32 entries (rebased offsets).  The text
+    //  + toks views are needed by NEIL's predicates (`NEILIsWS` peeks
+    //  bytes; the boundary-shift pass scans for line/word breaks).
+    //  Without NEIL the LCS happily matches whitespace tokens between
+    //  unrelated lines, producing a weave where a deleted-then-inserted
+    //  pair shares its surrounding `' '` / `\n` tokens — a meaningless
+    //  "context" that pollutes both the diff hunks and downstream blame.
+    Bu64 alive_h     = {};
+    Bu8  alive_text  = {};
+    Bu32 alive_toks  = {};
+    Bi32 work        = {};
+    Bu32 edlbuf      = {};
 
     __ = u64bAlloc(alive_h, src_len + 1); if (__ != OK) goto cleanup;
-    for (u32 i = 0; i < src_len; i++) {
-        if (src_irm[i].rm == 0) {
+    u32 src_text_len = (u32)u8bDataLen(src->text);
+    if (src_text_len == 0) src_text_len = 1;
+    __ = u8bMap (alive_text, src_text_len + 1); if (__ != OK) goto cleanup;
+    __ = u32bAlloc(alive_toks, src_len + 1);    if (__ != OK) goto cleanup;
+    {
+        u32 cum = 0;
+        for (u32 i = 0; i < src_len; i++) {
+            if (src_irm[i].rm != 0) continue;
             __ = u64bFeed1(alive_h, src_hash[i]); if (__ != OK) goto cleanup;
+            u32 lo = (i == 0) ? 0 : tok32Offset(src_toks[i - 1]);
+            u32 hi = tok32Offset(src_toks[i]);
+            u8cs tb = {src_text + lo, src_text + hi};
+            __ = u8bFeed(alive_text, tb); if (__ != OK) goto cleanup;
+            cum += (hi - lo);
+            u8 tag = tok32Tag(src_toks[i]);
+            __ = u32bFeed1(alive_toks, tok32Pack(tag, cum));
+            if (__ != OK) goto cleanup;
         }
     }
 
@@ -184,6 +208,22 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
         edlg[1] = edlg[0];
         if (olen > 0) { *edlg[1]++ = DIFF_ENTRY(DIFF_DEL, (u32)olen); }
         if (nlen > 0) { *edlg[1]++ = DIFF_ENTRY(DIFF_INS, (u32)nlen); }
+    } else {
+        //  NEIL semantic cleanup on the EDL: kill false short equalities
+        //  (typically lone whitespace / punctuation tokens that LCS-
+        //  matched across unrelated content) and lossless boundary shift
+        //  to align edits with line/word boundaries.  Both passes
+        //  in-place.  The `walk` block below re-reads `edlg[0]` so it
+        //  picks up the cleaned size.
+        u32cs at_view = {(u32cp)u32bDataHead(alive_toks),
+                         (u32cp)u32bDataHead(alive_toks) +
+                                u32bDataLen(alive_toks)};
+        u32cs nt_view = {nu_toks, nu_toks_e};
+        u8cs  at_text = {u8bDataHead(alive_text),
+                         u8bDataHead(alive_text) + u8bDataLen(alive_text)};
+        u8cs  nt_text = {nu_text, nu_text + (size_t)u8bDataLen(nu->text)};
+        NEILCleanup(edlg, at_view, nt_view, at_text, nt_text);
+        NEILShift  (edlg, at_view, nt_view, at_text, nt_text);
     }
     e32c *ep = edlbuf[0];
     e32c *ee = edlg[0];
@@ -263,6 +303,8 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
 
 cleanup:
     u64bFree(alive_h);
+    if (alive_text[0]) u8bUnMap(alive_text);
+    u32bFree(alive_toks);
     i32bFree(work);
     u32bFree(edlbuf);
     return __;
@@ -278,14 +320,35 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
 
 // --- WEAVEEmitDiff ---
 //
-//  Emits one hunk classifying every weave token vs the (from, to) sets
-//  passed in.  Output text is the concatenation of every kept token in
-//  weave order; hili is a tiling of that text with tok32(tag, end_off)
-//  spans.  Tags: 'I' (inserted on to-side), 'D' (deleted), ' ' (context).
-//  Empty diff (no `I` and no `D`) → no hunk emitted.
+//  Emits one or more hunks per file, each covering a cluster of changed
+//  lines flanked by `WEAVE_CTX_LINES` of context (the conventional
+//  unified-diff `@@ -X,Y +A,B @@` shape minus the line-count header).
+//  Per kept token (anything `alive_from || alive_to`):
+//    alive_to && !alive_from → 'I' (inserted on to-side)
+//    alive_from && !alive_to → 'D' (deleted on to-side)
+//    alive_from && alive_to  → ' ' (context, unchanged)
+//  Tokens carry their lexer tag in the hunk's `toks` (syntax stream),
+//  and the I/D/' ' classification in `hili`.  Both arrays tile the
+//  hunk's `text` exactly.  See `dog/HUNK.c` for the renderer.
+//  TODO: NEIL-style cleanup happens upstream in `WEAVEDiff` (ride the
+//  EDL there); WEAVEEmitDiff trusts its weave's classification.
 
-#define WEAVE_DIFF_TEXT_MAX (64UL << 20)
-#define WEAVE_DIFF_HILI_MAX (1UL << 20)
+#define WEAVE_CTX_LINES 3
+
+//  Per-token classification + line tracking, used by both passes.
+//  Returns the kind of `'I'` / `'D'` / `' '`, or 0 to skip.
+static u8 weave_diff_classify(inrm e,
+                               WEAVEsetfn in_from, void *from_ctx,
+                               WEAVEsetfn in_to,   void *to_ctx) {
+    b8 af = in_from(e.in, from_ctx) &&
+            (e.rm == 0 || !in_from(e.rm, from_ctx));
+    b8 at = in_to  (e.in, to_ctx) &&
+            (e.rm == 0 || !in_to  (e.rm, to_ctx));
+    if (at && !af) return 'I';
+    if (af && !at) return 'D';
+    if (af && at)  return ' ';
+    return 0;
+}
 
 ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                    WEAVEsetfn in_from, void *from_ctx,
@@ -298,77 +361,185 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     u32   ntok   = (u32)(toks_e - toks);
     inrmcp irm   = (inrmcp)w->inrm[1];
     u8cp   text  = (u8cp)w->text[1];
+    if (ntok == 0) done;
 
-    Bu8 outtext = {};
-    Bu32 outhili = {};
-    call(u8bMap,  outtext, WEAVE_DIFF_TEXT_MAX);
-    ok64 mh = u32bMap(outhili, WEAVE_DIFF_HILI_MAX);
-    if (mh != OK) { u8bUnMap(outtext); return mh; }
+    //  Pass 1: walk kept tokens, count newlines (line index in the
+    //  merged stream), mark every line that contains an I or D token.
+    //  total_lines is one past the highest line index we'll see.
+    u32 total_lines_est = 1;
+    {
+        u32 tlen = (u32)u8bDataLen(w->text);
+        for (u32 b = 0; b < tlen; b++) if (text[b] == '\n') total_lines_est++;
+    }
 
-    u32 emitted_off = 0;
-    u32 prev_span_off = 0;   // end of last flushed hili span
-    u8  prev_tag = 0;        // 0 = no run yet
-    u32 has_id = 0;          // bitmask: 1='I' seen, 2='D' seen
+    Bu8 changed = {};
+    call(u8bMap, changed, total_lines_est + 4);
+    memset(u8bDataHead(changed), 0, total_lines_est);
+    u8bFed(changed, total_lines_est);
 
+    u8 *cmark = (u8 *)u8bDataHead(changed);
+    u32 cur_line = 0;
     for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(irm[i], in_from, from_ctx,
+                                            in_to,   to_ctx);
+        if (tag == 0) continue;
+
         u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
         u32 hi = tok32Offset(toks[i]);
-        u8cs tok_bytes = {text + lo, text + hi};
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
 
-        u32 in = irm[i].in;
-        u32 rm = irm[i].rm;
-
-        b8 alive_from = in_from(in, from_ctx) &&
-                        (rm == 0 || !in_from(rm, from_ctx));
-        b8 alive_to   = in_to(in, to_ctx) &&
-                        (rm == 0 || !in_to(rm, to_ctx));
-
-        u8 tag = 0;
-        if (alive_to && !alive_from)      tag = 'I';
-        else if (alive_from && !alive_to) tag = 'D';
-        else if (alive_from && alive_to)  tag = ' ';
-        else continue;
-
-        if (tag == 'I') has_id |= 1;
-        else if (tag == 'D') has_id |= 2;
-
-        // Flush previous run if tag changes.
-        if (prev_tag != 0 && tag != prev_tag) {
-            ok64 fo = u32bFeed1(outhili, tok32Pack(prev_tag, emitted_off));
-            if (fo != OK) { u8bUnMap(outtext); u32bUnMap(outhili); return fo; }
-            prev_span_off = emitted_off;
+        if (tag == 'I' || tag == 'D') {
+            for (u32 l = cur_line; l <= cur_line + nl && l < total_lines_est; l++)
+                cmark[l] = 1;
         }
-        prev_tag = tag;
-
-        // Append token bytes to outtext.
-        ok64 fo = u8bFeed(outtext, tok_bytes);
-        if (fo != OK) { u8bUnMap(outtext); u32bUnMap(outhili); return fo; }
-        emitted_off += (u32)$len(tok_bytes);
+        cur_line += nl;
     }
+    u32 total_lines = cur_line + 1;
+    if (total_lines > total_lines_est) total_lines = total_lines_est;
 
-    // Flush trailing run.
-    if (prev_tag != 0 && emitted_off > prev_span_off) {
-        ok64 fo = u32bFeed1(outhili, tok32Pack(prev_tag, emitted_off));
-        if (fo != OK) { u8bUnMap(outtext); u32bUnMap(outhili); return fo; }
+    //  Pass 2: cluster changed lines into visible windows.  Adjacent
+    //  changed regions whose context (CTX_LINES on each side) overlaps
+    //  fold into one window.
+    Bu32 windows = {};
+    call(u32bMap, windows, (total_lines + 4) * 2);
+    u32 *wbuf = (u32 *)u32bDataHead(windows);
+    u32 nwin = 0;
+    {
+        u32 i = 0;
+        while (i < total_lines) {
+            if (!cmark[i]) { i++; continue; }
+            u32 cluster_first = i;
+            u32 cluster_last  = i;
+            i++;
+            //  Extend cluster while the next change is within
+            //  2*CTX_LINES (i.e. its context overlaps ours).
+            while (i < total_lines) {
+                if (cmark[i]) { cluster_last = i; i++; continue; }
+                u32 j = i;
+                while (j < total_lines && !cmark[j] &&
+                       j - cluster_last <= 2 * WEAVE_CTX_LINES) j++;
+                if (j < total_lines && cmark[j]) {
+                    cluster_last = j; i = j + 1;
+                } else break;
+            }
+            u32 lo = (cluster_first > WEAVE_CTX_LINES)
+                     ? cluster_first - WEAVE_CTX_LINES : 0;
+            u32 hi = cluster_last + WEAVE_CTX_LINES;
+            if (hi >= total_lines) hi = total_lines - 1;
+            wbuf[nwin * 2]     = lo;
+            wbuf[nwin * 2 + 1] = hi;
+            nwin++;
+        }
     }
+    u32bFed(windows, nwin * 2);
 
-    if (has_id == 0) {
-        // No insertions or deletions — caller asked for a diff between
-        // identical states.  Skip hunk emission.
-        u8bUnMap(outtext);
-        u32bUnMap(outhili);
+    if (nwin == 0) {
+        u8bUnMap(changed);
+        u32bUnMap(windows);
         done;
     }
 
-    hunk hk = {};
-    $mv(hk.uri, name);
-    hk.text[0] = u8bDataHead(outtext);
-    hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);
-    hk.hili[0] = (tok32c *)u32bDataHead(outhili);
-    hk.hili[1] = (tok32c *)u32bDataHead(outhili) + u32bDataLen(outhili);
-    ok64 r = cb(&hk, cb_ctx);
+    //  Pass 3: emit one hunk per window.  Walk tokens once, accumulate
+    //  output for the active window, flush + advance when we cross a
+    //  window boundary.
+    Bu8  outtext = {};
+    Bu32 outtoks = {};
+    Bu32 outhili = {};
+    call(u8bMap,  outtext, 16UL << 20);
+    call(u32bMap, outtoks, 1UL << 16);
+    call(u32bMap, outhili, 1UL << 16);
 
+    ok64 ret = OK;
+    u32 wi = 0;          // active window index
+    u32 win_lo = wbuf[0];
+    u32 win_hi = wbuf[1];
+    cur_line = 0;
+    u8 last_hili = 0;    // last 'I'/'D'/' ' tag in current hunk
+    b8 hunk_open = NO;
+
+    #define FLUSH_HUNK() do {                                          \
+        if (hunk_open) {                                               \
+            if (last_hili != 0) {                                      \
+                u32bFeed1(outhili,                                     \
+                    tok32Pack(last_hili, (u32)u8bDataLen(outtext)));   \
+            }                                                          \
+            hunk hk = {};                                              \
+            $mv(hk.uri, name);                                         \
+            hk.text[0] = u8bDataHead(outtext);                         \
+            hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);   \
+            hk.toks[0] = (tok32c *)u32bDataHead(outtoks);              \
+            hk.toks[1] = (tok32c *)u32bDataHead(outtoks)               \
+                       + u32bDataLen(outtoks);                         \
+            hk.hili[0] = (tok32c *)u32bDataHead(outhili);              \
+            hk.hili[1] = (tok32c *)u32bDataHead(outhili)               \
+                       + u32bDataLen(outhili);                         \
+            ok64 _r = cb(&hk, cb_ctx);                                 \
+            if (_r != OK) ret = _r;                                    \
+            u8bReset(outtext);                                         \
+            u32bReset(outtoks);                                        \
+            u32bReset(outhili);                                        \
+            last_hili = 0;                                             \
+            hunk_open = NO;                                            \
+        }                                                              \
+    } while (0)
+
+    for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(irm[i], in_from, from_ctx,
+                                            in_to,   to_ctx);
+        if (tag == 0) continue;
+
+        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
+        u32 hi = tok32Offset(toks[i]);
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
+
+        //  Advance past finished windows.
+        while (wi < nwin && cur_line > win_hi) {
+            FLUSH_HUNK();
+            wi++;
+            if (wi < nwin) {
+                win_lo = wbuf[wi * 2];
+                win_hi = wbuf[wi * 2 + 1];
+            }
+        }
+        if (wi >= nwin) break;
+
+        //  Token's start line determines window membership.  We treat
+        //  any token whose start line is inside the window as visible.
+        if (cur_line >= win_lo && cur_line <= win_hi) {
+            if (last_hili != 0 && last_hili != tag) {
+                ok64 fo = u32bFeed1(outhili,
+                    tok32Pack(last_hili, (u32)u8bDataLen(outtext)));
+                if (fo != OK) { ret = fo; goto cleanup; }
+            }
+            last_hili = tag;
+
+            u8cs tb = {text + lo, text + hi};
+            ok64 fo = u8bFeed(outtext, tb);
+            if (fo != OK) { ret = fo; goto cleanup; }
+            //  Carry the lexer's syntax tag through into the hunk's
+            //  toks stream so the renderer can colour by token type.
+            u8 syntag = tok32Tag(toks[i]);
+            fo = u32bFeed1(outtoks,
+                tok32Pack(syntag, (u32)u8bDataLen(outtext)));
+            if (fo != OK) { ret = fo; goto cleanup; }
+            hunk_open = YES;
+        }
+        cur_line += nl;
+    }
+
+    //  Final flush: any tokens past the last window are dropped; the
+    //  open window (if any) emits its accumulated hunk now.
+    FLUSH_HUNK();
+
+    #undef FLUSH_HUNK
+
+cleanup:
     u8bUnMap(outtext);
+    u32bUnMap(outtoks);
     u32bUnMap(outhili);
-    return r;
+    u8bUnMap(changed);
+    u32bUnMap(windows);
+    return ret;
 }

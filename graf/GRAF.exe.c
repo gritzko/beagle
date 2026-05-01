@@ -11,12 +11,14 @@
 #include <unistd.h>
 
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
+#include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 
 // --- Verb / flag tables ---
@@ -197,18 +199,27 @@ ok64 GRAFExec(cli *c) {
 
     // --- diff: dispatch on URI shape ---
     //
-    //   2 URIs, no ?query on either → file-pair (no keeper needed)
-    //   1 URI with ?query           → URI-driven, falls through
-    //                                 to the keeper-open block below
+    //   2 URIs, no projector intent on URI[0]   → legacy file-pair
+    //                                             (no keeper needed)
+    //   1 URI with diff: scheme / ?query / path → URI-driven projector,
+    //                                             falls through to the
+    //                                             keeper-open block below
 
     if ($eq(c->verb, v_diff)) {
-        b8 has_query = (c->nuris >= 1 && !u8csEmpty(c->uris[0].query));
-        if (!has_query) {
-            if (c->nuris < 2) {
-                fprintf(stderr,
-                    "graf: diff requires 2 files, or 1 URI with ?ref\n");
-                return FAILSANITY;
-            }
+        uri *u0 = (c->nuris >= 1) ? &c->uris[0] : NULL;
+        //  Legacy file-pair `graf diff a.c b.c`: two URIs with no
+        //  projector intent on the first (no scheme, no query).  A
+        //  single URI is always projector — even bare `diff:<path>`.
+        b8 file_pair = (c->nuris >= 2 && u0 != NULL &&
+                        u8csEmpty(u0->scheme) &&
+                        u8csEmpty(u0->query));
+        if (c->nuris < 1) {
+            fprintf(stderr,
+                "graf: diff requires 2 files, or 1 URI"
+                " (diff:[<path>][?<ref>])\n");
+            return FAILSANITY;
+        }
+        if (file_pair) {
             pid_t pager = graf_start_pager(c->tty_out, force_tlv);
             u8cs op = {}, np = {};
             graf_uri_path(op, &c->uris[0]);
@@ -295,39 +306,79 @@ ok64 GRAFExec(cli *c) {
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_diff)) {
-        //  URI-driven diff.  Shape is already validated above
-        //  (c->nuris >= 1 && !empty(query)).  Split query on "..":
-        //    has "..", has path   → file ref-to-ref (via WeaveDiff)
-        //    has "..", no path    → tree ref-to-ref
-        //    no "..", has path    → file ref vs wt
-        //    no "..", no path     → tree ref vs wt
+        //  URI-driven diff (VERBS.md §"View projectors", `diff:`).  The
+        //  right-hand side of every diff is *ours* (the changed state).
+        //  URI shape table:
+        //
+        //    diff:                  → wt vs base    (whole tree)
+        //    diff:file.c            → wt vs base    (single file)
+        //    diff:?branch           → branch vs base (whole tree, ref-to-ref)
+        //    diff:file.c?branch     → branch vs base (single file, ref-to-ref)
+        //    diff:?h1..h2           → h1 vs h2      (whole tree, explicit)
+        //    diff:file.c?h1..h2     → h1 vs h2      (single file, explicit)
+        //
+        //  The base sha comes from `--at`'s fragment (the worktree's
+        //  current baseline, forwarded by `be`).  Every form except the
+        //  explicit `?h1..h2` range needs it; missing → `GRAFNOAT`.
         pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         uri *u = &c->uris[0];
+
+        uri at = {};
+        CLIAtURI(&at, c);
+        u8cs base_hex = {};
+        $mv(base_hex, at.fragment);
+
+        u8cs path = {};
+        u8csMv(path, u->path);
+
         u8cs wf = {}, wt = {};
         a_dup(u8c, q, u->query);
         u8cs dots = {(u8cp)"..", (u8cp)".." + 2};
-        b8 has_range = (u8csFindS(q, dots) == OK);
+        b8 has_range = !$empty(q) && (u8csFindS(q, dots) == OK);
+
         if (has_range) {
-            wf[0] = u->query[0];
-            wf[1] = q[0];
-            wt[0] = q[0] + 2;
-            wt[1] = u->query[1];
-        } else {
-            u8csMv(wt, u->query);
-        }
-        u8cs path = {};
-        u8csMv(path, u->path);
-        if (!$empty(path)) {
-            if (has_range) {
+            //  Explicit `?h1..h2` — no baseline needed.
+            wf[0] = u->query[0]; wf[1] = q[0];
+            wt[0] = q[0] + 2;    wt[1] = u->query[1];
+            if (!$empty(path)) {
                 ret = GRAFWeaveDiff(&KEEP, path, reporoot, wf, wt);
             } else {
-                ret = GRAFDiffFileWT(&KEEP, path, wt, reporoot);
+                ret = GRAFDiffTreeRefs(&KEEP, wf, wt, reporoot);
             }
         } else {
-            if (has_range) {
-                ret = GRAFDiffTreeRefs(&KEEP, wf, wt, reporoot);
+            if ($empty(base_hex)) {
+                fprintf(stderr,
+                    "graf: diff: no --at baseline; need explicit"
+                    " 'diff:?<h1>..<h2>' or a sniff anchor\n");
+                graf_stop_pager(pager);
+                KEEPClose();
+                return GRAFNOAT;
+            }
+            sha1 base_sha = {};
+            a_dup(u8c, base_dup, base_hex);
+            u8s sb = {(u8p)base_sha.data, (u8p)base_sha.data + 20};
+            ok64 ho = HEXu8sDrainSome(sb, base_dup);
+            u64 base_h40 = (ho == OK) ? WHIFFHashlet40(&base_sha) : 0;
+
+            if (!u8csEmpty(u->query)) {
+                //  `?branch` → branch vs base (ref-to-ref).
+                u8cs branch = {};
+                u8csMv(branch, u->query);
+                if (!$empty(path)) {
+                    ret = GRAFWeaveDiff(&KEEP, path, reporoot,
+                                        branch, base_hex);
+                } else {
+                    ret = GRAFDiffTreeRefs(&KEEP, branch, base_hex,
+                                           reporoot);
+                }
             } else {
-                ret = GRAFDiffTreeWT(&KEEP, wt, reporoot);
+                //  No query → wt vs base (weave-based).
+                if (!$empty(path)) {
+                    ret = GRAFDiffWtFile(&KEEP, path, base_h40, reporoot);
+                } else {
+                    ret = GRAFDiffWtTree(&KEEP, base_h40, base_hex,
+                                         reporoot);
+                }
             }
         }
         graf_stop_pager(pager);

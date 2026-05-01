@@ -70,6 +70,10 @@ con ok64 GRAFOPENRO  = 0x41b28f6193976d8;
 con ok64 GRAFNOBR    = 0x41b28f5d82db;
 //  Missing prefix dir along the trunk → leaf branch path.
 con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
+//  No `--at` anchor available — `diff:` projector forms that need a
+//  baseline (any URI without an explicit `?h1..h2` range) refuse with
+//  this rather than silently falling back to "wt as base".
+con ok64 GRAFNOAT    = 0x41b28f5cd5d3;
 
 // --- Public API (DOG 4-fn, singleton) ---
 
@@ -173,19 +177,25 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out);
 ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to);
 
-// URI-driven diff primitives.  `ref`/`from`/`to` are the `?`-less
-// bodies of a URI query (e.g. `tags/v1`, `heads/main`).  Each emits
-// one `--- <path> ---` hunk block per changed file through
-// GRAFHunkEmit, same format as GRAFDiff/GRAFWeaveDiff.
+// URI-driven diff primitives.  Each emits one hunk block per changed
+// file through `GRAFHunkEmit`.
 //
-//   GRAFDiffFileWT   — single file: blob at `ref` vs worktree file.
-//   GRAFDiffTreeWT   — whole tree: walk `ref`, diff each file vs wt,
-//                      plus wt-only files as insertions.
+//   GRAFDiffWtFile   — single file: weave-based diff of wt-on-disk
+//                      against the baseline blob at `base_h40`
+//                      (40-bit commit hashlet from sniff's `--at`
+//                      anchor).  wt is folded into the file's weave
+//                      as the next version after the base, so
+//                      attribution is preserved.
+//   GRAFDiffWtTree   — whole tree: walk the base tree, run a per-file
+//                      weave diff against wt for each file.  `base_hex`
+//                      is the 40-hex spelling of the same commit (used
+//                      to compose the URI for `KEEPLsFiles`).  wt-only
+//                      additions are not yet emitted.
 //   GRAFDiffTreeRefs — whole tree: walk both refs, pair by path,
-//                      orphans on either side become deletions
-//                      or insertions against empty.
-ok64 GRAFDiffFileWT(keeper *k, u8cs filepath, u8cs ref, u8cs reporoot);
-ok64 GRAFDiffTreeWT(keeper *k, u8cs ref, u8cs reporoot);
+//                      orphans on either side become deletions or
+//                      insertions against empty.
+ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot);
+ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot);
 ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot);
 
 // Deterministic URI-driven blob/tree merge (see graf/GET.md).

@@ -45,6 +45,30 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
     done;
 }
 
+//  Compose `<lead><ref>` into `ubuf` where `lead` is `#` for a bare
+//  40-hex sha, `?` otherwise.  KEEPResolveTree's fragment branch is the
+//  fast path for 40-hex; the query branch goes through REFS which has
+//  no bare-sha entries — so we have to dispatch here.
+static b8 ref_is_hex40(u8cs ref) {
+    if ($len(ref) != 40) return NO;
+    for (u8cp p = ref[0]; p < ref[1]; p++) {
+        u8 c = *p;
+        b8 d = (c >= '0' && c <= '9');
+        b8 lo = (c >= 'a' && c <= 'f');
+        b8 up = (c >= 'A' && c <= 'F');
+        if (!d && !lo && !up) return NO;
+    }
+    return YES;
+}
+
+static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
+    sane(ubuf);
+    u8 lead = ref_is_hex40(ref) ? '#' : '?';
+    call(u8bFeed1, ubuf, lead);
+    call(u8bFeed,  ubuf, ref);
+    done;
+}
+
 static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
     size_t plen = (size_t)$len(path);
     for (u32 i = 0; i < s->n; i++) {
@@ -89,8 +113,7 @@ static ok64 diffref_load_blob(Bu8 out, keeper *k, u8cs path, u8cs ref) {
     sane(k);
     a_pad(u8, ubuf, DIFFREF_PATH_MAX + 128);
     if (!$empty(path)) call(u8bFeed, ubuf, path);
-    call(u8bFeed1, ubuf, '?');
-    call(u8bFeed, ubuf, ref);
+    call(diffref_compose_ref_uri, ubuf, ref);
     a_dup(u8c, udata, u8bData(ubuf));
     uri target = {};
     call(URIutf8Drain, udata, &target);
@@ -112,38 +135,57 @@ static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
     done;
 }
 
-// --- Single file, ref vs wt ---------------------------------------
+// --- wt-vs-base diff: weave-based ---------------------------------
+//
+//  `wt` is the next version after the base sha.  Build the file's
+//  weave with `tip_h = base_h40`, fold the wt bytes as a final layer
+//  tagged `WEAVE_WT_SRC`, then walk the weave: tokens introduced by
+//  wt are 'I', tokens removed by wt are 'D', survivors are context.
 
-ok64 GRAFDiffFileWT(keeper *k, u8cs path, u8cs ref, u8cs reporoot) {
-    sane(k && $ok(path) && $ok(ref) && $ok(reporoot));
-
-    Bu8 ref_buf = {};
-    call(u8bMap, ref_buf, 16UL << 20);
-    ok64 ro = diffref_load_blob(ref_buf, k, path, ref);
-
-    u8bp wt_map = NULL;
-    u8cs wt_data = {};
-    ok64 wo = diffref_load_wt(&wt_map, wt_data, reporoot, path);
-
-    u8cs ref_data = {};
-    if (ro == OK) {
-        ref_data[0] = u8bDataHead(ref_buf);
-        ref_data[1] = u8bIdleHead(ref_buf);
-    }
-
-    ok64 r = diffref_emit_pair(ref_data, wt_data, path);
-
-    if (wt_map) FILEUnMap(wt_map);
-    u8bUnMap(ref_buf);
-    return r;
+static b8 wt_in_from(u32 c, void *ctx) {
+    (void)ctx;
+    return c != WEAVE_WT_SRC;
+}
+static b8 wt_in_to(u32 c, void *ctx) {
+    (void)ctx; (void)c;
+    return YES;
 }
 
-// --- Whole tree, ref vs wt ----------------------------------------
+ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot) {
+    sane(k && $ok(filepath) && $ok(reporoot));
+
+    call(GRAFArenaInit);
+
+    weave wA = {}, wB = {}, wnu = {};
+    call(WEAVEInit, &wA);
+    call(WEAVEInit, &wB);
+    call(WEAVEInit, &wnu);
+
+    weave *final = NULL;
+    ok64 fwo = GRAFFileWeave(&wA, &wB, &wnu, &final, k, filepath, base_h40,
+                              reporoot, WEAVE_WT_SRC, NULL, NULL);
+    ok64 ret = OK;
+    if (fwo == OK && final) {
+        ret = WEAVEEmitDiff(final, filepath,
+                            wt_in_from, NULL,
+                            wt_in_to,   NULL,
+                            GRAFHunkEmit, NULL);
+    } else if (fwo != OK) {
+        ret = fwo;
+    }
+
+    WEAVEFree(&wA);
+    WEAVEFree(&wB);
+    WEAVEFree(&wnu);
+    GRAFArenaCleanup();
+    return ret;
+}
+
+// --- Whole tree, wt vs base ---------------------------------------
 //
-//  Walks the ref tree lazily, collecting (path, blob_sha) pairs.
-//  Then iterates the collected set, pulling each blob on demand and
-//  diffing against the wt file at the same path.  After that, a wt
-//  scan emits wt-only files as insertions.
+//  Walks the base tree, collecting (path, blob_sha) pairs.  Then
+//  per-file weave diff against the wt.  Files only present in the wt
+//  (untracked additions) are not yet emitted — same TODO as before.
 
 typedef struct {
     diffref_set *set;
@@ -160,13 +202,11 @@ static ok64 diffref_collect_visit(u8cs path, u8 kind, u8cp esha,
     return OK;
 }
 
-ok64 GRAFDiffTreeWT(keeper *k, u8cs ref, u8cs reporoot) {
-    sane(k && $ok(ref) && $ok(reporoot));
+ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
+    sane(k && $ok(base_hex) && $ok(reporoot));
 
-    // --- 1. Walk ref tree, collect (path, sha) ---
     a_pad(u8, ubuf, 256);
-    call(u8bFeed1, ubuf, '?');
-    call(u8bFeed, ubuf, ref);
+    call(diffref_compose_ref_uri, ubuf, base_hex);
     a_dup(u8c, udata, u8bData(ubuf));
     uri target = {};
     call(URIutf8Drain, udata, &target);
@@ -181,38 +221,11 @@ ok64 GRAFDiffTreeWT(keeper *k, u8cs ref, u8cs reporoot) {
                 set.overflow, (u32)DIFFREF_MAX_FILES);
     }
 
-    // --- 2. For each collected path, diff ref blob vs wt file ---
-    Bu8 ref_buf = {};
-    call(u8bMap, ref_buf, 16UL << 20);
     for (u32 i = 0; i < set.n; i++) {
         u8cs path = {(u8cp)set.v[i].path,
                      (u8cp)set.v[i].path + set.v[i].path_len};
-
-        u8bReset(ref_buf);
-        sha1 sha = {};
-        memcpy(sha.data, set.v[i].sha, 20);
-        u8 btype = 0;
-        ok64 bo = KEEPGetExact(k, &sha, ref_buf, &btype);
-        u8cs ref_data = {};
-        if (bo == OK && btype == DOG_OBJ_BLOB) {
-            ref_data[0] = u8bDataHead(ref_buf);
-            ref_data[1] = u8bIdleHead(ref_buf);
-        }
-
-        u8bp wt_map = NULL;
-        u8cs wt_data = {};
-        diffref_load_wt(&wt_map, wt_data, reporoot, path);
-
-        diffref_emit_pair(ref_data, wt_data, path);
-        if (wt_map) FILEUnMap(wt_map);
+        GRAFDiffWtFile(k, path, base_h40, reporoot);
     }
-    u8bUnMap(ref_buf);
-
-    //  wt-only additions: deferred.  Emitting them requires walking
-    //  the wt (respecting .dogs/.git/.sniff ignores) and the current
-    //  fs scanner hook isn't wired through here yet.  The ref-vs-ref
-    //  path covers insertions; this path covers edits and deletions,
-    //  which is already enough for incremental-update regressions.
     done;
 }
 
@@ -224,8 +237,7 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     // --- 1. Walk `from`, collect ---
     a_pad(u8, fbuf, 256);
-    call(u8bFeed1, fbuf, '?');
-    call(u8bFeed, fbuf, from);
+    call(diffref_compose_ref_uri, fbuf, from);
     a_dup(u8c, fdata, u8bData(fbuf));
     uri ftarget = {};
     call(URIutf8Drain, fdata, &ftarget);
@@ -237,8 +249,7 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     // --- 2. Walk `to`, collect ---
     a_pad(u8, tbuf, 256);
-    call(u8bFeed1, tbuf, '?');
-    call(u8bFeed, tbuf, to);
+    call(diffref_compose_ref_uri, tbuf, to);
     a_dup(u8c, tdata, u8bData(tbuf));
     uri ttarget = {};
     call(URIutf8Drain, tdata, &ttarget);

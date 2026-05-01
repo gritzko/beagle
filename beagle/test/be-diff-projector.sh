@@ -1,12 +1,17 @@
 #!/bin/sh
-#  be-diff-projector.sh — VERBS.md `diff:` projector under GET.
+#  be-diff-projector.sh — VERBS.md `diff:` projector.
 #
-#  Wires `be get diff:<path>?<ref>` and `be get diff:?<ref>` (plus the
-#  verb-less projector form `be diff:<path>?<ref>`) through to graf's
-#  diff machinery and checks that unified-diff output appears.  Does
-#  not assert exact bytes — graf's diff is token-level and its output
-#  shape evolves with the renderer.  Also smoke-checks the file vs
-#  ref-to-ref form.
+#  Per VERBS.md the right-hand-side is always *ours* (the changed state):
+#
+#    diff:                 → wt vs base    (whole tree)
+#    diff:file.c           → wt vs base    (single file)
+#    diff:?branch          → branch vs base (whole tree, ref-to-ref)
+#    diff:file.c?branch    → branch vs base (single file, ref-to-ref)
+#    diff:?h1..h2          → h1 vs h2      (whole tree, explicit)
+#    diff:file.c?h1..h2    → h1 vs h2      (single file, explicit)
+#
+#  Output is unified-diff-shape; we don't assert exact bytes — graf's
+#  diff is token-level and its renderer evolves.
 #
 #  Run: BIN=build-asan/bin sh beagle/test/be-diff-projector.sh
 #
@@ -36,7 +41,20 @@ want_all() {
     pass "all patterns matched"
 }
 
-# --- Build a tiny 2-tag repo + a wt edit -----------------------------
+# --- Build a tiny 2-tag repo + 2 files + a wt edit -------------------
+#
+#  Layout designed so each diff form has a distinct, predictable token
+#  delta we can grep for:
+#
+#                v1                v2 (= cur/base)        wt
+#  a.txt    hello world         hello world           hello universe
+#           goodnight moon      goodbye moon          goodbye moon
+#  b.txt    one                 one two               one two
+#                                                     one two three
+#
+#  v1↔v2: a.txt: 'goodnight'→'goodbye'; b.txt: append ' two'
+#  base↔wt: a.txt: 'world'→'universe'; b.txt: append ' three'
+#
 R=$T/repo; mkdir -p "$R"; cd "$R"
 sniff init >/dev/null
 
@@ -44,12 +62,14 @@ cat > a.txt <<'EOF'
 hello world
 goodnight moon
 EOF
+echo 'one' > b.txt
 be post -m v1 '?tags/v1' >/dev/null
 
 cat > a.txt <<'EOF'
 hello world
 goodbye moon
 EOF
+echo 'one two' > b.txt
 be post -m v2 '?tags/v2' >/dev/null
 
 # wt drift on top of v2
@@ -57,31 +77,70 @@ cat > a.txt <<'EOF'
 hello universe
 goodbye moon
 EOF
+cat > b.txt <<'EOF'
+one two
+one two three
+EOF
 
-# --- Case A: file ref-vs-wt via `be get diff:<path>?<ref>` ---------
+# --- Case A: file wt-vs-base — `diff:<path>` -----------------------
+#  Empty query → from=base (v2 cur), to=wt.
+#  a.txt diff: -'world' / +'universe' (line-1).
 CASE=A
-be get 'diff:a.txt?tags/v1' > "$T/A.out" 2>&1 || true
-want_all "$T/A.out" 'a.txt' 'universe'
+be 'diff:a.txt' > "$T/A.out" 2>&1 || true
+want_all "$T/A.out" '^--- a\.txt ---$' '\-hello world' '\+hello universe'
+# wt-vs-base for a SINGLE file should not mention b.txt
+grep -q 'b\.txt' "$T/A.out" && fail "A.out shouldn't mention b.txt"
 
-# --- Case B: tree ref-vs-wt via `be get diff:?<ref>` ---------------
+# --- Case B: tree wt-vs-base — `diff:` -----------------------------
+#  Both files in the base tree get a per-file weave diff vs wt.
 CASE=B
-be get 'diff:?tags/v1' > "$T/B.out" 2>&1 || true
-want_all "$T/B.out" 'a.txt' 'universe'
+be 'diff:' > "$T/B.out" 2>&1 || true
+want_all "$T/B.out" '^--- a\.txt ---$' '\+hello universe' \
+                    '^--- b\.txt ---$' '\+one two three'
 
-# --- Case C: verb-less `be diff:<path>?<ref>` ---------------------
+# --- Case C: file branch-vs-base — `diff:<path>?<branch>` ----------
+#  from=v1, to=v2 (cur).  a.txt: -goodnight / +goodbye.
+#  No 'universe' should appear (wt is excluded from this comparison).
 CASE=C
-be 'diff:a.txt?tags/v1' > "$T/C.out" 2>&1 || true
-want_all "$T/C.out" 'a.txt' 'universe'
+be get 'diff:a.txt?tags/v1' > "$T/C.out" 2>&1 || true
+want_all "$T/C.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon'
+grep -q 'universe' "$T/C.out" && fail "C.out should NOT mention 'universe' (wt excluded)"
 
-# --- Case D: file ref-to-ref via `be get diff:<path>?<from>..<to>` -
+# --- Case D: tree branch-vs-base — `diff:?<branch>` ----------------
+#  b.txt v1→v2 = `one\n` → `one two\n`: pure-INS within the line,
+#  so the line-based renderer emits `+one two` only (no paired `-old`
+#  — that's reconstructed only when a line has both INS and DEL spans).
 CASE=D
-be get 'diff:a.txt?tags/v1..tags/v2' > "$T/D.out" 2>&1 || true
-want_all "$T/D.out" 'a.txt' 'goodnight|goodbye'
+be get 'diff:?tags/v1' > "$T/D.out" 2>&1 || true
+want_all "$T/D.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon' \
+                    '^--- b\.txt ---$' '\+one two'
+grep -q 'universe' "$T/D.out" && fail "D.out should NOT mention 'universe'"
+
+# --- Case E: file ref-to-ref range — `diff:<path>?<h1>..<h2>` ------
+CASE=E
+be get 'diff:a.txt?tags/v1..tags/v2' > "$T/E.out" 2>&1 || true
+want_all "$T/E.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon'
+grep -q 'universe' "$T/E.out" && fail "E.out should NOT mention 'universe'"
+
+# --- Case F: tree ref-to-ref range — `diff:?<h1>..<h2>` ------------
+CASE=F
+be get 'diff:?tags/v1..tags/v2' > "$T/F.out" 2>&1 || true
+want_all "$T/F.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon' \
+                    '^--- b\.txt ---$' '\+one two'
+grep -q 'universe' "$T/F.out" && fail "F.out should NOT mention 'universe'"
+
+# --- Case G: verb-less projector — `be diff:<path>?<branch>` -------
+#  The verb-less form (no `get`) routes through the same projector
+#  pipeline — sanity check that BE.cli.c doesn't mistake `diff:` for
+#  a search/view URI.
+CASE=G
+be 'diff:a.txt?tags/v1' > "$T/G.out" 2>&1 || true
+want_all "$T/G.out" '^--- a\.txt ---$' '\-goodnight' '\+goodbye'
 
 # --- Summary -----------------------------------------------------
 echo ""
 if [ "$FAIL" = "0" ]; then
-    echo "=== be-diff-projector OK (4 cases) ==="
+    echo "=== be-diff-projector OK (7 cases) ==="
 else
     echo "=== be-diff-projector FAIL ($FAIL case(s)) ==="
     exit 1

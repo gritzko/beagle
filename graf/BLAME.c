@@ -527,15 +527,32 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
 static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
     sane(buf && k);
 
+    //  Pick `#<sha>` for a 40-hex ref (KEEPResolveTree's fragment fast
+    //  path), `?<ref>` for everything else (REFS-resolved name).
+    b8 hex40 = ($len(ref) == 40);
+    if (hex40) {
+        for (u8cp p = ref[0]; p < ref[1]; p++) {
+            u8 c = *p;
+            b8 d = (c >= '0' && c <= '9');
+            b8 lo = (c >= 'a' && c <= 'f');
+            b8 up = (c >= 'A' && c <= 'F');
+            if (!d && !lo && !up) { hex40 = NO; break; }
+        }
+    }
     uri target = {};
     a_pad(u8, ubuf, 512);
-    u8bFeed1(ubuf, '?');
+    u8bFeed1(ubuf, hex40 ? '#' : '?');
     call(u8bFeed, ubuf, ref);
     a_dup(u8c, udata, u8bData(ubuf));
     target.data[0] = udata[0];
     target.data[1] = udata[1];
-    target.query[0] = udata[0] + 1;
-    target.query[1] = udata[1];
+    if (hex40) {
+        target.fragment[0] = udata[0] + 1;
+        target.fragment[1] = udata[1];
+    } else {
+        target.query[0] = udata[0] + 1;
+        target.query[1] = udata[1];
+    }
 
     sha1 cur = {};
     call(KEEPResolveTree, k, &target, &cur);

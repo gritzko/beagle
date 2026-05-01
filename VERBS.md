@@ -99,7 +99,7 @@ keeper, …) emits `dog/HUNK` TLV, bro pages it.
 | `commit:` | commit object body                               | `be commit:?123abc` |
 | `log:`    | `REFS` tail, newest-first, one commit per line (`#N` = last N) | `be log:?feat#10` |
 | `refs:`   | list refs under a dir (`**` = recursive)         | `be refs:?**` |
-| `diff:`   | unified diff of wt vs ref                        | `be diff:file.c?main` |
+| `diff:`   | weave-based unified diff; right-hand side is *ours* (the changed state).  `diff:` and `diff:<path>` use the wt as *ours* and the sniff `--at` baseline as the from-side; `diff:?<branch>` and `diff:<path>?<branch>` use the baseline as *ours* and `<branch>` as the from-side; `diff:?<h1>..<h2>` is explicit (no baseline needed).  Refuses with `GRAFNOAT` when a baseline is needed but no `--at` is forwarded. | `be diff:file.c`, `be diff:?main`, `be diff:?v1..v2` |
 | `size:`   | byte size of the resource                        | `be size:?#abc1234` |
 | `type:`   | object type (`commit`/`tree`/`blob`/`tag`)       | `be type:?#abc1234` |
 
