@@ -18,7 +18,7 @@ touch -d "2026-04-20 12:01:00" foo.c
 "$BE" post 'baseline msg' >/dev/null 2>&1
 
 #  --- create + switch to ?fix1, edit, post --------------------------
-"$BE" post '?./fix1' >/dev/null 2>&1
+"$BE" put '?./fix1' >/dev/null 2>&1
 "$BE" get  '?fix1'   >/dev/null 2>&1
 cp "$CASE/02.foo.fix1.c" foo.c
 touch -d "2026-04-20 12:02:00" foo.c
@@ -27,7 +27,7 @@ touch -d "2026-04-20 12:02:00" foo.c
 
 #  --- back to trunk, create + switch to ?fix2, edit, post -----------
 "$BE" get  '?..'     >/dev/null 2>&1
-"$BE" post '?./fix2' >/dev/null 2>&1
+"$BE" put '?./fix2' >/dev/null 2>&1
 "$BE" get  '?fix2'   >/dev/null 2>&1
 cp "$CASE/03.foo.fix2.c" foo.c
 touch -d "2026-04-20 12:03:00" foo.c

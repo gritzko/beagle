@@ -15,7 +15,7 @@ note "trunk T1=$T1"
 
 # 10. rebuild ?fix1 with a 2-commit stack (C1, C2)
 echo "=== 10. rebuild ?fix1 with a 2-commit stack ==="
-"$BE" post "?./fix1" >/dev/null || fail "be post ?./fix1 (re-create) failed"
+"$BE" put "?./fix1" >/dev/null || fail "be post ?./fix1 (re-create) failed"
 "$BE" get "?fix1" >/dev/null || fail "be get ?fix1 (re-switch) failed"
 [ "$(cur_branch)" = "fix1" ] || fail "wt should be on ?fix1; got '$(cur_branch)'"
 

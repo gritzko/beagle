@@ -16,7 +16,7 @@ printf 'the quick fox\n' > conflict30.txt
 T30_BASE=$(head_hex)
 
 # Create ?fix1 with the OURS edit ("QUICK").
-"$BE" post "?./fix1" >/dev/null || fail "§30: create ?fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "§30: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§30: switch to ?fix1 failed"
 sleep 0.01
 printf 'the QUICK fox\n' > conflict30.txt

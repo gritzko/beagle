@@ -14,7 +14,7 @@ note "§25: trunk pre = $T25_pre"
 
 echo "=== 25. ?.. auto-sync ==="
 #  Create a fresh ?fix1 child for this scenario.
-"$BE" post "?./fix1" >/dev/null || fail "§25: be post ?./fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "§25: be post ?./fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§25: be get ?fix1 failed"
 sleep 0.01
 echo "fix1-25 v1" > f25.txt
@@ -41,7 +41,9 @@ T25_advance=$(ref_tip "?")
     || fail "§25: trunk REFS didn't advance"
 note "§25: trunk advanced to $T25_advance"
 
-# Back in cur (on ?fix1): be post ?.. — promote + auto-sync
+# Back in cur (on ?fix1): be post ?.. — advances trunk only.
+# Per VERBS.md: POST modifies only the named target; cur is never
+# auto-synced.  ?fix1 stays where it was (= F25_C1).
 cd "$WT"
 "$BE" post "?.." 2>"$ETMP/p25.err" >/dev/null \
     || { cat "$ETMP/p25.err"; fail "§25: be post ?.. failed"; }
@@ -49,20 +51,20 @@ T25_after=$(ref_tip "?")
 F25_after=$(ref_tip "?fix1")
 [ -n "$T25_after" ] && [ "$T25_after" != "$T25_advance" ] \
     || fail "§25: trunk REFS didn't advance past T25_advance"
-[ "$F25_after" = "$T25_after" ] \
-    || fail "§25: cur (?fix1) auto-sync failed: ?fix1=$F25_after, ?=$T25_after"
-note "§25: trunk -> $T25_after; ?fix1 auto-synced"
-note "§25 OK: ?.. auto-sync"
+[ "$F25_after" = "$F25_C1" ] \
+    || fail "§25: ?fix1 should stay at C1=$F25_C1 (no auto-sync); got $F25_after"
+note "§25: trunk -> $T25_after; ?fix1 unchanged at $F25_after"
+note "§25 OK: ?.. promote (no auto-sync)"
 
-# cleanup
+# cleanup — switch off ?fix1 first so delete isn't refused
+"$BE" get "?.." >/dev/null 2>&1 || true
 "$BE" delete "?fix1" >/dev/null 2>&1 || true
 rm -f f25.txt tr25.txt
 
 # 26. ?./fix2 promote-into-child
 echo "=== 26. ?./fix2 promote-into-child ==="
 cd "$WT"
-"$BE" get "?.." >/dev/null || fail "§26: be get ?.. failed"
-"$BE" post "?./fix1" >/dev/null || fail "§26: be post ?./fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "§26: be post ?./fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§26: be get ?fix1 failed"
 sleep 0.01
 echo "fix1-26 v1" > f1_26.txt
@@ -71,7 +73,7 @@ echo "fix1-26 v1" > f1_26.txt
 F1_TIP=$(head_hex)
 [ -n "$F1_TIP" ] || fail "§26: no fix1 tip"
 
-"$BE" post "?./fix2" >/dev/null || fail "§26: be post ?./fix2 failed"
+"$BE" put "?./fix2" >/dev/null || fail "§26: be post ?./fix2 failed"
 "$BE" get "?fix1/fix2" >/dev/null || fail "§26: be get ?fix1/fix2 failed"
 [ "$(cur_branch)" = "fix1/fix2" ] || fail "§26: wt should be on fix1/fix2"
 sleep 0.01
@@ -106,8 +108,8 @@ rm -f f1_26.txt f2_26.txt
 echo "=== 27. sibling promote ==="
 cd "$WT"
 "$BE" get "?.." >/dev/null || fail "§27: be get ?.. failed"
-"$BE" post "?./fix1" >/dev/null || fail "§27: be post ?./fix1 failed"
-"$BE" post "?./fix2" >/dev/null || fail "§27: be post ?./fix2 (peer) failed"
+"$BE" put "?./fix1" >/dev/null || fail "§27: be post ?./fix1 failed"
+"$BE" put "?./fix2" >/dev/null || fail "§27: be post ?./fix2 (peer) failed"
 
 "$BE" get "?fix2" >/dev/null || fail "§27: be get ?fix2 failed"
 sleep 0.01

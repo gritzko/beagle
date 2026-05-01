@@ -73,7 +73,7 @@ T1=$(head_hex)
 # ------------------------------------------------------------------
 # 2. create ?fix1 off trunk.
 # ------------------------------------------------------------------
-must "$BE" post "?./fix1" > "$LOGS/03.create.out" 2> "$LOGS/03.create.err"
+must "$BE" put "?./fix1" > "$LOGS/03.create.out" 2> "$LOGS/03.create.err"
 FIX1_AT_T1=$(ref_tip "?fix1")
 [ "$FIX1_AT_T1" = "$T1" ] \
     || { echo "?fix1 should fork at T1=$T1; got $FIX1_AT_T1" >&2; exit 1; }
@@ -115,24 +115,26 @@ FIX1_OLD_TIP=$(ref_tip "?fix1")
 
 # ------------------------------------------------------------------
 # 6. `be post ?..` from ?fix1: trunk-advance forces rebase of C1 onto
-#    T2; cur (?fix1) auto-syncs.  Capture stderr for inline diagnostics
-#    if the cross-branch promote dispatcher trips up.
+#    T2 — trunk advances; ?fix1 (cur) is NOT auto-synced (VERBS.md:
+#    POST modifies only the named target, never cur).
 # ------------------------------------------------------------------
 if ! "$BE" post "?.." > "$LOGS/11.post.out" 2> "$LOGS/11.post.err"; then
-    echo "TODO(spec): be post ?.. failed; stderr:" >&2
+    echo "be post ?.. failed; stderr:" >&2
     cat "$LOGS/11.post.err" >&2
     exit 1
 fi
 
 # ------------------------------------------------------------------
-# 7. assert: trunk advanced to T3 (≠ T1, ≠ T2); ?fix1 auto-synced to T3.
+# 7. assert: trunk advanced to T3 (≠ T1, ≠ T2); ?fix1 STAYS at C1
+#    (no auto-sync per spec — user runs `be get ?` to follow).
 # ------------------------------------------------------------------
 T3=$(ref_tip "?")
 FIX1_NEW_TIP=$(ref_tip "?fix1")
 [ -n "$T3" ] && [ "$T3" != "$T1" ] && [ "$T3" != "$T2" ] \
     || { echo "trunk did not advance past T2 (T3='$T3')" >&2; exit 1; }
-[ "$FIX1_NEW_TIP" = "$T3" ] \
-    || { echo "auto-sync failed: ?fix1=$FIX1_NEW_TIP, ?=$T3" >&2; exit 1; }
+[ "$FIX1_NEW_TIP" = "$FIX1_C1" ] \
+    || { echo "?fix1 should stay at C1=$FIX1_C1 (no auto-sync); got $FIX1_NEW_TIP" >&2
+         exit 1; }
 
 # ------------------------------------------------------------------
 # 8. assert: T3's single parent is T2 (NOT T1) — proves rebase happened.
@@ -150,10 +152,12 @@ PARENT_SHA=$(awk '/^parent / { print $2; exit }' "$LOGS/12.commit.out")
          exit 1; }
 
 # ------------------------------------------------------------------
-# 9. wt content after `be post ?..`.  POST refreshes the wt to the
-# rebased tree as part of cur auto-sync — both edits should be
-# visible without an explicit follow-up GET.
+# 9. wt content after `be post ?..`.  Wt stays on ?fix1 — content is
+# fix1's tree (a=alpha-fix1, b=beta from C1's parent T1).  Switch to
+# trunk for the merged-tree assertion.
 # ------------------------------------------------------------------
+"$BE" get "?" >/dev/null 2> "$LOGS/13.get.err" \
+    || { cat "$LOGS/13.get.err" >&2; exit 1; }
 match "$CASE/05.a.want.txt" a.txt
 match "$CASE/06.b.want.txt" b.txt
 

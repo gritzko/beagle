@@ -16,8 +16,8 @@ echo "x32" > x32.txt
 "$BE" post '32-base msg' >/dev/null || fail "§32: base post failed"
 T32_TRUNK=$(ref_tip "?")
 
-"$BE" post "?./feat" >/dev/null || fail "§32: create ?feat failed"
-"$BE" post "?./fix1" >/dev/null || fail "§32: create ?fix1 failed"
+"$BE" put "?./feat" >/dev/null || fail "§32: create ?feat failed"
+"$BE" put "?./fix1" >/dev/null || fail "§32: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§32: switch ?fix1 failed"
 sleep 0.01
 echo "fix1 work 32" > fwork32.txt
@@ -26,9 +26,9 @@ echo "fix1 work 32" > fwork32.txt
 F1_TIP_32=$(ref_tip "?fix1")
 FEAT_TIP_32=$(ref_tip "?feat")
 
-# Run the create-on-miss arm: be post ?feat/new from cur=?fix1.
-"$BE" post "?feat/new" 2>"$ETMP/p32.err" >/dev/null \
-    || { cat "$ETMP/p32.err"; fail "§32: be post ?feat/new failed"; }
+# Run the create-on-miss arm: be put ?feat/new from cur=?fix1.
+"$BE" put "?feat/new" 2>"$ETMP/p32.err" >/dev/null \
+    || { cat "$ETMP/p32.err"; fail "§32: be put ?feat/new failed"; }
 
 NEW32=$(ref_tip "?feat/new")
 [ -n "$NEW32" ] || fail "§32: ?feat/new not in REFS"
@@ -66,8 +66,8 @@ echo "x33" > x33.txt
 "$BE" put x33.txt >/dev/null
 "$BE" post '33-base msg' >/dev/null || fail "§33: base post failed"
 
-"$BE" post "?./feat" >/dev/null || fail "§33: create ?feat failed"
-"$BE" post "?./fix1" >/dev/null || fail "§33: create ?fix1 failed"
+"$BE" put "?./feat" >/dev/null || fail "§33: create ?feat failed"
+"$BE" put "?./fix1" >/dev/null || fail "§33: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§33: switch ?fix1 failed"
 sleep 0.01
 echo "fix1-33" > f33.txt
@@ -76,8 +76,8 @@ echo "fix1-33" > f33.txt
 F1_PRE_33=$(ref_tip "?fix1")
 FEAT_PRE_33=$(ref_tip "?feat")
 
-"$BE" post "?feat/" 2>"$ETMP/p33.err" >/dev/null \
-    || { cat "$ETMP/p33.err"; fail "§33: be post ?feat/ failed"; }
+"$BE" put "?feat/" 2>"$ETMP/p33.err" >/dev/null \
+    || { cat "$ETMP/p33.err"; fail "§33: be put ?feat/ failed"; }
 
 NEW33=$(ref_tip "?feat/fix1")
 [ -n "$NEW33" ] || fail "§33: ?feat/fix1 not in REFS"
@@ -106,17 +106,17 @@ rm -f x33.txt f33.txt
 "$BE" delete f33.txt >/dev/null 2>&1 || true
 "$BE" post '33-cleanup msg' >/dev/null 2>&1 || true
 
-# === 34. tree-parent absolute auto-syncs cur ===
-echo "=== 34. absolute tree-parent auto-syncs cur ==="
+# === 34. tree-parent absolute advances target only (no auto-sync) ===
+echo "=== 34. absolute tree-parent advances ?feat; cur ?feat/fix stays ==="
 cd "$WT"
 sleep 0.01
 echo "x34" > x34.txt
 "$BE" put x34.txt >/dev/null
 "$BE" post '34-base msg' >/dev/null || fail "§34: base post failed"
 
-"$BE" post "?./feat" >/dev/null || fail "§34: create ?feat failed"
+"$BE" put "?./feat" >/dev/null || fail "§34: create ?feat failed"
 "$BE" get "?feat" >/dev/null || fail "§34: switch ?feat failed"
-"$BE" post "?./fix" >/dev/null || fail "§34: create ?feat/fix failed"
+"$BE" put "?./fix" >/dev/null || fail "§34: create ?feat/fix failed"
 "$BE" get "?feat/fix" >/dev/null || fail "§34: switch ?feat/fix failed"
 sleep 0.01
 echo "feat/fix work" > ff34.txt
@@ -130,8 +130,10 @@ FF_PRE_34=$(ref_tip "?feat/fix")
 FEAT_AFTER_34=$(ref_tip "?feat")
 FF_AFTER_34=$(ref_tip "?feat/fix")
 [ "$FEAT_AFTER_34" != "" ] || fail "§34: ?feat REFS missing"
-[ "$FF_AFTER_34" = "$FEAT_AFTER_34" ] \
-    || fail "§34: cur ?feat/fix should auto-sync to ?feat tip"
-note "§34 OK: cur (?feat/fix) auto-synced to ?feat=$FEAT_AFTER_34"
+[ "$FF_AFTER_34" = "$FF_PRE_34" ] \
+    || fail "§34: cur ?feat/fix moved unexpectedly (no auto-sync per spec)"
+[ "$FEAT_AFTER_34" = "$FF_PRE_34" ] \
+    || fail "§34: ?feat should advance to cur's tip = $FF_PRE_34, got $FEAT_AFTER_34"
+note "§34 OK: ?feat advanced to $FEAT_AFTER_34; cur (?feat/fix) untouched"
 
 echo "=== branches/09-absolute-leaf: OK ==="

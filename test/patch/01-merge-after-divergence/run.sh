@@ -19,7 +19,7 @@ cp "$CASE/02.b.txt" b.txt
 "$BE" post 'baseline msg' >/dev/null 2>&1
 
 # Step 2: fork the child branch (cur stays on trunk)
-"$BE" post '?./fix1' >/dev/null 2>&1
+"$BE" put '?./fix1' >/dev/null 2>&1
 
 # Step 3: switch to child, edit b.txt, commit
 "$BE" get '?fix1' >/dev/null 2>&1

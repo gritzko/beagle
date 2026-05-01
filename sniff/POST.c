@@ -72,7 +72,11 @@ typedef struct {
     ron60          v_keep;       // verb constants emitted into `decisions`
     ron60          v_unlink;
     ron60          v_add;
-    ron60          stamp_ts;     // single per-commit stamp (post ts)
+    ron60          stamp_ts;     // single per-commit stamp (post ts).
+                                 // Also used to re-stamp content-clean
+                                 // files whose mtime drifted, so they
+                                 // align with the new post row and the
+                                 // next bare `be` fast-paths them.
     b8             any_pd;       // any put/delete rows since last post
     b8             base_is_patch;// baseline row is a `patch`, not get/post
     b8             has_base;     // baseline row exists (any get/post/patch)
@@ -539,6 +543,13 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             return OK;
         if (sha1eq(&disk_sha, &base_sha)) {
             //  Identical → KEEP (mtime drifted but bytes match).
+            //  Re-stamp with this POST's stamp_ts so the file aligns
+            //  with the new post row in `.sniff`; the next bare `be`
+            //  fast-paths it via SNIFFAtKnown without re-hashing.
+            //  Mirrors PUT's bare-walk re-stamp at put_visit_tracked.
+            a_path(fp);
+            if (SNIFFFullpath(fp, c->reporoot, path) == OK)
+                (void)SNIFFAtStampPath(fp, c->stamp_ts);
             return post_emit_decision(c, c->v_keep, path, base_mode,
                                       NULL, &base_sha);
         }
@@ -1002,7 +1013,9 @@ static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k) {
     call(RONutf8sDrain, &c->v_unlink, du);
     call(RONutf8sDrain, &c->v_add,    da);
 
-    //  Single per-commit stamp ts; carried in every decision row.
+    //  Single per-commit stamp ts; carried in every decision row,
+    //  and also used to re-stamp content-clean drifted files (see
+    //  `post_classify_step`).
     struct timespec _tv = {};
     SNIFFAtNow(&c->stamp_ts, &_tv);
     done;
@@ -1483,7 +1496,29 @@ static void post_basename(u8cs out, u8cs abs_branch) {
     if (last_slash != NULL) out[0] = last_slash + 1;
 }
 
-ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
+//  PUT-side branch creation: refuse if the branch already exists,
+//  otherwise delegate to POSTPromote which handles the create-on-miss
+//  arm (case (c) in the POSTPromote dispatcher).  No commit, no rebase
+//  beyond the absolute-parent ff that POSTPromote already does for
+//  `?<abs>/<newleaf>`.
+ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch) {
+    sane($ok(reporoot) && $ok(target_branch));
+    sha1 existing = {};
+    ok64 er = post_resolve_branch_tip(&existing, reporoot, target_branch);
+    if (er == OK) {
+        fprintf(stderr,
+                "sniff: put: ?%.*s already exists\n",
+                (int)u8csLen(target_branch),
+                (char *)target_branch[0]);
+        return PUTDUP;
+    }
+    if (er != REFSNONE) return er;
+    //  Create-only: POSTPromote with allow_create=YES handles the
+    //  create-on-miss arm, but doesn't auto-sync cur (per spec).
+    return POSTPromote(reporoot, target_branch, YES);
+}
+
+ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     sane($ok(reporoot) && $ok(target_branch));
     keeper *k = &KEEP;
 
@@ -1622,6 +1657,19 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
     //
     //  Other create-on-miss shapes (`?../sib`, etc.) still fall back
     //  to the legacy POSTSetLabel via POSTNONE.
+    //  Spec: POST never creates branches.  Branch creation lives in
+    //  PUT (`be put ?<branch>`) — POST refuses unresolved refs.  The
+    //  PUT-side wrapper (`POSTCreateBranch`) calls us with
+    //  allow_create=YES to reuse the create-on-miss arm below.
+    if (!target_exists && !allow_create) {
+        fprintf(stderr,
+                "sniff: post: ?%.*s does not exist — "
+                "`be put ?<branch>` first\n",
+                (int)u8csLen(target_branch),
+                (char *)target_branch[0]);
+        return POSTNONE;
+    }
+
     sha1 absolute_parent_tip = {};
     b8   create_under_absolute = NO;
     if (!target_exists && !is_child) {
@@ -1740,7 +1788,10 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch) {
         (void)GRAFLca(&base_old, &cur_tip, &target_tip);
         base_new  = target_tip;
         child_tip = cur_tip;
-        auto_sync_cur = is_parent ? YES : NO;
+        //  Spec (VERBS.md §POST): the named target advances; cur is
+        //  never auto-modified.  User runs `be get ?<target>` if they
+        //  want the wt to follow.  (was: `is_parent ? YES : NO`.)
+        auto_sync_cur = NO;
     }
 
     //  Already in sync? base_old == child_tip means there are no

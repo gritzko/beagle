@@ -11,7 +11,7 @@ echo "x v1" > x.txt
 note "trunk seeded"
 
 echo "=== 20. setup ?L1 with a commit ==="
-"$BE" post "?./L1" >/dev/null || fail "be post ?./L1 failed"
+"$BE" put "?./L1" >/dev/null || fail "be post ?./L1 failed"
 "$BE" get "?L1" >/dev/null || fail "be get ?L1 failed"
 sleep 0.01
 echo "L1 v1" > l1.txt
@@ -22,7 +22,7 @@ C_L1=$(head_hex)
 note "?L1 at C_L1=$C_L1"
 
 echo "=== 21. setup ?L1/L2 with a commit ==="
-"$BE" post "?./L2" >/dev/null || fail "be post ?./L2 (under L1) failed"
+"$BE" put "?./L2" >/dev/null || fail "be post ?./L2 (under L1) failed"
 "$BE" get "?L1/L2" >/dev/null || fail "be get ?L1/L2 failed"
 [ "$(cur_branch)" = "L1/L2" ] || fail "wt should be on L1/L2; got '$(cur_branch)'"
 sleep 0.01

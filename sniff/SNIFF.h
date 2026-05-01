@@ -35,6 +35,7 @@ con ok64 SNIFFNOFF     = 0x1c5d23cf5d83cf;
 con ok64 SNIFFNOOP     = 0x1c5d23cf5d8619;     // legacy alias, prefer POSTNONE
 con ok64 CLOCKBAD      = 0x31560c50b28d;
 con ok64 PUTNONE       = 0x1979d5d85ce;
+con ok64 PUTDUP        = 0x65e74d799;     // ref already exists
 con ok64 DELDIRTY      = 0x34e54d49b762;
 con ok64 POSTNONE      = 0x65871d5d85ce;
 con ok64 MERGEFAIL     = 0x1639b40e3ca495;

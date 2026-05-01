@@ -19,7 +19,7 @@ note "trunk T1=$T1"
 
 # 2. create child branch via POST
 echo "=== 2. be post ?./fix1 — create child ==="
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "be post ?./fix1 failed (pre-spec: POST must create on miss)"
 FIX1_REFS=$(ref_tip "?fix1")
 [ -n "$FIX1_REFS" ] || fail "?fix1 not in REFS after be post ?./fix1"

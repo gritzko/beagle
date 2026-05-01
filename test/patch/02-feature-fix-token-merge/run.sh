@@ -39,7 +39,7 @@ cp "$CASE/02.notes.baseline.txt" notes.txt
 "$BE" post 'baseline msg'         >/dev/null 2>&1
 
 # --- 2. fork feature off trunk and switch to it ---------------------
-"$BE" post '?./feature' >/dev/null 2>&1
+"$BE" put '?./feature' >/dev/null 2>&1
 "$BE" get  '?feature'   >/dev/null 2>&1
 
 # --- 3. feat-one on feature: ALPHA ----------------------------------
@@ -48,7 +48,7 @@ cp "$CASE/03.lib.feat1.txt" lib.txt
 "$BE" post 'feat-one msg' >/dev/null 2>&1
 
 # --- 4. fork fix off feature ----------------------------------------
-"$BE" post '?./fix' >/dev/null 2>&1
+"$BE" put '?./fix' >/dev/null 2>&1
 
 # --- 5. switch to fix, fix-one: GAMMA -------------------------------
 "$BE" get '?feature/fix' >/dev/null 2>&1

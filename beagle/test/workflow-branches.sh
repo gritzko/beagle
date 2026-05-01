@@ -111,7 +111,7 @@ note "trunk T1=$T1"
 # 2. create child branch via POST  (be post ?./fix1)
 # ------------------------------------------------------------------
 echo "=== 2. be post ?./fix1 — create child ==="
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "be post ?./fix1 failed (pre-spec: POST must create on miss)"
 FIX1_REFS=$(ref_tip "?fix1")
 [ -n "$FIX1_REFS" ] \
@@ -233,7 +233,7 @@ note "?fix1 deleted; trunk unchanged at T1=$T1"
 # 10. re-create child + stack two commits on it (C1, C2)
 # ------------------------------------------------------------------
 echo "=== 10. rebuild ?fix1 with a 2-commit stack ==="
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "be post ?./fix1 (re-create) failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "be get ?fix1 (re-switch) failed"
@@ -451,7 +451,7 @@ skip "explicit conflict-abort scenario deferred — needs scripted .sniff rewind
 # ------------------------------------------------------------------
 echo "=== 20. setup ?L1 with a commit ==="
 cd "$WT"
-"$BE" post "?./L1" >/dev/null \
+"$BE" put "?./L1" >/dev/null \
     || fail "be post ?./L1 failed"
 "$BE" get "?L1" >/dev/null \
     || fail "be get ?L1 failed"
@@ -465,7 +465,7 @@ C_L1=$(head_hex)
 note "?L1 at C_L1=$C_L1"
 
 echo "=== 21. setup ?L1/L2 with a commit ==="
-"$BE" post "?./L2" >/dev/null \
+"$BE" put "?./L2" >/dev/null \
     || fail "be post ?./L2 (under L1) failed"
 "$BE" get "?L1/L2" >/dev/null \
     || fail "be get ?L1/L2 failed"
@@ -566,7 +566,7 @@ T25_pre=$(head_hex)
 note "§25: trunk pre = $T25_pre"
 
 #  Create a fresh ?fix1 child for this scenario.
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§25: be post ?./fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§25: be get ?fix1 failed"
@@ -631,7 +631,7 @@ echo "=== 26. ?./fix2 promote-into-child ==="
 cd "$WT"
 "$BE" get "?.." >/dev/null \
     || fail "§26: be get ?.. (back to trunk) failed"
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§26: be post ?./fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§26: be get ?fix1 failed"
@@ -644,7 +644,7 @@ F1_TIP=$(head_hex)
 [ -n "$F1_TIP" ] || fail "§26: no fix1 tip"
 
 # Create ?./fix2 sub-branch (under ?fix1).
-"$BE" post "?./fix2" >/dev/null \
+"$BE" put "?./fix2" >/dev/null \
     || fail "§26: be post ?./fix2 failed"
 "$BE" get "?fix1/fix2" >/dev/null \
     || fail "§26: be get ?fix1/fix2 failed"
@@ -667,7 +667,7 @@ F1_PRE=$(ref_tip "?fix1")
 F2_PRE=$(ref_tip "?fix1/fix2")
 [ "$F1_PRE" = "$F1_TIP" ] || fail "§26: ?fix1 unexpectedly moved"
 
-"$BE" post "?./fix2" 2>"$TMP/p26.err" >/dev/null \
+"$BE" put "?./fix2" 2>"$TMP/p26.err" >/dev/null \
     || { cat "$TMP/p26.err"; fail "§26: be post ?./fix2 failed"; }
 
 F1_POST=$(ref_tip "?fix1")
@@ -701,9 +701,9 @@ echo "=== 27. sibling promote ==="
 cd "$WT"
 "$BE" get "?.." >/dev/null \
     || fail "§27: be get ?.. (trunk) failed"
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§27: be post ?./fix1 failed"
-"$BE" post "?./fix2" >/dev/null \
+"$BE" put "?./fix2" >/dev/null \
     || fail "§27: be post ?./fix2 (peer) failed"
 
 # Add a commit to ?fix2 first so its tip differs from trunk.
@@ -904,7 +904,7 @@ T29_T1=$(head_hex)
 note "§29: T1=$T29_T1"
 
 #  Build ?fix1 with C1 (fix.txt) + C2 (other.txt).
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§29: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§29: switch to ?fix1 failed"
@@ -930,7 +930,7 @@ note "§29: ?fix1 stack T1=$T29_T1 -> C1=$F29_C1 -> C2=$F29_C2"
 #  ?fix2 just below succeeds.
 "$BE" get "?.." >/dev/null \
     || fail "§29: back to trunk failed"
-"$BE" post "?./fix2" >/dev/null \
+"$BE" put "?./fix2" >/dev/null \
     || fail "§29: create ?fix2 failed"
 "$BE" get "?fix2" >/dev/null \
     || fail "§29: switch to ?fix2 failed"
@@ -1014,7 +1014,7 @@ printf 'the quick fox\n' > conflict30.txt
 T30_BASE=$(head_hex)
 
 #  Create ?fix1 with the OURS edit ("QUICK").
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§30: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§30: switch to ?fix1 failed"
@@ -1116,9 +1116,9 @@ echo "x32" > x32.txt
     || fail "§32: base post failed"
 T32_TRUNK=$(ref_tip "?")
 
-"$BE" post "?./feat" >/dev/null \
+"$BE" put "?./feat" >/dev/null \
     || fail "§32: create ?feat failed"
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§32: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§32: switch ?fix1 failed"
@@ -1184,9 +1184,9 @@ echo "x33" > x33.txt
 "$BE" post '33-base msg' >/dev/null \
     || fail "§33: base post failed"
 
-"$BE" post "?./feat" >/dev/null \
+"$BE" put "?./feat" >/dev/null \
     || fail "§33: create ?feat failed"
-"$BE" post "?./fix1" >/dev/null \
+"$BE" put "?./fix1" >/dev/null \
     || fail "§33: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null \
     || fail "§33: switch ?fix1 failed"
@@ -1248,11 +1248,11 @@ echo "x34" > x34.txt
 "$BE" post '34-base msg' >/dev/null \
     || fail "§34: base post failed"
 
-"$BE" post "?./feat" >/dev/null \
+"$BE" put "?./feat" >/dev/null \
     || fail "§34: create ?feat failed"
 "$BE" get "?feat" >/dev/null \
     || fail "§34: switch ?feat failed"
-"$BE" post "?./fix" >/dev/null \
+"$BE" put "?./fix" >/dev/null \
     || fail "§34: create ?feat/fix failed"
 "$BE" get "?feat/fix" >/dev/null \
     || fail "§34: switch ?feat/fix failed"

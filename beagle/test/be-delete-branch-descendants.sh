@@ -10,7 +10,7 @@ vc_fresh_wt
 sp_seed_trunk
 sp_label_feat
 sp_switch_feat
-"$BE" post "?./sub" >/dev/null      # creates ?feat/sub at feat tip
+"$BE" put "?./sub" >/dev/null      # creates ?feat/sub at feat tip
 "$BE" get "?" >/dev/null            # back on trunk
 
 vc_snapshot before

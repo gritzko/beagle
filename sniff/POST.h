@@ -64,6 +64,12 @@ ok64 POSTSetLabel(u8cs ref_uri, u8cs sha_hex);
 //    GRAFCNFL    — three-way merge conflict mid-rebase.
 //    REFSCAS     — concurrent advance of target REFS row.
 //    SNIFFFAIL   — generic dispatcher / resource error.
-ok64 POSTPromote(u8cs reporoot, u8cs target_branch);
+ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create);
+
+//  PUT-side branch creation (VERBS.md §PUT, `?branch` aspect).
+//  Creates the named branch as a label at cur.tip without producing
+//  a commit.  Refuses with `PUTDUP` if the branch already exists.
+//  Reuses POSTPromote's create-on-miss arm; returns OK on success.
+ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch);
 
 #endif

@@ -896,7 +896,7 @@ ok64 SNIFFExec(cli *c) {
                 u8cs target = {};
                 target[0] = label_uri->query[0];
                 target[1] = label_uri->query[1];
-                ret = POSTPromote(reporoot, target);
+                ret = POSTPromote(reporoot, target, NO);
                 if (ret == POSTNONE) {
                     //  target == cur → legacy label-only behaviour.
                     ret = OK;
@@ -925,9 +925,37 @@ ok64 SNIFFExec(cli *c) {
             }
         }
     } else if (is_put) {
-        //  PUT.c prints its own staged-row count (it's the only path
-        //  that knows how many input URIs survived dedup / validation).
-        ret = PUTStage(c->nuris, c->uris);
+        //  Split URIs by aspect (VERBS.md §PUT):
+        //    * `?branch` (query, no path) → POSTCreateBranch (create
+        //      label at cur.tip; refuses with PUTDUP if exists).
+        //    * `./path` / bare path       → PUTStage (stage file/dir).
+        //  Mixed invocations process each in arrival order; first
+        //  failure aborts.
+        uri path_uris[CLI_MAX_URIS] = {};
+        u32 npath = 0;
+        for (u32 i = 0; i < c->nuris && ret == OK; i++) {
+            uri u = c->uris[i];
+            b8 has_q = !u8csEmpty(u.query);
+            b8 has_path = !u8csEmpty(u.path);
+            if (has_q && !has_path && u8csEmpty(u.authority)) {
+                a_pad(u8, abs_qbuf,    256);
+                a_pad(u8, abs_databuf, 260);
+                if (sniff_resolve_rel(&u, abs_qbuf, abs_databuf,
+                                      NULL) != OK) {
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                a_dup(u8c, target, u.query);
+                ret = POSTCreateBranch(reporoot, target);
+                continue;
+            }
+            //  Path / bare — defer to PUTStage.
+            if (npath < CLI_MAX_URIS) path_uris[npath++] = u;
+        }
+        if (ret == OK && (npath > 0 || c->nuris == 0)) {
+            //  PUT.c prints its own staged-row count.
+            ret = PUTStage(npath, path_uris);
+        }
     } else if (is_delete) {
         //  Two URI shapes:
         //    * branch-form (`?branch`) — drop the label via REFS
@@ -960,7 +988,8 @@ ok64 SNIFFExec(cli *c) {
                                           NULL) != OK) {
                         ret = SNIFFFAIL; break;
                     }
-                    ret = DELBranch(u);
+                    b8 recursive = CLIHas(c, "-r") || CLIHas(c, "--force");
+                    ret = DELBranch(u, recursive);
                 } else {
                     if (npath < CLI_MAX_URIS) path_uris[npath++] = *u;
                 }

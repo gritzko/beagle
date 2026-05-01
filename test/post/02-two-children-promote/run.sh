@@ -23,7 +23,7 @@ cp "$CASE/02.b.txt" b.txt
 "$BE" post 'baseline msg'   >/dev/null 2>&1
 
 # Step 2: fork ?fix1 (cur stays on trunk)
-"$BE" post '?./fix1' >/dev/null 2>&1
+"$BE" put '?./fix1' >/dev/null 2>&1
 
 # Step 3: switch to fix1, two commits editing a.txt
 "$BE" get '?fix1' >/dev/null 2>&1
@@ -36,7 +36,7 @@ cp "$CASE/04.a-fix1-c2.txt" a.txt
 
 # Step 4: back to trunk, fork ?fix2
 "$BE" get '?..'      >/dev/null 2>&1
-"$BE" post '?./fix2' >/dev/null 2>&1
+"$BE" put '?./fix2' >/dev/null 2>&1
 
 # Step 5: switch to fix2, two commits editing b.txt
 "$BE" get '?fix2' >/dev/null 2>&1

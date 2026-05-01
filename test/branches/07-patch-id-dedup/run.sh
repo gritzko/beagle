@@ -21,7 +21,7 @@ T29_T1=$(head_hex)
 note "§29: T1=$T29_T1"
 
 # Build ?fix1 with C1 (fix.txt) + C2 (other.txt).
-"$BE" post "?./fix1" >/dev/null || fail "§29: create ?fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "§29: create ?fix1 failed"
 "$BE" get "?fix1" >/dev/null || fail "§29: switch to ?fix1 failed"
 sleep 0.01
 echo "fix changed" > fix29.txt
@@ -37,7 +37,7 @@ note "§29: ?fix1 stack T1=$T29_T1 -> C1=$F29_C1 -> C2=$F29_C2"
 
 # Build ?fix2 forked at T1 with cherry-picked C1' (same content as C1).
 "$BE" get "?.." >/dev/null || fail "§29: back to trunk failed"
-"$BE" post "?./fix2" >/dev/null || fail "§29: create ?fix2 failed"
+"$BE" put "?./fix2" >/dev/null || fail "§29: create ?fix2 failed"
 "$BE" get "?fix2" >/dev/null || fail "§29: switch to ?fix2 failed"
 sleep 0.01
 echo "fix changed" > fix29.txt

@@ -26,7 +26,7 @@ T1=$(head_hex)
 note "primary trunk T1=$T1"
 
 # 2. primary creates ?fix1 (cur stays on trunk)
-"$BE" post "?./fix1" >/dev/null || fail "be post ?./fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "be post ?./fix1 failed"
 [ -d ".dogs/fix1" ] || fail ".dogs/fix1 shard missing"
 [ "$(ref_tip "?fix1")" = "$T1" ] \
     || fail "?fix1 should fork at T1"

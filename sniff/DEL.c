@@ -337,11 +337,45 @@ static ok64 del_descendant_cb(refcp r, void *ctx) {
     return REFSSTOP;                       // short-circuit walk
 }
 
+//  Collect every descendant branch (key whose query is `<target>/<sub>`)
+//  into an arena buffer.  Each name is preceded by a 1-byte length so
+//  the recursive walk can iterate without further parsing.  Caller
+//  picks deepest-first by sorting on length descending, then byte
+//  order (irrelevant for correctness).
+typedef struct {
+    u8cs target;
+    u8b *names;       // NUL-terminated names, packed
+    ok64 err;
+} del_descendants_collect_ctx;
+
+static ok64 del_collect_descendants_cb(refcp r, void *ctx) {
+    sane(r && ctx);
+    del_descendants_collect_ctx *d = ctx;
+    if (d->err != OK) done;
+
+    uri ku = {};
+    u8csMv(ku.data, r->key);
+    ok64 lo = URILexer(&ku);
+    if (lo != OK) done;
+    if (!u8csEmpty(ku.host)) done;
+    u8cs q = {ku.query[0], ku.query[1]};
+    if (u8csEmpty(q)) done;
+
+    size_t tl = u8csLen(d->target);
+    if (u8csLen(q) <= tl + 1) done;
+    if (memcmp(q[0], d->target[0], tl) != 0) done;
+    if (q[0][tl] != '/') done;
+
+    u8bFeed(*d->names, q);
+    u8bFeed1(*d->names, '\0');
+    done;
+}
+
 //  Forty ASCII '0' chars — the tombstone fragment.
 #define DEL_ZERO_HEX                                               \
     "0000000000000000000000000000000000000000"
 
-ok64 DELBranch(uri const *u) {
+ok64 DELBranch(uri const *u, b8 recursive) {
     sane(SNIFF.h && u);
 
     keeper *k = &KEEP;
@@ -377,7 +411,9 @@ ok64 DELBranch(uri const *u) {
         }
     }
 
-    //  Refuse if any active descendant label exists.
+    //  Refuse if any active descendant label exists — unless
+    //  `recursive` is set, in which case drop them deepest-first
+    //  before falling through to drop the target itself.
     {
         del_descendant_ctx dctx = {.target = {target[0], target[1]},
                                    .has_descendant = NO};
@@ -388,12 +424,65 @@ ok64 DELBranch(uri const *u) {
                     ok64str(eo));
             fail(SNIFFFAIL);
         }
-        if (dctx.has_descendant) {
+        if (dctx.has_descendant && !recursive) {
             fprintf(stderr,
                     "sniff: delete: `%.*s` has active descendant "
-                    "branches — drop those first\n",
+                    "branches — pass `--force` (or `-r`) to drop "
+                    "the subtree\n",
                     (int)u8csLen(target), (char *)target[0]);
             fail(SNIFFFAIL);
+        }
+        if (dctx.has_descendant && recursive) {
+            //  Collect every descendant; drop deepest first.
+            //  Iterate to a fixed point so deletes that surface
+            //  newly-leafed children (after their leaves go) are
+            //  picked up.
+            for (;;) {
+                Bu8 names = {};
+                if (u8bAllocate(names, 1UL << 16) != OK) fail(NOROOM);
+                del_descendants_collect_ctx cctx = {
+                    .target = {target[0], target[1]},
+                    .names  = &names,
+                    .err    = OK,
+                };
+                ok64 co = REFSEach($path(keepdir),
+                                   del_collect_descendants_cb, &cctx);
+                if (co != OK || cctx.err != OK) {
+                    u8bFree(names);
+                    fail(SNIFFFAIL);
+                }
+                if ($empty(u8bData(names))) {
+                    u8bFree(names);
+                    break;
+                }
+                //  Pick the longest (deepest) name from the buffer.
+                u8cp p = u8bDataHead(names);
+                u8cp end = u8bIdleHead(names);
+                u8cp best_b = NULL;
+                size_t best_len = 0;
+                while (p < end) {
+                    u8cp q = p;
+                    while (q < end && *q != '\0') q++;
+                    size_t l = (size_t)(q - p);
+                    if (l > best_len) { best_b = p; best_len = l; }
+                    p = (q < end) ? q + 1 : end;
+                }
+                if (best_b == NULL) { u8bFree(names); break; }
+
+                //  Build a synthetic uri for DELBranch(non-recursive).
+                uri sub = {};
+                sub.query[0]    = best_b;
+                sub.query[1]    = best_b + best_len;
+                a_pad(u8, dbuf, 260);
+                u8bFeed1(dbuf, '?');
+                u8cs nm = {best_b, best_b + best_len};
+                u8bFeed(dbuf, nm);
+                sub.data[0] = u8bDataHead(dbuf);
+                sub.data[1] = u8bIdleHead(dbuf);
+                ok64 dr = DELBranch(&sub, NO);
+                u8bFree(names);
+                if (dr != OK) fail(dr);
+            }
         }
     }
 
