@@ -221,6 +221,99 @@ static ok64 put_classify_step(class_step const *step, void *ctx_) {
     return OK;
 }
 
+// --- Dir-form expansion --------------------------------------------
+//
+//  `be put <dir>/` (trailing slash): expand to one per-file `put` row
+//  per path.  VERBS.md §PUT contract:
+//
+//      tracked dir   (any baseline entry under prefix) → stage every
+//                    tracked-dirty file, skip untracked siblings
+//      untracked dir (no baseline entry under prefix) → stage every
+//                    non-meta file under it
+//
+//  We previously emitted a single dir-prefix row and deferred
+//  expansion to POST.  That left status (`be`) unable to surface the
+//  staged files (CLASS.c skips dir-prefix rows for the per-file
+//  classifier), so users saw `0 put / 0 mod` despite their explicit
+//  `be put dir/`, and a fresh row-per-call broke idempotence.
+
+typedef struct {
+    u8cs   prefix;
+    Bu8   *dirty;       // tracked + dirty (BOTH + mtime ∉ get/post stamp)
+    Bu8   *untracked;   // WT_ONLY paths
+    u32    base_seen;   // any BOTH or BASE_ONLY under prefix
+    ron60  verb_get;
+    ron60  verb_post;
+    ok64   err;
+} dir_collect_ctx;
+
+static b8 dir_path_under(u8cs path, u8cs prefix) {
+    size_t pl = (size_t)$len(prefix);
+    if ((size_t)$len(path) < pl) return NO;
+    return memcmp(path[0], prefix[0], pl) == 0;
+}
+
+static ok64 dir_collect_step(class_step const *step, void *vctx) {
+    sane(step && vctx);
+    dir_collect_ctx *c = (dir_collect_ctx *)vctx;
+    if (!dir_path_under(step->path, c->prefix)) return OK;
+
+    if (step->kind == CLASS_BOTH || step->kind == CLASS_BASE_ONLY)
+        c->base_seen++;
+
+    if (step->kind == CLASS_BOTH) {
+        //  Idempotence: any stamp-set match counts as "settled" for
+        //  the dir-form.  A get/post stamp means baseline-clean, a
+        //  put stamp means already-staged-by-an-earlier-put.  Either
+        //  way, re-staging would just shift the row's ts forward for
+        //  no semantic gain — `be put dir/` twice in a row should
+        //  emit zero new rows on the second call.  (The per-file
+        //  form keeps the stricter get/post-only rule since users
+        //  invoke it explicitly per path.)
+        ron60 mr = step->wt_rec ? step->wt_rec->ts : 0;
+        b8 settled = (mr != 0 && SNIFFAtKnown(mr));
+        if (!settled) {
+            ok64 r = u8bFeed(*c->dirty, step->path);
+            if (r == OK) r = u8bFeed1(*c->dirty, '\n');
+            if (r != OK) c->err = r;
+        }
+    } else if (step->kind == CLASS_WT_ONLY) {
+        ok64 r = u8bFeed(*c->untracked, step->path);
+        if (r == OK) r = u8bFeed1(*c->untracked, '\n');
+        if (r != OK) c->err = r;
+    }
+    return OK;
+}
+
+//  Iterate newline-separated paths in `paths`, append per-file put
+//  rows + stamp.  Caller advances `*ts_io` and `*emitted_io`.
+static ok64 dir_emit_paths(Bu8 paths, u8cs reporoot,
+                            ron60 *ts_io, u32 *emitted_io,
+                            ron60 verb_put) {
+    sane(ts_io && emitted_io);
+    a_dup(u8c, scan, u8bData(paths));
+    while (!u8csEmpty(scan)) {
+        u8cp eol = scan[0];
+        while (eol < scan[1] && *eol != '\n') eol++;
+        u8cs path = {scan[0], eol};
+        scan[0] = (eol < scan[1]) ? eol + 1 : eol;
+        if ($empty(path)) continue;
+
+        a_path(fp);
+        if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
+
+        uri urow = {};
+        urow.path[0] = path[0];
+        urow.path[1] = path[1];
+        ok64 ar = SNIFFAtAppendAt(*ts_io, verb_put, &urow);
+        if (ar != OK) return ar;
+        (void)SNIFFAtStampPath(fp, *ts_io);
+        (*ts_io)++;
+        (*emitted_io)++;
+    }
+    done;
+}
+
 // --- Public API ---
 
 ok64 PUTStage(u32 nuris, uri const *uris) {
@@ -302,9 +395,12 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
 
         b8 is_dir = ($len(raw) > 0 && *(raw[1] - 1) == '/');
         if (is_dir) {
-            //  Dir-form: lstat-confirm the dir exists, then emit one
-            //  row with the dir path.  POST walks every baseline /
-            //  wt entry under the prefix at commit time.
+            //  Dir-form: confirm the dir exists, then expand into
+            //  per-file `put` rows according to the tracked/untracked
+            //  rule from VERBS.md §PUT.  Empty expansion (no dirty
+            //  files under a tracked dir, or empty wt subtree) is a
+            //  no-op for this argument — the per-arg result mirrors
+            //  the single-file `be put file.c` `is unchanged` skip.
             a_path(fp);
             if (SNIFFFullpath(fp, reporoot, raw) != OK) {
                 fprintf(stderr,
@@ -320,12 +416,50 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                         (int)$len(raw), (char *)raw[0]);
                 skipped++; continue;
             }
-            uri urow = {};
-            urow.path[0] = raw[0];
-            urow.path[1] = raw[1];
-            call(SNIFFAtAppendAt, ts, verb_put, &urow);
-            ts++;
-            emitted++;
+
+            Bu8 dirty = {}, untracked = {};
+            ok64 da = u8bAllocate(dirty,     1UL << 16);
+            ok64 ua = u8bAllocate(untracked, 1UL << 16);
+            if (da != OK || ua != OK) {
+                if (dirty[0])     u8bFree(dirty);
+                if (untracked[0]) u8bFree(untracked);
+                fail(NOROOM);
+            }
+            dir_collect_ctx dctx = {
+                .prefix = {raw[0], raw[1]},
+                .dirty = &dirty,
+                .untracked = &untracked,
+                .verb_get = verb_get,
+                .verb_post = verb_post,
+                .err = OK,
+            };
+            ok64 cr = SNIFFClassify(dir_collect_step, &dctx);
+            if (cr != OK) {
+                u8bFree(dirty); u8bFree(untracked); return cr;
+            }
+            if (dctx.err != OK) {
+                u8bFree(dirty); u8bFree(untracked); return dctx.err;
+            }
+
+            //  Tracked dir → stage tracked-dirty.  Untracked →
+            //  stage every non-meta file under it.  `dctx.base_seen`
+            //  counts any BOTH or BASE_ONLY entry under the prefix.
+            Bu8 *src = (dctx.base_seen > 0) ? &dirty : &untracked;
+            u32 before = emitted;
+            ok64 er = dir_emit_paths(*src, reporoot,
+                                      &ts, &emitted, verb_put);
+            u8bFree(dirty); u8bFree(untracked);
+            if (er != OK) return er;
+
+            if (emitted == before) {
+                //  Nothing dirty under a tracked dir, or empty wt
+                //  subtree.  Per-arg "skipped — unchanged" message
+                //  mirrors the single-file form.
+                fprintf(stderr,
+                        "sniff: put: %.*s is unchanged — skipped\n",
+                        (int)$len(raw), (char *)raw[0]);
+                skipped++;
+            }
             continue;
         }
 
