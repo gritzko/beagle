@@ -41,4 +41,11 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
 ok64 NEILShift(e32g edl, u32cs old_toks, u32cs new_toks,
                u8csc old_src, u8csc new_src);
 
+// Canonicalize splices: within every maximal non-EQ run, collapse all
+// the INS+DEL entries into one INS entry followed by one DEL entry —
+// the "in-rm" invariant.  Drops length-0 entries.  Idempotent.  Runs
+// implicitly at the tail of both `NEILCleanup` and `NEILShift`; call
+// directly when consuming an EDL produced outside this pipeline.
+ok64 NEILCanon(e32g edl);
+
 #endif

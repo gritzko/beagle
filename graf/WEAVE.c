@@ -257,7 +257,7 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
             continue;
         }
 
-        //  Non-EQ run: gather totals, then emit INS first then DEL.
+        //  Non-EQ run: gather totals.
         u32 sum_ins = 0, sum_del = 0;
         while (ep < ee && DIFF_OP(*ep) != DIFF_EQ) {
             u32 l = DIFF_LEN(*ep);
@@ -266,16 +266,103 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
             ep++;
         }
 
-        //  INS: append nu tokens with in=src_commit, rm=0.
-        for (u32 j = 0; j < sum_ins; j++) {
+        //  Prefix/suffix lift: when LCS or NEIL leaves byte-equal
+        //  tokens at the boundaries of a non-EQ run (typically because
+        //  NEIL killed a small EQ between two edits, or because LCS
+        //  couldn't pick up the match due to budget), recover them as
+        //  EQ context.  Without this, the merged weave duplicates the
+        //  same byte run with both `I` and `D` tags — see test/diff/
+        //  03-stock-context for the regression repro.
+        //
+        //  Pre-collect indices of the next `sum_del` alive src tokens
+        //  so prefix and suffix walks can index by position.
+        Bu32 adi_buf = {};
+        u32 prefix = 0, suffix = 0;
+        u32 *adi = NULL;
+        u32  adi_n = 0;
+        if (sum_del > 0 && sum_ins > 0) {
+            __ = u32bAllocate(adi_buf, sum_del);
+            if (__ != OK) goto cleanup;
+            adi = adi_buf[0];
+            u32 wi_p = wi;
+            while (adi_n < sum_del && wi_p < src_len) {
+                if (src_irm[wi_p].rm == 0) adi[adi_n++] = wi_p;
+                wi_p++;
+            }
+
+            u32 lim = (sum_ins < sum_del) ? sum_ins : sum_del;
+
+            //  Forward prefix walk.
+            while (prefix < lim && prefix < adi_n) {
+                u32 ni_p = ni + prefix;
+                u32 wi_q = adi[prefix];
+                u32 nu_lo  = (ni_p == 0) ? 0
+                           : tok32Offset(nu_toks[ni_p - 1]);
+                u32 nu_hi  = tok32Offset(nu_toks[ni_p]);
+                u32 src_lo = (wi_q == 0) ? 0
+                           : tok32Offset(src_toks[wi_q - 1]);
+                u32 src_hi = tok32Offset(src_toks[wi_q]);
+                if (nu_hi - nu_lo != src_hi - src_lo) break;
+                if (memcmp(nu_text  + nu_lo,
+                           src_text + src_lo,
+                           nu_hi - nu_lo) != 0) break;
+                prefix++;
+            }
+
+            //  Backward suffix walk.  Bounded so prefix + suffix never
+            //  exceeds either side's available token count.
+            u32 max_sf = lim - prefix;
+            while (suffix < max_sf) {
+                u32 ni_p = ni + sum_ins - 1 - suffix;
+                u32 wi_q = adi[sum_del - 1 - suffix];
+                u32 nu_lo  = (ni_p == 0) ? 0
+                           : tok32Offset(nu_toks[ni_p - 1]);
+                u32 nu_hi  = tok32Offset(nu_toks[ni_p]);
+                u32 src_lo = (wi_q == 0) ? 0
+                           : tok32Offset(src_toks[wi_q - 1]);
+                u32 src_hi = tok32Offset(src_toks[wi_q]);
+                if (nu_hi - nu_lo != src_hi - src_lo) break;
+                if (memcmp(nu_text  + nu_lo,
+                           src_text + src_lo,
+                           nu_hi - nu_lo) != 0) break;
+                suffix++;
+            }
+        }
+        u32bFree(adi_buf);
+
+        //  Prefix lift: emit `prefix` tokens as EQ-context, carrying
+        //  the src token's original inrm (these bytes lived in src and
+        //  survive into nu — they were never touched by this diff
+        //  step, the LCS just happened not to mark them so).  Advance
+        //  both wi and ni in lockstep.
+        for (u32 j = 0; j < prefix; j++) {
+            while (wi < src_len && src_irm[wi].rm != 0) {
+                __ = weave_append(dst, src_text, src_toks, src_hash,
+                                  wi, src_irm[wi]);
+                if (__ != OK) goto cleanup;
+                wi++;
+            }
+            if (wi < src_len) {
+                __ = weave_append(dst, src_text, src_toks, src_hash,
+                                  wi, src_irm[wi]);
+                if (__ != OK) goto cleanup;
+                wi++;
+            }
+            ni++;
+        }
+
+        //  Remaining INS: nu tokens in (ni .. ni + remain_ins).
+        u32 remain_ins = sum_ins - prefix - suffix;
+        for (u32 j = 0; j < remain_ins; j++) {
             inrm e = {.in = src_commit, .rm = 0};
             __ = weave_append(dst, nu_text, nu_toks, nu_hash, ni, e);
             if (__ != OK) goto cleanup;
             ni++;
         }
 
-        //  DEL: drain dead, then mark each alive token rm=src_commit.
-        for (u32 j = 0; j < sum_del; j++) {
+        //  Remaining DEL: alive src tokens, rm = src_commit.
+        u32 remain_del = sum_del - prefix - suffix;
+        for (u32 j = 0; j < remain_del; j++) {
             while (wi < src_len && src_irm[wi].rm != 0) {
                 __ = weave_append(dst, src_text, src_toks, src_hash,
                                   wi, src_irm[wi]);
@@ -285,10 +372,29 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
             if (wi < src_len) {
                 inrm e = src_irm[wi];
                 e.rm = src_commit;
-                __ = weave_append(dst, src_text, src_toks, src_hash, wi, e);
+                __ = weave_append(dst, src_text, src_toks, src_hash,
+                                  wi, e);
                 if (__ != OK) goto cleanup;
                 wi++;
             }
+        }
+
+        //  Suffix lift: same shape as prefix.  Emits `suffix` tokens
+        //  as EQ-context to close the run.
+        for (u32 j = 0; j < suffix; j++) {
+            while (wi < src_len && src_irm[wi].rm != 0) {
+                __ = weave_append(dst, src_text, src_toks, src_hash,
+                                  wi, src_irm[wi]);
+                if (__ != OK) goto cleanup;
+                wi++;
+            }
+            if (wi < src_len) {
+                __ = weave_append(dst, src_text, src_toks, src_hash,
+                                  wi, src_irm[wi]);
+                if (__ != OK) goto cleanup;
+                wi++;
+            }
+            ni++;
         }
     }
 

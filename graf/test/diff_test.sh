@@ -171,14 +171,17 @@ check_tokbnd() {
 check_tokbnd "for (for (" "DEL/INS concatenated"
 check_tokbnd "for (size_t for (" "INS/DEL concatenated"
 
-# The deletion must contain 'for (' (the shared prefix that's deleted
-# because the old line structure differs).  Token-level diff may split
-# the old line differently than line-level diff.
-if ! echo "$TOUT" | grep -q '^-.*for ('; then
-    echo "FAIL: no deletion line with 'for (' found"
+# The diff must show that `int i;` was deleted (the old's separate
+# declaration line is gone in the new version).  NEIL's ident-protect
+# rule keeps the surrounding `for ( ... i = 0; ... )` tokens as shared
+# context, so `for (` may appear unprefixed (context) or under `+`
+# (inline `size_t ` insertion) but should NOT need to be re-emitted as
+# a paired DEL — the line-level deletion is just the `int i;` line.
+if ! echo "$TOUT" | grep -q '^-.*int i;'; then
+    echo "FAIL: no deletion line with 'int i;' found"
     TFAILS=$((TFAILS + 1))
 else
-    echo "  OK: deletion with 'for (' present"
+    echo "  OK: deletion 'int i;' present"
 fi
 
 # The correct insertion line must exist

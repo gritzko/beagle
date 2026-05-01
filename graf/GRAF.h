@@ -198,6 +198,13 @@ ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot);
 ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot);
 ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot);
 
+// 2-layer weave diff: WEAVEFromBlob ×2 + WEAVEDiff (LCS+NEIL+canon) +
+// WEAVEEmitDiff.  The single engine every diff path uses.  `name` is
+// the hunk title (file path); `ext` selects the tokenizer; either
+// blob slice may be empty (file added or deleted).  No-change pair →
+// no hunks emitted.
+ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data);
+
 // Deterministic URI-driven blob/tree merge (see graf/GET.md).
 //
 // URI grammar: `path?sha1&sha2&...&shaN`.  Trailing `/` on the path

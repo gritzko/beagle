@@ -575,18 +575,15 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
 
 ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to) {
-    sane(k && $ok(filepath) && $ok(reporoot));
-
-    call(GRAFArenaInit);
-
-    u8cs ext = {};
-    PATHu8sExt(ext, filepath);
+    sane(k && $ok(filepath));
+    (void)reporoot;
 
     Bu8 from_buf = {}, to_buf = {};
     call(u8bMap, from_buf, 16UL << 20);
-    call(u8bMap, to_buf, 16UL << 20);
+    call(u8bMap, to_buf,   16UL << 20);
 
-    // Fetch to-blob (HEAD or specified ref)
+    //  Fetch the `to` blob.  Empty `to` ref means HEAD (legacy
+    //  callers); diff: dispatch always supplies an explicit ref.
     {
         u8cs to_ref = {};
         if (!$empty(to))
@@ -599,27 +596,20 @@ ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
         blame_read_blob(to_buf, k, to_ref, filepath);
     }
 
-    // Fetch from-blob (if specified)
+    //  Fetch the `from` blob if specified; empty → empty buffer →
+    //  GRAFDiff2Layer treats it as a brand-new file (all-INS).
     if (!$empty(from))
         blame_read_blob(from_buf, k, from, filepath);
 
-    // Run the standard token-level diff
-    {
-        u8cs old_data = {u8bDataHead(from_buf),
-                         u8bDataHead(from_buf) + u8bDataLen(from_buf)};
-        u8cs new_data = {u8bDataHead(to_buf),
-                         u8bDataHead(to_buf) + u8bDataLen(to_buf)};
+    a_dup(u8c, from_data, u8bData(from_buf));
+    a_dup(u8c, to_data,   u8bData(to_buf));
 
-        char dispname[512];
-        snprintf(dispname, sizeof(dispname), "%.*s",
-                 (int)$len(filepath), (char *)filepath[0]);
+    u8cs ext = {};
+    PATHu8sExt(ext, filepath);
 
-        call(DIFFu8cs, graf_arena, old_data, new_data,
-             ext, dispname, GRAFHunkEmit, NULL);
-    }
+    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data);
 
     u8bUnMap(from_buf);
     u8bUnMap(to_buf);
-    GRAFArenaCleanup();
-    done;
+    return ret;
 }

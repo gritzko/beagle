@@ -86,6 +86,8 @@ start_fuzz rdx SLIK
 start_fuzz cc JSON
 start_fuzz ast CSS
 start_fuzz graf JOIN
+start_fuzz graf NEIL
+start_fuzz graf WEAVE
 
 # Wait for all and collect results
 FAILED=0

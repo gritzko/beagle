@@ -46,44 +46,57 @@ static void DIFFFindFunc(u8cs source, u32 pos, u8cs ext_nodot,
     u32 ls = pos;
     while (ls > 0 && base[ls - 1] != '\n') ls--;
 
-    for (int tries = 0; tries < 200 && ls > 0; tries++) {
-        ls--;
-        while (ls > 0 && base[ls - 1] != '\n') ls--;
-
+    //  Walk lines from the one containing `pos` upward.  Examining the
+    //  starting line is essential — the hunk often opens at a function
+    //  header line itself (the `static foo(...) {` is shown as context),
+    //  and skipping it would misattribute the hunk to the previous
+    //  function.
+    for (int tries = 0; tries < 200; tries++) {
         u32 le = ls;
         while (le < slen && base[le] != '\n') le++;
-        if (le == ls) continue;
+        if (le == ls) {
+            //  Empty line — step back and retry.
+            if (ls == 0) return;
+            ls--;
+            while (ls > 0 && base[ls - 1] != '\n') ls--;
+            continue;
+        }
 
         u8 ch = base[ls];
         u32 linelen = le - ls;
 
+        b8 match = NO;
         if (is_md) {
-            if (ch != '#') continue;
+            match = (ch == '#');
         } else if (is_py) {
-            if (linelen >= 4 && memcmp(base + ls, "def ", 4) == 0) {}
-            else if (linelen >= 6 && memcmp(base + ls, "class ", 6) == 0) {}
-            else continue;
+            match = (linelen >= 4 && memcmp(base + ls, "def ", 4) == 0) ||
+                    (linelen >= 6 && memcmp(base + ls, "class ", 6) == 0);
         } else {
-            if (ch == '/' || ch == '*' || ch == '#') continue;
-            if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-                  ch == '_'))
-                continue;
-            b8 has_paren = NO;
-            for (u32 j = ls; j < le; j++)
-                if (base[j] == '(') { has_paren = YES; break; }
-            if (!has_paren) continue;
+            if (ch != '/' && ch != '*' && ch != '#' &&
+                ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                 ch == '_')) {
+                for (u32 j = ls; j < le; j++)
+                    if (base[j] == '(') { match = YES; break; }
+            }
         }
 
-        u32 copylen = linelen;
-        if (copylen >= outsz) copylen = (u32)(outsz - 1);
-        memcpy(out, base + ls, copylen);
-        out[copylen] = 0;
-        while (copylen > 0 &&
-               (out[copylen - 1] == '{' || out[copylen - 1] == ':' ||
-                out[copylen - 1] == ' ' || out[copylen - 1] == '\t' ||
-                out[copylen - 1] == '\r'))
-            out[--copylen] = 0;
-        return;
+        if (match) {
+            u32 copylen = linelen;
+            if (copylen >= outsz) copylen = (u32)(outsz - 1);
+            memcpy(out, base + ls, copylen);
+            out[copylen] = 0;
+            while (copylen > 0 &&
+                   (out[copylen - 1] == '{' || out[copylen - 1] == ':' ||
+                    out[copylen - 1] == ' ' || out[copylen - 1] == '\t' ||
+                    out[copylen - 1] == '\r'))
+                out[--copylen] = 0;
+            return;
+        }
+
+        //  No match on this line — step back to the previous line.
+        if (ls == 0) return;
+        ls--;
+        while (ls > 0 && base[ls - 1] != '\n') ls--;
     }
 }
 
@@ -579,7 +592,14 @@ ok64 DIFFu8cs(Bu8 arena,
                             memcpy(dtxp, new_data[0] + ls, pn);
                             dtxp += pn;
                             if (dtokp) *dtokp++ = tok32Pack('S', _poff);
-                            if (dhilp) *dhilp++ = tok32Pack('I', _poff);
+                            //  Tag 'A' (context), not 'I'.  These bytes
+                            //  are the start of the new file's line up to
+                            //  the first INS token — they exist verbatim
+                            //  on the old side too (the run's common
+                            //  prefix), so colouring them as inserted
+                            //  paints unchanged tokens (e.g. `b8`) green
+                            //  on the `+` line.
+                            if (dhilp) *dhilp++ = tok32Pack('A', _poff);
                         }
                     }
                 }

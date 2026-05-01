@@ -18,7 +18,6 @@
 #include "dog/HUNK.h"
 #include "dog/IGNO.h"
 #include "dog/ULOG.h"
-#include "graf/TDIFF.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 
@@ -87,35 +86,6 @@ static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
     return NULL;
 }
 
-// --- Shared: emit one diff hunk block from two byte ranges --------
-
-static ok64 diffref_emit_pair(u8cs old_data, u8cs new_data, u8cs name) {
-    sane($ok(name));
-
-    // No change: skip (both empty is handled by DIFFu8cs too but
-    // cheaper to bail early).
-    if ($len(old_data) == $len(new_data) &&
-        ($len(old_data) == 0 ||
-         memcmp(old_data[0], new_data[0], (size_t)$len(old_data)) == 0)) {
-        done;
-    }
-
-    u8cs ext_nodot = {};
-    PATHu8sExt(ext_nodot, name);
-
-    char dispname[DIFFREF_PATH_MAX];
-    size_t dlen = (size_t)$len(name);
-    if (dlen >= sizeof(dispname)) dlen = sizeof(dispname) - 1;
-    memcpy(dispname, name[0], dlen);
-    dispname[dlen] = 0;
-
-    call(GRAFArenaInit);
-    ok64 o = DIFFu8cs(graf_arena, old_data, new_data, ext_nodot,
-                      dispname, GRAFHunkEmit, NULL);
-    GRAFArenaCleanup();
-    return o;
-}
-
 // --- Shared: load blob at ref+path via KEEPGetByURI ---------------
 
 static ok64 diffref_load_blob(Bu8 out, keeper *k, u8cs path, u8cs ref) {
@@ -144,16 +114,20 @@ static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
     done;
 }
 
-// --- wt-vs-base diff: weave-based ---------------------------------
+// --- 2-layer weave diff -------------------------------------------
 //
-//  Two-layer weave: base blob (fetched once via keeper) + wt bytes
-//  (mmap from disk).  No file-history walk — this is wt-vs-base, not
-//  blame, so we don't need per-token attribution beyond the base/wt
-//  split.  WEAVEDiff handles the LCS + NEIL cleanup; WEAVEEmitDiff
-//  classifies tokens with the wt predicates and emits hunks.
+//  The single primitive every diff path uses (wt-vs-base, ref-vs-ref
+//  file, ref-vs-ref tree per-file).  Builds a 2-layer weave from
+//  `from_data` (older) + `to_data` (newer) — `WEAVEFromBlob` ×2 +
+//  `WEAVEDiff` (LCS + NEIL + canon) — then `WEAVEEmitDiff` walks the
+//  resulting `inrm` stream and emits hunks with context, syntax tags,
+//  and `I`/`D`/` ` hili.  No legacy byte-pair `DIFFu8cs` path here.
 //
-//  Sentinel ids: base layer uses `WEAVE_BASE_SRC` (any value other
-//  than `WEAVE_WT_SRC` works); wt layer uses `WEAVE_WT_SRC`.
+//  Sentinel ids: `from` layer uses `WEAVE_BASE_SRC` (any value other
+//  than `WEAVE_WT_SRC` works); `to` layer uses `WEAVE_WT_SRC`.  The
+//  predicates are the same as for wt-vs-base — `to` is treated as
+//  "the next version after `from`" regardless of whether it's the
+//  worktree or another commit's blob.
 
 #define WEAVE_BASE_SRC 1u
 
@@ -166,78 +140,75 @@ static b8 wt_in_to(u32 c, void *ctx) {
     return YES;
 }
 
-ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot) {
-    sane(k && $ok(filepath) && $ok(reporoot));
+ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
+    sane($ok(name));
 
-    //  1. Fetch base blob (one keeper round-trip).
-    Bu8 base_buf = {};
-    call(u8bMap, base_buf, 16UL << 20);
-    ok64 bo = GRAFBlobAtCommit(base_buf, k, base_h40, filepath);
-    u8cs base_data = {};
-    if (bo == OK) {
-        base_data[0] = u8bDataHead(base_buf);
-        base_data[1] = u8bIdleHead(base_buf);
-    }
-
-    //  2. mmap wt file (may be missing → wt-deletion case).
-    a_path(wt_path, reporoot, filepath);
-    u8bp wt_mapped = NULL;
-    u8cs wt_data = {};
-    ok64 wto = FILEMapRO(&wt_mapped, $path(wt_path));
-    if (wto == OK && wt_mapped) {
-        wt_data[0] = u8bDataHead(wt_mapped);
-        wt_data[1] = u8bIdleHead(wt_mapped);
-    }
-
-    //  3. Fast skip on byte-identical content (the common case across
-    //     a tree walk: most files haven't changed in the wt).
-    ok64 ret = OK;
-    if ($len(base_data) == $len(wt_data) &&
-        ($len(base_data) == 0 ||
-         memcmp(base_data[0], wt_data[0],
-                (size_t)$len(base_data)) == 0)) {
-        if (wt_mapped) FILEUnMap(wt_mapped);
-        u8bUnMap(base_buf);
+    //  Fast skip on byte-identical content.  Cheap memcmp before any
+    //  tokenisation; the common case in tree walks.
+    if ($len(from_data) == $len(to_data) &&
+        ($len(from_data) == 0 ||
+         memcmp(from_data[0], to_data[0],
+                (size_t)$len(from_data)) == 0)) {
         return OK;
     }
 
-    //  4. Build the 2-layer weave.
     call(GRAFArenaInit);
-    u8cs ext = {};
-    PATHu8sExt(ext, filepath);
 
     weave wA = {}, wB = {}, wnu = {};
     if (WEAVEInit(&wA)  != OK ||
         WEAVEInit(&wB)  != OK ||
         WEAVEInit(&wnu) != OK) {
-        ret = NOROOM; goto cleanup;
+        WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
+        GRAFArenaCleanup();
+        return NOROOM;
     }
     weave *wsrc = &wA, *wdst = &wB;
 
-    //  Layer 1: base.  WEAVEFromBlob handles empty data (no-op reset).
-    ret = WEAVEFromBlob(wsrc, base_data, ext, WEAVE_BASE_SRC);
-    if (ret != OK) goto cleanup;
+    ok64 ret = WEAVEFromBlob(wsrc, from_data, ext, WEAVE_BASE_SRC);
+    if (ret == OK) ret = WEAVEFromBlob(&wnu, to_data, ext, WEAVE_WT_SRC);
+    if (ret == OK) ret = WEAVEDiff(wdst, wsrc, &wnu, WEAVE_WT_SRC);
+    if (ret == OK) {
+        wsrc = wdst;
+        ret = WEAVEEmitDiff(wsrc, name,
+                            wt_in_from, NULL,
+                            wt_in_to,   NULL,
+                            GRAFHunkEmit, NULL);
+    }
 
-    //  Layer 2: wt, folded via WEAVEDiff (which runs DIFFu64s + NEIL
-    //  internally).  Even for an empty wt (deleted file) we run the
-    //  diff so every base token gets `rm = WT_SRC` → renders as `D`.
-    ret = WEAVEFromBlob(&wnu, wt_data, ext, WEAVE_WT_SRC);
-    if (ret != OK) goto cleanup;
-    ret = WEAVEDiff(wdst, wsrc, &wnu, WEAVE_WT_SRC);
-    if (ret != OK) goto cleanup;
-    wsrc = wdst;
-
-    //  5. Emit hunks.
-    ret = WEAVEEmitDiff(wsrc, filepath,
-                        wt_in_from, NULL,
-                        wt_in_to,   NULL,
-                        GRAFHunkEmit, NULL);
-
-cleanup:
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
     GRAFArenaCleanup();
+    return ret;
+}
+
+// --- wt-vs-base file: thin wrapper around GRAFDiff2Layer -----------
+
+ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot) {
+    sane(k && $ok(filepath) && $ok(reporoot));
+
+    Bu8 base_buf = {};
+    call(u8bMap, base_buf, 16UL << 20);
+    ok64 bo = GRAFBlobAtCommit(base_buf, k, base_h40, filepath);
+    u8cs from_data = {};
+    if (bo == OK) {
+        a_dup(u8c, fd, u8bData(base_buf));
+        u8csMv(from_data, fd);
+    }
+
+    a_path(wt_path, reporoot, filepath);
+    u8bp wt_mapped = NULL;
+    u8cs to_data = {};
+    ok64 wto = FILEMapRO(&wt_mapped, $path(wt_path));
+    if (wto == OK && wt_mapped) {
+        a_dup(u8c, td, u8bData(wt_mapped));
+        u8csMv(to_data, td);
+    }
+
+    u8cs ext = {};
+    PATHu8sExt(ext, filepath);
+    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data);
+
     if (wt_mapped) FILEUnMap(wt_mapped);
     u8bUnMap(base_buf);
     return ret;
@@ -505,8 +476,8 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
             u8bReset(old_buf);
             u8 ot = 0;
             if (KEEPGetExact(k, &fs, old_buf, &ot) == OK && ot == DOG_OBJ_BLOB) {
-                old_data[0] = u8bDataHead(old_buf);
-                old_data[1] = u8bIdleHead(old_buf);
+                a_dup(u8c, old_dup, u8bData(old_buf));
+                u8csMv(old_data, old_dup);
             }
         }
         sha1 ts = {};
@@ -514,11 +485,13 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
         u8bReset(new_buf);
         u8 nt = 0;
         if (KEEPGetExact(k, &ts, new_buf, &nt) == OK && nt == DOG_OBJ_BLOB) {
-            new_data[0] = u8bDataHead(new_buf);
-            new_data[1] = u8bIdleHead(new_buf);
+            a_dup(u8c, new_dup, u8bData(new_buf));
+            u8csMv(new_data, new_dup);
         }
 
-        diffref_emit_pair(old_data, new_data, path);
+        u8cs ext = {};
+        PATHu8sExt(ext, path);
+        GRAFDiff2Layer(path, ext, old_data, new_data);
     }
 
     // --- 4. from-only entries (deletions): diff blob vs empty ---
@@ -533,9 +506,11 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
         u8 ot = 0;
         if (KEEPGetExact(k, &fs, old_buf, &ot) != OK || ot != DOG_OBJ_BLOB)
             continue;
-        u8cs old_data = {u8bDataHead(old_buf), u8bIdleHead(old_buf)};
+        a_dup(u8c, old_data, u8bData(old_buf));
         u8cs new_data = {};
-        diffref_emit_pair(old_data, new_data, path);
+        u8cs ext = {};
+        PATHu8sExt(ext, path);
+        GRAFDiff2Layer(path, ext, old_data, new_data);
     }
 
     u8bUnMap(old_buf);

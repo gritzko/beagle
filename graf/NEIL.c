@@ -189,6 +189,36 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                 tmp[w++] = buf[k]; continue;
             }
 
+            // Protect EQs that contain at least one alphanumeric token
+            // of length >= 2.  Such tokens are real identifiers /
+            // keywords / numeric literals that LCS matched because
+            // they're the same name on both sides — killing the EQ
+            // turns shared context (`b8`, `if`, `for`, `int`, …) into
+            // a duplicated DEL+INS pair, breaking attribution and the
+            // diff-renderer's mixed-line reconstruction.  Punctuation
+            // and single-char EQs fall through to the small-kill rule
+            // below.
+            {
+                u32 eq_from = new_off[k];
+                b8 has_ident = NO;
+                for (u32 j = 0; j < eq_len && !has_ident; j++) {
+                    u32 ti = eq_from + j;
+                    u32 lo = (ti > 0) ? tok32Offset(new_toks[0][ti - 1]) : 0;
+                    u32 hi = tok32Offset(new_toks[0][ti]);
+                    if (hi - lo < 2) continue;
+                    b8 alnum = YES;
+                    for (u32 b = lo; b < hi && alnum; b++) {
+                        u8 c = new_src[0][b];
+                        b8 d  = (c >= '0' && c <= '9');
+                        b8 lc = (c >= 'a' && c <= 'z');
+                        b8 uc = (c >= 'A' && c <= 'Z');
+                        if (!d && !lc && !uc && c != '_') alnum = NO;
+                    }
+                    if (alnum) has_ident = YES;
+                }
+                if (has_ident) { tmp[w++] = buf[k]; continue; }
+            }
+
             // Protect EQs that contain a line with >= 6 non-ws bytes.
             // A "line" is text between \n boundaries (or span edges).
             // This prevents the cascade where killing short EQs between
@@ -257,7 +287,12 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
     edl[0] = edl[2] + final_n;
 
     u32bFree(bbuf);
-    done;
+
+    //  Splice canonicalization (in-rm invariant): WEAVE.h's compose
+    //  pass and the unified-diff renderers both assume each non-EQ run
+    //  is exactly `[INS sum, DEL sum]` in that order.  Cleanup may have
+    //  produced `DEL INS DEL INS` interleavings; collapse them now.
+    return NEILCanon(edl);
 }
 
 ok64 NEILShift(e32g edl, u32cs old_toks, u32cs new_toks,
@@ -393,5 +428,63 @@ ok64 NEILShift(e32g edl, u32cs old_toks, u32cs new_toks,
 
     u32bFree(oobuf);
     u32bFree(nobuf);
+
+    //  Splice canonicalization — same reasoning as in `NEILCleanup`.
+    //  Shifting an EQ across a non-EQ run can leave a `DEL INS DEL`
+    //  shape; collapse to `INS DEL`.
+    return NEILCanon(edl);
+}
+
+ok64 NEILCanon(e32g edl) {
+    sane(edl != NULL);
+    u32 n = (u32)(edl[0] - edl[2]);
+    if (n == 0) done;
+
+    Bu32 buf = {};
+    call(u32bAlloc, buf, n + 4);
+    e32 *out = buf[0];
+    u32 w = 0;
+
+    u32 k = 0;
+    while (k < n) {
+        e32 e = edl[2][k];
+        u32 op = DIFF_OP(e);
+        u32 len = DIFF_LEN(e);
+        if (len == 0) { k++; continue; }
+        if (op == DIFF_EQ) {
+            //  Coalesce adjacent EQ entries (NEIL passes don't usually
+            //  produce them, but the canon is the right place to enforce
+            //  it).  Keeps downstream walkers simple.
+            if (w > 0 && DIFF_OP(out[w - 1]) == DIFF_EQ)
+                out[w - 1] = DIFF_ENTRY(DIFF_EQ,
+                                        DIFF_LEN(out[w - 1]) + len);
+            else
+                out[w++] = e;
+            k++;
+            continue;
+        }
+        //  Maximal non-EQ run starting at k.
+        u32 sum_ins = 0, sum_del = 0;
+        while (k < n) {
+            e32 ek = edl[2][k];
+            u32 op_k  = DIFF_OP(ek);
+            u32 len_k = DIFF_LEN(ek);
+            if (op_k == DIFF_EQ) break;
+            if (op_k == DIFF_INS) sum_ins += len_k;
+            else if (op_k == DIFF_DEL) sum_del += len_k;
+            k++;
+        }
+        //  Emit `INS sum, DEL sum` — the in-rm invariant.  Either may
+        //  be zero (one-sided edit); skip empty entries.
+        if (sum_ins > 0) out[w++] = DIFF_ENTRY(DIFF_INS, sum_ins);
+        if (sum_del > 0) out[w++] = DIFF_ENTRY(DIFF_DEL, sum_del);
+    }
+
+    u32 ecap = (u32)(edl[1] - edl[2]);
+    u32 final_n = (w < ecap) ? w : ecap;
+    memcpy(edl[2], out, final_n * sizeof(e32));
+    edl[0] = edl[2] + final_n;
+
+    u32bFree(buf);
     done;
 }
