@@ -302,8 +302,8 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
     diffref_wt_ctx *c = (diffref_wt_ctx *)ctx_;
     ulogreccp base = NULL, wt = NULL;
     for (u32 i = 0; i < n; i++) {
-        if      (recs[i].verb == c->v_base) base = &recs[i];
-        else if (recs[i].verb == c->v_wt)   wt   = &recs[i];
+        if      (ok64stem(recs[i].verb) == c->v_base) base = &recs[i];
+        else if (ok64stem(recs[i].verb) == c->v_wt)   wt   = &recs[i];
     }
     ulogreccp src = base ? base : wt;
     if (!src) return OK;
@@ -320,13 +320,9 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
 
     //  Submodules / gitlink trees: remember the path as a prefix to
     //  filter, then drop the row itself.
-    if (base != NULL) {
-        u8cs mode = {base->uri.query[0], base->uri.query[1]};
-        a_cstr(gitlink, "160000");
-        if ($eq(mode, gitlink)) {
-            (void)diffref_remember_submodule(c, path);
-            return OK;
-        }
+    if (base != NULL && ok64Lit(base->verb, 0) == RON_s) {
+        (void)diffref_remember_submodule(c, path);
+        return OK;
     }
 
     //  BOTH: sha-skip.  Hash wt bytes once and compare with the base

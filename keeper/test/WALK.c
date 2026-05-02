@@ -15,6 +15,7 @@
 #include "abc/LSM.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/TEST.h"
 #include "dog/DOG.h"
 #include "dog/ULOG.h"
@@ -298,20 +299,21 @@ ok64 WALKtest4() {
     u8cssHeapZ(cursors, ULOGu8csZbyUri);
 
     char const *expect_path[3] = {"hello.txt", "run.sh", "sub/nested.txt"};
-    char const *expect_mode[3] = {"100644",    "100755", "100644"};
+    u8          expect_kind[3] = {RON_f,       RON_x,    RON_f};
     sha1 expect_sha[3] = {hi_sha, run_sha, nested_blob_sha};
 
     for (u32 i = 0; i < 3; i++) {
         ulogrec g = {};
         call(ULOGu8ssDrainHeap, cursors, ULOGu8csZbyUri, &g);
-        want(g.verb == verb);
+        want(ok64stem(g.verb) == verb);
+        want(ok64Lit(g.verb, 0) == expect_kind[i]);
 
         size_t pl = strlen(expect_path[i]);
         want((size_t)u8csLen(g.uri.path) == pl);
         want(memcmp(g.uri.path[0], expect_path[i], pl) == 0);
 
-        want(u8csLen(g.uri.query) == 6);
-        want(memcmp(g.uri.query[0], expect_mode[i], 6) == 0);
+        //  Mode no longer in query — query is empty for tree rows.
+        want(u8csLen(g.uri.query) == 0);
 
         //  Decode the 40-hex fragment back to 20 raw bytes and compare.
         want(u8csLen(g.uri.fragment) == 40);

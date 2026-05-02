@@ -14,7 +14,7 @@ ok64 brocli() {
     call(CLIParse, &c, NULL, NULL);  // no verbs, no val-flags
 
     home h = {};
-    call(HOMEOpen, &h, c.repo, NO);
+    call(HOMEOpenAt, &h, c.repo, NO);
 
     bro b = {};
     call(BROOpen, &b, &h, NO);

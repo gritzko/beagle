@@ -70,12 +70,19 @@ ok64 KEEPLsFiles(keeper *k, uricp target,
                  walk_tree_fn visit, void0p ctx);
 
 //  Materialise a tree's leaf entries as ULOG rows for the heap-merge
-//  pipeline: one row per leaf, `<ts>\t<verb>\t<path>?<mode>#<hex-sha>\n`,
+//  pipeline: one row per leaf, `<ts>\t<verb><kind>\t<path>#<hex-sha>\n`,
 //  sorted by path (DFS == lex order on paths).
-//    ts   — caller-provided (commit ts, or 0 if irrelevant).
-//    verb — caller-provided (e.g. SNIFFAtVerbOf("base"|"ours"|"theirs")).
-//    mode — git octal: 100644 / 100755 / 120000 / 160000 (no DIR rows).
-//    sha  — 40 hex chars (HEXu8sFeed-encoded leaf sha).
+//    ts    — caller-provided (commit ts, or 0 if irrelevant).
+//    verb  — caller-provided stem (e.g. SNIFFAtVerbOf("base")); the
+//            scanner appends a kind letter via `ok64sub`, producing
+//            `basef`/`basex`/`basel`/`bases` etc.
+//    kind  — RON64 letter encoded into the verb's bottom digit:
+//              f = regular file (100644)
+//              x = executable file (100755)
+//              l = symlink         (120000)
+//              s = submodule       (160000) — gitlink, not recursed
+//            Recover via `ok64Lit(verb, 0)`; the stem via `ok64stem`.
+//    sha   — 40 hex chars (HEXu8sFeed-encoded leaf sha).
 //  `out` is reset before writing.  Caller owns it.
 ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
                   ron60 ts, ron60 verb, u8bp out);

@@ -201,11 +201,14 @@ ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40);
 ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta);
 
 //  Materialise wt entries as ULOG rows for the heap-merge pipeline:
-//  one row per file, `<mtime-ron60>\t<verb>\t<rel>?<mode>\n`.  The
-//  fragment (sha) is left empty — caller hashes on demand only when
-//  classification requires it.  Same wt-scan filter as
-//  `SNIFFWtListPaths` (skips `.dogs/`, `.sniff*`, IGNO matches).
-//  `out` is reset before writing.
+//  one row per file, `<mtime-ron60>\t<verb><kind>\t<rel>\n`.  The
+//  caller passes a verb stem (e.g. SNIFFAtVerbOf("wt")); the scanner
+//  appends a kind letter via `ok64sub` — f=regular, x=executable,
+//  l=symlink (no submodule on the wt side).  Recover stem with
+//  `ok64stem` and kind with `ok64Lit(verb, 0)`.  Fragment is left
+//  empty — caller hashes on demand only when classification requires
+//  it.  Same wt-scan filter as `SNIFFWtListPaths` (skips `.dogs/`,
+//  `.sniff*`, IGNO matches).  `out` is reset before writing.
 ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out);
 
 #endif

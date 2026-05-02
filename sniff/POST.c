@@ -30,6 +30,7 @@
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/IGNO.h"
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
@@ -43,10 +44,10 @@
 #include "AT.h"
 #include "GET.h"
 
-//  Cap on the per-commit ULOG-shaped buffers (decisions, leaves,
-//  recs).  32 MiB is enough for tens of thousands of distinct paths
-//  per commit at ~100 bytes per row.  A repo that exceeds this at
-//  commit time has bigger problems than the cap.
+//  Cap on the per-commit ULOG-shaped buffer (decisions).  32 MiB is
+//  enough for tens of thousands of distinct paths per commit at
+//  ~100 bytes per row.  A repo that exceeds this at commit time has
+//  bigger problems than the cap.
 #define POST_TREE_ULOG_MAX (32UL << 20)
 
 // --- Per-commit decision stream ---
@@ -65,13 +66,16 @@
 //  Every consumer (tree-build, unlink loop, blob feed, stamp,
 //  patch-parents, M/A/D print) drains `decisions`.
 
+//  Decision verbs emitted into `decisions` (ron60-encoded utf8 tokens).
+//  Precomputed via abc/ok64 so they're file-scope constants.
+con ron60 POST_V_KEEP   = 0xbe9a74;
+con ron60 POST_V_UNLINK = 0xe72c2dcaf;
+con ron60 POST_V_ADD    = 0x25a28;
+
 typedef struct {
     keeper        *k;
     u8cs           reporoot;
     Bu8            decisions;    // ULOG-shaped: <ts>\t<verb>\t<path>?<query>#<frag>
-    ron60          v_keep;       // verb constants emitted into `decisions`
-    ron60          v_unlink;
-    ron60          v_add;
     ron60          stamp_ts;     // single per-commit stamp (post ts).
                                  // Also used to re-stamp content-clean
                                  // files whose mtime drifted, so they
@@ -354,14 +358,31 @@ static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
 
 // --- Baseline ↔ wt classifier via N-way merge ---
 
-//  Parse an octal-ASCII mode slice ("100644", "40000", …) into a u16.
-static u16 post_parse_octal_mode(u8cs s) {
-    u16 m = 0;
-    for (u8c const *p = s[0]; p < s[1]; p++) {
-        if (*p < '0' || *p > '7') return m;
-        m = (u16)(m * 8 + (*p - '0'));
+//  Map the verb's bottom RON64 digit (kind suffix appended by
+//  KEEPTreeULog / SNIFFWtULog) to its git octal mode.  Unknown
+//  letters (or 0 = no suffix) yield 0.
+static u16 post_kind_to_mode(u8 kind) {
+    switch (kind) {
+        case RON_f: return 0100644;
+        case RON_x: return 0100755;
+        case RON_l: return 0120000;
+        case RON_s: return 0160000;
+        default:    return 0;
     }
-    return m;
+}
+
+//  Inverse of `post_kind_to_mode`: git octal mode → kind letter.
+//  Returns 0 for unknown / zero modes (used by unlink rows that
+//  carry no meaningful kind, and the tree-build dir entry, neither
+//  of which round-trips through the verb).
+static u8 post_mode_to_kind(u16 mode) {
+    switch (mode) {
+        case 0100644: return RON_f;
+        case 0100755: return RON_x;
+        case 0120000: return RON_l;
+        case 0160000: return RON_s;
+        default:      return 0;
+    }
 }
 
 //  Per-step classification context for `post_classify_step`.
@@ -386,39 +407,38 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     u8cs path = {recs[0].uri.path[0], recs[0].uri.path[1]};
     if ($empty(path)) return OK;
 
-    //  Inspect sources contributing to this path.
+    //  Inspect sources contributing to this path.  Baseline / wt rows
+    //  carry a kind suffix in the verb's bottom RON64 digit (appended
+    //  by KEEPTreeULog / SNIFFWtULog), so source dispatch tests the
+    //  stem.  Put/delete intent rows carry no suffix — equality match.
     ulogreccp src_base = NULL, src_wt = NULL;
     b8 has_put = NO, has_del = NO;
     for (u32 i = 0; i < n; i++) {
         ulogreccp m = &recs[i];
-        if      (m->verb == cctx->v_base) src_base = m;
-        else if (m->verb == cctx->v_wt)   src_wt   = m;
-        else if (m->verb == cctx->v_put)  has_put  = YES;
-        else if (m->verb == cctx->v_del)  has_del  = YES;
+        if      (ok64stem(m->verb) == cctx->v_base) src_base = m;
+        else if (ok64stem(m->verb) == cctx->v_wt)   src_wt   = m;
+        else if (m->verb == cctx->v_put)            has_put  = YES;
+        else if (m->verb == cctx->v_del)            has_del  = YES;
     }
 
-    //  Pull baseline mode + sha (when present).
+    //  Pull baseline mode (from verb) + sha (from fragment) when present.
     u16 base_mode = 0;
     sha1 base_sha = {};
     if (src_base) {
-        u8cs ms = {src_base->uri.query[0], src_base->uri.query[1]};
-        base_mode = post_parse_octal_mode(ms);
+        base_mode = post_kind_to_mode(ok64Lit(src_base->verb, 0));
         u8s bin_s = {base_sha.data, base_sha.data + 20};
         a_dup(u8c, frag_dup, src_base->uri.fragment);
         HEXu8sDrainSome(bin_s, frag_dup);
     }
-    //  Pull wt mode (when on disk).
+    //  Pull wt mode (from verb) when on disk.
     u16 wt_mode = 0;
-    if (src_wt) {
-        u8cs ms = {src_wt->uri.query[0], src_wt->uri.query[1]};
-        wt_mode = post_parse_octal_mode(ms);
-    }
+    if (src_wt) wt_mode = post_kind_to_mode(ok64Lit(src_wt->verb, 0));
 
     //  --- Decision ladder (mirrors the old post_decide) ---
 
     //  Gitlink: carry through verbatim — no on-disk file expected.
     if (base_mode == 0160000) {
-        return post_emit_decision(c, c->v_keep, path, base_mode,
+        return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                   NULL, &base_sha);
     }
 
@@ -426,7 +446,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  path was tracked or currently exists on disk.
     if (has_del) {
         if (src_base || src_wt) {
-            return post_emit_decision(c, c->v_unlink, path,
+            return post_emit_decision(c, POST_V_UNLINK, path,
                                       0, NULL, NULL);
         }
         return OK;
@@ -437,7 +457,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         if (!src_wt) {
             //  Explicit put of a missing file: drop, unlink if tracked.
             if (src_base) {
-                return post_emit_decision(c, c->v_unlink, path,
+                return post_emit_decision(c, POST_V_UNLINK, path,
                                           0, NULL, NULL);
             }
             return OK;
@@ -446,7 +466,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
             return OK;
         sha1 const *old = src_base ? &base_sha : NULL;
-        return post_emit_decision(c, c->v_add, path, wt_mode,
+        return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   old, &new_sha);
     }
 
@@ -457,20 +477,20 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         //  Gitignored baseline files: keep verbatim — we don't see
         //  them on disk because SNIFFWtULog filters via SNIFFSkipMeta.
         if (src_base && SNIFFSkipMeta(path)) {
-            return post_emit_decision(c, c->v_keep, path, base_mode,
+            return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                       NULL, &base_sha);
         }
         if (c->any_pd) {
             //  Selective mode: keep baseline entries unchanged.
             if (src_base) {
-                return post_emit_decision(c, c->v_keep, path, base_mode,
+                return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                           NULL, &base_sha);
             }
             return OK;
         }
         //  Implicit mode: missing tracked file is a deletion.
         if (src_base) {
-            return post_emit_decision(c, c->v_unlink, path,
+            return post_emit_decision(c, POST_V_UNLINK, path,
                                       0, NULL, NULL);
         }
         return OK;
@@ -484,7 +504,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     struct stat sb = {};
     if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
         if (src_base) {
-            return post_emit_decision(c, c->v_unlink, path,
+            return post_emit_decision(c, POST_V_UNLINK, path,
                                       0, NULL, NULL);
         }
         return OK;
@@ -506,7 +526,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             ron60 vp = SNIFFAtVerbPost();
             if (ow_verb == vg || ow_verb == vp) {
                 if (src_base) {
-                    return post_emit_decision(c, c->v_keep, path,
+                    return post_emit_decision(c, POST_V_KEEP, path,
                                               base_mode, NULL,
                                               &base_sha);
                 }
@@ -517,12 +537,12 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
                 return OK;
             sha1 const *old = src_base ? &base_sha : NULL;
-            return post_emit_decision(c, c->v_add, path, wt_mode,
+            return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                       old, &new_sha);
         }
         //  ts known but row not found (corrupt log?) — fallback keep.
         if (src_base) {
-            return post_emit_decision(c, c->v_keep, path, base_mode,
+            return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                       NULL, &base_sha);
         }
         return OK;
@@ -535,7 +555,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         //  the commit, plus deletes drop their targets.  Implicit mode
         //  (commit-all): hash and rewrite.
         if (c->any_pd) {
-            return post_emit_decision(c, c->v_keep, path, base_mode,
+            return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                       NULL, &base_sha);
         }
         sha1 disk_sha = {};
@@ -550,10 +570,10 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             a_path(fp);
             if (SNIFFFullpath(fp, c->reporoot, path) == OK)
                 (void)SNIFFAtStampPath(fp, c->stamp_ts);
-            return post_emit_decision(c, c->v_keep, path, base_mode,
+            return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                       NULL, &base_sha);
         }
-        return post_emit_decision(c, c->v_add, path, wt_mode,
+        return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   &base_sha, &disk_sha);
     }
     if (!c->has_base) {
@@ -561,7 +581,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         sha1 new_sha = {};
         if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
             return OK;
-        return post_emit_decision(c, c->v_add, path, wt_mode,
+        return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   NULL, &new_sha);
     }
     //  Untracked + dirty + has-base → ignore in implicit mode.
@@ -602,147 +622,113 @@ static ok64 post_classify_via_merge(post_ctx *c,
 
 // --- Tree building (bottom-up from sorted paths) ---
 
-//  Per-leaf row consumed by post_build_tree.  Built once from the
-//  decisions buffer (filtered to keep+add) and walked by lo/hi range.
-typedef struct {
-    u8cs path;     // slice into ctx.decisions (mmap-stable until POST exit)
-    u16  mode;
-    sha1 sha;
-} post_leaf;
-
-typedef struct {
-    u32    lo, hi;    // sorted-index range
-    u8cs   prefix;    // directory prefix these entries live under (with trailing '/')
-} tree_range;
-
-//  Inline accessors over a Bu8 of post_leaf records.
-fun post_leaf *post_leaves_head(u8b leaves) {
-    return (post_leaf *)u8bDataHead(leaves);
-}
-fun u32 post_leaves_count(u8b leaves) {
-    return (u32)(u8bDataLen(leaves) / sizeof(post_leaf));
-}
-fun post_leaf *post_leaves_at(u8b leaves, u32 i) {
-    return post_leaves_head(leaves) + i;
-}
-
-//  Parse octal mode bytes from an `add`/`keep` decision row's
-//  uri.query.  Stops at the optional `&<old_sha>` chain.
-static u16 post_decision_mode(uricp u) {
-    u8cs s = {u->query[0], u->query[1]};
-    //  Truncate at first '&' if present.
-    for (u8c const *p = s[0]; p < s[1]; p++) {
-        if (*p == '&') { s[1] = p; break; }
-    }
-    return post_parse_octal_mode(s);
-}
-
-//  Decode the optional `&<40-hex>` old-sha chain in an add row's
-//  uri.query.  Returns YES + fills *out on success; NO if absent.
+//  Decode the optional old-sha (40 hex) carried in an `add` row's
+//  query for the modify-vs-add distinction.  Returns YES + fills
+//  `*out` on success; NO if the query is absent or wrong-length.
 static b8 post_decision_old_sha(uricp u, sha1 *out) {
     if (!u || !out) return NO;
-    u8cs s = {u->query[0], u->query[1]};
-    u8c const *amp = NULL;
-    for (u8c const *p = s[0]; p < s[1]; p++) {
-        if (*p == '&') { amp = p; break; }
-    }
-    if (!amp) return NO;
-    u8cs hex = {amp + 1, s[1]};
-    if (u8csLen(hex) != 40) return NO;
+    if (u8csLen(u->query) != 40) return NO;
     u8s bin = {out->data, out->data + 20};
-    a_dup(u8c, hex_dup, hex);
+    a_dup(u8c, hex_dup, u->query);
     return HEXu8sDrainSome(bin, hex_dup) == OK;
 }
 
-//  Build the leaf array from the decisions buffer (keep + add only,
-//  skipping unlinks).  Decisions are emitted in lex order, so the
-//  resulting array is already sorted by path.
-static ok64 post_build_leaves(post_ctx *c, u8b leaves) {
-    sane(c && leaves);
-    u8bReset(leaves);
-    a_dup(u8c, scan, u8bData(c->decisions));
+//  YES iff `path` starts with `prefix`.  Empty prefix matches all.
+fun b8 post_path_under_prefix(u8cs path, u8cs prefix) {
+    size_t pl = $len(prefix);
+    if (pl == 0) return YES;
+    if ((size_t)$len(path) < pl) return NO;
+    return memcmp(path[0], prefix[0], pl) == 0;
+}
+
+//  Peek the path of the next decisions row without advancing scan.
+//  Returns YES + fills `*out` on success; NO when scan is empty or
+//  malformed (caller treats as end).
+static b8 post_peek_path(u8cs scan_in, u8cs out) {
+    if (u8csEmpty(scan_in)) return NO;
+    a_dup(u8c, scan, scan_in);
+    ulogrec rec = {};
+    if (ULOGu8sDrain(scan, &rec) != OK) return NO;
+    out[0] = rec.uri.path[0];
+    out[1] = rec.uri.path[1];
+    return YES;
+}
+
+//  Recursively build a git tree object for all decision rows in
+//  `subslice` (a contiguous u8cs over `c->decisions` covering rows
+//  whose path starts with `prefix`).  Decisions are lex-sorted by
+//  path, so subdir rows form contiguous sub-ranges sliced off here.
+//  Emits `(u32 length, body bytes)` records into `tree_body_list`
+//  for later pack-time replay; sets `*tree_out` to the tree's sha.
+//  Empty subslice → `*tree_out` zeroed, no body emitted.
+static ok64 post_build_tree(u8cs subslice, u8cs prefix,
+                            sha1 *tree_out, Bu8 tree_body_list,
+                            u32 *emit_count) {
+    sane(tree_out);
+
+    Bu8 tree = {};
+    call(u8bAllocate, tree, $len(subslice) + 256);
+
+    a_dup(u8c, scan, subslice);
     while (!u8csEmpty(scan)) {
+        u8c const *row_start_lo = scan[0];
+        u8c const *row_start_hi = scan[1];
         ulogrec rec = {};
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;
-        if (rec.verb != c->v_keep && rec.verb != c->v_add) continue;
 
-        post_leaf leaf = {};
-        leaf.path[0] = rec.uri.path[0];
-        leaf.path[1] = rec.uri.path[1];
-        leaf.mode    = post_decision_mode(&rec.uri);
-        if (u8csLen(rec.uri.fragment) == 40) {
-            u8s bin_s = {leaf.sha.data, leaf.sha.data + 20};
-            a_dup(u8c, frag_dup, rec.uri.fragment);
-            HEXu8sDrainSome(bin_s, frag_dup);
-        }
-        a_dup(u8c, leaf_view,
-              ((u8cs){(u8c *)&leaf, (u8c *)&leaf + sizeof(leaf)}));
-        ok64 fo = u8bFeed(leaves, leaf_view);
-        if (fo != OK) return fo;
-    }
-    done;
-}
+        //  Skip unlink rows (no tree entry).  Defensive against any
+        //  out-of-prefix row sneaking in (subslice should preclude it).
+        if (rec.verb == POST_V_UNLINK) continue;
+        ron60 stem = ok64stem(rec.verb);
+        if (stem != POST_V_KEEP && stem != POST_V_ADD) continue;
+        if (!post_path_under_prefix(rec.uri.path, prefix)) continue;
 
-//  Locate the end of the range whose sorted paths all start with
-//  `prefix` (exclusive).  Caller guarantees [lo..hi) is sorted.
-static u32 post_range_end(u8b leaves, u32 lo, u32 hi, u8cs prefix) {
-    u32 end = lo;
-    while (end < hi) {
-        post_leaf *l = post_leaves_at(leaves, end);
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
         size_t plen = $len(prefix);
-        if ($len(l->path) < plen) break;
-        if (memcmp(l->path[0], prefix[0], plen) != 0) break;
-        end++;
-    }
-    return end;
-}
+        u8cs rest = {$atp(path, plen), path[1]};
+        if ($empty(rest)) continue;
 
-static ok64 post_build_tree(u8b leaves, u32 lo, u32 hi, u8cs prefix,
-                            sha1 *tree_out, Bu8 tree_body_list,
-                            u32 *emit_count) {
-    //  Recursively build a tree for paths in [lo, hi) under `prefix`.
-    //  Emits serialized tree body bytes (prefixed by u32 length) into
-    //  `tree_body_list`.  The caller replays the list later to feed
-    //  keeper in the pack's expected commit→trees→blobs order.
-    sane(leaves && tree_out);
-
-    Bu8 tree = {};
-    call(u8bAllocate, tree, (u64)(hi - lo) * 80);
-
-    u32 i = lo;
-    while (i < hi) {
-        post_leaf *l = post_leaves_at(leaves, i);
-        u8cs rel = {l->path[0], l->path[1]};
-
-        size_t plen = $len(prefix);
-        if ($len(rel) <= plen) { i++; continue; }
-        u8cs rest = {$atp(rel, plen), rel[1]};
-        if ($empty(rest)) { i++; continue; }
-
-        //  Find first '/' in rest to distinguish direct-child files
-        //  from entries in deeper subtrees.
+        //  Locate the first '/' in `rest` to distinguish a direct
+        //  child file from an entry in a deeper subtree.
         u8c const *slash = NULL;
-        {
-            a_dup(u8c, scan, rest);
-            if (u8csFind(scan, '/') == OK) slash = scan[0];
-        }
+        a_dup(u8c, rest_scan, rest);
+        if (u8csFind(rest_scan, '/') == OK) slash = rest_scan[0];
 
         if (slash) {
-            //  Sub-directory of this tree: recurse over children.
+            //  Subdir entry.  Build subprefix = prefix + dirname + '/',
+            //  carve off the contiguous range of decision rows under
+            //  it from the parent subslice, and recurse.
             u8cs dirname = {rest[0], slash};
-            a_pad(u8, subprefix, 2048);
-            u8bFeed(subprefix, prefix);
-            u8bFeed(subprefix, dirname);
-            u8bFeed1(subprefix, '/');
-            u8cs sub = {u8bDataHead(subprefix), subprefix[2]};
+            a_pad(u8, subprefix_buf, 2048);
+            u8bFeed(subprefix_buf, prefix);
+            u8bFeed(subprefix_buf, dirname);
+            u8bFeed1(subprefix_buf, '/');
+            u8cs subprefix = {u8bDataHead(subprefix_buf),
+                              subprefix_buf[2]};
 
-            u32 sub_hi = post_range_end(leaves, i, hi, sub);
+            //  Roll scan back to the start of the subdir's first row
+            //  so the inner walk picks up this row, then advance until
+            //  a row's path leaves `subprefix`.
+            scan[0] = (u8c *)row_start_lo;
+            scan[1] = (u8c *)row_start_hi;
+            u8c const *sub_lo = scan[0];
+            u8c const *sub_hi = scan[0];
+            while (!u8csEmpty(scan)) {
+                u8cs peek = {};
+                if (!post_peek_path(scan, peek)) break;
+                if (!post_path_under_prefix(peek, subprefix)) break;
+                ulogrec drop = {};
+                if (ULOGu8sDrain(scan, &drop) != OK) break;
+                sub_hi = scan[0];
+            }
+            u8cs sub_subslice = {(u8c *)sub_lo, (u8c *)sub_hi};
 
             sha1 sub_sha = {};
-            ok64 so = post_build_tree(leaves, i, sub_hi, sub, &sub_sha,
-                                      tree_body_list, emit_count);
+            ok64 so = post_build_tree(sub_subslice, subprefix,
+                                      &sub_sha, tree_body_list,
+                                      emit_count);
             if (so != OK) { u8bFree(tree); return so; }
 
             if (!sha1empty(&sub_sha)) {
@@ -753,16 +739,20 @@ static ok64 post_build_tree(u8b leaves, u32 lo, u32 hi, u8cs prefix,
                 a_rawc(sr, sub_sha);
                 u8bFeed(tree, sr);
             }
-            i = sub_hi;
             continue;
         }
 
-        //  Direct-child file entry.  Leaves filtered to keep+add at
-        //  build_leaves time, so every record here is tree-bound.
-        sha1 entry_sha = l->sha;
-        if (sha1empty(&entry_sha)) { i++; continue; }
+        //  Direct-child file entry.  Mode is the kind suffix in the
+        //  verb's bottom RON64 digit; default to 100644 if absent.
+        sha1 entry_sha = {};
+        if (u8csLen(rec.uri.fragment) == 40) {
+            u8s bin_s = {entry_sha.data, entry_sha.data + 20};
+            a_dup(u8c, frag_dup, rec.uri.fragment);
+            HEXu8sDrainSome(bin_s, frag_dup);
+        }
+        if (sha1empty(&entry_sha)) continue;
 
-        u16 mode = l->mode;
+        u16 mode = post_kind_to_mode(ok64Lit(rec.verb, 0));
         if (mode == 0) mode = 0100644;
 
         post_mode_feed(tree, mode);
@@ -771,7 +761,6 @@ static ok64 post_build_tree(u8b leaves, u32 lo, u32 hi, u8cs prefix,
         u8bFeed1(tree, 0);
         a_rawc(er, entry_sha);
         u8bFeed(tree, er);
-        i++;
     }
 
     if (u8bDataLen(tree) == 0) {
@@ -782,8 +771,8 @@ static ok64 post_build_tree(u8b leaves, u32 lo, u32 hi, u8cs prefix,
 
     KEEPObjSha(tree_out, DOG_OBJ_TREE, u8bDataC(tree));
 
-    //  Record (len u32, body bytes) in tree_body_list; the feeder
-    //  loop in POSTCommit parses them back out to hand to keeper.
+    //  Record (len u32, body bytes) in tree_body_list; POSTCommit
+    //  replays them later to feed keeper in commit→trees→blobs order.
     u32 tlen = (u32)u8bDataLen(tree);
     u8cs tl = {(u8cp)&tlen, (u8cp)&tlen + sizeof(u32)};
     u8bFeed(tree_body_list, tl);
@@ -1005,14 +994,6 @@ static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k) {
     //  Decisions buffer holds the full per-commit ULOG-row stream.
     call(u8bAllocate, c->decisions, POST_TREE_ULOG_MAX);
 
-    //  Decision verbs (cached ron60).
-    a_cstr(s_keep,   "keep");   a_dup(u8c, dk, s_keep);
-    a_cstr(s_unlink, "unlink"); a_dup(u8c, du, s_unlink);
-    a_cstr(s_add,    "add");    a_dup(u8c, da, s_add);
-    call(RONutf8sDrain, &c->v_keep,   dk);
-    call(RONutf8sDrain, &c->v_unlink, du);
-    call(RONutf8sDrain, &c->v_add,    da);
-
     //  Single per-commit stamp ts; carried in every decision row,
     //  and also used to re-stamp content-clean drifted files (see
     //  `post_classify_step`).
@@ -1023,33 +1004,37 @@ static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k) {
 
 //  Emit one decision ULOG row into c->decisions.
 //
-//  Row shape (all variants):     <ts>\t<verb>\t<path>?<query>#<fragment>\n
+//  Row shapes:
+//    keep<k>   : <ts>\tkeep<k>\t<path>#<old_sha>\n
+//    add<k>    : <ts>\tadd<k>\t<path>[?<old_sha>]#<new_sha>\n
+//                (optional ?<old_sha> in query is present iff the path
+//                had a baseline entry — distinguishes "M" from "A".)
+//    unlink    : <ts>\tunlink\t<path>\n
 //
-//    keep    : query = <mode>,                 fragment = <old_sha>
-//    add     : query = <mode>[&<old_sha>],     fragment = <new_sha>
-//              (the optional &<old_sha> chain is present iff the path
-//              had a baseline entry — distinguishing "M" from "A".)
-//    unlink  : query empty, fragment empty.
-static ok64 post_emit_decision(post_ctx *c, ron60 verb,
+//  `<k>` is the RON64 kind letter encoding the git mode (f/x/l/s);
+//  appended via `ok64sub` so `ok64stem(verb)` recovers the bare
+//  POST_V_KEEP / POST_V_ADD stem.  Unlink rows carry no suffix.
+static ok64 post_emit_decision(post_ctx *c, ron60 verb_stem,
                                u8cs path, u16 mode,
                                sha1 const *old_sha, sha1 const *frag_sha) {
-    sane(c && verb);
+    sane(c && verb_stem);
 
-    //  Mode bytes (octal ASCII) into the query, optionally chained with
-    //  &<old_sha_hex> for modified add.
-    a_pad(u8, query_buf, 256);
-    if (mode != 0) {
-        char tmp[8];
-        int n = snprintf(tmp, sizeof(tmp), "%o", (unsigned)mode);
-        u8cs ms = {(u8cp)tmp, (u8cp)tmp + n};
-        u8bFeed(query_buf, ms);
-    }
+    //  Append the kind letter to the verb stem when we have a real
+    //  mode.  Unlink rows pass mode==0 and stay as bare POST_V_UNLINK.
+    ron60 verb = verb_stem;
+    u8 kletter = post_mode_to_kind(mode);
+    if (kletter != 0) verb = ok64sub(verb_stem, kletter);
+
+    //  query: the optional old-sha (40 hex), present only when the
+    //  caller passed a non-empty `old_sha` (i.e. modified-add row).
+    a_pad(u8, query_buf, 40);
     if (old_sha && !sha1empty(old_sha)) {
-        u8bFeed1(query_buf, '&');
         a_rawc(bin, *old_sha);
         HEXu8sFeedSome(u8bIdle(query_buf), bin);
     }
 
+    //  fragment: the row's primary sha (baseline-sha for keep,
+    //  new-sha for add, empty for unlink).
     a_pad(u8, hex_buf, 40);
     if (frag_sha && !sha1empty(frag_sha)) {
         a_rawc(bin, *frag_sha);
@@ -1057,15 +1042,11 @@ static ok64 post_emit_decision(post_ctx *c, ron60 verb,
     }
 
     uri u = {};
-    u.path[0] = path[0]; u.path[1] = path[1];
-    if (u8bDataLen(query_buf) > 0) {
-        u.query[0] = u8bDataHead(query_buf);
-        u.query[1] = u8bIdleHead(query_buf);
-    }
-    if (u8bDataLen(hex_buf) > 0) {
-        u.fragment[0] = u8bDataHead(hex_buf);
-        u.fragment[1] = u8bIdleHead(hex_buf);
-    }
+    u8csMv(u.path, path);
+    if (u8bDataLen(query_buf) > 0)
+        u8csMv(u.query, u8bDataC(query_buf));
+    if (u8bDataLen(hex_buf) > 0)
+        u8csMv(u.fragment, u8bDataC(hex_buf));
 
     ulogrec rec = {.ts = c->stamp_ts, .verb = verb, .uri = u};
     return ULOGu8sFeed(u8bIdle(c->decisions), &rec);
@@ -1090,10 +1071,12 @@ static ok64 post_walk_decisions(post_ctx *c, u32 verb_mask,
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;
+        //  keep/add carry a kind suffix in the verb's bottom RON64
+        //  digit; unlink is the bare stem.  Match accordingly.
         u32 bit = 0;
-        if      (rec.verb == c->v_keep)   bit = POST_VM_KEEP;
-        else if (rec.verb == c->v_unlink) bit = POST_VM_UNLINK;
-        else if (rec.verb == c->v_add)    bit = POST_VM_ADD;
+        if      (rec.verb == POST_V_UNLINK)         bit = POST_VM_UNLINK;
+        else if (ok64stem(rec.verb) == POST_V_KEEP) bit = POST_VM_KEEP;
+        else if (ok64stem(rec.verb) == POST_V_ADD)  bit = POST_VM_ADD;
         if (!(verb_mask & bit)) continue;
         ok64 cr = cb(c, &rec, cbctx);
         if (cr != OK) return cr;
@@ -1135,8 +1118,8 @@ typedef struct {
 static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     post_mad_ctx *m = (post_mad_ctx *)vctx;
     char code = 0;
-    if (rec->verb == c->v_unlink)   code = 'D';
-    else if (rec->verb == c->v_add) {
+    if (rec->verb == POST_V_UNLINK)   code = 'D';
+    else if (ok64stem(rec->verb) == POST_V_ADD) {
         sha1 old = {};
         code = post_decision_old_sha(&rec->uri, &old) ? 'M' : 'A';
     }
@@ -2169,24 +2152,16 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     call(u8bAllocate, tree_bodies, 1UL << 20);
     u32 tree_count = 0;
 
-    Bu8 leaves = {};
-    call(u8bAllocate, leaves, POST_TREE_ULOG_MAX);
     {
-        ok64 lo = post_build_leaves(&ctx, leaves);
-        if (lo != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return lo;
-        }
-    }
-
-    {
-        u32 n_leaves = post_leaves_count(leaves);
+        //  post_build_tree walks the decisions ULOG directly: rows
+        //  are lex-sorted by path, so subdir entries form contiguous
+        //  byte sub-ranges sliced off via subslice recursion.
+        a_dup(u8c, decisions_view, u8bData(ctx.decisions));
         u8cs no_prefix = {};
-        ok64 bo = post_build_tree(leaves, 0, n_leaves, no_prefix,
+        ok64 bo = post_build_tree(decisions_view, no_prefix,
                                   &root_tree, tree_bodies, &tree_count);
         if (bo != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return bo;
         }
@@ -2201,7 +2176,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     if (had_baseline && have_root && have_base &&
         memcmp(root_tree.data, base_tree_sha.data, 20) == 0) {
         fprintf(stderr, "POSTNONE: no changes since base\n");
-        u8bFree(leaves); u8bFree(tree_bodies);
+        u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return POSTNONE;
     }
@@ -2211,7 +2186,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     {
         ok64 po = KEEPPackOpen(k, &p);
         if (po != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return po;
         }
@@ -2289,7 +2264,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     u8bFree(com);
     if (fo != OK) {
         KEEPPackClose(k, &p);
-        u8bFree(leaves); u8bFree(tree_bodies);
+        u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return fo;
     }
@@ -2309,7 +2284,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             walk += tlen;
             if (to != OK) {
                 KEEPPackClose(k, &p);
-                u8bFree(leaves); u8bFree(tree_bodies);
+                u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return to;
             }
@@ -2329,10 +2304,10 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             ok64 dr = ULOGu8sDrain(scan, &drec);
             if (dr == NODATA) break;
             if (dr != OK) continue;
-            if (drec.verb != ctx.v_add) continue;
+            if (ok64stem(drec.verb) != POST_V_ADD) continue;
 
             u8cs path = {drec.uri.path[0], drec.uri.path[1]};
-            u16  mode = post_decision_mode(&drec.uri);
+            u16  mode = post_kind_to_mode(ok64Lit(drec.verb, 0));
             sha1 old_sha = {};
             b8   has_old = post_decision_old_sha(&drec.uri, &old_sha);
 
@@ -2372,7 +2347,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             if (u8bOK(body_buf)) u8bFree(body_buf);
             if (bo != OK) {
                 KEEPPackClose(k, &p);
-                u8bFree(leaves); u8bFree(tree_bodies);
+                u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return bo;
             }
@@ -2413,7 +2388,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         keep_pack p2 = {};
         ok64 po2 = KEEPPackOpen(k, &p2);
         if (po2 != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return po2;
         }
@@ -2426,12 +2401,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             fprintf(stderr,
                     "sniff: post: rebase aborted (%s)\n",
                     rb == GRAFCNFL ? "merge conflict" : "error");
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return rb;
         }
         if (cl2 != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cl2;
         }
@@ -2455,7 +2430,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         keep_pack p3 = {};
         ok64 po3 = KEEPPackOpen(k, &p3);
         if (po3 != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return po3;
         }
@@ -2473,12 +2448,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cw;
         }
         if (cl3 != OK) {
-            u8bFree(leaves); u8bFree(tree_bodies);
+            u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cl3;
         }
@@ -2574,7 +2549,6 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     }
 
     //  17. Clean up.
-    u8bFree(leaves);
     u8bFree(tree_bodies);
     post_ctx_free(&ctx);
     fprintf(stderr, "sniff: commit %.*s\n",

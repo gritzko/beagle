@@ -7,6 +7,7 @@
 #include "abc/B.h"
 #include "abc/HEX.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "keeper/GIT.h"
@@ -185,10 +186,10 @@ static ok64 class_merge_step(ulogreccp recs, u32 n, void *ctx_) {
 
     ulogreccp base = NULL, wt = NULL, put = NULL, del = NULL;
     for (u32 i = 0; i < n; i++) {
-        if      (recs[i].verb == w->v_base) base = &recs[i];
-        else if (recs[i].verb == w->v_wt)   wt   = &recs[i];
-        else if (recs[i].verb == w->v_put)  put  = &recs[i];
-        else if (recs[i].verb == w->v_del)  del  = &recs[i];
+        if      (ok64stem(recs[i].verb) == w->v_base) base = &recs[i];
+        else if (ok64stem(recs[i].verb) == w->v_wt)   wt   = &recs[i];
+        else if (recs[i].verb == w->v_put)            put  = &recs[i];
+        else if (recs[i].verb == w->v_del)            del  = &recs[i];
     }
 
     u8cs path = {};
@@ -202,15 +203,11 @@ static ok64 class_merge_step(ulogreccp recs, u32 n, void *ctx_) {
     //  (the embedded repo's own files have no business in our status).
     if (class_under_submodule(w, path)) return OK;
 
-    //  Gitlink rows themselves (mode `160000` in baseline) → record
+    //  Gitlink rows themselves (kind `s` in baseline verb) → record
     //  the path as a prefix to filter, then drop.
-    if (base != NULL) {
-        u8cs mode = {base->uri.query[0], base->uri.query[1]};
-        a_cstr(gitlink, "160000");
-        if ($eq(mode, gitlink)) {
-            (void)class_remember_submodule(w, path);
-            return OK;
-        }
+    if (base != NULL && ok64Lit(base->verb, 0) == RON_s) {
+        (void)class_remember_submodule(w, path);
+        return OK;
     }
 
     class_step step = {};

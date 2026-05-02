@@ -28,6 +28,7 @@
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/HOME.h"
 #include "keeper/GIT.h"
 #include "keeper/REFS.h"
@@ -166,21 +167,18 @@ typedef struct {
     u32    conflicts;
 } get_overlap_ctx;
 
-//  Compare two ULOG-row uri.query (mode) and uri.fragment (hex sha)
-//  by content.  YES iff both mode and sha bytes are equal.
+//  Compare two ULOG-row kind (verb's bottom RON64 digit) and
+//  uri.fragment (hex sha) by content.  YES iff both kind and sha
+//  match.
 static b8 get_leaf_eq(ulogreccp a, ulogreccp b) {
-    if (u8csLen(a->uri.query) != u8csLen(b->uri.query)) return NO;
+    if (ok64Lit(a->verb, 0) != ok64Lit(b->verb, 0)) return NO;
     if (u8csLen(a->uri.fragment) != u8csLen(b->uri.fragment)) return NO;
-    if (memcmp(a->uri.query[0],    b->uri.query[0],
-               u8csLen(a->uri.query)) != 0) return NO;
     return memcmp(a->uri.fragment[0], b->uri.fragment[0],
                   u8csLen(a->uri.fragment)) == 0;
 }
 
 static b8 get_is_sub(ulogreccp r) {
-    static u8c const sub[6] = "160000";
-    return u8csLen(r->uri.query) == 6 &&
-           memcmp(r->uri.query[0], sub, 6) == 0;
+    return ok64Lit(r->verb, 0) == RON_s;
 }
 
 static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
@@ -188,8 +186,8 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     ulogreccp base = NULL;
     ulogreccp tgt  = NULL;
     for (u32 i = 0; i < n; i++) {
-        if (recs[i].verb == c->v_base) base = &recs[i];
-        if (recs[i].verb == c->v_tgt)  tgt  = &recs[i];
+        if (ok64stem(recs[i].verb) == c->v_base) base = &recs[i];
+        if (ok64stem(recs[i].verb) == c->v_tgt)  tgt  = &recs[i];
     }
     if (!base && !tgt) return OK;
 

@@ -7,6 +7,7 @@
 
 #include "abc/HEX.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/ULOG.h"
@@ -336,24 +337,17 @@ typedef struct {
     ok64  err;
 } treeulog_ctx;
 
-//  Map WALK_KIND_* to git octal mode bytes.  Fills `out`; returns NO
-//  for kinds that don't have a leaf mode (DIR or unknown).
-static b8 treeulog_mode(u8 kind, u8cs out) {
-    static u8c const m_reg[6] = "100644";
-    static u8c const m_exe[6] = "100755";
-    static u8c const m_lnk[6] = "120000";
-    static u8c const m_sub[6] = "160000";
-    u8c const *p = NULL;
+//  Map WALK_KIND_* to a single RON64 letter that appends to the
+//  caller's verb stem: f=regular, x=executable, l=symlink,
+//  s=submodule.  Returns 0 for kinds with no leaf row (DIR/unknown).
+static u8 treeulog_kind_letter(u8 kind) {
     switch (kind) {
-        case WALK_KIND_REG: p = m_reg; break;
-        case WALK_KIND_EXE: p = m_exe; break;
-        case WALK_KIND_LNK: p = m_lnk; break;
-        case WALK_KIND_SUB: p = m_sub; break;
-        default:            return NO;
+        case WALK_KIND_REG: return RON_f;
+        case WALK_KIND_EXE: return RON_x;
+        case WALK_KIND_LNK: return RON_l;
+        case WALK_KIND_SUB: return RON_s;
+        default:            return 0;
     }
-    out[0] = p;
-    out[1] = p + 6;
-    return YES;
 }
 
 static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
@@ -362,27 +356,25 @@ static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     treeulog_ctx *c = (treeulog_ctx *)vctx;
 
     if (kind == WALK_KIND_DIR) return OK;       // root + subtrees skipped
-    u8cs mode = {};
-    if (!treeulog_mode(kind, mode)) return OK;  // unknown kind, skip
-
-    //  Compose URI components and emit one ULOG row.
-    uri u = {};
-    u.path[0]     = path[0];      u.path[1]     = path[1];
-    u.query[0]    = mode[0];      u.query[1]    = mode[1];
+    u8 kletter = treeulog_kind_letter(kind);
+    if (kletter == 0) return OK;                // unknown kind, skip
 
     //  Hex-encode the 20-byte leaf sha into a stack buffer used as the
-    //  fragment slice.  HEXu8sFeed advances the idle slice; capture
-    //  begin/end before/after.
+    //  fragment slice.
     a_pad(u8, hex_buf, 40);
     {
         u8cs bin = {esha, esha + 20};
         a_dup(u8c, bin_dup, bin);
         HEXu8sFeedSome(u8bIdle(hex_buf), bin_dup);
     }
-    u8cs hex = {u8bDataHead(hex_buf), u8bIdleHead(hex_buf)};
-    u.fragment[0] = hex[0];       u.fragment[1] = hex[1];
 
-    ulogrec rec = {.ts = c->ts, .verb = c->verb, .uri = u};
+    uri u = {};
+    u8csMv(u.path, path);
+    u8csMv(u.fragment, u8bDataC(hex_buf));
+
+    ulogrec rec = {.ts   = c->ts,
+                   .verb = ok64sub(c->verb, kletter),
+                   .uri  = u};
     ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
     if (o != OK) { c->err = o; return WALKSTOP; }
 

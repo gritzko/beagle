@@ -14,6 +14,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RAP.h"
+#include "abc/RON.h"
 #include "abc/URI.h"
 
 // --- streaming primitives --------------------------------------------
@@ -675,9 +676,14 @@ typedef struct {
     ok64         err;
 } ulog_wt_ctx;
 
-static u8c const ULOG_MODE_REG[6] = "100644";
-static u8c const ULOG_MODE_EXE[6] = "100755";
-static u8c const ULOG_MODE_LNK[6] = "120000";
+//  Map an `lstat`-derived kind to the RON64 letter appended to the
+//  caller's verb stem (f=regular, x=executable, l=symlink).  Mirrors
+//  `wt_kind_letter` in sniff/AT.c.
+static u8 ulog_wt_kind_letter(struct stat const *sb) {
+    if      (S_ISLNK(sb->st_mode))   return RON_l;
+    else if (sb->st_mode & S_IXUSR)  return RON_x;
+    else                             return RON_f;
+}
 
 static ok64 ulog_wt_cb(void *varg, path8bp path) {
     sane(varg && path);
@@ -691,21 +697,17 @@ static ok64 ulog_wt_cb(void *varg, path8bp path) {
     struct stat sb = {};
     if (lstat((char const *)full[0], &sb) != 0) return OK;
 
-    u8c const *mode_p = ULOG_MODE_REG;
-    if      (S_ISLNK(sb.st_mode))     mode_p = ULOG_MODE_LNK;
-    else if (sb.st_mode & S_IXUSR)    mode_p = ULOG_MODE_EXE;
-    u8cs mode_s = {mode_p, mode_p + 6};
-
     struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                            .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 ts = ULOGtsOfTimespec(mts);
 
     uri u = {};
-    u.path[0]  = rel[0];     u.path[1]  = rel[1];
-    u.query[0] = mode_s[0];  u.query[1] = mode_s[1];
-    //  fragment left empty (no sha yet)
+    u8csMv(u.path, rel);
+    //  query empty (mode encoded in verb), fragment empty (no sha yet).
 
-    ulogrec rec = {.ts = ts, .verb = c->verb, .uri = u};
+    ulogrec rec = {.ts   = ts,
+                   .verb = ok64sub(c->verb, ulog_wt_kind_letter(&sb)),
+                   .uri  = u};
     ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
     if (o != OK) { c->err = o; return o; }
     return OK;

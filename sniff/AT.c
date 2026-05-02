@@ -11,6 +11,7 @@
 #include "abc/FILE.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/QURY.h"
 #include "keeper/WALK.h"   // WALK_KIND_*
 
@@ -490,19 +491,13 @@ typedef struct {
     ok64  err;
 } at_ulog_ctx;
 
-static b8 wt_mode_str(u8 kind, u8cs out) {
-    static u8c const m_reg[6] = "100644";
-    static u8c const m_exe[6] = "100755";
-    static u8c const m_lnk[6] = "120000";
-    u8c const *p = NULL;
-    switch (kind) {
-        case WALK_KIND_REG: p = m_reg; break;
-        case WALK_KIND_EXE: p = m_exe; break;
-        case WALK_KIND_LNK: p = m_lnk; break;
-        default:            return NO;
-    }
-    out[0] = p; out[1] = p + 6;
-    return YES;
+//  Map an `lstat`-derived kind to the RON64 letter appended to the
+//  caller's verb stem (f=regular, x=executable, l=symlink).  No
+//  submodule case here — gitlinks live in trees, not the wt scan.
+static u8 wt_kind_letter(struct stat const *sb) {
+    if      (S_ISLNK(sb->st_mode))   return RON_l;
+    else if (sb->st_mode & S_IXUSR)  return RON_x;
+    else                             return RON_f;
 }
 
 static ok64 at_ulog_cb(void *varg, path8bp path) {
@@ -516,26 +511,20 @@ static ok64 at_ulog_cb(void *varg, path8bp path) {
 
     struct stat sb = {};
     if (lstat((char const *)full[0], &sb) != 0) return OK;
-    u8 kind;
-    if      (S_ISLNK(sb.st_mode))     kind = WALK_KIND_LNK;
-    else if (sb.st_mode & S_IXUSR)    kind = WALK_KIND_EXE;
-    else                              kind = WALK_KIND_REG;
-
-    u8cs mode_s = {};
-    if (!wt_mode_str(kind, mode_s)) return OK;
 
     //  ts = file mtime as ron60 (round-trips through SNIFFAtKnown).
-    //  fragment is empty: hash on demand only when classification needs it.
+    //  fragment empty: hash on demand only when classification needs it.
     struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                            .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 ts = SNIFFAtOfTimespec(mts);
 
     uri u = {};
-    u.path[0]  = rel[0];     u.path[1]  = rel[1];
-    u.query[0] = mode_s[0];  u.query[1] = mode_s[1];
-    //  fragment left empty (no sha yet)
+    u8csMv(u.path, rel);
+    //  query empty (mode encoded in verb), fragment empty (no sha yet).
 
-    ulogrec rec = {.ts = ts, .verb = c->verb, .uri = u};
+    ulogrec rec = {.ts   = ts,
+                   .verb = ok64sub(c->verb, wt_kind_letter(&sb)),
+                   .uri  = u};
     ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
     if (o != OK) { c->err = o; return o; }
     return OK;
