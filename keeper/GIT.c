@@ -49,7 +49,11 @@ ok64 GITu8sDrainTree(u8cs obj, u8csp file, u8csp sha1, u32 *mode) {
 
 //  Commit header iterator:
 //    - blank line (leading '\n') → field empty, value = body, obj consumed.
-//    - otherwise one "<field> <value>\n" line per call.
+//    - otherwise one "<field> <value>\n" line per call.  RFC-822 folding:
+//      lines starting with ' ' continue the previous header (git uses this
+//      for multi-line `gpgsig` signature blobs); the folded continuation
+//      bytes are absorbed into `value` so they don't surface as bogus
+//      empty-field "headers" with an empty body following.
 ok64 GITu8sDrainCommit(u8cs obj, u8csp field, u8csp value) {
     sane(u8csOK(obj) && field && value);
     if ($empty(obj)) return NODATA;
@@ -79,6 +83,17 @@ ok64 GITu8sDrainCommit(u8cs obj, u8csp field, u8csp value) {
 
     obj[0] = nl;
     if (has_nl) u8csUsed(obj, 1);            // skip '\n'
+
+    //  Fold continuation lines (RFC-822: leading SP).  Extend `value`
+    //  through each one so the caller sees a single header.
+    while (!$empty(obj) && *obj[0] == ' ') {
+        u8cs cont_scan = {obj[0], obj[1]};
+        b8   c_nl      = (u8csFind(cont_scan, '\n') == OK);
+        u8cp c_end     = c_nl ? cont_scan[0] : obj[1];
+        value[1] = c_end;
+        obj[0]   = c_end;
+        if (c_nl) u8csUsed(obj, 1);
+    }
     done;
 }
 

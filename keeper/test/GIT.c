@@ -363,6 +363,106 @@ ok64 GITtest11() {
     done;
 }
 
+// ---- Test 12: commit parser, folded gpgsig (RFC-822 continuation) ----
+//
+// Real commits signed with `git commit -S` carry a `gpgsig` header whose
+// value spans several lines, each continuation prefixed with a single
+// space.  The parser must absorb those continuation lines into the
+// `gpgsig` value and resume header iteration at the next bare-prefix
+// line — otherwise the first continuation is parsed as a header with
+// empty `field`, which downstream code (`graflog_render_commit`,
+// `GITu8sCommitTree`) interprets as the end-of-headers blank line and
+// then reads the SSH-signature blob as the commit message / tree.
+
+ok64 GITtest12() {
+    sane(1);
+    con char commit[] =
+        "tree aaa111\n"
+        "parent bbb222\n"
+        "author A <a@b> 1 +0000\n"
+        "committer A <a@b> 1 +0000\n"
+        "gpgsig -----BEGIN SSH SIGNATURE-----\n"
+        " U1NIU0lHAAAAAQAAAEoAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20\n"
+        " AAAAv\n"
+        " -----END SSH SIGNATURE-----\n"
+        "\n"
+        "BBu8 as the pinnacle of ABC constructs\n";
+
+    u8cs obj = {(u8cp)commit, (u8cp)commit + sizeof(commit) - 1};
+    u8cs field = {};
+    u8cs value = {};
+
+    // tree
+    ok64 o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want($len(field) == 4 && memcmp(field[0], "tree", 4) == 0);
+    want(memcmp(value[0], "aaa111", 6) == 0);
+
+    // parent
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want(memcmp(field[0], "parent", 6) == 0);
+
+    // author
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want(memcmp(field[0], "author", 6) == 0);
+
+    // committer
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want(memcmp(field[0], "committer", 9) == 0);
+
+    // gpgsig — value must extend through the folded continuation lines
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want($len(field) == 6 && memcmp(field[0], "gpgsig", 6) == 0);
+    //  Folded content includes "-----END SSH SIGNATURE-----" as the
+    //  last line of the value.
+    want($len(value) > 30);
+    want(memcmp(value[1] - 27, "-----END SSH SIGNATURE-----", 27) == 0);
+
+    // blank line → body must be the real subject, not a sig fragment
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == OK);
+    want($empty(field));
+    want($len(value) >= 38);
+    want(memcmp(value[0], "BBu8 as the pinnacle of ABC constructs", 38) == 0);
+
+    // exhausted
+    o = GITu8sDrainCommit(obj, field, value);
+    want(o == NODATA);
+
+    done;
+}
+
+// ---- Test 13: GITu8sCommitTree skips past folded gpgsig ----
+
+ok64 GITtest13() {
+    sane(1);
+    //  `tree` line first; folded gpgsig follows; ensure tree extraction
+    //  isn't confused by the continuation.
+    con char commit[] =
+        "tree 4b825dc642cb6eb9a060e54bf899d69f7af0d5f3\n"
+        "parent aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "author A <a@b> 1 +0000\n"
+        "committer A <a@b> 1 +0000\n"
+        "gpgsig -----BEGIN SSH SIGNATURE-----\n"
+        " continuation-1\n"
+        " continuation-2\n"
+        " -----END SSH SIGNATURE-----\n"
+        "\n"
+        "msg\n";
+    u8cs obj = {(u8cp)commit, (u8cp)commit + sizeof(commit) - 1};
+    u8 tree_sha[20];
+    ok64 o = GITu8sCommitTree(obj, tree_sha);
+    want(o == OK);
+    want(tree_sha[0] == 0x4b);
+    want(tree_sha[1] == 0x82);
+    want(tree_sha[19] == 0xf3);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(GITtest1);
@@ -376,6 +476,8 @@ ok64 maintest() {
     call(GITtest9);
     call(GITtest10);
     call(GITtest11);
+    call(GITtest12);
+    call(GITtest13);
     done;
 }
 

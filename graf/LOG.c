@@ -270,10 +270,13 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
     done;
 }
 
-//  File-history: walk the tip's ancestor closure newest-first,
-//  emit a row for each commit whose blob at `path` differs from the
-//  previously-kept commit's blob bytes (or whose path didn't exist
-//  in that commit — fetch failures are skipped).  Bounded by `count`.
+//  File-history: walk the tip's ancestor closure and keep commits whose
+//  blob at `path` differs from EVERY parent's blob at `path`, mirroring
+//  `git log <path>`'s default simplification (TREESAME-to-any-parent
+//  drops the commit).  Both presence-flips count: parent-absent /
+//  child-present is an add, parent-present / child-absent is a delete,
+//  byte-difference is a modify.  Root commits (no parents) are kept
+//  iff the blob exists.  Bounded by `count`.
 static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
                          u8cs path, u32 count) {
     sane(k && tip && $ok(path));
@@ -298,21 +301,14 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
     u64 *ordered = (u64 *)u8bDataHead(ord_buf);
     u32 nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors, runs);
 
-    //  Walk parents-first, dedup each commit's blob against its parent's
-    //  bytes; collect "touching" commit hashlets into `keep[]`.  The
-    //  parent in topological order is just the previously-walked commit
-    //  along a linear chain — for branchy histories it's the parent in
-    //  the topo numbering, which is approximate but matches what
-    //  PATH_VER captured at ingest time.  Then walk `keep[]` in reverse
-    //  to emit newest-first.
-    Bu8 cbuf = {}, blob_a = {}, blob_b = {}, keep_buf = {};
+    Bu8 cbuf = {}, blob_c = {}, blob_p = {}, keep_buf = {};
     if (u8bMap(cbuf,     LOG_OBJ_BUF)         != OK ||
-        u8bMap(blob_a,   LOG_OBJ_BUF)         != OK ||
-        u8bMap(blob_b,   LOG_OBJ_BUF)         != OK ||
+        u8bMap(blob_c,   LOG_OBJ_BUF)         != OK ||
+        u8bMap(blob_p,   LOG_OBJ_BUF)         != OK ||
         u8bMap(keep_buf, anc_cap * sizeof(u64)) != OK) {
         if (cbuf[0])     u8bUnMap(cbuf);
-        if (blob_a[0])   u8bUnMap(blob_a);
-        if (blob_b[0])   u8bUnMap(blob_b);
+        if (blob_c[0])   u8bUnMap(blob_c);
+        if (blob_p[0])   u8bUnMap(blob_p);
         if (keep_buf[0]) u8bUnMap(keep_buf);
         u8bUnMap(ord_buf);
         if (wh128bHead(ancestors) != wh128bTerm(ancestors))
@@ -322,33 +318,44 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
     u64 *keep = (u64 *)u8bDataHead(keep_buf);
     u32 nkeep = 0;
 
-    Bu8 *cur_blob = &blob_a, *prev_blob = &blob_b;
-    b8 have_prev = NO;
-
     for (u32 i = 0; i < nord; i++) {
         u64 h40 = ordered[i];
         if (h40 == 0) continue;
 
-        u8bReset(*cur_blob);
-        ok64 fo = GRAFBlobAtCommit(*cur_blob, k, h40, path);
-        if (fo != OK) {
-            //  Path absent in this commit — treat as "not changing
-            //  the file" for dedup purposes (carry prev forward).
-            continue;
+        u8bReset(blob_c);
+        ok64 fc = GRAFBlobAtCommit(blob_c, k, h40, path);
+        b8     c_present = (fc == OK);
+        size_t cl = c_present ? u8bDataLen(blob_c) : 0;
+
+        wh64  par_buf[16] = {};
+        wh64s parents = {par_buf, par_buf + 16};
+        wh64 *pbase = parents[0];
+        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, h40));
+        u32 npar = (u32)(parents[0] - pbase);
+
+        b8 keep_it;
+        if (npar == 0) {
+            //  Root commit: emit only if the file is there.
+            keep_it = c_present;
+        } else {
+            //  Differs from every parent → real change.  Bail to NO
+            //  the moment a parent is TREESAME for `path`.
+            keep_it = YES;
+            for (u32 pi = 0; pi < npar; pi++) {
+                u64 ph40 = DAGHashlet(pbase[pi]);
+                u8bReset(blob_p);
+                ok64 fp = GRAFBlobAtCommit(blob_p, k, ph40, path);
+                b8     p_present = (fp == OK);
+                size_t pl = p_present ? u8bDataLen(blob_p) : 0;
+                b8 same = (c_present == p_present) && (cl == pl) &&
+                          (cl == 0 ||
+                           memcmp(u8bDataHead(blob_c),
+                                  u8bDataHead(blob_p), cl) == 0);
+                if (same) { keep_it = NO; break; }
+            }
         }
 
-        if (have_prev) {
-            size_t cl = u8bDataLen(*cur_blob);
-            size_t pl = u8bDataLen(*prev_blob);
-            if (cl == pl && (cl == 0 ||
-                memcmp(u8bDataHead(*cur_blob),
-                       u8bDataHead(*prev_blob), cl) == 0)) continue;
-        }
-
-        if (nkeep < anc_cap) keep[nkeep++] = h40;
-
-        Bu8 *tmp = cur_blob; cur_blob = prev_blob; prev_blob = tmp;
-        have_prev = YES;
+        if (keep_it && nkeep < anc_cap) keep[nkeep++] = h40;
     }
 
     //  Emit newest-first.
@@ -367,8 +374,8 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
         emitted++;
     }
 
-    u8bUnMap(blob_a);
-    u8bUnMap(blob_b);
+    u8bUnMap(blob_c);
+    u8bUnMap(blob_p);
     u8bUnMap(cbuf);
     u8bUnMap(keep_buf);
     u8bUnMap(ord_buf);
