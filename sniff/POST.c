@@ -2269,26 +2269,55 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         return fo;
     }
 
-    //  12. Feed all rebuilt trees.
+    //  12. Feed all rebuilt trees in reverse-of-post-order — i.e.,
+    //      root first, descendants after.  post_build_tree pushed
+    //      bodies in DFS post-order (children before their parent),
+    //      because each parent's body needs its children's SHAs and
+    //      can only be sealed once they've been hashed.  Reversing
+    //      that emission is a valid topological *parent-first* order:
+    //      every ancestor precedes its descendants, exactly what the
+    //      keeper-side path-hash propagation in spot needs to greedily
+    //      stamp `obj_hl → path_hash` on every leaf as it streams in.
+    //
+    //      Implementation: forward-walk tree_bodies once to collect
+    //      record offsets (records are <u32 len, body>), then iterate
+    //      offsets[] in reverse and feed pack.
     if (have_root) {
-        u8c *walk = u8bDataHead(tree_bodies);
-        u8c *end_walk = u8bIdleHead(tree_bodies);
-        while (walk < end_walk) {
+        u8c *walk_lo = u8bDataHead(tree_bodies);
+        u8c *walk_hi = u8bIdleHead(tree_bodies);
+        Bu32 offs = {};
+        if (u32bAllocate(offs, tree_count > 0 ? tree_count : 1) != OK) {
+            KEEPPackClose(k, &p);
+            u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return SNIFFFAIL;
+        }
+        for (u8c *q = walk_lo; q < walk_hi; ) {
+            u32 off = (u32)(q - walk_lo);
+            (void)u32bFeed1(offs, off);
             u32 tlen = 0;
-            memcpy(&tlen, walk, sizeof(u32));
-            walk += sizeof(u32);
-            u8cs tbody = {walk, walk + tlen};
+            memcpy(&tlen, q, sizeof(u32));
+            q += sizeof(u32) + tlen;
+        }
+        u32 nrec = (u32)u32bDataLen(offs);
+        u32 *off_base = u32bDataHead(offs);
+        for (u32 i = nrec; i > 0; i--) {
+            u8c *q = walk_lo + off_base[i - 1];
+            u32 tlen = 0;
+            memcpy(&tlen, q, sizeof(u32));
+            u8cs tbody = {q + sizeof(u32), q + sizeof(u32) + tlen};
             sha1 tsha_dummy = {};
             ok64 to = KEEPPackFeed(k, &p, DOG_OBJ_TREE, tbody,
                                    0, &tsha_dummy);
-            walk += tlen;
             if (to != OK) {
+                u32bFree(offs);
                 KEEPPackClose(k, &p);
                 u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return to;
             }
         }
+        u32bFree(offs);
     }
 
     //  13. Feed all new blobs.  Drains `add` decisions; for each row
