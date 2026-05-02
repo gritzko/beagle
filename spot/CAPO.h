@@ -8,7 +8,9 @@
 #include "abc/PATH.h"
 #include "abc/RON.h"
 #include "abc/RAP.h"
+#include "dog/DOG.h"
 #include "dog/SHA1.h"
+#include "dog/WHIFF.h"
 
 con ok64 CAPONOROOM = 0x30a6585d86d8616;
 con ok64 CAPONODIFF = 0x30a6585d83523cf;  // no usable saved commit → full reindex
@@ -52,9 +54,17 @@ con ok64 SPOTNOPATH = 0x71961d5d864a751;
 //  size (anonymous mmap) — generously oversized vs the trigger.
 #define CAPO_SCRATCH_LEN (1UL << 27)  // 128M u64 entries = 1GB
 #define CAPO_FLUSH_AT    (1UL << 20)  // 1M entries (~8MB)
-#define CAPO_BLOB_STAGE_LEN     (2UL << 30)   // 2 GB anonymous mmap cap
-#define CAPO_BLOB_OFFSETS_CAP   (1u << 20)    // 1M blob slots
-#define CAPO_PENDING_COMMITS_LEN (1u << 20)   // 1MB → 52k commits
+//  Path-hash propagation map (rw): 60-bit obj_hl → 64-bit path_hash.
+//  ~16 B per entry × every tree+blob in the ingest closure.  src/git
+//  scale (~1 M tree+blob objects across an 80 K-commit fetch) lands
+//  near 16 MB; oversize the map for safety.
+#define CAPO_OBJ_PATH_CAP   (1u << 22)        // 4 M slots → ~64 MB
+//  Blob-to-extension map: only blobs with a known tokenizer ext
+//  appear, so this is much smaller than obj_to_path_hash.
+#define CAPO_BLOB_EXT_CAP   (1u << 20)        // 1 M slots
+//  Per-session arena for ext strings ("c", "h", "py", …).  Offset 0
+//  is reserved as a sentinel; ~50 distinct exts fit easily in 4 KB.
+#define CAPO_EXT_ARENA_LEN  (1u << 12)        // 4 KB
 
 #define CAPOTriChar(c) (RON64_REV[(u8)(c)] != 0xff)
 
@@ -69,15 +79,77 @@ fun u64 CAPOTriPack(u8cs tri) {
 // Extract triplet from packed u64 entry
 fun u64 CAPOTriOf(u64 entry) { return entry & 0xFFFFFFFF00000000ULL; }
 
-// Path hash: lower 32 bits of RAPHash
-fun u32 CAPOPathHash(u8csc path) { return (u32)RAPHash(path); }
+// Path hash: lower 32 bits of the chained DOGPathHash (root + each
+// non-empty segment folded through DOGChildPathHash).  Must match
+// the index-time stamping in SPOTUpdate(TREE), which builds the
+// chain one tree-entry name at a time as the producer streams trees
+// parent-first — see the helpers below (CAPOPathHashRoot,
+// CAPOPathHashStep, CAPOPathHashKey).
+fun u32 CAPOPathHash(u8csc path) {
+    return (u32)DOGPathHash(path);
+}
 
 // Pack trigram + path hash into u64
 fun u64 CAPOEntry(u8cs tri, u8cs path) {
     return CAPOTriPack(tri) | (u64)CAPOPathHash(path);
 }
 
-// Index a single source file: parse, extract trigrams, append u64 entries
+// --- Path hashing for streaming ingest --------------------------------
+//
+// Index entries are keyed by `(trigram, path_hash)`.  During pack
+// ingest we want to compute path_hash *without* a second tree walk,
+// so we propagate it through the producer's parent-first object
+// stream:
+//
+//   SPOTUpdate(COMMIT, sha, body)
+//       parse the `tree <hex>` header → root_tree_sha.
+//       seed `obj_to_path_hash[hashlet(root_tree_sha)] = ROOT`.
+//
+//   SPOTUpdate(TREE, sha, body)
+//       parent = obj_to_path_hash[hashlet(sha)]   (must be present)
+//       for each (mode, name, child_sha) in the tree:
+//           obj_to_path_hash[hashlet(child_sha)]
+//               = CAPOPathHashStep(name, parent)
+//
+//   SPOTUpdate(BLOB, sha, bytes)
+//       parent = obj_to_path_hash[hashlet(sha)]   (must be present;
+//                if absent → warn: producer packed parent-last or
+//                blob is orphan)
+//       phash = CAPOPathHashKey(parent)
+//       tokenise bytes inline using `phash`.
+//
+// The chain primitive is shared: dog/DOG.h's DOGChildPathHash, with
+// root = dog/DOG.h's `ROOT` (= ron60("ROOT")).  The wrappers below
+// just spell out spot's use of it so SPOTUpdate readers see the
+// chain at a glance.
+
+// Root path hash (matches dog/DOG.h's `ROOT`).
+fun u64 CAPOPathHashRoot(void) { return ROOT; }
+
+// One step down the tree: child of `parent` named `name` (leaf, no
+// slashes).  Thin wrapper over `DOGChildPathHash` so spot indexing
+// reads as a self-contained chain.
+fun u64 CAPOPathHashStep(u8csc name, u64 parent) {
+    return DOGChildPathHash(name, parent);
+}
+
+// Truncate the 64-bit chained value to spot's 32-bit posting key.
+// Used at BLOB ingest time when feeding the trigram tokenizer.
+fun u32 CAPOPathHashKey(u64 chained) { return (u32)chained; }
+
+// 60-bit object-id key for `obj_to_path_hash`.  Same shape as keeper's
+// WHIFFHashlet60; named here to make spot's SPOTUpdate dispatch
+// readable on its own.
+fun u64 CAPOObjHashlet(sha1 const *sha) { return WHIFFHashlet60(sha); }
+
+// Index a streaming blob whose path hash was already propagated via
+// SPOTUpdate(TREE).  Same body as the legacy CAPOIndexFile — only the
+// signature differs (precomputed phash; no path slice needed).
+ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 path_hash);
+
+// Index a single on-disk source file.  Computes path_hash from the
+// path slice and delegates to CAPOIndexBlob.  Used by the search-time
+// (re)tokenize path; ingest now goes through CAPOIndexBlob directly.
 ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path);
 
 // Load index stack as a typed view over SPOT.puppies (no fs scan,
@@ -95,6 +167,11 @@ typedef struct spot_ spot;
 // sources via DOGPupThinTail and write the merged run via
 // DOGPupCreate.  Mirrors KEEPCompact / dag_compact.
 ok64 CAPOCompact(spot *s);
+
+// Flush in-memory postings (s->entries) as a new puppy and run
+// CAPOCompact to keep the 1/8 invariant.  Called by SPOTUpdate(BLOB)
+// when scratch exceeds CAPO_FLUSH_AT, and by SPOTClose at end of run.
+ok64 CAPOFlushRun(spot *s);
 
 // Next available sequence number (max existing + 1)
 ok64 CAPONextSeqno(u64p seqno, u8csc dir);
@@ -211,17 +288,23 @@ struct spot_ {
     //  flushed to a new puppy when len >= CAPO_FLUSH_AT or on close.
     Bu64     entries;
 
-    //  Blob staging (rw only).  SPOTUpdate(BLOB) appends decompressed
-    //  bytes here keyed on hashlet32, so the Close-pass tree walk can
-    //  zero-copy tokenise them without re-decompressing via KEEPGet.
-    //  Blobs that don't fit in the arena are skipped here and re-read
-    //  via KEEPGetExact at Close time.
-    Bu8      blob_stage;            // anonymous mmap, decompressed bytes
-    Bkv64    blob_offsets;          // hashlet32 → (off:32 | len:32)
+    //  Path-hash propagation map (rw only).  Populated greedily as the
+    //  producer's parent-first object stream flows through SPOTUpdate
+    //  (see header comment on CAPOPathHashStep).  Key = CAPOObjHashlet
+    //  of a tree or blob; value = the 64-bit chained path hash.  Tree
+    //  values are looked up at SPOTUpdate(TREE) to seed children; blob
+    //  values are looked up at SPOTUpdate(BLOB) to tag postings.
+    Bkv64    obj_to_path_hash;      // 60-bit obj_hl → 64-bit path_hash
 
-    //  Pending commit shas, one per SPOTUpdate(COMMIT) seen this run.
-    //  Drained by the Close-pass tree walk.
-    Bu8      pending_commits;       // 20-byte sha1 records, packed
+    //  Per-blob extension lookup, only populated for blobs whose name
+    //  in their containing tree resolves to a known tokenizer
+    //  extension (CAPOKnownExt).  `val` is an offset into `ext_arena`
+    //  pointing to a NUL-terminated extension string (".c", ".h",
+    //  ".py", …).  Absent ⇒ blob is referenced from a tree but
+    //  doesn't tokenize → SPOTUpdate(BLOB) silently skips it.
+    Bkv64    blob_to_ext;           // 60-bit blob_hl → ext_off
+    Bu8      ext_arena;             // NUL-separated ext strings,
+                                    // offset 0 reserved as sentinel.
 
     b8 color;
     b8 term;
@@ -253,14 +336,23 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw);
 //  Run one CLI invocation.
 ok64 SPOTExec(cli *c);
 
-//  Feed a single git object into spot during pack ingest.  Spot
-//  cannot tokenize at this point (no path/ext yet — keeper does not
-//  parse trees), so this entry only stages: BLOB content goes into
-//  s->blob_stage keyed on hashlet32 to avoid a second decompress at
-//  Close-pass time, COMMIT shas are recorded for the Close-pass tree
-//  walk, TREE/TAG are no-ops.  Tokenization happens in SPOTClose's
-//  tree walk (CAPOClosePass) once paths are known.  `sha` is the
-//  caller's pre-computed git-object SHA-1.
+//  Feed a single git object into spot during pack ingest.  Path
+//  hashes propagate parent-first via the producer's pack order
+//  (git/sniff both pack commits → trees parent-first → blobs):
+//
+//    COMMIT: parse `tree <hex>` header, seed obj_to_path_hash
+//            for the root tree with CAPOPathHashRoot().
+//    TREE:   for each (mode, name, child_sha) entry, stamp
+//            obj_to_path_hash[hashlet(child_sha)] using the parent
+//            tree's path hash + CAPOPathHashStep(name, parent).
+//            For blob entries with a known tokenizer extension,
+//            also record the ext in blob_to_ext / ext_arena.
+//    BLOB:   look up the precomputed path_hash and ext, then call
+//            CAPOIndexBlob inline — no second tree walk.  If the
+//            path_hash is absent, fprintf(stderr, ...) a warning
+//            (producer packed parent-last, or orphan blob).
+//
+//  `sha` is the caller's pre-computed git-object SHA-1.
 ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob);
 
 void SPOTClose(void);

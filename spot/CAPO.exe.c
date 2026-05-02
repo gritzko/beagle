@@ -21,6 +21,7 @@
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "dog/SHA1.h"
+#include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 #include "spot/CAPOi.h"
@@ -357,45 +358,168 @@ ok64 SPOTExec(cli *c) {
     return ret;
 }
 
-// --- Update: stage a single git object during pack ingest ---
+// --- Update: index a single git object during pack ingest ---
 //
-// Driven by keeper's UNPK emit hook.  Spot cannot tokenize at this
-// point — paths are unknown until the Close-pass tree walk parses
-// commits/trees.  So:
-//   COMMIT: append the 20-byte sha to s->pending_commits for the
-//           Close-pass walk to drain.
-//   BLOB:   stash decompressed bytes in s->blob_stage keyed by
-//           hashlet32, so the Close-pass walk can zero-copy tokenize
-//           without re-decompressing via KEEPGetExact.  When the
-//           stage is full, skip — the Close-pass will fall through
-//           to KEEPGetExact for missing blobs.
-//   TREE / TAG: no-op (KEEPGetExact serves them at Close-pass time).
+// Driven by keeper's UNPK emit hook.  See `spot/CAPO.h` for the
+// `CAPOPathHashStep` chain that this dispatch propagates.  The
+// producer (git or sniff) packs commits → trees parent-first → blobs,
+// so by the time a BLOB lands its path_hash is already in
+// `s->obj_to_path_hash` and we tokenize inline.
+
+// Append `ext` to s->ext_arena if not already present; return its
+// offset (>= 1).  Offset 0 is reserved as a sentinel "missing".
+// Linear scan over an arena that holds ~50 distinct exts in practice.
+static u32 capo_ext_intern(spot *s, u8cs ext) {
+    if ($empty(ext)) return 0;
+    u8cp base = u8bDataHead(s->ext_arena);
+    u8cp idle = u8bIdleHead(s->ext_arena);
+    size_t want = (size_t)$len(ext);
+    for (u8cp p = base + 1; p < idle; ) {
+        u8cp end = p;
+        while (end < idle && *end != 0) end++;
+        if ((size_t)(end - p) == want &&
+            memcmp(p, ext[0], want) == 0)
+            return (u32)(p - base);
+        p = end + 1;
+    }
+    if (u8bIdleLen(s->ext_arena) < want + 1) return 0;
+    u32 off = (u32)u8bDataLen(s->ext_arena);
+    u8bFeed(s->ext_arena, ext);
+    u8bFeed1(s->ext_arena, 0);
+    return off;
+}
+
+// Print a "spot: BLOB <sha7> ingested without path_hash" warning so a
+// parent-last pack or orphan blob is loud, not silent.
+static void capo_warn_no_path(sha1 const *sha) {
+    static const char H[] = "0123456789abcdef";
+    char hex[15];
+    for (int i = 0; i < 7; i++) {
+        hex[i*2]   = H[(sha->data[i] >> 4) & 0xf];
+        hex[i*2+1] = H[ sha->data[i]       & 0xf];
+    }
+    hex[14] = 0;
+    fprintf(stderr,
+            "spot: BLOB %s ingested without path_hash"
+            " (parent-last pack or orphan)\n",
+            hex);
+}
+
 ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
     sane(1);
     spotp s = &SPOT;
-    if (!s->rw) done;
+    if (!s->rw || !sha) done;
+    if (BNULL(s->obj_to_path_hash)) done;
 
     if (obj_type == DOG_OBJ_COMMIT) {
-        if (!sha || BNULL(s->pending_commits)) done;
-        u8cs sb = {(u8cp)sha->data, (u8cp)sha->data + 20};
-        if (u8bIdleLen(s->pending_commits) < 20) done;
-        u8bFeed(s->pending_commits, sb);
+        //  Parse the `tree <hex>` header to find the root tree, then
+        //  seed obj_to_path_hash[root_hl] = ROOT.  Subsequent
+        //  SPOTUpdate(TREE) calls greedily propagate the chain down.
+        a_dup(u8c, scan, blob);
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(scan, field, value) == OK) {
+            if (u8csEmpty(field)) break;          // body
+            a_cstr(ft, "tree");
+            if (!$eq(field, ft) || u8csLen(value) < 40) continue;
+            sha1 root_sha = {};
+            u8s  bin_s = {root_sha.data, root_sha.data + 20};
+            u8cs hex_s = {value[0], value[0] + 40};
+            if (HEXu8sDrainSome(bin_s, hex_s) != OK) break;
+            u64 root_hl = CAPOObjHashlet(&root_sha);
+            kv64s tbl = {s->obj_to_path_hash[0],
+                         s->obj_to_path_hash[3]};
+            kv64 e = {.key = root_hl, .val = CAPOPathHashRoot()};
+            (void)HASHkv64Put(tbl, &e);
+            break;
+        }
         done;
     }
+
+    if (obj_type == DOG_OBJ_TREE) {
+        //  Parent's chained path_hash must already be in the map
+        //  (root via SPOTUpdate(COMMIT), inner trees via prior
+        //  SPOTUpdate(TREE) propagation).  If it's missing, the
+        //  producer packed parent-last for this object — children
+        //  will be unstamped, and the BLOB pass will warn.
+        u64 tree_hl = CAPOObjHashlet(sha);
+        kv64s tbl = {s->obj_to_path_hash[0], s->obj_to_path_hash[3]};
+        kv64 probe = {.key = tree_hl, .val = 0};
+        if (HASHkv64Get(&probe, tbl) != OK) done;
+        u64 parent_ph = probe.val;
+
+        a_dup(u8c, scan, blob);
+        u8cs file = {}, esha = {};
+        u32  mode = 0;
+        while (GITu8sDrainTree(scan, file, esha, &mode) == OK) {
+            //  Tree entry name comes after the "<mode> " prefix.
+            u8cs fscan = {file[0], file[1]};
+            if (u8csFind(fscan, ' ') != OK) continue;
+            u8cs name = {fscan[0] + 1, file[1]};
+            if ($empty(name) || u8csLen(esha) != 20) continue;
+
+            sha1 csha = {};
+            memcpy(csha.data, esha[0], 20);
+            u64 child_hl = CAPOObjHashlet(&csha);
+            u64 child_ph = CAPOPathHashStep(name, parent_ph);
+
+            kv64 e = {.key = child_hl, .val = child_ph};
+            (void)HASHkv64Put(tbl, &e);
+
+            //  For blob children with a known tokenizer ext, also
+            //  intern the ext for later lookup at SPOTUpdate(BLOB).
+            //  Submodules (mode 0160000) and trees (040000) skip.
+            if (mode == 0100644 || mode == 0100755 || mode == 0120000) {
+                u8cs ext = {};
+                PATHu8sExt(ext, name);
+                if (!$empty(ext) && CAPOKnownExt(ext)) {
+                    u32 ext_off = capo_ext_intern(s, ext);
+                    if (ext_off != 0) {
+                        kv64s etbl = {s->blob_to_ext[0],
+                                      s->blob_to_ext[3]};
+                        kv64 ee = {.key = child_hl,
+                                   .val = (u64)ext_off};
+                        (void)HASHkv64Put(etbl, &ee);
+                    }
+                }
+            }
+        }
+        done;
+    }
+
     if (obj_type != DOG_OBJ_BLOB) done;
-    if (BNULL(s->blob_stage) || BNULL(s->blob_offsets)) done;
 
-    u64 blen = u8csLen(blob);
-    if (blen == 0 || blen > u8bIdleLen(s->blob_stage)) done;
+    //  BLOB: look up path_hash, look up ext, tokenize inline.
+    u64 blob_hl = CAPOObjHashlet(sha);
+    kv64s tbl = {s->obj_to_path_hash[0], s->obj_to_path_hash[3]};
+    kv64 probe = {.key = blob_hl, .val = 0};
+    if (HASHkv64Get(&probe, tbl) != OK) {
+        capo_warn_no_path(sha);
+        done;
+    }
+    u64 chained_ph = probe.val;
 
-    u32 off = (u32)u8bDataLen(s->blob_stage);
-    u8bFeed(s->blob_stage, blob);
+    //  Absent ext ⇒ blob exists in a tree but isn't a known tokenizer
+    //  language (image, binary, …).  Silent skip — postings would be
+    //  meaningless.
+    kv64s etbl = {s->blob_to_ext[0], s->blob_to_ext[3]};
+    kv64 eprobe = {.key = blob_hl, .val = 0};
+    if (HASHkv64Get(&eprobe, etbl) != OK) done;
+    u32 ext_off = (u32)eprobe.val;
+    if (ext_off == 0 || ext_off >= u8bDataLen(s->ext_arena)) done;
 
-    u32 hashlet32 = 0;
-    if (sha) memcpy(&hashlet32, sha->data, sizeof(u32));
-    kv64 e = {.key = (u64)hashlet32,
-              .val = ((u64)off << 32) | (blen & 0xFFFFFFFFUL)};
-    kv64s tbl = {s->blob_offsets[0], s->blob_offsets[3]};
-    HASHkv64Put(tbl, &e);
+    u8cp ext_start = u8bDataHead(s->ext_arena) + ext_off;
+    u8cp ext_idle  = u8bIdleHead(s->ext_arena);
+    u8cp ext_end   = ext_start;
+    while (ext_end < ext_idle && *ext_end != 0) ext_end++;
+    u8cs ext = {ext_start, ext_end};
+
+    u32 phash = CAPOPathHashKey(chained_ph);
+    (void)CAPOIndexBlob(s->entries, blob, ext, phash);
+
+    //  Drain scratch periodically so memory stays bounded across a
+    //  long fetch.  CAPOFlushRun maintains the LSM 1/8 invariant.
+    if (u64bDataLen(s->entries) >= CAPO_FLUSH_AT)
+        (void)CAPOFlushRun(s);
+
     done;
 }

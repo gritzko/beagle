@@ -138,8 +138,8 @@ static ok64 CAPOTriExtractToks(u32cs toks, u8cp base,
     return OK;
 }
 
-ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
-    sane(entries != NULL && $ok(source) && $ok(ext) && $ok(path));
+ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 phash) {
+    sane(entries != NULL && $ok(source) && $ok(ext));
     if ($empty(source)) done;
 
     // Tokenize
@@ -168,7 +168,6 @@ ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
     u32cp ti = u32bIdleHead(toks);
     u32cs tokslice = {(u32cp)td, (u32cp)ti};
 
-    u32 phash = CAPOPathHash(path);
     CAPOTriCtx ctx = {
         .idle = u64bIdle(entries),
         .end = entries[3],
@@ -193,6 +192,14 @@ ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
 
     u32bUnMap(toks);
     done;
+}
+
+//  Search-time wrapper: takes a path string, hashes it, delegates.
+//  Ingest goes through CAPOIndexBlob directly (path_hash is already
+//  on hand from the SPOTUpdate(TREE) propagation).
+ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
+    sane($ok(path));
+    return CAPOIndexBlob(entries, source, ext, CAPOPathHash(path));
 }
 
 // --- Stack management ---
@@ -1274,14 +1281,27 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     //  itself (DOGPupCreate picks max+1), so no separate counter.
     if (rw) {
         call(u64bMap, s->entries, CAPO_SCRATCH_LEN);
-        call(u8bMap,  s->blob_stage, CAPO_BLOB_STAGE_LEN);
-        call(kv64bAllocate, s->blob_offsets, CAPO_BLOB_OFFSETS_CAP);
-        memset(s->blob_offsets[0], 0,
-               (size_t)(s->blob_offsets[3] - s->blob_offsets[0])
+        //  Path-hash propagation map — populated greedily as TREEs
+        //  flow through SPOTUpdate (parent-first per producer pack
+        //  order); read at every BLOB to tag postings inline.
+        call(kv64bAllocate, s->obj_to_path_hash, CAPO_OBJ_PATH_CAP);
+        memset(s->obj_to_path_hash[0], 0,
+               (size_t)(s->obj_to_path_hash[3] -
+                        s->obj_to_path_hash[0]) * sizeof(kv64));
+        s->obj_to_path_hash[1] = s->obj_to_path_hash[0];
+        s->obj_to_path_hash[2] = s->obj_to_path_hash[3];
+        //  Per-blob ext lookup, only blobs whose tree-entry name has
+        //  a known tokenizer extension appear here.
+        call(kv64bAllocate, s->blob_to_ext, CAPO_BLOB_EXT_CAP);
+        memset(s->blob_to_ext[0], 0,
+               (size_t)(s->blob_to_ext[3] - s->blob_to_ext[0])
                    * sizeof(kv64));
-        s->blob_offsets[1] = s->blob_offsets[0];
-        s->blob_offsets[2] = s->blob_offsets[3];
-        call(u8bMap, s->pending_commits, CAPO_PENDING_COMMITS_LEN);
+        s->blob_to_ext[1] = s->blob_to_ext[0];
+        s->blob_to_ext[2] = s->blob_to_ext[3];
+        //  Ext arena — offset 0 reserved as a sentinel ("missing"),
+        //  so seed with a single NUL.
+        call(u8bMap, s->ext_arena, CAPO_EXT_ARENA_LEN);
+        u8bFeed1(s->ext_arena, 0);
     }
 
     done;
@@ -1296,7 +1316,9 @@ ok64 SPOTOpen(home *h, b8 rw) {
 //  Sort + dedup pending postings and write them out as a new puppy
 //  in the leaf branch dir.  Leaves `entries` reset.  Seqno is owned
 //  by the puppy stack — DOGPupCreate picks max(seqno)+1 internally.
-static ok64 CAPOFlushRun(spot *s) {
+//  Visible to SPOTUpdate (CAPO.exe.c) so it can drain when scratch
+//  hits the high-water mark mid-ingest.
+ok64 CAPOFlushRun(spot *s) {
     sane(s);
     if (u64bDataLen(s->entries) == 0) done;
     u64sp data = u64bData(s->entries);
@@ -1319,148 +1341,19 @@ static ok64 CAPOFlushRun(spot *s) {
     done;
 }
 
-// --- Close-pass tree walk: tokenize new commits' blobs ---
-//
-// Drains s->pending_commits (recorded by SPOTUpdate(COMMIT)) and walks
-// each tree via KEEPLsFiles.  Per leaf with a known extension, fetches
-// the blob's bytes from s->blob_stage (zero-copy if hashlet32 hit) or
-// from KEEPGetExact (cold fallback for blobs ingested in earlier
-// packs), runs CAPOIndexFile to emit trigram/MEN/DEF postings, then
-// emits the tag-3 pair record (blob_hashlet30, path_hash) so the LSM's
-// row-dedup absorbs unchanged-file-at-unchanged-path repeats.
-
-typedef struct {
-    spot   *s;
-    keeper *k;
-    Bkv64   seen_pairs;   // key=(hashlet30<<32|path_hash), dedup the walk
-} capo_close_ctx;
-
-static ok64 capo_close_visit(u8cs path, u8 kind, u8cp esha,
-                              u8cs blob_unused, void0p ctx) {
-    (void)blob_unused;
-    capo_close_ctx *cx = (capo_close_ctx *)ctx;
-    if (kind != WALK_KIND_REG && kind != WALK_KIND_EXE) return OK;
-    if ($empty(path)) return OK;
-
-    u8cs ext = {};
-    PATHu8sExt(ext, path);
-    if ($empty(ext) || !CAPOKnownExt(ext)) return OK;
-
-    spot *s = cx->s;
-
-    //  Try staged bytes first (zero-copy view into blob_stage).
-    u32 hashlet32 = 0;
-    memcpy(&hashlet32, esha, sizeof(u32));
-
-    //  Dedup: skip if (hashlet30, path_hash) already tokenised this
-    //  Close-pass.  Multiple commits sharing an unchanged file would
-    //  otherwise re-tokenise it once per commit.
-    u32 phash0 = CAPOPathHash(path);
-    u32 hl30_0 = hashlet32 & 0x3FFFFFFFu;
-    u64 pair_key = ((u64)hl30_0 << 32) | (u64)phash0;
-    {
-        kv64s tbl = {cx->seen_pairs[0], cx->seen_pairs[3]};
-        kv64 probe = {.key = pair_key, .val = 0};
-        if (HASHkv64Get(&probe, tbl) == OK) return OK;
-    }
-    u8cs source = {};
-    Bu8 fetched = {};
-    {
-        kv64s tbl = {s->blob_offsets[0], s->blob_offsets[3]};
-        kv64 probe = {.key = (u64)hashlet32, .val = 0};
-        if (HASHkv64Get(&probe, tbl) == OK) {
-            u32 off = (u32)(probe.val >> 32);
-            u32 len = (u32)(probe.val & 0xFFFFFFFFUL);
-            u8cp base = u8bDataHead(s->blob_stage);
-            source[0] = base + off;
-            source[1] = base + off + len;
-        }
-    }
-    if ($empty(source)) {
-        //  Cold path: blob lives in an earlier pack — pay the inflate.
-        sha1 bsha = {};
-        memcpy(bsha.data, esha, 20);
-        if (u8bAllocate(fetched, 1UL << 22) != OK) return OK;
-        u8 btype = 0;
-        if (KEEPGetExact(cx->k, &bsha, fetched, &btype) != OK ||
-            btype != DOG_OBJ_BLOB) {
-            u8bFree(fetched);
-            return OK;
-        }
-        source[0] = u8bDataHead(fetched);
-        source[1] = u8bIdleHead(fetched);
-    }
-
-    //  Tokenise + emit trigram/MEN/DEF postings.
-    (void)CAPOIndexFile(s->entries, source, ext, path);
-
-    //  Emit pair record for LSM-level dedup of repeat (blob, path).
-    idx64 pair = CAPOPairEntry(hl30_0, phash0);
-    (void)u64bPush(s->entries, &pair);
-
-    //  Record the pair in the per-walk seen set so subsequent commits
-    //  visiting the same (blob, path) skip the tokeniser.
-    {
-        kv64s tbl = {cx->seen_pairs[0], cx->seen_pairs[3]};
-        kv64 e = {.key = pair_key, .val = 1};
-        HASHkv64Put(tbl, &e);
-    }
-
-    if (!BNULL(fetched)) u8bFree(fetched);
-    return OK;
-}
-
-static ok64 capo_close_pass(spot *s) {
-    sane(s);
-    if (BNULL(s->pending_commits)) done;
-    a_dup(u8c, commits, u8bData(s->pending_commits));
-    if ($empty(commits)) done;
-
-    capo_close_ctx cx = {s, &KEEP, {}};
-    //  Sized for the union of (blob, path) pairs across all commits in
-    //  this Close-pass.  16x the staged-blob count is a safe upper bound
-    //  (most blobs land at ≤16 distinct paths via renames over history).
-    u64 pair_cap = (u64)kv64bDataLen(s->blob_offsets) * 16;
-    if (pair_cap < 4096) pair_cap = 4096;
-    pair_cap = (pair_cap + 15) & ~(u64)15;
-    call(kv64bAllocate, cx.seen_pairs, pair_cap);
-    memset(cx.seen_pairs[0], 0,
-           (size_t)(cx.seen_pairs[3] - cx.seen_pairs[0]) * sizeof(kv64));
-    cx.seen_pairs[1] = cx.seen_pairs[0];
-    cx.seen_pairs[2] = cx.seen_pairs[3];
-
-    for (u8cp p = commits[0]; p + 20 <= commits[1]; p += 20) {
-        a_pad(u8, hexbuf, 41);
-        u8s hs = {u8bIdleHead(hexbuf), u8bTerm(hexbuf)};
-        u8cs raw = {p, p + 20};
-        HEXu8sFeedSome(hs, raw);
-        u8bFed(hexbuf, 40);
-        a_dup(u8c, hex, u8bData(hexbuf));
-
-        uri u = {};
-        u.fragment[0] = hex[0];
-        u.fragment[1] = hex[1];
-        (void)KEEPLsFiles(&KEEP, &u, capo_close_visit, &cx);
-    }
-    if (!BNULL(cx.seen_pairs)) kv64bFree(cx.seen_pairs);
-    done;
-}
-
 void SPOTClose(void) {
     if (!spot_is_open()) return;
     spot *s = &SPOT;
     if (s->rw && s->entries[0]) {
-        (void)capo_close_pass(s);
+        //  Final flush of any postings still in scratch — no close-pass
+        //  tree walk anymore; tokenisation happened inline in
+        //  SPOTUpdate(BLOB).  CAPOFlushRun also runs CAPOCompact, so
+        //  the puppy ladder stays balanced.
         CAPOFlushRun(s);
-        //  Maintain the LSM 1/8 ladder: each fresh run on top of
-        //  comparable-sized older runs needs to merge them.  Without
-        //  this, every fetch dropped a new ~17MB run on disk and
-        //  the stack grew unbounded.
-        CAPOCompact(s);
         u64bUnMap(s->entries);
-        if (!BNULL(s->blob_stage))      u8bUnMap(s->blob_stage);
-        if (!BNULL(s->blob_offsets))    kv64bFree(s->blob_offsets);
-        if (!BNULL(s->pending_commits)) u8bUnMap(s->pending_commits);
+        if (!BNULL(s->obj_to_path_hash)) kv64bFree(s->obj_to_path_hash);
+        if (!BNULL(s->blob_to_ext))      kv64bFree(s->blob_to_ext);
+        if (!BNULL(s->ext_arena))        u8bUnMap(s->ext_arena);
     }
     for (u32 i = 0; i < s->nmaps; i++) {
         if (s->toks[i][0] != NULL) u32bUnMap(s->toks[i]);
