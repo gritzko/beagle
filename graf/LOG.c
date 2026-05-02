@@ -270,13 +270,86 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
     done;
 }
 
+//  Walk commit `h40`'s tree to the entry at `path`; on success write its
+//  20-byte SHA-1 to `*out` and set `*present = YES`.  On any miss
+//  (commit absent, no tree header, path component missing) set
+//  `*present = NO` and return OK — caller compares the (present, sha)
+//  pair across commit/parents.  Uses caller-owned `cbuf` and `tbuf`
+//  as reusable scratch so the hot loop allocates nothing.
+static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
+                             u8cs path, Bu8 cbuf, Bu8 tbuf) {
+    sane(out && present && k);
+    *present = NO;
+
+    u8bReset(cbuf);
+    u8 ct = 0;
+    if (KEEPGet(k, h40, DAG_H60_HEXLEN, cbuf, &ct) != OK ||
+        ct != DOG_OBJ_COMMIT) done;
+
+    sha1 cur = {};
+    {
+        a_dup(u8c, scan, u8bDataC(cbuf));
+        u8cs field = {}, value = {};
+        b8 got = NO;
+        while (GITu8sDrainCommit(scan, field, value) == OK) {
+            if (u8csEmpty(field)) break;
+            a_cstr(ft, "tree");
+            if ($eq(field, ft) && u8csLen(value) >= 40) {
+                DAGsha1FromHex(&cur, (char const *)value[0]);
+                got = YES;
+                break;
+            }
+        }
+        if (!got) done;
+    }
+
+    //  Walk down each tree level reusing `tbuf`.
+    u8cs rest = {path[0], path[1]};
+    while (!$empty(rest)) {
+        u8cp slash = rest[0];
+        while (slash < rest[1] && *slash != '/') slash++;
+        u8cs name = {rest[0], slash};
+
+        u8bReset(tbuf);
+        u8 otype = 0;
+        if (KEEPGetExact(k, &cur, tbuf, &otype) != OK) done;
+        if (otype != DOG_OBJ_TREE) done;
+
+        u8cs body = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
+        u8cs field = {}, esha = {};
+        b8 found = NO;
+        while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
+            u8cs scan = {field[0], field[1]};
+            if (u8csFind(scan, ' ') != OK) continue;
+            u8cs entry_name = {scan[0] + 1, field[1]};
+            if ($len(entry_name) != $len(name)) continue;
+            if (memcmp(entry_name[0], name[0], $len(name)) != 0) continue;
+            memcpy(cur.data, esha[0], 20);
+            found = YES;
+            break;
+        }
+        if (!found) done;
+        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
+    }
+
+    *out = cur;
+    *present = YES;
+    done;
+}
+
 //  File-history: walk the tip's ancestor closure and keep commits whose
-//  blob at `path` differs from EVERY parent's blob at `path`, mirroring
-//  `git log <path>`'s default simplification (TREESAME-to-any-parent
-//  drops the commit).  Both presence-flips count: parent-absent /
-//  child-present is an add, parent-present / child-absent is a delete,
-//  byte-difference is a modify.  Root commits (no parents) are kept
-//  iff the blob exists.  Bounded by `count`.
+//  leaf SHA at `path` differs from EVERY parent's leaf SHA at `path`,
+//  mirroring `git log <path>`'s default simplification
+//  (TREESAME-to-any-parent drops the commit).  Both presence-flips
+//  count: parent-absent/child-present is an add, parent-present/
+//  child-absent is a delete, SHA-difference is a modify.  Root commits
+//  (no parents) are kept iff the file exists.  Bounded by `count`.
+//
+//  Per-commit leaf SHAs are cached in a parallel array indexed by
+//  topo position; parents (always at lower topo idx) are looked up
+//  via a flat back-scan so a parent's tree is walked only once across
+//  the whole history — the dominant cost for long linear chains is one
+//  tree-fetch per commit, not per (commit, parent) edge.
 static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
                          u8cs path, u32 count) {
     sane(k && tip && $ok(path));
@@ -301,31 +374,37 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
     u64 *ordered = (u64 *)u8bDataHead(ord_buf);
     u32 nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors, runs);
 
-    Bu8 cbuf = {}, blob_c = {}, blob_p = {}, keep_buf = {};
-    if (u8bMap(cbuf,     LOG_OBJ_BUF)         != OK ||
-        u8bMap(blob_c,   LOG_OBJ_BUF)         != OK ||
-        u8bMap(blob_p,   LOG_OBJ_BUF)         != OK ||
-        u8bMap(keep_buf, anc_cap * sizeof(u64)) != OK) {
+    Bu8 cbuf = {}, tbuf = {}, sha_buf = {}, keep_buf = {};
+    if (u8bMap(cbuf,     LOG_OBJ_BUF)            != OK ||
+        u8bMap(tbuf,     LOG_OBJ_BUF)            != OK ||
+        u8bMap(sha_buf,  anc_cap * 21)           != OK ||
+        u8bMap(keep_buf, anc_cap * sizeof(u64))  != OK) {
         if (cbuf[0])     u8bUnMap(cbuf);
-        if (blob_c[0])   u8bUnMap(blob_c);
-        if (blob_p[0])   u8bUnMap(blob_p);
+        if (tbuf[0])     u8bUnMap(tbuf);
+        if (sha_buf[0])  u8bUnMap(sha_buf);
         if (keep_buf[0]) u8bUnMap(keep_buf);
         u8bUnMap(ord_buf);
         if (wh128bHead(ancestors) != wh128bTerm(ancestors))
             wh128bFree(ancestors);
         fail(GRAFFAIL);
     }
+    //  Per-commit leaf cache: 21 bytes = 1 present-flag + 20 SHA bytes,
+    //  indexed by topo position.
+    u8 *leaf = (u8 *)u8bDataHead(sha_buf);
     u64 *keep = (u64 *)u8bDataHead(keep_buf);
     u32 nkeep = 0;
 
     for (u32 i = 0; i < nord; i++) {
         u64 h40 = ordered[i];
+        u8 *slot = leaf + (size_t)i * 21;
+        slot[0] = 0;
         if (h40 == 0) continue;
 
-        u8bReset(blob_c);
-        ok64 fc = GRAFBlobAtCommit(blob_c, k, h40, path);
-        b8     c_present = (fc == OK);
-        size_t cl = c_present ? u8bDataLen(blob_c) : 0;
+        sha1 csha = {};
+        b8   c_present = NO;
+        (void)graflog_path_sha(&csha, &c_present, k, h40, path, cbuf, tbuf);
+        slot[0] = c_present ? 1 : 0;
+        if (c_present) memcpy(slot + 1, csha.data, 20);
 
         wh64  par_buf[16] = {};
         wh64s parents = {par_buf, par_buf + 16};
@@ -335,22 +414,27 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
 
         b8 keep_it;
         if (npar == 0) {
-            //  Root commit: emit only if the file is there.
             keep_it = c_present;
         } else {
             //  Differs from every parent → real change.  Bail to NO
-            //  the moment a parent is TREESAME for `path`.
+            //  the moment a parent is TREESAME for `path`.  Parents
+            //  always sit at a lower topo idx; back-scan ordered[].
             keep_it = YES;
             for (u32 pi = 0; pi < npar; pi++) {
                 u64 ph40 = DAGHashlet(pbase[pi]);
-                u8bReset(blob_p);
-                ok64 fp = GRAFBlobAtCommit(blob_p, k, ph40, path);
-                b8     p_present = (fp == OK);
-                size_t pl = p_present ? u8bDataLen(blob_p) : 0;
-                b8 same = (c_present == p_present) && (cl == pl) &&
-                          (cl == 0 ||
-                           memcmp(u8bDataHead(blob_c),
-                                  u8bDataHead(blob_p), cl) == 0);
+                b8 found_idx = NO;
+                u8 *p_slot = NULL;
+                for (u32 j = i; j > 0; j--) {
+                    if (ordered[j - 1] == ph40) {
+                        p_slot = leaf + (size_t)(j - 1) * 21;
+                        found_idx = YES;
+                        break;
+                    }
+                }
+                b8 p_present = (found_idx && p_slot[0]);
+                b8 same = (c_present == p_present) &&
+                          (!c_present ||
+                           memcmp(slot + 1, p_slot + 1, 20) == 0);
                 if (same) { keep_it = NO; break; }
             }
         }
@@ -374,8 +458,8 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
         emitted++;
     }
 
-    u8bUnMap(blob_c);
-    u8bUnMap(blob_p);
+    u8bUnMap(tbuf);
+    u8bUnMap(sha_buf);
     u8bUnMap(cbuf);
     u8bUnMap(keep_buf);
     u8bUnMap(ord_buf);
