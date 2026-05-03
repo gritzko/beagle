@@ -78,9 +78,9 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     if (o != OK) { u8bFree(bbuf); return o; }
 
     if (kind == WALK_KIND_LNK) {
-        unlink((char *)u8bDataHead(fp));
-        u8bFeed1(bbuf, 0);
-        if (symlink((char *)u8bDataHead(bbuf), (char *)u8bDataHead(fp)) != 0) {
+        FILEUnLink($path(fp));
+        u8bFeed1(bbuf, 0);   // NUL-terminate so $path(bbuf) is C-string-safe
+        if (FILESymLink($path(bbuf), $path(fp)) != OK) {
             u8bFree(bbuf);
             fail(SNIFFFAIL);
         }
@@ -93,7 +93,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         FILEClose(&fd);
         if (o != OK) { u8bFree(bbuf); return o; }
         if (kind == WALK_KIND_EXE)
-            chmod((char *)u8bDataHead(fp), 0755);
+            FILEChmod($path(fp), 0755);
     }
     u8bFree(bbuf);
 
@@ -239,7 +239,9 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
     struct stat sb = {};
-    if (lstat((char *)u8bDataHead(fp), &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, $path(fp));
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // permissions etc — propagate
     struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                            .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 mr = SNIFFAtOfTimespec(mts);
@@ -376,7 +378,7 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks) {
         if ($empty(path)) continue;
         a_path(fp);
         if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
-        if (unlink((char const *)u8bDataHead(fp)) == 0) dropped++;
+        if (FILEUnLink($path(fp)) == OK) dropped++;
     }
     if (dropped > 0)
         fprintf(stderr, "sniff: pruned %u file(s)\n", dropped);

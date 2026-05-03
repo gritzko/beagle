@@ -93,10 +93,11 @@ typedef struct {
 static void post_mode_feed(Bu8 tree, u16 mode) {
     //  Git modes are printed in octal without leading zeros.  All four
     //  values we emit are 5- or 6-digit strings.
-    char buf[8];
-    int n = snprintf(buf, sizeof(buf), "%o", (unsigned)mode);
-    u8cs m = {(u8cp)buf, (u8cp)buf + n};
-    u8bFeed(tree, m);
+    a_pad(u8, buf, 8);
+    int n = snprintf((char *)u8bIdleHead(buf), u8bIdleLen(buf),
+                     "%o", (unsigned)mode);
+    if (n > 0) u8bFed(buf, (size_t)n);
+    u8bFeed(tree, u8bDataC(buf));
 }
 
 // --- Forward decls ---
@@ -117,12 +118,9 @@ static ok64 post_hash_path(u8cs reporoot, u8cs path, u16 mode, sha1 *out) {
     if (SNIFFFullpath(fp, reporoot, path) != OK) fail(SNIFFFAIL);
 
     if (mode == 0120000) {
-        char target[1024];
-        ssize_t tlen = readlink((char const *)u8bDataHead(fp),
-                                target, sizeof(target));
-        if (tlen <= 0) fail(SNIFFFAIL);
-        u8cs tv = {(u8cp)target, (u8cp)target + tlen};
-        KEEPObjSha(out, DOG_OBJ_BLOB, tv);
+        a_pad(u8, target, 1024);
+        call(FILEReadLink, target, $path(fp));
+        KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(target));
         done;
     }
 
@@ -488,13 +486,15 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
     struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(fp), &sb) != 0) {
+    ok64 lo = FILELStat(&sb, $path(fp));
+    if (lo == FILENOENT) {
         if (src_base) {
             return post_emit_decision(c, POST_V_UNLINK, path,
                                       0, NULL, NULL);
         }
         return OK;
     }
+    if (lo != OK) return lo;
     struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
                           .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 mtime_r = SNIFFAtOfTimespec(ts);
@@ -2341,15 +2341,11 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             u8bp mapped = NULL;
             u8cs body = {};
             if (mode == 0120000) {
-                char target[1024];
-                ssize_t tlen = readlink(
-                    (char const *)u8bDataHead(fp),
-                    target, sizeof(target));
-                if (tlen <= 0) continue;
-                ok64 ao = u8bAllocate(body_buf, (u64)tlen);
-                if (ao != OK) continue;
-                u8cs tv = {(u8cp)target, (u8cp)target + tlen};
-                u8bFeed(body_buf, tv);
+                a_pad(u8, target, 1024);
+                if (FILEReadLink(target, $path(fp)) != OK) continue;
+                a_dup(u8c, tgt_data, u8bData(target));
+                if (u8bAllocate(body_buf, (u64)$len(tgt_data)) != OK) continue;
+                u8bFeed(body_buf, tgt_data);
                 body[0] = u8bDataHead(body_buf);
                 body[1] = u8bIdleHead(body_buf);
             } else {

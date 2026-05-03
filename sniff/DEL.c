@@ -125,7 +125,9 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
 
     if (c->mode == DEL_DIR_PREFLIGHT) {
         struct stat sb = {};
-        if (lstat((char const *)full[0], &sb) != 0) return OK;
+        ok64 lo = FILELStat(&sb, full);
+        if (lo == FILENOENT) return OK;    // vanished
+        if (lo != OK) return lo;             // permissions etc — propagate
         struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                                .tv_nsec = sb.st_mtim.tv_nsec};
         ron60 mr = SNIFFAtOfTimespec(mts);
@@ -141,7 +143,7 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
     }
 
     //  apply
-    if (unlink((char const *)full[0]) == 0) c->unlinked++;
+    if (FILEUnLink(full) == OK) c->unlinked++;
     return OK;
 }
 
@@ -254,7 +256,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
                 return DELDIRTY;
             }
 
-            if (unlink((char const *)u8bDataHead(fp)) != 0) {
+            if (FILEUnLink($path(fp)) != OK) {
                 fprintf(stderr, "sniff: delete: unlink %.*s failed\n",
                         (int)$len(raw), (char *)raw[0]);
                 fail(SNIFFFAIL);

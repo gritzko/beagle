@@ -63,7 +63,7 @@ static ok64 sniff_rm_pid(u8cs reporoot) {
     a_cstr(rel, "/" SNIFF_FILE ".pid");
     call(u8bFeed, pp, rel);
     call(PATHu8bTerm, pp);
-    unlink((char *)u8bDataHead(pp));
+    FILEUnLink($path(pp));
     done;
 }
 
@@ -168,7 +168,9 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
     }
 
     struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, full);
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // propagate
     struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
                           .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 mtime = SNIFFAtOfTimespec(ts);
@@ -283,10 +285,10 @@ static ok64 sniff_stop(u8cs reporoot) {
     }
     fclose(fp);
     if (kill(dpid, SIGTERM) != 0) {
-        unlink((char *)u8bDataHead(pp)); fail(SNIFFFAIL);
+        FILEUnLink($path(pp)); fail(SNIFFFAIL);
     }
     fprintf(stderr, "sniff: stopped pid %d\n", dpid);
-    unlink((char *)u8bDataHead(pp));
+    FILEUnLink($path(pp));
     done;
 }
 

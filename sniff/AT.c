@@ -383,7 +383,9 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, full);
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // propagate other errors
     struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
                           .tv_nsec = sb.st_mtim.tv_nsec};
     if (SNIFFAtKnown(SNIFFAtOfTimespec(ts))) return OK;
@@ -427,7 +429,9 @@ static ok64 at_list_cb(void *varg, path8bp path) {
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, full);
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // propagate other errors
     u8 kind;
     if      (S_ISLNK(sb.st_mode))     kind = WALK_KIND_LNK;
     else if (sb.st_mode & S_IXUSR)    kind = WALK_KIND_EXE;
@@ -494,7 +498,9 @@ static ok64 at_ulog_cb(void *varg, path8bp path) {
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, full);
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // propagate other errors
 
     //  ts = file mtime as ron60 (round-trips through SNIFFAtKnown).
     //  fragment empty: hash on demand only when classification needs it.

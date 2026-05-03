@@ -76,7 +76,9 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
 
     struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(fp), &sb) != 0) return OK;
+    ok64 lo = FILELStat(&sb, $path(fp));
+    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo != OK) return lo;             // permissions etc — propagate
     struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
                            .tv_nsec = sb.st_mtim.tv_nsec};
     ron60 mr = SNIFFAtOfTimespec(mts);
@@ -106,12 +108,9 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     sha1Mv(&base_sha, (sha1 const *)esha);
 
     if (kind == WALK_KIND_LNK) {
-        char tgt[1024];
-        ssize_t tlen = readlink((char const *)u8bDataHead(fp),
-                                tgt, sizeof(tgt));
-        if (tlen <= 0) return OK;
-        u8cs lv = {(u8cp)tgt, (u8cp)tgt + tlen};
-        KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, lv);
+        a_pad(u8, tgt, 1024);
+        if (FILEReadLink(tgt, $path(fp)) != OK) return OK;
+        KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(tgt));
     } else {
         u8bp mapped = NULL;
         ok64 mo = FILEMapRO(&mapped, $path(fp));

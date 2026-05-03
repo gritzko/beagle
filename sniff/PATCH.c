@@ -199,22 +199,23 @@ static ok64 write_blob(u8cs reporoot, u8csc relpath_in,
                   mode[0][4] == '5' && mode[0][5] == '5');
 
     if (is_link) {
-        unlink((char *)u8bDataHead(fp));
+        FILEUnLink($path(fp));
         //  The "blob" for a symlink is its target path; NUL-terminate
-        //  by copying into a scratch buffer.
-        char target[PATH_MAX];
+        //  in a scratch buffer so $path(target) is C-string-safe.
+        a_pad(u8, target, PATH_MAX);
         size_t dl = $len(data);
-        if (dl >= sizeof(target)) dl = sizeof(target) - 1;
-        memcpy(target, data[0], dl);
-        target[dl] = 0;
-        if (symlink(target, (char *)u8bDataHead(fp)) != 0)
+        if (dl >= u8bIdleLen(target)) dl = u8bIdleLen(target) - 1;
+        u8cs trim = {data[0], data[0] + dl};
+        u8bFeed(target, trim);
+        u8bFeed1(target, 0);
+        if (FILESymLink($path(target), $path(fp)) != OK)
             fail(PATCHFAIL);
     } else {
         int fd = -1;
         call(FILECreate, &fd, $path(fp));
         call(FILEFeedAll, fd, data);
         FILEClose(&fd);
-        if (is_exe) chmod((char *)u8bDataHead(fp), 0755);
+        if (is_exe) FILEChmod($path(fp), 0755);
     }
 
     done;
