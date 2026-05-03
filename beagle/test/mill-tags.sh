@@ -8,12 +8,8 @@
 #
 set -e
 
-<<<<<<< HEAD
 BIN=${BIN:-$(dirname "$(command -v be)")}
 BIN=$(cd "$BIN" && pwd)
-=======
-BIN=${BIN:-$(dirname "$(command -v be)")}
->>>>>>> dogs-bro
 export PATH="$BIN:$PATH"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
@@ -75,11 +71,7 @@ for TAG in $TAGS; do
 
     # --- rsync dry-run: full content comparison ---
     RDIFF=$(rsync -rlcni --delete \
-<<<<<<< HEAD
-        --exclude='/.git/' --exclude='/.dogs/' \
-=======
         --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
->>>>>>> dogs-bro
         "$TMILL/git01/" "$TMILL/be01/" 2>&1)
 
     BE_N=$(find "$TMILL/be01" -not -path '*/.dogs/*' -not -path '*/.git/*' -type f | wc -l)

@@ -482,13 +482,11 @@ ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
     while (ext_end < ext_idle && *ext_end != 0) ext_end++;
     u8cs ext = {ext_start, ext_end};
 
-    (void)CAPOIndexBlob(s->entries, blob, ext, fn_rap);
+    (void)CAPOIndexBlob(blob, ext, fn_rap);
     SPOT_DBG_TOKENISED++;
 
-    //  Drain scratch periodically so memory stays bounded across a
-    //  long fetch.  CAPOFlushRun maintains the LSM 1/8 invariant.
-    if (u64bDataLen(s->entries) >= CAPO_FLUSH_AT)
-        (void)CAPOFlushRun(s);
+    //  Hash-set drain is owned by capo_emit (it flushes on HASHNOROOM
+    //  and retries) — no per-blob threshold check needed here.
 
     done;
 }

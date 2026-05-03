@@ -71,7 +71,7 @@ static u64 dag_obj_hashlet(u8 obj_type, sha1 const *sha, u8cs body) {
 #define DAG_DIR         ".dogs"
 #define GRAF_IDX_EXT    ".graf.idx"
 #define DAG_SEQNO_W     10
-#define DAG_BATCH       (1 << 18)   // 256K entries per flush
+#define DAG_BATCH       (1 << 22)   // 4M entries (64 MB) per flush
 
 // --- Ingest state (opaque to callers) ---
 

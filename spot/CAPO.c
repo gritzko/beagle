@@ -44,6 +44,13 @@ static void capo_abrt_handler(int sig) {
 #include "abc/HASHx.h"
 #undef X
 
+// u64 hash-set for the ingest-side dedup: posting → posting (key == value).
+// CAPOFlushRun compacts-in-place by skipping zero slots, sorts the survivors,
+// writes the run, then memsets the table back to zero for reuse.
+#define X(M, name) M##u64##name
+#include "abc/HASHx.h"
+#undef X
+
 // --- Language detection via tok/ ---
 
 b8 CAPOKnownExt(u8csc ext) {
@@ -102,19 +109,30 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
 // --- Trigram extraction from tok/ tokens ---
 
 typedef struct {
-    u64 **idle;
-    u64 *end;
     u64 fn_rap;
 } CAPOTriCtx;
 
+//  Insert one posting into the SPOT singleton's hash-set table.  Skips
+//  the zero sentinel (HASH treats slot==0 as empty).  HASHNOROOM
+//  triggers a full flush (sort + write puppy + memset table) and then
+//  retries.
+static ok64 capo_emit(u64 entry) {
+    if (entry == 0) return OK;
+    u64s table = {SPOT.entries[0], SPOT.entries[3]};
+    ok64 r = HASHu64Put(table, &entry);
+    if (r == HASHNOROOM) {
+        ok64 fr = CAPOFlushRun(&SPOT);
+        if (fr != OK) return fr;
+        r = HASHu64Put(table, &entry);
+    }
+    return r;
+}
+
 static ok64 CAPOTriCB(void0p arg, u8cs tri) {
     CAPOTriCtx *ctx = (CAPOTriCtx *)arg;
-    if (*ctx->idle >= ctx->end) return CAPONOROOM;
     u32 tid = spot64TriId(tri);
     u64 entry = spot64Pack(SPOT64_TRI, tid, ctx->fn_rap);
-    **ctx->idle = entry;
-    (*ctx->idle)++;
-    return OK;
+    return capo_emit(entry);
 }
 
 // Walk packed tokens, extract RON64 trigrams from source text
@@ -140,8 +158,8 @@ static ok64 CAPOTriExtractToks(u32cs toks, u8cp base,
     return OK;
 }
 
-ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap) {
-    sane(entries != NULL && $ok(source) && $ok(ext));
+ok64 CAPOIndexBlob(u8csc source, u8csc ext, u64 fn_rap) {
+    sane($ok(source) && $ok(ext));
     if ($empty(source)) done;
 
     // Tokenize
@@ -170,11 +188,7 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap) {
     u32cp ti = u32bIdleHead(toks);
     u32cs tokslice = {(u32cp)td, (u32cp)ti};
 
-    CAPOTriCtx ctx = {
-        .idle = u64bIdle(entries),
-        .end = entries[3],
-        .fn_rap = fn_rap,
-    };
+    CAPOTriCtx ctx = { .fn_rap = fn_rap };
     o = CAPOTriExtractToks(tokslice, source[0], CAPOTriCB, &ctx);
     if (o != OK) { u32bUnMap(toks); return o; }
 
@@ -185,11 +199,10 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap) {
         if (tag != 'S' && tag != 'N' && tag != 'C') continue;
         u8cs val = {}; tok32Val(val, tokslice, source[0], i);
         if ($len(val) < 2) continue;
-        if (*ctx.idle >= ctx.end) break;
         u8 type = (tag == 'N') ? SPOT64_DEF : SPOT64_MEN;
         u64 entry = spot64Pack(type, spot64SymId(val), fn_rap);
-        *(*ctx.idle) = entry;
-        (*ctx.idle)++;
+        ok64 er = capo_emit(entry);
+        if (er != OK) { u32bUnMap(toks); return er; }
     }
 
     u32bUnMap(toks);
@@ -199,9 +212,9 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap) {
 //  Search-time wrapper: takes a basename slice, hashes it, delegates.
 //  Ingest goes through CAPOIndexBlob directly (fn_rap is already on
 //  hand from the SPOTUpdate(TREE) stamp).
-ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc basename) {
+ok64 CAPOIndexFile(u8csc source, u8csc ext, u8csc basename) {
     sane($ok(basename));
-    return CAPOIndexBlob(entries, source, ext, CAPOFnRap40(basename));
+    return CAPOIndexBlob(source, ext, CAPOFnRap40(basename));
 }
 
 // --- Stack management ---
@@ -1300,30 +1313,43 @@ ok64 SPOTOpen(home *h, b8 rw) {
     return SPOTOpenBranch(h, trunk, rw);
 }
 
-//  Sort + dedup pending postings and write them out as a new puppy
-//  in the leaf branch dir.  Leaves `entries` reset.  Seqno is owned
-//  by the puppy stack — DOGPupCreate picks max(seqno)+1 internally.
-//  Visible to SPOTUpdate (CAPO.exe.c) so it can drain when scratch
-//  hits the high-water mark mid-ingest.
+//  Drain the hash-set scratch as a new puppy.  The table dedups on
+//  insert, so we just compact non-zero slots to the front, sort that
+//  prefix, write the run, and memset the table back to zero for reuse.
+//  Visible to SPOTUpdate so it can drain on HASHNOROOM mid-ingest.
 ok64 CAPOFlushRun(spot *s) {
     sane(s);
-    if (u64bDataLen(s->entries) == 0) done;
-    u64sp data = u64bData(s->entries);
+    if (s->entries[0] == NULL) done;
+    u64 *base = s->entries[0];
+    u64 *end  = s->entries[3];
+    size_t cap = (size_t)(end - base);
+    if (cap == 0) done;
+
+    u64 *w = base;
+    for (u64 *r = base; r < end; r++) {
+        if (*r != 0) {
+            if (r != w) *w = *r;
+            w++;
+        }
+    }
+    size_t n = (size_t)(w - base);
+    if (n == 0) done;
+    u64s data = {base, w};
     u64sSort(data);
-    u64sDedup(data);
+
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
     call(spot_branch_dir, leafdir, s->h, leaf);
     call(FILEMakeDirP, $path(leafdir));
     a_cstr(ext, CAPO_IDX_EXT);
-    size_t bytes = (size_t)((u8cp)data[1] - (u8cp)data[0]);
-    u8cs raw = {(u8cp)data[0], (u8cp)data[0] + bytes};
+    u8cs raw = {(u8cp)base, (u8cp)(base + n)};
     call(DOGPupCreate, s->puppies, $path(leafdir), ext, raw);
-    u64bReset(s->entries);
-    //  Maintain the 1/8 LSM ladder every flush — same discipline as
-    //  graf's dag_flush_batch and keeper's pack-write sites.  Without
-    //  this, repeated CAPOFlushRun calls in a long session pile up
-    //  equal-sized puppies past the runs[CAPO_MAX_LEVELS] view cap.
+
+    //  HASH primitive treats slot==0 as empty; zero the survivors'
+    //  former positions and any dirty trailing slots.
+    memset(base, 0, cap * sizeof(u64));
+
+    //  Maintain the 1/8 LSM ladder every flush.
     call(CAPOCompact, s);
     done;
 }

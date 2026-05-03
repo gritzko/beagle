@@ -342,18 +342,29 @@ static ok64 wcli_wire_to_be(u8csc wire_refname, gitref_kind *kind_out,
     done;
 }
 
-//  Match a peer-advertised wire refname against a be-side want_branch.
-//  Both go through the be ↔ wire translator so spelling differences
-//  don't matter.  `want_branch` is be-side (empty = trunk).
+//  Match a peer-advertised wire refname against a caller-supplied
+//  want_ref.  Both go through `GITParseRef` so the comparison is
+//  between (kind, bare) tuples — `heads/master` vs `refs/heads/master`
+//  match, `tags/v1.0` vs `refs/tags/v1.0` match, but a branch advert
+//  never matches a tag want.  Bare names like `master` route to BRANCH;
+//  bare `vN…` routes to TAG (matches `GITParseRef`'s heuristic).
+//  Empty `want_branch` is handled by the caller (HEAD discovery), so
+//  this function only deals with non-empty wants.
 static b8 wcli_refname_match(u8csc adv_name, u8csc want_branch) {
-    gitref_kind k = GITREF_NONE;
+    gitref_kind adv_k = GITREF_NONE;
     u8cs adv_be = {};
-    if (wcli_wire_to_be(adv_name, &k, adv_be) != OK) return NO;
-    if (k != GITREF_BRANCH) return NO;
-    if (u8csLen(adv_be) != u8csLen(want_branch)) return NO;
-    if ($empty(want_branch)) return $empty(adv_be);
-    return memcmp(adv_be[0], want_branch[0],
-                  (size_t)u8csLen(want_branch)) == 0;
+    if (wcli_wire_to_be(adv_name, &adv_k, adv_be) != OK) return NO;
+    if (adv_k != GITREF_BRANCH && adv_k != GITREF_TAG) return NO;
+
+    gitref_kind want_k = GITREF_NONE;
+    u8cs want_bare = {};
+    if (GITParseRef(want_branch, &want_k, want_bare) != OK) return NO;
+    if (want_k != adv_k) return NO;
+
+    if (u8csLen(adv_be) != u8csLen(want_bare)) return NO;
+    if ($empty(want_bare)) return $empty(adv_be);
+    return memcmp(adv_be[0], want_bare[0],
+                  (size_t)u8csLen(want_bare)) == 0;
 }
 
 // --- WIREFetch ---------------------------------------------------------
@@ -376,16 +387,21 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
     b8   first_seen = NO;
     a_cstr(head_lit, "HEAD");
 
-    //  Helper: translate the wire refname to its be-side branch and
+    //  Helper: translate the wire refname to its be-side form and
     //  capture it.  Trunk wire-name `main` collapses to empty bytes.
-    //  Unsupported kinds (TAG, REMOTE, OTHER, HEAD) leave name_out
-    //  empty — caller must not call this for them.
+    //  Tags keep their `tags/` prefix so REFS keys (`?tags/v1.0`) don't
+    //  collide with branch keys (`?v1.0` would shadow a branch named
+    //  `v1.0`).  REMOTE / OTHER / HEAD leave name_out empty.
     #define WCLI_RECORD_NAME(name) do {                                      \
         u8bReset(name_out);                                                  \
         gitref_kind _k = GITREF_NONE;                                        \
         u8cs _be = {};                                                       \
         if (wcli_wire_to_be((u8csc){(name)[0], (name)[1]},                   \
                             &_k, _be) == OK) {                               \
+            if (_k == GITREF_TAG) {                                          \
+                a_cstr(_tags_pfx, "tags/");                                  \
+                u8bFeed(name_out, _tags_pfx);                                \
+            }                                                                \
             if (!$empty(_be)) u8bFeed(name_out, _be);                        \
         }                                                                    \
     } while (0)

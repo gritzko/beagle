@@ -82,14 +82,16 @@ fun u64 CAPOFnRap40(u8csc basename) {
 }
 
 // Index a streaming blob whose basename hash was already stamped via
-// SPOTUpdate(TREE).  Tokenises and emits postings into `entries`.
-ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap);
+// SPOTUpdate(TREE).  Tokenises and emits postings into the SPOT
+// singleton's hash-set scratch (`SPOT.entries`).
+ok64 CAPOIndexBlob(u8csc source, u8csc ext, u64 fn_rap);
 
 // Index a single on-disk source file.  Hashes `basename` and
 // delegates to CAPOIndexBlob.  Used by the search-time (re)tokenize
 // path; ingest goes through CAPOIndexBlob directly.
-ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext,
-                   u8csc basename);
+ok64 CAPOIndexFile(u8csc source, u8csc ext, u8csc basename);
+
+typedef struct spot_ spot;
 
 // Load index stack as a typed view over SPOT.puppies (no fs scan,
 // no per-call mmap; the puppy stack is owned by the singleton).
@@ -99,8 +101,6 @@ ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir);
 
 // No-op: SPOT.puppies owns the mmaps now.
 ok64 CAPOStackClose(u8bp *maps, u32 nfiles);
-
-typedef struct spot_ spot;
 
 // Compact the LSM stack at the leaf branch dir, unlink merged
 // sources via DOGPupThinTail and write the merged run via
