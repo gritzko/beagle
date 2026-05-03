@@ -37,25 +37,13 @@ static ok64 class_baseline_tree(sha1 *out, b8 *have_out) {
     if (br == ULOGNONE) return OK;          // fresh repo
     if (br != OK) return br;
 
-    u8 hex40[40];
-    if (SNIFFAtQueryFirstSha(&u, hex40) != OK) return OK;
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return OK;
 
     sha1 commit_sha = {};
-    a_raw(csha_bin, commit_sha);
-    u8cs h40 = {hex40, hex40 + 40};
-    if (HEXu8sDrainSome(csha_bin, h40) != OK) return OK;
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return OK;
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
-    u8 ctype = 0;
-    ok64 go = KEEPGetExact(&KEEP, &commit_sha, cbuf, &ctype);
-    if (go != OK || ctype != DOG_OBJ_COMMIT) {
-        u8bFree(cbuf); return OK;
-    }
-    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-    ok64 to = GITu8sCommitTree(body, out->data);
-    u8bFree(cbuf);
-    if (to != OK) return to;
+    if (KEEPCommitTreeSha(&KEEP, &commit_sha, out) != OK) return OK;
     *have_out = YES;
     done;
 }

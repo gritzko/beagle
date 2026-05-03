@@ -108,16 +108,15 @@ static ok64 ls_ref(Bu8 out, uri const *u) {
         fprintf(stderr, "sniff: ls: no baseline; nothing checked out\n");
         fail(SNIFFFAIL);
     }
-    u8 hex40[40];
-    if (SNIFFAtQueryFirstSha(&bu, hex40) != OK) {
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&bu, &hex) != OK) {
         fprintf(stderr, "sniff: ls: baseline has no sha\n");
         fail(SNIFFFAIL);
     }
     uri tip = {};
     tip.path[0]     = u->path[0];
     tip.path[1]     = u->path[1];
-    tip.fragment[0] = hex40;
-    tip.fragment[1] = hex40 + 40;
+    sha1hexSlice(tip.fragment, &hex);
     return KEEPLsFiles(k, &tip, ls_tree_visit, &ctx);
 }
 

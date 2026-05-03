@@ -73,7 +73,7 @@ con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
 //  No `--at` anchor available — `diff:` projector forms that need a
 //  baseline (any URI without an explicit `?h1..h2` range) refuse with
 //  this rather than silently falling back to "wt as base".
-con ok64 GRAFNOAT    = 0x41b28f5cd5d3;
+con ok64 GRAFNOAT    = 0x41b28f5d829d;
 
 // --- Public API (DOG 4-fn, singleton) ---
 

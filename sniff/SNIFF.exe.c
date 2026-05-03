@@ -903,10 +903,11 @@ ok64 SNIFFExec(cli *c) {
                     ron60 bts = 0, bverb = 0;
                     uri bu = {};
                     ret = SNIFFAtBaseline(&bts, &bverb, &bu);
-                    u8 hex40[40];
+                    sha1hex shex = {};
                     if (ret == OK &&
-                        SNIFFAtQueryFirstSha(&bu, hex40) == OK) {
-                        u8cs h40 = {hex40, hex40 + 40};
+                        SNIFFAtQueryFirstSha(&bu, &shex) == OK) {
+                        u8cs h40 = {};
+                        sha1hexSlice(h40, &shex);
                         u8bFeed(hex, h40);
                         a_dup(u8c, hex_in, u8bData(hex));
                         a_dup(u8c, ref_uri, label_uri->data);

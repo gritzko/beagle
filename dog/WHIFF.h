@@ -148,6 +148,10 @@ typedef struct {
 
 typedef sha1hex const *sha1hexcp;
 
+fun int sha1hexcmp(sha1hex const *a, sha1hex const *b) {
+    return memcmp(a->data, b->data, 40);
+}
+
 fun void sha1hexFromSha1(sha1hex *out, sha1 const *s) {
     u8s hs = {out->data, out->data + 40};
     u8cs bs = {s->data, s->data + 20};
@@ -168,6 +172,12 @@ fun void sha1hexSlice(u8csp out, sha1hexcp s) {
     out[0] = s->data;
     out[1] = s->data + 40;
 }
+
+// --- ABC type system ---
+
+#define X(M, n) M##sha1hex##n
+#include "abc/Bx.h"
+#undef X
 
 // --- Hex to hashlet ---
 

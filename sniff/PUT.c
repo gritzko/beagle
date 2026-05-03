@@ -103,7 +103,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  sha.  Symlinks resolve via readlink; regular/exec via mmap.
     sha1 disk_sha = {};
     sha1 base_sha = {};
-    memcpy(base_sha.data, esha, 20);
+    sha1Mv(&base_sha, (sha1 const *)esha);
 
     if (kind == WALK_KIND_LNK) {
         char tgt[1024];
@@ -151,27 +151,13 @@ static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     if (br == ULOGNONE) return ULOGNONE;
     if (br != OK) return br;
 
-    u8 hex40[40];
-    if (SNIFFAtQueryFirstSha(&u, hex40) != OK) return ULOGNONE;
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return ULOGNONE;
 
     sha1 commit_sha = {};
-    a_raw(csha_bin, commit_sha);
-    u8cs h40 = {hex40, hex40 + 40};
-    HEXu8sDrainSome(csha_bin, h40);
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return ULOGNONE;
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 24);
-    u8 ctype = 0;
-    ok64 go = KEEPGetExact(&KEEP, &commit_sha, cbuf, &ctype);
-    if (go != OK || ctype != DOG_OBJ_COMMIT) {
-        u8bFree(cbuf);
-        return ULOGNONE;
-    }
-
-    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-    ok64 to = GITu8sCommitTree(body, tree_sha_out->data);
-    u8bFree(cbuf);
-    return to;
+    return KEEPCommitTreeSha(&KEEP, &commit_sha, tree_sha_out);
 }
 
 // --- Per-path classification via SNIFFClassify ----------------------

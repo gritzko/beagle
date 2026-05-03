@@ -1737,6 +1737,16 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
     fail(KEEPFAIL);  // no ref or hash in URI
 }
 
+ok64 KEEPCommitTreeSha(keeper *k, sha1 const *commit, sha1 *tree_out) {
+    sane(k && commit && tree_out);
+    u8bReset(k->buf1);
+    u8 ctype = 0;
+    call(KEEPGetExact, k, commit, k->buf1, &ctype);
+    if (ctype != DOG_OBJ_COMMIT) fail(KEEPFAIL);
+    a_dup(u8c, body, u8bData(k->buf1));
+    return GITu8sCommitTree(body, tree_out->data);
+}
+
 // --- Import: read git .idx v2 file alongside .pack, build wh128 index ---
 //
 // Git pack index v2 format:

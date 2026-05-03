@@ -17,22 +17,6 @@
 
 // --- Standalone RO tail peek (no SNIFF singleton, no keeper) -------
 
-//  Strip a trailing `.dogs/` (and any trailing slashes) from `in`,
-//  feeding the bare root path into `out`.  Mirrors
-//  `sniff_store_root_from_repo` (sniff/SNIFF.c) but operates on the
-//  caller's slice without touching the SNIFF singleton.
-static void at_root_from_repo_path(u8cs in, u8bp out) {
-    a_dup(u8c, p, in);
-    if (!$empty(p) && *u8csLast(p) == '/') u8csShed1(p);
-    a_cstr(dogs, ".dogs");
-    size_t dl = $len(dogs);
-    if ($len(p) >= dl && memcmp($atp(p, $len(p) - dl), dogs[0], dl) == 0)
-        for (size_t i = 0; i < dl; i++) u8csShed1(p);
-    while ($len(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
-    u8bReset(out);
-    u8bFeed(out, p);
-}
-
 ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     sane($ok(wt) && out);
 
@@ -46,10 +30,10 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     u8bp  data = NULL;
     Bkv64 idx  = {};
     ok64 o = ULOGOpenRO(&data, idx, $path(apath));
-    if (o != OK) fail(SNIFFATNONE);
+    if (o != OK) fail(SNIFFNONE);
 
     u32 n = ULOGCount(idx);
-    if (n == 0) { ULOGClose(data, idx, NO); fail(SNIFFATNONE); }
+    if (n == 0) { ULOGClose(data, idx, NO); fail(SNIFFNONE); }
 
     //  Row 0 = repo anchor → root path.
     a_pad(u8, root_buf, FILE_PATH_MAX_LEN);
@@ -57,10 +41,10 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         ulogrec r0 = {};
         if (ULOGRow(data, idx, 0, &r0) != OK ||
             r0.verb != SNIFFAtVerbRepo()) {
-            ULOGClose(data, idx, NO); fail(SNIFFATNONE);
+            ULOGClose(data, idx, NO); fail(SNIFFNONE);
         }
         u8cs rp = {r0.uri.path[0], r0.uri.path[1]};
-        at_root_from_repo_path(rp, root_buf);
+        DOGRepoFromDogs(rp, root_buf);
     }
 
     //  Latest get/post/patch with a 40-hex sha → branch + sha.
@@ -103,7 +87,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         if (!$empty(sha_body)) { found = YES; break; }
     }
 
-    if (!found) { ULOGClose(data, idx, NO); fail(SNIFFATNONE); }
+    if (!found) { ULOGClose(data, idx, NO); fail(SNIFFNONE); }
 
     //  Compose `<root>?<branch>#<sha>` into `out`.  branch may be
     //  empty (== trunk); `?` separator stays so URILexer round-trips
@@ -350,15 +334,15 @@ ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
     done;
 }
 
-ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40) {
-    sane(u && out_hex40);
+ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out) {
+    sane(u && out);
 
     //  Canonical at-log row: `?<branch>#<curhash>` — fragment is the
     //  current sha.  Take it directly when present.
     {
         u8cs frag = {u->fragment[0], u->fragment[1]};
-        if (u8csLen(frag) == 40) {
-            memcpy(out_hex40, frag[0], 40);
+        if (u8csLen(frag) == sizeof(out->data)) {
+            sha1hexMv(out, (sha1hex const *)frag[0]);
             done;
         }
     }
@@ -372,8 +356,8 @@ ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40) {
         qref spec = {};
         if (QURYu8sDrain(q, &spec) != OK) break;
         if (spec.type == QURY_NONE) break;
-        if (spec.type == QURY_SHA && $len(spec.body) == 40) {
-            memcpy(out_hex40, spec.body[0], 40);
+        if (spec.type == QURY_SHA && $len(spec.body) == sizeof(out->data)) {
+            sha1hexMv(out, (sha1hex const *)spec.body[0]);
             done;
         }
     }

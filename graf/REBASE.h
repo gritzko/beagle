@@ -37,7 +37,7 @@
 
 // --- Error codes ---
 
-con ok64 GRAFCNFL = 0x41b28d6cf90c;   //  3-way merge conflict during rebase
+con ok64 GRAFCNFL = 0x41b28f3173d5;   //  3-way merge conflict during rebase
 
 // --- Primitive 1: patch-id ---
 

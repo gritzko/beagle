@@ -71,7 +71,7 @@ static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
         e->mode[0] = mode_s[0]; e->mode[1] = mode_s[1];
         e->is_dir = ($len(mode_s) > 0 && *mode_s[0] == '4');
         e->present = YES;
-        memcpy(e->sha.data, esha[0], 20);
+        sha1Mv(&e->sha, (sha1 const *)esha[0]);
     }
     *nout = n;
     done;
@@ -670,11 +670,9 @@ static ok64 resolve_ours(sha1 *out) {
     ron60 ts = 0, verb = 0;
     uri u = {};
     call(SNIFFAtBaseline, &ts, &verb, &u);
-    u8 hex40[40];
-    if (SNIFFAtQueryFirstSha(&u, hex40) != OK) fail(PATCHFAIL);
-    u8s sb = {out->data, out->data + 20};
-    u8cs head = {hex40, hex40 + 40};
-    call(HEXu8sDrainSome, sb, head);
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) fail(PATCHFAIL);
+    call(sha1FromSha1hex, out, &hex);
     done;
 }
 
@@ -831,13 +829,12 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
         }
     }
     {
-        u8 zero[20] = {};
-        if (memcmp(fork_sha.data, zero, 20) == 0) {
+        if (sha1empty(&fork_sha)) {
             //  No parent-branch base, or LCA returned zero.  Fall
             //  back to direct DAG-LCA of ours and theirs.
             call(GRAFLca, &fork_sha, &our_sha, &thr_sha);
         }
-        if (memcmp(fork_sha.data, zero, 20) == 0) {
+        if (sha1empty(&fork_sha)) {
             fprintf(stderr, "sniff: patch: no common ancestor\n");
             fail(PATCHURELT);
         }

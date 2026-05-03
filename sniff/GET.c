@@ -73,7 +73,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     call(u8bAllocate, bbuf, 1UL << 24);
     u8 bt = 0;
     sha1 entry_sha = {};
-    memcpy(entry_sha.data, esha, 20);
+    sha1Mv(&entry_sha, (sha1 const *)esha);
     ok64 o = KEEPGetExact(k, &entry_sha, bbuf, &bt);
     if (o != OK) { u8bFree(bbuf); return o; }
 
@@ -586,15 +586,15 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
         ron60 bts = 0, bverb = 0;
         uri bu = {};
         if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-            u8 hex40[40];
-            if (SNIFFAtQueryFirstSha(&bu, hex40) == OK) {
-                u8cs hex_s = {hex40, hex40 + 40};
-                //  Decode the 40-hex baseline tip into a sha1 for the
+            sha1hex hex = {};
+            if (SNIFFAtQueryFirstSha(&bu, &hex) == OK) {
+                //  Decode the baseline tip hex into a sha1 for the
                 //  weave-merge drain (see get_drain_merges).
-                u8s bin = {base_commit_sha.data, base_commit_sha.data + 20};
-                a_dup(u8c, hex_dup, hex_s);
-                if (HEXu8sDrainSome(bin, hex_dup) == OK) has_base_commit = YES;
+                if (sha1FromSha1hex(&base_commit_sha, &hex) == OK)
+                    has_base_commit = YES;
 
+                u8cs hex_s = {};
+                sha1hexSlice(hex_s, &hex);
                 u64 bhashlet = WHIFFHexHashlet60(hex_s);
                 Bu8 cbuf = {};
                 if (u8bAllocate(cbuf, 1UL << 24) == OK) {

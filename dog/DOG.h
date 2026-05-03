@@ -34,6 +34,23 @@ fun u64 DOGPathHash(path8s path) {
     return h;
 }
 
+// Given the path of a `.dogs/` directory (the row-0 `repo`-anchor URI
+// path; with or without trailing slash), feed the parent repo-root
+// path into `out`.  E.g. `/abs/path/.dogs/` → `/abs/path`.  Strips
+// trailing slashes, then the `.dogs` segment, then any further
+// trailing slashes.  Caller's `out` buffer is reset before the feed.
+fun void DOGRepoFromDogs(u8cs in, u8bp out) {
+    a_dup(u8c, p, in);
+    if (!$empty(p) && *u8csLast(p) == '/') u8csShed1(p);
+    a_cstr(dogs, ".dogs");
+    size_t dl = $len(dogs);
+    if ($len(p) >= dl && memcmp($atp(p, $len(p) - dl), dogs[0], dl) == 0)
+        for (size_t i = 0; i < dl; i++) u8csShed1(p);
+    while ($len(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
+    u8bReset(out);
+    u8bFeed(out, p);
+}
+
 // Shared error code for branch-scoped Open entry points that receive
 // a branch path outside the supported set.  Phase 0 accepts only the
 // trunk (canonical form = empty slice); later phases widen this.
@@ -148,7 +165,7 @@ ok64 DOGCanonURIFeed(u8bp out, urip u);
 // caller-side (HIT*Compact); this API only does fs-level housekeeping.
 #define DOG_PUP_SEQNO_W 10
 
-con ok64 DOGPUPFAIL = 0xd680e3ca495;
+con ok64 DOGPUPFAIL = 0x3584197993ca495;
 
 // Scan `dir` for files matching `<10-RON64><ext>`, sort by seqno,
 // FILEMapRO each, push (seqno, fd) into `pups`.  Empty dir → OK with

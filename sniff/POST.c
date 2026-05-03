@@ -328,28 +328,14 @@ static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
     //  and fall into add via the implicit-dirty rule, and
     //  deleted files were unlinked by PATCH so they vanish via the
     //  implicit-drop rule.  So take the first SHA spec as "ours".
-    u8 hex40[40];
-    if (SNIFFAtQueryFirstSha(&base_u, hex40) != OK) done;
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&base_u, &hex) != OK) done;
 
     sha1 commit_sha = {};
-    a_raw(csha_bin, commit_sha);
-    u8cs h40 = {hex40, hex40 + 40};
-    HEXu8sDrainSome(csha_bin, h40);
-
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 24);
-    u8 ctype = 0;
-    ok64 go = KEEPGetExact(c->k, &commit_sha, cbuf, &ctype);
-    if (go != OK || ctype != DOG_OBJ_COMMIT) {
-        u8bFree(cbuf);
-        done;
-    }
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
 
     sha1 tree_sha = {};
-    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-    ok64 to = GITu8sCommitTree(body, tree_sha.data);
-    u8bFree(cbuf);
-    if (to != OK) done;
+    if (KEEPCommitTreeSha(c->k, &commit_sha, &tree_sha) != OK) done;
 
     *root_out = tree_sha;
     *has_out = YES;
@@ -835,12 +821,10 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
     //  form); legacy rows kept it in the query, which `SNIFFAtQueryFirstSha`
     //  handles transparently.
     {
-        u8 hex40[40];
-        if (SNIFFAtQueryFirstSha(&u, hex40) == OK) {
+        sha1hex hex = {};
+        if (SNIFFAtQueryFirstSha(&u, &hex) == OK) {
             sha1 ph = {};
-            u8s bin = {ph.data, ph.data + 20};
-            u8cs hx = {hex40, hex40 + 40};
-            if (HEXu8sDrainSome(bin, hx) == OK && bin[0] == ph.data + 20) {
+            if (sha1FromSha1hex(&ph, &hex) == OK) {
                 *parent_out = ph;
                 *has_parent_out = YES;
             }
@@ -1529,13 +1513,10 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 }
             }
             //  Cur tip from row's #fragment / first SHA in query.
-            u8 hex40[40];
-            if (SNIFFAtQueryFirstSha(&u, hex40) == OK) {
-                u8s bin = {cur_tip.data, cur_tip.data + 20};
-                u8cs hx = {hex40, hex40 + 40};
-                if (HEXu8sDrainSome(bin, hx) == OK)
-                    has_cur_tip = YES;
-            }
+            sha1hex hex = {};
+            if (SNIFFAtQueryFirstSha(&u, &hex) == OK &&
+                sha1FromSha1hex(&cur_tip, &hex) == OK)
+                has_cur_tip = YES;
         }
     }
     a_dup(u8c, cur_branch, u8bData(cur_buf));

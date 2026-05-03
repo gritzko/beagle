@@ -8,7 +8,7 @@
 set -u
 
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
-OK64="${2:-$ROOT/build-debug/abc/ok64}"
+OK64="${2:-$ROOT/build/abc/ok64}"
 
 if [ ! -x "$OK64" ]; then
     echo "ok64-rewrite: $OK64 not executable" >&2

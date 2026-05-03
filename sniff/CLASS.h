@@ -23,7 +23,7 @@
 #include "abc/URI.h"
 #include "dog/ULOG.h"
 
-con ok64 CLASSFAIL = 0xc1a5503ca495;
+con ok64 CLASSFAIL = 0xc54a71c3ca495;
 
 typedef enum {
     CLASS_BASE_ONLY = 1,   // path in baseline tree, not on disk

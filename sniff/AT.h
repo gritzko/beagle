@@ -48,8 +48,9 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/ULOG.h"
+#include "dog/WHIFF.h"
 
-con ok64 SNIFFATNONE = 0xd61029d5d85ce;
+con ok64 SNIFFNONE = 0x1c5d23cf5d85ce;
 
 //  Standalone RO peek at `<wt>/.sniff` — does NOT touch the SNIFF
 //  singleton, does NOT open keeper.  Composes a URI carrying the
@@ -61,7 +62,7 @@ con ok64 SNIFFATNONE = 0xd61029d5d85ce;
 //    fragment = current 40-hex commit sha, same row.
 //  The text `<root>?<branch>#<sha>` is fed into `out` and is then both
 //  URILexer-parseable and ready to forward as `--at <out>` to a
-//  sub-dog.  Returns SNIFFATNONE on a missing file, no `repo` row, or
+//  sub-dog.  Returns SNIFFNONE on a missing file, no `repo` row, or
 //  no row carrying a 40-hex sha.
 ok64 SNIFFAtTailOf(u8cs wt, u8bp out);
 
@@ -183,9 +184,9 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx);
 //  row mid-merge the query may also chain extra `&<theirs>` SHAs as
 //  additional parents; this helper returns the row's "current" sha
 //  (fragment first, then the first 40-hex spec in the query for
-//  legacy rows).  Copies the 40 bytes into `out_hex40` on success.
+//  legacy rows).  Writes the hex bytes into `out` on success.
 //  Returns ULOGNONE when no such spec is present.
-ok64 SNIFFAtQueryFirstSha(uricp u, u8 *out_hex40);
+ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out);
 
 //  Materialise the wt's non-meta files (excluding `.dogs/`, `.sniff*`,
 //  etc — same filter as `SNIFFAtScanDirty`) in lex order into two

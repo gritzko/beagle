@@ -54,7 +54,7 @@ con ok64 KEEPTRUNK = 0x1438e65d6de5d4;
 //  Also returned for live staging packs.
 con ok64 KEEPDIRTY = 0x1438e64d49b762;
 //  KEEPCreateBranch: leaf dir already exists.
-con ok64 KEEPDUP   = 0x50e3995cea180;
+con ok64 KEEPDUP   = 0x1438e64d799;
 
 // --- 60-bit hashlet: index key format ---
 //
@@ -360,6 +360,12 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out);
 //                      via REFS, tag-dereferenced if needed.
 //  Returns KEEPNONE when the ref is unknown, KEEPFAIL on bad input.
 ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_out);
+
+//  Resolve a commit's root-tree sha1 by full SHA-1.  Uses keeper's
+//  scratch (`k->buf1`) — caller passes no buffer.  Returns `KEEPFAIL`
+//  when the object exists but isn't a commit; otherwise the result of
+//  `KEEPGetExact` / `GITu8sCommitTree`.
+ok64 KEEPCommitTreeSha(keeper *k, sha1 const *commit, sha1 *tree_out);
 
 //  KEEPLsFiles is declared in keeper/WALK.h (takes a walk_tree_fn).
 

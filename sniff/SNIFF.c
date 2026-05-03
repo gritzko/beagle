@@ -57,23 +57,6 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
     return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
-//  Resolve the store root from the repo-row URI.  The URI's path is
-//  `/abs/path/.dogs/`; the store root is `/abs/path` (what h->root
-//  must point at so KEEPOpen finds `.dogs/` as a child).
-static void sniff_store_root_from_repo(u8cs uri_path, u8bp out) {
-    a_dup(u8c, p, uri_path);
-    //  Strip trailing slash, then the `.dogs` segment, then any
-    //  further slashes — all via the Sx.h shed primitives.
-    if (!$empty(p) && *u8csLast(p) == '/') u8csShed1(p);
-    a_cstr(dogs, ".dogs");
-    size_t dl = $len(dogs);
-    if ($len(p) >= dl && memcmp($atp(p, $len(p) - dl), dogs[0], dl) == 0)
-        for (size_t i = 0; i < dl; i++) u8csShed1(p);
-    while ($len(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
-    u8bReset(out);
-    u8bFeed(out, p);
-}
-
 ok64 SNIFFOpen(home *h, b8 rw) {
     sane(h);
 
@@ -140,7 +123,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
         if (rr == OK && !u8csEmpty(ru.path)) {
             a_dup(u8c, up, ru.path);
             a_pad(u8, storebuf, 2048);
-            sniff_store_root_from_repo(up, storebuf);
+            DOGRepoFromDogs(up, storebuf);
             if (u8bDataLen(storebuf) > 0) {
                 u8bReset(h->root);
                 a_dup(u8c, sb, u8bData(storebuf));

@@ -70,24 +70,12 @@ static b8 del_tracked_has(del_tracked *t, u8cs path) {
         ron60 ts = 0, verb = 0;
         uri u = {};
         if (SNIFFAtBaseline(&ts, &verb, &u) != OK) return NO;
-        u8 hex40[40];
-        if (SNIFFAtQueryFirstSha(&u, hex40) != OK) return NO;
+        sha1hex hex = {};
+        if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return NO;
         sha1 commit_sha = {};
-        a_raw(csha_bin, commit_sha);
-        u8cs h40 = {hex40, hex40 + 40};
-        if (HEXu8sDrainSome(csha_bin, h40) != OK) return NO;
-        Bu8 cbuf = {};
-        if (u8bAllocate(cbuf, 1UL << 20) != OK) return NO;
-        u8 ctype = 0;
-        if (KEEPGetExact(&KEEP, &commit_sha, cbuf, &ctype) != OK
-            || ctype != DOG_OBJ_COMMIT) {
-            u8bFree(cbuf); return NO;
-        }
+        if (sha1FromSha1hex(&commit_sha, &hex) != OK) return NO;
         sha1 tree_sha = {};
-        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-        ok64 to = GITu8sCommitTree(body, tree_sha.data);
-        u8bFree(cbuf);
-        if (to != OK) return NO;
+        if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) return NO;
         (void)WALKTreeLazy(&KEEP, tree_sha.data,
                            del_collect_tracked, t);
         t->ok = YES;
