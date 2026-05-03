@@ -53,6 +53,8 @@ ok64 CAPO1() {
 }
 
 // --- Test 2: CAPOIndexFile extracts trigrams keyed by basename RAP ---
+//  Postings land in the SPOT singleton's hash-set scratch
+//  (SPOT.entries); the test walks non-zero slots to inspect them.
 ok64 CAPO2() {
     sane(1);
     const char *src = "int foo(int x) { return x + 1; }";
@@ -60,35 +62,31 @@ ok64 CAPO2() {
     u8cs ext = $u8str(".c");
     a_cstr(name, "test.c");
 
-    size_t maxentries = 4096;
-    Bu64 entries = {};
-    call(u64bAlloc, entries, maxentries);
-    u64 *ebuf = entries[0];
+    call(u64bMap, SPOT.entries, 4096);
 
-    call(CAPOIndexFile, entries, source, ext, name);
-
-    size_t nentries = u64bIdleHead(entries) - ebuf;
-    want(nentries > 0);
+    call(CAPOIndexFile, source, ext, name);
 
     u64 fn_rap = CAPOFnRap40(name);
-    for (size_t i = 0; i < nentries; i++)
-        testeq(spot64FnRap(ebuf[i]), fn_rap);
-
     a_cstr(tri_foo, "foo");
     a_cstr(tri_int, "int");
     u32 id_foo = spot64TriId(tri_foo);
     u32 id_int = spot64TriId(tri_int);
 
+    size_t nentries = 0;
     b8 found_foo = NO, found_int = NO;
-    for (size_t i = 0; i < nentries; i++) {
-        if (spot64Type(ebuf[i]) != SPOT64_TRI) continue;
-        if (spot64Id(ebuf[i]) == id_foo) found_foo = YES;
-        if (spot64Id(ebuf[i]) == id_int) found_int = YES;
+    for (u64 *p = SPOT.entries[0]; p < SPOT.entries[3]; p++) {
+        if (*p == 0) continue;
+        nentries++;
+        testeq(spot64FnRap(*p), fn_rap);
+        if (spot64Type(*p) != SPOT64_TRI) continue;
+        if (spot64Id(*p) == id_foo) found_foo = YES;
+        if (spot64Id(*p) == id_int) found_int = YES;
     }
+    want(nentries > 0);
     want(found_foo == YES);
     want(found_int == YES);
 
-    u64bFree(entries);
+    u64bUnMap(SPOT.entries);
     done;
 }
 
@@ -211,31 +209,26 @@ ok64 CAPO7() {
     u8cs ext = $u8str(".c");
     a_cstr(name, "test.c");
 
-    size_t maxentries = 4096;
-    Bu64 entries = {};
-    call(u64bAlloc, entries, maxentries);
-    u64 *ebuf = entries[0];
+    call(u64bMap, SPOT.entries, 4096);
 
-    call(CAPOIndexFile, entries, source, ext, name);
+    call(CAPOIndexFile, source, ext, name);
 
-    size_t nentries = u64bIdleHead(entries) - ebuf;
-    want(nentries > 0);
-
-    size_t ntri = 0, nmen = 0, ndef = 0;
-    for (size_t i = 0; i < nentries; i++) {
-        u8 t = spot64Type(ebuf[i]);
+    u64 fn_rap = CAPOFnRap40(name);
+    size_t nentries = 0, ntri = 0, nmen = 0, ndef = 0;
+    for (u64 *p = SPOT.entries[0]; p < SPOT.entries[3]; p++) {
+        if (*p == 0) continue;
+        nentries++;
+        testeq(spot64FnRap(*p), fn_rap);
+        u8 t = spot64Type(*p);
         if (t == SPOT64_TRI) ntri++;
         else if (t == SPOT64_MEN) nmen++;
         else if (t == SPOT64_DEF) ndef++;
     }
+    want(nentries > 0);
     want(ntri > 0);
     want(nmen + ndef > 0);
 
-    u64 fn_rap = CAPOFnRap40(name);
-    for (size_t i = 0; i < nentries; i++)
-        testeq(spot64FnRap(ebuf[i]), fn_rap);
-
-    u64bFree(entries);
+    u64bUnMap(SPOT.entries);
     done;
 }
 
@@ -261,50 +254,6 @@ ok64 CAPO8() {
     testeq(spot64Type(arr[1]), (u8)SPOT64_MEN);
     testeq(spot64Type(arr[2]), (u8)SPOT64_DEF);
 
-    done;
-}
-
-// --- Test 9: CAPOIndexFile -> sort -> HIT dedup ---
-ok64 CAPO9() {
-    sane(1);
-    const char *src = "int aaa = aaa + aaa;";
-    u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
-    u8cs ext = $u8str(".c");
-    a_cstr(name, "dup.c");
-
-    size_t maxentries = 4096;
-    Bu64 entries = {};
-    call(u64bAlloc, entries, maxentries);
-    u64 *ebuf = entries[0];
-
-    call(CAPOIndexFile, entries, source, ext, name);
-
-    size_t nentries = u64bIdleHead(entries) - ebuf;
-    want(nentries > 0);
-
-    u64s data = {ebuf, ebuf + nentries};
-    u64sSort(data);
-
-    size_t dups = 0;
-    for (size_t i = 1; i < nentries; i++) {
-        if (ebuf[i] == ebuf[i - 1]) dups++;
-    }
-    want(dups > 0);
-
-    u64cs runs[1] = {{(u64cp)ebuf, (u64cp)ebuf + nentries}};
-    u64css iter = {runs, runs + 1};
-    HITu64Start(iter);
-
-    u64 out[4096];
-    u64p op = out;
-    HITu64Merge(iter, &op);
-    size_t unique = (size_t)(op - out);
-    want(unique < nentries);
-    for (size_t i = 1; i < unique; i++) {
-        want(out[i] != out[i - 1]);
-    }
-
-    u64bFree(entries);
     done;
 }
 
@@ -406,7 +355,6 @@ ok64 CAPOtest() {
     call(CAPO6);
     call(CAPO7);
     call(CAPO8);
-    call(CAPO9);
     call(CAPObasenameCollision);
     call(CAPOtestHunkEmit);
     call(CAPOtestKnownExt);

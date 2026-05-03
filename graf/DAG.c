@@ -23,7 +23,6 @@
 #include "abc/KV.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
-#include "abc/RAP.h"
 #include "abc/RON.h"
 #include "dog/DPATH.h"
 #include "dog/SHA1.h"
@@ -561,156 +560,14 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
         done;
     }
 
-    case DOG_OBJ_TREE: {
-        //  Fan out (TREE, tree_h ^ seg_h) → (kind, child_h) one per
-        //  entry, where kind comes from the git mode:
-        //    040000          → TREE
-        //    160000          → COMMIT (gitlink/submodule)
-        //    100644/100755/120000 → BLOB
-        //  Unknown modes are skipped — better an absent index entry
-        //  than a wrong-typed one (the keeper-verified scan side will
-        //  fall back to walking the tree blob anyway).
-        u64 tree_h = dag_obj_hashlet(DOG_OBJ_TREE, sha, blob);
-        if (tree_h == 0) done;
-
-        a_dup(u8c, scan, blob);
-        u8cs file = {}, esha = {};
-        u32 mode = 0;
-        while (GITu8sDrainTree(scan, file, esha, &mode) == OK) {
-            //  Split "<mode> <name>" → name slice.
-            u8cs fscan = {file[0], file[1]};
-            if (u8csFind(fscan, ' ') != OK) continue;
-            u8cs name = {fscan[0] + 1, file[1]};
-            if ($empty(name) || u8csLen(esha) != 20) continue;
-
-            u8 kind = 0;
-            switch (mode) {
-                case 040000:  kind = DAG_T_TREE;   break;
-                case 0160000: kind = DAG_T_COMMIT; break;
-                case 0100644: case 0100755: case 0120000:
-                              kind = DAG_T_BLOB;   break;
-                default:      continue;
-            }
-
-            sha1 child_sha = {};
-            memcpy(child_sha.data, esha[0], 20);
-            u64 child_h = WHIFFHashlet60(&child_sha);
-            u64 seg_h   = RAPHashSeed(name, GRAF_SEG_SEED) & DAG_HL_MASK;
-
-            dag_emit(g, DAG_T_TREE, tree_h ^ seg_h,
-                        kind,       child_h);
-            dag_batch_maybe_flush(g);
-        }
-        done;
-    }
-
+    case DOG_OBJ_TREE:
     case DOG_OBJ_BLOB:
     default:
-        done;  // blob payloads carry no graph edges.
+        done;  // tree/blob payloads carry no graph edges; commit→tree
+               // is the only tree-side edge and it lives on the COMMIT
+               // record.  Path resolution at query time goes through
+               // keeper, not the LSM.
     }
-}
-
-// ============================================================
-// Tree-child lookup
-// ============================================================
-
-ok64 DAGTreeChildren(wh128css runs, u64 tree_h, u8cs name,
-                     DAGChildCb cb, void *ctx) {
-    sane(cb && $ok(name));
-    u64 seg_h = RAPHashSeed(name, GRAF_SEG_SEED) & DAG_HL_MASK;
-    wh128cs slots[MSET_MAX_LEVELS] = {};
-    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
-    wh128cs *base = hits[0];
-    call(DAGRange, hits, runs, DAGPack(DAG_T_TREE, tree_h ^ seg_h));
-    for (wh128cs *r = base; r < hits[0]; r++) {
-        for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
-            ok64 rc = cb(ctx, DAGHashlet(e->val), DAGType(e->val));
-            if (rc != OK) return rc;
-        }
-    }
-    done;
-}
-
-// ============================================================
-// Path-walk through the tree-shape index
-// ============================================================
-
-//  Find one match for (tree_h, name) preferring `prefer_kind`; falls
-//  back to first hit of any kind.  Returns the val wh64 (kind +
-//  hashlet) or 0 on miss.  Used by DAGCommitPathHashlet — for
-//  intermediate segments we want a TREE; for leaves we accept any.
-//
-//  The "kind preference" matters only when a 60-bit hash collision
-//  produces multiple distinct matches — then we route through the
-//  TREE-kind candidate to keep descending.  In the no-collision case
-//  there's exactly one hit and prefer_kind is moot.
-typedef struct {
-    u8  prefer_kind;     // 0 = no preference (leaf walk)
-    wh64 hit;            // 0 if none yet, non-zero = wh64 val
-} path_hit;
-
-static ok64 path_collect(void *ctx, u64 child_h, u8 kind) {
-    path_hit *p = (path_hit *)ctx;
-    wh64 v = DAGPack(kind, child_h);
-    //  Always remember the first hit (fallback).
-    if (p->hit == 0) p->hit = v;
-    //  Promote to a preferred-kind hit if we see one.
-    if (p->prefer_kind != 0 && kind == p->prefer_kind) {
-        p->hit = v;
-        return DAGFAIL;   // signal "found preferred" — abort iteration
-    }
-    return OK;
-}
-
-wh64 DAGCommitPathHashlet(wh128css index, wh64 commit_h, u8cs path) {
-    //  Anchor at the commit's root tree.
-    u64 tree_h = DAGCommitTree(index, DAGHashlet(commit_h));
-    if (tree_h == 0) return 0;
-
-    //  Empty (or all-trailing-slash) path → root tree wh64.
-    a_dup(u8c, rest, path);
-    while (!$empty(rest) && *rest[0] == '/') u8csUsed1(rest);
-    if ($empty(rest)) return DAGPack(DAG_T_TREE, tree_h);
-
-    //  Descend segment by segment.  Each non-final segment must
-    //  resolve to a TREE; the final one yields whatever kind is
-    //  recorded (BLOB / TREE / COMMIT-gitlink).
-    while (!$empty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs seg = {rest[0], slash};
-
-        //  Skip empty segments (//, trailing /).
-        if ($empty(seg)) {
-            if (slash < rest[1]) rest[0] = slash + 1;
-            else rest[0] = slash;
-            continue;
-        }
-
-        b8 is_last = NO;
-        {
-            u8cp probe = (slash < rest[1]) ? slash + 1 : slash;
-            while (probe < rest[1] && *probe == '/') probe++;
-            if (probe >= rest[1]) is_last = YES;
-        }
-
-        path_hit ph = { .prefer_kind = is_last ? 0 : DAG_T_TREE, .hit = 0 };
-        ok64 rc = DAGTreeChildren(index, tree_h, seg, path_collect, &ph);
-        //  DAGFAIL from path_collect means "found preferred kind, stop"
-        //  — that's success here.  Any other non-OK is fatal.
-        if (rc != OK && rc != DAGFAIL) return 0;
-        if (ph.hit == 0) return 0;
-
-        if (is_last) return ph.hit;
-        if (DAGType(ph.hit) != DAG_T_TREE) return 0;
-        tree_h = DAGHashlet(ph.hit);
-
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
-    }
-
-    //  All segments consumed without hitting `is_last` — only happens
-    //  on degenerate inputs we already trimmed; defensive zero.
-    return 0;
 }
 
 ok64 GRAFDagFinish(void) {

@@ -1,13 +1,14 @@
 #ifndef GRAF_DAG_H
 #define GRAF_DAG_H
 
-//  DAG: graf's commit-graph + tree-shape index.
+//  DAG: graf's commit-graph index.
 //
 //  An LSM-style index of wh128 records (16 bytes each) covering
-//  commit parentage, commit→tree edges, and parent-tree→child-object
-//  edges.  Kept under <reporoot>/.dogs/graf/.  Stores no content —
-//  actual blobs/trees/commits are retrieved via keeper using the full
-//  path at query time.
+//  commit parentage and commit→root-tree edges.  Tree-shape (per-
+//  entry) edges are NOT recorded — git's pack-side delta compression
+//  keeps tree storage cheap, while materialising every tree entry
+//  here would dominate the repo footprint.  Path resolution at query
+//  time goes through keeper directly (graf/BLOB.c::GRAFTreeStep).
 //
 //  Layout (mirrors keeper's branch-sharded shape):
 //      .dogs/graf/<branch>/0000000001.graf.idx  sorted wh128 runs (LSM)
@@ -24,27 +25,17 @@
 //  Per-half types (4 bits in low nibble of each wh64):
 //      1  COMMIT   refers to a commit object
 //      2  TREE     refers to a tree object
-//      3  BLOB     refers to a blob object
+//      3  BLOB     refers to a blob object   (val side only, reserved)
 //
 //  Entry kinds = (key.type, val.type) pairs:
 //      (COMMIT, COMMIT)  commit → parent commit
 //                        key.hl = commit_h60, val.hl = parent_h60
 //      (COMMIT, TREE)    commit → root tree
 //                        key.hl = commit_h60, val.hl = tree_h60
-//      (TREE,   TREE)    parent-tree → child subtree
-//      (TREE,   BLOB)    parent-tree → child blob (file)
-//      (TREE,   COMMIT)  parent-tree → child commit (gitlink/submodule)
-//                        key.hl = tree_h60 ^ RAPHashSeed60(name)
-//                        val.hl = child_h60
 //
 //  Hashlets are 60-bit (top 60 bits of SHA-1) — the same width keeper
 //  uses for its LSM keys, so a graf hashlet resolves directly in
 //  keeper without prefix-lifting.
-//
-//  Tree-child keys are XOR-keyed on the segment name; lookup of
-//  (tree, name) is a direct binary search, but callers must scan
-//  forward across equal-key entries and verify against keeper to
-//  defend against the (extremely rare) 60-bit collision.
 
 #include "abc/INT.h"
 #include "dog/SHA1.h"
@@ -205,48 +196,5 @@ u32 DAGTopoSort(u64 *out, u32 cap,
 //  named constant for self-documenting call sites.
 
 #define DAG_H60_HEXLEN 15
-
-// ==========================================================
-// Tree-shape index
-// ==========================================================
-
-//  RAPHash seed for tree-segment names.  Constant, public so that
-//  ingest and lookup hash the same way.  Picked from the golden ratio
-//  bits — anything fixed and non-zero will do; the value just needs to
-//  isolate the segment-name hash space from raw-SHA hashlets so the
-//  XOR'd key doesn't accidentally collide with a same-shape COMMIT
-//  key from a different entry kind.
-#define GRAF_SEG_SEED 0x9e3779b97f4a7c15ULL
-
-//  Visitor for DAGTreeChildren.  Receives one (child_h60, kind) per
-//  matching wh128 record.  `kind` is DAG_T_TREE / DAG_T_BLOB /
-//  DAG_T_COMMIT.  Return OK to keep iterating; return any non-OK to
-//  abort the walk (the value propagates back to the caller — use it
-//  to signal "found what I wanted, stop").
-typedef ok64 (*DAGChildCb)(void *ctx, u64 child_h, u8 kind);
-
-//  Look up children of `tree_h` named `name` in the index.  Computes
-//  the XOR'd key, binary-searches each run, and walks every entry
-//  whose key matches before invoking `cb`.  In the no-collision case
-//  this is exactly one callback per matching entry; in the rare 60-bit
-//  collision case it's >1 and the caller disambiguates via keeper.
-ok64 DAGTreeChildren(wh128css runs, u64 tree_h, u8cs name,
-                     DAGChildCb cb, void *ctx);
-
-//  Walk path segments from `commit_h` (a packed wh64 key like
-//  `DAGPack(DAG_T_COMMIT, h60)`) through the tree-shape index and
-//  return the leaf object's wh64 (carries both kind and hashlet —
-//  decode with DAGType / DAGHashlet).  Returns 0 (a never-valid wh64,
-//  since type is always non-zero) if the commit isn't indexed, any
-//  intermediate segment is missing, or an intermediate is anything
-//  other than a TREE.  Hash-collision robustness: when multiple
-//  candidates match a segment, the first TREE-typed (intermediate)
-//  or any-typed (leaf) hit is taken.  Pure index lookups — no
-//  keeper roundtrip, no allocation.
-//
-//  Empty `path` returns the commit's root tree wh64.
-//  Trailing-slash paths are tolerated (treated as no segment after
-//  the slash).
-wh64 DAGCommitPathHashlet(wh128css index, wh64 commit_h, u8cs path);
 
 #endif

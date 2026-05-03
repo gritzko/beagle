@@ -240,16 +240,76 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     u8cs ext = {};
     PATHu8sExt(ext, filepath);
 
+    //  Per-topo-position metadata, scanned in lockstep with `ordered[]`:
+    //    tree_hs[i]    - root-tree hashlet of ordered[i] (0 on index miss).
+    //    npar_arr[i]   - number of parent edges in the index (≥2 ⇒ merge).
+    //    child_count[i]- in-set children of ordered[i] (≥2 ⇒ fork).
+    //  Computed in one pre-pass: DAGCommitTree + DAGParents per commit,
+    //  with the standard back-scan to fold parents into child_count
+    //  (LOG.c idiom).  All three arrays are optional — if the alloc
+    //  fails we fall back to "fold every commit," which is correct but
+    //  slow.
+    Bu8 th_buf = {}, np_buf = {}, cc_buf = {};
+    u64 *tree_hs    = NULL;
+    u32 *npar_arr   = NULL;
+    u32 *child_count = NULL;
+    if (nord > 0) {
+        if (u8bMap(th_buf, nord * sizeof(u64)) == OK)
+            tree_hs = (u64 *)u8bDataHead(th_buf);
+        if (u8bMap(np_buf, nord * sizeof(u32)) == OK)
+            npar_arr = (u32 *)u8bDataHead(np_buf);
+        if (u8bMap(cc_buf, nord * sizeof(u32)) == OK)
+            child_count = (u32 *)u8bDataHead(cc_buf);
+    }
+    if (tree_hs && npar_arr && child_count) {
+        for (u32 i = 0; i < nord; i++) {
+            tree_hs[i] = DAGCommitTree(runs, ordered[i]);
+            wh64 par_buf[16] = {};
+            wh64s parents = {par_buf, par_buf + 16};
+            wh64 *pbase = parents[0];
+            DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, ordered[i]));
+            npar_arr[i] = (u32)(parents[0] - pbase);
+            for (wh64 *p = pbase; p < parents[0]; p++) {
+                u64 ph = DAGHashlet(*p);
+                for (u32 j = i; j > 0; j--) {
+                    if (ordered[j - 1] == ph) {
+                        child_count[j - 1]++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     ok64 ret = OK;
     b8 have_prev = NO;
+    u64 prev_root_h = 0;   // root-tree hashlet of the last folded layer
     for (u32 i = 0; i < nord; i++) {
         u64 commit_h = ordered[i];
+
+        //  Anchor: always fold, even if content is unchanged — preserves
+        //  weave structure at the first folded layer, the topo tail, and
+        //  every fork/merge node.
+        b8 is_anchor = !have_prev ||
+                       (i == nord - 1) ||
+                       (npar_arr    && npar_arr[i]    >= 2) ||
+                       (child_count && child_count[i] >= 2);
+
+        //  Index-side skip: same root tree as the last folded layer ⇒
+        //  bit-identical content at every path ⇒ no need to fetch.
+        //  Tree-hashlet 0 means the commit isn't indexed; fall through
+        //  to the reliable keeper path.  Anchors bypass the skip.
+        if (!is_anchor && have_prev &&
+            tree_hs && tree_hs[i] != 0 && tree_hs[i] == prev_root_h)
+            continue;
+
         u8bReset(*cur_blob);
         ok64 fo = GRAFBlobAtCommit(*cur_blob, k, commit_h, filepath);
         if (fo != OK) continue;
 
-        // Byte-level dedup: skip blobs identical to last kept version.
-        if (have_prev) {
+        // Byte-level dedup safety net for non-anchors when the index
+        // side didn't help (different root tree, identical leaf bytes).
+        if (have_prev && !is_anchor) {
             size_t cl = u8bDataLen(*cur_blob);
             size_t pl = u8bDataLen(*prev_blobp);
             if (cl == pl && (cl == 0 ||
@@ -275,6 +335,7 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         // Swap blob buffers (prev kept for next iter's byte-dedup).
         Bu8 *tmp = cur_blob; cur_blob = prev_blobp; prev_blobp = tmp;
         have_prev = YES;
+        if (tree_hs) prev_root_h = tree_hs[i];
     }
 
     //  --- Worktree shadow version ---
@@ -321,6 +382,9 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 
     u8bUnMap(blob_a);
     u8bUnMap(blob_b);
+    if (cc_buf[0]) u8bUnMap(cc_buf);
+    if (np_buf[0]) u8bUnMap(np_buf);
+    if (th_buf[0]) u8bUnMap(th_buf);
     if (ord_buf[0]) u8bUnMap(ord_buf);
     wh128bFree(ancestors);
     if (own_open) GRAFClose();
