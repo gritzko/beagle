@@ -1,0 +1,3 @@
+--- single.c#1 ---
+int square(int n) { return n * n; }
+

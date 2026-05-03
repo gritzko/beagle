@@ -8,86 +8,82 @@
 #include "abc/SORT.h"
 #include "abc/TEST.h"
 
-// --- Test 0: TriPack roundtrip ---
+// --- Test 0: spot64Pack/Type/Id/FnRap roundtrip ---
 ok64 CAPO0() {
     sane(1);
-    // "abc" -> pack -> extract upper bits -> consistent
     a_cstr(tri, "abc");
-    u64 packed = CAPOTriPack(tri);
-    // Upper 32 bits hold the trigram, lower 32 are zero
-    testeq((u32)packed, (u32)0);
-    want(packed != 0);
+    u32 tid = spot64TriId(tri);
+    want(tid != 0);
+    testeq(tid & ~SPOT64_ID_MASK, (u32)0);
+
+    u64 fn_rap = 0xdeadbeef42ULL;
+    spot64 e = spot64Pack(SPOT64_TRI, tid, fn_rap);
+    testeq(spot64Type(e),  (u8)SPOT64_TRI);
+    testeq(spot64Id(e),    tid);
+    testeq(spot64FnRap(e), fn_rap);
 
     // Same input -> same output
-    u64 packed2 = CAPOTriPack(tri);
-    testeq(packed, packed2);
+    spot64 e2 = spot64Pack(SPOT64_TRI, tid, fn_rap);
+    testeq(e, e2);
 
-    // Different trigram -> different result
+    // Different trigram -> different id
     a_cstr(tri2, "xyz");
-    u64 packed3 = CAPOTriPack(tri2);
-    want(packed3 != packed);
-
-    // CAPOTriOf extracts just the trigram part
-    u64 entry = packed | 0x12345678ULL;
-    testeq(CAPOTriOf(entry), packed);
+    want(spot64TriId(tri2) != tid);
 
     done;
 }
 
-// --- Test 1: CAPOEntry packs both parts ---
+// --- Test 1: spot64 entries with same id sort by (type, fn_rap) ---
 ok64 CAPO1() {
     sane(1);
     a_cstr(tri, "foo");
-    a_cstr(path, "src/main.c");
-    u64 entry = CAPOEntry(tri, path);
+    u32 tid = spot64TriId(tri);
+    a_cstr(p1, "main.c");
+    a_cstr(p2, "other.c");
+    u64 r1 = CAPOFnRap40(p1);
+    u64 r2 = CAPOFnRap40(p2);
 
-    // Upper bits = trigram
-    testeq(CAPOTriOf(entry), CAPOTriPack(tri));
-    // Lower bits = path hash
-    testeq((u32)entry, CAPOPathHash(path));
-
-    // Different path, same trigram -> same upper, different lower
-    a_cstr(path2, "src/other.c");
-    u64 entry2 = CAPOEntry(tri, path2);
-    testeq(CAPOTriOf(entry), CAPOTriOf(entry2));
-    want((u32)entry != (u32)entry2);
+    spot64 e1 = spot64Pack(SPOT64_TRI, tid, r1);
+    spot64 e2 = spot64Pack(SPOT64_TRI, tid, r2);
+    testeq(spot64Id(e1),   spot64Id(e2));
+    testeq(spot64Type(e1), spot64Type(e2));
+    want(spot64FnRap(e1) != spot64FnRap(e2));
 
     done;
 }
 
-// --- Test 2: CAPOIndexFile extracts trigrams ---
+// --- Test 2: CAPOIndexFile extracts trigrams keyed by basename RAP ---
 ok64 CAPO2() {
     sane(1);
     const char *src = "int foo(int x) { return x + 1; }";
     u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
     u8cs ext = $u8str(".c");
-    a_cstr(path, "test.c");
+    a_cstr(name, "test.c");
 
     size_t maxentries = 4096;
     Bu64 entries = {};
     call(u64bAlloc, entries, maxentries);
     u64 *ebuf = entries[0];
 
-    call(CAPOIndexFile, entries, source, ext, path);
+    call(CAPOIndexFile, entries, source, ext, name);
 
     size_t nentries = u64bIdleHead(entries) - ebuf;
     want(nentries > 0);
 
-    // All entries should have the same path hash
-    u32 phash = CAPOPathHash(path);
+    u64 fn_rap = CAPOFnRap40(name);
     for (size_t i = 0; i < nentries; i++)
-        testeq((u32)ebuf[i], phash);
+        testeq(spot64FnRap(ebuf[i]), fn_rap);
 
-    // Should contain trigrams from "foo", "int", "return"
     a_cstr(tri_foo, "foo");
     a_cstr(tri_int, "int");
-    u64 prefix_foo = CAPOTriPack(tri_foo);
-    u64 prefix_int = CAPOTriPack(tri_int);
+    u32 id_foo = spot64TriId(tri_foo);
+    u32 id_int = spot64TriId(tri_int);
 
     b8 found_foo = NO, found_int = NO;
     for (size_t i = 0; i < nentries; i++) {
-        if (CAPOTriOf(ebuf[i]) == prefix_foo) found_foo = YES;
-        if (CAPOTriOf(ebuf[i]) == prefix_int) found_int = YES;
+        if (spot64Type(ebuf[i]) != SPOT64_TRI) continue;
+        if (spot64Id(ebuf[i]) == id_foo) found_foo = YES;
+        if (spot64Id(ebuf[i]) == id_int) found_int = YES;
     }
     want(found_foo == YES);
     want(found_int == YES);
@@ -99,23 +95,21 @@ ok64 CAPO2() {
 // --- Test 3: Sort + HIT dedup ---
 ok64 CAPO3() {
     sane(1);
-    // Two files with overlapping trigrams
     a_cstr(tri, "foo");
-    a_cstr(path1, "a.c");
-    a_cstr(path2, "b.c");
-    u64 e1 = CAPOEntry(tri, path1);
-    u64 e2 = CAPOEntry(tri, path2);
-    u64 e1dup = e1;  // duplicate
+    u32 tid = spot64TriId(tri);
+    a_cstr(p1, "a.c");
+    a_cstr(p2, "b.c");
+    spot64 e1 = spot64Pack(SPOT64_TRI, tid, CAPOFnRap40(p1));
+    spot64 e2 = spot64Pack(SPOT64_TRI, tid, CAPOFnRap40(p2));
+    spot64 e1dup = e1;
 
     u64 arr[] = {e2, e1, e1dup};
     u64s data = {arr, arr + 3};
     u64sSort(data);
 
-    // After sort: entries grouped by trigram, then by path hash
     want(arr[0] <= arr[1]);
     want(arr[1] <= arr[2]);
 
-    // Merge with HIT should dedup
     u64cs runs[1] = {{(u64cp)arr, (u64cp)arr + 3}};
     u64css iter = {runs, runs + 1};
     HITu64Start(iter);
@@ -124,7 +118,6 @@ ok64 CAPO3() {
     u64p op = out;
     HITu64Merge(iter, &op);
 
-    // Should have 2 unique entries (e1 deduped)
     testeq((size_t)(op - out), (size_t)2);
 
     done;
@@ -133,13 +126,11 @@ ok64 CAPO3() {
 // --- Test 4: TriChar filter ---
 ok64 CAPO4() {
     sane(1);
-    // RON64 chars should pass
     want(CAPOTriChar('a') != 0);
     want(CAPOTriChar('Z') != 0);
     want(CAPOTriChar('0') != 0);
     want(CAPOTriChar('_') != 0);
 
-    // Non-RON64 chars should fail
     want(CAPOTriChar(' ') == 0);
     want(CAPOTriChar('(') == 0);
     want(CAPOTriChar('{') == 0);
@@ -148,18 +139,21 @@ ok64 CAPO4() {
     done;
 }
 
-// --- Test 5: HIT seek by trigram prefix ---
+// --- Test 5: HIT seek by (type, id) prefix yields all entries in
+//             that bucket; range size is 1<<40 ---
 ok64 CAPO5() {
     sane(1);
-    a_cstr(tri1, "aaa");
-    a_cstr(tri2, "mmm");
-    a_cstr(tri3, "zzz");
+    a_cstr(t1, "aaa");
+    a_cstr(t2, "mmm");
+    a_cstr(t3, "zzz");
     a_cstr(p1, "x.c");
     a_cstr(p2, "y.c");
 
     u64 entries[] = {
-        CAPOEntry(tri1, p1), CAPOEntry(tri1, p2),
-        CAPOEntry(tri2, p1), CAPOEntry(tri3, p2),
+        spot64Pack(SPOT64_TRI, spot64TriId(t1), CAPOFnRap40(p1)),
+        spot64Pack(SPOT64_TRI, spot64TriId(t1), CAPOFnRap40(p2)),
+        spot64Pack(SPOT64_TRI, spot64TriId(t2), CAPOFnRap40(p1)),
+        spot64Pack(SPOT64_TRI, spot64TriId(t3), CAPOFnRap40(p2)),
     };
     u64s data = {entries, entries + 4};
     u64sSort(data);
@@ -168,43 +162,43 @@ ok64 CAPO5() {
     u64css iter = {runs, runs + 1};
     HITu64Start(iter);
 
-    // Seek to tri2 prefix
-    u64 prefix = CAPOTriPack(tri2);
+    u64 prefix = spot64Pack(SPOT64_TRI, spot64TriId(t2), 0);
     ok64 o = HITu64Seek(iter, &prefix);
     want(o == OK);
     want(!$empty(iter));
-    testeq(CAPOTriOf(*(*iter[0])[0]), prefix);
+    testeq(spot64Id(*(*iter[0])[0]),   spot64TriId(t2));
+    testeq(spot64Type(*(*iter[0])[0]), (u8)SPOT64_TRI);
 
     done;
 }
 
-// --- Test 6: idx64 type/key/path roundtrip ---
+// --- Test 6: spot64 accessors on TRI/MEN/DEF entries ---
 ok64 CAPO6() {
     sane(1);
     a_cstr(name, "myFunc");
-    a_cstr(path, "src/main.c");
+    a_cstr(path, "main.c");
+    u64 fn_rap = CAPOFnRap40(path);
+    u32 sid    = spot64SymId(name);
 
-    idx64 men = CAPOSymEntry(IDX64_MEN, name, path);
-    idx64 def = CAPOSymEntry(IDX64_DEF, name, path);
+    spot64 men = spot64Pack(SPOT64_MEN, sid, fn_rap);
+    spot64 def = spot64Pack(SPOT64_DEF, sid, fn_rap);
     a_cstr(tri6, "foo");
-    idx64 tri_entry = CAPOEntry(tri6, path);
+    spot64 tri_e = spot64Pack(SPOT64_TRI, spot64TriId(tri6), fn_rap);
 
-    // Type field
-    testeq(idx64Type(men), (u64)IDX64_MEN);
-    testeq(idx64Type(def), (u64)IDX64_DEF);
-    testeq(idx64Type(tri_entry), (u64)IDX64_TRI);
+    testeq(spot64Type(men),   (u8)SPOT64_MEN);
+    testeq(spot64Type(def),   (u8)SPOT64_DEF);
+    testeq(spot64Type(tri_e), (u8)SPOT64_TRI);
 
-    // Key: same name -> same key for both mention and definition
-    testeq(idx64Key(men), idx64Key(def));
+    // Same name -> same id for both mention and definition
+    testeq(spot64Id(men), spot64Id(def));
 
-    // Path hash
-    testeq(idx64PathHash(men), CAPOPathHash(path));
-    testeq(idx64PathHash(def), CAPOPathHash(path));
+    // fn_rap roundtrip
+    testeq(spot64FnRap(men), fn_rap);
+    testeq(spot64FnRap(def), fn_rap);
 
-    // Different name -> different key
     a_cstr(name2, "otherFunc");
-    idx64 men2 = CAPOSymEntry(IDX64_MEN, name2, path);
-    want(idx64Key(men2) != idx64Key(men));
+    spot64 men2 = spot64Pack(SPOT64_MEN, spot64SymId(name2), fn_rap);
+    want(spot64Id(men2) != spot64Id(men));
 
     done;
 }
@@ -215,86 +209,79 @@ ok64 CAPO7() {
     const char *src = "int foo(int x) { return x + 1; }";
     u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
     u8cs ext = $u8str(".c");
-    a_cstr(path, "test.c");
+    a_cstr(name, "test.c");
 
     size_t maxentries = 4096;
     Bu64 entries = {};
     call(u64bAlloc, entries, maxentries);
     u64 *ebuf = entries[0];
 
-    call(CAPOIndexFile, entries, source, ext, path);
+    call(CAPOIndexFile, entries, source, ext, name);
 
     size_t nentries = u64bIdleHead(entries) - ebuf;
     want(nentries > 0);
 
-    // Count by type
     size_t ntri = 0, nmen = 0, ndef = 0;
     for (size_t i = 0; i < nentries; i++) {
-        u64 t = idx64Type(ebuf[i]);
-        if (t == IDX64_TRI) ntri++;
-        else if (t == IDX64_MEN) nmen++;
-        else if (t == IDX64_DEF) ndef++;
+        u8 t = spot64Type(ebuf[i]);
+        if (t == SPOT64_TRI) ntri++;
+        else if (t == SPOT64_MEN) nmen++;
+        else if (t == SPOT64_DEF) ndef++;
     }
-    // Must have some trigrams
     want(ntri > 0);
-    // Must have some symbol entries (mentions or definitions)
     want(nmen + ndef > 0);
 
-    // All entries should have the same path hash
-    u32 phash = CAPOPathHash(path);
+    u64 fn_rap = CAPOFnRap40(name);
     for (size_t i = 0; i < nentries; i++)
-        testeq(idx64PathHash(ebuf[i]), phash);
+        testeq(spot64FnRap(ebuf[i]), fn_rap);
 
     u64bFree(entries);
     done;
 }
 
-// --- Test 8: symbol entries sort after trigrams ---
+// --- Test 8: same id, different types sort TRI < MEN < DEF ---
 ok64 CAPO8() {
     sane(1);
-    a_cstr(name, "myVar");
-    a_cstr(path, "a.c");
-    a_cstr(tri, "foo");
+    // Pick a literal 18-bit id that all three entries share, so the
+    // sort ordering across types is decided by the type field alone.
+    u32 id = 0x12345 & SPOT64_ID_MASK;
+    u64 fn_rap = 0xabcdef0042ULL;
 
-    idx64 tri_e = CAPOEntry(tri, path);
-    idx64 men_e = CAPOSymEntry(IDX64_MEN, name, path);
-    idx64 def_e = CAPOSymEntry(IDX64_DEF, name, path);
+    spot64 tri_e = spot64Pack(SPOT64_TRI, id, fn_rap);
+    spot64 men_e = spot64Pack(SPOT64_MEN, id, fn_rap);
+    spot64 def_e = spot64Pack(SPOT64_DEF, id, fn_rap);
 
-    // Trigram (type 00) < mention (type 01) < definition (type 10)
     want(tri_e < men_e);
     want(men_e < def_e);
 
-    // Sort should preserve this ordering
     u64 arr[] = {def_e, tri_e, men_e};
     u64s data = {arr, arr + 3};
     u64sSort(data);
-    testeq(idx64Type(arr[0]), (u64)IDX64_TRI);
-    testeq(idx64Type(arr[1]), (u64)IDX64_MEN);
-    testeq(idx64Type(arr[2]), (u64)IDX64_DEF);
+    testeq(spot64Type(arr[0]), (u8)SPOT64_TRI);
+    testeq(spot64Type(arr[1]), (u8)SPOT64_MEN);
+    testeq(spot64Type(arr[2]), (u8)SPOT64_DEF);
 
     done;
 }
 
-// --- Test 9: CAPOIndexFile produces no duplicate entries after sort ---
+// --- Test 9: CAPOIndexFile -> sort -> HIT dedup ---
 ok64 CAPO9() {
     sane(1);
-    // Source with repeated identifiers generates duplicate trigrams
     const char *src = "int aaa = aaa + aaa;";
     u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
     u8cs ext = $u8str(".c");
-    a_cstr(path, "dup.c");
+    a_cstr(name, "dup.c");
 
     size_t maxentries = 4096;
     Bu64 entries = {};
     call(u64bAlloc, entries, maxentries);
     u64 *ebuf = entries[0];
 
-    call(CAPOIndexFile, entries, source, ext, path);
+    call(CAPOIndexFile, entries, source, ext, name);
 
     size_t nentries = u64bIdleHead(entries) - ebuf;
     want(nentries > 0);
 
-    // Sort and check for duplicates
     u64s data = {ebuf, ebuf + nentries};
     u64sSort(data);
 
@@ -302,10 +289,8 @@ ok64 CAPO9() {
     for (size_t i = 1; i < nentries; i++) {
         if (ebuf[i] == ebuf[i - 1]) dups++;
     }
-    // "aaa" trigram appears 3 times for same file → must have duplicates pre-dedup
     want(dups > 0);
 
-    // After HIT merge, duplicates should be gone
     u64cs runs[1] = {{(u64cp)ebuf, (u64cp)ebuf + nentries}};
     u64css iter = {runs, runs + 1};
     HITu64Start(iter);
@@ -315,7 +300,6 @@ ok64 CAPO9() {
     HITu64Merge(iter, &op);
     size_t unique = (size_t)(op - out);
     want(unique < nentries);
-    // Verify no dups in merged output
     for (size_t i = 1; i < unique; i++) {
         want(out[i] != out[i - 1]);
     }
@@ -324,12 +308,21 @@ ok64 CAPO9() {
     done;
 }
 
+// --- Test BN: same basename in two dirs collides into one fn_rap ---
+ok64 CAPObasenameCollision() {
+    sane(1);
+    a_cstr(b1, "README.md");
+    a_cstr(b2, "README.md");
+    a_cstr(b3, "OTHER.md");
+    testeq(CAPOFnRap40(b1), CAPOFnRap40(b2));
+    want(CAPOFnRap40(b3) != CAPOFnRap40(b1));
+    done;
+}
+
 // --- Test A: HunkEmit produces valid TLV that roundtrips via Drain ---
 
 ok64 CAPOtestHunkEmit() {
     sane(1);
-    // Set up a capture buffer instead of a pipe.
-    // spot_emit = HUNKu8sFeed, spot_out_fd = a temp file.
     char tmppath[] = "/tmp/spot_hunk_test_XXXXXX";
     int fd = mkstemp(tmppath);
     test(fd >= 0, FAILSANITY);
@@ -338,7 +331,6 @@ ok64 CAPOtestHunkEmit() {
     spot_out_fd = fd;
     call(LESSArenaInit);
 
-    // Synthesize a hunk via CAPOBuildHunk
     const char *src = "void foo() {\n    int x = 1;\n    int y = 2;\n}\n";
     u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
     u8cs ext = $u8str(".c");
@@ -347,18 +339,15 @@ ok64 CAPOtestHunkEmit() {
     call(SPOTTokenize, toks, source, ext);
     u32cs htoks = {(u32cp)u32bDataHead(toks), (u32cp)u32bIdleHead(toks)};
 
-    // One highlight range covering "int x = 1;" (bytes 18..28 approx)
     range32 hls[1] = {{18, 28}};
     b8 first = YES;
     call(CAPOBuildHunk, source, htoks, 0, (u32)strlen(src),
          hls, 1, ext, "test.c", YES, &first);
 
-    // Close and verify the file has content.
     close(fd);
     spot_out_fd = -1;
     spot_emit   = NULL;
 
-    // Read back and drain
     u8bp mapped = NULL;
     a_pad(u8, pathbuf, 256);
     u8cs ps = {(u8cp)tmppath, (u8cp)tmppath + strlen(tmppath)};
@@ -367,17 +356,15 @@ ok64 CAPOtestHunkEmit() {
     call(FILEMapRO, &mapped, $path(pathbuf));
 
     a_dup(u8c, data, u8bDataC(mapped));
-    want($len(data) > 20);  // non-trivial TLV
+    want($len(data) > 20);
 
     hunk h = {};
     ok64 o = HUNKu8sDrain(data, &h);
     testeq(o, OK);
     want(!$empty(h.text));
     want(!$empty(h.uri));
-    // text should contain the source
     want($len(h.text) == strlen(src));
     want(memcmp(h.text[0], src, strlen(src)) == 0);
-    // URI should start with "test.c"
     want($len(h.uri) >= 6);
     want(memcmp(h.uri[0], "test.c", 6) == 0);
 
@@ -420,6 +407,7 @@ ok64 CAPOtest() {
     call(CAPO7);
     call(CAPO8);
     call(CAPO9);
+    call(CAPObasenameCollision);
     call(CAPOtestHunkEmit);
     call(CAPOtestKnownExt);
     done;

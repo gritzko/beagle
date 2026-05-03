@@ -2307,6 +2307,16 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             memcpy(&tlen, q, sizeof(u32));
             u8cs tbody = {q + sizeof(u32), q + sizeof(u32) + tlen};
             sha1 tsha_dummy = {};
+            //  TODO(delta-trees): pass the parent commit's same-path
+            //  tree SHA as `base_hashlet60` instead of 0.  A typical
+            //  commit changes ≤3 entries per touched directory, so a
+            //  delta against the parent tree shrinks each new tree
+            //  ~95 %.  Source for the base SHA: extend
+            //  keeper/WALK.c:treeulog_visit to also emit DIR rows
+            //  (currently it skips them, line ~358), then post_build_tree
+            //  can pluck the old subtree SHA per `subprefix` out of `bu`
+            //  on its way down — same plumbing as `old_sha` already does
+            //  for blobs at line 2371.  No extra walk needed.
             ok64 to = KEEPPackFeed(k, &p, DOG_OBJ_TREE, tbody,
                                    0, &tsha_dummy);
             if (to != OK) {

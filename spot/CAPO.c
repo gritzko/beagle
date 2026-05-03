@@ -28,14 +28,15 @@ static void capo_abrt_handler(int sig) {
 
 #include "abc/ANSI.h"
 #include "abc/PRO.h"
-#include "abc/SORT.h"
 #include "dog/DEF.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
-#include "dog/IGNO.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
+#include "sniff/AT.h"
+#include "sniff/CLASS.h"
+#include "sniff/SNIFF.h"
 #include "spot/SPOT.h"
 
 // kv64 hashtable for blob staging (hashlet32 → off+len)
@@ -103,13 +104,14 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
 typedef struct {
     u64 **idle;
     u64 *end;
-    u32 path_hash;
+    u64 fn_rap;
 } CAPOTriCtx;
 
 static ok64 CAPOTriCB(void0p arg, u8cs tri) {
     CAPOTriCtx *ctx = (CAPOTriCtx *)arg;
     if (*ctx->idle >= ctx->end) return CAPONOROOM;
-    u64 entry = CAPOTriPack(tri) | (u64)ctx->path_hash;
+    u32 tid = spot64TriId(tri);
+    u64 entry = spot64Pack(SPOT64_TRI, tid, ctx->fn_rap);
     **ctx->idle = entry;
     (*ctx->idle)++;
     return OK;
@@ -138,7 +140,7 @@ static ok64 CAPOTriExtractToks(u32cs toks, u8cp base,
     return OK;
 }
 
-ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 phash) {
+ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u64 fn_rap) {
     sane(entries != NULL && $ok(source) && $ok(ext));
     if ($empty(source)) done;
 
@@ -171,7 +173,7 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 phash) {
     CAPOTriCtx ctx = {
         .idle = u64bIdle(entries),
         .end = entries[3],
-        .path_hash = phash,
+        .fn_rap = fn_rap,
     };
     o = CAPOTriExtractToks(tokslice, source[0], CAPOTriCB, &ctx);
     if (o != OK) { u32bUnMap(toks); return o; }
@@ -184,8 +186,8 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 phash) {
         u8cs val = {}; tok32Val(val, tokslice, source[0], i);
         if ($len(val) < 2) continue;
         if (*ctx.idle >= ctx.end) break;
-        u64 type = (tag == 'N') ? IDX64_DEF : IDX64_MEN;
-        u64 entry = (type << 62) | CAPOSymKey(val) | (u64)phash;
+        u8 type = (tag == 'N') ? SPOT64_DEF : SPOT64_MEN;
+        u64 entry = spot64Pack(type, spot64SymId(val), fn_rap);
         *(*ctx.idle) = entry;
         (*ctx.idle)++;
     }
@@ -194,12 +196,12 @@ ok64 CAPOIndexBlob(u64bp entries, u8csc source, u8csc ext, u32 phash) {
     done;
 }
 
-//  Search-time wrapper: takes a path string, hashes it, delegates.
-//  Ingest goes through CAPOIndexBlob directly (path_hash is already
-//  on hand from the SPOTUpdate(TREE) propagation).
-ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc path) {
-    sane($ok(path));
-    return CAPOIndexBlob(entries, source, ext, CAPOPathHash(path));
+//  Search-time wrapper: takes a basename slice, hashes it, delegates.
+//  Ingest goes through CAPOIndexBlob directly (fn_rap is already on
+//  hand from the SPOTUpdate(TREE) stamp).
+ok64 CAPOIndexFile(u64bp entries, u8csc source, u8csc ext, u8csc basename) {
+    sane($ok(basename));
+    return CAPOIndexBlob(entries, source, ext, CAPOFnRap40(basename));
 }
 
 // --- Stack management ---
@@ -340,61 +342,45 @@ ok64 CAPOCompactAll(spot *s) {
 
 // --- Trigram query helpers ---
 
-// Seek a HIT to a prefix range [prefix, prefix + 1<<32).
-// After this, the HIT only contains entries within the prefix.
+// Seek a HIT to a (type, id) bucket: [prefix, prefix + 1<<40).  An
+// entry is `[id:20|type:4|fn_rap:40]`, so a fixed (id, type) covers
+// exactly the 2^40 fn_rap span at the low end.
 static ok64 CAPOSeekPrefix(u64css iter, u64 prefix) {
     u64 lo = prefix;
-    u64 hi = prefix + (1ULL << 32);
+    u64 hi = prefix + (1ULL << SPOT64_FN_BITS);
     return HITu64SeekRange(iter, &lo, &hi);
 }
 
-ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u32g hashes) {
+ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes) {
     ok64 o = CAPOSeekPrefix(iter, tri_prefix);
     if (o != OK) return OK;
 
     while (!$empty(iter)) {
-        u32gFeed1(hashes, (u32)(*(*iter[0])[0]));
+        u64gFeed1(hashes, spot64FnRap(*(*iter[0])[0]));
         HITu64Step(iter);
     }
     return OK;
 }
 
-// In-place intersect hashbuf against a range-seeked HIT's path hashes.
-// Both hashbuf data and the HIT output are sorted by path hash.
-void CAPOFilterInPlace(u32bp hashbuf, u64css iter, u64 prefix) {
+// In-place intersect hashbuf against a range-seeked HIT's fn_raps.
+// Both hashbuf data and the HIT output are sorted by fn_rap.
+void CAPOFilterInPlace(u64bp hashbuf, u64css iter, u64 prefix) {
     CAPOSeekPrefix(iter, prefix);
-    u32s data = {};
-    $mv(data, u32bData(hashbuf));
-    u32 *r = data[0], *w = data[0];
+    u64s data = {};
+    $mv(data, u64bData(hashbuf));
+    u64 *r = data[0], *w = data[0];
 
     while (r < data[1] && !$empty(iter)) {
-        u32 ph = (u32)(*(*iter[0])[0]);
+        u64 ph = spot64FnRap(*(*iter[0])[0]);
         if (*r < ph) { r++; continue; }
         if (*r > ph) { HITu64Step(iter); continue; }
-        u32 matched = *r;
+        u64 matched = *r;
         *w++ = matched;
         while (r < data[1] && *r == matched) r++;
-        while (!$empty(iter) && (u32)(*(*iter[0])[0]) == matched)
+        while (!$empty(iter) && spot64FnRap(*(*iter[0])[0]) == matched)
             HITu64Step(iter);
     }
-    u32bShed(hashbuf, (size_t)(data[1] - w));
-}
-
-
-u32 CAPOIntersect(u32s a, u32csc b) {
-    u32 na = (u32)$len(a), nb = (u32)$len(b);
-    u32 i = 0, j = 0, k = 0;
-    while (i < na && j < nb) {
-        if (a[0][i] < b[0][j]) i++;
-        else if (a[0][i] > b[0][j]) j++;
-        else { a[0][k++] = a[0][i]; i++; j++; }
-    }
-    return k;
-}
-
-int CAPOu32cmp(const void *a, const void *b) {
-    u32 x = *(const u32 *)a, y = *(const u32 *)b;
-    return (x > y) - (x < y);
+    u64bShed(hashbuf, (size_t)(data[1] - w));
 }
 
 void CAPOProgress(const char *line) {
@@ -763,7 +749,7 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
         return SPOTBAD;
     }
 
-    Bu32 hashbuf1 = {};
+    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL)
         CAPOTrigramFilter(hashbuf1, &has_trigrams, needle, reporoot);
@@ -782,14 +768,14 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
         .file_ctx = &sc,
     };
     if (!$empty(ext)) $mv(opts.target_ext, ext);
-    if (has_trigrams) $mv(opts.tri_hashes, u32bDataC(hashbuf1));
+    if (has_trigrams) $mv(opts.tri_hashes, u64bDataC(hashbuf1));
 
     if (ref != NULL) {
         home *h = SPOT.h;
         ok64 ko = KEEPOpen(h, NO);
         if (ko != OK && ko != KEEPOPEN) {
             fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
-            if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+            if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
             if ($empty(replace)) LESSArenaCleanup();
             return ko;
         }
@@ -812,91 +798,95 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
         fprintf(stderr, "%d replacements in %d files\n",
                 sc.total_replacements, sc.total_files_replaced);
 
-    if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+    if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
     done;
 }
 
-// --- File scan ---
+// --- File scan (ULOG-driven via SNIFFClassify) ---
+//
+//  CAPOScan replaces the legacy FILEScan worktree walk with a heap
+//  merge of two ULOG streams owned by other dogs: the trunk-tip tree
+//  (KEEPTreeULog) and the wt scan (SNIFFWtULog).  SNIFFClassify wraps
+//  both, fans rows to a per-path callback that knows whether the file
+//  is base-only (deleted), wt-only (new/untracked), or in both (clean
+//  or dirty by mtime).  We dispatch:
+//
+//    CLASS_BASE_ONLY            → file deleted from wt; skip.
+//    CLASS_WT_ONLY              → new/untracked; scan with NO filter
+//                                 (no index entries to compare against).
+//    CLASS_BOTH + clean mtime   → committed and unchanged; apply the
+//                                 trigram filter (basename ∈ candidate
+//                                 fn_rap40 set), scan if it passes.
+//    CLASS_BOTH + dirty mtime   → user-edited since last commit; scan
+//                                 with NO filter (index can't see the
+//                                 edit).
+//
+//  Content always comes from the wt — even for clean BOTH rows, since
+//  the wt copy is what the user expects search hits to reflect.
 
 typedef struct {
     CAPOScanOpts const *opts;
-    u8cs root;
-    size_t root_len;
-    igno ig;
-    b8   has_igno;
-} capo_scan_st;
+    u8cs                reporoot;
+} capo_class_ctx;
 
-static ok64 capo_scan_cb(void *arg, path8p path) {
-    capo_scan_st *st = arg;
-    CAPOScanOpts const *opts = st->opts;
-    u8cs data = {};
-    $mv(data, u8bDataC(path));
-    if ($empty(data)) return OK;
+static ok64 capo_class_step(class_step const *step, void *ctx_) {
+    capo_class_ctx *cx = (capo_class_ctx *)ctx_;
+    if (step->kind == CLASS_BASE_ONLY) return OK;        // deleted from wt
 
-    // Directory: trailing '/' appended by FILEScan
-    if (data[1][-1] == '/') {
-        // Extract basename (between last two '/' or start)
-        u8cp p = data[1] - 2;  // before trailing /
-        while (p > data[0] && p[-1] != '/') p--;
-        // Skip hidden dirs (.git, .dogs, etc.)
-        if (*p == '.') return FILESKIP;
-        // Check .gitignore
-        if (st->has_igno) {
-            u8cs rel = {data[0] + st->root_len, data[1] - 1};
-            if (!$empty(rel) && rel[0][0] == '/')
-                u8csFed(rel, 1);
-            if (!$empty(rel) && IGNOMatch(&st->ig, rel, YES))
-                return FILESKIP;
-        }
-        return OK;
-    }
+    u8cs path = {};
+    $mv(path, step->path);
+    if ($empty(path)) return OK;
 
-    // File: apply filters
     u8cs file_ext = {};
-    PATHu8sExt(file_ext, data);
-    if ($empty(file_ext)) return OK;
-    if (!CAPOKnownExt(file_ext)) return OK;
-    if (!$empty(opts->target_ext)) {
-        if (!TOKSameLexer(file_ext, opts->target_ext)) return OK;
+    PATHu8sExt(file_ext, path);
+    if ($empty(file_ext) || !CAPOKnownExt(file_ext)) return OK;
+    if (!$empty(cx->opts->target_ext) &&
+        !TOKSameLexer(file_ext, cx->opts->target_ext)) return OK;
+
+    //  Apply the trigram filter only when this is a clean tracked file
+    //  (BOTH + mtime ∈ stamp set) — the only case where the index is
+    //  authoritative about the file's contents.  Dirty + untracked
+    //  paths bypass the filter so the dirty/new content is searched.
+    b8 apply_filter = NO;
+    if (step->kind == CLASS_BOTH && step->wt_rec != NULL &&
+        SNIFFAtKnown(step->wt_rec->ts)) {
+        apply_filter = YES;
     }
 
-    // Compute relpath
-    u8cs relpath = {data[0] + st->root_len, data[1]};
-    if (!$empty(relpath) && relpath[0][0] == '/')
-        u8csFed(relpath, 1);
-
-    // Check .gitignore
-    if (st->has_igno && IGNOMatch(&st->ig, relpath, NO))
-        return OK;
-
-    // Trigram filter
-    if (opts->has_trigrams && !$empty(opts->tri_hashes)) {
-        u32 phash = CAPOPathHash(relpath);
-        u32s th = {(u32p)opts->tri_hashes[0], (u32p)opts->tri_hashes[1]};
-        if (!u32sBsearch(&phash, th))
-            return OK;
+    if (apply_filter && cx->opts->has_trigrams &&
+        !$empty(cx->opts->tri_hashes)) {
+        u8cs base = {};
+        PATHu8sBase(base, path);
+        if ($empty(base)) $mv(base, path);
+        u64 fn_rap = CAPOFnRap40(base);
+        u64s th = {(u64p)cx->opts->tri_hashes[0],
+                   (u64p)cx->opts->tri_hashes[1]};
+        if (!u64sBsearch(&fn_rap, th)) return OK;
     }
 
-    // NUL-terminated relpath for progress
-    char relpathz[FILE_PATH_MAX_LEN] = {};
-    size_t rlen = (size_t)$len(relpath);
-    if (rlen >= sizeof(relpathz)) rlen = sizeof(relpathz) - 1;
-    memcpy(relpathz, relpath[0], rlen);
-    CAPOProgress(relpathz);
+    //  Build absolute path: <reporoot>/<rel>.
+    a_path(fpbuf);
+    a_dup(u8c, root_s, cx->reporoot);
+    if (PATHu8bFeed(fpbuf, root_s) != OK) return OK;
+    if (PATHu8bPush(fpbuf, path)   != OK) return OK;
 
-    // Map file
+    //  NUL-terminated relpath for the progress line.
+    char rpz[FILE_PATH_MAX_LEN] = {};
+    size_t rlen = (size_t)$len(path);
+    if (rlen >= sizeof(rpz)) rlen = sizeof(rpz) - 1;
+    memcpy(rpz, path[0], rlen);
+    CAPOProgress(rpz);
+
     u8bp mapped = NULL;
-    ok64 o = FILEMapRO(&mapped, $path(path));
-    if (o != OK) return OK;  // skip unreadable files
-
+    if (FILEMapRO(&mapped, $path(fpbuf)) != OK) return OK;
     u8cs source = {};
     $mv(source, u8bDataC(mapped));
 
-    o = opts->file_fn(opts->file_ctx, relpath, source,
-                      file_ext, mapped, path);
-    if (o != OK) {
+    ok64 fo = cx->opts->file_fn(cx->opts->file_ctx, path, source,
+                                 file_ext, mapped, fpbuf);
+    if (fo != OK) {
         FILEUnMap(mapped);
-        return o;
+        return fo;
     }
     return OK;
 }
@@ -904,28 +894,32 @@ static ok64 capo_scan_cb(void *arg, path8p path) {
 ok64 CAPOScan(u8csc reporoot, CAPOScanOpts const *opts) {
     sane(!$empty(reporoot) && opts != NULL && opts->file_fn != NULL);
 
-    capo_scan_st st = {
-        .opts = opts,
-    };
-    $mv(st.root, reporoot);
-    st.root_len = (size_t)$len(reporoot);
+    //  SNIFFClassify needs both keeper + sniff singletons open.
+    home *h = SPOT.h;
+    ok64 ko = KEEPOpen(h, NO);
+    if (ko != OK && ko != KEEPOPEN) {
+        fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
+        return ko;
+    }
+    ok64 so = SNIFFOpen(h, NO);
+    if (so != OK && so != SNIFFOPEN) {
+        fprintf(stderr, "spot: sniff open failed: %s\n", ok64str(so));
+        if (ko == OK) KEEPClose();
+        return so;
+    }
 
-    // Load .gitignore
-    u8cs igroot = {(u8cp)reporoot[0], (u8cp)reporoot[1]};
-    if (IGNOLoad(&st.ig, igroot) == OK)
-        st.has_igno = YES;
+    capo_class_ctx cx = {.opts = opts};
+    $mv(cx.reporoot, reporoot);
 
-    a_path(wp);
-    call(PATHu8bFeed, wp, reporoot);
-
-    ok64 o = FILEScan(wp, (FILE_SCAN)(FILE_SCAN_ALL | FILE_SCAN_DEEP),
-                      capo_scan_cb, &st);
+    ok64 cr = SNIFFClassify(capo_class_step, &cx);
 
     CAPOProgress(NULL);
-    if (st.has_igno) IGNOFree(&st.ig);
 
-    if (o == FILESKIP) o = OK;  // normal completion
-    return o;
+    if (so == OK) SNIFFClose();
+    if (ko == OK) KEEPClose();
+
+    if (cr == FILESKIP) cr = OK;
+    return cr;
 }
 
 // --- Scan a historic ref via keeper: walk tree, pull matching-ext blobs ---
@@ -1040,7 +1034,7 @@ ok64 CAPOScanFiles(u8css files, CAPOScanOpts const *opts) {
 
 // --- Trigram filter ---
 
-ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
+ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
                         u8csc text, u8csc reporoot) {
     sane(hashbuf != NULL && has_trigrams != NULL);
     *has_trigrams = NO;
@@ -1050,8 +1044,8 @@ ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
     if (ro != OK) return OK;  // no index, skip filtering
     a_dup(u8c, dirslice, u8bDataC(capodir));
 
-    size_t maxhashes = 1ULL << 28;
-    call(u32bMap, hashbuf, maxhashes);
+    size_t maxhashes = 1ULL << 27;  // 128M u64 entries = 1 GB cap
+    call(u64bMap, hashbuf, maxhashes);
 
     u64cs runs[CAPO_MAX_LEVELS] = {};
     u64css stack = {runs, runs};
@@ -1071,7 +1065,7 @@ ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
         if (CAPOTriChar(p[0]) && CAPOTriChar(p[1]) &&
             CAPOTriChar(p[2])) {
             u8cs tri = {p, p + 3};
-            u64 tri_prefix = CAPOTriPack(tri);
+            u64 tri_prefix = spot64Pack(SPOT64_TRI, spot64TriId(tri), 0);
 
             u64cs seek_runs[CAPO_MAX_LEVELS];
             for (u32 i = 0; i < nidxfiles; i++) {
@@ -1082,12 +1076,12 @@ ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
             HITu64Start(seek_iter);
 
             if (!*has_trigrams) {
-                u32bReset(hashbuf);
+                u64bReset(hashbuf);
                 CAPOCollectPaths(seek_iter, tri_prefix,
-                                 u32bDataIdle(hashbuf));
+                                 u64bDataIdle(hashbuf));
                 *has_trigrams = YES;
             } else {
-                u32sSort(u32bData(hashbuf));
+                u64sSort(u64bData(hashbuf));
                 CAPOFilterInPlace(hashbuf, seek_iter, tri_prefix);
             }
         }
@@ -1096,8 +1090,8 @@ ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
 
     CAPOStackClose(mmaps, nidxfiles);
 
-    if (*has_trigrams && u32bDataLen(hashbuf) > 0)
-        u32sSort(u32bData(hashbuf));
+    if (*has_trigrams && u64bDataLen(hashbuf) > 0)
+        u64sSort(u64bData(hashbuf));
 
     return OK;
 }
@@ -1281,23 +1275,16 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     //  itself (DOGPupCreate picks max+1), so no separate counter.
     if (rw) {
         call(u64bMap, s->entries, CAPO_SCRATCH_LEN);
-        //  Path-hash propagation map — populated greedily as TREEs
-        //  flow through SPOTUpdate (parent-first per producer pack
-        //  order); read at every BLOB to tag postings inline.
-        call(kv64bAllocate, s->obj_to_path_hash, CAPO_OBJ_PATH_CAP);
-        memset(s->obj_to_path_hash[0], 0,
-               (size_t)(s->obj_to_path_hash[3] -
-                        s->obj_to_path_hash[0]) * sizeof(kv64));
-        s->obj_to_path_hash[1] = s->obj_to_path_hash[0];
-        s->obj_to_path_hash[2] = s->obj_to_path_hash[3];
-        //  Per-blob ext lookup, only blobs whose tree-entry name has
-        //  a known tokenizer extension appear here.
-        call(kv64bAllocate, s->blob_to_ext, CAPO_BLOB_EXT_CAP);
-        memset(s->blob_to_ext[0], 0,
-               (size_t)(s->blob_to_ext[3] - s->blob_to_ext[0])
+        //  Blob → (basename RAP, ext_off) map.  Stamped per-tree by
+        //  SPOTUpdate(TREE); read at every BLOB to tag postings.
+        //  Pack order is trees-before-blobs, so the lookup hits
+        //  without buffering.  Absent ⇒ silent skip.
+        call(kv64bAllocate, s->blob_to_fn, CAPO_BLOB_FN_CAP);
+        memset(s->blob_to_fn[0], 0,
+               (size_t)(s->blob_to_fn[3] - s->blob_to_fn[0])
                    * sizeof(kv64));
-        s->blob_to_ext[1] = s->blob_to_ext[0];
-        s->blob_to_ext[2] = s->blob_to_ext[3];
+        s->blob_to_fn[1] = s->blob_to_fn[0];
+        s->blob_to_fn[2] = s->blob_to_fn[3];
         //  Ext arena — offset 0 reserved as a sentinel ("missing"),
         //  so seed with a single NUL.
         call(u8bMap, s->ext_arena, CAPO_EXT_ARENA_LEN);
@@ -1341,19 +1328,29 @@ ok64 CAPOFlushRun(spot *s) {
     done;
 }
 
+extern u64 SPOT_DBG_BLOB_HIT, SPOT_DBG_BLOB_MISS,
+           SPOT_DBG_BLOB_NO_EXT, SPOT_DBG_TOKENISED;
+
 void SPOTClose(void) {
     if (!spot_is_open()) return;
     spot *s = &SPOT;
+    if (s->rw && getenv("SPOT_TRACE_ORDER")) {
+        fprintf(stderr,
+                "SPOT_DBG: blob_hit=%llu blob_miss=%llu "
+                "blob_no_ext=%llu tokenised=%llu\n",
+                (unsigned long long)SPOT_DBG_BLOB_HIT,
+                (unsigned long long)SPOT_DBG_BLOB_MISS,
+                (unsigned long long)SPOT_DBG_BLOB_NO_EXT,
+                (unsigned long long)SPOT_DBG_TOKENISED);
+    }
     if (s->rw && s->entries[0]) {
-        //  Final flush of any postings still in scratch — no close-pass
-        //  tree walk anymore; tokenisation happened inline in
-        //  SPOTUpdate(BLOB).  CAPOFlushRun also runs CAPOCompact, so
-        //  the puppy ladder stays balanced.
+        //  Final flush of any postings still in scratch.  Tokenisation
+        //  happened inline in SPOTUpdate(BLOB).  CAPOFlushRun also
+        //  runs CAPOCompact, so the puppy ladder stays balanced.
         CAPOFlushRun(s);
         u64bUnMap(s->entries);
-        if (!BNULL(s->obj_to_path_hash)) kv64bFree(s->obj_to_path_hash);
-        if (!BNULL(s->blob_to_ext))      kv64bFree(s->blob_to_ext);
-        if (!BNULL(s->ext_arena))        u8bUnMap(s->ext_arena);
+        if (!BNULL(s->blob_to_fn)) kv64bFree(s->blob_to_fn);
+        if (!BNULL(s->ext_arena))  u8bUnMap(s->ext_arena);
     }
     for (u32 i = 0; i < s->nmaps; i++) {
         if (s->toks[i][0] != NULL) u32bUnMap(s->toks[i]);

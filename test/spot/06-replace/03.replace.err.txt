@@ -1,0 +1,2 @@
+^replaced: x\.c \(2\)$
+^2 replacements in 1 files$

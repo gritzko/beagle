@@ -142,7 +142,7 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
               u8css files, uri const *ref) {
     sane($ok(substring) && !$empty(substring) && $ok(reporoot));
 
-    Bu32 hashbuf1 = {};
+    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL)
         CAPOTrigramFilter(hashbuf1, &has_trigrams, substring, reporoot);
@@ -158,7 +158,7 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
         .file_ctx = &gc,
     };
     if (!$empty(ext)) $mv(opts.target_ext, ext);
-    if (has_trigrams) $mv(opts.tri_hashes, u32bDataC(hashbuf1));
+    if (has_trigrams) $mv(opts.tri_hashes, u64bDataC(hashbuf1));
 
     ok64 scan_ret = OK;
     if (ref != NULL) {
@@ -167,7 +167,7 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
         ok64 ko = KEEPOpen(h, NO);
         if (ko != OK && ko != KEEPOPEN) {
             fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
-            if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+            if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
             LESSArenaCleanup();
             return ko;
         }
@@ -185,7 +185,7 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
         LESSRun(less_hunks, less_nhunks);
     LESSArenaCleanup();
 
-    if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+    if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
     done;
 }
 
@@ -197,7 +197,7 @@ typedef struct {
     u32 len;
     u32 nidxfiles;
     u64cs *runs;
-    u32 *const *hashbuf1;   // u32b decays to u32 *const *
+    u64 *const *hashbuf1;   // u64b decays to u64 *const *
     b8 *has_trigrams;
 } regexlits_ctx;
 
@@ -210,7 +210,7 @@ static void regexlits_flush(regexlits_ctx *c) {
                 !CAPOTriChar(c->buf[li + 2])) continue;
             u8 _tb[3] = {c->buf[li], c->buf[li + 1], c->buf[li + 2]};
             u8cs tri = {_tb, _tb + 3};
-            u64 tri_prefix = CAPOTriPack(tri);
+            u64 tri_prefix = spot64Pack(SPOT64_TRI, spot64TriId(tri), 0);
             u64cs seek_runs[CAPO_MAX_LEVELS];
             for (u32 si = 0; si < c->nidxfiles; si++) {
                 seek_runs[si][0] = c->runs[si][0];
@@ -219,12 +219,12 @@ static void regexlits_flush(regexlits_ctx *c) {
             u64css seek_iter = {seek_runs, seek_runs + c->nidxfiles};
             HITu64Start(seek_iter);
             if (!*c->has_trigrams) {
-                u32bReset(c->hashbuf1);
+                u64bReset(c->hashbuf1);
                 CAPOCollectPaths(seek_iter, tri_prefix,
-                                 u32bDataIdle(c->hashbuf1));
+                                 u64bDataIdle(c->hashbuf1));
                 *c->has_trigrams = YES;
             } else {
-                u32sSort(u32bData(c->hashbuf1));
+                u64sSort(u64bData(c->hashbuf1));
                 HITu64Seek(seek_iter, &tri_prefix);
                 CAPOFilterInPlace(c->hashbuf1, seek_iter, tri_prefix);
             }
@@ -246,7 +246,7 @@ static ok64 regexlits_cb(void *ctx, u8 ch, b8 flush) {
 static void CAPORegexLiterals(u8csc pattern,
                                u64css stack, u32 nidxfiles,
                                u64cs *runs,
-                               u32b hashbuf1,
+                               u64b hashbuf1,
                                b8 *has_trigrams) {
     (void)stack;  // resolved per-trigram via runs+nidxfiles
     regexlits_ctx ctx = {
@@ -424,14 +424,14 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
     $mv(nfa_ws, u32bIdle(nfa_ws_bb));
 
     // Trigram filtering for regex
-    Bu32 hashbuf1 = {};
+    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL) {
         a_path(capodir);
         call(CAPOResolveDir, capodir, reporoot);
         a_dup(u8c, dirslice, u8bDataC(capodir));
 
-        ok64 ao = u32bMap(hashbuf1, 1ULL << 28);
+        ok64 ao = u64bMap(hashbuf1, 1ULL << 27);
         if (ao == OK) {
             u64cs runs[CAPO_MAX_LEVELS] = {};
             u64css stack = {runs, runs};
@@ -443,8 +443,8 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
                 CAPORegexLiterals(pattern, stack, nidxfiles, runs,
                                    hashbuf1, &has_trigrams);
             CAPOStackClose(mmaps, nidxfiles);
-            if (has_trigrams && u32bDataLen(hashbuf1) > 0)
-                u32sSort(u32bData(hashbuf1));
+            if (has_trigrams && u64bDataLen(hashbuf1) > 0)
+                u64sSort(u64bData(hashbuf1));
         }
     }
 
@@ -460,7 +460,7 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
         .file_ctx = &pc,
     };
     if (!$empty(ext)) $mv(opts.target_ext, ext);
-    if (has_trigrams) $mv(opts.tri_hashes, u32bDataC(hashbuf1));
+    if (has_trigrams) $mv(opts.tri_hashes, u64bDataC(hashbuf1));
 
     if (ref != NULL) {
         home *h = SPOT.h;
@@ -468,7 +468,7 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
         if (ko != OK && ko != KEEPOPEN) {
             fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
             u32bFree(nfa_ws_bb);
-            if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+            if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
             LESSArenaCleanup();
             return ko;
         }
@@ -486,6 +486,6 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
     LESSArenaCleanup();
 
     u32bFree(nfa_ws_bb);
-    if (!BNULL(hashbuf1)) u32bUnMap(hashbuf1);
+    if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
     done;
 }

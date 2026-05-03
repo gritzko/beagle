@@ -355,6 +355,12 @@ static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     (void)blob;
     treeulog_ctx *c = (treeulog_ctx *)vctx;
 
+    //  TODO(delta-trees): emit a `dir`-kind row for WALK_KIND_DIR with
+    //  the subtree SHA in the fragment so sniff/POST.c:post_build_tree
+    //  can pick up the parent commit's same-path tree SHA per prefix
+    //  and pass it as KEEPPackFeed's base_hashlet60 (currently 0 at
+    //  POST.c:2310 — see TODO there).  Today we only emit leaf rows,
+    //  which is why the on-write delta path stays unused for trees.
     if (kind == WALK_KIND_DIR) return OK;       // root + subtrees skipped
     u8 kletter = treeulog_kind_letter(kind);
     if (kletter == 0) return OK;                // unknown kind, skip

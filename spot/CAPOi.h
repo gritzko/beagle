@@ -29,10 +29,8 @@ void CAPOGrepCtx(u8csc source, u32 match_pos, u32 nctx,
                   u32 *lo, u32 *hi);
 
 // --- Trigram query helpers ---
-ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u32g hashes);
-void CAPOFilterInPlace(u32bp hashbuf, u64css iter, u64 prefix);
-u32 CAPOIntersect(u32s a, u32csc b);
-int CAPOu32cmp(const void *a, const void *b);
+ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes);
+void CAPOFilterInPlace(u64bp hashbuf, u64css iter, u64 prefix);
 
 // --- HIT instantiation for u64cs ---
 
@@ -64,7 +62,7 @@ typedef ok64 (*CAPOFileFn)(void *ctx, u8csc relpath, u8csc source,
 
 typedef struct {
     u8cs       target_ext;   // language filter (empty = all known)
-    u32cs      tri_hashes;   // sorted trigram candidate path hashes
+    u64cs      tri_hashes;   // sorted candidate fn_rap40 set
     b8         has_trigrams;  // tri_hashes is active
     CAPOFileFn file_fn;      // per-file callback
     void      *file_ctx;     // opaque context for file_fn
@@ -86,12 +84,12 @@ ok64 CAPOScanFiles(u8css files, CAPOScanOpts const *opts);
 ok64 CAPOScanRef(keeper *k, uri const *target,
                   CAPOScanOpts const *opts);
 
-// Pre-compute trigram candidate hash set from literal text.
-ok64 CAPOTrigramFilter(Bu32 hashbuf, b8 *has_trigrams,
+// Pre-compute candidate fn_rap40 set from literal text.
+ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
                         u8csc text, u8csc reporoot);
 
 // Same for regex patterns (extracts literal runs first).
-ok64 CAPOTrigramFilterRegex(Bu32 hashbuf, b8 *has_trigrams,
+ok64 CAPOTrigramFilterRegex(Bu64 hashbuf, b8 *has_trigrams,
                              u8csc pattern, u8csc reporoot);
 
 // --- Hunk building (shared by SPOT/GREP) ---

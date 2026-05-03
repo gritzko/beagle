@@ -1,0 +1,6 @@
+--- committed.c#1 ---
+int needle_xyz(int x) { return x; }
+
+--- uncommitted.c#1 ---
+int needle_xyz(int y) { return y; }
+

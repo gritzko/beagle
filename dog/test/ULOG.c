@@ -489,6 +489,57 @@ static ok64 T_compact_latest(void) {
     done;
 }
 
+//  Regression: aborted RW open leaves a sparse, page-sized file with
+//  no real content (FILEBookCreate ftruncate's to a page before any
+//  row gets written; if the writer crashes / is killed before
+//  ULOGAppendAt, the file persists in this state).  A subsequent RO
+//  open via ULOGOpenRO must NOT crash on the first byte read of a
+//  sparse hole — it must surface as an empty log so callers fall
+//  through to the "no rows" branch (e.g., SNIFFAtTailOf returning
+//  SNIFFATNONE for a fresh worktree).
+static ok64 T_aborted_leftover(void) {
+    sane(1);
+    char const *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    char tpath[512];
+    snprintf(tpath, sizeof(tpath), "%s/tmp/ulog-al.log", home);
+    {
+        char mkd[512];
+        snprintf(mkd, sizeof(mkd), "mkdir -p %s/tmp", home);
+        int _ = system(mkd); (void)_;
+    }
+    rm_tmp(tpath);
+    a_pad(u8, path_buf, FILE_PATH_MAX_LEN);
+    {
+        size_t L = strlen(tpath);
+        u8cs s = {(u8cp)tpath, (u8cp)tpath + L};
+        u8bFeed(path_buf, s);
+        u8bFeed1(path_buf, 0);
+    }
+    a_dup(u8c, path, u8bData(path_buf));
+
+    //  Mirror FILEBookCreate's body without writing any content:
+    //  create the file, ftruncate it to one page, close.  This is
+    //  exactly the on-disk state an aborted RW open leaves behind.
+    //  Hardcoded 4096 (vs sysconf) because FILESysPage isn't in the
+    //  public header and any sane page size triggers the same path.
+    int fd = FILE_CLOSED;
+    call(FILECreate, &fd, path);
+    call(FILEResize, &fd, 4096);
+    call(FILEClose, &fd);
+
+    //  ULOGOpenRO must succeed and surface zero rows — the previous
+    //  symptom was SIGBUS on *scan[0] inside ulog_rebuild_idx.
+    u8bp  l_data = NULL;
+    Bkv64 l_idx  = {};
+    call(ULOGOpenRO, &l_data, l_idx, path);
+    want(ULOGCount(l_idx) == 0);
+    call(ULOGClose, l_data, l_idx, NO);
+
+    rm_tmp(tpath);
+    done;
+}
+
 ok64 ULOGtest(void) {
     sane(1);
     fprintf(stderr, "T_roundtrip...\n");     call(T_roundtrip);
@@ -501,6 +552,7 @@ ok64 ULOGtest(void) {
     fprintf(stderr, "T_whitespace...\n");    call(T_whitespace);
     fprintf(stderr, "T_each_latest...\n");   call(T_each_latest);
     fprintf(stderr, "T_compact_latest...\n");call(T_compact_latest);
+    fprintf(stderr, "T_aborted_leftover...\n"); call(T_aborted_leftover);
     done;
 }
 

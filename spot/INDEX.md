@@ -35,28 +35,41 @@ the pipe. Otherwise it writes plain ASCII directly to stdout via
 | `CAPOPcreGrep` | Regex grep via Thompson NFA + trigram filtering (GREP.c) |
 | `CAPOCompact` / `CAPOCompactAll` | Compact LSM index runs |
 | `CAPOResolveDir` | Resolve `<workspace>/.dogs/spot` dir |
-| `CAPOIndexFile` | Tokenize one blob, emit trigram+symbol u64 postings |
-| `CAPOCommitAppend` | Append a commit SHA to `.dogs/spot/COMMIT` |
+| `CAPOIndexBlob` | Tokenize a streaming blob, emit `spot64` postings keyed by precomputed `fn_rap40` |
+| `CAPOIndexFile` | Search-time wrapper: hash basename, delegate to `CAPOIndexBlob` |
+| `CAPOFnRap40` | `RAPHash(basename) & ((1<<40)-1)` — the 40-bit posting key |
 
-Ingestion is driven by `spot get` (→ `SPOTIngestNewCommits`), which
-`be` runs after `keeper get` / `sniff get`.  It walks every ref in
-`.dogs/keeper/REFS`, skips commit SHAs already in `.dogs/spot/COMMIT`,
-and for each new commit walks the tree via `KEEPLsFiles` + pulls
-blobs through `KEEPGetExact`, feeding `CAPOIndexFile` per blob.
-`spot get` opens spot rw (set by `spot` CLI when the verb is `get`).
+Ingestion is driven by keeper's UNPK emit hook (`SPOTUpdate` per
+resolved object), so a `keeper get` / `sniff get` indexes every blob
+inline.  `spot get` is a no-op kept for orchestration uniformity.
+The dispatch is order-tolerant beyond a single guarantee:
+
+- `COMMIT` — ignored.
+- `TREE` — for each `(name, child_sha)` entry whose basename has a
+  known tokenizer ext, stamp `blob_to_fn[hashlet60(child_sha)] =
+  (CAPOFnRap40(name) << 24) | ext_off`.  Subtrees and untokenizable
+  blobs are skipped — no chain, no parent state.
+- `BLOB` — look up `(fn_rap, ext_off)`; on hit, tokenize inline and
+  emit postings via `CAPOIndexBlob`.  Miss = no tokenizable basename
+  in any tree we've seen → silent skip.
+
+Pack producers (git, sniff) emit trees before blobs, so the lookup
+always hits.  No buffering, no deferred-tree replay, no commit-root
+seeding.
 
 Historic search (`spot … ?ref`) goes through `CAPOScanRef`: resolves
 the ref via keeper, walks the tree, pulls each blob-of-matching-ext,
 and runs the usual grep/pcre/snippet callbacks on the blob content.
 `spot --replace` is refused when `?ref` is set (no on-disk file).
 
-Worktree search uses the trigram filter for speed: paths whose
-path-hash carries no needle-trigram entry are skipped.  Any file that
-shares a path with a previously-indexed blob passes the filter, so
-mutated-but-tracked files are covered (the index accumulates hashes
-across history).  Strictly-untracked brand-new files with novel
-trigrams would be skipped — sniff-changed-file enumeration could
-bypass the filter explicitly; not currently wired.
+Worktree search uses the basename-RAP filter for speed: paths whose
+basename's `fn_rap40` carries no needle-trigram entry are skipped.
+Two files with the same basename in different directories share one
+posting bucket; both pass the filter and the worktree scan rescans
+each.  Strictly-untracked brand-new files with novel trigrams are
+still candidates as long as their basename appears in any indexed
+blob — sniff-changed-file enumeration could bypass the filter
+explicitly; not currently wired.
 
 ## Key functions (SPOT.h)
 
@@ -76,6 +89,21 @@ bypass the filter explicitly; not currently wired.
 
 ## Index format
 
-Trigram index lives in `.dogs/spot/*.idx` (next to `.git`). Each entry is a u64:
-upper 18 bits = trigram (3 RON64 chars), lower 32 bits = path hash.
-Files are sorted MSET runs, compacted via LSM-style merging.
+Index lives in `.dogs/spot/*.spot.idx` (under the workspace's
+`.dogs/`).  Each entry is one `spot64` (`u64`) with the layout
+
+```
+[ id:20 | type:4 | fn_rap:40 ]   (high → low, natural u64 sort)
+```
+
+| `type` | `id` payload |
+|--------|---------------|
+| `SPOT64_TRI` (0) | 18-bit packed RON64 trigram (2 spare bits) |
+| `SPOT64_MEN` (1) | `RAPHash(symbol_name) & 0xFFFFF`     — `S`/`C` tags |
+| `SPOT64_DEF` (2) | `RAPHash(symbol_name) & 0xFFFFF`     — `N` tag |
+| 3..15 | reserved |
+
+`fn_rap` is `RAPHash(basename) & ((1<<40)-1)` — the leaf basename
+only, no path.  Sorting clusters by `id` first (so seek-by-trigram
+is a contiguous `1<<40` range), then `type`, then `fn_rap`.  Files
+are sorted MSET runs, compacted via LSM-style merging.
