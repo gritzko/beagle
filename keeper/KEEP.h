@@ -400,4 +400,22 @@ typedef ok64 (*KEEPTipCb)(keep_tipcp t, void *ctx);
 //  stop-without-error and converted to OK on return.
 ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx);
 
+//  Remote-tracking ref entry — REFS rows whose key carries an
+//  authority or scheme (e.g. `//origin?heads/main`,
+//  `https://github.com/x?heads/y`).  `key` is the full URI bytes
+//  (everything before `#`); `sha` is 40 hex chars.  Slices borrow
+//  bytes from REFSLoad's arena; valid only while the iteration
+//  callback runs.
+typedef struct {
+    u8cs key;
+    u8cs sha;
+} keep_remote;
+typedef keep_remote const *keep_remotecp;
+
+typedef ok64 (*KEEPRemoteCb)(keep_remotecp r, void *ctx);
+
+//  Iterate every remote-tracking ref row (skips local `?<path>`
+//  tips and tombstones).  Same walk semantics as KEEPEachTip.
+ok64 KEEPEachRemote(keeper *k, KEEPRemoteCb cb, void *ctx);
+
 #endif

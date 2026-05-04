@@ -492,6 +492,66 @@ static ok64 sniff_status(u8cs reporoot) {
     return r;
 }
 
+// --- Mode: Get summary (bare `be get`) ---
+//
+//  Bare `be get` (no URI) prints a worktree-anchored snapshot of
+//  what's reachable: every local branch tip from keeper REFS, with
+//  the current branch starred; then every remote-tracking ref so
+//  the user can see which `//host?ref` rows are on file.
+
+static ok64 sniff_get_branch_cb(keep_tipcp t, void *ctx) {
+    u8cs *cp = (u8cs *)ctx;
+    u8cs cur = {(*cp)[0], (*cp)[1]};
+    char marker = ' ';
+    if ($len(t->path) == $len(cur) &&
+        ($len(cur) == 0 ||
+         memcmp(t->path[0], cur[0], $len(cur)) == 0)) {
+        marker = '*';
+    }
+    fprintf(stdout, "%c ?%.*s\t%.*s\n",
+            marker,
+            (int)$len(t->path), (char *)t->path[0],
+            (int)$len(t->sha),  (char *)t->sha[0]);
+    return OK;
+}
+
+static ok64 sniff_get_remote_cb(keep_remotecp r, void *ctx) {
+    (void)ctx;
+    fprintf(stdout, "  %.*s\t%.*s\n",
+            (int)$len(r->key), (char *)r->key[0],
+            (int)$len(r->sha), (char *)r->sha[0]);
+    return OK;
+}
+
+static ok64 sniff_get_summary(u8cs reporoot) {
+    sane($ok(reporoot));
+    (void)reporoot;
+    keeper *k = &KEEP;
+
+    //  Current branch from sniff baseline (empty == trunk).
+    ron60 bts = 0, bverb = 0;
+    uri bu = {};
+    u8cs cur = {};
+    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+        u8csMv(cur, bu.query);
+    }
+
+    fprintf(stdout, "branches:\n");
+    ok64 to = KEEPEachTip(k, sniff_get_branch_cb, &cur);
+    if (to != OK && to != REFSNONE) {
+        fprintf(stderr, "sniff: get: branches: %s\n", ok64str(to));
+        fail(to);
+    }
+
+    fprintf(stdout, "remotes:\n");
+    ok64 ro = KEEPEachRemote(k, sniff_get_remote_cb, NULL);
+    if (ro != OK && ro != REFSNONE) {
+        fprintf(stderr, "sniff: get: remotes: %s\n", ok64str(ro));
+        fail(ro);
+    }
+    done;
+}
+
 // --- Mode: Checkout ---
 
 static ok64 sniff_checkout(u8cs reporoot, u8cs hex) {
@@ -1002,8 +1062,13 @@ ok64 SNIFFExec(cli *c) {
         }
     } else if (is_checkout) {
         if (c->nuris < 1) {
-            fprintf(stderr, "sniff: get/checkout requires a URI or hex\n");
-            ret = SNIFFFAIL;
+            if ($eq(c->verb, v_get)) {
+                ret = sniff_get_summary(reporoot);
+            } else {
+                fprintf(stderr,
+                    "sniff: checkout requires a URI or hex\n");
+                ret = SNIFFFAIL;
+            }
         } else {
             uri *u = &c->uris[0];
             if ($eq(c->verb, v_get)) {

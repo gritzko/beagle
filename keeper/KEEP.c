@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "abc/BUF.h"
 #include "abc/FILE.h"
 #include "abc/HEX.h"
 #include "abc/PATH.h"
@@ -3353,4 +3354,71 @@ ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx) {
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
     keep_tip_walk w = {.cb = cb, .ctx = ctx};
     return REFSEach($path(keepdir), keep_tip_filter, &w);
+}
+
+// =====================================================================
+//  KEEPEachRemote — list every remote-tracking ref (key, sha).
+//
+//  REFS rows survive dedup separately per (URI, verb), so a single
+//  remote URL fetched via `get` and pushed via `post` produces two
+//  surviving rows.  For display callers want one entry per URL —
+//  the latest write across verbs.  We walk REFSEach in arrival
+//  order (latest-first within each verb-bucket) and use a seen-URL
+//  buffer to skip URL repeats; the first occurrence wins.
+// =====================================================================
+
+typedef struct {
+    KEEPRemoteCb cb;
+    void        *ctx;
+    Bu8         *seen;   //  newline-separated URLs already emitted
+} keep_remote_walk;
+
+static b8 keep_remote_seen(Bu8 *seen, u8csc url) {
+    a_dup(u8c, scan, u8bData(*seen));
+    while (!u8csEmpty(scan)) {
+        u8cs line = {};
+        if (u8csDrainLine(scan, line) != OK) break;
+        if (u8csLen(line) == u8csLen(url) &&
+            memcmp(line[0], url[0], u8csLen(url)) == 0) return YES;
+    }
+    return NO;
+}
+
+static ok64 keep_remote_filter(refcp r, void *ctx_) {
+    keep_remote_walk *w = (keep_remote_walk *)ctx_;
+
+    //  Local-branch keys start with `?` (no scheme, no authority).
+    //  Remote-tracking keys carry scheme or authority bytes.
+    u8cs k = {r->key[0], r->key[1]};
+    if ($empty(k) || *k[0] == '?') return OK;
+
+    u8cs v = {r->val[0], r->val[1]};
+    if ($empty(v)) return OK;
+    if (*v[0] == '?') v[0]++;
+    if (u8csLen(v) != 40) return OK;
+    b8 tomb = YES;
+    $for(u8c, p, v) if (*p != '0') { tomb = NO; break; }
+    if (tomb) return OK;
+
+    if (keep_remote_seen(w->seen, k)) return OK;
+    u8bFeed (*w->seen, k);
+    u8bFeed1(*w->seen, '\n');
+
+    keep_remote rem = {};
+    rem.key[0] = k[0];
+    rem.key[1] = k[1];
+    rem.sha[0] = v[0];
+    rem.sha[1] = v[1];
+    return w->cb(&rem, w->ctx);
+}
+
+ok64 KEEPEachRemote(keeper *k, KEEPRemoteCb cb, void *ctx) {
+    sane(k && cb);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    Bu8 seen = {};
+    call(u8bAllocate, seen, 1UL << 14);     //  16K seen-URL set
+    keep_remote_walk w = {.cb = cb, .ctx = ctx, .seen = &seen};
+    ok64 rc = REFSEach($path(keepdir), keep_remote_filter, &w);
+    u8bFree(seen);
+    return rc;
 }
