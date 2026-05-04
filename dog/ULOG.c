@@ -691,7 +691,7 @@ static ok64 ulog_wt_cb(void *varg, path8bp path) {
 
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
-    if (!ULOGu8sRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (!ULOGu8sRelFromFull(rel, c->reporoot, full)) return OK;
     if (c->skip && c->skip(rel, c->skip_ctx))         return OK;
 
     struct stat sb = {};

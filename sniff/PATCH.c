@@ -185,7 +185,7 @@ static ok64 write_blob(u8cs reporoot, u8csc relpath_in,
     {
         a_path(dp);
         u8cs dir = {};
-        PATHu8sDir(&dir, relpath);
+        PATHu8sDir(dir, relpath);
         if (!$empty(dir)) {
             call(SNIFFFullpath, dp, reporoot, dir);
             FILEMakeDirP($path(dp));

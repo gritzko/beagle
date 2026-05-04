@@ -120,7 +120,7 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
 
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
     if (c->mode == DEL_DIR_PREFLIGHT) {

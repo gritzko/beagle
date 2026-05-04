@@ -379,7 +379,7 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
 
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};
@@ -425,7 +425,7 @@ static ok64 at_list_cb(void *varg, path8bp path) {
 
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};
@@ -494,7 +494,7 @@ static ok64 at_ulog_cb(void *varg, path8bp path) {
 
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, c->reporoot, full)) return OK;
+    if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
     struct stat sb = {};

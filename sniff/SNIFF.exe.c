@@ -157,7 +157,7 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
     a_dup(u8c, full, u8bData(path));
 
     u8cs rel = {};
-    if (!SNIFFRelFromFull(&rel, w->reporoot, full)) return OK;
+    if (!SNIFFRelFromFull(rel, w->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
     //  Skip the daemon's own pidfile — we don't log ourselves.
@@ -344,7 +344,7 @@ static i64 status_ron60_to_secs(ron60 ts) {
     return s == (time_t)-1 ? 0 : (i64)s;
 }
 
-static void status_push(Bu8 buf, u8cs path, ron60 ts, i64 now,
+static void status_push(Bu8 buf, u8csc path, ron60 ts, i64 now,
                         u32 *count) {
     //  DOGutf8sFeedDate emits exactly 5 chars (centred-padded) — no
     //  per-caller padding needed.
