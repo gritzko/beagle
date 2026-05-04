@@ -32,6 +32,15 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"weave",  "graf"},
     {"map",    "graf"},
     {"ls",     "sniff"},
+    //  Search projectors — read-only views (VERBS.md §"View projectors").
+    //  Scheme picks the search backend; path-slot carries the body.
+    //  Examples:
+    //    be spot:'u8sFeed( a, b )'      structural
+    //    be regex:'u\d+sFeed'           PCRE
+    //    be grep:u8sFeed                literal
+    {"spot",   "spot"},
+    {"grep",   "spot"},
+    {"regex",  "spot"},
     {NULL,     NULL}
 };
 
@@ -178,8 +187,41 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
         if (c == ':')               { has_colon = YES; }
     }
 
-    // Whitespace wins immediately: not a URI, synthesize #<arg>.
+    // URI vs free-text disambiguation for whitespace tokens.  A token
+    // is URI-shaped only when it *starts* with one of the URI sigils:
+    //   `?` query, `#` fragment, `/` (incl. `//`) authority/path,
+    //   `<scheme>:` transport or projector.
+    // Plain whitespace tokens — `fix the typo`, `URI/verb routing`,
+    // `#wild msg` — get the bypass into the fragment slot.  This way
+    // `spot:'u8sFeed( a, b )'` reaches URILexer, but `URI/verb routing`
+    // doesn't get parsed as a path-form URI.
+    b8 starts_uri = NO;
+    if (!u8csEmpty(arg)) {
+        u8 c0 = arg[0][0];
+        if (c0 == '?' || c0 == '#' || c0 == '/') starts_uri = YES;
+        else if (has_colon) {
+            //  Scheme sits before the first `:` and is alpha (alpha|digit|+|-|.)*.
+            //  If we hit any other char before `:`, this isn't a scheme.
+            for (u8cp p = arg[0]; p < arg[1]; p++) {
+                u8 c = *p;
+                if (c == ':') { starts_uri = (p > arg[0]); break; }
+                b8 alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+                b8 digit = (c >= '0' && c <= '9');
+                b8 ext   = (c == '+' || c == '-' || c == '.');
+                if (p == arg[0]) { if (!alpha) break; }
+                else { if (!alpha && !digit && !ext) break; }
+            }
+        }
+    }
+
+    if (starts_uri) {
+        // Path may contain whitespace per RFC pchar's `unwise` set;
+        // URILexer handles it.
+        return DOGParseURI(u, arg);
+    }
+
     if (has_ws) {
+        // Free-text token (commit messages, search prose) → fragment.
         u->data[0]      = arg[0];
         u->data[1]      = arg[1];
         u->fragment[0]  = arg[0];
@@ -187,7 +229,7 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
         done;
     }
 
-    // Structural char → try the URI parser.
+    // Structural char in a non-whitespace token → URI parser.
     if (has_mark || has_slash || has_colon) {
         return DOGParseURI(u, arg);
     }

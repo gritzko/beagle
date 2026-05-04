@@ -384,9 +384,16 @@ ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes) {
     ok64 o = CAPOSeekPrefix(iter, tri_prefix);
     if (o != OK) return OK;
 
+    u64 collected = 0;
     while (!$empty(iter)) {
         u64gFeed1(hashes, spot64FnRap(*(*iter[0])[0]));
+        collected++;
         HITu64Step(iter);
+    }
+    if (getenv("SPOT_TRACE_QUERY")) {
+        fprintf(stderr, "spot: collect tri=%llx raw=%llu\n",
+            (unsigned long long)(tri_prefix >> SPOT64_FN_BITS),
+            (unsigned long long)collected);
     }
     return OK;
 }
@@ -728,6 +735,22 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
     if (o != OK) { if (mapped) FILEUnMap(mapped); return OK; }
     o = SPOTTokenize(toks, source, file_ext);
     if (o != OK) { u32bUnMap(toks); if (mapped) FILEUnMap(mapped); return OK; }
+    if (getenv("SPOT_TRACE_QUERY")) {
+        u32cs htoks = {(u32cp)u32bDataHead(toks),
+                       (u32cp)u32bIdleHead(toks)};
+        u8cp src = source[0];
+        u32 ntoks = (u32)$len(htoks);
+        u32 hit_tok = 0;
+        size_t ndl_len = (size_t)$len(sc->needle);
+        for (u32 i = 0; i < ntoks; i++) {
+            u8cs tv = {}; tok32Val(tv, htoks, src, i);
+            if ((size_t)$len(tv) == ndl_len &&
+                memcmp(tv[0], sc->needle[0], ndl_len) == 0) hit_tok++;
+        }
+        fprintf(stderr,
+            "spot:   sgcb %.*s ntoks=%u eq_tokens=%u\n",
+            (int)$len(relpath), (char *)relpath[0], ntoks, hit_tok);
+    }
     {
         u32 *dts[2] = {u32bDataHead(toks), u32bIdleHead(toks)};
         a_dup(u8c,dext,file_ext);
@@ -858,9 +881,26 @@ typedef struct {
     u8cs                reporoot;
 } capo_class_ctx;
 
+//  Per-query scan counters — drained at end of CAPOScan.  Help
+//  attribute "search found nothing" to the right cause: filter
+//  rejection (fn_rap not in trigram candidate set), ext mismatch,
+//  unknown ext, or no candidate hit at all.
+static u64 SPOT_SCAN_TOTAL    = 0;
+static u64 SPOT_SCAN_DELETED  = 0;
+static u64 SPOT_SCAN_NO_EXT   = 0;
+static u64 SPOT_SCAN_EXT_MISS = 0;
+static u64 SPOT_SCAN_FILTER_REJ = 0;
+static u64 SPOT_SCAN_FILTER_PASS = 0;
+static u64 SPOT_SCAN_NO_FILTER   = 0;
+static u64 SPOT_SCAN_SCANNED  = 0;
+
 static ok64 capo_class_step(class_step const *step, void *ctx_) {
     capo_class_ctx *cx = (capo_class_ctx *)ctx_;
-    if (step->kind == CLASS_BASE_ONLY) return OK;        // deleted from wt
+    SPOT_SCAN_TOTAL++;
+    if (step->kind == CLASS_BASE_ONLY) {
+        SPOT_SCAN_DELETED++;
+        return OK;        // deleted from wt
+    }
 
     u8cs path = {};
     $mv(path, step->path);
@@ -868,9 +908,15 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
 
     u8cs file_ext = {};
     PATHu8sExt(file_ext, path);
-    if ($empty(file_ext) || !CAPOKnownExt(file_ext)) return OK;
+    if ($empty(file_ext) || !CAPOKnownExt(file_ext)) {
+        SPOT_SCAN_NO_EXT++;
+        return OK;
+    }
     if (!$empty(cx->opts->target_ext) &&
-        !TOKSameLexer(file_ext, cx->opts->target_ext)) return OK;
+        !TOKSameLexer(file_ext, cx->opts->target_ext)) {
+        SPOT_SCAN_EXT_MISS++;
+        return OK;
+    }
 
     //  Apply the trigram filter only when this is a clean tracked file
     //  (BOTH + mtime ∈ stamp set) — the only case where the index is
@@ -890,14 +936,28 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
         u64 fn_rap = CAPOFnRap40(base);
         u64s th = {(u64p)cx->opts->tri_hashes[0],
                    (u64p)cx->opts->tri_hashes[1]};
-        if (!u64sBsearch(&fn_rap, th)) return OK;
+        if (!u64sBsearch(&fn_rap, th)) {
+            SPOT_SCAN_FILTER_REJ++;
+            if (getenv("SPOT_TRACE_REJ")) {
+                fprintf(stderr, "spot:   reject %.*s fn_rap=%llx\n",
+                    (int)$len(path), (char *)path[0],
+                    (unsigned long long)fn_rap);
+            }
+            return OK;
+        }
+        SPOT_SCAN_FILTER_PASS++;
+    } else {
+        SPOT_SCAN_NO_FILTER++;
     }
+    SPOT_SCAN_SCANNED++;
 
-    //  Build absolute path: <reporoot>/<rel>.
+    //  Build absolute path: <reporoot>/<rel>.  Use PATHu8bAdd (multi-
+    //  segment) — PATHu8bPush rejects any segment containing `/`,
+    //  which would silently drop every file in a subdirectory.
     a_path(fpbuf);
     a_dup(u8c, root_s, cx->reporoot);
     if (PATHu8bFeed(fpbuf, root_s) != OK) return OK;
-    if (PATHu8bPush(fpbuf, path)   != OK) return OK;
+    if (PATHu8bAdd(fpbuf, path)    != OK) return OK;
 
     //  NUL-terminated relpath for the progress line.
     char rpz[FILE_PATH_MAX_LEN] = {};
@@ -907,7 +967,14 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
     CAPOProgress(rpz);
 
     u8bp mapped = NULL;
-    if (FILEMapRO(&mapped, $path(fpbuf)) != OK) return OK;
+    ok64 mo = FILEMapRO(&mapped, $path(fpbuf));
+    if (mo != OK) {
+        if (getenv("SPOT_TRACE_QUERY")) {
+            fprintf(stderr, "spot:   map_fail %.*s -> %s\n",
+                (int)$len(path), (char *)path[0], ok64str(mo));
+        }
+        return OK;
+    }
     u8cs source = {};
     $mv(source, u8bDataC(mapped));
 
@@ -940,9 +1007,28 @@ ok64 CAPOScan(u8csc reporoot, CAPOScanOpts const *opts) {
     capo_class_ctx cx = {.opts = opts};
     $mv(cx.reporoot, reporoot);
 
+    SPOT_SCAN_TOTAL = SPOT_SCAN_DELETED = SPOT_SCAN_NO_EXT
+        = SPOT_SCAN_EXT_MISS = SPOT_SCAN_FILTER_REJ
+        = SPOT_SCAN_FILTER_PASS = SPOT_SCAN_NO_FILTER
+        = SPOT_SCAN_SCANNED = 0;
     ok64 cr = SNIFFClassify(capo_class_step, &cx);
 
     CAPOProgress(NULL);
+
+    if (getenv("SPOT_TRACE_QUERY")) {
+        fprintf(stderr,
+            "spot: scan  total=%llu deleted=%llu no_ext=%llu "
+            "ext_miss=%llu  filter_rej=%llu filter_pass=%llu "
+            "no_filter=%llu  scanned=%llu\n",
+            (unsigned long long)SPOT_SCAN_TOTAL,
+            (unsigned long long)SPOT_SCAN_DELETED,
+            (unsigned long long)SPOT_SCAN_NO_EXT,
+            (unsigned long long)SPOT_SCAN_EXT_MISS,
+            (unsigned long long)SPOT_SCAN_FILTER_REJ,
+            (unsigned long long)SPOT_SCAN_FILTER_PASS,
+            (unsigned long long)SPOT_SCAN_NO_FILTER,
+            (unsigned long long)SPOT_SCAN_SCANNED);
+    }
 
     if (so == OK) SNIFFClose();
     if (ko == OK) KEEPClose();
@@ -1088,6 +1174,7 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
         return OK;
     }
 
+    b8 trace = getenv("SPOT_TRACE_QUERY") != NULL;
     u8cp p = text[0];
     u8cp end = text[1] - 2;
     while (p <= end) {
@@ -1104,6 +1191,7 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
             u64css seek_iter = {seek_runs, seek_runs + nidxfiles};
             HITu64Start(seek_iter);
 
+            size_t before = u64bDataLen(hashbuf);
             if (!*has_trigrams) {
                 u64bReset(hashbuf);
                 CAPOCollectPaths(seek_iter, tri_prefix,
@@ -1112,6 +1200,12 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
             } else {
                 u64sSort(u64bData(hashbuf));
                 CAPOFilterInPlace(hashbuf, seek_iter, tri_prefix);
+            }
+            if (trace) {
+                size_t after = u64bDataLen(hashbuf);
+                fprintf(stderr,
+                    "spot: tri '%c%c%c' candidates: %zu (was %zu)\n",
+                    p[0], p[1], p[2], after, before);
             }
         }
         p++;
@@ -1122,6 +1216,16 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
     if (*has_trigrams && u64bDataLen(hashbuf) > 0)
         u64sSort(u64bData(hashbuf));
 
+    if (getenv("SPOT_TRACE_QUERY") && *has_trigrams) {
+        u64s data = {};
+        $mv(data, u64bData(hashbuf));
+        fprintf(stderr, "spot: candidate fn_raps (%zu):", $len(data));
+        size_t lim = $len(data) < 50 ? $len(data) : 50;
+        for (size_t i = 0; i < lim; i++)
+            fprintf(stderr, " %llx", (unsigned long long)data[0][i]);
+        if ($len(data) > lim) fprintf(stderr, " ...");
+        fprintf(stderr, "\n");
+    }
     return OK;
 }
 
@@ -1375,19 +1479,41 @@ ok64 CAPOFlushRun(spot *s) {
 }
 
 extern u64 SPOT_DBG_BLOB_HIT, SPOT_DBG_BLOB_MISS,
-           SPOT_DBG_BLOB_NO_EXT, SPOT_DBG_TOKENISED;
+           SPOT_DBG_BLOB_NO_EXT, SPOT_DBG_TOKENISED,
+           SPOT_DBG_TREES, SPOT_DBG_BLOBS, SPOT_DBG_COMMITS,
+           SPOT_DBG_TAGS, SPOT_DBG_BLOB_PRE_TREE,
+           SPOT_DBG_RUN_BLOB_MAX, SPOT_DBG_RUN_BLOB_CUR;
 
 void SPOTClose(void) {
     if (!spot_is_open()) return;
     spot *s = &SPOT;
-    if (s->rw && getenv("SPOT_TRACE_ORDER")) {
+    //  Ingest stats — gated behind SPOT_TRACE_ORDER so the per-test
+    //  stderr captures stay byte-stable.  High `orphan` ratio means
+    //  the pack producer interleaved trees and blobs and the
+    //  "trees-before-blobs" assumption in SPOTUpdate broke down; large
+    //  `max-B-run` (relative to total blobs) is the same signal.
+    if (s->rw && getenv("SPOT_TRACE_ORDER") &&
+        (SPOT_DBG_BLOBS + SPOT_DBG_TREES) > 0) {
+        if (SPOT_DBG_RUN_BLOB_CUR > SPOT_DBG_RUN_BLOB_MAX)
+            SPOT_DBG_RUN_BLOB_MAX = SPOT_DBG_RUN_BLOB_CUR;
+        u64 blobs = SPOT_DBG_BLOBS;
+        u64 orphan = SPOT_DBG_BLOB_MISS;
+        unsigned pct = blobs ? (unsigned)((orphan * 100) / blobs) : 0;
         fprintf(stderr,
-                "SPOT_DBG: blob_hit=%llu blob_miss=%llu "
-                "blob_no_ext=%llu tokenised=%llu\n",
-                (unsigned long long)SPOT_DBG_BLOB_HIT,
-                (unsigned long long)SPOT_DBG_BLOB_MISS,
-                (unsigned long long)SPOT_DBG_BLOB_NO_EXT,
-                (unsigned long long)SPOT_DBG_TOKENISED);
+            "spot: ingest order  C=%llu T=%llu B=%llu G=%llu  "
+            "pre-tree-B=%llu  max-B-run=%llu\n"
+            "spot: blob lookups  hit=%llu miss(orphan)=%llu (%u%%)  "
+            "no_ext=%llu  tokenised=%llu\n",
+            (unsigned long long)SPOT_DBG_COMMITS,
+            (unsigned long long)SPOT_DBG_TREES,
+            (unsigned long long)SPOT_DBG_BLOBS,
+            (unsigned long long)SPOT_DBG_TAGS,
+            (unsigned long long)SPOT_DBG_BLOB_PRE_TREE,
+            (unsigned long long)SPOT_DBG_RUN_BLOB_MAX,
+            (unsigned long long)SPOT_DBG_BLOB_HIT,
+            (unsigned long long)orphan, pct,
+            (unsigned long long)SPOT_DBG_BLOB_NO_EXT,
+            (unsigned long long)SPOT_DBG_TOKENISED);
     }
     if (s->rw && s->entries[0]) {
         //  Final flush of any postings still in scratch.  Tokenisation

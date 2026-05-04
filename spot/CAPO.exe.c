@@ -38,6 +38,21 @@ u64 SPOT_DBG_BLOB_HIT      = 0;
 u64 SPOT_DBG_BLOB_MISS     = 0;
 u64 SPOT_DBG_BLOB_NO_EXT   = 0;
 u64 SPOT_DBG_TOKENISED     = 0;
+//  Object-stream order stats — populated by SPOTUpdate, drained by
+//  SPOTClose.  The miss → "orphan" terminology means: the BLOB arrived
+//  before the TREE that names it, so the blob_to_fn lookup failed and
+//  the blob's trigrams never made it into the index.  A high orphan
+//  ratio indicates the pack producer is interleaving trees and blobs
+//  (typical of git's delta-chain ordering); the search index will be
+//  silently incomplete until the ingest path either two-passes or
+//  buffers orphans.
+u64 SPOT_DBG_TREES         = 0;  // total TREE objects seen
+u64 SPOT_DBG_BLOBS         = 0;  // total BLOB objects seen
+u64 SPOT_DBG_COMMITS       = 0;  // total COMMIT objects seen
+u64 SPOT_DBG_TAGS          = 0;  // total TAG objects seen
+u64 SPOT_DBG_BLOB_PRE_TREE = 0;  // BLOBs arriving before any TREE
+u64 SPOT_DBG_RUN_BLOB_MAX  = 0;  // longest BLOB-only run between TREEs
+u64 SPOT_DBG_RUN_BLOB_CUR  = 0;  // current BLOB-only run length
 
 // --- Verb / flag tables ---
 
@@ -51,7 +66,7 @@ char const *const SPOT_CLI_VERBS[] = {
 //  that `be` can still invoke it unconditionally after a keeper fetch.
 char const SPOT_CLI_VAL_FLAGS[] =
     "-g\0-s\0-r\0-p\0-C\0"
-    "--grep\0--spot\0--replace\0--pcre\0--context\0";
+    "--grep\0--spot\0--replace\0--pcre\0--context\0--at\0";
 
 // --- Helpers ---
 
@@ -151,11 +166,73 @@ ok64 SPOTExec(cli *c) {
     CLIFlag(v, c, "--pcre");
     if (!$empty(v)) { $mv(pcre_ndl, v); }
 
+    //  Projector dispatch (VERBS.md §"View projectors"):
+    //    be spot:#body[.ext]   structural search
+    //    be grep:#body[.ext]   literal grep
+    //    be regex:#body[.ext]  PCRE
+    //  Scheme picks the backend; the URI fragment carries the search
+    //  body (URI subresource semantics).  Path stays available for
+    //  file/dir narrowing (e.g. `grep:src/#body`).  A trailing `.ext`
+    //  on the fragment splits off as an extension filter
+    //  (`spot:#'body'.c`).  Surrounding `'…'` quotes around the body
+    //  are stripped so shell quoting doesn't leak in.
+    u8cs proj_ext = {};
+    b8 proj_search_uri0 = NO;
+    if ($empty(c->verb) && c->nuris > 0) {
+        uri *pu = &c->uris[0];
+        a_cstr(s_spot,  "spot");
+        a_cstr(s_grep,  "grep");
+        a_cstr(s_regex, "regex");
+        b8 is_search_proj = $eq(pu->scheme, s_spot)
+                         || $eq(pu->scheme, s_grep)
+                         || $eq(pu->scheme, s_regex);
+        if (is_search_proj) proj_search_uri0 = YES;
+        if (is_search_proj && !$empty(pu->fragment)) {
+            u8cs body = {pu->fragment[0], pu->fragment[1]};
+            //  Trailing `.ext` (e.g. `'body'.c`) — split body off ext.
+            //  Scan from the end for a `.` followed by ext-legal chars.
+            u8cp dot = NULL;
+            for (u8cp p = body[1]; p > body[0]; ) {
+                p--;
+                u8 ch = *p;
+                if (ch == '.') { dot = p; break; }
+                if (!((ch >= 'a' && ch <= 'z') ||
+                      (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9'))) break;
+            }
+            if (dot != NULL && dot > body[0] && dot < body[1] - 1) {
+                proj_ext[0] = dot;
+                proj_ext[1] = body[1];
+                body[1]     = dot;
+            }
+            //  Strip a single pair of surrounding `'…'` from the body.
+            if ($len(body) >= 2 && body[0][0] == '\'' &&
+                body[1][-1] == '\'') {
+                body[0]++; body[1]--;
+            }
+            if ($eq(pu->scheme, s_spot)) {
+                $mv(spot_ndl, body);
+            } else if ($eq(pu->scheme, s_grep)) {
+                $mv(grep_ndl, body);
+            } else {
+                $mv(pcre_ndl, body);
+            }
+            //  Fragment consumed; clear so the trailing-args loop
+            //  doesn't reprocess it.  Path is left intact — it stays
+            //  available as a file/dir narrowing constraint.
+            pu->fragment[0] = pu->fragment[1] = NULL;
+        }
+    }
+
     u8cs trail[16] = {};
     int ntrail = 0;
+    if (!$empty(proj_ext)) { $mv(trail[ntrail], proj_ext); ntrail++; }
     uri const *ref_uri = NULL;   // first URI with a real `?ref` query
     for (u32 ui = 0; ui < c->nuris && ntrail < 16; ui++) {
         uri *u = &c->uris[ui];
+        //  Projector consumed the fragment.  Path stays for narrowing
+        //  (e.g. `spot:/graf?feat#sym` ⇒ search `sym` under `/graf` on
+        //  branch `feat`); the loop below picks it up via u->path.
         //  URILexer can classify a leading-dot arg like `.c` as the
         //  "query" component even without a `?`.  A real ref URI has an
         //  explicit `?` in its input text — require that for has_ref.
@@ -169,43 +246,21 @@ ok64 SPOTExec(cli *c) {
             }
         }
         if (has_ref && ref_uri == NULL) ref_uri = u;
-        if ($empty(spot_ndl) && $empty(grep_ndl) && $empty(pcre_ndl) &&
-            !$empty(u->fragment)) {
-            frag fr = {};
-            if (FRAGu8sDrain(u->fragment, &fr) == OK) {
-                if (fr.type == FRAG_SPOT && !$empty(fr.body)) {
-                    $mv(spot_ndl, fr.body);
-                } else if (fr.type == FRAG_PCRE && !$empty(fr.body)) {
-                    $mv(pcre_ndl, fr.body);
-                } else if (fr.type == FRAG_IDENT && !$empty(fr.body)) {
-                    $mv(grep_ndl, fr.body);
-                }
-                for (u8 ei = 0; ei < fr.nexts && ntrail < 16; ei++) {
-                    if (!$empty(fr.exts[ei]) && fr.exts[ei][0] > u->data[0]) {
-                        trail[ntrail][0] = fr.exts[ei][0] - 1;
-                        trail[ntrail][1] = fr.exts[ei][1];
-                        ntrail++;
-                    }
-                }
-            }
-            //  u->path is the remote-side repo path for `//host/repo?ref`
-            //  URIs, not an in-worktree filter — skip it for ref searches.
-            if (!$empty(u->path) && !has_ref) {
-                u8cs gpath = {};
-                $mv(gpath, u->path);
-                if (!$empty(gpath) && *gpath[0] == '/') {
-                    u8csFed(gpath, 1);
-                }
-                if (!$empty(gpath) && ntrail < 16) {
-                    $mv(trail[ntrail], gpath);
-                    ntrail++;
-                }
-            }
-        } else if (!has_ref) {
+        //  Path is a file/dir narrowing constraint.  Skip it only when
+        //  the URI carries an authority (`//host/repo?ref`) where the
+        //  path is the *remote* repo location, not a local subtree.
+        b8 remote = !$empty(u->authority);
+        //  Search-projector URIs already had their fragment consumed
+        //  above; don't let their full data string ("grep:#body") leak
+        //  into trail[] as a bogus file filter.  Path stays valid.
+        b8 is_search_uri = (ui == 0 && proj_search_uri0);
+        if (!remote) {
             u8cs dat = {};
             if (!$empty(u->path)) {
                 $mv(dat, u->path);
-            } else if (!$empty(u->data)) {
+            } else if (!has_ref && !is_search_uri && !$empty(u->data)) {
+                //  No structured slot set — fall back to raw arg
+                //  (e.g. a bare `.c` ext token written without `?`/`#`).
                 $mv(dat, u->data);
             }
             if (!$empty(dat) && ntrail < 16) {
@@ -344,7 +399,38 @@ ok64 SPOTExec(cli *c) {
             ret = CAPOSpot(ndl, rep, ext, reporoot, sf, ref_uri);
         }
     } else if (c->nuris > 0) {
-        fprintf(stderr, "spot: file display moved to bro\n");
+        //  A search projector with no body (e.g. `spot:`, `spot:#name`)
+        //  is the most likely cause — body belongs in the URI path slot,
+        //  not the fragment.  Catch that case with a targeted hint.
+        uri *u0 = &c->uris[0];
+        a_cstr(s_spot,  "spot");
+        a_cstr(s_grep,  "grep");
+        a_cstr(s_regex, "regex");
+        b8 is_search = $eq(u0->scheme, s_spot)
+                    || $eq(u0->scheme, s_grep)
+                    || $eq(u0->scheme, s_regex);
+        if (is_search) {
+            //  Body lives in the fragment slot (`spot:#body`); a search
+            //  URI with only a path (`spot:body`) means the user put the
+            //  body in the wrong slot — point them at the right shape.
+            if (!$empty(u0->path)) {
+                u8cs path = {u0->path[0], u0->path[1]};
+                if (!$empty(path) && *path[0] == '/') u8csFed(path, 1);
+                fprintf(stderr,
+                    "spot: search body goes in the URI fragment, not "
+                    "the path\n  try: %.*s:#%.*s\n",
+                    (int)$len(u0->scheme), (char *)u0->scheme[0],
+                    (int)$len(path), (char *)path[0]);
+            } else {
+                fprintf(stderr,
+                    "spot: %.*s: needs a search body\n  try: "
+                    "%.*s:#<body>\n",
+                    (int)$len(u0->scheme), (char *)u0->scheme[0],
+                    (int)$len(u0->scheme), (char *)u0->scheme[0]);
+            }
+        } else {
+            fprintf(stderr, "spot: file display moved to bro\n");
+        }
         ret = FAILSANITY;
     } else {
         spot_usage();
@@ -406,6 +492,26 @@ ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
     spotp s = &SPOT;
     if (!s->rw || !sha) done;
     if (BNULL(s->blob_to_fn)) done;
+
+    //  Per-type counters and BLOB-run tracking — always on (cheap;
+    //  drained at SPOTClose).  Per-object trace lines stay opt-in
+    //  behind SPOT_TRACE_ORDER to avoid log volume on big packs.
+    switch (obj_type) {
+        case DOG_OBJ_COMMIT: SPOT_DBG_COMMITS++; break;
+        case DOG_OBJ_TAG:    SPOT_DBG_TAGS++;    break;
+        case DOG_OBJ_TREE:
+            SPOT_DBG_TREES++;
+            if (SPOT_DBG_RUN_BLOB_CUR > SPOT_DBG_RUN_BLOB_MAX)
+                SPOT_DBG_RUN_BLOB_MAX = SPOT_DBG_RUN_BLOB_CUR;
+            SPOT_DBG_RUN_BLOB_CUR = 0;
+            break;
+        case DOG_OBJ_BLOB:
+            SPOT_DBG_BLOBS++;
+            SPOT_DBG_RUN_BLOB_CUR++;
+            if (SPOT_DBG_TREES == 0) SPOT_DBG_BLOB_PRE_TREE++;
+            break;
+        default: break;
+    }
 
     if (getenv("SPOT_TRACE_ORDER")) {
         static const char H[] = "0123456789abcdef";

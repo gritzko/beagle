@@ -28,8 +28,11 @@ and the per-wt `.sniff` state from `sniff/AT.md`.
                   `<store>/feature/fix1/`.  Bare `?A` is absolute
                   (≡ `?/A`); `?./A` means a child of the current
                   branch, `?../A` a sibling.
-  - `#frag`     — object hash (`#abc1234`) or spot search
-                  fragment (see `dog/FRAG.h`).
+  - `#frag`     — object hash (`#abc1234`), line jump
+                  (`#42`, `#10-20`), or extension filter
+                  (`#.c.h`).  See `dog/FRAG.h`.  Search bodies
+                  live in their own projector schemes (`spot:`,
+                  `grep:`, `regex:`), not in the fragment slot.
 
 Branches form a tree; the **trunk** is the root.  "Create a
 branch" = "create a dir under a parent branch", and that's
@@ -81,7 +84,7 @@ its effect.
 | GET    | switch wt to branch   | restore file in wt      | fetch from remote         | sha pin / detach                 |
 | PUT    | create branch         | stage file/dir          | register remote alias     | —                                |
 | DELETE | drop branch           | unlink + stage delete   | drop alias / push delete  | —                                |
-| PATCH  | absorb branch (3-way) | restrict merge to file  | fetch + absorb            | spot rewrite (`#'old'->'new'.c`) |
+| PATCH  | absorb branch (3-way) | restrict merge to file  | fetch + absorb            | (search rewrites use `spot:` projector — see §"View projectors") |
 
 The default for an empty `?branch` slot is **cur** (current
 branch).  So `be post #msg` ≡ "advance cur with a new commit",
@@ -134,6 +137,24 @@ keeper, …) emits `dog/HUNK` TLV, bro pages it.
 | `diff:`   | weave-based unified diff; right-hand side is *ours* (the changed state).  `diff:` and `diff:<path>` use the wt as *ours* and the sniff `--at` baseline as the from-side; `diff:?<branch>` and `diff:<path>?<branch>` use the baseline as *ours* and `<branch>` as the from-side; `diff:?<h1>..<h2>` is explicit (no baseline needed).  Refuses with `GRAFNOAT` when a baseline is needed but no `--at` is forwarded. | `be diff:file.c`, `be diff:?main`, `be diff:?v1..v2` |
 | `size:`   | byte size of the resource                        | `be size:?#abc1234` |
 | `type:`   | object type (`commit`/`tree`/`blob`/`tag`)       | `be type:?#abc1234` |
+| `spot:`   | structural search; body in fragment, optional `.ext` filter | `be spot:#'u8sFeed( a, b )'.c` |
+| `grep:`   | literal substring search                         | `be grep:#u8sFeed.c` |
+| `regex:`  | PCRE search                                      | `be regex:#'u\d+sFeed'.c` |
+
+Search projectors (`spot:`, `grep:`, `regex:`) replace the older
+`#'body'` / `#name` / `#/regex/` fragment-search forms.  Each URI slot
+carries one orthogonal aspect:
+
+  - **scheme** — search backend (`spot` / `grep` / `regex`).
+  - **fragment (`#…`)** — search body.  Surrounding `'…'` quotes get
+    stripped so shell quoting applies once.  A trailing `.ext` on the
+    fragment narrows by extension.
+  - **path** — file/dir narrowing inside the worktree.
+  - **`?ref`** — search at a specific revision.
+
+So `be spot:/graf?feature#HASHu64Put` reads as "structural search for
+`HASHu64Put` under `/graf` on branch `feature`".  All four slots
+compose; any combination is valid.
 
 Projectors are pure — they never mutate.  They compose with
 `//auth` (`be sha1://origin?main` is a cheap reachability probe
@@ -380,7 +401,7 @@ them; hand-edit, or use a `diff:?` projection to enumerate.
 | `be patch ?feat..feat2`             | Apply a range diff to the wt (replay another branch's delta between two named refs). |
 | `be patch //origin?main`            | Fetch + absorb remote branch into wt.  ≈ `git pull --squash --no-commit`. |
 | `be patch file.c?feat`              | Absorb one file's version from another branch into the wt. |
-| `be patch #'Old'->'New'.c`          | Delegated to spot: in-place structural rewrite across `.c` files. |
+| `be patch spot:#'Old'->'New'.c`     | Delegated to spot: in-place structural rewrite across `.c` files. |
 
 Multiple PATCHes compose into the wt; the next POST emits one
 single-parent commit with the merged tree.  Branch identity of

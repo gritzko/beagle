@@ -449,7 +449,7 @@ printf 'int rendezvous_alpha(void) { return 43; }\n' > new_name.c
 "$BE" post 'rename msg' >/dev/null
 
 # spot finds the symbol; output must mention the new path.
-hits=$("$BE" '#rendezvous_alpha' 2>/dev/null || true)
+hits=$("$BE" 'grep:#rendezvous_alpha' 2>/dev/null || true)
 echo "$hits" | grep -q new_name.c \
     || fail "rename: spot did not locate rendezvous_alpha at new_name.c (got: $hits)"
 note "rename: rendezvous_alpha found at new_name.c"

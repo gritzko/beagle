@@ -1,6 +1,5 @@
 #include "abc/URI.h"
 #include "dog/CLI.h"
-#include "dog/FRAG.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -658,9 +657,6 @@ ok64 becli() {
 
     // Get first URI if available
     uri *u = (c.nuris > 0) ? &c.uris[0] : NULL;
-    frag fr = {};
-    if (u != NULL && !$empty(u->fragment))
-        FRAGu8sDrain(u->fragment, &fr);
 
     b8 seq = CLIHas(&c, "--seq");
 
@@ -675,25 +671,14 @@ ok64 becli() {
         done;
     }
 
-    // No verb → view/search mode.  Projector schemes (ls:, tree:, …)
-    // are verb-less by design per VERBS.md §"View projectors"; route
-    // them first so `be ls:?` doesn't get mistaken for a bare URI view.
+    // No verb → view/file mode.  Projector schemes (spot:, grep:, regex:,
+    // ls:, tree:, …) were already routed through BEProjector above; here
+    // a bare path-shaped URI displays the file via bro.  Search has no
+    // implicit `#frag` form anymore — use `be spot:body`, `be grep:body`,
+    // `be regex:body` (VERBS.md §"View projectors").
     if ($empty(verb)) {
-        u8cs spot = u8slit("spot");
         u8cs bro  = u8slit("bro");
-        if (u != NULL && DOGIsProjector(u->scheme)) {
-            call(BEProjector, &c, u);
-        } else if (u != NULL && (fr.type == FRAG_SPOT ||
-                                 fr.type == FRAG_PCRE ||
-                                 fr.type == FRAG_IDENT)) {
-            // Search → spot.  u->data borrows from argv (NUL-terminated).
-            a_pad(u8cs, args, 2);
-            u8csbFeed1(args, spot);
-            u8csbFeed1(args, u->data);
-            a_dup(u8cs, argv, u8csbData(args));
-            call(BERun, spot, argv, NO);
-        } else if (u != NULL && !$empty(u->path)) {
-            // View → bro
+        if (u != NULL && !$empty(u->path)) {
             a_pad(u8cs, args, 2);
             u8csbFeed1(args, bro);
             u8csbFeed1(args, u->data);

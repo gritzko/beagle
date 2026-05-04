@@ -60,8 +60,18 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
     if (!$empty(u.fragment)) {
         frag fr = {};
         if (FRAGu8sDrain(u.fragment, &fr) == OK) {
-            if (fr.type == FRAG_IDENT) $mv(loc->symbol, fr.body);
+            //  `#42`/`#42-50` → line.  Anything non-line non-empty is the
+            //  symbol body — strip a single pair of surrounding quotes
+            //  written by HUNKu8sMakeURI for non-ident symbols.
             loc->line = fr.line;
+            if (fr.type != FRAG_LINE && !$empty(u.fragment)) {
+                u8cs sym = {u.fragment[0], u.fragment[1]};
+                if ($len(sym) >= 2 && sym[0][0] == '\'' &&
+                    sym[1][-1] == '\'') {
+                    sym[0]++; sym[1]--;
+                }
+                $mv(loc->symbol, sym);
+            }
         }
     }
 }

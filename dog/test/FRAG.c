@@ -14,30 +14,11 @@ typedef struct {
     const char *exts[FRAG_MAX_EXTS]; // NULL-terminated
 } FRAGCase;
 
+// FRAG was simplified — search-shape fragments (`#name`, `#'body'`,
+// `#/regex/`) moved to the projector schemes `spot:`, `grep:`, `regex:`
+// (VERBS.md §"View projectors").  FRAG now only classifies line jumps
+// and ext filters.
 static const FRAGCase FRAG_CASES[] = {
-
-    // --- Identifiers (symbol/grep) ---
-    {"MSETOpen",          FRAG_IDENT, "MSETOpen", 0, 0, {NULL}},
-    {"FILEFeedAll",       FRAG_IDENT, "FILEFeedAll", 0, 0, {NULL}},
-    {"x",                 FRAG_IDENT, "x", 0, 0, {NULL}},
-    {"_foo_bar",          FRAG_IDENT, "_foo_bar", 0, 0, {NULL}},
-
-    // --- Identifier + line ---
-    {"MSETOpen:42",       FRAG_IDENT, "MSETOpen", 42, 0, {NULL}},
-    {"foo:1",             FRAG_IDENT, "foo", 1, 0, {NULL}},
-
-    // --- Identifier + range ---
-    {"MSETOpen:10-20",    FRAG_IDENT, "MSETOpen", 10, 20, {NULL}},
-
-    // --- Identifier + ext ---
-    {"FILEFeedAll.c",     FRAG_IDENT, "FILEFeedAll", 0, 0, {"c", NULL}},
-    {"FILEFeedAll.c.cpp", FRAG_IDENT, "FILEFeedAll", 0, 0, {"c", "cpp", NULL}},
-    {"TODO.c",            FRAG_IDENT, "TODO", 0, 0, {"c", NULL}},
-    {"MSETOpen.c.h",      FRAG_IDENT, "MSETOpen", 0, 0, {"c", "h", NULL}},
-
-    // --- Identifier + line + ext ---
-    {"MSETOpen:42.c",     FRAG_IDENT, "MSETOpen", 42, 0, {"c", NULL}},
-    {"foo:10-20.h",       FRAG_IDENT, "foo", 10, 20, {"h", NULL}},
 
     // --- Line number ---
     {"42",                FRAG_LINE,  NULL, 42, 0, {NULL}},
@@ -48,32 +29,14 @@ static const FRAGCase FRAG_CASES[] = {
     {"10-20",             FRAG_LINE,  NULL, 10, 20, {NULL}},
     {"1-1000",            FRAG_LINE,  NULL, 1, 1000, {NULL}},
 
-    // --- Structural search (spot) ---
-    {"'ok64 o = OK'",     FRAG_SPOT,  "ok64 o = OK", 0, 0, {NULL}},
-    {"'f(x,y)'",          FRAG_SPOT,  "f(x,y)", 0, 0, {NULL}},
-    {"'ok64 o = OK'.c",   FRAG_SPOT,  "ok64 o = OK", 0, 0, {"c", NULL}},
+    // --- Line + ext ---
+    {"42.c",              FRAG_LINE,  NULL, 42, 0, {"c", NULL}},
+    {"10-20.c.h",         FRAG_LINE,  NULL, 10, 20, {"c", "h", NULL}},
 
-    // --- Structural search, unclosed ---
-    {"'ok64 o = OK",      FRAG_SPOT,  "ok64 o = OK", 0, 0, {NULL}},
-    {"'f(x)",             FRAG_SPOT,  "f(x)", 0, 0, {NULL}},
-
-    // --- Regex ---
-    {"/u8sFeed/",         FRAG_PCRE,  "u8sFeed", 0, 0, {NULL}},
-    {"/u\\d+sFeed/",      FRAG_PCRE,  "u\\d+sFeed", 0, 0, {NULL}},
-    {"/u8sFeed/.h",       FRAG_PCRE,  "u8sFeed", 0, 0, {"h", NULL}},
-    {"/u8sFeed/.c.h",     FRAG_PCRE,  "u8sFeed", 0, 0, {"c", "h", NULL}},
-
-    // --- Regex with escaped slash ---
-    {"/u8s\\/Feed/",      FRAG_PCRE,  "u8s\\/Feed", 0, 0, {NULL}},
-    {"/a\\/b\\/c/.c",     FRAG_PCRE,  "a\\/b\\/c", 0, 0, {"c", NULL}},
-
-    // --- Percent-encoded identifiers ---
-    {"ok64%20HUNKu8sFeed", FRAG_IDENT, "ok64%20HUNKu8sFeed", 0, 0, {NULL}},
-    {"ok64%20HUNKu8sFeed:42", FRAG_IDENT, "ok64%20HUNKu8sFeed", 42, 0, {NULL}},
-
-    // --- Spot with line spec ---
-    {"'ok64 HUNKu8sFeed(u8s into)':42", FRAG_SPOT, "ok64 HUNKu8sFeed(u8s into)", 42, 0, {NULL}},
-    {"'func name':10-20.c", FRAG_SPOT, "func name", 10, 20, {"c", NULL}},
+    // --- Ext-only ---
+    {".c",                FRAG_NONE,  NULL, 0, 0, {"c", NULL}},
+    {".c.h",              FRAG_NONE,  NULL, 0, 0, {"c", "h", NULL}},
+    {".cpp",              FRAG_NONE,  NULL, 0, 0, {"cpp", NULL}},
 };
 
 #define FRAG_NCASES (sizeof(FRAG_CASES) / sizeof(FRAG_CASES[0]))

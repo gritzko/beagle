@@ -1,111 +1,56 @@
 
-/* #line 1 "dog/FRAG.c.rl" */
+/* #line 1 "FRAG.c.rl" */
 #include "FRAG.h"
 #include <string.h>
 
 
-/* #line 61 "dog/FRAG.c.rl" */
+/* #line 35 "FRAG.c.rl" */
 
 
 
-/* #line 7 "dog/FRAG.rl.c" */
+/* #line 7 "FRAG.rl.c" */
 static const char _frag_actions[] = {
-	0, 1, 0, 1, 1, 1, 3, 1, 
-	4, 1, 5, 1, 6, 1, 7, 1, 
-	8, 1, 9, 1, 10, 1, 11, 1, 
-	12, 2, 2, 3, 2, 9, 10, 2, 
-	10, 5, 2, 10, 6, 2, 10, 8, 
-	2, 11, 12
+	0, 1, 1, 1, 2, 1, 3, 1, 
+	4, 1, 5, 2, 0, 1
 };
 
 static const char _frag_key_offsets[] = {
-	0, 0, 9, 15, 17, 19, 19, 21, 
-	23, 23, 29, 35, 39, 43, 45, 52, 
-	56, 59, 69, 79, 85, 92, 98, 104, 
-	105, 109
+	0, 0, 3, 9, 11, 18, 22
 };
 
 static const char _frag_trans_keys[] = {
-	39, 47, 95, 48, 57, 65, 90, 97, 
-	122, 48, 57, 65, 90, 97, 122, 48, 
-	57, 48, 57, 47, 92, 47, 92, 48, 
-	57, 65, 70, 97, 102, 48, 57, 65, 
-	70, 97, 102, 39, 46, 58, 92, 39, 
-	46, 58, 92, 46, 58, 46, 48, 57, 
-	65, 90, 97, 122, 45, 46, 48, 57, 
-	46, 48, 57, 39, 46, 58, 92, 48, 
-	57, 65, 90, 97, 122, 39, 46, 58, 
-	92, 48, 57, 65, 90, 97, 122, 39, 
-	46, 58, 92, 48, 57, 39, 45, 46, 
-	58, 92, 48, 57, 39, 46, 58, 92, 
-	48, 57, 39, 46, 58, 92, 48, 57, 
-	46, 45, 46, 48, 57, 37, 46, 58, 
-	95, 48, 57, 65, 90, 97, 122, 0
+	46, 48, 57, 48, 57, 65, 90, 97, 
+	122, 48, 57, 46, 48, 57, 65, 90, 
+	97, 122, 45, 46, 48, 57, 46, 48, 
+	57, 0
 };
 
 static const char _frag_single_lengths[] = {
-	0, 3, 0, 0, 0, 0, 2, 2, 
-	0, 0, 0, 4, 4, 2, 1, 2, 
-	1, 4, 4, 4, 5, 4, 4, 1, 
-	2, 4
+	0, 1, 0, 0, 1, 2, 1
 };
 
 static const char _frag_range_lengths[] = {
-	0, 3, 3, 1, 1, 0, 0, 0, 
-	0, 3, 3, 0, 0, 0, 3, 1, 
-	1, 3, 3, 1, 1, 1, 1, 0, 
-	1, 3
+	0, 1, 3, 1, 3, 1, 1
 };
 
-static const unsigned char _frag_index_offsets[] = {
-	0, 0, 7, 11, 13, 15, 16, 19, 
-	22, 23, 27, 31, 36, 41, 44, 49, 
-	53, 56, 64, 72, 78, 85, 91, 97, 
-	99, 103
-};
-
-static const char _frag_indicies[] = {
-	0, 2, 4, 3, 4, 4, 1, 5, 
-	5, 5, 1, 6, 1, 7, 1, 8, 
-	10, 11, 9, 13, 14, 12, 12, 15, 
-	15, 15, 1, 16, 16, 16, 1, 18, 
-	19, 20, 21, 17, 22, 23, 24, 25, 
-	8, 26, 27, 1, 28, 29, 29, 29, 
-	1, 30, 31, 32, 1, 33, 34, 1, 
-	22, 23, 24, 25, 35, 35, 35, 8, 
-	22, 36, 24, 25, 37, 37, 37, 8, 
-	22, 23, 24, 25, 38, 8, 22, 39, 
-	40, 24, 25, 41, 8, 22, 23, 24, 
-	25, 42, 8, 22, 43, 24, 25, 44, 
-	8, 26, 1, 45, 46, 47, 1, 48, 
-	49, 50, 16, 16, 16, 16, 1, 0
+static const char _frag_index_offsets[] = {
+	0, 0, 3, 7, 9, 14, 18
 };
 
 static const char _frag_trans_targs[] = {
-	11, 0, 6, 24, 25, 14, 15, 16, 
-	12, 7, 23, 8, 7, 23, 8, 10, 
-	25, 12, 13, 17, 19, 5, 13, 17, 
-	19, 5, 2, 3, 2, 14, 4, 2, 
-	15, 2, 16, 18, 17, 18, 20, 21, 
-	17, 20, 22, 17, 22, 4, 2, 24, 
-	9, 2, 3
+	2, 5, 0, 4, 4, 4, 0, 6, 
+	0, 2, 4, 4, 4, 0, 3, 2, 
+	5, 0, 2, 6, 0, 0
 };
 
 static const char _frag_trans_actions[] = {
-	0, 0, 0, 25, 1, 13, 25, 25, 
-	0, 21, 40, 21, 0, 23, 0, 0, 
-	0, 17, 28, 28, 28, 17, 19, 19, 
-	19, 0, 0, 0, 15, 0, 9, 9, 
-	5, 11, 5, 13, 37, 0, 25, 9, 
-	31, 5, 25, 34, 5, 7, 7, 5, 
-	0, 3, 3
+	0, 11, 0, 7, 7, 7, 0, 11, 
+	0, 9, 0, 0, 0, 0, 3, 3, 
+	1, 0, 5, 1, 0, 0
 };
 
 static const char _frag_eof_actions[] = {
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 28, 19, 0, 15, 9, 
-	11, 19, 37, 19, 31, 19, 34, 0, 
-	7, 3
+	0, 0, 0, 0, 9, 3, 5
 };
 
 static const int frag_start = 1;
@@ -113,7 +58,7 @@ static const int frag_start = 1;
 static const int frag_en_main = 1;
 
 
-/* #line 64 "dog/FRAG.c.rl" */
+/* #line 38 "FRAG.c.rl" */
 
 ok64 FRAGu8sDrain(u8cs input, fragp f) {
     if (f == NULL) return FRAGBAD;
@@ -123,20 +68,19 @@ ok64 FRAGu8sDrain(u8cs input, fragp f) {
     u8cp p = input[0];
     u8cp pe = input[1];
     u8cp eof = pe;
-    u8cp mark = NULL;
     u8cp ext_mark = NULL;
     u32 nval = 0;
     int cs = 0;
 
     
-/* #line 124 "dog/FRAG.rl.c" */
+/* #line 68 "FRAG.rl.c" */
 	{
 	cs = frag_start;
 	}
 
-/* #line 79 "dog/FRAG.c.rl" */
+/* #line 52 "FRAG.c.rl" */
     
-/* #line 127 "dog/FRAG.rl.c" */
+/* #line 71 "FRAG.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -198,7 +142,6 @@ _resume:
 	}
 
 _match:
-	_trans = _frag_indicies[_trans];
 	cs = _frag_trans_targs[_trans];
 
 	if ( _frag_trans_actions[_trans] == 0 )
@@ -211,39 +154,27 @@ _match:
 		switch ( *_acts++ )
 		{
 	case 0:
-/* #line 7 "dog/FRAG.c.rl" */
-	{ mark = p; }
-	break;
-	case 1:
-/* #line 8 "dog/FRAG.c.rl" */
-	{ f->type = FRAG_IDENT; f->body[0] = mark; f->body[1] = p; }
-	break;
-	case 2:
-/* #line 9 "dog/FRAG.c.rl" */
+/* #line 7 "FRAG.c.rl" */
 	{ nval = 0; }
 	break;
-	case 3:
-/* #line 10 "dog/FRAG.c.rl" */
+	case 1:
+/* #line 8 "FRAG.c.rl" */
 	{ nval = nval * 10 + (*p - '0'); }
 	break;
-	case 4:
-/* #line 11 "dog/FRAG.c.rl" */
+	case 2:
+/* #line 9 "FRAG.c.rl" */
 	{ if (f->line == 0) f->line = nval; else f->line_end = nval; }
 	break;
-	case 5:
-/* #line 12 "dog/FRAG.c.rl" */
-	{ f->line = nval; nval = 0; }
-	break;
-	case 6:
-/* #line 13 "dog/FRAG.c.rl" */
+	case 3:
+/* #line 10 "FRAG.c.rl" */
 	{ f->line_end = nval; }
 	break;
-	case 7:
-/* #line 14 "dog/FRAG.c.rl" */
+	case 4:
+/* #line 11 "FRAG.c.rl" */
 	{ ext_mark = p; }
 	break;
-	case 8:
-/* #line 15 "dog/FRAG.c.rl" */
+	case 5:
+/* #line 12 "FRAG.c.rl" */
 	{
         if (f->nexts < FRAG_MAX_EXTS) {
             f->exts[f->nexts][0] = ext_mark;
@@ -252,23 +183,7 @@ _match:
         }
     }
 	break;
-	case 9:
-/* #line 22 "dog/FRAG.c.rl" */
-	{ mark = p; }
-	break;
-	case 10:
-/* #line 23 "dog/FRAG.c.rl" */
-	{ f->type = FRAG_SPOT; f->body[0] = mark; f->body[1] = p; }
-	break;
-	case 11:
-/* #line 24 "dog/FRAG.c.rl" */
-	{ mark = p; }
-	break;
-	case 12:
-/* #line 25 "dog/FRAG.c.rl" */
-	{ f->type = FRAG_PCRE; f->body[0] = mark; f->body[1] = p; }
-	break;
-/* #line 245 "dog/FRAG.rl.c" */
+/* #line 167 "FRAG.rl.c" */
 		}
 	}
 
@@ -284,24 +199,16 @@ _again:
 	unsigned int __nacts = (unsigned int) *__acts++;
 	while ( __nacts-- > 0 ) {
 		switch ( *__acts++ ) {
-	case 1:
-/* #line 8 "dog/FRAG.c.rl" */
-	{ f->type = FRAG_IDENT; f->body[0] = mark; f->body[1] = p; }
-	break;
-	case 4:
-/* #line 11 "dog/FRAG.c.rl" */
+	case 2:
+/* #line 9 "FRAG.c.rl" */
 	{ if (f->line == 0) f->line = nval; else f->line_end = nval; }
 	break;
-	case 5:
-/* #line 12 "dog/FRAG.c.rl" */
-	{ f->line = nval; nval = 0; }
-	break;
-	case 6:
-/* #line 13 "dog/FRAG.c.rl" */
+	case 3:
+/* #line 10 "FRAG.c.rl" */
 	{ f->line_end = nval; }
 	break;
-	case 8:
-/* #line 15 "dog/FRAG.c.rl" */
+	case 5:
+/* #line 12 "FRAG.c.rl" */
 	{
         if (f->nexts < FRAG_MAX_EXTS) {
             f->exts[f->nexts][0] = ext_mark;
@@ -310,15 +217,7 @@ _again:
         }
     }
 	break;
-	case 9:
-/* #line 22 "dog/FRAG.c.rl" */
-	{ mark = p; }
-	break;
-	case 10:
-/* #line 23 "dog/FRAG.c.rl" */
-	{ f->type = FRAG_SPOT; f->body[0] = mark; f->body[1] = p; }
-	break;
-/* #line 287 "dog/FRAG.rl.c" */
+/* #line 197 "FRAG.rl.c" */
 		}
 	}
 	}
@@ -326,20 +225,12 @@ _again:
 	_out: {}
 	}
 
-/* #line 80 "dog/FRAG.c.rl" */
+/* #line 53 "FRAG.c.rl" */
 
-    if (cs < 11) {
-        // If parser didn't reach a final state but we got a type,
-        // it's a tolerant parse (e.g., unclosed spot quote).
-        if (f->type == FRAG_SPOT && f->body[0] != NULL) {
-            // Unclosed spot: body extends to end of input
-            f->body[1] = pe;
-            return OK;
-        }
+    if (cs < 4) {
         return FRAGFAIL;
     }
 
-    // Line-only: digit-started fragment, type not set by ident/spot/pcre
     if (f->type == FRAG_NONE && f->line > 0)
         f->type = FRAG_LINE;
 

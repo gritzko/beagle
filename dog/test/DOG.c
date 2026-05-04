@@ -171,6 +171,10 @@ static const CanonCase CANON_CASES[] = {
         "0123456789abcdef0123456789abcdef01234567"},
     // Whitespace — classified as fragment (commit msg).
     {"fix the typo",                       "#fix the typo"},
+    // Whitespace with explicit leading `#` — `#` consumed, body kept.
+    {"#fix the typo",                      "#fix the typo"},
+    // Whitespace fragment with single-quoted spot body.
+    {"#'u8sFeed( a, b )'",                 "#'u8sFeed( a, b )'"},
     // Bare fragment.
     {"#symbol",                            "#symbol"},
     // Bare query (version-like).
@@ -187,6 +191,10 @@ static const CanonCase CANON_CASES[] = {
         "ssh://peer/src/repo?heads/feat#0123456789abcdef0123456789abcdef01234567"},
     // Deletion row: `?branch#` — non-empty query, empty-but-present fragment.
     {"?feature/fix1#",                     "?feature/fix1#"},
+    // Search projectors: scheme + body in path slot, whitespace OK.
+    {"spot:u8sFeed",                       "spot:u8sFeed"},
+    {"grep:u8sFeed",                       "grep:u8sFeed"},
+    {"spot:'u8sFeed( a, b )'",             "spot:'u8sFeed( a, b )'"},
     // View projectors round-trip with scheme preserved.
     {"ls:subdir",                          "ls:subdir"},
     {"ls:?heads/feat",                     "ls:?heads/feat"},

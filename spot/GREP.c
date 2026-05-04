@@ -48,6 +48,13 @@ static ok64 capo_grep_file_cb(void *ctx, u8csc relpath, u8csc source,
     capo_grep_ctx *gc = ctx;
     size_t ndl_len = (size_t)$len(gc->substring);
 
+    if (getenv("SPOT_TRACE_QUERY")) {
+        fprintf(stderr, "spot:   gcb %.*s len=%zu ndl=%zu first=%c\n",
+            (int)$len(relpath), (char *)relpath[0],
+            (size_t)$len(source), ndl_len,
+            ndl_len > 0 ? gc->substring[0][0] : '?');
+    }
+
     b8 tokenized = NO;
     Bu32 gtoks = {};
     u32cs gts = {};
