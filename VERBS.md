@@ -53,10 +53,12 @@ A `?ref` resolves in this order:
  3. Sha prefix (`?abc1234`) ⇒ object lookup; attaches as a
     detached wt.
 
-Branch creation is **PUT-only**.  `be put ?./fix` forks a child
-at the current tip; `be put ?feat/new` or `be put ?feat/`
-creates a new leaf under existing `feat`.  GET and POST never
-create — unresolved refs are errors.
+Branch creation is shared between PUT and POST.  `be put ?./fix`
+forks a label-only child at the current tip (no commit);
+`be post ?./fix#msg` forks **and** commits in one step (advance
+from zero).  `be put ?feat/new` or `be put ?feat/` creates a new
+leaf under existing `feat`.  GET refuses on a missing ref (no
+auto-fork on switch).
 
 | URI | From branch `feature` |
 |---|---|
@@ -151,7 +153,7 @@ When a verb takes a remote:
   - `be get //origin` — fast-forward the **current branch** from
     origin's counterpart.
   - `be get ?A` — **local**: resolve per §"Ref resolution"; no
-    network.  Unresolved refs are errors (PUT creates).
+    network.  Unresolved refs are errors (PUT or POST creates).
 
 Alias lookup walks up the dir tree to the store root, same as
 `<store>/ALIAS` in `keeper/REF.md`.
@@ -174,8 +176,8 @@ branch from its remote counterpart, not to local branch switches.
 | Form | Effect |
 |---|---|
 | `be get ?feat`                 | Switch the wt to branch `feat`, reset files from its tip.  Refuses on dirty overlap. |
-| `be get ?./fix`                | Switch the wt to child branch `fix`; error if missing (PUT creates). |
-| `be get ?../fix`               | Switch the wt to sibling branch `fix`; error if missing (PUT creates). |
+| `be get ?./fix`                | Switch the wt to child branch `fix`; error if missing (PUT or POST creates). |
+| `be get ?../fix`               | Switch the wt to sibling branch `fix`; error if missing (PUT or POST creates). |
 | `be get ?abc1234`              | Detached checkout on a sha.  `post`/`patch` refuse until re-attached. |
 | `be get file.c?feat`           | Overwrite one file in the wt from another branch's tip (no staging). |
 | `be get //origin`              | Fast-forward the **current branch** from its `//origin` counterpart.  Refuses on divergence — resolve with `be patch //origin`. |
@@ -211,9 +213,12 @@ posters that move it between fetch and post are rejected and
 the client retries.  Empty POSTs (no commit, no ref move,
 nothing to push) are refused with `POSTNONE`.
 
-**Branch creation lives in PUT, not POST.**  `be put ?./fix`
-makes the branch; POST only advances existing refs.  Force-
-rewrite is `be delete ?<branch>` then `be put ?<branch>`
+**POST advances linearly — possibly from zero.**  When the named
+target doesn't exist, POST treats it as zero-tip and advances by
+forking from cur: `be post ?./fix#msg` creates `fix` and lands one
+commit on it in a single step.  PUT remains the **label-only**
+fork (`be put ?./fix` makes the branch with no commit).
+Force-rewrite is `be delete ?<branch>` then `be put ?<branch>`
 (explicit).
 
 ### Per-file classification via stamps
@@ -275,7 +280,7 @@ Legacy `-m "msg"` is still accepted.
 | `be post '#fix'`                   | Commit on cur (msg = "fix"); cur advances. |
 | `be post ?feat`                    | Advance feat to cur.tip (label move; ff if linear, rebase otherwise).  Cur untouched. |
 | `be post ?feat#msg`                | New commit (parent = cur.tip), advance feat to it.  Cur untouched. |
-| `be post ?./stash#wip`             | (Requires `be put ?./stash` first.)  New commit (parent = cur.tip) lands on stash; cur clean.  Stash idiom. |
+| `be post ?./stash#wip`             | One-liner stash: create child `stash` (advance from zero), commit dirty there with msg "wip"; cur clean. |
 | `be post ?..`                      | Advance parent to cur.tip (ff or rebase).  Cur untouched. |
 | `be post //origin`                 | Push cur to origin via `keeper receive-pack` (`keeper/WIRE.md`). |
 | `be post //origin?feat`            | Advance feat locally to cur.tip and push to origin. |
@@ -471,17 +476,17 @@ another wt to actually drop the branch.
 
 ```sh
 # on cur with dirty wt; want to switch to otherbranch
-be put ?./stash             # create stash branch at cur.tip
-be post ?./stash#wip        # commit dirty on stash; cur stays clean
+be post ?./stash#wip        # one-liner: create stash + commit dirty; cur clean
 be get ?otherbranch         # switch (wt now clean)
 
 # come back later
 be get ?./stash             # pick up the stashed work
 ```
 
-The stash idiom relies on POST's aspect rule: with `?./stash`
-present, the new commit lands on stash only — cur is the new
-commit's parent but doesn't advance.
+The stash idiom rides two POST rules: (a) advance-from-zero
+creates `?./stash` on first use, (b) with `?./stash` named, the
+new commit lands on stash only — cur is the new commit's parent
+but doesn't advance.
 
 ##  Common-task cheat sheet
 
@@ -491,7 +496,7 @@ commit's parent but doesn't advance.
 | `git fetch`                            | `be get //origin?*` |
 | `git pull --ff-only`                   | `be get //origin` |
 | `git pull`                             | `be patch //origin && be post '#sync'` (single-parent absorb, not a merge commit) |
-| `git checkout -b feat` (child of trunk)| `be put ?./feat && be get ?./feat` (PUT creates, GET switches) |
+| `git checkout -b feat` (child of trunk)| `be put ?./feat && be get ?./feat` (PUT label-only fork, GET switches) |
 | `git checkout feat`                    | `be get ?feat` |
 | `git worktree add ../feat feat`        | `cd ../feat && be get file:../proj?feat` |
 | `git add file && git commit -m`        | `be put ./file && be post '#msg'` |
@@ -529,11 +534,13 @@ commit's parent but doesn't advance.
     and retry.  Force-rewrite of a non-trunk branch is
     `be delete ?<branch>` then `be put ?<branch>`.  Empty POSTs
     are refused.
- 4. **Tree-sharded branches; PUT creates, GET reads, POST advances.**
+ 4. **Tree-sharded branches; PUT labels, GET reads, POST advances (possibly from zero).**
     Sub-branch creation: `be put ?./A` (child), `be put ?../A`
     (sibling), `be put ?feat/new` or `be put ?feat/` (absolute
-    under existing parent).  Bare `?A` is absolute (≡ `?/A`).
-    GET and POST never auto-create — unresolved refs are errors.
+    under existing parent) — all label-only.  POST creates on
+    miss when it would advance the named target (`be post ?./A#msg`
+    forks A and commits in one step).  Bare `?A` is absolute
+    (≡ `?/A`).  GET refuses on a missing ref.
  5. **One store per machine, many worktrees.**  Per-wt state
     lives in `<wt>/.sniff` (base branch, base tip, pending PATCH
     parents).  Secondary wts symlink `.dogs` back to the
