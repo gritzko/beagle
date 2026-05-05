@@ -217,7 +217,7 @@ static void regexlits_flush(regexlits_ctx *c) {
                 !CAPOTriChar(c->buf[li + 2])) continue;
             u8 _tb[3] = {c->buf[li], c->buf[li + 1], c->buf[li + 2]};
             u8cs tri = {_tb, _tb + 3};
-            u64 tri_prefix = spot64Pack(SPOT64_TRI, spot64TriId(tri), 0);
+            u64 tri_prefix = CAPOOffPrefix(CAPOTri40(tri));
             u64cs seek_runs[CAPO_MAX_LEVELS];
             for (u32 si = 0; si < c->nidxfiles; si++) {
                 seek_runs[si][0] = c->runs[si][0];

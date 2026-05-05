@@ -90,20 +90,47 @@ explicitly; not currently wired.
 ## Index format
 
 Index lives in `.dogs/spot/*.spot.idx` (under the workspace's
-`.dogs/`).  Each entry is one `spot64` (`u64`) with the layout
+`.dogs/`).  Each entry is one `wh64` (see `dog/WHIFF.h`) with the
+layout
 
 ```
-[ id:20 | type:4 | fn_rap:40 ]   (high → low, natural u64 sort)
+[ off:40 | id:20 | type:4 ]   (high → low, natural u64 sort)
 ```
 
-| `type` | `id` payload |
-|--------|---------------|
-| `SPOT64_TRI` (0) | 18-bit packed RON64 trigram (2 spare bits) |
-| `SPOT64_MEN` (1) | `RAPHash(symbol_name) & 0xFFFFF`     — `S`/`C` tags |
-| `SPOT64_DEF` (2) | `RAPHash(symbol_name) & 0xFFFFF`     — `N` tag |
-| 3..15 | reserved |
+| `type` | `off` payload | `id` payload |
+|--------|---------------|--------------|
+| `SPOT_TRI`    (0) | 18-bit packed RON64 trigram (top 22 bits zero) | `CAPOFnRap20` |
+| `SPOT_MEN`    (1) | `RAPHash(symbol_name) & ((1<<40)-1)` (S/C tags) | `CAPOFnRap20` |
+| `SPOT_DEF`    (2) | `RAPHash(symbol_name) & ((1<<40)-1)` (N tag)    | `CAPOFnRap20` |
+| `SPOT_BLOBFN` (3) | `WHIFFHashlet40(blob_sha)`                       | `CAPOFnRap20` |
+| 4..15             | reserved                                         |              |
 
-`fn_rap` is `RAPHash(basename) & ((1<<40)-1)` — the leaf basename
-only, no path.  Sorting clusters by `id` first (so seek-by-trigram
-is a contiguous `1<<40` range), then `type`, then `fn_rap`.  Files
-are sorted MSET runs, compacted via LSM-style merging.
+`id` carries the 20-bit basename hash for every record type — the
+worktree-side filter picks files whose basename hashes into the
+posting set.  Sorting clusters by `off` first (so range-scan by an
+`off`-prefix is a contiguous `1<<24` window), then by `id`, then by
+`type`.  Within an off-block the iterator filters by `type` to pick
+out TRI vs MEN vs DEF (rare cross-type collisions when a symbol
+hash's top 22 bits happen to match a trigram value).
+
+The `BLOBFN` record persists the blob → basename mapping across
+puppy flushes: when a blob shows up under multiple basenames (rename,
+copy, vendored duplicate), every basename gets its own row, and a
+search-time range scan over `(off=blob_hashlet40, type=BLOBFN)`
+recovers every bucket the blob has lived in.
+
+### LSM stack
+
+- **In-RAM** : a `BOXu64` memtable over a 128 KB mmap (1 KB dirty +
+  1, 2, 4, 8, 16, 32, 64 KB sorted ladder).  Ratio is 2× — every
+  cascade fills its target chunk exactly (1/2 + 1/4 + … = 1), so no
+  intermediate-level slack.  `CAPOEmit` feeds postings; cascade is
+  automatic.  `BOXFULL` triggers `CAPOFlushRun`.
+- **On-disk**: sorted runs in `<seqno>.spot.idx` files; the standard
+  puppy 1/8 ladder.  `CAPOFlushRun` is `BOXu64Flush → DOGPupCreate
+  → CAPOCompact`.  The BOX's 2× ratio differs from the disk side's
+  8× — they don't need to align since flushed runs go through
+  `MSETCompact` anyway.
+- **Lookups** see the BOX's sorted slices alongside disk puppies via
+  `CAPOStackOpen`; the BOX's dirty region (unsorted, ≤ 1 KB) is
+  excluded — searches that need it run after `CAPOFlushRun`.

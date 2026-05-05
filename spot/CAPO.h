@@ -42,26 +42,16 @@ extern b8 CAPO_TERM;   // stderr is a terminal
 #define SPOT_LEAF_BRANCH_MAX 1024
 //  Missing prefix dir along the trunk → leaf branch path.
 con ok64 SPOTNOPATH = 0x71961d5d864a751;
-//  In-RAM sort-and-dedup scratch.  `CAPO_FLUSH_AT` is the trigger
-//  size: once data in `s->entries` reaches it, we sort + dedup in
-//  place, and — if the dedup leaves ≥ 50 % unique — flush to a new
-//  `.idx` run.  If < 50 % unique (highly redundant input) we keep
-//  the compacted scratch and let it refill.  Keeping the trigger
-//  small (1 M entries / 8 MB) bounds each sort's working set to
-//  stay cache-friendly; on dedup-heavy workloads (src/git ingest
-//  hits ~20 % unique) this means many small sorts instead of a few
-//  enormous ones.  `CAPO_SCRATCH_LEN` is the hard cap on scratch
-//  size (anonymous mmap) — generously oversized vs the trigger.
-//  Hash-set scratch sized to fit L3 cache (~16 MB on most x86-64
-//  cores).  Most hash-table accesses are random-strided, so a table
-//  larger than L3 pays DRAM latency on every probe.  When src/git's
-//  ~3 M unique postings overflow the 2 M slots, HASHNOROOM triggers
-//  CAPOFlushRun and the LSM compaction handles cross-flush dedup.
-//  MUST stay a power of 2 — HASHx.h folds hash → slot via bitmask.
-#define CAPO_SCRATCH_LEN (1UL << 21)  // 2M u64 entries = 16MB
-//  Keep CAPO_FLUSH_AT at the old 1M trigger size for source compat —
-//  the hash-set path no longer consults it (HASHNOROOM is the trigger),
-//  and the search path doesn't allocate it.
+//  In-RAM scratch sized to keep the BOX memtable cache-resident and
+//  the per-lookup binary-search count low.  With the default 1 KB
+//  dirty / 2× ratio, a 128 KB BOX gives 7 sorted levels (1, 2, 4,
+//  8, 16, 32, 64 KB) plus dirty — every level fits in L1, every
+//  cascade fills its target perfectly (1/2 + 1/4 + … = 1), and a
+//  full ingest passes through all 7 binary searches in well under a
+//  microsecond.  Tuned to bound peak RAM, not throughput: large
+//  packs flush more often, but each flush is cheap and the on-disk
+//  puppy ladder absorbs the run count.
+#define CAPO_SCRATCH_LEN (1UL << 14)  // 16 K u64 entries = 128 KB
 //  Per-session reusable token buffer cap.  16 M u32 entries = 64 MB,
 //  larger than any source file we expect to ingest.  Anonymous mmap
 //  pages are zero-fill on demand, so the unused tail costs nothing.
@@ -84,19 +74,24 @@ con ok64 SPOTNOPATH = 0x71961d5d864a751;
 // readable on its own.
 fun u64 CAPOObjHashlet(sha1 const *sha) { return WHIFFHashlet60(sha); }
 
-// Basename → 40-bit posting key.  Truncated `RAPHash(basename)`,
+// Basename → 20-bit posting key.  Truncated `RAPHash(basename)`,
 // computed at SPOTUpdate(TREE) for ingest and at search time over
-// every worktree path's basename.  Two files with the same basename
-// in different directories share a posting bucket — accepted as a
-// filter-only signal; the worktree scan rescans anyway.
-fun u64 CAPOFnRap40(u8csc basename) {
-    return RAPHash(basename) & ((1ULL << 40) - 1);
+// every worktree path's basename.  20 bits is enough as a filter
+// (filtering 1 file out of ~1 M); two files sharing a bucket pass
+// the filter and the worktree scan rescans both.
+fun u32 CAPOFnRap20(u8csc basename) {
+    return (u32)(RAPHash(basename) & WHIFF_ID_MASK);
 }
 
 // Index a streaming blob whose basename hash was already stamped via
 // SPOTUpdate(TREE).  Tokenises and emits postings into the SPOT
 // singleton's hash-set scratch (`SPOT.entries`).
-ok64 CAPOIndexBlob(u8csc source, u8csc ext, u64 fn_rap);
+ok64 CAPOIndexBlob(u8csc source, u8csc ext, u32 fn_hash20);
+
+// Append one wh64 posting to the SPOT singleton's hash-set scratch.
+// Skips the zero sentinel.  HASHNOROOM triggers CAPOFlushRun (sort
+// + write puppy + memset table) and the put is retried.
+ok64 CAPOEmit(u64 entry);
 
 // Index a single on-disk source file.  Hashes `basename` and
 // delegates to CAPOIndexBlob.  Used by the search-time (re)tokenize
@@ -163,53 +158,47 @@ b8 CAPOKnownExt(u8csc ext);
 
 // --- Index entry layout ---
 //
-// Every spot index entry is one u64 (`spot64`):
-//   [ id:20 | type:4 | fn_rap:40 ]   (high → low)
+// Every spot index entry is one wh64:
+//   [ off:40 | id:20 | type:4 ]   (high → low)
 //
-// Natural u64 sort clusters by `id` first (so seek-by-trigram is a
-// contiguous range), then `type`, then `fn_rap`.  `fn_rap` is the
-// 40-bit truncation of `RAPHash(basename)` — basename only, no path.
+// Natural u64 sort clusters by `off` first, then `id`, then `type`.
+// `id` carries the 20-bit basename hash (`CAPOFnRap20`) for every
+// record type, so a range scan over an `off`-prefix yields all the
+// (basename, type) pairs that mention that off-value.  Type-specific
+// content lives in `off`:
 //
-//   type=SPOT64_TRI: id = 18-bit packed RON64 trigram (2 spare bits)
-//   type=SPOT64_MEN: id = RAPHash(symbol_name) & 0xFFFFF  (S, C tags)
-//   type=SPOT64_DEF: id = RAPHash(symbol_name) & 0xFFFFF  (N tag)
+//   type=SPOT_TRI    (0): off = 18-bit packed RON64 trigram        ("text contains tri")
+//   type=SPOT_MEN    (1): off = RAPHash(symbol_name) & ((1<<40)-1) ("text uses sym",  S/C)
+//   type=SPOT_DEF    (2): off = RAPHash(symbol_name) & ((1<<40)-1) ("text declares sym", N)
+//   type=SPOT_BLOBFN (3): off = WHIFFHashlet40(blob_sha)            ("blob appears as basename")
 
-typedef u64 spot64;
+#define SPOT_TRI    0
+#define SPOT_MEN    1
+#define SPOT_DEF    2
+#define SPOT_BLOBFN 3
+//                  4..15 reserved
 
-#define SPOT64_FN_BITS    40
-#define SPOT64_TYPE_BITS   4
-#define SPOT64_ID_BITS    20
-#define SPOT64_FN_MASK    ((1ULL << SPOT64_FN_BITS) - 1)
-#define SPOT64_TYPE_MASK  ((1ULL << SPOT64_TYPE_BITS) - 1)
-#define SPOT64_ID_MASK    ((1ULL << SPOT64_ID_BITS) - 1)
-#define SPOT64_TYPE_SHIFT SPOT64_FN_BITS
-#define SPOT64_ID_SHIFT   (SPOT64_FN_BITS + SPOT64_TYPE_BITS)
-
-#define SPOT64_TRI 0   // text trigram
-#define SPOT64_MEN 1   // symbol use   (S, C tags)
-#define SPOT64_DEF 2   // symbol decl  (N tag)
-//                3..15 reserved
-
-fun spot64 spot64Pack(u8 type, u32 id20, u64 fn40) {
-    return ((u64)(id20  & SPOT64_ID_MASK)   << SPOT64_ID_SHIFT) |
-           ((u64)(type  & SPOT64_TYPE_MASK) << SPOT64_TYPE_SHIFT) |
-            (fn40 & SPOT64_FN_MASK);
+// Pack 3 RON64 chars into the off slot (40 bits, 18 used).
+fun u64 CAPOTri40(u8cs tri) {
+    return ((u64)RON64_REV[tri[0][0]] << 12) |
+           ((u64)RON64_REV[tri[0][1]] <<  6) |
+           ((u64)RON64_REV[tri[0][2]]);
 }
 
-fun u32 spot64Id   (spot64 e) { return (u32)((e >> SPOT64_ID_SHIFT) & SPOT64_ID_MASK); }
-fun u8  spot64Type (spot64 e) { return (u8)((e >> SPOT64_TYPE_SHIFT) & SPOT64_TYPE_MASK); }
-fun u64 spot64FnRap(spot64 e) { return e & SPOT64_FN_MASK; }
-
-// Pack 3 RON64 chars into the 18-bit id slot (zero-padded to 20).
-fun u32 spot64TriId(u8cs tri) {
-    return ((u32)RON64_REV[tri[0][0]] << 12) |
-           ((u32)RON64_REV[tri[0][1]] <<  6) |
-           ((u32)RON64_REV[tri[0][2]]);
+// Truncate a symbol-name RAP to the off slot (40 bits).
+fun u64 CAPOSym40(u8cs name) {
+    return RAPHash(name) & WHIFF_OFF_MASK;
 }
 
-// Truncate a symbol-name RAP to the 20-bit id slot.
-fun u32 spot64SymId(u8cs name) {
-    return (u32)(RAPHash(name) & SPOT64_ID_MASK);
+// `off`-prefix → range half-open [lo, lo + 1<<24).  Within a single
+// `off` value the entries vary by id (fn_hash20) and type, so the
+// span is 1<<24 (20 id bits + 4 type bits).
+#define SPOT_OFF_RANGE (1ULL << (WHIFF_ID_BITS + WHIFF_TYPE_BITS))
+
+// Build a seek-prefix for the off-block.  Caller filters by type
+// when iterating.
+fun u64 CAPOOffPrefix(u64 off40) {
+    return (off40 & WHIFF_OFF_MASK) << WHIFF_OFF_SHIFT;
 }
 
 // --- DOG control struct (DOG.md rule 8) ---
@@ -243,12 +232,16 @@ struct spot_ {
     Bu8      leaf_branch;           // canonical leaf-branch path
                                     // (trailing '/'; empty for trunk).
 
-    //  Ingestion scratch (rw only): postings hash-set keyed by the
-    //  posting itself.  CAPOIndexBlob inserts via HASHu64Put (skipping
-    //  the 0 sentinel).  HASHNOROOM triggers CAPOFlushRun, which
-    //  compacts non-zero slots, sorts them, writes the puppy and
-    //  memsets the table back to zero.
-    Bu64     entries;
+    //  Ingestion scratch (rw only): an LSM `BOXu64` over a 16 MB
+    //  mmap.  CAPOIndexBlob feeds postings via BOXu64Feed1; cascade
+    //  is automatic.  BOXFULL (top level can't absorb) triggers
+    //  CAPOFlushRun, which BOXu64Flushes the dedup'd sorted run into
+    //  a temp buffer and writes it as a puppy, leaving the BOX clean
+    //  for subsequent inserts.
+    Bu8      entries_mem;          // BOX byte range (16 MB anon mmap)
+    u64s     box_slots[16];        // backing for the box's level Ts entries
+    u64s    *entries_box[4];       // PAST=dirty, DATA=sorted, IDLE=fence
+    Bu8      flush_buf;            // scratch for BOXu64Flush output
 
     //  Per-session token buffer reused across every CAPOIndexBlob
     //  call (rw only).  Avoids the mmap+unmap pair we used to do per

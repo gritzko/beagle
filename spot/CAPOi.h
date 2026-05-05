@@ -46,6 +46,9 @@ fun void u64csSwap(u64cs *a, u64cs *b) {
 #define X(M, name) M##u64##name
 #include "abc/HITx.h"
 #undef X
+//  BOXx.h uses PRO.h's `sane()` macro, so it can only be instantiated
+//  in .c files that include PRO.h.  Each consumer (CAPO.c, the
+//  test driver) instantiates BOXu64 itself.
 
 #define CAPO_MAX_HLS 64
 

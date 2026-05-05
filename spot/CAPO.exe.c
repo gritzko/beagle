@@ -458,10 +458,10 @@ ok64 SPOTExec(cli *c) {
 // directly into `blob_to_fn` and BLOB lookups hit without buffering.
 // COMMIT objects are ignored.
 
-#define SPOT_FN_VAL_PACK(fn40, ext_off) \
-    (((u64)((fn40) & ((1ULL << 40) - 1)) << 24) | \
+#define SPOT_FN_VAL_PACK(fn20, ext_off) \
+    (((u64)((fn20) & WHIFF_ID_MASK) << 24) | \
      ((u64)(ext_off) & 0xFFFFFF))
-#define SPOT_FN_VAL_RAP(v)  (((v) >> 24) & ((1ULL << 40) - 1))
+#define SPOT_FN_VAL_HASH(v) ((u32)(((v) >> 24) & WHIFF_ID_MASK))
 #define SPOT_FN_VAL_EOFF(v) ((u32)((v) & 0xFFFFFF))
 
 // Append `ext` to s->ext_arena if not already present; return its
@@ -553,11 +553,22 @@ ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
             sha1 csha = {};
             memcpy(csha.data, esha[0], 20);
             u64 child_hl = CAPOObjHashlet(&csha);
-            u64 fn_rap   = CAPOFnRap40(name);
+            u32 fn_hash20 = CAPOFnRap20(name);
 
+            //  Transient map for in-pack BLOB lookups (single-value;
+            //  last basename within a pack wins).  Used by BLOB
+            //  ingest to recover the ext for tokenization.
             kv64 e = {.key = child_hl,
-                      .val = SPOT_FN_VAL_PACK(fn_rap, ext_off)};
+                      .val = SPOT_FN_VAL_PACK(fn_hash20, ext_off)};
             (void)HASHkv64Put(tbl, &e);
+
+            //  Persisted blob → fn_hash mapping.  Multiple basenames
+            //  for the same blob produce multiple BLOBFN rows; search
+            //  range-scans `(off=blob_hl40, type=BLOBFN)` to recover
+            //  every bucket the blob has lived in (rename-safe).
+            u64 blob_hl40 = WHIFFHashlet40(&csha);
+            u64 blobfn = wh64Pack(SPOT_BLOBFN, fn_hash20, blob_hl40);
+            (void)CAPOEmit(blobfn);
         }
         done;
     }
@@ -575,8 +586,8 @@ ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
     }
     SPOT_DBG_BLOB_HIT++;
 
-    u64 fn_rap  = SPOT_FN_VAL_RAP(probe.val);
-    u32 ext_off = SPOT_FN_VAL_EOFF(probe.val);
+    u32 fn_hash20 = SPOT_FN_VAL_HASH(probe.val);
+    u32 ext_off   = SPOT_FN_VAL_EOFF(probe.val);
     if (ext_off == 0 || ext_off >= u8bDataLen(s->ext_arena)) {
         SPOT_DBG_BLOB_NO_EXT++;
         done;
@@ -588,10 +599,10 @@ ok64 SPOTUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
     while (ext_end < ext_idle && *ext_end != 0) ext_end++;
     u8cs ext = {ext_start, ext_end};
 
-    (void)CAPOIndexBlob(blob, ext, fn_rap);
+    (void)CAPOIndexBlob(blob, ext, fn_hash20);
     SPOT_DBG_TOKENISED++;
 
-    //  Hash-set drain is owned by capo_emit (it flushes on HASHNOROOM
+    //  Hash-set drain is owned by CAPOEmit (it flushes on HASHNOROOM
     //  and retries) — no per-blob threshold check needed here.
 
     done;
