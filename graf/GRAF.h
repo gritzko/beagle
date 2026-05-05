@@ -169,6 +169,45 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                    u8cs reporoot, u32 wt_src,
                    GRAFweaveStepCb cb, void *cb_ctx);
 
+// Linear-chain analogue of `GRAFFileWeave`.  For each commit in
+// `chain[0..nchain)` (oldest-first), fetches the blob at `filepath`
+// and folds it into the weave via `WEAVEFromBlob` + `WEAVEDiff` with
+// `src` set to the low 32 bits of `WHIFFHashlet40(commit_sha)`.
+// Adjacent commits whose blob bytes match the prior kept version are
+// silently dropped; commits where `filepath` is absent are skipped.
+// No DAG dependency, no worktree layer.  Same three-buffer caller
+// pattern as `GRAFFileWeave` (`wsrc` / `wdst` / `wnu`); the buffer
+// holding the final state is returned in `*out_final`.  `cb`, when
+// non-NULL, fires once per kept layer with `src_id` = the same
+// 32-bit hashlet stamped on the layer and `commit_h` =
+// `WHIFFHashlet60(commit_sha)`.
+ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
+                         weave **out_final,
+                         keeper *k, u8cs filepath,
+                         sha1 const *chain, u32 nchain,
+                         GRAFweaveStepCb cb, void *cb_ctx);
+
+// Single-blob WEAVE merge for the rebase replay loop — replaces the
+// 3-way `JOINMerge` step that `GRAFMergeExplicit` performs today.
+// `running` is the file's weave on the post-rebase head's history;
+// `branch` is the file's weave on the to-be-replayed commit's
+// history.  Both must share an NCA-bootstrap layer (`src=0`) so
+// WEAVEMerge can recover the spine.
+//
+// `WEAVEMerge` combines the two histories; `WEAVEEmitMerged` then
+// renders the alive byte stream into `out` (reset before writing),
+// using `in_running` / `in_branch` as the per-side membership
+// predicates over 32-bit commit hashlets — typically backed by each
+// side's `DAGAncestors` closure.  When the rendered run has tokens
+// whose memberships are disjoint, `WEAVEEmitMerged` frames the
+// divergence with `<<<<` / `||||` / `>>>>` JOIN-format markers; the
+// post-render scan sets `*out_conflict = YES` and the caller maps
+// that to `GRAFCNFL`.  No keeper IO; pure weave/predicate work.
+ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
+                         WEAVEsetfn in_running, void *in_running_ctx,
+                         WEAVEsetfn in_branch,  void *in_branch_ctx,
+                         u8 *const *out, b8 *out_conflict);
+
 // Resolve a URI's `#hex` / `?ref` / absent-query to a 20-byte commit
 // SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
 ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out);

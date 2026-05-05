@@ -32,6 +32,7 @@
 #include "abc/PRO.h"
 #include "abc/RAP.h"
 #include "dog/DOG.h"
+#include "dog/WHIFF.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
@@ -425,10 +426,35 @@ static b8 tm_has_conflict_v2(u8cs bytes) {
     return NO;
 }
 
+//  Synthetic per-side hashlets for the leaf merge.  Disjoint, distinct
+//  from `WEAVE_WT_SRC` / `WEAVE_CFLCT_SRC`, and stable across the
+//  rebase loop — lets `WEAVEMerge` distinguish the two sides without
+//  any history-aware bookkeeping.  Step 4 will replace these with
+//  real chain ancestor sets.
+#define TM_RUN_SRC 0xa1a1a1a1u
+#define TM_BR_SRC  0xb2b2b2b2u
+
+static b8 tm_pred_run(u32 h32, void *ctx) {
+    (void)ctx;
+    return h32 == TM_RUN_SRC;
+}
+
+static b8 tm_pred_branch(u32 h32, void *ctx) {
+    (void)ctx;
+    return h32 == TM_BR_SRC;
+}
+
 //  Three-way leaf (blob) merge → emit a fresh blob if the merge
 //  produces new bytes that don't already match base/ours/theirs.
 //  Returns the canonical sha in `out_sha`; sets `*out_conflict` on
 //  conflict.
+//
+//  Body delegates to `GRAFRebaseBlobMerge` over per-side 2-version
+//  weaves (bootstrap from `base` blob with src=0; one WEAVEDiff per
+//  side stamps inserts with `TM_RUN_SRC` / `TM_BR_SRC`).  This drops
+//  JOINMerge in favour of WEAVE+NEIL but keeps the 3-way input
+//  contract — chain-aware weaves and DAG-ancestor predicates land
+//  in step 4.
 static ok64 tm_merge_blob(sha1 *out_sha,
                           sha1 const *base, sha1 const *ours,
                           sha1 const *theirs,
@@ -437,7 +463,7 @@ static ok64 tm_merge_blob(sha1 *out_sha,
     sane(out_sha && out_conflict);
     *out_conflict = NO;
 
-    //  Trivial cases that avoid running JOIN entirely.
+    //  Trivial sha-equality cases short-circuit the weave build.
     if (memcmp(base->data, ours->data, 20) == 0) {
         *out_sha = *theirs; done;
     }
@@ -448,25 +474,69 @@ static ok64 tm_merge_blob(sha1 *out_sha,
         *out_sha = *ours;   done;
     }
 
+    Bu8 bbuf = {}, obuf = {}, tbuf = {};
+    call(u8bMap, bbuf, REBASE_BLOB_MAX);
+    call(u8bMap, obuf, REBASE_BLOB_MAX);
+    call(u8bMap, tbuf, REBASE_BLOB_MAX);
+
+    ok64 ret = rebase_blob_at(bbuf, base);
+    if (ret == OK) ret = rebase_blob_at(obuf, ours);
+    if (ret == OK) ret = rebase_blob_at(tbuf, theirs);
+
+    weave bs_o = {}, nu_o = {}, run_w = {};
+    weave bs_t = {}, nu_t = {}, br_w  = {};
     Bu8 mbuf = {};
-    call(u8bMap, mbuf, REBASE_BLOB_MAX);
-    ok64 o = GRAFMergeExplicit(base, ours, theirs, mbuf);
-    if (o != OK) { u8bUnMap(mbuf); return o; }
+    if (ret == OK) ret = WEAVEInit(&bs_o);
+    if (ret == OK) ret = WEAVEInit(&nu_o);
+    if (ret == OK) ret = WEAVEInit(&run_w);
+    if (ret == OK) ret = WEAVEInit(&bs_t);
+    if (ret == OK) ret = WEAVEInit(&nu_t);
+    if (ret == OK) ret = WEAVEInit(&br_w);
+    if (ret == OK) ret = u8bMap(mbuf, REBASE_BLOB_MAX);
 
-    a_dup(u8c, mdata, u8bData(mbuf));
-    if (tm_has_conflict_v2(mdata)) {
-        *out_conflict = YES;
-        u8bUnMap(mbuf);
-        done;
+    if (ret == OK) {
+        a_dup(u8c, bdata, u8bData(bbuf));
+        a_dup(u8c, odata, u8bData(obuf));
+        a_dup(u8c, tdata, u8bData(tbuf));
+
+        //  No path → no extension hint; default tokenizer.  Matches
+        //  the prior `GRAFMergeExplicit` behaviour, which hard-coded
+        //  ext="c".  Step 4 threads the real path through.
+        u8cs ext = {};
+
+        ret = WEAVEFromBlob(&bs_o, bdata, ext, 0);
+        if (ret == OK) ret = WEAVEFromBlob(&nu_o, odata, ext, TM_RUN_SRC);
+        if (ret == OK) ret = WEAVEDiff(&run_w, &bs_o, &nu_o, TM_RUN_SRC);
+
+        if (ret == OK) ret = WEAVEFromBlob(&bs_t, bdata, ext, 0);
+        if (ret == OK) ret = WEAVEFromBlob(&nu_t, tdata, ext, TM_BR_SRC);
+        if (ret == OK) ret = WEAVEDiff(&br_w, &bs_t, &nu_t, TM_BR_SRC);
+
+        if (ret == OK) {
+            b8 conflict = NO;
+            ret = GRAFRebaseBlobMerge(&run_w, &br_w,
+                                      tm_pred_run,    NULL,
+                                      tm_pred_branch, NULL,
+                                      mbuf, &conflict);
+            if (ret == OK && conflict) {
+                *out_conflict = YES;
+            } else if (ret == OK) {
+                a_dup(u8c, mdata, u8bData(mbuf));
+                KEEPObjSha(out_sha, DOG_OBJ_BLOB, mdata);
+                if (cb != NULL) {
+                    ret = cb(ctx, DOG_OBJ_BLOB, out_sha, mdata);
+                }
+            }
+        }
     }
 
-    KEEPObjSha(out_sha, DOG_OBJ_BLOB, mdata);
-    if (cb != NULL) {
-        ok64 eo = cb(ctx, DOG_OBJ_BLOB, out_sha, mdata);
-        if (eo != OK) { u8bUnMap(mbuf); return eo; }
-    }
-    u8bUnMap(mbuf);
-    done;
+    if (u8bOK(mbuf)) u8bUnMap(mbuf);
+    WEAVEFree(&bs_o); WEAVEFree(&nu_o); WEAVEFree(&run_w);
+    WEAVEFree(&bs_t); WEAVEFree(&nu_t); WEAVEFree(&br_w);
+    u8bUnMap(bbuf);
+    u8bUnMap(obuf);
+    u8bUnMap(tbuf);
+    return ret;
 }
 
 static ok64 tm_merge_trees(sha1 *tree_out_sha,
@@ -974,4 +1044,157 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
     free(pids);
     if (head_body_cached) u8bFree(head_body_cache);
     return ret;
+}
+
+// ---------------------------------------------------------------------
+//  GRAFRebaseFileWeave — linear-chain weave builder (step 1 of WEAVE+
+//  NEIL migration).  Mirrors GRAFFileWeave's three-buffer fold pattern
+//  but walks a caller-supplied sha1 chain (oldest-first), bypassing
+//  the DAG index entirely.  No worktree layer.
+// ---------------------------------------------------------------------
+
+#define REBASE_FW_BLOB_MAX (16UL << 20)
+
+//  Resolve (commit_sha, filepath) → blob bytes.  Mirrors
+//  GRAFBlobAtCommit but takes the full sha1 directly so the caller
+//  can avoid the 60-bit-hashlet round-trip.  Returns KEEPNONE when
+//  the path is absent or the object isn't a commit/blob.
+static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
+                               sha1 const *commit_sha, u8cs filepath) {
+    sane(buf && k && commit_sha);
+
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, REBASE_OBJ_BUF);
+    u8 ct = 0;
+    ok64 o = KEEPGetExact(k, commit_sha, cbuf, &ct);
+    if (o != OK) { u8bFree(cbuf); return o; }
+    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
+
+    sha1 tree_sha = {}, parent_unused = {};
+    b8 had_parent = NO;
+    a_dup(u8c, cbody, u8bDataC(cbuf));
+    ok64 p = pid_parse_commit(cbody, &tree_sha,
+                              &parent_unused, &had_parent);
+    u8bFree(cbuf);
+    if (p != OK) return p;
+
+    sha1 cur = tree_sha;
+    u8cs rest = {filepath[0], filepath[1]};
+    while (!$empty(rest)) {
+        u8cp slash = rest[0];
+        while (slash < rest[1] && *slash != '/') slash++;
+        u8cs name = {rest[0], slash};
+        ok64 s = GRAFTreeStep(k, &cur, name);
+        if (s != OK) return s;
+        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
+    }
+
+    u8 btype = 0;
+    call(KEEPGetExact, k, &cur, buf, &btype);
+    if (btype != DOG_OBJ_BLOB) return KEEPNONE;
+    done;
+}
+
+ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
+                         weave **out_final,
+                         keeper *k, u8cs filepath,
+                         sha1 const *chain, u32 nchain,
+                         GRAFweaveStepCb cb, void *cb_ctx) {
+    sane(wsrc && wdst && wnu && out_final && k && $ok(filepath));
+    *out_final = wsrc;
+    if (nchain == 0 || chain == NULL) done;
+
+    Bu8 blob_a = {}, blob_b = {};
+    call(u8bMap, blob_a, REBASE_FW_BLOB_MAX);
+    ok64 mb = u8bMap(blob_b, REBASE_FW_BLOB_MAX);
+    if (mb != OK) { u8bUnMap(blob_a); return mb; }
+
+    Bu8 *cur_blob = &blob_a, *prev_blob = &blob_b;
+
+    u8cs ext = {};
+    PATHu8sExt(ext, filepath);
+
+    ok64 ret = OK;
+    b8 have_prev = NO;
+
+    for (u32 i = 0; i < nchain && ret == OK; i++) {
+        u8bReset(*cur_blob);
+        ok64 fo = rebase_blob_at_sha(*cur_blob, k, &chain[i], filepath);
+        if (fo != OK) continue;  //  path absent at this commit
+
+        if (have_prev) {
+            size_t cl = u8bDataLen(*cur_blob);
+            size_t pl = u8bDataLen(*prev_blob);
+            if (cl == pl && (cl == 0 ||
+                memcmp(u8bDataHead(*cur_blob),
+                       u8bDataHead(*prev_blob), cl) == 0))
+                continue;  //  byte-identical to prior fold
+        }
+
+        u32 sc = (u32)WHIFFHashlet40(&chain[i]);
+        u64 commit_h60 = WHIFFHashlet60(&chain[i]);
+        if (cb) {
+            ok64 co = cb(sc, commit_h60, cb_ctx);
+            if (co != OK) { ret = co; break; }
+        }
+
+        u8cs new_data = {u8bDataHead(*cur_blob),
+                         u8bDataHead(*cur_blob) + u8bDataLen(*cur_blob)};
+
+        ret = WEAVEFromBlob(wnu, new_data, ext, sc);
+        if (ret != OK) break;
+        ret = WEAVEDiff(wdst, wsrc, wnu, sc);
+        if (ret != OK) break;
+        weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
+
+        Bu8 *tmp = cur_blob; cur_blob = prev_blob; prev_blob = tmp;
+        have_prev = YES;
+    }
+
+    *out_final = wsrc;
+    u8bUnMap(blob_a);
+    u8bUnMap(blob_b);
+    return ret;
+}
+
+// ---------------------------------------------------------------------
+//  GRAFRebaseBlobMerge — WEAVE-merge step (step 2 of the WEAVE+NEIL
+//  migration).  Pure weave work: no keeper IO, no DAG dependency.
+// ---------------------------------------------------------------------
+
+ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
+                         WEAVEsetfn in_running, void *in_running_ctx,
+                         WEAVEsetfn in_branch,  void *in_branch_ctx,
+                         u8 *const *out, b8 *out_conflict) {
+    sane(running && branch && in_running && in_branch &&
+         out && out_conflict);
+    *out_conflict = NO;
+
+    weave merged = {};
+    call(WEAVEInit, &merged);
+
+    ok64 ret = WEAVEMerge(&merged, running, branch);
+    if (ret != OK) { WEAVEFree(&merged); return ret; }
+
+    WEAVEsetfn preds[2] = {in_running, in_branch};
+    void *ctxs[2] = {in_running_ctx, in_branch_ctx};
+    ret = WEAVEEmitMerged(&merged, preds, ctxs, 2, out);
+    WEAVEFree(&merged);
+    if (ret != OK) return ret;
+
+    //  Conflict detection: WEAVEEmitMerged frames divergent runs with
+    //  `<<<<` markers.  A 4-byte `<` run is the unambiguous signal —
+    //  the same heuristic `tm_has_conflict_v2` uses for JOINMerge
+    //  output, kept here so the migration's signal shape matches.
+    a_dup(u8c, rendered, u8bData(out));
+    if ($len(rendered) >= 4) {
+        for (u8c *p = rendered[0]; p + 4 <= rendered[1]; p++) {
+            if (p[0] == '<' && p[1] == '<' &&
+                p[2] == '<' && p[3] == '<') {
+                *out_conflict = YES;
+                break;
+            }
+        }
+    }
+    done;
 }

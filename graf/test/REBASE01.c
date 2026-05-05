@@ -32,6 +32,7 @@
 #include "abc/TEST.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
+#include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 
 // --- Tiny test harness ----------------------------------------------------
@@ -580,11 +581,247 @@ ok64 test_rebase(void) {
     done;
 }
 
+// --- (m) GRAFRebaseFileWeave -------------------------------------------
+//
+//  Linear chain of three commits modifying f.txt one line at a time:
+//      C1: "alpha\nbeta\ngamma\n"
+//      C2: "alpha\nBETA\ngamma\n"   (line 2 modified)
+//      C3: "alpha\nBETA\nGAMMA\n"   (line 3 modified)
+//
+//  Expectations:
+//    - per-step callback fires exactly 3 times, in chain order, with
+//      `src_id` = low-32 of WHIFFHashlet40 and `commit_h` =
+//      WHIFFHashlet60 for each commit;
+//    - alive-byte concatenation of the resulting weave equals C3's
+//      blob bytes verbatim.
+
+#define FW_REC_CAP 16
+typedef struct {
+    u32  src[FW_REC_CAP];
+    u64  h60[FW_REC_CAP];
+    u32  n;
+} fw_rec;
+
+static ok64 fw_step_cb(u32 src_id, u64 commit_h, void *ctx) {
+    fw_rec *r = (fw_rec *)ctx;
+    if (r->n < FW_REC_CAP) {
+        r->src[r->n] = src_id;
+        r->h60[r->n] = commit_h;
+        r->n++;
+    }
+    return OK;
+}
+
+ok64 test_rebase_file_weave(void) {
+    sane(1);
+    call(setup_repo);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &KEEP, &p);
+    p.strict_order = NO;
+
+    sha1 b1 = {}, t1 = {}, c1 = {};
+    call(make_single_leaf_tree, &p, "100644 f.txt",
+         "alpha\nbeta\ngamma\n", &b1, &t1);
+    call(feed_commit, &p, &t1, NULL, "alice", 1000, "v1", &c1);
+
+    sha1 b2 = {}, t2 = {}, c2 = {};
+    call(make_single_leaf_tree, &p, "100644 f.txt",
+         "alpha\nBETA\ngamma\n", &b2, &t2);
+    call(feed_commit, &p, &t2, &c1, "alice", 1100, "v2", &c2);
+
+    sha1 b3 = {}, t3 = {}, c3 = {};
+    call(make_single_leaf_tree, &p, "100644 f.txt",
+         "alpha\nBETA\nGAMMA\n", &b3, &t3);
+    call(feed_commit, &p, &t3, &c2, "alice", 1200, "v3", &c3);
+
+    call(KEEPPackClose, &KEEP, &p);
+
+    sha1 chain[3] = {c1, c2, c3};
+    weave wA = {}, wB = {}, wnu = {};
+    call(WEAVEInit, &wA);
+    call(WEAVEInit, &wB);
+    call(WEAVEInit, &wnu);
+
+    fw_rec rec = {};
+    a_cstr(fp, "f.txt");
+    weave *out = NULL;
+    call(GRAFRebaseFileWeave, &wA, &wB, &wnu, &out,
+         &KEEP, fp, chain, 3, fw_step_cb, &rec);
+    want(out != NULL);
+
+    if (rec.n != 3) {
+        fprintf(stderr, "  fw: cb fired %u times (want 3)\n", rec.n);
+        fail(TESTFAIL);
+    }
+    want(rec.h60[0] == WHIFFHashlet60(&c1));
+    want(rec.h60[1] == WHIFFHashlet60(&c2));
+    want(rec.h60[2] == WHIFFHashlet60(&c3));
+    want(rec.src[0] == (u32)WHIFFHashlet40(&c1));
+    want(rec.src[1] == (u32)WHIFFHashlet40(&c2));
+    want(rec.src[2] == (u32)WHIFFHashlet40(&c3));
+
+    //  Render alive bytes from the resulting weave.
+    Bu8 ab = {};
+    call(u8bMap, ab, 1UL << 16);
+
+    u32cp toks   = (u32cp)out->toks[1];
+    u32cp toks_e = (u32cp)out->toks[2];
+    u32   wlen   = (u32)(toks_e - toks);
+    inrmcp irm   = (inrmcp)out->inrm[1];
+    u8cp   text  = (u8cp)out->text[1];
+    for (u32 i = 0; i < wlen; i++) {
+        if (irm[i].rm != 0) continue;
+        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
+        u32 hi = tok32Offset(toks[i]);
+        u8cs chunk = {text + lo, text + hi};
+        u8bFeed(ab, chunk);
+    }
+    a_dup(u8c, alive, u8bData(ab));
+    a_cstr(want_s, "alpha\nBETA\nGAMMA\n");
+    if ($len(alive) != $len(want_s) ||
+        memcmp(alive[0], want_s[0], $len(alive)) != 0) {
+        fprintf(stderr, "  fw: alive=%.*s\n",
+                (int)$len(alive), (char const *)alive[0]);
+        u8bUnMap(ab);
+        fail(TESTFAIL);
+    }
+    u8bUnMap(ab);
+
+    WEAVEFree(&wA);
+    WEAVEFree(&wB);
+    WEAVEFree(&wnu);
+
+    teardown_repo();
+    fprintf(stderr, "  rebase_file_weave (m)PASS\n");
+    done;
+}
+
+// --- (n)/(o) GRAFRebaseBlobMerge -----------------------------------------
+//
+//  WEAVE-merge step.  Two pre-built weaves (running, branch), each
+//  bootstrapped from a shared ancestor blob (src=0) and extended by
+//  one edit (src=R_h32 / src=B_h32).  Merge and render bytes.
+//
+//    (n) disjoint edits → no conflict, merged bytes contain both
+//        sides' changes and equal the natural concatenated result;
+//    (o) same-line edits → conflict flag set, marker bytes present.
+
+typedef struct {
+    u32 hs[8];
+    u32 n;
+} u32_set;
+
+static b8 in_u32_set(u32 h32, void *ctx) {
+    u32_set const *s = (u32_set const *)ctx;
+    for (u32 i = 0; i < s->n; i++) if (s->hs[i] == h32) return YES;
+    return NO;
+}
+
+//  Build a 2-version weave: bootstrap from `anc` (src=0), diff
+//  toward `nu` with `src`.  Caller owns the three weaves and
+//  must `WEAVEFree` them after.
+static ok64 build_2v_weave(weave *out, weave *bs, weave *nu_w,
+                           u8cs anc, u8cs nu_bytes, u8cs ext, u32 src) {
+    sane(out && bs && nu_w);
+    call(WEAVEFromBlob, bs, anc, ext, 0);
+    call(WEAVEFromBlob, nu_w, nu_bytes, ext, src);
+    call(WEAVEDiff, out, bs, nu_w, src);
+    done;
+}
+
+ok64 test_rebase_blob_merge(void) {
+    sane(1);
+
+    a_cstr(ext, "txt");
+    u32 R_h32 = 0xa1a1a1a1u;
+    u32 B_h32 = 0xb2b2b2b2u;
+    u32_set rset = {.hs = {R_h32}, .n = 1};
+    u32_set bset = {.hs = {B_h32}, .n = 1};
+
+    //  --- (n) disjoint edits ----------------------------------------
+    {
+        a_cstr(anc,    "x = 1\ny = 2\nz = 3\n");
+        a_cstr(rbytes, "x = 10\ny = 2\nz = 3\n");
+        a_cstr(bbytes, "x = 1\ny = 2\nz = 30\n");
+
+        weave bs_r = {}, nu_r = {}, run_w = {};
+        weave bs_b = {}, nu_b = {}, br_w  = {};
+        call(WEAVEInit, &bs_r); call(WEAVEInit, &nu_r); call(WEAVEInit, &run_w);
+        call(WEAVEInit, &bs_b); call(WEAVEInit, &nu_b); call(WEAVEInit, &br_w);
+
+        call(build_2v_weave, &run_w, &bs_r, &nu_r, anc, rbytes, ext, R_h32);
+        call(build_2v_weave, &br_w,  &bs_b, &nu_b, anc, bbytes, ext, B_h32);
+
+        Bu8 out = {};
+        call(u8bMap, out, 1UL << 16);
+        b8 conflict = YES;
+        call(GRAFRebaseBlobMerge, &run_w, &br_w,
+             in_u32_set, &rset, in_u32_set, &bset,
+             out, &conflict);
+
+        if (conflict) {
+            fprintf(stderr, "  bm n: unexpected conflict\n");
+            u8bUnMap(out); fail(TESTFAIL);
+        }
+        a_dup(u8c, od, u8bData(out));
+        a_cstr(want_s, "x = 10\ny = 2\nz = 30\n");
+        if ($len(od) != $len(want_s) ||
+            memcmp(od[0], want_s[0], $len(od)) != 0) {
+            fprintf(stderr, "  bm n: got %.*s\n",
+                    (int)$len(od), (char const *)od[0]);
+            u8bUnMap(out); fail(TESTFAIL);
+        }
+        u8bUnMap(out);
+
+        WEAVEFree(&bs_r); WEAVEFree(&nu_r); WEAVEFree(&run_w);
+        WEAVEFree(&bs_b); WEAVEFree(&nu_b); WEAVEFree(&br_w);
+    }
+
+    //  --- (o) same-line conflict ------------------------------------
+    {
+        a_cstr(anc,    "v = old\n");
+        a_cstr(rbytes, "v = new1\n");
+        a_cstr(bbytes, "v = new2\n");
+
+        weave bs_r = {}, nu_r = {}, run_w = {};
+        weave bs_b = {}, nu_b = {}, br_w  = {};
+        call(WEAVEInit, &bs_r); call(WEAVEInit, &nu_r); call(WEAVEInit, &run_w);
+        call(WEAVEInit, &bs_b); call(WEAVEInit, &nu_b); call(WEAVEInit, &br_w);
+
+        call(build_2v_weave, &run_w, &bs_r, &nu_r, anc, rbytes, ext, R_h32);
+        call(build_2v_weave, &br_w,  &bs_b, &nu_b, anc, bbytes, ext, B_h32);
+
+        Bu8 out = {};
+        call(u8bMap, out, 1UL << 16);
+        b8 conflict = NO;
+        call(GRAFRebaseBlobMerge, &run_w, &br_w,
+             in_u32_set, &rset, in_u32_set, &bset,
+             out, &conflict);
+
+        if (!conflict) {
+            a_dup(u8c, od, u8bData(out));
+            fprintf(stderr, "  bm o: expected conflict, got %.*s\n",
+                    (int)$len(od), (char const *)od[0]);
+            u8bUnMap(out); fail(TESTFAIL);
+        }
+        u8bUnMap(out);
+
+        WEAVEFree(&bs_r); WEAVEFree(&nu_r); WEAVEFree(&run_w);
+        WEAVEFree(&bs_b); WEAVEFree(&nu_b); WEAVEFree(&br_w);
+    }
+
+    fprintf(stderr, "  rebase_blob_merge (n)PASS (o)PASS\n");
+    done;
+}
+
 ok64 maintest(void) {
     sane(1);
     call(test_patchid);
     call(test_merge_explicit);
     call(test_rebase);
+    call(test_rebase_file_weave);
+    call(test_rebase_blob_merge);
     done;
 }
 
