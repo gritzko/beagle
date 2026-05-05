@@ -189,21 +189,47 @@ ok64 SPOTExec(cli *c) {
         if (is_search_proj) proj_search_uri0 = YES;
         if (is_search_proj && !$empty(pu->fragment)) {
             u8cs body = {pu->fragment[0], pu->fragment[1]};
-            //  Trailing `.ext` (e.g. `'body'.c`) — split body off ext.
-            //  Scan from the end for a `.` followed by ext-legal chars.
-            u8cp dot = NULL;
-            for (u8cp p = body[1]; p > body[0]; ) {
-                p--;
-                u8 ch = *p;
-                if (ch == '.') { dot = p; break; }
-                if (!((ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9'))) break;
+
+            //  Path-side `.ext` (e.g. `spot:.c#u8sFeed`) — when the
+            //  whole path is just `.<ext-chars>`, treat it as the
+            //  extension filter and clear the path slot so it doesn't
+            //  also get used as a file-narrowing constraint below.
+            if (!$empty(pu->path)) {
+                u8cs p = {pu->path[0], pu->path[1]};
+                b8 path_is_ext = ($len(p) >= 2) && (p[0][0] == '.');
+                for (u8cp q = p[0] + 1; path_is_ext && q < p[1]; q++) {
+                    u8 ch = *q;
+                    if (!((ch >= 'a' && ch <= 'z') ||
+                          (ch >= 'A' && ch <= 'Z') ||
+                          (ch >= '0' && ch <= '9'))) {
+                        path_is_ext = NO;
+                    }
+                }
+                if (path_is_ext) {
+                    $mv(proj_ext, p);
+                    pu->path[0] = pu->path[1] = NULL;
+                }
             }
-            if (dot != NULL && dot > body[0] && dot < body[1] - 1) {
-                proj_ext[0] = dot;
-                proj_ext[1] = body[1];
-                body[1]     = dot;
+
+            //  Trailing `.ext` on the fragment (e.g. `'body'.c`) —
+            //  split body off ext.  Skipped if the path slot already
+            //  carries the ext.  Scan from the end for a `.` followed
+            //  by ext-legal chars.
+            if ($empty(proj_ext)) {
+                u8cp dot = NULL;
+                for (u8cp p = body[1]; p > body[0]; ) {
+                    p--;
+                    u8 ch = *p;
+                    if (ch == '.') { dot = p; break; }
+                    if (!((ch >= 'a' && ch <= 'z') ||
+                          (ch >= 'A' && ch <= 'Z') ||
+                          (ch >= '0' && ch <= '9'))) break;
+                }
+                if (dot != NULL && dot > body[0] && dot < body[1] - 1) {
+                    proj_ext[0] = dot;
+                    proj_ext[1] = body[1];
+                    body[1]     = dot;
+                }
             }
             //  Strip a single pair of surrounding `'…'` from the body.
             if ($len(body) >= 2 && body[0][0] == '\'' &&
