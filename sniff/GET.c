@@ -618,6 +618,16 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     call(u8bAllocate, noop,    1UL << 20);
     call(u8bAllocate, unlinks, 1UL << 20);
     call(u8bAllocate, merges,  1UL << 20);
+    //  TODO: even on a fresh clone (`base_tree==NULL`) the overlap
+    //  check still walks the target tree once to detect dirty wt
+    //  files sitting at target-tree paths (the
+    //  `no_base_conflicts` refusal — see be-get-overlay-no-baseline
+    //  test).  That makes sniff GET walk the target tree TWICE on
+    //  a fresh clone (once here, once in WALKTreeLazy below).  A
+    //  better split would fuse the dirty-overlap detection into
+    //  the WRITE pass and skip this pre-flight when there's no
+    //  baseline to compare against; left as an optimisation since
+    //  the safety check has to run somewhere.
     o = get_overlap_check(k, reporoot,
                           has_base_tree ? base_tree.data : NULL,
                           tree_sha.data, noop, unlinks, merges);

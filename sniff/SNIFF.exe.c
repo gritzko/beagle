@@ -634,13 +634,13 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     keeper *k = &KEEP;
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
-    //  Remote URI (`//host?ref`, `ssh://host/path?ref`, …): pull the
-    //  reachable closure into the local keeper before resolving.  be
-    //  no longer pre-fetches as a separate dispatch step — sniff is
-    //  the verb owner and orchestrates downstream calls itself.
-    if (!u8csEmpty(u->authority)) {
-        call(KEEPGetRemote, u);
-    }
+    //  Remote URI: under DOG.md §10a `be get` is the orchestrator —
+    //  it already ran `keeper get URI` synchronously before forking
+    //  the parallel spot/graf/sniff children.  Sniff is a worktree
+    //  updater; it does not fetch from peers itself.  Standalone
+    //  `sniff get ssh://...` will fail at REFSResolve below if the
+    //  pack hasn't been pre-fetched — that's intentional (use `be
+    //  get` for clones).
 
     //  Path-only URI (no authority, no query) → `be get <hex>` or
     //  `be get <local-dir>` (the latter is rewritten by BEGetWorktree

@@ -547,11 +547,18 @@ static ok64 spot_walk_visit(u8cs path, u8 kind, u8cp esha,
     u64 blob_hl40 = WHIFFHashlet40(&bsha);
     u32 path_h20  = CAPOFnRap20(path);
 
-    //  Memo: same (blob, path) on a prior walk → nothing to do.
-    if (spot_memo_hit(cx->runs, blob_hl40, path_h20)) {
-        SPOT_DBG_MEMO_HIT++;
-        return OK;
-    }
+    //  TODO: BLOBFN memo skip is disabled because the snapshotted
+    //  `cx->runs` is invalidated mid-walk by `CAPOFlushRun →
+    //  CAPOCompact → DOGPupThinTail`, which unmaps the old puppy
+    //  files our snapshot points at and SEGV's the next lookup.
+    //  Right fix: a safe re-snapshotting walker (re-call
+    //  CAPOStackOpen after every flush) or a DOGPup* read-side that
+    //  pins existing maps until the walk finishes.  For now we
+    //  just retokenise every blob — measured ~9 s for git's full
+    //  tip on a debug+ASAN build, fast enough to live with.
+    (void)spot_memo_hit;
+    (void)blob_hl40;
+    (void)path_h20;
 
     u32 ext_off = capo_ext_intern(cx->s, ext);
     if (ext_off == 0) return OK;
