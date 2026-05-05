@@ -524,7 +524,6 @@ static b8 spot_memo_hit(u64css runs, u64 blob_hl40, u32 path_h20) {
 typedef struct {
     spot   *s;
     keeper *k;
-    u64css  runs;       // pre-opened LSM stack for memo lookups
 } spot_walk_ctx;
 
 static ok64 spot_walk_visit(u8cs path, u8 kind, u8cp esha,
@@ -547,18 +546,16 @@ static ok64 spot_walk_visit(u8cs path, u8 kind, u8cp esha,
     u64 blob_hl40 = WHIFFHashlet40(&bsha);
     u32 path_h20  = CAPOFnRap20(path);
 
-    //  TODO: BLOBFN memo skip is disabled because the snapshotted
-    //  `cx->runs` is invalidated mid-walk by `CAPOFlushRun →
-    //  CAPOCompact → DOGPupThinTail`, which unmaps the old puppy
-    //  files our snapshot points at and SEGV's the next lookup.
-    //  Right fix: a safe re-snapshotting walker (re-call
-    //  CAPOStackOpen after every flush) or a DOGPup* read-side that
-    //  pins existing maps until the walk finishes.  For now we
-    //  just retokenise every blob — measured ~9 s for git's full
-    //  tip on a debug+ASAN build, fast enough to live with.
-    (void)spot_memo_hit;
-    (void)blob_hl40;
-    (void)path_h20;
+    //  Memo: same (blob, path) on a prior walk → nothing to do.
+    //  Reads SPOT.runs live; CAPOFlushRun / CAPOCompact re-publish
+    //  the view via CAPORefreshView before returning, so this is
+    //  safe across mid-walk emits (no stale-pointer window).
+    u64css live_runs = {};
+    CAPORuns(live_runs);
+    if (spot_memo_hit(live_runs, blob_hl40, path_h20)) {
+        SPOT_DBG_MEMO_HIT++;
+        return OK;
+    }
 
     u32 ext_off = capo_ext_intern(cx->s, ext);
     if (ext_off == 0) return OK;
@@ -588,25 +585,12 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     spotp s = &SPOT;
     if (!s->rw) done;
 
-    //  Snapshot the current LSM runs once — used as the per-blob
-    //  memo lookup.  Postings emitted during this walk go through
-    //  the BOX scratch and are not visible here; the walk's own
-    //  visitor would have seen the prior path for any rename.
-    a_path(capodir);
-    a_dup(u8c, reporoot, u8bDataC(s->h->root));
-    if (CAPOResolveDir(capodir, reporoot) != OK) done;
-    a_dup(u8c, dirslice, u8bDataC(capodir));
-
-    u64cs runs[CAPO_MAX_LEVELS] = {};
-    u64css stack = {runs, runs};
-    u8bp mmaps[CAPO_MAX_LEVELS] = {};
-    u32 nidxfiles = 0;
-    (void)CAPOStackOpen(stack, mmaps, &nidxfiles, dirslice);
-    stack[1] = stack[0] + nidxfiles;
-
+    //  No caller snapshot of the puppy stack: `spot_walk_visit` reads
+    //  `SPOT.runs` live via `CAPORuns()` on each blob, and
+    //  `CAPOFlushRun` / `CAPOCompact` re-publish the view before
+    //  returning so reads on the same thread always see a current,
+    //  unmap-safe set.
     spot_walk_ctx cx = {.s = s, .k = k};
-    cx.runs[0] = stack[0];
-    cx.runs[1] = stack[1];
 
     //  Promote a 40-hex query (`?<sha>`) or path (`<sha>`) to the
     //  fragment slot so KEEPResolveTree takes the direct-sha branch
@@ -706,7 +690,5 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     if (has_resolvable) {
         (void)KEEPLsFiles(k, &probe, spot_walk_visit, &cx);
     }
-
-    CAPOStackClose(mmaps, nidxfiles);
     done;
 }

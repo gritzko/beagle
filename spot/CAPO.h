@@ -99,10 +99,25 @@ typedef struct spot_ spot;
 // no per-call mmap; the puppy stack is owned by the singleton).
 // `dir` is ignored — kept for API stability.  Each `<seqno>.spot.idx`
 // along trunk → leaf appears as one run in `stack[0..nfiles)`.
+//
+// LEGACY shim: just copies `SPOT.runs[]` into the caller's slots.
+// New code should call `CAPORuns()` instead — same data, no copy,
+// always current after a `CAPORefreshView()` from any mutator.
 ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir);
 
 // No-op: SPOT.puppies owns the mmaps now.
 ok64 CAPOStackClose(u8bp *maps, u32 nfiles);
+
+// Rebuild `SPOT.runs[]` / `SPOT.runs_n` from the current `SPOT.puppies`
+// stack.  Called by SPOTOpen after `DOGPupOpenAll`, by `CAPOFlushRun`
+// after `DOGPupCreate` / `DOGPupThinTail`, and from any future code
+// path that mutates the puppy stack.  Mirrors `GRAFRefreshView`.
+void CAPORefreshView(void);
+
+// Live `u64cs` view over `SPOT.runs[0..runs_n)`.  Slice ends point
+// into `SPOT.runs[]`; valid until the next puppy-stack mutation
+// (which always re-publishes via `CAPORefreshView`).
+void CAPORuns(u64cssp out);
 
 // Compact the LSM stack at the leaf branch dir, unlink merged
 // sources via DOGPupThinTail and write the merged run via
@@ -227,6 +242,17 @@ struct spot_ {
     Bkv32    puppies;
     Bu8      leaf_branch;           // canonical leaf-branch path
                                     // (trailing '/'; empty for trunk).
+
+    //  Typed `u64cs` view over `puppies`, rebuilt by `CAPORefreshView`
+    //  on every change (Open, FlushRun, Compact).  Queries
+    //  (`spot_memo_hit`, trigram filter) read this directly instead
+    //  of taking a stack-local snapshot — that snapshot pattern was
+    //  unsafe once query and emit interleaved in the same call
+    //  (`spot get URI`), because `DOGPupThinTail`'s `FILEUnMap`
+    //  would invalidate the snapshot's pointers.  Mirrors
+    //  `graf.runs[]` / `GRAFRefreshView`.
+    u64cs    runs[CAPO_MAX_LEVELS];
+    u32      runs_n;
 
     //  Ingestion scratch (rw only): an LSM `BOXu64` over a 16 MB
     //  mmap.  CAPOIndexBlob feeds postings via BOXu64Feed1; cascade

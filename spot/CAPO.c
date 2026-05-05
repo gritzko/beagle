@@ -241,39 +241,62 @@ ok64 CAPOIndexFile(u8csc source, u8csc ext, u8csc full_path) {
     return CAPOIndexBlob(source, ext, CAPOFnRap20(full_path));
 }
 
-// --- Stack management ---
+// --- View management ---
 //
-//  The puppy stack is owned by the SPOT singleton (set up by
-//  SPOTOpenBranch walking trunk → … → leaf).  CAPOStackOpen builds a
-//  typed `u64cs[]` view over `SPOT.puppies` — no per-call fs scan,
-//  no per-call mmap.  `dir` is ignored (kept for API stability;
-//  every caller already targets the spot dir resolved from the
-//  same singleton's home).  The matching CAPOStackClose is a no-op:
-//  mappings are unmapped at SPOTClose.
+//  `SPOT.runs[]` is a typed view over `SPOT.puppies`.  Mutators
+//  (`CAPOFlushRun → DOGPupCreate / DOGPupThinTail`) call
+//  `CAPORefreshView()` after touching the puppy stack so any reader
+//  on the same thread sees a current view without taking a snapshot.
+//  Same shape as `GRAFRefreshView` / `graf.runs`.
+//
+//  Note: `SPOT.runs[]` deliberately does NOT include the in-RAM BOX
+//  scratch levels.  Callers that need to query both (search-time
+//  trigram filter) still take their own snapshot of the BOX in a
+//  loop after each emit; `spot_memo_hit` only reads on-disk puppies
+//  so a live view of `SPOT.runs[]` is sufficient and unmap-safe.
 
+void CAPORefreshView(void) {
+    spot *s = &SPOT;
+    s->runs_n = 0;
+    if (!spot_is_open()) return;
+    u32 n = DOGPupCount(s->puppies);
+    for (u32 i = 0; i < n && s->runs_n < CAPO_MAX_LEVELS; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, s->puppies, i);
+        if (raw[0] == NULL) continue;
+        u64cp base = (u64cp)raw[0];
+        size_t bytes = (size_t)(raw[1] - raw[0]);
+        s->runs[s->runs_n][0] = base;
+        s->runs[s->runs_n][1] = base + bytes / sizeof(u64);
+        s->runs_n++;
+    }
+}
+
+void CAPORuns(u64cssp out) {
+    out[0] = SPOT.runs;
+    out[1] = SPOT.runs + SPOT.runs_n;
+}
+
+//  LEGACY shim: copies `SPOT.runs[]` into the caller's slots, then
+//  appends the in-RAM BOX levels (which never live in `SPOT.runs[]`
+//  — those are caller-snapshot only).  `dir` is ignored (kept for
+//  API stability).  New code should use `CAPORuns()` directly when
+//  the BOX side isn't needed.
 ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir) {
     sane($ok(stack) && maps != NULL && nfiles != NULL && $ok(dir));
     (void)dir;
     *nfiles = 0;
     if (!spot_is_open()) done;
     spot *s = &SPOT;
-    u32 n = DOGPupCount(s->puppies);
-    for (u32 i = 0; i < n && *nfiles < CAPO_MAX_LEVELS; i++) {
-        u8cs raw = {};
-        DOGPupData(raw, s->puppies, i);
-        if (raw[0] == NULL) continue;
-        u64cp base = (u64cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        stack[0][*nfiles][0] = base;
-        stack[0][*nfiles][1] = base + bytes / sizeof(u64);
-        maps[*nfiles] = NULL;  // owned by SPOT.puppies; not per-call
+    for (u32 i = 0; i < s->runs_n && *nfiles < CAPO_MAX_LEVELS; i++) {
+        stack[0][*nfiles][0] = s->runs[i][0];
+        stack[0][*nfiles][1] = s->runs[i][1];
+        maps[*nfiles] = NULL;
         (*nfiles)++;
     }
     //  In-memory BOX scratch: append every sorted level so
     //  HITu64Start sees in-flight postings alongside disk puppies.
-    //  Dirty (PAST) is unsorted and stays excluded; queries miss
-    //  those entries until the next CAPOFlushRun, which is the same
-    //  staleness window the old hash-set scratch had.
+    //  Dirty (PAST) is unsorted and stays excluded.
     if (!BNULL(s->entries_mem)) {
         u64s *box_data = s->entries_box[1];
         u64s *box_idle = s->entries_box[2];
@@ -338,6 +361,7 @@ ok64 CAPOCompact(spot *s) {
     //  Thin first (unlinks the m sources), then create.
     call(DOGPupThinTail, s->puppies, $path(leafdir), ext, (u32)m);
     call(DOGPupCreate,   s->puppies, $path(leafdir), ext, merged);
+    CAPORefreshView();
 
     u64bFree(cbuf);
     done;
@@ -389,6 +413,7 @@ ok64 CAPOCompactAll(spot *s) {
     //  Drop ALL existing puppies, then create the merged single run.
     call(DOGPupThinTail, s->puppies, $path(leafdir), ext, nview);
     call(DOGPupCreate,   s->puppies, $path(leafdir), ext, merged);
+    CAPORefreshView();
 
     u64bUnMap(mbuf);
     done;
@@ -1418,6 +1443,7 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
             return wo;
         }
     }
+    CAPORefreshView();
 
     //  Lock the LEAF dir on rw (writes only land deepest).  Readers
     //  go lockless — DOGPupCreate publishes via tmp+rename.
@@ -1509,8 +1535,10 @@ ok64 CAPOFlushRun(spot *s) {
     a_cstr(ext, CAPO_IDX_EXT);
     u8cs raw = {(u8cp)save_base, (u8cp)(save_base + n)};
     call(DOGPupCreate, s->puppies, $path(leafdir), ext, raw);
+    CAPORefreshView();
 
-    //  Maintain the 1/8 LSM ladder every flush.
+    //  Maintain the 1/8 LSM ladder every flush.  CAPOCompact may
+    //  rebuild puppies again — it calls CAPORefreshView itself.
     call(CAPOCompact, s);
     done;
 }
