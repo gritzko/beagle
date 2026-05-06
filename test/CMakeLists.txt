@@ -23,7 +23,6 @@ file(GLOB _be_case_runs CONFIGURE_DEPENDS
 # to FAIL until the implementation catches up.  Flip-back is part
 # of the relevant impl PR.  See VERBS.todo.md for tracking.
 set(_BE_WILL_FAIL_CASES
-    "be-head-01-ahead-behind"
     "be-post-05-rebase-on-remote"
 )
 
@@ -35,6 +34,7 @@ set(_BE_WILL_FAIL_CASES
 # under $HOME/tmp/run-<ts>/be-test/$$/<verb>/<name>).
 set(_BE_NEEDS_SSH_CASES
     "be-post-05-rebase-on-remote"
+    "be-post-06-fetch-incremental"
 )
 
 foreach(_run ${_be_case_runs})

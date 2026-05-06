@@ -2,8 +2,8 @@
 . "$(dirname "$0")/../../lib/spot-case.sh"
 
 # 01: stage two .c files — only one defines a single-arg int function.
-cp "$CASE/single.c" single.c
-cp "$CASE/multi.c"  multi.c
+sleep 0.02; cp "$CASE/single.c" single.c
+sleep 0.02; cp "$CASE/multi.c"  multi.c
 "$BE" put single.c multi.c > /dev/null 2>&1
 "$BE" post 'init msg'           > /dev/null 2>&1
 

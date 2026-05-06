@@ -60,6 +60,16 @@ ron60 REFSVerbSet(void) {
     return refs_verb_cached("set", &c);
 }
 
+ron60 REFSVerbGetFail(void) {
+    static ron60 c = 0;
+    return refs_verb_cached("get_fail", &c);
+}
+
+ron60 REFSVerbPostFail(void) {
+    static ron60 c = 0;
+    return refs_verb_cached("post_fail", &c);
+}
+
 // --- path builder ---
 
 #define REFS_LOG_PATH(name, dir)                                \
@@ -246,6 +256,11 @@ static ok64 refs_each_store(ulogreccp rec, void *ctx) {
     sane(rec && ctx);
     refs_load_ctx *c = (refs_load_ctx *)ctx;
     if (c->cnt >= c->max) done;
+    //  Fail-marker rows are journal-only — never surface them as
+    //  refs.  They appear in `.dogs/refs` but don't change resolved
+    //  state.
+    if (rec->verb == REFSVerbGetFail() ||
+        rec->verb == REFSVerbPostFail()) done;
     uri const *u = &rec->uri;
 
     //  Skip tombstoned keys: zero-sha fragment means the branch was
@@ -362,8 +377,15 @@ static b8 refs_query_match(u8csc in_query, u8csc r_query) {
     return memcmp(in_query[0], r_query[0], u8csLen(in_query)) == 0;
 }
 
-static b8 refs_match_pred(uricp u, void *ctx) {
+static b8 refs_match_pred(ulogreccp r, void *ctx) {
     match_ctx *m = (match_ctx *)ctx;
+    //  Skip fail-marker rows: they record an attempt that did NOT
+    //  land state, so they must not surface as the latest resolved
+    //  value.  Diagnostic walks (audit, recovery) read these out of
+    //  band via the ULOG directly.
+    if (r->verb == REFSVerbGetFail() ||
+        r->verb == REFSVerbPostFail()) return NO;
+    uricp u = &r->uri;
     u8cs r_host  = {u->host[0],  u->host[1]};
     u8cs r_query = {u->query[0], u->query[1]};
     //  Input had no `?` at all → match any ref whose host fits the

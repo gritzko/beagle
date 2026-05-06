@@ -2,7 +2,7 @@
 . "$(dirname "$0")/../../lib/case.sh"
 
 # 01: stage greet.txt in a fresh wt
-cp "$CASE/01.greet.txt" greet.txt
+sleep 0.02; cp "$CASE/01.greet.txt" greet.txt
 "$BE" put greet.txt > 01.put.got.out 2> 01.put.got.err
 empty 01.put.got.out
 match "$CASE/01.put.err.txt" 01.put.got.err

@@ -2710,47 +2710,65 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
         return OK;
     }
 
-    //  --- 4. CAS-advance cur's REFS row (cur_tip → new_tip). ---
+    //  --- 4. Reset wt to new_tip FIRST (writes blob bytes; bumps
+    //  `.sniff` baseline).  REFS stays untouched until checkout
+    //  reports success — a mid-checkout crash (e.g. FILENORESZ)
+    //  must not leave REFS pointing at a tip the wt and `.sniff`
+    //  never reached.  CAS-advance follows once the wt is in
+    //  place; the small remaining inconsistency window
+    //  (`.sniff` ahead, REFS behind on a CAS race) is a much
+    //  cheaper failure mode than the inverse. ---
+    a_pad(u8, new_hex, 40);
+    a_rawc(nsha, new_tip);
+    HEXu8sFeedSome(new_hex_idle, nsha);
     a_path(keepdir, reporoot, KEEP_DIR_S);
     a_pad(u8, refkey_buf, 260);
     u8bFeed1(refkey_buf, '?');
     if (!u8csEmpty(cur_branch)) u8bFeed(refkey_buf, cur_branch);
     a_dup(u8c, refkey, u8bData(refkey_buf));
+    {
+        a_dup(u8c, hex_cs, u8bDataC(new_hex));
+        a_dup(u8c, src_cs, refkey);
+        ok64 co = GETCheckout(reporoot, hex_cs, src_cs);
+        if (co != OK) {
+            //  Journal the failed attempt: cur stays at cur_tip but
+            //  audit / recovery tooling sees a `post_fail ?...#<would-be>`
+            //  marker explaining why a freshly-rebased commit object
+            //  exists in the pack without a corresponding success row.
+            a_dup(u8c, val, u8bDataC(new_hex));
+            (void)REFSAppendVerb($path(keepdir), REFSVerbPostFail(),
+                                 refkey, val);
+            return co;
+        }
+    }
 
+    //  --- 5. CAS-advance cur's REFS row (cur_tip → new_tip).
+    //  GETCheckout (step 4) already wrote a `post ?<branch>#<new_tip>`
+    //  row, so the CAS here is a sanity check + concurrent-writer
+    //  guard.  REFSCAS with REFS already at new_tip is the expected
+    //  idempotent path (our own checkout's row); only an UNRELATED
+    //  third sha indicates a real concurrent update worth aborting on.
     a_pad(u8, exp_hex, 40);
     a_rawc(esha, cur_tip);
     HEXu8sFeedSome(exp_hex_idle, esha);
-    a_pad(u8, new_hex, 40);
-    a_rawc(nsha, new_tip);
-    HEXu8sFeedSome(new_hex_idle, nsha);
     a_dup(u8c, expected, u8bDataC(exp_hex));
     a_dup(u8c, val,      u8bDataC(new_hex));
 
     ok64 cas = REFSCompareAndAppend($path(keepdir), refkey, expected, val);
     if (cas == REFSCAS) {
-        fprintf(stderr,
-                "sniff: post: cur REFS advanced concurrently — retry\n");
-        return REFSCAS;
-    }
-    if (cas != OK) return cas;
-
-    //  --- 5. Reset wt to new_tip (so on-disk content matches the
-    //  rebased tree).  GETCheckout also bumps `.sniff` baseline.
-    //  Known residual: GETCheckout returns FILENORESZ on this path
-    //  (post-rebase, pre-mature ftruncate of an already-trimmed
-    //  pack mapping?).  The merged bytes ARE on disk by the time
-    //  the error fires — the test/post/05-rebase-on-remote `match`
-    //  on hello.c passes byte-for-byte.  TODO: trace FILENORESZ
-    //  call site under GETCheckout. ---
-    {
-        a_dup(u8c, hex_cs, u8bDataC(new_hex));
-        a_pad(u8, src_buf, 260);
-        u8bFeed1(src_buf, '?');
-        if (!u8csEmpty(cur_branch)) u8bFeed(src_buf, cur_branch);
-        a_dup(u8c, src_cs, u8bDataC(src_buf));
-        ok64 co = GETCheckout(reporoot, hex_cs, src_cs);
-        if (co != OK) return co;
-    }
+        a_pad(u8, arena, 1024);
+        uri resolved = {};
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), refkey);
+        u8cs cur_now = {resolved.query[0], resolved.query[1]};
+        a_dup(u8c, want, u8bDataC(new_hex));
+        if (ro != OK || u8csLen(cur_now) != u8csLen(want) ||
+            memcmp(cur_now[0], want[0], u8csLen(want)) != 0) {
+            fprintf(stderr,
+                    "sniff: post: cur REFS advanced concurrently — retry\n");
+            return REFSCAS;
+        }
+        //  GETCheckout's own row landed first — already at new_tip.
+    } else if (cas != OK) return cas;
 
     fprintf(stderr,
             "sniff: post: rebased ?%.*s onto %.*s%s\n",

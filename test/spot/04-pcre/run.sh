@@ -2,7 +2,7 @@
 . "$(dirname "$0")/../../lib/spot-case.sh"
 
 # 01: stage one .c file with multiple call patterns.
-cp "$CASE/calls.c" calls.c
+sleep 0.02; cp "$CASE/calls.c" calls.c
 "$BE" put calls.c  > /dev/null 2>&1
 "$BE" post 'init msg'  > /dev/null 2>&1
 

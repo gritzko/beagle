@@ -263,6 +263,15 @@ ok64 KEEPGetRemote(uri *g) {
     u8cs want_ref = {};
     u8csMv(want_ref, g->query);
 
+    //  `?*` wildcard: bulk-fetch every advertised heads/tags ref in
+    //  one upload-pack session (multi-want).  See VERBS.md §HEAD —
+    //  `be head ssh://origin?*` mirrors `git fetch`.
+    if ($len(want_ref) == 1 && want_ref[0][0] == '*') {
+        ok64 fa = WIREFetchAll(k, remote_uri);
+        u8bUnMap(rarena);
+        return fa;
+    }
+
     //  Local short-circuit for `?<40hex>` queries: plain git peers
     //  reject `want <sha>` without uploadpack.allowReachableSHA1InWant,
     //  so the supported flow is "seed with a named ref first, then
@@ -315,6 +324,21 @@ ok64 KEEPGetRemote(uri *g) {
     }
 
     ok64 fo = WIREFetch(k, remote_uri, want_ref);
+    if (fo != OK) {
+        //  Journal the failed fetch so recovery / audit tooling sees a
+        //  `get_fail <peer-uri>?<branch>` row alongside the success
+        //  rows already emitted by wcli_record_ref.  Best-effort write
+        //  — we still return the underlying fetch error.
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_pad(u8, key_buf, 512);
+        u8bFeed(key_buf, remote_uri);
+        u8bFeed1(key_buf, '?');
+        if (!u8csEmpty(want_ref)) u8bFeed(key_buf, want_ref);
+        a_dup(u8c, key, u8bData(key_buf));
+        a_cstr(empty_to, "");
+        (void)REFSAppendVerb($path(keepdir), REFSVerbGetFail(),
+                             key, empty_to);
+    }
     u8bUnMap(rarena);
     return fo;
 }

@@ -492,15 +492,55 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
     done;
 }
 
-//  Harvest local-tip have shas from the keeper's REFADV.  Caps at
-//  WIRE_MAX_HAVES to bound the request size.
-static u32 wcli_collect_haves(refadvcp adv, sha1 *out, u32 cap) {
-    if (!adv) return 0;
-    u32 n = 0;
-    for (u32 i = 0; i < adv->count && n < cap; i++) {
-        out[n++] = adv->ents[i].tip;
+//  Decode a REFS row's val (`?<40-hex>` or bare 40-hex) into a sha1.
+//  Mirror of REFADV's refadv_decode_terminal — kept private here so the
+//  haves walk doesn't pull REFADV's branch-dedup logic.
+static b8 wcli_haves_decode_val(sha1 *out, u8csc val) {
+    u8cs hex = {val[0], val[1]};
+    if (u8csLen(hex) == 41 && hex[0][0] == '?') u8csUsed(hex, 1);
+    if (u8csLen(hex) != 40) return NO;
+    a_dup(u8c, hex_dup, hex);
+    u8 buf[20] = {};
+    u8s bin = {buf, buf + 20};
+    if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
+    if (bin[0] != buf + 20) return NO;
+    if (!u8csEmpty(hex_dup)) return NO;
+    memcpy(out->data, buf, 20);
+    return YES;
+}
+
+typedef struct {
+    sha1 *out;
+    u32   cap;
+    u32   n;
+} wcli_haves_ctx;
+
+static ok64 wcli_haves_cb(refcp r, void *vctx) {
+    sane(r && vctx);
+    wcli_haves_ctx *c = (wcli_haves_ctx *)vctx;
+    if (c->n >= c->cap) return REFSSTOP;
+    sha1 sh = {};
+    u8cs val = {r->val[0], r->val[1]};
+    if (!wcli_haves_decode_val(&sh, val)) done;
+    if (sha1empty(&sh)) done;
+    for (u32 i = 0; i < c->n; i++) {
+        if (sha1eq(&c->out[i], &sh)) done;        // dedup
     }
-    return n;
+    c->out[c->n++] = sh;
+    done;
+}
+
+//  Harvest have-shas from every latest REFS row — local (`?<branch>`)
+//  AND peer-observed (`<peer-uri>?<branch>`).  REFADV's per-branch
+//  dedup is wrong for haves: the cached peer tip is exactly the
+//  overlap we want to advertise to the same peer, but it gets
+//  shadowed by the local cur row in REFADV.  Caps at WIRE_MAX_HAVES.
+static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
+    if (!k) return 0;
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
+    (void)REFSEach($path(keepdir), wcli_haves_cb, &c);
+    return c.n;
 }
 
 //  Send the upload-pack request: want <sha> caps + flush + haves +
@@ -603,6 +643,206 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     return REFSAppend($path(keepdir), key, val);
 }
 
+// --- WIREFetchAll: bulk fetch every advertised heads/tags ref ----------
+//
+//  Single upload-pack session.  Drains the peer's advertisement, then
+//  emits a multi-want request (one `want <sha>` line per advertised
+//  branch/tag, capability list on the first only).  The peer streams
+//  back one packfile carrying the union of all wants' reachable
+//  closures; KEEPIngestStream lands every object in our log.  Each
+//  ref is recorded locally via wcli_record_ref under the peer URI key
+//  so subsequent `be head //origin?<ref>` reads can hit the cache.
+//
+//  Bound: WIRECLI_FETCHALL_MAX advertised refs per session.  Past that
+//  the peer's tail entries are silently dropped — large mirrors should
+//  loop a known-prefix probe instead.
+
+#define WIRECLI_FETCHALL_MAX 64
+#define WIRECLI_REFNAME_CAP  256
+
+typedef struct {
+    sha1 sha;
+    u8   name[WIRECLI_REFNAME_CAP];
+    u32  name_len;
+} wcli_advert_ref;
+
+ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
+    sane(k);
+    if (u8csEmpty(remote_uri)) return WIRECLFL;
+
+    int wfd = -1, rfd = -1;
+    pid_t pid = 0;
+    ok64 so = wcli_spawn(remote_uri, "upload-pack", &wfd, &rfd, &pid);
+    if (so != OK) return WIRECLFL;
+
+    Bu8 advbuf = {};
+    Bu8 frame  = {};
+    ok64 rv = WIRECLFL;
+    if (u8bAllocate(advbuf, WCLI_BUF) != OK) goto fa_close;
+
+    wcli_advert_ref refs[WIRECLI_FETCHALL_MAX];
+    u32 nrefs = 0;
+
+    //  1. Drain advertisement; collect heads/tags only.  Skip HEAD
+    //     pseudo-ref, peeled-tag `^{}` lines, and `refs/remotes/*`.
+    {
+        u8cs adv = {u8bDataHead(advbuf), u8bDataHead(advbuf)};
+        a_cstr(head_lit,    "HEAD");
+        a_cstr(remotes_pfx, "refs/remotes/");
+        a_cstr(heads_pfx,   "refs/heads/");
+        a_cstr(tags_pfx,    "refs/tags/");
+        for (;;) {
+            u8cs line = {};
+            ok64 d = wcli_read_pkt(rfd, advbuf, adv, line);
+            if (d == PKTFLUSH) break;
+            if (d == PKTDELIM) continue;
+            if (d != OK) goto fa_close;
+
+            if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
+            if (u8csLen(line) < 41) continue;
+
+            u8csc hex = {line[0], line[0] + 40};
+            sha1 sha = {};
+            if (!wcli_decode_sha(&sha, hex)) continue;
+            if (line[0][40] != ' ') continue;
+
+            u8cs name = {line[0] + 41, line[1]};
+            u8c *nul = name[0];
+            while (nul < name[1] && *nul != 0) nul++;
+            name[1] = nul;
+
+            if (wcli_eq_lit(name, head_lit[0],
+                            (size_t)$len(head_lit))) continue;
+            if (u8csLen(name) >= 3 && name[1][-1] == '}' &&
+                name[1][-2] == '{' && name[1][-3] == '^') continue;
+            if (wcli_starts_with(name, remotes_pfx[0],
+                                 (size_t)$len(remotes_pfx))) continue;
+            if (!wcli_starts_with(name, heads_pfx[0],
+                                  (size_t)$len(heads_pfx)) &&
+                !wcli_starts_with(name, tags_pfx[0],
+                                  (size_t)$len(tags_pfx)))
+                continue;
+
+            if (nrefs >= WIRECLI_FETCHALL_MAX) {
+                fprintf(stderr,
+                    "be: WIREFetchAll: peer advertises >%u refs;"
+                    " trailing refs skipped\n",
+                    (u32)WIRECLI_FETCHALL_MAX);
+                break;
+            }
+            refs[nrefs].sha = sha;
+            size_t nlen = (size_t)$len(name);
+            if (nlen > sizeof(refs[nrefs].name))
+                nlen = sizeof(refs[nrefs].name);
+            memcpy(refs[nrefs].name, name[0], nlen);
+            refs[nrefs].name_len = (u32)nlen;
+            nrefs++;
+        }
+    }
+
+    if (nrefs == 0) {
+        //  Peer advertised no heads/tags — clean disconnect, no pack.
+        rv = OK;
+        goto fa_close;
+    }
+
+    //  2. Harvest haves locally so the peer can prune the pack.
+    sha1 haves[WIRE_MAX_HAVES] = {};
+    u32  nhaves = wcli_collect_haves(k, haves, WIRE_MAX_HAVES);
+
+    //  3. Emit multi-want request.  Caps go on the first want; remaining
+    //     wants carry only the sha + newline.
+    if (u8bAllocate(frame, 1u << 16) != OK) goto fa_close;
+    for (u32 i = 0; i < nrefs; i++) {
+        a_pad(u8, line, 256);
+        a_cstr(want_pfx, "want ");
+        u8bFeed(line, want_pfx);
+        u8 hex[40];
+        wcli_sha_to_hex(hex, &refs[i].sha);
+        u8csc hexs = {hex, hex + 40};
+        u8bFeed(line, hexs);
+        if (i == 0) {
+            a_cstr(caps_s, " side-band-64k ofs-delta\n");
+            u8bFeed(line, caps_s);
+        } else {
+            u8bFeed1(line, '\n');
+        }
+        a_dup(u8c, payload, u8bData(line));
+        if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
+    }
+    if (PKTu8sFeedFlush(u8bIdle(frame)) != OK) goto fa_close;
+    for (u32 i = 0; i < nhaves; i++) {
+        a_pad(u8, line, 64);
+        a_cstr(have_pfx, "have ");
+        u8bFeed(line, have_pfx);
+        u8 hex[40];
+        wcli_sha_to_hex(hex, &haves[i]);
+        u8csc hexs = {hex, hex + 40};
+        u8bFeed(line, hexs);
+        u8bFeed1(line, '\n');
+        a_dup(u8c, payload, u8bData(line));
+        if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
+    }
+    {
+        a_cstr(done_s, "done\n");
+        if (PKTu8sFeed(u8bIdle(frame), done_s) != OK) goto fa_close;
+    }
+    {
+        a_dup(u8c, fdata, u8bData(frame));
+        ok64 wo = FILEFeedAll(wfd, fdata);
+        if (wo != OK) goto fa_close;
+    }
+    close(wfd); wfd = -1;
+
+    //  4. Stream-ingest the response packfile.
+    if (KEEPIngestStream(k, rfd) != OK) goto fa_close;
+    close(rfd); rfd = -1;
+
+    //  5. Record each ref locally.  Skip refs whose wire_to_be doesn't
+    //     classify (e.g. malformed names) — the pack landed regardless,
+    //     but no ref row means no cached lookup for that name.
+    u32 recorded = 0;
+    for (u32 i = 0; i < nrefs; i++) {
+        u8csc wire_name = {refs[i].name, refs[i].name + refs[i].name_len};
+        gitref_kind kk = GITREF_NONE;
+        u8cs be_bare = {};
+        if (wcli_wire_to_be(wire_name, &kk, be_bare) != OK) continue;
+        if (kk != GITREF_BRANCH && kk != GITREF_TAG) continue;
+
+        a_pad(u8, name_buf, WIRECLI_REFNAME_CAP + 8);
+        if (kk == GITREF_TAG) {
+            a_cstr(tags_pfx, "tags/");
+            u8bFeed(name_buf, tags_pfx);
+        }
+        if (!$empty(be_bare)) u8bFeed(name_buf, be_bare);
+        a_dup(u8c, be_name, u8bData(name_buf));
+
+        ok64 rr = wcli_record_ref(k, remote_uri, be_name, &refs[i].sha);
+        if (rr != OK) {
+            fprintf(stderr,
+                "be: wcli_record_ref %.*s failed: %s\n",
+                (int)refs[i].name_len, (char *)refs[i].name,
+                ok64str(rr));
+            continue;
+        }
+        recorded++;
+    }
+
+    fprintf(stdout, "keeper: fetched %u ref(s)\n", recorded);
+    rv = OK;
+
+fa_close:
+    if (frame[0])  u8bFree(frame);
+    if (advbuf[0]) u8bFree(advbuf);
+    if (wfd >= 0) close(wfd);
+    if (rfd >= 0) close(rfd);
+    if (pid > 0) {
+        int rc = 0;
+        FILEReap(pid, &rc);
+    }
+    return rv;
+}
+
 ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref) {
     sane(k);
     if (u8csEmpty(remote_uri)) return WIRECLFL;
@@ -636,17 +876,10 @@ ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref) {
         matched_ref[1] = effective_ref[1];
     }
 
-    //  2.  Harvest haves from local REFADV.
+    //  2.  Harvest haves from local REFS (every tracked tip — local
+    //      cur AND cached peer-observed rows).
     sha1 haves[WIRE_MAX_HAVES] = {};
-    u32  nhaves = 0;
-    {
-        refadv adv = {};
-        ok64 ao = REFADVOpen(&adv, k);
-        if (ao == OK) {
-            nhaves = wcli_collect_haves(&adv, haves, WIRE_MAX_HAVES);
-            REFADVClose(&adv);
-        }
-    }
+    u32  nhaves = wcli_collect_haves(k, haves, WIRE_MAX_HAVES);
 
     //  3.  Send want + haves + done.
     if (wcli_send_request(wfd, &want_sha, haves, nhaves) != OK)

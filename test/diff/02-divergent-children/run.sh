@@ -12,27 +12,27 @@
 . "$(dirname "$0")/../../lib/case.sh"
 
 #  --- trunk baseline -----------------------------------------------
-cp "$CASE/01.foo.c" foo.c
+sleep 0.02; cp "$CASE/01.foo.c" foo.c
 touch -d "2026-04-20 12:01:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post 'baseline msg' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post 'baseline msg' >/dev/null
 
 #  --- create + switch to ?fix1, edit, post --------------------------
-"$BE" put '?./fix1' >/dev/null 2>&1
-"$BE" get  '?fix1'   >/dev/null 2>&1
-cp "$CASE/02.foo.fix1.c" foo.c
+"$BE" put '?./fix1' >/dev/null
+"$BE" get  '?fix1'   >/dev/null
+sleep 0.02; cp "$CASE/02.foo.fix1.c" foo.c
 touch -d "2026-04-20 12:02:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post 'c1 msg' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post 'c1 msg' >/dev/null
 
 #  --- back to trunk, create + switch to ?fix2, edit, post -----------
-"$BE" get  '?..'     >/dev/null 2>&1
-"$BE" put '?./fix2' >/dev/null 2>&1
-"$BE" get  '?fix2'   >/dev/null 2>&1
-cp "$CASE/03.foo.fix2.c" foo.c
+"$BE" get  '?..'     >/dev/null
+"$BE" put '?./fix2' >/dev/null
+"$BE" get  '?fix2'   >/dev/null
+sleep 0.02; cp "$CASE/03.foo.fix2.c" foo.c
 touch -d "2026-04-20 12:03:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post 'c1 msg' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post 'c1 msg' >/dev/null
 
 #  --- diff fix1..fix2 (forward) -------------------------------------
 "$BE" get 'diff:foo.c?fix1..fix2' \

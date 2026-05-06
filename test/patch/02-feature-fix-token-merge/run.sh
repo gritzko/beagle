@@ -33,41 +33,41 @@ OUT="$SCRATCH/../out"
 mkdir -p "$OUT"
 
 # --- 1. trunk: baseline ---------------------------------------------
-cp "$CASE/01.lib.baseline.txt"   lib.txt
-cp "$CASE/02.notes.baseline.txt" notes.txt
-"$BE" put lib.txt notes.txt >/dev/null 2>&1
-"$BE" post 'baseline msg'         >/dev/null 2>&1
+sleep 0.02; cp "$CASE/01.lib.baseline.txt"   lib.txt
+sleep 0.02; cp "$CASE/02.notes.baseline.txt" notes.txt
+"$BE" put lib.txt notes.txt >/dev/null
+"$BE" post 'baseline msg'         >/dev/null
 
 # --- 2. fork feature off trunk and switch to it ---------------------
-"$BE" put '?./feature' >/dev/null 2>&1
-"$BE" get  '?feature'   >/dev/null 2>&1
+"$BE" put '?./feature' >/dev/null
+"$BE" get  '?feature'   >/dev/null
 
 # --- 3. feat-one on feature: ALPHA ----------------------------------
-cp "$CASE/03.lib.feat1.txt" lib.txt
-"$BE" put lib.txt   >/dev/null 2>&1
-"$BE" post 'feat-one msg' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/03.lib.feat1.txt" lib.txt
+"$BE" put lib.txt   >/dev/null
+"$BE" post 'feat-one msg' >/dev/null
 
 # --- 4. fork fix off feature ----------------------------------------
-"$BE" put '?./fix' >/dev/null 2>&1
+"$BE" put '?./fix' >/dev/null
 
 # --- 5. switch to fix, fix-one: GAMMA -------------------------------
-"$BE" get '?feature/fix' >/dev/null 2>&1
-cp "$CASE/04.lib.fix1.txt" lib.txt
-"$BE" put lib.txt  >/dev/null 2>&1
-"$BE" post 'fix-one msg' >/dev/null 2>&1
+"$BE" get '?feature/fix' >/dev/null
+sleep 0.02; cp "$CASE/04.lib.fix1.txt" lib.txt
+"$BE" put lib.txt  >/dev/null
+"$BE" post 'fix-one msg' >/dev/null
 
 # --- 6. back to feature, feat-two: DELTA (divergence) ---------------
-"$BE" get  '?feature' >/dev/null 2>&1
-cp "$CASE/05.lib.feat2.txt" lib.txt
-"$BE" put lib.txt   >/dev/null 2>&1
-"$BE" post 'feat-two msg' >/dev/null 2>&1
+"$BE" get  '?feature' >/dev/null
+sleep 0.02; cp "$CASE/05.lib.feat2.txt" lib.txt
+"$BE" put lib.txt   >/dev/null
+"$BE" post 'feat-two msg' >/dev/null
 
 # --- 7. feature wt edit on a file fix never touched -----------------
 #  Stage with `be put` so PATCH's dirty-file gate accepts.  The bytes
 #  on disk don't change — only the sniff stamp moves into the new put
 #  row, marking the file as a known-clean wt edit.
-cp "$CASE/06.notes.wt.txt" notes.txt
-"$BE" put notes.txt >/dev/null 2>&1
+sleep 0.02; cp "$CASE/06.notes.wt.txt" notes.txt
+"$BE" put notes.txt >/dev/null
 
 # --- 8. patch fix into feature's wt — the merge under test ----------
 "$BE" patch '?./fix' >"$OUT/08.patch.out" 2>"$OUT/08.patch.err"

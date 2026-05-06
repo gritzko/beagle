@@ -147,8 +147,10 @@ fun b8 ULOGHas(kv64b idx, ron60 ts) {
 // --- reverse scans ---------------------------------------------------
 
 //  Reverse scan with predicate; stops at the first row the predicate
-//  accepts.  ULOGNONE if no row matches.
-typedef b8 (*ulog_pred)(uricp u, void *ctx);
+//  accepts.  ULOGNONE if no row matches.  The predicate sees the full
+//  record (verb + uri) so callers can filter on verb without needing
+//  a second pass.
+typedef b8 (*ulog_pred)(ulogreccp r, void *ctx);
 ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
                     ulogrecp out);
 

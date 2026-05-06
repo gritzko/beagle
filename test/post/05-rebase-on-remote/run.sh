@@ -53,8 +53,8 @@ git init --bare "$ORIGIN" >/dev/null
 git init "$SEED" >/dev/null
 git -C "$SEED" config user.email t@t
 git -C "$SEED" config user.name  T
-git -C "$SEED" checkout -b master >/dev/null 2>&1 || true
-cp "$CASE/01.A.hello.c" "$SEED/hello.c"
+git -C "$SEED" checkout -b master >/dev/null || true
+sleep 0.02; cp "$CASE/01.A.hello.c" "$SEED/hello.c"
 git -C "$SEED" add . >/dev/null
 git -C "$SEED" commit -qm A
 git -C "$SEED" push -q "$ORIGIN" master:master
@@ -72,7 +72,7 @@ match "$CASE/01.A.hello.c" hello.c
 # 3. advance origin to version B
 # ====================================================================
 cd ..
-cp "$CASE/02.B.hello.c" "$SEED/hello.c"
+sleep 0.02; cp "$CASE/02.B.hello.c" "$SEED/hello.c"
 git -C "$SEED" add . >/dev/null
 git -C "$SEED" commit -qm B
 git -C "$SEED" push -q "$ORIGIN" master:master
@@ -81,7 +81,7 @@ git -C "$SEED" push -q "$ORIGIN" master:master
 # 4. local commit on cur (parent = A) — version C
 # ====================================================================
 cd wt
-cp "$CASE/03.client.hello.c" hello.c
+sleep 0.02; cp "$CASE/03.client.hello.c" hello.c
 "$BE" post 'client edits' >02.post.got.out 2>02.post.got.err
 empty 02.post.got.out
 match "$CASE/03.client.hello.c" hello.c

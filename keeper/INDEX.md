@@ -98,6 +98,11 @@ ref-update line + pack, drains unpack/per-ref status.
   - `WIREServeUpload`    one-shot: read request, build segs, write pack
   - `WIREFetch`          client: spawn upload-pack peer, ingest pack,
                           append REFS tip
+  - `WIREFetchAll`       client: single upload-pack session, multi-want
+                          for every advertised heads/tags ref.  Backs
+                          `be head ssh://origin?*` (VERBS.md §HEAD).
+                          Capped at WIRECLI_FETCHALL_MAX (64) refs per
+                          session
   - `WIREPush`           client: spawn receive-pack peer, send pack,
                           drain status
   - `WIREFAIL` / `WIREBADREQ` / `WIRENOWANT` / `WIRENOSHA`

@@ -34,51 +34,51 @@ OUT="$SCRATCH/../out"
 mkdir -p "$OUT"
 
 # T0 baseline
-cp "$CASE/01.lib.t0.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 'baseline init' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/01.lib.t0.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 'baseline init' >/dev/null
 
 # T1 parent c1
-cp "$CASE/02.lib.t1.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 't1 rename and prune' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/02.lib.t1.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 't1 rename and prune' >/dev/null
 
 # T2 parent c2 (K&R reformat + refactor + add mul) — fork point
-cp "$CASE/03.lib.t2.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 't2 KR reformat add mul' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/03.lib.t2.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 't2 KR reformat add mul' >/dev/null
 
 # Fork the child branch off T2
-"$BE" put '?./child' >/dev/null 2>&1
-"$BE" get '?child'   >/dev/null 2>&1
+"$BE" put '?./child' >/dev/null
+"$BE" get '?child'   >/dev/null
 
 # C1 child c1
-cp "$CASE/04.lib.c1.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 'c1 string renames and prune' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/04.lib.c1.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 'c1 string renames and prune' >/dev/null
 
 # C2 child c2
-cp "$CASE/05.lib.c2.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 'c2 hello and welcome' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/05.lib.c2.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 'c2 hello and welcome' >/dev/null
 
 # C3 child c3
-cp "$CASE/06.lib.c3.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 'c3 farewell and thanks' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/06.lib.c3.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 'c3 farewell and thanks' >/dev/null
 
 # Switch back to parent (trunk)
-"$BE" get '?..' >/dev/null 2>&1
+"$BE" get '?..' >/dev/null
 
 # T3 parent c3 (post-fork)
-cp "$CASE/07.lib.t3.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 't3 rename log_msg and prune' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/07.lib.t3.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 't3 rename log_msg and prune' >/dev/null
 
 # T4 parent c4
-cp "$CASE/08.lib.t4.c" lib.c
-"$BE" put lib.c >/dev/null 2>&1
-"$BE" post 't4 format and print_err' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/08.lib.t4.c" lib.c
+"$BE" put lib.c >/dev/null
+"$BE" post 't4 format and print_err' >/dev/null
 
 # Merge child into parent's wt via 3-way patch
 "$BE" patch '?./child' >"$OUT/patch.out" 2>"$OUT/patch.err"
