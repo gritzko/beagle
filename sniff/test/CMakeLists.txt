@@ -73,14 +73,11 @@ if (WITH_SSH)
     set_tests_properties(SNIFFpatch PROPERTIES
         ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFpatch")
 
-    #  post-roundtrip.sh — be get / be post / be post //origin
-    #  end-to-end: clone, edit, commit, push back, verify the bare
-    #  remote's git log + tree + parent linkage + pack-size budget.
-    add_test(NAME SNIFFpostroundtrip
-        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/post-roundtrip.sh
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-    set_tests_properties(SNIFFpostroundtrip PROPERTIES
-        ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFpostroundtrip")
+    #  post-roundtrip.sh — be get / be post / be put //origin end-to-end:
+    #  clone, edit, commit, push back, verify the bare remote's git
+    #  log + tree + parent linkage + pack-size budget.
+    #  Coverage moved to beagle/test/roundtrip.sh (BEroundtrip);
+    #  the standalone script never landed.
 endif()
 
 #  refuse.sh — coverage for the new refusal codes (PUTNONE on

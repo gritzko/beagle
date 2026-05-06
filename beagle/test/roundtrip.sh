@@ -6,7 +6,8 @@
 #    3. `be get <clone>` in a fresh dir — make a worktree off the clone.
 #    4. Edit in both the clone and the worktree.
 #    5. `be post msg` in the worktree (local commit).
-#    6. `be post ssh://localhost:<origin>?master` (push the commit).
+#    6. `be put ssh://localhost:<origin>?master` (push the commit;
+#       VERBS.md §"PUT" — `//remote` is the FF-push form).
 #    7. Fetch origin into a fresh git clone and diff against our worktree.
 #
 #  Requires passwordless ssh to localhost (same as POSTtest did).
@@ -77,13 +78,24 @@ sleep 0.1                                 # ensure mtime differs from checkout
 echo alpha-CLONE > "$CLONE/a.txt"
 echo charlie > "$WT/c.txt"
 echo bravo-WT > "$WT/b.txt"
-rm -f "$WT/a.txt"
-note "clone edited a.txt; worktree adds c.txt, modifies b.txt, removes a.txt"
+note "clone edited a.txt; worktree adds c.txt and modifies b.txt"
 
-# --- 5. be post in the worktree (msg in fragment) ---
-echo "=== 5. be post (local commit) ==="
+# --- 5. stage + commit ---
+#  Per VERBS.md §"POST": implicit mode (bare `be post`) commits all
+#  dirty *tracked* files; an untracked sibling (`c.txt`) needs an
+#  explicit `be put`, and removing a tracked file needs an explicit
+#  `be delete` (it would have swept in via implicit mode, but as
+#  soon as any `put`/`delete` row lands the post switches to
+#  selective mode where only named paths are staged).
+echo "=== 5. be put c.txt b.txt; be delete a.txt; be post ==="
 cd "$WT"
-"$BE" post --seq 'worktree commit' >/dev/null 2>&1 \
+"$BE" put    --seq c.txt   >/dev/null 2>&1 \
+    || fail "be put c.txt failed"
+"$BE" put    --seq b.txt   >/dev/null 2>&1 \
+    || fail "be put b.txt failed"
+"$BE" delete --seq a.txt   >/dev/null 2>&1 \
+    || fail "be delete a.txt failed"
+"$BE" post   --seq 'worktree commit' >/dev/null 2>&1 \
     || fail "be post failed"
 # Read the committed SHA from the tail of .sniff.  Rows are
 # `<ts>\t<verb>\t<uri>`; the canonical format is `?<branch>#<sha>` —
@@ -96,9 +108,11 @@ WT_SHA=$(awk -F'\t' '$2 == "post" { last = $3 } END {
 [ "$WT_SHA" != "$SEED_SHA" ] || fail "worktree commit didn't advance"
 note "worktree commit=$WT_SHA"
 
-# --- 6. be post ssh://... → push ---
-echo "=== 6. be post ssh://localhost:<origin>?master ==="
-"$BE" post --seq "ssh://localhost/$REL_ORIGIN?master" 2>&1 \
+# --- 6. be put ssh://... → push ---
+#  Per VERBS.md §"PUT" the FF-push verb is now PUT (was POST in the
+#  pre-rewrite model).  `be post //remote` rebases cur from cached.
+echo "=== 6. be put ssh://localhost:<origin>?master ==="
+"$BE" put --seq "ssh://localhost/$REL_ORIGIN?master" 2>&1 \
     | grep -q "keeper: pushed" || fail "keeper push didn't happen"
 note "push reported"
 

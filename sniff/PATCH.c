@@ -654,7 +654,32 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
 
     a_pad(u8, arena, 512);
     uri resolved = {};
-    call(REFSResolve, &resolved, arena, $path(keepdir), qkey);
+    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+
+    //  Local lookup miss → retry with `refs/` / `heads/` prefixes
+    //  peeled and a `.` authority needle so peer-observed tracking
+    //  rows participate.  Mirror of sniff_get's resolution chain.
+    if (ro != OK || u8csLen(resolved.query) < 40) {
+        char const *strips[] = {"", "heads/", "refs/", "refs/heads/", NULL};
+        for (u32 si = 0; strips[si] != NULL &&
+                         (ro != OK || u8csLen(resolved.query) < 40); si++) {
+            u8cs q = {target_query[0], target_query[1]};
+            size_t plen = strlen(strips[si]);
+            if (plen > 0) {
+                if ($len(q) <= plen) continue;
+                if (memcmp(q[0], strips[si], plen) != 0) continue;
+                u8csUsed(q, plen);
+            }
+            a_pad(u8, retry_buf, 512);
+            a_cstr(dot_q, ".?");
+            u8bFeed(retry_buf, dot_q);
+            u8bFeed(retry_buf, q);
+            a_dup(u8c, retry_uri, u8bData(retry_buf));
+            memset(&resolved, 0, sizeof(resolved));
+            ro = REFSResolve(&resolved, arena, $path(keepdir), retry_uri);
+        }
+    }
+    if (ro != OK) return ro;
     if ($len(resolved.query) < 40) fail(PATCHFAIL);
     u8s sb = {out->data, out->data + 20};
     u8cs hx = {resolved.query[0], resolved.query[0] + 40};
@@ -805,6 +830,25 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
 
     sha1 thr_sha = {};
     call(resolve_target, &thr_sha, reporoot, target_query);
+
+    //  Lazy-index both branches' commit chains into graf so the LCA
+    //  query below sees their ancestors.  When the user invoked
+    //  `keeper get` directly (no `be get` orchestration), graf hasn't
+    //  seen the freshly-fetched commits yet — without this,
+    //  `GRAFLca(&our, &thr)` returns 0 and PATCH refuses with
+    //  PATCHURELT.  The indexer is idempotent on already-known tips.
+    {
+        sha1 const *tips[2] = {&our_sha, &thr_sha};
+        for (u32 i = 0; i < 2; i++) {
+            sha1hex tip_hex = {};
+            sha1hexFromSha1(&tip_hex, tips[i]);
+            a_rawc(hex_bytes, tip_hex);
+            uri tip_uri = {};
+            $mv(tip_uri.fragment, hex_bytes);
+            $mv(tip_uri.data,     hex_bytes);
+            (void)GRAFIndexFromTips(&KEEP, &tip_uri);
+        }
+    }
 
     //  Per VERBS.md §PATCH and Invariant 2: the merge base is
     //  `tree(arg.fork_commit)`, the commit on arg's parent branch

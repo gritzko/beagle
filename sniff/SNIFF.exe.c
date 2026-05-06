@@ -674,6 +674,54 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
         uri resolved = {};
         ok64 o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
 
+        //  Local lookup miss → retry with shorter query prefixes.
+        //  `keeper get //host?refs/heads/X` stores under a
+        //  peer-prefixed key with the wire-canonical query (e.g.
+        //  `?master` after wcli_wire_to_be strips `refs/heads/`,
+        //  `?tags/v1` after stripping `refs/`).  User input may be
+        //  fully-qualified (`?refs/heads/X`) or already-stripped.
+        //  Try `refs/`-then-`refs/heads/` peels.  When the URI has
+        //  no authority of its own, also probe with `.` so peer
+        //  rows participate (`sniff get ?master` finds remote
+        //  tracking too).
+        if ((o != OK || $empty(resolved.query)) && !$empty(u->query)) {
+            char const *strips[] = {"refs/heads/", "refs/", "heads/", "", NULL};
+            b8 bare = $empty(u->authority);
+            for (u32 si = 0; strips[si] != NULL && (o != OK ||
+                                $empty(resolved.query)); si++) {
+                u8cs q = {u->query[0], u->query[1]};
+                size_t plen = strlen(strips[si]);
+                if (plen > 0) {
+                    if ($len(q) <= plen) continue;
+                    if (memcmp(q[0], strips[si], plen) != 0) continue;
+                    u8csUsed(q, plen);
+                }
+                //  Local probe with stripped query (`?<stripped>`).
+                a_pad(u8, retry_buf, 512);
+                u8cs head = {u->data[0], u->query[0]};
+                u8bFeed(retry_buf, head);
+                u8bFeed(retry_buf, q);
+                a_dup(u8c, retry_uri, u8bData(retry_buf));
+                memset(&resolved, 0, sizeof(resolved));
+                o = REFSResolve(&resolved, arena1,
+                                $path(keepdir), retry_uri);
+                if (o == OK && !$empty(resolved.query)) break;
+                //  Peer-relay probe (`.?<stripped>`): bare-query
+                //  inputs (no authority) — rewrite the URI as
+                //  `.?<stripped>` so peer-prefixed tracking rows
+                //  match.
+                if (!bare) continue;
+                a_pad(u8, dot_buf, 512);
+                a_cstr(dot_pfx, ".?");
+                u8bFeed(dot_buf, dot_pfx);
+                u8bFeed(dot_buf, q);
+                a_dup(u8c, dot_uri, u8bData(dot_buf));
+                memset(&resolved, 0, sizeof(resolved));
+                o = REFSResolve(&resolved, arena1,
+                                $path(keepdir), dot_uri);
+            }
+        }
+
         //  GET never creates branches on miss — absolute and relative
         //  refs alike error out when REFS has no row.  `be post ?./X`
         //  is the spec-aligned create path (per VERBS.md).
@@ -902,6 +950,65 @@ ok64 SNIFFExec(cli *c) {
         for (u32 i = 0; i < c->nuris; i++)
             if (!$empty(c->uris[i].query)) { label_uri = &c->uris[i]; break; }
 
+        //  VERBS.md §"POST" remote arm: `be post //origin` resolves
+        //  the authority against the local ref log (REFSResolve does
+        //  authority-substring match — see keeper/REFS.c:391) and
+        //  rebases cur onto the tracking ref's sha.  No alias
+        //  registry; the most recent matching get/put row's URI is
+        //  the connection target and its hash is the rebase tip.
+        //  Skip this arm if a regular ?branch was supplied (label_uri
+        //  != NULL) — that takes precedence.
+        sha1 remote_target_tip = {};
+        b8   has_remote_target = NO;
+        if (label_uri == NULL && !$ok(commit_msg)) {
+            for (u32 i = 0; i < c->nuris; i++) {
+                uri *uu = &c->uris[i];
+                if (u8csEmpty(uu->authority)) continue;
+                if (!u8csEmpty(uu->query))    continue;
+                a_path(keepdir, reporoot, KEEP_DIR_S);
+                a_pad(u8, arena, 1024);
+                uri resolved = {};
+                a_dup(u8c, in_uri, uu->data);
+                if (REFSResolve(&resolved, arena, $path(keepdir),
+                                in_uri) != OK) {
+                    fprintf(stderr,
+                            "sniff: post: %.*s — no matching tracking "
+                            "ref in log; run `be head ssh://...` first\n",
+                            (int)u8csLen(uu->data),
+                            (char *)uu->data[0]);
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                u8cs sha_hex = {resolved.query[0], resolved.query[1]};
+                if (!u8csEmpty(sha_hex) && *sha_hex[0] == '?')
+                    u8csUsed(sha_hex, 1);
+                if (u8csLen(sha_hex) != sizeof(sha1hex)) {
+                    fprintf(stderr,
+                            "sniff: post: tracking row for %.*s has "
+                            "no sha\n",
+                            (int)u8csLen(uu->data),
+                            (char *)uu->data[0]);
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                a_raw(bin, remote_target_tip);
+                a_dup(u8c, hx, sha_hex);
+                if (HEXu8sDrainSome(bin, hx) != OK) {
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                has_remote_target = YES;
+                break;
+            }
+        }
+        if (ret == OK && has_remote_target) {
+            ret = POSTRebaseOntoSha(reporoot, &remote_target_tip);
+            //  Fall through to the standard close (no commit_msg /
+            //  label_uri path runs).  Use a sentinel to skip the
+            //  dry-run-status arm.
+            goto post_done;
+        }
+
         //  Resolve a relative label (`?./X`, `?../X`, `?..`) before
         //  POSTSetLabel sees it.  Buffers must outlive POSTSetLabel —
         //  hence stack-local pads scoped to this if-block.
@@ -987,6 +1094,8 @@ ok64 SNIFFExec(cli *c) {
                 }
             }
         }
+post_done:
+        ;
     } else if (is_put) {
         //  Split URIs by aspect (VERBS.md §PUT):
         //    * `?branch` (query, no path) → POSTCreateBranch (create

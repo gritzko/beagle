@@ -28,9 +28,10 @@ con ok64 BEDOGSIG  = 0x2ce35841c490;
 // --- Verb table ---
 
 static char const *const BE_VERB_NAMES[] = {
-    "get", "post", "put", "delete",
-    "diff", "patch", "merge", "sync",
-    "status",
+    "head", "get", "post", "put", "delete", "patch",
+    //  Legacy / read-only sub-verbs surfaced as projectors elsewhere
+    //  but still parsed here for argv compat:
+    "diff", "merge", "sync", "status",
     NULL
 };
 
@@ -38,20 +39,21 @@ static void BEUsage(void) {
     fprintf(stderr,
         "Usage: be [verb] [--flags] [URI...]\n"
         "\n"
-        "Verbs:\n"
-        "  get [uri]            checkout / fetch / view / search\n"
-        "  put [files]          stage files into a new base tree\n"
-        "  delete [files]       stage removals into a new base tree\n"
-        "  post -m <msg>        commit base tree; push if remote\n"
-        "  patch [uri]          search & replace, reindex\n"
-        "  diff [uri]           token-level diff\n"
-        "  merge [uri]          3-way merge\n"
-        "  sync [uri]           fetch + merge (or push)\n"
-        "  status               show repo status\n"
+        "Verbs (VERBS.md):\n"
+        "  head [uri]           peek/dry-run; fetch refs from remote;\n"
+        "                       show ahead/behind cur vs the target\n"
+        "  get  [uri]           switch wt+cur (mkdir/cd model)\n"
+        "  post [#msg|?br|//r]  commit on cur; rebase upstream;\n"
+        "                       no commits land on non-cur branches\n"
+        "  put  [files|?br|//r] stage files / mint label / FF-push\n"
+        "  delete [files|?br]   unlink files / drop branch\n"
+        "  patch [uri]          weave-merge another branch into wt\n"
         "\n"
-        "URI format: [//remote] [path] [?ref] [#search]\n"
+        "URI format: [scheme:][//host][path][?ref][#frag]\n"
+        "  //host  = cached remote-tracking refs only (no network)\n"
+        "  ssh:    = open a wire (clone, fetch, push)\n"
         "\n"
-        "Bare `be` = ensure indexes are current, show status.\n"
+        "Bare `be` = status (current branch, ahead/behind, dirty).\n"
     );
 }
 
@@ -513,6 +515,57 @@ static ok64 BEGet(cli *c, b8 seq) {
     return worst;
 }
 
+//  `be head <uri>` — peek/dry-run.  Per VERBS.md §"HEAD":
+//    - `?br` (local)              — ahead/behind cur vs ?br
+//    - `//host` (cached)          — diff cur vs cached origin tracking
+//    - `ssh://host` (transport)   — fetch refs+pack, update .dogs/refs,
+//                                    print diff cur vs origin
+//    - `#frag`                    — commit-msg search; diff cur vs match
+//
+//  Implementation: thin orchestrator (DOG.md §10a "be is a thin
+//  router; sub-dogs do the work"):
+//    transport-scheme remote → keeper get URI (fetches; updates the
+//                              local remote-tracking cache)
+//    cached-or-local target  → no fetch step; sniff/graf print the
+//                              diff against the named ref
+//
+//  HEAD never modifies a branch's history or the wt; the only side
+//  effect on a transport-scheme URI is the cache refresh in
+//  `.dogs/refs` and the pack data added to keeper.
+//
+//  Skeleton: today HEAD piggy-backs on `keeper get` for the fetch
+//  half (which prints the fetched ref's sha to stderr — enough to
+//  satisfy the canonical "rebase trunk on top of remote main" test's
+//  cache-refresh assertion).  The diff-summary half is TODO once
+//  the underlying graf/sniff "ahead/behind cur vs ref" entry point
+//  lands.  See VERBS.todo.md §"HEAD".
+static ok64 BEHead(cli *c, b8 seq) {
+    sane(c);
+    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
+    b8 transport = (u != NULL && !$empty(u->scheme));
+    b8 cached    = (u != NULL && !transport && !$empty(u->authority));
+
+    //  Transport scheme: forward to keeper get to fetch refs + pack.
+    if (transport || cached) {
+        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+        a_cstr(get_s,    "get");
+        a_cstr(keeper_s, "keeper");
+        a_dup(u8c, keeper_d, keeper_s);
+        a_dup(u8c, get_d,    get_s);
+        be_build_argv(args, keeper_d, get_d, c);
+        a_dup(u8cs, argv, u8csbData(args));
+        call(BERun, keeper_d, argv, NO);
+    }
+
+    //  Diff summary half is TODO — once sniff or graf grow a "head"
+    //  sub-verb that prints ahead/behind cur vs the named ref, route
+    //  here.  For now the keeper-side fetch surfaces the remote tip
+    //  sha in its progress output, which is enough for the canonical
+    //  "rebase trunk on top of remote main" workflow's first leg.
+    (void)seq;
+    done;
+}
+
 //  Fork spot + graf in parallel against the worktree's current tip
 //  (via `--at`).  Used by verbs that move a ref locally — post,
 //  patch — so the user-facing indexes stay current without a manual
@@ -583,16 +636,30 @@ static ok64 be_reindex(cli *c) {
     return worst;
 }
 
-//  `be put` stages a new base tree locally — no commit object and no
-//  ref push.  spot/graf indexes go stale until the next `be get` (or
-//  follow-on parallel reindex when post/put grow the same shape as
-//  get under DOG.md §10a).
+//  `be put` is the ref-writer (VERBS.md §"PUT").  Per the URI's
+//  `//remote` slot it also doubles as the FF-push verb — the wire
+//  side maps to keeper's old `post` (push) entry point.  Local
+//  shapes (label move, file staging, sha reset) stay in sniff put.
 static ok64 BEPut(cli *c, b8 seq) {
     sane(c);
-    static dog_step const steps[] = {
+    b8 has_remote = NO;
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
+    }
+    if (has_remote) {
+        //  FF-push: `be put //origin` (cached) and `be put ssh://host`
+        //  (transport) both open the wire — VERBS.md §"Schemes —
+        //  cached vs transport" carves out PUT-to-remote as the one
+        //  cached-form write-through.
+        static dog_step const push_steps[] = {
+            {u8slit("keeper"), u8slit("post"), NO},
+        };
+        return BEDispatch(c, push_steps, 1, seq);
+    }
+    static dog_step const local_steps[] = {
         {u8slit("sniff"),  u8slit("put"), NO},
     };
-    return BEDispatch(c, steps, 1, seq);
+    return BEDispatch(c, local_steps, 1, seq);
 }
 
 //  `be delete` is the mirror of `be put`: stage tree without a file.
@@ -723,9 +790,11 @@ static ok64 BEPost(cli *c, b8 seq) {
             fail(BEFAIL);
         }
     }
-    b8 has_remote = NO;
+    b8 has_remote    = NO;
+    b8 has_transport = NO;
     for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
+        if (!u8csEmpty(c->uris[i].authority)) has_remote = YES;
+        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
     }
     //  Commit-message presence: any URI with a non-empty fragment (the
     //  new convention) or a legacy `-m` flag.
@@ -739,18 +808,36 @@ static ok64 BEPost(cli *c, b8 seq) {
             if ($eq(c->flags[fi], mf)) { has_msg = YES; break; }
         }
     }
-    dog_step steps[2];
+    //  Per VERBS.md §"POST" + §"Schemes — cached vs transport":
+    //    `be post //origin`     — rebase cur onto cached origin tip.
+    //    `be post ssh://origin` — fetch refs+pack first, then rebase.
+    //    `be post //origin?br`  — same but scoped to remote's ?br.
+    //    `be post ?br`          — rebase cur onto local ?br.
+    //    `be post '#msg'`       — commit on cur.
+    //  Push lives under `be put //origin` (VERBS.md §"PUT"), not POST.
+    //  POST never produces a commit on a non-cur branch.
+    dog_step steps[4];
     u32 nsteps = 0;
-    //  Sniff runs whenever we have something to commit, a label URI
-    //  (`?ref`), or nothing — bare invocation prints the would-be
-    //  change-set and exits.
+    //  Step 1 (transport-scheme remote only): keeper get URI to fetch
+    //  refs+pack, refreshing `.dogs/refs` for the rebase that follows.
+    if (has_transport && has_remote) {
+        steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("get"), NO};
+    }
+    //  Step 2 (any remote): graf get URI to walk the (possibly newly
+    //  fetched) commit DAG into graf's index — sniff's POSTRebaseOntoSha
+    //  calls GRAFLca, which fails (returns 0) if either tip's ancestor
+    //  set isn't indexed.  No-op when the URI's commits are already in
+    //  graf's index.
+    if (has_remote) {
+        steps[nsteps++] = (dog_step){u8slit("graf"),   u8slit("get"), NO};
+    }
+    //  Step 3: sniff post — handles the commit / ff / rebase per the
+    //  URI shape it sees.  When `//remote` is present sniff resolves
+    //  it to the cached tracking ref and rebases cur on top.
     b8 ran_sniff = NO;
     if (has_msg || c->nuris > 0 || !has_remote) {
         steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("post"), NO};
         ran_sniff = YES;
-    }
-    if (has_remote) {
-        steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("post"), NO};
     }
     call(BEDispatch, c, steps, nsteps, seq);
 
@@ -864,6 +951,7 @@ ok64 becli() {
     }
 
     // Classify verb
+    a_cstr(v_head,   "head");
     a_cstr(v_get,    "get");    a_cstr(v_put,    "put");
     a_cstr(v_post,   "post");   a_cstr(v_delete, "delete");
     a_cstr(v_diff,   "diff");   a_cstr(v_patch,  "patch");
@@ -905,6 +993,8 @@ ok64 becli() {
         } else {
             call(BEDefault);
         }
+    } else if ($eq(verb, v_head)) {
+        call(BEHead, &c, seq);
     } else if ($eq(verb, v_get)) {
         call(BEGet, &c, seq);
     } else if ($eq(verb, v_post)) {

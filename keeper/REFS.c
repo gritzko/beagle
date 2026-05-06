@@ -131,6 +131,29 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
                                u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
     if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
 
+    //  Idempotency: skip when REFSResolve(key) already returns the
+    //  same value.  Per keeper/LOG.md the log is append-of-events;
+    //  repeating a row that doesn't change the resolved-state must
+    //  produce zero file delta (the ssh round-trip suite asserts
+    //  bit-identical `.dogs/refs` across repeated `be get`).
+    {
+        ULOGClose(data, idx, YES);
+        a_pad(u8, arena, 1024);
+        uri resolved = {};
+        ok64 ro = REFSResolve(&resolved, arena, dir, from_uri);
+        if (ro == OK) {
+            u8cs cur_frag = {resolved.query[0], resolved.query[1]};
+            if (u8csLen(cur_frag) == u8csLen(to_uri) &&
+                (u8csEmpty(to_uri) ||
+                 memcmp(cur_frag[0], to_uri[0],
+                        u8csLen(to_uri)) == 0)) {
+                done;   //  no-op: state unchanged.
+            }
+        }
+        //  Re-open for the actual append below.
+        call(ULOGOpen, &data, idx, log_path);
+    }
+
     ulogrec rec = {.ts = refs_next_ts(data, idx), .verb = verb, .uri = u};
     ok64 o = ULOGAppendAt(data, idx, &rec);
     ULOGClose(data, idx, YES);

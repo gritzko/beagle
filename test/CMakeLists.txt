@@ -19,6 +19,24 @@ file(GLOB _be_case_runs CONFIGURE_DEPENDS
     RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/*/*/run.sh")
 
+# Tests in this list are drafted alongside spec rewrites, expected
+# to FAIL until the implementation catches up.  Flip-back is part
+# of the relevant impl PR.  See VERBS.todo.md for tracking.
+set(_BE_WILL_FAIL_CASES
+    "be-head-01-ahead-behind"
+    "be-post-05-rebase-on-remote"
+)
+
+# Tests that need passwordless ssh to localhost (mirror what
+# beagle/test/CMakeLists.txt does for roundtrip.sh).  Skipped when
+# WITH_SSH is OFF so non-ssh dev environments stay green.  TMP must
+# live under $HOME because keeper resolves `//host/path` URIs as
+# remote-HOME-relative — case.sh's $SCRATCH already does (it sits
+# under $HOME/tmp/run-<ts>/be-test/$$/<verb>/<name>).
+set(_BE_NEEDS_SSH_CASES
+    "be-post-05-rebase-on-remote"
+)
+
 foreach(_run ${_be_case_runs})
     # _run = "<verb>/<case>/run.sh"  →  verb / case
     get_filename_component(_case_dir "${_run}"     DIRECTORY)
@@ -32,9 +50,16 @@ foreach(_run ${_be_case_runs})
     endif()
 
     set(_test_name "be-${_verb_name}-${_case_name}")
+    if (_test_name IN_LIST _BE_NEEDS_SSH_CASES AND NOT WITH_SSH)
+        continue()
+    endif()
+
     add_test(NAME ${_test_name}
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/${_run}"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
     set_tests_properties(${_test_name} PROPERTIES
         ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${_BE_TEST_TMP}")
+    if (_test_name IN_LIST _BE_WILL_FAIL_CASES)
+        set_tests_properties(${_test_name} PROPERTIES WILL_FAIL TRUE)
+    endif()
 endforeach()

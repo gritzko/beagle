@@ -426,13 +426,18 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 u8bFree(dirty); u8bFree(untracked); return dctx.err;
             }
 
-            //  Tracked dir → stage tracked-dirty.  Untracked →
-            //  stage every non-meta file under it.  `dctx.base_seen`
-            //  counts any BOTH or BASE_ONLY entry under the prefix.
-            Bu8 *src = (dctx.base_seen > 0) ? &dirty : &untracked;
+            //  Stage everything stage-worthy under the prefix:
+            //  tracked-and-dirty plus untracked files.  These two
+            //  sets are disjoint by definition (untracked == not in
+            //  baseline; dirty implies tracked), so there's nothing
+            //  to dedupe.  `base_seen` is no longer load-bearing for
+            //  this choice — both bins drain together.
             u32 before = emitted;
-            ok64 er = dir_emit_paths(*src, reporoot,
-                                      &ts, &emitted, verb_put);
+            ok64 er = dir_emit_paths(dirty, reporoot,
+                                     &ts, &emitted, verb_put);
+            if (er == OK)
+                er = dir_emit_paths(untracked, reporoot,
+                                    &ts, &emitted, verb_put);
             u8bFree(dirty); u8bFree(untracked);
             if (er != OK) return er;
 

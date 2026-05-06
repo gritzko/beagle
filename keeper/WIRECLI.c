@@ -594,10 +594,12 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     call(DOGCanonURIFeed, kbuf, &pu);
     a_dup(u8c, key, u8bData(kbuf));
 
-    u8 hex[40];
-    wcli_sha_to_hex(hex, new_sha);
-    u8csc val = {hex, hex + 40};
+    sha1hex hexnew = {};
+    sha1hexFromSha1(&hexnew, new_sha);
+    a_rawc(val, hexnew);
 
+    //  REFSAppend itself dedups on (key, val) so a no-op `be get`
+    //  repeat doesn't grow `.dogs/refs` (per keeper/LOG.md).
     return REFSAppend($path(keepdir), key, val);
 }
 

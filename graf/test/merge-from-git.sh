@@ -108,18 +108,22 @@ TIP_B=$(git -C "$W" rev-parse HEAD)
 rm -rf "$W"
 SRC_REL=${SRC#$HOME/}
 
-# --- 2. keeper client fetches every branch; indexer fan-out feeds
-#        graf's DAG in the same call. ---
+# --- 2. keeper client fetches every branch; per dog/DOG.md §10a
+#        keeper no longer fans out into graf/spot — those dogs
+#        reindex themselves in parallel under `be get`.  Direct
+#        keeper-cli tests must drive `graf get` explicitly. ---
 
 CLI=$TMP/client
 mkdir -p "$CLI/.dogs"
 cd "$CLI"
 for REF in refs/heads/master refs/heads/feat-a refs/heads/feat-b; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null
+    graf get   "//localhost/$SRC_REL?$REF" >/dev/null
 done
 
-#  Sanity: graf's index must have entries — otherwise there was no
-#  fan-out and we're about to silently test nothing.
+#  Sanity: graf's index must have entries — otherwise the explicit
+#  index step above didn't ingest anything and we're about to
+#  silently test nothing.
 STATUS=$(graf status 2>&1)
 echo "  $STATUS"
 case "$STATUS" in

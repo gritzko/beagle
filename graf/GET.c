@@ -226,57 +226,83 @@ static ok64 build_tip_weave_with_ids(weave *out, u8cs path, u8cs ext,
                                      Bu32 out_ids);
 static ok64 emit_alive_bytes(u8b into, weave const *w);
 
-//  WEAVE-based 3-way merge.  Builds an ancestor-aware weave per tip
-//  via `build_tip_weave`, then `WEAVEMerge` reconciles them into a
-//  single weave whose alive tokens are emitted as the merged bytes.
-//
-//  No explicit base argument: per-token inrm provenance recovers the
-//  shared spine, so multi-LCA (criss-cross) histories resolve
-//  naturally — the algorithm doesn't pick one LCA and lose info from
-//  the other.  Concurrent-alive divergence keeps both sides' tokens
-//  in the storage; render-time marker emission (a follow-up) wraps
-//  them with `<<<<` / `||||` / `>>>>` in the output stream when
-//  appropriate.  Until that lands the alive bytes for a divergent
-//  region read as a-side-then-b-side concatenation.
+//  Per-side membership predicate for `WEAVEEmitMerged`.  Backed by a
+//  Bu32 of `sc` values used during `build_tip_weave_with_ids` (and
+//  optionally augmented with WEAVE_WT_SRC for the wt-folded side).
+typedef struct {
+    u32cp ids;     // u32 array of in-stamps reachable via this side
+    u32   n;
+} merge_id_set;
+
+static b8 merge_id_set_has(u32 in, void *vctx) {
+    merge_id_set *s = (merge_id_set *)vctx;
+    if (!s) return NO;
+    for (u32 i = 0; i < s->n; i++)
+        if (s->ids[i] == in) return YES;
+    return NO;
+}
+
+//  3-way JOIN merge keyed off the DAG LCA: tokenise base/ours/theirs
+//  blobs and call JOINMerge, which inlines `>>>>theirs||||ours<<<<`
+//  markers on divergent inserts.  When the LCA isn't indexed (fresh
+//  import, unrelated histories), base degenerates to empty and JOIN
+//  treats the merge as a pair of independent inserts.
 static ok64 get_merge_2way(u8b into, u8cs path, get_tip const *tips) {
     sane(into && tips);
 
     u8cs ext = {};
     PATHu8sExt(ext, path);
 
-    weave wours = {}, wtheirs = {}, wmerge = {};
-    ok64 ret = OK;
-    if ((ret = WEAVEInit(&wours))   != OK) return ret;
-    if ((ret = WEAVEInit(&wtheirs)) != OK) goto cleanup;
-    if ((ret = WEAVEInit(&wmerge))  != OK) goto cleanup;
-
     u64 ours_tip   = tips[0].h40;
     u64 theirs_tip = tips[1].h40;
+    u64 base_h     = get_lca(ours_tip, theirs_tip);
 
-    ret = build_tip_weave(&wours,   path, ext, &ours_tip,   1);
-    if (ret != OK) goto cleanup;
-    ret = build_tip_weave(&wtheirs, path, ext, &theirs_tip, 1);
-    if (ret != OK) goto cleanup;
+    Bu8 base_buf = {}, ours_buf = {}, theirs_buf = {};
+    ok64 ret = OK;
+    if ((ret = u8bMap(base_buf,   GET_BLOB_MAX)) != OK) return ret;
+    if ((ret = u8bMap(ours_buf,   GET_BLOB_MAX)) != OK) {
+        u8bUnMap(base_buf); return ret;
+    }
+    if ((ret = u8bMap(theirs_buf, GET_BLOB_MAX)) != OK) {
+        u8bUnMap(base_buf); u8bUnMap(ours_buf); return ret;
+    }
 
-    //  Empty-tip degeneracy: if either side has no alive tokens
-    //  (path absent at that tip's history), emit the other side's
-    //  alive bytes verbatim.  Mirrors the legacy JOIN behaviour for
-    //  add/del cases.
-    u32 ours_n   = (u32)((u32cp)wours.toks[2]   - (u32cp)wours.toks[1]);
-    u32 theirs_n = (u32)((u32cp)wtheirs.toks[2] - (u32cp)wtheirs.toks[1]);
-    if (ours_n == 0 && theirs_n == 0) { ret = GETFAIL; goto cleanup; }
-    if (ours_n == 0)   { ret = emit_alive_bytes(into, &wtheirs); goto cleanup; }
-    if (theirs_n == 0) { ret = emit_alive_bytes(into, &wours);   goto cleanup; }
+    if (base_h != 0)
+        (void)GRAFBlobAtCommit(base_buf, &KEEP, base_h, path);
+    (void)GRAFBlobAtCommit(ours_buf,   &KEEP, ours_tip,   path);
+    (void)GRAFBlobAtCommit(theirs_buf, &KEEP, theirs_tip, path);
 
-    ret = WEAVEMerge(&wmerge, &wours, &wtheirs);
-    if (ret != OK) goto cleanup;
+    size_t on = u8bDataLen(ours_buf);
+    size_t tn = u8bDataLen(theirs_buf);
+    if (on == 0 && tn == 0) { ret = GETFAIL; goto cleanup; }
+    if (on == 0) {
+        a_dup(u8c, td, u8bData(theirs_buf));
+        ret = u8bFeed(into, td);
+        goto cleanup;
+    }
+    if (tn == 0) {
+        a_dup(u8c, od, u8bData(ours_buf));
+        ret = u8bFeed(into, od);
+        goto cleanup;
+    }
 
-    ret = emit_alive_bytes(into, &wmerge);
+    a_dup(u8c, bdata, u8bData(base_buf));
+    a_dup(u8c, odata, u8bData(ours_buf));
+    a_dup(u8c, tdata, u8bData(theirs_buf));
+
+    JOINfile bjf = {}, ojf = {}, tjf = {};
+    ret = JOINTokenize(&bjf, bdata, ext);
+    if (ret == OK) ret = JOINTokenize(&ojf, odata, ext);
+    if (ret == OK) ret = JOINTokenize(&tjf, tdata, ext);
+    if (ret == OK) ret = JOINMerge(into, &bjf, &ojf, &tjf);
+    JOINFree(&bjf);
+    JOINFree(&ojf);
+    JOINFree(&tjf);
 
 cleanup:
-    WEAVEFree(&wours);
-    WEAVEFree(&wtheirs);
-    WEAVEFree(&wmerge);
+    u8bUnMap(theirs_buf);
+    u8bUnMap(ours_buf);
+    u8bUnMap(base_buf);
     return ret;
 }
 
@@ -307,22 +333,6 @@ static ok64 graf_fold_wt_layer(weave *next, b8 *used_next,
     }
     FILEUnMap(wt_mapped);
     return ret;
-}
-
-//  Per-side membership predicate for `WEAVEEmitMerged`.  Backed by a
-//  Bu32 of `sc` values used during `build_tip_weave_with_ids` (and
-//  optionally augmented with WEAVE_WT_SRC for the wt-folded side).
-typedef struct {
-    u32cp ids;     // u32 array of in-stamps reachable via this side
-    u32   n;
-} merge_id_set;
-
-static b8 merge_id_set_has(u32 in, void *vctx) {
-    merge_id_set *s = (merge_id_set *)vctx;
-    if (!s) return NO;
-    for (u32 i = 0; i < s->n; i++)
-        if (s->ids[i] == in) return YES;
-    return NO;
 }
 
 //  Weave-merge a single file across two commits, treating the wt's

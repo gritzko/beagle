@@ -90,8 +90,12 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     //  forwarded by `be`).  Mirrors `git log` defaulting to HEAD with
     //  no args.  Empty `cur_sha` (no `--at` forwarded — direct CLI
     //  invocation) falls through to REFS so a fresh clone still
-    //  resolves trunk.
-    if (u->query[0] == NULL) {
+    //  resolves trunk.  EXCEPTION: when the URI carries an
+    //  authority (e.g. `graf get //origin`), the user is asking for
+    //  a *remote-tracking* ref — fall through to REFSResolve so the
+    //  authority-substring match finds the cached row instead of
+    //  silently rewriting "remote tip" as "local cur".
+    if (u->query[0] == NULL && u8csEmpty(u->authority)) {
         if (u8bDataLen(k->h->cur_sha) == 40) {
             u8s sb = {out->data, out->data + 20};
             a_dup(u8c, hx, u8bData(k->h->cur_sha));
@@ -103,6 +107,31 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     uri resolved = {};
     a_dup(u8c, in_uri, u->data);
     ok64 ro = REFSResolve(&resolved, arena_buf, $path(keepdir), in_uri);
+
+    //  Wire-prefix peel: `?refs/heads/X` / `?refs/X` / `?heads/X`
+    //  may all map to a peer-stored canonical query like `?X` (the
+    //  wire canonicaliser drops `refs/heads/` on incoming refs).
+    //  Splice on u->data to keep authority intact.
+    if ((ro != OK || u8csLen(resolved.query) < 40) &&
+        u->query[0] != NULL && !u8csEmpty(u->query)) {
+        char const *strips[] = {"refs/heads/", "refs/", "heads/", NULL};
+        for (u32 si = 0; strips[si] != NULL &&
+                         (ro != OK || u8csLen(resolved.query) < 40); si++) {
+            u8cs q = {u->query[0], u->query[1]};
+            size_t plen = strlen(strips[si]);
+            if ($len(q) <= plen) continue;
+            if (memcmp(q[0], strips[si], plen) != 0) continue;
+            u8csUsed(q, plen);
+            a_pad(u8, retry_buf, 512);
+            u8cs head = {u->data[0], u->query[0]};
+            u8bFeed(retry_buf, head);
+            u8bFeed(retry_buf, q);
+            a_dup(u8c, retry_uri, u8bData(retry_buf));
+            memset(&resolved, 0, sizeof(resolved));
+            ro = REFSResolve(&resolved, arena_buf, $path(keepdir), retry_uri);
+        }
+    }
+
     if (ro != OK) return ro;
     if (u8csLen(resolved.query) < 40) fail(GRAFFAIL);
     u8s sb = {out->data, out->data + 20};

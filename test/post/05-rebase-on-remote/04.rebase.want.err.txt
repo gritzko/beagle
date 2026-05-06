@@ -1,0 +1,3 @@
+^M b\.txt$
+^M local\.c$
+^sniff: rebased cur onto [0-9a-f]{40} \(\+1 commit replayed\)$

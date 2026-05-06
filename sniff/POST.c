@@ -570,7 +570,10 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   NULL, &new_sha);
     }
-    //  Untracked + dirty + has-base → ignore in implicit mode.
+    //  Untracked + dirty + has-base.  Per VERBS.md §POST: implicit
+    //  mode commits all dirty *tracked* files; an untracked sibling
+    //  must be explicitly `be put`-staged to land in the next commit.
+    //  Same in selective mode.  Either way, ignore here.
     return OK;
 }
 
@@ -2605,4 +2608,144 @@ ok64 POSTSetLabel(u8cs ref_uri, u8cs sha_hex) {
 
     //  Val is bare 40-hex (canonical).  `post` verb — local ref move.
     return REFSAppendVerb($path(keepdir), REFSVerbPost(), key, sha_hex);
+}
+
+//  POSTRebaseOntoSha — rebase cur's stack onto an arbitrary sha.
+//  The dispatcher resolves the target sha (e.g. via REFSResolve on a
+//  `//remote` URI matched against the ref log) and hands it to us;
+//  we run the GRAFLca + GRAFRebase + REFS-advance + wt-reset
+//  pipeline.  Mirrors the cur-side of POSTPromote's PROMOTE arm
+//  (lines 1738+) but without the cascade walk (no descendants to
+//  bump because cur is the only ref moving).  Cur is the target.
+ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
+    sane($ok(reporoot) && target_tip);
+    keeper *k = &KEEP;
+
+    //  --- 1. Resolve cur (baseline branch + tip) ---
+    a_pad(u8, cur_buf, 256);
+    sha1 cur_tip = {};
+    b8   has_cur_tip = NO;
+    {
+        ron60 ts = 0, verb = 0;
+        uri u = {};
+        if (SNIFFAtBaseline(&ts, &verb, &u) == OK) {
+            a_dup(u8c, q, u.query);
+            while (!$empty(q)) {
+                qref spec = {};
+                if (QURYu8sDrain(q, &spec) != OK) break;
+                if (spec.type == QURY_NONE) {
+                    if ($empty(q)) break;
+                    continue;
+                }
+                if (spec.type == QURY_REF) {
+                    u8bFeed(cur_buf, spec.body);
+                    break;
+                }
+            }
+            sha1hex hex = {};
+            if (SNIFFAtQueryFirstSha(&u, &hex) == OK &&
+                sha1FromSha1hex(&cur_tip, &hex) == OK)
+                has_cur_tip = YES;
+        }
+    }
+    if (!has_cur_tip) {
+        fprintf(stderr,
+                "sniff: post: no cur tip — cannot rebase onto remote\n");
+        return SNIFFFAIL;
+    }
+    a_dup(u8c, cur_branch, u8bData(cur_buf));
+
+    //  --- 2. Already in sync? ---
+    if (sha1eq(&cur_tip, target_tip)) return POSTNONE;
+
+    //  --- 3. Compute LCA + operands.  Same shape as POSTPromote's
+    //  ?<absolute-upstream> branch (lines 1750-1759). ---
+    sha1 base_old = {};
+    (void)GRAFLca(&base_old, &cur_tip, target_tip);
+    sha1 base_new  = *target_tip;
+    sha1 child_tip = cur_tip;
+
+    //  Cur is already on target's spine (cur ancestor of target):
+    //  fast-forward without replay.
+    b8 is_ff_forward = sha1eq(&base_old, &child_tip);
+    sha1 new_tip = {};
+    b8   stack_was_rewritten = NO;
+
+    if (is_ff_forward) {
+        new_tip = base_new;
+    } else if (sha1eq(&base_old, &base_new)) {
+        //  Target hasn't moved relative to cur's fork (defensive —
+        //  rebase reduces to "no-op on history, ref already where it
+        //  should be"); cur stays.
+        new_tip = child_tip;
+    } else {
+        //  Real rebase: replay cur stack onto target_tip.
+        keep_pack pp = {};
+        call(KEEPPackOpen, k, &pp);
+        pp.strict_order = NO;
+        post_rebase_ctx rctx = {.k = k, .p = &pp};
+        ok64 rb = GRAFRebase(&base_old, &base_new, &child_tip,
+                             post_rebase_emit_cb, &rctx);
+        ok64 cl = KEEPPackClose(k, &pp);
+        if (rb != OK) {
+            fprintf(stderr,
+                    "sniff: post: rebase aborted (%s)\n",
+                    rb == GRAFCNFL ? "merge conflict" : "error");
+            return rb;
+        }
+        if (cl != OK) return cl;
+        new_tip = rctx.have_last_commit ? rctx.last_commit_sha : base_new;
+        stack_was_rewritten = rctx.have_last_commit;
+    }
+
+    if (sha1eq(&new_tip, &cur_tip)) return POSTNONE;
+
+    //  --- 4. CAS-advance cur's REFS row (cur_tip → new_tip). ---
+    a_path(keepdir, reporoot, KEEP_DIR_S);
+    a_pad(u8, refkey_buf, 260);
+    u8bFeed1(refkey_buf, '?');
+    if (!u8csEmpty(cur_branch)) u8bFeed(refkey_buf, cur_branch);
+    a_dup(u8c, refkey, u8bData(refkey_buf));
+
+    a_pad(u8, exp_hex, 40);
+    a_rawc(esha, cur_tip);
+    HEXu8sFeedSome(exp_hex_idle, esha);
+    a_pad(u8, new_hex, 40);
+    a_rawc(nsha, new_tip);
+    HEXu8sFeedSome(new_hex_idle, nsha);
+    a_dup(u8c, expected, u8bDataC(exp_hex));
+    a_dup(u8c, val,      u8bDataC(new_hex));
+
+    ok64 cas = REFSCompareAndAppend($path(keepdir), refkey, expected, val);
+    if (cas == REFSCAS) {
+        fprintf(stderr,
+                "sniff: post: cur REFS advanced concurrently — retry\n");
+        return REFSCAS;
+    }
+    if (cas != OK) return cas;
+
+    //  --- 5. Reset wt to new_tip (so on-disk content matches the
+    //  rebased tree).  GETCheckout also bumps `.sniff` baseline.
+    //  Known residual: GETCheckout returns FILENORESZ on this path
+    //  (post-rebase, pre-mature ftruncate of an already-trimmed
+    //  pack mapping?).  The merged bytes ARE on disk by the time
+    //  the error fires — the test/post/05-rebase-on-remote `match`
+    //  on hello.c passes byte-for-byte.  TODO: trace FILENORESZ
+    //  call site under GETCheckout. ---
+    {
+        a_dup(u8c, hex_cs, u8bDataC(new_hex));
+        a_pad(u8, src_buf, 260);
+        u8bFeed1(src_buf, '?');
+        if (!u8csEmpty(cur_branch)) u8bFeed(src_buf, cur_branch);
+        a_dup(u8c, src_cs, u8bDataC(src_buf));
+        ok64 co = GETCheckout(reporoot, hex_cs, src_cs);
+        if (co != OK) return co;
+    }
+
+    fprintf(stderr,
+            "sniff: post: rebased ?%.*s onto %.*s%s\n",
+            (int)u8csLen(cur_branch), (char *)cur_branch[0],
+            (int)u8bDataLen(new_hex), (char *)u8bDataHead(new_hex),
+            stack_was_rewritten ? " (replayed)" : " (ff)");
+    return OK;
 }

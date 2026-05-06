@@ -1652,6 +1652,40 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
                 u8cs hx = {resolved.query[0], resolved.query[0] + 40};
                 if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
             }
+            //  When the URI has a query but no authority, probe with
+            //  `.` so peer-observed tracking rows (`<peer>?<query>`)
+            //  match, and additionally try `refs/`/`heads/` prefix
+            //  peels — the wire-side canonicaliser stores `master`
+            //  after stripping `refs/heads/` but the user may type
+            //  `heads/master`.
+            if (!found && !u8csEmpty(target->query) &&
+                u8csEmpty(target->authority)) {
+                char const *strips[] = {"", "heads/", "refs/heads/",
+                                        "refs/", NULL};
+                for (u32 si = 0; strips[si] != NULL && !found; si++) {
+                    u8cs q = {target->query[0], target->query[1]};
+                    size_t plen = strlen(strips[si]);
+                    if (plen > 0) {
+                        if ($len(q) <= plen) continue;
+                        if (memcmp(q[0], strips[si], plen) != 0) continue;
+                        u8csUsed(q, plen);
+                    }
+                    a_pad(u8, dot_buf, 512);
+                    a_cstr(dot_pfx, ".?");
+                    u8bFeed(dot_buf, dot_pfx);
+                    u8bFeed(dot_buf, q);
+                    a_dup(u8c, dot_uri, u8bData(dot_buf));
+                    memset(&resolved, 0, sizeof(resolved));
+                    if (REFSResolve(&resolved, arena_buf,
+                                    $path(keepdir), dot_uri) == OK &&
+                        u8csLen(resolved.query) >= 40) {
+                        u8s sb = {commit_sha.data, commit_sha.data + 20};
+                        u8cs hx = {resolved.query[0],
+                                   resolved.query[0] + 40};
+                        if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
+                    }
+                }
+            }
         }
 
         if (!found) {

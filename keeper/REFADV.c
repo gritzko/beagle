@@ -44,12 +44,33 @@ static b8 refadv_decode_terminal(sha1 *out, u8csc val) {
 
 typedef struct {
     refadv *adv;
+    b8      peer_pass;   // YES = second pass, only emit peer-prefixed
+                         //       branches not yet in adv->ents
 } refadv_ctx;
 
-//  Per-ref callback fed by REFSEach.  Local rows have keys of the
-//  form `?<branch-path>` (`?` for trunk).  Peer-prefixed rows
-//  (`<peer-uri>?<branch>`) are observations of someone else's tip and
-//  must NOT be advertised as ours — skip them.
+//  Helper: return YES when `name` is already in adv->ents.
+static b8 refadv_branch_seen(refadv *adv, u8csc name) {
+    for (u32 i = 0; i < adv->count; i++) {
+        u8cs ent_dir = {adv->ents[i].dir[0], adv->ents[i].dir[1]};
+        if (u8csLen(ent_dir) == u8csLen(name) &&
+            (u8csEmpty(name) ||
+             memcmp(ent_dir[0], name[0], u8csLen(name)) == 0))
+            return YES;
+    }
+    return NO;
+}
+
+//  Per-ref callback fed by REFSEach.  Two row shapes contribute to
+//  the advert:
+//      Local-only:    `?<branch>`           — our own tip (pass 1).
+//      Peer-observed: `<peer-uri>?<branch>` — relayed from a peer
+//                     (pass 2; only emitted for branches not already
+//                     covered by a local row).  A relay keeper —
+//                     cloned from another keeper, no local commits —
+//                     has only peer-observed rows; without
+//                     re-advertising them the upload-pack response
+//                     carries zero refs and the client fails with
+//                     WIRECLNRF.
 //
 //  Wire mapping at this boundary (the only place the trunk⇔main
 //  alias lives):
@@ -67,28 +88,55 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     u8cs key = {r->key[0], r->key[1]};
     u8cs val = {r->val[0], r->val[1]};
 
-    //  Local-only filter: a key that doesn't *start* with `?` carries
-    //  a peer URI prefix and represents a remote-observed tip.
-    if ($empty(key) || *key[0] != '?') done;
-    u8cs branch = {key[0] + 1, key[1]};
+    if ($empty(key)) done;
+    b8 is_local = (*key[0] == '?');
+    if (ctx->peer_pass) {
+        if (is_local) done;             //  pass 2: skip locals
+    } else {
+        if (!is_local) done;            //  pass 1: skip peers
+    }
+
+    //  Find the `?` separator and take everything after as branch.
+    u8c *qmark = key[0];
+    while (qmark < key[1] && *qmark != '?') qmark++;
+    if (qmark == key[1]) done;          //  malformed: no `?`
+    u8cs branch = {qmark + 1, key[1]};
+
+    //  Pass 2: skip if a local row already covered this branch.
+    if (ctx->peer_pass && refadv_branch_seen(adv, branch)) done;
 
     sha1 tip = {};
     if (!refadv_decode_terminal(&tip, val)) done;
 
-    //  Wire alias: empty branch (trunk) advertises as `main`.
-    a_cstr(main_s, "main");
+    //  Branch-vs-tag classification: a `tags/X` prefix in the local
+    //  row's query maps to a TAG advertisement (`refs/tags/X`); all
+    //  other queries map to BRANCH (`refs/heads/X`).  Wire alias:
+    //  empty branch (trunk) advertises as `main`.
+    a_cstr(tags_pfx, "tags/");
+    a_cstr(main_s,   "main");
+    gitref_kind kind = GITREF_BRANCH;
     u8cs name = {};
-    u8csMv(name, $empty(branch) ? main_s : branch);
+    if ($empty(branch)) {
+        u8csMv(name, main_s);
+    } else if ($len(branch) > $len(tags_pfx) &&
+               memcmp(branch[0], tags_pfx[0],
+                      $len(tags_pfx)) == 0) {
+        kind = GITREF_TAG;
+        u8cs nm = {branch[0] + $len(tags_pfx), branch[1]};
+        u8csMv(name, nm);
+    } else {
+        u8csMv(name, branch);
+    }
 
     if (adv->count >= REFADV_MAX_ENTRIES) done;
     refadv_entry *ent = &adv->ents[adv->count];
     ent->tip = tip;
 
     //  Build refname into the arena via GITFeedRef so the wire form
-    //  (refs/heads/<name>) is built in exactly one place.
+    //  is built in exactly one place.
     u8 *refname_start = u8bIdleHead(adv->arena);
     {
-        ok64 fo = GITFeedRef(adv->arena, GITREF_BRANCH, name);
+        ok64 fo = GITFeedRef(adv->arena, kind, name);
         if (fo != OK) return fo;
     }
     ent->refname[0] = refname_start;
@@ -132,12 +180,14 @@ ok64 REFADVOpen(refadv *out, keeper *k) {
     //  <root>/.dogs/REFS.  Future phases iterate every shard dir.
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
-    refadv_ctx ctx = {.adv = out};
+    //  Two-pass: local rows first (authoritative), then peer-observed
+    //  rows for branches not yet covered (relay role).
+    refadv_ctx ctx = {.adv = out, .peer_pass = NO};
     ok64 eo = REFSEach($path(keepdir), refadv_each_cb, &ctx);
-    if (eo != OK) {
-        REFADVClose(out);
-        return eo;
-    }
+    if (eo != OK) { REFADVClose(out); return eo; }
+    ctx.peer_pass = YES;
+    eo = REFSEach($path(keepdir), refadv_each_cb, &ctx);
+    if (eo != OK) { REFADVClose(out); return eo; }
     done;
 }
 

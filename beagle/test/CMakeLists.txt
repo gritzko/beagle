@@ -117,6 +117,11 @@ if (WITH_SSH)
     set_tests_properties(BEroundtrip PROPERTIES
         ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEroundtrip")
 
+    #  Note: be-post-rebase-remote moved to test/post/05-rebase-on-
+    #  remote/ — that scaffold is auto-discovered, ssh-free (uses
+    #  a local file:// origin), and pins outputs/file-states via
+    #  *.want.txt fixtures.  See VERBS.todo.md for tracking.
+
     # Toy-repo matrix (3 commits, v1+v2 tags, master tip).  Each script
     # builds the same toy and rsync-compares git-side and keeper-side
     # worktrees after the same operation.  -from-git uses a vanilla git

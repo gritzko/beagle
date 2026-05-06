@@ -231,14 +231,14 @@ want_missing mk/sub/inner.tmp
 note "*.tmp patterns honoured at every depth under mk/"
 
 # ------------------------------------------------------------------
-# Scenario 9: be put existing_dir/ stages only tracked files
+# Scenario 9: be put existing_dir/ stages dirty + untracked together
 #
 #   Starting from a commit that has `src/foo.c`, modify foo.c and add a
-#   brand-new untracked `src/bar.c`.  `be put src/` must rewrite foo.c
-#   (tracked ⇒ part of the base tree) and leave bar.c out (untracked
-#   on disk ⇒ not in baseline ⇒ skipped).
+#   brand-new untracked `src/bar.c`.  Per VERBS.md §PUT, `be put src/`
+#   stages every dirty-tracked file plus every untracked file under the
+#   subtree — both foo.c (modified) and bar.c (new) land in the commit.
 # ------------------------------------------------------------------
-echo "=== 9. be put existing_dir/ commits tracked files only ==="
+echo "=== 9. be put existing_dir/ stages tracked + untracked ==="
 D9="$TMP/r9"; mkdir -p "$D9/src"; cd "$D9"
 echo v1 > src/foo.c
 echo top > README
@@ -252,7 +252,7 @@ sleep 0.2
 echo v2 > src/foo.c                      # modify tracked
 echo stray > src/bar.c                   # add untracked
 "$BE" put src/ >/dev/null
-"$BE" post 'tracked only src' >/dev/null
+"$BE" post 'tracked + untracked src' >/dev/null
 C9b=$(head_hex)
 [ "$C9b" != "$C9a" ] || fail "HEAD unchanged after modify+put dir"
 note "updated HEAD=$C9b"
@@ -261,9 +261,9 @@ D9c="$TMP/r9c"; mkdir -p "$D9c"; cd "$D9c"
 cp -r "$D9/.dogs" .
 "$BE" get "$C9b" >/dev/null
 want_file    src/foo.c "v2"
+want_file    src/bar.c "stray"
 want_file    README    "top"
-want_missing src/bar.c
-note "modified tracked file rewritten, untracked sibling stayed out"
+note "modified tracked file rewritten, untracked sibling included"
 
 # ------------------------------------------------------------------
 # Scenario 10: be delete dir/ drops the entire subtree
