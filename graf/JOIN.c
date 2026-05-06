@@ -5,6 +5,7 @@
 #include "JOIN.h"
 
 #include "abc/PRO.h"
+#include "graf/NEIL.h"
 
 // Instantiate Myers diff for u64 hash sequences
 #define X(M, name) M##u64##name
@@ -166,6 +167,27 @@ ok64 JOINMerge(u8bp out, JOINfile *base, JOINfile *ours, JOINfile *theirs) {
 
     call(DIFFu64s, edl_o, ws, bh, oh);
     call(DIFFu64s, edl_t, ws, bh, th);
+
+    // NEIL semantic cleanup on both EDLs: kills false short EQs (lone
+    // brackets, punctuation, lone whitespace tokens that LCS picked up
+    // across genuinely divergent code), then lossless boundary shift
+    // toward line/word breaks.  Without these, JOINMerge frames
+    // conflicts around tiny shared tokens — `<<<<);` and similar
+    // bracket-glue artifacts — instead of expanding markers to whole
+    // lines.  In-place; both passes safe to ignore-on-error (the EDL
+    // remains valid, just unsmoothed).
+    {
+        u32cs base_tv  = {base->toks[1],   base->toks[2]};
+        u32cs ours_tv  = {ours->toks[1],   ours->toks[2]};
+        u32cs theirs_tv= {theirs->toks[1], theirs->toks[2]};
+        u8cs  base_dv  = {base->data[0],   base->data[1]};
+        u8cs  ours_dv  = {ours->data[0],   ours->data[1]};
+        u8cs  theirs_dv= {theirs->data[0], theirs->data[1]};
+        NEILCleanup(edl_o, base_tv, ours_tv,   base_dv, ours_dv);
+        NEILShift  (edl_o, base_tv, ours_tv,   base_dv, ours_dv);
+        NEILCleanup(edl_t, base_tv, theirs_tv, base_dv, theirs_dv);
+        NEILShift  (edl_t, base_tv, theirs_tv, base_dv, theirs_dv);
+    }
 
     // Mark hashes
     e32cs edl_ocs = {edl_o[2], edl_o[0]};
