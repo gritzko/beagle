@@ -2035,6 +2035,287 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
     done;
 }
 
+// --- Stream-ingest a side-band-64k upload-pack response ---
+//
+// Reads the entire upload-pack response off `rfd` directly into the
+// keeper's tail log: pkt-line headers parsed inline, side-band frames
+// dispatched in real time (band-1 → log via u8bFeed, band-2 → stderr
+// live, band-3 → fatal).  No intermediate response/pack buffer.
+//
+// The first 12 band-1 bytes (git's per-pack PACK header) are stashed
+// for the count parse but not written to the log — the log layout
+// follows KEEPIngestFile's: a single file-level PACK header at offset
+// 0, then concatenated raw object streams.  After EOF, the trailing
+// 20-byte SHA-1 trailer is shed via u8bShed and the file-level PACK
+// header count is patched.  UNPK indexes the appended slice.
+
+static u32 keep_hex4(u8 const *h) {
+    u32 v = 0;
+    for (int i = 0; i < 4; i++) {
+        u8 c = h[i];
+        u32 d;
+        if (c >= '0' && c <= '9')      d = (u32)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (u32)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (u32)(c - 'A' + 10);
+        else return 0xFFFFFFFFu;
+        v = (v << 4) | d;
+    }
+    return v;
+}
+
+static ssize_t keep_read_full(int fd, void *buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, (char *)buf + got, n - got);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (r == 0) return (ssize_t)got;
+        got += (size_t)r;
+    }
+    return (ssize_t)got;
+}
+
+ok64 KEEPIngestStream(keeper *k, int rfd) {
+    sane(k && rfd >= 0);
+
+    a_path(kdir);
+    call(keep_branch_dir, kdir, k->h, u8bDataC(k->leaf_branch));
+    call(FILEMakeDirP, $path(kdir));
+
+    b8  appending = (kv32bDataLen(k->packs) > 0);
+    u32 file_id = appending ? keep_packs_max_seqno(k) : k->next_seqno;
+    a_pad(u8, packpath, FILE_PATH_MAX_LEN);
+    call(keep_pack_path, packpath, $path(kdir), file_id);
+
+    u8bp log = NULL;
+    u64  pack_offset = 0;
+    if (appending) {
+        u8bp tail = keep_pack_buf(k, file_id);
+        if (tail) {
+            FILEUnMap(tail);
+            keep_pack_drop(k, file_id);
+        }
+        call(FILEBook, &log, $path(packpath), 16ULL << 30);
+        pack_offset = u8bDataLen(log);
+    } else {
+        test(kv32bDataLen(k->packs) < KEEP_MAX_FILES, KEEPNOROOM);
+        call(FILEBookCreate, &log, $path(packpath), 16ULL << 30, 4096);
+        call(PACKu8sFeedHdr, u8bIdle(log), 0);
+        pack_offset = 12;
+    }
+    call(keep_pack_install, k, file_id, log);
+
+    //  Stream-demux: pkt-line headers parsed inline; side-band-64k
+    //  caps body at 65519 bytes (round up for slack).
+    static u8 body[65540];
+    u8 git_hdr[12];
+    u32 git_hdr_got = 0;
+    b8 raw_mode = NO;       // server inlined PACK, no sideband
+    b8 saw_pack = NO;       // any band-1 / raw bytes seen?
+
+    //  Forward `n` band-1 bytes from `src` into the log, stripping
+    //  the leading 12 (git PACK header) into `git_hdr`.
+    #define KEEP_INGEST_FORWARD(src, nbytes)                            \
+        do {                                                            \
+            u8 const *_p = (src);                                       \
+            u32       _n = (nbytes);                                    \
+            if (_n) saw_pack = YES;                                     \
+            if (git_hdr_got < 12 && _n) {                               \
+                u32 _take = 12 - git_hdr_got;                           \
+                if (_take > _n) _take = _n;                             \
+                memcpy(git_hdr + git_hdr_got, _p, _take);               \
+                git_hdr_got += _take;                                   \
+                _p += _take;                                            \
+                _n -= _take;                                            \
+            }                                                           \
+            if (_n) {                                                   \
+                ok64 _e = FILEBookEnsure(log, _n);                      \
+                if (_e != OK) return _e;                                \
+                u8cs _slice = {_p, _p + _n};                            \
+                u8bFeed(log, _slice);                                   \
+            }                                                           \
+        } while (0)
+
+    for (;;) {
+        if (raw_mode) {
+            //  No-sideband fallback: drain the rest of rfd through
+            //  body[] and forward into the log (with strip filter).
+            ssize_t got = read(rfd, body, sizeof(body));
+            if (got == 0) break;
+            if (got < 0) {
+                if (errno == EINTR) continue;
+                fail(KEEPFAIL);
+            }
+            KEEP_INGEST_FORWARD(body, (u32)got);
+            continue;
+        }
+
+        u8 hdr[4];
+        ssize_t n = keep_read_full(rfd, hdr, 4);
+        if (n == 0) break;
+        if (n != 4) fail(KEEPFAIL);
+        u32 plen = keep_hex4(hdr);
+        if (plen == 0xFFFFFFFFu) {
+            //  Header isn't valid hex — server (e.g. keeper's own
+            //  upload-pack) advertised side-band-64k support but is
+            //  actually streaming raw pack bytes after the NAK.  The
+            //  4 bytes we just consumed are the start of "PACK".
+            KEEP_INGEST_FORWARD(hdr, 4);
+            raw_mode = YES;
+            continue;
+        }
+        if (plen == 0) break;            // flush-pkt
+        if (plen <= 4) continue;         // delim / response-end
+        u32 blen = plen - 4;
+        if (blen > sizeof(body)) fail(KEEPFAIL);
+        n = keep_read_full(rfd, body, blen);
+        if ((u32)n != blen) fail(KEEPFAIL);
+        if (blen == 0) continue;
+
+        //  Bare NAK/ACK status — absorb.
+        if (blen >= 3 &&
+            (memcmp(body, "NAK", 3) == 0 ||
+             memcmp(body, "ACK", 3) == 0)) continue;
+
+        //  Server-without-sideband fallback: pkt body starts with
+        //  "PACK" — the body itself is the start of the raw pack;
+        //  remainder of rfd is raw too.
+        if (blen >= 4 && memcmp(body, "PACK", 4) == 0) {
+            KEEP_INGEST_FORWARD(body, blen);
+            raw_mode = YES;
+            continue;
+        }
+
+        u8 band = body[0];
+        u32 dlen = blen - 1;
+        u8 *data = body + 1;
+        switch (band) {
+        case 0x01:
+            KEEP_INGEST_FORWARD(data, dlen);
+            break;
+        case 0x02: {                       // progress (live stderr)
+            ssize_t w;
+            do {
+                w = write(STDERR_FILENO, data, dlen);
+            } while (w < 0 && errno == EINTR);
+            break;
+        }
+        case 0x03:                         // fatal
+            (void)write(STDERR_FILENO, data, dlen);
+            fail(KEEPFAIL);
+        default:
+            //  Unknown band — skip.
+            break;
+        }
+    }
+    #undef KEEP_INGEST_FORWARD
+
+    //  No bytes received (clean disconnect with no pack) — leave the
+    //  log as-is and return OK.  Bookmark write would be ill-formed.
+    if (!saw_pack) {
+        FILETrimBook(log);
+        FILEUnBook(log);
+        keep_pack_drop(k, file_id);
+        u8bp ro = NULL;
+        call(FILEMapRO, &ro, $path(packpath));
+        call(keep_pack_install, k, file_id, ro);
+        if (!appending) k->next_seqno = file_id + 1;
+        done;
+    }
+
+    //  Got fewer bytes than a valid pack tail (12 hdr stashed + 0
+    //  bytes appended + 20 trailer wouldn't reach here — trailer
+    //  appended to log is at least 20 bytes).
+    if (git_hdr_got < 12 || u8bDataLen(log) < pack_offset + 20)
+        fail(KEEPFAIL);
+
+    //  Drop the 20-byte SHA-1 trailer from the log tail.
+    u8bShed(log, 20);
+
+    //  Parse the stashed git PACK header for the object count.
+    pack_hdr ph = {};
+    {
+        u8cs hscan = {git_hdr, git_hdr + 12};
+        call(PACKDrainHdr, hscan, &ph);
+    }
+
+    //  Empty pack: zero objects, no log mutation needed beyond what
+    //  we've already done (which was nothing for the data region).
+    if (ph.count == 0) {
+        FILETrimBook(log);
+        FILEUnBook(log);
+        keep_pack_drop(k, file_id);
+        u8bp ro = NULL;
+        call(FILEMapRO, &ro, $path(packpath));
+        call(keep_pack_install, k, file_id, ro);
+        if (!appending) k->next_seqno = file_id + 1;
+        done;
+    }
+
+    //  Patch the file-level PACK header count: old + ph.count.
+    {
+        u8p hdr = u8bDataHead(log);
+        u32 old_count = ((u32)hdr[8] << 24) | ((u32)hdr[9] << 16) |
+                        ((u32)hdr[10] << 8) | (u32)hdr[11];
+        u32 new_count = old_count + ph.count;
+        hdr[8]  = (u8)(new_count >> 24);
+        hdr[9]  = (u8)(new_count >> 16);
+        hdr[10] = (u8)(new_count >> 8);
+        hdr[11] = (u8)(new_count);
+    }
+
+    u64 log_len = u8bDataLen(log);
+    u64 pack_byte_len = log_len - pack_offset;
+
+    call(FILETrimBook, log);
+    FILEUnBook(log);
+    log = NULL;
+
+    keep_pack_drop(k, file_id);
+    u8bp ro = NULL;
+    call(FILEMapRO, &ro, $path(packpath));
+    call(keep_pack_install, k, file_id, ro);
+    if (!appending) k->next_seqno = file_id + 1;
+
+    //  Index the newly-appended slice.
+    Bwh128 entries = {};
+    call(wh128bAllocate, entries, (u64)ph.count + 16);
+    u8cs log_view = {u8bDataHead(ro), u8bDataHead(ro) + log_len};
+    unpk_in uin = {
+        .pack = {log_view[0], log_view[1]},
+        .scan_start = pack_offset,
+        .scan_end = log_len,
+        .count = ph.count,
+        .file_id = file_id,
+    };
+    unpk_stats ust = {};
+    call(UNPKIndex, k, &uin, entries, &ust);
+
+    {
+        wh128 bm = {
+            .key = wh64Pack(KEEP_TYPE_PACK, file_id, pack_offset),
+            .val = keepPackBmVal(ph.count, (u32)pack_byte_len),
+        };
+        call(wh128bPush, entries, &bm);
+    }
+
+    a_dup(wh128, sorted, wh128bData(entries));
+    wh128sSort(sorted);
+    wh128sDedup(sorted);
+    u64 nent = wh128sLen(sorted);
+
+    a_cstr(ext, KEEP_IDX_EXT);
+    u8cs raw = {(u8cp)sorted[0], (u8cp)(sorted[0] + nent)};
+    ok64 cr = DOGPupCreate(k->puppies, $path(kdir), ext, raw);
+    wh128bFree(entries);
+    if (cr != OK) return cr;
+    call(KEEPCompact, k);
+
+    done;
+}
+
 // --- Sync: clone or update from remote via git-upload-pack ---
 
 #include "PKT.h"

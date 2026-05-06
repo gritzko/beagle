@@ -20,8 +20,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFdirty}
-TMP=$TMP/$TEST_ID
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+TMP=$TMP/$TEST_ID/$$
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 mkdir -p "$TMP"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -80,12 +80,12 @@ note "edited a.txt without committing"
 before_tail=$(last_row)
 before_a=$(cat a.txt)
 
-if sniff get "?feat" 2>/tmp/dirty.err; then
-    cat /tmp/dirty.err
+if sniff get "?feat" 2>$TMP/dirty.err; then
+    cat $TMP/dirty.err
     fail "cross-branch GET should have refused on dirty wt"
 fi
-grep -q "cross-branch GET refused" /tmp/dirty.err \
-    || fail "expected refusal message; got: $(cat /tmp/dirty.err)"
+grep -q "cross-branch GET refused" $TMP/dirty.err \
+    || fail "expected refusal message; got: $(cat $TMP/dirty.err)"
 note "cross-branch GET refused as expected"
 
 #  Rollback: .sniff unchanged, a.txt unchanged.
@@ -117,12 +117,12 @@ note "two trunk tips: T1=$T1 T2=$T2"
 sleep 0.1
 echo "a uncommitted" > a.txt
 
-if ! sniff get "$T1" 2>/tmp/dirty.err; then
-    cat /tmp/dirty.err
+if ! sniff get "$T1" 2>$TMP/dirty.err; then
+    cat $TMP/dirty.err
     fail "same-branch overlap GET should have weave-merged, not refused"
 fi
-grep -q "weave-merged" /tmp/dirty.err \
-    || fail "expected 'weave-merged' notice; got: $(cat /tmp/dirty.err)"
+grep -q "weave-merged" $TMP/dirty.err \
+    || fail "expected 'weave-merged' notice; got: $(cat $TMP/dirty.err)"
 [ -f a.txt ] || fail "a.txt vanished across merge GET"
 note "same-branch overlap GET weave-merged as expected"
 

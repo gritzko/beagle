@@ -15,10 +15,10 @@ export PATH="$BIN:$PATH"
 #  use the HOME-relative form.  CMake seeds TMP=$HOME/tmp by default.
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-mill}
-TMILL=$TMP/$TEST_ID
+TMILL=$TMP/$TEST_ID/$$
 TMILL_REL=${TMILL#$HOME/}
 mkdir -p "$TMILL"
-trap 'rm -rf "$TMILL"; rmdir "$TMP" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT
 
 echo "=== mill: be get + verify ==="
 

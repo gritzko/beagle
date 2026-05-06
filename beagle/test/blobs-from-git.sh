@@ -23,10 +23,10 @@ export DOG_REMOTE_PATH="$BIN"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-blobs-from-git}
-TMP=$TMP/$TEST_ID
+TMP=$TMP/$TEST_ID/$$
 TMP_REL=${TMP#$HOME/}
 mkdir -p "$TMP"; echo "Running in $PWD"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT
 
 # --- 1. toy git source: 3 revs, two files, v1+v2 tags, master tip ---
 #  f.txt evolves at every commit; g.txt only changes at master.  Six

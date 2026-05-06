@@ -18,8 +18,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFcrosspost}
-TMP=$TMP/$TEST_ID
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+TMP=$TMP/$TEST_ID/$$
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 mkdir -p "$TMP"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -118,12 +118,12 @@ printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .dogs/refs
 
 sleep 0.1
 echo "x v2" > x.txt
-if sniff post "?feat" 'should fail' 2>/tmp/cross.err; then
-    cat /tmp/cross.err
+if sniff post "?feat" 'should fail' 2>$TMP/cross.err; then
+    cat $TMP/cross.err
     fail "non-ff cross-branch POST should have been refused"
 fi
-grep -q "rebase aborted" /tmp/cross.err \
-    || fail "expected rebase aborted message; got: $(cat /tmp/cross.err)"
+grep -q "rebase aborted" $TMP/cross.err \
+    || fail "expected rebase aborted message; got: $(cat $TMP/cross.err)"
 note "non-ff cross-branch POST refused"
 
 echo "=== all cross-post scenarios passed ==="

@@ -246,6 +246,17 @@ ok64 KEEPGet(keeper *k, u64 hashlet60, size_t hexlen, u8bp out, u8p out_type);
 //  (e.g. tree entries) to avoid hashlet collisions.
 ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type);
 
+//  Stream a side-band-64k upload-pack response from `rfd` directly
+//  into the keeper log: band-1 bytes go to disk via u8bFeed (no
+//  intermediate copy buffer), band-2 progress text streams live to
+//  stderr, band-3 fails the call.  After EOF, the streamed range
+//  has its 20-byte SHA-1 trailer trimmed in place, the embedded
+//  git PACK header is parsed for the object count, the file-level
+//  PACK header is patched, and UNPK indexes the new objects.
+//  This is the streaming equivalent of `KEEPIngestFile(k, bytes)`
+//  with no intermediate respbuf / packbuf double-buffering.
+ok64 KEEPIngestStream(keeper *k, int rfd);
+
 //  Check if object exists in the store (hexlen = prefix length).
 ok64 KEEPHas(keeper *k, u64 hashlet60, size_t hexlen);
 

@@ -30,8 +30,8 @@ HOST=${HOST:-localhost}
 #  back to $HOME/tmp/run-<timestamp> and the script's basename.
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFpatch}
-TMP=$TMP/$TEST_ID
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT
+TMP=$TMP/$TEST_ID/$$
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT
 mkdir -p "$TMP"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

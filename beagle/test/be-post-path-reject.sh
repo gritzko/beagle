@@ -14,12 +14,12 @@ echo "edited" > x.txt
 vc_snapshot before
 
 vc_step "be post x.txt msg — should be refused"
-if "$BE" post x.txt msg 2>/tmp/post-path.err; then
-    cat /tmp/post-path.err
+if "$BE" post x.txt msg 2>$TMP/post-path.err; then
+    cat $TMP/post-path.err
     vc_fail "be post path-form should have been refused"
 fi
-grep -q "path-form URI" /tmp/post-path.err \
-    || vc_fail "expected path-form refusal; got: $(cat /tmp/post-path.err)"
+grep -q "path-form URI" $TMP/post-path.err \
+    || vc_fail "expected path-form refusal; got: $(cat $TMP/post-path.err)"
 
 vc_snapshot after
 

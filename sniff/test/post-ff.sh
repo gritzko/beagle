@@ -13,8 +13,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFpostff}
-TMP=$TMP/$TEST_ID
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+TMP=$TMP/$TEST_ID/$$
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 mkdir -p "$TMP"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -45,12 +45,12 @@ T1=$(head_hex)
 note "v1 = $T1"
 
 before_tail=$(last_row)
-if sniff post -m "noop" 2>/tmp/postff.err; then
-    cat /tmp/postff.err
+if sniff post -m "noop" 2>$TMP/postff.err; then
+    cat $TMP/postff.err
     fail "empty POST should have been refused"
 fi
-grep -q "no changes since base" /tmp/postff.err \
-    || fail "expected SNIFFNOOP message; got: $(cat /tmp/postff.err)"
+grep -q "no changes since base" $TMP/postff.err \
+    || fail "expected SNIFFNOOP message; got: $(cat $TMP/postff.err)"
 [ "$(last_row)" = "$before_tail" ] \
     || fail ".sniff tail row changed after refused empty POST"
 note "empty POST refused; .sniff intact"
@@ -91,12 +91,12 @@ note "REFS poisoned with unrelated tip $FAKE; wt.base still $T2"
 before_tail=$(last_row)
 sleep 0.1
 echo "x v3" > x.txt
-if sniff post -m "should fail" 2>/tmp/postff.err; then
-    cat /tmp/postff.err
+if sniff post -m "should fail" 2>$TMP/postff.err; then
+    cat $TMP/postff.err
     fail "non-ff POST should have been refused"
 fi
-grep -q "rebase aborted" /tmp/postff.err \
-    || fail "expected rebase aborted message; got: $(cat /tmp/postff.err)"
+grep -q "rebase aborted" $TMP/postff.err \
+    || fail "expected rebase aborted message; got: $(cat $TMP/postff.err)"
 [ "$(last_row)" = "$before_tail" ] \
     || fail ".sniff tail row changed after refused non-ff POST"
 note "non-ff POST refused; .sniff intact"

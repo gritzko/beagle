@@ -24,9 +24,9 @@ BE="$BIN/be"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEhistory}
-TMP=$TMP/$TEST_ID
+TMP=$TMP/$TEST_ID/$$
 mkdir -p "$TMP"; echo "Running in $PWD"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }

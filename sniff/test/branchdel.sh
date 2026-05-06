@@ -13,8 +13,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFbranchdel}
-TMP=$TMP/$TEST_ID
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+TMP=$TMP/$TEST_ID/$$
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 mkdir -p "$TMP"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -66,12 +66,12 @@ sniff post -m "base" >/dev/null
 sniff post "?feat" >/dev/null
 sniff get "?feat" >/dev/null
 
-if sniff delete "?feat" 2>/tmp/bd.err; then
-    cat /tmp/bd.err
+if sniff delete "?feat" 2>$TMP/bd.err; then
+    cat $TMP/bd.err
     fail "delete ?<current-branch> should have been refused"
 fi
-grep -q "wt is on" /tmp/bd.err \
-    || fail "expected 'wt is on' refusal; got: $(cat /tmp/bd.err)"
+grep -q "wt is on" $TMP/bd.err \
+    || fail "expected 'wt is on' refusal; got: $(cat $TMP/bd.err)"
 ref_present "?feat" \
     || fail "?feat removed despite refusal"
 note "delete ?feat refused while wt is on feat"
@@ -87,12 +87,12 @@ sniff post -m "base" >/dev/null
 sniff post "?parent" >/dev/null
 sniff post "?parent/child" >/dev/null
 
-if sniff delete "?parent" 2>/tmp/bd.err; then
-    cat /tmp/bd.err
+if sniff delete "?parent" 2>$TMP/bd.err; then
+    cat $TMP/bd.err
     fail "delete ?parent should have been refused (descendants)"
 fi
-grep -q "active descendant" /tmp/bd.err \
-    || fail "expected descendant refusal; got: $(cat /tmp/bd.err)"
+grep -q "active descendant" $TMP/bd.err \
+    || fail "expected descendant refusal; got: $(cat $TMP/bd.err)"
 ref_present "?parent" || fail "?parent removed despite refusal"
 note "delete ?parent refused; tombstone descendants first"
 

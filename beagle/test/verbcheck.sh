@@ -37,9 +37,9 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-vctest}
-TMP=$TMP/$TEST_ID
+TMP=$TMP/$TEST_ID/$$
 mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
 
 vc_fail() { echo "FAIL ($TEST_ID): $*" >&2; exit 1; }
 vc_note() { echo "  - $*"; }
