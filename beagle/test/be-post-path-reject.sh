@@ -13,8 +13,12 @@ echo "edited" > x.txt
 
 vc_snapshot before
 
-vc_step "be post x.txt msg — should be refused"
-if "$BE" post x.txt msg 2>$TMP/post-path.err; then
+vc_step "be post ./x.txt msg — should be refused (explicit path-form)"
+#  Bareword `x.txt` is a fragment under VERBS.md §"Bareword
+#  defaults" — POST's bareword default is fragment (commit msg).
+#  The path-reject rule fires only for an EXPLICIT path-form URI
+#  (`./x.txt`, `/x.txt`, or anything with a `/`).
+if "$BE" post ./x.txt msg 2>$TMP/post-path.err; then
     cat $TMP/post-path.err
     vc_fail "be post path-form should have been refused"
 fi

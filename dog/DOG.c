@@ -236,14 +236,43 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
 
     // Bare single token — RFC 3986 path-noscheme.  No charset-based
     // classification here: a bare `README`, `VERBS.md`, or 40-hex
-    // string all parse as path.  Verbs that expect a ref (post,
-    // patch) or a sha (size:, blob:) demote path → query/fragment
-    // themselves; verbs that expect a path (put, delete, bro) take
-    // it as-is.  Keeps the parser disambiguation-free.
+    // string all parse as path.  Per-verb routing (POST → fragment,
+    // GET/HEAD/PATCH → query, PUT/DELETE/verbless → path) is applied
+    // post-parse via DOGPromoteBareword once the verb is known.
     u->data[0] = arg[0];
     u->data[1] = arg[1];
     u->path[0] = arg[0];
     u->path[1] = arg[1];
+    done;
+}
+
+ok64 DOGPromoteBareword(urip u, u8 slot) {
+    sane(u != NULL);
+    if (slot != 'q' && slot != 'f') done;
+
+    //  Bareword shape: path is the only populated component, and it
+    //  has no '/' (a slash would have routed the arg through
+    //  URILexer in DOGNormalizeArg, so the path is path-shaped, not
+    //  a bare branch / message word).
+    if (u->path[0] == NULL || u8csEmpty(u->path)) done;
+    if (u->scheme[0]    != NULL) done;
+    if (u->authority[0] != NULL) done;
+    if (u->host[0]      != NULL) done;
+    if (u->query[0]     != NULL) done;
+    if (u->fragment[0]  != NULL) done;
+    $for(u8c, p, u->path) {
+        if (*p == '/') done;
+    }
+
+    if (slot == 'q') {
+        u->query[0] = u->path[0];
+        u->query[1] = u->path[1];
+    } else {  //  'f'
+        u->fragment[0] = u->path[0];
+        u->fragment[1] = u->path[1];
+    }
+    u->path[0] = NULL;
+    u->path[1] = NULL;
     done;
 }
 

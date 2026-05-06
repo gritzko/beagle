@@ -626,6 +626,12 @@ static ok64 BEDiff(cli *c, b8 seq) {
 //  both yield query=feat.  Promotion only happens when query is empty
 //  (caller hasn't explicitly set a ref).  Returns YES if anything moved.
 static b8 be_promote_to_ref(uri *u) {
+    //  Legacy: a URILexer-produced path that matches QURY ref grammar
+    //  (e.g. `be get feat/sub` → path="feat/sub") gets routed to the
+    //  query slot.  Bareword promotion is now handled centrally by
+    //  DOGPromoteBareword in becli() per VERBS.md §"Bareword
+    //  defaults"; the fragment→query branch was removed so POST's
+    //  fragment-default (`be post fix` ⇒ msg="fix") survives.
     if (!$empty(u->query)) return NO;
     qref qr = {};
     if (!$empty(u->path)) {
@@ -634,15 +640,6 @@ static b8 be_promote_to_ref(uri *u) {
             (qr.type == QURY_REF || qr.type == QURY_SHA)) {
             u8csMv(u->query, s);
             u->path[0] = u->path[1] = NULL;
-            return YES;
-        }
-    }
-    if (!$empty(u->fragment)) {
-        u8cs s = {u->fragment[0], u->fragment[1]};
-        if (QURYu8sDrain(s, &qr) == OK &&
-            (qr.type == QURY_REF || qr.type == QURY_SHA)) {
-            u8csMv(u->query, s);
-            u->fragment[0] = u->fragment[1] = NULL;
             return YES;
         }
     }
@@ -799,6 +796,50 @@ ok64 becli() {
     if (CLIHas(&c, "-h") || CLIHas(&c, "--help")) {
         BEUsage();
         done;
+    }
+
+    //  Per-verb bareword default (VERBS.md §"Bareword defaults"):
+    //  promote a bareword sitting in u->path into the verb's natural
+    //  slot.  POST → fragment (commit msg); GET / HEAD / PATCH →
+    //  query (branch); PUT / DELETE / verbless → path (no-op).  When
+    //  a promotion fires we also rewrite u->data with a leading `?`
+    //  or `#` so be_build_argv forwards a URI shape that sub-dogs
+    //  re-parse the same way (no second round of bareword promotion
+    //  at the sub-dog layer).  Bareword bytes get packed into one
+    //  scratch buffer that lives for becli's full frame (covers the
+    //  later BEDispatch → be_build_argv hand-off).
+    a_pad(u8, bareword_scratch, CLI_MAX_URIS * 65);
+    {
+        u8 def = 'p';
+        if (!$empty(c.verb)) {
+            a_cstr(_v_post,  "post");
+            a_cstr(_v_get,   "get");
+            a_cstr(_v_head,  "head");
+            a_cstr(_v_patch, "patch");
+            a_cstr(_v_diff,  "diff");
+            if      ($eq(c.verb, _v_post))  def = 'f';
+            else if ($eq(c.verb, _v_get))   def = 'q';
+            else if ($eq(c.verb, _v_head))  def = 'q';
+            else if ($eq(c.verb, _v_patch)) def = 'q';
+            else if ($eq(c.verb, _v_diff))  def = 'q';
+        }
+        if (def != 'p') {
+            for (u32 i = 0; i < c.nuris; i++) {
+                uri *u = &c.uris[i];
+                u8cs orig_path = {u->path[0], u->path[1]};
+                ok64 pr = DOGPromoteBareword(u, def);
+                if (pr != OK) continue;
+                if (u->path[0] != NULL) continue;        // not promoted
+                if (u8csEmpty(orig_path)) continue;
+                u8c *before = *u8bIdle(bareword_scratch);
+                if (u8bFeed1(bareword_scratch,
+                             (def == 'q') ? '?' : '#') != OK) continue;
+                if (u8bFeed(bareword_scratch, orig_path) != OK) continue;
+                u8c *after = *u8bIdle(bareword_scratch);
+                u->data[0] = before;
+                u->data[1] = after;
+            }
+        }
     }
 
     //  Read the wt's tip URI (`<root>?<branch>#<sha>`) once, here at

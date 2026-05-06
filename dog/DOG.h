@@ -234,4 +234,23 @@ ok64 DOGutf8sFeedDate(u8s into, i64 ts, i64 now);
 // authority, rooted path, `?`, or `#` pass through unchanged.
 ok64 DOGNormalizeArg(urip u, u8csc arg);
 
+// Move a bareword sitting in u->path (the default slot from
+// DOGNormalizeArg) into the verb's natural default slot.  No-op
+// when the URI has any other component populated, when path
+// contains a '/' (path-shaped, not bareword), or when slot is 'p'.
+//
+// slot values:  'q' → query (?ref)
+//               'f' → fragment (#frag)
+//               'p' (or anything else) → leave as path
+//
+// Per-verb defaults (see VERBS.md §"Bareword defaults"):
+//   POST    → 'f'   commit message
+//   GET     → 'q'   branch
+//   HEAD    → 'q'   branch
+//   PATCH   → 'q'   branch
+//   PUT     → 'p'   path (file staging)
+//   DELETE  → 'p'   path (file unlink)
+//   verbless→ 'p'   path (open in bro)
+ok64 DOGPromoteBareword(urip u, u8 slot);
+
 #endif
