@@ -1,7 +1,7 @@
 #!/bin/sh
 #  be-delete-branch-resurrect.sh — `be delete ?feat` then
-#  `be post ?feat` brings the label back.  Verifies the tombstone
-#  doesn't permanently shadow the key (a later post supersedes it).
+#  `be put ?feat` brings the label back.  Verifies the tombstone
+#  doesn't permanently shadow the key (a later put supersedes it).
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"
@@ -19,8 +19,8 @@ if vc_section before refs | grep -qE '^\?feat	'; then
 fi
 vc_note "?feat hidden in REFS after tombstone"
 
-vc_step "be post ?feat — should resurrect the label"
-vc_run resurrect "$BE" post "?feat"
+vc_step "be put ?feat — should resurrect the label"
+vc_run resurrect "$BE" put "?feat"
 
 vc_snapshot after
 

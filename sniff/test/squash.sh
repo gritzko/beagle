@@ -99,7 +99,7 @@ note "trunk BASE=$BASE"
 
 # --- step 2: label same tip as ?feat (side branch) -------------------
 echo "=== 2. label ?feat at BASE ==="
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 FEAT_REF=$(ref_tip "?feat")
 [ "$FEAT_REF" = "$BASE" ] || fail "feat ref not at BASE (got=$FEAT_REF)"
 note "?feat -> $FEAT_REF"

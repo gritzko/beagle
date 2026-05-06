@@ -109,7 +109,7 @@ WT="$TMP/wt2"
 mkdir -p "$WT"; cd "$WT"
 echo "x" > x.txt
 sniff post -m "trunk base" >/dev/null
-sniff post "?feat" >/dev/null              # label feat at trunk's tip
+sniff put "?feat" >/dev/null              # label feat at trunk's tip
 
 #  Poison feat's REFS with an unrelated sha so the ff check fires.
 FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"

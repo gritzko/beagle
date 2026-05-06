@@ -63,7 +63,7 @@ sp_seed_two_tips() {
 #  After sp_seed_trunk: label `?feat` at T1.  Exports:
 #    FEAT_TIP — sha that ?feat points at (= T1).
 sp_label_feat() {
-    "$BE" post "?feat" >/dev/null
+    "$BE" put '?feat' >/dev/null
     FEAT_TIP=$(sp_ref_tip "?feat")
     [ "$FEAT_TIP" = "$T1" ] \
         || { echo "sp_label_feat: ?feat at '$FEAT_TIP' != T1=$T1" >&2; exit 1; }

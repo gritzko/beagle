@@ -1052,44 +1052,44 @@ ok64 SNIFFExec(cli *c) {
                     HEXu8sFeedSome(hex_idle, rs);
                 }
             } else if (label_uri != NULL) {
-                //  No commit_msg + label_uri = either:
-                //    (a) cross-branch promote (`?..`, `?./fix`,
-                //        `?<absolute>`, `?./newleaf`) per VERBS.md
-                //        §POST — runs through POSTPromote;
-                //    (b) legacy label-only op (target == cur) — point
-                //        the URI's branch at the wt's current baseline
-                //        sha via POSTSetLabel.
-                //
-                //  The dispatcher returns POSTNONE when the target IS
-                //  cur, so we fall through to the legacy path then.
-                u8cs target = {};
-                target[0] = label_uri->query[0];
-                target[1] = label_uri->query[1];
-                ret = POSTPromote(reporoot, target, NO);
-                if (ret == POSTNONE) {
-                    //  target == cur → legacy label-only behaviour.
-                    ret = OK;
-                    ron60 bts = 0, bverb = 0;
-                    uri bu = {};
-                    ret = SNIFFAtBaseline(&bts, &bverb, &bu);
-                    sha1hex shex = {};
-                    if (ret == OK &&
-                        SNIFFAtQueryFirstSha(&bu, &shex) == OK) {
-                        u8cs h40 = {};
-                        sha1hexSlice(h40, &shex);
-                        u8bFeed(hex, h40);
-                        a_dup(u8c, hex_in, u8bData(hex));
-                        a_dup(u8c, ref_uri, label_uri->data);
-                        ret = POSTSetLabel(ref_uri, hex_in);
-                        if (ret == OK)
-                            fprintf(stderr,
-                                    "sniff: label %.*s -> %.*s\n",
-                                    (int)u8csLen(ref_uri),
-                                    (char *)ref_uri[0],
-                                    (int)u8bDataLen(hex),
-                                    (char *)u8bDataHead(hex));
-                    } else {
+                //  No commit_msg + label_uri: rebase cur onto
+                //  `label_uri.tip` (VERBS.md §POST: "Rebase cur onto
+                //  `?br.tip`.  Cur's stack replays from `?br.tip`;
+                //  no new commit").  Cur is the only ref POST moves;
+                //  the label_uri side is read-only.
+                a_path(keepdir, reporoot, KEEP_DIR_S);
+                a_pad(u8, arena, 1024);
+                uri resolved = {};
+                a_dup(u8c, lbl_in, label_uri->data);
+                if (REFSResolve(&resolved, arena, $path(keepdir),
+                                lbl_in) != OK ||
+                    u8csEmpty(resolved.query)) {
+                    fprintf(stderr,
+                            "sniff: post: %.*s — no such ref in log\n",
+                            (int)u8csLen(label_uri->data),
+                            (char *)label_uri->data[0]);
+                    ret = SNIFFFAIL;
+                } else {
+                    u8cs sha_hex = {resolved.query[0], resolved.query[1]};
+                    if (!u8csEmpty(sha_hex) && *sha_hex[0] == '?')
+                        u8csUsed(sha_hex, 1);
+                    if (u8csLen(sha_hex) != sizeof(sha1hex)) {
+                        fprintf(stderr,
+                                "sniff: post: ref row for %.*s has "
+                                "no sha\n",
+                                (int)u8csLen(label_uri->data),
+                                (char *)label_uri->data[0]);
                         ret = SNIFFFAIL;
+                    } else {
+                        sha1 target_tip = {};
+                        a_raw(bin, target_tip);
+                        a_dup(u8c, hx, sha_hex);
+                        if (HEXu8sDrainSome(bin, hx) != OK) {
+                            ret = SNIFFFAIL;
+                        } else {
+                            ret = POSTRebaseOntoSha(reporoot,
+                                                    &target_tip);
+                        }
                     }
                 }
             }

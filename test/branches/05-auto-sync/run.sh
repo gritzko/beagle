@@ -1,6 +1,7 @@
 #!/bin/sh
-#  branches/05-auto-sync — extracted from workflow-branches.sh stages 25-27.
-#  ?.. auto-sync; ?./fix2 promote-into-child; sibling promote (no auto-sync).
+#  branches/05-auto-sync — `be post ?br` rebases CUR onto br.tip
+#  (VERBS.md §POST: cur is the only ref POST moves).  Three flavours:
+#  parent (`?..`), descendant (`?./child`), sibling.
 
 . "$(dirname "$0")/../../lib/branches.sh"
 WT="$SCRATCH"
@@ -12,10 +13,9 @@ T25_pre=$(head_hex)
 [ -n "$T25_pre" ] || fail "no trunk tip after seed post"
 note "§25: trunk pre = $T25_pre"
 
-echo "=== 25. ?.. auto-sync ==="
-#  Create a fresh ?fix1 child for this scenario.
-"$BE" put "?./fix1" >/dev/null || fail "§25: be post ?./fix1 failed"
-"$BE" get "?fix1" >/dev/null || fail "§25: be get ?fix1 failed"
+echo "=== 25. be post ?.. rebases cur onto parent ==="
+"$BE" put "?./fix1" >/dev/null || fail "§25: be put ?./fix1 failed"
+"$BE" get "?fix1" >/dev/null   || fail "§25: be get ?fix1 failed"
 sleep 0.01
 echo "fix1-25 v1" > f25.txt
 "$BE" put f25.txt >/dev/null
@@ -41,31 +41,30 @@ T25_advance=$(ref_tip "?")
     || fail "§25: trunk REFS didn't advance"
 note "§25: trunk advanced to $T25_advance"
 
-# Back in cur (on ?fix1): be post ?.. — advances trunk only.
-# Per VERBS.md: POST modifies only the named target; cur is never
-# auto-synced.  ?fix1 stays where it was (= F25_C1).
+# Back in cur (on ?fix1): be post ?.. — rebases ?fix1 onto trunk.tip.
+# Trunk stays put; ?fix1 moves to a new commit whose parent is trunk.
 cd "$WT"
 "$BE" post "?.." 2>"$ETMP/p25.err" >/dev/null \
     || { cat "$ETMP/p25.err"; fail "§25: be post ?.. failed"; }
 T25_after=$(ref_tip "?")
 F25_after=$(ref_tip "?fix1")
-[ -n "$T25_after" ] && [ "$T25_after" != "$T25_advance" ] \
-    || fail "§25: trunk REFS didn't advance past T25_advance"
-[ "$F25_after" = "$F25_C1" ] \
-    || fail "§25: ?fix1 should stay at C1=$F25_C1 (no auto-sync); got $F25_after"
-note "§25: trunk -> $T25_after; ?fix1 unchanged at $F25_after"
-note "§25 OK: ?.. promote (no auto-sync)"
+[ "$T25_after" = "$T25_advance" ] \
+    || fail "§25: trunk drifted ($T25_advance -> $T25_after); POST must not move it"
+[ -n "$F25_after" ] && [ "$F25_after" != "$F25_C1" ] \
+    || fail "§25: ?fix1 didn't advance from C1=$F25_C1"
+note "§25: ?fix1 -> $F25_after; trunk unchanged at $T25_after"
+note "§25 OK: be post ?.. rebases cur"
 
 # cleanup — switch off ?fix1 first so delete isn't refused
 "$BE" get "?.." >/dev/null 2>&1 || true
 "$BE" delete "?fix1" >/dev/null 2>&1 || true
 rm -f f25.txt tr25.txt
 
-# 26. ?./fix2 promote-into-child
-echo "=== 26. ?./fix2 promote-into-child ==="
+# 26. be post ?./fix2 — rebase cur (?fix1) onto descendant ?fix1/fix2.
+echo "=== 26. be post ?./fix2 rebases cur onto descendant ==="
 cd "$WT"
-"$BE" put "?./fix1" >/dev/null || fail "§26: be post ?./fix1 failed"
-"$BE" get "?fix1" >/dev/null || fail "§26: be get ?fix1 failed"
+"$BE" put "?./fix1" >/dev/null || fail "§26: be put ?./fix1 failed"
+"$BE" get "?fix1" >/dev/null   || fail "§26: be get ?fix1 failed"
 sleep 0.01
 echo "fix1-26 v1" > f1_26.txt
 "$BE" put f1_26.txt >/dev/null
@@ -73,7 +72,7 @@ echo "fix1-26 v1" > f1_26.txt
 F1_TIP=$(head_hex)
 [ -n "$F1_TIP" ] || fail "§26: no fix1 tip"
 
-"$BE" put "?./fix2" >/dev/null || fail "§26: be post ?./fix2 failed"
+"$BE" put "?./fix2" >/dev/null || fail "§26: be put ?./fix2 failed"
 "$BE" get "?fix1/fix2" >/dev/null || fail "§26: be get ?fix1/fix2 failed"
 [ "$(cur_branch)" = "fix1/fix2" ] || fail "§26: wt should be on fix1/fix2"
 sleep 0.01
@@ -94,22 +93,26 @@ F2_PRE=$(ref_tip "?fix1/fix2")
 
 F1_POST=$(ref_tip "?fix1")
 F2_POST=$(ref_tip "?fix1/fix2")
-[ "$F1_POST" = "$F1_PRE" ] || fail "§26: cur (?fix1) moved across promote"
-[ "$F2_POST" != "$F1_PRE" ] \
-    || fail "§26: ?fix1/fix2 collapsed to fix1"
-note "§26: ?fix1 unchanged at $F1_POST; ?fix1/fix2 -> $F2_POST"
+#  fix1's stack since LCA(fix1, fix1/fix2) is empty (fix1/fix2 is a
+#  descendant of fix1), so the rebase is a fast-forward: ?fix1 ends
+#  at fix1/fix2's tip.  ?fix1/fix2 must not move.
+[ "$F2_POST" = "$F2_PRE" ] \
+    || fail "§26: ?fix1/fix2 drifted; POST may not move a non-cur ref"
+[ "$F1_POST" = "$F2_PRE" ] \
+    || fail "§26: ?fix1 should ff to ?fix1/fix2's tip; got $F1_POST"
+note "§26: ?fix1 ff'd to $F1_POST; ?fix1/fix2 unchanged at $F2_POST"
 
 "$BE" get "?.." >/dev/null
 "$BE" delete "?fix1/fix2" >/dev/null 2>&1 || true
 "$BE" delete "?fix1"      >/dev/null 2>&1 || true
 rm -f f1_26.txt f2_26.txt
 
-# 27. sibling promote (NO auto-sync)
-echo "=== 27. sibling promote ==="
+# 27. be post ?fix2 — rebase cur (?fix1) onto sibling ?fix2.
+echo "=== 27. be post ?fix2 rebases cur onto sibling ==="
 cd "$WT"
-"$BE" get "?.." >/dev/null || fail "§27: be get ?.. failed"
-"$BE" put "?./fix1" >/dev/null || fail "§27: be post ?./fix1 failed"
-"$BE" put "?./fix2" >/dev/null || fail "§27: be post ?./fix2 (peer) failed"
+"$BE" get "?.." >/dev/null     || fail "§27: be get ?.. failed"
+"$BE" put "?./fix1" >/dev/null || fail "§27: be put ?./fix1 failed"
+"$BE" put "?./fix2" >/dev/null || fail "§27: be put ?./fix2 (peer) failed"
 
 "$BE" get "?fix2" >/dev/null || fail "§27: be get ?fix2 failed"
 sleep 0.01
@@ -135,12 +138,12 @@ F2_TIP_POST=$(ref_tip "?fix2")
 F1_TIP_POST=$(ref_tip "?fix1")
 TRUNK_POST_27=$(ref_tip "?")
 
-[ "$F1_TIP_POST" = "$F1_TIP_PRE" ] \
-    || fail "§27: cur (?fix1) auto-synced when sibling promote should leave it"
-[ "$F2_TIP_POST" != "$F2_TIP_PRE" ] \
-    || fail "§27: sibling ?fix2 did not advance"
+[ "$F2_TIP_POST" = "$F2_TIP_PRE" ] \
+    || fail "§27: ?fix2 drifted; POST may not move a non-cur ref"
+[ -n "$F1_TIP_POST" ] && [ "$F1_TIP_POST" != "$F1_TIP_PRE" ] \
+    || fail "§27: ?fix1 (cur) didn't advance after rebase onto sibling"
 [ "$TRUNK_POST_27" = "$TRUNK_PRE_27" ] \
     || fail "§27: trunk drifted ($TRUNK_PRE_27 -> $TRUNK_POST_27)"
-note "§27 OK: ?fix2 advanced; ?fix1 untouched (no auto-sync for sibling)"
+note "§27 OK: ?fix1 rebased; ?fix2/trunk untouched"
 
 echo "=== branches/05-auto-sync: OK ==="

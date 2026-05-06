@@ -69,7 +69,7 @@ note "trunk baseline established"
 
 # --- step 2: ?./feat from trunk creates child label ------------------
 echo "=== 2. ?./feat from trunk ==="
-sniff post "?./feat" >/dev/null
+sniff put "?./feat" >/dev/null
 TIP_FEAT=$(ref_tip "?feat")
 [ -n "$TIP_FEAT" ] \
     || fail "?./feat from trunk did not create root-level feat"
@@ -88,7 +88,7 @@ note "?.. resolves feat → trunk"
 echo "=== 4. ?../sib from feat ==="
 sniff get "?feat" >/dev/null
 [ "$(cur_branch)" = "feat" ] || fail "couldn't return to feat"
-sniff post "?../sib" >/dev/null
+sniff put "?../sib" >/dev/null
 TIP_SIB=$(ref_tip "?sib")
 [ -n "$TIP_SIB" ] \
     || fail "?../sib from feat did not create root-level sib"
@@ -108,7 +108,7 @@ fi
     || fail "failed get ?./sub must not register feat/sub in REFS"
 note "get ?./sub on miss errors cleanly"
 #  Spec-aligned create-then-switch idiom.
-sniff post "?./sub" >/dev/null
+sniff put "?./sub" >/dev/null
 TIP_SUB=$(ref_tip "?feat/sub")
 [ -n "$TIP_SUB" ] || fail "post ?./sub did not register feat/sub in REFS"
 sniff get "?./sub" >/dev/null

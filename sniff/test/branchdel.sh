@@ -40,7 +40,7 @@ WT="$TMP/wt1"
 mkdir -p "$WT"; cd "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 ref_present "?feat" || fail "?feat not present after post"
 note "?feat present"
 
@@ -63,7 +63,7 @@ WT="$TMP/wt2"
 mkdir -p "$WT"; cd "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 sniff get "?feat" >/dev/null
 
 if sniff delete "?feat" 2>$TMP/bd.err; then
@@ -84,8 +84,8 @@ WT="$TMP/wt3"
 mkdir -p "$WT"; cd "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
-sniff post "?parent" >/dev/null
-sniff post "?parent/child" >/dev/null
+sniff put "?parent" >/dev/null
+sniff put "?parent/child" >/dev/null
 
 if sniff delete "?parent" 2>$TMP/bd.err; then
     cat $TMP/bd.err
@@ -112,11 +112,11 @@ WT="$TMP/wt4"
 mkdir -p "$WT"; cd "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 sniff delete "?feat" >/dev/null
 ref_present "?feat" && fail "?feat still present after delete"
 
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 ref_present "?feat" \
     || fail "?feat not resurrected by subsequent post"
 note "post ?feat after delete resurrects the branch"

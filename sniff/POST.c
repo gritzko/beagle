@@ -1640,18 +1640,18 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     sha1 absolute_parent_tip = {};
     b8   create_under_absolute = NO;
     if (!target_exists && !is_child) {
-        //  Try arm (b): dirname(target) is a real branch.
+        //  Try arm (b): dirname(target) is a real branch.  Empty
+        //  dirname means trunk (the root) — `?sib` / `?../sib` from
+        //  a child both land here, with trunk's tip as the absolute
+        //  parent.
         u8cs t_dir = {};
         post_dirname(t_dir, target_branch);
-        if (!$empty(t_dir)) {
-            ok64 dr = post_resolve_branch_tip(&absolute_parent_tip,
-                                              reporoot, t_dir);
-            if (dr == OK) create_under_absolute = YES;
-            else if (dr != REFSNONE) return dr;
-        }
+        ok64 dr = post_resolve_branch_tip(&absolute_parent_tip,
+                                          reporoot, t_dir);
+        if (dr == OK) create_under_absolute = YES;
+        else if (dr != REFSNONE) return dr;
         if (!create_under_absolute) {
-            //  TODO(spec): sibling-create (`?../sib` from cur on a
-            //  child).  Hand off to legacy POSTSetLabel.
+            //  Parent branch missing — surface as POSTNONE.
             return POSTNONE;
         }
     }
@@ -2656,7 +2656,10 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
     a_dup(u8c, cur_branch, u8bData(cur_buf));
 
     //  --- 2. Already in sync? ---
-    if (sha1eq(&cur_tip, target_tip)) return POSTNONE;
+    if (sha1eq(&cur_tip, target_tip)) {
+        fprintf(stderr, "sniff: post: cur already at target — no rebase\n");
+        return OK;
+    }
 
     //  --- 3. Compute LCA + operands.  Same shape as POSTPromote's
     //  ?<absolute-upstream> branch (lines 1750-1759). ---
@@ -2698,7 +2701,14 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
         stack_was_rewritten = rctx.have_last_commit;
     }
 
-    if (sha1eq(&new_tip, &cur_tip)) return POSTNONE;
+    if (sha1eq(&new_tip, &cur_tip)) {
+        //  Target is an ancestor of cur (or rebase produced no
+        //  change) — nothing to write.  Spec: success.
+        fprintf(stderr,
+                "sniff: post: cur already incorporates target — "
+                "no rebase\n");
+        return OK;
+    }
 
     //  --- 4. CAS-advance cur's REFS row (cur_tip → new_tip). ---
     a_path(keepdir, reporoot, KEEP_DIR_S);
