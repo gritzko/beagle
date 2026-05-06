@@ -13,25 +13,25 @@ mkdir -p "$OUT"
 # both branches' edits.
 
 # Step 1: baseline on trunk — a.txt + b.txt
-cp "$CASE/01.a.txt" a.txt
-cp "$CASE/02.b.txt" b.txt
-"$BE" put a.txt b.txt >/dev/null 2>&1
-"$BE" post 'baseline msg' >/dev/null 2>&1
+sleep 0.02; cp "$CASE/01.a.txt" a.txt
+sleep 0.02; cp "$CASE/02.b.txt" b.txt
+"$BE" put a.txt b.txt >/dev/null
+"$BE" post 'baseline msg' >/dev/null
 
 # Step 2: fork the child branch (cur stays on trunk)
-"$BE" put '?./fix1' >/dev/null 2>&1
+"$BE" put '?./fix1' >/dev/null
 
 # Step 3: switch to child, edit b.txt, commit
-"$BE" get '?fix1' >/dev/null 2>&1
-cp "$CASE/04.b-fix.txt" b.txt
-"$BE" put b.txt >/dev/null 2>&1
-"$BE" post 'c1 msg' >/dev/null 2>&1
+"$BE" get '?fix1' >/dev/null
+sleep 0.02; cp "$CASE/04.b-fix.txt" b.txt
+"$BE" put b.txt >/dev/null
+"$BE" post 'c1 msg' >/dev/null
 
 # Step 4: switch back to trunk, edit a.txt, commit (trunk diverges)
-"$BE" get '?..' >/dev/null 2>&1
-cp "$CASE/03.a-trunk.txt" a.txt
-"$BE" put a.txt >/dev/null 2>&1
-"$BE" post 't2 msg' >/dev/null 2>&1
+"$BE" get '?..' >/dev/null
+sleep 0.02; cp "$CASE/03.a-trunk.txt" a.txt
+"$BE" put a.txt >/dev/null
+"$BE" post 't2 msg' >/dev/null
 
 # Step 5: on trunk, patch fix1 in — absorb fix1's stack as a 3-way merge
 "$BE" patch '?./fix1' >"$OUT/05.patch.got.out" 2>"$OUT/05.patch.got.err"

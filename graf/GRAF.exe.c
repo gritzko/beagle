@@ -25,7 +25,7 @@
 
 char const *const GRAF_CLI_VERBS[] = {
     "get", "diff", "merge", "blame", "weave", "index",
-    "log", "map", "status", "help", NULL
+    "log", "map", "head", "status", "help", NULL
 };
 
 char const GRAF_CLI_VAL_FLAGS[] = "-o\0--at\0";
@@ -43,6 +43,7 @@ static void graf_usage(void) {
         "    blame file                   token-level blame\n"
         "    weave file?from..to          weave diff between refs\n"
         "    log [path]?ref[#N]           commit history (one per line)\n"
+        "    head '#<msg-substring>'      find cur-reachable commit by msg\n"
         "    index                        index object graph from keeper\n"
         "    status                       show index stats\n"
         "    help                         this message\n"
@@ -138,6 +139,7 @@ ok64 GRAFExec(cli *c) {
     a_cstr(v_index,  "index");
     a_cstr(v_log,    "log");
     a_cstr(v_map,    "map");
+    a_cstr(v_head,   "head");
     a_cstr(v_status, "status");
     a_cstr(v_help,   "help");
 
@@ -421,6 +423,17 @@ ok64 GRAFExec(cli *c) {
         pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         graf_pager_plain_text();
         ret = GRAFLog(&KEEP, &c->uris[0]);
+        graf_stop_pager(pager);
+
+    } else if ($eq(c->verb, v_head)) {
+        //  No URI → ahead/behind cur vs implicit target.  With a URI:
+        //  fragment-only does message search; `?branch` does explicit
+        //  ahead/behind.  GRAFHead dispatches internally.
+        uri empty = {};
+        uri *hu = (c->nuris >= 1) ? &c->uris[0] : &empty;
+        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        graf_pager_plain_text();
+        ret = GRAFHead(&KEEP, hu);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_weave)) {

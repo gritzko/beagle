@@ -146,6 +146,18 @@ con ok64 WIRECLNRF = 0x2049b38c5576cf;
 //  the requested ref, WIRECLFL on transport / ingest errors.
 ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref);
 
+//  Bulk fetch: drive a single upload-pack session that sends one
+//  `want <sha>` per peer-advertised heads/tags ref.  The peer streams
+//  back one packfile carrying the union of all wants' reachable
+//  closures; KEEPIngestStream lands every object in our log.  Each
+//  matched ref is recorded under the peer URI so subsequent cached
+//  reads (`be ... //origin?<X>`) hit `.dogs/refs`.  Capped at 64
+//  refs per session — past that, trailing entries are skipped.
+//
+//  Returns OK on success (zero refs is OK — peer advertised none),
+//  WIRECLFL on transport / ingest errors.
+ok64 WIREFetchAll(keeper *k, u8csc remote_uri);
+
 //  Spawn a git-protocol peer (ssh or local exec) and run a push
 //  conversation: drain peer's refs advertisement, locate peer's tip
 //  for the chosen branch, send a single ref-update + a packfile that

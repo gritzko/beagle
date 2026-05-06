@@ -40,10 +40,12 @@
 #include "dog/FRAG.h"
 #include "dog/HUNK.h"
 #include "dog/TOK.h"
+#include "dog/ULOG.h"
 #include "dog/WHIFF.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
+#include "keeper/WALK.h"
 
 //  No artificial cap on default `be log:` — backpressure (pipe write
 //  blocks once the pager kernel-buffer fills) paces the producer.
@@ -495,6 +497,524 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
     if (wh128bHead(ancestors) != wh128bTerm(ancestors))
         wh128bFree(ancestors);
     done;
+}
+
+// --- HEAD: commit-message substring search ----------------------------
+//
+//  `graf head '#parallel'` walks cur's first-parent chain via the DAG
+//  COMMIT_PARENT index, fetches each commit body via keeper, and emits
+//  the first commit whose message body contains the fragment as a
+//  substring.  Used by `be head '#parallel'` (VERBS.md §HEAD).
+//
+//  Resolution policy: cur tip comes from `--at <root>?<branch>#<sha>`
+//  forwarded by `be` and parked in `k->h->cur_sha` by HOMEOpen.  No
+//  `--at` (direct invocation) is an error — we have nothing to walk.
+//
+//  Walk is bounded by GRAFHEAD_MAX_WALK so a pathological commit graph
+//  can't hang the dispatcher.  On no match we leave stdout empty and
+//  return GRAFNONE so the caller can render a "not found" hint.
+
+#define GRAFHEAD_MAX_WALK 65536
+
+static ok64 graf_head_msg_search(keeper *k, uricp u) {
+    sane(k && u);
+    if (u8bDataLen(k->h->cur_sha) != 40) {
+        fprintf(stderr, "graf: head: --at sha not set\n");
+        return GRAFFAIL;
+    }
+
+    sha1 cur_tip = {};
+    {
+        u8s sb = {cur_tip.data, cur_tip.data + 20};
+        a_dup(u8c, hx, u8bData(k->h->cur_sha));
+        if (HEXu8sDrainSome(sb, hx) != OK) return GRAFFAIL;
+    }
+
+    u8csc needle = {u->fragment[0], u->fragment[1]};
+
+    call(GRAFArenaInit);
+
+    log_ctx lx = {};
+    lx.tlv = (graf_emit == HUNKu8sFeed);
+    lx.now = (i64)time(NULL);
+    call(u8bAllocate, lx.text, LOG_TEXT_BUF);
+    if (lx.tlv) {
+        ok64 to = u32bAllocate(lx.toks, LOG_TOKS_CAP);
+        if (to != OK) { u8bFree(lx.text); return to; }
+    }
+
+    Bu8 cbuf = {};
+    if (u8bMap(cbuf, LOG_OBJ_BUF) != OK) {
+        if (lx.tlv) u32bFree(lx.toks);
+        u8bFree(lx.text);
+        return GRAFFAIL;
+    }
+
+    ok64 go = GRAFOpen(k->h, NO);
+    b8 own_open = (go == OK);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
+        u8bUnMap(cbuf);
+        if (lx.tlv) u32bFree(lx.toks);
+        u8bFree(lx.text);
+        return go;
+    }
+
+    u64 cur_h40 = WHIFFHashlet60(&cur_tip);
+    b8  found = NO;
+
+    for (u32 i = 0; i < GRAFHEAD_MAX_WALK && cur_h40 != 0 && !found; i++) {
+        u8bReset(cbuf);
+        u8 ot = 0;
+        if (KEEPGet(k, cur_h40, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
+            ot != DOG_OBJ_COMMIT) break;
+        a_dup(u8c, body, u8bData(cbuf));
+        sha1 csha = {};
+        KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
+
+        //  Skip headers; capture the message body (value after the
+        //  empty-field sentinel that ends the header block).
+        u8cs message = {};
+        {
+            a_dup(u8c, scan, u8bDataC(cbuf));
+            u8cs field = {}, value = {};
+            while (GITu8sDrainCommit(scan, field, value) == OK) {
+                if (u8csEmpty(field)) { $mv(message, value); break; }
+            }
+        }
+
+        if (!u8csEmpty(message) &&
+            u8csFindS(message, needle) == OK) {
+            (void)graflog_render_commit(lx.text,
+                                        lx.tlv ? lx.toks : NULL,
+                                        &csha, body, lx.now);
+            found = YES;
+            break;
+        }
+
+        //  First-parent walk — branches are linear (VERBS.md Inv. 2).
+        wh64 par_buf[2] = {};
+        wh64s parents = {par_buf, par_buf + 2};
+        wh64 *pbase = parents[0];
+        wh128css runs = {NULL, NULL};
+        GRAFRuns(runs);
+        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, cur_h40));
+        if (parents[0] == pbase) break;
+        cur_h40 = DAGHashlet(*pbase);
+    }
+
+    ok64 ret = OK;
+    if (found) {
+        a_pad(u8, title, 256);
+        a_cstr(prefix, "head:#");
+        (void)u8bFeed(title, prefix);
+        (void)u8bFeed(title, u->fragment);
+        hunk hk = {};
+        u8csMv(hk.uri,  u8bDataC(title));
+        u8csMv(hk.text, u8bDataC(lx.text));
+        if (lx.tlv) u32csMv(hk.toks, u32bDataC(lx.toks));
+        (void)GRAFHunkEmit(&hk, NULL);
+    } else {
+        fprintf(stderr,
+                "graf: head: no commit message matches '%.*s'\n",
+                (int)$len(u->fragment), (char const *)u->fragment[0]);
+        ret = GRAFNONE;
+    }
+
+    if (own_open) GRAFClose();
+    u8bUnMap(cbuf);
+    if (lx.tlv) u32bFree(lx.toks);
+    u8bFree(lx.text);
+    return ret;
+}
+
+// --- HEAD: ahead/behind cur vs target ---------------------------------
+//
+//  `graf head` (no URI)  → implicit target.  cur ≠ trunk: target =
+//                          trunk; cur = trunk: target = cached remote
+//                          counterpart in `.dogs/refs` (no network).
+//  `graf head ?br`       → explicit target = branch `br`.
+//
+//  Output (one hunk, single trailing newline; `+` = ahead, `-` = behind):
+//      + <sha7>  HH:MM  <msg> (<author>)         commits in cur, not target
+//      - <sha7>  HH:MM  <msg> (<author>)         commits in target, not cur
+//      + <path>                                  files only on cur side
+//      - <path>                                  files only on target side
+//      head: <N> ahead, <M> behind, <K> changed
+//
+//  Tree diff comes from keeper (`KEEPTreeDiff`); commits come from
+//  graf's DAG ancestor sets (`DAGAncestors` + `DAGTopoSort`).
+
+#define GRAFHEAD_ANC_SIZE (1u << 18)
+
+//  Fetch a commit's tree SHA from keeper.  Mirrors graf/BLOB.c's
+//  GRAFBlobAtCommit's first half — we only want the tree row.
+static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
+    sane(k && out);
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 20);
+    u8 ct = 0;
+    ok64 o = KEEPGet(k, commit_h60, DAG_H60_HEXLEN, cbuf, &ct);
+    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
+    a_dup(u8c, scan, u8bDataC(cbuf));
+    u8cs field = {}, value = {};
+    b8 got = NO;
+    while (GITu8sDrainCommit(scan, field, value) == OK) {
+        if (u8csEmpty(field)) break;
+        a_cstr(ft, "tree");
+        if ($eq(field, ft) && u8csLen(value) >= 40) {
+            DAGsha1FromHex(out, (char const *)value[0]);
+            got = YES;
+            break;
+        }
+    }
+    u8bFree(cbuf);
+    return got ? OK : KEEPNONE;
+}
+
+//  Per-row context for `graf_head_pick_remote_cb`.
+typedef struct {
+    sha1 sha;
+    b8   found;
+} rt_ctx;
+
+//  REFSEach callback: pick the first authority-bearing (peer-tracking)
+//  ref row.  Stops the walk via REFSSTOP after the first match.
+static ok64 graf_head_pick_remote_cb(refcp r, void *ctx) {
+    rt_ctx *rt = (rt_ctx *)ctx;
+    if (rt->found) return REFSSTOP;
+    //  Key has `//` iff two consecutive '/' bytes appear before any '?'.
+    u8cs key = {};
+    u8csMv(key, r->key);
+    u8cp p = key[0];
+    b8 has_auth = NO;
+    while (p + 1 < key[1]) {
+        if (p[0] == '/' && p[1] == '/') { has_auth = YES; break; }
+        p++;
+    }
+    if (!has_auth) return OK;
+    //  val = `?<40-hex>` (REFS layout); strip the leading `?`.
+    u8cs val = {};
+    u8csMv(val, r->val);
+    if (u8csLen(val) > 0 && val[0][0] == '?') val[0]++;
+    if (u8csLen(val) != 40) return OK;
+    u8s sb = {rt->sha.data, rt->sha.data + 20};
+    a_dup(u8c, hx, val);
+    if (HEXu8sDrainSome(sb, hx) != OK) return OK;
+    rt->found = YES;
+    return REFSSTOP;
+}
+
+//  Decode a 40-hex sha slice into the 20-byte `out`.
+static ok64 graf_head_decode_sha(sha1 *out, u8cs hex) {
+    sane(out);
+    if (u8csLen(hex) != 40) return GRAFFAIL;
+    u8s sb = {out->data, out->data + 20};
+    a_dup(u8c, hx, hex);
+    return HEXu8sDrainSome(sb, hx);
+}
+
+//  Resolve target: explicit `?branch` via REFSResolve; else implicit —
+//  cur ≠ trunk → trunk (`?` lookup); cur = trunk → first cached
+//  remote-tracking row in REFS (the only kind whose key carries `//`).
+//  Writes the 20-byte sha into `*out`; returns GRAFNONE on no match.
+static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
+    sane(k && u && out);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+
+    Bu8 arena = {};
+    call(u8bAllocate, arena, 4096);
+    uri resolved = {};
+
+    a_dup(u8c, cur_branch, u8bData(k->h->cur_branch));
+    b8 on_trunk = u8csEmpty(cur_branch);
+
+    if (!u8csEmpty(u->query)) {
+        //  Relative `?..` short-circuit: parent of cur.  For a direct
+        //  child of trunk (cur_branch has no `/`), parent is trunk
+        //  (REFS key `?`); for deeper branches we strip the last
+        //  segment.  Other relative forms (`?./X`, `?../X`) fall
+        //  through to REFSResolve as-is for now.
+        b8 is_dotdot = (u8csLen(u->query) == 2 &&
+                        u->query[0][0] == '.' && u->query[0][1] == '.');
+        if (is_dotdot) {
+            a_path(parent_q);
+            (void)u8bFeed1(parent_q, '?');
+            if (!on_trunk) {
+                u8cs cb = {};
+                u8csMv(cb, cur_branch);
+                u8cp slash = cb[1];
+                while (slash > cb[0] && *(slash - 1) != '/') slash--;
+                if (slash > cb[0]) {
+                    u8cs head = {cb[0], slash - 1};
+                    (void)u8bFeed(parent_q, head);
+                }
+            }
+            a_dup(u8c, qkey, u8bDataC(parent_q));
+            ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+            ok64 rv = (ro == OK)
+                    ? graf_head_decode_sha(out, resolved.query)
+                    : GRAFNONE;
+            u8bFree(arena);
+            return rv;
+        }
+        a_dup(u8c, in_uri, u->data);
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), in_uri);
+        ok64 rv = (ro == OK)
+                ? graf_head_decode_sha(out, resolved.query)
+                : GRAFNONE;
+        u8bFree(arena);
+        return rv;
+    }
+    //  Implicit (no query): same trunk-or-remote dispatch below.
+
+    if (!on_trunk) {
+        a_cstr(qmark, "?");
+        a_dup(u8c, qkey, qmark);
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+        ok64 rv = (ro == OK)
+                ? graf_head_decode_sha(out, resolved.query)
+                : GRAFNONE;
+        u8bFree(arena);
+        return rv;
+    }
+
+    //  cur = trunk: pick the first cached remote-tracking ref via
+    //  REFSEach.  Refs whose key carries `//` are peer rows; the
+    //  callback stops on the first match.  MVP — refine to a "primary
+    //  remote" notion later.
+    rt_ctx rt = {.found = NO};
+    (void)REFSEach($path(keepdir), graf_head_pick_remote_cb, &rt);
+    u8bFree(arena);
+    if (rt.found) {
+        memcpy(out->data, rt.sha.data, 20);
+        return OK;
+    }
+    return GRAFNONE;
+}
+
+//  Render one log row prefixed by `+ ` or `- `.  Reuses
+//  graflog_render_commit; we just feed the prefix first.
+static ok64 graf_head_render_prefixed(log_ctx *lx, u8 prefix,
+                                      sha1 const *csha, u8cs body) {
+    (void)u8bFeed1(lx->text, prefix);
+    (void)u8bFeed1(lx->text, ' ');
+    if (lx->tlv) graflog_pack(lx->toks, lx->text, 'P');
+    return graflog_render_commit(lx->text,
+                                 lx->tlv ? lx->toks : NULL,
+                                 csha, body, lx->now);
+}
+
+//  Topo-sort `set` (parents before children), then iterate newest-first
+//  emitting each commit not in `exclude` as a prefixed log row.
+static u32 graf_head_emit_diverged(log_ctx *lx, keeper *k,
+                                   Bwh128 set, Bwh128 exclude,
+                                   wh128css runs, u8 prefix,
+                                   Bu8 cbuf) {
+    size_t cap = (size_t)(wh128bTerm(set) - wh128bHead(set));
+    if (cap == 0) return 0;
+    Bu8 ord_buf = {};
+    if (u8bMap(ord_buf, cap * sizeof(u64)) != OK) return 0;
+    u64 *ordered = (u64 *)u8bDataHead(ord_buf);
+    u32 nord = DAGTopoSort(ordered, (u32)cap, set, runs);
+
+    u32 emitted = 0;
+    for (u32 ki = nord; ki > 0; ki--) {
+        u64 h = ordered[ki - 1];
+        if (h == 0) continue;
+        if (DAGAncestorsHas(exclude, h)) continue;
+        u8bReset(cbuf);
+        u8 ot = 0;
+        if (KEEPGet(k, h, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
+            ot != DOG_OBJ_COMMIT) continue;
+        a_dup(u8c, body, u8bData(cbuf));
+        sha1 csha = {};
+        KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
+        if (graf_head_render_prefixed(lx, prefix, &csha, body) != OK) break;
+        emitted++;
+    }
+    u8bUnMap(ord_buf);
+    return emitted;
+}
+
+//  Walk a diff-ULOG (KEEPTreeDiff output) and emit one `<prefix> <path>\n`
+//  line for every row whose verb stem matches `verb_stem`.  Used twice
+//  by graf_head_ahead_behind: first for `add` (prefix '+'), then for
+//  `del` (prefix '-').  Returns count emitted.
+static u32 graf_head_emit_path_side(log_ctx *lx, u8cs diff,
+                                    ron60 verb_stem, u8 prefix) {
+    u32 n = 0;
+    a_dup(u8c, scan, diff);
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if (ok64stem(rec.verb) != verb_stem) continue;
+        (void)u8bFeed1(lx->text, prefix);
+        (void)u8bFeed1(lx->text, ' ');
+        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'P');
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
+        (void)u8bFeed(lx->text, path);
+        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'F');
+        (void)u8bFeed1(lx->text, '\n');
+        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'W');
+        n++;
+    }
+    return n;
+}
+
+static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
+    sane(k && u);
+
+    //  1. Resolve cur tip from --at.
+    if (u8bDataLen(k->h->cur_sha) != 40) {
+        fprintf(stderr, "graf: head: --at sha not set\n");
+        return GRAFFAIL;
+    }
+    sha1 cur_tip = {};
+    {
+        u8s sb = {cur_tip.data, cur_tip.data + 20};
+        a_dup(u8c, hx, u8bData(k->h->cur_sha));
+        if (HEXu8sDrainSome(sb, hx) != OK) return GRAFFAIL;
+    }
+    u64 cur_h = WHIFFHashlet60(&cur_tip);
+
+    //  2. Resolve target tip.
+    sha1 target_tip = {};
+    ok64 tr = graf_head_resolve_target(k, u, &target_tip);
+    if (tr != OK) {
+        fprintf(stderr, "graf: head: cannot resolve target\n");
+        return tr;
+    }
+    u64 target_h = WHIFFHashlet60(&target_tip);
+
+    //  3. Open graf, allocate render context.
+    call(GRAFArenaInit);
+    log_ctx lx = {};
+    lx.tlv = (graf_emit == HUNKu8sFeed);
+    lx.now = (i64)time(NULL);
+    call(u8bAllocate, lx.text, LOG_TEXT_BUF);
+    if (lx.tlv) {
+        ok64 to = u32bAllocate(lx.toks, LOG_TOKS_CAP);
+        if (to != OK) { u8bFree(lx.text); return to; }
+    }
+    Bu8 cbuf = {};
+    if (u8bMap(cbuf, LOG_OBJ_BUF) != OK) {
+        if (lx.tlv) u32bFree(lx.toks);
+        u8bFree(lx.text);
+        return GRAFFAIL;
+    }
+    ok64 go = GRAFOpen(k->h, NO);
+    b8 own_open = (go == OK);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
+        u8bUnMap(cbuf);
+        if (lx.tlv) u32bFree(lx.toks);
+        u8bFree(lx.text);
+        return go;
+    }
+    wh128css runs = {NULL, NULL};
+    GRAFRuns(runs);
+
+    //  4. Build ancestor sets for both tips.
+    Bwh128 anc_cur = {}, anc_target = {};
+    if (wh128bAllocate(anc_cur, GRAFHEAD_ANC_SIZE) != OK ||
+        wh128bAllocate(anc_target, GRAFHEAD_ANC_SIZE) != OK) {
+        if (wh128bHead(anc_cur)    != wh128bTerm(anc_cur))    wh128bFree(anc_cur);
+        if (wh128bHead(anc_target) != wh128bTerm(anc_target)) wh128bFree(anc_target);
+        if (own_open) GRAFClose();
+        u8bUnMap(cbuf);
+        if (lx.tlv) u32bFree(lx.toks);
+        u8bFree(lx.text);
+        return GRAFFAIL;
+    }
+    DAGAncestors(anc_cur,    runs, cur_h);
+    DAGAncestors(anc_target, runs, target_h);
+
+    //  5. Emit `+` commits (in cur, not in target) then `-` commits.
+    u32 nahead = graf_head_emit_diverged(&lx, k, anc_cur, anc_target,
+                                          runs, '+', cbuf);
+    u32 nbehind = graf_head_emit_diverged(&lx, k, anc_target, anc_cur,
+                                          runs, '-', cbuf);
+
+    //  6. Tree diff via keeper.
+    sha1 cur_tree = {}, target_tree = {};
+    ok64 ct = graf_head_commit_tree(k, cur_h,    &cur_tree);
+    ok64 tt = graf_head_commit_tree(k, target_h, &target_tree);
+    u32 nchanged = 0;
+    if (ct == OK && tt == OK) {
+        Bu8 diff_buf = {};
+        if (u8bAllocate(diff_buf, 1UL << 20) == OK) {
+            //  KEEPTreeDiff(target → cur): `add` rows = paths on cur
+            //  side only (`+`), `del` = paths on target side only (`-`),
+            //  `mod` = both, sha differs (rendered as `+` then `-`).
+            ok64 dr = KEEPTreeDiff(target_tree.data, cur_tree.data,
+                                   diff_buf);
+            if (dr == OK) {
+                a_cstr(s_add, "add"); a_dup(u8c, dvadd, s_add);
+                a_cstr(s_del, "del"); a_dup(u8c, dvdel, s_del);
+                a_cstr(s_mod, "mod"); a_dup(u8c, dvmod, s_mod);
+                ron60 v_add = 0, v_del = 0, v_mod = 0;
+                (void)RONutf8sDrain(&v_add, dvadd);
+                (void)RONutf8sDrain(&v_del, dvdel);
+                (void)RONutf8sDrain(&v_mod, dvmod);
+
+                u8cs diff = {u8bDataHead(diff_buf), u8bIdleHead(diff_buf)};
+                nchanged += graf_head_emit_path_side(&lx, diff, v_add, '+');
+                nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '+');
+                nchanged += graf_head_emit_path_side(&lx, diff, v_del, '-');
+                nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '-');
+            }
+            u8bFree(diff_buf);
+        }
+    }
+
+    //  7. Summary line.
+    {
+        char buf[128];
+        int n = snprintf(buf, sizeof(buf),
+                         "head: %u ahead, %u behind, %u changed\n",
+                         nahead, nbehind, nchanged);
+        if (n > 0) {
+            u8cs s = {(u8cp)buf, (u8cp)buf + n};
+            (void)u8bFeed(lx.text, s);
+            if (lx.tlv) graflog_pack(lx.toks, lx.text, 'L');
+        }
+    }
+
+    //  8. Emit one hunk.
+    a_pad(u8, title, 256);
+    a_cstr(prefix, "head:");
+    (void)u8bFeed(title, prefix);
+    if (u->query[0] != NULL) {
+        //  `?` separator emitted whenever the query slot is present,
+        //  even if its body is empty (bare `be head ?` ⇒ trunk).
+        (void)u8bFeed1(title, '?');
+        if (!u8csEmpty(u->query)) (void)u8bFeed(title, u->query);
+    }
+    hunk hk = {};
+    u8csMv(hk.uri,  u8bDataC(title));
+    u8csMv(hk.text, u8bDataC(lx.text));
+    if (lx.tlv) u32csMv(hk.toks, u32bDataC(lx.toks));
+    (void)GRAFHunkEmit(&hk, NULL);
+
+    wh128bFree(anc_cur);
+    wh128bFree(anc_target);
+    if (own_open) GRAFClose();
+    u8bUnMap(cbuf);
+    if (lx.tlv) u32bFree(lx.toks);
+    u8bFree(lx.text);
+    done;
+}
+
+ok64 GRAFHead(keeper *k, uricp u) {
+    sane(k && u);
+    //  Fragment-only URI → message search; everything else (no URI,
+    //  bare `?br`, etc.) → ahead/behind diff vs target.
+    b8 frag_only = !u8csEmpty(u->fragment) &&
+                   u8csEmpty(u->path) && u8csEmpty(u->query) &&
+                   u8csEmpty(u->scheme) && u8csEmpty(u->authority);
+    if (frag_only) return graf_head_msg_search(k, u);
+    return graf_head_ahead_behind(k, u);
 }
 
 // --- Entry -------------------------------------------------------------

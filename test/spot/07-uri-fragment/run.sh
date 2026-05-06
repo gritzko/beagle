@@ -2,7 +2,7 @@
 . "$(dirname "$0")/../../lib/spot-case.sh"
 
 # 01: stage one .c file.
-cp "$CASE/u.c" u.c
+sleep 0.02; cp "$CASE/u.c" u.c
 "$BE" put u.c     > /dev/null 2>&1
 "$BE" post 'init msg' > /dev/null 2>&1
 

@@ -263,6 +263,15 @@ ok64 KEEPGetRemote(uri *g) {
     u8cs want_ref = {};
     u8csMv(want_ref, g->query);
 
+    //  `?*` wildcard: bulk-fetch every advertised heads/tags ref in
+    //  one upload-pack session (multi-want).  See VERBS.md §HEAD —
+    //  `be head ssh://origin?*` mirrors `git fetch`.
+    if ($len(want_ref) == 1 && want_ref[0][0] == '*') {
+        ok64 fa = WIREFetchAll(k, remote_uri);
+        u8bUnMap(rarena);
+        return fa;
+    }
+
     //  Local short-circuit for `?<40hex>` queries: plain git peers
     //  reject `want <sha>` without uploadpack.allowReachableSHA1InWant,
     //  so the supported flow is "seed with a named ref first, then

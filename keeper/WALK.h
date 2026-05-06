@@ -87,4 +87,23 @@ ok64 KEEPLsFiles(keeper *k, uricp target,
 ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
                   ron60 ts, ron60 verb, u8bp out);
 
+//  Tree-vs-tree diff as a ULOG.
+//
+//  Builds two `KEEPTreeULog` streams (sorted by path / DFS = lex
+//  order) over the keeper singleton `KEEP`, runs `ULOGMergeWalk` to
+//  group equal-path rows, and writes a fresh ULOG of `add` / `del` /
+//  `mod` rows into `out` (caller-owned buffer; reset on entry).
+//
+//  Output row shapes (all ts = 0; caller may stamp on append):
+//      <0>\tadd<k>\t<path>#<new-hex>\n           only in `sha_b`
+//      <0>\tdel<k>\t<path>#<old-hex>\n           only in `sha_a`
+//      <0>\tmod<k>\t<path>?<old-hex>#<new-hex>\n  both sides, sha differs
+//  `<k>` is the kind letter (f/x/l/s) carried in the verb's bottom
+//  digit, identical to `KEEPTreeULog`'s convention; recover the stem
+//  via `ok64stem`.  Equal paths with equal sha and kind do NOT emit.
+//
+//  Either `sha_a` or `sha_b` may be NULL — that side is treated as
+//  the empty tree (every leaf on the other side fires `add` or `del`).
+ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out);
+
 #endif

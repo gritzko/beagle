@@ -546,6 +546,9 @@ static ok64 BEHead(cli *c, b8 seq) {
     b8 cached    = (u != NULL && !transport && !$empty(u->authority));
 
     //  Transport scheme: forward to keeper get to fetch refs + pack.
+    //  `?*` wildcard query (`be head ssh://origin?*`) routes to keeper
+    //  get just like a single-ref form — keeper detects the literal
+    //  `*` and runs the bulk-fetch (advertise + multi-want) path.
     if (transport || cached) {
         a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
         a_cstr(get_s,    "get");
@@ -555,13 +558,28 @@ static ok64 BEHead(cli *c, b8 seq) {
         be_build_argv(args, keeper_d, get_d, c);
         a_dup(u8cs, argv, u8csbData(args));
         call(BERun, keeper_d, argv, NO);
+        (void)seq;
+        done;
     }
 
-    //  Diff summary half is TODO — once sniff or graf grow a "head"
-    //  sub-verb that prints ahead/behind cur vs the named ref, route
-    //  here.  For now the keeper-side fetch surfaces the remote tip
-    //  sha in its progress output, which is enough for the canonical
-    //  "rebase trunk on top of remote main" workflow's first leg.
+    //  Local: hand off to `graf head`.  graf dispatches internally:
+    //    fragment-only URI → commit-message substring search;
+    //    `?br` / no URI    → ahead/behind cur vs target + tree diff.
+    //  Bare `be` (no verb) is the spec's "current branch + ahead/
+    //  behind + dirty list" combo and adds `sniff status` upstream;
+    //  `be head` itself stays read-only and refuses to mix in wt
+    //  status (per VERBS.md §HEAD: "never modifies a branch's
+    //  history or the wt").
+    {
+        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+        a_cstr(head_s, "head");
+        a_cstr(graf_s, "graf");
+        a_dup(u8c, graf_d, graf_s);
+        a_dup(u8c, head_d, head_s);
+        be_build_argv(args, graf_d, head_d, c);
+        a_dup(u8cs, argv, u8csbData(args));
+        call(BERun, graf_d, argv, NO);
+    }
     (void)seq;
     done;
 }

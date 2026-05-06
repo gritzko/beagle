@@ -17,50 +17,50 @@ OUT="$SCRATCH/../out"
 mkdir -p "$OUT"
 
 # Step 1: trunk baseline — a.txt + b.txt
-cp "$CASE/01.a.txt" a.txt
-cp "$CASE/02.b.txt" b.txt
-"$BE" put a.txt b.txt >/dev/null 2>&1
-"$BE" post 'baseline msg'   >/dev/null 2>&1
+sleep 0.02; cp "$CASE/01.a.txt" a.txt
+sleep 0.02; cp "$CASE/02.b.txt" b.txt
+"$BE" put a.txt b.txt >/dev/null
+"$BE" post 'baseline msg'   >/dev/null
 
 # Step 2: fork ?fix1 (cur stays on trunk)
-"$BE" put '?./fix1' >/dev/null 2>&1
+"$BE" put '?./fix1' >/dev/null
 
 # Step 3: switch to fix1, two commits editing a.txt
-"$BE" get '?fix1' >/dev/null 2>&1
-cp "$CASE/03.a-fix1-c1.txt" a.txt
-"$BE" put a.txt >/dev/null 2>&1
-"$BE" post 'c1 msg'   >/dev/null 2>&1
-cp "$CASE/04.a-fix1-c2.txt" a.txt
-"$BE" put a.txt >/dev/null 2>&1
-"$BE" post 'c2 msg'   >/dev/null 2>&1
+"$BE" get '?fix1' >/dev/null
+sleep 0.02; cp "$CASE/03.a-fix1-c1.txt" a.txt
+"$BE" put a.txt >/dev/null
+"$BE" post 'c1 msg'   >/dev/null
+sleep 0.02; cp "$CASE/04.a-fix1-c2.txt" a.txt
+"$BE" put a.txt >/dev/null
+"$BE" post 'c2 msg'   >/dev/null
 
 # Step 4: back to trunk, fork ?fix2
-"$BE" get '?..'      >/dev/null 2>&1
-"$BE" put '?./fix2' >/dev/null 2>&1
+"$BE" get '?..'      >/dev/null
+"$BE" put '?./fix2' >/dev/null
 
 # Step 5: switch to fix2, two commits editing b.txt
-"$BE" get '?fix2' >/dev/null 2>&1
-cp "$CASE/05.b-fix2-c1.txt" b.txt
-"$BE" put b.txt >/dev/null 2>&1
-"$BE" post 'c1 msg'   >/dev/null 2>&1
-cp "$CASE/06.b-fix2-c2.txt" b.txt
-"$BE" put b.txt >/dev/null 2>&1
-"$BE" post 'c2 msg'   >/dev/null 2>&1
+"$BE" get '?fix2' >/dev/null
+sleep 0.02; cp "$CASE/05.b-fix2-c1.txt" b.txt
+"$BE" put b.txt >/dev/null
+"$BE" post 'c1 msg'   >/dev/null
+sleep 0.02; cp "$CASE/06.b-fix2-c2.txt" b.txt
+"$BE" put b.txt >/dev/null
+"$BE" post 'c2 msg'   >/dev/null
 
 # Step 6: from fix2, promote into trunk via `be post ?..`.
 # Trunk hasn't moved since fix2 forked — fast-forward path.
-must "$BE" post '?..' >/dev/null 2>&1
+must "$BE" post '?..' >/dev/null
 
 # Step 7: switch to fix1, then promote it into trunk.
 # Trunk has now advanced past fix1's fork point (carries fix2's
 # commits), so fix1's promote triggers a real rebase.
-"$BE" get '?fix1' >/dev/null 2>&1
-must "$BE" post '?..' >/dev/null 2>&1
+"$BE" get '?fix1' >/dev/null
+must "$BE" post '?..' >/dev/null
 
 # Step 8: switch to trunk and refresh the wt.
 # (POST advances REFS but doesn't refresh the on-disk tree — this
 # explicit GET materialises the post-promote state.)
-"$BE" get '?..' >/dev/null 2>&1
+"$BE" get '?..' >/dev/null
 
 # Final assertion: trunk's wt has both edits.
 match "$CASE/07.a.want.txt" a.txt

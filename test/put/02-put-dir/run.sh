@@ -28,14 +28,14 @@ mkdir -p "$OUT"
 
 # --- 1. baseline: tracked dir/a.txt + dir/b.txt --------------------
 mkdir -p dir
-cp "$CASE/01.a.txt" dir/a.txt
-cp "$CASE/02.b.txt" dir/b.txt
-"$BE" put dir/a.txt dir/b.txt >/dev/null 2>&1
-"$BE" post 'baseline msg'            >/dev/null 2>&1
+sleep 0.02; cp "$CASE/01.a.txt" dir/a.txt
+sleep 0.02; cp "$CASE/02.b.txt" dir/b.txt
+"$BE" put dir/a.txt dir/b.txt >/dev/null
+"$BE" post 'baseline msg'            >/dev/null
 
 # --- 2. modify both tracked files ---------------------------------
-cp "$CASE/03.a-mod.txt" dir/a.txt
-cp "$CASE/04.b-mod.txt" dir/b.txt
+sleep 0.02; cp "$CASE/03.a-mod.txt" dir/a.txt
+sleep 0.02; cp "$CASE/04.b-mod.txt" dir/b.txt
 
 # --- 3. status before any put — both must show as `mod` -----------
 "$BE" >"$OUT/before.out" 2>&1

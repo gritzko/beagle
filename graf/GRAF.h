@@ -279,6 +279,15 @@ ok64 GRAFMergeWtFile(u8cs path, u8cs reporoot,
 // rides graf_emit (TLV via bro on TTY, raw text otherwise).
 ok64 GRAFLog(keeper *k, uricp u);
 
+// `graf head '#<msg-substring>'` — walk cur's first-parent chain
+// (cur tip parked by HOMEOpen via `--at`), substring-match the
+// commit-message body, emit the first matching commit's log row.
+// Returns GRAFNONE when no commit matches; FAILSANITY on bad URI;
+// GRAFFAIL on transport / object-fetch error.  Used by `be head
+// '#parallel'` (VERBS.md §HEAD).
+con ok64 GRAFNONE    = 0x41b28f5d85ce;
+ok64 GRAFHead(keeper *k, uricp u);
+
 // Subway-map view of the branch tree for `be map:`.  Reads from the
 // keeper + graf singletons; caller has already opened both.  Phase 1
 // emits one indented row per branch within the current branch's

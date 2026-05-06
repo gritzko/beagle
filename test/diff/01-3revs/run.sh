@@ -11,22 +11,22 @@
 . "$(dirname "$0")/../../lib/case.sh"
 
 #  --- v1 ------------------------------------------------------------
-cp "$CASE/01.foo.c" foo.c
+sleep 0.02; cp "$CASE/01.foo.c" foo.c
 touch -d "2026-04-20 12:01:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post -m v1 '?tags/v1' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post -m v1 '?tags/v1' >/dev/null
 
 #  --- v2 ------------------------------------------------------------
-cp "$CASE/02.foo.c" foo.c
+sleep 0.02; cp "$CASE/02.foo.c" foo.c
 touch -d "2026-04-20 12:02:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post -m v2 '?tags/v2' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post -m v2 '?tags/v2' >/dev/null
 
 #  --- v3 ------------------------------------------------------------
-cp "$CASE/03.foo.c" foo.c
+sleep 0.02; cp "$CASE/03.foo.c" foo.c
 touch -d "2026-04-20 12:03:00" foo.c
-"$BE" put foo.c >/dev/null 2>&1
-"$BE" post -m v3 '?tags/v3' >/dev/null 2>&1
+"$BE" put foo.c >/dev/null
+"$BE" post -m v3 '?tags/v3' >/dev/null
 
 #  --- diff v1..v2 ---------------------------------------------------
 "$BE" get 'diff:foo.c?tags/v1..tags/v2' \

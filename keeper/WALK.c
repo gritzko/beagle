@@ -398,3 +398,128 @@ ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
     if (o != OK) return o;
     return c.err;
 }
+
+// --- KEEPTreeDiff: tree-vs-tree as a diff ULOG ----------------------
+//
+//  Build two side-tagged ULOGs via KEEPTreeULog, merge them through
+//  ULOGMergeWalk grouped by path, and emit add/del/mod rows into the
+//  caller's `out` buffer.  ULOG row layout matches POST's decision-
+//  log shape so downstream consumers stay uniform.
+
+typedef struct {
+    u8bp  out;
+    ron60 v_add;
+    ron60 v_del;
+    ron60 v_mod;
+    ron60 v_a;          // side-tag for the `sha_a` cursor
+    ron60 v_b;          // side-tag for the `sha_b` cursor
+    ok64  err;
+} treediff_ctx;
+
+//  Append a diff row to `out`.  `verb_stem` is one of v_add / v_del /
+//  v_mod; we preserve the kind letter from the source row so callers
+//  can recover (mode, kind) downstream.
+static ok64 treediff_emit(treediff_ctx *c, ron60 verb_stem,
+                          ulogreccp src,
+                          u8cs old_hex, u8cs new_hex) {
+    sane(c && src);
+    //  Kind letter rides in the bottom RON digit of the source verb;
+    //  re-attach it to the diff verb stem.
+    u8 kletter = (u8)ok64Lit(src->verb, 0);
+    ron60 verb = (kletter != 0) ? ok64sub(verb_stem, kletter)
+                                 : verb_stem;
+
+    uri u = {};
+    u8csMv(u.path, src->uri.path);
+    if (!u8csEmpty(old_hex)) u8csMv(u.query,    old_hex);
+    if (!u8csEmpty(new_hex)) u8csMv(u.fragment, new_hex);
+
+    ulogrec rec = {.ts = 0, .verb = verb, .uri = u};
+    return ULOGu8sFeed(u8bIdle(c->out), &rec);
+}
+
+static ok64 treediff_step(ulogreccp recs, u32 n, void *ctx) {
+    treediff_ctx *c = (treediff_ctx *)ctx;
+    sane(c && recs && n > 0);
+
+    //  Identify A / B rows in the tie group by side-tag stem.
+    ulogreccp a = NULL;
+    ulogreccp b = NULL;
+    for (u32 i = 0; i < n; i++) {
+        ron60 stem = ok64stem(recs[i].verb);
+        if      (stem == c->v_a && a == NULL) a = &recs[i];
+        else if (stem == c->v_b && b == NULL) b = &recs[i];
+    }
+
+    u8cs empty = {};
+    ok64 fo = OK;
+    if (a == NULL && b != NULL) {
+        u8cs nh = {b->uri.fragment[0], b->uri.fragment[1]};
+        fo = treediff_emit(c, c->v_add, b, empty, nh);
+    } else if (a != NULL && b == NULL) {
+        u8cs oh = {a->uri.fragment[0], a->uri.fragment[1]};
+        fo = treediff_emit(c, c->v_del, a, empty, oh);
+    } else if (a != NULL && b != NULL) {
+        u8cs oh = {a->uri.fragment[0], a->uri.fragment[1]};
+        u8cs nh = {b->uri.fragment[0], b->uri.fragment[1]};
+        //  Equal-and-same: same kind letter on both verbs AND same
+        //  fragment (leaf sha) → no row.  Anything else is `mod`.
+        b8 kind_eq = (ok64Lit(a->verb, 0) == ok64Lit(b->verb, 0));
+        b8 sha_eq  = ($len(oh) == $len(nh)) &&
+                     (u8csEmpty(oh) ||
+                      memcmp(oh[0], nh[0], (size_t)$len(oh)) == 0);
+        if (kind_eq && sha_eq) return OK;
+        //  Use B's kind letter on the `mod` row (the new state wins).
+        fo = treediff_emit(c, c->v_mod, b, oh, nh);
+    }
+    if (fo != OK) c->err = fo;
+    return fo;
+}
+
+ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out) {
+    sane(out);
+    u8bReset(out);
+
+    //  RON-encode side tags + output verbs once.
+    a_cstr(s_a,   "a");   a_dup(u8c, dva,   s_a);
+    a_cstr(s_b,   "b");   a_dup(u8c, dvb,   s_b);
+    a_cstr(s_add, "add"); a_dup(u8c, dvadd, s_add);
+    a_cstr(s_del, "del"); a_dup(u8c, dvdel, s_del);
+    a_cstr(s_mod, "mod"); a_dup(u8c, dvmod, s_mod);
+    ron60 v_a = 0, v_b = 0, v_add = 0, v_del = 0, v_mod = 0;
+    call(RONutf8sDrain, &v_a,   dva);
+    call(RONutf8sDrain, &v_b,   dvb);
+    call(RONutf8sDrain, &v_add, dvadd);
+    call(RONutf8sDrain, &v_del, dvdel);
+    call(RONutf8sDrain, &v_mod, dvmod);
+
+    Bu8 ula = {}, ulb = {};
+    call(u8bAllocate, ula, 1UL << 20);
+    if (u8bAllocate(ulb, 1UL << 20) != OK) { u8bFree(ula); fail(WALKFAIL); }
+
+    if (sha_a != NULL) {
+        ok64 ar = KEEPTreeULog(&KEEP, sha_a, 0, v_a, ula);
+        if (ar != OK) { u8bFree(ula); u8bFree(ulb); return ar; }
+    }
+    if (sha_b != NULL) {
+        ok64 br = KEEPTreeULog(&KEEP, sha_b, 0, v_b, ulb);
+        if (br != OK) { u8bFree(ula); u8bFree(ulb); return br; }
+    }
+
+    //  Build the cursor array — two slices over the row buffers.
+    u8cs cur[2] = {};
+    u8csMv(cur[0], u8bDataC(ula));
+    u8csMv(cur[1], u8bDataC(ulb));
+    u8css cursors = {cur, cur + 2};
+
+    treediff_ctx ctx = {
+        .out = out, .v_add = v_add, .v_del = v_del, .v_mod = v_mod,
+        .v_a = v_a, .v_b = v_b, .err = OK,
+    };
+    ok64 mo = ULOGMergeWalk(cursors, treediff_step, &ctx);
+
+    u8bFree(ula);
+    u8bFree(ulb);
+    if (mo != OK) return mo;
+    return ctx.err;
+}
