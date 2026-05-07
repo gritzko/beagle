@@ -1060,9 +1060,15 @@ static ok64 wpush_walk_commit(keeper *k, sha1 const *commit_sha,
     ok64 mo = u8bMap(cbuf, 1UL << 20);
     if (mo != OK) return mo;
     u8 ctype = 0;
-    if (KEEPGetExact(k, commit_sha, cbuf, &ctype) != OK ||
-        ctype != KEEP_OBJ_COMMIT) {
+    ok64 go = KEEPGetExact(k, commit_sha, cbuf, &ctype);
+    if (go != OK || ctype != KEEP_OBJ_COMMIT) {
         u8bUnMap(cbuf);
+        //  Haveset-build mode (`add_to_have` set, `out` not):
+        //  tolerate missing commits — we collect what we have, the
+        //  rest just doesn't prune the local-side closure.
+        //  Pack-build mode (out non-NULL): hard fail; the caller
+        //  needs the body to feed the pack.
+        if (out == NULL) done;
         return WIRECLFL;
     }
     u8cs commit_body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
@@ -1133,9 +1139,20 @@ static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
     for (u32 i = 0; i < nshas; i++) {
         Bu8 obuf = {};
         ok64 mo = u8bMap(obuf, 1UL << 24);
-        if (mo != OK) return mo;
+        if (mo != OK) {
+            fprintf(stderr,
+                    "wpush: build_pack obj#%u: u8bMap rc=%llx\n",
+                    i, (unsigned long long)mo);
+            return mo;
+        }
         u8 otype = 0;
-        if (KEEPGetExact(k, &shas[i], obuf, &otype) != OK) {
+        ok64 go = KEEPGetExact(k, &shas[i], obuf, &otype);
+        if (go != OK) {
+            sha1hex h = {}; sha1hexFromSha1(&h, &shas[i]);
+            fprintf(stderr,
+                    "wpush: build_pack obj#%u sha=%.40s: "
+                    "KEEPGetExact rc=%llx\n",
+                    i, h.data, (unsigned long long)go);
             u8bUnMap(obuf);
             return WIRECLFL;
         }
@@ -1144,12 +1161,29 @@ static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
         a_pad(u8, ohdr, 16);
         wpush_feed_obj_hdr(ohdr, otype, olen);
         a_dup(u8c, oh, u8bData(ohdr));
-        u8bFeed(pack_out, oh);
+        ok64 fho = u8bFeed(pack_out, oh);
+        if (fho != OK) {
+            fprintf(stderr,
+                    "wpush: build_pack obj#%u type=%u: hdr feed rc=%llx "
+                    "(pack_out idle=%zu need=%zu)\n",
+                    i, (unsigned)otype, (unsigned long long)fho,
+                    u8bIdleLen(pack_out), (size_t)u8csLen(oh));
+            u8bUnMap(obuf);
+            return fho;
+        }
 
         a_dup(u8c, osrc, u8bData(obuf));
         ok64 zo = ZINFDeflate(u8bIdle(pack_out), osrc);
+        if (zo != OK) {
+            fprintf(stderr,
+                    "wpush: build_pack obj#%u type=%u olen=%llu: "
+                    "ZINFDeflate rc=%llx (pack_out idle=%zu)\n",
+                    i, (unsigned)otype, (unsigned long long)olen,
+                    (unsigned long long)zo, u8bIdleLen(pack_out));
+            u8bUnMap(obuf);
+            return zo;
+        }
         u8bUnMap(obuf);
-        if (zo != OK) return zo;
     }
 
     //  20-byte SHA-1 trailer over the whole pack so far.
@@ -1180,13 +1214,20 @@ static void wpush_local_tip(refadvcp adv, u8csc local_branch,
     }
 }
 
-//  Drain peer's refs advertisement; if `branch_refname` matches an
-//  advertised entry, capture its sha and set *have=YES.  Otherwise
-//  (creation case) leave *have=NO with sha untouched.
+//  Drain peer's refs advertisement.  Two outputs:
+//    * if `branch_refname` matches an advertised entry, capture its
+//      sha into `*out_sha` and set `*out_have=YES`;
+//    * if `peer_tips_out` is non-NULL, push EVERY advertised tip sha
+//      into it — used downstream as roots for the "objects the peer
+//      already has" walk, so the local pack-build can prune anything
+//      reachable from any peer ref (not just the one matching ours).
 static ok64 wpush_peer_tip(int rfd, u8b advbuf, u8csc branch_refname,
-                           sha1 *out_sha, b8 *out_have) {
+                           sha1 *out_sha, b8 *out_have,
+                           sha1 *peer_tips_out, u32 *peer_tips_n,
+                           u32 peer_tips_cap) {
     sane(rfd >= 0 && out_sha && out_have);
     *out_have = NO;
+    if (peer_tips_n) *peer_tips_n = 0;
     u8cs adv = {u8bDataHead(advbuf), u8bDataHead(advbuf)};
     for (;;) {
         u8cs line = {};
@@ -1209,6 +1250,11 @@ static ok64 wpush_peer_tip(int rfd, u8b advbuf, u8csc branch_refname,
                    (size_t)u8csLen(branch_refname)) == 0) {
             *out_sha  = sha;
             *out_have = YES;
+        }
+        if (peer_tips_out && peer_tips_n &&
+            *peer_tips_n < peer_tips_cap) {
+            peer_tips_out[*peer_tips_n] = sha;
+            (*peer_tips_n)++;
         }
     }
     done;
@@ -1358,14 +1404,28 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
     }
 
     //  Drain peer advert; capture old tip if peer already has the ref.
+    //  Also collect EVERY advertised tip — used below as roots for the
+    //  "objects peer already has" walk, so we prune the local closure
+    //  against the peer's full ref set, not just our specific branch.
     sha1 peer_tip = {};
     b8   have_peer = NO;
-    if (wpush_peer_tip(rfd, advbuf, refname, &peer_tip, &have_peer) != OK) {
-        fprintf(stderr, "wpush: peer_tip drain failed\n");
+    enum { WPUSH_PEER_TIPS_MAX = 4096 };
+    sha1 *peer_tips = calloc(WPUSH_PEER_TIPS_MAX, sizeof(sha1));
+    u32   peer_tips_n = 0;
+    if (!peer_tips) {
+        fprintf(stderr, "wpush: peer_tips calloc failed\n");
         goto push_close;
     }
-    fprintf(stderr, "wpush: peer advert drained, have_peer=%d\n",
-            (int)have_peer);
+    if (wpush_peer_tip(rfd, advbuf, refname, &peer_tip, &have_peer,
+                       peer_tips, &peer_tips_n,
+                       WPUSH_PEER_TIPS_MAX) != OK) {
+        fprintf(stderr, "wpush: peer_tip drain failed\n");
+        free(peer_tips);
+        goto push_close;
+    }
+    fprintf(stderr,
+            "wpush: peer advert drained, have_peer=%d peer_tips=%u\n",
+            (int)have_peer, peer_tips_n);
 
     //  Short-circuit: peer already at our tip — nothing to push.
     if (have_peer && sha1eq(&peer_tip, &local_tip)) {
@@ -1381,22 +1441,32 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
         goto push_close;
     }
 
-    //  Build the have-set (objects the peer already has) when peer
-    //  advertised our branch.  Walking peer_tip's commit + tree
-    //  closure locally gives us every sha we don't need to ship —
-    //  cuts a 580-object full-snapshot pack down to the 5-10 objects
-    //  actually new in a typical FF.
+    //  Build the have-set (objects the peer already has).  Walks
+    //  EVERY advertised peer ref's commit + tree closure locally so
+    //  the local pack-build can prune anything reachable from any
+    //  peer ref — not just the matching branch.  Critical when our
+    //  refname is a fresh branch (have_peer=NO) but the peer still
+    //  has shared history via main / other branches.  Walks that hit
+    //  KEEPNONE (object not in our local keeper) are tolerated —
+    //  walk_commit aborts that subtree, the rest of the haveset
+    //  remains valid.
     sha_set haveset = {};
     sha_set *have = NULL;
-    if (have_peer) {
+    if (peer_tips_n > 0) {
         haveset.items = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
         haveset.cap   = WPUSH_MAX_OBJS;
         if (haveset.items) {
-            (void)wpush_walk_commit(k, &peer_tip, NULL, &(u32){0}, 0,
-                                    NULL, &haveset);
+            for (u32 i = 0; i < peer_tips_n; i++) {
+                (void)wpush_walk_commit(k, &peer_tips[i], NULL,
+                                        &(u32){0}, 0, NULL, &haveset);
+            }
             have = &haveset;
+            fprintf(stderr,
+                    "wpush: have-set has %u objects (from %u peer refs)\n",
+                    haveset.n, peer_tips_n);
         }
     }
+    free(peer_tips);
 
     //  Walk the local commit's reachable closure, skipping anything
     //  the peer already advertised (via `have`) and following the
@@ -1404,12 +1474,31 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
     //  commits.
     sha1 *shas = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
     if (!shas) {
+        fprintf(stderr, "wpush: shas calloc failed\n");
+        if (haveset.items) free(haveset.items);
+        goto push_close;
+    }
+    //  Dedup-set for the local-side walk.  Without it, every tree
+    //  shared by N parents (every history fan-in) gets walked N
+    //  times, blowing past WPUSH_MAX_OBJS on any non-trivial repo.
+    //  `have` (from peer's matching ref) prunes shared-with-peer
+    //  ancestors; this fresh set prunes within our own closure.
+    sha_set seen = {};
+    seen.items = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
+    seen.cap   = WPUSH_MAX_OBJS;
+    if (!seen.items) {
+        fprintf(stderr, "wpush: seen-set calloc failed\n");
+        free(shas);
         if (haveset.items) free(haveset.items);
         goto push_close;
     }
     u32 nshas = 0;
-    if (wpush_walk_commit(k, &local_tip, shas, &nshas, WPUSH_MAX_OBJS,
-                          have, NULL) != OK || nshas == 0) {
+    ok64 wro = wpush_walk_commit(k, &local_tip, shas, &nshas,
+                                 WPUSH_MAX_OBJS, have, &seen);
+    fprintf(stderr, "wpush: walk_commit rc=%llx nshas=%u\n",
+            (unsigned long long)wro, nshas);
+    free(seen.items);
+    if (wro != OK || nshas == 0) {
         free(shas);
         if (haveset.items) free(haveset.items);
         goto push_close;
