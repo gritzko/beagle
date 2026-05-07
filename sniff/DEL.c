@@ -188,13 +188,86 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
     done;
 }
 
+// --- Bare-form sweep: find tracked paths that are gone from disk ---
+//
+//  Walks the wt's baseline tree once; for every tracked file whose
+//  on-disk counterpart is missing (lstat → ENOENT), appends a
+//  `delete <path>` row to the ULOG with strictly-increasing ts.
+//  Quiet no-op when there's no baseline or nothing is missing.
+
+typedef struct {
+    u8cs   reporoot;
+    ron60  ts;          // bumped after each emitted row
+    ron60  verb;
+    u32    emitted;
+    ok64   err;
+} del_sweep_ctx;
+
+static ok64 del_sweep_visit(u8cs path, u8 kind, u8cp esha,
+                            u8cs blob, void0p vctx) {
+    (void)esha; (void)blob;
+    if (kind == WALK_KIND_DIR || kind == WALK_KIND_SUB) return OK;
+    if ($empty(path)) return OK;
+    del_sweep_ctx *c = (del_sweep_ctx *)vctx;
+
+    a_path(fp);
+    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+
+    struct stat sb = {};
+    if (lstat((char const *)u8bDataHead(fp), &sb) == 0) return OK;
+    //  Anything other than ENOENT (permission denied, ELOOP, …) →
+    //  silent skip; the bare form is a sweep, not a hard refusal.
+
+    uri urow = {};
+    urow.path[0] = path[0];
+    urow.path[1] = path[1];
+    ok64 ar = SNIFFAtAppendAt(c->ts, c->verb, &urow);
+    if (ar != OK) { c->err = ar; return ar; }
+    c->ts++;
+    c->emitted++;
+    return OK;
+}
+
+static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
+                              u32 *emitted_out) {
+    sane(emitted_out);
+    *emitted_out = 0;
+
+    ron60 bts = 0, bverb = 0;
+    uri u = {};
+    if (SNIFFAtBaseline(&bts, &bverb, &u) != OK) done;
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) done;
+    sha1 commit_sha = {};
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
+    sha1 tree_sha = {};
+    if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) done;
+
+    del_sweep_ctx ctx = {.ts = ts, .verb = verb};
+    u8csMv(ctx.reporoot, reporoot);
+    (void)WALKTreeLazy(&KEEP, tree_sha.data, del_sweep_visit, &ctx);
+    if (ctx.err != OK) return ctx.err;
+    *emitted_out = ctx.emitted;
+    done;
+}
+
 ok64 DELStage(u32 nuris, uri const *uris) {
     sane(SNIFF.h && (nuris == 0 || uris != NULL));
 
     if (nuris == 0) {
-        fprintf(stderr,
-                "sniff: delete: no paths given (use `be delete <path>` "
-                "or `be delete ?<branch>`)\n");
+        //  Sweep: any tracked path missing from disk gets a delete row.
+        ron60 sweep_ts = 0;
+        struct timespec sweep_tv = {};
+        SNIFFAtNow(&sweep_ts, &sweep_tv);
+        ron60 sweep_verb = SNIFFAtVerbDelete();
+        a_dup(u8c, sweep_root, u8bData(SNIFF.h->wt));
+        u32 sweep_n = 0;
+        ok64 so = del_sweep_missing(sweep_root, sweep_ts, sweep_verb,
+                                    &sweep_n);
+        if (so != OK) return so;
+        if (sweep_n > 0)
+            fprintf(stderr,
+                    "sniff: delete: swept %u missing file(s)\n", sweep_n);
         done;
     }
 
