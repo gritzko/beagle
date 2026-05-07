@@ -22,6 +22,7 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/IGNO.h"
+#include "dog/ULOG.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -324,12 +325,31 @@ static ok64 sniff_stop(u8cs reporoot) {
 #define STATUS_ANSI_UNK "\033[90m"        // grey
 #define STATUS_ANSI_OFF "\033[0m"
 
+//  Display verbs encode the status bucket inside one shared ULOG-
+//  formatted row stream.  Disjoint from the .sniff log's own verbs;
+//  these never persist — the buffer is mmap'd and freed inside one
+//  status invocation.  Re-encoded each call (cheap; <10 bytes each).
 typedef struct {
-    //  Each listed row buffered as `<7-char-date>\t<path>\n`.  The
-    //  `ok` group never lists rows — clean tracked files would
+    ron60 v_put, v_new, v_mod, v_del, v_mis, v_unk;
+} status_verbs;
+
+static void status_verbs_init(status_verbs *v) {
+    a_cstr(s_put, "put"); v->v_put = SNIFFAtVerbOf(s_put);
+    a_cstr(s_new, "new"); v->v_new = SNIFFAtVerbOf(s_new);
+    a_cstr(s_mod, "mod"); v->v_mod = SNIFFAtVerbOf(s_mod);
+    a_cstr(s_del, "del"); v->v_del = SNIFFAtVerbOf(s_del);
+    a_cstr(s_mis, "mis"); v->v_mis = SNIFFAtVerbOf(s_mis);
+    a_cstr(s_unk, "unk"); v->v_unk = SNIFFAtVerbOf(s_unk);
+}
+
+typedef struct {
+    //  ULOG-formatted rows: `<ts>\t<verb>\t<path>\n`.  Verb encodes
+    //  the bucket so the dump pass groups by verb in render order.
+    //  The `ok` bucket never lists rows — clean tracked files would
     //  flood the output — so it's a counter only.
-    Bu8 put_buf, new_buf, mod_buf, del_buf, mis_buf, unk_buf;
+    Bu8 rows;
     u32 ok_n, put_n, new_n, mod_n, del_n, mis_n, unk_n;
+    status_verbs v;
     i64 now;          // unix epoch seconds, for relative-date format
     u8cs reporoot;    // for resolving full paths in the wt-eq-base check
 } status_buckets;
@@ -384,50 +404,48 @@ static i64 status_ron60_to_secs(ron60 ts) {
     return s == (time_t)-1 ? 0 : (i64)s;
 }
 
-static void status_push(Bu8 buf, u8csc path, ron60 ts, i64 now,
+//  Push one ULOG row carrying (ts, verb, path) into the shared
+//  buffer.  Verb encodes the bucket — drained back out in render
+//  order by status_dump_verb.
+static void status_push(Bu8 rows, u8cs path, ron60 ts, ron60 verb,
                         u32 *count) {
-    //  DOGutf8sFeedDate emits exactly 7 chars (centred-padded) — no
-    //  per-caller padding needed.
-    u8 date_buf[8];
-    u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
-    u8cp start = date_into[0];
-    (void)DOGutf8sFeedDate(date_into, status_ron60_to_secs(ts), now);
-    u8cs date_slice = {start, date_into[0]};
-    (void)u8bFeed(buf, date_slice);
-    (void)u8bFeed1(buf, '\t');
-    (void)u8bFeed(buf, path);
-    (void)u8bFeed1(buf, '\n');
+    uri u = {};
+    u.path[0] = path[0];
+    u.path[1] = path[1];
+    ulogrec rec = {.ts = ts, .verb = verb, .uri = u};
+    if (ULOGu8sFeed(u8bIdle(rows), &rec) != OK) return;
     (*count)++;
 }
 
 static ok64 status_step(class_step const *step, void *ctx) {
     status_buckets *b = (status_buckets *)ctx;
+    u8cs path = {step->path[0], step->path[1]};
 
     //  Staged groups take precedence — del/put rows describe user
     //  intent regardless of subsequent wt fiddling.
     if (step->del_rec != NULL) {
-        status_push(b->del_buf, step->path,
-                    step->del_rec->ts, b->now, &b->del_n);
+        status_push(b->rows, path,
+                    step->del_rec->ts, b->v.v_del, &b->del_n);
         return OK;
     }
     if (step->put_rec != NULL) {
         ron60 ts = step->put_rec->ts;
         if (step->kind == CLASS_BOTH || step->kind == CLASS_BASE_ONLY)
-            status_push(b->put_buf, step->path, ts, b->now, &b->put_n);
+            status_push(b->rows, path, ts, b->v.v_put, &b->put_n);
         else
-            status_push(b->new_buf, step->path, ts, b->now, &b->new_n);
+            status_push(b->rows, path, ts, b->v.v_new, &b->new_n);
         return OK;
     }
     switch (step->kind) {
         case CLASS_WT_ONLY:
-            status_push(b->unk_buf, step->path,
+            status_push(b->rows, path,
                         step->wt_rec ? step->wt_rec->ts : 0,
-                        b->now, &b->unk_n);
+                        b->v.v_unk, &b->unk_n);
             break;
         case CLASS_BASE_ONLY:
             //  No useful timestamp — file is gone, baseline rows
             //  carry ts=0 by KEEPTreeULog convention.
-            status_push(b->mis_buf, step->path, 0, b->now, &b->mis_n);
+            status_push(b->rows, path, 0, b->v.v_mis, &b->mis_n);
             break;
         case CLASS_BOTH:
             //  mtime fast-path: file last touched by a tracked op
@@ -439,46 +457,53 @@ static ok64 status_step(class_step const *step, void *ctx) {
             if (SNIFFAtKnown(step->wt_rec->ts)) {
                 b->ok_n++;
             } else if (status_wt_eq_base(b->reporoot, step->base_rec,
-                                         step->path)) {
+                                         path)) {
                 b->ok_n++;
             } else {
-                status_push(b->mod_buf, step->path,
-                            step->wt_rec->ts, b->now, &b->mod_n);
+                status_push(b->rows, path,
+                            step->wt_rec->ts, b->v.v_mod, &b->mod_n);
             }
             break;
     }
     return OK;
 }
 
-//  Each buffered row is `<padded-date>\t<path>\n`.  Inject status
-//  marker between date and path when flushing — `<date>\t<status>\t<path>`.
-//  On tty: time column wears grey, status wears its own colour, path
-//  stays default.
-static void status_dump_rows(Bu8 paths, char const *marker,
-                             char const *ansi, b8 tty) {
-    a_dup(u8c, b, u8bData(paths));
-    u8cs scan = {b[0], b[1]};
-    while (!$empty(scan)) {
-        u8cp tab = scan[0];
-        while (tab < scan[1] && *tab != '\t') tab++;
-        if (tab >= scan[1]) break;
-        u8cp nl = tab + 1;
-        while (nl < scan[1] && *nl != '\n') nl++;
-        if (tty) fputs(STATUS_ANSI_UNK, stdout);              // grey for time
-        fwrite(scan[0], 1, (size_t)(tab - scan[0]), stdout);   // date (no tab yet)
+//  Drain the shared rows buffer, render rows whose verb matches
+//  `verb_filter` as `<date>\t<status>\t<path>`.  On tty: time column
+//  wears grey, status wears its own colour, path stays default.
+//  Walked once per bucket (6 passes) — trivial for status sizes.
+static void status_dump_verb(Bu8 rows, ron60 verb_filter,
+                             char const *marker, char const *ansi,
+                             b8 tty, i64 now) {
+    a_dup(u8c, scan, u8bData(rows));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;                  // skip malformed (drain advances)
+        if (rec.verb != verb_filter) continue;
+
+        u8 date_buf[8];
+        u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
+        u8cp date_start = date_into[0];
+        (void)DOGutf8sFeedDate(date_into,
+                               status_ron60_to_secs(rec.ts), now);
+
+        if (tty) fputs(STATUS_ANSI_UNK, stdout);
+        fwrite(date_start, 1, (size_t)(date_into[0] - date_start), stdout);
         if (tty) fputs(STATUS_ANSI_OFF, stdout);
         fputc('\t', stdout);
         if (tty) fputs(ansi, stdout);
         fputs(marker, stdout);
         if (tty) fputs(STATUS_ANSI_OFF, stdout);
         fputc('\t', stdout);
-        fwrite(tab + 1, 1, (size_t)(nl - (tab + 1)), stdout);  // path
+        fwrite(rec.uri.path[0], 1,
+               (size_t)$len(rec.uri.path), stdout);
         fputc('\n', stdout);
-        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
     }
 }
 
-//  Worker: assumes b's buckets are already mapped.  Returns the
+//  Worker: assumes b's rows buffer is already mapped.  Returns the
 //  classification result; never frees.
 static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
@@ -487,12 +512,18 @@ static ok64 sniff_status_work(status_buckets *b) {
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
     b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
-    if (b->put_n > 0) status_dump_rows(b->put_buf, "put", STATUS_ANSI_PUT, tty);
-    if (b->new_n > 0) status_dump_rows(b->new_buf, "new", STATUS_ANSI_NEW, tty);
-    if (b->mod_n > 0) status_dump_rows(b->mod_buf, "mod", STATUS_ANSI_MOD, tty);
-    if (b->del_n > 0) status_dump_rows(b->del_buf, "del", STATUS_ANSI_DEL, tty);
-    if (b->mis_n > 0) status_dump_rows(b->mis_buf, "mis", STATUS_ANSI_MIS, tty);
-    if (b->unk_n > 0) status_dump_rows(b->unk_buf, "unk", STATUS_ANSI_UNK, tty);
+    if (b->put_n > 0)
+        status_dump_verb(b->rows, b->v.v_put, "put", STATUS_ANSI_PUT, tty, b->now);
+    if (b->new_n > 0)
+        status_dump_verb(b->rows, b->v.v_new, "new", STATUS_ANSI_NEW, tty, b->now);
+    if (b->mod_n > 0)
+        status_dump_verb(b->rows, b->v.v_mod, "mod", STATUS_ANSI_MOD, tty, b->now);
+    if (b->del_n > 0)
+        status_dump_verb(b->rows, b->v.v_del, "del", STATUS_ANSI_DEL, tty, b->now);
+    if (b->mis_n > 0)
+        status_dump_verb(b->rows, b->v.v_mis, "mis", STATUS_ANSI_MIS, tty, b->now);
+    if (b->unk_n > 0)
+        status_dump_verb(b->rows, b->v.v_unk, "unk", STATUS_ANSI_UNK, tty, b->now);
     //  Color the count + tag pair when the count is non-zero, on tty
     //  only.  `ok` is uncolored — its tag is informational, never
     //  surfaced as a row above.
@@ -517,27 +548,21 @@ static ok64 sniff_status_work(status_buckets *b) {
     done;
 }
 
-//  Entry: maps the buckets, runs the worker, releases regardless.
-//  4 MB per bucket — mmap-backed so VA cost is paid lazily.  Real-
-//  world wts (~/dogs etc.) routinely produce tens of thousands of
-//  `unk` rows; the prior 16 KB caps tripped BNOROOM on bare `be`.
+//  Entry: maps the shared rows buffer, runs the worker, releases
+//  regardless.  16 MB — mmap-backed so VA cost is paid lazily.
+//  One buffer instead of six (~4× headroom): real-world wts
+//  (~/dogs etc.) routinely produce tens of thousands of `unk` rows.
 static ok64 sniff_status(u8cs reporoot) {
     sane(1);
 
     status_buckets b = {.now = (i64)time(NULL)};
+    status_verbs_init(&b.v);
     u8csMv(b.reporoot, reporoot);
-    call(u8bMap, b.put_buf, 1UL << 22);
-    call(u8bMap, b.new_buf, 1UL << 22);
-    call(u8bMap, b.mod_buf, 1UL << 22);
-    call(u8bMap, b.del_buf, 1UL << 22);
-    call(u8bMap, b.mis_buf, 1UL << 22);
-    call(u8bMap, b.unk_buf, 1UL << 22);
+    call(u8bMap, b.rows, 1UL << 24);
 
     ok64 r = sniff_status_work(&b);
 
-    u8bUnMap(b.put_buf); u8bUnMap(b.new_buf);
-    u8bUnMap(b.mod_buf); u8bUnMap(b.del_buf);
-    u8bUnMap(b.mis_buf); u8bUnMap(b.unk_buf);
+    u8bUnMap(b.rows);
     return r;
 }
 

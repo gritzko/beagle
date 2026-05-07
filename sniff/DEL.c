@@ -37,66 +37,43 @@
 #include "keeper/WALK.h"
 
 #include "AT.h"
+#include "CLASS.h"
 
-// --- Baseline-tree membership (for absent-path classification) ------
+// --- Per-URI baseline-membership classifier -------------------------
 //
 //  When a `be delete <path>` target is already absent on disk we
 //  need to know whether the baseline tree had it: tracked → emit
 //  the delete row so POST drops the path from the next commit;
-//  untracked → silent no-op (no row, nothing to drop).  Walks the
-//  baseline tree once on first use and caches the path set.
+//  untracked → silent no-op (no row, nothing to drop).
+//
+//  Mirrors PUT's per-URI classifier: SNIFFClassify yields one step
+//  per distinct path; we set in_baseline on the matching req.  The
+//  reqs array is parallel to the user's uris so the main loop reads
+//  reqs[i] without a secondary lookup.  Empty raw → file-form slot
+//  unused (dir-form / skipped URI).
 
 typedef struct {
-    Bu8 paths;     // newline-terminated tracked paths
-    b8  loaded;    // YES once we've tried to walk the baseline
-    b8  ok;        // YES if walk landed (no baseline = NO, set is empty)
-} del_tracked;
+    u8cs raw;            // bytes from user URI (file-form only)
+    b8   in_baseline;    // CLASS_BOTH or CLASS_BASE_ONLY
+} del_req;
 
-static ok64 del_collect_tracked(u8cs path, u8 kind, u8cp esha,
-                                u8cs blob, void0p vctx) {
-    (void)esha; (void)blob;
-    if (kind == WALK_KIND_DIR || kind == WALK_KIND_SUB) return OK;
-    if ($empty(path)) return OK;
-    del_tracked *t = (del_tracked *)vctx;
-    (void)u8bFeed(t->paths, path);
-    (void)u8bFeed1(t->paths, '\n');
+typedef struct {
+    del_req *reqs;
+    u32      n;
+} del_ctx;
+
+static ok64 del_classify_step(class_step const *step, void *ctx_) {
+    del_ctx *w = (del_ctx *)ctx_;
+    if (step->kind != CLASS_BOTH && step->kind != CLASS_BASE_ONLY)
+        return OK;
+    for (u32 j = 0; j < w->n; j++) {
+        if (!$ok(w->reqs[j].raw)) continue;
+        if ($len(w->reqs[j].raw) != $len(step->path)) continue;
+        if (memcmp(w->reqs[j].raw[0], step->path[0],
+                   (size_t)$len(step->path)) != 0) continue;
+        w->reqs[j].in_baseline = YES;
+    }
     return OK;
-}
-
-static b8 del_tracked_has(del_tracked *t, u8cs path) {
-    if (!t->loaded) {
-        t->loaded = YES;
-        if (u8bAllocate(t->paths, 1UL << 16) != OK) return NO;
-        ron60 ts = 0, verb = 0;
-        uri u = {};
-        if (SNIFFAtBaseline(&ts, &verb, &u) != OK) return NO;
-        sha1hex hex = {};
-        if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return NO;
-        sha1 commit_sha = {};
-        if (sha1FromSha1hex(&commit_sha, &hex) != OK) return NO;
-        sha1 tree_sha = {};
-        if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) return NO;
-        (void)WALKTreeLazy(&KEEP, tree_sha.data,
-                           del_collect_tracked, t);
-        t->ok = YES;
-    }
-    if (!t->ok) return NO;
-    a_dup(u8c, scan, u8bDataC(t->paths));
-    while (!u8csEmpty(scan)) {
-        u8cs entry = {};
-        u8csMv(entry, scan);
-        a_dup(u8c, find, scan);
-        if (u8csFind(find, '\n') != OK) break;
-        entry[1] = find[0];
-        if (u8csEq(entry, path)) return YES;
-        u8csUsed1(find);
-        u8csMv(scan, find);
-    }
-    return NO;
-}
-
-static void del_tracked_free(del_tracked *t) {
-    if (t->loaded && t->ok) u8bFree(t->paths);
 }
 
 // --- Dir-form recursive delete --------------------------------------
@@ -283,7 +260,29 @@ ok64 DELStage(u32 nuris, uri const *uris) {
     u32 unlinked = 0;
     u32 emitted = 0;
     u32 skipped = 0;
-    del_tracked tracked = {};
+
+    //  Pre-pass: register file-form URIs for one-shot baseline
+    //  classification.  Dir-form URIs (handled inline below) don't
+    //  need it — their baseline overlap is computed by POST at commit
+    //  time.  Empty / skipped URIs leave reqs[i].raw empty so the
+    //  main loop and the classify step both fall through.
+    del_req reqs[CLI_MAX_URIS] = {};
+    b8 any_file_form = NO;
+    for (u32 i = 0; i < nuris && i < CLI_MAX_URIS; i++) {
+        u8cs raw = {};
+        SNIFFAtPathBytes(&uris[i], raw);
+        if (u8csEmpty(raw)) continue;
+        if (*u8csLast(raw) == '/') continue;        // dir-form
+        reqs[i].raw[0] = raw[0];
+        reqs[i].raw[1] = raw[1];
+        any_file_form = YES;
+    }
+    if (any_file_form) {
+        del_ctx dctx = {.reqs = reqs,
+                        .n    = nuris < CLI_MAX_URIS ? nuris : CLI_MAX_URIS};
+        call(SNIFFClassify, del_classify_step, &dctx);
+    }
+
     for (u32 i = 0; i < nuris; i++) {
         u8cs raw = {};
         SNIFFAtPathBytes(&uris[i], raw);
@@ -342,7 +341,9 @@ ok64 DELStage(u32 nuris, uri const *uris) {
             //  was actually in the baseline tree — otherwise this is
             //  a no-op (the user named a path that never existed in
             //  the repo, e.g. a typo / a renamed-away file).
-            if (!del_tracked_has(&tracked, raw)) {
+            //  Pre-classified by SNIFFClassify above.
+            b8 in_baseline = (i < CLI_MAX_URIS) ? reqs[i].in_baseline : NO;
+            if (!in_baseline) {
                 skipped++;
                 continue;
             }
@@ -356,7 +357,6 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         emitted++;
     }
 
-    del_tracked_free(&tracked);
     if (skipped > 0)
         fprintf(stderr,
                 "sniff: deleted %u file(s) (%u row(s), %u skipped)\n",

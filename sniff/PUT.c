@@ -226,14 +226,17 @@ static ok64 put_classify_step(class_step const *step, void *ctx_) {
 //  classifier), so users saw `0 put / 0 mod` despite their explicit
 //  `be put dir/`, and a fresh row-per-call broke idempotence.
 
+//  Stream rows directly into the .sniff ULOG from the classify
+//  callback — no in-memory path-set intermediate.  The merge yields
+//  paths in lex order; SNIFFAtAppendAt only requires monotonic ts,
+//  which `*ts_io` carries forward across calls.
 typedef struct {
-    u8cs   prefix;
-    Bu8   *dirty;       // tracked + dirty (BOTH + mtime ∉ get/post stamp)
-    Bu8   *untracked;   // WT_ONLY paths
-    u32    base_seen;   // any BOTH or BASE_ONLY under prefix
-    ron60  verb_get;
-    ron60  verb_post;
-    ok64   err;
+    u8cs    prefix;
+    u8cs    reporoot;
+    ron60  *ts_io;
+    u32    *emitted_io;
+    ron60   verb_put;
+    ok64    err;
 } dir_collect_ctx;
 
 static b8 dir_path_under(u8cs path, u8cs prefix) {
@@ -245,62 +248,40 @@ static b8 dir_path_under(u8cs path, u8cs prefix) {
 static ok64 dir_collect_step(class_step const *step, void *vctx) {
     sane(step && vctx);
     dir_collect_ctx *c = (dir_collect_ctx *)vctx;
-    if (!dir_path_under(step->path, c->prefix)) return OK;
+    u8cs path = {step->path[0], step->path[1]};
+    if (!dir_path_under(path, c->prefix)) return OK;
 
-    if (step->kind == CLASS_BOTH || step->kind == CLASS_BASE_ONLY)
-        c->base_seen++;
-
+    //  VERBS.md §PUT dir-form contract:
+    //    BOTH    + mtime ∈ stamp-set   → settled, skip
+    //    BOTH    + otherwise           → stage (tracked-and-dirty)
+    //    WT_ONLY                       → stage (untracked sibling)
+    //    BASE_ONLY                     → skip (gone from disk; DEL territory)
+    //
+    //  Idempotence: any stamp-set match (get/post or put) counts as
+    //  settled — re-staging would just shift ts forward for no
+    //  semantic gain.  `be put dir/` twice in a row emits zero rows
+    //  on the second call.
+    b8 stage = NO;
     if (step->kind == CLASS_BOTH) {
-        //  Idempotence: any stamp-set match counts as "settled" for
-        //  the dir-form.  A get/post stamp means baseline-clean, a
-        //  put stamp means already-staged-by-an-earlier-put.  Either
-        //  way, re-staging would just shift the row's ts forward for
-        //  no semantic gain — `be put dir/` twice in a row should
-        //  emit zero new rows on the second call.  (The per-file
-        //  form keeps the stricter get/post-only rule since users
-        //  invoke it explicitly per path.)
         ron60 mr = step->wt_rec ? step->wt_rec->ts : 0;
-        b8 settled = (mr != 0 && SNIFFAtKnown(mr));
-        if (!settled) {
-            ok64 r = u8bFeed(*c->dirty, step->path);
-            if (r == OK) r = u8bFeed1(*c->dirty, '\n');
-            if (r != OK) c->err = r;
-        }
+        if (!(mr != 0 && SNIFFAtKnown(mr))) stage = YES;
     } else if (step->kind == CLASS_WT_ONLY) {
-        ok64 r = u8bFeed(*c->untracked, step->path);
-        if (r == OK) r = u8bFeed1(*c->untracked, '\n');
-        if (r != OK) c->err = r;
+        stage = YES;
     }
+    if (!stage) return OK;
+
+    a_path(fp);
+    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+
+    uri urow = {};
+    urow.path[0] = path[0];
+    urow.path[1] = path[1];
+    ok64 ar = SNIFFAtAppendAt(*c->ts_io, c->verb_put, &urow);
+    if (ar != OK) { c->err = ar; return ar; }
+    (void)SNIFFAtStampPath(fp, *c->ts_io);
+    (*c->ts_io)++;
+    (*c->emitted_io)++;
     return OK;
-}
-
-//  Iterate newline-separated paths in `paths`, append per-file put
-//  rows + stamp.  Caller advances `*ts_io` and `*emitted_io`.
-static ok64 dir_emit_paths(Bu8 paths, u8cs reporoot,
-                            ron60 *ts_io, u32 *emitted_io,
-                            ron60 verb_put) {
-    sane(ts_io && emitted_io);
-    a_dup(u8c, scan, u8bData(paths));
-    while (!u8csEmpty(scan)) {
-        u8cp eol = scan[0];
-        while (eol < scan[1] && *eol != '\n') eol++;
-        u8cs path = {scan[0], eol};
-        scan[0] = (eol < scan[1]) ? eol + 1 : eol;
-        if ($empty(path)) continue;
-
-        a_path(fp);
-        if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
-
-        uri urow = {};
-        urow.path[0] = path[0];
-        urow.path[1] = path[1];
-        ok64 ar = SNIFFAtAppendAt(*ts_io, verb_put, &urow);
-        if (ar != OK) return ar;
-        (void)SNIFFAtStampPath(fp, *ts_io);
-        (*ts_io)++;
-        (*emitted_io)++;
-    }
-    done;
 }
 
 // --- Public API ---
@@ -415,44 +396,22 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 skipped++; continue;
             }
 
-            Bu8 dirty = {}, untracked = {};
-            ok64 da = u8bAllocate(dirty,     1UL << 16);
-            ok64 ua = u8bAllocate(untracked, 1UL << 16);
-            if (da != OK || ua != OK) {
-                if (dirty[0])     u8bFree(dirty);
-                if (untracked[0]) u8bFree(untracked);
-                fail(NOROOM);
-            }
+            //  Stream tracked-and-dirty + untracked rows straight
+            //  into the .sniff ULOG from the merge callback.  Lex
+            //  order is the merge's, which yields a deterministic
+            //  row order under the prefix.
             dir_collect_ctx dctx = {
-                .prefix = {raw[0], raw[1]},
-                .dirty = &dirty,
-                .untracked = &untracked,
-                .verb_get = verb_get,
-                .verb_post = verb_post,
-                .err = OK,
+                .prefix     = {raw[0], raw[1]},
+                .ts_io      = &ts,
+                .emitted_io = &emitted,
+                .verb_put   = verb_put,
+                .err        = OK,
             };
-            ok64 cr = SNIFFClassify(dir_collect_step, &dctx);
-            if (cr != OK) {
-                u8bFree(dirty); u8bFree(untracked); return cr;
-            }
-            if (dctx.err != OK) {
-                u8bFree(dirty); u8bFree(untracked); return dctx.err;
-            }
-
-            //  Stage everything stage-worthy under the prefix:
-            //  tracked-and-dirty plus untracked files.  These two
-            //  sets are disjoint by definition (untracked == not in
-            //  baseline; dirty implies tracked), so there's nothing
-            //  to dedupe.  `base_seen` is no longer load-bearing for
-            //  this choice — both bins drain together.
+            u8csMv(dctx.reporoot, reporoot);
             u32 before = emitted;
-            ok64 er = dir_emit_paths(dirty, reporoot,
-                                     &ts, &emitted, verb_put);
-            if (er == OK)
-                er = dir_emit_paths(untracked, reporoot,
-                                    &ts, &emitted, verb_put);
-            u8bFree(dirty); u8bFree(untracked);
-            if (er != OK) return er;
+            ok64 cr = SNIFFClassify(dir_collect_step, &dctx);
+            if (cr != OK) return cr;
+            if (dctx.err != OK) return dctx.err;
 
             if (emitted == before) {
                 //  Nothing dirty under a tracked dir, or empty wt
