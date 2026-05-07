@@ -10,6 +10,7 @@ include_directories(.. .)
 list(APPEND GRAF_HEADERS
     GRAF.h
     BLOB.h
+    BRAM.h
     DAG.h
     JOIN.h
     NEIL.h
@@ -23,6 +24,7 @@ list(APPEND GRAF_SOURCES
     GRAF.exe.c
     BLAME.c
     BLOB.c
+    BRAM.c
     DAG.c
     DIFF.c
     DIFFREF.c

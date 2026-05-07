@@ -228,17 +228,17 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
                 }
             } else if (tag == 'I') {
                 if (is_nl) {
-                    //  Emit `+` only if this NEW line carried any INS
-                    //  bytes.  An untagged new_acc holds context bytes
-                    //  also present in old_acc; OLD's '\n' will flush
-                    //  them as context — emitting them here too would
-                    //  duplicate the line.
-                    if (new_dirty) {
-                        u8sFeed1(into, '+');
-                        a_dup(u8c, body, u8bData(newb));
-                        u8sFeed(into, body);
-                        u8sFeed1(into, '\n');
-                    }
+                    //  An INS-tagged '\n' is itself an INS contribution
+                    //  — the line break is new even when the line's
+                    //  preceding bytes were KEEP.  Always emit `+`.
+                    //  Skipping it would silently drop blank-line
+                    //  insertions (KEEP context + INS '\n' alone) and
+                    //  any line whose only NEW-side change is the
+                    //  trailing newline.
+                    u8sFeed1(into, '+');
+                    a_dup(u8c, body, u8bData(newb));
+                    u8sFeed(into, body);
+                    u8sFeed1(into, '\n');
                     u8bReset(newb);
                     new_dirty = NO;
                 } else {

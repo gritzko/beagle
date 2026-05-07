@@ -117,10 +117,57 @@ typedef struct {
     ok64 fail;
 } hunk_check_ctx;
 
+//  TLV-rendering property: in the emitted `text + hili` stream, an
+//  `I`↔`D` boundary where neither side is '\n' AND the just-closed
+//  span contained at least one '\n' would visually fuse the two
+//  multi-line edits onto a single screen row in bro (e.g.
+//  `name[0]char const *name…`).  Catches the bug fixed by the
+//  synthetic-`\n` insertion in `WEAVEEmitDiff`.
+static ok64 weave_tlv_fusion_check(hunkc *hk) {
+    sane(hk);
+    int n_hili = (int)$len(hk->hili);
+    if (n_hili < 2) return OK;
+    u8c *text = hk->text[0];
+    u32 textlen = (u32)$len(hk->text);
+    u32 prev_lo = 0;
+    u8 prev_tag = tok32Tag(hk->hili[0][0]);
+    for (int i = 1; i < n_hili; i++) {
+        u32 boundary = tok32Offset(hk->hili[0][i - 1]);
+        u8 cur_tag = tok32Tag(hk->hili[0][i]);
+        b8 swap = (prev_tag == 'I' && cur_tag == 'D') ||
+                  (prev_tag == 'D' && cur_tag == 'I');
+        if (swap && boundary > 0 && boundary < textlen) {
+            u8 last_byte  = text[boundary - 1];
+            u8 first_byte = text[boundary];
+            if (last_byte != '\n' && first_byte != '\n') {
+                u32 span_len = boundary - prev_lo;
+                if (span_len > 0 &&
+                    memchr(text + prev_lo, '\n', span_len) != NULL) {
+                    fprintf(stderr,
+                        "WEAVE fuzz: INS↔DEL fusion at offset %u "
+                        "(%c→%c, span_len=%u, last=0x%02x first=0x%02x)\n",
+                        boundary, prev_tag, cur_tag, span_len,
+                        last_byte, first_byte);
+                    return FAILSANITY;
+                }
+            }
+        }
+        prev_lo = boundary;
+        prev_tag = cur_tag;
+    }
+    return OK;
+}
+
 static ok64 weave_hunk_check_cb(hunkc *hk, void *vctx) {
     sane(hk && vctx);
     hunk_check_ctx *c = vctx;
     if (c->fail != OK) return OK;
+
+    //  Property: no INS↔DEL fusion across multi-line spans.
+    {
+        ok64 fr = weave_tlv_fusion_check(hk);
+        if (fr != OK) { c->fail = fr; return OK; }
+    }
 
     //  Render the hunk in plain unified-diff form.
     Bu8 buf = {};

@@ -224,14 +224,20 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
             }
 
             // Protect EQs that contain at least one alphanumeric token
-            // of length >= 2.  Such tokens are real identifiers /
-            // keywords / numeric literals that LCS matched because
-            // they're the same name on both sides — killing the EQ
-            // turns shared context (`b8`, `if`, `for`, `int`, …) into
-            // a duplicated DEL+INS pair, breaking attribution and the
-            // diff-renderer's mixed-line reconstruction.  Punctuation
-            // and single-char EQs fall through to the small-kill rule
-            // below.
+            // of length >= 2 — IF the EQ is line-aligned on at least
+            // one boundary OR the surrounding edits are small.  When
+            // the EQ is mid-line on both sides AND sits between large
+            // edit regions, the matched identifier is almost certainly
+            // accidental (e.g. `DOG_PUP_SEQNO_W` appearing 3x in OLD
+            // and 3x in NEW across a function rewrite — LCS picks one
+            // pairing arbitrarily; rendering it as KEEP within
+            // otherwise-DEL or -INS lines just adds visual noise).
+            //
+            // "Line-aligned" here means the byte just before the EQ's
+            // first token is `\n` OR the byte just after the EQ's last
+            // token (in `new_src`) is `\n`.  Cheap and covers the
+            // single-line modification case (`int x = 5;` →
+            // `int x = 7;`) where the EQ tokens straddle an `\n`.
             {
                 u32 eq_from = new_off[k];
                 b8 has_ident = NO;
@@ -250,7 +256,34 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                     }
                     if (alnum) has_ident = YES;
                 }
-                if (has_ident) { tmp[w++] = buf[k]; continue; }
+                if (has_ident) {
+                    //  Protect when (a) the EQ touches at least one
+                    //  line boundary in `new_src` (covers single-line
+                    //  modifications where most tokens stay), OR (b)
+                    //  the surrounding edits are small enough that the
+                    //  match is plausibly intentional, not accidental.
+                    //  Mid-line-on-both-sides + large surrounding edits
+                    //  = LCS picked one arbitrary occurrence of a
+                    //  repeated identifier across a function rewrite —
+                    //  visually noisy in token-coloured renderers.
+                    u32 eq_blo = (eq_from > 0)
+                        ? tok32Offset(new_toks[0][eq_from - 1]) : 0;
+                    u32 eq_bhi = tok32Offset(new_toks[0][eq_from + eq_len - 1]);
+                    u32 nlen   = (u32)$len(new_src);
+                    b8 line_aligned = NO;
+                    if (eq_blo == 0 || new_src[0][eq_blo - 1] == '\n')
+                        line_aligned = YES;
+                    if (eq_bhi >= nlen || new_src[0][eq_bhi] == '\n')
+                        line_aligned = YES;
+                    //  "Big" = at least one full line worth of edit on
+                    //  each side.  Single-line `int x = 5;` →
+                    //  `int x = 7;` has tiny surrounds; the existing
+                    //  has_ident protection is right there.
+                    b8 big_both = (before_bytes >= 60 && after_bytes >= 60);
+                    if (line_aligned || !big_both) {
+                        tmp[w++] = buf[k]; continue;
+                    }
+                }
             }
 
             // Protect EQs that contain a line with >= 6 non-ws bytes.
