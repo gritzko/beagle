@@ -81,14 +81,16 @@ static b8 del_tracked_has(del_tracked *t, u8cs path) {
         t->ok = YES;
     }
     if (!t->ok) return NO;
-    u8cs scan = {u8bDataHead(t->paths), u8bIdleHead(t->paths)};
-    while (!$empty(scan)) {
-        u8cp nl = scan[0];
-        while (nl < scan[1] && *nl != '\n') nl++;
-        if ((size_t)(nl - scan[0]) == (size_t)$len(path) &&
-            memcmp(scan[0], path[0], (size_t)$len(path)) == 0)
-            return YES;
-        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    a_dup(u8c, scan, u8bDataC(t->paths));
+    while (!u8csEmpty(scan)) {
+        u8cs entry = {};
+        u8csMv(entry, scan);
+        a_dup(u8c, find, scan);
+        if (u8csFind(find, '\n') != OK) break;
+        entry[1] = find[0];
+        if (u8csEq(entry, path)) return YES;
+        u8csUsed1(find);
+        u8csMv(scan, find);
     }
     return NO;
 }
@@ -387,13 +389,13 @@ static ok64 del_descendant_cb(refcp r, void *ctx) {
     ok64 lo = URILexer(&ku);
     if (lo != OK) done;
     if (!u8csEmpty(ku.host)) done;          // remote observation
-    u8cs q = {ku.query[0], ku.query[1]};
+    a_dup(u8c, q, ku.query);
     if (u8csEmpty(q)) done;                 // trunk row, ignore
 
     //  q must start with `<target>/` and have additional bytes.
     size_t tl = u8csLen(d->target);
     if (u8csLen(q) <= tl + 1) done;
-    if (memcmp(q[0], d->target[0], tl) != 0) done;
+    if (!u8csHasPrefix(q, d->target)) done;
     if (q[0][tl] != '/') done;
 
     d->has_descendant = YES;
@@ -421,12 +423,12 @@ static ok64 del_collect_descendants_cb(refcp r, void *ctx) {
     ok64 lo = URILexer(&ku);
     if (lo != OK) done;
     if (!u8csEmpty(ku.host)) done;
-    u8cs q = {ku.query[0], ku.query[1]};
+    a_dup(u8c, q, ku.query);
     if (u8csEmpty(q)) done;
 
     size_t tl = u8csLen(d->target);
     if (u8csLen(q) <= tl + 1) done;
-    if (memcmp(q[0], d->target[0], tl) != 0) done;
+    if (!u8csHasPrefix(q, d->target)) done;
     if (q[0][tl] != '/') done;
 
     u8bFeed(*d->names, q);
@@ -461,10 +463,7 @@ ok64 DELBranch(uri const *u, b8 recursive) {
         ron60 bts = 0, bverb = 0;
         uri bu = {};
         if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-            u8cs cur = {bu.query[0], bu.query[1]};
-            if (u8csLen(cur) == u8csLen(target) &&
-                !u8csEmpty(cur) &&
-                memcmp(cur[0], target[0], u8csLen(target)) == 0) {
+            if (!u8csEmpty(bu.query) && u8csEq(bu.query, target)) {
                 fprintf(stderr,
                         "sniff: delete: wt is on `%.*s` — switch to "
                         "another branch first (`be get ?..`)\n",

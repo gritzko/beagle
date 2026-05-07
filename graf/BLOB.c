@@ -19,15 +19,14 @@ ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
     if (o != OK) { u8bFree(tbuf); return o; }
     if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
 
-    u8cs body = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
+    a_dup(u8c, body, u8bDataC(tbuf));
     u8cs field = {}, esha = {};
     ok64 result = KEEPNONE;
     while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
-        u8cs scan = {field[0], field[1]};
+        a_dup(u8c, scan, field);
         if (u8csFind(scan, ' ') != OK) continue;
         u8cs entry_name = {scan[0] + 1, field[1]};
-        if ($len(entry_name) != $len(name)) continue;
-        if (memcmp(entry_name[0], name[0], $len(name)) != 0) continue;
+        if (!u8csEq(entry_name, name)) continue;
         memcpy(cur->data, esha[0], 20);
         result = OK;
         break;
@@ -54,8 +53,7 @@ ok64 GRAFBlobAtCommit(u8bp buf, keeper *k,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            a_cstr(ft, "tree");
-            if ($eq(field, ft) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 DAGsha1FromHex(&tree_sha, (char const *)value[0]);
                 got_tree = YES;
                 break;

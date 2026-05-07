@@ -60,15 +60,14 @@ typedef refcp *refcsp;
 
 // Match: key equality
 fun b8 REFMatch(refcp a, u8csc key) {
-    return $len(a->key) == $len(key) &&
-           memcmp(a->key[0], key[0], $len(key)) == 0;
+    return u8csEq((u8c **)a->key, (u8c **)key);
 }
 
 // Compare by key (for dedup/sort)
 fun int REFKeyCmp(refcp a, refcp b) {
-    size_t al = $len(a->key), bl = $len(b->key);
+    size_t al = u8csLen(a->key), bl = u8csLen(b->key);
     size_t ml = al < bl ? al : bl;
-    int c = memcmp(a->key[0], b->key[0], ml);
+    int c = (ml == 0) ? 0 : memcmp(a->key[0], b->key[0], ml);
     if (c != 0) return c;
     return al < bl ? -1 : al > bl ? 1 : 0;
 }

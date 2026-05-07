@@ -310,11 +310,9 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         // Byte-level dedup safety net for non-anchors when the index
         // side didn't help (different root tree, identical leaf bytes).
         if (have_prev && !is_anchor) {
-            size_t cl = u8bDataLen(*cur_blob);
-            size_t pl = u8bDataLen(*prev_blobp);
-            if (cl == pl && (cl == 0 ||
-                memcmp(u8bDataHead(*cur_blob),
-                       u8bDataHead(*prev_blobp), cl) == 0)) continue;
+            a_dup(u8c, cur_data,  u8bDataC(*cur_blob));
+            a_dup(u8c, prev_data, u8bDataC(*prev_blobp));
+            if (u8csEq(cur_data, prev_data)) continue;
         }
 
         u32 sc = (u32)commit_h;
@@ -323,8 +321,7 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             if (co != OK) { ret = co; break; }
         }
 
-        u8cs new_data = {u8bDataHead(*cur_blob),
-                         u8bDataHead(*cur_blob) + u8bDataLen(*cur_blob)};
+        a_dup(u8c, new_data, u8bDataC(*cur_blob));
 
         ret = WEAVEFromBlob(wnu, new_data, ext, sc);
         if (ret != OK) break;
@@ -645,12 +642,7 @@ ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
     //  callers); diff: dispatch always supplies an explicit ref.
     {
         u8cs to_ref = {};
-        if (!$empty(to))
-            u8csMv(to_ref, to);
-        else {
-            a_cstr(head, "HEAD");
-            u8csMv(to_ref, head);
-        }
+        u8csMv(to_ref, u8csEmpty(to) ? GIT_HEAD_LIT : to);
         blame_read_blob(to_buf, k, to_ref, filepath);
     }
 

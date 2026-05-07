@@ -142,17 +142,16 @@ typedef struct {
 
 static b8 class_under_submodule(class_walk_ctx const *w, u8cs path) {
     if (!w->sub_init) return NO;
-    u8cs scan = {u8bDataHead(w->sub_prefixes),
-                 u8bIdleHead(w->sub_prefixes)};
-    size_t pl = (size_t)$len(path);
-    while (!$empty(scan)) {
-        u8cp nl = scan[0];
-        while (nl < scan[1] && *nl != '\n') nl++;
-        size_t prl = (size_t)(nl - scan[0]);
-        if (prl > 0 && prl <= pl &&
-            memcmp(scan[0], path[0], prl) == 0)
-            return YES;
-        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    a_dup(u8c, scan, u8bDataC(w->sub_prefixes));
+    while (!u8csEmpty(scan)) {
+        u8cs prefix = {};
+        u8csMv(prefix, scan);
+        a_dup(u8c, find, scan);
+        if (u8csFind(find, '\n') != OK) break;
+        prefix[1] = find[0];
+        if (!u8csEmpty(prefix) && u8csHasPrefix(path, prefix)) return YES;
+        u8csUsed1(find);
+        u8csMv(scan, find);
     }
     return NO;
 }

@@ -28,6 +28,30 @@
 con ok64 GITFAIL = 0x1049d3ca495;
 con ok64 GITBADFMT = 0x1049d2ca34f59d;
 
+//  Wire-protocol fixed strings — defined here so call sites compare
+//  against a single source of truth instead of redeclaring literals.
+//  Use with u8csEq / u8csHasPrefix.
+extern u8csc GIT_FIELD_TREE;
+extern u8csc GIT_FIELD_PARENT;
+extern u8csc GIT_FIELD_AUTHOR;
+extern u8csc GIT_FIELD_COMMITTER;
+extern u8csc GIT_FIELD_GPGSIG;
+extern u8csc GIT_FIELD_OBJECT;
+
+extern u8csc GIT_REFS_HEADS_PFX;
+extern u8csc GIT_REFS_TAGS_PFX;
+extern u8csc GIT_REFS_REMOTES_PFX;
+extern u8csc GIT_TAGS_PFX;
+extern u8csc GIT_HEAD_LIT;
+extern u8csc GIT_MAIN_LIT;
+extern u8csc GIT_PACK_MAGIC;
+extern u8csc GIT_PKT_NAK;
+extern u8csc GIT_PKT_ACK;
+extern u8csc GIT_PKT_UNPACK_OK;
+extern u8csc GIT_PKT_OK_PFX;
+extern u8csc GIT_PKT_NG_PFX;
+extern u8csc GIT_PKT_UNPACK_PFX;
+
 //  Kind of a git ref.  GITREF_NONE = unparseable / empty input.
 typedef enum {
     GITREF_NONE   = 0,

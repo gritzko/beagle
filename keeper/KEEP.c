@@ -932,8 +932,7 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if ($empty(field)) break;
-            a_cstr(tree_kw, "tree");
-            if (u8csEq(field, tree_kw) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 sha1 tree_sha = {};
                 u8s sb = {tree_sha.data, tree_sha.data + 20};
                 u8cs hx = {value[0], value[0] + 40};
@@ -988,10 +987,9 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
         // Parse "object <sha>" from tag body, recurse
         u8cs body = {content, content + content_sz};
         u8cs field = {}, value = {};
-        a_cstr(object_kw, "object");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            if (u8csEq(field, object_kw) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_OBJECT) && u8csLen(value) >= 40) {
                 sha1 target_sha = {};
                 u8s sb = {target_sha.data, target_sha.data + 20};
                 u8cs hx = {value[0], value[0] + 40};
@@ -1044,8 +1042,7 @@ ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx) {
     // Skip PACK header if at start
     if (offset == 0 && packlen >= 12) {
         u8cs head = {pack, pack + 4};
-        a_cstr(pack_magic, "PACK");
-        if (u8csEq(head, pack_magic)) offset = 12;  // skip PACK+version+count
+        if (u8csEq(head, GIT_PACK_MAGIC)) offset = 12;
     }
 
     u8p buf = (u8p)malloc(KEEP_BUFSZ);
@@ -1537,10 +1534,9 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         // Parse tree SHA from commit
         a_dup(u8c, body, u8bDataC(k->buf1));
         u8cs field = {}, value = {};
-        a_cstr(tree_kw_inner, "tree");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            if (u8csEq(field, tree_kw_inner) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 u8s sb = {tree_sha->data, tree_sha->data + 20};
                 u8cs hx = {value[0], value[0] + 40};
                 call(HEXu8sDrainSome, sb, hx);
@@ -1650,10 +1646,9 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         if (type == DOG_OBJ_TAG) {
             a_dup(u8c, tbody, u8bDataC(k->buf1));
             u8cs tf = {}, tv = {};
-            a_cstr(object_kw, "object");
             while (GITu8sDrainCommit(tbody, tf, tv) == OK) {
                 if (u8csEmpty(tf)) break;
-                if (u8csEq(tf, object_kw) && u8csLen(tv) >= 40) {
+                if (u8csEq(tf, GIT_FIELD_OBJECT) && u8csLen(tv) >= 40) {
                     u8s sb2 = {commit_sha.data, commit_sha.data + 20};
                     u8cs hx2 = {tv[0], tv[0] + 40};
                     call(HEXu8sDrainSome, sb2, hx2);
@@ -1667,10 +1662,9 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
 
         a_dup(u8c, body, u8bDataC(k->buf1));
         u8cs field = {}, value = {};
-        a_cstr(tree_kw_inner, "tree");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            if (u8csEq(field, tree_kw_inner) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 u8s sb = {tree_sha->data, tree_sha->data + 20};
                 u8cs hx = {value[0], value[0] + 40};
                 call(HEXu8sDrainSome, sb, hx);
@@ -2410,11 +2404,10 @@ static ok64 keep_commit_parents(u8cs body, sha1 *out, u32 *n, u32 cap) {
     sane(out && n);
     a_dup(u8c, scan, body);
     u8cs field = {}, value = {};
-    a_cstr(parent_kw, "parent");
     *n = 0;
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;  // blank line → commit message follows
-        if (!u8csEq(field, parent_kw)) continue;
+        if (!u8csEq(field, GIT_FIELD_PARENT)) continue;
         if (u8csLen(value) < 40) continue;
         if (*n >= cap) break;
         u8s obin = {out[*n].data, out[*n].data + 20};
@@ -2431,10 +2424,9 @@ static ok64 keep_tag_target(u8cs body, sha1 *out) {
     sane(out);
     a_dup(u8c, scan, body);
     u8cs field = {}, value = {};
-    a_cstr(object_kw, "object");
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;
-        if (!u8csEq(field, object_kw)) continue;
+        if (!u8csEq(field, GIT_FIELD_OBJECT)) continue;
         if (u8csLen(value) < 40) return GITBADFMT;
         u8s obin = {out->data, out->data + 20};
         u8cs hex40 = {value[0], value[0] + 40};
@@ -2927,20 +2919,17 @@ got_pack:
     u8cs resp = {rbuf, rbuf + rlen};
     po = PKTu8sDrain(resp, line);
     if (po != OK) goto sync_fail;
-    a_cstr(nak_pfx, "NAK");
-    a_cstr(ack_pfx, "ACK");
-    a_cstr(pack_magic, "PACK");
-    if (u8csHasPrefix(line, nak_pfx)) {
+    if (u8csHasPrefix(line, GIT_PKT_NAK)) {
         // Full clone response
-    } else if (u8csHasPrefix(line, ack_pfx)) {
+    } else if (u8csHasPrefix(line, GIT_PKT_ACK)) {
         // Incremental: drain ACK/NAK lines until we reach the pack data
         for (;;) {
             // Check if resp[0] is at PACK magic
-            if (u8csHasPrefix(resp, pack_magic)) break;
+            if (u8csHasPrefix(resp, GIT_PACK_MAGIC)) break;
             ok64 ao = PKTu8sDrain(resp, line);
             if (ao == PKTFLUSH) break;
             if (ao != OK) break;
-            if (u8csHasPrefix(line, nak_pfx)) break;
+            if (u8csHasPrefix(line, GIT_PKT_NAK)) break;
         }
     } else {
         fprintf(stderr, "keeper: unexpected response: %.*s\n",
@@ -3505,16 +3494,13 @@ ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
         u8cp start = u8bDataHead(rbuf_b);
         u8cs adv = {start, start};
         u8cs line = {};
-        a_cstr(unpack_ok_lit, "unpack ok");
-        a_cstr(ok_pfx,        "ok ");
-        a_cstr(ng_pfx,        "ng ");
         for (;;) {
             ok64 o = keep_sync_drain_pkt(rfd, rbuf_b, adv, line);
             if (o == PKTFLUSH) break;
             if (o != OK) break;
-            if (u8csHasPrefix(line, unpack_ok_lit))      unpack_ok = YES;
-            else if (u8csHasPrefix(line, ok_pfx))         ref_ok    = YES;
-            else if (u8csHasPrefix(line, ng_pfx))
+            if (u8csHasPrefix(line, GIT_PKT_UNPACK_OK))   unpack_ok = YES;
+            else if (u8csHasPrefix(line, GIT_PKT_OK_PFX)) ref_ok    = YES;
+            else if (u8csHasPrefix(line, GIT_PKT_NG_PFX))
                 fprintf(stderr, "keeper: push rejected: %.*s",
                         (int)u8csLen(line), (char *)line[0]);
         }

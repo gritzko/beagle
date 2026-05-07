@@ -298,9 +298,8 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
 //      "X"       → "refs/heads/X"
 static ok64 wcli_be_to_wire(u8b out, u8csc be_branch) {
     sane(u8bOK(out));
-    a_cstr(main_s, "main");
     u8cs name = {};
-    u8csMv(name, $empty(be_branch) ? main_s : be_branch);
+    u8csMv(name, u8csEmpty(be_branch) ? GIT_MAIN_LIT : be_branch);
     return GITFeedRef(out, GITREF_BRANCH, name);
 }
 
@@ -321,9 +320,7 @@ static ok64 wcli_wire_to_be(u8csc wire_refname, gitref_kind *kind_out,
         done;
     }
     //  Trunk alias: wire-side `main` is the be-side empty branch.
-    a_cstr(main_s, "main");
-    if (u8csLen(bare) == u8csLen(main_s) &&
-        memcmp(bare[0], main_s[0], (size_t)u8csLen(main_s)) == 0) {
+    if (u8csEq(bare, GIT_MAIN_LIT)) {
         name_out[0] = bare[1];
         name_out[1] = bare[1];
         done;
@@ -375,7 +372,6 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
     sha1 first_sha = {};
     u8cs first_name = {NULL, NULL};
     b8   first_seen = NO;
-    a_cstr(head_lit, "HEAD");
 
     //  Helper: translate the wire refname to its be-side form and
     //  capture it.  Trunk wire-name `main` collapses to empty bytes.
@@ -388,11 +384,8 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
         u8cs _be = {};                                                       \
         if (wcli_wire_to_be((u8csc){(name)[0], (name)[1]},                   \
                             &_k, _be) == OK) {                               \
-            if (_k == GITREF_TAG) {                                          \
-                a_cstr(_tags_pfx, "tags/");                                  \
-                u8bFeed(name_out, _tags_pfx);                                \
-            }                                                                \
-            if (!$empty(_be)) u8bFeed(name_out, _be);                        \
+            if (_k == GITREF_TAG) u8bFeed(name_out, GIT_TAGS_PFX);           \
+            if (!u8csEmpty(_be)) u8bFeed(name_out, _be);                     \
         }                                                                    \
     } while (0)
 
@@ -425,7 +418,7 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
         //  Track HEAD separately — git advertises "HEAD" + capability
         //  list as the very first entry, and the matching branch ref
         //  follows with the same sha.
-        if (u8csEq(name, head_lit)) {
+        if (u8csEq(name, GIT_HEAD_LIT)) {
             head_sha = sha;
             have_head = YES;
             continue;
@@ -434,16 +427,10 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
         //  Skip peer's own remote-tracking refs (`refs/remotes/*`) —
         //  those are git-ism leakage, not real branches of the repo.
         //  Only `refs/heads/*` and `refs/tags/*` are meaningful.
-        {
-            a_cstr(remotes_pfx, "refs/remotes/");
-            if (u8csHasPrefix(name, remotes_pfx))
-                continue;
-            a_cstr(heads_pfx_s, "refs/heads/");
-            a_cstr(tags_pfx_s,  "refs/tags/");
-            if (!u8csHasPrefix(name, heads_pfx_s) &&
-                !u8csHasPrefix(name, tags_pfx_s))
-                continue;
-        }
+        if (u8csHasPrefix(name, GIT_REFS_REMOTES_PFX)) continue;
+        if (!u8csHasPrefix(name, GIT_REFS_HEADS_PFX) &&
+            !u8csHasPrefix(name, GIT_REFS_TAGS_PFX))
+            continue;
 
         if (!first_seen) {
             first_sha = sha;
@@ -686,10 +673,6 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
     //     pseudo-ref, peeled-tag `^{}` lines, and `refs/remotes/*`.
     {
         u8cs adv = {u8bDataHead(advbuf), u8bDataHead(advbuf)};
-        a_cstr(head_lit,    "HEAD");
-        a_cstr(remotes_pfx, "refs/remotes/");
-        a_cstr(heads_pfx,   "refs/heads/");
-        a_cstr(tags_pfx,    "refs/tags/");
         for (;;) {
             u8cs line = {};
             ok64 d = wcli_read_pkt(rfd, advbuf, adv, line);
@@ -710,12 +693,12 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
             while (nul < name[1] && *nul != 0) nul++;
             name[1] = nul;
 
-            if (u8csEq(name, head_lit)) continue;
+            if (u8csEq(name, GIT_HEAD_LIT)) continue;
             if (u8csLen(name) >= 3 && name[1][-1] == '}' &&
                 name[1][-2] == '{' && name[1][-3] == '^') continue;
-            if (u8csHasPrefix(name, remotes_pfx)) continue;
-            if (!u8csHasPrefix(name, heads_pfx) &&
-                !u8csHasPrefix(name, tags_pfx))
+            if (u8csHasPrefix(name, GIT_REFS_REMOTES_PFX)) continue;
+            if (!u8csHasPrefix(name, GIT_REFS_HEADS_PFX) &&
+                !u8csHasPrefix(name, GIT_REFS_TAGS_PFX))
                 continue;
 
             if (nrefs >= WIRECLI_FETCHALL_MAX) {
@@ -805,12 +788,9 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
         if (kk != GITREF_BRANCH && kk != GITREF_TAG) continue;
 
         a_pad(u8, name_buf, WIRECLI_REFNAME_CAP + 8);
-        if (kk == GITREF_TAG) {
-            a_cstr(tags_pfx, "tags/");
-            u8bFeed(name_buf, tags_pfx);
-        }
-        if (!$empty(be_bare)) u8bFeed(name_buf, be_bare);
-        a_dup(u8c, be_name, u8bData(name_buf));
+        if (kk == GITREF_TAG) u8bFeed(name_buf, GIT_TAGS_PFX);
+        if (!u8csEmpty(be_bare)) u8bFeed(name_buf, be_bare);
+        a_dup(u8c, be_name, u8bDataC(name_buf));
 
         ok64 rr = wcli_record_ref(k, remote_uri, be_name, &refs[i].sha);
         if (rr != OK) {
@@ -1301,19 +1281,15 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
     b8 ref_ok    = NO;
 
     a_pad(u8, ok_line, 512);
-    a_cstr(ok_pfx, "ok ");
-    u8bFeed(ok_line, ok_pfx);
+    u8bFeed(ok_line, GIT_PKT_OK_PFX);
     u8bFeed(ok_line, refname);
     a_dup(u8c, ok_match, u8bDataC(ok_line));
 
     a_pad(u8, ng_line, 512);
-    a_cstr(ng_pfx, "ng ");
-    u8bFeed(ng_line, ng_pfx);
+    u8bFeed(ng_line, GIT_PKT_NG_PFX);
     u8bFeed(ng_line, refname);
     a_dup(u8c, ng_match, u8bDataC(ng_line));
 
-    a_cstr(unpack_ok_lit, "unpack ok");
-    a_cstr(unpack_pfx,    "unpack ");
     for (;;) {
         u8cs line = {};
         ok64 d = wcli_read_pkt(rfd, buf, adv, line);
@@ -1328,9 +1304,9 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
         a_dup(u8c, ln, line);
         if (!u8csEmpty(ln) && *u8csLast(ln) == '\n') ln[1]--;
 
-        if (u8csEq(ln, unpack_ok_lit)) {
+        if (u8csEq(ln, GIT_PKT_UNPACK_OK)) {
             unpack_ok = YES;
-        } else if (u8csHasPrefix(ln, unpack_pfx)) {
+        } else if (u8csHasPrefix(ln, GIT_PKT_UNPACK_PFX)) {
             //  "unpack <reason>" — remote refused the pack itself.
             fprintf(stderr, "wpush: remote unpack failed: %.*s\n",
                     (int)u8csLen(ln) - 7, (char const *)ln[0] + 7);

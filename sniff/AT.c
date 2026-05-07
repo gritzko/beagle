@@ -459,9 +459,7 @@ static b8 at_baseline_blob_sha(u8cs base_rows, u8cs rel, sha1 *out) {
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;
-        if ($len(rec.uri.path) != $len(rel)) continue;
-        if (memcmp(rec.uri.path[0], rel[0], (size_t)$len(rel)) != 0)
-            continue;
+        if (!u8csEq(rec.uri.path, rel)) continue;
         if (u8csLen(rec.uri.fragment) != 40) return NO;
         u8s bin = {out->data, out->data + 20};
         a_dup(u8c, hex, rec.uri.fragment);
@@ -513,10 +511,7 @@ static b8 at_under_gitlink(u8cs gitlinks, u8cs rel) {
         a_dup(u8c, find, scan);
         if (u8csFind(find, '\n') != OK) break;
         entry[1] = find[0];
-        if ((size_t)$len(rel) >= (size_t)$len(entry) &&
-            memcmp(entry[0], rel[0], (size_t)$len(entry)) == 0) {
-            return YES;
-        }
+        if (u8csHasPrefix(rel, entry)) return YES;
         u8csUsed1(find);
         u8csMv(scan, find);
     }

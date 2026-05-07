@@ -37,8 +37,7 @@ b8 KEYWHas(keyw const *k, u8csc tok) {
     u8 h = keyw_hash(tok[0], len);
     while (k->table[h] != 0) {
         u8csc kw = {k->kws[k->table[h] - 1][0], k->kws[k->table[h] - 1][1]};
-        if (u8csLen(kw) == len && memcmp(tok[0], kw[0], len) == 0)
-            return YES;
+        if (u8csEq(tok, kw)) return YES;
         h++;
     }
     return NO;

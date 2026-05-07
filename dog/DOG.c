@@ -45,11 +45,10 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
 };
 
 static DOGProjRoute const *dog_proj_lookup(u8cs scheme) {
-    if ($empty(scheme)) return NULL;
-    size_t n = (size_t)$len(scheme);
+    if (u8csEmpty(scheme)) return NULL;
     for (DOGProjRoute const *p = DOG_PROJECTORS; p->scheme; p++) {
-        size_t pl = strlen(p->scheme);
-        if (pl == n && memcmp(scheme[0], p->scheme, pl) == 0) return p;
+        a_cstr(p_s, p->scheme);
+        if (u8csEq(scheme, p_s)) return p;
     }
     return NULL;
 }
@@ -72,11 +71,10 @@ static char const *const DOG_TRANSPORTS[] = {
 };
 
 b8 DOGIsTransport(u8cs scheme) {
-    if ($empty(scheme)) return NO;
-    size_t n = (size_t)$len(scheme);
+    if (u8csEmpty(scheme)) return NO;
     for (char const *const *t = DOG_TRANSPORTS; *t; t++) {
-        size_t pl = strlen(*t);
-        if (pl == n && memcmp(scheme[0], *t, pl) == 0) return YES;
+        a_cstr(t_s, *t);
+        if (u8csEq(scheme, t_s)) return YES;
     }
     return NO;
 }

@@ -125,15 +125,13 @@ static ok64 pid_parse_commit(u8cs commit_body,
     u8cs field = {}, value = {};
     b8 got_tree = NO;
     while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if ($empty(field)) break;
-        a_cstr(ft, "tree");
-        a_cstr(fp, "parent");
-        if ($eq(field, ft) && u8csLen(value) >= 40 && !got_tree) {
+        if (u8csEmpty(field)) break;
+        if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40 && !got_tree) {
             if (DAGsha1FromHex(tree_out,
                                (char const *)value[0]) != OK)
                 return GITBADFMT;
             got_tree = YES;
-        } else if ($eq(field, fp) && u8csLen(value) >= 40 &&
+        } else if (u8csEq(field, GIT_FIELD_PARENT) && u8csLen(value) >= 40 &&
                    !*got_parent) {
             if (DAGsha1FromHex(parent_out,
                                (char const *)value[0]) != OK)
@@ -173,7 +171,7 @@ static u64 pid_digest(pid_collector const *parent, pid_collector const *child) {
             path = pl->path; plen = pl->path_len;
             psha = &pl->sha; csha = &cl->sha;
             i++; j++;
-            if (memcmp(psha->data, csha->data, 20) == 0) continue;
+            if (sha1eq(psha, csha)) continue;
         } else if (c < 0) {
             //  parent has the path, child doesn't — deletion.
             path = pl->path; plen = pl->path_len;
@@ -816,17 +814,12 @@ static ok64 rebase_build_commit(u8 *const *out, u8csc old_body,
             u8csMv(body_rest, value);
             break;
         }
-        a_cstr(f_tree, "tree");
-        a_cstr(f_par,  "parent");
-        a_cstr(f_auth, "author");
-        a_cstr(f_comm, "committer");
-        a_cstr(f_gpg,  "gpgsig");
-        if ($eq(field, f_tree) || $eq(field, f_par)) {
+        if (u8csEq(field, GIT_FIELD_TREE) || u8csEq(field, GIT_FIELD_PARENT)) {
             in_gpgsig = NO;
             continue;
         }
-        if ($eq(field, f_gpg)) { in_gpgsig = YES; continue; }
-        if ($eq(field, f_comm)) {
+        if (u8csEq(field, GIT_FIELD_GPGSIG)) { in_gpgsig = YES; continue; }
+        if (u8csEq(field, GIT_FIELD_COMMITTER)) {
             //  Replace committer with stub.
             in_gpgsig = NO;
             a_cstr(stub, "committer rebase <rebase@dogs> 0 +0000\n");
@@ -834,7 +827,7 @@ static ok64 rebase_build_commit(u8 *const *out, u8csc old_body,
             emitted_committer = YES;
             continue;
         }
-        if ($eq(field, f_auth)) {
+        if (u8csEq(field, GIT_FIELD_AUTHOR)) {
             in_gpgsig = NO;
             call(u8bFeed, out, field);
             call(u8bFeed1, out, ' ');

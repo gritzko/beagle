@@ -223,19 +223,14 @@ void IGNOFree(ignop ig) {
 //  submodule's nested `.git/` are equally ignored, so a submodule's
 //  internal git-state never surfaces as untracked.
 static b8 igno_is_meta(u8cs rel) {
-    if ($empty(rel)) return NO;
-    static char const *const metas[] = {".git", ".dogs", ".sniff"};
-    u8cp seg = rel[0];
-    while (seg < rel[1]) {
-        u8cp end = seg;
-        while (end < rel[1] && *end != '/') end++;
-        size_t sl = (size_t)(end - seg);
-        for (u32 i = 0; i < sizeof(metas) / sizeof(metas[0]); i++) {
-            size_t ml = strlen(metas[i]);
-            if (sl == ml && memcmp(seg, metas[i], ml) == 0)
-                return YES;
-        }
-        seg = (end < rel[1]) ? end + 1 : end;
+    if (u8csEmpty(rel)) return NO;
+    a_cstr(m_git,   ".git");
+    a_cstr(m_dogs,  ".dogs");
+    a_cstr(m_sniff, ".sniff");
+    $eachseg(seg, rel) {
+        if (u8csEq(seg, m_git))   return YES;
+        if (u8csEq(seg, m_dogs))  return YES;
+        if (u8csEq(seg, m_sniff)) return YES;
     }
     return NO;
 }

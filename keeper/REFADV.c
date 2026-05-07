@@ -51,11 +51,7 @@ typedef struct {
 //  Helper: return YES when `name` is already in adv->ents.
 static b8 refadv_branch_seen(refadv *adv, u8csc name) {
     for (u32 i = 0; i < adv->count; i++) {
-        u8cs ent_dir = {adv->ents[i].dir[0], adv->ents[i].dir[1]};
-        if (u8csLen(ent_dir) == u8csLen(name) &&
-            (u8csEmpty(name) ||
-             memcmp(ent_dir[0], name[0], u8csLen(name)) == 0))
-            return YES;
+        if (u8csEq(adv->ents[i].dir, (u8c **)name)) return YES;
     }
     return NO;
 }
@@ -85,10 +81,10 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     refadv_ctx *ctx = (refadv_ctx *)vctx;
     refadv *adv = ctx->adv;
 
-    u8cs key = {r->key[0], r->key[1]};
-    u8cs val = {r->val[0], r->val[1]};
+    a_dup(u8c, key, r->key);
+    a_dup(u8c, val, r->val);
 
-    if ($empty(key)) done;
+    if (u8csEmpty(key)) done;
     b8 is_local = (*key[0] == '?');
     if (ctx->peer_pass) {
         if (is_local) done;             //  pass 2: skip locals
@@ -112,17 +108,14 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     //  row's query maps to a TAG advertisement (`refs/tags/X`); all
     //  other queries map to BRANCH (`refs/heads/X`).  Wire alias:
     //  empty branch (trunk) advertises as `main`.
-    a_cstr(tags_pfx, "tags/");
-    a_cstr(main_s,   "main");
     gitref_kind kind = GITREF_BRANCH;
     u8cs name = {};
-    if ($empty(branch)) {
-        u8csMv(name, main_s);
-    } else if ($len(branch) > $len(tags_pfx) &&
-               memcmp(branch[0], tags_pfx[0],
-                      $len(tags_pfx)) == 0) {
+    if (u8csEmpty(branch)) {
+        u8csMv(name, GIT_MAIN_LIT);
+    } else if (u8csLen(branch) > u8csLen(GIT_TAGS_PFX) &&
+               u8csHasPrefix(branch, GIT_TAGS_PFX)) {
         kind = GITREF_TAG;
-        u8cs nm = {branch[0] + $len(tags_pfx), branch[1]};
+        u8cs nm = {branch[0] + u8csLen(GIT_TAGS_PFX), branch[1]};
         u8csMv(name, nm);
     } else {
         u8csMv(name, branch);

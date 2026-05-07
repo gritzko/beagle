@@ -78,10 +78,9 @@ static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
 }
 
 static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
-    size_t plen = (size_t)$len(path);
     for (u32 i = 0; i < s->n; i++) {
-        if (s->v[i].path_len != plen) continue;
-        if (memcmp(s->v[i].path, path[0], plen) == 0) return &s->v[i];
+        u8cs entry = {s->v[i].path, s->v[i].path + s->v[i].path_len};
+        if (u8csEq(entry, path)) return &s->v[i];
     }
     return NULL;
 }
@@ -143,14 +142,9 @@ static b8 wt_in_to(u32 c, void *ctx) {
 ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
     sane($ok(name));
 
-    //  Fast skip on byte-identical content.  Cheap memcmp before any
+    //  Fast skip on byte-identical content.  Cheap u8csEq before any
     //  tokenisation; the common case in tree walks.
-    if ($len(from_data) == $len(to_data) &&
-        ($len(from_data) == 0 ||
-         memcmp(from_data[0], to_data[0],
-                (size_t)$len(from_data)) == 0)) {
-        return OK;
-    }
+    if (u8csEq(from_data, to_data)) return OK;
 
     call(GRAFArenaInit);
 
@@ -271,17 +265,16 @@ typedef struct {
 
 static b8 diffref_under_submodule(diffref_wt_ctx const *c, u8cs path) {
     if (!c->sub_init) return NO;
-    u8cs scan = {u8bDataHead(c->sub_prefixes),
-                 u8bIdleHead(c->sub_prefixes)};
-    size_t pl = (size_t)$len(path);
-    while (!$empty(scan)) {
-        u8cp nl = scan[0];
-        while (nl < scan[1] && *nl != '\n') nl++;
-        size_t prl = (size_t)(nl - scan[0]);
-        if (prl > 0 && prl <= pl &&
-            memcmp(scan[0], path[0], prl) == 0)
-            return YES;
-        scan[0] = (nl < scan[1]) ? nl + 1 : scan[1];
+    a_dup(u8c, scan, u8bDataC(c->sub_prefixes));
+    while (!u8csEmpty(scan)) {
+        u8cs prefix = {};
+        u8csMv(prefix, scan);
+        a_dup(u8c, find, scan);
+        if (u8csFind(find, '\n') != OK) break;
+        prefix[1] = find[0];
+        if (!u8csEmpty(prefix) && u8csHasPrefix(path, prefix)) return YES;
+        u8csUsed1(find);
+        u8csMv(scan, find);
     }
     return NO;
 }
@@ -332,14 +325,14 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
         a_path(wt_path, c->reporoot, path);
         u8bp wt_mapped = NULL;
         if (FILEMapRO(&wt_mapped, $path(wt_path)) == OK && wt_mapped) {
-            a_dup(u8c, wd, u8bData(wt_mapped));
+            a_dup(u8c, wd, u8bDataC(wt_mapped));
             sha1 wt_sha = {};
             KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, wd);
-            u8 base_sha_bin[20] = {};
-            u8s sb = {base_sha_bin, base_sha_bin + 20};
+            sha1 base_sha = {};
+            u8s sb = {base_sha.data, base_sha.data + 20};
             a_dup(u8c, hx, base->uri.fragment);
             b8 same = (HEXu8sDrainSome(sb, hx) == OK &&
-                       memcmp(wt_sha.data, base_sha_bin, 20) == 0);
+                       sha1eq(&wt_sha, &base_sha));
             FILEUnMap(wt_mapped);
             if (same) return OK;
         }

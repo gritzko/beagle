@@ -519,16 +519,12 @@ static ok64 build_tip_weave_with_ids(weave *out, u8cs path, u8cs ext,
         if (fo != OK) continue;
 
         if (have_prev) {
-            size_t cl = u8bDataLen(*cur);
-            size_t pl = u8bDataLen(*prev);
-            if (cl == pl && (cl == 0 ||
-                memcmp(u8bDataHead(*cur),
-                       u8bDataHead(*prev), cl) == 0))
-                continue;
+            a_dup(u8c, cur_data,  u8bDataC(*cur));
+            a_dup(u8c, prev_data, u8bDataC(*prev));
+            if (u8csEq(cur_data, prev_data)) continue;
         }
 
-        u8cs new_data = {u8bDataHead(*cur),
-                         u8bDataHead(*cur) + u8bDataLen(*cur)};
+        a_dup(u8c, new_data, u8bDataC(*cur));
         u32 sc = (u32)commit_h;
         ok64 fbo = WEAVEFromBlob(&wnu, new_data, ext, sc);
         if (fbo == OK) {
@@ -624,8 +620,7 @@ static ok64 get_tree_at(sha1 *tree_out, keeper *k,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            a_cstr(ft, "tree");
-            if ($eq(field, ft) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 DAGsha1FromHex(&cur, (char const *)value[0]);
                 got = YES;
                 break;
@@ -784,8 +779,8 @@ static ok64 get_tree_merge(u8b into, u8cs path,
 
         b8 agree = YES;
         for (u32 k = 1; k < npres; k++) {
-            if (memcmp(r->sha[present_tips[0]].data,
-                       r->sha[present_tips[k]].data, 20) != 0) {
+            if (!sha1eq(&r->sha[present_tips[0]],
+                        &r->sha[present_tips[k]])) {
                 agree = NO; break;
             }
         }

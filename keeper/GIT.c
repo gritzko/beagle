@@ -7,6 +7,38 @@
 #include "abc/HEX.h"
 #include "abc/PRO.h"
 
+// --- Wire-protocol fixed strings (one global per literal) -----------
+
+#define GITLIT(NAME, BYTES)                                          \
+    static u8 const NAME##_BYTES[] = BYTES;                          \
+    u8csc NAME = {                                                   \
+        NAME##_BYTES,                                                \
+        NAME##_BYTES + sizeof(NAME##_BYTES) - 1                      \
+    }
+
+GITLIT(GIT_FIELD_TREE,       "tree");
+GITLIT(GIT_FIELD_PARENT,     "parent");
+GITLIT(GIT_FIELD_AUTHOR,     "author");
+GITLIT(GIT_FIELD_COMMITTER,  "committer");
+GITLIT(GIT_FIELD_GPGSIG,     "gpgsig");
+GITLIT(GIT_FIELD_OBJECT,     "object");
+
+GITLIT(GIT_REFS_HEADS_PFX,   "refs/heads/");
+GITLIT(GIT_REFS_TAGS_PFX,    "refs/tags/");
+GITLIT(GIT_REFS_REMOTES_PFX, "refs/remotes/");
+GITLIT(GIT_TAGS_PFX,         "tags/");
+GITLIT(GIT_HEAD_LIT,         "HEAD");
+GITLIT(GIT_MAIN_LIT,         "main");
+GITLIT(GIT_PACK_MAGIC,       "PACK");
+GITLIT(GIT_PKT_NAK,          "NAK");
+GITLIT(GIT_PKT_ACK,          "ACK");
+GITLIT(GIT_PKT_UNPACK_OK,    "unpack ok");
+GITLIT(GIT_PKT_OK_PFX,       "ok ");
+GITLIT(GIT_PKT_NG_PFX,       "ng ");
+GITLIT(GIT_PKT_UNPACK_PFX,   "unpack ");
+
+#undef GITLIT
+
 //  Tree entry: <mode SP name>\0<20-byte-sha1>.  Find the NUL via
 //  u8csFind; slice before = "<mode> <name>"; the 20 bytes that follow
 //  are the raw SHA-1.
@@ -102,8 +134,7 @@ ok64 GITu8sCommitTree(u8cs commit, u8 tree_sha[20]) {
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if (u8csEmpty(field)) break;
-        a_cstr(tree_kw, "tree");
-        if (u8csEq(field, tree_kw)) {
+        if (u8csEq(field, GIT_FIELD_TREE)) {
             if (u8csLen(value) < 40) return GITBADFMT;
             u8s bin = {tree_sha, tree_sha + 20};
             u8cs hex = {value[0], value[0] + 40};
@@ -134,13 +165,10 @@ ok64 GITParseRef(u8csc in, gitref_kind *kind, u8csp name) {
 
     //  "HEAD" (only as the bare literal — "refs/HEAD" is not a thing
     //  in modern git advertisements).
-    {
-        a_cstr(head_s, "HEAD");
-        if (u8csEq(s, head_s)) {
-            *kind = GITREF_HEAD;
-            u8csMv(name, s);
-            done;
-        }
+    if (u8csEq(s, GIT_HEAD_LIT)) {
+        *kind = GITREF_HEAD;
+        u8csMv(name, s);
+        done;
     }
 
     //  Optional `refs/` prefix.  Once stripped, a `<sub>/...` head whose
@@ -183,8 +211,7 @@ ok64 GITFeedRef(u8b out, gitref_kind kind, u8csc name) {
     sane(u8bOK(out));
 
     if (kind == GITREF_HEAD) {
-        a_cstr(head_s, "HEAD");
-        u8bFeed(out, head_s);
+        u8bFeed(out, GIT_HEAD_LIT);
         done;
     }
 

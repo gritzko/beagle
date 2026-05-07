@@ -46,13 +46,13 @@ static void recv_sha_to_hex(u8 *out40, sha1 const *s) {
 
 //  Token equality.
 static b8 recv_token_eq(u8csc s, u8c const *tok, size_t tlen) {
-    if ((size_t)u8csLen(s) != tlen) return NO;
-    return memcmp(s[0], tok, tlen) == 0;
+    u8cs t = {(u8c *)tok, (u8c *)tok + tlen};
+    return u8csEq((u8c **)s, t);
 }
 
 static b8 recv_starts_with(u8csc s, u8c const *pfx, size_t plen) {
-    if ((size_t)u8csLen(s) < plen) return NO;
-    return memcmp(s[0], pfx, plen) == 0;
+    u8cs p = {(u8c *)pfx, (u8c *)pfx + plen};
+    return u8csHasPrefix((u8c **)s, p);
 }
 
 //  Parse a space-separated capability list off the tail of the first
@@ -298,10 +298,7 @@ static ok64 recv_build_key(u8b out, u8csc refname) {
     if (GITParseRef(refname, &k, name) != OK) return RECVBADREF;
     if (k != GITREF_BRANCH) return RECVBADREF;
     u8bFeed1(out, '?');
-    a_cstr(main_s, "main");
-    if (u8csLen(name) == u8csLen(main_s) &&
-        memcmp(name[0], main_s[0], (size_t)u8csLen(main_s)) == 0)
-        done;  //  trunk: bare `?`
+    if (u8csEq(name, GIT_MAIN_LIT)) done;  //  trunk: bare `?`
     u8bFeed(out, name);
     done;
 }
@@ -323,9 +320,7 @@ static void recv_lookup_tip(refadvcp adv, u8csc refname,
     *have_tip = NO;
     if (!adv) return;
     for (u32 i = 0; i < adv->count; i++) {
-        u8cs r = {adv->ents[i].refname[0], adv->ents[i].refname[1]};
-        if (u8csLen(r) != u8csLen(refname)) continue;
-        if (memcmp(r[0], refname[0], (size_t)u8csLen(refname)) != 0) continue;
+        if (!u8csEq(adv->ents[i].refname, (u8c **)refname)) continue;
         *out_tip   = adv->ents[i].tip;
         *have_tip  = YES;
         return;

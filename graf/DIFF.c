@@ -53,13 +53,9 @@ ok64 GRAFDiff(u8cs old_path, u8cs new_path, u8cs name,
     if (nro != OK) { new_data[0] = NULL; new_data[1] = NULL; }
 
     // Byte-identical content: emit mode-change hunk if modes differ
-    if (oro == OK && nro == OK &&
-        $len(old_data) == $len(new_data) &&
-        ($len(old_data) == 0 ||
-         memcmp(old_data[0], new_data[0], (size_t)$len(old_data)) == 0)) {
-        b8 mode_diff = !$empty(old_mode) && !$empty(new_mode) &&
-            ($len(old_mode) != $len(new_mode) ||
-             memcmp(old_mode[0], new_mode[0], (size_t)$len(old_mode)) != 0);
+    if (oro == OK && nro == OK && u8csEq(old_data, new_data)) {
+        b8 mode_diff = !u8csEmpty(old_mode) && !u8csEmpty(new_mode) &&
+                       !u8csEq(old_mode, new_mode);
         if (mode_diff) {
             (void)GRAFArenaInit();
             emit_mode_change(name, old_mode, new_mode);

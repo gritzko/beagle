@@ -119,16 +119,16 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
         char const *strips[] = {"refs/heads/", "refs/", "heads/", NULL};
         for (u32 si = 0; strips[si] != NULL &&
                          (ro != OK || u8csLen(resolved.query) < 40); si++) {
-            u8cs q = {u->query[0], u->query[1]};
-            size_t plen = strlen(strips[si]);
-            if ($len(q) <= plen) continue;
-            if (memcmp(q[0], strips[si], plen) != 0) continue;
-            u8csUsed(q, plen);
+            a_dup(u8c, q, u->query);
+            a_cstr(strip_s, strips[si]);
+            if (u8csLen(q) <= u8csLen(strip_s)) continue;
+            if (!u8csHasPrefix(q, strip_s)) continue;
+            u8csUsed(q, u8csLen(strip_s));
             a_pad(u8, retry_buf, 512);
             u8cs head = {u->data[0], u->query[0]};
             u8bFeed(retry_buf, head);
             u8bFeed(retry_buf, q);
-            a_dup(u8c, retry_uri, u8bData(retry_buf));
+            a_dup(u8c, retry_uri, u8bDataC(retry_buf));
             memset(&resolved, 0, sizeof(resolved));
             ro = REFSResolve(&resolved, arena_buf, $path(keepdir), retry_uri);
         }
@@ -324,8 +324,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
         b8 got = NO;
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            a_cstr(ft, "tree");
-            if ($eq(field, ft) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 DAGsha1FromHex(&cur, (char const *)value[0]);
                 got = YES;
                 break;
@@ -346,15 +345,14 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
         if (KEEPGetExact(k, &cur, tbuf, &otype) != OK) done;
         if (otype != DOG_OBJ_TREE) done;
 
-        u8cs body = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
+        a_dup(u8c, body, u8bDataC(tbuf));
         u8cs field = {}, esha = {};
         b8 found = NO;
         while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
-            u8cs scan = {field[0], field[1]};
+            a_dup(u8c, scan, field);
             if (u8csFind(scan, ' ') != OK) continue;
             u8cs entry_name = {scan[0] + 1, field[1]};
-            if ($len(entry_name) != $len(name)) continue;
-            if (memcmp(entry_name[0], name[0], $len(name)) != 0) continue;
+            if (!u8csEq(entry_name, name)) continue;
             memcpy(cur.data, esha[0], 20);
             found = YES;
             break;
@@ -660,8 +658,7 @@ static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
     b8 got = NO;
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;
-        a_cstr(ft, "tree");
-        if ($eq(field, ft) && u8csLen(value) >= 40) {
+        if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
             DAGsha1FromHex(out, (char const *)value[0]);
             got = YES;
             break;

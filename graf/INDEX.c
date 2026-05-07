@@ -239,8 +239,7 @@ ok64 GRAFIndexFromTips(keeper *k, uricp u) {
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            a_cstr(fp, "parent");
-            if (!$eq(field, fp)) continue;
+            if (!u8csEq(field, GIT_FIELD_PARENT)) continue;
             if (u8csLen(value) < 40) continue;
 
             sha1 psha = {};

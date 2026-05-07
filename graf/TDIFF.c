@@ -18,13 +18,12 @@
 // --- Local helpers (lifted from spot/CAPO.c) ---
 
 static b8 DIFFExtIs(u8cs ext_nodot, char const *a, char const *b) {
-    if ($empty(ext_nodot)) return NO;
-    size_t n = (size_t)$len(ext_nodot);
-    size_t al = strlen(a);
-    if (n == al && memcmp(ext_nodot[0], a, al) == 0) return YES;
+    if (u8csEmpty(ext_nodot)) return NO;
+    a_cstr(a_s, a);
+    if (u8csEq(ext_nodot, a_s)) return YES;
     if (b != NULL) {
-        size_t bl = strlen(b);
-        if (n == bl && memcmp(ext_nodot[0], b, bl) == 0) return YES;
+        a_cstr(b_s, b);
+        if (u8csEq(ext_nodot, b_s)) return YES;
     }
     return NO;
 }
@@ -69,8 +68,11 @@ static void DIFFFindFunc(u8cs source, u32 pos, u8cs ext_nodot,
         if (is_md) {
             match = (ch == '#');
         } else if (is_py) {
-            match = (linelen >= 4 && memcmp(base + ls, "def ", 4) == 0) ||
-                    (linelen >= 6 && memcmp(base + ls, "class ", 6) == 0);
+            u8cs line = {base + ls, base + le};
+            a_cstr(def_pfx, "def ");
+            a_cstr(class_pfx, "class ");
+            match = u8csHasPrefix(line, def_pfx) ||
+                    u8csHasPrefix(line, class_pfx);
         } else {
             if (ch != '/' && ch != '*' && ch != '#' &&
                 ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
@@ -480,9 +482,7 @@ ok64 DIFFu8cs(Bu8 arena,
                         u8cs ov = {}, nv = {};
                         tok32Val(ov, old_ts, old_f.data[0], (int)ti);
                         tok32Val(nv, new_ts, new_f.data[0], (int)tj);
-                        if ($len(ov) != $len(nv)) break;
-                        if (memcmp(ov[0], nv[0], (size_t)$len(ov)))
-                            break;
+                        if (!u8csEq(ov, nv)) break;
                         prefix++; ti++; tj++;
                     }
                 }
@@ -498,9 +498,7 @@ ok64 DIFFu8cs(Bu8 arena,
                         u8cs ov = {}, nv = {};
                         tok32Val(ov, old_ts, old_f.data[0], (int)ti);
                         tok32Val(nv, new_ts, new_f.data[0], (int)tj);
-                        if ($len(ov) != $len(nv)) break;
-                        if (memcmp(ov[0], nv[0], (size_t)$len(ov)))
-                            break;
+                        if (!u8csEq(ov, nv)) break;
                         suffix++; ti--; tj--;
                     }
                 }

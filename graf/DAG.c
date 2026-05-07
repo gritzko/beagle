@@ -529,12 +529,11 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
         b8 got_tree = NO;
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            a_cstr(ft, "tree");
-            a_cstr(fp, "parent");
-            if ($eq(field, ft) && u8csLen(value) >= 40) {
+            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 DAGsha1FromHex(&tree_sha, (char const *)value[0]);
                 got_tree = YES;
-            } else if ($eq(field, fp) && u8csLen(value) >= 40 && npar < 16) {
+            } else if (u8csEq(field, GIT_FIELD_PARENT) && u8csLen(value) >= 40
+                       && npar < 16) {
                 DAGsha1FromHex(&parents[npar], (char const *)value[0]);
                 npar++;
             }

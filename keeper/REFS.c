@@ -156,14 +156,8 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
         a_pad(u8, arena, 1024);
         uri resolved = {};
         ok64 ro = REFSResolve(&resolved, arena, dir, from_uri);
-        if (ro == OK) {
-            u8cs cur_frag = {resolved.query[0], resolved.query[1]};
-            if (u8csLen(cur_frag) == u8csLen(to_uri) &&
-                (u8csEmpty(to_uri) ||
-                 memcmp(cur_frag[0], to_uri[0],
-                        u8csLen(to_uri)) == 0)) {
-                done;   //  no-op: state unchanged.
-            }
+        if (ro == OK && u8csEq(resolved.query, (u8c **)to_uri)) {
+            done;   //  no-op: state unchanged.
         }
         //  Re-open for the actual append below.
         call(ULOGOpen, &data, idx, log_path);
@@ -190,7 +184,7 @@ ok64 REFSAppend(u8csc dir, u8csc from_uri, u8csc to_uri) {
 //  accepts both never-written and deleted keys.
 ok64 REFSCompareAndAppend(u8csc dir, u8csc key, u8csc expected_old,
                           u8csc new_val) {
-    sane($ok(dir) && $ok(key) && $ok(expected_old) && $ok(new_val));
+    sane(u8csOK(dir) && u8csOK(key) && u8csOK(expected_old) && u8csOK(new_val));
     if (u8csEmpty(key)) fail(REFSBAD);
 
     Bu8 arena = {};
@@ -207,10 +201,7 @@ ok64 REFSCompareAndAppend(u8csc dir, u8csc key, u8csc expected_old,
         if (!absent) { u8bUnMap(arena); fail(REFSCAS); }
     } else {
         if (absent) { u8bUnMap(arena); fail(REFSCAS); }
-        u8cs cur = {resolved.query[0], resolved.query[1]};
-        if (u8csLen(cur) != u8csLen(expected_old) ||
-            memcmp(cur[0], expected_old[0],
-                   (size_t)u8csLen(expected_old)) != 0) {
+        if (!u8csEq(resolved.query, (u8c **)expected_old)) {
             u8bUnMap(arena);
             fail(REFSCAS);
         }
@@ -366,12 +357,8 @@ typedef struct {
 
 static b8 refs_host_match(u8csc host, u8csc needle) {
     if (u8csEmpty(needle)) return YES;
-    size_t nl = u8csLen(needle);
-    size_t hl = u8csLen(host);
-    if (hl < nl) return NO;
-    for (size_t off = 0; off + nl <= hl; off++)
-        if (memcmp(host[0] + off, needle[0], nl) == 0) return YES;
-    return NO;
+    a_dup(u8c, scan, host);
+    return u8csFindS(scan, needle) == OK;
 }
 
 //  Local query is an opaque path: trunk = empty, anything else is a
@@ -379,9 +366,7 @@ static b8 refs_host_match(u8csc host, u8csc needle) {
 //  git refname conventions live behind keeper/GIT.h and apply at the
 //  wire boundary only.
 static b8 refs_query_match(u8csc in_query, u8csc r_query) {
-    if (u8csLen(in_query) != u8csLen(r_query)) return NO;
-    if (u8csEmpty(in_query)) return YES;
-    return memcmp(in_query[0], r_query[0], u8csLen(in_query)) == 0;
+    return u8csEq((u8c **)in_query, (u8c **)r_query);
 }
 
 static b8 refs_match_pred(ulogreccp r, void *ctx) {

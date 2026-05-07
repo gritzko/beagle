@@ -41,12 +41,11 @@ fun u64 DOGPathHash(path8s path) {
 // trailing slashes.  Caller's `out` buffer is reset before the feed.
 fun void DOGRepoFromDogs(u8cs in, u8bp out) {
     a_dup(u8c, p, in);
-    if (!$empty(p) && *u8csLast(p) == '/') u8csShed1(p);
+    if (!u8csEmpty(p) && *u8csLast(p) == '/') u8csShed1(p);
     a_cstr(dogs, ".dogs");
-    size_t dl = $len(dogs);
-    if ($len(p) >= dl && memcmp($atp(p, $len(p) - dl), dogs[0], dl) == 0)
-        for (size_t i = 0; i < dl; i++) u8csShed1(p);
-    while ($len(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
+    if (u8csHasSuffix(p, dogs))
+        for (size_t i = 0; i < u8csLen(dogs); i++) u8csShed1(p);
+    while (u8csLen(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
     u8bReset(out);
     u8bFeed(out, p);
 }
