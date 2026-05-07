@@ -31,8 +31,16 @@
 //      `(target_branch, new_tip)`.  Refused when the target
 //      branch's REFS tip exists and is not an ancestor of the wt's
 //      recorded base (non-ff).
+//  `inv` (may be NULL) is the parsed CLI invocation — verb, flags,
+//  URIs.  POSTCommit consults the bits it needs via CLIHas / etc.;
+//  currently `--force` bypasses the conflict-marker refusal
+//  (POSTCFLCT) for files whose legitimate content contains `<<<<`
+//  (e.g. VERBS.md describing the marker syntax).  More flags follow
+//  without further signature churn.
+#include "dog/CLI.h"
 ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
-                u8cs message, u8cs author, sha1 *sha_out);
+                u8cs message, u8cs author,
+                cli const *inv, sha1 *sha_out);
 
 //  Compose default message and author for a bare `be post` whose
 //  ULOG carries one or more `patch` rows since the latest get/post.

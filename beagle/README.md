@@ -29,11 +29,11 @@ A verb = an action with a direction.
 
 ## Post (worktree → repo)
 
-    be post abc/MSET.h                stage file
-    be post .                         stage subtree + commit (dry-run sans msg)
-    be post . fix MSET                stage subtree + commit with message
-    be post ?refs/heads/feat          commit to branch
-    be post MSET.h?feat               commit file to branch
+    be put abc/MSET.h                 stage file
+    be put .                          stage subtree
+    be post '#fix MSET'               commit cur with msg
+    be patch ?feat#                   absorb one commit from feat (rebase atom)
+    be patch ?feat '#sync feat'       merge feat into cur
 
 ## Put (repo → repo)
 

@@ -14,13 +14,15 @@ and the per-wt `.sniff` state from `sniff/AT.md`.
 ##  Verb semantics in one paragraph
 
 POST creates commits; PUT writes refs.  POST is the only
-commit-maker — it advances **cur** (the current branch's tip) via
-fast-forward, rebase, or merge.  PUT is the only ref-writer — it
-sets a (ref, sha) row in `.dogs/REFS`, optionally staging blobs
-into keeper for the next POST, and never produces a commit
-object on its own.  GET moves wt+cur (`cd`); PUT mints labels
-(`mkdir`); HEAD peeks; PATCH weaves another branch's delta into
-the wt without recording provenance; DELETE removes things.
+commit-maker — it advances **cur** (the current branch's tip),
+reading any `patch` rows since the last `get`/`post` to assemble
+multi-parent commits.  PUT is the only ref-writer — it sets a
+(ref, sha) row in `.dogs/REFS`, optionally staging blobs into
+keeper for the next POST, and never produces a commit object on
+its own.  GET moves wt+cur (`cd`); PUT mints labels (`mkdir`);
+HEAD peeks; PATCH absorbs another branch's work into the wt and
+records the absorbed sha for POST to consume; DELETE removes
+things.
 
 ##  URI recap
 
@@ -59,13 +61,14 @@ empty pack log**.  Creating one is `be put ?./feat` (mkdir);
 entering it is `be get ?./feat` (cd).  The two are deliberately
 separate — workflow-by-fork stays explicit.
 
-Each branch is a **linear** stack from its fork commit to its
-tip; every commit has exactly one parent.  POST is the only verb
-that produces commits, and it produces them with-history (ff,
-rebase, or merge of cur's stack onto an upstream).  PATCH is
-*history-erased*: it weaves another branch's delta into the wt
-without recording provenance, and the next POST commits the
-result as a single-parent commit on cur.
+Each branch is **first-parent linear**: walking from cur's tip
+along the first-parent chain reaches the fork commit in a
+straight line.  Additional parents (from merge) and `foster`
+headers (from squash / rebase-one) attach at POST time when
+`patch` rows since the pd boundary contributed work; cherry-pick
+records the picked sha as a `picked` trailer with no DAG edge.
+POST is the only commit-maker; PATCH does not commit — it stages
+the absorbed sha(s) in `.sniff` for the next POST.
 
 ##  Ref resolution
 
@@ -103,17 +106,20 @@ its effect.
 |--------|----------------------------------------|--------------------------------|--------------------------------------------|--------------------------------------|
 | HEAD   | diff cur vs branch (ahead/behind, files) | scope diff to path           | cached-only with `//host`; transport scheme fetches first | sha pin / commit-msg search |
 | GET    | switch wt+cur to branch                | restore one file in wt         | (transport scheme) clone / fetch + checkout | sha pin / detach                    |
-| POST   | rebase cur onto branch (upstream)      | —                              | rebase cur onto cached remote counterpart  | new commit on cur (msg = frag)       |
+| POST   | FF-advance ?branch to cur.tip          | —                              | FF-advance remote's counterpart to cur.tip | commit msg                           |
 | PUT    | name the ref to write                  | stage path (blob + reflog row) | FF-push to remote                          | sha to reset ref to                  |
 | DELETE | drop branch                            | unlink + stage delete          | drop alias / push delete                   | —                                    |
-| PATCH  | weave-merge branch into wt             | restrict merge to path         | (transport scheme) fetch + weave-merge     | —                                    |
+| PATCH  | source branch — squash whole stack     | scope absorption to path (no header recorded) | (transport scheme) fetch + absorb | empty `#` = rebase one; `#msg` = merge; bare `#hash` = cherry-pick |
 
-The default for an empty `?branch` slot is **cur**.  POST is
-**always** cur-targeting: cur is the only ref POST advances.  A
-populated `?branch` slot picks the *source* (rebase upstream),
-not the target.  Cross-branch commits do not exist in this
-model; if you want a commit elsewhere, switch cur there first
-(see §"Eager branching" under §"Worktree management").
+The default for an empty `?branch` slot is **cur**.  POST commits
+on cur; with a populated `?branch` or `//remote` slot it
+additionally **FF-advances** that ref to cur's new tip after the
+commit.  POST never rewrites cur's history (rebase is
+`patch ?br#` + `post`, looped).  PATCH's `?branch` picks the
+*source* of absorption — different role from POST's *target*.
+Cross-branch commits do not exist in this model; if you want a
+commit elsewhere, switch cur there first (see §"Eager branching"
+under §"Worktree management").
 
 Argument shape: every non-flag argv token becomes one URI via
 `DOGNormalizeArg`.  Tokens with whitespace classify as fragment
@@ -296,29 +302,60 @@ After a successful GET, `.sniff` records the new base as
 
 ##  POST — advance cur
 
-POST is the **commit-mover**: it creates new commits and
+POST is the **commit-mover**: it creates one new commit and
 advances **cur** (the current branch's tip).  Cur is the only
-ref POST advances — never another branch.  The URI components
-combine orthogonally:
+ref POST advances — never another branch.  POST scans `patch`
+rows since the pd boundary (most recent `get`/`post`) and
+assembles the new commit's headers from them; URI components on
+POST itself supply only the message and remote hint:
 
-  - **`#frag`** — make a new commit (msg = fragment).  Without
-    a fragment, no commit is made (POST may still ff/rebase/merge).
-  - **`?branch`** — `?branch` is the **upstream** for rebase.
-    POST rebases cur's stack onto `?branch.tip`.  Cur's name
-    stays; cur's history changes from the fork point onward.
-  - **`//remote`** — rebase cur onto the remote's counterpart
-    (cached form: read `.dogs/refs`; transport form: fetch
-    first).
+  - **`#frag`** — commit message.  Without a fragment, POST
+    derives the message from `patch` rows (see "Message
+    resolution" below).
+  - **`?branch`** — after committing on cur, **FF-advance**
+    `?branch` to cur's new tip.  Refused (`POSTNOFF`) if cur is
+    not a descendant of `?branch.tip`.  Cur is *not* rewritten;
+    only the named ref moves.  This is the cross-branch promote
+    flow (e.g. `be post ?..` after eager branching brings the
+    sub-branch's work up to its parent).
+  - **`//remote`** — after committing on cur, FF-push cur's new
+    tip to the remote's counterpart ref (transport scheme opens
+    a wire; cached form refuses since push needs the wire).
+    Same FF check as `?branch`.
 
-POST never produces a merge commit; every commit is
-single-parent.  When cur and the upstream diverge, POST rebases
-cur's stack with patch-id dedup; cur's old SHAs are not
-rewritten in place — the rebased copies replace cur's chain
-from the fork point onward.  Cur's old objects survive in
-keeper, reachable via `?<sha>` until GC'd.
+###  Parent / foster / picked assembly
 
-Empty POSTs (no commit, no advance, nothing to push) are
-refused with `POSTNONE`.
+For each `patch` row in scope, POST classifies by URI shape and
+emits the corresponding header on the new commit:
+
+| Patch row URI       | Op           | Emitted on commit            |
+|---------------------|--------------|------------------------------|
+| `?<sha>`            | squash       | one `foster <sha>` header    |
+| `?<sha>#<msg>`      | merge        | `parent <sha>` header        |
+| `?<sha>#`           | rebase one   | `foster <sha>` header        |
+| `#<sha>`            | cherry-pick  | `picked: <sha>` trailer      |
+
+First parent is always cur's previous tip.  Headers are emitted
+in the order patch rows were appended.  Multiple patch rows
+compose freely (e.g. two rebase-ones plus a cherry-pick =
+two foster headers + one picked trailer).
+
+###  Message resolution
+
+POST picks the commit message in this order:
+
+ 1. POST's own `#frag` if present — wins.
+ 2. Else count commits applied across in-scope patch rows: if
+    **exactly one** carries a usable msg (rebase-one's reused,
+    cherry-pick's reused, or merge's explicit `?br#msg`), use it.
+ 3. Else refuse with `POSTNOMSG`.
+
+Squash never auto-supplies a message (multiple commits
+collapsed); the user must provide one on POST or the command
+refuses.
+
+Empty POSTs (no patch rows in scope and no `#frag`) are refused
+with `POSTNONE`.
 
 ###  Per-file classification via stamps
 
@@ -344,13 +381,17 @@ a commit by accident — even bare `be post 'msg'` requires
 on the other hand, do flow into the implicit-mode commit (mirrors
 git's `commit -a`).
 
-###  Single-parent commits
+###  First-parent linearity
 
-The new commit's parent is always cur's previous tip — period.
-PATCH-merged content contributes to the new tree but **not** to
-the parent set; provenance is erased at PATCH time.  Cross-
-branch deduplication (when cur eventually flows toward trunk)
-relies on patch-id matching, not recorded parents.
+The new commit's **first** parent is always cur's previous tip
+— period.  Walking first-parents from any commit reaches its
+fork point in a straight line.  Additional parents and `foster`
+headers come from in-scope `patch` rows (see "Parent / foster /
+picked assembly" above); their reachability participates in the
+ancestor-skip walk on subsequent PATCHes.  Cross-branch
+deduplication has two sources: foster/parent reachability when
+the absorbed work is now in the DAG, and patch-id matching as a
+safety net for replays.
 
 ###  ULOG scope and boundaries
 
@@ -380,21 +421,18 @@ typo'`).  Single-word messages need explicit `#`:
 
 | Form | Effect |
 |---|---|
-| `be post`                          | No-op (no commit, no advance).  Status / dry-run. |
-| `be post 'fix the typo'`           | Commit on cur (msg = "fix the typo"); cur advances. |
+| `be post`                          | Commit on cur using msg derived from in-scope patch rows (see "Message resolution"); refused if none/ambiguous. |
+| `be post 'fix the typo'`           | Commit on cur (msg = "fix the typo"); cur advances.  Patch rows in scope contribute parent/foster/picked headers. |
 | `be post '#fix'`                   | Commit on cur (msg = "fix"); cur advances. |
-| `be post ?br`                      | Rebase cur onto `?br.tip`.  Cur's stack replays from `?br.tip`; no new commit. |
-| `be post ?br '#msg'`               | Rebase cur onto `?br`, then add commit msg on cur. |
-| `be post ?..`                      | Rebase cur onto parent branch's tip. |
-| `be post //origin`                 | Rebase cur onto origin's counterpart (cached). |
-| `be post ssh://origin '#sync'`     | Fetch origin first, then rebase cur, then commit "sync" on cur. |
+| `be post ?..`                      | Commit on cur, then FF-advance parent branch to cur's new tip.  `POSTNOFF` if cur isn't a descendant of `?..tip`. |
+| `be post ?feat`                    | Commit on cur, then FF-advance `?feat` to cur's new tip. |
+| `be post ssh://origin`             | Commit on cur, then FF-push cur's new tip to origin's counterpart over the wire. |
+| `be post //origin`                 | Same as above using the configured transport scheme; cached form alone (no transport) is refused since push needs the wire. |
 
-Each POST appends one or more entries to cur's `REFS` — one for
-the new commit (when `#frag` is present), plus rebased copies
-when cur's stack diverged from the upstream.  Every commit is
-single-parent.  When cur's stack is rebased over existing
-commits on the upstream, **patch-id dedup** silently skips
-replays whose normalized diff is already reachable.
+Each POST appends one entry to cur's `REFS` for the new commit.
+Patch-id dedup (`GRAFPatchId`) acts as a safety net to skip a
+foster/parent absorption whose diff is already reachable from
+cur — distinct from header assembly, which always runs.
 
 ##  PUT — write a ref
 
@@ -458,41 +496,106 @@ Already-absent paths are an OK no-op.
 | `be delete //origin?feat`           | Push a delete (`<old> 000…0 refs/heads/feat`) via `keeper receive-pack`. |
 | `be delete //origin`                | Drop the remote alias entry from `<store>/ALIAS`.  No network. |
 
-##  PATCH — absorb, history erased
+##  PATCH — absorb commits into wt
 
-PATCH takes another branch as a whole — its full
-`(fork_commit..tip)` stack — and **weave-merges** the delta into
-cur's wt.  PATCH does **not** commit.  The next POST turns the
-merged wt into one new single-parent commit on cur.  No
-multi-parent commit is ever produced and no provenance is
-recorded — cross-branch dedup later relies on patch-id matching
-or an explicit `cherry-picked-from` trailer in the commit
-message.
+PATCH absorbs commits from another branch into cur's wt and
+records the absorbed sha(s) in `.sniff` for the next POST to
+consume.  PATCH itself does not commit; the cycle is
+**patch → test → post**, run once per merge / cherry-pick /
+squash, or looped per commit for rebase.  This makes every
+recorded commit a tested commit — no chain of unverified work
+ever lands.
 
-PATCH refuses if any file it would touch is dirty in the wt.
-For now, files modified by a previous PATCH count as dirty too,
-so PATCH-on-PATCH only works on disjoint file sets.
+###  Four URI shapes
 
-Conflicts are marked **token-level** with 4-character delimiters
-(`<<<<` / `>>>>`), not the line-level 7-char markers git uses.
-Existing diff/merge UIs and `git mergetool` won't recognize
-them; hand-edit, or use a `diff:?` projection to enumerate.
+| User input        | Op           | Applies                          | POST records as                |
+|-------------------|--------------|----------------------------------|--------------------------------|
+| `?<br>`           | squash       | full `fork..br.tip` as one wt-merge | one `foster` header (br.tip) |
+| `#<hash>`         | cherry-pick  | the one named commit             | `picked: <hash>` trailer       |
+| `?<br>#<msg>`     | merge        | full `fork..br.tip` as one wt-merge | `parent` header (br.tip)     |
+| `?<br>#`          | rebase one   | the next not-yet-replayed commit on `?br` | `foster` header (that commit) |
+
+Shape classification is the URI form alone: presence of `?`,
+presence and emptiness of `#`.  All four shapes accept the usual
+URI extras — `//host` to fetch first, `./path` to scope the
+absorption to one path, and so on — combined orthogonally.
+
+###  Ancestor-skip walk
+
+Squash and merge replay only commits not already reachable from
+cur via parent ∪ foster.  `picked` trailers are dedup-only and
+do **not** participate in reachability.  Rebase-one (`?br#`)
+picks the next commit on `?br` not yet absorbed by cur, by
+walking br's first-parent chain and stopping at the first sha
+already reachable.
+
+###  Path-scoped PATCH
+
+When the URI carries a non-empty path slot (e.g.
+`be patch file.c?feat`, `be patch src/?trunk#`), the absorbed
+bytes land in the wt for those paths only.  The resulting row
+carries the path but **no `&<theirs>` slot**: POST emits no
+foster / parent / picked header for it, and the row contributes
+zero "applied commits" to POST's message resolution.  Rationale:
+a partial absorption is not a faithful record of any DAG commit,
+so neither reachability nor msg reuse is sound.  Use a full
+(no-path) shape if you want POST to record provenance.
+
+###  Reporting
+
+Every PATCH prints a ULOG-style report — one line per applied
+commit and per touched file, in `<verb>\t<status>\t<path-or-uri>`
+form — matching bare `be`'s output shape.  This keeps the
+patch-test-post loop auditable: you can see what changed before
+deciding to POST.
+
+Per-file status is one of:
+
+| Status     | Meaning |
+|------------|---------|
+| `applied`  | file was clean (at baseline or stamped) and has been overlaid with *theirs* bytes — no merge needed. |
+| `merged`   | file had non-baseline bytes (user edits or prior PATCH output) AND theirs touched it; WEAVE 3-way merge integrated both sides cleanly. |
+| `dirty`    | file had non-baseline bytes; theirs did **not** touch this path; the dirty bytes are preserved untouched. |
+| `conflict` | file had non-baseline bytes AND theirs touched it AND WEAVE could not auto-resolve; conflict markers are now in the file. |
+
+Conflicts are **loud**: every `conflict` row is also written to
+stderr, and PATCH exits non-zero so an unattended `patch && post`
+chain stops before recording a half-merged commit.  The wt is
+left with the markers in place for the user to resolve.
+
+###  Weave merge into dirty wt
+
+PATCH does **not** refuse on dirty files.  It runs a WEAVE
+3-way merge with the absorbed commit on the *theirs* side and
+the wt's current bytes (including user edits AND any prior
+PATCH's output) on the *ours* side.  Previous PATCH applications
+look exactly like user edits: the merge composes them with the
+new absorption.  PATCH-on-PATCH on overlapping files works by
+construction.
+
+Conflicts that cannot be auto-resolved are marked **token-level**
+with 4-character delimiters (`<<<<` / `>>>>`), not the line-level
+7-char markers git uses.  Existing diff/merge UIs and
+`git mergetool` won't recognize them; hand-edit, or use a
+`diff:?` projection to enumerate.
+
+###  Common forms
 
 | Form | Effect |
 |---|---|
-| `be patch ?..`                      | Weave parent's progress (parent's stack `fork..tip`) into wt as one squash. |
-| `be patch ?./fix`                   | Weave child branch `fix` (its stack) into wt. |
-| `be patch ?feat/fix`                | Weave absolute branch `feat/fix` into wt. |
-| `be patch ?trunk`                   | Weave trunk's stack into wt (sync from trunk). |
-| `be patch ?feat..feat2`             | Weave a range diff into the wt (replay another branch's delta between two named refs). |
-| `be patch ssh://origin?main`        | Fetch + weave remote branch into wt.  ≈ `git pull --squash --no-commit`. |
-| `be patch file.c?feat`              | Weave one file's version from another branch into the wt. |
+| `be patch ?..`                      | Squash parent's stack into wt.  Foster on next POST. |
+| `be patch ?./fix`                   | Squash child branch `fix` into wt. |
+| `be patch ?feat/fix#`               | Rebase one commit from `feat/fix` onto cur. |
+| `be patch ?trunk '#sync from trunk'`| Merge trunk into cur with explicit msg. |
+| `be patch '#abc1234'`               | Cherry-pick `abc1234`.  Picked trailer on next POST. |
+| `be patch ssh://origin?main`        | Fetch + squash remote branch.  ≈ `git pull --squash --no-commit`. |
+| `be patch file.c?feat`              | Apply one file's version from `?feat` into the wt (no foster row). |
 | `be patch spot:#'Old'->'New'.c`     | Delegated to spot: in-place structural rewrite across `.c` files. |
 
-Multiple PATCHes compose into the wt; the next POST emits one
-single-parent commit with the merged tree.  Branch identity of
-the absorbed sources is **not** recorded — they survive on their
-own branches with their own commit history, untouched by PATCH.
+Multiple PATCHes compose: each appends a `patch` row, all of
+which the next POST consumes.  Combinations like rebase-one +
+cherry-pick + merge are valid — POST emits the corresponding mix
+of foster / parent headers and picked trailers in row order.
 
 ##  Worktree management
 
@@ -622,9 +725,9 @@ another wt to actually drop the branch.
 |---|---|
 | `git clone URL`                        | `be get ssh://URL` |
 | `git fetch`                            | `be head ssh://origin?*` |
-| `git pull --ff-only`                   | `be post //origin` (ff if linear, else refuses) |
-| `git pull`                             | `be post //origin` (ff or rebase, single-parent only) |
-| `git pull --rebase`                    | `be post //origin` |
+| `git pull --ff-only`                   | `be patch //origin?` + `be post` (ff if linear, else refuses) |
+| `git pull`                             | `be patch //origin?#` (rebase-one) loop, or `be patch //origin? '#merge'` for a merge commit |
+| `git pull --rebase`                    | `be patch //origin?#` + `be post`, looped per commit |
 | `git checkout -b feat`                 | `be put ?./feat && be get ?./feat` (PUT mkdir, GET cd) |
 | `git checkout feat`                    | `be get ?feat` |
 | `git worktree add ../feat feat`        | `cd ../feat && be get file:../proj?feat` |
@@ -632,8 +735,8 @@ another wt to actually drop the branch.
 | `git commit -am "…"`                   | `be put . && be post 'msg with space'` |
 | `git rm file && commit`                | `be delete ./file && be post '#msg'` |
 | `git branch -d feat`                   | `be delete ?feat` |
-| `git merge trunk`                      | `be patch ?trunk && be post '#sync trunk'` (single-parent on cur) |
-| `git cherry-pick <sha>`                | `be patch ?<sha>~..<sha>` |
+| `git merge trunk`                      | `be patch ?trunk '#sync trunk' && be post` (parent header on cur) |
+| `git cherry-pick <sha>`                | `be patch '#<sha>' && be post` (picked trailer; msg reused) |
 | `git stash`                            | use a sub-branch — see §"Eager branching" |
 | `git push`                             | `be put ssh://origin` |
 | `git push -d origin feat`              | `be delete //origin?feat` |
@@ -651,16 +754,25 @@ another wt to actually drop the branch.
     a file in that branch.  `//host` is cached unless paired
     with a transport scheme.  The projector scheme only reshapes
     the output.
- 2. **Linear branches, single-parent commits.**  Each branch is
-    a linear stack from its `fork_commit` to its `tip`; every
-    commit has exactly one parent.  POST never produces a merge
-    commit; PATCH absorbs without recording provenance.
+ 2. **First-parent linearity; multi-parent at POST.**  Walking
+    first-parents from any commit reaches its fork point in a
+    straight line.  Additional `parent` headers (merge) and
+    `foster` headers (squash, rebase-one) come from in-scope
+    `patch` rows at POST time; cherry-pick contributes a
+    `picked` trailer with no DAG edge.  PATCH records the
+    absorbed sha; provenance is no longer erased.
  3. **POST is the only commit-maker; PUT is the only ref-writer.**
-    POST advances cur via ff/rebase/merge; cur is the only ref
-    POST advances.  PUT writes one (ref, sha) row to
+    POST advances cur, reading `patch` rows since the pd
+    boundary to assemble headers.  A populated `?branch` /
+    `//remote` slot additionally **FF-advances** that ref to
+    cur's new tip after the commit (refused with `POSTNOFF` if
+    cur isn't a descendant).  PUT writes one (ref, sha) row to
     `.dogs/REFS`, optionally staging blobs into keeper for the
     next POST; PUT never creates commits.  GET is repo-read-only
-    and refuses on dirty overlap.  Empty POSTs are refused.
+    and refuses on dirty overlap.  Empty POSTs (`POSTNONE`) and
+    message-less POSTs that can't auto-resolve (`POSTNOMSG`) are
+    refused.  POST never rewrites cur's history; rebase is
+    `patch ?br#` + `post`, looped.
  4. **Cheap branches; mkdir/cd separation.**  Branches are
     one-row reflog entries with empty pack logs.  `be put ?./A`
     creates the branch (mkdir); `be get ?./A` enters it (cd).
@@ -712,11 +824,20 @@ another wt to actually drop the branch.
     sessions.
   - **Projector + mutating verb** — `be post sha1:?feat` etc.
     is not a thing; projectors are their own verbs (read-only).
-  - **PATCH-on-PATCH state.**  Today PATCH treats files
-    previously merged by an earlier PATCH as "dirty," so
-    multi-PATCH only works on disjoint file sets.  TODO:
-    distinguish "merge-result-clean" from "user-edited" so an
-    arbitrary chain of PATCHes can compose.
+  - **Conflict marker normalisation.**  Token-level 4-char
+    delimiters need a stable wire format so downstream tools
+    (bro, graf-resolve, future `git mergetool` adapter) can
+    parse them uniformly.
+  - **`picked` trailer wire format.**  Cherry-pick records the
+    picked sha in the commit message as a trailer; exact key
+    name (`picked:` / `cherry-picked-from:` / other) and parser
+    contract still TBD.  Multiple picked trailers from one POST
+    accumulate in row order.
+  - **Path-scoped PATCH provenance.**  A path-scoped PATCH
+    intentionally records no header (partial absorption isn't a
+    faithful DAG commit); if we ever want a "partial picked"
+    trailer that names `<sha>:<path>` for forensics, that's a
+    future extension.
   - **Squashing / repacking.**  The current GC path is "delete
     branch" (drops shards reachable only from that branch dir).
     A real squash (consolidate a branch's REFS into a single

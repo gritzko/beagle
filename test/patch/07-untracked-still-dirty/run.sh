@@ -15,10 +15,11 @@
 #     ignored            new file matching .gitignore  not dirty
 #
 #  This test sets up all four conditions in one wt and runs
-#  `be patch ?./feat` against a divergent feat branch.  The patch
-#  must refuse (because edit.txt really is dirty) and the dirty
-#  list must contain `edit.txt` and ONLY `edit.txt` — not
-#  `bump.txt`, not `new.txt`, not `scratch.tmp`.
+#  `be patch ?./feat` against a divergent feat branch.  Per the
+#  new spec (VERBS.md §PATCH "Weave merge into dirty wt"), PATCH
+#  no longer refuses on dirty wt — it weaves and reports per-file
+#  status.  edit.txt must appear with `patch dirty edit.txt`;
+#  bump.txt / new.txt / scratch.tmp must NOT.
 
 . "$(dirname "$0")/../../lib/case.sh"
 
@@ -68,36 +69,25 @@ echo "fresh" > new.txt
 echo "scratch" > scratch.tmp
 
 # ------------------------------------------------------------------
-# 4. THE TEST: be patch ?./feat.  edit.txt must refuse; others must
-#    NOT appear in the dirty list.  PATCH exits non-zero on dirty
-#    refusal — drop set -e for the call so we can read the rc.
+# 4. THE TEST: be patch ?./feat.  edit.txt must be reported as dirty;
+#    others must NOT appear in the status report.  PATCH succeeds
+#    (no more refuse-on-dirty per the new spec).
 # ------------------------------------------------------------------
-set +e
 "$BE" patch '?./feat' > "$LOGS/patch.out" 2> "$LOGS/patch.err"
-PATCH_RC=$?
-set -e
 
-#  edit.txt must be flagged.
-grep -q 'edit\.txt' "$LOGS/patch.err" || {
-    echo "FAIL: tracked-changed edit.txt was not flagged dirty" >&2
-    cat "$LOGS/patch.err" >&2
-    exit 1
-}
+#  edit.txt must appear in a `patch dirty edit.txt` row.
+grep -E '^patch[[:space:]]+dirty[[:space:]]+(\./)?edit\.txt$' "$LOGS/patch.err" \
+    || { echo "FAIL: edit.txt not reported as dirty" >&2
+         cat "$LOGS/patch.err" >&2
+         exit 1; }
 
 #  bump.txt / new.txt / scratch.tmp must NOT be flagged.
 for forbidden in 'bump\.txt' 'new\.txt' 'scratch\.tmp'; do
-    if grep -q "$forbidden" "$LOGS/patch.err"; then
-        echo "FAIL: $forbidden was flagged dirty (should not be):" >&2
+    if grep -E "patch[[:space:]]+(dirty|merged|conflict|applied)[[:space:]]+(\./)?$forbidden" "$LOGS/patch.err"; then
+        echo "FAIL: $forbidden was flagged (should not be):" >&2
         cat "$LOGS/patch.err" >&2
         exit 1
     fi
 done
-
-#  Patch must have refused — there is a real dirty file.
-[ "$PATCH_RC" != "0" ] || {
-    echo "FAIL: patch RC=0 but edit.txt is genuinely dirty" >&2
-    cat "$LOGS/patch.err" >&2
-    exit 1
-}
 
 rm -rf "$LOGS"

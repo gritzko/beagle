@@ -19,29 +19,45 @@
 
 #include "abc/INT.h"
 #include "abc/BUF.h"
+#include "abc/URI.h"
 
-//  Apply a 3-way merge from `target_query` / `frag` into the wt.
+//  PATCH URI shapes (see VERBS.md §PATCH four-shapes table and
+//  sniff/AT.md "Patch row shapes").  Classified from URIPattern(u)
+//  bits plus u8csEmpty(u->fragment):
 //
-//  `reporoot`       absolute path of the wt root (already resolved
-//                   by the caller via HOMEOpen).
-//  `target_query`   branch/tag slice (e.g. "heads/feat",
-//                   "tags/v1.0"), or a 40-char hex commit sha.
-//                   No leading `?`.  Empty when `frag` is set and
-//                   the user invoked the cherry-pick form.
-//  `frag`           URI fragment slice (no leading `#`).  Two roles:
-//                     * `?branch#hash` — clamp the upper bound of
-//                       the absorbed range to `hash` (must be on
-//                       `branch`).  Not yet implemented.
-//                     * `#hash` (empty `target_query`) — single-
-//                       commit cherry-pick: theirs = `hash`,
-//                       fork = `parent(hash)`.
-//                   Empty slice means "no fragment".
+//    PATCH_SQUASH       URI_QUERY only                — `?br`
+//    PATCH_CHERRY       URI_FRAGMENT only             — `#hash`
+//    PATCH_MERGE        QUERY + FRAGMENT (non-empty)  — `?br#msg`
+//    PATCH_REBASE_ONE   QUERY + FRAGMENT (empty)      — `?br#`
+#define PATCH_SHAPE_BAD     0
+#define PATCH_SHAPE_SQUASH  1
+#define PATCH_SHAPE_CHERRY  2
+#define PATCH_SHAPE_MERGE   3
+#define PATCH_SHAPE_REBASE1 4
+
+//  Classify the user's PATCH URI into one of the four shapes above.
+//  Returns PATCH_SHAPE_BAD if the URI is neither query- nor
+//  fragment-bearing.  Path-scoped URIs are routed to PATCHApplyFile
+//  by the caller and are not classified here.
+u8 PATCHShape(uricp u);
+
+//  Apply a 3-way merge from `u` (the user's PATCH URI) into the wt.
 //
-//  Returns OK on clean merge (exit 0).  Returns PATCHCONFLICT when
-//  at least one path ended up with `<<<<<<<`/`>>>>>>>` markers or
-//  a modify/delete clash — conflict paths are logged to stderr;
-//  callers map this to a non-zero CLI exit.
-ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag);
+//  `reporoot`  absolute path of the wt root (already resolved by
+//              the caller via HOMEOpen).
+//  `u`         the user's parsed URI.  PATCH classifies via
+//              PATCHShape(u) and writes a `patch` row whose URI
+//              carries the resolved commit sha:
+//                  squash      → `?<sha>`
+//                  cherry-pick → `#<sha>`
+//                  merge       → `?<sha>#<msg>`
+//                  rebase-one  → `?<sha>#`
+//
+//  Returns OK on clean merge (exit 0).  Returns PATCHCFLCT when at
+//  least one path ended up with conflict markers or a modify/delete
+//  clash — conflict paths are logged to stderr; callers map this to
+//  a non-zero CLI exit.
+ok64 PATCHApply(u8cs reporoot, uricp u);
 
 //  Single-file variant: merge one path only.  Everything else in
 //  the wt is left alone.  `frag` follows the same contract as

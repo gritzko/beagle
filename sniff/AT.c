@@ -226,6 +226,37 @@ ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     return ULOGNONE;
 }
 
+//  Pick the 40-hex sha out of a patch row's URI into `out`.  Query
+//  slot wins for squash/merge/rebase-one shapes; fragment slot for
+//  cherry-pick.  `out` is left empty when neither slot has 40+ hex.
+static void at_patch_row_sha_hex(u8cs out, uricp u) {
+    if (u->query[0] != NULL && u8csLen(u->query) >= 40) {
+        $mv(out, u->query);
+        return;
+    }
+    if (u->fragment[0] != NULL && u8csLen(u->fragment) >= 40) {
+        $mv(out, u->fragment);
+        return;
+    }
+    out[0] = NULL;
+    out[1] = NULL;
+}
+
+//  Classify a patch row's URI into one of the four PATCH_SHAPE_*
+//  values.  Mirrors PATCHShape() in sniff/PATCH.c but lives here
+//  to keep AT.c self-contained (PATCH.h would otherwise leak via
+//  AT.h).  Stays in lock-step with sniff/PATCH.c by convention.
+static u8 at_patch_row_shape(uricp u) {
+    b8 has_q = (u->query[0]    != NULL);
+    b8 has_f = (u->fragment[0] != NULL);
+    b8 frag_empty = has_f && u8csEmpty(u->fragment);
+    if ( has_q && !has_f)               return 1;  // SQUASH
+    if (!has_q &&  has_f && !frag_empty) return 2; // CHERRY
+    if ( has_q &&  has_f && !frag_empty) return 3; // MERGE
+    if ( has_q &&  has_f &&  frag_empty) return 4; // REBASE1
+    return 0;  // BAD
+}
+
 ok64 SNIFFAtPatchChain(sha1b out) {
     sane(SNIFF.h && Bok(out));
     ron60 vg = SNIFFAtVerbGet();
@@ -234,9 +265,6 @@ ok64 SNIFFAtPatchChain(sha1b out) {
     u32 n = ULOGCount(SNIFF.log_idx);
     if (n == 0) return ULOGNONE;
 
-    //  Locate the index immediately after the latest get/post; that's
-    //  the oldest patch row to emit.  No baseline → walk the entire
-    //  log (start = 0).
     u32 start = 0;
     for (u32 i = n; i > 0; i--) {
         ulogrec rec = {};
@@ -245,19 +273,62 @@ ok64 SNIFFAtPatchChain(sha1b out) {
         if (rec.verb == vg || rec.verb == vp) { start = i; break; }
     }
 
-    //  Forward-walk patch rows; decode each fragment hex into a sha1
-    //  and feed into out.  Full → stop (no error).
     for (u32 i = start; i < n && sha1bHasRoom(out); i++) {
         ulogrec rec = {};
         ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
         if (o != OK) return o;
         if (rec.verb != vx) continue;
-        if (u8csLen(rec.uri.fragment) < 40) continue;
+        u8cs sha_hex = {};
+        at_patch_row_sha_hex(sha_hex, &rec.uri);
+        if (u8csLen(sha_hex) < 40) continue;
         sha1 s = {};
         a_raw(sb, s);
-        a_dup(u8c, hx, rec.uri.fragment);
+        a_dup(u8c, hx, sha_hex);
         if (HEXu8sDrainSome(sb, hx) != OK) continue;
         sha1bFeed1(out, s);
+    }
+    done;
+}
+
+ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
+    sane(SNIFF.h && entries && n_out);
+    *n_out = 0;
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 vp = SNIFFAtVerbPost();
+    ron60 vx = SNIFFAtVerbPatch();
+    u32 n = ULOGCount(SNIFF.log_idx);
+    if (n == 0) return ULOGNONE;
+
+    u32 start = 0;
+    for (u32 i = n; i > 0; i--) {
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
+        if (o != OK) return o;
+        if (rec.verb == vg || rec.verb == vp) { start = i; break; }
+    }
+
+    for (u32 i = start; i < n && *n_out < cap; i++) {
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
+        if (o != OK) return o;
+        if (rec.verb != vx) continue;
+        u8 sh = at_patch_row_shape(&rec.uri);
+        if (sh == 0) continue;
+        u8cs sha_hex = {};
+        at_patch_row_sha_hex(sha_hex, &rec.uri);
+        if (u8csLen(sha_hex) < 40) continue;
+        sniff_pe *e = &entries[*n_out];
+        e->shape = sh;
+        a_raw(sb, e->sha);
+        a_dup(u8c, hx, sha_hex);
+        if (HEXu8sDrainSome(sb, hx) != OK) continue;
+        if (sh == 3 /* MERGE */) {
+            $mv(e->msg, rec.uri.fragment);
+        } else {
+            e->msg[0] = NULL;
+            e->msg[1] = NULL;
+        }
+        (*n_out)++;
     }
     done;
 }

@@ -34,6 +34,7 @@
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
+#include "graf/JOIN.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -148,6 +149,66 @@ static ok64 fetch_blob(u8b into, u8cs path, sha1 const *sha) {
     return GRAFGet(into, u);
 }
 
+//  WEAVE-into-dirty 3-way merge: ours = wt bytes (user edits +
+//  prior PATCH output), base + theirs from keeper.  Per VERBS.md
+//  §PATCH "Weave merge into dirty wt" — prior PATCH bytes look
+//  exactly like user edits, composing transparently.  Falls back
+//  to the keeper-side `fetch_merge` if the wt file can't be
+//  mapped (e.g. add-from-theirs case where wt has nothing yet).
+static ok64 fetch_merge_wt(u8b into, u8cs reporoot, u8cs childpath,
+                           sha1 const *base_sha, sha1 const *thr_sha) {
+    sane(into && base_sha && thr_sha && !$empty(childpath));
+    u8bReset(into);
+
+    a_path(fp);
+    if (SNIFFFullpath(fp, reporoot, childpath) != OK) return PATCHFAIL;
+
+    u8b wt_map = {};
+    ok64 mo = FILEMapRO(&wt_map, $path(fp));
+    if (mo != OK) return mo;
+
+    Bu8 base_buf = {};
+    Bu8 thr_buf  = {};
+    ok64 ba = u8bAllocate(base_buf, PATCH_BLOB_BUF);
+    ok64 ta = u8bAllocate(thr_buf,  PATCH_BLOB_BUF);
+    if (ba != OK || ta != OK) {
+        u8bFree(base_buf); u8bFree(thr_buf); FILEUnMap(wt_map);
+        return PATCHFAIL;
+    }
+    ok64 bo = fetch_blob(base_buf, childpath, base_sha);
+    ok64 to = fetch_blob(thr_buf,  childpath, thr_sha);
+    if (bo != OK || to != OK) {
+        u8bFree(base_buf); u8bFree(thr_buf); FILEUnMap(wt_map);
+        return (bo != OK) ? bo : to;
+    }
+
+    a_dup(u8c, wt_bytes,   u8bDataC(wt_map));
+    a_dup(u8c, base_bytes, u8bDataC(base_buf));
+    a_dup(u8c, thr_bytes,  u8bDataC(thr_buf));
+
+    //  Path-derived extension drives the syntax tokenizer (e.g.
+    //  `c` selects the C lexer; tokens convention strips the dot
+    //  per graf/test/NEIL01.c:215).  Empty when the path has no `.`.
+    u8cs ext = {};
+    {
+        u8cp dot = NULL;
+        $for(u8c, p, childpath) { if (*p == '.') dot = (u8cp)p; }
+        if (dot != NULL && dot + 1 < childpath[1]) {
+            ext[0] = dot + 1;
+            ext[1] = childpath[1];
+        }
+    }
+    JOINfile fb = {}, fo = {}, ft = {};
+    ok64 mo2 = JOINTokenize(&fb, base_bytes, ext);
+    if (mo2 == OK) mo2 = JOINTokenize(&fo, wt_bytes,  ext);
+    if (mo2 == OK) mo2 = JOINTokenize(&ft, thr_bytes, ext);
+    if (mo2 == OK) mo2 = JOINMerge(into, &fb, &fo, &ft);
+    JOINFree(&fb); JOINFree(&fo); JOINFree(&ft);
+    u8bFree(base_buf); u8bFree(thr_buf);
+    FILEUnMap(wt_map);
+    return mo2;
+}
+
 static ok64 fetch_merge(u8b into, u8cs path,
                         sha1 const *ours, sha1 const *thrs) {
     sane(into && ours && thrs && !$empty(path));
@@ -254,6 +315,36 @@ typedef struct {
     //  the on-disk mtimes stay in lock-step (stamp-set invariant).
     ron60 ts;
 } patch_stats;
+
+//  Emit a per-file status row in the `patch <status> <path>` form
+//  required by VERBS.md §PATCH "Reporting".  Status is one of
+//  applied / merged / dirty / conflict.  Caller passes the path
+//  (no leading `./` — that's left to the consumer's regex).
+static void emit_status(const char *status, u8cs path) {
+    if ($empty(path)) return;
+    fprintf(stderr, "patch\t%s\t%.*s\n",
+            status,
+            (int)$len(path), (char *)path[0]);
+}
+
+//  Check whether the wt's on-disk bytes for `childpath` differ from
+//  `baseline_sha` (the file's blob sha at the merge baseline).  If
+//  they do, the file has user / prior-PATCH edits — emit a `dirty`
+//  status row.  Best-effort: any I/O error is silently ignored.
+static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
+                                  sha1 const *baseline_sha) {
+    if ($empty(childpath) || baseline_sha == NULL) return;
+    a_path(fp);
+    if (SNIFFFullpath(fp, reporoot, childpath) != OK) return;
+    u8bp mapped = NULL;
+    if (FILEMapRO(&mapped, $path(fp)) != OK || mapped == NULL) return;
+    sha1 disk_sha = {};
+    KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
+    FILEUnMap(mapped);
+    if (!sha1eq(&disk_sha, baseline_sha)) {
+        emit_status("dirty", childpath);
+    }
+}
 
 //  Stamp the just-written file with the patch row's ts.  Silent on
 //  error — callers are best-effort.
@@ -437,8 +528,13 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
         b8 o_eq_t = o && t && sha_eq(&o->sha, &t->sha);
 
         if (l && o && t && o_eq_l && t_eq_l) {
-            //  Unchanged on both sides — skip.
+            //  Unchanged on both sides — skip.  But the wt's
+            //  on-disk bytes may carry user / prior-PATCH edits
+            //  that diverged from the baseline; emit `dirty` in
+            //  that case so they're reported and not silently
+            //  ignored.
             st->noop++;
+            emit_dirty_if_changed(reporoot, childpath, &l->sha);
             continue;
         }
         if (l && o && t && o_eq_l && !t_eq_l) {
@@ -450,25 +546,70 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             a_dup(u8c, bytes, u8bData(mbuf));
             ok64 wo = write_blob(reporoot, childpath,
                                  t->mode, bytes);
-            if (wo == OK) { st->take_theirs++; stamp_wrote(reporoot, childpath, st); }
-            else          st->failed++;
+            if (wo == OK) {
+                st->take_theirs++;
+                stamp_wrote(reporoot, childpath, st);
+                emit_status("applied", childpath);
+            } else {
+                st->failed++;
+            }
             u8bReset(mbuf);
             continue;
         }
         if (l && o && t && !o_eq_l && t_eq_l) {
             //  Only ours changed — disk already has the right bytes.
+            //  ours diverged from baseline; report as `dirty` (theirs
+            //  did not touch this path, the user/prior-PATCH bytes
+            //  are preserved).
             st->noop++;
+            emit_status("dirty", childpath);
             continue;
         }
         if (l && o && t && o_eq_t) {
             //  Both made the same change.  Disk has ours already.
+            //  But the wt may carry user edits / prior-PATCH bytes
+            //  that diverged from the baseline blob — emit `dirty`
+            //  in that case so the user sees their work preserved.
             st->noop++;
+            emit_dirty_if_changed(reporoot, childpath, &l->sha);
             continue;
         }
         if (l && o && t && !o_eq_l && !t_eq_l && !o_eq_t) {
-            //  Both changed differently → 3-way merge via graf.
-            //  Commit-level shas, not the leaf blob shas.
-            (void)fetch_merge(mbuf, childpath, our, thr);
+            //  Both changed differently → 3-way merge.  When wt's
+            //  on-disk bytes for this path differ from cur's
+            //  committed blob (`o->sha`), the user / prior-PATCH
+            //  introduced edits that must compose with theirs:
+            //  switch to GRAFMergeWtFile which folds wt bytes as
+            //  implicit edits on `our` (VERBS.md §PATCH "Weave
+            //  merge into dirty wt", "dirty wt = virtual commit"
+            //  framing).  When wt is clean (= committed blob),
+            //  fall through to plain fetch_merge so the historical
+            //  behaviour for the multi-edit / clamped / token tests
+            //  is preserved — same merge, fewer moving parts.
+            b8 wt_dirty = NO;
+            {
+                a_path(fp);
+                if (SNIFFFullpath(fp, reporoot, childpath) == OK) {
+                    u8bp m = NULL;
+                    if (FILEMapRO(&m, $path(fp)) == OK && m) {
+                        sha1 disk_sha = {};
+                        KEEPObjSha(&disk_sha, DOG_OBJ_BLOB,
+                                   u8bDataC(m));
+                        FILEUnMap(m);
+                        if (!sha1eq(&disk_sha, &o->sha)) wt_dirty = YES;
+                    }
+                }
+            }
+            if (wt_dirty) {
+                ok64 wmo = GRAFMergeWtFile(childpath, reporoot,
+                                           our, thr, mbuf);
+                if (wmo != OK) {
+                    u8bReset(mbuf);
+                    (void)fetch_merge(mbuf, childpath, our, thr);
+                }
+            } else {
+                (void)fetch_merge(mbuf, childpath, our, thr);
+            }
             a_dup(u8c, bytes, u8bData(mbuf));
             b8 conflict = has_conflict_marker(bytes);
             //  Write result using theirs' mode when ours == fork mode,
@@ -482,8 +623,10 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         "sniff: patch: CONFLICT (content) %.*s\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->merged_conflict++;
+                    emit_status("conflict", childpath);
                 } else {
                     st->merged++;
+                    emit_status("merged", childpath);
                 }
             } else {
                 st->failed++;
@@ -497,8 +640,13 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             a_dup(u8c, bytes, u8bData(mbuf));
             ok64 wo = write_blob(reporoot, childpath,
                                  t->mode, bytes);
-            if (wo == OK) { st->added++; stamp_wrote(reporoot, childpath, st); }
-            else          st->failed++;
+            if (wo == OK) {
+                st->added++;
+                stamp_wrote(reporoot, childpath, st);
+                emit_status("applied", childpath);
+            } else {
+                st->failed++;
+            }
             u8bReset(mbuf);
             continue;
         }
@@ -928,12 +1076,112 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
     done;
 }
 
-ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
-    b8 cherry = $empty(target_query) && !$empty(frag);
-    sane($ok(reporoot) && (cherry || $ok(target_query)));
+//  Read `commit_sha`'s body, extract its first `parent <hex>` field
+//  into `parent_out`.  Returns OK on success, PATCHFAIL on root /
+//  malformed commit, KEEP* on storage error.
+static ok64 patch_first_parent(sha1 *parent_out, sha1 const *commit_sha) {
+    sane(parent_out && commit_sha);
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 16);
+    u8 ct = 0;
+    ok64 ko = KEEPGetExact(&KEEP, commit_sha, cbuf, &ct);
+    if (ko != OK) { u8bFree(cbuf); return ko; }
+    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return PATCHFAIL; }
 
-    call(refuse_if_dirty, reporoot);
+    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+    u8cs field = {}, value = {};
+    b8 found = NO;
+    while (GITu8sDrainCommit(body, field, value) == OK) {
+        if ($empty(field)) break;
+        if ($len(field) == 6 &&
+            memcmp(field[0], "parent", 6) == 0 &&
+            $len(value) >= 40) {
+            u8s sb = {parent_out->data, parent_out->data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            HEXu8sDrainSome(sb, hx);
+            found = YES;
+            break;
+        }
+    }
+    u8bFree(cbuf);
+    return found ? OK : PATCHFAIL;
+}
 
+//  Ancestor-skip walk for rebase-one (`?br#`): walk first-parent
+//  chain from `br_tip` toward `fork`.  Return the oldest commit
+//  whose parent equals `fork` (or any sha already-reachable from
+//  cur via parent chain — TODO: extend for foster reachability
+//  once foster-aware walks land).  This is the "next not-yet-
+//  replayed commit on the branch".
+//
+//    F1 ── F2 ── F3 = br_tip
+//    fork = T0; walking F3→F2→F1, parent(F1)==fork → return F1.
+//
+//  Returns PATCHFAIL if br_tip equals fork (nothing to rebase) or
+//  the chain doesn't reach fork within RBASEONE_MAX hops.
+#define RBASEONE_MAX 4096
+static ok64 resolve_rebase_one(sha1 *out, sha1 const *br_tip,
+                               sha1 const *fork) {
+    sane(out && br_tip && fork);
+    if (sha1eq(br_tip, fork)) {
+        fprintf(stderr,
+            "sniff: patch: rebase-one — branch tip is already "
+            "reachable from cur (nothing to replay)\n");
+        return PATCHFAIL;
+    }
+    sha1 cur = *br_tip;
+    for (u32 i = 0; i < RBASEONE_MAX; i++) {
+        sha1 par = {};
+        ok64 po = patch_first_parent(&par, &cur);
+        if (po != OK) {
+            fprintf(stderr,
+                "sniff: patch: rebase-one — chain from br_tip didn't "
+                "reach fork (root commit?)\n");
+            return po;
+        }
+        if (sha1eq(&par, fork)) {
+            *out = cur;
+            return OK;
+        }
+        cur = par;
+    }
+    fprintf(stderr,
+        "sniff: patch: rebase-one — chain longer than %u hops; "
+        "giving up\n", RBASEONE_MAX);
+    return PATCHFAIL;
+}
+
+u8 PATCHShape(uricp u) {
+    if (u == NULL) return PATCH_SHAPE_BAD;
+    u8 p = URIPattern(u);
+    b8 has_q = (p & URI_QUERY)    != 0;
+    b8 has_f = (p & URI_FRAGMENT) != 0;
+    b8 frag_empty = has_f && u8csEmpty(u->fragment);
+    if ( has_q && !has_f)              return PATCH_SHAPE_SQUASH;
+    if (!has_q &&  has_f && !frag_empty) return PATCH_SHAPE_CHERRY;
+    if ( has_q &&  has_f && !frag_empty) return PATCH_SHAPE_MERGE;
+    if ( has_q &&  has_f &&  frag_empty) return PATCH_SHAPE_REBASE1;
+    return PATCH_SHAPE_BAD;
+}
+
+ok64 PATCHApply(u8cs reporoot, uricp u) {
+    sane($ok(reporoot) && u != NULL);
+    u8 shape = PATCHShape(u);
+    if (shape == PATCH_SHAPE_BAD) {
+        fprintf(stderr,
+            "sniff: patch URI must be one of `?<br>`, `#<sha>`, "
+            "`?<br>#<msg>`, or `?<br>#`\n");
+        fail(PATCHFAIL);
+    }
+    b8 cherry = (shape == PATCH_SHAPE_CHERRY);
+    a_dup(u8c, target_query, u->query);
+    a_dup(u8c, frag,         u->fragment);
+
+    //  Per VERBS.md §PATCH "Weave merge into dirty wt" — PATCH no
+    //  longer refuses on dirty wt.  Dirty bytes are preserved by
+    //  the weave merge and reported via `patch dirty <path>` status
+    //  rows (emitted from patch_walk's noop arms when the wt's
+    //  on-disk bytes differ from the baseline blob).
     sha1 our_sha = {};
     call(resolve_ours, &our_sha);
 
@@ -944,19 +1192,19 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
         call(resolve_cherry, &thr_sha, &fork_sha, frag);
     } else {
         call(resolve_target, &thr_sha, reporoot, target_query);
-        //  Clamp form (`?branch#hash`): override theirs to the
-        //  fragment-supplied sha.  The branch path stays unchanged,
-        //  so the resolve_parent_tip / GRAFLca step below still
-        //  computes the correct fork — only the upper bound moves
-        //  from `tip(branch)` to `hash`.  Reachability of `hash`
-        //  from the branch is not validated here yet (TODO); a
-        //  hash on a different branch will silently produce a
-        //  surprising 3-way result.
-        if (!u8csEmpty(frag)) {
-            sha1 clamp_sha = {};
-            call(patch_hex40_to_sha1, &clamp_sha, frag);
-            thr_sha = clamp_sha;
-        }
+        //  Frag interpretation depends on shape:
+        //    PATCH_SHAPE_SQUASH  — no frag.
+        //    PATCH_SHAPE_MERGE   — frag is the user-supplied merge
+        //                          msg, recorded into the patch row
+        //                          but does not affect resolution.
+        //    PATCH_SHAPE_REBASE1 — frag empty (marker only); resolve
+        //                          theirs to the NEXT not-yet-
+        //                          replayed commit on the branch
+        //                          (TODO Phase 4); for now fall
+        //                          through to branch-tip behavior.
+        //  No `?branch#hash` clamp form in the new model — that's
+        //  the cherry-pick shape (fragment-only) instead.
+        (void)shape;
     }
 
     //  Lazy-index both branches' commit chains into graf so the LCA
@@ -1014,6 +1262,20 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
         fail(PATCHURELT);
     }
 
+    //  Rebase-one ancestor-skip: walk first-parent chain from br.tip
+    //  back to fork_sha; pick the oldest commit not reachable from
+    //  cur (its parent equals fork).  Resets thr_sha to that commit;
+    //  fork_sha (== parent of theirs) stays correct for the merge
+    //  base.  TODO: extend reachability to follow `foster` headers
+    //  on cur's history once Phase 4 lands; today the LCA-based
+    //  fork captures parent-only reachability.
+    if (shape == PATCH_SHAPE_REBASE1) {
+        sha1 br_tip = thr_sha;
+        sha1 picked = {};
+        call(resolve_rebase_one, &picked, &br_tip, &fork_sha);
+        thr_sha = picked;
+    }
+
     //  Pick the patch row ts up-front.  SNIFFAtNow guarantees
     //  monotonicity against the ULOG tail (tail_ts+1 on tie).  We thread
     //  this ts through patch_walk and stamp each file SNIFFAtStampPath-
@@ -1029,15 +1291,19 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
     call(patch_walk, reporoot, root,
          &fork_sha, &our_sha, &thr_sha, &st);
 
-    //  Append a `patch` ULOG row.  The row's fragment carries
-    //  `theirs` — the absorbed commit's sha.  The wt's anchor
-    //  commit (`ours`) is implicit: it lives in the most recent
-    //  get/post row and is recovered via SNIFFAtCurTip.  No
-    //  `&<theirs>` chain in the query — the chain is reconstructed
-    //  by walking the tail of patch rows back to the latest
-    //  get/post (SNIFFAtPatchChain), each row contributing its own
-    //  `theirs`.  Per-file forensic tracking lives in stamp_wrote
-    //  (the row's ts matches every touched file's mtime).
+    //  Append a `patch` ULOG row.  The URI shape encodes the op,
+    //  the `<theirs>` slot always holds the resolved 40-hex sha:
+    //
+    //    PATCH_SHAPE_SQUASH   →  `?<sha>`
+    //    PATCH_SHAPE_CHERRY   →  `#<sha>`
+    //    PATCH_SHAPE_MERGE    →  `?<sha>#<msg>`
+    //    PATCH_SHAPE_REBASE1  →  `?<sha>#`            (empty fragment)
+    //
+    //  POST consumes these via SNIFFAtPatchChain to assemble parent /
+    //  foster headers and `picked` trailers on the next commit (see
+    //  VERBS.md §POST "Parent / foster / picked assembly").
+    //  Per-file forensic tracking lives in stamp_wrote (the row's
+    //  ts matches every touched file's mtime).
     a_pad(u8, thex, 40);
     a_rawc(tsha, thr_sha);
     HEXu8sFeedSome(thex_idle, tsha);
@@ -1045,12 +1311,39 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
     uri urow = {};
     {
         a_dup(u8c, h, u8bDataC(thex));
-        urow.fragment[0] = h[0];
-        urow.fragment[1] = h[1];
+        if (shape == PATCH_SHAPE_CHERRY) {
+            //  fragment-only: `#<sha>`
+            urow.fragment[0] = h[0];
+            urow.fragment[1] = h[1];
+        } else {
+            //  query-bearing shapes: sha goes into query.
+            urow.query[0] = h[0];
+            urow.query[1] = h[1];
+            if (shape == PATCH_SHAPE_MERGE) {
+                //  user-supplied msg → fragment.
+                urow.fragment[0] = u->fragment[0];
+                urow.fragment[1] = u->fragment[1];
+            } else if (shape == PATCH_SHAPE_REBASE1) {
+                //  Empty-fragment marker: present-but-empty slice
+                //  (begin==end, both non-NULL).  Anchor it on the
+                //  hex buffer's tail so the pointer stays live for
+                //  the duration of the SNIFFAtAppendAt call.
+                urow.fragment[0] = h[1];
+                urow.fragment[1] = h[1];
+            }
+            //  SQUASH: fragment slot left absent (NULL).
+        }
     }
 
     ron60 verb = SNIFFAtVerbPatch();
     (void)SNIFFAtAppendAt(ts, verb, &urow);
+
+    //  Per-commit applied report (VERBS.md §PATCH "Reporting": one
+    //  line per applied commit).  For now, emit just the resolved
+    //  theirs sha — squash absorbs many commits but only the tip is
+    //  the row's anchor; ancestor-skip enumeration is TODO.
+    fprintf(stderr, "patch\tapplied\t%.*s\n",
+            (int)u8bDataLen(thex), (char *)u8bDataHead(thex));
 
     fprintf(stderr,
             "sniff: patch: noop=%u take-theirs=%u merged=%u "

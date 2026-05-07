@@ -31,6 +31,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RON.h"
+#include "dog/CLI.h"
 #include "dog/IGNO.h"
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
@@ -43,6 +44,7 @@
 
 #include "AT.h"
 #include "GET.h"
+#include "PATCH.h"
 
 //  Cap on the per-commit ULOG-shaped buffer (decisions).  32 MiB is
 //  enough for tens of thousands of distinct paths per commit at
@@ -2046,18 +2048,35 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
     *n_out = 0;
 
-    a_pad(sha1, fosters, 64);
-    (void)SNIFFAtPatchChain(fosters);
-    if (sha1bDataLen(fosters) == 0) return ULOGNONE;
+    //  New msg-resolution per VERBS.md §POST:
+    //    1. POST's own #frag wins (handled by caller before us).
+    //    2. Else if exactly one in-scope patch row applied a commit
+    //       AND it carries a usable msg — use it.  Usable msgs:
+    //         MERGE   → row's fragment (user-supplied).
+    //         CHERRY  → picked commit's subject (looked up here).
+    //         REBASE1 → replayed commit's subject (looked up here).
+    //         SQUASH  → not usable (multiple commits collapsed).
+    //    3. Else (0 or >1 usable msgs) → return ULOGNONE; caller
+    //       refuses with POSTNOMSG.
+    sniff_pe pent[64];
+    u32 n_pent = 0;
+    (void)SNIFFAtPatchEntries(pent, 64, &n_pent);
+    if (n_pent == 0) return ULOGNONE;
+    *n_out = n_pent;
 
-    a_dup(sha1c, fchain, sha1bDataC(fosters));
-    *n_out = (u32)$len(fchain);
+    //  Count usable-msg entries; remember the last one's index for
+    //  the "exactly one" path.
+    u32 usable = 0, idx = 0;
+    for (u32 i = 0; i < n_pent; i++) {
+        u8 sh = pent[i].shape;
+        if (sh == 1 /* SQUASH */) continue;
+        usable++;
+        idx = i;
+    }
+    if (usable != 1) return ULOGNONE;
 
-    //  Pick: ULOG-order last entry (pragmatic proxy for topologically
-    //  latest — same answer when cherry-picks were applied in order;
-    //  for the unusual reverse-order case the user can pass -m to
-    //  override).
-    sha1 pick = *$last(fchain);
+    sha1 pick = pent[idx].sha;
+    u8   pshape = pent[idx].shape;
 
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
@@ -2072,25 +2091,14 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     post_parse_commit_meta(u8bDataC(cbuf),
                            pick_subject, pick_author_id);
 
-    //  Et-al detection: any other absorbed commit's author identity
-    //  differs from the pick's → annotate the inherited author.
-    b8 et_al = NO;
-    Bu8 cbuf2 = {};
-    u8bAllocate(cbuf2, 1UL << 16);
-    $for(sha1c, sp, fchain) {
-        if (sp == $last(fchain)) continue;
-        u8bReset(cbuf2);
-        u8 ct2 = 0;
-        if (KEEPGetExact(&KEEP, sp, cbuf2, &ct2) != OK) continue;
-        if (ct2 != DOG_OBJ_COMMIT) continue;
-        u8cs sub2 = {}, auth2 = {};
-        post_parse_commit_meta(u8bDataC(cbuf2), sub2, auth2);
-        if (!$eq(auth2, pick_author_id)) {
-            et_al = YES;
-            break;
-        }
+    //  MERGE shape: msg is the row's fragment (user-supplied),
+    //  override the keeper-fetched subject.
+    if (pshape == 3 /* MERGE */ && !u8csEmpty(pent[idx].msg)) {
+        $mv(pick_subject, pent[idx].msg);
     }
-    u8bFree(cbuf2);
+
+    //  Et-al doesn't apply with the new "exactly one" rule.
+    b8 et_al = NO;
 
     //  Compose author into auth_buf.  When et-al, inject " (et al)"
     //  before "<email>" — find the last '<' in the identity string.
@@ -2119,15 +2127,9 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     }
     u8csMv(*auth_out, u8bDataC(auth_buf));
 
-    //  Compose message: subject + " (+N)" when N=patches-1>0.
+    //  Single-msg path under the new spec — no `(+N)` annotation
+    //  (that was the old "absorb chain into one squash" behavior).
     u8bFeed(msg_buf, pick_subject);
-    u32 extra = (u32)$len(fchain) - 1;
-    if (extra > 0) {
-        char tmp[32];
-        int len = snprintf(tmp, sizeof(tmp), " (+%u)", extra);
-        u8cs ext = {(u8cp)tmp, (u8cp)tmp + len};
-        u8bFeed(msg_buf, ext);
-    }
     u8csMv(*msg_out, u8bDataC(msg_buf));
 
     u8bFree(cbuf);
@@ -2135,8 +2137,10 @@ ok64 POSTPatchDefaults(u8cs reporoot,
 }
 
 ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
-                u8cs message, u8cs author, sha1 *sha_out) {
+                u8cs message, u8cs author,
+                cli const *inv, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
+    b8 force = inv && CLIHas(inv, "--force");
     keeper *k = &KEEP;
 
     //  1. Resolve baseline parent.  Single-parent invariant on the
@@ -2364,24 +2368,29 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         u8bFeed1(com, '\n');
     }
 
-    //  Foster lines: every patch row's `theirs` sha appended since
-    //  the latest get/post is recorded as `foster <hex>` (oldest-
-    //  first).  These are NOT graph parents (single-parent invariant
-    //  on the write path, see VERBS.md §POST) — they're permanent
-    //  provenance for absorbed work.  Empty chain → no foster lines.
-    {
-        a_pad(sha1, fosters, 64);
-        (void)SNIFFAtPatchChain(fosters);
-        a_dup(sha1c, fchain, sha1bDataC(fosters));
-        $for(sha1c, sp, fchain) {
-            a_cstr(fos_label, "foster ");
-            u8bFeed(com, fos_label);
-            a_pad(u8, fhex, 40);
-            a_rawc(fraw, *sp);
-            HEXu8sFeedSome(fhex_idle, fraw);
-            u8bFeed(com, u8bDataC(fhex));
-            u8bFeed1(com, '\n');
-        }
+    //  Headers from in-scope patch rows (VERBS.md §POST "Parent /
+    //  foster / picked assembly").  Walk oldest → newest; classify
+    //  each row by URI shape:
+    //
+    //    SQUASH   `?<sha>`         → foster <sha>\n
+    //    REBASE1  `?<sha>#`        → foster <sha>\n
+    //    MERGE    `?<sha>#<msg>`   → parent <sha>\n
+    //    CHERRY   `#<sha>`         → collected for `picked: <sha>`
+    //                                 trailer appended to msg below.
+    sniff_pe pent[64];
+    u32 n_pent = 0;
+    (void)SNIFFAtPatchEntries(pent, 64, &n_pent);
+    for (u32 i = 0; i < n_pent; i++) {
+        if (pent[i].shape == 2 /* CHERRY */) continue;
+        const char *lab =
+            (pent[i].shape == 3 /* MERGE */) ? "parent " : "foster ";
+        u8cs lab_cs = {(u8cp)lab, (u8cp)lab + 7};
+        u8bFeed(com, lab_cs);
+        a_pad(u8, fhex, 40);
+        a_rawc(fraw, pent[i].sha);
+        HEXu8sFeedSome(fhex_idle, fraw);
+        u8bFeed(com, u8bDataC(fhex));
+        u8bFeed1(com, '\n');
     }
 
     time_t now = time(NULL);
@@ -2402,6 +2411,28 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     u8bFeed1(com, '\n');
     u8bFeed(com, message);
     u8bFeed1(com, '\n');
+
+    //  Append `picked: <sha>` trailers for any cherry-pick entries
+    //  in the patch chain (VERBS.md §POST).  One blank line between
+    //  message body and trailers so a downstream reader can split
+    //  them cleanly.
+    {
+        b8 any_picked = NO;
+        for (u32 i = 0; i < n_pent; i++) {
+            if (pent[i].shape != 2 /* CHERRY */) continue;
+            if (!any_picked) {
+                u8bFeed1(com, '\n');
+                any_picked = YES;
+            }
+            a_cstr(pkl, "picked: ");
+            u8bFeed(com, pkl);
+            a_pad(u8, phex, 40);
+            a_rawc(praw, pent[i].sha);
+            HEXu8sFeedSome(phex_idle, praw);
+            u8bFeed(com, u8bDataC(phex));
+            u8bFeed1(com, '\n');
+        }
+    }
 
     //  11. Feed pack: commit first.
     a_dup(u8c, com_data, u8bData(com));
@@ -2519,6 +2550,35 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                 body[1] = u8bIdleHead(mapped);
             }
 
+            //  Refuse to commit any file containing PATCH's
+            //  4-char conflict markers (`<<<<`).  An unattended
+            //  `patch && post` chain stops here with POSTCFLCT
+            //  before recording a half-merged commit (VERBS.md
+            //  §PATCH "Reporting" — conflict-loud rule).
+            //  `force=YES` skips the scan — for committing files
+            //  whose legitimate content contains the marker (e.g.
+            //  VERBS.md / docs describing the syntax).
+            if (!force) {
+                u8cp pp = body[0];
+                u8cp pe = body[1];
+                while (pp + 4 <= pe) {
+                    if (pp[0] == '<' && pp[1] == '<' &&
+                        pp[2] == '<' && pp[3] == '<') {
+                        fprintf(stderr,
+                            "sniff: post: refusing — conflict "
+                            "marker in tracked file %.*s "
+                            "(re-run with --force to override)\n",
+                            (int)$len(path), (char *)path[0]);
+                        if (mapped) FILEUnMap(mapped);
+                        if (u8bOK(body_buf)) u8bFree(body_buf);
+                        KEEPPackClose(k, &p);
+                        u8bFree(tree_bodies);
+                        post_ctx_free(&ctx);
+                        return POSTCFLCT;
+                    }
+                    pp++;
+                }
+            }
             u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
             sha1 bsha = {};
             ok64 bo = KEEPPackFeed(k, &p, DOG_OBJ_BLOB, body,

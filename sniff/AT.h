@@ -126,11 +126,31 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out);
 ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out);
 
 //  Append every `patch` row's `theirs` sha (decoded from the row's
-//  40-hex fragment) into `out`, oldest-first, walking from the row
-//  immediately after the latest `get`/`post` to the ULOG tail.  Stops
-//  early once `out` is full (no error).  Empty chain → `out` left
-//  empty.  Returns OK; ULOGNONE only when the ULOG has no rows at all.
+//  40-hex query or fragment slot) into `out`, oldest-first, walking
+//  from the row immediately after the latest `get`/`post` to the
+//  ULOG tail.  Stops early once `out` is full (no error).  Empty
+//  chain → `out` left empty.  Returns OK; ULOGNONE only when the
+//  ULOG has no rows at all.
 ok64 SNIFFAtPatchChain(sha1b out);
+
+//  Shape-aware patch-row reader.  Per VERBS.md §POST "Parent /
+//  foster / picked assembly", POST needs more than just the sha
+//  list — it needs each row's URI shape (squash / cherry-pick /
+//  merge / rebase-one) to decide whether to emit a `parent` /
+//  `foster` header or a `picked:` trailer, and the user-supplied
+//  msg (merge shape only).
+//
+//  `entries` array is filled oldest-first with up to `cap` rows;
+//  on overflow extra rows are dropped (no error).  `*n_out` gets
+//  the number written.  Each entry's `msg` slice points into the
+//  ULOG buffer — valid until the next ULOG mutation.
+typedef struct {
+    u8   shape;   //  PATCH_SHAPE_SQUASH/CHERRY/MERGE/REBASE1
+    sha1 sha;     //  resolved 40-hex theirs
+    u8cs msg;     //  merge: row's fragment; otherwise empty
+} sniff_pe;
+
+ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out);
 
 //  Timestamp of the latest `post` row, or 0 if none.  This is the floor
 //  for "put/delete since last post" scans used by POST's change-set

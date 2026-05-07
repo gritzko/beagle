@@ -315,7 +315,7 @@ ok64 SNIFFCheckoutCommit() {
     a_cstr(author, "Test <t@t>");
     sha1 new_sha = {};
     u8cs no_target = {};
-    call(POSTCommit, root, no_target, msg, author, &new_sha);
+    call(POSTCommit, root, no_target, msg, author, NULL, &new_sha);
 
     // Verify new commit exists
     u64 new_hashlet = WHIFFHashlet60(&new_sha);
@@ -595,7 +595,8 @@ ok64 SNIFFRoundTrip_stash() {
     sha1 c2_sha = {};
     a_cstr(msg2, "modify a, add d");
     a_cstr(author, "Test <t@t>");
-    call(POSTCommit, root, msg2, author, &c2_sha);
+    u8cs no_target2 = {};
+    call(POSTCommit, root, no_target2, msg2, author, NULL, &c2_sha);
 
     a_pad(u8, c2_hex, 40);
     sha2hex(c2_hex, &c2_sha);
@@ -654,7 +655,8 @@ ok64 SNIFFRoundTrip_stash() {
         a_cstr(msg, "delete b");
         a_cstr(auth, "Test <t@t>");
         sha1 c3_sha = {};
-        call(POSTCommit, root, msg, auth, &c3_sha);
+        u8cs no_target3 = {};
+        call(POSTCommit, root, no_target3, msg, auth, NULL, &c3_sha);
 
         a_pad(u8, c3_hex, 40);
         sha2hex(c3_hex, &c3_sha);

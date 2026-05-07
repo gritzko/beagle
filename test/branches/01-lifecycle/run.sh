@@ -17,17 +17,17 @@ TRUNK_REFS_T1=$(ref_tip "?")
     || fail "trunk REFS tip $TRUNK_REFS_T1 != T1=$T1"
 note "trunk T1=$T1"
 
-# 2. create child branch via POST
-echo "=== 2. be post ?./fix1 — create child ==="
+# 2. create child branch via PUT
+echo "=== 2. be put ?./fix1 — create child ==="
 "$BE" put "?./fix1" >/dev/null \
-    || fail "be post ?./fix1 failed (pre-spec: POST must create on miss)"
+    || fail "be put ?./fix1 failed"
 FIX1_REFS=$(ref_tip "?fix1")
-[ -n "$FIX1_REFS" ] || fail "?fix1 not in REFS after be post ?./fix1"
+[ -n "$FIX1_REFS" ] || fail "?fix1 not in REFS after be put ?./fix1"
 [ "$FIX1_REFS" = "$T1" ] || fail "?fix1 should fork at T1=$T1; got $FIX1_REFS"
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] || fail "trunk REFS moved by branch create"
 note "?fix1 forked at $FIX1_REFS; trunk unchanged"
-[ -d .dogs/fix1 ] || fail ".dogs/fix1 shard missing after be post ?./fix1"
+[ -d .dogs/fix1 ] || fail ".dogs/fix1 shard missing after be put ?./fix1"
 note ".dogs/fix1 shard materialised"
 
 # 3. switch wt to the child

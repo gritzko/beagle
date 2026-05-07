@@ -18,7 +18,7 @@ on-disk files are "clean" vs user-edited.
 | `repo`   | `file:///abs/path/.dogs/` (row 0 only; worktree → store anchor) | no |
 | `get`    | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
 | `post`   | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
-| `patch`  | `?<branch>#<ours>` (single-tip; copies prior query)   | yes |
+| `patch`  | one of four shapes — see "Patch row shapes" below     | yes |
 | `put`    | `<path>`                                              | yes (the staged file) |
 | `delete` | `<path>`                                              | no (file unlinked) |
 | `mod`    | `<path>`  (watch daemon hint — inotify observed edit) | no |
@@ -74,21 +74,51 @@ walk `u.query` with `QURYu8sDrain` to pull out the ref and SHA(s).
 
 ## Baseline URI
 
-The most recent `get` / `post` / `patch` row names the current
-baseline tree.  The canonical shape is `?<branch>#<curhash>`: the
-query carries the absolute branch path (one REF spec per dog/QURY)
-and the fragment carries the wt's current 40-hex commit sha.
-
-Per VERBS.md §PATCH and Invariant 2 (linear branches, single-parent
-commits), PATCH erases provenance — its row copies the prior
-baseline's query verbatim and writes the wt's tip into the fragment.
-No `&<theirs>` chain is appended; the baseline stays single-tip
-across PATCH and POST.  Per-file forensic tracking of which files
-came from a PATCH lives in the row's `ts` (every touched file's
-mtime equals the PATCH row's ts), not in the URI query.
+The most recent `get` / `post` row names the current baseline tree.
+The canonical shape is `?<branch>#<curhash>`: query carries the
+absolute branch path (one REF spec per dog/QURY), fragment carries
+the wt's current 40-hex commit sha.  `patch` rows do **not** redefine
+the baseline; they record absorbed work since the last `get`/`post`
+and are consumed by the next POST (see "Patch row shapes" below).
 
 Readers that only need "current tip" take the fragment via
 `SNIFFAtQueryFirstSha(u, hex40)`.
+
+## Patch row shapes
+
+Per VERBS.md §PATCH, PATCH has four URI shapes; each maps to a row
+that POST consumes when assembling the next commit's headers.  All
+user inputs (branch names, hashlets, msg-substring searches) are
+resolved at PATCH time into the canonical 40-hex sha of the commit
+actually applied; the row's query/fragment slot then holds that
+sha verbatim (a single `QURY_SHA` spec).  The branch name / search
+string is **not** logged — it doesn't survive renames, and POST
+doesn't need it to assemble headers.
+
+| User input         | Op           | Patch row URI       | POST consumes as          |
+|--------------------|--------------|---------------------|---------------------------|
+| `?<br>`            | squash       | `?<sha>`            | one foster header         |
+| `#<hashlet>` / `#<msg>` | cherry-pick | `#<sha>`         | `picked` trailer          |
+| `?<br>#<msg>`      | merge        | `?<sha>#<msg>`      | parent header + msg       |
+| `?<br>#`           | rebase one   | `?<sha>#`           | foster header + reused msg|
+
+Shape classification is by URI form: query-only → squash; non-empty
+fragment alongside query → merge; empty-fragment alongside query →
+rebase-one; fragment-only → cherry-pick.  The empty-fragment
+marker (`#` with no body) is significant and must be preserved by
+ULOG writers (`DOGCanonURI` does this already).
+
+A `patch` row whose URI carries a path slot (e.g.
+`./<path>?<sha>`) is **path-scoped**: it records the absorbed
+bytes for those paths only.  POST emits no header for such rows
+and counts them as zero applied commits during message resolution.
+
+Multiple `patch` rows may accumulate between two POSTs; POST scans
+forward from the pd boundary (most recent `get`/`post`) and assembles
+all foster/parent headers and `picked` trailers in row order.
+Per-file forensic tracking of which files came from which PATCH
+lives in the row's `ts` (every touched file's mtime equals the row's
+ts), not in the URI.
 
 ## Stamp-set
 

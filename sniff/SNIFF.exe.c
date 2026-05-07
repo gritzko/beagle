@@ -1322,7 +1322,7 @@ ok64 SNIFFExec(cli *c) {
                 u8cs no_target = {};
                 sha1 sha = {};
                 ret = POSTCommit(reporoot, no_target,
-                                 def_msg, def_auth, &sha);
+                                 def_msg, def_auth, c, &sha);
                 if (ret == OK) {
                     a_pad(u8, hex, 40);
                     a_rawc(rs, sha);
@@ -1331,6 +1331,14 @@ ok64 SNIFFExec(cli *c) {
                             (int)u8bDataLen(hex),
                             (char *)u8bDataHead(hex));
                 }
+            } else if (def_n > 0) {
+                //  Patch rows in scope but msg can't be auto-resolved
+                //  (zero or >1 usable msgs).  Refuse per VERBS.md §POST
+                //  message-resolution; user must supply `#msg`.
+                fprintf(stderr,
+                    "sniff: post: cannot auto-resolve commit msg "
+                    "from %u patch row(s); supply `#msg`\n", def_n);
+                ret = POSTNOMSG;
             } else {
                 ret = POSTPrintStatus(reporoot);
             }
@@ -1354,7 +1362,7 @@ ok64 SNIFFExec(cli *c) {
                 }
                 sha1 sha = {};
                 ret = POSTCommit(reporoot, target,
-                                 commit_msg, commit_author, &sha);
+                                 commit_msg, commit_author, c, &sha);
                 if (ret == OK) {
                     a_rawc(rs, sha);
                     HEXu8sFeedSome(hex_idle, rs);
@@ -1506,6 +1514,17 @@ post_done:
             ret = SNIFFFAIL;
         } else {
             uri *u = &c->uris[0];
+            //  Coalesce trailing fragment-only URIs (typical
+            //  `be patch ?feat '#merge msg'` shape — argv lexer puts
+            //  msg into uris[1] as a fragment-only URI).  Merge that
+            //  fragment back into uris[0] so PATCHApply sees one URI
+            //  with the full shape.
+            for (u32 i = 1; i < c->nuris; i++) {
+                uri *u2 = &c->uris[i];
+                if (u2->fragment[0] != NULL && u->fragment[0] == NULL) {
+                    $mv(u->fragment, u2->fragment);
+                }
+            }
             //  Accept `path?query` for single-file merge, bare
             //  `?query` (with optional `#hash` clamp) for whole-wt
             //  merge, or bare `#hash` for single-commit cherry-pick.
@@ -1514,14 +1533,13 @@ post_done:
                 a_dup(u8c, query, u->query);
                 a_dup(u8c, frag,  u->fragment);
                 ret = PATCHApplyFile(reporoot, path, query, frag);
-            } else if (!$empty(u->query)) {
-                a_dup(u8c, query, u->query);
-                a_dup(u8c, frag,  u->fragment);
-                ret = PATCHApply(reporoot, query, frag);
-            } else if (!$empty(u->fragment)) {
-                u8cs no_query = {};
-                a_dup(u8c, frag, u->fragment);
-                ret = PATCHApply(reporoot, no_query, frag);
+            } else if ((u->query[0] != NULL) ||
+                       (u->fragment[0] != NULL)) {
+                //  Pass the URI directly so the present-empty
+                //  fragment marker (`?br#` rebase-one shape)
+                //  survives.  PATCHApply classifies via PATCHShape
+                //  and writes the appropriate row variant.
+                ret = PATCHApply(reporoot, u);
             } else {
                 fprintf(stderr,
                     "sniff: patch URI must have `?<ref|sha>` "
