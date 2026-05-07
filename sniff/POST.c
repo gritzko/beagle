@@ -1359,12 +1359,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 
         //  Skip filter: cross-branch promote handles cur via auto-sync,
         //  so don't recurse into it from the cascade.
-        if (!u8csEmpty(cc->skip) &&
-            u8csLen(child_branch) == u8csLen(cc->skip) &&
-            memcmp(child_branch[0], cc->skip[0],
-                   u8csLen(child_branch)) == 0) {
-            continue;
-        }
+        if (!u8csEmpty(cc->skip) && u8csEq(child_branch, cc->skip)) continue;
 
         //  Stage rebase + record.
         ok64 ro = post_cascade_one(cc, child_branch,

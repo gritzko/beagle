@@ -375,60 +375,65 @@ static ok64 dog_pup_path(path8b out, path8s dir, u32 seqno, u8cs ext) {
 }
 
 //  Parse "<10-RON64><ext>" filename → seqno; 0 on bad fmt.
-static u32 dog_pup_parse_seqno(char const *name, size_t nlen, u8cs ext) {
-    size_t elen = (size_t)$len(ext);
-    if (nlen != DOG_PUP_SEQNO_W + elen) return 0;
-    if (memcmp(name + DOG_PUP_SEQNO_W, ext[0], elen) != 0) return 0;
-    u8cs slice = {(u8cp)name, (u8cp)name + DOG_PUP_SEQNO_W};
+static u32 dog_pup_parse_seqno(u8cs name, u8cs ext) {
+    if (u8csLen(name) != DOG_PUP_SEQNO_W + u8csLen(ext)) return 0;
+    a_dup(u8c, tail, name);
+    u8csUsed(tail, DOG_PUP_SEQNO_W);
+    if (!u8csEq(tail, ext)) return 0;
+    u8cs seqno_s = {name[0], name[0] + DOG_PUP_SEQNO_W};
     ok64 v = 0;
-    if (RONutf8sDrain(&v, slice) != OK) return 0;
+    if (RONutf8sDrain(&v, seqno_s) != OK) return 0;
     return (u32)v;
 }
 
 ok64 DOGPupOpenAll(kv32b pups, path8s dir, u8cs ext) {
-    sane(pups != NULL && $ok(dir) && $ok(ext));
+    sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
 
-    a_path(dpat);
-    PATHu8bFeed(dpat, dir);
-    DIR *d = opendir((char *)u8bDataHead(dpat));
-    if (!d) done;  // empty stack — dir not yet created
+    //  Two-phase: walk directory with FILEIter to collect (seqno → name)
+    //  pairs in a Bkv32, sort by key, then map each file in order.
+    //  Keeping the iterator and FILEMapRO disjoint avoids any aliasing
+    //  between the iterator's path buffer and FILEMapRO's bookkeeping.
+    a_path(dpat, dir);
+    fileit it = {};
+    if (FILEIterOpen(&it, dpat) != OK) done;  // dir absent → empty stack
 
-    char names[FILE_MAX_OPEN][DOG_PUP_SEQNO_W + 64];
-    u32 nfound = 0;
-    size_t elen = (size_t)$len(ext);
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL && nfound < FILE_MAX_OPEN) {
-        size_t nlen = strlen(e->d_name);
-        if (nlen != DOG_PUP_SEQNO_W + elen) continue;
-        if (memcmp(e->d_name + DOG_PUP_SEQNO_W, ext[0], elen) != 0) continue;
-        memcpy(names[nfound], e->d_name, nlen + 1);
-        nfound++;
+    Bkv32 seqnos = {};
+    call(kv32bAllocate, seqnos, FILE_MAX_OPEN);
+    //  names are <=21 bytes (10 seqno + 11 ext); 32 is plenty.
+    a_pad(u8, namebuf, FILE_MAX_OPEN * 32);
+
+    scan(FILENext, &it) {
+        if (it.type != DT_REG) continue;
+        u8cs base = {};
+        PATHu8sBase(base, u8bDataC(it.path));
+        u32 sq = dog_pup_parse_seqno(base, ext);
+        if (sq == 0) continue;
+        if ($len(u8bIdleC(namebuf)) < u8csLen(base) + 1) continue;
+        u32 name_off = (u32)u8bDataLen(namebuf);
+        u8bFeed(namebuf, base);
+        u8bFeed1(namebuf, 0);
+        kv32 kv = {.key = sq, .val = name_off};
+        if (kv32bPush(seqnos, &kv) != OK) break;
     }
-    closedir(d);
+    seen(END);
+    FILEIterClose(&it);
 
-    //  Sort lexicographically — name order matches seqno order since
-    //  `<seqno>` is fixed-width zero-padded RON64.
-    for (u32 i = 0; i + 1 < nfound; i++)
-        for (u32 j = i + 1; j < nfound; j++)
-            if (strcmp(names[i], names[j]) > 0) {
-                char t[DOG_PUP_SEQNO_W + 64];
-                memcpy(t, names[i], sizeof(t));
-                memcpy(names[i], names[j], sizeof(t));
-                memcpy(names[j], t, sizeof(t));
-            }
+    a_dup(kv32, ks, kv32bData(seqnos));
+    $kv32sort(ks);
 
-    for (u32 i = 0; i < nfound; i++) {
-        u32 sq = dog_pup_parse_seqno(names[i], strlen(names[i]), ext);
-        u8cs fn = {(u8cp)names[i], (u8cp)names[i] + strlen(names[i])};
-        a_path(fpath, dir);
-        if (PATHu8bPush(fpath, fn) != OK) continue;
+    $for(kv32, kp, ks) {
+        u8cp nm0 = u8bDataHead(namebuf) + kp->val;
+        u8cs fn  = {nm0, nm0 + strlen((char const *)nm0)};
+        a_path(fpath, dir, fn);
         u8bp buf = NULL;
         if (FILEMapRO(&buf, $path(fpath)) != OK) continue;
         int fd = FILEBookedFD(buf);
         if (fd < 0) { FILEUnMap(buf); continue; }
-        kv32 kv = {.key = sq, .val = (u32)fd};
+        kv32 kv = {.key = kp->key, .val = (u32)fd};
         call(kv32bPush, pups, &kv);
     }
+
+    kv32bFree(seqnos);
     done;
 }
 

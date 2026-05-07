@@ -78,72 +78,6 @@ static ok64 keep_branch_dir(path8b out, home *h, u8cs branch) {
     done;
 }
 
-//  Parse the leading KEEP_SEQNO_W hex chars of a filename into a u32.
-//  Returns 0 on bad input — files we wrote always have valid hex
-//  prefixes since keep_leaf_name produces them.
-static u32 keep_parse_seqno(char const *name) {
-    u32 v = 0;
-    for (u32 i = 0; i < KEEP_SEQNO_W; i++) {
-        u8 c = (u8)name[i];
-        u32 d;
-        if      (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-        else return 0;
-        v = (v << 4) | d;
-    }
-    return v;
-}
-
-// --- Scan helper: find and mmap files matching extension ---
-//
-// `seqnos` is optional: when non-NULL, parsed seqnos are appended in
-// the same order as `maps` so callers can correlate run i with the
-// `<seqno>.idx` filename it came from without re-listing the dir.
-static ok64 keep_scan_dir(u8csc dir, char const *ext,
-                          u8bp *maps, u32 *count, u32 max,
-                          u32 *seqnos) {
-    a_path(dpat);
-    PATHu8bFeed(dpat, dir);
-    DIR *dp = opendir((char *)u8bDataHead(dpat));
-    if (!dp) return OK;  // dir doesn't exist yet
-
-    size_t extlen = strlen(ext);
-    char names[KEEP_MAX_FILES][64];
-    u32 nfound = 0;
-    struct dirent *e;
-    while ((e = readdir(dp)) != NULL && nfound < max) {
-        size_t nlen = strlen(e->d_name);
-        if (nlen <= extlen || nlen > 63) continue;
-        if (strcmp(e->d_name + nlen - extlen, ext) != 0) continue;
-        memcpy(names[nfound], e->d_name, nlen + 1);
-        nfound++;
-    }
-    closedir(dp);
-
-    // Sort by name
-    for (u32 i = 0; i + 1 < nfound; i++)
-        for (u32 j = i + 1; j < nfound; j++)
-            if (strcmp(names[i], names[j]) > 0) {
-                char tmp[64];
-                memcpy(tmp, names[i], 64);
-                memcpy(names[i], names[j], 64);
-                memcpy(names[j], tmp, 64);
-            }
-
-    for (u32 i = 0; i < nfound && *count < max; i++) {
-        u8cs fn = {(u8cp)names[i], (u8cp)names[i] + strlen(names[i])};
-        a_path(fpath, dir, fn);
-        u8bp mapped = NULL;
-        if (FILEMapRO(&mapped, $path(fpath)) == OK) {
-            maps[*count] = mapped;
-            if (seqnos) seqnos[*count] = keep_parse_seqno(names[i]);
-            (*count)++;
-        }
-    }
-    return OK;
-}
-
 // Scan one branch dir for both .keeper and .keeper.idx files,
 // extending the keeper-level registries.  Lockless-reader invariant:
 // pack scan first, then idx, so any idx entry references a pack
@@ -558,78 +492,64 @@ ok64 KEEPClose(void) {
 
 // --- Drop-a-dir: KEEPBranchDrop ---
 
+typedef struct {
+    keeper *k;
+    u8cs    ext;
+    void  (*drop_fn)(keeper *, u32);
+} keep_drop_ctx;
+
+static ok64 keep_branch_drop_cb(void0p arg, path8p path) {
+    keep_drop_ctx *c = (keep_drop_ctx *)arg;
+    u8cs base = {};
+    PATHu8sBase(base, u8bDataC(path));
+    if (u8csLen(base) != DOG_PUP_SEQNO_W + u8csLen(c->ext)) return OK;
+    a_dup(u8c, ext_tail, base);
+    u8csUsed(ext_tail, DOG_PUP_SEQNO_W);
+    if (!u8csEq(ext_tail, c->ext)) return OK;
+
+    u8cs seqno_slice = {base[0], base[0] + DOG_PUP_SEQNO_W};
+    ok64 v = 0;
+    if (RONutf8sDrain(&v, seqno_slice) != OK) return OK;
+    u32 sq = (u32)v;
+
+    Bkv32 *reg = (c->drop_fn == keep_pack_drop) ? &c->k->packs
+                                                : &c->k->puppies;
+    kv32 *db = (kv32 *)kv32bDataHead(*reg);
+    kv32 *de = (kv32 *)kv32bIdleHead(*reg);
+    for (kv32 *p = db; p < de; p++) {
+        if (p->key != sq) continue;
+        u8bp slot = FILE_WANT_BUFS[p->val];
+        if (slot && slot[0]) FILEUnMap(slot);
+        break;
+    }
+    c->drop_fn(c->k, sq);
+    FILEUnLink(u8bDataC(path));
+    return OK;
+}
+
 //  ls one branch dir for files matching `ext`; for each match, parse
 //  its seqno, evict the entry from `reg` (closing any FILE_WANT_BUFS
 //  slot), and unlink the file.  Returns OK even when the dir is empty.
 static ok64 keep_branch_drop_files(keeper *k, u8cs branchdir, u8cs ext,
                                    void (*drop_fn)(keeper *, u32)) {
     sane(k);
-    a_path(dpat);
-    call(PATHu8bDup, dpat, branchdir);
-    DIR *dp = opendir((char *)u8bDataHead(dpat));
-    if (!dp) done;
-    size_t elen = (size_t)$len(ext);
-    struct dirent *e;
-    char names[FILE_MAX_OPEN][DOG_PUP_SEQNO_W + 64];
-    u32 nfound = 0;
-    while ((e = readdir(dp)) != NULL && nfound < FILE_MAX_OPEN) {
-        size_t nlen = strlen(e->d_name);
-        if (nlen != DOG_PUP_SEQNO_W + elen) continue;
-        if (memcmp(e->d_name + DOG_PUP_SEQNO_W, ext[0], elen) != 0) continue;
-        memcpy(names[nfound], e->d_name, nlen + 1);
-        nfound++;
-    }
-    closedir(dp);
-
-    for (u32 i = 0; i < nfound; i++) {
-        u8cs slice = {(u8cp)names[i], (u8cp)names[i] + DOG_PUP_SEQNO_W};
-        ok64 v = 0;
-        if (RONutf8sDrain(&v, slice) != OK) continue;
-        u32 sq = (u32)v;
-        //  Drop registry entry (also FILEUnMaps the slot).
-        Bkv32 *reg = (drop_fn == keep_pack_drop) ? &k->packs : &k->puppies;
-        kv32 *db = (kv32 *)kv32bDataHead(*reg);
-        kv32 *de = (kv32 *)kv32bIdleHead(*reg);
-        for (kv32 *p = db; p < de; p++) {
-            if (p->key != sq) continue;
-            u8bp slot = FILE_WANT_BUFS[p->val];
-            if (slot && slot[0]) FILEUnMap(slot);
-            break;
-        }
-        drop_fn(k, sq);
-        //  Unlink file on disk.
-        u8cs fn = {(u8cp)names[i], (u8cp)names[i] + strlen(names[i])};
-        a_path(fpath);
-        call(PATHu8bDup, fpath, branchdir);
-        call(PATHu8bPush, fpath, fn);
-        FILEUnLink($path(fpath));
-    }
+    a_path(dpat, branchdir);
+    keep_drop_ctx c = {.k = k, .ext = ext, .drop_fn = drop_fn};
+    (void)FILEScanFiles(dpat, keep_branch_drop_cb, &c);
     done;
+}
+
+static ok64 keep_subdir_seen_cb(void0p arg, path8p path) {
+    (void)path;
+    *(b8 *)arg = YES;
+    return KEEPNONE;  //  any non-OK aborts the scan
 }
 
 //  YES iff `branchdir` has any subdirectory (other than . / ..).
 static b8 keep_branch_has_subdir(u8cs branchdir) {
-    a_path(dpat);
-    PATHu8bDup(dpat, branchdir);
-    DIR *dp = opendir((char *)u8bDataHead(dpat));
-    if (!dp) return NO;
+    a_path(dpat, branchdir);
     b8 found = NO;
-    struct dirent *e;
-    while ((e = readdir(dp)) != NULL) {
-        if (e->d_name[0] == '.' &&
-            (e->d_name[1] == 0 ||
-             (e->d_name[1] == '.' && e->d_name[2] == 0)))
-            continue;
-        //  stat the entry to check it's a dir.
-        a_path(child);
-        PATHu8bDup(child, branchdir);
-        u8cs nm = {(u8cp)e->d_name, (u8cp)e->d_name + strlen(e->d_name)};
-        if (PATHu8bPush(child, nm) != OK) continue;
-        struct stat st = {};
-        if (FILEStat(&st, $path(child)) != OK) continue;
-        if ((st.st_mode & S_IFMT) == S_IFDIR) { found = YES; break; }
-    }
-    closedir(dp);
+    (void)FILEScan(dpat, FILE_SCAN_DIRS, keep_subdir_seen_cb, &found);
     return found;
 }
 
@@ -1012,8 +932,8 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if ($empty(field)) break;
-            if ($len(field) == 4 && memcmp(field[0], "tree", 4) == 0 &&
-                $len(value) >= 40) {
+            a_cstr(tree_kw, "tree");
+            if (u8csEq(field, tree_kw) && u8csLen(value) >= 40) {
                 sha1 tree_sha = {};
                 u8s sb = {tree_sha.data, tree_sha.data + 20};
                 u8cs hx = {value[0], value[0] + 40};
@@ -1033,14 +953,15 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
     } else if (obj_type == DOG_OBJ_TREE) {
         // Parse tree entries: each is "mode name\0<20-byte sha>"
         u8cs body = {content, content + content_sz};
-        while (!$empty(body)) {
+        while (!u8csEmpty(body)) {
             u8cs entry_field = {}, entry_sha = {};
             ok64 o = GITu8sDrainTree(body, entry_field, entry_sha, NULL);
             if (o != OK) break;
-            if ($len(entry_sha) != 20) continue;
+            if (u8csLen(entry_sha) != 20) continue;
             // Skip gitlinks (submodule refs) — mode 160000, commit in another repo
-            if ($len(entry_field) > 6 && memcmp(entry_field[0], "160000", 6) == 0)
-                continue;
+            a_cstr(gitlink_pfx, "160000");
+            if (u8csHasPrefix(entry_field, gitlink_pfx) &&
+                u8csLen(entry_field) > 6) continue;
             {
                 u8cs vscan = {entry_field[0], entry_field[1]};
                 if (u8csFind(vscan, ' ') == OK) {
@@ -1067,10 +988,10 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
         // Parse "object <sha>" from tag body, recurse
         u8cs body = {content, content + content_sz};
         u8cs field = {}, value = {};
+        a_cstr(object_kw, "object");
         while (GITu8sDrainCommit(body, field, value) == OK) {
-            if ($empty(field)) break;
-            if ($len(field) == 6 && memcmp(field[0], "object", 6) == 0 &&
-                $len(value) >= 40) {
+            if (u8csEmpty(field)) break;
+            if (u8csEq(field, object_kw) && u8csLen(value) >= 40) {
                 sha1 target_sha = {};
                 u8s sb = {target_sha.data, target_sha.data + 20};
                 u8cs hx = {value[0], value[0] + 40};
@@ -1122,8 +1043,9 @@ ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx) {
 
     // Skip PACK header if at start
     if (offset == 0 && packlen >= 12) {
-        if (memcmp(pack, "PACK", 4) == 0)
-            offset = 12;  // skip PACK + version + count
+        u8cs head = {pack, pack + 4};
+        a_cstr(pack_magic, "PACK");
+        if (u8csEq(head, pack_magic)) offset = 12;  // skip PACK+version+count
     }
 
     u8p buf = (u8p)malloc(KEEP_BUFSZ);
@@ -1613,12 +1535,12 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         }
         if (type != DOG_OBJ_COMMIT) fail(KEEPFAIL);
         // Parse tree SHA from commit
-        a_dup(u8c, body, u8bData(k->buf1));
+        a_dup(u8c, body, u8bDataC(k->buf1));
         u8cs field = {}, value = {};
+        a_cstr(tree_kw_inner, "tree");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            if (u8csLen(field) == 4 && memcmp(field[0], "tree", 4) == 0 &&
-                u8csLen(value) >= 40) {
+            if (u8csEq(field, tree_kw_inner) && u8csLen(value) >= 40) {
                 u8s sb = {tree_sha->data, tree_sha->data + 20};
                 u8cs hx = {value[0], value[0] + 40};
                 call(HEXu8sDrainSome, sb, hx);
@@ -1663,12 +1585,12 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
                 char const *strips[] = {"", "heads/", "refs/heads/",
                                         "refs/", NULL};
                 for (u32 si = 0; strips[si] != NULL && !found; si++) {
-                    u8cs q = {target->query[0], target->query[1]};
-                    size_t plen = strlen(strips[si]);
-                    if (plen > 0) {
-                        if ($len(q) <= plen) continue;
-                        if (memcmp(q[0], strips[si], plen) != 0) continue;
-                        u8csUsed(q, plen);
+                    a_dup(u8c, q, target->query);
+                    a_cstr(strip_s, strips[si]);
+                    if (!u8csEmpty(strip_s)) {
+                        if (u8csLen(q) <= u8csLen(strip_s)) continue;
+                        if (!u8csHasPrefix(q, strip_s)) continue;
+                        u8csUsed(q, u8csLen(strip_s));
                     }
                     a_pad(u8, dot_buf, 512);
                     a_cstr(dot_pfx, ".?");
@@ -1726,12 +1648,12 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
 
         // If tag, get the commit it points to
         if (type == DOG_OBJ_TAG) {
-            a_dup(u8c, tbody, u8bData(k->buf1));
+            a_dup(u8c, tbody, u8bDataC(k->buf1));
             u8cs tf = {}, tv = {};
+            a_cstr(object_kw, "object");
             while (GITu8sDrainCommit(tbody, tf, tv) == OK) {
                 if (u8csEmpty(tf)) break;
-                if (u8csLen(tf) == 6 && memcmp(tf[0], "object", 6) == 0 &&
-                    u8csLen(tv) >= 40) {
+                if (u8csEq(tf, object_kw) && u8csLen(tv) >= 40) {
                     u8s sb2 = {commit_sha.data, commit_sha.data + 20};
                     u8cs hx2 = {tv[0], tv[0] + 40};
                     call(HEXu8sDrainSome, sb2, hx2);
@@ -1743,12 +1665,12 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
             call(KEEPGet, k, hashlet, 15, k->buf1, &type);
         }
 
-        a_dup(u8c, body, u8bData(k->buf1));
+        a_dup(u8c, body, u8bDataC(k->buf1));
         u8cs field = {}, value = {};
+        a_cstr(tree_kw_inner, "tree");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
-            if (u8csLen(field) == 4 && memcmp(field[0], "tree", 4) == 0 &&
-                u8csLen(value) >= 40) {
+            if (u8csEq(field, tree_kw_inner) && u8csLen(value) >= 40) {
                 u8s sb = {tree_sha->data, tree_sha->data + 20};
                 u8cs hx = {value[0], value[0] + 40};
                 call(HEXu8sDrainSome, sb, hx);
@@ -1787,10 +1709,10 @@ ok64 KEEPImport(keeper *k, u8cs pack_path) {
     // Derive .idx path from .pack path (replace extension)
     a_pad(u8, idx_path_buf, 1024);
     call(u8bFeed, idx_path_buf, pack_path);
-    size_t plen = u8bDataLen(idx_path_buf);
-    if (plen >= 5 && memcmp(u8bDataHead(idx_path_buf) + plen - 5, ".pack", 5) == 0)
-        ((u8 **)idx_path_buf)[2] -= 5;
-    else {
+    a_cstr(pack_ext, ".pack");
+    if (u8csHasSuffix(u8bDataC(idx_path_buf), pack_ext)) {
+        u8bShed(idx_path_buf, u8csLen(pack_ext));
+    } else {
         fprintf(stderr, "keeper: expected .pack file\n");
         fail(KEEPFAIL);
     }
@@ -2486,14 +2408,14 @@ static ok64 keep_sync_drain_pkt(int rfd, u8b buf, u8cs adv, u8csp line) {
 //  to `cap` parent sha1s into `out`, returns count in `*n`.
 static ok64 keep_commit_parents(u8cs body, sha1 *out, u32 *n, u32 cap) {
     sane(out && n);
-    u8cs scan = {body[0], body[1]};
+    a_dup(u8c, scan, body);
     u8cs field = {}, value = {};
+    a_cstr(parent_kw, "parent");
     *n = 0;
     while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if ($empty(field)) break;  // blank line → commit message follows
-        if ($len(field) != 6 || memcmp(field[0], "parent", 6) != 0)
-            continue;
-        if ($len(value) < 40) continue;
+        if (u8csEmpty(field)) break;  // blank line → commit message follows
+        if (!u8csEq(field, parent_kw)) continue;
+        if (u8csLen(value) < 40) continue;
         if (*n >= cap) break;
         u8s obin = {out[*n].data, out[*n].data + 20};
         u8cs hex40 = {value[0], value[0] + 40};
@@ -2507,13 +2429,13 @@ static ok64 keep_commit_parents(u8cs body, sha1 *out, u32 *n, u32 cap) {
 //  start with `object <hex>\n`.  Same header parser.
 static ok64 keep_tag_target(u8cs body, sha1 *out) {
     sane(out);
-    u8cs scan = {body[0], body[1]};
+    a_dup(u8c, scan, body);
     u8cs field = {}, value = {};
+    a_cstr(object_kw, "object");
     while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if ($empty(field)) break;
-        if ($len(field) != 6 || memcmp(field[0], "object", 6) != 0)
-            continue;
-        if ($len(value) < 40) return GITBADFMT;
+        if (u8csEmpty(field)) break;
+        if (!u8csEq(field, object_kw)) continue;
+        if (u8csLen(value) < 40) return GITBADFMT;
         u8s obin = {out->data, out->data + 20};
         u8cs hex40 = {value[0], value[0] + 40};
         return HEXu8sDrainSome(obin, hex40);
@@ -3005,22 +2927,24 @@ got_pack:
     u8cs resp = {rbuf, rbuf + rlen};
     po = PKTu8sDrain(resp, line);
     if (po != OK) goto sync_fail;
-    if ($len(line) >= 3 && memcmp(line[0], "NAK", 3) == 0) {
+    a_cstr(nak_pfx, "NAK");
+    a_cstr(ack_pfx, "ACK");
+    a_cstr(pack_magic, "PACK");
+    if (u8csHasPrefix(line, nak_pfx)) {
         // Full clone response
-    } else if ($len(line) >= 3 && memcmp(line[0], "ACK", 3) == 0) {
+    } else if (u8csHasPrefix(line, ack_pfx)) {
         // Incremental: drain ACK/NAK lines until we reach the pack data
         for (;;) {
             // Check if resp[0] is at PACK magic
-            if (resp[1] - resp[0] >= 4 && memcmp(resp[0], "PACK", 4) == 0)
-                break;
+            if (u8csHasPrefix(resp, pack_magic)) break;
             ok64 ao = PKTu8sDrain(resp, line);
             if (ao == PKTFLUSH) break;
             if (ao != OK) break;
-            if ($len(line) >= 3 && memcmp(line[0], "NAK", 3) == 0) break;
+            if (u8csHasPrefix(line, nak_pfx)) break;
         }
     } else {
         fprintf(stderr, "keeper: unexpected response: %.*s\n",
-                (int)$len(line), (char *)line[0]);
+                (int)u8csLen(line), (char *)line[0]);
         goto sync_fail;
     }
 
@@ -3581,17 +3505,18 @@ ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
         u8cp start = u8bDataHead(rbuf_b);
         u8cs adv = {start, start};
         u8cs line = {};
+        a_cstr(unpack_ok_lit, "unpack ok");
+        a_cstr(ok_pfx,        "ok ");
+        a_cstr(ng_pfx,        "ng ");
         for (;;) {
             ok64 o = keep_sync_drain_pkt(rfd, rbuf_b, adv, line);
             if (o == PKTFLUSH) break;
             if (o != OK) break;
-            if ($len(line) >= 9 && memcmp(line[0], "unpack ok", 9) == 0)
-                unpack_ok = YES;
-            else if ($len(line) >= 3 && memcmp(line[0], "ok ", 3) == 0)
-                ref_ok = YES;
-            else if ($len(line) >= 3 && memcmp(line[0], "ng ", 3) == 0)
+            if (u8csHasPrefix(line, unpack_ok_lit))      unpack_ok = YES;
+            else if (u8csHasPrefix(line, ok_pfx))         ref_ok    = YES;
+            else if (u8csHasPrefix(line, ng_pfx))
                 fprintf(stderr, "keeper: push rejected: %.*s",
-                        (int)$len(line), (char *)line[0]);
+                        (int)u8csLen(line), (char *)line[0]);
         }
     }
 
@@ -3632,25 +3557,24 @@ static ok64 keep_tip_filter(refcp r, void *ctx_) {
     //  Local-branch keys are exactly `?<path>` — no scheme, no
     //  authority.  Anything else (`//host?ref`, `ssh://…`) is a
     //  remote-tracking row or a host alias.
-    u8cs k = {r->key[0], r->key[1]};
-    if ($empty(k) || *k[0] != '?') return OK;
+    a_dup(u8c, k, r->key);
+    if (u8csEmpty(k) || *k[0] != '?') return OK;
+    u8csUsed1(k);   //  strip leading '?'
 
     //  Value slot is the fragment bytes (sha hex).  Older / current
     //  REFSLoad emits the bare 40 hex chars; tolerate a stray leading
     //  `?` for forward-compatibility with raw-fragment writers.
-    u8cs v = {r->val[0], r->val[1]};
-    if ($empty(v)) return OK;
-    if (*v[0] == '?') v[0]++;
+    a_dup(u8c, v, r->val);
+    if (u8csEmpty(v)) return OK;
+    if (*v[0] == '?') u8csUsed1(v);
     if (u8csLen(v) != 40) return OK;
     b8 tomb = YES;
     $for(u8c, p, v) if (*p != '0') { tomb = NO; break; }
     if (tomb) return OK;
 
     keep_tip t = {};
-    t.path[0] = k[0] + 1;   //  strip leading '?'
-    t.path[1] = k[1];
-    t.sha[0]  = v[0];
-    t.sha[1]  = v[1];
+    u8csMv(t.path, k);
+    u8csMv(t.sha,  v);
     return w->cb(&t, w->ctx);
 }
 
@@ -3679,12 +3603,11 @@ typedef struct {
 } keep_remote_walk;
 
 static b8 keep_remote_seen(Bu8 *seen, u8csc url) {
-    a_dup(u8c, scan, u8bData(*seen));
+    a_dup(u8c, scan, u8bDataC(*seen));
     while (!u8csEmpty(scan)) {
         u8cs line = {};
         if (u8csDrainLine(scan, line) != OK) break;
-        if (u8csLen(line) == u8csLen(url) &&
-            memcmp(line[0], url[0], u8csLen(url)) == 0) return YES;
+        if (u8csEq(line, url)) return YES;
     }
     return NO;
 }
@@ -3694,11 +3617,11 @@ static ok64 keep_remote_filter(refcp r, void *ctx_) {
 
     //  Local-branch keys start with `?` (no scheme, no authority).
     //  Remote-tracking keys carry scheme or authority bytes.
-    u8cs k = {r->key[0], r->key[1]};
-    if ($empty(k) || *k[0] == '?') return OK;
+    a_dup(u8c, k, r->key);
+    if (u8csEmpty(k) || *k[0] == '?') return OK;
 
-    u8cs v = {r->val[0], r->val[1]};
-    if ($empty(v)) return OK;
+    a_dup(u8c, v, r->val);
+    if (u8csEmpty(v)) return OK;
     if (*v[0] == '?') v[0]++;
     if (u8csLen(v) != 40) return OK;
     b8 tomb = YES;
@@ -3710,10 +3633,8 @@ static ok64 keep_remote_filter(refcp r, void *ctx_) {
     u8bFeed1(*w->seen, '\n');
 
     keep_remote rem = {};
-    rem.key[0] = k[0];
-    rem.key[1] = k[1];
-    rem.sha[0] = v[0];
-    rem.sha[1] = v[1];
+    u8csMv(rem.key, k);
+    u8csMv(rem.sha, v);
     return w->cb(&rem, w->ctx);
 }
 
