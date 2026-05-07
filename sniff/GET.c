@@ -530,8 +530,6 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     sane($ok(hex));
     keeper *k = &KEEP;
 
-    fprintf(stderr, "GETDBG GETCheckout hex=[%.*s] hexlen=%lld\n",
-            (int)$len(hex), (char const *)hex[0], (long long)$len(hex));
     size_t hexlen = $len(hex);
     if (hexlen > 15) hexlen = 15;
     u64 hashlet = WHIFFHexHashlet60(hex);
@@ -585,13 +583,7 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
 
     sha1 tree_sha = {}, tgt_commit_sha = {};
     u8cs commit = {u8bDataHead(buf), u8bIdleHead(buf)};
-    fprintf(stderr, "GETDBG commit body (first 120 bytes): %.*s\n",
-            (int)($len(commit) < 120 ? $len(commit) : 120),
-            (char const *)commit[0]);
     o = GITu8sCommitTree(commit, tree_sha.data);
-    fprintf(stderr, "GETDBG tree_sha=%02x%02x%02x%02x\n",
-            tree_sha.data[0], tree_sha.data[1],
-            tree_sha.data[2], tree_sha.data[3]);
     //  Hash the commit body for the weave-merge drain (its sha is the
     //  tgt commit hashlet graf walks from).  Must happen before
     //  u8bFree(buf) — `commit` borrows into the mapping.

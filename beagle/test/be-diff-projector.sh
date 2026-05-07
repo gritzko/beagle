@@ -137,10 +137,23 @@ CASE=G
 be 'diff:a.txt?tags/v1' > "$T/G.out" 2>&1 || true
 want_all "$T/G.out" '^--- a\.txt ---$' '\-goodnight' '\+goodbye'
 
+# --- Case H: untracked files are excluded from `diff:` -------------
+#  Drop a never-staged file alongside the tracked ones; whole-tree
+#  `diff:` must NOT mention it (no baseline → nothing to diff).
+CASE=H
+echo 'random scratch bytes' > scratch.txt
+be 'diff:' > "$T/H.out" 2>&1 || true
+grep -q 'scratch\.txt' "$T/H.out" \
+    && fail "H.out should NOT mention untracked scratch.txt"
+# But the tracked diffs must still be there.
+want_all "$T/H.out" '^--- a\.txt ---$' '\+hello universe' \
+                    '^--- b\.txt ---$' '\+one two three'
+rm -f scratch.txt
+
 # --- Summary -----------------------------------------------------
 echo ""
 if [ "$FAIL" = "0" ]; then
-    echo "=== be-diff-projector OK (7 cases) ==="
+    echo "=== be-diff-projector OK (8 cases) ==="
 else
     echo "=== be-diff-projector FAIL ($FAIL case(s)) ==="
     exit 1

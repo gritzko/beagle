@@ -305,12 +305,13 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
         if      (ok64stem(recs[i].verb) == c->v_base) base = &recs[i];
         else if (ok64stem(recs[i].verb) == c->v_wt)   wt   = &recs[i];
     }
-    ulogreccp src = base ? base : wt;
-    if (!src) return OK;
+    //  Wt-only rows are untracked files (no entry in the baseline
+    //  tree).  They have no `from` side to diff against, so skip
+    //  them — `be diff:` is wt-vs-baseline, not wt-vs-empty.
+    if (!base) return OK;
 
     u8cs path = {};
-    path[0] = src->uri.path[0];
-    path[1] = src->uri.path[1];
+    u8csMv(path, base->uri.path);
     if ($empty(path) || $len(path) >= DIFFREF_PATH_MAX) return OK;
 
     //  Drop wt-side rows that descend into a previously-recorded

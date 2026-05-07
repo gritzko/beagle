@@ -15,9 +15,8 @@ empty    02.post.got.out
 match_re "$CASE/02.post.err.txt" 02.post.got.err
 
 # 03: switch the wt to the branch tip (no-op on a clean wt — exercises
-# the GET checkout path).  GET prints debug "GETDBG ..." lines plus
-# "sniff: checkout done" to stderr; only the trailing summary line is
-# stable across builds, so we filter.  stdout must be empty.
+# the GET checkout path).  GET prints "sniff: checkout done" to stderr;
+# we match that trailing summary line.  stdout must be empty.
 "$BE" get '?' > 03.tree.got.out 2> 03.tree.got.err.raw
 grep -E '^sniff: checkout done$' 03.tree.got.err.raw > 03.tree.got.err || true
 empty 03.tree.got.out
