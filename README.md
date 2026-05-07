@@ -25,7 +25,7 @@ The project dogfoods from day 1.
 
 ## Quick start
 
-Build (requires libsodium, lz4, zlib and cmake, also ninja is recommended):
+Build (requires libsodium, libcurl, lz4, zlib and cmake; ninja recommended):
 
     mkdir build && cd build
     CC=clang CXX=clang++ cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..

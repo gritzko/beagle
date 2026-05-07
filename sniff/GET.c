@@ -485,7 +485,11 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         FILEClose(&fd);
         if (wo != OK) { failed++; continue; }
 
-        (void)SNIFFAtStampPath(fp, stamp_ts);
+        //  Stamp at ts+1 (one ron60 ms tick past the GET row) so the
+        //  merged bytes land outside the stamp-set and `be` flags them
+        //  as user-dirty — the merge result is a user edit, not clean
+        //  baseline.
+        (void)SNIFFAtStampPath(fp, stamp_ts + 1);
         merged++;
     }
 

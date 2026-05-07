@@ -126,6 +126,16 @@ grep -q "weave-merged" $TMP/dirty.err \
 [ -f a.txt ] || fail "a.txt vanished across merge GET"
 note "same-branch overlap GET weave-merged as expected"
 
+#  Merged bytes are a user edit, not clean baseline — `be`-status
+#  must classify a.txt as mod/dirty so the user notices the merge
+#  result before the next post.
+sniff status >$TMP/dirty.status 2>&1 \
+    || fail "sniff status failed after weave-merge GET"
+grep -E "[[:space:]](mod|new)[[:space:]]+a\.txt" $TMP/dirty.status \
+    >/dev/null \
+    || fail "weave-merged a.txt should appear dirty; status: $(cat $TMP/dirty.status)"
+note "weave-merged a.txt is reported dirty by sniff status"
+
 # ====================================================================
 # Scenario 4 — same-branch GET allowed when the dirty file is
 #              untracked (not in the target tree).
