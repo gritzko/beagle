@@ -1,90 +1,93 @@
 #!/bin/sh
-#  03-multi-edit-merge — exercise PATCH against a richly-evolved C
-#  file: 5 commits on parent (2 pre-fork, 3 post-fork) and 3 commits
-#  on a child branch, each commit bundling several edits (token
-#  renames, deletes, body refactors, format changes, additions).
-#  After `be patch ?./child` from cur=parent, every change from both
-#  branches must land in the wt; `be post 'all merged'` then commits
-#  the merged tree as a single-parent commit on parent.
+#  03-multi-edit-merge — exercise the WEAVE-driven content merge.
 #
-#  Edit map (all per-commit edits land in disjoint sections so the
-#  3-way merge cleanly takes ours / theirs / base for each):
+#  Earlier shape of this test only made one-sided edits per file
+#  (parent-only or child-only), so `patch_walk` always classified
+#  via tree-entry sha equality (`take theirs` / `noop`) and never
+#  invoked `fetch_merge`.  That's a tree-shape test, not a merge
+#  test.  This rewrite makes BOTH parent and child stacks edit
+#  `lib.c` at distinct, non-overlapping regions, so the patch's
+#  3-way classification at the leaf hits
+#    `!o_eq_l && !t_eq_l && !o_eq_t`
+#  → `fetch_merge` → graf's WEAVE engine.  The resulting bytes must
+#  carry every change from both branches with NO conflict markers.
 #
-#    T0  baseline                           (math+string+io w/ placeholders)
-#    T1  parent c1: rename x,y → a,b in add+sub; delete placeholder_m
-#    T2  parent c2: K&R reformat ALL fns; refactor add body; add mul
-#         (fork point — child branch off here)
-#    C1  child c1: rename greet_str → hello, bye_str → goodbye;
-#                  delete placeholder_s
-#    C2  child c2: change "hi" → "Hello!"; add welcome const
-#    C3  child c3: change "bye" → "Farewell."; add thanks const
-#    T3  parent c3 (post-fork): rename log_msg → print_line; delete
-#                               placeholder_io
-#    T4  parent c4: change "%s\n" → "[log] %s\n" in print_line;
-#                   add print_err
+#  Topology (fork at T0; both stacks 2 commits):
 #
-#  3-way result:
-#    math   — base==ours==theirs (no change)
-#    string — ours==base, theirs differs → take theirs (child edits)
-#    io     — ours differs, theirs==base → take ours (parent edits)
+#     T0 ── T1 ── T2          ←── parent / cur after step 4
+#       \
+#        C1 ── C2              ?child stack
+#
+#  Per-commit edits.  Parent edits modify EXISTING lines; child edits
+#  INSERT new lines.  Insertion points are not the same spine line as
+#  any of parent's modifications, so WEAVE can integrate cleanly with
+#  no conflict markers.
+#
+#    T1 parent: edit  sub body  → `{ int r = x - y; return r; }`
+#    T2 parent: edit  greet     → "Hello"
+#               insert info("hi") inside main
+#    C1 child : insert mul       (after sub)
+#               edit   bye        → "Goodbye"
+#    C2 child : insert debug_    (after info)
+#
+#  After `be patch ?./child` from cur=T2 the wt's lib.c must hold ALL
+#  four parent + three child edits interleaved (06.lib.want.c).
 
 . "$(dirname "$0")/../../lib/case.sh"
 
 OUT="$SCRATCH/../out"
 mkdir -p "$OUT"
 
-# T0 baseline
+# T0 baseline on parent (= trunk).
 sleep 0.02; cp "$CASE/01.lib.t0.c" lib.c
 "$BE" put lib.c >/dev/null
-"$BE" post 'baseline init' >/dev/null
+"$BE" post 't0 baseline' >/dev/null
 
-# T1 parent c1
+# Fork ?child off T0 (cur stays on parent).
+"$BE" put '?./child' >/dev/null
+
+# T1 parent.
 sleep 0.02; cp "$CASE/02.lib.t1.c" lib.c
 "$BE" put lib.c >/dev/null
-"$BE" post 't1 rename and prune' >/dev/null
+"$BE" post 't1 parent: edit sub body' >/dev/null
 
-# T2 parent c2 (K&R reformat + refactor + add mul) — fork point
+# T2 parent.
 sleep 0.02; cp "$CASE/03.lib.t2.c" lib.c
 "$BE" put lib.c >/dev/null
-"$BE" post 't2 KR reformat add mul' >/dev/null
+"$BE" post 't2 parent: greet=Hello, info call in main' >/dev/null
 
-# Fork the child branch off T2
-"$BE" put '?./child' >/dev/null
-"$BE" get '?child'   >/dev/null
+# Switch to child branch.
+"$BE" get '?child' >/dev/null
 
-# C1 child c1
+# C1 child.
 sleep 0.02; cp "$CASE/04.lib.c1.c" lib.c
 "$BE" put lib.c >/dev/null
-"$BE" post 'c1 string renames and prune' >/dev/null
+"$BE" post 'c1 child: insert mul, bye=Goodbye' >/dev/null
 
-# C2 child c2
+# C2 child.
 sleep 0.02; cp "$CASE/05.lib.c2.c" lib.c
 "$BE" put lib.c >/dev/null
-"$BE" post 'c2 hello and welcome' >/dev/null
+"$BE" post 'c2 child: insert debug_' >/dev/null
 
-# C3 child c3
-sleep 0.02; cp "$CASE/06.lib.c3.c" lib.c
-"$BE" put lib.c >/dev/null
-"$BE" post 'c3 farewell and thanks' >/dev/null
-
-# Switch back to parent (trunk)
+# Back to parent (trunk) at T2.
 "$BE" get '?..' >/dev/null
 
-# T3 parent c3 (post-fork)
-sleep 0.02; cp "$CASE/07.lib.t3.c" lib.c
-"$BE" put lib.c >/dev/null
-"$BE" post 't3 rename log_msg and prune' >/dev/null
-
-# T4 parent c4
-sleep 0.02; cp "$CASE/08.lib.t4.c" lib.c
-"$BE" put lib.c >/dev/null
-"$BE" post 't4 format and print_err' >/dev/null
-
-# Merge child into parent's wt via 3-way patch
+# THE TEST: 3-way merge with all three blob shas distinct →
+# patch_walk must hit the merge arm and invoke WEAVE via fetch_merge.
 "$BE" patch '?./child' >"$OUT/patch.out" 2>"$OUT/patch.err"
 
-# Verify wt holds the merged result with all edits from both sides
-match "$CASE/09.lib.want.c" lib.c
+# wt must carry the integrated result; no conflict markers anywhere.
+match "$CASE/06.lib.want.c" lib.c
+if grep -E '^(<<<<|>>>>|\|\|\|\|)' lib.c >/dev/null 2>&1; then
+    echo "FAIL: conflict markers leaked into lib.c after merge:" >&2
+    cat lib.c >&2
+    exit 1
+fi
 
-# Commit the merged tree as a single-parent commit on parent
-"$BE" post 'all merged' >"$OUT/post.out" 2>"$OUT/post.err"
+# Patch stats must show at least one merged path.
+grep -q 'merged=[1-9]' "$OUT/patch.err" || {
+    echo "FAIL: patch did not invoke a merge (merged=0) — patch_walk"  \
+         "never reached the !o_eq_l && !t_eq_l && !o_eq_t arm" >&2
+    cat "$OUT/patch.err" >&2
+    exit 1
+}

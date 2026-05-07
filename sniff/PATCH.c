@@ -293,9 +293,15 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
 
     //  Missing-at-commit is not fatal — the dir just didn't exist
     //  on that side, we treat its entry set as empty.
-    (void)fetch_tree(lbuf, dir_path, fork);
-    (void)fetch_tree(obuf, dir_path, our);
-    (void)fetch_tree(tbuf, dir_path, thr);
+    ok64 lo = fetch_tree(lbuf, dir_path, fork);
+    ok64 oo = fetch_tree(obuf, dir_path, our);
+    ok64 to = fetch_tree(tbuf, dir_path, thr);
+    fprintf(stderr,
+            "PATCHDBG walk dir='%.*s' lo=%llx(%zu) oo=%llx(%zu) to=%llx(%zu)\n",
+            (int)$len(dir_path), (char *)dir_path[0],
+            (unsigned long long)lo, u8bDataLen(lbuf),
+            (unsigned long long)oo, u8bDataLen(obuf),
+            (unsigned long long)to, u8bDataLen(tbuf));
 
     entry *le = calloc(PATCH_MAX_ENTRIES, sizeof(entry));
     entry *oe = calloc(PATCH_MAX_ENTRIES, sizeof(entry));
@@ -379,8 +385,15 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             //  a zero sha that would never match a real tree sha).
             if (l && o && t &&
                 sha_eq(&lsub, &osub) && sha_eq(&osub, &tsub)) {
+                fprintf(stderr,
+                        "PATCHDBG short-circuit dir='%.*s'\n",
+                        (int)$len(childpath), (char *)childpath[0]);
                 continue;
             }
+            fprintf(stderr,
+                    "PATCHDBG recurse dir='%.*s' l=%d o=%d t=%d\n",
+                    (int)$len(childpath), (char *)childpath[0],
+                    l ? 1 : 0, o ? 1 : 0, t ? 1 : 0);
             //  If either subtree is missing AND absent on LCA, the
             //  whole subtree is a pure add/delete — for MVP skeleton
             //  we still descend with empty-stand-in.  Real add/delete
@@ -867,8 +880,9 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     //  diverged) and is forgiving of an over-inclusive base.
     sha1 parent_tip = {};
     sha1 fork_sha = {};
+    ok64 pr = OK;
     {
-        ok64 pr = resolve_parent_tip(&parent_tip, reporoot, target_query);
+        pr = resolve_parent_tip(&parent_tip, reporoot, target_query);
         if (pr == OK) {
             call(GRAFLca, &fork_sha, &parent_tip, &thr_sha);
         }
@@ -883,6 +897,17 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
             fprintf(stderr, "sniff: patch: no common ancestor\n");
             fail(PATCHURELT);
         }
+    }
+    {
+        sha1hex ph = {}, oh = {}, th = {}, fh = {};
+        sha1hexFromSha1(&ph, &parent_tip);
+        sha1hexFromSha1(&oh, &our_sha);
+        sha1hexFromSha1(&th, &thr_sha);
+        sha1hexFromSha1(&fh, &fork_sha);
+        fprintf(stderr,
+                "PATCHDBG parent_pr=%llx parent=%.40s our=%.40s "
+                "thr=%.40s fork=%.40s\n",
+                (unsigned long long)pr, ph.data, oh.data, th.data, fh.data);
     }
 
     //  Pick the patch row ts up-front.  SNIFFAtNow guarantees

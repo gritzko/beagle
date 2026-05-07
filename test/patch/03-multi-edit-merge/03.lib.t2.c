@@ -1,38 +1,17 @@
 #include <stdio.h>
 
 /* math */
-int add(int a, int b)
-{
-    int s = a + b;
-    return s;
-}
-
-int sub(int a, int b)
-{
-    return a - b;
-}
-
-int mul(int a, int b)
-{
-    return a * b;
-}
+int add(int x, int y) { return x + y; }
+int sub(int x, int y) { int r = x - y; return r; }
 
 /* string */
-const char *greet_str = "hi";
-const char *bye_str = "bye";
-const char *placeholder_s = NULL;
+const char *greet = "Hello";
+const char *bye = "bye";
 
 /* io */
-void log_msg(const char *m)
-{
-    printf("%s\n", m);
-}
+void info(const char *m) { printf("%s\n", m); }
 
-void placeholder_io(void)
-{
-}
-
-int main(void)
-{
+int main(void) {
+    info("hi");
     return 0;
 }
