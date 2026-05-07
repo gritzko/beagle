@@ -20,23 +20,34 @@
 #include "abc/INT.h"
 #include "abc/BUF.h"
 
-//  Apply a 3-way merge from `target_query` into the current wt.
+//  Apply a 3-way merge from `target_query` / `frag` into the wt.
 //
 //  `reporoot`       absolute path of the wt root (already resolved
 //                   by the caller via HOMEOpen).
 //  `target_query`   branch/tag slice (e.g. "heads/feat",
 //                   "tags/v1.0"), or a 40-char hex commit sha.
-//                   No leading `?`.
+//                   No leading `?`.  Empty when `frag` is set and
+//                   the user invoked the cherry-pick form.
+//  `frag`           URI fragment slice (no leading `#`).  Two roles:
+//                     * `?branch#hash` — clamp the upper bound of
+//                       the absorbed range to `hash` (must be on
+//                       `branch`).  Not yet implemented.
+//                     * `#hash` (empty `target_query`) — single-
+//                       commit cherry-pick: theirs = `hash`,
+//                       fork = `parent(hash)`.
+//                   Empty slice means "no fragment".
 //
 //  Returns OK on clean merge (exit 0).  Returns PATCHCONFLICT when
 //  at least one path ended up with `<<<<<<<`/`>>>>>>>` markers or
 //  a modify/delete clash — conflict paths are logged to stderr;
 //  callers map this to a non-zero CLI exit.
-ok64 PATCHApply(u8cs reporoot, u8cs target_query);
+ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag);
 
 //  Single-file variant: merge one path only.  Everything else in
-//  the wt is left alone.
-ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath, u8cs target_query);
+//  the wt is left alone.  `frag` follows the same contract as
+//  `PATCHApply` (cherry-pick when `target_query` is empty).
+ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
+                    u8cs target_query, u8cs frag);
 
 // --- Error / sentinel codes ---
 

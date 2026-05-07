@@ -101,9 +101,16 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri);
 //  append in this module.
 ok64 REFSCompareAndAppend(u8csc dir, u8csc key, u8csc expected_old, u8csc new_val);
 
-//  Cached RON60 of the three verbs REFS knows about.
+//  Cached RON60 of the verbs REFS knows about.  `*Fail` rows are
+//  journalled markers — recorded when an outbound op started but
+//  failed before the corresponding success row could land (e.g.
+//  fetch reached the peer but the post-fetch checkout crashed).
+//  REFSResolve / REFSLoad ignore them; readers that care about
+//  history (audit, recovery, debug) walk for them explicitly.
 ron60 REFSVerbGet(void);
 ron60 REFSVerbPost(void);
+ron60 REFSVerbGetFail(void);
+ron60 REFSVerbPostFail(void);
 ron60 REFSVerbSet(void);   //  legacy — only for reading old logs
 
 //  Resolve a URI by reverse-scanning the ULOG.  Host-substring match +

@@ -59,13 +59,15 @@ F1_TIP_PRE=$(ref_tip "?fix1")
 
 F2_TIP_POST=$(ref_tip "?fix2")
 F1_TIP_POST=$(ref_tip "?fix1")
-[ "$F1_TIP_POST" = "$F1_TIP_PRE" ] \
-    || fail "§29: cur (?fix1) moved across sibling promote"
-[ "$F2_TIP_POST" != "$F2_TIP_PRE" ] || fail "§29: ?fix2 didn't advance"
+[ "$F2_TIP_POST" = "$F2_TIP_PRE" ] \
+    || fail "§29: ?fix2 moved across rebase (POST may not write a non-cur ref)"
+[ "$F1_TIP_POST" != "$F1_TIP_PRE" ] \
+    || fail "§29: cur (?fix1) didn't advance after rebase onto sibling"
 
-# Walk parents from F2_TIP_POST until we reach F2_TIP_PRE; expect 1 hop.
+# Walk parents from F1_TIP_POST until we reach F2_TIP_PRE (= C1');
+# expect exactly 1 hop (only C2 replayed; C1 deduped against C1').
 hops=0
-cur="$F2_TIP_POST"
+cur="$F1_TIP_POST"
 while [ -n "$cur" ] && [ "$cur" != "$F2_TIP_PRE" ]; do
     p=$("$KEEPER" get ".#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
     hops=$((hops+1))
@@ -74,6 +76,6 @@ while [ -n "$cur" ] && [ "$cur" != "$F2_TIP_PRE" ]; do
 done
 [ "$hops" = "1" ] \
     || fail "§29: expected 1 hop (C2 only) past C1' due to dedup; got $hops"
-note "§29 OK: C1 deduped against C1'; ?fix2 advanced by exactly 1 commit"
+note "§29 OK: C1 deduped against C1'; ?fix1 rebased by exactly 1 commit"
 
 echo "=== branches/07-patch-id-dedup: OK ==="

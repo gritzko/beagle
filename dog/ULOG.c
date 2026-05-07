@@ -310,7 +310,7 @@ ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
         ulogrec r = {};
         ok64 o = ULOGRow(data, idx, i, &r);
         if (o != OK) return o;
-        if (pred(&r.uri, ctx)) {
+        if (pred(&r, ctx)) {
             *out = r;
             done;
         }

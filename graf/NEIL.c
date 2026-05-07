@@ -170,6 +170,40 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                 tmp[w++] = buf[k]; continue;
             }
 
+            // Line-fraction kill: if the EQ is a small fragment of the
+            // line(s) it spans, drop it.  Common case is incidental
+            // bracket / punctuation matches inside otherwise-different
+            // code: `( ) ; ,` and bare `\n`s the LCS picks up between
+            // genuinely divergent text.  Keeping them as EQ glues
+            // conflict markers around tiny fragments and forces ugly
+            // intra-line marker runs; killing forces the surrounding
+            // non-EQ run to absorb the whole line and the diff snaps
+            // to line granularity.  Counts \n bytes on both sides
+            // (EQ-bytes and line-span) per the user's request.
+            {
+                u32 eq_from   = new_off[k];
+                u32 eq_blo_lf = (eq_from > 0)
+                    ? tok32Offset(new_toks[0][eq_from - 1]) : 0;
+                u32 eq_bhi_lf = tok32Offset(new_toks[0][eq_from + eq_len - 1]);
+                a_head(u8c, pre_eq,  new_src, eq_blo_lf);
+                a_rest(u8c, post_eq, new_src, eq_bhi_lf);
+                u8cp line_lo_p = new_src[0];
+                $rof(u8c, p, pre_eq) {
+                    if (*p == '\n') { line_lo_p = p + 1; break; }
+                }
+                a_dup(u8c, scan, post_eq);
+                (void)u8csFind(scan, '\n');     // scan[0] = '\n' or term
+                u32 line_span = (u32)(scan[0] - line_lo_p);
+                u32 raw_eq    = NEILByteSpanX(new_toks, new_src[0],
+                                              new_off[k], eq_len, NO);
+                if (line_span >= 4 && raw_eq * 4 < line_span) {
+                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
+                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
+                    changed = YES;
+                    continue;
+                }
+            }
+
             // Whitespace-only EQs: use raw byte span for kill decision.
             if (eq_bytes == 0) {
                 u32 raw = NEILByteSpanX(new_toks, new_src[0],

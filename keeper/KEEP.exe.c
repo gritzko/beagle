@@ -324,6 +324,21 @@ ok64 KEEPGetRemote(uri *g) {
     }
 
     ok64 fo = WIREFetch(k, remote_uri, want_ref);
+    if (fo != OK) {
+        //  Journal the failed fetch so recovery / audit tooling sees a
+        //  `get_fail <peer-uri>?<branch>` row alongside the success
+        //  rows already emitted by wcli_record_ref.  Best-effort write
+        //  — we still return the underlying fetch error.
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_pad(u8, key_buf, 512);
+        u8bFeed(key_buf, remote_uri);
+        u8bFeed1(key_buf, '?');
+        if (!u8csEmpty(want_ref)) u8bFeed(key_buf, want_ref);
+        a_dup(u8c, key, u8bData(key_buf));
+        a_cstr(empty_to, "");
+        (void)REFSAppendVerb($path(keepdir), REFSVerbGetFail(),
+                             key, empty_to);
+    }
     u8bUnMap(rarena);
     return fo;
 }

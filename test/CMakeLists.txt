@@ -34,6 +34,7 @@ set(_BE_WILL_FAIL_CASES
 # under $HOME/tmp/run-<ts>/be-test/$$/<verb>/<name>).
 set(_BE_NEEDS_SSH_CASES
     "be-post-05-rebase-on-remote"
+    "be-post-06-fetch-incremental"
 )
 
 foreach(_run ${_be_case_runs})

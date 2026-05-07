@@ -61,19 +61,13 @@ ok64 sniffcli() {
     a_cstr(v_mflag,  "-m");
     b8 is_projector = $empty(c.verb) && c.nuris > 0 &&
                       DOGIsProjector(c.uris[0].scheme);
-    b8 is_post_dryrun = ($eq(c.verb, v_post) || $eq(c.verb, v_commit));
-    if (is_post_dryrun) {
-        for (u32 fi = 0; fi + 1 < c.nflags; fi += 2)
-            if ($eq(c.flags[fi], v_mflag)) { is_post_dryrun = NO; break; }
-        //  A URI with a label (`?ref`) commits.  A URI with a fragment
-        //  (free-form commit message per VERBS.md) commits.  Bare
-        //  `sniff post` with no URIs at all → dry run.
-        for (u32 i = 0; i < c.nuris; i++) {
-            if (!$empty(c.uris[i].query) || !$empty(c.uris[i].fragment)) {
-                is_post_dryrun = NO; break;
-            }
-        }
-    }
+    //  `be post` always opens the home rw — even bare `be post`, which
+    //  used to be a pure dry-run, can now compose a commit when patch
+    //  rows are present (see VERBS.md §POST and POSTPatchDefaults).
+    //  The patch chain isn't observable until the ULOG is mmapped, so
+    //  we can't pick rw vs ro at CLI-open time.  The rare bare status
+    //  preview pays an unnecessary write lock — acceptable.
+    b8 is_post_dryrun = NO;
     b8 ro = $eq(c.verb, v_status) || $eq(c.verb, v_list) || is_projector
          || is_post_dryrun;
     b8 rw = !ro;

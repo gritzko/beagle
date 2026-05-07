@@ -13,9 +13,12 @@
 //  squash with `base = tree(arg.fork_commit)`.  `arg.fork_commit` is
 //  the LCA of the target's parent-branch tip and the target's tip —
 //  the commit on the parent branch where the target was forked.
-//  Provenance is erased: the resulting `patch` row records ours as
-//  the wt's tip and leaves the baseline single-tip; no `&<theirs>`
-//  chain is appended.  The next POST emits a single-parent commit.
+//  Provenance for the commit graph is erased: the next POST emits a
+//  single-parent commit anchored on the wt's pre-patch get/post tip,
+//  not the absorbed branch.  The patch row itself records `theirs`
+//  in its fragment so POST's bare-no-msg path can recover the
+//  absorbed commits' messages and authors as defaults; this is
+//  metadata only and never participates in the commit topology.
 //
 #include "PATCH.h"
 
@@ -701,14 +704,14 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
 }
 
 //  Read the current worktree's branch tip from sniff's ULOG.  The
-//  baseline URI's query carries one REF plus one or more SHAs
-//  (dog/QURY); "ours" is always the first 40-hex SHA spec — later
-//  SHAs are merge participants layered on top by prior `patch` rows.
+//  wt's anchor commit (`ours`) lives in the most recent get/post
+//  row — patch rows are skipped via SNIFFAtCurTip because their
+//  fragment carries `theirs`, not `ours`.
 static ok64 resolve_ours(sha1 *out) {
     sane(out);
     ron60 ts = 0, verb = 0;
     uri u = {};
-    call(SNIFFAtBaseline, &ts, &verb, &u);
+    call(SNIFFAtCurTip, &ts, &verb, &u);
     sha1hex hex = {};
     if (SNIFFAtQueryFirstSha(&u, &hex) != OK) fail(PATCHFAIL);
     call(sha1FromSha1hex, out, &hex);
@@ -726,7 +729,7 @@ static ok64 resolve_current_branch(u8cs out_branch) {
     out_branch[1] = NULL;
     ron60 bts = 0, bverb = 0;
     uri bu = {};
-    ok64 br = SNIFFAtBaseline(&bts, &bverb, &bu);
+    ok64 br = SNIFFAtCurTip(&bts, &bverb, &bu);
     if (br != OK) done;        //  no baseline → trunk
     a_dup(u8c, q, bu.query);
     while (!u8csEmpty(q)) {
@@ -833,8 +836,96 @@ static ok64 refuse_if_dirty(u8cs reporoot) {
     return PATCHDIRTY;
 }
 
-ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
-    sane($ok(reporoot) && $ok(target_query));
+//  TODO: PATCH-on-PATCH overlapping files (VERBS.md §PATCH).
+//  Today the dirty scan refuses any file that a prior patch touched,
+//  so two patches in a row must edit disjoint file sets.  The proper
+//  composition is per-file weave-driven:
+//
+//    1. Seed a weave with the file's full ancestor-closure replay at
+//       the wt's base get/post tip (spine).
+//    2. For each prior patch row's tip, append the file's full
+//       ancestor-closure replay as additional layers (one src per
+//       commit, via GRAFFileWeave).
+//    3. Render the weave into bytes; if those bytes differ from
+//       what's on disk, fold the on-disk bytes in as the next layer
+//       (WEAVE_WT_SRC) — captures hand-edits made between patches.
+//    4. Append the new patch tip's ancestor-closure replay as the
+//       final stack of layers.
+//    5. WEAVEEmitMerged → write to disk; conflicts framed by the
+//       4-char `<<<<` / `||||` / `>>>>` markers in the usual way.
+//
+//  Until that lands, the dirty refusal above gates overlapping
+//  PATCH-on-PATCH so the user sees a clear error rather than a
+//  silently corrupt 3-way against the wrong base.
+
+//  Decode a 40-hex commit sha into `out`.  Returns PATCHFAIL when
+//  `hex` is not exactly 40 hex chars.
+static ok64 patch_hex40_to_sha1(sha1 *out, u8cs hex) {
+    sane(out);
+    if ($len(hex) != 40) fail(PATCHFAIL);
+    for (size_t i = 0; i < 40; i++) {
+        u8 c = hex[0][i];
+        b8 ok_hex = (c >= '0' && c <= '9') ||
+                    (c >= 'a' && c <= 'f') ||
+                    (c >= 'A' && c <= 'F');
+        if (!ok_hex) fail(PATCHFAIL);
+    }
+    u8s sb = {out->data, out->data + 20};
+    a_dup(u8c, hx, hex);
+    call(HEXu8sDrainSome, sb, hx);
+    done;
+}
+
+//  Cherry-pick prep: theirs = `frag` (40-hex commit sha), fork =
+//  parent(theirs).  Reads theirs's commit body from keeper and parses
+//  the first `parent <hex>` field.  Refuses on root commits (no
+//  parent).  Caller has already verified `frag` is non-empty.
+static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
+    sane(thr_out && fork_out);
+
+    ok64 hr = patch_hex40_to_sha1(thr_out, frag);
+    if (hr != OK) {
+        fprintf(stderr,
+            "sniff: patch: #hash must be exactly 40 hex chars\n");
+        return hr;
+    }
+
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 16);
+
+    u8 ct = 0;
+    ok64 ko = KEEPGetExact(&KEEP, thr_out, cbuf, &ct);
+    if (ko != OK) { u8bFree(cbuf); return ko; }
+    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(PATCHFAIL); }
+
+    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+    u8cs field = {}, value = {};
+    b8 found_parent = NO;
+    while (GITu8sDrainCommit(body, field, value) == OK) {
+        if ($empty(field)) break;
+        if ($len(field) == 6 &&
+            memcmp(field[0], "parent", 6) == 0 &&
+            $len(value) >= 40) {
+            u8s sb = {fork_out->data, fork_out->data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            HEXu8sDrainSome(sb, hx);
+            found_parent = YES;
+            break;
+        }
+    }
+    u8bFree(cbuf);
+
+    if (!found_parent) {
+        fprintf(stderr,
+            "sniff: patch: cherry-pick of root commit unsupported\n");
+        fail(PATCHFAIL);
+    }
+    done;
+}
+
+ok64 PATCHApply(u8cs reporoot, u8cs target_query, u8cs frag) {
+    b8 cherry = $empty(target_query) && !$empty(frag);
+    sane($ok(reporoot) && (cherry || $ok(target_query)));
 
     call(refuse_if_dirty, reporoot);
 
@@ -842,7 +933,26 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     call(resolve_ours, &our_sha);
 
     sha1 thr_sha = {};
-    call(resolve_target, &thr_sha, reporoot, target_query);
+    sha1 fork_sha = {};
+
+    if (cherry) {
+        call(resolve_cherry, &thr_sha, &fork_sha, frag);
+    } else {
+        call(resolve_target, &thr_sha, reporoot, target_query);
+        //  Clamp form (`?branch#hash`): override theirs to the
+        //  fragment-supplied sha.  The branch path stays unchanged,
+        //  so the resolve_parent_tip / GRAFLca step below still
+        //  computes the correct fork — only the upper bound moves
+        //  from `tip(branch)` to `hash`.  Reachability of `hash`
+        //  from the branch is not validated here yet (TODO); a
+        //  hash on a different branch will silently produce a
+        //  surprising 3-way result.
+        if (!u8csEmpty(frag)) {
+            sha1 clamp_sha = {};
+            call(patch_hex40_to_sha1, &clamp_sha, frag);
+            thr_sha = clamp_sha;
+        }
+    }
 
     //  Lazy-index both branches' commit chains into graf so the LCA
     //  query below sees their ancestors.  When the user invoked
@@ -863,6 +973,10 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
         }
     }
 
+    //  Branch-form base resolution.  Cherry-pick already filled
+    //  `fork_sha` from theirs's parent edge, so we skip this for
+    //  cherry-pick.
+    //
     //  Per VERBS.md §PATCH and Invariant 2: the merge base is
     //  `tree(arg.fork_commit)`, the commit on arg's parent branch
     //  where arg was forked.  We model that as
@@ -878,36 +992,21 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     //  the spine — so the fork_sha here only steers the per-path
     //  classification in `patch_walk` (only-ours / only-theirs /
     //  diverged) and is forgiving of an over-inclusive base.
-    sha1 parent_tip = {};
-    sha1 fork_sha = {};
-    ok64 pr = OK;
-    {
-        pr = resolve_parent_tip(&parent_tip, reporoot, target_query);
+    if (!cherry) {
+        sha1 parent_tip = {};
+        ok64 pr = resolve_parent_tip(&parent_tip, reporoot, target_query);
         if (pr == OK) {
             call(GRAFLca, &fork_sha, &parent_tip, &thr_sha);
         }
-    }
-    {
         if (sha1empty(&fork_sha)) {
             //  No parent-branch base, or LCA returned zero.  Fall
             //  back to direct DAG-LCA of ours and theirs.
             call(GRAFLca, &fork_sha, &our_sha, &thr_sha);
         }
-        if (sha1empty(&fork_sha)) {
-            fprintf(stderr, "sniff: patch: no common ancestor\n");
-            fail(PATCHURELT);
-        }
     }
-    {
-        sha1hex ph = {}, oh = {}, th = {}, fh = {};
-        sha1hexFromSha1(&ph, &parent_tip);
-        sha1hexFromSha1(&oh, &our_sha);
-        sha1hexFromSha1(&th, &thr_sha);
-        sha1hexFromSha1(&fh, &fork_sha);
-        fprintf(stderr,
-                "PATCHDBG parent_pr=%llx parent=%.40s our=%.40s "
-                "thr=%.40s fork=%.40s\n",
-                (unsigned long long)pr, ph.data, oh.data, th.data, fh.data);
+    if (sha1empty(&fork_sha)) {
+        fprintf(stderr, "sniff: patch: no common ancestor\n");
+        fail(PATCHURELT);
     }
 
     //  Pick the patch row ts up-front.  SNIFFAtNow guarantees
@@ -925,37 +1024,22 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     call(patch_walk, reporoot, root,
          &fork_sha, &our_sha, &thr_sha, &st);
 
-    //  Append a `patch` ULOG row.  Per VERBS.md §PATCH (history
-    //  erased), the row records the wt's current tip in the
-    //  fragment and copies the prior baseline's query verbatim —
-    //  no `&<theirs>` chain.  The next POST emits a single-parent
-    //  commit; provenance from the absorbed branch is not preserved.
-    //  Per-file forensic tracking lives in stamp_wrote (the row's ts
-    //  matches every touched file's mtime).
-    uri baseline_u = {};
-    {
-        ron60 bts = 0, bverb = 0;
-        ok64 br = SNIFFAtBaseline(&bts, &bverb, &baseline_u);
-        if (br != OK) {
-            //  No prior baseline: rare (you can't patch into a
-            //  fresh worktree).  Be defensive — emit `?#<ours>`
-            //  with an empty query.
-            memset(&baseline_u, 0, sizeof(baseline_u));
-        }
-    }
-
-    //  Fragment carries `ours` — the wt's current tip.
-    a_pad(u8, ohex, 40);
-    a_rawc(osha, our_sha);
-    HEXu8sFeedSome(ohex_idle, osha);
+    //  Append a `patch` ULOG row.  The row's fragment carries
+    //  `theirs` — the absorbed commit's sha.  The wt's anchor
+    //  commit (`ours`) is implicit: it lives in the most recent
+    //  get/post row and is recovered via SNIFFAtCurTip.  No
+    //  `&<theirs>` chain in the query — the chain is reconstructed
+    //  by walking the tail of patch rows back to the latest
+    //  get/post (SNIFFAtPatchChain), each row contributing its own
+    //  `theirs`.  Per-file forensic tracking lives in stamp_wrote
+    //  (the row's ts matches every touched file's mtime).
+    a_pad(u8, thex, 40);
+    a_rawc(tsha, thr_sha);
+    HEXu8sFeedSome(thex_idle, tsha);
 
     uri urow = {};
-    if (!u8csEmpty(baseline_u.query)) {
-        urow.query[0] = baseline_u.query[0];
-        urow.query[1] = baseline_u.query[1];
-    }
     {
-        a_dup(u8c, h, u8bDataC(ohex));
+        a_dup(u8c, h, u8bDataC(thex));
         urow.fragment[0] = h[0];
         urow.fragment[1] = h[1];
     }
@@ -977,14 +1061,22 @@ ok64 PATCHApply(u8cs reporoot, u8cs target_query) {
     done;
 }
 
-ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath, u8cs target_query) {
-    sane($ok(reporoot) && $ok(filepath) && $ok(target_query));
+ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
+                    u8cs target_query, u8cs frag) {
+    b8 cherry = $empty(target_query) && !$empty(frag);
+    sane($ok(reporoot) && $ok(filepath) &&
+         (cherry || $ok(target_query)));
     //  Single-file mode: just run a merge on that one path using
     //  graf's 3-way merge — no tree walk, no classification.
     sha1 our_sha = {};
     call(resolve_ours, &our_sha);
     sha1 thr_sha = {};
-    call(resolve_target, &thr_sha, reporoot, target_query);
+    if (cherry) {
+        sha1 fork_unused = {};
+        call(resolve_cherry, &thr_sha, &fork_unused, frag);
+    } else {
+        call(resolve_target, &thr_sha, reporoot, target_query);
+    }
 
     Bu8 mbuf = {};
     call(u8bAllocate, mbuf, PATCH_BLOB_BUF);

@@ -58,7 +58,7 @@ TRUNK=$(head_hex)
 note "trunk base = $TRUNK"
 
 #  Label `?feat` at trunk tip (zero-change post on `?feat`).
-sniff post "?feat" >/dev/null
+sniff put "?feat" >/dev/null
 sniff get "?feat" >/dev/null
 note "switched to ?feat (clean)"
 [ -f a.txt ] || fail "a.txt missing after clean cross-branch GET"
@@ -72,7 +72,7 @@ mkdir -p "$WT"; cd "$WT"
 echo "a v1" > a.txt
 echo "b v1" > b.txt
 sniff post -m "trunk base" >/dev/null
-sniff post "?feat" >/dev/null            # label feat at this tip
+sniff put "?feat" >/dev/null            # label feat at this tip
 sleep 0.1
 echo "a v1 (uncommitted)" > a.txt        # dirty edit on trunk
 note "edited a.txt without committing"

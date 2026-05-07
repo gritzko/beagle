@@ -1,23 +1,24 @@
 #!/bin/sh
 #  03-rebase-on-divergent-parent — `be post ?..` from a child branch
-#  whose parent advanced out from under it must rebase (not ff) and
-#  auto-sync cur to the new parent tip.
+#  whose parent has advanced rebases CUR (the child) onto the parent's
+#  tip.  Per VERBS.md §POST: cur is the only ref POST moves; the
+#  named branch is the upstream (read-only).
 #
 #  Sequence:
 #    T1 baseline (a=alpha, b=beta) on trunk.
-#    Create ?fix1 (be post ?./fix1), switch to it, edit a.txt to
+#    Create ?fix1 (be put ?./fix1), switch to it, edit a.txt to
 #    alpha-fix1, put + post → ?fix1 at C1 (parent T1).
 #    Switch back to trunk, edit b.txt to beta-trunk, put + post → T2
 #    (parent T1).  ?fix1 is now divergent: its parent T1 is no longer
 #    the trunk tip.
 #    Switch to ?fix1 (wt resets to fix1's tree: a=alpha-fix1, b=beta).
-#    `be post ?..` from ?fix1: rebases C1 onto T2.  Trunk advances to
-#    T3; ?fix1 auto-syncs to T3.
+#    `be post ?..` from ?fix1: rebases C1 onto T2 — fix1 advances to
+#    C1' (parent T2).  Trunk stays at T2.
 #
 #  Asserts:
-#    * trunk tip changed (T1 -> T2 -> T3, all distinct).
-#    * ?fix1 tip == trunk's new tip (auto-sync).
-#    * T3's first parent == T2 (proves rebase, not a ff/no-op).
+#    * trunk tip stays at T2 (POST never moves a non-cur ref).
+#    * ?fix1 tip moves from C1 to C1' (rebase replayed C1 onto T2).
+#    * C1'.parent == T2 (proves rebase happened).
 #    * wt has both edits: a=alpha-fix1, b=beta-trunk.
 #
 #  Note: redirected stderr/stdout files are kept OUTSIDE the wt
@@ -73,7 +74,7 @@ T1=$(head_hex)
 # ------------------------------------------------------------------
 # 2. create ?fix1 off trunk.
 # ------------------------------------------------------------------
-must "$BE" put "?./fix1" > "$LOGS/03.create.out" 2> "$LOGS/03.create.err"
+must "$BE" put '?./fix1' > "$LOGS/03.create.out" 2> "$LOGS/03.create.err"
 FIX1_AT_T1=$(ref_tip "?fix1")
 [ "$FIX1_AT_T1" = "$T1" ] \
     || { echo "?fix1 should fork at T1=$T1; got $FIX1_AT_T1" >&2; exit 1; }
@@ -114,50 +115,46 @@ FIX1_OLD_TIP=$(ref_tip "?fix1")
     || { echo "?fix1 tip drifted: want $FIX1_C1 got $FIX1_OLD_TIP" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 6. `be post ?..` from ?fix1: trunk-advance forces rebase of C1 onto
-#    T2 — trunk advances; ?fix1 (cur) is NOT auto-synced (VERBS.md:
-#    POST modifies only the named target, never cur).
+# 6. `be post ?..` from ?fix1: rebases CUR (?fix1) onto trunk's tip
+#    (T2).  fix1 moves from C1 → C1' (parent T2); trunk stays at T2.
 # ------------------------------------------------------------------
-if ! "$BE" post "?.." > "$LOGS/11.post.out" 2> "$LOGS/11.post.err"; then
+if ! "$BE" post '?..' > "$LOGS/11.post.out" 2> "$LOGS/11.post.err"; then
     echo "be post ?.. failed; stderr:" >&2
     cat "$LOGS/11.post.err" >&2
     exit 1
 fi
 
 # ------------------------------------------------------------------
-# 7. assert: trunk advanced to T3 (≠ T1, ≠ T2); ?fix1 STAYS at C1
-#    (no auto-sync per spec — user runs `be get ?` to follow).
+# 7. assert: trunk stays at T2; ?fix1 advances from C1 to C1'.
 # ------------------------------------------------------------------
-T3=$(ref_tip "?")
+TRUNK_AFTER=$(ref_tip "?")
 FIX1_NEW_TIP=$(ref_tip "?fix1")
-[ -n "$T3" ] && [ "$T3" != "$T1" ] && [ "$T3" != "$T2" ] \
-    || { echo "trunk did not advance past T2 (T3='$T3')" >&2; exit 1; }
-[ "$FIX1_NEW_TIP" = "$FIX1_C1" ] \
-    || { echo "?fix1 should stay at C1=$FIX1_C1 (no auto-sync); got $FIX1_NEW_TIP" >&2
-         exit 1; }
+[ "$TRUNK_AFTER" = "$T2" ] \
+    || { echo "trunk should stay at T2=$T2; got $TRUNK_AFTER" >&2; exit 1; }
+[ -n "$FIX1_NEW_TIP" ] && [ "$FIX1_NEW_TIP" != "$FIX1_C1" ] \
+    || { echo "?fix1 did not advance from C1=$FIX1_C1" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 8. assert: T3's single parent is T2 (NOT T1) — proves rebase happened.
+# 8. assert: C1''s single parent is T2 (NOT T1) — proves rebase
+#    happened (cur replayed onto trunk's new tip).
 # ------------------------------------------------------------------
-"$KEEPER" get ".#$T3" > "$LOGS/12.commit.out" 2> "$LOGS/12.commit.err" \
-    || { echo "keeper get .#$T3 failed" >&2
+"$KEEPER" get ".#$FIX1_NEW_TIP" > "$LOGS/12.commit.out" \
+    2> "$LOGS/12.commit.err" \
+    || { echo "keeper get .#$FIX1_NEW_TIP failed" >&2
          cat "$LOGS/12.commit.err" >&2; exit 1; }
 PARENTS=$(grep -c '^parent ' "$LOGS/12.commit.out" || true)
 [ "$PARENTS" = "1" ] \
-    || { echo "T3 has $PARENTS parent line(s); want exactly 1" >&2
+    || { echo "C1' has $PARENTS parent line(s); want exactly 1" >&2
          cat "$LOGS/12.commit.out" >&2; exit 1; }
 PARENT_SHA=$(awk '/^parent / { print $2; exit }' "$LOGS/12.commit.out")
 [ "$PARENT_SHA" = "$T2" ] \
-    || { echo "T3.parent=$PARENT_SHA; want T2=$T2 (rebase, not ff)" >&2
+    || { echo "C1'.parent=$PARENT_SHA; want T2=$T2 (rebase, not ff)" >&2
          exit 1; }
 
 # ------------------------------------------------------------------
-# 9. wt content after `be post ?..`.  Wt stays on ?fix1 — content is
-# fix1's tree (a=alpha-fix1, b=beta from C1's parent T1).  Switch to
-# trunk for the merged-tree assertion.
+# 9. wt content after `be post ?..`.  Wt now reflects rebased fix1
+# (a=alpha-fix1 from C1's edit, b=beta-trunk inherited from T2).
 # ------------------------------------------------------------------
-"$BE" get "?" >/dev/null 2> "$LOGS/13.get.err" \
-    || { cat "$LOGS/13.get.err" >&2; exit 1; }
 match "$CASE/05.a.want.txt" a.txt
 match "$CASE/06.b.want.txt" b.txt
 

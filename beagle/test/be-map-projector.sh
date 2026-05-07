@@ -51,20 +51,20 @@ sniff init >/dev/null
 echo "trunk content" > base.txt
 be post -m "trunk-c1" >/dev/null
 
-be post '?./feat' >/dev/null
+be put '?./feat' >/dev/null
 be get '?feat' >/dev/null 2>&1
 echo feat-content > feat.txt
 be put feat.txt >/dev/null
 be post -m "feat-c1" >/dev/null
 
-be post '?./sub' >/dev/null
+be put '?./sub' >/dev/null
 be get '?feat/sub' >/dev/null 2>&1
 echo sub-content > sub.txt
 be put sub.txt >/dev/null
 be post -m "sub-c1" >/dev/null
 
 be get '?' >/dev/null 2>&1
-be post '?./docs' >/dev/null
+be put '?./docs' >/dev/null
 be get '?docs' >/dev/null 2>&1
 echo docs-content > docs.txt
 be put docs.txt >/dev/null
