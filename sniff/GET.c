@@ -593,7 +593,7 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     {
         ron60 bts = 0, bverb = 0;
         uri bu = {};
-        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+        if (SNIFFAtCurTip(&bts, &bverb, &bu) == OK) {
             u8cs t_branch = {};
             if ($ok(source) && !u8csEmpty(source) &&
                 *source[0] == '?' && $len(source) != 41) {
@@ -626,7 +626,7 @@ ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
     {
         ron60 bts = 0, bverb = 0;
         uri bu = {};
-        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+        if (SNIFFAtCurTip(&bts, &bverb, &bu) == OK) {
             sha1hex hex = {};
             if (SNIFFAtQueryFirstSha(&bu, &hex) == OK) {
                 //  Decode the baseline tip hex into a sha1 for the

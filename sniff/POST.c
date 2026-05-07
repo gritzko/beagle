@@ -82,8 +82,7 @@ typedef struct {
                                  // align with the new post row and the
                                  // next bare `be` fast-paths them.
     b8             any_pd;       // any put/delete rows since last post
-    b8             base_is_patch;// baseline row is a `patch`, not get/post
-    b8             has_base;     // baseline row exists (any get/post/patch)
+    b8             has_base;     // baseline get/post row exists
     ron60          last_post_ts;
     ok64           error;
 } post_ctx;
@@ -305,19 +304,19 @@ static ok64 post_sort_dedup_intent(u8b src, u8b dst) {
 // --- Baseline tree resolution ---
 
 //  Resolve the baseline URI to a tree sha (no walk — the merge below
-//  consumes the tree via KEEPTreeListLeaves).  Sets c->has_base and
-//  c->base_is_patch as a side-effect.
+//  consumes the tree via KEEPTreeListLeaves).  Sets c->has_base as a
+//  side-effect.  Skips patch rows via SNIFFAtCurTip so the baseline
+//  is the wt's anchor commit, not the latest absorbed patch.
 static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
     sane(c && root_out && has_out);
     *has_out = NO;
 
     ron60 base_ts = 0, base_verb = 0;
     uri base_u = {};
-    ok64 br = SNIFFAtBaseline(&base_ts, &base_verb, &base_u);
+    ok64 br = SNIFFAtCurTip(&base_ts, &base_verb, &base_u);
     if (br == ULOGNONE) done;  // fresh repo
     if (br != OK) return br;
-    c->has_base      = YES;
-    c->base_is_patch = (base_verb == SNIFFAtVerbPatch());
+    c->has_base = YES;
 
     //  Baseline query carries the version info (see dog/QURY): one
     //  branch REF plus 1-to-N SHAs.  For a squash-merge POST we only
@@ -815,7 +814,7 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
     *had_baseline_out = NO;
     ron60 ts = 0, verb = 0;
     uri u = {};
-    ok64 r = SNIFFAtBaseline(&ts, &verb, &u);
+    ok64 r = SNIFFAtCurTip(&ts, &verb, &u);
     if (r == ULOGNONE) done;        // fresh repo — root commit allowed
     if (r != OK) return r;
     *had_baseline_out = YES;
@@ -1499,7 +1498,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     {
         ron60 ts = 0, verb = 0;
         uri u = {};
-        ok64 br = SNIFFAtBaseline(&ts, &verb, &u);
+        ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
         if (br == OK) {
             //  Baseline branch is the first QURY_REF in the row's query.
             a_dup(u8c, q, u.query);
@@ -1993,6 +1992,145 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     done;
 }
 
+//  Strip the trailing "<token>" plus the spaces before it from a
+//  slice — used to peel off "<ts>" and "<tz>" from an "author"
+//  field value, leaving "Name <email>".  Caller's slice cells are
+//  mutated in place via Shed1.
+static void post_trim_trailing_token(u8cs s) {
+    while (!u8csEmpty(s) && *u8csLast(s) == ' ') u8csShed1(s);
+    while (!u8csEmpty(s) && *u8csLast(s) != ' ') u8csShed1(s);
+}
+
+//  Walk a commit body once, extract the subject (first line of the
+//  message body) and the "Name <email>" identity from the "author"
+//  field.  Both outputs may stay empty when the field is missing.
+//  Slices point into `body_in`; valid for as long as `body_in` is.
+static void post_parse_commit_meta(u8cs body_in,
+                                   u8cs subject_out,
+                                   u8cs author_id_out) {
+    a_dup(u8c, body, body_in);
+    u8cs field = {}, value = {};
+    while (GITu8sDrainCommit(body, field, value) == OK) {
+        if (u8csEmpty(field)) {
+            //  Reached the body separator; `value` is the whole body.
+            //  Subject is `value` up to (not including) the first '\n'.
+            u8csMv(subject_out, value);
+            a_dup(u8c, scan, value);
+            if (u8csFind(scan, '\n') == OK) {
+                u8cs head = {value[0], scan[0]};
+                u8csMv(subject_out, head);
+            }
+            break;
+        }
+        a_cstr(author_lit, "author");
+        if ($eq(field, author_lit)) {
+            u8csMv(author_id_out, value);
+            //  Drop "<tz>" then "<ts>" plus any trailing spaces.
+            post_trim_trailing_token(author_id_out);
+            post_trim_trailing_token(author_id_out);
+            while (!u8csEmpty(author_id_out) &&
+                   *u8csLast(author_id_out) == ' ') {
+                u8csShed1(author_id_out);
+            }
+        }
+    }
+}
+
+ok64 POSTPatchDefaults(u8cs reporoot,
+                       Bu8 msg_buf,  u8cs *msg_out,
+                       Bu8 auth_buf, u8cs *auth_out,
+                       u32 *n_out) {
+    sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
+    *n_out = 0;
+
+    a_pad(sha1, fosters, 64);
+    (void)SNIFFAtPatchChain(fosters);
+    if (sha1bDataLen(fosters) == 0) return ULOGNONE;
+
+    a_dup(sha1c, fchain, sha1bDataC(fosters));
+    *n_out = (u32)$len(fchain);
+
+    //  Pick: ULOG-order last entry (pragmatic proxy for topologically
+    //  latest — same answer when cherry-picks were applied in order;
+    //  for the unusual reverse-order case the user can pass -m to
+    //  override).
+    sha1 pick = *$last(fchain);
+
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 16);
+
+    u8 ct = 0;
+    ok64 ko = KEEPGetExact(&KEEP, &pick, cbuf, &ct);
+    if (ko != OK) { u8bFree(cbuf); return ko; }
+    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
+
+    u8cs pick_subject   = {};
+    u8cs pick_author_id = {};
+    post_parse_commit_meta(u8bDataC(cbuf),
+                           pick_subject, pick_author_id);
+
+    //  Et-al detection: any other absorbed commit's author identity
+    //  differs from the pick's → annotate the inherited author.
+    b8 et_al = NO;
+    Bu8 cbuf2 = {};
+    u8bAllocate(cbuf2, 1UL << 16);
+    $for(sha1c, sp, fchain) {
+        if (sp == $last(fchain)) continue;
+        u8bReset(cbuf2);
+        u8 ct2 = 0;
+        if (KEEPGetExact(&KEEP, sp, cbuf2, &ct2) != OK) continue;
+        if (ct2 != DOG_OBJ_COMMIT) continue;
+        u8cs sub2 = {}, auth2 = {};
+        post_parse_commit_meta(u8bDataC(cbuf2), sub2, auth2);
+        if (!$eq(auth2, pick_author_id)) {
+            et_al = YES;
+            break;
+        }
+    }
+    u8bFree(cbuf2);
+
+    //  Compose author into auth_buf.  When et-al, inject " (et al)"
+    //  before "<email>" — find the last '<' in the identity string.
+    if (!et_al) {
+        u8bFeed(auth_buf, pick_author_id);
+    } else {
+        u8c *email_lt = NULL;
+        $for(u8c, p, pick_author_id) {
+            if (*p == '<') email_lt = (u8c *)p;
+        }
+        if (email_lt == NULL) {
+            //  Malformed identity (no '<') — append at end.
+            u8bFeed(auth_buf, pick_author_id);
+            a_cstr(et_al_suf, " (et al)");
+            u8bFeed(auth_buf, et_al_suf);
+        } else {
+            u8cs name_part  = {pick_author_id[0], email_lt};
+            u8cs email_part = {email_lt, pick_author_id[1]};
+            while (!u8csEmpty(name_part) && *u8csLast(name_part) == ' ')
+                u8csShed1(name_part);
+            u8bFeed(auth_buf, name_part);
+            a_cstr(et_al_mid, " (et al) ");
+            u8bFeed(auth_buf, et_al_mid);
+            u8bFeed(auth_buf, email_part);
+        }
+    }
+    u8csMv(*auth_out, u8bDataC(auth_buf));
+
+    //  Compose message: subject + " (+N)" when N=patches-1>0.
+    u8bFeed(msg_buf, pick_subject);
+    u32 extra = (u32)$len(fchain) - 1;
+    if (extra > 0) {
+        char tmp[32];
+        int len = snprintf(tmp, sizeof(tmp), " (+%u)", extra);
+        u8cs ext = {(u8cp)tmp, (u8cp)tmp + len};
+        u8bFeed(msg_buf, ext);
+    }
+    u8csMv(*msg_out, u8bDataC(msg_buf));
+
+    u8bFree(cbuf);
+    done;
+}
+
 ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                 u8cs message, u8cs author, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
@@ -2221,6 +2359,26 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         HEXu8sFeedSome(par_hex_idle, psha);
         u8bFeed(com, u8bDataC(par_hex));
         u8bFeed1(com, '\n');
+    }
+
+    //  Foster lines: every patch row's `theirs` sha appended since
+    //  the latest get/post is recorded as `foster <hex>` (oldest-
+    //  first).  These are NOT graph parents (single-parent invariant
+    //  on the write path, see VERBS.md §POST) — they're permanent
+    //  provenance for absorbed work.  Empty chain → no foster lines.
+    {
+        a_pad(sha1, fosters, 64);
+        (void)SNIFFAtPatchChain(fosters);
+        a_dup(sha1c, fchain, sha1bDataC(fosters));
+        $for(sha1c, sp, fchain) {
+            a_cstr(fos_label, "foster ");
+            u8bFeed(com, fos_label);
+            a_pad(u8, fhex, 40);
+            a_rawc(fraw, *sp);
+            HEXu8sFeedSome(fhex_idle, fraw);
+            u8bFeed(com, u8bDataC(fhex));
+            u8bFeed1(com, '\n');
+        }
     }
 
     time_t now = time(NULL);
@@ -2628,7 +2786,7 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
     {
         ron60 ts = 0, verb = 0;
         uri u = {};
-        if (SNIFFAtBaseline(&ts, &verb, &u) == OK) {
+        if (SNIFFAtCurTip(&ts, &verb, &u) == OK) {
             a_dup(u8c, q, u.query);
             while (!$empty(q)) {
                 qref spec = {};

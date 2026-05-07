@@ -215,6 +215,61 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     return ULOGNONE;
 }
 
+ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
+    sane(SNIFF.h && ts_out && verb_out && u_out);
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 vp = SNIFFAtVerbPost();
+    u32 n = ULOGCount(SNIFF.log_idx);
+    for (u32 i = n; i > 0; i--) {
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
+        if (o != OK) return o;
+        if (rec.verb == vg || rec.verb == vp) {
+            *ts_out   = rec.ts;
+            *verb_out = rec.verb;
+            *u_out    = rec.uri;
+            done;
+        }
+    }
+    return ULOGNONE;
+}
+
+ok64 SNIFFAtPatchChain(sha1b out) {
+    sane(SNIFF.h && Bok(out));
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 vp = SNIFFAtVerbPost();
+    ron60 vx = SNIFFAtVerbPatch();
+    u32 n = ULOGCount(SNIFF.log_idx);
+    if (n == 0) return ULOGNONE;
+
+    //  Locate the index immediately after the latest get/post; that's
+    //  the oldest patch row to emit.  No baseline → walk the entire
+    //  log (start = 0).
+    u32 start = 0;
+    for (u32 i = n; i > 0; i--) {
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
+        if (o != OK) return o;
+        if (rec.verb == vg || rec.verb == vp) { start = i; break; }
+    }
+
+    //  Forward-walk patch rows; decode each fragment hex into a sha1
+    //  and feed into out.  Full → stop (no error).
+    for (u32 i = start; i < n && sha1bHasRoom(out); i++) {
+        ulogrec rec = {};
+        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
+        if (o != OK) return o;
+        if (rec.verb != vx) continue;
+        if (u8csLen(rec.uri.fragment) < 40) continue;
+        sha1 s = {};
+        a_raw(sb, s);
+        a_dup(u8c, hx, rec.uri.fragment);
+        if (HEXu8sDrainSome(sb, hx) != OK) continue;
+        sha1bFeed1(out, s);
+    }
+    done;
+}
+
 // --- Last-post timestamp ---
 
 ron60 SNIFFAtLastPostTs(void) {

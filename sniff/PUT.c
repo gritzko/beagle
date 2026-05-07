@@ -146,7 +146,7 @@ static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     sane(tree_sha_out);
     ron60 ts = 0, verb = 0;
     uri u = {};
-    ok64 br = SNIFFAtBaseline(&ts, &verb, &u);
+    ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
     if (br == ULOGNONE) return ULOGNONE;
     if (br != OK) return br;
 

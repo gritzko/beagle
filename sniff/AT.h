@@ -115,6 +115,23 @@ ok64 SNIFFAtRepo(urip u_out);
 //  rows (shouldn't happen in practice — a bare log has no baseline).
 ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out);
 
+//  "Current tip" — like `SNIFFAtBaseline` but skips `patch` rows and
+//  returns the most recent `get` or `post`.  Use this when you want
+//  the wt's anchor commit (parent for the next post, tree to diff
+//  against, branch label) rather than the literal latest baseline
+//  row.  Patch rows now record the *absorbed* commit's sha in their
+//  fragment (not the wt's tip); their `theirs` chain is recovered
+//  via `SNIFFAtPatchChain`.  Returns ULOGNONE when no get/post row
+//  is present.
+ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out);
+
+//  Append every `patch` row's `theirs` sha (decoded from the row's
+//  40-hex fragment) into `out`, oldest-first, walking from the row
+//  immediately after the latest `get`/`post` to the ULOG tail.  Stops
+//  early once `out` is full (no error).  Empty chain → `out` left
+//  empty.  Returns OK; ULOGNONE only when the ULOG has no rows at all.
+ok64 SNIFFAtPatchChain(sha1b out);
+
 //  Timestamp of the latest `post` row, or 0 if none.  This is the floor
 //  for "put/delete since last post" scans used by POST's change-set
 //  computation.
@@ -179,13 +196,15 @@ typedef ok64 (*sniff_at_dirty_cb)(u8cs rel, void *ctx);
 ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx);
 
 //  Extract the current 40-hex commit SHA from a baseline URI.  The
-//  canonical at-log row is `?<branch>#<curhash>` — fragment carries
-//  the current sha, query carries the be-branch path.  For a `patch`
-//  row mid-merge the query may also chain extra `&<theirs>` SHAs as
-//  additional parents; this helper returns the row's "current" sha
-//  (fragment first, then the first 40-hex spec in the query for
-//  legacy rows).  Writes the hex bytes into `out` on success.
-//  Returns ULOGNONE when no such spec is present.
+//  canonical get/post row is `?<branch>#<curhash>` — fragment carries
+//  the current sha, query carries the be-branch path.  Patch rows
+//  put `theirs` (the absorbed commit) in the fragment and have an
+//  empty query; pair this helper with `SNIFFAtCurTip` (skips patch
+//  rows) when you want the wt's anchor — using it on a patch row
+//  returns `theirs`, not `ours`.  Writes the hex bytes into `out`
+//  on success; reads the row's fragment first, then falls back to
+//  the first 40-hex spec in the query for legacy rows.  Returns
+//  ULOGNONE when no such spec is present.
 ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out);
 
 //  Materialise the wt's non-meta files (excluding `.dogs/`, `.sniff*`,

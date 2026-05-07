@@ -33,7 +33,7 @@ static ok64 class_baseline_tree(sha1 *out, b8 *have_out) {
     *have_out = NO;
     ron60 ts = 0, verb = 0;
     uri u = {};
-    ok64 br = SNIFFAtBaseline(&ts, &verb, &u);
+    ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
     if (br == ULOGNONE) return OK;          // fresh repo
     if (br != OK) return br;
 

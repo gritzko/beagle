@@ -9,3 +9,7 @@
 * `04-criss-cross-merge/` — two siblings each `be patch` the other and
   post; a third cross-patch demonstrates dogs sidestepping the classic
   criss-cross via single-parent commits and PATCH provenance erasure.
+* `07-patch-multi-author/` — two cherry-picks from a fix branch with
+  two authors, then bare `be post`: the resulting commit must inherit
+  message + author from the topologically latest patched commit, with
+  ` (+N)` and ` (et al)` decorations for the count and author mix.

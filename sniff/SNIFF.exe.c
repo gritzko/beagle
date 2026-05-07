@@ -1022,10 +1022,36 @@ ok64 SNIFFExec(cli *c) {
         }
 
         if (!$ok(commit_msg) && label_uri == NULL) {
-            //  Bare `sniff post` (no -m, no ?label) → dry run:
-            //  list the change-set the next commit would produce
-            //  without writing anything.
-            ret = POSTPrintStatus(reporoot);
+            //  Bare `sniff post` (no -m, no ?label).  When patch rows
+            //  are present since the latest get/post, compose default
+            //  msg+author from the absorbed commits and commit; else
+            //  fall back to dry-run status so the user sees what the
+            //  next non-bare post would produce.
+            a_pad(u8, def_msg_buf,  1024);
+            a_pad(u8, def_auth_buf, 512);
+            u8cs def_msg  = {};
+            u8cs def_auth = {};
+            u32  def_n    = 0;
+            ok64 dr = POSTPatchDefaults(reporoot,
+                                        def_msg_buf,  &def_msg,
+                                        def_auth_buf, &def_auth,
+                                        &def_n);
+            if (dr == OK && def_n > 0) {
+                u8cs no_target = {};
+                sha1 sha = {};
+                ret = POSTCommit(reporoot, no_target,
+                                 def_msg, def_auth, &sha);
+                if (ret == OK) {
+                    a_pad(u8, hex, 40);
+                    a_rawc(rs, sha);
+                    HEXu8sFeedSome(hex_idle, rs);
+                    fprintf(stderr, "sniff: commit %.*s\n",
+                            (int)u8bDataLen(hex),
+                            (char *)u8bDataHead(hex));
+                }
+            } else {
+                ret = POSTPrintStatus(reporoot);
+            }
         } else {
             //  POSTCommit does its own wt scan + change-set resolve;
             //  no pre-pass needed anymore.
@@ -1198,18 +1224,26 @@ post_done:
             ret = SNIFFFAIL;
         } else {
             uri *u = &c->uris[0];
-            //  Accept `path?query` for single-file merge OR bare
-            //  `?query` for whole-wt merge.
+            //  Accept `path?query` for single-file merge, bare
+            //  `?query` (with optional `#hash` clamp) for whole-wt
+            //  merge, or bare `#hash` for single-commit cherry-pick.
             if (!$empty(u->path) && !$empty(u->query)) {
-                a_dup(u8c, path, u->path);
+                a_dup(u8c, path,  u->path);
                 a_dup(u8c, query, u->query);
-                ret = PATCHApplyFile(reporoot, path, query);
+                a_dup(u8c, frag,  u->fragment);
+                ret = PATCHApplyFile(reporoot, path, query, frag);
             } else if (!$empty(u->query)) {
                 a_dup(u8c, query, u->query);
-                ret = PATCHApply(reporoot, query);
+                a_dup(u8c, frag,  u->fragment);
+                ret = PATCHApply(reporoot, query, frag);
+            } else if (!$empty(u->fragment)) {
+                u8cs no_query = {};
+                a_dup(u8c, frag, u->fragment);
+                ret = PATCHApply(reporoot, no_query, frag);
             } else {
                 fprintf(stderr,
-                    "sniff: patch URI must have `?<ref|sha>`\n");
+                    "sniff: patch URI must have `?<ref|sha>` "
+                    "or `#<sha>`\n");
                 ret = SNIFFFAIL;
             }
         }

@@ -34,6 +34,24 @@
 ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                 u8cs message, u8cs author, sha1 *sha_out);
 
+//  Compose default message and author for a bare `be post` whose
+//  ULOG carries one or more `patch` rows since the latest get/post.
+//  Walks `SNIFFAtPatchChain`, fetches each absorbed commit's body via
+//  keeper, and writes:
+//    * msg_buf   : last entry's subject + " (+N)" when N=patches-1>0.
+//    * auth_buf  : last entry's author identity ("Name <email>"); if
+//                  any other entry's identity differs, " (et al)" is
+//                  injected before the `<email>`.
+//  Slices `*msg_out` / `*auth_out` are repointed into the freshly
+//  written buffer regions and remain valid for as long as the caller
+//  keeps the buffers alive.  Returns OK with `*n_out>0` when defaults
+//  were composed, ULOGNONE when no patch rows are present (caller
+//  falls back to the dry-run / refuse-empty arm).
+ok64 POSTPatchDefaults(u8cs reporoot,
+                       Bu8 msg_buf,  u8cs *msg_out,
+                       Bu8 auth_buf, u8cs *auth_out,
+                       u32 *n_out);
+
 //  Dry run: walk the same change-set the next POSTCommit would
 //  build, print one line per changed path to stdout (`M/A/D path`),
 //  and a `sniff: <n> change(s)` summary to stderr.  No commit, no

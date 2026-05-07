@@ -100,10 +100,10 @@ static ok64 ls_ref(Bu8 out, uri const *u) {
         return KEEPLsFiles(k, u, ls_tree_visit, &ctx);
     }
 
-    //  query present-but-empty: look up the baseline sha.
+    //  query present-but-empty: look up the wt's anchor commit sha.
     ron60 ts = 0, verb = 0;
     uri bu = {};
-    ok64 br = SNIFFAtBaseline(&ts, &verb, &bu);
+    ok64 br = SNIFFAtCurTip(&ts, &verb, &bu);
     if (br != OK) {
         fprintf(stderr, "sniff: ls: no baseline; nothing checked out\n");
         fail(SNIFFFAIL);
