@@ -331,7 +331,47 @@ typedef struct {
     Bu8 put_buf, new_buf, mod_buf, del_buf, mis_buf, unk_buf;
     u32 ok_n, put_n, new_n, mod_n, del_n, mis_n, unk_n;
     i64 now;          // unix epoch seconds, for relative-date format
+    u8cs reporoot;    // for resolving full paths in the wt-eq-base check
 } status_buckets;
+
+//  Hash the on-disk content at `<reporoot>/<rel>` as a git blob and
+//  compare to the baseline blob sha encoded in `base_rec->uri.fragment`
+//  (40-hex).  YES iff the bytes match — i.e. the file is "touched
+//  unchanged" (mtime drift but content equals baseline) and should
+//  count as `ok`, not `mod`.
+static b8 status_wt_eq_base(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
+    if (!base_rec || u8csLen(base_rec->uri.fragment) != 40) return NO;
+    a_path(fp);
+    if (SNIFFFullpath(fp, reporoot, rel) != OK) return NO;
+    struct stat sb = {};
+    if (FILELStat(&sb, $path(fp)) != OK) return NO;
+
+    sha1 wt_sha = {};
+    if (S_ISLNK(sb.st_mode)) {
+        a_pad(u8, tgt, 4096);
+        if (FILEReadLink(tgt, $path(fp)) != OK) return NO;
+        KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, u8bDataC(tgt));
+    } else if (S_ISREG(sb.st_mode)) {
+        if (sb.st_size == 0) {
+            u8cs empty = {NULL, NULL};
+            KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, empty);
+        } else {
+            u8bp m = NULL;
+            if (FILEMapRO(&m, $path(fp)) != OK) return NO;
+            u8cs body = {u8bDataHead(m), u8bIdleHead(m)};
+            KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, body);
+            FILEUnMap(m);
+        }
+    } else {
+        return NO;
+    }
+
+    sha1 base_sha = {};
+    u8s bin = {base_sha.data, base_sha.data + 20};
+    a_dup(u8c, hex, base_rec->uri.fragment);
+    if (HEXu8sDrainSome(bin, hex) != OK) return NO;
+    return sha1eq(&wt_sha, &base_sha);
+}
 
 //  Convert ron60 (packed local-time encoding via RONOfTime) to
 //  unix-epoch seconds for DOGutf8sFeedDate.  0 → 0 ("?" placeholder).
@@ -392,10 +432,19 @@ static ok64 status_step(class_step const *step, void *ctx) {
         case CLASS_BOTH:
             //  mtime fast-path: file last touched by a tracked op
             //  → unchanged from baseline content (counted as `ok`).
-            //  Otherwise the file was edited since last get/post.
-            if (SNIFFAtKnown(step->wt_rec->ts)) b->ok_n++;
-            else status_push(b->mod_buf, step->path,
-                             step->wt_rec->ts, b->now, &b->mod_n);
+            //  Otherwise the file was edited since last get/post —
+            //  unless its bytes hash equal to the baseline blob,
+            //  which is the "touched-unchanged" / clean-drift case
+            //  and also counts as `ok`.
+            if (SNIFFAtKnown(step->wt_rec->ts)) {
+                b->ok_n++;
+            } else if (status_wt_eq_base(b->reporoot, step->base_rec,
+                                         step->path)) {
+                b->ok_n++;
+            } else {
+                status_push(b->mod_buf, step->path,
+                            step->wt_rec->ts, b->now, &b->mod_n);
+            }
             break;
     }
     return OK;
@@ -474,9 +523,9 @@ static ok64 sniff_status_work(status_buckets *b) {
 //  `unk` rows; the prior 16 KB caps tripped BNOROOM on bare `be`.
 static ok64 sniff_status(u8cs reporoot) {
     sane(1);
-    (void)reporoot;
 
     status_buckets b = {.now = (i64)time(NULL)};
+    u8csMv(b.reporoot, reporoot);
     call(u8bMap, b.put_buf, 1UL << 22);
     call(u8bMap, b.new_buf, 1UL << 22);
     call(u8bMap, b.mod_buf, 1UL << 22);

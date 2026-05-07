@@ -13,6 +13,8 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/QURY.h"
+#include "dog/WHIFF.h"
+#include "keeper/KEEP.h"
 #include "keeper/WALK.h"   // WALK_KIND_*
 
 // --- Standalone RO tail peek (no SNIFF singleton, no keeper) -------
@@ -371,7 +373,100 @@ typedef struct {
     sniff_at_dirty_cb cb;
     void             *user_ctx;
     ok64              cb_err;
+    //  Newline-separated list of `<path>/` prefixes harvested from
+    //  the wt's baseline-tree gitlink (mode-160000) entries.  Files
+    //  whose rel-path starts with any of these belong to a submodule
+    //  whose internal state sniff doesn't manage; the dirty test is
+    //  meaningless for them and they must not appear in the dirty
+    //  callback.  Empty when there's no baseline or no gitlinks.
+    u8cs              gitlinks;
+    //  Sorted ULOG-row stream produced by `KEEPTreeULog` over the
+    //  wt's baseline tree.  Each row encodes one tracked path and
+    //  its blob sha.  Used for two extra classifications inside the
+    //  cb:
+    //    * `rel` not in baseline       → untracked; not dirty.
+    //    * `rel` in baseline + bytes
+    //       hash equal to base blob   → touched-unchanged; not dirty.
+    //  Empty when there's no baseline.
+    u8cs              base_rows;
 } at_dirty_scan_ctx;
+
+//  Scan `base_rows` (KEEPTreeULog-formatted) for a row whose
+//  uri.path equals `rel`.  On match, decode the row's 40-hex
+//  fragment into `*out` and return YES.  Linear; baselines run
+//  from a few tens to a few thousand of entries — fine for the
+//  refusal pre-flight.
+static b8 at_baseline_blob_sha(u8cs base_rows, u8cs rel, sha1 *out) {
+    if (u8csEmpty(base_rows) || u8csEmpty(rel)) return NO;
+    a_dup(u8c, scan, base_rows);
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if ($len(rec.uri.path) != $len(rel)) continue;
+        if (memcmp(rec.uri.path[0], rel[0], (size_t)$len(rel)) != 0)
+            continue;
+        if (u8csLen(rec.uri.fragment) != 40) return NO;
+        u8s bin = {out->data, out->data + 20};
+        a_dup(u8c, hex, rec.uri.fragment);
+        if (HEXu8sDrainSome(bin, hex) != OK) return NO;
+        return YES;
+    }
+    return NO;
+}
+
+//  Hash the on-disk content of `full` as a git blob.  Returns OK
+//  with `*out` filled, or fails (caller treats as "couldn't hash").
+//  Hash the on-disk content of `full` (a path8b buffer) as a git
+//  blob.  Returns OK with `*out` filled, or fails (caller treats as
+//  "couldn't hash").
+static ok64 at_hash_wt_blob(sha1 *out, path8bp full,
+                            struct stat const *sb) {
+    sane(out != NULL && full != NULL && sb != NULL);
+    a_dup(u8c, full_s, u8bData(full));   // path8s view for FILE APIs
+    if (S_ISLNK(sb->st_mode)) {
+        a_pad(u8, tgt, 4096);
+        ok64 ro = FILEReadLink(tgt, full_s);
+        if (ro != OK) return ro;
+        KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(tgt));
+        done;
+    }
+    if (!S_ISREG(sb->st_mode)) fail(SNIFFFAIL);
+    if (sb->st_size == 0) {
+        u8cs empty = {NULL, NULL};
+        KEEPObjSha(out, DOG_OBJ_BLOB, empty);
+        done;
+    }
+    u8bp m = NULL;
+    ok64 mo = FILEMapRO(&m, full_s);
+    if (mo != OK) return mo;
+    u8cs body = {u8bDataHead(m), u8bIdleHead(m)};
+    KEEPObjSha(out, DOG_OBJ_BLOB, body);
+    FILEUnMap(m);
+    done;
+}
+
+//  YES iff `rel` starts with any `<path>/` prefix in the gitlinks
+//  slice (each entry is `<path>/\n`).
+static b8 at_under_gitlink(u8cs gitlinks, u8cs rel) {
+    if (u8csEmpty(gitlinks)) return NO;
+    a_dup(u8c, scan, gitlinks);
+    while (!u8csEmpty(scan)) {
+        u8cs entry = {};
+        u8csMv(entry, scan);
+        a_dup(u8c, find, scan);
+        if (u8csFind(find, '\n') != OK) break;
+        entry[1] = find[0];
+        if ((size_t)$len(rel) >= (size_t)$len(entry) &&
+            memcmp(entry[0], rel[0], (size_t)$len(entry)) == 0) {
+            return YES;
+        }
+        u8csUsed1(find);
+        u8csMv(scan, find);
+    }
+    return NO;
+}
 
 static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     sane(varg && path);
@@ -381,31 +476,123 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     u8cs rel = {};
     if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
+    if (at_under_gitlink(c->gitlinks, rel))         return OK;
 
     struct stat sb = {};
     ok64 lo = FILELStat(&sb, full);
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
+
+    //  Directory hook: any subdir that hosts its own `.git` (file or
+    //  directory) is a separate repository — sniff doesn't manage
+    //  its contents.  FILESKIP prunes the recursion so none of its
+    //  files get checked.  Catches both git-submodule shapes (`.git`
+    //  dir with HEAD/, or `.git` file containing `gitdir: ...`).
+    if (S_ISDIR(sb.st_mode)) {
+        a_path(probe, full, ((u8cs)u8slit(".git")));
+        struct stat git_sb = {};
+        if (FILELStat(&git_sb, $path(probe)) == OK) return FILESKIP;
+        return OK;
+    }
+
     struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
                           .tv_nsec = sb.st_mtim.tv_nsec};
     if (SNIFFAtKnown(SNIFFAtOfTimespec(ts))) return OK;
+
+    //  Mtime ∉ stamp set.  Two cases that should still be silent:
+    //    1. Path is not in the baseline tree (untracked) — sniff
+    //       has no opinion about it.
+    //    2. Path IS in baseline AND on-disk bytes hash equal to
+    //       the baseline blob sha (touched-unchanged / clean drift).
+    sha1 base_sha = {};
+    b8 in_base = at_baseline_blob_sha(c->base_rows, rel, &base_sha);
+    if (!in_base) return OK;
+
+    sha1 wt_sha = {};
+    if (at_hash_wt_blob(&wt_sha, path, &sb) == OK &&
+        sha1eq(&wt_sha, &base_sha)) {
+        return OK;
+    }
 
     ok64 o = c->cb(rel, c->user_ctx);
     if (o != OK) c->cb_err = o;
     return o;
 }
 
+// --- Baseline pre-walk for the dirty scan ----------------------------
+
+//  Best-effort: produce a baseline ULOG via `KEEPTreeULog` (sorted
+//  rows, one per leaf path) into `rows_out`, and a newline-separated
+//  list of gitlink prefixes (`<path>/\n`) into `gitlinks_out`.
+//  Failures (no baseline, no commit, walk error) silently leave both
+//  buffers empty — callers see empty inputs and behave as before
+//  the fix.
+static void at_collect_baseline(u8bp rows_out, u8bp gitlinks_out) {
+    u8bReset(rows_out);
+    u8bReset(gitlinks_out);
+    ron60 ts = 0, verb = 0;
+    uri u = {};
+    if (SNIFFAtBaseline(&ts, &verb, &u) != OK) return;
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return;
+    sha1 commit_sha = {};
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return;
+    sha1 tree_sha = {};
+    if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) return;
+
+    //  Verb stem irrelevant here; we read `kind` via `ok64Lit` later.
+    a_cstr(stem_name, "base");
+    a_dup(u8c, stem_d, stem_name);
+    ron60 stem = 0;
+    if (RONutf8sDrain(&stem, stem_d) != OK) return;
+    if (KEEPTreeULog(&KEEP, tree_sha.data, 0, stem, rows_out) != OK)
+        return;
+
+    //  Filter rows for gitlinks (kind == 's').  Append `<path>/\n`
+    //  for each into gitlinks_out.
+    a_dup(u8c, scan, u8bDataC(rows_out));
+    while (!u8csEmpty(scan)) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr != OK) break;
+        if (ok64Lit(rec.verb, 0) != RON_s) continue;
+        if (u8csEmpty(rec.uri.path)) continue;
+        (void)u8bFeed (gitlinks_out, rec.uri.path);
+        (void)u8bFeed1(gitlinks_out, '/');
+        (void)u8bFeed1(gitlinks_out, '\n');
+    }
+}
+
 ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
     sane($ok(reporoot) && cb != NULL);
+
+    //  Pre-walk baseline once: produce a ULOG of leaf rows (used to
+    //  classify wt entries as in-baseline / out-of-baseline plus to
+    //  recover blob shas for the touched-unchanged check) and a
+    //  newline-separated list of gitlink prefixes derived from the
+    //  same rows.  Both can stay empty (no baseline / first checkout).
+    Bu8 base_rows = {};
+    Bu8 gitlinks  = {};
+    call(u8bAllocate, base_rows, 1UL << 22);
+    call(u8bAllocate, gitlinks,  1UL << 14);
+    at_collect_baseline(base_rows, gitlinks);
+
     at_dirty_scan_ctx sc = {.cb = cb, .user_ctx = ctx, .cb_err = OK};
-    u8csMv(sc.reporoot, reporoot);
+    u8csMv(sc.reporoot,  reporoot);
+    u8csMv(sc.gitlinks,  u8bDataC(gitlinks));
+    u8csMv(sc.base_rows, u8bDataC(base_rows));
+
     a_path(wp);
     u8bFeed(wp, reporoot);
     call(PATHu8bTerm, wp);
+    //  FILE_SCAN_DIRS gets the cb a chance to FILESKIP whole nested
+    //  repos via the `.git`-inside heuristic.
     ok64 so = FILEScan(wp,
                        (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                                   FILE_SCAN_DEEP),
+                                   FILE_SCAN_DIRS  | FILE_SCAN_DEEP),
                        at_dirty_scan_cb, &sc);
+    u8bFree(gitlinks);
+    u8bFree(base_rows);
     if (sc.cb_err != OK) return sc.cb_err;
     return so;
 }
