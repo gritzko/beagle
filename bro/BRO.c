@@ -301,9 +301,13 @@ static u32 bro_row_end(u8csc text, u32 tlen, u32 off, u32 cols) {
 }
 
 // Pass-aware row end.  Skips bytes whose token side is hidden in this
-// pass (in-side bytes for rm-pass, rm-side bytes for in-pass).  Counts
-// only visible codepoints toward `cols`.  Stops on '\n' regardless of
-// side (the line break terminates every pass).
+// pass (in-side bytes for rm-pass, rm-side bytes for in-pass).  A
+// '\n' only terminates the row when it's *visible* in this pass:
+// an INS '\n' embedded mid-old-line (e.g. when the diff inserted whole
+// new lines just before a modified line and shares a token prefix
+// with them) must not break the rm-pass row, or the OLD line
+// reconstruction looks fragmented.  Counts only visible codepoints
+// toward `cols`.
 static u32 bro_row_end_pass(hunkc const *hk, u32 tlen, u32 off,
                             u32 cols, u8 pass) {
     if (pass == BRO_PASS_NORMAL) {
@@ -314,33 +318,51 @@ static u32 bro_row_end_pass(hunkc const *hk, u32 tlen, u32 off,
     int ti = 0;
     while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
     u32 cp = 0;
-    while (off < tlen && cp < cols && hk->text[0][off] != '\n') {
+    while (off < tlen && cp < cols) {
         while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
         u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
         u8 ch = hk->text[0][off];
-        u32 clen = UTF8_LEN[ch >> 4];
-        if (clen == 0 || off + clen > tlen) clen = 1;
         b8 hidden = (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
                     (pass == BRO_PASS_IN && side == TOK_SIDE_RM);
+        if (ch == '\n' && !hidden) break;
+        u32 clen = UTF8_LEN[ch >> 4];
+        if (clen == 0 || off + clen > tlen) clen = 1;
         off += clen;
         if (!hidden) cp++;
     }
     return off;
 }
 
-// Per-source-line classification info used for block detection.
+// Per-segment info.  A "segment" runs from the byte after the previous
+// '\n' to (and including) the next '\n' in the merged text.  The
+// boundary `\n` carries a side (eq/in/rm) — the side determines which
+// pass(es) treat this `\n` as a real row break.  Token-level diff
+// freely interleaves IN, RM, and EQ bytes across line boundaries, so
+// a single OLD-side line can span multiple `\n`-bounded segments
+// (the IN `\n`s inside it are hidden in rm-pass and don't break the
+// OLD row).
 typedef struct {
-    u32 lo;       // line start byte offset
+    u32 lo;       // segment start byte offset
     u32 hi;       // exclusive end (the '\n' or text end)
     u32 in_b;     // count of in-side bytes within [lo,hi)
     u32 rm_b;     // count of rm-side bytes within [lo,hi)
     u32 eq_b;     // count of eq-side bytes within [lo,hi)
+    u8  bnd_side; // side of the byte at `hi` (TOK_SIDE_EQ/IN/RM); EQ
+                  // for the trailing partial-line case (no '\n').
 } bro_lineinfo;
 
-// Walk hk's tokens to populate per-line side byte counts.
-// `out` must hold at least `cap` entries; returns the number filled.
-// If the source has more lines than `cap`, the tail is truncated and
-// classification falls back to all-eq for those lines.
+// Returns the side of the byte at offset `off` in the merged text.
+static u8 bro_side_at(hunkc const *hk, u32 off) {
+    int ntoks = (int)$len(hk->toks);
+    int lo = 0, hi = ntoks;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (tok32Offset(hk->toks[0][mid]) <= off) lo = mid + 1;
+        else hi = mid;
+    }
+    return (lo < ntoks) ? tok32Side(hk->toks[0][lo]) : TOK_SIDE_EQ;
+}
+
 static u32 bro_classify_lines(hunkc const *hk, bro_lineinfo *out, u32 cap) {
     u32 tlen = (u32)$len(hk->text);
     if (tlen == 0 || cap == 0) return 0;
@@ -348,17 +370,14 @@ static u32 bro_classify_lines(hunkc const *hk, bro_lineinfo *out, u32 cap) {
     u32 line_lo = 0;
     int ntoks = (int)$len(hk->toks);
     int ti = 0;
-    u32 prev_end = 0;
     u32 in_b = 0, rm_b = 0, eq_b = 0;
     for (u32 off = 0; off < tlen; off++) {
-        while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) {
-            prev_end = tok32Offset(hk->toks[0][ti]);
-            ti++;
-        }
+        while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
         u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
         if (hk->text[0][off] == '\n') {
             if (nl < cap)
-                out[nl] = (bro_lineinfo){line_lo, off, in_b, rm_b, eq_b};
+                out[nl] = (bro_lineinfo){line_lo, off, in_b, rm_b, eq_b,
+                                         side};
             nl++;
             line_lo = off + 1;
             in_b = rm_b = eq_b = 0;
@@ -368,13 +387,20 @@ static u32 bro_classify_lines(hunkc const *hk, bro_lineinfo *out, u32 cap) {
             else eq_b++;
         }
     }
-    (void)prev_end;
     if (line_lo < tlen) {
         if (nl < cap)
-            out[nl] = (bro_lineinfo){line_lo, tlen, in_b, rm_b, eq_b};
+            out[nl] = (bro_lineinfo){line_lo, tlen, in_b, rm_b, eq_b,
+                                     TOK_SIDE_EQ};
         nl++;
     }
     return nl < cap ? nl : cap;
+}
+
+// True if a segment's boundary `\n` is visible in this pass.
+static b8 bro_pass_sees_nl(u8 pass, u8 bnd_side) {
+    if (pass == BRO_PASS_NORMAL) return YES;
+    if (pass == BRO_PASS_RM) return (bnd_side != TOK_SIDE_IN) ? YES : NO;
+    return (bnd_side != TOK_SIDE_RM) ? YES : NO;  // BRO_PASS_IN
 }
 
 // Line type derived from byte counts.
@@ -398,13 +424,15 @@ static bro_linekind bro_classify(bro_lineinfo const *li) {
     u32 changed = li->in_b + li->rm_b;
     if (changed == 0) return BRO_LINE_EQ;
     if (li->eq_b == 0) {
-        // No context bytes — classic pure ADD / DEL / both-sides edit.
         if (li->in_b > 0 && li->rm_b > 0) return BRO_LINE_MOD_SPLIT;
         return (li->in_b > 0) ? BRO_LINE_PURE_IN : BRO_LINE_PURE_RM;
     }
-    u32 total = changed + li->eq_b;
-    return (changed * 4 < total) ? BRO_LINE_MOD_INLINE
-                                  : BRO_LINE_MOD_SPLIT;
+    // Any modified line splits into rm-row + in-row.  The merged-text
+    // byte order is INS-before-DEL (NEILCanon's in-rm invariant), so
+    // an inline render of `1UL << 16 → 12` would read as `<< 1216`,
+    // which is unreadable.  Split renders the OLD line (in bytes
+    // hidden) and the NEW line (rm bytes hidden) on adjacent rows.
+    return BRO_LINE_MOD_SPLIT;
 }
 
 static b8 bro_kind_in_rm_pass(bro_linekind k) {
@@ -425,84 +453,133 @@ static u8 bro_kind_pass_for_in(bro_linekind k) {
 
 #define BRO_LINEINFO_CAP 8192  // generous; hunks are typically tiny
 
-// Append rows for one source line to lines[].  Returns the new li.
+// Append soft-wrap rows for one logical line span in `pass`, between
+// `lo` (inclusive) and `end_nl` (offset of the visible '\n' that
+// terminates the row, or text length for trailing partials).
 static u32 bro_append_rows(range32 *lines, u32 li, u32 maxlines,
-                           hunkc const *hk, u32 h, bro_lineinfo const *info,
+                           hunkc const *hk, u32 h, u32 lo, u32 end_nl,
                            u32 cols, u8 pass) {
-    if (li >= maxlines) return li;
     u32 tlen = (u32)$len(hk->text);
-    u32 off = info->lo;
-    u32 line_end = info->hi;
-    while (off <= line_end) {
-        if (li < maxlines) {
+    u32 off = lo;
+    while (off <= end_nl) {
+        if (li < maxlines)
             lines[li++] = (range32){h, bro_line_make(off, pass)};
-        }
         u32 end = bro_row_end_pass(hk, tlen, off, cols, pass);
-        if (end >= line_end) break;  // last row of this line
+        if (end >= end_nl) break;
         off = end;
     }
     return li;
 }
 
-// Count rows produced by appending one source line in `pass`.
-static u32 bro_count_rows(hunkc const *hk, bro_lineinfo const *info,
+static u32 bro_count_rows(hunkc const *hk, u32 lo, u32 end_nl,
                           u32 cols, u8 pass) {
     u32 tlen = (u32)$len(hk->text);
-    u32 off = info->lo;
-    u32 line_end = info->hi;
+    u32 off = lo;
     u32 n = 0;
-    while (off <= line_end) {
+    while (off <= end_nl) {
         n++;
         u32 end = bro_row_end_pass(hk, tlen, off, cols, pass);
-        if (end >= line_end) break;
+        if (end >= end_nl) break;
         off = end;
     }
     return n;
 }
 
-// Walk a hunk's lines, count display rows per the block-reorder rule.
-static u32 bro_hunk_count_rows(hunkc const *hk, u32 cols) {
+// Drive the per-hunk row-emission loop.  `emit` is the per-row sink:
+// receives (row_start_offset, end_nl_offset, pass).  Used by both
+// bro_hunk_count_rows (counts) and bro_hunk_append (writes lines[]).
+typedef u32 (*bro_emit_fn)(void *ctx, u32 lo, u32 end_nl, u8 pass);
+
+static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
     static bro_lineinfo info[BRO_LINEINFO_CAP];
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
     u32 total = 0;
     u32 i = 0;
+
+    // Block detection.  An eq-only segment (in_b == 0 && rm_b == 0)
+    // *whose boundary `\n` is also eq* is a context line — emit
+    // directly.  Anything else is part of a "modified block".  Within
+    // a block we collect rm-pass rows (visible RM/EQ `\n`s) and
+    // in-pass rows (visible IN/EQ `\n`s).
     while (i < nl) {
         bro_linekind k = bro_classify(&info[i]);
-        if (k == BRO_LINE_EQ) {
-            total += bro_count_rows(hk, &info[i], cols, BRO_PASS_NORMAL);
+        if (k == BRO_LINE_EQ && info[i].bnd_side == TOK_SIDE_EQ) {
+            total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
             i++;
             continue;
         }
-        // Find block end (run of non-eq lines).
+        // Block end: when we hit the next eq-context line.
         u32 j = i;
-        while (j < nl && bro_classify(&info[j]) != BRO_LINE_EQ) j++;
-        // Pass 1: rm-side rows.
+        while (j < nl && !(bro_classify(&info[j]) == BRO_LINE_EQ &&
+                           info[j].bnd_side == TOK_SIDE_EQ))
+            j++;
+
+        // Walk block segments for rm-pass; group across hidden IN `\n`s.
+        u32 row_start = info[i].lo;
         for (u32 m = i; m < j; m++) {
-            bro_linekind km = bro_classify(&info[m]);
-            if (!bro_kind_in_rm_pass(km)) continue;
-            total += bro_count_rows(hk, &info[m], cols,
-                                    bro_kind_pass_for_rm(km));
+            if (bro_pass_sees_nl(BRO_PASS_RM, info[m].bnd_side)) {
+                if (info[m].rm_b > 0 || info[m].eq_b > 0) {
+                    total += emit(ctx, row_start, info[m].hi, BRO_PASS_RM);
+                }
+                row_start = info[m].hi + 1;
+            }
         }
-        // Pass 2: in-side rows.
+        // (Trailing range with no visible RM/EQ `\n` ⇒ no rm-row.)
+
+        // Walk block segments for in-pass.
+        row_start = info[i].lo;
         for (u32 m = i; m < j; m++) {
-            bro_linekind km = bro_classify(&info[m]);
-            if (!bro_kind_in_in_pass(km)) continue;
-            total += bro_count_rows(hk, &info[m], cols,
-                                    bro_kind_pass_for_in(km));
+            if (bro_pass_sees_nl(BRO_PASS_IN, info[m].bnd_side)) {
+                if (info[m].in_b > 0 || info[m].eq_b > 0) {
+                    total += emit(ctx, row_start, info[m].hi, BRO_PASS_IN);
+                }
+                row_start = info[m].hi + 1;
+            }
         }
+
         i = j;
     }
     return total;
 }
 
-// Append one hunk's rows to lines[] following the block-reorder rule.
-// Mutates hk->toks: sets the custom bit on tokens belonging to inrm
-// lines so the renderer can colour them as "changed-side" (split toks).
+typedef struct {
+    hunkc const *hk;
+    u32 cols;
+} bro_count_ctx;
+static u32 bro_count_emit(void *vctx, u32 lo, u32 end_nl, u8 pass) {
+    bro_count_ctx *c = vctx;
+    return bro_count_rows(c->hk, lo, end_nl, c->cols, pass);
+}
+
+static u32 bro_hunk_count_rows(hunkc const *hk, u32 cols) {
+    bro_count_ctx c = {hk, cols};
+    return bro_walk_hunk(hk, bro_count_emit, &c);
+}
+
+typedef struct {
+    range32 *lines;
+    u32 li;
+    u32 maxlines;
+    hunkc const *hk;
+    u32 h;
+    u32 cols;
+} bro_append_ctx;
+static u32 bro_append_emit(void *vctx, u32 lo, u32 end_nl, u8 pass) {
+    bro_append_ctx *c = vctx;
+    u32 before = c->li;
+    c->li = bro_append_rows(c->lines, c->li, c->maxlines, c->hk, c->h,
+                            lo, end_nl, c->cols, pass);
+    return c->li - before;
+}
+
 static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
                            hunkc const *hk, u32 h, u32 cols) {
+    // Stamp custom bit on inrm-line tokens (per any-`\n` segment that
+    // has both in and rm bytes).  Used by the renderer to distinguish
+    // "this token is on a modified line" from a token in a pure-add
+    // or pure-delete line, for any future styling that wants it.
     static bro_lineinfo info[BRO_LINEINFO_CAP];
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
-    // Stamp custom bit on inrm-line tokens.
     int ntoks = (int)$len(hk->toks);
     if (ntoks > 0) {
         u32p toks = (u32p)hk->toks[0];
@@ -510,7 +587,6 @@ static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
         u32 li_idx = 0;
         for (int ti = 0; ti < ntoks; ti++) {
             u32 end = tok32Offset(toks[ti]);
-            // Advance to the line containing [prev, end)
             while (li_idx < nl && info[li_idx].hi < prev) li_idx++;
             b8 in_inrm = NO;
             for (u32 m = li_idx; m < nl && info[m].lo < end; m++) {
@@ -523,34 +599,9 @@ static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
         }
     }
 
-    u32 i = 0;
-    while (i < nl) {
-        bro_linekind k = bro_classify(&info[i]);
-        if (k == BRO_LINE_EQ) {
-            li = bro_append_rows(lines, li, maxlines, hk, h,
-                                 &info[i], cols, BRO_PASS_NORMAL);
-            i++;
-            continue;
-        }
-        u32 j = i;
-        while (j < nl && bro_classify(&info[j]) != BRO_LINE_EQ) j++;
-        for (u32 m = i; m < j; m++) {
-            bro_linekind km = bro_classify(&info[m]);
-            if (!bro_kind_in_rm_pass(km)) continue;
-            li = bro_append_rows(lines, li, maxlines, hk, h,
-                                 &info[m], cols,
-                                 bro_kind_pass_for_rm(km));
-        }
-        for (u32 m = i; m < j; m++) {
-            bro_linekind km = bro_classify(&info[m]);
-            if (!bro_kind_in_in_pass(km)) continue;
-            li = bro_append_rows(lines, li, maxlines, hk, h,
-                                 &info[m], cols,
-                                 bro_kind_pass_for_in(km));
-        }
-        i = j;
-    }
-    return li;
+    bro_append_ctx c = {lines, li, maxlines, hk, h, cols};
+    bro_walk_hunk(hk, bro_append_emit, &c);
+    return c.li;
 }
 
 u32 BROCountLines(hunkc const *hunks, u32 nhunks, u32 cols) {
@@ -1674,84 +1725,116 @@ static void BROReadURI(BROstate *st, char const *repo) {
     }
 }
 
-// --- Fallback: plain output (when piped) ---
+// --- Fallback: one-shot ANSI dump (when piped) ---
+//
+// Builds the same line index BRORender uses (so MOD_SPLIT lines emit
+// as paired rm-row + in-row, not as merged-byte goo) and walks each
+// row, applying side-aware bg colours.  Cursor positioning is omitted
+// — output is plain stream-of-bytes suitable for a pipe.
 
 static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
     sane(hunks != NULL);
     call(BROScreenInit);
-    for (u32 h = 0; h < nhunks; h++) {
+
+    if (!BRO_COLOR) {
+        // No colours: emit hunk text verbatim with a `--- uri ---` title
+        // per hunk.  Same as before — plain --no-color dump.
+        for (u32 h = 0; h < nhunks; h++) {
+            u8bReset(bro_scr);
+            if (hunk_has_title(&hunks[h])) {
+                char dtitle[HUNK_TITLE_MAX + 1];
+                int dtlen = bro_format_title(dtitle, sizeof(dtitle), &hunks[h]);
+                u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
+                u8bFeed(bro_scr, dts);
+                u8sFeed1(u8bIdle(bro_scr), '\n');
+            }
+            if (!$empty(hunks[h].text)) {
+                u8bFeed(bro_scr, hunks[h].text);
+                u32 tlen = (u32)$len(hunks[h].text);
+                if (tlen > 0 && hunks[h].text[0][tlen - 1] != '\n')
+                    u8sFeed1(u8bIdle(bro_scr), '\n');
+            }
+            BROScreenFlush();
+        }
+        done;
+    }
+
+    // Colour mode: build line index (which classifies inrm-modified
+    // lines and emits two passes) and render each row with the same
+    // side+pass→bg mapping the interactive pager uses.
+    u32 cols = 200;  // generous; soft-wrap rarely needed in pipe mode
+    u32 nlines_max = BROCountLines(hunks, nhunks, cols);
+    if (nlines_max == 0) done;
+
+    Brange32 linesbuf = {};
+    if (range32bAlloc(linesbuf, nlines_max) != OK) fail(NOROOM);
+    range32 *lines = linesbuf[0];
+    u32 nlines = BROAppendLines(lines, 0, nlines_max,
+                                hunks, 0, nhunks, cols);
+
+    for (u32 vi = 0; vi < nlines; vi++) {
         u8bReset(bro_scr);
-        if (hunk_has_title(&hunks[h])) {
+        range32 const *ln = &lines[vi];
+        hunk const *hk = &hunks[ln->lo];
+
+        if (ln->hi == BRO_TITLE_LINE) {
             char dtitle[HUNK_TITLE_MAX + 1];
-            int dtlen = bro_format_title(dtitle, sizeof(dtitle), &hunks[h]);
-            if (BRO_COLOR) scr_puts(BRO_TITLE_COLOR);
+            int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
+            scr_puts(BRO_TITLE_COLOR);
             u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
             u8bFeed(bro_scr, dts);
-            if (BRO_COLOR) scr_puts(TTY_RESET);
+            scr_puts(TTY_RESET);
             u8sFeed1(u8bIdle(bro_scr), '\n');
+            BROScreenFlush();
+            continue;
         }
-        if (!$empty(hunks[h].text)) {
-            u32 tlen = (u32)$len(hunks[h].text);
-            if (!BRO_COLOR) {
-                // No colors: plain text
-                u8bFeed(bro_scr, hunks[h].text);
-            } else {
-                int ntoks = (int)$len(hunks[h].toks);
-                int tok_i = 0;
-                int prev_fg = 0;
-                int prev_bg = 0;
-                b8 prev_bold = NO;
-                for (u32 i = 0; i < tlen; i++) {
-                    // Advance tok cursor
-                    while (tok_i < ntoks &&
-                           tok32Offset(hunks[h].toks[0][tok_i]) <= i)
-                        tok_i++;
-                    u8 fg_tag = (tok_i < ntoks)
-                                    ? tok32Tag(hunks[h].toks[0][tok_i])
-                                    : 'S';
-                    u8 side = (tok_i < ntoks)
-                                  ? tok32Side(hunks[h].toks[0][tok_i])
-                                  : TOK_SIDE_EQ;
-                    u8 bg_tag = (side == TOK_SIDE_IN) ? 'I'
-                              : (side == TOK_SIDE_RM) ? 'D' : 'A';
-                    b8 bold = NO;
-                    int fg = BROTagColor(fg_tag, &bold);
-                    int bg = 0;
-                    if (bg_tag == 'I') bg = 194;
-                    else if (bg_tag == 'D') bg = 224;
-                    u8sp out = u8bIdle(bro_scr);
-                    if (fg != prev_fg || bg != prev_bg ||
-                        bold != prev_bold) {
-                        if (prev_fg != 0 || prev_bg != 0 || prev_bold)
-                            escfeed(out, 0);  // reset
-                        if (bold) escfeed(out, BOLD);
-                        if (fg != 0) escfeed(out, (u8)fg);
-                        if (bg != 0) escfeedBG256(out, (u8)bg);
-                        prev_fg = fg;
-                        prev_bg = bg;
-                        prev_bold = bold;
-                    }
-                    u8sFeed1(out, hunks[h].text[0][i]);
-                    if (hunks[h].text[0][i] == '\n' &&
-                        (prev_fg != 0 || prev_bg != 0 || prev_bold)) {
-                        escfeed(out, 0);  // reset at EOL
-                        prev_fg = 0;
-                        prev_bg = 0;
-                        prev_bold = NO;
-                    }
-                }
-                if (prev_fg != 0 || prev_bg != 0 || prev_bold)
-                    escfeed(u8bIdle(bro_scr), 0);
+
+        u32 textlen = (u32)$len(hk->text);
+        u32 off = bro_line_off(ln);
+        u8 pass = bro_line_pass(ln);
+        u32 line_end = bro_row_end_pass(hk, textlen, off, cols, pass);
+        u32 w = line_end - off;
+
+        int ntoks = (int)$len(hk->toks);
+        int tok_i = 0;
+        while (tok_i < ntoks &&
+               tok32Offset(hk->toks[0][tok_i]) <= off)
+            tok_i++;
+
+        for (u32 j = 0; j < w; ) {
+            u32 pos = off + j;
+            u8 ch = hk->text[0][pos];
+            u32 clen = UTF8_LEN[ch >> 4];
+            if (clen > w - j) clen = w - j;
+            while (tok_i < ntoks &&
+                   tok32Offset(hk->toks[0][tok_i]) <= pos)
+                tok_i++;
+            u8 fg_tag = (tok_i < ntoks)
+                            ? tok32Tag(hk->toks[0][tok_i]) : 'S';
+            u8 side = (tok_i < ntoks)
+                          ? tok32Side(hk->toks[0][tok_i]) : TOK_SIDE_EQ;
+            if ((pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+                (pass == BRO_PASS_IN && side == TOK_SIDE_RM)) {
+                j += clen;
+                continue;
             }
-            // Trailing newline if text doesn't end with one
-            if (tlen > 0 && hunks[h].text[0][tlen - 1] != '\n')
-                u8sFeed1(u8bIdle(bro_scr), '\n');
-            if (h + 1 >= nhunks || hunk_has_title(&hunks[h + 1]))
-                u8sFeed1(u8bIdle(bro_scr), '\n');
+            u8 bg_tag = 'A';
+            if (pass == BRO_PASS_NORMAL) {
+                if (side == TOK_SIDE_IN) bg_tag = 'I';
+                else if (side == TOK_SIDE_RM) bg_tag = 'D';
+            } else if (pass == BRO_PASS_RM) {
+                bg_tag = (side == TOK_SIDE_RM) ? 'd' : 'p';
+            } else {
+                bg_tag = (side == TOK_SIDE_IN) ? 'i' : 'g';
+            }
+            scr_emit_char(hk->text[0] + pos, clen, fg_tag, bg_tag, NO);
+            j += clen;
         }
-        // Flush per hunk (hunks can be large)
+        u8sFeed1(u8bIdle(bro_scr), '\n');
         BROScreenFlush();
     }
+
+    range32bFree(linesbuf);
     done;
 }
 
@@ -2415,8 +2498,78 @@ u32 BROAppendLines(range32 *lines, u32 nlines, u32 maxlines,
     return li;
 }
 
+// Drain all TLV records from `pipefd` into `bro_hunks` then return.
+// Used by the non-interactive (non-TTY stdout) pipe path: callers
+// invoke this and then dispatch to BROPlain for a one-shot ANSI dump.
+static ok64 bro_pipe_drain_all(int pipefd) {
+    sane(pipefd >= 0);
+    call(BROArenaInit);
+    Bu8 rdbuf = {};
+    call(u8bMap, rdbuf, PIPE_RDBUF_INIT);
+
+    for (;;) {
+        size_t space = u8bIdleLen(rdbuf);
+        if (space == 0) {
+            // Grow buffer.
+            size_t cur = u8bLen(rdbuf);
+            size_t nxt = cur * 2;
+            Bu8 grow = {};
+            if (u8bMap(grow, nxt) != OK) break;
+            size_t dlen = u8bDataLen(rdbuf);
+            memcpy(u8bIdleHead(grow), u8bDataHead(rdbuf), dlen);
+            u8bFed(grow, dlen);
+            u8bUnMap(rdbuf);
+            rdbuf[0] = grow[0]; rdbuf[1] = grow[1];
+            rdbuf[2] = grow[2]; rdbuf[3] = grow[3];
+            space = u8bIdleLen(rdbuf);
+        }
+        ssize_t nr = read(pipefd, u8bIdleHead(rdbuf), space);
+        if (nr <= 0) break;
+        u8bFed(rdbuf, (size_t)nr);
+    }
+
+    a_dup(u8 const, from, u8bDataC(rdbuf));
+    while (!$empty(from) && bro_nhunks < BRO_MAX_HUNKS) {
+        a_dup(u8 const, save, from);
+        hunk tlv_hk = {};
+        ok64 o = HUNKu8sDrain(from, &tlv_hk);
+        if (o != OK) { $mv(from, save); break; }
+        hunk *hk = &bro_hunks[bro_nhunks];
+        *hk = (hunk){};
+        if (!$empty(tlv_hk.uri)) {
+            u8p up = BROArenaWrite(tlv_hk.uri[0], (size_t)$len(tlv_hk.uri));
+            if (up) { hk->uri[0] = up; hk->uri[1] = u8bIdleHead(bro_arena); }
+        }
+        if (!$empty(tlv_hk.text)) {
+            u8p xp = BROArenaWrite(tlv_hk.text[0], (size_t)$len(tlv_hk.text));
+            if (xp) { hk->text[0] = xp; hk->text[1] = u8bIdleHead(bro_arena); }
+        }
+        if (!$empty(tlv_hk.toks)) {
+            size_t tn = (size_t)((u8cp)tlv_hk.toks[1] - (u8cp)tlv_hk.toks[0]);
+            u8p tkp = BROArenaWrite(tlv_hk.toks[0], tn);
+            if (tkp) {
+                hk->toks[0] = (u32cp)tkp;
+                hk->toks[1] = (u32cp)u8bIdleHead(bro_arena);
+            }
+        }
+        hunkbFed(bro_state->hunks, 1);
+    }
+    u8bUnMap(rdbuf);
+    done;
+}
+
 ok64 BROPipeRun(int pipefd) {
     sane(pipefd >= 0);
+
+    // Non-TTY stdout: drain all TLV and emit a one-shot ANSI dump via
+    // BROPlain.  This is the path `be --color diff:foo | cat` takes —
+    // no interactive pager, but the renderer's colours are preserved.
+    if (!isatty(STDOUT_FILENO)) {
+        call(bro_pipe_drain_all, pipefd);
+        if (bro_nhunks > 0) call(BROPlain, bro_hunks, bro_nhunks);
+        BROArenaCleanup();
+        done;
+    }
 
     // If pipefd is a TTY (bro invoked with no data source), ignore
     // it — otherwise the pipe-drain would swallow keystrokes that

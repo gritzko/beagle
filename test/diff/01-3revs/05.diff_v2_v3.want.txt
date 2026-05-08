@@ -1,4 +1,6 @@
---- foo.c ---
+--- a/foo.c
++++ b/foo.c
+@@ -1,6 +1,7 @@
  #include <stdio.h>
  
  int main(void) {
@@ -6,4 +8,3 @@
 +    puts("goodbye");
      return 0;
  }
-

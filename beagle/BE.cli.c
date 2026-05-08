@@ -372,7 +372,15 @@ static ok64 BEProjector(cli *c, uri *u) {
     }
     a_cstr(dog_s, dog_cstr);
 
-    b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
+    //  `--color` (alias `--ansi`) forces the bro pager pipeline even
+    //  when stdout is not a terminal — useful for capturing the
+    //  ANSI-coloured renderer output (vs. the plain unified-diff text
+    //  that graf emits when piped).  Bro reads BRO_COLOR=1 from the
+    //  environment and uses BROPlain to one-shot dump ANSI when its
+    //  own stdout is non-TTY.
+    b8 force_color = CLIHas(c, "--color") || CLIHas(c, "--ansi");
+    if (force_color) setenv("BRO_COLOR", "1", 1);
+    b8 tty = (isatty(STDOUT_FILENO) || force_color) ? YES : NO;
 
     a_path(dogpath);
     a$rg(a0, 0);

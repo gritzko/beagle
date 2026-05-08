@@ -87,7 +87,7 @@ EOF
 #  a.txt diff: -'world' / +'universe' (line-1).
 CASE=A
 be 'diff:a.txt' > "$T/A.out" 2>&1 || true
-want_all "$T/A.out" '^--- a\.txt ---$' '\-hello world' '\+hello universe'
+want_all "$T/A.out" '^--- a/a\.txt$' '\-hello world' '\+hello universe'
 # wt-vs-base for a SINGLE file should not mention b.txt
 grep -q 'b\.txt' "$T/A.out" && fail "A.out shouldn't mention b.txt"
 
@@ -95,15 +95,15 @@ grep -q 'b\.txt' "$T/A.out" && fail "A.out shouldn't mention b.txt"
 #  Both files in the base tree get a per-file weave diff vs wt.
 CASE=B
 be 'diff:' > "$T/B.out" 2>&1 || true
-want_all "$T/B.out" '^--- a\.txt ---$' '\+hello universe' \
-                    '^--- b\.txt ---$' '\+one two three'
+want_all "$T/B.out" '^--- a/a\.txt$' '\+hello universe' \
+                    '^--- a/b\.txt$' '\+one two three'
 
 # --- Case C: file branch-vs-base — `diff:<path>?<branch>` ----------
 #  from=v1, to=v2 (cur).  a.txt: -goodnight / +goodbye.
 #  No 'universe' should appear (wt is excluded from this comparison).
 CASE=C
 be get 'diff:a.txt?tags/v1' > "$T/C.out" 2>&1 || true
-want_all "$T/C.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon'
+want_all "$T/C.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon'
 grep -q 'universe' "$T/C.out" && fail "C.out should NOT mention 'universe' (wt excluded)"
 
 # --- Case D: tree branch-vs-base — `diff:?<branch>` ----------------
@@ -112,21 +112,21 @@ grep -q 'universe' "$T/C.out" && fail "C.out should NOT mention 'universe' (wt e
 #  — that's reconstructed only when a line has both INS and DEL spans).
 CASE=D
 be get 'diff:?tags/v1' > "$T/D.out" 2>&1 || true
-want_all "$T/D.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon' \
-                    '^--- b\.txt ---$' '\+one two'
+want_all "$T/D.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon' \
+                    '^--- a/b\.txt$' '\+one two'
 grep -q 'universe' "$T/D.out" && fail "D.out should NOT mention 'universe'"
 
 # --- Case E: file ref-to-ref range — `diff:<path>?<h1>..<h2>` ------
 CASE=E
 be get 'diff:a.txt?tags/v1..tags/v2' > "$T/E.out" 2>&1 || true
-want_all "$T/E.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon'
+want_all "$T/E.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon'
 grep -q 'universe' "$T/E.out" && fail "E.out should NOT mention 'universe'"
 
 # --- Case F: tree ref-to-ref range — `diff:?<h1>..<h2>` ------------
 CASE=F
 be get 'diff:?tags/v1..tags/v2' > "$T/F.out" 2>&1 || true
-want_all "$T/F.out" '^--- a\.txt ---$' '\-goodnight moon' '\+goodbye moon' \
-                    '^--- b\.txt ---$' '\+one two'
+want_all "$T/F.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon' \
+                    '^--- a/b\.txt$' '\+one two'
 grep -q 'universe' "$T/F.out" && fail "F.out should NOT mention 'universe'"
 
 # --- Case G: verb-less projector — `be diff:<path>?<branch>` -------
@@ -135,7 +135,7 @@ grep -q 'universe' "$T/F.out" && fail "F.out should NOT mention 'universe'"
 #  a search/view URI.
 CASE=G
 be 'diff:a.txt?tags/v1' > "$T/G.out" 2>&1 || true
-want_all "$T/G.out" '^--- a\.txt ---$' '\-goodnight' '\+goodbye'
+want_all "$T/G.out" '^--- a/a\.txt$' '\-goodnight' '\+goodbye'
 
 # --- Case H: untracked files are excluded from `diff:` -------------
 #  Drop a never-staged file alongside the tracked ones; whole-tree
@@ -146,8 +146,8 @@ be 'diff:' > "$T/H.out" 2>&1 || true
 grep -q 'scratch\.txt' "$T/H.out" \
     && fail "H.out should NOT mention untracked scratch.txt"
 # But the tracked diffs must still be there.
-want_all "$T/H.out" '^--- a\.txt ---$' '\+hello universe' \
-                    '^--- b\.txt ---$' '\+one two three'
+want_all "$T/H.out" '^--- a/a\.txt$' '\+hello universe' \
+                    '^--- a/b\.txt$' '\+one two three'
 rm -f scratch.txt
 
 # --- Summary -----------------------------------------------------

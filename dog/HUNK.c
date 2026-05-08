@@ -1,6 +1,8 @@
 #include "HUNK.h"
 
 #include "abc/PRO.h"
+#include "abc/URI.h"
+#include "dog/DOG.h"
 #include "dog/FRAG.h"
 #include "dog/TOK.h"
 
@@ -121,19 +123,230 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     done;
 }
 
-ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
-    sane(u8sOK(into) && hk != NULL);
-    if (!$empty(hk->uri)) {
-        a_cstr(pfx, "--- ");
-        u8sFeed(into, pfx);
-        u8sFeed(into, hk->uri);
-        a_cstr(sfx, " ---\n");
-        u8sFeed(into, sfx);
+// One line slice — content between leading `-`/`+` prefix and trailing '\n'.
+typedef struct { u8c *lo; u8c *hi; } hk_line;
+
+// Slurp one prefixed line (`-X\n` or `+X\n`) starting at *cur.
+// Skips the prefix char, returns content bounds, advances *cur past '\n'.
+// Returns YES on success, NO on no '\n' found.
+static b8 hk_take_line(u8c **cur, u8c *end, hk_line *out) {
+    if (*cur >= end) return NO;
+    u8c *nl = (u8c*)memchr(*cur, '\n', (size_t)(end - *cur));
+    if (!nl) return NO;
+    out->lo = *cur + 1;   // skip prefix char
+    out->hi = nl;
+    *cur = nl + 1;
+    return YES;
+}
+
+// Common prefix (chars matching from start) + common suffix (chars
+// matching from end, not overlapping the prefix).  Used to gauge how
+// "small" the edit between two lines is — token-level diff routinely
+// fails to pair small-edit lines (one token changed) into a single
+// merged-text line, so the renderer pairs them at line level.
+static u32 hk_shared(hk_line a, hk_line b) {
+    u32 alen = (u32)(a.hi - a.lo);
+    u32 blen = (u32)(b.hi - b.lo);
+    u32 lim  = alen < blen ? alen : blen;
+    u32 lcp = 0;
+    while (lcp < lim && a.lo[lcp] == b.lo[lcp]) lcp++;
+    u32 lcs = 0;
+    while (lcs < lim - lcp && a.hi[-1 - (i32)lcs] == b.hi[-1 - (i32)lcs])
+        lcs++;
+    return lcp + lcs;
+}
+
+// Two lines are a "small edit" if shared bytes (LCP+LCS) cover at
+// least 3/4 of the longer line — i.e. less than 1/4 of the line was
+// touched.
+static b8 hk_small_edit(hk_line a, hk_line b) {
+    u32 alen = (u32)(a.hi - a.lo);
+    u32 blen = (u32)(b.hi - b.lo);
+    u32 mx   = alen > blen ? alen : blen;
+    if (mx == 0) return YES;
+    u32 sh = hk_shared(a, b);
+    return (sh * 4 >= mx * 3) ? YES : NO;
+}
+
+#define HK_REGION_MAX 4096
+
+// Append `<prefix><content>\n` for a line slice.
+static void hk_emit_line(Bu8 body, u8 prefix, hk_line ln) {
+    u8bFeed1(body, prefix);
+    u8csc s = {ln.lo, ln.hi};
+    u8bFeed(body, s);
+    u8bFeed1(body, '\n');
+}
+
+// Flush a diff region's accumulated `-` lines and `+` lines into `body`.
+// Three-stage cleanup:
+//   1. exact-match prefix at line granularity → context
+//   2. exact-match suffix at line granularity → context
+//   3. similarity-based pairing in the middle: each `+` line is matched
+//      to the most-similar unpaired `-` line (greedy max-shared); pairs
+//      get emitted as `-X\n+Y\n` adjacent at the `+`'s position so a
+//      one-token edit shows up as a `-/+` pair instead of a big DEL run
+//      followed by a big INS run.
+// Counts are unchanged regardless of the rearrangement.
+static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
+    u8c *dp = u8bDataHead(dels);
+    u8c *de = dp + u8bDataLen(dels);
+    u8c *ap = u8bDataHead(adds);
+    u8c *ae = ap + u8bDataLen(adds);
+
+    // 1. Exact-match prefix → context.
+    while (dp < de && ap < ae) {
+        u8c *dnl = (u8c*)memchr(dp, '\n', (size_t)(de - dp));
+        u8c *anl = (u8c*)memchr(ap, '\n', (size_t)(ae - ap));
+        if (!dnl || !anl) break;
+        size_t dlen = (size_t)(dnl - dp);
+        size_t alen = (size_t)(anl - ap);
+        if (dlen != alen || memcmp(dp + 1, ap + 1, dlen - 1) != 0) break;
+        u8bFeed1(body, ' ');
+        u8csc ctx = {dp + 1, dnl + 1};
+        u8bFeed(body, ctx);
+        dp = dnl + 1;
+        ap = anl + 1;
     }
 
-    if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
+    // 2. Exact-match suffix → context.
+    u8c *de_end = de;
+    u8c *ae_end = ae;
+    while (dp < de_end && ap < ae_end) {
+        u8c *dlast = de_end - 1;
+        if (*dlast != '\n') break;
+        u8c *dline = dlast - 1;
+        while (dline >= dp && *dline != '\n') dline--;
+        dline++;
+        u8c *alast = ae_end - 1;
+        if (*alast != '\n') break;
+        u8c *aline = alast - 1;
+        while (aline >= ap && *aline != '\n') aline--;
+        aline++;
+        size_t dlen = (size_t)(dlast - dline);
+        size_t alen = (size_t)(alast - aline);
+        if (dlen != alen || memcmp(dline + 1, aline + 1, dlen - 1) != 0) break;
+        de_end = dline;
+        ae_end = aline;
+    }
+
+    // 3. Similarity-based pairing on the middle.
+    static hk_line dl[HK_REGION_MAX], al[HK_REGION_MAX];
+    u32 nd = 0, na = 0;
+    {
+        u8c *cur = dp;
+        while (nd < HK_REGION_MAX && hk_take_line(&cur, de_end, &dl[nd])) nd++;
+    }
+    {
+        u8c *cur = ap;
+        while (na < HK_REGION_MAX && hk_take_line(&cur, ae_end, &al[na])) na++;
+    }
+
+    static i32 pair_a[HK_REGION_MAX];   // pair_a[j] = i if A[j]↔D[i], else -1
+    static i32 pair_d[HK_REGION_MAX];
+    for (u32 j = 0; j < na; j++) pair_a[j] = -1;
+    for (u32 i = 0; i < nd; i++) pair_d[i] = -1;
+
+    // Greedy 2D max-shared pairing: at each step pick the (i, j) with
+    // the highest shared-byte count among unpaired pairs that pass the
+    // small-edit threshold; pair them; repeat until no qualifying pair.
+    for (;;) {
+        u32 best_sh = 0;
+        i32 best_i = -1, best_j = -1;
+        for (u32 i = 0; i < nd; i++) {
+            if (pair_d[i] >= 0) continue;
+            for (u32 j = 0; j < na; j++) {
+                if (pair_a[j] >= 0) continue;
+                if (!hk_small_edit(dl[i], al[j])) continue;
+                u32 sh = hk_shared(dl[i], al[j]);
+                if (sh > best_sh) {
+                    best_sh = sh;
+                    best_i = (i32)i;
+                    best_j = (i32)j;
+                }
+            }
+        }
+        if (best_i < 0) break;
+        pair_d[best_i] = best_j;
+        pair_a[best_j] = best_i;
+    }
+
+    // Emit in `adds` order.  A paired `+A[j]` is preceded by its
+    // matched `-D[i]`; an unpaired `+A[j]` stands alone.
+    for (u32 j = 0; j < na; j++) {
+        if (pair_a[j] >= 0) hk_emit_line(body, '-', dl[pair_a[j]]);
+        hk_emit_line(body, '+', al[j]);
+    }
+    // Trailing unpaired `-D[i]`s, in their original order.
+    for (u32 i = 0; i < nd; i++) {
+        if (pair_d[i] < 0) hk_emit_line(body, '-', dl[i]);
+    }
+
+    // Emit suffix-matched lines (collected in step 2) in forward order.
+    u8c *sp = de_end;
+    while (sp < de) {
+        u8c *snl = (u8c*)memchr(sp, '\n', (size_t)(de - sp));
+        if (!snl) break;
+        u8bFeed1(body, ' ');
+        u8csc ctx = {sp + 1, snl + 1};
+        u8bFeed(body, ctx);
+        sp = snl + 1;
+    }
+    u8bReset(dels);
+    u8bReset(adds);
+}
+
+// Parse hunk URI via the standard URI/FRAG parsers.
+// Produces path slice (no leading '/' stripped — caller's responsibility)
+// and line number (0 if absent).  Slices point into `uri_text`.
+static void hunk_loc(u8cs uri_text, u8cs out_path, u32 *out_line) {
+    out_path[0] = NULL;
+    out_path[1] = NULL;
+    *out_line = 0;
+    if ($empty(uri_text)) return;
+    uri u = {};
+    u8csc text = {uri_text[0], uri_text[1]};
+    if (DOGParseURI(&u, text) != OK) return;
+    if (!$empty(u.path)) {
+        $mv(out_path, u.path);
+        if (!$empty(out_path) && *out_path[0] == '/')
+            u8csUsed(out_path, 1);
+    }
+    if (!$empty(u.fragment)) {
+        frag fr = {};
+        if (FRAGu8sDrain(u.fragment, &fr) == OK) *out_line = fr.line;
+    }
+}
+
+ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk != NULL);
+
+    u8cs path = {};
+    u32 line = 0;
+    hunk_loc(hk->uri, path, &line);
+
+    // For grep/cat-style hunks (no diff sides), emit a one-line header
+    // and the verbatim text — not patchable, but informative.
+    if ($empty(hk->text)) {
+        if (!$empty(hk->uri)) {
+            a_cstr(pfx, "--- ");
+            u8sFeed(into, pfx);
+            u8sFeed(into, hk->uri);
+            a_cstr(sfx, " ---\n");
+            u8sFeed(into, sfx);
+        }
+        u8sFeed1(into, '\n');
+        done;
+    }
 
     if (!hunk_has_diff(hk)) {
+        if (!$empty(hk->uri)) {
+            a_cstr(pfx, "--- ");
+            u8sFeed(into, pfx);
+            u8sFeed(into, hk->uri);
+            a_cstr(sfx, " ---\n");
+            u8sFeed(into, sfx);
+        }
         u8cs t = {hk->text[0], hk->text[1]};
         u8sFeed(into, t);
         if (*$last(t) != '\n') u8sFeed1(into, '\n');
@@ -141,24 +354,33 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
         done;
     }
 
-    //  Reconstruct OLD and NEW byte streams from per-token sides:
-    //    OLD = eq + rm bytes, NEW = eq + in bytes.
-    //  Lines are split on real '\n' on each side.  At every '\n':
-    //    - rm '\n'  flushes OLD line as `-...`
-    //    - in '\n'  flushes NEW line as `+...`
-    //    - eq '\n'  flushes OLD ('-' if line had any non-eq byte, else
-    //               ' ' context).  If line is modified, also emits the
-    //               NEW line as `+...` — the "modified" signal is set
-    //               by both rm AND in bytes (so a line that lost bytes
-    //               but gained none still gets a `+` showing the
-    //               new content with those bytes removed).
+    //  Build the unified-diff body in a side buffer, then emit standard
+    //  headers (`--- a/path` / `+++ b/path` / `@@ -L,C +L,C @@`).
+    //  Within each diff region (run of non-context lines), DEL lines
+    //  are buffered into `dels` and INS into `adds`; at each context
+    //  line (or end of hunk), `dels` are flushed before `adds` so the
+    //  output is `patch`-applicable (token-level merging in TDIFF can
+    //  produce merged-text bytes in INS-before-DEL order — the renderer
+    //  reorders here to keep the `-` / `+` convention).
+    //
+    //  Per-line accumulation:
+    //    oldb = bytes of the current OLD-side line in progress (eq+rm)
+    //    newb = bytes of the current NEW-side line in progress (eq+in)
+    //    old_dirty = oldb has any rm byte
+    //    new_dirty = newb has any in byte
     u8c *base = hk->text[0];
     int  n_toks = (int)$len(hk->toks);
 
+    Bu8 body = {};
+    Bu8 dels = {}, adds = {};
     Bu8 oldb = {}, newb = {};
-    call(u8bAllocate, oldb, 1UL << 16);
-    call(u8bAllocate, newb, 1UL << 16);
+    call(u8bAllocate, body, 1UL << 16);
+    call(u8bAllocate, dels, 1UL << 12);
+    call(u8bAllocate, adds, 1UL << 12);
+    call(u8bAllocate, oldb, 1UL << 12);
+    call(u8bAllocate, newb, 1UL << 12);
     b8 old_dirty = NO, new_dirty = NO;
+    u32 old_count = 0, new_count = 0;
 
     u32 prev = 0;
     for (int i = 0; i < n_toks; i++) {
@@ -171,24 +393,26 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
             b8 is_nl = (c == '\n');
             if (side == TOK_SIDE_RM) {
                 if (is_nl) {
-                    u8sFeed1(into, '-');
-                    a_dup(u8c, body, u8bData(oldb));
-                    u8sFeed(into, body);
-                    u8sFeed1(into, '\n');
+                    u8bFeed1(dels, '-');
+                    a_dup(u8c, ob, u8bData(oldb));
+                    u8bFeed(dels, ob);
+                    u8bFeed1(dels, '\n');
                     u8bReset(oldb);
                     old_dirty = NO;
+                    old_count++;
                 } else {
                     u8bFeed1(oldb, c);
                     old_dirty = YES;
                 }
             } else if (side == TOK_SIDE_IN) {
                 if (is_nl) {
-                    u8sFeed1(into, '+');
-                    a_dup(u8c, body, u8bData(newb));
-                    u8sFeed(into, body);
-                    u8sFeed1(into, '\n');
+                    u8bFeed1(adds, '+');
+                    a_dup(u8c, nb, u8bData(newb));
+                    u8bFeed(adds, nb);
+                    u8bFeed1(adds, '\n');
                     u8bReset(newb);
                     new_dirty = NO;
+                    new_count++;
                 } else {
                     u8bFeed1(newb, c);
                     new_dirty = YES;
@@ -196,17 +420,30 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
             } else { // EQ
                 if (is_nl) {
                     b8 modified = old_dirty || new_dirty;
-                    u8sFeed1(into, modified ? '-' : ' ');
-                    a_dup(u8c, ob, u8bData(oldb));
-                    u8sFeed(into, ob);
-                    u8sFeed1(into, '\n');
-                    u8bReset(oldb);
                     if (modified) {
-                        u8sFeed1(into, '+');
+                        u8bFeed1(dels, '-');
+                        a_dup(u8c, ob, u8bData(oldb));
+                        u8bFeed(dels, ob);
+                        u8bFeed1(dels, '\n');
+                        old_count++;
+                        u8bFeed1(adds, '+');
                         a_dup(u8c, nb, u8bData(newb));
-                        u8sFeed(into, nb);
-                        u8sFeed1(into, '\n');
+                        u8bFeed(adds, nb);
+                        u8bFeed1(adds, '\n');
+                        new_count++;
+                    } else {
+                        // Region break — flush dels/adds (with prefix
+                        // and suffix line-matching to cancel token-
+                        // level misalignments), then emit the context.
+                        hunk_flush_region(body, dels, adds);
+                        u8bFeed1(body, ' ');
+                        a_dup(u8c, ob, u8bData(oldb));
+                        u8bFeed(body, ob);
+                        u8bFeed1(body, '\n');
+                        old_count++;
+                        new_count++;
                     }
+                    u8bReset(oldb);
                     u8bReset(newb);
                     old_dirty = NO;
                     new_dirty = NO;
@@ -219,25 +456,78 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
         prev = span_hi;
     }
 
-    //  Trailing partial line (no terminating '\n').
+    //  Trailing partial line + final region flush.
     {
         b8 modified = old_dirty || new_dirty;
         if (u8bDataLen(oldb) > 0 || old_dirty) {
-            u8sFeed1(into, modified ? '-' : ' ');
-            a_dup(u8c, ob, u8bData(oldb));
-            u8sFeed(into, ob);
-            u8sFeed1(into, '\n');
+            if (modified) {
+                u8bFeed1(dels, '-');
+                a_dup(u8c, ob, u8bData(oldb));
+                u8bFeed(dels, ob);
+                u8bFeed1(dels, '\n');
+                old_count++;
+            } else {
+                // Trailing context line (no terminating '\n').
+                hunk_flush_region(body, dels, adds);
+                u8bFeed1(body, ' ');
+                a_dup(u8c, ob, u8bData(oldb));
+                u8bFeed(body, ob);
+                u8bFeed1(body, '\n');
+                old_count++;
+                new_count++;
+            }
         }
         if (modified && u8bDataLen(newb) > 0) {
-            u8sFeed1(into, '+');
+            u8bFeed1(adds, '+');
             a_dup(u8c, nb, u8bData(newb));
-            u8sFeed(into, nb);
-            u8sFeed1(into, '\n');
+            u8bFeed(adds, nb);
+            u8bFeed1(adds, '\n');
+            new_count++;
         }
+        hunk_flush_region(body, dels, adds);
     }
+
+    //  Emit standard unified-diff headers.
+    if (!$empty(path)) {
+        a_cstr(amin, "--- a/");
+        u8sFeed(into, amin);
+        u8sFeed(into, path);
+        u8sFeed1(into, '\n');
+        a_cstr(aplu, "+++ b/");
+        u8sFeed(into, aplu);
+        u8sFeed(into, path);
+        u8sFeed1(into, '\n');
+    }
+    {
+        u32 ol_start = (line > 0) ? line : 1;
+        u32 nu_start = ol_start;
+        a_pad(u8, hh, 64);
+        u8sFeed1(hh_idle, '@');
+        u8sFeed1(hh_idle, '@');
+        u8sFeed1(hh_idle, ' ');
+        u8sFeed1(hh_idle, '-');
+        utf8sFeed10(hh_idle, (u64)ol_start);
+        u8sFeed1(hh_idle, ',');
+        utf8sFeed10(hh_idle, (u64)old_count);
+        u8sFeed1(hh_idle, ' ');
+        u8sFeed1(hh_idle, '+');
+        utf8sFeed10(hh_idle, (u64)nu_start);
+        u8sFeed1(hh_idle, ',');
+        utf8sFeed10(hh_idle, (u64)new_count);
+        u8sFeed1(hh_idle, ' ');
+        u8sFeed1(hh_idle, '@');
+        u8sFeed1(hh_idle, '@');
+        u8sFeed1(hh_idle, '\n');
+        u8sFeed(into, u8bDataC(hh));
+    }
+    a_dup(u8c, bb, u8bData(body));
+    u8sFeed(into, bb);
+
+    u8bFree(body);
+    u8bFree(dels);
+    u8bFree(adds);
     u8bFree(oldb);
     u8bFree(newb);
-    u8sFeed1(into, '\n');
     done;
 }
 
@@ -351,3 +641,4 @@ ok64 HUNKu8sMakeURI(u8s into, u8csc path, u8csc symbol, u32 lineno) {
     }
     done;
 }
+ 
