@@ -1428,9 +1428,9 @@ ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
 
 //  YES iff `path` is an existing directory.
 static b8 spot_dir_exists(path8s path) {
-    struct stat st = {};
-    if (FILEStat(&st, path) != OK) return NO;
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    filestat fs = {};
+    if (FILEStat(&fs, path) != OK) return NO;
+    return fs.kind == FILE_KIND_DIR;
 }
 
 typedef ok64 (*spot_dir_cb)(spot *s, u8cs dir, void0p ctx);

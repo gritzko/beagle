@@ -285,14 +285,14 @@ static ok64 home_walk_up(home *h) {
     a_cstr(dotsniff, ".sniff");
     a_cstr(dotdogs,  ".dogs");
     for (;;) {
-        struct stat sb = {};
+        filestat fs = {};
         {
             a_path(probe);
             a_dup(u8c, cur, u8bDataC(h->root));
             call(PATHu8bFeed, probe, cur);
             call(PATHu8bPush, probe, dotsniff);
-            if (stat((char const *)*$path(probe), &sb) == 0 &&
-                (sb.st_mode & S_IFREG)) {
+            if (FILEStat(&fs, $path(probe)) == OK &&
+                fs.kind == FILE_KIND_REG) {
                 done;
             }
         }
@@ -301,8 +301,8 @@ static ok64 home_walk_up(home *h) {
             a_dup(u8c, cur, u8bDataC(h->root));
             call(PATHu8bFeed, probe, cur);
             call(PATHu8bPush, probe, dotdogs);
-            if (stat((char const *)*$path(probe), &sb) == 0 &&
-                (sb.st_mode & S_IFDIR)) {
+            if (FILEStat(&fs, $path(probe)) == OK &&
+                fs.kind == FILE_KIND_DIR) {
                 done;
             }
         }
@@ -327,9 +327,9 @@ ok64 HOMEFindDogs(home *h) {
 // --- Resolve sibling binary ---
 
 static b8 home_is_exe(path8s p) {
-    struct stat sb;
-    if (FILEStat(&sb, p) != OK) return NO;
-    return (sb.st_mode & S_IXUSR) ? YES : NO;
+    filestat fs = {};
+    if (FILEStat(&fs, p) != OK) return NO;
+    return (fs.mode & 0100) ? YES : NO;
 }
 
 // If <dir>/<name> is executable, feed its full path into `out`.

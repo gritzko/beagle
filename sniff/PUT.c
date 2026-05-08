@@ -79,13 +79,11 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
 
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, $path(fp));
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, $path(fp));
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // permissions etc — propagate
-    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                           .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 mr = SNIFFAtOfTimespec(mts);
+    ron60 mr = fs.mtime;
 
     //  Fast path: mtime equals some `get` or `post` row's ts → sniff
     //  wrote this file as part of materialising a tree, the user
@@ -403,9 +401,9 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                         (int)$len(raw), (char *)raw[0]);
                 skipped++; continue;
             }
-            struct stat sb = {};
-            if (lstat((char const *)u8bDataHead(fp), &sb) != 0 ||
-                !S_ISDIR(sb.st_mode)) {
+            filestat fs = {};
+            if (FILELStat(&fs, $path(fp)) != OK ||
+                fs.kind != FILE_KIND_DIR) {
                 fprintf(stderr,
                         "sniff: put: %.*s does not exist — skipped\n",
                         (int)$len(raw), (char *)raw[0]);

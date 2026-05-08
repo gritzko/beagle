@@ -103,13 +103,11 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
     if (SNIFFSkipMeta(rel))                         return OK;
 
     if (c->mode == DEL_DIR_PREFLIGHT) {
-        struct stat sb = {};
-        ok64 lo = FILELStat(&sb, full);
+        filestat fs = {};
+        ok64 lo = FILELStat(&fs, full);
         if (lo == FILENOENT) return OK;    // vanished
         if (lo != OK) return lo;             // permissions etc — propagate
-        struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                               .tv_nsec = sb.st_mtim.tv_nsec};
-        ron60 mr = SNIFFAtOfTimespec(mts);
+        ron60 mr = fs.mtime;
         if (!SNIFFAtKnown(mr)) {
             fprintf(stderr,
                     "sniff: delete: %.*s has unstamped changes — "
@@ -136,8 +134,8 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
         fail(SNIFFFAIL);
     }
 
-    struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(dir_full), &sb) != 0) {
+    filestat fs = {};
+    if (FILELStat(&fs, $path(dir_full)) != OK) {
         //  Already absent — caller will append the dir row idempotently.
         done;
     }
@@ -192,8 +190,8 @@ static ok64 del_sweep_visit(u8cs path, u8 kind, u8cp esha,
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
 
-    struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(fp), &sb) == 0) return OK;
+    filestat fs = {};
+    if (FILELStat(&fs, $path(fp)) == OK) return OK;
     //  Anything other than ENOENT (permission denied, ELOOP, …) →
     //  silent skip; the bare form is a sweep, not a hard refusal.
 
@@ -312,16 +310,14 @@ ok64 DELStage(u32 nuris, uri const *uris) {
             fail(SNIFFFAIL);
         }
 
-        struct stat sb = {};
-        b8 exists = (lstat((char const *)u8bDataHead(fp), &sb) == 0);
+        filestat fs = {};
+        b8 exists = (FILELStat(&fs, $path(fp)) == OK);
 
         if (exists) {
             //  Dirty-safety: mtime must be in the ULOG stamp-set
             //  (file was last written by some sniff-tracked op).
             //  ∉ stamp-set ⇒ user-edited; refuse to clobber.
-            struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                                   .tv_nsec = sb.st_mtim.tv_nsec};
-            ron60 mr = SNIFFAtOfTimespec(mts);
+            ron60 mr = fs.mtime;
             if (!SNIFFAtKnown(mr)) {
                 fprintf(stderr,
                         "sniff: delete: %.*s has unstamped changes — "

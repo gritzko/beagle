@@ -670,18 +670,6 @@ b8 ULOGu8sRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full) {
     return YES;
 }
 
-ron60 ULOGtsOfTimespec(struct timespec tsp) {
-    struct tm tm = {};
-    time_t sec = tsp.tv_sec;
-    //  RONNow uses localtime, so match that for round-trip.
-    localtime_r(&sec, &tm);
-    u32 ms = (u32)(tsp.tv_nsec / 1000000);
-    if (ms > 999) ms = 999;
-    ron60 r = 0;
-    if (RONOfTime(&r, &tm, ms) != OK) r = 0;
-    return r;
-}
-
 // --- ULOGu8bScanWt: walk reporoot → ULOG rows -----------------------
 
 typedef struct {
@@ -693,13 +681,13 @@ typedef struct {
     ok64         err;
 } ulog_wt_ctx;
 
-//  Map an `lstat`-derived kind to the RON64 letter appended to the
+//  Map a stat-derived kind/mode to the RON64 letter appended to the
 //  caller's verb stem (f=regular, x=executable, l=symlink).  Mirrors
 //  `wt_kind_letter` in sniff/AT.c.
-static u8 ulog_wt_kind_letter(struct stat const *sb) {
-    if      (S_ISLNK(sb->st_mode))   return RON_l;
-    else if (sb->st_mode & S_IXUSR)  return RON_x;
-    else                             return RON_f;
+static u8 ulog_wt_kind_letter(filestat const *fs) {
+    if      (fs->kind == FILE_KIND_LNK) return RON_l;
+    else if (fs->mode & 0100)           return RON_x;
+    else                                return RON_f;
 }
 
 static ok64 ulog_wt_cb(void *varg, path8bp path) {
@@ -711,19 +699,15 @@ static ok64 ulog_wt_cb(void *varg, path8bp path) {
     if (!ULOGu8sRelFromFull(rel, c->reporoot, full)) return OK;
     if (c->skip && c->skip(rel, c->skip_ctx))         return OK;
 
-    struct stat sb = {};
-    if (lstat((char const *)full[0], &sb) != 0) return OK;
-
-    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                           .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 ts = ULOGtsOfTimespec(mts);
+    filestat fs = {};
+    if (FILELStat(&fs, full) != OK) return OK;
 
     uri u = {};
     u8csMv(u.path, rel);
     //  query empty (mode encoded in verb), fragment empty (no sha yet).
 
-    ulogrec rec = {.ts   = ts,
-                   .verb = ok64sub(c->verb, ulog_wt_kind_letter(&sb)),
+    ulogrec rec = {.ts   = fs.mtime,
+                   .verb = ok64sub(c->verb, ulog_wt_kind_letter(&fs)),
                    .uri  = u};
     ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
     if (o != OK) { c->err = o; return o; }

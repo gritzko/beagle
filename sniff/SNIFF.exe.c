@@ -168,13 +168,11 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
             memcmp(rel[0], d_pid[0], $len(d_pid)) == 0) return OK;
     }
 
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, full);
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, full);
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate
-    struct timespec ts = {.tv_sec = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 mtime = SNIFFAtOfTimespec(ts);
+    ron60 mtime = fs.mtime;
 
     //  Clean against some baseline → nothing to log.
     if (SNIFFAtKnown(mtime)) return OK;
@@ -363,16 +361,16 @@ static b8 status_wt_eq_base(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
     if (!base_rec || u8csLen(base_rec->uri.fragment) != 40) return NO;
     a_path(fp);
     if (SNIFFFullpath(fp, reporoot, rel) != OK) return NO;
-    struct stat sb = {};
-    if (FILELStat(&sb, $path(fp)) != OK) return NO;
+    filestat fs = {};
+    if (FILELStat(&fs, $path(fp)) != OK) return NO;
 
     sha1 wt_sha = {};
-    if (S_ISLNK(sb.st_mode)) {
+    if (fs.kind == FILE_KIND_LNK) {
         a_pad(u8, tgt, 4096);
         if (FILEReadLink(tgt, $path(fp)) != OK) return NO;
         KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, u8bDataC(tgt));
-    } else if (S_ISREG(sb.st_mode)) {
-        if (sb.st_size == 0) {
+    } else if (fs.kind == FILE_KIND_REG) {
+        if (fs.size == 0) {
             u8cs empty = {NULL, NULL};
             KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, empty);
         } else {

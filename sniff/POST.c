@@ -129,8 +129,8 @@ static ok64 post_hash_path(u8cs reporoot, u8cs path, u16 mode, sha1 *out) {
     //  ahead and hash the empty content directly (gives the canonical
     //  empty-blob sha e69de29b…).  Without this, FILEMapRO returns
     //  non-OK and the caller silently drops the file from the commit.
-    struct stat sb = {};
-    if (lstat((char const *)u8bDataHead(fp), &sb) == 0 && sb.st_size == 0) {
+    filestat fs = {};
+    if (FILELStat(&fs, $path(fp)) == OK && fs.size == 0) {
         u8cs empty = {NULL, NULL};
         KEEPObjSha(out, DOG_OBJ_BLOB, empty);
         done;
@@ -498,8 +498,8 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
 
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, $path(fp));
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, $path(fp));
     if (lo == FILENOENT) {
         if (src_base) {
             return post_emit_decision(c, POST_V_UNLINK, path,
@@ -508,9 +508,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         return OK;
     }
     if (lo != OK) return lo;
-    struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 mtime_r = SNIFFAtOfTimespec(ts);
+    ron60 mtime_r = fs.mtime;
 
     if (SNIFFAtKnown(mtime_r)) {
         //  Per-file stamp lookup: who owns this mtime?
@@ -1339,9 +1337,9 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         a_path(child, $path(bdir));
         u8cs nm = {(u8cp)e->d_name, (u8cp)e->d_name + nl};
         if (PATHu8bAdd(child, nm) != OK) continue;
-        struct stat sb = {};
-        if (stat((char const *)u8bDataHead(child), &sb) != 0) continue;
-        if ((sb.st_mode & S_IFMT) != S_IFDIR) continue;
+        filestat fs = {};
+        if (FILEStat(&fs, $path(child)) != OK) continue;
+        if (fs.kind != FILE_KIND_DIR) continue;
         memcpy(names[nfound++], e->d_name, nl + 1);
     }
     closedir(dp);

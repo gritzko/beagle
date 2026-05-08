@@ -208,9 +208,9 @@ static b8 keep_is_rw = NO;
 
 //  YES iff `path` (NUL-terminated u8b) is an existing directory.
 static b8 keep_dir_exists(path8s path) {
-    struct stat st = {};
-    if (FILEStat(&st, path) != OK) return NO;
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    filestat fs = {};
+    if (FILEStat(&fs, path) != OK) return NO;
+    return fs.kind == FILE_KIND_DIR;
 }
 
 //  Walk one branch path component at a time, calling `dir_cb` for

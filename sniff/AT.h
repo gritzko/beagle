@@ -185,10 +185,6 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out);
 //  already-terminated on-disk path.
 ok64 SNIFFAtStampPath(path8b path, ron60 ts);
 
-//  Convert an on-disk mtime (timespec) to the ron60 stamp used by the
-//  ULOG stamp-set.  Truncates nanoseconds to milliseconds.
-ron60 SNIFFAtOfTimespec(struct timespec ts);
-
 //  CLI's DOGNormalizeArg routes bare tokens (`a.txt`) into the URI's
 //  `query` slot rather than `path`, so `put`/`delete` see empty paths.
 //  This helper picks the best bytes to treat as the row's path:

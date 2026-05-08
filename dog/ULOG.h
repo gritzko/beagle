@@ -233,11 +233,6 @@ ok64 ULOGMergeWalk(u8css cursors, ulog_step_fn cb, void *ctx);
 //  `full` is outside `reporoot` or names the wt root itself.
 b8 ULOGu8sRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
 
-//  Convert a `struct timespec` (typically a file's mtime) into the
-//  ron60 stamp used by ULOG row timestamps.  Truncates nanoseconds to
-//  milliseconds.  `localtime`-aligned to round-trip with `RONNow`.
-ron60 ULOGtsOfTimespec(struct timespec tsp);
-
 // --- Generic worktree scanner emitting ULOG rows --------------------
 //
 //  Walk `reporoot` (recursive, sorted, files + symlinks), emit one

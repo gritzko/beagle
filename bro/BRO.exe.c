@@ -106,9 +106,9 @@ ok64 BROExec(bro *b, cli *c) {
             __ = PATHu8bTerm(fpbuf);
             if (__ != OK) continue;
 
-            struct stat sb = {};
-            if (FILEStat(&sb, $path(fpbuf)) == OK &&
-                S_ISDIR(sb.st_mode)) {
+            filestat fs = {};
+            if (FILEStat(&fs, $path(fpbuf)) == OK &&
+                fs.kind == FILE_KIND_DIR) {
                 BROListDir(file_path);
                 continue;
             }

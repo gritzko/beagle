@@ -305,8 +305,8 @@ static ok64 BEGetWorktree(uri *u) {
     call(PATHu8bFeed, cwd_dogs, cwd_s);
     call(PATHu8bPush, cwd_dogs, dotdogs);
     {
-        struct stat sb;
-        if (lstat((char const *)*$path(cwd_dogs), &sb) == 0) done;
+        filestat fs = {};
+        if (FILELStat(&fs, $path(cwd_dogs)) == OK) done;
     }
 
     // Worktree layout:

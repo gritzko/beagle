@@ -195,8 +195,8 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
             (void)u8csDrainLine(g->noop_cursor, head);
             a_path(probe);
             if (SNIFFFullpath(probe, g->reporoot, path) == OK) {
-                struct stat sb = {};
-                if (lstat((char *)u8bDataHead(probe), &sb) == 0)
+                filestat fs = {};
+                if (FILELStat(&fs, $path(probe)) == OK)
                     return OK;     // present on disk — preserve it
             }
             //  File missing → fall through to get_write_one.
@@ -320,13 +320,11 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     //  changed && !sub: lstat + stamp-set check.
     a_path(fp);
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, $path(fp));
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, $path(fp));
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // permissions etc — propagate
-    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                           .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 mr = SNIFFAtOfTimespec(mts);
+    ron60 mr = fs.mtime;
 
     //  Unattributed mtime without a baseline to compare against:
     //  refuse — there's no "clean drift" answer possible, and graf
@@ -349,14 +347,14 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     if (!SNIFFAtKnown(mr) && base) {
         sha1 wt_sha = {};
         b8 hashed = NO;
-        if (S_ISREG(sb.st_mode)) {
+        if (fs.kind == FILE_KIND_REG) {
             u8bp m = NULL;
             if (FILEMapRO(&m, $path(fp)) == OK && m) {
                 u8cs body = {u8bDataHead(m), u8bIdleHead(m)};
                 KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, body);
                 FILEUnMap(m);
                 hashed = YES;
-            } else if (sb.st_size == 0) {
+            } else if (fs.size == 0) {
                 u8cs empty = {NULL, NULL};
                 KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, empty);
                 hashed = YES;

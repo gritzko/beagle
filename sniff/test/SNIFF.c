@@ -7,24 +7,20 @@
 
 #include "graf/GRAF.h"
 
+#include "abc/FILE.h"
+
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/time.h>
 #include <unistd.h>
 
 //  Bump a file's atime/mtime forward by `bump_sec` seconds.  Lets
 //  tests observe a distinct mtime without a real sleep.
 static void bump_mtime(char const *abs_path, int bump_sec) {
-    struct stat sb = {};
-    if (stat(abs_path, &sb) != 0) return;
-    struct timeval tv[2] = {
-        { .tv_sec = sb.st_atim.tv_sec + bump_sec, .tv_usec = 0 },
-        { .tv_sec = sb.st_mtim.tv_sec + bump_sec, .tv_usec = 0 },
-    };
-    utimes(abs_path, tv);
+    a_path(p);
+    a_cstr(s, abs_path);
+    if (PATHu8bFeed(p, s) != OK) return;
+    (void)FILEBumpTimes($path(p), (i64)bump_sec);
 }
 
-#include "abc/FILE.h"
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
@@ -286,8 +282,8 @@ ok64 SNIFFCheckoutCommit() {
     a_cstr(fn, "/test.txt");
     call(u8bFeed, fp, fn);
     call(PATHu8bTerm, fp);
-    struct stat sb = {};
-    want(FILEStat(&sb, $path(fp)) == OK);
+    filestat fs = {};
+    want(FILEStat(&fs, $path(fp)) == OK);
 
     //  New-model sniff doesn't expose a per-path hashlet cache across
     //  processes — GETCheckout just stamps the files and appends a
@@ -405,8 +401,8 @@ static ok64 check_file(u8cs root, char const *rel, char const *expected) {
     call(u8bFeed, fp, r);
     call(PATHu8bTerm, fp);
 
-    struct stat sb = {};
-    want(FILEStat(&sb, $path(fp)) == OK);
+    filestat fs = {};
+    want(FILEStat(&fs, $path(fp)) == OK);
 
     Bu8 content = {};
     call(u8bAllocate, content, 1UL << 20);
@@ -431,8 +427,8 @@ static b8 file_gone(u8cs root, char const *rel) {
     a_cstr(r, rel);
     u8bFeed(fp, r);
     PATHu8bTerm(fp);
-    struct stat sb = {};
-    return (FILEStat(&sb, $path(fp)) != OK);
+    filestat fs = {};
+    return (FILEStat(&fs, $path(fp)) != OK);
 }
 
 // --- Helper: create initial commit with N files in keeper ---
@@ -573,21 +569,21 @@ ok64 SNIFFRoundTrip_stash() {
         a_cstr(asep, "/a.txt");
         u8bFeed(afp, asep);
         PATHu8bTerm(afp);
-        struct stat asb = {};
-        call(FILEStat, &asb, $path(afp));
+        filestat afs = {};
+        call(FILEStat, &afs, $path(afp));
         // a.txt is idx 0 after checkout
         a_cstr(apath, "a.txt");
         u32 aidx = SNIFFIntern(apath);
-        SNIFFRecord(SNIFF_CHANGED, aidx, (u64)asb.st_mtim.tv_sec);
+        SNIFFRecord(SNIFF_CHANGED, aidx, (u64)afs.mtime);
     }
     {
         a_path(dfp, root);
         a_cstr(dsep, "/d.txt");
         u8bFeed(dfp, dsep);
         PATHu8bTerm(dfp);
-        struct stat dsb = {};
-        call(FILEStat, &dsb, $path(dfp));
-        SNIFFRecord(SNIFF_CHANGED, didx, (u64)dsb.st_mtim.tv_sec);
+        filestat dfs = {};
+        call(FILEStat, &dfs, $path(dfp));
+        SNIFFRecord(SNIFF_CHANGED, didx, (u64)dfs.mtime);
     }
 
     // 4. POST: commit changes.  HEAD is set to c1 from GETCheckout;

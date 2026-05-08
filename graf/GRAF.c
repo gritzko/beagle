@@ -55,9 +55,9 @@ static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
 
 //  YES iff `path` (NUL-terminated u8b) is an existing directory.
 static b8 graf_dir_exists(path8s path) {
-    struct stat st = {};
-    if (FILEStat(&st, path) != OK) return NO;
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    filestat fs = {};
+    if (FILEStat(&fs, path) != OK) return NO;
+    return fs.kind == FILE_KIND_DIR;
 }
 
 //  Walk one branch path component at a time, calling `cb` per prefix

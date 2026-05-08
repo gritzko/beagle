@@ -350,19 +350,7 @@ ron60 SNIFFAtLastPostTs(void) {
 
 // --- Put/delete forward scan since floor ---
 
-// --- ron60 ↔ timespec helpers ---
-
-ron60 SNIFFAtOfTimespec(struct timespec tsp) {
-    struct tm tm = {};
-    time_t sec = tsp.tv_sec;
-    //  RONNow uses localtime, so match that for round-trip.
-    localtime_r(&sec, &tm);
-    u32 ms = (u32)(tsp.tv_nsec / 1000000);
-    if (ms > 999) ms = 999;
-    ron60 r = 0;
-    RONOfTime(&r, &tm, ms);
-    return r;
-}
+// --- ron60 → timespec helper (used to restamp wt files via utimensat) ---
 
 static struct timespec at_ts_of_ron60(ron60 r) {
     struct tm tm = {};
@@ -550,18 +538,18 @@ static b8 at_baseline_blob_sha(u8cs base_rows, u8cs rel, sha1 *out) {
 //  blob.  Returns OK with `*out` filled, or fails (caller treats as
 //  "couldn't hash").
 static ok64 at_hash_wt_blob(sha1 *out, path8bp full,
-                            struct stat const *sb) {
-    sane(out != NULL && full != NULL && sb != NULL);
+                            filestat const *fs) {
+    sane(out != NULL && full != NULL && fs != NULL);
     a_dup(u8c, full_s, u8bData(full));   // path8s view for FILE APIs
-    if (S_ISLNK(sb->st_mode)) {
+    if (fs->kind == FILE_KIND_LNK) {
         a_pad(u8, tgt, 4096);
         ok64 ro = FILEReadLink(tgt, full_s);
         if (ro != OK) return ro;
         KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(tgt));
         done;
     }
-    if (!S_ISREG(sb->st_mode)) fail(SNIFFFAIL);
-    if (sb->st_size == 0) {
+    if (fs->kind != FILE_KIND_REG) fail(SNIFFFAIL);
+    if (fs->size == 0) {
         u8cs empty = {NULL, NULL};
         KEEPObjSha(out, DOG_OBJ_BLOB, empty);
         done;
@@ -603,8 +591,8 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     if (SNIFFSkipMeta(rel))                         return OK;
     if (at_under_gitlink(c->gitlinks, rel))         return OK;
 
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, full);
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, full);
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
 
@@ -613,16 +601,14 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     //  its contents.  FILESKIP prunes the recursion so none of its
     //  files get checked.  Catches both git-submodule shapes (`.git`
     //  dir with HEAD/, or `.git` file containing `gitdir: ...`).
-    if (S_ISDIR(sb.st_mode)) {
+    if (fs.kind == FILE_KIND_DIR) {
         a_path(probe, full, ((u8cs)u8slit(".git")));
-        struct stat git_sb = {};
-        if (FILELStat(&git_sb, $path(probe)) == OK) return FILESKIP;
+        filestat git_fs = {};
+        if (FILELStat(&git_fs, $path(probe)) == OK) return FILESKIP;
         return OK;
     }
 
-    struct timespec ts = {.tv_sec  = sb.st_mtim.tv_sec,
-                          .tv_nsec = sb.st_mtim.tv_nsec};
-    if (SNIFFAtKnown(SNIFFAtOfTimespec(ts))) return OK;
+    if (SNIFFAtKnown(fs.mtime)) return OK;
 
     //  Mtime ∉ stamp set.  Two cases that should still be silent:
     //    1. Path is not in the baseline tree (untracked) — sniff
@@ -634,7 +620,7 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     if (!in_base) return OK;
 
     sha1 wt_sha = {};
-    if (at_hash_wt_blob(&wt_sha, path, &sb) == OK &&
+    if (at_hash_wt_blob(&wt_sha, path, &fs) == OK &&
         sha1eq(&wt_sha, &base_sha)) {
         return OK;
     }
@@ -740,14 +726,14 @@ static ok64 at_list_cb(void *varg, path8bp path) {
     if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, full);
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, full);
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
     u8 kind;
-    if      (S_ISLNK(sb.st_mode))     kind = WALK_KIND_LNK;
-    else if (sb.st_mode & S_IXUSR)    kind = WALK_KIND_EXE;
-    else                              kind = WALK_KIND_REG;
+    if      (fs.kind == FILE_KIND_LNK) kind = WALK_KIND_LNK;
+    else if (fs.mode & 0100)           kind = WALK_KIND_EXE;
+    else                               kind = WALK_KIND_REG;
 
     ok64 o = u8bFeed(c->paths, rel);
     if (o == OK) o = u8bFeed1(c->paths, '\n');
@@ -791,13 +777,13 @@ typedef struct {
     ok64  err;
 } at_ulog_ctx;
 
-//  Map an `lstat`-derived kind to the RON64 letter appended to the
+//  Map a stat-derived kind/mode to the RON64 letter appended to the
 //  caller's verb stem (f=regular, x=executable, l=symlink).  No
 //  submodule case here — gitlinks live in trees, not the wt scan.
-static u8 wt_kind_letter(struct stat const *sb) {
-    if      (S_ISLNK(sb->st_mode))   return RON_l;
-    else if (sb->st_mode & S_IXUSR)  return RON_x;
-    else                             return RON_f;
+static u8 wt_kind_letter(filestat const *fs) {
+    if      (fs->kind == FILE_KIND_LNK) return RON_l;
+    else if (fs->mode & 0100)           return RON_x;
+    else                                return RON_f;
 }
 
 static ok64 at_ulog_cb(void *varg, path8bp path) {
@@ -809,23 +795,17 @@ static ok64 at_ulog_cb(void *varg, path8bp path) {
     if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
 
-    struct stat sb = {};
-    ok64 lo = FILELStat(&sb, full);
+    filestat fs = {};
+    ok64 lo = FILELStat(&fs, full);
     if (lo == FILENOENT) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
-
-    //  ts = file mtime as ron60 (round-trips through SNIFFAtKnown).
-    //  fragment empty: hash on demand only when classification needs it.
-    struct timespec mts = {.tv_sec  = sb.st_mtim.tv_sec,
-                           .tv_nsec = sb.st_mtim.tv_nsec};
-    ron60 ts = SNIFFAtOfTimespec(mts);
 
     uri u = {};
     u8csMv(u.path, rel);
     //  query empty (mode encoded in verb), fragment empty (no sha yet).
 
-    ulogrec rec = {.ts   = ts,
-                   .verb = ok64sub(c->verb, wt_kind_letter(&sb)),
+    ulogrec rec = {.ts   = fs.mtime,
+                   .verb = ok64sub(c->verb, wt_kind_letter(&fs)),
                    .uri  = u};
     ok64 o = ULOGu8sFeed(u8bIdle(c->out), &rec);
     if (o != OK) { c->err = o; return o; }
