@@ -441,6 +441,16 @@ static u32 topo_links_of(wh128css runs, u64 commit_h,
     return n;
 }
 
+//  Stable u64 sort (insertion — set sizes are small in practice).
+static void topo_sort_u64(u64 *a, u32 n) {
+    for (u32 i = 1; i < n; i++) {
+        u64 v = a[i];
+        u32 j = i;
+        while (j > 0 && a[j - 1] > v) { a[j] = a[j - 1]; j--; }
+        a[j] = v;
+    }
+}
+
 u32 DAGTopoSortTunable(u64 *out, u32 cap,
                        Bwh128 set, wh128css runs,
                        u32 edges) {
@@ -464,13 +474,34 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     topo_frame *stack = (topo_frame *)u8bDataHead(stk_buf);
     u32 stack_max = (u32)set_cap;
 
-    u32 written = 0;
-    wh128cp set_head = wh128bHead(set);
-    wh128cp set_term = wh128bTerm(set);
+    //  Determinism: collect set members into a flat array, sort by
+    //  hashlet, then iterate in sorted order.  Without this the outer
+    //  DFS loop visits commits in hash-position order, which depends
+    //  on the commit hashlets — different runs of the same scenario
+    //  (which assign different ts → different commit shas) produce
+    //  different topo orders → different WEAVE replays → different
+    //  output bytes.  Stable hashlet order makes the merge reproducible.
+    Bu8 roots_buf = {};
+    if (u8bMap(roots_buf, set_cap * sizeof(u64)) != OK) {
+        u8bUnMap(stk_buf); wh128bUnMap(visited);
+        return 0;
+    }
+    u64 *roots = (u64 *)u8bDataHead(roots_buf);
+    u32 nroots = 0;
+    {
+        wh128cp set_head = wh128bHead(set);
+        wh128cp set_term = wh128bTerm(set);
+        for (wh128cp p = set_head; p < set_term; p++) {
+            if (p->key == 0) continue;
+            roots[nroots++] = DAGHashlet(p->key);
+        }
+        topo_sort_u64(roots, nroots);
+    }
 
-    for (wh128cp p = set_head; p < set_term && written < cap; p++) {
-        if (p->key == 0) continue;
-        u64 root = DAGHashlet(p->key);
+    u32 written = 0;
+
+    for (u32 ri = 0; ri < nroots && written < cap; ri++) {
+        u64 root = roots[ri];
         if (DAGAncestorsHas(visited, root)) continue;
         if (1 > stack_max) goto outta_room;
 
@@ -482,6 +513,9 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
                                        DAG_TOPO_MAX_PARENTS);
         if (stack[sp].npar > DAG_TOPO_MAX_PARENTS)
             stack[sp].npar = DAG_TOPO_MAX_PARENTS;
+        //  Sort the parent list too — DAGEdgesOf returns LSM-scan
+        //  order, also non-deterministic across runs.
+        topo_sort_u64(stack[sp].pars, stack[sp].npar);
         sp++;
         dag_anc_put(visited, root);
 
@@ -502,6 +536,7 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
                                                DAG_TOPO_MAX_PARENTS);
                 if (stack[sp].npar > DAG_TOPO_MAX_PARENTS)
                     stack[sp].npar = DAG_TOPO_MAX_PARENTS;
+                topo_sort_u64(stack[sp].pars, stack[sp].npar);
                 sp++;
                 dag_anc_put(visited, par);
                 descended = YES;
@@ -515,6 +550,7 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     }
 
 outta_room:
+    u8bUnMap(roots_buf);
     u8bUnMap(stk_buf);
     wh128bUnMap(visited);
     return written;

@@ -610,36 +610,40 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             }
             //  Routing:
             //
-            //    cherry-pick (`#<sha>`)     → GRAFMergeExplicit (JOIN
+            //    cherry-pick (`#<sha>`)  → GRAFMergeExplicit (JOIN
             //         with explicit `parent(thr)` base — apply a
             //         single commit's diff onto an unrelated `ours`).
-            //    squash / merge / rebase-one → GRAFMergeWtFileTunable
-            //         (WEAVE on parent ∪ foster ancestor closures —
-            //         foster-aware so prior `?br#`+post cycles'
-            //         absorbed work participates in reachability AND
-            //         in the topo replay order, keeping each token's
-            //         introducing-commit sc stable across both sides
-            //         so WEAVEMerge's `inrm.in`-mixed LCS aligns).
-            //         JOIN auto-LCA `fetch_merge` is the fallback when
-            //         the WEAVE side errors out (no DAG entries, etc.).
-            //         GRAFMergeWtFile already folds dirty wt bytes as
-            //         a final base-side layer; on a clean wt the layer
-            //         is a no-op.
+            //    rebase-one (`?br#`)     → GRAFMergeExplicit too,
+            //         using `fork_sha = parent(picked)`.  WEAVE could
+            //         work here (single-commit diff, foster-aware
+            //         ancestor closure stamps tokens with theirs's
+            //         original sc) — but only when ours's history is
+            //         a clean linear chain.  For now JOIN with the
+            //         explicit fork base is enough.
+            //    squash / merge          → fetch_merge (JOIN with
+            //         auto-LCA(our, thr)).  WEAVE-on-ancestor-closure
+            //         is non-deterministic for these shapes when the
+            //         reach set has multi-branch parallelism (e.g.
+            //         test 15's P1 = trunk-T1 + foster-G1, where T1
+            //         and the feature/gizmo chain have no topological
+            //         order between them — different topo tie-breaking
+            //         → different WEAVEDiff replay paths → different
+            //         merged bytes).  Productive WEAVE for these
+            //         shapes needs WEAVEReplay-on-multi-parent (per
+            //         the build_tip_weave_with_ids "case-B" TODO).
             if (st->use_fork_base) {
                 (void)GRAFMergeExplicit(&l->sha, &o->sha,
                                         &t->sha, mbuf);
-            } else {
-                u32 edges = DAG_EDGE_PARENT | DAG_EDGE_FOSTER;
-                ok64 wmo = GRAFMergeWtFileTunable(childpath, reporoot,
-                                                  our, thr,
-                                                  edges, NULL, 0,
-                                                  mbuf);
+            } else if (wt_dirty) {
+                ok64 wmo = GRAFMergeWtFile(childpath, reporoot,
+                                           our, thr, mbuf);
                 if (wmo != OK) {
                     u8bReset(mbuf);
                     (void)fetch_merge(mbuf, childpath, our, thr);
                 }
+            } else {
+                (void)fetch_merge(mbuf, childpath, our, thr);
             }
-            (void)wt_dirty;
             a_dup(u8c, bytes, u8bData(mbuf));
             b8 conflict = has_conflict_marker(bytes);
             //  Write result using theirs' mode when ours == fork mode,
