@@ -115,7 +115,7 @@ static void watch_dir_remember(Bu8 *seen, u8cs dir) {
 
 //  Compute the parent dir slice (with trailing '/') for `rel` into
 //  `out`.  Files at the wt root use "/".
-static void watch_parent_dir(u8cs rel, Bu8 out) {
+static void watch_parent_dir(u8csc rel, u8b out) {
     u8bReset(out);
     u8c const *slash_last = NULL;
     for (u8c const *p = rel[0]; p < rel[1]; p++) {

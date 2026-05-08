@@ -56,8 +56,8 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 //  were composed, ULOGNONE when no patch rows are present (caller
 //  falls back to the dry-run / refuse-empty arm).
 ok64 POSTPatchDefaults(u8cs reporoot,
-                       Bu8 msg_buf,  u8cs *msg_out,
-                       Bu8 auth_buf, u8cs *auth_out,
+                       u8b msg_buf,  u8cs *msg_out,
+                       u8b auth_buf, u8cs *auth_out,
                        u32 *n_out);
 
 //  Dry run: walk the same change-set the next POSTCommit would

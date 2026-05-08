@@ -299,7 +299,7 @@ static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
 // Parse hunk URI via the standard URI/FRAG parsers.
 // Produces path slice (no leading '/' stripped — caller's responsibility)
 // and line number (0 if absent).  Slices point into `uri_text`.
-static void hunk_loc(u8cs uri_text, u8cs out_path, u32 *out_line) {
+static void hunk_loc(u8csc uri_text, u8cs out_path, u32 *out_line) {
     out_path[0] = NULL;
     out_path[1] = NULL;
     *out_line = 0;

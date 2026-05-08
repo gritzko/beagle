@@ -373,7 +373,7 @@ static ok64 dog_pup_path(path8b out, path8s dir, u32 seqno, u8cs ext) {
 }
 
 //  Parse "<10-RON64><ext>" filename → seqno; 0 on bad fmt.
-static u32 dog_pup_parse_seqno(u8cs name, u8cs ext) {
+static u32 dog_pup_parse_seqno(u8csc name, u8csc ext) {
     if (u8csLen(name) != DOG_PUP_SEQNO_W + u8csLen(ext)) return 0;
     a_dup(u8c, tail, name);
     u8csUsed(tail, DOG_PUP_SEQNO_W);
@@ -384,7 +384,7 @@ static u32 dog_pup_parse_seqno(u8cs name, u8cs ext) {
     return (u32)v;
 }
 
-ok64 DOGPupOpenAll(kv32b pups, path8s dir, u8cs ext) {
+ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
     sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
 
     //  Two-phase: walk directory with FILEIter to collect (seqno → name)

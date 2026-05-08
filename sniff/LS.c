@@ -23,7 +23,7 @@
 //  u8bFeed errors: the buffer is pre-sized in SNIFFLs and all call
 //  sites are additive, so a failed append means "too big" and we drop
 //  the line rather than abort the whole listing.
-static void ls_emit_line(Bu8 out, u8cs path, b8 is_dir) {
+static void ls_emit_line(u8b out, u8cs path, b8 is_dir) {
     if ($empty(path)) return;
     (void)u8bFeed(out, path);
     if (is_dir) (void)u8bFeed1(out, '/');
@@ -83,7 +83,7 @@ static ok64 ls_tree_visit(u8cs path, u8 kind, u8cp esha,
     //  trailing '/'; files verbatim — matching wt-mode shape.
     if ($empty(path)) return OK;
     b8 is_dir = (kind == WALK_KIND_DIR);
-    ls_emit_line((u8 *const *)c->out_buf, path, is_dir);
+    ls_emit_line(c->out_buf, path, is_dir);
     return OK;
 }
 

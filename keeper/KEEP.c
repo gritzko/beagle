@@ -12,10 +12,12 @@
 #include "ZINF.h"
 
 #include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include "abc/BUF.h"
 #include "abc/FILE.h"
@@ -534,7 +536,7 @@ static ok64 keep_branch_drop_files(keeper *k, u8cs branchdir, u8cs ext,
                                    void (*drop_fn)(keeper *, u32)) {
     sane(k);
     a_path(dpat, branchdir);
-    keep_drop_ctx c = {.k = k, .ext = ext, .drop_fn = drop_fn};
+    keep_drop_ctx c = {.k = k, .ext = {ext[0], ext[1]}, .drop_fn = drop_fn};
     (void)FILEScanFiles(dpat, keep_branch_drop_cb, &c);
     done;
 }

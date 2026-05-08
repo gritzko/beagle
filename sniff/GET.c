@@ -586,7 +586,7 @@ static b8 get_wt_dirty(u8cs reporoot) {
 
 // --- Public API ---
 
-ok64 GETCheckout(u8cs reporoot, u8cs hex, u8cs source) {
+ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     sane($ok(hex));
     keeper *k = &KEEP;
 

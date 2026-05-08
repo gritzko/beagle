@@ -169,7 +169,7 @@ con ok64 DOGPUPFAIL = 0x3584197993ca495;
 // Scan `dir` for files matching `<10-RON64><ext>`, sort by seqno,
 // FILEMapRO each, push (seqno, fd) into `pups`.  Empty dir → OK with
 // pups left empty.  Caller must have allocated `pups` first.
-ok64 DOGPupOpenAll(kv32b pups, path8s dir, u8cs ext);
+ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext);
 
 // Atomically write `bytes` to `<max(seqno)+1>.<ext>` (tmp+rename),
 // FILEMapRO, push (new_seqno, fd) onto `pups`.

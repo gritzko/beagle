@@ -195,7 +195,7 @@ ok64 dag_anc_put(Bwh128 set, u64 commit_h) {
     return HASHwh128Put(tab, &rec);
 }
 
-b8 DAGAncestorsHas(Bwh128 set, u64 commit_h) {
+b8 DAGAncestorsHas(wh128b set, u64 commit_h) {
     wh128 probe = {.key = DAGPack(0, commit_h), .val = 0};
     wh128s tab = {wh128bHead(set), wh128bTerm(set)};
     return HASHwh128Get(&probe, tab) == OK;

@@ -65,8 +65,10 @@ static ok64 neil_check_basic(e32 const *edl, u32 n,
                     fail(TESTFAIL);
                 }
                 u8cs ov = {}, nv = {};
-                tok32Val(ov, of->toks, of->data[0], (int)(oi + j));
-                tok32Val(nv, nf->toks, nf->data[0], (int)(ni + j));
+                tok32Val(ov, (tok32 const *const *)of->toks,
+                         of->data[0], (int)(oi + j));
+                tok32Val(nv, (tok32 const *const *)nf->toks,
+                         nf->data[0], (int)(ni + j));
                 if ($len(ov) != $len(nv) ||
                     memcmp(ov[0], nv[0], (size_t)$len(ov)) != 0) {
                     fprintf(stderr, "NEIL01: prop1 EQ mismatch\n");
@@ -110,7 +112,8 @@ static ok64 neil_check_idents(e32 const *pre, u32 pre_n,
             if (op == DIFF_EQ) {
                 for (u32 j = 0; j < len && pn < 1024; j++) {
                     u8cs v = {};
-                    tok32Val(v, of->toks, of->data[0], (int)(oi + j));
+                    tok32Val(v, (tok32 const *const *)of->toks,
+                             of->data[0], (int)(oi + j));
                     if (!neil_is_ident(v)) continue;
                     u64 h = of->hashes[1][oi + j];
                     if (!hash_in(h, pre_h, pn)) pre_h[pn++] = h;

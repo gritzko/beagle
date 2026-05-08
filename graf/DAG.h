@@ -224,7 +224,7 @@ ok64 DAGEdgesOf(wh128css runs, u64 commit_h, u8 kind,
 ok64 DAGAllCommits(Bwh128 set, wh128css runs);
 
 //  Membership check on a set populated by DAGAncestors.
-b8 DAGAncestorsHas(Bwh128 set, u64 commit_h);
+b8 DAGAncestorsHas(wh128b set, u64 commit_h);
 
 //  Insert a commit hashlet into a set populated by DAGAncestors.
 ok64 dag_anc_put(Bwh128 set, u64 commit_h);

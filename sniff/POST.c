@@ -2048,8 +2048,8 @@ static void post_parse_commit_meta(u8cs body_in,
 }
 
 ok64 POSTPatchDefaults(u8cs reporoot,
-                       Bu8 msg_buf,  u8cs *msg_out,
-                       Bu8 auth_buf, u8cs *auth_out,
+                       u8b msg_buf,  u8cs *msg_out,
+                       u8b auth_buf, u8cs *auth_out,
                        u32 *n_out) {
     sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
     *n_out = 0;

@@ -164,7 +164,7 @@ static ok64 fetch_merge_wt(u8b into, u8cs reporoot, u8cs childpath,
     a_path(fp);
     if (SNIFFFullpath(fp, reporoot, childpath) != OK) return PATCHFAIL;
 
-    u8b wt_map = {};
+    u8bp wt_map = NULL;
     ok64 mo = FILEMapRO(&wt_map, $path(fp));
     if (mo != OK) return mo;
 

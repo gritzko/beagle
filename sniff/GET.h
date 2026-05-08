@@ -15,7 +15,7 @@
 //  hex: commit SHA hex prefix (6-15 chars).
 //  source: URI we checked out (recorded in keeper REFS as
 //          file:///reporoot → source).  Empty to skip recording.
-ok64 GETCheckout(u8cs reporoot, u8cs hex,
-                 u8cs source);
+ok64 GETCheckout(u8cs reporoot, u8csc hex,
+                 u8csc source);
 
 #endif

@@ -79,7 +79,8 @@ static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
 
 static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
     for (u32 i = 0; i < s->n; i++) {
-        u8cs entry = {s->v[i].path, s->v[i].path + s->v[i].path_len};
+        u8cs entry = {(u8cp)s->v[i].path,
+                      (u8cp)s->v[i].path + s->v[i].path_len};
         if (u8csEq(entry, path)) return &s->v[i];
     }
     return NULL;

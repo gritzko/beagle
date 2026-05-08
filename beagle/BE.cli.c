@@ -240,7 +240,7 @@ static u8cs const be_at_flag = {
 //  Build a `<dog> <verb> [--at <uri>] [flags...] [URIs...]` argv
 //  slice into `args`.  Caller-owned: `args` must be a u8cs Bbuf with
 //  space for `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.
-static void be_build_argv(u8csb args, u8cs dog, u8cs verb, cli *c) {
+static void be_build_argv(u8csb args, u8csc dog, u8csc verb, cli *c) {
     a_dup(u8c, ldog,  dog);
     a_dup(u8c, lverb, verb);
     u8csbFeed1(args, ldog);
