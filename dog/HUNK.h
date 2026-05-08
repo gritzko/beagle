@@ -9,16 +9,17 @@
 #define HUNK_TLV_URI  'U'  // hunk URI: path#symbol:line
 #define HUNK_TLV_TXT  'X'  // source text bytes
 #define HUNK_TLV_TOK  'K'  // tok32 array (packed u32 LE)
-#define HUNK_TLV_HILI 'I'  // sparse tok32 bg highlights
 
 // A serializable code hunk.
 // Location is a single URI: path#symbol:lineno (see dog/DOG.md).
 // Display title is formatted at render time by parsing the URI.
+//
+// Each `tok32` in `toks` carries a syntax tag (top 5 bits) and a 2-bit
+// diff side (eq/in/rm) — see dog/TOK.h.  No separate hili stream.
 typedef struct {
     u8cs uri;      // e.g. "abc/MSET.h#MSETOpen:42"
     u8cs text;     // source text bytes
-    tok32cs toks;  // packed tok32: syntax fg
-    tok32cs hili;  // sparse tok32: bg highlights ('I'=INS, 'D'=DEL)
+    tok32cs toks;  // packed tok32: syntax fg + diff side
 } hunk;
 
 typedef hunk const hunkc;
@@ -45,9 +46,10 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk);
 
 // Render a hunk as plain ASCII, no ANSI, git-diff-ish style:
 //   formatted title, then each text line prefixed with '+'/'-'/' '
-//   based on hili spans ('I'=insert, 'D'=delete).
-// If hili is empty, every line gets a leading space (grep/cat output).
-// A blank line is appended after the hunk.  Advances into[0].
+//   based on per-token diff side bits in `toks`.
+// If no token has a non-eq side, every line gets a leading space
+// (grep/cat output).  A blank line is appended after the hunk.
+// Advances into[0].
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk);
 
 // Render a hunk as proper line-based unified diff: a line with mixed

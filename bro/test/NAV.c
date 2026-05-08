@@ -19,10 +19,14 @@
 // Build a tok32 from (tag, end_offset). Inlined as a constant expression
 // (tok32Pack is a static inline, not usable as a static initializer).
 #define TOK(tag, off)                                          \
-    (((u32)((u8)(tag) - 'A') << 27) | ((u32)(off) & ((1u << 27) - 1)))
+    (((u32)((u8)(tag) - 'A') << 27) | ((u32)(off) & ((1u << 24) - 1)))
+#define TOKSIDE(tag, side, off)                                \
+    (((u32)((u8)(tag) - 'A') << 27)                            \
+     | (((u32)(side) & 0x3u) << 24)                            \
+     | ((u32)(off) & ((1u << 24) - 1)))
 
-// Convenience: declare a hili tok array as a local static and yield a u32cs.
-#define HILI(name, ...)                                          \
+// Convenience: declare a tok32 array as a local static and yield a u32cs.
+#define TOKS(name, ...)                                          \
     static u32 const name##_data[] = {__VA_ARGS__};              \
     u32cs name = {(u32 const *)name##_data,                      \
                   (u32 const *)name##_data +                     \
@@ -166,8 +170,16 @@ ok64 NAVtest_hili_layout() {
           {1, 0},
           {1, 4});
 
-    HILI(h0, TOK('A', 2), TOK('D', 4), TOK('A', 10), TOK('I', 12), TOK('A', 20));
-    HILI(h1, TOK('A', 4), TOK('D', 7));
+    // Toks tile the text exactly; sides eq/rm/eq/in/eq for h0, eq/rm for h1.
+    TOKS(h0,
+         TOKSIDE('S', 0, 2),    // eq
+         TOKSIDE('S', 2, 4),    // rm
+         TOKSIDE('S', 0, 10),   // eq
+         TOKSIDE('S', 1, 12),   // in
+         TOKSIDE('S', 0, 20));  // eq
+    TOKS(h1,
+         TOKSIDE('S', 0, 4),    // eq
+         TOKSIDE('S', 2, 7));   // rm
 
     static u8 const h0_text[] = "abcdef\nghijkl\nmnopqr";
     static u8 const h1_text[] = "uvw\nxyz";
@@ -179,14 +191,14 @@ ok64 NAVtest_hili_layout() {
     hunks[0].uri[1] = (u8 const *)t0 + 2;
     hunks[0].text[0]  = (u8 const *)h0_text;
     hunks[0].text[1]  = (u8 const *)h0_text + sizeof(h0_text) - 1;
-    hunks[0].hili[0]  = h0[0];
-    hunks[0].hili[1]  = h0[1];
+    hunks[0].toks[0]  = h0[0];
+    hunks[0].toks[1]  = h0[1];
     hunks[1].uri[0] = (u8 const *)t1;
     hunks[1].uri[1] = (u8 const *)t1 + 2;
     hunks[1].text[0]  = (u8 const *)h1_text;
     hunks[1].text[1]  = (u8 const *)h1_text + sizeof(h1_text) - 1;
-    hunks[1].hili[0]  = h1[0];
-    hunks[1].hili[1]  = h1[1];
+    hunks[1].toks[0]  = h1[0];
+    hunks[1].toks[1]  = h1[1];
 
     testeq(BROHiliCount(hunks, 2), 3);
 
@@ -226,15 +238,18 @@ ok64 NAVtest_hili_layout() {
 ok64 NAVtest_hili_adjacent_kinds() {
     sane(1);
 
-    // toks: I(end=4) D(end=8) A(end=20) — two real ranges, then neutral.
-    HILI(h, TOK('I', 4), TOK('D', 8), TOK('A', 20));
+    // toks: in(end=4) rm(end=8) eq(end=20) — two real runs, then eq.
+    TOKS(h,
+         TOKSIDE('S', 1, 4),    // in
+         TOKSIDE('S', 2, 8),    // rm
+         TOKSIDE('S', 0, 20));  // eq
 
     static u8 const text[] = "0123456789xxxxxxxxxx";
     hunk hunks[1] = {};
     hunks[0].text[0] = (u8 const *)text;
     hunks[0].text[1] = (u8 const *)text + sizeof(text) - 1;
-    hunks[0].hili[0] = h[0];
-    hunks[0].hili[1] = h[1];
+    hunks[0].toks[0] = h[0];
+    hunks[0].toks[1] = h[1];
 
     testeq(BROHiliCount(hunks, 1), 2);
     done;

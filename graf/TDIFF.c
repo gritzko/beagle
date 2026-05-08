@@ -124,8 +124,10 @@ static ok64 arena_alloc(Bu8 arena, u8s out, size_t len) {
     u32cs ts = {(u32cp)(jf)->toks[1], (u32cp)(jf)->toks[2]}
 
 // Emit a single hunk via cb after a "deleted" or "new" file shortcut.
+// `side` (TOK_SIDE_IN / TOK_SIDE_RM / TOK_SIDE_EQ) is stamped into
+// every emitted token.
 static ok64 emit_whole_file(Bu8 arena, char const *dispname,
-                            u8cs data, u32cs toks, u8 hili_tag,
+                            u8cs data, u32cs toks, u8 side,
                             HUNKcb cb, void *ctx) {
     sane(cb != NULL);
     hunk hk = {};
@@ -145,19 +147,17 @@ static ok64 emit_whole_file(Bu8 arena, char const *dispname,
     if (txp) { hk.text[0] = txp; hk.text[1] = txp + dlen; }
 
     if (!$empty(toks)) {
-        size_t tkn = (size_t)((u8cp)toks[1] - (u8cp)toks[0]);
-        u8p tkp = arena_write(arena, toks[0], tkn);
-        if (tkp) {
-            hk.toks[0] = (u32cp)tkp;
-            hk.toks[1] = (u32cp)(tkp + tkn);
+        // Re-pack toks with `side` stamped into every token.
+        u32 ntok = (u32)$len(toks);
+        u8s tkout = {};
+        if (arena_alloc(arena, tkout, ntok * sizeof(u32)) == OK) {
+            u32p out = (u32p)tkout[0];
+            for (u32 i = 0; i < ntok; i++) {
+                out[i] = tok32SetSide(toks[0][i], side);
+            }
+            hk.toks[0] = (u32cp)tkout[0];
+            hk.toks[1] = (u32cp)tkout[1];
         }
-    }
-
-    u32 tag_tok = tok32Pack(hili_tag, dlen);
-    u8p hp = arena_write(arena, &tag_tok, sizeof(u32));
-    if (hp) {
-        hk.hili[0] = (u32cp)hp;
-        hk.hili[1] = (u32cp)(hp + sizeof(u32));
     }
 
     return cb(&hk, ctx);
@@ -184,7 +184,7 @@ ok64 DIFFu8cs(Bu8 arena,
         if (o == OK) {
             CAPOJoinToks(new_ts, &new_f);
             o = emit_whole_file(arena, dispname, new_data,
-                                new_ts, 'I', cb, ctx);
+                                new_ts, TOK_SIDE_IN, cb, ctx);
         }
         JOINFree(&new_f);
         return o;
@@ -197,7 +197,7 @@ ok64 DIFFu8cs(Bu8 arena,
         if (o == OK) {
             CAPOJoinToks(old_ts, &old_f);
             o = emit_whole_file(arena, dispname, old_data,
-                                old_ts, 'D', cb, ctx);
+                                old_ts, TOK_SIDE_RM, cb, ctx);
         }
         JOINFree(&old_f);
         return o;
@@ -306,21 +306,20 @@ ok64 DIFFu8cs(Bu8 arena,
         u32 max_toks = (u32)($len(old_ts) + $len(new_ts) + 100);
         u8s diff_text_s = {};
         u8p dtxp = NULL;
-        u32p dtokp = NULL, dhilp = NULL;
+        u32p dtokp = NULL;
         hunk cur_hunk_v = {};
         hunk *cur_hunk = NULL;
 
         if (arena_need > 0 &&
             arena_alloc(arena, diff_text_s, arena_need) == OK) {
             dtxp = diff_text_s[0];
-            u8s toks_arena = {}, hili_arena = {};
-            if (arena_alloc(arena, toks_arena, max_toks * sizeof(u32)) == OK &&
-                arena_alloc(arena, hili_arena, max_toks * sizeof(u32)) == OK) {
+            u8s toks_arena = {};
+            if (arena_alloc(arena, toks_arena, max_toks * sizeof(u32)) == OK) {
                 dtokp = (u32p)toks_arena[0];
-                dhilp = (u32p)hili_arena[0];
             }
         }
 
+        // hflag is the legacy hili tag ('I' / 'D' / 0); translate to side.
         #define DIFF_COPY_TOK(toks_s, base, idx, hflag) do {   \
             u8cs _v = {};                                       \
             tok32Val(_v, toks_s, base, (int)(idx));             \
@@ -329,9 +328,10 @@ ok64 DIFFu8cs(Bu8 arena,
             u32 _eoff = (u32)(dtxp - (u8p)cur_hunk->text[0]) + _n; \
             memcpy(dtxp, _v[0], _n);                            \
             dtxp += _n;                                         \
-            if (dtokp) *dtokp++ = tok32Pack(_tag, _eoff);       \
-            if (dhilp) *dhilp++ = tok32Pack(                    \
-                (hflag) ? (hflag) : 'A', _eoff);                \
+            u8 _side = ((hflag) == 'I') ? TOK_SIDE_IN           \
+                     : ((hflag) == 'D') ? TOK_SIDE_RM           \
+                     :                    TOK_SIDE_EQ;          \
+            if (dtokp) *dtokp++ = tok32PackSide(_tag, _side, _eoff); \
         } while(0)
 
         // Start a new hunk; emit the previous one (if any) via cb.
@@ -339,7 +339,6 @@ ok64 DIFFu8cs(Bu8 arena,
             if (cur_hunk != NULL) {                             \
                 cur_hunk->text[1] = dtxp;                       \
                 cur_hunk->toks[1] = (u32cp)dtokp;               \
-                cur_hunk->hili[1] = (u32cp)dhilp;               \
                 cb(cur_hunk, ctx);                              \
             }                                                   \
             cur_hunk = &cur_hunk_v;                             \
@@ -366,7 +365,6 @@ ok64 DIFFu8cs(Bu8 arena,
             }                                                   \
             cur_hunk->text[0] = dtxp;                           \
             cur_hunk->toks[0] = (u32cp)dtokp;                   \
-            cur_hunk->hili[0] = (u32cp)dhilp;                   \
         } while(0)
 
         #define DIFF_COPY_LINE_PREFIX(boff) do {                \
@@ -377,8 +375,7 @@ ok64 DIFFu8cs(Bu8 arena,
                 u32 _eoff = (u32)(dtxp - (u8p)cur_hunk->text[0]) + _pn; \
                 memcpy(dtxp, new_data[0] + _ls, _pn);           \
                 dtxp += _pn;                                    \
-                if (dtokp) *dtokp++ = tok32Pack('S', _eoff);    \
-                if (dhilp) *dhilp++ = tok32Pack('A', _eoff);    \
+                if (dtokp) *dtokp++ = tok32PackSide('S', TOK_SIDE_EQ, _eoff); \
             }                                                   \
         } while(0)
 
@@ -582,22 +579,16 @@ ok64 DIFFu8cs(Bu8 arena,
                             ls--;
                         u32 _nloff = (u32)(dtxp - (u8p)cur_hunk->text[0]) + 1;
                         *dtxp++ = '\n';
-                        if (dtokp) *dtokp++ = tok32Pack('W', _nloff);
-                        if (dhilp) *dhilp++ = tok32Pack('D', _nloff);
+                        // Synthetic newline terminating the DEL run.
+                        if (dtokp) *dtokp++ = tok32PackSide('W', TOK_SIDE_RM, _nloff);
                         if (ls < ins_boff) {
                             u32 pn = ins_boff - ls;
                             u32 _poff = _nloff + pn;
                             memcpy(dtxp, new_data[0] + ls, pn);
                             dtxp += pn;
-                            if (dtokp) *dtokp++ = tok32Pack('S', _poff);
-                            //  Tag 'A' (context), not 'I'.  These bytes
-                            //  are the start of the new file's line up to
-                            //  the first INS token — they exist verbatim
-                            //  on the old side too (the run's common
-                            //  prefix), so colouring them as inserted
-                            //  paints unchanged tokens (e.g. `b8`) green
-                            //  on the `+` line.
-                            if (dhilp) *dhilp++ = tok32Pack('A', _poff);
+                            //  These bytes are the new file's line prefix
+                            //  up to the first INS token — context (eq).
+                            if (dtokp) *dtokp++ = tok32PackSide('S', TOK_SIDE_EQ, _poff);
                         }
                     }
                 }
@@ -652,7 +643,6 @@ ok64 DIFFu8cs(Bu8 arena,
         if (cur_hunk != NULL) {
             cur_hunk->text[1] = dtxp;
             cur_hunk->toks[1] = (u32cp)dtokp;
-            cur_hunk->hili[1] = (u32cp)dhilp;
             cb(cur_hunk, ctx);
         }
 

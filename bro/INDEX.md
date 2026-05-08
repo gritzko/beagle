@@ -25,8 +25,9 @@ bro file.c [...]     cat mode (syntax-highlighted file display)
 ## Pipe protocol
 
 Hunks arrive as nested TLV records (`HUNK_TLV`) with sub-tags for title,
-text, fg toks, and hili toks (see `dog/HUNK.h`). `BROPipeRun` drains
-records incrementally, copies fields into the bro arena, and renders.
+text, and toks (see `dog/HUNK.h`); each tok carries syntax tag plus a
+2-bit diff side (eq/in/rm). `BROPipeRun` drains records incrementally,
+copies fields into the bro arena, and renders.
 
 ## Spawning bro from spot
 

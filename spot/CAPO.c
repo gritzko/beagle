@@ -732,30 +732,27 @@ ok64 CAPOBuildHunk(u8csc source, u32cs htoks, u32 ctx_lo, u32 ctx_hi,
     // Clip file-level toks to context region
     HUNKu32sClip(less_arena, hk->toks, htoks, ctx_lo, ctx_hi);
 
-    // Build sparse hili from match ranges
-    if (CAPO_COLOR) {
-        u32gp g = u32aOpen(less_arena);
-        u32 prev_end = 0;
-        for (int i = 0; i < nhl; i++) {
-            u32 mlo = hls[i].lo < ctx_lo
-                          ? 0
-                          : hls[i].lo - ctx_lo;
-            u32 mhi = hls[i].hi > ctx_hi
-                          ? ctx_hi - ctx_lo
-                          : hls[i].hi - ctx_lo;
-            if (mlo > prev_end)
-                u32gFeed1(g, tok32Pack('A', mlo));
-            u32gFeed1(g, tok32Pack('I', mhi));
-            prev_end = mhi;
-        }
-        u32 region_len = ctx_hi - ctx_lo;
-        if (prev_end < region_len)
-            u32gFeed1(g, tok32Pack('A', region_len));
-        u32cs hili = {};
-        u32aClose(less_arena, hili);
-        if (!$empty(hili)) {
-            hk->hili[0] = hili[0];
-            hk->hili[1] = hili[1];
+    // Apply match highlighting by stamping side=in onto every tok
+    // whose byte range intersects any match span.
+    if (CAPO_COLOR && nhl > 0 && !$empty(hk->toks)) {
+        u32 ntok = (u32)$len(hk->toks);
+        u32p toks = (u32p)hk->toks[0];  // toks live in less_arena
+        u32 prev = 0;
+        for (u32 ti = 0; ti < ntok; ti++) {
+            u32 end = tok32Offset(toks[ti]);
+            for (int i = 0; i < nhl; i++) {
+                u32 mlo = hls[i].lo < ctx_lo
+                              ? 0
+                              : hls[i].lo - ctx_lo;
+                u32 mhi = hls[i].hi > ctx_hi
+                              ? ctx_hi - ctx_lo
+                              : hls[i].hi - ctx_lo;
+                if (mlo < end && mhi > prev) {
+                    toks[ti] = tok32SetSide(toks[ti], TOK_SIDE_IN);
+                    break;
+                }
+            }
+            prev = end;
         }
     }
 

@@ -874,9 +874,9 @@ cleanup:
 //    alive_to && !alive_from → 'I' (inserted on to-side)
 //    alive_from && !alive_to → 'D' (deleted on to-side)
 //    alive_from && alive_to  → ' ' (context, unchanged)
-//  Tokens carry their lexer tag in the hunk's `toks` (syntax stream),
-//  and the I/D/' ' classification in `hili`.  Both arrays tile the
-//  hunk's `text` exactly.  See `dog/HUNK.c` for the renderer.
+//  Each tok in the hunk's `toks` carries a lexer tag (top 5 bits) and
+//  a 2-bit diff side (eq/in/rm).  Tokens tile the hunk's `text` exactly.
+//  See `dog/HUNK.c` for the renderer.
 //  TODO: NEIL-style cleanup happens upstream in `WEAVEDiff` (ride the
 //  EDL there); WEAVEEmitDiff trusts its weave's classification.
 
@@ -999,26 +999,18 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     //  window boundary.
     Bu8  outtext = {};
     Bu32 outtoks = {};
-    Bu32 outhili = {};
     call(u8bMap,  outtext, 16UL << 20);
     call(u32bMap, outtoks, 1UL << 16);
-    call(u32bMap, outhili, 1UL << 16);
 
     ok64 ret = OK;
     u32 wi = 0;          // active window index
     u32 win_lo = wbuf[0];
     u32 win_hi = wbuf[1];
     cur_line = 0;
-    u8 last_hili = 0;    // last 'I'/'D'/' ' tag in current hunk
-    u32 last_hili_start = 0;  // outtext byte offset where last_hili started
     b8 hunk_open = NO;
 
     #define FLUSH_HUNK() do {                                          \
         if (hunk_open) {                                               \
-            if (last_hili != 0) {                                      \
-                u32bFeed1(outhili,                                     \
-                    tok32Pack(last_hili, (u32)u8bDataLen(outtext)));   \
-            }                                                          \
             hunk hk = {};                                              \
             $mv(hk.uri, name);                                         \
             hk.text[0] = u8bDataHead(outtext);                         \
@@ -1026,16 +1018,10 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
             hk.toks[0] = (tok32c *)u32bDataHead(outtoks);              \
             hk.toks[1] = (tok32c *)u32bDataHead(outtoks)               \
                        + u32bDataLen(outtoks);                         \
-            hk.hili[0] = (tok32c *)u32bDataHead(outhili);              \
-            hk.hili[1] = (tok32c *)u32bDataHead(outhili)               \
-                       + u32bDataLen(outhili);                         \
             ok64 _r = cb(&hk, cb_ctx);                                 \
             if (_r != OK) ret = _r;                                    \
             u8bReset(outtext);                                         \
             u32bReset(outtoks);                                        \
-            u32bReset(outhili);                                        \
-            last_hili = 0;                                             \
-            last_hili_start = 0;                                       \
             hunk_open = NO;                                            \
         }                                                              \
     } while (0)
@@ -1064,65 +1050,18 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
         //  Token's start line determines window membership.  We treat
         //  any token whose start line is inside the window as visible.
         if (cur_line >= win_lo && cur_line <= win_hi) {
-            //  Synthetic newline at INS↔DEL transitions when neither
-            //  side ends/starts at '\n' AND the previous span ran
-            //  across a line boundary (contained a '\n').  Without
-            //  it, bro's TLV renderer fuses an INS-line's tail with
-            //  the next DEL-line's head — e.g.
-            //    `u8cs seqno_s = {name[0], name[0]char const *name…`
-            //  LineBased rendering is robust via HUNK.c's dampener
-            //  (drops phantom DEL flushes when oldb has no DEL bytes).
-            if (last_hili != 0 && last_hili != tag &&
-                ((last_hili == 'I' && tag == 'D') ||
-                 (last_hili == 'D' && tag == 'I'))) {
-                u32 olen = (u32)u8bDataLen(outtext);
-                u8c *odata = u8bDataHead(outtext);
-                u8c last_byte = (olen > 0) ? odata[olen - 1] : '\n';
-                u8c first_byte = (lo < hi) ? text[lo] : '\n';
-                u8 const *outp = u8bDataHead(outtext);
-                u32 span_len = (olen > last_hili_start)
-                               ? (olen - last_hili_start) : 0;
-                b8 prev_multi_line = (span_len > 0) &&
-                    (memchr(outp + last_hili_start, '\n', span_len) != NULL);
-                if (last_byte != '\n' && first_byte != '\n' &&
-                    prev_multi_line) {
-                    ok64 fc = u32bFeed1(outhili,
-                        tok32Pack(last_hili, olen));
-                    if (fc != OK) { ret = fc; goto cleanup; }
-                    fc = u8bFeed1(outtext, '\n');
-                    if (fc != OK) { ret = fc; goto cleanup; }
-                    //  Mark synthetic '\n' with tag 'X' so HUNK.c
-                    //  LineBased can tell it apart from a real DEL
-                    //  '\n'.  (tok32 packs the tag as `tag - 'A'` in
-                    //  5 bits, so the tag must lie in 'A'..'`'; 'X'
-                    //  is unused by the lexer or diff classifier.)
-                    //  Bro renders the byte as a row break, which is
-                    //  the only effect we needed for fusion-breaking.
-                    fc = u32bFeed1(outhili,
-                        tok32Pack('X', olen + 1));
-                    if (fc != OK) { ret = fc; goto cleanup; }
-                    fc = u32bFeed1(outtoks,
-                        tok32Pack('W', olen + 1));
-                    if (fc != OK) { ret = fc; goto cleanup; }
-                    last_hili = 'X';
-                }
-            }
-            if (last_hili != 0 && last_hili != tag) {
-                ok64 fo = u32bFeed1(outhili,
-                    tok32Pack(last_hili, (u32)u8bDataLen(outtext)));
-                if (fo != OK) { ret = fo; goto cleanup; }
-                last_hili_start = (u32)u8bDataLen(outtext);
-            }
-            last_hili = tag;
-
             u8cs tb = {text + lo, text + hi};
             ok64 fo = u8bFeed(outtext, tb);
             if (fo != OK) { ret = fo; goto cleanup; }
-            //  Carry the lexer's syntax tag through into the hunk's
-            //  toks stream so the renderer can colour by token type.
+            //  Carry the lexer's syntax tag plus the diff side
+            //  (eq/in/rm) through into the hunk's toks stream.
             u8 syntag = tok32Tag(toks[i]);
+            u8 side = (tag == 'I') ? TOK_SIDE_IN
+                    : (tag == 'D') ? TOK_SIDE_RM
+                    :                TOK_SIDE_EQ;
             fo = u32bFeed1(outtoks,
-                tok32Pack(syntag, (u32)u8bDataLen(outtext)));
+                tok32PackSide(syntag, side,
+                              (u32)u8bDataLen(outtext)));
             if (fo != OK) { ret = fo; goto cleanup; }
             hunk_open = YES;
         }
@@ -1138,7 +1077,6 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
 cleanup:
     u8bUnMap(outtext);
     u32bUnMap(outtoks);
-    u32bUnMap(outhili);
     u8bUnMap(changed);
     u32bUnMap(windows);
     return ret;

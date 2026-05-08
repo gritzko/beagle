@@ -30,7 +30,7 @@ typedef struct {
     int   pipe_fd;      // TLV hunk input pipe; -1 when not piped
     int   worker_pid;   // child PID feeding the pipe; -1 when none
 
-    Bu8   arena;        // hunk staging arena (URI/text/hili bytes)
+    Bu8   arena;        // hunk staging arena (URI/text/toks bytes)
     hunkb hunks;        // typed buffer of hunks (DATA length = count)
     u32b  toks;         // flat tokens arena for all hunks
     u8bb  maps;         // buffer of mmap'd files awaiting cleanup
@@ -137,7 +137,7 @@ u32 BROHunkCount(range32 const *lines, u32 nlines);
 // 1-based index of the hunk that contains line `at`; 0 if nlines==0.
 u32 BROHunkIndexAt(range32 const *lines, u32 nlines, u32 at);
 
-// Total non-neutral hili ranges across hunks[0..nhunks).
+// Total non-eq side runs (in/rm) across hunks[0..nhunks).
 u32 BROHiliCount(hunkc const *hunks, u32 nhunks);
 
 // 1-based index of the latest hili range whose first line <= `at`.

@@ -172,8 +172,31 @@ typedef struct {
 // Tokens live in the shared bro_state->toks arena; hunk.toks slices it.
 typedef struct {
     u8bp mapped;    // mmap'd file
-    hunk hunk;      // inline hunk (title + text + toks, no hili)
+    hunk hunk;      // inline hunk (title + text + toks)
 } BROfileview;
+
+// --- Line index encoding ---
+//
+// Each `range32` row in lines[]:  lo = hunk index, hi = packed offset+pass.
+// `hi == BRO_TITLE_LINE` (UINT32_MAX) tags a title sentinel.
+// Otherwise: bits 23..0 = byte offset within hunk text, bits 25..24 = pass.
+//
+//   pass = 0: normal/inline   (eq lines, inrm-small, plain text)
+//   pass = 1: rm-pass row     (rm + inrm-big rm-side, in-side bytes hidden)
+//   pass = 2: in-pass row     (in + inrm-big in-side, rm-side bytes hidden)
+#define BRO_LINE_OFF_BITS  24
+#define BRO_LINE_OFF_MASK  ((1u << BRO_LINE_OFF_BITS) - 1)
+#define BRO_PASS_NORMAL    0u
+#define BRO_PASS_RM        1u
+#define BRO_PASS_IN        2u
+
+fun u32 bro_line_off (range32 const *ln) { return ln->hi & BRO_LINE_OFF_MASK; }
+fun u8  bro_line_pass(range32 const *ln) {
+    return (u8)((ln->hi >> BRO_LINE_OFF_BITS) & 0x3);
+}
+fun u32 bro_line_make(u32 off, u8 pass) {
+    return (((u32)pass & 0x3) << BRO_LINE_OFF_BITS) | (off & BRO_LINE_OFF_MASK);
+}
 
 typedef struct {
     hunk const *hunks;
@@ -277,22 +300,266 @@ static u32 bro_row_end(u8csc text, u32 tlen, u32 off, u32 cols) {
     return off;
 }
 
+// Pass-aware row end.  Skips bytes whose token side is hidden in this
+// pass (in-side bytes for rm-pass, rm-side bytes for in-pass).  Counts
+// only visible codepoints toward `cols`.  Stops on '\n' regardless of
+// side (the line break terminates every pass).
+static u32 bro_row_end_pass(hunkc const *hk, u32 tlen, u32 off,
+                            u32 cols, u8 pass) {
+    if (pass == BRO_PASS_NORMAL) {
+        u8csc text = {hk->text[0], hk->text[1]};
+        return bro_row_end(text, tlen, off, cols);
+    }
+    int ntoks = (int)$len(hk->toks);
+    int ti = 0;
+    while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
+    u32 cp = 0;
+    while (off < tlen && cp < cols && hk->text[0][off] != '\n') {
+        while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
+        u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
+        u8 ch = hk->text[0][off];
+        u32 clen = UTF8_LEN[ch >> 4];
+        if (clen == 0 || off + clen > tlen) clen = 1;
+        b8 hidden = (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+                    (pass == BRO_PASS_IN && side == TOK_SIDE_RM);
+        off += clen;
+        if (!hidden) cp++;
+    }
+    return off;
+}
+
+// Per-source-line classification info used for block detection.
+typedef struct {
+    u32 lo;       // line start byte offset
+    u32 hi;       // exclusive end (the '\n' or text end)
+    u32 in_b;     // count of in-side bytes within [lo,hi)
+    u32 rm_b;     // count of rm-side bytes within [lo,hi)
+    u32 eq_b;     // count of eq-side bytes within [lo,hi)
+} bro_lineinfo;
+
+// Walk hk's tokens to populate per-line side byte counts.
+// `out` must hold at least `cap` entries; returns the number filled.
+// If the source has more lines than `cap`, the tail is truncated and
+// classification falls back to all-eq for those lines.
+static u32 bro_classify_lines(hunkc const *hk, bro_lineinfo *out, u32 cap) {
+    u32 tlen = (u32)$len(hk->text);
+    if (tlen == 0 || cap == 0) return 0;
+    u32 nl = 0;
+    u32 line_lo = 0;
+    int ntoks = (int)$len(hk->toks);
+    int ti = 0;
+    u32 prev_end = 0;
+    u32 in_b = 0, rm_b = 0, eq_b = 0;
+    for (u32 off = 0; off < tlen; off++) {
+        while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) {
+            prev_end = tok32Offset(hk->toks[0][ti]);
+            ti++;
+        }
+        u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
+        if (hk->text[0][off] == '\n') {
+            if (nl < cap)
+                out[nl] = (bro_lineinfo){line_lo, off, in_b, rm_b, eq_b};
+            nl++;
+            line_lo = off + 1;
+            in_b = rm_b = eq_b = 0;
+        } else {
+            if (side == TOK_SIDE_IN) in_b++;
+            else if (side == TOK_SIDE_RM) rm_b++;
+            else eq_b++;
+        }
+    }
+    (void)prev_end;
+    if (line_lo < tlen) {
+        if (nl < cap)
+            out[nl] = (bro_lineinfo){line_lo, tlen, in_b, rm_b, eq_b};
+        nl++;
+    }
+    return nl < cap ? nl : cap;
+}
+
+// Line type derived from byte counts.
+//   EQ        : no in/rm bytes — context line.
+//   PURE_IN   : no eq bytes; in only — classic INS line, only `+` shown.
+//   PURE_RM   : no eq bytes; rm only — classic DEL line, only `-` shown.
+//   MOD_INLINE: changed bytes < 25% of line — one row, inline highlights.
+//   MOD_SPLIT : changed bytes ≥ 25% — two rows (rm-pass + in-pass).
+// "Modified" covers eq+rm only, eq+in only, eq+in+rm, and (rare)
+// no-eq+in+rm cases — the line exists in both old and new with
+// different content, so both `-` and `+` views must be shown.
+typedef enum {
+    BRO_LINE_EQ,
+    BRO_LINE_PURE_IN,
+    BRO_LINE_PURE_RM,
+    BRO_LINE_MOD_INLINE,
+    BRO_LINE_MOD_SPLIT,
+} bro_linekind;
+
+static bro_linekind bro_classify(bro_lineinfo const *li) {
+    u32 changed = li->in_b + li->rm_b;
+    if (changed == 0) return BRO_LINE_EQ;
+    if (li->eq_b == 0) {
+        // No context bytes — classic pure ADD / DEL / both-sides edit.
+        if (li->in_b > 0 && li->rm_b > 0) return BRO_LINE_MOD_SPLIT;
+        return (li->in_b > 0) ? BRO_LINE_PURE_IN : BRO_LINE_PURE_RM;
+    }
+    u32 total = changed + li->eq_b;
+    return (changed * 4 < total) ? BRO_LINE_MOD_INLINE
+                                  : BRO_LINE_MOD_SPLIT;
+}
+
+static b8 bro_kind_in_rm_pass(bro_linekind k) {
+    return (k == BRO_LINE_PURE_RM || k == BRO_LINE_MOD_SPLIT ||
+            k == BRO_LINE_MOD_INLINE);
+}
+static b8 bro_kind_in_in_pass(bro_linekind k) {
+    return (k == BRO_LINE_PURE_IN || k == BRO_LINE_MOD_SPLIT);
+}
+// MOD_INLINE renders once in the normal pass (eq plain, rm/in bg-tinted).
+// All others use the side-aware split passes.
+static u8 bro_kind_pass_for_rm(bro_linekind k) {
+    return (k == BRO_LINE_MOD_INLINE) ? BRO_PASS_NORMAL : BRO_PASS_RM;
+}
+static u8 bro_kind_pass_for_in(bro_linekind k) {
+    (void)k; return BRO_PASS_IN;
+}
+
+#define BRO_LINEINFO_CAP 8192  // generous; hunks are typically tiny
+
+// Append rows for one source line to lines[].  Returns the new li.
+static u32 bro_append_rows(range32 *lines, u32 li, u32 maxlines,
+                           hunkc const *hk, u32 h, bro_lineinfo const *info,
+                           u32 cols, u8 pass) {
+    if (li >= maxlines) return li;
+    u32 tlen = (u32)$len(hk->text);
+    u32 off = info->lo;
+    u32 line_end = info->hi;
+    while (off <= line_end) {
+        if (li < maxlines) {
+            lines[li++] = (range32){h, bro_line_make(off, pass)};
+        }
+        u32 end = bro_row_end_pass(hk, tlen, off, cols, pass);
+        if (end >= line_end) break;  // last row of this line
+        off = end;
+    }
+    return li;
+}
+
+// Count rows produced by appending one source line in `pass`.
+static u32 bro_count_rows(hunkc const *hk, bro_lineinfo const *info,
+                          u32 cols, u8 pass) {
+    u32 tlen = (u32)$len(hk->text);
+    u32 off = info->lo;
+    u32 line_end = info->hi;
+    u32 n = 0;
+    while (off <= line_end) {
+        n++;
+        u32 end = bro_row_end_pass(hk, tlen, off, cols, pass);
+        if (end >= line_end) break;
+        off = end;
+    }
+    return n;
+}
+
+// Walk a hunk's lines, count display rows per the block-reorder rule.
+static u32 bro_hunk_count_rows(hunkc const *hk, u32 cols) {
+    static bro_lineinfo info[BRO_LINEINFO_CAP];
+    u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
+    u32 total = 0;
+    u32 i = 0;
+    while (i < nl) {
+        bro_linekind k = bro_classify(&info[i]);
+        if (k == BRO_LINE_EQ) {
+            total += bro_count_rows(hk, &info[i], cols, BRO_PASS_NORMAL);
+            i++;
+            continue;
+        }
+        // Find block end (run of non-eq lines).
+        u32 j = i;
+        while (j < nl && bro_classify(&info[j]) != BRO_LINE_EQ) j++;
+        // Pass 1: rm-side rows.
+        for (u32 m = i; m < j; m++) {
+            bro_linekind km = bro_classify(&info[m]);
+            if (!bro_kind_in_rm_pass(km)) continue;
+            total += bro_count_rows(hk, &info[m], cols,
+                                    bro_kind_pass_for_rm(km));
+        }
+        // Pass 2: in-side rows.
+        for (u32 m = i; m < j; m++) {
+            bro_linekind km = bro_classify(&info[m]);
+            if (!bro_kind_in_in_pass(km)) continue;
+            total += bro_count_rows(hk, &info[m], cols,
+                                    bro_kind_pass_for_in(km));
+        }
+        i = j;
+    }
+    return total;
+}
+
+// Append one hunk's rows to lines[] following the block-reorder rule.
+// Mutates hk->toks: sets the custom bit on tokens belonging to inrm
+// lines so the renderer can colour them as "changed-side" (split toks).
+static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
+                           hunkc const *hk, u32 h, u32 cols) {
+    static bro_lineinfo info[BRO_LINEINFO_CAP];
+    u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
+    // Stamp custom bit on inrm-line tokens.
+    int ntoks = (int)$len(hk->toks);
+    if (ntoks > 0) {
+        u32p toks = (u32p)hk->toks[0];
+        u32 prev = 0;
+        u32 li_idx = 0;
+        for (int ti = 0; ti < ntoks; ti++) {
+            u32 end = tok32Offset(toks[ti]);
+            // Advance to the line containing [prev, end)
+            while (li_idx < nl && info[li_idx].hi < prev) li_idx++;
+            b8 in_inrm = NO;
+            for (u32 m = li_idx; m < nl && info[m].lo < end; m++) {
+                if (info[m].in_b > 0 && info[m].rm_b > 0) {
+                    in_inrm = YES; break;
+                }
+            }
+            toks[ti] = tok32SetCustom(toks[ti], in_inrm ? 1 : 0);
+            prev = end;
+        }
+    }
+
+    u32 i = 0;
+    while (i < nl) {
+        bro_linekind k = bro_classify(&info[i]);
+        if (k == BRO_LINE_EQ) {
+            li = bro_append_rows(lines, li, maxlines, hk, h,
+                                 &info[i], cols, BRO_PASS_NORMAL);
+            i++;
+            continue;
+        }
+        u32 j = i;
+        while (j < nl && bro_classify(&info[j]) != BRO_LINE_EQ) j++;
+        for (u32 m = i; m < j; m++) {
+            bro_linekind km = bro_classify(&info[m]);
+            if (!bro_kind_in_rm_pass(km)) continue;
+            li = bro_append_rows(lines, li, maxlines, hk, h,
+                                 &info[m], cols,
+                                 bro_kind_pass_for_rm(km));
+        }
+        for (u32 m = i; m < j; m++) {
+            bro_linekind km = bro_classify(&info[m]);
+            if (!bro_kind_in_in_pass(km)) continue;
+            li = bro_append_rows(lines, li, maxlines, hk, h,
+                                 &info[m], cols,
+                                 bro_kind_pass_for_in(km));
+        }
+        i = j;
+    }
+    return li;
+}
+
 u32 BROCountLines(hunkc const *hunks, u32 nhunks, u32 cols) {
     if (cols == 0) cols = 1;
     u32 total = 0;
     for (u32 h = 0; h < nhunks; h++) {
         if (hunk_has_title(&hunks[h])) total++;
-        u32 tlen = (u32)$len(hunks[h].text);
-        if (tlen == 0) continue;
-        a_dup(u8 const, text, hunks[h].text);
-        u32 off = 0;
-        while (off < tlen) {
-            total++;
-            u32 end = bro_row_end(text, tlen, off, cols);
-            if (end < tlen && text[0][end] == '\n') end++;
-            if (end >= tlen) break;
-            off = end;
-        }
+        if ($empty(hunks[h].text)) continue;
+        total += bro_hunk_count_rows(&hunks[h], cols);
     }
     return total;
 }
@@ -613,28 +880,37 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
 // BROExtendIndex). They are exposed via BRO.h for tests, so they take
 // raw arrays rather than BROstate.
 
-static b8 bro_hili_real(u8 tag) {
-    return (tag != 0 && tag != 'A') ? YES : NO;
+// A "hili run" is a maximal sequence of consecutive tokens whose side
+// is non-eq AND share the same side (in/rm).  Transition eq→non-eq or
+// in↔rm starts a new run.
+static b8 bro_side_real(u8 side) {
+    return side != TOK_SIDE_EQ ? YES : NO;
 }
 
 // Display line `i` is the first row of its source line (i.e. not a
 // wrap continuation of a longer source line).  Title rows return NO.
+// A row is a source-start if it begins with offset 0 OR the previous
+// row covers a different hunk OR pass changes OR the previous source
+// byte is '\n'.
 static b8 bro_is_source_start(hunkc const *hunks, range32 const *lines,
                               u32 nlines, u32 i) {
     if (i >= nlines) return NO;
     range32 const *ln = &lines[i];
     if (ln->hi == BRO_TITLE_LINE) return NO;
-    if (i == 0 || ln->hi == 0) return YES;
+    u32 off = bro_line_off(ln);
+    if (i == 0 || off == 0) return YES;
     range32 const *prev = &lines[i - 1];
     if (prev->lo != ln->lo) return YES;
     if (prev->hi == BRO_TITLE_LINE) return YES;
-    return (hunks[ln->lo].text[0][ln->hi - 1] == '\n') ? YES : NO;
+    if (bro_line_pass(prev) != bro_line_pass(ln)) return YES;
+    return (hunks[ln->lo].text[0][off - 1] == '\n') ? YES : NO;
 }
 
 // Find the line that contains byte offset `off` in hunk `h`.
 // Returns the largest line index i with lines[i].lo == h,
-// lines[i].hi != BRO_TITLE_LINE, and lines[i].hi <= off.
-// BRO_NONE if no such line exists.
+// lines[i].hi != BRO_TITLE_LINE, and bro_line_off(lines+i) <= off.
+// BRO_NONE if no such line exists.  Used by hili nav — picks the first
+// matching pass (rm) since that comes first in source order.
 static u32 bro_line_for_off(range32 const *lines, u32 nlines,
                             u32 h, u32 off) {
     u32 best = BRO_NONE;
@@ -642,7 +918,8 @@ static u32 bro_line_for_off(range32 const *lines, u32 nlines,
         if (lines[i].lo < h) continue;
         if (lines[i].lo > h) break;  // hunks are appended in order
         if (lines[i].hi == BRO_TITLE_LINE) continue;
-        if (lines[i].hi <= off) best = i;
+        u32 lo_off = bro_line_off(&lines[i]);
+        if (lo_off <= off) best = i;
         else break;
     }
     return best;
@@ -688,12 +965,22 @@ u32 BROHunkIndexAt(range32 const *lines, u32 nlines, u32 at) {
     return n;
 }
 
+// A token starts a new hili run iff its side is non-eq AND either it
+// is the first tok or the previous tok has a different (eq or other) side.
+static b8 bro_is_run_start(hunk const *hk, u32 j) {
+    u8 side = tok32Side(hk->toks[0][j]);
+    if (!bro_side_real(side)) return NO;
+    if (j == 0) return YES;
+    u8 prev = tok32Side(hk->toks[0][j - 1]);
+    return (prev != side) ? YES : NO;
+}
+
 u32 BROHiliCount(hunk const *hunks, u32 nhunks) {
     u32 n = 0;
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].hili);
+        u32 nh = (u32)$len(hunks[h].toks);
         for (u32 j = 0; j < nh; j++)
-            if (bro_hili_real(tok32Tag(hunks[h].hili[0][j]))) n++;
+            if (bro_is_run_start(&hunks[h], j)) n++;
     }
     return n;
 }
@@ -702,12 +989,11 @@ u32 BROHiliIndexAt(hunk const *hunks, u32 nhunks,
                    range32 const *lines, u32 nlines, u32 at) {
     u32 n = 0;
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].hili);
+        u32 nh = (u32)$len(hunks[h].toks);
         for (u32 j = 0; j < nh; j++) {
-            tok32 t = hunks[h].hili[0][j];
-            if (!bro_hili_real(tok32Tag(t))) continue;
+            if (!bro_is_run_start(&hunks[h], j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].hili[0][j - 1]);
+                          : tok32Offset(hunks[h].toks[0][j - 1]);
             u32 ln = bro_line_for_off(lines, nlines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln <= at) n++;
@@ -720,12 +1006,11 @@ u32 BROHiliIndexAt(hunk const *hunks, u32 nhunks,
 u32 BROHiliNextLine(hunk const *hunks, u32 nhunks,
                     range32 const *lines, u32 nlines, u32 mid) {
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].hili);
+        u32 nh = (u32)$len(hunks[h].toks);
         for (u32 j = 0; j < nh; j++) {
-            tok32 t = hunks[h].hili[0][j];
-            if (!bro_hili_real(tok32Tag(t))) continue;
+            if (!bro_is_run_start(&hunks[h], j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].hili[0][j - 1]);
+                          : tok32Offset(hunks[h].toks[0][j - 1]);
             u32 ln = bro_line_for_off(lines, nlines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln > mid) return ln;
@@ -738,12 +1023,11 @@ u32 BROHiliPrevLine(hunk const *hunks, u32 nhunks,
                     range32 const *lines, u32 nlines, u32 mid) {
     u32 best = BRO_NONE;
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].hili);
+        u32 nh = (u32)$len(hunks[h].toks);
         for (u32 j = 0; j < nh; j++) {
-            tok32 t = hunks[h].hili[0][j];
-            if (!bro_hili_real(tok32Tag(t))) continue;
+            if (!bro_is_run_start(&hunks[h], j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].hili[0][j - 1]);
+                          : tok32Offset(hunks[h].toks[0][j - 1]);
             u32 ln = bro_line_for_off(lines, nlines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln >= mid) return best;
@@ -811,11 +1095,26 @@ static void bro_goto(int row, int col) {
 static void scr_emit_char(u8cp p, u32 n, u8 fg_tag, u8 bg_tag, b8 in_search) {
     b8 bold = NO;
     int fg = BROTagColor(fg_tag, &bold);
-    b8 is_ins = (bg_tag == 'I');
-    b8 is_del = (bg_tag == 'D');
+    // bg_tag conventions (256-color, low-blue green/pink hues):
+    //   'A' = no bg
+    //   'I' = pale green  rgb(215,255,215)  (INS, normal/inline pass)
+    //   'D' = pale pink   rgb(255,215,215)  (DEL, normal/inline pass)
+    //   'i' = mid green   rgb(175,255,175)  (INS bytes in split in-pass)
+    //   'd' = mid pink    rgb(255,175,175)  (RM  bytes in split rm-pass)
+    //   'g' = pale green  (eq context in in-pass — same as 'I')
+    //   'p' = pale pink   (eq context in rm-pass — same as 'D')
+    int bg = 0;
+    switch (bg_tag) {
+    case 'I': bg = 194; break;
+    case 'D': bg = 224; break;
+    case 'i': bg = 157; break;
+    case 'd': bg = 217; break;
+    case 'g': bg = 194; break;
+    case 'p': bg = 224; break;
+    }
 
     u8sp out = u8bIdle(bro_scr);
-    if (fg != 0 || bold || is_ins || is_del || in_search) {
+    if (fg != 0 || bold || bg != 0 || in_search) {
         if (bold) escfeed(out, BOLD);
         if (fg < 0) {
             // 256-color FG: \033[38;5;Nm
@@ -827,8 +1126,7 @@ static void scr_emit_char(u8cp p, u32 n, u8 fg_tag, u8 bg_tag, b8 in_search) {
         } else if (fg > 0) {
             escfeed(out, (u8)fg);
         }
-        if (is_ins) escfeedBG256(out, 157);
-        else if (is_del) escfeedBG256(out, 217);
+        if (bg != 0) escfeedBG256(out, (u8)bg);
         else if (in_search) escfeed(out, 7);
         u8cs chars = {p, p + n};
         u8sFeed(out, chars);
@@ -916,10 +1214,10 @@ static void BRORender(BROstate *st) {
         }
 
         u32 textlen = (u32)$len(hk->text);
-        u32 off = ln->hi;
-        a_dup(u8 const, txts, hk->text);
+        u32 off = bro_line_off(ln);
+        u8 pass = bro_line_pass(ln);
         u32 cols = st->cols > 0 ? st->cols : 80;
-        u32 line_end = bro_row_end(txts, textlen, off, cols);
+        u32 line_end = bro_row_end_pass(hk, textlen, off, cols, pass);
         u32 w = line_end - off;
 
         // Find tok cursor for this offset
@@ -928,12 +1226,6 @@ static void BRORender(BROstate *st) {
         while (tok_i < ntoks &&
                tok32Offset(hk->toks[0][tok_i]) <= off)
             tok_i++;
-
-        int nhili = (int)$len(hk->hili);
-        int hili_i = 0;
-        while (hili_i < nhili &&
-               tok32Offset(hk->hili[0][hili_i]) <= off)
-            hili_i++;
 
         // Carry-over byte counter so a multi-byte search match stays
         // highlighted across the whole run, not just its first char.
@@ -965,11 +1257,24 @@ static void BRORender(BROstate *st) {
                 tok_i++;
             u8 fg_tag = (tok_i < ntoks)
                             ? tok32Tag(hk->toks[0][tok_i]) : 'S';
-            while (hili_i < nhili &&
-                   tok32Offset(hk->hili[0][hili_i]) <= pos)
-                hili_i++;
-            u8 bg_tag = (hili_i < nhili)
-                            ? tok32Tag(hk->hili[0][hili_i]) : 'A';
+            u8 side = (tok_i < ntoks)
+                          ? tok32Side(hk->toks[0][tok_i]) : TOK_SIDE_EQ;
+            // Skip bytes hidden by this pass (the row width already
+            // accounts for them, so just don't emit).
+            if ((pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+                (pass == BRO_PASS_IN && side == TOK_SIDE_RM)) {
+                j += clen;
+                continue;
+            }
+            u8 bg_tag = 'A';
+            if (pass == BRO_PASS_NORMAL) {
+                if (side == TOK_SIDE_IN) bg_tag = 'I';
+                else if (side == TOK_SIDE_RM) bg_tag = 'D';
+            } else if (pass == BRO_PASS_RM) {
+                bg_tag = (side == TOK_SIDE_RM) ? 'd' : 'p';
+            } else { // BRO_PASS_IN
+                bg_tag = (side == TOK_SIDE_IN) ? 'i' : 'g';
+            }
             if (search_left == 0 && bro_search_at(st, hk->text, pos))
                 search_left = st->search_len;
             b8 in_search = (search_left > 0) ? YES : NO;
@@ -1392,8 +1697,7 @@ static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
                 u8bFeed(bro_scr, hunks[h].text);
             } else {
                 int ntoks = (int)$len(hunks[h].toks);
-                int nhili = (int)$len(hunks[h].hili);
-                int tok_i = 0, hili_i = 0;
+                int tok_i = 0;
                 int prev_fg = 0;
                 int prev_bg = 0;
                 b8 prev_bold = NO;
@@ -1405,18 +1709,16 @@ static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
                     u8 fg_tag = (tok_i < ntoks)
                                     ? tok32Tag(hunks[h].toks[0][tok_i])
                                     : 'S';
-                    // Advance hili cursor
-                    while (hili_i < nhili &&
-                           tok32Offset(hunks[h].hili[0][hili_i]) <= i)
-                        hili_i++;
-                    u8 bg_tag = (hili_i < nhili)
-                                    ? tok32Tag(hunks[h].hili[0][hili_i])
-                                    : 'A';
+                    u8 side = (tok_i < ntoks)
+                                  ? tok32Side(hunks[h].toks[0][tok_i])
+                                  : TOK_SIDE_EQ;
+                    u8 bg_tag = (side == TOK_SIDE_IN) ? 'I'
+                              : (side == TOK_SIDE_RM) ? 'D' : 'A';
                     b8 bold = NO;
                     int fg = BROTagColor(fg_tag, &bold);
                     int bg = 0;
-                    if (bg_tag == 'I') bg = 157;
-                    else if (bg_tag == 'D') bg = 217;
+                    if (bg_tag == 'I') bg = 194;
+                    else if (bg_tag == 'D') bg = 224;
                     u8sp out = u8bIdle(bro_scr);
                     if (fg != prev_fg || bg != prev_bg ||
                         bold != prev_bold) {
@@ -1692,11 +1994,6 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
                 size_t tn = (size_t)((u8cp)tlv_hk.toks[1] - (u8cp)tlv_hk.toks[0]);
                 u8p tkp = BROArenaWrite(tlv_hk.toks[0], tn);
                 if (tkp) { hk->toks[0] = (u32cp)tkp; hk->toks[1] = (u32cp)u8bIdleHead(bro_arena); }
-            }
-            if (!$empty(tlv_hk.hili)) {
-                size_t hn = (size_t)((u8cp)tlv_hk.hili[1] - (u8cp)tlv_hk.hili[0]);
-                u8p hp = BROArenaWrite(tlv_hk.hili[0], hn);
-                if (hp) { hk->hili[0] = (u32cp)hp; hk->hili[1] = (u32cp)u8bIdleHead(bro_arena); }
             }
             hunkbFed(bro_state->hunks, 1);
         }
@@ -2112,18 +2409,8 @@ u32 BROAppendLines(range32 *lines, u32 nlines, u32 maxlines,
             if (li < maxlines)
                 lines[li++] = (range32){h, BRO_TITLE_LINE};
         }
-        u32 tlen = (u32)$len(hunks[h].text);
-        if (tlen == 0) continue;
-        a_dup(u8 const, text, hunks[h].text);
-        u32 off = 0;
-        while (off < tlen) {
-            if (li < maxlines)
-                lines[li++] = (range32){h, off};
-            u32 end = bro_row_end(text, tlen, off, cols);
-            if (end < tlen && text[0][end] == '\n') end++;
-            if (end >= tlen) break;
-            off = end;
-        }
+        if ($empty(hunks[h].text)) continue;
+        li = bro_hunk_append(lines, li, maxlines, &hunks[h], h, cols);
     }
     return li;
 }
@@ -2311,15 +2598,6 @@ ok64 BROPipeRun(int pipefd) {
                     if (tkp) {
                         hk->toks[0] = (u32cp)tkp;
                         hk->toks[1] = (u32cp)u8bIdleHead(bro_arena);
-                    }
-                }
-                if (!$empty(tlv_hk.hili)) {
-                    u8p hp = BROArenaWrite(tlv_hk.hili[0],
-                                 (size_t)((u8cp)tlv_hk.hili[1] -
-                                          (u8cp)tlv_hk.hili[0]));
-                    if (hp) {
-                        hk->hili[0] = (u32cp)hp;
-                        hk->hili[1] = (u32cp)u8bIdleHead(bro_arena);
                     }
                 }
                 hunkbFed(bro_state->hunks, 1);
