@@ -38,15 +38,6 @@
 
 // --- small slice helpers ------------------------------------------------
 
-static b8 wcli_decode_sha(sha1 *out, u8csc hex) {
-    if (u8csLen(hex) != 40) return NO;
-    a_dup(u8c, hex_dup, hex);
-    u8s bin = {out->data, out->data + 20};
-    if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
-    if (bin[0] != out->data + 20) return NO;
-    return YES;
-}
-
 static void wcli_sha_to_hex(u8 *out40, sha1 const *s) {
     u8s hs = {out40, out40 + 40};
     u8cs bs = {s->data, s->data + 20};
@@ -401,18 +392,12 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
 
         //  Trim trailing '\n'.
         if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
-        if (u8csLen(line) < 41) continue;          // not "<sha> <name>"
 
-        u8csc hex = {line[0], line[0] + 40};
-        sha1 sha = {};
-        if (!wcli_decode_sha(&sha, hex)) continue;
-        if (line[0][40] != ' ') continue;
-
-        u8cs name = {line[0] + 41, line[1]};
-        //  Strip everything from the first NUL (capability list).
-        u8c *nul = name[0];
-        while (nul < name[1] && *nul != 0) nul++;
-        name[1] = nul;
+        wire_evt ev = {};
+        if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+        if (ev.kind != WIRE_REF) continue;
+        sha1 sha = ev.sha;
+        u8cs name = {ev.name[0], ev.name[1]};
         //  Strip "^{}" peeled-tag suffix (we want the tag's own sha here).
         if (u8csLen(name) >= 3 &&
             name[1][-1] == '}' && name[1][-2] == '{' && name[1][-3] == '^')
@@ -684,17 +669,12 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
             if (d != OK) goto fa_close;
 
             if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
-            if (u8csLen(line) < 41) continue;
 
-            u8csc hex = {line[0], line[0] + 40};
-            sha1 sha = {};
-            if (!wcli_decode_sha(&sha, hex)) continue;
-            if (line[0][40] != ' ') continue;
-
-            u8cs name = {line[0] + 41, line[1]};
-            u8c *nul = name[0];
-            while (nul < name[1] && *nul != 0) nul++;
-            name[1] = nul;
+            wire_evt ev = {};
+            if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+            if (ev.kind != WIRE_REF) continue;
+            sha1 sha = ev.sha;
+            u8cs name = {ev.name[0], ev.name[1]};
 
             if (u8csEq(name, GIT_HEAD_LIT)) continue;
             if (u8csLen(name) >= 3 && name[1][-1] == '}' &&
@@ -1211,15 +1191,11 @@ static ok64 wpush_peer_tip(int rfd, u8b advbuf, u8csc branch_refname,
         if (d == PKTDELIM) continue;
         if (d != OK) return WIRECLFL;
         if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
-        if (u8csLen(line) < 41) continue;
-        u8csc hex = {line[0], line[0] + 40};
-        sha1 sha = {};
-        if (!wcli_decode_sha(&sha, hex)) continue;
-        if (line[0][40] != ' ') continue;
-        u8cs name = {line[0] + 41, line[1]};
-        u8c *nul = name[0];
-        while (nul < name[1] && *nul != 0) nul++;
-        name[1] = nul;
+        wire_evt ev = {};
+        if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+        if (ev.kind != WIRE_REF) continue;
+        sha1 sha = ev.sha;
+        u8cs name = {ev.name[0], ev.name[1]};
         if (u8csLen(name) == u8csLen(branch_refname) &&
             memcmp(name[0], branch_refname[0],
                    (size_t)u8csLen(branch_refname)) == 0) {

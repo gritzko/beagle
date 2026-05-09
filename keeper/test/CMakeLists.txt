@@ -105,6 +105,12 @@ target_compile_options(WIREtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WIREtest keeplib gitcompat dog abc-core)
 add_test(NAME WIREtest COMMAND WIREtest)
 
+add_executable(WIRERLtest WIRE_RL.c)
+target_link_options(WIRERLtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WIRERLtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WIRERLtest keeplib gitcompat dog abc-core)
+add_test(NAME WIRERLtest COMMAND WIRERLtest)
+
 #  upload-pack CLI verb (WIRE.md Phase 5).  The test spawns the built
 #  `keeper` binary, so it depends on it being present in DOG_BIN_DIR.
 add_executable(UPLOADPACKtest UPLOADPACK.c)

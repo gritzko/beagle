@@ -16,6 +16,7 @@
 #include "keeper/GIT.h"
 #include "keeper/PKT.h"
 #include "keeper/REFS.h"
+#include "keeper/WIRE.h"
 
 // --- capability tokens (recognised on the first ref-update line) ---
 
@@ -26,16 +27,6 @@ static u8c const RECV_CAP_QUIET_S[]         = "quiet";
 static u8c const RECV_CAP_AGENT_PFX[]       = "agent=";
 
 // --- small helpers ---
-
-//  Decode a 40-hex slice into `out`.  Returns NO on shape/format error.
-static b8 recv_decode_sha(sha1 *out, u8csc hex) {
-    if (u8csLen(hex) != 40) return NO;
-    a_dup(u8c, hex_dup, hex);
-    u8s bin = {out->data, out->data + 20};
-    if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
-    if (bin[0] != out->data + 20) return NO;
-    return YES;
-}
 
 //  Hex-encode a sha1 into out40 (must hold 40 bytes).
 static void recv_sha_to_hex(u8 *out40, sha1 const *s) {
@@ -144,36 +135,23 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
         //  Trim trailing '\n' if present.
         if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
 
-        //  Layout: "<old-40hex> SP <new-40hex> SP <refname>[NUL <caps>]"
-        if (u8csLen(line) < 40 + 1 + 40 + 1 + 1) {
+        wire_evt ev = {};
+        if (WIREClassify(line, WIRE_RECEIVE, &ev) != OK ||
+            ev.kind != WIRE_UPDATE) {
             rc = RECVBADREQ;
             break;
         }
-        u8c const *p = line[0];
-        u8c const *e = line[1];
-
-        u8csc old_hex = {p, p + 40};
-        if (p[40] != ' ') { rc = RECVBADREQ; break; }
-        u8csc new_hex = {p + 41, p + 81};
-        if (p + 81 >= e || p[81] != ' ') { rc = RECVBADREQ; break; }
-        u8c const *name_start = p + 82;
-        u8c const *name_end   = name_start;
-        while (name_end < e && *name_end != 0) name_end++;
-        if (name_end == name_start) { rc = RECVBADREQ; break; }
-        u8csc refname = {name_start, name_end};
 
         if (req->count >= RECV_MAX_UPDATES) {
             rc = RECVBADREQ;
             break;
         }
         recv_update *u = &req->upds[req->count];
-        if (!recv_decode_sha(&u->old_sha, old_hex) ||
-            !recv_decode_sha(&u->new_sha, new_hex)) {
-            rc = RECVBADREQ;
-            break;
-        }
+        u->old_sha = ev.old_sha;
+        u->new_sha = ev.sha;
 
         //  Copy refname into the request arena so the slice outlives `buf`.
+        u8csc refname = {ev.name[0], ev.name[1]};
         if (u8bIdleLen(req->arena) < (size_t)u8csLen(refname)) {
             rc = RECVFAIL;
             break;
@@ -184,10 +162,8 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
         u->refname[1] = u8bIdleHead(req->arena);
 
         //  Capabilities ride after a NUL on the first line only.
-        if (req->count == 0 && name_end < e && *name_end == 0) {
-            u8csc tail = {name_end + 1, e};
-            recv_parse_caps(&req->caps, tail);
-        }
+        if (req->count == 0 && !u8csEmpty(ev.caps))
+            recv_parse_caps(&req->caps, (u8csc){ev.caps[0], ev.caps[1]});
 
         req->count++;
     }
