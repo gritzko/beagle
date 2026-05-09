@@ -188,7 +188,7 @@ static u32 BEReadDogs(char out[][64], u32 maxn) {
         while (nl < data[1] && *nl != '\n') nl++;
         size_t len = (size_t)(nl - data[0]);
         if (len > 0 && data[0][0] != '#') {
-            if (len >= 64) len = 63;
+            if (len >= sizeof(out[count])) len = sizeof(out[count]) - 1;
             memcpy(out[count], data[0], len);
             out[count][len] = 0;
             count++;
@@ -333,8 +333,10 @@ static ok64 BEGetWorktree(uri *u) {
     URILexer(&prim_uri);
     if (u8csLen(prim_uri.fragment) != 40) done;
     wt_uri_text[0] = '?';
-    memcpy(wt_uri_text + 1, prim_uri.fragment[0], 40);
-    wt_uri_text[41] = 0;
+    size_t flen = u8csLen(prim_uri.fragment);
+    if (flen > sizeof(wt_uri_text) - 2) flen = sizeof(wt_uri_text) - 2;
+    memcpy(wt_uri_text + 1, prim_uri.fragment[0], flen);
+    wt_uri_text[flen + 1] = 0;
 
     u->data[0]      = wt_uri_text;
     u->data[1]      = wt_uri_text + 41;
