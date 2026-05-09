@@ -172,6 +172,52 @@ ok64 PACKtest7() {
     done;
 }
 
+// ---- Test 8: malformed object header — varint with too many
+// continuation bytes.  Must be rejected, not silently accepted with a
+// shifted-off `size`. Regression test for the unbounded-shift UB.
+ok64 PACKtest8() {
+    sane(1);
+    // 12 bytes, all with continuation bit set.  Type=0, size body
+    // would shift past 64 bits.
+    u8 raw[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+                0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+    u8cs from = {raw, raw + sizeof(raw)};
+    pack_obj obj = {};
+
+    ok64 o = PACKDrainObjHdr(from, &obj);
+    want(o == PACKBADFMT);
+    done;
+}
+
+// ---- Test 9: OFS_DELTA varint that would overflow u64 if accepted.
+// Each continuation byte multiplies *ofs by 128 and adds; 12 bytes of
+// 0xff easily overflows.
+ok64 PACKtest9() {
+    sane(1);
+    // type=6 (ofs_delta), size=1 + huge offset varint.
+    u8 raw[14];
+    raw[0] = 0x61;
+    for (int i = 1; i < 14; i++) raw[i] = 0xff;
+    u8cs from = {raw, raw + sizeof(raw)};
+    pack_obj obj = {};
+
+    ok64 o = PACKDrainObjHdr(from, &obj);
+    want(o == PACKBADFMT);
+    done;
+}
+
+// ---- Test 10: object size varint truncated mid-continuation.
+ok64 PACKtest10() {
+    sane(1);
+    u8 raw[] = {0x80};  // type=0, low4=0, continuation set, then EOF.
+    u8cs from = {raw, raw + sizeof(raw)};
+    pack_obj obj = {};
+
+    ok64 o = PACKDrainObjHdr(from, &obj);
+    want(o != OK);  // NODATA is fine, anything non-OK
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(PACKtest1);
@@ -181,6 +227,9 @@ ok64 maintest() {
     call(PACKtest5);
     call(PACKtest6);
     call(PACKtest7);
+    call(PACKtest8);
+    call(PACKtest9);
+    call(PACKtest10);
     done;
 }
 

@@ -6,19 +6,19 @@
 
 // Decode a size varint (7-bit continuation, used for base/result sizes)
 static ok64 DELTDrainSize(u8cs from, u64 *out) {
+    sane(out);
     u64 val = 0;
     u32 shift = 0;
-    u8c *p = from[0];
     for (;;) {
-        if (p >= from[1]) return DELTBADFMT;
-        u8 c = *p++;
+        u8 c = 0;
+        call(u8sDrain8, from, &c);
+        test(shift < 64, DELTBADFMT);
         val |= (u64)(c & 0x7f) << shift;
-        shift += 7;
         if (!(c & 0x80)) break;
+        shift += 7;
     }
-    from[0] = (u8p)p;
     *out = val;
-    return OK;
+    done;
 }
 
 ok64 DELTApply(u8cs delta, u8cs base, u8g out) {
@@ -29,45 +29,49 @@ ok64 DELTApply(u8cs delta, u8cs base, u8g out) {
     call(DELTDrainSize, delta, &base_sz);
     call(DELTDrainSize, delta, &result_sz);
 
-    if ((u64)u8gRestLen(out) < result_sz) return NOROOM;
+    test((u64)u8gRestLen(out) >= result_sz, NOROOM);
+    u64 written = 0;
 
-    u8p wp = out[1];
-    u8p wend = out[1] + result_sz;
-
-    while (delta[0] < delta[1]) {
-        u8 cmd = *delta[0]++;
+    while (!u8csEmpty(delta)) {
+        u8 cmd = 0;
+        call(u8sDrain8, delta, &cmd);
 
         if (cmd & 0x80) {
             // copy from base
             u64 off = 0, sz = 0;
-            if (cmd & 0x01) { off |= (u64)(*delta[0]++); }
-            if (cmd & 0x02) { off |= (u64)(*delta[0]++) << 8; }
-            if (cmd & 0x04) { off |= (u64)(*delta[0]++) << 16; }
-            if (cmd & 0x08) { off |= (u64)(*delta[0]++) << 24; }
-            if (cmd & 0x10) { sz |= (u64)(*delta[0]++); }
-            if (cmd & 0x20) { sz |= (u64)(*delta[0]++) << 8; }
-            if (cmd & 0x40) { sz |= (u64)(*delta[0]++) << 16; }
+            u8 b = 0;
+            if (cmd & 0x01) { call(u8sDrain8, delta, &b); off |= (u64)b; }
+            if (cmd & 0x02) { call(u8sDrain8, delta, &b); off |= (u64)b << 8; }
+            if (cmd & 0x04) { call(u8sDrain8, delta, &b); off |= (u64)b << 16; }
+            if (cmd & 0x08) { call(u8sDrain8, delta, &b); off |= (u64)b << 24; }
+            if (cmd & 0x10) { call(u8sDrain8, delta, &b); sz |= (u64)b; }
+            if (cmd & 0x20) { call(u8sDrain8, delta, &b); sz |= (u64)b << 8; }
+            if (cmd & 0x40) { call(u8sDrain8, delta, &b); sz |= (u64)b << 16; }
             if (sz == 0) sz = 0x10000;
 
-            if (off + sz > (u64)$size(base)) return DELTBADFMT;
-            if (wp + sz > wend) return DELTBADFMT;
-            memcpy(wp, base[0] + off, sz);
-            wp += sz;
+            test(off <= (u64)$size(base), DELTBADFMT);
+            test(sz <= (u64)$size(base) - off, DELTBADFMT);
+            test(sz <= result_sz - written, DELTBADFMT);
+
+            a_rest(u8c, src, base, off);
+            a_head(u8c, src_h, src, sz);
+            call(u8gFeed, out, src_h);
+            written += sz;
         } else if (cmd > 0) {
             // insert literal
             u64 n = cmd;
-            if (delta[0] + n > delta[1]) return DELTBADFMT;
-            if (wp + n > wend) return DELTBADFMT;
-            memcpy(wp, delta[0], n);
-            delta[0] += n;
-            wp += n;
+            test(n <= (u64)$size(delta), DELTBADFMT);
+            test(n <= result_sz - written, DELTBADFMT);
+            a_head(u8c, lit, delta, n);
+            call(u8gFeed, out, lit);
+            u8csUsed(delta, n);
+            written += n;
         } else {
             return DELTBADFMT;  // cmd=0 is reserved
         }
     }
 
-    if (wp != wend) return DELTBADFMT;
-    out[1] = wp;
+    test(written == result_sz, DELTBADFMT);
     done;
 }
 

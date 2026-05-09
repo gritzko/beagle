@@ -191,11 +191,80 @@ ok64 DELTlongrun() {
     done;
 }
 
+//  Malformed-delta cases: each must reject without OOB read or UB.
+//  Regression tests for varint shift overflow, truncated copy
+//  instructions, and oversized literals.
+typedef struct {
+    const char *name;
+    const u8 *delta;
+    u64 delta_len;
+    const char *base;
+} bad_case;
+
+static ok64 bad_apply(bad_case const *c) {
+    sane(c);
+    u8cs delta = {(u8cp)c->delta, (u8cp)c->delta + c->delta_len};
+    u8cs base  = {(u8cp)c->base,  (u8cp)c->base  + strlen(c->base)};
+
+    a_pad(u8, out_buf, 1024);
+    u8g og = {u8bIdleHead(out_buf), u8bIdleHead(out_buf), u8bTerm(out_buf)};
+    a_dup(u8c, dcs, delta);
+    a_dup(u8c, bcs, base);
+
+    ok64 rv = DELTApply(dcs, bcs, og);
+    if (rv == OK) {
+        fprintf(stderr, "DELT bad %s: accepted malformed input\n", c->name);
+        fail(TESTFAIL);
+    }
+    done;
+}
+
+ok64 DELTbadcases() {
+    sane(1);
+
+    //  Varint with too many continuation bytes — exercises the
+    //  shift-overflow guard in DELTDrainSize.
+    static const u8 D_oversize_varint[] = {
+        0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+    };
+
+    //  base_sz=10, result_sz=4, then cmd=0x91 = copy with off-byte and
+    //  size-byte, but only one trailing byte present.  Used to read
+    //  past delta[1] before the bounds fix.
+    static const u8 D_truncated_copy[] = { 0x0a, 0x04, 0x91, 0x00 };
+
+    //  base_sz=0, result_sz=10, cmd=0x05 (insert 5 literal bytes) but
+    //  only 2 follow — must reject, not over-read.
+    static const u8 D_short_insert[] = { 0x00, 0x0a, 0x05, 'a', 'b' };
+
+    //  base_sz=4, result_sz=10, cmd=0x91 with off=0, sz=20 — copy past
+    //  end of base.
+    static const u8 D_copy_past_base[] = { 0x04, 0x0a, 0x91, 0x00, 0x14 };
+
+    //  cmd=0 reserved.
+    static const u8 D_reserved_zero[] = { 0x00, 0x01, 0x00 };
+
+    bad_case const cases[] = {
+        {"oversize-varint",  D_oversize_varint, sizeof(D_oversize_varint), ""},
+        {"truncated-copy",   D_truncated_copy,  sizeof(D_truncated_copy),  "0123456789"},
+        {"short-insert",     D_short_insert,    sizeof(D_short_insert),    ""},
+        {"copy-past-base",   D_copy_past_base,  sizeof(D_copy_past_base),  "abcd"},
+        {"reserved-zero",    D_reserved_zero,   sizeof(D_reserved_zero),   "x"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        call(bad_apply, &cases[i]);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(DELTroundtrip);
     call(DELTbackext);
     call(DELTlongrun);
+    call(DELTbadcases);
     done;
 }
 

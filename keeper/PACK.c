@@ -39,38 +39,38 @@ ok64 PACKDrainHdr(u8cs from, pack_hdr *hdr) {
 // Decode git varint: type in bits 6..4 of first byte, size in
 // bit 3..0 of first byte then 7-bit continuation.
 static ok64 PACKDrainVarint(u8cs from, u8 *type, u64 *size) {
+    sane(type && size);
     u8 c = 0;
-    ok64 o = u8sDrain8(from, &c);
-    if (o != OK) return NODATA;
+    call(u8sDrain8, from, &c);
 
     *type = (c >> 4) & 0x7;
     *size = c & 0x0f;
     u32 shift = 4;
 
     while (c & 0x80) {
-        o = u8sDrain8(from, &c);
-        if (o != OK) return NODATA;
+        test(shift < 64, PACKBADFMT);
+        call(u8sDrain8, from, &c);
         *size |= (u64)(c & 0x7f) << shift;
         shift += 7;
     }
 
-    return OK;
+    done;
 }
 
 // Decode OFS_DELTA negative offset varint
 static ok64 PACKDrainOfs(u8cs from, u64 *ofs) {
+    sane(ofs);
     u8 c = 0;
-    ok64 o = u8sDrain8(from, &c);
-    if (o != OK) return NODATA;
+    call(u8sDrain8, from, &c);
     *ofs = c & 0x7f;
 
     while (c & 0x80) {
-        o = u8sDrain8(from, &c);
-        if (o != OK) return NODATA;
+        test(*ofs < (UINT64_MAX >> 7), PACKBADFMT);
+        call(u8sDrain8, from, &c);
         *ofs = ((*ofs + 1) << 7) | (c & 0x7f);
     }
 
-    return OK;
+    done;
 }
 
 ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj) {
