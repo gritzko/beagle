@@ -7,6 +7,27 @@ set(CMAKE_C_STANDARD 23)
 # GCC -O3 strict aliasing breaks overlapping slice access patterns.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
 
+# Slim Release builds: thin-LTO + per-symbol section GC + ICF + strip.
+# Cuts ~20% off live binaries (more on dispatchers like `be`).
+# Only applied to Release; Debug/RelWithDebInfo/Fuzz are unaffected.
+# Requires lld for ICF; install lld or override CMAKE_LINKER_TYPE.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT _ipo_ok)
+if(_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
+add_compile_options(
+    $<$<CONFIG:Release>:-ffunction-sections>
+    $<$<CONFIG:Release>:-fdata-sections>
+)
+add_link_options(
+    $<$<CONFIG:Release>:-fuse-ld=lld>
+    $<$<CONFIG:Release>:-Wl,--icf=safe>
+    $<$<CONFIG:Release>:-Wl,--gc-sections>
+    $<$<CONFIG:Release>:-Wl,-O2>
+    $<$<CONFIG:Release>:-Wl,-s>
+)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 include(CTest)

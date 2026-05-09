@@ -48,6 +48,19 @@ static bro *bro_state = NULL;
 // Tokens arena size — big enough for every hunk's tokens combined.
 #define BRO_TOKS_SIZE (1UL << 22)   // 16M u32 entries = 64MB
 
+// Per-walk scratch: holds bro_lineinfo[BRO_LINEINFO_CAP] (~192K).
+// Process-wide because the line-index API is callable without a bro
+// instance (e.g. WRAP tests).
+#define BRO_SCRATCH_SIZE (1UL << 18)   // 256K
+static Bu8 bro_scratch_buf;
+
+ok64 BROScratchInit(void) {
+    sane(1);
+    if (bro_scratch_buf[0]) done;
+    call(u8bMap, bro_scratch_buf, BRO_SCRATCH_SIZE);
+    done;
+}
+
 // --- DOG 4-fn: Open / Close / Update ---
 
 ok64 BROOpen(bro *b, home *h, b8 rw) {
@@ -60,6 +73,7 @@ ok64 BROOpen(bro *b, home *h, b8 rw) {
     b->worker_pid = -1;
     bro_state = b;
     call(u8bMap, b->arena, BRO_ARENA_SIZE);
+    call(BROScratchInit);
     call(hunkbMap, b->hunks, BRO_MAX_HUNKS);
     call(u32bMap,  b->toks,  BRO_TOKS_SIZE);
     call(u8bbMap,  b->maps,  BRO_MAX_MAPS);
@@ -79,6 +93,7 @@ ok64 BROClose(bro *b) {
         if (b->toks[0])  u32bUnMap(b->toks);
         if (b->hunks[0]) hunkbUnMap(b->hunks);
         if (b->arena[0]) u8bUnMap(b->arena);
+        // bro_scratch_buf is process-wide; leak at exit.
         bro_state = NULL;
     }
     zerop(b);
@@ -453,6 +468,9 @@ static u8 bro_kind_pass_for_in(bro_linekind k) {
 
 #define BRO_LINEINFO_CAP 8192  // generous; hunks are typically tiny
 
+_Static_assert(BRO_SCRATCH_SIZE >= BRO_LINEINFO_CAP * sizeof(bro_lineinfo),
+               "BRO_SCRATCH_SIZE too small for bro_lineinfo[BRO_LINEINFO_CAP]");
+
 // Append soft-wrap rows for one logical line span in `pass`, between
 // `lo` (inclusive) and `end_nl` (offset of the visible '\n' that
 // terminates the row, or text length for trailing partials).
@@ -491,7 +509,7 @@ static u32 bro_count_rows(hunkc const *hk, u32 lo, u32 end_nl,
 typedef u32 (*bro_emit_fn)(void *ctx, u32 lo, u32 end_nl, u8 pass);
 
 static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
-    static bro_lineinfo info[BRO_LINEINFO_CAP];
+    bro_lineinfo *info = (bro_lineinfo*)u8bIdleHead(bro_scratch_buf);
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
     u32 total = 0;
     u32 i = 0;
@@ -578,7 +596,7 @@ static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
     // has both in and rm bytes).  Used by the renderer to distinguish
     // "this token is on a modified line" from a token in a pure-add
     // or pure-delete line, for any future styling that wants it.
-    static bro_lineinfo info[BRO_LINEINFO_CAP];
+    bro_lineinfo *info = (bro_lineinfo*)u8bIdleHead(bro_scratch_buf);
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
     int ntoks = (int)$len(hk->toks);
     if (ntoks > 0) {

@@ -182,6 +182,7 @@ ok64 WRAPtest_cols_one() {
 
 ok64 WRAPtest() {
     sane(1);
+    call(BROScratchInit);
     call(WRAPtest_short_no_title);
     call(WRAPtest_exact_cols);
     call(WRAPtest_wrap_ascii);

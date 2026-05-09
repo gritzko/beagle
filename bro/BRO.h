@@ -85,6 +85,11 @@ ok64 BROArenaInit(void);
 void BROArenaCleanup(void);
 u8p  BROArenaWrite(void const *data, size_t len);
 
+// Map the process-wide scratch buffer used by BROCountLines /
+// BROAppendLines. Idempotent. BROOpen calls this; tests that exercise
+// the line-index APIs without a bro instance must call it explicitly.
+ok64 BROScratchInit(void);
+
 // Record a mmap'd file for cleanup at BROClose time.
 void BRODefer(u8bp mapped);
 
