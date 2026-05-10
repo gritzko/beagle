@@ -25,11 +25,11 @@ jobs:
     - name: Strip
       run: strip build/bin/be build/bin/spot
     - name: Package
-      run: tar czf librdx-linux-x86_64.tar.gz -C build/bin be spot
+      run: tar czf beagle-linux-x86_64.tar.gz -C build/bin be spot
     - uses: actions/upload-artifact@v4
       with:
-        name: librdx-linux-x86_64
-        path: librdx-linux-x86_64.tar.gz
+        name: beagle-linux-x86_64
+        path: beagle-linux-x86_64.tar.gz
 
   macos:
     runs-on: macos-latest
@@ -48,11 +48,11 @@ jobs:
     - name: Strip
       run: strip build/bin/spot
     - name: Package
-      run: tar czf librdx-macos-arm64.tar.gz -C build/bin spot
+      run: tar czf beagle-macos-arm64.tar.gz -C build/bin spot
     - uses: actions/upload-artifact@v4
       with:
-        name: librdx-macos-arm64
-        path: librdx-macos-arm64.tar.gz
+        name: beagle-macos-arm64
+        path: beagle-macos-arm64.tar.gz
 
   release:
     needs: [linux, macos]
@@ -64,11 +64,11 @@ jobs:
       with:
         submodules: recursive
     - name: Source tarball
-      run: git archive --format=tar.gz --prefix=librdx/ HEAD > librdx-src.tar.gz
+      run: git archive --format=tar.gz --prefix=beagle/ HEAD > beagle-src.tar.gz
     - uses: actions/download-artifact@v4
     - uses: softprops/action-gh-release@v2
       with:
         files: |
-          librdx-src.tar.gz
-          librdx-linux-x86_64/librdx-linux-x86_64.tar.gz
-          librdx-macos-arm64/librdx-macos-arm64.tar.gz
+          beagle-src.tar.gz
+          beagle-linux-x86_64/beagle-linux-x86_64.tar.gz
+          beagle-macos-arm64/beagle-macos-arm64.tar.gz
