@@ -52,8 +52,7 @@
 // ---------------------------------------------------------------------
 
 typedef struct {
-    u8c *path;       //  borrowed: lives in collector arena
-    u32  path_len;
+    u8cs path;       //  borrowed: lives in collector arena
     sha1 sha;
 } pid_leaf;
 
@@ -61,9 +60,7 @@ typedef struct {
     pid_leaf *leaves;
     u32       n;
     u32       cap;
-    u8       *arena;     //  path bytes
-    u32       arena_len;
-    u32       arena_cap;
+    Bu8       arena;     //  path bytes; borrowed by `leaves[i].path`
     ok64      err;
 } pid_collector;
 
@@ -79,17 +76,14 @@ static ok64 pid_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     }
     if (c->n >= c->cap) { c->err = GRAFFAIL; return WALKSTOP; }
 
-    u32 plen = (u32)$len(path);
-    if (c->arena_len + plen > c->arena_cap) {
-        c->err = GRAFFAIL; return WALKSTOP;
-    }
-    u8 *dst = c->arena + c->arena_len;
-    if (plen > 0) memcpy(dst, path[0], plen);
-    c->arena_len += plen;
-
     pid_leaf *l = &c->leaves[c->n++];
-    l->path = dst;
-    l->path_len = plen;
+    if (u8bFeed(c->arena, path) != OK) {
+        c->n--;
+        c->err = GRAFFAIL;
+        return WALKSTOP;
+    }
+    u8csMv(l->path, u8bDataC(c->arena));
+    (void)u8csUsedAll(u8bDataC(c->arena));
     sha1Mv(&l->sha, (sha1cp)esha);
     return OK;
 }
@@ -97,11 +91,12 @@ static ok64 pid_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
 static int pid_leaf_cmp(void const *a_, void const *b_) {
     pid_leaf const *a = (pid_leaf const *)a_;
     pid_leaf const *b = (pid_leaf const *)b_;
-    u32 ml = a->path_len < b->path_len ? a->path_len : b->path_len;
-    int c = (ml == 0) ? 0 : memcmp(a->path, b->path, ml);
+    size_t alen = u8csLen(a->path), blen = u8csLen(b->path);
+    size_t ml = alen < blen ? alen : blen;
+    int c = (ml == 0) ? 0 : memcmp(a->path[0], b->path[0], ml);
     if (c != 0) return c;
-    if (a->path_len < b->path_len) return -1;
-    if (a->path_len > b->path_len) return 1;
+    if (alen < blen) return -1;
+    if (alen > blen) return 1;
     return 0;
 }
 
@@ -154,38 +149,37 @@ static u64 pid_digest(pid_collector const *parent, pid_collector const *child) {
         if (pl == NULL) c = 1;
         else if (cl == NULL) c = -1;
         else {
-            u32 ml = pl->path_len < cl->path_len ? pl->path_len : cl->path_len;
-            c = (ml == 0) ? 0 : memcmp(pl->path, cl->path, ml);
+            size_t plen = u8csLen(pl->path), clen = u8csLen(cl->path);
+            size_t ml = plen < clen ? plen : clen;
+            c = (ml == 0) ? 0 : memcmp(pl->path[0], cl->path[0], ml);
             if (c == 0) {
-                if (pl->path_len < cl->path_len) c = -1;
-                else if (pl->path_len > cl->path_len) c = 1;
+                if (plen < clen) c = -1;
+                else if (plen > clen) c = 1;
             }
         }
 
-        u8c *path = NULL;
-        u32 plen = 0;
+        u8cs ps = {};
         sha1 const *psha = NULL;
         sha1 const *csha = NULL;
         sha1 zero = {};
         if (c == 0) {
-            path = pl->path; plen = pl->path_len;
+            u8csMv(ps, pl->path);
             psha = &pl->sha; csha = &cl->sha;
             i++; j++;
             if (sha1Eq(psha, csha)) continue;
         } else if (c < 0) {
             //  parent has the path, child doesn't — deletion.
-            path = pl->path; plen = pl->path_len;
+            u8csMv(ps, pl->path);
             psha = &pl->sha; csha = &zero;
             i++;
         } else {
             //  child has the path, parent doesn't — addition.
-            path = cl->path; plen = cl->path_len;
+            u8csMv(ps, cl->path);
             psha = &zero; csha = &cl->sha;
             j++;
         }
         //  Fold (path | psha | csha) into the digest.  RAPHashSeed
         //  carries h forward without any allocation.
-        u8cs ps = {path, path + plen};
         h = RAPHashSeed(ps, h);
         a_rawc(ss1, *psha);
         h = RAPHashSeed(ss1, h);
@@ -224,25 +218,24 @@ u64 GRAFPatchId(u8csc commit_body) {
     //  Allocate parallel collectors.  Single arena per side.
     pid_collector pc = {}, cc = {};
     pc.cap = cc.cap = REBASE_TREE_ENTRIES;
-    pc.arena_cap = cc.arena_cap = REBASE_TREE_ENTRIES * 64;
     pc.leaves = calloc(pc.cap, sizeof(pid_leaf));
     cc.leaves = calloc(cc.cap, sizeof(pid_leaf));
-    pc.arena  = (u8 *)calloc(pc.arena_cap, 1);
-    cc.arena  = (u8 *)calloc(cc.arena_cap, 1);
-    if (!pc.leaves || !cc.leaves || !pc.arena || !cc.arena) goto fail;
+    if (u8bAllocate(pc.arena, REBASE_TREE_ENTRIES * 64) != OK) goto fail;
+    if (u8bAllocate(cc.arena, REBASE_TREE_ENTRIES * 64) != OK) goto fail;
+    if (!pc.leaves || !cc.leaves) goto fail;
 
     if (pid_collect(&tree_p, &pc) != OK) goto fail;
     if (pid_collect(&tree_c, &cc) != OK) goto fail;
 
     u64 h = pid_digest(&pc, &cc);
     free(pc.leaves); free(cc.leaves);
-    free(pc.arena);  free(cc.arena);
+    u8bFree(pc.arena); u8bFree(cc.arena);
     return h;
 fail:
     if (pc.leaves) free(pc.leaves);
     if (cc.leaves) free(cc.leaves);
-    if (pc.arena)  free(pc.arena);
-    if (cc.arena)  free(cc.arena);
+    if (pc.arena[0]) u8bFree(pc.arena);
+    if (cc.arena[0]) u8bFree(cc.arena);
     return 0;
 }
 

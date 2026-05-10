@@ -88,12 +88,12 @@ ron60 REFSVerbPostFail(void) {
 //  `<from-uri>#<sha>`.  `from` is lexed to pick up scheme/auth/path/
 //  query; `to` lands in the fragment as bare 40-hex (or empty for a
 //  deletion row).  Callers MUST pass canonical `from` / `to` — this
-//  is a storage primitive, not a canonicaliser.
+//  is a storage primitive, not a canonicaliser.  `frag_buf` owns the
+//  bytes that `u_out->fragment` will point into.
 static ok64 refs_uri_for_row(urip u_out, u8csc from, u8csc to,
-                             u8 *frag_bytes, size_t frag_cap,
-                             size_t *frag_len_out) {
-    sane(u_out && from && to && frag_bytes);
-    memset(u_out, 0, sizeof(*u_out));
+                             u8b frag_buf) {
+    sane(u_out && from && to);
+    zerop(u_out);
 
     //  Lex `from` into components.  URILexer consumes `u.data`; re-seed
     //  afterwards so URIutf8Feed can walk the components.
@@ -103,16 +103,14 @@ static ok64 refs_uri_for_row(urip u_out, u8csc from, u8csc to,
     u_out->data[0] = from[0];
     u_out->data[1] = from[1];
 
-    //  Copy `to` verbatim into caller-owned fragment storage.  Empty
-    //  `to` means a deletion row (`?branch#`) — represent as a
+    //  Feed `to` verbatim into the caller-owned fragment buffer.
+    //  Empty `to` means a deletion row (`?branch#`) — represent as a
     //  present-but-empty fragment slice so URIutf8Feed emits the
-    //  bare `#`.
-    size_t need = (size_t)$len(to);
-    if (need > frag_cap) fail(REFSBAD);
-    if (need > 0) memcpy(frag_bytes, to[0], need);
-    u_out->fragment[0] = frag_bytes;
-    u_out->fragment[1] = frag_bytes + need;
-    *frag_len_out = need;
+    //  bare `#`.  Snapshot the freshly-fed range as the fragment.
+    u8c *frag_start = u8bIdleHead(frag_buf);
+    if (u8bFeed(frag_buf, to) != OK) fail(REFSBAD);
+    u_out->fragment[0] = frag_start;
+    u_out->fragment[1] = u8bIdleHead(frag_buf);
     done;
 }
 
@@ -141,9 +139,7 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
 
     a_pad(u8, fragb, 256);
     uri u = {};
-    size_t fl = 0;
-    ok64 bo = refs_uri_for_row(&u, from_uri, to_uri,
-                               u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
+    ok64 bo = refs_uri_for_row(&u, from_uri, to_uri, fragb);
     if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
 
     //  Idempotency: skip when REFSResolve(key) already returns the
@@ -225,9 +221,7 @@ ok64 REFSSyncRecord(u8csc dir, refcp arr, u32 nrefs) {
         u8csc to   = {arr[i].val[0], arr[i].val[1]};
         a_pad(u8, fragb, 256);
         uri u = {};
-        size_t fl = 0;
-        ok64 bo = refs_uri_for_row(&u, from, to,
-                                   u8bIdleHead(fragb), u8bIdleLen(fragb), &fl);
+        ok64 bo = refs_uri_for_row(&u, from, to, fragb);
         if (bo != OK) { ULOGClose(data, idx, YES); return bo; }
         ulogrec rec = {.ts = ts++, .verb = verb_get, .uri = u};
         ok64 ao = ULOGAppendAt(data, idx, &rec);

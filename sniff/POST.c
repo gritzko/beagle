@@ -1232,8 +1232,7 @@ static ok64 post_resolve_branch_tip(sha1 *out, u8cs reporoot, u8cs branch) {
 
 //  Cascade record: one descendant branch awaiting its REFS write.
 typedef struct {
-    u8  branch_buf[256];     // canonical absolute path
-    u32 branch_len;
+    u8cs branch;             // canonical absolute path; lives in cascade_ctx.arena
     sha1 old_tip;
     sha1 new_tip;
 } cascade_rec;
@@ -1251,6 +1250,7 @@ typedef struct {
     //  promote uses this so cur is not double-rebased — auto-sync
     //  handles cur directly).  NULL/empty disables the filter.
     u8cs         skip;
+    Bu8          arena;     // backs each rec's branch slice
 } cascade_ctx;
 
 //  Stage one descendant: compute its old fork point relative to the
@@ -1281,10 +1281,12 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
             //  Child is already on new spine — point its REFS at the
             //  matching commit (child_tip itself).  No rebase needed.
             cascade_rec *r = &cc->recs[cc->n++];
-            size_t bl = u8csLen(branch);
-            if (bl > sizeof(r->branch_buf)) return SNIFFFAIL;
-            memcpy(r->branch_buf, branch[0], bl);
-            r->branch_len = (u32)bl;
+            if (u8bFeed(cc->arena, branch) != OK) {
+                cc->n--;
+                return SNIFFFAIL;
+            }
+            u8csMv(r->branch, u8bDataC(cc->arena));
+            (void)u8csUsedAll(u8bDataC(cc->arena));
             r->old_tip = child_tip;
             r->new_tip = child_tip;
             return OK;
@@ -1297,10 +1299,12 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (rb != OK) return rb;
 
     cascade_rec *r = &cc->recs[cc->n++];
-    size_t bl = u8csLen(branch);
-    if (bl > sizeof(r->branch_buf)) return SNIFFFAIL;
-    memcpy(r->branch_buf, branch[0], bl);
-    r->branch_len = (u32)bl;
+    if (u8bFeed(cc->arena, branch) != OK) {
+        cc->n--;
+        return SNIFFFAIL;
+    }
+    u8csMv(r->branch, u8bDataC(cc->arena));
+    (void)u8csUsedAll(u8bDataC(cc->arena));
     r->old_tip = child_tip;
     r->new_tip = rctx.have_last_commit ? rctx.last_commit_sha
                                        : *parent_new_tip;
@@ -1325,35 +1329,39 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
     if (!dp) return OK;     //  no shard yet — no descendants
 
     //  Snapshot child names to avoid concurrent-readdir surprises.
-    char names[CASCADE_MAX][128];
+    //  Each `names[i]` is a slice into `names_arena`.
+    u8cs names[CASCADE_MAX] = {};
+    Bu8  names_arena = {};
+    if (u8bAllocate(names_arena, CASCADE_MAX * 128) != OK) {
+        closedir(dp); return OK;
+    }
     u32 nfound = 0;
     struct dirent *e;
     while ((e = readdir(dp)) != NULL && nfound < CASCADE_MAX) {
         if (e->d_name[0] == '.') continue;     //  skip ., .., refs, .lock
         if (strcmp(e->d_name, "refs") == 0) continue;
-        size_t nl = strlen(e->d_name);
-        if (nl >= sizeof(names[0])) continue;
+        a_cstr(nm, e->d_name);
         //  Confirm it's a directory by stat'ing.
         a_path(child, $path(bdir));
-        u8cs nm = {(u8cp)e->d_name, (u8cp)e->d_name + nl};
         if (PATHu8bAdd(child, nm) != OK) continue;
         filestat fs = {};
         if (FILEStat(&fs, $path(child)) != OK) continue;
         if (fs.kind != FILE_KIND_DIR) continue;
-        memcpy(names[nfound++], e->d_name, nl + 1);
+        if (u8bFeed(names_arena, nm) != OK) continue;
+        u8csMv(names[nfound], u8bDataC(names_arena));
+        (void)u8csUsedAll(u8bDataC(names_arena));
+        nfound++;
     }
     closedir(dp);
 
     for (u32 i = 0; i < nfound; i++) {
-        size_t nl = strlen(names[i]);
         //  Build absolute child branch path: <branch>/<name>.
         a_pad(u8, child_path, 256);
         if (!u8csEmpty(branch)) {
             u8bFeed(child_path, branch);
             u8bFeed1(child_path, '/');
         }
-        u8cs nm = {(u8cp)names[i], (u8cp)names[i] + nl};
-        u8bFeed(child_path, nm);
+        u8bFeed(child_path, names[i]);
         a_dup(u8c, child_branch, u8bData(child_path));
 
         //  Capture the child's tip BEFORE the rebase via the global
@@ -1372,14 +1380,15 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         //  Stage rebase + record.
         ok64 ro = post_cascade_one(cc, child_branch,
                                    branch_old_tip, branch_new_tip);
-        if (ro != OK) return ro;
+        if (ro != OK) { u8bFree(names_arena); return ro; }
 
         //  Recurse: this child's old/new tips drive the next level.
         sha1 child_new = cc->recs[cc->n - 1].new_tip;
         ok64 rr = post_cascade_walk(cc, child_branch, &child_old,
                                     &child_new);
-        if (rr != OK) return rr;
+        if (rr != OK) { u8bFree(names_arena); return rr; }
     }
+    u8bFree(names_arena);
     return OK;
 }
 
@@ -1393,8 +1402,7 @@ static ok64 post_cascade_persist(cascade_ctx *cc) {
         cascade_rec *r = &cc->recs[i];
         a_pad(u8, keybuf, 256);
         u8bFeed1(keybuf, '?');
-        u8cs br = {r->branch_buf, r->branch_buf + r->branch_len};
-        u8bFeed(keybuf, br);
+        u8bFeed(keybuf, r->branch);
         a_dup(u8c, refkey, u8bData(keybuf));
 
         a_pad(u8, exp_hex, 40);
@@ -1410,9 +1418,9 @@ static ok64 post_cascade_persist(cascade_ctx *cc) {
                                         expected, val);
         if (cas == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: cascade REFS race on `?%.*s` — "
-                    "earlier descendants may have advanced\n",
-                    (int)r->branch_len, (char *)r->branch_buf);
+                    "sniff: post: cascade REFS race on `?" U8SFMT
+                    "` — earlier descendants may have advanced\n",
+                    u8sFmt(r->branch));
         } else if (cas != OK) {
             return cas;
         }
@@ -1859,6 +1867,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //  the (old, new) tip pair; we just hand it the target's view.
     cascade_ctx casc = {};
     if (stack_was_rewritten) {
+        call(u8bAllocate, casc.arena, CASCADE_MAX * 256);
         keep_pack p3 = {};
         call(KEEPPackOpen, k, &p3);
         p3.strict_order = NO;
@@ -1916,6 +1925,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
 
     //  --- 10. Persist any cascade descendants (best-effort). ---
     if (casc.n > 0) (void)post_cascade_persist(&casc);
+    if (casc.arena[0]) u8bFree(casc.arena);
 
     //  --- 11. Cur auto-sync (?.. and ?<absolute> when target IS cur's
     //  tree-parent).  Race story: if this CAS loses, target already
@@ -2640,6 +2650,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             post_ctx_free(&ctx);
             return po3;
         }
+        if (u8bAllocate(casc.arena, CASCADE_MAX * 256) != OK) {
+            (void)KEEPPackClose(k, &p3);
+            u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
+            return SNIFFFAIL;
+        }
         p3.strict_order = NO;
         casc.k = k;
         casc.p = &p3;
@@ -2711,6 +2727,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  AFTER cur's REFS update succeeded.  Best-effort on individual
     //  CAS races (logged inside post_cascade_persist).
     if (casc.n > 0) (void)post_cascade_persist(&casc);
+    if (casc.arena[0]) u8bFree(casc.arena);
 
     //  15. Append `post` ULOG row with stamp ts; futimens written
     //      files so they become clean under the new stamp.  Canonical

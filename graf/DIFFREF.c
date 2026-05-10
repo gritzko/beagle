@@ -28,8 +28,7 @@
 #define DIFFREF_MAX_FILES 8192
 
 typedef struct {
-    char path[DIFFREF_PATH_MAX];
-    u16  path_len;
+    u8cs path;       //  borrowed: lives in set's arena
     sha1 sha;
 } diffref_entry;
 
@@ -38,17 +37,21 @@ typedef struct {
     u32            n;
     u32            cap;
     u32            overflow;
+    Bu8            arena;     //  path bytes; owns backing
 } diffref_set;
 
 static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
     sane(s);
     if (s->n >= s->cap) { s->overflow++; done; }
-    size_t plen = (size_t)$len(path);
-    if (plen == 0 || plen >= DIFFREF_PATH_MAX) { s->overflow++; done; }
+    if (u8csEmpty(path) || u8csLen(path) >= DIFFREF_PATH_MAX) {
+        s->overflow++; done;
+    }
     diffref_entry *e = &s->v[s->n++];
-    memcpy(e->path, path[0], plen);
-    e->path[plen] = 0;
-    e->path_len = (u16)plen;
+    if (u8bFeed(s->arena, path) != OK) {
+        s->n--; s->overflow++; done;
+    }
+    u8csMv(e->path, u8bDataC(s->arena));
+    (void)u8csUsedAll(u8bDataC(s->arena));
     sha1Mv(&e->sha, (sha1cp)esha);
     done;
 }
@@ -79,8 +82,7 @@ static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
 
 static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
     for (u32 i = 0; i < s->n; i++) {
-        u8cs entry = {(u8cp)s->v[i].path,
-                      (u8cp)s->v[i].path + s->v[i].path_len};
+        u8csc entry = {s->v[i].path[0], s->v[i].path[1]};
         if (u8csEq(entry, path)) return &s->v[i];
     }
     return NULL;
@@ -427,6 +429,7 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     diffref_entry from_entries[DIFFREF_MAX_FILES];
     diffref_set from_set = {.v = from_entries, .cap = DIFFREF_MAX_FILES};
+    call(u8bAllocate, from_set.arena, DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
     diffref_collect_ctx fctx = {.set = &from_set};
     call(KEEPLsFiles, k, &ftarget, diffref_collect_visit, &fctx);
 
@@ -439,6 +442,7 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     diffref_entry to_entries[DIFFREF_MAX_FILES];
     diffref_set to_set = {.v = to_entries, .cap = DIFFREF_MAX_FILES};
+    call(u8bAllocate, to_set.arena, DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
     diffref_collect_ctx tctx = {.set = &to_set};
     call(KEEPLsFiles, k, &ttarget, diffref_collect_visit, &tctx);
 
@@ -453,8 +457,8 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
     call(u8bMap, new_buf, 16UL << 20);
 
     for (u32 i = 0; i < to_set.n; i++) {
-        u8cs path = {(u8cp)to_set.v[i].path,
-                     (u8cp)to_set.v[i].path + to_set.v[i].path_len};
+        u8cs path = {};
+        u8csMv(path, to_set.v[i].path);
         diffref_entry *f = diffref_set_find(&from_set, path);
 
         // Same sha on both sides → unchanged, skip cheaply.
@@ -483,8 +487,8 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     // --- 4. from-only entries (deletions): diff blob vs empty ---
     for (u32 i = 0; i < from_set.n; i++) {
-        u8cs path = {(u8cp)from_set.v[i].path,
-                     (u8cp)from_set.v[i].path + from_set.v[i].path_len};
+        u8cs path = {};
+        u8csMv(path, from_set.v[i].path);
         if (diffref_set_find(&to_set, path) != NULL) continue;
 
         u8bReset(old_buf);
@@ -500,5 +504,7 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
 
     u8bUnMap(old_buf);
     u8bUnMap(new_buf);
+    if (from_set.arena[0]) u8bFree(from_set.arena);
+    if (to_set.arena[0])   u8bFree(to_set.arena);
     done;
 }

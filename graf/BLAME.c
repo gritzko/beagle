@@ -103,47 +103,26 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
         return;
     }
 
-    // Parse commit headers looking for "author"
-    
-a_dup(u8c, scan, u8bDataC(cbuf));
+    //  Walk via the shared commit-body parser; pick name + ts from
+    //  the author header.
+    a_dup(u8c, scan, u8bDataC(cbuf));
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if (u8csEmpty(field)) break;  // blank line = body
-        a_cstr(author_f, "author");
-        if (!$eq(field, author_f)) continue;
-
-        // value = "Name <email> timestamp tz"
-        // Find last '<' to split name from rest
-        u8cp lt = value[1];
-        while (lt > value[0] && *(lt - 1) != '<') lt--;
-        if (lt > value[0]) {
-            // Name is before '<', trim trailing space
-            u8cp ne = lt - 1;
-            while (ne > value[0] && *(ne - 1) == ' ') ne--;
-            size_t nl = (size_t)(ne - value[0]);
-            if (nl >= sizeof(ba->author)) nl = sizeof(ba->author) - 1;
-            memcpy(ba->author, value[0], nl);
-            ba->author[nl] = 0;
-        }
-
-        // Extract timestamp (after '> ')
-        u8cp gt = lt;
-        while (gt < value[1] && *gt != '>') gt++;
-        if (gt < value[1]) gt++;  // past '>'
-        while (gt < value[1] && *gt == ' ') gt++;
-        // gt now at timestamp digits
-        if (gt < value[1]) {
-            long ts = 0;
-            while (gt < value[1] && *gt >= '0' && *gt <= '9') {
-                ts = ts * 10 + (*gt - '0');
-                gt++;
-            }
-            if (ts > 0) {
-                time_t t = (time_t)ts;
-                struct tm *tm = gmtime(&t);
-                if (tm)
-                    snprintf(ba->date, sizeof(ba->date), "%04d-%02d-%02d",
-                             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+        if (u8csEmpty(field)) break;
+        if (!u8csEq(field, GIT_FIELD_AUTHOR)) continue;
+        u8csc value_c = {value[0], value[1]};
+        u8cs name = {}, email = {};
+        ron60 ts_r = 0;
+        GITu8sIdent(value_c, name, email, &ts_r);
+        size_t nl = u8csLen(name);
+        if (nl >= sizeof(ba->author)) nl = sizeof(ba->author) - 1;
+        if (nl > 0) memcpy(ba->author, name[0], nl);
+        ba->author[nl] = 0;
+        if (ts_r != 0) {
+            struct tm tm = {};
+            if (RONToTime(ts_r, &tm, NULL) == OK) {
+                snprintf(ba->date, sizeof(ba->date), "%04d-%02d-%02d",
+                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
             }
         }
         break;
