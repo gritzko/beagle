@@ -7,6 +7,12 @@
   `?fix1` and `?fix2` (created via `be post ?./fixN`) each with one
   commit editing disjoint lines of `foo.c`.  Captures the byte-exact
   diff for `fix1..fix2` and the reverse `fix2..fix1`.
+* `04-ins-after-block-ansi/` — repro for the ANSI render dropping an
+  inserted line.  When token-LCS matches the new line's terminating
+  `\n` as EQ on a different `\n`-segment, `bro_walk_hunk`'s in-pass
+  loop skipped the segment with the IN bytes (its boundary `\n` was
+  RM-side, hidden in IN-pass).  Plaintext (`HUNKu8sFeedLineBased`)
+  was unaffected; only the ANSI path lost the line.
 
 ## Label form note
 

@@ -532,26 +532,43 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
                            info[j].bnd_side == TOK_SIDE_EQ))
             j++;
 
-        // Walk block segments for rm-pass; group across hidden IN `\n`s.
+        //  Walk block segments for rm-pass; group across hidden IN `\n`s.
+        //  `pend_*` accumulate visible/hidden byte counts across grouped
+        //  segments (segments whose boundary `\n` is hidden in this
+        //  pass) so the emit decision considers content carried in
+        //  from earlier in the group, not just the current segment.
+        //  Without this, an EQ `\n` matched onto a pure-RM segment
+        //  fails the `info[m].in_b||eq_b` check and the IN bytes from
+        //  earlier segments in the group never get a row.
         u32 row_start = info[i].lo;
+        u32 pend_in = 0, pend_rm = 0, pend_eq = 0;
         for (u32 m = i; m < j; m++) {
+            pend_in += info[m].in_b;
+            pend_rm += info[m].rm_b;
+            pend_eq += info[m].eq_b;
             if (bro_pass_sees_nl(BRO_PASS_RM, info[m].bnd_side)) {
-                if (info[m].rm_b > 0 || info[m].eq_b > 0) {
+                if (pend_rm > 0 || pend_eq > 0) {
                     total += emit(ctx, row_start, info[m].hi, BRO_PASS_RM);
                 }
                 row_start = info[m].hi + 1;
+                pend_in = pend_rm = pend_eq = 0;
             }
         }
-        // (Trailing range with no visible RM/EQ `\n` ⇒ no rm-row.)
+        //  (Trailing range with no visible RM/EQ `\n` ⇒ no rm-row.)
 
-        // Walk block segments for in-pass.
+        //  Walk block segments for in-pass — symmetric.
         row_start = info[i].lo;
+        pend_in = pend_rm = pend_eq = 0;
         for (u32 m = i; m < j; m++) {
+            pend_in += info[m].in_b;
+            pend_rm += info[m].rm_b;
+            pend_eq += info[m].eq_b;
             if (bro_pass_sees_nl(BRO_PASS_IN, info[m].bnd_side)) {
-                if (info[m].in_b > 0 || info[m].eq_b > 0) {
+                if (pend_in > 0 || pend_eq > 0) {
                     total += emit(ctx, row_start, info[m].hi, BRO_PASS_IN);
                 }
                 row_start = info[m].hi + 1;
+                pend_in = pend_rm = pend_eq = 0;
             }
         }
 

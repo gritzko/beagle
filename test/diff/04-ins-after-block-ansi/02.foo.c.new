@@ -1,0 +1,7 @@
+//  trees in memory to pair entries by path before diffing.
+#define DIFFREF_MAX_FILES 8192
+
+typedef struct {
+    u8cs path;       //  borrowed: lives in set's arena
+    sha1 sha;
+} diffref_entry;

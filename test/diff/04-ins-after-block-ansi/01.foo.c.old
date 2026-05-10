@@ -1,0 +1,8 @@
+//  trees in memory to pair entries by path before diffing.
+#define DIFFREF_MAX_FILES 8192
+
+typedef struct {
+    char path[DIFFREF_PATH_MAX];
+    u16  path_len;
+    sha1 sha;
+} diffref_entry;
