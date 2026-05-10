@@ -818,14 +818,13 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     sv->hunks = st->hunks;
     sv->nhunks = st->nhunks;
     sv->lines = st->lines;
-    memcpy(sv->linesbuf, st->linesbuf, sizeof(Brange32));
+    range32bHandOver(sv->linesbuf, st->linesbuf);
     sv->nlines = st->nlines;
     sv->scroll = st->scroll;
 
     // Switch to file view
     st->hunks = &fv->hunk;
     st->nhunks = 1;
-    memset(st->linesbuf, 0, sizeof(Brange32));
     call(BROBuildIndex, st);
     // Scroll to target line (1-based file line number).
     // Count only source-line starts — wrap continuations share the
@@ -867,7 +866,7 @@ static b8 BROBack(BROstate *st) {
     st->hunks = sv->hunks;
     st->nhunks = sv->nhunks;
     st->lines = sv->lines;
-    memcpy(st->linesbuf, sv->linesbuf, sizeof(Brange32));
+    range32bHandOver(st->linesbuf, sv->linesbuf);
     st->nlines = sv->nlines;
     st->scroll = sv->scroll;
     return YES;
@@ -915,14 +914,13 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
                         .hunks = st->hunks, .nhunks = st->nhunks,
                         .lines = st->lines, .nlines = st->nlines,
                         .scroll = st->scroll};
-                    memcpy(st->saves[idx].linesbuf, st->linesbuf,
-                           sizeof(Brange32));
+                    range32bHandOver(st->saves[idx].linesbuf,
+                                     st->linesbuf);
                     st->files[idx] = (BROfileview){};
                     u32 save_nh = bro_nhunks;
                     if (BROListDir(u8bDataC(fpbufA)) == OK && bro_nhunks > save_nh) {
                         st->hunks = bro_hunks + save_nh;
                         st->nhunks = bro_nhunks - save_nh;
-                        memset(st->linesbuf, 0, sizeof(Brange32));
                         BROBuildIndex(st);
                         st->scroll = (st->nlines > 1) ? 1 : 0;
                         st->nsaves = idx + 1;
@@ -1713,51 +1711,51 @@ static void BROReadURI(BROstate *st, char const *repo) {
     b8 has_path = !$empty(u.path);
     b8 has_frag = !$empty(u.fragment);
 
-    // Path component → open file
+    //  Path component → open file.  BROOpenFile takes a u8csc directly,
+    //  so we hand `u.path` through with no intermediate C-string.
     if (has_path) {
-        // NUL-terminate path for BROOpenFile
-        char pathz[FILE_PATH_MAX_LEN] = {};
-        size_t pl = (size_t)$len(u.path);
-        if (pl >= sizeof(pathz)) pl = sizeof(pathz) - 1;
-        memcpy(pathz, u.path[0], pl);
-
-        // Determine target line from fragment (if numeric)
+        //  Determine target line from fragment (if numeric)
         u32 target_line = 0;
         if (has_frag && u.fragment[0][0] >= '0' && u.fragment[0][0] <= '9') {
-            char lnbuf[32] = {};
-            size_t fl = (size_t)$len(u.fragment);
-            if (fl >= sizeof(lnbuf)) fl = sizeof(lnbuf) - 1;
-            memcpy(lnbuf, u.fragment[0], fl);
-            target_line = (u32)atoi(lnbuf);
+            i64 ln = 0;
+            a_dup(u8c, fragc, u.fragment);
+            if (utf8sDrainInt(fragc, &ln) == OK && ln > 0)
+                target_line = (u32)ln;
         }
 
-        u8cs relpath = {(u8cp)pathz, (u8cp)pathz + pl};
-        ok64 o = BROOpenFile(st, relpath, repo, target_line);
+        ok64 o = BROOpenFile(st, u.path, repo, target_line);
         if (o != OK)
             snprintf(st->flash, sizeof(st->flash),
-                     "open: %s: %s", pathz, ok64str(o));
+                     "open: " U8SFMT ": %s",
+                     u8sFmt(u.path), ok64str(o));
 
-        // If fragment is non-numeric, set it as search pattern after opening
+        //  If fragment is non-numeric, set it as search pattern after opening
         if (o == OK && has_frag &&
             !(u.fragment[0][0] >= '0' && u.fragment[0][0] <= '9')) {
             size_t fl = (size_t)$len(u.fragment);
             if (fl < sizeof(st->search)) {
-                memcpy(st->search, u.fragment[0], fl);
-                st->search_len = (u32)fl;
-                u32 f = BROSearchNext(st, st->scroll, +1);
-                if (f != UINT32_MAX) st->scroll = f;
+                a_dup(u8c, fragc, u.fragment);
+                u8s search_s = {(u8 *)st->search,
+                                (u8 *)st->search + sizeof(st->search)};
+                if (u8sFeed(search_s, fragc) == OK) {
+                    st->search_len = (u32)fl;
+                    u32 f = BROSearchNext(st, st->scroll, +1);
+                    if (f != UINT32_MAX) st->scroll = f;
+                }
             }
         }
         return;
     }
 
-    // Fragment only → dispatch as GURI search
+    //  Fragment only → dispatch as GURI search.  BRODispatchFragment
+    //  still takes a NUL-terminated `char *frag` (it passes it on to
+    //  spot via execlp + manipulates it in place); materialise once
+    //  here using a stack u8 buffer with the path-style NUL invariant.
     if (has_frag) {
-        char frag[256] = {};
-        size_t fl = (size_t)$len(u.fragment);
-        if (fl >= sizeof(frag)) fl = sizeof(frag) - 1;
-        memcpy(frag, u.fragment[0], fl);
-        BRODispatchFragment(st, frag, repo);
+        a_pad(u8, frag, 256);
+        u8bFeed(frag, u.fragment);
+        u8sFeed1(frag_idle, 0);
+        BRODispatchFragment(st, (char *)u8bDataHead(frag), repo);
         return;
     }
 
@@ -1887,18 +1885,22 @@ static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
 
 // --- Spot invocation ---
 
-// Resolve spot binary path (lazy, cached).
-static char bro_spot_path[FILE_PATH_MAX_LEN] = {};
+//  Resolve spot binary path (lazy, cached).  The buffer is allocated
+//  on first call and lives until process exit; PATHu8b's NUL-past-DATA
+//  invariant lets us hand `(char *)u8bDataHead(...)` straight to execlp
+//  without a manual `buf[len] = 0` step.
+static path8b bro_spot_path;
 static void bro_resolve_spot(void) {
-    if (bro_spot_path[0]) return;
+    if (bro_spot_path[1] != NULL) return;
     a_path(p);
     a$rg(a0, 0);
     a_cstr(spot_name, "spot");
     if (HOMEResolveSibling(NULL, p, spot_name, a0) != OK) return;
-    size_t plen = u8bDataLen(p);
-    if (plen >= sizeof(bro_spot_path)) plen = sizeof(bro_spot_path) - 1;
-    memcpy(bro_spot_path, u8bDataHead(p), plen);
-    bro_spot_path[plen] = 0;
+    if (PATHu8bAlloc(bro_spot_path) != OK) return;
+    if (PATHu8bFeed(bro_spot_path, $path(p)) != OK) {
+        u8bFree(bro_spot_path);
+        return;
+    }
 }
 
 // Collect unique words from hunk text matching a prefix.
@@ -2069,11 +2071,12 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
         close(pfd[0]);
         dup2(pfd[1], STDOUT_FILENO);
         close(pfd[1]);
+        char const *spot_cstr = (char const *)u8bDataHead(bro_spot_path);
         if (filepath)
-            execlp(bro_spot_path, "spot", "--tlv", flag, token,
+            execlp(spot_cstr, "spot", "--tlv", flag, token,
                    filepath, (char *)NULL);
         else
-            execlp(bro_spot_path, "spot", "--tlv", flag, token,
+            execlp(spot_cstr, "spot", "--tlv", flag, token,
                    (char *)NULL);
         _exit(127);
     }
@@ -2158,13 +2161,12 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
     sv->hunks = st->hunks;
     sv->nhunks = st->nhunks;
     sv->lines = st->lines;
-    memcpy(sv->linesbuf, st->linesbuf, sizeof(Brange32));
+    range32bHandOver(sv->linesbuf, st->linesbuf);
     sv->nlines = st->nlines;
     sv->scroll = st->scroll;
 
     st->hunks = bro_hunks + hunks_save;
     st->nhunks = new_nhunks;
-    memset(st->linesbuf, 0, sizeof(Brange32));
     call(BROBuildIndex, st);
     st->scroll = (st->nlines > 1) ? 1 : 0;
     st->nsaves = idx + 1;
@@ -2294,7 +2296,7 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         sv->hunks = st->hunks;
         sv->nhunks = st->nhunks;
         sv->lines = st->lines;
-        memcpy(sv->linesbuf, st->linesbuf, sizeof(Brange32));
+        range32bHandOver(sv->linesbuf, st->linesbuf);
         sv->nlines = st->nlines;
         sv->scroll = st->scroll;
         st->files[idx] = (BROfileview){};
@@ -2314,7 +2316,6 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         }
         st->hunks = bro_hunks + save_nh;
         st->nhunks = bro_nhunks - save_nh;
-        memset(st->linesbuf, 0, sizeof(Brange32));
         BROBuildIndex(st);
         st->scroll = (st->nlines > 1) ? 1 : 0;
         st->nsaves = idx + 1;
@@ -2420,22 +2421,20 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
     st.hunks = hunks;
     st.nhunks = nhunks;
 
-    // Resolve repo root for file navigation — reuse bro's home if set,
-    // otherwise walk up from cwd.
-    char repo[FILE_PATH_MAX_LEN] = {};
+    //  Resolve repo root for file navigation — reuse bro's home if set,
+    //  otherwise walk up from cwd.  a_path materialises a stack buffer
+    //  with the path-NUL invariant, so `(char *)u8bDataHead(repo)` is
+    //  a valid C-string for the legacy `char const *repo` interfaces
+    //  downstream (BROHandleKey, BROReadURI, …).
+    a_path(repo);
     home scratch_h = {};
     home *rh = bro_state && bro_state->h ? bro_state->h : &scratch_h;
     if (rh == &scratch_h) {
         uri none = {};
         if (HOMEOpen(rh, &none, NO) != OK) rh = NULL;
     }
-    if (rh != NULL) {
-        size_t rl = u8bDataLen(rh->root);
-        if (rl < sizeof(repo)) {
-            memcpy(repo, u8bDataHead(rh->root), rl);
-            repo[rl] = 0;
-        }
-    }
+    if (rh != NULL) PATHu8bFeed(repo, $path(rh->root));
+    char const *repo_cstr = (char const *)u8bDataHead(repo);
 
     BROGetSize(&st);
     call(BROBuildIndex, &st);
@@ -2492,7 +2491,6 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
             }
             BROGetSize(&st);
             range32bFree(st.linesbuf);
-            memset(st.linesbuf, 0, sizeof(Brange32));
             if (BROBuildIndex(&st) == OK && have_anchor) {
                 u32 ln = bro_line_for_off(st.lines, st.nlines,
                                           anchor_h, anchor_off);
@@ -2503,7 +2501,7 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
         u8 ch = 0;
         ssize_t nr = read(st.tty_fd, &ch, 1);
         if (nr <= 0) continue;
-        int r = BROHandleKey(&st, ch, repo);
+        int r = BROHandleKey(&st, ch, repo_cstr);
         if (r == BRO_KEY_QUIT) quit = YES;
         else if (r == BRO_KEY_CHANGED) BRORender(&st);
     }
@@ -2634,20 +2632,17 @@ ok64 BROPipeRun(int pipefd) {
     Bu8 rdbuf = {};
     call(u8bMap, rdbuf, PIPE_RDBUF_INIT);
 
-    // Resolve repo root
-    char repo[FILE_PATH_MAX_LEN] = {};
+    //  Resolve repo root.  See BRORun for the a_path / repo_cstr idiom.
+    a_path(repo);
     {
         home rh = {};
         uri none = {};
         if (HOMEOpen(&rh, &none, NO) == OK) {
-            size_t rl = u8bDataLen(rh.root);
-            if (rl < sizeof(repo)) {
-                memcpy(repo, u8bDataHead(rh.root), rl);
-                repo[rl] = 0;
-            }
+            PATHu8bFeed(repo, $path(rh.root));
             HOMEClose(&rh);
         }
     }
+    char const *repo_cstr = (char const *)u8bDataHead(repo);
 
     // Allocate line index
     BROstate st = {};
@@ -2814,7 +2809,7 @@ ok64 BROPipeRun(int pipefd) {
             u8 ch = 0;
             ssize_t nr = read(st.tty_fd, &ch, 1);
             if (nr > 0) {
-                int r = BROHandleKey(&st, ch, repo);
+                int r = BROHandleKey(&st, ch, repo_cstr);
                 if (r == BRO_KEY_QUIT) quit = YES;
                 else if (r == BRO_KEY_CHANGED) changed = YES;
                 key_pressed = YES;
