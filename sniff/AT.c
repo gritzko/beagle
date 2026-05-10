@@ -621,7 +621,7 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
 
     sha1 wt_sha = {};
     if (at_hash_wt_blob(&wt_sha, path, &fs) == OK &&
-        sha1eq(&wt_sha, &base_sha)) {
+        sha1Eq(&wt_sha, &base_sha)) {
         return OK;
     }
 

@@ -489,16 +489,6 @@ static ok64 keeper_put(keeper *k, cli *c) {
 
 // --- Verb: post ---
 
-//  Extract the tree SHA-1 (as 40 hex chars) from a commit object body.
-//  A git commit always starts with "tree <40hex>\n" per object format.
-static ok64 post_extract_tree_hex(u8 *out40, u8csc body) {
-    a_cstr(tree_pfx, "tree ");
-    if (u8csLen(body) < 46) return KEEPFAIL;
-    if (!u8csHasPrefix(body, tree_pfx)) return KEEPFAIL;
-    memcpy(out40, body[0] + 5, 40);
-    return OK;
-}
-
 //  Push the current worktree commit to a remote.  Nothing is staged
 //  locally (sniff already committed if anything was).  Flow:
 //    1. Determine target branch from URI query (`?main` / `?heads/X`)

@@ -71,15 +71,8 @@ ok64 GRAFDiff(u8cs old_path, u8cs new_path, u8cs name,
         return NOROOM;
     }
 
-    // Display name (NUL-terminated) for hunk titles
-    char dispname[FILE_PATH_MAX_LEN];
-    size_t dlen = (size_t)$len(name);
-    if (dlen >= sizeof(dispname)) dlen = sizeof(dispname) - 1;
-    memcpy(dispname, name[0], dlen);
-    dispname[dlen] = 0;
-
     ok64 o = DIFFu8cs(graf_arena, old_data, new_data, ext_nodot,
-                      dispname, GRAFHunkEmit, NULL);
+                      name, GRAFHunkEmit, NULL);
 
     GRAFArenaCleanup();
     if (map_old) FILEUnMap(map_old);

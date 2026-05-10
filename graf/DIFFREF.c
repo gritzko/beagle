@@ -30,7 +30,7 @@
 typedef struct {
     char path[DIFFREF_PATH_MAX];
     u16  path_len;
-    u8   sha[20];
+    sha1 sha;
 } diffref_entry;
 
 typedef struct {
@@ -49,7 +49,7 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
     memcpy(e->path, path[0], plen);
     e->path[plen] = 0;
     e->path_len = (u16)plen;
-    memcpy(e->sha, esha, 20);
+    sha1Mv(&e->sha, (sha1cp)esha);
     done;
 }
 
@@ -333,7 +333,7 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
             u8s sb = {base_sha.data, base_sha.data + 20};
             a_dup(u8c, hx, base->uri.fragment);
             b8 same = (HEXu8sDrainSome(sb, hx) == OK &&
-                       sha1eq(&wt_sha, &base_sha));
+                       sha1Eq(&wt_sha, &base_sha));
             FILEUnMap(wt_mapped);
             if (same) return OK;
         }
@@ -458,24 +458,20 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
         diffref_entry *f = diffref_set_find(&from_set, path);
 
         // Same sha on both sides → unchanged, skip cheaply.
-        if (f && memcmp(f->sha, to_set.v[i].sha, 20) == 0) continue;
+        if (f && sha1Eq(&f->sha, &to_set.v[i].sha)) continue;
 
         u8cs old_data = {}, new_data = {};
         if (f) {
-            sha1 fs = {};
-            memcpy(fs.data, f->sha, 20);
             u8bReset(old_buf);
             u8 ot = 0;
-            if (KEEPGetExact(k, &fs, old_buf, &ot) == OK && ot == DOG_OBJ_BLOB) {
+            if (KEEPGetExact(k, &f->sha, old_buf, &ot) == OK && ot == DOG_OBJ_BLOB) {
                 a_dup(u8c, old_dup, u8bData(old_buf));
                 u8csMv(old_data, old_dup);
             }
         }
-        sha1 ts = {};
-        memcpy(ts.data, to_set.v[i].sha, 20);
         u8bReset(new_buf);
         u8 nt = 0;
-        if (KEEPGetExact(k, &ts, new_buf, &nt) == OK && nt == DOG_OBJ_BLOB) {
+        if (KEEPGetExact(k, &to_set.v[i].sha, new_buf, &nt) == OK && nt == DOG_OBJ_BLOB) {
             a_dup(u8c, new_dup, u8bData(new_buf));
             u8csMv(new_data, new_dup);
         }
@@ -491,11 +487,9 @@ ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
                      (u8cp)from_set.v[i].path + from_set.v[i].path_len};
         if (diffref_set_find(&to_set, path) != NULL) continue;
 
-        sha1 fs = {};
-        memcpy(fs.data, from_set.v[i].sha, 20);
         u8bReset(old_buf);
         u8 ot = 0;
-        if (KEEPGetExact(k, &fs, old_buf, &ot) != OK || ot != DOG_OBJ_BLOB)
+        if (KEEPGetExact(k, &from_set.v[i].sha, old_buf, &ot) != OK || ot != DOG_OBJ_BLOB)
             continue;
         a_dup(u8c, old_data, u8bData(old_buf));
         u8cs new_data = {};

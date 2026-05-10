@@ -23,7 +23,7 @@ con ok64 TDIFFFAIL = 0x1d3523cf3ca495;
 // is in `arena` and remains valid only for the duration of the call.
 ok64 DIFFu8cs(Bu8 arena,
               u8cs old_data, u8cs new_data,
-              u8cs ext_nodot, char const *dispname,
+              u8cs ext_nodot, u8csc dispname,
               HUNKcb cb, void *ctx);
 
 #endif

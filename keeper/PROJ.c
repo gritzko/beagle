@@ -132,7 +132,7 @@ static ok64 proj_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
             if (u8csLen(name_s) != u8csLen(seg)) continue;
             if (memcmp(name_s[0], seg[0], u8csLen(name_s)) != 0) continue;
             next_kind = WALKu8sModeKind(mode_s);
-            memcpy(next_sha.data, esha[0], 20);
+            (void)sha1Drain(esha, &next_sha);
             found = YES;
             break;
         }
@@ -268,7 +268,7 @@ ok64 KEEPProjTree(keeper *k, uricp u, b8 tlv) {
         proj_tree_mode_type(text, kind);
         (void)u8bFeed1(text, ' ');
         sha1 esh = {};
-        memcpy(esh.data, esha[0], 20);
+        (void)sha1Drain(esha, &esh);
         proj_feed_sha_hex(text, &esh);
         (void)u8bFeed1(text, '\t');
         (void)u8bFeed(text, name_s);

@@ -829,7 +829,7 @@ ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type) {
             sha1 actual = {};
             u8cs content = {u8bDataHead(out), u8bIdleHead(out)};
             KEEPObjSha(&actual, otype, content);
-            if (sha1eq(&actual, sha)) {
+            if (sha1Eq(&actual, sha)) {
                 if (out_type) *out_type = otype;
                 done;
             }

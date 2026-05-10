@@ -126,15 +126,15 @@ static ok64 arena_alloc(Bu8 arena, u8s out, size_t len) {
 // Emit a single hunk via cb after a "deleted" or "new" file shortcut.
 // `side` (TOK_SIDE_IN / TOK_SIDE_RM / TOK_SIDE_EQ) is stamped into
 // every emitted token.
-static ok64 emit_whole_file(Bu8 arena, char const *dispname,
+static ok64 emit_whole_file(Bu8 arena, u8csc dispname,
                             u8cs data, u32cs toks, u8 side,
                             HUNKcb cb, void *ctx) {
     sane(cb != NULL);
     hunk hk = {};
     u32 dlen = (u32)$len(data);
 
-    if (dispname) {
-        u8cs dp = {(u8cp)dispname, (u8cp)dispname + strlen(dispname)};
+    if (!u8csEmpty(dispname)) {
+        a_dup(u8c, dp, dispname);
         u8cs nosym = {};
         u8gp ug = u8aOpen(arena);
         HUNKu8sMakeURI(u8gRest(ug), dp, nosym, 0);
@@ -165,7 +165,7 @@ static ok64 emit_whole_file(Bu8 arena, char const *dispname,
 
 ok64 DIFFu8cs(Bu8 arena,
               u8cs old_data, u8cs new_data,
-              u8cs ext_nodot, char const *dispname,
+              u8cs ext_nodot, u8csc dispname,
               HUNKcb cb, void *ctx) {
     sane(cb != NULL);
 
@@ -348,10 +348,7 @@ ok64 DIFFu8cs(Bu8 arena,
                 DIFFFindFunc(new_data, (boff), ext_nodot,       \
                              _funcname, sizeof(_funcname));     \
                 u8cs _dp = {};                                  \
-                if (dispname) {                                 \
-                    _dp[0] = (u8cp)dispname;                    \
-                    _dp[1] = (u8cp)dispname + strlen(dispname); \
-                }                                               \
+                u8csMv(_dp, dispname);                          \
                 u8cs _fn = {};                                  \
                 if (_funcname[0]) {                             \
                     _fn[0] = (u8cp)_funcname;                   \

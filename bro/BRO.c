@@ -1222,29 +1222,22 @@ static void BROStatusBar(BROstate *st);
 static int bro_format_title(char *buf, size_t bufsz, hunkc const *hk) {
     BROloc loc = {};
     BROHunkLoc(&loc, hk);
-    char pathz[FILE_PATH_MAX_LEN] = {};
-    char funcz[256] = {};
-    if (!$empty(loc.path)) {
-        size_t pl = (size_t)$len(loc.path);
-        if (pl >= sizeof(pathz)) pl = sizeof(pathz) - 1;
-        memcpy(pathz, loc.path[0], pl);
-    }
-    if (!$empty(loc.symbol)) {
-        size_t fl = (size_t)$len(loc.symbol);
-        if (fl >= sizeof(funcz)) fl = sizeof(funcz) - 1;
-        memcpy(funcz, loc.symbol[0], fl);
-    }
+    b8 has_p = !$empty(loc.path);
+    b8 has_f = !$empty(loc.symbol);
     int n = 0;
-    if (pathz[0] && funcz[0] && loc.line > 0)
-        n = snprintf(buf, bufsz, "--- %s :: %s:%u ---", pathz, funcz, loc.line);
-    else if (pathz[0] && funcz[0])
-        n = snprintf(buf, bufsz, "--- %s :: %s ---", pathz, funcz);
-    else if (pathz[0] && loc.line > 0)
-        n = snprintf(buf, bufsz, "--- %s:%u ---", pathz, loc.line);
-    else if (pathz[0])
-        n = snprintf(buf, bufsz, "--- %s ---", pathz);
-    else if (funcz[0])
-        n = snprintf(buf, bufsz, "--- %s ---", funcz);
+    if (has_p && has_f && loc.line > 0)
+        n = snprintf(buf, bufsz, "--- " U8SFMT " :: " U8SFMT ":%u ---",
+                     u8sFmt(loc.path), u8sFmt(loc.symbol), loc.line);
+    else if (has_p && has_f)
+        n = snprintf(buf, bufsz, "--- " U8SFMT " :: " U8SFMT " ---",
+                     u8sFmt(loc.path), u8sFmt(loc.symbol));
+    else if (has_p && loc.line > 0)
+        n = snprintf(buf, bufsz, "--- " U8SFMT ":%u ---",
+                     u8sFmt(loc.path), loc.line);
+    else if (has_p)
+        n = snprintf(buf, bufsz, "--- " U8SFMT " ---", u8sFmt(loc.path));
+    else if (has_f)
+        n = snprintf(buf, bufsz, "--- " U8SFMT " ---", u8sFmt(loc.symbol));
     if (n < 0) n = 0;
     if ((size_t)n >= bufsz) n = (int)(bufsz - 1);
     return n;
@@ -2533,9 +2526,7 @@ static ok64 bro_pipe_drain_all(int pipefd) {
             size_t nxt = cur * 2;
             Bu8 grow = {};
             if (u8bMap(grow, nxt) != OK) break;
-            size_t dlen = u8bDataLen(rdbuf);
-            memcpy(u8bIdleHead(grow), u8bDataHead(rdbuf), dlen);
-            u8bFed(grow, dlen);
+            call(u8bFeed, grow, u8bDataC(rdbuf));
             u8bUnMap(rdbuf);
             rdbuf[0] = grow[0]; rdbuf[1] = grow[1];
             rdbuf[2] = grow[2]; rdbuf[3] = grow[3];

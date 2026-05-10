@@ -27,7 +27,7 @@ ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
         if (u8csFind(scan, ' ') != OK) continue;
         u8cs entry_name = {scan[0] + 1, field[1]};
         if (!u8csEq(entry_name, name)) continue;
-        memcpy(cur->data, esha[0], 20);
+        (void)sha1Drain(esha, cur);
         result = OK;
         break;
     }

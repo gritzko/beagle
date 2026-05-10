@@ -763,27 +763,25 @@ static ok64 get_tree_merge(u8b into, u8cs path,
             if (!r) {
                 if (nrec >= GET_TREE_MAX_ENTRIES) continue;
                 r = &recs[nrec++];
-                size_t nl = $len(name_s);
-                if (u8bIdleLen(arena) < nl) { nrec--; continue; }
+                if (u8bIdleLen(arena) < $len(name_s)) { nrec--; continue; }
                 u8p nbase = u8bIdleHead(arena);
-                memcpy(nbase, name_s[0], nl);
-                ((u8 **)arena)[2] += nl;
+                (void)u8bFeed(arena, name_s);
+                u8p nend = u8bIdleHead(arena);
                 r->name[0] = nbase;
-                r->name[1] = nbase + nl;
+                r->name[1] = nend;
             }
-            size_t ml = $len(mode_s);
-            if (u8bIdleLen(arena) < ml) continue;
+            if (u8bIdleLen(arena) < $len(mode_s)) continue;
             u8p mbase = u8bIdleHead(arena);
-            memcpy(mbase, mode_s[0], ml);
-            ((u8 **)arena)[2] += ml;
+            (void)u8bFeed(arena, mode_s);
+            u8p mend = u8bIdleHead(arena);
             r->mode[ti][0] = mbase;
-            r->mode[ti][1] = mbase + ml;
+            r->mode[ti][1] = mend;
             r->present[ti] = YES;
-            memcpy(r->sha[ti].data, esha[0], 20);
+            (void)sha1Drain(esha, &r->sha[ti]);
             //  Git tree mode: "40000" for subtrees, "1XXXXX" for
             //  blobs/symlinks, "160000" for gitlinks.  '4' prefix ⇒
             //  dir.
-            if (ml > 0 && *mbase == '4') r->any_dir = YES;
+            if (mbase < mend && *mbase == '4') r->any_dir = YES;
         }
         u8bFree(tbuf);
     }
@@ -813,7 +811,7 @@ static ok64 get_tree_merge(u8b into, u8cs path,
 
         b8 agree = YES;
         for (u32 k = 1; k < npres; k++) {
-            if (!sha1eq(&r->sha[present_tips[0]],
+            if (!sha1Eq(&r->sha[present_tips[0]],
                         &r->sha[present_tips[k]])) {
                 agree = NO; break;
             }

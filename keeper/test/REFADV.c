@@ -156,7 +156,7 @@ ok64 REFADVtest_single_trunk() {
 
     sha1 expect = {};
     hex_to_sha(&expect, hex);
-    want(sha1eq(&adv.ents[0].tip, &expect));
+    want(sha1Eq(&adv.ents[0].tip, &expect));
     a_cstr(want_refname, "refs/heads/main");
     want(u8csLen(adv.ents[0].refname) == u8csLen(want_refname));
     want(memcmp(adv.ents[0].refname[0], want_refname[0],
@@ -384,7 +384,7 @@ ok64 REFADVtest_round_trip() {
         //  match against any entry
         b8 matched = NO;
         for (u32 i = 0; i < adv.count; i++) {
-            if (!sha1eq(&adv.ents[i].tip, &got_sha)) continue;
+            if (!sha1Eq(&adv.ents[i].tip, &got_sha)) continue;
             if (u8csLen(got_refname) != u8csLen(adv.ents[i].refname))
                 continue;
             if (memcmp(got_refname[0], adv.ents[i].refname[0],

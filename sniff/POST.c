@@ -558,7 +558,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         sha1 disk_sha = {};
         if (post_hash_path(c->reporoot, path, wt_mode, &disk_sha) != OK)
             return OK;
-        if (sha1eq(&disk_sha, &base_sha)) {
+        if (sha1Eq(&disk_sha, &base_sha)) {
             //  Identical → KEEP (mtime drifted but bytes match).
             //  Re-stamp with this POST's stamp_ts so the file aligns
             //  with the new post row in `.sniff`; the next bare `be`
@@ -1277,7 +1277,7 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     {
         sha1 lca2 = {};
         (void)GRAFLca(&lca2, &child_tip, parent_new_tip);
-        if (sha1eq(&lca2, &child_tip)) {
+        if (sha1Eq(&lca2, &child_tip)) {
             //  Child is already on new spine — point its REFS at the
             //  matching commit (child_tip itself).  No rebase needed.
             cascade_rec *r = &cc->recs[cc->n++];
@@ -1678,11 +1678,11 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         if (create_under_absolute) {
             sha1 lca = {};
             (void)GRAFLca(&lca, &cur_tip, &absolute_parent_tip);
-            if (sha1eq(&lca, &cur_tip)) {
+            if (sha1Eq(&lca, &cur_tip)) {
                 //  Cur already on absolute_parent_tip's spine — leaf
                 //  lands at absolute_parent_tip.
                 leaf_tip = absolute_parent_tip;
-            } else if (sha1eq(&lca, &absolute_parent_tip)) {
+            } else if (sha1Eq(&lca, &absolute_parent_tip)) {
                 //  Cur is downstream of absolute parent — fast-forward
                 //  case: leaf = cur_tip (no replay needed).
                 leaf_tip = cur_tip;
@@ -1773,13 +1773,13 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
 
     //  Already in sync? base_old == child_tip means there are no
     //  commits to replay (child is an ancestor of base_new).
-    b8 nothing_to_replay = sha1eq(&base_old, &child_tip);
+    b8 nothing_to_replay = sha1Eq(&base_old, &child_tip);
     //  Also, if target already contains child_tip (ff in the other
     //  direction), nothing to do.
     if (nothing_to_replay) {
         sha1 lca2 = {};
         (void)GRAFLca(&lca2, &child_tip, &base_new);
-        if (sha1eq(&lca2, &child_tip)) {
+        if (sha1Eq(&lca2, &child_tip)) {
             //  child_tip is an ancestor of base_new — no advance.
             //  But if auto_sync_cur is set, we still want cur to track
             //  base_new (e.g. `?..` after parent has been advanced
@@ -1827,7 +1827,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     b8   stack_was_rewritten = NO;
     post_rebase_ctx rctx = {};
     keep_pack pp = {};
-    if (sha1eq(&base_old, &base_new)) {
+    if (sha1Eq(&base_old, &base_new)) {
         target_new_tip = child_tip;
         //  No new objects emitted — child_tip already exists in keeper.
         stack_was_rewritten = NO;
@@ -2242,12 +2242,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
             //  ff iff tip is an ancestor of (or equal to) parent.
             b8 ff_ok = NO;
-            if (sha1eq(&parent, &expected_tip_sha)) {
+            if (sha1Eq(&parent, &expected_tip_sha)) {
                 ff_ok = YES;
             } else {
                 sha1 lca = {};
                 (void)GRAFLca(&lca, &parent, &expected_tip_sha);
-                if (sha1eq(&lca, &expected_tip_sha)) ff_ok = YES;
+                if (sha1Eq(&lca, &expected_tip_sha)) ff_ok = YES;
             }
             if (!ff_ok) {
                 //  Same-branch divergence: defer the SNIFFNOFF bail —
@@ -2465,8 +2465,8 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //      record offsets (records are <u32 len, body>), then iterate
     //      offsets[] in reverse and feed pack.
     if (have_root) {
-        u8c *walk_lo = u8bDataHead(tree_bodies);
-        u8c *walk_hi = u8bIdleHead(tree_bodies);
+        a_dup(u8c, whole, u8bDataC(tree_bodies));
+        u32 wlen = (u32)u8csLen(whole);
         Bu32 offs = {};
         if (u32bAllocate(offs, tree_count > 0 ? tree_count : 1) != OK) {
             KEEPPackClose(k, &p);
@@ -2474,20 +2474,22 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             post_ctx_free(&ctx);
             return SNIFFFAIL;
         }
-        for (u8c *q = walk_lo; q < walk_hi; ) {
-            u32 off = (u32)(q - walk_lo);
-            (void)u32bFeed1(offs, off);
+        a_dup(u8c, scan, whole);
+        while (!u8csEmpty(scan)) {
+            (void)u32bFeed1(offs, (u32)(scan[0] - whole[0]));
             u32 tlen = 0;
-            memcpy(&tlen, q, sizeof(u32));
-            q += sizeof(u32) + tlen;
+            if (u8sDrain32(scan, &tlen) != OK) break;
+            if (u8csUsed(scan, tlen) != OK) break;
         }
         u32 nrec = (u32)u32bDataLen(offs);
         u32 *off_base = u32bDataHead(offs);
         for (u32 i = nrec; i > 0; i--) {
-            u8c *q = walk_lo + off_base[i - 1];
+            u32 from = off_base[i - 1];
+            u32 till = (i < nrec) ? off_base[i] : wlen;
+            u8cs rec = {};
+            if (u8csSub(whole, rec, from, till) != OK) continue;
             u32 tlen = 0;
-            memcpy(&tlen, q, sizeof(u32));
-            u8cs tbody = {q + sizeof(u32), q + sizeof(u32) + tlen};
+            if (u8sDrain32(rec, &tlen) != OK) continue;
             sha1 tsha_dummy = {};
             //  TODO(delta-trees): pass the parent commit's same-path
             //  tree SHA as `base_hashlet60` instead of 0.  A typical
@@ -2499,7 +2501,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             //  can pluck the old subtree SHA per `subprefix` out of `bu`
             //  on its way down — same plumbing as `old_sha` already does
             //  for blobs at line 2371.  No extra walk needed.
-            ok64 to = KEEPPackFeed(k, &p, DOG_OBJ_TREE, tbody,
+            ok64 to = KEEPPackFeed(k, &p, DOG_OBJ_TREE, rec,
                                    0, &tsha_dummy);
             if (to != OK) {
                 u32bFree(offs);
@@ -2883,7 +2885,7 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
     a_dup(u8c, cur_branch, u8bData(cur_buf));
 
     //  --- 2. Already in sync? ---
-    if (sha1eq(&cur_tip, target_tip)) {
+    if (sha1Eq(&cur_tip, target_tip)) {
         fprintf(stderr, "sniff: post: cur already at target — no rebase\n");
         return OK;
     }
@@ -2897,13 +2899,13 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
 
     //  Cur is already on target's spine (cur ancestor of target):
     //  fast-forward without replay.
-    b8 is_ff_forward = sha1eq(&base_old, &child_tip);
+    b8 is_ff_forward = sha1Eq(&base_old, &child_tip);
     sha1 new_tip = {};
     b8   stack_was_rewritten = NO;
 
     if (is_ff_forward) {
         new_tip = base_new;
-    } else if (sha1eq(&base_old, &base_new)) {
+    } else if (sha1Eq(&base_old, &base_new)) {
         //  Target hasn't moved relative to cur's fork (defensive —
         //  rebase reduces to "no-op on history, ref already where it
         //  should be"); cur stays.
@@ -2928,7 +2930,7 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
         stack_was_rewritten = rctx.have_last_commit;
     }
 
-    if (sha1eq(&new_tip, &cur_tip)) {
+    if (sha1Eq(&new_tip, &cur_tip)) {
         //  Target is an ancestor of cur (or rebase produced no
         //  change) — nothing to write.  Spec: success.
         fprintf(stderr,

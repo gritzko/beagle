@@ -90,7 +90,7 @@ static ok64 pid_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     pid_leaf *l = &c->leaves[c->n++];
     l->path = dst;
     l->path_len = plen;
-    memcpy(l->sha.data, esha, 20);
+    sha1Mv(&l->sha, (sha1cp)esha);
     return OK;
 }
 
@@ -171,7 +171,7 @@ static u64 pid_digest(pid_collector const *parent, pid_collector const *child) {
             path = pl->path; plen = pl->path_len;
             psha = &pl->sha; csha = &cl->sha;
             i++; j++;
-            if (sha1eq(psha, csha)) continue;
+            if (sha1Eq(psha, csha)) continue;
         } else if (c < 0) {
             //  parent has the path, child doesn't — deletion.
             path = pl->path; plen = pl->path_len;
@@ -352,19 +352,19 @@ static ok64 tm_parse(sha1 const *tree_sha, tm_set *out,
         if ($empty(name_s) || u8csLen(esha) != 20) continue;
         if (out->n >= out->cap) break;
 
-        //  Intern bytes into the arena.
-        u8 *mb = u8bIdleHead(arena);
+        //  Intern bytes into the arena via typed Feed; capture
+        //  before/after-Feed idle heads as slice borders.
         if (u8bIdleLen(arena) < (u64)$len(mode_s) + (u64)$len(name_s)) break;
-        memcpy(mb, mode_s[0], $len(mode_s));
-        ((u8 **)arena)[2] += $len(mode_s);
+        u8 *mb = u8bIdleHead(arena);
+        (void)u8bFeed(arena, mode_s);
         u8 *nb = u8bIdleHead(arena);
-        memcpy(nb, name_s[0], $len(name_s));
-        ((u8 **)arena)[2] += $len(name_s);
+        (void)u8bFeed(arena, name_s);
+        u8 *ne = u8bIdleHead(arena);
 
         tm_entry *e = &out->e[out->n++];
-        e->mode[0] = mb;            e->mode[1] = mb + $len(mode_s);
-        e->name[0] = nb;            e->name[1] = nb + $len(name_s);
-        memcpy(e->sha.data, esha[0], 20);
+        e->mode[0] = mb; e->mode[1] = nb;
+        e->name[0] = nb; e->name[1] = ne;
+        (void)sha1Drain(esha, &e->sha);
         e->kind = WALKu8sModeKind(mode_s);
         e->present = YES;
     }
@@ -461,13 +461,13 @@ static ok64 tm_merge_blob(sha1 *out_sha,
     *out_conflict = NO;
 
     //  Trivial sha-equality cases short-circuit the weave build.
-    if (sha1eq(base, ours)) {
+    if (sha1Eq(base, ours)) {
         *out_sha = *theirs; done;
     }
-    if (sha1eq(base, theirs)) {
+    if (sha1Eq(base, theirs)) {
         *out_sha = *ours;   done;
     }
-    if (sha1eq(ours, theirs)) {
+    if (sha1Eq(ours, theirs)) {
         *out_sha = *ours;   done;
     }
 
@@ -544,13 +544,13 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     sane(tree_out_sha && had_conflict);
 
     //  Fast paths: agreement.
-    if (sha1eq(base_t, ours_t)) {
+    if (sha1Eq(base_t, ours_t)) {
         *tree_out_sha = *theirs_t; done;
     }
-    if (sha1eq(base_t, theirs_t)) {
+    if (sha1Eq(base_t, theirs_t)) {
         *tree_out_sha = *ours_t; done;
     }
-    if (sha1eq(ours_t, theirs_t)) {
+    if (sha1Eq(ours_t, theirs_t)) {
         *tree_out_sha = *ours_t; done;
     }
 
@@ -640,11 +640,11 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             if (*had_conflict) { ret = GRAFCNFL; goto loop_fail; }
         } else if (oe && te) {
             //  Both sides present.
-            if (sha1eq(&o_sha, &t_sha)) {
+            if (sha1Eq(&o_sha, &t_sha)) {
                 final = o_sha;
-            } else if (be && sha1eq(&b_sha, &o_sha)) {
+            } else if (be && sha1Eq(&b_sha, &o_sha)) {
                 final = t_sha;
-            } else if (be && sha1eq(&b_sha, &t_sha)) {
+            } else if (be && sha1Eq(&b_sha, &t_sha)) {
                 final = o_sha;
             } else if (kind == WALK_KIND_DIR) {
                 ret = GRAFCNFL; *had_conflict = YES; goto loop_fail;
@@ -658,14 +658,14 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             }
         } else if (oe && !te) {
             //  Only ours has it.
-            if (be && sha1eq(&b_sha, &o_sha)) {
+            if (be && sha1Eq(&b_sha, &o_sha)) {
                 //  base had it, theirs deleted it, ours unchanged → drop.
                 keep = NO;
             } else {
                 final = o_sha;
             }
         } else if (!oe && te) {
-            if (be && sha1eq(&b_sha, &t_sha)) {
+            if (be && sha1Eq(&b_sha, &t_sha)) {
                 keep = NO;
             } else {
                 final = t_sha;
@@ -716,7 +716,7 @@ static ok64 rebase_walk_chain(sha1 const *child_tip, sha1 const *base_old,
     sane(child_tip && base_old && list && nlist);
     u32 n = 0;
     sha1 cur = *child_tip;
-    while (!sha1eq(&cur, base_old)) {
+    while (!sha1Eq(&cur, base_old)) {
         if (n >= maxlist) { return GRAFFAIL; }
         list[n++] = cur;
         Bu8 cbuf = {};
@@ -864,7 +864,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
     sane(base_old && base_new && child_tip);
 
     //  Trivial: child_tip == base_old → nothing to replay.
-    if (sha1eq(child_tip, base_old)) {
+    if (sha1Eq(child_tip, base_old)) {
         done;
     }
 

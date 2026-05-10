@@ -403,8 +403,8 @@ ok64 WIREtest_round_trip() {
 
     want(req.nwants == 1);
     want(req.nhaves == 1);
-    want(sha1eq(&req.wants[0], &sha_b));
-    want(sha1eq(&req.haves[0], &sha_a));
+    want(sha1Eq(&req.wants[0], &sha_b));
+    want(sha1Eq(&req.haves[0], &sha_a));
 
     u8bFree(reqbuf);
     call(KEEPClose);

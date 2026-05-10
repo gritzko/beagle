@@ -121,7 +121,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
         FILEUnMap(mapped);
     }
 
-    if (sha1eq(&disk_sha, &base_sha)) {
+    if (sha1Eq(&disk_sha, &base_sha)) {
         //  Content matches baseline.  Re-stamp with baseline_ts so the
         //  next mtime check fast-paths this file.  No put row.
         if (c->baseline_ts != 0)

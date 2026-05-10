@@ -743,8 +743,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                                 //  Override base_commit_sha with the
                                 //  peeled commit so weave-merge sees
                                 //  the right history root.
-                                memcpy(base_commit_sha.data,
-                                       tag_target.data, 20);
+                                sha1Mv(&base_commit_sha, &tag_target);
                             }
                         }
                         if (ctype == DOG_OBJ_COMMIT) {

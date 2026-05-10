@@ -330,7 +330,7 @@ ok64 RECVApplyUpdates(keeper *k, refadvcp adv, recv_reqcp req,
             sha1 cur = {};
             b8 have_tip = NO;
             recv_lookup_tip(adv, u->refname, &cur, &have_tip);
-            if (!have_tip || !sha1eq(&cur, &u->old_sha)) {
+            if (!have_tip || !sha1Eq(&cur, &u->old_sha)) {
                 r->result = RECVNOTFF;
                 continue;
             }

@@ -21,10 +21,6 @@ fun int sha1cmp(sha1 const *a, sha1 const *b) {
     return memcmp(a->data, b->data, 20);
 }
 
-fun b8 sha1eq(sha1 const *a, sha1 const *b) {
-    return memcmp(a->data, b->data, 20) == 0;
-}
-
 fun b8 sha1Z(sha1 const *a, sha1 const *b) {
     return memcmp(a->data, b->data, 20) < 0;
 }

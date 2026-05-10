@@ -388,7 +388,7 @@ static b8 status_wt_eq_base(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
     u8s bin = {base_sha.data, base_sha.data + 20};
     a_dup(u8c, hex, base_rec->uri.fragment);
     if (HEXu8sDrainSome(bin, hex) != OK) return NO;
-    return sha1eq(&wt_sha, &base_sha);
+    return sha1Eq(&wt_sha, &base_sha);
 }
 
 //  Convert ron60 (packed local-time encoding via RONOfTime) to

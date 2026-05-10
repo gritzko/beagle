@@ -28,12 +28,10 @@ static b8 refadv_decode_terminal(sha1 *out, u8csc val) {
     if (u8csLen(hex) == 41 && hex[0][0] == '?') u8csUsed(hex, 1);
     if (u8csLen(hex) != 40) return NO;
     a_dup(u8c, hex_dup, hex);
-    u8 buf[20] = {};
-    u8s bin = {buf, buf + 20};
+    u8s bin = {out->data, out->data + 20};
     if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
-    if (bin[0] != buf + 20) return NO;
+    if (!u8sEmpty(bin)) return NO;
     if (!u8csEmpty(hex_dup)) return NO;
-    memcpy(out->data, buf, 20);
     return YES;
 }
 
@@ -203,7 +201,7 @@ u32 REFADVTipDirs(refadv const *adv, sha1 const *tip,
     if (!adv || !tip || !out_dirs || cap == 0) return 0;
     u32 n = 0;
     for (u32 i = 0; i < adv->count && n < cap; i++) {
-        if (sha1eq(&adv->ents[i].tip, tip)) {
+        if (sha1Eq(&adv->ents[i].tip, tip)) {
             out_dirs[n][0] = adv->ents[i].dir[0];
             out_dirs[n][1] = adv->ents[i].dir[1];
             n++;

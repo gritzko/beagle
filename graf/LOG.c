@@ -353,7 +353,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
             if (u8csFind(scan, ' ') != OK) continue;
             u8cs entry_name = {scan[0] + 1, field[1]};
             if (!u8csEq(entry_name, name)) continue;
-            memcpy(cur.data, esha[0], 20);
+            (void)sha1Drain(esha, &cur);
             found = YES;
             break;
         }
@@ -783,7 +783,7 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
     (void)REFSEach($path(keepdir), graf_head_pick_remote_cb, &rt);
     u8bFree(arena);
     if (rt.found) {
-        memcpy(out->data, rt.sha.data, 20);
+        sha1Mv(out, &rt.sha);
         return OK;
     }
     return GRAFNONE;

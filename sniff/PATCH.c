@@ -349,7 +349,7 @@ static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
     sha1 disk_sha = {};
     KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
     FILEUnMap(mapped);
-    if (!sha1eq(&disk_sha, baseline_sha)) {
+    if (!sha1Eq(&disk_sha, baseline_sha)) {
         emit_status("dirty", childpath);
     }
 }
@@ -604,7 +604,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         KEEPObjSha(&disk_sha, DOG_OBJ_BLOB,
                                    u8bDataC(m));
                         FILEUnMap(m);
-                        if (!sha1eq(&disk_sha, &o->sha)) wt_dirty = YES;
+                        if (!sha1Eq(&disk_sha, &o->sha)) wt_dirty = YES;
                     }
                 }
             }
@@ -1181,7 +1181,7 @@ static ok64 patch_links_of(sha1 *out, u32 cap, u32 *nout,
 //  rebase-one reachability BFS — n is bounded by RBASEONE_REACH_MAX.
 static b8 reach_set_has(sha1 const *set, u32 nset, sha1 const *q) {
     for (u32 i = 0; i < nset; i++) {
-        if (sha1eq(&set[i], q)) return YES;
+        if (sha1Eq(&set[i], q)) return YES;
     }
     return NO;
 }
@@ -1242,7 +1242,7 @@ static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
 static ok64 resolve_rebase_one(sha1 *out, sha1 const *br_tip,
                                sha1 const *our) {
     sane(out && br_tip && our);
-    if (sha1eq(br_tip, our)) {
+    if (sha1Eq(br_tip, our)) {
         fprintf(stderr,
             "sniff: patch: rebase-one — branch tip is already "
             "reachable from cur (nothing to replay)\n");

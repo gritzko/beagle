@@ -429,7 +429,7 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
         //  branch: take the entry whose sha matches the symref HEAD.
         //  Otherwise compare be-side branch names via the translator.
         if ($empty(want_branch)) {
-            if (have_head && sha1eq(&sha, &head_sha)) {
+            if (have_head && sha1Eq(&sha, &head_sha)) {
                 *out_sha = sha;
                 WCLI_RECORD_NAME(name);
                 picked = YES;
@@ -496,7 +496,7 @@ static ok64 wcli_haves_cb(refcp r, void *vctx) {
     if (!wcli_haves_decode_val(&sh, r->val)) done;
     if (sha1empty(&sh)) done;
     for (u32 i = 0; i < c->n; i++) {
-        if (sha1eq(&c->out[i], &sh)) done;        // dedup
+        if (sha1Eq(&c->out[i], &sh)) done;        // dedup
     }
     c->out[c->n++] = sh;
     done;
@@ -920,7 +920,7 @@ static void sha_set_add(sha_set *s, sha1 const *v) {
         s->items[i] = s->items[i - 1];
         i--;
     }
-    if (i > 0 && sha1eq(&s->items[i - 1], v)) return;  //  dup
+    if (i > 0 && sha1Eq(&s->items[i - 1], v)) return;  //  dup
     s->items[i] = *v;
     s->n++;
 }
@@ -1371,7 +1371,7 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
             (int)have_peer, peer_tips_n);
 
     //  Short-circuit: peer already at our tip — nothing to push.
-    if (have_peer && sha1eq(&peer_tip, &local_tip)) {
+    if (have_peer && sha1Eq(&peer_tip, &local_tip)) {
         rv = OK;
         //  Still need to send a flush so the peer closes cleanly.
         Bu8 flush_b = {};
