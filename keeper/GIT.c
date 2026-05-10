@@ -148,6 +148,115 @@ ok64 GITu8sDrainCommit(u8cs obj, u8csp field, u8csp value) {
     done;
 }
 
+//  Read a run of decimal digits off the head of `scan` into `*out`.
+//  Returns the number of digits consumed.
+static u32 git_drain_decimal(u8cs scan, i64 *out) {
+    i64 v = 0;
+    u32 n = 0;
+    while (!u8csEmpty(scan) && *scan[0] >= '0' && *scan[0] <= '9') {
+        v = v * 10 + (*scan[0] - '0');
+        u8csUsed1(scan);
+        n++;
+    }
+    *out = v;
+    return n;
+}
+
+void GITu8sIdent(u8csc ident, u8csp name, u8csp email, ron60 *ts) {
+    name[0] = name[1] = NULL;
+    email[0] = email[1] = NULL;
+    if (ts) *ts = 0;
+    if (u8csEmpty(ident)) return;
+
+    //  Name = bytes up to the first '<'; trim trailing spaces.
+    a_dup(u8c, scan, ident);
+    (void)u8csFind(scan, '<');
+    u8cs name_view = {ident[0], scan[0]};
+    while (!u8csEmpty(name_view) && *u8csLast(name_view) == ' ')
+        u8csShed1(name_view);
+    u8csMv(name, name_view);
+
+    //  Email = bytes between '<' and '>' (no '<' / '>' in slice).
+    if (!u8csEmpty(scan)) {
+        u8csUsed1(scan);                //  step past '<'
+        a_dup(u8c, gt, scan);
+        (void)u8csFind(gt, '>');
+        u8cs email_view = {scan[0], gt[0]};
+        u8csMv(email, email_view);
+        u8csMv(scan, gt);
+        if (!u8csEmpty(scan)) u8csUsed1(scan);   //  step past '>'
+    }
+    if (ts == NULL) return;
+
+    //  Skip leading spaces, then "ts tz" (unix epoch + RFC822 zone).
+    while (!u8csEmpty(scan) && *scan[0] == ' ') u8csUsed1(scan);
+    i64 epoch = 0;
+    if (git_drain_decimal(scan, &epoch) == 0) return;
+
+    //  Optional "+HHMM" / "-HHMM" zone — apply offset to epoch so the
+    //  resulting ron60 is in the author's wall-clock zone.
+    while (!u8csEmpty(scan) && *scan[0] == ' ') u8csUsed1(scan);
+    int tz_sign = 0;
+    if (!u8csEmpty(scan) && (*scan[0] == '+' || *scan[0] == '-')) {
+        tz_sign = (*scan[0] == '-') ? -1 : 1;
+        u8csUsed1(scan);
+        i64 tz_hhmm = 0;
+        u32 nd = git_drain_decimal(scan, &tz_hhmm);
+        if (nd > 0) {
+            i64 tz_secs = ((tz_hhmm / 100) * 3600) +
+                          ((tz_hhmm % 100) * 60);
+            epoch += tz_sign * tz_secs;
+        }
+    }
+
+    time_t e = (time_t)epoch;
+    struct tm tm = {};
+    if (gmtime_r(&e, &tm) == NULL) return;
+    ron60 r = 0;
+    if (RONOfTime(&r, &tm, 0) == OK) *ts = r;
+}
+
+void GITu8sParseCommit(u8cs body, git_commit *out) {
+    out->author_id[0] = out->author_id[1] = NULL;
+    out->subject[0]   = out->subject[1]   = NULL;
+    out->author_ts    = 0;
+
+    a_dup(u8c, scan, body);
+    u8cs field = {}, value = {};
+    u8cs message = {};
+    while (GITu8sDrainCommit(scan, field, value) == OK) {
+        if (u8csEmpty(field)) { u8csMv(message, value); break; }
+        if (u8csEq(field, GIT_FIELD_AUTHOR)) {
+            u8csc ident = {value[0], value[1]};
+            u8cs  name  = {}, email = {};
+            GITu8sIdent(ident, name, email, &out->author_ts);
+            //  author_id covers "Name <email>" — value head through
+            //  the closing '>'.  Find '>' via slice walk; truncate.
+            u8csMv(out->author_id, value);
+            a_dup(u8c, gt, value);
+            (void)u8csFind(gt, '>');
+            if (!u8csEmpty(gt)) {
+                u8csUsed1(gt);              //  step past '>'
+                out->author_id[1] = gt[0];  //  term = one past '>'
+            } else if (!u8csEmpty(name)) {
+                //  No email — keep just the (trimmed) name.
+                u8csMv(out->author_id, name);
+            }
+        }
+    }
+
+    //  Subject = first line of message (skip leading blanks, trim CR).
+    a_dup(u8c, msg, message);
+    while (!u8csEmpty(msg) && (*msg[0] == '\n' || *msg[0] == '\r'))
+        u8csUsed1(msg);
+    a_dup(u8c, sub, msg);
+    (void)u8csFind(sub, '\n');
+    u8cs subject_view = {msg[0], sub[0]};
+    while (!u8csEmpty(subject_view) && *u8csLast(subject_view) == '\r')
+        u8csShed1(subject_view);
+    u8csMv(out->subject, subject_view);
+}
+
 ok64 GITu8sCommitTree(u8cs commit, u8 tree_sha[20]) {
     sane(u8csOK(commit) && tree_sha);
     a_dup(u8c, body, commit);

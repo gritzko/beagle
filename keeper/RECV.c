@@ -28,13 +28,6 @@ static u8c const RECV_CAP_AGENT_PFX[]       = "agent=";
 
 // --- small helpers ---
 
-//  Hex-encode a sha1 into out40 (must hold 40 bytes).
-static void recv_sha_to_hex(u8 *out40, sha1 const *s) {
-    u8s hs = {out40, out40 + 40};
-    u8cs bs = {s->data, s->data + 20};
-    HEXu8sFeedSome(hs, bs);
-}
-
 //  Token equality.
 static b8 recv_token_eq(u8csc s, u8c const *tok, size_t tlen) {
     u8cs t = {(u8c *)tok, (u8c *)tok + tlen};
@@ -282,10 +275,10 @@ static ok64 recv_build_key(u8b out, u8csc refname) {
 //  Compose the to-URI value: bare 40-hex (canonical fragment form).
 static ok64 recv_build_val(u8b out, sha1 const *sha) {
     sane(u8bOK(out));
-    u8 hex[40];
-    recv_sha_to_hex(hex, sha);
-    u8csc hexs = {hex, hex + 40};
-    u8bFeed(out, hexs);
+    sha1hex hex = {};
+    sha1hexFromSha1(&hex, sha);
+    a_rawc(hexs, hex);
+    call(u8bFeed, out, hexs);
     done;
 }
 

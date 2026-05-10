@@ -31,6 +31,7 @@
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
@@ -61,10 +62,9 @@ static char const *map_glyph_for(u8 depth) {
 // --- Branch metadata ------------------------------------------------
 
 typedef struct {
-    char    path[MAP_PATH_MAX];
-    u16     path_len;
+    u8cs    path;            // slice into per-call strs_arena
     u8      depth;          // count of '/' in path; trunk = 0
-    u8      sha[40];        // tip sha (40 hex)
+    sha1hex sha;            // tip sha (40 hex)
     u64     tip_h40;        // 40-bit hashlet of tip
     Bwh128  ancestors;      // set populated via DAGAncestors
     b8      anc_init;
@@ -73,12 +73,12 @@ typedef struct {
 // --- Per-commit row -------------------------------------------------
 
 typedef struct {
-    u64 commit_h40;         // 40-bit hashlet
-    sha1 csha;              // full 20-byte sha
-    i64  ts;                // unix epoch seconds
-    u32  owner;             // index into branches[] (deepest claimant)
-    char summary[80];       // first line of commit message
-    char author[40];        // author name (best-effort)
+    u64   commit_h40;       // 40-bit hashlet
+    sha1  csha;             // full 20-byte sha
+    ron60 ts;               // packed wall-clock time (RONOfTime)
+    u32   owner;            // index into branches[] (deepest claimant)
+    u8cs  summary;          // first line of commit message (slice into arena)
+    u8cs  author;           // author name (slice into arena)
 } map_commit;
 
 // --- Helpers --------------------------------------------------------
@@ -87,28 +87,42 @@ static int map_branch_cmp_for_columns(void const *a_, void const *b_) {
     map_branch const *a = (map_branch const *)a_;
     map_branch const *b = (map_branch const *)b_;
     if (a->depth != b->depth) return (int)a->depth - (int)b->depth;
-    size_t ml = a->path_len < b->path_len ? a->path_len : b->path_len;
-    int c = memcmp(a->path, b->path, ml);
+    size_t alen = u8csLen(a->path), blen = u8csLen(b->path);
+    size_t ml = alen < blen ? alen : blen;
+    int c = (ml == 0) ? 0 : memcmp(a->path[0], b->path[0], ml);
     if (c != 0) return c;
-    return (int)a->path_len - (int)b->path_len;
+    return (int)alen - (int)blen;
 }
 
 static int map_commit_cmp_desc(void const *a_, void const *b_) {
     map_commit const *a = (map_commit const *)a_;
     map_commit const *b = (map_commit const *)b_;
-    //  Newest first.  Tie-break on hashlet for stability.
-    if (a->ts != b->ts) return (a->ts < b->ts) ? 1 : -1;
+    //  Newest first.  ron60 normalises so that lexicographic order
+    //  matches chronological order; compare via ron60Z.
+    if (ron60Z(&a->ts, &b->ts)) return 1;
+    if (ron60Z(&b->ts, &a->ts)) return -1;
     if (a->commit_h40 != b->commit_h40)
         return (a->commit_h40 < b->commit_h40) ? 1 : -1;
     return 0;
 }
 
-static b8 map_is_ancestor_of(char const *anc, u16 anc_len,
-                             char const *desc, u16 desc_len) {
-    if (anc_len == 0) return YES;
-    if (anc_len > desc_len) return NO;
-    if (memcmp(anc, desc, anc_len) != 0) return NO;
-    return anc_len == desc_len || desc[anc_len] == '/';
+//  ron60 (RON-packed wall-clock) → unix-epoch seconds for date
+//  rendering.  Mirror of sniff/SNIFF.exe.c's status_ron60_to_secs.
+static i64 map_ron60_to_secs(ron60 ts) {
+    if (ts == 0) return 0;
+    struct tm t = {};
+    if (RONToTime(ts, &t, NULL) != OK) return 0;
+    t.tm_isdst = -1;
+    time_t s = mktime(&t);
+    return s == (time_t)-1 ? 0 : (i64)s;
+}
+
+static b8 map_is_ancestor_of(u8csc anc, u8csc desc) {
+    size_t al = u8csLen(anc), dl = u8csLen(desc);
+    if (al == 0) return YES;
+    if (al > dl) return NO;
+    if (memcmp(anc[0], desc[0], al) != 0) return NO;
+    return al == dl || desc[0][al] == '/';
 }
 
 // --- Branch enumeration --------------------------------------------
@@ -117,6 +131,7 @@ typedef struct {
     map_branch *v;
     u32         n;
     u32         cap;
+    Bu8         arena;       //  borrowed: path bytes are interned here
 } map_set;
 
 static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
@@ -127,74 +142,36 @@ static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
     if ($len(t->sha) != 40) return OK;
 
     map_branch *b = &s->v[s->n++];
-    memset(b, 0, sizeof(*b));
-    memcpy(b->path, t->path[0], pl);
-    b->path_len = (u16)pl;
-    memcpy(b->sha, t->sha[0], 40);
+    zerop(b);
+    if (u8bFeed(s->arena, t->path) != OK) { s->n--; return OK; }
+    u8csMv(b->path, u8bDataC(s->arena));
+    (void)u8csUsedAll(u8bDataC(s->arena));
+    if (sha1hexFromHex(&b->sha, t->sha) != OK) {
+        s->n--;
+        return OK;
+    }
     //  Depth = number of path segments.  trunk = "" (0 segments, depth 0);
     //  "feat" → 1 segment, depth 1; "feat/sub" → 2 segments, depth 2.
     u8 d = pl > 0 ? 1 : 0;
-    for (size_t i = 0; i < pl; i++) if (b->path[i] == '/') d++;
+    $for(u8c, p, b->path) if (*p == '/') d++;
     b->depth = d;
 
     sha1 tip = {};
-    u8s sb = {tip.data, tip.data + 20};
-    u8cs hx = {b->sha, b->sha + 40};
-    if (HEXu8sDrainSome(sb, hx) != OK) {
-        s->n--;   // bad sha; drop this branch
+    if (sha1FromSha1hex(&tip, &b->sha) != OK) {
+        s->n--;
         return OK;
     }
     b->tip_h40 = WHIFFHashlet60(&tip);
     return OK;
 }
 
-// --- Commit body parse: ts (author) + summary ----------------------
-
-static void map_parse_commit_body(u8cs body, i64 *ts_out,
-                                  char *summary, size_t scap,
-                                  char *author, size_t acap) {
-    *ts_out = 0;
-    summary[0] = 0;
-    if (acap > 0) author[0] = 0;
-    a_dup(u8c, scan, body);
-    u8cs field = {}, value = {};
-    u8cs message = {};
-    while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if (u8csEmpty(field)) { $mv(message, value); break; }
-        a_cstr(fa, "author");
-        if ($eq(field, fa)) {
-            //  "Name <email> ts tz" — extract ts and name.
-            u8cp lt = value[0];
-            while (lt < value[1] && *lt != '<') lt++;
-            u8cp ne = lt;
-            while (ne > value[0] && *(ne - 1) == ' ') ne--;
-            size_t nl = (size_t)(ne - value[0]);
-            if (nl >= acap) nl = acap > 0 ? acap - 1 : 0;
-            if (nl > 0) {
-                memcpy(author, value[0], nl);
-                author[nl] = 0;
-            }
-            u8cp gt = lt;
-            while (gt < value[1] && *gt != '>') gt++;
-            if (gt < value[1]) gt++;
-            while (gt < value[1] && *gt == ' ') gt++;
-            i64 ts = 0;
-            while (gt < value[1] && *gt >= '0' && *gt <= '9') {
-                ts = ts * 10 + (*gt - '0');
-                gt++;
-            }
-            *ts_out = ts;
-        }
-    }
-    //  First non-empty line of message → summary.
-    u8cp ms = message[0];
-    while (ms < message[1] && (*ms == '\n' || *ms == '\r')) ms++;
-    u8cp me = ms;
-    while (me < message[1] && *me != '\n' && *me != '\r') me++;
-    size_t n = (size_t)(me - ms);
-    if (n >= scap) n = scap > 0 ? scap - 1 : 0;
-    if (n > 0) memcpy(summary, ms, n);
-    summary[n] = 0;
+//  Intern a slice into `arena`: feed bytes, snapshot the new DATA
+//  range as `out`, then UsedAll so subsequent feeds extend cleanly.
+static void map_intern(Bu8 arena, u8csp out, u8csc src) {
+    if (u8csEmpty(src)) return;
+    if (u8bFeed(arena, src) != OK) return;
+    u8csMv(out, u8bDataC(arena));
+    (void)u8csUsedAll(u8bDataC(arena));
 }
 
 // --- Main -----------------------------------------------------------
@@ -206,33 +183,47 @@ ok64 GRAFMap(uricp u) {
     //  Resolve current branch (path) so we can compute the include
     //  filter (current ∪ ancestors-to-trunk ∪ descendants).  Sourced
     //  from `--at <root>?<branch>#<sha>` forwarded by `be` and parked
+    //  Per-call arena for path / summary / author bytes — every slice
+    //  in map_branch / map_commit points into here.
+    Bu8 strs_arena = {};
+    if (u8bAllocate(strs_arena, 1UL << 20) != OK) fail(GRAFFAIL);
+
     //  in `KEEP.h->cur_branch` by HOMEOpen.  Empty branch == trunk.
-    char cur_path[MAP_PATH_MAX] = {0};
-    u16  cur_len = 0;
+    u8cs cur_path = {};
     {
         a_dup(u8c, cb, u8bData(KEEP.h->cur_branch));
-        size_t cl = (size_t)$len(cb);
-        if (cl > 0 && cb[0][0] == '?') { u8csUsed1(cb); cl--; }
-        if (cl >= MAP_PATH_MAX) cl = MAP_PATH_MAX - 1;
-        if (cl > 0) memcpy(cur_path, cb[0], cl);
-        cur_len = (u16)cl;
+        if (!u8csEmpty(cb) && *cb[0] == '?') u8csUsed1(cb);
+        if (u8csLen(cb) > 0) {
+            if (u8bFeed(strs_arena, cb) != OK) {
+                u8bFree(strs_arena);
+                fail(GRAFFAIL);
+            }
+            u8csMv(cur_path, u8bDataC(strs_arena));
+            (void)u8csUsedAll(u8bDataC(strs_arena));
+        }
     }
 
     //  Pull every local-branch tip, then keep only those in the
     //  ancestors-or-descendants window of the current branch.
     map_branch *all = (map_branch *)calloc(MAP_MAX_BRANCHES, sizeof(*all));
-    if (!all) fail(GRAFFAIL);
-    map_set s = {.v = all, .n = 0, .cap = MAP_MAX_BRANCHES};
+    if (!all) { u8bFree(strs_arena); fail(GRAFFAIL); }
+    map_set s = {.v = all, .n = 0, .cap = MAP_MAX_BRANCHES,
+                 .arena = {strs_arena[0], strs_arena[1],
+                           strs_arena[2], strs_arena[3]}};
     call(KEEPEachTip, &KEEP, map_collect_cb, &s);
+    //  KEEPEachTip mutates s.arena's data/idle pointers in place.  Sync
+    //  the outer arena so subsequent feeds continue from where it left.
+    strs_arena[1] = s.arena[1];
+    strs_arena[2] = s.arena[2];
 
     map_branch *kept = (map_branch *)calloc(MAP_MAX_BRANCHES, sizeof(*kept));
     u32 nk = 0;
     for (u32 i = 0; i < s.n && nk < MAP_MAX_BRANCHES; i++) {
         map_branch const *b = &s.v[i];
-        b8 anc  = map_is_ancestor_of(b->path, b->path_len,
-                                     cur_path, cur_len);
-        b8 desc = map_is_ancestor_of(cur_path, cur_len,
-                                     b->path, b->path_len);
+        u8csc bp = {b->path[0], b->path[1]};
+        u8csc cp = {cur_path[0], cur_path[1]};
+        b8 anc  = map_is_ancestor_of(bp, cp);
+        b8 desc = map_is_ancestor_of(cp, bp);
         if (anc || desc) kept[nk++] = *b;
     }
     free(all);
@@ -311,12 +302,6 @@ ok64 GRAFMap(uricp u) {
         sha1 csha = {};
         KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
 
-        i64 ts = 0;
-        char summary[80] = {0};
-        char author[40]  = {0};
-        map_parse_commit_body(body, &ts, summary, sizeof(summary),
-                              author, sizeof(author));
-
         u32 owner = nk;
         for (u32 i = 0; i < nk; i++) {
             if (DAGAncestorsHas(kept[i].ancestors, h40)) {
@@ -325,13 +310,17 @@ ok64 GRAFMap(uricp u) {
         }
         if (owner == nk) continue;
 
+        git_commit gc = {};
+        GITu8sParseCommit(body, &gc);
         map_commit *mc = &commits[ncommits++];
         mc->commit_h40 = h40;
         mc->csha = csha;
-        mc->ts = ts;
         mc->owner = owner;
-        memcpy(mc->summary, summary, sizeof(mc->summary));
-        memcpy(mc->author,  author,  sizeof(mc->author));
+        mc->ts = gc.author_ts;
+        u8csc gc_subject_c   = {gc.subject[0],   gc.subject[1]};
+        u8csc gc_author_id_c = {gc.author_id[0], gc.author_id[1]};
+        map_intern(strs_arena, mc->summary, gc_subject_c);
+        map_intern(strs_arena, mc->author,  gc_author_id_c);
     }
     u8bUnMap(cbuf);
 
@@ -373,27 +362,22 @@ ok64 GRAFMap(uricp u) {
         u8 date_buf[8];
         u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
         u8cp date_start = date_into[0];
-        (void)DOGutf8sFeedDate(date_into, mc->ts, now);
+        (void)DOGutf8sFeedDate(date_into,
+                               map_ron60_to_secs(mc->ts), now);
         u8cs date_slice = {date_start, date_into[0]};
         (void)u8bFeed(text, date_slice);
         (void)u8bFeed1(text, ' ');
         //  branch + summary
         map_branch const *ob = &kept[mc->owner];
-        if (ob->path_len == 0) {
+        if (u8csEmpty(ob->path)) {
             a_cstr(trunk_s, "trunk");
             (void)u8bFeed(text, trunk_s);
         } else {
             (void)u8bFeed1(text, '?');
-            u8cs path_s = {(u8c *)ob->path,
-                           (u8c *)ob->path + ob->path_len};
-            (void)u8bFeed(text, path_s);
+            (void)u8bFeed(text, ob->path);
         }
         (void)u8bFeed1(text, ' ');
-        if (mc->summary[0]) {
-            u8cs sum_s = {(u8c *)mc->summary,
-                          (u8c *)mc->summary + strlen(mc->summary)};
-            (void)u8bFeed(text, sum_s);
-        }
+        if (!u8csEmpty(mc->summary)) (void)u8bFeed(text, mc->summary);
         (void)u8bFeed1(text, '\n');
     }
 
@@ -417,6 +401,7 @@ ok64 GRAFMap(uricp u) {
         if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
     if (own_graf) GRAFClose();
     free(kept);
+    u8bFree(strs_arena);
     done;
 
 cleanup_commits:
@@ -428,5 +413,6 @@ cleanup_branches:
         if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
     if (own_graf) GRAFClose();
     free(kept);
+    u8bFree(strs_arena);
     fail(GRAFFAIL);
 }

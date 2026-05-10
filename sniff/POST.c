@@ -2003,50 +2003,6 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     done;
 }
 
-//  Strip the trailing "<token>" plus the spaces before it from a
-//  slice — used to peel off "<ts>" and "<tz>" from an "author"
-//  field value, leaving "Name <email>".  Caller's slice cells are
-//  mutated in place via Shed1.
-static void post_trim_trailing_token(u8cs s) {
-    while (!u8csEmpty(s) && *u8csLast(s) == ' ') u8csShed1(s);
-    while (!u8csEmpty(s) && *u8csLast(s) != ' ') u8csShed1(s);
-}
-
-//  Walk a commit body once, extract the subject (first line of the
-//  message body) and the "Name <email>" identity from the "author"
-//  field.  Both outputs may stay empty when the field is missing.
-//  Slices point into `body_in`; valid for as long as `body_in` is.
-static void post_parse_commit_meta(u8cs body_in,
-                                   u8cs subject_out,
-                                   u8cs author_id_out) {
-    a_dup(u8c, body, body_in);
-    u8cs field = {}, value = {};
-    while (GITu8sDrainCommit(body, field, value) == OK) {
-        if (u8csEmpty(field)) {
-            //  Reached the body separator; `value` is the whole body.
-            //  Subject is `value` up to (not including) the first '\n'.
-            u8csMv(subject_out, value);
-            a_dup(u8c, scan, value);
-            if (u8csFind(scan, '\n') == OK) {
-                u8cs head = {value[0], scan[0]};
-                u8csMv(subject_out, head);
-            }
-            break;
-        }
-        a_cstr(author_lit, "author");
-        if ($eq(field, author_lit)) {
-            u8csMv(author_id_out, value);
-            //  Drop "<tz>" then "<ts>" plus any trailing spaces.
-            post_trim_trailing_token(author_id_out);
-            post_trim_trailing_token(author_id_out);
-            while (!u8csEmpty(author_id_out) &&
-                   *u8csLast(author_id_out) == ' ') {
-                u8csShed1(author_id_out);
-            }
-        }
-    }
-}
-
 ok64 POSTPatchDefaults(u8cs reporoot,
                        u8b msg_buf,  u8cs *msg_out,
                        u8b auth_buf, u8cs *auth_out,
@@ -2092,10 +2048,12 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
 
+    git_commit gc = {};
+    GITu8sParseCommit(u8bDataC(cbuf), &gc);
     u8cs pick_subject   = {};
     u8cs pick_author_id = {};
-    post_parse_commit_meta(u8bDataC(cbuf),
-                           pick_subject, pick_author_id);
+    u8csMv(pick_subject,   gc.subject);
+    u8csMv(pick_author_id, gc.author_id);
 
     //  MERGE shape: msg is the row's fragment (user-supplied),
     //  override the keeper-fetched subject.

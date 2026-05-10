@@ -127,6 +127,33 @@ ok64 GITu8sDrainTree(u8cs obj, u8csp file, u8csp sha1, u32 *mode);
 //  as `value`.  Returns NODATA when exhausted.
 ok64 GITu8sDrainCommit(u8cs obj, u8csp field, u8csp value);
 
+//  Decompose a git ident line ("Name <email> ts tz", as carried by
+//  `author` / `committer` fields) into its parts.  Slices point into
+//  `ident`; any output may be empty/zero when the format doesn't
+//  match.  Trailing whitespace inside `name` is trimmed.
+//
+//  Timestamp is converted from the line's "ts tz" pair (unix-epoch
+//  seconds + RFC822 zone offset) to a `ron60` packed encoding via
+//  RONOfTime — the canonical ABC time form.  0 on missing/malformed.
+void GITu8sIdent(u8csc ident, u8csp name, u8csp email, ron60 *ts);
+
+//  Light commit-meta extracted from a commit body — what's needed
+//  for status / log / map renderers.  Slices point into the body
+//  and are valid for as long as it is.  `author_ts` is ron60.
+typedef struct {
+    u8cs  author_id;     // "Name <email>" (ts/tz trimmed)
+    u8cs  subject;       // first line of the message
+    ron60 author_ts;     // ron60 (RONOfTime) packed wall-clock
+} git_commit;
+
+//  Single-pass commit-body scanner — walks the headers via
+//  GITu8sDrainCommit, picks `author` (decomposed via GITu8sIdent),
+//  and the first line of the message body as `subject`.  Other
+//  headers are ignored — for finer-grained extraction (tree,
+//  parents, gpgsig, custom trailers, etc.) drive `GITu8sDrainCommit`
+//  directly.
+void GITu8sParseCommit(u8cs body, git_commit *out);
+
 //  Parse the "tree <hex>" header from a commit body and write the
 //  20-byte binary SHA-1 into tree_sha.  Returns GITBADFMT if the
 //  tree line is missing or malformed.

@@ -36,14 +36,6 @@
 #include "keeper/SHA1.h"
 #include "keeper/ZINF.h"
 
-// --- small slice helpers ------------------------------------------------
-
-static void wcli_sha_to_hex(u8 *out40, sha1 const *s) {
-    u8s hs = {out40, out40 + 40};
-    u8cs bs = {s->data, s->data + 20};
-    HEXu8sFeedSome(hs, bs);
-}
-
 // --- pkt-line drain with refill ----------------------------------------
 
 #define WCLI_BUF (1u << 16)
@@ -529,9 +521,9 @@ static ok64 wcli_send_request(int wfd, sha1 const *want_sha,
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        u8 hex[40];
-        wcli_sha_to_hex(hex, want_sha);
-        u8csc hexs = {hex, hex + 40};
+        sha1hex hex = {};
+        sha1hexFromSha1(&hex, want_sha);
+        a_rawc(hexs, hex);
         u8bFeed(line, hexs);
         //  Request side-band-64k so the server multiplexes its
         //  "Counting/Compressing/Receiving objects…" progress text
@@ -553,9 +545,9 @@ static ok64 wcli_send_request(int wfd, sha1 const *want_sha,
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        u8 hex[40];
-        wcli_sha_to_hex(hex, &haves[i]);
-        u8csc hexs = {hex, hex + 40};
+        sha1hex hex = {};
+        sha1hexFromSha1(&hex, &haves[i]);
+        a_rawc(hexs, hex);
         u8bFeed(line, hexs);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
@@ -634,8 +626,7 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
 
 typedef struct {
     sha1 sha;
-    u8   name[WIRECLI_REFNAME_CAP];
-    u32  name_len;
+    u8cs name;   //  slice into the per-call names_arena
 } wcli_advert_ref;
 
 ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
@@ -647,10 +638,14 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
     ok64 so = wcli_spawn(remote_uri, "upload-pack", &wfd, &rfd, &pid);
     if (so != OK) return WIRECLFL;
 
-    Bu8 advbuf = {};
-    Bu8 frame  = {};
+    Bu8 advbuf      = {};
+    Bu8 frame       = {};
+    Bu8 names_arena = {};
     ok64 rv = WIRECLFL;
     if (u8bAllocate(advbuf, WCLI_BUF) != OK) goto fa_close;
+    if (u8bAllocate(names_arena,
+                    WIRECLI_FETCHALL_MAX * WIRECLI_REFNAME_CAP) != OK)
+        goto fa_close;
 
     wcli_advert_ref refs[WIRECLI_FETCHALL_MAX];
     u32 nrefs = 0;
@@ -690,11 +685,12 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
                 break;
             }
             refs[nrefs].sha = sha;
-            size_t nlen = (size_t)u8csLen(name);
-            if (nlen > sizeof(refs[nrefs].name))
-                nlen = sizeof(refs[nrefs].name);
-            memcpy(refs[nrefs].name, name[0], nlen);
-            refs[nrefs].name_len = (u32)nlen;
+            //  Feed the name into the arena, snapshot the just-fed
+            //  range as the record's slice, then UsedAll so the next
+            //  Feed grows from a fresh DATA boundary.
+            if (u8bFeed(names_arena, name) != OK) goto fa_close;
+            u8csMv(refs[nrefs].name, u8bDataC(names_arena));
+            (void)u8csUsedAll(u8bDataC(names_arena));
             nrefs++;
         }
     }
@@ -716,9 +712,9 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        u8 hex[40];
-        wcli_sha_to_hex(hex, &refs[i].sha);
-        u8csc hexs = {hex, hex + 40};
+        sha1hex hex = {};
+        sha1hexFromSha1(&hex, &refs[i].sha);
+        a_rawc(hexs, hex);
         u8bFeed(line, hexs);
         if (i == 0) {
             a_cstr(caps_s, " side-band-64k ofs-delta\n");
@@ -734,9 +730,9 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        u8 hex[40];
-        wcli_sha_to_hex(hex, &haves[i]);
-        u8csc hexs = {hex, hex + 40};
+        sha1hex hex = {};
+        sha1hexFromSha1(&hex, &haves[i]);
+        a_rawc(hexs, hex);
         u8bFeed(line, hexs);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
@@ -762,7 +758,7 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
     //     but no ref row means no cached lookup for that name.
     u32 recorded = 0;
     for (u32 i = 0; i < nrefs; i++) {
-        u8csc wire_name = {refs[i].name, refs[i].name + refs[i].name_len};
+        u8csc wire_name = {refs[i].name[0], refs[i].name[1]};
         gitref_kind kk = GITREF_NONE;
         u8cs be_bare = {};
         if (wcli_wire_to_be(wire_name, &kk, be_bare) != OK) continue;
@@ -776,9 +772,8 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
         ok64 rr = wcli_record_ref(k, remote_uri, be_name, &refs[i].sha);
         if (rr != OK) {
             fprintf(stderr,
-                "be: wcli_record_ref %.*s failed: %s\n",
-                (int)refs[i].name_len, (char *)refs[i].name,
-                ok64str(rr));
+                "be: wcli_record_ref " U8SFMT " failed: %s\n",
+                u8sFmt(refs[i].name), ok64str(rr));
             continue;
         }
         recorded++;
@@ -788,8 +783,9 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
     rv = OK;
 
 fa_close:
-    if (frame[0])  u8bFree(frame);
-    if (advbuf[0]) u8bFree(advbuf);
+    if (frame[0])       u8bFree(frame);
+    if (names_arena[0]) u8bFree(names_arena);
+    if (advbuf[0])      u8bFree(advbuf);
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
@@ -1218,15 +1214,15 @@ static ok64 wpush_send_update(int wfd, sha1 const *old_sha,
     call(u8bAllocate, frame, 1024);
 
     a_pad(u8, line, 512);
-    u8 oh[40], nh[40];
+    sha1hex oh = {}, nh = {};
     if (have_old) {
-        wcli_sha_to_hex(oh, old_sha);
+        sha1hexFromSha1(&oh, old_sha);
     } else {
-        memset(oh, '0', 40);
+        memset(oh.data, '0', 40);
     }
-    wcli_sha_to_hex(nh, new_sha);
-    u8csc oh_s = {oh, oh + 40};
-    u8csc nh_s = {nh, nh + 40};
+    sha1hexFromSha1(&nh, new_sha);
+    a_rawc(oh_s, oh);
+    a_rawc(nh_s, nh);
     u8bFeed(line, oh_s);
     u8bFeed1(line, ' ');
     u8bFeed(line, nh_s);
