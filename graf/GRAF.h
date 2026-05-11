@@ -84,7 +84,7 @@ ok64 GRAFOpen(home *h, b8 rw);
 
 //  Branch-aware Open.  Normalizes `branch` via DPATHBranchNormFeed,
 //  registers it on the home singleton via HOMEOpenBranch, then walks
-//  trunk → … → leaf under `<root>/.dogs/graf/`, calling
+//  trunk → … → leaf under `<root>/.be/`, calling
 //  `DOGPupOpenAll(GRAF.puppies, dir, ".graf.idx")` per dir.  Locks
 //  the leaf's `.lock` when rw.  Refreshes the typed `runs[]` view.
 //  Mirrors `KEEPOpenBranch`.  Missing prefix dirs return `GRAFNOPATH`.

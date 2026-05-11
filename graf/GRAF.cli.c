@@ -11,7 +11,7 @@ static ok64 grafcli_inner(cli *c) {
     call(FILEInit);
     call(CLIParse, c, GRAF_CLI_VERBS, GRAF_CLI_VAL_FLAGS);
 
-    // Most graf verbs read .dogs/graf/; index writes. Use rw=YES to
+    // Most graf verbs read .be/; index writes. Use rw=YES to
     // keep parity with the previous behavior (always mkdir -p).
     //
     // Prefer `--at` from be; fall back to cwd-walk via c.repo.

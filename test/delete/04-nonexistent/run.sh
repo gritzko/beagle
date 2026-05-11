@@ -10,13 +10,13 @@ echo "tracked" > a.txt
 "$BE" put a.txt        > /dev/null
 "$BE" post 'baseline'  > /dev/null
 
-ROWS_BEFORE=$(wc -l < .sniff)
+ROWS_BEFORE=$(wc -l < .be/wtlog)
 
 "$BE" delete typo.txt > /dev/null
 
-ROWS_AFTER=$(wc -l < .sniff)
+ROWS_AFTER=$(wc -l < .be/wtlog)
 [ "$ROWS_BEFORE" = "$ROWS_AFTER" ] || {
-    echo "FAIL: .sniff grew by $((ROWS_AFTER - ROWS_BEFORE)) row(s) — expected 0" >&2
-    tail .sniff >&2
+    echo "FAIL: .be/wtlog grew by $((ROWS_AFTER - ROWS_BEFORE)) row(s) — expected 0" >&2
+    tail .be/wtlog >&2
     exit 1
 }

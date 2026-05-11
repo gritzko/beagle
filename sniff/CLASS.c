@@ -50,7 +50,7 @@ static ok64 class_baseline_tree(sha1 *out, b8 *have_out) {
 
 // --- Staged put/delete row collector ---
 //
-//  Walks `.sniff` rows since the last post via `SNIFFAtScanPutDelete`,
+//  Walks `.be/wtlog` rows since the last post via `SNIFFAtScanPutDelete`,
 //  emitting per-row ULOG bytes into the matching unsorted buffer.
 //  Sort is the heap-merge's job; we just produce two cursors.
 

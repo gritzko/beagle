@@ -14,13 +14,13 @@
 
 # ----- helpers used internally ---------------------------------------
 
-#  Latest sha recorded in .sniff (most recent get/post/patch row).
+#  Latest sha recorded in .be/wtlog (most recent get/post/patch row).
 sp_head_hex() {
     awk -F'\t' '$2=="post"||$2=="get"||$2=="patch" { last=$3 }
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Tip of a labelled branch via `keeper refs`.
@@ -88,15 +88,15 @@ sp_make_dirty() {
 sp_poison_refs() {
     key=$1                                    # e.g. "?" or "?feat"
     fake="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-    ts=$(awk 'END { print $1 }' .dogs/refs)
-    printf '%sz\tpost\t%s#%s\n' "$ts" "$key" "$fake" >> .dogs/refs
+    ts=$(awk 'END { print $1 }' .be/refs)
+    printf '%sz\tpost\t%s#%s\n' "$ts" "$key" "$fake" >> .be/refs
 }
 
 #  Drop tracked files from disk (simulating a wiped wt).  Useful for
 #  GET-restores-files scenarios.
 sp_wipe_wt() {
     find . -type f \
-        -not -path './.dogs' -not -path './.dogs/*' \
-        -not -name '.sniff' -not -name '.sniff.pid' \
+        -not -path './.be' -not -path './.be/*' \
+        -not -name '.be/wtlog' -not -name '.be/sniff.pid' \
         -delete 2>/dev/null || true
 }

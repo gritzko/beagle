@@ -64,7 +64,7 @@ SRC_REL=${SRC#$HOME/}
 
 # --- 2. seed keeper mirror (server side); sniff-free. ---
 KSRV=$TMP/keeper-srv
-mkdir -p "$KSRV/.dogs/keeper"
+mkdir -p "$KSRV/.be"
 cd "$KSRV"
 for REF in refs/tags/v1 refs/tags/v2 refs/heads/master; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null
@@ -75,7 +75,7 @@ KSRV_REL=${KSRV#$HOME/}
 git clone --quiet --no-checkout "ssh://localhost/$SRC" "$TMP/git-oracle"
 
 # --- 4. fresh keeper client; iterate v1 → v2 → master ---
-mkdir -p "$TMP/be-client/.dogs/keeper"
+mkdir -p "$TMP/be-client/.be"
 
 #  Step table: <name> <git-ref> <keeper-fetch-ref> <keeper-projector-ref>
 #  - git-ref       : how git names the ref (`git show <git-ref>:<path>`)

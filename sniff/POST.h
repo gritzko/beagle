@@ -27,7 +27,7 @@
 //      baseline branch (same-branch POST).
 //    * non-empty — cross-branch POST: the new commit goes on
 //      `?<target_branch>`, the wt's recorded baseline branch is
-//      left untouched in REFS, and `.sniff` is reset to
+//      left untouched in REFS, and `.be/wtlog` is reset to
 //      `(target_branch, new_tip)`.  Refused when the target
 //      branch's REFS tip exists and is not an ancestor of the wt's
 //      recorded base (non-ff).

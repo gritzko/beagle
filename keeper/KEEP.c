@@ -1,6 +1,6 @@
 //  KEEP: local git object store.
 //
-//  Stores git packfiles under .dogs/ (trunk-flat) indexed by u64→w64
+//  Stores git packfiles under .be/ (trunk-flat) indexed by u64→w64
 //  in LSM sorted runs of wh128 entries.
 //
 #include "KEEP.h"
@@ -54,7 +54,7 @@ u8c *const KEEP_DIR_S[2] = {
 
 // --- Helpers ---
 
-// Build <h->root>/.dogs/ into `out`.  The worktree root has
+// Build <h->root>/.be/ into `out`.  The worktree root has
 // already been resolved by HOMEOpen.
 static ok64 keep_resolve_dir(path8b out, home *h) {
     sane(out && h);
@@ -66,7 +66,7 @@ static ok64 keep_resolve_dir(path8b out, home *h) {
     done;
 }
 
-// Build <h->root>/.dogs[/<branch>] into `out` (NUL-terminated path).
+// Build <h->root>/.be[/<branch>] into `out` (NUL-terminated path).
 // Empty branch → trunk dir.  `branch` may be in DPATHBranchNormFeed
 // canonical form (trailing '/'); PATHu8bAdd splits on '/' and pushes
 // each segment, so trailing slash is harmless.
@@ -331,7 +331,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
 
     //  Worktree sharing: take an exclusive lock on the LEAF dir (writes
     //  only land in the deepest dir).  For trunk leaf this is
-    //  `.dogs/.lock`.  Readers open lockless — the idx-before-packs
+    //  `.be/.lock`.  Readers open lockless — the idx-before-packs
     //  scan order plus idx-via-rename publication keep readers
     //  consistent without blocking on slow writers.
     if (rw) {
@@ -1112,7 +1112,7 @@ static ok64 keep_leaf_name(path8b out, u32 seqno, u8csc ext) {
 }
 
 //  Compose "<kdir>/NNNNN.keeper" into `out` (reset first).
-//  `kdir` is the `.dogs` prefix (absolute or relative, no trailing
+//  `kdir` is the `.be` prefix (absolute or relative, no trailing
 //  slash).  `PATHu8bDup` preserves any leading '/' that a
 //  segment-wise `PATHu8bAdd` would eat as an empty prefix segment.
 static ok64 keep_pack_path(path8b out, u8csc kdir, u32 file_id) {
@@ -1197,7 +1197,7 @@ ok64 KEEPPackOpen(keeper *k, keep_pack *p) {
     call(u8bMap, p->delta_instr, KEEP_BUFSZ);
 
     // Pack lands in the active leaf-branch dir (writes only land at
-    // the leaf; trunk leaf collapses to <root>/.dogs/).
+    // the leaf; trunk leaf collapses to <root>/.be/).
     a_path(kdir);
     call(keep_branch_dir, kdir, k->h, u8bDataC(k->leaf_branch));
 

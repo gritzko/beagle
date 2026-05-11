@@ -54,7 +54,7 @@ KSRV=$TMP/keeper-srv
 mkdir -p "$KSRV"
 cd "$KSRV"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 be get "//localhost/$SRC_REL"
 KSRV_REL=${KSRV#$HOME/}
 
@@ -70,12 +70,12 @@ git clone --quiet --upload-pack="PATH='$BIN':\$PATH keeper upload-pack" \
 mkdir -p "$TMP/be-clone"
 cd "$TMP/be-clone"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 be get "be://localhost/$KSRV_REL"
 
 # --- 5. compare worktrees ---
 RDIFF=$(rsync -rlcni --delete \
-    --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+    --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
     "$TMP/git-clone/" "$TMP/be-clone/" 2>&1)
 if [ -n "$RDIFF" ]; then
     echo "FAIL: clone-from-keeper: worktrees differ"
@@ -90,15 +90,15 @@ sh "$VERIFY" "$KSRV"         || { echo "FAIL: keeper mirror refs not canonical";
 sh "$VERIFY" "$TMP/be-clone" || { echo "FAIL: be-clone refs not canonical";    exit 1; }
 
 # --- 7. idempotency: a repeat `be get` against the keeper mirror must
-#         leave .dogs bit-identical.  Per keeper/LOG.md: the log is
+#         leave .be bit-identical.  Per keeper/LOG.md: the log is
 #         append-of-packs; a no-op fetch produces zero file changes.
-snapshot_dogs() { (cd "$1/.dogs" && find . -type f -not -name '.lock' \
+snapshot_dogs() { (cd "$1/.be" && find . -type f -not -name '.lock' \
     | sort | xargs sha256sum); }
 SNAP1=$(snapshot_dogs "$TMP/be-clone")
 be get "be://localhost/$KSRV_REL"
 SNAP2=$(snapshot_dogs "$TMP/be-clone")
 if [ "$SNAP1" != "$SNAP2" ]; then
-    echo "FAIL: repeat be get changed files in .dogs"
+    echo "FAIL: repeat be get changed files in .be"
     diff <(printf '%s\n' "$SNAP1") <(printf '%s\n' "$SNAP2") | head -20
     exit 1
 fi

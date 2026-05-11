@@ -113,10 +113,10 @@ ok64 SNIFFAtHelpers() {
         call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &_r0);
         t_repo = _r0.ts; v_repo = _r0.verb; ru = _r0.uri;
         want(v_repo == vr);
-        //  URI path is `/…/.dogs/`.
+        //  URI path is `/…/.be/`.
         a_dup(u8c, rp, ru.path);
-        want($len(rp) >= 7);
-        a_cstr(tail, ".dogs/");
+        a_cstr(tail, DOG_BE_NAME "/");
+        want($len(rp) >= $len(tail));
         want(memcmp(rp[1] - $len(tail), tail[0], $len(tail)) == 0);
     }
     ron60 base = t_repo + 1000;
@@ -614,7 +614,8 @@ ok64 SNIFFRoundTrip_stash() {
     {
         char cmd[300];
         snprintf(cmd, sizeof(cmd),
-                 "rm -rf %s/.dogs/sniff %s/a.txt %s/b.txt %s/c.txt %s/d.txt",
+                 "rm -rf %s/" DOG_BE_NAME "/" DOG_WTLOG_NAME
+                 " %s/a.txt %s/b.txt %s/c.txt %s/d.txt",
                  g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir);
         system(cmd);
     }
@@ -682,26 +683,26 @@ ok64 SNIFFRoundTrip_stash() {
 //
 //  Build a small wt fixture, call SNIFFWtListPaths, assert the (paths,
 //  meta) bytes match the expected lex-sorted layout.  Exercises the
-//  meta-file filter (`.sniff*`, `.dogs/`) and the kind classification
-//  (REG vs EXE vs LNK).
+//  meta-file filter (`.be/`) and the kind classification (REG vs EXE
+//  vs LNK).
 
 ok64 SNIFFWtListPathsTest() {
     sane(1);
     call(make_tmpdir);
 
     //  Files: a.txt (REG), b/c.txt (REG), run.sh (EXE), link (LNK→a.txt).
-    //  Meta to filter: .sniff (file at root), .dogs/ (dir at root).
+    //  Meta to filter: .be/ (dir at root) — covers wtlog, refs, config,
+    //  and per-branch puppy files.
     char buf[400];
     snprintf(buf, sizeof(buf),
-             "mkdir -p %s/b %s/.dogs && "
+             "mkdir -p %s/b %s/" DOG_BE_NAME " && "
              "echo a > %s/a.txt && "
              "echo c > %s/b/c.txt && "
              "echo r > %s/run.sh && chmod +x %s/run.sh && "
              "ln -s a.txt %s/zlink && "
-             "touch %s/.sniff && "
-             "echo x > %s/.dogs/dummy",
+             "echo x > %s/" DOG_BE_NAME "/dummy",
              g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir,
-             g_tmpdir, g_tmpdir, g_tmpdir);
+             g_tmpdir, g_tmpdir);
     want(system(buf) == 0);
 
     a_dup(u8c, root, ((u8cs){(u8cp)g_tmpdir, (u8cp)g_tmpdir + strlen(g_tmpdir)}));

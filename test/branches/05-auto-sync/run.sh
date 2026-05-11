@@ -28,7 +28,9 @@ note "§25: ?fix1 at $F25_C1 (cur)"
 # A peer wt shares the keeper, advances trunk while cur is on ?fix1.
 WT25="$ETMP/wt25"
 mkdir -p "$WT25"
-ln -s "$WT/.dogs" "$WT25/.dogs"
+# Secondary wt: `.be` is a regular file = its own wtlog seeded from
+# the primary's (row-0 `repo` URI names the shared store).
+cp "$WT/.be/wtlog" "$WT25/.be"
 ( cd "$WT25" && "$BE" get "?" >/dev/null ) \
     || fail "§25: WT25 be get ? failed"
 ( cd "$WT25" && sleep 0.01 && echo "trunk advance 25" > tr25.txt \

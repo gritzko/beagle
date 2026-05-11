@@ -5,9 +5,9 @@
 # case dir does not require a CMake edit (re-run cmake to refresh).
 
 # IMPORTANT: TMP must live OUTSIDE the dogs source tree.  `be` walks
-# upward from the cwd looking for an existing `.dogs/` and would
+# upward from the cwd looking for an existing `.be/` and would
 # otherwise glue the test scratch onto the project's own repo
-# (`/.../dogs/.dogs/`).  Use the timestamped run dir already created
+# (`/.../dogs/.be/`).  Use the timestamped run dir already created
 # by the top-level CMakeLists.txt for the existing toy-repo tests.
 set(_BE_TEST_TMP "${DOG_TEST_TMP_ROOT}/be-test")
 file(MAKE_DIRECTORY "${_BE_TEST_TMP}")

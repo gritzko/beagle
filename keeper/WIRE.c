@@ -142,7 +142,7 @@ out:;
 
 // --- segment builder ---
 
-//  Compose <root>/.dogs/NNNNN.keeper into `out` (reset first).
+//  Compose <root>/.be/NNNNN.keeper into `out` (reset first).
 //  Mirrors KEEP.c's static keep_pack_path; replicated here because
 //  that helper isn't exposed.  `kdir` is the dir prefix (trunk or a
 //  branch subdir) the caller already resolved.

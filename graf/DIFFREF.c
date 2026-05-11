@@ -242,7 +242,7 @@ static ok64 diffref_collect_visit(u8cs path, u8 kind, u8cp esha,
 //  full keeper blob fetch + tokenize + diff.
 
 //  Skip predicate for the wt scanner.  `IGNOMatch` already handles
-//  unconditional `.git/.dogs/.sniff` skipping (at any depth, including
+//  unconditional `.git/.be/.be/wtlog` skipping (at any depth, including
 //  nested submodule `.git/`s) AND any `.gitignore` patterns the
 //  caller loaded into the `igno` struct via `IGNOLoad(reporoot)`.
 static b8 diffref_wt_skip(u8cs rel, void *ctx) {
@@ -385,7 +385,7 @@ ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
 
     //  Wt side: filesystem walk → ULOG rows (no sha; computed on demand).
     //  Load reporoot's `.gitignore` so build/Corpus/etc. drop out; the
-    //  meta dirs (`.git/.dogs/.sniff`) are filtered by IGNOMatch
+    //  meta dirs (`.git/.be/.be/wtlog`) are filtered by IGNOMatch
     //  unconditionally even with no `.gitignore` present.
     igno ig = {};
     a_dup(u8c, ig_root, reporoot);

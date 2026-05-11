@@ -326,7 +326,7 @@ ok64 KEEPbranchRoundTrip() {
     home h = {};
     call(HOMEOpenAt, &h, root, YES);
 
-    //  Phase 1: open trunk first (creates the .dogs dir + lock), then
+    //  Phase 1: open trunk first (creates the .be dir + lock), then
     //  use KEEPCreateBranch to materialise nested feat/ → feat/fix.
     call(KEEPOpen, &h, YES);
     call(KEEPClose);
@@ -345,7 +345,7 @@ ok64 KEEPbranchRoundTrip() {
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
-        a_cstr(rel, "/.dogs/feat");
+        a_cstr(rel, "/" DOG_BE_NAME "/feat");
         u8bFeed(p, rel);
         u8bFeed1(p, 0);
         struct stat st = {};
@@ -375,7 +375,7 @@ ok64 KEEPbranchRoundTrip() {
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
-        a_cstr(rel, "/.dogs/feat/fix/.lock");
+        a_cstr(rel, "/" DOG_BE_NAME "/feat/fix/.lock");
         u8bFeed(p, rel);
         u8bFeed1(p, 0);
         struct stat st = {};
@@ -395,7 +395,7 @@ ok64 KEEPbranchRoundTrip() {
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
-        a_cstr(rel, "/.dogs/feat/fix");
+        a_cstr(rel, "/" DOG_BE_NAME "/feat/fix");
         u8bFeed(p, rel);
         u8bFeed1(p, 0);
         struct stat st = {};
@@ -407,7 +407,7 @@ ok64 KEEPbranchRoundTrip() {
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
-        a_cstr(rel, "/.dogs/feat");
+        a_cstr(rel, "/" DOG_BE_NAME "/feat");
         u8bFeed(p, rel);
         u8bFeed1(p, 0);
         struct stat st = {};

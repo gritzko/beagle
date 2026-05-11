@@ -27,7 +27,7 @@ grep -q "path-form URI" $TMP/post-path.err \
 
 vc_snapshot after
 
-#  Refused POST must leave .sniff and refs untouched.
+#  Refused POST must leave .be/wtlog and refs untouched.
 vc_assert_unchanged sniff
 vc_assert_unchanged refs
 

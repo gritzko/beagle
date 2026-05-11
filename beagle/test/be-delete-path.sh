@@ -1,6 +1,6 @@
 #!/bin/sh
 #  be-delete-path.sh — `be delete x.txt` (path-form) appends one
-#  `delete x.txt` row to .sniff.  No keeper writes, no refs change.
+#  `delete x.txt` row to .be/wtlog.  No keeper writes, no refs change.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

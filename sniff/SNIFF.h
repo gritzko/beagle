@@ -3,10 +3,10 @@
 
 //  SNIFF — worktree state backed by an append-only URI log.
 //
-//  On disk: a single file `<wt>/.sniff` — a ULOG (see dog/ULOG.md):
+//  On disk: a single file `<wt>/.be/wtlog` — a ULOG (see dog/ULOG.md):
 //  `<ron60-ms>\t<verb>\t<uri>\n` rows record every op that changed
 //  the worktree.  Row 0 is a `repo` anchor naming the store's
-//  `.dogs/` via a `file://` URI.  Every file sniff writes is
+//  `.be/` via a `file://` URI.  Every file sniff writes is
 //  `futimens`-stamped to the op's ts, so `mtime ∈ {row timestamps}`
 //  means "clean, attributed".
 //
@@ -42,13 +42,27 @@ con ok64 POSTNOMSG     = 0x65871d5d8c4d;     // can't auto-resolve commit msg
 con ok64 POSTCFLCT     = 0x65871d5dc6b3;     // tracked file has conflict markers
 con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 
-#define SNIFF_FILE ".sniff"
+// Build the absolute wtlog path into `out` (reset first), dispatching
+// on the shape of `<wt_root>/.be`:
+//   * directory (primary / colocated wt)  → `<wt_root>/.be/wtlog`
+//   * regular file (secondary wt)         → `<wt_root>/.be`
+//                                           (the file IS the wtlog;
+//                                           row 0's `repo` URI names
+//                                           the shared store)
+//   * missing                              → `<wt_root>/.be/wtlog`
+//                                           (primary-wt default; the
+//                                           caller is expected to
+//                                           mkdir `.be/` before open)
+//
+// Symlinks are resolved one level (via lstat → followed stat) so a
+// `.be` symlink to a dir is treated as a primary wt.
+ok64 SNIFFWtlogPath(path8b out, u8cs wt_root);
 
 // --- State ---
 
 typedef struct {
     home   *h;        // borrowed
-    u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.sniff
+    u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.be/wtlog
     wh128bp log_idx;  // ts → wh128 (off + verb-hash) index over log_data
     b8      log_rw;   // YES iff log was opened RW (Close must trim)
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
@@ -68,17 +82,15 @@ extern char const *const SNIFF_VERBS[];
 extern char const SNIFF_VAL_FLAGS[];
 
 fun ok64 SNIFFFullpath(path8b out, u8cs reporoot, u8cs rel) {
-    a_cstr(sep, "/");
-    u8bFeed(out, reporoot);
-    u8bFeed(out, sep);
-    u8bFeed(out, rel);
-    return PATHu8bTerm(out);
+    u8bReset(out);
+    if (PATHu8bFeed(out, reporoot) != OK) return PATHFAIL;
+    return PATHu8bAdd(out, rel);
 }
 
 //  YES iff `rel` names one of sniff/keeper's on-disk metadata
-//  entries (`.sniff`, `.dogs`) — either exactly or as a directory
-//  prefix.  All wt-scan callbacks route through this so metadata
-//  never leaks into commits / prune / status / mod rows.
+//  entries (`.be`) — either exactly or as a directory prefix.  All
+//  wt-scan callbacks route through this so metadata never leaks into
+//  commits / prune / status / mod rows.
 b8   SNIFFSkipMeta(u8cs rel);
 
 //  Resolve a path reported by FILEScan into a reporoot-relative
@@ -94,7 +106,7 @@ b8   SNIFFRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
 //  per-path-key step callback.  Each input cursor is a `u8cs` view
 //  over a sorted ULOG row buffer (one row per leaf,
 //  `<ts>\t<verb>\t<path>?<mode>#<sha>\n`, produced by `KEEPTreeULog`,
-//  `SNIFFWtULog`, or sliced from the `.sniff` log).  Inputs are
+//  `SNIFFWtULog`, or sliced from the `.be/wtlog` log).  Inputs are
 //  distinguished by their row verb — callers normally emit each
 //  source with its own verb (`base`, `ours`, `theirs`, `wt`, `put`,
 //  …) so the step callback can dispatch per record.

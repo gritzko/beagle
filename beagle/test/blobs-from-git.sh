@@ -60,7 +60,7 @@ SRC_REL=${SRC#$HOME/}
 git clone --quiet --no-checkout "ssh://localhost/$SRC" "$TMP/git-clone"
 
 # --- 3. keeper fetches objects for each ref (sniff-free path) ---
-mkdir -p "$TMP/be-clone/.dogs/keeper"
+mkdir -p "$TMP/be-clone/.be"
 cd "$TMP/be-clone"
 for REF in refs/tags/v1 refs/tags/v2 refs/heads/master; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null

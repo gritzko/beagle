@@ -151,7 +151,7 @@ ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref);
 //  back one packfile carrying the union of all wants' reachable
 //  closures; KEEPIngestStream lands every object in our log.  Each
 //  matched ref is recorded under the peer URI so subsequent cached
-//  reads (`be ... //origin?<X>`) hit `.dogs/refs`.  Capped at 64
+//  reads (`be ... //origin?<X>`) hit `.be/refs`.  Capped at 64
 //  refs per session — past that, trailing entries are skipped.
 //
 //  Returns OK on success (zero refs is OK — peer advertised none),
@@ -169,7 +169,7 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri);
 //  "main".  The same name is offered to the peer (`refs/heads/<X>`).
 //
 //  `local_tip` is the authoritative sha to push.  Callers in the
-//  worktree path (sniff at-log driven) read it from `.sniff` and
+//  worktree path (sniff at-log driven) read it from `.be/wtlog` and
 //  pass it down — keeper-side REFS may lag if the wt advanced via
 //  a sniff path that didn't reach REFS-append, so the wt's at_sha
 //  is the source of truth, not REFADV.

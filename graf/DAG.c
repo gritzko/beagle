@@ -6,7 +6,7 @@
 //  batch and triggers compaction.  No historical keeper lookups.
 //
 //  Layout:
-//      .dogs/graf/0000000001.idx   sorted wh128 runs (LSM)
+//      .be/0000000001.idx   sorted wh128 runs (LSM)
 //
 #include "DAG.h"
 #include "GRAF.h"
@@ -67,7 +67,7 @@ static u64 dag_obj_hashlet(u8 obj_type, sha1 const *sha, u8cs body) {
 
 // --- Constants ---
 
-#define DAG_DIR         ".dogs"
+#define DAG_DIR         DOG_BE_NAME
 #define GRAF_IDX_EXT    ".graf.idx"
 #define DAG_SEQNO_W     10
 #define DAG_BATCH       (1 << 22)   // 4M entries (64 MB) per flush
@@ -102,15 +102,15 @@ static b8 dag_is_hex_sha(char const *s, size_t len) {
 //  truth, and `GRAFRefreshView` keeps the typed `wh128cs` view in
 //  sync.
 
-//  Compose the leaf branch dir for `<root>/.dogs/graf/<leaf>` and
-//  feed it into `out` (NUL-terminated).  Mirrors `keep_branch_dir`.
+//  Compose the leaf branch dir `<root>/.be[/<leaf>]` and feed it into
+//  `out` (NUL-terminated).  Trunk is the bare `.be/` dir.  Mirrors
+//  `keep_branch_dir` and `spot_branch_dir`.
 static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     sane(h && $ok(leaf_branch) && out);
     u8bReset(out);
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
-    a_cstr(rel, ".dogs");
-    call(PATHu8bAdd, out, rel);
+    call(PATHu8bPush, out, DOG_BE_S);
     if (!u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);
         if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);

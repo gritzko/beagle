@@ -14,10 +14,11 @@ b8 CAPO_TERM = NO;
 
 // --- Forward decls used before their definitions further below ---
 static b8   spot_is_open(void);
-//  Compose `<root>/.dogs/spot/<leaf>` into `out` (NUL-term).
-//  Exposed (non-static) so the parallel-worker dispatcher in
-//  CAPO.exe.c can compute the leaf-branch dir without copy-pasting
-//  the 5-line PATHu8b dance.  Internal: not part of CAPO.h.
+//  Compose `<root>/.be[/<leaf>]` into `out` (NUL-term).  Trunk is the
+//  bare `.be/` dir; leaf branches get a sibling dir.  Exposed (non-
+//  static) so the parallel-worker dispatcher in CAPO.exe.c can compute
+//  the leaf-branch dir without copy-pasting the PATHu8b dance.
+//  Internal: not part of CAPO.h.
 ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
 
 // Guard against assert() crashes in library code
@@ -86,9 +87,10 @@ static void CAPOCodecName(u8csp codec, u8csc ext) {
 }
 
 // --- Resolve spot index directory ---
-// Spot files live in <reporoot>/.dogs/spot/, where <reporoot> is the
-// workspace dir containing .git (file or directory). Caller is responsible
-// for creating the dir via FILEMakeDirP if it does not yet exist.
+// Spot's `.spot.idx` puppy files live in <reporoot>/.be/[<branch>/],
+// alongside keeper's `.keeper` packs and graf's `.graf.idx` puppies.
+// Caller is responsible for creating the dir via FILEMakeDirP if it
+// does not yet exist.
 
 ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
     sane(u8csOK(reporoot) && out != NULL);
@@ -105,8 +107,7 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
         HOMEClose(&rh);
         if (fo != OK) return fo;
     }
-    a_cstr(dotdogs, ".dogs");
-    call(PATHu8bPush, out, dotdogs);
+    call(PATHu8bPush, out, DOG_BE_S);
     done;
 }
 
@@ -1387,7 +1388,7 @@ static b8 spot_is_rw = NO;
 
 // --- Branch-dir composition ---
 
-//  Compose `<root>/.dogs/spot/<leaf_branch>` into `out`
+//  Compose `<root>/.be[/<leaf_branch>]` into `out`
 //  (NUL-terminated).  Mirrors `keep_branch_dir` /
 //  `graf_branch_dir`.
 ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
@@ -1395,8 +1396,7 @@ ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
     u8bReset(out);
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
-    a_cstr(rel, CAPO_DIR);
-    call(PATHu8bAdd, out, rel);
+    call(PATHu8bPush, out, DOG_BE_S);
     if ($ok(leaf_branch) && !u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);
         if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
@@ -1421,12 +1421,10 @@ typedef ok64 (*spot_dir_cb)(spot *s, u8cs dir, void0p ctx);
 static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
                               void0p ctx) {
     sane(s && cb);
-    a_pad(u8, sdir, FILE_PATH_MAX_LEN);
+    a_path(sdir);
     a_dup(u8c, root_s, u8bDataC(s->h->root));
     call(PATHu8bFeed, sdir, root_s);
-    a_cstr(rel, CAPO_DIR);
-    call(PATHu8bAdd, sdir, rel);
-    call(PATHu8bTerm, sdir);
+    call(PATHu8bPush, sdir, DOG_BE_S);
     {
         a_pad(u8, d, FILE_PATH_MAX_LEN);
         a_dup(u8c, sd, u8bDataC(sdir));

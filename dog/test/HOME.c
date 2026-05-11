@@ -1,6 +1,7 @@
 //  HOME: TOML config getter keyed by dotted path.
 //
 #include "dog/HOME.h"
+#include "dog/DOG.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,10 +14,10 @@
 
 static void seed_config(char const *root, char const *body) {
     char dir[256];
-    snprintf(dir, sizeof(dir), "%s/.dogs", root);
+    snprintf(dir, sizeof(dir), "%s/" DOG_BE_NAME, root);
     mkdir(dir, 0755);
     char path[256];
-    snprintf(path, sizeof(path), "%s/.dogs/config", root);
+    snprintf(path, sizeof(path), "%s/" DOG_BE_NAME "/" DOG_CONFIG_NAME, root);
     FILE *f = fopen(path, "w");
     fputs(body, f);
     fclose(f);

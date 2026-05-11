@@ -37,10 +37,11 @@ echo "=== 22. fork WTL1 on ?L1 (shares keeper, baseline ?L1@C_L1) ==="
 "$BE" get "?L1" >/dev/null || fail "be get ?L1 (back to L1) failed"
 WTL1="$ETMP/wtl1"
 mkdir -p "$WTL1"
-ln -s "$WT/.dogs" "$WTL1/.dogs"
 cp "$WT/x.txt"  "$WTL1/x.txt"  2>/dev/null || true
 cp "$WT/l1.txt" "$WTL1/l1.txt" 2>/dev/null || true
-cp "$WT/.sniff" "$WTL1/.sniff"
+# Secondary wt: `.be` is a regular file = its own wtlog.  Row 0's
+# `repo` URI (inherited from primary) names the shared store.
+cp "$WT/.be/wtlog" "$WTL1/.be"
 note "WTL1 forked off ?L1 at C_L1"
 
 echo "=== 23. WT advances ?L1 to C_L1b ==="

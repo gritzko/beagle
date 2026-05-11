@@ -28,14 +28,19 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     sane(c != NULL && c->repo[0] != NULL);
     c->tty_out = isatty(STDOUT_FILENO) ? YES : NO;
 
-    // Repo root — feed into the caller-owned path buffer.  Borrow a
-    // temporary `home` just to walk up to the workspace; caller may
+    // Worktree root — feed into the caller-owned path buffer.  Borrow
+    // a temporary `home` just to walk up to the anchor; caller may
     // open its own home later from $path(c->repo).
+    //
+    // c->repo carries the *worktree* path (h->wt), not the store path
+    // (h->root) — for secondary worktrees these differ.  sniff /
+    // beagle layer `<reporoot>/<rel>` to compose absolute paths to
+    // the user's files, which live in the wt.
     {
         home rh = {};
         uri none = {};
         if (HOMEOpen(&rh, &none, NO) == OK) {
-            (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+            (void)PATHu8bFeed(c->repo, u8bDataC(rh.wt));
         }
         HOMEClose(&rh);
     }

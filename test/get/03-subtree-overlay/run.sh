@@ -4,7 +4,7 @@
 #  feat both have `src/`; feat differs in two existing files and
 #  adds a new one.  After the overlay, all three feat-side files
 #  land in the wt; files outside `src/` (here `common.txt`) and the
-#  baseline (cur stays on trunk) are untouched.  No `.sniff` row
+#  baseline (cur stays on trunk) are untouched.  No `.be/wtlog` row
 #  is appended (no staging — VERBS.md §GET).
 
 . "$(dirname "$0")/../../lib/case.sh"
@@ -39,8 +39,8 @@ match "$CASE/02.y.trunk.c"  src/y.c
 match "$CASE/03.common.txt" common.txt
 [ ! -f src/z.c ] || { echo "src/z.c should not exist on trunk" >&2; exit 1; }
 
-# Snapshot .sniff length to assert no new row appended.
-ROWS_BEFORE=$(wc -l < .sniff)
+# Snapshot .be/wtlog length to assert no new row appended.
+ROWS_BEFORE=$(wc -l < .be/wtlog)
 
 # THE TEST: subtree overlay from ?feat.
 "$BE" get 'src/?feat' > 07.get.got.out 2> 07.get.got.err
@@ -52,9 +52,9 @@ match "$CASE/05.y.feat.c"  src/y.c
 match "$CASE/06.z.feat.c"  src/z.c
 match "$CASE/03.common.txt" common.txt
 
-# `.sniff` did NOT grow.
-ROWS_AFTER=$(wc -l < .sniff)
+# `.be/wtlog` did NOT grow.
+ROWS_AFTER=$(wc -l < .be/wtlog)
 [ "$ROWS_BEFORE" = "$ROWS_AFTER" ] || {
-    echo "subtree get appended a .sniff row (was $ROWS_BEFORE, now $ROWS_AFTER)" >&2
+    echo "subtree get appended a .be/wtlog row (was $ROWS_BEFORE, now $ROWS_AFTER)" >&2
     exit 1
 }

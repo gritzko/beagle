@@ -1,7 +1,7 @@
 #!/bin/sh
 #  relref.sh — end-to-end check that `?./X`, `?../X`, and `?..` are
 #  resolved through the dispatcher to the absolute branch path,
-#  using the wt's current branch from `.sniff` baseline.
+#  using the wt's current branch from `.be/wtlog` baseline.
 #
 #  Covered today:
 #    * `sniff post ?./feat`  labels child branch (creates feat).
@@ -37,7 +37,7 @@ cur_branch() {
                     sub(/#.*/, "", q)        # drop fragment
                     sub(/^\?/, "", q)        # drop leading ?
                     print q
-                }' .sniff
+                }' .be/wtlog
 }
 
 ref_tip() {

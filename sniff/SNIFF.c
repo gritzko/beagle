@@ -1,6 +1,6 @@
 //  SNIFF — worktree state singleton + path-registry wrappers.
 //
-//  The only cross-invocation state is `<wt>/.sniff` (dog/ULOG).
+//  The only cross-invocation state is `<wt>/.be/wtlog` (dog/ULOG).
 //  The per-process in-RAM state is a path-index sort over keeper's
 //  registry, rebuilt lazily by callers (POST, DEL) that walk sorted
 //  paths to assemble tree objects.  Nothing else survives.
@@ -17,6 +17,27 @@
 
 #include "AT.h"
 
+// --- Wtlog path resolver --------------------------------------------
+
+ok64 SNIFFWtlogPath(path8b out, u8cs wt_root) {
+    sane(out && $ok(wt_root));
+    u8bReset(out);
+    call(PATHu8bFeed, out, wt_root);
+    call(PATHu8bPush, out, DOG_BE_S);
+
+    //  Stat `<wt>/.be` (follow symlinks so a symlinked dir counts as
+    //  primary).  If it's a regular file, this wt is a secondary —
+    //  the `.be` file IS the wtlog.  Otherwise fall through to the
+    //  primary layout `<wt>/.be/wtlog` (covers dir, missing, and
+    //  broken-symlink — the caller mkdir's `.be/` before open).
+    filestat fs = {};
+    if (FILEStat(&fs, $path(out)) == OK && fs.kind == FILE_KIND_REG) {
+        done;                                // secondary: out = <wt>/.be
+    }
+    call(PATHu8bPush, out, DOG_WTLOG_S);     // primary: out = <wt>/.be/wtlog
+    done;
+}
+
 // --- Singleton ---
 
 sniff SNIFF = {};
@@ -27,21 +48,17 @@ static b8 sniff_opened_keep = NO;
 
 // --- Open / close ---
 
-//  Write the initial `repo` row into a freshly-created at.log.  The
-//  URI anchors the wt to its store; default is colocated (`<wt>/.dogs/`).
-//  `wt_root` is the wt path (where `.sniff` lives).
+//  Write the initial `repo` row into a freshly-created wtlog.  The
+//  URI anchors the wt to its store; default is colocated (`<wt>/.be/`).
+//  `wt_root` is the wt path (where `.be/` lives).
 static ok64 sniff_write_repo_row(u8cs wt_root) {
     sane(SNIFF.h);
-    //  Compose `file:///<wt_root>/.dogs/` via URI component fields;
+    //  Compose `file:///<wt_root>/.be/` via URI component fields;
     //  ULOGAppend serializes through URIutf8Feed.
-    a_pad(u8, pathbuf, 2048);
-    a_cstr(slash, "/");
-    u8bFeed(pathbuf, wt_root);
-    //  Guarantee exactly one trailing slash before we append ".dogs/".
-    if (u8bDataLen(pathbuf) == 0 || *u8bLast(pathbuf) != '/')
-        u8bFeed(pathbuf, slash);
-    a_cstr(dogs, ".dogs/");
-    u8bFeed(pathbuf, dogs);
+    a_path(pathbuf, wt_root, DOG_BE_S);
+    //  URI path for a directory carries a trailing slash.
+    call(u8bFeed1, pathbuf, '/');
+    call(PATHu8bTerm, pathbuf);
 
     uri urow = {};
     a_cstr(scheme, "file");
@@ -70,15 +87,24 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     s->h = h;
     sniff_is_rw = rw;
 
-    //  The ULOG lives at `<wt>/.sniff` — one plain file, the whole of
-    //  sniff's per-worktree state.  `h->wt` points at the worktree
-    //  root; for colocated setups it equals `h->root`.  RW callers
-    //  page-align the file via FILEBook (ULOGClose trims on dirty
-    //  close); RO callers (status, list, dry-run post) go through
-    //  ULOGOpenRO which never extends the on-disk size.
+    //  The ULOG lives at either `<wt>/.be/wtlog` (primary / colocated
+    //  wt) or `<wt>/.be` (secondary wt — the `.be` file IS the wtlog,
+    //  with row 0's `repo` URI naming the shared primary store).
+    //  `SNIFFWtlogPath` dispatches on the on-disk shape; for RW opens
+    //  on a fresh wt we also pre-create `.be/` so the primary path
+    //  resolves cleanly.  RW callers page-align the file via FILEBook
+    //  (ULOGClose trims on dirty close); RO callers (status, list,
+    //  dry-run post) go through ULOGOpenRO which never extends the
+    //  on-disk size.
     a_dup(u8c, wt_root, u8bDataC(h->wt));
-    a_cstr(sniffname, SNIFF_FILE);
-    a_path(atpath, wt_root, sniffname);
+    if (rw) {
+        //  Primary-wt mkdir: harmless if `.be/` already exists,
+        //  no-op (EEXIST as a file) if this is a secondary wt.
+        a_path(bedir, wt_root, DOG_BE_S);
+        (void)FILEMakeDirP($path(bedir));
+    }
+    a_path(atpath);
+    call(SNIFFWtlogPath, atpath, wt_root);
     ok64 uo = rw ? ULOGOpen  (&s->log_data, &s->log_idx, $path(atpath))
                  : ULOGOpenRO(&s->log_data, &s->log_idx, $path(atpath));
     if (uo != OK) { zerop(s); return uo; }
@@ -97,7 +123,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     }
 
     //  Row-0 `repo` anchor.  Bootstrap on a fresh log (writes the
-    //  colocated default `file:///<wt>/.dogs/`); honour an existing
+    //  colocated default `file:///<wt>/.be/`); honour an existing
     //  anchor for secondary worktrees by redirecting h->root to the
     //  store before keeper opens.
     if (ULOGCount(s->log_idx) == 0) {
@@ -115,15 +141,15 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     }
 
     //  If we have a repo row, resolve the store path and redirect
-    //  h->root to it so keeper / graf / spot open the correct .dogs/.
-    //  (h->wt stays pointed at the worktree where `.sniff` lives.)
+    //  h->root to it so keeper / graf / spot open the correct .be/.
+    //  (h->wt stays pointed at the worktree where the wtlog lives.)
     {
         uri ru = {};
         ok64 rr = SNIFFAtRepo(&ru);
         if (rr == OK && !u8csEmpty(ru.path)) {
             a_dup(u8c, up, ru.path);
-            a_pad(u8, storebuf, 2048);
-            DOGRepoFromDogs(up, storebuf);
+            a_path(storebuf);
+            DOGRepoFromBe(up, storebuf);
             if (u8bDataLen(storebuf) > 0) {
                 u8bReset(h->root);
                 a_dup(u8c, sb, u8bData(storebuf));
@@ -143,7 +169,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
 
     //  Load wt-root .gitignore (single file, no nested cascade) into
     //  `s->ignores`.  Absent file is not an error — IGNOMatch still
-    //  rejects .git/.dogs/.sniff unconditionally.
+    //  rejects .git/.be unconditionally.
     {
         a_dup(u8c, wt_for_ig, u8bDataC(h->wt));
         (void)IGNOLoad(&s->ignores, wt_for_ig);
@@ -169,8 +195,8 @@ ok64 SNIFFClose(void) {
 // --- Shared wt-scan helpers ---
 
 //  One gate for every wt-scan callback: delegates to IGNOMatch, which
-//  rejects metadata (.git/.dogs/.sniff) unconditionally and applies
-//  any .gitignore patterns loaded into SNIFF.ignores at open time.
+//  rejects metadata (.git/.be) unconditionally and applies any
+//  .gitignore patterns loaded into SNIFF.ignores at open time.
 b8 SNIFFSkipMeta(u8cs rel) {
     return IGNOMatch(&SNIFF.ignores, rel, NO);
 }

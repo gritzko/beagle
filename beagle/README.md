@@ -83,4 +83,4 @@ See `beagle/GURI.md` for the full spec.
 | **sniff** | worktree management (checkout, status) |
 
 Bare `be` (no args) runs `--update` then `--status` on each dog
-listed in `.dogs/DOGS` (default: spot, graf, sniff).
+listed in `.be/DOGS` (default: spot, graf, sniff).

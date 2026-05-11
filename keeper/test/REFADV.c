@@ -144,7 +144,7 @@ ok64 REFADVtest_single_trunk() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    //  REFS lives at <root>/.dogs.  Local trunk row (`?`) advertises
+    //  REFS lives at <root>/.be/refs.  Local trunk row (`?`) advertises
     //  on the wire as `refs/heads/main` (the only wire-side alias).
     a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
     char const *hex = "0123456789abcdef0123456789abcdef01234567";

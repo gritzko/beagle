@@ -43,7 +43,7 @@ scenario1() {
     echo "=== 1. disjoint-edit merge ==="
     SRC=$TMP/s1/src
     CLI=$TMP/s1/client
-    mkdir -p "$SRC" "$CLI/.dogs"
+    mkdir -p "$SRC" "$CLI/.be"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)
@@ -98,7 +98,7 @@ scenario2() {
     echo "=== 2. conflict merge ==="
     SRC=$TMP/s2/src
     CLI=$TMP/s2/client
-    mkdir -p "$SRC" "$CLI/.dogs"
+    mkdir -p "$SRC" "$CLI/.be"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)
@@ -161,7 +161,7 @@ scenario3() {
     echo "=== 3. target-side add ==="
     SRC=$TMP/s3/src
     CLI=$TMP/s3/client
-    mkdir -p "$SRC" "$CLI/.dogs"
+    mkdir -p "$SRC" "$CLI/.be"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)

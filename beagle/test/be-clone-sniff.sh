@@ -1,8 +1,8 @@
 #!/bin/sh
-#  be-clone-sniff.sh — verify `.sniff` after `be get ssh://...` clone.
+#  be-clone-sniff.sh — verify `.be/wtlog` after `be get ssh://...` clone.
 #
-#  After a clone the secondary `.sniff` must hold both:
-#    row 0: `repo file:<wt>/.dogs/`
+#  After a clone the secondary `.be/wtlog` must hold both:
+#    row 0: `repo file:<wt>/.be/`
 #    row 1: `get   ?<branch>#<sha>`
 #
 #  The `repo` row is bootstrapped by SNIFFOpen; the `get` row is
@@ -68,25 +68,25 @@ echo "=== 2. be get ssh://... in fresh wt ==="
 WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
 "$BE" get "$URI" >/dev/null 2>&1 || fail "wt: be get failed"
 
-[ -f .sniff ] || fail "wt: .sniff missing"
+[ -f .be/wtlog ] || fail "wt: .be/wtlog missing"
 
-# --- 3. .sniff must carry both rows --------------------------------
-echo "=== 3. .sniff has repo + get rows ==="
-NREPO=$(awk -F'\t' '$2=="repo"' .sniff | wc -l)
-NGET=$(awk -F'\t' '$2=="get"'  .sniff | wc -l)
+# --- 3. .be/wtlog must carry both rows --------------------------------
+echo "=== 3. .be/wtlog has repo + get rows ==="
+NREPO=$(awk -F'\t' '$2=="repo"' .be/wtlog | wc -l)
+NGET=$(awk -F'\t' '$2=="get"'  .be/wtlog | wc -l)
 
-[ "$NREPO" -eq 1 ] || fail ".sniff: expected 1 repo row, got $NREPO"
+[ "$NREPO" -eq 1 ] || fail ".be/wtlog: expected 1 repo row, got $NREPO"
 [ "$NGET"  -eq 1 ] || {
-    echo "--- .sniff hex dump ---" >&2
-    xxd .sniff >&2
+    echo "--- .be/wtlog hex dump ---" >&2
+    xxd .be/wtlog >&2
     echo "-----------------------" >&2
-    echo "--- .dogs/refs ---" >&2
-    cat .dogs/refs 2>/dev/null >&2
+    echo "--- .be/refs ---" >&2
+    cat .be/refs 2>/dev/null >&2
     echo "------------------" >&2
-    fail ".sniff: expected 1 get row after clone, got $NGET"
+    fail ".be/wtlog: expected 1 get row after clone, got $NGET"
 }
 
-GROW=$(awk -F'\t' '$2=="get"{print $3}' .sniff)
+GROW=$(awk -F'\t' '$2=="get"{print $3}' .be/wtlog)
 case "$GROW" in
     *"#$SEED") note "get row OK: $GROW" ;;
     *)        fail "get row sha mismatch: row=$GROW, expected #$SEED" ;;

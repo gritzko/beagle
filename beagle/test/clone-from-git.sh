@@ -55,12 +55,12 @@ git clone --quiet "ssh://localhost/$SRC" "$TMP/git-clone"
 mkdir -p "$TMP/be-clone"
 cd "$TMP/be-clone"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 be get "//localhost/$SRC_REL"
 
 # --- 4. compare worktrees ---
 RDIFF=$(rsync -rlcni --delete \
-    --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+    --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
     "$TMP/git-clone/" "$TMP/be-clone/" 2>&1)
 if [ -n "$RDIFF" ]; then
     echo "FAIL: clone-from-git: worktrees differ"
@@ -72,17 +72,17 @@ fi
 VERIFY="$TESTDIR/verify-canonical-refs.sh"
 sh "$VERIFY" "$TMP/be-clone" || { echo "FAIL: be-clone refs not canonical"; exit 1; }
 
-# --- 6. idempotency: a repeat `be get` must leave .dogs bit-identical.
+# --- 6. idempotency: a repeat `be get` must leave .be bit-identical.
 #         Per keeper/LOG.md: the log is append-of-packs; a no-op fetch
 #         produces zero file changes (no new .keeper, no new .idx, no
 #         append to existing ones).
-snapshot_dogs() { (cd "$1/.dogs" && find . -type f -not -name '.lock' \
+snapshot_dogs() { (cd "$1/.be" && find . -type f -not -name '.lock' \
     | sort | xargs sha256sum); }
 SNAP1=$(snapshot_dogs "$TMP/be-clone")
 be get "//localhost/$SRC_REL"
 SNAP2=$(snapshot_dogs "$TMP/be-clone")
 if [ "$SNAP1" != "$SNAP2" ]; then
-    echo "FAIL: repeat be get changed files in .dogs"
+    echo "FAIL: repeat be get changed files in .be"
     diff <(printf '%s\n' "$SNAP1") <(printf '%s\n' "$SNAP2") | head -20
     exit 1
 fi

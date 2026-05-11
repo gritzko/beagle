@@ -1,13 +1,13 @@
 # sniff — worktree management
 
 Checkout, status, stage, commit.  State is a single append-only
-ULOG file at `<wt>/.sniff`; no pack files, no caches, no path
+ULOG file at `<wt>/.be/wtlog`; no pack files, no caches, no path
 registry (keeper owns paths).  The worktree's files-on-disk plus the
 ULOG plus keeper's object store are the ground truth.
 
-Worktrees may share a store: each wt has its own `.sniff` but the
-`repo` row (row 0) points them all at the same `.dogs/`.  Colocated
-wts set it to their own sibling `.dogs/`; secondary wts set it to
+Worktrees may share a store: each wt has its own `.be/wtlog` but the
+`repo` row (row 0) points them all at the same `.be/`.  Colocated
+wts set it to their own sibling `.be/`; secondary wts set it to
 the primary's store.
 
 ## The one-paragraph model
@@ -52,7 +52,7 @@ contribute their merged bytes but no header.  Cross-branch
 deduplication uses foster/parent reachability plus patch-id
 matching as a safety net (`graf/REBASE.c:GRAFPatchId`).
 
-### Boundaries in `.sniff`
+### Boundaries in `.be/wtlog`
 
   * **pd boundary** = most recent `get` *or* `post` row.  `put` /
     `delete` rows after this are in scope.
@@ -86,7 +86,7 @@ scan; no new ULOG verb required.
 | `sniff patch ?<ref>` | 3-way merge into wt |
 | `sniff status` | List mtime-dirty files (M) |
 | `sniff list` | List keeper-interned paths |
-| `sniff watch` | Start the inotify daemon (fork, pidfile at `.sniff.pid`).  Appends one `mod <relpath>` row to `.sniff` for every file whose mtime leaves the stamp-set.  Dedup'd per-path so repeated edits to the same file share one row until a commit stamps it clean. |
+| `sniff watch` | Start the inotify daemon (fork, pidfile at `.be/sniff.pid`).  Appends one `mod <relpath>` row to `.be/wtlog` for every file whose mtime leaves the stamp-set.  Dedup'd per-path so repeated edits to the same file share one row until a commit stamps it clean. |
 | `sniff stop` | Stop the watch daemon |
 
 Flags: `-m <msg>` commit message, `--author <who>` author string.
@@ -97,10 +97,10 @@ Per worktree (at the wt root):
 
 | Path | Format |
 |------|--------|
-| `.sniff` | `<ron60-ts>\t<verb>\t<uri>\n` — see `dog/ULOG.md`.  Row 0 is a `repo` anchor whose `file://` URI names the store.  Subsequent rows are `get`/`post`/`patch`/`put`/`delete`. |
-| `.sniff.pid` | Watch daemon PID (if `sniff watch` is running; dead weight in the ULOG-only model and may be retired). |
+| `.be/wtlog` | `<ron60-ts>\t<verb>\t<uri>\n` — see `dog/ULOG.md`.  Row 0 is a `repo` anchor whose `file://` URI names the store.  Subsequent rows are `get`/`post`/`patch`/`put`/`delete`. |
+| `.be/sniff.pid` | Watch daemon PID (if `sniff watch` is running; dead weight in the ULOG-only model and may be retired). |
 
-Nothing else.  The store (`.dogs/`) is the keeper's; sniff never
+Nothing else.  The store (`.be/`) is the keeper's; sniff never
 writes there directly — it hands objects to keeper via `KEEPPackFeed`.
 
 ## Tests

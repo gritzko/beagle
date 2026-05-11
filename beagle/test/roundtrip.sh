@@ -66,11 +66,11 @@ note "clone has a.txt, b.txt"
 echo "=== 3. be get <clone> (worktree) ==="
 mkdir -p "$WT"; cd "$WT"
 "$BE" get --seq "$CLONE" >/dev/null 2>&1 || true
-[ -L "$WT/.dogs" ] || fail "worktree .dogs not a symlink"
-[ -f "$WT/.sniff" ] && [ ! -L "$WT/.sniff" ] \
-    || fail "worktree .sniff should be a real file"
+[ -L "$WT/.be" ] || fail "worktree .be not a symlink"
+[ -f "$WT/.be/wtlog" ] && [ ! -L "$WT/.be/wtlog" ] \
+    || fail "worktree .be/wtlog should be a real file"
 [ -f a.txt ] && [ -f b.txt ] || fail "worktree missing checked-out files"
-note "worktree has .dogs symlink + local .sniff + checked-out files"
+note "worktree has .be symlink + local .be/wtlog + checked-out files"
 
 # --- 4. edits in clone and worktree ---
 echo "=== 4. edits ==="
@@ -97,13 +97,13 @@ cd "$WT"
     || fail "be delete a.txt failed"
 "$BE" post   --seq 'worktree commit' >/dev/null 2>&1 \
     || fail "be post failed"
-# Read the committed SHA from the tail of .sniff.  Rows are
+# Read the committed SHA from the tail of .be/wtlog.  Rows are
 # `<ts>\t<verb>\t<uri>`; the canonical format is `?<branch>#<sha>` —
 # 40-hex commit lives in the URI fragment.
 WT_SHA=$(awk -F'\t' '$2 == "post" { last = $3 } END {
     h = last; sub(/^[^#]*#/, "", h)
     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-}' "$WT/.sniff")
+}' "$WT/.be/wtlog")
 [ ${#WT_SHA} -eq 40 ] || fail "no 40-hex worktree commit recorded"
 [ "$WT_SHA" != "$SEED_SHA" ] || fail "worktree commit didn't advance"
 note "worktree commit=$WT_SHA"
@@ -125,10 +125,10 @@ note "origin master == worktree commit"
 
 # Fresh git checkout of origin, diff against our worktree.
 git clone -q "$ORIGIN" "$VERIFY"
-# Compare just the tracked files, not .git vs .dogs.
+# Compare just the tracked files, not .git vs .be.
 ( cd "$VERIFY" && git ls-files ) | sort > "$TMP/git.list"
 ( cd "$WT" && find . -type f \
-    -not -path './.dogs/*' -not -name '.sniff' -not -name '.be' \
+    -not -path './.be/*' -not -name '.be/wtlog' -not -name '.be' \
     | sed 's|^\./||' ) | sort > "$TMP/wt.list"
 diff -u "$TMP/git.list" "$TMP/wt.list" || fail "file sets differ"
 while IFS= read -r f; do

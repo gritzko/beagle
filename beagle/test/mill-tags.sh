@@ -29,7 +29,7 @@ mkdir -p "$TMILL/be01" "$TMILL/git01"
 # --- Init dogs repo ---
 cd "$TMILL/be01"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 # --- Init git reference repo ---
 git clone --quiet --no-checkout "$REPO" "$TMILL/git01"
@@ -71,10 +71,10 @@ for TAG in $TAGS; do
 
     # --- rsync dry-run: full content comparison ---
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+        --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
         "$TMILL/git01/" "$TMILL/be01/" 2>&1)
 
-    BE_N=$(find "$TMILL/be01" -not -path '*/.dogs/*' -not -path '*/.git/*' -type f | wc -l)
+    BE_N=$(find "$TMILL/be01" -not -path '*/.be/*' -not -path '*/.git/*' -type f | wc -l)
 
     if [ -z "$RDIFF" ]; then
         echo "PASS: $TAG ($BE_N files)"

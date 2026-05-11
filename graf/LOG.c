@@ -629,7 +629,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
 //
 //  `graf head` (no URI)  → implicit target.  cur ≠ trunk: target =
 //                          trunk; cur = trunk: target = cached remote
-//                          counterpart in `.dogs/refs` (no network).
+//                          counterpart in `.be/refs` (no network).
 //  `graf head ?br`       → explicit target = branch `br`.
 //
 //  Output (one hunk, single trailing newline; `+` = ahead, `-` = behind):

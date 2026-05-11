@@ -17,10 +17,10 @@ sp_seed_trunk
 #  Inject one peer-observed row.  ULOG enforces strictly-increasing
 #  ts within a file; appending a non-base64 char to the tail's ts
 #  produces a >tail value (URILexer/ULOG accept it as a longer ron60).
-ts=$(awk 'END { print $1 }' .dogs/refs)
+ts=$(awk 'END { print $1 }' .be/refs)
 fakesha="abc123abc123abc123abc123abc123abc123abc1"
 printf '%sz\tget\tssh://fakehost/repo?heads/main#?%s\n' \
-    "$ts" "$fakesha" >> .dogs/refs
+    "$ts" "$fakesha" >> .be/refs
 
 #  Sanity: the injected row must show up in `keeper refs` before we
 #  delete (otherwise the post-delete check would pass for the wrong

@@ -86,17 +86,17 @@ Branch directories nest freely: `feature/fix1/` is a valid
 sub-branch of `feature/`.  File numbering (`NNNNN.keeper`,
 `NNNNN.idx`, …) is a fresh sequence per directory.
 
-Worktrees are separate checkouts on disk; each wt has a `.dogs`
+Worktrees are separate checkouts on disk; each wt has a `.be`
 *file* (not a directory) naming the store plus the branch it is on:
 
 ```
-<wt>/.dogs        contents: /abs/store?heads/feature
+<wt>/.be        contents: /abs/store?heads/feature
 ```
 
 The branch directory holds the reverse pointer in `WT`, so each
 branch is linked to at most one wt.  A store-co-located wt
-(traditional layout) uses `<repo>/.dogs/` as the store dir and keeps
-its working files next to it; external wts use the `.dogs` file.
+(traditional layout) uses `<repo>/.be/` as the store dir and keeps
+its working files next to it; external wts use the `.be` file.
 
 ##  Pack log files
 

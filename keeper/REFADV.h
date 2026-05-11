@@ -10,7 +10,7 @@
 //  a dir without rescanning REFS.
 //
 //  Phase 1c keeper has only the trunk shard open — REFS lives at
-//  `<store>/REFS` (`<root>/.dogs/REFS`).  Sibling shards land in
+//  `<store>/REFS` (`<root>/.be/REFS`).  Sibling shards land in
 //  Phase 2; REFADVOpen then fans out to each.
 //
 //  Emit format (git protocol v0/v1):

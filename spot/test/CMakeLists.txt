@@ -16,14 +16,14 @@ add_test(NAME SPOTreTest COMMAND SPOTreTest)
 #  spot reaches HOMEOpen before dispatching to its search verbs even
 #  though `-s '<pat>' <file>` doesn't actually need a keeper.  Tests
 #  run from a fresh tmpdir bootstrapped with the canonical `be put`
-#  markers (.dogs/refs + .sniff) so HOME walk-up succeeds.  The
+#  markers (.be/refs + .be/wtlog) so HOME walk-up succeeds.  The
 #  fixture is symlinked at the original relative path so spot's
 #  output (which echoes the path it was given) still matches the
 #  pre-canned `.spot` / `.hili` golden files.
 set(_SPOT_INIT_REPO
     "W=$ENV{HOME}/tmp/spot-test-$$ && \
-    mkdir -p \"$W/.dogs\" \"$W/spot/test/data\" && \
-    : > \"$W/.dogs/refs\" && : > \"$W/.sniff\" && \
+    mkdir -p \"$W/.be\" \"$W/spot/test/data\" && \
+    : > \"$W/.be/refs\" && : > \"$W/.be/wtlog\" && \
     ln -s ${CMAKE_CURRENT_SOURCE_DIR}/data/slice_init.c \
         \"$W/spot/test/data/slice_init.c\" && \
     trap 'rm -rf \"$W\"' EXIT && cd \"$W\"")

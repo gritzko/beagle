@@ -33,8 +33,8 @@ set -e
 
 #  No delete row was appended (the refusal happened before the row
 #  was written).
-if grep -q 'delete	stray\.txt' .sniff; then
+if grep -q 'delete	stray\.txt' .be/wtlog; then
     echo "FAIL: stray.txt got a delete row anyway" >&2
-    tail .sniff >&2
+    tail .be/wtlog >&2
     exit 1
 fi

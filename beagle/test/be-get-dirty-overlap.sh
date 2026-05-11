@@ -3,7 +3,7 @@
 #  with x.txt dirty.  Phase 2: instead of refusing, sniff hands the
 #  dirty path to graf for a weave-merge (wt as an implicit edit on
 #  baseline) and writes the merged bytes back.  GET succeeds; the
-#  baseline + .sniff move to T1.
+#  baseline + .be/wtlog move to T1.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

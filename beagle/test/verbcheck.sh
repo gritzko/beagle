@@ -5,10 +5,10 @@
 #  `be-get-dirty-cross.sh` for the canonical example.
 #
 #  Five observables are captured per snapshot:
-#    [sniff]    rows of <wt>/.sniff (verb + URI; trailing pad ignored)
+#    [sniff]    rows of <wt>/.be/wtlog (verb + URI; trailing pad ignored)
 #    [refs]     `keeper refs` (already tombstone-filtered)
 #    [wt]       per-file inventory: path, size, sha1, mtime
-#    [baseline] derived from .sniff: branch + tip + patch-parent count
+#    [baseline] derived from .be/wtlog: branch + tip + patch-parent count
 #    [outcome]  exit code + first non-empty stderr line of last command
 #
 #  A test calls `vc_snapshot before`, runs commands via `vc_run NAME …`,
@@ -50,7 +50,7 @@ vc_step() { echo "=== $* ==="; }
 #  vc_fresh_wt creates a wt subdir under $TMP (which is itself
 #  $TMP_ROOT/$TEST_ID) and cd's into it.  Wipes any leftover state so
 #  back-to-back ctest invocations against the same configure-time
-#  $TMP_ROOT can't inherit a torn .sniff / .dogs from a prior run.
+#  $TMP_ROOT can't inherit a torn .be/wtlog / .be from a prior run.
 
 vc_fresh_wt() {
     name=${1:-wt}
@@ -67,15 +67,21 @@ vc_fresh_wt() {
 vc_snapshot() {
     name=$1
     out="$TMP/snap.$name"
+    #  Resolve the wtlog path: `.be/wtlog` if `.be` is a dir (primary
+    #  / colocated wt); `.be` itself if a regular file (secondary wt).
+    if   [ -d .be ]; then wtlog=.be/wtlog
+    elif [ -f .be ]; then wtlog=.be
+    else wtlog=.be/wtlog
+    fi
     {
         printf '[sniff]\n'
-        if [ -f .sniff ]; then
+        if [ -f "$wtlog" ]; then
             #  trim-strip pad: keep only rows with a verb in column 2.
-            awk -F'\t' 'NF >= 2 && $2 != "" { print $2 "\t" $3 }' .sniff
+            awk -F'\t' 'NF >= 2 && $2 != "" { print $2 "\t" $3 }' "$wtlog"
         fi
 
         printf '[refs]\n'
-        if [ -d .dogs ]; then
+        if [ -d .be ] || [ -f .be ]; then
             #  `keeper refs` filters tombstones via REFSEach.  Pull
             #  just the `?<key> → <hex>` lines, sort for determinism.
             keeper refs 2>/dev/null | awk '
@@ -88,16 +94,16 @@ vc_snapshot() {
 
         printf '[wt]\n'
         if [ -d . ]; then
-            #  Find tracked-or-not files; exclude .dogs/, .sniff,
-            #  .sniff.pid (daemon scratch).  Sort for determinism.
+            #  Find tracked-or-not files; exclude `.be` (file or dir)
+            #  and anything inside `.be/`, plus the secondary-wt's
+            #  sidecar `..be.idx` (ULOG idx sibling for `<wt>/.be`).
             #  Mtime is intentionally omitted — POST restamps files,
             #  so mtime always changes; content shape (size + sha1)
             #  is the user-facing observable.  Stamp-set membership
             #  is checked via the dirty-overlap contract elsewhere.
             find . -type f \
-                -not -path './.dogs' -not -path './.dogs/*' \
-                -not -name '.sniff' -not -name '.sniff.pid' \
-                -not -name '..sniff.idx' \
+                -not -path './.be' -not -path './.be/*' \
+                -not -path './..be.idx' \
                 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
                 sz=$(wc -c < "$f" | tr -d ' ')
                 sha=$(sha1sum "$f" 2>/dev/null | awk '{print $1}')
@@ -106,7 +112,7 @@ vc_snapshot() {
         fi
 
         printf '[baseline]\n'
-        if [ -f .sniff ]; then
+        if [ -f "$wtlog" ]; then
             awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
                         END {
                             if (last == "") exit
@@ -118,7 +124,7 @@ vc_snapshot() {
                             print "branch=" br
                             print "tip=" tp
                             print "patch_parents=" n
-                        }' .sniff
+                        }' "$wtlog"
         fi
 
         printf '[outcome]\n'

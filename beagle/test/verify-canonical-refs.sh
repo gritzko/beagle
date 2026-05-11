@@ -1,5 +1,5 @@
 #!/bin/sh
-#  verify-canonical-refs.sh — assert that a .dogs/refs file contains
+#  verify-canonical-refs.sh — assert that a .be/refs file contains
 #  only canonical URIs per dog/DOG.md's "Query mini-language" section.
 #
 #  Canonical row: `<ts>\t<verb>\t<uri>\n` where the URI must NOT
@@ -19,7 +19,7 @@
 set -eu
 
 ROOT=${1:-.}
-REFS="$ROOT/.dogs/refs"
+REFS="$ROOT/.be/refs"
 
 if [ ! -f "$REFS" ]; then
     echo "verify-canonical-refs: missing $REFS" >&2

@@ -11,10 +11,10 @@
 //  time goes through keeper directly (graf/BLOB.c::GRAFTreeStep).
 //
 //  Layout (mirrors keeper's branch-sharded shape):
-//      .dogs/graf/<branch>/0000000001.graf.idx  sorted wh128 runs (LSM)
-//      .dogs/graf/COMMIT                        last-seen ref tips
+//      .be/<branch>/0000000001.graf.idx  sorted wh128 runs (LSM)
+//      .be/COMMIT                        last-seen ref tips
 //  Trunk's `<branch>` slot is empty; nested branches live under
-//  parent dirs (`.dogs/graf/feat/sub/...`).  `GRAFOpenBranch` walks
+//  parent dirs (`.be/feat/sub/...`).  `GRAFOpenBranch` walks
 //  trunk → leaf, registering every `.graf.idx` along the way as a
 //  DOGPup* puppy stack.  Writes only land in the leaf dir.
 //

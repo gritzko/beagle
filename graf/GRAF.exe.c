@@ -225,7 +225,7 @@ ok64 GRAFExec(cli *c) {
     // --- index, blame, weave: require keeper ---
 
     if (!reporoot[0]) {
-        fprintf(stderr, "graf: %.*s requires .dogs/keeper\n",
+        fprintf(stderr, "graf: %.*s requires a keeper store under .be/\n",
                 (int)$len(c->verb), (char *)c->verb[0]);
         return FAILSANITY;
     }

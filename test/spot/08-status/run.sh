@@ -1,7 +1,7 @@
 #!/bin/sh
 . "$(dirname "$0")/../../lib/spot-case.sh"
 
-# 01: bring up an empty workspace (no commits — just .dogs/).
+# 01: bring up an empty workspace (no commits — just .be/).
 sleep 0.02; cp "$CASE/empty.c" empty.c
 "$BE" put empty.c  > /dev/null 2>&1
 "$BE" post 'init msg'  > /dev/null 2>&1

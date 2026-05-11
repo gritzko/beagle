@@ -42,7 +42,7 @@ fi
 # --- dogs clone via be get ---
 echo "=== be get ==="
 cd "$DOGS_DIR"
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 if [ "$REF" = "HEAD" ]; then
     be get "ssh://localhost${REPO}" 2>&1 | grep -v "^keeper: round" || true
@@ -53,10 +53,10 @@ fi
 # --- compare worktrees (rsync dry-run) ---
 echo "=== diff ==="
 RDIFF=$(rsync -rlcni --delete \
-    --exclude='/.git/' --exclude='/.dogs/' \
+    --exclude='/.git/' --exclude='/.be/' \
     "$GIT_DIR/" "$DOGS_DIR/" 2>&1)
 
-G1=$(find "$DOGS_DIR" -not -path '*/.dogs/*' -not -path '*/.git/*' -type f | wc -l)
+G1=$(find "$DOGS_DIR" -not -path '*/.be/*' -not -path '*/.git/*' -type f | wc -l)
 G2=$(find "$GIT_DIR" -not -path '*/.git/*' -type f | wc -l)
 echo "$DOGS_DIR (be get): $G1 files"
 echo "$GIT_DIR (git):    $G2 files"

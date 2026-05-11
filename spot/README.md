@@ -171,8 +171,8 @@ Post-commit hook (incremental reindex):
 ## How it works
 
 **Indexing**: Source files are tokenized based on the file extension.
-Trigram and symbol indexes are put into `.dogs/spot/*.idx` files
-(in a `.dogs/` directory next to `.git`).
+Trigram and symbol indexes are put into `.be/*.idx` files
+(in a `.be/` directory next to `.git`).
 `--fork N` stripes files across N workers.
 
 **SPOT mode**: extracts trigrams from the needle text, seeks each in

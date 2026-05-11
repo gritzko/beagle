@@ -6,7 +6,7 @@
 #  post-migration model:
 #
 #    * `sniff put <path>` / `sniff delete <path>` only append rows to
-#      `.sniff`; no staging pack, no tree object written yet.
+#      `.be/wtlog`; no staging pack, no tree object written yet.
 #    * `sniff post -m ...` walks the baseline + wt, applies the
 #      change-set rules (explicit put/delete, or implicit mtime-dirty),
 #      and emits one keeper pack `commit → trees → blobs`.
@@ -51,7 +51,7 @@ head_hex() {
         h = last
         sub(/^[^#]*#/, "", h)
         if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-    }' .sniff
+    }' .be/wtlog
 }
 
 # ------------------------------------------------------------------
@@ -66,24 +66,24 @@ H1=$(head_hex)
 [ -n "$H1" ] || fail "HEAD unset after post"
 note "HEAD=$H1"
 
-# .sniff must be trimmed to actual content on close — FILEBook
+# .be/wtlog must be trimmed to actual content on close — FILEBook
 # page-aligns on open, ULOGClose's FILETrimBook reverses it.
 #  BSD `wc` pads its count with leading whitespace; arithmetic
 #  expansion strips that so the string compare against awk's
 #  unpadded count works on both Linux and macOS.
-sz=$(($(wc -c < .sniff)))
-content_sz=$(awk 'END{print c} {c+=length($0)+1}' .sniff)
+sz=$(($(wc -c < .be/wtlog)))
+content_sz=$(awk 'END{print c} {c+=length($0)+1}' .be/wtlog)
 [ "$sz" = "$content_sz" ] \
-    || fail ".sniff not trimmed: file=$sz content=$content_sz"
-note ".sniff trimmed to $sz bytes"
+    || fail ".be/wtlog not trimmed: file=$sz content=$content_sz"
+note ".be/wtlog trimmed to $sz bytes"
 
-# Bare `sniff post` (dry run) must NOT grow .sniff either —
+# Bare `sniff post` (dry run) must NOT grow .be/wtlog either —
 # RO open path keeps the file at its existing length.
 "$SNIFF" post >/dev/null
-sz2=$(($(wc -c < .sniff)))
+sz2=$(($(wc -c < .be/wtlog)))
 [ "$sz2" = "$sz" ] \
-    || fail "dry-run post grew .sniff: was=$sz now=$sz2"
-note "dry-run post left .sniff at $sz2 bytes"
+    || fail "dry-run post grew .be/wtlog: was=$sz now=$sz2"
+note "dry-run post left .be/wtlog at $sz2 bytes"
 
 # ------------------------------------------------------------------
 # Scenario 2: checkout the commit into a fresh dir, files reappear
@@ -104,10 +104,10 @@ echo alpha > a.txt
 echo bravo > b.txt
 
 "$SNIFF" put a.txt >/dev/null
-awk -F'\t' '$2 == "put" && $3 == "a.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "a.txt"' .be/wtlog | grep -q . \
     || fail "no `put a.txt` row in ULOG"
 "$SNIFF" put b.txt >/dev/null
-awk -F'\t' '$2 == "put" && $3 == "b.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "b.txt"' .be/wtlog | grep -q . \
     || fail "no `put b.txt` row in ULOG"
 note "ULOG records two put rows"
 
@@ -119,7 +119,7 @@ note "HEAD after post=$C3"
 #  Checkout into a fresh dir — both files must land.
 D3b="$TMP/r3b"
 mkdir -p "$D3b"; cd "$D3b"
-cp -r "$D3/.dogs" .
+cp -r "$D3/.be" .
 "$SNIFF" get "$C3" >/dev/null
 want_file a.txt "alpha"
 want_file b.txt "bravo"
@@ -142,7 +142,7 @@ C4=$(head_hex)
 note "new HEAD=$C4"
 
 D4b="$TMP/r4b"; mkdir -p "$D4b"; cd "$D4b"
-cp -r "$D3b/.dogs" .
+cp -r "$D3b/.be" .
 "$SNIFF" get "$C4" >/dev/null
 want_file a.txt "alpha-two"
 want_file b.txt "bravo"
@@ -155,7 +155,7 @@ note "modified content on disk after get"
 echo "=== 5. delete a.txt ==="
 cd "$D4b"
 "$SNIFF" delete a.txt >/dev/null
-awk -F'\t' '$2 == "delete" && $3 == "a.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "delete" && $3 == "a.txt"' .be/wtlog | grep -q . \
     || fail "no \`delete a.txt\` row in ULOG"
 "$SNIFF" post 'drop a' >/dev/null
 want_missing a.txt                      # POST must unlink
@@ -163,7 +163,7 @@ C5=$(head_hex)
 note "HEAD after delete=$C5"
 
 D5b="$TMP/r5b"; mkdir -p "$D5b"; cd "$D5b"
-cp -r "$D4b/.dogs" .
+cp -r "$D4b/.be" .
 "$SNIFF" get "$C5" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
@@ -185,20 +185,20 @@ rm a.txt                                # vanish one without a `delete` row
 C6=$(head_hex)
 
 D6b="$TMP/r6b"; mkdir -p "$D6b"; cd "$D6b"
-cp -r "$D5b/.dogs" .
+cp -r "$D5b/.be" .
 "$SNIFF" get "$C6" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
 note "a.txt removed by implicit-delete sweep"
 
 # ------------------------------------------------------------------
-# Scenario 7: pre-seeded `.dogs/config` supplies the commit author —
+# Scenario 7: pre-seeded `.be/config` supplies the commit author —
 # `[user] name`/`email` end up in the commit object as
 # `<name> <<email>>`, not the bland `sniff <sniff@dogs>` fallback.
 # ------------------------------------------------------------------
-echo "=== 7. .dogs/config drives the commit author ==="
-D7="$TMP/r7"; mkdir -p "$D7/.dogs"; cd "$D7"
-cat > .dogs/config <<'EOF'
+echo "=== 7. .be/config drives the commit author ==="
+D7="$TMP/r7"; mkdir -p "$D7/.be"; cd "$D7"
+cat > .be/config <<'EOF'
 [user]
 name = "Test User"
 email = "test@example.com"
@@ -209,9 +209,9 @@ C7=$(head_hex)
 [ -n "$C7" ] || fail "HEAD unset after post"
 body=$("$KEEPER" get ".#$C7" 2>/dev/null)
 echo "$body" | grep -q '^author Test User <test@example.com> ' \
-    || fail "author line missing identity from .dogs/config (got: $(echo "$body" | grep ^author))"
+    || fail "author line missing identity from .be/config (got: $(echo "$body" | grep ^author))"
 echo "$body" | grep -q '^committer Test User <test@example.com> ' \
-    || fail "committer line missing identity from .dogs/config"
+    || fail "committer line missing identity from .be/config"
 note "commit author = Test User <test@example.com>"
 
 echo "=== all workflow scenarios passed ==="

@@ -47,10 +47,8 @@ static void sniff_sighandler(int sig) {
 
 static ok64 sniff_write_pid(u8cs reporoot) {
     sane($ok(reporoot));
-    a_path(pp, reporoot);
-    a_cstr(rel, "/" SNIFF_FILE ".pid");
-    call(u8bFeed, pp, rel);
-    call(PATHu8bTerm, pp);
+    a_cstr(pidname, "sniff.pid");
+    a_path(pp, reporoot, DOG_BE_S, pidname);
     FILE *fp = fopen((char *)u8bDataHead(pp), "w");
     if (!fp) fail(SNIFFFAIL);
     fprintf(fp, "%d\n", (int)getpid());
@@ -60,10 +58,8 @@ static ok64 sniff_write_pid(u8cs reporoot) {
 
 static ok64 sniff_rm_pid(u8cs reporoot) {
     sane($ok(reporoot));
-    a_path(pp, reporoot);
-    a_cstr(rel, "/" SNIFF_FILE ".pid");
-    call(u8bFeed, pp, rel);
-    call(PATHu8bTerm, pp);
+    a_cstr(pidname, "sniff.pid");
+    a_path(pp, reporoot, DOG_BE_S, pidname);
     FILEUnLink($path(pp));
     done;
 }
@@ -83,7 +79,7 @@ static ok64 sniff_drain_cb(u8cs path, void *ctx) {
 }
 
 //  The watch daemon emits one `mod <dir/>` ULOG row per directory
-//  containing dirty files (mtime ∉ stamp set).  Dedup is via .sniff
+//  containing dirty files (mtime ∉ stamp set).  Dedup is via .be/wtlog
 //  itself: a directory whose `mod <dir/>` row already exists since the
 //  most recent baseline (get/post/patch) is skipped.  Coarse-grained
 //  by design — POST does its own wt scan; the row is just an advisory
@@ -129,7 +125,7 @@ static void watch_parent_dir(u8csc rel, u8b out) {
     }
 }
 
-//  Seed `*seen` from the .sniff log: every `mod <dir/>` row whose ts
+//  Seed `*seen` from the .be/wtlog log: every `mod <dir/>` row whose ts
 //  is past the most recent get/post/patch baseline contributes its
 //  path.
 static ok64 watch_seed_seen(Bu8 *seen) {
@@ -160,13 +156,8 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
     u8cs rel = {};
     if (!SNIFFRelFromFull(rel, w->reporoot, full)) return OK;
     if (SNIFFSkipMeta(rel))                         return OK;
-
-    //  Skip the daemon's own pidfile — we don't log ourselves.
-    {
-        a_cstr(d_pid, ".sniff.pid");
-        if ($len(rel) == $len(d_pid) &&
-            memcmp(rel[0], d_pid[0], $len(d_pid)) == 0) return OK;
-    }
+    //  The daemon's own pidfile (`<root>/.be/sniff.pid`) is filtered
+    //  by SNIFFSkipMeta above (anything under `.be/`).
 
     filestat fs = {};
     ok64 lo = FILELStat(&fs, full);
@@ -195,7 +186,7 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
 
 static ok64 watch_rescan(u8cs reporoot, Bu8 *seen_dirs) {
     sane($ok(reporoot) && seen_dirs);
-    //  Rebuild the seen set from .sniff each scan — the baseline may
+    //  Rebuild the seen set from .be/wtlog each scan — the baseline may
     //  have advanced (get/post/patch) since the last invocation,
     //  invalidating prior `mod` rows.
     call(watch_seed_seen, seen_dirs);
@@ -272,10 +263,8 @@ static ok64 sniff_daemon(u8cs reporoot) {
 
 static ok64 sniff_stop(u8cs reporoot) {
     sane($ok(reporoot));
-    a_path(pp, reporoot);
-    a_cstr(rel, "/" SNIFF_FILE ".pid");
-    call(u8bFeed, pp, rel);
-    call(PATHu8bTerm, pp);
+    a_cstr(pidname, "sniff.pid");
+    a_path(pp, reporoot, DOG_BE_S, pidname);
     FILE *fp = fopen((char *)u8bDataHead(pp), "r");
     if (!fp) { fprintf(stderr, "sniff: no daemon running\n"); done; }
     int dpid = 0;
@@ -324,7 +313,7 @@ static ok64 sniff_stop(u8cs reporoot) {
 #define STATUS_ANSI_OFF "\033[0m"
 
 //  Display verbs encode the status bucket inside one shared ULOG-
-//  formatted row stream.  Disjoint from the .sniff log's own verbs;
+//  formatted row stream.  Disjoint from the .be/wtlog log's own verbs;
 //  these never persist — the buffer is mmap'd and freed inside one
 //  status invocation.  Re-encoded each call (cheap; <10 bytes each).
 typedef struct {
@@ -637,7 +626,7 @@ static ok64 sniff_checkout(u8cs reporoot, u8cs hex) {
 
 //  Pre-resolve a relative `?./X`, `?../X`, or `?..` URI in place.
 //  No-op when the query has no relative prefix.  Reads the wt's
-//  current branch from `.sniff` baseline and writes the absolute
+//  current branch from `.be/wtlog` baseline and writes the absolute
 //  branch path into `qbuf`; rebuilds the URI's `data` slice as
 //  `?<absolute>` in `databuf`.  Both buffers must outlive the
 //  caller's use of `u`.  When `was_relative_out` is non-NULL it
@@ -703,7 +692,7 @@ static ok64 sniff_get_by_refkey(u8cs reporoot, u8csc keepdir,
 
 // --- Path+query GET helpers -----------------------------------------
 //
-//  Both helpers are no-staging (no `.sniff` row) overwrites of wt
+//  Both helpers are no-staging (no `.be/wtlog` row) overwrites of wt
 //  files from another branch's tip.  Single-file form fetches one
 //  blob via `KEEPGetByURI`; subtree form drains the target tree's
 //  leaves via `KEEPTreeULog` and writes every leaf under the
@@ -911,7 +900,7 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  Path+query, no authority — single-file or subtree overlay
     //  from another branch's tip (VERBS.md §GET).  Trailing `/` on
     //  the path picks subtree mode; no slash means single file.
-    //  No `.sniff` row is appended either way (no staging — the
+    //  No `.be/wtlog` row is appended either way (no staging — the
     //  written paths land as regular user edits).  No pruning — wt
     //  files outside the target tree stay put (per project rule:
     //  GET overwrites unconditionally; we don't try to be clever
@@ -1082,7 +1071,7 @@ static void sniff_usage(void) {
             "                              projectors); verb-less; --tlv\n"
             "                              emits HUNK TLV for `bro`\n"
             "  sniff watch                 start inotify daemon (fork;\n"
-            "                              pid at <wt>/.sniff.pid)\n"
+            "                              pid at <wt>/.be/sniff.pid)\n"
             "                              emits `mod <path>` rows\n"
             "  sniff stop                  stop the watch daemon\n"
             "  sniff help                  this message\n"
@@ -1185,7 +1174,7 @@ ok64 SNIFFExec(cli *c) {
         u8cs commit_author = {};
         CLIFlag(commit_author, c, "--author");
         //  Default identity: assemble `<name> <<email>>` from the wt's
-        //  `<root>/.dogs/config` (TOML — `[user] name = "..." email =
+        //  `<root>/.be/config` (TOML — `[user] name = "..." email =
         //  "..."`).  Falls back to the legacy sniff sentinel only when
         //  config has neither field (test fixtures without a seeded
         //  identity).
@@ -1349,7 +1338,7 @@ ok64 SNIFFExec(cli *c) {
                 //  its query is the *commit target*.  POSTCommit
                 //  lands the new commit on that branch (instead of
                 //  the wt's baseline branch); the wt's other branch
-                //  is left untouched in REFS, and `.sniff` resets
+                //  is left untouched in REFS, and `.be/wtlog` resets
                 //  to (target, new_tip).  No separate POSTSetLabel
                 //  pass — that was the old "label both branches at
                 //  the same sha" behaviour, replaced here.

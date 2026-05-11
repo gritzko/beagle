@@ -33,14 +33,14 @@ set_tests_properties(SNIFFdirty PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFdirty")
 
 #  post-ff.sh — POST pre-flight: empty-commit refuse + non-ff refuse
-#  (REFS tip vs .sniff base divergence).
+#  (REFS tip vs .be/wtlog base divergence).
 add_test(NAME SNIFFpostff
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/post-ff.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(SNIFFpostff PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFpostff")
 
-#  relref.sh — `?./X`, `?../X`, `?..` resolve via .sniff baseline.
+#  relref.sh — `?./X`, `?../X`, `?..` resolve via .be/wtlog baseline.
 add_test(NAME SNIFFrelref
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/relref.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

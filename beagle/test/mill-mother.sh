@@ -8,7 +8,7 @@
 #  Phase 1 (seed dog01):
 #    for TAG in last-N tags of $REPO:
 #      git -C src01 checkout TAG
-#      rsync src01/ -> dog01/   (preserving dog01/.git and dog01/.dogs)
+#      rsync src01/ -> dog01/   (preserving dog01/.git and dog01/.be)
 #      be post -m TAG ?tags/TAG  (inside dog01 — commits + marks)
 #
 #  Phase 2 (keeper -> keeper clone):
@@ -160,7 +160,7 @@ echo "$TAGS" | sed 's/^/    /'
 git clone -q --no-checkout "$SRC" "$TMILL/src01"
 git clone -q --no-checkout "$SRC" "$TMILL/git01"
 
-#  dog01 is a bare worktree.  `be post` creates .dogs/ on first commit.
+#  dog01 is a bare worktree.  `be post` creates .be/ on first commit.
 #  (Don't `git init` here — we don't need a host git repo, and an empty
 #  .git/ would be scanned and committed if SNIFFSkipMeta didn't skip it.)
 mkdir -p "$TMILL/dog01"
@@ -176,7 +176,7 @@ printf "%-20s  %s\n" "---" "----"
 for TAG in $TAGS; do
     TOTAL=$((TOTAL + 1))
     #  Pause between tags: a single `be put .` over a few-thousand-file
-    #  wt self-bumps the .sniff tail timestamp ~N milliseconds (one per
+    #  wt self-bumps the .be/wtlog tail timestamp ~N milliseconds (one per
     #  staged row, see SNIFFAtNow's monotonicity guard).  Without a
     #  wall-clock gap the next iteration's RONNow() lands before the
     #  prior tail and SNIFFCheckClock fires CLOCKBAD.  Six seconds is
@@ -189,7 +189,7 @@ for TAG in $TAGS; do
     #  from the tree, so mtime+size quick-check can miss
     #  same-size/same-mtime content changes across tags.
     rsync -rlc --delete \
-        --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff*' \
+        --exclude='/.git/' --exclude='/.be/' --exclude='/.be*' \
         "$TMILL/src01/" "$TMILL/dog01/"
     cd "$TMILL/dog01"
     T0=$(date +%s)
@@ -275,21 +275,21 @@ for TAG in $TAGS; do
         prune_empty "$TMILL/dog01"
         prune_empty "$TMILL/git01"
         D1=$(rsync -rlcni --delete \
-            --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff*' \
+            --exclude='/.git/' --exclude='/.be/' --exclude='/.be*' \
             "$TMILL/git01/" "$TMILL/dog01/" 2>&1)
     fi
     D2="dog02 be get failed"
     if ( cd "$TMILL/dog02" && "$BE" get "?tags/$TAG" >/dev/null 2>&1 ); then
         prune_empty "$TMILL/dog02"
         D2=$(rsync -rlcni --delete \
-            --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff*' \
+            --exclude='/.git/' --exclude='/.be/' --exclude='/.be*' \
             "$TMILL/git01/" "$TMILL/dog02/" 2>&1)
     fi
 
     r1=$([ -z "$D1" ] && echo OK || echo FAIL)
     r2=$([ -z "$D2" ] && echo OK || echo FAIL)
-    N=$(find "$TMILL/dog01" -not -path '*/.dogs/*' -not -path '*/.git/*' \
-        -not -path '*/.sniff*' -type f | wc -l)
+    N=$(find "$TMILL/dog01" -not -path '*/.be/*' -not -path '*/.git/*' \
+        -not -path '*/.be*' -type f | wc -l)
     if [ "$r1" = OK ] && [ "$r2" = OK ]; then
         printf "%-20s  PASS  (%s files, git==dog01==dog02)\n" "$TAG" "$N"
     else

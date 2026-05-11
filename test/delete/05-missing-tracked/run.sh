@@ -18,8 +18,8 @@ rm a.txt
 
 [ ! -e a.txt ] || { echo "FAIL: a.txt re-appeared after delete" >&2; exit 1; }
 
-grep -q 'delete	a\.txt' .sniff || {
+grep -q 'delete	a\.txt' .be/wtlog || {
     echo "FAIL: no delete row for missing-but-tracked a.txt" >&2
-    tail .sniff >&2
+    tail .be/wtlog >&2
     exit 1
 }

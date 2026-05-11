@@ -36,8 +36,8 @@ typedef struct {
     class_kind  kind;       // base/wt presence
     ulogreccp   base_rec;   // baseline tree row (NULL if absent)
     ulogreccp   wt_rec;     // wt scan row       (NULL if absent)
-    ulogreccp   put_rec;    // .sniff `put`  row since last post (NULL if none)
-    ulogreccp   del_rec;    // .sniff `del`  row since last post (NULL if none)
+    ulogreccp   put_rec;    // .be/wtlog `put`  row since last post (NULL if none)
+    ulogreccp   del_rec;    // .be/wtlog `del`  row since last post (NULL if none)
 } class_step;
 
 typedef ok64 (*class_cb)(class_step const *step, void *ctx);

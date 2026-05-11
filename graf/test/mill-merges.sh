@@ -36,7 +36,7 @@ HOST=${HOST:-localhost}
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-GRAFmillMerges}
 TMILL=$TMP/$TEST_ID
-mkdir -p "$TMILL/client/.dogs"
+mkdir -p "$TMILL/client/.be"
 trap 'rm -rf "$TMILL"; rmdir "$TMP" 2>/dev/null || true' EXIT
 
 #  Curated merges: 2-parent, file-overlapping, and CLEAN under
@@ -128,7 +128,7 @@ echo "=== PASS1: $TOTAL merge/file cases, $FAIL failures ==="
 #      wt  ← `be patch ?<P2>`  (3-way merge P2's tip, via graf)
 #      ref ← `git checkout <M>` in a reference no-checkout clone
 #  Then rsync -c compares wt against the reference tree
-#  (excluding .dogs/ + .git/).  Any diff = FAIL.  The git side is
+#  (excluding .be/ + .git/).  Any diff = FAIL.  The git side is
 #  the authoritative 3-way result under the CLEAN-merge selection,
 #  so exact content agreement is the target.
 #
@@ -160,13 +160,13 @@ for M in $MERGES; do
     PATCH_TOTAL=$((PATCH_TOTAL + 1))
 
     WT="$TMILL/wt.$M"
-    mkdir -p "$WT/.dogs"
+    mkdir -p "$WT/.be"
 
     echo ""
     echo "=== $M  $SUBJ ==="
 
     set +e
-    #  Seed this wt's .dogs with the same ref Pass 1 used — the curated
+    #  Seed this wt's .be with the same ref Pass 1 used — the curated
     #  merges are all reachable from it, so the follow-up `be get ?<sha>`
     #  can resolve locally (git upload-pack rejects `want <sha>` without
     #  allow-reachable-sha1-in-want).
@@ -204,11 +204,11 @@ for M in $MERGES; do
     git -C "$REFCLONE" checkout --quiet --force "$M"
 
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+        --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
         "$REFCLONE/" "$WT/" 2>&1)
 
     if [ -z "$RDIFF" ]; then
-        N=$(find "$WT" -not -path '*/.dogs/*' -not -name '.sniff' \
+        N=$(find "$WT" -not -path '*/.be/*' -not -name '.be/wtlog' \
             -type f | wc -l)
         printf "PASS: %s (%s files match git checkout)\n" "$M" "$N"
     else

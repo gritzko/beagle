@@ -19,21 +19,21 @@ rm a.txt c.txt
 "$BE" delete > /dev/null
 
 #  Both rm'd paths must have a delete row.
-grep -q 'delete	a\.txt' .sniff || {
+grep -q 'delete	a\.txt' .be/wtlog || {
     echo "FAIL: missing a.txt has no delete row" >&2
-    tail .sniff >&2
+    tail .be/wtlog >&2
     exit 1
 }
-grep -q 'delete	c\.txt' .sniff || {
+grep -q 'delete	c\.txt' .be/wtlog || {
     echo "FAIL: missing c.txt has no delete row" >&2
-    tail .sniff >&2
+    tail .be/wtlog >&2
     exit 1
 }
 
 #  b.txt was never missing — must NOT get a delete row.
-if grep -q 'delete	b\.txt' .sniff; then
+if grep -q 'delete	b\.txt' .be/wtlog; then
     echo "FAIL: b.txt got a delete row but is still on disk" >&2
-    tail .sniff >&2
+    tail .be/wtlog >&2
     exit 1
 fi
 

@@ -14,9 +14,10 @@ T_pre_rebase=$(head_hex)
 echo "=== 16. setup secondary wt (WT2) sharing one keeper ==="
 WT2="$ETMP/wt2"
 mkdir -p "$WT2"
-ln -s "$WT/.dogs" "$WT2/.dogs"
 cp "$WT/x.txt" "$WT2/x.txt"
-cp "$WT/.sniff" "$WT2/.sniff"
+# Secondary worktree: `<wt>/.be` is a regular file = its own wtlog.
+# Row 0's `repo` URI (inherited from primary) names the shared store.
+cp "$WT/.be/wtlog" "$WT2/.be"
 note "WT2 forked at trunk tip T_pre_rebase=$T_pre_rebase"
 
 echo "=== 17. WT advances trunk: a new commit lands first ==="
@@ -51,6 +52,6 @@ PARENT_REBASED=$("$KEEPER" get ".#$T_rebased" 2>/dev/null \
 note "T_rebased.parent = T_advance (rebase landed on top)"
 
 echo "=== 19. WT3 conflict abort: deferred ==="
-skip "explicit conflict-abort scenario deferred — needs scripted .sniff rewind"
+skip "explicit conflict-abort scenario deferred — needs scripted .be/wtlog rewind"
 
 echo "=== branches/03-secondary-wt: OK ==="

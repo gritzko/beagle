@@ -114,7 +114,7 @@ SRC_REL=${SRC#$HOME/}
 #        keeper-cli tests must drive `graf get` explicitly. ---
 
 CLI=$TMP/client
-mkdir -p "$CLI/.dogs"
+mkdir -p "$CLI/.be"
 cd "$CLI"
 for REF in refs/heads/master refs/heads/feat-a refs/heads/feat-b; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null

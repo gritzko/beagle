@@ -21,8 +21,8 @@ echo "readme" > README.md
 [ -f tools/run.sh ] || { echo "FAIL: tools/run.sh removed"  >&2; exit 1; }
 [ -f README.md ]    || { echo "FAIL: README.md removed"     >&2; exit 1; }
 
-grep -q 'delete	src/$' .sniff || {
-    echo "FAIL: no 'delete src/' row in .sniff" >&2
-    tail .sniff >&2
+grep -q 'delete	src/$' .be/wtlog || {
+    echo "FAIL: no 'delete src/' row in .be/wtlog" >&2
+    tail .be/wtlog >&2
     exit 1
 }

@@ -46,7 +46,7 @@ echo "$TAGS" | sed 's/^/    /'
 #  be side: bare-ish dogs repo.
 cd "$TMILL/be01"
 git init -q .
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 #  git side: ssh-backed empty repo, no pre-fetch.  Each tag's fetch
 #  goes over ssh for an apples-to-apples comparison with `be`.
@@ -79,9 +79,9 @@ for TAG in $TAGS; do
 
     #  rsync dry-run: reports any file content/mode/presence difference.
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' \
+        --exclude='/.git/' --exclude='/.be/' \
         "$TMILL/git01/" "$TMILL/be01/" 2>&1)
-    BE_N=$(find "$TMILL/be01" -not -path '*/.dogs/*' -not -path '*/.git/*' \
+    BE_N=$(find "$TMILL/be01" -not -path '*/.be/*' -not -path '*/.git/*' \
            -type f | wc -l)
 
     if [ -z "$RDIFF" ]; then

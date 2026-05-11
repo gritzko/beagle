@@ -22,8 +22,8 @@
 ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     sane(u8csOK(wt) && out);
 
-    a_cstr(rel, SNIFF_FILE);
-    a_path(apath, wt, rel);
+    a_path(apath);
+    call(SNIFFWtlogPath, apath, wt);
 
     //  RO open: callable concurrently with sniff's own RW handle.
     //  ULOGOpenRO maps PROT_READ and skips FILEBook's page-align
@@ -45,7 +45,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             r0.verb != SNIFFAtVerbRepo()) {
             ULOGClose(data, &idx, NO); fail(SNIFFNONE);
         }
-        DOGRepoFromDogs(r0.uri.path, root_buf);
+        DOGRepoFromBe(r0.uri.path, root_buf);
     }
 
     //  Latest get/post/patch with a 40-hex sha → branch + sha.
@@ -416,7 +416,7 @@ ok64 SNIFFCheckClock(void) {
         if (skew_ms > 30000) {
             fprintf(stderr,
                     "sniff: clock skew — system clock is before the latest "
-                    ".sniff row; refusing every command until clock catches "
+                    "wtlog row; refusing every command until clock catches "
                     "up\n");
             return CLOCKBAD;
         }

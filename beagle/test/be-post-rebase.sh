@@ -28,12 +28,19 @@ trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
+wtlog_path() {
+    if [ -d .be ]; then printf '%s\n' .be/wtlog
+    elif [ -f .be ]; then printf '%s\n' .be
+    else printf '%s\n' .be/wtlog
+    fi
+}
+
 head_hex() {
     awk -F'\t' '$2=="post"||$2=="get"||$2=="patch" { last=$3 }
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' "$(wtlog_path)"
 }
 
 ref_tip() {
@@ -63,18 +70,17 @@ T1=$(head_hex)
 note "T1=$T1"
 
 # ------------------------------------------------------------------
-# 2. WT2 attaches to the same .dogs (clone via shared keeper store).
-#    Cheap simulation: copy the wt + its .dogs into WT2 BEFORE WT1
-#    advances; both wts then race on the same .dogs in cwd.
-#    Real use case is two checkouts of one repo; here we use a hard
-#    symlink to keep both wts pointing at the same keeper.
+# 2. WT2 attaches as a secondary worktree of WT1's store.  In the
+#    `.be`-file model, the secondary's `<wt>/.be` is a regular file
+#    that IS its own wtlog; row 0's `repo` URI (inherited from the
+#    primary's wtlog) names the shared store.  We seed it by copying
+#    WT1's wtlog onto WT2/.be.
 # ------------------------------------------------------------------
 echo "=== 2. WT2 forks off the same store at T1 ==="
 WT2="$TMP/wt2"
 mkdir -p "$WT2"; cd "$WT2"
-ln -s "$WT1/.dogs" .dogs
 cp "$WT1/x.txt" x.txt
-cp "$WT1/.sniff" .sniff
+cp "$WT1/.be/wtlog" .be
 sleep 0.1
 T1_wt2=$(head_hex)
 [ "$T1_wt2" = "$T1" ] || fail "WT2 not at T1 (got $T1_wt2)"

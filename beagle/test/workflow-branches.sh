@@ -67,7 +67,7 @@ head_hex() {
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Branch portion (between leading `?` and `#`) of the latest row.
@@ -76,7 +76,7 @@ cur_branch() {
                 END {
                     q = last; sub(/#.*/, "", q); sub(/^\?/, "", q)
                     print q
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Tip recorded for KEY in `keeper refs` output.  Empty if KEY absent.
@@ -125,8 +125,8 @@ note "?fix1 forked at $FIX1_REFS; trunk unchanged"
 
 # Assert the per-branch shard dir exists — POSTSetLabel now calls
 # KEEPCreateBranch before writing the REFS row.
-[ -d .dogs/fix1 ] || fail ".dogs/fix1 shard missing after be post ?./fix1"
-note ".dogs/fix1 shard materialised"
+[ -d .be/fix1 ] || fail ".be/fix1 shard missing after be post ?./fix1"
+note ".be/fix1 shard materialised"
 
 # ------------------------------------------------------------------
 # 3. switch wt to the child branch  (be get ?fix1)
@@ -210,8 +210,8 @@ FIX1_REFS=$(ref_tip "?fix1")
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] \
     || fail "trunk REFS moved across delete: $T1 -> $TRUNK_REFS"
-[ ! -e .dogs/fix1 ] || fail ".dogs/fix1 left behind after delete"
-note ".dogs/fix1 shard removed by KEEPBranchDrop"
+[ ! -e .be/fix1 ] || fail ".be/fix1 left behind after delete"
+note ".be/fix1 shard removed by KEEPBranchDrop"
 note "?fix1 deleted; trunk unchanged at T1=$T1"
 
 # --- 5. patch squash child into parent ---
@@ -345,7 +345,7 @@ echo "=== 15. cleanup: be delete ?fix1 ==="
     || fail "be delete ?fix1 (cleanup) failed"
 [ -z "$(ref_tip "?fix1")" ] \
     || fail "?fix1 still in REFS after cleanup delete"
-[ ! -e .dogs/fix1 ] || fail ".dogs/fix1 left behind after cleanup delete"
+[ ! -e .be/fix1 ] || fail ".be/fix1 left behind after cleanup delete"
 note "?fix1 cleaned up"
 
 # ------------------------------------------------------------------
@@ -368,9 +368,9 @@ note "?fix1 cleaned up"
 echo "=== 16. setup secondary wt (WT2) sharing one keeper ==="
 WT2="$TMP/wt2"
 mkdir -p "$WT2"
-ln -s "$WT/.dogs" "$WT2/.dogs"
+ln -s "$WT/.be" "$WT2/.be"
 cp "$WT/x.txt" "$WT2/x.txt"
-cp "$WT/.sniff" "$WT2/.sniff"
+cp "$WT/.be/wtlog" "$WT2/.be/wtlog"
 T_pre_rebase=$T_squash
 note "WT2 forked at trunk tip T_pre_rebase=$T_pre_rebase"
 
@@ -387,7 +387,7 @@ T_advance=$(head_hex)
     || fail "WT advance didn't change tip (got $T_advance)"
 note "WT advanced trunk to T_advance=$T_advance"
 
-# WT2's .sniff still references T_pre_rebase as its parent.  Edit a
+# WT2's .be/wtlog still references T_pre_rebase as its parent.  Edit a
 # disjoint file and post — Stage 2 phase-2 promote rebases WT2's new
 # commit onto T_advance.
 echo "=== 18. WT2 posts on top of stale tip → rebase ==="
@@ -422,13 +422,13 @@ note "T_rebased.parent = T_advance (rebase landed on top)"
 echo "=== 19. WT3 conflict abort: edits racing.txt vs T_advance ==="
 WT3="$TMP/wt3"
 mkdir -p "$WT3"
-ln -s "$WT/.dogs" "$WT3/.dogs"
-# WT3 starts at T_rebased (current state of REFS); rewind .sniff to a
+ln -s "$WT/.be" "$WT3/.be"
+# WT3 starts at T_rebased (current state of REFS); rewind .be/wtlog to a
 # stale baseline so the conflict path fires.  Easiest: copy WT2's
-# original (pre-rebase) .sniff snapshot — but we already advanced past
+# original (pre-rebase) .be/wtlog snapshot — but we already advanced past
 # that.  Skip this aggressive scenario on the workflow path; the
 # unit/integration covers it via the tooling layer.
-skip "explicit conflict-abort scenario deferred — needs scripted .sniff rewind"
+skip "explicit conflict-abort scenario deferred — needs scripted .be/wtlog rewind"
 
 # ------------------------------------------------------------------
 # 20-24. Two-level cascade rebase
@@ -439,7 +439,7 @@ skip "explicit conflict-abort scenario deferred — needs scripted .sniff rewind
 #   * Create ?L1/L2 on it (post ?./L2 from ?L1).
 #   * Switch to ?L1/L2; commit C_L2 on it.
 # Race:
-#   * WT2_L1 forks: copies wt+.sniff from WT (now on ?L1 baseline).
+#   * WT2_L1 forks: copies wt+.be/wtlog from WT (now on ?L1 baseline).
 #     Both wts see ?L1 at C_L1.
 #   * WT advances ?L1 to C_L1b (original wt edit + post).
 #   * WT2_L1 posts on stale ?L1 → rebase, AND because ?L1/L2 is a
@@ -485,12 +485,12 @@ echo "=== 22. fork WTL1 on ?L1 (shares keeper, baseline ?L1@C_L1) ==="
     || fail "be get ?L1 (back to L1) failed"
 WTL1="$TMP/wtl1"
 mkdir -p "$WTL1"
-ln -s "$WT/.dogs" "$WTL1/.dogs"
+ln -s "$WT/.be" "$WTL1/.be"
 cp "$WT/x.txt" "$WTL1/x.txt"   2>/dev/null || true
 cp "$WT/a.txt" "$WTL1/a.txt"   2>/dev/null || true
 cp "$WT/b.txt" "$WTL1/b.txt"   2>/dev/null || true
 cp "$WT/l1.txt" "$WTL1/l1.txt" 2>/dev/null || true
-cp "$WT/.sniff" "$WTL1/.sniff"
+cp "$WT/.be/wtlog" "$WTL1/.be/wtlog"
 note "WTL1 forked off ?L1 at C_L1"
 
 echo "=== 23. WT advances ?L1 to C_L1b ==="
@@ -583,7 +583,7 @@ note "§25: ?fix1 at $F25_C1 (cur)"
 # A peer wt shares the keeper, advances trunk while cur is on ?fix1.
 WT25="$TMP/wt25"
 mkdir -p "$WT25"
-ln -s "$WT/.dogs" "$WT25/.dogs"
+ln -s "$WT/.be" "$WT25/.be"
 ( cd "$WT25" && "$BE" get "?" >/dev/null ) \
     || fail "§25: WT25 be get ? failed"
 ( cd "$WT25" && sleep 0.2 && echo "trunk advance 25" > tr25.txt \
@@ -1030,7 +1030,7 @@ F1_REFS_PRE=$(ref_tip "?fix1")
 #  Advance trunk via a peer wt with the THEIRS edit ("slow").
 WT30="$TMP/wt30"
 mkdir -p "$WT30"
-ln -s "$WT/.dogs" "$WT30/.dogs"
+ln -s "$WT/.be" "$WT30/.be"
 ( cd "$WT30" && "$BE" get "?" >/dev/null ) \
     || fail "§30: WT30 trunk checkout failed"
 ( cd "$WT30" && sleep 0.2 && printf 'the slow fox\n' > conflict30.txt \
@@ -1103,7 +1103,7 @@ skip "§31 cascade-into-descendant after auto-sync — cascade walker skip seman
 # `be post ?feat/new` creates `?feat/new`; rebases cur's stack onto
 # `?feat`'s tip (which is == trunk here, so no commits to replay) →
 # new leaf points at ?feat.tip (or rebased equivalent).  Cur's
-# REFS + .dogs/feat/new shard exist; cur unchanged.
+# REFS + .be/feat/new shard exist; cur unchanged.
 # ------------------------------------------------------------------
 echo "=== 32. ?<absolute>/<newleaf> create-on-miss ==="
 cd "$WT"
@@ -1139,8 +1139,8 @@ NEW32=$(ref_tip "?feat/new")
 F1_TIP_32_AFTER=$(ref_tip "?fix1")
 [ "$F1_TIP_32_AFTER" = "$F1_TIP_32" ] \
     || fail "§32: cur ?fix1 moved: $F1_TIP_32 -> $F1_TIP_32_AFTER"
-[ -d ".dogs/feat/new" ] \
-    || fail "§32: .dogs/feat/new shard missing"
+[ -d ".be/feat/new" ] \
+    || fail "§32: .be/feat/new shard missing"
 
 #  Walk parents from NEW32 until we hit FEAT_TIP_32 (the absolute
 #  parent's tip).  In this trivial setup ?fix1.tip is the same commit
@@ -1173,7 +1173,7 @@ rm -f x32.txt fwork32.txt
 # cur on ?fix1; `?feat` exists on trunk.  `be post ?feat/` rewrites
 # the target to `?feat/<basename(cur)>` = `?feat/fix1`, then runs the
 # same flow as §32.  Asserts: ?feat/fix1 exists; cur (?fix1) is
-# unchanged; .dogs/feat/fix1 shard exists.
+# unchanged; .be/feat/fix1 shard exists.
 # ------------------------------------------------------------------
 echo "=== 33. ?<absolute>/ trailing-slash reuse ==="
 cd "$WT"
@@ -1207,8 +1207,8 @@ NEW33=$(ref_tip "?feat/fix1")
 F1_AFTER_33=$(ref_tip "?fix1")
 [ "$F1_AFTER_33" = "$F1_PRE_33" ] \
     || fail "§33: cur ?fix1 moved: $F1_PRE_33 -> $F1_AFTER_33"
-[ -d ".dogs/feat/fix1" ] \
-    || fail "§33: .dogs/feat/fix1 shard missing"
+[ -d ".be/feat/fix1" ] \
+    || fail "§33: .be/feat/fix1 shard missing"
 seen_feat=NO
 cur="$NEW33"; n=0
 while [ -n "$cur" ] && [ $n -lt 20 ]; do

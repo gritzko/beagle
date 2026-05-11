@@ -1,8 +1,8 @@
 #!/bin/sh
 #  post-ff.sh — POST pre-flight tests:
 #    * empty POST refused (no changes since baseline → SNIFFNOOP),
-#    * non-ff POST refused (REFS tip differs from .sniff base
-#      → SNIFFNOFF) and `.sniff` left untouched.
+#    * non-ff POST refused (REFS tip differs from .be/wtlog base
+#      → SNIFFNOFF) and `.be/wtlog` left untouched.
 #
 #  Run: BIN=build-debug/bin sh sniff/test/post-ff.sh
 set -eu
@@ -21,7 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
 last_row() {
-    awk -F'\t' 'NF >= 2 && $2 != "" { last=$0 } END { print last }' .sniff
+    awk -F'\t' 'NF >= 2 && $2 != "" { last=$0 } END { print last }' .be/wtlog
 }
 
 head_hex() {
@@ -30,7 +30,7 @@ head_hex() {
                     h = last
                     sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 # ====================================================================
@@ -52,8 +52,8 @@ fi
 grep -q "no changes since base" $TMP/postff.err \
     || fail "expected SNIFFNOOP message; got: $(cat $TMP/postff.err)"
 [ "$(last_row)" = "$before_tail" ] \
-    || fail ".sniff tail row changed after refused empty POST"
-note "empty POST refused; .sniff intact"
+    || fail ".be/wtlog tail row changed after refused empty POST"
+note "empty POST refused; .be/wtlog intact"
 
 # ====================================================================
 # Scenario 2 — non-ff POST refused (REFS tip on an unrelated lineage).
@@ -84,8 +84,8 @@ note "v2 = $T2 (wt.base)"
 #  the fake as the trunk tip.  GRAFLca(v2, deadbeef…) → 0 (unrelated
 #  histories) — the ff guard sees lca != tip and refuses.
 FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-TS=$(awk 'END { print $1 }' .dogs/refs)
-printf '%sz\tpost\t?#%s\n' "$TS" "$FAKE" >> .dogs/refs
+TS=$(awk 'END { print $1 }' .be/refs)
+printf '%sz\tpost\t?#%s\n' "$TS" "$FAKE" >> .be/refs
 note "REFS poisoned with unrelated tip $FAKE; wt.base still $T2"
 
 before_tail=$(last_row)
@@ -98,7 +98,7 @@ fi
 grep -q "rebase aborted" $TMP/postff.err \
     || fail "expected rebase aborted message; got: $(cat $TMP/postff.err)"
 [ "$(last_row)" = "$before_tail" ] \
-    || fail ".sniff tail row changed after refused non-ff POST"
-note "non-ff POST refused; .sniff intact"
+    || fail ".be/wtlog tail row changed after refused non-ff POST"
+note "non-ff POST refused; .be/wtlog intact"
 
 echo "=== all post-ff scenarios passed ==="

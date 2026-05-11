@@ -27,7 +27,7 @@ note "primary trunk T1=$T1"
 
 # 2. primary creates ?fix1 (cur stays on trunk)
 "$BE" put "?./fix1" >/dev/null || fail "be put ?./fix1 failed"
-[ -d ".dogs/fix1" ] || fail ".dogs/fix1 shard missing"
+[ -d ".be/fix1" ] || fail ".be/fix1 shard missing"
 [ "$(ref_tip "?fix1")" = "$T1" ] \
     || fail "?fix1 should fork at T1"
 [ "$(cur_branch)" = "" ] || fail "primary cur should still be trunk"
@@ -43,14 +43,14 @@ WT2="$ETMP/wt2"
 mkdir -p "$WT2"
 ( cd "$WT2" && "$BE" get "file:$WT" >/dev/null 2>"$ETMP/wt2-get.err" ) \
     || { cat "$ETMP/wt2-get.err"; fail "be get file: failed"; }
-[ -L "$WT2/.dogs" ] || fail "$WT2/.dogs not a symlink"
-tgt=$(readlink "$WT2/.dogs")
-[ "$tgt" = "$WT/.dogs" ] \
-    || fail "$WT2/.dogs -> $tgt, expected $WT/.dogs"
-[ -f "$WT2/.sniff" ] && [ ! -L "$WT2/.sniff" ] \
-    || fail "$WT2/.sniff should be a local file"
+# Secondary wt: `.be` is a regular FILE = the local wtlog (row 0 names
+# the primary's store via its `repo` URI).
+[ -f "$WT2/.be" ] && [ ! -d "$WT2/.be" ] \
+    || fail "$WT2/.be should be a regular file"
+[ ! -L "$WT2/.be" ] \
+    || fail "$WT2/.be should NOT be a symlink"
 [ -f "$WT2/x.txt" ] || fail "x.txt not checked out in WT2"
-note "WT2 wired to $WT/.dogs (on trunk @ T1)"
+note "WT2 wired to $WT/.be via row-0 anchor (on trunk @ T1)"
 
 ( cd "$WT2" && "$BE" get "?fix1" >/dev/null 2>"$ETMP/wt2-switch.err" ) \
     || { cat "$ETMP/wt2-switch.err"; fail "WT2 switch to ?fix1 failed"; }

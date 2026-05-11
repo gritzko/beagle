@@ -10,7 +10,7 @@
 vc_step "setup: trunk + commit, then wipe wt files"
 vc_fresh_wt
 sp_seed_trunk             # exports T1 (= the only tip)
-sp_wipe_wt                # rm tracked files; .sniff baseline still T1
+sp_wipe_wt                # rm tracked files; .be/wtlog baseline still T1
 
 vc_snapshot before
 

@@ -149,9 +149,9 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  no write, no mark.
     if (kind == WALK_KIND_SUB) return WALKSKIP;
 
-    //  Sniff-meta paths (.sniff, .dogs/*, .git*) sometimes leak into
-    //  legacy trees but must never be materialised on disk — the live
-    //  ULOG / store dir would be clobbered.  Skip both the dir creation
+    //  Sniff-meta paths (.git*, .be*) sometimes leak into legacy
+    //  trees but must never be materialised on disk — the live wtlog
+    //  / store dir would be clobbered.  Skip both the dir creation
     //  and the file write.  The check is hard-coded to the literal
     //  meta names rather than going through `SNIFFSkipMeta` (which
     //  also applies user-loaded .gitignore patterns and would cause
@@ -159,13 +159,11 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  cross-tag rollbacks — see git/contrib/* in mill-mother).
     if (!$empty(path)) {
         a_cstr(m_git, ".git");
-        a_cstr(m_dogs, ".dogs");
-        a_cstr(m_sniff, ".sniff");
+        DOGa_be(m_be);
         b8 hit = NO;
         $eachseg(seg, path) {
-            if (u8csEq(seg, m_git))   { hit = YES; break; }
-            if (u8csEq(seg, m_dogs))  { hit = YES; break; }
-            if (u8csEq(seg, m_sniff)) { hit = YES; break; }
+            if (u8csEq(seg, m_git)) { hit = YES; break; }
+            if (u8csEq(seg, m_be))  { hit = YES; break; }
         }
         if (hit) return (kind == WALK_KIND_DIR) ? WALKSKIP : OK;
     }
@@ -282,25 +280,23 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     u8cs path = {};
     u8csMv(path, (base ? base->uri.path : tgt->uri.path));
 
-    //  `.dogs/`, `.sniff*`, `.git*` are sniff-meta — they sometimes
-    //  leak into committed trees (legacy / accidental put), but they
-    //  must never participate in the overlap-dirty classifier: the
-    //  live ULOG and store dir would always trip the unstamped-mtime
-    //  check and refuse every cross-branch GET.  Treat them as if
-    //  they weren't in the tree.  Hard-coded names rather than
-    //  `SNIFFSkipMeta` (which also folds in user `.gitignore`
-    //  patterns and would silently drop tracked tree paths whose
-    //  basename matches a broad pattern like `.*`, e.g. linux's
-    //  root .gitignore — see get_visit's matching block).
+    //  `.be*`, `.git*` are sniff-meta — they sometimes leak into
+    //  committed trees (legacy / accidental put), but they must never
+    //  participate in the overlap-dirty classifier: the live wtlog
+    //  and store dir would always trip the unstamped-mtime check and
+    //  refuse every cross-branch GET.  Treat them as if they weren't
+    //  in the tree.  Hard-coded names rather than `SNIFFSkipMeta`
+    //  (which also folds in user `.gitignore` patterns and would
+    //  silently drop tracked tree paths whose basename matches a
+    //  broad pattern like `.*`, e.g. linux's root .gitignore — see
+    //  get_visit's matching block).
     {
         a_cstr(m_git, ".git");
-        a_cstr(m_dogs, ".dogs");
-        a_cstr(m_sniff, ".sniff");
+        DOGa_be(m_be);
         b8 hit = NO;
         $eachseg(seg, path) {
-            if (u8csEq(seg, m_git))   { hit = YES; break; }
-            if (u8csEq(seg, m_dogs))  { hit = YES; break; }
-            if (u8csEq(seg, m_sniff)) { hit = YES; break; }
+            if (u8csEq(seg, m_git)) { hit = YES; break; }
+            if (u8csEq(seg, m_be))  { hit = YES; break; }
         }
         if (hit) return OK;
     }

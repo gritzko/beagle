@@ -392,7 +392,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     u8cs path = {recs[0].uri.path[0], recs[0].uri.path[1]};
     if ($empty(path)) return OK;
 
-    //  Sniff-meta paths (.sniff / .dogs/* / .git*): never carry into
+    //  Sniff-meta paths (.be/wtlog / .be/* / .git*): never carry into
     //  the new commit's tree, even when present in the baseline tree.
     //  Legacy trees that committed these accidentally are scrubbed on
     //  the next post.  Emit UNLINK so POST drops them; the on-disk
@@ -561,7 +561,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         if (sha1Eq(&disk_sha, &base_sha)) {
             //  Identical → KEEP (mtime drifted but bytes match).
             //  Re-stamp with this POST's stamp_ts so the file aligns
-            //  with the new post row in `.sniff`; the next bare `be`
+            //  with the new post row in `.be/wtlog`; the next bare `be`
             //  fast-paths it via SNIFFAtKnown without re-hashing.
             //  Mirrors PUT's bare-walk re-stamp at put_visit_tracked.
             a_path(fp);
@@ -2140,7 +2140,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  Cross-branch override: when the caller passes a non-empty
     //  target_branch, the new commit lands on that branch instead
     //  of the baseline-derived one.  brbuf carries the branch path
-    //  used downstream by both the REFS writer and the .sniff post
+    //  used downstream by both the REFS writer and the .be/wtlog post
     //  row's query, so swapping it here is enough.
     if ($ok(target_branch) && !u8csEmpty(target_branch)) {
         u8bReset(brbuf);
@@ -2273,7 +2273,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
     //  7b. Empty-commit refuse: if the new root tree matches the
     //      baseline's tree exactly, the wt has nothing to record.
-    //      Refusing here keeps `.sniff` and REFS clean — VERBS.md
+    //      Refusing here keeps `.be/wtlog` and REFS clean — VERBS.md
     //      says "empty POSTs are refused."  Skip on a fresh repo
     //      (no baseline tree to compare against).
     if (had_baseline && have_root && have_base &&
@@ -2915,12 +2915,12 @@ ok64 POSTRebaseOntoSha(u8cs reporoot, sha1 const *target_tip) {
     }
 
     //  --- 4. Reset wt to new_tip FIRST (writes blob bytes; bumps
-    //  `.sniff` baseline).  REFS stays untouched until checkout
+    //  `.be/wtlog` baseline).  REFS stays untouched until checkout
     //  reports success — a mid-checkout crash (e.g. FILENORESZ)
-    //  must not leave REFS pointing at a tip the wt and `.sniff`
+    //  must not leave REFS pointing at a tip the wt and `.be/wtlog`
     //  never reached.  CAS-advance follows once the wt is in
     //  place; the small remaining inconsistency window
-    //  (`.sniff` ahead, REFS behind on a CAS race) is a much
+    //  (`.be/wtlog` ahead, REFS behind on a CAS race) is a much
     //  cheaper failure mode than the inverse. ---
     a_pad(u8, new_hex, 40);
     a_rawc(nsha, new_tip);

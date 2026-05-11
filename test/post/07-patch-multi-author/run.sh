@@ -5,7 +5,7 @@
 #  and must refuse with POSTNOMSG; the user supplies an explicit
 #  msg.  The resulting commit carries `picked: <sha>` trailers for
 #  every cherry-picked source (no DAG edge, just provenance).
-#  Author comes from the live `.dogs/config` — no inheritance from
+#  Author comes from the live `.be/config` — no inheritance from
 #  patch rows in the new spec.
 #
 #  Branch shape:
@@ -30,8 +30,8 @@ LOGS=$(cd .. && pwd)/logs-$NAME
 rm -rf "$LOGS"; mkdir -p "$LOGS"
 
 set_author() {
-    mkdir -p .dogs
-    cat > .dogs/config <<EOF
+    mkdir -p .be
+    cat > .be/config <<EOF
 [user]
 name = "$1"
 email = "$2"
@@ -44,7 +44,7 @@ head_hex() {
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 # ------------------------------------------------------------------

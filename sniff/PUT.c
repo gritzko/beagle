@@ -57,7 +57,7 @@ typedef struct {
 //       * differs → emit a put row and stamp with put ts.
 //
 //  mtimes are an optimization; the SHA-1 comparison is the actual
-//  dirtiness test.  Without this, a `.sniff` carried over from
+//  dirtiness test.  Without this, a `.be/wtlog` carried over from
 //  another checkout (where every wt mtime is foreign) would put-stage
 //  the entire baseline tree even though nothing actually changed.
 static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
@@ -71,7 +71,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  Submodules / gitlinks: nothing to put.  POST keeps them via
     //  the gitlink-pass-through rule.
     if (kind == WALK_KIND_SUB) return WALKSKIP;
-    //  Meta paths (.sniff / .dogs/* / .git*) leak into legacy trees
+    //  Meta paths (.be/wtlog / .be/* / .git*) leak into legacy trees
     //  but must never be re-staged.  Skip even when present on the
     //  tracked side — POST will drop them from the new tree too.
     if (SNIFFSkipMeta(path)) return OK;
@@ -224,7 +224,7 @@ static ok64 put_classify_step(class_step const *step, void *ctx_) {
 //  classifier), so users saw `0 put / 0 mod` despite their explicit
 //  `be put dir/`, and a fresh row-per-call broke idempotence.
 
-//  Stream rows directly into the .sniff ULOG from the classify
+//  Stream rows directly into the .be/wtlog ULOG from the classify
 //  callback — no in-memory path-set intermediate.  The merge yields
 //  paths in lex order; SNIFFAtAppendAt only requires monotonic ts,
 //  which `*ts_io` carries forward across calls.
@@ -372,7 +372,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         } else if ($len(raw) >= 2 && raw[0][0] == '.' && raw[0][1] == '/') {
             raw[0] += 2;
         }
-        //  Refuse to stage sniff-meta paths (.sniff / .dogs/* / .git*)
+        //  Refuse to stage sniff-meta paths (.be/wtlog / .be/* / .git*)
         //  even when explicitly named — they leak into legacy trees
         //  but must not propagate forward.
         if (!u8csEmpty(raw) && SNIFFSkipMeta(raw)) {
@@ -411,7 +411,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             }
 
             //  Stream tracked-and-dirty + untracked rows straight
-            //  into the .sniff ULOG from the merge callback.  Lex
+            //  into the .be/wtlog ULOG from the merge callback.  Lex
             //  order is the merge's, which yields a deterministic
             //  row order under the prefix.
             dir_collect_ctx dctx = {

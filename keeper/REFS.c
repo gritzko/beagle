@@ -146,7 +146,7 @@ ok64 REFSAppendVerb(u8csc dir, ron60 verb, u8csc from_uri, u8csc to_uri) {
     //  same value.  Per keeper/LOG.md the log is append-of-events;
     //  repeating a row that doesn't change the resolved-state must
     //  produce zero file delta (the ssh round-trip suite asserts
-    //  bit-identical `.dogs/refs` across repeated `be get`).
+    //  bit-identical `.be/refs` across repeated `be get`).
     {
         ULOGClose(data, &idx, YES);
         a_pad(u8, arena, 1024);
@@ -249,7 +249,7 @@ static ok64 refs_each_store(ulogreccp rec, void *ctx) {
     refs_load_ctx *c = (refs_load_ctx *)ctx;
     if (c->cnt >= c->max) done;
     //  Fail-marker rows are journal-only — never surface them as
-    //  refs.  They appear in `.dogs/refs` but don't change resolved
+    //  refs.  They appear in `.be/refs` but don't change resolved
     //  state.
     if (rec->verb == REFSVerbGetFail() ||
         rec->verb == REFSVerbPostFail()) done;

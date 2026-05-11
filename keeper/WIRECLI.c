@@ -603,7 +603,7 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     a_rawc(val, hexnew);
 
     //  REFSAppend itself dedups on (key, val) so a no-op `be get`
-    //  repeat doesn't grow `.dogs/refs` (per keeper/LOG.md).
+    //  repeat doesn't grow `.be/refs` (per keeper/LOG.md).
     return REFSAppend($path(keepdir), key, val);
 }
 

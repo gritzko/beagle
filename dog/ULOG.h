@@ -327,7 +327,7 @@ b8 ULOGu8sRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
 //  fragment is left empty (callers hash blobs on demand).  Output is
 //  reset before writing.  `skip`, when non-NULL, is called per relative
 //  path; returning YES drops the entry.  Use it for repo-meta filters
-//  (`.dogs/`, `.sniff*`) and per-repo ignore lists; the dog layer is
+//  (`.be/`, `.be*`) and per-repo ignore lists; the dog layer is
 //  agnostic to either.
 typedef b8 (*ulog_skip_fn)(u8cs rel, void *ctx);
 

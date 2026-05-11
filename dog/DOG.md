@@ -2,13 +2,13 @@
 
  1. Each dog provides a static library and an executable.
  2. CLI convention: `dog [verb] [--flags] URI*` (see dog/CLI.h).
- 3. Each dog keeps its state in `$REPO_ROOT/.dogs/name`
+ 3. Each dog keeps its state in `$REPO_ROOT/.be/name`
  4. Dogs must understand the URI syntax (see below).
     Dog's CLI is callable as `name URI`.
  5. Dogs find their home and each other using dog/HOME
- 6. If `.dogs/keeper` is present, keeper has the data; if
+ 6. If `.be` is present, keeper has the data; if
     not, `git` has the data
- 7. Last-seen-commit tracking is in `.dogs/name/COMMIT`.
+ 7. Last-seen-commit tracking is in `.be/name/COMMIT`.
  8. The static lib has a `name` control struct and three uniform
     entry points:
       - `ok64 DOGOpen(u8cs branch, b8 rw)`

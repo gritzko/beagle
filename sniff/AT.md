@@ -1,7 +1,7 @@
-# sniff attribution log — `<wt>/.sniff`
+# sniff attribution log — `<wt>/.be/wtlog`
 
 The worktree's authoritative per-wt state is the ULOG file at
-`<wt>/.sniff`.  It is a single plain append-only text file in
+`<wt>/.be/wtlog`.  It is a single plain append-only text file in
 `dog/ULOG.md` format:
 
     <ron60-ms>\t<verb>\t<uri>\n
@@ -15,7 +15,7 @@ on-disk files are "clean" vs user-edited.
 
 | Verb | URI shape | Stamps files? |
 |------|-----------|---------------|
-| `repo`   | `file:///abs/path/.dogs/` (row 0 only; worktree → store anchor) | no |
+| `repo`   | `file:///abs/path/.be/` (row 0 only; worktree → store anchor) | no |
 | `get`    | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
 | `post`   | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
 | `patch`  | one of four shapes — see "Patch row shapes" below     | yes |
@@ -54,9 +54,9 @@ not (see `dog/ULOG.md` §"No concurrent writers").
 
 Row 0 must be `repo`; no other verb may appear at row 0, and `repo`
 must not appear elsewhere.  Walk-up discovery (`dog/HOME`) treats a
-`.sniff` file in an ancestor as a worktree anchor and records its
+`.be/wtlog` file in an ancestor as a worktree anchor and records its
 dir as `h->wt`; SNIFFOpen reads the `repo` URI to set `h->root`
-(the store path where `.dogs/` lives).  For colocated wts the two
+(the store path where `.be/` lives).  For colocated wts the two
 are the same directory.
 
 "Stamps files" means sniff calls `utimensat` on every file it wrote
@@ -129,10 +129,10 @@ of those ops and nothing has edited it since.
 
 ## Retired pointer-pair
 
-An earlier plan replaced `.sniff` with two cooperating
-pointer files — `<wt>/.dogs` and `<branch-dir>/WT` — on the theory
+An earlier plan replaced `.be/wtlog` with two cooperating
+pointer files — `<wt>/.be` and `<branch-dir>/WT` — on the theory
 that per-branch single-wt and store-side back-pointers were worth
-the split.  That plan is not in the code; `.sniff` is the
+the split.  That plan is not in the code; `.be/wtlog` is the
 whole of the per-wt state and is expected to stay that way.  The
 `<store>/ALIAS` + per-branch `REFS` infrastructure on the keeper
 side is unchanged.

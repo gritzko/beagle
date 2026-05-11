@@ -53,7 +53,7 @@ head_hex() {
         h = last
         sub(/^[^#]*#/, "", h)
         if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-    }' .sniff
+    }' .be/wtlog
 }
 
 # ------------------------------------------------------------------
@@ -91,14 +91,14 @@ echo bravo > b.txt
 echo stray > stray.txt                   # untracked, never put-ed
 
 "$BE" put a.txt >/dev/null
-awk -F'\t' '$2 == "put" && $3 == "a.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "a.txt"' .be/wtlog | grep -q . \
     || fail "no \`put a.txt\` row in ULOG"
-awk -F'\t' '$2 == "put" && $3 == "stray.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "stray.txt"' .be/wtlog | grep -q . \
     && fail "stray.txt should not be in any put row"
 "$BE" put b.txt >/dev/null
-awk -F'\t' '$2 == "put" && $3 == "b.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "b.txt"' .be/wtlog | grep -q . \
     || fail "no \`put b.txt\` row in ULOG"
-awk -F'\t' '$2 == "put" && $3 == "stray.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "stray.txt"' .be/wtlog | grep -q . \
     && fail "stray.txt should not be in any put row"
 note "ULOG records two put rows; stray.txt absent from both"
 
@@ -116,7 +116,7 @@ note "HEAD=$C3"
 # Verify: fresh worktree + be get restores both files; stray.txt and
 # late.txt + side/ were never committed.
 D3b="$TMP/r3b"; mkdir -p "$D3b"; cd "$D3b"
-cp -r "$D3/.dogs" .
+cp -r "$D3/.be" .
 "$BE" get "$C3" >/dev/null
 want_file a.txt "alpha"
 want_file b.txt "bravo"
@@ -139,7 +139,7 @@ C4=$(head_hex)
 note "HEAD=$C4"
 
 D4b="$TMP/r4b"; mkdir -p "$D4b"; cd "$D4b"
-cp -r "$D3b/.dogs" .
+cp -r "$D3b/.be" .
 "$BE" get "$C4" >/dev/null
 want_file a.txt "alpha-v2"
 want_file b.txt "bravo"
@@ -156,7 +156,7 @@ want_missing a.txt                    # POST must unlink explicit deletes
 C5=$(head_hex)
 
 D5b="$TMP/r5b"; mkdir -p "$D5b"; cd "$D5b"
-cp -r "$D4b/.dogs" .
+cp -r "$D4b/.be" .
 "$BE" get "$C5" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
@@ -176,7 +176,7 @@ rm a.txt                              # vanish one without a `delete` row
 C6=$(head_hex)
 
 D6b="$TMP/r6b"; mkdir -p "$D6b"; cd "$D6b"
-cp -r "$D5b/.dogs" .
+cp -r "$D5b/.be" .
 "$BE" get "$C6" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
@@ -203,7 +203,7 @@ C7=$(head_hex)
 note "HEAD=$C7"
 
 D7b="$TMP/r7b"; mkdir -p "$D7b"; cd "$D7b"
-cp -r "$D7/.dogs" .
+cp -r "$D7/.be" .
 "$BE" get "$C7" >/dev/null
 want_file lib/a.txt     "alpha"
 want_file lib/sub/b.txt "bravo"
@@ -231,7 +231,7 @@ C8=$(head_hex)
 note "HEAD=$C8"
 
 D8b="$TMP/r8b"; mkdir -p "$D8b"; cd "$D8b"
-cp -r "$D8/.dogs" .
+cp -r "$D8/.be" .
 "$BE" get "$C8" >/dev/null
 want_file    mk/keep.txt     "keep"
 want_file    mk/sub/inner.txt "deep"
@@ -270,7 +270,7 @@ C9b=$(head_hex)
 note "updated HEAD=$C9b"
 
 D9c="$TMP/r9c"; mkdir -p "$D9c"; cd "$D9c"
-cp -r "$D9/.dogs" .
+cp -r "$D9/.be" .
 "$BE" get "$C9b" >/dev/null
 want_file    src/foo.c "v2"
 want_file    src/bar.c "stray"
@@ -303,7 +303,7 @@ want_missing dd/inner/b.txt
 note "dd/ unlinked from worktree"
 
 D10c="$TMP/r10c"; mkdir -p "$D10c"; cd "$D10c"
-cp -r "$D10/.dogs" .
+cp -r "$D10/.be" .
 "$BE" get "$C10b" >/dev/null
 want_file    keep.txt "k"
 want_missing dd/a.txt
@@ -339,11 +339,11 @@ echo nested > side/inner/n.txt            # untracked subtree
 echo top    > top.txt                     # untracked top-level
 
 "$BE" put >/dev/null                      # bare put — tracked-only
-awk -F'\t' '$2 == "put" && $3 == "lib/foo.c"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "lib/foo.c"' .be/wtlog | grep -q . \
     || fail "bare put did not stage lib/foo.c"
-awk -F'\t' '$2 == "put" && $3 ~ /^side\//' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 ~ /^side\//' .be/wtlog | grep -q . \
     && fail "bare put leaked an untracked side/ path into the ULOG"
-awk -F'\t' '$2 == "put" && $3 == "top.txt"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "top.txt"' .be/wtlog | grep -q . \
     && fail "bare put leaked untracked top.txt into the ULOG"
 note "bare put staged lib/foo.c only; untracked side/ + top.txt absent from ULOG"
 
@@ -353,7 +353,7 @@ C11b=$(head_hex)
 note "updated HEAD=$C11b"
 
 D11c="$TMP/r11c"; mkdir -p "$D11c"; cd "$D11c"
-cp -r "$D11/.dogs" .
+cp -r "$D11/.be" .
 "$BE" get "$C11b" >/dev/null
 want_file    lib/foo.c        "v2"
 want_missing side
@@ -386,7 +386,7 @@ note "baseline HEAD=$C12a"
 sleep 0.2
 echo v2 > foo.c                            # modify tracked
 "$BE" put >/dev/null
-awk -F'\t' '$2 == "put" && $3 == "foo.c"' .sniff | grep -q . \
+awk -F'\t' '$2 == "put" && $3 == "foo.c"' .be/wtlog | grep -q . \
     || fail "first bare put did not stage foo.c"
 note "first bare put staged foo.c (now put-stamped, content != baseline)"
 

@@ -93,7 +93,7 @@ note "?fix1 tip still at C2=$C2 (child untouched by PATCH)"
 echo "=== 15. cleanup: be delete ?fix1 ==="
 "$BE" delete "?fix1" >/dev/null || fail "be delete ?fix1 (cleanup) failed"
 [ -z "$(ref_tip "?fix1")" ] || fail "?fix1 still in REFS after cleanup"
-[ ! -e .dogs/fix1 ] || fail ".dogs/fix1 left behind after cleanup"
+[ ! -e .be/fix1 ] || fail ".be/fix1 left behind after cleanup"
 note "?fix1 cleaned up"
 
 echo "=== branches/02-patch: OK ==="

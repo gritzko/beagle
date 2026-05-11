@@ -1,7 +1,7 @@
 #ifndef SNIFF_AT_H
 #define SNIFF_AT_H
 
-//  AT — sniff's per-worktree state log, persisted at `<wt>/.sniff`
+//  AT — sniff's per-worktree state log, persisted at `<wt>/.be/wtlog`
 //  as a ULOG (see dog/ULOG.md).  Each row records a worktree-changing
 //  op: checkout (`get`), stage (`put` / `delete`), commit (`post`),
 //  patch (`patch`).  The row's timestamp is the ms at which the op
@@ -10,7 +10,7 @@
 //  to the matching row's URI".
 //
 //  URI schema for rows (new ULOG-only model):
-//    repo   `file:///abs/path/.dogs/`      (wt → store anchor; row 0 only)
+//    repo   `file:///abs/path/.be/`      (wt → store anchor; row 0 only)
 //    get    `//origin/path?heads/X#<sha>`  (checkout from remote)
 //    get    `?heads/X#<sha>`               (local checkout by ref)
 //    get    `#<sha>`                       (detached checkout)
@@ -22,10 +22,10 @@
 //    mod    `<path>`                       (daemon-observed modification;
 //                                           advisory hint for POST's change-set)
 //
-//  Row-0 invariant: every non-empty `.sniff` ULOG has a `repo` row
-//  at row 0 naming the store (the directory whose `.dogs/` subdir
+//  Row-0 invariant: every non-empty `.be/wtlog` ULOG has a `repo` row
+//  at row 0 naming the store (the directory whose `.be/` subdir
 //  holds the keeper pack-log).  Colocated default: the wt's own
-//  `.dogs/`.  Secondary worktrees sharing a primary's store record
+//  `.be/`.  Secondary worktrees sharing a primary's store record
 //  that primary's URI here.  `repo` is appendable only to an empty
 //  log; any other verb is appendable only to a non-empty log.
 //
@@ -52,11 +52,11 @@
 
 con ok64 SNIFFNONE = 0x1c5d23cf5d85ce;
 
-//  Standalone RO peek at `<wt>/.sniff` — does NOT touch the SNIFF
+//  Standalone RO peek at `<wt>/.be/wtlog` — does NOT touch the SNIFF
 //  singleton, does NOT open keeper.  Composes a URI carrying the
 //  worktree's full anchor:
-//    path     = repo root (parent of `.dogs/`, from the row-0 `repo`
-//               URI; `.dogs/` segment is stripped).
+//    path     = repo root (parent of `.be/`, from the row-0 `repo`
+//               URI; `.be/` segment is stripped).
 //    query    = current be-side branch path (empty == trunk), from
 //               the latest `get`/`post`/`patch` row.
 //    fragment = current 40-hex commit sha, same row.
@@ -102,7 +102,7 @@ ron60 SNIFFAtVerbMod   (void);
 
 //  Read row 0 — the `repo` anchor.  On OK, `u_out` is parsed via
 //  URILexer (slices point into the mmap, stable until ULOGClose);
-//  its path component is the on-disk path of the store's `.dogs/`
+//  its path component is the on-disk path of the store's `.be/`
 //  directory.  ULOGNONE on an empty log.  Returns SNIFFFAIL if the
 //  first row exists but its verb is not `repo`.
 ok64 SNIFFAtRepo(urip u_out);
@@ -223,7 +223,7 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx);
 //  ULOGNONE when no such spec is present.
 ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out);
 
-//  Materialise the wt's non-meta files (excluding `.dogs/`, `.sniff*`,
+//  Materialise the wt's non-meta files (excluding `.be/`, `.be*`,
 //  etc — same filter as `SNIFFAtScanDirty`) in lex order into two
 //  parallel buffers.  Same shape as `KEEPTreeListLeaves` so a
 //  `[tree, wt]` pair feeds straight into `KEEPu8ssDrain`.
@@ -243,8 +243,8 @@ ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta);
 //  l=symlink (no submodule on the wt side).  Recover stem with
 //  `ok64stem` and kind with `ok64Lit(verb, 0)`.  Fragment is left
 //  empty — caller hashes on demand only when classification requires
-//  it.  Same wt-scan filter as `SNIFFWtListPaths` (skips `.dogs/`,
-//  `.sniff*`, IGNO matches).  `out` is reset before writing.
+//  it.  Same wt-scan filter as `SNIFFWtListPaths` (skips `.be/`,
+//  `.be*`, IGNO matches).  `out` is reset before writing.
 ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out);
 
 #endif

@@ -132,7 +132,7 @@ git -C "$TMP/src" tag | sort -V | sed 's/^/    /'
 #  --- Init be01 consumer, fetch v0.0.4 into worktree ------------------
 cd "$TMP/be01"
 git init -q .
-mkdir -p .dogs/keeper
+mkdir -p .be
 timeout 10 "$BE" get "$REPO_URI?refs/tags/v0.0.4" 2>&1 \
     | grep -Ev '^keeper:|^sniff:|^spot:|^graf-dag:' || true
 

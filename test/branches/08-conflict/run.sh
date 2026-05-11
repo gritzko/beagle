@@ -28,7 +28,9 @@ F1_REFS_PRE=$(ref_tip "?fix1")
 # Advance trunk via a peer wt with the THEIRS edit ("slow").
 WT30="$ETMP/wt30"
 mkdir -p "$WT30"
-ln -s "$WT/.dogs" "$WT30/.dogs"
+# Secondary wt: `.be` is a regular file = its own wtlog seeded from
+# the primary's (row-0 `repo` URI names the shared store).
+cp "$WT/.be/wtlog" "$WT30/.be"
 ( cd "$WT30" && "$BE" get "?" >/dev/null ) \
     || fail "§30: WT30 trunk checkout failed"
 ( cd "$WT30" && sleep 0.01 && printf 'the slow fox\n' > conflict30.txt \

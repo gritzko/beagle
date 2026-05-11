@@ -6,12 +6,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "DOG.h"
 #include "DPATH.h"
+#include "ULOG.h"
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 #include "TOMLT.h"
 
 // --- HOMEOpen / HOMEClose ---
+
+static ok64 home_anchor_resolve(home *h, u8cs anchor);
 
 // Capture stdout of `git config --global --get <key>` into out.
 // Returns NODATA if git exits non-zero (key unset) or the subprocess
@@ -47,7 +51,7 @@ static ok64 home_git_config_get(char const *key, u8s out) {
     return u8sFeed(out, raw);
 }
 
-// Fresh clones: seed .dogs/config from git's global config so commits
+// Fresh clones: seed .be/config from git's global config so commits
 // and ref authorities get a sensible default identity without manual
 // setup.  Called from HOMEOpen when rw=YES and config is absent.
 // Best-effort — silent on any failure.
@@ -64,18 +68,16 @@ static void home_bootstrap_config(home *h) {
     b8 got_name  = (home_git_config_get("user.name",  name)  == OK);
     if (!got_email && !got_name) return;
 
-    a_path(dotdogs);
+    a_path(bedir);
     a_dup(u8c, root_s, u8bDataC(h->root));
-    if (PATHu8bFeed(dotdogs, root_s) != OK) return;
-    a_cstr(dd, ".dogs");
-    if (PATHu8bPush(dotdogs, dd) != OK) return;
-    if (FILEMakeDirP($path(dotdogs)) != OK) return;
+    if (PATHu8bFeed(bedir, root_s) != OK) return;
+    if (PATHu8bPush(bedir, DOG_BE_S) != OK) return;
+    if (FILEMakeDirP($path(bedir)) != OK) return;
 
     a_path(cfgp);
-    a_dup(u8c, dd_s, u8bDataC(dotdogs));
-    if (PATHu8bFeed(cfgp, dd_s) != OK) return;
-    a_cstr(cfg_name, "config");
-    if (PATHu8bPush(cfgp, cfg_name) != OK) return;
+    a_dup(u8c, be_s, u8bDataC(bedir));
+    if (PATHu8bFeed(cfgp, be_s) != OK) return;
+    if (PATHu8bPush(cfgp, DOG_CONFIG_S) != OK) return;
 
     a_pad(u8, body, 1024);
     a_cstr(hdr, "[user]\n");
@@ -104,7 +106,11 @@ static void home_bootstrap_config(home *h) {
     FILEClose(&fd);
 }
 
-ok64 HOMEOpen(home *h, uricp at, b8 rw) {
+// Worker body for HOMEOpen.  Allocates buffers, mmaps the arena,
+// resolves wt/root, mmaps config.  Any early-return on failure leaves
+// already-allocated resources for the wrapper to release via
+// `HOMEClose` (which is null-safe per field).
+static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     sane(h != NULL);
     zerop(h);
     h->rw = rw;
@@ -122,7 +128,15 @@ ok64 HOMEOpen(home *h, uricp at, b8 rw) {
     call(u8bAllocate, h->cur_branch, 256);
     call(u8bAllocate, h->cur_sha,    64);
 
-    // 2. Resolve root: explicit URI path → feed; absent → HOMEFindDogs.
+    // 2. Resolve root + wt:
+    //    * Explicit URI path  → use as h->root.
+    //                            h->wt = cwd if query/fragment is
+    //                            present (`--at` forward from `be`),
+    //                            else colocated (== h->root).
+    //    * No path             → HOMEFindDogs walks up and sets BOTH
+    //                            h->wt (anchor location) and h->root
+    //                            (store root: same as wt for primary,
+    //                            redirected via row-0 for secondary).
     u8cs at_path  = {};
     u8cs at_query = {};
     u8cs at_frag  = {};
@@ -132,29 +146,24 @@ ok64 HOMEOpen(home *h, uricp at, b8 rw) {
         u8csMv(at_frag,  at->fragment);
     }
     if (!u8csEmpty(at_path)) {
-        call(PATHu8bFeed, h->root, at_path);
-    } else {
-        call(HOMEFindDogs, h);
-    }
-    //  wt: where `.sniff` lives.
-    //    * URI carries query OR fragment → call came from `be`'s
-    //      `--at <root>?<branch>#<sha>` forward; the wt is the
-    //      *subprocess cwd*, which may differ from `root` (secondary
-    //      worktree symlinking into a primary's `.dogs/`).
-    //    * URI path only (test fixture / HOMEOpenAt shim) or empty
-    //      (cwd-walk) → wt == root, the colocated default.
-    if (!u8csEmpty(at_query) || !u8csEmpty(at_frag)) {
-        a_path(cwdp);
-        if (FILEGetCwd(cwdp) == OK) {
-            a_dup(u8c, cwd_s, u8bDataC(cwdp));
-            call(PATHu8bFeed, h->wt, cwd_s);
-        } else {
-            a_dup(u8c, r, u8bDataC(h->root));
-            call(PATHu8bFeed, h->wt, r);
+        //  Resolve the anchor at `at_path` (peek `.be`'s shape; if it's
+        //  a regular file, redirect h->root to the primary store via
+        //  the wtlog's row-0 `repo` URI; otherwise h->root == at_path).
+        call(home_anchor_resolve, h, at_path);
+        //  `--at <root>?<branch>#<sha>` forward from `be`: subprocess
+        //  cwd is the actual worktree, which may differ from the
+        //  anchor `at_path` carried over the boundary.  Override h->wt
+        //  with the cwd in that case.
+        if (!u8csEmpty(at_query) || !u8csEmpty(at_frag)) {
+            a_path(cwdp);
+            if (FILEGetCwd(cwdp) == OK) {
+                u8bReset(h->wt);
+                a_dup(u8c, cwd_s, u8bDataC(cwdp));
+                call(PATHu8bFeed, h->wt, cwd_s);
+            }
         }
     } else {
-        a_dup(u8c, r, u8bDataC(h->root));
-        call(PATHu8bFeed, h->wt, r);
+        call(HOMEFindDogs, h);   // sets both h->wt and h->root
     }
 
     // 3. Scratch arena — 4 GB VA, pages on demand.
@@ -164,8 +173,8 @@ ok64 HOMEOpen(home *h, uricp at, b8 rw) {
     a_path(cfg);
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, cfg, root_s);
-    a_cstr(rel, ".dogs/config");
-    ok64 po = PATHu8bAdd(cfg, rel);
+    call(PATHu8bPush, cfg, DOG_BE_S);
+    ok64 po = PATHu8bPush(cfg, DOG_CONFIG_S);
     if (po == OK) {
         u8bp mapped = NULL;
         if (FILEMapRO(&mapped, $path(cfg)) != OK && rw) {
@@ -192,6 +201,17 @@ ok64 HOMEOpen(home *h, uricp at, b8 rw) {
         ok64 bo = HOMEOpenBranch(h, br, rw);
         if (bo != OK && bo != HOMEOPEN) return bo;
     }
+    done;
+}
+
+// Wrapper: runs the worker via `try` so partial-init state from any
+// failure path (e.g. `HOMEFindDogs` returning NOHOME) gets released
+// via HOMEClose.  Per ABC.md §"Resource lifecycle" — one entry fn
+// holds the cleanup, worker fn does the work.
+ok64 HOMEOpen(home *h, uricp at, b8 rw) {
+    sane(h != NULL);
+    try(home_open_inner, h, at, rw);
+    nedo HOMEClose(h);
     done;
 }
 
@@ -269,47 +289,100 @@ b8 HOMEBranchVisible(home const *h, u8cs branch) {
 
 // --- Workspace finders ---
 
-// Walk up from cwd to the first dir that looks like a sniff/keeper
-// anchor: either a `.sniff` regular file (a worktree) or a `.dogs`
-// subdirectory (the colocated store).  Fills h->root with the found
-// path.  Returns NOHOME if the walk reaches / without finding either.
+//  Peek the first line of a secondary-wt's `.be` file (a wtlog whose
+//  row 0 is a `repo` anchor) and extract the URI's path bytes into
+//  `path_out` (a slice that lives inside `arena`'s busy region).
+//
+//  Returns OK on success, NODATA when the file is empty or row 0 is
+//  not a parsable `repo` row.
+static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out) {
+    sane($ok(be_path) && arena && path_out);
+    u8bp map = NULL;
+    if (FILEMapRO(&map, be_path) != OK) return NODATA;
+    u8cs scan = {u8bDataHead(map), u8bIdleHead(map)};
+    //  Find the first newline so the drain doesn't run past row 0.
+    u8cp nl = scan[0];
+    while (nl < scan[1] && *nl != '\n') nl++;
+    if (nl == scan[1]) { FILEUnMap(map); return NODATA; }
+    u8cs row = {scan[0], nl + 1};
+    ulogrec rec = {};
+    ok64 dr = ULOGu8sDrain(row, &rec);
+    if (dr != OK) { FILEUnMap(map); return NODATA; }
+    //  Copy the URI path bytes into the caller's arena before unmap —
+    //  the slice in `rec` points into the soon-to-be-invalid map.
+    u8cs ru_path = {rec.uri.path[0], rec.uri.path[1]};
+    if (u8csEmpty(ru_path)) { FILEUnMap(map); return NODATA; }
+    u8cp start = u8bIdleHead(arena);
+    ok64 fo = u8bFeed(arena, ru_path);
+    FILEUnMap(map);
+    if (fo != OK) return fo;
+    path_out[0] = start;
+    path_out[1] = u8bIdleHead(arena);
+    return OK;
+}
+
+//  Given a wt anchor path (where `.be` lives), populate h->wt with
+//  the anchor itself and h->root with the store root:
+//    * `.be` is a DIR (primary)        → h->root = anchor
+//    * `.be` is a regular FILE (sec)   → h->root from row-0 `repo` URI
+//    * absent / unparsable             → h->root = anchor (fallback)
+static ok64 home_anchor_resolve(home *h, u8cs anchor) {
+    sane(h && $ok(anchor));
+    u8bReset(h->wt);
+    u8bReset(h->root);
+    call(PATHu8bFeed, h->wt, anchor);
+
+    a_path(probe);
+    a_dup(u8c, anchor_s, u8bDataC(h->wt));
+    call(PATHu8bFeed, probe, anchor_s);
+    call(PATHu8bPush, probe, DOG_BE_S);
+
+    filestat fs = {};
+    ok64 so = FILEStat(&fs, $path(probe));
+    if (so == OK && fs.kind == FILE_KIND_REG) {
+        a_path(arena);
+        u8cs repo_path = {};
+        if (home_peek_repo_uri($path(probe), arena, repo_path) == OK) {
+            a_path(stripped);
+            DOGRepoFromBe(repo_path, stripped);
+            if (u8bDataLen(stripped) > 0) {
+                a_dup(u8c, sb, u8bDataC(stripped));
+                call(PATHu8bFeed, h->root, sb);
+                done;
+            }
+        }
+    }
+    //  Primary / colocated / unreadable row 0: store == wt.
+    a_dup(u8c, wt_s, u8bDataC(h->wt));
+    call(PATHu8bFeed, h->root, wt_s);
+    done;
+}
+
+// Walk up from cwd to the first ancestor containing a `.be` anchor.
+// Fills h->wt with the anchor location and h->root via
+// `home_anchor_resolve` (primary: wt; secondary: row-0 redirect).
+// Returns NOHOME if the walk reaches / without finding an anchor.
 static ok64 home_walk_up(home *h) {
     sane(h != NULL);
 
-    u8bReset(h->root);
-    char cwdbuf[FILE_PATH_MAX_LEN];
-    test(getcwd(cwdbuf, sizeof(cwdbuf)) != NULL, NOHOME);
-    u8cs cwds = {(u8cp)cwdbuf, (u8cp)cwdbuf + strlen(cwdbuf)};
-    call(PATHu8bFeed, h->root, cwds);
+    a_path(here);
+    test(FILEGetCwd(here) == OK, NOHOME);
 
-    a_cstr(dotsniff, ".sniff");
-    a_cstr(dotdogs,  ".dogs");
     for (;;) {
+        a_path(probe);
+        a_dup(u8c, cur, u8bDataC(here));
+        call(PATHu8bFeed, probe, cur);
+        call(PATHu8bPush, probe, DOG_BE_S);
         filestat fs = {};
-        {
-            a_path(probe);
-            a_dup(u8c, cur, u8bDataC(h->root));
-            call(PATHu8bFeed, probe, cur);
-            call(PATHu8bPush, probe, dotsniff);
-            if (FILEStat(&fs, $path(probe)) == OK &&
-                fs.kind == FILE_KIND_REG) {
-                done;
-            }
-        }
-        {
-            a_path(probe);
-            a_dup(u8c, cur, u8bDataC(h->root));
-            call(PATHu8bFeed, probe, cur);
-            call(PATHu8bPush, probe, dotdogs);
-            if (FILEStat(&fs, $path(probe)) == OK &&
-                fs.kind == FILE_KIND_DIR) {
-                done;
-            }
+        if (FILEStat(&fs, $path(probe)) == OK &&
+            (fs.kind == FILE_KIND_DIR || fs.kind == FILE_KIND_REG)) {
+            a_dup(u8c, anchor, u8bDataC(here));
+            return home_anchor_resolve(h, anchor);
         }
 
-        size_t before = $len(u8bDataC(h->root));
-        call(PATHu8bPop, h->root);
-        size_t after = $len(u8bDataC(h->root));
+        size_t before = $len(u8bDataC(here));
+        call(PATHu8bPop, here);
+        size_t after = $len(u8bDataC(here));
         if (after >= before) return NOHOME;
     }
 }
@@ -401,7 +474,7 @@ ok64 HOMEResolveSibling(home *h, path8b out, u8csc name, u8csc argv0) {
     done;
 }
 
-// --- Config: .dogs/config (TOML) ---
+// --- Config: .be/config (TOML) ---
 
 // The TOML header `[a.b.c]` and dotted keys `a.b = "v"` both express the
 // same dotted hierarchy.  We track the full active path in `current`

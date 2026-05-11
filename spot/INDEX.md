@@ -34,7 +34,7 @@ the pipe. Otherwise it writes plain ASCII directly to stdout via
 | `CAPOGrep` | Substring grep with syntax-highlighted context (GREP.c) |
 | `CAPOPcreGrep` | Regex grep via Thompson NFA + trigram filtering (GREP.c) |
 | `CAPOCompact` / `CAPOCompactAll` | Compact LSM index runs |
-| `CAPOResolveDir` | Resolve `<workspace>/.dogs/spot` dir |
+| `CAPOResolveDir` | Resolve `<workspace>/.be` dir |
 | `CAPOIndexBlob` | Tokenize a streaming blob, emit `spot64` postings keyed by precomputed `path_h20` (truncated full-path RAP) |
 | `CAPOIndexFile` | Search-time wrapper: hash full repo-relative path, delegate to `CAPOIndexBlob` |
 | `CAPOFnRap20` | `RAPHash(full_path) & ((1<<20)-1)` — the 20-bit posting key |
@@ -88,8 +88,8 @@ hashes into the indexed posting set.
 
 ## Index format
 
-Index lives in `.dogs/spot/*.spot.idx` (under the workspace's
-`.dogs/`).  Each entry is one `wh64` (see `dog/WHIFF.h`) with the
+Index lives in `.be/*.spot.idx` (under the workspace's
+`.be/`).  Each entry is one `wh64` (see `dog/WHIFF.h`) with the
 layout
 
 ```

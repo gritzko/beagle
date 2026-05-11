@@ -56,7 +56,7 @@ KSRV=$TMP/keeper-srv
 mkdir -p "$KSRV"
 cd "$KSRV"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 for REF in refs/heads/master refs/tags/v1 refs/tags/v2; do
     be get "//localhost/$SRC_REL?$REF" >/dev/null
 done
@@ -66,7 +66,7 @@ KSRV_REL=${KSRV#$HOME/}
 mkdir -p "$TMP/be-clone"
 cd "$TMP/be-clone"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 #  Reuse the bare git source for the git-clone's worktree shape, but
 #  point its `origin` at the keeper mirror with the upload-pack override
@@ -91,7 +91,7 @@ for STEP in "v1 refs/tags/v1" "v2 refs/tags/v2" "master refs/heads/master"; do
     git -C "$TMP/git-clone" checkout --quiet "refs/keep/$NAME"
 
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+        --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
         "$TMP/git-clone/" "$TMP/be-clone/" 2>&1)
     if [ -n "$RDIFF" ]; then
         echo "FAIL: tags-from-keeper $NAME"

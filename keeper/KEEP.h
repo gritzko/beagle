@@ -3,13 +3,13 @@
 
 //  KEEP: local git object store.
 //
-//  Stores git pack objects in append-only log files under .dogs/.
+//  Stores git pack objects in append-only log files under .be/.
 //  Objects are looked up via an LSM index of wh128 entries:
 //    key = keepKeyPack(obj_type, hashlet60)  hashlet60[60] | type[4]
 //    val = wh64Pack(flags, file_id, offset)  offset[40] | file_id[20] | flags[4]
 //
 //  On disk (Phase 2 multi-branch layout):
-//    .dogs/                             — trunk dir
+//    .be/                             — trunk dir
 //      NNNNN.keeper                     — append-only pack log (FILEBook'd)
 //      NNNNN.keeper.idx                 — sorted wh128 run (LSM)
 //      REFS                             — URI→URI reflog
@@ -107,7 +107,7 @@ fun u32 keepPackBmLen(u64 val)   { return (u32)val; }
 
 #define KEEP_MAX_FILES   256
 #define KEEP_MAX_LEVELS  MSET_MAX_LEVELS
-#define KEEP_DIR         ".dogs"
+#define KEEP_DIR         DOG_BE_NAME
 #define KEEP_PACK_EXT    ".keeper"       // pack logs live next to indexes
 #define KEEP_IDX_EXT     ".keeper.idx"
 #define KEEP_SEQNO_W     DOG_PUP_SEQNO_W // 10-char RON64 (matches DOGPup*)
@@ -143,7 +143,7 @@ typedef struct {
     Bu8     buf4;                 // working buffer for keep_resolve delta
 } keeper;
 
-// Relative ".dogs" slice.  Call sites compose the full dir via
+// Relative ".be" slice.  Call sites compose the full dir via
 //   a_path(dir, u8bDataC(k->h->root), KEEP_DIR_S);
 // and use $path(dir) wherever a u8csc is needed.
 extern u8c *const KEEP_DIR_S[2];

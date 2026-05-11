@@ -9,7 +9,7 @@ intent; the URI picks the resource.
 
 This document is the canonical reference for that mapping.  It
 assumes the branch-sharded storage model from `keeper/README.md`
-and the per-wt `.sniff` state from `sniff/AT.md`.
+and the per-wt `.be/wtlog` state from `sniff/AT.md`.
 
 ##  Verb semantics in one paragraph
 
@@ -17,7 +17,7 @@ POST creates commits; PUT writes refs.  POST is the only
 commit-maker — it advances **cur** (the current branch's tip),
 reading any `patch` rows since the last `get`/`post` to assemble
 multi-parent commits.  PUT is the only ref-writer — it sets a
-(ref, sha) row in `.dogs/REFS`, optionally staging blobs into
+(ref, sha) row in `.be/REFS`, optionally staging blobs into
 keeper for the next POST, and never produces a commit object on
 its own.  GET moves wt+cur (`cd`); PUT mints labels (`mkdir`);
 HEAD peeks; PATCH absorbs another branch's work into the wt and
@@ -36,7 +36,7 @@ things.
   - `//auth`    — remote alias (`//origin`, `//github`).  A bare
                   `//host` resolves through `<store>/ALIAS` and
                   reads only the **cached** remote-tracking refs
-                  in `.dogs/refs`; it never opens a network
+                  in `.be/refs`; it never opens a network
                   connection.  To talk to the wire, attach a
                   transport scheme (`ssh://origin`, `be://github`).
   - `path`      — file or directory inside the branch's tree.
@@ -68,7 +68,7 @@ headers (from squash / rebase-one) attach at POST time when
 `patch` rows since the pd boundary contributed work; cherry-pick
 records the picked sha as a `picked` trailer with no DAG edge.
 POST is the only commit-maker; PATCH does not commit — it stages
-the absorbed sha(s) in `.sniff` for the next POST.
+the absorbed sha(s) in `.be/wtlog` for the next POST.
 
 ##  Ref resolution
 
@@ -167,7 +167,7 @@ feat/fix` is the path `feat/fix`, not the branch — type
 
   - **Cached form (no transport scheme)**: `be ... //origin` reads
     only the locally-cached remote-tracking refs in
-    `.dogs/refs`.  No network.  Useful for "what does the cache
+    `.be/refs`.  No network.  Useful for "what does the cache
     say" inspection and for verbs that can use the last-known
     remote tip without refresh (rebase, ahead/behind diff).
   - **Transport form (`ssh:`, `https:`, `be:`)**: opens a
@@ -233,7 +233,7 @@ cur vs cur's remote counterpart when cur = trunk.
 
 Aliases live in `<store>/ALIAS`, looked up by walking up the dir
 tree to the store root.  Cached remote-tracking refs live in
-`.dogs/refs` keyed by alias.
+`.be/refs` keyed by alias.
 
   - `be ... //origin?feat` — read only the cache.
   - `be get ssh://origin?feat` — fetch + checkout; on first use,
@@ -250,7 +250,7 @@ tree to the store root.  Cached remote-tracking refs live in
 
 HEAD is the read-only "what changed and what would change" verb.
 It never modifies a branch's history or the wt; with a transport
-scheme on a `//host` URI, HEAD does update `.dogs/refs` (the
+scheme on a `//host` URI, HEAD does update `.be/refs` (the
 remote-tracking cache) and pulls just enough pack data to render
 the diff.
 
@@ -261,7 +261,7 @@ the diff.
 | `be head ./path?br`                | Same diff scoped to `path`. |
 | `be head '#parallel'`              | Find the commit reachable from cur whose message contains "parallel"; show diff cur vs that commit. |
 | `be head //origin`                 | Print cached diff cur vs origin's cur counterpart.  No network. |
-| `be head ssh://origin`             | Fetch refs + minimal pack from origin, update `.dogs/refs`, print diff cur vs origin's cur. |
+| `be head ssh://origin`             | Fetch refs + minimal pack from origin, update `.be/refs`, print diff cur vs origin's cur. |
 | `be head ssh://origin?feat`        | Same scoped to `feat`. |
 | `be head ssh://origin?*`           | Fetch every branch origin advertises (≈ `git fetch`); print summary. |
 
@@ -296,7 +296,7 @@ not to local branch switches.
 | `be get ssh://host/path?feat`     | Open wire, fetch `feat` (pack + REFS), checkout, register alias on first use. |
 | `be get file:../proj?feat`        | Local sibling: wire this empty cwd as a wt sharing `../proj`'s store, reset files to `feat`'s tip. |
 
-After a successful GET, `.sniff` records the new base as
+After a successful GET, `.be/wtlog` records the new base as
 `(branch, tip-sha)` and clears any pending PATCH parents.  Bare
 `be get` is a no-op status (≡ bare `be`).
 
@@ -395,7 +395,7 @@ safety net for replays.
 
 ###  ULOG scope and boundaries
 
-Two boundaries in `.sniff`, both anchored at the most recent
+Two boundaries in `.be/wtlog`, both anchored at the most recent
 `get` row (a `get` is a hard reset of the world):
 
   * **pd boundary** — most recent `get` *or* `post`.  `put` /
@@ -436,14 +436,14 @@ cur — distinct from header assembly, which always runs.
 
 ##  PUT — write a ref
 
-PUT is the **ref-writer**: it writes one row to `.dogs/REFS` (or
+PUT is the **ref-writer**: it writes one row to `.be/REFS` (or
 remote refs, for `//host`), and may stage blobs into keeper for
 the next POST.  PUT **never creates commits** — that's POST's
 job.  The URI components combine orthogonally:
 
   - **`?branch`** — the ref to write.  Default: cur.
   - **`./path`** — path whose dirty bytes are hashed into keeper
-    as a blob and recorded in a `put` row in `.sniff`.  The blob
+    as a blob and recorded in a `put` row in `.be/wtlog`.  The blob
     is now staged for the next POST.
   - **`//remote`** — push our local ref-value to the remote's
     counterpart.  FF-checked at the wire.
@@ -467,8 +467,8 @@ with the command's ts.
 | `be put //origin?br`    | FF-push our `?br` to origin's `?br`. |
 | `be put ssh://host/path`| Register as a remote alias (name from host, or `--as=name`).  No `?ref` ⇒ alias-register only. |
 
-PUT writes to `<wt>/.sniff` (for `./path` rows) and
-`.dogs/REFS` (for `?branch` and `?branch#sha`); blobs land in
+PUT writes to `<wt>/.be/wtlog` (for `./path` rows) and
+`.be/REFS` (for `?branch` and `?branch#sha`); blobs land in
 keeper.  No commit objects are written by PUT.
 
 A `put` on a clean baseline-stamped file is refused —
@@ -491,7 +491,7 @@ Already-absent paths are an OK no-op.
 | `be delete`                         | Stage every tracked file that's missing on disk.  Mirror of bare PUT.  One `delete` row per absent file. |
 | `be delete file.c`                  | Unlink the file (refused as `DELDIRTY` if user-edited); append `delete file.c` row. |
 | `be delete src/`                    | Atomic pre-flight: scan all descendants; refuse if any is dirty.  On pass, unlink all + append one `delete src/` row. |
-| `be delete ?feat/fix1`              | Drop a branch dir.  Leaf-only by default; refused with `DELDESC` if descendants exist or any wt's `.sniff` records this branch as base.  Reclaims unreachable shards. |
+| `be delete ?feat/fix1`              | Drop a branch dir.  Leaf-only by default; refused with `DELDESC` if descendants exist or any wt's `.be/wtlog` records this branch as base.  Reclaims unreachable shards. |
 | `be delete -r ?feat`                | Drop the branch and every descendant, depth-first (leaves first).  Still refused if any wt has it as base. |
 | `be delete //origin?feat`           | Push a delete (`<old> 000…0 refs/heads/feat`) via `keeper receive-pack`. |
 | `be delete //origin`                | Drop the remote alias entry from `<store>/ALIAS`.  No network. |
@@ -499,7 +499,7 @@ Already-absent paths are an OK no-op.
 ##  PATCH — absorb commits into wt
 
 PATCH absorbs commits from another branch into cur's wt and
-records the absorbed sha(s) in `.sniff` for the next POST to
+records the absorbed sha(s) in `.be/wtlog` for the next POST to
 consume.  PATCH itself does not commit; the cycle is
 **patch → test → post**, run once per merge / cherry-pick /
 squash, or looped per commit for rebase.  This makes every
@@ -599,17 +599,17 @@ of foster / parent headers and picked trailers in row order.
 
 ##  Worktree management
 
-A **store** is the `.dogs/` directory holding packs, indexes,
+A **store** is the `.be/` directory holding packs, indexes,
 REFS, and aliases.  A **worktree (wt)** is a checked-out tree on
 disk; per-wt state — base branch, base tip, pending PATCH
-parents — lives in `<wt>/.sniff` (see `sniff/AT.md`).  A
-secondary wt shares the primary's store via a `.dogs` symlink.
+parents — lives in `<wt>/.be/wtlog` (see `sniff/AT.md`).  A
+secondary wt shares the primary's store via a `.be` symlink.
 
 One branch can only have one active worktree; that is tracked
 in the branch reflog.
 
 The guiding rule: **a machine only needs one store per upstream
-repo**.  Every extra wt is just another dir with a `.dogs`
+repo**.  Every extra wt is just another dir with a `.be`
 symlink back.
 
 ###  Eager branching: the canonical workflow
@@ -687,8 +687,8 @@ mkdir v1.2.3 && (cd v1.2.3 && be get file:../proj?v1.2.3)
 mkdir v1.2.4 && (cd v1.2.4 && be get file:../proj?v1.2.4)
 ```
 
-Now `proj/`, `v1.2.3/`, and `v1.2.4/` each have a `.dogs`
-symlink to the primary store and their own `.sniff` recording
+Now `proj/`, `v1.2.3/`, and `v1.2.4/` each have a `.be`
+symlink to the primary store and their own `.be/wtlog` recording
 the branch they sit on.
 
 ###  Example 3 — feature branch workflow
@@ -767,7 +767,7 @@ another wt to actually drop the branch.
     `//remote` slot additionally **FF-advances** that ref to
     cur's new tip after the commit (refused with `POSTNOFF` if
     cur isn't a descendant).  PUT writes one (ref, sha) row to
-    `.dogs/REFS`, optionally staging blobs into keeper for the
+    `.be/REFS`, optionally staging blobs into keeper for the
     next POST; PUT never creates commits.  GET is repo-read-only
     and refuses on dirty overlap.  Empty POSTs (`POSTNONE`) and
     message-less POSTs that can't auto-resolve (`POSTNOMSG`) are
@@ -783,8 +783,8 @@ another wt to actually drop the branch.
     sub-branch, never on cur.  If you need to stash, you should
     have already been on a sub-branch.
  6. **One store per machine, many worktrees.**  Per-wt state
-    lives in `<wt>/.sniff` (base branch, base tip, pending PATCH
-    parents).  Secondary wts symlink `.dogs` back to the
+    lives in `<wt>/.be/wtlog` (base branch, base tip, pending PATCH
+    parents).  Secondary wts symlink `.be` back to the
     primary.
  7. **Detached mode is explicit** (`?<sha>` with no branch);
     `post`/`patch` refuse on detached wts.

@@ -35,7 +35,7 @@ extern b8 CAPO_TERM;   // stderr is a terminal
         }                                                                \
     }
 
-#define CAPO_DIR ".dogs"
+#define CAPO_DIR DOG_BE_NAME
 #define CAPO_IDX_EXT ".spot.idx"
 #define CAPO_LOCK_S  ".lock.spot"
 #define CAPO_SEQNO_WIDTH 10
@@ -167,7 +167,7 @@ ok64 CAPOCompactAll(spot *s);
 // to s->puppies and refreshes the view.
 ok64 CAPOMergeWorkers(spot *s, u32 nw);
 
-// Resolve spot index dir from reporoot (<reporoot>/.dogs/spot)
+// Resolve spot index dir from reporoot (<reporoot>/.be)
 ok64 CAPOResolveDir(path8b out, u8csc reporoot);
 
 // Check if extension is known to tok/ tokenizers

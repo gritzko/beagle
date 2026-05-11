@@ -14,13 +14,17 @@ vc_fresh_wt
 echo "x v1" > x.txt
 "$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
-PRIMARY_DOGS="$(pwd)/.dogs"
+PRIMARY="$(pwd)"
 
-#  Fresh wt: empty .sniff, but `.dogs` symlinked to the primary store
-#  so keeper can resolve T1.  Drop a foreign x.txt onto disk before GET.
+#  Fresh secondary wt: `.be` is a regular FILE = its own wtlog, with
+#  only a row-0 `repo` anchor naming the primary store.  Keeper opens
+#  via the anchor; the wtlog has no baseline get/post row yet.  Drop
+#  a foreign x.txt onto disk before GET to trip the overlap check.
 mkdir "$TMP/wt2"
 cd "$TMP/wt2"
-ln -s "$PRIMARY_DOGS" .dogs
+ts=$("$BE" head 2>/dev/null | awk '{print $1; exit}')   # any ron60-ms is fine
+[ -n "$ts" ] || ts="0000000000"
+printf '%s\trepo\tfile://%s/.be/\n' "$ts" "$PRIMARY" > .be
 echo "foreign content" > x.txt
 
 vc_snapshot before
@@ -33,10 +37,9 @@ vc_snapshot after
 vc_assert_exit nonzero
 vc_assert_stderr nobase "GET refused"
 vc_assert_unchanged wt
-#  No `get` row should have been appended.  (The bare `repo` row may
-#  have been seeded by sniff's open path; that's separate from any
-#  attempt at the actual checkout.)
-got_row=$(awk -F'\t' '$2=="get"' .sniff 2>/dev/null || true)
+#  No `get` row should have been appended.  (The seed `repo` row at
+#  row 0 stays; that's separate from any attempt at the actual checkout.)
+got_row=$(awk -F'\t' '$2=="get"' .be 2>/dev/null || true)
 [ -z "$got_row" ] || vc_fail "unexpected get row appended: $got_row"
 
 echo "=== be-get-overlay-no-baseline: OK ==="

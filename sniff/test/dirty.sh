@@ -3,7 +3,7 @@
 #
 #  Verifies the post-Phase-2 GET semantics:
 #    * cross-branch GET refused on any unattributed-mtime wt file
-#      (SNIFFDRTY); .sniff and the wt are unchanged on refusal,
+#      (SNIFFDRTY); .be/wtlog and the wt are unchanged on refusal,
 #    * cross-branch GET allowed on a clean wt,
 #    * same-branch GET on a dirty target-tree overlap is now
 #      weave-merged (wt as an implicit edit on baseline, merged
@@ -34,7 +34,7 @@ head_hex() {
                     h = last
                     sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Last meaningful (verb + uri) row.  Skips any trailing pad bytes
@@ -42,7 +42,7 @@ head_hex() {
 #  to run on an early-fail (rw open without subsequent write — see
 #  the get pre-flight refuse paths).
 last_row() {
-    awk -F'\t' 'NF >= 2 && $2 != "" { last=$0 } END { print last }' .sniff
+    awk -F'\t' 'NF >= 2 && $2 != "" { last=$0 } END { print last }' .be/wtlog
 }
 
 # ====================================================================
@@ -88,12 +88,12 @@ grep -q "cross-branch GET refused" $TMP/dirty.err \
     || fail "expected refusal message; got: $(cat $TMP/dirty.err)"
 note "cross-branch GET refused as expected"
 
-#  Rollback: .sniff unchanged, a.txt unchanged.
+#  Rollback: .be/wtlog unchanged, a.txt unchanged.
 [ "$(last_row)" = "$before_tail" ] \
-    || fail ".sniff tail row changed after refused GET"
+    || fail ".be/wtlog tail row changed after refused GET"
 [ "$(cat a.txt)" = "$before_a" ] \
     || fail "a.txt mutated after refused GET"
-note ".sniff and wt left untouched (all-or-nothing rollback)"
+note ".be/wtlog and wt left untouched (all-or-nothing rollback)"
 
 # ====================================================================
 # Scenario 3 — same-branch GET weave-merges dirty overlap with target.

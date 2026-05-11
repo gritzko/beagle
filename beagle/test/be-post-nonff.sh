@@ -6,7 +6,7 @@
 #  parent-chain walk and the rebase aborts.  Pre-Stage-2 this returned
 #  SNIFFNOFF; post-Stage-2 the same poison input still fails (no merge
 #  base ⇒ GRAFFAIL surfaces from rebase).
-#  Simulated by appending a fake `?#deadbeef…` row to .dogs/refs.
+#  Simulated by appending a fake `?#deadbeef…` row to .be/refs.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

@@ -24,7 +24,7 @@ mkdir -p "$TMPDIR"
 trap 'rm -rf "$TMPDIR"; rmdir "$TMP" 2>/dev/null || true' EXIT
 
 WORK="$TMPDIR/work"
-mkdir -p "$WORK/.dogs/keeper"
+mkdir -p "$WORK/.be"
 
 # Fake a .git so HOMEFind works
 echo "fake" > "$WORK/.git"

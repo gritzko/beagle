@@ -30,13 +30,23 @@ fail() { echo "FAIL ($NAME): $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 skip() { echo "  - SKIP: $*"; }
 
+#  Resolve the wtlog path for the cwd, dispatching on `.be` shape:
+#    * dir   → `.be/wtlog`  (primary / colocated wt)
+#    * file  → `.be`        (secondary wt — the file IS the wtlog)
+wtlog_path() {
+    if [ -d .be ]; then printf '%s\n' .be/wtlog
+    elif [ -f .be ]; then printf '%s\n' .be
+    else printf '%s\n' .be/wtlog                    # default for fresh wt
+    fi
+}
+
 #  Latest sniff baseline row's URI sha (post|get|patch).
 head_hex() {
     awk -F'\t' '$2=="post"||$2=="get"||$2=="patch" { last=$3 }
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' "$(wtlog_path)"
 }
 
 #  Branch portion (between leading `?` and `#`) of the latest row.
@@ -45,7 +55,7 @@ cur_branch() {
                 END {
                     q = last; sub(/#.*/, "", q); sub(/^\?/, "", q)
                     print q
-                }' .sniff
+                }' "$(wtlog_path)"
 }
 
 #  Tip recorded for KEY in `keeper refs` output.  Empty if KEY absent.

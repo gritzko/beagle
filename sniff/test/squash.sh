@@ -43,7 +43,7 @@ WT="$TMP/wt"
 mkdir -p "$WT"
 cd "$WT"
 
-#  Current commit recorded in .sniff — `?<branch>#<curhash>` shape:
+#  Current commit recorded in .be/wtlog — `?<branch>#<curhash>` shape:
 #  fragment of the most recent get/post/patch row holds the sha.
 head_hex() {
     awk -F'\t' '$2=="post" || $2=="get" || $2=="patch" { last=$3 }
@@ -51,7 +51,7 @@ head_hex() {
                     h = last
                     sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Parent sha of a given commit, via `keeper get .#<hex>`.
@@ -180,7 +180,7 @@ note "squash parent = TRUNK1 (single-parent absorb, history erased)"
 echo "=== 7. fresh checkout verifies squash tree ==="
 WT2="$TMP/wt2"
 mkdir -p "$WT2"
-cp -r "$WT/.dogs" "$WT2/"
+cp -r "$WT/.be" "$WT2/"
 cd "$WT2"
 sniff get "$SQUASH" >/dev/null
 grep -qF '(feat mod)'  a.txt || fail "checkout: a.txt not feat-modified"

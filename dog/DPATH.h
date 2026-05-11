@@ -17,7 +17,7 @@ con ok64 DPATHBAD  = 0x35929d44b28d;
 //   .         (current dir)
 //   ..        (parent dir escape)
 //   .git      (case-insensitive)
-//   .dogs     (case-insensitive)
+//   .be     (case-insensitive)
 //
 // Returns OK and advances input past the segment.
 // Returns DPATHBAD on dangerous names or invalid bytes.
@@ -38,7 +38,7 @@ fun ok64 DPATHVerify(u8csc name) {
 
 // --- Branch path normalization + ancestor test ---
 //
-// Canonical-form rules (for `.dogs/` sharding):
+// Canonical-form rules (for `.be/` sharding):
 //   * trunk              = "" (empty slice)
 //   * non-trunk branch   = path ending with '/', no leading '/'
 //   * trunk aliases      = "", "main", "master", "trunk",

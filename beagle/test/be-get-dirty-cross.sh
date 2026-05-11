@@ -3,7 +3,7 @@
 #
 #    Cross-branch `be get ?feat` from a wt with a dirty tracked file
 #    is refused with SNIFFDRTY, and leaves *all* observables
-#    unchanged (`.sniff`, `refs`, `wt`, `baseline`).
+#    unchanged (`.be/wtlog`, `refs`, `wt`, `baseline`).
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

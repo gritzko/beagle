@@ -12,6 +12,17 @@
 
 // kv32 buffer ops via Bx (instantiated in abc/KV.h).
 
+// --- Canonical layout-name slices (extern'd in DOG.h) ----------------
+//
+// `u8cs`-shaped pointer pairs over the layout-name string literals,
+// created via the standard `a_cstr` macro at file scope so callers
+// can pass them where a slice is wanted (e.g.
+// `a_path(p, root, DOG_BE_S)`).
+a_cstr(DOG_BE_S,     DOG_BE_NAME);
+a_cstr(DOG_REFS_S,   DOG_REFS_NAME);
+a_cstr(DOG_WTLOG_S,  DOG_WTLOG_NAME);
+a_cstr(DOG_CONFIG_S, DOG_CONFIG_NAME);
+
 //  Known view-projector schemes (VERBS.md §"View projectors") with
 //  the dog that implements each.  Shared source of truth: DOGParseURI
 //  uses the scheme column to exempt these from the scheme→authority

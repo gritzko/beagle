@@ -54,7 +54,7 @@ git clone --quiet "$TMILL/origin" "$TMILL/git01"
 mkdir -p "$TMILL/be01"
 cd "$TMILL/be01"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 be get "//localhost/${TMILL_REL}/origin" 2>&1
 
@@ -78,13 +78,13 @@ find . -not -path './.git/*' -type f -print0 | while IFS= read -r -d '' f; do
     fi
 done
 cd "$TMILL/be01"
-for f in $(find . -not -path './.dogs/*' -not -path './.git/*' -type f); do
+for f in $(find . -not -path './.be/*' -not -path './.git/*' -type f); do
     if [ ! -f "$TMILL/git01/$f" ]; then
         echo "EXTRA: $f"; FAIL=1
     fi
 done
 
-BE_N=$(find "$TMILL/be01" -not -path '*/.dogs/*' -not -path '*/.git/*' -type f | wc -l)
+BE_N=$(find "$TMILL/be01" -not -path '*/.be/*' -not -path '*/.git/*' -type f | wc -l)
 GIT_N=$(find "$TMILL/git01" -not -path '*/.git/*' -type f | wc -l)
 echo "be01: $BE_N files, git01: $GIT_N files"
 test "$BE_N" = "$GIT_N" || { echo "FAIL: file count mismatch"; exit 1; }

@@ -140,7 +140,7 @@ ok64 DELTARoundTrip() {
     //  Read the on-disk log.
     char logpath[1024];
     snprintf(logpath, sizeof(logpath),
-             "%s/.dogs/0000000001.keeper", tmp);
+             "%s/" DOG_BE_NAME "/0000000001.keeper", tmp);
     u8bp logmap = NULL;
     {
         u8cs lpp = {(u8cp)logpath, (u8cp)logpath + strlen(logpath)};

@@ -87,7 +87,7 @@ empty 02.post.got.out
 match "$CASE/03.client.hello.c" hello.c
 
 # ====================================================================
-# 5. fetch via HEAD (refs+pack land in keeper, .dogs/refs updated)
+# 5. fetch via HEAD (refs+pack land in keeper, .be/refs updated)
 # ====================================================================
 "$BE" head "ssh://localhost/$REL_ORIGIN" \
     >03.head.got.out 2>03.head.got.err

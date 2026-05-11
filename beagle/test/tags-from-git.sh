@@ -51,7 +51,7 @@ SRC_REL=${SRC#$HOME/}
 mkdir -p "$TMP/be-clone"
 cd "$TMP/be-clone"
 git init --quiet .
-mkdir -p .dogs/keeper
+mkdir -p .be
 
 git clone --quiet --no-checkout "ssh://localhost/$SRC" "$TMP/git-clone"
 
@@ -69,7 +69,7 @@ for STEP in "v1 refs/tags/v1" "v2 refs/tags/v2" "master refs/heads/master"; do
     git -C "$TMP/git-clone" checkout --quiet "refs/keep/$NAME"
 
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' --exclude='/.sniff' \
+        --exclude='/.git/' --exclude='/.be/' --exclude='/.be/wtlog' \
         "$TMP/git-clone/" "$TMP/be-clone/" 2>&1)
     if [ -n "$RDIFF" ]; then
         echo "FAIL: tags-from-git $NAME"

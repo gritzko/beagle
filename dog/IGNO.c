@@ -7,6 +7,7 @@
 #include "abc/FILE.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "DOG.h"
 
 static a_cstr(GITIGNORE_NAME, ".gitignore");
 
@@ -213,28 +214,28 @@ void IGNOFree(ignop ig) {
     memset(ig, 0, sizeof(*ig));
 }
 
-//  Hardcoded metadata: .git / .dogs / .sniff are always ignored,
-//  whether or not a .gitignore is loaded.  Every dog's wt-scan
-//  callbacks pass through IGNOMatch, so this one check keeps
-//  internal state (git's .git, keeper's .dogs, sniff's .sniff ULOG)
-//  out of diff / status / post / patch worktree passes.
+//  Hardcoded metadata: .git and .be are always ignored, whether or
+//  not a .gitignore is loaded.  `.be` covers both the primary-wt
+//  store directory (`<wt>/.be/`, containing refs, wtlog, packs, …)
+//  and the secondary-wt wtlog file (`<wt>/.be`).  Every dog's
+//  wt-scan callback routes through IGNOMatch, so this one check
+//  keeps internal state out of diff / status / post / patch passes.
 //
 //  Matches at ANY directory level — `.git/` at the wt root and a
 //  submodule's nested `.git/` are equally ignored, so a submodule's
 //  internal git-state never surfaces as untracked.
 static b8 igno_is_meta(u8cs rel) {
     if (u8csEmpty(rel)) return NO;
-    a_cstr(m_git,   ".git");
-    a_cstr(m_dogs,  ".dogs");
-    a_cstr(m_sniff, ".sniff");
-    //  ULOG sidecar for `<dir>/.sniff` is `<dir>/..sniff.idx`
-    //  (hidden sibling, dot-prefixed).
-    a_cstr(m_sniff_idx, "..sniff.idx");
+    a_cstr(m_git, ".git");
+    DOGa_be(m_be);
+    //  Secondary-wt sidecar: `<wt>/.be` is a file, its ULOG idx is at
+    //  `<wt>/..be.idx`.  Primary-wt's idx (`<wt>/.be/.wtlog.idx`) is
+    //  inside `.be/` and is already covered by the segment check.
+    a_cstr(m_be_idx, "..be.idx");
     $eachseg(seg, rel) {
-        if (u8csEq(seg, m_git))       return YES;
-        if (u8csEq(seg, m_dogs))      return YES;
-        if (u8csEq(seg, m_sniff))     return YES;
-        if (u8csEq(seg, m_sniff_idx)) return YES;
+        if (u8csEq(seg, m_git))    return YES;
+        if (u8csEq(seg, m_be))     return YES;
+        if (u8csEq(seg, m_be_idx)) return YES;
     }
     return NO;
 }

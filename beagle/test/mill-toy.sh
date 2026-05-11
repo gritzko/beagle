@@ -52,7 +52,7 @@ git -C "$TMILL/src" tag | sort -V | sed 's/^/    /'
 #  --- Init be + git consumer roots ---
 cd "$TMILL/be01"
 git init -q .
-mkdir -p .dogs/keeper
+mkdir -p .be
 git clone -q --no-checkout "$TMILL/src" "$TMILL/git01"
 
 #  --- Per-tag loop ---
@@ -85,9 +85,9 @@ for TAG in $TAGS; do
     GIT_T=$(( $(date +%s) - T0 ))
 
     RDIFF=$(rsync -rlcni --delete \
-        --exclude='/.git/' --exclude='/.dogs/' \
+        --exclude='/.git/' --exclude='/.be/' \
         "$TMILL/git01/" "$TMILL/be01/" 2>&1)
-    BE_N=$(find "$TMILL/be01" -not -path '*/.dogs/*' -not -path '*/.git/*' \
+    BE_N=$(find "$TMILL/be01" -not -path '*/.be/*' -not -path '*/.git/*' \
            -type f | wc -l)
 
     if [ -z "$RDIFF" ]; then

@@ -18,7 +18,7 @@ REPO="${REMOTE#* }"
 
 echo "=== treadmill: remote=$REMOTE workdir=$WORKDIR ==="
 
-mkdir -p "$WORKDIR/.dogs/keeper"
+mkdir -p "$WORKDIR/.be"
 
 # Get tags via git-upload-pack ref advertisement
 echo "--- listing tags ---"

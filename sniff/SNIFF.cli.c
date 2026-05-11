@@ -1,7 +1,7 @@
 //  sniff CLI — thin wrapper: parse, open, exec, close.
 //
 //  Sniff has no shard index of its own (DOG.md §"Indexing"); it
-//  reads worktree state and the `.sniff` ULOG, and writes commits
+//  reads worktree state and the `.be/wtlog` ULOG, and writes commits
 //  through keeper.  Reindexing of graf/spot is no longer driven
 //  from here — under the new arrangement (DOG.md §10a) `be` spawns
 //  spot/graf alongside keeper, and each dog refreshes its own
@@ -44,11 +44,11 @@ static ok64 sniffcli_inner(cli *c) {
 
     if (!need_state) return SNIFFExec(c);
 
-    // rw for anything that mutates the ULOG at `<wt>/.sniff` or the
+    // rw for anything that mutates the ULOG at `<wt>/.be/wtlog` or the
     // store.  View projectors (verbless `sniff <proj>:<URI>`) are
     // always RO per VERBS.md §"View projectors are pure".  Bare
     // `sniff post` (no -m, no `?label`) is a dry-run change-set
-    // print — also RO; otherwise FILEBook's page-align grows .sniff
+    // print — also RO; otherwise FILEBook's page-align grows .be/wtlog
     // and ULOGClose can't trim under a non-dirty handle.
     a_cstr(v_status, "status");
     a_cstr(v_list,   "list");

@@ -168,7 +168,7 @@ ok64 REFADVOpen(refadv *out, keeper *k) {
     }
 
     //  Phase 1c: only the trunk shard exists.  Walk its REFS at
-    //  <root>/.dogs/REFS.  Future phases iterate every shard dir.
+    //  <root>/.be/REFS.  Future phases iterate every shard dir.
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
     //  Two-pass: local rows first (authoritative), then peer-observed

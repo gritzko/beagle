@@ -22,14 +22,14 @@ set_tests_properties(BEworkflow PROPERTIES
 # the verbcheck-style harness picks up through CMakeLists test/branches.
 
 # worktree.sh — `be get <localdir>` clones a local primary.
-# Worktree layout: `.dogs` symlink to primary + local `.sniff` file.
+# Worktree layout: `.be` symlink to primary + local `.be/wtlog` file.
 add_test(NAME BEworktree
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/worktree.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(BEworktree PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEworktree")
 
-# be-clone-sniff.sh — after a clone, `.sniff` must carry both rows
+# be-clone-sniff.sh — after a clone, `.be/wtlog` must carry both rows
 # (repo + get).  Pins the on-disk shape against silent regressions
 # where only the bootstrap repo row survives.
 add_test(NAME be-clone-sniff

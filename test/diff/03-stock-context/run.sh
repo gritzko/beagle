@@ -32,12 +32,12 @@ mkdir -p "$OUT"
 sleep 0.02; cp "$CASE/01.foo.old.h" foo.h
 "$BE" put  foo.h    >/dev/null
 "$BE" post 'v1 msg'       >/dev/null
-OLD_SHA=$(grep -oE '#[0-9a-f]{40}' .sniff | tail -1 | tr -d '#')
+OLD_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
 
 sleep 0.02; cp "$CASE/02.foo.new.h" foo.h
 "$BE" put  foo.h    >/dev/null
 "$BE" post 'v2 msg'       >/dev/null
-NEW_SHA=$(grep -oE '#[0-9a-f]{40}' .sniff | tail -1 | tr -d '#')
+NEW_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
 
 "$BE" "diff:foo.h?${OLD_SHA}#${NEW_SHA}" \
     >"$OUT/diff.got.out" 2>"$OUT/diff.got.err" || true

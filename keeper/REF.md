@@ -81,7 +81,7 @@ aliases that must survive a branch-dir drop belong in the root's
 ## What's not in keeper's ref state
 
 **Worktree state** is not in keeper.  The per-wt branch pointer
-lives in the wt's `.dogs` file; the reverse pointer lives in the
+lives in the wt's `.be` file; the reverse pointer lives in the
 branch dir's `WT` file (see `sniff/AT.md`).  Keeper's refs carry
 only replicated refs (local + remote-attributed for the same
 branch) — never "which wt is where".

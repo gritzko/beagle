@@ -27,8 +27,8 @@ FIX1_REFS=$(ref_tip "?fix1")
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] || fail "trunk REFS moved by branch create"
 note "?fix1 forked at $FIX1_REFS; trunk unchanged"
-[ -d .dogs/fix1 ] || fail ".dogs/fix1 shard missing after be put ?./fix1"
-note ".dogs/fix1 shard materialised"
+[ -d .be/fix1 ] || fail ".be/fix1 shard missing after be put ?./fix1"
+note ".be/fix1 shard materialised"
 
 # 3. switch wt to the child
 echo "=== 3. be get ?fix1 — switch wt ==="
@@ -77,7 +77,7 @@ FIX1_REFS=$(ref_tip "?fix1")
 [ -z "$FIX1_REFS" ] || fail "?fix1 still visible in REFS after delete: $FIX1_REFS"
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] || fail "trunk REFS moved across delete"
-[ ! -e .dogs/fix1 ] || fail ".dogs/fix1 left behind after delete"
+[ ! -e .be/fix1 ] || fail ".be/fix1 left behind after delete"
 note "?fix1 deleted; trunk unchanged at T1=$T1"
 
 echo "=== branches/01-lifecycle: OK ==="

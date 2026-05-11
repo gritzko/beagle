@@ -1,6 +1,6 @@
 #!/bin/sh
 #  be-put-path.sh — `be put a.txt` appends one `put a.txt` row to
-#  .sniff and changes nothing else.  No keeper writes, no refs row.
+#  .be/wtlog and changes nothing else.  No keeper writes, no refs row.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"

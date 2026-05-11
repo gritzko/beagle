@@ -64,10 +64,10 @@ match_re "$CASE/02.head_trunk.want.txt" 02.head_trunk.got.out
 
 # --- HEAD must NOT mutate cur (no commit, no ref move) ---
 TIP_BEFORE=$(awk -F'\t' '$2=="post"{last=$3} END{
-    h=last; sub(/^[^#]*#/, "", h); print h }' .sniff)
+    h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
 "$BE" head '?..' >/dev/null 2>&1
 TIP_AFTER=$(awk -F'\t' '$2=="post"{last=$3} END{
-    h=last; sub(/^[^#]*#/, "", h); print h }' .sniff)
+    h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
 [ "$TIP_AFTER" = "$TIP_BEFORE" ] || {
     echo "head: cur tip changed after read-only HEAD" >&2
     exit 1

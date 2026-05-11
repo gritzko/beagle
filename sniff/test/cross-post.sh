@@ -31,7 +31,7 @@ cur_branch() {
                     q = last
                     sub(/#.*/, "", q); sub(/^\?/, "", q)
                     print q
-                }' .sniff
+                }' .be/wtlog
 }
 
 head_hex() {
@@ -39,7 +39,7 @@ head_hex() {
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 ref_tip() {
@@ -113,8 +113,8 @@ sniff put "?feat" >/dev/null              # label feat at trunk's tip
 
 #  Poison feat's REFS with an unrelated sha so the ff check fires.
 FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-TS=$(awk 'END { print $1 }' .dogs/refs)
-printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .dogs/refs
+TS=$(awk 'END { print $1 }' .be/refs)
+printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .be/refs
 
 sleep 0.1
 echo "x v2" > x.txt

@@ -27,14 +27,14 @@ static b8 graf_is_rw = NO;
 
 // --- GRAFOpenBranch / GRAFOpen / GRAFClose ---
 
-#define GRAF_DIR_S       ".dogs"
+#define GRAF_DIR_S       DOG_BE_NAME
 #define GRAF_IDX_EXT     ".graf.idx"
 #define GRAF_LOCK_S      ".lock.graf"
 #define GRAF_LEAF_BRANCH_MAX 1024
 
-//  Compose `<root>/.dogs/graf/<branch>` (with `<branch>` empty for
-//  trunk).  `branch` is the canonical leaf-branch (trailing '/' if
-//  non-empty).  `out` is NUL-terminated.
+//  Compose `<root>/.be[/<branch>]` (with `<branch>` empty for trunk).
+//  `branch` is the canonical leaf-branch (trailing '/' if non-empty).
+//  `out` is NUL-terminated.
 static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
     sane(h && out);
     u8bReset(out);
@@ -207,7 +207,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     GRAFRefreshView();
 
     //  Worktree sharing: lock the LEAF dir (writes only land in the
-    //  deepest dir).  For trunk leaf this is `<.dogs/graf>/.lock`.
+    //  deepest dir).  For trunk leaf this is `<.be>/.lock`.
     //  Readers open lockless — runs are immutable (tmp+rename
     //  publication) and DOGPupOpenAll retries on ENOENT.
     if (rw) {

@@ -18,9 +18,9 @@ echo "beta"  > b.txt
 [ ! -e a.txt ] || { echo "FAIL: a.txt still on disk after delete" >&2; exit 1; }
 
 #  ULOG row appended.
-grep -q 'delete	a\.txt' .sniff || {
-    echo "FAIL: no delete row for a.txt in .sniff" >&2
-    tail .sniff >&2
+grep -q 'delete	a\.txt' .be/wtlog || {
+    echo "FAIL: no delete row for a.txt in .be/wtlog" >&2
+    tail .be/wtlog >&2
     exit 1
 }
 

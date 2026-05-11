@@ -14,7 +14,7 @@ con ok64 HOMENOBR  = 0x45858e5d82db;       // no writable branch opened
 con ok64 HOMEMAX   = 0x116163962a1;        // open-branch capacity exhausted
 
 #define HOME_ARENA_SIZE         (1ULL << 32)   // 4 GB VA, pages on demand
-#define HOME_CONFIG_MAX         (1UL  << 16)   // 64 KB is plenty for .dogs/config
+#define HOME_CONFIG_MAX         (1UL  << 16)   // 64 KB is plenty for .be/config
 #define HOME_OPEN_BRANCHES_MAX  16             // slot 0 + up to 15 merge parents
 #define HOME_BRANCHES_DATA_SIZE 1024           // interned branch path bytes
 
@@ -34,15 +34,16 @@ con ok64 HOMEMAX   = 0x116163962a1;        // open-branch capacity exhausted
 //     the first Open was ro, `write_frozen` stays NO and no later
 //     Open can claim the write slot.
 typedef struct {
-    path8b root;     // repo root (where `.dogs/` lives), NUL-termed.
+    path8b root;     // repo root (where `.be/` lives), NUL-termed.
                      // Colocated default: equals `wt`.  Secondary
-                     // worktrees override this from their `.sniff`
+                     // worktrees override this from their `.be`
                      // file's `repo` URI so keeper/graf/spot open the
                      // shared store.
-    path8b wt;       // worktree root (where `.sniff` lives).  May
-                     // differ from `root` for secondary worktrees
+    path8b wt;       // worktree root (where `.be` lives — either the
+                     // store dir or the secondary-wt wtlog file).
+                     // May differ from `root` for secondary worktrees
                      // sharing a primary store.
-    u8b    config;   // mmap of <root>/.dogs/config (empty if none)
+    u8b    config;   // mmap of <root>/.be/config (empty if none)
     u8b    arena;    // scratch: 4 GB VA, stack-like consumption.  Each
                      // dog function must rewind the arena to its entry
                      // state before returning.  Use Bu8mark + Bu8rewind
@@ -55,7 +56,7 @@ typedef struct {
     size_t open_branches_count;
     b8     write_frozen;
 
-    //  Worktree tip — the (branch, sha) pair learned from `.sniff` at
+    //  Worktree tip — the (branch, sha) pair learned from the wtlog at
     //  the top of the call chain (`be`) and forwarded to every dog
     //  via the `--at <root>?<branch>#<sha>` flag.  Empty when no tip
     //  is known (fresh clone, direct sub-dog invocation without
@@ -67,15 +68,15 @@ typedef struct {
 
 // Initialize a `home` in place.  `at` is a URI carrying everything
 // the home needs to know about its anchor:
-//   path     → repo root (where `.dogs/` lives).  Empty → auto-detect
+//   path     → repo root (where `.be/` lives).  Empty → auto-detect
 //              via HOMEFindDogs from cwd.
 //   query    → current be-side branch path.  Empty == trunk.  When
 //              non-empty (or path is set), HOMEOpenBranch is called
 //              internally so slot 0 is claimed in one step.
 //   fragment → current commit sha as 40 hex.  Empty when no tip is
 //              recorded (fresh clone).
-// rw=YES allows downstream dogs to create their `.dogs/<name>/` dirs.
-// Reserves the arena, mmaps `.dogs/config` if present.
+// rw=YES allows downstream dogs to populate `.be/` (per-branch dirs,
+// puppy files).  Reserves the arena, mmaps `.be/config` if present.
 //
 // Pass an empty `uri` for the historical "empty `at`" behaviour.
 ok64 HOMEOpen(home *h, uricp at, b8 rw);
@@ -95,13 +96,13 @@ fun ok64 HOMEOpenAt(home *h, u8cs root, b8 rw) {
 // Release arena, config mmap, and path buffer.
 ok64 HOMEClose(home *h);
 
-// Walk up from cwd to the first ancestor directory containing `.dogs/`.
-// Feeds the found path into h->root.  Returns NOHOME if the walk
-// reaches / without finding one.
+// Walk up from cwd to the first ancestor containing a `.be` anchor
+// (either the store directory or the secondary-wt wtlog file).  Feeds
+// the found path into h->root.  Returns NOHOME if the walk reaches /
+// without finding one.
 ok64 HOMEFind(home *h);
 
 // Alias of HOMEFind kept for callers that want intent-named lookup.
-// Finds the directory where `.dogs/` lives.
 ok64 HOMEFindDogs(home *h);
 
 // Resolve a peer binary into `out`: same directory as `argv0`
@@ -109,7 +110,7 @@ ok64 HOMEFindDogs(home *h);
 // that holds it.  Falls back to feeding just `name`.
 ok64 HOMEResolveSibling(home *h, path8b out, u8csc name, u8csc argv0);
 
-// Read one value from <root>/.dogs/config (TOML) addressed by a dotted
+// Read one value from <root>/.be/config (TOML) addressed by a dotted
 // path-style `needle` — e.g. for `[a.b] c = "v"` caller builds
 // `a_path(n, "a", "b", "c")` and passes `$path(n)`.  Feeds the value
 // bytes into `value`, advancing value[0] past them.  Returns NOCONF if

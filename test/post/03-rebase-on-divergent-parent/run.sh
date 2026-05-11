@@ -47,7 +47,7 @@ head_hex() {
                 END {
                     h = last; sub(/^[^#]*#/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-                }' .sniff
+                }' .be/wtlog
 }
 
 #  Tip recorded for KEY in `keeper refs` output.  Empty if KEY absent.

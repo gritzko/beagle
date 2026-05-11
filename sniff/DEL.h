@@ -20,7 +20,7 @@ ok64 DELStage(u32 nuris, uri const *uris);
 //  DELBranch: drop a label by writing a tombstone REFS row
 //  (`post ?<branch>#0000…0`).  Default refuses if the branch has
 //  any active descendant labels in REFS (use `recursive=YES` to
-//  drop the whole subtree depth-first), or if the wt's `.sniff`
+//  drop the whole subtree depth-first), or if the wt's `.be/wtlog`
 //  baseline is currently on the branch being deleted (would
 //  orphan the wt).  Cross-wt safety is the user's responsibility.
 //

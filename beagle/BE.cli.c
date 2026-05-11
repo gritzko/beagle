@@ -10,6 +10,7 @@
 #include "abc/FILE.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/QURY.h"
@@ -188,8 +189,8 @@ typedef struct {
 
 //  Process-wide buffer for the `--at <root>?<branch>#<sha>` URI text
 //  forwarded to every sub-dog argv.  Populated once at the top of
-//  `becli` from `<cwd>/.sniff` via `SNIFFAtTailOf`; empty when no
-//  `.sniff` is present (fresh dir / pre-clone bootstrap), in which
+//  `becli` from `<cwd>/.be/wtlog` via `SNIFFAtTailOf`; empty when no
+//  `.be/wtlog` is present (fresh dir / pre-clone bootstrap), in which
 //  case sub-dogs fall back to their own cwd-walk.
 static u8 be_at_buf_storage[FILE_PATH_MAX_LEN + 128];
 static Bu8 be_at_buf = {
@@ -262,38 +263,63 @@ static ok64 BEGetWorktree(uri *u) {
     if (u == NULL || !u8csEmpty(u->authority)) done;
     if (u8csEmpty(u->path)) done;
 
-    // Primary candidate has to be an existing dir containing .dogs/.
-    a_cstr(dotdogs, ".dogs");
+    // Primary candidate has to be an existing dir containing .be/.
     a_dup(u8c, prim_s, u->path);
-    a_path(prim_dogs, prim_s, dotdogs);
-    if (FILEisdir($path(prim_dogs)) != OK) done;
+    a_path(prim_be, prim_s, DOG_BE_S);
+    if (FILEisdir($path(prim_be)) != OK) done;
 
-    // Skip if cwd already has a .dogs (dir or symlink).
+    // Skip if cwd already has a .be (dir, symlink, or wtlog file).
     a_path(cwd);
     call(FILEGetCwd, cwd);
-    a_path(cwd_dogs);
+    a_path(cwd_be);
     a_dup(u8c, cwd_s, u8bDataC(cwd));
-    call(PATHu8bFeed, cwd_dogs, cwd_s);
-    call(PATHu8bPush, cwd_dogs, dotdogs);
+    call(PATHu8bFeed, cwd_be, cwd_s);
+    call(PATHu8bPush, cwd_be, DOG_BE_S);
     {
         filestat fs = {};
-        if (FILELStat(&fs, $path(cwd_dogs)) == OK) done;
+        if (FILELStat(&fs, $path(cwd_be)) == OK) done;
     }
 
-    // Worktree layout:
-    //   * `<wt>/.dogs` is a symlink to the primary's `.dogs/` — the
-    //     wt and primary share the entire store (keeper, graf, spot,
-    //     per-branch indexes, REFS, paths registry, ALIAS, lock).
-    //   * `<wt>/.sniff` is a plain file (the ULOG) — each wt tracks
-    //     its own checkout independently.  Created lazily by
-    //     SNIFFOpen on first rw access; BE doesn't need to touch it.
-    ok64 lo = FILESymLink($path(prim_dogs), $path(cwd_dogs));
-    if (lo != OK && lo != FILEEXIST) return lo;
+    // Worktree layout: secondary wt has `<wt>/.be` as a REGULAR FILE
+    // (= its own wtlog).  Row 0's `repo` URI names the primary's
+    // `.be/`, so keeper/graf/spot reach the shared store via that
+    // anchor.  We seed the file with a single `repo` row pointing at
+    // the primary, then sniff's row-0 read on the next open redirects
+    // h->root automatically.
+    {
+        int fd = FILE_CLOSED;
+        ok64 co = FILECreate(&fd, $path(cwd_be));
+        if (co != OK) return co;
+
+        a_path(repo_uri);
+        a_cstr(file_pref, "file://");
+        call(u8bFeed, repo_uri, file_pref);
+        call(u8bFeed, repo_uri, prim_s);
+        call(u8bFeed1, repo_uri, '/');
+        call(u8bFeed, repo_uri, DOG_BE_S);
+        call(u8bFeed1, repo_uri, '/');
+
+        //  Compose the row body: `<ts>\trepo\t<uri>\n`.  ts =
+        //  RONNow(); verb = `repo`; uri = file:///<prim>/.be/.
+        a_pad(u8, row, 1024);
+        ron60 ts = RONNow();
+        call(RONutf8sFeed, u8bIdle(row), ts);
+        call(u8bFeed1, row, '\t');
+        a_cstr(repo_verb, "repo");
+        call(u8bFeed, row, repo_verb);
+        call(u8bFeed1, row, '\t');
+        call(u8bFeed, row, u8bDataC(repo_uri));
+        call(u8bFeed1, row, '\n');
+
+        a_dup(u8c, rowbytes, u8bData(row));
+        (void)FILEFeedAll(fd, rowbytes);
+        FILEClose(&fd);
+    }
 
     fprintf(stderr, "be: worktree from %.*s\n",
             (int)$len(u->path), (char *)u->path[0]);
 
-    // Resolve the primary's current commit via its `.sniff` log.
+    // Resolve the primary's current commit via its wtlog.
     // Rewrite this URI to "?<sha>" so downstream sniff checks out
     // that commit in the worktree.
     a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
@@ -360,7 +386,7 @@ static ok64 BEProjector(cli *c, uri *u) {
     //  dog sees the URI with its projector scheme intact and dispatches
     //  on u->scheme inside its own CLI.  `--at` carries the wt's tip
     //  so the projector (graf map / log "you are here", etc.) doesn't
-    //  need to poke at `.sniff` itself.
+    //  need to poke at `.be/wtlog` itself.
     a_cstr(tlv_flag, "--tlv");
     b8 have_at = u8bDataLen(be_at_buf) > 0;
     a_pad(u8cs, dargs, 5);
@@ -391,7 +417,7 @@ static ok64 BEProjector(cli *c, uri *u) {
 //  `be get URI` (DOG.md §10a):
 //
 //    1. keeper get URI  — synchronous.  Fetches/clones (remote URI),
-//       writes the pack to .dogs/keeper, builds keeper's own index.
+//       writes the pack to .be, builds keeper's own index.
 //    2. spot get URI, graf get URI, sniff get URI — in parallel.
 //       Each dog opens keeper read-only, walks the URI's tip(s), and
 //       updates its own state (spot/graf indexes; sniff worktree).
@@ -400,7 +426,7 @@ static ok64 BEProjector(cli *c, uri *u) {
 //  execution — same dispatch shape as the other verbs.
 //
 //  Pre-flight: URI normalisation (worktree wiring + fresh-clone
-//  .dogs/ bootstrap so the downstream dogs have a place to land).
+//  .be/ bootstrap so the downstream dogs have a place to land).
 static ok64 BEGet(cli *c, b8 seq) {
     sane(c);
     //  GET is ref-expecting: promote bare `be get other/branch` to
@@ -418,7 +444,7 @@ static ok64 BEGet(cli *c, b8 seq) {
     //  Path+query (no authority) is a one-file checkout — bypass the
     //  spot/graf parallel index pipeline and route only to sniff,
     //  which fetches the blob via keeper and overwrites the wt file
-    //  without touching `.sniff` (no `get`/`put` row appended).
+    //  without touching `.be/wtlog` (no `get`/`put` row appended).
     if (u != NULL && !$empty(u->path) && !$empty(u->query) &&
         $empty(u->authority)) {
         a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
@@ -433,9 +459,9 @@ static ok64 BEGet(cli *c, b8 seq) {
         done;
     }
 
-    //  Fresh-clone bootstrap: a remote URI with no .dogs/ anywhere up
-    //  to / needs an empty .dogs/ in cwd so the downstream dog can
-    //  place its subdir.
+    //  Fresh-clone bootstrap: a remote URI with no `.be/` anywhere up
+    //  to / needs an empty `.be/` in cwd so the downstream dog can
+    //  place its files.
     if (remote) {
         home probe_h = {};
         uri at = {};
@@ -444,8 +470,7 @@ static ok64 BEGet(cli *c, b8 seq) {
         if (ho != OK) {
             a_path(here);
             if (FILEGetCwd(here) == OK) {
-                a_cstr(dotdogs, ".dogs");
-                call(PATHu8bPush, here, dotdogs);
+                call(PATHu8bPush, here, DOG_BE_S);
                 call(FILEMakeDirP, $path(here));
             }
         }
@@ -515,7 +540,7 @@ static ok64 BEGet(cli *c, b8 seq) {
 //  `be head <uri>` — peek/dry-run.  Per VERBS.md §"HEAD":
 //    - `?br` (local)              — ahead/behind cur vs ?br
 //    - `//host` (cached)          — diff cur vs cached origin tracking
-//    - `ssh://host` (transport)   — fetch refs+pack, update .dogs/refs,
+//    - `ssh://host` (transport)   — fetch refs+pack, update .be/refs,
 //                                    print diff cur vs origin
 //    - `#frag`                    — commit-msg search; diff cur vs match
 //
@@ -528,7 +553,7 @@ static ok64 BEGet(cli *c, b8 seq) {
 //
 //  HEAD never modifies a branch's history or the wt; the only side
 //  effect on a transport-scheme URI is the cache refresh in
-//  `.dogs/refs` and the pack data added to keeper.
+//  `.be/refs` and the pack data added to keeper.
 //
 //  Skeleton: today HEAD piggy-backs on `keeper get` for the fetch
 //  half (which prints the fetched ref's sha to stderr — enough to
@@ -584,14 +609,14 @@ static ok64 BEHead(cli *c, b8 seq) {
 //  Fork spot + graf in parallel against the worktree's current tip
 //  (via `--at`).  Used by verbs that move a ref locally — post,
 //  patch — so the user-facing indexes stay current without a manual
-//  `be get` step.  `be_at_buf` is refreshed from `.sniff` first
+//  `be get` step.  `be_at_buf` is refreshed from `.be/wtlog` first
 //  (the calling verb may have just moved the tip).
 static ok64 be_reindex(cli *c) {
     sane(c);
     //  Re-derive the wt root: a post that just bootstrapped a fresh
-    //  `.dogs/` (`be post` in an empty dir) leaves `c->repo` empty
+    //  `.be/` (`be post` in an empty dir) leaves `c->repo` empty
     //  because CLIParse's cwd-walk happened before the post created
-    //  the store.  Walk again here so SNIFFAtTailOf can read `.sniff`.
+    //  the store.  Walk again here so SNIFFAtTailOf can read `.be/wtlog`.
     u8cs repo = {};
     if (u8bHasData(c->repo)) {
         u8csMv(repo, $path(c->repo));
@@ -645,13 +670,11 @@ static ok64 be_reindex(cli *c) {
     return worst;
 }
 
-//  Repo bootstrap: when no `.dogs/` is reachable from cwd, lay down
-//  the empty markers `<cwd>/.dogs/refs` and `<cwd>/.sniff` so the
+//  Repo bootstrap: when no `.be/` is reachable from cwd, lay down
+//  the empty markers `<cwd>/.be/refs` and `<cwd>/.be/wtlog` so the
 //  HOME walk-up succeeds for downstream dogs.  No-op when an existing
-//  repo is already in scope.  Mirrors the canonical layout: `.sniff`
-//  is sniff's per-wt ULOG; `.dogs/refs` is keeper's REFS_FILE ULOG —
-//  both grow append-only so an empty file is the well-defined "no
-//  rows yet" state.
+//  repo is already in scope.  Both ULOGs grow append-only so an empty
+//  file is the well-defined "no rows yet" state.
 static ok64 be_ensure_repo(void) {
     sane(1);
     {
@@ -664,28 +687,26 @@ static ok64 be_ensure_repo(void) {
     a_path(here);
     call(FILEGetCwd, here);
     a_dup(u8c, here_s, u8bDataC(here));
-    a_cstr(dotdogs,  ".dogs");
-    a_cstr(refs_lit, "refs");
-    a_cstr(dotsniff, ".sniff");
+    a_path(be_dir);
+    call(PATHu8bFeed, be_dir, here_s);
+    call(PATHu8bPush, be_dir, DOG_BE_S);
+    call(FILEMakeDirP, $path(be_dir));
     {
-        a_path(dogs_dir);
-        call(PATHu8bFeed, dogs_dir, here_s);
-        call(PATHu8bPush, dogs_dir, dotdogs);
-        call(FILEMakeDirP, $path(dogs_dir));
         a_path(refs_path);
-        a_dup(u8c, dogs_s, u8bDataC(dogs_dir));
-        call(PATHu8bFeed, refs_path, dogs_s);
-        call(PATHu8bPush, refs_path, refs_lit);
+        a_dup(u8c, be_s, u8bDataC(be_dir));
+        call(PATHu8bFeed, refs_path, be_s);
+        call(PATHu8bPush, refs_path, DOG_REFS_S);
         int fd = -1;
         call(FILECreate, &fd, $path(refs_path));
         call(FILEClose, &fd);
     }
     {
-        a_path(sniff_path);
-        call(PATHu8bFeed, sniff_path, here_s);
-        call(PATHu8bPush, sniff_path, dotsniff);
+        a_path(wtlog_path);
+        a_dup(u8c, be_s, u8bDataC(be_dir));
+        call(PATHu8bFeed, wtlog_path, be_s);
+        call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
         int fd = -1;
-        call(FILECreate, &fd, $path(sniff_path));
+        call(FILECreate, &fd, $path(wtlog_path));
         call(FILEClose, &fd);
     }
     done;
@@ -697,7 +718,7 @@ static ok64 be_ensure_repo(void) {
 //  shapes (label move, file staging, sha reset) stay in sniff put.
 //
 //  PUT also doubles as the repo-init verb: when nothing is reachable
-//  from cwd it lays down the canonical `.dogs/refs` + `.sniff`
+//  from cwd it lays down the canonical `.be/refs` + `.be/wtlog`
 //  markers so the dispatched sniff-put has a HOME to walk into.
 static ok64 BEPut(cli *c, b8 seq) {
     sane(c);
@@ -896,7 +917,7 @@ static ok64 BEPost(cli *c, b8 seq) {
     dog_step steps[4];
     u32 nsteps = 0;
     //  Step 1 (transport-scheme remote only): keeper get URI to fetch
-    //  refs+pack, refreshing `.dogs/refs` for the rebase that follows.
+    //  refs+pack, refreshing `.be/refs` for the rebase that follows.
     if (has_transport && has_remote) {
         steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("get"), NO};
     }
@@ -922,7 +943,7 @@ static ok64 BEPost(cli *c, b8 seq) {
     //  refresh spot/graf so subsequent log/diff/search see the new
     //  tip without a manual `be get`.  Skip the bare-dry-run case
     //  (no commit, no message, no URI) — sniff just printed the
-    //  would-be change-set and `.sniff` baseline is unchanged.
+    //  would-be change-set and `.be/wtlog` baseline is unchanged.
     b8 dry_run = !has_msg && c->nuris == 0;
     if (ran_sniff && !dry_run) (void)be_reindex(c);
     done;
@@ -1011,9 +1032,9 @@ static ok64 becli_inner(cli *c) {
     //  to know the worktree's current branch / commit (sniff bare
     //  `get` resume, keeper `get //origin` default branch, graf `log`
     //  / `map` "you are here") read it back via `CLIAtURI` from
-    //  their own cli.flags — no more sub-dog poking at `.sniff`.
+    //  their own cli.flags — no more sub-dog poking at `.be/wtlog`.
     //  `c.repo` is the cwd-walked wt root resolved by `CLIParse`.
-    //  Absent / empty `.sniff` (fresh dir, pre-clone bootstrap) →
+    //  Absent / empty `.be/wtlog` (fresh dir, pre-clone bootstrap) →
     //  buffer stays empty and no `--at` flag is forwarded.
     if (u8bHasData(c->repo)) {
         u8bReset(be_at_buf);
