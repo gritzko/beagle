@@ -271,7 +271,10 @@ static void ulog_idx_free_anon(wh128bp idx) {
 
 //  Fetch the log file's mtime via fstat on the booked fd.  Returns 0
 //  if the buffer isn't booked or the fstat fails — both treated as
-//  "force rebuild" by the freshness check.
+//  "force rebuild" by the freshness check.  Note: on RW opens this
+//  reads the POST-`FILEBook`-ftruncate mtime, NOT the pre-open one,
+//  so the open path captures mtime via `FILEStat(path)` before
+//  `FILEBook` and threads it through `ulog_idx_is_fresh`.
 static ron60 ulog_log_mtime(u8b data) {
     int fd = FILEBookedFD((u8bp)data);
     if (fd < 0) return 0;
@@ -281,9 +284,12 @@ static ron60 ulog_log_mtime(u8b data) {
 }
 
 //  Validate the sidecar's tail sentinel against the log's actual size
-//  AND mtime.  Returns YES iff both match — neither size-only matches
-//  nor mtime-only matches qualify (rebuild on any discrepancy).
-static b8 ulog_idx_is_fresh(wh128bp idx, u8b data) {
+//  AND `expected_mtime` (the log's mtime captured BEFORE `FILEBook`'s
+//  ftruncate-up clobbered it).  Returns YES iff both match.
+//  `expected_mtime == 0` falls back to size-only freshness — used for
+//  RO opens where the on-disk mtime is undisturbed and the caller
+//  may pre-fstat the fd.
+static b8 ulog_idx_is_fresh(wh128bp idx, u8b data, ron60 expected_mtime) {
     size_t n = wh128bDataLen(idx);
     if (n == 0) return NO;
     wh128 sentinel = ulog_idx_at(idx, (u32)(n - 1));
@@ -291,9 +297,9 @@ static b8 ulog_idx_is_fresh(wh128bp idx, u8b data) {
     u64 actual_size = (u64)((u8 const *)data[2] - (u8 const *)data[0]);
     if (logged_size != actual_size) return NO;
     ron60 logged_mtime = ulogIdxSentinelMtime(sentinel);
-    if (logged_mtime == 0) return NO;  // no mtime recorded yet
-    ron60 actual_mtime = ulog_log_mtime(data);
-    return logged_mtime == actual_mtime;
+    if (logged_mtime == 0) return NO;        // no mtime recorded yet
+    if (expected_mtime  == 0) return YES;    // mtime check disabled
+    return logged_mtime == expected_mtime;
 }
 
 //  Append the tail sentinel to idx.  The sentinel records the log's
@@ -327,7 +333,8 @@ static ok64 ulog_idx_rebuild(wh128bp idx, u8bp data) {
 
 // --- public idx API --------------------------------------------------
 
-ok64 ULOGOpenIdx(wh128bp *idx_out, path8s log_path, u8b log_data, b8 ro) {
+ok64 ULOGOpenIdx(wh128bp *idx_out, path8s log_path, u8b log_data, b8 ro,
+                 ron60 expected_mtime) {
     sane(idx_out && $ok(log_path) && log_data);
 
     a_path(idx_path);
@@ -347,7 +354,7 @@ ok64 ULOGOpenIdx(wh128bp *idx_out, path8s log_path, u8b log_data, b8 ro) {
 
     if (oo == OK) {
         //  Booked successfully.  Validate freshness; rebuild if stale.
-        if (ulog_idx_is_fresh(*idx_out, log_data)) done;
+        if (ulog_idx_is_fresh(*idx_out, log_data, expected_mtime)) done;
 
         if (ro) {
             //  RO sidecar but stale — we cannot write through to disk.
@@ -407,6 +414,16 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
                     size_t book_size, size_t init_size) {
     sane(data && $ok(path));
 
+    //  Capture the log's mtime BEFORE `FILEBook` ftruncate's the file
+    //  up to a page boundary — that ftruncate clobbers mtime, but the
+    //  sidecar's sentinel recorded the close-time mtime.  This is the
+    //  value we hand to the freshness check below.
+    ron60 pre_mtime = 0;
+    {
+        filestat fs = {};
+        if (FILEStat(&fs, path) == OK) pre_mtime = fs.mtime;
+    }
+
     ok64 o = FILEBook(data, path, book_size);
     if (o != OK) {
         call(FILEBookCreate, data, path, book_size, init_size);
@@ -426,7 +443,7 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
     }
 
     if (idx) {
-        ok64 io = ULOGOpenIdx(idx, path, *data, NO);
+        ok64 io = ULOGOpenIdx(idx, path, *data, NO, pre_mtime);
         if (io != OK) {
             if (*data && (*data)[0]) FILEUnBook(*data);
             return io;
@@ -442,6 +459,15 @@ ok64 ULOGOpen(u8bp *data, wh128bp *idx, path8s path) {
 
 ok64 ULOGOpenRO(u8bp *data, wh128bp *idx, path8s path) {
     sane(data && $ok(path));
+
+    //  Capture mtime before `FILEBookRO` — for RO opens the mtime
+    //  is not actually clobbered (no ftruncate), but staying parallel
+    //  with `ULOGOpenBooked` keeps the freshness contract uniform.
+    ron60 pre_mtime = 0;
+    {
+        filestat fs = {};
+        if (FILEStat(&fs, path) == OK) pre_mtime = fs.mtime;
+    }
 
     //  RO map only — fails if file is missing (no implicit create).
     call(FILEBookRO, data, path, ULOG_BOOK_DEFAULT);
@@ -460,7 +486,7 @@ ok64 ULOGOpenRO(u8bp *data, wh128bp *idx, path8s path) {
     }
 
     if (idx) {
-        ok64 io = ULOGOpenIdx(idx, path, *data, YES);
+        ok64 io = ULOGOpenIdx(idx, path, *data, YES, pre_mtime);
         if (io != OK) {
             if (*data && (*data)[0]) FILEUnBook(*data);
             return io;

@@ -170,7 +170,11 @@ ok64 ULOGOpenRO(u8bp *data, wh128bp *idx, path8s path);
 //  hidden sibling `<dir>/.<base>.idx` if present and current; rebuilds
 //  by scanning `log_data` otherwise.  `ro=YES` opens read-only and
 //  falls back to anonymous mmap when the sidecar is missing.
-ok64 ULOGOpenIdx(wh128bp *idx, path8s log_path, u8b log_data, b8 ro);
+//  `expected_mtime` is the log's mtime captured BEFORE `FILEBook`
+//  ftruncate'd it (which clobbers mtime on RW opens); 0 disables the
+//  mtime check and falls back to size-only freshness.
+ok64 ULOGOpenIdx(wh128bp *idx, path8s log_path, u8b log_data, b8 ro,
+                 ron60 expected_mtime);
 
 //  Close the index.  FILEUnBook for booked sidecars, munmap+free for
 //  the anonymous-mmap fallback.  *idx is set to NULL.
