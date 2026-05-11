@@ -97,6 +97,7 @@ vc_snapshot() {
             find . -type f \
                 -not -path './.dogs' -not -path './.dogs/*' \
                 -not -name '.sniff' -not -name '.sniff.pid' \
+                -not -name '..sniff.idx' \
                 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
                 sz=$(wc -c < "$f" | tr -d ' ')
                 sha=$(sha1sum "$f" 2>/dev/null | awk '{print $1}')

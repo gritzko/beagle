@@ -90,8 +90,8 @@ static ok64 T_roundtrip(void) {
     LOGPATH(path, "/tmp/ulog-rt.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
     want(ULOGCount(l_idx) == 0);
 
     saved_uri s1 = {}, s2 = {}, s3 = {};
@@ -115,7 +115,7 @@ static ok64 T_roundtrip(void) {
     want(g.verb == verb_of("post"));
     want(uri_serializes_to(&g.uri, "?heads/main"));
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     done;
 }
 
@@ -124,8 +124,8 @@ static ok64 T_persist(void) {
     LOGPATH(path, "/tmp/ulog-rt.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
     want(ULOGCount(l_idx) == 3);
 
     ulogrec g = {};
@@ -133,7 +133,7 @@ static ok64 T_persist(void) {
     want(g.verb == verb_of("put"));
     want(uri_serializes_to(&g.uri, "//localhost/repo?staging/abcd1234"));
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-rt.log");
     done;
 }
@@ -144,8 +144,8 @@ static ok64 T_seek(void) {
     LOGPATH(path, "/tmp/ulog-sk.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     ron60 stamps[] = {100, 200, 300, 400};
     saved_uri s = {};
@@ -168,7 +168,7 @@ static ok64 T_seek(void) {
     want(ULOGHas(l_idx, 400) == YES);
     want(ULOGFind(l_idx, 250, &i) == ULOGNONE);
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-sk.log");
     done;
 }
@@ -179,8 +179,8 @@ static ok64 T_clock(void) {
     LOGPATH(path, "/tmp/ulog-ck.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
@@ -202,7 +202,7 @@ static ok64 T_clock(void) {
     }
     want(ULOGCount(l_idx) == 2);
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-ck.log");
     done;
 }
@@ -213,8 +213,8 @@ static ok64 T_findverb(void) {
     LOGPATH(path, "/tmp/ulog-fv.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     saved_uri s1 = {}, s2 = {}, s3 = {}, s4 = {};
     call(parse_uri_lit, &s1, "?heads/master");
@@ -243,7 +243,7 @@ static ok64 T_findverb(void) {
 
     want(ULOGFindVerb(l_data, l_idx, verb_of("patch"), &g) == ULOGNONE);
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-fv.log");
     done;
 }
@@ -254,8 +254,8 @@ static ok64 T_truncate(void) {
     LOGPATH(path, "/tmp/ulog-tr.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     saved_uri s = {};
     call(parse_uri_lit, &s, "//h/p");
@@ -278,15 +278,15 @@ static ok64 T_truncate(void) {
     }
     want(ULOGCount(l_idx) == 4);
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
 
     u8bp  l2_data = NULL;
-    Bkv64 l2_idx  = {};
-    call(ULOGOpen, &l2_data, l2_idx, path);
+    wh128bp l2_idx  = NULL;
+    call(ULOGOpen, &l2_data, &l2_idx, path);
     want(ULOGCount(l2_idx) == 4);
     call(ULOGTail, l2_data, l2_idx, &g);
     want(g.ts == 200);
-    call(ULOGClose, l2_data, l2_idx, YES);
+    call(ULOGClose, l2_data, &l2_idx, YES);
     rm_tmp("/tmp/ulog-tr.log");
     done;
 }
@@ -393,8 +393,8 @@ static ok64 T_each_latest(void) {
     LOGPATH(path, "/tmp/ulog-el.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     //  Two keys, three revisions: main@1, feat@2, main@3, main@4, feat@5.
     //  Plus one `get` row to verify verb filter (`set` only).
@@ -443,7 +443,7 @@ static ok64 T_each_latest(void) {
     want(c_all.verb[2] == set_v);
     want(c_all.ts[2] == 4);
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-el.log");
     done;
 }
@@ -454,8 +454,8 @@ static ok64 T_compact_latest(void) {
     LOGPATH(path, "/tmp/ulog-cl.log");
 
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpen, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
 
     saved_uri s[5] = {};
     call(parse_uri_lit, &s[0], "?heads/main#?1111");
@@ -471,7 +471,7 @@ static ok64 T_compact_latest(void) {
     }
     want(ULOGCount(l_idx) == 5);
 
-    call(ULOGCompactLatest, &l_data, l_idx, path, set_v);
+    call(ULOGCompactLatest, &l_data, &l_idx, path, set_v);
     want(ULOGCount(l_idx) == 2);
 
     //  Survivors in ts order: main@12, feat@14.
@@ -483,7 +483,7 @@ static ok64 T_compact_latest(void) {
     want(g.ts == 14);
     want(uri_serializes_to(&g.uri, "?heads/feat#?cccc"));
 
-    call(ULOGClose, l_data, l_idx, YES);
+    call(ULOGClose, l_data, &l_idx, YES);
     rm_tmp("/tmp/ulog-cl.log");
     rm_tmp("/tmp/ulog-cl.log.tmp");
     done;
@@ -531,12 +531,207 @@ static ok64 T_aborted_leftover(void) {
     //  ULOGOpenRO must succeed and surface zero rows — the previous
     //  symptom was SIGBUS on *scan[0] inside ulog_rebuild_idx.
     u8bp  l_data = NULL;
-    Bkv64 l_idx  = {};
-    call(ULOGOpenRO, &l_data, l_idx, path);
+    wh128bp l_idx  = NULL;
+    call(ULOGOpenRO, &l_data, &l_idx, path);
     want(ULOGCount(l_idx) == 0);
-    call(ULOGClose, l_data, l_idx, NO);
+    call(ULOGClose, l_data, &l_idx, NO);
 
     rm_tmp(tpath);
+    done;
+}
+
+// --- Sidecar tests ---------------------------------------------------
+
+//  Open writes the sidecar; reopen finds it fresh and reuses it
+//  (no rebuild from log).  Verified by checking the sidecar file
+//  exists on disk and the verb-hash field round-trips through it.
+static ok64 T_sidecar_reuse(void) {
+    sane(1);
+    rm_tmp("/tmp/ulog-sc.log");
+    rm_tmp("/tmp/.ulog-sc.log.idx");
+    LOGPATH(path, "/tmp/ulog-sc.log");
+
+    saved_uri s = {};
+    call(parse_uri_lit, &s, "?heads/main");
+
+    {   //  Session 1: create + append.
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        ulogrec r = rec_of(1000, verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+
+    //  Sidecar must exist on disk now.
+    {
+        struct stat st = {};
+        want(stat("/tmp/.ulog-sc.log.idx", &st) == 0);
+        //  1 row + 1 sentinel = 2 entries × 16 B.
+        want((size_t)st.st_size == 2 * 16);
+    }
+
+    {   //  Session 2: reopen, verify row data + verb-hash field.
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        want(ULOGCount(l_idx) == 1);
+
+        //  Verb prefilter byte-equal: index entry 0 has the hash of
+        //  `get`; ULOGFindVerb must locate the row without scanning
+        //  past it.
+        ulogrec g = {};
+        call(ULOGFindVerb, l_data, l_idx, verb_of("get"), &g);
+        want(g.ts == 1000);
+
+        //  A different verb's hash must NOT match — ULOGFindVerb
+        //  returns ULOGNONE without dereferencing.
+        want(ULOGFindVerb(l_data, l_idx, verb_of("put"), &g) == ULOGNONE);
+
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+
+    rm_tmp("/tmp/ulog-sc.log");
+    rm_tmp("/tmp/.ulog-sc.log.idx");
+    done;
+}
+
+//  A stale sidecar (sentinel offset disagrees with actual log size)
+//  must be rebuilt from the log on the next Open.  Simulated by
+//  overwriting the sidecar with a single bogus sentinel.
+static ok64 T_sidecar_stale_rebuild(void) {
+    sane(1);
+    rm_tmp("/tmp/ulog-st.log");
+    rm_tmp("/tmp/.ulog-st.log.idx");
+    LOGPATH(path, "/tmp/ulog-st.log");
+
+    saved_uri s = {};
+    call(parse_uri_lit, &s, "?heads/main");
+
+    //  Append three rows, close (writes sidecar).
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        for (u32 i = 0; i < 3; i++) {
+            ulogrec r = rec_of((ron60)(100 + i), verb_of("get"), &s);
+            call(ULOGAppendAt, l_data, l_idx, &r);
+        }
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+
+    //  Corrupt the sidecar: rewrite as a single sentinel claiming
+    //  size=0.  Reopen must detect the mismatch (log file size != 0)
+    //  and rebuild — surfacing all 3 rows.
+    {
+        int fd = open("/tmp/.ulog-st.log.idx", O_RDWR | O_TRUNC);
+        if (fd < 0) fail(TESTFAIL);
+        u8 sentinel[16] = {};   // ts=0, val=0 → off=0
+        if (write(fd, sentinel, 16) != 16) { close(fd); fail(TESTFAIL); }
+        close(fd);
+    }
+
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        want(ULOGCount(l_idx) == 3);    // rebuilt
+        ulogrec g = {};
+        call(ULOGTail, l_data, l_idx, &g);
+        want(g.ts == 102);
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+
+    rm_tmp("/tmp/ulog-st.log");
+    rm_tmp("/tmp/.ulog-st.log.idx");
+    done;
+}
+
+//  RO open with no sidecar present: must succeed via the anonymous
+//  mmap fallback and surface every row from the log.  The idx slot
+//  must NOT register as booked (FILEIsBooked == NO).
+static ok64 T_sidecar_ro_fallback(void) {
+    sane(1);
+    rm_tmp("/tmp/ulog-rof.log");
+    rm_tmp("/tmp/.ulog-rof.log.idx");
+    LOGPATH(path, "/tmp/ulog-rof.log");
+
+    saved_uri s = {};
+    call(parse_uri_lit, &s, "?heads/main");
+
+    //  RW: append 2 rows, close, then unlink the sidecar to simulate
+    //  RO mount / vanished sidecar.
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        ulogrec r1 = rec_of(10, verb_of("get"), &s);
+        ulogrec r2 = rec_of(20, verb_of("put"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r1);
+        call(ULOGAppendAt, l_data, l_idx, &r2);
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+    rm_tmp("/tmp/.ulog-rof.log.idx");
+
+    //  RO open: sidecar absent → quiet anonymous-mmap fallback.
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpenRO, &l_data, &l_idx, path);
+        want(ULOGCount(l_idx) == 2);
+        want(FILEIsBooked((u8bp)l_idx) == NO);   // anonymous fallback
+
+        ulogrec g = {};
+        call(ULOGRow, l_data, l_idx, 0, &g);
+        want(g.ts == 10);
+        call(ULOGRow, l_data, l_idx, 1, &g);
+        want(g.ts == 20);
+
+        call(ULOGClose, l_data, &l_idx, NO);
+    }
+
+    rm_tmp("/tmp/ulog-rof.log");
+    done;
+}
+
+//  Verb prefilter correctness: ULOGFindVerb must reject rows whose
+//  20-bit verb hash doesn't match before parsing them.  Insert many
+//  rows of one verb and one row of another; FindVerb on the second
+//  must locate it correctly without touching the first verb's rows.
+static ok64 T_verb_prefilter(void) {
+    sane(1);
+    rm_tmp("/tmp/ulog-vf.log");
+    rm_tmp("/tmp/.ulog-vf.log.idx");
+    LOGPATH(path, "/tmp/ulog-vf.log");
+
+    u8bp    l_data = NULL;
+    wh128bp l_idx  = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
+
+    saved_uri s = {};
+    call(parse_uri_lit, &s, "?heads/main");
+
+    //  100 `get` rows then one `delete` row.
+    for (u32 i = 0; i < 100; i++) {
+        ulogrec r = rec_of((ron60)(i + 1), verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
+    {
+        ulogrec r = rec_of(200, verb_of("delete"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+    }
+
+    ulogrec g = {};
+    call(ULOGFindVerb, l_data, l_idx, verb_of("delete"), &g);
+    want(g.ts == 200);
+    want(g.verb == verb_of("delete"));
+
+    //  An absent verb still returns ULOGNONE.
+    want(ULOGFindVerb(l_data, l_idx, verb_of("patch"), &g) == ULOGNONE);
+
+    call(ULOGClose, l_data, &l_idx, YES);
+    rm_tmp("/tmp/ulog-vf.log");
+    rm_tmp("/tmp/.ulog-vf.log.idx");
     done;
 }
 
@@ -553,6 +748,10 @@ ok64 ULOGtest(void) {
     fprintf(stderr, "T_each_latest...\n");   call(T_each_latest);
     fprintf(stderr, "T_compact_latest...\n");call(T_compact_latest);
     fprintf(stderr, "T_aborted_leftover...\n"); call(T_aborted_leftover);
+    fprintf(stderr, "T_sidecar_reuse...\n");        call(T_sidecar_reuse);
+    fprintf(stderr, "T_sidecar_stale_rebuild...\n");call(T_sidecar_stale_rebuild);
+    fprintf(stderr, "T_sidecar_ro_fallback...\n");  call(T_sidecar_ro_fallback);
+    fprintf(stderr, "T_verb_prefilter...\n");       call(T_verb_prefilter);
     done;
 }
 

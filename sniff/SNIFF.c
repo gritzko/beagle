@@ -79,8 +79,8 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     a_dup(u8c, wt_root, u8bDataC(h->wt));
     a_cstr(sniffname, SNIFF_FILE);
     a_path(atpath, wt_root, sniffname);
-    ok64 uo = rw ? ULOGOpen  (&s->log_data, s->log_idx, $path(atpath))
-                 : ULOGOpenRO(&s->log_data, s->log_idx, $path(atpath));
+    ok64 uo = rw ? ULOGOpen  (&s->log_data, &s->log_idx, $path(atpath))
+                 : ULOGOpenRO(&s->log_data, &s->log_idx, $path(atpath));
     if (uo != OK) { zerop(s); return uo; }
     s->log_rw = rw;
 
@@ -91,7 +91,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     if (rw) {
         ok64 co = SNIFFCheckClock();
         if (co != OK) {
-            ULOGClose(s->log_data, s->log_idx, s->log_rw);
+            ULOGClose(s->log_data, &s->log_idx, s->log_rw);
             zerop(s); return co;
         }
     }
@@ -108,7 +108,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
         } else {
             ok64 wr = sniff_write_repo_row(wt_root);
             if (wr != OK) {
-                ULOGClose(s->log_data, s->log_idx, s->log_rw);
+                ULOGClose(s->log_data, &s->log_idx, s->log_rw);
                 zerop(s); return wr;
             }
         }
@@ -136,7 +136,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     //  redirected as appropriate.
     ok64 kr = KEEPOpen(h, rw);
     if (kr != OK && kr != KEEPOPEN) {
-        ULOGClose(s->log_data, s->log_idx, s->log_rw);
+        ULOGClose(s->log_data, &s->log_idx, s->log_rw);
         zerop(s); return kr;
     }
     sniff_opened_keep = (kr == OK);
@@ -155,7 +155,7 @@ ok64 SNIFFClose(void) {
     sane(1);
     if (!sniff_is_open()) return OK;
     sniff *s = &SNIFF;
-    ULOGClose(s->log_data, s->log_idx, s->log_rw);
+    ULOGClose(s->log_data, &s->log_idx, s->log_rw);
     IGNOFree(&s->ignores);
     zerop(s);
     sniff_is_rw = NO;

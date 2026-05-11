@@ -227,10 +227,14 @@ static b8 igno_is_meta(u8cs rel) {
     a_cstr(m_git,   ".git");
     a_cstr(m_dogs,  ".dogs");
     a_cstr(m_sniff, ".sniff");
+    //  ULOG sidecar for `<dir>/.sniff` is `<dir>/..sniff.idx`
+    //  (hidden sibling, dot-prefixed).
+    a_cstr(m_sniff_idx, "..sniff.idx");
     $eachseg(seg, rel) {
-        if (u8csEq(seg, m_git))   return YES;
-        if (u8csEq(seg, m_dogs))  return YES;
-        if (u8csEq(seg, m_sniff)) return YES;
+        if (u8csEq(seg, m_git))       return YES;
+        if (u8csEq(seg, m_dogs))      return YES;
+        if (u8csEq(seg, m_sniff))     return YES;
+        if (u8csEq(seg, m_sniff_idx)) return YES;
     }
     return NO;
 }

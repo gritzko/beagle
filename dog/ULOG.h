@@ -11,18 +11,43 @@
 //  scanning) is fatal (ULOGCLOCK).
 //
 //  Storage:
-//    `u8bp  data`   pointer to the FILEBook'd buffer slot (FILE_WANT_BUFS
-//                   entry).  Caller declares `u8bp data = NULL;` and
-//                   passes `&data` to Open so FILEBook can fill it in.
-//    `Bkv64 idx`    optional in-memory index, key = ts, val = byte
-//                   offset of the row in `data`.  Naturally sorted by
-//                   construction; rebuilt by one linear scan on Open.
-//                   Pass NULL on Open to skip the build (streaming-
-//                   only consumers); random-access functions require
-//                   a non-NULL idx.
+//    `u8bp     data`  pointer to the FILEBook'd buffer slot for the log
+//                     (FILE_WANT_BUFS entry).  Caller declares
+//                     `u8bp data = NULL;` and passes `&data` to Open.
+//    `wh128bp  idx`   pointer to a wh128 buffer slot for the index.
+//                     Caller declares `wh128bp idx = NULL;` and passes
+//                     `&idx`.  ULOG fills it with either:
+//                       (a) a FILEBook'd sidecar slot (RW or RO when the
+//                           sidecar is present), or
+//                       (b) a heap-allocated 4-pointer slot backed by an
+//                           anonymous mmap (RO + missing sidecar — quiet
+//                           fallback so a read-only mount still works).
+//                     Discriminate via `FILEIsBooked(idx)`.
 //
-//  URI slices returned via `ulogrec.uri` point into the mmap and stay
-//  valid until ULOGClose / ULOGTruncate.
+//  Index entry layout (wh128):
+//    key  = ron60 timestamp (top 4 bits zero)
+//    val  = wh64Pack(0, verbHash20, byteOffset40)
+//             - byteOffset40 (40 bits) — start of the row in the log
+//             - verbHash20   (20 bits) — `mix64(verb) & 0xFFFFF` for
+//                                        cheap pre-filtering on verb
+//                                        before parsing the row
+//
+//  The index is sorted by key (== ts) by construction (monotonic
+//  appends).  The LAST entry of a non-empty index is a TAIL SENTINEL,
+//  not a row:
+//    sentinel.key = ts of the last row (0 if log is empty)
+//    sentinel.val = wh64Pack(0, 0, log_byte_size)
+//  `wh128bDataLen(idx)` is therefore `row_count + 1`.  The sentinel is
+//  used to (a) detect a stale sidecar on Open (compare its offset to
+//  the log file size) and (b) cheaply read the tail ts for the next
+//  monotonicity guard.
+//
+//  Sidecar file: hidden sibling of the log path — `<dir>/.<base>.idx`.
+//  Wire format: a packed array of wh128 entries; the file is just the
+//  in-memory index dumped as-is (FILEBook-extended in place).  When the
+//  sentinel disagrees with the log's actual byte size, the sidecar is
+//  treated as stale and the index is rebuilt by a linear scan of the
+//  log; the rebuilt index is then written through to the sidecar.
 //
 //  Streaming primitives (`ULOGu8sFeed`, `ULOGu8sDrain`) are stateless —
 //  use them when you have no file (encoding to a wire buffer, parsing
@@ -33,11 +58,11 @@
 #include <time.h>
 
 #include "abc/BUF.h"
-#include "abc/KV.h"
 #include "abc/OK.h"
 #include "abc/PATH.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
+#include "dog/WHIFF.h"
 
 con ok64 ULOGFAIL   = 0x7956103ca495;
 con ok64 ULOGNONE   = 0x7956105d85ce;
@@ -48,6 +73,40 @@ con ok64 ULOGBADFMT = 0x7956102ca34f59d;
 //  initial file size.  Callers can tune via ULOGOpenBooked.
 #define ULOG_BOOK_DEFAULT (1UL << 30)
 #define ULOG_INIT_DEFAULT 4096
+
+//  Sidecar VA reservation: 1M entries × 16 B = 16 MiB.  At ~50 B/row
+//  in the log, 1M rows is ~50 MiB of log — well below the 40-bit
+//  offset cap.  Initial file size is one page; FILEBook page-aligns
+//  and lazily grows.
+#define ULOG_IDX_BOOK_DEFAULT (16UL << 20)
+#define ULOG_IDX_INIT_DEFAULT 4096
+
+//  20-bit verb hash mask.
+#define ULOG_VERB_MASK20 0xFFFFFu
+
+// --- Index entry accessors ------------------------------------------
+
+//  20-bit prefilter hash for a verb.  Collisions ~1/1M; callers must
+//  still verify by parsing the row.
+fun u32 ulogVerbHash(ron60 verb) {
+    return (u32)(mix64((u64)verb) & ULOG_VERB_MASK20);
+}
+
+fun ron60 ulogIdxTs    (wh128 e) { return (ron60)e.key; }
+fun u64   ulogIdxOff   (wh128 e) { return wh64Off(e.val); }
+fun u32   ulogIdxVerbH (wh128 e) { return wh64Id(e.val); }
+
+fun wh128 ulogIdxEntry(ron60 ts, ron60 verb, u64 off) {
+    wh128 e = {.key = (u64)ts,
+               .val = wh64Pack(0, ulogVerbHash(verb), off)};
+    return e;
+}
+
+fun wh128 ulogIdxSentinel(ron60 last_ts, u64 log_size) {
+    wh128 e = {.key = (u64)last_ts,
+               .val = wh64Pack(0, 0, log_size)};
+    return e;
+}
 
 // --- one parsed row -------------------------------------------------
 
@@ -81,65 +140,81 @@ ok64 ULOGu8sDrain(u8cs scan, ulogrecp out);
 
 // --- open / close ----------------------------------------------------
 
-//  Open (create if missing) RW.  `idx` may be NULL (skip indexing).
-//  Returns ULOGCLOCK if existing rows are not strictly monotonic,
-//  ULOGBADFMT on malformed lines.
-ok64 ULOGOpen(u8bp *data, kv64bp idx, path8s path);
+//  Open (create if missing) RW.  `idx` may be NULL (skip indexing —
+//  streaming consumers).  Returns ULOGCLOCK if existing rows are not
+//  strictly monotonic, ULOGBADFMT on malformed lines.
+ok64 ULOGOpen(u8bp *data, wh128bp *idx, path8s path);
 
 //  Variant with explicit book sizing.
-ok64 ULOGOpenBooked(u8bp *data, kv64bp idx, path8s path,
+ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
                     size_t book_size, size_t init_size);
 
 //  Read-only open (PROT_READ via FILEBookRO).  Appends will fail.
 //  Missing file is an error (no implicit create).  `idx` may be NULL.
-ok64 ULOGOpenRO(u8bp *data, kv64bp idx, path8s path);
+//  When the sidecar is missing or unwritable, the in-memory index is
+//  built quietly (anonymous mmap, no sidecar write); discriminate via
+//  `FILEIsBooked(idx)` if you care.
+ok64 ULOGOpenRO(u8bp *data, wh128bp *idx, path8s path);
 
-//  Close.  `rw=YES` trims the file (RW open page-aligned via FILEBook —
-//  Close must trim back even if no append happened); `rw=NO` skips the
-//  trim (RO opens never grew the file).  `idx` may be NULL.
-//  After return, `data`'s slot is NULL'd by FILEUnBook.
-ok64 ULOGClose(u8bp data, kv64bp idx, b8 rw);
+//  Open just the sidecar index for `log_path`'s log.  Loads from the
+//  hidden sibling `<dir>/.<base>.idx` if present and current; rebuilds
+//  by scanning `log_data` otherwise.  `ro=YES` opens read-only and
+//  falls back to anonymous mmap when the sidecar is missing.
+ok64 ULOGOpenIdx(wh128bp *idx, path8s log_path, u8b log_data, b8 ro);
+
+//  Close the index.  FILEUnBook for booked sidecars, munmap+free for
+//  the anonymous-mmap fallback.  *idx is set to NULL.
+ok64 ULOGCloseIdx(wh128bp *idx);
+
+//  Close.  `rw=YES` trims the log file (RW open page-aligned via
+//  FILEBook — Close must trim back even if no append happened);
+//  `rw=NO` skips the trim (RO opens never grew the file).  `idx` may
+//  be NULL.  Closes the sidecar (if any) before unbooking the log.
+ok64 ULOGClose(u8bp data, wh128bp *idx, b8 rw);
 
 // --- append ----------------------------------------------------------
 
 //  Append a row using `RONNow()` clamped to `tail+1` ms.  On return,
 //  `rec->ts` is overwritten with the stamp that was actually used.
-//  Requires a non-NULL idx (used for monotonicity check + offset push).
-ok64 ULOGAppend  (u8bp data, kv64bp idx, ulogrecp  rec);
+//  Requires a non-NULL idx.
+ok64 ULOGAppend  (u8bp data, wh128bp idx, ulogrecp  rec);
 
 //  Append with explicit ts (`rec->ts`).  Refuses ULOGCLOCK if
 //  `rec->ts <= tail`.
-ok64 ULOGAppendAt(u8bp data, kv64bp idx, ulogreccp rec);
+ok64 ULOGAppendAt(u8bp data, wh128bp idx, ulogreccp rec);
 
 // --- random access (require non-NULL idx) ---------------------------
 
-//  Row count.
-fun u32 ULOGCount(kv64b idx) { return (u32)kv64bDataLen(idx); }
+//  Row count.  Excludes the tail sentinel.
+fun u32 ULOGCount(wh128bp idx) {
+    size_t n = wh128bDataLen(idx);
+    return n ? (u32)(n - 1) : 0;
+}
 
 //  Random access, 0-indexed.
-ok64 ULOGRow(u8b data, kv64b idx, u32 i, ulogrecp out);
+ok64 ULOGRow(u8b data, wh128bp idx, u32 i, ulogrecp out);
 
 //  Lower-bound: smallest index i such that idx[i].key >= ts.
 //  Writes the count if ts is past the tail.
-ok64 ULOGSeek(kv64b idx, ron60 ts, u32 *i_out);
+ok64 ULOGSeek(wh128bp idx, ron60 ts, u32 *i_out);
 
 //  Exact-timestamp lookup.  ULOGNONE if no row has that stamp.
-ok64 ULOGFind(kv64b idx, ron60 ts, u32 *i_out);
+ok64 ULOGFind(wh128bp idx, ron60 ts, u32 *i_out);
 
 //  First / last row convenience (inline over ULOGRow).
-fun ok64 ULOGHead(u8b data, kv64b idx, ulogrecp out) {
+fun ok64 ULOGHead(u8b data, wh128bp idx, ulogrecp out) {
     if (ULOGCount(idx) == 0) return ULOGNONE;
     return ULOGRow(data, idx, 0, out);
 }
 
-fun ok64 ULOGTail(u8b data, kv64b idx, ulogrecp out) {
+fun ok64 ULOGTail(u8b data, wh128bp idx, ulogrecp out) {
     u32 n = ULOGCount(idx);
     if (n == 0) return ULOGNONE;
     return ULOGRow(data, idx, n - 1, out);
 }
 
 //  Cheap `ts ∈ log` predicate (binary search).
-fun b8 ULOGHas(kv64b idx, ron60 ts) {
+fun b8 ULOGHas(wh128bp idx, ron60 ts) {
     u32 i = 0;
     return ULOGFind(idx, ts, &i) == OK;
 }
@@ -151,12 +226,13 @@ fun b8 ULOGHas(kv64b idx, ron60 ts) {
 //  record (verb + uri) so callers can filter on verb without needing
 //  a second pass.
 typedef b8 (*ulog_pred)(ulogreccp r, void *ctx);
-ok64 ULOGFindLatest(u8b data, kv64b idx, ulog_pred pred, void *ctx,
+ok64 ULOGFindLatest(u8b data, wh128bp idx, ulog_pred pred, void *ctx,
                     ulogrecp out);
 
-//  Latest row whose verb matches `verb`.  Reverse scan; stops at first
-//  match.  ULOGNONE if no row carries that verb.
-ok64 ULOGFindVerb(u8b data, kv64b idx, ron60 verb, ulogrecp out);
+//  Latest row whose verb matches `verb`.  Reverse scan; the 20-bit
+//  verb prefilter in the index entry skips rows whose hash can't
+//  match before parsing.  ULOGNONE if no row carries that verb.
+ok64 ULOGFindVerb(u8b data, wh128bp idx, ron60 verb, ulogrecp out);
 
 //  Iteration callback for `ULOGeachLatest`.  A non-OK return aborts
 //  the walk and is propagated out.
@@ -165,7 +241,7 @@ typedef ok64 (*ulog_each_fn)(ulogreccp rec, void *ctx);
 //  Walk in reverse chronological order, invoking `cb` at most ONCE per
 //  unique (verb, URI-minus-fragment) key — always with the latest row
 //  bearing that key.  `verb_filter == 0` considers every verb.
-ok64 ULOGeachLatest(u8b data, kv64b idx, ron60 verb_filter,
+ok64 ULOGeachLatest(u8b data, wh128bp idx, ron60 verb_filter,
                     ulog_each_fn cb, void *ctx);
 
 //  Like `ULOGeachLatest` but the dedup key is the URI-minus-fragment
@@ -175,19 +251,19 @@ ok64 ULOGeachLatest(u8b data, kv64b idx, ron60 verb_filter,
 //  style walks where a delete row must mask earlier writes by any
 //  other verb for the same key.  `verb_filter == 0` considers every
 //  verb.
-ok64 ULOGeachLatestKey(u8b data, kv64b idx, ron60 verb_filter,
+ok64 ULOGeachLatestKey(u8b data, wh128bp idx, ron60 verb_filter,
                        ulog_each_fn cb, void *ctx);
 
 // --- compact / truncate ---------------------------------------------
 
 //  Rewrite the log keeping only the latest row per (verb,
 //  URI-minus-fragment) key.  Atomic via `<path>.tmp` + rename(2).
-//  On success `*data`/`idx` are reopened against the compacted file.
-ok64 ULOGCompactLatest(u8bp *data, kv64bp idx, path8s path,
+//  On success `*data`/`*idx` are reopened against the compacted file.
+ok64 ULOGCompactLatest(u8bp *data, wh128bp *idx, path8s path,
                        ron60 verb_filter);
 
 //  Compaction — keep rows [0, keep_n), discard the rest.
-ok64 ULOGTruncate(u8bp data, kv64bp idx, u32 keep_n);
+ok64 ULOGTruncate(u8bp data, wh128bp idx, u32 keep_n);
 
 // --- K-way heap merge over ULOG cursors -----------------------------
 //

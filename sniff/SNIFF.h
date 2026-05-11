@@ -49,7 +49,7 @@ con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 typedef struct {
     home   *h;        // borrowed
     u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.sniff
-    Bkv64   log_idx;  // ts → byte-offset index over log_data
+    wh128bp log_idx;  // ts → wh128 (off + verb-hash) index over log_data
     b8      log_rw;   // YES iff log was opened RW (Close must trim)
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;

@@ -29,13 +29,13 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     //  ULOGOpenRO maps PROT_READ and skips FILEBook's page-align
     //  ftruncate, so it can't trip the silent-EOF-truncation bug
     //  the legacy RW reader caused.
-    u8bp  data = NULL;
-    Bkv64 idx  = {};
-    ok64 o = ULOGOpenRO(&data, idx, $path(apath));
+    u8bp    data = NULL;
+    wh128bp idx  = NULL;
+    ok64 o = ULOGOpenRO(&data, &idx, $path(apath));
     if (o != OK) fail(SNIFFNONE);
 
     u32 n = ULOGCount(idx);
-    if (n == 0) { ULOGClose(data, idx, NO); fail(SNIFFNONE); }
+    if (n == 0) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
 
     //  Row 0 = repo anchor → root path.
     a_pad(u8, root_buf, FILE_PATH_MAX_LEN);
@@ -43,7 +43,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         ulogrec r0 = {};
         if (ULOGRow(data, idx, 0, &r0) != OK ||
             r0.verb != SNIFFAtVerbRepo()) {
-            ULOGClose(data, idx, NO); fail(SNIFFNONE);
+            ULOGClose(data, &idx, NO); fail(SNIFFNONE);
         }
         DOGRepoFromDogs(r0.uri.path, root_buf);
     }
@@ -80,7 +80,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         if (!u8csEmpty(sha_body)) { found = YES; break; }
     }
 
-    if (!found) { ULOGClose(data, idx, NO); fail(SNIFFNONE); }
+    if (!found) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
 
     //  Compose `<root>?<branch>#<sha>` into `out`.  branch may be
     //  empty (== trunk); `?` separator stays so URILexer round-trips
@@ -92,7 +92,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     u8bFeed1(out, '#');
     u8bFeed(out, sha_body);
 
-    ULOGClose(data, idx, NO);
+    ULOGClose(data, &idx, NO);
     done;
 }
 
