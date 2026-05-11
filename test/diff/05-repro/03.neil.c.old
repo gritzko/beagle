@@ -1,0 +1,5 @@
+void run(void) {
+    MSTXcount(heap, &count);
+    MSTXindex(heap, &index);
+    MSTXvalue(heap, &value);
+}

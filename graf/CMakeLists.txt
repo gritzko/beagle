@@ -15,7 +15,6 @@ list(APPEND GRAF_HEADERS
     JOIN.h
     NEIL.h
     REBASE.h
-    TDIFF.h
     WEAVE.h
 )
 
@@ -26,7 +25,6 @@ list(APPEND GRAF_SOURCES
     BLOB.c
     BRAM.c
     DAG.c
-    DIFF.c
     DIFFREF.c
     GET.c
     INDEX.c
@@ -36,7 +34,6 @@ list(APPEND GRAF_SOURCES
     MERGE.c
     NEIL.c
     REBASE.c
-    TDIFF.c
     WEAVE.c
 )
 

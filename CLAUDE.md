@@ -64,7 +64,7 @@
 6.  Funny macros from PRO.h should not pollute namespaces, hence that header must not
     be included by any other headers, only .c files.
 7.  Error codes are uppercase, follow predictable pattern, numeric values are
-    ron60 coded, see abc/ok64 utility
+    ron60 coded, see abc/ok64 utility. 10 chars max (60 bits in RON base 64)
 8.  Use different build dirs: build/ for debug, build-release/ for bench, build-fuzz
     for fuzzing and build-load (release build, heavy long running tests),
     all under the project root, e.g. librdx/build, also see WITH_ASAN, WITH_FUZZ,
@@ -75,10 +75,11 @@
 11. Avoid cat-ting large files and *never* send traces to stdout. Redirect to a file,
     then grep/tail the file.
 12. Read DONT.md and INDEX.md. Reread them after every compaction.
-13. Dont fucking reimplement things repeatedly. When planninng, check INDEX.md for 
+13. Dont reimplement things repeatedly. When planninng, check `*/INDEX.md` for 
     a relevant header, the thing may already exist. Always ask if unsure.
 14. After large code changes (esp. new files added) update respective INDEX.md.
 15. Read abc/S.md abc/B.md for the idiomatic slice manipulation functions
 16. Propagate errors. Check error codes where correcting action is possible.
     Use sane()/call()/try()/done cycle from PRO.h in .c files.
 17. When fixing a bug, first make a repro test, then fix a bug.
+    Check your fix actually works.

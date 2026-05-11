@@ -1,0 +1,5 @@
+void run(void) {
+    HITXcount(heap, &count);
+    HITXindex(heap, &index);
+    HITXvalue(heap, &value);
+}

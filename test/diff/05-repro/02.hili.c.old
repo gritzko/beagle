@@ -1,0 +1,5 @@
+void foo(void) {
+    u32 tlo = (ti > 0) ? toks[ti - 1].off : 0;
+    u32 thi = toks[ti].off;
+    process(tlo, thi);
+}

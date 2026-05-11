@@ -442,11 +442,14 @@ static bro_linekind bro_classify(bro_lineinfo const *li) {
         if (li->in_b > 0 && li->rm_b > 0) return BRO_LINE_MOD_SPLIT;
         return (li->in_b > 0) ? BRO_LINE_PURE_IN : BRO_LINE_PURE_RM;
     }
-    // Any modified line splits into rm-row + in-row.  The merged-text
-    // byte order is INS-before-DEL (NEILCanon's in-rm invariant), so
-    // an inline render of `1UL << 16 → 12` would read as `<< 1216`,
-    // which is unreadable.  Split renders the OLD line (in bytes
-    // hidden) and the NEW line (rm bytes hidden) on adjacent rows.
+    // Small edits stay inline (single NORMAL-pass row, rm bytes
+    // red-tinted and in bytes green-tinted in place).  Larger edits
+    // split into rm-row + in-row, because the merged-text byte order
+    // (INS-before-DEL by WEAVE canon) makes an inline render of
+    // `1UL << 16 → 12` read as `<< 1216` once the change dominates
+    // the line.
+    u32 total = changed + li->eq_b;
+    if (changed * 4 < total) return BRO_LINE_MOD_INLINE;
     return BRO_LINE_MOD_SPLIT;
 }
 
@@ -526,11 +529,22 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
             i++;
             continue;
         }
-        // Block end: when we hit the next eq-context line.
+        if (k == BRO_LINE_MOD_INLINE && info[i].bnd_side == TOK_SIDE_EQ) {
+            total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
+            i++;
+            continue;
+        }
+        // Block end: when we hit the next eq-context line OR an
+        // inline-classifiable line (handled by the branch above on the
+        // next iteration).
         u32 j = i;
-        while (j < nl && !(bro_classify(&info[j]) == BRO_LINE_EQ &&
-                           info[j].bnd_side == TOK_SIDE_EQ))
+        while (j < nl) {
+            bro_linekind kj = bro_classify(&info[j]);
+            if (info[j].bnd_side == TOK_SIDE_EQ &&
+                (kj == BRO_LINE_EQ || kj == BRO_LINE_MOD_INLINE))
+                break;
             j++;
+        }
 
         //  Walk block segments for rm-pass; group across hidden IN `\n`s.
         //  `pend_*` accumulate visible/hidden byte counts across grouped

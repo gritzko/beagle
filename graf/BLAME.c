@@ -5,12 +5,12 @@
 //  versions, renders blame annotations per line.
 //
 //  WEAVE DIFF: resolves refs via KEEPWalk, fetches blobs, runs
-//  pairwise token-level diff via DIFFu8cs.
+//  pairwise token-level diff via WEAVEDiff (delegated through
+//  graf/DIFFREF.c GRAFDiff2Layer).
 //
 #include "GRAF.h"
 #include "BLOB.h"
 #include "DAG.h"
-#include "TDIFF.h"
 #include "WEAVE.h"
 
 #include <stdio.h>

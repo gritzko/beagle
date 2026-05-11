@@ -123,7 +123,7 @@ static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
 //  `from_data` (older) + `to_data` (newer) — `WEAVEFromBlob` ×2 +
 //  `WEAVEDiff` (LCS + NEIL + canon) — then `WEAVEEmitDiff` walks the
 //  resulting `inrm` stream and emits hunks with context, syntax tags,
-//  and `I`/`D`/` ` hili.  No legacy byte-pair `DIFFu8cs` path here.
+//  and `I`/`D`/` ` hili.
 //
 //  Sentinel ids: `from` layer uses `WEAVE_BASE_SRC` (any value other
 //  than `WEAVE_WT_SRC` works); `to` layer uses `WEAVE_WT_SRC`.  The

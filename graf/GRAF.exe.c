@@ -38,7 +38,7 @@ static void graf_usage(void) {
         "\n"
         "  Verbs:\n"
         "    get path?sha1&sha2[&...]     deterministic blob/tree merge\n"
-        "    diff old new                 token-level colored diff\n"
+        "    diff:[path][?from][#to]      token-level colored diff (URI)\n"
         "    merge base ours theirs       3-way merge\n"
         "    blame file                   token-level blame\n"
         "    weave file?from..to          weave diff between refs\n"
@@ -199,39 +199,11 @@ ok64 GRAFExec(cli *c) {
         done;
     }
 
-    // --- diff: dispatch on URI shape ---
-    //
-    //   2 URIs, no projector intent on URI[0]   → legacy file-pair
-    //                                             (no keeper needed)
-    //   1 URI with diff: scheme / ?query / path → URI-driven projector,
-    //                                             falls through to the
-    //                                             keeper-open block below
+    // --- diff: requires a projector URI; resolved against keeper below ---
 
-    if ($eq(c->verb, v_diff)) {
-        uri *u0 = (c->nuris >= 1) ? &c->uris[0] : NULL;
-        //  Legacy file-pair `graf diff a.c b.c`: two URIs with no
-        //  projector intent on the first (no scheme, no query).  A
-        //  single URI is always projector — even bare `diff:<path>`.
-        b8 file_pair = (c->nuris >= 2 && u0 != NULL &&
-                        u8csEmpty(u0->scheme) &&
-                        u8csEmpty(u0->query));
-        if (c->nuris < 1) {
-            fprintf(stderr,
-                "graf: diff requires 2 files, or 1 URI"
-                " (diff:[<path>][?<ref>])\n");
-            return FAILSANITY;
-        }
-        if (file_pair) {
-            pid_t pager = graf_start_pager(c->tty_out, force_tlv);
-            u8cs op = {}, np = {};
-            graf_uri_path(op, &c->uris[0]);
-            graf_uri_path(np, &c->uris[1]);
-            u8cs nomode = {};
-            ok64 ret = GRAFDiff(op, np, np, nomode, nomode);
-            graf_stop_pager(pager);
-            return ret;
-        }
-        // fall through to keeper-open block below
+    if ($eq(c->verb, v_diff) && c->nuris < 1) {
+        fprintf(stderr, "graf: diff requires a URI (diff:[<path>][?<ref>])\n");
+        return FAILSANITY;
     }
 
     // --- merge: file-based, no keeper needed ---

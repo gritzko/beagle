@@ -38,15 +38,8 @@ add_test(NAME MERGEWT01test COMMAND MERGEWT01test)
 set_tests_properties(MERGEWT01test PROPERTIES
     ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=MERGEWT01test")
 
-add_test(NAME GRAFcli_diff_artifact
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/diff_test.sh
-        $<TARGET_FILE:graf-cli>
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(GRAFcli_diff_artifact PROPERTIES
-    ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFcli_diff_artifact")
-
-#  toy.sh — full-pipeline smoke test: be post x3, graf diff, merge,
-#  blame, weave, index/status.  Exercises dog/DOG.md §8 entry points.
+#  toy.sh — full-pipeline smoke test: be post x3, merge, blame,
+#  weave, index/status.  Exercises dog/DOG.md §8 entry points.
 add_test(NAME GRAFtoy
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/toy.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

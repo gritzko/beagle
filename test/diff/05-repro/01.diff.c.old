@@ -1,0 +1,11 @@
+void old_init(void) {
+    // Old comment line about processing
+    init_data();
+    if (flag != OK) {
+        cleanup_old();
+        return;
+    }
+    done_old();
+    if (map) unmap(map);
+    return_old();
+}

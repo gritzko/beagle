@@ -2,7 +2,6 @@
 #  toy.sh — end-to-end smoke test for graf on a tiny throwaway repo.
 #
 #  Exercises graf's full public surface against a 3-commit repo:
-#    - `graf diff`   : token-level diff of two files on disk
 #    - `graf merge`  : 3-way merge of base/ours/theirs
 #    - streaming ingest (dog/DOG.md §8):
 #        `be post` drives sniff→spot→graf.  The `graf get` step pulls
@@ -113,22 +112,9 @@ SPOT_IDX_N=$(find "$R/.dogs" -maxdepth 1 -name '*.spot.idx' 2>/dev/null | wc -l)
 note "spot has $SPOT_IDX_N index run(s) on disk"
 
 # ------------------------------------------------------------------
-#  3.  graf diff — token-level colored diff between v1 and v3.
+#  3.  graf merge — 3-way merge of divergent edits from a common base.
 # ------------------------------------------------------------------
-echo "=== 3. graf diff v1.c v3.c ==="
-
-OUT=$("$GRAF" diff "$TMP/v1.c" "$TMP/v3.c" 2>&1 | perl -pe 's/\e\[[0-9;]*m//g')
-echo "$OUT" | sed 's/^/    /'
-
-echo "$OUT" | grep -q 'return' || fail "diff: no 'return' in output"
-echo "$OUT" | grep -q '^+'      || fail "diff: no insertion markers"
-echo "$OUT" | grep -q '^-'      || fail "diff: no deletion markers"
-note "diff produced additions, deletions, and shared context"
-
-# ------------------------------------------------------------------
-#  4.  graf merge — 3-way merge of divergent edits from a common base.
-# ------------------------------------------------------------------
-echo "=== 4. graf merge ==="
+echo "=== 3. graf merge ==="
 
 cat > "$TMP/base.c" <<'BASE'
 int f(int x) {
@@ -157,10 +143,10 @@ echo "$M" | grep -qF 'int g(int x)' || fail "merge: lost theirs' addition"
 note "merge combined both sides' non-conflicting edits"
 
 # ------------------------------------------------------------------
-#  5.  graf blame — walks PATH_VER for f.c, pulls each version's
+#  4.  graf blame — walks PATH_VER for f.c, pulls each version's
 #      blob via keeper, builds a weave, annotates surviving tokens.
 # ------------------------------------------------------------------
-echo "=== 5. graf blame f.c ==="
+echo "=== 4. graf blame f.c ==="
 
 cd "$R"
 BOUT=$("$GRAF" blame f.c 2>&1 | perl -pe 's/\e\[[0-9;]*m//g')

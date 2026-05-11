@@ -124,10 +124,6 @@ void GRAFArenaCleanup(void);
 // Serialize one hunk via graf_emit and write to graf_out_fd.
 ok64 GRAFHunkEmit(hunk const *hk, void *ctx);
 
-// User-facing diff entry.
-ok64 GRAFDiff(u8cs old_path, u8cs new_path, u8cs name,
-              u8cs old_mode, u8cs new_mode);
-
 // 3-way merge entry.
 ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
                u8cs outpath);
