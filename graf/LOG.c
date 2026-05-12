@@ -901,13 +901,54 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
         u8bFree(lx.text);
         return GRAFFAIL;
     }
-    ok64 go = GRAFOpen(k->h, NO);
+    //  Branch-aware open: cur first (from --at's `h->cur_branch`), then
+    //  switch to the URI's `?branch` so both cur and target chains are
+    //  visible in PAST+DATA for the ancestor walks.  Same-branch hint
+    //  (target == cur or empty target) collapses to a single open.
+    u8cs open_branch_h = {};
+    if (u8bHasData(k->h->cur_branch))
+        u8csMv(open_branch_h, u8bDataC(k->h->cur_branch));
+    static u8c const _h0 = 0;
+    if (open_branch_h[0] == NULL) {
+        open_branch_h[0] = &_h0; open_branch_h[1] = &_h0;
+    }
+    ok64 go = GRAFOpenBranch(k->h, open_branch_h, NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
         u8bUnMap(cbuf);
         if (lx.tlv) u32bFree(lx.toks);
         u8bFree(lx.text);
         return go;
+    }
+    //  Switch graf to the target branch from u->query so target's
+    //  commits land in DATA while cur is preserved in PAST.  No-op
+    //  when target is empty or already covered.  Resolves the
+    //  relative anchor `..` (parent) against cur first; deeper
+    //  forms (`./X`, `../X`) currently fall through unmodified
+    //  (TODO: share with PATCH's `absolutise_query`).
+    if (!u8csEmpty(u->query)) {
+        a_pad(u8, tabuf, 256);
+        u8cs t = {u->query[0], u->query[1]};
+        b8 dotdot = (u8csLen(t) == 2 &&
+                     t[0][0] == '.' && t[0][1] == '.');
+        if (dotdot) {
+            //  Trunk's parent of cur: dirname.  For a top-level
+            //  branch (no `/`), parent is trunk (empty).
+            a_dup(u8c, cb, u8bDataC(k->h->cur_branch));
+            u8cs cbv = {};
+            u8csMv(cbv, cb);
+            if (!u8csEmpty(cbv) && *u8csLast(cbv) == '/')
+                u8csShed1(cbv);
+            u8cp slash = cbv[1];
+            while (slash > cbv[0] && *(slash - 1) != '/') slash--;
+            if (slash > cbv[0]) {
+                u8cs dn = {cbv[0], slash - 1};
+                (void)u8bFeed(tabuf, dn);
+            }
+            t[0] = u8bDataHead(tabuf);
+            t[1] = u8bIdleHead(tabuf);
+        }
+        (void)GRAFSwitchBranch(k->h, t);
     }
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);

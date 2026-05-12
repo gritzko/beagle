@@ -326,6 +326,60 @@ ok64 DOGCanonURI(urip u) {
     done;
 }
 
+b8 DOGIsHashlet(u8cs s) {
+    size_t n = u8csLen(s);
+    if (n < 6 || n > 40) return NO;
+    for (size_t i = 0; i < n; i++) {
+        u8 c = s[0][i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return NO;
+    }
+    return YES;
+}
+
+b8 DOGRefIsBranch(u8cs ref) {
+    size_t n = u8csLen(ref);
+    if (n == 0) return YES;  // trunk
+    for (size_t i = 0; i < n; i++)
+        if (ref[0][i] == '/') return YES;
+    if (n == 1 && ref[0][0] == '.') return YES;
+    if (n == 2 && ref[0][0] == '.' && ref[0][1] == '.') return YES;
+    return NO;
+}
+
+void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out) {
+    branch_out[0] = NULL; branch_out[1] = NULL;
+    pin_out[0]    = NULL; pin_out[1]    = NULL;
+    if (u8csLen(query) == 0) return;
+
+    //  Find the last '/'-separated segment.  When query is just
+    //  `abc1234` (no '/'), the whole slice is the candidate.
+    u8cp head  = query[0];
+    u8cp term  = query[1];
+    u8cp slash = NULL;
+    for (u8cp p = head; p < term; p++) if (*p == '/') slash = p;
+
+    u8cs tail = {};
+    if (slash) { tail[0] = slash + 1; tail[1] = term; }
+    else       { tail[0] = head;      tail[1] = term; }
+
+    if (DOGIsHashlet(tail)) {
+        //  Trailing hashlet: split branch / pin at the last '/'.
+        //  When no '/' is present the whole query is the pin and
+        //  the branch is empty (trunk).
+        if (slash) {
+            branch_out[0] = head;
+            branch_out[1] = slash;
+        }
+        pin_out[0] = tail[0];
+        pin_out[1] = tail[1];
+    } else {
+        branch_out[0] = head;
+        branch_out[1] = term;
+    }
+}
+
 ok64 DOGCanonURIFeed(u8bp out, urip u) {
     sane(out != NULL && u != NULL);
     call(DOGCanonURI, u);
@@ -430,7 +484,19 @@ ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
     a_dup(kv32, ks, kv32bData(seqnos));
     $kv32sort(ks);
 
+    //  Skip seqnos already loaded — re-opens of shared ancestor dirs
+    //  (cross-branch loads, idempotent re-scans) must not double-map.
+    //  Scan PastData since duplicates can appear in either side.
     $for(kv32, kp, ks) {
+        b8 dup = NO;
+        {
+            kv32s pd = {};
+            kv32PastDataS(pups, pd);
+            $for(kv32, q, pd) {
+                if (q->key == kp->key) { dup = YES; break; }
+            }
+        }
+        if (dup) continue;
         u8cp nm0 = u8bDataHead(namebuf) + kp->val;
         u8cs fn  = {nm0, nm0 + strlen((char const *)nm0)};
         a_path(fpath, dir, fn);
@@ -446,22 +512,35 @@ ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
     done;
 }
 
-ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes) {
-    sane(pups != NULL && $ok(dir) && $ok(ext));
+ok64 DOGPupOpenAside(kv32b pups, path8sc dir, u8csc ext) {
+    sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
+    //  Collapse the current DATA into PAST: the previously-active
+    //  leaf becomes part of the read-only context.  pups[1] is the
+    //  PAST/DATA boundary; advancing it to pups[2] (the DATA/IDLE
+    //  boundary) leaves DATA empty and ready for the next branch's
+    //  entries.
+    if (kv32bDataLen(pups) > 0)
+        ((kv32 **)pups)[1] = (kv32 *)pups[2];
+    return DOGPupOpenAll(pups, dir, ext);
+}
 
-    //  new_seqno = 1 + max(existing seqnos), default 1 for empty stack.
-    u32 new_seqno = 1;
+ok64 DOGPupCreateAt(kv32b pups, path8s dir, u8cs ext, u8cs bytes,
+                    u32 seqno) {
+    sane(pups != NULL && $ok(dir) && $ok(ext) && seqno > 0);
+
+    //  Refuse on DATA-side seqno collision (caller is meant to
+    //  DOGPupThinTail first when replacing the tail run).
     {
         kv32 const *db = (kv32 const *)kv32bDataHead(pups);
         kv32 const *de = (kv32 const *)kv32bIdleHead(pups);
         for (kv32 const *p = db; p < de; p++)
-            if (p->key >= new_seqno) new_seqno = p->key + 1;
+            if (p->key == seqno) return DOGPUPFAIL;
     }
 
     a_path(idxpath);
-    call(dog_pup_path, idxpath, dir, new_seqno, ext);
+    call(dog_pup_path, idxpath, dir, seqno, ext);
     a_path(tmppath);
-    call(dog_pup_path, tmppath, dir, new_seqno, ext);
+    call(dog_pup_path, tmppath, dir, seqno, ext);
     a_cstr(tmpsuf, ".tmp");
     call(u8bFeed, tmppath, tmpsuf);
     call(PATHu8bTerm, tmppath);
@@ -478,9 +557,22 @@ ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes) {
     call(FILEMapRO, &buf, $path(idxpath));
     int fd = FILEBookedFD(buf);
     if (fd < 0) { FILEUnMap(buf); return DOGPUPFAIL; }
-    kv32 kv = {.key = new_seqno, .val = (u32)fd};
+    kv32 kv = {.key = seqno, .val = (u32)fd};
     call(kv32bPush, pups, &kv);
     done;
+}
+
+ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes) {
+    sane(pups != NULL);
+    //  new_seqno = 1 + max(DATA seqno), default 1 for empty DATA.
+    u32 new_seqno = 1;
+    {
+        kv32 const *db = (kv32 const *)kv32bDataHead(pups);
+        kv32 const *de = (kv32 const *)kv32bIdleHead(pups);
+        for (kv32 const *p = db; p < de; p++)
+            if (p->key >= new_seqno) new_seqno = p->key + 1;
+    }
+    return DOGPupCreateAt(pups, dir, ext, bytes, new_seqno);
 }
 
 ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m) {
@@ -603,6 +695,19 @@ void DOGPupData(u8csp out, kv32b pups, u32 i) {
     if (i >= kv32bDataLen(pups)) return;
     kv32 *base = (kv32 *)kv32bDataHead(pups);
     u32 fd = base[i].val;
+    u8bp slot = FILE_WANT_BUFS[fd];
+    if (!slot || !slot[0]) return;
+    out[0] = slot[0];
+    out[1] = slot[2];
+}
+
+void DOGPupDataAll(u8csp out, kv32b pups, u32 i) {
+    out[0] = NULL; out[1] = NULL;
+    kv32s all = {};
+    kv32PastDataS(pups, all);
+    size_t n = (size_t)(all[1] - all[0]);
+    if ((size_t)i >= n) return;
+    u32 fd = all[0][i].val;
     u8bp slot = FILE_WANT_BUFS[fd];
     if (!slot || !slot[0]) return;
     out[0] = slot[0];

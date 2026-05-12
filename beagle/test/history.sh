@@ -4,11 +4,11 @@
 #  verify that files that appear/disappear do so correctly.
 #
 #  Flow:
-#    1. `be post ?tags/v0.0.1 v1`  — seed: hello.txt + other.txt
+#    1. `be post ?v0.0.1 v1`  — seed: hello.txt + other.txt
 #    2. `be delete hello.txt`
-#       `be post ?tags/v0.0.2 v2`  — drop hello.txt
+#       `be post ?v0.0.2 v2`  — drop hello.txt
 #    3. edit other.txt
-#       `be post ?tags/v0.0.3 v3`  — other.txt changed, plus add
+#       `be post ?v0.0.3 v3`  — other.txt changed, plus add
 #                                    extra.txt
 #    4. for each tag, `be get ?tags/v<n>` and check the worktree
 #       matches the expected snapshot (files present/absent +
@@ -47,13 +47,13 @@ R="$TMP/r"; mkdir -p "$R"; cd "$R"
 git init --quiet .
 echo "alpha v1" > hello.txt
 echo "stable"   > other.txt
-"$BE" post "?tags/v0.0.1" 'v1 msg' >/dev/null
+"$BE" post "?v0.0.1" 'v1 msg' >/dev/null
 note "v0.0.1 labeled"
 
 # --- 2. v2 (delete hello.txt) ----------------------------------------
 echo "=== 2. delete hello.txt, tag v0.0.2 ==="
 "$BE" delete hello.txt >/dev/null
-"$BE" post "?tags/v0.0.2" 'v2 msg' >/dev/null
+"$BE" post "?v0.0.2" 'v2 msg' >/dev/null
 note "v0.0.2 labeled"
 
 # --- 3. v3 (edit other.txt + add extra.txt) --------------------------
@@ -66,25 +66,25 @@ echo "new file" > extra.txt
 #  be put-staged or the modification gets ignored.
 "$BE" put other.txt >/dev/null
 "$BE" put extra.txt >/dev/null
-"$BE" post "?tags/v0.0.3" 'v3 msg' >/dev/null
+"$BE" post "?v0.0.3" 'v3 msg' >/dev/null
 note "v0.0.3 labeled"
 
 # --- 4. verify each version -------------------------------------------
 echo "=== 4. get each tag, verify worktree contents ==="
 
-"$BE" get "?tags/v0.0.1" >/dev/null
+"$BE" get "?v0.0.1" >/dev/null
 want_file hello.txt "alpha v1"
 want_file other.txt "stable"
 want_gone extra.txt
 note "v0.0.1 ok (hello.txt + other.txt stable, no extra)"
 
-"$BE" get "?tags/v0.0.2" >/dev/null
+"$BE" get "?v0.0.2" >/dev/null
 want_gone hello.txt
 want_file other.txt "stable"
 want_gone extra.txt
 note "v0.0.2 ok (hello.txt gone, other.txt unchanged)"
 
-"$BE" get "?tags/v0.0.3" >/dev/null
+"$BE" get "?v0.0.3" >/dev/null
 want_gone hello.txt
 want_file other.txt "beta v3"
 want_file extra.txt "new file"
@@ -92,7 +92,7 @@ note "v0.0.3 ok (other.txt edited, extra.txt appeared)"
 
 # Round-trip back to v0.0.1 one more time to confirm reverse traversal
 # restores a file that was added and then removed.
-"$BE" get "?tags/v0.0.1" >/dev/null
+"$BE" get "?v0.0.1" >/dev/null
 want_file hello.txt "alpha v1"
 want_file other.txt "stable"
 want_gone extra.txt

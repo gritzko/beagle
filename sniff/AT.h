@@ -145,9 +145,14 @@ ok64 SNIFFAtPatchChain(sha1b out);
 //  the number written.  Each entry's `msg` slice points into the
 //  ULOG buffer — valid until the next ULOG mutation.
 typedef struct {
-    u8   shape;   //  PATCH_SHAPE_SQUASH/CHERRY/MERGE/REBASE1
-    sha1 sha;     //  resolved 40-hex theirs
-    u8cs msg;     //  merge: row's fragment; otherwise empty
+    u8   shape;     //  PATCH_SHAPE_SQUASH/CHERRY/MERGE/REBASE1
+    sha1 sha;       //  resolved 40-hex theirs
+    u8cs msg;       //  merge: row's fragment; otherwise empty
+    u8cs locator;   //  located cherry-pick (`?<branch>/<sha>`):
+                    //  the `<branch>` prefix; consumer switches
+                    //  keeper to it before reading the picked
+                    //  commit's body.  Empty for bare-cherry /
+                    //  squash / merge / rebase-one rows.
 } sniff_pe;
 
 ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out);

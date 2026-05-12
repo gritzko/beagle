@@ -174,7 +174,7 @@ POST_TIP=$(head_hex)
          exit 1; }
 
 #  Single-parent + parent is M2 (PATCH erased provenance of M1).
-"$KEEPER" get ".#$POST_TIP" \
+"$KEEPER" get "?fix2#$POST_TIP" \
     > "$LOGS/04.commit.out" 2> "$LOGS/04.commit.err" \
     || { echo "keeper get .#$POST_TIP failed" >&2
          cat "$LOGS/04.commit.err" >&2; exit 1; }

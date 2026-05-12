@@ -25,13 +25,13 @@
 #  --- v1 (OLD) -------------------------------------------------------
 sleep 0.02; cp "$CASE/01.foo.c.old" foo.c
 "$BE" put  foo.c                  >/dev/null
-"$BE" post -m v1 '?tags/v1'       >/dev/null
+"$BE" post -m v1 '?v1'       >/dev/null
 OLD_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
 
 #  --- v2 (NEW) -------------------------------------------------------
 sleep 0.02; cp "$CASE/02.foo.c.new" foo.c
 "$BE" put  foo.c                  >/dev/null
-"$BE" post -m v2 '?tags/v2'       >/dev/null
+"$BE" post -m v2 '?v2'       >/dev/null
 NEW_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
 
 #  --- diff plaintext: must include the addition ----------------------

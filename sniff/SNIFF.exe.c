@@ -698,7 +698,22 @@ static ok64 sniff_get_by_refkey(u8cs reporoot, u8csc keepdir,
 //  leaves via `KEEPTreeULog` and writes every leaf under the
 //  requested prefix.
 
+static ok64 sniff_get_blob_to_wt_switch(uri *u) {
+    sane(u);
+    u8cs br_split = {}, pin_split = {};
+    DOGRefSplitPin(u->query, br_split, pin_split);
+    u8cs target = {};
+    if (u8csEmpty(pin_split)) u8csMv(target, u->query);
+    else                       u8csMv(target, br_split);
+    (void)SNIFFMaybeSwitchKeeper(target); (void)SNIFFMaybeSwitchGraf(target);
+    done;
+}
+
 static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
+    //  Same cross-branch consideration as the subtree overlay below:
+    //  `be get file.c?feat` reads a blob from feat's tree, so feat's
+    //  packs must be loaded.
+    (void)sniff_get_blob_to_wt_switch(u);
     sane(u);
     keeper *k = &KEEP;
     Bu8 blob = {};
@@ -792,6 +807,20 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
 static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
     sane(u);
     keeper *k = &KEEP;
+
+    //  Cross-branch overlay: when the URI's query names a different
+    //  branch (`be get src/?feat`), load feat's packs into PAST so
+    //  the tree-walk + blob fetches below resolve via PastData.
+    //  Path-prefix overlays don't change the wt's anchor; the
+    //  switch is read-only context, no DATA shuffling for writes.
+    {
+        u8cs br_split = {}, pin_split = {};
+        DOGRefSplitPin(u->query, br_split, pin_split);
+        u8cs target = {};
+        if (u8csEmpty(pin_split)) u8csMv(target, u->query);
+        else                       u8csMv(target, br_split);
+        (void)SNIFFMaybeSwitchKeeper(target); (void)SNIFFMaybeSwitchGraf(target);
+    }
 
     sha1 tree_sha = {};
     ok64 tr = sniff_get_subtree_resolve_tree(u, &tree_sha);
@@ -1390,6 +1419,22 @@ ok64 SNIFFExec(cli *c) {
                         if (HEXu8sDrainSome(bin, hx) != OK) {
                             ret = SNIFFFAIL;
                         } else {
+                            //  Cross-branch rebase: load target's
+                            //  shard so graf/keeper see its history.
+                            //  The branch comes from the user's
+                            //  `?<branch>` query (stripped of any
+                            //  trailing-hashlet pin per
+                            //  dog/DOG.h §DOGRefSplitPin).
+                            u8cs br_split = {}, pin_split = {};
+                            DOGRefSplitPin(label_uri->query,
+                                           br_split, pin_split);
+                            u8cs t_br = {};
+                            if (u8csEmpty(pin_split))
+                                u8csMv(t_br, label_uri->query);
+                            else
+                                u8csMv(t_br, br_split);
+                            (void)SNIFFMaybeSwitchKeeper(t_br);
+                            (void)SNIFFMaybeSwitchGraf(t_br);
                             ret = POSTRebaseOntoSha(reporoot,
                                                     &target_tip);
                         }

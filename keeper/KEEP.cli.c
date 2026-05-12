@@ -114,7 +114,23 @@ static ok64 keepercli_inner(cli *c) {
         u8csMv(at.path, $path(c->repo));
     call(HOMEOpen, &h, &at, rw);
 
-    call(KEEPOpen, &h, rw);
+    //  Branch-aware open: when the first verb URI carries a `?branch`
+    //  query, that's the explicit target the caller wants keeper
+    //  pointed at — load it as the leaf (PAST = trunk → branch's
+    //  ancestors, DATA = branch shard).  Falls back to the `--at`
+    //  URI's cur_branch (wt-context, set by `be` from the wtlog) and
+    //  finally trunk.  URI query wins over `--at` so wire receives
+    //  (`keeper get file://...?fix2`) land in the target branch's
+    //  shard even when the wt is on a different cur.
+    //  Empty-but-valid slice: both ends point at the same byte so
+    //  the `$ok(branch)` sanity check in KEEPOpenBranch holds.
+    static u8c const _zero = 0;
+    u8cs branch = {&_zero, &_zero};
+    if (c->nuris > 0 && !u8csEmpty(c->uris[0].query))
+        u8csMv(branch, c->uris[0].query);
+    else if (u8bHasData(h.cur_branch))
+        u8csMv(branch, u8bDataC(h.cur_branch));
+    call(KEEPOpenBranch, &h, branch, rw);
 
     ok64 ret = KEEPExec(&KEEP, c);
 

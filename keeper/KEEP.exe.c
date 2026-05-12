@@ -71,15 +71,17 @@ static ok64 refs_print_cb(refcp r, void *ctx) {
 
 static ok64 keeper_status(keeper *k) {
     sane(k);
-    u32 nruns = DOGPupCount(k->puppies);
-    u32 npacks = (u32)kv32bDataLen(k->packs);
+    //  Show every loaded pack/idx across PastData — status is a
+    //  cross-branch overview, not a per-leaf write summary.
+    u32 nruns  = DOGPupCountAll(k->puppies);
+    u32 npacks = (u32)kv32bPastDataLen(k->packs);
     fprintf(stdout, "keeper: %u pack file(s), %u index run(s)\n",
             npacks, nruns);
     u64 total_pack = 0;
     {
-        kv32 const *db = (kv32 const *)kv32bDataHead(k->packs);
-        kv32 const *de = (kv32 const *)kv32bIdleHead(k->packs);
-        for (kv32 const *p = db; p < de; p++) {
+        kv32s packs_all = {};
+        kv32PastDataS(k->packs, packs_all);
+        for (kv32 const *p = packs_all[0]; p < packs_all[1]; p++) {
             u8bp slot = FILE_WANT_BUFS[p->val];
             if (slot && slot[0]) total_pack += (u64)u8bDataLen(slot);
         }
@@ -87,7 +89,7 @@ static ok64 keeper_status(keeper *k) {
     u64 total_idx = 0;
     for (u32 i = 0; i < nruns; i++) {
         u8cs raw = {NULL, NULL};
-        DOGPupData(raw, k->puppies, i);
+        DOGPupDataAll(raw, k->puppies, i);
         total_idx += (u64)(raw[1] - raw[0]);
     }
     fprintf(stdout, "  packs: %llu bytes\n", (unsigned long long)total_pack);

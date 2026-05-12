@@ -3,10 +3,12 @@
 #  the target branch without modifying the wt's other branches.
 #
 #  Verifies:
-#    * cross-branch POST (`be post -m msg ?./feat` from trunk wt)
+#    * cross-branch POST (`be post -m msg ?feat/` from trunk wt)
 #      creates a commit on feat with first-parent = trunk's tip,
 #      switches the wt's recorded branch to feat,
 #      leaves trunk's REFS tip unchanged.
+#      (Trailing slash is the "new branch" marker — see VERBS.md
+#      §"Ref kinds" / dog/DOG.h §DOGRefIsBranch.)
 #    * non-ff cross-branch POST refused (target on unrelated lineage).
 #
 #  Run: BIN=build-debug/bin sh sniff/test/cross-post.sh
@@ -74,7 +76,7 @@ note "trunk base = $TRUNK_BASE"
 #  the URI's #fragment.
 sleep 0.1
 echo "x feat" > x.txt
-sniff post "?feat" 'feat work' >/dev/null
+sniff post "?feat/" 'feat work' >/dev/null
 
 #  feat now has the new commit; trunk should NOT have advanced.
 TRUNK_REF=$(ref_tip "?")
@@ -118,7 +120,7 @@ printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .be/refs
 
 sleep 0.1
 echo "x v2" > x.txt
-if sniff post "?feat" 'should fail' 2>$TMP/cross.err; then
+if sniff post "?feat/" 'should fail' 2>$TMP/cross.err; then
     cat $TMP/cross.err
     fail "non-ff cross-branch POST should have been refused"
 fi

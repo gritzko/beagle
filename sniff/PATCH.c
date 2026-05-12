@@ -1316,8 +1316,41 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         fail(PATCHFAIL);
     }
     b8 cherry = (shape == PATCH_SHAPE_CHERRY);
-    a_dup(u8c, target_query, u->query);
-    a_dup(u8c, frag,         u->fragment);
+    a_dup(u8c, target_query_raw, u->query);
+    a_dup(u8c, frag,             u->fragment);
+
+    //  Absolutise the query slot up front (`?./fix` from cur=feature
+    //  → `feature/fix`) so the SNIFFMaybeSwitch* probes below see a
+    //  real shard dir name, not a relative anchor.  `tq_buf` outlives
+    //  every downstream read of `target_query` in this scope.
+    a_pad(u8, tq_buf, 260);
+    u8cs target_query = {};
+    call(absolutise_query, target_query, tq_buf, target_query_raw);
+
+    //  Located cherry-pick (`?br/sha`).  When the query has a
+    //  trailing 6..40-hex segment (per dog/DOG.h §DOGRefSplitPin),
+    //  treat the query as "branch as locator + sha as commit": load
+    //  the branch's packs into PAST/DATA, promote the shape to
+    //  CHERRY, and let `resolve_cherry` below decode the pin as
+    //  frag.  Same semantics as bare `#sha` (apply this commit's
+    //  diff onto cur) but with the locator hint that lets keeper
+    //  find the pack.
+    //  Track the branch locator so we can serialise the patch row
+    //  as `?<branch>/<sha>` (preserving the hint) instead of bare
+    //  `#<sha>`.  POSTPatchDefaults uses the locator to switch keeper
+    //  before KEEPGetExact on the picked sha.
+    u8cs cherry_locator = {};
+    if (!cherry && shape != PATCH_SHAPE_BAD &&
+        !u8csEmpty(target_query)) {
+        u8cs br_split = {}, pin_split = {};
+        DOGRefSplitPin(target_query, br_split, pin_split);
+        if (!u8csEmpty(pin_split)) {
+            (void)SNIFFMaybeSwitchKeeper(br_split); (void)SNIFFMaybeSwitchGraf(br_split);
+            cherry = YES;
+            u8csMv(frag, pin_split);
+            u8csMv(cherry_locator, br_split);
+        }
+    }
 
     //  Per VERBS.md §PATCH "Weave merge into dirty wt" — PATCH no
     //  longer refuses on dirty wt.  Dirty bytes are preserved by
@@ -1331,8 +1364,33 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     sha1 fork_sha = {};
 
     if (cherry) {
+        //  Promoted CHERRY-LOCATED case: pin may be a short hashlet
+        //  (6..39 hex).  Expand to a full 40-hex sha first so
+        //  `resolve_cherry` (which insists on 40 chars) can run.
+        if (u8csLen(frag) != 40) {
+            u64 hashlet = WHIFFHexHashlet60(frag);
+            Bu8 cbuf = {};
+            call(u8bAllocate, cbuf, 1UL << 16);
+            u8 ct = 0;
+            ok64 ko = KEEPGet(&KEEP, hashlet, $len(frag), cbuf, &ct);
+            if (ko != OK) { u8bFree(cbuf); return ko; }
+            u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+            sha1 full = {};
+            KEEPObjSha(&full, ct, body);
+            u8bFree(cbuf);
+            sha1hex hex40 = {};
+            sha1hexFromSha1(&hex40, &full);
+            a_rawc(hex_slice, hex40);
+            u8csMv(frag, hex_slice);
+        }
         call(resolve_cherry, &thr_sha, &fork_sha, frag);
     } else {
+        //  Cross-branch PATCH: ensure the target branch's packs are
+        //  loaded into keeper's PAST/DATA view so `resolve_target`,
+        //  graf's WEAVE history walks, and the LCA / blob fetches
+        //  below all resolve their objects.  No-op for tags, peer-
+        //  prefixed refs, or same-branch reads.
+        (void)SNIFFMaybeSwitchKeeper(target_query); (void)SNIFFMaybeSwitchGraf(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
         //  Frag interpretation depends on shape:
         //    PATCH_SHAPE_SQUASH  — no frag.
@@ -1472,30 +1530,68 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     a_rawc(tsha, thr_sha);
     HEXu8sFeedSome(thex_idle, tsha);
 
+    //  Compose the row's query slot.  Preserve the user-typed branch
+    //  locator in `?<branch>/<sha>` form for every query-bearing
+    //  shape so a subsequent POST can split via DOGRefSplitPin and
+    //  switch keeper/graf to the locator branch.
+    //  Locator rule (preserves the branch hint so POST can switch
+    //  keeper/graf to read the foster commit's body):
+    //    SQUASH (`?br`)        → no locator (foster header only;
+    //                            POST doesn't read the commit body).
+    //    CHERRY-bare (`#sha`)  → no locator.
+    //    CHERRY-located, MERGE, REBASE_ONE → locator preserved.
+    u8cs row_locator = {};
+    if (cherry && !u8csEmpty(cherry_locator)) {
+        u8csMv(row_locator, cherry_locator);
+    } else if (!cherry && !u8csEmpty(target_query) &&
+               shape != PATCH_SHAPE_SQUASH) {
+        u8cs br_split = {}, pin_split = {};
+        DOGRefSplitPin(target_query, br_split, pin_split);
+        if (!u8csEmpty(br_split)) u8csMv(row_locator, br_split);
+    } else if (!cherry && !u8csEmpty(target_query) &&
+               shape == PATCH_SHAPE_SQUASH) {
+        //  SQUASH may still carry an explicit pin (`?br/sha`): if so,
+        //  preserve the locator (route through CHERRY-located shape
+        //  on read), otherwise drop it (plain `?br` = bare squash).
+        u8cs br_split = {}, pin_split = {};
+        DOGRefSplitPin(target_query, br_split, pin_split);
+        if (!u8csEmpty(pin_split) && !u8csEmpty(br_split))
+            u8csMv(row_locator, br_split);
+    }
+    a_pad(u8, qbuf, 256);
+    if (!u8csEmpty(row_locator)) {
+        u8bFeed(qbuf, row_locator);
+        u8bFeed1(qbuf, '/');
+    }
+    u8bFeed(qbuf, u8bDataC(thex));
+
     uri urow = {};
     {
         a_dup(u8c, h, u8bDataC(thex));
-        if (shape == PATCH_SHAPE_CHERRY) {
-            //  fragment-only: `#<sha>`
+        a_dup(u8c, q, u8bData(qbuf));
+        if (cherry && u8csEmpty(row_locator)) {
+            //  Bare fragment-only cherry: `#<sha>`
             urow.fragment[0] = h[0];
             urow.fragment[1] = h[1];
+        } else if (cherry) {
+            //  Located cherry: `?<locator>/<sha>` in query, no frag.
+            urow.query[0] = q[0];
+            urow.query[1] = q[1];
         } else {
-            //  query-bearing shapes: sha goes into query.
-            urow.query[0] = h[0];
-            urow.query[1] = h[1];
+            //  SQUASH / MERGE / REBASE_ONE — query carries the
+            //  qbuf (`<branch>/<sha>` or just `<sha>`).
+            urow.query[0] = q[0];
+            urow.query[1] = q[1];
             if (shape == PATCH_SHAPE_MERGE) {
-                //  user-supplied msg → fragment.
                 urow.fragment[0] = u->fragment[0];
                 urow.fragment[1] = u->fragment[1];
             } else if (shape == PATCH_SHAPE_REBASE1) {
-                //  Empty-fragment marker: present-but-empty slice
-                //  (begin==end, both non-NULL).  Anchor it on the
-                //  hex buffer's tail so the pointer stays live for
-                //  the duration of the SNIFFAtAppendAt call.
-                urow.fragment[0] = h[1];
-                urow.fragment[1] = h[1];
+                //  present-but-empty fragment marker; anchor on
+                //  the qbuf tail so the pointer stays live.
+                urow.fragment[0] = q[1];
+                urow.fragment[1] = q[1];
             }
-            //  SQUASH: fragment slot left absent (NULL).
+            //  SQUASH: fragment slot left absent.
         }
     }
 

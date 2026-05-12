@@ -72,7 +72,7 @@ L2_REFS=$(ref_tip "?L1/L2")
 [ -n "$L2_REFS" ] || fail "?L1/L2 REFS missing after cascade"
 [ "$L2_REFS" != "$C_L2" ] \
     || fail "cascade did not advance ?L1/L2 (still at $C_L2)"
-L2_PARENT=$("$KEEPER" get ".#$L2_REFS" 2>/dev/null \
+L2_PARENT=$("$KEEPER" get "?L1/L2#$L2_REFS" 2>/dev/null \
               | awk '/^parent / { print $2; exit }')
 [ "$L2_PARENT" = "$C_L1c" ] \
     || fail "?L1/L2 rebased tip's parent is $L2_PARENT; want C_L1c=$C_L1c"

@@ -38,9 +38,11 @@ F2=$(head_hex)
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T1" ] || fail "wt should be at T1"
 
-# THE ACTION: cherry-pick F1 by sha (no branch).
-"$BE" patch "#$F1" >"$ETMP/cp.out" 2>"$ETMP/cp.err" \
-    || fail "be patch #F1 failed: $(cat $ETMP/cp.err)"
+# THE ACTION: cherry-pick F1 via the located form (`?feat/<sha>`).
+# Branch sharding (per dog/DOG.h §DOGRefSplitPin) makes the branch
+# the locator; bare `#<sha>` needs a flat object pool we don't have.
+"$BE" patch "?feat/$F1" >"$ETMP/cp.out" 2>"$ETMP/cp.err" \
+    || fail "be patch ?feat/F1 failed: $(cat $ETMP/cp.err)"
 
 grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.err" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/cp.err)"

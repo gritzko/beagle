@@ -186,6 +186,45 @@ ok64 DOGCanonURI(urip u);
 // writer goes through.
 ok64 DOGCanonURIFeed(u8bp out, urip u);
 
+// Split a branch ref like `feat/sub/abc1234` into branch + commit pin.
+// When the LAST '/'-separated segment is 6..40 hex chars, it's read
+// as a commit hashlet pinning the branch's lineage at that commit:
+//
+//     feat                  → branch = "feat",     pin = ""
+//     feat/sub              → branch = "feat/sub", pin = ""
+//     feat/abc1234          → branch = "feat",     pin = "abc1234"
+//     abc1234               → branch = "",         pin = "abc1234"
+//     stable/v1.2.3         → branch = "stable/v1.2.3", pin = ""  (v1.2.3
+//                              is non-hex; whole path stays as branch)
+//
+// Pin slices are 0 (no pin) or 6..40 bytes inclusive (a sha1 hashlet).
+// `query` may be the URI query body (no leading `?`) or a path-form
+// ref string — same rule.  Slices in (branch_out, pin_out) point
+// into `query`; valid as long as `query`'s storage lives.  Empty
+// `query` → both outputs empty.  Caller-owned outputs.
+void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out);
+
+// YES iff `s` is 6..40 bytes of [0-9a-fA-F].  Used by DOGRefSplitPin
+// to classify the trailing segment; exposed for callers that need
+// the same hashlet test (sniff URI normalisers, ref parsers).
+b8   DOGIsHashlet(u8cs s);
+
+// Classify a *new* ref name as branch (dir ref) vs tag (file ref).
+// For refs that already exist in REFS, callers must check the existing
+// kind first and override; this helper only fixes the default for a
+// fresh ref so PUT/POST know whether to materialise a dir shard.
+//
+// Rule (VERBS.md §"Ref kinds"):
+//     empty           → BRANCH (trunk)
+//     contains '/'    → BRANCH (`feat/fix`, `feat/`, `./sub`, `../sib`)
+//     is `.` or `..`  → BRANCH (bare relative anchor)
+//     otherwise       → TAG    (`v1.2.3`, `feat`)
+//
+// Returns YES for branch, NO for tag.  Trailing-slash callers strip
+// the slash before storing the canonical ref bytes; the slash on its
+// own is the signal, not part of the name.
+b8   DOGRefIsBranch(u8cs ref);
+
 // --- Puppies: stack of `<seqno>.<ext>` files ---
 //
 // A "puppy" is one git-pack-style file (mmap'd, contents are bytes
@@ -209,11 +248,35 @@ con ok64 DOGPUPFAIL = 0x3584197993ca495;
 // Scan `dir` for files matching `<10-RON64><ext>`, sort by seqno,
 // FILEMapRO each, push (seqno, fd) into `pups`.  Empty dir → OK with
 // pups left empty.  Caller must have allocated `pups` first.
+// Skips any seqno already present in `pups` (PAST or DATA) — opens
+// are idempotent, and re-opens of shared-ancestor dirs across branch
+// loads stay no-ops.
 ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext);
 
+// Cross-branch load: flip the current DATA into PAST (collapse the
+// previously-loaded branch into the read-only context), then open
+// `dir`'s pup files into the now-empty DATA, skipping seqnos already
+// present.  Mirror of "open first branch, then `pups[1]=pups[2]`,
+// then open the second" — the call sequence becomes one helper.
+// The active leaf becomes the dir just loaded; subsequent
+// KEEPPackOpen / DOGPupCreate writes target this new DATA.
+ok64 DOGPupOpenAside(kv32b pups, path8sc dir, u8csc ext);
+
 // Atomically write `bytes` to `<max(seqno)+1>.<ext>` (tmp+rename),
-// FILEMapRO, push (new_seqno, fd) onto `pups`.
+// FILEMapRO, push (new_seqno, fd) onto `pups`.  `max(seqno)` ranges
+// over `pups` DATA — callers with a PAST/DATA partition (see
+// abc/Bx.h §PastDataS, keeper/KEEP.h "Branch-aware object store")
+// must use `DOGPupCreateAt` with a globally-unique seqno instead,
+// or DATA-only max+1 may collide with a PAST entry's seqno.
 ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes);
+
+// Same as DOGPupCreate but the caller picks the seqno explicitly.
+// Refuses with DOGPUPFAIL when a live entry with the same seqno
+// already sits in DATA (caller should DOGPupThinTail first when
+// replacing the tail).  Used by keeper to keep `.keeper.idx` and
+// `.keeper` file-ids in lockstep across branches.
+ok64 DOGPupCreateAt(kv32b pups, path8s dir, u8cs ext, u8cs bytes,
+                    u32 seqno);
 
 // Unmap and unlink the youngest `m` puppies; trim `pups` by `m`.
 ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m);
@@ -221,13 +284,24 @@ ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m);
 // Unmap every puppy and free `pups` itself.
 ok64 DOGPupClose(kv32b pups);
 
-// Number of live puppies in the stack.
+// Number of live puppies in the stack — DATA only (the active leaf,
+// when callers use the PAST/DATA partition; see abc/Bx.h §PastDataS,
+// keeper/KEEP.h "Branch-aware object store").  For "every loaded
+// run" reads (cross-branch lookups, LSM merges), use `DOGPupCountAll`.
 fun u32 DOGPupCount(kv32b pups) { return (u32)kv32bDataLen(pups); }
+// Number of live puppies across PastData — every loaded run including
+// inherited / read-only PAST entries.  Used by cross-branch readers
+// (keeper's LSM lookups, graf's keeper-side idx scan, wire enumeration).
+fun u32 DOGPupCountAll(kv32b pups) { return (u32)kv32bPastDataLen(pups); }
 
 // Byte slice of the i-th puppy's contents (lookup via FILE_WANT_BUFS).
+// Indexes into DATA only — see `DOGPupCount` caveats.  For an
+// "every loaded run" indexer, use `DOGPupDataAll`.
 // Writes [data_start, data_end) into `out`; out becomes empty when
 // `i` is out-of-range or the file's mapping has been released.
 void DOGPupData(u8csp out, kv32b pups, u32 i);
+// Like DOGPupData but indexes into PastData — every loaded run.
+void DOGPupDataAll(u8csp out, kv32b pups, u32 i);
 
 // Fill `out` with one [data_start, data_end) slice per live puppy
 // (oldest → newest, matching the kv32b's seqno order from

@@ -68,7 +68,7 @@ int h${V}(int y) { return y * ${V}; }
 EOF
     cp "$TMP/v${V}.c" f.c
     touch -d "2026-04-20 12:0${V}:00" f.c
-    "$BE" post -m "v${V}" "?tags/v0.0.${V}" >/dev/null 2>&1
+    "$BE" post -m "v${V}" "?v0.0.${V}" >/dev/null 2>&1
     note "v0.0.${V} committed"
 done
 

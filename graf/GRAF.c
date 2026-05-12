@@ -62,9 +62,12 @@ static b8 graf_dir_exists(path8s path) {
 
 //  Walk one branch path component at a time, calling `cb` per prefix
 //  dir (trunk first → leaf last).  `cb` receives a freshly-built
-//  NUL-terminated path slice for each prefix dir.  Stops at first
-//  non-OK return.
-typedef ok64 (*graf_dir_cb)(graf *g, u8cs dir, void0p ctx);
+//  NUL-terminated path slice for each prefix dir plus an `is_leaf`
+//  flag (YES on the final call — trunk's call when `leaf` is empty,
+//  otherwise the deepest segment's call).  Mirrors keeper's
+//  `keep_walk_branch` so PAST/DATA boundary flipping happens in the
+//  same place.  Stops at first non-OK return.
+typedef ok64 (*graf_dir_cb)(graf *g, u8cs dir, b8 is_leaf, void0p ctx);
 
 static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
                               void0p ctx) {
@@ -76,15 +79,22 @@ static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
     call(PATHu8bAdd, gdir, rel);
     call(PATHu8bTerm, gdir);
 
-    //  Trunk first.
+    //  Trunk first.  Empty leaf → trunk is the leaf.
+    b8 trunk_is_leaf = u8csEmpty(leaf);
     {
         a_pad(u8, d, FILE_PATH_MAX_LEN);
         a_dup(u8c, gd, u8bDataC(gdir));
         call(PATHu8bFeed, d, gd);
-        call(PATHu8bTerm, d);
-        call(cb, g, $path(d), ctx);
+        call(cb, g, $path(d), trunk_is_leaf, ctx);
     }
-    if (u8csEmpty(leaf)) done;
+    if (trunk_is_leaf) done;
+
+    //  Pre-scan: where does the last segment start?  We need the cb
+    //  to know it's the leaf BEFORE the scan runs, so PAST/DATA can
+    //  flip first.
+    u8cp last_seg_start = leaf[0];
+    for (u8cp p = leaf[0]; p < leaf[1]; p++)
+        if (*p == '/' && p + 1 < leaf[1]) last_seg_start = p + 1;
 
     //  Each '/'-separated component, accumulating.
     a_pad(u8, d, FILE_PATH_MAX_LEN);
@@ -99,10 +109,14 @@ static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
                 u8cs seg = {seg_start, p};
                 call(PATHu8bPush, d, seg);
                 call(PATHu8bTerm, d);
-                call(cb, g, $path(d), ctx);
-                //  Drop the terminator byte we just appended so the
-                //  next PATHu8bPush rebuilds correctly.
-                ((u8 **)d)[2]--;
+                b8 is_leaf = (seg_start == last_seg_start);
+                call(cb, g, $path(d), is_leaf, ctx);
+                //  No `idle--`: PATHu8bPush writes its NUL via
+                //  PATHu8bTerm WITHOUT advancing idle, so DATA is
+                //  already at the correct end-of-segment.  Backing
+                //  idle up would eat one byte of the segment (bug
+                //  that surfaces on nested branches like
+                //  `feature/fix`, see graf/GRAF.c history).
             }
             seg_start = p + 1;
         }
@@ -111,9 +125,82 @@ static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
     done;
 }
 
-static ok64 graf_open_dir_cb(graf *g, u8cs dir, void0p ctx) {
+//  Filename → seqno for `<10-RON64>.graf.idx`.  Returns 0 on parse
+//  failure or non-graf-idx file.
+static u32 graf_filename_seqno(u8cs name) {
+    static char const EXT[] = GRAF_IDX_EXT;
+    static const size_t SEQ_W = 10;
+    size_t n = u8csLen(name);
+    if (n != SEQ_W + sizeof(EXT) - 1) return 0;
+    char const *tail = (char const *)name[0] + SEQ_W;
+    if (memcmp(tail, EXT, sizeof(EXT) - 1) != 0) return 0;
+    u8cs seq_s = {name[0], name[0] + SEQ_W};
+    ok64 v = 0;
+    if (RONutf8sDrain(&v, seq_s) != OK) return 0;
+    return (u32)v;
+}
+
+static ok64 graf_max_seqno_cb(void0p arg, path8p path) {
+    u32 *max = (u32 *)arg;
+    u8cs base = {};
+    PATHu8sBase(base, u8bDataC(path));
+    u32 sq = graf_filename_seqno(base);
+    if (sq > *max) *max = sq;
+    return OK;
+}
+
+//  Recursive scan over `<root>/.be/` for every `.graf.idx` file;
+//  returns the global max seqno (default 0 when none found).  Used
+//  by `graf_recompute_next_seqno` to keep fresh seqnos unique across
+//  sibling branch dirs that aren't loaded into the registry.
+static u32 graf_global_max_seqno(home *h) {
+    u32 max = 0;
+    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S);
+    (void)FILEDeepScanFiles(bedir, graf_max_seqno_cb, &max);
+    return max;
+}
+
+//  next_seqno = max(disk seqnos under `.be/`) + 1, then bumped above
+//  any loaded run as a defensive max.  Called by GRAFOpenBranch and
+//  GRAFSwitchBranch.
+static void graf_recompute_next_seqno(graf *g) {
+    u32 max = graf_global_max_seqno(g->h);
+    kv32s pups_all = {};
+    kv32PastDataS(g->puppies, pups_all);
+    for (kv32 const *p = pups_all[0]; p < pups_all[1]; p++)
+        if (p->key > max) max = p->key;
+    g->next_seqno = max + 1;
+}
+
+//  Create a new `.graf.idx` in `dir` with a globally-unique seqno;
+//  drop-in replacement for `DOGPupCreate(g->puppies, dir, ext, data)`
+//  that picks `seqno = g->next_seqno` and bumps the counter on
+//  success.  Mirrors keeper/KEEP.c §keep_pup_create_next.
+ok64 GRAFPupCreateNext(path8s dir, u8cs ext, u8cs data) {
+    sane($ok(dir));
+    graf *g = &GRAF;
+    u32 seqno = g->next_seqno;
+    call(DOGPupCreateAt, g->puppies, dir, ext, data, seqno);
+    if (seqno >= g->next_seqno) g->next_seqno = seqno + 1;
+    done;
+}
+
+static ok64 graf_open_dir_cb(graf *g, u8cs dir, b8 is_leaf, void0p ctx) {
     (void)ctx;
-    if (!graf_dir_exists(dir)) return GRAFNOPATH;
+    //  Branch shard dirs are materialised lazily — mirror
+    //  keep_open_dir_cb's "missing dir = no inherited shards"
+    //  policy.  REFS (sniff) is the source of truth on branch
+    //  existence; here we just accumulate what's on disk.
+    b8 exists = graf_dir_exists(dir);
+    //  Mirror keeper's leaf-flip: freeze inherited (trunk + ancestor)
+    //  graf-idx entries into PAST before scanning the leaf dir.  The
+    //  active leaf's entries then accumulate in DATA, where writes
+    //  (DOGPupCreate / DAGCompact) target.  Reads scan PastData via
+    //  GRAFRefreshView so cross-branch DAG walks see every loaded
+    //  run.  See KEEP.h §"Branch-aware object store".
+    if (is_leaf && kv32bDataLen(g->puppies) > 0)
+        ((kv32 **)g->puppies)[1] = (kv32 *)g->puppies[2];
+    if (!exists) return OK;
     a_cstr(ext, GRAF_IDX_EXT);
     return DOGPupOpenAll(g->puppies, dir, ext);
 }
@@ -121,10 +208,14 @@ static ok64 graf_open_dir_cb(graf *g, u8cs dir, void0p ctx) {
 void GRAFRefreshView(void) {
     graf *g = &GRAF;
     g->runs_n = 0;
-    u32 n = DOGPupCount(g->puppies);
+    //  Span PastData — inherited (parent / sibling-after-switch) runs
+    //  in PAST plus leaf-owned runs in DATA — so cross-branch DAG
+    //  reads (LCA, WEAVE history walks) see every loaded run.
+    //  Compaction (DAGCompact) operates on DATA only via DOGPupCount.
+    u32 n = DOGPupCountAll(g->puppies);
     for (u32 i = 0; i < n && g->runs_n < MSET_MAX_LEVELS; i++) {
         u8cs raw = {};
-        DOGPupData(raw, g->puppies, i);
+        DOGPupDataAll(raw, g->puppies, i);
         if (raw[0] == NULL) continue;
         wh128cp base = (wh128cp)raw[0];
         size_t bytes = (size_t)(raw[1] - raw[0]);
@@ -205,6 +296,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     }
 
     GRAFRefreshView();
+    graf_recompute_next_seqno(g);
 
     //  Worktree sharing: lock the LEAF dir (writes only land in the
     //  deepest dir).  For trunk leaf this is `<.be>/.lock`.
@@ -214,6 +306,8 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
         a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
         a_dup(u8c, leaf, u8bDataC(g->leaf_branch));
         call(graf_branch_dir, leafdir, h, leaf);
+        //  Lazy materialisation, see keeper/KEEP.c §KEEPOpenBranch.
+        call(FILEMakeDirP, $path(leafdir));
         a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
         a_dup(u8c, lds, u8bDataC(leafdir));
         call(PATHu8bFeed, lockpath, lds);
@@ -233,6 +327,122 @@ ok64 GRAFOpen(home *h, b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
     return GRAFOpenBranch(h, trunk, rw);
+}
+
+// --- GRAFSwitchBranch ------------------------------------------------
+//
+// Re-target graf from current leaf to `new_branch` without closing.
+// Slides current DATA (the active leaf's `.graf.idx` runs) into PAST
+// on `g->puppies`, walks segments past LCA(old, new) scanning each
+// new dir, refreshes `g->runs[]`, swaps the leaf flock.  Mirrors
+// keeper's `KEEPSwitchBranch`.  Use case: cross-branch ops (POST
+// promote-to-sibling, located-cherry PATCH from another branch)
+// need both branches' DAG runs visible — `SNIFFMaybeSwitchGraf`
+// pairs this with `KEEPSwitchBranch` at every cross-branch call site.
+
+static size_t graf_branch_lca_prefix(u8cs a, u8cs b) {
+    size_t na = u8csLen(a), nb = u8csLen(b);
+    size_t n = na < nb ? na : nb;
+    size_t matched = 0;
+    size_t last_slash = 0;
+    for (; matched < n; matched++) {
+        if (a[0][matched] != b[0][matched]) break;
+        if (a[0][matched] == '/') last_slash = matched + 1;
+    }
+    if (matched == n) {
+        if (na == nb) return na;
+        u8cp longer_head = (na > nb) ? a[0] : b[0];
+        if (longer_head[n] == '/') return n;
+    }
+    return last_slash;
+}
+
+ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
+    sane(h != NULL && $ok(new_branch));
+    graf *g = &GRAF;
+    if (!graf_is_open()) return GRAFFAIL;
+
+    //  Normalize the new branch.
+    a_pad(u8, nb, GRAF_LEAF_BRANCH_MAX);
+    call(DPATHBranchNormFeed, nb, new_branch);
+    a_dup(u8c, norm, u8bDataC(nb));
+
+    //  No-op when already on the requested branch.  `g->leaf_branch`
+    //  is normalized (trailing '/' for non-trunk) so direct compare
+    //  is sufficient if both sides match the convention.  Strip a
+    //  trailing slash on either side before compare.
+    a_dup(u8c, cur, u8bDataC(g->leaf_branch));
+    {
+        u8cs a = {}, b = {};
+        u8csMv(a, cur);
+        u8csMv(b, norm);
+        if (!u8csEmpty(a) && *(a[1] - 1) == '/') u8csShed1(a);
+        if (!u8csEmpty(b) && *(b[1] - 1) == '/') u8csShed1(b);
+        if (u8csLen(a) == u8csLen(b) &&
+            (u8csLen(a) == 0 ||
+             memcmp(a[0], b[0], u8csLen(a)) == 0))
+            done;
+    }
+
+    //  Strip trailing slash on cur for LCA comparison.
+    u8cs cur_for_lca = {};
+    u8csMv(cur_for_lca, cur);
+    if (!u8csEmpty(cur_for_lca) && *(cur_for_lca[1] - 1) == '/')
+        u8csShed1(cur_for_lca);
+    size_t lca = graf_branch_lca_prefix(cur_for_lca, norm);
+
+    //  1. Collapse old leaf's DATA into PAST.
+    if (kv32bDataLen(g->puppies) > 0)
+        ((kv32 **)g->puppies)[1] = (kv32 *)g->puppies[2];
+
+    //  2. Walk the new branch past LCA, scanning each new dir.
+    a_path(d);
+    {
+        a_dup(u8c, root_s, u8bDataC(h->root));
+        call(PATHu8bFeed, d, root_s);
+        a_cstr(rel, GRAF_DIR_S);
+        call(PATHu8bAdd, d, rel);
+        call(PATHu8bTerm, d);
+    }
+    if (u8csLen(norm) > 0) {
+        u8cp p = norm[0];
+        u8cp seg_start = p;
+        size_t off = 0;
+        while (p <= norm[1]) {
+            b8 at_end = (p == norm[1]);
+            if (at_end || *p == '/') {
+                if (p > seg_start) {
+                    u8cs seg = {seg_start, p};
+                    call(PATHu8bPush, d, seg);
+                    if (off >= lca) {
+                        if (!graf_dir_exists($path(d)))
+                            return GRAFNOPATH;
+                        a_cstr(ext, GRAF_IDX_EXT);
+                        call(DOGPupOpenAll, g->puppies, $path(d), ext);
+                    }
+                }
+                seg_start = p + 1;
+                off = (size_t)(p - norm[0]) + 1;
+            }
+            p++;
+        }
+    }
+
+    //  3. Refresh the typed runs[] view + global next_seqno.
+    GRAFRefreshView();
+    graf_recompute_next_seqno(g);
+
+    //  Lock stays on the original leaf: cross-branch graf access is
+    //  read-only context (writes still target the originally-opened
+    //  leaf).  Swapping the flock would create stray `.lock.graf`
+    //  files in sibling shard dirs that `be delete ?branch` can't
+    //  clean up via REFS tombstone alone.
+
+    //  5. Update leaf_branch.
+    u8bReset(g->leaf_branch);
+    call(PATHu8bTerm, g->leaf_branch);
+    if (!u8csEmpty(norm)) call(PATHu8bFeed, g->leaf_branch, norm);
+    done;
 }
 
 ok64 GRAFClose(void) {

@@ -43,7 +43,7 @@ R=$T/repo; mkdir -p "$R"; cd "$R"
 sniff init >/dev/null
 
 echo a1 > a.txt
-be post -m c1 '?tags/v1' >/dev/null
+be post -m c1 '?v1' >/dev/null
 
 echo b2 > b.txt
 be put b.txt >/dev/null
@@ -55,39 +55,39 @@ be post -m c3 >/dev/null
 
 echo b4 >> b.txt
 be put b.txt >/dev/null
-be post -m c4 '?tags/v4' >/dev/null
+be post -m c4 '?v4' >/dev/null
 
 # --- Case A: full branch log via tip tag (tags/v4 = c4) ----------
 CASE=A
-be 'log:?tags/v4#10' > "$T/A.out" 2>&1 || true
+be 'log:?v4#10' > "$T/A.out" 2>&1 || true
 want_lines "$T/A.out" 4
 want_grep  "$T/A.out" 'c4'
 want_grep  "$T/A.out" 'c1'
 
 # --- Case B: branch log truncated by #N --------------------------
 CASE=B
-be 'log:?tags/v4#2' > "$T/B.out" 2>&1 || true
+be 'log:?v4#2' > "$T/B.out" 2>&1 || true
 want_lines "$T/B.out" 2
 want_grep  "$T/B.out" 'c4'
 want_grep  "$T/B.out" 'c3'
 
 # --- Case C: file log of a.txt — only c1 + c3 touched it ---------
 CASE=C
-be 'log:./a.txt?tags/v4#10' > "$T/C.out" 2>&1 || true
+be 'log:./a.txt?v4#10' > "$T/C.out" 2>&1 || true
 want_lines "$T/C.out" 2
 want_grep  "$T/C.out" 'c3'
 want_grep  "$T/C.out" 'c1'
 
 # --- Case D: file log of b.txt — only c2 + c4 touched it ---------
 CASE=D
-be 'log:./b.txt?tags/v4#10' > "$T/D.out" 2>&1 || true
+be 'log:./b.txt?v4#10' > "$T/D.out" 2>&1 || true
 want_lines "$T/D.out" 2
 want_grep  "$T/D.out" 'c4'
 want_grep  "$T/D.out" 'c2'
 
 # --- Case E: file log truncated by #N ----------------------------
 CASE=E
-be 'log:./a.txt?tags/v4#1' > "$T/E.out" 2>&1 || true
+be 'log:./a.txt?v4#1' > "$T/E.out" 2>&1 || true
 want_lines "$T/E.out" 1
 want_grep  "$T/E.out" 'c3'
 

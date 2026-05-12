@@ -138,7 +138,7 @@ FIX1_NEW_TIP=$(ref_tip "?fix1")
 # 8. assert: C1''s single parent is T2 (NOT T1) — proves rebase
 #    happened (cur replayed onto trunk's new tip).
 # ------------------------------------------------------------------
-"$KEEPER" get ".#$FIX1_NEW_TIP" > "$LOGS/12.commit.out" \
+"$KEEPER" get "?fix1#$FIX1_NEW_TIP" > "$LOGS/12.commit.out" \
     2> "$LOGS/12.commit.err" \
     || { echo "keeper get .#$FIX1_NEW_TIP failed" >&2
          cat "$LOGS/12.commit.err" >&2; exit 1; }

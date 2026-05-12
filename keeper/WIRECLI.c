@@ -779,7 +779,7 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
         recorded++;
     }
 
-    fprintf(stdout, "keeper: fetched %u ref(s)\n", recorded);
+    fprintf(stderr, "keeper: fetched %u ref(s)\n", recorded);
     rv = OK;
 
 fa_close:

@@ -46,8 +46,9 @@ B1=$(head_hex)
 [ "$(head_hex)" = "$T1" ] || fail "wt should be at T1"
 
 # Cherry-pick B1.  T1 edited lib.c, B1 edited lib.c → merged.
-"$BE" patch "#$B1" >/dev/null 2>"$ETMP/cp.err" \
-    || fail "be patch #B1 failed: $(cat $ETMP/cp.err)"
+# Located form (`?bug/<sha>`) per dog/DOG.h §DOGRefSplitPin.
+"$BE" patch "?bug/$B1" >/dev/null 2>"$ETMP/cp.err" \
+    || fail "be patch ?bug/B1 failed: $(cat $ETMP/cp.err)"
 grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.err" \
     || fail "cherry-pick: expected 'patch merged lib.c'; got: $(cat $ETMP/cp.err)"
 

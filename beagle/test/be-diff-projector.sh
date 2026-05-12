@@ -63,14 +63,14 @@ hello world
 goodnight moon
 EOF
 echo 'one' > b.txt
-be post -m v1 '?tags/v1' >/dev/null
+be post -m v1 '?v1' >/dev/null
 
 cat > a.txt <<'EOF'
 hello world
 goodbye moon
 EOF
 echo 'one two' > b.txt
-be post -m v2 '?tags/v2' >/dev/null
+be post -m v2 '?v2' >/dev/null
 
 # wt drift on top of v2
 cat > a.txt <<'EOF'
@@ -102,7 +102,7 @@ want_all "$T/B.out" '^--- a/a\.txt$' '\+hello universe' \
 #  from=v1, to=v2 (cur).  a.txt: -goodnight / +goodbye.
 #  No 'universe' should appear (wt is excluded from this comparison).
 CASE=C
-be get 'diff:a.txt?tags/v1' > "$T/C.out" 2>&1 || true
+be get 'diff:a.txt?v1' > "$T/C.out" 2>&1 || true
 want_all "$T/C.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon'
 grep -q 'universe' "$T/C.out" && fail "C.out should NOT mention 'universe' (wt excluded)"
 
@@ -111,20 +111,20 @@ grep -q 'universe' "$T/C.out" && fail "C.out should NOT mention 'universe' (wt e
 #  so the line-based renderer emits `+one two` only (no paired `-old`
 #  — that's reconstructed only when a line has both INS and DEL spans).
 CASE=D
-be get 'diff:?tags/v1' > "$T/D.out" 2>&1 || true
+be get 'diff:?v1' > "$T/D.out" 2>&1 || true
 want_all "$T/D.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon' \
                     '^--- a/b\.txt$' '\+one two'
 grep -q 'universe' "$T/D.out" && fail "D.out should NOT mention 'universe'"
 
 # --- Case E: file ref-to-ref range — `diff:<path>?<from>#<to>` ------
 CASE=E
-be get 'diff:a.txt?tags/v1#tags/v2' > "$T/E.out" 2>&1 || true
+be get 'diff:a.txt?v1#v2' > "$T/E.out" 2>&1 || true
 want_all "$T/E.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon'
 grep -q 'universe' "$T/E.out" && fail "E.out should NOT mention 'universe'"
 
 # --- Case F: tree ref-to-ref range — `diff:?<from>#<to>` ------------
 CASE=F
-be get 'diff:?tags/v1#tags/v2' > "$T/F.out" 2>&1 || true
+be get 'diff:?v1#v2' > "$T/F.out" 2>&1 || true
 want_all "$T/F.out" '^--- a/a\.txt$' '\-goodnight moon' '\+goodbye moon' \
                     '^--- a/b\.txt$' '\+one two'
 grep -q 'universe' "$T/F.out" && fail "F.out should NOT mention 'universe'"
@@ -134,7 +134,7 @@ grep -q 'universe' "$T/F.out" && fail "F.out should NOT mention 'universe'"
 #  pipeline — sanity check that BE.cli.c doesn't mistake `diff:` for
 #  a search/view URI.
 CASE=G
-be 'diff:a.txt?tags/v1' > "$T/G.out" 2>&1 || true
+be 'diff:a.txt?v1' > "$T/G.out" 2>&1 || true
 want_all "$T/G.out" '^--- a/a\.txt$' '\-goodnight' '\+goodbye'
 
 # --- Case H: untracked files are excluded from `diff:` -------------

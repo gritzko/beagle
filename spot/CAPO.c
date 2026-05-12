@@ -1429,7 +1429,6 @@ static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
         a_pad(u8, d, FILE_PATH_MAX_LEN);
         a_dup(u8c, sd, u8bDataC(sdir));
         call(PATHu8bFeed, d, sd);
-        call(PATHu8bTerm, d);
         call(cb, s, $path(d), ctx);
     }
     if (u8csEmpty(leaf)) done;

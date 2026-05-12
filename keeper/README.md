@@ -86,6 +86,9 @@ Branch directories nest freely: `feature/fix1/` is a valid
 sub-branch of `feature/`.  File numbering (`NNNNN.keeper`,
 `NNNNN.idx`, …) is a fresh sequence per directory.
 
+Tags are leafs of the branch tree (i.e. tags are scoped to
+a branch!).
+
 Worktrees are separate checkouts on disk; each wt has a `.be`
 *file* (not a directory) naming the store plus the branch it is on:
 

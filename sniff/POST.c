@@ -32,6 +32,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/CLI.h"
+#include "dog/DOG.h"
 #include "dog/IGNO.h"
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
@@ -1267,6 +1268,44 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (cr == REFSNONE) return OK;     //  branch has no REFS tip — skip
     if (cr != OK) return cr;
 
+    //  Cross-branch visibility: the child's commits live in
+    //  `<.be>/<child_branch>/` shard, which wasn't loaded under cur.
+    //  Switch both keeper and graf to the child so GRAFLca,
+    //  GRAFRebase, and the rebase emit's KEEPGet calls see the
+    //  child_tip's body and ancestry.  Switch collapses cur's
+    //  DATA→PAST and walks the new tail; we don't restore cur on
+    //  the way out — persist writes REFS, then either the next
+    //  child gets switched-to (collapsing this one likewise into
+    //  PAST), or the cascade finishes and the keeper close handles
+    //  the rest.
+    //  Cross-branch visibility: child's commits live in `<.be>/<branch>/`,
+    //  not loaded under cur.  Switch keeper + graf to the descendant
+    //  so GRAFLca, GRAFRebase, and the rebase emit's KEEPGet calls see
+    //  the child_tip's body and ancestry.  cc->p was opened on cur's
+    //  leaf — close it before the switch so the swept-out DATA's
+    //  file_id can't collide with the new leaf's allocator; reopen on
+    //  the new leaf so emits land in `.be/<branch>/<NNNN>.keeper`.
+    //
+    //  TODO(cascade): pack reopen on the new leaf currently confuses
+    //  `keep_recompute_next_seqno` — the rebased commit body lands in
+    //  the pack but isn't reachable via `keeper get .#<sha>` afterward.
+    //  See test/branches/04-cascade.  Likely fix: have KEEPPackOpen on
+    //  a freshly-switched leaf use the PastData max+1 directly without
+    //  re-scanning `.be/*` on disk (which can see still-mmap'd packs
+    //  with the same seqno as the new pack's allocation).
+    if (cc->p != NULL) {
+        ok64 cl = KEEPPackClose(cc->k, cc->p);
+        if (cl != OK) return cl;
+        zerop(cc->p);
+    }
+    (void)SNIFFMaybeSwitchKeeper(branch);
+    (void)SNIFFMaybeSwitchGraf(branch);
+    if (cc->p != NULL) {
+        ok64 op = KEEPPackOpen(cc->k, cc->p);
+        if (op != OK) return op;
+        cc->p->strict_order = NO;
+    }
+
     //  Old fork point = LCA(parent_old_tip, child_tip).
     sha1 fork_old = {};
     (void)GRAFLca(&fork_old, parent_old_tip, &child_tip);
@@ -1603,6 +1642,16 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
             //  REFSBAD or other read error — surface.
             return tr;
         }
+    }
+
+    //  Cross-branch promote: load the target branch's packs so the
+    //  subsequent graf walks, KEEPGet calls, and POSTCommit pack
+    //  write all see (and land in) the right shard.  No-op when the
+    //  target dir doesn't exist on disk yet (CREATE_ON_MISS arm
+    //  mkdir's it below before any keeper write).
+    if (target_exists) {
+        (void)SNIFFMaybeSwitchKeeper(target_branch);
+        (void)SNIFFMaybeSwitchGraf(target_branch);
     }
 
     //  --- 4. Classify shape. ---
@@ -2050,11 +2099,38 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     sha1 pick = pent[idx].sha;
     u8   pshape = pent[idx].shape;
 
+    //  Located cherry-pick rows (`?<branch>/<sha>`) carry the branch
+    //  prefix in `pent[idx].locator`.  Switch keeper to that branch
+    //  long enough to read the picked commit's body, then switch
+    //  BACK so any subsequent POSTCommit pack write lands in cur's
+    //  shard, not the locator's.
+    a_pad(u8, saved_branch, 256);
+    b8 switched = NO;
+    if (!u8csEmpty(pent[idx].locator)) {
+        u8bFeed(saved_branch, u8bDataC(KEEP.leaf_branch));
+        //  KEEPOpenBranch normalises with a trailing '/'; strip it
+        //  so the round-trip via DPATHBranchNormFeed doesn't
+        //  re-add another.  Empty saved_branch (= trunk) stays
+        //  empty.
+        if (u8bDataLen(saved_branch) > 0 &&
+            *(u8bIdleHead(saved_branch) - 1) == '/')
+            ((u8 **)saved_branch)[2]--;
+        ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
+        (void)SNIFFMaybeSwitchGraf(pent[idx].locator);
+        switched = (so == OK);
+    }
+
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
 
     u8 ct = 0;
     ok64 ko = KEEPGetExact(&KEEP, &pick, cbuf, &ct);
+
+    if (switched) {
+        a_dup(u8c, sb, u8bData(saved_branch));
+        (void)KEEPSwitchBranch(KEEP.h, sb);
+        (void)GRAFSwitchBranch(GRAF.h, sb);
+    }
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
 
@@ -2138,13 +2214,36 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     }
 
     //  Cross-branch override: when the caller passes a non-empty
-    //  target_branch, the new commit lands on that branch instead
-    //  of the baseline-derived one.  brbuf carries the branch path
-    //  used downstream by both the REFS writer and the .be/wtlog post
-    //  row's query, so swapping it here is enough.
-    if ($ok(target_branch) && !u8csEmpty(target_branch)) {
+    //  branch-shaped target (DOGRefIsBranch=YES — has '/', is `.`/`..`,
+    //  or names an existing dir ref), the new commit lands on that
+    //  branch and keeper/graf swap shards.  Tag-shaped targets (single
+    //  segment, no slash) are pure labels per VERBS.md §POST: commit
+    //  lands on cur (brbuf unchanged), then a REFS row points the tag
+    //  at the new tip — no shard swap, no cur rewrite.  See
+    //  `dog/DOG.h §DOGRefIsBranch`.
+    //
+    //  A trailing slash on the target (`?feat/`) is the "new branch"
+    //  syntactic marker per VERBS.md §"Ref kinds": branch with no
+    //  hierarchy.  The slash itself is stripped before storage — the
+    //  canonical ref key is `?feat`, the slash was just the signal.
+    b8 target_is_branch = NO;
+    u8cs target_canon = {};
+    u8csMv(target_canon, target_branch);
+    if ($ok(target_canon) && !u8csEmpty(target_canon)) {
+        target_is_branch = DOGRefIsBranch(target_canon);
+        if (target_is_branch && *u8csLast(target_canon) == '/')
+            u8csShed1(target_canon);
+    }
+    if (target_is_branch) {
         u8bReset(brbuf);
-        u8bFeed(brbuf, target_branch);
+        u8bFeed(brbuf, target_canon);
+
+        //  Re-target keeper to the cross-branch destination so the
+        //  pack about to be written lands at `<root>/.be/<target>/
+        //  NNNN.keeper` (per KEEP.h §"Branch-aware object store").
+        //  No-op when there's no `<target>/` shard dir yet (the
+        //  CREATE_ON_MISS arm via POSTPromote mkdir's it first).
+        (void)SNIFFMaybeSwitchKeeper(target_canon); (void)SNIFFMaybeSwitchGraf(target_canon);
     }
     //  No baseline branch recovered AND no override → default to
     //  trunk (empty be-side query).  Locally trunk has no name; the
@@ -2728,6 +2827,23 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  CAS races (logged inside post_cascade_persist).
     if (casc.n > 0) (void)post_cascade_persist(&casc);
     if (casc.arena[0]) u8bFree(casc.arena);
+
+    //  14b. Tag label: when the caller passed a tag-shaped target
+    //  (single segment, no slash — see DOGRefIsBranch), the commit
+    //  landed on cur (above) and we now point the tag at the new
+    //  tip.  Tags are re-pointable freely — no FF/CAS gate.  Mirrors
+    //  POSTSetLabel (REFSAppendVerb with `post` verb).
+    if ($ok(target_branch) && !u8csEmpty(target_branch) &&
+        !target_is_branch) {
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_pad(u8, tagkey, 128);
+        u8bFeed1(tagkey, '?');
+        u8bFeed(tagkey, target_branch);
+        a_dup(u8c, tagref, u8bData(tagkey));
+        a_dup(u8c, val,    u8bDataC(out_hex));
+        ron60 vpost = SNIFFAtVerbPost();
+        (void)REFSAppendVerb($path(keepdir), vpost, tagref, val);
+    }
 
     //  15. Append `post` ULOG row with stamp ts; futimens written
     //      files so they become clean under the new stamp.  Canonical

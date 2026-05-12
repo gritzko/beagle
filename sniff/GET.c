@@ -37,6 +37,7 @@
 
 #include "AT.h"
 #include "SNIFF.h"
+#include "SUBS.h"
 
 typedef struct {
     keeper        *k;
@@ -55,6 +56,10 @@ typedef struct {
     //                   must not clobber the wt content here.
     u8cs           noop_cursor;
     u8cs           merges_cursor;
+    //  Submodule (`160000` gitlink) collector — one `<path>\t<hex>\n`
+    //  row per `WALK_KIND_SUB` entry seen during the target walk.
+    //  Drained by `get_drain_subs` after the parent's WRITE pass.
+    u8bp           subs_out;
 } get_ctx;
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
@@ -144,10 +149,27 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     (void)blob;  // lazy mode
     get_ctx *g = (get_ctx *)vctx;
 
-    //  Submodule (gitlink, mode 160000).  Sniff doesn't manage submodule
-    //  contents — git's own submodule machinery does.  Skip the entry;
-    //  no write, no mark.
-    if (kind == WALK_KIND_SUB) return WALKSKIP;
+    //  Submodule (gitlink, mode 160000).  Record `<path>\t<hex>\n` so
+    //  the post-walk drain (`get_drain_subs`) can mount each sub via
+    //  a recursive `be get`.  Materialise the mount-point dir now so
+    //  recursion has a place to chdir into.  No blob write, no stamp.
+    if (kind == WALK_KIND_SUB) {
+        if (g->subs_out && esha) {
+            a_path(mount);
+            if (SNIFFFullpath(mount, g->reporoot, path) == OK)
+                (void)FILEMakeDirP($path(mount));
+            (void)u8bFeed(g->subs_out, path);
+            (void)u8bFeed1(g->subs_out, '\t');
+            //  20-byte sha → 40-byte hex.
+            u8 hex[40];
+            u8s hex_s = {hex, hex + 40};
+            u8cs bin = {(u8c *)esha, (u8c *)esha + 20};
+            (void)HEXu8sFeedSome(hex_s, bin);
+            (void)u8bFeed(g->subs_out, ((u8cs){hex, hex + 40}));
+            (void)u8bFeed1(g->subs_out, '\n');
+        }
+        return WALKSKIP;
+    }
 
     //  Sniff-meta paths (.git*, .be*) sometimes leak into legacy
     //  trees but must never be materialised on disk — the live wtlog
@@ -590,6 +612,60 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     if (hexlen > 15) hexlen = 15;
     u64 hashlet = WHIFFHexHashlet60(hex);
 
+    //  Cross-branch GET pre-switch: when `source` names a different
+    //  branch than the wt's current baseline, slide keeper's DATA
+    //  (cur's packs) into PAST and load the target branch's packs
+    //  into DATA via `SNIFFMaybeSwitchKeeper`.  Has to happen BEFORE
+    //  the KEEPGet below — the target's tip commit lives in the
+    //  target branch's pack, which `KEEPOpenBranch(cur)` did not
+    //  register.  See KEEP.h §KEEPSwitchBranch.
+    {
+        u8cs t_branch = {};
+        if ($ok(source) && !u8csEmpty(source) &&
+            *source[0] == '?' && $len(source) != 41) {
+            t_branch[0] = $atp(source, 1);
+            t_branch[1] = source[1];
+        }
+        if (!u8csEmpty(t_branch)) {
+            //  Strip a trailing-hashlet pin off the branch path (per
+            //  dog/DOG.h §DOGRefSplitPin) before the switch — the
+            //  branch is the locator, the pin is the commit.  The
+            //  caller already resolved hex into `hex`, so we only
+            //  need the branch slice here.
+            u8cs br_split = {}, pin_split = {};
+            DOGRefSplitPin(t_branch, br_split, pin_split);
+            u8cs to_switch = {};
+            if (u8csEmpty(pin_split)) u8csMv(to_switch, t_branch);
+            else                      u8csMv(to_switch, br_split);
+            ok64 so = SNIFFMaybeSwitchKeeper(to_switch);
+            if (so != OK && so != KEEPOPEN) {
+                fprintf(stderr,
+                        "sniff: cannot switch keeper to ?%.*s: %s\n",
+                        (int)$len(to_switch),
+                        (char *)to_switch[0],
+                        ok64str(so));
+                fail(SNIFFFAIL);
+            }
+            (void)SNIFFMaybeSwitchGraf(to_switch);
+        } else if ($ok(source) && !u8csEmpty(source) &&
+                   *source[0] == '?' && $len(source) == 1) {
+            //  Bare `?` (trunk) — switch back to trunk-leaf view.
+            //  Pass an "empty but valid" slice so KEEPSwitchBranch's
+            //  `$ok(branch)` holds.
+            if (!u8csEmpty(u8bDataC(k->leaf_branch))) {
+                static u8c const _zero = 0;
+                u8cs empty = {(u8cp)&_zero, (u8cp)&_zero};
+                ok64 so = KEEPSwitchBranch(SNIFF.h, empty);
+                if (so != OK && so != KEEPOPEN) {
+                    fprintf(stderr,
+                            "sniff: cannot switch keeper to trunk: %s\n",
+                            ok64str(so));
+                    fail(SNIFFFAIL);
+                }
+            }
+        }
+    }
+
     Bu8 buf = {};
     call(u8bAllocate, buf, 1UL << 24);
     u8 otype = 0;
@@ -681,6 +757,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                         "— wt is dirty\n");
                 fail(SNIFFDRTY);
             }
+            //  KEEPSwitchBranch already ran at the top of this fn —
+            //  reads below operate on the post-switch view.
         }
     }
     //  --- end pre-flight gate ------------------------------------
@@ -762,10 +840,13 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  in lex order — `tools/v*`, `tools/w*` — those tail entries
     //  silently lost their `u8bFeed` and never reached the unlink
     //  drainer, leaving stale files on disk after checkout).
-    Bu8 noop = {}, unlinks = {}, merges = {};
+    Bu8 noop = {}, unlinks = {}, merges = {}, subs = {};
     call(u8bMap, noop,    1UL << 28);
     call(u8bMap, unlinks, 1UL << 28);
     call(u8bMap, merges,  1UL << 28);
+    //  Submodule (`160000`) collector — kept small; most trees have
+    //  O(10) gitlinks at most.  64 KB ≫ any realistic count.
+    call(u8bAllocate, subs, 1UL << 16);
     //  TODO: even on a fresh clone (`base_tree==NULL`) the overlap
     //  check still walks the target tree once to detect dirty wt
     //  files sitting at target-tree paths (the
@@ -779,7 +860,11 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     o = get_overlap_check(k, reporoot,
                           has_base_tree ? base_tree.data : NULL,
                           tree_sha.data, noop, unlinks, merges);
-    if (o != OK) { u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges); return o; }
+    if (o != OK) {
+        u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
+        u8bFree(subs);
+        return o;
+    }
 
     get_ctx ctx = {.k = k, .error = OK};
     u8csMv(ctx.reporoot, reporoot);
@@ -788,11 +873,13 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     ctx.noop_cursor[1]   = u8bIdleHead(noop);
     ctx.merges_cursor[0] = u8bDataHead(merges);
     ctx.merges_cursor[1] = u8bIdleHead(merges);
+    ctx.subs_out         = subs;
 
     o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
         u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
+        u8bFree(subs);
         return o;
     }
 
@@ -817,6 +904,48 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         (void)get_drain_unlinks(reporoot, ulist);
     }
     u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
+
+    //  Drain the submodule list.  `.gitmodules` is a regular blob in
+    //  the parent tree we just materialised, so we read it straight
+    //  off disk rather than chasing it through keeper.  Per-sub
+    //  failures are logged (inside SNIFFSubMount) but the overall GET
+    //  still completes — partial materialisation beats a hard refuse
+    //  here.
+    if (u8bDataLen(subs) > 0) {
+        a_path(gm_path);
+        u8cs gmrel = {(u8c *)".gitmodules", (u8c *)".gitmodules" + 11};
+        u8bp gm_map = NULL;
+        if (SNIFFFullpath(gm_path, reporoot, gmrel) == OK &&
+            FILEMapRO(&gm_map, $path(gm_path)) == OK && gm_map) {
+            u8cs gm_blob = {u8bDataHead(gm_map), u8bIdleHead(gm_map)};
+            a_dup(u8c, parent_root_s, u8bDataC(KEEP.h->root));
+            a$rg(argv0, 0);
+            a_dup(u8c, sub_scan, u8bData(subs));
+            for (;;) {
+                u8cs line = {};
+                if (u8csDrainLine(sub_scan, line) != OK) break;
+                if (u8csEmpty(line)) continue;
+                u8c const *tab = NULL;
+                $for(u8c, p, line) if (*p == '\t') { tab = p; break; }
+                if (!tab) continue;
+                u8cs path_s = {line[0], tab};
+                u8cs hex_s  = {tab + 1, line[1]};
+                if (u8csLen(hex_s) != 40) continue;
+                ok64 mo = SNIFFSubMount(reporoot, parent_root_s,
+                                        path_s, hex_s, gm_blob, argv0);
+                if (mo != OK)
+                    fprintf(stderr,
+                            "sniff: submodule %.*s mount failed\n",
+                            (int)$len(path_s), (char *)path_s[0]);
+            }
+            FILEUnMap(gm_map);
+        } else {
+            fprintf(stderr,
+                    "sniff: %u submodule(s) skipped — no .gitmodules in tree\n",
+                    (unsigned)(u8bDataLen(subs) / 2));
+        }
+    }
+    u8bFree(subs);
 
     //  Compose the `get` row URI via abc/URI.  Canonical at-log form:
     //  `?<branch>#<curhash>` — query carries the be-branch path

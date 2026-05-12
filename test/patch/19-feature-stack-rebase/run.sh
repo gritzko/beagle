@@ -89,7 +89,7 @@ FIXB=$(head_hex)
 [ "$(head_hex)" = "$T2" ] || fail "trunk should be at T2; head=$(head_hex)"
 
 sleep 0.02
-"$BE" patch "#$FIXA" >"$ETMP/cp.out" 2>"$ETMP/cp.err" \
+"$BE" patch "?feature/fix/$FIXA" >"$ETMP/cp.out" 2>"$ETMP/cp.err" \
     || fail "cherry-pick FixA failed: $(cat $ETMP/cp.err)"
 match "$CASE/10.lib.cp1.c" lib.c
 

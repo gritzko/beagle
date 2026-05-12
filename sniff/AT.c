@@ -230,9 +230,22 @@ ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
 //  slot wins for squash/merge/rebase-one shapes; fragment slot for
 //  cherry-pick.  `out` is left empty when neither slot has 40+ hex.
 static void at_patch_row_sha_hex(u8cs out, uricp u) {
-    if (u->query[0] != NULL && u8csLen(u->query) >= 40) {
-        $mv(out, u->query);
-        return;
+    if (u->query[0] != NULL) {
+        //  Located-cherry row: `?<branch>/<sha>` — split off the
+        //  trailing-hashlet via DOGRefSplitPin (path-form convention,
+        //  see dog/DOG.h).  Empty pin → query carries the sha alone
+        //  (the pre-locator shape: `?<sha>` from SQUASH and friends).
+        u8cs br_s = {}, pin_s = {};
+        u8cs q = {u->query[0], u->query[1]};
+        DOGRefSplitPin(q, br_s, pin_s);
+        if (!u8csEmpty(pin_s) && u8csLen(pin_s) >= 40) {
+            $mv(out, pin_s);
+            return;
+        }
+        if (u8csLen(u->query) >= 40) {
+            $mv(out, u->query);
+            return;
+        }
     }
     if (u->fragment[0] != NULL && u8csLen(u->fragment) >= 40) {
         $mv(out, u->fragment);
@@ -242,15 +255,40 @@ static void at_patch_row_sha_hex(u8cs out, uricp u) {
     out[1] = NULL;
 }
 
+//  Locator branch from a patch row's URI (only present for located-
+//  cherry shape `?<branch>/<sha>`).  Returns the `<branch>` slice
+//  (slices into `u->query`); empty slice when the row carries no
+//  locator (bare cherry `#<sha>` or sha-only query).  Used by POST
+//  to switch keeper before reading the picked commit body.
+static void at_patch_row_locator(u8cs out, uricp u) {
+    out[0] = NULL; out[1] = NULL;
+    if (u->query[0] == NULL) return;
+    u8cs br_s = {}, pin_s = {};
+    u8cs q = {u->query[0], u->query[1]};
+    DOGRefSplitPin(q, br_s, pin_s);
+    if (!u8csEmpty(pin_s) && !u8csEmpty(br_s)) $mv(out, br_s);
+}
+
 //  Classify a patch row's URI into one of the four PATCH_SHAPE_*
 //  values.  Mirrors PATCHShape() in sniff/PATCH.c but lives here
-//  to keep AT.c self-contained (PATCH.h would otherwise leak via
-//  AT.h).  Stays in lock-step with sniff/PATCH.c by convention.
+//  to keep AT.c self-contained.
+//
+//  A `?<branch>/<sha>` query (located form, see dog/DOG.h
+//  §DOGRefSplitPin) reads as CHERRY-with-locator: POST treats it
+//  like a single-commit pick (msg lookup, `picked:` trailer).  The
+//  bare-sha query `?<sha>` (locator empty) stays SQUASH.
 static u8 at_patch_row_shape(uricp u) {
     b8 has_q = (u->query[0]    != NULL);
     b8 has_f = (u->fragment[0] != NULL);
     b8 frag_empty = has_f && u8csEmpty(u->fragment);
-    if ( has_q && !has_f)               return 1;  // SQUASH
+    if (has_q && !has_f) {
+        u8cs br_s = {}, pin_s = {};
+        u8cs q = {u->query[0], u->query[1]};
+        DOGRefSplitPin(q, br_s, pin_s);
+        //  Located cherry: branch + hashlet pin.
+        if (!u8csEmpty(pin_s) && !u8csEmpty(br_s)) return 2; // CHERRY
+        return 1;                                            // SQUASH
+    }
     if (!has_q &&  has_f && !frag_empty) return 2; // CHERRY
     if ( has_q &&  has_f && !frag_empty) return 3; // MERGE
     if ( has_q &&  has_f &&  frag_empty) return 4; // REBASE1
@@ -328,6 +366,8 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
             e->msg[0] = NULL;
             e->msg[1] = NULL;
         }
+        //  Capture the locator branch (only set for located cherry).
+        at_patch_row_locator(e->locator, &rec.uri);
         (*n_out)++;
     }
     done;
@@ -601,10 +641,17 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
     //  its contents.  FILESKIP prunes the recursion so none of its
     //  files get checked.  Catches both git-submodule shapes (`.git`
     //  dir with HEAD/, or `.git` file containing `gitdir: ...`).
+    //  Also catches beagle's own sub-mount shape (a regular `.be`
+    //  *file* at the subdir's root — secondary-wt anchor written by
+    //  GET's submodule materialiser, see MODULES.plan.md).
     if (fs.kind == FILE_KIND_DIR) {
         a_path(probe, full, ((u8cs)u8slit(".git")));
         filestat git_fs = {};
         if (FILELStat(&git_fs, $path(probe)) == OK) return FILESKIP;
+        a_path(beprobe, full, ((u8cs)u8slit(".be")));
+        filestat be_fs = {};
+        if (FILELStat(&be_fs, $path(beprobe)) == OK &&
+            be_fs.kind == FILE_KIND_REG) return FILESKIP;
         return OK;
     }
 

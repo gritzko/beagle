@@ -35,6 +35,7 @@ set(_BE_WILL_FAIL_CASES
 set(_BE_NEEDS_SSH_CASES
     "be-post-05-rebase-on-remote"
     "be-post-06-fetch-incremental"
+    "be-get-05-submodule-from-ssh"
 )
 
 foreach(_run ${_be_case_runs})

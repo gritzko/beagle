@@ -15,12 +15,12 @@ run_diff() {
     mkdir -p "$_sub"; cd "$_sub"
     cp "$_oldf" f.c
     "$BE" put  f.c                  >/dev/null
-    "$BE" post -m v1 '?tags/v1'     >/dev/null
+    "$BE" post -m v1 '?v1'          >/dev/null
     OLD_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
     sleep 0.02
     cp "$_newf" f.c
     "$BE" put  f.c                  >/dev/null
-    "$BE" post -m v2 '?tags/v2'     >/dev/null
+    "$BE" post -m v2 '?v2'          >/dev/null
     NEW_SHA=$(grep -oE '#[0-9a-f]{40}' .be/wtlog | tail -1 | tr -d '#')
     OUT=$("$BE" "diff:f.c?${OLD_SHA}#${NEW_SHA}" 2>&1 \
             | sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g')

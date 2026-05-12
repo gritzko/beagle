@@ -102,7 +102,18 @@ static ok64 sniffcli_inner(cli *c) {
     b8 needs_graf = !u8csEq(c->verb, v_get) && !u8csEq(c->verb, v_checkout)
                  && (rw || u8csEq(c->verb, v_post) || u8csEq(c->verb, v_commit)
                         || u8csEq(c->verb, v_patch));
-    ok64 go = needs_graf ? GRAFOpen(&h, rw) : NONE;
+    //  Branch-aware graf open mirrors keeper: per-branch shard
+    //  dirs (`.be/<branch>/<seqno>.graf.idx`).  Cross-branch DAG
+    //  walks switch via `SNIFFMaybeSwitchGraf` in each verb.
+    a_pad(u8, gbr_buf, 256);
+    if (needs_graf) {
+        ron60 bts = 0, bverb = 0;
+        uri bu = {};
+        if (SNIFFAtCurTip(&bts, &bverb, &bu) == OK)
+            u8bFeed(gbr_buf, bu.query);
+    }
+    a_dup(u8c, gbranch, u8bData(gbr_buf));
+    ok64 go = needs_graf ? GRAFOpenBranch(&h, gbranch, rw) : NONE;
 
     ok64 ret = SNIFFExec(c);
 

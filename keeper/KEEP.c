@@ -93,18 +93,73 @@ static ok64 keep_scan_branch_dir(keeper *k, u8csc keepdir) {
     done;
 }
 
-// Update k->next_seqno = max(any seqno in packs ∪ puppies) + 1.
-// Default 1 if both registries are empty.
+//  Filename → seqno.  Returns 0 on parse failure or non-keeper file.
+//  Accepts `<10-RON64>.keeper` and `<10-RON64>.keeper.idx`.
+static u32 keep_filename_seqno(u8cs name) {
+    static char const KEXT[]  = ".keeper";
+    static char const IEXT[]  = ".keeper.idx";
+    static const size_t SEQ_W = 10;
+    size_t n = u8csLen(name);
+    if (n != SEQ_W + sizeof(KEXT) - 1 &&
+        n != SEQ_W + sizeof(IEXT) - 1) return 0;
+    char const *tail = (char const *)name[0] + SEQ_W;
+    if (memcmp(tail, KEXT, sizeof(KEXT) - 1) == 0 &&
+        n == SEQ_W + sizeof(KEXT) - 1) {
+        /* OK */
+    } else if (memcmp(tail, IEXT, sizeof(IEXT) - 1) == 0 &&
+               n == SEQ_W + sizeof(IEXT) - 1) {
+        /* OK */
+    } else {
+        return 0;
+    }
+    u8cs seq_s = {name[0], name[0] + SEQ_W};
+    ok64 v = 0;
+    if (RONutf8sDrain(&v, seq_s) != OK) return 0;
+    return (u32)v;
+}
+
+//  Path-callback: track max seqno across every `.keeper` / `.keeper.idx`
+//  filename under `<root>/.be/` (recursive).  Ctx is a `u32 *max`.
+static ok64 keep_max_seqno_cb(void0p arg, path8p path) {
+    u32 *max = (u32 *)arg;
+    u8cs base = {};
+    PATHu8sBase(base, u8bDataC(path));
+    u32 sq = keep_filename_seqno(base);
+    if (sq > *max) *max = sq;
+    return OK;
+}
+
+//  Recursively scan `<root>/.be/` for every `.keeper` / `.keeper.idx`
+//  file and return the global max seqno (default 0 when none found).
+//  Used by `keep_recompute_next_seqno` to keep fresh seqnos unique
+//  across sibling branches that are NOT loaded into the registry
+//  (only trunk → leaf is loaded; siblings stay on disk).  Cheap:
+//  one recursive dir-listing pass at open time, no file mmaps.
+static u32 keep_global_max_seqno(home *h) {
+    u32 max = 0;
+    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S);
+    (void)FILEDeepScanFiles(bedir, keep_max_seqno_cb, &max);
+    return max;
+}
+
+// Update k->next_seqno = max(any seqno on disk under `.be/`) + 1.
+// Default 1 when no pack/idx files exist anywhere.  Scans the whole
+// `.be/` tree on disk — not just loaded PAST+DATA — so sibling
+// branches' seqnos (never loaded into the registry) still don't
+// collide with a freshly-created leaf pack.
 static void keep_recompute_next_seqno(keeper *k) {
-    k->next_seqno = 1;
-    kv32 const *db = (kv32 const *)kv32bDataHead(k->packs);
-    kv32 const *de = (kv32 const *)kv32bIdleHead(k->packs);
-    for (kv32 const *p = db; p < de; p++)
-        if (p->key >= k->next_seqno) k->next_seqno = p->key + 1;
-    db = (kv32 const *)kv32bDataHead(k->puppies);
-    de = (kv32 const *)kv32bIdleHead(k->puppies);
-    for (kv32 const *p = db; p < de; p++)
-        if (p->key >= k->next_seqno) k->next_seqno = p->key + 1;
+    u32 max = keep_global_max_seqno(k->h);
+    //  Defensive: in case PAST/DATA contains a seqno that's no longer
+    //  on disk (registry races, edge cases), take the larger.
+    kv32s packs_all = {};
+    kv32PastDataS(k->packs, packs_all);
+    for (kv32 const *p = packs_all[0]; p < packs_all[1]; p++)
+        if (p->key > max) max = p->key;
+    kv32s pups_all = {};
+    kv32PastDataS(k->puppies, pups_all);
+    for (kv32 const *p = pups_all[0]; p < pups_all[1]; p++)
+        if (p->key > max) max = p->key;
+    k->next_seqno = max + 1;
 }
 
 // Largest seqno currently in the packs registry, or 0 if empty.  Used
@@ -123,12 +178,15 @@ static u32 keep_packs_max_seqno(keeper const *k) {
 
 //  Linear-scan the keeper-level pack registry for the (seqno=file_id)
 //  entry; return the mmap'd buffer via FILE_WANT_BUFS[fd], or NULL
-//  when not present or the slot has been released.
+//  when not present or the slot has been released.  Scans both PAST
+//  (parent / read-only pack registrations from trunk → … → ancestor)
+//  and DATA (the active leaf branch) — cross-branch object resolution
+//  needs visibility into every loaded pack.
 static u8bp keep_pack_buf(keeper const *k, u32 file_id) {
     if (file_id == 0) return NULL;
-    kv32 const *db = (kv32 const *)kv32bDataHead(k->packs);
-    kv32 const *de = (kv32 const *)kv32bIdleHead(k->packs);
-    for (kv32 const *p = db; p < de; p++) {
+    kv32s all = {};
+    kv32PastDataS(k->packs, all);
+    for (kv32 const *p = all[0]; p < all[1]; p++) {
         if (p->key != file_id) continue;
         u8bp slot = FILE_WANT_BUFS[p->val];
         if (!slot || !slot[0]) return NULL;
@@ -185,12 +243,49 @@ static void keep_idx_drop(keeper *k, u32 seqno) {
 }
 
 //  Read the i-th index run as a wh128 slice (zero-copy view into
-//  FILE_WANT_BUFS via the puppy's fd).  Output via slice param.
+//  FILE_WANT_BUFS via the puppy's fd).  DATA only — the leaf branch's
+//  runs.  Used by `KEEPCompact` (which by spec only ever merges /
+//  thins leaf-owned runs; see KEEP.h §"Branch-aware object store").
 fun void keep_run_at(wh128csp out, keeper const *k, u32 i) {
     u8cs raw = {NULL, NULL};
     DOGPupData(raw, k->puppies, i);
     out[0] = (wh128cp)raw[0];
     out[1] = (wh128cp)raw[1];
+}
+
+//  Like `keep_run_at` but indexes into PastData — every loaded idx
+//  run including the inherited parent-dir runs.  Used by every
+//  cross-branch read path (KEEPLookup, KEEPGetExact).  Returns an
+//  empty slice when `i` is out-of-range or the slot was released.
+fun void keep_run_at_all(wh128csp out, keeper const *k, u32 i) {
+    out[0] = NULL; out[1] = NULL;
+    kv32s pups_all = {};
+    kv32PastDataS(k->puppies, pups_all);
+    size_t n = (size_t)(pups_all[1] - pups_all[0]);
+    if (i >= n) return;
+    u32 fd = pups_all[0][i].val;
+    u8bp slot = FILE_WANT_BUFS[fd];
+    if (!slot || !slot[0]) return;
+    out[0] = (wh128cp)slot[0];
+    out[1] = (wh128cp)slot[2];
+}
+
+fun u32 keep_run_count_all(keeper const *k) {
+    return (u32)kv32bPastDataLen(k->puppies);
+}
+
+//  Create a fresh idx run in the leaf dir using a globally-unique
+//  seqno (`k->next_seqno`), then advance `next_seqno` on success.
+//  Centralises the "DOGPupCreate, but globally unique" pattern that
+//  every keeper-side idx publisher needs after the PAST/DATA
+//  partition (DOGPupCreate's default max(DATA)+1 only spans the leaf).
+static ok64 keep_pup_create_next(keeper *k, path8s dir, u8cs ext,
+                                 u8cs data) {
+    sane(k && $ok(dir));
+    u32 seqno = k->next_seqno;
+    call(DOGPupCreateAt, k->puppies, dir, ext, data, seqno);
+    if (seqno >= k->next_seqno) k->next_seqno = seqno + 1;
+    done;
 }
 
 // --- Singleton ---
@@ -217,21 +312,35 @@ static b8 keep_dir_exists(path8s path) {
 
 //  Walk one branch path component at a time, calling `dir_cb` for
 //  each prefix dir (trunk first).  `dir_cb` receives a freshly-built
-//  path8 slice (NUL-terminated) for each prefix dir along trunk → leaf.
+//  path8 slice (NUL-terminated) for each prefix dir along trunk → leaf
+//  plus an `is_leaf` flag — YES on the last call (trunk's call when
+//  `leaf` is empty, otherwise the deepest segment's call).  Callbacks
+//  use the flag to flip a PAST/DATA boundary on the active branch
+//  registries before scanning the owned leaf dir.
 //  Stops on first non-OK from `dir_cb`.
-typedef ok64 (*keep_dir_cb)(keeper *k, u8cs dir, void0p ctx);
+typedef ok64 (*keep_dir_cb)(keeper *k, u8cs dir, b8 is_leaf, void0p ctx);
 
 static ok64 keep_walk_branch(keeper *k, u8cs leaf, keep_dir_cb cb, void0p ctx) {
     sane(k && cb);
     a_path(kdir, u8bDataC(k->h->root), KEEP_DIR_S);
-    //  Trunk first.
+    //  Trunk first.  Empty `leaf` means trunk IS the leaf.
+    b8 trunk_is_leaf = u8csEmpty(leaf);
     {
         a_path(d);
         call(PATHu8bDup, d, $path(kdir));
-        call(cb, k, $path(d), ctx);
+        call(cb, k, $path(d), trunk_is_leaf, ctx);
     }
+    if (trunk_is_leaf) done;
+
+    //  Identify where the last segment begins; we need the cb to know
+    //  it's looking at the leaf BEFORE the scan runs (so it can flip
+    //  its PAST/DATA boundary first).  We scan once to find the last
+    //  '/'+1 offset, then the main loop checks against it.
+    u8cp last_seg_start = leaf[0];
+    for (u8cp p = leaf[0]; p < leaf[1]; p++)
+        if (*p == '/' && p + 1 < leaf[1]) last_seg_start = p + 1;
+
     //  Each '/'-separated leaf component, accumulating.
-    if (u8csEmpty(leaf)) done;
     a_path(d);
     call(PATHu8bDup, d, $path(kdir));
     u8cp p = leaf[0];
@@ -242,7 +351,8 @@ static ok64 keep_walk_branch(keeper *k, u8cs leaf, keep_dir_cb cb, void0p ctx) {
             if (p > seg_start) {
                 u8cs seg = {seg_start, p};
                 call(PATHu8bPush, d, seg);
-                call(cb, k, $path(d), ctx);
+                b8 is_leaf = (seg_start == last_seg_start);
+                call(cb, k, $path(d), is_leaf, ctx);
             }
             seg_start = p + 1;
         }
@@ -251,9 +361,31 @@ static ok64 keep_walk_branch(keeper *k, u8cs leaf, keep_dir_cb cb, void0p ctx) {
     done;
 }
 
-static ok64 keep_open_dir_cb(keeper *k, u8cs dir, void0p ctx) {
+static ok64 keep_open_dir_cb(keeper *k, u8cs dir, b8 is_leaf, void0p ctx) {
     (void)ctx;
-    if (!keep_dir_exists(dir)) return KEEPNONE;
+    //  Branch shard dirs are materialised lazily: a branch may be
+    //  created (REFS row written) before any commit shards land in
+    //  its own dir.  Treat a missing ancestor/leaf dir as "no shards
+    //  inherited from here" — REFS at the sniff layer is the source
+    //  of truth on branch existence.  Writes (KEEPPackOpen) mkdir
+    //  the leaf on demand.
+    b8 exists = keep_dir_exists(dir);
+    //  About to scan the leaf dir: freeze the parents' DATA (everything
+    //  accumulated so far for trunk + intermediate ancestor dirs) into
+    //  PAST on both `packs` and `puppies`.  Writes target the leaf
+    //  (`KEEPPackOpen` picks `file_id` from `next_seqno`; KEEPCompact
+    //  iterates DATA-only via `kv32bDataLen(k->puppies)`).  Reads use
+    //  `kv32PastDataS` so cross-branch resolution stays whole.
+    //  Trunk-only branches skip the flip — DATA = trunk entries,
+    //  PAST stays empty.  See KEEP.h §"Branch-aware object store" and
+    //  abc/Bx.h §PastDataS.
+    if (is_leaf) {
+        if (kv32bDataLen(k->packs) > 0)
+            ((kv32 **)k->packs)[1] = (kv32 *)k->packs[2];
+        if (kv32bDataLen(k->puppies) > 0)
+            ((kv32 **)k->puppies)[1] = (kv32 *)k->puppies[2];
+    }
+    if (!exists) return OK;
     return keep_scan_branch_dir(k, dir);
 }
 
@@ -338,6 +470,9 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
         a_path(leafdir);
         a_dup(u8c, leaf, u8bDataC(k->leaf_branch));
         call(keep_branch_dir, leafdir, h, leaf);
+        //  Lazy materialisation: branches "created" via REFS may not
+        //  have a shard dir on disk yet.  mkdir -p before lock open.
+        call(FILEMakeDirP, $path(leafdir));
         a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
         u8bFeed(lockpath, $path(leafdir));
         a_cstr(lockrel, "/.lock");
@@ -362,6 +497,137 @@ ok64 KEEPOpen(home *h, b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
     return KEEPOpenBranch(h, trunk, rw);
+}
+
+// --- KEEPSwitchBranch ------------------------------------------------
+//
+// Re-target keeper from current leaf to `new_branch`.  See KEEP.h.
+// Pseudocode:
+//   1. Normalize new_branch.
+//   2. Compute LCA-prefix length of (old_leaf, new_branch).
+//   3. Flip DATA→PAST on both `packs` and `puppies` (the old leaf's
+//      entries become part of the read-only context).
+//   4. For each '/'-separated segment of new_branch past the LCA,
+//      keep_scan_branch_dir into the new leaf dir.  On the LAST
+//      segment, this is the new DATA fill (no further flip needed —
+//      DATA is already empty after step 3).
+//   5. Recompute next_seqno across PastData ∪ PastData.
+//   6. In rw mode, swap the flock: release the old leaf's `.lock`,
+//      take an exclusive lock on the new leaf's `.lock`.
+//   7. Update k->leaf_branch.
+
+//  Longest shared '/'-bounded prefix of `a` and `b`, in bytes.
+//  Returns the offset at which they first differ at a segment
+//  boundary; the slice [0, n) of either name covers ancestors
+//  already loaded as PAST.  Empty bytes for the trunk-only case.
+//  Examples:
+//    ("feat",  "other")         → 0   (no shared segment)
+//    ("feat",  "feat/sub")      → 5   ("feat" is an ancestor of
+//                                       feat/sub; trailing '/' aware)
+//    ("feat/sub1", "feat/sub2") → 5   ("feat/" is shared)
+//    ("feat/sub", "feat/sub")   → 8   (identical)
+static size_t keep_branch_lca_prefix(u8cs a, u8cs b) {
+    size_t na = u8csLen(a), nb = u8csLen(b);
+    size_t n = na < nb ? na : nb;
+    size_t matched = 0;        // count of bytes that matched bytewise
+    size_t last_slash = 0;     // boundary at start = trunk-only LCA
+    for (; matched < n; matched++) {
+        if (a[0][matched] != b[0][matched]) break;
+        if (a[0][matched] == '/') last_slash = matched + 1;
+    }
+    //  Whole-string match: the shorter is an exact ancestor of the
+    //  longer iff matched == min(na, nb) AND either na == nb OR the
+    //  next byte in the longer is '/'.
+    if (matched == n) {
+        if (na == nb) return na;
+        u8cp longer_head = (na > nb) ? a[0] : b[0];
+        if (longer_head[n] == '/') return n;
+    }
+    return last_slash;
+}
+
+ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
+    sane(h != NULL && $ok(new_branch));
+    keeper *k = &KEEP;
+    if (!keep_is_open()) return KEEPFAIL;
+
+    //  Normalize.
+    a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
+    call(DPATHBranchNormFeed, nb, new_branch);
+    a_dup(u8c, norm, u8bDataC(nb));
+
+    //  No-op when already on the requested branch.
+    a_dup(u8c, cur, u8bDataC(k->leaf_branch));
+    if (u8csLen(cur) == u8csLen(norm) &&
+        (u8csLen(norm) == 0 ||
+         memcmp(cur[0], norm[0], u8csLen(norm)) == 0))
+        done;
+
+    //  LCA: bytes of `norm` already covered by k->packs PAST (and
+    //  by the old leaf's DATA, which we're about to PAST).
+    size_t lca = keep_branch_lca_prefix(cur, norm);
+
+    //  1. Collapse old leaf's DATA into PAST on both registries.
+    if (kv32bDataLen(k->packs) > 0)
+        ((kv32 **)k->packs)[1] = (kv32 *)k->packs[2];
+    if (kv32bDataLen(k->puppies) > 0)
+        ((kv32 **)k->puppies)[1] = (kv32 *)k->puppies[2];
+
+    //  2. Walk the new tail.  PATHu8bDup the trunk-keepdir, push
+    //  every full-prefix path of `norm`, but only INVOKE scan for
+    //  segments past the LCA.
+    a_path(d, u8bDataC(h->root), KEEP_DIR_S);
+    if (u8csLen(norm) > 0) {
+        u8cp p = norm[0];
+        u8cp seg_start = p;
+        size_t off = 0;
+        while (p <= norm[1]) {
+            b8 at_end = (p == norm[1]);
+            if (at_end || *p == '/') {
+                if (p > seg_start) {
+                    u8cs seg = {seg_start, p};
+                    call(PATHu8bPush, d, seg);
+                    //  Only scan if we've crossed the LCA boundary.
+                    if (off >= lca) {
+                        if (!keep_dir_exists($path(d))) return KEEPNONE;
+                        call(keep_scan_branch_dir, k, $path(d));
+                    }
+                }
+                seg_start = p + 1;
+                off = (size_t)(p - norm[0]) + 1;
+            }
+            p++;
+        }
+    }
+
+    //  3. next_seqno: span PastData ∪ PastData on both registries.
+    keep_recompute_next_seqno(k);
+
+    //  4. Swap the flock if we held one.  The old lock lives at the
+    //  cur leaf dir; the new lock at the new leaf dir.  Trunk →
+    //  leaf swaps `<root>/.be/.lock` for `<root>/.be/<leaf>/.lock`.
+    if (k->lock_fd >= 0) {
+        a_path(leafdir);
+        call(keep_branch_dir, leafdir, h, norm);
+        a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
+        u8bFeed(lockpath, $path(leafdir));
+        a_cstr(lockrel, "/.lock");
+        u8bFeed(lockpath, lockrel);
+        PATHu8bTerm(lockpath);
+        int newfd = -1;
+        ok64 co = FILECreate(&newfd, $path(lockpath));
+        if (co != OK) return co;
+        ok64 lo = FILELock(&newfd, YES);
+        if (lo != OK) { FILEClose(&newfd); return lo; }
+        FILEClose(&k->lock_fd);
+        k->lock_fd = newfd;
+    }
+
+    //  5. Update leaf_branch.
+    u8bReset(k->leaf_branch);
+    call(PATHu8bTerm, k->leaf_branch);
+    if (!u8csEmpty(norm)) call(PATHu8bFeed, k->leaf_branch, norm);
+    done;
 }
 
 ok64 KEEPCreateBranch(home *h, u8cs branch) {
@@ -468,7 +734,7 @@ ok64 KEEPCompact(keeper *k) {
     //  Order: thin first (drops the m sources), then create (writes
     //  the new run with seqno = max(remaining)+1).
     call(DOGPupThinTail, k->puppies, $path(leafdir), ext, (u32)m);
-    call(DOGPupCreate,   k->puppies, $path(leafdir), ext, merged);
+    call(keep_pup_create_next, k, $path(leafdir), ext, merged);
 
     wh128bFree(cbuf);
     done;
@@ -595,14 +861,49 @@ ok64 KEEPBranchDrop(keeper *k, u8cs branch) {
         call(keep_branch_drop_files, k, $path(bdir), ext, keep_pack_drop);
     }
 
-    //  Remove a stray `.lock` file if present, then rmdir.
+    //  Best-effort: unlink any sidecar shard files keeper doesn't
+    //  own — graf's `.graf.idx` runs and lock, spot's lock.  These
+    //  show up when a verb switched graf into this branch via
+    //  `GRAFSwitchBranch` for a cross-branch read but the higher-
+    //  level branch-delete only knows about keeper files.  Iterate
+    //  the dir once and unlink anything matching the known suffixes.
     {
-        a_path(lockpath);
-        call(PATHu8bDup, lockpath, $path(bdir));
-        a_cstr(lockrel, ".lock");
-        u8cs lr = {lockrel[0], lockrel[1]};
-        if (PATHu8bPush(lockpath, lr) == OK)
-            FILEUnLink($path(lockpath));
+        a_path(scratch);
+        call(PATHu8bDup, scratch, $path(bdir));
+        size_t base_len = u8bDataLen(scratch);
+        char const *names[] = {
+            ".lock", ".lock.graf", ".lock.spot",
+        };
+        for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
+            ((u8 **)scratch)[2] = u8bDataHead(scratch) + base_len;
+            a_cstr(rel_dummy, "x");  (void)rel_dummy;
+            u8cs nm = {(u8c *)names[i],
+                       (u8c *)names[i] + strlen(names[i])};
+            if (PATHu8bPush(scratch, nm) == OK)
+                FILEUnLink($path(scratch));
+        }
+        //  Also unlink any `.graf.idx` files matching `<seqno>.graf.idx`.
+        ((u8 **)scratch)[2] = u8bDataHead(scratch) + base_len;
+        call(PATHu8bTerm, scratch);
+        fileit it = {};
+        a_path(dpat);
+        a_dup(u8c, bd, u8bDataC(bdir));
+        call(PATHu8bFeed, dpat, bd);
+        if (FILEIterOpen(&it, dpat) == OK) {
+            scan(FILENext, &it) {
+                if (it.type != DT_REG) continue;
+                u8cs base = {};
+                PATHu8sBase(base, u8bDataC(it.path));
+                size_t n = u8csLen(base);
+                static char const SUF[] = ".graf.idx";
+                size_t s = sizeof(SUF) - 1;
+                if (n <= s) continue;
+                if (memcmp(base[0] + n - s, SUF, s) != 0) continue;
+                FILEUnLink(u8bDataC(it.path));
+            }
+            seen(END);
+            FILEIterClose(&it);
+        }
     }
     call(FILERmDir, $path(bdir), false);
     done;
@@ -632,10 +933,10 @@ ok64 KEEPLookup(keeper *k, u64 hashlet60, size_t hexlen, u64p val) {
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG,
                              hpre | (~hmask & WHIFF_HASHLET60_MASK));
 
-    u32 nruns = DOGPupCount(k->puppies);
+    u32 nruns = keep_run_count_all(k);
     for (u32 r = 0; r < nruns; r++) {
         wh128cs run = {NULL, NULL};
-        keep_run_at(run, k, r);
+        keep_run_at_all(run, k, r);
         wh128cp base = run[0];
         size_t len = (size_t)(run[1] - run[0]);
         if (len == 0) continue;
@@ -721,15 +1022,28 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
             // Base might be in a different pack file
             u32 bfile = wh64Id(base_val);
             if (bfile != file_id) {
-                // Cross-file: get base recursively, apply delta chain
+                // Cross-file: get base recursively, apply delta chain.
+                // Caveats:
+                //   * The recursive KEEPGet call uses buf1/buf2 as
+                //     scratch, clobbering ours.  Reset buf1 before
+                //     copying from buf3 so we don't carry residue.
+                //   * `out` may alias k->buf3 (when a deeper recursive
+                //     KEEPGetPacked got `out=k->buf3` from its caller).
+                //     The post-loop `u8bFeed(out, content)` would then
+                //     append onto our just-loaded base.  Reset buf3
+                //     after the copy so the final feed lands in an
+                //     empty buffer regardless of aliasing.
                 u8bReset(k->buf3);
                 u8 btype = 0;
                 rc = KEEPGet(k, base_hashlet, 15, k->buf3, &btype);
                 if (rc != OK) goto cleanup;
                 obj_type = btype;
-                // buf3 has the base content; copy to buf1
+                u8bReset(k->buf1);
                 (void)u8bFeed(k->buf1, u8bData(k->buf3));
+                u8bReset(k->buf3);
+                buf1 = u8bHead(k->buf1);
                 outsz = u8bDataLen(k->buf1);
+                result = buf1;
                 break;  // apply delta chain from here
             }
             cur = wh64Off(base_val);
@@ -802,10 +1116,10 @@ ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type) {
     u64 key_lo = keepKeyPack(KEEP_OBJ_COMMIT, hashlet60);
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG, hashlet60);
 
-    u32 nruns = DOGPupCount(k->puppies);
+    u32 nruns = keep_run_count_all(k);
     for (u32 r = 0; r < nruns; r++) {
         wh128cs run = {NULL, NULL};
-        keep_run_at(run, k, r);
+        keep_run_at_all(run, k, r);
         wh128cp base = run[0];
         size_t len = (size_t)(run[1] - run[0]);
         if (len == 0) continue;
@@ -1451,12 +1765,18 @@ ok64 KEEPPackClose(keeper *k, keep_pack *p) {
         wh128bPush(p->entries, &bm);
     }
 
-    // Sort index entries, publish as a fresh puppy.
+    // Sort index entries, publish as a fresh puppy.  Idx files use
+    // their own LSM seqno space (the new run sits at the top of the
+    // ladder regardless of which pack file_id it indexes) — a single
+    // pack file_id may have many sidecar idx runs published over its
+    // lifetime as more objects are appended.  Pull the next seqno
+    // from the global counter so it doesn't collide with an inherited
+    // parent's puppies entry.
     a_dup(wh128, sorted, wh128bData(p->entries));
     wh128sSort(sorted);
     a_cstr(ext, KEEP_IDX_EXT);
     u8cs raw = {(u8cp)sorted[0], (u8cp)sorted[1]};
-    call(DOGPupCreate, k->puppies, $path(kdir), ext, raw);
+    call(keep_pup_create_next, k, $path(kdir), ext, raw);
     //  Maintain the 1/8 LSM ladder right after every puppy create, so
     //  the runs[KEEP_MAX_LEVELS] view cap is never reached and reads
     //  always see the full stack.
@@ -1963,7 +2283,7 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
 
     a_cstr(ext, KEEP_IDX_EXT);
     u8cs raw = {(u8cp)sorted[0], (u8cp)(sorted[0] + nent)};
-    ok64 cr = DOGPupCreate(k->puppies, $path(kdir), ext, raw);
+    ok64 cr = keep_pup_create_next(k, $path(kdir), ext, raw);
     wh128bFree(entries);
     if (cr != OK) return cr;
     //  Compact-per-flush keeps the puppy ladder under the 1/8 invariant.
@@ -2245,7 +2565,7 @@ ok64 KEEPIngestStream(keeper *k, int rfd) {
 
     a_cstr(ext, KEEP_IDX_EXT);
     u8cs raw = {(u8cp)sorted[0], (u8cp)(sorted[0] + nent)};
-    ok64 cr = DOGPupCreate(k->puppies, $path(kdir), ext, raw);
+    ok64 cr = keep_pup_create_next(k, $path(kdir), ext, raw);
     wh128bFree(entries);
     if (cr != OK) return cr;
     call(KEEPCompact, k);
@@ -3092,7 +3412,7 @@ got_pack:
             call(keep_branch_dir, kdir, k->h, u8bDataC(k->leaf_branch));
             a_cstr(ext, KEEP_IDX_EXT);
             u8cs data = {(u8cp)sorted[0], (u8cp)(sorted[0] + nfinal)};
-            ok64 cr = DOGPupCreate(k->puppies, $path(kdir), ext, data);
+            ok64 cr = keep_pup_create_next(k, $path(kdir), ext, data);
             if (cr != OK) {
                 wh128bFree(entries);
                 goto sync_fail;

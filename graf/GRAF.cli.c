@@ -28,7 +28,11 @@ static ok64 grafcli_inner(cli *c) {
         if (ho != OK) { HOMEClose(&h); return ho; }
     }
 
-    call(GRAFOpen, &h, YES);
+    //  Match sniff's branch-aware open: derive cur branch from
+    //  `h.cur_branch` (populated by HOMEOpen from `--at <root>?<br>`)
+    //  so reindex / lookup walks land at the right shard.
+    a_dup(u8c, gbr, u8bDataC(h.cur_branch));
+    call(GRAFOpenBranch, &h, gbr, YES);
     ok64 ret = GRAFExec(c);
     GRAFClose();
     HOMEClose(&h);

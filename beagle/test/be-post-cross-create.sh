@@ -1,8 +1,11 @@
 #!/bin/sh
-#  be-post-cross-create.sh — `be post ?feat msg` from a wt on trunk,
+#  be-post-cross-create.sh — `be post ?feat/ msg` from a wt on trunk,
 #  where ?feat doesn't exist yet, lands the new commit on ?feat
 #  only.  Trunk's REFS tip is unchanged; ?feat is born at the new
-#  commit; baseline switches to feat.
+#  commit; baseline switches to feat.  Trailing slash is the "new
+#  branch" marker (see VERBS.md §"Ref kinds" / dog/DOG.h
+#  §DOGRefIsBranch); bareword `?feat` is a tag (file ref), which
+#  POST never switches to.
 
 . "$(dirname "$0")/verbcheck.sh"
 . "$(dirname "$0")/setup-primitives.sh"
@@ -16,7 +19,7 @@ vc_snapshot before
 vc_step "be post ?feat feat work — cross-branch create"
 sleep 0.1
 echo "x feat" > x.txt     # actual change so POST isn't empty
-vc_run xpost "$BE" post "?feat" 'feat work'
+vc_run xpost "$BE" post "?feat/" 'feat work'
 
 vc_snapshot after
 

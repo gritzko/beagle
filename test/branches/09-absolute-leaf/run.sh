@@ -39,9 +39,12 @@ F1_TIP_32_AFTER=$(ref_tip "?fix1")
 
 seen_feat=NO
 cur="$NEW32"; n=0
+#  Keeper has no wt context here — pass `?fix1` so its PAST (trunk +
+#  fix1's pack) covers the whole chain we're about to walk.  Keeper
+#  refuses to auto-discover branches per the explicit-form contract.
 while [ -n "$cur" ] && [ $n -lt 20 ]; do
     if [ "$cur" = "$FEAT_TIP_32" ]; then seen_feat=YES; break; fi
-    p=$("$KEEPER" get ".#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
+    p=$("$KEEPER" get "?fix1#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
     cur=$p; n=$((n+1))
 done
 [ "$seen_feat" = "YES" ] \
@@ -87,9 +90,10 @@ F1_AFTER_33=$(ref_tip "?fix1")
 [ -d ".be/feat/fix1" ] || fail "§33: .be/feat/fix1 shard missing"
 seen_feat=NO
 cur="$NEW33"; n=0
+#  Same rationale as §32 — explicit branch hint required for keeper.
 while [ -n "$cur" ] && [ $n -lt 20 ]; do
     if [ "$cur" = "$FEAT_PRE_33" ]; then seen_feat=YES; break; fi
-    p=$("$KEEPER" get ".#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
+    p=$("$KEEPER" get "?fix1#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
     cur=$p; n=$((n+1))
 done
 [ "$seen_feat" = "YES" ] \

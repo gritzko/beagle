@@ -168,7 +168,7 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
     u32  best_count = 0;
     u32  best_len  = 0;
     b8   any = NO;
-    for (u32 r = 0, _nr_ = DOGPupCount(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->puppies, r);
+    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
@@ -199,7 +199,7 @@ static ok64 wire_tail_pack(keeper *k, u32 file_id,
     u32  best_count = 0;
     u32  best_len  = 0;
     b8   any = NO;
-    for (u32 r = 0, _nr_ = DOGPupCount(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->puppies, r);
+    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
@@ -224,7 +224,7 @@ static ok64 wire_tail_pack(keeper *k, u32 file_id,
 //  offset is in [from, to).
 static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {
     u64 total = 0;
-    for (u32 r = 0, _nr_ = DOGPupCount(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->puppies, r);
+    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
@@ -250,7 +250,7 @@ static ok64 wire_locate_sha(keeper *k, sha1 const *sha,
     u64 key_lo = keepKeyPack(KEEP_OBJ_COMMIT, hashlet60);
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG, hashlet60);
 
-    for (u32 r = 0, _nr_ = DOGPupCount(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupData(_raw_, k->puppies, r);
+    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         size_t  len  = (size_t)((wh128cp)_raw_[1] - base);
         if (len == 0) continue;

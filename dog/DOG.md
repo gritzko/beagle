@@ -1,15 +1,14 @@
 #   Dog API
 
+The codebase is divided into *dogs*. Each dog has its purview,
+a part of data and functionality. The dependency graph is like:
+   
+   beagle --> spot,graf,sniff,... --> keeper --> libdog
+
  1. Each dog provides a static library and an executable.
  2. CLI convention: `dog [verb] [--flags] URI*` (see dog/CLI.h).
- 3. Each dog keeps its state in `$REPO_ROOT/.be/name`
- 4. Dogs must understand the URI syntax (see below).
-    Dog's CLI is callable as `name URI`.
- 5. Dogs find their home and each other using dog/HOME
- 6. If `.be` is present, keeper has the data; if
-    not, `git` has the data
- 7. Last-seen-commit tracking is in `.be/name/COMMIT`.
- 8. The static lib has a `name` control struct and three uniform
+ 3. Dogs find their home and each other using dog/HOME
+ 4. The static lib has a `name` control struct and three uniform
     entry points:
       - `ok64 DOGOpen(u8cs branch, b8 rw)`
            open the dog's shards for `branch` in the process-wide
@@ -26,23 +25,51 @@
            APIs; nothing is pushed into them.
       - `ok64 DOGClose(name* state)`
            close every shard opened by this dog.
- 9. `be` links every dog's static lib directly — no subprocess
-    fork/exec. It parses one CLI, opens the dogs it needs, calls
-    `NAMEExec` on each in order, and closes them.  Exception: see
-    `be get` in §10a.
-10. `be` dispatches the HTTP-like verb vocabulary below to other dogs.
+ 5. `be` dispatches the HTTP-like verb vocabulary below to other dogs.
+    Most often, by spawning processes. `be` defines the order.
+    Most dogs maintain their indexes of the repo, normally as sorted
+    runs in branch dirs, e.g. `.be/branch/0000000002.spot.idx`.
 
-10a. `be get URI` is the one verb that uses subprocesses.  `be`
-    `posix_spawn`s keeper first and waits — keeper clones/updates
-    the repo and builds keeper's own index.  Then `be` spawns
-    spot, graf, and sniff in parallel, each with the same verb and
-    URI, and waits for all three.  Each child opens keeper
-    read-only via its own mmaps and pulls what it needs.  No
-    shared state across the three; every dog for himself.
+##  HTTP verb vocabulary
+
+The verb vocabulary shared by all dogs is more or less HTTP-like:
+
+    be get URI               repo → worktree retrieval
+    be post URI              worktree → repo filing
+    be delete URI            remove branch/tag/file
+    be put URI               repo → repo, intra-repo ops
+    be patch URI             transform in place (spot replace)
+
+No verb = read-only view or search.  A verb = action with direction.
+
+    be /path                 view file
+    be '#search.ext'         search working tree (spot)
+
+The history of commands get logged in ulog files (refs, wtlog) in
+the format: timestamp verb uri.
+
+##  URI convention
+
+Dogs accept URIs of the form:
+
+    [scheme:] [//authority] [path] [?ref] [#fragment]
+
+  - `scheme:` is either the app/applet/view or transport protocol,
+    either way it says which code has to process this URI
+  - `//authority` — remote host or alias (`//origin`, `//host/path/repo`)
+  - `path` — repo-relative file or directory,
+  - `?ref` — branch, tag, SHA of the version in question,
+  - `#fragment` — any value, file location or search string, or
+    branch/hash or commit message.
+
+URIs are canonicalised via `dog/DOG:DOGCanonURI` on input.
+Some parts of URI can be relative or ambiguous, also resolved on input.
+Dogs that construct queries internally are expected to produce 
+non-ambiguous canonical form directly.
 
 ##  Indexing (post-DOGUpdate)
 
-There is no push path into a dog's index.  Each indexing dog runs
+There is no push path into a dog's index. Each indexing dog runs
 its own pass driven by the URI it was invoked with (whatever `be`
 forwarded from the user — trunk, a branch, a sha, a range).
 
@@ -60,108 +87,3 @@ forwarded from the user — trunk, a branch, a sha, a range).
   - **sniff** — no index.  Updates the worktree and writes its
     attribution rows to ULOG; reads come from the worktree and
     ULOG, never from a shard graph.
-
-##  URI convention
-
-Dogs accept URIs of the form:
-
-    [scheme:] [//authority] [path] [?ref] [#fragment]
-
-  - `//authority` — remote host or alias (`//origin`, `//host/path/repo`)
-  - `path` — repo-relative file or directory (always a real path)
-  - `?ref` — branch, tag, SHA, range (`?main`, `?HEAD~3`, `?main..feat`)
-  - `#fragment` — location or search within a file (parsed by dog/FRAG)
-
-Short refs like `?main` are ambiguous — resolved by trying
-`heads/`, then `tags/`, then SHA prefix.  Use `?heads/main` or
-`?tags/v1.0` to disambiguate.
-
-##  Query mini-language (dog/QURY)
-
-The `?query` slot names a ref, a sha, or a set/range of either.
-Grammar is a strict subset of `gitrevisions(7)`.
-
-    query   = spec ('&' spec)*            -- set (e.g. merge parents)
-            | spec '..' spec              -- range (for diffs)
-    spec    = path ancestry?              -- path-like ref or sha
-    path    = seg ('/' seg)*              -- branch/tag path or hex sha
-    ancestry = ('~' | '^') digit*         -- first/Nth parent walk
-
-### Canonical form
-
-Every query that enters a ULOG row (keeper REFS, sniff attribution
-log) is canonicalised via `dog/DOG:DOGCanonURI` before it is
-written.  The canonicaliser is an input filter, not a defensive
-check in writers; writers that construct queries internally are
-expected to produce canonical form directly.
-
-Rules applied to the query:
-
-  - Strip leading `refs/`: `refs/heads/X` → `heads/X`, `refs/tags/X` → `tags/X`.
-  - Collapse the trunk aliases to the empty query (the trunk):
-    `heads/master`, `heads/main`, `heads/trunk` — and bare
-    `master`, `main`, `trunk` — all become `?` (present-but-empty).
-  - Leave everything else untouched: `heads/feat`, `tags/v1.0`,
-    40-hex SHAs, ranges, sets.
-
-Rules applied to the fragment (the "value" slot in K/V usage):
-
-  - Strip a single leading `?` — values carried as `?<sha>` are
-    equivalent to bare `<sha>`.
-  - The fragment is either a bare 40-hex SHA or empty.
-
-### Trunk
-
-The default branch is called **trunk** and its canonical query is
-the empty string.  We do not use `HEAD` — that is a git term.  A
-trunk-move row is written as `?#<sha>` (present-but-empty query,
-non-empty fragment); a deletion row for some named branch is
-`?feature/fix1#` (present-but-empty fragment).
-
-For a remote git repo that uses `main` or `master`, keeper observes
-peer advertisements under `<peer>?heads/main#<sha>`; canonicalisation
-collapses that to `<peer>?#<sha>`.
-
-### What the mini-language does *not* cover
-
-Deliberately excluded from the subset:
-
-  - `@{upstream}` / `@{push}` / `@{N}` — reflog & remote-tracking
-    markers are not part of the dog model.
-  - `^{tree}` / `^{commit}` / `^{tag}` — peel operators; if you want
-    a tree, follow the commit yourself.
-  - `:/text` — commit-message search belongs in dog/FRAG, not QURY.
-
-##  Fragment syntax (dog/FRAG)
-
-The `#fragment` is a mini-language with first-char dispatch:
-
-  - `#symbol` — identifier (function name or grep text)
-  - `#symbol:42` — identifier + line number
-  - `#symbol:10-20` — identifier + line range
-  - `#42` — line number
-  - `#10-20` — line range
-  - `#'snippet'` — structural search
-  - `#/regex/` — pcre search
-
-Trailing `.ext` filters by file type (one or more):
-
-  - `#TODO.c` — grep "TODO" in .c files
-  - `#FILEFeedAll.c.cpp` — grep in .c and .cpp
-  - `#'ok64 o'.c` — structural search in .c
-  - `#/u8sFeed/.c.h` — regex in .c and .h
-
-##  HTTP verb vocabulary
-
-The verb vocabulary shared by all dogs is more or less HTTP-like:
-
-    be get URI               repo → worktree retrieval
-    be post URI              worktree → repo filing
-    be delete URI            remove branch/tag/file
-    be put URI               repo → repo, intra-repo ops
-    be patch URI             transform in place (spot replace)
-
-No verb = read-only view or search.  A verb = action with direction.
-
-    be /path                 view file
-    be '#search.ext'         search working tree (spot)

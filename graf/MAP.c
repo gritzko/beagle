@@ -238,6 +238,19 @@ ok64 GRAFMap(uricp u) {
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
         free(kept); return go;
     }
+    //  Load every branch's idx pups into graf's PAST/DATA before
+    //  walking ancestors.  Each `GRAFSwitchBranch` collapses the
+    //  prior DATA into PAST and opens the next branch's dir into
+    //  DATA (DOGPupOpenAside semantics).  After the loop, runs span
+    //  every kept branch.
+    for (u32 i = 0; i < nk; i++) {
+        a_dup(u8c, br, kept[i].path);
+        (void)GRAFSwitchBranch(KEEP.h, br);
+        //  Mirror on keeper so per-branch commit bodies (KEEPGet) and
+        //  per-branch tree/blob fetches downstream resolve.  Map is
+        //  read-only so the keeper switch is safe (no in-flight pack).
+        (void)KEEPSwitchBranch(KEEP.h, br);
+    }
     for (u32 i = 0; i < nk; i++) {
         ok64 ao = wh128bAllocate(kept[i].ancestors, MAP_ANC_SIZE);
         if (ao != OK) {

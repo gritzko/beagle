@@ -231,7 +231,17 @@ ok64 GRAFExec(cli *c) {
     }
 
 
-    call(KEEPOpen, g->h, YES);
+    //  Branch-aware open: keeper sees `h->cur_branch`'s PAST+DATA
+    //  chain so cross-branch reads (KEEPGet for `?other` commits in
+    //  the head/log/map projectors) resolve.  Falls back to trunk
+    //  when `--at` didn't carry a branch.
+    {
+        static u8c const _zero = 0;
+        u8cs br = {&_zero, &_zero};
+        if (u8bHasData(g->h->cur_branch))
+            u8csMv(br, u8bDataC(g->h->cur_branch));
+        call(KEEPOpenBranch, g->h, br, YES);
+    }
     ok64 ret = OK;
 
     if ($eq(c->verb, v_index)) {
@@ -335,6 +345,18 @@ ok64 GRAFExec(cli *c) {
             //  Explicit `?from#to` — no baseline needed.
             u8csMv(wf, u->query);
             u8csMv(wt, u->fragment);
+            //  Load both side branches' packs into keeper/graf
+            //  so the per-ref tree+blob fetches downstream resolve.
+            //  When from/to look like branch names (non-hex), switch
+            //  through each so its idx/pack pups land in PAST or DATA.
+            if (!DOGIsHashlet(wf)) {
+                (void)KEEPSwitchBranch(KEEP.h, wf);
+                (void)GRAFSwitchBranch(KEEP.h, wf);
+            }
+            if (!DOGIsHashlet(wt)) {
+                (void)KEEPSwitchBranch(KEEP.h, wt);
+                (void)GRAFSwitchBranch(KEEP.h, wt);
+            }
             if (!$empty(path)) {
                 ret = GRAFWeaveDiff(&KEEP, path, reporoot, wf, wt);
             } else {

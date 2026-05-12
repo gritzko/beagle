@@ -4,6 +4,7 @@
 #include "sniff/GET.h"
 #include "sniff/POST.h"
 #include "sniff/PUT.h"
+#include "sniff/SUBS.h"
 
 #include "graf/GRAF.h"
 
@@ -833,6 +834,203 @@ static ok64 SNIFFMergeWalkTest(void) {
     done;
 }
 
+// --- SUBS: URL basename + .gitmodules parse/synth -----------------------
+
+static b8 slice_eq_cstr(u8cs s, char const *c) {
+    size_t n = strlen(c);
+    if (u8csLen(s) != n) return NO;
+    if (n == 0) return YES;
+    return memcmp(s[0], (u8 const *)c, n) == 0;
+}
+
+static ok64 SUBSBasenameTest(void) {
+    sane(1);
+
+    struct {
+        char const *url;
+        char const *want;        // NULL → expect SUBSPARSE
+    } cases[] = {
+        {"https://github.com/gritzko/libabc.git",    "libabc"},
+        {"git@github.com:foo/proj.git",              "proj"},
+        {"ssh://localhost/srv/repos/widgets/",       "widgets"},
+        {"ssh://localhost/srv/repos/widgets",        "widgets"},
+        {"file:///var/repos/proj.git",               "proj"},
+        {"http://host/x/y/z/",                       "z"},
+        {"single",                                   "single"},
+        {"",                                         NULL},
+        {"http://host/.git",                         NULL}, // empty basename
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].url);
+        a_dup(u8c, in, src);
+        u8cs got = {};
+        ok64 o = SNIFFSubBasename(in, got);
+        if (cases[i].want == NULL) {
+            want(o != OK);
+        } else {
+            want(o == OK);
+            want(slice_eq_cstr(got, cases[i].want));
+        }
+    }
+    done;
+}
+
+typedef struct {
+    u32         n;
+    char        path[8][64];
+    char        url [8][128];
+} subs_collect;
+
+static ok64 subs_collect_cb(u8cs path, u8cs url, void *vctx) {
+    subs_collect *c = (subs_collect *)vctx;
+    if (c->n >= 8) return OK;
+    size_t pl = u8csLen(path); if (pl > 63) pl = 63;
+    size_t ul = u8csLen(url);  if (ul > 127) ul = 127;
+    memcpy(c->path[c->n], path[0], pl); c->path[c->n][pl] = 0;
+    memcpy(c->url [c->n], url[0],  ul); c->url [c->n][ul] = 0;
+    c->n++;
+    return OK;
+}
+
+static ok64 SUBSParseTest(void) {
+    sane(1);
+
+    char const *blob_str =
+        "; sample .gitmodules\n"
+        "[submodule \"vendor/sub\"]\n"
+        "\tpath = vendor/sub\n"
+        "\turl = ssh://localhost/srv/sub.git\n"
+        "\n"
+        "[submodule \"thirdparty/x\"]\n"
+        "  path  =  thirdparty/x  \n"
+        "  url  =  https://host/x.git\n"
+        "[other]\n"
+        "ignored = yes\n"
+        "[submodule \"no-url\"]\n"
+        "  path = oops\n"
+        ;
+    a_cstr(src, blob_str);
+    a_dup(u8c, blob, src);
+    subs_collect c = {};
+    call(SNIFFSubsParse, blob, subs_collect_cb, &c);
+    want(c.n == 2);
+    want(strcmp(c.path[0], "vendor/sub") == 0);
+    want(strcmp(c.url [0], "ssh://localhost/srv/sub.git") == 0);
+    want(strcmp(c.path[1], "thirdparty/x") == 0);
+    want(strcmp(c.url [1], "https://host/x.git") == 0);
+
+    //  ParseFind: hit + miss.
+    a_dup(u8c, blob2, src);
+    a_cstr(want_path, "thirdparty/x");
+    u8cs url = {};
+    call(SNIFFSubsParseFind, blob2, want_path, url);
+    want(slice_eq_cstr(url, "https://host/x.git"));
+
+    a_dup(u8c, blob3, src);
+    a_cstr(miss_path, "nope");
+    u8cs url2 = {};
+    ok64 m = SNIFFSubsParseFind(blob3, miss_path, url2);
+    want(m == SUBSNOSEC);
+
+    //  Malformed: missing closing ']'.
+    a_cstr(bad_str, "[submodule \"x\"\nurl = y\n");
+    a_dup(u8c, bad, bad_str);
+    ok64 b = SNIFFSubsParse(bad, subs_collect_cb, &c);
+    want(b != OK);
+    done;
+}
+
+static ok64 SUBSSynthTest(void) {
+    sane(1);
+
+    Bu8 paths_b = {}, urls_b = {}, out = {};
+    call(u8bAllocate, paths_b, 256);
+    call(u8bAllocate, urls_b,  512);
+    call(u8bAllocate, out,     1024);
+
+    a_cstr(p1, "vendor/sub");        u8bFeed(paths_b, p1); u8bFeed1(paths_b, '\n');
+    a_cstr(p2, "thirdparty/x");      u8bFeed(paths_b, p2); u8bFeed1(paths_b, '\n');
+    a_cstr(u1, "ssh://localhost/srv/sub.git");
+    u8bFeed(urls_b, u1); u8bFeed1(urls_b, '\n');
+    a_cstr(u2, "https://host/x.git");
+    u8bFeed(urls_b, u2); u8bFeed1(urls_b, '\n');
+
+    a_dup(u8c, paths, u8bData(paths_b));
+    a_dup(u8c, urls,  u8bData(urls_b));
+    call(SNIFFSubsSynth, out, paths, urls);
+
+    char const *expect =
+        "[submodule \"vendor/sub\"]\n"
+        "\tpath = vendor/sub\n"
+        "\turl = ssh://localhost/srv/sub.git\n"
+        "[submodule \"thirdparty/x\"]\n"
+        "\tpath = thirdparty/x\n"
+        "\turl = https://host/x.git\n";
+    size_t exp_len = strlen(expect);
+    want(u8bDataLen(out) == exp_len);
+    want(memcmp(u8bDataHead(out), expect, exp_len) == 0);
+
+    //  Synth-then-parse round-trip.
+    subs_collect c = {};
+    a_dup(u8c, view, u8bData(out));
+    call(SNIFFSubsParse, view, subs_collect_cb, &c);
+    want(c.n == 2);
+    want(strcmp(c.path[0], "vendor/sub") == 0);
+    want(strcmp(c.url [0], "ssh://localhost/srv/sub.git") == 0);
+    want(strcmp(c.path[1], "thirdparty/x") == 0);
+    want(strcmp(c.url [1], "https://host/x.git") == 0);
+
+    u8bFree(paths_b);
+    u8bFree(urls_b);
+    u8bFree(out);
+    done;
+}
+
+static ok64 SUBSIsMountTest(void) {
+    sane(1);
+    call(FILEInit);
+    call(make_tmpdir);
+
+    //  Layout under $g_tmpdir:
+    //      <tmp>/wt/                       (parent wt root)
+    //      <tmp>/wt/.be/                   (parent keeper dir)
+    //      <tmp>/wt/.be/wtlog              (parent wtlog)
+    //      <tmp>/wt/vendor/sub/.be         (sub-mount anchor — REG file)
+    //      <tmp>/wt/vendor/other/          (regular dir, no .be inside)
+    //      <tmp>/wt/dir/.be/               (DIR — not a sub-mount)
+    //
+    //  IsMount must return YES only for vendor/sub.
+
+    a_pad(u8, wt_path, 512);
+    a_cstr(wt_lit, "/wt");
+    a_cstr(tmp_lit, g_tmpdir);
+    u8bFeed(wt_path, tmp_lit);
+    u8bFeed(wt_path, wt_lit);
+    a_dup(u8c, wt_root, u8bData(wt_path));
+
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd,
+             "rm -rf %s/wt && mkdir -p %s/wt/.be %s/wt/vendor/sub "
+             "%s/wt/vendor/other %s/wt/dir/.be && "
+             "echo X > %s/wt/.be/wtlog && "
+             "echo Y > %s/wt/vendor/sub/.be",
+             g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir,
+             g_tmpdir, g_tmpdir);
+    system(cmd);
+
+    a_cstr(p_sub,    "vendor/sub");
+    a_cstr(p_other,  "vendor/other");
+    a_cstr(p_dir,    "dir");
+    a_cstr(p_missing,"nope");
+    want( SNIFFSubIsMount(wt_root, p_sub));
+    want(!SNIFFSubIsMount(wt_root, p_other));
+    want(!SNIFFSubIsMount(wt_root, p_dir));
+    want(!SNIFFSubIsMount(wt_root, p_missing));
+
+    rm_tmpdir();
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "SNIFFAtHelpers...\n");
@@ -843,6 +1041,14 @@ ok64 maintest() {
     call(SNIFFWtListPathsTest);
     fprintf(stderr, "SNIFFMergeWalk...\n");
     call(SNIFFMergeWalkTest);
+    fprintf(stderr, "SUBSBasename...\n");
+    call(SUBSBasenameTest);
+    fprintf(stderr, "SUBSParse...\n");
+    call(SUBSParseTest);
+    fprintf(stderr, "SUBSSynth...\n");
+    call(SUBSSynthTest);
+    fprintf(stderr, "SUBSIsMount...\n");
+    call(SUBSIsMountTest);
     fprintf(stderr, "all passed\n");
     done;
 }

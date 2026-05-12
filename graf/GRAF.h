@@ -45,6 +45,10 @@ typedef struct {
     Bkv32        puppies;
     Bu8          leaf_branch;  // canonical leaf-branch path (trailing
                                // '/'; empty for trunk).  Heap-backed.
+    u32          next_seqno;   // next seqno for fresh `.graf.idx`
+                               // creation; spans every loaded shard
+                               // dir plus an on-disk scan at open
+                               // so seqnos stay unique across siblings.
 
     //  Typed wh128cs view over `puppies`, rebuilt by `graf_refresh_view`
     //  on every change.  Newest run sits at the highest index — query
@@ -90,6 +94,15 @@ ok64 GRAFOpen(home *h, b8 rw);
 //  Mirrors `KEEPOpenBranch`.  Missing prefix dirs return `GRAFNOPATH`.
 ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw);
 
+//  Re-target an open graf from current leaf to `new_branch` WITHOUT
+//  closing.  Collapses current DATA into PAST on `g->puppies`, walks
+//  segments of `new_branch` past LCA(old, new) scanning new dirs,
+//  refreshes the runs view, swaps the leaf flock.  Mirrors
+//  `KEEPSwitchBranch`.  Cross-branch DAG walks (POSTPromote-style
+//  rebases, located cherry-pick) get visibility into both branches'
+//  `.graf.idx` runs via the unified PAST/DATA view.
+ok64 GRAFSwitchBranch(home *h, u8cs new_branch);
+
 //  Fill `out` with a live `wh128css` view over the open puppy stack
 //  (oldest run at index 0, newest last).  Slice ends point into
 //  `GRAF.runs[]`; valid until the next DOGPupCreate / DOGPupThinTail
@@ -101,6 +114,13 @@ void GRAFRuns(wh128cssp out);
 //  DOGPupThinTail; exposed here so DAG.c's compactor (which lives
 //  next to its writes) can keep the view in sync.
 void GRAFRefreshView(void);
+
+//  Create a new `.graf.idx` file in `dir` with a globally-unique
+//  seqno (`g->next_seqno`, bumped on success).  Mirrors keeper's
+//  `keep_pup_create_next`: every fresh idx run gets a seqno that
+//  clears EVERY shard dir on disk, so siblings can't collide.
+//  Drop-in replacement for `DOGPupCreate(g->puppies, dir, ext, data)`.
+ok64 GRAFPupCreateNext(path8s dir, u8cs ext, u8cs data);
 
 //  Run one CLI invocation.
 ok64 GRAFExec(cli *c);

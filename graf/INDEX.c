@@ -60,10 +60,11 @@ static ok64 graf_collect(keeper *k, u8 want_type,
     if (!buf) return NOROOM;
     size_t n = 0;
 
-    u32 nruns = DOGPupCount(k->puppies);
+    //  Use PastData — graf scans every loaded idx across branches.
+    u32 nruns = DOGPupCountAll(k->puppies);
     for (u32 r = 0; r < nruns; r++) {
         u8cs raw = {NULL, NULL};
-        DOGPupData(raw, k->puppies, r);
+        DOGPupDataAll(raw, k->puppies, r);
         wh128cp base = (wh128cp)raw[0];
         size_t len = (size_t)((wh128cp)raw[1] - base);
         for (size_t i = 0; i < len; i++) {

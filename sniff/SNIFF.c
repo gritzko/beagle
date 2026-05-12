@@ -15,9 +15,54 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 
+#include "graf/GRAF.h"
+
 #include "AT.h"
 
 // --- Wtlog path resolver --------------------------------------------
+
+ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
+    sane(1);
+    if (!$ok(target_branch) || u8csEmpty(target_branch)) done;
+
+    keeper *k = &KEEP;
+    if (k->h == NULL) done;  // keeper not open — nothing to switch.
+
+    //  Same as current leaf?  No-op.
+    a_dup(u8c, cur, u8bDataC(k->leaf_branch));
+    if (u8csLen(cur) == u8csLen(target_branch) &&
+        (u8csLen(target_branch) == 0 ||
+         memcmp(cur[0], target_branch[0],
+                u8csLen(target_branch)) == 0)) done;
+
+    //  Probe `<root>/.be/<target_branch>/` — skip if it's not a real
+    //  branch shard dir (tags, peer-prefixed refs, etc. all share the
+    //  cur branch's view).
+    a_path(probe, u8bDataC(k->h->root), KEEP_DIR_S);
+    if (PATHu8bAdd(probe, target_branch) != OK) done;
+    filestat fs = {};
+    if (FILEStat(&fs, $path(probe)) != OK ||
+        fs.kind != FILE_KIND_DIR) done;
+
+    return KEEPSwitchBranch(k->h, target_branch);
+}
+
+ok64 SNIFFMaybeSwitchGraf(u8cs target_branch) {
+    sane(1);
+    if (!$ok(target_branch) || u8csEmpty(target_branch)) done;
+
+    graf *g = &GRAF;
+    if (g->h == NULL) done;  // graf not open.
+
+    //  Probe the on-disk shard (same gating as keeper).
+    a_path(probe, u8bDataC(g->h->root), KEEP_DIR_S);
+    if (PATHu8bAdd(probe, target_branch) != OK) done;
+    filestat fs = {};
+    if (FILEStat(&fs, $path(probe)) != OK ||
+        fs.kind != FILE_KIND_DIR) done;
+
+    return GRAFSwitchBranch(g->h, target_branch);
+}
 
 ok64 SNIFFWtlogPath(path8b out, u8cs wt_root) {
     sane(out && $ok(wt_root));
@@ -158,9 +203,19 @@ ok64 SNIFFOpen(home *h, b8 rw) {
         }
     }
 
-    //  Now open keeper — h->root is the store root, colocated or
-    //  redirected as appropriate.
-    ok64 kr = KEEPOpen(h, rw);
+    //  Open keeper on the wt's current branch (PAST = trunk +
+    //  ancestors, DATA = active leaf).  Pack writes land at
+    //  `<root>/.be/<branch>/NNNN.keeper`; cross-branch reads route
+    //  through `SNIFFMaybeSwitchKeeper` / `SNIFFMaybeSwitchGraf`.
+    a_pad(u8, br_buf, 256);
+    {
+        ron60 bts = 0, bverb = 0;
+        uri bu = {};
+        if (SNIFFAtCurTip(&bts, &bverb, &bu) == OK)
+            u8bFeed(br_buf, bu.query);
+    }
+    a_dup(u8c, branch, u8bData(br_buf));
+    ok64 kr = KEEPOpenBranch(h, branch, rw);
     if (kr != OK && kr != KEEPOPEN) {
         ULOGClose(s->log_data, &s->log_idx, s->log_rw);
         zerop(s); return kr;

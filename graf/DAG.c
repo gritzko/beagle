@@ -132,7 +132,7 @@ static ok64 dag_index_write_leaf(graf *g, wh128cs run) {
     a_cstr(ext, GRAF_IDX_EXT);
     size_t bytes = $len(run) * sizeof(wh128);
     u8cs data = {(u8cp)run[0], (u8cp)run[0] + bytes};
-    call(DOGPupCreate, g->puppies, $path(leafdir), ext, data);
+    call(GRAFPupCreateNext, $path(leafdir), ext, data);
     GRAFRefreshView();
     done;
 }
@@ -678,7 +678,7 @@ static ok64 dag_compact(graf *g) {
     a_cstr(ext, GRAF_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};
     call(DOGPupThinTail, g->puppies, $path(leafdir), ext, (u32)m);
-    call(DOGPupCreate,   g->puppies, $path(leafdir), ext, merged);
+    call(GRAFPupCreateNext, $path(leafdir), ext, merged);
 
     GRAFRefreshView();
     wh128bFree(cbuf);

@@ -42,6 +42,22 @@ con ok64 POSTNOMSG     = 0x65871d5d8c4d;     // can't auto-resolve commit msg
 con ok64 POSTCFLCT     = 0x65871d5dc6b3;     // tracked file has conflict markers
 con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 
+//  Switch the open keeper to a different branch when `target_branch`
+//  is non-empty AND names a real on-disk shard (`<root>/.be/<branch>/`).
+//  No-op for trunk-only repos, same-branch ops, or symbolic refs that
+//  don't correspond to a branch dir (tags, peer-prefixed refs).  Wraps
+//  KEEPSwitchBranch with the on-disk probe so verbs (POST/PATCH/GET)
+//  can call it unconditionally before cross-branch reads.  Returns OK
+//  on switch, OK on no-op, propagates KEEPSwitchBranch errors otherwise.
+ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch);
+
+//  Mirror of `SNIFFMaybeSwitchKeeper` for graf.  Cross-branch DAG
+//  walks (POSTPromote-style rebase, located cherry-pick) need graf's
+//  `.graf.idx` runs visible across both branches.  Verbs paired both
+//  switches when they do cross-branch work — keeper for the object
+//  store, graf for the commit DAG.
+ok64 SNIFFMaybeSwitchGraf(u8cs target_branch);
+
 // Build the absolute wtlog path into `out` (reset first), dispatching
 // on the shape of `<wt_root>/.be`:
 //   * directory (primary / colocated wt)  → `<wt_root>/.be/wtlog`
