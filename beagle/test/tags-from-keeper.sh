@@ -53,7 +53,7 @@ SRC_REL=${SRC#$HOME/}
 #  explicitly so the mirror carries master + both tags (the consumer
 #  tests below want every ref present in the mirror).
 KSRV=$TMP/keeper-srv
-mkdir -p "$KSRV"
+mkdir -p "$KSRV/.be"
 cd "$KSRV"
 git init --quiet .
 mkdir -p .be

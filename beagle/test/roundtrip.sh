@@ -27,7 +27,7 @@ TEST_ID=${TEST_ID:-BEroundtrip}
 TMP=$TMP/$TEST_ID/$$
 REL=${TMP#$HOME/}                       # $TMP relative to $HOME
 mkdir -p "$TMP"; echo "Running in $PWD"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -56,7 +56,7 @@ note "seed=$SEED_SHA"
 
 # --- 2. be get via ssh ---
 echo "=== 2. be get ssh://localhost:<origin>?master ==="
-mkdir -p "$CLONE"; cd "$CLONE"
+mkdir -p "$CLONE/.be"; cd "$CLONE"
 "$BE" get --seq "ssh://localhost/$REL_ORIGIN?master" >/dev/null 2>&1 \
     || fail "be get (clone) failed"
 [ -f a.txt ] && [ -f b.txt ] || fail "clone missing seed files"
@@ -64,7 +64,7 @@ note "clone has a.txt, b.txt"
 
 # --- 3. be get <clone> → worktree ---
 echo "=== 3. be get <clone> (worktree) ==="
-mkdir -p "$WT"; cd "$WT"
+mkdir -p "$WT/.be"; cd "$WT"
 "$BE" get --seq "$CLONE" >/dev/null 2>&1 || true
 [ -L "$WT/.be" ] || fail "worktree .be not a symlink"
 [ -f "$WT/.be/wtlog" ] && [ ! -L "$WT/.be/wtlog" ] \

@@ -27,7 +27,7 @@ TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFworkflow}
 TMP=$TMP/$TEST_ID/$$
 mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -118,8 +118,8 @@ note "HEAD after post=$C3"
 
 #  Checkout into a fresh dir — both files must land.
 D3b="$TMP/r3b"
-mkdir -p "$D3b"; cd "$D3b"
-cp -r "$D3/.be" .
+mkdir -p "$D3b/.be"; cd "$D3b"
+cp -r "$D3/.be/." .be/
 "$SNIFF" get "$C3" >/dev/null
 want_file a.txt "alpha"
 want_file b.txt "bravo"
@@ -141,8 +141,8 @@ C4=$(head_hex)
 [ "$C4" != "$C3" ] || fail "HEAD unchanged after modify+post"
 note "new HEAD=$C4"
 
-D4b="$TMP/r4b"; mkdir -p "$D4b"; cd "$D4b"
-cp -r "$D3b/.be" .
+D4b="$TMP/r4b"; mkdir -p "$D4b/.be"; cd "$D4b"
+cp -r "$D3b/.be/." .be/
 "$SNIFF" get "$C4" >/dev/null
 want_file a.txt "alpha-two"
 want_file b.txt "bravo"
@@ -162,8 +162,8 @@ want_missing a.txt                      # POST must unlink
 C5=$(head_hex)
 note "HEAD after delete=$C5"
 
-D5b="$TMP/r5b"; mkdir -p "$D5b"; cd "$D5b"
-cp -r "$D4b/.be" .
+D5b="$TMP/r5b"; mkdir -p "$D5b/.be"; cd "$D5b"
+cp -r "$D4b/.be/." .be/
 "$SNIFF" get "$C5" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
@@ -184,8 +184,8 @@ rm a.txt                                # vanish one without a `delete` row
 "$SNIFF" post 'auto delete' >/dev/null
 C6=$(head_hex)
 
-D6b="$TMP/r6b"; mkdir -p "$D6b"; cd "$D6b"
-cp -r "$D5b/.be" .
+D6b="$TMP/r6b"; mkdir -p "$D6b/.be"; cd "$D6b"
+cp -r "$D5b/.be/." .be/
 "$SNIFF" get "$C6" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"

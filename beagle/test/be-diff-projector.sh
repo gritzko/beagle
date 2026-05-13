@@ -24,7 +24,7 @@ export PATH="$BIN:$PATH"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-diff-projector}
 T=$TMP/$TEST_ID/$$
-mkdir -p "$T"
+mkdir -p "$T/.be"
 trap 'rm -rf "$T"; rmdir "${T%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT INT TERM
 
 FAIL=0
@@ -55,7 +55,7 @@ want_all() {
 #  v1↔v2: a.txt: 'goodnight'→'goodbye'; b.txt: append ' two'
 #  base↔wt: a.txt: 'world'→'universe'; b.txt: append ' three'
 #
-R=$T/repo; mkdir -p "$R"; cd "$R"
+R=$T/repo; mkdir -p "$R/.be"; cd "$R"
 sniff init >/dev/null
 
 cat > a.txt <<'EOF'

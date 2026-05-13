@@ -52,7 +52,7 @@ NTAGS_WANT=${NTAGS:-10}
 
 KEEP_WORK=${KEEP_WORK:-}
 trap '[ -z "$KEEP_WORK" ] && { rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true; }; echo; echo "workdir: $TMILL${KEEP_WORK:+ (kept)}"' EXIT
-mkdir -p "$TMILL"
+mkdir -p "$TMILL/.be"
 
 #  --- Source git repo: caller-supplied, or a fresh toy one. ---
 if [ -n "${REPO:-}" ]; then
@@ -86,7 +86,7 @@ else
 
     # v0.0.2 — edit README, add lib/ subtree.
     echo 'toy project v2 (lib)'    > "$SRC/README.md"
-    mkdir -p "$SRC/lib"
+    mkdir -p "$SRC/lib/.be"
     echo 'int helper(){return 2;}' > "$SRC/lib/helper.c"
     echo 'int helper(void);'       > "$SRC/lib/helper.h"
     tag v0.0.2
@@ -98,19 +98,19 @@ else
     echo 'int core(void);'         > "$SRC/include/core.h"
     echo '#include "core.h"'       > "$SRC/src/main.c"
     git -C "$SRC" rm -q docs/intro.md
-    mkdir -p "$SRC/docs"
+    mkdir -p "$SRC/docs/.be"
     echo 'api reference'           > "$SRC/docs/api.md"
     tag v0.0.3
 
     # v0.0.4 — add a test/ subtree.
-    mkdir -p "$SRC/test"
+    mkdir -p "$SRC/test/.be"
     echo 'main test'               > "$SRC/test/test_main.c"
     echo 'core test'               > "$SRC/test/test_core.c"
     tag v0.0.4
 
     # v0.0.5 — nuke lib/, replace with lib/v2/ (directory rename-ish).
     git -C "$SRC" rm -qr lib
-    mkdir -p "$SRC/lib/v2"
+    mkdir -p "$SRC/lib/v2/.be"
     echo 'int helper2(){return 22;}' > "$SRC/lib/v2/helper.c"
     echo 'int helper2(void);'        > "$SRC/lib/v2/helper.h"
     tag v0.0.5
@@ -128,7 +128,7 @@ else
     tag v0.0.7
 
     # v0.0.8 — nested subtree: src/platform/{linux,mac}.c.
-    mkdir -p "$SRC/src/platform"
+    mkdir -p "$SRC/src/platform/.be"
     echo 'int plat_linux(){return 0;}' > "$SRC/src/platform/linux.c"
     echo 'int plat_mac(){return 0;}'   > "$SRC/src/platform/mac.c"
     tag v0.0.8
@@ -163,7 +163,7 @@ git clone -q --no-checkout "$SRC" "$TMILL/git01"
 #  dog01 is a bare worktree.  `be post` creates .be/ on first commit.
 #  (Don't `git init` here — we don't need a host git repo, and an empty
 #  .git/ would be scanned and committed if SNIFFSkipMeta didn't skip it.)
-mkdir -p "$TMILL/dog01"
+mkdir -p "$TMILL/dog01/.be"
 
 FAIL=0
 TOTAL=0
@@ -239,7 +239,7 @@ case "$TMILL/dog01" in
     *) echo "TMILL must live under \$HOME for be:// URIs (TMILL=$TMILL)"; exit 2 ;;
 esac
 
-mkdir -p "$TMILL/dog02"
+mkdir -p "$TMILL/dog02/.be"
 cd "$TMILL/dog02"
 T0=$(date +%s)
 #  `be get be://.../` without a query fetches the peer's HEAD only

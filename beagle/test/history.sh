@@ -26,7 +26,7 @@ TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEhistory}
 TMP=$TMP/$TEST_ID/$$
 mkdir -p "$TMP"; echo "Running in $PWD"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -43,7 +43,7 @@ want_gone() { [ ! -e "$1" ] || fail "$1: should be gone"; }
 
 # --- 1. v1 (seed) -----------------------------------------------------
 echo "=== 1. seed commit tagged v0.0.1 ==="
-R="$TMP/r"; mkdir -p "$R"; cd "$R"
+R="$TMP/r"; mkdir -p "$R/.be"; cd "$R"
 git init --quiet .
 echo "alpha v1" > hello.txt
 echo "stable"   > other.txt

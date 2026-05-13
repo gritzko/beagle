@@ -54,8 +54,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEworkflowBranches}
 TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+mkdir -p "$TMP/.be"
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -91,7 +91,7 @@ ref_tip() {
 }
 
 WT="$TMP/wt"
-mkdir -p "$WT"; cd "$WT"
+mkdir -p "$WT/.be"; cd "$WT"
 
 # ------------------------------------------------------------------
 # 1. seed trunk: first commit gives us T1
@@ -367,7 +367,7 @@ note "?fix1 cleaned up"
 
 echo "=== 16. setup secondary wt (WT2) sharing one keeper ==="
 WT2="$TMP/wt2"
-mkdir -p "$WT2"
+mkdir -p "$WT2/.be"
 ln -s "$WT/.be" "$WT2/.be"
 cp "$WT/x.txt" "$WT2/x.txt"
 cp "$WT/.be/wtlog" "$WT2/.be/wtlog"
@@ -421,7 +421,7 @@ note "T_rebased.parent = T_advance (rebase landed on top)"
 # fresh WT3 forked at T_pre_rebase.
 echo "=== 19. WT3 conflict abort: edits racing.txt vs T_advance ==="
 WT3="$TMP/wt3"
-mkdir -p "$WT3"
+mkdir -p "$WT3/.be"
 ln -s "$WT/.be" "$WT3/.be"
 # WT3 starts at T_rebased (current state of REFS); rewind .be/wtlog to a
 # stale baseline so the conflict path fires.  Easiest: copy WT2's
@@ -484,7 +484,7 @@ echo "=== 22. fork WTL1 on ?L1 (shares keeper, baseline ?L1@C_L1) ==="
 "$BE" get "?L1" >/dev/null \
     || fail "be get ?L1 (back to L1) failed"
 WTL1="$TMP/wtl1"
-mkdir -p "$WTL1"
+mkdir -p "$WTL1/.be"
 ln -s "$WT/.be" "$WTL1/.be"
 cp "$WT/x.txt" "$WTL1/x.txt"   2>/dev/null || true
 cp "$WT/a.txt" "$WTL1/a.txt"   2>/dev/null || true
@@ -582,7 +582,7 @@ note "§25: ?fix1 at $F25_C1 (cur)"
 
 # A peer wt shares the keeper, advances trunk while cur is on ?fix1.
 WT25="$TMP/wt25"
-mkdir -p "$WT25"
+mkdir -p "$WT25/.be"
 ln -s "$WT/.be" "$WT25/.be"
 ( cd "$WT25" && "$BE" get "?" >/dev/null ) \
     || fail "§25: WT25 be get ? failed"
@@ -1029,7 +1029,7 @@ F1_REFS_PRE=$(ref_tip "?fix1")
 
 #  Advance trunk via a peer wt with the THEIRS edit ("slow").
 WT30="$TMP/wt30"
-mkdir -p "$WT30"
+mkdir -p "$WT30/.be"
 ln -s "$WT/.be" "$WT30/.be"
 ( cd "$WT30" && "$BE" get "?" >/dev/null ) \
     || fail "§30: WT30 trunk checkout failed"

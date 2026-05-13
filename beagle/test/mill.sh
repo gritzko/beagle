@@ -17,7 +17,7 @@ TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-mill}
 TMILL=$TMP/$TEST_ID/$$
 TMILL_REL=${TMILL#$HOME/}
-mkdir -p "$TMILL"
+mkdir -p "$TMILL/.be"
 trap 'rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT
 
 echo "=== mill: be get + verify ==="
@@ -51,7 +51,7 @@ echo "origin HEAD: $GIT_HEAD"
 git clone --quiet "$TMILL/origin" "$TMILL/git01"
 
 # --- 3. Dogs clone via be get ---
-mkdir -p "$TMILL/be01"
+mkdir -p "$TMILL/be01/.be"
 cd "$TMILL/be01"
 git init --quiet .
 mkdir -p .be

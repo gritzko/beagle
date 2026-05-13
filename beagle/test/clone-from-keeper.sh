@@ -51,7 +51,7 @@ SRC_REL=${SRC#$HOME/}
 
 # --- 2. seed keeper mirror by cloning the toy git into it ---
 KSRV=$TMP/keeper-srv
-mkdir -p "$KSRV"
+mkdir -p "$KSRV/.be"
 cd "$KSRV"
 git init --quiet .
 mkdir -p .be

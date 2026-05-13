@@ -22,7 +22,7 @@ export PATH="$BIN:$PATH"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-diff-revs}
 T=$TMP/$TEST_ID/$$
-mkdir -p "$T"
+mkdir -p "$T/.be"
 trap 'rm -rf "$T"; rmdir "${T%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT INT TERM
 
 FAIL=0
@@ -49,7 +49,7 @@ want_none() {
 }
 
 # --- Build the 5-rev toy --------------------------------------------
-R=$T/repo; mkdir -p "$R"; cd "$R"
+R=$T/repo; mkdir -p "$R/.be"; cd "$R"
 git init --quiet .
 
 # v1: seed ---------------------------------------------------------

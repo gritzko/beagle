@@ -226,6 +226,90 @@ ok64 HOMETestBranches() {
     done;
 }
 
+//  rw bootstrap: `HOMEOpen(rw=YES)` in a dir with no `.be/` anchor
+//  must (1) succeed instead of failing NOHOME and (2) lay down the
+//  canonical empty-state layout — `<cwd>/.be/{refs,wtlog}` — so the
+//  next walk-up finds a well-formed anchor.  Table-driven over the
+//  three input shapes the production code path actually exercises.
+ok64 HOMETestRwBootstrap() {
+    sane(1);
+    call(FILEInit);
+
+    struct {
+        char const *name;
+        b8          via_at;          // YES → HOMEOpenAt(root), NO → cwd-walk
+        b8          preexisting_be;  // mkdir .be/ before open (no markers)
+    } const cases[] = {
+        {"cwd-walk, empty dir",   NO,  NO},
+        {"cwd-walk, .be exists",  NO,  YES},
+        {"HOMEOpenAt, empty dir", YES, NO},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tmp[] = "/tmp/dog-home-rw-XXXXXX";
+        want(mkdtemp(tmp) != NULL);
+        fprintf(stderr, "  case: %s\n", cases[i].name);
+
+        if (cases[i].preexisting_be) {
+            char bedir[256];
+            snprintf(bedir, sizeof(bedir), "%s/" DOG_BE_NAME, tmp);
+            want(mkdir(bedir, 0755) == 0);
+        }
+
+        home h = {};
+        if (cases[i].via_at) {
+            a_cstr(root, tmp);
+            call(HOMEOpenAt, &h, root, YES);
+        } else {
+            want(chdir(tmp) == 0);
+            uri none = {};
+            call(HOMEOpen, &h, &none, YES);
+        }
+
+        char p[512];
+        snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_REFS_NAME, tmp);
+        struct stat st = {};
+        want(stat(p, &st) == 0);
+        want(S_ISREG(st.st_mode));
+        snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_WTLOG_NAME, tmp);
+        want(stat(p, &st) == 0);
+        want(S_ISREG(st.st_mode));
+
+        HOMEClose(&h);
+        char rm[512];
+        snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
+        system(rm);
+    }
+    done;
+}
+
+//  rw=NO must NOT create anything — the historical NOHOME signal is
+//  still needed by read-only callers (status, view projectors) so they
+//  can distinguish "no repo here" from "repo open succeeded".
+ok64 HOMETestRoNoBootstrap() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/dog-home-ro-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    want(chdir(tmp) == 0);
+
+    home h = {};
+    uri none = {};
+    want(HOMEOpen(&h, &none, NO) == NOHOME);
+    HOMEClose(&h);
+
+    char p[512];
+    snprintf(p, sizeof(p), "%s/" DOG_BE_NAME, tmp);
+    struct stat st = {};
+    want(stat(p, &st) != 0);   // .be must NOT have been created
+
+    char rm[512];
+    snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
+    system(rm);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "HOMETestGet...\n");
@@ -234,6 +318,10 @@ ok64 maintest() {
     call(HOMETestMissingFile);
     fprintf(stderr, "HOMETestBranches...\n");
     call(HOMETestBranches);
+    fprintf(stderr, "HOMETestRwBootstrap...\n");
+    call(HOMETestRwBootstrap);
+    fprintf(stderr, "HOMETestRoNoBootstrap...\n");
+    call(HOMETestRoNoBootstrap);
     fprintf(stderr, "all passed\n");
     done;
 }

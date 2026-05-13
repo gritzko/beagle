@@ -106,6 +106,39 @@ static void home_bootstrap_config(home *h) {
     FILEClose(&fd);
 }
 
+// rw bootstrap: idempotently materialize the canonical empty-state
+// layout under <h->root>/.be — directory plus the two append-only
+// marker logs (`refs`, `wtlog`).  Stat-then-create avoids truncating
+// existing data; an empty file is the well-defined "no rows yet"
+// state for both logs, so creating fresh ones is safe.  Best-effort
+// from the caller's perspective: downstream code will still fail
+// loudly if it can't read what it needs.
+static ok64 home_ensure_markers(home *h) {
+    sane(h != NULL && u8bHasData(h->root));
+    a_dup(u8c, root_s, u8bDataC(h->root));
+    a_path(bedir);
+    call(PATHu8bFeed, bedir, root_s);
+    call(PATHu8bPush, bedir, DOG_BE_S);
+    call(FILEMakeDirP, $path(bedir));
+    a_dup(u8c, bedir_s, u8bDataC(bedir));
+
+    u8cs const markers[2] = {
+        {DOG_REFS_S[0],  DOG_REFS_S[1]},
+        {DOG_WTLOG_S[0], DOG_WTLOG_S[1]},
+    };
+    for (int i = 0; i < 2; i++) {
+        a_path(mp);
+        call(PATHu8bFeed, mp, bedir_s);
+        call(PATHu8bPush, mp, markers[i]);
+        filestat fs = {};
+        if (FILEStat(&fs, $path(mp)) == OK) continue;
+        int fd = -1;
+        call(FILECreate, &fd, $path(mp));
+        FILEClose(&fd);
+    }
+    done;
+}
+
 // Worker body for HOMEOpen.  Allocates buffers, mmaps the arena,
 // resolves wt/root, mmaps config.  Any early-return on failure leaves
 // already-allocated resources for the wrapper to release via
@@ -163,8 +196,29 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
             }
         }
     } else {
-        call(HOMEFindDogs, h);   // sets both h->wt and h->root
+        ok64 fr = HOMEFindDogs(h);   // sets both h->wt and h->root
+        if (fr == NOHOME && rw) {
+            //  Fresh-clone / `be put` in an empty dir: anchor at cwd
+            //  instead of failing — the marker-creation step below will
+            //  lay down `.be/{refs,wtlog}` so the next HOMEOpen walks
+            //  up to a well-formed anchor.
+            a_path(cwdp);
+            call(FILEGetCwd, cwdp);
+            a_dup(u8c, cwd_s, u8bDataC(cwdp));
+            u8bReset(h->wt);
+            u8bReset(h->root);
+            call(PATHu8bFeed, h->wt,   cwd_s);
+            call(PATHu8bFeed, h->root, cwd_s);
+        } else if (fr != OK) {
+            return fr;
+        }
     }
+
+    //  rw bootstrap: ensure `<root>/.be/{refs,wtlog}` exist.  Idempotent
+    //  and best-effort — failure here doesn't abort the open (a read-only
+    //  filesystem still gets a chance to fail later with a more specific
+    //  error from whichever sub-system actually needed to write).
+    if (rw) (void)home_ensure_markers(h);
 
     // 3. Scratch arena — 4 GB VA, pages on demand.
     call(u8bMap, h->arena, HOME_ARENA_SIZE);

@@ -33,7 +33,7 @@ export CASE NAME VERB
 # 4. scratch dir --------------------------------------------------------
 SCRATCH="$TMP/$$/$VERB/$NAME"
 rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH"
+mkdir -p "$SCRATCH/.be"
 cd "$SCRATCH"
 export SCRATCH
 

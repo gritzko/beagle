@@ -27,14 +27,14 @@ done
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-GRAFget}
 TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+mkdir -p "$TMP/.be"
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
 echo "=== 1. seed 3 commits ==="
-R="$TMP/repo"; mkdir -p "$R"; cd "$R"
+R="$TMP/repo"; mkdir -p "$R/.be"; cd "$R"
 git init --quiet -b main .
 git config user.email t@t
 git config user.name  t

@@ -12,7 +12,7 @@
 #  Sets OUT (CSI-stripped unified diff) in caller scope.
 run_diff() {
     _sub=$1; _oldf=$2; _newf=$3
-    mkdir -p "$_sub"; cd "$_sub"
+    mkdir -p "$_sub/.be"; cd "$_sub"
     cp "$_oldf" f.c
     "$BE" put  f.c                  >/dev/null
     "$BE" post -m v1 '?v1'          >/dev/null

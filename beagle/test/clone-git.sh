@@ -27,7 +27,7 @@ DOGS_DIR="$CLONE/$NAME"
 GIT_DIR="$CLONE/$NAME.git-ref"
 
 rm -rf "$DOGS_DIR" "$GIT_DIR"
-mkdir -p "$DOGS_DIR"
+mkdir -p "$DOGS_DIR/.be"
 trap 'rm -rf "$CLONE"; rmdir "${CLONE%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT INT TERM
 
 # --- git reference clone ---

@@ -23,8 +23,8 @@ BE="$BIN/be"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-clone-sniff}
 TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+mkdir -p "$TMP/.be"
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -44,7 +44,7 @@ fi
 #  repo under $TMP (which lives under $HOME/tmp by default) and pass
 #  the leading-slash form `/path-relative-to-home` in the URI.
 echo "=== 1. seed git repo over ssh-reachable path ==="
-SRC="$TMP/src"; mkdir -p "$SRC"; cd "$SRC"
+SRC="$TMP/src"; mkdir -p "$SRC/.be"; cd "$SRC"
 git init --quiet -b main
 git config user.email t@t
 git config user.name  t
@@ -65,7 +65,7 @@ note "seed sha=$SEED, ssh URI=$URI"
 
 # --- 2. clone via be get ssh:// ------------------------------------
 echo "=== 2. be get ssh://... in fresh wt ==="
-WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
+WT="$TMP/wt"; mkdir -p "$WT/.be"; cd "$WT"
 "$BE" get "$URI" >/dev/null 2>&1 || fail "wt: be get failed"
 
 [ -f .be/wtlog ] || fail "wt: .be/wtlog missing"

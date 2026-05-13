@@ -21,7 +21,7 @@ TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEworktree}
 TMP=$TMP/$TEST_ID/$$
 mkdir -p "$TMP"; echo "Running in $PWD"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -48,7 +48,7 @@ head_hex_of() {
 
 # --- 1. primary ------------------------------------------------------
 echo "=== 1. primary: seed commit ==="
-PRIM="$TMP/prim"; mkdir -p "$PRIM"; cd "$PRIM"
+PRIM="$TMP/prim"; mkdir -p "$PRIM/.be"; cd "$PRIM"
 echo hello > README
 "$BE" post --seq -m "seed" >/dev/null
 SEED_HEAD=$(head_hex_of "$PRIM")
@@ -62,6 +62,8 @@ ls "$PRIM/.be"/*.keeper >/dev/null 2>&1 \
 # --- 2. worktree from primary ---------------------------------------
 echo "=== 2. be get <primary> creates worktree ==="
 WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
+#  Secondary wt: `.be` must be born as a regular file (wtlog) here;
+#  `be get <primary>` seeds it from row 0 of the primary's wtlog.
 "$BE" get --seq "$PRIM" >/dev/null 2>/dev/null || true
 [ -f "$WT/.be" ] && [ ! -d "$WT/.be" ] \
     || fail ".be should be a regular file (secondary wt)"

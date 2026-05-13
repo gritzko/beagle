@@ -30,7 +30,7 @@ TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-GRAFmergeFromGit}
 TMP=$TMP/$TEST_ID/$$
 TMP_REL=${TMP#$HOME/}
-mkdir -p "$TMP"
+mkdir -p "$TMP/.be"
 trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT
 
 # --- 1. toy git source: base + feat-a + feat-b, concurrent edits ----

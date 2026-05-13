@@ -17,7 +17,7 @@ export PATH="$BIN:$PATH"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-log-projector}
 T=$TMP/$TEST_ID/$$
-mkdir -p "$T"
+mkdir -p "$T/.be"
 trap 'rm -rf "$T"; rmdir "${T%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT INT TERM
 
 FAIL=0
@@ -39,7 +39,7 @@ want_grep() {
 }
 
 # --- Build a 4-commit repo: a.txt touched in c1/c3, b.txt only in c2/c4
-R=$T/repo; mkdir -p "$R"; cd "$R"
+R=$T/repo; mkdir -p "$R/.be"; cd "$R"
 sniff init >/dev/null
 
 echo a1 > a.txt

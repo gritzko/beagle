@@ -22,8 +22,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-post-rebase}
 TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP"
-trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT INT TERM
+mkdir -p "$TMP/.be"
+trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
@@ -62,7 +62,7 @@ parent_of() {
 # ------------------------------------------------------------------
 echo "=== 1. WT1 seed: T1 ==="
 WT1="$TMP/wt1"
-mkdir -p "$WT1"; cd "$WT1"
+mkdir -p "$WT1/.be"; cd "$WT1"
 echo "x v1" > x.txt
 "$BE" post 'v1 msg' >/dev/null
 T1=$(head_hex)
@@ -78,6 +78,8 @@ note "T1=$T1"
 # ------------------------------------------------------------------
 echo "=== 2. WT2 forks off the same store at T1 ==="
 WT2="$TMP/wt2"
+#  Secondary wt: `.be` is a regular file (its own wtlog), seeded
+#  from WT1's wtlog below.  No mkdir .be — the cp creates the file.
 mkdir -p "$WT2"; cd "$WT2"
 cp "$WT1/x.txt" x.txt
 cp "$WT1/.be/wtlog" .be

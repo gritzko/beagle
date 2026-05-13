@@ -62,6 +62,8 @@ static void BEUsage(void) {
 
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
 // resolved against this process's own argv[0] via HOMEResolveSibling.
+static ok64 be_ensure_repo(void);
+
 static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
     a_path(path);
@@ -459,22 +461,11 @@ static ok64 BEGet(cli *c, b8 seq) {
         done;
     }
 
-    //  Fresh-clone bootstrap: a remote URI with no `.be/` anywhere up
-    //  to / needs an empty `.be/` in cwd so the downstream dog can
-    //  place its files.
-    if (remote) {
-        home probe_h = {};
-        uri at = {};
-        ok64 ho = HOMEOpen(&probe_h, &at, NO);
-        HOMEClose(&probe_h);
-        if (ho != OK) {
-            a_path(here);
-            if (FILEGetCwd(here) == OK) {
-                call(PATHu8bPush, here, DOG_BE_S);
-                call(FILEMakeDirP, $path(here));
-            }
-        }
-    }
+    //  Auto-bootstrap: GET is a writer (advances cur, stamps files,
+    //  appends a `get` row), so it needs `.be/` markers like PUT/POST.
+    //  Covers both the fresh-clone (remote) and the local
+    //  `be get ?branch` on an empty dir cases.
+    call(be_ensure_repo);
 
     //  Step 1: keeper get URI — synchronous.  Only meaningful when
     //  the URI carries a remote authority (fetch/clone path); for a
@@ -757,6 +748,9 @@ static ok64 BEDelete(cli *c, b8 seq) {
     for (u32 i = 0; i < c->nuris; i++) {
         if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
     }
+    //  Local-only DELETE on a fresh dir is an edge case but the test
+    //  surface expects auto-bootstrap parity with PUT/POST.
+    if (!has_remote) call(be_ensure_repo);
     if (has_remote) {
         static dog_step const remote_steps[] = {
             {u8slit("keeper"), u8slit("delete"), NO},
@@ -820,6 +814,17 @@ static ok64 BEPatch(cli *c, b8 seq) {
     //  PATCH is ref-expecting (absorbs another branch's stack): promote
     //  bare `be patch feat` to query=feat just like POST.
     for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
+    //  Auto-bootstrap parity with PUT/POST — local PATCH on a fresh
+    //  dir needs the same `.be/` markers downstream.
+    {
+        b8 patch_has_remote = NO;
+        for (u32 i = 0; i < c->nuris; i++) {
+            if (!u8csEmpty(c->uris[i].authority)) {
+                patch_has_remote = YES; break;
+            }
+        }
+        if (!patch_has_remote) call(be_ensure_repo);
+    }
     static dog_step const steps[] = {
         {u8slit("keeper"), u8slit("get"),   NO},
         {u8slit("sniff"),  u8slit("patch"), NO},
@@ -870,6 +875,17 @@ static b8 be_post_is_path_form(uri *u) {
 
 static ok64 BEPost(cli *c, b8 seq) {
     sane(c);
+    //  Auto-bootstrap: `be post 'msg'` on a fresh dir is the
+    //  canonical "init + first commit" path (see workflow.sh §1).
+    //  Mirrors BEPut's call to be_ensure_repo; only meaningful when
+    //  there's no remote authority (push targets always have a repo).
+    b8 has_remote_pre = NO;
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].authority)) {
+            has_remote_pre = YES; break;
+        }
+    }
+    if (!has_remote_pre) call(be_ensure_repo);
     for (u32 i = 0; i < c->nuris; i++) {
         uri *u = &c->uris[i];
         //  POST is ref-expecting: bare `be post feat` should target ref
