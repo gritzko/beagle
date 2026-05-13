@@ -300,6 +300,26 @@ After a successful GET, `.be/wtlog` records the new base as
 `(branch, tip-sha)` and clears any pending PATCH parents.  Bare
 `be get` is a no-op status (≡ bare `be`).
 
+###  `--force` and `--prune` (tree reset)
+
+`be get --force` overwrites dirty tracked paths instead of
+weave-merging, and bypasses the no-baseline dirty-overlay refusal
+— turning GET from a careful merge into a tree reset.  Untracked
+files survive (`--force` is reset, not clean).
+
+`be get --prune` (typically paired with `--force`) additionally
+removes every wt-only path after the checkout: any file or
+directory in the wt that isn't in the target tree, with two
+exceptions.  Paths matching `.gitignore` patterns survive
+(mirrors `git clean -f`, not `-fx`); the target tree's
+`.gitignore` is consulted (re-read post-checkout so freshly
+added rules apply).  The metadata dir (`.be/`) is never touched.
+
+| Form | Effect |
+|---|---|
+| `be get --force ?<sha>`           | Detached reset to `<sha>`; dirty tracked bytes are overwritten; untracked files preserved. |
+| `be get --force --prune ?<sha>`   | Same reset + remove untracked clutter (gitignored files survive). |
+
 ##  POST — advance cur
 
 POST is the **commit-mover**: it creates one new commit and
