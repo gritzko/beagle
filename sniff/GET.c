@@ -272,6 +272,7 @@ typedef struct {
     ron60  v_base;
     ron60  v_tgt;
     u32    no_base_conflicts;   // dirty wt without a baseline to merge against
+    b8     force;               // --force: overwrite dirty paths, no merge
 } get_overlap_ctx;
 
 //  Compare two ULOG-row kind (verb's bottom RON64 digit) and
@@ -329,6 +330,13 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     b8 changed = !base || !tgt || !get_leaf_eq(base, tgt);
 
     if (!changed && tgt) {
+        //  `--force`: skip the noop-overlay optimisation so WRITE
+        //  overwrites + restamps every target path.  Resetting to
+        //  the current tip (`be get --force '?'`) has base.sha ==
+        //  tgt.sha for every file, so without this the noop list
+        //  would cover the whole tree and dirty user edits would
+        //  silently survive the "reset".
+        if (c->force) return OK;
         u8bFeed(c->noop_out, path);
         u8bFeed1(c->noop_out, '\n');
         return OK;
@@ -347,8 +355,10 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     //  Unattributed mtime without a baseline to compare against:
     //  refuse — there's no "clean drift" answer possible, and graf
     //  has no history to weave-merge with.  Mirrors the prior
-    //  blanket dirty-overlap refusal for this corner.
+    //  blanket dirty-overlap refusal for this corner.  `--force`
+    //  bypasses: WRITE will overwrite the dirty bytes.
     if (!SNIFFAtKnown(mr) && !base) {
+        if (c->force) return OK;
         if (c->no_base_conflicts < 5)
             fprintf(stderr, "sniff: dirty overlay %.*s\n",
                     (int)$len(path), (char *)path[0]);
@@ -361,8 +371,13 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     //  (silent fall-through) — UNLESS tgt is absent (deletion), in
     //  which case the WRITE pass never visits this path and the
     //  unlink branch below has to do the work.  Different → real
-    //  local edit, schedule a weave-merge.
-    if (!SNIFFAtKnown(mr) && base) {
+    //  local edit, schedule a weave-merge.  `--force` skips the
+    //  hash+merge classification — WRITE overwrites dirty bytes
+    //  for the tgt-present case; tgt-absent falls into clean delete.
+    if (c->force && !SNIFFAtKnown(mr) && base) {
+        if (tgt) return OK;
+        //  base && !tgt → drop into the clean-delete arm below.
+    } else if (!SNIFFAtKnown(mr) && base) {
         sha1 wt_sha = {};
         b8 hashed = NO;
         if (fs.kind == FILE_KIND_REG) {
@@ -416,7 +431,7 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
 static ok64 get_overlap_check(keeper *k, u8cs reporoot,
                               u8cp base_tree, u8cp tgt_tree,
                               u8bp noop_out, u8bp unlink_out,
-                              u8bp merges_out) {
+                              u8bp merges_out, b8 force) {
     sane(k && tgt_tree && noop_out && unlink_out && merges_out);
     u8bReset(noop_out);
     u8bReset(unlink_out);
@@ -455,6 +470,7 @@ static ok64 get_overlap_check(keeper *k, u8cs reporoot,
         .v_base     = v_base,
         .v_tgt      = v_tgt,
         .no_base_conflicts = 0,
+        .force      = force,
     };
     u8csMv(ctx.reporoot, reporoot);
 
@@ -751,10 +767,10 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 (bl == 0 ||
                  memcmp(b_branch[0], t_branch[0], (size_t)bl) == 0);
 
-            if (!same_branch && get_wt_dirty(reporoot)) {
+            if (!same_branch && !SNIFF.force && get_wt_dirty(reporoot)) {
                 fprintf(stderr,
                         "sniff: cross-branch GET refused "
-                        "— wt is dirty\n");
+                        "— wt is dirty (use --force to override)\n");
                 fail(SNIFFDRTY);
             }
             //  KEEPSwitchBranch already ran at the top of this fn —
@@ -859,7 +875,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  the safety check has to run somewhere.
     o = get_overlap_check(k, reporoot,
                           has_base_tree ? base_tree.data : NULL,
-                          tree_sha.data, noop, unlinks, merges);
+                          tree_sha.data, noop, unlinks, merges,
+                          SNIFF.force);
     if (o != OK) {
         u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
         u8bFree(subs);
@@ -917,9 +934,14 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  when the parent tree references unreachable submodule URLs
     //  whose fetch would otherwise stall on a network timeout.
     if (SNIFF.nosub && u8bDataLen(subs) > 0) {
+        //  One row per submodule: `<path>\t<40-hex>\n`.  Count rows
+        //  by counting newlines — `u8bDataLen / 2` was a row-size
+        //  guess that wildly overcounts on any path > 2 bytes.
+        unsigned nsubs = 0;
+        a_dup(u8c, scan, u8bData(subs));
+        $for(u8c, p, scan) if (*p == '\n') nsubs++;
         fprintf(stderr,
-                "sniff: %u submodule(s) skipped (--nosub)\n",
-                (unsigned)(u8bDataLen(subs) / 2));
+                "sniff: %u submodule(s) skipped (--nosub)\n", nsubs);
     }
     if (!SNIFF.nosub && u8bDataLen(subs) > 0) {
         a_path(gm_path);
@@ -950,9 +972,12 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             }
             FILEUnMap(gm_map);
         } else {
+            unsigned nsubs = 0;
+            a_dup(u8c, scan, u8bData(subs));
+            $for(u8c, p, scan) if (*p == '\n') nsubs++;
             fprintf(stderr,
                     "sniff: %u submodule(s) skipped — no .gitmodules in tree\n",
-                    (unsigned)(u8bDataLen(subs) / 2));
+                    nsubs);
         }
     }
     u8bFree(subs);

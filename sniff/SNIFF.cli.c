@@ -86,6 +86,13 @@ static ok64 sniffcli_inner(cli *c) {
     //  AFTER SNIFFOpen — that function zerops the singleton.
     SNIFF.nosub = CLIHas(c, "--nosub") ? YES : NO;
 
+    //  `--force` (boolean): GET overwrites dirty wt paths without
+    //  weave-merge and without the no-baseline dirty-overlay
+    //  refusal.  Without it, `be get` is a careful merge — with it,
+    //  `be get` is a tree reset.  Forwarded by `be` to every sub-dog;
+    //  only sniff acts on it.  Set AFTER SNIFFOpen (zerops singleton).
+    SNIFF.force = CLIHas(c, "--force") ? YES : NO;
+
     //  POST (ff check) and PATCH (3-way merge LCA) call into graf for
     //  ancestor queries.  Open graf only for those two verbs — `sniff
     //  get` doesn't move HEAD, doesn't read the DAG, and grabbing

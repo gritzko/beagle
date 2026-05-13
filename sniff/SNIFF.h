@@ -84,6 +84,11 @@ typedef struct {
     b8      nosub;    // YES → skip the GET.c submodule-mount loop
                       // (`--nosub` on the CLI).  Set in sniffcli_inner;
                       // read by GET.c.  Default NO.
+    b8      force;    // YES → GET overwrites dirty wt paths without
+                      // weave-merge and without the no-baseline
+                      // dirty-overlay refusal (`--force` on the CLI).
+                      // Set in sniffcli_inner AFTER SNIFFOpen (which
+                      // zerops the singleton); read by GET.c.  Default NO.
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;
 
