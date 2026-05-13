@@ -294,16 +294,55 @@ static void stamp_wrote(u8cs reporoot, u8cs childpath, patch_stats *st) {
     (void)SNIFFAtStampPath(fp, st->ts);
 }
 
-//  Scan `bytes` for conflict markers (JOIN emits a literal
-//  `<<<<<<<` at column 0).  Any hit → conflict.
+//  Scan `bytes` for a WEAVE-format conflict marker triple.
+//  Valid shapes (both produced by `WEAVEEmitMerged`):
+//
+//    inline:      `<<<<theirs||||ours>>>>`
+//    line-block:  `<<<<\n…\n||||\n…\n>>>>\n` (each marker on its own line,
+//                                            re-aligned by
+//                                            `weave_realign_conflicts`
+//                                            when the cluster is ≥ 1/4
+//                                            of the surrounding line)
+//
+//  Order is fixed: open `<<<<`, then at least one mid `||||`, then close
+//  `>>>>`.  A bare `<<<<` (or `>>>>`) without the matching partners — as
+//  appears in documentation prose like VERBS.md — is *not* a conflict.
+//  A nested `<<<<` before the close aborts the candidate triple and the
+//  scan continues past the inner open.
 static b8 has_conflict_marker(u8cs bytes) {
     u8cp p = bytes[0];
     u8cp e = bytes[1];
-    //  Inline token-level markers emitted by JOIN: >>>>theirs||||ours<<<<
-    while (p + 4 <= e) {
-        if (p[0] == '<' && p[1] == '<' && p[2] == '<' && p[3] == '<')
-            return YES;
-        p++;
+    while (p + 12 <= e) {     // need at least `<x4 |x4 >x4`
+        if (p[0] != '<' || p[1] != '<' || p[2] != '<' || p[3] != '<') {
+            p++; continue;
+        }
+        //  Candidate open at `p`.  Look forward for a `||||` (no
+        //  intervening `<<<<` or `>>>>`), then a `>>>>` (no
+        //  intervening `<<<<`).  Multiple `||||` separators per
+        //  cluster are allowed (n-way merges).
+        u8cp q = p + 4;
+        b8 saw_mid = NO;
+        b8 saw_close = NO;
+        b8 nested_open = NO;
+        while (q + 4 <= e) {
+            if (q[0] == '<' && q[1] == '<' && q[2] == '<' && q[3] == '<') {
+                nested_open = YES; break;
+            }
+            if (q[0] == '>' && q[1] == '>' && q[2] == '>' && q[3] == '>') {
+                if (saw_mid) saw_close = YES;
+                break;
+            }
+            if (q[0] == '|' && q[1] == '|' && q[2] == '|' && q[3] == '|') {
+                saw_mid = YES;
+                q += 4; continue;
+            }
+            q++;
+        }
+        if (saw_close) return YES;
+        //  Not a valid triple — skip past this `<<<<` and keep
+        //  scanning.  On nested-open we resume from the inner one
+        //  so it gets its own chance to match.
+        p = nested_open ? q : p + 4;
     }
     return NO;
 }
