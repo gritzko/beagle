@@ -806,9 +806,19 @@ static b8 be_promote_to_ref(uri *u) {
 }
 
 //  `be patch <uri>` — 3-way merge `uri`'s target ref/sha into the
-//  worktree.  If the URI has an authority we first `keeper get` to
-//  fetch the target's reachable closure, then hand off to
-//  `sniff patch`.  See VERBS.md §PATCH.
+//  worktree.  Steps:
+//    1. (transport-scheme remote only) keeper get URI to fetch
+//       refs+pack, refreshing `.be/refs` and seeding keeper with
+//       the target commit's reachable closure.
+//    2. (any remote) graf get URI to walk the (possibly newly
+//       fetched) commits into graf's DAG index — sniff's PATCH
+//       calls GRAFLca / GRAFResolveTip, which fail if the target's
+//       ancestor set isn't indexed.  No-op when the URI's commits
+//       are already in graf's index.  Mirrors the equivalent step
+//       in BEPost.  Without this, a remote `be patch ssh://host?<sha>`
+//       reports GRAFFAIL even though the pack data sits in keeper.
+//    3. sniff patch — performs the 3-way merge into the wt.
+//  See VERBS.md §PATCH.
 static ok64 BEPatch(cli *c, b8 seq) {
     sane(c);
     //  PATCH is ref-expecting (absorbs another branch's stack): promote
@@ -816,23 +826,23 @@ static ok64 BEPatch(cli *c, b8 seq) {
     for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
     //  Auto-bootstrap parity with PUT/POST — local PATCH on a fresh
     //  dir needs the same `.be/` markers downstream.
-    {
-        b8 patch_has_remote = NO;
-        for (u32 i = 0; i < c->nuris; i++) {
-            if (!u8csEmpty(c->uris[i].authority)) {
-                patch_has_remote = YES; break;
-            }
-        }
-        if (!patch_has_remote) call(be_ensure_repo);
+    b8 has_remote = NO, has_transport = NO;
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].authority)) has_remote = YES;
+        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
     }
-    static dog_step const steps[] = {
-        {u8slit("keeper"), u8slit("get"),   NO},
-        {u8slit("sniff"),  u8slit("patch"), NO},
-    };
-    u32 nsteps = sizeof(steps) / sizeof(steps[0]);
-    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
-    u32 start = (u != NULL && !$empty(u->authority)) ? 0 : 1;
-    call(BEDispatch, c, steps + start, nsteps - start, seq);
+    if (!has_remote) call(be_ensure_repo);
+
+    dog_step steps[3];
+    u32 nsteps = 0;
+    if (has_transport && has_remote) {
+        steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("get"), NO};
+    }
+    if (has_remote) {
+        steps[nsteps++] = (dog_step){u8slit("graf"),   u8slit("get"), NO};
+    }
+    steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("patch"), NO};
+    call(BEDispatch, c, steps, nsteps, seq);
     //  Patch may move the wt's HEAD via 3-way merge; refresh spot+graf.
     (void)be_reindex(c);
     done;
