@@ -1,0 +1,5 @@
+header line
+    if (cond && value > UPSTREAM) {
+        do_thing();
+    }
+trailer line

@@ -1,0 +1,5 @@
+header line
+    if (cond && value > LOCAL) {
+        do_thing();
+    }
+trailer line

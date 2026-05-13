@@ -18,6 +18,13 @@
   placeholder lands at `.be/sub/` (basename-keyed), and `vendor/sub/lib.h`
   carries the upstream blob.  Gated on `WITH_SSH`.  Exercises
   MODULES.plan.md Phases 1 + 3 end-to-end.
+* `07-submodule-nosub/` — `be get --nosub ssh://localhost/<rel>/parent.git?master`
+  on the same submodule-bearing parent as case 05.  Asserts the
+  parent files materialise but the sub mount loop is short-circuited:
+  no `vendor/sub/lib.h`, no `.be/sub/` store, and stderr carries
+  the `submodule(s) skipped (--nosub)` line.  Regression spec for
+  the conflict-marker breakage at sniff/GET.c around the `--nosub`
+  branch.  Gated on `WITH_SSH`.
 * `06-branch-switch-shards/` — `be get ?<branch>` switches the wt
   across sibling branches, keeping each branch's packs inside its
   own `.be/<branch>/` shard.  Builds trunk + ?feat + ?other (both
@@ -30,3 +37,15 @@
   keep working via the flat-pool semantics.  Flip on after POST /
   PATCH route through `KEEPSwitchBranch` (or a sibling-load
   variant).
+* `08-weave-marker-line-anchor/` — `be get file://<bare>?master`
+  twice across a wt edit + an upstream commit that touch the same
+  line.  Pre-fix `WEAVEEmitMerged` dropped `<<<<` / `||||` / `>>>>`
+  at token boundaries — clusters held only the diverging fragment
+  (`LOCAL` vs `UPSTREAM`) so neither side reconstructed a syntactic
+  line when extracted.  Asserts the reframer runs (markers on their
+  own lines) AND each cluster carries the full conflict line
+  (`    if (cond && value > LOCAL) {` / `... > UPSTREAM) {`), so
+  dropping one side leaves a buildable file.  Inline framing
+  (cluster < 1/4 of the line) is preserved for tiny single-word
+  edits via a separate path; this case exercises the line-level
+  branch.

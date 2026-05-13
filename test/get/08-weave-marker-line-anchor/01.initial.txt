@@ -1,0 +1,5 @@
+header line
+    if (cond && value > 0) {
+        do_thing();
+    }
+trailer line
