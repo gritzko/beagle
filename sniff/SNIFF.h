@@ -81,6 +81,9 @@ typedef struct {
     u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.be/wtlog
     wh128bp log_idx;  // ts → wh128 (off + verb-hash) index over log_data
     b8      log_rw;   // YES iff log was opened RW (Close must trim)
+    b8      nosub;    // YES → skip the GET.c submodule-mount loop
+                      // (`--nosub` on the CLI).  Set in sniffcli_inner;
+                      // read by GET.c.  Default NO.
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;
 

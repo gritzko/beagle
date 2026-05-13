@@ -911,7 +911,17 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  failures are logged (inside SNIFFSubMount) but the overall GET
     //  still completes — partial materialisation beats a hard refuse
     //  here.
-    if (u8bDataLen(subs) > 0) {
+    //
+    //  `--nosub` (forwarded by `be` and parked in SNIFF.nosub by
+    //  sniffcli_inner) short-circuits this loop entirely — useful
+    //  when the parent tree references unreachable submodule URLs
+    //  whose fetch would otherwise stall on a network timeout.
+    if (SNIFF.nosub && u8bDataLen(subs) > 0) {
+        fprintf(stderr,
+                "sniff: %u submodule(s) skipped (--nosub)\n",
+                (unsigned)(u8bDataLen(subs) / 2));
+    }
+    if (!SNIFF.nosub && u8bDataLen(subs) > 0) {
         a_path(gm_path);
         u8cs gmrel = {(u8c *)".gitmodules", (u8c *)".gitmodules" + 11};
         u8bp gm_map = NULL;

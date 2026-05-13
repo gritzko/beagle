@@ -25,6 +25,7 @@ static ok64 sniffcli_inner(cli *c) {
     call(FILEInit);
     call(CLIParse, c, SNIFF_VERBS, SNIFF_VAL_FLAGS);
 
+
     char cwd[1024];
     u8cs reporoot = {};
     if (u8bHasData(c->repo)) {
@@ -78,6 +79,12 @@ static ok64 sniffcli_inner(cli *c) {
         u8csMv(at.path, reporoot);
     call(HOMEOpen, &h, &at, rw);
     call(SNIFFOpen, &h, rw);   // opens keeper singleton too
+
+    //  `--nosub` (boolean): skip the submodule-mount loop in
+    //  GET.c.  Forwarded by `be` to every sub-dog; only sniff
+    //  acts on it (other dogs don't fetch submodules).  Set
+    //  AFTER SNIFFOpen — that function zerops the singleton.
+    SNIFF.nosub = CLIHas(c, "--nosub") ? YES : NO;
 
     //  POST (ff check) and PATCH (3-way merge LCA) call into graf for
     //  ancestor queries.  Open graf only for those two verbs — `sniff

@@ -1377,6 +1377,7 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
             FILEFeedAll(wfd, fdata);
             u8bFree(flush_b);
         }
+        free(peer_tips);
         goto push_close;
     }
 
