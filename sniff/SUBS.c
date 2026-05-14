@@ -408,6 +408,11 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  the parent keeper is the smoke-path simplification of
     //  MODULES.plan.md §"Storage layout" — proper per-sub branch dirs
     //  remain a follow-up.
+    //
+    //  On failure, roll the anchor and (empty) shard dir back so a
+    //  later retry sees a clean slate — a stranded `<mount>/.be` file
+    //  would otherwise make SNIFFSubIsMount lie and bare `be` think
+    //  the sub is mounted with no content.
     {
         a_dup(u8c, url_const, url);
         ok64 fo = WIREFetchAll(&KEEP, url_const);
@@ -415,6 +420,8 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             fprintf(stderr,
                     "sniff: submodule fetch failed for %.*s\n",
                     (int)$len(url), (char *)url[0]);
+            (void)FILEUnLink($path(anchor));
+            (void)FILERmDir($path(store_dir), false);
             return fo;
         }
     }
@@ -454,6 +461,10 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     if (had_lock) (void)FILEUnlock(&KEEP.lock_fd);
     ok64 sr = subs_spawn_be_get(exe_s, mount_s, arg_s);
     if (had_lock) (void)FILELock(&KEEP.lock_fd, YES);
+    if (sr != OK) {
+        (void)FILEUnLink($path(anchor));
+        (void)FILERmDir($path(store_dir), false);
+    }
     return sr;
 }
 
