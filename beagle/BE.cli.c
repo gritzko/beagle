@@ -16,6 +16,7 @@
 #include "dog/QURY.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
+#include "sniff/SUBS.h"
 
 // Distinct codes so the MAIN-wrapper's `Error: <code>` line tells you
 // what kind of failure stopped the pipeline — a dog exited non-zero
@@ -63,6 +64,7 @@ static void BEUsage(void) {
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
 // resolved against this process's own argv[0] via HOMEResolveSibling.
 static ok64 be_ensure_repo(void);
+static ok64 be_sub_shard_setup(cli *c, uri *u);
 
 static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
@@ -757,6 +759,142 @@ static ok64 be_ensure_repo(void) {
     done;
 }
 
+//  Subdir-of-existing-repo + remote clone = treat cwd as a submodule
+//  worktree of a fresh shard under the ancestor's `.be/`.
+//
+//  Layout (matches "/.be/ is the trunk shard; non-trunk shards mention
+//  the path .../.be/<shard>"):
+//
+//      <parent_root>/.be/                          parent's trunk shard
+//      <parent_root>/.be/<basename>/.be/           sub's own store
+//          ├── refs                                (empty markers)
+//          └── wtlog
+//      <cwd>/.be                                   regular FILE anchor
+//          └── <ts>\trepo\tfile:<parent>/.be/<basename>/.be/\n
+//
+//  Walk-up from any path inside cwd then resolves to the sub's store
+//  (via the anchor file's row-0), so keeper / sniff / graf / spot all
+//  open the shard cleanly without colliding with the parent's keeper.
+//
+//  After setup we rewrite c->repo to cwd so the be_at_buf fill below
+//  reads the freshly-minted (empty) shard wtlog, not the parent's.
+static ok64 be_sub_shard_setup(cli *c, uri *u) {
+    sane(c && u);
+
+    //  Only fires when CLIParse walked up to an ancestor (c->repo
+    //  non-empty) and cwd is a strict subdir of it.  Pure remote
+    //  clones only — `?ref` / `#sha` / projector forms are handled
+    //  by the normal in-repo path.
+    if (!u8bHasData(c->repo)) done;
+    if (u8csEmpty(u->authority)) done;
+
+    a_path(cwd);
+    call(FILEGetCwd, cwd);
+    a_dup(u8c, cwd_s,  u8bDataC(cwd));
+    a_dup(u8c, repo_s, u8bDataC(c->repo));
+    if (u8csEq(cwd_s, repo_s)) done;             // not a subdir
+    if (u8csLen(cwd_s) <= u8csLen(repo_s)) done;
+    if (!u8csHasPrefix(cwd_s, repo_s)) done;
+    //  Boundary check: cwd must continue into repo with a '/' so a
+    //  cousin named `<repo>x/…` doesn't masquerade as a subdir.
+    if (cwd_s[0][u8csLen(repo_s)] != '/') done;
+
+    //  Refuse to clobber an existing `<cwd>/.be` — either anchor file
+    //  or store dir.  A stale one means the user already mounted here
+    //  and a fresh shard would orphan the previous state.
+    a_path(cwd_be);
+    call(PATHu8bFeed, cwd_be, cwd_s);
+    call(PATHu8bPush, cwd_be, DOG_BE_S);
+    {
+        filestat fs = {};
+        if (FILELStat(&fs, $path(cwd_be)) == OK) done;
+    }
+
+    //  Derive shard name from the URL basename — same rule the
+    //  .gitmodules-driven sub-mount uses (sniff/SUBS.c).
+    a_dup(u8c, url_d, u->data);
+    u8cs basename = {};
+    call(SNIFFSubBasename, url_d, basename);
+
+    //  mkdir <parent>/.be/<basename>/.be/
+    a_path(shard_be);
+    call(PATHu8bFeed, shard_be, repo_s);
+    call(PATHu8bPush, shard_be, DOG_BE_S);
+    a_dup(u8c, base_s, basename);
+    call(PATHu8bPush, shard_be, base_s);
+    a_path(shard_root);
+    a_dup(u8c, sr_pre, u8bDataC(shard_be));
+    call(PATHu8bFeed, shard_root, sr_pre);
+    call(PATHu8bPush, shard_be, DOG_BE_S);
+    call(FILEMakeDirP, $path(shard_be));
+
+    //  Seed empty refs + wtlog so HOME walk-up finds a well-formed
+    //  store on first open.
+    {
+        a_path(p);
+        a_dup(u8c, s, u8bDataC(shard_be));
+        call(PATHu8bFeed, p, s);
+        call(PATHu8bPush, p, DOG_REFS_S);
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+    {
+        a_path(p);
+        a_dup(u8c, s, u8bDataC(shard_be));
+        call(PATHu8bFeed, p, s);
+        call(PATHu8bPush, p, DOG_WTLOG_S);
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+
+    //  Compose row-0 URI: `file:<shard_root>/.be/`.  Routed through
+    //  URIutf8Feed so the bytes match `sniff_write_repo_row`'s output
+    //  shape (single slash after `file:`, trailing slash on path).
+    a_path(uri_path);
+    a_dup(u8c, sr_s, u8bDataC(shard_be));
+    call(PATHu8bFeed, uri_path, sr_s);
+    call(u8bFeed1, uri_path, '/');
+    call(PATHu8bTerm, uri_path);
+
+    uri urow = {};
+    a_cstr(scheme_s, "file");
+    urow.scheme[0] = scheme_s[0];
+    urow.scheme[1] = scheme_s[1];
+    {
+        a_dup(u8c, p, u8bData(uri_path));
+        urow.path[0] = p[0];
+        urow.path[1] = p[1];
+    }
+
+    a_pad(u8, row, 1024);
+    ron60 ts = RONNow();
+    call(RONutf8sFeed, u8bIdle(row), ts);
+    call(u8bFeed1, row, '\t');
+    a_cstr(repo_verb, "repo");
+    call(u8bFeed, row, repo_verb);
+    call(u8bFeed1, row, '\t');
+    call(URIutf8Feed, u8bIdle(row), &urow);
+    call(u8bFeed1, row, '\n');
+
+    int fd = -1;
+    call(FILECreate, &fd, $path(cwd_be));
+    a_dup(u8c, body, u8bData(row));
+    call(FILEFeedAll, fd, body);
+    FILEClose(&fd);
+
+    //  Re-anchor c->repo at cwd so the be_at_buf fill (and any later
+    //  c->repo readers) see the sub, not the parent.
+    u8bReset(c->repo);
+    call(PATHu8bFeed, c->repo, cwd_s);
+
+    fprintf(stderr, "be: subdir clone — shard at %.*s/.be/%.*s\n",
+            (int)$len(repo_s),   (char *)repo_s[0],
+            (int)$len(basename), (char *)basename[0]);
+    done;
+}
+
 //  `be put` is the ref-writer (VERBS.md §"PUT").  Per the URI's
 //  `//remote` slot it also doubles as the FF-push verb — the wire
 //  side maps to keeper's old `post` (push) entry point.  Local
@@ -1104,6 +1242,17 @@ static ok64 becli_inner(cli *c) {
                 u->data[1] = after;
             }
         }
+    }
+
+    //  Subdir-of-existing-repo + remote `be get`: drop a fresh shard
+    //  under the ancestor's `.be/` and anchor cwd there before the
+    //  --at flag is composed.  Without this the sub-dogs would walk
+    //  up to the parent and pollute its keeper.
+    {
+        a_cstr(v_get_s, "get");
+        if (!u8csEmpty(c->verb) && u8csEq(c->verb, v_get_s) &&
+            c->nuris > 0)
+            (void)be_sub_shard_setup(c, &c->uris[0]);
     }
 
     //  Read the wt's tip URI (`<root>?<branch>#<sha>`) once, here at
