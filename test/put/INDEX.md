@@ -5,6 +5,10 @@
   behaves when one of the listed paths is unchanged versus modified or
   new.
 * `02-put-dir/` — `be put <dir>/` on a tracked subtree.
+* `05-submodule-bump/` — `be put <subpath>` on a sub-mount: PUT reads
+  the sub-wt's pinned tip from its `.be` anchor and stages one
+  `put <subpath>#<40-hex>` row.  No dir walk, no per-file hashing.
+  Covers MODULES.plan.md §"Phase 4 — PUT" (explicit-arg form).
 * `03-branch-shard/` — `be put ?<branch>` creates the branch's keeper
   shard dir (`.be/<branch>/`), and any subsequent `be post` on that
   branch writes its pack log INTO that shard (`.be/<branch>/NNNN.keeper`)

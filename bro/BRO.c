@@ -227,6 +227,9 @@ typedef struct {
     int tty_fd;        // /dev/tty for keyboard (stdin may be data pipe)
     b8 raw_mode;       // whether terminal is in raw mode
     b8 mouse_on;       // mouse tracking active (toggled with 'm')
+    b8 wrap;           // soft-wrap long lines (toggled with 'w')
+    b8 fixed_lines;    // linesbuf is fixed-capacity (pipe mode): rewrite
+                       // in place instead of free+realloc on rebuild
     char flash[128];   // one-shot status bar message (cleared after display)
     // View stack
     BROsave saves[BRO_MAX_VIEWS];
@@ -664,10 +667,18 @@ u32 BROCountLines(hunkc const *hunks, u32 nhunks, u32 cols) {
     return total;
 }
 
+// Effective wrap width for the line index.  Wrap mode wraps at the
+// screen width; no-wrap mode passes the 24-bit offset ceiling so each
+// source line becomes one index entry (renderer still clips at st->cols).
+fun u32 bro_wrap_cols(BROstate const *st) {
+    if (!st->wrap) return BRO_LINE_OFF_MASK;
+    return st->cols > 0 ? st->cols : 80;
+}
+
 static ok64 BROBuildIndex(BROstate *st) {
     sane(st != NULL && st->hunks != NULL);
 
-    u32 cols = st->cols > 0 ? st->cols : 80;
+    u32 cols = bro_wrap_cols(st);
     u32 total = BROCountLines(st->hunks, st->nhunks, cols);
     u32 cap = total > 0 ? total : 1;
     ok64 lo = range32bAlloc(st->linesbuf, cap);
@@ -2341,6 +2352,40 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         else MAUSDisable(STDOUT_FILENO);
         return BRO_KEY_NONE;
     }
+    if (ch == 'w') {
+        // Save source-line anchor before rebuilding the index.
+        u32 anchor_h = 0, anchor_off = 0;
+        b8 have_anchor = NO;
+        if (st->scroll < st->nlines &&
+            st->lines[st->scroll].hi != BRO_TITLE_LINE) {
+            anchor_h = st->lines[st->scroll].lo;
+            anchor_off = bro_line_off(&st->lines[st->scroll]);
+            have_anchor = YES;
+        }
+        st->wrap = !st->wrap;
+        u32 cols = bro_wrap_cols(st);
+        if (st->fixed_lines) {
+            // Rewrite in place; the fixed capacity was set at open.
+            u32 cap = (u32)range32bLen(st->linesbuf);
+            st->nlines = BROAppendLines(st->lines, 0, cap,
+                                        st->hunks, 0, st->nhunks, cols);
+        } else {
+            range32bFree(st->linesbuf);
+            if (BROBuildIndex(st) != OK) {
+                snprintf(st->flash, sizeof(st->flash),
+                         "wrap: rebuild failed");
+                return BRO_KEY_CHANGED;
+            }
+        }
+        if (have_anchor) {
+            u32 ln = bro_line_for_off(st->lines, st->nlines,
+                                      anchor_h, anchor_off);
+            if (ln != BRO_NONE) st->scroll = ln;
+        }
+        snprintf(st->flash, sizeof(st->flash),
+                 "wrap: %s", st->wrap ? "on" : "off");
+        return BRO_KEY_CHANGED;
+    }
     if (ch == '\'') {
         // Local token search (GURI-consistent alias for /)
         BROReadSearch(st);
@@ -2432,6 +2477,7 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
 
     BROstate st = {};
     st.tty_fd = -1;
+    st.wrap = YES;
     st.hunks = hunks;
     st.nhunks = nhunks;
 
@@ -2661,6 +2707,8 @@ ok64 BROPipeRun(int pipefd) {
     // Allocate line index
     BROstate st = {};
     st.tty_fd = -1;
+    st.wrap = YES;
+    st.fixed_lines = YES;
     ok64 lo = range32bAlloc(st.linesbuf, PIPE_MAX_LINES);
     if (lo != OK) {
         u8bUnMap(rdbuf);
@@ -2713,7 +2761,8 @@ ok64 BROPipeRun(int pipefd) {
             }
             BROGetSize(&st);
             st.nlines = BROAppendLines(st.lines, 0, PIPE_MAX_LINES,
-                                        bro_hunks, 0, bro_nhunks, st.cols);
+                                        bro_hunks, 0, bro_nhunks,
+                                        bro_wrap_cols(&st));
             indexed_nhunks = bro_nhunks;
             if (have_anchor) {
                 u32 ln = bro_line_for_off(st.lines, st.nlines,
@@ -2835,7 +2884,7 @@ ok64 BROPipeRun(int pipefd) {
             st.nlines = BROAppendLines(st.lines, st.nlines,
                                          PIPE_MAX_LINES, bro_hunks,
                                          indexed_nhunks, bro_nhunks,
-                                         st.cols);
+                                         bro_wrap_cols(&st));
             st.nhunks = bro_nhunks;
             indexed_nhunks = bro_nhunks;
         }

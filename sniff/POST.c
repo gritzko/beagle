@@ -239,6 +239,18 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
         return OK;
     }
 
+    //  Sub-mount bump (`put <sub>#<40-hex>`): fragment is a new
+    //  gitlink sha, not a move destination.  Emit one put intent
+    //  preserving the URI so post_classify_step can read the new sha.
+    if (verb == w->v_put_filter) {
+        u8cs frag = {src->uri.fragment[0], src->uri.fragment[1]};
+        if (u8csLen(frag) == 40 && HEXu8sValid(frag)) {
+            ulogrec rec = {.ts = ts, .verb = w->v_put_emit,
+                           .uri = src->uri};
+            return ULOGu8sFeed(u8bIdle(w->put_unsorted), &rec);
+        }
+    }
+
     //  Move-form put row (`put <old>#<new>`): expand to one del intent
     //  for the source path and one put intent for the dest path.  The
     //  classifier then handles each side via its existing rules
@@ -430,13 +442,13 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  carry a kind suffix in the verb's bottom RON64 digit (appended
     //  by KEEPTreeULog / SNIFFWtULog), so source dispatch tests the
     //  stem.  Put/delete intent rows carry no suffix — equality match.
-    ulogreccp src_base = NULL, src_wt = NULL;
+    ulogreccp src_base = NULL, src_wt = NULL, src_put = NULL;
     b8 has_put = NO, has_del = NO;
     for (u32 i = 0; i < n; i++) {
         ulogreccp m = &recs[i];
         if      (ok64stem(m->verb) == cctx->v_base) src_base = m;
         else if (ok64stem(m->verb) == cctx->v_wt)   src_wt   = m;
-        else if (m->verb == cctx->v_put)            has_put  = YES;
+        else if (m->verb == cctx->v_put)          { has_put = YES; src_put = m; }
         else if (m->verb == cctx->v_del)            has_del  = YES;
     }
 
@@ -456,7 +468,24 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  --- Decision ladder (mirrors the old post_decide) ---
 
     //  Gitlink: carry through verbatim — no on-disk file expected.
+    //  Sub-mount bump (`put <sub>#<40-hex>`) overrides the keep with
+    //  an ADD at the new sha so the new tree records the bumped pin.
     if (base_mode == 0160000) {
+        if (src_put) {
+            u8cs put_frag = {src_put->uri.fragment[0],
+                             src_put->uri.fragment[1]};
+            if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
+                sha1 new_sha = {};
+                u8s bin_s = {new_sha.data, new_sha.data + 20};
+                a_dup(u8c, frag_dup, put_frag);
+                if (HEXu8sDrainSome(bin_s, frag_dup) == OK &&
+                    !sha1Eq(&new_sha, &base_sha)) {
+                    return post_emit_decision(c, POST_V_ADD, path,
+                                              base_mode,
+                                              &base_sha, &new_sha);
+                }
+            }
+        }
         return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                   NULL, &base_sha);
     }

@@ -194,10 +194,20 @@ static ok64 class_merge_step(ulogreccp recs, u32 n, void *ctx_) {
     if (class_under_submodule(w, path)) return OK;
 
     //  Gitlink rows themselves (kind `s` in baseline verb) → record
-    //  the path as a prefix to filter, then drop.
+    //  the path as a prefix so the sub's internals are filtered
+    //  (`class_under_submodule` above), then surface the mount itself
+    //  as one step so callers (bare-`be` status, POST) see staged
+    //  bumps (`put <sub>#<40-hex>`) and the current pin.
     if (base != NULL && ok64Lit(base->verb, 0) == RON_s) {
         (void)class_remember_submodule(w, path);
-        return OK;
+        class_step step = {};
+        step.kind = (wt != NULL) ? CLASS_BOTH : CLASS_BASE_ONLY;
+        step.path[0] = path[0]; step.path[1] = path[1];
+        step.base_rec = base;
+        step.wt_rec   = wt;
+        step.put_rec  = put;
+        step.del_rec  = del;
+        return w->cb(&step, w->ctx);
     }
 
     class_step step = {};

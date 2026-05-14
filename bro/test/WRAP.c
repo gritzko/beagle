@@ -178,6 +178,20 @@ ok64 WRAPtest_cols_one() {
     return check_wrap("cols_one", &hk, 1, 1, W, W_n);
 }
 
+// No-wrap mode: 'w'-toggle passes the 24-bit offset ceiling
+// (BRO_LINE_OFF_MASK) so each source line is exactly one index entry
+// regardless of its length.
+ok64 WRAPtest_nowrap() {
+    sane(1);
+    hunk hk;
+    mk_hunk(&hk, NULL, "abcdefghij\nkl\nmnopqrst");
+    LINES(W,
+          {0, 0},    // "abcdefghij" — no wrap inside this 10-char line
+          {0, 11},   // "kl"
+          {0, 14});  // "mnopqrst"
+    return check_wrap("nowrap", &hk, 1, (1u << 24) - 1, W, W_n);
+}
+
 // --- runner ----------------------------------------------------------
 
 ok64 WRAPtest() {
@@ -193,6 +207,7 @@ ok64 WRAPtest() {
     call(WRAPtest_title_multi);
     call(WRAPtest_two_hunks);
     call(WRAPtest_cols_one);
+    call(WRAPtest_nowrap);
     done;
 }
 

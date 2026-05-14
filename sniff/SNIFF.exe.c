@@ -32,6 +32,7 @@
 #include "abc/FILE.h"
 #include "abc/FSW.h"
 #include "abc/HEX.h"
+#include "abc/RON.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/UTF8.h"
@@ -456,7 +457,11 @@ static ok64 status_step(class_step const *step, void *ctx) {
         //  below via the stamp lookup.
         u8cs frag = {step->put_rec->uri.fragment[0],
                      step->put_rec->uri.fragment[1]};
-        if (!u8csEmpty(frag)) {
+        //  Sub-mount bump (`put <sub>#<40-hex>`): fragment is a sha,
+        //  not a destination path.  Bucket as `put` (or `new`) — the
+        //  `mov` renderer would print the sha as a path.
+        b8 is_bump = (u8csLen(frag) == 40 && HEXu8sValid(frag));
+        if (!u8csEmpty(frag) && !is_bump) {
             status_push_mov(b->rows, path, frag, ts,
                             b->v.v_mov, &b->mov_n);
             return OK;
@@ -478,6 +483,15 @@ static ok64 status_step(class_step const *step, void *ctx) {
                         b->v.v_unk, &b->unk_n);
             break;
         case CLASS_BASE_ONLY:
+            //  Gitlink with no on-disk wt row and no put/del intent
+            //  is a clean sub-mount: pinned at baseline.  Bucket as
+            //  `ok` instead of `mis` (which would imply the path
+            //  was removed from disk).
+            if (step->base_rec &&
+                ok64Lit(step->base_rec->verb, 0) == RON_s) {
+                b->ok_n++;
+                break;
+            }
             //  No useful timestamp — file is gone, baseline rows
             //  carry ts=0 by KEEPTreeULog convention.
             status_push(b->rows, path, 0, b->v.v_mis, &b->mis_n);

@@ -34,6 +34,7 @@
 
 #include "AT.h"
 #include "CLASS.h"
+#include "SUBS.h"
 
 // --- Bare-walk callback (baseline-tree visitor) ---
 
@@ -686,6 +687,41 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                     "sniff: put: %.*s is a meta path — skipped\n",
                     (int)$len(raw), (char *)raw[0]);
             skipped++; continue;
+        }
+
+        //  Sub-mount short-circuit: `<wt>/<raw>/.be` is a regular file,
+        //  so the path is a secondary worktree, not a parent directory.
+        //  Read its pinned tip via the secondary-wt anchor and emit one
+        //  `put <path>#<40-hex>` row.  No dir walk, no per-file hashing
+        //  — the sub owns its own ULOG.  MODULES.plan.md §"Phase 4 —
+        //  PUT".  Empty raw (`be put .`) falls through to the dir-form
+        //  below; SubIsMount returns NO on empty subpath.
+        {
+            u8cs probe = {raw[0], raw[1]};
+            if ($len(probe) > 0 && *(probe[1] - 1) == '/') probe[1]--;
+            if (SNIFFSubIsMount(reporoot, probe)) {
+                a_pad(u8, hexpad, 40);
+                ok64 tr = SNIFFSubReadTip(reporoot, probe,
+                                          u8bIdle(hexpad));
+                if (tr != OK) {
+                    fprintf(stderr,
+                            "sniff: put: %.*s: no sub tip — skipped\n",
+                            (int)$len(probe), (char *)probe[0]);
+                    skipped++; continue;
+                }
+                //  u8sCopy is the consumed-slice form (doesn't advance
+                //  the buffer's idle-head); commit the 40 written bytes
+                //  to DATA explicitly so u8bDataC frames them.
+                u8bFed(hexpad, 40);
+                a_dup(u8c, hex_view, u8bDataC(hexpad));
+                uri urow = {};
+                urow.path[0]     = probe[0];   urow.path[1]     = probe[1];
+                urow.fragment[0] = hex_view[0]; urow.fragment[1] = hex_view[1];
+                call(SNIFFAtAppendAt, ts, verb_put, &urow);
+                ts++;
+                emitted++;
+                continue;
+            }
         }
 
         //  Empty raw (`.` or `./` after normalisation) is the

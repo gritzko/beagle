@@ -73,6 +73,7 @@ graf -d old.c new.c                  graf forks bro for diffs
 | Key | Action |
 |-----|--------|
 | `m` | toggle mouse (wheel scroll, click to open) |
+| `w` | toggle soft-wrap (off = clip long lines at the screen edge) |
 | `Esc` | disable mouse mode |
 
 ## URI prompt (`:` or `#`)
@@ -109,7 +110,9 @@ Prefix match is tried first; if no match, substring match.
 
 Long source lines soft-wrap at the terminal width.  Wrap is codepoint-based
 (1 codepoint = 1 column); wide characters like CJK and emoji still count
-as a single column for now.
+as a single column for now.  Press `w` to toggle wrap off — long lines
+are then clipped at the screen edge (less -S semantics); `w` again to
+restore.
 
 ## Architecture
 
