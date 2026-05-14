@@ -8,7 +8,7 @@ find_package(ZLIB REQUIRED)
 add_library(gitcompat STATIC GIT.c PKT.c PACK.c DELT.c ZINF.c SHA1.c)
 target_link_libraries(gitcompat dog abc-core ZLIB::ZLIB)
 
-add_library(keeplib STATIC KEEP.c KEEP.exe.c REFS.c REFADV.c WALK.c UNPK.c PSTR.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c)
+add_library(keeplib STATIC KEEP.c KEEP.exe.c MIGRATE.c REFS.c REFADV.c RESOLVE.c WALK.c UNPK.c PSTR.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c)
 target_link_libraries(keeplib gitcompat dog abc-core)
 
 #  keeper-cli no longer pushes to graf/spot — under the new

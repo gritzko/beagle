@@ -26,6 +26,7 @@
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
+#include "keeper/RESOLVE.h"
 #include "keeper/WALK.h"
 
 #include "abc/B.h"
@@ -478,6 +479,18 @@ static ok64 status_step(class_step const *step, void *ctx) {
             //  line was already emitted on the source path's step.
             if (step->wt_rec != NULL &&
                 status_wt_is_mov_dst(step->wt_rec->ts)) break;
+            //  Patched-in file: PATCH stamped the file's mtime to its
+            //  row's ts (stamp_wrote / SNIFFAtStampPath); the file
+            //  isn't in baseline yet, but it's a known tracked op —
+            //  surface as `new` rather than `unk` so the user can see
+            //  what the in-scope patch added.  True untracked files
+            //  (no stamp) stay in `unk`.
+            if (step->wt_rec != NULL &&
+                SNIFFAtKnown(step->wt_rec->ts)) {
+                status_push(b->rows, path, step->wt_rec->ts,
+                            b->v.v_new, &b->new_n);
+                break;
+            }
             status_push(b->rows, path,
                         step->wt_rec ? step->wt_rec->ts : 0,
                         b->v.v_unk, &b->unk_n);
@@ -593,7 +606,45 @@ static ok64 sniff_status_work(status_buckets *b) {
             else                                                        \
                 fprintf(stdout, ", %u %s", (n), (tag));                 \
         } while (0)
-    fprintf(stdout, "sniff: %u ok", b->ok_n);
+    //  Lead with the local-position URI: `<rel>?<branch>` where
+    //  `<rel>` is cwd's path inside the wt (empty when cwd == wt root)
+    //  and `<branch>` is the current be-branch (empty == trunk).  Tells
+    //  the user where they are at a glance — wt subdir + branch.
+    {
+        ron60 bts = 0, bverb = 0;
+        uri bu = {};
+        u8cs cur_br = {};
+        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+            u8csMv(cur_br, bu.query);
+        }
+
+        //  Resolve cwd's path relative to the wt root.  When the
+        //  worktree is colocated with cwd (or cwd is the wt root),
+        //  the relative path is empty.
+        a_path(cwd_path);
+        u8cs rel = {};
+        if (FILEGetCwd(cwd_path) == OK && SNIFF.h != NULL &&
+            u8bDataLen(SNIFF.h->wt) > 0) {
+            a_dup(u8c, cwd_s, u8bDataC(cwd_path));
+            a_dup(u8c, wt_s,  u8bDataC(SNIFF.h->wt));
+            size_t wt_len = $len(wt_s);
+            if ($len(cwd_s) > wt_len &&
+                memcmp(cwd_s[0], wt_s[0], wt_len) == 0 &&
+                cwd_s[0][wt_len] == '/') {
+                rel[0] = cwd_s[0] + wt_len + 1;
+                rel[1] = cwd_s[1];
+            }
+        }
+
+        if (u8csEmpty(cur_br)) {
+            fprintf(stdout, "%.*s?\t%u ok",
+                    (int)$len(rel), (char *)rel[0], b->ok_n);
+        } else {
+            fprintf(stdout, "%.*s?%.*s\t%u ok",
+                    (int)$len(rel), (char *)rel[0],
+                    (int)$len(cur_br), (char *)cur_br[0], b->ok_n);
+        }
+    }
     STATUS_PAINT(b->put_n, "put", STATUS_ANSI_PUT);
     STATUS_PAINT(b->new_n, "new", STATUS_ANSI_NEW);
     STATUS_PAINT(b->mov_n, "mov", STATUS_ANSI_MOV);
@@ -1315,10 +1366,23 @@ ok64 SNIFFExec(cli *c) {
         }
 
         //  Pick the first URI with a non-empty query as a label target
-        //  (e.g. `?heads/main`, `?tags/v0.0.1`).
+        //  (e.g. `?heads/main`, `?tags/v0.0.1`).  Also accept bare `?`
+        //  (empty query but data starts with `?`) as the trunk target
+        //  — `be post ?` from a child branch means "FF trunk to cur".
         uri *label_uri = NULL;
-        for (u32 i = 0; i < c->nuris; i++)
-            if (!$empty(c->uris[i].query)) { label_uri = &c->uris[i]; break; }
+        for (u32 i = 0; i < c->nuris; i++) {
+            uri *uu = &c->uris[i];
+            if (!$empty(uu->query)) { label_uri = uu; break; }
+            //  Bare `?` (trunk): data is exactly "?" and every other
+            //  slot is empty.
+            if (!$empty(uu->data) && uu->data[0][0] == '?' &&
+                u8csLen(uu->data) == 1 &&
+                $empty(uu->path) && $empty(uu->fragment) &&
+                $empty(uu->authority) && $empty(uu->scheme)) {
+                label_uri = uu;
+                break;
+            }
+        }
 
         //  VERBS.md §"POST" remote arm: `be post //origin` resolves
         //  the authority against the local ref log (REFSResolve does
@@ -1456,62 +1520,37 @@ ok64 SNIFFExec(cli *c) {
                     HEXu8sFeedSome(hex_idle, rs);
                 }
             } else if (label_uri != NULL) {
-                //  No commit_msg + label_uri: rebase cur onto
-                //  `label_uri.tip` (VERBS.md §POST: "Rebase cur onto
-                //  `?br.tip`.  Cur's stack replays from `?br.tip`;
-                //  no new commit").  Cur is the only ref POST moves;
-                //  the label_uri side is read-only.
-                a_path(keepdir, reporoot, KEEP_DIR_S);
-                a_pad(u8, arena, 1024);
-                uri resolved = {};
-                a_dup(u8c, lbl_in, label_uri->data);
-                if (REFSResolve(&resolved, arena, $path(keepdir),
-                                lbl_in) != OK ||
-                    u8csEmpty(resolved.query)) {
-                    fprintf(stderr,
-                            "sniff: post: %.*s — no such ref in log\n",
-                            (int)u8csLen(label_uri->data),
-                            (char *)label_uri->data[0]);
-                    ret = SNIFFFAIL;
-                } else {
-                    u8cs sha_hex = {resolved.query[0], resolved.query[1]};
-                    if (!u8csEmpty(sha_hex) && *sha_hex[0] == '?')
-                        u8csUsed(sha_hex, 1);
-                    if (u8csLen(sha_hex) != sizeof(sha1hex)) {
-                        fprintf(stderr,
-                                "sniff: post: ref row for %.*s has "
-                                "no sha\n",
-                                (int)u8csLen(label_uri->data),
-                                (char *)label_uri->data[0]);
-                        ret = SNIFFFAIL;
-                    } else {
-                        sha1 target_tip = {};
-                        a_raw(bin, target_tip);
-                        a_dup(u8c, hx, sha_hex);
-                        if (HEXu8sDrainSome(bin, hx) != OK) {
-                            ret = SNIFFFAIL;
-                        } else {
-                            //  Cross-branch rebase: load target's
-                            //  shard so graf/keeper see its history.
-                            //  The branch comes from the user's
-                            //  `?<branch>` query (stripped of any
-                            //  trailing-hashlet pin per
-                            //  dog/DOG.h §DOGRefSplitPin).
-                            u8cs br_split = {}, pin_split = {};
-                            DOGRefSplitPin(label_uri->query,
-                                           br_split, pin_split);
-                            u8cs t_br = {};
-                            if (u8csEmpty(pin_split))
-                                u8csMv(t_br, label_uri->query);
-                            else
-                                u8csMv(t_br, br_split);
-                            (void)SNIFFMaybeSwitchKeeper(t_br);
-                            (void)SNIFFMaybeSwitchGraf(t_br);
-                            ret = POSTRebaseOntoSha(reporoot,
-                                                    &target_tip);
-                        }
-                    }
+                //  No commit_msg + label_uri (`be post ?<br>`).  Per
+                //  VERBS.md §POST `?branch` row: "FF-advance ?branch
+                //  to cur's tip".  This is the local-branch promote
+                //  — we move target's REFS row forward to cur.tip,
+                //  migrate any commit/tree/blob objects from cur's
+                //  shard into target's shard along the way, and leave
+                //  cur untouched.  Refuses if cur is not a descendant
+                //  of target.tip (POSTNOFF) or if the rebase produces
+                //  a conflict.
+                //
+                //  (Remote-target shapes — `//host`, `ssh://...` —
+                //  short-circuited above via POSTRebaseOntoSha.  Those
+                //  pull remote work into cur, which is the inverse
+                //  direction.)
+                u8cs br_split = {}, pin_split = {};
+                DOGRefSplitPin(label_uri->query, br_split, pin_split);
+                u8cs t_br = {};
+                if (u8csEmpty(pin_split))
+                    u8csMv(t_br, label_uri->query);
+                else
+                    u8csMv(t_br, br_split);
+                //  Normalise trunk-targets: `?` (empty) and `?/` (one
+                //  slash) both mean trunk.  Reduce to empty so
+                //  POSTPromote's trunk-leaf path fires cleanly.
+                if (u8csLen(t_br) == 1 && t_br[0][0] == '/') {
+                    static u8c const _z = 0;
+                    t_br[0] = (u8cp)&_z;
+                    t_br[1] = (u8cp)&_z;
                 }
+                a_dup(u8c, tb, t_br);
+                ret = POSTPromote(reporoot, tb, NO);
             }
         }
 post_done:
@@ -1520,16 +1559,64 @@ post_done:
         //  Split URIs by aspect (VERBS.md §PUT):
         //    * `?branch` (query, no path) → POSTCreateBranch (create
         //      label at cur.tip; refuses with PUTDUP if exists).
-        //    * `./path` / bare path       → PUTStage (stage file/dir).
+        //    * `?branch#<sha>` (query + sha fragment) → POSTSetBranch
+        //      (reset the ref to that sha; non-FF rewrite allowed).
+        //    * `?#<sha>` (empty query + sha fragment) → trunk reset.
+        //      data must start with `?` so a fragment-only `#<sha>`
+        //      (which goes through DOGNormalizeArg differently) isn't
+        //      mistaken for a PUT-on-trunk.
+        //    * `./path` / bare path → PUTStage (stage file/dir).
         //  Mixed invocations process each in arrival order; first
         //  failure aborts.
         uri path_uris[CLI_MAX_URIS] = {};
         u32 npath = 0;
         for (u32 i = 0; i < c->nuris && ret == OK; i++) {
             uri u = c->uris[i];
-            b8 has_q = !u8csEmpty(u.query);
-            b8 has_path = !u8csEmpty(u.path);
-            if (has_q && !has_path && u8csEmpty(u.authority)) {
+            b8 has_q     = !u8csEmpty(u.query);
+            b8 has_path  = !u8csEmpty(u.path);
+            b8 has_frag  = !u8csEmpty(u.fragment);
+            b8 has_auth  = !u8csEmpty(u.authority);
+            //  Trunk reset: `?#<sha>` — empty query, hex fragment,
+            //  no path, no authority, data starts with `?`.  Accept
+            //  6..40 hex (hashlet prefix); resolve to full 40-hex
+            //  via GRAFResolveRef so the REFS row carries a canonical
+            //  sha (POSTSetBranch insists on full 40-hex).
+            b8 trunk_reset = !has_q && !has_path && !has_auth &&
+                             has_frag &&
+                             !$empty(u.data) && u.data[0][0] == '?' &&
+                             u8csLen(u.fragment) >= 6 &&
+                             u8csLen(u.fragment) <= 40 &&
+                             HEXu8sValid(u.fragment);
+            if (trunk_reset) {
+                a_dup(u8c, frag, u.fragment);
+                //  Canonicalise the user-typed fragment via the
+                //  single front-door resolver.  Empty cur_branch:
+                //  the fragment is a hashlet / sha40, not a relative
+                //  branch ref.
+                sha1 resolved = {};
+                u8cs cur_branch = {NULL, NULL};
+                ok64 rr = KEEPResolveRef(&KEEP, &resolved,
+                                         frag, cur_branch);
+                if (rr != OK) {
+                    fprintf(stderr,
+                        "sniff: put: cannot resolve ?#%.*s\n",
+                        (int)$len(frag), (char *)frag[0]);
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                sha1hex full = {};
+                sha1hexFromSha1(&full, &resolved);
+                a_rawc(full_s, full);
+                //  POSTSetBranch's sane() check rejects all-NULL
+                //  slices ($ok); pass a zero-length slice with valid
+                //  pointers so it represents "trunk" (empty branch
+                //  path).  refkey ends up as bare `?`.
+                static u8c const _z = 0;
+                u8cs empty_branch = {(u8cp)&_z, (u8cp)&_z};
+                ret = POSTSetBranch(reporoot, empty_branch, full_s);
+                continue;
+            }
+            if (has_q && !has_path && !has_auth) {
                 a_pad(u8, abs_qbuf,    256);
                 a_pad(u8, abs_databuf, 260);
                 if (sniff_resolve_rel(&u, abs_qbuf, abs_databuf,
@@ -1538,7 +1625,37 @@ post_done:
                     break;
                 }
                 a_dup(u8c, target, u.query);
-                ret = POSTCreateBranch(reporoot, target);
+                //  `?br#<sha>` aspect (VERBS.md §PUT): the fragment
+                //  pins the target sha — write the ref to that value,
+                //  bypassing the create-only PUTDUP check.  Non-FF
+                //  rewrite is allowed.  Short hashlets (6..40 hex)
+                //  resolve via GRAFResolveRef to a canonical 40-hex.
+                //  Bare `?br` (no fragment) keeps the create-only
+                //  POSTCreateBranch path.
+                a_dup(u8c, frag, u.fragment);
+                if (u8csLen(frag) >= 6 && u8csLen(frag) <= 40 &&
+                    HEXu8sValid(frag)) {
+                    //  Canonicalise the hashlet/sha through the
+                    //  single front-door resolver.
+                    sha1 resolved = {};
+                    u8cs cur_branch = {NULL, NULL};
+                    ok64 rr = KEEPResolveRef(&KEEP, &resolved,
+                                             frag, cur_branch);
+                    if (rr != OK) {
+                        fprintf(stderr,
+                            "sniff: put: cannot resolve ?%.*s#%.*s\n",
+                            (int)$len(target), (char *)target[0],
+                            (int)$len(frag), (char *)frag[0]);
+                        ret = SNIFFFAIL;
+                        break;
+                    }
+                    sha1hex full = {};
+                    sha1hexFromSha1(&full, &resolved);
+                    a_rawc(full_s, full);
+                    ret = POSTSetBranch(reporoot, target, full_s);
+                } else {
+                    ret = POSTCreateBranch(reporoot, target);
+                }
                 continue;
             }
             //  Path / bare — defer to PUTStage.

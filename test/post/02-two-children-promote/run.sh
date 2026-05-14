@@ -2,9 +2,10 @@
 . "$(dirname "$0")/../../lib/case.sh"
 
 # Two child branches forked off trunk, each with two commits editing
-# disjoint files.  From fix1, `be post ?fix2` rebases fix1's stack onto
-# fix2's tip — fix1 advances to a tip that carries both edits.  Per
-# VERBS.md §POST, only cur (?fix1) moves; trunk and ?fix2 are read-only.
+# disjoint files.  From cur=?fix1, iterated `be patch ?fix2#` + `be
+# post` absorbs ?fix2's commits as fosters, leaving cur with both
+# edits on disk.  Per VERBS.md §POST, only cur (?fix1) moves; trunk
+# and ?fix2 are read-only.
 
 OUT="$SCRATCH/../out"
 mkdir -p "$OUT"
@@ -40,11 +41,16 @@ sleep 0.02; cp "$CASE/06.b-fix2-c2.txt" b.txt
 "$BE" put b.txt >/dev/null
 "$BE" post 'c2 msg'   >/dev/null
 
-# Step 6: switch to fix1, then rebase it onto ?fix2's tip via
-# `be post ?fix2`.  fix1's a-edit stack replays on top of fix2's
-# b-edit, so fix1.tip carries both file edits.
+# Step 6: switch to fix1, then absorb ?fix2's full stack via two
+# rebase-one iterations.  Each `be patch ?fix2#` picks the next
+# unabsorbed commit from ?fix2; `be post` commits with foster.
 "$BE" get '?fix1' >/dev/null
-must "$BE" post '?fix2' >/dev/null
+sleep 0.02
+must "$BE" patch '?fix2#'
+must "$BE" post 'absorb fix2-c1'
+sleep 0.02
+must "$BE" patch '?fix2#'
+must "$BE" post 'absorb fix2-c2'
 
 # Final assertion: cur (?fix1) wt has both edits.
 match "$CASE/07.a.want.txt" a.txt

@@ -396,6 +396,37 @@ ok64 KEEPPackFeed(keeper *k, keep_pack *p,
 
 ok64 KEEPPackClose(keeper *k, keep_pack *p);
 
+//  Copy a list of commits (plus every reachable tree+blob) into the
+//  KEEP singleton's active write-leaf, with delta-base hints.
+//
+//  Use case: cross-branch promote (`be post ?<other>`) needs the
+//  promoted commits' objects in the target shard's pack — otherwise
+//  the target's REFS row points at bytes only visible from the source
+//  shard, and any reader that opens the target leaf alone silently
+//  misses them (status sees no baseline, `be log:` walks zero rows,
+//  wire push has nothing to upload).
+//
+//  Convention:
+//    1. Caller has switched KEEP to the destination leaf via
+//       `KEEPSwitchBranch(dst)`.  Writes always land in the active
+//       leaf — that's `dst`.  The prior leaf sits in PAST (read-
+//       visible) after the switch.
+//    2. `src_branch` names the source shard so its packs are
+//       guaranteed registered in PAST (idempotent — already-open
+//       shards stay open).  Empty `src_branch` == trunk.
+//    3. Each commit is emitted with its first-parent commit as the
+//       delta-base hint; each tree / blob with the same-path
+//       predecessor in the parent's tree as its hint.
+//    4. Objects not locally available (typically upstream history
+//       fetched only as minimal-diff via `be head`) are skipped —
+//       wire push fills them in from origin.
+//
+//  Returns OK on success, KEEPMVNOOP when `commits` is empty,
+//  KEEPMVFAIL on a read/write error.
+con ok64 KEEPMVNOOP = 0x50e39959f5d8619;
+con ok64 KEEPMVFAIL = 0x50e39959f3ca495;
+ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch);
+
 //  Walk objects in a pack file from a given val position.
 typedef ok64 (*keep_cb)(u8 type, u8cs content, u64 hashlet, void *ctx);
 ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx);

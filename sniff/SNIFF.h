@@ -47,6 +47,7 @@ con ok64 DELDIRTY      = 0x34e54d49b762;
 con ok64 POSTNONE      = 0x65871d5d85ce;
 con ok64 POSTNOMSG     = 0x65871d5d8c4d;     // can't auto-resolve commit msg
 con ok64 POSTCFLCT     = 0x65871d5dc6b3;     // tracked file has conflict markers
+con ok64 POSTNOFF      = 0x65871d5d83cf;     // not a fast-forward — use `be patch` to rebase
 con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 
 //  Switch the open keeper to a different branch when `target_branch`

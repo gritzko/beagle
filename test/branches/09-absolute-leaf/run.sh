@@ -110,9 +110,10 @@ rm -f x33.txt f33.txt
 "$BE" delete f33.txt >/dev/null 2>&1 || true
 "$BE" post '33-cleanup msg' >/dev/null 2>&1 || true
 
-# === 34. rebase cur onto its tree-parent (?feat) is a no-op when
-#         the parent is an ancestor of cur — both refs stay put. ===
-echo "=== 34. be post ?feat from ?feat/fix is a no-op (parent is ancestor) ==="
+# === 34. `be patch ?feat#` from cur=?feat/fix is a no-op when ?feat
+#         is an ancestor of cur — patch refuses with "nothing to
+#         replay"; both refs stay put. ===
+echo "=== 34. be patch ?feat# from ?feat/fix refuses (parent is ancestor) ==="
 cd "$WT"
 sleep 0.01
 echo "x34" > x34.txt
@@ -128,17 +129,23 @@ echo "feat/fix work" > ff34.txt
 "$BE" put ff34.txt >/dev/null
 "$BE" post 'feat-fix-c1 msg' >/dev/null || fail "§34: post feat-fix-c1 failed"
 FF_PRE_34=$(ref_tip "?feat/fix")
-
 FEAT_PRE_34=$(ref_tip "?feat")
-"$BE" post "?feat" 2>"$ETMP/p34.err" >/dev/null \
-    || { cat "$ETMP/p34.err"; fail "§34: be post ?feat failed"; }
+
+set +e
+"$BE" patch "?feat#" 2>"$ETMP/p34.err" >/dev/null
+EC34=$?
+set -e
+[ "$EC34" != "0" ] \
+    || fail "§34: be patch ?feat# should refuse (ancestor)"
+grep -q "already reachable\|nothing to replay" "$ETMP/p34.err" \
+    || fail "§34: stderr should mention 'already reachable'; got: $(cat $ETMP/p34.err)"
 
 FEAT_AFTER_34=$(ref_tip "?feat")
 FF_AFTER_34=$(ref_tip "?feat/fix")
 [ "$FF_AFTER_34" = "$FF_PRE_34" ] \
-    || fail "§34: cur ?feat/fix moved (parent is ancestor — should be no-op)"
+    || fail "§34: cur ?feat/fix moved (patch refused — should be no-op)"
 [ "$FEAT_AFTER_34" = "$FEAT_PRE_34" ] \
-    || fail "§34: ?feat moved (POST may not write a non-cur ref)"
-note "§34 OK: rebase onto ancestor is a no-op"
+    || fail "§34: ?feat moved (patch refused — no commits should appear)"
+note "§34 OK: patch onto ancestor refuses; refs unchanged"
 
 echo "=== branches/09-absolute-leaf: OK ==="

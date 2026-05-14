@@ -29,6 +29,7 @@
 #include "dog/WHIFF.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
+#include "keeper/RESOLVE.h"
 
 con ok64 GETFAIL   = 0x1039d3ca495;
 con ok64 GETBAD    = 0x40e74b28d;
@@ -49,33 +50,33 @@ typedef struct {
 
 // --- Resolve one qref to (sha, h40, gen) ---
 //
-//  Phase 1: SHA-form tips only.  A `QURY_REF` entry will round-trip
-//  through `REFSResolve` in a later pass; for now the CLI always
-//  hands graf hex shas.
+//  Front-door for projector URIs (`tree:`, `blob:`, etc.).  Routes
+//  through KEEPResolveRef so the URI accepts every shape the CLI
+//  understands: full sha, hashlet prefix, absolute / relative branch
+//  paths.  Caller has already classified the qref (SHA or REF) — we
+//  hand the body to the resolver which redoes its own classification
+//  internally.  After resolution we insist on COMMIT-typed output:
+//  graf's projector pipeline walks commit→tree→blob; passing a tree
+//  sha at this seat would silently produce empty output (see
+//  test/patch/26-deep-tree-take-theirs for the historical bug).
 static ok64 get_resolve_qref(get_tip *out, qref const *q) {
     sane(out && q);
-    if (q->type != QURY_SHA) return GETBAD;
+    if (q->type != QURY_SHA && q->type != QURY_REF) return GETBAD;
 
-    u64 h60 = WHIFFHexHashlet60(q->body);
-    size_t hexlen = u8csLen(q->body);
-    if (hexlen < HASH_MIN_HEX) return GETBAD;
-    if (hexlen > 15) hexlen = 15;
+    u8cs no_cur = {};
+    ok64 rr = KEEPResolveRef(&KEEP, &out->sha, q->body, no_cur);
+    if (rr != OK) return GETFAIL;
 
+    //  Verify the resolved object is a COMMIT (not a tree / blob / tag).
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 o = KEEPGet(&KEEP, h60, hexlen, cbuf, &ct);
-    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return GETFAIL; }
-
-    //  Compute the canonical 20-byte sha from the fetched body so
-    //  short-prefix inputs resolve to a unique hashlet.  KEEPObjSha
-    //  rebuilds "<type> <len>\0<body>" then hashes.
-    a_dup(u8c, body, u8bData(cbuf));
-    KEEPObjSha(&out->sha, DOG_OBJ_COMMIT, body);
+    ok64 ko = KEEPGetExact(&KEEP, &out->sha, cbuf, &ct);
     u8bFree(cbuf);
+    if (ko != OK || ct != DOG_OBJ_COMMIT) return GETFAIL;
 
     out->h40 = WHIFFHashlet60(&out->sha);
-    out->gen = 0;            //  gen is no longer indexed
+    out->gen = 0;
     done;
 }
 

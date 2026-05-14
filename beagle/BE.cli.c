@@ -558,21 +558,75 @@ static ok64 BEHead(cli *c, b8 seq) {
     b8 transport = (u != NULL && !$empty(u->scheme));
     b8 cached    = (u != NULL && !transport && !$empty(u->authority));
 
-    //  Transport scheme: forward to keeper get to fetch refs + pack.
+    //  Transport scheme: forward to keeper get (fetches refs + pack),
+    //  then spot get + graf get in parallel so the freshly-pulled
+    //  commits + trees + blobs get indexed for downstream walks
+    //  (`be log:`, `be patch`, `be spot ...`).  Per VERBS.md §HEAD,
+    //  HEAD with a transport scheme updates `.be/refs` and pulls a
+    //  pack; without the indexing chain, `be log:` on the fetched
+    //  history would walk only as far as graf's DAG already knew.
+    //
     //  `?*` wildcard query (`be head ssh://origin?*`) routes to keeper
     //  get just like a single-ref form — keeper detects the literal
     //  `*` and runs the bulk-fetch (advertise + multi-want) path.
     if (transport || cached) {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
         a_cstr(get_s,    "get");
-        a_cstr(keeper_s, "keeper");
-        a_dup(u8c, keeper_d, keeper_s);
-        a_dup(u8c, get_d,    get_s);
-        be_build_argv(args, keeper_d, get_d, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        call(BERun, keeper_d, argv, NO);
-        (void)seq;
-        done;
+
+        //  Step 1: keeper get URI — synchronous.
+        {
+            a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+            a_cstr(keeper_s, "keeper");
+            a_dup(u8c, keeper_d, keeper_s);
+            a_dup(u8c, get_d,    get_s);
+            be_build_argv(args, keeper_d, get_d, c);
+            a_dup(u8cs, argv, u8csbData(args));
+            call(BERun, keeper_d, argv, NO);
+        }
+
+        //  Step 2: graf + spot get URI in parallel.  HEAD is read-
+        //  only so sniff is NOT included (no wt change, no get row).
+        //  Mirrors BEGet's parallel pattern minus sniff.
+        static u8c const graf_lit[] = "graf";
+        static u8c const spot_lit[] = "spot";
+        u8cs const dogs[2] = {
+            {graf_lit, graf_lit + 4},
+            {spot_lit, spot_lit + 4},
+        };
+
+        if (seq) {
+            for (int i = 0; i < 2; i++) {
+                a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+                a_dup(u8c, dog_d, dogs[i]);
+                a_dup(u8c, get_d2, get_s);
+                be_build_argv(args, dog_d, get_d2, c);
+                a_dup(u8cs, argv, u8csbData(args));
+                call(BERun, dog_d, argv, NO);
+            }
+            done;
+        }
+
+        pid_t pids[2] = {0};
+        ok64  spawn_err[2] = {OK, OK};
+        for (int i = 0; i < 2; i++) {
+            a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+            a_dup(u8c, dog_d, dogs[i]);
+            a_dup(u8c, get_d2, get_s);
+            be_build_argv(args, dog_d, get_d2, c);
+            a_dup(u8cs, argv, u8csbData(args));
+            spawn_err[i] = BESpawn(dog_d, argv, &pids[i]);
+            if (spawn_err[i] != OK) {
+                fprintf(stderr, "be: spawn " U8SFMT ": %s\n",
+                        u8sFmt(dog_d), ok64str(spawn_err[i]));
+            }
+        }
+        ok64 worst = OK;
+        for (int i = 0; i < 2; i++) {
+            if (spawn_err[i] != OK) { worst = spawn_err[i]; continue; }
+            a_dup(u8c, dog_d, dogs[i]);
+            ok64 r = BEReap(pids[i], dog_d);
+            if (r != OK) worst = r;
+        }
+        return worst;
     }
 
     //  Local: hand off to `graf head`.  graf dispatches internally:

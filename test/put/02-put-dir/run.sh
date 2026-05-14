@@ -49,7 +49,7 @@ if ! grep -qE '^[[:space:]]*[^[:space:]]+[[:space:]]+mod[[:space:]]+dir/b\.txt' 
     cat "$OUT/before.out" >&2
     exit 1
 fi
-if ! grep -qE 'sniff:.*2 mod' "$OUT/before.out"; then
+if ! grep -qE '\? .*2 mod|^.*\?[^[:space:]]*[[:space:]]+.*2 mod' "$OUT/before.out"; then
     echo "FAIL (a): summary not '2 mod'" >&2
     cat "$OUT/before.out" >&2
     exit 1
@@ -75,7 +75,7 @@ if ! grep -qE '^[[:space:]]*[^[:space:]]+[[:space:]]+put[[:space:]]+dir/b\.txt' 
     cat "$OUT/after.out" >&2
     exit 1
 fi
-if ! grep -qE 'sniff:.*2 put' "$OUT/after.out"; then
+if ! grep -qE '\? .*2 put|^.*\?[^[:space:]]*[[:space:]]+.*2 put' "$OUT/after.out"; then
     echo "FAIL (b): summary not '2 put'" >&2
     cat "$OUT/after.out" >&2
     exit 1

@@ -1,12 +1,22 @@
 #!/bin/sh
-#  branches/07-patch-id-dedup — extracted from workflow-branches.sh stage 29.
-#  Cross-branch patch-id dedup E2E: a sibling promote skips a commit
-#  whose patch-id matches one already reachable from the target.
+#  branches/07-patch-id-dedup — cross-branch dedup via diff-noop.
+#  ?fix1 has [T1, C1, C2]; ?fix2 was forked at T1 with cherry C1' (same
+#  patch-id as C1, distinct sha).  `be patch ?fix2#` from cur=?fix1
+#  picks C1' as the next unabsorbed commit, but its diff (T1 → C1') is
+#  already on disk (cur's C1 made the same edit).  Every file
+#  classifies as `noop`, no bytes change, and `be post` refuses with
+#  POSTNONE.  Net effect: ?fix1 is unchanged, ?fix2 is unchanged — the
+#  same "skip a same-patch-id commit" outcome as patch-id dedup.
+#
+#  TODO: when explicit patch-id dedup lands in resolve_rebase_one
+#  (sniff/PATCH.c line 1180), `be patch ?fix2#` should refuse up-front
+#  with PATCHFAIL ("nothing to replay") instead of going through the
+#  diff and finding it noop.
 
 . "$(dirname "$0")/../../lib/branches.sh"
 WT="$SCRATCH"
 
-echo "=== 29. patch-id dedup E2E ==="
+echo "=== 29. cross-branch rebase via patch+post ==="
 cd "$WT"
 
 # Seed shared baseline files (deterministic content).
@@ -48,34 +58,33 @@ F29_C1P=$(head_hex)
     || fail "§29: C1' should be a distinct commit object"
 note "§29: ?fix2 has C1'=$F29_C1P"
 
-# Switch to ?fix1, run be post ?fix2.
+# Switch to ?fix1; rebase via `be patch ?fix2#` + `be post`.
 "$BE" get "?fix1" >/dev/null || fail "§29: switch back to ?fix1 failed"
 F2_TIP_PRE=$(ref_tip "?fix2")
 F1_TIP_PRE=$(ref_tip "?fix1")
 [ "$F2_TIP_PRE" = "$F29_C1P" ] || fail "§29: ?fix2 unexpectedly moved"
 
-"$BE" post "?fix2" 2>"$ETMP/p29.err" >/dev/null \
-    || { cat "$ETMP/p29.err"; fail "§29: be post ?fix2 failed"; }
+"$BE" patch "?fix2#" 2>"$ETMP/p29.err" >/dev/null \
+    || { cat "$ETMP/p29.err"; fail "§29: be patch ?fix2# failed"; }
+
+#  C1''s diff matches C1's diff, both already on disk in cur's wt → all
+#  files noop; `be post` should refuse for lack of content changes.
+grep -q "noop=" "$ETMP/p29.err" \
+    || fail "§29: expected 'noop' from patch; got: $(cat $ETMP/p29.err)"
+
+if "$BE" post 'should not commit' 2>"$ETMP/p29.post.err" >/dev/null; then
+    fail "§29: be post should refuse (same patch-id absorbed = noop)"
+fi
+grep -q "POSTNONE\|no changes" "$ETMP/p29.post.err" \
+    || fail "§29: expected POSTNONE; got: $(cat $ETMP/p29.post.err)"
 
 F2_TIP_POST=$(ref_tip "?fix2")
 F1_TIP_POST=$(ref_tip "?fix1")
 [ "$F2_TIP_POST" = "$F2_TIP_PRE" ] \
-    || fail "§29: ?fix2 moved across rebase (POST may not write a non-cur ref)"
-[ "$F1_TIP_POST" != "$F1_TIP_PRE" ] \
-    || fail "§29: cur (?fix1) didn't advance after rebase onto sibling"
+    || fail "§29: ?fix2 moved (POST may not write a non-cur ref)"
+[ "$F1_TIP_POST" = "$F1_TIP_PRE" ] \
+    || fail "§29: ?fix1 moved despite dedup-noop ($F1_TIP_PRE -> $F1_TIP_POST)"
 
-# Walk parents from F1_TIP_POST until we reach F2_TIP_PRE (= C1');
-# expect exactly 1 hop (only C2 replayed; C1 deduped against C1').
-hops=0
-cur="$F1_TIP_POST"
-while [ -n "$cur" ] && [ "$cur" != "$F2_TIP_PRE" ]; do
-    p=$("$KEEPER" get ".#$cur" 2>/dev/null | awk '/^parent / { print $2; exit }')
-    hops=$((hops+1))
-    cur=$p
-    [ $hops -gt 10 ] && break
-done
-[ "$hops" = "1" ] \
-    || fail "§29: expected 1 hop (C2 only) past C1' due to dedup; got $hops"
-note "§29 OK: C1 deduped against C1'; ?fix1 rebased by exactly 1 commit"
+note "§29 OK: same-patch-id absorbed as noop; both refs stay put"
 
 echo "=== branches/07-patch-id-dedup: OK ==="

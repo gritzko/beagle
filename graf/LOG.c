@@ -45,6 +45,7 @@
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
+#include "keeper/RESOLVE.h"
 #include "keeper/WALK.h"
 
 //  No artificial cap on default `be log:` — backpressure (pipe write
@@ -86,16 +87,18 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
-    //  Fragment slot: any non-empty fragment resolves via the token
-    //  helper (40-hex or short hashlet prefix; longer-fragment shapes
-    //  like commit-msg searches are not URI-fragment business).
+    //  Fragment slot: any non-empty fragment resolves via the unified
+    //  front-door resolver (40-hex / hashlet prefix / branch path).
+    //  No cur_branch — fragments don't carry relative branch refs.
     if (!u8csEmpty(u->fragment)) {
         u8cs frag = {u->fragment[0], u->fragment[1]};
-        ok64 fr = GRAFResolveRef(k, frag, out);
+        u8cs no_cur = {};
+        ok64 fr = KEEPResolveRef(k, out, frag, no_cur);
         if (fr == OK) return OK;
         //  Fall through to query/cur-fallback handling on miss — a
-        //  fragment that doesn't resolve as hex (e.g. `#msg-search`)
-        //  isn't a "tip" question and is handled elsewhere.
+        //  fragment that doesn't resolve as hex / ref (e.g. `#msg-
+        //  search`, future msg-substring) isn't a "tip" question and
+        //  is handled elsewhere.
     }
 
     //  Bare `log:` with no query — fall back to the wt's current tip
@@ -150,88 +153,6 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     u8s sb = {out->data, out->data + 20};
     u8cs hx = {resolved.query[0], resolved.query[0] + 40};
     return HEXu8sDrainSome(sb, hx);
-}
-
-//  Resolve a user-typed reference token to a full 20-byte commit sha.
-//
-//  Token classification (first hit wins):
-//    1. Empty                        → GRAFNONE.
-//    2. All-hex (`HEXu8sValid`), 40  → decode + verify object exists.
-//    3. All-hex, 4..39               → keeper hashlet prefix → unique
-//                                       commit sha.
-//    4. Otherwise                    → REFS path lookup (handles abs /
-//                                       rel branch paths via the
-//                                       existing resolver).
-//  Returns OK with `*out` populated, or GRAFNONE / GRAFFAIL.
-//
-//  Hex tokens of length 1..3 fall through to the path branch — too
-//  short to disambiguate by hashlet alone, and the user's token may
-//  actually name a branch like `?A` whose first byte coincides with
-//  a hex digit.  Commit-message substring search is a follow-up
-//  (see RESOLVE.TODO.md).
-ok64 GRAFResolveRef(keeper *k, u8cs token, sha1 *out) {
-    sane(k && out);
-    if ($empty(token)) return GRAFREFBAD;
-
-    size_t len = (size_t)u8csLen(token);
-
-    if (HEXu8sValid(token)) {
-        if (len == 40) {
-            u8s sb = {out->data, out->data + 20};
-            a_dup(u8c, hx, token);
-            ok64 hd = HEXu8sDrainSome(sb, hx);
-            if (hd != OK) return GRAFFAIL;
-            //  Verify the object exists by attempting a keeper lookup
-            //  on the canonical sha — a typed sha with no matching
-            //  object is a clean GRAFREFBAD (bad ref token) rather
-            //  than an OK that downstream code then fails to fetch.
-            Bu8 cbuf = {};
-            if (u8bAllocate(cbuf, 1UL << 20) != OK) return GRAFFAIL;
-            u8 ct = 0;
-            ok64 ko = KEEPGetExact(k, out, cbuf, &ct);
-            u8bFree(cbuf);
-            if (ko != OK) return GRAFREFBAD;
-            return OK;
-        }
-        if (len >= 4 && len < 40) {
-            //  Short hex prefix — keeper hashlet lookup.  Build a
-            //  60-bit hashlet from the typed hex characters and let
-            //  KEEPGet do the per-byte refinement against indexed
-            //  objects.  Recover the canonical sha from the body.
-            a_dup(u8c, hx, token);
-            u64 h60 = WHIFFHexHashlet60(hx);
-            Bu8 cbuf = {};
-            if (u8bAllocate(cbuf, 1UL << 20) != OK) return GRAFFAIL;
-            u8 ct = 0;
-            ok64 o = KEEPGet(k, h60, len, cbuf, &ct);
-            if (o != OK) { u8bFree(cbuf); return GRAFREFBAD; }
-            if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return GRAFREFBAD; }
-            a_dup(u8c, body, u8bDataC(cbuf));
-            KEEPObjSha(out, DOG_OBJ_COMMIT, body);
-            u8bFree(cbuf);
-            return OK;
-        }
-        //  1..3 hex chars: fall through; treat as a path token below.
-    }
-
-    //  Path-shaped or short-hex-also-valid-as-path — delegate to
-    //  REFSResolve via a synthetic `?<token>` URI so absolute /
-    //  relative paths route through the same resolver `GRAFResolveTip`
-    //  already uses.
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
-    a_pad(u8, urib, 1024);
-    a_cstr(qsig, "?");
-    (void)u8bFeed(urib, qsig);
-    (void)u8bFeed(urib, token);
-    a_dup(u8c, urid, u8bDataC(urib));
-    a_pad(u8, arena_buf, 1024);
-    uri resolved = {};
-    ok64 ro = REFSResolve(&resolved, arena_buf, $path(keepdir), urid);
-    if (ro != OK) return GRAFREFBAD;
-    if (u8csLen(resolved.query) < 40) return GRAFREFBAD;
-    u8s sb = {out->data, out->data + 20};
-    u8cs hxq = {resolved.query[0], resolved.query[0] + 40};
-    return (HEXu8sDrainSome(sb, hxq) == OK) ? OK : GRAFFAIL;
 }
 
 //  `#N` → cap; missing or non-numeric fragment → unlimited.
@@ -378,17 +299,44 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
 
         if (graflog_emit_one(lx, &csha, body) != OK) break;
 
-        //  First-parent walk via the DAG index (linear-history
-        //  invariant — `parents[1+]` only appears for git-imported
-        //  merges, which a `--first-parent`-style log skips by design).
+        //  First-parent walk: try the DAG index first (fast bulk
+        //  lookup, returns 60-bit hashlet of parent).  On miss —
+        //  common when the commit was fetched but never explicitly
+        //  graf-indexed (e.g. via `be head //origin` which doesn't
+        //  trigger `graf get`) — fall back to parsing the commit
+        //  body we already fetched.  Keeps the log self-sufficient
+        //  on freshly-fetched history.
         wh64 par_buf[2] = {};
         wh64s parents = {par_buf, par_buf + 2};
         wh64 *pbase = parents[0];
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
         DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, cur_h40));
-        if (parents[0] == pbase) break;   // no parents → root commit
-        cur_h40 = DAGHashlet(*pbase);
+        if (parents[0] != pbase) {
+            cur_h40 = DAGHashlet(*pbase);
+            continue;
+        }
+        //  DAG miss → parse commit body for first `parent <40hex>`.
+        b8 found = NO;
+        {
+            a_dup(u8c, scan, body);
+            u8cs field = {}, value = {};
+            while (GITu8sDrainCommit(scan, field, value) == OK) {
+                if ($empty(field)) break;
+                a_cstr(par_kw, "parent");
+                if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+                    sha1 par_sha = {};
+                    u8s  bin = {par_sha.data, par_sha.data + 20};
+                    u8cs hx  = {value[0], value[0] + 40};
+                    if (HEXu8sDrainSome(bin, hx) == OK) {
+                        cur_h40 = WHIFFHashlet60(&par_sha);
+                        found = YES;
+                    }
+                    break;
+                }
+            }
+        }
+        if (!found) break;            // truly a root commit
     }
     u8bUnMap(cbuf);
     done;
@@ -1099,12 +1047,23 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
         }
     }
 
-    //  7. Summary line.
+    //  7. Summary line.  Leads with the current branch (empty == trunk)
+    //  so a quick `be` tells the user where they are, then the
+    //  ahead/behind/changed counters against the diff target.
     {
-        char buf[128];
-        int n = snprintf(buf, sizeof(buf),
-                         "head: %u ahead, %u behind, %u changed\n",
+        a_dup(u8c, cur_br, u8bDataC(k->h->cur_branch));
+        char buf[256];
+        int n;
+        if (u8csEmpty(cur_br)) {
+            n = snprintf(buf, sizeof(buf),
+                         "head: ?trunk: %u ahead, %u behind, %u changed\n",
                          nahead, nbehind, nchanged);
+        } else {
+            n = snprintf(buf, sizeof(buf),
+                         "head: ?%.*s: %u ahead, %u behind, %u changed\n",
+                         (int)$len(cur_br), (char *)cur_br[0],
+                         nahead, nbehind, nchanged);
+        }
         if (n > 0) {
             u8cs s = {(u8cp)buf, (u8cp)buf + n};
             (void)u8bFeed(lx.text, s);
@@ -1186,13 +1145,36 @@ ok64 GRAFLog(keeper *k, uricp u) {
     u8csMv(path, u->path);
     graflog_strip_dotslash(path);
 
-    ok64 go = GRAFOpen(k->h, NO);
+    //  Open graf on the wt's current branch (`k->h->cur_branch`,
+    //  populated from `--at`).  GRAFOpenBranch walks trunk → cur,
+    //  registering every ancestor shard's `.graf.idx` along the
+    //  path so the DAG walk below sees the full reachability —
+    //  trunk's deep history (in `.be/*.graf.idx`) plus cur's
+    //  session-added commits (in `.be/<cur>/*.graf.idx`).
+    //
+    //  When graf is already open on a different branch (it's a
+    //  singleton; an earlier sniff PATCH may have opened it on
+    //  some other leaf), GRAFOpenBranch short-circuits to GRAFOPEN
+    //  and the cached state stays put.  Force the switch via
+    //  SNIFFMaybeSwitchGraf — that's the canonical helper that
+    //  flips DATA→PAST and scans the new leaf's idx files.
+    u8cs cur_branch = {};
+    if (u8bDataLen(k->h->cur_branch) > 0) {
+        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+    } else {
+        static u8c const _zero = 0;
+        cur_branch[0] = (u8cp)&_zero;
+        cur_branch[1] = (u8cp)&_zero;
+    }
+    ok64 go = GRAFOpenBranch(k->h, cur_branch, NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
         if (lx.tlv) u32bFree(lx.toks);
         u8bFree(lx.text);
         return go;
     }
+    //  Whether or not we opened, ensure the active leaf is cur.
+    (void)GRAFSwitchBranch(k->h, cur_branch);
 
     ok64 wo = $empty(path)
         ? graflog_branch(&lx, k, &tip, count)

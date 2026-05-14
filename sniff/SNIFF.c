@@ -23,7 +23,7 @@
 
 ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
     sane(1);
-    if (!$ok(target_branch) || u8csEmpty(target_branch)) done;
+    if (!$ok(target_branch)) done;
 
     keeper *k = &KEEP;
     if (k->h == NULL) done;  // keeper not open — nothing to switch.
@@ -34,6 +34,15 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
         (u8csLen(target_branch) == 0 ||
          memcmp(cur[0], target_branch[0],
                 u8csLen(target_branch)) == 0)) done;
+
+    //  Empty target == trunk-leaf.  Trunk's shard dir is always the
+    //  store root (`<root>/.be/`), so the on-disk probe below is
+    //  trivially true; skip the probe and switch directly.  This lets
+    //  cross-shard ops (cross-branch POST, KEEP migrate) re-target
+    //  trunk-leaf without bypass.
+    if (u8csEmpty(target_branch)) {
+        return KEEPSwitchBranch(k->h, target_branch);
+    }
 
     //  Probe `<root>/.be/<target_branch>/` — skip if it's not a real
     //  branch shard dir (tags, peer-prefixed refs, etc. all share the

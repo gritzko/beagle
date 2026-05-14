@@ -98,6 +98,15 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create);
 //  Reuses POSTPromote's create-on-miss arm; returns OK on success.
 ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch);
 
+//  PUT-side branch reset (VERBS.md §PUT, `?branch#<sha>` aspect).
+//  Writes `?<target_branch> → ?<sha-hex>` to keeper REFS.  Creates
+//  the branch when it doesn't yet exist; non-FF rewrite of an
+//  existing branch is allowed (PUT is unconstrained on the local
+//  namespace per spec).  No commit, no wt change.  Caller has
+//  already validated `sha_hex` is 40 hex chars and that the sha is
+//  reachable in keeper.
+ok64 POSTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex);
+
 //  Rebase cur's stack onto an arbitrary sha (no branch lookup).
 //  Used by `be post //remote` (VERBS.md §"POST"): the target tip
 //  is resolved via REFSResolve from the cached tracking ref log

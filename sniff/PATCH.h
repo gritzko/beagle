@@ -77,5 +77,8 @@ con ok64 PATCHBUSY     = 0x1929d3112de722;   // merge already in progress —
                                              // complete with `be post` or
                                              // abort by checking out the
                                              // pre-patch commit
+con ok64 PATCHDET      = 0x64a74c44d39d;     // detached wt: PATCH refuses
+                                             // (per VERBS.md Invariant 7);
+                                             // re-attach to a branch first
 
 #endif

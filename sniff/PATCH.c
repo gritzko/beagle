@@ -39,6 +39,7 @@
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
+#include "keeper/RESOLVE.h"
 
 #include "AT.h"
 #include "SNIFF.h"
@@ -239,7 +240,9 @@ typedef struct {
     u32   merged_conflict;   // merged bytes contained <<<<<<< markers
     u32   added;
     u32   deleted;
-    u32   mod_del_conflict;  // one side deleted, the other modified
+    u32   mod_del_kept;      // one side deleted, the other modified —
+                             // content side wins, warning emitted, NOT a
+                             // hard conflict (PATCH still returns OK)
     u32   failed;
     //  The patch row's ts, picked up-front in PATCHApply and threaded
     //  through the walk.  Every file write_blob lays down gets stamped
@@ -369,9 +372,13 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
 
     //  Missing-at-commit is not fatal — the dir just didn't exist
     //  on that side, we treat its entry set as empty.
-    ok64 lo = fetch_tree(lbuf, dir_path, fork);
-    ok64 oo = fetch_tree(obuf, dir_path, our);
-    ok64 to = fetch_tree(tbuf, dir_path, thr);
+    //  Use COMMIT shas (not the per-recursion TREE shas) — graf's
+    //  get_resolve_qref rejects non-commit objects with GETFAIL.
+    //  The tree-sha tuple is consumed by the subtree-equality
+    //  short-circuit at the entry level, not here.
+    ok64 lo = fetch_tree(lbuf, dir_path, fork_commit);
+    ok64 oo = fetch_tree(obuf, dir_path, our_commit);
+    ok64 to = fetch_tree(tbuf, dir_path, thr_commit);
     fprintf(stderr,
             "PATCHDBG walk dir='%.*s' lo=%llx(%zu) oo=%llx(%zu) to=%llx(%zu)\n",
             (int)$len(dir_path), (char *)dir_path[0],
@@ -522,11 +529,14 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             continue;
         }
         if (l && o && t && o_eq_l && !t_eq_l) {
-            //  Only theirs changed.  GRAFGet needs the commit sha in
-            //  the URI query — `t->sha` is the blob-level entry sha,
-            //  so we pass `thr` (the tip commit) and let graf walk
-            //  to the blob via the path.
-            (void)fetch_blob(mbuf, childpath, thr);
+            //  Only theirs changed.  GRAFGet needs the COMMIT sha in
+            //  the URI query (graf's get_resolve_qref rejects non-
+            //  commit objects with GETFAIL).  Use `thr_commit` — at
+            //  the root recursion `thr == thr_commit` so this is a
+            //  no-op; at deeper recursion `thr` is the subdir's
+            //  TREE sha and passing it produces an empty merge buf,
+            //  zeroing the file on disk.
+            (void)fetch_blob(mbuf, childpath, thr_commit);
             a_dup(u8c, bytes, u8bData(mbuf));
             ok64 wo = write_blob(reporoot, childpath,
                                  t->mode, bytes);
@@ -639,8 +649,9 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             continue;
         }
         if (!l && !o && t) {
-            //  Target added a new file — write it.
-            (void)fetch_blob(mbuf, childpath, thr);
+            //  Target added a new file — write it.  Same commit-sha
+            //  requirement as the take-theirs arm above.
+            (void)fetch_blob(mbuf, childpath, thr_commit);
             a_dup(u8c, bytes, u8bData(mbuf));
             ok64 wo = write_blob(reporoot, childpath,
                                  t->mode, bytes);
@@ -689,18 +700,29 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             continue;
         }
         //  Structural: one side absent at leaf, LCA had the path.
+        //  Modify/delete asymmetry is preserved conservatively: the
+        //  side with content wins, the deletion is dropped, and a
+        //  warning is logged.  Both directions return OK; only true
+        //  content conflicts (merged_conflict, failed) flip PATCH to
+        //  PATCHCFLCT.  Rationale: silently losing user-edited bytes
+        //  is far worse than carrying along a file the other side
+        //  meant to delete — the user can re-delete in one keystroke.
         if (l && o && !t) {
             if (sha_eq(&l->sha, &o->sha)) {
                 //  Theirs deleted; ours unchanged → delete from wt.
                 ok64 d = delete_blob(reporoot, childpath);
                 if (d == OK) st->deleted++; else st->failed++;
             } else {
-                //  Theirs deleted; ours modified → modify/delete.
-                //  MVP: keep ours on disk, log it.
+                //  Theirs deleted; ours modified → keep ours (content
+                //  side wins).  Warn loudly so the user can decide
+                //  whether to re-apply the deletion.
                 fprintf(stderr,
-                    "sniff: patch: CONFLICT (modify/delete, ours kept) %.*s\n",
+                    "sniff: patch: modify/delete on %.*s — kept ours "
+                    "(theirs deleted, ours modified); re-delete if "
+                    "intentional\n",
                     (int)$len(childpath), (char *)childpath[0]);
-                st->mod_del_conflict++;
+                st->mod_del_kept++;
+                emit_status("kept", childpath);
             }
             continue;
         }
@@ -709,18 +731,23 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                 //  Ours deleted; theirs unchanged → leave deleted.
                 st->noop++;
             } else {
-                //  Ours deleted; theirs modified → modify/delete.
-                //  MVP: materialise theirs on disk + log conflict.
-                (void)fetch_blob(mbuf, childpath, &t->sha);
+                //  Ours deleted; theirs modified → write theirs
+                //  (content side wins).  Warn loudly.  Use commit-sha
+                //  (graf rejects non-commit shas — see take-theirs
+                //  arm above).
+                (void)fetch_blob(mbuf, childpath, thr_commit);
                 a_dup(u8c, bytes, u8bData(mbuf));
                 ok64 wo = write_blob(reporoot, childpath,
                                      t->mode, bytes);
                 if (wo == OK) {
                     stamp_wrote(reporoot, childpath, st);
                     fprintf(stderr,
-                        "sniff: patch: CONFLICT (delete/modify, theirs written) %.*s\n",
+                        "sniff: patch: delete/modify on %.*s — wrote "
+                        "theirs (ours deleted, theirs modified); "
+                        "re-delete if intentional\n",
                         (int)$len(childpath), (char *)childpath[0]);
-                    st->mod_del_conflict++;
+                    st->mod_del_kept++;
+                    emit_status("kept", childpath);
                 } else {
                     st->failed++;
                 }
@@ -774,94 +801,47 @@ static ok64 absolutise_query(u8cs out_q, u8b qbuf, u8cs target_query) {
 
 //  Resolve `target_query` ("heads/main", "tags/v1", or a 40-hex
 //  commit sha) to the 20-byte commit sha.  Annotated tags are
-//  dereferenced.  Relative refs (`./X`, `../X`, `..`) are absolutised
-//  against the wt's current branch before REFS lookup.
+//  dereferenced.  Token classification + relative-ref absolutisation
+//  + hashlet expansion + REFS-with-strip-retry all live in
+//  KEEPResolveRef now (keeper/RESOLVE.c); this wrapper only carries
+//  the patch-specific tag-deref policy on top.
 static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
     sane(out && u8csOK(target_query_in));
+    (void)reporoot;
 
-    //  Absolutise `?./X` / `?../X` / `?..` before any further
-    //  processing so the rest of the function sees a canonical query.
-    //  abs_qbuf must outlive every use of target_query below — keep it
-    //  in this stack frame.
-    a_pad(u8, abs_qbuf, 256);
-    u8cs target_query = {};
-    call(absolutise_query, target_query, abs_qbuf, target_query_in);
+    u8cs cur_branch = {};
+    (void)resolve_current_branch(cur_branch);
 
-    //  Hex token (40-char or short 4..39-char prefix): delegate to
-    //  GRAFResolveRef for token classification + keeper lookup.  Then
-    //  dereference annotated tag if the resolved object is one.  A
-    //  hex-shaped token that fails to resolve (e.g. typo'd prefix) is
-    //  treated as final — falling through to REFS would only find a
-    //  branch coincidentally named with hex chars, which is rarely
-    //  what the user means.
-    if (HEXu8sValid(target_query) && $len(target_query) >= 4) {
-        ok64 rr = GRAFResolveRef(&KEEP, target_query, out);
-        if (rr == OK) {
-            Bu8 cbuf = {};
-            call(u8bAllocate, cbuf, 1UL << 16);
-            u8 ct = 0;
-            ok64 ko = KEEPGetExact(&KEEP, out, cbuf, &ct);
-            if (ko == OK && ct == DOG_OBJ_TAG) {
-                a_dup(u8c, body, u8bDataC(cbuf));
-                u8cs field = {}, value = {};
-                a_cstr(obj_kw, "object");
-                while (GITu8sDrainCommit(body, field, value) == OK) {
-                    if (u8csEmpty(field)) break;
-                    if (u8csEq(field, obj_kw) &&
-                        u8csLen(value) >= 40) {
-                        u8s sb2 = {out->data, out->data + 20};
-                        u8cs hx2 = {value[0], value[0] + 40};
-                        HEXu8sDrainSome(sb2, hx2);
-                        break;
-                    }
-                }
-            }
-            u8bFree(cbuf);
-            done;
-        }
+    ok64 rr = KEEPResolveRef(&KEEP, out, target_query_in, cur_branch);
+    if (rr != OK) {
         fprintf(stderr,
             "sniff: patch: bad ref '%.*s'\n",
-            (int)$len(target_query), (char const *)target_query[0]);
+            (int)$len(target_query_in),
+            (char const *)target_query_in[0]);
         fail(PATCHFAIL);
     }
 
-    //  Symbolic ref: look up via REFS.  Compose the lookup URI via
-    //  abc/URI — a query-only ref like `?heads/main`.
-    a_path(keepdir, reporoot, KEEP_DIR_S);
-    a_uri(qkey, 0, 0, 0, target_query, 0);
-
-    a_pad(u8, arena, 512);
-    uri resolved = {};
-    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
-
-    //  Local lookup miss → retry with `refs/` / `heads/` prefixes
-    //  peeled and a `.` authority needle so peer-observed tracking
-    //  rows participate.  Mirror of sniff_get's resolution chain.
-    if (ro != OK || u8csLen(resolved.query) < 40) {
-        char const *strips[] = {"", "heads/", "refs/", "refs/heads/", NULL};
-        for (u32 si = 0; strips[si] != NULL &&
-                         (ro != OK || u8csLen(resolved.query) < 40); si++) {
-            a_dup(u8c, q, target_query);
-            a_cstr(strip_s, strips[si]);
-            if (!u8csEmpty(strip_s)) {
-                if (u8csLen(q) <= u8csLen(strip_s)) continue;
-                if (!u8csHasPrefix(q, strip_s)) continue;
-                u8csUsed(q, u8csLen(strip_s));
+    //  If we resolved to an annotated tag, deref to the underlying
+    //  commit via the `object` field.
+    Bu8 cbuf = {};
+    call(u8bAllocate, cbuf, 1UL << 16);
+    u8 ct = 0;
+    ok64 ko = KEEPGetExact(&KEEP, out, cbuf, &ct);
+    if (ko == OK && ct == DOG_OBJ_TAG) {
+        a_dup(u8c, body, u8bDataC(cbuf));
+        u8cs field = {}, value = {};
+        a_cstr(obj_kw, "object");
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if (u8csEmpty(field)) break;
+            if (u8csEq(field, obj_kw) && u8csLen(value) >= 40) {
+                u8s sb2 = {out->data, out->data + 20};
+                u8cs hx2 = {value[0], value[0] + 40};
+                HEXu8sDrainSome(sb2, hx2);
+                break;
             }
-            a_pad(u8, retry_buf, 512);
-            a_cstr(dot_q, ".?");
-            u8bFeed(retry_buf, dot_q);
-            u8bFeed(retry_buf, q);
-            a_dup(u8c, retry_uri, u8bDataC(retry_buf));
-            memset(&resolved, 0, sizeof(resolved));
-            ro = REFSResolve(&resolved, arena, $path(keepdir), retry_uri);
         }
     }
-    if (ro != OK) return ro;
-    if (u8csLen(resolved.query) < 40) fail(PATCHFAIL);
-    u8s sb = {out->data, out->data + 20};
-    u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-    call(HEXu8sDrainSome, sb, hx);
+    u8bFree(cbuf);
     done;
 }
 
@@ -1028,7 +1008,9 @@ static ok64 refuse_if_dirty(u8cs reporoot) {
 static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
     sane(thr_out && fork_out);
 
-    ok64 hr = GRAFResolveRef(&KEEP, frag, thr_out);
+    u8cs cur_branch = {};
+    (void)resolve_current_branch(cur_branch);
+    ok64 hr = KEEPResolveRef(&KEEP, thr_out, frag, cur_branch);
     if (hr != OK) {
         fprintf(stderr,
             "sniff: patch: cannot resolve cherry ref '%.*s'\n",
@@ -1265,8 +1247,44 @@ u8 PATCHShape(uricp u) {
     return PATCH_SHAPE_BAD;
 }
 
+//  Detached-wt detector.  Two failure modes:
+//    1. Cur-tip URI is `?<sha>` (sha-only query, no fragment) — the
+//       explicit detached form per AT.md "Branch tracking".  Not
+//       currently emitted by GET (folds to `?#<sha>` instead), but
+//       supported by the parser for forward compatibility.
+//    2. Cur-tip URI is `?<branch>#<wt_sha>` but `wt_sha` does NOT
+//       match the branch's reflog tip — i.e., the user rewound the
+//       wt to an older commit on cur's branch (or to a sibling
+//       branch's commit that the URI shape happens to alias to
+//       trunk).  This is the path users actually take to detach
+//       today: `be get ?#<old-sha>`.
+//  Per VERBS.md Invariant 7, PATCH refuses on detached wts — the
+//  merge would have no branch to record the absorbed sha against.
+static b8 is_detached_wt(u8cs reporoot) {
+    (void)reporoot;
+    ron60 ts = 0, verb = 0;
+    uri u = {};
+    if (SNIFFAtCurTip(&ts, &verb, &u) != OK) return NO;
+
+    //  Detached URI shape per AT.md "Branch tracking": query carries
+    //  a 40-hex SHA spec with no REF, fragment empty.  Attached form
+    //  is `?<branch>#<sha>` (fragment non-empty).  Today GET only
+    //  emits the attached form, so this triggers when an external
+    //  process (test harness, subs mount) writes a detached row.
+    if (!u8csEmpty(u.fragment)) return NO;
+    a_dup(u8c, q, u.query);
+    if (u8csLen(q) != 40) return NO;
+    return HEXu8sValid(q);
+}
+
 ok64 PATCHApply(u8cs reporoot, uricp u) {
     sane($ok(reporoot) && u != NULL);
+    if (is_detached_wt(reporoot)) {
+        fprintf(stderr,
+            "sniff: patch: refusing on detached wt — re-attach to a "
+            "branch first (be get ?<branch>)\n");
+        fail(PATCHDET);
+    }
     u8 shape = PATCHShape(u);
     if (shape == PATCH_SHAPE_BAD) {
         fprintf(stderr,
@@ -1568,13 +1586,13 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
 
     fprintf(stderr,
             "sniff: patch: noop=%u take-theirs=%u merged=%u "
-            "added=%u deleted=%u content-conflict=%u mod/del=%u failed=%u\n",
+            "added=%u deleted=%u content-conflict=%u mod-del-kept=%u "
+            "failed=%u\n",
             st.noop, st.take_theirs, st.merged,
             st.added, st.deleted, st.merged_conflict,
-            st.mod_del_conflict, st.failed);
+            st.mod_del_kept, st.failed);
 
-    if (st.merged_conflict > 0 || st.mod_del_conflict > 0 ||
-        st.failed > 0) {
+    if (st.merged_conflict > 0 || st.failed > 0) {
         return PATCHCFLCT;
     }
     done;
@@ -1585,6 +1603,12 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     b8 cherry = $empty(target_query) && !$empty(frag);
     sane($ok(reporoot) && $ok(filepath) &&
          (cherry || $ok(target_query)));
+    if (is_detached_wt(reporoot)) {
+        fprintf(stderr,
+            "sniff: patch: refusing on detached wt — re-attach to a "
+            "branch first (be get ?<branch>)\n");
+        fail(PATCHDET);
+    }
     //  Single-file mode: just run a merge on that one path using
     //  graf's 3-way merge — no tree walk, no classification.
     sha1 our_sha = {};
@@ -1594,7 +1618,29 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
         sha1 fork_unused = {};
         call(resolve_cherry, &thr_sha, &fork_unused, frag);
     } else {
+        //  Cross-branch read: ensure the target branch's packs are
+        //  loaded into keeper so resolve_target / graf's history walk
+        //  can see them.  Mirrors PATCHApply.
+        (void)SNIFFMaybeSwitchKeeper(target_query);
+        (void)SNIFFMaybeSwitchGraf(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
+    }
+
+    //  Lazy-index both commit chains into graf so GRAFMergeWtFileTunable's
+    //  history walk sees both sides' ancestors.  Without this the merge
+    //  silently returns ours's bytes (no theirs-side edit visible).
+    //  Mirror of PATCHApply's tip-indexing block.
+    {
+        sha1 const *tips[2] = {&our_sha, &thr_sha};
+        for (u32 i = 0; i < 2; i++) {
+            sha1hex tip_hex = {};
+            sha1hexFromSha1(&tip_hex, tips[i]);
+            a_rawc(hex_bytes, tip_hex);
+            uri tip_uri = {};
+            $mv(tip_uri.fragment, hex_bytes);
+            $mv(tip_uri.data,     hex_bytes);
+            (void)GRAFIndexFromTips(&KEEP, &tip_uri);
+        }
     }
 
     Bu8 mbuf = {};
@@ -1610,10 +1656,28 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     ok64 wo = write_blob(reporoot, filepath, default_mode, bytes);
     u8bFree(mbuf);
     if (wo != OK) return wo;
+
+    //  Stamp the file so it counts as patch-written for POST's
+    //  classification (not "dirty/untracked").  ts is fresh — path-
+    //  scoped PATCH doesn't write a patch row (per VERBS.md §"Path-
+    //  scoped PATCH": no header recorded), so the stamp is purely a
+    //  baseline-marker for POST's mtime lookup.
+    {
+        ron60 ts = 0;
+        struct timespec tv = {};
+        SNIFFAtNow(&ts, &tv);
+        a_path(fp);
+        if (SNIFFFullpath(fp, reporoot, filepath) == OK) {
+            (void)SNIFFAtStampPath(fp, ts);
+        }
+    }
+
     if (conflict) {
         fprintf(stderr, "sniff: patch: CONFLICT (content) %.*s\n",
                 (int)$len(filepath), (char *)filepath[0]);
         return PATCHCFLCT;
     }
+    fprintf(stderr, "patch\tapplied\t%.*s\n",
+            (int)$len(filepath), (char *)filepath[0]);
     done;
 }

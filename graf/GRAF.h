@@ -234,23 +234,6 @@ ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
 // SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
 ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out);
 
-// Resolve a user-typed reference token (a single u8cs argv arg, not a
-// URI) to a full 20-byte commit SHA-1.  Token classification order:
-//
-//   1. Empty                       → GRAFNONE.
-//   2. All-hex (`HEXu8sValid`), 40 → decode + verify object exists.
-//   3. All-hex, 4..39              → keeper hashlet prefix lookup.
-//   4. Otherwise                   → REFS path resolution (absolute
-//                                     or relative branch paths via
-//                                     REFSResolve).
-//
-// Hex tokens of length 1..3 fall through to the path branch — too
-// short to disambiguate by hashlet alone.  Caller passes the raw
-// token; the helper handles the synthetic `?<token>` URI internally
-// for REFS lookup.  Commit-message substring search is a follow-up
-// (see RESOLVE.TODO.md).
-ok64 GRAFResolveRef(keeper *k, u8cs token, sha1 *out);
-
 // Weave diff between two commits (reads blobs from keeper).
 ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to);

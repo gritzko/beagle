@@ -40,6 +40,7 @@
 #include "graf/REBASE.h"
 #include "keeper/GIT.h"
 #include "keeper/REFS.h"
+#include "keeper/RESOLVE.h"
 #include "keeper/SHA1.h"
 #include "keeper/WALK.h"
 
@@ -1260,6 +1261,12 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 
 //  Resolve a branch's REFS tip (`?<branch>`) to a 20-byte sha.  Returns
 //  REFSNONE when no row exists, OK when a tip is present and decoded.
+//
+//  Internal — NOT routed through KEEPResolveRef.  Callers in this file
+//  pass `branch` as the literal REFS key (e.g. `feat/` with trailing
+//  slash for the basename-reuse semantic), and the higher-level
+//  POSTPromote logic distinguishes `?feat` from `?feat/`.  Going via
+//  KEEPResolveRef's dog/QURY normaliser would collapse those.
 static ok64 post_resolve_branch_tip(sha1 *out, u8cs reporoot, u8cs branch) {
     sane(out);
     a_path(keepdir, reporoot, KEEP_DIR_S);
@@ -1595,6 +1602,33 @@ ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch) {
     return POSTPromote(reporoot, target_branch, YES);
 }
 
+//  PUT-side branch reset: `be put ?<branch>#<sha>` writes the named
+//  branch's REFS row to `?<sha>` regardless of any existing value.
+//  Both create and non-FF rewrite are allowed (VERBS.md §PUT row:
+//  "Non-FF rewrite is allowed (PUT is unconstrained on the local
+//  namespace).")  Bypasses POSTPromote (no rebase, no cur sync) —
+//  this is a label move, period.
+ok64 POSTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
+    sane($ok(reporoot) && $ok(target_branch) && $ok(sha_hex));
+    if (u8csLen(sha_hex) != 40 || !HEXu8sValid(sha_hex)) fail(SNIFFFAIL);
+
+    a_path(keepdir, reporoot, KEEP_DIR_S);
+
+    //  refkey = `?<branch>`
+    a_pad(u8, keybuf, 256);
+    u8bFeed1(keybuf, '?');
+    u8bFeed(keybuf, target_branch);
+    a_dup(u8c, refkey, u8bData(keybuf));
+
+    //  value = `?<sha-hex>`
+    a_pad(u8, valbuf, 64);
+    u8bFeed1(valbuf, '?');
+    u8bFeed(valbuf, sha_hex);
+    a_dup(u8c, val, u8bData(valbuf));
+
+    return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
+}
+
 ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     sane($ok(reporoot) && $ok(target_branch));
     keeper *k = &KEEP;
@@ -1867,14 +1901,47 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         child_tip = target_tip;
         auto_sync_cur = NO;
     } else {
-        //  ?.. (parent) or ?<absolute> (peer/upstream): replay cur's
-        //  stack onto target.tip.
-        (void)GRAFLca(&base_old, &cur_tip, &target_tip);
+        //  ?.. (parent) or ?<absolute> (peer/upstream): FF target to
+        //  cur.tip when cur is a descendant of target.tip; refuse
+        //  otherwise.  Detect via a keeper-side first-parent walk —
+        //  graf's GRAFLca depends on the DAG being indexed for the
+        //  cross-shard parent chain, which isn't guaranteed for
+        //  freshly-fetched history.  Walking commit bodies directly
+        //  is slower per step but always correct.
+        #define POST_PARENT_MAX 8192
+        sha1 cur = cur_tip;
+        b8 ff = NO;
+        Bu8 cbuf = {};
+        (void)u8bMap(cbuf, 1UL << 16);
+        for (u32 hop = 0; hop < POST_PARENT_MAX; hop++) {
+            if (sha1Eq(&cur, &target_tip)) { ff = YES; break; }
+            u8bReset(cbuf);
+            u8 ct = 0;
+            if (KEEPGetExact(k, &cur, cbuf, &ct) != OK ||
+                ct != DOG_OBJ_COMMIT) break;
+            a_dup(u8c, body, u8bData(cbuf));
+            u8cs field = {}, value = {};
+            b8 stepped = NO;
+            while (GITu8sDrainCommit(body, field, value) == OK) {
+                if ($empty(field)) break;
+                a_cstr(par_kw, "parent");
+                if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+                    u8cs hx = {value[0], value[0] + 40};
+                    u8s  bn = {cur.data, cur.data + 20};
+                    if (HEXu8sDrainSome(bn, hx) == OK) stepped = YES;
+                    break;
+                }
+            }
+            if (!stepped) break;
+        }
+        u8bUnMap(cbuf);
+        if (ff) base_old = target_tip;
+        else    sha1Zero(&base_old);  //  signal non-FF below
         base_new  = target_tip;
         child_tip = cur_tip;
         //  Spec (VERBS.md §POST): the named target advances; cur is
         //  never auto-modified.  User runs `be get ?<target>` if they
-        //  want the wt to follow.  (was: `is_parent ? YES : NO`.)
+        //  want the wt to follow.
         auto_sync_cur = NO;
     }
 
@@ -1936,27 +2003,83 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     keep_pack pp = {};
     if (sha1Eq(&base_old, &base_new)) {
         target_new_tip = child_tip;
-        //  No new objects emitted — child_tip already exists in keeper.
+        //  Trivial FF — but `child_tip`'s pack may live in a
+        //  different shard (cur's leaf) and the active leaf (target)
+        //  doesn't have a copy.  Collect the FP chain
+        //  `child_tip → base_old (exclusive)` and KEEPMoveCommits
+        //  copies each commit's reachable trees+blobs into the
+        //  active leaf with delta-base hints.
+        //
+        //  Walk the first-parent chain via existing helper.
+        //  Bounded by POST_MIG_MAX so a pathological chain can't
+        //  hang the dispatcher.
+        #define POST_MIG_MAX 8192
+        sha1 chain[POST_MIG_MAX];
+        u32 nchain = 0;
+        {
+            Bu8 cbuf = {};
+            (void)u8bMap(cbuf, 1UL << 16);
+            sha1 cur = child_tip;
+            while (nchain < POST_MIG_MAX &&
+                   !sha1Eq(&cur, &base_old)) {
+                chain[nchain++] = cur;
+                u8bReset(cbuf);
+                u8 ct = 0;
+                if (KEEPGetExact(&KEEP, &cur, cbuf, &ct) != OK ||
+                    ct != DOG_OBJ_COMMIT) break;
+                a_dup(u8c, body, u8bData(cbuf));
+                u8cs field = {}, value = {};
+                b8 found_par = NO;
+                while (GITu8sDrainCommit(body, field, value) == OK) {
+                    if ($empty(field)) break;
+                    a_cstr(par_kw, "parent");
+                    if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+                        u8cs hx = {value[0], value[0] + 40};
+                        u8s  bn = {cur.data, cur.data + 20};
+                        (void)HEXu8sDrainSome(bn, hx);
+                        found_par = YES;
+                        break;
+                    }
+                }
+                if (!found_par) break;
+            }
+            u8bUnMap(cbuf);
+        }
+        if (nchain > 0) {
+            //  Reverse to oldest-first for KEEPMoveCommits.
+            for (u32 i = 0, j = nchain - 1; i < j; i++, j--) {
+                sha1 tmp = chain[i]; chain[i] = chain[j]; chain[j] = tmp;
+            }
+            sha1cs slice = {chain, chain + nchain};
+            //  src_branch = cur's leaf (where the objects live today).
+            //  Caller has already switched KEEP to target = active
+            //  leaf, so source sits in PAST.  Empty cur_branch =
+            //  trunk (legitimate when promoting trunk's own commits).
+            a_dup(u8c, src, cur_branch);
+            ok64 mv = KEEPMoveCommits(slice, src);
+            if (mv != OK && mv != KEEPMVNOOP) {
+                fprintf(stderr,
+                        "sniff: post: cross-shard copy failed (%s)\n",
+                        ok64str(mv));
+                return mv;
+            }
+        }
         stack_was_rewritten = NO;
     } else {
-        call(KEEPPackOpen, k, &pp);
-        pp.strict_order = NO;
-        rctx.k = k;
-        rctx.p = &pp;
-        ok64 rb = GRAFRebase(&base_old, &base_new, &child_tip,
-                             post_rebase_emit_cb, &rctx);
-        ok64 cl = KEEPPackClose(k, &pp);
-        if (rb != OK) {
-            fprintf(stderr,
-                    "sniff: post: cross-branch rebase aborted (%s)\n",
-                    rb == GRAFCNFL ? "merge conflict" : "error");
-            return rb;
-        }
-        if (cl != OK) return cl;
-        target_new_tip = rctx.have_last_commit
-                            ? rctx.last_commit_sha
-                            : base_new;
-        stack_was_rewritten = rctx.have_last_commit;
+        //  POST is commit-or-FF, never rebase (per VERBS.md).  When
+        //  cur is not a descendant of target.tip, refuse with
+        //  POSTNOFF — user runs `be patch ?target#` + `be post` per
+        //  commit to rebase explicitly.  (Old `GRAFRebase` path
+        //  removed: rebase semantics belong in PATCH; see
+        //  VERBS.md §POST and the cheat sheet for `git rebase`.)
+        (void)pp; (void)rctx;
+        fprintf(stderr,
+                "sniff: post: ?%.*s — not a fast-forward (cur is not "
+                "a descendant of target.tip); use `be patch ?%.*s#` "
+                "+ `be post` to rebase\n",
+                (int)u8csLen(target_branch), (char *)target_branch[0],
+                (int)u8csLen(target_branch), (char *)target_branch[0]);
+        return POSTNOFF;
     }
 
     //  --- 8. Cascade walk on the *target* side. ---

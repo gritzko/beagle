@@ -7,5 +7,5 @@
 ^\+ d\.txt$
 ^- a\.txt$
 ^- b\.txt$
-^head: 2 ahead, 2 behind, 4 changed$
+^head: \?[a-zA-Z0-9_/-]*: 2 ahead, 2 behind, 4 changed$
 ^$

@@ -618,11 +618,58 @@ static b8 get_wt_dirty(u8cs reporoot) {
     return count > 0;
 }
 
+//  Hole verifier — walk the reachable closure of `target_hex` through
+//  the keeper's current PastData view and report (`stderr`) any object
+//  that's locally absent.  Returns OK iff every reachable
+//  commit/tree/blob is present; KEEPFAIL otherwise.
+//
+//  Use case: `--force` on `be get` activates this BEFORE any state
+//  change (no keeper switch, no wt write).  The current keeper context
+//  is the wt's cur leaf — PAST already covers trunk + every loaded
+//  ancestor branch, so cross-shard targets verify without switching
+//  (KEEPSwitchBranch would itself fail when the target shard is
+//  broken, defeating the purpose).  Refusing the checkout up-front
+//  preserves a working ?onto-remote while exposing what's missing
+//  upstream.
+//
+//  Target must be a full 40-char hex (KEEPVerify's contract).
+static ok64 get_verify_closure(keeper *k, u8csc target_hex) {
+    sane(k && $ok(target_hex));
+    if ($len(target_hex) != 40) {
+        fprintf(stderr,
+            "sniff: --force verify: target must be 40-hex (got %zu)\n",
+            (size_t)$len(target_hex));
+        return SNIFFFAIL;
+    }
+    a_dup(u8c, hex_mut, target_hex);
+    ok64 vo = KEEPVerify(k, hex_mut);
+    if (vo != OK) {
+        fprintf(stderr,
+            "sniff: --force verify: target %.*s has missing objects "
+            "(see `keeper verify '#%.*s'` for the list).  "
+            "Refusing checkout — repair the local store first "
+            "(e.g. re-fetch from a peer that has the closure).\n",
+            (int)$len(target_hex), (char *)target_hex[0],
+            (int)$len(target_hex), (char *)target_hex[0]);
+        return SNIFFFAIL;
+    }
+    return OK;
+}
+
 // --- Public API ---
 
 ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     sane($ok(hex));
     keeper *k = &KEEP;
+
+    //  --force escape hatch: verify the target's closure up-front
+    //  (no state change) and refuse the checkout when bytes are
+    //  missing.  Runs from the wt's current cur context so a broken
+    //  target shard doesn't trip the KEEPSwitchBranch path that would
+    //  otherwise hide the holes.
+    if (SNIFF.force && $len(hex) == 40) {
+        call(get_verify_closure, k, hex);
+    }
 
     size_t hexlen = $len(hex);
     if (hexlen > 15) hexlen = 15;

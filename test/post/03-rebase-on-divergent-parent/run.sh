@@ -1,8 +1,8 @@
 #!/bin/sh
-#  03-rebase-on-divergent-parent — `be post ?..` from a child branch
-#  whose parent has advanced rebases CUR (the child) onto the parent's
-#  tip.  Per VERBS.md §POST: cur is the only ref POST moves; the
-#  named branch is the upstream (read-only).
+#  03-rebase-on-divergent-parent — `be patch ?..#` + `be post` from
+#  a child branch whose parent has advanced absorbs the parent's tip
+#  as a foster on cur's new tip.  Per VERBS.md §POST: cur is the only
+#  ref POST moves; the named branch is read-only.
 #
 #  Sequence:
 #    T1 baseline (a=alpha, b=beta) on trunk.
@@ -12,13 +12,14 @@
 #    (parent T1).  ?fix1 is now divergent: its parent T1 is no longer
 #    the trunk tip.
 #    Switch to ?fix1 (wt resets to fix1's tree: a=alpha-fix1, b=beta).
-#    `be post ?..` from ?fix1: rebases C1 onto T2 — fix1 advances to
-#    C1' (parent T2).  Trunk stays at T2.
+#    `be patch ?..#` + `be post` from ?fix1: ?..tip (T2) absorbed as
+#    foster on fix1's new tip C1' (parent C1).  Wt picks up T2's
+#    b.txt edit via 3-way merge.  Trunk stays at T2.
 #
 #  Asserts:
 #    * trunk tip stays at T2 (POST never moves a non-cur ref).
-#    * ?fix1 tip moves from C1 to C1' (rebase replayed C1 onto T2).
-#    * C1'.parent == T2 (proves rebase happened).
+#    * ?fix1 tip moves from C1 to C1'.
+#    * C1'.parent == C1 and C1'.foster == T2 (proves absorb-as-foster).
 #    * wt has both edits: a=alpha-fix1, b=beta-trunk.
 #
 #  Note: redirected stderr/stdout files are kept OUTSIDE the wt
@@ -115,12 +116,18 @@ FIX1_OLD_TIP=$(ref_tip "?fix1")
     || { echo "?fix1 tip drifted: want $FIX1_C1 got $FIX1_OLD_TIP" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 6. `be post ?..` from ?fix1: rebases CUR (?fix1) onto trunk's tip
-#    (T2).  fix1 moves from C1 → C1' (parent T2); trunk stays at T2.
+# 6. `be patch ?..#` then `be post` from ?fix1: absorbs T2 as foster.
+#    fix1 moves from C1 → C1' (parent C1, foster T2); trunk stays at T2.
 # ------------------------------------------------------------------
-if ! "$BE" post '?..' > "$LOGS/11.post.out" 2> "$LOGS/11.post.err"; then
-    echo "be post ?.. failed; stderr:" >&2
-    cat "$LOGS/11.post.err" >&2
+sleep 0.02
+if ! "$BE" patch '?..#' > "$LOGS/11.patch.out" 2> "$LOGS/11.patch.err"; then
+    echo "be patch ?..# failed; stderr:" >&2
+    cat "$LOGS/11.patch.err" >&2
+    exit 1
+fi
+if ! "$BE" post 'fix1 absorb trunk' > "$LOGS/12.post.out" 2> "$LOGS/12.post.err"; then
+    echo "be post (after patch) failed; stderr:" >&2
+    cat "$LOGS/12.post.err" >&2
     exit 1
 fi
 
@@ -135,25 +142,24 @@ FIX1_NEW_TIP=$(ref_tip "?fix1")
     || { echo "?fix1 did not advance from C1=$FIX1_C1" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 8. assert: C1''s single parent is T2 (NOT T1) — proves rebase
-#    happened (cur replayed onto trunk's new tip).
+# 8. assert: C1'.parent == C1; C1'.foster == T2 (proves absorb-as-foster).
 # ------------------------------------------------------------------
-"$KEEPER" get "?fix1#$FIX1_NEW_TIP" > "$LOGS/12.commit.out" \
-    2> "$LOGS/12.commit.err" \
+"$KEEPER" get "?fix1#$FIX1_NEW_TIP" > "$LOGS/13.commit.out" \
+    2> "$LOGS/13.commit.err" \
     || { echo "keeper get .#$FIX1_NEW_TIP failed" >&2
-         cat "$LOGS/12.commit.err" >&2; exit 1; }
-PARENTS=$(grep -c '^parent ' "$LOGS/12.commit.out" || true)
-[ "$PARENTS" = "1" ] \
-    || { echo "C1' has $PARENTS parent line(s); want exactly 1" >&2
-         cat "$LOGS/12.commit.out" >&2; exit 1; }
-PARENT_SHA=$(awk '/^parent / { print $2; exit }' "$LOGS/12.commit.out")
-[ "$PARENT_SHA" = "$T2" ] \
-    || { echo "C1'.parent=$PARENT_SHA; want T2=$T2 (rebase, not ff)" >&2
+         cat "$LOGS/13.commit.err" >&2; exit 1; }
+PARENT_SHA=$(awk '/^parent / { print $2; exit }' "$LOGS/13.commit.out")
+[ "$PARENT_SHA" = "$FIX1_C1" ] \
+    || { echo "C1'.parent=$PARENT_SHA; want $FIX1_C1 (cur's old tip)" >&2
          exit 1; }
+FOSTER_SHA=$(awk '/^foster / { print $2; exit }' "$LOGS/13.commit.out")
+[ "$FOSTER_SHA" = "$T2" ] \
+    || { echo "C1'.foster=$FOSTER_SHA; want T2=$T2" >&2
+         cat "$LOGS/13.commit.out" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 9. wt content after `be post ?..`.  Wt now reflects rebased fix1
-# (a=alpha-fix1 from C1's edit, b=beta-trunk inherited from T2).
+# 9. wt content after patch + post.  Wt reflects 3-way merge:
+# a=alpha-fix1 from C1's edit, b=beta-trunk from T2.
 # ------------------------------------------------------------------
 match "$CASE/05.a.want.txt" a.txt
 match "$CASE/06.b.want.txt" b.txt

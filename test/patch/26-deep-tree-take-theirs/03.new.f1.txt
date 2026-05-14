@@ -1,0 +1,3 @@
+a new file added in a deep subdirectory by feat, body must
+survive the patch byte-exact (regression for the file-zeroing
+bug where add-arm fetched at the recurse tree-sha).

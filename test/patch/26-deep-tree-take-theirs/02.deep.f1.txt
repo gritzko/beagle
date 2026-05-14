@@ -1,0 +1,5 @@
+feat one — extensive edit by the feature branch, a
+proper multi-line file body, several lines long,
+with enough content to make a non-trivial blob
+that PATCH must reproduce byte-exact on disk.
+EOF marker line.
