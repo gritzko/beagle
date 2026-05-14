@@ -67,12 +67,6 @@ ok64 POSTPatchDefaults(u8cs reporoot,
 //  no `?label`) so the user can sanity-check before committing.
 ok64 POSTPrintStatus(u8cs reporoot);
 
-//  Record `ref_uri → ?<sha_hex>` in keeper/refs via REFSAppend.
-//  `ref_uri` is the URI the user typed on the CLI — e.g. `?heads/main`
-//  or `?tags/v0.0.1` — passed straight through (`c->uris[i].data`).
-//  `sha_hex` must be exactly 40 hex chars.
-ok64 POSTSetLabel(u8cs ref_uri, u8cs sha_hex);
-
 //  Cross-branch promote (no-msg `be post ?<X>` shapes per VERBS.md
 //  §POST).  `target_branch` is the absolute branch path the user
 //  named (already absolutised from `?./X`/`?../X`/`?..` by the
@@ -92,20 +86,32 @@ ok64 POSTSetLabel(u8cs ref_uri, u8cs sha_hex);
 //    SNIFFFAIL   — generic dispatcher / resource error.
 ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create);
 
-//  PUT-side branch creation (VERBS.md §PUT, `?branch` aspect).
-//  Creates the named branch as a label at cur.tip without producing
-//  a commit.  Refuses with `PUTDUP` if the branch already exists.
-//  Reuses POSTPromote's create-on-miss arm; returns OK on success.
-ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch);
+//  Look up a branch's current tip via keeper REFS.  Empty `branch`
+//  means trunk.  Returns OK with `*out` populated on hit, REFSNONE
+//  when the branch has no entry, or REFSBAD on a malformed value
+//  row.  Pure read — no side effects.
+ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch);
 
-//  PUT-side branch reset (VERBS.md §PUT, `?branch#<sha>` aspect).
-//  Writes `?<target_branch> → ?<sha-hex>` to keeper REFS.  Creates
-//  the branch when it doesn't yet exist; non-FF rewrite of an
-//  existing branch is allowed (PUT is unconstrained on the local
-//  namespace per spec).  No commit, no wt change.  Caller has
-//  already validated `sha_hex` is 40 hex chars and that the sha is
-//  reachable in keeper.
-ok64 POSTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex);
+//  First-parent chain walker used by cross-shard migration on POST's
+//  FF promote arm and PUT's `?br#<sha>` ref reset.  Walks from `*from`
+//  backwards along the `parent` header, writing each visited commit
+//  sha into `out[0..*nout)` newest-first (so `out[0] == *from`).
+//
+//  Termination, in priority order:
+//    * `stop != NULL && cur == *stop`   → `*reached_stop = YES`
+//    * KEEPGetExact miss / no parent     → `*reached_stop = NO`  (root
+//                                          or unreachable from the
+//                                          currently-open shard chain)
+//    * `*nout == cap`                    → `*reached_stop = NO`
+//
+//  Caller passes `stop = NULL` to walk to the natural end (root or
+//  unreachable); `*reached_stop` is then always set to NO.
+//
+//  Reads use the currently-active keeper singleton — callers that need
+//  to walk under a specific shard must `KEEPSwitchBranch` first.
+#define POST_MIG_MAX 8192
+ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
+                   sha1 *out, u32 cap, u32 *nout, b8 *reached_stop);
 
 //  Rebase cur's stack onto an arbitrary sha (no branch lookup).
 //  Used by `be post //remote` (VERBS.md §"POST"): the target tip

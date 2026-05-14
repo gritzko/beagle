@@ -554,7 +554,7 @@ ok64 DELBranch(uri const *u, b8 recursive) {
     call(REFSAppendVerb, $path(keepdir), REFSVerbDelete(), refkey, zeros);
 
     //  Drop the per-branch keeper shard if it was materialised by a
-    //  prior `be post ?./X` (POSTSetLabel).  KEEPBranchDrop is the
+    //  prior `be post ?./X` (PUTSetLabel).  KEEPBranchDrop is the
     //  inverse of KEEPCreateBranch; KEEPNONE means the dir was never
     //  created (older REFS-only labels), KEEPTRUNK / KEEPDIRTY are
     //  guarded above.  Failing here would leave the REFS tombstone

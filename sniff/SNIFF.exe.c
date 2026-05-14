@@ -1444,7 +1444,7 @@ ok64 SNIFFExec(cli *c) {
         }
 
         //  Resolve a relative label (`?./X`, `?../X`, `?..`) before
-        //  POSTSetLabel sees it.  Buffers must outlive POSTSetLabel —
+        //  PUTSetLabel sees it.  Buffers must outlive PUTSetLabel —
         //  hence stack-local pads scoped to this if-block.
         a_pad(u8, label_qbuf,    256);
         a_pad(u8, label_databuf, 260);
@@ -1504,7 +1504,7 @@ ok64 SNIFFExec(cli *c) {
                 //  lands the new commit on that branch (instead of
                 //  the wt's baseline branch); the wt's other branch
                 //  is left untouched in REFS, and `.be/wtlog` resets
-                //  to (target, new_tip).  No separate POSTSetLabel
+                //  to (target, new_tip).  No separate PUTSetLabel
                 //  pass — that was the old "label both branches at
                 //  the same sha" behaviour, replaced here.
                 u8cs target = {};
@@ -1557,9 +1557,9 @@ post_done:
         ;
     } else if (is_put) {
         //  Split URIs by aspect (VERBS.md §PUT):
-        //    * `?branch` (query, no path) → POSTCreateBranch (create
+        //    * `?branch` (query, no path) → PUTCreateBranch (create
         //      label at cur.tip; refuses with PUTDUP if exists).
-        //    * `?branch#<sha>` (query + sha fragment) → POSTSetBranch
+        //    * `?branch#<sha>` (query + sha fragment) → PUTSetBranch
         //      (reset the ref to that sha; non-FF rewrite allowed).
         //    * `?#<sha>` (empty query + sha fragment) → trunk reset.
         //      data must start with `?` so a fragment-only `#<sha>`
@@ -1580,7 +1580,7 @@ post_done:
             //  no path, no authority, data starts with `?`.  Accept
             //  6..40 hex (hashlet prefix); resolve to full 40-hex
             //  via GRAFResolveRef so the REFS row carries a canonical
-            //  sha (POSTSetBranch insists on full 40-hex).
+            //  sha (PUTSetBranch insists on full 40-hex).
             b8 trunk_reset = !has_q && !has_path && !has_auth &&
                              has_frag &&
                              !$empty(u.data) && u.data[0][0] == '?' &&
@@ -1607,13 +1607,13 @@ post_done:
                 sha1hex full = {};
                 sha1hexFromSha1(&full, &resolved);
                 a_rawc(full_s, full);
-                //  POSTSetBranch's sane() check rejects all-NULL
+                //  PUTSetBranch's sane() check rejects all-NULL
                 //  slices ($ok); pass a zero-length slice with valid
                 //  pointers so it represents "trunk" (empty branch
                 //  path).  refkey ends up as bare `?`.
                 static u8c const _z = 0;
                 u8cs empty_branch = {(u8cp)&_z, (u8cp)&_z};
-                ret = POSTSetBranch(reporoot, empty_branch, full_s);
+                ret = PUTSetBranch(reporoot, empty_branch, full_s);
                 continue;
             }
             if (has_q && !has_path && !has_auth) {
@@ -1631,7 +1631,7 @@ post_done:
                 //  rewrite is allowed.  Short hashlets (6..40 hex)
                 //  resolve via GRAFResolveRef to a canonical 40-hex.
                 //  Bare `?br` (no fragment) keeps the create-only
-                //  POSTCreateBranch path.
+                //  PUTCreateBranch path.
                 a_dup(u8c, frag, u.fragment);
                 if (u8csLen(frag) >= 6 && u8csLen(frag) <= 40 &&
                     HEXu8sValid(frag)) {
@@ -1652,9 +1652,9 @@ post_done:
                     sha1hex full = {};
                     sha1hexFromSha1(&full, &resolved);
                     a_rawc(full_s, full);
-                    ret = POSTSetBranch(reporoot, target, full_s);
+                    ret = PUTSetBranch(reporoot, target, full_s);
                 } else {
-                    ret = POSTCreateBranch(reporoot, target);
+                    ret = PUTCreateBranch(reporoot, target);
                 }
                 continue;
             }

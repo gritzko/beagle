@@ -27,13 +27,17 @@
 #include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "dog/DOG.h"
+#include "dog/QURY.h"
 #include "keeper/GIT.h"
 #include "keeper/KEEP.h"
+#include "keeper/REFS.h"
 #include "keeper/WALK.h"
 #include "keeper/SHA1.h"
 
 #include "AT.h"
 #include "CLASS.h"
+#include "POST.h"
 #include "SUBS.h"
 
 // --- Bare-walk callback (baseline-tree visitor) ---
@@ -828,4 +832,228 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
     }
     fprintf(stderr, "sniff: staged %u put row(s)\n", emitted);
     done;
+}
+
+// --- Branch-form PUT helpers ----------------------------------------
+//
+//  `be put ?<branch>`        → PUTCreateBranch (label-only fork at cur.tip)
+//  `be put ?<branch>#<sha>`  → PUTSetBranch    (label move + cross-shard
+//                                                migration)
+//  `be put ?<refkey>` with explicit sha (legacy PUTSetLabel path) →
+//                              PUTSetLabel (canonicalise key, append REFS)
+//
+//  These are PUT-side ref-writers — they never create commits.  Naming
+//  matches VERBS.md's verb semantics (POST = commit-maker, PUT =
+//  ref-writer); historical residence in POST.c was an accumulation
+//  artefact.  See git history for the move.
+
+ok64 PUTCreateBranch(u8cs reporoot, u8cs target_branch) {
+    sane($ok(reporoot) && $ok(target_branch));
+    sha1 existing = {};
+    ok64 er = POSTResolveBranchTip(&existing, reporoot, target_branch);
+    if (er == OK) {
+        fprintf(stderr,
+                "sniff: put: ?%.*s already exists\n",
+                (int)u8csLen(target_branch),
+                (char *)target_branch[0]);
+        return PUTDUP;
+    }
+    if (er != REFSNONE) return er;
+    //  Create-only: POSTPromote with allow_create=YES handles the
+    //  create-on-miss arm, but doesn't auto-sync cur (per spec).
+    return POSTPromote(reporoot, target_branch, YES);
+}
+
+ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
+    sane($ok(reporoot) && $ok(target_branch) && $ok(sha_hex));
+    if (u8csLen(sha_hex) != 40 || !HEXu8sValid(sha_hex)) fail(SNIFFFAIL);
+
+    //  Decode new tip into a sha1 for the FP walk.
+    sha1 new_tip = {};
+    {
+        u8s bn = {new_tip.data, new_tip.data + 20};
+        a_dup(u8c, hx, sha_hex);
+        call(HEXu8sDrainSome, bn, hx);
+    }
+
+    keeper *k = &KEEP;
+
+    //  Resolve cur's branch — that's the source shard for KEEPMoveCommits
+    //  (where the new tip's objects currently live).  Empty cur_branch
+    //  means trunk.  Matches the lookup POSTPromote does at its head.
+    a_pad(u8, cur_buf, 256);
+    {
+        ron60 ts = 0, verb = 0;
+        uri u = {};
+        if (SNIFFAtCurTip(&ts, &verb, &u) == OK) {
+            a_dup(u8c, q, u.query);
+            while (!$empty(q)) {
+                qref spec = {};
+                if (QURYu8sDrain(q, &spec) != OK) break;
+                if (spec.type == QURY_NONE) {
+                    if ($empty(q)) break;
+                    continue;
+                }
+                if (spec.type == QURY_REF) {
+                    u8bFeed(cur_buf, spec.body);
+                    break;
+                }
+            }
+        }
+    }
+    a_dup(u8c, cur_branch, u8bData(cur_buf));
+
+    a_path(keepdir, reporoot, KEEP_DIR_S);
+
+    a_pad(u8, keybuf, 256);
+    u8bFeed1(keybuf, '?');
+    u8bFeed(keybuf, target_branch);
+    a_dup(u8c, refkey, u8bData(keybuf));
+
+    a_pad(u8, valbuf, 64);
+    u8bFeed1(valbuf, '?');
+    u8bFeed(valbuf, sha_hex);
+    a_dup(u8c, val, u8bData(valbuf));
+
+    //  Same-shard short-circuit: target == cur means the new tip's
+    //  objects already live in the active leaf — no migration, no
+    //  switch.  PUT semantics permit re-pointing cur's own ref.
+    if (u8csEq(target_branch, cur_branch))
+        return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
+
+    //  Shared-ancestry resolution.
+    //
+    //    Existing target  → stop = ?target.tip; chain must FP-reach it,
+    //                       else SNIFFFAIL ("no shared ancestry").
+    //    New target       → stop = NULL; walk to root or cap.  Cap hit
+    //                       on a still-extending chain is treated as
+    //                       "history too deep / disconnected"; SNIFFFAIL.
+    //
+    //  In both cases the chain we hand to KEEPMoveCommits is exactly
+    //  what the migration needs to materialise inside target's shard.
+    sha1 target_tip = {};
+    b8   has_target_tip = NO;
+    {
+        ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
+                                          target_branch);
+        if (tr == OK) has_target_tip = YES;
+        else if (tr != REFSNONE) return tr;
+    }
+
+    sha1 chain[POST_MIG_MAX];
+    u32 nchain = 0;
+    b8 reached_stop = NO;
+    call(POSTFpChainTo, &new_tip,
+         has_target_tip ? &target_tip : NULL,
+         chain, POST_MIG_MAX, &nchain, &reached_stop);
+
+    if (has_target_tip) {
+        //  FF check on the local namespace: chain from new_tip must
+        //  reach target.tip via first-parent.  Non-FP intersections
+        //  (e.g. via merge edges) intentionally don't satisfy this —
+        //  PUT is a label move, not a graf-LCA negotiation.
+        if (!reached_stop) {
+            fprintf(stderr,
+                    "sniff: put: ?%.*s#%.*s: no shared ancestry with "
+                    "target.tip (chain didn't reach existing tip "
+                    "within POST_MIG_MAX)\n",
+                    (int)u8csLen(target_branch), (char *)target_branch[0],
+                    (int)u8csLen(sha_hex), (char *)sha_hex[0]);
+            return SNIFFFAIL;
+        }
+    } else {
+        //  New ref: cap-hit on a chain whose final commit still has
+        //  a parent means we didn't reach a natural root.  Refuse —
+        //  better than leaving the new shard with a dangling history.
+        //  POSTFpChainTo leaves nchain==cap only on cap-hit (root /
+        //  KEEPGetExact-miss both break early with nchain<cap).
+        if (nchain == POST_MIG_MAX) {
+            fprintf(stderr,
+                    "sniff: put: ?%.*s#%.*s: history exceeds "
+                    "POST_MIG_MAX (%u) commits\n",
+                    (int)u8csLen(target_branch), (char *)target_branch[0],
+                    (int)u8csLen(sha_hex), (char *)sha_hex[0],
+                    POST_MIG_MAX);
+            return SNIFFFAIL;
+        }
+        if (nchain == 0) {
+            fprintf(stderr,
+                    "sniff: put: ?%.*s#%.*s: cannot read new tip\n",
+                    (int)u8csLen(target_branch), (char *)target_branch[0],
+                    (int)u8csLen(sha_hex), (char *)sha_hex[0]);
+            return SNIFFFAIL;
+        }
+    }
+
+    //  Ensure target's shard dir exists before switching into it.
+    //  Idempotent on KEEPDUP / KEEPTRUNK; KEEPNONE surfaces a missing
+    //  parent dir (caller hasn't built the branch tree above target).
+    {
+        ok64 ko = KEEPCreateBranch(k->h, target_branch);
+        if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
+    }
+
+    //  Switch keeper to target.  cur's pack registry slides into PAST,
+    //  so KEEPMoveCommits' KEEPGetExact reads still resolve commits
+    //  living in cur's shard.  Writes land in target's new DATA leaf.
+    call(KEEPSwitchBranch, k->h, target_branch);
+
+    if (nchain > 0) {
+        //  Reverse to oldest-first for KEEPMoveCommits.
+        for (u32 i = 0, j = nchain - 1; i < j; i++, j--) {
+            sha1 tmp = chain[i]; chain[i] = chain[j]; chain[j] = tmp;
+        }
+        sha1cs slice = {chain, chain + nchain};
+        a_dup(u8c, src, cur_branch);
+        ok64 mv = KEEPMoveCommits(slice, src);
+        if (mv != OK && mv != KEEPMVNOOP) {
+            (void)KEEPSwitchBranch(k->h, cur_branch);
+            fprintf(stderr,
+                    "sniff: put: cross-shard copy failed (%s)\n",
+                    ok64str(mv));
+            return mv;
+        }
+    }
+
+    ok64 ar = REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
+
+    //  Restore cur as the active leaf so subsequent operations in this
+    //  invocation (reindex, status print) see what they expect.
+    (void)KEEPSwitchBranch(k->h, cur_branch);
+    return ar;
+}
+
+ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {
+    sane($ok(ref_uri) && !u8csEmpty(ref_uri) && $ok(sha_hex));
+    if (u8csLen(sha_hex) != 40) fail(SNIFFFAIL);
+
+    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
+
+    //  Canonicalise the caller-supplied ref URI (user input path:
+    //  command line `be post ?<label>`).  Lex → canonicalise → feed.
+    uri u = {};
+    u.data[0] = ref_uri[0];
+    u.data[1] = ref_uri[1];
+    call(URILexer, &u);
+    u.data[0] = ref_uri[0];
+    u.data[1] = ref_uri[1];
+    a_pad(u8, keybuf, 256);
+    call(DOGCanonURIFeed, keybuf, &u);
+    a_dup(u8c, key, u8bData(keybuf));
+
+    //  Materialise the per-branch keeper shard for non-trunk labels
+    //  before recording the REFS row.  KEEPCreateBranch normalises the
+    //  branch (empty = trunk, mapped trunk aliases collapse to trunk
+    //  too) and is idempotent on KEEPDUP — letting two POSTs against
+    //  the same fresh label converge without a separate "branch
+    //  exists" probe.  KEEPTRUNK is silently absorbed (trunk shard
+    //  always exists by construction).
+    if (!$empty(u.query)) {
+        a_dup(u8c, branch, u.query);
+        ok64 ko = KEEPCreateBranch(KEEP.h, branch);
+        if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
+    }
+
+    //  Val is bare 40-hex (canonical).  `post` verb — local ref move.
+    return REFSAppendVerb($path(keepdir), REFSVerbPost(), key, sha_hex);
 }

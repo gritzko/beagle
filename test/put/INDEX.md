@@ -9,6 +9,11 @@
   the sub-wt's pinned tip from its `.be` anchor and stages one
   `put <subpath>#<40-hex>` row.  No dir walk, no per-file hashing.
   Covers MODULES.plan.md §"Phase 4 — PUT" (explicit-arg form).
+* `05-cross-shard-set/` — `be put ?<branch>#<sha>` migrates the new
+  tip's reachable closure into the target's shard (KEEPMoveCommits)
+  with a shared-ancestry guard.  Covers: existing-target FP-mismatch
+  refusal, new-target migration (pack bytes grow, wt resolves), and
+  bogus-sha resolver refusal.
 * `03-branch-shard/` — `be put ?<branch>` creates the branch's keeper
   shard dir (`.be/<branch>/`), and any subsequent `be post` on that
   branch writes its pack log INTO that shard (`.be/<branch>/NNNN.keeper`)

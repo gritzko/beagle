@@ -1267,7 +1267,7 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 //  slash for the basename-reuse semantic), and the higher-level
 //  POSTPromote logic distinguishes `?feat` from `?feat/`.  Going via
 //  KEEPResolveRef's dog/QURY normaliser would collapse those.
-static ok64 post_resolve_branch_tip(sha1 *out, u8cs reporoot, u8cs branch) {
+ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch) {
     sane(out);
     a_path(keepdir, reporoot, KEEP_DIR_S);
     a_pad(u8, keybuf, 256);
@@ -1321,7 +1321,7 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (cc->n >= CASCADE_MAX) return SNIFFFAIL;
 
     sha1 child_tip = {};
-    ok64 cr = post_resolve_branch_tip(&child_tip, cc->reporoot, branch);
+    ok64 cr = POSTResolveBranchTip(&child_tip, cc->reporoot, branch);
     if (cr == REFSNONE) return OK;     //  branch has no REFS tip — skip
     if (cr != OK) return cr;
 
@@ -1465,7 +1465,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         //  shard dir or a non-branch sibling like `graf`/`spot` at
         //  trunk level); skip.
         sha1 child_old = {};
-        ok64 cr = post_resolve_branch_tip(&child_old, cc->reporoot,
+        ok64 cr = POSTResolveBranchTip(&child_old, cc->reporoot,
                                           child_branch);
         if (cr != OK) continue;     //  no row → skip
 
@@ -1580,53 +1580,44 @@ static void post_basename(u8cs out, u8cs abs_branch) {
     if (last_slash != NULL) out[0] = last_slash + 1;
 }
 
-//  PUT-side branch creation: refuse if the branch already exists,
-//  otherwise delegate to POSTPromote which handles the create-on-miss
-//  arm (case (c) in the POSTPromote dispatcher).  No commit, no rebase
-//  beyond the absolute-parent ff that POSTPromote already does for
-//  `?<abs>/<newleaf>`.
-ok64 POSTCreateBranch(u8cs reporoot, u8cs target_branch) {
-    sane($ok(reporoot) && $ok(target_branch));
-    sha1 existing = {};
-    ok64 er = post_resolve_branch_tip(&existing, reporoot, target_branch);
-    if (er == OK) {
-        fprintf(stderr,
-                "sniff: put: ?%.*s already exists\n",
-                (int)u8csLen(target_branch),
-                (char *)target_branch[0]);
-        return PUTDUP;
+ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
+                   sha1 *out, u32 cap, u32 *nout, b8 *reached_stop) {
+    sane(from && out && nout && reached_stop);
+    *nout = 0;
+    *reached_stop = NO;
+    if (cap == 0) done;
+
+    Bu8 cbuf = {};
+    call(u8bMap, cbuf, 1UL << 16);
+    sha1 cur = *from;
+    while (*nout < cap) {
+        if (stop != NULL && sha1Eq(&cur, stop)) {
+            *reached_stop = YES;
+            break;
+        }
+        out[(*nout)++] = cur;
+        u8bReset(cbuf);
+        u8 ct = 0;
+        if (KEEPGetExact(&KEEP, &cur, cbuf, &ct) != OK ||
+            ct != DOG_OBJ_COMMIT) break;
+        a_dup(u8c, body, u8bData(cbuf));
+        u8cs field = {}, value = {};
+        b8 found_par = NO;
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            a_cstr(par_kw, "parent");
+            if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+                u8cs hx = {value[0], value[0] + 40};
+                u8s  bn = {cur.data, cur.data + 20};
+                (void)HEXu8sDrainSome(bn, hx);
+                found_par = YES;
+                break;
+            }
+        }
+        if (!found_par) break;
     }
-    if (er != REFSNONE) return er;
-    //  Create-only: POSTPromote with allow_create=YES handles the
-    //  create-on-miss arm, but doesn't auto-sync cur (per spec).
-    return POSTPromote(reporoot, target_branch, YES);
-}
-
-//  PUT-side branch reset: `be put ?<branch>#<sha>` writes the named
-//  branch's REFS row to `?<sha>` regardless of any existing value.
-//  Both create and non-FF rewrite are allowed (VERBS.md §PUT row:
-//  "Non-FF rewrite is allowed (PUT is unconstrained on the local
-//  namespace).")  Bypasses POSTPromote (no rebase, no cur sync) —
-//  this is a label move, period.
-ok64 POSTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
-    sane($ok(reporoot) && $ok(target_branch) && $ok(sha_hex));
-    if (u8csLen(sha_hex) != 40 || !HEXu8sValid(sha_hex)) fail(SNIFFFAIL);
-
-    a_path(keepdir, reporoot, KEEP_DIR_S);
-
-    //  refkey = `?<branch>`
-    a_pad(u8, keybuf, 256);
-    u8bFeed1(keybuf, '?');
-    u8bFeed(keybuf, target_branch);
-    a_dup(u8c, refkey, u8bData(keybuf));
-
-    //  value = `?<sha-hex>`
-    a_pad(u8, valbuf, 64);
-    u8bFeed1(valbuf, '?');
-    u8bFeed(valbuf, sha_hex);
-    a_dup(u8c, val, u8bData(valbuf));
-
-    return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
+    u8bUnMap(cbuf);
+    done;
 }
 
 ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
@@ -1711,7 +1702,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
          memcmp(target_branch[0], cur_branch[0],
                 u8csLen(target_branch)) == 0)) {
         //  Target == cur: not a promote.  The caller (label-only
-        //  legacy path) will fall through to its own POSTSetLabel.
+        //  legacy path) will fall through to its own PUTSetLabel.
         return POSTNONE;
     }
 
@@ -1719,7 +1710,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     sha1 target_tip      = {};
     b8   target_exists   = NO;
     {
-        ok64 tr = post_resolve_branch_tip(&target_tip, reporoot,
+        ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
                                           target_branch);
         if (tr == OK) target_exists = YES;
         else if (tr != REFSNONE) {
@@ -1774,10 +1765,10 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //        `?feat/<basename(cur)>` in step 1b above and lands here.
     //
     //  Other create-on-miss shapes (`?../sib`, etc.) still fall back
-    //  to the legacy POSTSetLabel via POSTNONE.
+    //  to the legacy PUTSetLabel via POSTNONE.
     //  Spec: POST never creates branches.  Branch creation lives in
     //  PUT (`be put ?<branch>`) — POST refuses unresolved refs.  The
-    //  PUT-side wrapper (`POSTCreateBranch`) calls us with
+    //  PUT-side wrapper (`PUTCreateBranch`) calls us with
     //  allow_create=YES to reuse the create-on-miss arm below.
     if (!target_exists && !allow_create) {
         fprintf(stderr,
@@ -1797,7 +1788,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         //  parent.
         u8cs t_dir = {};
         post_dirname(t_dir, target_branch);
-        ok64 dr = post_resolve_branch_tip(&absolute_parent_tip,
+        ok64 dr = POSTResolveBranchTip(&absolute_parent_tip,
                                           reporoot, t_dir);
         if (dr == OK) create_under_absolute = YES;
         else if (dr != REFSNONE) return dr;
@@ -1870,7 +1861,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         if (cr == REFSCAS) {
             //  Lost the race: someone else created the branch.  Retry
             //  as a PROMOTE on the now-existing branch.
-            ok64 tr = post_resolve_branch_tip(&target_tip, reporoot,
+            ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
                                               target_branch);
             if (tr != OK) return cr;
             target_exists = YES;
@@ -2010,41 +2001,13 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         //  copies each commit's reachable trees+blobs into the
         //  active leaf with delta-base hints.
         //
-        //  Walk the first-parent chain via existing helper.
         //  Bounded by POST_MIG_MAX so a pathological chain can't
         //  hang the dispatcher.
-        #define POST_MIG_MAX 8192
         sha1 chain[POST_MIG_MAX];
         u32 nchain = 0;
-        {
-            Bu8 cbuf = {};
-            (void)u8bMap(cbuf, 1UL << 16);
-            sha1 cur = child_tip;
-            while (nchain < POST_MIG_MAX &&
-                   !sha1Eq(&cur, &base_old)) {
-                chain[nchain++] = cur;
-                u8bReset(cbuf);
-                u8 ct = 0;
-                if (KEEPGetExact(&KEEP, &cur, cbuf, &ct) != OK ||
-                    ct != DOG_OBJ_COMMIT) break;
-                a_dup(u8c, body, u8bData(cbuf));
-                u8cs field = {}, value = {};
-                b8 found_par = NO;
-                while (GITu8sDrainCommit(body, field, value) == OK) {
-                    if ($empty(field)) break;
-                    a_cstr(par_kw, "parent");
-                    if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
-                        u8cs hx = {value[0], value[0] + 40};
-                        u8s  bn = {cur.data, cur.data + 20};
-                        (void)HEXu8sDrainSome(bn, hx);
-                        found_par = YES;
-                        break;
-                    }
-                }
-                if (!found_par) break;
-            }
-            u8bUnMap(cbuf);
-        }
+        b8 reached = NO;
+        (void)POSTFpChainTo(&child_tip, &base_old,
+                            chain, POST_MIG_MAX, &nchain, &reached);
         if (nchain > 0) {
             //  Reverse to oldest-first for KEEPMoveCommits.
             for (u32 i = 0, j = nchain - 1; i < j; i++, j--) {
@@ -3005,7 +2968,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  (single segment, no slash — see DOGRefIsBranch), the commit
     //  landed on cur (above) and we now point the tag at the new
     //  tip.  Tags are re-pointable freely — no FF/CAS gate.  Mirrors
-    //  POSTSetLabel (REFSAppendVerb with `post` verb).
+    //  PUTSetLabel (REFSAppendVerb with `post` verb).
     if ($ok(target_branch) && !u8csEmpty(target_branch) &&
         !target_is_branch) {
         a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
@@ -3066,41 +3029,6 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     fprintf(stderr, "sniff: commit %.*s\n",
             (int)u8bDataLen(out_hex), (char *)u8bDataHead(out_hex));
     done;
-}
-
-ok64 POSTSetLabel(u8cs ref_uri, u8cs sha_hex) {
-    sane($ok(ref_uri) && !u8csEmpty(ref_uri) && $ok(sha_hex));
-    if (u8csLen(sha_hex) != 40) fail(SNIFFFAIL);
-
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
-
-    //  Canonicalise the caller-supplied ref URI (user input path:
-    //  command line `be post ?<label>`).  Lex → canonicalise → feed.
-    uri u = {};
-    u.data[0] = ref_uri[0];
-    u.data[1] = ref_uri[1];
-    call(URILexer, &u);
-    u.data[0] = ref_uri[0];
-    u.data[1] = ref_uri[1];
-    a_pad(u8, keybuf, 256);
-    call(DOGCanonURIFeed, keybuf, &u);
-    a_dup(u8c, key, u8bData(keybuf));
-
-    //  Materialise the per-branch keeper shard for non-trunk labels
-    //  before recording the REFS row.  KEEPCreateBranch normalises the
-    //  branch (empty = trunk, mapped trunk aliases collapse to trunk
-    //  too) and is idempotent on KEEPDUP — letting two POSTs against
-    //  the same fresh label converge without a separate "branch
-    //  exists" probe.  KEEPTRUNK is silently absorbed (trunk shard
-    //  always exists by construction).
-    if (!$empty(u.query)) {
-        a_dup(u8c, branch, u.query);
-        ok64 ko = KEEPCreateBranch(KEEP.h, branch);
-        if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
-    }
-
-    //  Val is bare 40-hex (canonical).  `post` verb — local ref move.
-    return REFSAppendVerb($path(keepdir), REFSVerbPost(), key, sha_hex);
 }
 
 //  POSTRebaseOntoSha — rebase cur's stack onto an arbitrary sha.
