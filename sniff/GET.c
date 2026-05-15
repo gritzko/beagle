@@ -36,8 +36,10 @@
 #include "keeper/WALK.h"
 
 #include "AT.h"
+#include "CLASS.h"
 #include "SNIFF.h"
 #include "SUBS.h"
+#include "dog/IGNO.h"
 
 typedef struct {
     keeper        *k;
@@ -489,6 +491,31 @@ static ok64 get_overlap_check(keeper *k, u8cs reporoot,
     done;
 }
 
+// --- --prune sweep --------------------------------------------------
+//
+//  Post-checkout sweep: every `SNIFFClassify` callback whose step is
+//  `CLASS_WT_ONLY` is a path on disk that isn't in the (already-
+//  advanced) baseline tree.  Unlink it inline — `SNIFFWtULog` has
+//  finished its wt walk by the time callbacks fire, so mutating the
+//  fs during dispatch is safe.  Gitignore filtering happens upstream
+//  in `SNIFFWtULog → SNIFFSkipMeta`.
+typedef struct {
+    u8cs reporoot;
+    u32  dropped;
+} prune_ctx;
+
+static ok64 prune_cb(class_step const *step, void *vctx) {
+    sane(step && vctx);
+    prune_ctx *c = (prune_ctx *)vctx;
+    if (step->kind != CLASS_WT_ONLY) return OK;
+    u8cs path = {step->path[0], step->path[1]};
+    if ($empty(path)) return OK;
+    a_path(fp);
+    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    if (FILEUnLink($path(fp)) == OK) c->dropped++;
+    return OK;
+}
+
 //  Drain a newline-separated path list and unlink each entry.  Paths
 //  came from get_overlap_check's classifier, which already verified
 //  presence + clean stamp; defensive lstat is omitted.  After
@@ -656,6 +683,65 @@ static ok64 get_verify_closure(keeper *k, u8csc target_hex) {
     return OK;
 }
 
+// --- FF-only check for branch-named GET ---
+//
+//  VERBS.md §GET: when GET advances a local branch to a new tip
+//  (`be get ssh://origin?A` or its cached `//origin?A` form), the
+//  local tip must be an ancestor of (or equal to) the incoming
+//  tip.  Refuse SNIFFNOFF on divergence; user reconciles with
+//  `be patch //origin?A#` + `be post`.  Mirrors the FF check at
+//  sniff/POST.c §"ff-only pre-flight": LCA(a, b) == a iff a is an
+//  ancestor of b.  Graf opened RO inline (idempotent, same pattern
+//  as `get_drain_merges`).
+static ok64 get_ff_check(sha1 const *local_tip, sha1 const *target_tip) {
+    sane(local_tip && target_tip);
+    if (sha1Eq(local_tip, target_tip)) done;
+
+    ok64 go = GRAFOpen(SNIFF.h, NO);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return go;
+    b8 own_open = (go == OK);
+
+    sha1 lca = {};
+    (void)GRAFLca(&lca, local_tip, target_tip);
+    if (own_open) GRAFClose();
+
+    if (sha1Eq(&lca, local_tip)) done;          //  local is ancestor — FF
+    return SNIFFNOFF;
+}
+
+//  Resolve the local-only tip of `?<branch>` by querying REFS with a
+//  no-authority URI.  Returns OK + fills `*out` on hit; NONE on miss.
+//  Branch slice excludes the leading `?` (callers pass the body).
+static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
+    sane(out && $ok(branch));
+    keeper *k = &KEEP;
+    if (u8csEmpty(branch)) return NONE;
+    //  40-hex `branch` means caller really passed a detached sha; nothing
+    //  to advance, no FF check applies.
+    if ($len(branch) == 40) return NONE;
+
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_pad(u8, refkey_buf, 256);
+    u8bFeed1(refkey_buf, '?');
+    u8bFeed(refkey_buf, branch);
+    a_dup(u8c, refkey, u8bData(refkey_buf));
+
+    a_pad(u8, arena, 1024);
+    uri resolved = {};
+    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), refkey);
+    if (ro != OK || $empty(resolved.query)) return NONE;
+
+    u8cs tip_hex = {resolved.query[0], resolved.query[1]};
+    if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?') u8csUsed(tip_hex, 1);
+    if ($len(tip_hex) != 40) return NONE;
+
+    sha1hex hex = {};
+    a_dup(u8c, hx, tip_hex);
+    if (sha1hexFromHex(&hex, hx) != OK) return NONE;
+    if (sha1FromSha1hex(out, &hex) != OK) return NONE;
+    done;
+}
+
 // --- Public API ---
 
 ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
@@ -787,6 +873,34 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     if (o != OK) {
         fprintf(stderr, "sniff: bad commit (no tree)\n");
         fail(SNIFFFAIL);
+    }
+
+    //  --- FF-only gate for branch-named GET ---------------------
+    //  VERBS.md §GET: `be get ssh://origin?A` is fast-forward only
+    //  on the local tip of branch A.  Local switches (`be get ?feat`)
+    //  resolve target == local-tip so this check is a no-op; the
+    //  walk only runs when a remote-tracking row advances `?A` past
+    //  the local tip on a divergent history.  --force overrides
+    //  (matches the dirty-overlay escape hatch).
+    if (!SNIFF.force && $ok(source) && !u8csEmpty(source) &&
+        *source[0] == '?' && $len(source) != 41 && $len(source) > 1) {
+        u8cs branch = {$atp(source, 1), source[1]};
+        sha1 local_tip = {};
+        if (get_local_branch_tip(&local_tip, branch) == OK) {
+            ok64 ffo = get_ff_check(&local_tip, &tgt_commit_sha);
+            if (ffo == SNIFFNOFF) {
+                fprintf(stderr,
+                        "sniff: get: ?%.*s — not a fast-forward "
+                        "(local tip is not an ancestor of incoming); "
+                        "reconcile with `be patch //...?%.*s#` + "
+                        "`be post`, or pass --force to overwrite\n",
+                        (int)$len(branch), (char *)branch[0],
+                        (int)$len(branch), (char *)branch[0]);
+                return SNIFFNOFF;
+            }
+            //  Any other walk error (out-of-memory etc.) — propagate.
+            if (ffo != OK) return ffo;
+        }
     }
 
     //  --- Pre-flight gate: cross-branch wt-dirty refuse ---------
@@ -939,6 +1053,71 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     ctx.merges_cursor[1] = u8bIdleHead(merges);
     ctx.subs_out         = subs;
 
+    //  --- COMMIT POINT (atomicity) -------------------------------
+    //  Append the `get` ULOG row and advance the local branch tip
+    //  BEFORE we mutate the worktree.  Rationale: the wt-mutation
+    //  block below (WALKTreeLazy + drains + submodule loop) is not
+    //  itself crash-safe — a partial run leaves a mix of new
+    //  contents and old paths.  By recording the new baseline first
+    //  we preserve git's invariant: REFS + ULOG always agree; the
+    //  wt may drift but is always reconcilable by replaying the
+    //  same GET (`be get --force ?<cur>` after a crash).  Stamping
+    //  uses ctx.ts/ctx.tv, the SAME ts as this row — files written
+    //  below round-trip into the stamp-set on the next status.
+    //
+    //  The pre-flight gates above (cross-branch dirty refuse, FF
+    //  check, overlap check) have already passed; nothing below
+    //  can refuse — only fail partway, which is what the reorder
+    //  is designed to make survivable.
+    {
+        uri urow = {};
+        a_pad(u8, qbuf, 128);
+        if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
+            $len(source) != 41) {
+            a_dup(u8c, q, source);
+            u8csUsed1(q);
+            u8bFeed(qbuf, q);
+        }
+        {
+            a_dup(u8c, q, u8bData(qbuf));
+            urow.query[0] = q[0];
+            urow.query[1] = q[1];
+        }
+        {
+            a_dup(u8c, h, hex);
+            urow.fragment[0] = h[0];
+            urow.fragment[1] = h[1];
+        }
+        ron60 verb = SNIFFAtVerbGet();
+        ok64 ar = SNIFFAtAppendAt(ctx.ts, verb, &urow);
+        if (ar != OK) {
+            u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
+            u8bFree(subs);
+            return ar;
+        }
+
+        //  Advance the keeper-side local-branch tip with verb `post`.
+        //  Failure here is non-fatal: the worktree update below
+        //  proceeds, and the next `be get` re-resolves via the
+        //  peer-prefixed row.
+        a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
+        a_pad(u8, key_buf, 128);
+        u8bFeed1(key_buf, '?');
+        if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
+            $len(source) != 41) {
+            a_dup(u8c, ref_q, source);
+            u8csUsed1(ref_q);
+            a_cstr(refs_pfx, "refs/");
+            if ($len(ref_q) > 5 &&
+                memcmp(ref_q[0], refs_pfx[0], 5) == 0)
+                u8csUsed(ref_q, 5);
+            u8bFeed(key_buf, ref_q);
+        }
+        a_dup(u8c, key_s, u8bData(key_buf));
+        (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), key_s, hex);
+    }
+    //  --- end commit point --------------------------------------
+
     o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
@@ -1034,62 +1213,27 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     }
     u8bFree(subs);
 
-    //  Compose the `get` row URI via abc/URI.  Canonical at-log form:
-    //  `?<branch>#<curhash>` — query carries the be-branch path
-    //  (empty for trunk), fragment carries the tip sha.  Mirrors the
-    //  REFS row format so readers walk the same shape everywhere.
-    uri urow = {};
-    a_pad(u8, qbuf, 128);
-    if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
-        $len(source) != 41) {
-        //  Named refs come in with a leading '?', e.g. `?feat`.
-        //  URI query slices exclude the sentinel per RFC 3986, so
-        //  drop the leading byte before copying the slice into qbuf.
-        a_dup(u8c, q, source);
-        u8csUsed1(q);
-        u8bFeed(qbuf, q);
-    }
-    {
-        a_dup(u8c, q, u8bData(qbuf));
-        urow.query[0] = q[0];
-        urow.query[1] = q[1];
-    }
-    {
-        a_dup(u8c, h, hex);
-        urow.fragment[0] = h[0];
-        urow.fragment[1] = h[1];
-    }
+    //  `--prune` sweep (VERBS.md §"--force and --prune"): drop every
+    //  wt-only path that isn't in the target tree.  Runs after the
+    //  `get` row is appended so `SNIFFClassify` resolves the
+    //  baseline to the freshly-checked-out tree — `CLASS_WT_ONLY`
+    //  then means "on disk, not in target".  Gitignored paths and
+    //  the `.be/` metadata dir are filtered upstream by
+    //  `SNIFFWtULog → SNIFFSkipMeta`; we reload `.gitignore` first
+    //  so the target tree's rules apply (a freshly added pattern
+    //  must spare its matches even on this same `be get`).
+    if (SNIFF.prune) {
+        IGNOFree(&SNIFF.ignores);
+        zerop(&SNIFF.ignores);
+        a_dup(u8c, wt_for_ig, u8bDataC(SNIFF.h->wt));
+        (void)IGNOLoad(&SNIFF.ignores, wt_for_ig);
 
-    ron60 verb = SNIFFAtVerbGet();
-    call(SNIFFAtAppendAt, ctx.ts, verb, &urow);
-
-    //  Advance the keeper-side local-branch tip with verb `post`.
-    //  Key: `?heads/<branch>` when `source` carries a branch; bare `?`
-    //  (trunk) only when nothing in `source` names one.  Using the
-    //  literal branch is critical — REFADV walks `<store>/refs` for
-    //  `?heads/<X>` keys, and a bare-`?` row leaves the per-branch
-    //  local tip unadvertised, which silently short-circuits future
-    //  `WIREPush` calls.  Failure here is non-fatal: the worktree is
-    //  already updated, subsequent `be get` re-resolves via the
-    //  peer-prefixed row.
-    {
-        a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
-        a_pad(u8, key_buf, 128);
-        u8bFeed1(key_buf, '?');
-        if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
-            $len(source) != 41) {
-            a_dup(u8c, ref_q, source);
-            u8csUsed1(ref_q);  //  drop leading '?'
-            //  Strip a leading `refs/` if present so the key is the
-            //  same `?heads/<X>` form REFSAppendVerb / REFADV expect.
-            a_cstr(refs_pfx, "refs/");
-            if ($len(ref_q) > 5 &&
-                memcmp(ref_q[0], refs_pfx[0], 5) == 0)
-                u8csUsed(ref_q, 5);
-            u8bFeed(key_buf, ref_q);
-        }
-        a_dup(u8c, key_s, u8bData(key_buf));
-        (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), key_s, hex);
+        prune_ctx pctx = {.dropped = 0};
+        u8csMv(pctx.reporoot, reporoot);
+        (void)SNIFFClassify(prune_cb, &pctx);
+        if (pctx.dropped > 0)
+            fprintf(stderr,
+                    "sniff: pruned %u file(s)\n", pctx.dropped);
     }
 
     fprintf(stderr, "sniff: checkout done\n");

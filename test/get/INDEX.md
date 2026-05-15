@@ -32,11 +32,7 @@
   files round-trip + each branch dir owns its own pack.  Exercises
   the PAST/DATA partition (KEEP.h §"Branch-aware object store"),
   `KEEPSwitchBranch`, and the global-seqno scan that keeps sibling
-  branches from colliding on file_id.  WILL_FAIL today — sniff
-  still opens keeper on trunk so cross-branch POST / PATCH ops
-  keep working via the flat-pool semantics.  Flip on after POST /
-  PATCH route through `KEEPSwitchBranch` (or a sibling-load
-  variant).
+  branches from colliding on file_id.
 * `08-weave-marker-line-anchor/` — `be get file://<bare>?master`
   twice across a wt edit + an upstream commit that touch the same
   line.  Pre-fix `WEAVEEmitMerged` dropped `<<<<` / `||||` / `>>>>`
@@ -49,3 +45,19 @@
   (cluster < 1/4 of the line) is preserved for tiny single-word
   edits via a separate path; this case exercises the line-level
   branch.
+* `09-refuse-no-commit/` — atomicity invariant, negative half.
+  GETCheckout now appends the `get` ULOG row and advances local
+  REFS BEFORE WALKTreeLazy mutates the wt; pre-flight refusals
+  must therefore run BEFORE the commit point, or a rejected GET
+  would leave a stray baseline row.  Dirties trunk's wt and tries
+  a cross-branch `be get ?feat` — must refuse SNIFFDRTY and leave
+  `.be/wtlog` row count unchanged + the dirty wt content untouched.
+* `10-partial-recovery/` — atomicity invariant, positive half.
+  T0 has files in a locked subdir + outside it; T1 modifies both.
+  Get back to T0, chmod 555 on the subdir + chmod 444 on the file
+  inside, then attempt `be get ?feat`.  WALKTreeLazy fails on the
+  read-only path; the `get` row + REFS advance fired BEFORE the
+  mutation, so `.be/wtlog` must grow even though the wt is partial.
+  A follow-up `be get --force ?feat` (chmod restored) completes the
+  materialisation idempotently — the documented recovery path for
+  a baseline-correct / wt-mid-flux state.

@@ -93,6 +93,13 @@ static ok64 sniffcli_inner(cli *c) {
     //  only sniff acts on it.  Set AFTER SNIFFOpen (zerops singleton).
     SNIFF.force = CLIHas(c, "--force") ? YES : NO;
 
+    //  `--prune` (boolean): GET removes every wt-only path after
+    //  checkout — files/dirs in the wt that aren't in the target
+    //  tree.  Paths matching `.gitignore` survive (mirror of
+    //  `git clean -f`, not `-fx`); `.be/` is never touched.
+    //  Typically paired with `--force`.  See VERBS.md §GET.
+    SNIFF.prune = CLIHas(c, "--prune") ? YES : NO;
+
     //  POST (ff check) and PATCH (3-way merge LCA) call into graf for
     //  ancestor queries.  Open graf only for those two verbs — `sniff
     //  get` doesn't move HEAD, doesn't read the DAG, and grabbing
