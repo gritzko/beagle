@@ -191,7 +191,7 @@ note "auto-delete took out a.txt"
 #   targets are included on the first commit).
 # ------------------------------------------------------------------
 echo "=== 7. be put dir/ recurses into nested subtree ==="
-D7="$TMP/r7"; mkdir -p "$D7/lib/sub"; cd "$D7"
+D7="$TMP/r7"; mkdir -p "$D7/lib/sub" "$D7/.be"; cd "$D7"
 echo alpha    > lib/a.txt
 echo bravo    > lib/sub/b.txt
 echo untracked > top.txt                 # not put → should not appear
@@ -218,7 +218,7 @@ note "nested subtree present, root-level non-put file absent"
 #   files that `be put mk/` would otherwise include, at every depth.
 # ------------------------------------------------------------------
 echo "=== 8. be put new_dir/ skips wt-root .gitignore matches ==="
-D8="$TMP/r8"; mkdir -p "$D8/mk/sub"; cd "$D8"
+D8="$TMP/r8"; mkdir -p "$D8/mk/sub" "$D8/.be"; cd "$D8"
 printf '*.tmp\n' > .gitignore            # wt-root — the only one read
 echo keep       > mk/keep.txt
 echo gone       > mk/ignored.tmp
@@ -251,7 +251,7 @@ note "*.tmp patterns honoured at every depth under mk/"
 #   subtree — both foo.c (modified) and bar.c (new) land in the commit.
 # ------------------------------------------------------------------
 echo "=== 9. be put existing_dir/ stages tracked + untracked ==="
-D9="$TMP/r9"; mkdir -p "$D9/src"; cd "$D9"
+D9="$TMP/r9"; mkdir -p "$D9/src" "$D9/.be"; cd "$D9"
 echo v1 > src/foo.c
 echo top > README
 "$BE" put src/foo.c >/dev/null           # baseline: just src/foo.c
@@ -286,7 +286,7 @@ note "modified tracked file rewritten, untracked sibling included"
 #   deletes of single paths — same contract for a dir target).
 # ------------------------------------------------------------------
 echo "=== 10. be delete dir/ prunes nested subtree ==="
-D10="$TMP/r10"; mkdir -p "$D10/dd/inner"; cd "$D10"
+D10="$TMP/r10"; mkdir -p "$D10/dd/inner" "$D10/.be"; cd "$D10"
 echo a > dd/a.txt
 echo b > dd/inner/b.txt
 echo k > keep.txt
@@ -326,7 +326,7 @@ note "commit tree excludes the deleted subtree"
 #   sniff/PUT.c §"Bare-walk callback (baseline-tree visitor)".
 # ------------------------------------------------------------------
 echo "=== 11. bare be put stages tracked-only (no untracked leak) ==="
-D11="$TMP/r11"; mkdir -p "$D11/lib"; cd "$D11"
+D11="$TMP/r11"; mkdir -p "$D11/lib" "$D11/.be"; cd "$D11"
 echo v1 > lib/foo.c
 "$BE" post 'seed lib' >/dev/null
 C11a=$(head_hex)
