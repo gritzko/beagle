@@ -37,7 +37,7 @@ static ok64 setup_repo(void) {
     snprintf(g_tmp, sizeof(g_tmp), "/tmp/grafmergewt-XXXXXX");
     want(mkdtemp(g_tmp) != NULL);
     a_cstr(root, g_tmp);
-    memset(&g_home, 0, sizeof(g_home));
+    zero(g_home);
     call(HOMEOpenAt, &g_home, root, YES);
     call(KEEPOpen, &g_home, YES);
     done;

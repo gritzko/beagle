@@ -23,9 +23,8 @@ ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
     u8cs field = {}, esha = {};
     ok64 result = KEEPNONE;
     while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
-        a_dup(u8c, scan, field);
-        if (u8csFind(scan, ' ') != OK) continue;
-        u8cs entry_name = {scan[0] + 1, field[1]};
+        u8cs entry_name = {};
+        if (GITu8sFileSplit(field, NULL, entry_name) != OK) continue;
         if (!u8csEq(entry_name, name)) continue;
         (void)sha1Drain(esha, cur);
         result = OK;

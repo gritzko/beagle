@@ -1921,7 +1921,7 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
                     u8bFeed(dot_buf, dot_pfx);
                     u8bFeed(dot_buf, q);
                     a_dup(u8c, dot_uri, u8bData(dot_buf));
-                    memset(&resolved, 0, sizeof(resolved));
+                    zero(resolved);
                     if (REFSResolve(&resolved, arena_buf,
                                     $path(keepdir), dot_uri) == OK &&
                         u8csLen(resolved.query) >= 40) {

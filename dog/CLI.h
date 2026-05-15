@@ -81,7 +81,7 @@ fun b8 CLIHas(cli const *c, char const *flag) {
 fun void CLIAtURI(uri *at, cli const *c) {
     u8cs v = {};
     CLIFlag(v, c, "--at");
-    memset(at, 0, sizeof(*at));
+    zerop(at);
     if (v[0] == NULL || u8csEmpty(v)) return;
     u8csMv(at->data, v);
     URILexer(at);

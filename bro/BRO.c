@@ -1591,7 +1591,7 @@ static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
 // Read search pattern from user (displayed in status bar)
 static void BROReadSearch(BROstate *st) {
     st->search_len = 0;
-    memset(st->search, 0, sizeof(st->search));
+    zero(st->search);
 
     for (;;) {
         // Render prompt on status bar

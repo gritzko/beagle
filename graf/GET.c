@@ -199,7 +199,7 @@ static u64 get_lca(u64 a_h40, u64 b_h40) {
 // `*out` all-zero when no shared ancestor is indexed.
 ok64 GRAFLca(sha1 *out, sha1 const *a, sha1 const *b) {
     sane(out && a && b);
-    memset(out->data, 0, sizeof(out->data));
+    zero(out->data);
 
     u64 a_h40 = WHIFFHashlet60(a);
     u64 b_h40 = WHIFFHashlet60(b);
@@ -589,10 +589,10 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     //  don't double-free.
     if (wsrc == &wA) {
         memcpy(out, &wA, sizeof(weave));
-        memset(&wA, 0, sizeof(weave));
+        zero(wA);
     } else {
         memcpy(out, &wB, sizeof(weave));
-        memset(&wB, 0, sizeof(weave));
+        zero(wB);
     }
 
     u8bUnMap(blob_a);

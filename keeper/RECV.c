@@ -98,7 +98,7 @@ static ok64 recv_read_pkt(int in_fd, u8b buf, u8cs adv, u8csp line) {
 ok64 RECVReadRequest(int in_fd, recv_reqp req) {
     sane(in_fd >= 0 && req);
 
-    memset(req, 0, sizeof(*req));
+    zerop(req);
     if (u8bAllocate(req->upds_b,
                     RECV_MAX_UPDATES * sizeof(recv_update)) != OK)
         fail(RECVFAIL);

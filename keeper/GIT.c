@@ -99,6 +99,16 @@ ok64 GITu8sDrainTree(u8cs obj, u8csp file, u8csp sha1, u32 *mode) {
     done;
 }
 
+ok64 GITu8sFileSplit(u8cs file, u8csp mode, u8csp name) {
+    sane(u8csOK(file));
+    a_dup(u8c, scan, file);
+    if (u8csFind(scan, ' ') != OK) return GITBADFMT;
+    if (mode) { mode[0] = file[0]; mode[1] = scan[0]; }
+    u8csUsed1(scan);             // skip SP
+    if (name) u8csMv(name, scan);
+    done;
+}
+
 //  Commit header iterator:
 //    - blank line (leading '\n') → field empty, value = body, obj consumed.
 //    - otherwise one "<field> <value>\n" line per call.  RFC-822 folding:

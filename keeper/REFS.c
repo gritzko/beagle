@@ -402,7 +402,7 @@ static ok64 refs_capture_cs(u8bp arena, u8csc src, u8csp out) {
 
 ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     sane($ok(dir) && $ok(input) && resolved != NULL && arena != NULL);
-    memset(resolved, 0, sizeof(*resolved));
+    zerop(resolved);
 
     //  Parse the input URI.  Query is opaque (local branch path); no
     //  `refs/` strip, no name aliasing.  Wire-side translation is

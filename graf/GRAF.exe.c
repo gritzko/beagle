@@ -439,7 +439,7 @@ ok64 GRAFExec(cli *c) {
         u8cs wf = {}, wt = {};
         if (!u8csEmpty(u->query)) {
             a_dup(u8c, q, u->query);
-            u8cs dots = {(u8cp)"..", (u8cp)".." + 2};
+            a_cstr(dots, "..");
             if (u8csFindS(q, dots) == OK) {
                 wf[0] = u->query[0];
                 wf[1] = q[0];

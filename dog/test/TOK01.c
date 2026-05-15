@@ -56,6 +56,7 @@
 #include "MDT.h"
 #include "TOK.h"
 
+#include "abc/PRO.h"
 #include "abc/TEST.h"
 
 typedef struct {

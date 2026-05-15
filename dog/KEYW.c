@@ -15,7 +15,7 @@ ok64 KEYWOpen(keyw *k, u8cs *kws, u32 nkw) {
     sane(k && kws);
     test(nkw <= KEYW_MAX, KEYWFULL);
 
-    memset(k->table, 0, sizeof(k->table));
+    zero(k->table);
     k->kws = kws;
     k->nkw = nkw;
 

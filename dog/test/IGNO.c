@@ -9,7 +9,7 @@ ok64 IGNOtest1() {
     sane(1);
     // Test basic pattern matching with an in-memory igno struct
     igno ig;
-    memset(&ig, 0, sizeof(ig));
+    zero(ig);
 
     // Add pattern: *.o
     con u8 pat1[] = "*.o";
@@ -35,7 +35,7 @@ ok64 IGNOtest1() {
 ok64 IGNOtest2() {
     sane(1);
     igno ig;
-    memset(&ig, 0, sizeof(ig));
+    zero(ig);
 
     // Add pattern: build/
     con u8 pat1[] = "build";
@@ -61,7 +61,7 @@ ok64 IGNOtest3() {
     sane(1);
     // Empty igno should match nothing
     igno ig;
-    memset(&ig, 0, sizeof(ig));
+    zero(ig);
 
     a_cstr(path, "anything");
     want(IGNOMatch(&ig, path, NO) == NO);

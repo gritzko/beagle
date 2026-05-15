@@ -301,10 +301,8 @@ static ok64 tm_parse(sha1 const *tree_sha, tm_set *out,
     u8cs body = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
     u8cs file = {}, esha = {};
     while (GITu8sDrainTree(body, file, esha, NULL) == OK) {
-        u8cs scan = {file[0], file[1]};
-        if (u8csFind(scan, ' ') != OK) continue;
-        u8cs mode_s = {file[0], scan[0]};
-        u8cs name_s = {scan[0] + 1, file[1]};
+        u8cs mode_s = {}, name_s = {};
+        if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
         if ($empty(name_s) || u8csLen(esha) != 20) continue;
         if (out->n >= out->cap) break;
 

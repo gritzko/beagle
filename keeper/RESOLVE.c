@@ -249,3 +249,12 @@ ok64 KEEPResolveRef(keeper *k, sha1 *out,
     //  above is ready for one-line activation.
     return RESOLVENONE;
 }
+
+ok64 KEEPResolveHex(keeper *k, sha1hex *out, u8cs token) {
+    sane(k && out && $ok(token));
+    sha1 sh = {};
+    u8cs cur_branch = {NULL, NULL};
+    call(KEEPResolveRef, k, &sh, token, cur_branch);
+    sha1hexFromSha1(out, &sh);
+    done;
+}

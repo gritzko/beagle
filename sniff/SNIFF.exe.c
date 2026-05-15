@@ -1124,7 +1124,7 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
                 u8bFeed(retry_buf, head);
                 u8bFeed(retry_buf, q);
                 a_dup(u8c, retry_uri, u8bData(retry_buf));
-                memset(&resolved, 0, sizeof(resolved));
+                zero(resolved);
                 o = REFSResolve(&resolved, arena1,
                                 $path(keepdir), retry_uri);
                 if (o == OK && !$empty(resolved.query)) break;
@@ -1138,7 +1138,7 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
                 u8bFeed(dot_buf, dot_pfx);
                 u8bFeed(dot_buf, q);
                 a_dup(u8c, dot_uri, u8bData(dot_buf));
-                memset(&resolved, 0, sizeof(resolved));
+                zero(resolved);
                 o = REFSResolve(&resolved, arena1,
                                 $path(keepdir), dot_uri);
             }
@@ -1560,13 +1560,10 @@ ok64 SNIFFExec(cli *c) {
             if (trunk_reset) {
                 a_dup(u8c, frag, u.fragment);
                 //  Canonicalise the user-typed fragment via the
-                //  single front-door resolver.  Empty cur_branch:
-                //  the fragment is a hashlet / sha40, not a relative
-                //  branch ref.
-                sha1 resolved = {};
-                u8cs cur_branch = {NULL, NULL};
-                ok64 rr = KEEPResolveRef(&KEEP, &resolved,
-                                         frag, cur_branch);
+                //  single front-door resolver (handles both full
+                //  40-hex shas and 6..39 hashlet prefixes).
+                sha1hex full = {};
+                ok64 rr = KEEPResolveHex(&KEEP, &full, frag);
                 if (rr != OK) {
                     fprintf(stderr,
                         "sniff: put: cannot resolve ?#%.*s\n",
@@ -1574,8 +1571,6 @@ ok64 SNIFFExec(cli *c) {
                     ret = SNIFFFAIL;
                     break;
                 }
-                sha1hex full = {};
-                sha1hexFromSha1(&full, &resolved);
                 a_rawc(full_s, full);
                 //  PUTSetBranch's sane() check rejects all-NULL
                 //  slices ($ok); pass a zero-length slice with valid
@@ -1607,10 +1602,8 @@ ok64 SNIFFExec(cli *c) {
                     HEXu8sValid(frag)) {
                     //  Canonicalise the hashlet/sha through the
                     //  single front-door resolver.
-                    sha1 resolved = {};
-                    u8cs cur_branch = {NULL, NULL};
-                    ok64 rr = KEEPResolveRef(&KEEP, &resolved,
-                                             frag, cur_branch);
+                    sha1hex full = {};
+                    ok64 rr = KEEPResolveHex(&KEEP, &full, frag);
                     if (rr != OK) {
                         fprintf(stderr,
                             "sniff: put: cannot resolve ?%.*s#%.*s\n",
@@ -1619,8 +1612,6 @@ ok64 SNIFFExec(cli *c) {
                         ret = SNIFFFAIL;
                         break;
                     }
-                    sha1hex full = {};
-                    sha1hexFromSha1(&full, &resolved);
                     a_rawc(full_s, full);
                     ret = PUTSetBranch(reporoot, target, full_s);
                 } else {

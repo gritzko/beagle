@@ -111,7 +111,7 @@ ok64 ULOGu8sDrain(u8cs scan, ulogrecp out) {
         ulog_skip_line(scan);
         fail(ULOGBADFMT);
     }
-    memset(out, 0, sizeof(*out));
+    zerop(out);
     out->uri.data[0] = uri_head;
     out->uri.data[1] = uri_term;
     if (URILexer(&out->uri) != OK) {

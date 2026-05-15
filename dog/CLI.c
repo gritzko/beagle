@@ -71,7 +71,7 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     // whitespace-bearing arg (`be post "fix the typo"`) or carry
     // an explicit `#` (`be post '#fix'`); legacy `-m <msg>` still
     // works.
-    u8cs empty_val = {(u8cp)"", (u8cp)""};  // non-NULL empty sentinel
+    a_cstr(empty_val, "");                  // non-NULL empty sentinel
     while (ai < argn) {
         a$rg(a, ai);
         ai++;

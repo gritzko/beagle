@@ -27,7 +27,7 @@
 
 ok64 WEAVEInit(weave *w) {
     sane(w);
-    memset(w, 0, sizeof(*w));
+    zerop(w);
     call(u8bMap,   w->text,     WEAVE_TEXT_MAX);
     call(u32bMap,  w->toks,     WEAVE_TOK_MAX);
     call(u64bMap,  w->hashlets, WEAVE_TOK_MAX);
@@ -49,7 +49,7 @@ void WEAVEFree(weave *w) {
     if (w->toks[0])     u32bUnMap (w->toks);
     if (w->hashlets[0]) u64bUnMap (w->hashlets);
     if (w->inrm[0])     inrmbUnMap(w->inrm);
-    memset(w, 0, sizeof(*w));
+    zerop(w);
 }
 
 // --- Tokenization helper for FromBlob ---

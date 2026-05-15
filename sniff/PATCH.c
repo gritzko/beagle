@@ -64,13 +64,8 @@ static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
     u8cs obj = {body[0], body[1]};
     u8cs file = {}, esha = {};
     while (n < cap && GITu8sDrainTree(obj, file, esha, NULL) == OK) {
-        //  `file` is `<mode> <name>`.  csFind consumes `scan` up to
-        //  the space; mode is [file[0]..scan[0]), name is [scan[0]+1..file[1]).
-        a_dup(u8c, scan, file);
-        if (u8csFind(scan, ' ') != OK) continue;
-        u8cs mode_s = {file[0], scan[0]};
-        u8csUsed1(scan);                                  // skip the space
-        u8cs name_s = {scan[0], file[1]};
+        u8cs mode_s = {}, name_s = {};
+        if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
         if ($empty(name_s) || u8csLen(esha) != 20) continue;
         entry *e = &out[n++];
         e->name[0] = name_s[0]; e->name[1] = name_s[1];
@@ -1345,18 +1340,8 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         //  (6..39 hex).  Expand to a full 40-hex sha first so
         //  `resolve_cherry` (which insists on 40 chars) can run.
         if (u8csLen(frag) != 40) {
-            u64 hashlet = WHIFFHexHashlet60(frag);
-            Bu8 cbuf = {};
-            call(u8bAllocate, cbuf, 1UL << 16);
-            u8 ct = 0;
-            ok64 ko = KEEPGet(&KEEP, hashlet, $len(frag), cbuf, &ct);
-            if (ko != OK) { u8bFree(cbuf); return ko; }
-            u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-            sha1 full = {};
-            KEEPObjSha(&full, ct, body);
-            u8bFree(cbuf);
             sha1hex hex40 = {};
-            sha1hexFromSha1(&hex40, &full);
+            call(KEEPResolveHex, &KEEP, &hex40, frag);
             a_rawc(hex_slice, hex40);
             u8csMv(frag, hex_slice);
         }

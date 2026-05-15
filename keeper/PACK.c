@@ -75,7 +75,7 @@ static ok64 PACKDrainOfs(u8cs from, u64 *ofs) {
 
 ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj) {
     sane(u8csOK(from) && obj);
-    memset(obj, 0, sizeof(*obj));
+    zerop(obj);
 
     ok64 rv = PACKDrainVarint(from, &obj->type, &obj->size);
     if (rv != OK) return rv;

@@ -114,7 +114,7 @@ static b8 TryMatch(igno_pat const *pat, u8cs path, b8 is_dir) {
 
 ok64 IGNOLoad(ignop out, u8cs dir_path) {
     sane(out && u8csOK(dir_path));
-    memset(out, 0, sizeof(*out));
+    zerop(out);
 
     // Build path to .gitignore
     a_path(gi_path);
@@ -167,7 +167,7 @@ ok64 IGNOLoad(ignop out, u8cs dir_path) {
 
         // Parse pattern
         igno_pat *pat = &out->patterns[out->count];
-        memset(pat, 0, sizeof(*pat));
+        zerop(pat);
 
         u8cp p = line_start;
 
@@ -211,7 +211,7 @@ void IGNOFree(ignop ig) {
     if (ig->buf && ig->buf[0]) {
         u8bUnMap(ig->buf);
     }
-    memset(ig, 0, sizeof(*ig));
+    zerop(ig);
 }
 
 //  Hardcoded metadata: .git and .be are always ignored, whether or

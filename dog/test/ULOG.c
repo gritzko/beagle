@@ -43,7 +43,7 @@ static ok64 parse_uri_lit(saved_uri *s, char const *text) {
     if (n >= sizeof(s->raw)) return TESTFAIL;
     memcpy(s->raw, text, n);
     s->raw[n] = 0;
-    memset(&s->u, 0, sizeof(s->u));
+    zero(s->u);
     s->u.data[0] = (u8cp)s->raw;
     s->u.data[1] = (u8cp)s->raw + n;
     return URILexer(&s->u);

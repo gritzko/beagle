@@ -122,6 +122,11 @@ ok64 GITFeedRef(u8b out, gitref_kind kind, u8csc name);
 //  exhausted.
 ok64 GITu8sDrainTree(u8cs obj, u8csp file, u8csp sha1, u32 *mode);
 
+//  Split a `file` slice from GITu8sDrainTree ("<mode> <name>") into
+//  its mode and name parts.  Either output may be NULL.  Returns
+//  GITBADFMT if no SP separator is present.
+ok64 GITu8sFileSplit(u8cs file, u8csp mode, u8csp name);
+
 //  Drain one commit header: field name into `field`, value into `value`.
 //  On the blank-line separator, returns empty `field` and commit body
 //  as `value`.  Returns NODATA when exhausted.

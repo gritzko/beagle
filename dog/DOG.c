@@ -96,7 +96,7 @@ static b8 dog_is_projector(u8cs scheme) {
 
 ok64 DOGParseURI(urip uri, u8csc text) {
     sane(uri != NULL);
-    memset(uri, 0, sizeof(*uri));
+    zerop(uri);
     uri->data[0] = text[0];
     uri->data[1] = text[1];
     call(URILexer, uri);

@@ -70,9 +70,8 @@ static ok64 mig_tree_find(u8cs body, u8cs name, sha1p out) {
     a_dup(u8c, scan, body);
     u8cs field = {}, esha = {};
     while (GITu8sDrainTree(scan, field, esha, NULL) == OK) {
-        a_dup(u8c, fscan, field);
-        if (u8csFind(fscan, ' ') != OK) continue;
-        u8cs ename = {fscan[0] + 1, field[1]};
+        u8cs ename = {};
+        if (GITu8sFileSplit(field, NULL, ename) != OK) continue;
         if (!u8csEq(ename, name)) continue;
         return sha1FromBin(out, esha);
     }
@@ -166,10 +165,8 @@ static ok64 mig_emit_tree(keep_pack *p,
     a_dup(u8c, walk, u8bData(new_buf));
     u8cs field = {}, esha = {};
     while (GITu8sDrainTree(walk, field, esha, NULL) == OK) {
-        a_dup(u8c, fscan, field);
-        if (u8csFind(fscan, ' ') != OK) continue;
-        u8cs mode = {field[0], fscan[0]};
-        u8cs name = {fscan[0] + 1, field[1]};
+        u8cs mode = {}, name = {};
+        if (GITu8sFileSplit(field, mode, name) != OK) continue;
         if ($empty(name)) continue;
 
         sha1 entry = {};

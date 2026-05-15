@@ -166,8 +166,7 @@ ok64 SNIFFSubsParse(u8cs blob, sniff_subs_cb cb, void *ctx) {
             subs_strip(hdr);
 
             //  Match leading `submodule` keyword.
-            static u8c const kw[] = "submodule";
-            u8cs kws = {(u8c *)kw, (u8c *)kw + 9};
+            a_cstr(kws, "submodule");
             if (u8csLen(hdr) >= 9 &&
                 memcmp(hdr[0], kws[0], 9) == 0 &&
                 (u8csLen(hdr) == 9 ||
@@ -191,10 +190,8 @@ ok64 SNIFFSubsParse(u8cs blob, sniff_subs_cb cb, void *ctx) {
         subs_strip(val);
         if (u8csEmpty(key)) continue;
 
-        static u8c const k_path[] = "path";
-        static u8c const k_url[]  = "url";
-        u8cs key_path = {(u8c *)k_path, (u8c *)k_path + 4};
-        u8cs key_url  = {(u8c *)k_url,  (u8c *)k_url  + 3};
+        a_cstr(key_path, "path");
+        a_cstr(key_url,  "url");
         if (subs_eq(key, key_path)) {
             u8csMv(st.path, val);
         } else if (subs_eq(key, key_url)) {

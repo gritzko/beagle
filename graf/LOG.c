@@ -143,7 +143,7 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
             u8bFeed(retry_buf, head);
             u8bFeed(retry_buf, q);
             a_dup(u8c, retry_uri, u8bDataC(retry_buf));
-            memset(&resolved, 0, sizeof(resolved));
+            zero(resolved);
             ro = REFSResolve(&resolved, arena_buf, $path(keepdir), retry_uri);
         }
     }
@@ -390,9 +390,8 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
         u8cs field = {}, esha = {};
         b8 found = NO;
         while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
-            a_dup(u8c, scan, field);
-            if (u8csFind(scan, ' ') != OK) continue;
-            u8cs entry_name = {scan[0] + 1, field[1]};
+            u8cs entry_name = {};
+            if (GITu8sFileSplit(field, NULL, entry_name) != OK) continue;
             if (!u8csEq(entry_name, name)) continue;
             (void)sha1Drain(esha, &cur);
             found = YES;

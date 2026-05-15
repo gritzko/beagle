@@ -51,11 +51,8 @@ static ok64 walk_tree_dive(keeper *k, sha1 const *tree_sha,
 
     u8 const *tsp = (u8 const *)tree_sha;
     while (GITu8sDrainTree(tree_s, file, esha, NULL) == OK) {
-        // Parse "<mode> <name>".
-        u8cs scan = {file[0], file[1]};
-        if (u8csFind(scan, ' ') != OK) continue;
-        u8cs mode_s = {file[0], scan[0]};
-        u8cs name_s = {scan[0] + 1, file[1]};
+        u8cs mode_s = {}, name_s = {};
+        if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
         if ($empty(mode_s) || $empty(name_s)) continue;
         u8 kind = WALKu8sModeKind(mode_s);
         if (kind == 0) continue;
@@ -209,10 +206,8 @@ static ok64 lsf_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
         sha1 next_sha = {};
         u8cs file = {}, esha = {};
         while (GITu8sDrainTree(tree_s, file, esha, NULL) == OK) {
-            u8cs fscan = {file[0], file[1]};
-            if (u8csFind(fscan, ' ') != OK) continue;
-            u8cs mode_s = {file[0], fscan[0]};
-            u8cs name_s = {fscan[0] + 1, file[1]};
+            u8cs mode_s = {}, name_s = {};
+            if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
             if (u8csLen(name_s) != u8csLen(seg)) continue;
             if (memcmp(name_s[0], seg[0], u8csLen(name_s)) != 0) continue;
             next_kind = WALKu8sModeKind(mode_s);

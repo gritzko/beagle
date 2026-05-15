@@ -22,9 +22,9 @@ spot_emit_fn spot_emit   = NULL;
 ok64 LESSArenaInit(void) {
     less_nhunks = 0;
     less_nmaps  = 0;
-    memset(less_hunks, 0, sizeof(less_hunks));
-    memset(less_maps,  0, sizeof(less_maps));
-    memset(less_toks,  0, sizeof(less_toks));
+    zero(less_hunks);
+    zero(less_maps);
+    zero(less_toks);
     if (less_arena[0] != NULL) {
         u8bShedAll(less_arena);  // empty DATA, IDLE spans full buffer
         return OK;

@@ -816,7 +816,7 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
     }
 
     if (u8bDataLen(tree) == 0) {
-        memset(tree_out, 0, sizeof(*tree_out));
+        zerop(tree_out);
         u8bFree(tree);
         done;
     }

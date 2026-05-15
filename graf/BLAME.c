@@ -526,8 +526,7 @@ ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
     }
 
     if (!at_bol) {
-        u8cs nl = {(u8cp)"\n", (u8cp)"\n" + 1};
-        u8bFeed(outbuf, nl);
+        u8bFeed1(outbuf, '\n');
     }
 
     #undef EMIT_BLANK
