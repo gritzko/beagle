@@ -202,8 +202,8 @@ the way; missing prefix dirs return `KEEPNONE`.
 `KEEPBranchDrop(k, branch)` evicts + unlinks every file in the leaf
 dir and rmdirs it; refuses trunk (`KEEPTRUNK`), the active leaf, or
 a branch with subdirs (both `KEEPDIRTY`).  Writes (`KEEPPackOpen`,
-`KEEPPackClose`, `KEEPIngestFile`, `KEEPSync`) all land in the leaf
-branch dir; `KEEPCompact` writes its merged run into the leaf dir
+`KEEPPackClose`, `KEEPIngestFile`, `KEEPIngestStream`) all land in
+the leaf branch dir; `KEEPCompact` writes its merged run into the leaf dir
 too.  The REF_DELTA visibility check is now structural: every entry
 in `k->packs` is by construction visible to a delta encoded into the
 leaf, since the open walk only loads packs from trunk → … → leaf.

@@ -210,7 +210,7 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     //  URI parser's leading '/' attached.  ssh peers expect a path
     //  relative to the remote login's HOME, so strip it.  Absolute
     //  remote paths need to come through file:/// or be encoded
-    //  differently — matching what KEEPSync/keeper_get_remote did pre-Phase8.
+    //  differently — matching what keeper_get_remote did pre-Phase8.
     if (!u8csEmpty(path) && *path[0] == '/') path[0]++;
     if (u8csEmpty(path)) return WIRECLFL;
 

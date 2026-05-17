@@ -283,8 +283,8 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out) {
     sane(k && target && out);
 
     //  Host-bearing URI: remote materialization.  Not wired yet —
-    //  keeper has KEEPSync/KEEPPush but no policy for deciding what
-    //  to pull on demand.  Fail loudly until that's resolved.
+    //  keeper has KEEPPush but no policy for deciding what to pull on
+    //  demand.  Fail loudly until that's resolved.
     if (!$empty(target->host)) fail(KEEPFAIL);
 
     //  Neither ?ref nor #sha: nothing to resolve against.  Caller is
