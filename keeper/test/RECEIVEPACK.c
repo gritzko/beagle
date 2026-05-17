@@ -15,9 +15,9 @@
 //    4. Non-FF rejection: pre-seed REFS with tip A, send B → C
 //       (B != A), expect `ng … non-fast-forward`, REFS unchanged.
 
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
-#include "keeper/PKT.h"
+#include "dog/git/PKT.h"
 #include "keeper/REFS.h"
 
 #include <fcntl.h>

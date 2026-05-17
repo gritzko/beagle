@@ -5,20 +5,17 @@ include_directories(.. .)
 
 find_package(ZLIB REQUIRED)
 
-add_library(gitcompat STATIC GIT.c PKT.c PACK.c DELT.c ZINF.c SHA1.c)
-target_link_libraries(gitcompat dog abc-core ZLIB::ZLIB)
-
 add_library(keeplib STATIC KEEP.c KEEP.exe.c MIGRATE.c REFS.c REFADV.c RESOLVE.c WALK.c UNPK.c PSTR.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c)
-target_link_libraries(keeplib gitcompat dog abc-core)
+target_link_libraries(keeplib dog abc-core ZLIB::ZLIB)
 
 #  keeper-cli no longer pushes to graf/spot — under the new
 #  arrangement (dog/DOG.md §10a) those dogs reindex themselves when
 #  `be get URI` spawns them.  keeplib stays the only direct dep.
 add_executable(keeper-cli KEEP.cli.c)
-target_link_libraries(keeper-cli keeplib gitcompat dog abc-core)
+target_link_libraries(keeper-cli keeplib dog abc-core)
 set_target_properties(keeper-cli PROPERTIES OUTPUT_NAME keeper RUNTIME_OUTPUT_DIRECTORY ${DOG_BIN_DIR})
 
 add_executable(git-dl git-dl.cli.c)
-target_link_libraries(git-dl keeplib gitcompat dog abc-core)
+target_link_libraries(git-dl keeplib dog abc-core)
 
 add_subdirectory(test)

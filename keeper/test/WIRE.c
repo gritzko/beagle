@@ -23,11 +23,11 @@
 #include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
-#include "keeper/PACK.h"
-#include "keeper/PKT.h"
+#include "dog/git/PACK.h"
+#include "dog/git/PKT.h"
 #include "keeper/PSTR.h"
 #include "keeper/REFADV.h"
-#include "keeper/SHA1.h"
+#include "dog/git/SHA1.h"
 
 #define GIT_UNSET "unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR " \
                   "GIT_INDEX_FILE GIT_OBJECT_DIRECTORY && "

@@ -5,7 +5,7 @@
 //  Follows abc/SHA.h pattern: struct, Sum, Open/Feed/Close.
 
 #include "abc/INT.h"
-#include "sha1dc/sha1.h"
+#include "dog/sha1dc/sha1.h"
 
 typedef struct {
     u8 data[20];

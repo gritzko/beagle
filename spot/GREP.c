@@ -9,7 +9,7 @@
 #include "abc/SORT.h"
 #include "spot/RXLITS.h"
 #include "spot/SPOT.h"
-#include "dog/DEF.h"
+#include "dog/tok/DEF.h"
 
 // --- Grep: substring search in source text (no tree) ---
 

@@ -25,8 +25,8 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/DPATH.h"
-#include "dog/SHA1.h"
-#include "keeper/GIT.h"
+#include "dog/git/SHA1.h"
+#include "dog/git/GIT.h"
 
 // Resolve a 40-bit object hashlet.  Prefer the caller-supplied SHA
 // (the UNPK hot path has it) — falls back to computing it from the

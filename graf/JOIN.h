@@ -10,7 +10,7 @@
 
 #include "abc/DIFF.h"
 #include "abc/RAP.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // Packed tok32 tokens: use tok32Pack/tok32Tag/tok32Offset from TOK.h
 

@@ -1,11 +1,11 @@
 //  FETCH treadmill: clone a repo via ssh git-upload-pack,
 //  unpack objects, write them as loose objects into a new repo.
 //
-#include "keeper/GIT.h"
-#include "keeper/PACK.h"
-#include "keeper/PKT.h"
-#include "keeper/SHA1.h"
-#include "keeper/ZINF.h"
+#include "dog/git/GIT.h"
+#include "dog/git/PACK.h"
+#include "dog/git/PKT.h"
+#include "dog/git/SHA1.h"
+#include "dog/git/ZINF.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -10,7 +10,7 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 

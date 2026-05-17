@@ -29,7 +29,7 @@
 #include "abc/INT.h"
 #include "abc/OK.h"
 #include "abc/S.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 
 // --- Error codes ---
 

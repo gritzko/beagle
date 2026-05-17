@@ -33,7 +33,7 @@
 #include "abc/RAP.h"
 #include "dog/DOG.h"
 #include "dog/WHIFF.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
 

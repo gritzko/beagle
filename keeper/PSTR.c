@@ -4,8 +4,8 @@
 
 #include <unistd.h>
 
-#include "PACK.h"
-#include "SHA1.h"
+#include "dog/git/PACK.h"
+#include "dog/git/SHA1.h"
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 

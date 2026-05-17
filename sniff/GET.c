@@ -31,7 +31,7 @@
 #include "abc/RON.h"
 #include "dog/HOME.h"
 #include "graf/GRAF.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/REFS.h"
 #include "keeper/WALK.h"
 
@@ -39,7 +39,7 @@
 #include "CLASS.h"
 #include "SNIFF.h"
 #include "SUBS.h"
-#include "dog/IGNO.h"
+#include "dog/git/IGNO.h"
 
 typedef struct {
     keeper        *k;

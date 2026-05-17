@@ -7,6 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 include_directories(../..)
 include_directories(..)
+include_directories(../tok ../git)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FUZZ_CXX_FLAGS}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${FUZZ_C_FLAGS}")

@@ -33,7 +33,7 @@ static void capo_abrt_handler(int sig) {
 
 #include "abc/ANSI.h"
 #include "abc/PRO.h"
-#include "dog/DEF.h"
+#include "dog/tok/DEF.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/HOME.h"

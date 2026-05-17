@@ -21,7 +21,7 @@
 #include "abc/PATH.h"
 #include "dog/CLI.h"
 #include "dog/HOME.h"
-#include "dog/IGNO.h"
+#include "dog/git/IGNO.h"
 #include "dog/ULOG.h"
 #include "keeper/KEEP.h"
 

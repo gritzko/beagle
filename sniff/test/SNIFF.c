@@ -27,7 +27,7 @@ static void bump_mtime(char const *abs_path, int bump_sec) {
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 #include "keeper/REFS.h"
-#include "keeper/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "keeper/WALK.h"
 
 // --- Helpers ---

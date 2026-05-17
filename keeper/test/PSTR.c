@@ -11,8 +11,8 @@
 //  `git index-pack --stdin`.
 //
 #include "keeper/PSTR.h"
-#include "keeper/PACK.h"
-#include "keeper/SHA1.h"
+#include "dog/git/PACK.h"
+#include "dog/git/SHA1.h"
 
 #include <dirent.h>
 #include <fcntl.h>

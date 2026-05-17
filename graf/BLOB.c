@@ -8,7 +8,7 @@
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "graf/DAG.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 
 ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
     sane(k && cur);

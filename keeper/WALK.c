@@ -11,7 +11,7 @@
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/ULOG.h"
-#include "GIT.h"
+#include "dog/git/GIT.h"
 
 u8 WALKu8sModeKind(u8cs mode) {
     if ($empty(mode)) return 0;

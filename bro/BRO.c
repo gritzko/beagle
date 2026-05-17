@@ -23,10 +23,10 @@
 #include "abc/TTY.h"
 #include "abc/URI.h"
 #include "abc/UTF8.h"
-#include "dog/DEF.h"
+#include "dog/tok/DEF.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // --- Active bro instance ---
 //

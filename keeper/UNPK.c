@@ -19,9 +19,9 @@
 //  base lives in an earlier pack.
 #include "UNPK.h"
 
-#include "DELT.h"
-#include "PACK.h"
-#include "ZINF.h"
+#include "dog/git/DELT.h"
+#include "dog/git/PACK.h"
+#include "dog/git/ZINF.h"
 
 #include <stdio.h>
 #include <stdlib.h>

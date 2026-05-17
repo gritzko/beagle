@@ -27,7 +27,7 @@
 #include "dog/HUNK.h"
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/RESOLVE.h"
 

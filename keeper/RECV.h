@@ -30,7 +30,7 @@
 #include "abc/OK.h"
 #include "abc/S.h"
 #include "abc/B.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFADV.h"
 

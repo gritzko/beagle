@@ -8,7 +8,7 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "graf/DAG.h"
 #include "graf/WEAVE.h"
 

@@ -1,5 +1,5 @@
-#include "keeper/PACK.h"
-#include "keeper/ZINF.h"
+#include "dog/git/PACK.h"
+#include "dog/git/ZINF.h"
 
 #include <string.h>
 

@@ -26,7 +26,7 @@
 #include "abc/INT.h"
 #include "abc/RAP.h"
 #include "dog/HUNK.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 

@@ -27,14 +27,14 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
-#include "dog/SHA1.h"
-#include "keeper/GIT.h"
+#include "dog/git/SHA1.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
-#include "keeper/PKT.h"
+#include "dog/git/PKT.h"
 #include "keeper/REFADV.h"
 #include "keeper/REFS.h"
-#include "keeper/SHA1.h"
-#include "keeper/ZINF.h"
+#include "dog/git/SHA1.h"
+#include "dog/git/ZINF.h"
 
 // --- pkt-line drain with refill ----------------------------------------
 

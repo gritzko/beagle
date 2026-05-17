@@ -38,7 +38,7 @@
 //  keeper without prefix-lifting.
 
 #include "abc/INT.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 

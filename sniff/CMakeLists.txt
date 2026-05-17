@@ -15,7 +15,7 @@ add_library(snifflib STATIC
     LS.h LS.c
     SUBS.h SUBS.c
     ../abc/FSW.c)
-target_link_libraries(snifflib graflib keeplib gitcompat dog abc-core)
+target_link_libraries(snifflib graflib keeplib dog abc-core)
 
 #  sniff-cli is a thin parser/exec wrapper around snifflib.  Under
 #  the new arrangement (dog/DOG.md §10a) sniff drives no other dog —

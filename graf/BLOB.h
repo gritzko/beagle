@@ -7,7 +7,7 @@
 //  hashlets.
 
 #include "abc/INT.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "keeper/KEEP.h"
 
 //  Descend one tree entry by name.  On entry `*cur` is a tree sha;

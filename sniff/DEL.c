@@ -31,7 +31,7 @@
 #include "abc/OK.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
 #include "keeper/WALK.h"

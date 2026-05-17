@@ -36,7 +36,7 @@
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
 #include "graf/REBASE.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
 #include "keeper/RESOLVE.h"

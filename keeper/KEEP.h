@@ -28,7 +28,7 @@
 #include "abc/URI.h"
 #include "dog/CLI.h"
 #include "dog/HOME.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "dog/WHIFF.h"
 #include "dog/DOG.h"
 

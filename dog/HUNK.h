@@ -2,7 +2,7 @@
 #define DOG_HUNK_H
 
 #include "abc/TLV.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // TLV type letters for hunk records
 #define HUNK_TLV      'H'  // outer container

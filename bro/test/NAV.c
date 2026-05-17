@@ -12,7 +12,7 @@
 #include "abc/B.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // --- helpers ----------------------------------------------------------
 

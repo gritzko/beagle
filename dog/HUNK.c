@@ -4,7 +4,7 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/FRAG.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 ok64 HUNKu8sFeed(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);

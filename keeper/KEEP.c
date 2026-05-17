@@ -6,10 +6,10 @@
 #include "KEEP.h"
 #include "REFS.h"
 
-#include "DELT.h"
-#include "PACK.h"
-#include "SHA1.h"
-#include "ZINF.h"
+#include "dog/git/DELT.h"
+#include "dog/git/PACK.h"
+#include "dog/git/SHA1.h"
+#include "dog/git/ZINF.h"
 
 #include <dirent.h>
 #include <signal.h>
@@ -1164,7 +1164,7 @@ ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type) {
 
 // --- Verify: get object, check SHA-1, recurse into tree/commit ---
 
-#include "GIT.h"
+#include "dog/git/GIT.h"
 
 // Simple visited-set: linear scan (good enough for <10K objects)
 #define VERIFY_MAX_VISITED 16384
@@ -2599,8 +2599,8 @@ ok64 KEEPIngestStream(keeper *k, int rfd) {
 
 // --- Sync: clone or update from remote via git-upload-pack ---
 
-#include "PKT.h"
-#include "ZINF.h"
+#include "dog/git/PKT.h"
+#include "dog/git/ZINF.h"
 #include <sys/wait.h>
 
 // Compute git object SHA-1: hash("<type> <size>\0<content>")

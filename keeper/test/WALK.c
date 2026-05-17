@@ -1,8 +1,8 @@
 //  WALK tests: tree walker on KEEP (eager / lazy / skip / stop).
 //
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
-#include "keeper/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "keeper/WALK.h"
 
 #include <stdio.h>

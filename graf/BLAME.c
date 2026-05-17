@@ -25,7 +25,7 @@
 #include "abc/UTF8.h"
 #include "dog/HUNK.h"
 #include "dog/WHIFF.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/REFS.h"
 
 #define BLAME_MAX_VERS 256

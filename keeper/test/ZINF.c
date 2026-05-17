@@ -4,7 +4,7 @@
 //  deflate each into a contiguous buffer, then inflate them
 //  one by one, verifying round-trip fidelity.
 
-#include "keeper/ZINF.h"
+#include "dog/git/ZINF.h"
 
 #include <string.h>
 

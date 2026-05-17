@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 
-include_directories(.. ../..)
+include_directories(.. ../.. ../tok ../git)
 
 set(TEST_CXX_FLAGS "-g")
 set(TEST_LDD_FLAGS "-g")

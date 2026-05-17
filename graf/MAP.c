@@ -36,7 +36,7 @@
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
 #include "dog/WHIFF.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 
 #define MAP_MAX_BRANCHES   32

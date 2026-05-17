@@ -17,7 +17,7 @@
 #include "dog/HOME.h"
 #include "dog/WHIFF.h"
 
-#include "GIT.h"
+#include "dog/git/GIT.h"
 #include "KEEP.h"
 
 #define MIG_BUF (16UL << 20)        // 16 MB per object body scratch

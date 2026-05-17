@@ -1,7 +1,7 @@
 #include "CT.h"
 
 #include "abc/PRO.h"
-#include "dog/KEYW.h"
+#include "dog/tok/KEYW.h"
 
 static u8cs CT_KEYWORDS[] = {
     u8slit("auto"),     u8slit("break"),    u8slit("case"),

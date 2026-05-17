@@ -16,7 +16,7 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
-#include "dog/IGNO.h"
+#include "dog/git/IGNO.h"
 #include "dog/ULOG.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"

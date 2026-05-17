@@ -14,7 +14,7 @@
 #include "abc/DIFF.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // Instantiate the u64 DIFF specialization (DIFFu64s, etc).
 #define X(M, name) M##u64##name

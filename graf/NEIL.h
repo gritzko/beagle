@@ -2,7 +2,7 @@
 #define GRAF_NEIL_H
 
 #include "abc/DIFF.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 con ok64 NEILBAD = 0x1739254b28d;
 

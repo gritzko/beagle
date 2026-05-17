@@ -98,7 +98,7 @@ fun int wh128cscmp(wh128cs const *a, wh128cs const *b) { return $cmp(*a, *b); }
 // Both are big-endian: first SHA byte in the most significant bits.
 // Input: sha1 const * (typed, 20 bytes).
 
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 
 // 40-bit hashlet: first 5 bytes of SHA (10 hex chars)
 #define WHIFF_HASHLET40_BITS  40

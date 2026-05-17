@@ -29,11 +29,11 @@
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/QURY.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
 #include "keeper/WALK.h"
-#include "keeper/SHA1.h"
+#include "dog/git/SHA1.h"
 
 #include "AT.h"
 #include "CLASS.h"

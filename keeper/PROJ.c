@@ -1,7 +1,7 @@
 //  PROJ: keeper view projectors — tree:, commit:, blob:.
 //
 #include "PROJ.h"
-#include "GIT.h"
+#include "dog/git/GIT.h"
 #include "REFS.h"
 #include "WALK.h"
 
@@ -16,7 +16,7 @@
 
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
-#include "dog/TOK.h"
+#include "dog/tok/TOK.h"
 
 // =====================================================================
 //  Helpers

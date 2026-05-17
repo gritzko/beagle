@@ -4,7 +4,7 @@
 //  edit in the middle, and a larger random-ish blob for the extend
 //  paths (forward + backward).
 
-#include "keeper/DELT.h"
+#include "dog/git/DELT.h"
 
 #include <string.h>
 

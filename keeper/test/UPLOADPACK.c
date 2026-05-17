@@ -15,7 +15,7 @@
 //  protocol down without dragging in a git-shell shim.
 
 #include "keeper/KEEP.h"
-#include "keeper/PKT.h"
+#include "dog/git/PKT.h"
 #include "keeper/REFS.h"
 
 #include <fcntl.h>

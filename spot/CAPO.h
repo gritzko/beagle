@@ -9,7 +9,7 @@
 #include "abc/RON.h"
 #include "abc/RAP.h"
 #include "dog/DOG.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 

@@ -14,7 +14,7 @@
 //     on-disk log (i.e. delta compression actually kicked in).
 
 #include "keeper/KEEP.h"
-#include "keeper/PACK.h"
+#include "dog/git/PACK.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -29,7 +29,7 @@
 #include "abc/S.h"
 #include "abc/TEST.h"
 #include "dog/HOME.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 
 static void sha_to_hex(char *hex41, sha1 const *s) {
     static const char HEX[] = "0123456789abcdef";

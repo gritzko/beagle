@@ -20,11 +20,11 @@ list(APPEND BRO_SOURCES
 
 add_library(brolib STATIC ${BRO_HEADERS} ${BRO_SOURCES})
 target_compile_definitions(brolib PRIVATE NDEBUG)
-target_link_libraries(brolib keeplib gitcompat dog abc-core)
+target_link_libraries(brolib keeplib dog abc-core)
 
 add_executable(bro-cli BRO.cli.c)
 target_compile_definitions(bro-cli PRIVATE NDEBUG)
-target_link_libraries(bro-cli brolib keeplib gitcompat dog abc-core)
+target_link_libraries(bro-cli brolib keeplib dog abc-core)
 set_target_properties(bro-cli PROPERTIES OUTPUT_NAME bro RUNTIME_OUTPUT_DIRECTORY ${DOG_BIN_DIR})
 
 add_subdirectory(test)

@@ -18,7 +18,7 @@
 #include "dog/HOME.h"
 #include "dog/QURY.h"
 
-#include "GIT.h"
+#include "dog/git/GIT.h"
 #include "KEEP.h"
 #include "REFS.h"
 

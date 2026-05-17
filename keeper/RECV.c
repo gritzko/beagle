@@ -13,8 +13,8 @@
 #include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
-#include "keeper/GIT.h"
-#include "keeper/PKT.h"
+#include "dog/git/GIT.h"
+#include "dog/git/PKT.h"
 #include "keeper/REFS.h"
 #include "keeper/WIRE.h"
 

@@ -116,7 +116,7 @@ static ok64 graf_feed_type(keeper *k, u8 type, b8 sort_by_val, Bu8 body) {
 // --- Incremental tip-walk (DOG.md §10a, called from `graf get URI`) ---
 
 #include "abc/KV.h"
-#include "keeper/GIT.h"
+#include "dog/git/GIT.h"
 
 #define GRAF_WALK_SET_CAP (1UL << 16)   // 64K hashlet slots
 

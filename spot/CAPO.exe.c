@@ -20,7 +20,7 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
-#include "dog/SHA1.h"
+#include "dog/git/SHA1.h"
 #include "dog/ULOG.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"

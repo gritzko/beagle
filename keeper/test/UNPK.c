@@ -7,7 +7,7 @@
 //
 #include "keeper/KEEP.h"
 #include "keeper/UNPK.h"
-#include "keeper/PACK.h"
+#include "dog/git/PACK.h"
 
 #include <dirent.h>
 #include <stdio.h>
