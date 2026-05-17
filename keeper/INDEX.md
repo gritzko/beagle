@@ -15,7 +15,12 @@ to the same dir or an ancestor.
 
 ##  Headers
 
-### GIT.h — git object parsers
+The git-compat shims (`GIT.h`, `PKT.h`, `PACK.h`, `IGNO.h`, `SHA1.h`,
+`ZINF.h`, `DELT.h`) all live in `dog/git/`; their sections below are
+prefixed with `dog/git/` to make that explicit.  Everything else in
+this section lives in `keeper/`.
+
+### dog/git/GIT.h — git object parsers
 
 Types: none (output via slices).
 
@@ -23,7 +28,7 @@ Types: none (output via slices).
   - `GITu8sDrainCommit`  drain one commit header; empty field = body
   - `GITu8sCommitTree`   extract the tree SHA-1 from a commit body
 
-### PKT.h — pkt-line framing
+### dog/git/PKT.h — pkt-line framing
 
   - `PKTu8sDrain`      drain one pkt-line; returns PKTFLUSH/PKTDELIM for specials
   - `PKTu8sFeed`       feed one pkt-line (4-hex prefix + payload)
@@ -36,7 +41,7 @@ Types: none (output via slices).
   - `REFADVTipDirs`  reverse-lookup: which dir(s) hold this sha as a tip?
   - `REFADVEmit`     write the pkt-line advertisement (caps on first line + flush)
 
-### PACK.h — packfile parser
+### dog/git/PACK.h — packfile parser
 
 Types: `pack_hdr` (version, count), `pack_obj` (type, size, delta ref).
 
@@ -46,7 +51,7 @@ Object types: COMMIT=1, TREE=2, BLOB=3, TAG=4, OFS_DELTA=6, REF_DELTA=7.
   - `PACKDrainObjHdr`  parse object type/size varint + delta base
   - `PACKInflate`      zlib-inflate compressed object data
 
-### IGNO.h — .gitignore parser/matcher
+### dog/git/IGNO.h — .gitignore parser/matcher
 
 Types: `igno_pat` (pattern + flags), `igno` (up to 256 patterns).
 
@@ -54,7 +59,7 @@ Types: `igno_pat` (pattern + flags), `igno` (up to 256 patterns).
   - `IGNOFree`   free resources
   - `IGNOMatch`  check if relative path should be ignored
 
-### SHA1.h — SHA-1 hash (sha1dc wrapper)
+### dog/git/SHA1.h — SHA-1 hash (sha1dc wrapper)
 
   - `SHA1Sum`                              one-shot 20-byte SHA-1
   - `SHA1Open` / `SHA1Feed` / `SHA1Close`  streaming hash; PSTR.c
@@ -132,28 +137,70 @@ full delete semantics are a follow-up.
   - `RECVServe`          one-shot: read request, ingest, apply, emit
   - `RECVFAIL` / `RECVNOTFF` / `RECVBADREF` / `RECVBADREQ`
 
-### ZINF.h — zlib inflate/deflate wrapper
+### dog/git/ZINF.h — zlib inflate/deflate wrapper
 
   - `ZINFInflate(u8s into, u8cs zipped)`  decompress zlib data
   - `ZINFDeflate(u8s into, u8cs plain)`  compress data
 
+### RESOLVE.h — user-input → canonical sha funnel
+
+Interpretation step at the boundary between user input and the
+internals.  Downstream code only ever sees full 40-hex shas and
+absolute branch paths.
+
+  - `KEEPResolveRef`  canonicalise sha / hex-prefix / branch path /
+                      relative-branch-path / (postponed) commit-msg
+                      fragment into a 40-byte sha
+  - `KEEPResolveHex`  same for a hex (sha-prefix / branch tip) lookup
+
+### UNPK.h — single-pass packfile indexer
+
+Given a pack mapped in memory, resolve every object's SHA-1
+(chasing OFS_DELTA / REF_DELTA) and emit one `wh128` entry per
+object: `key = hashlet60 | type`, `val = flags | file_id | log_off`.
+Thin-pack fallback resolves REF_DELTA bases via `KEEPGet` against
+earlier packs / index runs.
+
+  - `unpk_in`     mmapped pack slice + file_id + log_off
+  - `UNPKIndex`   index pack → emit sorted/deduped wh128 entries
+
+### PROJ.h — keeper-owned view projectors
+
+URI handlers wired through `KEEPProjDispatch` (called from
+`KEEP.exe.c` when `DOG_PROJECTORS` routes a scheme to "keeper").
+TLV mode goes through `dog/HUNK` so `bro` can render the output.
+
+  - `KEEPProjTree`     `tree:[<path>]?<ref|sha>` — directory entries
+  - `KEEPProjCommit`   `commit:?<ref|sha>` — commit header + body
+  - `KEEPProjBlob`     `blob:[<path>]?<ref|sha>` — blob bytes (TLV
+                       mode tokenizes via `dog/TOK`)
+  - `KEEPProjDispatch` scheme → projector dispatch entry point
+
 
 ##  Implementation files
 
-  - `GIT.c`     tree/commit drain parsers (~75 lines)
-  - `PKT.c`     pkt-line framing (~77 lines)
-  - `PACK.c`    packfile header/object/inflate (~101 lines)
-  - `IGNO.c`    gitignore glob matching (~233 lines)
-  - `SHA1.c`    SHA-1 via sha1dc (header-only inlines)
-  - `ZINF.c`    zlib inflate/deflate (~63 lines)
-  - `WALK.c`    KEEP-backed tree walker (eager + lazy)
-  - `PSTR.c`    pack-stitcher streaming encoder (~85 lines)
-  - `WIRE.c`    upload-pack want/have negotiator + segment list builder
-  - `WIRECLI.c` client-side WIREFetch / WIREPush (transport spawn,
-                advert drain, want/have/done, pack ingest / build,
-                REFS update, push status drain)
-  - `RECV.c`    receive-pack server (request parser + pack ingest +
-                FF-check + REFS append + response emit)
+  - `KEEP.c`     branch-aware Open + Get/Has/Lookup/Scan + pack
+                 writer (PackOpen/Feed/Close) + Import/Ingest +
+                 Push + tip/remote enumeration
+  - `KEEP.exe.c` CLI verb dispatch (`get`, `put`, `post`, `status`,
+                 `refs`, `alias`, `sync`, `upload-pack`, …)
+  - `MIGRATE.c`  `KEEPMoveCommits` — cross-shard pack copy with
+                 delta-base hints (`be post ?<other>`)
+  - `REFS.c`     URI→URI reflog (append + load + resolve)
+  - `REFADV.c`   refs advertisement (walk shards, emit pkt-lines)
+  - `RESOLVE.c`  user-input → canonical sha funnel
+  - `WALK.c`     KEEP-backed tree walker (eager + lazy)
+  - `UNPK.c`     single-pass pack indexer (delta chase + thin-pack)
+  - `PSTR.c`    pack-stitcher streaming encoder
+  - `WIRE.c`     upload-pack want/have negotiator + segment list
+                 builder (`WIRE.c.rl` is the ragel source for
+                 `WIRE.rl.c` co-built alongside)
+  - `WIRECLI.c`  client-side `WIREFetch` / `WIREPush` (transport
+                 spawn, advert drain, want/have/done, pack ingest /
+                 build, REFS update, push status drain)
+  - `RECV.c`     receive-pack server (request parser + pack ingest
+                 + FF-check + REFS append + response emit)
+  - `PROJ.c`     view projectors (`tree:` / `commit:` / `blob:`)
 
 ### KEEP.h — branch-aware Open + per-shard state
 
@@ -220,7 +267,7 @@ Types: `walk` (walker state), `walk_fn` (visitor callback).
                        N-way tree merges (sniff/GET overlap pre-flight uses it).
   - Commit-graph traversal lives in `graf/`, not here.
 
-### DELT.h — git delta instruction applier + encoder
+### dog/git/DELT.h — git delta instruction applier + encoder
 
   - `DELTApply`   apply delta instructions (copy/insert) to base object
   - `DELTEncode`  produce a git delta instruction stream for
@@ -258,11 +305,13 @@ Types: `walk` (walker state), `walk_fn` (visitor callback).
 
 ##  Build
 
-Library `gitcompat` (static): GIT.c PKT.c PACK.c DELT.c ZINF.c SHA1.c IGNO.c.
-Library `keeplib` (static): KEEP.c KEEP.exe.c REFS.c REFADV.c WALK.c
-                            UNPK.c PATHS.c PSTR.c WIRE.c
-                            WIRECLI.c RECV.c.
-Links: abc, ZLIB, OpenSSL::Crypto.
+Library `keeplib` (static, see `CMakeLists.txt`):
+  KEEP.c KEEP.exe.c MIGRATE.c REFS.c REFADV.c RESOLVE.c WALK.c
+  UNPK.c PSTR.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c.
+Links: dog, abc-core, ZLIB.  (Git-compat code — GIT.c PKT.c PACK.c
+DELT.c ZINF.c IGNO.c plus SHA1 inlines — links in via `dog/git/`.)
+
+Executables: `keeper` (`KEEP.cli.c`), `git-dl` (`git-dl.cli.c`).
 
 ##  Tests
 

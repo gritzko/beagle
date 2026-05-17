@@ -190,36 +190,6 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
     done;
 }
 
-//  Find the *last* PACK bookmark in file_id (the dir tail).
-//  Returns KEEPNONE if file_id has no bookmarks.
-static ok64 wire_tail_pack(keeper *k, u32 file_id,
-                           u64 *bm_offset, u32 *bm_count, u32 *bm_byte_len) {
-    sane(k && bm_offset && bm_count && bm_byte_len);
-    u64  best_off  = 0;
-    u32  best_count = 0;
-    u32  best_len  = 0;
-    b8   any = NO;
-    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
-        wh128cp base = (wh128cp)_raw_[0];
-        wh128cp term = (wh128cp)_raw_[1];
-        for (wh128cp e = base; e < term; e++) {
-            if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
-            if (wh64Id(e->key)   != file_id)        continue;
-            u64 bo = wh64Off(e->key);
-            if (any && bo <= best_off) continue;
-            best_off   = bo;
-            best_count = keepPackBmCount(e->val);
-            best_len   = keepPackBmLen(e->val);
-            any = YES;
-        }
-    }
-    if (!any) return KEEPNONE;
-    *bm_offset   = best_off;
-    *bm_count    = best_count;
-    *bm_byte_len = best_len;
-    done;
-}
-
 //  Sum obj_count of every PACK bookmark in file_id whose
 //  offset is in [from, to).
 static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {

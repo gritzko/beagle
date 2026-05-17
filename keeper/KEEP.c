@@ -12,7 +12,6 @@
 #include "dog/git/ZINF.h"
 
 #include <dirent.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,18 +52,6 @@ u8c *const KEEP_DIR_S[2] = {
 };
 
 // --- Helpers ---
-
-// Build <h->root>/.be/ into `out`.  The worktree root has
-// already been resolved by HOMEOpen.
-static ok64 keep_resolve_dir(path8b out, home *h) {
-    sane(out && h);
-    a_dup(u8c, root_s, u8bDataC(h->root));
-    call(PATHu8bFeed, out, root_s);
-    a_cstr(rel, "/" KEEP_DIR);
-    call(u8bFeed, out, rel);
-    call(PATHu8bTerm, out);
-    done;
-}
 
 // Build <h->root>/.be[/<branch>] into `out` (NUL-terminated path).
 // Empty branch → trunk dir.  `branch` may be in DPATHBranchNormFeed

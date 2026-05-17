@@ -1144,25 +1144,6 @@ static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
     done;
 }
 
-//  Look up our local tip for `local_branch` via REFADV.  `local_branch`
-//  is be-side (empty for trunk).  Sets *have=YES if found, *out filled.
-static void wpush_local_tip(refadvcp adv, u8csc local_branch,
-                            sha1 *out, b8 *have) {
-    *have = NO;
-    if (!adv) return;
-    a_pad(u8, full, 256);
-    if (wcli_be_to_wire(full, local_branch) != OK) return;
-    u8cs target = {u8bDataHead(full), u8bIdleHead(full)};
-    for (u32 i = 0; i < adv->count; i++) {
-        u8cs r = {adv->ents[i].refname[0], adv->ents[i].refname[1]};
-        if (u8csLen(r) != u8csLen(target)) continue;
-        if (memcmp(r[0], target[0], (size_t)u8csLen(target)) != 0) continue;
-        *out  = adv->ents[i].tip;
-        *have = YES;
-        return;
-    }
-}
-
 //  Drain peer's refs advertisement.  Two outputs:
 //    * if `branch_refname` matches an advertised entry, capture its
 //      sha into `*out_sha` and set `*out_have=YES`;

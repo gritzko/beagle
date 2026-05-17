@@ -42,11 +42,6 @@ con ok64 KEEPOPEN    = 0x50e399619397;
 con ok64 KEEPOPENRO  = 0x50e3996193976d8;
 //  Intra-pack object order violation: commit→tree→blob→tag required.
 con ok64 ORDERBAD    = 0x61b34e6cb28d;
-//  KEEPOpenBranch / KEEPCreateBranch: branch path doesn't exist on disk
-//  (parent dir or leaf dir missing).  KEEPOpenBranch returns this when
-//  any prefix dir is missing; KEEPCreateBranch returns it when the
-//  parent dir is missing.
-con ok64 KEEPNOBR  = 0x50e3995d82db;
 //  KEEPBranchDrop: refuses to drop the trunk shard.
 con ok64 KEEPTRUNK = 0x1438e65d6de5d4;
 //  KEEPBranchDrop: refuses a branch that still has descendants
