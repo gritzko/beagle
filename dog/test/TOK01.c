@@ -55,6 +55,7 @@
 #include "LLT.h"
 #include "MDT.h"
 #include "TOK.h"
+#include "git/CFG.h"
 
 #include "abc/PRO.h"
 #include "abc/TEST.h"
@@ -741,6 +742,85 @@ ok64 TOMLTBasicTest() {
     done;
 }
 
+ok64 CFGDrainTest() {
+    sane(1);
+    static const char blob[] =
+        "[submodule \"abc\"]\n"
+        "\tpath = lib/abc\n"
+        "\turl = https://github.com/gritzko/libabc.git\n"
+        "\n"
+        "; an ini-style comment line\n"
+        "[submodule \"ragel-runtime\"]\n"
+        "\tpath = vendor/ragel\n"
+        "\turl = git@github.com:colmnet/ragel.git\n"
+        "[core]\n"
+        "\teditor = vim ; trailing comment\n";
+
+    struct expect {
+        const char *section;
+        const char *key;
+        const char *val;
+    } want[] = {
+        {"submodule/abc",           "path",   "lib/abc"},
+        {"submodule/abc",           "url",    "https://github.com/gritzko/libabc.git"},
+        {"submodule/ragel-runtime", "path",   "vendor/ragel"},
+        {"submodule/ragel-runtime", "url",    "git@github.com:colmnet/ragel.git"},
+        {"core",                    "editor", "vim"},
+    };
+    int n_want = sizeof(want) / sizeof(want[0]);
+
+    a_pad(u8, section, 256);
+    a_pad(u8, cfgbuf, 1024);
+    u8bReset(section);
+
+    u8cs ini = {(u8c *)blob, (u8c *)blob + sizeof(blob) - 1};
+    int i = 0;
+    for (;;) {
+        u8cs k = {}, v = {};
+        ok64 o = CFGu8sDrain(ini, cfgbuf, section, k, v);
+        if (o == NODATA) break;
+        if (o != OK) {
+            fprintf(stderr, "CFGDrain failed at #%d: %s\n", i, ok64str(o));
+            fail(TESTFAIL);
+        }
+        if (i >= n_want) {
+            fprintf(stderr, "CFGDrain produced too many pairs\n");
+            fail(TESTFAIL);
+        }
+        a_dup(u8c, sec, u8bDataC(section));
+        size_t slen = strlen(want[i].section);
+        size_t klen = strlen(want[i].key);
+        size_t vlen = strlen(want[i].val);
+        if ($len(sec) != slen ||
+            memcmp(sec[0], want[i].section, slen) != 0) {
+            fprintf(stderr,
+                    "CFGDrain #%d section: got '%.*s' want '%s'\n",
+                    i, (int)$len(sec), (char *)sec[0], want[i].section);
+            fail(TESTFAIL);
+        }
+        if ($len(k) != klen ||
+            memcmp(k[0], want[i].key, klen) != 0) {
+            fprintf(stderr,
+                    "CFGDrain #%d key: got '%.*s' want '%s'\n",
+                    i, (int)$len(k), (char *)k[0], want[i].key);
+            fail(TESTFAIL);
+        }
+        if ($len(v) != vlen ||
+            memcmp(v[0], want[i].val, vlen) != 0) {
+            fprintf(stderr,
+                    "CFGDrain #%d val: got '%.*s' want '%s'\n",
+                    i, (int)$len(v), (char *)v[0], want[i].val);
+            fail(TESTFAIL);
+        }
+        ++i;
+    }
+    if (i != n_want) {
+        fprintf(stderr, "CFGDrain produced %d pairs, want %d\n", i, n_want);
+        fail(TESTFAIL);
+    }
+    done;
+}
+
 ok64 SQLTBasicTest() {
     sane(1);
     TOK01Case cases[] = {
@@ -1149,6 +1229,7 @@ ok64 TOK01test() {
     call(NIXTBasicTest);
     call(YMLTBasicTest);
     call(TOMLTBasicTest);
+    call(CFGDrainTest);
     call(SQLTBasicTest);
     call(GQLTBasicTest);
     call(PRTTBasicTest);

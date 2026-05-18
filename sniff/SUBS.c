@@ -13,6 +13,7 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/HOME.h"
+#include "dog/git/CFG.h"
 #include "keeper/KEEP.h"
 #include "keeper/WIRE.h"
 
@@ -20,22 +21,6 @@
 #include "SNIFF.h"
 
 // --- helpers ----------------------------------------------------------
-
-//  Drop ASCII whitespace from both ends of `s` in place.  Whitespace
-//  is space, tab, CR, LF.  Acts on a u8cs in-place by moving its head
-//  and term.
-static void subs_strip(u8cs s) {
-    while (!u8csEmpty(s)) {
-        u8c c = *s[0];
-        if (c != ' ' && c != '\t' && c != '\r') break;
-        u8csUsed1(s);
-    }
-    while (!u8csEmpty(s)) {
-        u8c c = *(s[1] - 1);
-        if (c != ' ' && c != '\t' && c != '\r') break;
-        u8csShed1(s);
-    }
-}
 
 //  YES iff a == b (byte-exact).
 static b8 subs_eq(u8cs a, u8cs b) {
@@ -114,92 +99,66 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
 
 // --- SubsParse --------------------------------------------------------
 
-typedef struct {
-    u8cs path;
-    u8cs url;
-    b8   in_submod;   // YES while inside a `[submodule "…"]` section
-} subs_state;
-
-static ok64 subs_flush(subs_state *st, sniff_subs_cb cb, void *ctx) {
-    if (!st->in_submod) return OK;
-    if (u8csEmpty(st->path) || u8csEmpty(st->url)) {
-        //  Section missing path or url → silently skip.
-        st->in_submod = NO;
-        u8csMv(st->path, ((u8cs){}));
-        u8csMv(st->url,  ((u8cs){}));
-        return OK;
-    }
-    ok64 o = cb(st->path, st->url, ctx);
-    st->in_submod = NO;
-    u8csMv(st->path, ((u8cs){}));
-    u8csMv(st->url,  ((u8cs){}));
-    return o;
-}
+//  Pull-mode CFG drain.  We latch path/url per `[submodule "..."]`
+//  section and flush the cb on section change / EOF.  The CFG buffer
+//  recycles key/value bytes each Feed call, so we copy the latched
+//  values into a side-buffer to keep them alive across calls.
 
 ok64 SNIFFSubsParse(u8cs blob, sniff_subs_cb cb, void *ctx) {
     sane(cb);
-    subs_state st = {};
 
-    a_dup(u8c, scan, blob);
+    a_pad(u8, cfgbuf,  4096);
+    a_pad(u8, pathbuf,  512);
+    a_pad(u8, urlbuf,  1024);
+
+    CFGstate s = { .data = {blob[0], blob[1]}, .buf = cfgbuf };
+    a_cstr(submod_word, "submodule");
+    a_cstr(k_path,      "path");
+    a_cstr(k_url,       "url");
+
+    b8 in_submod = NO;
+
     for (;;) {
-        u8cs line = {};
-        if (u8csDrainLine(scan, line) != OK) break;
+        ok64 o = CFGu8sFeed(&s);
+        if (o == NODATA) break;
+        if (o != OK) return SUBSPARSE;
 
-        //  Strip trailing whitespace / CR.
-        subs_strip(line);
-        if (u8csEmpty(line)) continue;
-
-        //  Comments.
-        if (*line[0] == '#' || *line[0] == ';') continue;
-
-        //  Section header: `[submodule "<name>"]` or any other.  We
-        //  only care whether it's a submodule section; the name is
-        //  cosmetic (the `path` key is authoritative).
-        if (*line[0] == '[') {
-            ok64 o = subs_flush(&st, cb, ctx);
-            if (o != OK) return o;
-
-            //  Need a closing ']'.
-            if (*(line[1] - 1) != ']') return SUBSPARSE;
-            //  Inside brackets, strip first '[' and last ']'.
-            u8cs hdr = {line[0] + 1, line[1] - 1};
-            subs_strip(hdr);
-
-            //  Match leading `submodule` keyword.
-            a_cstr(kws, "submodule");
-            if (u8csLen(hdr) >= 9 &&
-                memcmp(hdr[0], kws[0], 9) == 0 &&
-                (u8csLen(hdr) == 9 ||
-                 hdr[0][9] == ' ' || hdr[0][9] == '\t' ||
-                 hdr[0][9] == '"')) {
-                st.in_submod = YES;
+        if (u8csEmpty(s.key)) {
+            //  Section change: flush the previous submodule (if any).
+            if (in_submod) {
+                a_dup(u8c, p, u8bDataC(pathbuf));
+                a_dup(u8c, u, u8bDataC(urlbuf));
+                if (!u8csEmpty(p) && !u8csEmpty(u)) {
+                    ok64 cbo = cb(p, u, ctx);
+                    if (cbo != OK) return cbo;
+                }
+                u8bReset(pathbuf);
+                u8bReset(urlbuf);
             }
+            in_submod = subs_eq(s.sec, submod_word);
             continue;
         }
 
-        if (!st.in_submod) continue;
-
-        //  key=value.  Split on the first '='.
-        u8cs key = {}, val = {};
-        u8c const *eq = NULL;
-        $for(u8c, p, line) if (*p == '=') { eq = p; break; }
-        if (!eq) continue;
-        key[0] = line[0]; key[1] = eq;
-        val[0] = eq + 1;  val[1] = line[1];
-        subs_strip(key);
-        subs_strip(val);
-        if (u8csEmpty(key)) continue;
-
-        a_cstr(key_path, "path");
-        a_cstr(key_url,  "url");
-        if (subs_eq(key, key_path)) {
-            u8csMv(st.path, val);
-        } else if (subs_eq(key, key_url)) {
-            u8csMv(st.url, val);
+        if (!in_submod) continue;
+        if (subs_eq(s.key, k_path)) {
+            u8bReset(pathbuf);
+            call(u8bFeed, pathbuf, s.value);
+        } else if (subs_eq(s.key, k_url)) {
+            u8bReset(urlbuf);
+            call(u8bFeed, urlbuf, s.value);
         }
     }
 
-    return subs_flush(&st, cb, ctx);
+    //  Trailing flush.
+    if (in_submod) {
+        a_dup(u8c, p, u8bDataC(pathbuf));
+        a_dup(u8c, u, u8bDataC(urlbuf));
+        if (!u8csEmpty(p) && !u8csEmpty(u)) {
+            ok64 cbo = cb(p, u, ctx);
+            if (cbo != OK) return cbo;
+        }
+    }
+    done;
 }
 
 // --- SubsParseFind ----------------------------------------------------
