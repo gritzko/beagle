@@ -90,3 +90,9 @@ target_compile_options(ULOGtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(ULOGtest dog abc-core)
 add_test(NAME ULOGtest COMMAND ULOGtest)
 
+add_executable(CFGtest CFG.c)
+target_link_options(CFGtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(CFGtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(CFGtest dog abc-core)
+add_test(NAME CFGtest COMMAND CFGtest)
+

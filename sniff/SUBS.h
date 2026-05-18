@@ -13,9 +13,11 @@
 //  No singleton state.  No I/O.  All consumers are pure-slice.
 
 #include "abc/BUF.h"
+#include "dog/git/SUBS.h"
 
-con ok64 SUBSPARSE = 0x65bb73d4a495;  // .gitmodules INI did not parse
-con ok64 SUBSNOSEC = 0x65bb73d5d85ce; // no [submodule] section for path
+//  SUBSPARSE / SUBSNOSEC are now declared in dog/git/SUBS.h.  The
+//  sniff-side names below are thin wrappers around the SUBSu8s*
+//  functions there.
 
 //  Extract the project-basename from a clone URL.  Mirrors the
 //  default sub-store keying rule of MODULES.plan.md §"Storage layout":
@@ -55,10 +57,13 @@ typedef ok64 (*sniff_subs_cb)(u8cs path, u8cs url, void *ctx);
 ok64 SNIFFSubsParse(u8cs blob, sniff_subs_cb cb, void *ctx);
 
 //  Convenience: find the URL for the section whose `path = <path>`.
-//  Equivalent to SubsParse + filter on path.  Returns SUBSNOSEC if no
-//  matching section, SUBSPARSE on parse error.  On OK, `url_out`
-//  points into `blob`.
-ok64 SNIFFSubsParseFind(u8cs blob, u8cs path, u8csp url_out);
+//  Wrapper around `SUBSu8sFind`; `url_buf` is a caller-owned scratch
+//  that the URL bytes are copied into so `url_out` outlives the
+//  parser's per-call stack frame.  Returns SUBSNOSEC if no matching
+//  section, SUBSPARSE on parse error, NOROOM if the buffer is too
+//  small.
+ok64 SNIFFSubsParseFind(u8cs blob, u8cs path, u8bp url_buf,
+                        u8csp url_out);
 
 //  Emit a canonical `.gitmodules` blob into `out` (which is RESET on
 //  entry) given two parallel slice arrays of equal length: one

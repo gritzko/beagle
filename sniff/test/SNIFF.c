@@ -735,17 +735,20 @@ static ok64 SUBSParseTest(void) {
     want(strcmp(c.path[1], "thirdparty/x") == 0);
     want(strcmp(c.url [1], "https://host/x.git") == 0);
 
-    //  ParseFind: hit + miss.
+    //  ParseFind: hit + miss.  url_buf lives in the test's own frame
+    //  so the returned slice outlives the parser's call.
+    a_pad(u8, url_buf, 512);
     a_dup(u8c, blob2, src);
     a_cstr(want_path, "thirdparty/x");
     u8cs url = {};
-    call(SNIFFSubsParseFind, blob2, want_path, url);
+    call(SNIFFSubsParseFind, blob2, want_path, url_buf, url);
     want(slice_eq_cstr(url, "https://host/x.git"));
 
+    a_pad(u8, url_buf2, 512);
     a_dup(u8c, blob3, src);
     a_cstr(miss_path, "nope");
     u8cs url2 = {};
-    ok64 m = SNIFFSubsParseFind(blob3, miss_path, url2);
+    ok64 m = SNIFFSubsParseFind(blob3, miss_path, url_buf2, url2);
     want(m == SUBSNOSEC);
 
     //  Malformed: missing closing ']'.

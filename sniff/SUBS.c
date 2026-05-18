@@ -13,7 +13,6 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/HOME.h"
-#include "dog/git/CFG.h"
 #include "keeper/KEEP.h"
 #include "keeper/WIRE.h"
 
@@ -97,132 +96,25 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
     return OK;
 }
 
-// --- SubsParse --------------------------------------------------------
-
-//  Pull-mode CFG drain.  We latch path/url per `[submodule "..."]`
-//  section and flush the cb on section change / EOF.  The CFG buffer
-//  recycles key/value bytes each Feed call, so we copy the latched
-//  values into a side-buffer to keep them alive across calls.
+// --- Sniff-side wrappers around dog/git/SUBS.  The parser lives in
+//     dog/git/SUBS.{h,c} now so keeper can use it without depending
+//     on sniff.  These thin forwarders preserve the existing call
+//     surface across sniff and its tests.
 
 ok64 SNIFFSubsParse(u8cs blob, sniff_subs_cb cb, void *ctx) {
-    sane(cb);
-
-    a_pad(u8, cfgbuf,  4096);
-    a_pad(u8, pathbuf,  512);
-    a_pad(u8, urlbuf,  1024);
-
-    CFGstate s = { .data = {blob[0], blob[1]}, .buf = cfgbuf };
-    a_cstr(submod_word, "submodule");
-    a_cstr(k_path,      "path");
-    a_cstr(k_url,       "url");
-
-    b8 in_submod = NO;
-
-    for (;;) {
-        ok64 o = CFGu8sFeed(&s);
-        if (o == NODATA) break;
-        if (o != OK) return SUBSPARSE;
-
-        if (u8csEmpty(s.key)) {
-            //  Section change: flush the previous submodule (if any).
-            if (in_submod) {
-                a_dup(u8c, p, u8bDataC(pathbuf));
-                a_dup(u8c, u, u8bDataC(urlbuf));
-                if (!u8csEmpty(p) && !u8csEmpty(u)) {
-                    ok64 cbo = cb(p, u, ctx);
-                    if (cbo != OK) return cbo;
-                }
-                u8bReset(pathbuf);
-                u8bReset(urlbuf);
-            }
-            in_submod = subs_eq(s.sec, submod_word);
-            continue;
-        }
-
-        if (!in_submod) continue;
-        if (subs_eq(s.key, k_path)) {
-            u8bReset(pathbuf);
-            call(u8bFeed, pathbuf, s.value);
-        } else if (subs_eq(s.key, k_url)) {
-            u8bReset(urlbuf);
-            call(u8bFeed, urlbuf, s.value);
-        }
-    }
-
-    //  Trailing flush.
-    if (in_submod) {
-        a_dup(u8c, p, u8bDataC(pathbuf));
-        a_dup(u8c, u, u8bDataC(urlbuf));
-        if (!u8csEmpty(p) && !u8csEmpty(u)) {
-            ok64 cbo = cb(p, u, ctx);
-            if (cbo != OK) return cbo;
-        }
-    }
-    done;
+    //  sniff_subs_cb and subs_cb (dog/git/SUBS.h) have the same
+    //  signature; reinterpret the pointer.  C lets us pass through
+    //  a function pointer of compatible type.
+    return SUBSu8sParse(blob, (subs_cb)cb, ctx);
 }
 
-// --- SubsParseFind ----------------------------------------------------
-
-typedef struct {
-    u8cs want_path;
-    u8cs found_url;
-    b8   hit;
-} subs_find_ctx;
-
-static ok64 subs_find_cb(u8cs path, u8cs url, void *vctx) {
-    subs_find_ctx *c = (subs_find_ctx *)vctx;
-    if (c->hit) return OK;
-    if (subs_eq(path, c->want_path)) {
-        u8csMv(c->found_url, url);
-        c->hit = YES;
-    }
-    return OK;
+ok64 SNIFFSubsParseFind(u8cs blob, u8cs path, u8bp url_buf,
+                        u8csp url_out) {
+    return SUBSu8sFind(blob, path, url_buf, url_out);
 }
-
-ok64 SNIFFSubsParseFind(u8cs blob, u8cs path, u8csp url_out) {
-    subs_find_ctx c = {};
-    u8csMv(c.want_path, path);
-    ok64 o = SNIFFSubsParse(blob, subs_find_cb, &c);
-    if (o != OK) return o;
-    if (!c.hit) return SUBSNOSEC;
-    u8csMv(url_out, c.found_url);
-    return OK;
-}
-
-// --- SubsSynth --------------------------------------------------------
 
 ok64 SNIFFSubsSynth(u8bp out, u8cs paths, u8cs urls) {
-    sane(out);
-    u8bReset(out);
-
-    a_dup(u8c, p_scan, paths);
-    a_dup(u8c, u_scan, urls);
-
-    for (;;) {
-        u8cs path = {}, url = {};
-        if (u8csDrainLine(p_scan, path) != OK) break;
-        if (u8csDrainLine(u_scan, url)  != OK) return SUBSPARSE;
-        if (u8csEmpty(path) || u8csEmpty(url)) continue;
-
-        call(u8bFeed, out, ((u8cs){(u8c *)"[submodule \"",
-                                   (u8c *)"[submodule \"" + 12}));
-        call(u8bFeed, out, path);
-        call(u8bFeed, out, ((u8cs){(u8c *)"\"]\n\tpath = ",
-                                   (u8c *)"\"]\n\tpath = " + 11}));
-        call(u8bFeed, out, path);
-        call(u8bFeed, out, ((u8cs){(u8c *)"\n\turl = ",
-                                   (u8c *)"\n\turl = " + 8}));
-        call(u8bFeed, out, url);
-        call(u8bFeed1, out, '\n');
-    }
-
-    //  Trailing line not exhausted on the urls side → mismatched arity.
-    if (!u8csEmpty(u_scan)) {
-        u8cs trail = {};
-        if (u8csDrainLine(u_scan, trail) == OK && !u8csEmpty(trail))
-            return SUBSPARSE;
-    }
-    done;
+    return SUBSu8bSynth(out, paths, urls);
 }
 
 // --- SubMount: recursive `be get` driver ------------------------------
@@ -336,9 +228,11 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     sane($ok(reporoot) && $ok(parent_root) && $ok(path) &&
          $ok(hex_sha) && u8csLen(hex_sha) == 40);
 
-    //  1. URL lookup.
+    //  1. URL lookup.  The URL bytes get copied into a frame-local
+    //  buffer so the slice remains valid past SubsParseFind's return.
+    a_pad(u8, url_buf, 2048);
     u8cs url = {};
-    call(SNIFFSubsParseFind, gitmodules, path, url);
+    call(SNIFFSubsParseFind, gitmodules, path, url_buf, url);
 
     //  2. Basename.
     u8cs basename = {};

@@ -35,7 +35,7 @@ static u8 CFGdecEsc (u8 c) {
 }
 
 
-/* #line 186 "CFG.c.rl" */
+/* #line 208 "CFG.c.rl" */
 
 
 
@@ -178,7 +178,7 @@ static const int CFG_error = 0;
 static const int CFG_en_main = 28;
 
 
-/* #line 189 "CFG.c.rl" */
+/* #line 211 "CFG.c.rl" */
 
 ok64 CFGu8sFeed (CFGstate *state) {
     sane(state != NULL && $ok(state->data) && Bok(state->buf));
@@ -189,16 +189,23 @@ ok64 CFGu8sFeed (CFGstate *state) {
     u8c *eof = pe;
     u8c const *run_s = NULL;
     ok64 o = OK;
+    //  `emit_section` / `emit_assign` set this before `fbreak`.  After
+    //  `fbreak`, `cs` is whatever ragel's transition table picked for
+    //  the post-nl state — `line*` doesn't necessarily fold back into
+    //  `CFG_first_final` immediately, so the cs-based check below is
+    //  not enough to distinguish a successful event from a real
+    //  parse error.  The flag lets us return OK without consulting cs.
+    b8 emitted = NO;
 
     
-/* #line 186 "CFG.rl.c" */
+/* #line 193 "CFG.rl.c" */
 	{
 	cs = CFG_start;
 	}
 
-/* #line 201 "CFG.c.rl" */
+/* #line 230 "CFG.c.rl" */
     
-/* #line 189 "CFG.rl.c" */
+/* #line 196 "CFG.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -324,11 +331,17 @@ _match:
     Bate(state->buf);                                   // DATA → PAST
     state->key[0]   = state->key[1]   = (u8c *)state->buf[2];
     state->value[0] = state->value[1] = (u8c *)state->buf[2];
-    {p++; goto _out; }
+    emitted = YES;
+    //  Leaving-action: `%emit_section` fires on the transition AWAY
+    //  from `section_hdr`, which happens AFTER the trailing `\n` is
+    //  already consumed.  `*p` at this point is the first char of
+    //  the next line, not the `\n`.  `fbreak`'s built-in `p++` would
+    //  skip that char.  Exit without advancing p.
+    {goto _out;}
 }
 	break;
 	case 10:
-/* #line 102 "CFG.c.rl" */
+/* #line 108 "CFG.c.rl" */
 	{
     Back(state->buf);
     state->key[0]   = state->key[1]   = (u8c *)state->buf[2];
@@ -336,33 +349,33 @@ _match:
 }
 	break;
 	case 11:
-/* #line 108 "CFG.c.rl" */
+/* #line 114 "CFG.c.rl" */
 	{ state->key[0] = (u8c *)state->buf[2]; }
 	break;
 	case 12:
-/* #line 109 "CFG.c.rl" */
+/* #line 115 "CFG.c.rl" */
 	{
     u8cs r = {run_s, p};
     if (u8bFeed(state->buf, r) != OK) { o = CFGNOBUF; {p++; goto _out; } }
 }
 	break;
 	case 13:
-/* #line 113 "CFG.c.rl" */
+/* #line 119 "CFG.c.rl" */
 	{ state->key[1] = (u8c *)state->buf[2]; }
 	break;
 	case 14:
-/* #line 116 "CFG.c.rl" */
+/* #line 122 "CFG.c.rl" */
 	{ state->value[0] = (u8c *)state->buf[2]; }
 	break;
 	case 15:
-/* #line 117 "CFG.c.rl" */
+/* #line 123 "CFG.c.rl" */
 	{
     u8cs r = {run_s, p};
     if (u8bFeed(state->buf, r) != OK) { o = CFGNOBUF; {p++; goto _out; } }
 }
 	break;
 	case 16:
-/* #line 121 "CFG.c.rl" */
+/* #line 127 "CFG.c.rl" */
 	{
     if (u8bFeed1(state->buf, CFGdecEsc(p[-1])) != OK) {
         o = CFGNOBUF; {p++; goto _out; }
@@ -370,35 +383,51 @@ _match:
 }
 	break;
 	case 17:
-/* #line 126 "CFG.c.rl" */
+/* #line 132 "CFG.c.rl" */
 	{ state->value[1] = (u8c *)state->buf[2]; }
 	break;
 	case 18:
-/* #line 130 "CFG.c.rl" */
+/* #line 136 "CFG.c.rl" */
 	{ state->value[0] = (u8c *)state->buf[2]; }
 	break;
 	case 19:
-/* #line 131 "CFG.c.rl" */
+/* #line 137 "CFG.c.rl" */
 	{
     u8cs r = {run_s, p};
     if (u8bFeed(state->buf, r) != OK) { o = CFGNOBUF; {p++; goto _out; } }
 }
 	break;
 	case 20:
-/* #line 135 "CFG.c.rl" */
+/* #line 141 "CFG.c.rl" */
 	{
+    //  Trim trailing whitespace.  The DATA cursor `buf[2]` defines
+    //  where the value ends; rewind past any trailing sp/tab/cr.
     u8c **bb = (u8c **)state->buf;
     while (bb[2] > bb[1] &&
            (bb[2][-1] == ' ' || bb[2][-1] == '\t' || bb[2][-1] == '\r'))
         bb[2]--;
+    //  Trim leading whitespace.  Ragel's DFA resolves the ambiguity
+    //  between `hsp*` after `=` and `bvalue`'s `b_run` (which also
+    //  matches space) by letting `b_run` win — so leading spaces
+    //  land inside the value.  Advance state->value[0] past them
+    //  before sealing.
+    while (state->value[0] < (u8c const *)bb[2] &&
+           (state->value[0][0] == ' '  ||
+            state->value[0][0] == '\t' ||
+            state->value[0][0] == '\r'))
+        state->value[0]++;
     state->value[1] = (u8c *)state->buf[2];
 }
 	break;
 	case 21:
-/* #line 143 "CFG.c.rl" */
-	{ {p++; goto _out; } }
+/* #line 161 "CFG.c.rl" */
+	{
+    //  See emit_section: leaving-action, no p++ to avoid over-advance.
+    emitted = YES;
+    {goto _out;}
+}
 	break;
-/* #line 366 "CFG.rl.c" */
+/* #line 395 "CFG.rl.c" */
 		}
 	}
 
@@ -420,14 +449,24 @@ _again:
     Bate(state->buf);                                   // DATA → PAST
     state->key[0]   = state->key[1]   = (u8c *)state->buf[2];
     state->value[0] = state->value[1] = (u8c *)state->buf[2];
-    {p++; goto _out; }
+    emitted = YES;
+    //  Leaving-action: `%emit_section` fires on the transition AWAY
+    //  from `section_hdr`, which happens AFTER the trailing `\n` is
+    //  already consumed.  `*p` at this point is the first char of
+    //  the next line, not the `\n`.  `fbreak`'s built-in `p++` would
+    //  skip that char.  Exit without advancing p.
+    {goto _out;}
 }
 	break;
 	case 21:
-/* #line 143 "CFG.c.rl" */
-	{ {p++; goto _out; } }
+/* #line 161 "CFG.c.rl" */
+	{
+    //  See emit_section: leaving-action, no p++ to avoid over-advance.
+    emitted = YES;
+    {goto _out;}
+}
 	break;
-/* #line 392 "CFG.rl.c" */
+/* #line 431 "CFG.rl.c" */
 		}
 	}
 	}
@@ -435,10 +474,11 @@ _again:
 	_out: {}
 	}
 
-/* #line 202 "CFG.c.rl" */
+/* #line 231 "CFG.c.rl" */
 
     state->data[0] = p;
     if (o != OK) return o;
+    if (emitted) return OK;
     if (p == pe && cs >= CFG_first_final) return NODATA;
     if (cs < CFG_first_final) return CFGBAD;
     return OK;

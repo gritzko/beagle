@@ -212,6 +212,7 @@ list(APPEND TOK_HEADERS
     git/DELT.h
     git/ZINF.h
     git/CFG.h
+    git/SUBS.h
 )
 list(APPEND TOK_SOURCES
     git/IGNO.c
@@ -222,6 +223,7 @@ list(APPEND TOK_SOURCES
     git/ZINF.c
     git/CFG.c
     git/CFG.rl.c
+    git/SUBS.c
 )
 
 list(APPEND TOK_HEADERS HUNK.h)

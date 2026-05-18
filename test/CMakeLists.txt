@@ -36,6 +36,12 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-06-fetch-incremental"
     "be-get-05-submodule-from-ssh"
     "be-get-07-submodule-nosub"
+    # SUBS.plan.md fixture (test/lib/submodules.sh) uses
+    # ssh://localhost just like get/05.
+    "be-head-03-sub-clean-flat"
+    "be-head-04-sub-dirty"
+    "be-head-05-sub-parent-ahead"
+    "be-head-08-sub-declared-not-mounted"
 )
 
 foreach(_run ${_be_case_runs})

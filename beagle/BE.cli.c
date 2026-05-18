@@ -18,6 +18,8 @@
 #include "sniff/AT.h"
 #include "sniff/SUBS.h"
 
+#include "SUBS.h"           // beagle/SUBS.h — BESubsHere / BERecurseInto
+
 // Distinct codes so the MAIN-wrapper's `Error: <code>` line tells you
 // what kind of failure stopped the pipeline — a dog exited non-zero
 // (BEDOGEXIT) or died from a signal (BEDOGSIG). Generic BEFAIL is
@@ -554,7 +556,10 @@ static ok64 BEGet(cli *c, b8 seq) {
 //  cache-refresh assertion).  The diff-summary half is TODO once
 //  the underlying graf/sniff "ahead/behind cur vs ref" entry point
 //  lands.  See VERBS.todo.md §"HEAD".
-static ok64 BEHead(cli *c, b8 seq) {
+//  Local body — the original BEHead implementation, unchanged.  The
+//  per-project work for one level of the submodule forest.  Recursion
+//  into mounted subs lives in the BEHead wrapper below.
+static ok64 BEHeadLocal(cli *c, b8 seq) {
     sane(c);
     uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
     b8 transport = (u != NULL && !$empty(u->scheme));
@@ -651,6 +656,110 @@ static ok64 BEHead(cli *c, b8 seq) {
     }
     (void)seq;
     done;
+}
+
+//  HEAD recursion context (SUBS.plan.md §HEAD).  Carries the
+//  child-process argv built once for the whole forest walk plus the
+//  outer wt root (needed to compose mount paths in BERecurseInto)
+//  and a sticky `worst` exit code so the walk continues across sub
+//  failures (compiler-style).  `outer_emitted` tracks whether the
+//  outer-project marker has been printed yet — it fires lazily on
+//  the first sub entry so single-project repos (no `.gitmodules`)
+//  keep their pre-recursion stderr contract (empty on success).
+typedef struct {
+    u8cs  wt_root;
+    u8cs *argv_head;    //  raw [head, term) over a u8css storage
+    u8cs *argv_term;
+    b8    outer_emitted;
+    ok64  worst;
+} behead_recurse_ctx;
+
+static void behead_emit_outer(behead_recurse_ctx *rc) {
+    if (rc->outer_emitted) return;
+    fprintf(stderr, "be: head .\n");
+    rc->outer_emitted = YES;
+}
+
+static ok64 behead_recurse_cb(besub const *s, void *vctx) {
+    behead_recurse_ctx *rc = (behead_recurse_ctx *)vctx;
+
+    //  Declared but not mounted on disk — report and continue.  Do
+    //  not recurse (nothing to chdir into).
+    if (!s->mounted) {
+        behead_emit_outer(rc);
+        fprintf(stderr, "be: head %.*s: declared, not mounted\n",
+                (int)$len(s->path), (char *)s->path[0]);
+        return OK;
+    }
+
+    behead_emit_outer(rc);
+    fprintf(stderr, "be: head %.*s\n",
+            (int)$len(s->path), (char *)s->path[0]);
+
+    u8css argv = {rc->argv_head, rc->argv_term};
+    //  Copy out of besub-const to drop the const wrapper on the
+    //  array elements (clang otherwise warns on -Wincompatible-
+    //  pointer-types-discards-qualifiers).
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    ok64 r = BERecurseInto(rc->wt_root, subpath, argv);
+    if (r != OK) rc->worst = r;
+    return OK;          //  keep going across sub failures
+}
+
+//  `be head <uri>` — pre-order recursion across mounted submodules.
+//
+//  Algorithm (SUBS.plan.md §HEAD):
+//    1. Run BEHeadLocal (existing per-project body) for the outer.
+//    2. Enumerate one level of subs declared in <wt>/.gitmodules.
+//       If any subs are reported (mounted or declared-not-mounted),
+//       emit `be: head .` marker on stderr before the first sub
+//       marker — single-project repos with no `.gitmodules` keep
+//       their pre-recursion clean-stderr contract.
+//    3. For each mounted sub: emit `be: head <subpath>` marker,
+//       fork-self into the mount with the same head argv (minus
+//       --at, which each level rederives).  For declared-but-not-
+//       mounted entries: report, do not recurse.
+//    4. Return the worst exit code (compiler-style aggregation).
+static ok64 BEHead(cli *c, b8 seq) {
+    sane(c);
+
+    //  Local body for the outer project.  Aggregate but never
+    //  short-circuit on its exit — subs are still worth probing
+    //  (read-only verb).
+    ok64 worst = BEHeadLocal(c, seq);
+
+    //  Need a wt root to enumerate / chdir from.
+    if (!u8bHasData(c->repo)) return worst;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Build the child argv: `head` + (forwarded flags, sans --at) +
+    //  forwarded URIs.  Each level rederives --at from its own wtlog.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    a_cstr(head_lit, "head");
+    a_dup(u8c, head_d, head_lit);
+    u8csbFeed1(child_args, head_d);
+    for (u32 j = 0; j + 1 < c->nflags; j += 2) {
+        if ($eq(c->flags[j], be_at_flag)) continue;
+        u8csbFeed1(child_args, c->flags[j]);
+        if (!u8csEmpty(c->flags[j + 1]))
+            u8csbFeed1(child_args, c->flags[j + 1]);
+    }
+    for (u32 j = 0; j < c->nuris; j++)
+        u8csbFeed1(child_args, c->uris[j].data);
+
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+    behead_recurse_ctx rc = {
+        .argv_head      = (u8cs *)child_argv[0],
+        .argv_term      = (u8cs *)child_argv[1],
+        .outer_emitted  = NO,
+        .worst          = OK,
+    };
+    u8csMv(rc.wt_root, wt_root);
+
+    (void)BESubsHere(wt_root, behead_recurse_cb, &rc);
+    if (rc.worst != OK) worst = rc.worst;
+    return worst;
 }
 
 //  Fork spot + graf in parallel against the worktree's current tip
