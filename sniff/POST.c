@@ -369,7 +369,7 @@ static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
     if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
 
     sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(c->k, &commit_sha, &tree_sha) != OK) done;
+    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) done;
 
     *root_out = tree_sha;
     *has_out = YES;
@@ -839,7 +839,7 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
 
 static ok64 post_feed_empty_tree(keeper *k, keep_pack *p, sha1 *out) {
     u8cs empty = {};
-    return KEEPPackFeed(k, p, DOG_OBJ_TREE, empty, 0, out);
+    return KEEPPackFeed(p, DOG_OBJ_TREE, empty, 0, out);
 }
 
 // --- Resolve parent commit sha for the commit body ---
@@ -854,7 +854,7 @@ static ok64 post_parent_sha(keeper *k, u8cs parent_hex, sha1 *out) {
     Bu8 tmp = {};
     call(u8bAllocate, tmp, 1UL << 20);
     u8 ctype = 0;
-    ok64 go = KEEPGetExact(k, out, tmp, &ctype);
+    ok64 go = KEEPGetExact(out, tmp, &ctype);
     u8bFree(tmp);
     if (go != OK || ctype != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
     done;
@@ -977,7 +977,7 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     } while (0)
 
     if (*have_base) {
-        ok64 br = KEEPTreeULog(c->k, base_tree_sha->data, 0, v_base, bu);
+        ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);
         if (br != OK) { PD_FREE_ALL(); return br; }
     }
     {
@@ -1222,7 +1222,7 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
     sane(vctx && sha);
     post_rebase_ctx *rc = (post_rebase_ctx *)vctx;
     sha1 fed = {};
-    ok64 fo = KEEPPackFeed(rc->k, rc->p, obj_type, body, 0, &fed);
+    ok64 fo = KEEPPackFeed(rc->p, obj_type, body, 0, &fed);
     if (fo != OK) return fo;
     if (obj_type == DOG_OBJ_COMMIT) {
         //  Record the last commit sha — that's our rebased tip.
@@ -1233,10 +1233,10 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
         //  GRAFRebase's loop fetches the previous-emit's commit/tree/
         //  blob bodies on the next pass; without this checkpoint they
         //  sit in a booked-but-unindexed pack and aren't resolvable.
-        ok64 cl = KEEPPackClose(rc->k, rc->p);
+        ok64 cl = KEEPPackClose(rc->p);
         if (cl != OK) return cl;
         zerop(rc->p);
-        ok64 op = KEEPPackOpen(rc->k, rc->p);
+        ok64 op = KEEPPackOpen(rc->p);
         if (op != OK) return op;
         rc->p->strict_order = NO;
     }
@@ -1351,14 +1351,14 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     //  re-scanning `.be/*` on disk (which can see still-mmap'd packs
     //  with the same seqno as the new pack's allocation).
     if (cc->p != NULL) {
-        ok64 cl = KEEPPackClose(cc->k, cc->p);
+        ok64 cl = KEEPPackClose(cc->p);
         if (cl != OK) return cl;
         zerop(cc->p);
     }
     (void)SNIFFMaybeSwitchKeeper(branch);
     (void)SNIFFMaybeSwitchGraf(branch);
     if (cc->p != NULL) {
-        ok64 op = KEEPPackOpen(cc->k, cc->p);
+        ok64 op = KEEPPackOpen(cc->p);
         if (op != OK) return op;
         cc->p->strict_order = NO;
     }
@@ -1598,7 +1598,7 @@ ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
         out[(*nout)++] = cur;
         u8bReset(cbuf);
         u8 ct = 0;
-        if (KEEPGetExact(&KEEP, &cur, cbuf, &ct) != OK ||
+        if (KEEPGetExact(&cur, cbuf, &ct) != OK ||
             ct != DOG_OBJ_COMMIT) break;
         a_dup(u8c, body, u8bData(cbuf));
         u8cs field = {}, value = {};
@@ -1821,13 +1821,13 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
             } else {
                 //  Replay cur's stack onto absolute_parent_tip.
                 keep_pack pp = {};
-                call(KEEPPackOpen, k, &pp);
+                call(KEEPPackOpen, &pp);
                 pp.strict_order = NO;
                 post_rebase_ctx rctx = {.k = k, .p = &pp};
                 ok64 rb = GRAFRebase(&lca, &absolute_parent_tip,
                                      &cur_tip, post_rebase_emit_cb,
                                      &rctx);
-                ok64 cl = KEEPPackClose(k, &pp);
+                ok64 cl = KEEPPackClose(&pp);
                 if (rb != OK) {
                     fprintf(stderr,
                             "sniff: post: leaf-create rebase aborted "
@@ -1908,7 +1908,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
             if (sha1Eq(&cur, &target_tip)) { ff = YES; break; }
             u8bReset(cbuf);
             u8 ct = 0;
-            if (KEEPGetExact(k, &cur, cbuf, &ct) != OK ||
+            if (KEEPGetExact(&cur, cbuf, &ct) != OK ||
                 ct != DOG_OBJ_COMMIT) break;
             a_dup(u8c, body, u8bData(cbuf));
             u8cs field = {}, value = {};
@@ -2054,7 +2054,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     if (stack_was_rewritten) {
         call(u8bAllocate, casc.arena, CASCADE_MAX * 256);
         keep_pack p3 = {};
-        call(KEEPPackOpen, k, &p3);
+        call(KEEPPackOpen, &p3);
         p3.strict_order = NO;
         casc.k = k;
         casc.p = &p3;
@@ -2066,7 +2066,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         casc.skip[1] = cur_branch[1];
         ok64 cw = post_cascade_walk(&casc, target_branch,
                                     &target_tip, &target_new_tip);
-        ok64 cl3 = KEEPPackClose(k, &p3);
+        ok64 cl3 = KEEPPackClose(&p3);
         if (cw != OK) {
             fprintf(stderr,
                     "sniff: post: cascade aborted (%s)\n",
@@ -2260,7 +2260,7 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     call(u8bAllocate, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, &pick, cbuf, &ct);
+    ok64 ko = KEEPGetExact(&pick, cbuf, &ct);
 
     if (switched) {
         a_dup(u8c, sb, u8bData(saved_branch));
@@ -2522,7 +2522,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  8. If the result has no files, fall back to the empty-tree sha.
     keep_pack p = {};
     {
-        ok64 po = KEEPPackOpen(k, &p);
+        ok64 po = KEEPPackOpen(&p);
         if (po != OK) {
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
@@ -2645,10 +2645,10 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 
     //  11. Feed pack: commit first.
     a_dup(u8c, com_data, u8bData(com));
-    ok64 fo = KEEPPackFeed(k, &p, DOG_OBJ_COMMIT, com_data, 0, sha_out);
+    ok64 fo = KEEPPackFeed(&p, DOG_OBJ_COMMIT, com_data, 0, sha_out);
     u8bFree(com);
     if (fo != OK) {
-        KEEPPackClose(k, &p);
+        KEEPPackClose(&p);
         u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return fo;
@@ -2672,7 +2672,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         u32 wlen = (u32)u8csLen(whole);
         Bu32 offs = {};
         if (u32bAllocate(offs, tree_count > 0 ? tree_count : 1) != OK) {
-            KEEPPackClose(k, &p);
+            KEEPPackClose(&p);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return SNIFFFAIL;
@@ -2704,11 +2704,11 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             //  can pluck the old subtree SHA per `subprefix` out of `bu`
             //  on its way down — same plumbing as `old_sha` already does
             //  for blobs at line 2371.  No extra walk needed.
-            ok64 to = KEEPPackFeed(k, &p, DOG_OBJ_TREE, rec,
+            ok64 to = KEEPPackFeed(&p, DOG_OBJ_TREE, rec,
                                    0, &tsha_dummy);
             if (to != OK) {
                 u32bFree(offs);
-                KEEPPackClose(k, &p);
+                KEEPPackClose(&p);
                 u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return to;
@@ -2782,7 +2782,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                             (int)$len(path), (char *)path[0]);
                         if (mapped) FILEUnMap(mapped);
                         if (u8bOK(body_buf)) u8bFree(body_buf);
-                        KEEPPackClose(k, &p);
+                        KEEPPackClose(&p);
                         u8bFree(tree_bodies);
                         post_ctx_free(&ctx);
                         return POSTCFLCT;
@@ -2792,12 +2792,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             }
             u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
             sha1 bsha = {};
-            ok64 bo = KEEPPackFeed(k, &p, DOG_OBJ_BLOB, body,
+            ok64 bo = KEEPPackFeed(&p, DOG_OBJ_BLOB, body,
                                    base_hl, &bsha);
             if (mapped) FILEUnMap(mapped);
             if (u8bOK(body_buf)) u8bFree(body_buf);
             if (bo != OK) {
-                KEEPPackClose(k, &p);
+                KEEPPackClose(&p);
                 u8bFree(tree_bodies);
                 post_ctx_free(&ctx);
                 return bo;
@@ -2805,7 +2805,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         }
     }
 
-    call(KEEPPackClose, k, &p);
+    call(KEEPPackClose, &p);
 
     //  13b. Phase-2 promote: rebase the just-built commit onto the
     //       live REFS tip when the branch diverged out from under us,
@@ -2837,7 +2837,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     cascade_ctx casc = {};
     if (needs_rebase) {
         keep_pack p2 = {};
-        ok64 po2 = KEEPPackOpen(k, &p2);
+        ok64 po2 = KEEPPackOpen(&p2);
         if (po2 != OK) {
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
@@ -2847,7 +2847,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         post_rebase_ctx rctx = {.k = k, .p = &p2};
         ok64 rb = GRAFRebase(&parent, &expected_tip_sha, sha_out,
                              post_rebase_emit_cb, &rctx);
-        ok64 cl2 = KEEPPackClose(k, &p2);
+        ok64 cl2 = KEEPPackClose(&p2);
         if (rb != OK) {
             fprintf(stderr,
                     "sniff: post: rebase aborted (%s)\n",
@@ -2879,14 +2879,14 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         a_dup(u8c, branch_view, u8bData(brbuf));
         sha1 br_new = *sha_out;
         keep_pack p3 = {};
-        ok64 po3 = KEEPPackOpen(k, &p3);
+        ok64 po3 = KEEPPackOpen(&p3);
         if (po3 != OK) {
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return po3;
         }
         if (u8bAllocate(casc.arena, CASCADE_MAX * 256) != OK) {
-            (void)KEEPPackClose(k, &p3);
+            (void)KEEPPackClose(&p3);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return SNIFFFAIL;
@@ -2899,7 +2899,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         casc.reporoot[1] = root_view[1];
         ok64 cw = post_cascade_walk(&casc, branch_view,
                                     &expected_tip_sha, &br_new);
-        ok64 cl3 = KEEPPackClose(k, &p3);
+        ok64 cl3 = KEEPPackClose(&p3);
         if (cw != OK) {
             fprintf(stderr,
                     "sniff: post: cascade aborted (%s)\n",

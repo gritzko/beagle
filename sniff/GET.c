@@ -85,7 +85,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     u8 bt = 0;
     sha1 entry_sha = {};
     sha1Mv(&entry_sha, (sha1 const *)esha);
-    ok64 o = KEEPGetExact(k, &entry_sha, bbuf, &bt);
+    ok64 o = KEEPGetExact(&entry_sha, bbuf, &bt);
     if (o != OK) {
         //  Empty-blob short-circuit.  The well-known empty-blob sha
         //  e69de29b… isn't always stored as a packed object — git
@@ -454,8 +454,8 @@ static ok64 get_overlap_check(keeper *k, u8cs reporoot,
     call(u8bMap, tu, 1UL << 28);
 
     ok64 r = OK;
-    if (base_tree) r = KEEPTreeULog(k, base_tree, 0, v_base, bu);
-    if (r == OK)   r = KEEPTreeULog(k, tgt_tree,  0, v_tgt,  tu);
+    if (base_tree) r = KEEPTreeULog(base_tree, 0, v_base, bu);
+    if (r == OK)   r = KEEPTreeULog(tgt_tree,  0, v_tgt,  tu);
     if (r != OK) { u8bUnMap(bu); u8bUnMap(tu); return r; }
 
     a_dup(u8c, view_b, u8bData(bu));
@@ -669,7 +669,7 @@ static ok64 get_verify_closure(keeper *k, u8csc target_hex) {
         return SNIFFFAIL;
     }
     a_dup(u8c, hex_mut, target_hex);
-    ok64 vo = KEEPVerify(k, hex_mut);
+    ok64 vo = KEEPVerify(hex_mut);
     if (vo != OK) {
         fprintf(stderr,
             "sniff: --force verify: target %.*s has missing objects "
@@ -818,7 +818,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     Bu8 buf = {};
     call(u8bAllocate, buf, 1UL << 24);
     u8 otype = 0;
-    ok64 o = KEEPGet(k, hashlet, hexlen, buf, &otype);
+    ok64 o = KEEPGet(hashlet, hexlen, buf, &otype);
     if (o != OK) {
         u8bFree(buf);
         fprintf(stderr, "sniff: object not found\n");
@@ -848,7 +848,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             fail(SNIFFFAIL);
         }
         u8bReset(buf);
-        o = KEEPGetExact(k, &tag_sha, buf, &otype);
+        o = KEEPGetExact(&tag_sha, buf, &otype);
         if (o != OK || otype != DOG_OBJ_COMMIT) {
             u8bFree(buf);
             fprintf(stderr, "sniff: tag target not a commit\n");
@@ -963,7 +963,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 Bu8 cbuf = {};
                 if (u8bAllocate(cbuf, 1UL << 24) == OK) {
                     u8 ctype = 0;
-                    if (KEEPGet(k, bhashlet, 40, cbuf, &ctype) == OK) {
+                    if (KEEPGet(bhashlet, 40, cbuf, &ctype) == OK) {
                         //  Peel annotated tag → commit (mill-tags
                         //  baselines like `?tags/v2.52.0` resolve
                         //  to a TAG object, not the commit it
@@ -990,7 +990,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                                 u64 ch = WHIFFHashlet60(&tag_target);
                                 u8bReset(cbuf);
                                 ctype = 0;
-                                (void)KEEPGet(k, ch, 40, cbuf, &ctype);
+                                (void)KEEPGet(ch, 40, cbuf, &ctype);
                                 //  Override base_commit_sha with the
                                 //  peeled commit so weave-merge sees
                                 //  the right history root.
@@ -1118,7 +1118,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     }
     //  --- end commit point --------------------------------------
 
-    o = WALKTreeLazy(k, tree_sha.data, get_visit, &ctx);
+    o = WALKTreeLazy(tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
         u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);

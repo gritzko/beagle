@@ -122,7 +122,7 @@ ok64 SPOTExec(cli *c) {
         uri empty = {};
         uri *u = (c->nuris > 0) ? &c->uris[0] : &empty;
         call(KEEPOpen, dog->h, NO);
-        ok64 igr = SPOTIndexFromTips(&KEEP, u);
+        ok64 igr = SPOTIndexFromTips(u);
         KEEPClose();
         return igr;
     }
@@ -623,7 +623,7 @@ static ok64 spot_index_one(keeper *k, spot_todo const *row,
     u8 btype = 0;
     u8bReset(bbuf);
     sha1 sha = row->sha;
-    if (KEEPGetExact(k, &sha, bbuf, &btype) != OK) return OK;
+    if (KEEPGetExact(&sha, bbuf, &btype) != OK) return OK;
     if (btype != DOG_OBJ_BLOB) return OK;
     u8cs source = {u8bDataHead(bbuf), u8bIdleHead(bbuf)};
 
@@ -644,8 +644,9 @@ static ok64 spot_index_one(keeper *k, spot_todo const *row,
     return OK;
 }
 
-ok64 SPOTIndexFromTips(keeper *k, uricp u) {
-    sane(k && u);
+ok64 SPOTIndexFromTips(uricp u) {
+    sane(u);
+    keeper *k = &KEEP;
     spotp s = &SPOT;
     if (!s->rw) done;
 
@@ -655,7 +656,7 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     if (!spot_probe_uri(k, u, &probe, frag_buf)) done;
 
     sha1 tree_sha = {};
-    if (KEEPResolveTree(k, &probe, &tree_sha) != OK) done;
+    if (KEEPResolveTree(&probe, &tree_sha) != OK) done;
 
     //  Phase 1 — get the tip's ULOG: one row per leaf, sorted by
     //  path, fragment carries the leaf's hex sha.  Single ~big
@@ -664,7 +665,7 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     if (u8bMap(ulog_buf, 1UL << 28) != OK) done;
     a_cstr(s_tgt, "tgt"); a_dup(u8c, dt, s_tgt);
     ron60 v_tgt = 0; (void)RONutf8sDrain(&v_tgt, dt);
-    if (KEEPTreeULog(k, tree_sha.data, 0, v_tgt, ulog_buf) != OK) {
+    if (KEEPTreeULog(tree_sha.data, 0, v_tgt, ulog_buf) != OK) {
         u8bUnMap(ulog_buf);
         done;
     }
@@ -794,7 +795,7 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     //  then forks `nw` children and waits.  Children re-walk their
     //  slice into their own BOX, BOXu64Flush at end, write a pup
     //  run with their pre-assigned seqno, exit.
-    (void)CAPOFlushRun(s);
+    (void)CAPOFlushRun();
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     {
@@ -885,10 +886,10 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
             }
             u8bUnMap(bbuf);
 
-            (void)CAPOFlushRun(s);
+            (void)CAPOFlushRun();
             //  Collapse the worker dir to a single pup so the parent
             //  merge stack is bounded by `nw`, not `nw * cascade`.
-            (void)CAPOCompactAll(s);
+            (void)CAPOCompactAll();
             _exit(0);
         }
         pids[w] = pid;
@@ -906,8 +907,8 @@ ok64 SPOTIndexFromTips(keeper *k, uricp u) {
     //  Merge every worker subdir's pup into a single new pup at the
     //  leaf level, drop the worker subdirs, then fold the merged run
     //  into the parent's pre-fork ladder via the usual compact.
-    (void)CAPOMergeWorkers(s, nw);
-    (void)CAPOCompact(s);
+    (void)CAPOMergeWorkers(nw);
+    (void)CAPOCompact();
 
     u8bUnMap(todo_buf);
     u8bUnMap(ulog_buf);

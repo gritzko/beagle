@@ -33,7 +33,7 @@ static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(k, out, cbuf, &ct);
+    ok64 ko = KEEPGetExact(out, cbuf, &ct);
     u8bFree(cbuf);
     if (ko != OK) return RESOLVENONE;
     return OK;
@@ -50,7 +50,7 @@ static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
-    ok64 ko = KEEPGet(k, h60, hexlen, cbuf, &ct);
+    ok64 ko = KEEPGet(h60, hexlen, cbuf, &ct);
     if (ko != OK) { u8bFree(cbuf); return RESOLVENONE; }
     a_dup(u8c, body, u8bDataC(cbuf));
     KEEPObjSha(out, ct, body);
@@ -164,7 +164,7 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
             u64 h60 = e->key >> 4;
             u8bReset(cbuf);
             u8 ct = 0;
-            ok64 ko = KEEPGet(k, h60, 15, cbuf, &ct);
+            ok64 ko = KEEPGet(h60, 15, cbuf, &ct);
             if (ko != OK || ct != KEEP_OBJ_COMMIT) continue;
 
             //  Skip headers; grab the message body (everything after
@@ -190,9 +190,9 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
     return RESOLVENONE;
 }
 
-ok64 KEEPResolveRef(keeper *k, sha1 *out,
-                    u8cs token, u8cs cur_branch) {
-    sane(k && out && $ok(token));
+ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
+    sane(out && $ok(token));
+    keeper *k = &KEEP;
 
     //  Empty token is a legitimate "trunk" lookup — used by PATCH /
     //  POST when `?..` from a top-level branch absolutises to "".
@@ -250,11 +250,11 @@ ok64 KEEPResolveRef(keeper *k, sha1 *out,
     return RESOLVENONE;
 }
 
-ok64 KEEPResolveHex(keeper *k, sha1hex *out, u8cs token) {
-    sane(k && out && $ok(token));
+ok64 KEEPResolveHex(sha1hex *out, u8cs token) {
+    sane(out && $ok(token));
     sha1 sh = {};
     u8cs cur_branch = {NULL, NULL};
-    call(KEEPResolveRef, k, &sh, token, cur_branch);
+    call(KEEPResolveRef, &sh, token, cur_branch);
     sha1hexFromSha1(out, &sh);
     done;
 }

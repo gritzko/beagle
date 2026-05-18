@@ -106,7 +106,7 @@ ok64 WIREReadRequest(int in_fd, wire_reqp req);
 //  Returns OK / WIRENOSHA (a want sha is not in our store) /
 //  WIREFAIL (open or index error) / WIRENOWANT (req.nwants == 0
 //  with no haves; out_n=0, no fds opened — empty pack on the wire).
-ok64 WIREBuildSegments(keeper *k, refadvcp adv, wire_reqcp req,
+ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
                        pstr_seg *out_segs, int *fd_pool,
                        u32 cap, u32 *out_n);
 
@@ -118,7 +118,7 @@ ok64 WIREBuildSegments(keeper *k, refadvcp adv, wire_reqcp req,
 //
 //  Sends "NAK\n" pkt-line ahead of the pack stream (canonical reply
 //  when no haves were ACK'd in this MVP).
-ok64 WIREServeUpload(int in_fd, int out_fd, keeper *k, refadvcp adv);
+ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv);
 
 // --- client side (Phase 7) ---------------------------------------------
 
@@ -144,7 +144,7 @@ con ok64 WIRECLNRF = 0x2049b38c5576cf;
 //
 //  Returns OK on success, WIRECLNRF if the peer doesn't advertise
 //  the requested ref, WIRECLFL on transport / ingest errors.
-ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref);
+ok64 WIREFetch(u8csc remote_uri, u8csc want_ref);
 
 //  Bulk fetch: drive a single upload-pack session that sends one
 //  `want <sha>` per peer-advertised heads/tags ref.  The peer streams
@@ -156,7 +156,7 @@ ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref);
 //
 //  Returns OK on success (zero refs is OK — peer advertised none),
 //  WIRECLFL on transport / ingest errors.
-ok64 WIREFetchAll(keeper *k, u8csc remote_uri);
+ok64 WIREFetchAll(u8csc remote_uri);
 
 //  Spawn a git-protocol peer (ssh or local exec) and run a push
 //  conversation: drain peer's refs advertisement, locate peer's tip
@@ -176,7 +176,7 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri);
 //
 //  Returns OK on success, WIRECLNRF if local_tip is zero,
 //  WIRECLFL on transport / pack-build / refusal.
-ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
+ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1 const *local_tip);
 
 //  Spawn a git-protocol peer and run a delete-only push: drain the
@@ -189,7 +189,7 @@ ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
 //  `refs/heads/main`).  Returns OK on accept, WIRECLNRF if the peer
 //  did not advertise the ref (nothing to delete), WIRECLFL on
 //  transport failure or peer refusal.
-ok64 WIREPushDelete(keeper *k, u8csc remote_uri, u8csc local_branch);
+ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch);
 
 // --- pkt-line text payload classifier -----------------------------------
 //

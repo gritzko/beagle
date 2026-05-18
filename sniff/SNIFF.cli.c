@@ -148,7 +148,7 @@ static ok64 sniffcli_inner(cli *c) {
             uri tip = {};
             u8csMv(tip.data, u8bDataC(tail_buf));
             URILexer(&tip);
-            (void)GRAFIndexFromTips(&KEEP, &tip);
+            (void)GRAFIndexFromTips(&tip);
         }
     }
 

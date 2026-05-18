@@ -721,14 +721,14 @@ static ok64 sniff_get_summary(u8cs reporoot) {
     }
 
     fprintf(stdout, "branches:\n");
-    ok64 to = KEEPEachTip(k, sniff_get_branch_cb, &cur);
+    ok64 to = KEEPEachTip(sniff_get_branch_cb, &cur);
     if (to != OK && to != REFSNONE) {
         fprintf(stderr, "sniff: get: branches: %s\n", ok64str(to));
         fail(to);
     }
 
     fprintf(stdout, "remotes:\n");
-    ok64 ro = KEEPEachRemote(k, sniff_get_remote_cb, NULL);
+    ok64 ro = KEEPEachRemote(sniff_get_remote_cb, NULL);
     if (ro != OK && ro != REFSNONE) {
         fprintf(stderr, "sniff: get: remotes: %s\n", ok64str(ro));
         fail(ro);
@@ -841,7 +841,7 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     keeper *k = &KEEP;
     Bu8 blob = {};
     call(u8bMap, blob, 64UL << 20);
-    ok64 go = KEEPGetByURI(k, u, blob);
+    ok64 go = KEEPGetByURI(u, blob);
     if (go != OK) {
         u8bUnMap(blob);
         fprintf(stderr,
@@ -905,7 +905,7 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
     Bu8 cbuf = {};
     call(u8bMap, cbuf, 1UL << 20);
     u8 ot = 0;
-    ok64 go = KEEPGetExact(k, &commit_sha, cbuf, &ot);
+    ok64 go = KEEPGetExact(&commit_sha, cbuf, &ot);
     if (go != OK || ot != DOG_OBJ_COMMIT) {
         u8bUnMap(cbuf);
         return go == OK ? SNIFFFAIL : go;
@@ -964,7 +964,7 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
     call(RONutf8sDrain, &v_leaf, stem_dup);
     Bu8 ulog = {};
     call(u8bAllocate, ulog, 4UL << 20);
-    ok64 lr = KEEPTreeULog(k, tree_sha.data, 0, v_leaf, ulog);
+    ok64 lr = KEEPTreeULog(tree_sha.data, 0, v_leaf, ulog);
     if (lr != OK) { u8bFree(ulog); return lr; }
 
     //  Filter rows by the requested subtree prefix.  Path slice
@@ -994,7 +994,7 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
         }
         u8bReset(blob);
         u8 ot = 0;
-        if (KEEPGetExact(k, &leaf_sha, blob, &ot) != OK) continue;
+        if (KEEPGetExact(&leaf_sha, blob, &ot) != OK) continue;
 
         a_path(fp);
         a_dup(u8c, rr_s, reporoot);
@@ -1563,7 +1563,7 @@ ok64 SNIFFExec(cli *c) {
                 //  single front-door resolver (handles both full
                 //  40-hex shas and 6..39 hashlet prefixes).
                 sha1hex full = {};
-                ok64 rr = KEEPResolveHex(&KEEP, &full, frag);
+                ok64 rr = KEEPResolveHex(&full, frag);
                 if (rr != OK) {
                     fprintf(stderr,
                         "sniff: put: cannot resolve ?#%.*s\n",
@@ -1603,7 +1603,7 @@ ok64 SNIFFExec(cli *c) {
                     //  Canonicalise the hashlet/sha through the
                     //  single front-door resolver.
                     sha1hex full = {};
-                    ok64 rr = KEEPResolveHex(&KEEP, &full, frag);
+                    ok64 rr = KEEPResolveHex(&full, frag);
                     if (rr != OK) {
                         fprintf(stderr,
                             "sniff: put: cannot resolve ?%.*s#%.*s\n",

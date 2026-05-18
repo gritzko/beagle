@@ -122,13 +122,13 @@ void CAPORuns(u64cssp out);
 // Compact the LSM stack at the leaf branch dir, unlink merged
 // sources via DOGPupThinTail and write the merged run via
 // DOGPupCreate.  Mirrors KEEPCompact / dag_compact.
-ok64 CAPOCompact(spot *s);
+ok64 CAPOCompact(void);
 
 // Flush in-memory postings (s->entries) as a new puppy and run
 // CAPOCompact to keep the 1/8 invariant.  Called by the tip-walk
 // visitor when scratch exceeds CAPO_FLUSH_AT, and by SPOTClose at
 // end of run.
-ok64 CAPOFlushRun(spot *s);
+ok64 CAPOFlushRun(void);
 
 // Next available sequence number (max existing + 1)
 ok64 CAPONextSeqno(u64p seqno, u8csc dir);
@@ -159,13 +159,13 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
 
 // Compact all .spot.idx files into a single run at the leaf branch
 // dir.  Uses SPOT.puppies and writes to SPOT.leaf_branch.
-ok64 CAPOCompactAll(spot *s);
+ok64 CAPOCompactAll(void);
 
 // Merge all .wNNNN/ worker subdirs under the leaf dir into a single
 // run at <leafdir>/, then rm -rf each worker subdir. Called by spot
 // get's parent after waitpid'ing fork-workers. Adds the merged run
 // to s->puppies and refreshes the view.
-ok64 CAPOMergeWorkers(spot *s, u32 nw);
+ok64 CAPOMergeWorkers(u32 nw);
 
 // Resolve spot index dir from reporoot (<reporoot>/.be)
 ok64 CAPOResolveDir(path8b out, u8csc reporoot);
@@ -323,7 +323,7 @@ ok64 SPOTExec(cli *c);
 //  hash, and write a fresh BLOBFN row for the dedup memo.
 //
 //  Used by `spot get URI` under the new arrangement (DOG.md §10a).
-ok64 SPOTIndexFromTips(keeper *k, uricp u);
+ok64 SPOTIndexFromTips(uricp u);
 
 void SPOTClose(void);
 

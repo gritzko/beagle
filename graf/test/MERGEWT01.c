@@ -59,7 +59,7 @@ static ok64 make_single_leaf_tree(keep_pack *p,
                                   sha1 *blob_out, sha1 *tree_out) {
     sane(p && blob_out && tree_out);
     u8cs cb = {(u8cp)content, (u8cp)content + strlen(content)};
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_BLOB, cb, 0, blob_out);
+    call(KEEPPackFeed, p, DOG_OBJ_BLOB, cb, 0, blob_out);
     a_pad(u8, tb, 256);
     a_cstr(prefix, "100644 ");
     call(u8bFeed, tb, prefix);
@@ -69,7 +69,7 @@ static ok64 make_single_leaf_tree(keep_pack *p,
     a_rawc(ss, *blob_out);
     call(u8bFeed, tb, ss);
     a_dup(u8c, tc, u8bData(tb));
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_TREE, tc, 0, tree_out);
+    call(KEEPPackFeed, p, DOG_OBJ_TREE, tc, 0, tree_out);
     done;
 }
 
@@ -107,7 +107,7 @@ static ok64 commit_one(keep_pack *p,
     u8bFeed(cb, hs);
 
     a_dup(u8c, cd, u8bData(cb));
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_COMMIT, cd, 0, out_sha);
+    call(KEEPPackFeed, p, DOG_OBJ_COMMIT, cd, 0, out_sha);
     u8bFree(cb);
     done;
 }
@@ -154,7 +154,7 @@ ok64 test_clean_merge(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     sha1 c_base = {}, c_tgt = {};
@@ -163,11 +163,11 @@ ok64 test_clean_merge(void) {
     call(commit_one_file, &p, "f.txt",
          "alpha\nbeta\nGAMMA\n", &c_base,        "tgt",  1700000100L, &c_tgt);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     //  Build the DAG so build_tip_weave can walk history.
     call(GRAFOpen, &g_home, YES);
-    call(GRAFIndex, &KEEP);
+    call(GRAFIndex);
 
     //  wt = base + edit on line 1 (alpha → ALPHA).
     call(write_wt, "f.txt", "ALPHA\nbeta\ngamma\n");
@@ -195,7 +195,7 @@ ok64 test_wt_absent(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     sha1 c_base = {}, c_tgt = {};
@@ -204,9 +204,9 @@ ok64 test_wt_absent(void) {
     call(commit_one_file, &p, "f.txt",
          "one\nTWO\n", &c_base,         "tgt",  1700000100L, &c_tgt);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
     call(GRAFOpen, &g_home, YES);
-    call(GRAFIndex, &KEEP);
+    call(GRAFIndex);
 
     //  No write_wt — file is absent on disk.
     Bu8 out = {};
@@ -232,7 +232,7 @@ ok64 test_wt_clean_drift(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     sha1 c_base = {}, c_tgt = {};
@@ -241,9 +241,9 @@ ok64 test_wt_clean_drift(void) {
     call(commit_one_file, &p, "f.txt",
          "x\nY\n", &c_base,         "tgt",  1700000100L, &c_tgt);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
     call(GRAFOpen, &g_home, YES);
-    call(GRAFIndex, &KEEP);
+    call(GRAFIndex);
 
     //  wt content matches base — graf_fold_wt_layer in BLAME's pattern
     //  byte-dedups, but our extracted helper does not (yet).  Even so,
@@ -276,7 +276,7 @@ ok64 test_conflict(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     sha1 c_base = {}, c_tgt = {};
@@ -285,9 +285,9 @@ ok64 test_conflict(void) {
     call(commit_one_file, &p, "f.txt",
          "one\nBETA-tgt\nthree\n", &c_base, "tgt",  1700000100L, &c_tgt);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
     call(GRAFOpen, &g_home, YES);
-    call(GRAFIndex, &KEEP);
+    call(GRAFIndex);
 
     //  wt edits the same line, differently from tgt.
     call(write_wt, "f.txt", "one\nBETA-wt\nthree\n");

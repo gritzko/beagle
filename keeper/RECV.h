@@ -100,7 +100,7 @@ void RECVCloseRequest(recv_reqp req);
 //  request's flush; they are prepended to whatever is drained from fd.
 //  An empty stream (e.g. delete-only updates, no objects) is allowed
 //  and returns OK with no on-disk state changed.
-ok64 RECVIngestPack(keeper *k, int in_fd, u8csc tail);
+ok64 RECVIngestPack(int in_fd, u8csc tail);
 
 //  Fast-forward check + REFS update for each parsed update.
 //
@@ -115,7 +115,7 @@ ok64 RECVIngestPack(keeper *k, int in_fd, u8csc tail);
 //  The whole call returns OK even when individual updates are
 //  rejected — each ng is reflected in its `result` field.  Hard
 //  RECVFAIL is returned only for I/O / encoding failures.
-ok64 RECVApplyUpdates(keeper *k, refadvcp adv, recv_reqcp req,
+ok64 RECVApplyUpdates(refadvcp adv, recv_reqcp req,
                       recv_resultp out_results, u32 cap, u32p out_n);
 
 //  Emit the receive-pack response over pkt-line:
@@ -128,6 +128,6 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
 //  Top-level orchestration matching WIREServeUpload's contract.
 //  Reads request, ingests pack, applies updates, emits response.
 //  Refs advertisement is emitted by the caller before this is called.
-ok64 RECVServe(int in_fd, int out_fd, keeper *k, refadvcp adv);
+ok64 RECVServe(int in_fd, int out_fd, refadvcp adv);
 
 #endif

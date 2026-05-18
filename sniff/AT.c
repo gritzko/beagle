@@ -695,14 +695,14 @@ static void at_collect_baseline(u8bp rows_out, u8bp gitlinks_out) {
     sha1 commit_sha = {};
     if (sha1FromSha1hex(&commit_sha, &hex) != OK) return;
     sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) return;
+    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) return;
 
     //  Verb stem irrelevant here; we read `kind` via `ok64Lit` later.
     a_cstr(stem_name, "base");
     a_dup(u8c, stem_d, stem_name);
     ron60 stem = 0;
     if (RONutf8sDrain(&stem, stem_d) != OK) return;
-    if (KEEPTreeULog(&KEEP, tree_sha.data, 0, stem, rows_out) != OK)
+    if (KEEPTreeULog(tree_sha.data, 0, stem, rows_out) != OK)
         return;
 
     //  Filter rows for gitlinks (kind == 's').  Append `<path>/\n`

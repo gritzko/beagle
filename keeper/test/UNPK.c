@@ -219,7 +219,7 @@ static ok64 run_toy(char const *recipe) {
     Bwh128 entries = {};
     call(wh128bAllocate, entries, hdr.count ? hdr.count * 2 : 16);
     unpk_stats st = {};
-    call(UNPKIndex, &KEEP, &in, entries, &st);
+    call(UNPKIndex, &in, entries, &st);
 
     //  Per-event sanity: emit counts match object types in the pack.
     want(ec.nblobs + ec.ntrees + ec.ncommits <= hdr.count);

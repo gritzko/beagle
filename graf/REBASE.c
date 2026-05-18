@@ -102,7 +102,7 @@ static int pid_leaf_cmp(void const *a_, void const *b_) {
 
 static ok64 pid_collect(sha1 const *tree_sha, pid_collector *c) {
     sane(tree_sha && c);
-    ok64 o = WALKTreeLazy(&KEEP, tree_sha->data, pid_visit, c);
+    ok64 o = WALKTreeLazy(tree_sha->data, pid_visit, c);
     if (o == WALKSTOP && c->err != OK) return c->err;
     if (o != OK && o != WALKSTOP) return o;
     qsort(c->leaves, c->n, sizeof(pid_leaf), pid_leaf_cmp);
@@ -203,7 +203,7 @@ u64 GRAFPatchId(u8csc commit_body) {
     Bu8 pbuf = {};
     if (u8bAllocate(pbuf, REBASE_OBJ_BUF) != OK) return 0;
     u8 ot = 0;
-    if (KEEPGetExact(&KEEP, &parent_sha, pbuf, &ot) != OK
+    if (KEEPGetExact(&parent_sha, pbuf, &ot) != OK
         || ot != DOG_OBJ_COMMIT) {
         u8bFree(pbuf); return 0;
     }
@@ -250,7 +250,7 @@ static ok64 rebase_blob_at(u8 *const *buf, sha1 const *sha) {
     sane(buf);
     if (sha1empty(sha)) return OK;  //  treat as empty
     u8 t = 0;
-    ok64 o = KEEPGetExact(&KEEP, sha, buf, &t);
+    ok64 o = KEEPGetExact(sha, buf, &t);
     if (o == KEEPNONE) return OK;
     if (o != OK) return o;
     if (t != DOG_OBJ_BLOB) return KEEPFAIL;
@@ -294,7 +294,7 @@ static ok64 tm_parse(sha1 const *tree_sha, tm_set *out,
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, REBASE_OBJ_BUF);
     u8 ot = 0;
-    ok64 o = KEEPGetExact(&KEEP, tree_sha, tbuf, &ot);
+    ok64 o = KEEPGetExact(tree_sha, tbuf, &ot);
     if (o != OK) { u8bFree(tbuf); return o; }
     if (ot != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
 
@@ -690,7 +690,7 @@ static ok64 rebase_walk_chain(sha1 const *child_tip, sha1 const *base_old,
         Bu8 cbuf = {};
         if (u8bAllocate(cbuf, REBASE_OBJ_BUF) != OK) { return GRAFFAIL; }
         u8 ot = 0;
-        ok64 o = KEEPGetExact(&KEEP, &cur, cbuf, &ot);
+        ok64 o = KEEPGetExact(&cur, cbuf, &ot);
         if (o != OK || ot != DOG_OBJ_COMMIT) {
             u8bFree(cbuf); { return GRAFFAIL; }
         }
@@ -723,7 +723,7 @@ static ok64 rebase_collect_pids(sha1 const *base_new, u64 *pids, u32 *n,
         Bu8 cbuf = {};
         if (u8bAllocate(cbuf, REBASE_OBJ_BUF) != OK) { return GRAFFAIL; }
         u8 ot = 0;
-        ok64 o = KEEPGetExact(&KEEP, &cur, cbuf, &ot);
+        ok64 o = KEEPGetExact(&cur, cbuf, &ot);
         if (o != OK || ot != DOG_OBJ_COMMIT) { u8bFree(cbuf); break; }
         a_dup(u8c, cbody, u8bDataC(cbuf));
         u64 pid = GRAFPatchId(cbody);
@@ -869,7 +869,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
             { ret = GRAFFAIL; break; }
         }
         u8 ot = 0;
-        if (KEEPGetExact(&KEEP, cmt, cbuf, &ot) != OK
+        if (KEEPGetExact(cmt, cbuf, &ot) != OK
             || ot != DOG_OBJ_COMMIT) {
             u8bFree(cbuf); { ret = GRAFFAIL; break; }
         }
@@ -898,7 +898,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
                 u8bFree(cbuf); { ret = GRAFFAIL; break; }
             }
             u8 pt = 0;
-            if (KEEPGetExact(&KEEP, &parent_sha, pbuf, &pt) != OK
+            if (KEEPGetExact(&parent_sha, pbuf, &pt) != OK
                 || pt != DOG_OBJ_COMMIT) {
                 u8bFree(pbuf); u8bFree(cbuf); { ret = GRAFFAIL; break; }
             }
@@ -929,7 +929,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
                 }
                 hbuf_owned = YES;
                 u8 ht = 0;
-                if (KEEPGetExact(&KEEP, &head, hbuf, &ht) != OK
+                if (KEEPGetExact(&head, hbuf, &ht) != OK
                     || ht != DOG_OBJ_COMMIT) {
                     u8bFree(hbuf); u8bFree(cbuf); { ret = GRAFFAIL; break; }
                 }
@@ -1026,7 +1026,7 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, REBASE_OBJ_BUF);
     u8 ct = 0;
-    ok64 o = KEEPGetExact(k, commit_sha, cbuf, &ct);
+    ok64 o = KEEPGetExact(commit_sha, cbuf, &ct);
     if (o != OK) { u8bFree(cbuf); return o; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
 
@@ -1044,13 +1044,13 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
         u8cp slash = rest[0];
         while (slash < rest[1] && *slash != '/') slash++;
         u8cs name = {rest[0], slash};
-        ok64 s = GRAFTreeStep(k, &cur, name);
+        ok64 s = GRAFTreeStep(&cur, name);
         if (s != OK) return s;
         rest[0] = (slash < rest[1]) ? slash + 1 : slash;
     }
 
     u8 btype = 0;
-    call(KEEPGetExact, k, &cur, buf, &btype);
+    call(KEEPGetExact, &cur, buf, &btype);
     if (btype != DOG_OBJ_BLOB) return KEEPNONE;
     done;
 }

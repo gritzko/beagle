@@ -247,7 +247,7 @@ ok64 GRAFExec(cli *c) {
     if ($eq(c->verb, v_index)) {
         //  Pull every keeper object through graf's DOG.md §8 streaming
         //  ingest: COMMIT → TREE → BLOB → finish.  Idempotent.
-        ret = GRAFIndex(&KEEP);
+        ret = GRAFIndex();
 
     } else if ($eq(c->verb, v_get)) {
         //  Two shapes share the verb:
@@ -288,7 +288,7 @@ ok64 GRAFExec(cli *c) {
             //  worktree's current tip (via `--at` parked in cur_sha).
             uri empty = {};
             uri *u = (c->nuris >= 1) ? &c->uris[0] : &empty;
-            ret = GRAFIndexFromTips(&KEEP, u);
+            ret = GRAFIndexFromTips(u);
         }
 
     } else if ($eq(c->verb, v_blame)) {
@@ -306,10 +306,10 @@ ok64 GRAFExec(cli *c) {
         u64 tip_h = 0;
         {
             sha1 tip = {};
-            if (GRAFResolveTip(&KEEP, &c->uris[0], &tip) == OK)
+            if (GRAFResolveTip(&c->uris[0], &tip) == OK)
                 tip_h = WHIFFHashlet60(&tip);
         }
-        ret = GRAFBlame(&KEEP, path, tip_h, reporoot);
+        ret = GRAFBlame(path, tip_h, reporoot);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_diff)) {
@@ -358,9 +358,9 @@ ok64 GRAFExec(cli *c) {
                 (void)GRAFSwitchBranch(KEEP.h, wt);
             }
             if (!$empty(path)) {
-                ret = GRAFWeaveDiff(&KEEP, path, reporoot, wf, wt);
+                ret = GRAFWeaveDiff(path, reporoot, wf, wt);
             } else {
-                ret = GRAFDiffTreeRefs(&KEEP, wf, wt, reporoot);
+                ret = GRAFDiffTreeRefs(wf, wt, reporoot);
             }
         } else {
             if ($empty(base_hex)) {
@@ -382,18 +382,18 @@ ok64 GRAFExec(cli *c) {
                 u8cs branch = {};
                 u8csMv(branch, u->query);
                 if (!$empty(path)) {
-                    ret = GRAFWeaveDiff(&KEEP, path, reporoot,
+                    ret = GRAFWeaveDiff(path, reporoot,
                                         branch, base_hex);
                 } else {
-                    ret = GRAFDiffTreeRefs(&KEEP, branch, base_hex,
+                    ret = GRAFDiffTreeRefs(branch, base_hex,
                                            reporoot);
                 }
             } else {
                 //  No query → wt vs base (weave-based).
                 if (!$empty(path)) {
-                    ret = GRAFDiffWtFile(&KEEP, path, base_h40, reporoot);
+                    ret = GRAFDiffWtFile(path, base_h40, reporoot);
                 } else {
-                    ret = GRAFDiffWtTree(&KEEP, base_h40, base_hex,
+                    ret = GRAFDiffWtTree(base_h40, base_hex,
                                          reporoot);
                 }
             }
@@ -414,7 +414,7 @@ ok64 GRAFExec(cli *c) {
         }
         pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         graf_pager_plain_text();
-        ret = GRAFLog(&KEEP, &c->uris[0]);
+        ret = GRAFLog(&c->uris[0]);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_head)) {
@@ -425,7 +425,7 @@ ok64 GRAFExec(cli *c) {
         uri *hu = (c->nuris >= 1) ? &c->uris[0] : &empty;
         pid_t pager = graf_start_pager(c->tty_out, force_tlv);
         graf_pager_plain_text();
-        ret = GRAFHead(&KEEP, hu);
+        ret = GRAFHead(hu);
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_weave)) {
@@ -451,7 +451,7 @@ ok64 GRAFExec(cli *c) {
         }
         u8cs path = {};
         graf_uri_path(path, u);
-        ret = GRAFWeaveDiff(&KEEP, path, reporoot, wf, wt);
+        ret = GRAFWeaveDiff(path, reporoot, wf, wt);
         graf_stop_pager(pager);
 
     } else {

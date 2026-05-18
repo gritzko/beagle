@@ -133,7 +133,7 @@ ok64 WIREtest_empty() {
     call(KEEPOpen, &h, YES);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
 
     //  Build a request that's just "done\n" (no wants).
     Bu8 reqbuf = {};
@@ -153,7 +153,7 @@ ok64 WIREtest_empty() {
     pstr_seg segs[4] = {};
     int      fds [4] = {-1,-1,-1,-1};
     u32      n = 0;
-    call(WIREBuildSegments, &KEEP, &adv, &req, segs, fds, 4, &n);
+    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
     want(n == 0);
     for (int i = 0; i < 4; i++) want(fds[i] == -1);
 
@@ -174,13 +174,13 @@ static ok64 add_blob_pack(sha1 *out_sha, u32 *out_file_id,
                           char const *content) {
     sane(out_sha && out_file_id);
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     a_cstr(blob_s, content);
     sha1 sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, blob_s, 0, &sha);
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, blob_s, 0, &sha);
     *out_sha     = sha;
     *out_file_id = p.file_id;
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
     done;
 }
 
@@ -204,7 +204,7 @@ ok64 WIREtest_single_want() {
     want(kv32bDataLen(KEEP.packs) == 1);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
 
     wire_req req = {};
     req.nwants = 1;
@@ -213,7 +213,7 @@ ok64 WIREtest_single_want() {
     pstr_seg segs[4] = {};
     int      fds [4] = {-1,-1,-1,-1};
     u32      n = 0;
-    call(WIREBuildSegments, &KEEP, &adv, &req, segs, fds, 4, &n);
+    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
     want(n == 1);
     want(fds[0] >= 0);
     want(segs[0].fd == fds[0]);
@@ -257,7 +257,7 @@ ok64 WIREtest_have_ff() {
     want(fid_b == 1);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
 
     wire_req req = {};
     req.nwants = 1;
@@ -268,7 +268,7 @@ ok64 WIREtest_have_ff() {
     pstr_seg segs[4] = {};
     int      fds [4] = {-1,-1,-1,-1};
     u32      n = 0;
-    call(WIREBuildSegments, &KEEP, &adv, &req, segs, fds, 4, &n);
+    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
     want(n == 1);
     want(fds[0] >= 0);
     //  Watermark must skip past the first pack — segment offset > 12.
@@ -302,7 +302,7 @@ ok64 WIREtest_nosha() {
     call(add_blob_pack, &known, &fid, "real blob\n");
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
 
     wire_req req = {};
     req.nwants = 1;
@@ -313,7 +313,7 @@ ok64 WIREtest_nosha() {
     pstr_seg segs[4] = {};
     int      fds [4] = {-1,-1,-1,-1};
     u32      n = 0;
-    ok64 rc = WIREBuildSegments(&KEEP, &adv, &req, segs, fds, 4, &n);
+    ok64 rc = WIREBuildSegments(&adv, &req, segs, fds, 4, &n);
     want(rc == WIRENOSHA);
 
     REFADVClose(&adv);
@@ -431,7 +431,7 @@ ok64 WIREtest_end_to_end() {
     call(add_blob_pack, &blob_sha, &fid, "end to end\n");
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
 
     wire_req req = {};
     req.nwants = 1;
@@ -440,7 +440,7 @@ ok64 WIREtest_end_to_end() {
     pstr_seg segs[4] = {};
     int      fds [4] = {-1,-1,-1,-1};
     u32      n = 0;
-    call(WIREBuildSegments, &KEEP, &adv, &req, segs, fds, 4, &n);
+    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
     want(n == 1);
 
     char outpath[] = "/tmp/wire-e2e-pack-XXXXXX";

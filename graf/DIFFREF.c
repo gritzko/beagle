@@ -88,21 +88,6 @@ static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
     return NULL;
 }
 
-// --- Shared: load blob at ref+path via KEEPGetByURI ---------------
-
-static ok64 diffref_load_blob(Bu8 out, keeper *k, u8cs path, u8cs ref) {
-    sane(k);
-    a_pad(u8, ubuf, DIFFREF_PATH_MAX + 128);
-    if (!$empty(path)) call(u8bFeed, ubuf, path);
-    call(diffref_compose_ref_uri, ubuf, ref);
-    a_dup(u8c, udata, u8bData(ubuf));
-    uri target = {};
-    call(URIutf8Drain, udata, &target);
-    u8bReset(out);
-    call(KEEPGetByURI, k, &target, out);
-    done;
-}
-
 // --- Shared: mmap wt file (ok to fail with FILEOPEN → empty) ------
 
 static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
@@ -181,12 +166,13 @@ ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
 
 // --- wt-vs-base file: thin wrapper around GRAFDiff2Layer -----------
 
-ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot) {
-    sane(k && $ok(filepath) && $ok(reporoot));
+ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot) {
+    sane($ok(filepath) && $ok(reporoot));
+    keeper *k = &KEEP;
 
     Bu8 base_buf = {};
     call(u8bMap, base_buf, 16UL << 20);
-    ok64 bo = GRAFBlobAtCommit(base_buf, k, base_h40, filepath);
+    ok64 bo = GRAFBlobAtCommit(base_buf, base_h40, filepath);
     u8cs from_data = {};
     if (bo == OK) {
         a_dup(u8c, fd, u8bData(base_buf));
@@ -343,15 +329,16 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
 
     //  Real diff.  GRAFDiffWtFile handles the empty-base / empty-wt
     //  edge cases internally (deletion / addition both emit hunks).
-    (void)GRAFDiffWtFile(c->k, path, c->base_h40, c->reporoot);
+    (void)GRAFDiffWtFile(path, c->base_h40, c->reporoot);
     return OK;
 }
 
 #define DIFFREF_WT_BASE_BUF (1UL << 20)
 #define DIFFREF_WT_WT_BUF   (1UL << 20)
 
-ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
-    sane(k && $ok(base_hex) && $ok(reporoot));
+ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
+    sane($ok(base_hex) && $ok(reporoot));
+    keeper *k = &KEEP;
 
     //  Resolve base hex to its tree sha.
     a_pad(u8, ubuf, 256);
@@ -360,7 +347,7 @@ ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
     uri target = {};
     call(URIutf8Drain, udata, &target);
     sha1 base_tree = {};
-    call(KEEPResolveTree, k, &target, &base_tree);
+    call(KEEPResolveTree, &target, &base_tree);
 
     a_cstr(s_base, "base");
     a_cstr(s_wt,   "wt");
@@ -380,7 +367,7 @@ ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot) {
     }
 
     //  Base side: keeper tree → ULOG rows (`<ts>\t<verb>\t<path>?<mode>#<hex-sha>\n`).
-    ok64 to = KEEPTreeULog(k, base_tree.data, 0, v_base, bu);
+    ok64 to = KEEPTreeULog(base_tree.data, 0, v_base, bu);
     if (to != OK) { u8bUnMap(bu); u8bUnMap(wu); return to; }
 
     //  Wt side: filesystem walk → ULOG rows (no sha; computed on demand).
@@ -433,7 +420,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
     uri ftarget = {};
     call(URIutf8Drain, fdata, &ftarget);
     diffref_collect_ctx fctx = {.set = from_set};
-    call(KEEPLsFiles, k, &ftarget, diffref_collect_visit, &fctx);
+    call(KEEPLsFiles, &ftarget, diffref_collect_visit, &fctx);
 
     // --- 2. Walk `to`, collect ---
     a_pad(u8, tbuf, 256);
@@ -442,7 +429,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
     uri ttarget = {};
     call(URIutf8Drain, tdata, &ttarget);
     diffref_collect_ctx tctx = {.set = to_set};
-    call(KEEPLsFiles, k, &ttarget, diffref_collect_visit, &tctx);
+    call(KEEPLsFiles, &ttarget, diffref_collect_visit, &tctx);
 
     if (from_set->overflow || to_set->overflow) {
         fprintf(stderr, "graf: diff-tree: files skipped (>%u limit)\n",
@@ -462,14 +449,14 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         if (f) {
             u8bReset(old_buf);
             u8 ot = 0;
-            if (KEEPGetExact(k, &f->sha, old_buf, &ot) == OK && ot == DOG_OBJ_BLOB) {
+            if (KEEPGetExact(&f->sha, old_buf, &ot) == OK && ot == DOG_OBJ_BLOB) {
                 a_dup(u8c, old_dup, u8bData(old_buf));
                 u8csMv(old_data, old_dup);
             }
         }
         u8bReset(new_buf);
         u8 nt = 0;
-        if (KEEPGetExact(k, &to_set->v[i].sha, new_buf, &nt) == OK && nt == DOG_OBJ_BLOB) {
+        if (KEEPGetExact(&to_set->v[i].sha, new_buf, &nt) == OK && nt == DOG_OBJ_BLOB) {
             a_dup(u8c, new_dup, u8bData(new_buf));
             u8csMv(new_data, new_dup);
         }
@@ -487,7 +474,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
 
         u8bReset(old_buf);
         u8 ot = 0;
-        if (KEEPGetExact(k, &from_set->v[i].sha, old_buf, &ot) != OK || ot != DOG_OBJ_BLOB)
+        if (KEEPGetExact(&from_set->v[i].sha, old_buf, &ot) != OK || ot != DOG_OBJ_BLOB)
             continue;
         a_dup(u8c, old_data, u8bData(old_buf));
         u8cs new_data = {};
@@ -498,8 +485,9 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
     done;
 }
 
-ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot) {
-    sane(k && $ok(from) && $ok(to));
+ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot) {
+    sane($ok(from) && $ok(to));
+    keeper *k = &KEEP;
     (void)reporoot;
 
     //  Caller-owned storage so cleanup runs on every error path the

@@ -10,12 +10,12 @@
 #include "graf/DAG.h"
 #include "dog/git/GIT.h"
 
-ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
-    sane(k && cur);
+ok64 GRAFTreeStep(sha1 *cur, u8cs name) {
+    sane(cur);
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, 1UL << 20);
     u8 otype = 0;
-    ok64 o = KEEPGetExact(k, cur, tbuf, &otype);
+    ok64 o = KEEPGetExact(cur, tbuf, &otype);
     if (o != OK) { u8bFree(tbuf); return o; }
     if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
 
@@ -34,14 +34,13 @@ ok64 GRAFTreeStep(keeper *k, sha1 *cur, u8cs name) {
     return result;
 }
 
-ok64 GRAFBlobAtCommit(u8bp buf, keeper *k,
-                      u64 commit_hashlet60, u8cs filepath) {
-    sane(buf && k);
+ok64 GRAFBlobAtCommit(u8bp buf, u64 commit_hashlet60, u8cs filepath) {
+    sane(buf);
 
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 o = KEEPGet(k, commit_hashlet60,
+    ok64 o = KEEPGet(commit_hashlet60,
                      DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
 
@@ -68,13 +67,13 @@ ok64 GRAFBlobAtCommit(u8bp buf, keeper *k,
         u8cp slash = rest[0];
         while (slash < rest[1] && *slash != '/') slash++;
         u8cs name = {rest[0], slash};
-        ok64 s = GRAFTreeStep(k, &cur, name);
+        ok64 s = GRAFTreeStep(&cur, name);
         if (s != OK) return s;
         rest[0] = (slash < rest[1]) ? slash + 1 : slash;
     }
 
     u8 btype = 0;
-    call(KEEPGetExact, k, &cur, buf, &btype);
+    call(KEEPGetExact, &cur, buf, &btype);
     if (btype != DOG_OBJ_BLOB) return KEEPNONE;
     done;
 }

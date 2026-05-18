@@ -42,14 +42,13 @@ con ok64 RESOLVEFAIL = 0x6e30dd2253ca495;  // malformed token / lookup error
 //  Resolve `token` to a 40-byte commit sha.  Writes the canonical sha
 //  into `*out` on success.  On miss returns RESOLVENONE; on hard
 //  failure returns RESOLVEFAIL or the underlying keeper/REFS error.
-ok64 KEEPResolveRef(keeper *k, sha1 *out,
-                    u8cs token, u8cs cur_branch);
+ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch);
 
 //  Convenience wrapper for callers that take a user-typed hex token
 //  (full 40-hex sha OR 6..39 hashlet prefix) and need the canonical
 //  40-char ASCII form.  Composes KEEPResolveRef + sha1hexFromSha1;
 //  passes empty cur_branch (hex tokens are not relative).  Returns
 //  RESOLVENONE on miss, RESOLVEFAIL on malformed input.
-ok64 KEEPResolveHex(keeper *k, sha1hex *out, u8cs token);
+ok64 KEEPResolveHex(sha1hex *out, u8cs token);
 
 #endif

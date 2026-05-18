@@ -99,7 +99,7 @@ static ok64 graf_feed_type(keeper *k, u8 type, b8 sort_by_val, Bu8 body) {
     for (size_t i = 0; i < n; i++) {
         u8bReset(body);
         u8 ot = 0;
-        ok64 o = KEEPGet(k, ents[i].hashlet60, 15, body, &ot);
+        ok64 o = KEEPGet(ents[i].hashlet60, 15, body, &ot);
         if (o != OK) continue;
         if (ot != type) continue;    //  hashlet collision — skip
         u8cs bs = {u8bDataHead(body), u8bIdleHead(body)};
@@ -150,7 +150,7 @@ static ok64 graf_walk_from_tip(keeper *k, u64 tip_h,
 
         u8bReset(body);
         u8 ot = 0;
-        if (KEEPGet(k, h60, DAG_H60_HEXLEN, body, &ot) != OK) continue;
+        if (KEEPGet(h60, DAG_H60_HEXLEN, body, &ot) != OK) continue;
         if (ot != DOG_OBJ_COMMIT) continue;
 
         a_dup(u8c, bs, u8bData(body));
@@ -181,8 +181,9 @@ static ok64 graf_walk_from_tip(keeper *k, u64 tip_h,
     return rc;
 }
 
-ok64 GRAFIndexFromTips(keeper *k, uricp u) {
-    sane(k && u);
+ok64 GRAFIndexFromTips(uricp u) {
+    sane(u);
+    keeper *k = &KEEP;
 
     //  Promote a 40-hex `?<sha>` query or `<sha>` path into the
     //  fragment slot so GRAFResolveTip's first branch (fragment
@@ -228,7 +229,7 @@ ok64 GRAFIndexFromTips(keeper *k, uricp u) {
     //  entirely on a fresh empty store).  Then this can hard-fail
     //  on resolution errors again.
     sha1 tip = {};
-    if (GRAFResolveTip(k, &probe, &tip) != OK) done;
+    if (GRAFResolveTip(&probe, &tip) != OK) done;
     u64 tip_h = WHIFFHashlet60(&tip);
     if (tip_h == 0) done;
 
@@ -317,8 +318,9 @@ static ok64 graf_index_remote_cb(keep_remotecp r, void *ctx) {
 //  puppies — is preserved as a belt-and-braces pass after the tip
 //  walks, so any commit whose tip-pointer was already pruned but
 //  whose pack is still loaded still gets indexed.
-ok64 GRAFIndex(keeper *k) {
-    sane(k);
+ok64 GRAFIndex(void) {
+    sane(YES);
+    keeper *k = &KEEP;
 
     Bu8 body = {};
     call(u8bMap, body, GRAF_INGEST_BUFSZ);
@@ -338,9 +340,9 @@ ok64 GRAFIndex(keeper *k) {
     };
 
     //  Local-branch tips first (typical fresh commits).
-    (void)KEEPEachTip(k, graf_index_local_cb, &ctx);
+    (void)KEEPEachTip(graf_index_local_cb, &ctx);
     //  Remote-tracking tips (commits fetched via `be head` etc.).
-    (void)KEEPEachRemote(k, graf_index_remote_cb, &ctx);
+    (void)KEEPEachRemote(graf_index_remote_cb, &ctx);
 
     //  Belt-and-braces LSM scan for any orphan COMMIT objects whose
     //  tip-pointer is no longer present but whose pack remains loaded.

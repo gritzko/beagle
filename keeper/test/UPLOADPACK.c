@@ -62,12 +62,12 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
     call(KEEPOpen, &h, YES);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     a_cstr(blob_s, "upload-pack fixture\n");
     sha1 sha = {};
-    call(KEEPPackFeed, &KEEP, &p,
+    call(KEEPPackFeed, &p,
          KEEP_OBJ_BLOB, blob_s, 0, &sha);
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     //  Encode sha → 40 hex chars + NUL.
     u8s hexs = {(u8 *)out_hex_41, (u8 *)out_hex_41 + 40};

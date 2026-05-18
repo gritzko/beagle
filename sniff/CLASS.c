@@ -43,7 +43,7 @@ static ok64 class_baseline_tree(sha1 *out, b8 *have_out) {
     sha1 commit_sha = {};
     if (sha1FromSha1hex(&commit_sha, &hex) != OK) return OK;
 
-    if (KEEPCommitTreeSha(&KEEP, &commit_sha, out) != OK) return OK;
+    if (KEEPCommitTreeSha(&commit_sha, out) != OK) return OK;
     *have_out = YES;
     done;
 }
@@ -257,7 +257,7 @@ ok64 SNIFFClassify(class_cb cb, void *ctx) {
     ok64 br = class_baseline_tree(&base_tree, &have_base);
     if (br != OK) { CLASS_FREE_ALL(); return br; }
     if (have_base) {
-        ok64 to = KEEPTreeULog(&KEEP, base_tree.data, 0, v_base, bu);
+        ok64 to = KEEPTreeULog(base_tree.data, 0, v_base, bu);
         if (to != OK) { CLASS_FREE_ALL(); return to; }
     }
     ok64 wr = SNIFFWtULog(reporoot, v_wt, wu);

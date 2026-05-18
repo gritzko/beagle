@@ -96,7 +96,7 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     Bu8 cbuf = {};
     if (u8bMap(cbuf, 1UL << 20) != OK) return;
     u8 obj_type = 0;
-    if (KEEPGet(k, commit_hashlet,
+    if (KEEPGet(commit_hashlet,
                 DAG_H60_HEXLEN, cbuf, &obj_type) != OK ||
         obj_type != DOG_OBJ_COMMIT) {
         u8bUnMap(cbuf);
@@ -283,7 +283,7 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             continue;
 
         u8bReset(*cur_blob);
-        ok64 fo = GRAFBlobAtCommit(*cur_blob, k, commit_h, filepath);
+        ok64 fo = GRAFBlobAtCommit(*cur_blob, commit_h, filepath);
         if (fo != OK) continue;
 
         // Byte-level dedup safety net for non-anchors when the index
@@ -392,8 +392,9 @@ static ok64 blame_step_cb(u32 src_id, u64 commit_h, void *vctx) {
     done;
 }
 
-ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot) {
-    sane(k && $ok(filepath) && $ok(reporoot));
+ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
+    sane($ok(filepath) && $ok(reporoot));
+    keeper *k = &KEEP;
 
     call(GRAFArenaInit);
 
@@ -590,26 +591,27 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
     }
 
     sha1 cur = {};
-    call(KEEPResolveTree, k, &target, &cur);
+    call(KEEPResolveTree, &target, &cur);
 
     u8cs rest = {filepath[0], filepath[1]};
     while (!$empty(rest)) {
         u8cp slash = rest[0];
         while (slash < rest[1] && *slash != '/') slash++;
         u8cs name = {rest[0], slash};
-        call(GRAFTreeStep, k, &cur, name);
+        call(GRAFTreeStep, &cur, name);
         rest[0] = (slash < rest[1]) ? slash + 1 : slash;
     }
 
     u8 btype = 0;
-    call(KEEPGetExact, k, &cur, buf, &btype);
+    call(KEEPGetExact, &cur, buf, &btype);
     if (btype != DOG_OBJ_BLOB) fail(KEEPNONE);
     done;
 }
 
-ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
+ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to) {
-    sane(k && $ok(filepath));
+    sane($ok(filepath));
+    keeper *k = &KEEP;
     (void)reporoot;
 
     Bu8 from_buf = {}, to_buf = {};

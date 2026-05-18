@@ -110,14 +110,14 @@ static ok64 build_leaf_tree(keeper *k, keep_pack *p,
                              sha1 *tree_out) {
     sane(k && p && tree_out);
     sha1 bsha = {};
-    call(KEEPPackFeed, k, p, DOG_OBJ_BLOB, content, 0, &bsha);
+    call(KEEPPackFeed, p, DOG_OBJ_BLOB, content, 0, &bsha);
     a_pad(u8, tb, 256);
     call(u8bFeed, tb, mode_name);
     u8bFeed1(tb, 0);
     a_rawc(ss, bsha);
     call(u8bFeed, tb, ss);
     a_dup(u8c, tc, u8bData(tb));
-    call(KEEPPackFeed, k, p, DOG_OBJ_TREE, tc, 0, tree_out);
+    call(KEEPPackFeed, p, DOG_OBJ_TREE, tc, 0, tree_out);
     done;
 }
 
@@ -134,7 +134,7 @@ ok64 WALKtest2() {
     
     call(KEEPOpen, &h, YES);
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     //  This test feeds blobs before trees to exercise WALK against a
     //  hand-rolled tree hierarchy; that's non-canonical but the walker
     //  doesn't care.  Drop the intra-pack ordering check for the pack.
@@ -143,11 +143,11 @@ ok64 WALKtest2() {
     // Leaf blobs.
     a_cstr(hi_content, "hi\n");
     sha1 hi_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, hi_content, 0, &hi_sha);
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, hi_content, 0, &hi_sha);
 
     a_cstr(run_content, "#!/bin/sh\n");
     sha1 run_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, run_content, 0, &run_sha);
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, run_content, 0, &run_sha);
 
     // Inner "sub" tree.
     a_cstr(nested_mn, "100644 nested.txt");
@@ -177,14 +177,14 @@ ok64 WALKtest2() {
 
     a_dup(u8c, rtc, u8bData(rtb));
     sha1 root_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, rtc, 0, &root_sha);
+    call(KEEPPackFeed, &p, DOG_OBJ_TREE, rtc, 0, &root_sha);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     // Eager walk.  One root DIR visit, three files, one sub DIR.
     {
         w2_ctx c = {};
-        call(WALKTree, &KEEP, root_sha.data, w2_visit, &c);
+        call(WALKTree, root_sha.data, w2_visit, &c);
         want(c.n_entries == 5);
         want(c.n_files == 3);
         want(c.n_dirs == 2);
@@ -194,7 +194,7 @@ ok64 WALKtest2() {
     // Lazy walk — blobs empty.
     {
         w2_ctx c = {};
-        call(WALKTreeLazy, &KEEP, root_sha.data, w2_visit, &c);
+        call(WALKTreeLazy, root_sha.data, w2_visit, &c);
         want(c.n_entries == 5);
         want(c.n_files == 3);
         want(c.n_dirs == 2);
@@ -205,7 +205,7 @@ ok64 WALKtest2() {
     {
         w2_ctx c = {};
         strcpy(c.dir_to_skip, "sub");
-        call(WALKTreeLazy, &KEEP, root_sha.data, w2_visit, &c);
+        call(WALKTreeLazy, root_sha.data, w2_visit, &c);
         want(c.n_entries == 4);   // root, hello.txt, run.sh, sub (skipped)
         want(c.n_files == 2);
         want(c.n_dirs == 2);
@@ -244,17 +244,17 @@ ok64 WALKtest4() {
     call(KEEPOpen, &h, YES);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     a_cstr(hi_content, "hi\n");
     sha1 hi_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, hi_content, 0,
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, hi_content, 0,
          &hi_sha);
 
     a_cstr(run_content, "#!/bin/sh\n");
     sha1 run_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, run_content, 0,
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, run_content, 0,
          &run_sha);
 
     a_cstr(nested_mn, "100644 nested.txt");
@@ -263,7 +263,7 @@ ok64 WALKtest4() {
     call(build_leaf_tree, &KEEP, &p, nested_mn, nested_content, &sub_sha);
 
     sha1 nested_blob_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, nested_content, 0,
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, nested_content, 0,
          &nested_blob_sha);
 
     a_pad(u8, rtb, 512);
@@ -276,10 +276,10 @@ ok64 WALKtest4() {
 
     a_dup(u8c, rtc, u8bData(rtb));
     sha1 root_sha = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, rtc, 0,
+    call(KEEPPackFeed, &p, DOG_OBJ_TREE, rtc, 0,
          &root_sha);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     Bu8 ulog_buf = {};
     call(u8bAllocate, ulog_buf, 1UL << 16);
@@ -289,7 +289,7 @@ ok64 WALKtest4() {
     ron60 verb = 0;
     call(RONutf8sDrain, &verb, verb_dup);
 
-    call(KEEPTreeULog, &KEEP, root_sha.data, 0, verb, ulog_buf);
+    call(KEEPTreeULog, root_sha.data, 0, verb, ulog_buf);
 
     //  Drain back via the heap with one cursor.
     a_dup(u8c, view, u8bData(ulog_buf));

@@ -163,7 +163,7 @@ static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     sha1 commit_sha = {};
     if (sha1FromSha1hex(&commit_sha, &hex) != OK) return ULOGNONE;
 
-    return KEEPCommitTreeSha(&KEEP, &commit_sha, tree_sha_out);
+    return KEEPCommitTreeSha(&commit_sha, tree_sha_out);
 }
 
 // --- Per-path classification via SNIFFClassify ----------------------
@@ -614,7 +614,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         put_walk_ctx wc = {.ts = ts, .verb_put = verb_put,
                            .baseline_ts = base_ts, .err = OK};
         u8csMv(wc.reporoot, reporoot);
-        ok64 wo = WALKTreeLazy(&KEEP, tree_sha.data,
+        ok64 wo = WALKTreeLazy(tree_sha.data,
                                put_visit_tracked, &wc);
         if (wc.err != OK) return wc.err;
         if (wo != OK) return wo;

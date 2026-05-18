@@ -102,7 +102,7 @@ static ok64 keeper_status(keeper *k) {
 
 static ok64 keeper_import(keeper *k, u8cs path) {
     sane(k && $ok(path));
-    call(KEEPImport, k, path);
+    call(KEEPImport, path);
     done;
 }
 
@@ -110,7 +110,7 @@ static ok64 keeper_import(keeper *k, u8cs path) {
 
 static ok64 keeper_verify(keeper *k, u8cs hex) {
     sane(k && $ok(hex));
-    return KEEPVerify(k, hex);
+    return KEEPVerify(hex);
 }
 
 // --- Verb: ls-files ---
@@ -149,7 +149,7 @@ static ok64 keeper_lsfiles_visit(u8cs path, u8 kind, u8cp esha,
 
 static ok64 keeper_lsfiles(keeper *k, uricp target) {
     sane(k && target);
-    return KEEPLsFiles(k, target, keeper_lsfiles_visit, NULL);
+    return KEEPLsFiles(target, keeper_lsfiles_visit, NULL);
 }
 
 // --- Verb: refs ---
@@ -183,7 +183,7 @@ static ok64 keeper_tips_print_cb(keep_tipcp t, void *ctx) {
 static ok64 keeper_tips(keeper *k) {
     sane(k);
     int n = 0;
-    ok64 o = KEEPEachTip(k, keeper_tips_print_cb, &n);
+    ok64 o = KEEPEachTip(keeper_tips_print_cb, &n);
     if (o != OK && o != REFSNONE)
         fprintf(stderr, "keeper: tips: %s\n", ok64str(o));
     fprintf(stdout, "keeper: %d tip(s)\n", n);
@@ -272,7 +272,7 @@ ok64 KEEPGetRemote(uri *g) {
     //  one upload-pack session (multi-want).  See VERBS.md §HEAD —
     //  `be head ssh://origin?*` mirrors `git fetch`.
     if ($len(want_ref) == 1 && want_ref[0][0] == '*') {
-        ok64 fa = WIREFetchAll(k, remote_uri);
+        ok64 fa = WIREFetchAll(remote_uri);
         u8bUnMap(rarena);
         return fa;
     }
@@ -293,7 +293,7 @@ ok64 KEEPGetRemote(uri *g) {
         if (all_hex) {
             u64 hashlet = WHIFFHexHashlet60(want_ref);
             u64 val = 0;
-            if (KEEPLookup(k, hashlet, 40, &val) == OK) {
+            if (KEEPLookup(hashlet, 40, &val) == OK) {
                 u8bUnMap(rarena);
                 return OK;
             }
@@ -324,7 +324,7 @@ ok64 KEEPGetRemote(uri *g) {
         }
     }
 
-    ok64 fo = WIREFetch(k, remote_uri, want_ref);
+    ok64 fo = WIREFetch(remote_uri, want_ref);
     if (fo != OK) {
         //  Journal the failed fetch so recovery / audit tooling sees a
         //  `get_fail <peer-uri>?<branch>` row alongside the success
@@ -356,7 +356,7 @@ static ok64 keeper_get_object(keeper *k, u8cs prefix) {
     Bu8 out = {};
     call(u8bMap, out, 64UL << 20);
     u8 obj_type = 0;
-    ok64 o = KEEPGet(k, hashlet, hexlen, out, &obj_type);
+    ok64 o = KEEPGet(hashlet, hexlen, out, &obj_type);
     if (o == OK) {
         a_dup(u8c, data, u8bData(out));
         write(STDOUT_FILENO, data[0], u8csLen(data));
@@ -396,7 +396,7 @@ static ok64 keeper_get_blob(keeper *k, uri *g) {
     sane(k && g);
     Bu8 out = {};
     call(u8bAlloc, out, 64UL << 20);
-    ok64 go = KEEPGetByURI(k, g, out);
+    ok64 go = KEEPGetByURI(g, out);
     if (go == OK) {
         a_dup(u8c, data, u8bData(out));
         write(STDOUT_FILENO, data[0], u8csLen(data));
@@ -590,7 +590,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
             return KEEPFAIL;
         }
     }
-    ok64 pu = WIREPush(k, remote_uri, local_branch, &at_tip);
+    ok64 pu = WIREPush(remote_uri, local_branch, &at_tip);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 
@@ -770,7 +770,7 @@ static ok64 keeper_delete(keeper *k, cli *c) {
     a_dup(u8c, remote_uri, u8bDataC(ubuf));
 
     a_dup(u8c, branch, g->query);
-    ok64 pu = WIREPushDelete(k, remote_uri, branch);
+    ok64 pu = WIREPushDelete(remote_uri, branch);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 
@@ -808,8 +808,9 @@ static ok64 keeper_delete(keeper *k, cli *c) {
 
 // --- Entry ---
 
-ok64 KEEPExec(keeper *k, cli *c) {
-    sane(k && c);
+ok64 KEEPExec(cli *c) {
+    sane(c);
+    keeper *k = &KEEP;
 
     a_cstr(v_help,   "help");
     a_cstr(v_get,    "get");
@@ -837,7 +838,7 @@ ok64 KEEPExec(keeper *k, cli *c) {
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "keeper") == 0) {
             b8 tlv = CLIHas(c, "--tlv");
-            return KEEPProjDispatch(k, pu, tlv);
+            return KEEPProjDispatch(pu, tlv);
         }
     }
 

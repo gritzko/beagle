@@ -629,8 +629,9 @@ typedef struct {
     u8cs name;   //  slice into the per-call names_arena
 } wcli_advert_ref;
 
-ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
-    sane(k);
+ok64 WIREFetchAll(u8csc remote_uri) {
+    sane($ok(remote_uri));
+    keeper *k = &KEEP;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     int wfd = -1, rfd = -1;
@@ -750,7 +751,7 @@ ok64 WIREFetchAll(keeper *k, u8csc remote_uri) {
     close(wfd); wfd = -1;
 
     //  4. Stream-ingest the response packfile.
-    if (KEEPIngestStream(k, rfd) != OK) goto fa_close;
+    if (KEEPIngestStream(rfd) != OK) goto fa_close;
     close(rfd); rfd = -1;
 
     //  5. Record each ref locally.  Skip refs whose wire_to_be doesn't
@@ -795,8 +796,9 @@ fa_close:
     return rv;
 }
 
-ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref) {
-    sane(k);
+ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
+    sane($ok(remote_uri));
+    keeper *k = &KEEP;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     //  Empty want_ref → let wcli_match_advert pick the peer's HEAD or
@@ -842,7 +844,7 @@ ok64 WIREFetch(keeper *k, u8csc remote_uri, u8csc want_ref) {
     //  drops the trailing 20-byte SHA-1 + the embedded git PACK
     //  header.  No intermediate response/pack buffer.
     {
-        ok64 io = KEEPIngestStream(k, rfd);
+        ok64 io = KEEPIngestStream(rfd);
         if (io != OK) {
             fprintf(stderr, "be: KEEPIngestStream failed: %s\n",
                     ok64str(io));
@@ -946,7 +948,7 @@ static ok64 wpush_walk_tree(keeper *k, sha1 const *tree_sha,
     ok64 mo = u8bMap(tbuf, 1UL << 20);
     if (mo != OK) return mo;
     u8 ttype = 0;
-    if (KEEPGetExact(k, tree_sha, tbuf, &ttype) != OK ||
+    if (KEEPGetExact(tree_sha, tbuf, &ttype) != OK ||
         ttype != KEEP_OBJ_TREE) {
         u8bUnMap(tbuf);
         done;
@@ -1009,7 +1011,7 @@ static ok64 wpush_walk_commit(keeper *k, sha1 const *commit_sha,
     ok64 mo = u8bMap(cbuf, 1UL << 20);
     if (mo != OK) return mo;
     u8 ctype = 0;
-    ok64 go = KEEPGetExact(k, commit_sha, cbuf, &ctype);
+    ok64 go = KEEPGetExact(commit_sha, cbuf, &ctype);
     if (go != OK || ctype != KEEP_OBJ_COMMIT) {
         u8bUnMap(cbuf);
         //  Haveset-build mode (`add_to_have` set, `out` not):
@@ -1095,7 +1097,7 @@ static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
             return mo;
         }
         u8 otype = 0;
-        ok64 go = KEEPGetExact(k, &shas[i], obuf, &otype);
+        ok64 go = KEEPGetExact(&shas[i], obuf, &otype);
         if (go != OK) {
             sha1hex h = {}; sha1hexFromSha1(&h, &shas[i]);
             fprintf(stderr,
@@ -1282,9 +1284,10 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
     return (unpack_ok && ref_ok) ? OK : WIRECLFL;
 }
 
-ok64 WIREPush(keeper *k, u8csc remote_uri, u8csc local_branch,
+ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1 const *local_tip_in) {
-    sane(k);
+    sane($ok(remote_uri));
+    keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
     //  the trunk shard, which goes on the wire as `refs/heads/main`.
     if (u8csEmpty(remote_uri)) return WIRECLFL;
@@ -1486,8 +1489,10 @@ push_close:
 //  pack — see git's pack-protocol.txt §"updates" ("If the only
 //  commands are deletes, the client MAY skip the pack data").
 
-ok64 WIREPushDelete(keeper *k, u8csc remote_uri, u8csc local_branch) {
-    sane(k);
+ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
+    sane($ok(remote_uri));
+    keeper *k = &KEEP;
+    (void)k;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     a_pad(u8, refname_buf, 256);

@@ -82,8 +82,8 @@ ok64 KEEPempty() {
     a_cstr(_h, "abcdef");
     u64 hashlet = WHIFFHexHashlet60(_h);
     u64 val = 0;
-    want(KEEPLookup(&KEEP, hashlet, 6, &val) == KEEPNONE);
-    want(KEEPHas(&KEEP, hashlet, 6) == KEEPNONE);
+    want(KEEPLookup(hashlet, 6, &val) == KEEPNONE);
+    want(KEEPHas(hashlet, 6) == KEEPNONE);
 
     call(KEEPClose);
     HOMEClose(&h);
@@ -121,7 +121,7 @@ ok64 KEEPput() {
         wh64Pack(DOG_OBJ_BLOB, 0, 0),
     };
 
-    call(KEEPPut, &KEEP, objs, wh, 2);
+    call(KEEPPut, objs, wh, 2);
     want(kv32bDataLen(KEEP.packs) == 1);
     want(DOGPupCount(KEEP.puppies) == 1);
 
@@ -140,13 +140,13 @@ ok64 KEEPput() {
 
     // Should be retrievable by 7-char prefix (git default)
     a_cstr(_3b, "3b18e51");
-    want(KEEPHas(&KEEP, WHIFFHexHashlet60(_3b), 7) == OK);
+    want(KEEPHas(WHIFFHexHashlet60(_3b), 7) == OK);
 
     // Get content back
     Bu8 out = {};
     call(u8bMap, out, 1UL << 20);
     u8 obj_type = 0;
-    call(KEEPGet, &KEEP, h0, 15, out, &obj_type);
+    call(KEEPGet, h0, 15, out, &obj_type);
     want(obj_type == DOG_OBJ_BLOB);
     want(u8bDataLen(out) == u8csLen(blob1));
     want(memcmp(u8bDataHead(out), blob1[0], u8csLen(blob1)) == 0);
@@ -179,7 +179,7 @@ ok64 KEEPpackIncremental() {
     call(KEEPOpen, &h, YES);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
 
     //  Pre-compute the blob SHA so we can build the tree object
     //  first (intra-pack order: commit→tree→blob→tag).
@@ -204,9 +204,9 @@ ok64 KEEPpackIncremental() {
     a_dup(u8c, tree_content, u8bData(tree_buf));
     sha1 tree_sha = {};
     //  Feed tree first (type 2), then blob (type 3) — monotone order.
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, tree_content, 0, &tree_sha);
+    call(KEEPPackFeed, &p, DOG_OBJ_TREE, tree_content, 0, &tree_sha);
     sha1 blob_sha2 = {};
-    call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, blob_content, 0, &blob_sha2);
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, blob_content, 0, &blob_sha2);
     want(memcmp(blob_sha.data, blob_sha2.data, 20) == 0);
 
     // Verify tree SHA matches git: 68aba62e560c0ebc3396e8ae9335232cd93a3f60
@@ -215,7 +215,7 @@ ok64 KEEPpackIncremental() {
         0xe8,0xae,0x93,0x35,0x23,0x2c,0xd9,0x3a,0x3f,0x60};
     want(memcmp(tree_sha.data, expected_tree_sha, 20) == 0);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
     want(kv32bDataLen(KEEP.packs) == 1);
     want(DOGPupCount(KEEP.puppies) == 1);
 
@@ -225,7 +225,7 @@ ok64 KEEPpackIncremental() {
     call(u8bMap, out, 1UL << 20);
     u8 obj_type = 0;
     a_cstr(_bh, "3b18e51");
-    call(KEEPGet, &KEEP, WHIFFHexHashlet60(_bh), 7, out, &obj_type);
+    call(KEEPGet, WHIFFHexHashlet60(_bh), 7, out, &obj_type);
     want(obj_type == DOG_OBJ_BLOB);
     want(u8bDataLen(out) == u8csLen(blob_content));
     want(memcmp(u8bDataHead(out), blob_content[0], u8csLen(blob_content)) == 0);
@@ -233,7 +233,7 @@ ok64 KEEPpackIncremental() {
     // Retrieve tree by full 15-char hashlet
     u8bReset(out);
     u64 tree_hashlet = WHIFFHashlet60(&tree_sha);
-    call(KEEPGet, &KEEP, tree_hashlet, 15, out, &obj_type);
+    call(KEEPGet, tree_hashlet, 15, out, &obj_type);
     want(obj_type == DOG_OBJ_TREE);
     want(u8bDataLen(out) == u8csLen(tree_content));
     want(memcmp(u8bDataHead(out), tree_content[0], u8csLen(tree_content)) == 0);
@@ -293,7 +293,7 @@ ok64 KEEPBranchDropTable() {
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         u8cs in = {(u8cp)cases[i].input,
                    (u8cp)cases[i].input + strlen(cases[i].input)};
-        ok64 got = KEEPBranchDrop(&KEEP, in);
+        ok64 got = KEEPBranchDrop(in);
         if (got != cases[i].expect) {
             fprintf(stderr, "FAIL drop[%zu] '%s': got %s want %s\n",
                     i, cases[i].input,
@@ -388,10 +388,10 @@ ok64 KEEPbranchRoundTrip() {
     call(KEEPOpen, &h, YES);
 
     //  Refuses dropping while branch has children.
-    want(KEEPBranchDrop(&KEEP, feat) == KEEPDIRTY);
+    want(KEEPBranchDrop(feat) == KEEPDIRTY);
 
     //  Drop the leaf.  Dir must be gone afterwards.
-    call(KEEPBranchDrop, &KEEP, featfix);
+    call(KEEPBranchDrop, featfix);
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
@@ -403,7 +403,7 @@ ok64 KEEPbranchRoundTrip() {
     }
 
     //  Now feat is empty leaf — drop succeeds.
-    call(KEEPBranchDrop, &KEEP, feat);
+    call(KEEPBranchDrop, feat);
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);

@@ -234,9 +234,9 @@ static void unpk_worker_main(unpk_worker *w) {
     }
 }
 
-ok64 UNPKIndex(keeper *k, unpk_in const *in,
-               Bwh128 out, unpk_stats *stats) {
-    sane(k && in && out);
+ok64 UNPKIndex(unpk_in const *in, Bwh128 out, unpk_stats *stats) {
+    sane(in && out);
+    keeper *k = &KEEP;
 
     u8cp packbase = in->pack[0];
     if (in->pack[1] < packbase) return UNPKBADFMT;
@@ -514,7 +514,7 @@ worker_alloc_ok:;
         u64 base_hashlet = WHIFFHashlet60((sha1cp)obj.ref_delta[0]);
         u8 base_type = 0;
         u8bReset(k->buf3);
-        if (KEEPGet(k, base_hashlet, 15, k->buf3, &base_type) != OK) {
+        if (KEEPGet(base_hashlet, 15, k->buf3, &base_type) != OK) {
             st.skipped++; continue;
         }
 

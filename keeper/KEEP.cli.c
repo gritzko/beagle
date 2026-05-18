@@ -38,9 +38,9 @@ static ok64 keeper_upload_pack(cli *c) {
     call(KEEPOpen, &h, NO);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     call(REFADVEmit, STDOUT_FILENO, &adv);
-    ok64 wo = WIREServeUpload(STDIN_FILENO, STDOUT_FILENO, &KEEP, &adv);
+    ok64 wo = WIREServeUpload(STDIN_FILENO, STDOUT_FILENO, &adv);
     REFADVClose(&adv);
     KEEPClose();
     HOMEClose(&h);
@@ -65,9 +65,9 @@ static ok64 keeper_receive_pack(cli *c) {
     call(KEEPOpen, &h, YES);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     call(REFADVEmit, STDOUT_FILENO, &adv);
-    ok64 ro = RECVServe(STDIN_FILENO, STDOUT_FILENO, &KEEP, &adv);
+    ok64 ro = RECVServe(STDIN_FILENO, STDOUT_FILENO, &adv);
     REFADVClose(&adv);
 
     KEEPClose();
@@ -132,7 +132,7 @@ static ok64 keepercli_inner(cli *c) {
         u8csMv(branch, u8bDataC(h.cur_branch));
     call(KEEPOpenBranch, &h, branch, rw);
 
-    ok64 ret = KEEPExec(&KEEP, c);
+    ok64 ret = KEEPExec(c);
 
     KEEPClose();
     HOMEClose(&h);

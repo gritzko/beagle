@@ -84,7 +84,7 @@ static ok64 mig_emit_blob(keep_pack *p,
     Bu8 buf = {};
     call(u8bMap, buf, MIG_BUF);
     u8 type = 0;
-    ok64 ko = KEEPGetExact(&KEEP, (sha1p)new_blob, buf, &type);
+    ok64 ko = KEEPGetExact((sha1p)new_blob, buf, &type);
     if (ko != OK) {
         //  Object not in any open pack.  Don't silently skip — the
         //  target shard ends up missing bytes its REFS row claims to
@@ -107,7 +107,7 @@ static ok64 mig_emit_blob(keep_pack *p,
     u64 hint = (old_blob && !sha1empty(old_blob))
                 ? WHIFFHashlet60(old_blob) : 0;
     sha1 verify = {};
-    ok64 fo = KEEPPackFeed(&KEEP, p, type, body, hint, &verify);
+    ok64 fo = KEEPPackFeed(p, type, body, hint, &verify);
     u8bUnMap(buf);
     return fo;
 }
@@ -119,7 +119,7 @@ static ok64 mig_emit_tree(keep_pack *p,
     Bu8 new_buf = {};
     call(u8bMap, new_buf, MIG_BUF);
     u8 nt = 0;
-    ok64 ko = KEEPGetExact(&KEEP, (sha1p)new_tree, new_buf, &nt);
+    ok64 ko = KEEPGetExact((sha1p)new_tree, new_buf, &nt);
     if (ko != OK) {
         //  Tree missing from any open pack.  Same hazard as mig_emit_
         //  blob: silently skipping leaves the target shard incomplete.
@@ -142,7 +142,7 @@ static ok64 mig_emit_tree(keep_pack *p,
     if (old_tree && !sha1empty(old_tree)) {
         if (u8bMap(old_buf, MIG_BUF) == OK) {
             u8 ot = 0;
-            if (KEEPGetExact(&KEEP, (sha1p)old_tree, old_buf, &ot) == OK
+            if (KEEPGetExact((sha1p)old_tree, old_buf, &ot) == OK
                 && ot == DOG_OBJ_TREE) {
                 have_old = YES;
             }
@@ -154,7 +154,7 @@ static ok64 mig_emit_tree(keep_pack *p,
     u64 tree_hint = (old_tree && !sha1empty(old_tree))
                      ? WHIFFHashlet60(old_tree) : 0;
     sha1 tverify = {};
-    ok64 fo = KEEPPackFeed(&KEEP, p, DOG_OBJ_TREE, new_body,
+    ok64 fo = KEEPPackFeed(p, DOG_OBJ_TREE, new_body,
                            tree_hint, &tverify);
     if (fo != OK) {
         if (have_old) u8bUnMap(old_buf);
@@ -263,7 +263,7 @@ ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {
     //  commit-then-tree-then-blob per commit; that ordering doesn't
     //  match the file-level commit/tree/blob/tag invariant.
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     ok64 ret = OK;
@@ -280,7 +280,7 @@ ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {
         ok64 mo = u8bMap(cbuf, MIG_BUF);
         if (mo != OK) { ret = mo; break; }
         u8 ct = 0;
-        ok64 ko = KEEPGetExact(&KEEP, (sha1p)c, cbuf, &ct);
+        ok64 ko = KEEPGetExact((sha1p)c, cbuf, &ct);
         if (ko != OK) { u8bUnMap(cbuf); ret = ko; break; }
         if (ct != DOG_OBJ_COMMIT) {
             u8bUnMap(cbuf); ret = KEEPMVFAIL; break;
@@ -304,7 +304,7 @@ ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {
                   : has_parent ? WHIFFHashlet60(&cparent) : 0;
         a_dup(u8c, body2, u8bData(cbuf));
         sha1 verify = {};
-        ok64 fo = KEEPPackFeed(&KEEP, &p, DOG_OBJ_COMMIT, body2,
+        ok64 fo = KEEPPackFeed(&p, DOG_OBJ_COMMIT, body2,
                                chint, &verify);
         u8bUnMap(cbuf);
         if (fo != OK) { ret = fo; break; }
@@ -316,6 +316,6 @@ ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {
         prev_commit = &prev_commit_storage;
     }
 
-    ok64 cl = KEEPPackClose(&KEEP, &p);
+    ok64 cl = KEEPPackClose(&p);
     return ret == OK ? cl : ret;
 }

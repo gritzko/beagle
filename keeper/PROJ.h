@@ -19,19 +19,19 @@ con ok64 PROJNONE = 0x65b6135d85ce;
 
 //  tree:[<path>]?<ref|sha>  — list one directory's entries
 //  (mode, type, sha, name).  Non-recursive.
-ok64 KEEPProjTree(keeper *k, uricp u, b8 tlv);
+ok64 KEEPProjTree(uricp u, b8 tlv);
 
 //  commit:?<ref|sha>  — render a commit object: header lines
 //  (commit/tree/parents/author/committer) + message body.
-ok64 KEEPProjCommit(keeper *k, uricp u, b8 tlv);
+ok64 KEEPProjCommit(uricp u, b8 tlv);
 
 //  blob:[<path>]?<ref|sha>  — emit blob bytes.  In TLV mode, the bytes
 //  are tokenized via dog/TOK using the URI path's extension and packed
 //  into a hunk so `bro` can render syntax highlighting.
-ok64 KEEPProjBlob(keeper *k, uricp u, b8 tlv);
+ok64 KEEPProjBlob(uricp u, b8 tlv);
 
 //  Dispatch on `u->scheme`.  Returns PROJNONE for schemes the keeper
 //  table claims but no handler is wired (helpful diagnostic).
-ok64 KEEPProjDispatch(keeper *k, uricp u, b8 tlv);
+ok64 KEEPProjDispatch(uricp u, b8 tlv);
 
 #endif

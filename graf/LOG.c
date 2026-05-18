@@ -83,8 +83,9 @@ typedef struct {
 //  is delegated to `GRAFResolveRef`; this function adds the URI-layer
 //  policy on top (which slot to consult, when to fall back to the
 //  wt's current tip, remote-authority handling).
-ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
-    sane(k && u && out);
+ok64 GRAFResolveTip(uricp u, sha1 *out) {
+    sane(u && out);
+    keeper *k = &KEEP;
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
 
     //  Fragment slot: any non-empty fragment resolves via the unified
@@ -93,7 +94,7 @@ ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out) {
     if (!u8csEmpty(u->fragment)) {
         u8cs frag = {u->fragment[0], u->fragment[1]};
         u8cs no_cur = {};
-        ok64 fr = KEEPResolveRef(k, out, frag, no_cur);
+        ok64 fr = KEEPResolveRef(out, frag, no_cur);
         if (fr == OK) return OK;
         //  Fall through to query/cur-fallback handling on miss — a
         //  fragment that doesn't resolve as hex / ref (e.g. `#msg-
@@ -291,7 +292,7 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
 
         u8bReset(cbuf);
         u8 ot = 0;
-        if (KEEPGet(k, cur_h40, DAG_H60_HEXLEN,
+        if (KEEPGet(cur_h40, DAG_H60_HEXLEN,
                     cbuf, &ot) != OK || ot != DOG_OBJ_COMMIT) break;
         a_dup(u8c, body, u8bData(cbuf));
         sha1 csha = {};
@@ -355,7 +356,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
 
     u8bReset(cbuf);
     u8 ct = 0;
-    if (KEEPGet(k, h40, DAG_H60_HEXLEN, cbuf, &ct) != OK ||
+    if (KEEPGet(h40, DAG_H60_HEXLEN, cbuf, &ct) != OK ||
         ct != DOG_OBJ_COMMIT) done;
 
     sha1 cur = {};
@@ -383,7 +384,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
 
         u8bReset(tbuf);
         u8 otype = 0;
-        if (KEEPGetExact(k, &cur, tbuf, &otype) != OK) done;
+        if (KEEPGetExact(&cur, tbuf, &otype) != OK) done;
         if (otype != DOG_OBJ_TREE) done;
 
         a_dup(u8c, body, u8bDataC(tbuf));
@@ -518,7 +519,7 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
         u64 h40 = keep[ki - 1];
         u8bReset(cbuf);
         u8 ot = 0;
-        if (KEEPGet(k, h40, DAG_H60_HEXLEN,
+        if (KEEPGet(h40, DAG_H60_HEXLEN,
                     cbuf, &ot) != OK || ot != DOG_OBJ_COMMIT) continue;
         a_dup(u8c, body, u8bData(cbuf));
         sha1 csha = {};
@@ -603,7 +604,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
     for (u32 i = 0; i < GRAFHEAD_MAX_WALK && cur_h40 != 0 && !found; i++) {
         u8bReset(cbuf);
         u8 ot = 0;
-        if (KEEPGet(k, cur_h40, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
+        if (KEEPGet(cur_h40, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
             ot != DOG_OBJ_COMMIT) break;
         a_dup(u8c, body, u8bData(cbuf));
         sha1 csha = {};
@@ -691,7 +692,7 @@ static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 o = KEEPGet(k, commit_h60, DAG_H60_HEXLEN, cbuf, &ct);
+    ok64 o = KEEPGet(commit_h60, DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
     a_dup(u8c, scan, u8bDataC(cbuf));
     u8cs field = {}, value = {};
@@ -861,7 +862,7 @@ static u32 graf_head_emit_diverged(log_ctx *lx, keeper *k,
         if (DAGAncestorsHas(exclude, h)) continue;
         u8bReset(cbuf);
         u8 ot = 0;
-        if (KEEPGet(k, h, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
+        if (KEEPGet(h, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
             ot != DOG_OBJ_COMMIT) continue;
         a_dup(u8c, body, u8bData(cbuf));
         sha1 csha = {};
@@ -1095,8 +1096,9 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     done;
 }
 
-ok64 GRAFHead(keeper *k, uricp u) {
-    sane(k && u);
+ok64 GRAFHead(uricp u) {
+    sane(u);
+    keeper *k = &KEEP;
     //  Fragment-only URI → message search; everything else (no URI,
     //  bare `?br`, etc.) → ahead/behind diff vs target.
     b8 frag_only = !u8csEmpty(u->fragment) &&
@@ -1108,8 +1110,9 @@ ok64 GRAFHead(keeper *k, uricp u) {
 
 // --- Entry -------------------------------------------------------------
 
-ok64 GRAFLog(keeper *k, uricp u) {
-    sane(k && u);
+ok64 GRAFLog(uricp u) {
+    sane(u);
+    keeper *k = &KEEP;
 
     //  GRAFHunkEmit serialises into the legacy `graf_arena` global
     //  (separate from GRAF.arena).  Without init the arena is NULL
@@ -1117,7 +1120,7 @@ ok64 GRAFLog(keeper *k, uricp u) {
     call(GRAFArenaInit);
 
     sha1 tip = {};
-    call(GRAFResolveTip, k, u, &tip);
+    call(GRAFResolveTip, u, &tip);
 
     u32 count = graflog_count_from_frag(u);
 

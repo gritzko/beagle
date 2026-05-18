@@ -52,22 +52,20 @@ typedef ok64 (*walk_tree_fn)(u8cs path, u8 kind, u8cp esha,
 //  Walk the tree at `tree_sha` (20-byte) depth-first, eager mode:
 //  resolves every REG/EXE/LNK blob through `k` before invoking the
 //  visitor, so `blob` is always filled for file entries.
-ok64 WALKTree(keeper *k, u8cp tree_sha, walk_tree_fn visit, void0p ctx);
+ok64 WALKTree(u8cp tree_sha, walk_tree_fn visit, void0p ctx);
 
 //  Lazy variant of WALKTree.  Never resolves blob objects; `blob` is
 //  always empty ($empty()) in the visitor.  Trees are still resolved
 //  (required for iteration).  Callers that need a blob can pull it
 //  on demand with `KEEPGetExact`.
-ok64 WALKTreeLazy(keeper *k, u8cp tree_sha, walk_tree_fn visit,
-                  void0p ctx);
+ok64 WALKTreeLazy(u8cp tree_sha, walk_tree_fn visit, void0p ctx);
 
 //  ls-files: resolve `target` (URI with ?ref or #sha plus optional
 //  /subpath) and invoke `visit` once per descendant entry, lazy mode.
 //  Paths delivered to the visitor are absolute from the repo root
 //  (matching git ls-tree -r output).  If the subpath resolves to a
 //  single blob, the visitor is called exactly once for that blob.
-ok64 KEEPLsFiles(keeper *k, uricp target,
-                 walk_tree_fn visit, void0p ctx);
+ok64 KEEPLsFiles(uricp target, walk_tree_fn visit, void0p ctx);
 
 //  Materialise a tree's leaf entries as ULOG rows for the heap-merge
 //  pipeline: one row per leaf, `<ts>\t<verb><kind>\t<path>#<hex-sha>\n`,
@@ -84,8 +82,7 @@ ok64 KEEPLsFiles(keeper *k, uricp target,
 //            Recover via `ok64Lit(verb, 0)`; the stem via `ok64stem`.
 //    sha   — 40 hex chars (HEXu8sFeed-encoded leaf sha).
 //  `out` is reset before writing.  Caller owns it.
-ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
-                  ron60 ts, ron60 verb, u8bp out);
+ok64 KEEPTreeULog(u8cp tree_sha, ron60 ts, ron60 verb, u8bp out);
 
 //  Tree-vs-tree diff as a ULOG.
 //

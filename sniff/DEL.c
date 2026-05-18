@@ -218,11 +218,11 @@ static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
     sha1 commit_sha = {};
     if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
     sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(&KEEP, &commit_sha, &tree_sha) != OK) done;
+    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) done;
 
     del_sweep_ctx ctx = {.ts = ts, .verb = verb};
     u8csMv(ctx.reporoot, reporoot);
-    (void)WALKTreeLazy(&KEEP, tree_sha.data, del_sweep_visit, &ctx);
+    (void)WALKTreeLazy(tree_sha.data, del_sweep_visit, &ctx);
     if (ctx.err != OK) return ctx.err;
     *emitted_out = ctx.emitted;
     done;
@@ -561,7 +561,7 @@ ok64 DELBranch(uri const *u, b8 recursive) {
     //  in place and the dir on disk — log + continue: the REFS state
     //  is the source of truth.
     {
-        ok64 do_ = KEEPBranchDrop(k, target);
+        ok64 do_ = KEEPBranchDrop(target);
         if (do_ != OK && do_ != KEEPNONE && do_ != KEEPTRUNK) {
             fprintf(stderr,
                     "sniff: delete: REFS tombstoned but shard dir "

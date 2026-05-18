@@ -126,7 +126,7 @@ ok64 CAPOEmit(u64 entry) {
     if (entry == 0) return OK;
     ok64 r = BOXu64Feed1(SPOT.entries_box, &entry);
     if (r == BOXFULL) {
-        ok64 fr = CAPOFlushRun(&SPOT);
+        ok64 fr = CAPOFlushRun();
         if (fr != OK) return fr;
         r = BOXu64Feed1(SPOT.entries_box, &entry);
     }
@@ -310,8 +310,9 @@ ok64 CAPOStackClose(u8bp *maps, u32 nfiles) {
 
 // --- Compaction ---
 
-ok64 CAPOCompact(spot *s) {
-    sane(s);
+ok64 CAPOCompact(void) {
+    sane(YES);
+    spot *s = &SPOT;
 
     u32 nfiles = DOGPupCount(s->puppies);
     if (nfiles < 2) done;
@@ -362,8 +363,9 @@ ok64 CAPOCompact(spot *s) {
 
 // --- Compact all into one ---
 
-ok64 CAPOCompactAll(spot *s) {
-    sane(s);
+ok64 CAPOCompactAll(void) {
+    sane(YES);
+    spot *s = &SPOT;
 
     u32 nfiles = DOGPupCount(s->puppies);
     if (nfiles <= 1) done;
@@ -436,8 +438,9 @@ static ok64 spot_worker_dir(path8b out, path8s leafdir, u32 w) {
     done;
 }
 
-ok64 CAPOMergeWorkers(spot *s, u32 nw) {
-    sane(s);
+ok64 CAPOMergeWorkers(u32 nw) {
+    sane(YES);
+    spot *s = &SPOT;
     if (nw == 0) done;
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
@@ -996,7 +999,7 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
             if ($empty(replace)) LESSArenaCleanup();
             return ko;
         }
-        CAPOScanRef(&KEEP, ref, &opts);
+        CAPOScanRef(ref, &opts);
         if (ko == OK) KEEPClose();
     } else if ($len(files) > 0) {
         CAPOScanFiles(files, &opts);
@@ -1231,7 +1234,7 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
     Bu8 bbuf = {};
     if (u8bAllocate(bbuf, 1UL << 22) != OK) return OK;
     u8 btype = 0;
-    ok64 gr = KEEPGetExact(cx->k, &bsha, bbuf, &btype);
+    ok64 gr = KEEPGetExact(&bsha, bbuf, &btype);
     if (gr != OK || btype != DOG_OBJ_BLOB) {
         u8bFree(bbuf);
         return OK;
@@ -1247,13 +1250,13 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
     return OK;
 }
 
-ok64 CAPOScanRef(keeper *k, uri const *target,
-                  CAPOScanOpts const *opts) {
-    sane(k && target && opts && opts->file_fn);
+ok64 CAPOScanRef(uri const *target, CAPOScanOpts const *opts) {
+    sane(target && opts && opts->file_fn);
+    keeper *k = &KEEP;
     capo_ref_scan_ctx cx = {k, opts, OK};
     //  KEEPLsFiles takes a non-const uri*, but the function body only
     //  reads from it.  Cast away const — the callee does not mutate.
-    ok64 o = KEEPLsFiles(k, (uricp)target, capo_ref_visit, &cx);
+    ok64 o = KEEPLsFiles((uricp)target, capo_ref_visit, &cx);
     CAPOProgress((u8csc){});
     if (cx.last_err != OK) return cx.last_err;
     return o;
@@ -1596,8 +1599,9 @@ ok64 SPOTOpen(home *h, b8 rw) {
 //  zeros the BOX's level chunks, and leaves the box ready for fresh
 //  inserts.  We then write that contiguous u64 run as a puppy and
 //  fold it into the on-disk LSM ladder.
-ok64 CAPOFlushRun(spot *s) {
-    sane(s);
+ok64 CAPOFlushRun(void) {
+    sane(YES);
+    spot *s = &SPOT;
     if (BNULL(s->entries_mem) || BNULL(s->flush_buf)) done;
 
     u64 *save_base = (u64 *)u8bDataHead(s->flush_buf);
@@ -1619,7 +1623,7 @@ ok64 CAPOFlushRun(spot *s) {
 
     //  Maintain the 1/8 LSM ladder every flush.  CAPOCompact may
     //  rebuild puppies again — it calls CAPORefreshView itself.
-    call(CAPOCompact, s);
+    call(CAPOCompact);
     done;
 }
 
@@ -1645,7 +1649,7 @@ void SPOTClose(void) {
         //  Final flush of any postings still in the BOX.  Tokenisation
         //  happened inline in the tip-walker's visitor.  CAPOFlushRun
         //  also runs CAPOCompact, so the puppy ladder stays balanced.
-        CAPOFlushRun(s);
+        CAPOFlushRun();
         u8bUnMap(s->entries_mem);
         if (!BNULL(s->flush_buf)) u8bUnMap(s->flush_buf);
         if (s->ingest_toks[0] != NULL) u32bUnMap(s->ingest_toks);

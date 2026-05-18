@@ -172,7 +172,7 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
             LESSArenaCleanup();
             return ko;
         }
-        scan_ret = CAPOScanRef(&KEEP, ref, &opts);
+        scan_ret = CAPOScanRef(ref, &opts);
         if (ko == OK) KEEPClose();
     } else if ($len(files) > 0) {
         scan_ret = CAPOScanFiles(files, &opts);
@@ -468,7 +468,7 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
             LESSArenaCleanup();
             return ko;
         }
-        CAPOScanRef(&KEEP, ref, &opts);
+        CAPOScanRef(ref, &opts);
         if (ko == OK) KEEPClose();
     } else if ($len(files) > 0) {
         CAPOScanFiles(files, &opts);

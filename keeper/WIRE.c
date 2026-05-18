@@ -239,10 +239,11 @@ static ok64 wire_locate_sha(keeper *k, sha1 const *sha,
     return KEEPNONE;
 }
 
-ok64 WIREBuildSegments(keeper *k, refadvcp adv, wire_reqcp req,
+ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
                        pstr_seg *out_segs, int *fd_pool,
                        u32 cap, u32 *out_n) {
-    sane(k && req && out_segs && fd_pool && out_n);
+    sane(req && out_segs && fd_pool && out_n);
+    keeper *k = &KEEP;
     (void)adv;  // tip→dir lookup wired in once multi-branch fan-out lands.
 
     *out_n = 0;
@@ -333,8 +334,8 @@ ok64 WIREBuildSegments(keeper *k, refadvcp adv, wire_reqcp req,
 
 // --- one-shot serve ---
 
-ok64 WIREServeUpload(int in_fd, int out_fd, keeper *k, refadvcp adv) {
-    sane(in_fd >= 0 && out_fd >= 0 && k);
+ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv) {
+    sane(in_fd >= 0 && out_fd >= 0);
 
     wire_req req = {};
     call(WIREReadRequest, in_fd, &req);
@@ -355,7 +356,7 @@ ok64 WIREServeUpload(int in_fd, int out_fd, keeper *k, refadvcp adv) {
     for (u32 i = 0; i < WIRE_MAX_WANTS; i++) fds[i] = -1;
     u32 nseg = 0;
 
-    ok64 bo = WIREBuildSegments(k, adv, &req, segs, fds, WIRE_MAX_WANTS, &nseg);
+    ok64 bo = WIREBuildSegments(adv, &req, segs, fds, WIRE_MAX_WANTS, &nseg);
     if (bo != OK) {
         for (u32 i = 0; i < WIRE_MAX_WANTS; i++)
             if (fds[i] >= 0) close(fds[i]);

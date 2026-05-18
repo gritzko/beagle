@@ -77,7 +77,7 @@ ok64 BROExec(bro *b, cli *c) {
                 }
                 Bu8 blobbuf = {};
                 if (u8bAllocate(blobbuf, 1UL << 24) != OK) continue;
-                ok64 go = KEEPGetByURI(&KEEP, u, blobbuf);
+                ok64 go = KEEPGetByURI(u, blobbuf);
                 if (go != OK) {
                     fprintf(stderr, "bro: cannot fetch " U8SFMT ": %s\n",
                             u8sFmt(u->data), ok64str(go));

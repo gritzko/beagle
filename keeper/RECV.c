@@ -200,8 +200,9 @@ void RECVCloseRequest(recv_reqp req) {
 
 #define RECV_PACK_BUF (1u << 20)   // 1 MiB chunked drain
 
-ok64 RECVIngestPack(keeper *k, int in_fd, u8csc tail) {
-    sane(k && in_fd >= 0);
+ok64 RECVIngestPack(int in_fd, u8csc tail) {
+    sane(in_fd >= 0);
+    keeper *k = &KEEP;
 
     Bu8 buf = {};
     call(u8bMap, buf, 1ULL << 30);  // up to 1 GiB packfile
@@ -249,7 +250,7 @@ ok64 RECVIngestPack(keeper *k, int in_fd, u8csc tail) {
     }
 
     a_dup(u8c, bytes, u8bData(buf));
-    ok64 io = KEEPIngestFile(k, bytes);
+    ok64 io = KEEPIngestFile(bytes);
     u8bUnMap(buf);
     if (io != OK) return RECVFAIL;
     done;
@@ -298,9 +299,10 @@ static void recv_lookup_tip(refadvcp adv, u8csc refname,
     }
 }
 
-ok64 RECVApplyUpdates(keeper *k, refadvcp adv, recv_reqcp req,
+ok64 RECVApplyUpdates(refadvcp adv, recv_reqcp req,
                       recv_resultp out_results, u32 cap, u32p out_n) {
-    sane(k && req && out_results && out_n);
+    sane(req && out_results && out_n);
+    keeper *k = &KEEP;
     *out_n = 0;
     if (req->count > cap) return RECVFAIL;
 
@@ -425,8 +427,8 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
 
 // --- top-level orchestration ---
 
-ok64 RECVServe(int in_fd, int out_fd, keeper *k, refadvcp adv) {
-    sane(in_fd >= 0 && out_fd >= 0 && k);
+ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
+    sane(in_fd >= 0 && out_fd >= 0);
 
     recv_req req = {};
     ok64 rro = RECVReadRequest(in_fd, &req);
@@ -441,7 +443,7 @@ ok64 RECVServe(int in_fd, int out_fd, keeper *k, refadvcp adv) {
     ok64 unpack_status = OK;
     if (req.count > 0) {
         u8csc rtail = {u8bDataHead(req.tail), u8bIdleHead(req.tail)};
-        ok64 io = RECVIngestPack(k, in_fd, rtail);
+        ok64 io = RECVIngestPack(in_fd, rtail);
         if (io != OK) unpack_status = io;
     }
 
@@ -452,7 +454,7 @@ ok64 RECVServe(int in_fd, int out_fd, keeper *k, refadvcp adv) {
     recv_result results[RECV_MAX_UPDATES] = {};
     u32 nres = 0;
     if (req.count > 0) {
-        ok64 ao = RECVApplyUpdates(k, adv, &req, results,
+        ok64 ao = RECVApplyUpdates(adv, &req, results,
                                    RECV_MAX_UPDATES, &nres);
         if (ao != OK && unpack_status == OK) unpack_status = ao;
     }

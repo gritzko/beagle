@@ -64,7 +64,7 @@ ok64 gitdl() {
     call(HOMEOpenAt, &h, out_arg, YES);
     call(KEEPOpen, &h, YES);
 
-    ok64 fo = WIREFetch(&KEEP, remote_arg, ref_cs);
+    ok64 fo = WIREFetch(remote_arg, ref_cs);
 
     KEEPClose();
     HOMEClose(&h);

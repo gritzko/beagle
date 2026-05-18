@@ -658,14 +658,14 @@ ok64 KEEPCreateBranch(home *h, u8cs branch) {
 // Convenience single-object path over KEEPPackOpen/Feed/Close.
 // Opens a fresh pack log, writes one object, closes. For bulk
 // ingestion prefer KEEPPackOpen/KEEPPackFeed/KEEPPackClose.
-ok64 KEEPUpdate(keeper *k, u8 obj_type, u8cs blob) {
-    sane(k && $ok(blob));
+ok64 KEEPUpdate(u8 obj_type, u8cs blob) {
+    sane($ok(blob));
     keep_pack p = {};
-    call(KEEPPackOpen, k, &p);
+    call(KEEPPackOpen, &p);
     u8csc content = {blob[0], blob[1]};
     sha1 sha = {};
-    ok64 o = KEEPPackFeed(k, &p, obj_type, content, 0, &sha);
-    KEEPPackClose(k, &p);
+    ok64 o = KEEPPackFeed(&p, obj_type, content, 0, &sha);
+    KEEPPackClose(&p);
     return o;
 }
 
@@ -680,8 +680,9 @@ static ok64 keep_idx_path(path8b out, u8csc kdir, u32 seqno);
 // runs HITwh128Compact, then `DOGPupThinTail(m)` + `DOGPupCreate`
 // to commit the merged run + drop the m sources.  No-op when the
 // stack already satisfies the 1/8 invariant.
-ok64 KEEPCompact(keeper *k) {
-    sane(k);
+ok64 KEEPCompact(void) {
+    sane(YES);
+    keeper *k = &KEEP;
     if (!keep_is_rw) done;
     u32 n = DOGPupCount(k->puppies);
     if (n < 2) done;
@@ -731,7 +732,7 @@ ok64 KEEPClose(void) {
     sane(1);
     if (!keep_is_open()) return OK;
     keeper *k = &KEEP;
-    if (keep_is_rw) (void)KEEPCompact(k);
+    if (keep_is_rw) (void)KEEPCompact();
     if (!BNULL(k->packs))       DOGPupClose(k->packs);
     if (!BNULL(k->puppies))     DOGPupClose(k->puppies);
     if (!BNULL(k->leaf_branch)) u8bFree(k->leaf_branch);
@@ -808,8 +809,9 @@ static b8 keep_branch_has_subdir(u8cs branchdir) {
     return found;
 }
 
-ok64 KEEPBranchDrop(keeper *k, u8cs branch) {
-    sane(k && $ok(branch));
+ok64 KEEPBranchDrop(u8cs branch) {
+    sane($ok(branch));
+    keeper *k = &KEEP;
 
     a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
     call(DPATHBranchNormFeed, nb, branch);
@@ -900,8 +902,9 @@ ok64 KEEPBranchDrop(keeper *k, u8cs branch) {
 // hexlen: number of significant hex chars in the hashlet (6-10).
 // With 60-bit hashlets, max is 15 hex chars.
 
-ok64 KEEPLookup(keeper *k, u64 hashlet60, size_t hexlen, u64p val) {
-    sane(k && val);
+ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val) {
+    sane(val);
+    keeper *k = &KEEP;
 
     // Build range for prefix matching.
     // key = hashlet60[60] | type[4].
@@ -943,9 +946,9 @@ ok64 KEEPLookup(keeper *k, u64 hashlet60, size_t hexlen, u64p val) {
 
 // --- Has ---
 
-ok64 KEEPHas(keeper *k, u64 hashlet60, size_t hexlen) {
+ok64 KEEPHas(u64 hashlet60, size_t hexlen) {
     u64 val = 0;
-    return KEEPLookup(k, hashlet60, hexlen, &val);
+    return KEEPLookup(hashlet60, hexlen, &val);
 }
 
 // --- Resolve: inflate object at pack val (file_id + offset) ---
@@ -1004,7 +1007,7 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
             // Look up base by SHA-1 prefix
             u64 base_hashlet = WHIFFHashlet60((sha1cp)obj.ref_delta[0]);
             u64 base_val = 0;
-            rc = KEEPLookup(k, base_hashlet, 10, &base_val);
+            rc = KEEPLookup(base_hashlet, 10, &base_val);
             if (rc != OK) goto cleanup;
             // Base might be in a different pack file
             u32 bfile = wh64Id(base_val);
@@ -1022,7 +1025,7 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
                 //     empty buffer regardless of aliasing.
                 u8bReset(k->buf3);
                 u8 btype = 0;
-                rc = KEEPGet(k, base_hashlet, 15, k->buf3, &btype);
+                rc = KEEPGet(base_hashlet, 15, k->buf3, &btype);
                 if (rc != OK) goto cleanup;
                 obj_type = btype;
                 u8bReset(k->buf1);
@@ -1091,11 +1094,12 @@ cleanup:
 
 // --- Get: inflate object from pack by hashlet ---
 
-ok64 KEEPGet(keeper *k, u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
-    sane(k && out);
+ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
+    sane(out);
+    keeper *k = &KEEP;
 
     u64 val = 0;
-    ok64 lo = KEEPLookup(k, hashlet, hexlen, &val);
+    ok64 lo = KEEPLookup(hashlet, hexlen, &val);
     if (lo != OK) return lo;
 
     return KEEPGetPacked(k, val, out, out_type);
@@ -1105,8 +1109,9 @@ ok64 KEEPGet(keeper *k, u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
 
 // KEEPObjSha defined below with KEEPPackFeed; declared in KEEP.h.
 
-ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type) {
-    sane(k && sha && out);
+ok64 KEEPGetExact(sha1 const *sha, u8bp out, u8p out_type) {
+    sane(sha && out);
+    keeper *k = &KEEP;
 
     u64 hashlet60 = WHIFFHashlet60(sha);
     //  Object lookup: skip KEEP_TYPE_PACK bookmarks (see LOG.md).
@@ -1180,7 +1185,7 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
     if (u8bAllocate(obj, VERIFY_BUFSZ) != OK) return KEEPNOROOM;
     u8 obj_type = 0;
 
-    ok64 rc = KEEPGet(k, hashlet, 15, obj, &obj_type);
+    ok64 rc = KEEPGet(hashlet, 15, obj, &obj_type);
     if (rc != OK) {
         a_pad(u8, hex, 16);
         WHIFFHexFeed60(hex_idle, hashlet);
@@ -1313,8 +1318,9 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
     return OK;
 }
 
-ok64 KEEPVerify(keeper *k, u8cs hex_sha) {
-    sane(k && $ok(hex_sha));
+ok64 KEEPVerify(u8cs hex_sha) {
+    sane($ok(hex_sha));
+    keeper *k = &KEEP;
     verify_nvisited = 0;
     if ($len(hex_sha) < 40) {
         fprintf(stderr, "keeper: verify requires full 40-char SHA\n");
@@ -1335,8 +1341,9 @@ ok64 KEEPVerify(keeper *k, u8cs hex_sha) {
 
 // --- Scan ---
 
-ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx) {
-    sane(k && cb);
+ok64 KEEPScan(u64 from_val, keep_cb cb, void *ctx) {
+    sane(cb);
+    keeper *k = &KEEP;
 
     u32 file_id = wh64Id(from_val);
     u64 offset  = wh64Off(from_val);
@@ -1489,8 +1496,9 @@ static void pack_feed_ofs(u8bp buf, u64 val) {
     for (int i = pos; i >= 0; i--) u8bFeed1(buf, tmp[i]);
 }
 
-ok64 KEEPPackOpen(keeper *k, keep_pack *p) {
-    sane(k && p);
+ok64 KEEPPackOpen(keep_pack *p) {
+    sane(p);
+    keeper *k = &KEEP;
     zerop(p);
     p->strict_order = YES;
 
@@ -1579,11 +1587,10 @@ static b8 keep_find_raw_in_pack(keep_pack *p, u64 base_hashlet60,
     return NO;
 }
 
-ok64 KEEPPackFeed(keeper *k, keep_pack *p,
-                  u8 type, u8csc content,
-                  u64 base_hashlet60,
-                  sha1 *sha_out) {
-    sane(k && p && p->log && type >= 1 && type <= 4);
+ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
+                  u64 base_hashlet60, sha1 *sha_out) {
+    sane(p && p->log && type >= 1 && type <= 4);
+    keeper *k = &KEEP;
 
     //  Intra-pack order invariant: commit → tree → blob → tag.  Only
     //  enforced for canonical (main-log) packs.  Staging packs toggle
@@ -1631,7 +1638,7 @@ ok64 KEEPPackFeed(keeper *k, keep_pack *p,
             //  packs from trunk → … → leaf, every hit in `k->packs`
             //  is by construction visible to a delta encoded into
             //  the leaf — no extra check needed.
-            if (KEEPGet(k, base_hashlet60, 15, p->delta_base,
+            if (KEEPGet(base_hashlet60, 15, p->delta_base,
                         &base_type) != OK) {
                 u8bReset(p->delta_base);
             }
@@ -1710,8 +1717,9 @@ ok64 KEEPPackFeed(keeper *k, keep_pack *p,
     done;
 }
 
-ok64 KEEPPackClose(keeper *k, keep_pack *p) {
-    sane(k && p && p->log);
+ok64 KEEPPackClose(keep_pack *p) {
+    sane(p && p->log);
+    keeper *k = &KEEP;
 
     //  Update file-level PACK header count: add THIS pack's nobjs
     //  to whatever was already there.  No per-pack headers, no
@@ -1775,7 +1783,7 @@ ok64 KEEPPackClose(keeper *k, keep_pack *p) {
     //  Maintain the 1/8 LSM ladder right after every puppy create, so
     //  the runs[KEEP_MAX_LEVELS] view cap is never reached and reads
     //  always see the full stack.
-    call(KEEPCompact, k);
+    call(KEEPCompact);
 
     wh128bFree(p->entries);
     if (p->delta_base[0])  u8bUnMap(p->delta_base);
@@ -1785,16 +1793,16 @@ ok64 KEEPPackClose(keeper *k, keep_pack *p) {
 
 // --- KEEPPut: convenience wrapper ---
 
-ok64 KEEPPut(keeper *k, u8csc *objects, wh64 *whiffs, u32 nobjs) {
-    sane(k && objects && whiffs && nobjs > 0);
+ok64 KEEPPut(u8csc *objects, wh64 *whiffs, u32 nobjs) {
+    sane(objects && whiffs && nobjs > 0);
 
     keep_pack p = {};
-    call(KEEPPackOpen, k, &p);
+    call(KEEPPackOpen, &p);
 
     for (u32 i = 0; i < nobjs; i++) {
         u8 type = wh64Type(whiffs[i]);
         sha1 sha = {};
-        ok64 o = KEEPPackFeed(k, &p, type, objects[i], 0, &sha);
+        ok64 o = KEEPPackFeed(&p, type, objects[i], 0, &sha);
         if (o != OK) {
             if (p.log) FILEUnBook(p.log);
             wh128bFree(p.entries);
@@ -1806,7 +1814,7 @@ ok64 KEEPPut(keeper *k, u8csc *objects, wh64 *whiffs, u32 nobjs) {
         whiffs[i] = wh64Pack(type, p.file_id, hashlet);
     }
 
-    call(KEEPPackClose, k, &p);
+    call(KEEPPackClose, &p);
     done;
 }
 
@@ -1814,8 +1822,9 @@ ok64 KEEPPut(keeper *k, u8csc *objects, wh64 *whiffs, u32 nobjs) {
 
 // Resolve a URI (target.fragment = hex, target.query = refname) to a
 // root tree SHA-1.  Handles annotated-tag dereference.
-ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
-    sane(k);
+ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
+    sane(YES);
+    keeper *k = &KEEP;
 
     sha1 commit_sha = {};
 
@@ -1829,7 +1838,7 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         a_dup(u8c, cur_hex, u8bDataC(k->h->cur_sha));
         synth.fragment[0] = cur_hex[0];
         synth.fragment[1] = cur_hex[1];
-        return KEEPResolveTree(k, (uricp)&synth, tree_sha);
+        return KEEPResolveTree((uricp)&synth, tree_sha);
     }
 
     // Try fragment (#hash) or query (?ref)
@@ -1838,7 +1847,7 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         u64 hashlet = WHIFFHexHashlet60(target->fragment);
         u8 type = 0;
         u8bReset(k->buf1);
-        call(KEEPGet, k, hashlet, u8csLen(target->fragment), k->buf1, &type);
+        call(KEEPGet, hashlet, u8csLen(target->fragment), k->buf1, &type);
         if (type == DOG_OBJ_TREE) {
             // Already a tree — compute its SHA
             a_dup(u8c, content, u8bData(k->buf1));
@@ -1954,7 +1963,7 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
         u64 hashlet = WHIFFHashlet60(&commit_sha);
         u8 type = 0;
         u8bReset(k->buf1);
-        call(KEEPGet, k, hashlet, 15, k->buf1, &type);
+        call(KEEPGet, hashlet, 15, k->buf1, &type);
         if (type != DOG_OBJ_COMMIT && type != DOG_OBJ_TAG) fail(KEEPFAIL);
 
         // If tag, get the commit it points to
@@ -1972,7 +1981,7 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
             }
             hashlet = WHIFFHashlet60(&commit_sha);
             u8bReset(k->buf1);
-            call(KEEPGet, k, hashlet, 15, k->buf1, &type);
+            call(KEEPGet, hashlet, 15, k->buf1, &type);
         }
 
         a_dup(u8c, body, u8bDataC(k->buf1));
@@ -1992,11 +2001,12 @@ ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_sha) {
     fail(KEEPFAIL);  // no ref or hash in URI
 }
 
-ok64 KEEPCommitTreeSha(keeper *k, sha1 const *commit, sha1 *tree_out) {
-    sane(k && commit && tree_out);
+ok64 KEEPCommitTreeSha(sha1 const *commit, sha1 *tree_out) {
+    sane(commit && tree_out);
+    keeper *k = &KEEP;
     u8bReset(k->buf1);
     u8 ctype = 0;
-    call(KEEPGetExact, k, commit, k->buf1, &ctype);
+    call(KEEPGetExact, commit, k->buf1, &ctype);
     if (ctype != DOG_OBJ_COMMIT) fail(KEEPFAIL);
     a_dup(u8c, body, u8bData(k->buf1));
     return GITu8sCommitTree(body, tree_out->data);
@@ -2009,8 +2019,9 @@ ok64 KEEPCommitTreeSha(keeper *k, sha1 const *commit, sha1 *tree_out) {
 //   N×20 SHA-1, N×u32 CRC, N×u32 offset (BE), [8-byte offsets for >2GB]
 //   pack SHA-1, index SHA-1
 
-ok64 KEEPImport(keeper *k, u8cs pack_path) {
-    sane(k && $ok(pack_path));
+ok64 KEEPImport(u8cs pack_path) {
+    sane($ok(pack_path));
+    keeper *k = &KEEP;
 
     // NUL-terminate pack_path for FILEMapRO
     a_path(pack_pp, pack_path);
@@ -2162,8 +2173,9 @@ ok64 KEEPImport(keeper *k, u8cs pack_path) {
 // the append offset.  An empty pack (count == 0) produces zero
 // file changes.
 
-ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
-    sane(k && $ok(bytes));
+ok64 KEEPIngestFile(u8csc bytes) {
+    sane($ok(bytes));
+    keeper *k = &KEEP;
     u64 file_len = u8csLen(bytes);
     if (file_len < 12) fail(KEEPFAIL);
 
@@ -2274,7 +2286,7 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
         .file_id = file_id,
     };
     unpk_stats ust = {};
-    call(UNPKIndex, k, &uin, entries, &ust);
+    call(UNPKIndex, &uin, entries, &ust);
 
     //  Pack bookmark: key points at the append offset, val carries
     //  (obj_count, byte_len) for O(1) wire reconstruction.
@@ -2298,7 +2310,7 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes) {
     wh128bFree(entries);
     if (cr != OK) return cr;
     //  Compact-per-flush keeps the puppy ladder under the 1/8 invariant.
-    call(KEEPCompact, k);
+    call(KEEPCompact);
 
     done;
 }
@@ -2345,8 +2357,9 @@ static ssize_t keep_read_full(int fd, void *buf, size_t n) {
     return (ssize_t)got;
 }
 
-ok64 KEEPIngestStream(keeper *k, int rfd) {
-    sane(k && rfd >= 0);
+ok64 KEEPIngestStream(int rfd) {
+    sane(rfd >= 0);
+    keeper *k = &KEEP;
 
     a_path(kdir);
     call(keep_branch_dir, kdir, k->h, u8bDataC(k->leaf_branch));
@@ -2559,7 +2572,7 @@ ok64 KEEPIngestStream(keeper *k, int rfd) {
         .file_id = file_id,
     };
     unpk_stats ust = {};
-    call(UNPKIndex, k, &uin, entries, &ust);
+    call(UNPKIndex, &uin, entries, &ust);
 
     {
         wh128 bm = {
@@ -2579,7 +2592,7 @@ ok64 KEEPIngestStream(keeper *k, int rfd) {
     ok64 cr = keep_pup_create_next(k, $path(kdir), ext, raw);
     wh128bFree(entries);
     if (cr != OK) return cr;
-    call(KEEPCompact, k);
+    call(KEEPCompact);
 
     done;
 }
@@ -2631,7 +2644,7 @@ static ok64 keep_walk_tree(keeper *k, sha1 const *tree_sha,
     Bu8 tbuf = {};
     call(u8bMap, tbuf, 1UL << 20);
     u8 ttype = 0;
-    if (KEEPGetExact(k, tree_sha, tbuf, &ttype) != OK ||
+    if (KEEPGetExact(tree_sha, tbuf, &ttype) != OK ||
         ttype != KEEP_OBJ_TREE) {
         u8bUnMap(tbuf);
         done;
@@ -2683,7 +2696,7 @@ static ok64 keep_walk_commit(keeper *k, u8csc new_hex,
     Bu8 cbuf = {};
     call(u8bMap, cbuf, 1UL << 20);
     u8 ctype = 0;
-    if (KEEPGetExact(k, &commit_sha, cbuf, &ctype) != OK ||
+    if (KEEPGetExact(&commit_sha, cbuf, &ctype) != OK ||
         ctype != KEEP_OBJ_COMMIT) {
         u8bUnMap(cbuf);
         return KEEPFAIL;
@@ -2699,10 +2712,11 @@ static ok64 keep_walk_commit(keeper *k, u8csc new_hex,
     return keep_walk_tree(k, &tree_sha, out, n, cap);
 }
 
-ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
+ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
               u8csc old_hex, u8csc new_hex, u8csc commit_body) {
-    sane(k && ref && $len(host) > 0 && $len(path) > 0 &&
+    sane(ref && $len(host) > 0 && $len(path) > 0 &&
          $len(old_hex) == 40 && $len(new_hex) == 40);
+    keeper *k = &KEEP;
     (void)commit_body;  // walker re-fetches from store; body arg kept for ABI
 
     fprintf(stderr, "keeper: connecting: ssh %.*s git-receive-pack %.*s\n",
@@ -2783,7 +2797,7 @@ ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
         for (u32 i = 0; i < nobjs; i++) {
             u8bReset(tmp);
             u8 ot = 0;
-            if (KEEPGetExact(k, &walk_shas[i], tmp, &ot) == OK)
+            if (KEEPGetExact(&walk_shas[i], tmp, &ot) == OK)
                 est += u8bDataLen(tmp) + 64;
             else
                 est += 8UL << 20;
@@ -2812,7 +2826,7 @@ ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
                 goto push_fail;
             }
             u8 otype = 0;
-            if (KEEPGetExact(k, &walk_shas[i], obuf, &otype) != OK) {
+            if (KEEPGetExact(&walk_shas[i], obuf, &otype) != OK) {
                 u8bUnMap(obuf);
                 sha1bFree(walk_shas_b);
                 goto push_fail;
@@ -2925,8 +2939,9 @@ static ok64 keep_tip_filter(refcp r, void *ctx_) {
     return w->cb(&t, w->ctx);
 }
 
-ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx) {
-    sane(k && cb);
+ok64 KEEPEachTip(KEEPTipCb cb, void *ctx) {
+    sane(cb);
+    keeper *k = &KEEP;
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
     keep_tip_walk w = {.cb = cb, .ctx = ctx};
     return REFSEach($path(keepdir), keep_tip_filter, &w);
@@ -2985,8 +3000,9 @@ static ok64 keep_remote_filter(refcp r, void *ctx_) {
     return w->cb(&rem, w->ctx);
 }
 
-ok64 KEEPEachRemote(keeper *k, KEEPRemoteCb cb, void *ctx) {
-    sane(k && cb);
+ok64 KEEPEachRemote(KEEPRemoteCb cb, void *ctx) {
+    sane(cb);
+    keeper *k = &KEEP;
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
     Bu8 seen = {};
     call(u8bAllocate, seen, 1UL << 14);     //  16K seen-URL set

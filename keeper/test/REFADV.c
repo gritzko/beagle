@@ -112,7 +112,7 @@ ok64 REFADVtest_empty() {
     call(KEEPOpen, &h, YES);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     want(adv.count == 0);
 
     u8 *bytes = NULL;
@@ -151,7 +151,7 @@ ok64 REFADVtest_single_trunk() {
     call(push_branch, $path(keepdir), "", hex);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     want(adv.count == 1);
 
     sha1 expect = {};
@@ -217,7 +217,7 @@ ok64 REFADVtest_multi() {
     call(push_branch, $path(keepdir), "feat", hex_feat);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     want(adv.count == 2);
 
     //  Find which entry is which (REFS order is undefined).
@@ -290,7 +290,7 @@ ok64 REFADVtest_tip_lookup() {
     call(push_branch, $path(keepdir), "feat", hex_feat);
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     want(adv.count == 2);
 
     sha1 sha_trunk = {};
@@ -344,7 +344,7 @@ ok64 REFADVtest_round_trip() {
     call(push_branch, $path(keepdir), "v2.0", hex_c);  // literal branch
 
     refadv adv = {};
-    call(REFADVOpen, &adv, &KEEP);
+    call(REFADVOpen, &adv);
     want(adv.count == 3);
 
     u8 *bytes = NULL;

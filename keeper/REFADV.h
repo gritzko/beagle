@@ -55,7 +55,7 @@ typedef refadv const *refadvcp;
 
 //  Walk the keeper's REFS, populate `out`.  Caller frees with
 //  REFADVClose.  `out` is reset (zeroed) on entry.
-ok64 REFADVOpen(refadv *out, keeper *k);
+ok64 REFADVOpen(refadv *out);
 
 //  Release arena + entries array.  Safe on a zeroed `adv`.
 void REFADVClose(refadv *adv);

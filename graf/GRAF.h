@@ -71,7 +71,6 @@ ok64 GRAFDagFinish(void);
 con ok64 GRAFFAIL    = 0x41b28f3ca495;
 con ok64 GRAFOPEN    = 0x41b28f619397;
 con ok64 GRAFOPENRO  = 0x41b28f6193976d8;
-con ok64 GRAFNOBR    = 0x41b28f5d82db;
 //  Missing prefix dir along the trunk → leaf branch path.
 con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
 //  No `--at` anchor available — `diff:` projector forms that need a
@@ -157,7 +156,7 @@ ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
 // Drive a full streaming ingest from keeper: iterate every commit in
 // the keeper store, replay one (COMMIT, sha, body) into graf's DAG,
 // and finalize.  Used by `graf index` (no URI) for forced reindex.
-ok64 GRAFIndex(keeper *k);
+ok64 GRAFIndex(void);
 
 // Walk back from each tip in `u` (resolved via GRAFResolveTip) over
 // COMMIT_PARENT edges in keeper, calling GRAFDagUpdate per commit and
@@ -165,11 +164,11 @@ ok64 GRAFIndex(keeper *k);
 // index (DAG.md: mention ≡ known).  Multi-tip URIs and ranges are
 // folded together; bare URI (no query) walks the wt's current tip.
 // Used by `graf get URI` under the new arrangement (DOG.md §10a).
-ok64 GRAFIndexFromTips(keeper *k, uricp u);
+ok64 GRAFIndexFromTips(uricp u);
 
 // Token-level blame (reads blobs from keeper).
 //   tip_h: 40-bit commit hashlet bounding the history (0 = no filter).
-ok64 GRAFBlame(keeper *k, u8cs filepath, u64 tip_h, u8cs reporoot);
+ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot);
 
 // Build the file's full token weave by replaying its blob history along
 // `tip_h`'s ancestor closure (oldest-first, byte-dedup adjacent), then
@@ -232,10 +231,10 @@ ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
 
 // Resolve a URI's `#hex` / `?ref` / absent-query to a 20-byte commit
 // SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
-ok64 GRAFResolveTip(keeper *k, uricp u, sha1 *out);
+ok64 GRAFResolveTip(uricp u, sha1 *out);
 
 // Weave diff between two commits (reads blobs from keeper).
-ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
+ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
                    u8cs from, u8cs to);
 
 // URI-driven diff primitives.  Each emits one hunk block per changed
@@ -255,9 +254,9 @@ ok64 GRAFWeaveDiff(keeper *k, u8cs filepath, u8cs reporoot,
 //   GRAFDiffTreeRefs — whole tree: walk both refs, pair by path,
 //                      orphans on either side become deletions or
 //                      insertions against empty.
-ok64 GRAFDiffWtFile(keeper *k, u8cs filepath, u64 base_h40, u8cs reporoot);
-ok64 GRAFDiffWtTree(keeper *k, u64 base_h40, u8cs base_hex, u8cs reporoot);
-ok64 GRAFDiffTreeRefs(keeper *k, u8cs from, u8cs to, u8cs reporoot);
+ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot);
+ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot);
+ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot);
 
 // 2-layer weave diff: WEAVEFromBlob ×2 + WEAVEDiff (LCS+NEIL+canon) +
 // WEAVEEmitDiff.  The single engine every diff path uses.  `name` is
@@ -327,7 +326,7 @@ ok64 GRAFMerge3Bytes(u8cs base, u8cs ours, u8cs theirs,
 // Branch-only URI (no path) walks the COMMIT_PARENT chain via the DAG
 // index; path-bearing URI uses PATH_VER + ancestor filter.  Output
 // rides graf_emit (TLV via bro on TTY, raw text otherwise).
-ok64 GRAFLog(keeper *k, uricp u);
+ok64 GRAFLog(uricp u);
 
 // `graf head '#<msg-substring>'` — walk cur's first-parent chain
 // (cur tip parked by HOMEOpen via `--at`), substring-match the
@@ -336,7 +335,7 @@ ok64 GRAFLog(keeper *k, uricp u);
 // GRAFFAIL on transport / object-fetch error.  Used by `be head
 // '#parallel'` (VERBS.md §HEAD).
 con ok64 GRAFNONE    = 0x41b28f5d85ce;
-ok64 GRAFHead(keeper *k, uricp u);
+ok64 GRAFHead(uricp u);
 
 // Subway-map view of the branch tree for `be map:`.  Reads from the
 // keeper + graf singletons; caller has already opened both.  Phase 1

@@ -97,7 +97,7 @@ static ok64 ls_ref(Bu8 out, uri const *u) {
     //  resolve it via sniff's ULOG baseline instead.  Construct a
     //  local URI with #<sha> fragment and hand that to KEEPLsFiles.
     if (!$empty(u->query)) {
-        return KEEPLsFiles(k, u, ls_tree_visit, &ctx);
+        return KEEPLsFiles(u, ls_tree_visit, &ctx);
     }
 
     //  query present-but-empty: look up the wt's anchor commit sha.
@@ -117,7 +117,7 @@ static ok64 ls_ref(Bu8 out, uri const *u) {
     tip.path[0]     = u->path[0];
     tip.path[1]     = u->path[1];
     sha1hexSlice(tip.fragment, &hex);
-    return KEEPLsFiles(k, &tip, ls_tree_visit, &ctx);
+    return KEEPLsFiles(&tip, ls_tree_visit, &ctx);
 }
 
 // --- URI-shape dispatch ---

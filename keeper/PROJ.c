@@ -59,7 +59,7 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
         call(u8bAllocate, tmp, 1UL << 20);
         u64 hashlet = WHIFFHexHashlet60(u->fragment);
         u8 type = 0;
-        ok64 go = KEEPGet(k, hashlet, u8csLen(u->fragment), tmp, &type);
+        ok64 go = KEEPGet(hashlet, u8csLen(u->fragment), tmp, &type);
         if (go == OK) {
             a_dup(u8c, body, u8bData(tmp));
             KEEPObjSha(out, type, body);
@@ -115,7 +115,7 @@ static ok64 proj_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
         Bu8 tbuf = {};
         call(u8bAllocate, tbuf, 1UL << 20);
         u8 otype = 0;
-        ok64 go = KEEPGetExact(k, &cur, tbuf, &otype);
+        ok64 go = KEEPGetExact(&cur, tbuf, &otype);
         if (go != OK || otype != DOG_OBJ_TREE) {
             u8bFree(tbuf);
             return go == OK ? PROJNONE : go;
@@ -223,13 +223,14 @@ static void proj_tree_mode_type(u8b out, u8 kind) {
     while (tn++ < 6) (void)u8bFeed1(out, ' ');
 }
 
-ok64 KEEPProjTree(keeper *k, uricp u, b8 tlv) {
-    sane(k && u);
+ok64 KEEPProjTree(uricp u, b8 tlv) {
+    sane(u);
+    keeper *k = &KEEP;
 
     //  Resolve URI → root tree SHA.  KEEPResolveTree handles ?ref,
     //  #hex, and commit→tree dereference.
     sha1 root_tree = {};
-    call(KEEPResolveTree, k, u, &root_tree);
+    call(KEEPResolveTree, u, &root_tree);
 
     //  Descend the URI's path inside that tree.  Empty path stays at
     //  the root; trailing '/' is fine.
@@ -244,7 +245,7 @@ ok64 KEEPProjTree(keeper *k, uricp u, b8 tlv) {
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, 1UL << 20);
     u8 otype = 0;
-    ok64 go = KEEPGetExact(k, &target, tbuf, &otype);
+    ok64 go = KEEPGetExact(&target, tbuf, &otype);
     if (go != OK || otype != DOG_OBJ_TREE) {
         u8bFree(tbuf);
         return go == OK ? PROJFAIL : go;
@@ -284,8 +285,9 @@ ok64 KEEPProjTree(keeper *k, uricp u, b8 tlv) {
 //  commit:
 // =====================================================================
 
-ok64 KEEPProjCommit(keeper *k, uricp u, b8 tlv) {
-    sane(k && u);
+ok64 KEEPProjCommit(uricp u, b8 tlv) {
+    sane(u);
+    keeper *k = &KEEP;
 
     sha1 csha = {};
     call(proj_resolve_object_sha, k, u, &csha);
@@ -293,7 +295,7 @@ ok64 KEEPProjCommit(keeper *k, uricp u, b8 tlv) {
     Bu8 obj = {};
     call(u8bAllocate, obj, 1UL << 20);
     u8 otype = 0;
-    ok64 go = KEEPGetExact(k, &csha, obj, &otype);
+    ok64 go = KEEPGetExact(&csha, obj, &otype);
     if (go != OK) { u8bFree(obj); return go; }
 
     //  Tag → dereference once to its target object.
@@ -316,7 +318,7 @@ ok64 KEEPProjCommit(keeper *k, uricp u, b8 tlv) {
             csha = tgt;
             u8bReset(obj);
             otype = 0;
-            go = KEEPGetExact(k, &csha, obj, &otype);
+            go = KEEPGetExact(&csha, obj, &otype);
             if (go != OK) { u8bFree(obj); return go; }
         }
     }
@@ -368,15 +370,16 @@ ok64 KEEPProjCommit(keeper *k, uricp u, b8 tlv) {
 //  blob:
 // =====================================================================
 
-ok64 KEEPProjBlob(keeper *k, uricp u, b8 tlv) {
-    sane(k && u);
+ok64 KEEPProjBlob(uricp u, b8 tlv) {
+    sane(u);
+    keeper *k = &KEEP;
 
     //  KEEPGetByURI handles both `?<sha>` (bare blob) and
     //  `<path>?<ref|sha>` (path-in-tree), so we don't duplicate
     //  resolution here.
     Bu8 text = {};
     call(u8bAllocate, text, 64UL << 20);
-    ok64 go = KEEPGetByURI(k, u, text);
+    ok64 go = KEEPGetByURI(u, text);
     if (go != OK) { u8bFree(text); return go; }
 
     if (!tlv) {
@@ -437,8 +440,8 @@ static b8 proj_is_hex_prefix(u8cs s) {
     return YES;
 }
 
-ok64 KEEPProjDispatch(keeper *k, uricp u, b8 tlv) {
-    sane(k && u);
+ok64 KEEPProjDispatch(uricp u, b8 tlv) {
+    sane(u);
     if (u8csEmpty(u->scheme)) fail(PROJFAIL);
 
     a_cstr(s_tree,   "tree");
@@ -462,9 +465,9 @@ ok64 KEEPProjDispatch(keeper *k, uricp u, b8 tlv) {
     }
     uricp un = (uricp)&local;
 
-    if ($eq(un->scheme, s_tree))   return KEEPProjTree(k, un, tlv);
-    if ($eq(un->scheme, s_commit)) return KEEPProjCommit(k, un, tlv);
-    if ($eq(un->scheme, s_blob))   return KEEPProjBlob(k, un, tlv);
+    if ($eq(un->scheme, s_tree))   return KEEPProjTree(un, tlv);
+    if ($eq(un->scheme, s_commit)) return KEEPProjCommit(un, tlv);
+    if ($eq(un->scheme, s_blob))   return KEEPProjBlob(un, tlv);
 
     //  DOG_PROJECTORS routed this scheme to keeper but no handler is
     //  wired here.  Surface that explicitly so the gap is obvious.

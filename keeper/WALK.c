@@ -41,7 +41,7 @@ static ok64 walk_tree_dive(keeper *k, sha1 const *tree_sha,
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, 1UL << 20);
     u8 otype = 0;
-    ok64 o = KEEPGetExact(k, tree_sha, tbuf, &otype);
+    ok64 o = KEEPGetExact(tree_sha, tbuf, &otype);
     if (o != OK) { u8bFree(tbuf); return o; }
     if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); return WALKBADFMT; }
 
@@ -80,7 +80,7 @@ static ok64 walk_tree_dive(keeper *k, sha1 const *tree_sha,
                 sha1 entry_sha = {};
                 sha1Mv(&entry_sha, (sha1cp)esha[0]);
                 u8 btype = 0;
-                if (KEEPGetExact(k, &entry_sha, bbuf, &btype) == OK &&
+                if (KEEPGetExact(&entry_sha, bbuf, &btype) == OK &&
                     btype == DOG_OBJ_BLOB) {
                     blob[0] = u8bDataHead(bbuf);
                     blob[1] = u8bIdleHead(bbuf);
@@ -128,12 +128,12 @@ static ok64 walk_tree_entry(keeper *k, u8cp tree_sha, b8 eager,
     return o;
 }
 
-ok64 WALKTree(keeper *k, u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return walk_tree_entry(k, tree_sha, YES, visit, ctx);
+ok64 WALKTree(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
+    return walk_tree_entry(&KEEP, tree_sha, YES, visit, ctx);
 }
 
-ok64 WALKTreeLazy(keeper *k, u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return walk_tree_entry(k, tree_sha, NO, visit, ctx);
+ok64 WALKTreeLazy(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
+    return walk_tree_entry(&KEEP, tree_sha, NO, visit, ctx);
 }
 
 //  ls-files: descend an optional /subpath relative to a URI-resolved
@@ -197,7 +197,7 @@ static ok64 lsf_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
         Bu8 tbuf = {};
         call(u8bAllocate, tbuf, 1UL << 20);
         u8 otype = 0;
-        ok64 o = KEEPGetExact(k, &cur_sha, tbuf, &otype);
+        ok64 o = KEEPGetExact(&cur_sha, tbuf, &otype);
         if (o != OK || otype != DOG_OBJ_TREE) { u8bFree(tbuf); return o ? o : KEEPNONE; }
 
         u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
@@ -231,13 +231,13 @@ static ok64 lsf_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
     done;
 }
 
-ok64 KEEPLsFiles(keeper *k, uricp target,
-                 walk_tree_fn visit, void0p ctx) {
-    sane(k && target && visit);
+ok64 KEEPLsFiles(uricp target, walk_tree_fn visit, void0p ctx) {
+    sane(target && visit);
+    keeper *k = &KEEP;
 
     //  1. Resolve URI to root tree SHA (commit→tree or tree→tree).
     sha1 root_tree = {};
-    call(KEEPResolveTree, k, target, &root_tree);
+    call(KEEPResolveTree, target, &root_tree);
 
     //  2. Descend /subpath (URI path, strip leading '/').
     a_pad(u8, prefix_buf, 4096);
@@ -279,8 +279,9 @@ ok64 KEEPLsFiles(keeper *k, uricp target,
 //  URI → single blob.  Shares the resolve + descend machinery with
 //  KEEPLsFiles; differs in that it requires a file leaf and writes its
 //  body into the caller's buffer.
-ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out) {
-    sane(k && target && out);
+ok64 KEEPGetByURI(uricp target, u8bp out) {
+    sane(target && out);
+    keeper *k = &KEEP;
 
     //  Host-bearing URI: remote materialization.  Not wired yet —
     //  keeper has KEEPPush but no policy for deciding what to pull on
@@ -297,13 +298,13 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out) {
         u8 btype = 0;
         u64 hashlet = WHIFFHexHashlet60(target->query);
         u8bReset(out);
-        call(KEEPGet, k, hashlet, u8csLen(target->query), out, &btype);
+        call(KEEPGet, hashlet, u8csLen(target->query), out, &btype);
         if (btype != DOG_OBJ_BLOB) fail(KEEPFAIL);
         done;
     }
 
     sha1 root_tree = {};
-    call(KEEPResolveTree, k, target, &root_tree);
+    call(KEEPResolveTree, target, &root_tree);
 
     a_pad(u8, prefix_buf, 4096);
     sha1 leaf_sha  = root_tree;
@@ -318,7 +319,7 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out) {
     if (leaf_kind == WALK_KIND_DIR) fail(KEEPFAIL);
 
     u8 btype = 0;
-    call(KEEPGetExact, k, &leaf_sha, out, &btype);
+    call(KEEPGetExact, &leaf_sha, out, &btype);
     if (btype != DOG_OBJ_BLOB) fail(KEEPNONE);
     done;
 }
@@ -384,12 +385,12 @@ static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     return OK;
 }
 
-ok64 KEEPTreeULog(keeper *k, u8cp tree_sha,
+ok64 KEEPTreeULog(u8cp tree_sha,
                   ron60 ts, ron60 verb, u8bp out) {
-    sane(k && tree_sha && out);
+    sane(tree_sha && out);
     u8bReset(out);
     treeulog_ctx c = {.out = out, .ts = ts, .verb = verb, .err = OK};
-    ok64 o = WALKTreeLazy(k, tree_sha, treeulog_visit, &c);
+    ok64 o = WALKTreeLazy(tree_sha, treeulog_visit, &c);
     if (o != OK) return o;
     return c.err;
 }
@@ -493,11 +494,11 @@ ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out) {
     if (u8bAllocate(ulb, 1UL << 20) != OK) { u8bFree(ula); fail(WALKFAIL); }
 
     if (sha_a != NULL) {
-        ok64 ar = KEEPTreeULog(&KEEP, sha_a, 0, v_a, ula);
+        ok64 ar = KEEPTreeULog(sha_a, 0, v_a, ula);
         if (ar != OK) { u8bFree(ula); u8bFree(ulb); return ar; }
     }
     if (sha_b != NULL) {
-        ok64 br = KEEPTreeULog(&KEEP, sha_b, 0, v_b, ulb);
+        ok64 br = KEEPTreeULog(sha_b, 0, v_b, ulb);
         if (br != OK) { u8bFree(ula); u8bFree(ulb); return br; }
     }
 

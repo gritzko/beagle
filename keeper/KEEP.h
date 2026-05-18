@@ -234,15 +234,15 @@ ok64 KEEPSwitchBranch(home *h, u8cs new_branch);
 //  dir, evicts each from the keeper-level registries, then rmdir's
 //  the leaf dir.  REF_DELTA descendant ancestry is a follow-up
 //  (Phase 2+).
-ok64 KEEPBranchDrop(keeper *k, u8cs branch);
+ok64 KEEPBranchDrop(u8cs branch);
 
 //  Run one CLI invocation — same effect as `keeper ...`.
-ok64 KEEPExec(keeper *k, cli *c);
+ok64 KEEPExec(cli *c);
 
 //  Feed a single git object (type + raw uncompressed content) into
 //  the store.  Appends to the current pack log + records an index
 //  entry.  obj_type uses KEEP_OBJ_* below.
-ok64 KEEPUpdate(keeper *k, u8 obj_type, u8cs blob);
+ok64 KEEPUpdate(u8 obj_type, u8cs blob);
 
 //  Compact the LSM run stack to satisfy the 1/8 invariant — merges
 //  the youngest violators into one run, writes the merged `.idx`
@@ -250,7 +250,7 @@ ok64 KEEPUpdate(keeper *k, u8 obj_type, u8cs blob);
 //  the shard's `runs[]` / `run_maps[]`.  Invoked automatically from
 //  KEEPClose; safe no-op when the stack is already compact or open
 //  is read-only.
-ok64 KEEPCompact(keeper *k);
+ok64 KEEPCompact(void);
 
 //  Close and unmap everything.
 ok64 KEEPClose(void);
@@ -278,12 +278,12 @@ extern char const KEEP_CLI_VAL_FLAGS[];
 
 //  Retrieve object by hashlet.  Inflates from pack, chases deltas.
 //  Returns object body in `out`, type in `*out_type`.
-ok64 KEEPGet(keeper *k, u64 hashlet60, size_t hexlen, u8bp out, u8p out_type);
+ok64 KEEPGet(u64 hashlet60, size_t hexlen, u8bp out, u8p out_type);
 
 //  Retrieve object by full 20-byte SHA-1.  Scans all hashlet matches,
 //  inflates each, verifies SHA-1.  Use when the full hash is known
 //  (e.g. tree entries) to avoid hashlet collisions.
-ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type);
+ok64 KEEPGetExact(sha1 const *sha, u8bp out, u8p out_type);
 
 //  Stream a side-band-64k upload-pack response from `rfd` directly
 //  into the keeper log: band-1 bytes go to disk via u8bFeed (no
@@ -292,12 +292,12 @@ ok64 KEEPGetExact(keeper *k, sha1 const *sha, u8bp out, u8p out_type);
 //  has its 20-byte SHA-1 trailer trimmed in place, the embedded
 //  git PACK header is parsed for the object count, the file-level
 //  PACK header is patched, and UNPK indexes the new objects.
-//  This is the streaming equivalent of `KEEPIngestFile(k, bytes)`
+//  This is the streaming equivalent of `KEEPIngestFile(bytes)`
 //  with no intermediate respbuf / packbuf double-buffering.
-ok64 KEEPIngestStream(keeper *k, int rfd);
+ok64 KEEPIngestStream(int rfd);
 
 //  Check if object exists in the store (hexlen = prefix length).
-ok64 KEEPHas(keeper *k, u64 hashlet60, size_t hexlen);
+ok64 KEEPHas(u64 hashlet60, size_t hexlen);
 
 //  Compute the canonical git object SHA-1 of a body: SHA1("<type>
 //  <size>\0" + body).  `type` must be one of DOG_OBJ_*.
@@ -305,15 +305,15 @@ void KEEPObjSha(sha1 *out, u8 type, u8csc content);
 
 //  Raw index lookup: hashlet → val wh64 (flags|file|offset).
 //  hexlen: prefix length for partial matching (15 = full 60-bit).
-ok64 KEEPLookup(keeper *k, u64 hashlet60, size_t hexlen, u64p val);
+ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val);
 
 //  Verify object by full SHA-1: get from store, recompute hash,
 //  compare.  For commits: also verifies tree.  For trees: verifies
 //  all children recursively.  Reports errors to stderr.
-ok64 KEEPVerify(keeper *k, u8cs hex_sha);
+ok64 KEEPVerify(u8cs hex_sha);
 
 //  Import a git packfile into the store.
-ok64 KEEPImport(keeper *k, u8cs pack_path);
+ok64 KEEPImport(u8cs pack_path);
 
 //  Ingest a received git pack: `bytes` is the whole pack (12-byte
 //  PACK header + object records + optional 20-byte SHA-1 trailer).
@@ -325,7 +325,7 @@ ok64 KEEPImport(keeper *k, u8cs pack_path);
 //  is a no-op: zero file changes.  A new NNNNN.keeper file is only
 //  created when the registry is empty (first-ever ingest).
 //  Caller holds no resources beyond the `bytes` slice.
-ok64 KEEPIngestFile(keeper *k, u8csc bytes);
+ok64 KEEPIngestFile(u8csc bytes);
 
 //  Push one new commit object to `host:path` via git-receive-pack.
 //  Spawns `ssh <host> git-receive-pack <path>` (no shell).
@@ -334,11 +334,11 @@ ok64 KEEPIngestFile(keeper *k, u8csc bytes);
 //  "000...0" (40 zeros) to create a new ref.
 //  `commit_body` is the raw commit object bytes that correspond to
 //  new_hex; KEEPPush packs and sends exactly this one object.
-ok64 KEEPPush(keeper *k, u8csc host, u8csc path, char const *ref,
+ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
               u8csc old_hex, u8csc new_hex, u8csc commit_body);
 
 //  Store a batch of objects (convenience wrapper over Open/Feed/Close).
-ok64 KEEPPut(keeper *k, u8csc *objects, wh64 *whiffs, u32 nobjs);
+ok64 KEEPPut(u8csc *objects, wh64 *whiffs, u32 nobjs);
 
 // --- Incremental pack writer ---
 
@@ -356,7 +356,7 @@ typedef struct {
     Bu8      delta_instr;           // scratch: encoded delta instructions
 } keep_pack;
 
-ok64 KEEPPackOpen(keeper *k, keep_pack *p);
+ok64 KEEPPackOpen(keep_pack *p);
 
 //  Feed one object.  `sha_out` receives the 20-byte git SHA-1.
 //  `path` is repo-relative for blobs (drives spot's tokenizer choice
@@ -374,12 +374,10 @@ ok64 KEEPPackOpen(keeper *k, keep_pack *p);
 //  Any mismatch (hashlet collision, delta not smaller than raw, base
 //  unreachable) falls silently back to a raw record.  The index
 //  entry always records the resolved object type.
-ok64 KEEPPackFeed(keeper *k, keep_pack *p,
-                  u8 type, u8csc content,
-                  u64 base_hashlet60,
-                  sha1 *sha_out);
+ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
+                  u64 base_hashlet60, sha1 *sha_out);
 
-ok64 KEEPPackClose(keeper *k, keep_pack *p);
+ok64 KEEPPackClose(keep_pack *p);
 
 //  Copy a list of commits (plus every reachable tree+blob) into the
 //  KEEP singleton's active write-leaf, with delta-base hints.
@@ -414,7 +412,7 @@ ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch);
 
 //  Walk objects in a pack file from a given val position.
 typedef ok64 (*keep_cb)(u8 type, u8cs content, u64 hashlet, void *ctx);
-ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx);
+ok64 KEEPScan(u64 from_val, keep_cb cb, void *ctx);
 
 //  Retrieve a single blob by URI.  Dispatch:
 //    URI has host     → materialize from remote (TODO: not yet wired),
@@ -422,7 +420,7 @@ ok64 KEEPScan(keeper *k, u64 from_val, keep_cb cb, void *ctx);
 //    URI has fragment → hex SHA prefix (object lookup) + path descent,
 //    otherwise        → KEEPFAIL (caller should use the filesystem).
 //  `out` must be an allocated u8bp; the blob body is written into it.
-ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out);
+ok64 KEEPGetByURI(uricp target, u8bp out);
 
 //  Resolve a target URI to a root tree SHA-1 (20 bytes).
 //  Accepted forms:
@@ -430,13 +428,13 @@ ok64 KEEPGetByURI(keeper *k, uricp target, u8bp out);
 //    target.query    = ref name ("HEAD", "refs/tags/X", …) — looked up
 //                      via REFS, tag-dereferenced if needed.
 //  Returns KEEPNONE when the ref is unknown, KEEPFAIL on bad input.
-ok64 KEEPResolveTree(keeper *k, uricp target, sha1 *tree_out);
+ok64 KEEPResolveTree(uricp target, sha1 *tree_out);
 
 //  Resolve a commit's root-tree sha1 by full SHA-1.  Uses keeper's
 //  scratch (`k->buf1`) — caller passes no buffer.  Returns `KEEPFAIL`
 //  when the object exists but isn't a commit; otherwise the result of
 //  `KEEPGetExact` / `GITu8sCommitTree`.
-ok64 KEEPCommitTreeSha(keeper *k, sha1 const *commit, sha1 *tree_out);
+ok64 KEEPCommitTreeSha(sha1 const *commit, sha1 *tree_out);
 
 //  KEEPLsFiles is declared in keeper/WALK.h (takes a walk_tree_fn).
 
@@ -469,7 +467,7 @@ typedef ok64 (*KEEPTipCb)(keep_tipcp t, void *ctx);
 //  rows (host-only keys), and tombstones (zero-sha values).  Walk
 //  stops on a non-OK return from `cb`; `REFSSTOP` is treated as
 //  stop-without-error and converted to OK on return.
-ok64 KEEPEachTip(keeper *k, KEEPTipCb cb, void *ctx);
+ok64 KEEPEachTip(KEEPTipCb cb, void *ctx);
 
 //  Remote-tracking ref entry — REFS rows whose key carries an
 //  authority or scheme (e.g. `//origin?heads/main`,
@@ -487,6 +485,6 @@ typedef ok64 (*KEEPRemoteCb)(keep_remotecp r, void *ctx);
 
 //  Iterate every remote-tracking ref row (skips local `?<path>`
 //  tips and tombstones).  Same walk semantics as KEEPEachTip.
-ok64 KEEPEachRemote(keeper *k, KEEPRemoteCb cb, void *ctx);
+ok64 KEEPEachRemote(KEEPRemoteCb cb, void *ctx);
 
 #endif

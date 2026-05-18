@@ -424,7 +424,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  the sub is mounted with no content.
     {
         a_dup(u8c, url_const, url);
-        ok64 fo = WIREFetchAll(&KEEP, url_const);
+        ok64 fo = WIREFetchAll(url_const);
         if (fo != OK) {
             fprintf(stderr,
                     "sniff: submodule fetch failed for %.*s\n",

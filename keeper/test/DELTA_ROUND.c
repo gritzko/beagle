@@ -114,27 +114,27 @@ ok64 DELTARoundTrip() {
     //      the v3 base is itself a REF_DELTA — KEEPGet chases it.
     {
         keep_pack p = {};
-        call(KEEPPackOpen, &KEEP, &p);
+        call(KEEPPackOpen, &p);
         p.strict_order = NO;
         u8csc c0 = {(u8cp)versions[0],
                     (u8cp)versions[0] + strlen(versions[0])};
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, c0, 0,
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c0, 0,
              &shas[0]);
         u8csc c1 = {(u8cp)versions[1],
                     (u8cp)versions[1] + strlen(versions[1])};
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, c1,
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c1,
              WHIFFHashlet60(&shas[0]), &shas[1]);
-        call(KEEPPackClose, &KEEP, &p);
+        call(KEEPPackClose, &p);
     }
     for (int i = 2; i < N; i++) {
         keep_pack p = {};
-        call(KEEPPackOpen, &KEEP, &p);
+        call(KEEPPackOpen, &p);
         p.strict_order = NO;
         u8csc c = {(u8cp)versions[i],
                    (u8cp)versions[i] + strlen(versions[i])};
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, c,
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c,
              WHIFFHashlet60(&shas[i-1]), &shas[i]);
-        call(KEEPPackClose, &KEEP, &p);
+        call(KEEPPackClose, &p);
     }
 
     //  Read the on-disk log.

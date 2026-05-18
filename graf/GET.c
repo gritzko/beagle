@@ -64,14 +64,14 @@ static ok64 get_resolve_qref(get_tip *out, qref const *q) {
     if (q->type != QURY_SHA && q->type != QURY_REF) return GETBAD;
 
     u8cs no_cur = {};
-    ok64 rr = KEEPResolveRef(&KEEP, &out->sha, q->body, no_cur);
+    ok64 rr = KEEPResolveRef(&out->sha, q->body, no_cur);
     if (rr != OK) return GETFAIL;
 
     //  Verify the resolved object is a COMMIT (not a tree / blob / tag).
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, &out->sha, cbuf, &ct);
+    ok64 ko = KEEPGetExact(&out->sha, cbuf, &ct);
     u8bFree(cbuf);
     if (ko != OK || ct != DOG_OBJ_COMMIT) return GETFAIL;
 
@@ -126,7 +126,7 @@ static ok64 get_append_blob_at(u8b into, u64 commit_h40, u8cs path) {
     sane(into);
     Bu8 blob = {};
     call(u8bMap, blob, GET_BLOB_MAX);
-    ok64 o = GRAFBlobAtCommit(blob, &KEEP, commit_h40, path);
+    ok64 o = GRAFBlobAtCommit(blob, commit_h40, path);
     if (o != OK) { u8bUnMap(blob); return o; }
     a_dup(u8c, bdata, u8bData(blob));
     o = u8bFeed(into, bdata);
@@ -212,7 +212,7 @@ ok64 GRAFLca(sha1 *out, sha1 const *a, sha1 const *b) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 o = KEEPGet(&KEEP, lca_h,
+    ok64 o = KEEPGet(lca_h,
                      DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); done; }
 
@@ -559,7 +559,7 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     for (u32 i = 0; i < nvers; i++) {
         u64 commit_h = vers[i];
         u8bReset(*cur);
-        ok64 fo = GRAFBlobAtCommit(*cur, &KEEP, commit_h, path);
+        ok64 fo = GRAFBlobAtCommit(*cur, commit_h, path);
         if (fo != OK) continue;
 
         if (have_prev) {
@@ -636,7 +636,7 @@ static ok64 get_tree_at(u8b into, keeper *k, u64 commit_h40, u8cs path) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);
     u8 ct = 0;
-    ok64 o = KEEPGet(k, commit_h40, DAG_H60_HEXLEN, cbuf, &ct);
+    ok64 o = KEEPGet(commit_h40, DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
 
     sha1 cur = {};
@@ -663,7 +663,7 @@ static ok64 get_tree_at(u8b into, keeper *k, u64 commit_h40, u8cs path) {
         while (slash < rest[1] && *slash != '/') slash++;
         u8cs name = {rest[0], slash};
         if (!$empty(name)) {
-            ok64 s = GRAFTreeStep(k, &cur, name);
+            ok64 s = GRAFTreeStep(&cur, name);
             if (s != OK) return s;
         }
         rest[0] = (slash < rest[1]) ? slash + 1 : slash;
@@ -672,7 +672,7 @@ static ok64 get_tree_at(u8b into, keeper *k, u64 commit_h40, u8cs path) {
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, 1UL << 20);
     u8 ot = 0;
-    ok64 ko = KEEPGetExact(k, &cur, tbuf, &ot);
+    ok64 ko = KEEPGetExact(&cur, tbuf, &ot);
     if (ko == OK && ot == DOG_OBJ_TREE) {
         a_dup(u8c, tb, u8bData(tbuf));
         ko = u8bFeed(into, tb);

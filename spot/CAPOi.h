@@ -92,8 +92,7 @@ ok64 CAPOScanFiles(u8css files, CAPOScanOpts const *opts);
 // matching-ext blob, calling opts->file_fn with mapped=NULL.  Replace
 // mode is not supported (no on-disk path); callers must check and
 // reject spot --replace when the URI has a ref query.
-ok64 CAPOScanRef(keeper *k, uri const *target,
-                  CAPOScanOpts const *opts);
+ok64 CAPOScanRef(uri const *target, CAPOScanOpts const *opts);
 
 // Pre-compute candidate fn_rap40 set from literal text.
 ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,

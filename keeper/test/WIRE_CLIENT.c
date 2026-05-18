@@ -117,7 +117,7 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     call(KEEPOpen, &h, YES);
 
     u8csc bytes = {pbuf, pbuf + plen};
-    call(KEEPIngestFile, &KEEP, bytes);
+    call(KEEPIngestFile, bytes);
 
     a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
     a_pad(u8, kbuf, 256);
@@ -207,7 +207,7 @@ ok64 WIRECLIENTtest_fetch_smoke() {
 
         FILE_URI(uri, serverdir);
         u8csc want_cs = {NULL, NULL};
-        ok64 fo = WIREFetch(&KEEP, uri, want_cs);
+        ok64 fo = WIREFetch(uri, want_cs);
         want(fo == OK);
 
         KEEPClose();
@@ -258,7 +258,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(&KEEP, uri, branch_cs, &tip);
+        ok64 po = WIREPush(uri, branch_cs, &tip);
         want(po == OK);
 
         KEEPClose();
@@ -312,7 +312,7 @@ ok64 WIRECLIENTtest_round_trip() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(&KEEP, uri, branch_cs, &tip);
+        ok64 po = WIREPush(uri, branch_cs, &tip);
         want(po == OK);
 
         KEEPClose();
@@ -328,7 +328,7 @@ ok64 WIRECLIENTtest_round_trip() {
 
         FILE_URI(uri, Adir);
         u8csc want_cs = {NULL, NULL};
-        ok64 fo = WIREFetch(&KEEP, uri, want_cs);
+        ok64 fo = WIREFetch(uri, want_cs);
         want(fo == OK);
 
         KEEPClose();

@@ -600,9 +600,9 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                 (void)u8bMap(obuf, PATCH_BLOB_BUF);
                 (void)u8bMap(tbuf, PATCH_BLOB_BUF);
                 u8 bt = 0, ot = 0, tt = 0;
-                (void)KEEPGetExact(&KEEP, &l->sha, bbuf, &bt);
-                (void)KEEPGetExact(&KEEP, &o->sha, obuf, &ot);
-                (void)KEEPGetExact(&KEEP, &t->sha, tbuf, &tt);
+                (void)KEEPGetExact(&l->sha, bbuf, &bt);
+                (void)KEEPGetExact(&o->sha, obuf, &ot);
+                (void)KEEPGetExact(&t->sha, tbuf, &tt);
                 a_dup(u8c, bdata, u8bData(bbuf));
                 a_dup(u8c, odata, u8bData(obuf));
                 a_dup(u8c, tdata, u8bData(tbuf));
@@ -807,7 +807,7 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
     u8cs cur_branch = {};
     (void)resolve_current_branch(cur_branch);
 
-    ok64 rr = KEEPResolveRef(&KEEP, out, target_query_in, cur_branch);
+    ok64 rr = KEEPResolveRef(out, target_query_in, cur_branch);
     if (rr != OK) {
         fprintf(stderr,
             "sniff: patch: bad ref '%.*s'\n",
@@ -821,7 +821,7 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, out, cbuf, &ct);
+    ok64 ko = KEEPGetExact(out, cbuf, &ct);
     if (ko == OK && ct == DOG_OBJ_TAG) {
         a_dup(u8c, body, u8bDataC(cbuf));
         u8cs field = {}, value = {};
@@ -1005,7 +1005,7 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
 
     u8cs cur_branch = {};
     (void)resolve_current_branch(cur_branch);
-    ok64 hr = KEEPResolveRef(&KEEP, thr_out, frag, cur_branch);
+    ok64 hr = KEEPResolveRef(thr_out, frag, cur_branch);
     if (hr != OK) {
         fprintf(stderr,
             "sniff: patch: cannot resolve cherry ref '%.*s'\n",
@@ -1017,7 +1017,7 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
     call(u8bAllocate, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, thr_out, cbuf, &ct);
+    ok64 ko = KEEPGetExact(thr_out, cbuf, &ct);
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(PATCHFAIL); }
 
@@ -1054,7 +1054,7 @@ static ok64 patch_first_parent(sha1 *parent_out, sha1 const *commit_sha) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, commit_sha, cbuf, &ct);
+    ok64 ko = KEEPGetExact(commit_sha, cbuf, &ct);
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return PATCHFAIL; }
 
@@ -1088,7 +1088,7 @@ static ok64 patch_links_of(sha1 *out, u32 cap, u32 *nout,
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&KEEP, commit_sha, cbuf, &ct);
+    ok64 ko = KEEPGetExact(commit_sha, cbuf, &ct);
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return PATCHFAIL; }
 
@@ -1341,7 +1341,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         //  `resolve_cherry` (which insists on 40 chars) can run.
         if (u8csLen(frag) != 40) {
             sha1hex hex40 = {};
-            call(KEEPResolveHex, &KEEP, &hex40, frag);
+            call(KEEPResolveHex, &hex40, frag);
             a_rawc(hex_slice, hex40);
             u8csMv(frag, hex_slice);
         }
@@ -1384,7 +1384,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
             uri tip_uri = {};
             $mv(tip_uri.fragment, hex_bytes);
             $mv(tip_uri.data,     hex_bytes);
-            (void)GRAFIndexFromTips(&KEEP, &tip_uri);
+            (void)GRAFIndexFromTips(&tip_uri);
         }
     }
 
@@ -1624,7 +1624,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
             uri tip_uri = {};
             $mv(tip_uri.fragment, hex_bytes);
             $mv(tip_uri.data,     hex_bytes);
-            (void)GRAFIndexFromTips(&KEEP, &tip_uri);
+            (void)GRAFIndexFromTips(&tip_uri);
         }
     }
 

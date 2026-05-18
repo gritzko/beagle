@@ -150,8 +150,9 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
 
 // --- Open / Close ---
 
-ok64 REFADVOpen(refadv *out, keeper *k) {
-    sane(out && k);
+ok64 REFADVOpen(refadv *out) {
+    sane(out);
+    keeper *k = &KEEP;
 
     out->ents  = NULL;
     out->count = 0;

@@ -67,7 +67,7 @@ static ok64 make_single_leaf_tree(keep_pack *p,
                                   sha1 *blob_out, sha1 *tree_out) {
     sane(p && blob_out && tree_out);
     u8cs cb = {(u8cp)content, (u8cp)content + strlen(content)};
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_BLOB, cb, 0, blob_out);
+    call(KEEPPackFeed, p, DOG_OBJ_BLOB, cb, 0, blob_out);
     a_pad(u8, tb, 256);
     a_cstr(mn, mode_name);
     call(u8bFeed, tb, mn);
@@ -75,7 +75,7 @@ static ok64 make_single_leaf_tree(keep_pack *p,
     a_rawc(ss, *blob_out);
     call(u8bFeed, tb, ss);
     a_dup(u8c, tc, u8bData(tb));
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_TREE, tc, 0, tree_out);
+    call(KEEPPackFeed, p, DOG_OBJ_TREE, tc, 0, tree_out);
     done;
 }
 
@@ -123,7 +123,7 @@ static ok64 feed_commit(keep_pack *p,
     call(u8bAllocate, cb, 4096);
     make_commit_body(cb, tree_sha, parent_sha, author_id, ts, msg);
     a_dup(u8c, cd, u8bData(cb));
-    call(KEEPPackFeed, &KEEP, p, DOG_OBJ_COMMIT, cd, 0, out_sha);
+    call(KEEPPackFeed, p, DOG_OBJ_COMMIT, cd, 0, out_sha);
     u8bFree(cb);
     done;
 }
@@ -132,7 +132,7 @@ static ok64 feed_commit(keep_pack *p,
 static ok64 fetch_commit(sha1 const *sha, u8 *const *out) {
     sane(out);
     u8 t = 0;
-    call(KEEPGetExact, &KEEP, sha, out, &t);
+    call(KEEPGetExact, sha, out, &t);
     if (t != DOG_OBJ_COMMIT) fail(KEEPFAIL);
     done;
 }
@@ -168,7 +168,7 @@ ok64 test_patchid(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     //  Two parents that share an identical tree: file `f.txt` = "old\n".
@@ -216,11 +216,11 @@ ok64 test_patchid(void) {
         u8bFeed(tb, e2);
         u8bFeed1(tb, 0);
         a_cstr(gc, "g\n");
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, gc, 0, &b_g);
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, gc, 0, &b_g);
         a_rawc(o2, b_g);
         u8bFeed(tb, o2);
         a_dup(u8c, td, u8bData(tb));
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, td, 0, &t_extra);
+        call(KEEPPackFeed, &p, DOG_OBJ_TREE, td, 0, &t_extra);
         u8bFree(tb);
     }
     sha1 chi_extra = {};
@@ -232,7 +232,7 @@ ok64 test_patchid(void) {
     call(feed_commit, &p, &t_par_a, &par_a, "alice", 1300,
          "empty", &chi_nodiff);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     //  Fetch bodies and compute ids.
     Bu8 ba = {}, bb = {}, be = {}, bn = {};
@@ -292,7 +292,7 @@ ok64 test_rebase(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     //  Initial blob+tree at base_old: f.txt = "v0\n"
@@ -305,7 +305,7 @@ ok64 test_rebase(void) {
     sha1 g_blob = {}, t_bn = {};
     {
         a_cstr(gc, "g\n");
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, gc, 0, &g_blob);
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, gc, 0, &g_blob);
         Bu8 tb = {};
         call(u8bAllocate, tb, 256);
         a_cstr(e1, "100644 f.txt"); u8bFeed(tb, e1);
@@ -313,7 +313,7 @@ ok64 test_rebase(void) {
         a_cstr(e2, "100644 g.txt"); u8bFeed(tb, e2);
         u8bFeed1(tb, 0); a_rawc(o2, g_blob); u8bFeed(tb, o2);
         a_dup(u8c, td, u8bData(tb));
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, td, 0, &t_bn);
+        call(KEEPPackFeed, &p, DOG_OBJ_TREE, td, 0, &t_bn);
         u8bFree(tb);
     }
     sha1 base_new = {};
@@ -330,9 +330,9 @@ ok64 test_rebase(void) {
     {
         a_cstr(gc, "g\n");
         sha1 g2 = {};  //  reuse same content; KEEP will dedup
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, gc, 0, &g2);
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, gc, 0, &g2);
         a_cstr(c2, "v2\n");
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_BLOB, c2, 0, &b2);
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c2, 0, &b2);
         Bu8 tb = {};
         call(u8bAllocate, tb, 256);
         a_cstr(e1, "100644 f.txt"); u8bFeed(tb, e1);
@@ -340,13 +340,13 @@ ok64 test_rebase(void) {
         a_cstr(e2, "100644 g.txt"); u8bFeed(tb, e2);
         u8bFeed1(tb, 0); a_rawc(o2, g2); u8bFeed(tb, o2);
         a_dup(u8c, td, u8bData(tb));
-        call(KEEPPackFeed, &KEEP, &p, DOG_OBJ_TREE, td, 0, &t_c2);
+        call(KEEPPackFeed, &p, DOG_OBJ_TREE, td, 0, &t_c2);
         u8bFree(tb);
     }
     sha1 child2 = {};
     call(feed_commit, &p, &t_c2, &child1, "alice", 400, "v2", &child2);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     //  (i) child_tip == base_old → no emits.
     {
@@ -386,7 +386,7 @@ ok64 test_rebase(void) {
     //      Build base_alt = base_old (no extras), child_solo with a
     //      change unique to itself.  Replay onto base_alt.
     keep_pack p2 = {};
-    call(KEEPPackOpen, &KEEP, &p2);
+    call(KEEPPackOpen, &p2);
     p2.strict_order = NO;
     sha1 b_solo = {}, t_solo = {};
     call(make_single_leaf_tree, &p2, "100644 f.txt", "solo\n",
@@ -394,7 +394,7 @@ ok64 test_rebase(void) {
     sha1 child_solo = {};
     call(feed_commit, &p2, &t_solo, &base_old, "alice", 500,
          "solo edit", &child_solo);
-    call(KEEPPackClose, &KEEP, &p2);
+    call(KEEPPackClose, &p2);
     {
         rec_emit r = {};
         ok64 o = GRAFRebase(&base_old, &base_old, &child_solo,
@@ -422,7 +422,7 @@ ok64 test_rebase(void) {
     //  Replaying child onto base_new requires merging "v0", "head",
     //  "branch" — concurrent edits, conflict.
     keep_pack p3 = {};
-    call(KEEPPackOpen, &KEEP, &p3);
+    call(KEEPPackOpen, &p3);
     p3.strict_order = NO;
     sha1 b_h = {}, t_h = {};
     call(make_single_leaf_tree, &p3, "100644 f.txt", "head\n",
@@ -437,7 +437,7 @@ ok64 test_rebase(void) {
     sha1 child_branch = {};
     call(feed_commit, &p3, &t_b, &base_old, "alice", 700,
          "branch edit", &child_branch);
-    call(KEEPPackClose, &KEEP, &p3);
+    call(KEEPPackClose, &p3);
     {
         rec_emit r = {};
         ok64 o = GRAFRebase(&base_old, &base_new_h, &child_branch,
@@ -498,7 +498,7 @@ ok64 test_rebase_file_weave(void) {
     call(setup_repo);
 
     keep_pack p = {};
-    call(KEEPPackOpen, &KEEP, &p);
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     sha1 b1 = {}, t1 = {}, c1 = {};
@@ -516,7 +516,7 @@ ok64 test_rebase_file_weave(void) {
          "alpha\nBETA\nGAMMA\n", &b3, &t3);
     call(feed_commit, &p, &t3, &c2, "alice", 1200, "v3", &c3);
 
-    call(KEEPPackClose, &KEEP, &p);
+    call(KEEPPackClose, &p);
 
     sha1 chain[3] = {c1, c2, c3};
     weave wA = {}, wB = {}, wnu = {};

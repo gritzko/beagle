@@ -210,7 +210,7 @@ ok64 GRAFMap(uricp u) {
     map_set s = {.v = all, .n = 0, .cap = MAP_MAX_BRANCHES,
                  .arena = {strs_arena[0], strs_arena[1],
                            strs_arena[2], strs_arena[3]}};
-    call(KEEPEachTip, &KEEP, map_collect_cb, &s);
+    call(KEEPEachTip, map_collect_cb, &s);
     //  KEEPEachTip mutates s.arena's data/idle pointers in place.  Sync
     //  the outer arena so subsequent feeds continue from where it left.
     strs_arena[1] = s.arena[1];
@@ -309,7 +309,7 @@ ok64 GRAFMap(uricp u) {
 
         u8bReset(cbuf);
         u8 ot = 0;
-        if (KEEPGet(&KEEP, h40, DAG_H60_HEXLEN,
+        if (KEEPGet(h40, DAG_H60_HEXLEN,
                     cbuf, &ot) != OK || ot != DOG_OBJ_COMMIT) continue;
         a_dup(u8c, body, u8bData(cbuf));
         sha1 csha = {};
