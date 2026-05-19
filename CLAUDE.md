@@ -11,6 +11,7 @@
       * clang and llvm are preferred to gcc and gdb.
         ripgrep is preferred over grep.
       * ragel invocation pattern: `ragel -C I3.c.rl -o I3.rl.c -L`, avoid other modes.
+      * running tests: ctest -j16, timeout 1 minute 
     There is a fast CI script at scripts/ci-fast.sh to check for regressions 
     after you edit things. When introducing new behavior, always add
     tests, preferably by adding cases to existing table driven tests.

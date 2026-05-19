@@ -63,4 +63,16 @@ sub_tip=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
 [ "$sub_tip" = "$PARENT_PINNED" ] \
     || fail "sub tip mismatch: got '$sub_tip' want '$PARENT_PINNED'"
 
+# --- sub-shard carries the sub's OWN keeper data ---------------------
+#  Per SUBS.plan.md §"Storage layout": parent_root/.be/<basename>/ is
+#  the sub's private keeper shard.  The recursive mount currently
+#  short-circuits and lets sub objects piggy-back on parent's trunk,
+#  leaving .be/sub/ empty — that's the bug.  This assertion pins the
+#  intended invariant: the shard must hold the sub's refs reflog at
+#  minimum (a real fetch also drops a keeper pack run in there).
+[ -d .be/sub ] || fail ".be/sub shard dir missing"
+[ -s .be/sub/refs ] \
+    || fail ".be/sub/refs missing or empty — sub keeper data not landing in shard:
+$(ls -la .be/sub 2>&1)"
+
 note "get/11-sub-clone-recursive: parent + vendor/sub mounted at SUB_C2"

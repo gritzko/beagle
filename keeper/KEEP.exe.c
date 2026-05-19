@@ -158,7 +158,7 @@ static ok64 keeper_lsfiles(keeper *k, uricp target) {
 
 static ok64 keeper_refs(keeper *k) {
     sane(k);
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     int rcount = 0;
     ok64 o = REFSEach($path(keepdir), refs_print_cb, &rcount);
     if (o != OK && o != REFSNONE)
@@ -180,20 +180,29 @@ static ok64 keeper_refs(keeper *k) {
 
 static ok64 keeper_subs(keeper *k, cli *c) {
     sane(k && c);
-    if (c->nuris < 1 || u8csEmpty(c->uris[0].query)) {
+    if (c->nuris < 1 ||
+        (u8csEmpty(c->uris[0].query) && u8csEmpty(c->uris[0].fragment))) {
         fprintf(stderr, "keeper: subs requires `?<ref>` URI\n");
         return KEEPFAIL;
     }
     uri *u = &c->uris[0];
 
-    //  Resolve ?<ref> to a 40-hex commit sha.  Direct-sha shortcut:
-    //  if the query IS already a 40-hex string, skip REFSResolve and
-    //  use it as-is.  Lets beagle's BEGet recursion pass the
-    //  pinned-sub commit sha here directly without REFS-side
-    //  bookkeeping (no entry for a recursion-target sha typically
-    //  exists in refs).
+    //  Resolve ?<ref> to a 40-hex commit sha.  Direct-sha shortcuts:
+    //    * `?<branch>#<sha>` — fragment carries the sha; query carries
+    //      the branch (already consumed by KEEP.cli.c to open the
+    //      right leaf shard).  Use the fragment directly.
+    //    * `?<sha>` — query IS the 40-hex sha (legacy direct form).
+    //  Either skips REFSResolve.  Falls through to REFSResolve when
+    //  the input is a ref name to look up.
     sha1 commit_sha = {};
-    if (u8csLen(u->query) == 40 && HEXu8sValid(u->query)) {
+    if (u8csLen(u->fragment) == 40 && HEXu8sValid(u->fragment)) {
+        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
+        a_dup(u8c, hex40, u->fragment);
+        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
+            fprintf(stderr, "keeper: subs: bad sha\n");
+            fail(KEEPFAIL);
+        }
+    } else if (u8csLen(u->query) == 40 && HEXu8sValid(u->query)) {
         u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
         a_dup(u8c, hex40, u->query);
         if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
@@ -201,7 +210,7 @@ static ok64 keeper_subs(keeper *k, cli *c) {
             fail(KEEPFAIL);
         }
     } else {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(trunk_dir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, qbuf, 256);
         u8bFeed1(qbuf, '?');
         u8bFeed(qbuf, u->query);
@@ -209,7 +218,23 @@ static ok64 keeper_subs(keeper *k, cli *c) {
 
         a_pad(u8, arena, 1024);
         uri resolved = {};
-        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+        ok64 ro = REFSNONE;
+        //  Leaf-first lookup: writes from `wcli_record_ref` land in the
+        //  active leaf branch dir when one is open (sub-shard fetch
+        //  isolation).  Try leaf first, then fall back to trunk for
+        //  locally-committed refs that sniff POST writes to trunk.
+        if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+            a_path(leafdir);
+            a_dup(u8c, trunk_s, u8bDataC(trunk_dir));
+            call(PATHu8bFeed, leafdir, trunk_s);
+            a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+            call(PATHu8bAdd, leafdir, leaf_s);
+            ro = REFSResolve(&resolved, arena, $path(leafdir), qkey);
+        }
+        if (ro != OK || u8csLen(resolved.query) != 40) {
+            zero(resolved);
+            ro = REFSResolve(&resolved, arena, $path(trunk_dir), qkey);
+        }
         if (ro != OK || u8csLen(resolved.query) != 40) {
             fprintf(stderr, "keeper: subs: ref %.*s not resolvable\n",
                     (int)u8csLen(u->query), (char *)u->query[0]);
@@ -287,7 +312,7 @@ static ok64 keeper_tips(keeper *k) {
 //  it after finishing with the resolved URI bytes.
 static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     sane(k && g && u8bOK(out) && u8bOK(rarena_out));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     u8cs rscheme = {};
     u8cs rhost = {};
@@ -308,7 +333,25 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
         ok64 rr = OK;
         if (!explicit_full) {
             a_dup(u8c, in_uri, g->data);
-            rr = REFSResolve(&resolved, rarena_out, $path(keepdir), in_uri);
+            //  Leaf-first lookup: wire-recorded peer URIs land in the
+            //  active leaf shard's REFS (sub-shard / sub-clone isolation,
+            //  per `wcli_record_ref`).  Trunk holds only sniff-POST rows
+            //  in that case.  Try leaf first, fall back to trunk.
+            rr = REFSNONE;
+            if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+                a_path(leafdir);
+                a_dup(u8c, trunk_s, u8bDataC(keepdir));
+                call(PATHu8bFeed, leafdir, trunk_s);
+                a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+                call(PATHu8bAdd, leafdir, leaf_s);
+                rr = REFSResolve(&resolved, rarena_out, $path(leafdir),
+                                 in_uri);
+            }
+            if (rr != OK || u8csEmpty(resolved.host)) {
+                zero(resolved);
+                rr = REFSResolve(&resolved, rarena_out, $path(keepdir),
+                                 in_uri);
+            }
         }
         if (!explicit_full && rr == OK && !u8csEmpty(resolved.host)) {
             if (!u8csEmpty(resolved.scheme)) u8csMv(rscheme, resolved.scheme);
@@ -399,27 +442,15 @@ ok64 KEEPGetRemote(uri *g) {
 
     a_pad(u8, branch_buf, 256);
     u8cs cur_branch = {};
-    if (u8csEmpty(want_ref)) {
-        //  No explicit ref → default to the worktree's current branch
-        //  as forwarded by `be` via `--at <root>?<branch>#<sha>` and
-        //  parked in `h->cur_branch` by `HOMEOpen`.  Strip a redundant
-        //  `heads/` prefix and re-attach a canonical one so we emit
-        //  exactly `heads/<branch>` on the wire.  When no `--at` was
-        //  forwarded (direct `keeper get //origin` invocation), leave
-        //  `want_ref` empty — `wcli_match_advert` then picks the
-        //  peer's HEAD-mapped branch (mirrors `git clone`).
-        a_dup(u8c, at_branch, u8bDataC(k->h->cur_branch));
-        if (!u8csEmpty(at_branch)) {
-            a_cstr(heads_pfx, "heads/");
-            u8cs src = {};
-            u8csMv(src, at_branch);
-            if (u8csHasPrefix(src, heads_pfx)) u8csUsed(src, 6);
-            u8bFeed(branch_buf, heads_pfx);
-            u8bFeed(branch_buf, src);
-            u8csMv(cur_branch, u8bDataC(branch_buf));
-            u8csMv(want_ref, cur_branch);
-        }
-    }
+    //  No explicit ref → let `wcli_match_advert` pick the peer's
+    //  HEAD-mapped branch (mirrors `git clone`'s default behavior).
+    //  Previously we defaulted to `heads/<cur_branch>` from the
+    //  HOMEOpen anchor, but cur_branch is the LOCAL leaf (e.g.
+    //  "origin" for a sub-clone), not a remote-ref name; emitting
+    //  `want heads/origin` against a peer that only advertises
+    //  `heads/master` ends the wire with WIRECLNRF.
+    (void)cur_branch;
+    (void)branch_buf;
 
     ok64 fo = WIREFetch(remote_uri, want_ref);
     if (fo != OK) {
@@ -427,7 +458,7 @@ ok64 KEEPGetRemote(uri *g) {
         //  `get_fail <peer-uri>?<branch>` row alongside the success
         //  rows already emitted by wcli_record_ref.  Best-effort write
         //  — we still return the underlying fetch error.
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, key_buf, 512);
         u8bFeed(key_buf, remote_uri);
         u8bFeed1(key_buf, '?');
@@ -466,7 +497,7 @@ static ok64 keeper_get_object(keeper *k, u8cs prefix) {
 
 static ok64 keeper_get_ref(keeper *k, u8cs query) {
     sane(k && $ok(query));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     a_pad(u8, qbuf, 256);
     u8bFeed1(qbuf, '?');
@@ -558,7 +589,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
         return KEEPFAIL;
     }
 
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     //  Canonical key: build a query-only URI with the user's ref
     //  name and canonicalise — strips `refs/` and collapses the
@@ -689,7 +720,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
                         "(ssh://host/path[?branch])\n");
         return KEEPFAIL;
     }
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     //  1. Worktree's current branch + tip (used both as the WIREPush
     //     local_branch default and to record the new peer-side ref).
@@ -911,7 +942,7 @@ static ok64 keeper_delete_alias_collect(refcp r, void *vctx) {
 
 static ok64 keeper_delete_alias(keeper *k, u8cs host) {
     sane(k && !u8csEmpty(host));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     Bu8 keys = {};
     call(u8bAllocate, keys, 1UL << 16);
@@ -1006,7 +1037,7 @@ static ok64 keeper_delete(keeper *k, cli *c) {
     //  Tombstone the local cached `<peer-uri>?<branch>` row so future
     //  cached reads stop returning the now-deleted tip.  Mirrors the
     //  REFS-write at the end of keeper_post (KEEP.exe.c:620+).
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     {
         a_pad(u8, kbuf, 1280);
         uri gk = {};

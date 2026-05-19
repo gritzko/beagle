@@ -44,6 +44,14 @@ PARENT_SEED="$SCRATCH/parent-seed"
 REL_SUB="$REL_SCRATCH/sub.git"
 REL_PARENT="$REL_SCRATCH/parent.git"
 
+#  case.sh pre-creates `$SCRATCH/.be/` as ambient state; with that
+#  placeholder present, `be get` inside `wt/` would treat it as a
+#  subdir-of-existing-repo and lay down a nested shard.  This test
+#  wants the canonical primary-wt-clones-a-sub layout from
+#  SUBS.plan.md (`wt/.be/` colocated, `wt/.be/sub/` for the submodule),
+#  so drop the placeholder first.  Mirrors submodules.sh.
+rmdir "$SCRATCH/.be" 2>/dev/null || true
+
 cd "$SCRATCH"
 
 # ====================================================================
@@ -136,16 +144,28 @@ grep -q 'SUB 1' vendor/sub/lib.h || {
 }
 
 # ====================================================================
-# 7. sub store under parent's keeper, sibling-keyed by URL basename
-#    (sub.git → .be/sub/).
+# 7. Sub store under the wt's keeper, sibling-keyed by URL basename
+#    (sub.git → wt/.be/sub/).  Top-level subdir of `.be/`, same shape
+#    as the trunk dir (NNNNN.keeper, refs, wtlog).
 # ====================================================================
+[ -d .be ] || { echo "FAIL: wt/.be should be a colocated store dir" >&2; exit 1; }
 [ -d .be/sub ] || {
-    echo "FAIL: parent keeper missing sub store at .be/sub/" >&2
+    echo "FAIL: parent keeper missing sub shard at wt/.be/sub/" >&2
     ls -la .be 2>&1 >&2 || true
+    exit 1
+}
+#  Sub-shard must hold the sub's own keeper data (not piggy-back on
+#  the parent's trunk).  Minimum invariant: a non-empty REFS reflog
+#  for the sub (the wire fetch lands a peer-key `get` row at the
+#  leaf).
+[ -s .be/sub/refs ] || {
+    echo "FAIL: wt/.be/sub/refs empty — sub keeper data" >&2
+    echo "      not landing in the shard (regression on SUBS.plan.md)" >&2
+    ls -la .be/sub 2>&1 >&2 || true
     exit 1
 }
 
 # ====================================================================
 # 8. parent wtlog has the `get` row (one ULOG entry past row-0 repo)
 # ====================================================================
-[ -f .be/wtlog ] || { echo "FAIL: parent .be/wtlog missing" >&2; exit 1; }
+[ -f .be/wtlog ] || { echo "FAIL: parent wtlog missing" >&2; exit 1; }

@@ -28,22 +28,62 @@ fun u64 DOGChildPathHash(u8csc name, u64 parent) {
 
 // --- Canonical on-disk layout ----------------------------------------
 //
-// Primary / colocated worktree:
-//   <wt>/.be/                    — store directory (trunk)
-//   <wt>/.be/refs                — store-wide branch-tip ULOG (REFS)
-//   <wt>/.be/wtlog               — primary worktree's command ULOG
-//   <wt>/.be/config              — TOML user config
-//   <wt>/.be/<seqno>.keeper      — trunk keeper pack
-//   <wt>/.be/<seqno>.keeper.idx  — trunk keeper LSM index puppy
-//   <wt>/.be/<seqno>.graf.idx    — trunk graf commit-graph puppy
-//   <wt>/.be/<seqno>.spot.idx    — trunk spot index puppy
-//   <wt>/.be/<branch>/<seqno>.<ext>
-//                                — branch packs / idx puppies live in
-//                                  a sibling dir per leaf branch
+// First level under `.be/` is always a project — one repository
+// identity, name typically derived from the clone URL basename (see
+// `SNIFFSubBasename`).  A store may hold any number of project shards
+// side-by-side; each is self-contained (REF_DELTA bases cannot cross
+// project boundaries).  Below the project, the directory tree mirrors
+// branch paths verbatim, with the project's trunk sitting at the
+// project root itself.
 //
-// Secondary worktree (shares a primary's store):
-//   <wt>/.be                     — regular file = the wtlog
-//   row 0's `repo` URI names the primary's <wt>/.be/
+// Primary / colocated worktree (one project alongside the wt):
+//   <wt>/.be/                                — store directory
+//   <wt>/.be/config                          — store-wide TOML config
+//   <wt>/.be/wtlog                           — wt command ULOG; row 0
+//                                              = `repo file:<wt>/.be/<project>`
+//                                              pins which project this
+//                                              wt is on
+//   <wt>/.be/<project>/                      — project shard (== its
+//                                              trunk branch)
+//   <wt>/.be/<project>/refs                  — project-scoped ref
+//                                              ULOG: trunk tip plus
+//                                              entries meant to
+//                                              outlive a branch-dir
+//                                              drop (host aliases,
+//                                              project-scoped tags)
+//   <wt>/.be/<project>/<seqno>.keeper        — trunk keeper packs
+//   <wt>/.be/<project>/<seqno>.keeper.idx    — trunk keeper LSM index
+//   <wt>/.be/<project>/<seqno>.graf.idx      — trunk graf commit-graph
+//   <wt>/.be/<project>/<seqno>.spot.idx      — trunk spot index
+//   <wt>/.be/<project>/<branch>/refs         — branch-scoped ref ULOG:
+//                                              this branch's tip +
+//                                              branch-local
+//                                              remote-tracking
+//                                              (`be delete ?branch`
+//                                              is a whole-dir drop)
+//   <wt>/.be/<project>/<branch>/<seqno>.<ext>
+//                                            — per-branch packs + idx
+//                                              puppies, one sibling
+//                                              dir per leaf branch
+//
+// Secondary worktree (wt sits elsewhere; `.be` is a regular file =
+// the wtlog; row 0's `repo` URI pins the project):
+//   <wt>/.be                                 — regular file = the wtlog
+//   row 0 = `repo file:<store>/.be/<project>`
+//
+// The branch the wt is on is NOT carried in the anchor URI; it is the
+// latest `get`/`post` row's `?branch` in the wtlog.  Switching
+// branches appends a new row, never rewrites the anchor.
+//
+// Central store ("$HOME/.be/" pattern): the store holds many project
+// shards side-by-side; every wt is a secondary anchored at one of
+// them.
+//
+// Migration note: the older single-project layout (no `<project>/`
+// segment — `refs`, packs, and branches sitting directly under
+// `<wt>/.be/`) is still recognised.  `DOGProjectFromBe` returns ""
+// for that shape; callers may treat the empty project as "the
+// implicit single project" during the transition.
 //
 // Single source of truth for the layout names.  Use the macros directly
 // where a C-string is needed; use the `DOGa_*` `a_cstr`-style helpers
@@ -74,20 +114,100 @@ fun u64 DOGPathHash(path8s path) {
     return h;
 }
 
-// Given the path of a `.be/` directory (the row-0 `repo`-anchor URI
-// path; with or without trailing slash), feed the parent worktree-root
-// path into `out`.  E.g. `/abs/path/.be/` → `/abs/path`.  Strips
-// trailing slashes, then the `.be` segment, then any further
-// trailing slashes.  Caller's `out` buffer is reset before the feed.
+// Given the path of a `.be/[<branch>/]` directory (the row-0 `repo`-
+// anchor URI path; with or without trailing slash), feed the wt-root
+// path into `out`.  Splits on the first `/.be/` separator:
+//     /abs/path/.be/          → /abs/path
+//     /abs/path/.be/sub/      → /abs/path        (branch = "sub")
+//     /abs/path/.be/a/b/      → /abs/path        (branch = "a/b")
+// Falls back to the trailing-`.be`-strip logic when `/.be/` is not
+// present (so already-stripped paths and other legacy callers keep
+// working).  Caller's `out` buffer is reset before the feed.
 fun void DOGRepoFromBe(u8cs in, u8bp out) {
     a_dup(u8c, p, in);
     if (!u8csEmpty(p) && *u8csLast(p) == '/') u8csShed1(p);
+    //  First pass: split on `/.be/` if present.
     DOGa_be(be);
+    if (u8csLen(p) > u8csLen(be) + 1) {
+        u8c const *scan = p[0];
+        u8c const *end  = p[1] - u8csLen(be) - 1;  // last possible start
+        for (u8c const *q = scan; q <= end; q++) {
+            if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
+                && q[4] == '/') {
+                p[1] = q;                          //  truncate at sep
+                u8bReset(out);
+                u8bFeed(out, p);
+                return;
+            }
+        }
+    }
+    //  Fallback: strip a trailing `.be` (legacy / already-stripped).
     if (u8csHasSuffix(p, be))
         for (size_t i = 0; i < u8csLen(be); i++) u8csShed1(p);
     while (u8csLen(p) > 1 && *u8csLast(p) == '/') u8csShed1(p);
     u8bReset(out);
     u8bFeed(out, p);
+}
+
+// Sibling of `DOGRepoFromBe` / `DOGBranchFromBe`: extract the project
+// segment — the first path component AFTER `/.be/` — from a row-0
+// anchor URI path.  Empty when no `/.be/` separator is present, or
+// when the URI ends exactly at `/.be/` (legacy single-project anchor
+// with the project name elided).  Trailing `/` on the input is
+// tolerated.  Caller's `out` buffer is reset before the feed.
+//
+//     /abs/path/.be/                  → ""
+//     /abs/path/.be/beagle            → "beagle"
+//     /abs/path/.be/beagle/           → "beagle"
+//     /abs/path/.be/beagle/feat       → "beagle"
+//     /abs/path/.be/beagle/feat/x     → "beagle"
+fun void DOGProjectFromBe(u8cs in, u8bp out) {
+    u8bReset(out);
+    a_dup(u8c, p, in);
+    if (!u8csEmpty(p) && *u8csLast(p) == '/') u8csShed1(p);
+    DOGa_be(be);
+    if (u8csLen(p) <= u8csLen(be) + 1) return;
+    u8c const *scan = p[0];
+    u8c const *end  = p[1] - u8csLen(be) - 1;
+    for (u8c const *q = scan; q <= end; q++) {
+        if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
+            && q[4] == '/') {
+            u8c const *seg_start = q + 5;
+            u8c const *seg_end = seg_start;
+            while (seg_end < p[1] && *seg_end != '/') seg_end++;
+            u8cs proj = {(u8 *)seg_start, (u8 *)seg_end};
+            if (!u8csEmpty(proj)) u8bFeed(out, proj);
+            return;
+        }
+    }
+}
+
+// Sibling of `DOGRepoFromBe`: extract the path that lives AFTER
+// `/.be/` in a row-0 anchor URI path.  Empty when the URI ends at
+// `/.be/` itself, or when no `/.be/` separator is present.  Caller's
+// `out` buffer is reset before the feed.
+//
+// Project-sharded layout: the returned slice carries `<project>[/<branch>]`
+// — the project segment first.  Callers that need just the branch
+// should pair this with `DOGProjectFromBe` and strip the leading
+// project segment.  The legacy single-project layout (project elided)
+// returns the bare `<branch>` here.
+fun void DOGBranchFromBe(u8cs in, u8bp out) {
+    u8bReset(out);
+    a_dup(u8c, p, in);
+    if (!u8csEmpty(p) && *u8csLast(p) == '/') u8csShed1(p);
+    DOGa_be(be);
+    if (u8csLen(p) <= u8csLen(be) + 1) return;
+    u8c const *scan = p[0];
+    u8c const *end  = p[1] - u8csLen(be) - 1;
+    for (u8c const *q = scan; q <= end; q++) {
+        if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
+            && q[4] == '/') {
+            u8cs br = {(u8 *)(q + 5), (u8 *)p[1]};
+            if (!u8csEmpty(br)) u8bFeed(out, br);
+            return;
+        }
+    }
 }
 
 // Shared error code for branch-scoped Open entry points that receive

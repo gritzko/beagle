@@ -65,7 +65,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
     sane(k && out);
     if (k->h == NULL || u8bDataLen(k->h->root) == 0) return RESOLVEFAIL;
 
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
 
     //  Empty path is the canonical trunk lookup.  REFSResolve treats
     //  a URI with `?` and no body as "match trunk only" (presence test,

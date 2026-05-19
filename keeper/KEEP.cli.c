@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
@@ -114,22 +115,52 @@ static ok64 keepercli_inner(cli *c) {
         u8csMv(at.path, $path(c->repo));
     call(HOMEOpen, &h, &at, rw);
 
-    //  Branch-aware open: when the first verb URI carries a `?branch`
-    //  query, that's the explicit target the caller wants keeper
-    //  pointed at — load it as the leaf (PAST = trunk → branch's
-    //  ancestors, DATA = branch shard).  Falls back to the `--at`
-    //  URI's cur_branch (wt-context, set by `be` from the wtlog) and
-    //  finally trunk.  URI query wins over `--at` so wire receives
-    //  (`keeper get file://...?fix2`) land in the target branch's
-    //  shard even when the wt is on a different cur.
+    //  Branch-aware open: pick the leaf shard the verb will operate on.
+    //
+    //  Two distinct concepts share the URI's query slot:
+    //    1. LOCAL branch switch (`be get ?feat`) — query names the
+    //       branch.  No authority on the URI.
+    //    2. REMOTE ref fetch (`be get ssh://host/path?master`) — query
+    //       names the ref the peer should advertise/send.  The local
+    //       branch (where the fetched objects land) is the wt's
+    //       cur_branch, NOT the remote ref name.  In submodule
+    //       contexts that branch is parked in `h.cur_branch` by
+    //       HOMEOpen from the row-0 anchor's `/.be/<basename>/`.
+    //
+    //  Sha-detached form (`?<40-hex>`) is also NOT a branch.
+    //
+    //  Rule: query is the leaf only when there is no authority (purely
+    //  local checkout) and the query isn't a 40-hex sha.  Otherwise
+    //  fall back to cur_branch.
+    //
     //  Empty-but-valid slice: both ends point at the same byte so
     //  the `$ok(branch)` sanity check in KEEPOpenBranch holds.
     static u8c const _zero = 0;
     u8cs branch = {&_zero, &_zero};
-    if (c->nuris > 0 && !u8csEmpty(c->uris[0].query))
-        u8csMv(branch, c->uris[0].query);
-    else if (u8bHasData(h.cur_branch))
-        u8csMv(branch, u8bDataC(h.cur_branch));
+    b8 has_query    = (c->nuris > 0 && !u8csEmpty(c->uris[0].query));
+    b8 query_is_sha = (has_query && u8csLen(c->uris[0].query) == 40 &&
+                       HEXu8sValid(c->uris[0].query));
+    b8 has_authority = (c->nuris > 0 && !u8csEmpty(c->uris[0].authority));
+    //  Remote-vs-local branch resolution:
+    //    Remote (`scheme://host…?ref`) — the query is the REMOTE ref
+    //      to fetch.  The local branch (where fetched objects land)
+    //      is the wt's cur_branch (parked by HOMEOpen from the row-0
+    //      anchor for sub-shard contexts); falls back to query when
+    //      no cur_branch.
+    //    Local (`?ref`, no authority) — query IS the branch name
+    //      (switch op); falls back to cur_branch when query is
+    //      empty or a sha (detached pin, not a branch).
+    if (has_authority) {
+        if (u8bHasData(h.cur_branch))
+            u8csMv(branch, u8bDataC(h.cur_branch));
+        else if (has_query && !query_is_sha)
+            u8csMv(branch, c->uris[0].query);
+    } else {
+        if (has_query && !query_is_sha)
+            u8csMv(branch, c->uris[0].query);
+        else if (u8bHasData(h.cur_branch))
+            u8csMv(branch, u8bDataC(h.cur_branch));
+    }
     call(KEEPOpenBranch, &h, branch, rw);
 
     ok64 ret = KEEPExec(c);

@@ -2044,6 +2044,39 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                         ok64str(mv));
                 return mv;
             }
+
+            //  KEEPMoveCommits only touched keeper-side packs+idx;
+            //  graf's DAG for the target shard is unaware of the
+            //  migrated commits.  GRAFIndexFromTips wouldn't help:
+            //  graf is currently open on cur (the source shard,
+            //  loaded as PAST after the switch to target), so the
+            //  walk's runs-snapshot includes cur's DAG and the
+            //  first migrated commit looks "already known" — the
+            //  walk stops with 0 commits added to target.  Emit
+            //  DAG entries directly off the chain we already have
+            //  (oldest → newest), pulling each commit body via
+            //  KEEPGetExact (resolves into target's shard since
+            //  the migrate just populated it) and piping through
+            //  GRAFDagUpdate / GRAFDagFinish.  Best-effort: a
+            //  graf failure here doesn't roll back the migrate.
+            (void)SNIFFMaybeSwitchGraf(target_branch);
+            {
+                Bu8 body = {};
+                if (u8bMap(body, 1UL << 20) == OK) {
+                    for (u32 i = 0; i < nchain; i++) {
+                        u8bReset(body);
+                        u8 ot = 0;
+                        if (KEEPGetExact(&chain[i], body, &ot) != OK)
+                            continue;
+                        if (ot != DOG_OBJ_COMMIT) continue;
+                        a_dup(u8c, bs, u8bData(body));
+                        (void)GRAFDagUpdate(DOG_OBJ_COMMIT,
+                                            &chain[i], bs);
+                    }
+                    (void)GRAFDagFinish();
+                    u8bUnMap(body);
+                }
+            }
         }
         stack_was_rewritten = NO;
     } else {

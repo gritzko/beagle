@@ -155,9 +155,11 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     h->write_frozen = NO;
 
     // 1. Path buffers for wt and repo root, 1 KB each; tip buffers
-    // for branch path (interning size) and sha (40-hex).
+    // for branch path (interning size) and sha (40-hex); project
+    // segment (basename-sized).
     call(u8bAllocate, h->root,       FILE_PATH_MAX_LEN);
     call(u8bAllocate, h->wt,         FILE_PATH_MAX_LEN);
+    call(u8bAllocate, h->project,    256);
     call(u8bAllocate, h->cur_branch, 256);
     call(u8bAllocate, h->cur_sha,    64);
 
@@ -249,7 +251,17 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     //    No tip yet (fresh clone, direct sub-dog without --at) →
     //    leave both buffers empty and skip the branch claim.
     if (!u8csEmpty(at_query) || !u8csEmpty(at_frag)) {
-        u8bFeed(h->cur_branch, at_query);
+        //  Reset before feed: home_anchor_resolve may have pre-filled
+        //  h->cur_branch from the row-0 anchor's `/.be/<branch>/`
+        //  segment; appending the at_query slot would concatenate the
+        //  two (e.g. anchor "origin" + at_query "master" → "originmaster")
+        //  and route reads/writes through a nonexistent branch dir.
+        //  When at_query is non-empty it's authoritative; when empty,
+        //  preserve the anchor-derived branch.
+        if (!u8csEmpty(at_query)) {
+            u8bReset(h->cur_branch);
+            u8bFeed(h->cur_branch, at_query);
+        }
         if (!u8csEmpty(at_frag)) u8bFeed(h->cur_sha, at_frag);
         a_dup(u8c, br, u8bDataC(h->cur_branch));
         ok64 bo = HOMEOpenBranch(h, br, rw);
@@ -275,6 +287,7 @@ ok64 HOMEClose(home *h) {
     if (h->arena[0]         != NULL) u8bUnMap(h->arena);
     if (h->root[0]          != NULL) u8bFree(h->root);
     if (h->wt[0]            != NULL) u8bFree(h->wt);
+    if (h->project[0]       != NULL) u8bFree(h->project);
     if (h->cur_branch[0]    != NULL) u8bFree(h->cur_branch);
     if (h->cur_sha[0]       != NULL) u8bFree(h->cur_sha);
     if (h->branches_data[0] != NULL) u8bFree(h->branches_data);
@@ -343,12 +356,16 @@ b8 HOMEBranchVisible(home const *h, u8cs branch) {
 
 // --- Workspace finders ---
 
-//  Peek the first line of a secondary-wt's `.be` file (a wtlog whose
-//  row 0 is a `repo` anchor) and extract the URI's path bytes into
-//  `path_out` (a slice that lives inside `arena`'s busy region).
+//  Peek the first line of a wtlog (either a secondary-wt's `.be`
+//  file OR a primary's `<wt>/.be/wtlog`) and extract the URI's path
+//  bytes into `path_out` (a slice that lives inside `arena`'s busy
+//  region).
 //
 //  Returns OK on success, NODATA when the file is empty or row 0 is
-//  not a parsable `repo` row.
+//  not parsable.  Callers must defend against non-anchor row-0
+//  shapes — typically by passing the result through
+//  DOGProjectFromBe, which returns empty for any URI without a
+//  `/.be/` segment.
 static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out) {
     sane($ok(be_path) && arena && path_out);
     u8bp map = NULL;
@@ -402,6 +419,36 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
             if (u8bDataLen(stripped) > 0) {
                 a_dup(u8c, sb, u8bDataC(stripped));
                 call(PATHu8bFeed, h->root, sb);
+                //  Project-sharded layout: the first segment after
+                //  `/.be/` in the anchor URI names the project shard.
+                //  Pre-fill `h->project` so downstream openers can
+                //  route reads/writes through the right shard.  Empty
+                //  result == legacy single-project anchor; leave
+                //  `h->project` empty and let consumers fall back to
+                //  the implicit single project.
+                a_path(proj_buf);
+                DOGProjectFromBe(repo_path, proj_buf);
+                if (u8bDataLen(proj_buf) > 0) {
+                    a_dup(u8c, ps, u8bDataC(proj_buf));
+                    call(u8bFeed, h->project, ps);
+                }
+                //  Anchor URI may carry a branch suffix after `/.be/`
+                //  (`file:<root>/.be/<basename>/` for a submodule mount).
+                //  Pre-fill `h->cur_branch` so downstream openers route
+                //  reads/writes through the right keeper leaf even when
+                //  no `get`/`post` row yet exists in the secondary wtlog.
+                //  TODO: under the project-sharded layout this slice
+                //  starts with the project segment; consumers wanting
+                //  just the branch should strip `h->project` from the
+                //  front.  Cleanup pending alongside the call-site
+                //  migration.
+                a_path(br_buf);
+                DOGBranchFromBe(repo_path, br_buf);
+                if (u8bDataLen(br_buf) > 0) {
+                    u8bReset(h->cur_branch);
+                    a_dup(u8c, brs, u8bDataC(br_buf));
+                    call(u8bFeed, h->cur_branch, brs);
+                }
                 done;
             }
         }
@@ -409,6 +456,28 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
     //  Primary / colocated / unreadable row 0: store == wt.
     a_dup(u8c, wt_s, u8bDataC(h->wt));
     call(PATHu8bFeed, h->root, wt_s);
+    //  Primary wts may also carry a project anchor on row 0 of
+    //  <wt>/.be/wtlog.  When present, populate `h->project` so
+    //  keeper composes paths through the project shard.  Non-anchor
+    //  row-0 verbs (put/post/get/…) have URI paths that don't carry
+    //  a `/.be/` segment, so DOGProjectFromBe returns empty for
+    //  them — h->project stays empty for legacy single-project wts.
+    if (so == OK && fs.kind == FILE_KIND_DIR) {
+        a_path(wtlog_probe);
+        call(PATHu8bFeed, wtlog_probe, anchor_s);
+        call(PATHu8bPush,  wtlog_probe, DOG_BE_S);
+        call(PATHu8bPush,  wtlog_probe, DOG_WTLOG_S);
+        a_path(arena2);
+        u8cs repo_path = {};
+        if (home_peek_repo_uri($path(wtlog_probe), arena2, repo_path) == OK) {
+            a_path(proj_buf);
+            DOGProjectFromBe(repo_path, proj_buf);
+            if (u8bDataLen(proj_buf) > 0) {
+                a_dup(u8c, ps, u8bDataC(proj_buf));
+                call(u8bFeed, h->project, ps);
+            }
+        }
+    }
     done;
 }
 

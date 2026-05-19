@@ -127,14 +127,23 @@ git init --bare -q "$GIT_REPO"
 
 # ------------------------------------------------------------------
 # 2. Import both branches over WIRECLI's git-over-file dispatch.
-#    `?*` bulk form isn't wired for the git wire today, so fetch
-#    explicitly: fix1 first (so ?fix1 is known to keeper), then
-#    fix2 (which leaves the wt at M2's tree).
+#    Fetch fix2 FIRST so cur lands on fix2's shard; the subsequent
+#    fix1 fetch then targets fix2's shard too (per the unified
+#    --at routing: keeper.cli prefers --at branch over URI query
+#    for has_authority fetches, and SNIFFAtTailOf forwards the
+#    last LOCAL switch as --at).  Both packs end up in fix2/, so
+#    PATCH from ?fix1 + POST on fix2 can both resolve M1/M2 via
+#    the fix2 shard's keeper-level registry.  After the fix1 fetch
+#    cur secretly switches to fix1 (legacy `be get URL?ref`
+#    behaviour) so explicitly `be get ?fix2` to re-attach before
+#    the PATCH.
 # ------------------------------------------------------------------
+must "$BE" get "file://$GIT_REPO?fix2" \
+    > "$LOGS/01.get-fix2.out" 2> "$LOGS/01.get-fix2.err"
 must "$BE" get "file://$GIT_REPO?fix1" \
     > "$LOGS/01a.get-fix1.out" 2> "$LOGS/01a.get-fix1.err"
-must "$BE" get "file://$GIT_REPO?fix2" \
-    > "$LOGS/01.get.out" 2> "$LOGS/01.get.err"
+must "$BE" get '?fix2' \
+    > "$LOGS/01b.get-fix2-again.out" 2> "$LOGS/01b.get-fix2-again.err"
 
 #  Pre-merge wt sanity: M2 tree.
 match "$CASE/04.a-C1.txt" a.txt

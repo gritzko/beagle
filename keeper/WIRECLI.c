@@ -437,23 +437,9 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
             *out_sha = first_sha;
             a_dup(u8c, fn, first_name);
             WCLI_RECORD_NAME(fn);
-            sha1hex h = {}; sha1hexFromSha1(&h, out_sha);
-            fprintf(stderr,
-                    "WIREDBG match_advert: no want_branch, no HEAD match — "
-                    "fell back to first ref sha=%.40s name=%.*s\n",
-                    h.data, (int)u8csLen(fn), (char *)fn[0]);
             done;
         }
         return WIRECLNRF;
-    }
-    {
-        sha1hex h = {}; sha1hexFromSha1(&h, out_sha);
-        a_dup(u8c, nm, u8bDataC(name_out));
-        fprintf(stderr,
-                "WIREDBG match_advert: picked sha=%.40s be-name='%.*s' "
-                "want_branch='%.*s'\n",
-                h.data, (int)u8csLen(nm), (char *)nm[0],
-                (int)u8csLen(want_branch), (char *)want_branch[0]);
     }
     #undef WCLI_RECORD_NAME
     done;
@@ -501,7 +487,7 @@ static ok64 wcli_haves_cb(refcp r, void *vctx) {
 //  shadowed by the local cur row in REFADV.  Caps at WIRE_MAX_HAVES.
 static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
     if (!k) return 0;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
     (void)REFSEach($path(keepdir), wcli_haves_cb, &c);
     return c.n;
@@ -576,7 +562,17 @@ static ok64 wcli_send_request(int wfd, sha1 const *want_sha,
 static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
                              sha1 const *new_sha) {
     sane(k);
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    //  Wire-side refs land in the leaf branch dir when one is active
+    //  (sub-shard fetch isolation: a submodule's `master` ref must
+    //  not contaminate the parent's REFS reflog).  Trunk-only opens
+    //  keep using `<root>/.be/refs` as before.  Readers compensate
+    //  with a leaf→trunk fallback (REFSResolve at leaf first, then
+    //  retry at trunk if not found).
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+        a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+        call(PATHu8bAdd, keepdir, leaf_s);
+    }
 
     uri pu = {};
     pu.data[0] = remote_uri[0];

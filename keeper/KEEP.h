@@ -157,8 +157,10 @@ typedef struct {
     Bu8     buf4;                 // working buffer for keep_resolve delta
 } keeper;
 
-// Relative ".be" slice.  Call sites compose the full dir via
-//   a_path(dir, u8bDataC(k->h->root), KEEP_DIR_S);
+// Relative ".be" slice.  Call sites compose the project-scoped store
+// dir via
+//   a_path(dir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+// (empty `h->project` collapses to the legacy single-project layout)
 // and use $path(dir) wherever a u8csc is needed.
 extern u8c *const KEEP_DIR_S[2];
 

@@ -217,7 +217,18 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     //  `<root>/.be/<branch>/NNNN.keeper`; cross-branch reads route
     //  through `SNIFFMaybeSwitchKeeper` / `SNIFFMaybeSwitchGraf`.
     a_pad(u8, br_buf, 256);
-    {
+    //  Branch priority:
+    //    1. `h->cur_branch` — set by HOME from the row-0 anchor's
+    //       `/.be/<branch>/` segment.  Authoritative for sub-shard /
+    //       sub-clone contexts: the wtlog's get/post URI query may
+    //       record the SOURCE ref (e.g. `?master` from
+    //       `be get ssh://…?master`) which is NOT the local leaf.
+    //    2. Latest get/post/patch row's query (`SNIFFAtCurTip`).
+    //  Empty for trunk.
+    if (!BNULL(h->cur_branch) && u8bDataLen(h->cur_branch) > 0) {
+        a_dup(u8c, hbr, u8bDataC(h->cur_branch));
+        u8bFeed(br_buf, hbr);
+    } else {
         ron60 bts = 0, bverb = 0;
         uri bu = {};
         if (SNIFFAtCurTip(&bts, &bverb, &bu) == OK)

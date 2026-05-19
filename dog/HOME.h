@@ -56,6 +56,17 @@ typedef struct {
     size_t open_branches_count;
     b8     write_frozen;
 
+    //  Project segment — the first path component under `.be/` (see
+    //  DOG.h §"Canonical on-disk layout").  Populated from the anchor
+    //  URI by `home_anchor_resolve` via `DOGProjectFromBe`, or from
+    //  the clone-URL basename on a fresh `be get`.  Empty during the
+    //  layout migration window means "implicit single-project (legacy
+    //  layout)" — readers may treat it as the project name being
+    //  elided.  Distinct from `cur_branch`: `project` is wt-wide
+    //  identity (set once at open), `cur_branch` is wt state (moves
+    //  with each `get`/`post` row).
+    u8b    project;
+
     //  Worktree tip — the (branch, sha) pair learned from the wtlog at
     //  the top of the call chain (`be`) and forwarded to every dog
     //  via the `--at <root>?<branch>#<sha>` flag.  Empty when no tip

@@ -37,8 +37,13 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     u32 n = ULOGCount(idx);
     if (n == 0) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
 
-    //  Row 0 = repo anchor → root path.
+    //  Row 0 = repo anchor → root path (and, for a sub-shard anchor
+    //  whose URI is `file:<root>/.be/<branch>/`, also the active
+    //  branch — the secondary wt's `get`/`post` rows often omit the
+    //  branch slot, but the anchor URI's `/.be/<branch>/` segment
+    //  is the authoritative locator).
     a_pad(u8, root_buf, FILE_PATH_MAX_LEN);
+    a_pad(u8, anchor_branch_buf, 256);
     {
         ulogrec r0 = {};
         if (ULOGRow(data, idx, 0, &r0) != OK ||
@@ -46,11 +51,17 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             ULOGClose(data, &idx, NO); fail(SNIFFNONE);
         }
         DOGRepoFromBe(r0.uri.path, root_buf);
+        DOGBranchFromBe(r0.uri.path, anchor_branch_buf);
     }
 
-    //  Latest get/post/patch with a 40-hex sha → branch + sha.
+    //  Walk back for sha (latest row with 40-hex frag — could be a
+    //  local switch OR a fetch that detached the wt at a remote sha)
+    //  and provisionally pick the branch from that same row when it
+    //  was a local action (empty authority).
     u8cs ref_body = {}, sha_body = {};
     b8 found = NO;
+    b8 sha_row_local = NO;
+    u32 sha_row_idx = 0;
     for (u32 i = n; i > 0; ) {
         i--;
         ulogrec rec = {};
@@ -64,12 +75,19 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         u8csMv0(ref_body);
         u8csMv0(sha_body);
         if (u8csLen(u.fragment) == 40) u8csMv(sha_body, u.fragment);
+        b8 row_is_local = u8csEmpty(u.authority);
         a_dup(u8c, q, u.query);
         while (!u8csEmpty(q)) {
             qref spec = {};
             if (QURYu8sDrain(q, &spec) != OK) break;
             if (spec.type == QURY_NONE) break;
-            if (spec.type == QURY_REF && u8csEmpty(ref_body)) {
+            if (spec.type == QURY_REF && u8csEmpty(ref_body) &&
+                row_is_local) {
+                //  Only adopt the query as the cur branch when the
+                //  row is a LOCAL action (no remote authority).
+                //  Fetch rows (`get ssh://host?ref#sha`) detach the
+                //  wt at the fetched sha but don't move cur — their
+                //  query is the REMOTE ref, not the local leaf.
                 u8csMv(ref_body, spec.body);
             } else if (spec.type == QURY_SHA &&
                        u8csLen(spec.body) == 40 &&
@@ -77,7 +95,38 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
                 u8csMv(sha_body, spec.body);
             }
         }
-        if (!u8csEmpty(sha_body)) { found = YES; break; }
+        if (!u8csEmpty(sha_body)) {
+            sha_row_local = row_is_local;
+            sha_row_idx = i;
+            found = YES;
+            break;
+        }
+    }
+
+    //  Sha-row was a fetch — cur stays on whatever LOCAL switch
+    //  preceded it.  Walk further back for the latest local row's
+    //  query.  No local row found → cur is the project trunk
+    //  (ref_body stays empty).
+    if (found && !sha_row_local && u8csEmpty(ref_body)) {
+        for (u32 i = sha_row_idx; i > 0; ) {
+            i--;
+            ulogrec rec = {};
+            if (ULOGRow(data, idx, i, &rec) != OK) continue;
+            uri u = rec.uri;
+            if (!u8csEmpty(u.authority)) continue;
+            if (u8csLen(u.fragment) != 40) continue;
+            a_dup(u8c, q, u.query);
+            while (!u8csEmpty(q)) {
+                qref spec = {};
+                if (QURYu8sDrain(q, &spec) != OK) break;
+                if (spec.type == QURY_NONE) break;
+                if (spec.type == QURY_REF && u8csEmpty(ref_body)) {
+                    u8csMv(ref_body, spec.body);
+                    break;
+                }
+            }
+            if (!u8csEmpty(ref_body)) break;
+        }
     }
 
     if (!found) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
@@ -85,10 +134,24 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     //  Compose `<root>?<branch>#<sha>` into `out`.  branch may be
     //  empty (== trunk); `?` separator stays so URILexer round-trips
     //  the empty query as a present-but-empty slot.
+    //
+    //  Branch priority:
+    //    1. Anchor URI's `/.be/<branch>/` segment (sub-shard
+    //       authoritative): the wt was opened against a specific
+    //       leaf shard, downstream must follow.
+    //    2. Latest LOCAL get/post row's query (no authority on the
+    //       row): the user's last local switch (`be get ?fix2/`,
+    //       `be post '#msg'`).  Fetch rows (`be get URL?ref`) are
+    //       skipped — they detach the wt but don't move cur, so
+    //       their remote ref isn't the local leaf name.
+    //    3. (Otherwise empty) — cur is the project trunk.
     u8bReset(out);
     u8bFeed(out, u8bDataC(root_buf));
     u8bFeed1(out, '?');
-    if (!u8csEmpty(ref_body)) u8bFeed(out, ref_body);
+    if (u8bDataLen(anchor_branch_buf) > 0)
+        u8bFeed(out, u8bDataC(anchor_branch_buf));
+    else if (!u8csEmpty(ref_body))
+        u8bFeed(out, ref_body);
     u8bFeed1(out, '#');
     u8bFeed(out, sha_body);
 

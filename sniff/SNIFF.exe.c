@@ -1095,7 +1095,46 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     if (has_q || !$empty(u->authority)) {
         a_pad(u8, arena1, 1024);
         uri resolved = {};
-        ok64 o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
+        //  REFSResolve fallback chain: leaf (k->leaf_branch) first,
+        //  then trunk, then — when the URI query names a non-sha
+        //  ref — a speculative `<root>/.be/<query>/refs` dir.  The
+        //  last branch covers the fresh-clone case where keeper has
+        //  just fetched into `<query>` leaf but sniff has no anchor /
+        //  cur_branch to derive it from.
+        a_path(leaf_keepdir);
+        b8 has_leaf = (!BNULL(k->leaf_branch) &&
+                       u8bDataLen(k->leaf_branch) > 0);
+        if (has_leaf) {
+            a_dup(u8c, trunk_s, u8bDataC(keepdir));
+            call(PATHu8bFeed, leaf_keepdir, trunk_s);
+            a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+            call(PATHu8bAdd, leaf_keepdir, leaf_s);
+        }
+        ok64 o = REFSNONE;
+        if (has_leaf) {
+            o = REFSResolve(&resolved, arena1, $path(leaf_keepdir),
+                            u->data);
+        }
+        if (o != OK || $empty(resolved.query)) {
+            zero(resolved);
+            o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
+        }
+        if ((o != OK || $empty(resolved.query)) && has_q &&
+            !u8csEmpty(u->query)) {
+            u8cs vq = {};
+            u8csMv(vq, u->query);
+            b8 q_is_sha = (u8csLen(vq) == 40 && HEXu8sValid(vq));
+            if (!q_is_sha) {
+                a_path(q_keepdir);
+                a_dup(u8c, trunk_s, u8bDataC(keepdir));
+                call(PATHu8bFeed, q_keepdir, trunk_s);
+                a_dup(u8c, vq_const, vq);
+                call(PATHu8bAdd, q_keepdir, vq_const);
+                zero(resolved);
+                o = REFSResolve(&resolved, arena1, $path(q_keepdir),
+                                u->data);
+            }
+        }
 
         //  Local lookup miss → retry with shorter query prefixes.
         //  `keeper get //host?refs/heads/X` stores under a

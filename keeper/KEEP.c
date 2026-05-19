@@ -53,13 +53,16 @@ u8c *const KEEP_DIR_S[2] = {
 
 // --- Helpers ---
 
-// Build <h->root>/.be[/<branch>] into `out` (NUL-terminated path).
-// Empty branch → trunk dir.  `branch` may be in DPATHBranchNormFeed
-// canonical form (trailing '/'); PATHu8bAdd splits on '/' and pushes
-// each segment, so trailing slash is harmless.
+// Build <h->root>/.be[/<project>][/<branch>] into `out` (NUL-term'd).
+// Empty `h->project` (legacy single-project layout) collapses to no
+// project segment; empty branch → trunk dir of the project (or the
+// store-level trunk in the legacy layout).  `branch` may be in
+// DPATHBranchNormFeed canonical form (trailing '/'); PATHu8bAdd
+// splits on '/' and pushes each segment, so trailing slash is
+// harmless.
 static ok64 keep_branch_dir(path8b out, home *h, u8cs branch) {
     sane(out && h);
-    a_path(kdir, u8bDataC(h->root), KEEP_DIR_S);
+    a_path(kdir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     call(PATHu8bDup, out, $path(kdir));
     if (!u8csEmpty(branch)) {
         call(PATHu8bAdd, out, branch);
@@ -124,7 +127,7 @@ static ok64 keep_max_seqno_cb(void0p arg, path8p path) {
 //  one recursive dir-listing pass at open time, no file mmaps.
 static u32 keep_global_max_seqno(home *h) {
     u32 max = 0;
-    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S);
+    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     (void)FILEDeepScanFiles(bedir, keep_max_seqno_cb, &max);
     return max;
 }
@@ -309,7 +312,7 @@ typedef ok64 (*keep_dir_cb)(keeper *k, u8cs dir, b8 is_leaf, void0p ctx);
 
 static ok64 keep_walk_branch(keeper *k, u8cs leaf, keep_dir_cb cb, void0p ctx) {
     sane(k && cb);
-    a_path(kdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(kdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     //  Trunk first.  Empty `leaf` means trunk IS the leaf.
     b8 trunk_is_leaf = u8csEmpty(leaf);
     {
@@ -427,7 +430,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     if (!u8csEmpty(norm)) call(PATHu8bFeed, k->leaf_branch, norm);
 
     //  Trunk dir always exists after this — sniff/init creates it.
-    a_path(trunkdir, u8bDataC(h->root), KEEP_DIR_S);
+    a_path(trunkdir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     call(FILEMakeDirP, $path(trunkdir));
 
     //  Walk trunk → … → leaf, registering every pack + idx file along
@@ -563,7 +566,7 @@ ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
     //  2. Walk the new tail.  PATHu8bDup the trunk-keepdir, push
     //  every full-prefix path of `norm`, but only INVOKE scan for
     //  segments past the LCA.
-    a_path(d, u8bDataC(h->root), KEEP_DIR_S);
+    a_path(d, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     if (u8csLen(norm) > 0) {
         u8cp p = norm[0];
         u8cp seg_start = p;
@@ -851,17 +854,20 @@ ok64 KEEPBranchDrop(u8cs branch) {
     }
 
     //  Best-effort: unlink any sidecar shard files keeper doesn't
-    //  own — graf's `.graf.idx` runs and lock, spot's lock.  These
-    //  show up when a verb switched graf into this branch via
-    //  `GRAFSwitchBranch` for a cross-branch read but the higher-
-    //  level branch-delete only knows about keeper files.  Iterate
-    //  the dir once and unlink anything matching the known suffixes.
+    //  own — branch-scoped `refs` ULOG + its `.refs.idx` sidecar
+    //  (keeper/README.md §"refs and aliases"), graf's `.graf.idx`
+    //  runs and lock, spot's lock.  These show up when a verb
+    //  switched graf into this branch via `GRAFSwitchBranch` for a
+    //  cross-branch read but the higher-level branch-delete only
+    //  knows about keeper files.  Iterate the dir once and unlink
+    //  anything matching the known suffixes.
     {
         a_path(scratch);
         call(PATHu8bDup, scratch, $path(bdir));
         size_t base_len = u8bDataLen(scratch);
         char const *names[] = {
             ".lock", ".lock.graf", ".lock.spot",
+            "refs", ".refs.idx",
         };
         for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
             ((u8 **)scratch)[2] = u8bDataHead(scratch) + base_len;
@@ -1875,7 +1881,7 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
         // (`//auth/path?ref`), alias chains, and the `refs/` / `heads/` /
         // `tags/` normalisation users expect.  If the target URI has no
         // authority, we fall back to a bare `?<query>` match (legacy).
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         b8 found = NO;
 
         //  Always try REFSResolve first — it handles full URIs
@@ -2942,7 +2948,7 @@ static ok64 keep_tip_filter(refcp r, void *ctx_) {
 ok64 KEEPEachTip(KEEPTipCb cb, void *ctx) {
     sane(cb);
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     keep_tip_walk w = {.cb = cb, .ctx = ctx};
     return REFSEach($path(keepdir), keep_tip_filter, &w);
 }
@@ -3003,7 +3009,7 @@ static ok64 keep_remote_filter(refcp r, void *ctx_) {
 ok64 KEEPEachRemote(KEEPRemoteCb cb, void *ctx) {
     sane(cb);
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     Bu8 seen = {};
     call(u8bAllocate, seen, 1UL << 14);     //  16K seen-URL set
     keep_remote_walk w = {.cb = cb, .ctx = ctx, .seen = &seen};

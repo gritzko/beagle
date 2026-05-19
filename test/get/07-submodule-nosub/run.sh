@@ -108,3 +108,40 @@ grep -q 'skipped (--nosub)' 01.get.got.err || {
 
 # 7. parent wtlog has the `get` row ----------------------------------
 [ -f .be/wtlog ] || { echo "FAIL: parent .be/wtlog missing" >&2; exit 1; }
+
+# 8. Path B: manual `be get` for the sub --------------------------------
+#    --nosub left vendor/sub/ as an empty mount-point dir.  The
+#    canonical user-driven mount is then `cd vendor/sub && be get
+#    ssh://…/sub.git`: cwd is a strict subdir of wt/.be/, so
+#    be_sub_shard_setup fires, mkdirs wt/.be/sub/.be/ (seeding refs +
+#    wtlog), writes vendor/sub/.be as a secondary-wt anchor pointing
+#    at that fresh shard, then the normal fetch lands the sub's
+#    keeper objects in the shard rather than the parent's trunk.
+#    Plain ssh:// git URI — no `?branch` query (remote is a bare git
+#    repo; wire protocol advertises refs).
+mkdir -p vendor/sub
+( cd vendor/sub && "$BE" get "ssh://localhost/$REL_SUB" \
+      >../../02.manual.got.out 2>../../02.manual.got.err )
+mrc=$?
+[ "$mrc" = 0 ] || { echo "FAIL: manual be get exited $mrc; stderr:" >&2
+                    cat 02.manual.got.err >&2; exit 1; }
+
+#  Sub blob materialised by the manual fetch.
+[ -f vendor/sub/lib.h ] || { echo "FAIL: manual: vendor/sub/lib.h missing" >&2
+                              ls -la vendor/sub >&2; exit 1; }
+grep -q 'SUB 1' vendor/sub/lib.h \
+    || { echo "FAIL: manual: vendor/sub/lib.h content unexpected" >&2; exit 1; }
+
+#  Secondary-wt anchor written into the mount.
+[ -f vendor/sub/.be ] || { echo "FAIL: manual: vendor/sub/.be anchor missing" >&2; exit 1; }
+[ ! -d vendor/sub/.be ] || { echo "FAIL: vendor/sub/.be must be a regular file" >&2; exit 1; }
+
+#  Sub-shard populated under parent's .be/ — the whole point of Path B.
+#  Flat layout per SUBS.plan.md: pack logs / refs / wtlog live directly
+#  in `.be/<basename>/`, identical shape to the parent's trunk dir.
+[ -d .be/sub ] || { echo "FAIL: manual: wt/.be/sub/ shard dir missing" >&2; exit 1; }
+[ -f .be/sub/refs ]  || { echo "FAIL: manual: wt/.be/sub/refs missing" >&2
+                          ls -la .be/sub >&2; exit 1; }
+[ -f .be/sub/wtlog ] || { echo "FAIL: manual: wt/.be/sub/wtlog missing" >&2; exit 1; }
+[ -s .be/sub/refs ]  || { echo "FAIL: manual: wt/.be/sub/refs empty (sub fetch did not record)" >&2
+                          ls -la .be/sub >&2; exit 1; }

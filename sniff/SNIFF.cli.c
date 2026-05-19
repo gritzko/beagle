@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/CLI.h"
@@ -20,11 +21,39 @@
 #include "keeper/KEEP.h"
 #include "AT.h"
 
+//  Pure-work body: opens already done by the wrapper.  Runs the verb
+//  via SNIFFExec; on rw verbs that committed, walks the new tip into
+//  graf's DAG so subsequent LCAs see it.
+//
+//  ABC.md §"Resource lifecycle": worker functions receive resources,
+//  never own them.  `h`, the SNIFF singleton, and the graf singleton
+//  are all opened/closed in sniffcli_inner (the enclosing frame); we
+//  only read them here.
+static ok64 sniffcli_body(cli *c, b8 rw, b8 needs_graf, ok64 go,
+                          u8cs reporoot) {
+    sane(c);
+    ok64 ret = SNIFFExec(c);
+    if (rw && needs_graf && ret == OK && (go == OK || go == GRAFOPEN)) {
+        a_pad(u8, tail_buf, FILE_PATH_MAX_LEN + 128);
+        if (SNIFFAtTailOf(reporoot, tail_buf) == OK) {
+            uri tip = {};
+            u8csMv(tip.data, u8bDataC(tail_buf));
+            URILexer(&tip);
+            (void)GRAFIndexFromTips(&tip);
+        }
+    }
+    return ret;
+}
+
+//  Open/close frame: every successful open is paired with its close
+//  on every exit path.  ABC.md §"Resource lifecycle" — singletons
+//  are allocated at the top of the call chain; `call(...)` early-
+//  returns past pending cleanup would leak, so the openers run via
+//  `try()` and the closers fire unconditionally at the bottom.
 static ok64 sniffcli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, SNIFF_VERBS, SNIFF_VAL_FLAGS);
-
 
     char cwd[1024];
     u8cs reporoot = {};
@@ -55,18 +84,9 @@ static ok64 sniffcli_inner(cli *c) {
     a_cstr(v_list,   "list");
     a_cstr(v_post,   "post");
     a_cstr(v_commit, "commit");
-    a_cstr(v_mflag,  "-m");
     b8 is_projector = u8csEmpty(c->verb) && c->nuris > 0 &&
                       DOGIsProjector(c->uris[0].scheme);
-    //  `be post` always opens the home rw — even bare `be post`, which
-    //  used to be a pure dry-run, can now compose a commit when patch
-    //  rows are present (see VERBS.md §POST and POSTPatchDefaults).
-    //  The patch chain isn't observable until the ULOG is mmapped, so
-    //  we can't pick rw vs ro at CLI-open time.  The rare bare status
-    //  preview pays an unnecessary write lock — acceptable.
-    b8 is_post_dryrun = NO;
-    b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list) || is_projector
-         || is_post_dryrun;
+    b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list) || is_projector;
     b8 rw = !ro;
 
     //  Prefer the explicit `--at <root>?<branch>#<sha>` flag forwarded
@@ -77,52 +97,35 @@ static ok64 sniffcli_inner(cli *c) {
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8csOK(reporoot) && !u8csEmpty(reporoot))
         u8csMv(at.path, reporoot);
+
+    //  HOMEOpen failure self-cleans via its own try/nedo wrapper, so
+    //  we can `call(...)` it safely.  From here on we own `h` and
+    //  every exit path must HOMEClose.
     call(HOMEOpen, &h, &at, rw);
-    call(SNIFFOpen, &h, rw);   // opens keeper singleton too
 
-    //  `--nosub` (boolean): skip the submodule-mount loop in
-    //  GET.c.  Forwarded by `be` to every sub-dog; only sniff
-    //  acts on it (other dogs don't fetch submodules).  Set
-    //  AFTER SNIFFOpen — that function zerops the singleton.
+    //  SNIFFOpen via try() so its failure routes through the cleanup
+    //  below instead of skipping HOMEClose.
+    try(SNIFFOpen, &h, rw);   // opens keeper singleton too
+    ok64 so = __;
+    if (so != OK) { HOMEClose(&h); return so; }
+
+    //  SNIFFOpen zerops the singleton — set verb-side flags AFTER.
     SNIFF.nosub = CLIHas(c, "--nosub") ? YES : NO;
-
-    //  `--force` (boolean): GET overwrites dirty wt paths without
-    //  weave-merge and without the no-baseline dirty-overlay
-    //  refusal.  Without it, `be get` is a careful merge — with it,
-    //  `be get` is a tree reset.  Forwarded by `be` to every sub-dog;
-    //  only sniff acts on it.  Set AFTER SNIFFOpen (zerops singleton).
     SNIFF.force = CLIHas(c, "--force") ? YES : NO;
-
-    //  `--prune` (boolean): GET removes every wt-only path after
-    //  checkout — files/dirs in the wt that aren't in the target
-    //  tree.  Paths matching `.gitignore` survive (mirror of
-    //  `git clean -f`, not `-fx`); `.be/` is never touched.
-    //  Typically paired with `--force`.  See VERBS.md §GET.
     SNIFF.prune = CLIHas(c, "--prune") ? YES : NO;
 
-    //  POST (ff check) and PATCH (3-way merge LCA) call into graf for
-    //  ancestor queries.  Open graf only for those two verbs — `sniff
-    //  get` doesn't move HEAD, doesn't read the DAG, and grabbing
-    //  graf's leaf `.lock` here serialises against the parallel graf
-    //  child BE forks for `be get`, producing 20-minute wall-time
-    //  hangs on big-repo clones (CPU stays idle on flock wait).  rw
-    //  open mirrors the inline-reindex below — keeps the lock held
-    //  for the whole post/patch including the index update.
+    //  graf needs to be open whenever sniff may consult the DAG
+    //  (POST ff-check, PATCH 3-way LCA, PUT branch creation rebase,
+    //  DELETE branch ancestor checks).  Do NOT open it for
+    //  `get`/`checkout`/`sub-mount` — those don't read graf, and they
+    //  fork a parallel `graf get` child (or the recursive `be get`
+    //  inside SubMount does) whose lock would race with the sniff-rw
+    //  lock if we opened it here (long flock waits on big-repo
+    //  clones; sub-mount deadlocks the depth-3 case outright).
     a_cstr(v_get,      "get");
     a_cstr(v_patch,    "patch");
-    a_cstr(v_put,      "put");
-    a_cstr(v_delete,   "delete");
     a_cstr(v_checkout, "checkout");
     a_cstr(v_submount, "sub-mount");
-    //  graf needs to be open whenever sniff may consult the DAG
-    //  (POST ff-check, PATCH 3-way LCA, PUT branch creation
-    //  rebase, DELETE branch ancestor checks).  Do NOT open it
-    //  for `get`/`checkout`/`sub-mount` — those don't read graf,
-    //  and they fork a parallel `graf get` child (or the recursive
-    //  `be get` inside SubMount does) whose lock would race with
-    //  the sniff-rw lock if we opened it here (long flock waits
-    //  on big-repo clones; sub-mount deadlocks the depth-3 case
-    //  outright).
     b8 needs_graf = !u8csEq(c->verb, v_get) && !u8csEq(c->verb, v_checkout)
                  && !u8csEq(c->verb, v_submount)
                  && (rw || u8csEq(c->verb, v_post) || u8csEq(c->verb, v_commit)
@@ -140,21 +143,10 @@ static ok64 sniffcli_inner(cli *c) {
     a_dup(u8c, gbranch, u8bData(gbr_buf));
     ok64 go = needs_graf ? GRAFOpenBranch(&h, gbranch, rw) : NONE;
 
-    ok64 ret = SNIFFExec(c);
-
-    //  Post-exec reindex for rw verbs that landed a commit.  Walk the
-    //  new tip into graf's DAG so subsequent `sniff patch` LCAs see
-    //  it without a manual `graf index` step.  BE matches this with
-    //  be_reindex when invoked through `be post` / `be patch`.
-    if (rw && needs_graf && ret == OK && (go == OK || go == GRAFOPEN)) {
-        a_pad(u8, tail_buf, FILE_PATH_MAX_LEN + 128);
-        if (SNIFFAtTailOf(reporoot, tail_buf) == OK) {
-            uri tip = {};
-            u8csMv(tip.data, u8bDataC(tail_buf));
-            URILexer(&tip);
-            (void)GRAFIndexFromTips(&tip);
-        }
-    }
+    //  Body via try() so its non-OK exit routes through the cleanup
+    //  below instead of skipping the closes.
+    try(sniffcli_body, c, rw, needs_graf, go, reporoot);
+    ok64 ret = __;
 
     if (go == OK) GRAFClose();
     SNIFFClose();

@@ -30,6 +30,12 @@
 con ok64 BEFAIL    = 0x2ce3ca495;
 con ok64 BEDOGEXIT = 0xb38d6103a149d;
 con ok64 BEDOGSIG  = 0x2ce35841c490;
+//  `be get ?/proj/...` (or any URI carrying an explicit project
+//  segment): the project shard dir already exists on disk and
+//  there's no row-0 anchor pinning this wt to it yet — a fresh-
+//  init would clobber the existing shard's seed files.  User must
+//  either drop the shard first or use a different project name.
+con ok64 BEPRJDUP  = 0x2ce65b4cd799;
 
 // --- Verb table ---
 
@@ -68,6 +74,8 @@ static void BEUsage(void) {
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
 // resolved against this process's own argv[0] via HOMEResolveSibling.
 static ok64 be_ensure_repo(void);
+static ok64 be_ensure_project_repo(uricp u);
+static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
 
 static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
@@ -491,8 +499,15 @@ static ok64 BEGetLocal(cli *c, b8 seq) {
     //  Auto-bootstrap: GET is a writer (advances cur, stamps files,
     //  appends a `get` row), so it needs `.be/` markers like PUT/POST.
     //  Covers both the fresh-clone (remote) and the local
-    //  `be get ?branch` on an empty dir cases.
-    call(be_ensure_repo);
+    //  `be get ?branch` on an empty dir cases.  For remote clones,
+    //  derive the project name from the URL and lay down
+    //  `<cwd>/.be/<project>/{refs,wtlog}` (project-sharded layout —
+    //  see dog/DOG.h §"Canonical on-disk layout").
+    if (remote) {
+        call(be_ensure_project_repo, u);
+    } else {
+        call(be_ensure_repo);
+    }
 
     //  Step 1: keeper get URI — synchronous.  Only meaningful when
     //  the URI carries a remote authority (fetch/clone path); for a
@@ -822,34 +837,77 @@ static ok64 BEGet(cli *c, b8 seq) {
         }
     }
 
+    //  `--nosub`: skip the submodule recursion entirely.  The user
+    //  asked us to leave declared subs unmounted; print a stderr
+    //  marker (VERBS.md §"GET --nosub") and bail out after the local
+    //  body finishes.  Each level of `be get` honors this flag, so
+    //  cascading clones (parent + sub + leaf) stop at this level.
+    b8 nosub = CLIHas(c, "--nosub");
+
     ok64 worst = BEGetLocal(c, seq);
 
-    //  Re-resolve the wt root after the local body.
-    if (!u8bHasData(c->repo)) {
+    if (nosub) {
+        fprintf(stderr, "be: submodule(s) skipped (--nosub)\n");
+        return worst;
+    }
+
+    //  Re-resolve the wt root after the local body.  Also grab the
+    //  active leaf branch from the anchor (parked in h->cur_branch by
+    //  HOMEOpen via DOGBranchFromBe) so beget_keeper_subs can pass it
+    //  as the URI's branch slot — `?<branch>#<sha>` puts keeper_subs
+    //  at the right leaf shard for sub enumeration.
+    a_pad(u8, post_get_branch, 256);
+    {
         home rh = {};
         uri none = {};
         if (HOMEOpen(&rh, &none, NO) == OK) {
-            (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+            if (!u8bHasData(c->repo))
+                (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+            if (u8bDataLen(rh.cur_branch) > 0) {
+                a_dup(u8c, rb, u8bDataC(rh.cur_branch));
+                u8bFeed(post_get_branch, rb);
+            }
         }
         HOMEClose(&rh);
     }
     if (!u8bHasData(c->repo)) return worst;
     a_dup(u8c, wt_root, $path(c->repo));
 
-    //  Target ref: parent's URI query if present; else the wtlog
-    //  tail (which BEGetLocal just updated to point at the new tip).
-    u8cs target_ref = {};
+    //  Target ref to pass to `keeper subs`: prefer the wtlog tail's
+    //  full `?<branch>#<sha>` form so keeper opens the right leaf
+    //  shard (branch slot) AND can resolve the commit directly via
+    //  the fragment.  Falls back to URI query for truly fresh
+    //  clones (no wtlog tail yet).
+    a_pad(u8, target_ref_buf, 128);
     a_pad(u8, target_at_buf, FILE_PATH_MAX_LEN + 128);
     uri tt = {};
-    if (c->nuris > 0 && !u8csEmpty(c->uris[0].query)) {
-        u8csMv(target_ref, c->uris[0].query);
-    } else if (SNIFFAtTailOf(wt_root, target_at_buf) == OK) {
+    b8 have_tail = (SNIFFAtTailOf(wt_root, target_at_buf) == OK);
+    if (have_tail) {
         u8csMv(tt.data, u8bDataC(target_at_buf));
         URILexer(&tt);
-        if (u8csLen(tt.fragment) == 40)
-            u8csMv(target_ref, tt.fragment);
     }
-    if (u8csEmpty(target_ref)) return worst;
+    if (have_tail && u8csLen(tt.fragment) == 40) {
+        //  Compose `<branch>#<sha>` (query slot's body, no leading `?`
+        //  — beget_keeper_subs prefixes `?` itself).  Prefer the
+        //  home's cur_branch (set from the row-0 anchor for sub-shard
+        //  / sub-clone contexts) over the wtlog row's query slot —
+        //  the latter records the source URI's ref name (e.g.
+        //  `?master` from `ssh://…?master`), not the local leaf.
+        //  Branch may be empty for trunk; we still emit `#<sha>`
+        //  so keeper_subs's fragment path kicks in.
+        if (u8bDataLen(post_get_branch) > 0) {
+            (void)u8bFeed(target_ref_buf, u8bDataC(post_get_branch));
+        } else if (!u8csEmpty(tt.query)) {
+            (void)u8bFeed(target_ref_buf, tt.query);
+        }
+        (void)u8bFeed1(target_ref_buf, '#');
+        (void)u8bFeed(target_ref_buf, tt.fragment);
+    } else if (c->nuris > 0 && !u8csEmpty(c->uris[0].query)) {
+        (void)u8bFeed(target_ref_buf, c->uris[0].query);
+    }
+    if (u8bDataLen(target_ref_buf) == 0) return worst;
+    u8cs target_ref = {};
+    u8csMv(target_ref, u8bDataC(target_ref_buf));
 
     //  Enumerate target's subs (the post-checkout declarations).
     Bu8 target_subs = {};
@@ -1252,6 +1310,157 @@ static ok64 be_reindex(cli *c) {
     return worst;
 }
 
+//  Derive the project segment from a URI.  Currently only the
+//  explicit absolute-query form is honored:
+//    * `?/<project>/...` — project is the first path segment after
+//      the leading `/`.  Works for any scheme (`be://host?/proj/main`,
+//      `file:///path?/proj/main`, bare `?/proj/main`).
+//  URL-basename derivation (e.g. inferring "beagle" from
+//  `https://github.com/gritzko/beagle.git`) is intentionally deferred
+//  until the test suite is migrated to expect the project-sharded
+//  on-disk layout for fresh clones — switching the default today
+//  would silently flip the layout for every file:// clone in the
+//  suite (test/get/08, test/post/04, etc.).
+//
+//  Feeds the project bytes into `out` (a slice borrowing from the
+//  URI; no allocation).  Returns SUBSPARSE when the URI doesn't
+//  carry an absolute-query project.
+static ok64 be_url_project(uricp u, u8csp out) {
+    if (!u) return SUBSPARSE;
+    if (u8csEmpty(u->query)) return SUBSPARSE;
+    a_dup(u8c, q, u->query);
+    if (*q[0] != '/') return SUBSPARSE;
+    u8csUsed1(q);
+    u8c const *end = q[0];
+    while (end < q[1] && *end != '/') end++;
+    if (end == q[0]) return SUBSPARSE;
+    u8cs proj_slice = {q[0], (u8c *)end};
+    u8csMv(out, proj_slice);
+    return OK;
+}
+
+//  Project-aware variant of `be_ensure_repo`: lays down
+//  `<cwd>/.be/<project>/{refs,wtlog}` plus a `<cwd>/.be/wtlog` row-0
+//  `repo file:<cwd>/.be/<project>` anchor that pins this wt to the
+//  project shard.  Project name derivation, in order:
+//    1. `?/<proj>/...` query slot on `u` (explicit URI form).
+//    2. URL basename via `SNIFFSubBasename` (clone-URL form).
+//    3. `basename($PWD)` (fresh-init in an empty dir with no URL).
+//  Skipped iff an anchor is already present in the wt (`h->project`
+//  populated after HOMEOpen) — established projects aren't
+//  re-initialised; the existing anchor wins.  When derivation yields
+//  nothing (all three fall back to empty — e.g. `cwd == /`), falls
+//  back to the legacy single-project bootstrap.
+static ok64 be_ensure_project_repo(uricp u) {
+    sane(1);
+    //  Probe for an existing anchor.  An empty `h->project` after
+    //  HOMEOpen means either no `.be/` exists in any parent OR a
+    //  `.be/` exists but its wtlog carries no row-0 `repo` anchor
+    //  (the legacy uninitialised shape — e.g. case.sh's hygiene
+    //  shield).  Either way we fall through to fresh-init.
+    {
+        home probe = {};
+        uri none = {};
+        ok64 ho = HOMEOpen(&probe, &none, NO);
+        b8 anchored = (ho == OK && u8bDataLen(probe.project) > 0);
+        HOMEClose(&probe);
+        if (anchored) done;
+    }
+
+    //  Project name from an explicit `?/<proj>/...` URI; on miss
+    //  fall through to the legacy bootstrap.  `basename($PWD)`
+    //  derivation is deferred (would flip the layout for every
+    //  fresh `be put` in the suite — same risk as the URL-basename
+    //  derivation; see be_url_project's note).
+    u8cs proj = {};
+    if (!u || be_url_project(u, proj) != OK || u8csEmpty(proj))
+        return be_ensure_repo();
+
+    a_path(cwd);
+    call(FILEGetCwd, cwd);
+    a_dup(u8c, cwd_s, u8bDataC(cwd));
+
+    //  <cwd>/.be/<project>/ — the project shard.  Refuse if it
+    //  already exists on disk: an explicit `?/<proj>` URI must not
+    //  silently clobber a half-initialised shard (anchor missing
+    //  from wtlog so we reached here, but the shard dir is present).
+    //  The anchored-gate above handles the fully-initialised case
+    //  (anchor present, project name matches) as a no-op.
+    a_path(shard_dir);
+    call(PATHu8bFeed, shard_dir, cwd_s);
+    call(PATHu8bPush, shard_dir, DOG_BE_S);
+    call(PATHu8bPush, shard_dir, proj);
+    {
+        filestat fs = {};
+        if (FILEStat(&fs, $path(shard_dir)) == OK) {
+            fprintf(stderr,
+                "be: project shard already exists at .be/%.*s\n",
+                (int)$len(proj), (char *)proj[0]);
+            return BEPRJDUP;
+        }
+    }
+    call(FILEMakeDirP, $path(shard_dir));
+    a_dup(u8c, shard_s, u8bDataC(shard_dir));
+
+    //  Seed empty refs + wtlog inside the shard.
+    {
+        a_path(p);
+        call(PATHu8bFeed, p, shard_s);
+        call(PATHu8bPush, p, DOG_REFS_S);
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+    {
+        a_path(p);
+        call(PATHu8bFeed, p, shard_s);
+        call(PATHu8bPush, p, DOG_WTLOG_S);
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+
+    //  Compose row-0 URI: `file:<cwd>/.be/<project>/` (trailing slash
+    //  matches sniff_write_repo_row's output shape).
+    a_path(uri_path);
+    call(PATHu8bFeed, uri_path, shard_s);
+    call(u8bFeed1, uri_path, '/');
+    call(PATHu8bTerm, uri_path);
+
+    uri urow = {};
+    a_cstr(scheme_s, "file");
+    u8csMv(urow.scheme, scheme_s);
+    {
+        a_dup(u8c, p, u8bData(uri_path));
+        u8csMv(urow.path, p);
+    }
+
+    a_pad(u8, row, 1024);
+    ron60 ts = RONNow();
+    call(RONutf8sFeed, u8bIdle(row), ts);
+    call(u8bFeed1, row, '\t');
+    a_cstr(repo_verb, "repo");
+    call(u8bFeed, row, repo_verb);
+    call(u8bFeed1, row, '\t');
+    call(URIutf8Feed, u8bIdle(row), &urow);
+    call(u8bFeed1, row, '\n');
+
+    //  Write <cwd>/.be/wtlog with the row-0 anchor.  Primary-wt
+    //  layout: wtlog sits inside the store dir alongside the
+    //  project shard(s); row-0 pins this wt to one project.
+    a_path(wtlog_path);
+    call(PATHu8bFeed, wtlog_path, cwd_s);
+    call(PATHu8bPush, wtlog_path, DOG_BE_S);
+    call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
+    int fd = -1;
+    call(FILECreate, &fd, $path(wtlog_path));
+    a_dup(u8c, body, u8bData(row));
+    call(FILEFeedAll, fd, body);
+    FILEClose(&fd);
+
+    done;
+}
+
 //  Repo bootstrap: when no `.be/` is reachable from cwd, lay down
 //  the empty markers `<cwd>/.be/refs` and `<cwd>/.be/wtlog` so the
 //  HOME walk-up succeeds for downstream dogs.  No-op when an existing
@@ -1283,13 +1492,47 @@ static ok64 be_ensure_repo(void) {
         call(FILEClose, &fd);
     }
     {
-        a_path(wtlog_path);
+        //  Seed `<cwd>/.be/wtlog` with a row-0 `repo` anchor pinning
+        //  this wt to its (single, legacy-shape) store.  Anchor URI
+        //  is `file:<cwd>/.be/` — no project segment.
+        //  `DOGProjectFromBe` returns empty for that shape, so
+        //  `h->project` stays empty and keeper composition is
+        //  unchanged.  The anchor matters for SNIFFAtTailOf (and
+        //  thus `be`'s --at forwarding into projector dispatches
+        //  like `be log:#10`), which requires row 0 to be a `repo`
+        //  row to extract the wt's store-root.
+        a_path(uri_path);
         a_dup(u8c, be_s, u8bDataC(be_dir));
+        call(PATHu8bFeed, uri_path, be_s);
+        call(u8bFeed1,    uri_path, '/');
+        call(PATHu8bTerm, uri_path);
+
+        uri urow = {};
+        a_cstr(scheme_s, "file");
+        u8csMv(urow.scheme, scheme_s);
+        {
+            a_dup(u8c, p, u8bData(uri_path));
+            u8csMv(urow.path, p);
+        }
+
+        a_pad(u8, row, 1024);
+        ron60 ts = RONNow();
+        call(RONutf8sFeed, u8bIdle(row), ts);
+        call(u8bFeed1, row, '\t');
+        a_cstr(repo_verb, "repo");
+        call(u8bFeed, row, repo_verb);
+        call(u8bFeed1, row, '\t');
+        call(URIutf8Feed, u8bIdle(row), &urow);
+        call(u8bFeed1, row, '\n');
+
+        a_path(wtlog_path);
         call(PATHu8bFeed, wtlog_path, be_s);
         call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
         int fd = -1;
         call(FILECreate, &fd, $path(wtlog_path));
-        call(FILEClose, &fd);
+        a_dup(u8c, body, u8bData(row));
+        call(FILEFeedAll, fd, body);
+        FILEClose(&fd);
     }
     done;
 }
@@ -1297,15 +1540,15 @@ static ok64 be_ensure_repo(void) {
 //  Subdir-of-existing-repo + remote clone = treat cwd as a submodule
 //  worktree of a fresh shard under the ancestor's `.be/`.
 //
-//  Layout (matches "/.be/ is the trunk shard; non-trunk shards mention
-//  the path .../.be/<shard>"):
+//  Layout (flat: `<parent>/.be/<basename>/` IS the sub's store, with
+//  the same file shape as the parent's trunk `<parent>/.be/`):
 //
-//      <parent_root>/.be/                          parent's trunk shard
-//      <parent_root>/.be/<basename>/.be/           sub's own store
-//          ├── refs                                (empty markers)
-//          └── wtlog
+//      <parent_root>/.be/                          parent's trunk store
+//      <parent_root>/.be/<basename>/               sub's store (branch dir)
+//          ├── refs                                (empty seed)
+//          └── wtlog                               (empty seed)
 //      <cwd>/.be                                   regular FILE anchor
-//          └── <ts>\trepo\tfile:<parent>/.be/<basename>/.be/\n
+//          └── <ts>\trepo\tfile:<parent>/.be/<basename>/\n
 //
 //  Walk-up from any path inside cwd then resolves to the sub's store
 //  (via the anchor file's row-0), so keeper / sniff / graf / spot all
@@ -1351,16 +1594,13 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     u8cs basename = {};
     call(SNIFFSubBasename, url_d, basename);
 
-    //  mkdir <parent>/.be/<basename>/.be/
+    //  mkdir <parent>/.be/<basename>/  (flat: this dir IS the sub's
+    //  store, same shape as <parent>/.be/ itself)
     a_path(shard_be);
     call(PATHu8bFeed, shard_be, repo_s);
     call(PATHu8bPush, shard_be, DOG_BE_S);
     a_dup(u8c, base_s, basename);
     call(PATHu8bPush, shard_be, base_s);
-    a_path(shard_root);
-    a_dup(u8c, sr_pre, u8bDataC(shard_be));
-    call(PATHu8bFeed, shard_root, sr_pre);
-    call(PATHu8bPush, shard_be, DOG_BE_S);
     call(FILEMakeDirP, $path(shard_be));
 
     //  Seed empty refs + wtlog so HOME walk-up finds a well-formed
@@ -1384,9 +1624,9 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
         call(FILEClose, &fd);
     }
 
-    //  Compose row-0 URI: `file:<shard_root>/.be/`.  Routed through
-    //  URIutf8Feed so the bytes match `sniff_write_repo_row`'s output
-    //  shape (single slash after `file:`, trailing slash on path).
+    //  Compose row-0 URI: `file:<parent>/.be/<basename>/`.  Routed
+    //  through URIutf8Feed so the bytes match `sniff_write_repo_row`'s
+    //  output shape (single slash after `file:`, trailing slash on path).
     a_path(uri_path);
     a_dup(u8c, sr_s, u8bDataC(shard_be));
     call(PATHu8bFeed, uri_path, sr_s);
@@ -2119,6 +2359,22 @@ static ok64 BEPost(cli *c, b8 seq) {
         }
         a_dup(u8cs, argv, u8csbData(args));
         (void)BERun(sniff_d, argv, NO);
+        return rc.worst;
+    }
+
+    //  Sub failure bail-out: any sub that exited non-OK (other than
+    //  POSTNONE, which the cb already swallowed as a no-op) halts
+    //  the cascade.  Committing the parent on top of a half-applied
+    //  forest lands a tree that misses the failed sub's gitlink
+    //  bump (or worse, references the unchanged old sha while the
+    //  user thinks the cascade ran).  Refusing here keeps the user
+    //  in a clean retry state — fix / retry the sub, then re-run
+    //  `be post`.
+    if (rc.worst != OK) {
+        fprintf(stderr,
+                "be: post: aborting parent commit — sub recursion "
+                "failed (worst=%s).  Resolve the sub and retry.\n",
+                ok64str(rc.worst));
         return rc.worst;
     }
 

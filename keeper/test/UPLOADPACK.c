@@ -80,7 +80,7 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
     //  whatever (sha, refname) pairs REFS holds.  Real fetches against
     //  this fixture would refuse (git wants a commit/tag), but the
     //  pack-stitching path is exercised with raw sha lookup.
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
     a_cstr(heads, "heads/main");

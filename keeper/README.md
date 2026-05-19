@@ -60,46 +60,82 @@ KEEPPackClose(&k, &p);
 
 ##  Storage layout
 
-A **store** is a directory containing trunk plus nested branch
-subdirectories, each path-like to mirror `?refname` URIs:
+A **store** is a directory (`.be/`) holding one or more **project
+shards** side-by-side.  Each project shard is self-contained: a
+project root that doubles as that project's trunk, plus nested
+branch subdirectories that mirror `?refname` URIs path-for-path.
+Cross-project REF_DELTA bases are forbidden — every project shard
+is droppable / movable in isolation.
 
 ```
-<store>/                       trunk (aliases heads/main,
-                               heads/master, heads/trunk → "")
-    refs                       trunk reflog (dog/ULOG; carries both
-                               local tips and host aliases)
-    WT                         abspath of worktree on trunk (if any)
-    NNNNN.keeper               trunk pack logs (append-only)
-    NNNNN.idx                  trunk LSM index runs
-    NNNNN.spot                 other dogs' per-branch artefacts
-    feature/                   `?heads/feature`
+<store>/                              the store (`.be/`)
+    config                            store-wide TOML config
+    <project>/                        project shard (== its trunk;
+                                      aliases heads/main,
+                                      heads/master, heads/trunk → "")
+        refs                          project-scoped ref ULOG: host
+                                      aliases (`//github →
+                                      https://…`) and any tags or
+                                      labels meant to outlive a
+                                      branch-dir drop
+        NNNNN.keeper                  trunk pack logs (append-only)
+        NNNNN.keeper.idx              trunk LSM index runs
+        NNNNN.spot.idx                other dogs' per-branch artefacts
+        feature/                      `?feature` (project-relative)
+            refs                      branch-scoped ref ULOG: this
+                                      branch's tip + branch-local
+                                      remote-tracking rows (kept
+                                      next to the branch's packs so
+                                      `be delete ?feature` is a
+                                      whole-dir drop, fetch
+                                      isolation falls out for free)
+            NNNNN.keeper
+            NNNNN.keeper.idx
+        feature/fix1/                 `?feature/fix1` (nested freely)
+            refs
+            NNNNN.keeper
+        tags/v0.0.1/                  reserved leaf shape; tags
+                                      meant to be branch-scoped can
+                                      live as their own leaf dirs;
+                                      project-scoped tags ride as
+                                      rows in `<project>/refs`
+    <other-project>/                  sibling project shard
         refs
-        WT
-        NNNNN.keeper
-        NNNNN.idx
-    heads/fix/                 `?heads/fix` (explicit path also
-                               accepted; `heads/` prefix is optional)
-    tags/v0.0.1/               `?tags/v0.0.1`
+        ...
 ```
 
-Branch directories nest freely: `feature/fix1/` is a valid
-sub-branch of `feature/`.  File numbering (`NNNNN.keeper`,
-`NNNNN.idx`, …) is a fresh sequence per directory.
+Branch directories nest freely under a project: `feature/fix1/` is
+a valid sub-branch of `feature/`.  File numbering (`NNNNN.keeper`,
+`NNNNN.keeper.idx`, …) is a fresh sequence per project shard.
 
-Tags are leafs of the branch tree (i.e. tags are scoped to
-a branch!).
+Refs live next to the packs they describe: each branch dir holds
+its own `refs` ULOG carrying that branch's tips.  A branch's `refs`
+is authoritative for its own tips — resolution does NOT walk up the
+dir chain.  Things that must survive a branch-dir drop (host aliases,
+project-scoped tags) belong in `<project>/refs`.
 
-Worktrees are separate checkouts on disk; each wt has a `.be`
-*file* (not a directory) naming the store plus the branch it is on:
+Worktrees are separate checkouts on disk.  Two flavors:
+
+  * **Colocated** — `<wt>/.be/` is the store directory; the store
+    holds one project shard alongside the wt's files.  The wt
+    command log lives at `<wt>/.be/wtlog`; row 0's `repo` URI
+    pins the project (`file:<wt>/.be/<project>`).
+  * **Central** ("`$HOME/.be/`" pattern) — `<wt>/.be` is a regular
+    *file* (not a directory) carrying a wtlog whose row 0 names
+    a project under a remote store:
 
 ```
-<wt>/.be        contents: /abs/store?heads/feature
+<wt>/.be        contents: file:/abs/store/.be/<project>
+                followed by `get`/`post`/... rows for branch state
 ```
 
-The branch directory holds the reverse pointer in `WT`, so each
-branch is linked to at most one wt.  A store-co-located wt
-(traditional layout) uses `<repo>/.be/` as the store dir and keeps
-its working files next to it; external wts use the `.be` file.
+The branch the wt is on is NOT in the anchor URI — it is the
+latest `get`/`post` row's `?branch` in the wtlog.  Switching
+branches appends a new row, never rewrites the anchor.
+
+The reverse pointer (which wts are pinned to which branches) is
+derivable by walking known wtlogs; keeper does not maintain a
+per-branch `WT` file.
 
 ##  Pack log files
 

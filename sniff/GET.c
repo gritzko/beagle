@@ -720,7 +720,18 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     //  to advance, no FF check applies.
     if ($len(branch) == 40) return NONE;
 
+    //  Look up the local-only tip via bare `?<branch>` (the shape
+    //  sniff POST writes — peer-keyed rows from wire fetches use
+    //  `<peer-uri>?<branch>` and aren't a "local tip" for FF purposes).
+    //  REFS lives in the active leaf branch dir (sub-shard isolation:
+    //  a sub mount has its OWN REFS at `<root>/.be/<leaf>/refs`, not
+    //  the parent's trunk).  Trunk REFS holds the primary wt's own
+    //  rows when leaf is empty.
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+        a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+        call(PATHu8bAdd, keepdir, leaf_s);
+    }
     a_pad(u8, refkey_buf, 256);
     u8bFeed1(refkey_buf, '?');
     u8bFeed(refkey_buf, branch);

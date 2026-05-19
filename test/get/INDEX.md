@@ -61,3 +61,12 @@
   A follow-up `be get --force ?feat` (chmod restored) completes the
   materialisation idempotently — the documented recovery path for
   a baseline-correct / wt-mid-flux state.
+* `19-be-url-project/` — `be get be://host?/project/branch`:
+  project segment comes from the FIRST path component of the
+  query, not from the URL-path basename (the rule for non-be
+  schemes).  Asserts `be_ensure_project_repo` lays down
+  `.be/<project>/{refs,wtlog}` plus a `.be/wtlog` row-0 anchor
+  pinning the wt to that shard.  Wire intentionally fails
+  (nonexistent `.invalid` host); only the on-disk layout is
+  checked because `be_ensure_project_repo` runs BEFORE the keeper
+  fetch step.

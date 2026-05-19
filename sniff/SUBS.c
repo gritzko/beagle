@@ -68,6 +68,19 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
         if (colon) work[0] = colon + 1;
     }
 
+    //  Strip URI query (`?…`) and fragment (`#…`) tails — callers
+    //  hand us URIs with ref/sha slots attached (`…/parent.git?master`)
+    //  but the basename is purely the path's last segment.  Without
+    //  this the shard dir name picks up the `?master` and confuses
+    //  every downstream URI/path parser.
+    {
+        u8c const *cut = NULL;
+        $for(u8c, p, work) {
+            if (*p == '?' || *p == '#') { cut = p; break; }
+        }
+        if (cut) work[1] = cut;
+    }
+
     //  Strip trailing '/' so the last segment is non-empty when the
     //  URL ended on a slash (e.g. `…/widgets/`).
     while (!u8csEmpty(work) && *(work[1] - 1) == '/')
@@ -120,22 +133,22 @@ ok64 SNIFFSubsSynth(u8bp out, u8cs paths, u8cs urls) {
 // --- SubMount: recursive `be get` driver ------------------------------
 
 //  Write a one-row ULOG file at `<wt>/<path>/.be`:
-//      <ron60-now>\trepo\tfile:<parent_root>/.be/\n
-//  Mirrors `sniff_write_repo_row` (sniff/SNIFF.c) and BEGetWorktree's
-//  secondary-wt seed (beagle/BE.cli.c) — same row shape, same `repo`
-//  verb, same trailing slash convention so `home_walk_up` reads it
-//  and dispatches to the secondary path.  Routed through URIutf8Feed
-//  so the serialization matches the primary writer byte-for-byte;
-//  the hand-rolled string used to emit the three-slash `file:///…`
-//  form, which differs textually from the primary's `file:/…` and
-//  tripped exact-match comparisons.
-static ok64 subs_write_anchor(u8cs sub_be_path, u8cs parent_root) {
-    sane($ok(sub_be_path) && $ok(parent_root));
+//      <ron60-now>\trepo\tfile:<shard_root>/\n
+//  where `<shard_root>` is the sub's own keeper store dir (typically
+//  `<parent_root>/.be/<basename>/`).  Mirrors `sniff_write_repo_row`
+//  (sniff/SNIFF.c) and BEGetWorktree's secondary-wt seed
+//  (beagle/BE.cli.c) — same row shape, same `repo` verb, same trailing
+//  slash convention so `home_walk_up` reads it and dispatches to the
+//  secondary path.  Routed through URIutf8Feed so the serialization
+//  matches the primary writer byte-for-byte; the hand-rolled string
+//  used to emit the three-slash `file:///…` form, which differs
+//  textually from the primary's `file:/…` and tripped exact-match
+//  comparisons.
+static ok64 subs_write_anchor(u8cs sub_be_path, u8cs shard_root) {
+    sane($ok(sub_be_path) && $ok(shard_root));
 
     a_path(pathbuf);
-    call(PATHu8bFeed, pathbuf, parent_root);
-    a_cstr(be_s, ".be");
-    call(PATHu8bPush, pathbuf, be_s);
+    call(PATHu8bFeed, pathbuf, shard_root);
     //  Directory URIs carry a trailing slash.
     call(u8bFeed1, pathbuf, '/');
     call(PATHu8bTerm, pathbuf);
@@ -238,18 +251,40 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     u8cs basename = {};
     call(SNIFFSubBasename, url, basename);
 
-    //  3. Sub-store dir under parent's `.be/`.  Spec keying is
-    //  `<parent>/.be/<basename>/`; we mkdir it as a placeholder so the
-    //  smoke test sees it.  Actual objects land in the parent's keeper
-    //  trunk via the recursive `be get` (the shared-keeper model).
+    //  3. Sub-store dir: `<parent_root>/.be/<basename>/`.  Top-level
+    //  subdir of the parent's `.be/`, identical shape to the parent's
+    //  trunk dir (NNNNN.keeper, refs, wtlog).  Seed refs+wtlog so
+    //  HOME walk-up classifies the dir as a well-formed store.
     a_path(store_dir);
     call(PATHu8bFeed, store_dir, parent_root);
     a_cstr(be_dir, ".be");
     call(PATHu8bPush, store_dir, be_dir);
     call(PATHu8bPush, store_dir, basename);
     call(FILEMakeDirP, $path(store_dir));
+    {
+        a_path(p);
+        a_dup(u8c, s, u8bDataC(store_dir));
+        call(PATHu8bFeed, p, s);
+        a_cstr(refs_s, "refs");
+        call(PATHu8bPush, p, refs_s);
+        int fd = FILE_CLOSED;
+        call(FILECreate, &fd, $path(p));
+        FILEClose(&fd);
+    }
+    {
+        a_path(p);
+        a_dup(u8c, s, u8bDataC(store_dir));
+        call(PATHu8bFeed, p, s);
+        a_cstr(wtlog_s, "wtlog");
+        call(PATHu8bPush, p, wtlog_s);
+        int fd = FILE_CLOSED;
+        call(FILECreate, &fd, $path(p));
+        FILEClose(&fd);
+    }
 
-    //  4. Sub mount + secondary-wt anchor.
+    //  4. Sub mount + secondary-wt anchor.  The anchor's row-0 URI
+    //  points at the sub-shard (store_dir), NOT the parent's `.be/`,
+    //  so the child `be get` opens the sub-shard cleanly.
     a_path(mount);
     call(PATHu8bFeed, mount, reporoot);
     call(PATHu8bAdd,  mount, path);          //  multi-segment safe
@@ -261,30 +296,48 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     a_cstr(be_s, ".be");
     call(PATHu8bPush, anchor, be_s);
     a_dup(u8c, anchor_s, u8bDataC(anchor));
-    call(subs_write_anchor, anchor_s, parent_root);
+    a_dup(u8c, shard_s,  u8bDataC(store_dir));
+    call(subs_write_anchor, anchor_s, shard_s);
 
-    //  5. Pre-fetch the sub's pack into the parent's (shared) keeper.
-    //  WIREFetchAll grabs every advertised heads/tags ref; the child
-    //  sniff process then does a pure detached checkout against the
-    //  already-resident commit (no second wire round-trip).  Sharing
-    //  the parent keeper is the smoke-path simplification of
-    //  MODULES.plan.md §"Storage layout" — proper per-sub branch dirs
-    //  remain a follow-up.
+    //  5. Pre-fetch the sub's pack into the SUB's keeper shard.
+    //  WIREFetchAll writes through the keeper singleton; we
+    //  temporarily swap KEEP from the parent's trunk to the sub-shard
+    //  (opened as branch=<basename> under the parent's home so writes
+    //  land in `<parent>/.be/<basename>/` only).  After the fetch we
+    //  restore the parent's trunk so the rest of SubMount + the
+    //  caller's open frame see the same KEEP they started with.
     //
     //  On failure, roll the anchor and (empty) shard dir back so a
     //  later retry sees a clean slate — a stranded `<mount>/.be` file
     //  would otherwise make SNIFFSubIsMount lie and bare `be` think
     //  the sub is mounted with no content.
     {
-        a_dup(u8c, url_const, url);
-        ok64 fo = WIREFetchAll(url_const);
-        if (fo != OK) {
+        home *parent_home = KEEP.h;
+        b8 parent_rw = (KEEP.lock_fd >= 0);
+        KEEPClose();
+
+        a_dup(u8c, basename_const, basename);
+        ok64 ko = KEEPOpenBranch(parent_home, basename_const, YES);
+        ok64 fo = NONE;
+        if (ko == OK) {
+            a_dup(u8c, url_const, url);
+            fo = WIREFetchAll(url_const);
+            KEEPClose();
+        }
+
+        //  Restore parent's trunk open regardless of fetch outcome
+        //  so cleanup paths (FILEUnLink, FILERmDir) and the caller
+        //  frame see a sane KEEP.
+        u8cs trunk = {NULL, NULL};
+        (void)KEEPOpenBranch(parent_home, trunk, parent_rw);
+
+        if (ko != OK || fo != OK) {
             fprintf(stderr,
                     "sniff: submodule fetch failed for %.*s\n",
                     (int)$len(url), (char *)url[0]);
             (void)FILEUnLink($path(anchor));
             (void)FILERmDir($path(store_dir), false);
-            return fo;
+            return ko != OK ? ko : fo;
         }
     }
 
