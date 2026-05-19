@@ -1400,6 +1400,11 @@ ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
     call(PATHu8bPush, out, DOG_BE_S);
+    //  Project shard segment (project-sharded layout — see
+    //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
+    //  collapses to the legacy single-project shape.
+    a_dup(u8c, proj, u8bDataC(h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
     if ($ok(leaf_branch) && !u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);
         if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
@@ -1428,6 +1433,9 @@ static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
     a_dup(u8c, root_s, u8bDataC(s->h->root));
     call(PATHu8bFeed, sdir, root_s);
     call(PATHu8bPush, sdir, DOG_BE_S);
+    //  Project shard prefix — see spot_branch_dir's comment above.
+    a_dup(u8c, proj, u8bDataC(s->h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bAdd, sdir, proj);
     {
         a_pad(u8, d, FILE_PATH_MAX_LEN);
         a_dup(u8c, sd, u8bDataC(sdir));

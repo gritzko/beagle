@@ -1027,7 +1027,7 @@ ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {
     sane($ok(ref_uri) && !u8csEmpty(ref_uri) && $ok(sha_hex));
     if (u8csLen(sha_hex) != 40) fail(SNIFFFAIL);
 
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
 
     //  Canonicalise the caller-supplied ref URI (user input path:
     //  command line `be post ?<label>`).  Lex → canonicalise → feed.

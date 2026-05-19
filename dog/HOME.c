@@ -437,17 +437,38 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
                 //  Pre-fill `h->cur_branch` so downstream openers route
                 //  reads/writes through the right keeper leaf even when
                 //  no `get`/`post` row yet exists in the secondary wtlog.
-                //  TODO: under the project-sharded layout this slice
-                //  starts with the project segment; consumers wanting
-                //  just the branch should strip `h->project` from the
-                //  front.  Cleanup pending alongside the call-site
-                //  migration.
+                //
+                //  Project-aware strip: `DOGBranchFromBe` returns the
+                //  full path after `/.be/` (e.g. "abc" for anchor
+                //  `file:/path/.be/abc/`, or "abc/feat" for
+                //  `.../.be/abc/feat/`).  When the project segment is
+                //  populated, strip it from the front so cur_branch
+                //  carries the branch path WITHIN the project (empty
+                //  for the project's trunk).  Without this, keeper
+                //  composes `<root>/.be/<project>/<project>/` for the
+                //  leaf dir and the fetched pack lands one level too
+                //  deep — sniff opens `.be/<project>/` (no branch),
+                //  doesn't see the pack, fails with "object not
+                //  found".  Surfaced by the subdir-clone scenario
+                //  (`be_sub_shard_setup` writes anchor
+                //  `file:/parent/.be/<sub>/`).
                 a_path(br_buf);
                 DOGBranchFromBe(repo_path, br_buf);
-                if (u8bDataLen(br_buf) > 0) {
+                a_dup(u8c, br_all, u8bDataC(br_buf));
+                a_dup(u8c, proj_strip, u8bDataC(proj_buf));
+                if (!u8csEmpty(proj_strip) && !u8csEmpty(br_all) &&
+                    u8csLen(br_all) >= u8csLen(proj_strip)) {
+                    u8cs head = {br_all[0],
+                                 br_all[0] + u8csLen(proj_strip)};
+                    if (u8csEq(head, proj_strip)) {
+                        br_all[0] += u8csLen(proj_strip);
+                        if (!u8csEmpty(br_all) && *br_all[0] == '/')
+                            u8csUsed1(br_all);
+                    }
+                }
+                if (!u8csEmpty(br_all)) {
                     u8bReset(h->cur_branch);
-                    a_dup(u8c, brs, u8bDataC(br_buf));
-                    call(u8bFeed, h->cur_branch, brs);
+                    call(u8bFeed, h->cur_branch, br_all);
                 }
                 done;
             }

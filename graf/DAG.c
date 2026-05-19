@@ -111,6 +111,14 @@ static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
     call(PATHu8bPush, out, DOG_BE_S);
+    //  Project shard segment (project-sharded layout — see
+    //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
+    //  collapses to the legacy single-project shape.  Without this,
+    //  graf publishes its idx into `<root>/.be/` even when keeper
+    //  has written packs into `<root>/.be/<project>/` — the two
+    //  fall out of sync.
+    a_dup(u8c, proj, u8bDataC(h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
     if (!u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);
         if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);

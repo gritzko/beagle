@@ -727,7 +727,7 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     //  a sub mount has its OWN REFS at `<root>/.be/<leaf>/refs`, not
     //  the parent's trunk).  Trunk REFS holds the primary wt's own
     //  rows when leaf is empty.
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
         a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
         call(PATHu8bAdd, keepdir, leaf_s);
@@ -1111,7 +1111,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         //  Failure here is non-fatal: the worktree update below
         //  proceeds, and the next `be get` re-resolves via the
         //  peer-prefixed row.
-        a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
         a_pad(u8, key_buf, 128);
         u8bFeed1(key_buf, '?');
         if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&

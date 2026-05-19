@@ -42,6 +42,11 @@ static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
     call(PATHu8bFeed, out, root_s);
     a_cstr(rel, GRAF_DIR_S);
     call(PATHu8bAdd, out, rel);
+    //  Project shard segment (project-sharded layout — see
+    //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
+    //  collapses to the legacy single-project shape.
+    a_dup(u8c, proj, u8bDataC(h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
     if ($ok(branch) && !u8csEmpty(branch)) {
         a_dup(u8c, br, branch);
         //  Strip trailing '/' from canonical branch path before
@@ -77,6 +82,9 @@ static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
     call(PATHu8bFeed, gdir, root_s);
     a_cstr(rel, GRAF_DIR_S);
     call(PATHu8bAdd, gdir, rel);
+    //  Project shard prefix — see graf_branch_dir's comment above.
+    a_dup(u8c, proj, u8bDataC(g->h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bAdd, gdir, proj);
     call(PATHu8bTerm, gdir);
 
     //  Trunk first.  Empty leaf → trunk is the leaf.
@@ -155,7 +163,7 @@ static ok64 graf_max_seqno_cb(void0p arg, path8p path) {
 //  sibling branch dirs that aren't loaded into the registry.
 static u32 graf_global_max_seqno(home *h) {
     u32 max = 0;
-    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S);
+    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     (void)FILEDeepScanFiles(bedir, graf_max_seqno_cb, &max);
     return max;
 }

@@ -1861,7 +1861,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         }
 
         //  REFS row at leaf_tip with empty `expected_old`.
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         u8bFeed(refkey_buf, target_branch);
@@ -1968,7 +1968,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
             //  base_new (e.g. `?..` after parent has been advanced
             //  already with cur's commits — sync cur to parent.tip).
             if (auto_sync_cur) {
-                a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+                a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
                 a_pad(u8, ckbuf, 260);
                 u8bFeed1(ckbuf, '?');
                 if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2130,7 +2130,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
 
     //  --- 9. Advance target's REFS row via CAS on target_tip. ---
     {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         if (!u8csEmpty(target_branch)) u8bFeed(refkey_buf, target_branch);
@@ -2168,7 +2168,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //  advanced and cur is stale — user can `be get ?..` to resync.
     //  Documented MWP best-effort behaviour. ---
     if (auto_sync_cur) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, ckbuf, 260);
         u8bFeed1(ckbuf, '?');
         if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2459,7 +2459,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                                   //  parent — replay the just-built commit
                                   //  onto REFS tip after the pack feed.
     if (had_baseline && has_parent) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, refkey_buf, 128);
         u8bFeed1(refkey_buf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -2984,7 +2984,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         HEXu8sFeedSome(out_hex_idle, osha);
     }
     {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, keybuf, 128);
         u8bFeed1(keybuf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -3034,7 +3034,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  PUTSetLabel (REFSAppendVerb with `post` verb).
     if ($ok(target_branch) && !u8csEmpty(target_branch) &&
         !target_is_branch) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
         a_pad(u8, tagkey, 128);
         u8bFeed1(tagkey, '?');
         u8bFeed(tagkey, target_branch);

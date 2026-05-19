@@ -47,7 +47,7 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
     //  Probe `<root>/.be/<target_branch>/` — skip if it's not a real
     //  branch shard dir (tags, peer-prefixed refs, etc. all share the
     //  cur branch's view).
-    a_path(probe, u8bDataC(k->h->root), KEEP_DIR_S);
+    a_path(probe, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
     if (PATHu8bAdd(probe, target_branch) != OK) done;
     filestat fs = {};
     if (FILEStat(&fs, $path(probe)) != OK ||
@@ -64,7 +64,7 @@ ok64 SNIFFMaybeSwitchGraf(u8cs target_branch) {
     if (g->h == NULL) done;  // graf not open.
 
     //  Probe the on-disk shard (same gating as keeper).
-    a_path(probe, u8bDataC(g->h->root), KEEP_DIR_S);
+    a_path(probe, u8bDataC(g->h->root), KEEP_DIR_S, u8bDataC(g->h->project));
     if (PATHu8bAdd(probe, target_branch) != OK) done;
     filestat fs = {};
     if (FILEStat(&fs, $path(probe)) != OK ||
