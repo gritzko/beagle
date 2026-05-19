@@ -133,6 +133,13 @@ PARENT_C3=$(git -C "$PARENT_SEED" rev-parse HEAD)
 
 git -C "$PARENT_SEED" push -q "$PARENT_BARE" master:master
 
+# Auxiliary branches so tests can fetch specific commits by name
+# (keeper's wire side doesn't support fetching by raw sha — it picks
+# from the peer's advertised refs).  `prev` = C2 (last commit before
+# the sub was added); `mid` = C1 (initial main.c only).
+git -C "$PARENT_SEED" push -q "$PARENT_BARE" "$PARENT_C2:refs/heads/prev"
+git -C "$PARENT_SEED" push -q "$PARENT_BARE" "$PARENT_C1:refs/heads/mid"
+
 PARENT_TIP="$PARENT_C3"
 SUB_TIP="$SUB_C3"
 

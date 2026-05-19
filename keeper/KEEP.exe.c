@@ -4,6 +4,7 @@
 #include "KEEP.h"
 #include "PROJ.h"
 #include "REFS.h"
+#include "SUBS.h"
 #include "WIRE.h"
 
 #include <stdio.h>
@@ -22,7 +23,7 @@
 
 char const *const KEEP_CLI_VERBS[] = {
     "get", "put", "post", "delete", "status", "import", "verify",
-    "refs", "tips", "ls-files",
+    "refs", "tips", "ls-files", "subs",
     "upload-pack", "receive-pack",
     "help", NULL
 };
@@ -163,6 +164,90 @@ static ok64 keeper_refs(keeper *k) {
         fprintf(stderr, "keeper: refs: %s\n", ok64str(o));
     fprintf(stdout, "keeper: %d ref(s)\n", rcount);
     done;
+}
+
+// --- Verb: subs ---
+//
+//  `keeper subs ?<ref>` — enumerate submodules declared in the tree
+//  of the commit `<ref>` resolves to.  Writes one KEEPSubsAt ULOG row
+//  per declared sub to stdout (`<ts>\t<verb>\t<url>?<mount-path>#<pin>\n`).
+//  Beagle invokes this from its BEGet wrapper to drive the
+//  per-project mount/recurse orchestration (SUBS.plan.md §GET).
+//
+//  `<ref>` may be a branch path or a sha prefix; resolution goes
+//  through the same REFSResolve path as `keeper get .?<ref>`.
+
+static ok64 keeper_subs(keeper *k, cli *c) {
+    sane(k && c);
+    if (c->nuris < 1 || u8csEmpty(c->uris[0].query)) {
+        fprintf(stderr, "keeper: subs requires `?<ref>` URI\n");
+        return KEEPFAIL;
+    }
+    uri *u = &c->uris[0];
+
+    //  Resolve ?<ref> to a 40-hex commit sha.  Direct-sha shortcut:
+    //  if the query IS already a 40-hex string, skip REFSResolve and
+    //  use it as-is.  Lets beagle's BEGet recursion pass the
+    //  pinned-sub commit sha here directly without REFS-side
+    //  bookkeeping (no entry for a recursion-target sha typically
+    //  exists in refs).
+    sha1 commit_sha = {};
+    if (u8csLen(u->query) == 40 && HEXu8sValid(u->query)) {
+        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
+        a_dup(u8c, hex40, u->query);
+        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
+            fprintf(stderr, "keeper: subs: bad sha\n");
+            fail(KEEPFAIL);
+        }
+    } else {
+        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S);
+        a_pad(u8, qbuf, 256);
+        u8bFeed1(qbuf, '?');
+        u8bFeed(qbuf, u->query);
+        a_dup(u8c, qkey, u8bData(qbuf));
+
+        a_pad(u8, arena, 1024);
+        uri resolved = {};
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+        if (ro != OK || u8csLen(resolved.query) != 40) {
+            fprintf(stderr, "keeper: subs: ref %.*s not resolvable\n",
+                    (int)u8csLen(u->query), (char *)u->query[0]);
+            return ro == OK ? REFSNONE : ro;
+        }
+        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
+        a_dup(u8c, hex40, resolved.query);
+        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
+            fprintf(stderr, "keeper: subs: bad sha\n");
+            fail(KEEPFAIL);
+        }
+    }
+
+    sha1 tree_sha = {};
+    ok64 to = KEEPCommitTreeSha(&commit_sha, &tree_sha);
+    if (to != OK) {
+        fprintf(stderr, "keeper: subs: commit not found\n");
+        return to;
+    }
+
+    //  Drive KEEPSubsAt; pipe the ULOG straight to stdout.  ts=0
+    //  (caller has no per-command ts); verb=`sub`.
+    Bu8 out = {};
+    call(u8bAlloc, out, 64UL << 10);
+    a_cstr(sub_word, "sub");
+    a_dup(u8c, sub_d, sub_word);
+    ron60 verb = 0;
+    call(RONutf8sDrain, &verb, sub_d);
+    ok64 so = KEEPSubsAt(&tree_sha, 0, verb, out);
+    if (so == OK || so == KEEPNONE) {
+        a_dup(u8c, body, u8bData(out));
+        if (!u8csEmpty(body))
+            write(STDOUT_FILENO, body[0], u8csLen(body));
+        u8bFree(out);
+        done;
+    }
+    u8bFree(out);
+    fprintf(stderr, "keeper: subs: %s\n", ok64str(so));
+    return so;
 }
 
 // --- Verb: tips ---
@@ -850,6 +935,9 @@ ok64 KEEPExec(cli *c) {
     if ($eq(c->verb, v_status))  return keeper_status(k);
     if ($eq(c->verb, v_refs))    return keeper_refs(k);
     if ($eq(c->verb, v_tips))    return keeper_tips(k);
+
+    a_cstr(v_subs, "subs");
+    if ($eq(c->verb, v_subs))    return keeper_subs(k, c);
 
     //  `be://` and `file://` dispatch.  Phase 8: route through WIRE
     //  (git wire protocol) so client and server are symmetric across

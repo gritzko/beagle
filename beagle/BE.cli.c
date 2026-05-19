@@ -14,6 +14,7 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/QURY.h"
+#include "dog/ULOG.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
 #include "sniff/SUBS.h"
@@ -433,7 +434,10 @@ static ok64 BEProjector(cli *c, uri *u) {
 //
 //  Pre-flight: URI normalisation (worktree wiring + fresh-clone
 //  .be/ bootstrap so the downstream dogs have a place to land).
-static ok64 BEGet(cli *c, b8 seq) {
+//
+//  This is the per-project body; the public `BEGet` wraps this with
+//  pre-order submodule recursion (SUBS.plan.md §GET).
+static ok64 BEGetLocal(cli *c, b8 seq) {
     sane(c);
     //  GET is ref-expecting: promote bare `be get other/branch` to
     //  query=other/branch just like POST and PATCH.  Path views
@@ -529,6 +533,361 @@ static ok64 BEGet(cli *c, b8 seq) {
         ok64 r = BEReap(pids[i], dog_d);
         if (r != OK) worst = r;
     }
+    return worst;
+}
+
+//  GET recursion (SUBS.plan.md §GET).  Pre-order: parent's WRITE
+//  pass (BEGetLocal above) materialises `.gitmodules` and gitlink
+//  mount points first; then we ask keeper for the canonical
+//  (URL, mount-path, pin) triple per declared submodule.
+//
+//  For each row:
+//    * sub already mounted on disk → fork `be get [flags] ?<pin>`
+//      with cwd = mount.  Idempotent if the sub's at the pin
+//      already; otherwise switches it.
+//    * sub declared in the tree but not on disk → fork `sniff
+//      sub-mount <path>#<pin>` to do the first-time fetch + check-
+//      out in a clean keeper state (no longer mid-parent-WALK, so
+//      WIREFetchAll writes land in a stable shard — fixes get/12).
+//
+//  `be: get <relpath>` markers fire lazily on the first row so
+//  single-project repos (no `.gitmodules`) keep their pre-recursion
+//  stderr contract — same shape as BEHead.
+
+//  Read child stdout to EOF into `out` (RESET on entry).  Reaps the
+//  child.  Returns the child's translated exit code (OK / BEDOGEXIT
+//  / BEDOGSIG).
+static ok64 be_capture(u8csc tool, u8css argv, u8bp out) {
+    sane($ok(tool) && out);
+    u8bReset(out);
+
+    a_path(path);
+    a$rg(a0, 0);
+    HOMEResolveSibling(NULL, path, tool, a0);
+
+    int stdout_r = -1;
+    pid_t pid = 0;
+    call(FILESpawn, $path(path), argv, NULL, &stdout_r, &pid);
+
+    for (;;) {
+        if (u8bIdleLen(out) == 0) break;     // out full
+        u8 *idle = u8bIdleHead(out);
+        size_t cap = (size_t)u8bIdleLen(out);
+        ssize_t n = read(stdout_r, idle, cap);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        u8bFed(out, (u32)n);
+    }
+    close(stdout_r);
+
+    int rc = 0;
+    ok64 r = FILEReap(pid, &rc);
+    if (r == FILESIGNAL) return BEDOGSIG;
+    if (r != OK)         return r;
+    if (rc != 0)         return BEDOGEXIT;
+    done;
+}
+
+//  Spawn `keeper subs ?<query>` and capture its ULOG output into
+//  `out`.  Empty `out` on the no-sub case (still OK).
+static ok64 beget_keeper_subs(u8cs query, u8bp out) {
+    sane(out);
+    a_pad(u8cs, args, 4);
+    a_cstr(keeper_s, "keeper");
+    a_cstr(subs_s,   "subs");
+    a_dup(u8c, keeper_d, keeper_s);
+    a_dup(u8c, subs_d,   subs_s);
+    u8csbFeed1(args, keeper_d);
+    u8csbFeed1(args, subs_d);
+
+    a_pad(u8, qbuf, 256);
+    call(u8bFeed1, qbuf, '?');
+    call(u8bFeed,  qbuf, query);
+    a_dup(u8c, qview, u8bData(qbuf));
+    u8csbFeed1(args, qview);
+
+    a_dup(u8cs, argv, u8csbData(args));
+    return be_capture(keeper_d, argv, out);
+}
+
+
+//  Check whether `subpath` appears as the query slot of any ULOG row
+//  in `ulog`.  Used to diff baseline-vs-target sub lists: a sub
+//  present in baseline but not in target has been removed by the
+//  target tree and should be unmounted.
+static b8 beget_subs_has(u8cs ulog, u8cs subpath) {
+    u8cs scan = {ulog[0], ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if (u8csEq(row.uri.query, subpath)) return YES;
+    }
+    return NO;
+}
+
+//  Unmount a sub that's been removed by the target tree: unlink the
+//  secondary-wt anchor file at `<wt>/<subpath>/.be`.  Leaves the
+//  sub's wt files in place — they become plain untracked content
+//  (caller can `rm -rf` separately if desired).  Returns OK whether
+//  or not the anchor was actually there (idempotent for the
+//  already-unmounted case).
+static ok64 beget_sub_unmount(u8cs wt_root, u8cs subpath) {
+    sane($ok(wt_root) && $ok(subpath));
+    a_path(anchor);
+    call(PATHu8bFeed, anchor, wt_root);
+    call(PATHu8bAdd,  anchor, subpath);
+    a_cstr(be_s, ".be");
+    call(PATHu8bPush, anchor, be_s);
+    (void)FILEUnLink($path(anchor));
+    fprintf(stderr, "be: get %.*s: unmounted\n",
+            (int)$len(subpath), (char *)subpath[0]);
+    done;
+}
+
+//  Iterate baseline ULOG rows; for any sub not present in target,
+//  unmount it.  Order is independent of target processing.
+static ok64 beget_drain_removed(u8cs wt_root, u8cs baseline_ulog,
+                                u8cs target_ulog) {
+    sane($ok(wt_root));
+    ok64 worst = OK;
+    u8cs scan = {baseline_ulog[0], baseline_ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+
+        u8cs path = {};
+        u8csMv(path, row.uri.query);
+        if (u8csEmpty(path)) continue;
+        if (beget_subs_has(target_ulog, path)) continue;     // still declared
+
+        if (!SNIFFSubIsMount(wt_root, path)) continue;       // already gone
+        ok64 ur = beget_sub_unmount(wt_root, path);
+        if (ur != OK) worst = ur;
+    }
+    return worst;
+}
+
+//  Spawn `sniff sub-mount ./<subpath>#<pin>` from the parent wt to
+//  do a first-time mount (anchor + WIREFetchAll + checkout) in a
+//  clean keeper state.  cwd inherits the parent process's cwd, which
+//  is the parent wt at this point.
+static ok64 beget_sub_mount(u8cs subpath, u8cs pin) {
+    sane($ok(subpath) && $ok(pin));
+
+    a_pad(u8, uri_buf, 1024);
+    a_cstr(rel, "./");
+    call(u8bFeed,  uri_buf, rel);
+    call(u8bFeed,  uri_buf, subpath);
+    call(u8bFeed1, uri_buf, '#');
+    call(u8bFeed,  uri_buf, pin);
+    a_dup(u8c, uri_view, u8bData(uri_buf));
+
+    a_pad(u8cs, args, 4);
+    a_cstr(sniff_s, "sniff");
+    a_cstr(verb_s,  "sub-mount");
+    a_dup(u8c, sniff_d, sniff_s);
+    a_dup(u8c, verb_d,  verb_s);
+    u8csbFeed1(args, sniff_d);
+    u8csbFeed1(args, verb_d);
+    u8csbFeed1(args, uri_view);
+    a_dup(u8cs, argv, u8csbData(args));
+
+    return BERun(sniff_d, argv, NO);
+}
+
+//  Iterate `keeper subs` ULOG rows via the standard ULOG drain API.
+//  Per row: row's URI is `<url>?<mount-path>#<pin>` (the keeper SUBS
+//  shape), so URILexer fills `uri.query` with the mount path and
+//  `uri.fragment` with the 40-hex pin; URL components land in
+//  scheme/authority/path slots.  If the sub is mounted on disk,
+//  recurse via `be get [flags] ?<pin>` cwd=mount; else hand off to
+//  `sniff sub-mount` for the first-time mount.  Outer `be: get .`
+//  marker fires lazily on the first row.
+static ok64 beget_drain_subs(u8cs wt_root, u8cs subs_ulog,
+                             u8cs *flag_head, u8cs *flag_term) {
+    sane($ok(wt_root));
+    ok64 worst = OK;
+    b8 outer_emitted = NO;
+
+    u8cs scan = {subs_ulog[0], subs_ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;     //  ULOGBADFMT advances past the bad line
+
+        u8cs path = {};
+        u8csMv(path, row.uri.query);
+        u8cs pin  = {};
+        u8csMv(pin,  row.uri.fragment);
+        if (u8csEmpty(path) || u8csLen(pin) != 40) continue;
+
+        if (!outer_emitted) {
+            fprintf(stderr, "be: get .\n");
+            outer_emitted = YES;
+        }
+        fprintf(stderr, "be: get %.*s\n",
+                (int)$len(path), (char *)path[0]);
+
+        u8cs subpath_arg = {};
+        u8csMv(subpath_arg, path);
+        u8cs pin_arg = {};
+        u8csMv(pin_arg, pin);
+
+        //  First-time mount if needed.  `sniff sub-mount` handles
+        //  anchor + fetch + the immediate `sniff get` checkout only —
+        //  no further recursion (split out to keep deep-leaf failures
+        //  from rolling back this sub's anchor via SubMount's
+        //  on-failure cleanup).  If the fetch/checkout itself fails,
+        //  skip the recursion below — there's no mount to recurse
+        //  into.
+        if (!SNIFFSubIsMount(wt_root, subpath_arg)) {
+            ok64 mr = beget_sub_mount(subpath_arg, pin_arg);
+            if (mr != OK) {
+                worst = mr;
+                continue;
+            }
+        }
+
+        //  Recurse `be get [flags] ?<pin>` cwd=mount.  Idempotent if
+        //  the sub is already at pin (no-op overlay); otherwise
+        //  switches it.  Also kicks BEGet's wrapper inside the
+        //  child, picking up any deeper sub-of-sub the sub's tree
+        //  declares (head/06-sub-depth3).
+        a_pad(u8, pin_uri, 64);
+        call(u8bFeed1, pin_uri, '?');
+        call(u8bFeed,  pin_uri, pin_arg);
+        a_dup(u8c, pin_uri_view, u8bDataC(pin_uri));
+
+        a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+        a_cstr(get_lit, "get");
+        a_dup(u8c, get_d, get_lit);
+        u8csbFeed1(child_args, get_d);
+        for (u8cs *fp = flag_head; fp < flag_term; fp++) {
+            u8csbFeed1(child_args, *fp);
+        }
+        u8csbFeed1(child_args, pin_uri_view);
+        a_dup(u8cs, child_argv, u8csbData(child_args));
+
+        ok64 r = BERecurseInto(wt_root, subpath_arg, child_argv);
+        if (r != OK) worst = r;
+    }
+    return worst;
+}
+
+//  Public BEGet wrapper: local body first (parent project), then
+//  keeper-driven submodule orchestration.
+static ok64 BEGet(cli *c, b8 seq) {
+    sane(c);
+
+    //  Snapshot the PRE-checkout tip BEFORE BEGetLocal runs.  After
+    //  the local body, the wtlog's tail moves to the new tip; this
+    //  saved value is the baseline that target_tip will be diffed
+    //  against to find removed/renamed subs (get/13, get/17).
+    u8cs baseline_ref = {};
+    a_pad(u8, baseline_at_buf, FILE_PATH_MAX_LEN + 128);
+    if (u8bHasData(c->repo)) {
+        if (SNIFFAtTailOf($path(c->repo), baseline_at_buf) == OK) {
+            uri bt = {};
+            u8csMv(bt.data, u8bDataC(baseline_at_buf));
+            URILexer(&bt);
+            if (u8csLen(bt.fragment) == 40)
+                u8csMv(baseline_ref, bt.fragment);
+        }
+    }
+
+    ok64 worst = BEGetLocal(c, seq);
+
+    //  Re-resolve the wt root after the local body.
+    if (!u8bHasData(c->repo)) {
+        home rh = {};
+        uri none = {};
+        if (HOMEOpen(&rh, &none, NO) == OK) {
+            (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+        }
+        HOMEClose(&rh);
+    }
+    if (!u8bHasData(c->repo)) return worst;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Target ref: parent's URI query if present; else the wtlog
+    //  tail (which BEGetLocal just updated to point at the new tip).
+    u8cs target_ref = {};
+    a_pad(u8, target_at_buf, FILE_PATH_MAX_LEN + 128);
+    uri tt = {};
+    if (c->nuris > 0 && !u8csEmpty(c->uris[0].query)) {
+        u8csMv(target_ref, c->uris[0].query);
+    } else if (SNIFFAtTailOf(wt_root, target_at_buf) == OK) {
+        u8csMv(tt.data, u8bDataC(target_at_buf));
+        URILexer(&tt);
+        if (u8csLen(tt.fragment) == 40)
+            u8csMv(target_ref, tt.fragment);
+    }
+    if (u8csEmpty(target_ref)) return worst;
+
+    //  Enumerate target's subs (the post-checkout declarations).
+    Bu8 target_subs = {};
+    call(u8bAllocate, target_subs, 1UL << 16);
+    ok64 ke = beget_keeper_subs(target_ref, target_subs);
+    if (ke != OK) {
+        u8bFree(target_subs);
+        return worst;                          //  keeper failed; bail
+    }
+
+    //  Enumerate baseline's subs (best-effort).  Skipped if we
+    //  didn't capture a baseline (initial clone) or it's the same
+    //  as target (no checkout move).
+    Bu8 baseline_subs = {};
+    call(u8bAllocate, baseline_subs, 1UL << 16);
+    if (!u8csEmpty(baseline_ref) && !u8csEq(baseline_ref, target_ref)) {
+        (void)beget_keeper_subs(baseline_ref, baseline_subs);
+    }
+
+    //  Build flag tail (sans --at).
+    a_pad(u8cs, flags_buf, CLI_MAX_FLAGS * 2);
+    for (u32 j = 0; j + 1 < c->nflags; j += 2) {
+        if ($eq(c->flags[j], be_at_flag)) continue;
+        u8csbFeed1(flags_buf, c->flags[j]);
+        if (!u8csEmpty(c->flags[j + 1]))
+            u8csbFeed1(flags_buf, c->flags[j + 1]);
+    }
+    a_dup(u8cs, flag_view, u8csbData(flags_buf));
+
+    //  Unmount removed subs (in baseline but not in target).  Runs
+    //  BEFORE the target-driven mount/recurse so the "rename"
+    //  case (path moves) lays down the new mount cleanly.
+    if (u8bDataLen(baseline_subs) > 0 && u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, base_view, u8bData(baseline_subs));
+        a_dup(u8c, tgt_view,  u8bData(target_subs));
+        ok64 rr = beget_drain_removed(wt_root, base_view, tgt_view);
+        if (rr != OK) worst = rr;
+    } else if (u8bDataLen(baseline_subs) > 0 &&
+               u8bDataLen(target_subs) == 0) {
+        //  All subs removed.
+        u8cs empty = {NULL, NULL};
+        a_dup(u8c, base_view, u8bData(baseline_subs));
+        ok64 rr = beget_drain_removed(wt_root, base_view, empty);
+        if (rr != OK) worst = rr;
+    }
+
+    //  Mount/recurse target's subs.
+    if (u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, tgt_view, u8bData(target_subs));
+        ok64 sub_worst = beget_drain_subs(wt_root, tgt_view,
+                                          (u8cs *)flag_view[0],
+                                          (u8cs *)flag_view[1]);
+        if (sub_worst != OK) worst = sub_worst;
+    }
+
+    u8bFree(target_subs);
+    u8bFree(baseline_subs);
     return worst;
 }
 
@@ -670,6 +1029,14 @@ typedef struct {
     u8cs  wt_root;
     u8cs *argv_head;    //  raw [head, term) over a u8css storage
     u8cs *argv_term;
+    //  When the parent URI carries a transport scheme (ssh:// etc.),
+    //  the recursion replaces it per-sub with that sub's own URL +
+    //  the original query.  argv_head/argv_term then point at the
+    //  `head` + flags prefix only; the cb appends `<sub-url>?<query>`
+    //  per call.  When transport_url is NO, argv_head/argv_term cover
+    //  the full child argv unchanged.
+    b8    transport_mode;
+    u8cs  forwarded_query;   //  parent's query slot, e.g. `master` or `*`
     b8    outer_emitted;
     ok64  worst;
 } behead_recurse_ctx;
@@ -681,6 +1048,7 @@ static void behead_emit_outer(behead_recurse_ctx *rc) {
 }
 
 static ok64 behead_recurse_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
     behead_recurse_ctx *rc = (behead_recurse_ctx *)vctx;
 
     //  Declared but not mounted on disk — report and continue.  Do
@@ -696,15 +1064,40 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     fprintf(stderr, "be: head %.*s\n",
             (int)$len(s->path), (char *)s->path[0]);
 
-    u8css argv = {rc->argv_head, rc->argv_term};
-    //  Copy out of besub-const to drop the const wrapper on the
-    //  array elements (clang otherwise warns on -Wincompatible-
-    //  pointer-types-discards-qualifiers).
     u8cs subpath = {};
     u8csMv(subpath, s->path);
-    ok64 r = BERecurseInto(rc->wt_root, subpath, argv);
+
+    if (!rc->transport_mode) {
+        //  Local recursion: forward parent's argv verbatim.
+        u8css argv = {rc->argv_head, rc->argv_term};
+        ok64 r = BERecurseInto(rc->wt_root, subpath, argv);
+        if (r != OK) rc->worst = r;
+        return OK;
+    }
+
+    //  Transport mode: append `<sub-url>?<query>` per-sub so the
+    //  child fetches the sub's own remote (not the parent's URL).
+    //  Build a fresh argv = (caller's prefix: `head` + flags) +
+    //  this sub's URI.
+    a_pad(u8, uri_buf, 2048);
+    a_dup(u8c, sub_url, s->url);
+    call(u8bFeed, uri_buf, sub_url);
+    if (!u8csEmpty(rc->forwarded_query)) {
+        call(u8bFeed1, uri_buf, '?');
+        call(u8bFeed,  uri_buf, rc->forwarded_query);
+    }
+    a_dup(u8c, uri_view, u8bData(uri_buf));
+
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    for (u8cs *fp = rc->argv_head; fp < rc->argv_term; fp++) {
+        u8csbFeed1(child_args, *fp);
+    }
+    u8csbFeed1(child_args, uri_view);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    ok64 r = BERecurseInto(rc->wt_root, subpath, child_argv);
     if (r != OK) rc->worst = r;
-    return OK;          //  keep going across sub failures
+    return OK;
 }
 
 //  `be head <uri>` — pre-order recursion across mounted submodules.
@@ -733,8 +1126,18 @@ static ok64 BEHead(cli *c, b8 seq) {
     if (!u8bHasData(c->repo)) return worst;
     a_dup(u8c, wt_root, $path(c->repo));
 
-    //  Build the child argv: `head` + (forwarded flags, sans --at) +
-    //  forwarded URIs.  Each level rederives --at from its own wtlog.
+    //  Detect transport mode: parent invoked with `ssh://` etc.  In
+    //  that case the recursion swaps the URL per-sub (each sub
+    //  fetches its OWN remote) — see head/07.  Local mode
+    //  (`?ref`, bare `?`, cached `//host`) just forwards verbatim.
+    b8 transport = (c->nuris > 0 && !u8csEmpty(c->uris[0].scheme));
+    u8cs forwarded_query = {};
+    if (transport) u8csMv(forwarded_query, c->uris[0].query);
+
+    //  Build the child argv prefix.  Local mode: include the parent's
+    //  URIs (child runs against `?<same-ref>` in its own scope).
+    //  Transport mode: stop at flags — the cb appends the sub URI per
+    //  call.
     a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
     a_cstr(head_lit, "head");
     a_dup(u8c, head_d, head_lit);
@@ -745,17 +1148,21 @@ static ok64 BEHead(cli *c, b8 seq) {
         if (!u8csEmpty(c->flags[j + 1]))
             u8csbFeed1(child_args, c->flags[j + 1]);
     }
-    for (u32 j = 0; j < c->nuris; j++)
-        u8csbFeed1(child_args, c->uris[j].data);
+    if (!transport) {
+        for (u32 j = 0; j < c->nuris; j++)
+            u8csbFeed1(child_args, c->uris[j].data);
+    }
 
     a_dup(u8cs, child_argv, u8csbData(child_args));
     behead_recurse_ctx rc = {
         .argv_head      = (u8cs *)child_argv[0],
         .argv_term      = (u8cs *)child_argv[1],
+        .transport_mode = transport,
         .outer_emitted  = NO,
         .worst          = OK,
     };
     u8csMv(rc.wt_root, wt_root);
+    u8csMv(rc.forwarded_query, forwarded_query);
 
     (void)BESubsHere(wt_root, behead_recurse_cb, &rc);
     if (rc.worst != OK) worst = rc.worst;

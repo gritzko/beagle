@@ -23,6 +23,11 @@ file(GLOB _be_case_runs CONFIGURE_DEPENDS
 # to FAIL until the implementation catches up.  Flip-back is part
 # of the relevant impl PR.  See VERBS.todo.md for tracking.
 set(_BE_WILL_FAIL_CASES
+    # SUBS.plan.md get/14 — needs `be get --dry-run` + compiler-style
+    # aggregation, neither of which exist yet.  Sniff GET currently
+    # auto-merges dirty-vs-target divergence via WEAVE, so the
+    # refusal the test expects doesn't fire.  See test header.
+    "be-get-14-sub-dirty-conflict-aggregate"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what
@@ -42,6 +47,17 @@ set(_BE_NEEDS_SSH_CASES
     "be-head-04-sub-dirty"
     "be-head-05-sub-parent-ahead"
     "be-head-08-sub-declared-not-mounted"
+    "be-get-11-sub-clone-recursive"
+    "be-get-12-sub-add"
+    "be-get-15-sub-force-recursive"
+    "be-get-16-sub-prune-recursive"
+    "be-head-06-sub-depth3"
+    "be-head-07-sub-fetch-recursive"
+    "be-head-18-sub-leaf-unreachable"
+    "be-get-13-sub-remove"
+    "be-get-14-sub-dirty-conflict-aggregate"
+    "be-get-17-sub-rename"
+    "be-get-18-sub-leaf-unreachable"
 )
 
 foreach(_run ${_be_case_runs})

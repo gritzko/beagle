@@ -1148,70 +1148,16 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     }
     u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
 
-    //  Drain the submodule list.  `.gitmodules` is a regular blob in
-    //  the parent tree we just materialised, so we read it straight
-    //  off disk rather than chasing it through keeper.  Per-sub
-    //  failures are logged (inside SNIFFSubMount) and a sticky bit
-    //  flips so the overall GET still completes (partial
-    //  materialisation beats a hard refuse here) but the exit code
-    //  reflects the failure — silent exit-0 used to mask unreachable
-    //  submodule URLs.
-    b8 sub_fail = NO;
-    //
-    //  `--nosub` (forwarded by `be` and parked in SNIFF.nosub by
-    //  sniffcli_inner) short-circuits this loop entirely — useful
-    //  when the parent tree references unreachable submodule URLs
-    //  whose fetch would otherwise stall on a network timeout.
-    if (SNIFF.nosub && u8bDataLen(subs) > 0) {
-        //  One row per submodule: `<path>\t<40-hex>\n`.  Count rows
-        //  by counting newlines — `u8bDataLen / 2` was a row-size
-        //  guess that wildly overcounts on any path > 2 bytes.
-        unsigned nsubs = 0;
-        a_dup(u8c, scan, u8bData(subs));
-        $for(u8c, p, scan) if (*p == '\n') nsubs++;
-        fprintf(stderr,
-                "sniff: %u submodule(s) skipped (--nosub)\n", nsubs);
-    }
-    if (!SNIFF.nosub && u8bDataLen(subs) > 0) {
-        a_path(gm_path);
-        u8cs gmrel = {(u8c *)".gitmodules", (u8c *)".gitmodules" + 11};
-        u8bp gm_map = NULL;
-        if (SNIFFFullpath(gm_path, reporoot, gmrel) == OK &&
-            FILEMapRO(&gm_map, $path(gm_path)) == OK && gm_map) {
-            u8cs gm_blob = {u8bDataHead(gm_map), u8bIdleHead(gm_map)};
-            a_dup(u8c, parent_root_s, u8bDataC(KEEP.h->root));
-            a$rg(argv0, 0);
-            a_dup(u8c, sub_scan, u8bData(subs));
-            for (;;) {
-                u8cs line = {};
-                if (u8csDrainLine(sub_scan, line) != OK) break;
-                if (u8csEmpty(line)) continue;
-                u8c const *tab = NULL;
-                $for(u8c, p, line) if (*p == '\t') { tab = p; break; }
-                if (!tab) continue;
-                u8cs path_s = {line[0], tab};
-                u8cs hex_s  = {tab + 1, line[1]};
-                if (u8csLen(hex_s) != 40) continue;
-                ok64 mo = SNIFFSubMount(reporoot, parent_root_s,
-                                        path_s, hex_s, gm_blob, argv0);
-                if (mo != OK) {
-                    fprintf(stderr,
-                            "sniff: submodule %.*s mount failed\n",
-                            (int)$len(path_s), (char *)path_s[0]);
-                    sub_fail = YES;
-                }
-            }
-            FILEUnMap(gm_map);
-        } else {
-            unsigned nsubs = 0;
-            a_dup(u8c, scan, u8bData(subs));
-            $for(u8c, p, scan) if (*p == '\n') nsubs++;
-            fprintf(stderr,
-                    "sniff: %u submodule(s) skipped — no .gitmodules in tree\n",
-                    nsubs);
-        }
-    }
+    //  Submodule orchestration moved to beagle's BEGet wrapper
+    //  (SUBS.plan.md §GET).  Sniff still classifies `160000` entries
+    //  during the WALK (`get_visit` returns WALKSKIP and skips
+    //  materialisation), but the actual fetch/mount/recurse for each
+    //  declared sub runs in `be` after sniff GET releases the keeper
+    //  write lock — that avoids the mid-WALK keeper-state hazard
+    //  that broke `be get` tip-switches with unintroduced subs (see
+    //  get/12).  `--nosub` propagation now lives at the `be` layer.
     u8bFree(subs);
+    b8 sub_fail = NO;
 
     //  `--prune` sweep (VERBS.md §"--force and --prune"): drop every
     //  wt-only path that isn't in the target tree.  Runs after the

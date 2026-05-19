@@ -290,12 +290,17 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
 
     //  6. Spawn `sniff get <hex>` with cwd = sub-mount.  The child
     //  opens the parent's keeper RO (via the row-0 anchor we wrote)
-    //  and checks out the gitlink-pinned commit into the mount.  We
-    //  shell out rather than recurse in-process because SNIFF is a
-    //  singleton — a nested checkout would clobber the parent's
-    //  open handle.  Use /proc/self/exe directly: this binary IS
-    //  sniff, so its path is the answer (HOMEResolveSibling needs an
-    //  argv0 with a slash, which the orchestrator-spawned form lacks).
+    //  and checks out the gitlink-pinned commit into the mount.
+    //
+    //  This handles the IMMEDIATE checkout only — no further sub-of-sub
+    //  recursion.  Beagle's BEGet wrapper runs a separate recursive
+    //  `be get ?<pin>` against this mount after we return, picking up
+    //  any deeper submodules the freshly-checked-out tree declares.
+    //  Splitting it that way means a deep-leaf failure can't cascade
+    //  up to roll back this sub's anchor.
+    //
+    //  /proc/self/exe IS `sniff` here (sniff binary is the running
+    //  process), so use it directly.
     a_path(sniff_exe);
     {
         char self[FILE_PATH_MAX_LEN];

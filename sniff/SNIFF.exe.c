@@ -28,6 +28,7 @@
 #include "keeper/REFS.h"
 #include "keeper/RESOLVE.h"
 #include "keeper/WALK.h"
+#include "SUBS.h"
 
 #include "abc/B.h"
 #include "abc/FILE.h"
@@ -1243,7 +1244,7 @@ static void sniff_usage(void) {
 char const *const SNIFF_VERBS[] = {
     "index", "update", "status", "checkout",
     "commit", "watch", "stop", "help",
-    "get", "post", "put", "delete", "patch", NULL
+    "get", "post", "put", "delete", "patch", "sub-mount", NULL
 };
 
 char const SNIFF_VAL_FLAGS[] =
@@ -1308,6 +1309,8 @@ ok64 SNIFFExec(cli *c) {
     }
     b8 is_delete = $eq(c->verb, v_delete);
     b8 is_patch = $eq(c->verb, v_patch);
+    a_cstr(v_submount, "sub-mount");
+    b8 is_submount = $eq(c->verb, v_submount);
 
     ok64 ret = OK;
 
@@ -1727,6 +1730,61 @@ ok64 SNIFFExec(cli *c) {
                     "sniff: patch URI must have `?<ref|sha>` "
                     "or `#<sha>`\n");
                 ret = SNIFFFAIL;
+            }
+        }
+    } else if (is_submount) {
+        //  `sniff sub-mount <subpath>#<40-hex-pin>` — invoked by
+        //  beagle's BEGet wrapper for declared-but-not-mounted
+        //  submodules.  Reads `.gitmodules` from the parent wt,
+        //  looks up the URL, mkdirs the mount point, writes the
+        //  secondary-wt anchor, fetches the sub's pack into the
+        //  shared keeper, and forks `sniff get <pin>` inside the
+        //  mount to check out at the pin.  See SUBS.plan.md §GET.
+        //
+        //  Running here (post-parent-checkout) gives us a clean
+        //  keeper state: the parent's get has already released
+        //  its write lock, so WIREFetchAll's writes land cleanly
+        //  in the trunk shard instead of getting tangled in a
+        //  branch-shard mid-transaction (the get/12 bug).
+        if (c->nuris < 1 || $empty(c->uris[0].path) ||
+            u8csLen(c->uris[0].fragment) != 40) {
+            fprintf(stderr,
+                "sniff: sub-mount requires `<subpath>#<40-hex-pin>`\n");
+            ret = SNIFFFAIL;
+        } else {
+            uri *u = &c->uris[0];
+            a_path(gm_path);
+            u8cs gmrel = {(u8c *)".gitmodules",
+                          (u8c *)".gitmodules" + 11};
+            ok64 pe = SNIFFFullpath(gm_path, reporoot, gmrel);
+            if (pe != OK) {
+                fprintf(stderr, "sniff: sub-mount: no .gitmodules\n");
+                ret = SNIFFFAIL;
+            } else {
+                u8bp gm_map = NULL;
+                ok64 me = FILEMapRO(&gm_map, $path(gm_path));
+                if (me != OK || gm_map == NULL) {
+                    fprintf(stderr,
+                        "sniff: sub-mount: cannot map .gitmodules\n");
+                    ret = SNIFFFAIL;
+                } else {
+                    u8cs gm_blob = {u8bDataHead(gm_map),
+                                    u8bIdleHead(gm_map)};
+                    a_dup(u8c, parent_root_s, u8bDataC(KEEP.h->root));
+                    u8cs path_s = {};
+                    u8csMv(path_s, u->path);
+                    //  Strip the `./` URI-form prefix that the caller
+                    //  uses to keep the path in the URI's path slot.
+                    if (u8csLen(path_s) >= 2 &&
+                        path_s[0][0] == '.' && path_s[0][1] == '/')
+                        path_s[0] += 2;
+                    u8cs hex_s = {};
+                    u8csMv(hex_s, u->fragment);
+                    a$rg(argv0, 0);
+                    ret = SNIFFSubMount(reporoot, parent_root_s,
+                                        path_s, hex_s, gm_blob, argv0);
+                    FILEUnMap(gm_map);
+                }
             }
         }
     } else if (is_watch) {

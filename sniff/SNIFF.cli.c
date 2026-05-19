@@ -113,14 +113,18 @@ static ok64 sniffcli_inner(cli *c) {
     a_cstr(v_put,      "put");
     a_cstr(v_delete,   "delete");
     a_cstr(v_checkout, "checkout");
+    a_cstr(v_submount, "sub-mount");
     //  graf needs to be open whenever sniff may consult the DAG
     //  (POST ff-check, PATCH 3-way LCA, PUT branch creation
     //  rebase, DELETE branch ancestor checks).  Do NOT open it
-    //  for `get`/`checkout` — those don't read graf, and `be get`
-    //  forks a parallel graf-rw child whose lock would race with
+    //  for `get`/`checkout`/`sub-mount` — those don't read graf,
+    //  and they fork a parallel `graf get` child (or the recursive
+    //  `be get` inside SubMount does) whose lock would race with
     //  the sniff-rw lock if we opened it here (long flock waits
-    //  on big-repo clones).
+    //  on big-repo clones; sub-mount deadlocks the depth-3 case
+    //  outright).
     b8 needs_graf = !u8csEq(c->verb, v_get) && !u8csEq(c->verb, v_checkout)
+                 && !u8csEq(c->verb, v_submount)
                  && (rw || u8csEq(c->verb, v_post) || u8csEq(c->verb, v_commit)
                         || u8csEq(c->verb, v_patch));
     //  Branch-aware graf open mirrors keeper: per-branch shard
