@@ -50,7 +50,7 @@ echo "hello" > README
 cat > .gitmodules <<'EOF'
 [submodule "bogus"]
 	path = bogus
-	url = https://127.0.0.1:1/bogus.git
+	url = https://localhost:1/bogus.git
 EOF
 git add README .gitmodules
 

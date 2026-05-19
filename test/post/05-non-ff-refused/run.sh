@@ -84,7 +84,14 @@ match "$CASE/03.client.hello.c" hello.c
 # 6. `be post //localhost` — cur(C) is NOT a descendant of remote(B);
 #    POST is commit-or-FF only, so this MUST refuse.
 # ====================================================================
-mustnt "$BE" post "//localhost" >04.post.got.out 2>04.post.got.err
+# Bypass `mustnt` — its 2>/dev/null would eat the stderr we need to
+# grep.  Run inline: expect non-zero exit AND `non-fast-forward` on
+# stderr (`wpush: refusing non-fast-forward push ...`).
+if "$BE" post "//localhost" >04.post.got.out 2>04.post.got.err; then
+    echo "post/05: be post //localhost unexpectedly succeeded" >&2
+    cat 04.post.got.err >&2
+    exit 1
+fi
 grep -q 'non-fast-forward' 04.post.got.err || {
     echo "post/05: expected 'non-fast-forward' in stderr, got:" >&2
     cat 04.post.got.err >&2

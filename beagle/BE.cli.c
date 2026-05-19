@@ -17,6 +17,7 @@
 #include "dog/ULOG.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
+#include "sniff/SNIFF.h"          // POSTNONE (low-byte exit signal)
 #include "sniff/SUBS.h"
 
 #include "SUBS.h"           // beagle/SUBS.h — BESubsHere / BERecurseInto
@@ -86,6 +87,18 @@ static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
         return BEDOGSIG;
     }
     if (r != OK) return r;
+    //  Plan §POST: sub-recursion treats POSTNONE as a no-op.  The
+    //  exit byte 0xCE (POSTNONE's RON60 low byte) is the residue
+    //  bepost_spawn_sub inspects one level up — pass it through
+    //  instead of collapsing to BEDOGEXIT.  Scope the pass-through
+    //  to the `sniff` tool because GRAFNONE happens to share the
+    //  same low byte (RON60 encodes the "NONE" suffix identically),
+    //  and graf-head's "no match" exit must keep mapping to
+    //  BEDOGEXIT for upstream tests.
+    if (rc == (int)(POSTNONE & 0xFFu)) {
+        a_cstr(s_sniff, "sniff");
+        if (u8csEq(tool, s_sniff)) return POSTNONE;
+    }
     if (rc != 0) return BEDOGEXIT;
     done;
 }
@@ -113,6 +126,12 @@ static ok64 BEReap(pid_t pid, u8csc tool) {
         return BEDOGSIG;
     }
     if (r != OK) return r;
+    //  Same sniff-only POSTNONE pass-through as BERun (see comment
+    //  there); BEReap is the parallel-reap path used by BEGet.
+    if (rc == (int)(POSTNONE & 0xFFu)) {
+        a_cstr(s_sniff, "sniff");
+        if (u8csEq(tool, s_sniff)) return POSTNONE;
+    }
     if (rc != 0) return BEDOGEXIT;
     return OK;
 }
@@ -1593,7 +1612,10 @@ static b8 be_post_is_path_form(uri *u) {
     return NO;
 }
 
-static ok64 BEPost(cli *c, b8 seq) {
+//  Per-project body — the original BEPost implementation.  The public
+//  BEPost wrapper below does post-order recursion across mounted
+//  submodules (SUBS.plan.md §POST) and calls this for each level.
+static ok64 BEPostLocal(cli *c, b8 seq) {
     sane(c);
     //  Auto-bootstrap: `be post 'msg'` on a fresh dir is the
     //  canonical "init + first commit" path (see workflow.sh §1).
@@ -1681,6 +1703,433 @@ static ok64 BEPost(cli *c, b8 seq) {
     done;
 }
 
+//  Spawn `be put <subpath>` in the parent wt to stage a `put
+//  <subpath>#<40-hex>` row reflecting the sub's current tip
+//  (SNIFFSubReadTip).  Used by BEPost after a sub's recursive POST
+//  returns OK: BEPostLocal then reads that row and emits the gitlink
+//  ADD in the parent commit.  A clean sub (tip == baseline) just gets
+//  re-stamped — no decision row, no parent bump.
+static ok64 bepost_bump_sub(u8cs subpath) {
+    sane($ok(subpath));
+
+    //  Resolve self so the child's argv[0] is the full self path —
+    //  HOMEResolveSibling needs that to find the sibling `sniff`,
+    //  `keeper`, etc.  Matches BERecurseInto's convention.
+    a_path(self_path);
+    {
+        char buf[FILE_PATH_MAX_LEN];
+        ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+        if (n <= 0) {
+            fprintf(stderr, "be: post: bump %.*s: cannot resolve self\n",
+                    (int)$len(subpath), (char *)subpath[0]);
+            return BEDOGEXIT;
+        }
+        buf[n] = 0;
+        a_cstr(buf_s, buf);
+        call(PATHu8bFeed, self_path, buf_s);
+    }
+
+    a_pad(u8cs, args, 4);
+    a_dup(u8c, self_view, u8bDataC(self_path));
+    a_cstr(put_s, "put");
+    a_dup(u8c, put_d, put_s);
+    a_dup(u8c, sub_d, subpath);
+    u8csbFeed1(args, self_view);
+    u8csbFeed1(args, put_d);
+    u8csbFeed1(args, sub_d);
+    a_dup(u8cs, argv, u8csbData(args));
+
+    pid_t pid = 0;
+    ok64 sp = FILESpawn($path(self_path), argv, NULL, NULL, &pid);
+    if (sp != OK) {
+        fprintf(stderr, "be: post: bump %.*s: spawn failed: %s\n",
+                (int)$len(subpath), (char *)subpath[0], ok64str(sp));
+        return BEDOGEXIT;
+    }
+    int rc = 0;
+    ok64 rr = FILEReap(pid, &rc);
+    if (rr == FILESIGNAL) return BEDOGSIG;
+    if (rr != OK)         return rr;
+    if (rc != 0)          return BEDOGEXIT;
+    done;
+}
+
+//  POST-recursion fork: fork + chdir(<wt>/<subpath>) + execvp the
+//  resolved self path.  Child stderr is inherited from the parent
+//  (no piping/teeing), so the child's diagnostic lines flow
+//  straight to the user.
+//
+//  POSTNONE detection rides on the exit code.  abc/PRO.h::MAIN
+//  returns the full ok64 from main(), but the kernel truncates to
+//  the low byte via WEXITSTATUS.  POSTNONE = 0x65871d5d85ce, low
+//  byte 0xCE = 206.  POSTNOMSG, KEEPFAIL, SNIFFFAIL etc. have
+//  distinct residues — if a future code ever collides on 0xCE the
+//  RON60 author needs to pick a different encoding.  See plan
+//  §POST: "a sub with no dirty paths just no-ops; parent doesn't
+//  bump that gitlink".
+//
+//  Returns OK on (child exit 0) OR (child exit POSTNONE's
+//  low-byte residue, with *postnone_out = YES).  BEDOGEXIT /
+//  BEDOGSIG otherwise.
+#define BEPOST_POSTNONE_BYTE  ((int)(POSTNONE & 0xFFu))
+
+static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
+                              u8css argv, b8 *postnone_out) {
+    sane($ok(wt_root) && $ok(subpath) && postnone_out);
+    *postnone_out = NO;
+
+    //  Resolve self (absolute path); use as argv[0] so the child's
+    //  HOMEResolveSibling finds the right bin dir.  Mirrors
+    //  BERecurseInto's convention.
+    a_path(self_path);
+    {
+        char buf[FILE_PATH_MAX_LEN];
+        ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+        if (n <= 0) {
+            fprintf(stderr, "be: post: %.*s: cannot resolve self\n",
+                    (int)$len(subpath), (char *)subpath[0]);
+            return BEDOGEXIT;
+        }
+        buf[n] = 0;
+        a_cstr(buf_s, buf);
+        call(PATHu8bFeed, self_path, buf_s);
+    }
+
+    //  Compose mount path: <wt_root>/<subpath>.
+    a_path(mount);
+    call(PATHu8bFeed, mount, wt_root);
+    call(PATHu8bAdd,  mount, subpath);
+
+    //  Pack argv with self_path as argv[0].
+    enum { POOL_BYTES = 8192, MAX_ARGS = 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS };
+    a_pad(u8, pool, POOL_BYTES);
+    size_t offs[MAX_ARGS];
+    u32    nargs = 0;
+    a_dup(u8c, self_view, u8bDataC(self_path));
+    {
+        size_t need = (size_t)u8csLen(self_view) + 1;
+        if ((size_t)u8bIdleLen(pool) < need) return BEDOGEXIT;
+        offs[nargs++] = (size_t)(u8bIdleHead(pool) - u8bDataHead(pool));
+        if (!u8csEmpty(self_view)) call(u8bFeed, pool, self_view);
+        call(u8bFeed1, pool, 0);
+    }
+    $for(u8cs, ap, argv) {
+        if (nargs >= MAX_ARGS) return BEDOGEXIT;
+        size_t need = (size_t)u8csLen(*ap) + 1;
+        if ((size_t)u8bIdleLen(pool) < need) return BEDOGEXIT;
+        offs[nargs] = (size_t)(u8bIdleHead(pool) - u8bDataHead(pool));
+        if (!u8csEmpty(*ap)) call(u8bFeed, pool, *ap);
+        call(u8bFeed1, pool, 0);
+        nargs++;
+    }
+    char *argv_c[MAX_ARGS + 1];
+    for (u32 i = 0; i < nargs; i++) {
+        argv_c[i] = (char *)(u8bDataHead(pool) + offs[i]);
+    }
+    argv_c[nargs] = NULL;
+    char const *mount_cstr = (char const *)u8bDataHead(mount);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "be: post: %.*s: fork failed: %s\n",
+                (int)$len(subpath), (char *)subpath[0], strerror(errno));
+        return BEDOGEXIT;
+    }
+    if (pid == 0) {
+        if (chdir(mount_cstr) != 0) {
+            fprintf(stderr, "be: post: chdir %s: %s\n",
+                    mount_cstr, strerror(errno));
+            _exit(127);
+        }
+        execvp(argv_c[0], argv_c);
+        fprintf(stderr, "be: post: execvp %s: %s\n",
+                argv_c[0], strerror(errno));
+        _exit(127);
+    }
+
+    int rc = 0;
+    ok64 wo = FILEReap(pid, &rc);
+    if (wo == FILESIGNAL) return BEDOGSIG;
+    if (wo != OK)         return wo;
+    if (rc == 0)          done;
+    //  Child exited non-zero.  POSTNONE's low-byte residue is a
+    //  no-op signal per plan §POST.
+    if (rc == BEPOST_POSTNONE_BYTE) { *postnone_out = YES; done; }
+    return BEDOGEXIT;
+}
+
+//  POST recursion context (SUBS.plan.md §POST).  The wrapper carries
+//  the parent's parsed cli (for flag iteration) plus the precomputed
+//  parent_msg (from `#frag` or `-m`); the cb composes a fresh child
+//  argv per sub so it can substitute the per-sub message (either a
+//  `--sub-msg <subpath>=<msg>` override or the decorated default
+//  `<parent-msg> [<subpath>]`).
+//
+//  dry_only flips the wrapper into status-aggregation mode: child
+//  argv strips the parent's msg (so each level dry-runs) and the
+//  bump-after-recurse step is skipped (sub tips don't move, so the
+//  parent must not stage gitlink rows that would otherwise pollute
+//  the wt's pd boundary).
+typedef struct {
+    u8cs   wt_root;
+    cli   *c;            //  parent's cli — for flag / URI access
+    u8cs   parent_msg;   //  effective msg from #frag or -m (may be empty)
+    b8     dry_only;     //  status-only walk (no msg forwarded, no bump)
+    b8     outer_emitted;
+    ok64   worst;
+} bepost_recurse_ctx;
+
+//  Match `--sub-msg <subpath>=<msg>` flag entries against `subpath`.
+//  Returns YES + writes msg into out_msg if found.
+static b8 bepost_find_sub_msg(cli const *c, u8cs subpath, u8csp out_msg) {
+    out_msg[0] = NULL; out_msg[1] = NULL;
+    a_cstr(sm_flag, "--sub-msg");
+    for (u32 i = 0; i + 1 < c->nflags; i += 2) {
+        if (!$eq(c->flags[i], sm_flag)) continue;
+        u8cs val = {c->flags[i + 1][0], c->flags[i + 1][1]};
+        //  Split val on the first '='.
+        u8c *eq = NULL;
+        $for(u8c, p, val) { if (*p == '=') { eq = p; break; } }
+        if (eq == NULL) continue;
+        u8cs key = {val[0], eq};
+        u8cs msg = {eq + 1, val[1]};
+        if (u8csEq(key, subpath)) {
+            out_msg[0] = msg[0];
+            out_msg[1] = msg[1];
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void bepost_emit_outer(bepost_recurse_ctx *rc) {
+    if (rc->outer_emitted) return;
+    fprintf(stderr, "be: post .\n");
+    rc->outer_emitted = YES;
+}
+
+static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    bepost_recurse_ctx *rc = (bepost_recurse_ctx *)vctx;
+
+    //  Declared but not mounted on disk — report and skip.  Nothing to
+    //  recurse into and no SubReadTip to bump.
+    if (!s->mounted) {
+        bepost_emit_outer(rc);
+        fprintf(stderr, "be: post %.*s: declared, not mounted\n",
+                (int)$len(s->path), (char *)s->path[0]);
+        return OK;
+    }
+
+    bepost_emit_outer(rc);
+    fprintf(stderr, "be: post %.*s\n",
+            (int)$len(s->path), (char *)s->path[0]);
+
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+
+    //  Compose the per-sub effective msg.  Resolution order:
+    //    1. dry_only → empty (no msg forwarded; child dry-runs).
+    //    2. `--sub-msg <subpath>=<msg>` override → use <msg> verbatim.
+    //    3. parent_msg non-empty → "<parent_msg> [<subpath>]" (default
+    //       decoration so the sub's commit body identifies the level).
+    //    4. else: empty — child gets no `#frag` URI and may auto-resolve
+    //       from its own put/patch rows (POSTNONE is treated as no-op
+    //       by bepost_spawn_sub).
+    a_pad(u8, msg_uri, 1024);
+    if (!rc->dry_only) {
+        u8cs override = {};
+        b8 have_override = bepost_find_sub_msg(rc->c, subpath, override);
+        if (have_override) {
+            if (!u8csEmpty(override)) {
+                (void)u8bFeed1(msg_uri, '#');
+                (void)u8bFeed (msg_uri, override);
+            }
+        } else if (!u8csEmpty(rc->parent_msg)) {
+            (void)u8bFeed1(msg_uri, '#');
+            (void)u8bFeed (msg_uri, rc->parent_msg);
+            (void)u8bFeed1(msg_uri, ' ');
+            (void)u8bFeed1(msg_uri, '[');
+            (void)u8bFeed (msg_uri, subpath);
+            (void)u8bFeed1(msg_uri, ']');
+        }
+    }
+
+    //  Build child argv: `post` + flags-sans-{--at,-m,--sub-msg} +
+    //  non-fragment URIs + the fresh `#<sub-msg>` URI (if any).
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    a_cstr(post_lit, "post");
+    a_cstr(mf_lit,   "-m");
+    a_cstr(sm_lit,   "--sub-msg");
+    a_dup(u8c, post_d, post_lit);
+    u8csbFeed1(child_args, post_d);
+    for (u32 j = 0; j + 1 < rc->c->nflags; j += 2) {
+        if ($eq(rc->c->flags[j], be_at_flag)) continue;
+        if ($eq(rc->c->flags[j], mf_lit))     continue;
+        if ($eq(rc->c->flags[j], sm_lit))     continue;
+        u8csbFeed1(child_args, rc->c->flags[j]);
+        if (!u8csEmpty(rc->c->flags[j + 1]))
+            u8csbFeed1(child_args, rc->c->flags[j + 1]);
+    }
+    for (u32 j = 0; j < rc->c->nuris; j++) {
+        uri *u = &rc->c->uris[j];
+        b8 pure_frag = !u8csEmpty(u->fragment) &&
+                       u8csEmpty(u->scheme) &&
+                       u8csEmpty(u->authority) &&
+                       u8csEmpty(u->path) &&
+                       u8csEmpty(u->query);
+        if (pure_frag) continue;
+        u8csbFeed1(child_args, u->data);
+    }
+    if (u8bDataLen(msg_uri) > 0) {
+        a_dup(u8c, msg_view, u8bData(msg_uri));
+        u8csbFeed1(child_args, msg_view);
+    }
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    //  Child runs its own BEPost: depth recursion is its responsibility.
+    //  bepost_spawn_sub returns OK with `postnone=YES` when the sub had
+    //  nothing to commit; we skip the bump in that case so the parent
+    //  doesn't move that gitlink (plan §POST).
+    b8 postnone = NO;
+    ok64 r = bepost_spawn_sub(rc->wt_root, subpath, child_argv, &postnone);
+    if (r != OK) { rc->worst = r; return OK; }
+    if (rc->dry_only) return OK;       //  status-only walk; no bump.
+    if (postnone) return OK;
+
+    //  Sub returned OK with a real commit.  Fork `be put <subpath>` in
+    //  the parent so the parent's wtlog gets a `put <subpath>#<40-hex>`
+    //  row at the new tip; BEPostLocal picks that up and emits the
+    //  gitlink ADD in the parent commit.
+    ok64 br = bepost_bump_sub(subpath);
+    if (br != OK) rc->worst = br;
+    return OK;
+}
+
+
+//  `be post <uri>` — post-order recursion across mounted submodules
+//  (SUBS.plan.md §POST).  Each sub commits its own changes first; the
+//  parent then reads each sub's new tip via `be put <subpath>` to
+//  stage a `put <subpath>#<40-hex>` row, and commits last so the new
+//  tree records the bumped gitlinks.
+//
+//  Cases that skip the wrapper (recursion adds nothing):
+//    * transport scheme present (`be post ssh://...`) — explicit URL
+//      targets a single project per SUBS.plan.md §"URI/argv rules".
+//    * bare status (no msg, no URIs)                  — dry-run printer.
+//    * no wt root resolved                            — fresh-dir bootstrap.
+//
+//  TODO (next): `--dry-run` aggregation pass (post/13), `--sub-msg`
+//  per-sub message override (post/14), `.gitmodules` synth when the
+//  live mount set differs from baseline (post/15), post-order push
+//  for `//origin` (post/16).
+static ok64 BEPost(cli *c, b8 seq) {
+    sane(c);
+
+    //  Same transport / msg detection as BEPostLocal so we can decide
+    //  whether to recurse before any commit work runs.  No flag/URI
+    //  mutation here — BEPostLocal repeats the parsing.
+    b8 has_transport = NO;
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
+    }
+    b8 has_msg = NO;
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].fragment)) { has_msg = YES; break; }
+    }
+    if (!has_msg) {
+        a_cstr(mf, "-m");
+        for (u32 fi = 0; fi + 1 < c->nflags; fi += 2) {
+            if ($eq(c->flags[fi], mf)) { has_msg = YES; break; }
+        }
+    }
+
+    //  Plan §"dry-run pass": explicit `--dry-run` walks the forest
+    //  reporting per-level dirty paths / msg-resolution / .gitmodules
+    //  drift, never committing or bumping.  Takes precedence over
+    //  the bare-status short-circuit so the recursion fires even when
+    //  the parent invocation has no msg / no URIs.
+    b8 dry_only = CLIHas(c, "--dry-run") ? YES : NO;
+
+    //  Bare status (no msg + no URIs): dry-run printer; let the
+    //  per-project body do auto-resolve (possibly committing via
+    //  in-scope patch rows, possibly refusing POSTNOMSG).  No
+    //  forest recursion — bare-mode is intentionally a single-
+    //  project status / auto-resolve probe.
+    //  Transport scheme: explicit URL — targets one project per
+    //  SUBS.plan.md §"URI/argv rules".
+    b8 bare_status = !has_msg && c->nuris == 0;
+    if (!dry_only && (bare_status || has_transport))
+        return BEPostLocal(c, seq);
+
+    //  Need a wt root to enumerate / chdir from.
+    if (!u8bHasData(c->repo)) return BEPostLocal(c, seq);
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Compute parent's effective commit msg (from `#frag` or `-m`).
+    //  The cb uses this to derive each sub's msg, either via the
+    //  decoration `<parent_msg> [<subpath>]` or a `--sub-msg
+    //  <subpath>=<msg>` override.
+    u8cs parent_msg = {};
+    for (u32 i = 0; i < c->nuris; i++) {
+        if (!u8csEmpty(c->uris[i].fragment)) {
+            u8csMv(parent_msg, c->uris[i].fragment);
+            break;
+        }
+    }
+    if (u8csEmpty(parent_msg)) {
+        a_cstr(mf_lit, "-m");
+        for (u32 fi = 0; fi + 1 < c->nflags; fi += 2) {
+            if ($eq(c->flags[fi], mf_lit)) {
+                u8csMv(parent_msg, c->flags[fi + 1]);
+                break;
+            }
+        }
+    }
+
+    bepost_recurse_ctx rc = {
+        .c             = c,
+        .dry_only      = dry_only,
+        .outer_emitted = NO,
+        .worst         = OK,
+    };
+    u8csMv(rc.wt_root,    wt_root);
+    u8csMv(rc.parent_msg, parent_msg);
+
+    (void)BESubsHere(wt_root, bepost_recurse_cb, &rc);
+
+    if (dry_only) {
+        //  Parent's status: spawn a bare `sniff post` (no msg, no
+        //  URIs) so we emit the same dirty-paths / "0 changes"
+        //  report the per-project body would print.  Skip
+        //  BEPostLocal entirely — it would commit when a msg is
+        //  present (no `--dry-run` plumbing in sniff yet).
+        a_pad(u8cs, args, 4);
+        a_cstr(sniff_s, "sniff");
+        a_cstr(post_s,  "post");
+        a_dup(u8c, sniff_d, sniff_s);
+        a_dup(u8c, post_d,  post_s);
+        u8csbFeed1(args, sniff_d);
+        u8csbFeed1(args, post_d);
+        if (u8bDataLen(be_at_buf) > 0) {
+            a_dup(u8c, at_flag, be_at_flag);
+            a_dup(u8c, at_val,  u8bData(be_at_buf));
+            u8csbFeed1(args, at_flag);
+            u8csbFeed1(args, at_val);
+        }
+        a_dup(u8cs, argv, u8csbData(args));
+        (void)BERun(sniff_d, argv, NO);
+        return rc.worst;
+    }
+
+    //  Now the parent commit.  After bumps were staged by
+    //  bepost_bump_sub above, BEPostLocal sees them as put-rows and
+    //  the gitlink decisions fold into this commit.
+    ok64 r = BEPostLocal(c, seq);
+    if (r != OK) return r;
+    return rc.worst;
+}
+
 // --- Bare `be`: --update all dogs, then --status each ---
 
 //  Bare `be` — overview of the working tree.  Forwards to bare
@@ -1707,7 +2156,7 @@ static ok64 becli_inner(cli *c) {
     //  -m / --author take a following value (legacy commit-message
     //  flag — the new convention is to fold trailing words into the
     //  URI fragment, but `-m` remains accepted).
-    call(CLIParse, c, BE_VERB_NAMES, "-m\0--author\0");
+    call(CLIParse, c, BE_VERB_NAMES, "-m\0--author\0--sub-msg\0");
 
     if (CLIHas(c, "-h") || CLIHas(c, "--help")) {
         BEUsage();

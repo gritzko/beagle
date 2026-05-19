@@ -107,7 +107,7 @@ its effect.
 | HEAD   | diff cur vs branch (ahead/behind, files) | scope diff to path           | cached-only with `//host`; transport scheme fetches first | sha pin / commit-msg search |
 | GET    | switch wt+cur to branch                | restore one file in wt         | (transport scheme) clone / fetch + checkout | sha pin / detach                    |
 | POST   | FF-advance ?branch to cur.tip          | —                              | FF-advance remote's counterpart to cur.tip | commit msg                           |
-| PUT    | name the ref to write                  | stage path (blob + reflog row) | FF-push to remote                          | sha to reset ref to                  |
+| PUT    | name the ref to write                  | stage path (blob + reflog row) | push to remote (non-FF allowed)            | sha to reset ref to                  |
 | DELETE | drop branch                            | unlink + stage delete          | drop alias / push delete                   | —                                    |
 | PATCH  | source branch — squash whole stack     | scope absorption to path (no header recorded) | (transport scheme) fetch + absorb | empty `#` = rebase one; `#msg` = merge; bare `#hash` = cherry-pick |
 
@@ -243,8 +243,9 @@ tree to the store root.  Cached remote-tracking refs live in
     compute the ahead/behind diff; cache updated, no checkout.
   - `be put ssh://host/path` — register an alias (no `?ref`,
     no other side-effect).
-  - `be put //origin` — FF-push our cur to origin's counterpart
-    trunk.  Wire goes through the registered transport.
+  - `be put //origin` — push our cur to origin's counterpart
+    trunk.  Wire goes through the registered transport.  Non-FF
+    allowed (PUT is unconstrained); use POST for FF-only.
 
 ##  HEAD — peek / dry-run
 
@@ -481,7 +482,10 @@ job.  The URI components combine orthogonally:
     as a blob and recorded in a `put` row in `.be/wtlog`.  The blob
     is now staged for the next POST.
   - **`//remote`** — push our local ref-value to the remote's
-    counterpart.  FF-checked at the wire.
+    counterpart.  PUT is **unconstrained**: non-FF (force) pushes
+    are allowed — that is the whole point of PUT vs POST.  POST is
+    the verb that refuses non-FF; PUT lets you rewrite refs on
+    either side of the wire.
   - **`#sha`** — explicit sha to write into the ref.  Without
     `#sha`, the default is `cur.tip` (label move).
 
@@ -499,9 +503,9 @@ with the command's ts.
 | `be put ?./fix`         | `mkdir`-the-branch: `?./fix` ⇒ cur.tip (label-only fork; no synth commit, no wt change). |
 | `be put ?../sib`        | Sibling branch label at the parent's tip. |
 | `be put ?feat/new`      | Absolute leaf `feat/new` under existing `feat`. |
-| `be put ?br#abc1234`    | Reset `?br` to sha `abc1234`.  Non-FF rewrite is allowed (PUT is unconstrained on the local namespace). |
-| `be put //origin`       | FF-push cur to origin's counterpart trunk.  Refused on remote-side concurrent change. |
-| `be put //origin?br`    | FF-push our `?br` to origin's `?br`. |
+| `be put ?br#abc1234`    | Reset `?br` to sha `abc1234`.  Non-FF rewrite is allowed (PUT is unconstrained — local or remote). |
+| `be put //origin`       | Push cur to origin's counterpart trunk.  Non-FF (force) is allowed; use POST for FF-only semantics. |
+| `be put //origin?br`    | Push our `?br` to origin's `?br`.  Non-FF allowed. |
 | `be put ssh://host/path`| Register as a remote alias (name from host, or `--as=name`).  No `?ref` ⇒ alias-register only. |
 
 PUT writes to `<wt>/.be/wtlog` (for `./path` rows) and
@@ -737,7 +741,7 @@ be put ?./feat              # mkdir feat at trunk's tip
 be get ?./feat              # cd into feat
 echo patch > new.c
 be post '#feat stub'        # commit on feat (=cur)
-be put ssh://origin?./feat  # FF-push feat to origin
+be put ssh://origin?./feat  # push feat to origin (non-FF allowed)
 
 # back on trunk
 be get ?..
@@ -832,8 +836,13 @@ another wt to actually drop the branch.
     the cache without network; on `ssh://host` they fetch first.
     PUT `//host` is the one cached-form exception that opens a
     wire — PUT-to-remote is by definition a write.
- 9. **Remote operations are fast-forward only.**  Divergence is
+ 9. **POST is fast-forward only; PUT is unconstrained.**  POST
+    (local advance or remote push) refuses non-FF — divergence is
     resolved client-side with PATCH + POST, never by the peer.
+    PUT, by contrast, can rewrite any ref on either side of the
+    wire (it's the force-push verb).  This split keeps the
+    everyday `be post //origin` path safe while leaving an
+    explicit escape hatch (`be put //origin`) for ref-surgery.
 10. **Projector schemes are read-only.**  They never mutate —
     safe to compose with any verb.
 11. **Git-peer interop: byte-faithful, topology-flat.**  Branch

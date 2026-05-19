@@ -503,6 +503,24 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
 
     //  Explicit put row.
     if (has_put) {
+        //  NEW gitlink (no baseline tree entry, no on-disk file) where
+        //  the put row carries a 40-hex sha → submodule-add.  Emit an
+        //  ADD with mode 0160000 so the new tree records the gitlink.
+        //  Plan §POST step 3: parent commits a fresh `vendor/sub`
+        //  entry alongside the synthesised `.gitmodules` blob.
+        if (!src_base && !src_wt && src_put) {
+            u8cs put_frag = {src_put->uri.fragment[0],
+                             src_put->uri.fragment[1]};
+            if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
+                sha1 new_sha = {};
+                u8s bin_s = {new_sha.data, new_sha.data + 20};
+                a_dup(u8c, frag_dup, put_frag);
+                if (HEXu8sDrainSome(bin_s, frag_dup) == OK) {
+                    return post_emit_decision(c, POST_V_ADD, path,
+                                              0160000, NULL, &new_sha);
+                }
+            }
+        }
         if (!src_wt) {
             //  Explicit put of a missing file: drop, unlink if tracked.
             if (src_base) {
@@ -2765,15 +2783,20 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             //  4-char conflict markers (`<<<<`).  An unattended
             //  `patch && post` chain stops here with POSTCFLCT
             //  before recording a half-merged commit (VERBS.md
-            //  §PATCH "Reporting" — conflict-loud rule).
-            //  `force=YES` skips the scan — for committing files
-            //  whose legitimate content contains the marker (e.g.
-            //  VERBS.md / docs describing the syntax).
+            //  §PATCH "Reporting" — conflict-loud rule).  Match
+            //  only at start-of-line — WEAVE emits markers
+            //  line-anchored, and gating on that excludes prose
+            //  references (docs / commit messages / comments)
+            //  that mention the marker syntax inline.
+            //  `force=YES` skips the scan entirely.
             if (!force) {
                 u8cp pp = body[0];
                 u8cp pe = body[1];
                 while (pp + 4 <= pe) {
-                    if (pp[0] == '<' && pp[1] == '<' &&
+                    b8 at_line_start = (pp == body[0]) ||
+                                       (pp > body[0] && pp[-1] == '\n');
+                    if (at_line_start &&
+                        pp[0] == '<' && pp[1] == '<' &&
                         pp[2] == '<' && pp[3] == '<') {
                         fprintf(stderr,
                             "sniff: post: refusing — conflict "
@@ -2953,7 +2976,14 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
                     "retry\n",
                     (int)u8csLen(branch), (char *)branch[0]);
             //  Best-effort: don't undo the pack feed.  Caller may retry
-            //  POST against the new tip.
+            //  POST against the new tip.  Mirror the success-path
+            //  cleanup at §17 so we don't leak the per-commit buffers
+            //  (post_ctx's 32 MiB decision arena + the 1 MiB
+            //  tree_bodies + the cascade arena, if any).
+            if (casc.n > 0) (void)post_cascade_persist(&casc);
+            if (casc.arena[0]) u8bFree(casc.arena);
+            u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
             return REFSCAS;
         }
     }

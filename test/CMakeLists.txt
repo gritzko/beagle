@@ -58,6 +58,15 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-14-sub-dirty-conflict-aggregate"
     "be-get-17-sub-rename"
     "be-get-18-sub-leaf-unreachable"
+    "be-post-09-sub-flat-both-dirty"
+    "be-post-10-sub-depth3-cascading"
+    "be-post-11-sub-only-sub-dirty"
+    "be-post-12-sub-only-parent-dirty"
+    "be-post-13-sub-dryrun-all-issues"
+    "be-post-15-sub-add-then-post"
+    "be-post-14-sub-msg-override"
+    "be-post-16-sub-push-postorder"
+    "be-post-17-sub-msg-resolution-per-level"
 )
 
 foreach(_run ${_be_case_runs})

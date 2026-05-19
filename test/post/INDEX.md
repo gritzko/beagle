@@ -13,6 +13,12 @@
   two authors, then bare `be post`: the resulting commit must inherit
   message + author from the topologically latest patched commit, with
   ` (+N)` and ` (et al)` decorations for the count and author mix.
+* `09-sub-flat-both-dirty/` — `be post '#round1'` with outer + sub
+  both dirty (SUBS.plan.md §POST): sub commits first via the BEPost
+  wrapper's post-order recursion, parent's commit records the bumped
+  gitlink via `SNIFFSubReadTip` + per-sub `be put <subpath>` staging.
+  Asserts both wtlog tips advanced and the parent's new vendor/ tree
+  references the sub's new sha.
 * `08-sibling-ff-migrate/` — `be post ?<branch>` (no msg) FF-promotes
   a sibling/parent label to cur.tip and copies the missing commit/
   tree/blob objects from cur's shard into the target shard via

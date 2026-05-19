@@ -18,6 +18,7 @@
 #include "dog/CLI.h"
 #include "dog/DOG.h"
 #include "dog/WHIFF.h"
+#include "dog/git/GIT.h"
 
 // --- Verb / flag tables ---
 
@@ -296,14 +297,25 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     u8csMv(rpath, g->path);
 
     if (!u8csEmpty(g->authority)) {
+        //  Explicit transport URI (scheme + path both present) wins
+        //  verbatim — the user named the wire target unambiguously.
+        //  REFSResolve only fills missing components for cached-form
+        //  `//host` lookups (where the user relies on alias lookup).
+        b8 has_explicit_path  = !u8csEmpty(rpath);
+        b8 has_explicit_proto = !u8csEmpty(rscheme);
+        b8 explicit_full = has_explicit_path && has_explicit_proto;
         uri resolved = {};
-        a_dup(u8c, in_uri, g->data);
-        ok64 rr = REFSResolve(&resolved, rarena_out, $path(keepdir), in_uri);
-        if (rr == OK && !u8csEmpty(resolved.host)) {
+        ok64 rr = OK;
+        if (!explicit_full) {
+            a_dup(u8c, in_uri, g->data);
+            rr = REFSResolve(&resolved, rarena_out, $path(keepdir), in_uri);
+        }
+        if (!explicit_full && rr == OK && !u8csEmpty(resolved.host)) {
             if (!u8csEmpty(resolved.scheme)) u8csMv(rscheme, resolved.scheme);
             u8csMv(rhost, resolved.host);
             if (!u8csEmpty(resolved.path))   u8csMv(rpath, resolved.path);
-        } else if (u8csEmpty(rscheme) && u8csEmpty(rpath)) {
+        } else if (!explicit_full &&
+                   u8csEmpty(rscheme) && u8csEmpty(rpath)) {
             //  Alias miss on a bare `//host` URI with no in-place
             //  transport — the user named a remote that's not
             //  registered.  Emit a friendly hint instead of letting
@@ -574,6 +586,84 @@ static ok64 keeper_put(keeper *k, cli *c) {
     done;
 }
 
+// --- POST fast-forward check ---
+//
+//  VERBS.md §POST / Design invariant 9: POST is FF-only.  Default-
+//  config bare git's receive-pack has `denyNonFastForwards=false`
+//  and would silently accept a non-FF push, so keeper enforces on
+//  the client side.  PUT (force-push) bypasses this entirely —
+//  it's the unconstrained ref-writer.  Keeper doesn't link graf
+//  (graf reads keeper, so the reverse would be a cycle), so the
+//  ancestor probe is a bounded BFS over commit parent edges
+//  resolved via KEEPGetExact.
+#define KEEP_FF_MAX  65536u
+
+//  YES iff `target` is reachable from `from` via commit-parent
+//  edges (i.e., `target` is an ancestor of `from`, so a push of
+//  `from` onto `target` is a fast-forward).  Capped at KEEP_FF_MAX
+//  commits — a tip more than that distance past peer isn't really
+//  a fast-forward by any normal-flow standard.  NO is returned on
+//  cap-exceeded or any keeper miss; callers treat that as "refuse,
+//  user should `be patch //origin?` + `be post` to resolve".
+static b8 keeper_post_is_ancestor(sha1 const *from, sha1 const *target) {
+    if (!from || !target) return NO;
+    if (sha1cmp(from, target) == 0) return YES;
+
+    sha1 *seen = calloc(KEEP_FF_MAX, sizeof(sha1));
+    if (!seen) return NO;
+    sha1 *queue = calloc(KEEP_FF_MAX, sizeof(sha1));
+    if (!queue) { free(seen); return NO; }
+    u32 nseen = 0;
+    u32 qhead = 0, qtail = 0;
+    queue[qtail++] = *from;
+    seen[nseen++] = *from;
+    b8 found = NO;
+
+    Bu8 cbuf = {};
+    if (u8bMap(cbuf, 1UL << 20) != OK) {
+        free(seen); free(queue);
+        return NO;
+    }
+
+    while (qhead < qtail && !found) {
+        sha1 cur = queue[qhead++];
+        u8bReset(cbuf);
+        u8 ctype = 0;
+        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) continue;
+        if (ctype != KEEP_OBJ_COMMIT) continue;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            if ($len(field) != 6) continue;
+            if (memcmp(field[0], "parent", 6) != 0) continue;
+            if ($len(value) < 40) continue;
+            sha1 par = {};
+            u8s bin = {par.data, par.data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            a_dup(u8c, hx_dup, hx);
+            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
+            if (bin[0] != par.data + 20) continue;
+            if (sha1cmp(&par, target) == 0) { found = YES; break; }
+            //  Dedup against `seen`.  Linear scan is fine — the
+            //  walk is bounded at KEEP_FF_MAX.
+            b8 dup = NO;
+            for (u32 i = 0; i < nseen; i++) {
+                if (sha1cmp(&seen[i], &par) == 0) { dup = YES; break; }
+            }
+            if (dup) continue;
+            if (qtail >= KEEP_FF_MAX || nseen >= KEEP_FF_MAX) continue;
+            queue[qtail++] = par;
+            seen[nseen++] = par;
+        }
+    }
+
+    u8bUnMap(cbuf);
+    free(seen);
+    free(queue);
+    return found;
+}
+
 // --- Verb: post ---
 
 //  Push the current worktree commit to a remote.  Nothing is staged
@@ -582,7 +672,12 @@ static ok64 keeper_put(keeper *k, cli *c) {
 //       or fall back to the worktree's current branch.
 //    2. Build the transport URI from the URI's authority/scheme (with
 //       alias resolution).
-//    3. Hand off to WIREPush — it harvests our local tip via REFADV,
+//    3. Check that the peer's cached tip is an ancestor of cur's tip
+//       (POST is FF-only — VERBS.md §POST).  Cache is whatever the
+//       last `be head ssh://...` (or transport-scheme POST/PATCH/GET)
+//       populated in `<store>/.be/refs`.  Skipped when the peer ref
+//       is unknown (fresh ref creation).
+//    4. Hand off to WIREPush — it harvests our local tip via REFADV,
 //       speaks the git wire protocol to the peer's receive-pack, and
 //       on success the caller advances the cached peer-tip ref below.
 //  No URI → this verb is a no-op (sniff already wrote the commit).
@@ -675,6 +770,55 @@ static ok64 keeper_post(keeper *k, cli *c) {
             return KEEPFAIL;
         }
     }
+
+    //  4a. POST is FF-only.  Look up the peer's cached tip and
+    //  refuse if it's not an ancestor of at_tip.  PUT bypasses
+    //  this (see VERBS.md §PUT — non-FF on either namespace is
+    //  allowed for PUT).  Skipped when the peer ref isn't cached
+    //  (fresh ref creation, or user didn't `be head` first; the
+    //  receive-pack will accept whatever we send).
+    //
+    //  REFSResolve matches host substring-only (not path), so it
+    //  can return a sibling-project row when parent + sub share
+    //  a hostname.  Filter additionally by path when the user
+    //  supplied an explicit transport URI with a path.
+    {
+        a_pad(u8, ffarena, 1024);
+        uri resolved = {};
+        a_dup(u8c, in_uri, g->data);
+        b8 path_mismatch = NO;
+        if (REFSResolve(&resolved, ffarena,
+                        $path(keepdir), in_uri) == OK &&
+            u8csLen(resolved.query) == 40) {
+            //  Reject the match if the user supplied an explicit
+            //  path that disagrees with what REFSResolve returned.
+            if (!u8csEmpty(g->path) && !u8csEmpty(resolved.path) &&
+                !u8csEq(g->path, resolved.path)) {
+                path_mismatch = YES;
+            }
+            sha1 peer_tip = {};
+            u8s pbin = {peer_tip.data, peer_tip.data + 20};
+            a_dup(u8c, phx, resolved.query);
+            if (!path_mismatch &&
+                HEXu8sDrainSome(pbin, phx) == OK &&
+                pbin[0] == peer_tip.data + 20 &&
+                sha1cmp(&peer_tip, &at_tip) != 0 &&
+                !keeper_post_is_ancestor(&at_tip, &peer_tip)) {
+                fprintf(stderr,
+                        "keeper: post: non-fast-forward — local tip "
+                        "%.*s is not a descendant of peer tip "
+                        "%.*s.  Use `be patch //%.*s?` + `be post` "
+                        "to merge, or `be put` to force-push.\n",
+                        (int)$len(at_sha), (char *)at_sha[0],
+                        (int)u8csLen(resolved.query),
+                        (char *)resolved.query[0],
+                        (int)$len(g->host), (char *)g->host[0]);
+                u8bUnMap(rarena);
+                return KEEPFAIL;
+            }
+        }
+    }
+
     ok64 pu = WIREPush(remote_uri, local_branch, &at_tip);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
