@@ -134,7 +134,7 @@ static ok64 dag_index_write_leaf(graf *g, wh128cs run) {
     sane(g);
     if ($empty(run)) done;
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
-    a_dup(u8c, leaf, u8bDataC(g->leaf_branch));
+    a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
     call(graf_leaf_dir, leafdir, g->h, leaf);
     call(FILEMakeDirP, $path(leafdir));
     a_cstr(ext, GRAF_IDX_EXT);
@@ -681,7 +681,7 @@ static ok64 dag_compact(graf *g) {
     if (m < 2) { wh128bFree(cbuf); done; }
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
-    a_dup(u8c, leaf, u8bDataC(g->leaf_branch));
+    a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
     call(graf_leaf_dir, leafdir, g->h, leaf);
     a_cstr(ext, GRAF_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};

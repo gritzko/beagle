@@ -372,18 +372,21 @@ con ok64 DOGPUPFAIL = 0x3584197993ca495;
 // Scan `dir` for files matching `<10-RON64><ext>`, sort by pup_key,
 // FILEMapRO each, push (pup_key, fd) into `pups`.  Empty dir → OK with
 // pups left empty.  Caller must have allocated `pups` first.
-// Skips any pup_key already present in `pups` (PAST or DATA) — opens
-// are idempotent, and re-opens of shared-ancestor dirs across branch
-// loads stay no-ops.
+// Not idempotent: every file in `dir` becomes a new entry, even if a
+// matching pup_key already sits in PAST/DATA — same basename in a
+// different dir is a different file.  Avoiding double-scans is the
+// caller's responsibility (keeper / graf compare the target branch
+// against `home->cur_branch` and skip the shared LCA prefix).
 ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext);
 
 // Cross-branch load: flip the current DATA into PAST (collapse the
 // previously-loaded branch into the read-only context), then open
-// `dir`'s pup files into the now-empty DATA, skipping pup_keys already
-// present.  Mirror of "open first branch, then `pups[1]=pups[2]`,
-// then open the second" — the call sequence becomes one helper.
-// The active leaf becomes the dir just loaded; subsequent
-// KEEPPackOpen / DOGPupCreate writes target this new DATA.
+// `dir`'s pup files into the now-empty DATA.  Mirror of "open first
+// branch, then `pups[1]=pups[2]`, then open the second" — the call
+// sequence becomes one helper.  The active leaf becomes the dir just
+// loaded; subsequent KEEPPackOpen / DOGPupCreate writes target this
+// new DATA.  Like DOGPupOpenAll, this primitive does not dedup against
+// already-loaded entries.
 ok64 DOGPupOpenAside(kv64b pups, path8sc dir, u8csc ext);
 
 // Atomically write `bytes` to `<max(now_ron60, max(DATA)+1)>.<ext>`

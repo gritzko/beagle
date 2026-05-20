@@ -1317,7 +1317,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         u8cs br_split = {}, pin_split = {};
         DOGRefSplitPin(target_query, br_split, pin_split);
         if (!u8csEmpty(pin_split)) {
-            (void)SNIFFMaybeSwitchKeeper(br_split); (void)SNIFFMaybeSwitchGraf(br_split);
+            (void)SNIFFMaybeSwitchGraf(br_split); (void)SNIFFMaybeSwitchKeeper(br_split);
             cherry = YES;
             u8csMv(frag, pin_split);
             u8csMv(cherry_locator, br_split);
@@ -1352,7 +1352,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         //  graf's WEAVE history walks, and the LCA / blob fetches
         //  below all resolve their objects.  No-op for tags, peer-
         //  prefixed refs, or same-branch reads.
-        (void)SNIFFMaybeSwitchKeeper(target_query); (void)SNIFFMaybeSwitchGraf(target_query);
+        (void)SNIFFMaybeSwitchGraf(target_query); (void)SNIFFMaybeSwitchKeeper(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
         //  Frag interpretation depends on shape:
         //    PATCH_SHAPE_SQUASH  — no frag.
@@ -1606,8 +1606,8 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
         //  Cross-branch read: ensure the target branch's packs are
         //  loaded into keeper so resolve_target / graf's history walk
         //  can see them.  Mirrors PATCHApply.
-        (void)SNIFFMaybeSwitchKeeper(target_query);
         (void)SNIFFMaybeSwitchGraf(target_query);
+        (void)SNIFFMaybeSwitchKeeper(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
     }
 

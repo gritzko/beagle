@@ -484,19 +484,11 @@ ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
     a_dup(kv64, ks, kv64bData(seqnos));
     $kv64sort(ks);
 
-    //  Skip pup_keys already loaded — re-opens of shared ancestor dirs
-    //  (cross-branch loads, idempotent re-scans) must not double-map.
-    //  Scan PastData since duplicates can appear in either side.
+    //  Pup layer is not idempotent: every file in `dir` becomes a new
+    //  entry in `pups`.  Avoiding double-scans of the same dir is the
+    //  caller's job (keeper / graf consult home->cur_branch and skip
+    //  shared LCA prefix on branch switches).
     $for(kv64, kp, ks) {
-        b8 dup = NO;
-        {
-            kv64s pd = {};
-            kv64PastDataS(pups, pd);
-            $for(kv64, q, pd) {
-                if (q->key == kp->key) { dup = YES; break; }
-            }
-        }
-        if (dup) continue;
         u8cp nm0 = u8bDataHead(namebuf) + kp->val;
         u8cs fn  = {nm0, nm0 + strlen((char const *)nm0)};
         a_path(fpath, dir, fn);

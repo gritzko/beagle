@@ -29,7 +29,7 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
     if (k->h == NULL) done;  // keeper not open — nothing to switch.
 
     //  Same as current leaf?  No-op.
-    a_dup(u8c, cur, u8bDataC(k->leaf_branch));
+    a_dup(u8c, cur, u8bDataC(k->h->cur_branch));
     if (u8csLen(cur) == u8csLen(target_branch) &&
         (u8csLen(target_branch) == 0 ||
          memcmp(cur[0], target_branch[0],

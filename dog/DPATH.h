@@ -83,4 +83,32 @@ fun b8 DPATHBranchAncestor(u8cs anc, u8cs des) {
     return u8csEq(anc, head);
 }
 
+// Longest shared '/'-bounded prefix of two canonical branch paths
+// `a` and `b`, in bytes.  Returns the offset at which they first
+// differ at a segment boundary; the slice [0, n) of either is the
+// shared LCA.  Empty for trunk-only intersection.
+//
+// Examples:
+//   ("feat/",     "other/")      → 0  (no shared segment)
+//   ("feat/",     "feat/sub/")   → 5  (feat is ancestor of feat/sub)
+//   ("feat/sub1/", "feat/sub2/") → 5  (feat/ shared)
+//   ("feat/sub/",  "feat/sub/")  → 9  (identical)
+//   ("",           "feat/")      → 0  (trunk LCA)
+fun size_t DPATHBranchLcaLen(u8cs a, u8cs b) {
+    size_t na = u8csLen(a), nb = u8csLen(b);
+    size_t n = na < nb ? na : nb;
+    size_t matched = 0;
+    size_t last_slash = 0;
+    for (; matched < n; matched++) {
+        if (a[0][matched] != b[0][matched]) break;
+        if (a[0][matched] == '/') last_slash = matched + 1;
+    }
+    if (matched == n) {
+        if (na == nb) return na;
+        u8cp longer_head = (na > nb) ? a[0] : b[0];
+        if (longer_head[n] == '/') return n;
+    }
+    return last_slash;
+}
+
 #endif

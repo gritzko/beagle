@@ -1373,8 +1373,9 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
         if (cl != OK) return cl;
         zerop(cc->p);
     }
-    (void)SNIFFMaybeSwitchKeeper(branch);
+    //  Graf reads h->cur_branch as its "from" — order before keeper.
     (void)SNIFFMaybeSwitchGraf(branch);
+    (void)SNIFFMaybeSwitchKeeper(branch);
     if (cc->p != NULL) {
         ok64 op = KEEPPackOpen(cc->p);
         if (op != OK) return op;
@@ -1743,8 +1744,8 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //  target dir doesn't exist on disk yet (CREATE_ON_MISS arm
     //  mkdir's it below before any keeper write).
     if (target_exists) {
-        (void)SNIFFMaybeSwitchKeeper(target_branch);
         (void)SNIFFMaybeSwitchGraf(target_branch);
+        (void)SNIFFMaybeSwitchKeeper(target_branch);
     }
 
     //  --- 4. Classify shape. ---
@@ -2294,7 +2295,7 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     a_pad(u8, saved_branch, 256);
     b8 switched = NO;
     if (!u8csEmpty(pent[idx].locator)) {
-        u8bFeed(saved_branch, u8bDataC(KEEP.leaf_branch));
+        u8bFeed(saved_branch, u8bDataC(KEEP.h->cur_branch));
         //  KEEPOpenBranch normalises with a trailing '/'; strip it
         //  so the round-trip via DPATHBranchNormFeed doesn't
         //  re-add another.  Empty saved_branch (= trunk) stays
@@ -2302,8 +2303,9 @@ ok64 POSTPatchDefaults(u8cs reporoot,
         if (u8bDataLen(saved_branch) > 0 &&
             *u8bLast(saved_branch) == '/')
             u8bShed1(saved_branch);
-        ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
+        //  Graf reads h->cur_branch as its "from" — order before keeper.
         (void)SNIFFMaybeSwitchGraf(pent[idx].locator);
+        ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
         switched = (so == OK);
     }
 
@@ -2315,8 +2317,12 @@ ok64 POSTPatchDefaults(u8cs reporoot,
 
     if (switched) {
         a_dup(u8c, sb, u8bData(saved_branch));
-        (void)KEEPSwitchBranch(KEEP.h, sb);
+        //  Graf BEFORE keeper: graf reads h->cur_branch as its "from"
+        //  for the LCA delta; keeper is the one that updates
+        //  h->cur_branch via HOMESetCurBranch.  Reversed order would
+        //  feed graf the post-switch value and collapse the delta.
         (void)GRAFSwitchBranch(GRAF.h, sb);
+        (void)KEEPSwitchBranch(KEEP.h, sb);
     }
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
@@ -2430,7 +2436,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         //  NNNN.keeper` (per KEEP.h §"Branch-aware object store").
         //  No-op when there's no `<target>/` shard dir yet (the
         //  CREATE_ON_MISS arm via POSTPromote mkdir's it first).
-        (void)SNIFFMaybeSwitchKeeper(target_canon); (void)SNIFFMaybeSwitchGraf(target_canon);
+        (void)SNIFFMaybeSwitchGraf(target_canon); (void)SNIFFMaybeSwitchKeeper(target_canon);
     }
     //  No baseline branch recovered AND no override → default to
     //  trunk (empty be-side query).  Locally trunk has no name; the

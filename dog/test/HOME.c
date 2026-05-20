@@ -160,8 +160,8 @@ ok64 HOMETestBranches() {
         want(HOMEWriteBranch(&h, w) == HOMENOBR);
     }
 
-    // 2. Open trunk ro first.  WriteBranch still HOMENOBR because
-    //    the first open was ro (no rw requested yet).
+    // 2. Open trunk ro first.  WriteBranch HOMENOBR because the
+    //    first open was ro (cur_rw=NO).
     {
         a_cstr(trunk, "main");
         want(HOMEOpenBranch(&h, trunk, NO) == OK);
@@ -169,15 +169,10 @@ ok64 HOMETestBranches() {
         want(HOMEWriteBranch(&h, w) == HOMENOBR);
     }
 
-    // 3. A later rw open must be refused — first open was ro.
-    {
-        a_cstr(feat, "feature");
-        want(HOMEOpenBranch(&h, feat, YES) == HOMEROBR);
-    }
-
-    // 4. Reset and try the other order: rw first.
-    HOMEClose(&h);
-    call(HOMEOpenAt, &h, root, NO);
+    // 3. A later rw open re-targets cur (test/CLI pattern: open
+    //    trunk, close keeper, open feature with rw).  Returns OK
+    //    when the rw branch differs from cur; HOMEOPEN when it
+    //    matches (idempotent promote).
     {
         a_cstr(feat, "heads/feature");
         want(HOMEOpenBranch(&h, feat, YES) == OK);
@@ -192,15 +187,19 @@ ok64 HOMETestBranches() {
         want(HOMEOpenBranch(&h, feat2, YES) == HOMEOPEN);
     }
 
-    // 6. Additional ro branches stack.  Visibility includes ancestors.
+    // 6. Second ro branch claims aux.  A third ro branch hits the
+    //    aux pin and is refused with HOMEROBR.
     {
-        a_cstr(trunk, "main");
-        want(HOMEOpenBranch(&h, trunk, NO) == OK);
         a_cstr(other, "other/fix");
-        want(HOMEOpenBranch(&h, other, NO) == OK);
+        want(HOMEOpenBranch(&h, other, NO) == OK);   // claims aux
+        a_cstr(other2, "other/fix");
+        want(HOMEOpenBranch(&h, other2, NO) == HOMEOPEN);  // idempotent
+        a_cstr(third, "third/branch");
+        want(HOMEOpenBranch(&h, third, NO) == HOMEROBR);   // aux pinned
     }
 
-    // 7. HOMEBranchVisible — canonical-form inputs.
+    // 7. HOMEBranchVisible — cur OR aux.  cur = "heads/feature/",
+    //    aux = "other/fix/".
     {
         a_cstr(trunk_s, "");
         u8cs trunk_b = {trunk_s[0], trunk_s[1]};
@@ -208,15 +207,28 @@ ok64 HOMETestBranches() {
 
         a_cstr(feat_s, "heads/feature/");
         u8cs feat_b = {feat_s[0], feat_s[1]};
-        want(HOMEBranchVisible(&h, feat_b) == YES);        // exact match
+        want(HOMEBranchVisible(&h, feat_b) == YES);        // exact match (cur)
 
         a_cstr(heads_s, "heads/");
         u8cs heads_b = {heads_s[0], heads_s[1]};
-        want(HOMEBranchVisible(&h, heads_b) == YES);       // ancestor of heads/feature/
+        want(HOMEBranchVisible(&h, heads_b) == YES);       // ancestor of cur
+
+        a_cstr(other_s, "other/fix/");
+        u8cs other_b = {other_s[0], other_s[1]};
+        want(HOMEBranchVisible(&h, other_b) == YES);       // exact match (aux)
 
         a_cstr(stray_s, "nope/");
         u8cs stray_b = {stray_s[0], stray_s[1]};
         want(HOMEBranchVisible(&h, stray_b) == NO);
+    }
+
+    // 8. HOMESetCurBranch re-targets cur without touching aux.
+    {
+        a_cstr(other_root, "other");
+        want(HOMESetCurBranch(&h, other_root) == OK);
+        u8cs w = {};
+        want(HOMEWriteBranch(&h, w) == OK);
+        want(slice_is(w, "other/"));
     }
 
     HOMEClose(&h);

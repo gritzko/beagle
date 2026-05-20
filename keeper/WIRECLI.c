@@ -569,8 +569,8 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     //  with a leaf→trunk fallback (REFSResolve at leaf first, then
     //  retry at trunk if not found).
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
-    if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
-        a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+    if (u8bDataLen(k->h->cur_branch) > 0) {
+        a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
         call(PATHu8bAdd, keepdir, leaf_s);
     }
 

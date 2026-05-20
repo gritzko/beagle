@@ -829,7 +829,7 @@ static ok64 sniff_get_blob_to_wt_switch(uri *u) {
     u8cs target = {};
     if (u8csEmpty(pin_split)) u8csMv(target, u->query);
     else                       u8csMv(target, br_split);
-    (void)SNIFFMaybeSwitchKeeper(target); (void)SNIFFMaybeSwitchGraf(target);
+    (void)SNIFFMaybeSwitchGraf(target); (void)SNIFFMaybeSwitchKeeper(target);
     done;
 }
 
@@ -943,7 +943,7 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
         u8cs target = {};
         if (u8csEmpty(pin_split)) u8csMv(target, u->query);
         else                       u8csMv(target, br_split);
-        (void)SNIFFMaybeSwitchKeeper(target); (void)SNIFFMaybeSwitchGraf(target);
+        (void)SNIFFMaybeSwitchGraf(target); (void)SNIFFMaybeSwitchKeeper(target);
     }
 
     sha1 tree_sha = {};
@@ -1095,19 +1095,19 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     if (has_q || !$empty(u->authority)) {
         a_pad(u8, arena1, 1024);
         uri resolved = {};
-        //  REFSResolve fallback chain: leaf (k->leaf_branch) first,
+        //  REFSResolve fallback chain: leaf (k->h->cur_branch) first,
         //  then trunk, then — when the URI query names a non-sha
         //  ref — a speculative `<root>/.be/<query>/refs` dir.  The
         //  last branch covers the fresh-clone case where keeper has
         //  just fetched into `<query>` leaf but sniff has no anchor /
         //  cur_branch to derive it from.
         a_path(leaf_keepdir);
-        b8 has_leaf = (!BNULL(k->leaf_branch) &&
-                       u8bDataLen(k->leaf_branch) > 0);
+        b8 has_leaf = (!BNULL(k->h->cur_branch) &&
+                       u8bDataLen(k->h->cur_branch) > 0);
         if (has_leaf) {
             a_dup(u8c, trunk_s, u8bDataC(keepdir));
             call(PATHu8bFeed, leaf_keepdir, trunk_s);
-            a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+            a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
             call(PATHu8bAdd, leaf_keepdir, leaf_s);
         }
         ok64 o = REFSNONE;

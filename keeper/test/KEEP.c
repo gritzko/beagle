@@ -364,7 +364,7 @@ ok64 KEEPbranchRoundTrip() {
     //  Canonical leaf_branch carries a trailing '/'.
     a_cstr(featfix_canon, "feat/fix/");
     {
-        a_dup(u8c, leaf, u8bDataC(KEEP.leaf_branch));
+        a_dup(u8c, leaf, u8bDataC(KEEP.h->cur_branch));
         want(u8csLen(leaf) == u8csLen(featfix_canon));
         want(memcmp(leaf[0], featfix_canon[0],
                     u8csLen(featfix_canon)) == 0);

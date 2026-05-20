@@ -780,6 +780,12 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
             if (!on_trunk) {
                 u8cs cb = {};
                 u8csMv(cb, cur_branch);
+                //  cur_branch is canonical (trailing '/' on non-trunk
+                //  branches, per DPATHBranchNormFeed); strip it so the
+                //  slash-walk finds the *separating* '/', not the
+                //  trailing one.
+                if (!u8csEmpty(cb) && *u8csLast(cb) == '/')
+                    u8csShed1(cb);
                 u8cp slash = cb[1];
                 while (slash > cb[0] && *(slash - 1) != '/') slash--;
                 if (slash > cb[0]) {

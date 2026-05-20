@@ -189,10 +189,13 @@ ok64 GRAFMap(uricp u) {
     if (u8bAllocate(strs_arena, 1UL << 20) != OK) fail(GRAFFAIL);
 
     //  in `KEEP.h->cur_branch` by HOMEOpen.  Empty branch == trunk.
+    //  Strip the canonical trailing '/' so prefix-match against
+    //  KEEPEachTip's slashless paths works.
     u8cs cur_path = {};
     {
         a_dup(u8c, cb, u8bData(KEEP.h->cur_branch));
         if (!u8csEmpty(cb) && *cb[0] == '?') u8csUsed1(cb);
+        if (!u8csEmpty(cb) && *u8csLast(cb) == '/') u8csShed1(cb);
         if (u8csLen(cb) > 0) {
             if (u8bFeed(strs_arena, cb) != OK) {
                 u8bFree(strs_arena);

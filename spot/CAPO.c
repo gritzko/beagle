@@ -1488,7 +1488,7 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     //  Register on home (idempotent re-opens absorbed).
     {
         ok64 o = HOMEOpenBranch(h, branch, rw);
-        if (o != OK && o != HOMEOPEN && o != HOMEROBR && o != HOMEMAX)
+        if (o != OK && o != HOMEOPEN && o != HOMEROBR)
             return o;
     }
 

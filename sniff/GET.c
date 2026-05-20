@@ -728,8 +728,8 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     //  the parent's trunk).  Trunk REFS holds the primary wt's own
     //  rows when leaf is empty.
     a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
-    if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
-        a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+    if (!BNULL(k->h->cur_branch) && u8bDataLen(k->h->cur_branch) > 0) {
+        a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
         call(PATHu8bAdd, keepdir, leaf_s);
     }
     a_pad(u8, refkey_buf, 256);
@@ -797,6 +797,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             u8cs to_switch = {};
             if (u8csEmpty(pin_split)) u8csMv(to_switch, t_branch);
             else                      u8csMv(to_switch, br_split);
+            //  Graf reads h->cur_branch as its "from" — order before keeper.
+            (void)SNIFFMaybeSwitchGraf(to_switch);
             ok64 so = SNIFFMaybeSwitchKeeper(to_switch);
             if (so != OK && so != KEEPOPEN) {
                 fprintf(stderr,
@@ -806,13 +808,12 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                         ok64str(so));
                 fail(SNIFFFAIL);
             }
-            (void)SNIFFMaybeSwitchGraf(to_switch);
         } else if ($ok(source) && !u8csEmpty(source) &&
                    *source[0] == '?' && $len(source) == 1) {
             //  Bare `?` (trunk) — switch back to trunk-leaf view.
             //  Pass an "empty but valid" slice so KEEPSwitchBranch's
             //  `$ok(branch)` holds.
-            if (!u8csEmpty(u8bDataC(k->leaf_branch))) {
+            if (!u8csEmpty(u8bDataC(k->h->cur_branch))) {
                 static u8c const _zero = 0;
                 u8cs empty = {(u8cp)&_zero, (u8cp)&_zero};
                 ok64 so = KEEPSwitchBranch(SNIFF.h, empty);

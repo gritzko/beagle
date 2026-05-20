@@ -147,11 +147,16 @@ typedef struct {
     //  no-ops on PAST entries but also clobbers fresh leaf runs —
     //  test/put/03-branch-shard pins the regression).
     Bkv64   puppies;
-    //  Active leaf-branch path (canonical form, empty = trunk).
-    //  Owned path-buffer: keeper allocates the backing storage in
-    //  KEEPOpenBranch (heap, KEEP_LEAF_BRANCH_MAX bytes) and frees it
-    //  in KEEPClose.  Readers derive a u8cs view via u8bDataC().
-    path8b  leaf_branch;
+    //  Active leaf-branch path lives in `h->cur_branch` (canonical
+    //  form, empty = trunk).  Keeper is the only writer (via
+    //  HOMESetCurBranch); upstream dogs (sniff/spot/graf) read it
+    //  before invoking keeper.  Readers use `u8bDataC(k->h->cur_branch)`.
+    //
+    //  NUL-separated list of dirs the keeper has scanned via
+    //  `keep_scan_branch_dir`.  Used to no-op repeat scans (cross-
+    //  branch loads / migrate sweeps re-visit shared ancestor dirs);
+    //  the dog-layer pup primitive deliberately doesn't dedup.
+    Bu8     loaded_dirs;
     int     lock_fd;              // flock on <leaf>/.lock; -1 = none
     //  Monotonic high-water mark for fresh pup_keys.  Updated by
     //  `keep_next_pup_key` to `max(RONNow(), last_pup_key + 1)` so
@@ -420,6 +425,13 @@ ok64 KEEPPackClose(keep_pack *p);
 con ok64 KEEPMVNOOP = 0x50e39959f5d8619;
 con ok64 KEEPMVFAIL = 0x50e39959f3ca495;
 ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch);
+
+//  Scan one branch dir for `.keeper` / `.keeper.idx` files, extending
+//  the keeper-level registries.  Idempotent at the dir level — repeat
+//  scans of the same path no-op (keeper tracks loaded dirs).  Exposed
+//  for MIGRATE.c's cross-shard sweeps; sniff/spot/graf go through the
+//  branch-aware KEEPOpenBranch / KEEPSwitchBranch entry points.
+ok64 keep_scan_branch_dir(keeper *k, u8csc keepdir);
 
 //  Walk objects in a pack file from a given val position.
 typedef ok64 (*keep_cb)(u8 type, u8cs content, u64 hashlet, void *ctx);

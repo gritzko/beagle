@@ -43,8 +43,10 @@ typedef struct {
     //  FILE_WANT_BUFS[fd].  Compaction appends a new puppy to the tail
     //  (DOGPupCreate) and drops the young suffix (DOGPupThinTail).
     Bkv64        puppies;
-    Bu8          leaf_branch;  // canonical leaf-branch path (trailing
-                               // '/'; empty for trunk).  Heap-backed.
+    //  Active leaf-branch path lives in `h->cur_branch`.  Graf's
+    //  switch hook runs BEFORE keeper updates `h->cur_branch` (per
+    //  the dog dep graph: graf depends on keeper, so callers invoke
+    //  graf first while h->cur_branch still reflects the old leaf).
     u64          last_pup_key; // monotonic high-water mark for fresh
                                // `.graf.idx` pup_keys; minted via
                                // `max(RONNow(), last_pup_key + 1)`.

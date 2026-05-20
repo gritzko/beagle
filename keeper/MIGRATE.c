@@ -206,17 +206,15 @@ static ok64 mig_emit_tree(keep_pack *p,
 //  objects into the active shard at write time, migration has to
 //  scan widely or lookups will hit KEEPNONE.
 //
-//  Idempotent — DOGPupOpenAll skips already-registered seqnos.
-//  Recursive (FILE_SCAN_DEEP) so nested branches participate.
+//  Idempotent — keep_scan_branch_dir no-ops on dirs already loaded
+//  via keeper's `loaded_dirs` list.  Recursive (FILE_SCAN_DEEP) so
+//  nested branches participate.
 typedef struct { int n; } mig_scan_ctx;
 static ok64 mig_scan_cb(void0p arg, path8p path) {
     sane(arg && path);
     (void)arg;
     u8cs dir = {path[0], path[1]};
-    a_cstr(pack_ext, KEEP_PACK_EXT);
-    (void)DOGPupOpenAll(KEEP.packs,   dir, pack_ext);
-    a_cstr(idx_ext, KEEP_IDX_EXT);
-    (void)DOGPupOpenAll(KEEP.puppies, dir, idx_ext);
+    (void)keep_scan_branch_dir(&KEEP, dir);
     return OK;
 }
 static void mig_scan_all_shards(void) {
@@ -232,8 +230,8 @@ static void mig_scan_all_shards(void) {
 
 //  Idempotent registration of a source shard's packs in PAST so this
 //  function can fetch source-only objects via KEEPGetExact.  No-op
-//  when the dir's already registered (DOGPupOpenAll skips known
-//  seqnos).  Empty branch → trunk (root dir).
+//  when the dir's already registered (keep_scan_branch_dir tracks
+//  loaded dirs).  Empty branch → trunk (root dir).
 static void mig_open_source(path8sc src_branch) {
     if (KEEP.h == NULL) return;
     a_path(dir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
@@ -241,10 +239,7 @@ static void mig_open_source(path8sc src_branch) {
         if (PATHu8bAdd(dir, src_branch) != OK) return;
     }
     a_dup(u8c, dir_s, u8bDataC(dir));
-    a_cstr(pack_ext, KEEP_PACK_EXT);
-    (void)DOGPupOpenAll(KEEP.packs,   dir_s, pack_ext);
-    a_cstr(idx_ext, KEEP_IDX_EXT);
-    (void)DOGPupOpenAll(KEEP.puppies, dir_s, idx_ext);
+    (void)keep_scan_branch_dir(&KEEP, dir_s);
 }
 
 ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {

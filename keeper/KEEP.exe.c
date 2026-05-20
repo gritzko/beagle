@@ -223,11 +223,11 @@ static ok64 keeper_subs(keeper *k, cli *c) {
         //  active leaf branch dir when one is open (sub-shard fetch
         //  isolation).  Try leaf first, then fall back to trunk for
         //  locally-committed refs that sniff POST writes to trunk.
-        if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+        if (u8bDataLen(k->h->cur_branch) > 0) {
             a_path(leafdir);
             a_dup(u8c, trunk_s, u8bDataC(trunk_dir));
             call(PATHu8bFeed, leafdir, trunk_s);
-            a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+            a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
             call(PATHu8bAdd, leafdir, leaf_s);
             ro = REFSResolve(&resolved, arena, $path(leafdir), qkey);
         }
@@ -338,11 +338,11 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
             //  per `wcli_record_ref`).  Trunk holds only sniff-POST rows
             //  in that case.  Try leaf first, fall back to trunk.
             rr = REFSNONE;
-            if (!BNULL(k->leaf_branch) && u8bDataLen(k->leaf_branch) > 0) {
+            if (u8bDataLen(k->h->cur_branch) > 0) {
                 a_path(leafdir);
                 a_dup(u8c, trunk_s, u8bDataC(keepdir));
                 call(PATHu8bFeed, leafdir, trunk_s);
-                a_dup(u8c, leaf_s, u8bDataC(k->leaf_branch));
+                a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
                 call(PATHu8bAdd, leafdir, leaf_s);
                 rr = REFSResolve(&resolved, rarena_out, $path(leafdir),
                                  in_uri);
