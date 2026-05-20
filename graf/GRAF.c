@@ -410,6 +410,11 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
         call(PATHu8bFeed, d, root_s);
         a_cstr(rel, GRAF_DIR_S);
         call(PATHu8bAdd, d, rel);
+        //  Project shard segment (project-sharded layout — see
+        //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
+        //  collapses to the legacy single-project shape.
+        a_dup(u8c, proj, u8bDataC(h->project));
+        if (!u8csEmpty(proj)) call(PATHu8bAdd, d, proj);
         call(PATHu8bTerm, d);
     }
     if (u8csLen(norm) > 0) {

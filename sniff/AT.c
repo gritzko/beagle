@@ -137,7 +137,10 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     //  parent project's shard, when the parent and sub share a
     //  store root).  `<project>` comes from the anchor URI's
     //  `/.be/<project>/` segment (anchor_branch_buf's first segment).
-    //  `<branch>` is the rest (empty for project trunk).  Falls
+    //  `<branch>` is the rest of anchor_branch_buf (only set for a
+    //  secondary-wt sub-shard anchor) ORed with `ref_body` (the
+    //  current branch from the latest LOCAL get/post row).  When
+    //  both are empty, the wt is on the project's trunk.  Falls
     //  back to bare `?<branch>` when no project segment is known
     //  — legacy single-project anchor.
     u8bReset(out);
@@ -146,9 +149,34 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     {
         a_dup(u8c, ab, u8bDataC(anchor_branch_buf));
         if (!u8csEmpty(ab)) {
-            //  Emit absolute form: `?/<project>[/<branch>]`.
+            //  Split anchor_branch_buf into <project>[/<rest>].
+            //  The first segment is the project shard; the rest
+            //  (if any) is the anchor-encoded branch (only present
+            //  for secondary-wt sub-shard anchors).  Emit absolute
+            //  form `?/<project>/<branch>`.  `ref_body` wins over
+            //  the anchor's `<rest>` when both are present: the
+            //  primary wt's anchor names the project's trunk but
+            //  the latest local row is authoritative for the
+            //  current branch.
+            u8cs proj_s = {ab[0], ab[1]};
+            u8cs anc_br = {};
+            for (u8cp p = ab[0]; p < ab[1]; p++) {
+                if (*p == '/') {
+                    proj_s[1] = p;
+                    u8cs r = {p + 1, ab[1]};
+                    u8csMv(anc_br, r);
+                    break;
+                }
+            }
             u8bFeed1(out, '/');
-            u8bFeed(out, ab);
+            u8bFeed(out, proj_s);
+            u8cs branch_out = {};
+            if (!u8csEmpty(ref_body)) u8csMv(branch_out, ref_body);
+            else if (!u8csEmpty(anc_br)) u8csMv(branch_out, anc_br);
+            if (!u8csEmpty(branch_out)) {
+                u8bFeed1(out, '/');
+                u8bFeed(out, branch_out);
+            }
         } else if (!u8csEmpty(ref_body)) {
             //  No anchor project — keep legacy relative form.
             u8bFeed(out, ref_body);
