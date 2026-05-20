@@ -73,7 +73,6 @@ static void BEUsage(void) {
 
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
 // resolved against this process's own argv[0] via HOMEResolveSibling.
-static ok64 be_ensure_repo(void);
 static ok64 be_ensure_project_repo(uricp u);
 static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
@@ -503,11 +502,7 @@ static ok64 BEGetLocal(cli *c, b8 seq) {
     //  derive the project name from the URL and lay down
     //  `<cwd>/.be/<project>/{refs,wtlog}` (project-sharded layout —
     //  see dog/DOG.h §"Canonical on-disk layout").
-    if (remote) {
-        call(be_ensure_project_repo, u);
-    } else {
-        call(be_ensure_repo);
-    }
+    call(be_ensure_project_repo, u);
 
     //  Step 1: keeper get URI — synchronous.  Only meaningful when
     //  the URI carries a remote authority (fetch/clone path); for a
@@ -1339,25 +1334,23 @@ static ok64 be_url_project(uricp u, u8csp out) {
     return OK;
 }
 
-//  Project-aware variant of `be_ensure_repo`: lays down
-//  `<cwd>/.be/<project>/{refs,wtlog}` plus a `<cwd>/.be/wtlog` row-0
-//  `repo file:<cwd>/.be/<project>` anchor that pins this wt to the
-//  project shard.  Project name derivation, in order:
+//  Lay down `<cwd>/.be/<project>/{refs,wtlog}` plus a `<cwd>/.be/wtlog`
+//  row-0 `repo file:<cwd>/.be/<project>/` anchor that pins this wt to
+//  the project shard.  Project name derivation, in order:
 //    1. `?/<proj>/...` query slot on `u` (explicit URI form).
 //    2. URL basename via `SNIFFSubBasename` (clone-URL form).
 //    3. `basename($PWD)` (fresh-init in an empty dir with no URL).
 //  Skipped iff an anchor is already present in the wt (`h->project`
 //  populated after HOMEOpen) — established projects aren't
-//  re-initialised; the existing anchor wins.  When derivation yields
-//  nothing (all three fall back to empty — e.g. `cwd == /`), falls
-//  back to the legacy single-project bootstrap.
+//  re-initialised; the existing anchor wins.  Refuses with `BEFAIL`
+//  when every derivation arm yields empty (e.g. `cwd == /`).
 static ok64 be_ensure_project_repo(uricp u) {
     sane(1);
     //  Probe for an existing anchor.  An empty `h->project` after
     //  HOMEOpen means either no `.be/` exists in any parent OR a
     //  `.be/` exists but its wtlog carries no row-0 `repo` anchor
-    //  (the legacy uninitialised shape — e.g. case.sh's hygiene
-    //  shield).  Either way we fall through to fresh-init.
+    //  (legacy uninitialised shape).  Either way fall through to
+    //  fresh-init.
     {
         home probe = {};
         uri none = {};
@@ -1367,18 +1360,33 @@ static ok64 be_ensure_project_repo(uricp u) {
         if (anchored) done;
     }
 
-    //  Project name from an explicit `?/<proj>/...` URI; on miss
-    //  fall through to the legacy bootstrap.  `basename($PWD)`
-    //  derivation is deferred (would flip the layout for every
-    //  fresh `be put` in the suite — same risk as the URL-basename
-    //  derivation; see be_url_project's note).
-    u8cs proj = {};
-    if (!u || be_url_project(u, proj) != OK || u8csEmpty(proj))
-        return be_ensure_repo();
-
     a_path(cwd);
     call(FILEGetCwd, cwd);
     a_dup(u8c, cwd_s, u8bDataC(cwd));
+
+    //  Project name derivation chain.
+    u8cs proj = {};
+    //  (1) Explicit `?/<proj>/...` query slot.
+    if (u) (void)be_url_project(u, proj);
+    //  (2) URL basename via SNIFFSubBasename.  Try u->data first
+    //      (full URI string, e.g. `ssh://host/foo/bar.git?master`),
+    //      fall through to u->path (file: clones, bare paths).
+    if (u8csEmpty(proj) && u) {
+        u8cs candidate = {NULL, NULL};
+        if (!u8csEmpty(u->data))      u8csMv(candidate, u->data);
+        else if (!u8csEmpty(u->path)) u8csMv(candidate, u->path);
+        if (!u8csEmpty(candidate))
+            (void)SNIFFSubBasename(candidate, proj);
+    }
+    //  (3) `basename($PWD)` — last resort.
+    if (u8csEmpty(proj)) PATHu8sBase(proj, cwd_s);
+
+    if (u8csEmpty(proj)) {
+        fprintf(stderr, "be: cannot derive project name; "
+                "pass `be put ?/<project>` or run from a named "
+                "directory\n");
+        return BEFAIL;
+    }
 
     //  <cwd>/.be/<project>/ — the project shard.  Refuse if it
     //  already exists on disk: an explicit `?/<proj>` URI must not
@@ -1458,82 +1466,6 @@ static ok64 be_ensure_project_repo(uricp u) {
     call(FILEFeedAll, fd, body);
     FILEClose(&fd);
 
-    done;
-}
-
-//  Repo bootstrap: when no `.be/` is reachable from cwd, lay down
-//  the empty markers `<cwd>/.be/refs` and `<cwd>/.be/wtlog` so the
-//  HOME walk-up succeeds for downstream dogs.  No-op when an existing
-//  repo is already in scope.  Both ULOGs grow append-only so an empty
-//  file is the well-defined "no rows yet" state.
-static ok64 be_ensure_repo(void) {
-    sane(1);
-    {
-        home probe = {};
-        uri none = {};
-        ok64 ho = HOMEOpen(&probe, &none, NO);
-        HOMEClose(&probe);
-        if (ho == OK) done;
-    }
-    a_path(here);
-    call(FILEGetCwd, here);
-    a_dup(u8c, here_s, u8bDataC(here));
-    a_path(be_dir);
-    call(PATHu8bFeed, be_dir, here_s);
-    call(PATHu8bPush, be_dir, DOG_BE_S);
-    call(FILEMakeDirP, $path(be_dir));
-    {
-        a_path(refs_path);
-        a_dup(u8c, be_s, u8bDataC(be_dir));
-        call(PATHu8bFeed, refs_path, be_s);
-        call(PATHu8bPush, refs_path, DOG_REFS_S);
-        int fd = -1;
-        call(FILECreate, &fd, $path(refs_path));
-        call(FILEClose, &fd);
-    }
-    {
-        //  Seed `<cwd>/.be/wtlog` with a row-0 `repo` anchor pinning
-        //  this wt to its (single, legacy-shape) store.  Anchor URI
-        //  is `file:<cwd>/.be/` — no project segment.
-        //  `DOGProjectFromBe` returns empty for that shape, so
-        //  `h->project` stays empty and keeper composition is
-        //  unchanged.  The anchor matters for SNIFFAtTailOf (and
-        //  thus `be`'s --at forwarding into projector dispatches
-        //  like `be log:#10`), which requires row 0 to be a `repo`
-        //  row to extract the wt's store-root.
-        a_path(uri_path);
-        a_dup(u8c, be_s, u8bDataC(be_dir));
-        call(PATHu8bFeed, uri_path, be_s);
-        call(u8bFeed1,    uri_path, '/');
-        call(PATHu8bTerm, uri_path);
-
-        uri urow = {};
-        a_cstr(scheme_s, "file");
-        u8csMv(urow.scheme, scheme_s);
-        {
-            a_dup(u8c, p, u8bData(uri_path));
-            u8csMv(urow.path, p);
-        }
-
-        a_pad(u8, row, 1024);
-        ron60 ts = RONNow();
-        call(RONutf8sFeed, u8bIdle(row), ts);
-        call(u8bFeed1, row, '\t');
-        a_cstr(repo_verb, "repo");
-        call(u8bFeed, row, repo_verb);
-        call(u8bFeed1, row, '\t');
-        call(URIutf8Feed, u8bIdle(row), &urow);
-        call(u8bFeed1, row, '\n');
-
-        a_path(wtlog_path);
-        call(PATHu8bFeed, wtlog_path, be_s);
-        call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
-        int fd = -1;
-        call(FILECreate, &fd, $path(wtlog_path));
-        a_dup(u8c, body, u8bData(row));
-        call(FILEFeedAll, fd, body);
-        FILEClose(&fd);
-    }
     done;
 }
 
@@ -1684,7 +1616,10 @@ static ok64 BEPut(cli *c, b8 seq) {
     for (u32 i = 0; i < c->nuris; i++) {
         if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
     }
-    if (!has_remote) call(be_ensure_repo);
+    if (!has_remote) {
+        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        call(be_ensure_project_repo, u0);
+    }
     if (has_remote) {
         //  FF-push: `be put //origin` (cached) and `be put ssh://host`
         //  (transport) both open the wire — VERBS.md §"Schemes —
@@ -1717,7 +1652,10 @@ static ok64 BEDelete(cli *c, b8 seq) {
     }
     //  Local-only DELETE on a fresh dir is an edge case but the test
     //  surface expects auto-bootstrap parity with PUT/POST.
-    if (!has_remote) call(be_ensure_repo);
+    if (!has_remote) {
+        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        call(be_ensure_project_repo, u0);
+    }
     if (has_remote) {
         static dog_step const remote_steps[] = {
             {u8slit("keeper"), u8slit("delete"), NO},
@@ -1798,7 +1736,10 @@ static ok64 BEPatch(cli *c, b8 seq) {
         if (!u8csEmpty(c->uris[i].authority)) has_remote = YES;
         if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
     }
-    if (!has_remote) call(be_ensure_repo);
+    if (!has_remote) {
+        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        call(be_ensure_project_repo, u0);
+    }
 
     dog_step steps[3];
     u32 nsteps = 0;
@@ -1867,7 +1808,10 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
             has_remote_pre = YES; break;
         }
     }
-    if (!has_remote_pre) call(be_ensure_repo);
+    if (!has_remote_pre) {
+        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        call(be_ensure_project_repo, u0);
+    }
     for (u32 i = 0; i < c->nuris; i++) {
         uri *u = &c->uris[i];
         //  POST is ref-expecting: bare `be post feat` should target ref

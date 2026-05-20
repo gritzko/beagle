@@ -2595,12 +2595,20 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         a_rawc(psha_in, parent);
         HEXu8sFeedSome(hx_buf_idle, psha_in);
         a_dup(u8c, ph, u8bDataC(hx_buf));
+        //  post_parent_sha consumes ph via HEXu8sDrainSome; snapshot
+        //  the hex pointer + length here so the failure printout
+        //  shows the actual sha, not an empty slice.
+        char const *ph_hex = (char const *)ph[0];
+        int         ph_len = (int)u8csLen(ph);
         sha1 ps = {};
         if (post_parent_sha(k, ph, &ps) != OK) {
             fprintf(stderr,
                     "sniff: post: parent commit %.*s not found in keeper — "
                     "refusing\n",
-                    (int)u8csLen(ph), (char const *)ph[0]);
+                    ph_len, ph_hex);
+            KEEPPackClose(&p);
+            u8bFree(tree_bodies);
+            post_ctx_free(&ctx);
             return SNIFFFAIL;
         }
         parent = ps;

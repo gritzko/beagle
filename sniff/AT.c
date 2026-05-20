@@ -131,27 +131,29 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
 
     if (!found) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
 
-    //  Compose `<root>?<branch>#<sha>` into `out`.  branch may be
-    //  empty (== trunk); `?` separator stays so URILexer round-trips
-    //  the empty query as a present-but-empty slot.
-    //
-    //  Branch priority:
-    //    1. Anchor URI's `/.be/<branch>/` segment (sub-shard
-    //       authoritative): the wt was opened against a specific
-    //       leaf shard, downstream must follow.
-    //    2. Latest LOCAL get/post row's query (no authority on the
-    //       row): the user's last local switch (`be get ?fix2/`,
-    //       `be post '#msg'`).  Fetch rows (`be get URL?ref`) are
-    //       skipped — they detach the wt but don't move cur, so
-    //       their remote ref isn't the local leaf name.
-    //    3. (Otherwise empty) — cur is the project trunk.
+    //  Compose `<root>?/<project>/<branch>#<sha>` into `out` (per
+    //  VERBS.md §"Ref resolution" — absolute form with leading `/`
+    //  so the receiver picks the right project shard, not the
+    //  parent project's shard, when the parent and sub share a
+    //  store root).  `<project>` comes from the anchor URI's
+    //  `/.be/<project>/` segment (anchor_branch_buf's first segment).
+    //  `<branch>` is the rest (empty for project trunk).  Falls
+    //  back to bare `?<branch>` when no project segment is known
+    //  — legacy single-project anchor.
     u8bReset(out);
     u8bFeed(out, u8bDataC(root_buf));
     u8bFeed1(out, '?');
-    if (u8bDataLen(anchor_branch_buf) > 0)
-        u8bFeed(out, u8bDataC(anchor_branch_buf));
-    else if (!u8csEmpty(ref_body))
-        u8bFeed(out, ref_body);
+    {
+        a_dup(u8c, ab, u8bDataC(anchor_branch_buf));
+        if (!u8csEmpty(ab)) {
+            //  Emit absolute form: `?/<project>[/<branch>]`.
+            u8bFeed1(out, '/');
+            u8bFeed(out, ab);
+        } else if (!u8csEmpty(ref_body)) {
+            //  No anchor project — keep legacy relative form.
+            u8bFeed(out, ref_body);
+        }
+    }
     u8bFeed1(out, '#');
     u8bFeed(out, sha_body);
 

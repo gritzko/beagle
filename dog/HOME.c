@@ -252,15 +252,40 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     //    leave both buffers empty and skip the branch claim.
     if (!u8csEmpty(at_query) || !u8csEmpty(at_frag)) {
         //  Reset before feed: home_anchor_resolve may have pre-filled
-        //  h->cur_branch from the row-0 anchor's `/.be/<branch>/`
-        //  segment; appending the at_query slot would concatenate the
-        //  two (e.g. anchor "origin" + at_query "master" → "originmaster")
-        //  and route reads/writes through a nonexistent branch dir.
+        //  h->cur_branch / h->project from the row-0 anchor.
         //  When at_query is non-empty it's authoritative; when empty,
         //  preserve the anchor-derived branch.
+        //
+        //  Query shape (per VERBS.md §"Ref resolution"):
+        //    `?/<project>/<branch>` — absolute (leading `/`).  Splits
+        //                              into h->project + h->cur_branch.
+        //                              Override h->project (the
+        //                              receiver may have been pre-set
+        //                              to the parent's project by the
+        //                              .be/wtlog probe in
+        //                              home_anchor_resolve).
+        //    `?<branch>` (no leading `/`) — project-relative; keeps the
+        //                                    pre-filled h->project,
+        //                                    sets h->cur_branch.
         if (!u8csEmpty(at_query)) {
-            u8bReset(h->cur_branch);
-            u8bFeed(h->cur_branch, at_query);
+            if (*at_query[0] == '/') {
+                //  Absolute: split on first `/` after the leading one.
+                a_dup(u8c, body, at_query);
+                u8csUsed1(body);  // strip leading '/'
+                u8c const *p = body[0];
+                while (p < body[1] && *p != '/') p++;
+                u8cs proj = {body[0], (u8c *)p};
+                u8cs br   = {(u8c *)p, body[1]};
+                if (!u8csEmpty(br) && *br[0] == '/') u8csUsed1(br);
+                u8bReset(h->project);
+                if (!u8csEmpty(proj)) u8bFeed(h->project, proj);
+                u8bReset(h->cur_branch);
+                if (!u8csEmpty(br)) u8bFeed(h->cur_branch, br);
+            } else {
+                //  Project-relative: branch only.
+                u8bReset(h->cur_branch);
+                u8bFeed(h->cur_branch, at_query);
+            }
         }
         if (!u8csEmpty(at_frag)) u8bFeed(h->cur_sha, at_frag);
         a_dup(u8c, br, u8bDataC(h->cur_branch));

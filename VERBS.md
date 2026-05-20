@@ -42,11 +42,14 @@ things.
   - `path`      — file or directory inside the branch's tree.
                   With a `file:` scheme, the path is a filesystem
                   path to another store/wt on this host.
-  - `?ref`      — branch path or sha/range.  Branch refs mirror
-                  the on-disk tree: `?feature/fix1` ⇢
-                  `<store>/feature/fix1/`.  Bare `?A` is absolute
-                  (≡ `?/A`); `?./A` means a child of the current
-                  branch, `?../A` a sibling.
+  - `?ref`      — branch path or sha/range.  Three shapes by
+                  leading character: `?/<project>/<branch>` is
+                  **absolute** (`<store>/<project>/<branch>/`);
+                  `?<branch>` is **project-relative** (under
+                  cur's project, no leading `/`); `?./<sub>` /
+                  `?../<sib>` / `?..` are **current-branch-
+                  relative**.  Sha prefix (`?abc1234`) is its own
+                  arm — object lookup, detached checkout.
   - `#frag`     — object hash (`#abc1234`), commit-message search
                   (`#parallel` finds the commit reachable from cur
                   whose message contains "parallel"), line jump
@@ -72,15 +75,21 @@ the absorbed sha(s) in `.be/wtlog` for the next POST.
 
 ##  Ref resolution
 
-A `?ref` resolves in this order:
+Every project lives in its own `<store>/<project>/` shard;
+branches are subdirs within.  `?ref` resolves in this order:
 
- 1. Absolute path (`?A`, `?A/B`, `?/A/B`) ⇒ that dir under the
-    store root.  Bare `?A` is **absolute**, not relative to the
-    current branch.
- 2. Relative path (`?./A`, `?../A`, `?..`) ⇒ rooted at the
-    current branch dir.  Refused from a detached wt (ambiguous —
-    pick an explicit branch first).
- 3. Sha prefix (`?abc1234`) ⇒ object lookup; attaches as a
+ 1. **Absolute** (`?/<project>/<branch>`, leading `/`) ⇒
+    `<store>/<project>/<branch>/`.  Names the full path; valid
+    from any cur (including detached).  Bare `?/<project>` is
+    that project's trunk.
+ 2. **Project-relative** (`?<branch>`, no leading `/`) ⇒
+    `<store>/<curproject>/<branch>/`.  Resolved against cur's
+    project.  Refused from a detached wt with no project anchor.
+ 3. **Branch-relative** (`?./<sub>`, `?../<sib>`, `?..`) ⇒
+    rooted at the current branch dir within cur's project.
+    Refused from a detached wt (ambiguous — pick an explicit
+    branch first).
+ 4. **Sha prefix** (`?abc1234`) ⇒ object lookup; attaches as a
     detached wt.
 
 Branch creation goes through PUT only.  GET refuses on a missing
@@ -88,13 +97,15 @@ ref (mirror of `cd nonexistent`).  `be put ?./fix` mints the
 empty leaf; `be get ?./fix` then enters it.  Force-rewrite of an
 existing branch is `be delete ?<branch>` then `be put ?<branch>`.
 
-| URI | From branch `feature` |
+| URI | From `feature` in project `beagle` |
 |---|---|
-| `?./fix`            | Child branch `feature/fix`.  GET refuses if absent; PUT creates. |
-| `?../fix`           | Sibling branch `fix`.  GET refuses if absent; PUT creates. |
-| `?..`               | Parent branch (the trunk if `feature` is top-level). |
-| `?fix`              | Absolute lookup of root-level branch `fix`; error if missing. |
-| `?feat/fix`         | Absolute path; same regardless of current branch. |
+| `?./fix`            | Child branch `beagle/feature/fix`.  GET refuses if absent; PUT creates. |
+| `?../fix`           | Sibling branch `beagle/fix`.  GET refuses if absent; PUT creates. |
+| `?..`               | Parent branch (the trunk of project `beagle` if `feature` is top-level). |
+| `?fix`              | Project-relative: `beagle/fix`; error if missing. |
+| `?feat/fix`         | Project-relative: `beagle/feat/fix`; same regardless of current branch. |
+| `?/abc`             | Absolute: project `abc`'s trunk. |
+| `?/abc/feat`        | Absolute: branch `feat` in project `abc`. |
 
 ##  Verb × URI aspect
 
