@@ -10,7 +10,7 @@
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 
-// kv32 buffer ops via Bx (instantiated in abc/KV.h).
+// kv64 buffer ops via Bx (instantiated in abc/KV.h).
 
 // --- Canonical layout-name slices (extern'd in DOG.h) ----------------
 //
@@ -425,20 +425,20 @@ ok64 DOGCanonURIFeed(u8bp out, urip u) {
 // --- Puppies: stack of <seqno>.<ext> files ---
 // =============================================================
 
-//  Compose `<dir>/<10-RON64-seqno><ext>` into `out` (reset first).
-static ok64 dog_pup_path(path8b out, path8s dir, u32 seqno, u8cs ext) {
+//  Compose `<dir>/<10-RON64-pup_key><ext>` into `out` (reset first).
+static ok64 dog_pup_path(path8b out, path8s dir, u64 pup_key, u8cs ext) {
     sane(u8bOK(out));
     call(PATHu8bDup, out, dir);
     a_pad(u8, name, DOG_PUP_SEQNO_W + 32);
-    call(RONu8sFeedPad, u8bIdle(name), (ok64)seqno, DOG_PUP_SEQNO_W);
+    call(RONu8sFeedPad, u8bIdle(name), (ok64)pup_key, DOG_PUP_SEQNO_W);
     ((u8 **)name)[2] += DOG_PUP_SEQNO_W;
     call(u8bFeed, name, ext);
     call(PATHu8bPush, out, u8bDataC(name));
     done;
 }
 
-//  Parse "<10-RON64><ext>" filename → seqno; 0 on bad fmt.
-static u32 dog_pup_parse_seqno(u8csc name, u8csc ext) {
+//  Parse "<10-RON64><ext>" filename → pup_key; 0 on bad fmt.
+static u64 dog_pup_parse_seqno(u8csc name, u8csc ext) {
     if (u8csLen(name) != DOG_PUP_SEQNO_W + u8csLen(ext)) return 0;
     a_dup(u8c, tail, name);
     u8csUsed(tail, DOG_PUP_SEQNO_W);
@@ -446,22 +446,22 @@ static u32 dog_pup_parse_seqno(u8csc name, u8csc ext) {
     u8cs seqno_s = {name[0], name[0] + DOG_PUP_SEQNO_W};
     ok64 v = 0;
     if (RONutf8sDrain(&v, seqno_s) != OK) return 0;
-    return (u32)v;
+    return (u64)v;
 }
 
-ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
+ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
     sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
 
-    //  Two-phase: walk directory with FILEIter to collect (seqno → name)
-    //  pairs in a Bkv32, sort by key, then map each file in order.
+    //  Two-phase: walk directory with FILEIter to collect (pup_key → name)
+    //  pairs in a Bkv64, sort by key, then map each file in order.
     //  Keeping the iterator and FILEMapRO disjoint avoids any aliasing
     //  between the iterator's path buffer and FILEMapRO's bookkeeping.
     a_path(dpat, dir);
     fileit it = {};
     if (FILEIterOpen(&it, dpat) != OK) done;  // dir absent → empty stack
 
-    Bkv32 seqnos = {};
-    call(kv32bAllocate, seqnos, FILE_MAX_OPEN);
+    Bkv64 seqnos = {};
+    call(kv64bAllocate, seqnos, FILE_MAX_OPEN);
     //  names are <=21 bytes (10 seqno + 11 ext); 32 is plenty.
     a_pad(u8, namebuf, FILE_MAX_OPEN * 32);
 
@@ -469,30 +469,30 @@ ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
         if (it.type != DT_REG) continue;
         u8cs base = {};
         PATHu8sBase(base, u8bDataC(it.path));
-        u32 sq = dog_pup_parse_seqno(base, ext);
+        u64 sq = dog_pup_parse_seqno(base, ext);
         if (sq == 0) continue;
         if ($len(u8bIdleC(namebuf)) < u8csLen(base) + 1) continue;
-        u32 name_off = (u32)u8bDataLen(namebuf);
+        u64 name_off = (u64)u8bDataLen(namebuf);
         u8bFeed(namebuf, base);
         u8bFeed1(namebuf, 0);
-        kv32 kv = {.key = sq, .val = name_off};
-        if (kv32bPush(seqnos, &kv) != OK) break;
+        kv64 kv = {.key = sq, .val = name_off};
+        if (kv64bPush(seqnos, &kv) != OK) break;
     }
     seen(END);
     FILEIterClose(&it);
 
-    a_dup(kv32, ks, kv32bData(seqnos));
-    $kv32sort(ks);
+    a_dup(kv64, ks, kv64bData(seqnos));
+    $kv64sort(ks);
 
-    //  Skip seqnos already loaded — re-opens of shared ancestor dirs
+    //  Skip pup_keys already loaded — re-opens of shared ancestor dirs
     //  (cross-branch loads, idempotent re-scans) must not double-map.
     //  Scan PastData since duplicates can appear in either side.
-    $for(kv32, kp, ks) {
+    $for(kv64, kp, ks) {
         b8 dup = NO;
         {
-            kv32s pd = {};
-            kv32PastDataS(pups, pd);
-            $for(kv32, q, pd) {
+            kv64s pd = {};
+            kv64PastDataS(pups, pd);
+            $for(kv64, q, pd) {
                 if (q->key == kp->key) { dup = YES; break; }
             }
         }
@@ -504,43 +504,43 @@ ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext) {
         if (FILEMapRO(&buf, $path(fpath)) != OK) continue;
         int fd = FILEBookedFD(buf);
         if (fd < 0) { FILEUnMap(buf); continue; }
-        kv32 kv = {.key = kp->key, .val = (u32)fd};
-        call(kv32bPush, pups, &kv);
+        kv64 kv = {.key = kp->key, .val = (u64)fd};
+        call(kv64bPush, pups, &kv);
     }
 
-    kv32bFree(seqnos);
+    kv64bFree(seqnos);
     done;
 }
 
-ok64 DOGPupOpenAside(kv32b pups, path8sc dir, u8csc ext) {
+ok64 DOGPupOpenAside(kv64b pups, path8sc dir, u8csc ext) {
     sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
     //  Collapse the current DATA into PAST: the previously-active
     //  leaf becomes part of the read-only context.  pups[1] is the
     //  PAST/DATA boundary; advancing it to pups[2] (the DATA/IDLE
     //  boundary) leaves DATA empty and ready for the next branch's
     //  entries.
-    if (kv32bDataLen(pups) > 0)
-        ((kv32 **)pups)[1] = (kv32 *)pups[2];
+    if (kv64bDataLen(pups) > 0)
+        ((kv64 **)pups)[1] = (kv64 *)pups[2];
     return DOGPupOpenAll(pups, dir, ext);
 }
 
-ok64 DOGPupCreateAt(kv32b pups, path8s dir, u8cs ext, u8cs bytes,
-                    u32 seqno) {
-    sane(pups != NULL && $ok(dir) && $ok(ext) && seqno > 0);
+ok64 DOGPupCreateAt(kv64b pups, path8s dir, u8cs ext, u8cs bytes,
+                    u64 pup_key) {
+    sane(pups != NULL && $ok(dir) && $ok(ext) && pup_key > 0);
 
-    //  Refuse on DATA-side seqno collision (caller is meant to
+    //  Refuse on DATA-side pup_key collision (caller is meant to
     //  DOGPupThinTail first when replacing the tail run).
     {
-        kv32 const *db = (kv32 const *)kv32bDataHead(pups);
-        kv32 const *de = (kv32 const *)kv32bIdleHead(pups);
-        for (kv32 const *p = db; p < de; p++)
-            if (p->key == seqno) return DOGPUPFAIL;
+        kv64 const *db = (kv64 const *)kv64bDataHead(pups);
+        kv64 const *de = (kv64 const *)kv64bIdleHead(pups);
+        for (kv64 const *p = db; p < de; p++)
+            if (p->key == pup_key) return DOGPUPFAIL;
     }
 
     a_path(idxpath);
-    call(dog_pup_path, idxpath, dir, seqno, ext);
+    call(dog_pup_path, idxpath, dir, pup_key, ext);
     a_path(tmppath);
-    call(dog_pup_path, tmppath, dir, seqno, ext);
+    call(dog_pup_path, tmppath, dir, pup_key, ext);
     a_cstr(tmpsuf, ".tmp");
     call(u8bFeed, tmppath, tmpsuf);
     call(PATHu8bTerm, tmppath);
@@ -557,33 +557,40 @@ ok64 DOGPupCreateAt(kv32b pups, path8s dir, u8cs ext, u8cs bytes,
     call(FILEMapRO, &buf, $path(idxpath));
     int fd = FILEBookedFD(buf);
     if (fd < 0) { FILEUnMap(buf); return DOGPUPFAIL; }
-    kv32 kv = {.key = seqno, .val = (u32)fd};
-    call(kv32bPush, pups, &kv);
+    kv64 kv = {.key = pup_key, .val = (u64)fd};
+    call(kv64bPush, pups, &kv);
     done;
 }
 
-ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes) {
+ok64 DOGPupCreate(kv64b pups, path8s dir, u8cs ext, u8cs bytes) {
     sane(pups != NULL);
-    //  new_seqno = 1 + max(DATA seqno), default 1 for empty DATA.
-    u32 new_seqno = 1;
+    //  Pick `max(RONNow, max(DATA)+1)` so two writers / two parallel
+    //  sub-shards collapsed into one project never accidentally pick
+    //  the same key.  RONNow has 1ms granularity; tight writer loops
+    //  within the same millisecond fall back to local max+1.  Both
+    //  paths preserve strict global ordering and 60-bit fit (RONNow
+    //  is ron60-bounded; the +1 bump only triggers when we're already
+    //  ron60-shaped).
+    u64 new_seqno = RONNow();
     {
-        kv32 const *db = (kv32 const *)kv32bDataHead(pups);
-        kv32 const *de = (kv32 const *)kv32bIdleHead(pups);
-        for (kv32 const *p = db; p < de; p++)
+        kv64 const *db = (kv64 const *)kv64bDataHead(pups);
+        kv64 const *de = (kv64 const *)kv64bIdleHead(pups);
+        for (kv64 const *p = db; p < de; p++)
             if (p->key >= new_seqno) new_seqno = p->key + 1;
     }
+    if (new_seqno == 0) new_seqno = 1;
     return DOGPupCreateAt(pups, dir, ext, bytes, new_seqno);
 }
 
-ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m) {
+ok64 DOGPupThinTail(kv64b pups, path8s dir, u8cs ext, u32 m) {
     sane(pups != NULL && $ok(dir) && $ok(ext));
-    u32 n = (u32)kv32bDataLen(pups);
+    u32 n = (u32)kv64bDataLen(pups);
     if (m > n) m = n;
     if (m == 0) done;
-    kv32 *base = (kv32 *)kv32bDataHead(pups);
+    kv64 *base = (kv64 *)kv64bDataHead(pups);
     for (u32 i = n - m; i < n; i++) {
-        u32 fd = base[i].val;
-        u32 sq = base[i].key;
+        u64 fd = base[i].val;
+        u64 sq = base[i].key;
         u8bp slot = FILE_WANT_BUFS[fd];
         if (slot && slot[0]) FILEUnMap(slot);
         a_path(ulpath);
@@ -591,21 +598,21 @@ ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m) {
         unlink((char *)u8bDataHead(ulpath));
     }
     //  Trim data end back by m records.  pups[2] is data end.
-    ((kv32 **)pups)[2] = base + (n - m);
+    ((kv64 **)pups)[2] = base + (n - m);
     done;
 }
 
-ok64 DOGPupClose(kv32b pups) {
+ok64 DOGPupClose(kv64b pups) {
     sane(pups != NULL);
     if (BNULL(pups)) done;
-    kv32 *base = (kv32 *)kv32bDataHead(pups);
-    u32 n = (u32)kv32bDataLen(pups);
+    kv64 *base = (kv64 *)kv64bDataHead(pups);
+    u32 n = (u32)kv64bDataLen(pups);
     for (u32 i = 0; i < n; i++) {
-        u32 fd = base[i].val;
+        u64 fd = base[i].val;
         u8bp slot = FILE_WANT_BUFS[fd];
         if (slot && slot[0]) FILEUnMap(slot);
     }
-    kv32bFree(pups);
+    kv64bFree(pups);
     done;
 }
 
@@ -690,34 +697,34 @@ ok64 DOGutf8sFeedDate(u8s into, i64 ts, i64 now) {
     done;
 }
 
-void DOGPupData(u8csp out, kv32b pups, u32 i) {
+void DOGPupData(u8csp out, kv64b pups, u32 i) {
     out[0] = NULL; out[1] = NULL;
-    if (i >= kv32bDataLen(pups)) return;
-    kv32 *base = (kv32 *)kv32bDataHead(pups);
-    u32 fd = base[i].val;
+    if (i >= kv64bDataLen(pups)) return;
+    kv64 *base = (kv64 *)kv64bDataHead(pups);
+    u64 fd = base[i].val;
     u8bp slot = FILE_WANT_BUFS[fd];
     if (!slot || !slot[0]) return;
     out[0] = slot[0];
     out[1] = slot[2];
 }
 
-void DOGPupDataAll(u8csp out, kv32b pups, u32 i) {
+void DOGPupDataAll(u8csp out, kv64b pups, u32 i) {
     out[0] = NULL; out[1] = NULL;
-    kv32s all = {};
-    kv32PastDataS(pups, all);
+    kv64s all = {};
+    kv64PastDataS(pups, all);
     size_t n = (size_t)(all[1] - all[0]);
     if ((size_t)i >= n) return;
-    u32 fd = all[0][i].val;
+    u64 fd = all[0][i].val;
     u8bp slot = FILE_WANT_BUFS[fd];
     if (!slot || !slot[0]) return;
     out[0] = slot[0];
     out[1] = slot[2];
 }
 
-ok64 DOGPupAllData(u8csb out, kv32b pups) {
+ok64 DOGPupAllData(u8csb out, kv64b pups) {
     sane(out && pups);
     u8csbReset(out);
-    u32 n = (u32)kv32bDataLen(pups);
+    u32 n = (u32)kv64bDataLen(pups);
     for (u32 i = 0; i < n; i++) {
         u8cs s = {};
         DOGPupData(s, pups, i);

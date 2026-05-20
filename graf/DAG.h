@@ -119,7 +119,7 @@ fun void DAGsha1ToHex(char *hex41, sha1 const *s) {
 //
 //  Public DAG queries take `wh128css runs` — a slice over the live
 //  wh128cs runs that make up the LSM index.  graf produces it via
-//  `GRAFRuns()` (a typed view over the kv32b puppy stack populated by
+//  `GRAFRuns()` (a typed view over the kv64b puppy stack populated by
 //  `DOGPupOpenAll`); test fixtures or other callers can build their
 //  own from any source.  Newest-first scan order; per-run binary
 //  search.

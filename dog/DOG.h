@@ -355,86 +355,90 @@ b8   DOGRefIsBranch(u8cs ref);
 // integer and `<ext>` is dog-specific (`.keeper.idx`, `.graf.idx`,
 // `.spot.idx`, `.keeper` for raw pack data).
 //
-// State is one `kv32b`: each entry is `(key=seqno, val=fd)` with the
+// State is one `kv64b`: each entry is `(key=pup_key, val=fd)` with the
 // mmap'd bytes living in `FILE_WANT_BUFS[fd]`.  Path and ext are
 // caller-owned and re-passed per call so the same primitive serves
 // multiple stacks per dog (keeper has both `.keeper` packs and
 // `.keeper.idx` runs).  The typed merge during compaction stays
 // caller-side (HIT*Compact); this API only does fs-level housekeeping.
+//
+// Pup keys are 60-bit ron60-style values (10-char RON64 filename).
+// Sequential write callers pass a `keep_next_pup_key`-style globally
+// monotonic value so two writers / collapsed sub-shards can't collide.
 #define DOG_PUP_SEQNO_W 10
 
 con ok64 DOGPUPFAIL = 0x3584197993ca495;
 
-// Scan `dir` for files matching `<10-RON64><ext>`, sort by seqno,
-// FILEMapRO each, push (seqno, fd) into `pups`.  Empty dir → OK with
+// Scan `dir` for files matching `<10-RON64><ext>`, sort by pup_key,
+// FILEMapRO each, push (pup_key, fd) into `pups`.  Empty dir → OK with
 // pups left empty.  Caller must have allocated `pups` first.
-// Skips any seqno already present in `pups` (PAST or DATA) — opens
+// Skips any pup_key already present in `pups` (PAST or DATA) — opens
 // are idempotent, and re-opens of shared-ancestor dirs across branch
 // loads stay no-ops.
-ok64 DOGPupOpenAll(kv32b pups, path8sc dir, u8csc ext);
+ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext);
 
 // Cross-branch load: flip the current DATA into PAST (collapse the
 // previously-loaded branch into the read-only context), then open
-// `dir`'s pup files into the now-empty DATA, skipping seqnos already
+// `dir`'s pup files into the now-empty DATA, skipping pup_keys already
 // present.  Mirror of "open first branch, then `pups[1]=pups[2]`,
 // then open the second" — the call sequence becomes one helper.
 // The active leaf becomes the dir just loaded; subsequent
 // KEEPPackOpen / DOGPupCreate writes target this new DATA.
-ok64 DOGPupOpenAside(kv32b pups, path8sc dir, u8csc ext);
+ok64 DOGPupOpenAside(kv64b pups, path8sc dir, u8csc ext);
 
-// Atomically write `bytes` to `<max(seqno)+1>.<ext>` (tmp+rename),
-// FILEMapRO, push (new_seqno, fd) onto `pups`.  `max(seqno)` ranges
-// over `pups` DATA — callers with a PAST/DATA partition (see
-// abc/Bx.h §PastDataS, keeper/KEEP.h "Branch-aware object store")
-// must use `DOGPupCreateAt` with a globally-unique seqno instead,
-// or DATA-only max+1 may collide with a PAST entry's seqno.
-ok64 DOGPupCreate(kv32b pups, path8s dir, u8cs ext, u8cs bytes);
+// Atomically write `bytes` to `<max(now_ron60, max(DATA)+1)>.<ext>`
+// (tmp+rename), FILEMapRO, push (new_pup_key, fd) onto `pups`.
+// New key picks `RONNow()` (60-bit ron60) when it dominates the local
+// max, else `max(DATA)+1` — same monotonic invariant the keeper's
+// `keep_next_pup_key` enforces, so independent writers across sub-
+// shards converge to non-overlapping key ranges.
+ok64 DOGPupCreate(kv64b pups, path8s dir, u8cs ext, u8cs bytes);
 
-// Same as DOGPupCreate but the caller picks the seqno explicitly.
-// Refuses with DOGPUPFAIL when a live entry with the same seqno
+// Same as DOGPupCreate but the caller picks the pup_key explicitly.
+// Refuses with DOGPUPFAIL when a live entry with the same pup_key
 // already sits in DATA (caller should DOGPupThinTail first when
 // replacing the tail).  Used by keeper to keep `.keeper.idx` and
 // `.keeper` file-ids in lockstep across branches.
-ok64 DOGPupCreateAt(kv32b pups, path8s dir, u8cs ext, u8cs bytes,
-                    u32 seqno);
+ok64 DOGPupCreateAt(kv64b pups, path8s dir, u8cs ext, u8cs bytes,
+                    u64 pup_key);
 
 // Unmap and unlink the youngest `m` puppies; trim `pups` by `m`.
-ok64 DOGPupThinTail(kv32b pups, path8s dir, u8cs ext, u32 m);
+ok64 DOGPupThinTail(kv64b pups, path8s dir, u8cs ext, u32 m);
 
 // Unmap every puppy and free `pups` itself.
-ok64 DOGPupClose(kv32b pups);
+ok64 DOGPupClose(kv64b pups);
 
 // Number of live puppies in the stack — DATA only (the active leaf,
 // when callers use the PAST/DATA partition; see abc/Bx.h §PastDataS,
 // keeper/KEEP.h "Branch-aware object store").  For "every loaded
 // run" reads (cross-branch lookups, LSM merges), use `DOGPupCountAll`.
-fun u32 DOGPupCount(kv32b pups) { return (u32)kv32bDataLen(pups); }
+fun u32 DOGPupCount(kv64b pups) { return (u32)kv64bDataLen(pups); }
 // Number of live puppies across PastData — every loaded run including
 // inherited / read-only PAST entries.  Used by cross-branch readers
 // (keeper's LSM lookups, graf's keeper-side idx scan, wire enumeration).
-fun u32 DOGPupCountAll(kv32b pups) { return (u32)kv32bPastDataLen(pups); }
+fun u32 DOGPupCountAll(kv64b pups) { return (u32)kv64bPastDataLen(pups); }
 
 // Byte slice of the i-th puppy's contents (lookup via FILE_WANT_BUFS).
 // Indexes into DATA only — see `DOGPupCount` caveats.  For an
 // "every loaded run" indexer, use `DOGPupDataAll`.
 // Writes [data_start, data_end) into `out`; out becomes empty when
 // `i` is out-of-range or the file's mapping has been released.
-void DOGPupData(u8csp out, kv32b pups, u32 i);
+void DOGPupData(u8csp out, kv64b pups, u32 i);
 // Like DOGPupData but indexes into PastData — every loaded run.
-void DOGPupDataAll(u8csp out, kv32b pups, u32 i);
+void DOGPupDataAll(u8csp out, kv64b pups, u32 i);
 
 // Fill `out` with one [data_start, data_end) slice per live puppy
-// (oldest → newest, matching the kv32b's seqno order from
+// (oldest → newest, matching the kv64b's pup_key order from
 // DOGPupOpenAll).  Resets `out` first.  Skips puppies whose slot has
 // been released — the resulting slice count may be less than
 // DOGPupCount.  Used by the LSM merge / lookup loops in keeper, graf,
 // spot to view the whole stack as one `u8css`.
-ok64 DOGPupAllData(u8csb out, kv32b pups);
+ok64 DOGPupAllData(u8csb out, kv64b pups);
 
-// Seqno of the i-th puppy.  Returns 0 when out-of-range.
-fun u32 DOGPupSeqno(kv32b pups, u32 i) {
-    if (i >= kv32bDataLen(pups)) return 0;
-    kv32 const *base = (kv32 const *)kv32bDataHead(pups);
+// Pup key of the i-th puppy.  Returns 0 when out-of-range.
+fun u64 DOGPupSeqno(kv64b pups, u32 i) {
+    if (i >= kv64bDataLen(pups)) return 0;
+    kv64 const *base = (kv64 const *)kv64bDataHead(pups);
     return base[i].key;
 }
 

@@ -110,47 +110,56 @@ fun u32 keepPackBmLen(u64 val)   { return (u32)val; }
 
 //  Branch-aware object store.  KEEPOpenBranch walks trunk → … → leaf,
 //  populating two keeper-level registries from every dir in the
-//  path.  Seqnos are unique across the entire instance, so flat
-//  kv32b registries (key = seqno) work uniformly for every branch.
+//  path.  Pup keys are 60-bit ron60 values minted via
+//  `keep_next_pup_key`; flat kv64b registries work uniformly for
+//  every branch.
 typedef struct {
     home   *h;                    // borrowed; owns root/arena/config/rw
-    //  Keeper-level pack registry.  Key = file seqno, val = fd into
-    //  FILE_WANT_BUFS (mmap'd pack bytes are FILE_WANT_BUFS[fd]).
-    //  Populated by walking trunk → … → leaf during KEEPOpenBranch.
+    //  Keeper-level pack registry.  Key = pack file_id (20-bit fit
+    //  for wh64.id, currently a small ascending counter; key type is
+    //  u64 only so the kv64 layout is shared with puppies).  Val =
+    //  fd into FILE_WANT_BUFS (mmap'd pack bytes are
+    //  FILE_WANT_BUFS[fd]).  Populated by walking trunk → … → leaf
+    //  during KEEPOpenBranch.
     //
     //  PAST/DATA partition (see abc/Bx.h §PastDataS, KEEP.c
     //  §keep_open_dir_cb):
     //    PAST  = parents' inherited pack registrations (trunk, then
     //            each intermediate branch dir).  Read-only — we
-    //            never `kv32bPush` into PAST.
+    //            never `kv64bPush` into PAST.
     //    DATA  = the active leaf branch's packs.  Writes append
     //            here; `KEEPPackOpen` picks `file_id` from DATA's
-    //            max seqno (so seqnos run consecutively *inside*
-    //            each branch dir) or from `next_seqno` (instance-
-    //            unique) for a fresh leaf.
-    //  Cross-branch object resolution uses `kv32PastDataS(packs,
+    //            max file_id (so file_ids run consecutively *inside*
+    //            each branch dir) or fresh on first-pack creation.
+    //  Cross-branch object resolution uses `kv64PastDataS(packs,
     //  &joined)` so REF_DELTA bases and `keep_pack_buf` see every
     //  loaded pack regardless of branch.
-    Bkv32   packs;
+    Bkv64   packs;
     //  LSM index runs (.keeper.idx files) as DOGPup* stack:
-    //    key = seqno of <seqno>.keeper.idx
+    //    key = ron60 pup_key of <pup_key>.keeper.idx
     //    val = fd into FILE_WANT_BUFS
     //  Walk order: trunk first, then each branch component in order;
-    //  inside each dir, by name (== seqno).  Lookups scan in registry
-    //  order — newer seqnos come last (LSM "newest wins").
+    //  inside each dir, by name (== pup_key).  Lookups scan in
+    //  registry order — newer pup_keys come last (LSM "newest wins").
     //  TODO: mirror the PAST/DATA partition from `packs` so
     //  KEEPCompact thins only leaf-owned runs (today it scans the
-    //  whole DATA and unlinks by leaf-dir/seqno, which silently
+    //  whole DATA and unlinks by leaf-dir/pup_key, which silently
     //  no-ops on PAST entries but also clobbers fresh leaf runs —
     //  test/put/03-branch-shard pins the regression).
-    Bkv32   puppies;
+    Bkv64   puppies;
     //  Active leaf-branch path (canonical form, empty = trunk).
     //  Owned path-buffer: keeper allocates the backing storage in
     //  KEEPOpenBranch (heap, KEEP_LEAF_BRANCH_MAX bytes) and frees it
     //  in KEEPClose.  Readers derive a u8cs view via u8bDataC().
     path8b  leaf_branch;
     int     lock_fd;              // flock on <leaf>/.lock; -1 = none
-    u32     next_seqno;           // next seqno for fresh pack creation
+    //  Monotonic high-water mark for fresh pup_keys.  Updated by
+    //  `keep_next_pup_key` to `max(RONNow(), last_pup_key + 1)` so
+    //  two writers / collapsed sub-shards can never collide on a
+    //  fresh `.keeper.idx` filename.  Seeded at open time from
+    //  `keep_recompute_last_pup_key` (max over on-disk + loaded
+    //  registries).
+    u64     last_pup_key;
     Bu8     buf1;                 // working buffer for KEEPGet base inflate
     Bu8     buf2;                 // working buffer for KEEPGet delta apply
     Bu8     buf3;                 // working buffer for keep_resolve base
@@ -207,7 +216,7 @@ ok64 KEEPCreateBranch(home *h, u8cs branch);
 //  walks the segments of `new_branch` past LCA(old, new) and scans
 //  each new dir into DATA.  Already-loaded ancestor dirs are
 //  skipped — no double-open of the shared prefix.  Updates
-//  `k->leaf_branch` and `k->next_seqno` (= max(PAST ∪ DATA) + 1).
+//  `k->leaf_branch` and `k->last_pup_key` (= max(PAST ∪ DATA)).
 //
 //  Use case: `be get ?other` from `?cur` — the GET needs to walk
 //  both branches' tree+commit chains (for graf's WEAVE history).

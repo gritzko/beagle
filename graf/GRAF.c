@@ -133,9 +133,9 @@ static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
     done;
 }
 
-//  Filename → seqno for `<10-RON64>.graf.idx`.  Returns 0 on parse
+//  Filename → pup_key for `<10-RON64>.graf.idx`.  Returns 0 on parse
 //  failure or non-graf-idx file.
-static u32 graf_filename_seqno(u8cs name) {
+static u64 graf_filename_seqno(u8cs name) {
     static char const EXT[] = GRAF_IDX_EXT;
     static const size_t SEQ_W = 10;
     size_t n = u8csLen(name);
@@ -145,52 +145,59 @@ static u32 graf_filename_seqno(u8cs name) {
     u8cs seq_s = {name[0], name[0] + SEQ_W};
     ok64 v = 0;
     if (RONutf8sDrain(&v, seq_s) != OK) return 0;
-    return (u32)v;
+    return (u64)v;
 }
 
 static ok64 graf_max_seqno_cb(void0p arg, path8p path) {
-    u32 *max = (u32 *)arg;
+    u64 *max = (u64 *)arg;
     u8cs base = {};
     PATHu8sBase(base, u8bDataC(path));
-    u32 sq = graf_filename_seqno(base);
+    u64 sq = graf_filename_seqno(base);
     if (sq > *max) *max = sq;
     return OK;
 }
 
 //  Recursive scan over `<root>/.be/` for every `.graf.idx` file;
-//  returns the global max seqno (default 0 when none found).  Used
-//  by `graf_recompute_next_seqno` to keep fresh seqnos unique across
-//  sibling branch dirs that aren't loaded into the registry.
-static u32 graf_global_max_seqno(home *h) {
-    u32 max = 0;
+//  returns the global max pup_key (default 0 when none found).  Used
+//  by `graf_recompute_last_pup_key` to keep fresh pup_keys unique
+//  across sibling branch dirs that aren't loaded into the registry.
+static u64 graf_global_max_seqno(home *h) {
+    u64 max = 0;
     a_path(bedir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
     (void)FILEDeepScanFiles(bedir, graf_max_seqno_cb, &max);
     return max;
 }
 
-//  next_seqno = max(disk seqnos under `.be/`) + 1, then bumped above
-//  any loaded run as a defensive max.  Called by GRAFOpenBranch and
-//  GRAFSwitchBranch.
-static void graf_recompute_next_seqno(graf *g) {
-    u32 max = graf_global_max_seqno(g->h);
-    kv32s pups_all = {};
-    kv32PastDataS(g->puppies, pups_all);
-    for (kv32 const *p = pups_all[0]; p < pups_all[1]; p++)
+//  last_pup_key = max(disk pup_keys under `.be/`, loaded PastData).
+//  Called by GRAFOpenBranch and GRAFSwitchBranch.  The next mint
+//  picks `max(RONNow, last_pup_key + 1)`.
+static void graf_recompute_last_pup_key(graf *g) {
+    u64 max = graf_global_max_seqno(g->h);
+    kv64s pups_all = {};
+    kv64PastDataS(g->puppies, pups_all);
+    for (kv64 const *p = pups_all[0]; p < pups_all[1]; p++)
         if (p->key > max) max = p->key;
-    g->next_seqno = max + 1;
+    g->last_pup_key = max;
 }
 
-//  Create a new `.graf.idx` in `dir` with a globally-unique seqno;
-//  drop-in replacement for `DOGPupCreate(g->puppies, dir, ext, data)`
-//  that picks `seqno = g->next_seqno` and bumps the counter on
-//  success.  Mirrors keeper/KEEP.c §keep_pup_create_next.
+//  Mint a globally-unique ron60 pup_key, mirror of
+//  `keep_next_pup_key`.
+static u64 graf_next_pup_key(graf *g) {
+    u64 now = RONNow();
+    u64 next = now > g->last_pup_key ? now : g->last_pup_key + 1;
+    g->last_pup_key = next;
+    return next;
+}
+
+//  Create a new `.graf.idx` in `dir` with a globally-unique ron60
+//  pup_key; drop-in replacement for
+//  `DOGPupCreate(g->puppies, dir, ext, data)`.  Mirrors keeper/KEEP.c
+//  §keep_pup_create_next.
 ok64 GRAFPupCreateNext(path8s dir, u8cs ext, u8cs data) {
     sane($ok(dir));
     graf *g = &GRAF;
-    u32 seqno = g->next_seqno;
-    call(DOGPupCreateAt, g->puppies, dir, ext, data, seqno);
-    if (seqno >= g->next_seqno) g->next_seqno = seqno + 1;
-    done;
+    u64 pup_key = graf_next_pup_key(g);
+    return DOGPupCreateAt(g->puppies, dir, ext, data, pup_key);
 }
 
 static ok64 graf_open_dir_cb(graf *g, u8cs dir, b8 is_leaf, void0p ctx) {
@@ -206,8 +213,8 @@ static ok64 graf_open_dir_cb(graf *g, u8cs dir, b8 is_leaf, void0p ctx) {
     //  (DOGPupCreate / DAGCompact) target.  Reads scan PastData via
     //  GRAFRefreshView so cross-branch DAG walks see every loaded
     //  run.  See KEEP.h §"Branch-aware object store".
-    if (is_leaf && kv32bDataLen(g->puppies) > 0)
-        ((kv32 **)g->puppies)[1] = (kv32 *)g->puppies[2];
+    if (is_leaf && kv64bDataLen(g->puppies) > 0)
+        ((kv64 **)g->puppies)[1] = (kv64 *)g->puppies[2];
     if (!exists) return OK;
     a_cstr(ext, GRAF_IDX_EXT);
     return DOGPupOpenAll(g->puppies, dir, ext);
@@ -269,7 +276,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     g->out_fd = -1;
     graf_is_rw = rw;
 
-    call(kv32bAllocate, g->puppies, FILE_MAX_OPEN);
+    call(kv64bAllocate, g->puppies, FILE_MAX_OPEN);
 
     //  Stash the canonical leaf-branch bytes in graf-owned storage.
     if (u8csLen(norm) >= GRAF_LEAF_BRANCH_MAX) return GRAFFAIL;
@@ -304,7 +311,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     }
 
     GRAFRefreshView();
-    graf_recompute_next_seqno(g);
+    graf_recompute_last_pup_key(g);
 
     //  Worktree sharing: lock the LEAF dir (writes only land in the
     //  deepest dir).  For trunk leaf this is `<.be>/.lock`.
@@ -400,8 +407,8 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
     size_t lca = graf_branch_lca_prefix(cur_for_lca, norm);
 
     //  1. Collapse old leaf's DATA into PAST.
-    if (kv32bDataLen(g->puppies) > 0)
-        ((kv32 **)g->puppies)[1] = (kv32 *)g->puppies[2];
+    if (kv64bDataLen(g->puppies) > 0)
+        ((kv64 **)g->puppies)[1] = (kv64 *)g->puppies[2];
 
     //  2. Walk the new branch past LCA, scanning each new dir.
     a_path(d);
@@ -441,9 +448,9 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
         }
     }
 
-    //  3. Refresh the typed runs[] view + global next_seqno.
+    //  3. Refresh the typed runs[] view + global last_pup_key.
     GRAFRefreshView();
-    graf_recompute_next_seqno(g);
+    graf_recompute_last_pup_key(g);
 
     //  Lock stays on the original leaf: cross-branch graf access is
     //  read-only context (writes still target the originally-opened

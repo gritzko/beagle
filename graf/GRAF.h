@@ -38,17 +38,18 @@ typedef struct {
     int          out_fd;     // output fd (-1 = uninitialized)
     graf_emit_fn emit;       // serializer (TLV or plain text)
 
-    //  Puppy stack: (seqno → fd) for every `<seqno>.graf.idx` along
-    //  trunk → leaf.  Mmaps live in FILE_WANT_BUFS[fd].  Compaction
-    //  appends a new puppy to the tail (DOGPupCreate) and drops the
-    //  young suffix (DOGPupThinTail).
-    Bkv32        puppies;
+    //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` along
+    //  trunk → leaf.  Pup keys are 60-bit ron60 values.  Mmaps live in
+    //  FILE_WANT_BUFS[fd].  Compaction appends a new puppy to the tail
+    //  (DOGPupCreate) and drops the young suffix (DOGPupThinTail).
+    Bkv64        puppies;
     Bu8          leaf_branch;  // canonical leaf-branch path (trailing
                                // '/'; empty for trunk).  Heap-backed.
-    u32          next_seqno;   // next seqno for fresh `.graf.idx`
-                               // creation; spans every loaded shard
-                               // dir plus an on-disk scan at open
-                               // so seqnos stay unique across siblings.
+    u64          last_pup_key; // monotonic high-water mark for fresh
+                               // `.graf.idx` pup_keys; minted via
+                               // `max(RONNow(), last_pup_key + 1)`.
+                               // Seeded from on-disk + loaded max at
+                               // open.
 
     //  Typed wh128cs view over `puppies`, rebuilt by `graf_refresh_view`
     //  on every change.  Newest run sits at the highest index — query
@@ -121,8 +122,8 @@ void GRAFRuns(wh128cssp out);
 void GRAFRefreshView(void);
 
 //  Create a new `.graf.idx` file in `dir` with a globally-unique
-//  seqno (`g->next_seqno`, bumped on success).  Mirrors keeper's
-//  `keep_pup_create_next`: every fresh idx run gets a seqno that
+//  ron60 pup_key (`graf_next_pup_key`).  Mirrors keeper's
+//  `keep_pup_create_next`: every fresh idx run gets a pup_key that
 //  clears EVERY shard dir on disk, so siblings can't collide.
 //  Drop-in replacement for `DOGPupCreate(g->puppies, dir, ext, data)`.
 ok64 GRAFPupCreateNext(path8s dir, u8cs ext, u8cs data);

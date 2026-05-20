@@ -98,14 +98,16 @@ FEAT_IDXES=$(ls -1 .be/$P/feat/*.keeper.idx 2>/dev/null | sort)
     exit 1
 }
 
-#  Pack + idx filenames must match the documented format: 10 zero-
-#  padded digits + extension (KEEP.h "feature-branch pack logs at
-#  <branch>/NNNNN.keeper").
+#  Pack + idx filenames must match the documented format: 10 RON64
+#  digits + extension (KEEP.h "feature-branch pack logs at
+#  <branch>/NNNNN.keeper").  RON64 alphabet =
+#  0-9A-Z_a-z~ — 64 chars covering 6 bits per digit, lex-sortable
+#  numerically.
 for f in $FEAT_PACKS $FEAT_IDXES; do
     base=${f##*/}
     case "$base" in
-        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].keeper) ;;
-        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].keeper.idx) ;;
+        [0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~].keeper) ;;
+        [0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~][0-9A-Za-z_~].keeper.idx) ;;
         *) echo "FAIL: branch file $f has non-canonical name '$base'" >&2
            exit 1;;
     esac

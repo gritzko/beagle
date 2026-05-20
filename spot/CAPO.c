@@ -454,8 +454,8 @@ ok64 CAPOMergeWorkers(u32 nw) {
     //  contains exactly one pup (children call CAPOCompactAll before
     //  exit), so up to `nw` pups total — bounded by CAPO_MAX_LEVELS in
     //  the loop below.
-    Bkv32 wp = {};
-    call(kv32bAllocate, wp, FILE_MAX_OPEN);
+    Bkv64 wp = {};
+    call(kv64bAllocate, wp, FILE_MAX_OPEN);
     a_cstr(ext, CAPO_IDX_EXT);
 
     for (u32 w = 0; w < nw; w++) {
@@ -467,7 +467,7 @@ ok64 CAPOMergeWorkers(u32 nw) {
 
     //  Build typed view; cap at CAPO_MAX_LEVELS just in case a worker
     //  somehow ended up with multiple pups (CAPOCompactAll can fail).
-    u32 nfiles = (u32)kv32bDataLen(wp);
+    u32 nfiles = (u32)kv64bDataLen(wp);
     if (nfiles == 0) {
         DOGPupClose(wp);
         //  Still try to remove any worker dirs left empty.
@@ -1502,7 +1502,7 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     s->color = isatty(STDOUT_FILENO) ? YES : NO;
     s->term = (isatty(STDERR_FILENO) && isatty(STDOUT_FILENO)) ? YES : NO;
 
-    call(kv32bAllocate, s->puppies, FILE_MAX_OPEN);
+    call(kv64bAllocate, s->puppies, FILE_MAX_OPEN);
 
     if (u8csLen(norm) >= SPOT_LEAF_BRANCH_MAX) return CAPONOROOM;
     call(u8bAllocate, s->leaf_branch, SPOT_LEAF_BRANCH_MAX);

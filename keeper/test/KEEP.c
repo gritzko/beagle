@@ -76,7 +76,7 @@ ok64 KEEPempty() {
     call(HOMEOpenAt, &h, root, YES);
     
     call(KEEPOpen, &h, YES);
-    want(kv32bDataLen(KEEP.packs) == 0);
+    want(kv64bDataLen(KEEP.packs) == 0);
     want(DOGPupCount(KEEP.puppies) == 0);
 
     a_cstr(_h, "abcdef");
@@ -107,7 +107,7 @@ ok64 KEEPput() {
     call(HOMEOpenAt, &h, root, YES);
     
     call(KEEPOpen, &h, YES);
-    want(kv32bDataLen(KEEP.packs) == 0);
+    want(kv64bDataLen(KEEP.packs) == 0);
 
     // Store two blobs
     a_cstr(blob1, "hello world\n");
@@ -122,7 +122,7 @@ ok64 KEEPput() {
     };
 
     call(KEEPPut, objs, wh, 2);
-    want(kv32bDataLen(KEEP.packs) == 1);
+    want(kv64bDataLen(KEEP.packs) == 1);
     want(DOGPupCount(KEEP.puppies) == 1);
 
     // Both whiffs should have valid types
@@ -216,7 +216,7 @@ ok64 KEEPpackIncremental() {
     want(memcmp(tree_sha.data, expected_tree_sha, 20) == 0);
 
     call(KEEPPackClose, &p);
-    want(kv32bDataLen(KEEP.packs) == 1);
+    want(kv64bDataLen(KEEP.packs) == 1);
     want(DOGPupCount(KEEP.puppies) == 1);
 
     // Retrieve blob by 7-char prefix (git default)

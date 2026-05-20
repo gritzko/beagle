@@ -240,12 +240,13 @@ struct spot_ {
     int          out_fd;
     spot_emit_fn emit;
 
-    //  Puppy stack: (seqno → fd) for every `<seqno>.spot.idx` along
-    //  trunk → leaf.  Mmaps live in FILE_WANT_BUFS[fd].  Mirrors
-    //  keeper's `k->puppies` and graf's `g->puppies`.  Reads fan out
-    //  across the whole path; writes (DOGPupCreate) and compactions
+    //  Puppy stack: (pup_key → fd) for every `<pup_key>.spot.idx`
+    //  along trunk → leaf.  Pup keys are 60-bit ron60 values.  Mmaps
+    //  live in FILE_WANT_BUFS[fd].  Mirrors keeper's `k->puppies` and
+    //  graf's `g->puppies`.  Reads fan out across the whole path;
+    //  writes (DOGPupCreate) and compactions
     //  (DOGPupThinTail+DOGPupCreate) only land in the leaf dir.
-    Bkv32    puppies;
+    Bkv64    puppies;
     Bu8      leaf_branch;           // canonical leaf-branch path
                                     // (trailing '/'; empty for trunk).
 
