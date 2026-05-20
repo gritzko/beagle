@@ -5,6 +5,10 @@
 . "$(dirname "$0")/../../lib/branches.sh"
 WT="$SCRATCH"
 
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
+
 # --- setup: trunk with one commit ---
 echo "x v1" > x.txt
 "$BE" post 'v1 msg' >/dev/null

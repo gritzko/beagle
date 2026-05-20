@@ -1287,7 +1287,7 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 //  KEEPResolveRef's dog/QURY normaliser would collapse those.
 ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch) {
     sane(out);
-    a_path(keepdir, reporoot, KEEP_DIR_S);
+    a_path(keepdir, reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
     if (!u8csEmpty(branch)) u8bFeed(keybuf, branch);
@@ -1433,7 +1433,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
                               sha1 const *branch_old_tip,
                               sha1 const *branch_new_tip) {
     sane(cc);
-    a_path(bdir, cc->reporoot, KEEP_DIR_S);
+    a_path(bdir, cc->reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
     if (!u8csEmpty(branch)) {
         ok64 ar = PATHu8bAdd(bdir, branch);
         if (ar != OK) return ar;
@@ -1511,7 +1511,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 //  earlier successes (best-effort, documented).
 static ok64 post_cascade_persist(cascade_ctx *cc) {
     sane(cc);
-    a_path(keepdir, cc->reporoot, KEEP_DIR_S);
+    a_path(keepdir, cc->reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
     for (u32 i = 0; i < cc->n; i++) {
         cascade_rec *r = &cc->recs[i];
         a_pad(u8, keybuf, 256);

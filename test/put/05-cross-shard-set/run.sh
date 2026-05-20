@@ -15,11 +15,15 @@
 #      Refuse with "no shared ancestry".
 #    * `be delete ?feat` then `be put ?feat#T2` (new ref).  Chain
 #      walks to root (T1 has no parent) without cap-hit.  Migration
-#      copies T2 + T1 into .be/feat/.  Reads from `?feat` then see
+#      copies T2 + T1 into .be/$P/feat/.  Reads from `?feat` then see
 #      T2's tree.
 #    * `be put ?feat#<bogus-40-hex>` → RESOLVE rejects pre-migration.
 
 . "$(dirname "$0")/../../lib/case.sh"
+
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
 
 LOGS=$(cd .. && pwd)/logs-$NAME
 rm -rf "$LOGS"; mkdir -p "$LOGS"
@@ -103,16 +107,16 @@ grep -q 'no shared ancestry' "$LOGS/10.err" \
 # ------------------------------------------------------------------
 must "$BE" delete '?feat' > "$LOGS/11.out" 2> "$LOGS/11.err"
 
-PRE_PACKS=$(pack_bytes .be/feat)
+PRE_PACKS=$(pack_bytes .be/$P/feat)
 must "$BE" put "?feat#$T2" \
     > "$LOGS/12.out" 2> "$LOGS/12.err"
 [ "$(ref_tip '?feat')" = "$T2" ] \
     || { echo "?feat didn't land at T2=$T2 (got $(ref_tip '?feat'))" >&2
          cat "$LOGS/12.err" >&2; exit 1; }
-POST_PACKS=$(pack_bytes .be/feat)
+POST_PACKS=$(pack_bytes .be/$P/feat)
 [ "$POST_PACKS" -gt "$PRE_PACKS" ] \
     || { echo "?feat shard pack bytes didn't grow (was $PRE_PACKS, now $POST_PACKS) — KEEPMoveCommits didn't copy" >&2
-         ls -la .be/feat/ >&2 2>/dev/null
+         ls -la .be/$P/feat/ >&2 2>/dev/null
          exit 1; }
 
 # ------------------------------------------------------------------

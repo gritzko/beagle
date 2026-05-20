@@ -17,6 +17,10 @@
 . "$(dirname "$0")/../../lib/branches.sh"
 WT="$SCRATCH"
 
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
+
 # 1. primary trunk seed
 echo "v1" > x.txt
 "$BE" post 'seed msg' >/dev/null || fail "primary seed post failed"
@@ -27,7 +31,7 @@ note "primary trunk T1=$T1"
 
 # 2. primary creates ?fix1 (cur stays on trunk)
 "$BE" put "?./fix1" >/dev/null || fail "be put ?./fix1 failed"
-[ -d ".be/fix1" ] || fail ".be/fix1 shard missing"
+[ -d ".be/$P/fix1" ] || fail ".be/$P/fix1 shard missing"
 [ "$(ref_tip "?fix1")" = "$T1" ] \
     || fail "?fix1 should fork at T1"
 [ "$(cur_branch)" = "" ] || fail "primary cur should still be trunk"

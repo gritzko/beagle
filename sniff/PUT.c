@@ -903,7 +903,7 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     }
     a_dup(u8c, cur_branch, u8bData(cur_buf));
 
-    a_path(keepdir, reporoot, KEEP_DIR_S);
+    a_path(keepdir, reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
 
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');

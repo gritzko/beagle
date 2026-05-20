@@ -315,10 +315,52 @@ static ok64 BEGetWorktree(uri *u) {
 
     // Worktree layout: secondary wt has `<wt>/.be` as a REGULAR FILE
     // (= its own wtlog).  Row 0's `repo` URI names the primary's
-    // `.be/`, so keeper/graf/spot reach the shared store via that
-    // anchor.  We seed the file with a single `repo` row pointing at
-    // the primary, then sniff's row-0 read on the next open redirects
-    // h->root automatically.
+    // project shard `<prim>/.be/<project>/`, so keeper/graf/spot
+    // reach the shared store via that anchor.  We seed the file with
+    // a single `repo` row pointing at the primary, then sniff's row-0
+    // read on the next open redirects h->root automatically.
+    //
+    // Project derivation: peek the primary's own `<prim>/.be/wtlog`
+    // row 0 and run DOGProjectFromBe on its URI path.  Empty means
+    // the primary is still on the legacy elided layout — fall back
+    // to bare `<prim>/.be/`.
+    a_path(prim_proj);
+    {
+        a_path(prim_wtlog);
+        call(u8bFeed, prim_wtlog, prim_s);
+        call(u8bFeed1, prim_wtlog, '/');
+        call(u8bFeed, prim_wtlog, DOG_BE_S);
+        call(u8bFeed1, prim_wtlog, '/');
+        a_cstr(wtlog_s, DOG_WTLOG_NAME);
+        call(u8bFeed, prim_wtlog, wtlog_s);
+        call(PATHu8bTerm, prim_wtlog);
+        u8bp mapped = NULL;
+        if (FILEMapRO(&mapped, $path(prim_wtlog)) == OK) {
+            a_dup(u8c, body, u8bDataC(mapped));
+            //  Row 0 is `<ts>\trepo\t<uri>\n`; pick the URI between
+            //  second tab and newline.
+            u8c const *nl = body[0];
+            while (nl < body[1] && *nl != '\n') nl++;
+            u8c const *tab2 = body[0];
+            int tabs = 0;
+            while (tab2 < nl && tabs < 2) {
+                if (*tab2 == '\t') tabs++;
+                tab2++;
+            }
+            if (tabs == 2 && tab2 < nl) {
+                u8cs r0_uri = {(u8c *)tab2, (u8c *)nl};
+                //  URI path starts after `scheme:` — find the first
+                //  `:` and skip a `//<auth>` if present.
+                uri parsed = {};
+                u8csMv(parsed.data, r0_uri);
+                URILexer(&parsed);
+                if (!u8csEmpty(parsed.path))
+                    DOGProjectFromBe(parsed.path, prim_proj);
+            }
+            FILEUnMap(mapped);
+        }
+    }
+
     {
         int fd = FILE_CLOSED;
         ok64 co = FILECreate(&fd, $path(cwd_be));
@@ -331,6 +373,11 @@ static ok64 BEGetWorktree(uri *u) {
         call(u8bFeed1, repo_uri, '/');
         call(u8bFeed, repo_uri, DOG_BE_S);
         call(u8bFeed1, repo_uri, '/');
+        if (u8bDataLen(prim_proj) > 0) {
+            a_dup(u8c, pp, u8bDataC(prim_proj));
+            call(u8bFeed, repo_uri, pp);
+            call(u8bFeed1, repo_uri, '/');
+        }
 
         //  Compose the row body: `<ts>\trepo\t<uri>\n`.  ts =
         //  RONNow(); verb = `repo`; uri = file:///<prim>/.be/.

@@ -21,6 +21,10 @@
 
 cd "$SCRATCH"
 
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
+
 # --- T1 on trunk ---
 echo "t1" > shared.txt
 "$BE" put shared.txt >/dev/null

@@ -6,6 +6,10 @@
 . "$(dirname "$0")/../../lib/branches.sh"
 WT="$SCRATCH"
 
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
+
 # === 32. ?<absolute>/<newleaf> create-on-miss ===
 echo "=== 32. ?<absolute>/<newleaf> create-on-miss ==="
 cd "$WT"
@@ -35,7 +39,7 @@ NEW32=$(ref_tip "?feat/new")
 F1_TIP_32_AFTER=$(ref_tip "?fix1")
 [ "$F1_TIP_32_AFTER" = "$F1_TIP_32" ] \
     || fail "§32: cur ?fix1 moved: $F1_TIP_32 -> $F1_TIP_32_AFTER"
-[ -d ".be/feat/new" ] || fail "§32: .be/feat/new shard missing"
+[ -d ".be/$P/feat/new" ] || fail "§32: .be/$P/feat/new shard missing"
 
 seen_feat=NO
 cur="$NEW32"; n=0
@@ -87,7 +91,7 @@ NEW33=$(ref_tip "?feat/fix1")
 F1_AFTER_33=$(ref_tip "?fix1")
 [ "$F1_AFTER_33" = "$F1_PRE_33" ] \
     || fail "§33: cur ?fix1 moved"
-[ -d ".be/feat/fix1" ] || fail "§33: .be/feat/fix1 shard missing"
+[ -d ".be/$P/feat/fix1" ] || fail "§33: .be/$P/feat/fix1 shard missing"
 seen_feat=NO
 cur="$NEW33"; n=0
 #  Same rationale as §32 — explicit branch hint required for keeper.

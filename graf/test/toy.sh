@@ -101,14 +101,18 @@ note "index holds ${ENTRIES} entries across 3 commits"
 #       index files under .be/ after three `be post`s + `graf index`.
 #       The lock file alone doesn't count; require ≥1 *.idx.
 # ------------------------------------------------------------------
-GRAF_IDX_N=$(find "$R/.be" -maxdepth 1 -name '*.graf.idx' 2>/dev/null | wc -l)
+#  Project name derives from cwd basename when no URL is in play
+#  (be_ensure_project_repo's `basename($PWD)` fallback).  Here cwd
+#  is "$R" → basename "repo", and packs/indexes live in the
+#  per-project shard .be/repo/.
+GRAF_IDX_N=$(find "$R/.be/repo" -maxdepth 1 -name '*.graf.idx' 2>/dev/null | wc -l)
 [ "$GRAF_IDX_N" -ge 1 ] \
-    || fail "graf: no .graf.idx under .be/ (found only: $(ls -A "$R/.be" 2>/dev/null | tr '\n' ' '))"
+    || fail "graf: no .graf.idx under .be/repo/ (found only: $(ls -A "$R/.be/repo" 2>/dev/null | tr '\n' ' '))"
 note "graf has $GRAF_IDX_N index run(s) on disk"
 
-SPOT_IDX_N=$(find "$R/.be" -maxdepth 1 -name '*.spot.idx' 2>/dev/null | wc -l)
+SPOT_IDX_N=$(find "$R/.be/repo" -maxdepth 1 -name '*.spot.idx' 2>/dev/null | wc -l)
 [ "$SPOT_IDX_N" -ge 1 ] \
-    || fail "spot: no .spot.idx under .be/ (found only: $(ls -A "$R/.be" 2>/dev/null | tr '\n' ' '))"
+    || fail "spot: no .spot.idx under .be/repo/ (found only: $(ls -A "$R/.be/repo" 2>/dev/null | tr '\n' ' '))"
 note "spot has $SPOT_IDX_N index run(s) on disk"
 
 # ------------------------------------------------------------------

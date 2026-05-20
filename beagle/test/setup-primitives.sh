@@ -82,14 +82,33 @@ sp_make_dirty() {
     echo "$(date +%N) dirty" >> "$p"
 }
 
+#  Resolve the canonical project shard's refs path.  Row 0 of
+#  .be/wtlog (or .be if it's a regular FILE secondary wt) carries
+#  `file:<abs>/.be/<project>/`; strip the `file:` prefix and the
+#  trailing slash to get the shard dir.  Fallback to `.be/` for
+#  legacy / unanchored worktrees.
+sp_refs_path() {
+    _wt=".be/wtlog"
+    [ -f .be ] && [ ! -d .be ] && _wt=".be"
+    _anchor=$(awk -F'\t' '$2 == "repo" { print $3; exit }' "$_wt" 2>/dev/null)
+    if [ -n "$_anchor" ]; then
+        _shard=${_anchor#file:}
+        _shard=${_shard%/}
+        printf '%s/refs\n' "$_shard"
+    else
+        printf '.be/refs\n'
+    fi
+}
+
 #  Write a present-but-unrelated tip into REFS for KEY.  Used by
 #  non-ff tests — GRAFLca returns 0 for unknown shas, so the ff
 #  guard fires.
 sp_poison_refs() {
     key=$1                                    # e.g. "?" or "?feat"
     fake="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-    ts=$(awk 'END { print $1 }' .be/refs)
-    printf '%sz\tpost\t%s#%s\n' "$ts" "$key" "$fake" >> .be/refs
+    _refs=$(sp_refs_path)
+    ts=$(awk 'END { print $1 }' "$_refs")
+    printf '%sz\tpost\t%s#%s\n' "$ts" "$key" "$fake" >> "$_refs"
 }
 
 #  Drop tracked files from disk (simulating a wiped wt).  Useful for

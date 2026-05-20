@@ -15,16 +15,20 @@ echo "x v1" > x.txt
 "$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 PRIMARY="$(pwd)"
+#  Project shard lives at .be/<project>/.  vc_fresh_wt's first commit
+#  was `be post 'v1 msg'` → URI basename "v1 msg" → project="v1 msg".
+PRIMARY_PROJ="v1 msg"
 
 #  Fresh secondary wt: `.be` is a regular FILE = its own wtlog, with
-#  only a row-0 `repo` anchor naming the primary store.  Keeper opens
-#  via the anchor; the wtlog has no baseline get/post row yet.  Drop
-#  a foreign x.txt onto disk before GET to trip the overlap check.
+#  only a row-0 `repo` anchor naming the primary's project shard.
+#  Keeper opens via the anchor; the wtlog has no baseline get/post row
+#  yet.  Drop a foreign x.txt onto disk before GET to trip the overlap
+#  check.
 mkdir "$TMP/wt2"
 cd "$TMP/wt2"
 ts=$("$BE" head 2>/dev/null | awk '{print $1; exit}')   # any ron60-ms is fine
 [ -n "$ts" ] || ts="0000000000"
-printf '%s\trepo\tfile://%s/.be/\n' "$ts" "$PRIMARY" > .be
+printf '%s\trepo\tfile://%s/.be/%s/\n' "$ts" "$PRIMARY" "$PRIMARY_PROJ" > .be
 echo "foreign content" > x.txt
 
 vc_snapshot before

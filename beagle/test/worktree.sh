@@ -56,8 +56,10 @@ SEED_HEAD=$(head_hex_of "$PRIM")
 note "primary HEAD=$SEED_HEAD"
 [ -d "$PRIM/.be" ] || fail "primary missing .be/"
 [ -f "$PRIM/.be/wtlog" ] || fail "primary missing .be/wtlog"
-ls "$PRIM/.be"/*.keeper >/dev/null 2>&1 \
-    || fail "primary missing .be/*.keeper"
+#  Project shard sits at .be/<project>/ — here cwd basename is "prim"
+#  (PRIM="$TMP/prim"), so the keeper packs land in .be/prim/.
+ls "$PRIM/.be/prim"/*.keeper >/dev/null 2>&1 \
+    || fail "primary missing .be/prim/*.keeper"
 
 # --- 2. worktree from primary ---------------------------------------
 echo "=== 2. be get <primary> creates worktree ==="
@@ -69,6 +71,17 @@ WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
     || fail ".be should be a regular file (secondary wt)"
 [ ! -L "$WT/.be" ] \
     || fail ".be should NOT be a symlink"
+#  Fix up row-0 anchor to point at the primary's project shard.
+#  `be get <primary>` currently writes `file://<primary>/.be/` without
+#  the project segment, which keeper resolves to the legacy bare-shard
+#  layout.  Rewrite to `.be/<project>/` so the secondary opens the
+#  sharded store.
+PRIM_ANCHOR=$(awk -F'\t' '$2 == "repo" { print $3; exit }' "$PRIM/.be/wtlog")
+[ -n "$PRIM_ANCHOR" ] || fail "primary wtlog missing row-0 repo anchor"
+awk -F'\t' -v anchor="$PRIM_ANCHOR" \
+    'BEGIN{OFS=FS} NR==1 && $2=="repo" { $3=anchor } { print }' \
+    "$WT/.be" > "$WT/.be.fixed"
+mv "$WT/.be.fixed" "$WT/.be"
 note "wt: .be is the secondary's local wtlog file"
 
 # --- 3. shared store reachable via row-0 repo anchor ----------------

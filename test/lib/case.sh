@@ -37,6 +37,14 @@ mkdir -p "$SCRATCH/.be"
 cd "$SCRATCH"
 export SCRATCH
 
+# 5. project shard name ------------------------------------------------
+#   `be_ensure_project_repo` derives the project name from PWD basename
+#   when no URL is in play (the common test case).  Expose it as $P so
+#   tests can assert on `.be/$P/<branch>` paths without hard-coding
+#   the case name in every glob.
+P="$NAME"
+export P
+
 # 5. helpers ------------------------------------------------------------
 
 # match WANT GOT — byte-exact compare.  Diff to stderr on mismatch.

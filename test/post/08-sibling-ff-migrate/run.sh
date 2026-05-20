@@ -13,11 +13,11 @@
 #
 #       on ?fix1: C1 (inline edit b.c), C2 (block edit c.c + rm d.c)
 #       be post ?fix2          → ?fix2 FF to C2; objects migrate
-#                                into .be/fix2/
+#                                into .be/$P/fix2/
 #       switch to ?fix2 — wt at C2 state
 #       on ?fix2: C3 (add f.c)
 #       be post ?fix1          → ?fix1 FF to C3; objects migrate
-#                                into .be/fix1/
+#                                into .be/$P/fix1/
 #       switch to ?fix1 — wt at C3 state
 #       switch to trunk — still at T2; wt has the original four files
 #       switch back to ?fix1
@@ -35,6 +35,10 @@
 #      C3 → C2 → C1 → T2 → T1.
 
 . "$(dirname "$0")/../../lib/case.sh"
+
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
 
 KEEPER=${KEEPER:-${BIN:+$BIN/keeper}}
 KEEPER=${KEEPER:-$(command -v keeper || true)}
@@ -158,10 +162,10 @@ C2=$(head_hex)
     || { echo "?fix1 didn't advance past C1 for C2" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 7. `be post ?fix2` — FF ?fix2 to C2, migrate objects into .be/fix2/.
+# 7. `be post ?fix2` — FF ?fix2 to C2, migrate objects into .be/$P/fix2/.
 #    Cur stays on ?fix1.  This is the cross-shard copy under test.
 # ------------------------------------------------------------------
-PRE_FIX2_PACKS=$(pack_bytes .be/fix2)
+PRE_FIX2_PACKS=$(pack_bytes .be/$P/fix2)
 sleep 0.2
 must "$BE" post '?fix2' \
     > "$LOGS/13.promote-fix2.out" 2> "$LOGS/13.promote-fix2.err"
@@ -173,10 +177,10 @@ FIX2_AFTER=$(ref_tip '?fix2')
 [ "$FIX2_AFTER" = "$C2" ] \
     || { echo "?fix2 didn't FF to C2=$C2 (got $FIX2_AFTER)" >&2; exit 1; }
 
-POST_FIX2_PACKS=$(pack_bytes .be/fix2)
+POST_FIX2_PACKS=$(pack_bytes .be/$P/fix2)
 [ "$POST_FIX2_PACKS" -gt "$PRE_FIX2_PACKS" ] \
     || { echo "?fix2 shard pack bytes didn't grow (was $PRE_FIX2_PACKS, now $POST_FIX2_PACKS); KEEPMoveCommits didn't copy" >&2
-         ls -la .be/fix2/ >&2 2>/dev/null
+         ls -la .be/$P/fix2/ >&2 2>/dev/null
          exit 1; }
 
 # ------------------------------------------------------------------
@@ -231,9 +235,9 @@ C3=$(head_hex)
 
 # ------------------------------------------------------------------
 # 10. `be post ?fix1` — FF ?fix1 to C3, migrate objects into
-#     .be/fix1/.  Cur stays on ?fix2.
+#     .be/$P/fix1/.  Cur stays on ?fix2.
 # ------------------------------------------------------------------
-PRE_FIX1_PACKS=$(pack_bytes .be/fix1)
+PRE_FIX1_PACKS=$(pack_bytes .be/$P/fix1)
 sleep 0.2
 must "$BE" post '?fix1' \
     > "$LOGS/17.promote-fix1.out" 2> "$LOGS/17.promote-fix1.err"
@@ -245,10 +249,10 @@ FIX1_AFTER2=$(ref_tip '?fix1')
 [ "$FIX1_AFTER2" = "$C3" ] \
     || { echo "?fix1 didn't FF to C3=$C3 (got $FIX1_AFTER2)" >&2; exit 1; }
 
-POST_FIX1_PACKS=$(pack_bytes .be/fix1)
+POST_FIX1_PACKS=$(pack_bytes .be/$P/fix1)
 [ "$POST_FIX1_PACKS" -gt "$PRE_FIX1_PACKS" ] \
     || { echo "?fix1 shard pack bytes didn't grow after promote-back (was $PRE_FIX1_PACKS, now $POST_FIX1_PACKS)" >&2
-         ls -la .be/fix1/ >&2 2>/dev/null
+         ls -la .be/$P/fix1/ >&2 2>/dev/null
          exit 1; }
 
 # ------------------------------------------------------------------
@@ -308,7 +312,7 @@ match "$CASE/06.e.t2.c" e.c
 sleep 0.2
 must "$BE" get '?fix1' \
     > "$LOGS/20.get-fix1.out" 2> "$LOGS/20.get-fix1.err"
-PRE_TRUNK_PACKS=$(pack_bytes .be)
+PRE_TRUNK_PACKS=$(pack_bytes .be/$P)
 sleep 0.2
 must "$BE" post '?..' \
     > "$LOGS/21.promote-trunk.out" 2> "$LOGS/21.promote-trunk.err"
@@ -319,10 +323,10 @@ TRUNK_TIP_FF=$(ref_tip '?')
 [ "$(ref_tip '?fix1')" = "$C3" ] \
     || { echo "?fix1 (cur) drifted after post ?.." >&2; exit 1; }
 
-POST_TRUNK_PACKS=$(pack_bytes .be)
+POST_TRUNK_PACKS=$(pack_bytes .be/$P)
 [ "$POST_TRUNK_PACKS" -gt "$PRE_TRUNK_PACKS" ] \
     || { echo "trunk shard pack bytes didn't grow after promote (was $PRE_TRUNK_PACKS, now $POST_TRUNK_PACKS)" >&2
-         ls -la .be/ >&2 2>/dev/null
+         ls -la .be/$P/ >&2 2>/dev/null
          exit 1; }
 
 # ------------------------------------------------------------------

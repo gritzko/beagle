@@ -20,6 +20,10 @@
 
 . "$(dirname "$0")/../../lib/case.sh"
 
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
+
 # ---------------------------------------------------------------
 # 1. Trunk baseline: one file + one post.
 # ---------------------------------------------------------------
@@ -29,9 +33,9 @@ echo "trunk v1" > x.txt
 
 #  Snapshot trunk's pack inventory before any branch work.  Branch
 #  creation must not move/copy this file.
-TRUNK_PACKS_BEFORE=$(ls -1 .be/*.keeper 2>/dev/null | sort)
+TRUNK_PACKS_BEFORE=$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)
 [ -n "$TRUNK_PACKS_BEFORE" ] || {
-    echo "FAIL: no trunk pack at .be/*.keeper after baseline post" >&2
+    echo "FAIL: no trunk pack at .be/$P/*.keeper after baseline post" >&2
     ls -la .be >&2
     exit 1
 }
@@ -41,12 +45,12 @@ TRUNK_PACKS_BEFORE=$(ls -1 .be/*.keeper 2>/dev/null | sort)
 #    materialise immediately; trunk's pack inventory must not change.
 # ---------------------------------------------------------------
 "$BE" put '?./feat' > /dev/null
-[ -d .be/feat ] || {
-    echo "FAIL: .be/feat shard dir missing after 'be put ?./feat'" >&2
-    ls -la .be >&2
+[ -d .be/$P/feat ] || {
+    echo "FAIL: .be/$P/feat shard dir missing after 'be put ?./feat'" >&2
+    ls -la .be/$P >&2
     exit 1
 }
-TRUNK_PACKS_AFTER_PUT=$(ls -1 .be/*.keeper 2>/dev/null | sort)
+TRUNK_PACKS_AFTER_PUT=$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)
 [ "$TRUNK_PACKS_BEFORE" = "$TRUNK_PACKS_AFTER_PUT" ] || {
     echo "FAIL: trunk packs changed across branch-create:" >&2
     echo "  before: $TRUNK_PACKS_BEFORE" >&2
@@ -56,9 +60,9 @@ TRUNK_PACKS_AFTER_PUT=$(ls -1 .be/*.keeper 2>/dev/null | sort)
 
 #  Before any commit on `feat`, its shard must NOT have a pack file
 #  yet (REFS entry only — see KEEPCreateBranch).
-[ -z "$(ls -1 .be/feat/*.keeper 2>/dev/null)" ] || {
-    echo "FAIL: .be/feat/*.keeper present before any post on the branch" >&2
-    ls -la .be/feat >&2
+[ -z "$(ls -1 .be/$P/feat/*.keeper 2>/dev/null)" ] || {
+    echo "FAIL: .be/$P/feat/*.keeper present before any post on the branch" >&2
+    ls -la .be/$P/feat >&2
     exit 1
 }
 
@@ -73,9 +77,9 @@ echo "feat v2" > x.txt
 "$BE" put x.txt           > /dev/null
 "$BE" post 'feat msg'     > /dev/null
 
-FEAT_PACKS=$(ls -1 .be/feat/*.keeper 2>/dev/null | sort)
+FEAT_PACKS=$(ls -1 .be/$P/feat/*.keeper 2>/dev/null | sort)
 [ -n "$FEAT_PACKS" ] || {
-    echo "FAIL: no pack at .be/feat/*.keeper after 'be post' on the branch" >&2
+    echo "FAIL: no pack at .be/$P/feat/*.keeper after 'be post' on the branch" >&2
     ls -laR .be >&2
     exit 1
 }
@@ -87,10 +91,10 @@ FEAT_PACKS=$(ls -1 .be/feat/*.keeper 2>/dev/null | sort)
 #  not share digits).  Either way, the branch dir must be self-
 #  sufficient: a reader walking only `.be/feat/` can find both the
 #  pack bytes and the index entries pointing into them.
-FEAT_IDXES=$(ls -1 .be/feat/*.keeper.idx 2>/dev/null | sort)
+FEAT_IDXES=$(ls -1 .be/$P/feat/*.keeper.idx 2>/dev/null | sort)
 [ -n "$FEAT_IDXES" ] || {
-    echo "FAIL: no .keeper.idx sidecar in .be/feat/ after the branch post" >&2
-    ls -la .be/feat >&2
+    echo "FAIL: no .keeper.idx sidecar in .be/$P/feat/ after the branch post" >&2
+    ls -la .be/$P/feat >&2
     exit 1
 }
 
@@ -108,7 +112,7 @@ for f in $FEAT_PACKS $FEAT_IDXES; do
 done
 
 #  Trunk's pack inventory is unchanged by the post on `feat`.
-TRUNK_PACKS_AFTER_POST=$(ls -1 .be/*.keeper 2>/dev/null | sort)
+TRUNK_PACKS_AFTER_POST=$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)
 [ "$TRUNK_PACKS_BEFORE" = "$TRUNK_PACKS_AFTER_POST" ] || {
     echo "FAIL: trunk packs changed when posting on ?feat:" >&2
     echo "  before:    $TRUNK_PACKS_BEFORE" >&2

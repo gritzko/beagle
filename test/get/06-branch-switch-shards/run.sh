@@ -22,10 +22,14 @@
 #  Crucially: posting on ?other must NOT extend trunk's or ?feat's
 #  pack inventory — branch posts are leaf-only writes (KEEPCompact
 #  rule).  Then `be get ?feat` after working on ?other must still
-#  resolve ?feat's tip tree (its objects live in `.be/feat/`, which
+#  resolve ?feat's tip tree (its objects live in `.be/$P/feat/`, which
 #  the new keeper open registers as PAST).
 
 . "$(dirname "$0")/../../lib/case.sh"
+
+# Anchor project shard at .be/$P/ so subsequent be invocations
+# don't derive the project name from the first URI's basename.
+"$BE" put "?/$P/" 2>/dev/null || true
 
 # ====================================================================
 # 1. trunk baseline + snapshot of trunk's pack inventory
@@ -33,7 +37,7 @@
 echo "trunk v1" > x.txt
 "$BE" put x.txt    > /dev/null
 "$BE" post 't0'    > /dev/null
-TRUNK_PACKS=$(ls -1 .be/*.keeper 2>/dev/null | sort)
+TRUNK_PACKS=$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)
 [ -n "$TRUNK_PACKS" ] || {
     echo "FAIL: no trunk pack after baseline post" >&2
     ls -la .be >&2
@@ -44,21 +48,21 @@ TRUNK_PACKS=$(ls -1 .be/*.keeper 2>/dev/null | sort)
 # 2. ?feat branch: switch + commit
 # ====================================================================
 "$BE" put '?./feat'     > /dev/null
-[ -d .be/feat ] || { echo "FAIL: .be/feat/ missing after create" >&2; exit 1; }
+[ -d .be/$P/feat ] || { echo "FAIL: .be/$P/feat/ missing after create" >&2; exit 1; }
 "$BE" get  '?feat'      > /dev/null
 sleep 0.02
 echo "feat v2"  > x.txt
 "$BE" put  x.txt        > /dev/null
 "$BE" post 'feat msg'   > /dev/null
 
-#  ?feat's commit must land at .be/feat/*.keeper — not trunk.
-FEAT_PACKS=$(ls -1 .be/feat/*.keeper 2>/dev/null | sort)
+#  ?feat's commit must land at .be/$P/feat/*.keeper — not trunk.
+FEAT_PACKS=$(ls -1 .be/$P/feat/*.keeper 2>/dev/null | sort)
 [ -n "$FEAT_PACKS" ] || {
-    echo "FAIL: no pack at .be/feat/*.keeper after post on ?feat" >&2
+    echo "FAIL: no pack at .be/$P/feat/*.keeper after post on ?feat" >&2
     ls -laR .be >&2
     exit 1
 }
-[ "$(ls -1 .be/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
+[ "$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
     echo "FAIL: trunk packs changed after post on ?feat" >&2
     exit 1
 }
@@ -72,27 +76,27 @@ FEAT_PACKS=$(ls -1 .be/feat/*.keeper 2>/dev/null | sort)
     cat x.txt >&2; exit 1
 }
 "$BE" put  '?./other'    > /dev/null
-[ -d .be/other ] || { echo "FAIL: .be/other/ missing" >&2; exit 1; }
+[ -d .be/$P/other ] || { echo "FAIL: .be/$P/other/ missing" >&2; exit 1; }
 "$BE" get  '?other'      > /dev/null
 sleep 0.02
 echo "other v3" > x.txt
 "$BE" put  x.txt         > /dev/null
 "$BE" post 'other msg'   > /dev/null
 
-OTHER_PACKS=$(ls -1 .be/other/*.keeper 2>/dev/null | sort)
+OTHER_PACKS=$(ls -1 .be/$P/other/*.keeper 2>/dev/null | sort)
 [ -n "$OTHER_PACKS" ] || {
-    echo "FAIL: no pack at .be/other/*.keeper after post on ?other" >&2
+    echo "FAIL: no pack at .be/$P/other/*.keeper after post on ?other" >&2
     ls -laR .be >&2
     exit 1
 }
-[ "$(ls -1 .be/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
+[ "$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
     echo "FAIL: trunk packs changed after post on ?other" >&2
     exit 1
 }
 
 # ====================================================================
 # 4. THE TEST: cross-shard switch ?other → ?feat.  ?feat's objects
-#    live in .be/feat/, which the keeper open must register as PAST.
+#    live in .be/$P/feat/, which the keeper open must register as PAST.
 #    Without it, `be get ?feat` fails with 'object not found' (graf
 #    can't resolve the feat tip tree).
 # ====================================================================
@@ -121,15 +125,15 @@ SWITCH_RC=$?
 # ====================================================================
 # 6. final layout: every branch's packs sit inside its own shard.
 # ====================================================================
-[ -n "$(ls -1 .be/feat/*.keeper 2>/dev/null)" ]  || {
-    echo "FAIL: .be/feat/*.keeper missing in final layout" >&2
-    ls -la .be/feat >&2; exit 1
+[ -n "$(ls -1 .be/$P/feat/*.keeper 2>/dev/null)" ]  || {
+    echo "FAIL: .be/$P/feat/*.keeper missing in final layout" >&2
+    ls -la .be/$P/feat >&2; exit 1
 }
-[ -n "$(ls -1 .be/other/*.keeper 2>/dev/null)" ] || {
-    echo "FAIL: .be/other/*.keeper missing in final layout" >&2
-    ls -la .be/other >&2; exit 1
+[ -n "$(ls -1 .be/$P/other/*.keeper 2>/dev/null)" ] || {
+    echo "FAIL: .be/$P/other/*.keeper missing in final layout" >&2
+    ls -la .be/$P/other >&2; exit 1
 }
-[ "$(ls -1 .be/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
+[ "$(ls -1 .be/$P/*.keeper 2>/dev/null | sort)" = "$TRUNK_PACKS" ] || {
     echo "FAIL: trunk packs grew after the cross-shard switches" >&2
     exit 1
 }
