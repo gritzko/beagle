@@ -1573,10 +1573,32 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     u8cs basename = {};
     call(SNIFFSubBasename, url_d, basename);
 
-    //  mkdir <parent>/.be/<basename>/  (flat: this dir IS the sub's
-    //  store, same shape as <parent>/.be/ itself)
+    //  Resolve the actual STORE root via HOMEOpen.  c->repo holds the
+    //  worktree path (h->wt); for a wt that's already a secondary
+    //  (its `.be` is a file anchor redirecting to another store) the
+    //  new shard must land at `<store>/<basename>/`, not under the
+    //  secondary's wt dir.  HOMEOpen follows the row-0 anchor and
+    //  fills h->root with the redirected store root; we use that.
+    //  If HOMEOpen fails (e.g. the anchor URI is corrupted) we fall
+    //  back to the wt dir's own `.be/` — the legacy behavior.
+    a_path(store_root_buf);
+    {
+        home rh = {};
+        uri none = {};
+        if (HOMEOpen(&rh, &none, NO) == OK && u8bHasData(rh.root)) {
+            a_dup(u8c, rs, u8bDataC(rh.root));
+            call(PATHu8bFeed, store_root_buf, rs);
+        } else {
+            call(PATHu8bFeed, store_root_buf, repo_s);
+        }
+        HOMEClose(&rh);
+    }
+    a_dup(u8c, store_root_s, u8bDataC(store_root_buf));
+
+    //  mkdir <store>/.be/<basename>/  (flat: this dir IS the sub's
+    //  store, same shape as <store>/.be/ itself)
     a_path(shard_be);
-    call(PATHu8bFeed, shard_be, repo_s);
+    call(PATHu8bFeed, shard_be, store_root_s);
     call(PATHu8bPush, shard_be, DOG_BE_S);
     a_dup(u8c, base_s, basename);
     call(PATHu8bPush, shard_be, base_s);
@@ -1644,8 +1666,8 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     call(PATHu8bFeed, c->repo, cwd_s);
 
     fprintf(stderr, "be: subdir clone — shard at %.*s/.be/%.*s\n",
-            (int)$len(repo_s),   (char *)repo_s[0],
-            (int)$len(basename), (char *)basename[0]);
+            (int)$len(store_root_s), (char *)store_root_s[0],
+            (int)$len(basename),     (char *)basename[0]);
     done;
 }
 
