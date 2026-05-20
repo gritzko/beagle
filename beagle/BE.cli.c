@@ -2208,18 +2208,28 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
         }
     }
 
-    //  Build child argv: `post` + flags-sans-{--at,-m,--sub-msg} +
-    //  non-fragment URIs + the fresh `#<sub-msg>` URI (if any).
-    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-    a_cstr(post_lit, "post");
-    a_cstr(mf_lit,   "-m");
-    a_cstr(sm_lit,   "--sub-msg");
+    //  Build child argv: `post -q` + flags-sans-{--at,-m,--sub-msg,-q,
+    //  --quiet} + non-fragment URIs + the fresh `#<sub-msg>` URI (if
+    //  any).  `-q` silences POSTNONE chatter in every sibling shard
+    //  with no changes — the cli wrapper converts POSTNONE to OK
+    //  there, so the bump runs unconditionally (idempotent on a no-
+    //  op sub).
+    a_pad(u8cs, child_args, 5 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    a_cstr(post_lit,  "post");
+    a_cstr(q_lit,     "-q");
+    a_cstr(qlong_lit, "--quiet");
+    a_cstr(mf_lit,    "-m");
+    a_cstr(sm_lit,    "--sub-msg");
     a_dup(u8c, post_d, post_lit);
+    a_dup(u8c, q_d,    q_lit);
     u8csbFeed1(child_args, post_d);
+    u8csbFeed1(child_args, q_d);
     for (u32 j = 0; j + 1 < rc->c->nflags; j += 2) {
         if ($eq(rc->c->flags[j], be_at_flag)) continue;
         if ($eq(rc->c->flags[j], mf_lit))     continue;
         if ($eq(rc->c->flags[j], sm_lit))     continue;
+        if ($eq(rc->c->flags[j], q_lit))      continue;
+        if ($eq(rc->c->flags[j], qlong_lit))  continue;
         u8csbFeed1(child_args, rc->c->flags[j]);
         if (!u8csEmpty(rc->c->flags[j + 1]))
             u8csbFeed1(child_args, rc->c->flags[j + 1]);
@@ -2580,8 +2590,16 @@ ok64 becli() {
     cli c = {};
     call(PATHu8bAlloc, c.repo);
     try(becli_inner, &c);
+    ok64 ret = __;
+    //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
+    //  real error) so the outer `be post` recursion's
+    //  bepost_spawn_sub passes `-q` to every sub-shard and gets
+    //  clean output for shards with no changes.
+    if (ret == POSTNONE &&
+        (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
+        ret = OK;
     PATHu8bFree(c.repo);
-    done;
+    return ret;
 }
 
 MAIN(becli);

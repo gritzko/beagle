@@ -2570,7 +2570,11 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //      (no baseline tree to compare against).
     if (had_baseline && have_root && have_base &&
         memcmp(root_tree.data, base_tree_sha.data, 20) == 0) {
-        fprintf(stderr, "POSTNONE: no changes since base\n");
+        //  `-q` / `--quiet` (be's POST sub-recursion sets this for
+        //  every sibling shard) suppresses the stderr note; the
+        //  POSTNONE return is still used by the caller.
+        if (!SNIFF.quiet)
+            fprintf(stderr, "POSTNONE: no changes since base\n");
         u8bFree(tree_bodies);
         post_ctx_free(&ctx);
         return POSTNONE;

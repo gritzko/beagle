@@ -103,6 +103,13 @@ typedef struct {
                       // `--force` for "tree-reset & clean".  Set
                       // in sniffcli_inner AFTER SNIFFOpen; read by
                       // GET.c.  Default NO.
+    b8      quiet;    // YES → POST's "POSTNONE: no changes since
+                      // base" stderr is suppressed and POSTNONE
+                      // converts to OK at the cli boundary.  Set
+                      // by `-q` / `--quiet`.  Used by be's POST
+                      // sub-recursion (which legitimately runs
+                      // POST in every sibling shard, many of which
+                      // have nothing to commit).  Default NO.
     igno    ignores;  // wt-root .gitignore, loaded once at SNIFFOpen
 } sniff;
 

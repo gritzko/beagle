@@ -113,6 +113,7 @@ static ok64 sniffcli_inner(cli *c) {
     SNIFF.nosub = CLIHas(c, "--nosub") ? YES : NO;
     SNIFF.force = CLIHas(c, "--force") ? YES : NO;
     SNIFF.prune = CLIHas(c, "--prune") ? YES : NO;
+    SNIFF.quiet = (CLIHas(c, "-q") || CLIHas(c, "--quiet")) ? YES : NO;
 
     //  graf needs to be open whenever sniff may consult the DAG
     //  (POST ff-check, PATCH 3-way LCA, PUT branch creation rebase,
@@ -159,8 +160,15 @@ ok64 sniffcli() {
     cli c = {};
     call(PATHu8bAlloc, c.repo);
     try(sniffcli_inner, &c);
+    ok64 ret = __;
+    //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
+    //  real error) so callers like `be post` recursion don't see
+    //  "Error: POSTNONE" for every sibling shard with no changes.
+    if (ret == POSTNONE &&
+        (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
+        ret = OK;
     PATHu8bFree(c.repo);
-    done;
+    return ret;
 }
 
 MAIN(sniffcli);
