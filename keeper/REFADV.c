@@ -170,7 +170,8 @@ ok64 REFADVOpen(refadv *out) {
 
     //  Phase 1c: only the trunk shard exists.  Walk its REFS at
     //  <root>/.be/REFS.  Future phases iterate every shard dir.
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  Two-pass: local rows first (authoritative), then peer-observed
     //  rows for branches not yet covered (relay role).

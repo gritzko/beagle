@@ -119,7 +119,8 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     u8csc bytes = {pbuf, pbuf + plen};
     call(KEEPIngestFile, bytes);
 
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
     if (branch && *branch) {
@@ -145,7 +146,8 @@ static b8 lookup_local_ref(char const *keeper_root, char const *branch,
     home h = {};
     if (HOMEOpenAt(&h, root_s, NO) != OK) return NO;
     if (KEEPOpen(&h, NO) != OK) { HOMEClose(&h); return NO; }
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    (void)HOMEBranchDir(KEEP.h, keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');

@@ -440,7 +440,8 @@ ok64 DELBranch(uri const *u, b8 recursive) {
     sane(SNIFF.h && u);
 
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  Target branch name (URI query bytes).  Trunk has an empty
     //  query — refuse early; can't drop trunk via this path.

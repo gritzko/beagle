@@ -889,7 +889,8 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
 static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
     sane(u && tree_out);
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     a_pad(u8, arena, 1024);
     uri resolved = {};
@@ -1040,7 +1041,8 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
 static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     sane(u);
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  Remote URI: under DOG.md §10a `be get` is the orchestrator —
     //  it already ran `keeper get URI` synchronously before forking

@@ -172,10 +172,10 @@ typedef struct {
 } keeper;
 
 // Relative ".be" slice.  Call sites compose the project-scoped store
-// dir via
-//   a_path(dir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
-// (empty `h->project` collapses to the legacy single-project layout)
-// and use $path(dir) wherever a u8csc is needed.
+// dir via `HOMEBranchDir(k->h, dir, NULL)` for the project trunk or
+// `HOMEBranchDir(k->h, dir, k->h->cur_branch)` for the active leaf,
+// and use $path(dir) wherever a u8csc is needed.  Empty `h->project`
+// collapses to the legacy single-project layout.
 extern u8c *const KEEP_DIR_S[2];
 
 // --- Public API (DOG 4-fn) ---

@@ -306,7 +306,8 @@ ok64 RECVApplyUpdates(refadvcp adv, recv_reqcp req,
     *out_n = 0;
     if (req->count > cap) return RECVFAIL;
 
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     for (u32 i = 0; i < req->count; i++) {
         recv_update const *u = &req->upds[i];

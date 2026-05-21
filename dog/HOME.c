@@ -399,6 +399,21 @@ b8 HOMEBranchVisible(home const *h, u8cs branch) {
     return NO;
 }
 
+ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
+    sane(h != NULL && abs_dir != NULL);
+    u8bReset(abs_dir);
+    a_dup(u8c, root_s, u8bDataC(h->root));
+    call(PATHu8bFeed, abs_dir, root_s);
+    call(PATHu8bPush, abs_dir, DOG_BE_S);
+    a_dup(u8c, proj, u8bDataC(h->project));
+    if (!u8csEmpty(proj)) call(PATHu8bPush, abs_dir, proj);
+    if (branch != NULL) {
+        a_dup(u8c, br, u8bDataC(branch));
+        if (!u8csEmpty(br)) call(PATHu8bAdd, abs_dir, br);
+    }
+    done;
+}
+
 // --- Workspace finders ---
 
 //  Peek the first line of a wtlog (either a secondary-wt's `.be`

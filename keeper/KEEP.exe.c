@@ -158,7 +158,8 @@ static ok64 keeper_lsfiles(keeper *k, uricp target) {
 
 static ok64 keeper_refs(keeper *k) {
     sane(k);
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
     int rcount = 0;
     ok64 o = REFSEach($path(keepdir), refs_print_cb, &rcount);
     if (o != OK && o != REFSNONE)
@@ -210,7 +211,8 @@ static ok64 keeper_subs(keeper *k, cli *c) {
             fail(KEEPFAIL);
         }
     } else {
-        a_path(trunk_dir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(trunk_dir);
+        call(HOMEBranchDir, k->h, trunk_dir, NULL);
         a_pad(u8, qbuf, 256);
         u8bFeed1(qbuf, '?');
         u8bFeed(qbuf, u->query);
@@ -312,7 +314,8 @@ static ok64 keeper_tips(keeper *k) {
 //  it after finishing with the resolved URI bytes.
 static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     sane(k && g && u8bOK(out) && u8bOK(rarena_out));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     u8cs rscheme = {};
     u8cs rhost = {};
@@ -458,7 +461,8 @@ ok64 KEEPGetRemote(uri *g) {
         //  `get_fail <peer-uri>?<branch>` row alongside the success
         //  rows already emitted by wcli_record_ref.  Best-effort write
         //  — we still return the underlying fetch error.
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, key_buf, 512);
         u8bFeed(key_buf, remote_uri);
         u8bFeed1(key_buf, '?');
@@ -497,7 +501,8 @@ static ok64 keeper_get_object(keeper *k, u8cs prefix) {
 
 static ok64 keeper_get_ref(keeper *k, u8cs query) {
     sane(k && $ok(query));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     a_pad(u8, qbuf, 256);
     u8bFeed1(qbuf, '?');
@@ -589,7 +594,8 @@ static ok64 keeper_put(keeper *k, cli *c) {
         return KEEPFAIL;
     }
 
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  Canonical key: build a query-only URI with the user's ref
     //  name and canonicalise — strips `refs/` and collapses the
@@ -720,7 +726,8 @@ static ok64 keeper_post(keeper *k, cli *c) {
                         "(ssh://host/path[?branch])\n");
         return KEEPFAIL;
     }
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  1. Worktree's current branch + tip (used both as the WIREPush
     //     local_branch default and to record the new peer-side ref).
@@ -942,7 +949,8 @@ static ok64 keeper_delete_alias_collect(refcp r, void *vctx) {
 
 static ok64 keeper_delete_alias(keeper *k, u8cs host) {
     sane(k && !u8csEmpty(host));
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     Bu8 keys = {};
     call(u8bAllocate, keys, 1UL << 16);
@@ -1037,7 +1045,8 @@ static ok64 keeper_delete(keeper *k, cli *c) {
     //  Tombstone the local cached `<peer-uri>?<branch>` row so future
     //  cached reads stop returning the now-deleted tip.  Mirrors the
     //  REFS-write at the end of keeper_post (KEEP.exe.c:620+).
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
     {
         a_pad(u8, kbuf, 1280);
         uri gk = {};

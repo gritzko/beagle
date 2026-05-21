@@ -903,7 +903,8 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     }
     a_dup(u8c, cur_branch, u8bData(cur_buf));
 
-    a_path(keepdir, reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
 
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
@@ -1026,7 +1027,8 @@ ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {
     sane($ok(ref_uri) && !u8csEmpty(ref_uri) && $ok(sha_hex));
     if (u8csLen(sha_hex) != 40) fail(SNIFFFAIL);
 
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
 
     //  Canonicalise the caller-supplied ref URI (user input path:
     //  command line `be post ?<label>`).  Lex → canonicalise → feed.

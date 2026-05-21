@@ -86,7 +86,8 @@ typedef struct {
 ok64 GRAFResolveTip(uricp u, sha1 *out) {
     sane(u && out);
     keeper *k = &KEEP;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  Fragment slot: any non-empty fragment resolves via the unified
     //  front-door resolver (40-hex / hashlet prefix / branch path).
@@ -757,7 +758,8 @@ static ok64 graf_head_decode_sha(sha1 *out, u8cs hex) {
 //  Writes the 20-byte sha into `*out`; returns GRAFNONE on no match.
 static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     Bu8 arena = {};
     call(u8bAllocate, arena, 4096);

@@ -219,7 +219,8 @@ static ok64 mig_scan_cb(void0p arg, path8p path) {
 }
 static void mig_scan_all_shards(void) {
     if (KEEP.h == NULL) return;
-    a_path(bedir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(bedir);
+    (void)HOMEBranchDir(KEEP.h, bedir, NULL);
     a_pad(u8, scratch, 64 * 1024);
     mig_scan_ctx ctx = {0};
     (void)FILEScanSorted(bedir,
@@ -234,7 +235,8 @@ static void mig_scan_all_shards(void) {
 //  loaded dirs).  Empty branch → trunk (root dir).
 static void mig_open_source(path8sc src_branch) {
     if (KEEP.h == NULL) return;
-    a_path(dir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(dir);
+    (void)HOMEBranchDir(KEEP.h, dir, NULL);
     if (!u8csEmpty(src_branch)) {
         if (PATHu8bAdd(dir, src_branch) != OK) return;
     }

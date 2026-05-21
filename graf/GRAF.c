@@ -163,7 +163,8 @@ static ok64 graf_max_seqno_cb(void0p arg, path8p path) {
 //  across sibling branch dirs that aren't loaded into the registry.
 static u64 graf_global_max_seqno(home *h) {
     u64 max = 0;
-    a_path(bedir, u8bDataC(h->root), KEEP_DIR_S, u8bDataC(h->project));
+    a_path(bedir);
+    (void)HOMEBranchDir(h, bedir, NULL);
     (void)FILEDeepScanFiles(bedir, graf_max_seqno_cb, &max);
     return max;
 }

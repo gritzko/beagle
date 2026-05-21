@@ -487,7 +487,8 @@ static ok64 wcli_haves_cb(refcp r, void *vctx) {
 //  shadowed by the local cur row in REFADV.  Caps at WIRE_MAX_HAVES.
 static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
     if (!k) return 0;
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    (void)HOMEBranchDir(k->h, keepdir, NULL);
     wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
     (void)REFSEach($path(keepdir), wcli_haves_cb, &c);
     return c.n;
@@ -568,11 +569,8 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     //  keep using `<root>/.be/refs` as before.  Readers compensate
     //  with a leaf→trunk fallback (REFSResolve at leaf first, then
     //  retry at trunk if not found).
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
-    if (u8bDataLen(k->h->cur_branch) > 0) {
-        a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
-        call(PATHu8bAdd, keepdir, leaf_s);
-    }
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, k->h->cur_branch);
 
     uri pu = {};
     pu.data[0] = remote_uri[0];

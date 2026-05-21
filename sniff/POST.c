@@ -1296,7 +1296,8 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 //  KEEPResolveRef's dog/QURY normaliser would collapse those.
 ok64 POSTResolveBranchTip(sha1 *out, u8cs branch) {
     sane(out);
-    a_path(keepdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, SNIFF.h, keepdir, NULL);
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
     if (!u8csEmpty(branch)) u8bFeed(keybuf, branch);
@@ -1472,7 +1473,8 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
                               sha1 const *branch_old_tip,
                               sha1 const *branch_new_tip) {
     sane(cc);
-    a_path(bdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(bdir);
+    call(HOMEBranchDir, SNIFF.h, bdir, NULL);
     if (!u8csEmpty(branch)) {
         ok64 ar = PATHu8bAdd(bdir, branch);
         if (ar != OK) return ar;
@@ -1530,7 +1532,8 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 //  earlier successes (best-effort, documented).
 static ok64 post_cascade_persist(cascade_ctx *cc) {
     sane(cc);
-    a_path(keepdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, SNIFF.h, keepdir, NULL);
     for (u32 i = 0; i < cc->n; i++) {
         cascade_rec *r = &cc->recs[i];
         a_pad(u8, keybuf, 256);
@@ -1872,7 +1875,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         }
 
         //  REFS row at leaf_tip with empty `expected_old`.
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         u8bFeed(refkey_buf, target_branch);
@@ -1975,7 +1979,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
             //  base_new (e.g. `?..` after parent has been advanced
             //  already with cur's commits — sync cur to parent.tip).
             if (auto_sync_cur) {
-                a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+                a_path(keepdir);
+                call(HOMEBranchDir, k->h, keepdir, NULL);
                 a_pad(u8, ckbuf, 260);
                 u8bFeed1(ckbuf, '?');
                 if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2132,7 +2137,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
 
     //  --- 9. Advance target's REFS row via CAS on target_tip. ---
     {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         if (!u8csEmpty(target_branch)) u8bFeed(refkey_buf, target_branch);
@@ -2169,7 +2175,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  advanced and cur is stale — user can `be get ?..` to resync.
     //  Documented MWP best-effort behaviour. ---
     if (auto_sync_cur) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, ckbuf, 260);
         u8bFeed1(ckbuf, '?');
         if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2462,7 +2469,8 @@ ok64 POSTCommit(u8cs target_branch,
                                   //  parent — replay the just-built commit
                                   //  onto REFS tip after the pack feed.
     if (had_baseline && has_parent) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, refkey_buf, 128);
         u8bFeed1(refkey_buf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -3000,7 +3008,8 @@ ok64 POSTCommit(u8cs target_branch,
         HEXu8sFeedSome(out_hex_idle, osha);
     }
     {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, keybuf, 128);
         u8bFeed1(keybuf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -3050,7 +3059,8 @@ ok64 POSTCommit(u8cs target_branch,
     //  PUTSetLabel (REFSAppendVerb with `post` verb).
     if ($ok(target_branch) && !u8csEmpty(target_branch) &&
         !target_is_branch) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
         a_pad(u8, tagkey, 128);
         u8bFeed1(tagkey, '?');
         u8bFeed(tagkey, target_branch);

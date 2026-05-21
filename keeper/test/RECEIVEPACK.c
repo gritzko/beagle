@@ -194,7 +194,8 @@ static ok64 seed_ref(char const *tmpdir, char const *refname,
     home h = {};
     call(HOMEOpenAt, &h, root_s, YES);
     call(KEEPOpen, &h, YES);
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     wire_to_be_key(kbuf, refname);
@@ -215,7 +216,8 @@ static b8 lookup_ref(char const *tmpdir, char const *refname, char *out_41) {
     home h = {};
     if (HOMEOpenAt(&h, root_s, NO) != OK) return NO;
     if (KEEPOpen(&h, NO) != OK) { HOMEClose(&h); return NO; }
-    a_path(keepdir, u8bDataC(KEEP.h->root), KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir);
+    (void)HOMEBranchDir(KEEP.h, keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     wire_to_be_key(kbuf, refname);

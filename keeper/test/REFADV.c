@@ -146,7 +146,8 @@ ok64 REFADVtest_single_trunk() {
 
     //  REFS lives at <root>/.be/refs.  Local trunk row (`?`) advertises
     //  on the wire as `refs/heads/main` (the only wire-side alias).
-    a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
+    a_path(keepdir);
+    call(HOMEBranchDir, &h, keepdir, NULL);
     char const *hex = "0123456789abcdef0123456789abcdef01234567";
     call(push_branch, $path(keepdir), "", hex);
 
@@ -210,7 +211,8 @@ ok64 REFADVtest_multi() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
+    a_path(keepdir);
+    call(HOMEBranchDir, &h, keepdir, NULL);
     char const *hex_trunk = "1111111111111111111111111111111111111111";
     char const *hex_feat  = "2222222222222222222222222222222222222222";
     call(push_branch, $path(keepdir), "",     hex_trunk);
@@ -283,7 +285,8 @@ ok64 REFADVtest_tip_lookup() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
+    a_path(keepdir);
+    call(HOMEBranchDir, &h, keepdir, NULL);
     char const *hex_trunk = "deadbeef00000000000000000000000000000000";
     char const *hex_feat  = "00000000000000000000000000000000beadeed0";
     call(push_branch, $path(keepdir), "",     hex_trunk);
@@ -335,7 +338,8 @@ ok64 REFADVtest_round_trip() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    a_path(keepdir, u8bDataC(h.root), KEEP_DIR_S);
+    a_path(keepdir);
+    call(HOMEBranchDir, &h, keepdir, NULL);
     char const *hex_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     char const *hex_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     char const *hex_c = "cccccccccccccccccccccccccccccccccccccccc";

@@ -590,7 +590,8 @@ static b8 spot_probe_uri(keeper *k, uricp u, uri *out, u8b frag_buf) {
     }
 
     if (!has_resolvable) {
-        a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+        a_path(keepdir);
+        (void)HOMEBranchDir(k->h, keepdir, NULL);
         a_pad(u8, arena_buf, 1024);
         uri resolved = {};
         static u8c const q_lit[] = "?";

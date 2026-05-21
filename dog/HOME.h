@@ -186,4 +186,13 @@ ok64 HOMEWriteBranch(home const *h, u8cs out);
 // trailing `/`).
 b8 HOMEBranchVisible(home const *h, u8cs branch);
 
+// Compose `<root>/.be/<project>[/<branch>]` into `abs_dir`
+// (NUL-terminated).  `branch` is a path8b buffer in canonical
+// form (DPATHBranchNormFeed: trunk = empty DATA; non-trunk ends
+// with '/'); NULL or empty DATA == trunk (no branch segment).
+// Empty `h->project` (legacy single-project layout) collapses
+// to no project segment.  Caller passes `&h->cur_branch[0]`
+// directly when targeting the active leaf.
+ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch);
+
 #endif

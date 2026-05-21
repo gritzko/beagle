@@ -43,7 +43,8 @@ static void proj_feed_lit(u8b out, char const *s) {
 //  On success returns OK; *out is the 20-byte SHA-1.
 static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
-    a_path(keepdir, u8bDataC(k->h->root), KEEP_DIR_S, u8bDataC(k->h->project));
+    a_path(keepdir);
+    call(HOMEBranchDir, k->h, keepdir, NULL);
 
     //  #hex — convert prefix to a full SHA via KEEPGet (which scans
     //  hashlet matches and verifies).  We don't need the body here,
