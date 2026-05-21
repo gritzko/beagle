@@ -444,18 +444,17 @@ ok64 SPOTExec(cli *c) {
 // Linear scan over an arena that holds ~50 distinct exts in practice.
 static u32 capo_ext_intern(spot *s, u8cs ext) {
     if ($empty(ext)) return 0;
-    u8cp base = u8bDataHead(s->ext_arena);
-    u8cp idle = u8bIdleHead(s->ext_arena);
-    size_t want = (size_t)$len(ext);
-    for (u8cp p = base + 1; p < idle; ) {
-        u8cp end = p;
-        while (end < idle && *end != 0) end++;
-        if ((size_t)(end - p) == want &&
-            memcmp(p, ext[0], want) == 0)
-            return (u32)(p - base);
-        p = end + 1;
+    a_dup(u8c, scan, u8bDataC(s->ext_arena));
+    u8csUsed1(scan);                            // skip the sentinel NUL
+    while (!$empty(scan)) {
+        u8cs entry = {scan[0], scan[1]};
+        if (u8csFind(scan, 0) == OK) entry[1] = scan[0];
+        else                          scan[0] = scan[1];   // last unterminated
+        if (u8csEq(entry, ext))
+            return (u32)(entry[0] - u8bDataHead(s->ext_arena));
+        if (!$empty(scan)) u8csUsed1(scan);     // step past the NUL
     }
-    if (u8bIdleLen(s->ext_arena) < want + 1) return 0;
+    if (u8bIdleLen(s->ext_arena) < (size_t)$len(ext) + 1) return 0;
     u32 off = (u32)u8bDataLen(s->ext_arena);
     u8bFeed(s->ext_arena, ext);
     u8bFeed1(s->ext_arena, 0);
@@ -598,8 +597,9 @@ static ok64 spot_index_slice_serial(spot_todo const *todos,
     call(u8bMap, bbuf, 1UL << 28);
     keeper *k = &KEEP;
     for (size_t i = lo; i < hi; i++) {
-        u8cp pbase = u8bDataHead(ulog_buf) + todos[i].path_off;
-        u8cs path = {pbase, pbase + todos[i].path_len};
+        u8cs path = {};
+        if (u8csSub(u8bDataC(ulog_buf), path, todos[i].path_off,
+                    todos[i].path_off + todos[i].path_len) != OK) continue;
         (void)spot_index_one(k, &todos[i], path, bbuf);
     }
     u8bUnMap(bbuf);
@@ -618,7 +618,7 @@ static void spot_index_worker_child(u32 w, spot_todo const *todos,
         a_cstr(prefix, ".w");
         if (u8bFeed(wname, prefix) != OK) _exit(1);
         if (RONu8sFeedPad(u8bIdle(wname), (ok64)w, 4) != OK) _exit(1);
-        ((u8 **)wname)[2] += 4;
+        if (u8bFed(wname, 4) != OK) _exit(1);
         if (PATHu8bPush(s->leaf_branch, u8bDataC(wname)) != OK) _exit(1);
     }
     a_pad(u8, wleafdir, FILE_PATH_MAX_LEN);

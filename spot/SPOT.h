@@ -3,8 +3,9 @@
 
 #include "dog/tok/TOK.h"
 
-con ok64 SPOTEND = 0x1c65874e5cd;
-con ok64 SPOTBAD = 0x1c65874b28d;
+con ok64 SPOTEND  = 0x1c65874e5cd;
+con ok64 SPOTBAD  = 0x1c65874b28d;
+con ok64 SPOTNONE = 0x71961d5d85ce;   // no-match-at-this-position
 
 #define SPOT_MAX_BINDS 52
 #define SPOT_MAX_SUBS 32

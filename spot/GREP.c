@@ -155,11 +155,13 @@ done_file:
     return OK;
 }
 
-ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
-              u8css files, uri const *ref) {
+//  Inner body of CAPOGrep.  Wrapper owns hashbuf1's lifecycle so an
+//  early `call(LESSArenaInit)` can't leak the trigram filter map.
+static ok64 capo_grep_inner(u8csc substring, u8csc ext, u8csc reporoot,
+                             u32 ctx_lines, u8css files, uri const *ref,
+                             Bu64 hashbuf1) {
     sane($ok(substring) && !$empty(substring) && $ok(reporoot));
 
-    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL)
         CAPOTrigramFilter(hashbuf1, &has_trigrams, substring, reporoot);
@@ -184,7 +186,15 @@ ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
     if (less_nhunks > 0)
         LESSRun(less_hunks, less_nhunks);
     LESSArenaCleanup();
+    done;
+}
 
+ok64 CAPOGrep(u8csc substring, u8csc ext, u8csc reporoot, u32 ctx_lines,
+              u8css files, uri const *ref) {
+    sane($ok(substring) && !$empty(substring) && $ok(reporoot));
+    Bu64 hashbuf1 = {};
+    try(capo_grep_inner, substring, ext, reporoot, ctx_lines, files, ref,
+        hashbuf1);
     if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
     done;
 }
@@ -243,7 +253,7 @@ static ok64 regexlits_cb(void *ctx, u8 ch, b8 flush) {
 // Walk a regex pattern, collect runs of literal characters.
 // Meta chars and class escapes break a run; backslash-escaped literals stay.
 // For each run >= 3 chars, extract trigrams and intersect with the index.
-static void CAPORegexLiterals(u8csc pattern, u64css live,
+static void capo_regex_literals(u8csc pattern, u64css live,
                                u64b hashbuf1,
                                b8 *has_trigrams) {
     regexlits_ctx ctx = {
@@ -389,8 +399,13 @@ static ok64 capo_pcre_file_cb(void *ctx, u8csc relpath, u8csc source,
     return OK;
 }
 
-ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
-                   u8css files, uri const *ref) {
+//  Inner body of CAPOPcreGrep.  Owns no buffers: the wrapper allocates
+//  `nfa_ws_bb` (via u32bAlloc inside) and `hashbuf1` (via u64bMap), and
+//  unconditionally frees both after we return — so an early `call(...)`
+//  in the middle of setup can't leak.
+static ok64 capo_pcre_inner(u8csc pattern, u8csc ext, u8csc reporoot,
+                             u32 ctx_lines, u8css files, uri const *ref,
+                             Bu32 nfa_ws_bb, Bu64 hashbuf1) {
     sane($ok(pattern) && !$empty(pattern) && $ok(reporoot));
 
     // Compile regex
@@ -408,13 +423,11 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
     u16 nstates = NFAu8States(cprog);
 
     u64 wsz = NFAu8WorkSize(nstates);
-    Bu32 nfa_ws_bb = {};
     call(u32bAlloc, nfa_ws_bb, wsz);
     u32s nfa_ws = {};
     $mv(nfa_ws, u32bIdle(nfa_ws_bb));
 
     // Trigram filtering for regex
-    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL) {
         ok64 ao = u64bMap(hashbuf1, 1ULL << 27);
@@ -422,7 +435,7 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
             u64css live = {};
             CAPORuns(live);
             if (!$empty(live))
-                CAPORegexLiterals(pattern, live, hashbuf1, &has_trigrams);
+                capo_regex_literals(pattern, live, hashbuf1, &has_trigrams);
             if (has_trigrams && u64bDataLen(hashbuf1) > 0)
                 u64sSort(u64bData(hashbuf1));
         }
@@ -448,8 +461,17 @@ ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
     if (less_nhunks > 0)
         LESSRun(less_hunks, less_nhunks);
     LESSArenaCleanup();
+    done;
+}
 
-    u32bFree(nfa_ws_bb);
-    if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
+ok64 CAPOPcreGrep(u8csc pattern, u8csc ext, u8csc reporoot, u32 ctx_lines,
+                   u8css files, uri const *ref) {
+    sane($ok(pattern) && !$empty(pattern) && $ok(reporoot));
+    Bu32 nfa_ws_bb = {};
+    Bu64 hashbuf1 = {};
+    try(capo_pcre_inner, pattern, ext, reporoot, ctx_lines, files, ref,
+        nfa_ws_bb, hashbuf1);
+    if (!BNULL(nfa_ws_bb)) u32bFree(nfa_ws_bb);
+    if (!BNULL(hashbuf1))  u64bUnMap(hashbuf1);
     done;
 }

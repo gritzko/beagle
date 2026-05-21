@@ -46,10 +46,15 @@ static b8 SPOTContainsStr(u8cs text, const char *needle) {
 }
 
 // ---- Test: error codes ----
+// SPOTEND  = SPOTNext exhausted the haystack (clean finish, no more matches).
+// SPOTBAD  = real input error: empty/oversized needle, malformed init.
+// SPOTNONE = internal "no match at this position" sentinel — used by
+//            spot_match_flat for backtracking; never escapes SPOTNext.
 ok64 SPOTtestCodes() {
     sane(1);
-    test(0 == strcmp(ok64str(SPOTEND), "SPOTEND"), FAILSANITY);
-    test(0 == strcmp(ok64str(SPOTBAD), "SPOTBAD"), FAILSANITY);
+    test(0 == strcmp(ok64str(SPOTEND),  "SPOTEND"),  FAILSANITY);
+    test(0 == strcmp(ok64str(SPOTBAD),  "SPOTBAD"),  FAILSANITY);
+    test(0 == strcmp(ok64str(SPOTNONE), "SPOTNONE"), FAILSANITY);
     done;
 }
 

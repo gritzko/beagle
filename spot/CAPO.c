@@ -63,7 +63,7 @@ b8 CAPOKnownExt(u8csc ext) {
 }
 
 // Simple ext-to-name for display (replaces BASTCodec)
-static void CAPOCodecName(u8csp codec, u8csc ext) {
+static void capo_codec_name(u8csp codec, u8csc ext) {
     if (u8csEmpty(ext)) {
         a_cstr(text_lit, "text");
         u8csMv(codec, text_lit);
@@ -128,14 +128,14 @@ ok64 CAPOEmit(u64 entry) {
     return r;
 }
 
-static ok64 CAPOTriCB(void0p arg, u8cs tri) {
+static ok64 capo_tri_cb(void0p arg, u8cs tri) {
     CAPOTriCtx *ctx = (CAPOTriCtx *)arg;
     u64 entry = wh64Pack(SPOT_TRI, ctx->fn_hash20, CAPOTri40(tri));
     return CAPOEmit(entry);
 }
 
 // Walk packed tokens, extract RON64 trigrams from source text
-static ok64 CAPOTriExtractToks(u32cs toks, u8cp base,
+static ok64 capo_tri_extract_toks(u32cs toks, u8cp base,
                                 ok64 (*cb)(void0p, u8cs), void0p arg) {
     sane(cb != NULL);
     int len = (int)$len(toks);
@@ -176,7 +176,7 @@ static ok64 capo_index_blob_inner(u8csc source, u8csc ext,
     a_dup(u32c, tokslice, u32bDataC(toks));
 
     CAPOTriCtx ctx = { .fn_hash20 = fn_hash20 };
-    call(CAPOTriExtractToks, tokslice, source[0], CAPOTriCB, &ctx);
+    call(capo_tri_extract_toks, tokslice, source[0], capo_tri_cb, &ctx);
 
     //  Emit symbol mention/definition entries.
     int ntoks = (int)u32csLen(tokslice);
@@ -239,30 +239,45 @@ ok64 CAPOIndexFile(u8csc source, u8csc ext, u8csc full_path) {
 //  loop after each emit; `spot_memo_hit` only reads on-disk puppies
 //  so a live view of `SPOT.runs[]` is sufficient and unmap-safe.
 
+//  Build a typed u64 view over a puppy stack's data slices.  Fills the
+//  caller-owned `runs[0..CAPO_MAX_LEVELS)` array, returns the entry
+//  count actually written.  When `total` is non-NULL the sum of view
+//  lengths (in u64 entries) lands there.  Excess pups beyond
+//  CAPO_MAX_LEVELS are silently dropped — the caller is responsible
+//  for logging if it cares (different callers want different messages).
+static u32 spot_pups_view_u64(u64cs *runs, size_t *total, kv64b pups) {
+    u32 nfiles = DOGPupCount(pups);
+    if (nfiles > CAPO_MAX_LEVELS) nfiles = CAPO_MAX_LEVELS;
+    u32 nview = 0;
+    if (total != NULL) *total = 0;
+    for (u32 i = 0; i < nfiles; i++) {
+        u8cs raw = {};
+        DOGPupData(raw, pups, i);
+        if (raw[0] == NULL) continue;
+        u64cp base = (u64cp)raw[0];
+        size_t bytes = (size_t)(raw[1] - raw[0]);
+        runs[nview][0] = base;
+        runs[nview][1] = base + bytes / sizeof(u64);
+        if (total != NULL) *total += bytes / sizeof(u64);
+        nview++;
+    }
+    return nview;
+}
+
 void CAPORefreshView(void) {
     spot *s = &SPOT;
     s->runs_n = 0;
     if (!spot_is_open()) return;
-    u32 n = DOGPupCount(s->puppies);
     //  The 1/8 LSM ladder caps at ~24 levels well past any realistic
     //  repo size.  Exceeding CAPO_MAX_LEVELS means a compaction or
     //  pup-stack bug — make it loud rather than silently truncate.
+    u32 n = DOGPupCount(s->puppies);
     if (n > CAPO_MAX_LEVELS) {
         fprintf(stderr,
             "spot: CAPORefreshView: %u pups exceeds CAPO_MAX_LEVELS=%u "
             "(later runs ignored)\n", n, (u32)CAPO_MAX_LEVELS);
-        n = CAPO_MAX_LEVELS;
     }
-    for (u32 i = 0; i < n; i++) {
-        u8cs raw = {};
-        DOGPupData(raw, s->puppies, i);
-        if (raw[0] == NULL) continue;
-        u64cp base = (u64cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        s->runs[s->runs_n][0] = base;
-        s->runs[s->runs_n][1] = base + bytes / sizeof(u64);
-        s->runs_n++;
-    }
+    s->runs_n = spot_pups_view_u64(s->runs, NULL, s->puppies);
 }
 
 void CAPORuns(u64cssp out) {
@@ -276,22 +291,10 @@ ok64 CAPOCompact(void) {
     sane(YES);
     spot *s = &SPOT;
 
-    u32 nfiles = DOGPupCount(s->puppies);
-    if (nfiles < 2) done;
+    if (DOGPupCount(s->puppies) < 2) done;
 
-    //  Build typed view from puppy data slices.
     u64cs runs[CAPO_MAX_LEVELS] = {};
-    u32 nview = 0;
-    for (u32 i = 0; i < nfiles && nview < CAPO_MAX_LEVELS; i++) {
-        u8cs raw = {};
-        DOGPupData(raw, s->puppies, i);
-        if (raw[0] == NULL) continue;
-        u64cp base = (u64cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        runs[nview][0] = base;
-        runs[nview][1] = base + bytes / sizeof(u64);
-        nview++;
-    }
+    u32 nview = spot_pups_view_u64(runs, NULL, s->puppies);
     u64css stack = {runs, runs + nview};
 
     if (HITu64IsCompact(stack)) done;
@@ -329,24 +332,11 @@ ok64 CAPOCompactAll(void) {
     sane(YES);
     spot *s = &SPOT;
 
-    u32 nfiles = DOGPupCount(s->puppies);
-    if (nfiles <= 1) done;
+    if (DOGPupCount(s->puppies) <= 1) done;
 
-    //  Build typed view over the whole stack.
     u64cs runs[CAPO_MAX_LEVELS] = {};
-    u32 nview = 0;
     size_t total = 0;
-    for (u32 i = 0; i < nfiles && nview < CAPO_MAX_LEVELS; i++) {
-        u8cs raw = {};
-        DOGPupData(raw, s->puppies, i);
-        if (raw[0] == NULL) continue;
-        u64cp base = (u64cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        runs[nview][0] = base;
-        runs[nview][1] = base + bytes / sizeof(u64);
-        total += $len(runs[nview]);
-        nview++;
-    }
+    u32 nview = spot_pups_view_u64(runs, &total, s->puppies);
     u64css stack = {runs, runs + nview};
     fprintf(stderr, "spot: merging %u runs, %zu total entries\n",
             nview, total);
@@ -394,7 +384,7 @@ static ok64 spot_worker_dir(path8b out, path8s leafdir, u32 w) {
     a_cstr(prefix, ".w");
     call(u8bFeed, name, prefix);
     call(RONu8sFeedPad, u8bIdle(name), (ok64)w, CAPO_WORKER_PAD);
-    ((u8 **)name)[2] += CAPO_WORKER_PAD;
+    call(u8bFed, name, CAPO_WORKER_PAD);
     call(PATHu8bPush, out, u8bDataC(name));
     call(PATHu8bTerm, out);
     done;
@@ -427,8 +417,7 @@ ok64 CAPOMergeWorkers(u32 nw) {
         (void)DOGPupOpenAll(wp, $path(wdir), ext);
     }
 
-    //  Build typed view; cap at CAPO_MAX_LEVELS just in case a worker
-    //  somehow ended up with multiple pups (CAPOCompactAll can fail).
+    //  Build typed view; helper caps at CAPO_MAX_LEVELS internally.
     u32 nfiles = (u32)kv64bDataLen(wp);
     if (nfiles == 0) {
         DOGPupClose(wp);
@@ -446,23 +435,11 @@ ok64 CAPOMergeWorkers(u32 nw) {
         fprintf(stderr,
                 "spot: warning: worker merge saw %u pups, capping at %u\n",
                 nfiles, (u32)CAPO_MAX_LEVELS);
-        nfiles = CAPO_MAX_LEVELS;
     }
 
     u64cs runs[CAPO_MAX_LEVELS] = {};
-    u32 nview = 0;
     size_t total = 0;
-    for (u32 i = 0; i < nfiles && nview < CAPO_MAX_LEVELS; i++) {
-        u8cs raw = {};
-        DOGPupData(raw, wp, i);
-        if (raw[0] == NULL) continue;
-        u64cp base = (u64cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        runs[nview][0] = base;
-        runs[nview][1] = base + bytes / sizeof(u64);
-        total += $len(runs[nview]);
-        nview++;
-    }
+    u32 nview = spot_pups_view_u64(runs, &total, wp);
     u64css stack = {runs, runs + nview};
 
     Bu64 mbuf = {};
@@ -498,7 +475,7 @@ ok64 CAPOMergeWorkers(u32 nw) {
 // Seek a HIT to an off-block: [prefix, prefix + 1<<24).  An entry
 // is `[off:40|id:20|type:4]`, so a fixed `off` covers exactly the
 // 2^24 (id, type) span at the low end.  Caller filters by type.
-static ok64 CAPOSeekPrefix(u64css iter, u64 prefix) {
+static ok64 capo_seek_prefix(u64css iter, u64 prefix) {
     u64 lo = prefix;
     u64 hi = prefix + SPOT_OFF_RANGE;
     return HITu64SeekRange(iter, &lo, &hi);
@@ -511,7 +488,7 @@ static void capo_iter_to_tri(u64css iter) {
 }
 
 ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes) {
-    ok64 o = CAPOSeekPrefix(iter, tri_prefix);
+    ok64 o = capo_seek_prefix(iter, tri_prefix);
     if (o != OK) return OK;
 
     u64 collected = 0;
@@ -534,7 +511,7 @@ ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes) {
 // stream.  Both hashbuf data and the (TRI-only) HIT slice are sorted
 // by fn_hash20.
 void CAPOFilterInPlace(u64bp hashbuf, u64css iter, u64 prefix) {
-    CAPOSeekPrefix(iter, prefix);
+    capo_seek_prefix(iter, prefix);
     u64s data = {};
     $mv(data, u64bData(hashbuf));
     u64 *r = data[0], *w = data[0];
@@ -616,11 +593,17 @@ void CAPOFindFunc(u8csc source, u32 pos, u8csc ext, u8s out) {
     }
 
     for (int tries = 0; tries < 200 && !u8csEmpty(tail); tries++) {
-        //  Peel one line off the right of `tail`.
-        u8cp line_lo = tail[0];
-        $rof(u8c, p, tail) { if (*p == '\n') { line_lo = p + 1; break; } }
-        u8cs line = {line_lo, tail[1]};
-        tail[1] = (line_lo > tail[0]) ? line_lo - 1 : tail[0];
+        //  Peel one line off the right of `tail`.  u8csRevFind retreats
+        //  `scan`'s term so scan[1]-1 sits on the matched '\n' (or empties
+        //  the slice when no '\n' is left).
+        a_dup(u8c, scan, tail);
+        u8cs line = {tail[0], tail[1]};
+        if (u8csRevFind(scan, '\n') == OK) {
+            line[0] = scan[1];           // line starts one past the '\n'
+            tail[1] = scan[1] - 1;        // peel: drop '\n' and after
+        } else {
+            tail[1] = tail[0];            // no '\n' left → last line
+        }
 
         if (u8csEmpty(line)) continue;
         u8 ch = *u8csHead(line);
@@ -724,7 +707,7 @@ ok64 CAPOBuildHunk(u8csc source, u32cs htoks, u32 ctx_lo, u32 ctx_hi,
 
 // --- Per-file replacement ---
 
-static ok64 CAPOSpotReplace(u8csc source, u8bp mapped, u32cs htoks,
+static ok64 capo_spot_replace(u8csc source, u8bp mapped, u32cs htoks,
                              u8csc needle, u8csc replace, u8csc file_ext,
                              u8bp fpbuf, u8csc line,
                              int *total_replacements,
@@ -761,7 +744,7 @@ static ok64 CAPOSpotReplace(u8csc source, u8bp mapped, u32cs htoks,
 
 // --- Per-file search+display ---
 
-static ok64 CAPOSpotFile(u8csc source, u32cs htoks, u8csc needle,
+static ok64 capo_spot_file(u8csc source, u32cs htoks, u8csc needle,
                           u8csc file_ext, u8csc line) {
     sane(!$empty(needle));
     aBpad(u32, nbuf, 4096);
@@ -871,11 +854,9 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
         u8cp src = source[0];
         u32 ntoks = (u32)$len(htoks);
         u32 hit_tok = 0;
-        size_t ndl_len = (size_t)$len(sc->needle);
         for (u32 i = 0; i < ntoks; i++) {
             u8cs tv = {}; tok32Val(tv, htoks, src, i);
-            if ((size_t)$len(tv) == ndl_len &&
-                memcmp(tv[0], sc->needle[0], ndl_len) == 0) hit_tok++;
+            if (u8csEq(tv, sc->needle)) hit_tok++;
         }
         fprintf(stderr,
             "spot:   sgcb %.*s ntoks=%u eq_tokens=%u\n",
@@ -891,12 +872,12 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
                    (u32cp)u32bIdleHead(toks)};
 
     if (!$empty(sc->replace))
-        CAPOSpotReplace(source, mapped, htoks, sc->needle,
+        capo_spot_replace(source, mapped, htoks, sc->needle,
                         sc->replace, file_ext, fpbuf, relpath,
                         &sc->total_replacements,
                         &sc->total_files_replaced);
     else
-        CAPOSpotFile(source, htoks, sc->needle, file_ext, relpath);
+        capo_spot_file(source, htoks, sc->needle, file_ext, relpath);
 
     if ($empty(sc->replace)) {
         if (mapped)
@@ -910,8 +891,12 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
     return OK;
 }
 
-ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
-              u8css files, uri const *ref) {
+//  Inner body of CAPOSpot.  Owns the work, never the resources.  The
+//  wrapper allocates `hashbuf1` (CAPOTrigramFilter may u64bMap it) and
+//  unmaps it after we return so an early `call(...)` here does not leak.
+static ok64 capo_spot_inner(u8csc needle, u8csc replace, u8csc ext,
+                             u8csc reporoot, u8css files, uri const *ref,
+                             Bu64 hashbuf1) {
     sane($ok(needle) && $ok(ext) && $ok(reporoot));
 
     if (!CAPOKnownExt(ext)) return SPOTBAD;
@@ -920,7 +905,6 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
         return SPOTBAD;
     }
 
-    Bu64 hashbuf1 = {};
     b8 has_trigrams = NO;
     if ($len(files) == 0 && ref == NULL)
         CAPOTrigramFilter(hashbuf1, &has_trigrams, needle, reporoot);
@@ -954,7 +938,15 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
     if (!$empty(replace))
         fprintf(stderr, "%d replacements in %d files\n",
                 sc.total_replacements, sc.total_files_replaced);
+    done;
+}
 
+ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
+              u8css files, uri const *ref) {
+    sane($ok(needle) && $ok(ext) && $ok(reporoot));
+    Bu64 hashbuf1 = {};
+    try(capo_spot_inner, needle, replace, ext, reporoot, files, ref,
+        hashbuf1);
     if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
     done;
 }
@@ -1149,6 +1141,7 @@ typedef struct {
     keeper             *k;
     CAPOScanOpts const *opts;
     ok64                last_err;
+    Bu8                 bbuf;     // borrowed scratch, allocated by CAPOScanRef
 } capo_ref_scan_ctx;
 
 static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
@@ -1165,23 +1158,18 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
         !TOKSameLexer(file_ext, cx->opts->target_ext)) return OK;
 
     sha1 bsha = {};
-    sha1Mv(&bsha, (sha1cp)esha);
+    sha1Mv(&bsha, (sha1 const *)esha);
 
-    Bu8 bbuf = {};
-    if (u8bAllocate(bbuf, 1UL << 22) != OK) return OK;
+    u8bReset(cx->bbuf);
     u8 btype = 0;
-    ok64 gr = KEEPGetExact(&bsha, bbuf, &btype);
-    if (gr != OK || btype != DOG_OBJ_BLOB) {
-        u8bFree(bbuf);
-        return OK;
-    }
-    u8cs source = {u8bDataHead(bbuf), u8bIdleHead(bbuf)};
+    ok64 gr = KEEPGetExact(&bsha, cx->bbuf, &btype);
+    if (gr != OK || btype != DOG_OBJ_BLOB) return OK;
+    u8cs source = {u8bDataHead(cx->bbuf), u8bIdleHead(cx->bbuf)};
 
     CAPOProgress(path);
 
     ok64 fo = cx->opts->file_fn(cx->opts->file_ctx, path, source,
                                  file_ext, NULL, NULL);
-    u8bFree(bbuf);
     if (fo != OK) cx->last_err = fo;
     return OK;
 }
@@ -1189,10 +1177,15 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
 ok64 CAPOScanRef(uri const *target, CAPOScanOpts const *opts) {
     sane(target && opts && opts->file_fn);
     keeper *k = &KEEP;
-    capo_ref_scan_ctx cx = {k, opts, OK};
+    //  Allocate the per-scan 4 MB blob buffer once (ABC.md §5: top of
+    //  call chain), pass it to the visitor via ctx — beats the old
+    //  alloc/free pair per visited file.
+    capo_ref_scan_ctx cx = {.k = k, .opts = opts, .last_err = OK};
+    call(u8bAllocate, cx.bbuf, 1UL << 22);
     //  KEEPLsFiles takes a non-const uri*, but the function body only
     //  reads from it.  Cast away const — the callee does not mutate.
     ok64 o = KEEPLsFiles((uricp)target, capo_ref_visit, &cx);
+    u8bFree(cx.bbuf);
     CAPOProgress((u8csc){});
     if (cx.last_err != OK) return cx.last_err;
     return o;
@@ -1280,7 +1273,7 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
 
     b8 trace = SPOT.trace_query;
     //  Slide a 3-byte window over `text`; same invariant as
-    //  CAPOTriExtractToks — `p + 2 < text[1]` is guaranteed by
+    //  capo_tri_extract_toks — `p + 2 < text[1]` is guaranteed by
     //  iterating over the prefix that has 2 bytes of right-side room.
     if ((size_t)$len(text) >= 3) {
         a_head(u8c, scan, text, (size_t)$len(text) - 2);
