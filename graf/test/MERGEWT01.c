@@ -75,7 +75,7 @@ static ok64 make_single_leaf_tree(keep_pack *p,
 
 //  Build a commit body and feed it to keeper.
 static ok64 commit_one(keep_pack *p,
-                       sha1 const *tree_sha, sha1 const *parent_sha,
+                       sha1cp tree_sha, sha1cp parent_sha,
                        char const *msg, long ts, sha1 *out_sha) {
     sane(p && tree_sha && msg && out_sha);
 
@@ -115,7 +115,7 @@ static ok64 commit_one(keep_pack *p,
 //  Convenience: build tree+commit for one file with `content` parented
 //  on `parent` (NULL for root).
 static ok64 commit_one_file(keep_pack *p, char const *name,
-                            char const *content, sha1 const *parent,
+                            char const *content, sha1cp parent,
                             char const *msg, long ts, sha1 *out_commit) {
     sane(p && name && content && msg && out_commit);
     sha1 blob = {}, tree = {};

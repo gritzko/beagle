@@ -31,7 +31,7 @@
 #include "dog/HOME.h"
 #include "dog/git/SHA1.h"
 
-static void sha_to_hex(char *hex41, sha1 const *s) {
+static void sha_to_hex(char *hex41, sha1cp s) {
     static const char HEX[] = "0123456789abcdef";
     for (int i = 0; i < 20; i++) {
         hex41[2*i]   = HEX[s->data[i] >> 4];

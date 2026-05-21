@@ -23,7 +23,7 @@
 // =====================================================================
 
 //  20-byte SHA → 40 hex bytes appended to out.
-static void proj_feed_sha_hex(u8b out, sha1 const *s) {
+static void proj_feed_sha_hex(u8b out, sha1cp s) {
     sha1hex hex = {};
     sha1hexFromSha1(&hex, s);
     a_rawc(hs, hex);
@@ -87,7 +87,7 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
 //  Descend a '/'-separated subpath inside a tree.  Caller owns `pathbuf`
 //  (used as scratch).  Returns the final entry's sha + kind in *out_*.
 //  Empty / "." subpath returns the input tree as a DIR.
-static ok64 proj_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
+static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
                           sha1 *out_sha, u8 *out_kind) {
     sane(k && root_tree && out_sha && out_kind);
     sha1 cur = *root_tree;

@@ -84,7 +84,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     call(u8bMap, bbuf, 1UL << 28);
     u8 bt = 0;
     sha1 entry_sha = {};
-    sha1Mv(&entry_sha, (sha1 const *)esha);
+    sha1Mv(&entry_sha, (sha1cp)esha);
     ok64 o = KEEPGetExact(&entry_sha, bbuf, &bt);
     if (o != OK) {
         //  Empty-blob short-circuit.  The well-known empty-blob sha
@@ -568,7 +568,7 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks) {
 //  Best-effort per path: a per-path failure is logged and the rest
 //  continue.
 static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
-                             sha1 const *base, sha1 const *tgt,
+                             sha1cp base, sha1cp tgt,
                              ron60 stamp_ts) {
     sane($ok(reporoot) && base && tgt);
     if (u8csEmpty(merges)) done;
@@ -693,7 +693,7 @@ static ok64 get_verify_closure(keeper *k, u8csc target_hex) {
 //  sniff/POST.c §"ff-only pre-flight": LCA(a, b) == a iff a is an
 //  ancestor of b.  Graf opened RO inline (idempotent, same pattern
 //  as `get_drain_merges`).
-static ok64 get_ff_check(sha1 const *local_tip, sha1 const *target_tip) {
+static ok64 get_ff_check(sha1cp local_tip, sha1cp target_tip) {
     sane(local_tip && target_tip);
     if (sha1Eq(local_tip, target_tip)) done;
 

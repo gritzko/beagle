@@ -103,19 +103,19 @@ static int NEILBoundaryScore(u32cs toks, u8cp base, u32 idx, u32 ntoks) {
 ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                  u8csc old_src, u8csc new_src) {
     sane(edl != NULL);
-    u32 nedl = (u32)(edl[0] - edl[2]);
+    e32cs entries = {edl[2], edl[0]};
     //  Short EDLs have no kill candidates (kill needs surrounding
     //  edits) but still need canonicalization — a 2-entry [DEL, INS]
     //  from DIFF must come back as [INS, DEL] per the in-rm invariant.
-    if (nedl < 3) return NEILCanon(edl);
+    if (u32csLen(entries) < 3) return NEILCanon(edl);
 
     // Work in a heap buffer (killed EQ expands to DEL+INS).
-    u32 cap = nedl * 2 + 4;
     Bu32 bbuf = {};
-    call(u32bAlloc, bbuf, cap);
+    call(u32bAlloc, bbuf, u32csLen(entries) * 2 + 4);
     e32 *buf = bbuf[0];
-    memcpy(buf, edl[2], nedl * sizeof(e32));
-    u32 n = nedl;
+    u32s dst = {buf, buf + u32csLen(entries)};
+    (void)u32sCopy(dst, entries);
+    u32 n = (u32)u32csLen(entries);
 
     // Iterative semantic cleanup: kill false equalities until stable.
     // Each iteration merges edit regions, potentially exposing new kills.
@@ -393,7 +393,9 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
     // Copy back into edl buffer
     u32 ecap = (u32)(edl[1] - edl[2]);
     u32 final_n = (n < ecap) ? n : ecap;
-    memcpy(edl[2], buf, final_n * sizeof(e32));
+    u32s  edst = {edl[2], edl[2] + final_n};
+    u32cs esrc = {buf, buf + final_n};
+    (void)u32sCopy(edst, esrc);
     edl[0] = edl[2] + final_n;
 
     u32bFree(bbuf);
@@ -418,7 +420,8 @@ static ok64 neil_shift_pass(e32g edl, u32cs old_toks, u32cs new_toks,
                              u8csc old_src, u8csc new_src, b8 *changed) {
     sane(edl != NULL && changed != NULL);
     *changed = NO;
-    u32 nedl = (u32)(edl[0] - edl[2]);
+    e32cs entries = {edl[2], edl[0]};
+    u32 nedl = (u32)u32csLen(entries);
     if (nedl < 3) done;
 
     u32 new_ntoks = (u32)$len(new_toks);
@@ -640,7 +643,9 @@ ok64 NEILCanon(e32g edl) {
 
     u32 ecap = (u32)(edl[1] - edl[2]);
     u32 final_n = (w < ecap) ? w : ecap;
-    memcpy(edl[2], out, final_n * sizeof(e32));
+    u32s  edst = {edl[2], edl[2] + final_n};
+    u32cs esrc = {out, out + final_n};
+    (void)u32sCopy(edst, esrc);
     edl[0] = edl[2] + final_n;
 
     u32bFree(buf);

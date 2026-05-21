@@ -198,7 +198,7 @@ void REFADVClose(refadv *adv) {
 
 // --- Tip → dirs lookup ---
 
-u32 REFADVTipDirs(refadv const *adv, sha1 const *tip,
+u32 REFADVTipDirs(refadv const *adv, sha1cp tip,
                   u8cs *out_dirs, u32 cap) {
     if (!adv || !tip || !out_dirs || cap == 0) return 0;
     u32 n = 0;

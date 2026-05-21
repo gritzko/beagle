@@ -197,7 +197,7 @@ static u64 get_lca(u64 a_h40, u64 b_h40) {
 // Public wrapper: `sha1 *` in/out for callers outside graf (sniff's
 // PATCH uses this to classify modify/delete cases).  Returns OK with
 // `*out` all-zero when no shared ancestor is indexed.
-ok64 GRAFLca(sha1 *out, sha1 const *a, sha1 const *b) {
+ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b) {
     sane(out && a && b);
     zero(out->data);
 
@@ -294,7 +294,7 @@ static ok64 graf_fold_wt_layer(weave *next, b8 *used_next,
 //  Returns OK on success.  GRAFFAIL on history-empty-on-both-sides.
 //  Caller writes `out` to disk and stamps the new mtime.
 ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
-                            sha1 const *base, sha1 const *tgt,
+                            sha1cp base, sha1cp tgt,
                             u32 edges,
                             u64 const *skip_hl, u32 nskip,
                             u8b out) {
@@ -377,7 +377,7 @@ cleanup:
 }
 
 ok64 GRAFMergeWtFile(u8cs path, u8cs reporoot,
-                     sha1 const *base, sha1 const *tgt,
+                     sha1cp base, sha1cp tgt,
                      u8b out) {
     //  Default to parent-only reachability — historic shape, kept so
     //  call sites that haven't migrated to the tunable variant get

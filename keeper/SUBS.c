@@ -19,7 +19,7 @@
 //     parsed octal mode.  Returns KEEPNONE if no entry, KEEPFAIL on
 //     malformed tree, OK on success.
 
-static ok64 keep_subs_tree_step(sha1 const *tree_sha, u8cs name,
+static ok64 keep_subs_tree_step(sha1cp tree_sha, u8cs name,
                                 sha1 *out_sha, u32 *out_mode) {
     sane(tree_sha && out_sha);
 
@@ -51,7 +51,7 @@ static ok64 keep_subs_tree_step(sha1 const *tree_sha, u8cs name,
 //  Walk `path` (slash-separated segments) starting at `root_tree`
 //  through nested tree steps; on success fills the final entry's sha
 //  + mode.  Returns KEEPNONE if any segment misses.
-static ok64 keep_subs_walk_path(sha1 const *root_tree, u8cs path,
+static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
                                 sha1 *out_sha, u32 *out_mode) {
     sane(root_tree && out_sha);
     sha1 cur = *root_tree;
@@ -80,7 +80,7 @@ static ok64 keep_subs_walk_path(sha1 const *root_tree, u8cs path,
 // --- ULOG row emission via SUBSu8sParse callback ----------------
 
 typedef struct {
-    sha1 const *tree_sha;
+    sha1cp tree_sha;
     u8bp        out;
     ron60       ts;
     ron60       verb;
@@ -94,7 +94,7 @@ typedef struct {
 //  / path slots; the mount path lands in the query slot; the pin is
 //  the fragment.
 static ok64 keep_subs_emit_row(keep_subs_emit_ctx *kc, u8cs path,
-                               u8cs url, sha1 const *pin) {
+                               u8cs url, sha1cp pin) {
     sane(kc && pin);
     //  ts + verb in RON64.
     call(RONutf8sFeed, u8bIdle(kc->out), kc->ts);
@@ -146,7 +146,7 @@ static ok64 keep_subs_step(u8cs path, u8cs url, void *vctx) {
     return r;
 }
 
-ok64 KEEPSubsAt(sha1 const *tree_sha, ron60 ts, ron60 verb, u8bp out) {
+ok64 KEEPSubsAt(sha1cp tree_sha, ron60 ts, ron60 verb, u8bp out) {
     sane(tree_sha && out);
     u8bReset(out);
 

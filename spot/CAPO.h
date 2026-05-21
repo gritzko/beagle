@@ -55,7 +55,7 @@ con ok64 SPOTNOPATH = 0x71961d5d864a751;
 #define CAPOTriChar(c) (RON64_REV[(u8)(c)] != 0xff)
 
 // 60-bit object-id key.  Same shape as keeper's WHIFFHashlet60.
-fun u64 CAPOObjHashlet(sha1 const *sha) { return WHIFFHashlet60(sha); }
+fun u64 CAPOObjHashlet(sha1cp sha) { return WHIFFHashlet60(sha); }
 
 // Full repo-relative path → 20-bit posting key.  Truncated
 // `RAPHash(full_path)`.  Under the new arrangement (DOG.md §"Indexing")

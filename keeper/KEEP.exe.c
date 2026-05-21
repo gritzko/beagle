@@ -642,7 +642,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
 //  a fast-forward by any normal-flow standard.  NO is returned on
 //  cap-exceeded or any keeper miss; callers treat that as "refuse,
 //  user should `be patch //origin?` + `be post` to resolve".
-static b8 keeper_post_is_ancestor(sha1 const *from, sha1 const *target) {
+static b8 keeper_post_is_ancestor(sha1cp from, sha1cp target) {
     if (!from || !target) return NO;
     if (sha1cmp(from, target) == 0) return YES;
 

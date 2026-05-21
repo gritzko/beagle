@@ -102,7 +102,7 @@ static int pid_leaf_cmp(void const *a_, void const *b_) {
     return 0;
 }
 
-static ok64 pid_collect(sha1 const *tree_sha, pid_collector *c) {
+static ok64 pid_collect(sha1cp tree_sha, pid_collector *c) {
     sane(tree_sha && c);
     ok64 o = WALKTreeLazy(tree_sha->data, pid_visit, c);
     if (o == WALKSTOP && c->err != OK) return c->err;
@@ -161,8 +161,8 @@ static u64 pid_digest(pid_collector const *parent, pid_collector const *child) {
         }
 
         u8cs ps = {};
-        sha1 const *psha = NULL;
-        sha1 const *csha = NULL;
+        sha1cp psha = NULL;
+        sha1cp csha = NULL;
         sha1 zero = {};
         if (c == 0) {
             u8csMv(ps, pl->path);
@@ -255,7 +255,7 @@ out_p:
 //  Helper: fetch blob bytes by sha into `buf`.  Empty `buf` on
 //  KEEPNONE so callers can degenerate gracefully (empty-side merge
 //  shape).
-static ok64 rebase_blob_at(u8 *const *buf, sha1 const *sha) {
+static ok64 rebase_blob_at(u8 *const *buf, sha1cp sha) {
     sane(buf);
     if (sha1empty(sha)) return OK;  //  treat as empty
     u8 t = 0;
@@ -297,7 +297,7 @@ typedef struct {
 
 //  Parse a tree body into entries.  `arena_out` buffer holds the
 //  intern'd name+mode bytes.
-static ok64 tm_parse(sha1 const *tree_sha, tm_set *out,
+static ok64 tm_parse(sha1cp tree_sha, tm_set *out,
                      u8 *const *arena) {
     sane(out && arena);
     Bu8 tbuf = {};
@@ -354,7 +354,7 @@ static tm_entry *tm_find(tm_set *s, u8cs name) {
 
 //  Append one git-format tree entry "<mode> <name>\0<20-byte sha>" to `out`.
 static ok64 tm_emit_entry(u8 *const *out, u8cs mode, u8cs name,
-                          sha1 const *sha) {
+                          sha1cp sha) {
     sane(out);
     call(u8bFeed, out, mode);
     call(u8bFeed1, out, ' ');
@@ -367,8 +367,8 @@ static ok64 tm_emit_entry(u8 *const *out, u8cs mode, u8cs name,
 
 //  Forward decl: recursive tree merge.
 static ok64 tm_merge_trees(sha1 *tree_out_sha,
-                           sha1 const *base_t, sha1 const *ours_t,
-                           sha1 const *theirs_t,
+                           sha1cp base_t, sha1cp ours_t,
+                           sha1cp theirs_t,
                            u8cs dir_path,
                            graf_rebase_emit_cb cb, void *ctx,
                            b8 *had_conflict);
@@ -417,8 +417,8 @@ static b8 tm_pred_branch(u32 h32, void *ctx) {
 //  contract — chain-aware weaves and DAG-ancestor predicates land
 //  in step 4.
 static ok64 tm_merge_blob(sha1 *out_sha,
-                          sha1 const *base, sha1 const *ours,
-                          sha1 const *theirs,
+                          sha1cp base, sha1cp ours,
+                          sha1cp theirs,
                           u8cs filepath,
                           graf_rebase_emit_cb cb, void *ctx,
                           b8 *out_conflict) {
@@ -503,8 +503,8 @@ static ok64 tm_merge_blob(sha1 *out_sha,
 }
 
 static ok64 tm_merge_trees(sha1 *tree_out_sha,
-                           sha1 const *base_t, sha1 const *ours_t,
-                           sha1 const *theirs_t,
+                           sha1cp base_t, sha1cp ours_t,
+                           sha1cp theirs_t,
                            u8cs dir_path,
                            graf_rebase_emit_cb cb, void *ctx,
                            b8 *had_conflict) {
@@ -521,14 +521,20 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
         *tree_out_sha = *ours_t; done;
     }
 
-    //  Parse all three trees.
+    //  Parse all three trees.  Entry arrays are 4096 * sizeof(tm_entry)
+    //  each (~224KB) — mmap to keep them off the stack and free
+    //  unconditionally at cleanup via u8bUnMap.  All buffers declared
+    //  up front so cleanup labels can reach them on any goto path.
     tm_set bs = {}, os = {}, ts = {};
     bs.cap = os.cap = ts.cap = REBASE_TREE_ENTRIES;
-    bs.e = calloc(bs.cap, sizeof(tm_entry));
-    os.e = calloc(os.cap, sizeof(tm_entry));
-    ts.e = calloc(ts.cap, sizeof(tm_entry));
-    Bu8 arena = {};
-    if (!bs.e || !os.e || !ts.e) { goto fail_alloc; }
+    Bu8 bs_buf = {}, os_buf = {}, ts_buf = {}, names_buf = {}, arena = {};
+    ok64 mb = u8bMap(bs_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    ok64 mo = u8bMap(os_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    ok64 mt = u8bMap(ts_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    if (mb != OK || mo != OK || mt != OK) { goto fail_alloc; }
+    bs.e = (tm_entry *)u8bDataHead(bs_buf);
+    os.e = (tm_entry *)u8bDataHead(os_buf);
+    ts.e = (tm_entry *)u8bDataHead(ts_buf);
     if (u8bAllocate(arena, REBASE_TREE_ENTRIES * 256) != OK) goto fail_alloc;
 
     ok64 ret = OK;
@@ -538,8 +544,11 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     if (ret != OK) goto cleanup;
 
     //  Build a deduplicated, sorted list of names across all three.
-    u8cs *names = calloc(bs.n + os.n + ts.n + 1, sizeof(u8cs));
-    if (!names) { ret = GRAFFAIL; goto cleanup; }
+    if (u8bMap(names_buf,
+               (bs.n + os.n + ts.n + 1) * sizeof(u8cs)) != OK) {
+        ret = GRAFFAIL; goto cleanup;
+    }
+    u8cs *names = (u8cs *)u8bDataHead(names_buf);
     u32 nnames = 0;
     for (u32 src = 0; src < 3; src++) {
         tm_set *s = (src == 0) ? &bs : (src == 1) ? &os : &ts;
@@ -659,7 +668,6 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
         continue;
     loop_fail:
         u8bFree(newtree);
-        free(names);
         goto cleanup;
     }
 
@@ -672,23 +680,25 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     }
 
     u8bFree(newtree);
-    free(names);
 cleanup:
+    if (names_buf[0]) u8bUnMap(names_buf);
     if (u8bOK(arena)) u8bFree(arena);
-    free(bs.e); free(os.e); free(ts.e);
+    if (bs_buf[0]) u8bUnMap(bs_buf);
+    if (os_buf[0]) u8bUnMap(os_buf);
+    if (ts_buf[0]) u8bUnMap(ts_buf);
     return ret;
 
 fail_alloc:
-    if (bs.e) free(bs.e);
-    if (os.e) free(os.e);
-    if (ts.e) free(ts.e);
+    if (bs_buf[0]) u8bUnMap(bs_buf);
+    if (os_buf[0]) u8bUnMap(os_buf);
+    if (ts_buf[0]) u8bUnMap(ts_buf);
     if (u8bOK(arena)) u8bFree(arena);
     { return GRAFFAIL; }
 }
 
 //  Walk parent chain: collect commit SHAs from `child_tip` back to
 //  (but not including) `base_old`, oldest-first.
-static ok64 rebase_walk_chain(sha1 const *child_tip, sha1 const *base_old,
+static ok64 rebase_walk_chain(sha1cp child_tip, sha1cp base_old,
                               sha1 *list, u32 *nlist, u32 maxlist) {
     sane(child_tip && base_old && list && nlist);
     u32 n = 0;
@@ -722,7 +732,7 @@ static ok64 rebase_walk_chain(sha1 const *child_tip, sha1 const *base_old,
 //  Build the patch-id set of every commit reachable from `base_new`
 //  via parent chain.  Stops on root.  IDs are stored unsorted; lookup
 //  is linear (small N typical).
-static ok64 rebase_collect_pids(sha1 const *base_new, u64 *pids, u32 *n,
+static ok64 rebase_collect_pids(sha1cp base_new, u64 *pids, u32 *n,
                                 u32 maxn) {
     sane(base_new && pids && n);
     u32 cnt = 0;
@@ -757,8 +767,8 @@ static b8 rebase_pid_seen(u64 const *pids, u32 n, u64 pid) {
 //  Build a fresh commit body from an old one: replace tree, parent,
 //  committer; preserve author, message; drop gpgsig.
 static ok64 rebase_build_commit(u8 *const *out, u8csc old_body,
-                                sha1 const *new_tree,
-                                sha1 const *new_parent) {
+                                sha1cp new_tree,
+                                sha1cp new_parent) {
     sane(out);
 
     //  Emit tree + parent first.
@@ -835,8 +845,8 @@ static ok64 rebase_build_commit(u8 *const *out, u8csc old_body,
     done;
 }
 
-ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
-                sha1 const *child_tip,
+ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
+                sha1cp child_tip,
                 graf_rebase_emit_cb cb, void *ctx) {
     sane(base_old && base_new && child_tip);
 
@@ -845,20 +855,28 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
         done;
     }
 
-    //  1. Walk chain.
-    sha1 *chain = calloc(REBASE_PATH_MAX, sizeof(sha1));
-    if (!chain) { return GRAFFAIL; }
+    //  1. Walk chain.  REBASE_PATH_MAX=4096 sha1s ≈ 80KB; mmap it.
+    Bu8 chain_buf = {};
+    if (u8bMap(chain_buf, REBASE_PATH_MAX * sizeof(sha1)) != OK)
+        return GRAFFAIL;
+    sha1 *chain = (sha1 *)u8bDataHead(chain_buf);
     u32 nchain = 0;
     ok64 ret = rebase_walk_chain(child_tip, base_old,
                                  chain, &nchain, REBASE_PATH_MAX);
-    if (ret != OK) { free(chain); return ret; }
+    if (ret != OK) { u8bUnMap(chain_buf); return ret; }
 
-    //  2. Patch-id set of base_new ancestors.
-    u64 *pids = calloc(REBASE_PIDS_MAX, sizeof(u64));
-    if (!pids) { free(chain); { return GRAFFAIL; } }
+    //  2. Patch-id set of base_new ancestors.  REBASE_PIDS_MAX=8192
+    //  u64s = 64KB; mmap it.
+    Bu8 pids_buf = {};
+    if (u8bMap(pids_buf, REBASE_PIDS_MAX * sizeof(u64)) != OK) {
+        u8bUnMap(chain_buf); return GRAFFAIL;
+    }
+    u64 *pids = (u64 *)u8bDataHead(pids_buf);
     u32 npids = 0;
     ret = rebase_collect_pids(base_new, pids, &npids, REBASE_PIDS_MAX);
-    if (ret != OK) { free(chain); free(pids); return ret; }
+    if (ret != OK) {
+        u8bUnMap(chain_buf); u8bUnMap(pids_buf); return ret;
+    }
 
     //  3. Replay loop.
     //  `head_body_cache` keeps the most-recently-emitted commit's
@@ -870,7 +888,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
     Bu8  head_body_cache = {};
     b8   head_body_cached = NO;
     for (u32 i = 0; i < nchain && ret == OK; i++) {
-        sha1 const *cmt = &chain[i];
+        sha1cp cmt = &chain[i];
 
         //  Fetch commit body.
         Bu8 cbuf = {};
@@ -1009,8 +1027,8 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
         if (npids < REBASE_PIDS_MAX && pid != 0) pids[npids++] = pid;
     }
 
-    free(chain);
-    free(pids);
+    u8bUnMap(chain_buf);
+    u8bUnMap(pids_buf);
     if (head_body_cached) u8bFree(head_body_cache);
     return ret;
 }
@@ -1029,7 +1047,7 @@ ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
 //  can avoid the 60-bit-hashlet round-trip.  Returns KEEPNONE when
 //  the path is absent or the object isn't a commit/blob.
 static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
-                               sha1 const *commit_sha, u8cs filepath) {
+                               sha1cp commit_sha, u8cs filepath) {
     sane(buf && k && commit_sha);
 
     Bu8 cbuf = {};
@@ -1067,7 +1085,7 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
 ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                          weave **out_final,
                          keeper *k, u8cs filepath,
-                         sha1 const *chain, u32 nchain,
+                         sha1cp chain, u32 nchain,
                          GRAFweaveStepCb cb, void *cb_ctx) {
     sane(wsrc && wdst && wnu && out_final && k && $ok(filepath));
     *out_final = wsrc;

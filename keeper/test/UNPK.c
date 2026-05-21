@@ -145,7 +145,7 @@ typedef struct {
     u32 ncommits;
 } emit_collect;
 
-static void emit_cb(void *ctx, u8 type, sha1 const *sha,
+static void emit_cb(void *ctx, u8 type, sha1cp sha,
                      u8cs content) {
     (void)sha; (void)content;
     emit_collect *c = (emit_collect *)ctx;

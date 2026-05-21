@@ -72,7 +72,7 @@ static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
         e->mode[0] = mode_s[0]; e->mode[1] = mode_s[1];
         e->is_dir = ($len(mode_s) > 0 && *mode_s[0] == '4');
         e->present = YES;
-        sha1Mv(&e->sha, (sha1 const *)esha[0]);
+        sha1Mv(&e->sha, (sha1cp)esha[0]);
     }
     *nout = n;
     done;
@@ -100,7 +100,7 @@ static void sort_entries(entry *arr, u32 n) {
     }
 }
 
-fun b8 sha_eq(sha1 const *a, sha1 const *b) {
+fun b8 sha_eq(sha1cp a, sha1cp b) {
     return memcmp(a->data, b->data, 20) == 0;
 }
 
@@ -113,7 +113,7 @@ fun b8 sha_eq(sha1 const *a, sha1 const *b) {
 //  query is the commit sha hex.  Returns OK with `into` populated, or
 //  any GRAFFAIL / KEEPNONE variant on failure (caller treats those as
 //  "dir absent at that commit").
-static ok64 fetch_tree(u8b into, u8cs dir, sha1 const *sha) {
+static ok64 fetch_tree(u8b into, u8cs dir, sha1cp sha) {
     sane(into && sha);
     u8bReset(into);
 
@@ -134,7 +134,7 @@ static ok64 fetch_tree(u8b into, u8cs dir, sha1 const *sha) {
     return GRAFGet(into, u);
 }
 
-static ok64 fetch_blob(u8b into, u8cs path, sha1 const *sha) {
+static ok64 fetch_blob(u8b into, u8cs path, sha1cp sha) {
     sane(into && sha && !$empty(path));
     u8bReset(into);
 
@@ -151,7 +151,7 @@ static ok64 fetch_blob(u8b into, u8cs path, sha1 const *sha) {
 //  wrapper over `GRAFMergeWtFileTunable` with the foster-aware
 //  edge set patch_walk uses.
 static ok64 fetch_merge(u8b into, u8cs reporoot, u8cs path,
-                        sha1 const *ours, sha1 const *thrs) {
+                        sha1cp ours, sha1cp thrs) {
     sane(into && ours && thrs && !$empty(path));
     return GRAFMergeWtFileTunable(path, reporoot, ours, thrs,
                                   DAG_EDGE_PARENT | DAG_EDGE_FOSTER,
@@ -269,7 +269,7 @@ static void emit_status(const char *status, u8cs path) {
 //  they do, the file has user / prior-PATCH edits — emit a `dirty`
 //  status row.  Best-effort: any I/O error is silently ignored.
 static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
-                                  sha1 const *baseline_sha) {
+                                  sha1cp baseline_sha) {
     if ($empty(childpath) || baseline_sha == NULL) return;
     a_path(fp);
     if (SNIFFFullpath(fp, reporoot, childpath) != OK) return;
@@ -352,10 +352,10 @@ static b8 has_conflict_marker(u8cs bytes) {
 //  — `tree(arg.fork_commit)` per VERBS.md §PATCH, computed by the
 //  caller as `LCA(arg_parent_tip, thr)`.
 static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
-                       sha1 const *fork, sha1 const *our, sha1 const *thr,
-                       sha1 const *fork_commit,
-                       sha1 const *our_commit,
-                       sha1 const *thr_commit,
+                       sha1cp fork, sha1cp our, sha1cp thr,
+                       sha1cp fork_commit,
+                       sha1cp our_commit,
+                       sha1cp thr_commit,
                        patch_stats *st) {
     sane(fork && our && thr && st &&
          fork_commit && our_commit && thr_commit);
@@ -1049,7 +1049,7 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
 //  Read `commit_sha`'s body, extract its first `parent <hex>` field
 //  into `parent_out`.  Returns OK on success, PATCHFAIL on root /
 //  malformed commit, KEEP* on storage error.
-static ok64 patch_first_parent(sha1 *parent_out, sha1 const *commit_sha) {
+static ok64 patch_first_parent(sha1 *parent_out, sha1cp commit_sha) {
     sane(parent_out && commit_sha);
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
@@ -1083,7 +1083,7 @@ static ok64 patch_first_parent(sha1 *parent_out, sha1 const *commit_sha) {
 //  contents preserved.  Used by `build_reachable_via_links` to expand
 //  cur's reachability set across both DAG-edge kinds.
 static ok64 patch_links_of(sha1 *out, u32 cap, u32 *nout,
-                           sha1 const *commit_sha) {
+                           sha1cp commit_sha) {
     sane(out && nout && commit_sha);
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 16);
@@ -1115,7 +1115,7 @@ static ok64 patch_links_of(sha1 *out, u32 cap, u32 *nout,
 
 //  Linear-scan membership in a `set[]` of `n` shas.  Used by the
 //  rebase-one reachability BFS — n is bounded by RBASEONE_REACH_MAX.
-static b8 reach_set_has(sha1 const *set, u32 nset, sha1 const *q) {
+static b8 reach_set_has(sha1cp set, u32 nset, sha1cp q) {
     for (u32 i = 0; i < nset; i++) {
         if (sha1Eq(&set[i], q)) return YES;
     }
@@ -1128,7 +1128,7 @@ static b8 reach_set_has(sha1 const *set, u32 nset, sha1 const *q) {
 //  per VERBS.md §PATCH "Ancestor-skip walk" — they are dedup-only
 //  and do not participate in reachability.
 static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
-                                      sha1 const *seed) {
+                                      sha1cp seed) {
     sane(set && nset && seed);
     *nset = 0;
     if (sha1empty(seed)) return OK;
@@ -1175,8 +1175,8 @@ static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
 //  as a broader safety net is a follow-up.
 #define RBASEONE_MAX 4096
 #define RBASEONE_REACH_MAX 4096
-static ok64 resolve_rebase_one(sha1 *out, sha1 const *br_tip,
-                               sha1 const *our) {
+static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
+                               sha1cp our) {
     sane(out && br_tip && our);
     if (sha1Eq(br_tip, our)) {
         fprintf(stderr,
@@ -1376,7 +1376,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  `GRAFLca(&our, &thr)` returns 0 and PATCH refuses with
     //  PATCHURELT.  The indexer is idempotent on already-known tips.
     {
-        sha1 const *tips[2] = {&our_sha, &thr_sha};
+        sha1cp tips[2] = {&our_sha, &thr_sha};
         for (u32 i = 0; i < 2; i++) {
             sha1hex tip_hex = {};
             sha1hexFromSha1(&tip_hex, tips[i]);
@@ -1616,7 +1616,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     //  silently returns ours's bytes (no theirs-side edit visible).
     //  Mirror of PATCHApply's tip-indexing block.
     {
-        sha1 const *tips[2] = {&our_sha, &thr_sha};
+        sha1cp tips[2] = {&our_sha, &thr_sha};
         for (u32 i = 0; i < 2; i++) {
             sha1hex tip_hex = {};
             sha1hexFromSha1(&tip_hex, tips[i]);

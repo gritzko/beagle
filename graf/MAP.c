@@ -337,13 +337,10 @@ ok64 GRAFMap(uricp u) {
             }
         }
         (void)u8bFeed1(text, ' ');
-        //  sha7 — hex the 20-byte sha, take head 7.
-        a_pad(u8, hex, 40);
-        a_rawc(ss, mc->csha);
-        HEXu8sFeedSome(hex_idle, ss);
-        a_dup(u8c, full, u8bDataC(hex));
-        u8cs sha7 = {full[0], full[0] + 7};
-        (void)u8bFeed(text, sha7);
+        //  Short sha hashlet.
+        a_pad(u8, hashlet, SHA1_HASHLEN_LEN);
+        (void)SHA1u8sFeedHashlet(hashlet_idle, &mc->csha);
+        (void)u8bFeed(text, u8bDataC(hashlet));
         (void)u8bFeed1(text, ' ');
         //  7-char date.
         a_pad(u8, date, 8);

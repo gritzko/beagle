@@ -96,7 +96,7 @@ fun wh128 DAGEntry(u8 ktype, u64 khash,
 
 // --- sha1 helpers ---
 
-fun u64 DAGsha1Hashlet(sha1 const *s) {
+fun u64 DAGsha1Hashlet(sha1cp s) {
     return WHIFFHashlet60(s);
 }
 
@@ -106,7 +106,7 @@ fun ok64 DAGsha1FromHex(sha1 *out, char const *hex40) {
     return HEXu8sDrainSome(sb, hx);
 }
 
-fun void DAGsha1ToHex(char *hex41, sha1 const *s) {
+fun void DAGsha1ToHex(char *hex41, sha1cp s) {
     u8 buf[41];
     u8s hx = {buf, buf + 40};
     u8cs bn = {s->data, s->data + 20};

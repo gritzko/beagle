@@ -66,7 +66,7 @@ typedef struct {
 extern graf GRAF;
 
 // --- Internal helpers used by the indexer (implemented in DAG.c) ---
-ok64 GRAFDagUpdate(u8 obj_type, sha1 const *sha, u8cs blob);
+ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob);
 ok64 GRAFDagFinish(void);
 
 // --- Error / sentinel codes ---
@@ -208,7 +208,7 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                          weave **out_final,
                          keeper *k, u8cs filepath,
-                         sha1 const *chain, u32 nchain,
+                         sha1cp chain, u32 nchain,
                          GRAFweaveStepCb cb, void *cb_ctx);
 
 // Single-blob WEAVE merge for the rebase replay loop — replaces the
@@ -294,7 +294,7 @@ ok64 GRAFGet(u8b into, u8csc uri);
 // concatenation — WEAVE marker emission is a follow-up.  Callers
 // that need conflict signaling should diff the result against tgt.
 ok64 GRAFMergeWtFile(u8cs path, u8cs reporoot,
-                     sha1 const *base, sha1 const *tgt,
+                     sha1cp base, sha1cp tgt,
                      u8b out);
 
 //  Tunable variant of GRAFMergeWtFile.  Both sides' ancestor closures
@@ -310,7 +310,7 @@ ok64 GRAFMergeWtFile(u8cs path, u8cs reporoot,
 //  arriving from "two independent introductions" and produce
 //  duplicate / conflict-marked output.
 ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
-                            sha1 const *base, sha1 const *tgt,
+                            sha1cp base, sha1cp tgt,
                             u32 edges,
                             u64 const *skip_hl, u32 nskip,
                             u8b out);
@@ -353,6 +353,6 @@ ok64 GRAFMap(uricp u);
 // zeroed when the DAG is empty or the tips share no indexed
 // ancestor; caller treats that as "unrelated histories" (refuse a
 // merge, fall back to ours, etc).
-ok64 GRAFLca(sha1 *out, sha1 const *a, sha1 const *b);
+ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b);
 
 #endif

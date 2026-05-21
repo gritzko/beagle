@@ -111,7 +111,7 @@ ok64 POSTResolveBranchTip(sha1 *out, u8cs branch);
 //  Reads use the currently-active keeper singleton — callers that need
 //  to walk under a specific shard must `KEEPSwitchBranch` first.
 #define POST_MIG_MAX 8192
-ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
+ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
                    sha1 *out, u32 cap, u32 *nout, b8 *reached_stop);
 
 #endif

@@ -81,8 +81,8 @@ static ok64 make_single_leaf_tree(keep_pack *p,
 
 //  Build a commit body: "tree <hex>\n[parent <hex>\n]author ...\ncommitter ...\n\nmsg\n"
 static void make_commit_body(u8 *const *out,
-                             sha1 const *tree_sha,
-                             sha1 const *parent_sha,        //  NULL for root
+                             sha1cp tree_sha,
+                             sha1cp parent_sha,        //  NULL for root
                              char const *author_id,
                              long ts,
                              char const *msg) {
@@ -115,7 +115,7 @@ static void make_commit_body(u8 *const *out,
 //  Feed a synthetic commit to keeper with a given (tree, parent) pair,
 //  return its sha.  Borrows `p` already opened by caller.
 static ok64 feed_commit(keep_pack *p,
-                        sha1 const *tree_sha, sha1 const *parent_sha,
+                        sha1cp tree_sha, sha1cp parent_sha,
                         char const *author_id, long ts, char const *msg,
                         sha1 *out_sha) {
     sane(p && out_sha);
@@ -129,7 +129,7 @@ static ok64 feed_commit(keep_pack *p,
 }
 
 //  Fetch a commit body into `out`.
-static ok64 fetch_commit(sha1 const *sha, u8 *const *out) {
+static ok64 fetch_commit(sha1cp sha, u8 *const *out) {
     sane(out);
     u8 t = 0;
     call(KEEPGetExact, sha, out, &t);
@@ -147,7 +147,7 @@ typedef struct {
     ok64 fail_after;   //  if > 0, the (n+1)-th call returns this
 } rec_emit;
 
-static ok64 rec_cb(void *ctx, u8 type, sha1 const *sha, u8csc body) {
+static ok64 rec_cb(void *ctx, u8 type, sha1cp sha, u8csc body) {
     (void)body;
     rec_emit *r = (rec_emit *)ctx;
     if (r->fail_after && r->n + 1 == r->fail_after) {

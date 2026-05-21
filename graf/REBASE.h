@@ -54,7 +54,7 @@ u64 GRAFPatchId(u8csc commit_body);
 //  callee surfaces the error code unchanged.
 typedef ok64 (*graf_rebase_emit_cb)(void *ctx,
                                     u8 obj_type,        //  DOG_OBJ_*
-                                    sha1 const *sha,    //  canonical
+                                    sha1cp sha,    //  canonical
                                     u8csc body);        //  raw bytes
 
 //  Replay every commit between `base_old` (exclusive) and `child_tip`
@@ -79,8 +79,8 @@ typedef ok64 (*graf_rebase_emit_cb)(void *ctx,
 //                 responsible for any cleanup of objects emitted
 //                 before the abort;
 //    callback's error  — propagated unchanged.
-ok64 GRAFRebase(sha1 const *base_old, sha1 const *base_new,
-                sha1 const *child_tip,
+ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
+                sha1cp child_tip,
                 graf_rebase_emit_cb cb, void *ctx);
 
 #endif

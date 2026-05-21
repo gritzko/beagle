@@ -342,7 +342,7 @@ ok64 SNIFFCheckoutCommit() {
 
 // --- Helper: sha1 to hex string ---
 
-static void sha2hex(u8bp buf, sha1 const *sha) {
+static void sha2hex(u8bp buf, sha1cp sha) {
     u8bReset(buf);
     a_rawc(s, *sha);
     u8s idle = {buf[2], buf[3]};
@@ -439,7 +439,7 @@ typedef struct { char const *name; char const *data; } testfile;
 
 static ok64 make_commit(sha1 *commit_out, keeper *k,
                         testfile const *files, u32 nfiles,
-                        sha1 const *parent) {
+                        sha1cp parent) {
     sane(k && commit_out);
     keep_pack p = {};
     call(KEEPPackOpen, &p);

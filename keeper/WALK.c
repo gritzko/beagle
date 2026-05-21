@@ -33,7 +33,7 @@ u8 WALKu8sModeKind(u8cs mode) {
 //  path (no leading/trailing '/'), shared across recursion levels.
 //  Each level owns its own `tbuf` and per-entry `bbuf` (blob) so
 //  nested KEEPGetExact calls don't clobber parent bytes.
-static ok64 walk_tree_dive(keeper *k, sha1 const *tree_sha,
+static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
                             u8bp pathbuf, b8 eager,
                             walk_tree_fn visit, void0p ctx) {
     sane(k && tree_sha && visit);
@@ -169,7 +169,7 @@ static ok64 lsf_prefix_visit(u8cs path, u8 kind, u8cp esha,
 //  *out_sha/*out_kind describe the last resolved entry; *out_prefix
 //  gets a slice into `pathbuf` holding the descended prefix (stable
 //  until pathbuf is reused).
-static ok64 lsf_descend(keeper *k, sha1 const *root_tree, u8cs subpath,
+static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
                          u8bp pathbuf, sha1 *out_sha, u8 *out_kind) {
     sane(k && root_tree && out_sha && out_kind);
 

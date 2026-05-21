@@ -12,7 +12,7 @@
 static u8c const HEX[] = "0123456789abcdef";
 
 //  Render 20 bytes as 40 lowercase hex chars into out.
-static void sha_hex(sha1 const *s, u8 out[40]) {
+static void sha_hex(sha1cp s, u8 out[40]) {
     for (int i = 0; i < 20; i++) {
         out[i*2  ] = HEX[(s->data[i] >> 4) & 0xf];
         out[i*2+1] = HEX[ s->data[i]       & 0xf];

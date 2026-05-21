@@ -1165,7 +1165,7 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
         !TOKSameLexer(file_ext, cx->opts->target_ext)) return OK;
 
     sha1 bsha = {};
-    sha1Mv(&bsha, (sha1 const *)esha);
+    sha1Mv(&bsha, (sha1cp)esha);
 
     Bu8 bbuf = {};
     if (u8bAllocate(bbuf, 1UL << 22) != OK) return OK;

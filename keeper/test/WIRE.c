@@ -42,7 +42,7 @@ static void tmp_rm(char const *path) {
 }
 
 //  Encode a sha1 into 40 hex chars in `out` (size 40).
-static void sha_to_hex(u8 *out40, sha1 const *s) {
+static void sha_to_hex(u8 *out40, sha1cp s) {
     u8s hs = {out40, out40 + 40};
     u8cs bs = {s->data, s->data + 20};
     HEXu8sFeedSome(hs, bs);
@@ -52,9 +52,9 @@ static void sha_to_hex(u8 *out40, sha1 const *s) {
 //  appended as a pkt-line.  No flush before "done" (vanilla git
 //  upload-pack accepts both).
 static ok64 build_request(u8b out,
-                          sha1 const *wants, u32 nwants,
+                          sha1cp wants, u32 nwants,
                           char const *first_caps,
-                          sha1 const *haves, u32 nhaves) {
+                          sha1cp haves, u32 nhaves) {
     sane(u8bOK(out));
     for (u32 i = 0; i < nwants; i++) {
         a_pad(u8, line, 256);

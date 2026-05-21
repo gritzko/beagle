@@ -96,7 +96,7 @@ fun int wh128cscmp(wh128cs const *a, wh128cs const *b) { return $cmp(*a, *b); }
 //   60-bit (15 hex chars): for keys where id=0 (hashlet spans both fields)
 //
 // Both are big-endian: first SHA byte in the most significant bits.
-// Input: sha1 const * (typed, 20 bytes).
+// Input: sha1cp (typed, 20 bytes).
 
 #include "dog/git/SHA1.h"
 
@@ -104,7 +104,7 @@ fun int wh128cscmp(wh128cs const *a, wh128cs const *b) { return $cmp(*a, *b); }
 #define WHIFF_HASHLET40_BITS  40
 #define WHIFF_HASHLET40_MASK  WHIFF_OFF_MASK
 
-fun u64 WHIFFHashlet40(sha1 const *s) {
+fun u64 WHIFFHashlet40(sha1cp s) {
     u64 h = 0;
     memcpy(&h, s->data, 8);
     return (flip64(h) >> 24) & WHIFF_HASHLET40_MASK;
@@ -114,7 +114,7 @@ fun u64 WHIFFHashlet40(sha1 const *s) {
 #define WHIFF_HASHLET60_BITS  60
 #define WHIFF_HASHLET60_MASK  ((1ULL << 60) - 1)
 
-fun u64 WHIFFHashlet60(sha1 const *s) {
+fun u64 WHIFFHashlet60(sha1cp s) {
     u64 h = 0;
     memcpy(&h, s->data, 8);
     return (flip64(h) >> 4) & WHIFF_HASHLET60_MASK;
@@ -150,7 +150,7 @@ fun int sha1hexcmp(sha1hex const *a, sha1hex const *b) {
     return memcmp(a->data, b->data, 40);
 }
 
-fun void sha1hexFromSha1(sha1hex *out, sha1 const *s) {
+fun void sha1hexFromSha1(sha1hex *out, sha1cp s) {
     u8s hs = {out->data, out->data + 40};
     u8cs bs = {s->data, s->data + 20};
     HEXu8sFeedSome(hs, bs);

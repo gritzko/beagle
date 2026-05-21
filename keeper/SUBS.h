@@ -35,6 +35,6 @@
 #include "dog/git/SHA1.h"
 #include "dog/git/SUBS.h"   // SUBSPARSE / SUBSNOSEC
 
-ok64 KEEPSubsAt(sha1 const *tree_sha, ron60 ts, ron60 verb, u8bp out);
+ok64 KEEPSubsAt(sha1cp tree_sha, ron60 ts, ron60 verb, u8bp out);
 
 #endif

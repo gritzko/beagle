@@ -56,7 +56,7 @@ fun int unpk_nodecmp(unpk_node const *a, unpk_node const *b) {
 //  Waiter: REF_DELTA indexed by sha8 of its base.
 //  val = 1-based index into nodes[].
 static void unpk_drain_waiters(wh128cs waiters, unpk_node *nodes,
-                               b8 *resolved, sha1 const *sha, u32 parent_idx) {
+                               b8 *resolved, sha1cp sha, u32 parent_idx) {
     u64 sha_key = WHIFFHashlet60(sha);
     wh128cp wbuf = waiters[0];
     size_t wlen = (size_t)(waiters[1] - waiters[0]);
@@ -76,7 +76,7 @@ static void unpk_drain_waiters(wh128cs waiters, unpk_node *nodes,
 
 //  Emit one wh128 entry for a resolved object at `obj_off` in the log.
 static ok64 unpk_emit(Bwh128 out, u32 file_id,
-                       u8 type, sha1 const *sha, u64 obj_off) {
+                       u8 type, sha1cp sha, u64 obj_off) {
     wh128 e = {
         .key = keepKeyPack(type, WHIFFHashlet60(sha)),
         .val = wh64Pack(KEEP_VAL_FLAGS, file_id, obj_off),
@@ -88,7 +88,7 @@ static ok64 unpk_emit(Bwh128 out, u32 file_id,
 //  No path derivation — consumers that need a path parse trees on
 //  their own at Close-pass time.
 static void unpk_dispatch(unpk_in const *in,
-                           u8 type, sha1 const *sha, u8cs content) {
+                           u8 type, sha1cp sha, u8cs content) {
     if (!in->emit) return;
     in->emit(in->emit_ctx, type, sha, content);
 }
@@ -129,7 +129,7 @@ typedef struct {
 //  the child wrote.  Returns 0 on overflow (silent drop, mirrors
 //  the prior `wh128bPush != OK ⇒ skipped++` behaviour).
 static b8 unpk_worker_emit(unpk_worker *w, u32 file_id,
-                            u8 type, sha1 const *sha, u64 obj_off) {
+                            u8 type, sha1cp sha, u64 obj_off) {
     if (w->shared->nemit >= w->entries_cap) return 0;
     wh128 *slot = &w->shared->entries[w->shared->nemit++];
     slot->key = keepKeyPack(type, WHIFFHashlet60(sha));

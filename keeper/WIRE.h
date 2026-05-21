@@ -177,7 +177,7 @@ ok64 WIREFetchAll(u8csc remote_uri);
 //  Returns OK on success, WIRECLNRF if local_tip is zero,
 //  WIRECLFL on transport / pack-build / refusal.
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1 const *local_tip);
+              sha1cp local_tip);
 
 //  Spawn a git-protocol peer and run a delete-only push: drain the
 //  advertisement, look up the peer's tip for `local_branch`, send

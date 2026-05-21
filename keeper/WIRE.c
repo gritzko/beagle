@@ -213,7 +213,7 @@ static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {
 //  the first object-type entry whose hashlet matches.  Trust the
 //  60-bit hashlet (collision rate ~2^-60); callers that need stricter
 //  guarantees can re-verify by inflating via KEEPGetExact.
-static ok64 wire_locate_sha(keeper *k, sha1 const *sha,
+static ok64 wire_locate_sha(keeper *k, sha1cp sha,
                             u32 *out_file_id, u64 *out_off) {
     sane(k && sha && out_file_id && out_off);
     u64 hashlet60 = WHIFFHashlet60(sha);
@@ -257,7 +257,7 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
 
     //  Phase 1c: dir chain is always [trunk shard 0].  One want →
     //  one segment.  Multi-want is a follow-up.
-    sha1 const *want = &req->wants[0];
+    sha1cp want = &req->wants[0];
 
     u32 want_fid = 0;
     u64 want_off = 0;

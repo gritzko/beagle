@@ -63,7 +63,7 @@ void REFADVClose(refadv *adv);
 //  Look up: which dir(s) hold this sha as a tip?
 //  Writes up to `cap` matches into `out_dirs`, returns the match count.
 //  "Topmost dir" picking (e.g. shortest dir slice) is the caller's job.
-u32  REFADVTipDirs(refadv const *adv, sha1 const *tip,
+u32  REFADVTipDirs(refadv const *adv, sha1cp tip,
                    u8cs *out_dirs, u32 cap);
 
 //  Emit the pkt-line advertisement to `out_fd`:

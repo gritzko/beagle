@@ -828,32 +828,31 @@ ok64 WEAVEReplay(weave *dst,
     if (!parents || nparents == 0) return FAILSANITY;
     WEAVEReset(dst);
 
-    weave work = {}, swap = {}, nu = {};
-    __ = WEAVEInit(&work);
+    //  Two backing weaves + a pair of pointers we rotate per iteration.
+    //  Buffers own their storage — never copy the descriptor; swap by
+    //  pointer.
+    weave wA = {}, wB = {}, nu = {};
+    weave *work = &wA, *swap = &wB;
+    __ = WEAVEInit(&wA);
     if (__ != OK) return __;
-    __ = WEAVEInit(&swap);
-    if (__ != OK) { WEAVEFree(&work); return __; }
+    __ = WEAVEInit(&wB);
+    if (__ != OK) { WEAVEFree(&wA); return __; }
     __ = WEAVEInit(&nu);
-    if (__ != OK) { WEAVEFree(&work); WEAVEFree(&swap); return __; }
+    if (__ != OK) { WEAVEFree(&wA); WEAVEFree(&wB); return __; }
 
     //  Pairwise reduce parents into `work`.  Bootstrap by merging the
     //  first parent with itself (clean copy with reconciled inrm).
     if (parents[0] == NULL) { __ = FAILSANITY; goto cleanup; }
-    __ = WEAVEMerge(&work, parents[0], parents[0]);
+    __ = WEAVEMerge(work, parents[0], parents[0]);
     if (__ != OK) goto cleanup;
 
     for (u32 k = 1; k < nparents; k++) {
         if (parents[k] == NULL) continue;
-        __ = WEAVEMerge(&swap, &work, parents[k]);
+        __ = WEAVEMerge(swap, work, parents[k]);
         if (__ != OK) goto cleanup;
-        //  Swap the buffer headers between work and swap so the next
-        //  iteration writes into a fresh (reset-on-entry) dst.  The
-        //  weave struct is plain (4 buffer arrays of pointers); copy
-        //  by memcpy to avoid array-assignment quirks.
-        weave tmp;
-        memcpy(&tmp,  &work, sizeof(weave));
-        memcpy(&work, &swap, sizeof(weave));
-        memcpy(&swap, &tmp,  sizeof(weave));
+        //  Rotate work/swap so the next iter writes into the freshly
+        //  consumed buffer.  Pointer swap only — no descriptor copy.
+        weave *tmp = work; work = swap; swap = tmp;
     }
 
     //  Build a one-version weave for the result blob.
@@ -861,11 +860,11 @@ ok64 WEAVEReplay(weave *dst,
     if (__ != OK) goto cleanup;
 
     //  WEAVEDiff(work, nu, merge_in) reconciles into dst.
-    __ = WEAVEDiff(dst, &work, &nu, merge_in);
+    __ = WEAVEDiff(dst, work, &nu, merge_in);
 
 cleanup:
-    WEAVEFree(&work);
-    WEAVEFree(&swap);
+    WEAVEFree(&wA);
+    WEAVEFree(&wB);
     WEAVEFree(&nu);
     return __;
 }

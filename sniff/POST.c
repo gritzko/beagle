@@ -125,8 +125,8 @@ static void post_mode_feed(Bu8 tree, u16 mode) {
 
 static ok64 post_emit_decision(post_ctx *c, ron60 verb,
                                u8cs path, u16 mode,
-                               sha1 const *old_sha,
-                               sha1 const *frag_sha);
+                               sha1cp old_sha,
+                               sha1cp frag_sha);
 
 // --- Hash a wt file (mmap or readlink) into a sha1 ---
 
@@ -547,7 +547,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         sha1 new_sha = {};
         if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
             return OK;
-        sha1 const *old = src_base ? &base_sha : NULL;
+        sha1cp old = src_base ? &base_sha : NULL;
         return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   old, &new_sha);
     }
@@ -618,7 +618,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             sha1 new_sha = {};
             if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
                 return OK;
-            sha1 const *old = src_base ? &base_sha : NULL;
+            sha1cp old = src_base ? &base_sha : NULL;
             return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                       old, &new_sha);
         }
@@ -1100,7 +1100,7 @@ static ok64 post_ctx_init(post_ctx *c) {
 //  POST_V_KEEP / POST_V_ADD stem.  Unlink rows carry no suffix.
 static ok64 post_emit_decision(post_ctx *c, ron60 verb_stem,
                                u8cs path, u16 mode,
-                               sha1 const *old_sha, sha1 const *frag_sha) {
+                               sha1cp old_sha, sha1cp frag_sha) {
     sane(c && verb_stem);
 
     //  Append the kind letter to the verb stem when we have a real
@@ -1245,7 +1245,7 @@ typedef struct {
 } post_rebase_ctx;
 
 static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
-                                sha1 const *sha, u8csc body) {
+                                sha1cp sha, u8csc body) {
     sane(vctx && sha);
     post_rebase_ctx *rc = (post_rebase_ctx *)vctx;
     sha1 fed = {};
@@ -1343,8 +1343,8 @@ typedef struct {
 //  parent's old tip, run GRAFRebase onto the parent's new tip, capture
 //  new tip into recs[].  Returns OK on success or a GRAFCNFL/error.
 static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
-                             sha1 const *parent_old_tip,
-                             sha1 const *parent_new_tip) {
+                             sha1cp parent_old_tip,
+                             sha1cp parent_new_tip) {
     sane(cc);
     if (cc->n >= CASCADE_MAX) return SNIFFFAIL;
 
@@ -1470,8 +1470,8 @@ static ok64 post_cascade_collect_cb(void0p arg, path8p path) {
 //  new parent.  `branch_old_tip` and `branch_new_tip` are the stage's
 //  current parent before/after the rewrite.
 static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
-                              sha1 const *branch_old_tip,
-                              sha1 const *branch_new_tip) {
+                              sha1cp branch_old_tip,
+                              sha1cp branch_new_tip) {
     sane(cc);
     a_path(bdir);
     call(HOMEBranchDir, SNIFF.h, bdir, NULL);
@@ -1620,7 +1620,7 @@ static void post_basename(u8cs out, u8cs abs_branch) {
     if (last_slash != NULL) out[0] = last_slash + 1;
 }
 
-ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
+ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
                    sha1 *out, u32 cap, u32 *nout, b8 *reached_stop) {
     sane(from && out && nout && reached_stop);
     *nout = 0;

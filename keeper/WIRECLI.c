@@ -496,8 +496,8 @@ static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
 
 //  Send the upload-pack request: want <sha> caps + flush + haves +
 //  flush + done.  No multi_ack — server replies with one NAK + pack.
-static ok64 wcli_send_request(int wfd, sha1 const *want_sha,
-                              sha1 const *haves, u32 nhaves) {
+static ok64 wcli_send_request(int wfd, sha1cp want_sha,
+                              sha1cp haves, u32 nhaves) {
     sane(wfd >= 0 && want_sha);
 
     Bu8 frame = {};
@@ -561,7 +561,7 @@ static ok64 wcli_send_request(int wfd, sha1 const *want_sha,
 //  by host.  No canonicalisation aliasing — the query is stored as the
 //  literal be-branch path (DOGCanonURIFeed only folds shape, not name).
 static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
-                             sha1 const *new_sha) {
+                             sha1cp new_sha) {
     sane(k);
     //  Wire-side refs land in the leaf branch dir when one is active
     //  (sub-shard fetch isolation: a submodule's `master` ref must
@@ -891,7 +891,7 @@ typedef struct {
     u32   cap;
 } sha_set;
 
-static b8 sha_set_has(sha_set const *s, sha1 const *q) {
+static b8 sha_set_has(sha_set const *s, sha1cp q) {
     if (!s || s->n == 0) return NO;
     u32 lo = 0, hi = s->n;
     while (lo < hi) {
@@ -904,7 +904,7 @@ static b8 sha_set_has(sha_set const *s, sha1 const *q) {
     return NO;
 }
 
-static void sha_set_add(sha_set *s, sha1 const *v) {
+static void sha_set_add(sha_set *s, sha1cp v) {
     if (!s || s->n >= s->cap) return;
     //  Insertion sort: find the position and shift.
     u32 i = s->n;
@@ -922,7 +922,7 @@ static void sha_set_add(sha_set *s, sha1 const *v) {
 //  enumerated).  When `add_to_have` is non-NULL, also record visited
 //  shas into that set — used by the "collect have-set from peer_tip"
 //  pass before the local walk.
-static ok64 wpush_walk_tree(keeper *k, sha1 const *tree_sha,
+static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
                             sha1 *out, u32 *n, u32 cap,
                             sha_set const *have, sha_set *add_to_have) {
     sane(k && tree_sha && n);
@@ -935,6 +935,8 @@ static ok64 wpush_walk_tree(keeper *k, sha1 const *tree_sha,
     if (out) {
         if (*n >= cap) return WIRECLFL;
         out[(*n)++] = *tree_sha;
+        sha1hex _h = {}; sha1hexFromSha1(&_h, tree_sha);
+        fprintf(stderr, "wpush_dump: tree %.40s\n", _h.data);
     }
     if (add_to_have) sha_set_add(add_to_have, tree_sha);
 
@@ -969,6 +971,8 @@ static ok64 wpush_walk_tree(keeper *k, sha1 const *tree_sha,
             if (out) {
                 if (*n >= cap) break;
                 out[(*n)++] = entry_sha;
+                sha1hex _h = {}; sha1hexFromSha1(&_h, &entry_sha);
+                fprintf(stderr, "wpush_dump: blob %.40s\n", _h.data);
             }
             if (add_to_have) sha_set_add(add_to_have, &entry_sha);
         }
@@ -987,7 +991,7 @@ static ok64 wpush_walk_tree(keeper *k, sha1 const *tree_sha,
 //  When `add_to_have` is non-NULL (and `out` is NULL), the function
 //  populates the haveset instead — used for the peer-tip closure pass
 //  before the local walk.
-static ok64 wpush_walk_commit(keeper *k, sha1 const *commit_sha,
+static ok64 wpush_walk_commit(keeper *k, sha1cp commit_sha,
                               sha1 *out, u32 *n, u32 cap,
                               sha_set const *have, sha_set *add_to_have) {
     sane(k && commit_sha && n);
@@ -998,6 +1002,8 @@ static ok64 wpush_walk_commit(keeper *k, sha1 const *commit_sha,
     if (out) {
         if (*n >= cap) return WIRECLFL;
         out[(*n)++] = *commit_sha;
+        sha1hex _h = {}; sha1hexFromSha1(&_h, commit_sha);
+        fprintf(stderr, "wpush_dump: commit %.40s\n", _h.data);
     }
     if (add_to_have) sha_set_add(add_to_have, commit_sha);
 
@@ -1068,7 +1074,7 @@ static void wpush_feed_obj_hdr(u8b buf, u8 type, u64 size) {
 //  `pack_out` (caller pre-mapped).  Each object is fetched via
 //  KEEPGetExact and zlib-deflated inline.  Adds the 12-byte PACK
 //  header up front and the 20-byte SHA-1 trailer at the end.
-static ok64 wpush_build_pack(keeper *k, sha1 const *shas, u32 nshas,
+static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
                              u8b pack_out) {
     sane(k && shas && u8bOK(pack_out));
 
@@ -1183,8 +1189,8 @@ static ok64 wpush_peer_tip(int rfd, u8b advbuf, u8csc branch_refname,
 }
 
 //  Send "<old> <new> <refname>\0report-status\n" + flush.
-static ok64 wpush_send_update(int wfd, sha1 const *old_sha,
-                              sha1 const *new_sha, u8csc refname,
+static ok64 wpush_send_update(int wfd, sha1cp old_sha,
+                              sha1cp new_sha, u8csc refname,
                               b8 have_old) {
     sane(wfd >= 0 && new_sha);
     Bu8 frame = {};
@@ -1279,7 +1285,7 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
 }
 
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1 const *local_tip_in) {
+              sha1cp local_tip_in) {
     sane($ok(remote_uri));
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects

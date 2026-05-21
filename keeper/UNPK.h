@@ -40,7 +40,7 @@ con ok64 UNPKNOROOM  = 0x7976545d86d8616;
 //  for the duration of the callback.  Paths are not derived here —
 //  consumers that need a path (e.g. spot) parse trees themselves at
 //  Close-pass time.
-typedef void (*unpk_emit_fn)(void *ctx, u8 type, sha1 const *sha,
+typedef void (*unpk_emit_fn)(void *ctx, u8 type, sha1cp sha,
                               u8cs content);
 
 typedef struct {

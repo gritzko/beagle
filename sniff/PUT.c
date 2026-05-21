@@ -112,7 +112,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  sha.  Symlinks resolve via readlink; regular/exec via mmap.
     sha1 disk_sha = {};
     sha1 base_sha = {};
-    sha1Mv(&base_sha, (sha1 const *)esha);
+    sha1Mv(&base_sha, (sha1cp)esha);
 
     if (kind == WALK_KIND_LNK) {
         a_pad(u8, tgt, 1024);

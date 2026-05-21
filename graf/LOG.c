@@ -33,6 +33,7 @@
 #include "abc/B.h"
 #include "abc/FILE.h"
 #include "abc/HEX.h"
+#include "abc/UTF8.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
@@ -202,16 +203,13 @@ static void graflog_pack(u32b toks, u8b out, u8 tag) {
 //  borrow dog/TOK.h: 'L' literal-shaped columns (sha + date), 'S'
 //  message word, 'P' parens, 'D' de-emphasised author, 'W' whitespace.
 static ok64 graflog_render_commit(u8b out, u32b toks,
-                                  sha1 const *csha,
+                                  sha1cp csha,
                                   u8cs commit_body, i64 now) {
     sane(csha);
 
-    u8 hex[40];
-    u8s hs = {hex, hex + 40};
-    u8cs ss = {csha->data, csha->data + 20};
-    HEXu8sFeedSome(hs, ss);
-    u8cs sha7 = {hex, hex + 7};
-    (void)u8bFeed(out, sha7);
+    a_pad(u8, hashlet, SHA1_HASHLEN_LEN);
+    (void)SHA1u8sFeedHashlet(hashlet_idle, csha);
+    (void)u8bFeed(out, u8bDataC(hashlet));
     graflog_pack(toks, out, 'L');
     (void)u8bFeed1(out, ' ');
     graflog_pack(toks, out, 'W');
@@ -230,12 +228,9 @@ static ok64 graflog_render_commit(u8b out, u32b toks,
     i64 ts = 0;
     graflog_parse_author(author_val, author_name, &ts);
 
-    u8 date_buf[8];
-    u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
-    u8cp date_start = date_into[0];
-    (void)DOGutf8sFeedDate(date_into, ts, now);
-    u8cs date_slice = {date_start, date_into[0]};
-    (void)u8bFeed(out, date_slice);
+    a_pad(u8, date, 8);
+    (void)DOGutf8sFeedDate(date_idle, ts, now);
+    (void)u8bFeed(out, u8bDataC(date));
     graflog_pack(toks, out, 'L');
     (void)u8bFeed1(out, ' ');
     graflog_pack(toks, out, 'W');
@@ -267,7 +262,7 @@ static ok64 graflog_render_commit(u8b out, u32b toks,
 //  here — GRAFHunkEmit fires once at the end of GRAFLog with the
 //  whole batch as a single hunk so HUNKu8sFeedText doesn't insert
 //  a separator blank line between every commit.
-static ok64 graflog_emit_one(log_ctx *lx, sha1 const *csha, u8cs body) {
+static ok64 graflog_emit_one(log_ctx *lx, sha1cp csha, u8cs body) {
     sane(lx);
     return graflog_render_commit(lx->text,
                                  lx->tlv ? lx->toks : NULL,
@@ -281,7 +276,7 @@ static void graflog_strip_dotslash(u8cs path) {
 }
 
 //  Branch-history: walk parent chain from tip via COMMIT_PARENT.
-static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1 const *tip,
+static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
                            u32 count) {
     sane(k && tip);
     Bu8 cbuf = {};
@@ -421,7 +416,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
 //  via a flat back-scan so a parent's tree is walked only once across
 //  the whole history — the dominant cost for long linear chains is one
 //  tree-fetch per commit, not per (commit, parent) edge.
-static ok64 graflog_file(log_ctx *lx, keeper *k, sha1 const *tip,
+static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
                          u8cs path, u32 count) {
     sane(k && tip && $ok(path));
 
@@ -841,7 +836,7 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
 //  Render one log row prefixed by `+ ` or `- `.  Reuses
 //  graflog_render_commit; we just feed the prefix first.
 static ok64 graf_head_render_prefixed(log_ctx *lx, u8 prefix,
-                                      sha1 const *csha, u8cs body) {
+                                      sha1cp csha, u8cs body) {
     (void)u8bFeed1(lx->text, prefix);
     (void)u8bFeed1(lx->text, ' ');
     if (lx->tlv) graflog_pack(lx->toks, lx->text, 'P');
@@ -1060,23 +1055,14 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     //  ahead/behind/changed counters against the diff target.
     {
         a_dup(u8c, cur_br, u8bDataC(k->h->cur_branch));
-        char buf[256];
-        int n;
-        if (u8csEmpty(cur_br)) {
-            n = snprintf(buf, sizeof(buf),
-                         "head: ?trunk: %u ahead, %u behind, %u changed\n",
-                         nahead, nbehind, nchanged);
-        } else {
-            n = snprintf(buf, sizeof(buf),
-                         "head: ?%.*s: %u ahead, %u behind, %u changed\n",
-                         (int)$len(cur_br), (char *)cur_br[0],
-                         nahead, nbehind, nchanged);
-        }
-        if (n > 0) {
-            u8cs s = {(u8cp)buf, (u8cp)buf + n};
-            (void)u8bFeed(lx.text, s);
-            if (lx.tlv) graflog_pack(lx.toks, lx.text, 'L');
-        }
+        a_cstr(trunk_s, "trunk");
+        u8cs br_label = {};
+        u8csMv(br_label, u8csEmpty(cur_br) ? trunk_s : cur_br);
+        (void)u8bPrintf(lx.text,
+                        "head: ?" U8SFMT ": %u ahead, %u behind, %u changed\n",
+                        u8sFmt(br_label),
+                        (unsigned)nahead, (unsigned)nbehind, (unsigned)nchanged);
+        if (lx.tlv) graflog_pack(lx.toks, lx.text, 'L');
     }
 
     //  8. Emit one hunk.

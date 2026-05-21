@@ -32,7 +32,7 @@
 // (the UNPK hot path has it) — falls back to computing it from the
 // object body for callers that don't (e.g. `graf index`'s manual
 // reindex walk at graf/INDEX.c).
-static u64 dag_obj_hashlet(u8 obj_type, sha1 const *sha, u8cs body) {
+static u64 dag_obj_hashlet(u8 obj_type, sha1cp sha, u8cs body) {
     if (sha) return WHIFFHashlet60(sha);
 
     char hdr[32];
@@ -766,7 +766,7 @@ static ok64 dag_finish(dag_ingest *g) {
 // into state->ing to lazily allocate the ingest context.  Forward-
 // decl of struct graf comes from GRAF.h include above.
 
-ok64 GRAFDagUpdate(u8 obj_type, sha1 const *sha, u8cs blob) {
+ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
     sane(1);
     graf *state = &GRAF;
 

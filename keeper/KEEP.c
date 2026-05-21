@@ -1157,7 +1157,7 @@ ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
 
 // KEEPObjSha defined below with KEEPPackFeed; declared in KEEP.h.
 
-ok64 KEEPGetExact(sha1 const *sha, u8bp out, u8p out_type) {
+ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
     sane(sha && out);
     keeper *k = &KEEP;
 
@@ -2054,7 +2054,7 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
     fail(KEEPFAIL);  // no ref or hash in URI
 }
 
-ok64 KEEPCommitTreeSha(sha1 const *commit, sha1 *tree_out) {
+ok64 KEEPCommitTreeSha(sha1cp commit, sha1 *tree_out) {
     sane(commit && tree_out);
     keeper *k = &KEEP;
     u8bReset(k->buf1);
@@ -2693,7 +2693,7 @@ static ok64 keep_push_write_all(int fd, u8csc data) {
 // into `out` (capacity `cap`).  Inflates each tree via KEEPGet and
 // walks its entries.  Returns count appended to *n.  Silent on fetch
 // failures — they manifest later when the pack is assembled.
-static ok64 keep_walk_tree(keeper *k, sha1 const *tree_sha,
+static ok64 keep_walk_tree(keeper *k, sha1cp tree_sha,
                            sha1 *out, u32 *n, u32 cap) {
     sane(k && tree_sha && out && n);
     if (*n >= cap) return KEEPFAIL;
