@@ -30,6 +30,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/HOME.h"
+#include "dog/ULOG.h"
 #include "graf/GRAF.h"
 #include "dog/git/GIT.h"
 #include "keeper/REFS.h"
@@ -62,7 +63,17 @@ typedef struct {
     //  row per `WALK_KIND_SUB` entry seen during the target walk.
     //  Drained by `get_drain_subs` after the parent's WRITE pass.
     u8bp           subs_out;
+    //  stdout tty? — drives ANSI coloring on the per-file `<date>\t
+    //  <status>\t<path>` rows emitted via `ULOGFeedStatusLine`.
+    b8             report_tty;
 } get_ctx;
+
+//  Per-file report verbs.  Encoded via abc/ok64; colors live in
+//  dog/ULOG.c's `ULOG_VERB_COLORS` palette.
+con ron60 GET_V_NEW = 0x32a7b;
+con ron60 GET_V_MOD = 0x31ce8;
+con ron60 GET_V_DEL = 0x28a70;
+con ron60 GET_V_MRG = 0x31dab;
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
 //  symlink if link; then stamp it with ctx->tv.  Caller is
@@ -75,6 +86,13 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
 
     a_path(fp);
     call(SNIFFFullpath, fp, g->reporoot, path);
+
+    //  Probe before we touch disk: file-on-disk before the write means
+    //  we're updating (`mod`), absence means it's a fresh path (`new`).
+    //  One extra lstat per write — negligible next to the keeper-pull
+    //  and the inevitable open/write.
+    filestat _pre = {};
+    b8 pre_present = (FILELStat(&_pre, $path(fp)) == OK);
 
     //  256 MB cap (mmap'd, COW): linux.git has generated headers
     //  >20 MB (drivers/gpu/drm/amd/include/asic_reg/dcn/*) that
@@ -110,6 +128,9 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             FILEClose(&fd);
             if (kind == WALK_KIND_EXE) FILEChmod($path(fp), 0755);
             call(SNIFFAtStampPath, fp, g->ts);
+            ULOGFeedStatusLine(g->report_tty,
+                pre_present ? "mod" : "new",
+                pre_present ? GET_V_MOD : GET_V_NEW, path);
             done;
         }
         u8bUnMap(bbuf);
@@ -143,6 +164,9 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     u8bUnMap(bbuf);
 
     call(SNIFFAtStampPath, fp, g->ts);
+    ULOGFeedStatusLine(g->report_tty,
+        pre_present ? "mod" : "new",
+        pre_present ? GET_V_MOD : GET_V_NEW, path);
     done;
 }
 
@@ -523,7 +547,7 @@ static ok64 prune_cb(class_step const *step, void *vctx) {
 //  every directory that became empty — git's checkout collapses
 //  empty dirs the same way, and rsync flags surviving ones as
 //  `*deleting <dir>/`.  Reports the file count to stderr.
-static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks) {
+static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, b8 tty) {
     sane($ok(reporoot));
     u32 dropped = 0;
     a_dup(u8c, scan, unlinks);
@@ -533,7 +557,10 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks) {
         if ($empty(path)) continue;
         a_path(fp);
         if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
-        if (FILEUnLink($path(fp)) == OK) dropped++;
+        if (FILEUnLink($path(fp)) == OK) {
+            dropped++;
+            ULOGFeedStatusLine(tty, "del", GET_V_DEL, path);
+        }
         //  Walk up: rmdir any newly-empty parent until we hit a
         //  non-empty dir, the reporoot, or rmdir fails (ENOTEMPTY).
         //  We mutate `fp` in place by truncating at the last `/`.
@@ -569,7 +596,7 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks) {
 //  continue.
 static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
                              sha1cp base, sha1cp tgt,
-                             ron60 stamp_ts) {
+                             ron60 stamp_ts, b8 tty) {
     sane($ok(reporoot) && base && tgt);
     if (u8csEmpty(merges)) done;
 
@@ -612,6 +639,7 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         //  baseline.
         (void)SNIFFAtStampPath(fp, stamp_ts + 1);
         merged++;
+        ULOGFeedStatusLine(tty, "mrg", GET_V_MRG, path);
     }
 
     u8bFree(out);
@@ -830,7 +858,23 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     ok64 o = KEEPGet(hashlet, hexlen, buf, &otype);
     if (o != OK) {
         u8bFree(buf);
-        fprintf(stderr, "sniff: object not found\n");
+        a_path(leafdir);
+        (void)HOMEBranchDir(KEEP.h, leafdir, KEEP.h->cur_branch);
+        fprintf(stderr,
+                "sniff: object not found: hex=" U8SFMT
+                " hexlen=%zu hashlet=%016llx source=" U8SFMT
+                " root=" U8SFMT " project=" U8SFMT
+                " cur_branch=" U8SFMT " leafdir=" U8SFMT
+                " packs=%zu keep_err=%s\n",
+                u8sFmt(hex), (size_t)hexlen,
+                (unsigned long long)hashlet,
+                u8sFmt(source),
+                u8sFmt(u8bDataC(KEEP.h->root)),
+                u8sFmt(u8bDataC(KEEP.h->project)),
+                u8sFmt(u8bDataC(KEEP.h->cur_branch)),
+                u8sFmt(u8bDataC(leafdir)),
+                (size_t)$len(kv64bData(KEEP.packs)),
+                ok64str(o));
         fail(SNIFFFAIL);
     }
 
@@ -1027,12 +1071,19 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  silently lost their `u8bFeed` and never reached the unlink
     //  drainer, leaving stale files on disk after checkout).
     Bu8 noop = {}, unlinks = {}, merges = {}, subs = {};
-    call(u8bMap, noop,    1UL << 28);
-    call(u8bMap, unlinks, 1UL << 28);
-    call(u8bMap, merges,  1UL << 28);
-    //  Submodule (`160000`) collector — kept small; most trees have
-    //  O(10) gitlinks at most.  64 KB ≫ any realistic count.
-    call(u8bAllocate, subs, 1UL << 16);
+    //  Cumulative cleanup on partial-allocation failure: u8bUnMap /
+    //  u8bFree on a zero-init Bu8 return FAILSANITY / BISNULL, harmless.
+#define GET_BUFS_FREE() \
+    do { u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges); u8bFree(subs); } while (0)
+    {
+        ok64 ao;
+        if ((ao = u8bMap(noop,    1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
+        if ((ao = u8bMap(unlinks, 1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
+        if ((ao = u8bMap(merges,  1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
+        //  Submodule (`160000`) collector — kept small; most trees have
+        //  O(10) gitlinks at most.  64 KB ≫ any realistic count.
+        if ((ao = u8bAllocate(subs, 1UL << 16)) != OK) { GET_BUFS_FREE(); return ao; }
+    }
     //  TODO: even on a fresh clone (`base_tree==NULL`) the overlap
     //  check still walks the target tree once to detect dirty wt
     //  files sitting at target-tree paths (the
@@ -1053,7 +1104,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         return o;
     }
 
-    get_ctx ctx = {.k = k, .error = OK};
+    get_ctx ctx = {.k = k, .error = OK,
+                   .report_tty = isatty(STDOUT_FILENO) ? YES : NO};
     u8csMv(ctx.reporoot, reporoot);
     SNIFFAtNow(&ctx.ts, &ctx.tv);
     ctx.noop_cursor[0]   = u8bDataHead(noop);
@@ -1146,7 +1198,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             a_dup(u8c, mlist, u8bData(merges));
             (void)get_drain_merges(reporoot, mlist,
                                    &base_commit_sha, &tgt_commit_sha,
-                                   ctx.ts);
+                                   ctx.ts, ctx.report_tty);
             if (own_open) GRAFClose();
         }
     }
@@ -1154,7 +1206,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  Prune the baseline-only paths the classifier flagged as clean.
     {
         a_dup(u8c, ulist, u8bData(unlinks));
-        (void)get_drain_unlinks(reporoot, ulist);
+        (void)get_drain_unlinks(reporoot, ulist, ctx.report_tty);
     }
     u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
 

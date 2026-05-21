@@ -3,10 +3,12 @@
 //
 #include "ULOG.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "abc/BUF.h"
@@ -17,6 +19,7 @@
 #include "abc/RAP.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
+#include "dog/DOG.h"     // DOGutf8sFeedDate
 #include "dog/WHIFF.h"
 
 // --- streaming primitives --------------------------------------------
@@ -1041,4 +1044,80 @@ ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
     u8bFree(scratch);
     if (c.err != OK) return c.err;
     return so;
+}
+
+// --- Shared verb→color palette --------------------------------------
+//
+//  Centralized so every dog (sniff, keeper, graf, spot) colors its
+//  per-file status output the same way.  See sniff/SNIFF.exe.c's
+//  status_dump_verb for the live consumer; new callers look up via
+//  `ULOGVerbColor(verb)`.
+//
+//  Layout: `u64[N][2]` — entry[0] is the verb (ron60 from abc/ok64),
+//  entry[1] is the packed ansi64 color (abc/ANSI.h).  Sentinel `{0,0}`.
+
+//  ansi64 builders for static initializers (constant-expression form
+//  of `ansi64Pack(n, mode, 0, 0, 0)`).  Bg/flags slots stay zero.
+#define ULOG_FG_BASIC(n)  (((u64)(n) & 0xFFFFFFu) | ((u64)1u << 24))
+#define ULOG_FG_256(n)    (((u64)(n) & 0xFFFFFFu) | ((u64)2u << 24))
+
+u64 const ULOG_VERB_COLORS[][2] = {
+    //  file-status palette (sniff/SNIFF.exe.c's STATUS_ANSI_*)
+    {0x34e78,  ULOG_FG_BASIC(34)},  // put  → blue
+    {0x32a7b,  ULOG_FG_BASIC(32)},  // new  → green
+    {0x31cfa,  ULOG_FG_BASIC(36)},  // mov  → cyan
+    {0x31ce8,  ULOG_FG_BASIC(33)},  // mod  → yellow
+    {0x28a70,  ULOG_FG_256(94)  },  // del  → brown (256)
+    {0x31b77,  ULOG_FG_BASIC(31)},  // mis  → red
+    {0x39caf,  ULOG_FG_BASIC(90)},  // unk  → grey
+    {0x31dab,  ULOG_FG_BASIC(35)},  // mrg  → magenta (weave-merge write)
+    {0, 0},
+};
+
+ansi64 ULOGVerbColor(ron60 verb) {
+    if (verb == 0) return ANSI_DEFAULT;
+    for (u32 i = 0; ULOG_VERB_COLORS[i][0] != 0; i++) {
+        if (ULOG_VERB_COLORS[i][0] == (u64)verb)
+            return (ansi64)ULOG_VERB_COLORS[i][1];
+    }
+    return ANSI_DEFAULT;
+}
+
+//  ron60 for "unk" so the date column wears the same grey
+//  status_dump_verb uses (STATUS_ANSI_UNK = `\033[90m`).
+#define ULOG_VERB_UNK 0x39caf
+
+void ULOGFeedStatusLine(b8 tty, char const *status, ron60 verb,
+                        u8cs path) {
+    //  Date column.  Streaming reports happen "right now", so ts==now
+    //  and DOGutf8sFeedDate renders HH:MM.
+    i64 now = (i64)time(NULL);
+    u8 date_buf[8];
+    u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
+    u8cp date_start = date_into[0];
+    (void)DOGutf8sFeedDate(date_into, now, now);
+
+    //  Pre-encode the two color SGRs into stack pads so we don't need
+    //  PRO.h flow here.
+    u8 esc_unk_buf[32], esc_verb_buf[32];
+    u8s esc_unk  = {esc_unk_buf,  esc_unk_buf  + sizeof(esc_unk_buf)};
+    u8s esc_verb = {esc_verb_buf, esc_verb_buf + sizeof(esc_verb_buf)};
+    if (tty) {
+        (void)ANSIu8sFeedDelta(esc_unk,  ULOGVerbColor(ULOG_VERB_UNK), ANSI_DEFAULT);
+        (void)ANSIu8sFeedDelta(esc_verb, ULOGVerbColor(verb),          ANSI_DEFAULT);
+    }
+
+    if (tty) fwrite(esc_unk_buf, 1, (size_t)(esc_unk[0] - esc_unk_buf), stdout);
+    fwrite(date_start, 1, (size_t)(date_into[0] - date_start), stdout);
+    if (tty) fputs("\033[0m", stdout);
+    fputc('\t', stdout);
+
+    if (tty) fwrite(esc_verb_buf, 1, (size_t)(esc_verb[0] - esc_verb_buf), stdout);
+    fputs(status, stdout);
+    if (tty) fputs("\033[0m", stdout);
+    fputc('\t', stdout);
+
+    fwrite(path[0], 1, (size_t)$len(path), stdout);
+    fputc('\n', stdout);
+    fflush(stdout);
 }

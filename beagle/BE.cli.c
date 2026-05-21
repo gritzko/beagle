@@ -817,15 +817,28 @@ static ok64 beget_drain_subs(u8cs wt_root, u8cs subs_ulog,
         u8cs pin_arg = {};
         u8csMv(pin_arg, pin);
 
-        //  First-time mount if needed.  `sniff sub-mount` handles
-        //  anchor + fetch + the immediate `sniff get` checkout only —
-        //  no further recursion (split out to keep deep-leaf failures
-        //  from rolling back this sub's anchor via SubMount's
-        //  on-failure cleanup).  If the fetch/checkout itself fails,
-        //  skip the recursion below — there's no mount to recurse
-        //  into.
-        if (!SNIFFSubIsMount(wt_root, subpath_arg)) {
+        //  Always run `sniff sub-mount`: it's idempotent and handles
+        //  both first-time mount (write anchor, seed shard, fetch,
+        //  initial checkout) and re-fetch on an existing mount (fetch
+        //  new commits into the existing shard; the subsequent
+        //  recurse below moves the wt to the new pin).  Skipping
+        //  this on already-mounted subs leaves the sub-shard at the
+        //  old pin and the recursive `be get ?<new_pin>` then fails
+        //  with KEEPNONE.  See SUBS.c for the already_mounted handling.
+        //  If the fetch/checkout itself fails, skip the recursion
+        //  below — there's no usable mount to recurse into.
+        b8 is_mounted = SNIFFSubIsMount(wt_root, subpath_arg);
+        fprintf(stderr,
+                "BE.dbg: sub path=" U8SFMT " pin=" U8SFMT
+                " is_mounted=%s wt_root=" U8SFMT "\n",
+                u8sFmt(subpath_arg), u8sFmt(pin_arg),
+                is_mounted ? "YES" : "NO", u8sFmt(wt_root));
+        {
             ok64 mr = beget_sub_mount(subpath_arg, pin_arg);
+            fprintf(stderr,
+                    "BE.dbg: beget_sub_mount path=" U8SFMT
+                    " result=%s\n",
+                    u8sFmt(subpath_arg), ok64str(mr));
             if (mr != OK) {
                 worst = mr;
                 continue;

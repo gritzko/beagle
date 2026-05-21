@@ -241,6 +241,25 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     sane($ok(reporoot) && $ok(parent_root) && $ok(path) &&
          $ok(hex_sha) && u8csLen(hex_sha) == 40);
 
+    //  Idempotency probe: if the anchor `<mount>/.be` is already a
+    //  regular file, this is a re-fetch (sync-existing-mount-to-new-pin)
+    //  rather than a first-time mount.  In that case we:
+    //    * skip the seed FILECreate for refs/wtlog (O_TRUNC would wipe
+    //      a working shard's reflog),
+    //    * skip rewriting the anchor (already correct),
+    //    * still run the WIREFetchAll + child checkout,
+    //    * do NOT rollback the anchor / store_dir on fetch failure
+    //      (keep the existing working state).
+    b8 already_mounted = SNIFFSubIsMount(reporoot, path);
+
+    fprintf(stderr,
+            "SUBS.dbg: SubMount path=" U8SFMT " hex=" U8SFMT
+            " reporoot=" U8SFMT " parent_root=" U8SFMT
+            " already_mounted=%s\n",
+            u8sFmt(path), u8sFmt(hex_sha),
+            u8sFmt(reporoot), u8sFmt(parent_root),
+            already_mounted ? "YES" : "NO");
+
     //  1. URL lookup.  The URL bytes get copied into a frame-local
     //  buffer so the slice remains valid past SubsParseFind's return.
     a_pad(u8, url_buf, 2048);
@@ -251,40 +270,50 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     u8cs basename = {};
     call(SNIFFSubBasename, url, basename);
 
+    fprintf(stderr,
+            "SUBS.dbg: SubMount url=" U8SFMT " basename=" U8SFMT "\n",
+            u8sFmt(url), u8sFmt(basename));
+
     //  3. Sub-store dir: `<parent_root>/.be/<basename>/`.  Top-level
     //  subdir of the parent's `.be/`, identical shape to the parent's
     //  trunk dir (NNNNN.keeper, refs, wtlog).  Seed refs+wtlog so
-    //  HOME walk-up classifies the dir as a well-formed store.
+    //  HOME walk-up classifies the dir as a well-formed store.  Skip
+    //  the seed creates on re-fetch — `FILECreate` is O_TRUNC and
+    //  would zero a working shard's reflog.
     a_path(store_dir);
     call(PATHu8bFeed, store_dir, parent_root);
     a_cstr(be_dir, ".be");
     call(PATHu8bPush, store_dir, be_dir);
     call(PATHu8bPush, store_dir, basename);
     call(FILEMakeDirP, $path(store_dir));
-    {
-        a_path(p);
-        a_dup(u8c, s, u8bDataC(store_dir));
-        call(PATHu8bFeed, p, s);
-        a_cstr(refs_s, "refs");
-        call(PATHu8bPush, p, refs_s);
-        int fd = FILE_CLOSED;
-        call(FILECreate, &fd, $path(p));
-        FILEClose(&fd);
-    }
-    {
-        a_path(p);
-        a_dup(u8c, s, u8bDataC(store_dir));
-        call(PATHu8bFeed, p, s);
-        a_cstr(wtlog_s, "wtlog");
-        call(PATHu8bPush, p, wtlog_s);
-        int fd = FILE_CLOSED;
-        call(FILECreate, &fd, $path(p));
-        FILEClose(&fd);
+    if (!already_mounted) {
+        {
+            a_path(p);
+            a_dup(u8c, s, u8bDataC(store_dir));
+            call(PATHu8bFeed, p, s);
+            a_cstr(refs_s, "refs");
+            call(PATHu8bPush, p, refs_s);
+            int fd = FILE_CLOSED;
+            call(FILECreate, &fd, $path(p));
+            FILEClose(&fd);
+        }
+        {
+            a_path(p);
+            a_dup(u8c, s, u8bDataC(store_dir));
+            call(PATHu8bFeed, p, s);
+            a_cstr(wtlog_s, "wtlog");
+            call(PATHu8bPush, p, wtlog_s);
+            int fd = FILE_CLOSED;
+            call(FILECreate, &fd, $path(p));
+            FILEClose(&fd);
+        }
     }
 
     //  4. Sub mount + secondary-wt anchor.  The anchor's row-0 URI
     //  points at the sub-shard (store_dir), NOT the parent's `.be/`,
-    //  so the child `be get` opens the sub-shard cleanly.
+    //  so the child `be get` opens the sub-shard cleanly.  Skip the
+    //  anchor write on re-fetch — content is identical, no need to
+    //  bump the row's mtime.
     a_path(mount);
     call(PATHu8bFeed, mount, reporoot);
     call(PATHu8bAdd,  mount, path);          //  multi-segment safe
@@ -297,7 +326,9 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     call(PATHu8bPush, anchor, be_s);
     a_dup(u8c, anchor_s, u8bDataC(anchor));
     a_dup(u8c, shard_s,  u8bDataC(store_dir));
-    call(subs_write_anchor, anchor_s, shard_s);
+    if (!already_mounted) {
+        call(subs_write_anchor, anchor_s, shard_s);
+    }
 
     //  5. Pre-fetch the sub's pack into the SUB's keeper shard.
     //  WIREFetchAll writes through the keeper singleton; we
@@ -322,7 +353,17 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         if (ko == OK) {
             a_dup(u8c, url_const, url);
             fo = WIREFetchAll(url_const);
+            fprintf(stderr,
+                    "SUBS.dbg: WIREFetchAll url=" U8SFMT
+                    " basename=" U8SFMT " result=%s\n",
+                    u8sFmt(url_const), u8sFmt(basename_const),
+                    ok64str(fo));
             KEEPClose();
+        } else {
+            fprintf(stderr,
+                    "SUBS.dbg: KEEPOpenBranch basename=" U8SFMT
+                    " failed: %s\n",
+                    u8sFmt(basename_const), ok64str(ko));
         }
 
         //  Restore parent's trunk open regardless of fetch outcome
@@ -335,8 +376,13 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             fprintf(stderr,
                     "sniff: submodule fetch failed for %.*s\n",
                     (int)$len(url), (char *)url[0]);
-            (void)FILEUnLink($path(anchor));
-            (void)FILERmDir($path(store_dir), false);
+            //  Rollback only on first-time mount.  On a re-fetch we
+            //  keep the existing working mount (the user can still
+            //  use the sub at its prior pin).
+            if (!already_mounted) {
+                (void)FILEUnLink($path(anchor));
+                (void)FILERmDir($path(store_dir), false);
+            }
             return ko != OK ? ko : fo;
         }
     }
@@ -379,9 +425,16 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  LOCK_EX otherwise.  Restore on the way out.
     b8 had_lock = (KEEP.lock_fd >= 0);
     if (had_lock) (void)FILEUnlock(&KEEP.lock_fd);
+    fprintf(stderr,
+            "SUBS.dbg: spawning sniff get hex=" U8SFMT
+            " mount=" U8SFMT " exe=" U8SFMT "\n",
+            u8sFmt(arg_s), u8sFmt(mount_s), u8sFmt(exe_s));
     ok64 sr = subs_spawn_be_get(exe_s, mount_s, arg_s);
+    fprintf(stderr,
+            "SUBS.dbg: spawned sniff get path=" U8SFMT " result=%s\n",
+            u8sFmt(path), ok64str(sr));
     if (had_lock) (void)FILELock(&KEEP.lock_fd, YES);
-    if (sr != OK) {
+    if (sr != OK && !already_mounted) {
         (void)FILEUnLink($path(anchor));
         (void)FILERmDir($path(store_dir), false);
     }

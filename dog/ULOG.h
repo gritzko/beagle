@@ -59,6 +59,7 @@
 
 #include <time.h>
 
+#include "abc/ANSI.h"
 #include "abc/BUF.h"
 #include "abc/OK.h"
 #include "abc/PATH.h"
@@ -338,5 +339,34 @@ typedef b8 (*ulog_skip_fn)(u8cs rel, void *ctx);
 ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
                    ulog_skip_fn skip, void *skip_ctx,
                    u8bp out);
+
+// --- Shared verb→color palette --------------------------------------
+//
+//  Sniff's per-file status reporters (`be` bare, `be patch`,
+//  `be post`, `be get`) all use the same 7-entry palette to color
+//  the status column.  Centralized here so keeper/graf/spot can
+//  reuse the same colors when they report file-level activity.
+//
+//  Table shape: `u64[N][2]` — first slot is the verb (ron60), second
+//  is the packed ansi64 color (abc/ANSI.h).  Sentinel: `{0, 0}`.
+
+extern u64 const ULOG_VERB_COLORS[][2];
+
+//  Resolve `verb`'s palette entry.  Returns `ANSI_DEFAULT` (0) when
+//  the verb isn't in the table.
+ansi64 ULOGVerbColor(ron60 verb);
+
+//  Emit one `<date>\t<status>\t<path>\n` line to `stdout` in the
+//  same format `be` (bare status) uses for its per-row dump.  On a
+//  tty, the date column wears `unk` grey and the status column wears
+//  its own palette color; off tty, plain ASCII.  Intended for
+//  "as it happens" streaming reports (sniff GET, keeper fetch, …) —
+//  status-buffer batch consumers continue to use sniff's own
+//  `status_dump_verb` for the buffered case.
+//
+//  `status` is the literal token to print ("new", "mod", "del", "mrg"
+//  …); `verb` is the matching ron60 used for the color lookup.
+void ULOGFeedStatusLine(b8 tty, char const *status, ron60 verb,
+                        u8cs path);
 
 #endif

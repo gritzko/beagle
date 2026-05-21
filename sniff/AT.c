@@ -832,7 +832,10 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
     Bu8 base_rows = {};
     Bu8 gitlinks  = {};
     call(u8bAllocate, base_rows, 1UL << 22);
-    call(u8bAllocate, gitlinks,  1UL << 14);
+    {
+        ok64 ao = u8bAllocate(gitlinks, 1UL << 14);
+        if (ao != OK) { u8bFree(base_rows); return ao; }
+    }
     at_collect_baseline(base_rows, gitlinks);
 
     at_dirty_scan_ctx sc = {.cb = cb, .user_ctx = ctx, .cb_err = OK};

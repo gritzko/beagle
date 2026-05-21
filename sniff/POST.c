@@ -990,12 +990,6 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     //  (malloc-backed); upgrading to `u8bMap` would drop the cost
     //  but POST mixes Free/UnMap conventions across its many
     //  cleanup paths — keep `Allocate` here for now.
-    call(u8bAllocate, bu,           1UL << 24);
-    call(u8bAllocate, wu,           1UL << 24);
-    call(u8bAllocate, put_unsorted, 1UL << 22);
-    call(u8bAllocate, del_unsorted, 1UL << 22);
-    call(u8bAllocate, put_buf,      1UL << 22);
-    call(u8bAllocate, del_buf,      1UL << 22);
 
 #define PD_FREE_ALL()                                  \
     do {                                                \
@@ -1003,6 +997,19 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
         u8bFree(put_unsorted); u8bFree(del_unsorted);   \
         u8bFree(put_buf); u8bFree(del_buf);             \
     } while (0)
+
+    //  Cumulative cleanup on partial-allocation failure: free everything
+    //  successfully allocated so far before returning.  u8bFree on a
+    //  zero-init Bu8 returns BISNULL, harmless.
+    {
+        ok64 ar;
+        if ((ar = u8bAllocate(bu,           1UL << 24)) != OK) { PD_FREE_ALL(); return ar; }
+        if ((ar = u8bAllocate(wu,           1UL << 24)) != OK) { PD_FREE_ALL(); return ar; }
+        if ((ar = u8bAllocate(put_unsorted, 1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
+        if ((ar = u8bAllocate(del_unsorted, 1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
+        if ((ar = u8bAllocate(put_buf,      1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
+        if ((ar = u8bAllocate(del_buf,      1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
+    }
 
     if (*have_base) {
         ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);
@@ -2115,9 +2122,11 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  the (old, new) tip pair; we just hand it the target's view.
     cascade_ctx casc = {};
     if (stack_was_rewritten) {
-        call(u8bAllocate, casc.arena, CASCADE_MAX * 256);
+        ok64 aa = u8bAllocate(casc.arena, CASCADE_MAX * 256);
+        if (aa != OK) return aa;
         keep_pack p3 = {};
-        call(KEEPPackOpen, &p3);
+        ok64 po = KEEPPackOpen(&p3);
+        if (po != OK) { u8bFree(casc.arena); return po; }
         p3.strict_order = NO;
         casc.p = &p3;
         //  Skip cur during cascade: auto-sync handles it directly.
@@ -2130,9 +2139,10 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
+            u8bFree(casc.arena);
             return cw;
         }
-        if (cl3 != OK) return cl3;
+        if (cl3 != OK) { u8bFree(casc.arena); return cl3; }
     }
 
     //  --- 9. Advance target's REFS row via CAS on target_tip. ---
@@ -2160,9 +2170,10 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                     "sniff: post: REFS for `?" U8SFMT "` advanced "
                     "concurrently — retry\n",
                     u8sFmt(target_branch));
+            if (casc.arena[0]) u8bFree(casc.arena);
             return REFSCAS;
         }
-        if (cas != OK) return cas;
+        if (cas != OK) { if (casc.arena[0]) u8bFree(casc.arena); return cas; }
     }
     (void)advance_target_branch;
 
@@ -2626,7 +2637,12 @@ ok64 POSTCommit(u8cs target_branch,
     //  10. Build commit body.  Single-parent invariant: at most one
     //      `parent <hex>\n` line.
     Bu8 com = {};
-    call(u8bAllocate, com, 4096);
+    if (u8bAllocate(com, 4096) != OK) {
+        KEEPPackClose(&p);
+        u8bFree(tree_bodies);
+        post_ctx_free(&ctx);
+        return SNIFFFAIL;
+    }
     a_cstr(tree_label, "tree ");
     u8bFeed(com, tree_label);
     a_pad(u8, thex, 40);
@@ -2985,11 +3001,13 @@ ok64 POSTCommit(u8cs target_branch,
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
+            u8bFree(casc.arena);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cw;
         }
         if (cl3 != OK) {
+            u8bFree(casc.arena);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cl3;

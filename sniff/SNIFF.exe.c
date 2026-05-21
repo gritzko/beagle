@@ -534,9 +534,9 @@ static ok64 status_step(class_step const *step, void *ctx) {
 //  Drain the shared rows buffer, render rows whose verb matches
 //  `verb_filter` as `<date>\t<status>\t<path>` (or `<src> -> <dst>`
 //  for move rows whose URI carries a fragment).  On tty: time
-//  column wears grey, status wears its own colour, path stays
-//  default.  Walked once per bucket (≤7 passes) — trivial for
-//  status sizes.
+//  column wears grey, status wears its own colour via dog/ULOG's
+//  shared palette (`ULOGVerbColor`), path stays default.  Walked
+//  once per bucket (≤7 passes) — trivial for status sizes.
 static void status_dump_verb(Bu8 rows, ron60 verb_filter,
                              char const *marker, char const *ansi,
                              b8 tty, i64 now) {

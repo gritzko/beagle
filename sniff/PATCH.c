@@ -361,9 +361,20 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
          fork_commit && our_commit && thr_commit);
 
     Bu8 lbuf = {}, obuf = {}, tbuf = {};
-    call(u8bAllocate, lbuf, PATCH_TREE_BUF);
-    call(u8bAllocate, obuf, PATCH_TREE_BUF);
-    call(u8bAllocate, tbuf, PATCH_TREE_BUF);
+    //  Cumulative cleanup on partial-allocation failure.  u8bFree on a
+    //  zero-init Bu8 returns BISNULL, harmless.
+    {
+        ok64 ao;
+        if ((ao = u8bAllocate(lbuf, PATCH_TREE_BUF)) != OK) {
+            return ao;
+        }
+        if ((ao = u8bAllocate(obuf, PATCH_TREE_BUF)) != OK) {
+            u8bFree(lbuf); return ao;
+        }
+        if ((ao = u8bAllocate(tbuf, PATCH_TREE_BUF)) != OK) {
+            u8bFree(lbuf); u8bFree(obuf); return ao;
+        }
+    }
 
     //  Missing-at-commit is not fatal — the dir just didn't exist
     //  on that side, we treat its entry set as empty.
@@ -403,7 +414,14 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
     sort_entries(te, tn);
 
     Bu8 mbuf = {};
-    call(u8bAllocate, mbuf, PATCH_BLOB_BUF);
+    {
+        ok64 ao = u8bAllocate(mbuf, PATCH_BLOB_BUF);
+        if (ao != OK) {
+            free(le); free(oe); free(te);
+            u8bFree(lbuf); u8bFree(obuf); u8bFree(tbuf);
+            return ao;
+        }
+    }
 
     //  Lockstep walk over three sorted arrays.  At each iteration
     //  we pick the smallest head-of-arrays name, collect the
