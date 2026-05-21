@@ -91,10 +91,28 @@ be 'log:./a.txt?v4#1' > "$T/E.out" 2>&1 || true
 want_lines "$T/E.out" 1
 want_grep  "$T/E.out" 'c3'
 
+# --- Case F: bare `log:` resolves cur via wtlog, ignoring intervening
+#   put-with-40hex-fragment rows (submodule/sub-shard pointers).
+#   Regression: SNIFFAtTailOf used to walk every row with a 40-hex
+#   fragment and adopt it as cur_sha — a `put abc#<sub-project-sha>`
+#   row appearing after the latest get/post made bare `log:` resolve
+#   to the sub-project's sha (or REFSNONE when the sha was absent
+#   from the active project's keeper), so bare `log:` printed an
+#   empty hunk in any wt that touched a sibling project shard.
+CASE=F
+WTLOG="$R/.be/wtlog"
+[ -f "$WTLOG" ] || WTLOG="$R/.be/dogs/wtlog"
+echo "26521DZZZZ	put	abc#0000000000000000000000000000000000000123" >> "$WTLOG"
+rm -f "$R/.be/.wtlog.idx" "$R/.be/dogs/.wtlog.idx"
+be 'log:' > "$T/F.out" 2>&1 || true
+want_grep "$T/F.out" 'c4'
+want_grep "$T/F.out" 'c1'
+want_lines "$T/F.out" 4
+
 # --- Summary -----------------------------------------------------
 echo ""
 if [ "$FAIL" = "0" ]; then
-    echo "=== be-log-projector OK (5 cases) ==="
+    echo "=== be-log-projector OK (6 cases) ==="
 else
     echo "=== be-log-projector FAIL ($FAIL case(s)) ==="
     exit 1

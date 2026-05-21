@@ -371,18 +371,15 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
         u8cs a = {}, b = {};
         u8csMv(a, cur);
         u8csMv(b, norm);
-        if (!u8csEmpty(a) && *(a[1] - 1) == '/') u8csShed1(a);
-        if (!u8csEmpty(b) && *(b[1] - 1) == '/') u8csShed1(b);
-        if (u8csLen(a) == u8csLen(b) &&
-            (u8csLen(a) == 0 ||
-             memcmp(a[0], b[0], u8csLen(a)) == 0))
-            done;
+        if (!u8csEmpty(a) && *u8csLast(a) == '/') u8csShed1(a);
+        if (!u8csEmpty(b) && *u8csLast(b) == '/') u8csShed1(b);
+        if (u8csEq(a, b)) done;
     }
 
     //  Strip trailing slash on cur for LCA comparison.
     u8cs cur_for_lca = {};
     u8csMv(cur_for_lca, cur);
-    if (!u8csEmpty(cur_for_lca) && *(cur_for_lca[1] - 1) == '/')
+    if (!u8csEmpty(cur_for_lca) && *u8csLast(cur_for_lca) == '/')
         u8csShed1(cur_for_lca);
     size_t lca = DPATHBranchLcaLen(cur_for_lca, norm);
 

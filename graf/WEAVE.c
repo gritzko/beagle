@@ -926,7 +926,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
 
     Bu8 changed = {};
     call(u8bMap, changed, total_lines_est + 4);
-    memset(u8bDataHead(changed), 0, total_lines_est);
+    //  Anonymous mmap delivers zero-filled pages — no memset needed.
     u8bFed(changed, total_lines_est);
 
     u8 *cmark = (u8 *)u8bDataHead(changed);

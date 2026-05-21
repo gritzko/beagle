@@ -107,16 +107,8 @@ static ok64 bram_region(e32g edl, i32s work,
     u32 olen = ob - oa;
     u32 nlen = nb - na;
     if (olen == 0 && nlen == 0) return OK;
-    if (olen == 0) {
-        if (edl[0] >= edl[1]) return DIFFNOROOM;
-        *edl[0]++ = DIFF_ENTRY(DIFF_INS, nlen);
-        return OK;
-    }
-    if (nlen == 0) {
-        if (edl[0] >= edl[1]) return DIFFNOROOM;
-        *edl[0]++ = DIFF_ENTRY(DIFF_DEL, olen);
-        return OK;
-    }
+    if (olen == 0) return DIFFu64AddEntry(edl, DIFF_INS, nlen);
+    if (nlen == 0) return DIFFu64AddEntry(edl, DIFF_DEL, olen);
     u64cs ra = {old_h + oa, old_h + ob};
     u64cs rb = {new_h + na, new_h + nb};
     //  Recursive patience: re-anchor on lines that are unique within
@@ -124,10 +116,8 @@ static ok64 bram_region(e32g edl, i32s work,
     //  DIFFu64s when no within-region anchors exist.
     ok64 r = BRAMu64s(edl, work, ra, rb);
     if (r == OK) return OK;
-    if (edl[0] + 2 > edl[1]) return DIFFNOROOM;
-    *edl[0]++ = DIFF_ENTRY(DIFF_DEL, olen);
-    *edl[0]++ = DIFF_ENTRY(DIFF_INS, nlen);
-    return OK;
+    ok64 d = DIFFu64AddEntry(edl, DIFF_DEL, olen); if (d != OK) return d;
+    return DIFFu64AddEntry(edl, DIFF_INS, nlen);
 }
 
 // --- Public API ------------------------------------------------------
@@ -138,16 +128,8 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     u32 nb = (u32)$len(new_hashes);
 
     if (na == 0 && nb == 0) return OK;
-    if (na == 0) {
-        if (edl[0] >= edl[1]) return DIFFNOROOM;
-        *edl[0]++ = DIFF_ENTRY(DIFF_INS, nb);
-        return OK;
-    }
-    if (nb == 0) {
-        if (edl[0] >= edl[1]) return DIFFNOROOM;
-        *edl[0]++ = DIFF_ENTRY(DIFF_DEL, na);
-        return OK;
-    }
+    if (na == 0) return DIFFu64AddEntry(edl, DIFF_INS, nb);
+    if (nb == 0) return DIFFu64AddEntry(edl, DIFF_DEL, na);
 
     u64cp old_h = old_hashes[0];
     u64cp new_h = new_hashes[0];
@@ -202,10 +184,9 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
         u8bFree(la_buf); u8bFree(lb_buf); u8bFree(pairs_buf);
         u8bFree(ina_buf); return r;
     }
+    //  u8bAlloc zero-fills via Balloc/memset — no manual reset needed.
     u8 *is_anchor_a = ina_buf[0];
     u8 *is_anchor_b = inb_buf[0];
-    memset(is_anchor_a, 0, la_n);
-    memset(is_anchor_b, 0, lb_n);
 
     //  Walk pairs grouped by hash; each hash with count_a == count_b
     //  == 1 contributes one anchor on each side.
@@ -308,17 +289,12 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
                                                   new_h, b_tok, tok_b_lo);
                 if (ro != OK) { r = ro; goto cleanup; }
 
-                //  Anchor itself — full EQ run.
+                //  Anchor itself — full EQ run.  DIFFu64AddEntry
+                //  handles the bounds check + coalesce with a
+                //  trailing EQ that DIFFu64s may have just emitted.
                 u32 elen = tok_a_hi - tok_a_lo;
-                if (edl[0] >= edl[1]) { r = DIFFNOROOM; goto cleanup; }
-                //  Coalesce with a trailing EQ on edl[0]-1 (DIFFu64s
-                //  may have just emitted one for the region).
-                if (edl[0] > edl[2] && DIFF_OP(*(edl[0] - 1)) == DIFF_EQ) {
-                    e32 *prev = edl[0] - 1;
-                    *prev = DIFF_ENTRY(DIFF_EQ, DIFF_LEN(*prev) + elen);
-                } else {
-                    *edl[0]++ = DIFF_ENTRY(DIFF_EQ, elen);
-                }
+                ok64 ae = DIFFu64AddEntry(edl, DIFF_EQ, elen);
+                if (ae != OK) { r = ae; goto cleanup; }
 
                 a_tok = tok_a_hi;
                 b_tok = tok_b_hi;

@@ -54,10 +54,16 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         DOGBranchFromBe(r0.uri.path, anchor_branch_buf);
     }
 
-    //  Walk back for sha (latest row with 40-hex frag — could be a
-    //  local switch OR a fetch that detached the wt at a remote sha)
-    //  and provisionally pick the branch from that same row when it
-    //  was a local action (empty authority).
+    //  Walk back for sha — only `get` / `post` rows move cur.
+    //  `put path#<sha>` rows carry the staged blob's content sha
+    //  (or submodule pointer) in the fragment slot — they record
+    //  staged work, never the wt's current commit.  Accepting them
+    //  here misreports cur as a blob/foreign-project sha and breaks
+    //  every downstream that resolves the wt tip (graf log, head,
+    //  …).  Same for `patch` (records absorbed source sha for the
+    //  next POST, not cur) and `delete` (path-side).
+    ron60 v_get  = SNIFFAtVerbGet();
+    ron60 v_post = SNIFFAtVerbPost();
     u8cs ref_body = {}, sha_body = {};
     b8 found = NO;
     b8 sha_row_local = NO;
@@ -66,6 +72,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         i--;
         ulogrec rec = {};
         if (ULOGRow(data, idx, i, &rec) != OK) continue;
+        if (rec.verb != v_get && rec.verb != v_post) continue;
         uri u = rec.uri;
 
         //  Canonical at-log shape: `?<branch>#<curhash>` — fragment
@@ -112,6 +119,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             i--;
             ulogrec rec = {};
             if (ULOGRow(data, idx, i, &rec) != OK) continue;
+            if (rec.verb != v_get && rec.verb != v_post) continue;
             uri u = rec.uri;
             if (!u8csEmpty(u.authority)) continue;
             if (u8csLen(u.fragment) != 40) continue;

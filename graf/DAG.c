@@ -75,9 +75,7 @@ static u64 dag_obj_hashlet(u8 obj_type, sha1 const *sha, u8cs body) {
 // --- Ingest state (opaque to callers) ---
 
 struct dag_ingest {
-    wh128  *batch;          // emit buffer
-    size_t  batch_len;
-    size_t  batch_cap;
+    Bwh128  batch;          // emit buffer (typed); DataLen == queued, IdleLen == room
     u8      finished;
 };
 
@@ -707,9 +705,8 @@ static ok64 dag_ingest_alloc(dag_ingest **out) {
     dag_ingest *g = calloc(1, sizeof(*g));
     if (!g) return DAGFAIL;
 
-    g->batch_cap = DAG_BATCH;
-    g->batch = calloc(g->batch_cap, sizeof(wh128));
-    if (!g->batch) { free(g); return DAGFAIL; }
+    ok64 ao = wh128bAllocate(g->batch, DAG_BATCH);
+    if (ao != OK) { free(g); return ao; }
 
     *out = g;
     done;
@@ -717,7 +714,7 @@ static ok64 dag_ingest_alloc(dag_ingest **out) {
 
 static void dag_ingest_free(dag_ingest *g) {
     if (!g) return;
-    free(g->batch);
+    if (g->batch[0]) wh128bFree(g->batch);
     free(g);
 }
 
@@ -726,20 +723,18 @@ static void dag_ingest_free(dag_ingest *g) {
 static void dag_emit(dag_ingest *g,
                      u8 ktype, u64 khash,
                      u8 vtype, u64 vhash) {
-    if (g->batch_len >= g->batch_cap) return;  // overflow; handled by flush
-    g->batch[g->batch_len++] = DAGEntry(ktype, khash, vtype, vhash);
+    if (!wh128bHasRoom(g->batch)) return;  // overflow; handled by flush
+    (void)wh128bFeed1(g->batch, DAGEntry(ktype, khash, vtype, vhash));
 }
 
 static ok64 dag_flush_batch(dag_ingest *g) {
     sane(g);
-    if (g->batch_len == 0) done;
-    wh128s d = {g->batch, g->batch + g->batch_len};
-    wh128sSort(d);
-    wh128sDedup(d);
-    g->batch_len = (size_t)(d[1] - d[0]);
-    wh128cs run = {g->batch, g->batch + g->batch_len};
+    if (!wh128bHasData(g->batch)) done;
+    wh128bSort(g->batch);
+    wh128bDedup(g->batch);
+    a_dup(wh128c, run, wh128bDataC(g->batch));
     call(dag_index_write_leaf, &GRAF, run);
-    g->batch_len = 0;
+    wh128bReset(g->batch);
     //  Maintain the 1/8 LSM ladder right here, every flush.  Without
     //  this the puppy stack grows unboundedly during a long ingest,
     //  exceeds the runs[MSET_MAX_LEVELS] view cap, and older runs go
@@ -749,7 +744,7 @@ static ok64 dag_flush_batch(dag_ingest *g) {
 }
 
 static void dag_batch_maybe_flush(dag_ingest *g) {
-    if (g->batch_len + 64 >= g->batch_cap) dag_flush_batch(g);
+    if (wh128bIdleLen(g->batch) < 64) dag_flush_batch(g);
 }
 
 // --- Finish: flush pending records, compact runs. ---

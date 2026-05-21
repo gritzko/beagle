@@ -60,7 +60,7 @@ typedef struct {
     pid_leaf *leaves;
     u32       n;
     u32       cap;
-    Bu8       arena;     //  path bytes; borrowed by `leaves[i].path`
+    u8bp      arena;     //  borrowed: path bytes; lives in caller's arena
     ok64      err;
 } pid_collector;
 
@@ -77,13 +77,15 @@ static ok64 pid_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     if (c->n >= c->cap) { c->err = GRAFFAIL; return WALKSTOP; }
 
     pid_leaf *l = &c->leaves[c->n++];
-    if (u8bFeed(c->arena, path) != OK) {
-        c->n--;
-        c->err = GRAFFAIL;
-        return WALKSTOP;
+    {
+        u8gp g = u8aOpen(c->arena);
+        if (u8gFeed(g, path) != OK) {
+            c->n--;
+            c->err = GRAFFAIL;
+            return WALKSTOP;
+        }
+        u8aClose(c->arena, l->path);
     }
-    u8csMv(l->path, u8bDataC(c->arena));
-    (void)u8csUsedAll(u8bDataC(c->arena));
     sha1Mv(&l->sha, (sha1cp)esha);
     return OK;
 }
@@ -215,28 +217,35 @@ u64 GRAFPatchId(u8csc commit_body) {
     }
     u8bFree(pbuf);
 
-    //  Allocate parallel collectors.  Single arena per side.
-    pid_collector pc = {}, cc = {};
-    pc.cap = cc.cap = REBASE_TREE_ENTRIES;
-    pc.leaves = calloc(pc.cap, sizeof(pid_leaf));
-    cc.leaves = calloc(cc.cap, sizeof(pid_leaf));
-    if (u8bAllocate(pc.arena, REBASE_TREE_ENTRIES * 64) != OK) goto fail;
-    if (u8bAllocate(cc.arena, REBASE_TREE_ENTRIES * 64) != OK) goto fail;
-    if (!pc.leaves || !cc.leaves) goto fail;
+    //  Two leaf buffers (4096 pid_leaf each ≈ 144KB; mmap them) +
+    //  one shared string arena.  Sequential tree walks (parent then
+    //  child) keep snapped path slices stable — bytes stay where
+    //  they were fed.
+    Bu8 p_leaves = {}, c_leaves = {}, arena = {};
+    u64 h = 0;
+    if (u8bMap(p_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK)
+        goto out_p;
+    if (u8bMap(c_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK)
+        goto out_c;
+    if (u8bAllocate(arena, REBASE_TREE_ENTRIES * 128) != OK)
+        goto out_arena;
 
-    if (pid_collect(&tree_p, &pc) != OK) goto fail;
-    if (pid_collect(&tree_c, &cc) != OK) goto fail;
+    pid_collector pc = {.leaves = (pid_leaf *)u8bDataHead(p_leaves), .n = 0,
+                        .cap = REBASE_TREE_ENTRIES, .arena = arena, .err = OK};
+    pid_collector cc = {.leaves = (pid_leaf *)u8bDataHead(c_leaves), .n = 0,
+                        .cap = REBASE_TREE_ENTRIES, .arena = arena, .err = OK};
 
-    u64 h = pid_digest(&pc, &cc);
-    free(pc.leaves); free(cc.leaves);
-    u8bFree(pc.arena); u8bFree(cc.arena);
+    if (pid_collect(&tree_p, &pc) == OK && pid_collect(&tree_c, &cc) == OK) {
+        h = pid_digest(&pc, &cc);
+    }
+
+    u8bFree(arena);
+out_arena:
+    u8bUnMap(c_leaves);
+out_c:
+    u8bUnMap(p_leaves);
+out_p:
     return h;
-fail:
-    if (pc.leaves) free(pc.leaves);
-    if (cc.leaves) free(cc.leaves);
-    if (pc.arena[0]) u8bFree(pc.arena);
-    if (cc.arena[0]) u8bFree(cc.arena);
-    return 0;
 }
 
 // ---------------------------------------------------------------------

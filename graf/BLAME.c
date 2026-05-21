@@ -44,46 +44,50 @@ typedef struct {
     char date[12];   // YYYY-MM-DD
 } blame_author;
 
-// --- UTF-8 aware fixed-width field: truncate to N codepoints, pad right ---
+// --- UTF-8 aware fixed-width feed: truncate to N codepoints, pad right ---
 
-static void blame_fixfield(char *out, size_t outsz,
-                            char const *src, int maxcols, char const *after) {
-    char *w = out;
-    char *wend = out + outsz - 1;
-    int cols = 0;
-    char const *p = src;
-    while (*p && cols < maxcols) {
+static void blame_fixfeed(u8bp out, u8cs src, u32 maxcols, u8cs after) {
+    u32 cols = 0;
+    u8c *p = src[0];
+    while (p < src[1] && cols < maxcols) {
         u8 len = UTF8_LEN[((u8)*p) >> 4];
-        if (w + len >= wend) break;
-        for (u8 j = 0; j < len && *p; j++) *w++ = *p++;
+        if (p + len > src[1]) break;
+        u8cs cp = {p, p + len};
+        (void)u8bFeed(out, cp);
+        p += len;
         cols++;
     }
-    while (cols < maxcols && w < wend) { *w++ = ' '; cols++; }
-    while (*after && w < wend) *w++ = *after++;
-    *w = 0;
+    while (cols < maxcols) { (void)u8bFeed1(out, ' '); cols++; }
+    (void)u8bFeed(out, after);
 }
 
-// --- Compact date: "3Jun" if same year, "2023" if different ---
+// --- Compact date feed: "3Jun" if same year, "2023" if different ---
 
 static char const *MONTH_ABBR[] = {
     "Jan","Feb","Mar","Apr","May","Jun",
     "Jul","Aug","Sep","Oct","Nov","Dec"
 };
 
-static void blame_compact_date(char *out, size_t outsz,
-                                char const *iso_date, int current_year) {
-    out[0] = 0;
-    if (!iso_date || strlen(iso_date) < 10) return;
-    int y = 0, m = 0, d = 0;
-    if (sscanf(iso_date, "%d-%d-%d", &y, &m, &d) != 3) return;
-    if (y == current_year) {
-        if (m >= 1 && m <= 12)
-            snprintf(out, outsz, "%d%s", d, MONTH_ABBR[m - 1]);
-        else
-            snprintf(out, outsz, "%d/%d", d, m);
+//  ISO date is "YYYY-MM-DD" (fixed format produced by
+//  blame_fetch_author); parse digit-by-digit, no sscanf.
+static void blame_compact_feed(u8bp out, u8cs iso_date, int cur_year) {
+    if (u8csLen(iso_date) < 10) return;
+    u8cp p = iso_date[0];
+    if (p[4] != '-' || p[7] != '-') return;
+    int y = (p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0');
+    int m = (p[5]-'0')*10 + (p[6]-'0');
+    int d = (p[8]-'0')*10 + (p[9]-'0');
+    a_pad(u8, buf, 8);
+    if (y == cur_year && m >= 1 && m <= 12) {
+        i64 dd = d;
+        (void)utf8sFeedInt(buf_idle, &dd);
+        a_cstr(mon, MONTH_ABBR[m - 1]);
+        (void)u8bFeed(buf, mon);
     } else {
-        snprintf(out, outsz, "%d", y);
+        i64 yy = y;
+        (void)utf8sFeedInt(buf_idle, &yy);
     }
+    (void)u8bFeed(out, u8bDataC(buf));
 }
 
 // --- Fetch author + date from commit via keeper ---
@@ -454,13 +458,10 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     b8  have_prev_in = NO;
     b8  at_bol = YES;
 
-    char blank_pre[BLAME_PW + 1];
-    memset(blank_pre, ' ', BLAME_PW);
-    blank_pre[BLAME_PW] = 0;
+    a_cstr(sp1, " ");
 
-    #define EMIT_BLANK do { \
-        u8cs _s = {(u8cp)blank_pre, (u8cp)blank_pre + BLAME_PW}; \
-        u8bFeed(outbuf, _s); \
+    #define EMIT_BLANK do {                                           \
+        for (u32 _j = 0; _j < BLAME_PW; _j++) u8bFeed1(outbuf, ' ');  \
     } while(0)
 
     for (u32 wi = 0; wi < wlen; wi++) {
@@ -476,36 +477,38 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
             if (!ba) ba = &blame_unknown;
             b8 diff_commit = !have_prev_in || prev_in != w_irm[wi].in;
 
-            char pre[256];
             if (diff_commit) {
-                char hexlet[12] = "       ";
+                //  Hash column: "wt" for worktree, first 7 hex of the
+                //  hashlet otherwise, blank when no source.
+                a_pad(u8, hex, 10);
+                u8cs hash_field = {};
                 if (ba->commit_hashlet == (u64)BLAME_WT_SRC) {
-                    snprintf(hexlet, sizeof(hexlet), "wt     ");
-                    hexlet[BLAME_HW] = 0;
+                    a_cstr(wt, "wt");
+                    (void)u8bFeed(hex, wt);
+                    hash_field[0] = u8bDataHead(hex);
+                    hash_field[1] = u8bIdleHead(hex);
                 } else if (ba->commit_hashlet) {
-                    snprintf(hexlet, sizeof(hexlet), "%010llx",
-                             (unsigned long long)ba->commit_hashlet);
-                    hexlet[BLAME_HW] = 0;
+                    (void)WHIFFHexFeed40(hex_idle, ba->commit_hashlet);
+                    a_dup(u8c, full, u8bDataC(hex));
+                    hash_field[0] = full[0];
+                    hash_field[1] = full[0] + BLAME_HW;
                 }
-                char cd[16];
-                blame_compact_date(cd, sizeof(cd), ba->date, cur_year);
-                char fhash[16], fname[32], fdate[16];
-                blame_fixfield(fhash, sizeof(fhash), hexlet, BLAME_HW, " ");
-                blame_fixfield(fname, sizeof(fname), ba->author, BLAME_NW, " ");
-                blame_fixfield(fdate, sizeof(fdate), cd, BLAME_DW, " ");
-                if (tty)
-                    snprintf(pre, sizeof(pre),
-                             CLR_HASH "%s" CLR_NAME "%s" CLR_DATE "%s" CLR_OFF,
-                             fhash, fname, fdate);
-                else
-                    snprintf(pre, sizeof(pre), "%s%s%s", fhash, fname, fdate);
+                a_cstr(name_field, ba->author);
+                a_cstr(date_field, ba->date);
+                a_pad(u8, cd, 8);
+                blame_compact_feed(cd, date_field, cur_year);
+                if (tty) { a_cstr(c, CLR_HASH); (void)u8bFeed(outbuf, c); }
+                blame_fixfeed(outbuf, hash_field, BLAME_HW, sp1);
+                if (tty) { a_cstr(c, CLR_NAME); (void)u8bFeed(outbuf, c); }
+                blame_fixfeed(outbuf, name_field, BLAME_NW, sp1);
+                if (tty) { a_cstr(c, CLR_DATE); (void)u8bFeed(outbuf, c); }
+                blame_fixfeed(outbuf, u8bDataC(cd), BLAME_DW, sp1);
+                if (tty) { a_cstr(c, CLR_OFF);  (void)u8bFeed(outbuf, c); }
                 prev_in = w_irm[wi].in;
                 have_prev_in = YES;
             } else {
-                snprintf(pre, sizeof(pre), "%s", blank_pre);
+                EMIT_BLANK;
             }
-            u8cs ps = {(u8cp)pre, (u8cp)pre + strlen(pre)};
-            u8bFeed(outbuf, ps);
             at_bol = NO;
         }
 
@@ -533,16 +536,15 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     #undef EMIT_BLANK
 
     {
-        char title[128];
-        snprintf(title, sizeof(title), "%.*s (blame)",
-                 (int)$len(filepath), (char *)filepath[0]);
-
-        u8cs fdata = {u8bDataHead(outbuf),
-                      u8bDataHead(outbuf) + u8bDataLen(outbuf)};
+        a_pad(u8, title, 128);
+        (void)u8bFeed(title, filepath);
+        a_cstr(suffix, " (blame)");
+        (void)u8bFeed(title, suffix);
         hunk hk = {};
-        hk.uri[0] = (u8cp)title;
-        hk.uri[1] = (u8cp)title + strlen(title);
-        $mv(hk.text, fdata);
+        hk.uri[0]  = u8bDataHead(title);
+        hk.uri[1]  = u8bIdleHead(title);
+        hk.text[0] = u8bDataHead(outbuf);
+        hk.text[1] = u8bIdleHead(outbuf);
         call(GRAFHunkEmit, &hk, NULL);
     }
 

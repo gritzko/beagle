@@ -131,7 +131,7 @@ typedef struct {
     map_branch *v;
     u32         n;
     u32         cap;
-    Bu8         arena;       //  borrowed: path bytes are interned here
+    u8bp        arena;       //  borrowed: path bytes are interned here
 } map_set;
 
 static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
@@ -143,9 +143,11 @@ static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
 
     map_branch *b = &s->v[s->n++];
     zerop(b);
-    if (u8bFeed(s->arena, t->path) != OK) { s->n--; return OK; }
-    u8csMv(b->path, u8bDataC(s->arena));
-    (void)u8csUsedAll(u8bDataC(s->arena));
+    {
+        u8gp g = u8aOpen(s->arena);
+        if (u8gFeed(g, t->path) != OK) { s->n--; return OK; }
+        u8aClose(s->arena, b->path);
+    }
     if (sha1hexFromHex(&b->sha, t->sha) != OK) {
         s->n--;
         return OK;
@@ -165,13 +167,13 @@ static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
     return OK;
 }
 
-//  Intern a slice into `arena`: feed bytes, snapshot the new DATA
-//  range as `out`, then UsedAll so subsequent feeds extend cleanly.
-static void map_intern(Bu8 arena, u8csp out, u8csc src) {
+//  Intern a slice into `arena`: open a u8 gauge over IDLE, feed
+//  bytes, close to commit and snapshot the populated range as `out`.
+static void map_intern(u8bp arena, u8csp out, u8csc src) {
     if (u8csEmpty(src)) return;
-    if (u8bFeed(arena, src) != OK) return;
-    u8csMv(out, u8bDataC(arena));
-    (void)u8csUsedAll(u8bDataC(arena));
+    u8gp g = u8aOpen(arena);
+    (void)u8gFeed(g, src);
+    u8aClose(arena, out);
 }
 
 // --- Main -----------------------------------------------------------
@@ -180,175 +182,144 @@ ok64 GRAFMap(uricp u) {
     sane(KEEP.h != NULL);
     (void)u;
 
-    //  Resolve current branch (path) so we can compute the include
-    //  filter (current ∪ ancestors-to-trunk ∪ descendants).  Sourced
-    //  from `--at <root>?<branch>#<sha>` forwarded by `be` and parked
-    //  Per-call arena for path / summary / author bytes — every slice
-    //  in map_branch / map_commit points into here.
+    //  Per-call string arena: path / summary / author bytes interned
+    //  here.  Every u8cs in map_branch / map_commit points into it.
     Bu8 strs_arena = {};
     if (u8bAllocate(strs_arena, 1UL << 20) != OK) fail(GRAFFAIL);
 
-    //  in `KEEP.h->cur_branch` by HOMEOpen.  Empty branch == trunk.
-    //  Strip the canonical trailing '/' so prefix-match against
-    //  KEEPEachTip's slashless paths works.
+    //  Resolve current branch — sourced from `--at <root>?<branch>#<sha>`
+    //  forwarded by `be` and parked in KEEP.h->cur_branch by HOMEOpen.
+    //  Empty branch == trunk; strip the canonical leading '?' and
+    //  trailing '/' for prefix-matching against KEEPEachTip's paths.
     u8cs cur_path = {};
     {
         a_dup(u8c, cb, u8bData(KEEP.h->cur_branch));
         if (!u8csEmpty(cb) && *cb[0] == '?') u8csUsed1(cb);
         if (!u8csEmpty(cb) && *u8csLast(cb) == '/') u8csShed1(cb);
         if (u8csLen(cb) > 0) {
-            if (u8bFeed(strs_arena, cb) != OK) {
-                u8bFree(strs_arena);
-                fail(GRAFFAIL);
-            }
-            u8csMv(cur_path, u8bDataC(strs_arena));
-            (void)u8csUsedAll(u8bDataC(strs_arena));
+            u8gp g = u8aOpen(strs_arena);
+            (void)u8gFeed(g, cb);
+            u8aClose(strs_arena, cur_path);
         }
     }
 
-    //  Pull every local-branch tip, then keep only those in the
-    //  ancestors-or-descendants window of the current branch.
-    map_branch *all = (map_branch *)calloc(MAP_MAX_BRANCHES, sizeof(*all));
-    if (!all) { u8bFree(strs_arena); fail(GRAFFAIL); }
+    //  Stack arrays for the bounded per-branch tables (~3.5KB each).
+    //  Path bytes inside map_branch.path point into strs_arena.
+    map_branch all[MAP_MAX_BRANCHES]  = {};
+    map_branch kept[MAP_MAX_BRANCHES] = {};
     map_set s = {.v = all, .n = 0, .cap = MAP_MAX_BRANCHES,
-                 .arena = {strs_arena[0], strs_arena[1],
-                           strs_arena[2], strs_arena[3]}};
+                 .arena = strs_arena};
     call(KEEPEachTip, map_collect_cb, &s);
-    //  KEEPEachTip mutates s.arena's data/idle pointers in place.  Sync
-    //  the outer arena so subsequent feeds continue from where it left.
-    strs_arena[1] = s.arena[1];
-    strs_arena[2] = s.arena[2];
 
-    map_branch *kept = (map_branch *)calloc(MAP_MAX_BRANCHES, sizeof(*kept));
+    //  Filter window: current branch's ancestors-to-trunk ∪ descendants.
     u32 nk = 0;
     for (u32 i = 0; i < s.n && nk < MAP_MAX_BRANCHES; i++) {
-        map_branch const *b = &s.v[i];
+        map_branch const *b = &all[i];
         u8csc bp = {b->path[0], b->path[1]};
         u8csc cp = {cur_path[0], cur_path[1]};
         b8 anc  = map_is_ancestor_of(bp, cp);
         b8 desc = map_is_ancestor_of(cp, bp);
         if (anc || desc) kept[nk++] = *b;
     }
-    free(all);
-
     //  Column order: shallow-first (trunk left), then lex within depth.
     qsort(kept, nk, sizeof(*kept), map_branch_cmp_for_columns);
 
-    //  Build per-branch ancestor sets via the DAG index.  GRAFOpen is
-    //  idempotent — close only if we owned the open.
+    //  GRAFOpen is idempotent — close only if we owned the open.
     ok64 go = GRAFOpen(KEEP.h, NO);
     b8 own_graf = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
-        free(kept); return go;
+        u8bFree(strs_arena); return go;
     }
-    //  Load every branch's idx pups into graf's PAST/DATA before
-    //  walking ancestors.  Each `GRAFSwitchBranch` collapses the
-    //  prior DATA into PAST and opens the next branch's dir into
-    //  DATA (DOGPupOpenAside semantics).  After the loop, runs span
-    //  every kept branch.
+    //  Walk every kept branch's idx pups into graf's PAST/DATA so
+    //  subsequent DAG queries span every branch.  Mirror on keeper
+    //  so per-branch commit bodies (KEEPGet) resolve.  Map is
+    //  read-only — the keeper switch is safe (no in-flight pack).
     for (u32 i = 0; i < nk; i++) {
         a_dup(u8c, br, kept[i].path);
         (void)GRAFSwitchBranch(KEEP.h, br);
-        //  Mirror on keeper so per-branch commit bodies (KEEPGet) and
-        //  per-branch tree/blob fetches downstream resolve.  Map is
-        //  read-only so the keeper switch is safe (no in-flight pack).
         (void)KEEPSwitchBranch(KEEP.h, br);
     }
     for (u32 i = 0; i < nk; i++) {
         ok64 ao = wh128bAllocate(kept[i].ancestors, MAP_ANC_SIZE);
-        if (ao != OK) {
-            for (u32 j = 0; j < i; j++)
-                if (kept[j].anc_init) wh128bFree(kept[j].ancestors);
-            if (own_graf) GRAFClose();
-            free(kept);
-            return ao;
-        }
+        if (ao != OK) goto cleanup_branches;
         kept[i].anc_init = YES;
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
         DAGAncestors(kept[i].ancestors, runs, kept[i].tip_h40);
     }
 
-    //  Union all hashlets.  The deepest-claiming branch owns each.
+    //  Union all hashlets.  Deepest-claiming branch owns each commit
+    //  (kept[] is shallow→deep; first match in kept[] order wins).
     Bwh128 union_set = {};
-    ok64 uo = wh128bAllocate(union_set, MAP_ANC_SIZE);
-    if (uo != OK) goto cleanup_branches;
+    if (wh128bAllocate(union_set, MAP_ANC_SIZE) != OK) goto cleanup_branches;
     if (nk > 0) {
-        u64 *tips = (u64 *)calloc(nk, sizeof(u64));
+        u64 tips[MAP_MAX_BRANCHES];
         for (u32 i = 0; i < nk; i++) tips[i] = kept[i].tip_h40;
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
         DAGAncestorsOfMany(union_set, runs, tips, nk);
-        free(tips);
     }
 
-    //  Walk the union: for each commit, find the deepest claimant
-    //  (iterate branches in deep-to-shallow order, first match wins),
-    //  fetch its body via keeper for ts + summary, accumulate.
-    map_commit *commits = (map_commit *)calloc(MAP_MAX_COMMITS,
-                                               sizeof(*commits));
-    if (!commits) goto cleanup_union;
+    //  commits[] is 320KB — too large for the stack; mmap and cast.
+    Bu8 commits_buf = {};
+    if (u8bMap(commits_buf, MAP_MAX_COMMITS * sizeof(map_commit)) != OK)
+        goto cleanup_union;
+    map_commit *commits = (map_commit *)u8bDataHead(commits_buf);
     u32 ncommits = 0;
 
     Bu8 cbuf = {};
     if (u8bMap(cbuf, MAP_OBJ_BUF) != OK) goto cleanup_commits;
 
+    //  Walk the union: records live as hashtable slots (key == 0 ==
+    //  empty), not packed.  Walk the full slot range, skip empties.
     //  Owner = SHALLOWEST branch whose ancestor set contains the
-    //  commit (the branch where it was first made — descendants
-    //  inherit older commits through their fork-commit chain).
-    //  kept[] is already sorted shallow→deep by column-cmp, so the
-    //  first match in kept[] order is the answer.
+    //  commit; kept[] is shallow→deep so the first match wins.
+    {
+        wh128cp ub = (wh128cp)wh128bHead(union_set);
+        wh128cp ue = (wh128cp)wh128bTerm(union_set);
+        for (wh128cp r = ub; r < ue && ncommits < MAP_MAX_COMMITS; r++) {
+            if (r->key == 0) continue;
+            u64 h40 = DAGHashlet(r->key);
+            if (h40 == 0) continue;
 
-    //  Iterate the wh128 union — records are scattered across the
-    //  set's full slot range as a hash table (DAGAncestors uses
-    //  HASHwh128Put), not packed into the data segment.  Walk every
-    //  slot, skip empties (key == 0).
-    wh128cp ub = (wh128cp)wh128bHead(union_set);
-    wh128cp ue = (wh128cp)wh128bTerm(union_set);
-    for (wh128cp r = ub; r < ue && ncommits < MAP_MAX_COMMITS; r++) {
-        if (r->key == 0) continue;
-        u64 h40 = DAGHashlet(r->key);
-        if (h40 == 0) continue;
+            u8bReset(cbuf);
+            u8 ot = 0;
+            if (KEEPGet(h40, DAG_H60_HEXLEN, cbuf, &ot) != OK
+                || ot != DOG_OBJ_COMMIT) continue;
+            a_dup(u8c, body, u8bData(cbuf));
+            sha1 csha = {};
+            KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
 
-        u8bReset(cbuf);
-        u8 ot = 0;
-        if (KEEPGet(h40, DAG_H60_HEXLEN,
-                    cbuf, &ot) != OK || ot != DOG_OBJ_COMMIT) continue;
-        a_dup(u8c, body, u8bData(cbuf));
-        sha1 csha = {};
-        KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
-
-        u32 owner = nk;
-        for (u32 i = 0; i < nk; i++) {
-            if (DAGAncestorsHas(kept[i].ancestors, h40)) {
-                owner = i; break;
+            u32 owner = nk;
+            for (u32 i = 0; i < nk; i++) {
+                if (DAGAncestorsHas(kept[i].ancestors, h40)) {
+                    owner = i; break;
+                }
             }
-        }
-        if (owner == nk) continue;
+            if (owner == nk) continue;
 
-        git_commit gc = {};
-        GITu8sParseCommit(body, &gc);
-        map_commit *mc = &commits[ncommits++];
-        mc->commit_h40 = h40;
-        mc->csha = csha;
-        mc->owner = owner;
-        mc->ts = gc.author_ts;
-        u8csc gc_subject_c   = {gc.subject[0],   gc.subject[1]};
-        u8csc gc_author_id_c = {gc.author_id[0], gc.author_id[1]};
-        map_intern(strs_arena, mc->summary, gc_subject_c);
-        map_intern(strs_arena, mc->author,  gc_author_id_c);
+            git_commit gc = {};
+            GITu8sParseCommit(body, &gc);
+            map_commit *mc = &commits[ncommits++];
+            mc->commit_h40 = h40;
+            mc->csha = csha;
+            mc->owner = owner;
+            mc->ts = gc.author_ts;
+            u8csc gc_subject_c   = {gc.subject[0],   gc.subject[1]};
+            u8csc gc_author_id_c = {gc.author_id[0], gc.author_id[1]};
+            map_intern(strs_arena, mc->summary, gc_subject_c);
+            map_intern(strs_arena, mc->author,  gc_author_id_c);
+        }
     }
     u8bUnMap(cbuf);
 
     qsort(commits, ncommits, sizeof(*commits), map_commit_cmp_desc);
 
-    //  Render.  Each row: per-column glyph (spine if commit ∈ branch's
-    //  ancestor set, space otherwise) + sha7 + 7-date + branch + summary.
-    //  Plain text only for now — bro pager hookup follows once the
-    //  rendering is settled.
+    //  Render — one row per commit: glyph-per-branch + sha7 + 7-date
+    //  + branch + summary.  Plain text; bro pager hookup is a later
+    //  layer.
     Bu8 text = {};
-    ok64 ta = u8bAllocate(text, 1UL << 20);
-    if (ta != OK) goto cleanup_commits;
+    if (u8bAllocate(text, 1UL << 20) != OK) goto cleanup_commits;
 
     i64 now = (i64)time(NULL);
     for (u32 i = 0; i < ncommits; i++) {
@@ -366,22 +337,19 @@ ok64 GRAFMap(uricp u) {
             }
         }
         (void)u8bFeed1(text, ' ');
-        //  sha7
-        u8 hex[40];
-        u8s hs = {hex, hex + 40};
-        u8cs ss = {mc->csha.data, mc->csha.data + 20};
-        HEXu8sFeedSome(hs, ss);
-        u8cs sha7 = {hex, hex + 7};
+        //  sha7 — hex the 20-byte sha, take head 7.
+        a_pad(u8, hex, 40);
+        a_rawc(ss, mc->csha);
+        HEXu8sFeedSome(hex_idle, ss);
+        a_dup(u8c, full, u8bDataC(hex));
+        u8cs sha7 = {full[0], full[0] + 7};
         (void)u8bFeed(text, sha7);
         (void)u8bFeed1(text, ' ');
-        //  7-char date
-        u8 date_buf[8];
-        u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
-        u8cp date_start = date_into[0];
-        (void)DOGutf8sFeedDate(date_into,
+        //  7-char date.
+        a_pad(u8, date, 8);
+        (void)DOGutf8sFeedDate(date_idle,
                                map_ron60_to_secs(mc->ts), now);
-        u8cs date_slice = {date_start, date_into[0]};
-        (void)u8bFeed(text, date_slice);
+        (void)u8bFeed(text, u8bDataC(date));
         (void)u8bFeed1(text, ' ');
         //  branch + summary
         map_branch const *ob = &kept[mc->owner];
@@ -397,9 +365,9 @@ ok64 GRAFMap(uricp u) {
         (void)u8bFeed1(text, '\n');
     }
 
-    //  Always emit one hunk via GRAFHunkEmit; the formatter in
-    //  `graf_emit` (set by graf_start_pager) picks bytes —
-    //  HUNKu8sFeed (TLV → bro) or HUNKu8sFeedText (plain → terminal).
+    //  Emit one hunk via GRAFHunkEmit; the formatter in `graf_emit`
+    //  (set by graf_start_pager) picks bytes — HUNKu8sFeed (TLV →
+    //  bro) or HUNKu8sFeedText (plain → terminal).
     call(GRAFArenaInit);
     a_pad(u8, title, 16);
     a_cstr(prefix, "map:");
@@ -411,24 +379,22 @@ ok64 GRAFMap(uricp u) {
     hk.text[1] = u8bIdleHead(text);
     (void)GRAFHunkEmit(&hk, NULL);
     u8bFree(text);
-    free(commits);
-    if (wh128bHead(union_set) != wh128bTerm(union_set)) wh128bFree(union_set);
+    u8bUnMap(commits_buf);
+    wh128bFree(union_set);
     for (u32 i = 0; i < nk; i++)
         if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
     if (own_graf) GRAFClose();
-    free(kept);
     u8bFree(strs_arena);
     done;
 
 cleanup_commits:
-    free(commits);
+    u8bUnMap(commits_buf);
 cleanup_union:
-    if (wh128bHead(union_set) != wh128bTerm(union_set)) wh128bFree(union_set);
+    wh128bFree(union_set);
 cleanup_branches:
     for (u32 i = 0; i < nk; i++)
         if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
     if (own_graf) GRAFClose();
-    free(kept);
     u8bFree(strs_arena);
     fail(GRAFFAIL);
 }
