@@ -24,17 +24,6 @@ con ok64 SPOTNOBR   = 0x71961d5d82db;
 extern b8 CAPO_COLOR;  // stdout is a terminal with color
 extern b8 CAPO_TERM;   // stderr is a terminal
 
-// Verbose call: prints step context on failure
-#define vcall(step, f, ...)                                              \
-    {                                                                    \
-        __ = (f(__VA_ARGS__));                                           \
-        if (__ != OK) {                                                  \
-            fprintf(stderr, "spot: %s: %s (%s:%d)\n",                   \
-                    step, ok64str(__), __func__, __LINE__);              \
-            return __;                                                   \
-        }                                                                \
-    }
-
 #define CAPO_DIR DOG_BE_NAME
 #define CAPO_IDX_EXT ".spot.idx"
 #define CAPO_LOCK_S  ".lock.spot"
@@ -94,19 +83,6 @@ ok64 CAPOEmit(u64 entry);
 ok64 CAPOIndexFile(u8csc source, u8csc ext, u8csc full_path);
 
 typedef struct spot_ spot;
-
-// Load index stack as a typed view over SPOT.puppies (no fs scan,
-// no per-call mmap; the puppy stack is owned by the singleton).
-// `dir` is ignored — kept for API stability.  Each `<seqno>.spot.idx`
-// along trunk → leaf appears as one run in `stack[0..nfiles)`.
-//
-// LEGACY shim: just copies `SPOT.runs[]` into the caller's slots.
-// New code should call `CAPORuns()` instead — same data, no copy,
-// always current after a `CAPORefreshView()` from any mutator.
-ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir);
-
-// No-op: SPOT.puppies owns the mmaps now.
-ok64 CAPOStackClose(u8bp *maps, u32 nfiles);
 
 // Rebuild `SPOT.runs[]` / `SPOT.runs_n` from the current `SPOT.puppies`
 // stack.  Called by SPOTOpen after `DOGPupOpenAll`, by `CAPOFlushRun`
@@ -288,6 +264,19 @@ struct spot_ {
     b8 color;
     b8 term;
     b8 rw;
+
+    //  Trace flags cached from the environment at SPOTOpen time.
+    //  Avoids ~9 `getenv()` calls per query in the trigram/scan hot
+    //  paths.  SPOT_TRACE_ORDER drains tip-walk stats in SPOTClose.
+    b8 trace_query;
+    b8 trace_rej;
+    b8 trace_order;
+
+    //  Tip-walk indexer counters.  Drained by SPOTClose under
+    //  `trace_order`.  Was three CAPO.exe.c file-scope globals.
+    u64 dbg_tokenised;
+    u64 dbg_memo_hit;
+    u64 dbg_blob_no_ext;
 };
 
 typedef spot *spotp;

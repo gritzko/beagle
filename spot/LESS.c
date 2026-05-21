@@ -25,7 +25,7 @@ ok64 LESSArenaInit(void) {
     zero(less_hunks);
     zero(less_maps);
     zero(less_toks);
-    if (less_arena[0] != NULL) {
+    if (!BNULL(less_arena)) {
         u8bShedAll(less_arena);  // empty DATA, IDLE spans full buffer
         return OK;
     }

@@ -102,7 +102,16 @@ want_grep  "$T/E.out" 'c3'
 CASE=F
 WTLOG="$R/.be/wtlog"
 [ -f "$WTLOG" ] || WTLOG="$R/.be/dogs/wtlog"
-echo "26521DZZZZ	put	abc#0000000000000000000000000000000000000123" >> "$WTLOG"
+#  Pick a ts strictly ahead of any legitimate row by stamping the
+#  prefix of the wtlog's tail row and trailing it with `~~~~`.
+#  `~` is RON64's max digit (value 63), so the resulting ts is the
+#  largest value sharing the tail row's high-order prefix — guaranteed
+#  to satisfy ulog_scan_log's strict-monotonicity gate regardless of
+#  wall-clock drift between the legitimate rows and the appended row.
+TAIL_TS=$(awk -F'\t' 'NF { ts = $1 } END { print ts }' "$WTLOG")
+PREFIX=$(printf '%s' "$TAIL_TS" | cut -c1-6)
+echo "${PREFIX}~~~~	put	abc#0000000000000000000000000000000000000123" \
+    >> "$WTLOG"
 rm -f "$R/.be/.wtlog.idx" "$R/.be/dogs/.wtlog.idx"
 be 'log:' > "$T/F.out" 2>&1 || true
 want_grep "$T/F.out" 'c4'

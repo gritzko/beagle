@@ -198,12 +198,12 @@ match "$CASE/06.e.t2.c" e.c
 #  Spot + graf index sanity on ?fix2's shard: the trigram index must
 #  cover the migrated blobs (b@C1 + c@C2 bodies) and the commit log
 #  must reach T1 through C1 and C2.
-"$BE" 'spot:#sub.c' \
+"$BE" 'spot:.c#sub' \
     > "$LOGS/14b.spot-sub.out" 2> "$LOGS/14b.spot-sub.err"
 grep -q '^--- b.c' "$LOGS/14b.spot-sub.out" \
     || { echo "?fix2: spot should find 'sub' in b.c (C1's edit)" >&2
          cat "$LOGS/14b.spot-sub.out" >&2; exit 1; }
-"$BE" 'spot:#mul.c' \
+"$BE" 'spot:.c#mul' \
     > "$LOGS/14c.spot-mul.out" 2> "$LOGS/14c.spot-mul.err"
 grep -q '^--- c.c' "$LOGS/14c.spot-mul.out" \
     || { echo "?fix2: spot should find 'mul' in c.c (C2's edit)" >&2
@@ -272,12 +272,12 @@ match "$CASE/09.f.c3.c" f.c
 #  Spot index on ?fix1: must see the new symbol `neg` from f.c (C3,
 #  authored on ?fix2, migrated here via promote-back) and lose `dbl`
 #  (d.c was deleted at C2).  Graf index: log walks the full chain.
-"$BE" 'spot:#neg.c' \
+"$BE" 'spot:.c#neg' \
     > "$LOGS/18b.spot-neg.out" 2> "$LOGS/18b.spot-neg.err"
 grep -q '^--- f.c' "$LOGS/18b.spot-neg.out" \
     || { echo "?fix1: spot should find 'neg' in f.c (migrated from ?fix2)" >&2
          cat "$LOGS/18b.spot-neg.out" >&2; exit 1; }
-"$BE" 'spot:#dbl.c' \
+"$BE" 'spot:.c#dbl' \
     > "$LOGS/18c.spot-dbl.out" 2> "$LOGS/18c.spot-dbl.err"
 [ ! -s "$LOGS/18c.spot-dbl.out" ] \
     || { echo "?fix1: spot should not find 'dbl' (d.c removed at C2)" >&2
@@ -348,13 +348,13 @@ match "$CASE/09.f.c3.c" f.c
 #  here, dbl must not (d.c removed at C2), and log must walk the full
 #  T1 → T2 → C1 → C2 → C3 chain.
 for sym in add sub mul sq neg; do
-    "$BE" "spot:#$sym.c" \
+    "$BE" "spot:.c#$sym" \
         > "$LOGS/22b.spot-$sym.out" 2> "$LOGS/22b.spot-$sym.err"
     [ -s "$LOGS/22b.spot-$sym.out" ] \
         || { echo "trunk: spot should find '$sym' after final promote" >&2
              exit 1; }
 done
-"$BE" 'spot:#dbl.c' \
+"$BE" 'spot:.c#dbl' \
     > "$LOGS/22c.spot-dbl.out" 2> "$LOGS/22c.spot-dbl.err"
 [ ! -s "$LOGS/22c.spot-dbl.out" ] \
     || { echo "trunk: spot should not find 'dbl' (d.c removed at C2)" >&2

@@ -28,11 +28,8 @@
 #include "spot/CAPOi.h"
 #include "spot/LESS.h"
 
-//  Per-session indexing stats — drained by SPOTClose.  Counts how
-//  many blobs the tip-walker tokenised vs skipped via the BLOBFN memo.
-u64 SPOT_DBG_TOKENISED     = 0;
-u64 SPOT_DBG_MEMO_HIT      = 0;
-u64 SPOT_DBG_BLOB_NO_EXT   = 0;
+//  Tip-walker counters live on the spot singleton (`SPOT.dbg_*`);
+//  SPOTClose drains them under `SPOT.trace_order`.
 
 // --- Verb / flag tables ---
 
@@ -82,7 +79,12 @@ ok64 SPOTExec(cli *c) {
 
     if (getenv("SPOT_COLOR")) { dog->color = YES; CAPO_COLOR = YES; }
 
-    a_dup(u8c, reporoot, u8bDataC(dog->h->root));
+    //  Use the wt root (`h->wt`) for file scans, not the store root
+    //  (`h->root`).  They coincide for a primary wt but diverge for a
+    //  secondary wt where the user's files live under `h->wt` while
+    //  refs/index/packs are stored under `h->root` (redirected via
+    //  the secondary's `.be` anchor's row-0 `repo` URI).
+    a_dup(u8c, reporoot, u8bDataC(dog->h->wt));
 
     u8cs v = {};
 
@@ -96,20 +98,12 @@ ok64 SPOTExec(cli *c) {
 
     if ($eq(c->verb, v_help_verb)) { spot_usage(); done; }
     if ($eq(c->verb, v_status_verb)) {
-        a_path(capodir);
-        CAPOResolveDir(capodir, reporoot);
-        a_dup(u8c, dirslice, u8bDataC(capodir));
-        u64cs runs[CAPO_MAX_LEVELS] = {};
-        u64css stack = {runs, runs};
-        u8bp mmaps[CAPO_MAX_LEVELS] = {};
-        u32 nidxfiles = 0;
-        CAPOStackOpen(stack, mmaps, &nidxfiles, dirslice);
+        u64css live = {};
+        CAPORuns(live);
         u64 total = 0;
-        for (u32 i = 0; i < nidxfiles; i++)
-            total += (u64)$len(runs[i]);
-        CAPOStackClose(mmaps, nidxfiles);
+        $for(u64cs, run, live) total += (u64)$len(*run);
         fprintf(stderr, "spot: %u index files, %llu entries\n",
-                nidxfiles, (unsigned long long)total);
+                (u32)$len(live), (unsigned long long)total);
         done;
     }
     //  `spot get URI` — invoked by `be` in parallel with keeper/graf/
@@ -179,50 +173,24 @@ ok64 SPOTExec(cli *c) {
             u8cs body = {pu->fragment[0], pu->fragment[1]};
 
             //  Path-side `.ext` (e.g. `spot:.c#u8sFeed`) — when the
-            //  whole path is just `.<ext-chars>`, treat it as the
+            //  whole path is a known `.ext`, treat it as the
             //  extension filter and clear the path slot so it doesn't
             //  also get used as a file-narrowing constraint below.
-            if (!$empty(pu->path)) {
-                u8cs p = {pu->path[0], pu->path[1]};
-                b8 path_is_ext = ($len(p) >= 2) && (p[0][0] == '.');
-                for (u8cp q = p[0] + 1; path_is_ext && q < p[1]; q++) {
-                    u8 ch = *q;
-                    if (!((ch >= 'a' && ch <= 'z') ||
-                          (ch >= 'A' && ch <= 'Z') ||
-                          (ch >= '0' && ch <= '9'))) {
-                        path_is_ext = NO;
-                    }
-                }
-                if (path_is_ext) {
-                    $mv(proj_ext, p);
-                    pu->path[0] = pu->path[1] = NULL;
-                }
+            //  PATHu8sExt's "hidden file" rule rejects bare `.c`, so
+            //  go through CAPOKnownExt directly.
+            if (!$empty(pu->path) && *u8csHead(pu->path) == '.' &&
+                CAPOKnownExt(pu->path)) {
+                u8cs p = {};
+                u8csMv(p, pu->path);
+                $mv(proj_ext, p);
+                pu->path[0] = pu->path[1] = NULL;
             }
-
-            //  Trailing `.ext` on the fragment (e.g. `'body'.c`) —
-            //  split body off ext.  Skipped if the path slot already
-            //  carries the ext.  Scan from the end for a `.` followed
-            //  by ext-legal chars.
-            if ($empty(proj_ext)) {
-                u8cp dot = NULL;
-                for (u8cp p = body[1]; p > body[0]; ) {
-                    p--;
-                    u8 ch = *p;
-                    if (ch == '.') { dot = p; break; }
-                    if (!((ch >= 'a' && ch <= 'z') ||
-                          (ch >= 'A' && ch <= 'Z') ||
-                          (ch >= '0' && ch <= '9'))) break;
-                }
-                if (dot != NULL && dot > body[0] && dot < body[1] - 1) {
-                    proj_ext[0] = dot;
-                    proj_ext[1] = body[1];
-                    body[1]     = dot;
-                }
-            }
-            //  Strip a single pair of surrounding `'…'` from the body.
-            if ($len(body) >= 2 && body[0][0] == '\'' &&
-                body[1][-1] == '\'') {
-                body[0]++; body[1]--;
+            //  Strip a single pair of surrounding `'…'` from the body
+            //  so shell quoting doesn't leak into the needle.
+            if ($len(body) >= 2 && *u8csHead(body) == '\'' &&
+                *u8csLast(body) == '\'') {
+                u8csUsed1(body);
+                u8csShed1(body);
             }
             if ($eq(pu->scheme, s_spot)) {
                 $mv(spot_ndl, body);
@@ -250,12 +218,10 @@ ok64 SPOTExec(cli *c) {
         //  URILexer can classify a leading-dot arg like `.c` as the
         //  "query" component even without a `?`.  A real ref URI has an
         //  explicit `?` in its input text — require that for has_ref.
-        //  URILexer can classify a leading-dot arg like `.c` as the
-        //  "query" component even without a `?`.  A real ref URI has an
-        //  explicit `?` in its input text — require that for has_ref.
         b8 has_ref = NO;
         if (!u8csEmpty(u->query) && !u8csEmpty(u->data)) {
-            for (u8cp p = u->data[0]; p < u->data[1]; p++) {
+            a_dup(u8c, scan, u->data);
+            $for(u8c, p, scan) {
                 if (*p == '?') { has_ref = YES; break; }
             }
         }
@@ -323,20 +289,12 @@ ok64 SPOTExec(cli *c) {
     ok64 ret = OK;
 
     if (do_status) {
-        a_path(capodir);
-        vcall("resolve_dir", CAPOResolveDir, capodir, reporoot);
-        a_dup(u8c, dirslice, u8bDataC(capodir));
-        u64cs runs[CAPO_MAX_LEVELS] = {};
-        u64css stack = {runs, runs};
-        u8bp mmaps[CAPO_MAX_LEVELS] = {};
-        u32 nidxfiles = 0;
-        vcall("stack_open", CAPOStackOpen, stack, mmaps, &nidxfiles, dirslice);
+        u64css live = {};
+        CAPORuns(live);
         u64 total = 0;
-        for (u32 i = 0; i < nidxfiles; i++)
-            total += (u64)$len(runs[i]);
-        CAPOStackClose(mmaps, nidxfiles);
+        $for(u64cs, run, live) total += (u64)$len(*run);
         fprintf(stderr, "spot: %u index files, %llu entries\n",
-                nidxfiles, (unsigned long long)total);
+                (u32)$len(live), (unsigned long long)total);
     } else if (!$empty(grep_ndl)) {
         u8cs ext = {};
         u8cs gfiles[16] = {};
@@ -508,18 +466,11 @@ static u32 capo_ext_intern(spot *s, u8cs ext) {
 //  exists in any open run.  Pure binary search on the natural u64
 //  layout — no allocation.
 static b8 spot_memo_hit(u64css runs, u64 blob_hl40, u32 path_h20) {
-    u64 want = wh64Pack(SPOT_BLOBFN, path_h20, blob_hl40);
+    u64 needle = wh64Pack(SPOT_BLOBFN, path_h20, blob_hl40);
     a_dup(u64cs, scan, runs);
     $for(u64cs, run, scan) {
-        u64cp base = (*run)[0];
-        size_t len = (size_t)((*run)[1] - base);
-        size_t lo = 0, hi = len;
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (base[mid] < want) lo = mid + 1;
-            else hi = mid;
-        }
-        if (lo < len && base[lo] == want) return YES;
+        u64s view = {(u64p)(*run)[0], (u64p)(*run)[1]};
+        if (u64sBsearch(&needle, view) != NULL) return YES;
     }
     return NO;
 }
@@ -557,21 +508,11 @@ static b8 spot_probe_uri(keeper *k, uricp u, uri *out, u8b frag_buf) {
                u8csLen(out->path) == 40) {
         $mv(hex_src, out->path);
     }
-    if (!u8csEmpty(hex_src)) {
-        b8 hex = YES;
-        for (u8cp p = hex_src[0]; p < hex_src[1]; p++) {
-            u8 ch = *p;
-            b8 d = (ch >= '0' && ch <= '9');
-            b8 l = (ch >= 'a' && ch <= 'f');
-            b8 U_ = (ch >= 'A' && ch <= 'F');
-            if (!(d || l || U_)) { hex = NO; break; }
-        }
-        if (hex) {
-            out->fragment[0] = hex_src[0];
-            out->fragment[1] = hex_src[1];
-            out->query[0] = out->query[1] = NULL;
-            out->path[0]  = out->path[1]  = NULL;
-        }
+    if (!u8csEmpty(hex_src) && HEXu8sValid(hex_src)) {
+        out->fragment[0] = hex_src[0];
+        out->fragment[1] = hex_src[1];
+        out->query[0] = out->query[1] = NULL;
+        out->path[0]  = out->path[1]  = NULL;
     }
 
     b8 has_resolvable =
@@ -638,11 +579,66 @@ static ok64 spot_index_one(keeper *k, spot_todo const *row,
     (void)path;   // path is currently unused at index time; reserved
                   // for future per-path diagnostics.
     (void)CAPOIndexBlob(source, ext, row->path_h20);
-    SPOT_DBG_TOKENISED++;
+    SPOT.dbg_tokenised++;
 
     u64 blob_hl40 = WHIFFHashlet40(&sha);
     (void)CAPOEmit(wh64Pack(SPOT_BLOBFN, row->path_h20, blob_hl40));
     return OK;
+}
+
+//  Index one slice of `todos[]` serially.  Single bbuf alloc/free,
+//  same shape as the children's body.  Used by the no-fork path,
+//  the fork-failed fallback, and the leaf-dir-resolution fallback.
+static ok64 spot_index_slice_serial(spot_todo const *todos,
+                                     size_t lo, size_t hi,
+                                     u8bp ulog_buf) {
+    sane(todos != NULL);
+    if (lo >= hi) done;
+    Bu8 bbuf = {};
+    call(u8bMap, bbuf, 1UL << 28);
+    keeper *k = &KEEP;
+    for (size_t i = lo; i < hi; i++) {
+        u8cp pbase = u8bDataHead(ulog_buf) + todos[i].path_off;
+        u8cs path = {pbase, pbase + todos[i].path_len};
+        (void)spot_index_one(k, &todos[i], path, bbuf);
+    }
+    u8bUnMap(bbuf);
+    done;
+}
+
+//  Fork-worker body: switch into `<leafdir>/.wNNNN`, reset the
+//  inherited pup stack, index `[lo, hi)`, collapse to a single pup,
+//  exit.  `_exit` per ABC convention for forked child failure.
+static void spot_index_worker_child(u32 w, spot_todo const *todos,
+                                     size_t lo, size_t hi,
+                                     u8bp ulog_buf) {
+    spotp s = &SPOT;
+    {
+        a_pad(u8, wname, 16);
+        a_cstr(prefix, ".w");
+        if (u8bFeed(wname, prefix) != OK) _exit(1);
+        if (RONu8sFeedPad(u8bIdle(wname), (ok64)w, 4) != OK) _exit(1);
+        ((u8 **)wname)[2] += 4;
+        if (PATHu8bPush(s->leaf_branch, u8bDataC(wname)) != OK) _exit(1);
+    }
+    a_pad(u8, wleafdir, FILE_PATH_MAX_LEN);
+    {
+        a_dup(u8c, wl, u8bDataC(s->leaf_branch));
+        if (spot_branch_dir(wleafdir, s->h, wl) != OK) _exit(1);
+    }
+    if (FILEMakeDirP($path(wleafdir)) != OK) _exit(1);
+
+    //  Reset inherited pup stack — start fresh in the worker dir.
+    Breset(s->puppies);
+    CAPORefreshView();
+
+    if (spot_index_slice_serial(todos, lo, hi, ulog_buf) != OK)
+        _exit(1);
+    (void)CAPOFlushRun();
+    //  Collapse to a single pup so the parent merge stack is
+    //  bounded by `nw`, not `nw * cascade`.
+    (void)CAPOCompactAll();
+    _exit(0);
 }
 
 ok64 SPOTIndexFromTips(uricp u) {
@@ -699,7 +695,7 @@ ok64 SPOTIndexFromTips(uricp u) {
             u8cs ext = {};
             PATHu8sExt(ext, path);
             if ($empty(ext) || !CAPOKnownExt(ext)) {
-                SPOT_DBG_BLOB_NO_EXT++;
+                SPOT.dbg_blob_no_ext++;
                 continue;
             }
 
@@ -716,7 +712,7 @@ ok64 SPOTIndexFromTips(uricp u) {
             u64css live_runs = {};
             CAPORuns(live_runs);
             if (spot_memo_hit(live_runs, blob_hl40, path_h20)) {
-                SPOT_DBG_MEMO_HIT++;
+                SPOT.dbg_memo_hit++;
                 continue;
             }
 
@@ -777,15 +773,7 @@ ok64 SPOTIndexFromTips(uricp u) {
     u32 nw = (u32)nw_by_size;
 
     if (nw == 1) {
-        Bu8 bbuf = {};
-        if (u8bMap(bbuf, 1UL << 28) == OK) {
-            for (size_t i = 0; i < ntodo; i++) {
-                u8cp pbase = u8bDataHead(ulog_buf) + todos[i].path_off;
-                u8cs path = {pbase, pbase + todos[i].path_len};
-                (void)spot_index_one(k, &todos[i], path, bbuf);
-            }
-            u8bUnMap(bbuf);
-        }
+        (void)spot_index_slice_serial(todos, 0, ntodo, ulog_buf);
         u8bUnMap(todo_buf);
         u8bUnMap(ulog_buf);
         done;
@@ -803,16 +791,7 @@ ok64 SPOTIndexFromTips(uricp u) {
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
         if (spot_branch_dir(leafdir, s->h, leaf) != OK) {
             //  Can't compute leaf dir → fall back to serial.
-            Bu8 bbuf = {};
-            if (u8bMap(bbuf, 1UL << 28) == OK) {
-                for (size_t i = 0; i < ntodo; i++) {
-                    u8cp pbase = u8bDataHead(ulog_buf) +
-                                 todos[i].path_off;
-                    u8cs path = {pbase, pbase + todos[i].path_len};
-                    (void)spot_index_one(k, &todos[i], path, bbuf);
-                }
-                u8bUnMap(bbuf);
-            }
+            (void)spot_index_slice_serial(todos, 0, ntodo, ulog_buf);
             u8bUnMap(todo_buf);
             u8bUnMap(ulog_buf);
             done;
@@ -826,72 +805,14 @@ ok64 SPOTIndexFromTips(uricp u) {
         size_t hi = (ntodo * (w+1)) / nw;
         pid_t pid = fork();
         if (pid < 0) {
-            //  Fork failed — fall back to inline serial for the
-            //  remaining slice in the parent.
-            Bu8 bbuf = {};
-            if (u8bMap(bbuf, 1UL << 28) == OK) {
-                for (size_t i = lo; i < hi; i++) {
-                    u8cp pbase = u8bDataHead(ulog_buf) +
-                                 todos[i].path_off;
-                    u8cs path = {pbase, pbase + todos[i].path_len};
-                    (void)spot_index_one(k, &todos[i], path, bbuf);
-                }
-                u8bUnMap(bbuf);
-            }
+            //  Fork failed — fall back to inline serial for this slice
+            //  in the parent.
+            (void)spot_index_slice_serial(todos, lo, hi, ulog_buf);
             continue;
         }
         if (pid == 0) {
-            //  Child: switch into our own per-worker subdir
-            //  `<leafdir>/.wNNNN/`, reset the inherited puppy stack
-            //  to empty (so DOGPupCreate's seqnos start at 1 inside
-            //  the worker dir), then index our slice and emit one
-            //  pup.  CAPOCompactAll collapses any cascade-emitted
-            //  pups into a single file so the parent's merge cap
-            //  stays bounded.  Parent merges all worker dirs into
-            //  the leaf dir post-waitpid.
-            //
-            //  Append `.wNNNN` to s->leaf_branch with a fixed-width
-            //  RON64 pad — same shape as dog_pup_path's seqno.
-            {
-                a_pad(u8, wname, 16);
-                a_cstr(prefix, ".w");
-                if (u8bFeed(wname, prefix) != OK) _exit(1);
-                if (RONu8sFeedPad(u8bIdle(wname), (ok64)w, 4) != OK)
-                    _exit(1);
-                ((u8 **)wname)[2] += 4;
-                if (PATHu8bPush(s->leaf_branch, u8bDataC(wname))
-                    != OK) _exit(1);
-            }
-            //  Compute the worker leafdir, mkdir -p it.
-            a_pad(u8, wleafdir, FILE_PATH_MAX_LEN);
-            {
-                a_dup(u8c, wl, u8bDataC(s->leaf_branch));
-                if (spot_branch_dir(wleafdir, s->h, wl) != OK)
-                    _exit(1);
-            }
-            if (FILEMakeDirP($path(wleafdir)) != OK) _exit(1);
-
-            //  Reset inherited pup stack — start fresh in the worker
-            //  dir.  No mmap leaks: parent owns the fds, the COW
-            //  copy of the buffer header is just zeroed here.
-            Breset(s->puppies);
-            CAPORefreshView();
-
-            Bu8 bbuf = {};
-            if (u8bMap(bbuf, 1UL << 28) != OK) _exit(1);
-            for (size_t i = lo; i < hi; i++) {
-                u8cp pbase = u8bDataHead(ulog_buf) +
-                             todos[i].path_off;
-                u8cs path = {pbase, pbase + todos[i].path_len};
-                (void)spot_index_one(k, &todos[i], path, bbuf);
-            }
-            u8bUnMap(bbuf);
-
-            (void)CAPOFlushRun();
-            //  Collapse the worker dir to a single pup so the parent
-            //  merge stack is bounded by `nw`, not `nw * cascade`.
-            (void)CAPOCompactAll();
-            _exit(0);
+            spot_index_worker_child(w, todos, lo, hi, ulog_buf);
+            /* no return */
         }
         pids[w] = pid;
     }

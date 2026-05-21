@@ -206,8 +206,8 @@ static ok64 SPOTMatchFlat(SPOTbinds *b, SPOTntok *ntoks, int nntoks,
 
         // Record first token position for segment tracking
         if (from == 0) {
-            if (b->nsubs < SPOT_MAX_SUBS)
-                b->subs[b->nsubs++] = (range32){leaf_srclo, leaf_srchi};
+            if (b->nsubs >= SPOT_MAX_SUBS) fail(SPOTBAD);
+            b->subs[b->nsubs++] = (range32){leaf_srclo, leaf_srchi};
         }
         if (b->nsubs > 0) b->subs[b->nsubs - 1].hi = leaf_srchi;
 
@@ -395,8 +395,8 @@ static ok64 SPOTMatchFlat(SPOTbinds *b, SPOTntok *ntoks, int nntoks,
             int post_pos = *hpos;
 
             // Record new segment
-            if (b->nsubs < SPOT_MAX_SUBS)
-                b->subs[b->nsubs++] = (range32){leaf_srclo, leaf_srchi};
+            if (b->nsubs >= SPOT_MAX_SUBS) fail(SPOTBAD);
+            b->subs[b->nsubs++] = (range32){leaf_srclo, leaf_srchi};
 
             b8 is_ph = SPOTIsPlaceholder(cur->val);
             u8 ph_c = is_ph ? cur->val[0][0] : 0;

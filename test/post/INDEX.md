@@ -27,7 +27,7 @@
   stack to trunk.  Asserts target REFS advance, cur stays put,
   target shard's pack bytes grow on each promote, wt content
   matches on every switch, and the final trunk first-parent chain
-  is intact.  After each switch also runs `be spot:#<sym>.c` for
+  is intact.  After each switch also runs `be spot:.c#<sym>` for
   symbols whose blobs only exist on the migrated side, and
   `be log:#10` to confirm graf's commit-history index walks the
   full chain — all three shards (?fix1/?fix2/trunk) get the same

@@ -1,8 +1,6 @@
 #include "CAPOi.h"
 
 #include <dirent.h>
-#include <setjmp.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,16 +18,6 @@ static b8   spot_is_open(void);
 //  the leaf-branch dir without copy-pasting the PATHu8b dance.
 //  Internal: not part of CAPO.h.
 ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
-
-// Guard against assert() crashes in library code
-static sigjmp_buf capo_jmpbuf;
-static volatile sig_atomic_t capo_in_match = 0;
-
-static void capo_abrt_handler(int sig) {
-    (void)sig;
-    if (capo_in_match) siglongjmp(capo_jmpbuf, 1);
-    _exit(134);
-}
 
 #include "abc/ANSI.h"
 #include "abc/PRO.h"
@@ -125,10 +113,17 @@ typedef struct {
 ok64 CAPOEmit(u64 entry) {
     if (entry == 0) return OK;
     ok64 r = BOXu64Feed1(SPOT.entries_box, &entry);
+    if (r != BOXFULL) return r;
+    ok64 fr = CAPOFlushRun();
+    if (fr != OK) return fr;
+    r = BOXu64Feed1(SPOT.entries_box, &entry);
     if (r == BOXFULL) {
-        ok64 fr = CAPOFlushRun();
-        if (fr != OK) return fr;
-        r = BOXu64Feed1(SPOT.entries_box, &entry);
+        //  Cascade still can't absorb after a full flush — entry is
+        //  pathological (e.g. BOX sized smaller than one posting).
+        //  Make the failure observable rather than silently dropping.
+        fprintf(stderr,
+            "spot: CAPOEmit: BOXFULL after flush (entry=%llx)\n",
+            (unsigned long long)entry);
     }
     return r;
 }
@@ -147,63 +142,43 @@ static ok64 CAPOTriExtractToks(u32cs toks, u8cp base,
     for (int i = 0; i < len; i++) {
         u8cs val = {}; tok32Val(val,toks,base,i);
         if ($len(val) < 3) continue;
-        u8cp p = val[0];
-        u8cp end = val[1] - 2;
-        while (p <= end) {
-            if (CAPOTriChar(p[0]) && CAPOTriChar(p[1]) &&
-                CAPOTriChar(p[2])) {
-                u8cs tri = {p, p + 3};
-                ok64 r = cb(arg, tri);
-                if (r != OK) return r;
-            }
-            p++;
+        //  Slide a 3-byte window over `val`.  Iterate `p` over the
+        //  prefix that has at least 2 bytes after it, so the
+        //  window `[p, p+3)` always lies within `val`.
+        a_head(u8c, scan, val, (size_t)$len(val) - 2);
+        $for(u8c, p, scan) {
+            if (!CAPOTriChar(p[0])) continue;
+            if (!CAPOTriChar(p[1])) continue;
+            if (!CAPOTriChar(p[2])) continue;
+            u8cs tri = {p, p + 3};
+            ok64 r = cb(arg, tri);
+            if (r != OK) return r;
         }
     }
     return OK;
 }
 
-ok64 CAPOIndexBlob(u8csc source, u8csc ext, u32 fn_hash20) {
-    sane($ok(source) && $ok(ext));
-    if ($empty(source)) done;
+//  Worker body: token buffer is provided; just tokenise, mark defs,
+//  emit trigrams + symbol postings.  Outer wrapper allocates / frees.
+static ok64 capo_index_blob_inner(u8csc source, u8csc ext,
+                                   u32 fn_hash20, u32 **toks) {
+    sane($ok(source));
+    call(SPOTTokenize, (u32 **)toks, source, ext);
 
-    //  Reuse the singleton's per-session token buffer when the blob
-    //  fits.  Falls back to a one-off mmap for the rare oversized
-    //  source (>INGEST_TOKS_CAP tokens).  `owned` carries the fallback
-    //  allocation; `toks` aliases whichever buffer we ended up using.
-    Bu32   owned = {};
-    u32 **toks;
-    size_t maxlen = $len(source) + 1;
-    b8 use_session = (SPOT.ingest_toks[0] != NULL &&
-                      (size_t)(SPOT.ingest_toks[3] - SPOT.ingest_toks[0])
-                          >= maxlen);
-    if (use_session) {
-        u32bReset(SPOT.ingest_toks);
-        toks = (u32 **)SPOT.ingest_toks;
-    } else {
-        vcall("mmap toks", u32bMap, owned, maxlen);
-        toks = (u32 **)owned;
-    }
-    ok64 o = SPOTTokenize((u32 **)toks, source, ext);
-    if (o != OK) {
-        if (!use_session) u32bUnMap(owned);
-        return o;
-    }
-
-    // Mark definitions (S→N) before extraction
+    //  Mark definitions (S→N) before extraction.
     {
         u32 *dts[2] = {u32bDataHead(toks), u32bIdleHead(toks)};
         a_dup(u8c, nodot, ext);
-        if (!u8csEmpty(nodot) && nodot[0][0] == '.') u8csUsed1(nodot);
+        if (!u8csEmpty(nodot) && *u8csHead(nodot) == '.') u8csUsed1(nodot);
         DEFMark(dts, source, nodot);
     }
 
     a_dup(u32c, tokslice, u32bDataC(toks));
 
     CAPOTriCtx ctx = { .fn_hash20 = fn_hash20 };
-    o = CAPOTriExtractToks(tokslice, source[0], CAPOTriCB, &ctx);
-    if (o != OK) { if (!use_session) u32bUnMap(owned); return o; }
+    call(CAPOTriExtractToks, tokslice, source[0], CAPOTriCB, &ctx);
 
-    // Emit symbol mention/definition entries
+    //  Emit symbol mention/definition entries.
     int ntoks = (int)u32csLen(tokslice);
     for (int i = 0; i < ntoks; i++) {
         u8 tag = tok32Tag(tokslice[0][i]);
@@ -212,15 +187,34 @@ ok64 CAPOIndexBlob(u8csc source, u8csc ext, u32 fn_hash20) {
         if (u8csLen(val) < 2) continue;
         u8 type = (tag == 'N') ? SPOT_DEF : SPOT_MEN;
         u64 entry = wh64Pack(type, fn_hash20, CAPOSym40(val));
-        ok64 er = CAPOEmit(entry);
-        if (er != OK) {
-            if (!use_session) u32bUnMap(owned);
-            return er;
-        }
+        call(CAPOEmit, entry);
     }
-
-    if (!use_session) u32bUnMap(owned);
     done;
+}
+
+ok64 CAPOIndexBlob(u8csc source, u8csc ext, u32 fn_hash20) {
+    sane($ok(source) && $ok(ext));
+    if ($empty(source)) done;
+
+    //  Prefer the singleton's per-session token buffer when the blob
+    //  fits; fall back to a one-off mmap for the rare oversized source
+    //  (>INGEST_TOKS_CAP tokens).  Single allocation/free pair at this
+    //  wrapper; the worker doesn't know which buffer it received.
+    size_t maxlen = $len(source) + 1;
+    b8 use_session = (SPOT.ingest_toks[0] != NULL &&
+                      (size_t)(SPOT.ingest_toks[3] - SPOT.ingest_toks[0])
+                          >= maxlen);
+    if (use_session) {
+        u32bReset(SPOT.ingest_toks);
+        ok64 r = capo_index_blob_inner(source, ext, fn_hash20,
+                                        (u32 **)SPOT.ingest_toks);
+        return r;
+    }
+    Bu32 owned = {};
+    vcall("mmap toks", u32bMap, owned, maxlen);
+    ok64 r = capo_index_blob_inner(source, ext, fn_hash20, (u32 **)owned);
+    u32bUnMap(owned);
+    return r;
 }
 
 //  Search-time wrapper: takes the full repo-relative path, hashes
@@ -250,7 +244,16 @@ void CAPORefreshView(void) {
     s->runs_n = 0;
     if (!spot_is_open()) return;
     u32 n = DOGPupCount(s->puppies);
-    for (u32 i = 0; i < n && s->runs_n < CAPO_MAX_LEVELS; i++) {
+    //  The 1/8 LSM ladder caps at ~24 levels well past any realistic
+    //  repo size.  Exceeding CAPO_MAX_LEVELS means a compaction or
+    //  pup-stack bug — make it loud rather than silently truncate.
+    if (n > CAPO_MAX_LEVELS) {
+        fprintf(stderr,
+            "spot: CAPORefreshView: %u pups exceeds CAPO_MAX_LEVELS=%u "
+            "(later runs ignored)\n", n, (u32)CAPO_MAX_LEVELS);
+        n = CAPO_MAX_LEVELS;
+    }
+    for (u32 i = 0; i < n; i++) {
         u8cs raw = {};
         DOGPupData(raw, s->puppies, i);
         if (raw[0] == NULL) continue;
@@ -265,47 +268,6 @@ void CAPORefreshView(void) {
 void CAPORuns(u64cssp out) {
     out[0] = SPOT.runs;
     out[1] = SPOT.runs + SPOT.runs_n;
-}
-
-//  LEGACY shim: copies `SPOT.runs[]` into the caller's slots, then
-//  appends the in-RAM BOX levels (which never live in `SPOT.runs[]`
-//  — those are caller-snapshot only).  `dir` is ignored (kept for
-//  API stability).  New code should use `CAPORuns()` directly when
-//  the BOX side isn't needed.
-ok64 CAPOStackOpen(u64css stack, u8bp *maps, u32p nfiles, u8csc dir) {
-    sane($ok(stack) && maps != NULL && nfiles != NULL && $ok(dir));
-    (void)dir;
-    *nfiles = 0;
-    if (!spot_is_open()) done;
-    spot *s = &SPOT;
-    for (u32 i = 0; i < s->runs_n && *nfiles < CAPO_MAX_LEVELS; i++) {
-        stack[0][*nfiles][0] = s->runs[i][0];
-        stack[0][*nfiles][1] = s->runs[i][1];
-        maps[*nfiles] = NULL;
-        (*nfiles)++;
-    }
-    //  In-memory BOX scratch: append every sorted level so
-    //  HITu64Start sees in-flight postings alongside disk puppies.
-    //  Dirty (PAST) is unsorted and stays excluded.
-    if (!BNULL(s->entries_mem)) {
-        u64s *box_data = s->entries_box[1];
-        u64s *box_idle = s->entries_box[2];
-        for (u64s *lev = box_data;
-             lev < box_idle && *nfiles < CAPO_MAX_LEVELS; lev++) {
-            if ((*lev)[1] <= (*lev)[0]) continue;
-            stack[0][*nfiles][0] = (u64cp)(*lev)[0];
-            stack[0][*nfiles][1] = (u64cp)(*lev)[1];
-            maps[*nfiles] = NULL;
-            (*nfiles)++;
-        }
-    }
-    done;
-}
-
-ok64 CAPOStackClose(u8bp *maps, u32 nfiles) {
-    //  No-op: SPOT.puppies owns the mmaps now.
-    (void)maps; (void)nfiles;
-    return OK;
 }
 
 // --- Compaction ---
@@ -560,7 +522,7 @@ ok64 CAPOCollectPaths(u64css iter, u64 tri_prefix, u64g hashes) {
         HITu64Step(iter);
         capo_iter_to_tri(iter);
     }
-    if (getenv("SPOT_TRACE_QUERY")) {
+    if (SPOT.trace_query) {
         fprintf(stderr, "spot: collect tri=%llx raw=%llu\n",
             (unsigned long long)(tri_prefix >> WHIFF_OFF_SHIFT),
             (unsigned long long)collected);
@@ -631,70 +593,65 @@ b8 CAPOExtIs(u8csc ext, const char *a, const char *b) {
 // original head down to the post-call head).
 void CAPOFindFunc(u8csc source, u32 pos, u8csc ext, u8s out) {
     if (u8csEmpty(source) || pos == 0 || u8sEmpty(out)) return;
-    u8cp base = source[0];
-    u32 slen = (u32)u8csLen(source);
-    if (pos > slen) pos = slen;
+    size_t slen = (size_t)u8csLen(source);
+    if ((size_t)pos > slen) pos = (u32)slen;
 
     b8 is_md = CAPOExtIs(ext, "md", "markdown") ||
                CAPOExtIs(ext, "rst", "txt");
     b8 is_py = CAPOExtIs(ext, "py", NULL);
 
-    // Find start of current line
-    u32 ls = pos;
-    while (ls > 0 && base[ls - 1] != '\n') ls--;
+    //  `tail` is the source prefix from the buffer start up to (and
+    //  including) the line that contains `pos`.  The hunk that called
+    //  us may sit ON the function signature line — context can back up
+    //  exactly that far — so we MUST keep that line as a candidate.
+    //  Each peel iteration drops the rightmost line and classifies it.
+    a_head(u8c, tail, source, pos);
+    {
+        //  Extend tail through the rest of the current line so we
+        //  consider the whole line (not just the prefix up to pos).
+        a_rest(u8c, after, source, pos);
+        a_dup(u8c, scan, after);
+        (void)u8csFind(scan, '\n');     // scan[0] = '\n' or term
+        tail[1] = scan[0];
+    }
 
-    // Walk backward up to 200 lines looking for a header line
-    for (int tries = 0; tries < 200 && ls > 0; tries++) {
-        // Move to previous line
-        ls--;
-        while (ls > 0 && base[ls - 1] != '\n') ls--;
+    for (int tries = 0; tries < 200 && !u8csEmpty(tail); tries++) {
+        //  Peel one line off the right of `tail`.
+        u8cp line_lo = tail[0];
+        $rof(u8c, p, tail) { if (*p == '\n') { line_lo = p + 1; break; } }
+        u8cs line = {line_lo, tail[1]};
+        tail[1] = (line_lo > tail[0]) ? line_lo - 1 : tail[0];
 
-        // Skip empty lines
-        u32 le = ls;
-        while (le < slen && base[le] != '\n') le++;
-        if (le == ls) continue;
-
-        u8 ch = base[ls];
-        u32 linelen = le - ls;
+        if (u8csEmpty(line)) continue;
+        u8 ch = *u8csHead(line);
 
         if (is_md) {
-            // Markdown: line starting with '#'
             if (ch != '#') continue;
         } else if (is_py) {
-            // Python: col-0 'def ' or 'class '
             a_cstr(def_lit,   "def ");
             a_cstr(class_lit, "class ");
-            u8csc head = {base + ls,
-                          base + ls + (linelen < 6 ? linelen : 6)};
-            if (linelen >= 4 && u8csHasPrefix(head, def_lit)) {}
-            else if (linelen >= 6 && u8csHasPrefix(head, class_lit)) {}
+            if (u8csHasPrefix(line, def_lit)) {}
+            else if (u8csHasPrefix(line, class_lit)) {}
             else continue;
         } else {
-            // C-like: col-0 identifier + '('
-            // Skip comment lines
+            //  C-like: col-0 identifier + a '(' somewhere on the line.
             if (ch == '/' || ch == '*' || ch == '#') continue;
-            // Must start with identifier char at column 0
-            if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-                  ch == '_'))
-                continue;
-            // Must contain '('
-            b8 has_paren = NO;
-            for (u32 j = ls; j < le; j++)
-                if (base[j] == '(') { has_paren = YES; break; }
-            if (!has_paren) continue;
+            b8 is_ident = (ch >= 'A' && ch <= 'Z') ||
+                          (ch >= 'a' && ch <= 'z') || ch == '_';
+            if (!is_ident) continue;
+            a_dup(u8c, paren_scan, line);
+            if (u8csFind(paren_scan, '(') != OK) continue;
         }
 
-        // Bound to [ls, le); trim trailing punct/whitespace; drain
-        // what fits into `out`.
-        a_rest(u8c, after_ls, source, ls);
-        a_head(u8c, line, after_ls, le - ls);
-        while (!u8csEmpty(line)) {
-            u8c last = *u8csLast(line);
+        //  Trim trailing punct/whitespace, drain what fits into `out`.
+        a_dup(u8c, trimmed, line);
+        while (!u8csEmpty(trimmed)) {
+            u8c last = *u8csLast(trimmed);
             if (last != '{' && last != ':' && last != ' ' &&
                 last != '\t' && last != '\r') break;
-            u8csShed1(line);
+            u8csShed1(trimmed);
         }
-        (void)u8sDrain(out, line);
+        (void)u8sDrain(out, trimmed);
         return;
     }
 }
@@ -908,7 +865,7 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
     if (o != OK) { if (mapped) FILEUnMap(mapped); return OK; }
     o = SPOTTokenize(toks, source, file_ext);
     if (o != OK) { u32bUnMap(toks); if (mapped) FILEUnMap(mapped); return OK; }
-    if (getenv("SPOT_TRACE_QUERY")) {
+    if (SPOT.trace_query) {
         u32cs htoks = {(u32cp)u32bDataHead(toks),
                        (u32cp)u32bIdleHead(toks)};
         u8cp src = source[0];
@@ -933,19 +890,13 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
     u32cs htoks = {(u32cp)u32bDataHead(toks),
                    (u32cp)u32bIdleHead(toks)};
 
-    signal(SIGABRT, capo_abrt_handler);
-    capo_in_match = 1;
-    if (sigsetjmp(capo_jmpbuf, 1) == 0) {
-        if (!$empty(sc->replace))
-            CAPOSpotReplace(source, mapped, htoks, sc->needle,
-                            sc->replace, file_ext, fpbuf, relpath,
-                            &sc->total_replacements,
-                            &sc->total_files_replaced);
-        else
-            CAPOSpotFile(source, htoks, sc->needle, file_ext, relpath);
-    }
-    capo_in_match = 0;
-    signal(SIGABRT, SIG_DFL);
+    if (!$empty(sc->replace))
+        CAPOSpotReplace(source, mapped, htoks, sc->needle,
+                        sc->replace, file_ext, fpbuf, relpath,
+                        &sc->total_replacements,
+                        &sc->total_files_replaced);
+    else
+        CAPOSpotFile(source, htoks, sc->needle, file_ext, relpath);
 
     if ($empty(sc->replace)) {
         if (mapped)
@@ -990,22 +941,8 @@ ok64 CAPOSpot(u8csc needle, u8csc replace, u8csc ext, u8csc reporoot,
     if (!$empty(ext)) $mv(opts.target_ext, ext);
     if (has_trigrams) $mv(opts.tri_hashes, u64bDataC(hashbuf1));
 
-    if (ref != NULL) {
-        home *h = SPOT.h;
-        ok64 ko = KEEPOpen(h, NO);
-        if (ko != OK && ko != KEEPOPEN) {
-            fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
-            if (!BNULL(hashbuf1)) u64bUnMap(hashbuf1);
-            if ($empty(replace)) LESSArenaCleanup();
-            return ko;
-        }
-        CAPOScanRef(ref, &opts);
-        if (ko == OK) KEEPClose();
-    } else if ($len(files) > 0) {
-        CAPOScanFiles(files, &opts);
-    } else {
-        CAPOScan(reporoot, &opts);
-    }
+    ok64 scan_ret = CAPORunScan(ref, files, reporoot, &opts);
+    (void)scan_ret;
 
     CAPOProgress((u8csc){});
 
@@ -1106,7 +1043,7 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
                    (u64p)cx->opts->tri_hashes[1]};
         if (!u64sBsearch(&fn_hash, th)) {
             SPOT_SCAN_FILTER_REJ++;
-            if (getenv("SPOT_TRACE_REJ")) {
+            if (SPOT.trace_rej) {
                 fprintf(stderr, "spot:   reject %.*s fn_hash=%llx\n",
                     (int)$len(path), (char *)path[0],
                     (unsigned long long)fn_hash);
@@ -1132,7 +1069,7 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
     u8bp mapped = NULL;
     ok64 mo = FILEMapRO(&mapped, $path(fpbuf));
     if (mo != OK) {
-        if (getenv("SPOT_TRACE_QUERY")) {
+        if (SPOT.trace_query) {
             fprintf(stderr, "spot:   map_fail %.*s -> %s\n",
                 (int)$len(path), (char *)path[0], ok64str(mo));
         }
@@ -1178,7 +1115,7 @@ ok64 CAPOScan(u8csc reporoot, CAPOScanOpts const *opts) {
 
     CAPOProgress((u8csc){});
 
-    if (getenv("SPOT_TRACE_QUERY")) {
+    if (SPOT.trace_query) {
         fprintf(stderr,
             "spot: scan  total=%llu deleted=%llu no_ext=%llu "
             "ext_miss=%llu  filter_rej=%llu filter_pass=%llu "
@@ -1221,9 +1158,8 @@ static ok64 capo_ref_visit(u8cs path, u8 kind, u8cp esha,
     if (kind != WALK_KIND_REG && kind != WALK_KIND_EXE) return OK;
     if ($empty(path)) return OK;
 
-    size_t plen = (size_t)$len(path);
     u8cs file_ext = {};
-    CAPOFindExt(file_ext, path[0], plen);
+    PATHu8sExt(file_ext, path);
     if ($empty(file_ext) || !CAPOKnownExt(file_ext)) return OK;
     if (!$empty(cx->opts->target_ext) &&
         !TOKSameLexer(file_ext, cx->opts->target_ext)) return OK;
@@ -1260,6 +1196,28 @@ ok64 CAPOScanRef(uri const *target, CAPOScanOpts const *opts) {
     CAPOProgress((u8csc){});
     if (cx.last_err != OK) return cx.last_err;
     return o;
+}
+
+//  Pick scan flavour + handle KEEPOpen for `?ref` mode.  Collapses
+//  the three identical ladders that CAPOSpot / CAPOGrep / CAPOPcreGrep
+//  used to inline.
+ok64 CAPORunScan(uri const *ref, u8css files, u8csc reporoot,
+                 CAPOScanOpts const *opts) {
+    sane(opts && opts->file_fn);
+    if (ref != NULL) {
+        home *h = SPOT.h;
+        ok64 ko = KEEPOpen(h, NO);
+        if (ko != OK && ko != KEEPOPEN) {
+            fprintf(stderr, "spot: keeper open failed: %s\n",
+                    ok64str(ko));
+            return ko;
+        }
+        ok64 sr = CAPOScanRef(ref, opts);
+        if (ko == OK) KEEPClose();
+        return sr;
+    }
+    if ($len(files) > 0) return CAPOScanFiles(files, opts);
+    return CAPOScan(reporoot, opts);
 }
 
 ok64 CAPOScanFiles(u8css files, CAPOScanOpts const *opts) {
@@ -1315,31 +1273,28 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
     size_t maxhashes = 1ULL << 27;  // 128M u64 entries = 1 GB cap
     call(u64bMap, hashbuf, maxhashes);
 
-    u64cs runs[CAPO_MAX_LEVELS] = {};
-    u64css stack = {runs, runs};
-    u8bp mmaps[CAPO_MAX_LEVELS] = {};
-    u32 nidxfiles = 0;
-    call(CAPOStackOpen, stack, mmaps, &nidxfiles, dirslice);
-    stack[1] = stack[0] + nidxfiles;
+    u64css live = {};
+    CAPORuns(live);
+    u32 nidxfiles = (u32)$len(live);
+    if (nidxfiles == 0) return OK;
 
-    if (nidxfiles == 0) {
-        CAPOStackClose(mmaps, nidxfiles);
-        return OK;
-    }
-
-    b8 trace = getenv("SPOT_TRACE_QUERY") != NULL;
-    u8cp p = text[0];
-    u8cp end = text[1] - 2;
-    while (p <= end) {
-        if (CAPOTriChar(p[0]) && CAPOTriChar(p[1]) &&
-            CAPOTriChar(p[2])) {
+    b8 trace = SPOT.trace_query;
+    //  Slide a 3-byte window over `text`; same invariant as
+    //  CAPOTriExtractToks — `p + 2 < text[1]` is guaranteed by
+    //  iterating over the prefix that has 2 bytes of right-side room.
+    if ((size_t)$len(text) >= 3) {
+        a_head(u8c, scan, text, (size_t)$len(text) - 2);
+        $for(u8c, p, scan) {
+            if (!CAPOTriChar(p[0])) continue;
+            if (!CAPOTriChar(p[1])) continue;
+            if (!CAPOTriChar(p[2])) continue;
             u8cs tri = {p, p + 3};
             u64 tri_prefix = CAPOOffPrefix(CAPOTri40(tri));
 
             u64cs seek_runs[CAPO_MAX_LEVELS];
             for (u32 i = 0; i < nidxfiles; i++) {
-                seek_runs[i][0] = runs[i][0];
-                seek_runs[i][1] = runs[i][1];
+                seek_runs[i][0] = live[0][i][0];
+                seek_runs[i][1] = live[0][i][1];
             }
             u64css seek_iter = {seek_runs, seek_runs + nidxfiles};
             HITu64Start(seek_iter);
@@ -1361,15 +1316,12 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
                     p[0], p[1], p[2], after, before);
             }
         }
-        p++;
     }
-
-    CAPOStackClose(mmaps, nidxfiles);
 
     if (*has_trigrams && u64bDataLen(hashbuf) > 0)
         u64sSort(u64bData(hashbuf));
 
-    if (getenv("SPOT_TRACE_QUERY") && *has_trigrams) {
+    if (SPOT.trace_query && *has_trigrams) {
         u64s data = {};
         $mv(data, u64bData(hashbuf));
         fprintf(stderr, "spot: candidate fn_raps (%zu):", $len(data));
@@ -1446,21 +1398,15 @@ static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
     a_pad(u8, d, FILE_PATH_MAX_LEN);
     a_dup(u8c, sd, u8bDataC(sdir));
     call(PATHu8bFeed, d, sd);
-    u8cp p = leaf[0];
-    u8cp seg_start = p;
-    while (p <= leaf[1]) {
-        b8 at_end = (p == leaf[1]);
-        if (at_end || *p == '/') {
-            if (p > seg_start) {
-                u8cs seg = {seg_start, p};
-                call(PATHu8bPush, d, seg);
-                call(PATHu8bTerm, d);
-                call(cb, s, $path(d), ctx);
-                ((u8 **)d)[2]--;  // drop the terminator NUL
-            }
-            seg_start = p + 1;
-        }
-        p++;
+    //  PATHu8bPush NUL-terminates each segment, so the cb sees a
+    //  valid C-string for every prefix `<sdir>/seg1/.../segN`.  The
+    //  previous hand-rolled loop did `((u8 **)d)[2]--` after each
+    //  call as a misguided "drop the NUL", which actually shrank
+    //  DATA by one byte and would have corrupted multi-segment
+    //  leaf paths (latent because Phase 3 only opens trunk).
+    $eachseg(seg, leaf) {
+        call(PATHu8bPush, d, seg);
+        call(cb, s, $path(d), ctx);
     }
     done;
 }
@@ -1501,6 +1447,9 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     spot_is_rw = rw;
     s->color = isatty(STDOUT_FILENO) ? YES : NO;
     s->term = (isatty(STDERR_FILENO) && isatty(STDOUT_FILENO)) ? YES : NO;
+    s->trace_query = getenv("SPOT_TRACE_QUERY") != NULL;
+    s->trace_rej   = getenv("SPOT_TRACE_REJ")   != NULL;
+    s->trace_order = getenv("SPOT_TRACE_ORDER") != NULL;
 
     call(kv64bAllocate, s->puppies, FILE_MAX_OPEN);
 
@@ -1635,9 +1584,6 @@ ok64 CAPOFlushRun(void) {
     done;
 }
 
-extern u64 SPOT_DBG_TOKENISED, SPOT_DBG_MEMO_HIT,
-           SPOT_DBG_BLOB_NO_EXT;
-
 void SPOTClose(void) {
     if (!spot_is_open()) return;
     spot *s = &SPOT;
@@ -1645,13 +1591,13 @@ void SPOTClose(void) {
     //  test stderr captures stay byte-stable.  `memo` is the BLOBFN
     //  hit count: how many (blob, path) pairs were unchanged since
     //  the prior walk and skipped without re-tokenisation.
-    if (s->rw && getenv("SPOT_TRACE_ORDER") &&
-        (SPOT_DBG_TOKENISED + SPOT_DBG_MEMO_HIT) > 0) {
+    if (s->rw && s->trace_order &&
+        (s->dbg_tokenised + s->dbg_memo_hit) > 0) {
         fprintf(stderr,
             "spot: walk  tokenised=%llu  memo-hit=%llu  no_ext=%llu\n",
-            (unsigned long long)SPOT_DBG_TOKENISED,
-            (unsigned long long)SPOT_DBG_MEMO_HIT,
-            (unsigned long long)SPOT_DBG_BLOB_NO_EXT);
+            (unsigned long long)s->dbg_tokenised,
+            (unsigned long long)s->dbg_memo_hit,
+            (unsigned long long)s->dbg_blob_no_ext);
     }
     if (s->rw && !BNULL(s->entries_mem)) {
         //  Final flush of any postings still in the BOX.  Tokenisation

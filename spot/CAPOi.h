@@ -5,20 +5,20 @@
 #include "abc/FILE.h"
 #include "spot/LESS.h"
 
-// --- Helper: find file extension ---
-
-#define CAPOFindExt(ext, path, len)                      \
-    do {                                                 \
-        (ext)[0] = NULL; (ext)[1] = NULL;                \
-        for (size_t _i = (len); _i > 0; _i--) {         \
-            if ((path)[_i - 1] == '/') break;            \
-            if ((path)[_i - 1] == '.') {                 \
-                (ext)[0] = (u8cp)(path) + _i - 1;       \
-                (ext)[1] = (u8cp)(path) + (len);         \
-                break;                                   \
-            }                                            \
-        }                                                \
-    } while (0)
+//  Verbose call: prints step context on failure.  Uses PRO.h's `__`
+//  carrier, so only safe in `.c` files that pulled PRO.h (i.e. files
+//  with `MAIN()` / `TEST()` / functions starting with `sane()`).
+//  Lives in CAPOi.h — not the public CAPO.h — to keep the PRO.h
+//  namespace pollution out of the published API (CLAUDE.md §6).
+#define vcall(step, f, ...)                                              \
+    {                                                                    \
+        __ = (f(__VA_ARGS__));                                           \
+        if (__ != OK) {                                                  \
+            fprintf(stderr, "spot: %s: %s (%s:%d)\n",                    \
+                    step, ok64str(__), __func__, __LINE__);              \
+            return __;                                                   \
+        }                                                                \
+    }
 
 // --- Internal: leaf branch dir composer (definition in CAPO.c) ---
 //  Compose `<root>/.be/<leaf>` into `out` (NUL-terminated).
@@ -84,6 +84,14 @@ ok64 CAPOScan(u8csc reporoot, CAPOScanOpts const *opts);
 
 // Walk explicit file list, call opts->file_fn per file.
 ok64 CAPOScanFiles(u8css files, CAPOScanOpts const *opts);
+
+//  Pick a scan flavour: when `ref` is non-NULL, open keeper and walk
+//  the historic tree; with an explicit `files` list, scan those;
+//  otherwise scan `reporoot`'s worktree.  Shared between CAPOSpot /
+//  CAPOGrep / CAPOPcreGrep — collapses three identical branch ladders
+//  (CAPOScanRef declaration follows below).
+ok64 CAPORunScan(uri const *ref, u8css files, u8csc reporoot,
+                 CAPOScanOpts const *opts);
 
 #include "abc/URI.h"
 #include "keeper/KEEP.h"
