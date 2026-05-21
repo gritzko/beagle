@@ -1063,14 +1063,21 @@ ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
 
 u64 const ULOG_VERB_COLORS[][2] = {
     //  file-status palette (sniff/SNIFF.exe.c's STATUS_ANSI_*)
-    {0x34e78,  ULOG_FG_BASIC(34)},  // put  → blue
-    {0x32a7b,  ULOG_FG_BASIC(32)},  // new  → green
-    {0x31cfa,  ULOG_FG_BASIC(36)},  // mov  → cyan
-    {0x31ce8,  ULOG_FG_BASIC(33)},  // mod  → yellow
-    {0x28a70,  ULOG_FG_256(94)  },  // del  → brown (256)
-    {0x31b77,  ULOG_FG_BASIC(31)},  // mis  → red
-    {0x39caf,  ULOG_FG_BASIC(90)},  // unk  → grey
-    {0x31dab,  ULOG_FG_BASIC(35)},  // mrg  → magenta (weave-merge write)
+    {0x34e78,        ULOG_FG_BASIC(34)},  // put       → blue
+    {0x32a7b,        ULOG_FG_BASIC(32)},  // new       → green
+    {0x31cfa,        ULOG_FG_BASIC(36)},  // mov       → cyan
+    {0x31ce8,        ULOG_FG_BASIC(33)},  // mod       → yellow
+    {0x28a70,        ULOG_FG_256(94)  },  // del       → brown (256)
+    {0x31b77,        ULOG_FG_BASIC(31)},  // mis       → red
+    {0x39caf,        ULOG_FG_BASIC(90)},  // unk       → grey
+    {0x31dab,        ULOG_FG_BASIC(35)},  // mrg       → magenta (weave-merge write)
+    //  patch-status palette (sniff/PATCH.c::emit_status).  Aligned
+    //  with the file-status colors so users build one mental map.
+    {0x25d34c2da68,  ULOG_FG_BASIC(32)},  // applied   → green   (== new)
+    {0xc69daba68,    ULOG_FG_BASIC(35)},  // merged    → magenta (== mrg)
+    {0x9f3caac2d9f8, ULOG_FG_BASIC(31)},  // conflict  → red     (== mis)
+    {0x28b76e3d,     ULOG_FG_BASIC(90)},  // dirty     → grey    (== unk)
+    {0xbe9d38,       ULOG_FG_BASIC(36)},  // kept      → cyan    (== mov)
     {0, 0},
 };
 

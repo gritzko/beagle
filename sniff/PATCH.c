@@ -31,8 +31,10 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
+#include <unistd.h>     // isatty / STDOUT_FILENO
 #include "dog/HOME.h"
 #include "dog/QURY.h"
+#include "dog/ULOG.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
@@ -254,15 +256,23 @@ typedef struct {
     b8    use_fork_base;
 } patch_stats;
 
-//  Emit a per-file status row in the `patch <status> <path>` form
-//  required by VERBS.md §PATCH "Reporting".  Status is one of
-//  applied / merged / dirty / conflict.  Caller passes the path
-//  (no leading `./` — that's left to the consumer's regex).
-static void emit_status(const char *status, u8cs path) {
+//  Emit a per-file status row via the shared dog/ULOG helper —
+//  same `<date>\t<status>\t<path>` shape every other verb (be bare,
+//  be get) prints to stdout, with the status token wearing its
+//  palette color (ULOG_VERB_COLORS).
+//
+//  Status verbs: applied / merged / conflict / dirty / kept.  Each
+//  maps to a ron60 constant the helper uses to look up the color.
+con ron60 PATCH_V_APPLIED  = 0x25d34c2da68;
+con ron60 PATCH_V_MERGED   = 0xc69daba68;
+con ron60 PATCH_V_CONFLICT = 0x9f3caac2d9f8;
+con ron60 PATCH_V_DIRTY    = 0x28b76e3d;
+con ron60 PATCH_V_KEPT     = 0xbe9d38;
+
+static void emit_status(const char *status, ron60 verb, u8cs path) {
     if ($empty(path)) return;
-    fprintf(stderr, "patch\t%s\t%.*s\n",
-            status,
-            (int)$len(path), (char *)path[0]);
+    b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
+    ULOGFeedStatusLine(tty, status, verb, path);
 }
 
 //  Check whether the wt's on-disk bytes for `childpath` differ from
@@ -280,7 +290,7 @@ static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
     KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
     FILEUnMap(mapped);
     if (!sha1Eq(&disk_sha, baseline_sha)) {
-        emit_status("dirty", childpath);
+        emit_status("dirty", PATCH_V_DIRTY, childpath);
     }
 }
 
@@ -557,7 +567,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             if (wo == OK) {
                 st->take_theirs++;
                 stamp_wrote(reporoot, childpath, st);
-                emit_status("applied", childpath);
+                emit_status("applied", PATCH_V_APPLIED, childpath);
             } else {
                 st->failed++;
             }
@@ -570,7 +580,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             //  did not touch this path, the user/prior-PATCH bytes
             //  are preserved).
             st->noop++;
-            emit_status("dirty", childpath);
+            emit_status("dirty", PATCH_V_DIRTY, childpath);
             continue;
         }
         if (l && o && t && o_eq_t) {
@@ -651,10 +661,10 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         "sniff: patch: CONFLICT (content) %.*s\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->merged_conflict++;
-                    emit_status("conflict", childpath);
+                    emit_status("conflict", PATCH_V_CONFLICT, childpath);
                 } else {
                     st->merged++;
-                    emit_status("merged", childpath);
+                    emit_status("merged", PATCH_V_MERGED, childpath);
                 }
             } else {
                 st->failed++;
@@ -672,7 +682,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             if (wo == OK) {
                 st->added++;
                 stamp_wrote(reporoot, childpath, st);
-                emit_status("applied", childpath);
+                emit_status("applied", PATCH_V_APPLIED, childpath);
             } else {
                 st->failed++;
             }
@@ -736,7 +746,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                     "intentional\n",
                     (int)$len(childpath), (char *)childpath[0]);
                 st->mod_del_kept++;
-                emit_status("kept", childpath);
+                emit_status("kept", PATCH_V_KEPT, childpath);
             }
             continue;
         }
@@ -761,7 +771,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         "re-delete if intentional\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->mod_del_kept++;
-                    emit_status("kept", childpath);
+                    emit_status("kept", PATCH_V_KEPT, childpath);
                 } else {
                     st->failed++;
                 }
@@ -1621,8 +1631,10 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  line per applied commit).  For now, emit just the resolved
     //  theirs sha — squash absorbs many commits but only the tip is
     //  the row's anchor; ancestor-skip enumeration is TODO.
-    fprintf(stderr, "patch\tapplied\t%.*s\n",
-            (int)u8bDataLen(thex), (char *)u8bDataHead(thex));
+    {
+        a_dup(u8c, sha_path, u8bDataC(thex));
+        emit_status("applied", PATCH_V_APPLIED, sha_path);
+    }
 
     fprintf(stderr,
             "sniff: patch: noop=%u take-theirs=%u merged=%u "
@@ -1717,7 +1729,6 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
                 (int)$len(filepath), (char *)filepath[0]);
         return PATCHCFLCT;
     }
-    fprintf(stderr, "patch\tapplied\t%.*s\n",
-            (int)$len(filepath), (char *)filepath[0]);
+    emit_status("applied", PATCH_V_APPLIED, filepath);
     done;
 }

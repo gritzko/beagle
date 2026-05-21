@@ -66,7 +66,7 @@ F1=$(head_hex)
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T1" ] || fail "trunk must be at T1; head=$(head_hex)"
 
-"$BE" patch '?feat' >/dev/null 2>"$OUT/p.err" \
+"$BE" patch '?feat' >"$OUT/p.out" 2>"$OUT/p.err" \
     || fail "be patch ?feat failed: $(cat $OUT/p.err)"
 
 #  Sanity: new_remote.txt actually landed on disk with feat's bytes.

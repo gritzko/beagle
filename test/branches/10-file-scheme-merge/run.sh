@@ -45,7 +45,7 @@ note "?fix1 created at T1; primary cur unchanged"
 #  steps for now: wire the sibling, then `be get ?fix1` switches it.
 WT2="$ETMP/wt2"
 mkdir -p "$WT2"
-( cd "$WT2" && "$BE" get "file:$WT" >/dev/null 2>"$ETMP/wt2-get.err" ) \
+( cd "$WT2" && "$BE" get "file:$WT" >"$ETMP/wt2-get.out" 2>"$ETMP/wt2-get.err" ) \
     || { cat "$ETMP/wt2-get.err"; fail "be get file: failed"; }
 # Secondary wt: `.be` is a regular FILE = the local wtlog (row 0 names
 # the primary's store via its `repo` URI).
@@ -56,7 +56,7 @@ mkdir -p "$WT2"
 [ -f "$WT2/x.txt" ] || fail "x.txt not checked out in WT2"
 note "WT2 wired to $WT/.be via row-0 anchor (on trunk @ T1)"
 
-( cd "$WT2" && "$BE" get "?fix1" >/dev/null 2>"$ETMP/wt2-switch.err" ) \
+( cd "$WT2" && "$BE" get "?fix1" >"$ETMP/wt2-switch.out" 2>"$ETMP/wt2-switch.err" ) \
     || { cat "$ETMP/wt2-switch.err"; fail "WT2 switch to ?fix1 failed"; }
 ( cd "$WT2" && [ "$(cur_branch)" = "fix1" ] ) \
     || fail "WT2 should be on fix1 after switch"

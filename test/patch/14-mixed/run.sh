@@ -47,15 +47,15 @@ B1=$(head_hex)
 
 # Cherry-pick B1.  T1 edited lib.c, B1 edited lib.c → merged.
 # Located form (`?bug/<sha>`) per dog/DOG.h §DOGRefSplitPin.
-"$BE" patch "?bug/$B1" >/dev/null 2>"$ETMP/cp.err" \
+"$BE" patch "?bug/$B1" >"$ETMP/cp.out" 2>"$ETMP/cp.err" \
     || fail "be patch ?bug/B1 failed: $(cat $ETMP/cp.err)"
-grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.err" \
+grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.out" \
     || fail "cherry-pick: expected 'patch merged lib.c'; got: $(cat $ETMP/cp.err)"
 
 # Merge feat with explicit msg.
-"$BE" patch '?feat' '#feat+bug' >/dev/null 2>"$ETMP/m.err" \
+"$BE" patch '?feat' '#feat+bug' >"$ETMP/m.out" 2>"$ETMP/m.err" \
     || fail "be patch ?feat '#feat+bug' failed: $(cat $ETMP/m.err)"
-grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.err" \
+grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.out" \
     || fail "merge: expected 'patch merged lib.c'; got: $(cat $ETMP/m.err)"
 
 # Two commits applied → POST without own msg must refuse (ambiguous).

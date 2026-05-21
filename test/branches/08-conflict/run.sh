@@ -43,15 +43,15 @@ note "§30: trunk advanced T30_BASE=$T30_BASE -> T30_NEW=$T30_NEW"
 
 # `be patch ?..#` should hit a 3-way conflict on the shared line.
 set +e
-"$BE" patch "?..#" 2>"$ETMP/p30.err" >/dev/null
+"$BE" patch "?..#" 2>"$ETMP/p30.err" >"$ETMP/p30.out"
 EC30=$?
 set -e
 
 [ "$EC30" != "0" ] \
     || { cat "$ETMP/p30.err" >&2; fail "§30: be patch ?..# should fail on conflict"; }
-grep -qE '^patch[[:space:]]+conflict[[:space:]]+(\./)?conflict30\.txt$' \
-        "$ETMP/p30.err" \
-    || fail "§30: stderr should report 'patch conflict conflict30.txt'; got: $(cat $ETMP/p30.err)"
+grep -qE '[[:space:]]+conflict[[:space:]]+(\./)?conflict30\.txt$' \
+        "$ETMP/p30.out" \
+    || fail "§30: status row should report 'conflict conflict30.txt'; got: $(cat $ETMP/p30.out $ETMP/p30.err)"
 
 # Wt must have token-level 4-char conflict markers.
 grep -F '<<<<' conflict30.txt \

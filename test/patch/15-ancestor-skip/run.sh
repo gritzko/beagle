@@ -66,7 +66,7 @@ G1=$(head_hex)
 [ "$(head_hex)" = "$T1" ] || fail "wt should be at T1"
 
 # Step 1: squash gizmo.  Absorbs F1+F2+G1.
-"$BE" patch '?feat/gizmo' >/dev/null 2>"$ETMP/p1.err" \
+"$BE" patch '?feat/gizmo' >"$ETMP/p1.out" 2>"$ETMP/p1.err" \
     || fail "patch ?feat/gizmo failed: $(cat $ETMP/p1.err)"
 match "$CASE/07.lib.want_step1.c" lib.c
 
@@ -86,21 +86,23 @@ echo "user scribble before step 2" >> note.txt
     || fail "patch ?feat failed: $(cat $ETMP/p2.err)"
 
 # Per-file status: lib.c → merged; note.txt → dirty (preserved).
-grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/p2.err" \
+grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/p2.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/p2.err)"
-grep -E '^patch[[:space:]]+dirty[[:space:]]+(\./)?note\.txt$' "$ETMP/p2.err" \
+grep -E '[[:space:]]+dirty[[:space:]]+(\./)?note\.txt$' "$ETMP/p2.out" \
     || fail "expected 'patch dirty note.txt'; got: $(cat $ETMP/p2.err)"
 
 match "$CASE/08.lib.want_step2.c" lib.c
 match "$CASE/10.note.want.txt"   note.txt
 
 # Step 2 reporting must mention only ONE applied commit (F3).
+# Commit-level `applied <sha>` row is on stdout (p2.out); summary
+# counters are on stderr (p2.err).
 grep -q "applied=1" "$ETMP/p2.err" \
-    || grep -q "$F3" "$ETMP/p2.err" \
+    || grep -q "$F3" "$ETMP/p2.out" \
     || fail "patch report did not show single-commit absorption (F3 only)"
-grep -q "$F1" "$ETMP/p2.err" \
+grep -q "$F1" "$ETMP/p2.out" "$ETMP/p2.err" \
     && fail "F1 should have been skipped (already reachable via prior foster)"
-grep -q "$F2" "$ETMP/p2.err" \
+grep -q "$F2" "$ETMP/p2.out" "$ETMP/p2.err" \
     && fail "F2 should have been skipped (already reachable via prior foster)"
 
 # POST with explicit msg: squash shape never auto-reuses msg

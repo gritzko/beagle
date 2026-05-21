@@ -42,7 +42,7 @@ F2=$(head_hex)
     >"$ETMP/m.out" 2>"$ETMP/m.err" \
     || fail "be patch ?feat '#merge ...' failed: $(cat $ETMP/m.err)"
 
-grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.err" \
+grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/m.err)"
 
 match "$CASE/06.lib.want.c" lib.c

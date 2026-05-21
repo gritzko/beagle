@@ -74,13 +74,13 @@ F1=$(head_hex)
 #  THE ACTION: squash ?feat into trunk.  The deep files exercise the
 #  recursive descent in patch_walk → fetch_blob via the take-theirs
 #  arm (deep.txt) and the add-theirs arm (new.txt).
-"$BE" patch '?feat' >/dev/null 2>"$ETMP/p.err" \
+"$BE" patch '?feat' >"$ETMP/p.out" 2>"$ETMP/p.err" \
     || fail "be patch ?feat failed: $(cat $ETMP/p.err)"
 
 #  Per-file status rows must appear.
-grep -E '^patch[[:space:]]+applied[[:space:]]+(\./)?src/a/b/deep\.txt$' "$ETMP/p.err" \
+grep -E '[[:space:]]+applied[[:space:]]+(\./)?src/a/b/deep\.txt$' "$ETMP/p.out" \
     || fail "expected 'patch applied src/a/b/deep.txt'; got: $(cat $ETMP/p.err)"
-grep -E '^patch[[:space:]]+applied[[:space:]]+(\./)?src/a/b/new\.txt$' "$ETMP/p.err" \
+grep -E '[[:space:]]+applied[[:space:]]+(\./)?src/a/b/new\.txt$' "$ETMP/p.out" \
     || fail "expected 'patch applied src/a/b/new.txt'; got: $(cat $ETMP/p.err)"
 
 #  THE REGRESSION ASSERT: both files must be non-empty AND match the

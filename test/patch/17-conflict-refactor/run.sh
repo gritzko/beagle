@@ -51,7 +51,7 @@ if "$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err"; then
 fi
 
 # Per-file status row: lib.c → conflict.
-grep -E '^patch[[:space:]]+conflict[[:space:]]+(\./)?lib\.c$' "$ETMP/c.err" \
+grep -E '[[:space:]]+conflict[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \
     || fail "expected 'patch conflict lib.c' status row; got: $(cat $ETMP/c.err)"
 
 # WEAVE conflict markers — 4-char `<<<<` / `||||` / `>>>>` framing

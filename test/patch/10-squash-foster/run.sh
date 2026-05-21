@@ -51,7 +51,7 @@ F2=$(head_hex)
     || fail "be patch ?feat failed: $(cat $ETMP/patch.err)"
 
 # Per-file status: lib.c was edited on both sides → merged.
-grep -E '^patch[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/patch.err" \
+grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/patch.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/patch.err)"
 
 # Wt must carry every edit from both sides.
