@@ -25,7 +25,7 @@
 #define RESOLVE_OBJ_BUF       (1UL << 16)
 
 //  Decode a 40-hex sha into `out` and verify the object exists in
-//  keeper.  Returns OK on success, RESOLVENONE if not found.
+//  keeper.  Returns OK on success, RESLVNONE if not found.
 static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
     sane(k && out);
     u8s sb = {out->data, out->data + 20};
@@ -35,13 +35,13 @@ static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
     u8 ct = 0;
     ok64 ko = KEEPGetExact(out, cbuf, &ct);
     u8bFree(cbuf);
-    if (ko != OK) return RESOLVENONE;
+    if (ko != OK) return RESLVNONE;
     return OK;
 }
 
 //  Expand a 4..39-hex hashlet via the keeper pack index, then rebuild
 //  the full 20-byte sha from the resolved object body.  Returns OK on
-//  success, RESOLVENONE on miss.
+//  success, RESLVNONE on miss.
 static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
     sane(k && out);
     u64 h60 = WHIFFHexHashlet60(hex);
@@ -51,7 +51,7 @@ static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
     call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
     ok64 ko = KEEPGet(h60, hexlen, cbuf, &ct);
-    if (ko != OK) { u8bFree(cbuf); return RESOLVENONE; }
+    if (ko != OK) { u8bFree(cbuf); return RESLVNONE; }
     a_dup(u8c, body, u8bDataC(cbuf));
     KEEPObjSha(out, ct, body);
     u8bFree(cbuf);
@@ -63,7 +63,7 @@ static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
 //  so the caller can pass any of the legal absolute spellings.
 static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
     sane(k && out);
-    if (k->h == NULL || u8bDataLen(k->h->root) == 0) return RESOLVEFAIL;
+    if (k->h == NULL || u8bDataLen(k->h->root) == 0) return RESLVFAIL;
 
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
@@ -79,7 +79,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
         uri resolved = {};
         ok64 ro = REFSResolve(&resolved, arena,
                               $path(keepdir), trunk_uri);
-        if (ro != OK || u8csLen(resolved.query) < 40) return RESOLVENONE;
+        if (ro != OK || u8csLen(resolved.query) < 40) return RESLVNONE;
         u8s sb = {out->data, out->data + 20};
         u8cs hx = {resolved.query[0], resolved.query[0] + 40};
         call(HEXu8sDrainSome, sb, hx);
@@ -106,7 +106,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
             return OK;
         }
     }
-    return RESOLVENONE;
+    return RESLVNONE;
 }
 
 //  POSTPONED — commit-message substring search.  Walks the pack
@@ -131,7 +131,7 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out)
 
 static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
     sane(k && out);
-    if (u8csEmpty(needle)) return RESOLVENONE;
+    if (u8csEmpty(needle)) return RESLVNONE;
 
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
@@ -160,7 +160,7 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
             if (type != KEEP_OBJ_COMMIT) continue;
             if (scanned++ >= RESOLVE_MSG_MAX_WALK) {
                 u8bFree(cbuf);
-                return RESOLVENONE;
+                return RESLVNONE;
             }
             u64 h60 = e->key >> 4;
             u8bReset(cbuf);
@@ -188,7 +188,7 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
         }
     }
     u8bFree(cbuf);
-    return RESOLVENONE;
+    return RESLVNONE;
 }
 
 ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
@@ -238,7 +238,7 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
         if (spec.rel != QURY_REL_NONE) {
             a_pad(u8, abs_buf, 256);
             if (QURYBuildAbsolute(abs_buf, &spec, cur_branch) != OK)
-                return RESOLVEFAIL;
+                return RESLVFAIL;
             a_dup(u8c, abs_path, u8bData(abs_buf));
             return resolve_branch_path(k, out, abs_path);
         }
@@ -248,7 +248,7 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     //  Last arm — commit-message substring search.  POSTPONED per the
     //  contract in RESOLVE.h; the `keep_msg_search` implementation
     //  above is ready for one-line activation.
-    return RESOLVENONE;
+    return RESLVNONE;
 }
 
 ok64 KEEPResolveHex(sha1hex *out, u8cs token) {

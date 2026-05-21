@@ -211,14 +211,24 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
         else if (has_colon) {
             //  Scheme sits before the first `:` and is alpha (alpha|digit|+|-|.)*.
             //  If we hit any other char before `:`, this isn't a scheme.
+            //  AND the scheme must be known (projector or transport) — an
+            //  unknown `word:` prefix is prose (commit msg / conventional
+            //  commit subject like `bro: uniformize the navigation`, not
+            //  a URI.
+            u8cp colon = NULL;
             for (u8cp p = arg[0]; p < arg[1]; p++) {
                 u8 c = *p;
-                if (c == ':') { starts_uri = (p > arg[0]); break; }
+                if (c == ':') { colon = p; break; }
                 b8 alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
                 b8 digit = (c >= '0' && c <= '9');
                 b8 ext   = (c == '+' || c == '-' || c == '.');
                 if (p == arg[0]) { if (!alpha) break; }
                 else { if (!alpha && !digit && !ext) break; }
+            }
+            if (colon != NULL && colon > arg[0]) {
+                u8cs scheme = {arg[0], colon};
+                if (DOGIsProjector(scheme) || DOGIsTransport(scheme))
+                    starts_uri = YES;
             }
         }
     }

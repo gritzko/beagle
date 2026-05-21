@@ -456,7 +456,12 @@ static ok64 BEProjector(cli *c, uri *u) {
     //  own stdout is non-TTY.
     b8 force_color = CLIHas(c, "--color") || CLIHas(c, "--ansi");
     if (force_color) setenv("BRO_COLOR", "1", 1);
-    b8 tty = (isatty(STDOUT_FILENO) || force_color) ? YES : NO;
+    //  `--tlv` forces TLV passthrough: the dog emits TLV to stdout,
+    //  no inner bro fork.  Used by an outer bro that opens `be` itself
+    //  to navigate a projector URI.
+    b8 force_tlv = CLIHas(c, "--tlv");
+    b8 tty = (!force_tlv && (isatty(STDOUT_FILENO) || force_color)) ? YES : NO;
+    b8 emit_tlv = tty || force_tlv;
 
     a_path(dogpath);
     a$rg(a0, 0);
@@ -477,7 +482,7 @@ static ok64 BEProjector(cli *c, uri *u) {
         u8csbFeed1(dargs, at_flag);
         u8csbFeed1(dargs, at_val);
     }
-    if (tty) u8csbFeed1(dargs, tlv_flag);
+    if (emit_tlv) u8csbFeed1(dargs, tlv_flag);
     u8csbFeed1(dargs, u->data);
     a_dup(u8cs, dargv, u8csbData(dargs));
 

@@ -14,8 +14,8 @@
 
 #include "abc/BUF.h"
 
-con ok64 SUBSPARSE = 0x65bb73d4a495;  // malformed .gitmodules
-con ok64 SUBSNOSEC = 0x65bb73d5d85ce; // no [submodule] for the queried path
+con ok64 SUBSPARSE = 0x1c78b71929b70e;  // malformed .gitmodules
+con ok64 SUBSNOSEC = 0x1c78b71761c38c; // no [submodule] for the queried path
 
 //  Drain `.gitmodules` blob bytes; invoke `cb(path, url, ctx)` once
 //  per `[submodule]` section that carries both `path` and `url`.

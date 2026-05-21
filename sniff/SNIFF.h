@@ -45,8 +45,8 @@ con ok64 PUTAMBIG      = 0x65e74a58b490;     // bare auto-pair: >1 sha match eit
 con ok64 PUTMVMETA     = 0x1979d59f58e74a;   // move src/dst inside .be/ or other meta
 con ok64 DELDIRTY      = 0x34e54d49b762;
 con ok64 POSTNONE      = 0x65871d5d85ce;
-con ok64 POSTNOMSG     = 0x65871d5d8c4d;     // can't auto-resolve commit msg
-con ok64 POSTCFLCT     = 0x65871d5dc6b3;     // tracked file has conflict markers
+con ok64 POSTNOMSG     = 0x1961c757616710;     // can't auto-resolve commit msg
+con ok64 POSTCFLCT     = 0x1961c74c3d531d;     // tracked file has conflict markers
 con ok64 POSTNOFF      = 0x65871d5d83cf;     // not a fast-forward — use `be patch` to rebase
 con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 

@@ -31,6 +31,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
+#include "dog/HOME.h"
 #include "dog/QURY.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
@@ -1365,13 +1366,49 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         }
         call(resolve_cherry, &thr_sha, &fork_sha, frag);
     } else {
-        //  Cross-branch PATCH: ensure the target branch's packs are
-        //  loaded into keeper's PAST/DATA view so `resolve_target`,
-        //  graf's WEAVE history walks, and the LCA / blob fetches
-        //  below all resolve their objects.  No-op for tags, peer-
-        //  prefixed refs, or same-branch reads.
-        (void)SNIFFMaybeSwitchGraf(target_query); (void)SNIFFMaybeSwitchKeeper(target_query);
-        call(resolve_target, &thr_sha, reporoot, target_query);
+        //  Peer-tracking lookup.  When the URI carries an authority
+        //  (`//<host>`), the merge target is "what `be head ssh://<host>`
+        //  last cached" — i.e. the latest `get` row in REFS whose URI
+        //  hosts that authority.  Previously the authority was silently
+        //  dropped here and an empty query fell through to a local
+        //  trunk lookup, picking the user's prior post tip instead of
+        //  the peer's — yielding a degenerate self-merge.  REFSResolve
+        //  already implements the host-substring match; we just need
+        //  to forward the full URI to it.
+        b8 peer_resolved = NO;
+        if (!u8csEmpty(u->authority)) {
+            a_path(keepdir);
+            if (HOMEBranchDir(KEEP.h, keepdir, NULL) == OK) {
+                a_pad(u8, arena, 1024);
+                uri resolved = {};
+                a_dup(u8c, in_uri, u->data);
+                ok64 ro = REFSResolve(&resolved, arena,
+                                      $path(keepdir), in_uri);
+                if (ro == OK && u8csLen(resolved.query) >= 40) {
+                    u8s sb = {thr_sha.data, thr_sha.data + 20};
+                    u8cs hx = {resolved.query[0],
+                               resolved.query[0] + 40};
+                    if (HEXu8sDrainSome(sb, hx) == OK)
+                        peer_resolved = YES;
+                }
+            }
+            if (!peer_resolved) {
+                fprintf(stderr,
+                    "sniff: patch: peer ref not cached for `//" U8SFMT
+                    "` — run `be head ssh://" U8SFMT "` to refresh\n",
+                    u8sFmt(u->authority), u8sFmt(u->authority));
+                fail(PATCHFAIL);
+            }
+        } else {
+            //  Cross-branch PATCH: ensure the target branch's packs are
+            //  loaded into keeper's PAST/DATA view so `resolve_target`,
+            //  graf's WEAVE history walks, and the LCA / blob fetches
+            //  below all resolve their objects.  No-op for tags, peer-
+            //  prefixed refs, or same-branch reads.
+            (void)SNIFFMaybeSwitchGraf(target_query);
+            (void)SNIFFMaybeSwitchKeeper(target_query);
+            call(resolve_target, &thr_sha, reporoot, target_query);
+        }
         //  Frag interpretation depends on shape:
         //    PATCH_SHAPE_SQUASH  — no frag.
         //    PATCH_SHAPE_MERGE   — frag is the user-supplied merge

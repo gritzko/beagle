@@ -175,6 +175,11 @@ static const CanonCase CANON_CASES[] = {
     {"fix the typo",                       "#fix the typo"},
     // Whitespace with explicit leading `#` — `#` consumed, body kept.
     {"#fix the typo",                      "#fix the typo"},
+    // Whitespace + unknown-scheme prefix (conventional-commit subject).
+    // `bro:` is not a known projector or transport; the whole token
+    // must classify as fragment, NOT as scheme=bro + path=` …`.
+    {"bro: uniformize the navigation",     "#bro: uniformize the navigation"},
+    {"feat: add foo",                      "#feat: add foo"},
     // Whitespace fragment with single-quoted spot body.
     {"#'u8sFeed( a, b )'",                 "#'u8sFeed( a, b )'"},
     // Bare fragment.

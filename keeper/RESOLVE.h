@@ -36,8 +36,8 @@
 #include "dog/WHIFF.h"
 #include "KEEP.h"
 
-con ok64 RESOLVENONE = 0x6e30dd225d85ce;   // no match
-con ok64 RESOLVEFAIL = 0x6e30dd2253ca495;  // malformed token / lookup error
+con ok64 RESLVNONE = 0x1b39c55f5d85ce;   // no match
+con ok64 RESLVFAIL = 0x1b39c55f3ca495;  // malformed token / lookup error
 
 //  Resolve `token` to a 40-byte commit sha.  Writes the canonical sha
 //  into `*out` on success.  On miss returns RESOLVENONE; on hard
