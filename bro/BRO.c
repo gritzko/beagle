@@ -375,6 +375,7 @@ static void BROReadSpot(BROstate *st, char *buf, int bufsz,
 static ok64 BROForkSpot(BROstate *st, char const *flag,
                         char const *token, char const *filepath,
                         char const *repo);
+static ok64 BROForkBe(BROstate *st, char const *uri);
 static u32 BROSearchNext(BROstate *st, u32 from, int direction);
 
 // --- Build line index ---
@@ -875,8 +876,7 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     {
         a_cstr(repo_s, repo);
         call(PATHu8bFeed, fpbuf, repo_s);
-        u8cg rel_g = {relpath[0], relpath[0], relpath[1]};
-        call(PATHu8bAdd, fpbuf, rel_g);
+        call(PATHu8bAdd, fpbuf, relpath);
     }
 
     // Map file
@@ -1797,35 +1797,60 @@ static void BROReadURI(BROstate *st, char const *repo) {
         return;
     }
 
+    //  Schemed URI (`spot:`, `grep:`, `sha1:`, `tree:`, …) → hand off to
+    //  `be --tlv <uri>`; the dispatcher routes to the right projector
+    //  dog and emits TLV to our pipe.
+    if (!$empty(u.scheme)) {
+        ok64 fo = BROForkBe(st, buf);
+        if (fo != OK && u8bDataLen(st->flash) == 0)
+            bro_flash(st, "be: %s", ok64str(fo));
+        return;
+    }
+
     b8 has_path = !$empty(u.path);
     b8 has_frag = !$empty(u.fragment);
+
+    //  Parse a leading-line marker from `frag`: bare digits or `L<digits>`.
+    //  Returns the 1-based line, or 0 if not a line marker.  FRAG/QURY
+    //  ragel grammars are stale; sscanf is sufficient here.
+    u32 frag_target_line = 0;
+    if (has_frag) {
+        char fbuf[64] = {};
+        size_t fl = (size_t)$len(u.fragment);
+        if (fl > 0 && fl < sizeof(fbuf)) {
+            memcpy(fbuf, u.fragment[0], fl);
+            unsigned ln = 0;
+            if (sscanf(fbuf, "L%u", &ln) == 1 ||
+                sscanf(fbuf, "%u", &ln) == 1)
+                frag_target_line = ln;
+        }
+    }
 
     //  Path component → open file.  BROOpenFile takes a u8csc directly,
     //  so we hand `u.path` through with no intermediate C-string.
     if (has_path) {
-        //  Determine target line from fragment (if numeric)
-        u32 target_line = 0;
-        if (has_frag && u.fragment[0][0] >= '0' && u.fragment[0][0] <= '9') {
-            i64 ln = 0;
-            a_dup(u8c, fragc, u.fragment);
-            if (utf8sDrainInt(fragc, &ln) == OK && ln > 0)
-                target_line = (u32)ln;
-        }
-
-        ok64 o = BROOpenFile(st, u.path, repo, target_line);
+        ok64 o = BROOpenFile(st, u.path, repo, frag_target_line);
         if (o != OK)
             bro_flash(st, "open: " U8SFMT ": %s",
                       u8sFmt(u.path), ok64str(o));
 
-        //  If fragment is non-numeric, set it as search pattern after opening
-        if (o == OK && has_frag &&
-            !(*u.fragment[0] >= '0' && *u.fragment[0] <= '9')) {
+        //  Non-line fragment → search pattern after opening.
+        if (o == OK && has_frag && frag_target_line == 0) {
             u8bReset(st->search);
             if (u8bFeed(st->search, u.fragment) == OK) {
                 u32 f = BROSearchNext(st, st->scroll, +1);
                 if (f != UINT32_MAX) st->scroll = f;
             }
         }
+        return;
+    }
+
+    //  Bare `#L123` (or `#123`) with no path/scheme → goto-line in cur view.
+    if (has_frag && frag_target_line > 0) {
+        u32 target = frag_target_line - 1;
+        if (target >= bro_nlines(st))
+            target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
+        st->scroll = target;
         return;
     }
 
@@ -1985,6 +2010,7 @@ static void bro_resolve_spot(void) {
         return;
     }
 }
+
 
 // Collect unique words from hunk text matching a prefix.
 // Words = runs of [a-zA-Z0-9_] starting with [a-zA-Z_].
@@ -2207,6 +2233,96 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
     }
 
     // Save current view and switch to spot results
+    int idx = st->nsaves;
+    BROsave *sv = &st->saves[idx];
+    $mv(sv->hunks, st->hunks);
+    range32bHandOver(sv->linesbuf, st->linesbuf);
+    sv->scroll = st->scroll;
+
+    st->hunks[0] = bro_hunks + hunks_save;
+    st->hunks[1] = bro_hunks + hunks_save + new_nhunks;
+    call(BROBuildIndex, st);
+    st->scroll = (bro_nlines(st) > 1) ? 1 : 0;
+    st->nsaves = idx + 1;
+    done;
+}
+
+//  Fork `be --tlv <uri>` and drain TLV hunks as a new view.  Mirrors
+//  BROForkSpot — same arena/hunks bookkeeping, same nsaves push.  Used
+//  by BROReadURI when the typed URI carries a scheme (projector or
+//  transport).
+static ok64 BROForkBe(BROstate *st, char const *uri) {
+    sane(st != NULL && uri != NULL && uri[0] != 0);
+    if (st->nsaves >= BRO_MAX_VIEWS) { bro_flash(st, "be: views full"); fail(NOROOM); }
+
+    //  Resolve sibling `be` into a stack path buffer.  HOMEResolveSibling
+    //  always populates `bepath` — with a real sibling path when argv0
+    //  has a dirname / PATH entry holding bro, else with the bare name
+    //  "be" for execvp fallback.
+    a_path(bepath);
+    a$rg(a0, 0);
+    a_cstr(be_name, "be");
+    (void)HOMEResolveSibling(NULL, bepath, be_name, a0);
+    if (u8bDataLen(bepath) == 0) {
+        bro_flash(st, "be: binary not resolved");
+        fail(FAILSANITY);
+    }
+
+    int pfd[2];
+    if (pipe(pfd) != 0) { bro_flash(st, "be: pipe: %s", strerror(errno)); fail(FAILSANITY); }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pfd[0]); close(pfd[1]);
+        bro_flash(st, "be: fork: %s", strerror(errno));
+        fail(FAILSANITY);
+    }
+
+    if (pid == 0) {
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[1]);
+        char const *be_cstr = (char const *)u8bDataHead(bepath);
+        execlp(be_cstr, "be", "--tlv", uri, (char *)NULL);
+        _exit(127);
+    }
+
+    close(pfd[1]);
+
+    u8p arena_save = u8bIdleHead(bro_arena);
+    u32 hunks_save = bro_nhunks;
+
+    Bu8 pdbuf = {};
+    ok64 mo2 = u8bMap(pdbuf, 1UL << 16);
+    if (mo2 != OK) { close(pfd[0]); waitpid(pid, NULL, 0); fail(mo2); }
+
+    for (;;) {
+        size_t space = u8bIdleLen(pdbuf);
+        if (space == 0) {
+            if (u8bReMap(pdbuf, u8bSize(pdbuf) * 2) != OK) break;
+            space = u8bIdleLen(pdbuf);
+        }
+        ssize_t nr = read(pfd[0], u8bIdleHead(pdbuf), space);
+        if (nr <= 0) break;
+        u8bFed(pdbuf, (size_t)nr);
+        bro_drain_tlv(pdbuf);
+    }
+    u8bUnMap(pdbuf);
+
+    close(pfd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    u32 new_nhunks = bro_nhunks - hunks_save;
+    if (new_nhunks == 0) {
+        hunkbShed(bro_state->hunks,
+                  (size_t)hunkbDataLen(bro_state->hunks) - hunks_save);
+        size_t added = (size_t)(u8bIdleHead(bro_arena) - arena_save);
+        if (added > 0) u8bShed(bro_arena, added);
+        bro_flash(st, "be: no results");
+        fail(FAILSANITY);
+    }
+
     int idx = st->nsaves;
     BROsave *sv = &st->saves[idx];
     $mv(sv->hunks, st->hunks);
