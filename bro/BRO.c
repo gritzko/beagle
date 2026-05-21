@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <stdio.h>
@@ -44,6 +45,12 @@ static bro *bro_state = NULL;
 #define bro_toks   (bro_state->toks)                 // shared u32b arena
 #define BRO_COLOR  (bro_state->color)
 #define bro_nhunks ((u32)hunkbDataLen(bro_state->hunks))
+
+// Maximum length of the interactive search pattern.
+#define BRO_SEARCH_MAX 256
+
+// Maximum length of a one-shot status-bar flash message.
+#define BRO_FLASH_MAX  128
 
 // Tokens arena size — big enough for every hunk's tokens combined.
 #define BRO_TOKS_SIZE (1UL << 22)   // 16M u32 entries = 64MB
@@ -120,13 +127,18 @@ ok64 BROArenaInit(void) {
 
 void BROArenaCleanup(void) { /* cleanup lives in BROClose */ }
 
-// Write bytes into the arena, return pointer to start
-u8p BROArenaWrite(void const *data, size_t len) {
-    if (u8bIdleLen(bro_arena) < len) return NULL;
+// Copy `orig` into the arena.  If `in_arena` is non-NULL, populate it
+// with the resulting slice (borders point into the arena).  Returns
+// NOROOM if the arena lacks room; the arena is not mutated in that case.
+ok64 BROArenaWrite(u8csp in_arena, u8cs orig) {
+    sane(1);
     u8p p = u8bIdleHead(bro_arena);
-    memcpy(p, data, len);
-    u8bFed(bro_arena, len);
-    return p;
+    call(u8bFeed, bro_arena, orig);
+    if (in_arena) {
+        in_arena[0] = p;
+        in_arena[1] = u8bIdleHead(bro_arena);
+    }
+    done;
 }
 
 // Record a mmap'd file so BROClose can FILEUnMap it after the view
@@ -136,8 +148,58 @@ void BRODefer(u8bp mapped) {
     u8bbFeed1(bro_state->maps, mapped);
 }
 
-// Finalize the hunk just staged at hunkbIdleHead.
-void BROHunkAdd(void) { hunkbFed(bro_state->hunks, 1); }
+// Copy one TLV-drained record's uri/text/toks into bro_arena and
+// populate `hk`'s slices.  Returns NOROOM on any arena exhaustion —
+// already-written bytes stay orphan in the arena, but `hk` is left
+// unfinalized (caller skips hunkbFed1).
+static ok64 bro_stage_hunk(hunk *hk, hunk *tlv_hk) {
+    sane(1);
+    *hk = (hunk){};
+    if (!$empty(tlv_hk->uri))
+        call(BROArenaWrite, hk->uri, tlv_hk->uri);
+    if (!$empty(tlv_hk->text))
+        call(BROArenaWrite, hk->text, tlv_hk->text);
+    if (!$empty(tlv_hk->toks)) {
+        // tok32cs is u32 elements; arena is u8 — view the same
+        // bytes through a u8 slice for the copy, then rebrand the
+        // resulting borders as u32cp.
+        u8cs tok_in = {(u8cp)tlv_hk->toks[0], (u8cp)tlv_hk->toks[1]};
+        u8cs tok_out = {};
+        call(BROArenaWrite, tok_out, tok_in);
+        hk->toks[0] = (u32cp)tok_out[0];
+        hk->toks[1] = (u32cp)tok_out[1];
+    }
+    done;
+}
+
+// Drain as many complete TLV hunk records as fit in bro_hunks /
+// bro_arena from `buf`'s DATA.  Each accepted record's uri/text/toks
+// are copied into bro_arena and a hunk is appended.  Any consumed
+// prefix is shifted out so a partial trailing record stays at the
+// start for the next read.  Returns the status of the first
+// HUNKu8sDrain / stage / append that didn't yield a record
+// (typically NODATA for "more bytes needed"); OK if the loop stopped
+// on empty buf or because BRO_MAX_HUNKS was reached.
+static ok64 bro_drain_tlv(Bu8 buf) {
+    a_dup(u8 const, from, u8bDataC(buf));
+    ok64 stop = OK;
+    while (!$empty(from) && bro_nhunks < BRO_MAX_HUNKS) {
+        a_dup(u8 const, save, from);
+        hunk tlv_hk = {};
+        ok64 o = HUNKu8sDrain(from, &tlv_hk);
+        if (o != OK) { $mv(from, save); stop = o; break; }
+        o = bro_stage_hunk(&bro_hunks[bro_nhunks], &tlv_hk);
+        if (o != OK) { $mv(from, save); stop = o; break; }
+        o = hunkbFed1(bro_state->hunks);
+        if (o != OK) { $mv(from, save); stop = o; break; }
+    }
+    size_t consumed = u8bDataLen(buf) - $len(from);
+    if (consumed > 0) {
+        u8bUsed(buf, consumed);
+        u8bShift(buf, 0);
+    }
+    return stop;
+}
 
 // 256-color ink violet for hunk titles
 #define BRO_TITLE_COLOR TTY_FG256(56)
@@ -175,11 +237,8 @@ static int BROTagColor(u8 tag, b8 *bold) {
 
 // Saved state of the main view when a file is opened.
 typedef struct {
-    hunk const *hunks;
-    u32 nhunks;
-    range32 *lines;
+    hunkcs hunks;
     Brange32 linesbuf;
-    u32 nlines;
     u32 scroll;
 } BROsave;
 
@@ -214,15 +273,11 @@ fun u32 bro_line_make(u32 off, u8 pass) {
 }
 
 typedef struct {
-    hunk const *hunks;
-    u32 nhunks;
-    range32 *lines;    // line index array (heap buffer)
-    Brange32 linesbuf; // buffer owning lines memory
-    u32 nlines;        // total line count
+    hunkcs hunks;
+    Brange32 linesbuf; // line index buffer (one entry per display row)
     u32 scroll;        // first visible line
     u16 rows, cols;    // terminal dimensions
-    char search[256];  // current search pattern
-    u32 search_len;    // length of search pattern
+    Bu8 search;        // search pattern (u8bAlloc'd, BRO_SEARCH_MAX bytes)
     struct termios orig_termios;  // saved terminal state
     int tty_fd;        // /dev/tty for keyboard (stdin may be data pipe)
     b8 raw_mode;       // whether terminal is in raw mode
@@ -230,12 +285,18 @@ typedef struct {
     b8 wrap;           // soft-wrap long lines (toggled with 'w')
     b8 fixed_lines;    // linesbuf is fixed-capacity (pipe mode): rewrite
                        // in place instead of free+realloc on rebuild
-    char flash[128];   // one-shot status bar message (cleared after display)
+    Bu8 flash;         // one-shot status bar message (cleared on render)
     // View stack
     BROsave saves[BRO_MAX_VIEWS];
     BROfileview files[BRO_MAX_VIEWS];
     int nsaves;
 } BROstate;
+
+// Line-buffer accessors: the buffer's data borders are the source of
+// truth — `range32 *lines` and `u32 nlines` would just cache them and
+// drift if a mid-flight realloc happens.
+fun range32 *bro_lines (BROstate *st) { return range32bDataHead(st->linesbuf); }
+fun u32      bro_nlines(BROstate *st) { return (u32)range32bDataLen(st->linesbuf); }
 
 // Global for signal handler
 static volatile sig_atomic_t bro_resized = 0;
@@ -243,6 +304,22 @@ static volatile sig_atomic_t bro_resized = 0;
 static void bro_winch_handler(int sig) {
     (void)sig;
     bro_resized = 1;
+}
+
+// Set the one-shot status-bar flash message (replaces prior).
+// Truncates silently to BRO_FLASH_MAX.
+static void bro_flash(BROstate *st, char const *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+static void bro_flash(BROstate *st, char const *fmt, ...) {
+    u8bReset(st->flash);
+    u8sp out = u8bIdle(st->flash);
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf((char *)out[0], $len(out), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if ((size_t)n > $len(out)) n = (int)$len(out);
+    u8bFed(st->flash, (size_t)n);
 }
 
 // --- Terminal setup ---
@@ -292,8 +369,7 @@ static void BROGetSize(BROstate *st) {
 
 // Forward declarations for functions used before definition.
 static void BROScrollCenter(BROstate *st, u32 target);
-static b8 bro_is_source_start(hunkc const *hunks, range32 const *lines,
-                              u32 nlines, u32 i);
+static b8 bro_is_source_start(hunkcs hunks, range32cs lines, u32 i);
 static void BROReadSpot(BROstate *st, char *buf, int bufsz,
                         char const *prompt);
 static ok64 BROForkSpot(BROstate *st, char const *flag,
@@ -479,20 +555,18 @@ _Static_assert(BRO_SCRATCH_SIZE >= BRO_LINEINFO_CAP * sizeof(bro_lineinfo),
 
 // Append soft-wrap rows for one logical line span in `pass`, between
 // `lo` (inclusive) and `end_nl` (offset of the visible '\n' that
-// terminates the row, or text length for trailing partials).
-static u32 bro_append_rows(range32 *lines, u32 li, u32 maxlines,
-                           hunkc const *hk, u32 h, u32 lo, u32 end_nl,
-                           u32 cols, u8 pass) {
+// terminates the row, or text length for trailing partials).  Pushes
+// into `lines`'s idle; silently caps on SNOROOM.
+static void bro_append_rows(range32b lines, hunkc const *hk, u32 h,
+                            u32 lo, u32 end_nl, u32 cols, u8 pass) {
     u32 tlen = (u32)$len(hk->text);
     u32 off = lo;
     while (off <= end_nl) {
-        if (li < maxlines)
-            lines[li++] = (range32){h, bro_line_make(off, pass)};
+        range32bFeed1(lines, (range32){h, bro_line_make(off, pass)});
         u32 end = bro_row_end_pass(hk, tlen, off, cols, pass);
         if (end >= end_nl) break;
         off = end;
     }
-    return li;
 }
 
 static u32 bro_count_rows(hunkc const *hk, u32 lo, u32 end_nl,
@@ -609,23 +683,20 @@ static u32 bro_hunk_count_rows(hunkc const *hk, u32 cols) {
 }
 
 typedef struct {
-    range32 *lines;
-    u32 li;
-    u32 maxlines;
+    range32 **lines;   // points into the caller's range32b slots
     hunkc const *hk;
     u32 h;
     u32 cols;
 } bro_append_ctx;
 static u32 bro_append_emit(void *vctx, u32 lo, u32 end_nl, u8 pass) {
     bro_append_ctx *c = vctx;
-    u32 before = c->li;
-    c->li = bro_append_rows(c->lines, c->li, c->maxlines, c->hk, c->h,
-                            lo, end_nl, c->cols, pass);
-    return c->li - before;
+    size_t before = range32bDataLen(c->lines);
+    bro_append_rows(c->lines, c->hk, c->h, lo, end_nl, c->cols, pass);
+    return (u32)(range32bDataLen(c->lines) - before);
 }
 
-static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
-                           hunkc const *hk, u32 h, u32 cols) {
+static void bro_hunk_append(range32b lines, hunkc const *hk, u32 h,
+                            u32 cols) {
     // Stamp custom bit on inrm-line tokens (per any-`\n` segment that
     // has both in and rm bytes).  Used by the renderer to distinguish
     // "this token is on a modified line" from a token in a pure-add
@@ -651,18 +722,17 @@ static u32 bro_hunk_append(range32 *lines, u32 li, u32 maxlines,
         }
     }
 
-    bro_append_ctx c = {lines, li, maxlines, hk, h, cols};
+    bro_append_ctx c = {(range32 **)lines, hk, h, cols};
     bro_walk_hunk(hk, bro_append_emit, &c);
-    return c.li;
 }
 
-u32 BROCountLines(hunkc const *hunks, u32 nhunks, u32 cols) {
+u32 BROCountLines(hunkcs hunks, u32 cols) {
     if (cols == 0) cols = 1;
     u32 total = 0;
-    for (u32 h = 0; h < nhunks; h++) {
-        if (hunk_has_title(&hunks[h])) total++;
-        if ($empty(hunks[h].text)) continue;
-        total += bro_hunk_count_rows(&hunks[h], cols);
+    $for (hunk const, hk, hunks) {
+        if (hunk_has_title(hk)) total++;
+        if ($empty(hk->text)) continue;
+        total += bro_hunk_count_rows(hk, cols);
     }
     return total;
 }
@@ -676,16 +746,13 @@ fun u32 bro_wrap_cols(BROstate const *st) {
 }
 
 static ok64 BROBuildIndex(BROstate *st) {
-    sane(st != NULL && st->hunks != NULL);
+    sane(st != NULL && !$empty(st->hunks));
 
     u32 cols = bro_wrap_cols(st);
-    u32 total = BROCountLines(st->hunks, st->nhunks, cols);
+    u32 total = BROCountLines(st->hunks, cols);
     u32 cap = total > 0 ? total : 1;
-    ok64 lo = range32bAlloc(st->linesbuf, cap);
-    if (lo != OK) fail(NOROOM);
-    st->lines = st->linesbuf[0];
-    st->nlines = BROAppendLines(st->lines, 0, total,
-                                st->hunks, 0, st->nhunks, cols);
+    call(range32bAlloc, st->linesbuf, cap);
+    BROAppendLines(st->linesbuf, st->hunks, 0, cols);
     done;
 }
 
@@ -715,16 +782,17 @@ static ok64 listdir_emit(void0p arg, path8p path) {
     PATHu8sBase(name, full);
     if ($empty(name)) return OK;
 
-    u8p wp = BROArenaWrite(name[0], (size_t)$len(name));
-    if (wp == NULL) return OK;
+    if (BROArenaWrite(NULL, name) != OK) return OK;
     u32 name_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
     u32bFeed1(bro_state->toks, tok32Pack('F', name_end));
     if (is_dir) {
-        BROArenaWrite("/", 1);
+        a_cstr(slash, "/");
+        BROArenaWrite(NULL, slash);
         u32 sl_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
         u32bFeed1(bro_state->toks, tok32Pack('P', sl_end));
     }
-    BROArenaWrite("\n", 1);
+    a_cstr(nl, "\n");
+    BROArenaWrite(NULL, nl);
     u32 nl_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
     u32bFeed1(bro_state->toks, tok32Pack('W', nl_end));
     return OK;
@@ -752,16 +820,15 @@ ok64 BROListDir(u8csc dirpath) {
     *hk = (hunk){};
 
     // URI = dirpath
-    size_t dl = (size_t)$len(dirpath);
-    u8p up = BROArenaWrite(dirpath[0], dl);
-    if (up) { hk->uri[0] = up; hk->uri[1] = up + dl; }
+    a_dup(u8 const, dp, dirpath);
+    BROArenaWrite(hk->uri, dp);
 
     hk->text[0] = ctx.text_start;
     hk->text[1] = text_end;
     hk->toks[0] = (u32cp)tok_start;
     hk->toks[1] = (u32cp)tok_end;
 
-    BROHunkAdd();
+    hunkbFed1(bro_state->hunks);
     done;
 }
 
@@ -830,35 +897,29 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     fv->hunk.text[1] = src_idle;
 
     // Copy URI (= path) into arena
-    u8p pp = BROArenaWrite(relpath[0], (size_t)$len(relpath));
-    if (pp) {
-        fv->hunk.uri[0] = pp;
-        fv->hunk.uri[1] = pp + $len(relpath);
-    }
+    a_dup(u8 const, rp, relpath);
+    BROArenaWrite(fv->hunk.uri, rp);
 
     BROTokenize(&fv->hunk, relpath);
 
     // Save current view
     BROsave *sv = &st->saves[idx];
-    sv->hunks = st->hunks;
-    sv->nhunks = st->nhunks;
-    sv->lines = st->lines;
+    $mv(sv->hunks, st->hunks);
     range32bHandOver(sv->linesbuf, st->linesbuf);
-    sv->nlines = st->nlines;
     sv->scroll = st->scroll;
 
     // Switch to file view
-    st->hunks = &fv->hunk;
-    st->nhunks = 1;
+    st->hunks[0] = &fv->hunk;
+    st->hunks[1] = &fv->hunk + 1;
     call(BROBuildIndex, st);
     // Scroll to target line (1-based file line number).
     // Count only source-line starts — wrap continuations share the
     // same source line number and must not bump the counter.
-    if (target_line > 0 && st->nlines > 1) {
+    if (target_line > 0 && bro_nlines(st) > 1) {
         u32 file_ln = 0;
         u32 best = 1;
-        for (u32 i = 0; i < st->nlines; i++) {
-            if (!bro_is_source_start(st->hunks, st->lines, st->nlines, i))
+        for (u32 i = 0; i < bro_nlines(st); i++) {
+            if (!bro_is_source_start(st->hunks, range32bDataC(st->linesbuf), i))
                 continue;
             file_ln++;
             if (file_ln == target_line) { best = i; break; }
@@ -866,7 +927,7 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
         }
         BROScrollCenter(st, best);
     } else {
-        st->scroll = (st->nlines > 1) ? 1 : 0;
+        st->scroll = (bro_nlines(st) > 1) ? 1 : 0;
     }
     st->nsaves = idx + 1;
     done;
@@ -888,11 +949,8 @@ static b8 BROBack(BROstate *st) {
 
     // Restore saved view
     BROsave *sv = &st->saves[idx];
-    st->hunks = sv->hunks;
-    st->nhunks = sv->nhunks;
-    st->lines = sv->lines;
+    $mv(st->hunks, sv->hunks);
     range32bHandOver(st->linesbuf, sv->linesbuf);
-    st->nlines = sv->nlines;
     st->scroll = sv->scroll;
     return YES;
 }
@@ -901,10 +959,10 @@ static b8 BROBack(BROstate *st) {
 // For directory listings, the line text IS the filename; the hunk URI
 // is the directory. Constructs dir/filename and opens.
 static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
-    if (line >= st->nlines) return NO;
-    range32 *ln = &st->lines[line];
+    if (line >= bro_nlines(st)) return NO;
+    range32 *ln = &bro_lines(st)[line];
     u32 hunk_idx = ln->lo;
-    hunk const *hk = &st->hunks[hunk_idx];
+    hunk const *hk = &st->hunks[0][hunk_idx];
     BROloc loc = {};
     BROHunkLoc(&loc, hk);
 
@@ -928,26 +986,25 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
             if (PATHu8bPush(fpbufA, entry) != OK) return NO;
             {
                 if (repo == NULL || repo[0] == 0) {
-                    snprintf(st->flash, sizeof(st->flash), "no repo root");
+                    bro_flash(st, "no repo root");
                     return NO;
                 }
                 if (is_dir) {
                     // Open directory listing
                     if (st->nsaves >= BRO_MAX_VIEWS) return NO;
                     int idx = st->nsaves;
-                    st->saves[idx] = (BROsave){
-                        .hunks = st->hunks, .nhunks = st->nhunks,
-                        .lines = st->lines, .nlines = st->nlines,
-                        .scroll = st->scroll};
-                    range32bHandOver(st->saves[idx].linesbuf,
-                                     st->linesbuf);
+                    BROsave *sv = &st->saves[idx];
+                    *sv = (BROsave){};
+                    $mv(sv->hunks, st->hunks);
+                    sv->scroll = st->scroll;
+                    range32bHandOver(sv->linesbuf, st->linesbuf);
                     st->files[idx] = (BROfileview){};
                     u32 save_nh = bro_nhunks;
                     if (BROListDir(u8bDataC(fpbufA)) == OK && bro_nhunks > save_nh) {
-                        st->hunks = bro_hunks + save_nh;
-                        st->nhunks = bro_nhunks - save_nh;
+                        st->hunks[0] = bro_hunks + save_nh;
+                        st->hunks[1] = bro_hunks + bro_nhunks;
                         BROBuildIndex(st);
-                        st->scroll = (st->nlines > 1) ? 1 : 0;
+                        st->scroll = (bro_nlines(st) > 1) ? 1 : 0;
                         st->nsaves = idx + 1;
                         return YES;
                     }
@@ -955,9 +1012,8 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
                 }
                 ok64 o = BROOpenFile(st, u8bDataC(fpbufA), repo, 0);
                 if (o != OK) {
-                    snprintf(st->flash, sizeof(st->flash),
-                             "open: " U8SFMT ": %s",
-                             u8sFmt(u8bDataC(fpbufA)), ok64str(o));
+                    bro_flash(st, "open: " U8SFMT ": %s",
+                              u8sFmt(u8bDataC(fpbufA)), ok64str(o));
                     return NO;
                 }
                 return YES;
@@ -967,18 +1023,17 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
 
     // Normal hunk: open path from URI
     if ($empty(loc.path)) {
-        snprintf(st->flash, sizeof(st->flash), "no path in hunk");
+        bro_flash(st, "no path in hunk");
         return NO;
     }
     if (repo == NULL || repo[0] == 0) {
-        snprintf(st->flash, sizeof(st->flash), "no repo root found");
+        bro_flash(st, "no repo root found");
         return NO;
     }
     ok64 o = BROOpenFile(st, loc.path, repo, loc.line);
     if (o != OK) {
-        snprintf(st->flash, sizeof(st->flash),
-                 "open: " U8SFMT ": %s",
-                 u8sFmt(loc.path), ok64str(o));
+        bro_flash(st, "open: " U8SFMT ": %s",
+                  u8sFmt(loc.path), ok64str(o));
         return NO;
     }
     return YES;
@@ -1001,18 +1056,18 @@ static b8 bro_side_real(u8 side) {
 // A row is a source-start if it begins with offset 0 OR the previous
 // row covers a different hunk OR pass changes OR the previous source
 // byte is '\n'.
-static b8 bro_is_source_start(hunkc const *hunks, range32 const *lines,
-                              u32 nlines, u32 i) {
+static b8 bro_is_source_start(hunkcs hunks, range32cs lines, u32 i) {
+    u32 nlines = (u32)$len(lines);
     if (i >= nlines) return NO;
-    range32 const *ln = &lines[i];
+    range32 const *ln = &lines[0][i];
     if (ln->hi == BRO_TITLE_LINE) return NO;
     u32 off = bro_line_off(ln);
     if (i == 0 || off == 0) return YES;
-    range32 const *prev = &lines[i - 1];
+    range32 const *prev = &lines[0][i - 1];
     if (prev->lo != ln->lo) return YES;
     if (prev->hi == BRO_TITLE_LINE) return YES;
     if (bro_line_pass(prev) != bro_line_pass(ln)) return YES;
-    return (hunks[ln->lo].text[0][off - 1] == '\n') ? YES : NO;
+    return (hunks[0][ln->lo].text[0][off - 1] == '\n') ? YES : NO;
 }
 
 // Find the line that contains byte offset `off` in hunk `h`.
@@ -1020,57 +1075,61 @@ static b8 bro_is_source_start(hunkc const *hunks, range32 const *lines,
 // lines[i].hi != BRO_TITLE_LINE, and bro_line_off(lines+i) <= off.
 // BRO_NONE if no such line exists.  Used by hili nav — picks the first
 // matching pass (rm) since that comes first in source order.
-static u32 bro_line_for_off(range32 const *lines, u32 nlines,
-                            u32 h, u32 off) {
+static u32 bro_line_for_off(range32cs lines, u32 h, u32 off) {
+    u32 nlines = (u32)$len(lines);
     u32 best = BRO_NONE;
     for (u32 i = 0; i < nlines; i++) {
-        if (lines[i].lo < h) continue;
-        if (lines[i].lo > h) break;  // hunks are appended in order
-        if (lines[i].hi == BRO_TITLE_LINE) continue;
-        u32 lo_off = bro_line_off(&lines[i]);
+        if (lines[0][i].lo < h) continue;
+        if (lines[0][i].lo > h) break;  // hunks are appended in order
+        if (lines[0][i].hi == BRO_TITLE_LINE) continue;
+        u32 lo_off = bro_line_off(&lines[0][i]);
         if (lo_off <= off) best = i;
         else break;
     }
     return best;
 }
 
-u32 BROHunkNextLine(range32 const *lines, u32 nlines, u32 from) {
+u32 BROHunkNextLine(range32cs lines, u32 from) {
+    u32 nlines = (u32)$len(lines);
     if (nlines == 0) return BRO_NONE;
     u32 start = (from + 1 < nlines) ? (from + 1) : nlines;
     for (u32 i = start; i < nlines; i++) {
-        if (lines[i].lo != lines[i - 1].lo) return i;
+        if (lines[0][i].lo != lines[0][i - 1].lo) return i;
     }
     return BRO_NONE;
 }
 
-u32 BROHunkPrevLine(range32 const *lines, u32 nlines, u32 from) {
+u32 BROHunkPrevLine(range32cs lines, u32 from) {
+    u32 nlines = (u32)$len(lines);
     if (nlines == 0 || from == 0) return BRO_NONE;
     if (from >= nlines) from = nlines - 1;
     // Walk back to the start line of the current hunk.
     u32 i = from;
-    while (i > 0 && lines[i - 1].lo == lines[i].lo) i--;
+    while (i > 0 && lines[0][i - 1].lo == lines[0][i].lo) i--;
     if (i < from) return i;  // mid-hunk: jump to start of current
     // Already at the current hunk's start; step into the previous hunk.
     if (i == 0) return BRO_NONE;
     i--;
-    while (i > 0 && lines[i - 1].lo == lines[i].lo) i--;
+    while (i > 0 && lines[0][i - 1].lo == lines[0][i].lo) i--;
     return i;
 }
 
-u32 BROHunkCount(range32 const *lines, u32 nlines) {
+u32 BROHunkCount(range32cs lines) {
+    u32 nlines = (u32)$len(lines);
     if (nlines == 0) return 0;
     u32 n = 1;
     for (u32 i = 1; i < nlines; i++)
-        if (lines[i].lo != lines[i - 1].lo) n++;
+        if (lines[0][i].lo != lines[0][i - 1].lo) n++;
     return n;
 }
 
-u32 BROHunkIndexAt(range32 const *lines, u32 nlines, u32 at) {
+u32 BROHunkIndexAt(range32cs lines, u32 at) {
+    u32 nlines = (u32)$len(lines);
     if (nlines == 0) return 0;
     if (at >= nlines) at = nlines - 1;
     u32 n = 1;
     for (u32 i = 1; i <= at; i++)
-        if (lines[i].lo != lines[i - 1].lo) n++;
+        if (lines[0][i].lo != lines[0][i - 1].lo) n++;
     return n;
 }
 
@@ -1084,26 +1143,27 @@ static b8 bro_is_run_start(hunk const *hk, u32 j) {
     return (prev != side) ? YES : NO;
 }
 
-u32 BROHiliCount(hunk const *hunks, u32 nhunks) {
+u32 BROHiliCount(hunkcs hunks) {
     u32 n = 0;
-    for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].toks);
+    $for (hunk const, hk, hunks) {
+        u32 nh = (u32)$len(hk->toks);
         for (u32 j = 0; j < nh; j++)
-            if (bro_is_run_start(&hunks[h], j)) n++;
+            if (bro_is_run_start(hk, j)) n++;
     }
     return n;
 }
 
-u32 BROHiliIndexAt(hunk const *hunks, u32 nhunks,
-                   range32 const *lines, u32 nlines, u32 at) {
+u32 BROHiliIndexAt(hunkcs hunks, range32cs lines, u32 at) {
     u32 n = 0;
+    u32 nhunks = (u32)$len(hunks);
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].toks);
+        hunk const *hk = &hunks[0][h];
+        u32 nh = (u32)$len(hk->toks);
         for (u32 j = 0; j < nh; j++) {
-            if (!bro_is_run_start(&hunks[h], j)) continue;
+            if (!bro_is_run_start(hk, j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].toks[0][j - 1]);
-            u32 ln = bro_line_for_off(lines, nlines, h, start_off);
+                          : tok32Offset(hk->toks[0][j - 1]);
+            u32 ln = bro_line_for_off(lines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln <= at) n++;
             else return n;
@@ -1112,15 +1172,16 @@ u32 BROHiliIndexAt(hunk const *hunks, u32 nhunks,
     return n;
 }
 
-u32 BROHiliNextLine(hunk const *hunks, u32 nhunks,
-                    range32 const *lines, u32 nlines, u32 mid) {
+u32 BROHiliNextLine(hunkcs hunks, range32cs lines, u32 mid) {
+    u32 nhunks = (u32)$len(hunks);
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].toks);
+        hunk const *hk = &hunks[0][h];
+        u32 nh = (u32)$len(hk->toks);
         for (u32 j = 0; j < nh; j++) {
-            if (!bro_is_run_start(&hunks[h], j)) continue;
+            if (!bro_is_run_start(hk, j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].toks[0][j - 1]);
-            u32 ln = bro_line_for_off(lines, nlines, h, start_off);
+                          : tok32Offset(hk->toks[0][j - 1]);
+            u32 ln = bro_line_for_off(lines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln > mid) return ln;
         }
@@ -1128,16 +1189,17 @@ u32 BROHiliNextLine(hunk const *hunks, u32 nhunks,
     return BRO_NONE;
 }
 
-u32 BROHiliPrevLine(hunk const *hunks, u32 nhunks,
-                    range32 const *lines, u32 nlines, u32 mid) {
+u32 BROHiliPrevLine(hunkcs hunks, range32cs lines, u32 mid) {
     u32 best = BRO_NONE;
+    u32 nhunks = (u32)$len(hunks);
     for (u32 h = 0; h < nhunks; h++) {
-        u32 nh = (u32)$len(hunks[h].toks);
+        hunk const *hk = &hunks[0][h];
+        u32 nh = (u32)$len(hk->toks);
         for (u32 j = 0; j < nh; j++) {
-            if (!bro_is_run_start(&hunks[h], j)) continue;
+            if (!bro_is_run_start(hk, j)) continue;
             u32 start_off = (j == 0) ? 0
-                          : tok32Offset(hunks[h].toks[0][j - 1]);
-            u32 ln = bro_line_for_off(lines, nlines, h, start_off);
+                          : tok32Offset(hk->toks[0][j - 1]);
+            u32 ln = bro_line_for_off(lines, h, start_off);
             if (ln == BRO_NONE) continue;
             if (ln >= mid) return best;
             best = ln;
@@ -1265,10 +1327,11 @@ static void scr_emit_char(u8cp p, u32 n, u8 fg_tag, u8 bg_tag, b8 in_search) {
 
 // Check if search pattern matches at position pos
 static b8 bro_search_at(BROstate *st, u8csc text, u32 pos) {
-    if (st->search_len == 0) return NO;
-    if (pos + st->search_len > (u32)$len(text)) return NO;
-    u8cs hay = {text[0] + pos, text[0] + pos + st->search_len};
-    u8cs ndl = {(u8cp)st->search, (u8cp)st->search + st->search_len};
+    u8cs ndl = {};
+    $mv(ndl, u8bDataC(st->search));
+    if ($empty(ndl)) return NO;
+    if (pos + $len(ndl) > (size_t)$len(text)) return NO;
+    a$part(u8c, hay, text, pos, $len(ndl));
     return $eq(hay, ndl);
 }
 
@@ -1305,21 +1368,21 @@ static void BRORender(BROstate *st) {
     scr_puts(TTY_CUR_HOME);
 
     u32 visible = (u32)(st->rows - 1);
-    if (st->nlines > visible) {
-        if (st->scroll > st->nlines - visible)
-            st->scroll = st->nlines - visible;
+    if (bro_nlines(st) > visible) {
+        if (st->scroll > bro_nlines(st) - visible)
+            st->scroll = bro_nlines(st) - visible;
     } else {
         st->scroll = 0;
     }
     u32 end = st->scroll + visible;
-    if (end > st->nlines) end = st->nlines;
+    if (end > bro_nlines(st)) end = bro_nlines(st);
 
     for (u32 vi = st->scroll; vi < end; vi++) {
         scr_goto((int)(vi - st->scroll + 1), 1);
         scr_puts(TTY_ERASE_LINE);
 
-        range32 *ln = &st->lines[vi];
-        hunk const *hk = &st->hunks[ln->lo];
+        range32 *ln = &bro_lines(st)[vi];
+        hunk const *hk = &st->hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
             scr_puts(BRO_TITLE_COLOR);
@@ -1351,16 +1414,17 @@ static void BRORender(BROstate *st) {
         // Seed from any match that started in the previous wrap segment
         // of the same source line (search can span wrap, not '\n').
         u32 search_left = 0;
-        if (st->search_len > 1 && off > 0) {
+        u32 slen = (u32)u8bDataLen(st->search);
+        if (slen > 1 && off > 0) {
             u32 src_start = off;
             while (src_start > 0 && hk->text[0][src_start - 1] != '\n')
                 src_start--;
-            u32 back = st->search_len - 1;
+            u32 back = slen - 1;
             if (off - src_start < back) back = off - src_start;
             for (u32 k = back; k >= 1; k--) {
                 u32 bp = off - k;
                 if (bro_search_at(st, hk->text, bp)) {
-                    search_left = st->search_len - k;
+                    search_left = slen - k;
                     break;
                 }
             }
@@ -1395,7 +1459,7 @@ static void BRORender(BROstate *st) {
                 bg_tag = (side == TOK_SIDE_IN) ? 'i' : 'g';
             }
             if (search_left == 0 && bro_search_at(st, hk->text, pos))
-                search_left = st->search_len;
+                search_left = slen;
             b8 in_search = (search_left > 0) ? YES : NO;
             scr_emit_char(hk->text[0] + pos, clen, fg_tag, bg_tag, in_search);
             if (search_left >= clen) search_left -= clen;
@@ -1420,8 +1484,8 @@ static void BROScrollCenter(BROstate *st, u32 target) {
     u32 page = (st->rows > 1) ? (u32)(st->rows - 1) : 1;
     u32 half = page / 2;
     u32 s = (target > half) ? (target - half) : 0;
-    if (st->nlines > page && s > st->nlines - page)
-        s = st->nlines - page;
+    if (bro_nlines(st) > page && s > bro_nlines(st) - page)
+        s = bro_nlines(st) - page;
     st->scroll = s;
 }
 
@@ -1430,44 +1494,46 @@ static void BROStatusBar(BROstate *st) {
     scr_puts(TTY_INVERSE TTY_ERASE_LINE);
 
     // Flash message: show it and clear for next render.
-    if (st->flash[0]) {
-        u8sp out = u8bIdle(bro_scr);
-        int slen = snprintf((char *)out[0], $len(out),
-                            " %s", st->flash);
-        if (slen > 0) {
-            if ((u32)slen > st->cols) slen = (int)st->cols;
-            u8sFed(out, (size_t)slen);
+    if (u8bDataLen(st->flash) > 0) {
+        u8sFeed1(u8bIdle(bro_scr), ' ');
+        u8cs body = {};
+        $mv(body, u8bDataC(st->flash));
+        if ((u32)$len(body) + 1 > st->cols && st->cols > 1) {
+            a$head(u8c, clipped, body, (size_t)(st->cols - 1));
+            u8bFeed(bro_scr, clipped);
+        } else {
+            u8bFeed(bro_scr, body);
         }
         scr_puts(TTY_RESET);
-        st->flash[0] = 0;
+        u8bReset(st->flash);
         return;
     }
 
     u32 cur_hunk = 0;
-    if (st->scroll < st->nlines)
-        cur_hunk = st->lines[st->scroll].lo;
+    if (st->scroll < bro_nlines(st))
+        cur_hunk = bro_lines(st)[st->scroll].lo;
 
-    u32 hunk_tot = BROHunkCount(st->lines, st->nlines);
-    u32 hunk_idx = BROHunkIndexAt(st->lines, st->nlines, st->scroll);
-    u32 hili_tot = BROHiliCount(st->hunks, st->nhunks);
-    u32 hili_idx = BROHiliIndexAt(st->hunks, st->nhunks,
-                                  st->lines, st->nlines, st->scroll);
+    u32 hunk_tot = BROHunkCount(range32bDataC(st->linesbuf));
+    u32 hunk_idx = BROHunkIndexAt(range32bDataC(st->linesbuf), st->scroll);
+    u32 hili_tot = BROHiliCount(st->hunks);
+    u32 hili_idx = BROHiliIndexAt(st->hunks,
+                                  range32bDataC(st->linesbuf), st->scroll);
 
-    hunk const *ch = &st->hunks[cur_hunk];
+    hunk const *ch = &st->hunks[0][cur_hunk];
 
     // Scroll position as percentage (source line numbers are in the
     // URI, not the local index — see project docs).  ALL means the
     // whole view fits on screen; TOP / BOT are the endpoints.
     char posbuf[8];
     u32 visible = (st->rows > 1) ? (u32)(st->rows - 1) : 1;
-    if (st->nlines <= visible)
+    if (bro_nlines(st) <= visible)
         snprintf(posbuf, sizeof(posbuf), "ALL");
     else if (st->scroll == 0)
         snprintf(posbuf, sizeof(posbuf), "TOP");
-    else if (st->scroll + visible >= st->nlines)
+    else if (st->scroll + visible >= bro_nlines(st))
         snprintf(posbuf, sizeof(posbuf), "BOT");
     else {
-        u32 max_scroll = st->nlines - visible;
+        u32 max_scroll = bro_nlines(st) - visible;
         u32 pct = (u32)((u64)st->scroll * 100 / max_scroll);
         if (pct > 99) pct = 99;  // reserve 100% for BOT
         snprintf(posbuf, sizeof(posbuf), "%u%%", pct);
@@ -1477,23 +1543,25 @@ static void BROStatusBar(BROstate *st) {
     // title gets.  Use a small local buffer (stats are short).
     char stats[128];
     int sn;
-    if (hili_tot > 0 && st->search_len > 0)
+    size_t plen = u8bDataLen(st->search);
+    char const *spat = (char const *)u8bDataHead(st->search);
+    if (hili_tot > 0 && plen > 0)
         sn = snprintf(stats, sizeof(stats),
                       "  %s  H%u/%u  C%u/%u  [/%.*s]",
                       posbuf,
                       hunk_idx, hunk_tot, hili_idx, hili_tot,
-                      (int)st->search_len, st->search);
+                      (int)plen, spat);
     else if (hili_tot > 0)
         sn = snprintf(stats, sizeof(stats),
                       "  %s  H%u/%u  C%u/%u",
                       posbuf,
                       hunk_idx, hunk_tot, hili_idx, hili_tot);
-    else if (st->search_len > 0)
+    else if (plen > 0)
         sn = snprintf(stats, sizeof(stats),
                       "  %s  H%u/%u  [/%.*s]",
                       posbuf,
                       hunk_idx, hunk_tot,
-                      (int)st->search_len, st->search);
+                      (int)plen, spat);
     else
         sn = snprintf(stats, sizeof(stats),
                       "  %s  H%u/%u",
@@ -1539,27 +1607,30 @@ static void BROStatusBar(BROstate *st) {
 // match's start.  The match body may extend past the row's end into a
 // wrap continuation (same source line) but not across a '\n'.
 static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
-    if (st->search_len == 0) return UINT32_MAX;
+    u8cs ndl = {};
+    $mv(ndl, u8bDataC(st->search));
+    if ($empty(ndl)) return UINT32_MAX;
+    u32 slen = (u32)$len(ndl);
     u32 i = from;
     for (;;) {
         if (direction > 0) {
             i++;
-            if (i >= st->nlines) return UINT32_MAX;
+            if (i >= bro_nlines(st)) return UINT32_MAX;
         } else {
             if (i == 0) return UINT32_MAX;
             i--;
         }
-        range32 *ln = &st->lines[i];
+        range32 *ln = &bro_lines(st)[i];
         if (ln->hi == BRO_TITLE_LINE) continue;
-        hunk const *hk = &st->hunks[ln->lo];
+        hunk const *hk = &st->hunks[0][ln->lo];
         u32 textlen = (u32)$len(hk->text);
         u32 off = ln->hi;
         // Byte span of this display row (bounded by next row in same
         // source line, else source-line end at '\n').
         u32 row_end;
-        if (i + 1 < st->nlines && st->lines[i + 1].lo == ln->lo &&
-            st->lines[i + 1].hi != BRO_TITLE_LINE) {
-            u32 nhi = st->lines[i + 1].hi;
+        if (i + 1 < bro_nlines(st) && bro_lines(st)[i + 1].lo == ln->lo &&
+            bro_lines(st)[i + 1].hi != BRO_TITLE_LINE) {
+            u32 nhi = bro_lines(st)[i + 1].hi;
             // Continuation if no '\n' between; otherwise nhi sits past
             // the '\n'.  Either way, the row's first-byte limit is nhi
             // (continuations) or the '\n' (new source line).
@@ -1574,14 +1645,12 @@ static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
         u32 src_end = row_end;
         while (src_end < textlen && hk->text[0][src_end] != '\n')
             src_end++;
-        u8cs ndl = {(u8cp)st->search, (u8cp)st->search + st->search_len};
-        if (row_end > off && src_end - off >= st->search_len) {
+        if (row_end > off && src_end - off >= slen) {
             u32 first_byte_limit = row_end;
-            u32 max_start = src_end - st->search_len;
+            u32 max_start = src_end - slen;
             if (first_byte_limit > max_start + 1) first_byte_limit = max_start + 1;
             for (u32 j = 0; off + j < first_byte_limit; j++) {
-                u8cs hay = {hk->text[0] + off + j,
-                            hk->text[0] + off + j + st->search_len};
+                a$part(u8c, hay, hk->text, off + j, slen);
                 if ($eq(hay, ndl)) return i;
             }
         }
@@ -1590,18 +1659,15 @@ static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
 
 // Read search pattern from user (displayed in status bar)
 static void BROReadSearch(BROstate *st) {
-    st->search_len = 0;
-    zero(st->search);
+    u8bReset(st->search);
 
     for (;;) {
         // Render prompt on status bar
         bro_goto(st->rows, 1);
         bro_puts(TTY_INVERSE TTY_ERASE_LINE);
         bro_puts(" /");
-        if (st->search_len > 0) {
-            u8cs srch = {(u8cp)st->search, (u8cp)st->search + st->search_len};
-            bro_write(srch);
-        }
+        if (u8bDataLen(st->search) > 0)
+            bro_write(u8bDataC(st->search));
         bro_puts(TTY_RESET);
 
         u8 ch = 0;
@@ -1609,16 +1675,14 @@ static void BROReadSearch(BROstate *st) {
         if (n <= 0) continue;
         if (ch == '\n' || ch == '\r') break;  // confirm
         if (ch == 27) {  // escape: cancel
-            st->search_len = 0;
+            u8bReset(st->search);
             break;
         }
         if (ch == 127 || ch == 8) {  // backspace
-            if (st->search_len > 0) st->search_len--;
+            if (u8bDataLen(st->search) > 0) u8bShed1(st->search);
             continue;
         }
-        if (ch >= 32 && st->search_len < sizeof(st->search) - 1) {
-            st->search[st->search_len++] = (char)ch;
-        }
+        if (ch >= 32) u8bFeed1(st->search, ch);
     }
 }
 
@@ -1658,7 +1722,7 @@ static void BRODispatchFragment(BROstate *st, char *frag,
     if (frag[0] >= '0' && frag[0] <= '9') {
         u32 target = (u32)atoi(frag);
         if (target > 0) target--;
-        if (target >= st->nlines) target = st->nlines > 0 ? st->nlines - 1 : 0;
+        if (target >= bro_nlines(st)) target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
         st->scroll = target;
         return;
     }
@@ -1683,9 +1747,9 @@ static void BRODispatchFragment(BROstate *st, char *frag,
     char argz[16] = {};
     if (ext_arg[0]) {
         arg = ext_arg;
-    } else if (st->scroll < st->nlines) {
-        u32 hi = st->lines[st->scroll].lo;
-        hunkc const *hk = &st->hunks[hi];
+    } else if (st->scroll < bro_nlines(st)) {
+        u32 hi = bro_lines(st)[st->scroll].lo;
+        hunkc const *hk = &st->hunks[0][hi];
         BROloc loc2 = {};
         BROHunkLoc(&loc2, hk);
         if (!$empty(loc2.path)) {
@@ -1704,8 +1768,8 @@ static void BRODispatchFragment(BROstate *st, char *frag,
     }
 
     ok64 o = BROForkSpot(st, flag, pattern, arg, repo);
-    if (o != OK && st->flash[0] == 0)
-        snprintf(st->flash, sizeof(st->flash), "spot: %s", ok64str(o));
+    if (o != OK && u8bDataLen(st->flash) == 0)
+        bro_flash(st, "spot: %s", ok64str(o));
 }
 
 // Unified URI prompt. Accepts: line number, path, path#fragment,
@@ -1716,7 +1780,7 @@ static void BROReadURI(BROstate *st, char const *repo) {
     if (buf[0] == 0) return;
 
     // Parse with abc/URI
-    u8cs input = {(u8cp)buf, (u8cp)buf + strlen(buf)};
+    a_cstr(input, buf);
     uri u = {};
     $mv(u.data, input);
     ok64 po = URILexer(&u);
@@ -1726,8 +1790,8 @@ static void BROReadURI(BROstate *st, char const *repo) {
         if (buf[0] >= '0' && buf[0] <= '9') {
             u32 target = (u32)atoi(buf);
             if (target > 0) target--;
-            if (target >= st->nlines)
-                target = st->nlines > 0 ? st->nlines - 1 : 0;
+            if (target >= bro_nlines(st))
+                target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
             st->scroll = target;
         }
         return;
@@ -1750,23 +1814,16 @@ static void BROReadURI(BROstate *st, char const *repo) {
 
         ok64 o = BROOpenFile(st, u.path, repo, target_line);
         if (o != OK)
-            snprintf(st->flash, sizeof(st->flash),
-                     "open: " U8SFMT ": %s",
-                     u8sFmt(u.path), ok64str(o));
+            bro_flash(st, "open: " U8SFMT ": %s",
+                      u8sFmt(u.path), ok64str(o));
 
         //  If fragment is non-numeric, set it as search pattern after opening
         if (o == OK && has_frag &&
-            !(u.fragment[0][0] >= '0' && u.fragment[0][0] <= '9')) {
-            size_t fl = (size_t)$len(u.fragment);
-            if (fl < sizeof(st->search)) {
-                a_dup(u8c, fragc, u.fragment);
-                u8s search_s = {(u8 *)st->search,
-                                (u8 *)st->search + sizeof(st->search)};
-                if (u8sFeed(search_s, fragc) == OK) {
-                    st->search_len = (u32)fl;
-                    u32 f = BROSearchNext(st, st->scroll, +1);
-                    if (f != UINT32_MAX) st->scroll = f;
-                }
+            !(*u.fragment[0] >= '0' && *u.fragment[0] <= '9')) {
+            u8bReset(st->search);
+            if (u8bFeed(st->search, u.fragment) == OK) {
+                u32 f = BROSearchNext(st, st->scroll, +1);
+                if (f != UINT32_MAX) st->scroll = f;
             }
         }
         return;
@@ -1788,8 +1845,8 @@ static void BROReadURI(BROstate *st, char const *repo) {
     if (buf[0] >= '0' && buf[0] <= '9') {
         u32 target = (u32)atoi(buf);
         if (target > 0) target--;
-        if (target >= st->nlines)
-            target = st->nlines > 0 ? st->nlines - 1 : 0;
+        if (target >= bro_nlines(st))
+            target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
         st->scroll = target;
     }
 }
@@ -1801,26 +1858,27 @@ static void BROReadURI(BROstate *st, char const *repo) {
 // row, applying side-aware bg colours.  Cursor positioning is omitted
 // — output is plain stream-of-bytes suitable for a pipe.
 
-static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
-    sane(hunks != NULL);
+static ok64 BROPlain(hunkcs hunks) {
+    sane(!$empty(hunks));
     call(BROScreenInit);
+    u32 nhunks = (u32)$len(hunks);
 
     if (!BRO_COLOR) {
         // No colours: emit hunk text verbatim with a `--- uri ---` title
         // per hunk.  Same as before — plain --no-color dump.
         for (u32 h = 0; h < nhunks; h++) {
             u8bReset(bro_scr);
-            if (hunk_has_title(&hunks[h])) {
+            if (hunk_has_title(&hunks[0][h])) {
                 char dtitle[HUNK_TITLE_MAX + 1];
-                int dtlen = bro_format_title(dtitle, sizeof(dtitle), &hunks[h]);
+                int dtlen = bro_format_title(dtitle, sizeof(dtitle), &hunks[0][h]);
                 u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
                 u8bFeed(bro_scr, dts);
                 u8sFeed1(u8bIdle(bro_scr), '\n');
             }
-            if (!$empty(hunks[h].text)) {
-                u8bFeed(bro_scr, hunks[h].text);
-                u32 tlen = (u32)$len(hunks[h].text);
-                if (tlen > 0 && hunks[h].text[0][tlen - 1] != '\n')
+            if (!$empty(hunks[0][h].text)) {
+                u8bFeed(bro_scr, hunks[0][h].text);
+                u32 tlen = (u32)$len(hunks[0][h].text);
+                if (tlen > 0 && hunks[0][h].text[0][tlen - 1] != '\n')
                     u8sFeed1(u8bIdle(bro_scr), '\n');
             }
             BROScreenFlush();
@@ -1832,19 +1890,19 @@ static ok64 BROPlain(hunk const *hunks, u32 nhunks) {
     // lines and emits two passes) and render each row with the same
     // side+pass→bg mapping the interactive pager uses.
     u32 cols = 200;  // generous; soft-wrap rarely needed in pipe mode
-    u32 nlines_max = BROCountLines(hunks, nhunks, cols);
+    u32 nlines_max = BROCountLines(hunks, cols);
     if (nlines_max == 0) done;
 
     Brange32 linesbuf = {};
-    if (range32bAlloc(linesbuf, nlines_max) != OK) fail(NOROOM);
+    call(range32bAlloc, linesbuf, nlines_max);
     range32 *lines = linesbuf[0];
-    u32 nlines = BROAppendLines(lines, 0, nlines_max,
-                                hunks, 0, nhunks, cols);
+    BROAppendLines(linesbuf, hunks, 0, cols);
+    u32 nlines = (u32)range32bDataLen(linesbuf);
 
     for (u32 vi = 0; vi < nlines; vi++) {
         u8bReset(bro_scr);
         range32 const *ln = &lines[vi];
-        hunk const *hk = &hunks[ln->lo];
+        hunk const *hk = &hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
             char dtitle[HUNK_TITLE_MAX + 1];
@@ -1938,7 +1996,7 @@ static b8 bro_has_substr(u8csc word, u8csc ndl) {
     if ($len(ndl) > $len(word)) return NO;
     u64 limit = $len(word) - $len(ndl) + 1;
     for (u64 i = 0; i < limit; i++) {
-        u8cs hay = {word[0] + i, word[0] + i + $len(ndl)};
+        a$part(u8c, hay, word, i, $len(ndl));
         if ($eq(hay, ndl)) return YES;
     }
     return NO;
@@ -1957,12 +2015,12 @@ static int bro_scan_hunk(hunkc const *hk, u8csc ndl,
         u32 wlen = i - ws;
         if (wlen < 2 || wlen >= 64) continue;
         if ((u32)$len(ndl) > wlen) continue;
-        u8cs word_s = {txt + ws, txt + ws + wlen};
+        a$part(u8c, word_s, hk->text, ws, wlen);
         if (!$empty(ndl)) {
             if (substr) {
                 if (!bro_has_substr(word_s, ndl)) continue;
             } else {
-                u8cs pfx = {word_s[0], word_s[0] + $len(ndl)};
+                a_head(u8c, pfx, word_s, $len(ndl));
                 if (!$eq(pfx, ndl)) continue;
             }
         }
@@ -2046,11 +2104,11 @@ static void BROReadSpot(BROstate *st, char *buf, int bufsz,
                 wstart--;
             int pfxlen = len - wstart;
             if (!matches_valid) {
-                u32 sh = (st->scroll < st->nlines)
-                       ? st->lines[st->scroll].lo : 0;
+                u32 sh = (st->scroll < bro_nlines(st))
+                       ? bro_lines(st)[st->scroll].lo : 0;
                 u8cs wndl = {(u8cp)buf + wstart,
                              (u8cp)buf + wstart + pfxlen};
-                nmatch = bro_collect_words(st->hunks, st->nhunks,
+                nmatch = bro_collect_words(st->hunks[0], (u32)$len(st->hunks),
                                            sh, wndl, matches, 256);
                 match_idx = -1;
                 matches_valid = YES;
@@ -2120,47 +2178,15 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
     if (mo2 != OK) { close(pfd[0]); waitpid(pid, NULL, 0); fail(mo2); }
 
     for (;;) {
-        // Read into idle space
         size_t space = u8bIdleLen(pdbuf);
         if (space == 0) {
-            ok64 ro = u8bReMap(pdbuf, u8bSize(pdbuf) * 2);
-            if (ro != OK) break;
+            if (u8bReMap(pdbuf, u8bSize(pdbuf) * 2) != OK) break;
             space = u8bIdleLen(pdbuf);
         }
         ssize_t nr = read(pfd[0], u8bIdleHead(pdbuf), space);
         if (nr <= 0) break;
         u8bFed(pdbuf, (size_t)nr);
-
-        // Drain complete TLV records
-        a_dup(u8 const, from, u8bDataC(pdbuf));
-        while (!$empty(from) && bro_nhunks < BRO_MAX_HUNKS) {
-            a_dup(u8 const, save, from);
-            hunk tlv_hk = {};
-            ok64 o = HUNKu8sDrain(from, &tlv_hk);
-            if (o != OK) { $mv(from, save); break; }
-            hunk *hk = &bro_hunks[bro_nhunks];
-            *hk = (hunk){};
-            if (!$empty(tlv_hk.uri)) {
-                u8p up = BROArenaWrite(tlv_hk.uri[0], (size_t)$len(tlv_hk.uri));
-                if (up) { hk->uri[0] = up; hk->uri[1] = u8bIdleHead(bro_arena); }
-            }
-            if (!$empty(tlv_hk.text)) {
-                u8p xp = BROArenaWrite(tlv_hk.text[0], (size_t)$len(tlv_hk.text));
-                if (xp) { hk->text[0] = xp; hk->text[1] = u8bIdleHead(bro_arena); }
-            }
-            if (!$empty(tlv_hk.toks)) {
-                size_t tn = (size_t)((u8cp)tlv_hk.toks[1] - (u8cp)tlv_hk.toks[0]);
-                u8p tkp = BROArenaWrite(tlv_hk.toks[0], tn);
-                if (tkp) { hk->toks[0] = (u32cp)tkp; hk->toks[1] = (u32cp)u8bIdleHead(bro_arena); }
-            }
-            hunkbFed(bro_state->hunks, 1);
-        }
-        // Compact: shift consumed data out
-        size_t consumed = u8bDataLen(pdbuf) - $len(from);
-        if (consumed > 0) {
-            u8bUsed(pdbuf, consumed);
-            u8bShift(pdbuf, 0);
-        }
+        bro_drain_tlv(pdbuf);
     }
     u8bUnMap(pdbuf);
 
@@ -2176,24 +2202,21 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
         // Roll IDLE back to the snapshot taken before this fork
         size_t added = (size_t)(u8bIdleHead(bro_arena) - arena_save);
         if (added > 0) u8bShed(bro_arena, added);
-        snprintf(st->flash, sizeof(st->flash), "spot: no results");
+        bro_flash(st, "spot: no results");
         fail(FAILSANITY);
     }
 
     // Save current view and switch to spot results
     int idx = st->nsaves;
     BROsave *sv = &st->saves[idx];
-    sv->hunks = st->hunks;
-    sv->nhunks = st->nhunks;
-    sv->lines = st->lines;
+    $mv(sv->hunks, st->hunks);
     range32bHandOver(sv->linesbuf, st->linesbuf);
-    sv->nlines = st->nlines;
     sv->scroll = st->scroll;
 
-    st->hunks = bro_hunks + hunks_save;
-    st->nhunks = new_nhunks;
+    st->hunks[0] = bro_hunks + hunks_save;
+    st->hunks[1] = bro_hunks + hunks_save + new_nhunks;
     call(BROBuildIndex, st);
-    st->scroll = (st->nlines > 1) ? 1 : 0;
+    st->scroll = (bro_nlines(st) > 1) ? 1 : 0;
     st->nsaves = idx + 1;
     done;
 }
@@ -2217,8 +2240,8 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         return BRO_KEY_CHANGED;
     }
     if (ch == ' ' || ch == 'f') {
-        if (st->scroll + page < st->nlines) st->scroll += page;
-        else if (st->nlines > page) st->scroll = st->nlines - page;
+        if (st->scroll + page < bro_nlines(st)) st->scroll += page;
+        else if (bro_nlines(st) > page) st->scroll = bro_nlines(st) - page;
         return BRO_KEY_CHANGED;
     }
     if (ch == 'b') {
@@ -2227,7 +2250,7 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         return BRO_KEY_CHANGED;
     }
     if (ch == 'j') {
-        if (st->scroll + 1 < st->nlines) { st->scroll++; return BRO_KEY_CHANGED; }
+        if (st->scroll + 1 < bro_nlines(st)) { st->scroll++; return BRO_KEY_CHANGED; }
         return BRO_KEY_NONE;
     }
     if (ch == 'k') {
@@ -2236,13 +2259,13 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
     }
     if (ch == 'g') { st->scroll = 0; return BRO_KEY_CHANGED; }
     if (ch == 'G') {
-        st->scroll = (st->nlines > page) ? st->nlines - page : 0;
+        st->scroll = (bro_nlines(st) > page) ? bro_nlines(st) - page : 0;
         return BRO_KEY_CHANGED;
     }
     if (ch == ':' || ch == '#') { BROReadURI(st, repo); return BRO_KEY_CHANGED; }
     if (ch == '/') {
         BROReadSearch(st);
-        if (st->search_len > 0) {
+        if (u8bDataLen(st->search) > 0) {
             u32 f = BROSearchNext(st, st->scroll, +1);
             if (f != UINT32_MAX) st->scroll = f;
         }
@@ -2260,8 +2283,8 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
     }
     if (ch == 'd') {
         u32 half = page / 2;
-        if (st->scroll + half < st->nlines) st->scroll += half;
-        else if (st->nlines > page) st->scroll = st->nlines - page;
+        if (st->scroll + half < bro_nlines(st)) st->scroll += half;
+        else if (bro_nlines(st) > page) st->scroll = bro_nlines(st) - page;
         return BRO_KEY_CHANGED;
     }
     if (ch == 'u') {
@@ -2271,20 +2294,20 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         return BRO_KEY_CHANGED;
     }
     if (ch == ']' || ch == '}') {
-        u32 nx = BROHunkNextLine(st->lines, st->nlines, st->scroll);
+        u32 nx = BROHunkNextLine(range32bDataC(st->linesbuf), st->scroll);
         if (nx != BRO_NONE) { st->scroll = nx; return BRO_KEY_CHANGED; }
         return BRO_KEY_NONE;
     }
     if (ch == '[' || ch == '{') {
-        u32 pv = BROHunkPrevLine(st->lines, st->nlines, st->scroll);
+        u32 pv = BROHunkPrevLine(range32bDataC(st->linesbuf), st->scroll);
         if (pv != BRO_NONE) { st->scroll = pv; return BRO_KEY_CHANGED; }
         return BRO_KEY_NONE;
     }
     if (ch == ')' || ch == '(') {
         u32 mid = st->scroll + (page > 0 ? (page - 1) / 2 : 0);
         u32 hl = (ch == ')')
-            ? BROHiliNextLine(st->hunks, st->nhunks, st->lines, st->nlines, mid)
-            : BROHiliPrevLine(st->hunks, st->nhunks, st->lines, st->nlines, mid);
+            ? BROHiliNextLine(st->hunks, range32bDataC(st->linesbuf), mid)
+            : BROHiliPrevLine(st->hunks, range32bDataC(st->linesbuf), mid);
         if (hl != BRO_NONE) { BROScrollCenter(st, hl); return BRO_KEY_CHANGED; }
         return BRO_KEY_NONE;
     }
@@ -2294,55 +2317,48 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         // path is already a bare name (no '/').
         u8cs dir = {};
         u8cs loc_path = {};
-        if (st->scroll < st->nlines) {
-            u32 hi = st->lines[st->scroll].lo;
+        if (st->scroll < bro_nlines(st)) {
+            u32 hi = bro_lines(st)[st->scroll].lo;
             BROloc loc = {};
-            BROHunkLoc(&loc, &st->hunks[hi]);
+            BROHunkLoc(&loc, &st->hunks[0][hi]);
             if (!$empty(loc.path)) $mv(loc_path, loc.path);
         }
         if (!$empty(loc_path)) {
             // Peel a trailing '/' (dir URI like "bro/") so we look at
             // the parent of the dir, not the dir itself.
             if (*$last(loc_path) == '/') u8csShed1(loc_path);
-            u8cp sl = loc_path[1];
-            while (sl > loc_path[0] && *(sl - 1) != '/') sl--;
-            if (sl > loc_path[0]) {
-                dir[0] = loc_path[0];
-                dir[1] = sl - 1;       // exclude the '/'
-            }
+            PATHu8sDir(dir, loc_path);
         }
-        if ($empty(dir)) { dir[0] = (u8cp)"."; dir[1] = (u8cp)"." + 1; }
+        if ($empty(dir)) {
+            u8cs dot = u8slit(".");
+            $mv(dir, dot);
+        }
         if (st->nsaves >= BRO_MAX_VIEWS) {
-            snprintf(st->flash, sizeof(st->flash), "view stack full");
+            bro_flash(st, "view stack full");
             return BRO_KEY_NONE;
         }
         int idx = st->nsaves;
         BROsave *sv = &st->saves[idx];
-        sv->hunks = st->hunks;
-        sv->nhunks = st->nhunks;
-        sv->lines = st->lines;
+        $mv(sv->hunks, st->hunks);
         range32bHandOver(sv->linesbuf, st->linesbuf);
-        sv->nlines = st->nlines;
         sv->scroll = st->scroll;
         st->files[idx] = (BROfileview){};
 
         u32 save_nh = bro_nhunks;
         ok64 lo = BROListDir(dir);
         if (lo != OK) {
-            snprintf(st->flash, sizeof(st->flash),
-                     "list dir " U8SFMT ": %s",
-                     u8sFmt(dir), ok64str(lo));
+            bro_flash(st, "list dir " U8SFMT ": %s",
+                      u8sFmt(dir), ok64str(lo));
             return BRO_KEY_NONE;
         }
         if (bro_nhunks <= save_nh) {
-            snprintf(st->flash, sizeof(st->flash),
-                     "empty: " U8SFMT, u8sFmt(dir));
+            bro_flash(st, "empty: " U8SFMT, u8sFmt(dir));
             return BRO_KEY_NONE;
         }
-        st->hunks = bro_hunks + save_nh;
-        st->nhunks = bro_nhunks - save_nh;
+        st->hunks[0] = bro_hunks + save_nh;
+        st->hunks[1] = bro_hunks + bro_nhunks;
         BROBuildIndex(st);
-        st->scroll = (st->nlines > 1) ? 1 : 0;
+        st->scroll = (bro_nlines(st) > 1) ? 1 : 0;
         st->nsaves = idx + 1;
         return BRO_KEY_CHANGED;
     }
@@ -2356,40 +2372,37 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         // Save source-line anchor before rebuilding the index.
         u32 anchor_h = 0, anchor_off = 0;
         b8 have_anchor = NO;
-        if (st->scroll < st->nlines &&
-            st->lines[st->scroll].hi != BRO_TITLE_LINE) {
-            anchor_h = st->lines[st->scroll].lo;
-            anchor_off = bro_line_off(&st->lines[st->scroll]);
+        if (st->scroll < bro_nlines(st) &&
+            bro_lines(st)[st->scroll].hi != BRO_TITLE_LINE) {
+            anchor_h = bro_lines(st)[st->scroll].lo;
+            anchor_off = bro_line_off(&bro_lines(st)[st->scroll]);
             have_anchor = YES;
         }
         st->wrap = !st->wrap;
         u32 cols = bro_wrap_cols(st);
         if (st->fixed_lines) {
             // Rewrite in place; the fixed capacity was set at open.
-            u32 cap = (u32)range32bLen(st->linesbuf);
-            st->nlines = BROAppendLines(st->lines, 0, cap,
-                                        st->hunks, 0, st->nhunks, cols);
+            range32bReset(st->linesbuf);
+            BROAppendLines(st->linesbuf, st->hunks, 0, cols);
         } else {
             range32bFree(st->linesbuf);
             if (BROBuildIndex(st) != OK) {
-                snprintf(st->flash, sizeof(st->flash),
-                         "wrap: rebuild failed");
+                bro_flash(st, "wrap: rebuild failed");
                 return BRO_KEY_CHANGED;
             }
         }
         if (have_anchor) {
-            u32 ln = bro_line_for_off(st->lines, st->nlines,
+            u32 ln = bro_line_for_off(range32bDataC(st->linesbuf),
                                       anchor_h, anchor_off);
             if (ln != BRO_NONE) st->scroll = ln;
         }
-        snprintf(st->flash, sizeof(st->flash),
-                 "wrap: %s", st->wrap ? "on" : "off");
+        bro_flash(st, "wrap: %s", st->wrap ? "on" : "off");
         return BRO_KEY_CHANGED;
     }
     if (ch == '\'') {
         // Local token search (GURI-consistent alias for /)
         BROReadSearch(st);
-        if (st->search_len > 0) {
+        if (u8bDataLen(st->search) > 0) {
             u32 f = BROSearchNext(st, st->scroll, +1);
             if (f != UINT32_MAX) st->scroll = f;
         }
@@ -2429,14 +2442,14 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
                         if (st->scroll >= step) st->scroll -= step;
                         else st->scroll = 0;
                     } else if (mev.button == MAUS_DOWN) {
-                        if (st->scroll + step < st->nlines) st->scroll += step;
-                        else if (st->nlines > page) st->scroll = st->nlines - page;
+                        if (st->scroll + step < bro_nlines(st)) st->scroll += step;
+                        else if (bro_nlines(st) > page) st->scroll = bro_nlines(st) - page;
                     }
                     return BRO_KEY_CHANGED;
                 }
                 if (mev.type == MAUS_PRESS && mev.button == MAUS_LEFT) {
                     u32 line = st->scroll + mev.row - 1;
-                    if (line < st->nlines) {
+                    if (line < bro_nlines(st)) {
                         BROTryOpen(st, line, repo);
                         return BRO_KEY_CHANGED;
                     }
@@ -2446,7 +2459,7 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         }
         switch (seq[1]) {
         case 'A': if (st->scroll > 0) st->scroll--; return BRO_KEY_CHANGED;
-        case 'B': if (st->scroll + 1 < st->nlines) st->scroll++; return BRO_KEY_CHANGED;
+        case 'B': if (st->scroll + 1 < bro_nlines(st)) st->scroll++; return BRO_KEY_CHANGED;
         case '5':
             (void)read(st->tty_fd, &seq[0], 1);
             if (st->scroll >= page) st->scroll -= page;
@@ -2454,12 +2467,12 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
             return BRO_KEY_CHANGED;
         case '6':
             (void)read(st->tty_fd, &seq[0], 1);
-            if (st->scroll + page < st->nlines) st->scroll += page;
-            else if (st->nlines > page) st->scroll = st->nlines - page;
+            if (st->scroll + page < bro_nlines(st)) st->scroll += page;
+            else if (bro_nlines(st) > page) st->scroll = bro_nlines(st) - page;
             return BRO_KEY_CHANGED;
         case 'H': st->scroll = 0; return BRO_KEY_CHANGED;
         case 'F':
-            st->scroll = (st->nlines > page) ? st->nlines - page : 0;
+            st->scroll = (bro_nlines(st) > page) ? bro_nlines(st) - page : 0;
             return BRO_KEY_CHANGED;
         }
     }
@@ -2468,18 +2481,19 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
 
 // --- Main entry ---
 
-ok64 BRORun(hunk const *hunks, u32 nhunks) {
-    sane(hunks != NULL && nhunks > 0);
+ok64 BRORun(hunkcs hunks) {
+    sane(!$empty(hunks));
 
     // Fallback: plain output when stdout is not a terminal
     if (!isatty(STDOUT_FILENO))
-        return BROPlain(hunks, nhunks);
+        return BROPlain(hunks);
 
     BROstate st = {};
     st.tty_fd = -1;
     st.wrap = YES;
-    st.hunks = hunks;
-    st.nhunks = nhunks;
+    $mv(st.hunks, hunks);
+    call(u8bAlloc, st.search, BRO_SEARCH_MAX);
+    call(u8bAlloc, st.flash,  BRO_FLASH_MAX);
 
     //  Resolve repo root for file navigation — reuse bro's home if set,
     //  otherwise walk up from cwd.  a_path materialises a stack buffer
@@ -2497,9 +2511,15 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
     char const *repo_cstr = (char const *)u8bDataHead(repo);
 
     BROGetSize(&st);
-    call(BROBuildIndex, &st);
-    call(BROScreenInit);
-    call(BRORawEnable, &st);
+    try(BROBuildIndex, &st);
+    then try(BROScreenInit);
+    then try(BRORawEnable, &st);
+    nedo {
+        range32bFree(st.linesbuf);
+        u8bFree(st.search);
+        u8bFree(st.flash);
+        done;
+    }
 
     // Install SIGWINCH handler
     struct sigaction sa = {}, old_sa = {};
@@ -2518,18 +2538,18 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
     // on that line. Otherwise skip the title.
     {
         BROloc loc0 = {};
-        if (nhunks > 0) BROHunkLoc(&loc0, &hunks[0]);
-        if (loc0.line > 0 && st.nlines > 1) {
+        if (!$empty(hunks)) BROHunkLoc(&loc0, hunks[0]);
+        if (loc0.line > 0 && bro_nlines(&st) > 1) {
             u32 file_ln = 0, best = 1;
-            for (u32 i = 0; i < st.nlines; i++) {
-                if (!bro_is_source_start(st.hunks, st.lines, st.nlines, i))
+            for (u32 i = 0; i < bro_nlines(&st); i++) {
+                if (!bro_is_source_start(st.hunks, range32bDataC(st.linesbuf), i))
                     continue;
                 file_ln++;
                 if (file_ln == loc0.line) { best = i; break; }
                 best = i;
             }
             BROScrollCenter(&st, best);
-        } else if (st.nlines > 1) {
+        } else if (bro_nlines(&st) > 1) {
             st.scroll = 1;
         }
     }
@@ -2543,16 +2563,16 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
             // Save source-line anchor before the index is rebuilt.
             u32 anchor_h = 0, anchor_off = 0;
             b8 have_anchor = NO;
-            if (st.scroll < st.nlines &&
-                st.lines[st.scroll].hi != BRO_TITLE_LINE) {
-                anchor_h = st.lines[st.scroll].lo;
-                anchor_off = st.lines[st.scroll].hi;
+            if (st.scroll < bro_nlines(&st) &&
+                bro_lines(&st)[st.scroll].hi != BRO_TITLE_LINE) {
+                anchor_h = bro_lines(&st)[st.scroll].lo;
+                anchor_off = bro_lines(&st)[st.scroll].hi;
                 have_anchor = YES;
             }
             BROGetSize(&st);
             range32bFree(st.linesbuf);
             if (BROBuildIndex(&st) == OK && have_anchor) {
-                u32 ln = bro_line_for_off(st.lines, st.nlines,
+                u32 ln = bro_line_for_off(range32bDataC(st.linesbuf),
                                           anchor_h, anchor_off);
                 if (ln != BRO_NONE) st.scroll = ln;
             }
@@ -2575,6 +2595,8 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
     // Free any stacked file views
     while (st.nsaves > 0) BROBack(&st);
     range32bFree(st.linesbuf);
+    u8bFree(st.search);
+    u8bFree(st.flash);
 
     done;
 }
@@ -2584,23 +2606,23 @@ ok64 BRORun(hunk const *hunks, u32 nhunks) {
 #define PIPE_RDBUF_INIT (1UL << 22)  // 4MB initial read buffer
 #define PIPE_MAX_LINES  (1UL << 20)  // 1M lines max
 
-// Append lines for hunks [from..nhunks) into lines[nlines..maxlines).
-// One entry per display row: title separator, source-line start, or
-// a wrap continuation of a long source line (`cols` codepoints each).
-// Returns new total nlines.
-u32 BROAppendLines(range32 *lines, u32 nlines, u32 maxlines,
-                   hunkc const *hunks, u32 from, u32 nhunks, u32 cols) {
+// Append lines for `hunks` into `lines`'s idle.  One entry per
+// display row: title separator, source-line start, or a wrap
+// continuation of a long source line (`cols` codepoints each).
+// `from` is the absolute hunk index assigned to the first entry of
+// `hunks`; subsequent entries get from+1, from+2, ...  Silently caps
+// on idle exhaustion.  Caller reads new count via range32bDataLen().
+void BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols) {
     if (cols == 0) cols = 1;
-    u32 li = nlines;
-    for (u32 h = from; h < nhunks; h++) {
-        if (hunk_has_title(&hunks[h])) {
-            if (li < maxlines)
-                lines[li++] = (range32){h, BRO_TITLE_LINE};
-        }
-        if ($empty(hunks[h].text)) continue;
-        li = bro_hunk_append(lines, li, maxlines, &hunks[h], h, cols);
+    u32 nhunks = (u32)$len(hunks);
+    for (u32 i = 0; i < nhunks; i++) {
+        u32 h = from + i;
+        hunkc const *hk = &hunks[0][i];
+        if (hunk_has_title(hk))
+            range32bFeed1(lines, (range32){h, BRO_TITLE_LINE});
+        if ($empty(hk->text)) continue;
+        bro_hunk_append(lines, hk, h, cols);
     }
-    return li;
 }
 
 // Drain all TLV records from `pipefd` into `bro_hunks` then return.
@@ -2615,15 +2637,7 @@ static ok64 bro_pipe_drain_all(int pipefd) {
     for (;;) {
         size_t space = u8bIdleLen(rdbuf);
         if (space == 0) {
-            // Grow buffer.
-            size_t cur = u8bLen(rdbuf);
-            size_t nxt = cur * 2;
-            Bu8 grow = {};
-            if (u8bMap(grow, nxt) != OK) break;
-            call(u8bFeed, grow, u8bDataC(rdbuf));
-            u8bUnMap(rdbuf);
-            rdbuf[0] = grow[0]; rdbuf[1] = grow[1];
-            rdbuf[2] = grow[2]; rdbuf[3] = grow[3];
+            if (u8bReMap(rdbuf, u8bSize(rdbuf) * 2) != OK) break;
             space = u8bIdleLen(rdbuf);
         }
         ssize_t nr = read(pipefd, u8bIdleHead(rdbuf), space);
@@ -2631,32 +2645,7 @@ static ok64 bro_pipe_drain_all(int pipefd) {
         u8bFed(rdbuf, (size_t)nr);
     }
 
-    a_dup(u8 const, from, u8bDataC(rdbuf));
-    while (!$empty(from) && bro_nhunks < BRO_MAX_HUNKS) {
-        a_dup(u8 const, save, from);
-        hunk tlv_hk = {};
-        ok64 o = HUNKu8sDrain(from, &tlv_hk);
-        if (o != OK) { $mv(from, save); break; }
-        hunk *hk = &bro_hunks[bro_nhunks];
-        *hk = (hunk){};
-        if (!$empty(tlv_hk.uri)) {
-            u8p up = BROArenaWrite(tlv_hk.uri[0], (size_t)$len(tlv_hk.uri));
-            if (up) { hk->uri[0] = up; hk->uri[1] = u8bIdleHead(bro_arena); }
-        }
-        if (!$empty(tlv_hk.text)) {
-            u8p xp = BROArenaWrite(tlv_hk.text[0], (size_t)$len(tlv_hk.text));
-            if (xp) { hk->text[0] = xp; hk->text[1] = u8bIdleHead(bro_arena); }
-        }
-        if (!$empty(tlv_hk.toks)) {
-            size_t tn = (size_t)((u8cp)tlv_hk.toks[1] - (u8cp)tlv_hk.toks[0]);
-            u8p tkp = BROArenaWrite(tlv_hk.toks[0], tn);
-            if (tkp) {
-                hk->toks[0] = (u32cp)tkp;
-                hk->toks[1] = (u32cp)u8bIdleHead(bro_arena);
-            }
-        }
-        hunkbFed(bro_state->hunks, 1);
-    }
+    bro_drain_tlv(rdbuf);
     u8bUnMap(rdbuf);
     done;
 }
@@ -2669,7 +2658,7 @@ ok64 BROPipeRun(int pipefd) {
     // no interactive pager, but the renderer's colours are preserved.
     if (!isatty(STDOUT_FILENO)) {
         call(bro_pipe_drain_all, pipefd);
-        if (bro_nhunks > 0) call(BROPlain, bro_hunks, bro_nhunks);
+        if (bro_nhunks > 0) call(BROPlain, hunkbDataC(bro_state->hunks));
         BROArenaCleanup();
         done;
     }
@@ -2709,23 +2698,24 @@ ok64 BROPipeRun(int pipefd) {
     st.tty_fd = -1;
     st.wrap = YES;
     st.fixed_lines = YES;
-    ok64 lo = range32bAlloc(st.linesbuf, PIPE_MAX_LINES);
-    if (lo != OK) {
-        u8bUnMap(rdbuf);
-        return NOROOM;
-    }
-    st.lines = st.linesbuf[0];
-    st.hunks = bro_hunks;
-    st.nhunks = 0;
+    try(u8bAlloc, st.search, BRO_SEARCH_MAX);
+    nedo { u8bUnMap(rdbuf); done; }
+    try(u8bAlloc, st.flash,  BRO_FLASH_MAX);
+    nedo { u8bFree(st.search); u8bUnMap(rdbuf); done; }
+    try(range32bAlloc, st.linesbuf, PIPE_MAX_LINES);
+    nedo { u8bFree(st.flash); u8bFree(st.search); u8bUnMap(rdbuf); done; }
+    st.hunks[0] = st.hunks[1] = bro_hunks;
 
     BROGetSize(&st);
-    st.nlines = 0;
 
-    call(BROScreenInit);
-    if (BRORawEnable(&st) != OK) {
-        u8bUnMap(rdbuf);
+    try(BROScreenInit);
+    then try(BRORawEnable, &st);
+    nedo {
         range32bFree(st.linesbuf);
-        return FAILSANITY;
+        u8bFree(st.flash);
+        u8bFree(st.search);
+        u8bUnMap(rdbuf);
+        done;
     }
 
     struct sigaction sa = {}, old_sa = {};
@@ -2753,23 +2743,22 @@ ok64 BROPipeRun(int pipefd) {
             // Preserve source-line anchor across reindex.
             u32 anchor_h = 0, anchor_off = 0;
             b8 have_anchor = NO;
-            if (st.scroll < st.nlines &&
-                st.lines[st.scroll].hi != BRO_TITLE_LINE) {
-                anchor_h = st.lines[st.scroll].lo;
-                anchor_off = st.lines[st.scroll].hi;
+            if (st.scroll < bro_nlines(&st) &&
+                bro_lines(&st)[st.scroll].hi != BRO_TITLE_LINE) {
+                anchor_h = bro_lines(&st)[st.scroll].lo;
+                anchor_off = bro_lines(&st)[st.scroll].hi;
                 have_anchor = YES;
             }
             BROGetSize(&st);
-            st.nlines = BROAppendLines(st.lines, 0, PIPE_MAX_LINES,
-                                        bro_hunks, 0, bro_nhunks,
-                                        bro_wrap_cols(&st));
+            range32bReset(st.linesbuf);
+            BROAppendLines(st.linesbuf, st.hunks, 0, bro_wrap_cols(&st));
             indexed_nhunks = bro_nhunks;
             if (have_anchor) {
-                u32 ln = bro_line_for_off(st.lines, st.nlines,
+                u32 ln = bro_line_for_off(range32bDataC(st.linesbuf),
                                           anchor_h, anchor_off);
                 if (ln != BRO_NONE) st.scroll = ln;
             }
-            if (st.nlines > 0) BRORender(&st);
+            if (bro_nlines(&st) > 0) BRORender(&st);
         }
 
         struct pollfd fds[2];
@@ -2804,67 +2793,11 @@ ok64 BROPipeRun(int pipefd) {
                 break;  // EAGAIN or EOF
             }
 
-            // Drain complete TLV records
-            a_dup(u8 const, from, u8bDataC(rdbuf));
-            while (!$empty(from) && bro_nhunks < BRO_MAX_HUNKS) {
-                a_dup(u8 const, save, from);
-                hunk tlv_hk = {};
-                ok64 o = HUNKu8sDrain(from, &tlv_hk);
-                if (o != OK) {
-                    $mv(from, save);
-                    // Buffer full with incomplete record — grow
-                    if ($len(from) >= u8bIdleLen(rdbuf)) {
-                        // Compact first, then grow
-                        size_t eaten = u8bDataLen(rdbuf) - $len(from);
-                        if (eaten > 0) {
-                            u8bUsed(rdbuf, eaten);
-                            u8bShift(rdbuf, 0);
-                        }
-                        ok64 ro = u8bReMap(rdbuf, u8bSize(rdbuf) * 2);
-                        if (ro == OK) {
-                            $mv(from, u8bDataC(rdbuf));
-                            continue;  // retry drain
-                        }
-                    }
-                    break;
-                }
-                // Copy fields into arena
-                hunk *hk = &bro_hunks[bro_nhunks];
-                *hk = (hunk){};
-                if (!$empty(tlv_hk.uri)) {
-                    u8p up = BROArenaWrite(tlv_hk.uri[0],
-                                            (size_t)$len(tlv_hk.uri));
-                    if (up) {
-                        hk->uri[0] = up;
-                        hk->uri[1] = u8bIdleHead(bro_arena);
-                    }
-                }
-                if (!$empty(tlv_hk.text)) {
-                    u8p xp = BROArenaWrite(tlv_hk.text[0],
-                                            (size_t)$len(tlv_hk.text));
-                    if (xp) {
-                        hk->text[0] = xp;
-                        hk->text[1] = u8bIdleHead(bro_arena);
-                    }
-                }
-                if (!$empty(tlv_hk.toks)) {
-                    u8p tkp = BROArenaWrite(tlv_hk.toks[0],
-                                  (size_t)((u8cp)tlv_hk.toks[1] -
-                                           (u8cp)tlv_hk.toks[0]));
-                    if (tkp) {
-                        hk->toks[0] = (u32cp)tkp;
-                        hk->toks[1] = (u32cp)u8bIdleHead(bro_arena);
-                    }
-                }
-                hunkbFed(bro_state->hunks, 1);
-            }
-
-            // Compact: shift remaining to buffer start
-            size_t consumed = u8bDataLen(rdbuf) - $len(from);
-            if (consumed > 0) {
-                u8bUsed(rdbuf, consumed);
-                u8bShift(rdbuf, 0);
-            }
+            bro_drain_tlv(rdbuf);
+            // If a single TLV record fills rdbuf entirely without
+            // yielding, grow so the next read can complete it.
+            if (u8bIdleLen(rdbuf) == 0 && u8bDataLen(rdbuf) > 0)
+                (void)u8bReMap(rdbuf, u8bSize(rdbuf) * 2);
         }
 
         // Handle keyboard input
@@ -2881,11 +2814,11 @@ ok64 BROPipeRun(int pipefd) {
 
         // Extend line index for any new hunks
         if (bro_nhunks > indexed_nhunks) {
-            st.nlines = BROAppendLines(st.lines, st.nlines,
-                                         PIPE_MAX_LINES, bro_hunks,
-                                         indexed_nhunks, bro_nhunks,
-                                         bro_wrap_cols(&st));
-            st.nhunks = bro_nhunks;
+            hunkcs new_hunks = {bro_hunks + indexed_nhunks,
+                                bro_hunks + bro_nhunks};
+            BROAppendLines(st.linesbuf, new_hunks, indexed_nhunks,
+                            bro_wrap_cols(&st));
+            st.hunks[1] = bro_hunks + bro_nhunks;
             indexed_nhunks = bro_nhunks;
         }
         // Render whenever new hunks have been indexed.  The 16ms poll
@@ -2894,15 +2827,15 @@ ok64 BROPipeRun(int pipefd) {
         if (indexed_nhunks > rendered_nhunks) {
             // Skip the first title line on the first render so the
             // user lands on actual content, not the title separator.
-            if (rendered_nhunks == 0 && st.nlines > 1) st.scroll = 1;
+            if (rendered_nhunks == 0 && bro_nlines(&st) > 1) st.scroll = 1;
             changed = YES;
             rendered_nhunks = indexed_nhunks;
         }
-        if ((changed || key_pressed) && st.nlines > 0)
+        if ((changed || key_pressed) && bro_nlines(&st) > 0)
             BRORender(&st);
 
         // Pipe done, no results — show "nothing!" and wait for quit
-        if (pipe_eof && st.nlines == 0 && !quit) {
+        if (pipe_eof && bro_nlines(&st) == 0 && !quit) {
             u8bReset(bro_scr);
             scr_goto(st.rows, 1);
             scr_puts(TTY_INVERSE TTY_ERASE_LINE " nothing!" TTY_RESET);
@@ -2919,6 +2852,8 @@ ok64 BROPipeRun(int pipefd) {
 
     while (st.nsaves > 0) BROBack(&st);
     range32bFree(st.linesbuf);
+    u8bFree(st.flash);
+    u8bFree(st.search);
     u8bUnMap(rdbuf);
     BROArenaCleanup();
 

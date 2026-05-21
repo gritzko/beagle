@@ -15,11 +15,11 @@ static ok64 brocli_inner(cli *c) {
     call(HOMEOpenAt, &h, $path(c->repo), NO);
 
     bro b = {};
-    call(BROOpen, &b, &h, NO);
-    ok64 ret = BROExec(&b, c);
+    try(BROOpen, &b, &h, NO);
+    then try(BROExec, &b, c);
     BROClose(&b);
     HOMEClose(&h);
-    return ret;
+    done;
 }
 
 ok64 brocli() {

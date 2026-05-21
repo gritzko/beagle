@@ -32,11 +32,12 @@
                   (u32 const *)name##_data +                     \
                       sizeof(name##_data) / sizeof(u32)}
 
-// Same for a line index range32 array.
+// Same for a line index range32 array.  Yields `name` as a range32cs
+// slice over the data array.
 #define LINES(name, ...)                                              \
     static range32 const name##_data[] = {__VA_ARGS__};               \
-    range32 const *name = name##_data;                                \
-    u32 name##_n = sizeof(name##_data) / sizeof(range32)
+    range32cs name = {name##_data,                                    \
+                      name##_data + sizeof(name##_data) / sizeof(range32)}
 
 // --- Hunk navigation tests --------------------------------------------
 
@@ -66,33 +67,33 @@ ok64 NAVtest_hunk_layout() {
           {2, 6},
           {2, 12});
 
-    testeq(BROHunkCount(L, L_n), 3);
+    testeq(BROHunkCount(L), 3);
 
     // BROHunkIndexAt: 1-based, line 0 in hunk 1, etc.
-    testeq(BROHunkIndexAt(L, L_n, 0), 1);
-    testeq(BROHunkIndexAt(L, L_n, 2), 1);
-    testeq(BROHunkIndexAt(L, L_n, 3), 2);
-    testeq(BROHunkIndexAt(L, L_n, 4), 2);
-    testeq(BROHunkIndexAt(L, L_n, 5), 3);
-    testeq(BROHunkIndexAt(L, L_n, 8), 3);
+    testeq(BROHunkIndexAt(L, 0), 1);
+    testeq(BROHunkIndexAt(L, 2), 1);
+    testeq(BROHunkIndexAt(L, 3), 2);
+    testeq(BROHunkIndexAt(L, 4), 2);
+    testeq(BROHunkIndexAt(L, 5), 3);
+    testeq(BROHunkIndexAt(L, 8), 3);
 
     // BROHunkNextLine: from any line in hunk i, lands on first line of hunk i+1.
-    testeq(BROHunkNextLine(L, L_n, 0), 3);
-    testeq(BROHunkNextLine(L, L_n, 1), 3);
-    testeq(BROHunkNextLine(L, L_n, 2), 3);
-    testeq(BROHunkNextLine(L, L_n, 3), 5);
-    testeq(BROHunkNextLine(L, L_n, 4), 5);
-    testeq(BROHunkNextLine(L, L_n, 5), BRO_NONE);
-    testeq(BROHunkNextLine(L, L_n, 8), BRO_NONE);
+    testeq(BROHunkNextLine(L, 0), 3);
+    testeq(BROHunkNextLine(L, 1), 3);
+    testeq(BROHunkNextLine(L, 2), 3);
+    testeq(BROHunkNextLine(L, 3), 5);
+    testeq(BROHunkNextLine(L, 4), 5);
+    testeq(BROHunkNextLine(L, 5), BRO_NONE);
+    testeq(BROHunkNextLine(L, 8), BRO_NONE);
 
     // BROHunkPrevLine: vim [[ semantics — mid-hunk goes to start of current.
-    testeq(BROHunkPrevLine(L, L_n, 2), 0);  // mid-hunk-0 -> start of hunk 0
-    testeq(BROHunkPrevLine(L, L_n, 1), 0);  // mid-hunk-0 -> start of hunk 0
-    testeq(BROHunkPrevLine(L, L_n, 0), BRO_NONE);  // already at top
-    testeq(BROHunkPrevLine(L, L_n, 4), 3);  // mid-hunk-1 -> start of hunk 1
-    testeq(BROHunkPrevLine(L, L_n, 3), 0);  // at hunk 1 start -> hunk 0 start
-    testeq(BROHunkPrevLine(L, L_n, 8), 5);  // mid-hunk-2 -> start of hunk 2
-    testeq(BROHunkPrevLine(L, L_n, 5), 3);  // at hunk 2 start -> hunk 1 start
+    testeq(BROHunkPrevLine(L, 2), 0);  // mid-hunk-0 -> start of hunk 0
+    testeq(BROHunkPrevLine(L, 1), 0);  // mid-hunk-0 -> start of hunk 0
+    testeq(BROHunkPrevLine(L, 0), BRO_NONE);  // already at top
+    testeq(BROHunkPrevLine(L, 4), 3);  // mid-hunk-1 -> start of hunk 1
+    testeq(BROHunkPrevLine(L, 3), 0);  // at hunk 1 start -> hunk 0 start
+    testeq(BROHunkPrevLine(L, 8), 5);  // mid-hunk-2 -> start of hunk 2
+    testeq(BROHunkPrevLine(L, 5), 3);  // at hunk 2 start -> hunk 1 start
     done;
 }
 
@@ -106,23 +107,24 @@ ok64 NAVtest_hunk_no_title() {
           {2, BRO_TITLE_LINE},  // hunk 2, with title
           {2, 0});
 
-    testeq(BROHunkCount(L, L_n), 3);
-    testeq(BROHunkNextLine(L, L_n, 0), 2);
-    testeq(BROHunkNextLine(L, L_n, 1), 2);
-    testeq(BROHunkNextLine(L, L_n, 2), 3);  // lands on title of hunk 2
-    testeq(BROHunkPrevLine(L, L_n, 1), 0);
-    testeq(BROHunkPrevLine(L, L_n, 4), 3);
-    testeq(BROHunkPrevLine(L, L_n, 3), 2);
+    testeq(BROHunkCount(L), 3);
+    testeq(BROHunkNextLine(L, 0), 2);
+    testeq(BROHunkNextLine(L, 1), 2);
+    testeq(BROHunkNextLine(L, 2), 3);  // lands on title of hunk 2
+    testeq(BROHunkPrevLine(L, 1), 0);
+    testeq(BROHunkPrevLine(L, 4), 3);
+    testeq(BROHunkPrevLine(L, 3), 2);
     done;
 }
 
 // Empty index: all queries return BRO_NONE / 0.
 ok64 NAVtest_hunk_empty() {
     sane(1);
-    testeq(BROHunkCount(NULL, 0), 0);
-    testeq(BROHunkIndexAt(NULL, 0, 0), 0);
-    testeq(BROHunkNextLine(NULL, 0, 0), BRO_NONE);
-    testeq(BROHunkPrevLine(NULL, 0, 0), BRO_NONE);
+    range32cs empty = {NULL, NULL};
+    testeq(BROHunkCount(empty), 0);
+    testeq(BROHunkIndexAt(empty, 0), 0);
+    testeq(BROHunkNextLine(empty, 0), BRO_NONE);
+    testeq(BROHunkPrevLine(empty, 0), BRO_NONE);
     done;
 }
 
@@ -200,7 +202,9 @@ ok64 NAVtest_hili_layout() {
     hunks[1].toks[0]  = h1[0];
     hunks[1].toks[1]  = h1[1];
 
-    testeq(BROHiliCount(hunks, 2), 3);
+    hunkcs H = {hunks, hunks + 2};
+
+    testeq(BROHiliCount(H), 3);
 
     // Range start lines (in the global line index):
     //   range 0 (D in hunk 0): line 1
@@ -208,26 +212,26 @@ ok64 NAVtest_hili_layout() {
     //   range 2 (D in hunk 1): line 6
 
     // BROHiliNextLine: strict > mid.
-    testeq(BROHiliNextLine(hunks, 2, L, L_n, 0), 1);
-    testeq(BROHiliNextLine(hunks, 2, L, L_n, 1), 2);
-    testeq(BROHiliNextLine(hunks, 2, L, L_n, 2), 6);
-    testeq(BROHiliNextLine(hunks, 2, L, L_n, 5), 6);
-    testeq(BROHiliNextLine(hunks, 2, L, L_n, 6), BRO_NONE);
+    testeq(BROHiliNextLine(H, L, 0), 1);
+    testeq(BROHiliNextLine(H, L, 1), 2);
+    testeq(BROHiliNextLine(H, L, 2), 6);
+    testeq(BROHiliNextLine(H, L, 5), 6);
+    testeq(BROHiliNextLine(H, L, 6), BRO_NONE);
 
     // BROHiliPrevLine: strict < mid.
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 0), BRO_NONE);
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 1), BRO_NONE);
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 2), 1);
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 3), 2);
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 6), 2);
-    testeq(BROHiliPrevLine(hunks, 2, L, L_n, 7), 6);
+    testeq(BROHiliPrevLine(H, L, 0), BRO_NONE);
+    testeq(BROHiliPrevLine(H, L, 1), BRO_NONE);
+    testeq(BROHiliPrevLine(H, L, 2), 1);
+    testeq(BROHiliPrevLine(H, L, 3), 2);
+    testeq(BROHiliPrevLine(H, L, 6), 2);
+    testeq(BROHiliPrevLine(H, L, 7), 6);
 
     // BROHiliIndexAt: largest range whose first line <= at.
-    testeq(BROHiliIndexAt(hunks, 2, L, L_n, 0), 0);
-    testeq(BROHiliIndexAt(hunks, 2, L, L_n, 1), 1);
-    testeq(BROHiliIndexAt(hunks, 2, L, L_n, 2), 2);
-    testeq(BROHiliIndexAt(hunks, 2, L, L_n, 5), 2);
-    testeq(BROHiliIndexAt(hunks, 2, L, L_n, 6), 3);
+    testeq(BROHiliIndexAt(H, L, 0), 0);
+    testeq(BROHiliIndexAt(H, L, 1), 1);
+    testeq(BROHiliIndexAt(H, L, 2), 2);
+    testeq(BROHiliIndexAt(H, L, 5), 2);
+    testeq(BROHiliIndexAt(H, L, 6), 3);
     done;
 }
 
@@ -251,7 +255,8 @@ ok64 NAVtest_hili_adjacent_kinds() {
     hunks[0].toks[0] = h[0];
     hunks[0].toks[1] = h[1];
 
-    testeq(BROHiliCount(hunks, 1), 2);
+    hunkcs H = {hunks, hunks + 1};
+    testeq(BROHiliCount(H), 2);
     done;
 }
 
@@ -264,10 +269,11 @@ ok64 NAVtest_hili_none() {
     hunks[0].text[0] = (u8 const *)text;
     hunks[0].text[1] = (u8 const *)text + 1;
 
-    testeq(BROHiliCount(hunks, 1), 0);
-    testeq(BROHiliNextLine(hunks, 1, L, L_n, 0), BRO_NONE);
-    testeq(BROHiliPrevLine(hunks, 1, L, L_n, 0), BRO_NONE);
-    testeq(BROHiliIndexAt(hunks, 1, L, L_n, 0), 0);
+    hunkcs H = {hunks, hunks + 1};
+    testeq(BROHiliCount(H), 0);
+    testeq(BROHiliNextLine(H, L, 0), BRO_NONE);
+    testeq(BROHiliPrevLine(H, L, 0), BRO_NONE);
+    testeq(BROHiliIndexAt(H, L, 0), 0);
     done;
 }
 

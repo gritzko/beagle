@@ -13,10 +13,11 @@
 
 // --- helpers ----------------------------------------------------------
 
+// `name` is a range32cs slice over the data array.
 #define LINES(name, ...)                                              \
     static range32 const name##_data[] = {__VA_ARGS__};               \
-    range32 const *name = name##_data;                                \
-    u32 name##_n = sizeof(name##_data) / sizeof(range32)
+    range32cs name = {name##_data,                                    \
+                      name##_data + sizeof(name##_data) / sizeof(range32)}
 
 // Build one hunk with text t and optional uri u (NULL = no title).
 // lits are string literals; length excludes the NUL terminator.
@@ -32,30 +33,32 @@ static void mk_hunk(hunk *hk, char const *uri, char const *t) {
     }
 }
 
-static ok64 check_wrap(char const *label, hunkc const *hunks, u32 nh,
-                       u32 cols, range32 const *want, u32 want_n) {
+static ok64 check_wrap(char const *label, hunkcs hunks, u32 cols,
+                       range32cs want) {
     sane(label != NULL);
-    u32 got_n = BROCountLines(hunks, nh, cols);
+    u32 want_n = (u32)$len(want);
+    u32 got_n = BROCountLines(hunks, cols);
     if (got_n != want_n) {
         fprintf(stderr, "%s: BROCountLines: want %u, got %u\n",
                 label, want_n, got_n);
         fail(FAILSANITY);
     }
-    range32 got[128] = {};
-    if (want_n > (sizeof(got) / sizeof(got[0]))) fail(NOROOM);
-    u32 n = BROAppendLines(got, 0, (u32)(sizeof(got) / sizeof(got[0])),
-                            hunks, 0, nh, cols);
+    a_pad(range32, got, 128);
+    if (want_n > 128) fail(NOROOM);
+    BROAppendLines(got, hunks, 0, cols);
+    u32 n = (u32)range32bDataLen(got);
     if (n != want_n) {
         fprintf(stderr, "%s: BROAppendLines: want %u, got %u\n",
                 label, want_n, n);
         fail(FAILSANITY);
     }
+    range32 const *got_d = range32bDataHead(got);
     for (u32 i = 0; i < n; i++) {
-        if (got[i].lo != want[i].lo || got[i].hi != want[i].hi) {
+        if (got_d[i].lo != want[0][i].lo || got_d[i].hi != want[0][i].hi) {
             fprintf(stderr,
                     "%s: entry[%u]: want {%u,%u}, got {%u,%u}\n",
-                    label, i, want[i].lo, want[i].hi,
-                    got[i].lo, got[i].hi);
+                    label, i, want[0][i].lo, want[0][i].hi,
+                    got_d[i].lo, got_d[i].hi);
             fail(FAILSANITY);
         }
     }
@@ -70,7 +73,8 @@ ok64 WRAPtest_short_no_title() {
     hunk hk;
     mk_hunk(&hk, NULL, "abc\n");
     LINES(W, {0, 0});
-    return check_wrap("short_no_title", &hk, 1, 80, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("short_no_title", H, 80, W);
 }
 
 // Line exactly cols wide — still one entry, no wrap after it.
@@ -79,7 +83,8 @@ ok64 WRAPtest_exact_cols() {
     hunk hk;
     mk_hunk(&hk, NULL, "abcdef\n");  // 6 chars + \n, cols=6
     LINES(W, {0, 0});
-    return check_wrap("exact_cols", &hk, 1, 6, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("exact_cols", H, 6, W);
 }
 
 // Long ASCII line wraps every cols codepoints.
@@ -92,7 +97,8 @@ ok64 WRAPtest_wrap_ascii() {
           {0, 3},
           {0, 6},
           {0, 9});
-    return check_wrap("wrap_ascii", &hk, 1, 3, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("wrap_ascii", H, 3, W);
 }
 
 // Wrap + newlines interleaved.
@@ -105,7 +111,8 @@ ok64 WRAPtest_wrap_then_newline() {
           {0, 4},   // "def"
           {0, 7},   // "ghi"
           {0, 10}); // "j"
-    return check_wrap("wrap_then_newline", &hk, 1, 3, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("wrap_then_newline", H, 3, W);
 }
 
 // Trailing newline must not yield a phantom empty row.
@@ -116,7 +123,8 @@ ok64 WRAPtest_trailing_newline() {
     LINES(W,
           {0, 0},   // "abc"
           {0, 4});  // "def"
-    return check_wrap("trailing_newline", &hk, 1, 80, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("trailing_newline", H, 80, W);
 }
 
 // Empty text hunk contributes no rows (even with a title).
@@ -125,7 +133,8 @@ ok64 WRAPtest_empty_text_with_title() {
     hunk hk;
     mk_hunk(&hk, "foo.c", "");
     LINES(W, {0, BRO_TITLE_LINE});
-    return check_wrap("empty_text_with_title", &hk, 1, 80, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("empty_text_with_title", H, 80, W);
 }
 
 // Multi-byte UTF-8 (3 bytes per codepoint).  Three "日" bytes
@@ -137,7 +146,8 @@ ok64 WRAPtest_utf8_wrap() {
     // "日本語" = 9 bytes; wrap at 2 cp -> two rows: offsets 0 and 6.
     mk_hunk(&hk, NULL, "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e");
     LINES(W, {0, 0}, {0, 6});
-    return check_wrap("utf8_wrap", &hk, 1, 2, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("utf8_wrap", H, 2, W);
 }
 
 // Title + multi-line + wrap — verifies title placement and hunk idx.
@@ -151,7 +161,8 @@ ok64 WRAPtest_title_multi() {
           {0, 0},
           {0, 4},
           {0, 7});
-    return check_wrap("title_multi", &hk, 1, 4, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("title_multi", H, 4, W);
 }
 
 // Two hunks, second has no title, wrap only on second.
@@ -166,7 +177,8 @@ ok64 WRAPtest_two_hunks() {
           {1, 0},
           {1, 3},
           {1, 6});
-    return check_wrap("two_hunks", hks, 2, 3, W, W_n);
+    hunkcs H = {hks, hks + 2};
+    return check_wrap("two_hunks", H, 3, W);
 }
 
 // cols=1 is the pathological edge case: one codepoint per row.
@@ -175,7 +187,8 @@ ok64 WRAPtest_cols_one() {
     hunk hk;
     mk_hunk(&hk, NULL, "abc");
     LINES(W, {0, 0}, {0, 1}, {0, 2});
-    return check_wrap("cols_one", &hk, 1, 1, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("cols_one", H, 1, W);
 }
 
 // No-wrap mode: 'w'-toggle passes the 24-bit offset ceiling
@@ -189,7 +202,8 @@ ok64 WRAPtest_nowrap() {
           {0, 0},    // "abcdefghij" — no wrap inside this 10-char line
           {0, 11},   // "kl"
           {0, 14});  // "mnopqrst"
-    return check_wrap("nowrap", &hk, 1, (1u << 24) - 1, W, W_n);
+    hunkcs H = {&hk, &hk + 1};
+    return check_wrap("nowrap", H, (1u << 24) - 1, W);
 }
 
 // --- runner ----------------------------------------------------------

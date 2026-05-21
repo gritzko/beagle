@@ -66,9 +66,10 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
             loc->line = fr.line;
             if (fr.type != FRAG_LINE && !$empty(u.fragment)) {
                 u8cs sym = {u.fragment[0], u.fragment[1]};
-                if ($len(sym) >= 2 && sym[0][0] == '\'' &&
-                    sym[1][-1] == '\'') {
-                    sym[0]++; sym[1]--;
+                if ($len(sym) >= 2 && *sym[0] == '\'' &&
+                    *$last(sym) == '\'') {
+                    u8csUsed1(sym);
+                    u8csShed1(sym);
                 }
                 $mv(loc->symbol, sym);
             }
@@ -83,7 +84,11 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
 // own the actual mmap lifecycle.
 ok64 BROArenaInit(void);
 void BROArenaCleanup(void);
-u8p  BROArenaWrite(void const *data, size_t len);
+// Copy `orig`'s bytes into the bro arena and, if `in_arena` is
+// non-NULL, populate it with the resulting slice (borders point into
+// the arena).  Returns NOROOM if the arena lacks room; the arena is
+// not mutated in that case.
+ok64 BROArenaWrite(u8csp in_arena, u8cs orig);
 
 // Map the process-wide scratch buffer used by BROCountLines /
 // BROAppendLines. Idempotent. BROOpen calls this; tests that exercise
@@ -92,9 +97,6 @@ ok64 BROScratchInit(void);
 
 // Record a mmap'd file for cleanup at BROClose time.
 void BRODefer(u8bp mapped);
-
-// Finalize the hunk that was filled at hunkbIdleHead.
-void BROHunkAdd(void);
 
 // List a directory; one hunk per entry tagged 'F'.
 ok64 BROListDir(u8csc dirpath);
@@ -107,7 +109,7 @@ b8 BROTokenize(hunk *hk, u8csc pathslice);
 
 // Interactive pager: displays hunks with syntax colors, diff highlighting,
 // status bar, and search. Falls back to plain output when !isatty.
-ok64 BRORun(hunkc const *hunks, u32 nhunks);
+ok64 BRORun(hunkcs hunks);
 
 // Pager event loop: reads TLV hunks from pipefd, displays incrementally.
 ok64 BROPipeRun(int pipefd);
@@ -120,42 +122,38 @@ ok64 BROPipeRun(int pipefd);
 // source lines get multiple entries — one per `cols` codepoints —
 // so soft-wrap is baked into the index.  Callers must pre-allocate
 // `lines[0..maxlines)`; returns the new total line count (<=maxlines).
-u32 BROAppendLines(range32 *lines, u32 nlines, u32 maxlines,
-                   hunkc const *hunks, u32 from, u32 nhunks, u32 cols);
+void BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols);
 
 // Total display-line count that BROAppendLines would produce for
-// hunks[0..nhunks) at the given `cols`.  Used to size allocations.
-u32 BROCountLines(hunkc const *hunks, u32 nhunks, u32 cols);
+// `hunks` at the given `cols`.  Used to size allocations.
+u32 BROCountLines(hunkcs hunks, u32 cols);
 
 // --- Navigation primitives (exposed for testing) ---
 
 // Next hunk start strictly after line `from`.
-u32 BROHunkNextLine(range32 const *lines, u32 nlines, u32 from);
+u32 BROHunkNextLine(range32cs lines, u32 from);
 
 // Start of current hunk if `from` is not already on it; else previous
 // hunk start. (vim's [[ semantics)
-u32 BROHunkPrevLine(range32 const *lines, u32 nlines, u32 from);
+u32 BROHunkPrevLine(range32cs lines, u32 from);
 
-// Total number of hunks represented in lines[0..nlines).
-u32 BROHunkCount(range32 const *lines, u32 nlines);
+// Total number of hunks represented in `lines`.
+u32 BROHunkCount(range32cs lines);
 
-// 1-based index of the hunk that contains line `at`; 0 if nlines==0.
-u32 BROHunkIndexAt(range32 const *lines, u32 nlines, u32 at);
+// 1-based index of the hunk that contains line `at`; 0 if lines is empty.
+u32 BROHunkIndexAt(range32cs lines, u32 at);
 
-// Total non-eq side runs (in/rm) across hunks[0..nhunks).
-u32 BROHiliCount(hunkc const *hunks, u32 nhunks);
+// Total non-eq side runs (in/rm) across `hunks`.
+u32 BROHiliCount(hunkcs hunks);
 
 // 1-based index of the latest hili range whose first line <= `at`.
-u32 BROHiliIndexAt(hunkc const *hunks, u32 nhunks,
-                   range32 const *lines, u32 nlines, u32 at);
+u32 BROHiliIndexAt(hunkcs hunks, range32cs lines, u32 at);
 
 // First line containing a hili range whose first line > `mid`.
-u32 BROHiliNextLine(hunkc const *hunks, u32 nhunks,
-                    range32 const *lines, u32 nlines, u32 mid);
+u32 BROHiliNextLine(hunkcs hunks, range32cs lines, u32 mid);
 
 // Last line containing a hili range whose first line < `mid`.
-u32 BROHiliPrevLine(hunkc const *hunks, u32 nhunks,
-                    range32 const *lines, u32 nlines, u32 mid);
+u32 BROHiliPrevLine(hunkcs hunks, range32cs lines, u32 mid);
 
 // --- Public API (DOG 4-fn) ---
 

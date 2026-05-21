@@ -84,19 +84,14 @@ ok64 BROExec(bro *b, cli *c) {
                     u8bFree(blobbuf);
                     continue;
                 }
-                size_t blen = u8bDataLen(blobbuf);
-                u8p body = BROArenaWrite(u8bDataHead(blobbuf), blen);
-                u8bFree(blobbuf);
-                if (!body) continue;
-
                 hunk *hk = hunkbIdleHead(b->hunks);
                 *hk = (hunk){};
-                u8p up = BROArenaWrite(u->data[0], (size_t)$len(u->data));
-                if (up) { hk->uri[0] = up; hk->uri[1] = up + $len(u->data); }
-                hk->text[0] = body;
-                hk->text[1] = body + blen;
+                ok64 wo = BROArenaWrite(hk->text, u8bDataC(blobbuf));
+                u8bFree(blobbuf);
+                if (wo != OK) continue;
+                BROArenaWrite(hk->uri, u->data);
                 BROTokenize(hk, file_path);
-                BROHunkAdd();
+                hunkbFed1(b->hunks);
                 continue;
             }
 
@@ -123,18 +118,16 @@ ok64 BROExec(bro *b, cli *c) {
 
             hunk *hk = hunkbIdleHead(b->hunks);
             *hk = (hunk){};
-            u8p up = BROArenaWrite(u->data[0], (size_t)$len(u->data));
-            if (up) { hk->uri[0] = up; hk->uri[1] = up + $len(u->data); }
+            BROArenaWrite(hk->uri, u->data);
             hk->text[0] = u8bDataHead(mapped);
             hk->text[1] = u8bIdleHead(mapped);
 
             BROTokenize(hk, file_path);
-            BROHunkAdd();
+            hunkbFed1(b->hunks);
             BRODefer(mapped);
         }
         if (hunkbDataLen(b->hunks) > 0)
-            BRORun(hunkbDataHead(b->hunks),
-                   (u32)hunkbDataLen(b->hunks));
+            BRORun(hunkbDataC(b->hunks));
         BROArenaCleanup();
         if (keeper_open) KEEPClose();
     } else {
