@@ -65,6 +65,13 @@ ok64 PATCHApply(u8cs reporoot, uricp u);
 ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
                     u8cs target_query, u8cs frag);
 
+//  Detect a complete WEAVE conflict-marker triple in `bytes`:
+//  `<<<<` followed by at least one `||||` then `>>>>`, anywhere
+//  in the stream.  Used by POST to refuse half-merged files, and
+//  by PATCH's own per-file classifier.  Lone `<<<<` / `>>>>`
+//  (prose mentions of the marker syntax) do *not* count.
+b8 SNIFFHasConflictMarker(u8cs bytes);
+
 // --- Error / sentinel codes ---
 
 con ok64 PATCHFAIL     = 0x1929d3113ca495;   // general failure

@@ -329,6 +329,26 @@ void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out);
 // the same hashlet test (sniff URI normalisers, ref parsers).
 b8   DOGIsHashlet(u8cs s);
 
+// Consume one `&`-separated chunk from a multi-ref query body
+// (`A&B&C` shape — `graf get` blob/tree merges, `sniff` baseline
+// rows that store `<branch>&<sha>`).  Advances `q[0]` past the
+// chunk and any trailing `&`; `out` holds the chunk slice (possibly
+// empty when the input started with `&`).  Callers loop on `$empty(q)`.
+//
+// Each chunk is a path-shaped branch ref — classify with
+// `DOGIsHashlet` (sha prefix vs branch path); relative `./X` / `../X`
+// / `..` resolve against `cur_branch` via `abc/PATH::PATHu8bAbs`.
+fun void DOGRefDrain(u8cs q, u8cs out) {
+    out[0] = NULL; out[1] = NULL;
+    if (q[0] == NULL || q[0] >= q[1]) return;
+    u8cp p = q[0];
+    u8cp e = q[1];
+    while (p < e && *p != '&') p++;
+    out[0] = q[0];
+    out[1] = p;
+    q[0] = (p < e) ? p + 1 : e;
+}
+
 // Classify a *new* ref name as branch (dir ref) vs tag (file ref).
 // For refs that already exist in REFS, callers must check the existing
 // kind first and override; this helper only fixes the default for a

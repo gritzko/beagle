@@ -15,8 +15,8 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
+#include "dog/DOG.h"
 #include "dog/HOME.h"
-#include "dog/QURY.h"
 
 #include "dog/git/GIT.h"
 #include "KEEP.h"
@@ -216,39 +216,37 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     if (HEXu8sValid(t)) {
         size_t len = u8csLen(t);
         if (len == 40) return resolve_sha40(k, out, t);
-        if (len >= QURY_MIN_SHA) return resolve_hashlet(k, out, t);
+        if (len >= 6) return resolve_hashlet(k, out, t);
         //  Short alpha-only-looking shape (3-char) might also be a
         //  legal branch name — fall through to branch resolution.
     }
 
-    //  Branch path, possibly relative.  dog/QURY classifies the shape
-    //  and `QURYBuildAbsolute` resolves `./X`, `../X`, `..` against
-    //  the caller-supplied `cur_branch`.
-    qref spec = {};
-    a_dup(u8c, scan, t);
-    if (QURYu8sDrain(scan, &spec) == OK &&
-        (spec.type == QURY_REF || spec.type == QURY_SHA)) {
-        if (spec.type == QURY_SHA) {
-            //  QURY classified as SHA (>= QURY_MIN_SHA hex) — should
-            //  have been caught by the HEX path above, but the QURY
-            //  parser may admit shorter shas (4-5 hex) we treat as
-            //  hashlet expansions for forward compat.
-            return resolve_hashlet(k, out, spec.body);
+    //  Branch path, possibly relative.  Queries are path-shaped:
+    //  `./X`, `../X`, `..` resolve against `cur_branch` via PATH
+    //  primitives (Pop/Push) — branch semantics: popping past
+    //  trunk yields trunk (empty), not "..".  Everything else
+    //  passes through verbatim (absolute / project-relative; the
+    //  branch resolver disambiguates).
+    a_path(abs_path);
+    path8s ref_in = {t[0], t[1]};
+    if (!$empty(ref_in) && ref_in[0][0] == '.') {
+        if (!$empty(cur_branch)) call(PATHu8bFeed, abs_path, cur_branch);
+        path8s rel = {ref_in[0], ref_in[1]};
+        if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
+            u8csUsed(rel, 2);
+        } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
+                   rel[0][1] == '.' && rel[0][2] == '/') {
+            call(PATHu8bPop, abs_path);
+            u8csUsed(rel, 3);
+        } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
+            call(PATHu8bPop, abs_path);
+            u8csUsed(rel, 2);
         }
-        if (spec.rel != QURY_REL_NONE) {
-            a_pad(u8, abs_buf, 256);
-            if (QURYBuildAbsolute(abs_buf, &spec, cur_branch) != OK)
-                return RESLVFAIL;
-            a_dup(u8c, abs_path, u8bData(abs_buf));
-            return resolve_branch_path(k, out, abs_path);
-        }
-        return resolve_branch_path(k, out, spec.body);
+        if (!$empty(rel)) call(PATHu8bPush, abs_path, rel);
+    } else if (!$empty(ref_in)) {
+        call(PATHu8bFeed, abs_path, ref_in);
     }
-
-    //  Last arm — commit-message substring search.  POSTPONED per the
-    //  contract in RESOLVE.h; the `keep_msg_search` implementation
-    //  above is ready for one-line activation.
-    return RESLVNONE;
+    return resolve_branch_path(k, out, $path(abs_path));
 }
 
 ok64 KEEPResolveHex(sha1hex *out, u8cs token) {

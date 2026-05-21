@@ -1718,13 +1718,19 @@ static void BRODispatchFragment(BROstate *st, char *frag,
     bro_strip_ext(frag, ext_arg, sizeof(ext_arg));
     if (frag[0] == 0) return;
 
-    // Line number
-    if (frag[0] >= '0' && frag[0] <= '9') {
-        u32 target = (u32)atoi(frag);
-        if (target > 0) target--;
-        if (target >= bro_nlines(st)) target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
-        st->scroll = target;
-        return;
+    // Line number — `42` or `L42`.
+    {
+        char const *digits = frag;
+        if (digits[0] == 'L' && digits[1] >= '0' && digits[1] <= '9')
+            digits++;
+        if (digits[0] >= '0' && digits[0] <= '9') {
+            u32 target = (u32)atoi(digits);
+            if (target > 0) target--;
+            if (target >= bro_nlines(st))
+                target = bro_nlines(st) > 0 ? bro_nlines(st) - 1 : 0;
+            st->scroll = target;
+            return;
+        }
     }
 
     // Classify search type

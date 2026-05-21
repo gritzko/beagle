@@ -19,7 +19,7 @@
 //    * relative branch path → resolved against `cur_branch` via
 //                              dog/QURY (`./X`, `../X`, `..`), then
 //                              REFSResolve.
-//    * commit-message frag  → POSTPONED; today returns `RESOLVENONE`.
+//    * commit-message frag  → POSTPONED; today returns `RESLVNONE`.
 //                              Implementation (`keep_msg_search`)
 //                              scans the recentmost commits across
 //                              currently-open pack logs; lives in
@@ -30,7 +30,7 @@
 //
 //  `cur_branch` is the wt's current absolute branch path (empty for
 //  trunk).  Pass an empty slice for non-wt contexts; relative refs
-//  then return RESOLVEFAIL.
+//  then return RESLVFAIL.
 
 #include "abc/INT.h"
 #include "dog/WHIFF.h"
@@ -40,15 +40,15 @@ con ok64 RESLVNONE = 0x1b39c55f5d85ce;   // no match
 con ok64 RESLVFAIL = 0x1b39c55f3ca495;  // malformed token / lookup error
 
 //  Resolve `token` to a 40-byte commit sha.  Writes the canonical sha
-//  into `*out` on success.  On miss returns RESOLVENONE; on hard
-//  failure returns RESOLVEFAIL or the underlying keeper/REFS error.
+//  into `*out` on success.  On miss returns RESLVNONE; on hard
+//  failure returns RESLVFAIL or the underlying keeper/REFS error.
 ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch);
 
 //  Convenience wrapper for callers that take a user-typed hex token
 //  (full 40-hex sha OR 6..39 hashlet prefix) and need the canonical
 //  40-char ASCII form.  Composes KEEPResolveRef + sha1hexFromSha1;
 //  passes empty cur_branch (hex tokens are not relative).  Returns
-//  RESOLVENONE on miss, RESOLVEFAIL on malformed input.
+//  RESLVNONE on miss, RESLVFAIL on malformed input.
 ok64 KEEPResolveHex(sha1hex *out, u8cs token);
 
 #endif

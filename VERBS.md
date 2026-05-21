@@ -50,13 +50,17 @@ things.
                   `?../<sib>` / `?..` are **current-branch-
                   relative**.  Sha prefix (`?abc1234`) is its own
                   arm — object lookup, detached checkout.
-  - `#frag`     — object hash (`#abc1234`), commit-message search
-                  (`#parallel` finds the commit reachable from cur
-                  whose message contains "parallel"), line jump
-                  (`#42`, `#10-20`), or extension filter
-                  (`#.c.h`).  Search bodies live in their own
-                  projector schemes (`spot:`, `grep:`, `regex:`),
-                  not in the fragment slot.
+  - `#frag`     — free-form payload.  No grammar; each verb / projector
+                  interprets it as it sees fit.  Established conventions:
+                  object hash (`#abc1234`); commit-message search
+                  (`#parallel` finds the commit reachable from cur whose
+                  message contains "parallel"); line jump (`#L42`,
+                  GitHub-style); extension filter (`#.c.h`); a count
+                  (`be log:?feat#10`).  Hunk URIs emitted by graf/spot
+                  use `<path>#<symbol>:L<line>` for navigation.  Search
+                  bodies for structural / regex search live in their own
+                  projector schemes (`spot:`, `grep:`, `regex:`), not
+                  in the fragment slot.
 
 Branches form a tree; the **trunk** is the root.  Branches are
 `mkdir`-cheap: an **empty branch is one row in the reflog and an

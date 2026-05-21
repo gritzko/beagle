@@ -18,7 +18,6 @@
 #include "POST.h"
 #include "PUT.h"
 #include "dog/CLI.h"
-#include "dog/QURY.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/git/IGNO.h"
@@ -534,9 +533,9 @@ static ok64 status_step(class_step const *step, void *ctx) {
 //  Drain the shared rows buffer, render rows whose verb matches
 //  `verb_filter` as `<date>\t<status>\t<path>` (or `<src> -> <dst>`
 //  for move rows whose URI carries a fragment).  On tty: time
-//  column wears grey, status wears its own colour via dog/ULOG's
-//  shared palette (`ULOGVerbColor`), path stays default.  Walked
-//  once per bucket (≤7 passes) — trivial for status sizes.
+//  column wears grey, status wears its own colour, path stays
+//  default.  Walked once per bucket (≤7 passes) — trivial for
+//  status sizes.
 static void status_dump_verb(Bu8 rows, ron60 verb_filter,
                              char const *marker, char const *ansi,
                              b8 tty, i64 now) {
@@ -756,31 +755,49 @@ static ok64 sniff_checkout(u8cs reporoot, u8cs hex) {
 //  caller's use of `u`.  When `was_relative_out` is non-NULL it
 //  receives YES iff the input had a relative prefix (callers use
 //  this to enable create-on-miss).
-static ok64 sniff_resolve_rel(uri *u, u8b qbuf, u8b databuf,
+static ok64 sniff_resolve_rel(uri *u, path8b qbuf, u8b databuf,
                               b8 *was_relative_out) {
     sane(u);
     if (was_relative_out) *was_relative_out = NO;
     if (u->query[0] == NULL || $empty(u->query)) done;
     a_dup(u8c, q_in, u->query);
-    qref qspec = {};
-    if (QURYu8sDrain(q_in, &qspec) != OK) done;
-    if (qspec.type != QURY_REF || qspec.rel == QURY_REL_NONE) done;
+    path8s first = {};
+    DOGRefDrain(q_in, first);
+    if ($empty(first)) done;
+    //  Only `.`-prefixed relative refs need absolutising.
+    if (first[0][0] != '.') done;
     if (was_relative_out) *was_relative_out = YES;
 
     //  Current branch from sniff baseline.  Empty / missing baseline
-    //  = trunk, which the resolver treats as the empty path.
+    //  = trunk.
     ron60 bts = 0, bverb = 0;
     uri bu = {};
-    u8cs current = {};
-    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
+    path8s current = {};
+    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK)
         u8csMv(current, bu.query);
-    }
 
-    if (QURYBuildAbsolute(qbuf, &qspec, current) != OK) fail(SNIFFFAIL);
+    //  Resolve `./X` / `../X` / `..` against `current` using
+    //  abc/PATH primitives: PATHu8bFeed for the base, PATHu8bPop
+    //  to climb, PATHu8bPush for the new leaf.  Branch semantics:
+    //  popping past trunk yields trunk (empty), not "..".
+    u8bReset(qbuf);
+    if (!$empty(current)) call(PATHu8bFeed, qbuf, current);
+    path8s rel = {first[0], first[1]};
+    if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
+        u8csUsed(rel, 2);
+    } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
+               rel[0][1] == '.' && rel[0][2] == '/') {
+        call(PATHu8bPop, qbuf);
+        u8csUsed(rel, 3);
+    } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
+        call(PATHu8bPop, qbuf);
+        u8csUsed(rel, 2);
+    }
+    if (!$empty(rel)) call(PATHu8bPush, qbuf, rel);
 
     u8bFeed1(databuf, '?');
-    u8bFeed(databuf, u8bDataC(qbuf));
-    u8csMv(u->query, u8bDataC(qbuf));
+    u8bFeed(databuf, $path(qbuf));
+    u8csMv(u->query, $path(qbuf));
     u8csMv(u->data,  u8bDataC(databuf));
     done;
 }
@@ -1161,25 +1178,30 @@ static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
                     u8csUsed(q, plen);
                 }
                 //  Local probe with stripped query (`?<stripped>`).
+                //  Build via URIutf8Feed off `u`'s parsed components so
+                //  the result is consistent regardless of whether the
+                //  caller (e.g. sniff_resolve_rel) has rewired query
+                //  and data into different buffers.
+                uri retry_u = *u;
+                u8csMv(retry_u.query, q);
+                retry_u.data[0] = retry_u.data[1] = NULL;
                 a_pad(u8, retry_buf, 512);
-                u8cs head = {u->data[0], u->query[0]};
-                u8bFeed(retry_buf, head);
-                u8bFeed(retry_buf, q);
-                a_dup(u8c, retry_uri, u8bData(retry_buf));
+                call(URIutf8Feed, u8bIdle(retry_buf), &retry_u);
+                a_dup(u8c, retry_uri, u8bDataC(retry_buf));
                 zero(resolved);
                 o = REFSResolve(&resolved, arena1,
                                 $path(keepdir), retry_uri);
                 if (o == OK && !$empty(resolved.query)) break;
-                //  Peer-relay probe (`.?<stripped>`): bare-query
-                //  inputs (no authority) — rewrite the URI as
-                //  `.?<stripped>` so peer-prefixed tracking rows
-                //  match.
+                //  Peer-relay probe (`.?<stripped>`): bare-query inputs
+                //  (no authority) — feed an authority-only `.` URI so
+                //  peer-prefixed tracking rows match.
                 if (!bare) continue;
+                uri dot_u = retry_u;
+                a_cstr(dot_path, ".");
+                u8csMv(dot_u.path, dot_path);
                 a_pad(u8, dot_buf, 512);
-                a_cstr(dot_pfx, ".?");
-                u8bFeed(dot_buf, dot_pfx);
-                u8bFeed(dot_buf, q);
-                a_dup(u8c, dot_uri, u8bData(dot_buf));
+                call(URIutf8Feed, u8bIdle(dot_buf), &dot_u);
+                a_dup(u8c, dot_uri, u8bDataC(dot_buf));
                 zero(resolved);
                 o = REFSResolve(&resolved, arena1,
                                 $path(keepdir), dot_uri);

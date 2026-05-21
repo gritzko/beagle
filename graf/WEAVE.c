@@ -1003,8 +1003,13 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     //  window boundary.
     Bu8  outtext = {};
     Bu32 outtoks = {};
+    Bu8  outuri  = {};
     call(u8bMap,  outtext, 16UL << 20);
     call(u32bMap, outtoks, 1UL << 16);
+    //  Per-hunk URI scratch — `<name>#L<lineno>` rendered fresh on each
+    //  FLUSH_HUNK and consumed synchronously by `cb`, so this single
+    //  small buffer is reused.
+    call(u8bMap,  outuri,  1UL << 12);
 
     ok64 ret = OK;
     u32 wi = 0;          // active window index
@@ -1013,10 +1018,21 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     cur_line = 0;
     b8 hunk_open = NO;
 
+    //  `win_lo` is the index of the hunk's first line in the merged
+    //  (alive_from ∪ alive_to) text — 1-indexed.  Pointing the hunk URI
+    //  at it lets readers jump straight to the change.
     #define FLUSH_HUNK() do {                                          \
         if (hunk_open) {                                               \
+            u8bReset(outuri);                                          \
+            u8csc _empty_sym = {NULL, NULL};                           \
+            if (HUNKu8sMakeURI(u8bIdle(outuri), name,                  \
+                               _empty_sym, win_lo + 1) != OK) {        \
+                u8bReset(outuri);                                      \
+                (void)u8bFeed(outuri, name);                           \
+            }                                                          \
             hunk hk = {};                                              \
-            $mv(hk.uri, name);                                         \
+            hk.uri[0] = (u8 *)u8bDataHead(outuri);                     \
+            hk.uri[1] = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri);\
             hk.text[0] = u8bDataHead(outtext);                         \
             hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);   \
             hk.toks[0] = (tok32c *)u32bDataHead(outtoks);              \
@@ -1081,6 +1097,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
 cleanup:
     u8bUnMap(outtext);
     u32bUnMap(outtoks);
+    u8bUnMap(outuri);
     u8bUnMap(changed);
     u32bUnMap(windows);
     return ret;
@@ -1128,147 +1145,6 @@ static ok64 weave_emit_token(u8b out, u8cp text, u32cp toks, u32 i) {
     u32 hi = tok32Offset(toks[i]);
     u8cs tb = {text + lo, text + hi};
     return u8bFeed(out, tb);
-}
-
-//  Second-pass reframer for `WEAVEEmitMerged`.  The streaming emit
-//  drops `<<<<` / `||||` / `>>>>` at token boundaries, which is
-//  desirable for tiny inline edits (a single word swap inside an
-//  otherwise-shared line) but produces syntactically broken halves
-//  for substantial conflicts — picking one side leaves an incoherent
-//  line like `value > \nLOCAL\n) {`.
-//
-//  Per conflict block, compare cluster bytes against the bytes of
-//  the surrounding line(s):
-//    * cluster_bytes * 4  <  line_bytes  → keep markers inline.
-//    * otherwise → rewrite the block so every cluster is whole-line:
-//      the shared prefix (last LF before `<<<<`) and shared suffix
-//      (next LF after `>>>>`) are spliced into each cluster, and
-//      markers sit on their own lines.
-//
-//  `cluster_bytes` measures content bytes only — interior `||||`
-//  marker bytes are subtracted.  `line_bytes` spans the entire
-//  affected line(s) so multi-line conflicts (clusters with internal
-//  LFs) always trip the line-level branch.
-static ok64 weave_realign_conflicts(u8b out) {
-    sane(1);
-
-    u32 n = (u32)u8bDataLen(out);
-    if (n < 12) done;       // shorter than `<<<<||||>>>>`
-
-    Bu8 src = {};
-    call(u8bMap, src, (size_t)n + 16);
-    call(u8bFeed, src, u8bDataC(out));
-    u8bReset(out);
-    u8cp sp = u8bDataHead(src);
-
-    a_cstr(sl_open,  "<<<<");
-    a_cstr(sl_mid,   "||||");
-    a_cstr(sl_close, ">>>>");
-    a_cstr(lf,       "\n");
-
-    u32 i = 0;
-    while (i < n) {
-        b8 at_open =
-            (i + 4 <= n) && (memcmp(sp + i, "<<<<", 4) == 0);
-        if (!at_open) {
-            (void)u8bFeed1(out, sp[i]);
-            i++;
-            continue;
-        }
-
-        //  Find matching `||||`* and `>>>>`.  Nested `<<<<` aborts.
-        u32 mids[WEAVE_EMIT_MAX_GROUPS];
-        u32 nmids = 0;
-        u32 close_pos = 0;
-        b8  closed = NO;
-        u32 j = i + 4;
-        while (j + 4 <= n) {
-            if (memcmp(sp + j, "<<<<", 4) == 0) break;
-            if (memcmp(sp + j, ">>>>", 4) == 0) {
-                close_pos = j; closed = YES; break;
-            }
-            if (memcmp(sp + j, "||||", 4) == 0) {
-                if (nmids < WEAVE_EMIT_MAX_GROUPS) mids[nmids++] = j;
-                j += 4;
-                continue;
-            }
-            j++;
-        }
-        if (!closed) {
-            (void)u8bFeed1(out, sp[i]);
-            i++;
-            continue;
-        }
-
-        u32 conflict_end = close_pos + 4;
-
-        //  Surrounding line: last LF before `<<<<` → first LF after
-        //  `>>>>`.  Indices into `src`.
-        u32 line_lo = i;
-        while (line_lo > 0 && sp[line_lo - 1] != '\n') line_lo--;
-        u32 line_hi = conflict_end;
-        while (line_hi < n && sp[line_hi] != '\n') line_hi++;
-
-        u32 line_bytes    = line_hi - line_lo;
-        u32 cluster_bytes = close_pos - (i + 4);
-        if (cluster_bytes >= 4u * nmids)
-            cluster_bytes -= 4u * nmids;
-
-        b8 line_level = (cluster_bytes * 4 >= line_bytes);
-
-        if (!line_level) {
-            //  Inline: copy the block verbatim.
-            u8cs blk = {sp + i, sp + conflict_end};
-            call(u8bFeed, out, blk);
-            i = conflict_end;
-            continue;
-        }
-
-        //  Line-level: rewind out by the shared prefix bytes already
-        //  emitted (line_lo .. i), then splice prefix + cluster +
-        //  suffix into each side and surround with line-anchored
-        //  markers.
-        u32 prefix_len = i - line_lo;
-        if (prefix_len > 0) u8bShed(out, prefix_len);
-
-        //  Marker positions: pos[0] = `<<<<`, pos[1..nmids] = `||||`,
-        //  pos[nmids+1] = `>>>>`.  Cluster k = [pos[k]+4, pos[k+1]).
-        u32 pos[WEAVE_EMIT_MAX_GROUPS + 2];
-        u32 npos = 0;
-        pos[npos++] = i;
-        for (u32 m = 0; m < nmids; m++) pos[npos++] = mids[m];
-        pos[npos++] = close_pos;
-        u32 ngroups = npos - 1;
-
-        u8cs prefix_s = {sp + line_lo, sp + i};
-        u8cs suffix_s = {sp + conflict_end, sp + line_hi};
-
-        call(u8bFeed, out, sl_open);
-        call(u8bFeed, out, lf);
-        for (u32 g = 0; g < ngroups; g++) {
-            if (g > 0) {
-                call(u8bFeed, out, sl_mid);
-                call(u8bFeed, out, lf);
-            }
-            if (prefix_s[1] > prefix_s[0]) call(u8bFeed, out, prefix_s);
-            u8cs c_s = {sp + pos[g] + 4, sp + pos[g + 1]};
-            if (c_s[1] > c_s[0]) call(u8bFeed, out, c_s);
-            if (suffix_s[1] > suffix_s[0]) call(u8bFeed, out, suffix_s);
-            size_t olen = u8bDataLen(out);
-            if (olen == 0 || u8bDataHead(out)[olen - 1] != '\n')
-                call(u8bFeed, out, lf);
-        }
-        call(u8bFeed, out, sl_close);
-        call(u8bFeed, out, lf);
-
-        //  Skip the original suffix bytes (already spliced into the
-        //  clusters) and the trailing LF.
-        i = line_hi;
-        if (i < n && sp[i] == '\n') i++;
-    }
-
-    u8bUnMap(src);
-    done;
 }
 
 ok64 WEAVEEmitMerged(weave const *w,
@@ -1382,20 +1258,14 @@ ok64 WEAVEEmitMerged(weave const *w,
         i = run_hi;
     }
 
-    //  Second pass: line-align large conflict blocks.  The streaming
-    //  emit above places `<<<<` / `||||` / `>>>>` at token boundaries,
-    //  which is fine for tiny edits (a single word swap) but produces
-    //  syntactically incoherent half-lines for larger conflicts —
-    //  dropping one side wouldn't reconstruct a buildable file.
-    //
-    //  Rule: per conflict block, compare its cluster bytes against the
-    //  bytes of the surrounding line(s).  If clusters take less than
-    //  1/4 of the affected line, keep markers inline.  Otherwise
-    //  rewrite the block so every cluster reads as complete line(s):
-    //  the shared prefix (last LF → `<<<<`) and shared suffix (`>>>>`
-    //  → next LF) are spliced into each cluster, and markers go on
-    //  their own lines.
-    call(weave_realign_conflicts, out);
-
+    //  Markers stay at token boundaries — no second-pass realignment.
+    //  A second pass that byte-scanned for `<<<<…||||…>>>>` triples
+    //  couldn't distinguish graf-emitted markers from marker-shaped
+    //  byte sequences in user content (source files quoting the
+    //  markers in strings / comments, or a wt that already carries
+    //  unresolved markers from a prior merge — see GRAFMergeWtFile,
+    //  which feeds the live wt bytes into WEAVE_WT_SRC).  Treating
+    //  every such sequence as user content is the only consistent
+    //  rule; readers can hand-pretty-print as they prefer.
     done;
 }

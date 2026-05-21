@@ -74,8 +74,16 @@ ok64 HUNKu32bTokenize(u32bp toks, u8csc source, u8csc ext);
 // Maximum visible width of a formatted hunk title.
 #define HUNK_TITLE_MAX 64
 
-// Compose a hunk URI into `into`: path#symbol:lineno
-// Any component may be empty/0 to omit.
+// Compose a hunk URI into `into`: path#symbol:Llineno  (`L`-prefix
+// follows GitHub convention).  Any component may be empty/0 to omit.
 ok64 HUNKu8sMakeURI(u8s into, u8csc path, u8csc symbol, u32 lineno);
+
+// Best-effort extractor for the conventions HUNKu8sMakeURI emits.
+// Returns the trailing line number (0 if absent).  When `out_sym` is
+// non-NULL, it is populated with the symbol portion (fragment minus
+// the trailing `:[L]?<digits>` suffix); surrounding `'…'` quotes are
+// stripped.  Fragments are otherwise free-form — anything not matching
+// these conventions stays in `out_sym` as the symbol body.
+u32 HUNKu8sFragSplit(u8csc frag, u8cs out_sym);
 
 #endif

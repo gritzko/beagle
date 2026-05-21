@@ -12,7 +12,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RON.h"
-#include "dog/QURY.h"
+#include "dog/DOG.h"
 #include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"   // WALK_KIND_*
@@ -85,21 +85,19 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         b8 row_is_local = u8csEmpty(u.authority);
         a_dup(u8c, q, u.query);
         while (!u8csEmpty(q)) {
-            qref spec = {};
-            if (QURYu8sDrain(q, &spec) != OK) break;
-            if (spec.type == QURY_NONE) break;
-            if (spec.type == QURY_REF && u8csEmpty(ref_body) &&
-                row_is_local) {
+            u8cs chunk = {};
+            DOGRefDrain(q, chunk);
+            if ($empty(chunk)) continue;
+            b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+            if (!is_sha && u8csEmpty(ref_body) && row_is_local) {
                 //  Only adopt the query as the cur branch when the
                 //  row is a LOCAL action (no remote authority).
                 //  Fetch rows (`get ssh://host?ref#sha`) detach the
                 //  wt at the fetched sha but don't move cur — their
                 //  query is the REMOTE ref, not the local leaf.
-                u8csMv(ref_body, spec.body);
-            } else if (spec.type == QURY_SHA &&
-                       u8csLen(spec.body) == 40 &&
-                       u8csEmpty(sha_body)) {
-                u8csMv(sha_body, spec.body);
+                u8csMv(ref_body, chunk);
+            } else if (is_sha && u8csEmpty(sha_body)) {
+                u8csMv(sha_body, chunk);
             }
         }
         if (!u8csEmpty(sha_body)) {
@@ -125,11 +123,12 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             if (u8csLen(u.fragment) != 40) continue;
             a_dup(u8c, q, u.query);
             while (!u8csEmpty(q)) {
-                qref spec = {};
-                if (QURYu8sDrain(q, &spec) != OK) break;
-                if (spec.type == QURY_NONE) break;
-                if (spec.type == QURY_REF && u8csEmpty(ref_body)) {
-                    u8csMv(ref_body, spec.body);
+                u8cs chunk = {};
+                DOGRefDrain(q, chunk);
+                if ($empty(chunk)) continue;
+                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+                if (!is_sha && u8csEmpty(ref_body)) {
+                    u8csMv(ref_body, chunk);
                     break;
                 }
             }
@@ -608,16 +607,13 @@ ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out) {
     }
 
     //  Legacy rows kept the sha in the query (`?<branch>&<sha>`) —
-    //  walk the `&`-chain and pick the first 40-hex spec.  Tolerate
-    //  empty leading specs (`&<sha>`) by skipping bare separators.
+    //  walk the `&`-chain and pick the first 40-hex chunk.
     a_dup(u8c, q, u->query);
     while (!$empty(q)) {
-        if (*q[0] == '&') { u8csUsed1(q); continue; }
-        qref spec = {};
-        if (QURYu8sDrain(q, &spec) != OK) break;
-        if (spec.type == QURY_NONE) break;
-        if (spec.type == QURY_SHA && $len(spec.body) == sizeof(out->data)) {
-            sha1hexMv(out, (sha1hex const *)spec.body[0]);
+        u8cs chunk = {};
+        DOGRefDrain(q, chunk);
+        if ($len(chunk) == sizeof(out->data) && DOGIsHashlet(chunk)) {
+            sha1hexMv(out, (sha1hex const *)chunk[0]);
             done;
         }
     }
@@ -832,10 +828,7 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
     Bu8 base_rows = {};
     Bu8 gitlinks  = {};
     call(u8bAllocate, base_rows, 1UL << 22);
-    {
-        ok64 ao = u8bAllocate(gitlinks, 1UL << 14);
-        if (ao != OK) { u8bFree(base_rows); return ao; }
-    }
+    call(u8bAllocate, gitlinks,  1UL << 14);
     at_collect_baseline(base_rows, gitlinks);
 
     at_dirty_scan_ctx sc = {.cb = cb, .user_ctx = ctx, .cb_err = OK};

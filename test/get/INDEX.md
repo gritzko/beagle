@@ -33,18 +33,6 @@
   the PAST/DATA partition (KEEP.h §"Branch-aware object store"),
   `KEEPSwitchBranch`, and the global-seqno scan that keeps sibling
   branches from colliding on file_id.
-* `08-weave-marker-line-anchor/` — `be get file://<bare>?master`
-  twice across a wt edit + an upstream commit that touch the same
-  line.  Pre-fix `WEAVEEmitMerged` dropped `<<<<` / `||||` / `>>>>`
-  at token boundaries — clusters held only the diverging fragment
-  (`LOCAL` vs `UPSTREAM`) so neither side reconstructed a syntactic
-  line when extracted.  Asserts the reframer runs (markers on their
-  own lines) AND each cluster carries the full conflict line
-  (`    if (cond && value > LOCAL) {` / `... > UPSTREAM) {`), so
-  dropping one side leaves a buildable file.  Inline framing
-  (cluster < 1/4 of the line) is preserved for tiny single-word
-  edits via a separate path; this case exercises the line-level
-  branch.
 * `09-refuse-no-commit/` — atomicity invariant, negative half.
   GETCheckout now appends the `get` ULOG row and advances local
   REFS BEFORE WALKTreeLazy mutates the wt; pre-flight refusals

@@ -37,11 +37,12 @@ or precede an existing stamp's owning row.  One ts is reserved
 per command, shared by every row + file stamp written.
 
 Version info — branch ref plus tip/merge-participant SHAs — lives in
-the URI **query** (`?`-side), parsed by `dog/QURY`.  The **fragment**
-(`#`-side) is reserved for content-locator syntax parsed by `dog/FRAG`
-(symbol / line / regex / spot).  Never mix SHAs into the fragment: a
-query like `bro ?heads/main#func:foo` only makes sense if the `#`-side
-is reserved for in-tree navigation.
+the URI **query** (`?`-side); each `&`-separated chunk is a
+path-shaped ref (branch / tag / 6..40-hex sha prefix).  The
+**fragment** (`#`-side) is free-form payload (line jump, symbol,
+search body, count); never mix SHAs into the fragment: a query like
+`bro ?heads/main#func:foo` only makes sense if the `#`-side is
+reserved for in-tree navigation.
 
 ### Move-form put rows
 
@@ -94,13 +95,13 @@ Whatever branch the wt is on is encoded as the first REF spec in the
 query of the most recent `get` / `post` / `patch` row (`heads/main`,
 `heads/feat`, ...).  A detached checkout's query has only SHA specs
 and no ref.  `SNIFFAtBaseline` parses the latest such row; callers
-walk `u.query` with `QURYu8sDrain` to pull out the ref and SHA(s).
+walk `u.query` with `DOGRefDrain` to pull out the ref and SHA(s).
 
 ## Baseline URI
 
 The most recent `get` / `post` row names the current baseline tree.
 The canonical shape is `?<branch>#<curhash>`: query carries the
-absolute branch path (one REF spec per dog/QURY), fragment carries
+absolute branch path (one path-shaped ref), fragment carries
 the wt's current 40-hex commit sha.  `patch` rows do **not** redefine
 the baseline; they record absorbed work since the last `get`/`post`
 and are consumed by the next POST (see "Patch row shapes" below).
@@ -115,7 +116,7 @@ that POST consumes when assembling the next commit's headers.  All
 user inputs (branch names, hashlets, msg-substring searches) are
 resolved at PATCH time into the canonical 40-hex sha of the commit
 actually applied; the row's query/fragment slot then holds that
-sha verbatim (a single `QURY_SHA` spec).  The branch name / search
+sha verbatim (a single 40-hex chunk).  The branch name / search
 string is **not** logged — it doesn't survive renames, and POST
 doesn't need it to assemble headers.
 

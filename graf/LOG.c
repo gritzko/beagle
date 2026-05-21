@@ -38,7 +38,6 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
-#include "dog/FRAG.h"
 #include "dog/HUNK.h"
 #include "dog/tok/TOK.h"
 #include "dog/ULOG.h"
@@ -158,14 +157,12 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
     return HEXu8sDrainSome(sb, hx);
 }
 
-//  `#N` → cap; missing or non-numeric fragment → unlimited.
+//  `#N` / `#LN` → cap; missing or non-numeric fragment → unlimited.
 static u32 graflog_count_from_frag(uricp u) {
     if (u8csEmpty(u->fragment)) return LOG_DEFAULT_COUNT;
-    frag f = {};
-    a_dup(u8c, fr, u->fragment);
-    if (FRAGu8sDrain(fr, &f) != OK) return LOG_DEFAULT_COUNT;
-    if (f.type != FRAG_LINE || f.line == 0) return LOG_DEFAULT_COUNT;
-    return f.line;
+    u8csc fr = {u->fragment[0], u->fragment[1]};
+    u32 n = HUNKu8sFragSplit(fr, NULL);
+    return n == 0 ? LOG_DEFAULT_COUNT : n;
 }
 
 //  Parse "Name <email> ts tz" into (name, ts).  Best-effort.

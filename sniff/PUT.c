@@ -28,7 +28,6 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
-#include "dog/QURY.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -888,14 +887,12 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
         if (SNIFFAtCurTip(&ts, &verb, &u) == OK) {
             a_dup(u8c, q, u.query);
             while (!$empty(q)) {
-                qref spec = {};
-                if (QURYu8sDrain(q, &spec) != OK) break;
-                if (spec.type == QURY_NONE) {
-                    if ($empty(q)) break;
-                    continue;
-                }
-                if (spec.type == QURY_REF) {
-                    u8bFeed(cur_buf, spec.body);
+                u8cs chunk = {};
+                DOGRefDrain(q, chunk);
+                if ($empty(chunk)) continue;
+                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+                if (!is_sha) {
+                    u8bFeed(cur_buf, chunk);
                     break;
                 }
             }

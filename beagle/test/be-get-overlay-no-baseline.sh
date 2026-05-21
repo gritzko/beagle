@@ -15,9 +15,11 @@ echo "x v1" > x.txt
 "$BE" post 'v1 msg' >/dev/null
 T1=$(sp_head_hex)
 PRIMARY="$(pwd)"
-#  Project shard lives at .be/<project>/.  vc_fresh_wt's first commit
-#  was `be post 'v1 msg'` → URI basename "v1 msg" → project="v1 msg".
-PRIMARY_PROJ="v1 msg"
+#  Project shard lives at .be/<project>/.  With no `?/<proj>` URI and
+#  no URL-form authority, `be_ensure_project_repo` falls back to
+#  basename($PWD).  vc_fresh_wt creates `$TMP/wt`, so the project is
+#  `wt`.
+PRIMARY_PROJ="wt"
 
 #  Fresh secondary wt: `.be` is a regular FILE = its own wtlog, with
 #  only a row-0 `repo` anchor naming the primary's project shard.

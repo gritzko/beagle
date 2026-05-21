@@ -30,7 +30,6 @@
 #include "dog/CLI.h"
 #include "dog/DOG.h"
 #include "dog/git/IGNO.h"
-#include "dog/QURY.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/REBASE.h"
@@ -925,19 +924,17 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
         }
     }
 
-    //  Walk the query for the branch (first QURY_REF).  Single-parent
-    //  invariant: any extra SHAs in the query are legacy artefacts from
-    //  pre-rewrite PATCH rows; they're ignored.
+    //  Walk the query for the branch (first non-sha chunk).
+    //  Single-parent invariant: any extra SHAs in the query are
+    //  legacy artefacts from pre-rewrite PATCH rows; they're ignored.
     a_dup(u8c, q, u.query);
     while (!$empty(q)) {
-        qref spec = {};
-        if (QURYu8sDrain(q, &spec) != OK) break;
-        if (spec.type == QURY_NONE) {
-            if ($empty(q)) break;
-            continue;
-        }
-        if (spec.type == QURY_REF && u8bDataLen(out) == 0) {
-            u8bFeed(out, spec.body);
+        u8cs chunk = {};
+        DOGRefDrain(q, chunk);
+        if ($empty(chunk)) continue;
+        b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+        if (!is_sha && u8bDataLen(out) == 0) {
+            u8bFeed(out, chunk);
             break;
         }
     }
@@ -990,6 +987,12 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     //  (malloc-backed); upgrading to `u8bMap` would drop the cost
     //  but POST mixes Free/UnMap conventions across its many
     //  cleanup paths — keep `Allocate` here for now.
+    call(u8bAllocate, bu,           1UL << 24);
+    call(u8bAllocate, wu,           1UL << 24);
+    call(u8bAllocate, put_unsorted, 1UL << 22);
+    call(u8bAllocate, del_unsorted, 1UL << 22);
+    call(u8bAllocate, put_buf,      1UL << 22);
+    call(u8bAllocate, del_buf,      1UL << 22);
 
 #define PD_FREE_ALL()                                  \
     do {                                                \
@@ -997,19 +1000,6 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
         u8bFree(put_unsorted); u8bFree(del_unsorted);   \
         u8bFree(put_buf); u8bFree(del_buf);             \
     } while (0)
-
-    //  Cumulative cleanup on partial-allocation failure: free everything
-    //  successfully allocated so far before returning.  u8bFree on a
-    //  zero-init Bu8 returns BISNULL, harmless.
-    {
-        ok64 ar;
-        if ((ar = u8bAllocate(bu,           1UL << 24)) != OK) { PD_FREE_ALL(); return ar; }
-        if ((ar = u8bAllocate(wu,           1UL << 24)) != OK) { PD_FREE_ALL(); return ar; }
-        if ((ar = u8bAllocate(put_unsorted, 1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
-        if ((ar = u8bAllocate(del_unsorted, 1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
-        if ((ar = u8bAllocate(put_buf,      1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
-        if ((ar = u8bAllocate(del_buf,      1UL << 22)) != OK) { PD_FREE_ALL(); return ar; }
-    }
 
     if (*have_base) {
         ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);
@@ -1683,17 +1673,15 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         uri u = {};
         ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
         if (br == OK) {
-            //  Baseline branch is the first QURY_REF in the row's query.
+            //  Baseline branch is the first non-sha chunk in the row's query.
             a_dup(u8c, q, u.query);
             while (!$empty(q)) {
-                qref spec = {};
-                if (QURYu8sDrain(q, &spec) != OK) break;
-                if (spec.type == QURY_NONE) {
-                    if ($empty(q)) break;
-                    continue;
-                }
-                if (spec.type == QURY_REF) {
-                    u8bFeed(cur_buf, spec.body);
+                u8cs chunk = {};
+                DOGRefDrain(q, chunk);
+                if ($empty(chunk)) continue;
+                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+                if (!is_sha) {
+                    u8bFeed(cur_buf, chunk);
                     break;
                 }
             }
@@ -2122,11 +2110,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  the (old, new) tip pair; we just hand it the target's view.
     cascade_ctx casc = {};
     if (stack_was_rewritten) {
-        ok64 aa = u8bAllocate(casc.arena, CASCADE_MAX * 256);
-        if (aa != OK) return aa;
+        call(u8bAllocate, casc.arena, CASCADE_MAX * 256);
         keep_pack p3 = {};
-        ok64 po = KEEPPackOpen(&p3);
-        if (po != OK) { u8bFree(casc.arena); return po; }
+        call(KEEPPackOpen, &p3);
         p3.strict_order = NO;
         casc.p = &p3;
         //  Skip cur during cascade: auto-sync handles it directly.
@@ -2139,10 +2125,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
-            u8bFree(casc.arena);
             return cw;
         }
-        if (cl3 != OK) { u8bFree(casc.arena); return cl3; }
+        if (cl3 != OK) return cl3;
     }
 
     //  --- 9. Advance target's REFS row via CAS on target_tip. ---
@@ -2170,10 +2155,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                     "sniff: post: REFS for `?" U8SFMT "` advanced "
                     "concurrently — retry\n",
                     u8sFmt(target_branch));
-            if (casc.arena[0]) u8bFree(casc.arena);
             return REFSCAS;
         }
-        if (cas != OK) { if (casc.arena[0]) u8bFree(casc.arena); return cas; }
+        if (cas != OK) return cas;
     }
     (void)advance_target_branch;
 
@@ -2613,7 +2597,7 @@ ok64 POSTCommit(u8cs target_branch,
 
     //  9. Verify each parent commit exists locally; refuse otherwise.
     //     `parents[]` already holds the decoded sha1 bytes from the
-    //     baseline row's QURY scan; `post_parent_sha` re-runs the
+    //     baseline row's ref-chunk scan; `post_parent_sha` re-runs the
     //     keeper lookup as a sanity check.
     if (has_parent) {
         a_pad(u8, hx_buf, 40);
@@ -2637,12 +2621,7 @@ ok64 POSTCommit(u8cs target_branch,
     //  10. Build commit body.  Single-parent invariant: at most one
     //      `parent <hex>\n` line.
     Bu8 com = {};
-    if (u8bAllocate(com, 4096) != OK) {
-        KEEPPackClose(&p);
-        u8bFree(tree_bodies);
-        post_ctx_free(&ctx);
-        return SNIFFFAIL;
-    }
+    call(u8bAllocate, com, 4096);
     a_cstr(tree_label, "tree ");
     u8bFeed(com, tree_label);
     a_pad(u8, thex, 40);
@@ -2852,31 +2831,15 @@ ok64 POSTCommit(u8cs target_branch,
             }
 
             //  Refuse to commit any file containing PATCH's
-            //  4-char conflict markers (`<<<<`).  An unattended
-            //  `patch && post` chain stops here with POSTCFLCT
-            //  before recording a half-merged commit (VERBS.md
-            //  §PATCH "Reporting" — conflict-loud rule).  Match
-            //  only at start-of-line — WEAVE emits markers
-            //  line-anchored, and gating on that excludes prose
-            //  references (docs / commit messages / comments)
-            //  that mention the marker syntax inline.
-            //  `force=YES` skips the scan entirely.
+            //  conflict-marker triple (`<<<<…||||…>>>>`).  An
+            //  unattended `patch && post` chain stops here with
+            //  POSTCFLCT before recording a half-merged commit
+            //  (VERBS.md §PATCH "Reporting" — conflict-loud
+            //  rule).  Lone `<<<<` (prose mentions) doesn't
+            //  trigger — see `SNIFFHasConflictMarker` for the
+            //  exact predicate.  `force=YES` skips the scan.
             if (!force) {
-                a_cstr(marker, "<<<<");
-                a_dup(u8c, scan, body);
-                b8 at_line_start = YES;
-                b8 cflct = NO;
-                while (!u8csEmpty(scan)) {
-                    if (at_line_start &&
-                        u8csLen(scan) >= 4 &&
-                        u8csHasPrefix(scan, marker)) {
-                        cflct = YES;
-                        break;
-                    }
-                    at_line_start = (*scan[0] == '\n');
-                    u8csUsed(scan, 1);
-                }
-                if (cflct) {
+                if (SNIFFHasConflictMarker(body)) {
                     fprintf(stderr,
                         "sniff: post: refusing — conflict "
                         "marker in tracked file " U8SFMT " "
@@ -3001,13 +2964,11 @@ ok64 POSTCommit(u8cs target_branch,
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
-            u8bFree(casc.arena);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cw;
         }
         if (cl3 != OK) {
-            u8bFree(casc.arena);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
             return cl3;

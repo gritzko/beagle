@@ -12,13 +12,14 @@ opens both dogs beforehand (mirrors `GRAFBlame`).
 
 ## URI grammar
 
-    path ( '?' qref ('&' qref)* )?
+    path ( '?' ref ('&' ref)* )?
 
   - `path` — repo-relative, UTF-8, `abc/PATH.h` rules.  Trailing `/`
     flags tree mode.  Empty path = repo root (tree).
-  - `qref` — one spec parsed by `QURYu8sDrain` from `dog/QURY.h`;
-    either `QURY_SHA` (hex ≥6) or `QURY_REF` (branch/tag, optional
-    `~N`/`^N`).
+  - `ref` — path-shaped string between `&` separators.  Hex chunks of
+    6..40 chars classify as sha prefixes (`DOGIsHashlet`); everything
+    else is a branch/tag name, with `./X` / `../X` / `..` resolved
+    against the cur branch via `DOGRefAbsolutize`.
   - `n ≥ 1`.  `n == 1` is the degenerate identity case (weave of
     one).
 
@@ -42,19 +43,19 @@ iterate the tree themselves.
 
 ### 1. URI split
 
-Use `abc/URI.h` to split `path` / `query`.  Loop `QURYu8sDrain` on
-the query into a small `qref[QGET_MAX]` (cap at 8 — octopus limit).
+Use `abc/URI.h` to split `path` / `query`.  Loop `DOGRefDrain` on
+the query into a small `u8cs[QGET_MAX]` (cap at 8 — octopus limit).
 Trailing-slash → `tree_mode = YES`; strip for path descent.
 Extension picked later via `PATHu8sExt` on the final leaf name.
 
 ### 2. Ref → commit sha → gen
 
-For each `qref`:
+For each chunk:
 
-  - `QURY_SHA` → `KEEPGetExact` (or `KEEPGet` on prefix) verify
-    `DOG_OBJ_COMMIT`.
-  - `QURY_REF` → `REFSResolve` (`keeper/REFS.h`) to the tip commit;
-    apply `~N`/`^N` by walking `COMMIT_PARENT` in the DAG.
+  - hex ≥6 (`DOGIsHashlet`) → `KEEPGetExact` (or `KEEPGet` on prefix)
+    verify `DOG_OBJ_COMMIT`.
+  - otherwise → `REFSResolve` (`keeper/REFS.h`) to the tip commit;
+    relative `./X`/`../X`/`..` resolved via `DOGRefAbsolutize`.
   - `gen` via DAG `COMMIT_GEN` lookup; fallback to commit header
     parse if missing.
 

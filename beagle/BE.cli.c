@@ -13,7 +13,6 @@
 #include "abc/RON.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
-#include "dog/QURY.h"
 #include "dog/ULOG.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
@@ -1433,17 +1432,20 @@ static ok64 be_ensure_project_repo(uricp u) {
     u8cs proj = {};
     //  (1) Explicit `?/<proj>/...` query slot.
     if (u) (void)be_url_project(u, proj);
-    //  (2) URL basename via SNIFFSubBasename.  Try u->data first
-    //      (full URI string, e.g. `ssh://host/foo/bar.git?master`),
-    //      fall through to u->path (file: clones, bare paths).
-    if (u8csEmpty(proj) && u) {
+    //  (2) URL basename via SNIFFSubBasename — only for URL-shaped
+    //      URIs (have scheme or authority).  Local file path args
+    //      like `be put a.txt` would otherwise anchor the store at
+    //      `.be/a.txt/`, breaking subsequent `keeper subs` /
+    //      project-relative lookups.
+    if (u8csEmpty(proj) && u &&
+        (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority))) {
         u8cs candidate = {NULL, NULL};
         if (!u8csEmpty(u->data))      u8csMv(candidate, u->data);
         else if (!u8csEmpty(u->path)) u8csMv(candidate, u->path);
         if (!u8csEmpty(candidate))
             (void)SNIFFSubBasename(candidate, proj);
     }
-    //  (3) `basename($PWD)` — last resort.
+    //  (3) `basename($PWD)` — fresh-init in a named directory.
     if (u8csEmpty(proj)) PATHu8sBase(proj, cwd_s);
 
     if (u8csEmpty(proj)) {
@@ -1771,30 +1773,23 @@ static ok64 BEDiff(cli *c, b8 seq) {
     return BEDispatch(c, steps + start, nsteps - start, seq);
 }
 
-//  Ref-expecting verbs (post, patch) may read path/fragment as the query
-//  when it fits QURY's
-//  ref grammar — `be post feat` (path) and `be post '#feat'` (fragment)
-//  both yield query=feat.  Promotion only happens when query is empty
-//  (caller hasn't explicitly set a ref).  Returns YES if anything moved.
+//  Ref-expecting verbs (post, patch) accept a path-shaped argument as
+//  the ref — `be get feat/sub` → query="feat/sub".  Bareword promotion
+//  is centralised in DOGPromoteBareword (per VERBS.md §"Bareword
+//  defaults"); this is the safety net for paths that URILexer already
+//  parked in `u->path`.  Skip when the path looks like a filesystem
+//  path (leading `/`) or rides a non-empty scheme (`file:`, `ssh:`,
+//  etc.) — both shapes go to keeper / sniff as paths, not refs.
+//  Returns YES if anything moved.
 static b8 be_promote_to_ref(uri *u) {
-    //  Legacy: a URILexer-produced path that matches QURY ref grammar
-    //  (e.g. `be get feat/sub` → path="feat/sub") gets routed to the
-    //  query slot.  Bareword promotion is now handled centrally by
-    //  DOGPromoteBareword in becli() per VERBS.md §"Bareword
-    //  defaults"; the fragment→query branch was removed so POST's
-    //  fragment-default (`be post fix` ⇒ msg="fix") survives.
     if (!$empty(u->query)) return NO;
-    qref qr = {};
-    if (!$empty(u->path)) {
-        u8cs s = {u->path[0], u->path[1]};
-        if (QURYu8sDrain(s, &qr) == OK &&
-            (qr.type == QURY_REF || qr.type == QURY_SHA)) {
-            u8csMv(u->query, s);
-            u->path[0] = u->path[1] = NULL;
-            return YES;
-        }
-    }
-    return NO;
+    if ($empty(u->path)) return NO;
+    if (!$empty(u->scheme)) return NO;
+    if (u->path[0][0] == '/') return NO;
+    u8cs s = {u->path[0], u->path[1]};
+    u8csMv(u->query, s);
+    u->path[0] = u->path[1] = NULL;
+    return YES;
 }
 
 //  `be patch <uri>` — 3-way merge `uri`'s target ref/sha into the

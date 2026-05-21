@@ -25,7 +25,6 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
-#include "dog/QURY.h"
 #include "dog/WHIFF.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
@@ -48,23 +47,21 @@ typedef struct {
     u32  gen;         // DAG generation (0 if not indexed)
 } get_tip;
 
-// --- Resolve one qref to (sha, h40, gen) ---
+// --- Resolve one ref chunk to (sha, h40, gen) ---
 //
 //  Front-door for projector URIs (`tree:`, `blob:`, etc.).  Routes
 //  through KEEPResolveRef so the URI accepts every shape the CLI
 //  understands: full sha, hashlet prefix, absolute / relative branch
-//  paths.  Caller has already classified the qref (SHA or REF) — we
-//  hand the body to the resolver which redoes its own classification
-//  internally.  After resolution we insist on COMMIT-typed output:
-//  graf's projector pipeline walks commit→tree→blob; passing a tree
-//  sha at this seat would silently produce empty output (see
+//  paths.  After resolution we insist on COMMIT-typed output: graf's
+//  projector pipeline walks commit→tree→blob; passing a tree sha at
+//  this seat would silently produce empty output (see
 //  test/patch/26-deep-tree-take-theirs for the historical bug).
-static ok64 get_resolve_qref(get_tip *out, qref const *q) {
-    sane(out && q);
-    if (q->type != QURY_SHA && q->type != QURY_REF) return GETBAD;
+static ok64 get_resolve_chunk(get_tip *out, u8cs chunk) {
+    sane(out);
+    if ($empty(chunk)) return GETBAD;
 
     u8cs no_cur = {};
-    ok64 rr = KEEPResolveRef(&out->sha, q->body, no_cur);
+    ok64 rr = KEEPResolveRef(&out->sha, chunk, no_cur);
     if (rr != OK) return GETFAIL;
 
     //  Verify the resolved object is a COMMIT (not a tree / blob / tag).
@@ -111,10 +108,10 @@ static ok64 get_drain_uri(u8cs path_out,
     u8cs query = {q + 1, data[1]};
     while (!$empty(query)) {
         if (*ntips >= maxtips) return GETBAD;
-        qref qr = {};
-        call(QURYu8sDrain, query, &qr);
-        if (qr.type == QURY_NONE) break;
-        call(get_resolve_qref, &tips[*ntips], &qr);
+        u8cs chunk = {};
+        DOGRefDrain(query, chunk);
+        if ($empty(chunk)) continue;
+        call(get_resolve_chunk, &tips[*ntips], chunk);
         (*ntips)++;
     }
     done;
@@ -207,7 +204,7 @@ ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b) {
     if (lca_h == 0) done;   // unrelated histories — leave out zero
 
     //  Recover the full sha by fetching the commit body from keeper
-    //  and rehashing (identical to the trick `get_resolve_qref`
+    //  and rehashing (identical to the trick `get_resolve_chunk`
     //  uses — KEEPObjSha("commit <len>\0<body>") is canonical).
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, 1UL << 20);

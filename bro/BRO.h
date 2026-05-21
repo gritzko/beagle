@@ -7,7 +7,6 @@
 #include "abc/URI.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
-#include "dog/FRAG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 
@@ -45,7 +44,9 @@ typedef struct {
     u32  line;    // 1-based line number, or 0
 } BROloc;
 
-// Parse a hunk's URI into path + symbol + line. Single URI+FRAG parse.
+// Parse a hunk's URI into path + symbol + line.  Fragments are
+// free-form; HUNKu8sFragSplit pulls out the trailing `[L]?<digits>`
+// (and strips surrounding quotes from the symbol body).
 fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
     *loc = (BROloc){};
     if ($empty(hk->uri)) return;
@@ -58,22 +59,10 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
             u8csFed(loc->path, 1);
     }
     if (!$empty(u.fragment)) {
-        frag fr = {};
-        if (FRAGu8sDrain(u.fragment, &fr) == OK) {
-            //  `#42`/`#42-50` → line.  Anything non-line non-empty is the
-            //  symbol body — strip a single pair of surrounding quotes
-            //  written by HUNKu8sMakeURI for non-ident symbols.
-            loc->line = fr.line;
-            if (fr.type != FRAG_LINE && !$empty(u.fragment)) {
-                u8cs sym = {u.fragment[0], u.fragment[1]};
-                if ($len(sym) >= 2 && *sym[0] == '\'' &&
-                    *$last(sym) == '\'') {
-                    u8csUsed1(sym);
-                    u8csShed1(sym);
-                }
-                $mv(loc->symbol, sym);
-            }
-        }
+        u8csc frag = {u.fragment[0], u.fragment[1]};
+        u8cs sym = {};
+        loc->line = HUNKu8sFragSplit(frag, sym);
+        if (!$empty(sym)) $mv(loc->symbol, sym);
     }
 }
 

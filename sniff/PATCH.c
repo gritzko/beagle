@@ -31,10 +31,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
-#include <unistd.h>     // isatty / STDOUT_FILENO
-#include "dog/HOME.h"
-#include "dog/QURY.h"
-#include "dog/ULOG.h"
+#include "dog/DOG.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
@@ -256,23 +253,21 @@ typedef struct {
     b8    use_fork_base;
 } patch_stats;
 
-//  Emit a per-file status row via the shared dog/ULOG helper —
-//  same `<date>\t<status>\t<path>` shape every other verb (be bare,
-//  be get) prints to stdout, with the status token wearing its
-//  palette color (ULOG_VERB_COLORS).
-//
-//  Status verbs: applied / merged / conflict / dirty / kept.  Each
-//  maps to a ron60 constant the helper uses to look up the color.
-con ron60 PATCH_V_APPLIED  = 0x25d34c2da68;
-con ron60 PATCH_V_MERGED   = 0xc69daba68;
-con ron60 PATCH_V_CONFLICT = 0x9f3caac2d9f8;
-con ron60 PATCH_V_DIRTY    = 0x28b76e3d;
-con ron60 PATCH_V_KEPT     = 0xbe9d38;
-
-static void emit_status(const char *status, ron60 verb, u8cs path) {
+//  Emit a per-file status row in the `patch <status> <path>` form
+//  required by VERBS.md §PATCH "Reporting".  Status is one of
+//  applied / merged / dirty / conflict.  Caller passes the path
+//  (no leading `./` — that's left to the consumer's regex).
+//  Routed to stdout so consumers can capture the report via `>`;
+//  conflict rows are additionally echoed to stderr by the caller.
+static void emit_status(const char *status, u8cs path) {
     if ($empty(path)) return;
-    b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
-    ULOGFeedStatusLine(tty, status, verb, path);
+    fprintf(stdout, "patch\t%s\t%.*s\n",
+            status,
+            (int)$len(path), (char *)path[0]);
+    if (strcmp(status, "conflict") == 0) {
+        fprintf(stderr, "patch\tconflict\t%.*s\n",
+                (int)$len(path), (char *)path[0]);
+    }
 }
 
 //  Check whether the wt's on-disk bytes for `childpath` differ from
@@ -290,7 +285,7 @@ static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
     KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
     FILEUnMap(mapped);
     if (!sha1Eq(&disk_sha, baseline_sha)) {
-        emit_status("dirty", PATCH_V_DIRTY, childpath);
+        emit_status("dirty", childpath);
     }
 }
 
@@ -318,7 +313,7 @@ static void stamp_wrote(u8cs reporoot, u8cs childpath, patch_stats *st) {
 //  appears in documentation prose like VERBS.md — is *not* a conflict.
 //  A nested `<<<<` before the close aborts the candidate triple and the
 //  scan continues past the inner open.
-static b8 has_conflict_marker(u8cs bytes) {
+b8 SNIFFHasConflictMarker(u8cs bytes) {
     u8cp p = bytes[0];
     u8cp e = bytes[1];
     while (p + 12 <= e) {     // need at least `<x4 |x4 >x4`
@@ -372,25 +367,14 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
          fork_commit && our_commit && thr_commit);
 
     Bu8 lbuf = {}, obuf = {}, tbuf = {};
-    //  Cumulative cleanup on partial-allocation failure.  u8bFree on a
-    //  zero-init Bu8 returns BISNULL, harmless.
-    {
-        ok64 ao;
-        if ((ao = u8bAllocate(lbuf, PATCH_TREE_BUF)) != OK) {
-            return ao;
-        }
-        if ((ao = u8bAllocate(obuf, PATCH_TREE_BUF)) != OK) {
-            u8bFree(lbuf); return ao;
-        }
-        if ((ao = u8bAllocate(tbuf, PATCH_TREE_BUF)) != OK) {
-            u8bFree(lbuf); u8bFree(obuf); return ao;
-        }
-    }
+    call(u8bAllocate, lbuf, PATCH_TREE_BUF);
+    call(u8bAllocate, obuf, PATCH_TREE_BUF);
+    call(u8bAllocate, tbuf, PATCH_TREE_BUF);
 
     //  Missing-at-commit is not fatal — the dir just didn't exist
     //  on that side, we treat its entry set as empty.
     //  Use COMMIT shas (not the per-recursion TREE shas) — graf's
-    //  get_resolve_qref rejects non-commit objects with GETFAIL.
+    //  get_resolve_chunk rejects non-commit objects with GETFAIL.
     //  The tree-sha tuple is consumed by the subtree-equality
     //  short-circuit at the entry level, not here.
     ok64 lo = fetch_tree(lbuf, dir_path, fork_commit);
@@ -425,14 +409,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
     sort_entries(te, tn);
 
     Bu8 mbuf = {};
-    {
-        ok64 ao = u8bAllocate(mbuf, PATCH_BLOB_BUF);
-        if (ao != OK) {
-            free(le); free(oe); free(te);
-            u8bFree(lbuf); u8bFree(obuf); u8bFree(tbuf);
-            return ao;
-        }
-    }
+    call(u8bAllocate, mbuf, PATCH_BLOB_BUF);
 
     //  Lockstep walk over three sorted arrays.  At each iteration
     //  we pick the smallest head-of-arrays name, collect the
@@ -554,7 +531,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
         }
         if (l && o && t && o_eq_l && !t_eq_l) {
             //  Only theirs changed.  GRAFGet needs the COMMIT sha in
-            //  the URI query (graf's get_resolve_qref rejects non-
+            //  the URI query (graf's get_resolve_chunk rejects non-
             //  commit objects with GETFAIL).  Use `thr_commit` — at
             //  the root recursion `thr == thr_commit` so this is a
             //  no-op; at deeper recursion `thr` is the subdir's
@@ -567,7 +544,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             if (wo == OK) {
                 st->take_theirs++;
                 stamp_wrote(reporoot, childpath, st);
-                emit_status("applied", PATCH_V_APPLIED, childpath);
+                emit_status("applied", childpath);
             } else {
                 st->failed++;
             }
@@ -580,7 +557,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             //  did not touch this path, the user/prior-PATCH bytes
             //  are preserved).
             st->noop++;
-            emit_status("dirty", PATCH_V_DIRTY, childpath);
+            emit_status("dirty", childpath);
             continue;
         }
         if (l && o && t && o_eq_t) {
@@ -649,7 +626,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                                              NULL, 0, mbuf);
             }
             a_dup(u8c, bytes, u8bData(mbuf));
-            b8 conflict = has_conflict_marker(bytes);
+            b8 conflict = SNIFFHasConflictMarker(bytes);
             //  Write result using theirs' mode when ours == fork mode,
             //  else ours' mode.  MVP: always ours' mode.
             ok64 wo = write_blob(reporoot, childpath,
@@ -661,10 +638,10 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         "sniff: patch: CONFLICT (content) %.*s\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->merged_conflict++;
-                    emit_status("conflict", PATCH_V_CONFLICT, childpath);
+                    emit_status("conflict", childpath);
                 } else {
                     st->merged++;
-                    emit_status("merged", PATCH_V_MERGED, childpath);
+                    emit_status("merged", childpath);
                 }
             } else {
                 st->failed++;
@@ -682,7 +659,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             if (wo == OK) {
                 st->added++;
                 stamp_wrote(reporoot, childpath, st);
-                emit_status("applied", PATCH_V_APPLIED, childpath);
+                emit_status("applied", childpath);
             } else {
                 st->failed++;
             }
@@ -704,7 +681,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                                          DAG_EDGE_PARENT | DAG_EDGE_FOSTER,
                                          NULL, 0, mbuf);
             a_dup(u8c, bytes, u8bData(mbuf));
-            b8 conflict = has_conflict_marker(bytes);
+            b8 conflict = SNIFFHasConflictMarker(bytes);
             ok64 wo = write_blob(reporoot, childpath,
                                  o->mode, bytes);
             if (wo == OK) {
@@ -746,7 +723,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                     "intentional\n",
                     (int)$len(childpath), (char *)childpath[0]);
                 st->mod_del_kept++;
-                emit_status("kept", PATCH_V_KEPT, childpath);
+                emit_status("kept", childpath);
             }
             continue;
         }
@@ -771,7 +748,7 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                         "re-delete if intentional\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->mod_del_kept++;
-                    emit_status("kept", PATCH_V_KEPT, childpath);
+                    emit_status("kept", childpath);
                 } else {
                     st->failed++;
                 }
@@ -805,21 +782,40 @@ static ok64 resolve_current_branch(u8cs out_branch);
 //  into the original `target_query` (when absolute / SHA / unparsable).
 //  Mirrors sniff/SNIFF.exe.c:sniff_resolve_rel which does the same
 //  dance for POST/GET.  Output slice's lifetime matches qbuf's data.
-static ok64 absolutise_query(u8cs out_q, u8b qbuf, u8cs target_query) {
+static ok64 absolutise_query(u8cs out_q, path8b qbuf, u8cs target_query) {
     sane(out_q && qbuf);
     u8csMv(out_q, target_query);
     if (u8csEmpty(target_query)) done;
 
+    //  Only relative refs (`./X`, `../X`, `..`) need absolutising; any
+    //  absolute path is passed through.  Drain the first chunk so a
+    //  legacy `<branch>&<sha>` query routes through the branch slot.
     a_dup(u8c, q_in, target_query);
-    qref qspec = {};
-    if (QURYu8sDrain(q_in, &qspec) != OK) done;
-    if (qspec.type != QURY_REF || qspec.rel == QURY_REL_NONE) done;
+    path8s first = {};
+    DOGRefDrain(q_in, first);
+    if ($empty(first)) done;
+    if (first[0][0] != '.') done;
 
-    u8cs current = {};
+    path8s current = {};
     (void)resolve_current_branch(current);
+    //  Resolve `./X` / `../X` / `..` against `current` via PATH
+    //  primitives — branch semantics (popping past trunk yields
+    //  trunk, not "..").
     u8bReset(qbuf);
-    if (QURYBuildAbsolute(qbuf, &qspec, current) != OK) fail(PATCHFAIL);
-    u8csMv(out_q, u8bDataC(qbuf));
+    if (!$empty(current)) call(PATHu8bFeed, qbuf, current);
+    path8s rel = {first[0], first[1]};
+    if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
+        u8csUsed(rel, 2);
+    } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
+               rel[0][1] == '.' && rel[0][2] == '/') {
+        call(PATHu8bPop, qbuf);
+        u8csUsed(rel, 3);
+    } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
+        call(PATHu8bPop, qbuf);
+        u8csUsed(rel, 2);
+    }
+    if (!$empty(rel)) call(PATHu8bPush, qbuf, rel);
+    u8csMv(out_q, $path(qbuf));
     done;
 }
 
@@ -886,7 +882,7 @@ static ok64 resolve_ours(sha1 *out) {
 
 //  Pull the wt's current absolute branch path from the latest
 //  baseline row.  The query carries `<branch>&<sha>...` per dog/QURY;
-//  the first qref's body (when type==REF) is the branch path.  On
+//  the first non-sha chunk is the branch path.  On
 //  detached / branchless baselines, returns OK with `*out_branch`
 //  empty (= trunk).
 static ok64 resolve_current_branch(u8cs out_branch) {
@@ -899,18 +895,16 @@ static ok64 resolve_current_branch(u8cs out_branch) {
     if (br != OK) done;        //  no baseline → trunk
     a_dup(u8c, q, bu.query);
     while (!u8csEmpty(q)) {
-        qref spec = {};
-        if (QURYu8sDrain(q, &spec) != OK) break;
-        if (spec.type == QURY_NONE) {
-            if ($empty(q)) break;
-            continue;
-        }
-        if (spec.type == QURY_REF) {
-            //  body slice points into the ULOG mmap; same lifetime
+        u8cs chunk = {};
+        DOGRefDrain(q, chunk);
+        if ($empty(chunk)) continue;
+        b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+        if (!is_sha) {
+            //  Chunk slice points into the ULOG mmap; same lifetime
             //  as the caller's `bu` reference.  Slices live until
             //  ULOGClose / ULOGTruncate (per SNIFFAtBaseline contract).
-            out_branch[0] = spec.body[0];
-            out_branch[1] = spec.body[1];
+            out_branch[0] = chunk[0];
+            out_branch[1] = chunk[1];
             done;
         }
     }
@@ -943,36 +937,58 @@ static void path_parent(u8cs out, u8cs abs_branch) {
 static ok64 resolve_parent_tip(sha1 *out, u8cs reporoot,
                                u8cs target_query) {
     sane(out);
-    qref qspec = {};
+    //  Take the first chunk of the multi-ref query as the branch
+    //  body.  A 40-hex chunk is a sha target — no parent branch.
     a_dup(u8c, q_in, target_query);
-    if (QURYu8sDrain(q_in, &qspec) != OK) return PATCHURELT;
-    if (qspec.type != QURY_REF) return PATCHURELT;  //  sha target
+    path8s first = {};
+    DOGRefDrain(q_in, first);
+    if ($empty(first)) return PATCHURELT;
+    if (u8csLen(first) == 40 && DOGIsHashlet(first)) return PATCHURELT;
 
-    //  Build the target's absolute branch path.
-    u8cs current = {};
+    //  Build the target's absolute branch path.  `.`-prefix refs
+    //  resolve against cur via PATH primitives (Pop/Push) — branch
+    //  semantics: popping past trunk yields trunk, not "..".
+    //  Project-relative refs pass through verbatim.
+    path8s current = {};
     (void)resolve_current_branch(current);
-    a_pad(u8, abs_buf, 256);
-    if (QURYBuildAbsolute(abs_buf, &qspec, current) != OK)
-        return PATCHURELT;
-    a_dup(u8c, abs_path, u8bData(abs_buf));
+    a_path(abs_path);
+    if (first[0][0] == '.') {
+        if (!$empty(current))
+            if (PATHu8bFeed(abs_path, current) != OK) return PATCHURELT;
+        path8s rel = {first[0], first[1]};
+        if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
+            u8csUsed(rel, 2);
+        } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
+                   rel[0][1] == '.' && rel[0][2] == '/') {
+            if (PATHu8bPop(abs_path) != OK) return PATCHURELT;
+            u8csUsed(rel, 3);
+        } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
+            if (PATHu8bPop(abs_path) != OK) return PATCHURELT;
+            u8csUsed(rel, 2);
+        }
+        if (!$empty(rel))
+            if (PATHu8bPush(abs_path, rel) != OK) return PATCHURELT;
+    } else {
+        if (PATHu8bFeed(abs_path, first) != OK) return PATCHURELT;
+    }
 
     //  Parent path = dirname(abs_path).  An empty abs_path means
     //  the target IS the trunk — there is no parent branch to fork
     //  from, so we cannot derive a fork commit.
-    if ($empty(abs_path)) return PATCHURELT;
-    u8cs parent = {};
-    path_parent(parent, abs_path);
+    a_dup(u8c, abs_slice, u8bData(abs_path));
+    if ($empty(abs_slice)) return PATCHURELT;
+    path8s parent = {};
+    path_parent(parent, abs_slice);
 
     //  Re-run resolve_target on the parent path's query.  parent
-    //  is a slice into abs_buf; copy it into a local pad so the
+    //  is a slice into abs_path; copy it into a local buffer so the
     //  query bytes are stable for resolve_target's REFSResolve call.
     //  When `parent` is empty (target is a top-level branch like
     //  ?feat), the resolver looks up trunk's tip via the bare `?`
     //  REFS key — which is exactly the target's parent.
-    a_pad(u8, par_buf, 256);
-    if (!$empty(parent)) call(u8bFeed, par_buf, parent);
-    a_dup(u8c, par_q, u8bData(par_buf));
-    return resolve_target(out, reporoot, par_q);
+    a_path(par_buf);
+    if (!$empty(parent)) call(PATHu8bFeed, par_buf, parent);
+    return resolve_target(out, reporoot, $path(par_buf));
 }
 
 // --- Public entries -------------------------------------------------
@@ -1376,49 +1392,13 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         }
         call(resolve_cherry, &thr_sha, &fork_sha, frag);
     } else {
-        //  Peer-tracking lookup.  When the URI carries an authority
-        //  (`//<host>`), the merge target is "what `be head ssh://<host>`
-        //  last cached" — i.e. the latest `get` row in REFS whose URI
-        //  hosts that authority.  Previously the authority was silently
-        //  dropped here and an empty query fell through to a local
-        //  trunk lookup, picking the user's prior post tip instead of
-        //  the peer's — yielding a degenerate self-merge.  REFSResolve
-        //  already implements the host-substring match; we just need
-        //  to forward the full URI to it.
-        b8 peer_resolved = NO;
-        if (!u8csEmpty(u->authority)) {
-            a_path(keepdir);
-            if (HOMEBranchDir(KEEP.h, keepdir, NULL) == OK) {
-                a_pad(u8, arena, 1024);
-                uri resolved = {};
-                a_dup(u8c, in_uri, u->data);
-                ok64 ro = REFSResolve(&resolved, arena,
-                                      $path(keepdir), in_uri);
-                if (ro == OK && u8csLen(resolved.query) >= 40) {
-                    u8s sb = {thr_sha.data, thr_sha.data + 20};
-                    u8cs hx = {resolved.query[0],
-                               resolved.query[0] + 40};
-                    if (HEXu8sDrainSome(sb, hx) == OK)
-                        peer_resolved = YES;
-                }
-            }
-            if (!peer_resolved) {
-                fprintf(stderr,
-                    "sniff: patch: peer ref not cached for `//" U8SFMT
-                    "` — run `be head ssh://" U8SFMT "` to refresh\n",
-                    u8sFmt(u->authority), u8sFmt(u->authority));
-                fail(PATCHFAIL);
-            }
-        } else {
-            //  Cross-branch PATCH: ensure the target branch's packs are
-            //  loaded into keeper's PAST/DATA view so `resolve_target`,
-            //  graf's WEAVE history walks, and the LCA / blob fetches
-            //  below all resolve their objects.  No-op for tags, peer-
-            //  prefixed refs, or same-branch reads.
-            (void)SNIFFMaybeSwitchGraf(target_query);
-            (void)SNIFFMaybeSwitchKeeper(target_query);
-            call(resolve_target, &thr_sha, reporoot, target_query);
-        }
+        //  Cross-branch PATCH: ensure the target branch's packs are
+        //  loaded into keeper's PAST/DATA view so `resolve_target`,
+        //  graf's WEAVE history walks, and the LCA / blob fetches
+        //  below all resolve their objects.  No-op for tags, peer-
+        //  prefixed refs, or same-branch reads.
+        (void)SNIFFMaybeSwitchGraf(target_query); (void)SNIFFMaybeSwitchKeeper(target_query);
+        call(resolve_target, &thr_sha, reporoot, target_query);
         //  Frag interpretation depends on shape:
         //    PATCH_SHAPE_SQUASH  — no frag.
         //    PATCH_SHAPE_MERGE   — frag is the user-supplied merge
@@ -1631,10 +1611,8 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  line per applied commit).  For now, emit just the resolved
     //  theirs sha — squash absorbs many commits but only the tip is
     //  the row's anchor; ancestor-skip enumeration is TODO.
-    {
-        a_dup(u8c, sha_path, u8bDataC(thex));
-        emit_status("applied", PATCH_V_APPLIED, sha_path);
-    }
+    fprintf(stdout, "patch\tapplied\t%.*s\n",
+            (int)u8bDataLen(thex), (char *)u8bDataHead(thex));
 
     fprintf(stderr,
             "sniff: patch: noop=%u take-theirs=%u merged=%u "
@@ -1700,7 +1678,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     ok64 mo = fetch_merge(mbuf, reporoot, filepath, &our_sha, &thr_sha);
     if (mo != OK) { u8bFree(mbuf); return mo; }
     a_dup(u8c, bytes, u8bData(mbuf));
-    b8 conflict = has_conflict_marker(bytes);
+    b8 conflict = SNIFFHasConflictMarker(bytes);
 
     //  Mode fallback: reuse whatever's on disk.  Not perfect (a
     //  newly-added file has no on-disk mode yet) — fine for MVP.
@@ -1729,6 +1707,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
                 (int)$len(filepath), (char *)filepath[0]);
         return PATCHCFLCT;
     }
-    emit_status("applied", PATCH_V_APPLIED, filepath);
+    fprintf(stdout, "patch\tapplied\t%.*s\n",
+            (int)$len(filepath), (char *)filepath[0]);
     done;
 }

@@ -3,8 +3,70 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
-#include "dog/FRAG.h"
 #include "dog/tok/TOK.h"
+
+// Fragments have no grammar — they carry whatever the producer wrote.
+// The conventions HUNKu8sMakeURI emits are:
+//   - bare line:        `#L42`
+//   - symbol + line:    `#sym:L42`  (or `#'quoted body':L42`)
+//   - symbol only:      `#sym`  / `#'quoted body'`
+// HUNKu8sFragSplit is a best-effort extractor over those conventions;
+// anything else is left to the caller to interpret.
+
+// Percent-escape URI-illegal bytes (control, non-ASCII, '#', '%') into
+// `into`.  Everything else in printable ASCII passes through.  Used by
+// HUNKu8sMakeURI to wrap free-form symbol bodies safely.
+static ok64 hunk_frag_esc(u8s into, u8cs raw) {
+    if (into[0] == NULL || into[0] >= into[1]) return SNOROOM;
+    if (raw[0] == NULL || raw[0] >= raw[1]) return OK;
+    static const u8c HEX[16] = "0123456789ABCDEF";
+    for (u8cp p = raw[0]; p < raw[1]; p++) {
+        u8 c = *p;
+        b8 legal = (c >= 0x20 && c <= 0x7E && c != '#' && c != '%');
+        if (legal) {
+            if (into[0] >= into[1]) return SNOROOM;
+            *into[0]++ = c;
+        } else {
+            if (into[0] + 3 > into[1]) return SNOROOM;
+            *into[0]++ = '%';
+            *into[0]++ = HEX[(c >> 4) & 0xF];
+            *into[0]++ = HEX[c & 0xF];
+        }
+    }
+    return OK;
+}
+
+u32 HUNKu8sFragSplit(u8csc frag, u8cs out_sym) {
+    if (out_sym) { out_sym[0] = NULL; out_sym[1] = NULL; }
+    if ($empty(frag)) return 0;
+
+    u8cp end = frag[1];
+    u8cp p = end;
+    while (p > frag[0] && p[-1] >= '0' && p[-1] <= '9') p--;
+    u8cp digits = p;
+    b8 has_digits = (digits < end);
+    if (has_digits && p > frag[0] && p[-1] == 'L') p--;
+    b8 is_bare    = has_digits && (p == frag[0]);
+    b8 after_col  = has_digits && (p > frag[0]) && (p[-1] == ':');
+    u32 line = 0;
+    if (has_digits && (is_bare || after_col))
+        for (u8cp d = digits; d < end; d++) line = line * 10 + (*d - '0');
+
+    if (out_sym) {
+        u8cp sym_lo = (u8cp)frag[0];
+        u8cp sym_hi = (u8cp)end;
+        if (after_col) sym_hi = (u8cp)(p - 1);   // drop trailing `:[L]?<digits>`
+        else if (is_bare) sym_hi = sym_lo;        // no symbol
+        if (sym_hi - sym_lo >= 2 &&
+            *sym_lo == '\'' && *(sym_hi - 1) == '\'') {
+            sym_lo++;
+            sym_hi--;
+        }
+        out_sym[0] = sym_lo;
+        out_sym[1] = sym_hi;
+    }
+    return line;
+}
 
 ok64 HUNKu8sFeed(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
@@ -296,9 +358,10 @@ static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
     u8bReset(adds);
 }
 
-// Parse hunk URI via the standard URI/FRAG parsers.
-// Produces path slice (no leading '/' stripped — caller's responsibility)
-// and line number (0 if absent).  Slices point into `uri_text`.
+// Split a hunk URI into path slice + line number.  Path slice points
+// into `uri_text`; line is 0 if not encoded.  The fragment has no
+// grammar — only the trailing `[L]?<digits>` convention is recognised
+// (see hunk_frag_split above).
 static void hunk_loc(u8csc uri_text, u8cs out_path, u32 *out_line) {
     out_path[0] = NULL;
     out_path[1] = NULL;
@@ -313,8 +376,8 @@ static void hunk_loc(u8csc uri_text, u8cs out_path, u32 *out_line) {
             u8csUsed(out_path, 1);
     }
     if (!$empty(u.fragment)) {
-        frag fr = {};
-        if (FRAGu8sDrain(u.fragment, &fr) == OK) *out_line = fr.line;
+        u8csc fr = {u.fragment[0], u.fragment[1]};
+        *out_line = HUNKu8sFragSplit(fr, NULL);
     }
 }
 
@@ -599,7 +662,9 @@ ok64 HUNKu32bTokenize(u32bp toks, u8csc source, u8csc ext) {
     done;
 }
 
-// Is `s` a plain FRAG ident: [A-Za-z_][A-Za-z0-9_]* ?
+// Is `s` a plain identifier: [A-Za-z_][A-Za-z0-9_]* ?  When yes,
+// HUNKu8sMakeURI emits it verbatim; otherwise it wraps the body in `'…'`
+// and percent-escapes URI-illegal bytes via hunk_frag_esc.
 static b8 hunk_is_ident(u8cs s) {
     if ($empty(s)) return NO;
     size_t n = (size_t)$len(s);
@@ -629,15 +694,17 @@ ok64 HUNKu8sMakeURI(u8s into, u8csc path, u8csc symbol, u32 lineno) {
         } else {
             // Quote and percent-escape URI-illegal chars
             u8sFeed1(into, '\'');
-            call(FRAGu8sEsc, into, sym);
+            call(hunk_frag_esc, into, sym);
             u8sFeed1(into, '\'');
         }
         if (lineno > 0) {
             u8sFeed1(into, ':');
+            u8sFeed1(into, 'L');
             utf8sFeed10(into, (u64)lineno);
         }
     } else if (lineno > 0) {
-        utf8sFeed10(into, (u64)lineno);  // bare line number
+        u8sFeed1(into, 'L');
+        utf8sFeed10(into, (u64)lineno);
     }
     done;
 }
