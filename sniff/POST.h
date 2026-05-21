@@ -31,6 +31,8 @@
 //      `(target_branch, new_tip)`.  Refused when the target
 //      branch's REFS tip exists and is not an ancestor of the wt's
 //      recorded base (non-ff).
+//  Repo root is sourced from `SNIFF.h->root`; keeper from the `KEEP`
+//  singleton — neither needs plumbing through.
 //  `inv` (may be NULL) is the parsed CLI invocation — verb, flags,
 //  URIs.  POSTCommit consults the bits it needs via CLIHas / etc.;
 //  currently `--force` bypasses the conflict-marker refusal
@@ -38,7 +40,7 @@
 //  (e.g. VERBS.md describing the marker syntax).  More flags follow
 //  without further signature churn.
 #include "dog/CLI.h"
-ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
+ok64 POSTCommit(u8cs target_branch,
                 u8cs message, u8cs author,
                 cli const *inv, sha1 *sha_out);
 
@@ -55,8 +57,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
 //  keeps the buffers alive.  Returns OK with `*n_out>0` when defaults
 //  were composed, ULOGNONE when no patch rows are present (caller
 //  falls back to the dry-run / refuse-empty arm).
-ok64 POSTPatchDefaults(u8cs reporoot,
-                       u8b msg_buf,  u8cs *msg_out,
+ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
                        u8b auth_buf, u8cs *auth_out,
                        u32 *n_out);
 
@@ -65,7 +66,7 @@ ok64 POSTPatchDefaults(u8cs reporoot,
 //  and a `sniff: <n> change(s)` summary to stderr.  No commit, no
 //  REFS, no ULOG mutation.  Wired to bare `sniff post` (no -m,
 //  no `?label`) so the user can sanity-check before committing.
-ok64 POSTPrintStatus(u8cs reporoot);
+ok64 POSTPrintStatus(void);
 
 //  Cross-branch promote (no-msg `be post ?<X>` shapes per VERBS.md
 //  §POST).  `target_branch` is the absolute branch path the user
@@ -84,13 +85,13 @@ ok64 POSTPrintStatus(u8cs reporoot);
 //    GRAFCNFL    — three-way merge conflict mid-rebase.
 //    REFSCAS     — concurrent advance of target REFS row.
 //    SNIFFFAIL   — generic dispatcher / resource error.
-ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create);
+ok64 POSTPromote(u8cs target_branch, b8 allow_create);
 
 //  Look up a branch's current tip via keeper REFS.  Empty `branch`
 //  means trunk.  Returns OK with `*out` populated on hit, REFSNONE
 //  when the branch has no entry, or REFSBAD on a malformed value
 //  row.  Pure read — no side effects.
-ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch);
+ok64 POSTResolveBranchTip(sha1 *out, u8cs branch);
 
 //  First-parent chain walker used by cross-shard migration on POST's
 //  FF promote arm and PUT's `?br#<sha>` ref reset.  Walks from `*from`

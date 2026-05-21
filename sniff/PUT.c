@@ -850,18 +850,18 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
 ok64 PUTCreateBranch(u8cs reporoot, u8cs target_branch) {
     sane($ok(reporoot) && $ok(target_branch));
     sha1 existing = {};
-    ok64 er = POSTResolveBranchTip(&existing, reporoot, target_branch);
+    ok64 er = POSTResolveBranchTip(&existing, target_branch);
     if (er == OK) {
         fprintf(stderr,
-                "sniff: put: ?%.*s already exists\n",
-                (int)u8csLen(target_branch),
-                (char *)target_branch[0]);
+                "sniff: put: ?" U8SFMT " already exists\n",
+                u8sFmt(target_branch));
         return PUTDUP;
     }
     if (er != REFSNONE) return er;
     //  Create-only: POSTPromote with allow_create=YES handles the
     //  create-on-miss arm, but doesn't auto-sync cur (per spec).
-    return POSTPromote(reporoot, target_branch, YES);
+    (void)reporoot;
+    return POSTPromote(target_branch, YES);
 }
 
 ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
@@ -934,8 +934,7 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     sha1 target_tip = {};
     b8   has_target_tip = NO;
     {
-        ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
-                                          target_branch);
+        ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
         if (tr == OK) has_target_tip = YES;
         else if (tr != REFSNONE) return tr;
     }

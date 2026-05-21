@@ -20,11 +20,7 @@
 #include "POST.h"
 
 #include <string.h>
-#include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <dirent.h>
 
 #include "abc/FILE.h"
 #include "abc/HEX.h"
@@ -76,20 +72,42 @@ con ron60 POST_V_KEEP   = 0xbe9a74;
 con ron60 POST_V_UNLINK = 0xe72c2dcaf;
 con ron60 POST_V_ADD    = 0x25a28;
 
+//  Per-commit context.  `keeper *` and `reporoot` are intentionally
+//  absent: keeper is a process singleton (`KEEP`) and the repo root is
+//  reachable as `u8bDataC(SNIFF.h->root)` (see dog/HOME.h §home).
 typedef struct {
-    keeper        *k;
-    u8cs           reporoot;
     Bu8            decisions;    // ULOG-shaped: <ts>\t<verb>\t<path>?<query>#<frag>
     ron60          stamp_ts;     // single per-commit stamp (post ts).
                                  // Also used to re-stamp content-clean
                                  // files whose mtime drifted, so they
                                  // align with the new post row and the
                                  // next bare `be` fast-paths them.
+    struct timespec stamp_tv;    // same instant as stamp_ts in
+                                 // timespec form — used for the
+                                 // commit body's wall-clock seconds
+                                 // so the commit object, the ULOG
+                                 // post row, and the file mtimes
+                                 // all share one instant (and inherit
+                                 // SNIFFAtNow's monotonicity guard).
     b8             any_pd;       // any put/delete rows since last post
     b8             has_base;     // baseline get/post row exists
     ron60          last_post_ts;
     ok64           error;
 } post_ctx;
+
+//  Shorthand: the worktree root, sourced from the SNIFF singleton.
+//  Used for wt-file operations (hashing, path joining).  For a
+//  secondary worktree `h->wt` is this wt's on-disk path while
+//  `h->root` points at the primary store — keep the two channels
+//  distinct.  Macro rather than `fun` because `u8cs` is an array
+//  typedef (can't be returned by value).
+#define post_reporoot()  u8bDataC(SNIFF.h->wt)
+
+//  Store root — where `.be/<project>/<branch>/` shards live.
+//  Used for REFS lookups and the cascade walk.  Equals
+//  `post_reporoot()` for a colocated worktree; differs for a
+//  secondary worktree where the store lives on the primary.
+#define post_storeroot() u8bDataC(SNIFF.h->root)
 
 // --- git mode helpers ---
 
@@ -149,10 +167,9 @@ static ok64 post_hash_path(u8cs reporoot, u8cs path, u16 mode, sha1 *out) {
 
 //  YES iff `p` lives strictly beneath `prefix` (prefix must end '/').
 fun b8 post_path_under(u8cs p, u8cs prefix) {
-    size_t plen = $len(prefix);
-    if (plen == 0) return NO;
-    if ($len(p) <= plen) return NO;
-    return memcmp(p[0], prefix[0], plen) == 0;
+    if (u8csLen(prefix) == 0) return NO;
+    if (u8csLen(p) <= u8csLen(prefix)) return NO;
+    return u8csHasPrefix(p, prefix);
 }
 
 //  Walk a sorted ULOG row buffer and, for every row whose URI path
@@ -300,14 +317,17 @@ static ok64 post_sort_dedup_intent(u8b src, u8b dst) {
     size_t cap = u8bDataLen(src) / 16 + 16;
     call(u8csbAllocate, slices, cap);
 
-    u8c *base = u8bDataHead(src);
-    u8c *term = base + u8bDataLen(src);
-    for (u8c *p = base; p < term; ) {
-        u8c *line_start = p;
-        while (p < term && *p != '\n') p++;
-        if (p < term) p++;     // include the trailing '\n'
-        u8cs slice = {line_start, p};
-        ok64 fo = u8csbFeedP(slices, &slice);
+    a_dup(u8c, scan, u8bData(src));
+    while (!u8csEmpty(scan)) {
+        a_dup(u8c, rest, scan);
+        u8cs line = {scan[0], scan[1]};
+        if (u8csFind(rest, '\n') == OK) {
+            //  Include the trailing '\n' in the line slice.
+            u8csUsed(rest, 1);
+            line[1] = rest[0];
+        }
+        u8csMv(scan, rest);
+        ok64 fo = u8csbFeedP(slices, &line);
         if (fo != OK) { u8csbFree(slices); return fo; }
     }
 
@@ -430,14 +450,9 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  Sniff-meta paths (.be/wtlog / .be/* / .git*): never carry into
     //  the new commit's tree, even when present in the baseline tree.
     //  Legacy trees that committed these accidentally are scrubbed on
-    //  the next post.  Emit UNLINK so POST drops them; the on-disk
-    //  meta files are preserved (post_emit_decision UNLINK only
-    //  affects the tree, not the wt).
-    if (SNIFFSkipMeta(path)) {
-        u8cs none = {NULL, NULL};
-        (void)none;
-        return OK;
-    }
+    //  the next post.  Skipping here drops them from the new commit's
+    //  tree without touching the on-disk meta files.
+    if (SNIFFSkipMeta(path)) return OK;
 
     //  Inspect sources contributing to this path.  Baseline / wt rows
     //  carry a kind suffix in the verb's bottom RON64 digit (appended
@@ -458,7 +473,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     sha1 base_sha = {};
     if (src_base) {
         base_mode = post_kind_to_mode(ok64Lit(src_base->verb, 0));
-        u8s bin_s = {base_sha.data, base_sha.data + 20};
+        a_raw(bin_s, base_sha);
         a_dup(u8c, frag_dup, src_base->uri.fragment);
         HEXu8sDrainSome(bin_s, frag_dup);
     }
@@ -477,7 +492,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
                              src_put->uri.fragment[1]};
             if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
                 sha1 new_sha = {};
-                u8s bin_s = {new_sha.data, new_sha.data + 20};
+                a_raw(bin_s, new_sha);
                 a_dup(u8c, frag_dup, put_frag);
                 if (HEXu8sDrainSome(bin_s, frag_dup) == OK &&
                     !sha1Eq(&new_sha, &base_sha)) {
@@ -513,7 +528,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
                              src_put->uri.fragment[1]};
             if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
                 sha1 new_sha = {};
-                u8s bin_s = {new_sha.data, new_sha.data + 20};
+                a_raw(bin_s, new_sha);
                 a_dup(u8c, frag_dup, put_frag);
                 if (HEXu8sDrainSome(bin_s, frag_dup) == OK) {
                     return post_emit_decision(c, POST_V_ADD, path,
@@ -530,7 +545,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             return OK;
         }
         sha1 new_sha = {};
-        if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+        if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
             return OK;
         sha1 const *old = src_base ? &base_sha : NULL;
         return post_emit_decision(c, POST_V_ADD, path, wt_mode,
@@ -567,7 +582,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     if (!src_base && c->any_pd) return OK;
 
     a_path(fp);
-    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    if (SNIFFFullpath(fp, post_reporoot(), path) != OK) return OK;
     filestat fs = {};
     ok64 lo = FILELStat(&fs, $path(fp));
     if (lo == FILENOENT) {
@@ -587,8 +602,8 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         //                    `theirs` joins parents via patch_parents)
         ron60 ow_verb = 0;
         uri ow_u = {};
-        ok64 lo = SNIFFAtRowAtTs(mtime_r, &ow_verb, &ow_u);
-        if (lo == OK) {
+        ok64 ro = SNIFFAtRowAtTs(mtime_r, &ow_verb, &ow_u);
+        if (ro == OK) {
             ron60 vg = SNIFFAtVerbGet();
             ron60 vp = SNIFFAtVerbPost();
             if (ow_verb == vg || ow_verb == vp) {
@@ -601,7 +616,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             }
             //  patch / put / mod stamp owns this mtime → add.
             sha1 new_sha = {};
-            if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+            if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
                 return OK;
             sha1 const *old = src_base ? &base_sha : NULL;
             return post_emit_decision(c, POST_V_ADD, path, wt_mode,
@@ -626,7 +641,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
                                       NULL, &base_sha);
         }
         sha1 disk_sha = {};
-        if (post_hash_path(c->reporoot, path, wt_mode, &disk_sha) != OK)
+        if (post_hash_path(post_reporoot(), path, wt_mode, &disk_sha) != OK)
             return OK;
         if (sha1Eq(&disk_sha, &base_sha)) {
             //  Identical → KEEP (mtime drifted but bytes match).
@@ -635,7 +650,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
             //  fast-paths it via SNIFFAtKnown without re-hashing.
             //  Mirrors PUT's bare-walk re-stamp at put_visit_tracked.
             a_path(fp);
-            if (SNIFFFullpath(fp, c->reporoot, path) == OK)
+            if (SNIFFFullpath(fp, post_reporoot(), path) == OK)
                 (void)SNIFFAtStampPath(fp, c->stamp_ts);
             return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                       NULL, &base_sha);
@@ -646,7 +661,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     if (!c->has_base) {
         //  Fresh-repo first commit: auto-stage every dirty file.
         sha1 new_sha = {};
-        if (post_hash_path(c->reporoot, path, wt_mode, &new_sha) != OK)
+        if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
             return OK;
         return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   NULL, &new_sha);
@@ -698,17 +713,15 @@ static ok64 post_classify_via_merge(post_ctx *c,
 static b8 post_decision_old_sha(uricp u, sha1 *out) {
     if (!u || !out) return NO;
     if (u8csLen(u->query) != 40) return NO;
-    u8s bin = {out->data, out->data + 20};
+    a_raw(bin, *out);
     a_dup(u8c, hex_dup, u->query);
     return HEXu8sDrainSome(bin, hex_dup) == OK;
 }
 
 //  YES iff `path` starts with `prefix`.  Empty prefix matches all.
 fun b8 post_path_under_prefix(u8cs path, u8cs prefix) {
-    size_t pl = $len(prefix);
-    if (pl == 0) return YES;
-    if ((size_t)$len(path) < pl) return NO;
-    return memcmp(path[0], prefix[0], pl) == 0;
+    if (u8csLen(prefix) == 0) return YES;
+    return u8csHasPrefix(path, prefix);
 }
 
 //  Peek the path of the next decisions row without advancing scan.
@@ -741,8 +754,10 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
 
     a_dup(u8c, scan, subslice);
     while (!u8csEmpty(scan)) {
-        u8c const *row_start_lo = scan[0];
-        u8c const *row_start_hi = scan[1];
+        //  Snapshot scan before draining the next row — when we
+        //  detect a subdir entry below we rewind to this position so
+        //  the recursive subslice covers it from the start.
+        a_dup(u8c, scan_snap, scan);
         ulogrec rec = {};
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
@@ -762,38 +777,32 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
 
         //  Locate the first '/' in `rest` to distinguish a direct
         //  child file from an entry in a deeper subtree.
-        u8c const *slash = NULL;
         a_dup(u8c, rest_scan, rest);
-        if (u8csFind(rest_scan, '/') == OK) slash = rest_scan[0];
+        b8 has_slash = (u8csFind(rest_scan, '/') == OK);
 
-        if (slash) {
+        if (has_slash) {
             //  Subdir entry.  Build subprefix = prefix + dirname + '/',
             //  carve off the contiguous range of decision rows under
             //  it from the parent subslice, and recurse.
-            u8cs dirname = {rest[0], slash};
+            u8cs dirname = {rest[0], rest_scan[0]};
             a_pad(u8, subprefix_buf, 2048);
             u8bFeed(subprefix_buf, prefix);
             u8bFeed(subprefix_buf, dirname);
             u8bFeed1(subprefix_buf, '/');
-            u8cs subprefix = {u8bDataHead(subprefix_buf),
-                              subprefix_buf[2]};
+            a_dup(u8c, subprefix, u8bDataC(subprefix_buf));
 
-            //  Roll scan back to the start of the subdir's first row
-            //  so the inner walk picks up this row, then advance until
-            //  a row's path leaves `subprefix`.
-            scan[0] = (u8c *)row_start_lo;
-            scan[1] = (u8c *)row_start_hi;
-            u8c const *sub_lo = scan[0];
-            u8c const *sub_hi = scan[0];
+            //  Rewind scan to the start of this subdir's first row, then
+            //  advance until a row's path leaves `subprefix`.
+            u8csMv(scan, scan_snap);
+            a_dup(u8c, sub_subslice, scan);
             while (!u8csEmpty(scan)) {
                 u8cs peek = {};
                 if (!post_peek_path(scan, peek)) break;
                 if (!post_path_under_prefix(peek, subprefix)) break;
                 ulogrec drop = {};
                 if (ULOGu8sDrain(scan, &drop) != OK) break;
-                sub_hi = scan[0];
             }
-            u8cs sub_subslice = {(u8c *)sub_lo, (u8c *)sub_hi};
+            sub_subslice[1] = scan[0];
 
             sha1 sub_sha = {};
             ok64 so = post_build_tree(sub_subslice, subprefix,
@@ -816,7 +825,7 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
         //  verb's bottom RON64 digit; default to 100644 if absent.
         sha1 entry_sha = {};
         if (u8csLen(rec.uri.fragment) == 40) {
-            u8s bin_s = {entry_sha.data, entry_sha.data + 20};
+            a_raw(bin_s, entry_sha);
             a_dup(u8c, frag_dup, rec.uri.fragment);
             HEXu8sDrainSome(bin_s, frag_dup);
         }
@@ -862,12 +871,13 @@ static ok64 post_feed_empty_tree(keeper *k, keep_pack *p, sha1 *out) {
 
 // --- Resolve parent commit sha for the commit body ---
 
-static ok64 post_parent_sha(keeper *k, u8cs parent_hex, sha1 *out) {
+static ok64 post_parent_sha(keeper *k, u8csc parent_hex, sha1 *out) {
     sane(out && $ok(parent_hex));
     if ($len(parent_hex) != 40) fail(SNIFFFAIL);
 
+    a_dup(u8c, hx, parent_hex);
     a_raw(bin, *out);
-    HEXu8sDrainSome(bin, parent_hex);
+    HEXu8sDrainSome(bin, hx);
     //  Verify the commit actually lives in keeper (sanity check).
     Bu8 tmp = {};
     call(u8bAllocate, tmp, 1UL << 20);
@@ -942,7 +952,7 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
 // --- Shared scan: produce the change-set into a post_ctx ---
 //
 //  Steps 2..5 of POSTCommit, lifted so a dry-run print path can run
-//  the same scan without committing.  Caller pre-fills `c->reporoot`,
+//  the same scan without committing.  Caller pre-fills `post_reporoot()`,
 //  `c->k`, `c->cap`, `c->rec`, `c->flag`, `c->last_post_ts`; this
 //  function drives the baseline walk + put/delete scan + wt scan +
 //  dir-row expansion + per-path decide.  On return, `c->flag[idx]`
@@ -999,7 +1009,7 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
         if (br != OK) { PD_FREE_ALL(); return br; }
     }
     {
-        ok64 wr = SNIFFWtULog(c->reporoot, v_wt, wu);
+        ok64 wr = SNIFFWtULog(post_reporoot(), v_wt, wu);
         if (wr != OK) { PD_FREE_ALL(); return wr; }
     }
 
@@ -1056,25 +1066,23 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     done;
 }
 
-//  Initialise the post_ctx for a scan.  Allocates the path arena and
-//  the dense recs buffer; both grow with `u8bFeed`.
-static ok64 post_ctx_init(post_ctx *c, u8cs reporoot, keeper *k) {
+//  Initialise the post_ctx for a scan.  Allocates the decisions
+//  buffer and stamps the per-commit ts.  Keeper + reporoot are read
+//  from the SNIFF / KEEP singletons; no need to plumb them through.
+static ok64 post_ctx_init(post_ctx *c) {
     sane(c);
     *c = (post_ctx){
-        .k = k,
         .last_post_ts = SNIFFAtLastPostTs(),
     };
-    c->reporoot[0] = reporoot[0];
-    c->reporoot[1] = reporoot[1];
 
     //  Decisions buffer holds the full per-commit ULOG-row stream.
     call(u8bAllocate, c->decisions, POST_TREE_ULOG_MAX);
 
     //  Single per-commit stamp ts; carried in every decision row,
-    //  and also used to re-stamp content-clean drifted files (see
-    //  `post_classify_step`).
-    struct timespec _tv = {};
-    SNIFFAtNow(&c->stamp_ts, &_tv);
+    //  used to re-stamp content-clean drifted files (see
+    //  `post_classify_step`), and as the wall-clock seconds in the
+    //  commit body's author/committer headers.
+    SNIFFAtNow(&c->stamp_ts, &c->stamp_tv);
     done;
 }
 
@@ -1167,7 +1175,7 @@ static ok64 post_drain_unlink_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     (void)vctx;
     u8cs path = {rec->uri.path[0], rec->uri.path[1]};
     a_path(fp);
-    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    if (SNIFFFullpath(fp, post_reporoot(), path) != OK) return OK;
     (void)FILEUnLink($path(fp));
     return OK;
 }
@@ -1177,7 +1185,7 @@ static ok64 post_drain_stamp_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     (void)vctx;
     u8cs path = {rec->uri.path[0], rec->uri.path[1]};
     a_path(fp);
-    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    if (SNIFFFullpath(fp, post_reporoot(), path) != OK) return OK;
     (void)SNIFFAtStampPath(fp, rec->ts);
     return OK;
 }
@@ -1200,9 +1208,8 @@ static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
         code = post_decision_old_sha(&rec->uri, &old) ? 'M' : 'A';
     }
     if (code == 0) return OK;
-    fprintf(m->out, "%s%c %.*s%s\n",
-            m->on, code, (int)u8csLen(rec->uri.path),
-            (char *)rec->uri.path[0], m->off);
+    fprintf(m->out, "%s%c " U8SFMT "%s\n",
+            m->on, code, u8sFmt(rec->uri.path), m->off);
     m->changed++;
     return OK;
 }
@@ -1228,8 +1235,10 @@ static void post_ctx_free(post_ctx *c) {
 //  are not referenced by REFS) and surfaces GRAFCNFL.  Cascade rebase
 //  for descendants is not yet wired; see TODO(spec) at the call site.
 
+//  Rebase emit context.  No `keeper *` — keeper is a singleton; the
+//  only state worth carrying is the open pack and the most recent
+//  emitted commit's sha.
 typedef struct {
-    keeper    *k;
     keep_pack *p;
     sha1       last_commit_sha;   //  most recent emitted commit
     b8         have_last_commit;
@@ -1285,9 +1294,9 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 //  slash for the basename-reuse semantic), and the higher-level
 //  POSTPromote logic distinguishes `?feat` from `?feat/`.  Going via
 //  KEEPResolveRef's dog/QURY normaliser would collapse those.
-ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch) {
+ok64 POSTResolveBranchTip(sha1 *out, u8cs branch) {
     sane(out);
-    a_path(keepdir, reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
     if (!u8csEmpty(branch)) u8bFeed(keybuf, branch);
@@ -1298,10 +1307,10 @@ ok64 POSTResolveBranchTip(sha1 *out, u8cs reporoot, u8cs branch) {
     ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), refkey);
     if (ro != OK) return ro;
     if ($empty(resolved.query)) return REFSNONE;
-    u8cs tip_hex = {resolved.query[0], resolved.query[1]};
+    a_dup(u8c, tip_hex, resolved.query);
     if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?') u8csUsed(tip_hex, 1);
     if ($len(tip_hex) != 40) return REFSBAD;
-    u8s bin = {out->data, out->data + 20};
+    a_raw(bin, *out);
     a_dup(u8c, hx, tip_hex);
     return HEXu8sDrainSome(bin, hx);
 }
@@ -1315,16 +1324,16 @@ typedef struct {
 
 #define CASCADE_MAX 64
 
+//  Cascade walker context.  Like post_ctx, no `keeper *` or
+//  `reporoot` — both reachable as singletons (KEEP, SNIFF.h).
 typedef struct {
-    keeper      *k;
     keep_pack   *p;
-    u8cs         reporoot;
     cascade_rec  recs[CASCADE_MAX];
     u32          n;
     ok64         err;
     //  Optional: branch path to skip during the walk (cross-branch
     //  promote uses this so cur is not double-rebased — auto-sync
-    //  handles cur directly).  NULL/empty disables the filter.
+    //  handles cur directly).  Empty disables the filter.
     u8cs         skip;
     Bu8          arena;     // backs each rec's branch slice
 } cascade_ctx;
@@ -1339,27 +1348,21 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (cc->n >= CASCADE_MAX) return SNIFFFAIL;
 
     sha1 child_tip = {};
-    ok64 cr = POSTResolveBranchTip(&child_tip, cc->reporoot, branch);
+    ok64 cr = POSTResolveBranchTip(&child_tip, branch);
     if (cr == REFSNONE) return OK;     //  branch has no REFS tip — skip
     if (cr != OK) return cr;
 
-    //  Cross-branch visibility: the child's commits live in
-    //  `<.be>/<child_branch>/` shard, which wasn't loaded under cur.
-    //  Switch both keeper and graf to the child so GRAFLca,
-    //  GRAFRebase, and the rebase emit's KEEPGet calls see the
-    //  child_tip's body and ancestry.  Switch collapses cur's
-    //  DATA→PAST and walks the new tail; we don't restore cur on
-    //  the way out — persist writes REFS, then either the next
-    //  child gets switched-to (collapsing this one likewise into
-    //  PAST), or the cascade finishes and the keeper close handles
-    //  the rest.
-    //  Cross-branch visibility: child's commits live in `<.be>/<branch>/`,
-    //  not loaded under cur.  Switch keeper + graf to the descendant
-    //  so GRAFLca, GRAFRebase, and the rebase emit's KEEPGet calls see
-    //  the child_tip's body and ancestry.  cc->p was opened on cur's
-    //  leaf — close it before the switch so the swept-out DATA's
-    //  file_id can't collide with the new leaf's allocator; reopen on
-    //  the new leaf so emits land in `.be/<branch>/<NNNN>.keeper`.
+    //  Cross-branch visibility: child's commits live in
+    //  `<.be>/<branch>/`, not loaded under cur.  Switch keeper + graf
+    //  to the descendant so GRAFLca, GRAFRebase, and the rebase emit's
+    //  KEEPGet calls see the child_tip's body and ancestry.  cc->p was
+    //  opened on cur's leaf — close it before the switch so the swept-
+    //  out DATA's file_id can't collide with the new leaf's allocator;
+    //  reopen on the new leaf so emits land in
+    //  `.be/<branch>/<NNNN>.keeper`.  We don't restore cur on the way
+    //  out — persist writes REFS, then either the next child gets
+    //  switched-to (collapsing this one likewise into PAST), or the
+    //  cascade finishes and the keeper close handles the rest.
     //
     //  TODO(cascade): pack reopen on the new leaf currently confuses
     //  `keep_recompute_next_seqno` — the rebased commit body lands in
@@ -1408,7 +1411,7 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
         }
     }
 
-    post_rebase_ctx rctx = {.k = cc->k, .p = cc->p};
+    post_rebase_ctx rctx = {.p = cc->p};
     ok64 rb = GRAFRebase(&fork_old, parent_new_tip, &child_tip,
                          post_rebase_emit_cb, &rctx);
     if (rb != OK) return rb;
@@ -1426,6 +1429,41 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     return OK;
 }
 
+//  Collector for `post_cascade_collect_cb`: accumulates child-branch
+//  basenames into a single arena, with one `u8cs` slice per name.
+typedef struct {
+    u8cs *names;
+    u32   cap;
+    u32   n;
+    u8bp  arena;
+} pc_collect;
+
+//  FILEScan callback (FILE_SCAN_DIRS): one entry per subdirectory of
+//  the parent branch dir.  We keep only "branch" entries — skip the
+//  `refs` reflog dir and anything dot-prefixed (`.lock`).  Basename is
+//  extracted as the slice after the last '/'.
+static ok64 post_cascade_collect_cb(void0p arg, path8p path) {
+    pc_collect *pc = (pc_collect *)arg;
+    if (pc->n >= pc->cap) return OK;
+    a_dup(u8c, base, u8bDataC(path));
+    //  Trailing '/' on dir entries from FILE_SCAN_DIRS — strip first.
+    if (!u8csEmpty(base) && *u8csLast(base) == '/') u8csShed1(base);
+    u8cp last_slash = NULL;
+    $for(u8c, p, base) {
+        if (*p == '/') last_slash = p;
+    }
+    if (last_slash != NULL) base[0] = last_slash + 1;
+    if (u8csEmpty(base)) return OK;
+    if (*base[0] == '.') return OK;            //  skip .lock, etc.
+    a_cstr(refs_s, "refs");
+    if (u8csEq(base, refs_s)) return OK;
+    if (u8bFeed(pc->arena, base) != OK) return OK;
+    u8csMv(pc->names[pc->n], u8bDataC(pc->arena));
+    (void)u8csUsedAll(u8bDataC(pc->arena));
+    pc->n++;
+    return OK;
+}
+
 //  Recursive walker.  For each subdir of `<store>/<branch>/` that has
 //  a `refs` file, stage its rebase, then recurse with the child as the
 //  new parent.  `branch_old_tip` and `branch_new_tip` are the stage's
@@ -1434,40 +1472,21 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
                               sha1 const *branch_old_tip,
                               sha1 const *branch_new_tip) {
     sane(cc);
-    a_path(bdir, cc->reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(bdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
     if (!u8csEmpty(branch)) {
         ok64 ar = PATHu8bAdd(bdir, branch);
         if (ar != OK) return ar;
     }
 
-    DIR *dp = opendir((char *)u8bDataHead(bdir));
-    if (!dp) return OK;     //  no shard yet — no descendants
-
-    //  Snapshot child names to avoid concurrent-readdir surprises.
-    //  Each `names[i]` is a slice into `names_arena`.
+    //  Snapshot child branch basenames via FILEScan; each `names[i]`
+    //  is a slice into `names_arena`.  No-op when the shard dir
+    //  doesn't exist (FILEScan returns non-OK; we still proceed).
     u8cs names[CASCADE_MAX] = {};
     Bu8  names_arena = {};
-    if (u8bAllocate(names_arena, CASCADE_MAX * 128) != OK) {
-        closedir(dp); return OK;
-    }
-    u32 nfound = 0;
-    struct dirent *e;
-    while ((e = readdir(dp)) != NULL && nfound < CASCADE_MAX) {
-        if (e->d_name[0] == '.') continue;     //  skip ., .., refs, .lock
-        if (strcmp(e->d_name, "refs") == 0) continue;
-        a_cstr(nm, e->d_name);
-        //  Confirm it's a directory by stat'ing.
-        a_path(child, $path(bdir));
-        if (PATHu8bAdd(child, nm) != OK) continue;
-        filestat fs = {};
-        if (FILEStat(&fs, $path(child)) != OK) continue;
-        if (fs.kind != FILE_KIND_DIR) continue;
-        if (u8bFeed(names_arena, nm) != OK) continue;
-        u8csMv(names[nfound], u8bDataC(names_arena));
-        (void)u8csUsedAll(u8bDataC(names_arena));
-        nfound++;
-    }
-    closedir(dp);
+    if (u8bAllocate(names_arena, CASCADE_MAX * 128) != OK) return OK;
+    pc_collect pc = {.names = names, .cap = CASCADE_MAX, .arena = names_arena};
+    (void)FILEScan(bdir, FILE_SCAN_DIRS, post_cascade_collect_cb, &pc);
+    u32 nfound = pc.n;
 
     for (u32 i = 0; i < nfound; i++) {
         //  Build absolute child branch path: <branch>/<name>.
@@ -1484,8 +1503,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         //  shard dir or a non-branch sibling like `graf`/`spot` at
         //  trunk level); skip.
         sha1 child_old = {};
-        ok64 cr = POSTResolveBranchTip(&child_old, cc->reporoot,
-                                          child_branch);
+        ok64 cr = POSTResolveBranchTip(&child_old, child_branch);
         if (cr != OK) continue;     //  no row → skip
 
         //  Skip filter: cross-branch promote handles cur via auto-sync,
@@ -1512,7 +1530,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 //  earlier successes (best-effort, documented).
 static ok64 post_cascade_persist(cascade_ctx *cc) {
     sane(cc);
-    a_path(keepdir, cc->reporoot, KEEP_DIR_S, u8bDataC(KEEP.h->project));
+    a_path(keepdir, post_storeroot(), KEEP_DIR_S, u8bDataC(KEEP.h->project));
     for (u32 i = 0; i < cc->n; i++) {
         cascade_rec *r = &cc->recs[i];
         a_pad(u8, keybuf, 256);
@@ -1626,8 +1644,8 @@ ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
             if ($empty(field)) break;
             a_cstr(par_kw, "parent");
             if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
-                u8cs hx = {value[0], value[0] + 40};
-                u8s  bn = {cur.data, cur.data + 20};
+                a_head(u8c, hx, value, 40);
+                a_raw(bn, cur);
                 (void)HEXu8sDrainSome(bn, hx);
                 found_par = YES;
                 break;
@@ -1639,9 +1657,12 @@ ok64 POSTFpChainTo(sha1 const *from, sha1 const *stop,
     done;
 }
 
-ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
-    sane($ok(reporoot) && $ok(target_branch));
+ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
+    sane($ok(target_branch));
     keeper *k = &KEEP;
+    //  Repo root reachable from SNIFF.h->root.  Use `a_dup` for a
+    //  local, consumable copy where the body needs slice ops.
+    a_dup(u8c, reporoot, post_reporoot());
 
     //  --- 1. Resolve cur (baseline branch + cur tip) ---
     a_pad(u8, cur_buf, 256);
@@ -1716,10 +1737,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     }
 
     //  --- 2. Same-branch guard: caller should have routed elsewhere. ---
-    if (u8csLen(target_branch) == u8csLen(cur_branch) &&
-        (u8csLen(target_branch) == 0 ||
-         memcmp(target_branch[0], cur_branch[0],
-                u8csLen(target_branch)) == 0)) {
+    if (u8csEq(target_branch, cur_branch)) {
         //  Target == cur: not a promote.  The caller (label-only
         //  legacy path) will fall through to its own PUTSetLabel.
         return POSTNONE;
@@ -1729,8 +1747,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     sha1 target_tip      = {};
     b8   target_exists   = NO;
     {
-        ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
-                                          target_branch);
+        ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
         if (tr == OK) target_exists = YES;
         else if (tr != REFSNONE) {
             //  REFSBAD or other read error — surface.
@@ -1763,13 +1780,8 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     u8cs cur_dir = {};
     post_dirname(cur_dir, cur_branch);
     b8 is_parent = NO;
-    if (!u8csEmpty(cur_branch)) {
-        size_t dl = u8csLen(cur_dir);
-        size_t tl = u8csLen(target_branch);
-        if (dl == tl &&
-            (tl == 0 || memcmp(cur_dir[0], target_branch[0], tl) == 0)) {
-            is_parent = YES;
-        }
+    if (!u8csEmpty(cur_branch) && u8csEq(cur_dir, target_branch)) {
+        is_parent = YES;
     }
 
     //  --- 5. CREATE_ON_MISS arm: ?./newleaf or ?<absolute>/<newleaf>. ---
@@ -1791,10 +1803,9 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //  allow_create=YES to reuse the create-on-miss arm below.
     if (!target_exists && !allow_create) {
         fprintf(stderr,
-                "sniff: post: ?%.*s does not exist — "
+                "sniff: post: ?" U8SFMT " does not exist — "
                 "`be put ?<branch>` first\n",
-                (int)u8csLen(target_branch),
-                (char *)target_branch[0]);
+                u8sFmt(target_branch));
         return POSTNONE;
     }
 
@@ -1807,8 +1818,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         //  parent.
         u8cs t_dir = {};
         post_dirname(t_dir, target_branch);
-        ok64 dr = POSTResolveBranchTip(&absolute_parent_tip,
-                                          reporoot, t_dir);
+        ok64 dr = POSTResolveBranchTip(&absolute_parent_tip, t_dir);
         if (dr == OK) create_under_absolute = YES;
         else if (dr != REFSNONE) return dr;
         if (!create_under_absolute) {
@@ -1842,7 +1852,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 keep_pack pp = {};
                 call(KEEPPackOpen, &pp);
                 pp.strict_order = NO;
-                post_rebase_ctx rctx = {.k = k, .p = &pp};
+                post_rebase_ctx rctx = {.p = &pp};
                 ok64 rb = GRAFRebase(&lca, &absolute_parent_tip,
                                      &cur_tip, post_rebase_emit_cb,
                                      &rctx);
@@ -1880,8 +1890,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         if (cr == REFSCAS) {
             //  Lost the race: someone else created the branch.  Retry
             //  as a PROMOTE on the now-existing branch.
-            ok64 tr = POSTResolveBranchTip(&target_tip, reporoot,
-                                              target_branch);
+            ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
             if (tr != OK) return cr;
             target_exists = YES;
             //  Fall through to PROMOTE arm below.
@@ -1890,11 +1899,8 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         } else {
             //  Created.  Cur unchanged.  Done.
             fprintf(stderr,
-                    "sniff: post: created ?%.*s at %.*s\n",
-                    (int)u8csLen(target_branch),
-                    (char *)target_branch[0],
-                    (int)u8bDataLen(val_hex),
-                    (char *)u8bDataHead(val_hex));
+                    "sniff: post: created ?" U8SFMT " at " U8SFMT "\n",
+                    u8sFmt(target_branch), u8sFmt(u8bDataC(val_hex)));
             return OK;
         }
     }
@@ -1936,8 +1942,8 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 if ($empty(field)) break;
                 a_cstr(par_kw, "parent");
                 if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
-                    u8cs hx = {value[0], value[0] + 40};
-                    u8s  bn = {cur.data, cur.data + 20};
+                    a_head(u8c, hx, value, 40);
+                    a_raw(bn, cur);
                     if (HEXu8sDrainSome(bn, hx) == OK) stepped = YES;
                     break;
                 }
@@ -1988,16 +1994,14 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 if (cas == REFSCAS) {
                     fprintf(stderr,
                             "sniff: post: cur auto-sync raced on "
-                            "?%.*s — run `be get ?..` to refresh\n",
-                            (int)u8csLen(cur_branch),
-                            (char *)cur_branch[0]);
+                            "?" U8SFMT " — run `be get ?..` to refresh\n",
+                            u8sFmt(cur_branch));
                 } else if (cas != OK) return cas;
             }
             fprintf(stderr,
-                    "sniff: post: nothing to promote (?%.*s already "
+                    "sniff: post: nothing to promote (?" U8SFMT " already "
                     "contains cur)\n",
-                    (int)u8csLen(target_branch),
-                    (char *)target_branch[0]);
+                    u8sFmt(target_branch));
             return OK;
         }
     }
@@ -2009,8 +2013,6 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
     //  trivial case (and dodges any rebase-loop edge cases for it).
     sha1 target_new_tip = {};
     b8   stack_was_rewritten = NO;
-    post_rebase_ctx rctx = {};
-    keep_pack pp = {};
     if (sha1Eq(&base_old, &base_new)) {
         target_new_tip = child_tip;
         //  Trivial FF — but `child_tip`'s pack may live in a
@@ -2021,8 +2023,12 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         //  active leaf with delta-base hints.
         //
         //  Bounded by POST_MIG_MAX so a pathological chain can't
-        //  hang the dispatcher.
-        sha1 chain[POST_MIG_MAX];
+        //  hang the dispatcher.  Heap-allocated — POST_MIG_MAX × 20 B
+        //  = 160 KB, too large for a comfortable stack frame inside a
+        //  function that already carries several a_path / a_pad locals.
+        Bsha1 chainb = {};
+        if (sha1bAllocate(chainb, POST_MIG_MAX) != OK) return SNIFFFAIL;
+        sha1 *chain = sha1bIdleHead(chainb);
         u32 nchain = 0;
         b8 reached = NO;
         (void)POSTFpChainTo(&child_tip, &base_old,
@@ -2043,6 +2049,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 fprintf(stderr,
                         "sniff: post: cross-shard copy failed (%s)\n",
                         ok64str(mv));
+                sha1bFree(chainb);
                 return mv;
             }
 
@@ -2079,6 +2086,7 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                 }
             }
         }
+        sha1bFree(chainb);
         stack_was_rewritten = NO;
     } else {
         //  POST is commit-or-FF, never rebase (per VERBS.md).  When
@@ -2087,13 +2095,11 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         //  commit to rebase explicitly.  (Old `GRAFRebase` path
         //  removed: rebase semantics belong in PATCH; see
         //  VERBS.md §POST and the cheat sheet for `git rebase`.)
-        (void)pp; (void)rctx;
         fprintf(stderr,
-                "sniff: post: ?%.*s — not a fast-forward (cur is not "
-                "a descendant of target.tip); use `be patch ?%.*s#` "
-                "+ `be post` to rebase\n",
-                (int)u8csLen(target_branch), (char *)target_branch[0],
-                (int)u8csLen(target_branch), (char *)target_branch[0]);
+                "sniff: post: ?" U8SFMT " — not a fast-forward (cur is "
+                "not a descendant of target.tip); use `be patch ?" U8SFMT
+                "#` + `be post` to rebase\n",
+                u8sFmt(target_branch), u8sFmt(target_branch));
         return POSTNOFF;
     }
 
@@ -2108,14 +2114,9 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         keep_pack p3 = {};
         call(KEEPPackOpen, &p3);
         p3.strict_order = NO;
-        casc.k = k;
         casc.p = &p3;
-        a_dup(u8c, root_view, u8bDataC(k->h->root));
-        casc.reporoot[0] = root_view[0];
-        casc.reporoot[1] = root_view[1];
         //  Skip cur during cascade: auto-sync handles it directly.
-        casc.skip[0] = cur_branch[0];
-        casc.skip[1] = cur_branch[1];
+        u8csMv(casc.skip, cur_branch);
         ok64 cw = post_cascade_walk(&casc, target_branch,
                                     &target_tip, &target_new_tip);
         ok64 cl3 = KEEPPackClose(&p3);
@@ -2150,10 +2151,9 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                                         expected, val);
         if (cas == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: REFS for `?%.*s` advanced "
+                    "sniff: post: REFS for `?" U8SFMT "` advanced "
                     "concurrently — retry\n",
-                    (int)u8csLen(target_branch),
-                    (char *)target_branch[0]);
+                    u8sFmt(target_branch));
             return REFSCAS;
         }
         if (cas != OK) return cas;
@@ -2187,9 +2187,9 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
                                         expected, val);
         if (cas == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: cur auto-sync raced on `?%.*s` — "
-                    "run `be get ?..` to refresh\n",
-                    (int)u8csLen(cur_branch), (char *)cur_branch[0]);
+                    "sniff: post: cur auto-sync raced on `?" U8SFMT "` "
+                    "— run `be get ?..` to refresh\n",
+                    u8sFmt(cur_branch));
             //  Don't surface — target already advanced; cur staleness
             //  is recoverable.
         } else if (cas != OK) return cas;
@@ -2216,23 +2216,19 @@ ok64 POSTPromote(u8cs reporoot, u8cs target_branch, b8 allow_create) {
         a_rawc(osha, target_new_tip);
         HEXu8sFeedSome(hex_out_idle, osha);
         fprintf(stderr,
-                "sniff: post: ?%.*s -> %.*s\n",
-                (int)u8csLen(target_branch),
-                (char *)target_branch[0],
-                (int)u8bDataLen(hex_out),
-                (char *)u8bDataHead(hex_out));
+                "sniff: post: ?" U8SFMT " -> " U8SFMT "\n",
+                u8sFmt(target_branch), u8sFmt(u8bDataC(hex_out)));
     }
     return OK;
 }
 
 // --- Public API ---
 
-ok64 POSTPrintStatus(u8cs reporoot) {
-    sane($ok(reporoot));
-    keeper *k = &KEEP;
+ok64 POSTPrintStatus(void) {
+    sane(1);
 
     post_ctx ctx = {};
-    call(post_ctx_init, &ctx, reporoot, k);
+    call(post_ctx_init, &ctx);
 
     sha1 base_tree_sha = {};
     b8   have_base = NO;
@@ -2250,8 +2246,7 @@ ok64 POSTPrintStatus(u8cs reporoot) {
     done;
 }
 
-ok64 POSTPatchDefaults(u8cs reporoot,
-                       u8b msg_buf,  u8cs *msg_out,
+ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
                        u8b auth_buf, u8cs *auth_out,
                        u32 *n_out) {
     sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
@@ -2379,12 +2374,14 @@ ok64 POSTPatchDefaults(u8cs reporoot,
     done;
 }
 
-ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
+ok64 POSTCommit(u8cs target_branch,
                 u8cs message, u8cs author,
                 cli const *inv, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
     b8 force = inv && CLIHas(inv, "--force");
     keeper *k = &KEEP;
+    //  Repo root from the SNIFF singleton (see post_reporoot()).
+    a_dup(u8c, reporoot, post_reporoot());
 
     //  1. Resolve baseline parent.  Single-parent invariant on the
     //     write path (see VERBS.md §POST):
@@ -2477,25 +2474,24 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         ok64 ro = REFSResolve(&resolved, arena, $path(keepdir),
                               refkey_s);
         if (ro == OK && !$empty(resolved.query)) {
-            u8cs tip_hex = {resolved.query[0], resolved.query[1]};
+            a_dup(u8c, tip_hex, resolved.query);
             if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?')
                 u8csUsed(tip_hex, 1);
             if ($len(tip_hex) != 40) {
                 fprintf(stderr,
-                        "sniff: post: REFS row for `?%.*s` has malformed "
-                        "tip (%zu bytes, want 40 hex)\n",
-                        (int)u8csLen(branch), (char *)branch[0],
-                        (size_t)$len(tip_hex));
+                        "sniff: post: REFS row for `?" U8SFMT "` has "
+                        "malformed tip (%zu bytes, want 40 hex)\n",
+                        u8sFmt(branch), (size_t)$len(tip_hex));
                 return SNIFFFAIL;
             }
-            u8s bin = {expected_tip_sha.data, expected_tip_sha.data + 20};
+            a_raw(bin, expected_tip_sha);
             a_dup(u8c, hx, tip_hex);
             ok64 ho = HEXu8sDrainSome(bin, hx);
             if (ho != OK) {
                 fprintf(stderr,
-                        "sniff: post: REFS row for `?%.*s` has non-hex "
-                        "tip\n",
-                        (int)u8csLen(branch), (char *)branch[0]);
+                        "sniff: post: REFS row for `?" U8SFMT "` has "
+                        "non-hex tip\n",
+                        u8sFmt(branch));
                 return SNIFFFAIL;
             }
             has_expected_tip = YES;
@@ -2522,7 +2518,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  Steps 2..5 — the change-set scan — share their entire body
     //  with POSTPrintStatus's dry-run path.  See post_scan_changeset.
     post_ctx ctx = {};
-    call(post_ctx_init, &ctx, reporoot, k);
+    call(post_ctx_init, &ctx);
 
     sha1 base_tree_sha = {};
     b8   have_base = NO;
@@ -2569,7 +2565,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //      says "empty POSTs are refused."  Skip on a fresh repo
     //      (no baseline tree to compare against).
     if (had_baseline && have_root && have_base &&
-        memcmp(root_tree.data, base_tree_sha.data, 20) == 0) {
+        sha1Eq(&root_tree, &base_tree_sha)) {
         //  `-q` / `--quiet` (be's POST sub-recursion sets this for
         //  every sibling shard) suppresses the stderr note; the
         //  POSTNONE return is still used by the caller.
@@ -2605,17 +2601,12 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         a_rawc(psha_in, parent);
         HEXu8sFeedSome(hx_buf_idle, psha_in);
         a_dup(u8c, ph, u8bDataC(hx_buf));
-        //  post_parent_sha consumes ph via HEXu8sDrainSome; snapshot
-        //  the hex pointer + length here so the failure printout
-        //  shows the actual sha, not an empty slice.
-        char const *ph_hex = (char const *)ph[0];
-        int         ph_len = (int)u8csLen(ph);
         sha1 ps = {};
         if (post_parent_sha(k, ph, &ps) != OK) {
             fprintf(stderr,
-                    "sniff: post: parent commit %.*s not found in keeper — "
-                    "refusing\n",
-                    ph_len, ph_hex);
+                    "sniff: post: parent commit " U8SFMT " not found in "
+                    "keeper — refusing\n",
+                    u8sFmt(ph));
             KEEPPackClose(&p);
             u8bFree(tree_bodies);
             post_ctx_free(&ctx);
@@ -2671,10 +2662,16 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         u8bFeed1(com, '\n');
     }
 
-    time_t now = time(NULL);
-    char tsb[64];
-    int tslen = snprintf(tsb, sizeof(tsb), " %lld +0000\n", (long long)now);
-    u8cs ts_s = {(u8cp)tsb, (u8cp)tsb + tslen};
+    //  Wall-clock seconds for the commit body — sourced from the
+    //  monotonicity-guarded ts already stamped on ctx, so the commit
+    //  object, the post ULOG row, and the on-disk file mtimes all
+    //  agree (per VERBS.md §POST "Wall-clock guard").
+    a_pad(u8, tsbuf, 64);
+    int tslen = snprintf((char *)u8bIdleHead(tsbuf), u8bIdleLen(tsbuf),
+                         " %lld +0000\n",
+                         (long long)ctx.stamp_tv.tv_sec);
+    if (tslen > 0) u8bFed(tsbuf, (size_t)tslen);
+    a_dup(u8c, ts_s, u8bDataC(tsbuf));
 
     a_cstr(auth_label, "author ");
     u8bFeed(com, auth_label);
@@ -2841,27 +2838,32 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             //  that mention the marker syntax inline.
             //  `force=YES` skips the scan entirely.
             if (!force) {
-                u8cp pp = body[0];
-                u8cp pe = body[1];
-                while (pp + 4 <= pe) {
-                    b8 at_line_start = (pp == body[0]) ||
-                                       (pp > body[0] && pp[-1] == '\n');
+                a_cstr(marker, "<<<<");
+                a_dup(u8c, scan, body);
+                b8 at_line_start = YES;
+                b8 cflct = NO;
+                while (!u8csEmpty(scan)) {
                     if (at_line_start &&
-                        pp[0] == '<' && pp[1] == '<' &&
-                        pp[2] == '<' && pp[3] == '<') {
-                        fprintf(stderr,
-                            "sniff: post: refusing — conflict "
-                            "marker in tracked file %.*s "
-                            "(re-run with --force to override)\n",
-                            (int)$len(path), (char *)path[0]);
-                        if (mapped) FILEUnMap(mapped);
-                        if (u8bOK(body_buf)) u8bFree(body_buf);
-                        KEEPPackClose(&p);
-                        u8bFree(tree_bodies);
-                        post_ctx_free(&ctx);
-                        return POSTCFLCT;
+                        u8csLen(scan) >= 4 &&
+                        u8csHasPrefix(scan, marker)) {
+                        cflct = YES;
+                        break;
                     }
-                    pp++;
+                    at_line_start = (*scan[0] == '\n');
+                    u8csUsed(scan, 1);
+                }
+                if (cflct) {
+                    fprintf(stderr,
+                        "sniff: post: refusing — conflict "
+                        "marker in tracked file " U8SFMT " "
+                        "(re-run with --force to override)\n",
+                        u8sFmt(path));
+                    if (mapped) FILEUnMap(mapped);
+                    if (u8bOK(body_buf)) u8bFree(body_buf);
+                    KEEPPackClose(&p);
+                    u8bFree(tree_bodies);
+                    post_ctx_free(&ctx);
+                    return POSTCFLCT;
                 }
             }
             u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
@@ -2918,7 +2920,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             return po2;
         }
         p2.strict_order = NO;
-        post_rebase_ctx rctx = {.k = k, .p = &p2};
+        post_rebase_ctx rctx = {.p = &p2};
         ok64 rb = GRAFRebase(&parent, &expected_tip_sha, sha_out,
                              post_rebase_emit_cb, &rctx);
         ok64 cl2 = KEEPPackClose(&p2);
@@ -2966,11 +2968,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
             return SNIFFFAIL;
         }
         p3.strict_order = NO;
-        casc.k = k;
         casc.p = &p3;
-        a_dup(u8c, root_view, u8bDataC(k->h->root));
-        casc.reporoot[0] = root_view[0];
-        casc.reporoot[1] = root_view[1];
         ok64 cw = post_cascade_walk(&casc, branch_view,
                                     &expected_tip_sha, &br_new);
         ok64 cl3 = KEEPPackClose(&p3);
@@ -3023,9 +3021,9 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
         ok64 cr = REFSCompareAndAppend($path(keepdir), refkey, expected, val);
         if (cr == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: REFS for `?%.*s` advanced concurrently — "
-                    "retry\n",
-                    (int)u8csLen(branch), (char *)branch[0]);
+                    "sniff: post: REFS for `?" U8SFMT "` advanced "
+                    "concurrently — retry\n",
+                    u8sFmt(branch));
             //  Best-effort: don't undo the pack feed.  Caller may retry
             //  POST against the new tip.  Mirror the success-path
             //  cleanup at §17 so we don't leak the per-commit buffers
@@ -3107,7 +3105,7 @@ ok64 POSTCommit(u8cs reporoot, u8cs target_branch,
     //  17. Clean up.
     u8bFree(tree_bodies);
     post_ctx_free(&ctx);
-    fprintf(stderr, "sniff: commit %.*s\n",
-            (int)u8bDataLen(out_hex), (char *)u8bDataHead(out_hex));
+    fprintf(stderr, "sniff: commit " U8SFMT "\n",
+            u8sFmt(u8bDataC(out_hex)));
     done;
 }

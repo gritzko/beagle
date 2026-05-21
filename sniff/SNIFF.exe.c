@@ -1480,22 +1480,20 @@ ok64 SNIFFExec(cli *c) {
             u8cs def_msg  = {};
             u8cs def_auth = {};
             u32  def_n    = 0;
-            ok64 dr = POSTPatchDefaults(reporoot,
-                                        def_msg_buf,  &def_msg,
+            ok64 dr = POSTPatchDefaults(def_msg_buf,  &def_msg,
                                         def_auth_buf, &def_auth,
                                         &def_n);
             if (dr == OK && def_n > 0) {
                 u8cs no_target = {};
                 sha1 sha = {};
-                ret = POSTCommit(reporoot, no_target,
+                ret = POSTCommit(no_target,
                                  def_msg, def_auth, c, &sha);
                 if (ret == OK) {
                     a_pad(u8, hex, 40);
                     a_rawc(rs, sha);
                     HEXu8sFeedSome(hex_idle, rs);
-                    fprintf(stderr, "sniff: commit %.*s\n",
-                            (int)u8bDataLen(hex),
-                            (char *)u8bDataHead(hex));
+                    fprintf(stderr, "sniff: commit " U8SFMT "\n",
+                            u8sFmt(u8bDataC(hex)));
                 }
             } else if (def_n > 0) {
                 //  Patch rows in scope but msg can't be auto-resolved
@@ -1506,7 +1504,7 @@ ok64 SNIFFExec(cli *c) {
                     "from %u patch row(s); supply `#msg`\n", def_n);
                 ret = POSTNOMSG;
             } else {
-                ret = POSTPrintStatus(reporoot);
+                ret = POSTPrintStatus();
             }
         } else {
             //  POSTCommit does its own wt scan + change-set resolve;
@@ -1527,7 +1525,7 @@ ok64 SNIFFExec(cli *c) {
                     target[1] = label_uri->query[1];
                 }
                 sha1 sha = {};
-                ret = POSTCommit(reporoot, target,
+                ret = POSTCommit(target,
                                  commit_msg, commit_author, c, &sha);
                 if (ret == OK) {
                     a_rawc(rs, sha);
@@ -1564,7 +1562,7 @@ ok64 SNIFFExec(cli *c) {
                     t_br[1] = (u8cp)&_z;
                 }
                 a_dup(u8c, tb, t_br);
-                ret = POSTPromote(reporoot, tb, NO);
+                ret = POSTPromote(tb, NO);
             }
         }
     } else if (is_put) {

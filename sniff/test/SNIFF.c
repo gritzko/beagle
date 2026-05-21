@@ -312,7 +312,8 @@ ok64 SNIFFCheckoutCommit() {
     a_cstr(author, "Test <t@t>");
     sha1 new_sha = {};
     u8cs no_target = {};
-    call(POSTCommit, root, no_target, msg, author, NULL, &new_sha);
+    (void)root;
+    call(POSTCommit, no_target, msg, author, NULL, &new_sha);
 
     // Verify new commit exists
     u64 new_hashlet = WHIFFHashlet60(&new_sha);
