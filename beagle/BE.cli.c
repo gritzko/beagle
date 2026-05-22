@@ -13,6 +13,7 @@
 #include "abc/RON.h"
 #include "dog/DOG.h"
 #include "dog/HOME.h"
+#include "dog/THEME.h"
 #include "dog/ULOG.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
@@ -2454,6 +2455,16 @@ static ok64 becli_inner(cli *c) {
         BEUsage();
         done;
     }
+
+    //  Theme forwarding: `be --light <args>` propagates to every dog
+    //  spawn via $BRO_THEME (THEMESelect setenv's).  All sub-tools we
+    //  pipe through bro (BERunPipe) inherit env unchanged, so the
+    //  pager picks up the same palette.  Unknown values → hard fail.
+    char const *theme_name = NULL;
+    if (CLIHas(c, "--16"))    theme_name = THEME_16;
+    if (CLIHas(c, "--dark"))  theme_name = THEME_DARK;
+    if (CLIHas(c, "--light")) theme_name = THEME_LIGHT;
+    if (theme_name != NULL) call(THEMESelect, theme_name);
 
     //  Per-verb bareword default (VERBS.md §"Bareword defaults"):
     //  promote a bareword sitting in u->path into the verb's natural

@@ -13,6 +13,7 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/CLI.h"
+#include "dog/THEME.h"
 #include "keeper/KEEP.h"
 
 // --- Usage ---
@@ -26,12 +27,16 @@ static void bro_usage(void) {
         "  bro file.c#42         open file at line 42\n"
         "  bro dir/              list directory\n"
         "\n"
+        "Themes: --16 (default, terminal-adaptive ANSI)\n"
+        "        --dark (Solarized dark)   --light (Solarized light)\n"
+        "        also via $BRO_THEME=16|dark|light\n"
+        "\n"
         "Keys: q quit, space/f page down, b page up, j/k line, g/G top/end,\n"
         "      / or ' search, n/N next/prev,\n"
         "      : URI prompt (path#line, #grep.ext, #'snippet'.ext),\n"
         "      [ ] { } prev/next hunk, ( ) prev/next change,\n"
-        "      Enter/l open file, h back, . list dir,\n"
-        "      m toggle mouse (wheel scroll, click to open)\n");
+        "      Enter/l open file, h/Backspace back, . list dir,\n"
+        "      m toggle mouse (wheel scroll, L-click open, R-click grep)\n");
 }
 
 // --- Entry ---
@@ -46,6 +51,20 @@ ok64 BROExec(bro *b, cli *c) {
     if (CLIHas(c, "-h") || CLIHas(c, "--help")) {
         bro_usage();
         done;
+    }
+
+    //  --16 / --dark / --light pick a dog/THEME palette; later flags
+    //  win.  Without a flag, THEMESelect(NULL) consults $BRO_THEME and
+    //  defaults to "16".  THEMESelect setenv's so child bros spawned
+    //  through BROForkBe inherit the choice.
+    char const *theme_name = NULL;
+    if (CLIHas(c, "--16"))    theme_name = THEME_16;
+    if (CLIHas(c, "--dark"))  theme_name = THEME_DARK;
+    if (CLIHas(c, "--light")) theme_name = THEME_LIGHT;
+    ok64 to = THEMESelect(theme_name);
+    if (to != OK) {
+        fprintf(stderr, "bro: unknown theme: %s\n", ok64str(to));
+        fail(to);
     }
 
     if (c->nuris > 0) {

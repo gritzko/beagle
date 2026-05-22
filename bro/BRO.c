@@ -27,6 +27,7 @@
 #include "dog/tok/DEF.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
+#include "dog/THEME.h"
 #include "dog/tok/TOK.h"
 
 // --- Active bro instance ---
@@ -201,25 +202,23 @@ static ok64 bro_drain_tlv(Bu8 buf) {
     return stop;
 }
 
-// 256-color ink violet for hunk titles
-#define BRO_TITLE_COLOR TTY_FG256(56)
-
-// Tag-to-ANSI-color mapping.
-// Returns fg color; sets *bold = YES for definitions.
-#define FILE_COLOR 56  // 256-color violet for filenames (same as title)
-
+// Tag-to-ANSI-color mapping reads from dog/THEME's active palette
+// (see THEMESelect).  Returns fg color in BRO's encoding (positive =
+// ANSI 16 SGR, negative = -(256-color N), 0 = default); sets *bold
+// for definition / call tags so the renderer adds ANSI_BOLD.
 static int BROTagColor(u8 tag, b8 *bold) {
     *bold = NO;
+    theme const *t = THEMEActive;
     switch (tag) {
-        case 'D': return GRAY;         // comment
-        case 'G': return DARK_GREEN;   // string
-        case 'L': return LIGHT_CYAN;   // number
-        case 'H': return DARK_PINK;    // preproc/annotation
-        case 'R': return LIGHT_BLUE;   // keyword
-        case 'P': return GRAY;         // punctuation
-        case 'N': *bold = YES; return 0; // defined name
-        case 'C': *bold = YES; return 0; // function call
-        case 'F': return -FILE_COLOR;  // filename (256-color, negative = 256)
+        case 'D': return t->fg_comment;
+        case 'G': return t->fg_string;
+        case 'L': return t->fg_number;
+        case 'H': return t->fg_preproc;
+        case 'R': return t->fg_keyword;
+        case 'P': return t->fg_punct;
+        case 'N': *bold = YES; return t->fg_defname;
+        case 'C': *bold = YES; return t->fg_funcall;
+        case 'F': return t->fg_filename;
         default:  return 0;
     }
 }
@@ -955,6 +954,68 @@ static b8 BROBack(BROstate *st) {
     return YES;
 }
 
+// Map a 1-based screen (row, col) to the (hunk, byte-offset) of the
+// visible character under that cell.  Walks the line the same way
+// BRORender does, skipping pass-hidden bytes so `col` counts emitted
+// codepoints (not raw bytes).  Returns NO for title rows, the status
+// bar, blank tail rows, or clicks past end-of-line.
+static b8 bro_screen_to_byte(BROstate *st, u32 row, u32 col,
+                             hunk const **hk_out, u32 *off_out) {
+    if (row == 0 || col == 0) return NO;
+    u32 vi = st->scroll + row - 1;
+    if (vi >= bro_nlines(st)) return NO;
+    range32 const *ln = &bro_lines(st)[vi];
+    if (ln->hi == BRO_TITLE_LINE) return NO;
+    hunk const *hk = &st->hunks[0][ln->lo];
+    u32 textlen = (u32)$len(hk->text);
+    u32 off = bro_line_off(ln);
+    u8 pass = bro_line_pass(ln);
+    u32 cols = st->cols > 0 ? st->cols : 80;
+    u32 line_end = bro_row_end_pass(hk, textlen, off, cols, pass);
+
+    int ntoks = (int)$len(hk->toks);
+    int ti = 0;
+    while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
+    u32 cp = 1;
+    u32 pos = off;
+    while (pos < line_end) {
+        while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= pos) ti++;
+        u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
+        b8 hidden = (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+                    (pass == BRO_PASS_IN && side == TOK_SIDE_RM);
+        u8 ch = hk->text[0][pos];
+        u32 clen = UTF8_LEN[ch >> 4];
+        if (clen == 0 || pos + clen > line_end) clen = 1;
+        if (!hidden) {
+            if (cp == col) { *hk_out = hk; *off_out = pos; return YES; }
+            cp++;
+        }
+        pos += clen;
+    }
+    return NO;
+}
+
+static b8 bro_is_word(u8 c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+        || (c >= '0' && c <= '9') || c == '_';
+}
+
+// Expand [A-Za-z0-9_] left and right of `off` and copy the run into
+// `out` (NUL-terminated).  Returns the byte length (0 if the char at
+// `off` isn't a word char or the word doesn't fit in `cap`).
+static u32 bro_word_around(hunk const *hk, u32 off, char *out, u32 cap) {
+    u32 textlen = (u32)$len(hk->text);
+    if (off >= textlen || !bro_is_word(hk->text[0][off])) return 0;
+    u32 lo = off, hi = off + 1;
+    while (lo > 0 && bro_is_word(hk->text[0][lo - 1])) lo--;
+    while (hi < textlen && bro_is_word(hk->text[0][hi])) hi++;
+    u32 n = hi - lo;
+    if (cap == 0 || n + 1 > cap) return 0;
+    for (u32 i = 0; i < n; i++) out[i] = (char)hk->text[0][lo + i];
+    out[n] = 0;
+    return n;
+}
+
 // Try to open the file/dir referenced by the hunk at the given line.
 // For directory listings, the line text IS the filename; the hunk URI
 // is the directory. Constructs dir/filename and opens.
@@ -1231,6 +1292,30 @@ static void scr_puts(char const *s) {
     u8sFeed(u8bIdle(bro_scr), cs);
 }
 
+// Emit the SGR for THEMEActive->fg_title.  Title color is a one-shot
+// escape outside the scr_emit_char SGR-delta machinery, so we render
+// the sequence inline here (matches the old scr_puts(TTY_FG256(56))
+// shape — caller follows with TTY_RESET).
+static void scr_emit_title_color(void) {
+    int c = THEMEActive->fg_title;
+    a_pad(u8, tmp, 24);
+    if (c > 0) {
+        u8sFeed1(tmp_idle, 033);
+        u8sFeed1(tmp_idle, '[');
+        utf8sFeed10(tmp_idle, (u64)c);
+        u8sFeed1(tmp_idle, 'm');
+    } else if (c < 0) {
+        a_cstr(prefix, "\033[38;5;");
+        u8sFeed(tmp_idle, prefix);
+        utf8sFeed10(tmp_idle, (u64)(-c));
+        u8sFeed1(tmp_idle, 'm');
+    } else {
+        a_cstr(def, "\033[39m");
+        u8sFeed(tmp_idle, def);
+    }
+    u8bFeed(bro_scr, u8bDataC(tmp));
+}
+
 // Feed goto escape: \033[row;colH
 static void scr_goto(int row, int col) {
     a_pad(u8, tmp, 32);
@@ -1282,22 +1367,23 @@ static void scr_emit_reset(void) {
 static void scr_emit_char(u8cp p, u32 n, u8 fg_tag, u8 bg_tag, b8 in_search) {
     b8 bold = NO;
     int fg = BROTagColor(fg_tag, &bold);
-    // bg_tag conventions (256-color, low-blue green/pink hues):
+    // bg_tag conventions (values from dog/THEME's active palette):
     //   'A' = no bg
-    //   'I' = pale green  rgb(215,255,215)  (INS, normal/inline pass)
-    //   'D' = pale pink   rgb(255,215,215)  (DEL, normal/inline pass)
-    //   'i' = mid green   rgb(175,255,175)  (INS bytes in split in-pass)
-    //   'd' = mid pink    rgb(255,175,175)  (RM  bytes in split rm-pass)
-    //   'g' = pale green  (eq context in in-pass — same as 'I')
-    //   'p' = pale pink   (eq context in rm-pass — same as 'D')
+    //   'I' = bg_ins        (INS, normal/inline pass)
+    //   'D' = bg_del        (DEL, normal/inline pass)
+    //   'i' = bg_ins_split  (INS bytes in split in-pass)
+    //   'd' = bg_del_split  (RM  bytes in split rm-pass)
+    //   'g' = bg_ins        (eq context in in-pass)
+    //   'p' = bg_del        (eq context in rm-pass)
+    theme const *th = THEMEActive;
     u8 bg = 0;
     switch (bg_tag) {
-    case 'I': bg = 194; break;
-    case 'D': bg = 224; break;
-    case 'i': bg = 157; break;
-    case 'd': bg = 217; break;
-    case 'g': bg = 194; break;
-    case 'p': bg = 224; break;
+    case 'I': bg = (u8)th->bg_ins;        break;
+    case 'D': bg = (u8)th->bg_del;        break;
+    case 'i': bg = (u8)th->bg_ins_split;  break;
+    case 'd': bg = (u8)th->bg_del_split;  break;
+    case 'g': bg = (u8)th->bg_ins;        break;
+    case 'p': bg = (u8)th->bg_del;        break;
     }
 
     //  Translate BRO's fg encoding (positive = basic SGR, negative =
@@ -1385,7 +1471,7 @@ static void BRORender(BROstate *st) {
         hunk const *hk = &st->hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
-            scr_puts(BRO_TITLE_COLOR);
+            scr_emit_title_color();
             char dtitle[HUNK_TITLE_MAX + 1];
             int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
             u32 w = (u32)dtlen < st->cols ? (u32)dtlen : st->cols;
@@ -1938,7 +2024,7 @@ static ok64 BROPlain(hunkcs hunks) {
         if (ln->hi == BRO_TITLE_LINE) {
             char dtitle[HUNK_TITLE_MAX + 1];
             int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
-            scr_puts(BRO_TITLE_COLOR);
+            scr_emit_title_color();
             u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
             u8bFeed(bro_scr, dts);
             scr_puts(TTY_RESET);
@@ -2356,7 +2442,8 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
     if (ch == 'q' || ch == 'Q') {
         return BRO_KEY_QUIT;
     }
-    if (ch == 'h') return BROBack(st) ? BRO_KEY_CHANGED : BRO_KEY_NONE;
+    if (ch == 'h' || ch == 127 || ch == 8)
+        return BROBack(st) ? BRO_KEY_CHANGED : BRO_KEY_NONE;
     if (ch == 'l' || ch == '\r' || ch == '\n') {
         BROTryOpen(st, st->scroll, repo);
         return BRO_KEY_CHANGED;
@@ -2576,6 +2663,22 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
                         return BRO_KEY_CHANGED;
                     }
                 }
+                if (mev.type == MAUS_PRESS && mev.button == MAUS_RIGHT) {
+                    hunk const *hk = NULL;
+                    u32 byte_off = 0;
+                    char word[128];
+                    if (bro_screen_to_byte(st, mev.row, mev.col,
+                                           &hk, &byte_off)
+                        && bro_word_around(hk, byte_off,
+                                           word, sizeof(word)) > 0) {
+                        char uri[160];
+                        int m = snprintf(uri, sizeof(uri),
+                                         "grep:#%s", word);
+                        if (m > 0 && m < (int)sizeof(uri))
+                            (void)BROForkBe(st, uri);
+                        return BRO_KEY_CHANGED;
+                    }
+                }
             }
             return BRO_KEY_NONE;
         }
@@ -2654,7 +2757,9 @@ ok64 BRORun(hunkcs hunks) {
 
     // Alternate screen buffer
     bro_puts("\033[?1049h");
-    // Mouse tracking starts disabled (toggle with 'm').
+    // Mouse tracking starts enabled (toggle with 'm', or bare Esc disables).
+    MAUSEnable(STDOUT_FILENO);
+    st.mouse_on = YES;
 
     // Initial scroll: if first hunk has a line number in its URI, center
     // on that line. Otherwise skip the title.
@@ -2847,7 +2952,9 @@ ok64 BROPipeRun(int pipefd) {
 
     bro_puts("\033[?25l");    // hide cursor
     bro_puts("\033[?1049h");  // alt screen
-    // Mouse tracking starts disabled (toggle with 'm').
+    // Mouse tracking starts enabled (toggle with 'm', or bare Esc disables).
+    MAUSEnable(STDOUT_FILENO);
+    st.mouse_on = YES;
 
     // Show initial "nothing..." while waiting for data
     u8bReset(bro_scr);

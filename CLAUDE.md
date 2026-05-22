@@ -75,7 +75,7 @@
     handling functions and macros, don't calculate any pointers manually.
 11. Avoid cat-ting large files and *never* send traces to stdout. Redirect to a file,
     then grep/tail the file.
-12. Read DONT.md and INDEX.md. Reread them after every compaction.
+12. Read ABC.md and \*/INDEX.md. Reread them after every compaction.
 13. Dont reimplement things repeatedly. When planninng, check `*/INDEX.md` for 
     a relevant header, the thing may already exist. Always ask if unsure.
 14. After large code changes (esp. new files added) update respective INDEX.md.
