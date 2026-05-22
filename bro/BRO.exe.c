@@ -110,6 +110,7 @@ ok64 BROExec(bro *b, cli *c) {
                 }
                 hunk *hk = hunkbIdleHead(b->hunks);
                 *hk = (hunk){};
+                hk->verb = HUNK_VERB_HUNK;
                 ok64 wo = BROArenaWrite(hk->text, u8bDataC(blobbuf));
                 u8bFree(blobbuf);
                 if (wo != OK) continue;
@@ -142,6 +143,7 @@ ok64 BROExec(bro *b, cli *c) {
 
             hunk *hk = hunkbIdleHead(b->hunks);
             *hk = (hunk){};
+            hk->verb = HUNK_VERB_HUNK;
             BROArenaWrite(hk->uri, u->data);
             hk->text[0] = u8bDataHead(mapped);
             hk->text[1] = u8bIdleHead(mapped);

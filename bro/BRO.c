@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "MAUS.h"
@@ -21,13 +22,16 @@
 #include "abc/FILE.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/TTY.h"
 #include "abc/URI.h"
 #include "abc/UTF8.h"
+#include "dog/DOG.h"
 #include "dog/tok/DEF.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "dog/THEME.h"
+#include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
 
 // --- Active bro instance ---
@@ -156,6 +160,8 @@ void BRODefer(u8bp mapped) {
 static ok64 bro_stage_hunk(hunk *hk, hunk *tlv_hk) {
     sane(1);
     *hk = (hunk){};
+    hk->ts   = tlv_hk->ts;
+    hk->verb = tlv_hk->verb;
     if (!$empty(tlv_hk->uri))
         call(BROArenaWrite, hk->uri, tlv_hk->uri);
     if (!$empty(tlv_hk->text))
@@ -825,6 +831,7 @@ ok64 BROListDir(u8csc dirpath) {
     u32 *tok_end = u32bIdleHead(bro_state->toks);
     hunk *hk = hunkbIdleHead(bro_state->hunks);
     *hk = (hunk){};
+    hk->verb = HUNK_VERB_HUNK;
 
     // URI = dirpath
     a_dup(u8 const, dp, dirpath);
@@ -899,6 +906,7 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     u8cp src_idle = u8bIdleHead(mapped);
 
     fv->hunk = (hunk){};
+    fv->hunk.verb = HUNK_VERB_HUNK;
     fv->hunk.text[0] = src_head;
     fv->hunk.text[1] = src_idle;
 
@@ -1377,10 +1385,32 @@ static b8 bro_search_at(BROstate *st, u8csc text, u32 pos) {
 }
 
 static void BROStatusBar(BROstate *st);
+fun b8 hunk_is_ulog(hunkc const *hk);
 
 // Format display title "--- path :: func ---" into buf.
 // Returns the number of bytes written (excl NUL).
+//
+// ULOG-shape hunks (ts or verb set) render as `<verb> <uri>` instead
+// — same identity as the per-row ULOG header minus the date column.
 static int bro_format_title(char *buf, size_t bufsz, hunkc const *hk) {
+    if (hunk_is_ulog(hk)) {
+        a_pad(u8, vbuf, 16);
+        if (hk->verb) (void)RONutf8sFeed(vbuf_idle, hk->verb);
+        a_dup(u8 const, vd, vbuf_datac);
+        int n;
+        if (!$empty(vd) && !$empty(hk->uri))
+            n = snprintf(buf, bufsz, U8SFMT " " U8SFMT,
+                         u8sFmt(vd), u8sFmt(hk->uri));
+        else if (!$empty(hk->uri))
+            n = snprintf(buf, bufsz, U8SFMT, u8sFmt(hk->uri));
+        else if (!$empty(vd))
+            n = snprintf(buf, bufsz, U8SFMT, u8sFmt(vd));
+        else
+            n = 0;
+        if (n < 0) n = 0;
+        if ((size_t)n >= bufsz) n = (int)(bufsz - 1);
+        return n;
+    }
     BROloc loc = {};
     BROHunkLoc(&loc, hk);
     b8 has_p = !$empty(loc.path);
@@ -1402,6 +1432,109 @@ static int bro_format_title(char *buf, size_t bufsz, hunkc const *hk) {
     if (n < 0) n = 0;
     if ((size_t)n >= bufsz) n = (int)(bufsz - 1);
     return n;
+}
+
+// A hunk carries ULOG-event shape when ts or verb is set.  Such titles
+// render as the footer-style row `<date> <verb> <uri>`; click navigates
+// via `be --tlv <uri>` so projector URIs work too.
+fun b8 hunk_is_ulog(hunkc const *hk) { return hk->ts != 0 || hk->verb != 0; }
+
+// Render a ULOG-shape title row into bro_scr: underlined row that
+// spans the full terminal width (padded with spaces so the underline
+// reaches the edge), greyish 7-cell date column, verb in its
+// ULOGVerbColor, URI in terminal default colour, elided to fit.
+// Caller has already moved the cursor to column 1 and emitted
+// TTY_ERASE_LINE.
+static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
+    if (st->cols == 0) return;
+    u32 cols = st->cols;
+    u32 used = 0;
+
+    ansi64 ul       = ANSI64_FLAG(ANSI_UNDERLINE);
+    ansi64 ul_grey  = ul | THEMEAt('Q');
+    ansi64 ul_verb  = ul | ULOGVerbColor(hk->verb);
+    ansi64 cur      = ANSI_DEFAULT;
+
+    (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
+
+    u8sFeed1(u8bIdle(bro_scr), ' ');
+    used++;
+
+    if (used < cols) {
+        i64 now = (i64)time(NULL);
+        i64 ts  = now;
+        if (hk->ts) {
+            struct tm tm = {};
+            if (RONToTime(hk->ts, &tm, NULL) == OK) {
+                time_t t = mktime(&tm);
+                if (t != (time_t)-1) ts = (i64)t;
+            }
+        }
+        (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul_grey, cur); cur = ul_grey;
+        (void)DOGutf8sFeedDate(u8bIdle(bro_scr), ts, now);
+        used = used + 7 < cols ? used + 7 : cols;
+        (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
+    }
+
+    if (used < cols) { u8sFeed1(u8bIdle(bro_scr), ' '); used++; }
+
+    if (used < cols && hk->verb) {
+        a_pad(u8, vbuf, 16);
+        (void)RONutf8sFeed(vbuf_idle, hk->verb);
+        a_dup(u8 const, vdata, vbuf_datac);
+        size_t vlen  = u8csLen(vdata);
+        size_t vshow = vlen < cols - used ? vlen : cols - used;
+        if (vshow > 0) {
+            (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul_verb, cur);
+            cur = ul_verb;
+            a_head(u8c, vshow_sl, vdata, vshow);
+            u8sFeed(u8bIdle(bro_scr), vshow_sl);
+            (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
+            used += (u32)vshow;
+        }
+    }
+
+    if (used < cols) { u8sFeed1(u8bIdle(bro_scr), ' '); used++; }
+
+    if (used < cols && !$empty(hk->uri)) {
+        u32 avail = cols - used;
+        a_dup(u8 const, uri, hk->uri);
+        size_t ulen = u8csLen(uri);
+        if (ulen <= avail) {
+            u8sFeed(u8bIdle(bro_scr), uri);
+            used += (u32)ulen;
+        } else {
+            a_dup(u8 const, scan, hk->uri);
+            b8 has_slash = (u8csRevFind(scan, '/') == OK);
+            size_t suff_off = has_slash ? u8csLen(scan) - 1 : 0;
+            size_t suff_len = ulen - suff_off;
+            if (has_slash && suff_len + 3 <= avail) {
+                a_cstr(dots, "...");
+                u8sFeed(u8bIdle(bro_scr), dots);
+                a_rest(u8c, suffix, hk->uri, suff_off);
+                u8sFeed(u8bIdle(bro_scr), suffix);
+                used += 3 + (u32)suff_len;
+            } else if (avail > 3) {
+                a_head(u8c, head, uri, avail - 3);
+                u8sFeed(u8bIdle(bro_scr), head);
+                a_cstr(dots, "...");
+                u8sFeed(u8bIdle(bro_scr), dots);
+                used = cols;
+            } else {
+                a_head(u8c, head, uri, avail);
+                u8sFeed(u8bIdle(bro_scr), head);
+                used += avail;
+            }
+        }
+    }
+
+    // Pad to full screen width so the underline reaches the edge.
+    while (used < cols) {
+        u8sFeed1(u8bIdle(bro_scr), ' ');
+        used++;
+    }
+
+    (void)ANSIu8sFeedReset(u8bIdle(bro_scr), cur);
 }
 
 static void BRORender(BROstate *st) {
@@ -1426,6 +1559,10 @@ static void BRORender(BROstate *st) {
         hunk const *hk = &st->hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
+            if (hunk_is_ulog(hk)) {
+                bro_render_ulog_title(st, hk);
+                continue;
+            }
             scr_emit_title_color();
             char dtitle[HUNK_TITLE_MAX + 1];
             int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
@@ -1526,7 +1663,7 @@ static void BROScrollCenter(BROstate *st, u32 target) {
 
 static void BROStatusBar(BROstate *st) {
     scr_goto(st->rows, 1);
-    scr_puts(TTY_INVERSE TTY_ERASE_LINE);
+    scr_puts(TTY_UNDERLINE TTY_ERASE_LINE);
 
     // Flash message: show it and clear for next render.
     if (u8bDataLen(st->flash) > 0) {
@@ -1699,7 +1836,7 @@ static void BROReadSearch(BROstate *st) {
     for (;;) {
         // Render prompt on status bar
         bro_goto(st->rows, 1);
-        bro_puts(TTY_INVERSE TTY_ERASE_LINE);
+        bro_puts(TTY_UNDERLINE TTY_ERASE_LINE);
         bro_puts(" /");
         if (u8bDataLen(st->search) > 0)
             bro_write(u8bDataC(st->search));
@@ -1929,6 +2066,18 @@ static ok64 BROPlain(hunkcs hunks) {
     call(BROScreenInit);
     u32 nhunks = (u32)$len(hunks);
 
+    //  --tlv: parent process expects HUNK TLV records on stdout (e.g.
+    //  a parent bro that forked `be --tlv` to render this URI as a
+    //  new view).  Serialize each hunk via HUNKu8sFeed and flush.
+    if (HUNKMode == HUNKOutTLV) {
+        for (u32 h = 0; h < nhunks; h++) {
+            u8bReset(bro_scr);
+            (void)HUNKu8sFeed(u8bIdle(bro_scr), &hunks[0][h]);
+            BROScreenFlush();
+        }
+        done;
+    }
+
     if (!BRO_COLOR) {
         // No colours: emit hunk text verbatim with a `--- uri ---` title
         // per hunk.  Same as before — plain --no-color dump.
@@ -1971,6 +2120,13 @@ static ok64 BROPlain(hunkcs hunks) {
         hunk const *hk = &hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
+            if (hunk_is_ulog(hk)) {
+                // <date>\t<verb>\t<uri>\n  — same shape as the pipe ULOG
+                // line so plain/TUI stay byte-compatible aside from bg.
+                (void)HUNKu8sFeedColor(u8bIdle(bro_scr), hk);
+                BROScreenFlush();
+                continue;
+            }
             char dtitle[HUNK_TITLE_MAX + 1];
             int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
             scr_emit_title_color();
@@ -2131,7 +2287,7 @@ static void BROReadSpot(BROstate *st, char *buf, int bufsz,
     for (;;) {
         // Render prompt
         bro_goto(st->rows, 1);
-        bro_puts(TTY_INVERSE TTY_ERASE_LINE);
+        bro_puts(TTY_UNDERLINE TTY_ERASE_LINE);
         bro_puts(prompt);
         if (len > 0) {
             u8cs bs = {(u8cp)buf, (u8cp)buf + len};
@@ -2603,33 +2759,63 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
                     if (line < bro_nlines(st)) {
                         range32 const *ln = &bro_lines(st)[line];
                         b8 is_title = (ln->hi == BRO_TITLE_LINE);
-                        hunk const *hk = NULL;
-                        u32 byte_off = 0;
-                        if (!is_title &&
-                            bro_screen_to_byte(st, mev.row, mev.col,
-                                               &hk, &byte_off)) {
-                            int ntoks = (int)$len(hk->toks);
-                            int ti = 0;
-                            while (ti < ntoks &&
-                                   tok32Offset(hk->toks[0][ti]) <= byte_off)
-                                ti++;
-                            int nxt = ti + 1;
-                            if (nxt < ntoks &&
-                                tok32Tag(hk->toks[0][nxt]) == 'U') {
-                                u8cs uri_slice = {};
-                                tok32Val(uri_slice, hk->toks, hk->text[0], nxt);
-                                size_t n = (size_t)$len(uri_slice);
-                                char uri[512];
-                                if (n > 0 && n < sizeof(uri)) {
-                                    for (size_t k = 0; k < n; k++)
-                                        uri[k] = (char)uri_slice[0][k];
-                                    uri[n] = 0;
-                                    (void)BROForkBe(st, uri);
-                                    return BRO_KEY_CHANGED;
+                        hunk const *thk = &st->hunks[0][ln->lo];
+
+                        // Content row: clicking a token followed by a
+                        // 'U'-tagged URI token navigates to that URI
+                        // explicitly (see TOK.h).
+                        if (!is_title) {
+                            hunk const *hk = NULL;
+                            u32 byte_off = 0;
+                            if (bro_screen_to_byte(st, mev.row, mev.col,
+                                                   &hk, &byte_off)) {
+                                int ntoks = (int)$len(hk->toks);
+                                int ti = 0;
+                                while (ti < ntoks &&
+                                       tok32Offset(hk->toks[0][ti]) <= byte_off)
+                                    ti++;
+                                int nxt = ti + 1;
+                                if (nxt < ntoks &&
+                                    tok32Tag(hk->toks[0][nxt]) == 'U') {
+                                    u8cs uri_slice = {};
+                                    tok32Val(uri_slice, hk->toks,
+                                             hk->text[0], nxt);
+                                    if (!$empty(uri_slice)) {
+                                        a_pad(u8, ubuf, 1024);
+                                        (void)u8sFeed(ubuf_idle, uri_slice);
+                                        (void)u8sFeed1(ubuf_idle, '\0');
+                                        (void)BROForkBe(st,
+                                            (char const *)u8bDataHead(ubuf));
+                                        return BRO_KEY_CHANGED;
+                                    }
                                 }
                             }
                         }
-                        BROTryOpen(st, line, repo);
+
+                        // In-process open of the URI's path covers
+                        // code-hunk titles, dir-listing entries, and
+                        // status rows whose URI is a file path.
+                        if (BROTryOpen(st, line, repo))
+                            return BRO_KEY_CHANGED;
+                        // Fallback: fork `be --tlv <uri>` for things
+                        // that aren't readable files — projector URIs
+                        // (`log:?…`, `commit:?…`), or directories /
+                        // submodules (URI ends in `/`), which we route
+                        // through `ls:` so the new view keeps the
+                        // status-listing format instead of bro's plain
+                        // dir listing.
+                        if (is_title && !$empty(thk->uri)) {
+                            a_pad(u8, ubuf, 1024);
+                            b8 is_dir = (*u8csLast(thk->uri) == '/');
+                            if (is_dir) {
+                                a_cstr(ls_pfx, "ls:");
+                                (void)u8sFeed(ubuf_idle, ls_pfx);
+                            }
+                            (void)u8sFeed(ubuf_idle, thk->uri);
+                            (void)u8sFeed1(ubuf_idle, '\0');
+                            (void)BROForkBe(st,
+                                (char const *)u8bDataHead(ubuf));
+                        }
                         return BRO_KEY_CHANGED;
                     }
                 }
@@ -2933,7 +3119,7 @@ ok64 BROPipeRun(int pipefd) {
     // Show initial "nothing..." while waiting for data
     u8bReset(bro_scr);
     scr_goto(st.rows, 1);
-    scr_puts(TTY_INVERSE TTY_ERASE_LINE " nothing..." TTY_RESET);
+    scr_puts(TTY_UNDERLINE TTY_ERASE_LINE " nothing..." TTY_RESET);
     BROScreenFlush();
 
     b8 quit = NO;
@@ -3041,7 +3227,7 @@ ok64 BROPipeRun(int pipefd) {
         if (pipe_eof && bro_nlines(&st) == 0 && !quit) {
             u8bReset(bro_scr);
             scr_goto(st.rows, 1);
-            scr_puts(TTY_INVERSE TTY_ERASE_LINE " nothing!" TTY_RESET);
+            scr_puts(TTY_UNDERLINE TTY_ERASE_LINE " nothing!" TTY_RESET);
             BROScreenFlush();
         }
     }

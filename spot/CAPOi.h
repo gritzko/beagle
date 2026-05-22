@@ -29,9 +29,9 @@ ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
 //  Empty `line` clears the progress row (the previous-API NULL).
 void CAPOProgress(u8csc line);
 b8 CAPOExtIs(u8csc ext, const char *a, const char *b);
-//  Drains the trimmed header line into `out` (writable slice).
+//  Drains the enclosing 'N'-tagged definition name into `out`.
 //  Caller reads the result from `out`'s pre-call vs post-call head.
-void CAPOFindFunc(u8csc source, u32 pos, u8csc ext, u8s out);
+void CAPOFindFunc(u32cs htoks, u8cp src_base, u32 pos, u8s out);
 void CAPOGrepCtx(u8csc source, u32 match_pos, u32 nctx,
                   u32 *lo, u32 *hi);
 

@@ -52,6 +52,7 @@ static theme const THEME16TBL = {
     IDX('Q') = FG16(90),    // unk       — grey
     IDX('Y') = FG16(34),    // upd       — blue (== put)
     IDX('Z') = FG16(35),    // mrg       — magenta
+    IDX('B') = FG16(33),    // eq/hunk   — yellow (no pale option in 16)
 };
 
 //  Solarized dark: muted base01 (240) body, accents in cyan/magenta/
@@ -86,6 +87,7 @@ static theme const THEMEDARKTBL = {
     IDX('Q') = FG256(240),                // unk       — base01 grey
     IDX('Y') = FG256(33),                 // upd       — blue
     IDX('Z') = FG256(125),                // mrg       — magenta
+    IDX('B') = FG256(180),                // eq/hunk   — muted yellow
 };
 
 //  Solarized light: same accents over a light background; body bumped
@@ -118,6 +120,7 @@ static theme const THEMELIGHTTBL = {
     IDX('Q') = FG256(245),                // base1 (lighter than base01)
     IDX('Y') = FG256(33),
     IDX('Z') = FG256(125),
+    IDX('B') = FG256(186),                // eq/hunk   — pale yellow
 };
 
 theme const *THEMEActive = &THEME16TBL;

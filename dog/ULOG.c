@@ -1070,6 +1070,8 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     {0x31b77,        'M'},  // mis       — slot M  (red)
     {0x39caf,        'Q'},  // unk       — slot Q  (grey)
     {0x31dab,        'Z'},  // mrg       — slot Z  (magenta)
+    {0xa75,          'B'},  // eq        — slot B  (pale yellow; "baseline")
+    {0xb39caf,       'B'},  // hunk      — slot B  (neutral file fragment)
     //  patch-status aliases (sniff/PATCH.c::emit_status).  Same slot
     //  letters as the file-status equivalents — one mental map.
     {0x25d34c2da68,  'W'},  // applied   ≡ new

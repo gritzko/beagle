@@ -2577,8 +2577,16 @@ static ok64 becli_inner(cli *c) {
     if ($empty(verb)) {
         u8cs bro  = u8slit("bro");
         if (u != NULL && !$empty(u->path)) {
-            a_pad(u8cs, args, 2);
+            //  Mirror BEProjector: propagate --tlv (and --color via the
+            //  env BRO_COLOR=1) so a parent bro that forked us through
+            //  BROForkBe gets back TLV records instead of plain text.
+            b8 emit_tlv = (HUNKMode != HUNKOutPlain);
+            if (HUNKMode == HUNKOutColor) setenv("BRO_COLOR", "1", 1);
+            a_cstr(tlv_flag_s, "--tlv");
+            u8cs tlv_flag = {tlv_flag_s[0], tlv_flag_s[1]};
+            a_pad(u8cs, args, 3);
             u8csbFeed1(args, bro);
+            if (emit_tlv) u8csbFeed1(args, tlv_flag);
             u8csbFeed1(args, u->data);
             a_dup(u8cs, argv, u8csbData(args));
             call(BERun, bro, argv, NO);

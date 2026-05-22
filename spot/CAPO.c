@@ -559,83 +559,48 @@ b8 CAPOExtIs(u8csc ext, const char *a, const char *b) {
     return NO;
 }
 
-// Walk backward from `pos` looking for a section header line.
-// Heuristic depends on file extension:
-//   md/markdown/rst/txt: line starting with '#'
-//   py: col-0 'def ' or 'class '
-//   default (C-like): col-0 identifier + '('
-//
-// Writes the (trimmed) header line into `out` via slice drain;
-// caller reads the result from `out`'s consumed prefix (i.e. the
-// original head down to the post-call head).
-void CAPOFindFunc(u8csc source, u32 pos, u8csc ext, u8s out) {
-    if (u8csEmpty(source) || pos == 0 || u8sEmpty(out)) return;
-    size_t slen = (size_t)u8csLen(source);
-    if ((size_t)pos > slen) pos = (u32)slen;
+// Find the enclosing definition name for byte position `pos` by
+// walking `htoks` backward to the nearest 'N'-tagged token (DEF pass
+// stamp; see dog/tok/DEF.h).  Capped at CAPO_FUNC_LOOKBACK_LINES
+// source lines to keep the search bounded on huge files.  Writes the
+// matched token's bytes into `out` via slice drain; no-op when no
+// 'N' token sits within the window.
+#define CAPO_FUNC_LOOKBACK_LINES 100
+void CAPOFindFunc(u32cs htoks, u8cp src_base, u32 pos, u8s out) {
+    if ($empty(htoks) || src_base == NULL || u8sEmpty(out)) return;
+    int ntoks = (int)$len(htoks);
+    if (ntoks == 0) return;
 
-    b8 is_md = CAPOExtIs(ext, "md", "markdown") ||
-               CAPOExtIs(ext, "rst", "txt");
-    b8 is_py = CAPOExtIs(ext, "py", NULL);
-
-    //  `tail` is the source prefix from the buffer start up to (and
-    //  including) the line that contains `pos`.  The hunk that called
-    //  us may sit ON the function signature line — context can back up
-    //  exactly that far — so we MUST keep that line as a candidate.
-    //  Each peel iteration drops the rightmost line and classifies it.
-    a_head(u8c, tail, source, pos);
-    {
-        //  Extend tail through the rest of the current line so we
-        //  consider the whole line (not just the prefix up to pos).
-        a_rest(u8c, after, source, pos);
-        a_dup(u8c, scan, after);
-        (void)u8csFind(scan, '\n');     // scan[0] = '\n' or term
-        tail[1] = scan[0];
+    //  Binary-search the smallest index whose end-offset is > pos.
+    //  Tokens at and before that index cover bytes [..., pos].
+    int lo = 0, hi = ntoks;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (tok32Offset(htoks[0][mid]) <= pos) lo = mid + 1;
+        else hi = mid;
     }
+    int ti = lo;
 
-    for (int tries = 0; tries < 200 && !u8csEmpty(tail); tries++) {
-        //  Peel one line off the right of `tail`.  u8csRevFind retreats
-        //  `scan`'s term so scan[1]-1 sits on the matched '\n' (or empties
-        //  the slice when no '\n' is left).
-        a_dup(u8c, scan, tail);
-        u8cs line = {tail[0], tail[1]};
-        if (u8csRevFind(scan, '\n') == OK) {
-            line[0] = scan[1];           // line starts one past the '\n'
-            tail[1] = scan[1] - 1;        // peel: drop '\n' and after
-        } else {
-            tail[1] = tail[0];            // no '\n' left → last line
+    //  Walk back, counting newlines in each peeled token's text so
+    //  we can stop once the window grows past LOOKBACK_LINES.  The
+    //  per-token byte walk is O(token-length) and the total across
+    //  the loop is O(pos), so no quadratic blowup.
+    u32 lines_back = 0;
+    while (ti > 0) {
+        ti--;
+        u32 tok_lo = (ti > 0) ? tok32Offset(htoks[0][ti - 1]) : 0;
+        u32 tok_hi = tok32Offset(htoks[0][ti]);
+        if (tok_hi > pos) tok_hi = pos;
+        for (u32 i = tok_lo; i < tok_hi; i++) {
+            if (src_base[i] == '\n') lines_back++;
         }
-
-        if (u8csEmpty(line)) continue;
-        u8 ch = *u8csHead(line);
-
-        if (is_md) {
-            if (ch != '#') continue;
-        } else if (is_py) {
-            a_cstr(def_lit,   "def ");
-            a_cstr(class_lit, "class ");
-            if (u8csHasPrefix(line, def_lit)) {}
-            else if (u8csHasPrefix(line, class_lit)) {}
-            else continue;
-        } else {
-            //  C-like: col-0 identifier + a '(' somewhere on the line.
-            if (ch == '/' || ch == '*' || ch == '#') continue;
-            b8 is_ident = (ch >= 'A' && ch <= 'Z') ||
-                          (ch >= 'a' && ch <= 'z') || ch == '_';
-            if (!is_ident) continue;
-            a_dup(u8c, paren_scan, line);
-            if (u8csFind(paren_scan, '(') != OK) continue;
+        if (lines_back > CAPO_FUNC_LOOKBACK_LINES) return;
+        if (tok32Tag(htoks[0][ti]) == 'N') {
+            u8cs val = {};
+            tok32Val(val, htoks, src_base, ti);
+            (void)u8sDrain(out, val);
+            return;
         }
-
-        //  Trim trailing punct/whitespace, drain what fits into `out`.
-        a_dup(u8c, trimmed, line);
-        while (!u8csEmpty(trimmed)) {
-            u8c last = *u8csLast(trimmed);
-            if (last != '{' && last != ':' && last != ' ' &&
-                last != '\t' && last != '\r') break;
-            u8csShed1(trimmed);
-        }
-        (void)u8sDrain(out, trimmed);
-        return;
     }
 }
 
@@ -648,12 +613,13 @@ ok64 CAPOBuildHunk(u8csc source, u32cs htoks, u32 ctx_lo, u32 ctx_hi,
     sane(less_nhunks < LESS_MAX_HUNKS);
     LESShunk *hk = &less_hunks[less_nhunks];
     *hk = (LESShunk){};
+    hk->verb = HUNK_VERB_HUNK;
 
     // Compose URI: path#symbol:lineno
     {
         a_pad(u8, funcname, 256);
         if (needs_title || *first_hunk)
-            CAPOFindFunc(source, ctx_lo, file_ext, funcname_idle);
+            CAPOFindFunc(htoks, source[0], ctx_lo, funcname_idle);
         u32 ln = 1;
         $for(u8c, ch, source) {
             if (ch >= source[0] + ctx_lo) break;

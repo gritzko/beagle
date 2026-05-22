@@ -5,6 +5,12 @@
 #include "abc/TLV.h"
 #include "dog/tok/TOK.h"
 
+// "hunk" — the neutral file-fragment verb.  Search results, grep hits,
+// cat-mode views, and other "this is a code snippet" hunks set this so
+// bro's title bar gets the ULOG-shape row instead of the old violet
+// `--- … ---` decoration.
+con ron60 HUNK_VERB_HUNK = 0xb39caf;
+
 // TLV type letters for hunk records
 #define HUNK_TLV      'H'  // outer container
 #define HUNK_TLV_TS   'T'  // ron60 timestamp (8 bytes LE)
