@@ -41,8 +41,8 @@ echo "in sub"      > sub/keep.txt
     || { echo "FAIL: explicit a.txt#a2.txt failed" >&2; exit 1; }
 [ ! -e a.txt ] || { echo "FAIL: a.txt still on disk after rename" >&2; exit 1; }
 [   -e a2.txt ] || { echo "FAIL: a2.txt missing after rename" >&2; exit 1; }
-"$BE" 2>&1 | grep -qE 'mov[[:space:]]+a\.txt -> a2\.txt' \
-    || { echo "FAIL: status missing 'mov a.txt -> a2.txt'" >&2;
+"$BE" 2>&1 | grep -qE 'mov[[:space:]]+a\.txt#a2\.txt' \
+    || { echo "FAIL: status missing 'mov a.txt#a2.txt'" >&2;
          "$BE" 2>&1 >&2; exit 1; }
 
 "$BE" post 'rename a' >/dev/null
@@ -53,8 +53,8 @@ echo "in sub"      > sub/keep.txt
     || { echo "FAIL: explicit b.txt#sub/ failed" >&2; exit 1; }
 [ ! -e b.txt ]      || { echo "FAIL: b.txt still on disk" >&2; exit 1; }
 [   -e sub/b.txt ]  || { echo "FAIL: sub/b.txt missing after dir rename" >&2; exit 1; }
-"$BE" 2>&1 | grep -qE 'mov[[:space:]]+b\.txt -> sub/b\.txt' \
-    || { echo "FAIL: status missing 'mov b.txt -> sub/b.txt'" >&2;
+"$BE" 2>&1 | grep -qE 'mov[[:space:]]+b\.txt#sub/b\.txt' \
+    || { echo "FAIL: status missing 'mov b.txt#sub/b.txt'" >&2;
          "$BE" 2>&1 >&2; exit 1; }
 "$BE" post 'b into sub' >/dev/null
 
@@ -62,7 +62,7 @@ echo "in sub"      > sub/keep.txt
 mv a2.txt renamed.txt
 "$BE" put >/dev/null \
     || { echo "FAIL: bare auto-pair failed" >&2; exit 1; }
-"$BE" 2>&1 | grep -qE 'mov[[:space:]]+a2\.txt -> renamed\.txt' \
+"$BE" 2>&1 | grep -qE 'mov[[:space:]]+a2\.txt#renamed\.txt' \
     || { echo "FAIL: bare auto-pair did not emit mov row" >&2;
          "$BE" 2>&1 >&2; exit 1; }
 "$BE" post 'auto-pair' >/dev/null
@@ -87,10 +87,10 @@ grep -q PUTAMBIG err \
 # --- 6. explicit-form "claim" disambiguates the ambiguous case ----
 "$BE" put 'x.txt#p.txt' 'y.txt#q.txt' >/dev/null \
     || { echo "FAIL: explicit claim failed" >&2; exit 1; }
-"$BE" 2>&1 | grep -qE 'mov[[:space:]]+x\.txt -> p\.txt' \
+"$BE" 2>&1 | grep -qE 'mov[[:space:]]+x\.txt#p\.txt' \
     || { echo "FAIL: claim did not emit mov x->p" >&2;
          "$BE" 2>&1 >&2; exit 1; }
-"$BE" 2>&1 | grep -qE 'mov[[:space:]]+y\.txt -> q\.txt' \
+"$BE" 2>&1 | grep -qE 'mov[[:space:]]+y\.txt#q\.txt' \
     || { echo "FAIL: claim did not emit mov y->q" >&2;
          "$BE" 2>&1 >&2; exit 1; }
 "$BE" post 'two renames' >/dev/null

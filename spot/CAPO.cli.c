@@ -14,6 +14,7 @@ static ok64 capocli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, SPOT_CLI_VERBS, SPOT_CLI_VAL_FLAGS);
+    CLISetHUNKMode(c);
 
     if (CLIHas(c, "-v") || CLIHas(c, "--version")) {
         fprintf(stderr, "spot %s %s\n", SPOT_GIT_TAG, SPOT_COMMIT_HASH);

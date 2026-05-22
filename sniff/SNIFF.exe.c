@@ -536,39 +536,22 @@ static ok64 status_step(class_step const *step, void *ctx) {
 //  column wears grey, status wears its own colour, path stays
 //  default.  Walked once per bucket (≤7 passes) — trivial for
 //  status sizes.
-static void status_dump_verb(Bu8 rows, ron60 verb_filter,
-                             char const *marker, char const *ansi,
-                             b8 tty, i64 now) {
+//  Walk `rows` (ULOG-formatted), drain row by row, and ship each row
+//  matching `verb_filter` through `HUNKu8sFeedOut` as a status hunk.
+//  The renderer reads `HUNKMode` (set by `CLISetHUNKMode` in main) and
+//  picks TLV/color/plain — same three-flag rule as every other dog.
+//  No tty / marker / ansi args: the verb token is rendered from the
+//  ron60 `rec.verb` and the colour comes from `ULOGVerbColor` via the
+//  HUNK renderer, so the palette stays in sync without per-call wiring.
+static void status_dump_verb(Bu8 rows, ron60 verb_filter) {
     a_dup(u8c, scan, u8bData(rows));
     while (!u8csEmpty(scan)) {
         ulogrec rec = {};
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
-        if (dr != OK) continue;                  // skip malformed (drain advances)
+        if (dr != OK) continue;                  // skip malformed
         if (rec.verb != verb_filter) continue;
-
-        u8 date_buf[8];
-        u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
-        u8cp date_start = date_into[0];
-        (void)DOGutf8sFeedDate(date_into,
-                               status_ron60_to_secs(rec.ts), now);
-
-        if (tty) fputs(STATUS_ANSI_UNK, stdout);
-        fwrite(date_start, 1, (size_t)(date_into[0] - date_start), stdout);
-        if (tty) fputs(STATUS_ANSI_OFF, stdout);
-        fputc('\t', stdout);
-        if (tty) fputs(ansi, stdout);
-        fputs(marker, stdout);
-        if (tty) fputs(STATUS_ANSI_OFF, stdout);
-        fputc('\t', stdout);
-        fwrite(rec.uri.path[0], 1,
-               (size_t)$len(rec.uri.path), stdout);
-        if (!u8csEmpty(rec.uri.fragment)) {
-            fputs(" -> ", stdout);
-            fwrite(rec.uri.fragment[0], 1,
-                   (size_t)$len(rec.uri.fragment), stdout);
-        }
-        fputc('\n', stdout);
+        (void)ULOGPrintStatusLine(&rec);
     }
 }
 
@@ -580,21 +563,16 @@ static ok64 sniff_status_work(status_buckets *b) {
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
+    //  ANSI is decided by HUNKMode (set in main from --tlv/--color/--plain
+    //  per the universal rule); no per-call tty branching here.
     b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
-    if (b->put_n > 0)
-        status_dump_verb(b->rows, b->v.v_put, "put", STATUS_ANSI_PUT, tty, b->now);
-    if (b->new_n > 0)
-        status_dump_verb(b->rows, b->v.v_new, "new", STATUS_ANSI_NEW, tty, b->now);
-    if (b->mov_n > 0)
-        status_dump_verb(b->rows, b->v.v_mov, "mov", STATUS_ANSI_MOV, tty, b->now);
-    if (b->mod_n > 0)
-        status_dump_verb(b->rows, b->v.v_mod, "mod", STATUS_ANSI_MOD, tty, b->now);
-    if (b->del_n > 0)
-        status_dump_verb(b->rows, b->v.v_del, "del", STATUS_ANSI_DEL, tty, b->now);
-    if (b->mis_n > 0)
-        status_dump_verb(b->rows, b->v.v_mis, "mis", STATUS_ANSI_MIS, tty, b->now);
-    if (b->unk_n > 0)
-        status_dump_verb(b->rows, b->v.v_unk, "unk", STATUS_ANSI_UNK, tty, b->now);
+    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put);
+    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new);
+    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov);
+    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod);
+    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del);
+    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis);
+    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk);
     //  Color the count + tag pair when the count is non-zero, on tty
     //  only.  `ok` is uncolored — its tag is informational, never
     //  surfaced as a row above.

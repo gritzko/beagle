@@ -1,9 +1,104 @@
 #include "HUNK.h"
 
+#include <time.h>
+
+#include "abc/ANSI.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
+
+// Pack ron60 as a fixed 8-byte LE record under `tag`.
+// Caller has already opened the outer container.
+static ok64 hunk_feed_ron60(u8s inner, u8 tag, ron60 v) {
+    sane(u8sOK(inner));
+    a_pad(u8, buf, 8);
+    for (int i = 0; i < 8; i++) call(u8sFeed1, buf_idle, (u8)(v >> (8 * i)));
+    a_dup(u8c, val, u8bData(buf));
+    call(TLVu8sFeed, inner, tag, val);
+    done;
+}
+
+// Unpack a fixed 8-byte LE ron60.  Tolerant of short slices (treats
+// them as 0) so legacy/forward-compat streams don't fail-hard.
+static ron60 hunk_drain_ron60(u8cs val) {
+    if ($len(val) != 8) return 0;
+    u64 v = 0;
+    for (int i = 0; i < 8; i++) v |= ((u64)val[0][i]) << (8 * i);
+    return (ron60)v;
+}
+
+// A status hunk is a ULOG-style event row lifted into hunk shape:
+// ts/verb populated, no source body.  Renders as one line.
+static b8 hunk_is_status(hunk const *hk) {
+    return (hk->ts || hk->verb) && $empty(hk->text) && $empty(hk->toks);
+}
+
+// Render `<pretty-date>\t<verb-token>\t<uri>\n` — human-readable but
+// uncoloured.  `DOGutf8sFeedDate` produces HH:MM / weekday / date
+// depending on age; `RONutf8sFeed` on a status verb prints the
+// symbolic token ("put", "new", "mod", ...) since those verbs live
+// in low ron60 codes.  For machine-parsing of the ts/verb fields
+// the caller should pick TLV mode (which emits raw 8-byte LE ron60
+// records under tags 'T'/'V').
+static ok64 hunk_feed_status_plain(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk);
+    if ($len(into) < 64) fail(BNOROOM);
+
+    i64 now = (i64)time(NULL);
+    i64 ts  = now;
+    if (hk->ts) {
+        struct tm tm = {};
+        if (RONToTime(hk->ts, &tm, NULL) == OK) {
+            time_t t = mktime(&tm);
+            if (t != (time_t)-1) ts = (i64)t;
+        }
+    }
+    call(DOGutf8sFeedDate, into, ts, now);
+    call(u8sFeed1, into, '\t');
+    call(RONutf8sFeed, into, hk->verb);
+    call(u8sFeed1, into, '\t');
+    if (!$empty(hk->uri)) call(u8sFeed, into, hk->uri);
+    call(u8sFeed1, into, '\n');
+    done;
+}
+
+// ANSI variant of the status line: date column in `unk` grey, verb in
+// its palette colour.  Mirrors the old `ULOGFeedStatusLine` rendering.
+#define HUNK_VERB_UNK_RON60 0x39caf  // "unk" — same constant ULOG used.
+static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk);
+    if ($len(into) < 64) fail(BNOROOM);
+
+    ansi64 c_unk  = ULOGVerbColor(HUNK_VERB_UNK_RON60);
+    ansi64 c_verb = ULOGVerbColor(hk->verb);
+
+    i64 now = (i64)time(NULL);
+    i64 ts  = now;
+    if (hk->ts) {
+        struct tm tm = {};
+        if (RONToTime(hk->ts, &tm, NULL) == OK) {
+            time_t t = mktime(&tm);
+            if (t != (time_t)-1) ts = (i64)t;
+        }
+    }
+
+    call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
+    call(DOGutf8sFeedDate, into, ts, now);
+    call(ANSIu8sFeedReset, into, c_unk);
+    call(u8sFeed1, into, '\t');
+
+    call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
+    call(RONutf8sFeed, into, hk->verb);
+    call(ANSIu8sFeedReset, into, c_verb);
+    call(u8sFeed1, into, '\t');
+
+    if (!$empty(hk->uri)) call(u8sFeed, into, hk->uri);
+    call(u8sFeed1, into, '\n');
+    done;
+}
 
 // Fragments have no grammar — they carry whatever the producer wrote.
 // The conventions HUNKu8sMakeURI emits are:
@@ -72,6 +167,8 @@ ok64 HUNKu8sFeed(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
     u8s inner = {};
     call(TLVu8sStart, into, inner, HUNK_TLV);
+    if (hk->ts)   call(hunk_feed_ron60, inner, HUNK_TLV_TS,  hk->ts);
+    if (hk->verb) call(hunk_feed_ron60, inner, HUNK_TLV_VRB, hk->verb);
     if (!$empty(hk->uri))
         call(TLVu8sFeed, inner, HUNK_TLV_URI, hk->uri);
     if (!$empty(hk->text))
@@ -96,6 +193,12 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk) {
         u8cs val = {};
         call(TLVu8sDrain, body, &st, val);
         switch (st) {
+        case HUNK_TLV_TS:
+            hk->ts = hunk_drain_ron60(val);
+            break;
+        case HUNK_TLV_VRB:
+            hk->verb = hunk_drain_ron60(val);
+            break;
         case HUNK_TLV_URI:
             $mv(hk->uri, val);
             break;
@@ -142,6 +245,10 @@ static u8 hunk_line_sides(hunk const *hk, u32 lo, u32 hi) {
 
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
+
+    //  Status hunk (ULOG-row shape) → single `<ts>\t<verb>\t<uri>\n` line.
+    if (hunk_is_status(hk)) return hunk_feed_status_plain(into, hk);
+
     if (!$empty(hk->uri)) {
         a_cstr(pfx, "--- ");
         u8sFeed(into, pfx);
@@ -183,6 +290,87 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     }
     u8sFeed1(into, '\n');
     done;
+}
+
+//  ANSI sequences for the diff-line colour band.  Re-emitted per line
+//  so the renderer stays stateless (no carried `prev`); the trailing
+//  `\033[0m` keeps the terminal clean once the hunk ends.
+#define HUNK_ANSI_RED   "\033[31m"
+#define HUNK_ANSI_GREEN "\033[32m"
+#define HUNK_ANSI_RESET "\033[0m"
+
+ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk != NULL);
+
+    //  Status hunk: ULOG-style coloured line and we're done.
+    if (hunk_is_status(hk)) return hunk_feed_status_color(into, hk);
+
+    if (!$empty(hk->uri)) {
+        a_cstr(pfx, "--- ");
+        u8sFeed(into, pfx);
+        u8sFeed(into, hk->uri);
+        a_cstr(sfx, " ---\n");
+        u8sFeed(into, sfx);
+    }
+
+    if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
+
+    if (!hunk_has_diff(hk)) {
+        //  Plain hunk (grep / search / cat): emit text verbatim, no colour.
+        u8cs t = {hk->text[0], hk->text[1]};
+        u8sFeed(into, t);
+        if (*$last(t) != '\n') u8sFeed1(into, '\n');
+        u8sFeed1(into, '\n');
+        done;
+    }
+
+    //  Diff hunk: per-line side from tok bits, `-` lines red and `+`
+    //  lines green; context lines uncoloured.  Mirrors HUNKu8sFeedText's
+    //  line-walk; only the colour band differs.
+    u8c *base = hk->text[0];
+    a_dup(u8 const, cur, hk->text);
+    while (!$empty(cur)) {
+        u32 line_lo = (u32)(cur[0] - base);
+        u8cs scan = {cur[0], cur[1]};
+        b8 had_nl = (u8csFind(scan, '\n') == OK);
+        u8c *line_end = scan[0];
+        u32 line_hi = (u32)(line_end - base);
+
+        u8 sides = hunk_line_sides(hk, line_lo, line_hi);
+        u8 prefix = ' ';
+        b8 col_add = NO, col_del = NO;
+        if (sides & 1) { prefix = '+'; col_add = YES; }
+        if (sides & 2) { prefix = '-'; col_del = YES; }
+
+        if (col_add) { a_cstr(s, HUNK_ANSI_GREEN); u8sFeed(into, s); }
+        if (col_del) { a_cstr(s, HUNK_ANSI_RED);   u8sFeed(into, s); }
+        u8sFeed1(into, prefix);
+        u8cs line = {cur[0], line_end};
+        u8sFeed(into, line);
+        if (col_add || col_del) {
+            a_cstr(off, HUNK_ANSI_RESET); u8sFeed(into, off);
+        }
+        u8sFeed1(into, '\n');
+        cur[0] = had_nl ? line_end + 1 : line_end;
+    }
+    u8sFeed1(into, '\n');
+    done;
+}
+
+//  Module-global mode resolved at process entry (main / MAIN / TEST).
+//  Default PLAIN matches the "stdout is a pipe" non-TTY case, which is
+//  the safe choice for an uninitialised tool (e.g. a unit test that
+//  forgets to set it).
+HUNKout HUNKMode = HUNKOutPlain;
+
+ok64 HUNKu8sFeedOut(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk != NULL);
+    switch (HUNKMode) {
+    case HUNKOutTLV:   return HUNKu8sFeed     (into, hk);
+    case HUNKOutColor: return HUNKu8sFeedColor(into, hk);
+    case HUNKOutPlain: return HUNKu8sFeedText (into, hk);
+    }
+    fail(FAILSANITY);
 }
 
 // One line slice — content between leading `-`/`+` prefix and trailing '\n'.

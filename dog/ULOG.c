@@ -1091,51 +1091,34 @@ ansi64 ULOGVerbColor(ron60 verb) {
     return ANSI_DEFAULT;
 }
 
-//  ron60 for "unk" so the date column wears the same grey
-//  status_dump_verb uses (STATUS_ANSI_UNK = `\033[90m`).
-#define ULOG_VERB_UNK 0x39caf
+//  Lift a parsed row into a status hunk: render the URI bytes into
+//  `uri_buf`'s idle area, snapshot the resulting slice into `out->uri`,
+//  and copy ts/verb.  Text/toks stay empty — the row IS the hunk.
+//  The renderer (`HUNKu8sFeedOut`) reads `HUNKMode` and picks the
+//  TLV/color/plain shape.
+ok64 ULOGToHunk(ulogreccp rec, hunk *out, u8b uri_buf) {
+    sane(rec && out && u8bOK(uri_buf));
 
-ok64 ULOGFeedStatusLine(u8s into, ulogreccp rec) {
-    sane($ok(into) && rec);
+    u8c *uri_lo = u8bIdleHead(uri_buf);
+    uri  u = rec->uri;
+    call(URIutf8Feed, u8bIdle(uri_buf), &u);
+    u8c *uri_hi = u8bIdleHead(uri_buf);
 
-    b8     tty    = ANSIIsTTY();
-    ansi64 c_unk  = ULOGVerbColor(ULOG_VERB_UNK);
-    ansi64 c_verb = ULOGVerbColor(rec->verb);
-
-    //  Date column.  `rec->ts` is the row's RON60 stamp; convert to
-    //  wall-clock seconds via struct tm so DOGutf8sFeedDate can render
-    //  HH:MM / weekday / date depending on age.  Wears unk grey on tty.
-    i64 now = (i64)time(NULL);
-    i64 ts  = now;
-    if (rec->ts) {
-        struct tm tm = {};
-        if (RONToTime(rec->ts, &tm, NULL) == OK) {
-            time_t t = mktime(&tm);
-            if (t != (time_t)-1) ts = (i64)t;
-        }
-    }
-    if (tty) call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
-    call(DOGutf8sFeedDate, into, ts, now);
-    if (tty) call(ANSIu8sFeedReset, into, c_unk);
-    call(u8sFeed1, into, '\t');
-
-    //  Verb token wears its palette color on a tty.
-    if (tty) call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
-    call(RONutf8sFeed, into, rec->verb);
-    if (tty) call(ANSIu8sFeedReset, into, c_verb);
-    call(u8sFeed1, into, '\t');
-
-    //  URI from rec->uri — the same way ULOGu8sFeed emits the row.
-    uri u = rec->uri;
-    call(URIutf8Feed, into, &u);
-    call(u8sFeed1, into, '\n');
+    *out = (hunk){};
+    out->ts     = rec->ts;
+    out->verb   = rec->verb;
+    out->uri[0] = uri_lo;
+    out->uri[1] = uri_hi;
     done;
 }
 
 ok64 ULOGPrintStatusLine(ulogreccp rec) {
     sane(rec);
+    a_pad(u8, ub,   1024);
     a_pad(u8, line, 4096);
-    call(ULOGFeedStatusLine, u8bIdle(line), rec);
-    call(FILEout, u8bDataC(line));
+    hunk hk = {};
+    call(ULOGToHunk,     rec, &hk, ub);
+    call(HUNKu8sFeedOut, u8bIdle(line), &hk);
+    call(FILEout,        u8bDataC(line));
     done;
 }

@@ -54,6 +54,7 @@ static ok64 sniffcli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, SNIFF_VERBS, SNIFF_VAL_FLAGS);
+    CLISetHUNKMode(c);
 
     char cwd[1024];
     u8cs reporoot = {};

@@ -80,6 +80,7 @@ static ok64 keepercli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, KEEP_CLI_VERBS, KEEP_CLI_VAL_FLAGS);
+    CLISetHUNKMode(c);
 
     //  upload-pack short-circuits the standard cwd-derived HOME/KEEP
     //  open: it opens the repo named in argv (the ssh contract), runs

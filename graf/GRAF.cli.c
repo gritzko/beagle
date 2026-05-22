@@ -10,6 +10,7 @@ static ok64 grafcli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, GRAF_CLI_VERBS, GRAF_CLI_VAL_FLAGS);
+    CLISetHUNKMode(c);
 
     // Most graf verbs read .be/; index writes. Use rw=YES to
     // keep parity with the previous behavior (always mkdir -p).

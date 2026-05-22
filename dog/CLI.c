@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "DOG.h"
+#include "abc/ANSI.h"
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 
@@ -150,4 +151,11 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
         }
     }
     done;
+}
+
+void CLISetHUNKMode(cli const *c) {
+    if (c && CLIHas(c, "--tlv"))        HUNKMode = HUNKOutTLV;
+    else if (c && CLIHas(c, "--color")) HUNKMode = HUNKOutColor;
+    else if (c && CLIHas(c, "--plain")) HUNKMode = HUNKOutPlain;
+    else HUNKMode = ANSIIsTTY() ? HUNKOutColor : HUNKOutPlain;
 }

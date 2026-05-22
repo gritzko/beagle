@@ -3,6 +3,12 @@ project(rdx C)
 
 set(CMAKE_C_STANDARD 23)
 
+find_program(CCACHE_PROGRAM ccache)
+if (CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+endif()
+
 # Buffer accessors return T** slice pointers into struct members;
 # GCC -O3 strict aliasing breaks overlapping slice access patterns.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")

@@ -2450,6 +2450,7 @@ static ok64 becli_inner(cli *c) {
     //  flag — the new convention is to fold trailing words into the
     //  URI fragment, but `-m` remains accepted).
     call(CLIParse, c, BE_VERB_NAMES, "-m\0--author\0--sub-msg\0");
+    CLISetHUNKMode(c);
 
     if (CLIHas(c, "-h") || CLIHas(c, "--help")) {
         BEUsage();

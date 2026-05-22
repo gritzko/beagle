@@ -65,6 +65,7 @@
 #include "abc/PATH.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
+#include "dog/HUNK.h"
 #include "dog/WHIFF.h"
 
 con ok64 ULOGFAIL   = 0x7956103ca495;
@@ -356,22 +357,19 @@ extern u64 const ULOG_VERB_COLORS[][2];
 //  the verb isn't in the table.
 ansi64 ULOGVerbColor(ron60 verb);
 
-//  Assemble one `<date>\t<verb>\t<uri>\n` line into `into`'s idle —
-//  the same format `be` (bare status) uses for its per-row dump.
-//  The verb token is rendered from `rec->verb` via the RON64 alphabet
-//  (so 0x32a7b → "new", 0x31ce8 → "mod", …); the date column renders
-//  `rec->ts` via `DOGutf8sFeedDate` against `now=time(NULL)`.  On a
-//  tty (see `ANSIIsTTY`), the date column wears `unk` grey and the
-//  verb column wears its palette color; off tty, plain ASCII.
-//  The caller owns the buffer and pushes the assembled slice to
-//  stdout (e.g. via `FILEout`); the function never writes itself.
-//  Returns `SNOROOM`/`BNOROOM` if `into` runs short.
-ok64 ULOGFeedStatusLine(u8s into, ulogreccp rec);
+//  Lift a ULOG row into a status hunk (empty body, ts/verb populated,
+//  URI rendered into `uri_buf`'s idle).  The hunk's `uri` slice borrows
+//  from `uri_buf`'s data area, so the buffer must outlive every use of
+//  `*out`.  Callers then ship the hunk through `HUNKu8sFeedOut` (and
+//  pick TLV/color/plain via the global `HUNKMode` — see dog/HUNK.h).
+//  `uri_buf` is *not* reset; the rendered bytes are appended to its
+//  idle area and `out->uri` covers exactly that fresh slice.
+ok64 ULOGToHunk(ulogreccp rec, hunk *out, u8b uri_buf);
 
-//  Convenience wrap: assemble one status line into a 4 KB stack
-//  buffer and push it to stdout via `FILEout`.  Common case for
-//  "as it happens" per-file status reports — sniff GET / POST /
-//  PATCH all use this.  Propagates buffer-short / I/O failures.
+//  One-shot convenience: lift `rec` into a status hunk, render it via
+//  `HUNKu8sFeedOut` (which reads `HUNKMode`), and push the assembled
+//  line to stdout via `FILEout`.  This is the canonical per-row status
+//  emitter used by sniff GET / POST / PATCH "as it happens" reporters.
 ok64 ULOGPrintStatusLine(ulogreccp rec);
 
 #endif

@@ -4,6 +4,7 @@
 #include "abc/FILE.h"
 #include "abc/URI.h"
 #include "dog/HOME.h"
+#include "dog/HUNK.h"
 
 //  CLI_MAX_URIS — caps the URI count per invocation.  Glob expansions
 //  (`be put test/*/*/*.txt`) routinely produce dozens of paths, so 16
@@ -86,5 +87,16 @@ fun void CLIAtURI(uri *at, cli const *c) {
     u8csMv(at->data, v);
     URILexer(at);
 }
+
+//  Resolve the global `HUNKMode` (dog/HUNK.h) from `c`'s flags per the
+//  universal rule:
+//      --tlv    → HUNKOutTLV
+//      --color  → HUNKOutColor    (overrides ANSIIsTTY())
+//      --plain  → HUNKOutPlain    (overrides ANSIIsTTY())
+//      default  → ANSIIsTTY() ? HUNKOutColor : HUNKOutPlain
+//  Same three flags for every dog.  Call once from `main()` after
+//  `CLIParse` (or any time the flag set changes); every downstream
+//  HUNK emitter then picks the right shape via `HUNKu8sFeedOut`.
+void CLISetHUNKMode(cli const *c);
 
 #endif
