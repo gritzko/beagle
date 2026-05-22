@@ -14,6 +14,7 @@
 #include "DEL.h"
 #include "GET.h"
 #include "LS.h"
+#include "CAT.h"
 #include "PATCH.h"
 #include "POST.h"
 #include "PUT.h"
@@ -1831,12 +1832,16 @@ ok64 SNIFFExec(cli *c) {
     } else if (is_status) {
         ret = sniff_status(reporoot);
     } else if (is_projector) {
-        //  URI scheme picks the projector; `--tlv` switches the
-        //  emitter from HUNKu8sFeedText to HUNKu8sFeed.
-        b8 tlv = CLIHas(c, "--tlv");
-        a_cstr(ls_s, "ls");
+        //  URI scheme picks the projector.  Output mode (TLV / plain /
+        //  color) is set once at process start via the universal
+        //  `--tlv` / `--color` / `--plain` rule into the module-global
+        //  `HUNKMode`; projectors only emit hunks.
+        a_cstr(ls_s,  "ls");
+        a_cstr(cat_s, "cat");
         if ($eq(proj_u->scheme, ls_s)) {
-            ret = SNIFFLs(reporoot, proj_u, tlv);
+            ret = SNIFFLs(reporoot, proj_u);
+        } else if ($eq(proj_u->scheme, cat_s)) {
+            ret = SNIFFCat(reporoot, proj_u);
         } else {
             //  Table says sniff owns this scheme but we don't have a
             //  handler wired — should not happen once DOG_PROJECTORS

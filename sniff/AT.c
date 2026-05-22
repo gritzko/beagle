@@ -138,20 +138,22 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
 
     if (!found) { ULOGClose(data, &idx, NO); fail(SNIFFNONE); }
 
-    //  Compose `<root>?/<project>/<branch>#<sha>` into `out` (per
-    //  VERBS.md §"Ref resolution" — absolute form with leading `/`
-    //  so the receiver picks the right project shard, not the
-    //  parent project's shard, when the parent and sub share a
-    //  store root).  `<project>` comes from the anchor URI's
-    //  `/.be/<project>/` segment (anchor_branch_buf's first segment).
-    //  `<branch>` is the rest of anchor_branch_buf (only set for a
-    //  secondary-wt sub-shard anchor) ORed with `ref_body` (the
-    //  current branch from the latest LOCAL get/post row).  When
-    //  both are empty, the wt is on the project's trunk.  Falls
-    //  back to bare `?<branch>` when no project segment is known
-    //  — legacy single-project anchor.
+    //  Compose `<wt_root>?/<project>/<branch>#<sha>` into `out`.  The
+    //  path slot is the **wt root** (the dir holding `.be`, whether
+    //  `.be` is a primary dir or a secondary-wt sentinel file), NOT
+    //  the store root: sniff needs the wt root to open `.be`, and any
+    //  dog that needs the store root reads row 0 of the wtlog
+    //  (`repo file:<store>`).  Keeping a single canonical root in
+    //  `--at` fixes the colocated-wt cwd bug where sub-dogs invoked
+    //  from a subdir were given the store root and couldn't find
+    //  `.be`.  `root_buf` (from `DOGRepoFromBe(r0.uri.path)`) is no
+    //  longer used in the URI; `anchor_branch_buf` still feeds the
+    //  query slot, since `<project>/<branch>` is encoded inside the
+    //  anchor URI's path-after-`.be/`.
+    //  VERBS.md §"Ref resolution" — absolute form with leading `/` so
+    //  the receiver picks the right project shard.
     u8bReset(out);
-    u8bFeed(out, u8bDataC(root_buf));
+    u8bFeed(out, wt);
     u8bFeed1(out, '?');
     {
         a_dup(u8c, ab, u8bDataC(anchor_branch_buf));

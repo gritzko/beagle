@@ -2878,13 +2878,17 @@ ok64 BROPipeRun(int pipefd) {
     Bu8 rdbuf = {};
     call(u8bMap, rdbuf, PIPE_RDBUF_INIT);
 
-    //  Resolve repo root.  See BRORun for the a_path / repo_cstr idiom.
+    //  Resolve repo root.  Click navigation opens FILES from the
+    //  worktree, so `h->wt` is what `BROOpenFile` needs to prepend —
+    //  NOT `h->root` (which is the store dir for secondary wts and
+    //  doesn't carry the user's source tree).  Primary wts have
+    //  wt == root, so this only matters for colocated/sub-mount.
     a_path(repo);
     {
         home rh = {};
         uri none = {};
         if (HOMEOpen(&rh, &none, NO) == OK) {
-            PATHu8bFeed(repo, $path(rh.root));
+            PATHu8bFeed(repo, $path(rh.wt));
             HOMEClose(&rh);
         }
     }

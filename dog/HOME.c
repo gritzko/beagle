@@ -180,19 +180,16 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         //  Resolve the anchor at `at_path` (peek `.be`'s shape; if it's
         //  a regular file, redirect h->root to the primary store via
         //  the wtlog's row-0 `repo` URI; otherwise h->root == at_path).
+        //
+        //  `at_path` is the **wt root** (`sniff/AT.c::SNIFFAtTailOf`
+        //  composes `--at` with the wt root in the path slot, not the
+        //  store root — the store root rides in the wtlog row-0 URI).
+        //  So `home_anchor_resolve` correctly sets h->wt = at_path and
+        //  redirects h->root through row-0 when `.be` is a sentinel
+        //  file.  No cwd-override needed: a sub-dog invoked from a
+        //  subdir gets the right h->wt from at_path directly.
         call(home_anchor_resolve, h, at_path);
-        //  `--at <root>?<branch>#<sha>` forward from `be`: subprocess
-        //  cwd is the actual worktree, which may differ from the
-        //  anchor `at_path` carried over the boundary.  Override h->wt
-        //  with the cwd in that case.
-        if (!u8csEmpty(at_query) || !u8csEmpty(at_frag)) {
-            a_path(cwdp);
-            if (FILEGetCwd(cwdp) == OK) {
-                u8bReset(h->wt);
-                a_dup(u8c, cwd_s, u8bDataC(cwdp));
-                call(PATHu8bFeed, h->wt, cwd_s);
-            }
-        }
+        (void)at_query; (void)at_frag;
     } else {
         ok64 fr = HOMEFindDogs(h);   // sets both h->wt and h->root
         if (fr == NOHOME && rw) {

@@ -1,31 +1,38 @@
 #ifndef SNIFF_LS_H
 #define SNIFF_LS_H
 
-//  LS — `ls:` projector.  Emits a file listing for a worktree, a
-//  subtree, a tree at a ref, or (TODO) the diff-stat between two
-//  refs.  Two outputs: plain text (default, one path per line) or a
-//  single HUNK TLV blob (--tlv) that `bro` can render as a pager
-//  hunk.  See VERBS.md §"View projectors" and sniff/AT.md.
+//  LS — `ls:[<path>][?<ref>]` projector.  Lists the wt (optionally
+//  scoped to `<path>/`) with one **status hunk** per entry, identical
+//  status set to bare `be` (see sniff/SNIFF.exe.c §"status_buckets"):
 //
-//  Modes, by first URI shape:
-//    (none)                 — wt registry listing (like `sniff list`)
-//    <path>                 — filter registry by subdir prefix
-//    ?                      — tree at current branch tip
-//    ?<ref|sha>             — tree at that ref/sha
-//    <path>?<ref|sha>       — subtree at that ref/sha
-//    ?<v1>..<v2>            — (TODO) diff-stat, +added -removed per file
+//      put | new | mov | mod | del | mis | unk | (eq is counted only)
 //
-//  Output contract:
-//    tlv == NO  → plain ascii, `<path>\n` per entry, stdout.
-//    tlv == YES → one HUNK TLV record wrapping the same text; URI
-//                 field is a human-readable title (mode hint + ref);
-//                 no toks, no hili.  Bro picks it up via BROPipeRun.
+//  `?ref` (default: sniff baseline from `.be/wtlog` last get/post/patch)
+//  picks the *ours* tree used by the path classifier.  The wt is always
+//  *theirs*.  No `?ref` → behaves identically to `be` (bare).  An
+//  explicit `?ref` changes the meaning of `mod`/`new`/`del`/`eq`
+//  (compared against that ref's tree); `mov`/`mis`/`unk` are stamp-
+//  driven and don't move.
+//
+//  Each entry is emitted via `HUNKu8sFeedOut`: one `HUNK_TLV` record
+//  carrying `V` = status verb (ron60 from `SNIFFAtVerbOf("put")` etc.),
+//  `T` = the row's ts, `U` = the per-entry navigation target
+//  (`cat:<path>` for files, `ls:<sub>/` for directories, `cat:<dst>`
+//  for `mov` rows), `X` = the displayed path (with `<src> -> <dst>`
+//  for moves).  Plain / color / TLV selection lives in `HUNKMode` —
+//  dog/HUNK.h does that conversion; the projector never branches on
+//  output mode.
+//
+//  Submodules are filtered upstream by `SNIFFClassify`.  Clean
+//  baseline-equal paths roll into the trailing `eq` count summary
+//  (one trailing hunk, no body) so the listing isn't drowned by
+//  unchanged files; pass `--all` (TODO) to surface them.
 
 #include "abc/INT.h"
 #include "abc/URI.h"
 
 #include "SNIFF.h"
 
-ok64 SNIFFLs(u8cs reporoot, uri const *u, b8 tlv);
+ok64 SNIFFLs(u8cs reporoot, uri const *u);
 
 #endif

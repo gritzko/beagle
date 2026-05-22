@@ -157,6 +157,19 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);
 
+//  Like `WEAVEEmitDiff` but without context-windowing.  Walks every
+//  alive token (classify as `I` / `D` / `' '` exactly as
+//  `WEAVEEmitDiff` does) and ships them as one hunk: `text` is the
+//  concatenation of every kept token; per-tok `toks` carries the
+//  lexer tag (top 5 bits) and the diff side (`TOK_SIDE_EQ` / `IN` /
+//  `RM`).  Backs the `cat:` projector ("file in full, with hili").
+//  Splits into multiple hunks only when the rendered text would
+//  exceed `WEAVE_FULL_HUNK_MAX` bytes — bro can stream them in order.
+ok64 WEAVEEmitFull(weave const *w, u8cs name,
+                   WEAVEsetfn in_from, void *from_ctx,
+                   WEAVEsetfn in_to,   void *to_ctx,
+                   HUNKcb cb, void *cb_ctx);
+
 // --- Conflict-aware merged-weave render ---
 //
 //  Emit alive bytes of a merged weave (output of `WEAVEMerge`) into

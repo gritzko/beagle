@@ -25,6 +25,16 @@ con ok64 THEMEBAD = 0x75139638b28d;       // unknown theme name
 //         O DEL (normal + rm-pass eq context)   ← renamed from 'D'
 //         J INS-split (in-pass IN bytes)        ← renamed from 'i'
 //         K DEL-split (rm-pass RM bytes)        ← renamed from 'd'
+//    Status-verb fg (ULOG row status, sniff bare-be / ls: / patch):
+//         U put       (staged write)
+//         W new       (untracked → tracked; also `applied`)
+//         V mov       (rename; also `kept`)
+//         E mod       (user-edited tracked file)
+//         X del       (staged remove)
+//         M mis       (in baseline, missing on disk; also `conflict`)
+//         Q unk       (untracked; also `dirty`)
+//         Y upd       (GET-overwritten)
+//         Z mrg       (weave-merge write; also `merged`)
 typedef ansi64 theme[32];
 
 #define THEME_16    "16"

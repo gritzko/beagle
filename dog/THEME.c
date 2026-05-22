@@ -40,6 +40,18 @@ static theme const THEME16TBL = {
     IDX('O') = BG256(224),
     IDX('J') = BG256(157),
     IDX('K') = BG256(217),
+    //  Status verbs — pre-THEME palette mapping (sniff/SNIFF.exe.c
+    //  STATUS_ANSI_*) preserved bit-for-bit so existing scripts that
+    //  grep coloured output keep matching.
+    IDX('U') = FG16(34),    // put       — blue
+    IDX('W') = FG16(32),    // new       — green
+    IDX('V') = FG16(36),    // mov       — cyan
+    IDX('E') = FG16(33),    // mod       — yellow
+    IDX('X') = FG256(94),   // del       — 256-brown
+    IDX('M') = FG16(31),    // mis       — red
+    IDX('Q') = FG16(90),    // unk       — grey
+    IDX('Y') = FG16(34),    // upd       — blue (== put)
+    IDX('Z') = FG16(35),    // mrg       — magenta
 };
 
 //  Solarized dark: muted base01 (240) body, accents in cyan/magenta/
@@ -60,6 +72,20 @@ static theme const THEMEDARKTBL = {
     IDX('O') = BG256(52),                 // dark red
     IDX('J') = BG256(28),                 // mid green
     IDX('K') = BG256(88),                 // mid red
+    //  Status verbs — Solarized palette analogues (blue 33, green 64,
+    //  cyan 37, yellow 136, orange 166, red 160, magenta 125, base01
+    //  240 for grey, violet 61).  Pairings preserve the 16-color
+    //  semantic groupings — put/upd both blue, new green, mov cyan,
+    //  mis red, mrg magenta, etc.
+    IDX('U') = FG256(33),                 // put       — blue
+    IDX('W') = FG256(64),                 // new       — green
+    IDX('V') = FG256(37),                 // mov       — cyan
+    IDX('E') = FG256(136),                // mod       — yellow
+    IDX('X') = FG256(166),                // del       — orange (Solarized)
+    IDX('M') = FG256(160),                // mis       — red
+    IDX('Q') = FG256(240),                // unk       — base01 grey
+    IDX('Y') = FG256(33),                 // upd       — blue
+    IDX('Z') = FG256(125),                // mrg       — magenta
 };
 
 //  Solarized light: same accents over a light background; body bumped
@@ -80,6 +106,18 @@ static theme const THEMELIGHTTBL = {
     IDX('O') = BG256(224),
     IDX('J') = BG256(157),
     IDX('K') = BG256(217),
+    //  Status verbs — Solarized accents over light bg.  Same hues as
+    //  the dark palette (Solarized is symmetric); only the body/punct
+    //  base shifts to base1 (245) for legibility.
+    IDX('U') = FG256(33),
+    IDX('W') = FG256(64),
+    IDX('V') = FG256(37),
+    IDX('E') = FG256(136),
+    IDX('X') = FG256(166),
+    IDX('M') = FG256(160),
+    IDX('Q') = FG256(245),                // base1 (lighter than base01)
+    IDX('Y') = FG256(33),
+    IDX('Z') = FG256(125),
 };
 
 theme const *THEMEActive = &THEME16TBL;

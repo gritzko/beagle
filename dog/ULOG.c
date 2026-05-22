@@ -20,6 +20,7 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"     // DOGutf8sFeedDate
+#include "dog/THEME.h"
 #include "dog/WHIFF.h"
 
 // --- streaming primitives --------------------------------------------
@@ -1046,47 +1047,44 @@ ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
     return so;
 }
 
-// --- Shared verb→color palette --------------------------------------
+// --- Shared verb→theme-tag map --------------------------------------
 //
 //  Centralized so every dog (sniff, keeper, graf, spot) colors its
-//  per-file status output the same way.  See sniff/SNIFF.exe.c's
-//  status_dump_verb for the live consumer; new callers look up via
-//  `ULOGVerbColor(verb)`.
+//  per-file status output through the same THEME slot.  Each verb
+//  resolves to a single ASCII letter that indexes `dog/THEME.h`'s
+//  active palette; `THEMESelect("dark"|"light"|"16")` therefore
+//  repaints every status emitter without touching their code.
 //
-//  Layout: `u64[N][2]` — entry[0] is the verb (ron60 from abc/ok64),
-//  entry[1] is the packed ansi64 color (abc/ANSI.h).  Sentinel `{0,0}`.
+//  Aliasing is deliberate: `kept` (PATCH) reuses `mov`'s slot, etc.
+//  Comments below match the THEME.h tag map; keep both in sync if
+//  you retire a verb or add a new one.
 
-//  ansi64 builders for static initializers (constant-expression form
-//  of `ansi64Pack(n, mode, 0, 0, 0)`).  Bg/flags slots stay zero.
-#define ULOG_FG_BASIC(n)  (((u64)(n) & 0xFFFFFFu) | ((u64)1u << 24))
-#define ULOG_FG_256(n)    (((u64)(n) & 0xFFFFFFu) | ((u64)2u << 24))
-
-u64 const ULOG_VERB_COLORS[][2] = {
-    //  file-status palette (sniff/SNIFF.exe.c's STATUS_ANSI_*)
-    {0x34e78,        ULOG_FG_BASIC(34)},  // put       → blue
-    {0x32a7b,        ULOG_FG_BASIC(32)},  // new       → green
-    {0x31cfa,        ULOG_FG_BASIC(36)},  // mov       → cyan
-    {0x31ce8,        ULOG_FG_BASIC(33)},  // mod       → yellow (user-modified, kept by GET)
-    {0x39d28,        ULOG_FG_BASIC(34)},  // upd       → blue (overwritten by GET)
-    {0x28a70,        ULOG_FG_256(94)  },  // del       → brown (256)
-    {0x31b77,        ULOG_FG_BASIC(31)},  // mis       → red
-    {0x39caf,        ULOG_FG_BASIC(90)},  // unk       → grey
-    {0x31dab,        ULOG_FG_BASIC(35)},  // mrg       → magenta (weave-merge write)
-    //  patch-status palette (sniff/PATCH.c::emit_status).  Aligned
-    //  with the file-status colors so users build one mental map.
-    {0x25d34c2da68,  ULOG_FG_BASIC(32)},  // applied   → green   (== new)
-    {0xc69daba68,    ULOG_FG_BASIC(35)},  // merged    → magenta (== mrg)
-    {0x9f3caac2d9f8, ULOG_FG_BASIC(31)},  // conflict  → red     (== mis)
-    {0x28b76e3d,     ULOG_FG_BASIC(90)},  // dirty     → grey    (== unk)
-    {0xbe9d38,       ULOG_FG_BASIC(36)},  // kept      → cyan    (== mov)
+static u64 const ULOG_VERB_TAGS[][2] = {
+    //  file-status verbs (sniff bare-be / ls: / future cat:)
+    {0x34e78,        'U'},  // put       — slot U  (blue)
+    {0x32a7b,        'W'},  // new       — slot W  (green)
+    {0x31cfa,        'V'},  // mov       — slot V  (cyan)
+    {0x31ce8,        'E'},  // mod       — slot E  (yellow)
+    {0x39d28,        'Y'},  // upd       — slot Y  (blue, GET-overwritten)
+    {0x28a70,        'X'},  // del       — slot X  (orange/brown)
+    {0x31b77,        'M'},  // mis       — slot M  (red)
+    {0x39caf,        'Q'},  // unk       — slot Q  (grey)
+    {0x31dab,        'Z'},  // mrg       — slot Z  (magenta)
+    //  patch-status aliases (sniff/PATCH.c::emit_status).  Same slot
+    //  letters as the file-status equivalents — one mental map.
+    {0x25d34c2da68,  'W'},  // applied   ≡ new
+    {0xc69daba68,    'Z'},  // merged    ≡ mrg
+    {0x9f3caac2d9f8, 'M'},  // conflict  ≡ mis
+    {0x28b76e3d,     'Q'},  // dirty     ≡ unk
+    {0xbe9d38,       'V'},  // kept      ≡ mov
     {0, 0},
 };
 
 ansi64 ULOGVerbColor(ron60 verb) {
     if (verb == 0) return ANSI_DEFAULT;
-    for (u32 i = 0; ULOG_VERB_COLORS[i][0] != 0; i++) {
-        if (ULOG_VERB_COLORS[i][0] == (u64)verb)
-            return (ansi64)ULOG_VERB_COLORS[i][1];
+    for (u32 i = 0; ULOG_VERB_TAGS[i][0] != 0; i++) {
+        if (ULOG_VERB_TAGS[i][0] == (u64)verb)
+            return THEMEAt((u8)ULOG_VERB_TAGS[i][1]);
     }
     return ANSI_DEFAULT;
 }

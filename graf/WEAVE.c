@@ -1103,6 +1103,110 @@ cleanup:
     return ret;
 }
 
+// --- WEAVEEmitFull ---
+//
+//  Full-file emit — backs the `cat:` projector.  Walks every alive
+//  token, classifies it as `I` / `D` / `' '` exactly as WEAVEEmitDiff
+//  does (same `weave_diff_classify` helper), and ships the result as
+//  one hunk.  No windowing.  When the accumulated text would exceed
+//  `WEAVE_FULL_HUNK_MAX`, the current hunk is flushed and a fresh one
+//  starts; bro streams them in arrival order so the file appears
+//  contiguous on screen.
+
+#define WEAVE_FULL_HUNK_MAX (1UL << 20)   // 1 MiB per hunk; flush boundary
+
+ok64 WEAVEEmitFull(weave const *w, u8cs name,
+                   WEAVEsetfn in_from, void *from_ctx,
+                   WEAVEsetfn in_to,   void *to_ctx,
+                   HUNKcb cb, void *cb_ctx) {
+    sane(w && cb && in_from && in_to);
+
+    u32cp toks   = (u32cp)w->toks[1];
+    u32cp toks_e = (u32cp)w->toks[2];
+    u32   ntok   = (u32)(toks_e - toks);
+    inrmcp irm   = (inrmcp)w->inrm[1];
+    u8cp   text  = (u8cp)w->text[1];
+    if (ntok == 0) done;
+
+    Bu8  outtext = {};
+    Bu32 outtoks = {};
+    Bu8  outuri  = {};
+    call(u8bMap,  outtext, 16UL << 20);
+    call(u32bMap, outtoks, 1UL << 16);
+    call(u8bMap,  outuri,  1UL << 12);
+
+    ok64 ret = OK;
+    b8   hunk_open = NO;
+    u32  hunk_start_line = 0;
+    u32  cur_line = 0;
+
+    #define FLUSH_FULL_HUNK() do {                                       \
+        if (hunk_open) {                                                 \
+            u8bReset(outuri);                                            \
+            u8csc _empty_sym = {NULL, NULL};                             \
+            if (HUNKu8sMakeURI(u8bIdle(outuri), name,                    \
+                               _empty_sym, hunk_start_line + 1) != OK) { \
+                u8bReset(outuri);                                        \
+                (void)u8bFeed(outuri, name);                             \
+            }                                                            \
+            hunk hk = {};                                                \
+            hk.uri[0]  = (u8 *)u8bDataHead(outuri);                      \
+            hk.uri[1]  = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri); \
+            hk.text[0] = u8bDataHead(outtext);                           \
+            hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);     \
+            hk.toks[0] = (tok32c *)u32bDataHead(outtoks);                \
+            hk.toks[1] = (tok32c *)u32bDataHead(outtoks)                 \
+                       + u32bDataLen(outtoks);                           \
+            ok64 _r = cb(&hk, cb_ctx);                                   \
+            if (_r != OK) ret = _r;                                      \
+            u8bReset(outtext);                                           \
+            u32bReset(outtoks);                                          \
+            hunk_open = NO;                                              \
+            hunk_start_line = cur_line;                                  \
+        }                                                                \
+    } while (0)
+
+    for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(irm[i], in_from, from_ctx,
+                                             in_to,   to_ctx);
+        if (tag == 0) continue;
+
+        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
+        u32 hi = tok32Offset(toks[i]);
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
+
+        //  Cap each hunk's size — bro can ingest multi-MiB hunks but
+        //  staying below 1 MiB keeps the TLV buffers and the renderer's
+        //  scratch bounded.  Flush at token boundary, never mid-token.
+        if (hunk_open && u8bDataLen(outtext) + (hi - lo) > WEAVE_FULL_HUNK_MAX)
+            FLUSH_FULL_HUNK();
+
+        u8cs tb = {text + lo, text + hi};
+        ok64 fo = u8bFeed(outtext, tb);
+        if (fo != OK) { ret = fo; goto cleanup; }
+
+        u8 syntag = tok32Tag(toks[i]);
+        u8 side = (tag == 'I') ? TOK_SIDE_IN
+                : (tag == 'D') ? TOK_SIDE_RM
+                :                TOK_SIDE_EQ;
+        fo = u32bFeed1(outtoks,
+            tok32PackSide(syntag, side, (u32)u8bDataLen(outtext)));
+        if (fo != OK) { ret = fo; goto cleanup; }
+        hunk_open = YES;
+        cur_line += nl;
+    }
+
+    FLUSH_FULL_HUNK();
+    #undef FLUSH_FULL_HUNK
+
+cleanup:
+    u8bUnMap(outtext);
+    u32bUnMap(outtoks);
+    u8bUnMap(outuri);
+    return ret;
+}
+
 // --- WEAVEEmitMerged ---
 //
 //  Conflict-aware render of a merged weave's alive bytes.  See
