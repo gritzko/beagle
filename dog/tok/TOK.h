@@ -12,7 +12,11 @@ con ok64 TOKFAIL = 0x1d6143ca495;
 //   bits 25..24 (2): diff side  0=eq  1=in  2=rm
 //   bits 23..0 (24): end offset  (16 MiB cap per hunk text)
 // Tags: D=comment, G=string, L=number, H=preproc, R=keyword, P=punct,
-//       S=word/default, W=whitespace
+//       S=word/default, W=whitespace, U=URI.
+// A 'U' token carries the bytes of a click-target URI immediately
+// following its anchor token in the hunk text.  It is invisible to
+// renderers (zero visible width) and to search/diff classification;
+// a left click on the preceding token navigates to the URI bytes.
 typedef u32 tok32;
 typedef tok32 const tok32c;
 typedef tok32 *tok32s[2];

@@ -407,19 +407,21 @@ static u32 bro_row_end(u8csc text, u32 tlen, u32 off, u32 cols) {
 // toward `cols`.
 static u32 bro_row_end_pass(hunkc const *hk, u32 tlen, u32 off,
                             u32 cols, u8 pass) {
-    if (pass == BRO_PASS_NORMAL) {
+    int ntoks = (int)$len(hk->toks);
+    if (ntoks == 0 && pass == BRO_PASS_NORMAL) {
         u8csc text = {hk->text[0], hk->text[1]};
         return bro_row_end(text, tlen, off, cols);
     }
-    int ntoks = (int)$len(hk->toks);
     int ti = 0;
     while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
     u32 cp = 0;
     while (off < tlen && cp < cols) {
         while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
         u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
+        u8 tag  = (ti < ntoks) ? tok32Tag (hk->toks[0][ti]) : 'S';
         u8 ch = hk->text[0][off];
-        b8 hidden = (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+        b8 hidden = (tag == 'U') ||
+                    (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
                     (pass == BRO_PASS_IN && side == TOK_SIDE_RM);
         if (ch == '\n' && !hidden) break;
         u32 clen = UTF8_LEN[ch >> 4];
@@ -471,6 +473,8 @@ static u32 bro_classify_lines(hunkc const *hk, bro_lineinfo *out, u32 cap) {
     for (u32 off = 0; off < tlen; off++) {
         while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= off) ti++;
         u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
+        u8 tag  = (ti < ntoks) ? tok32Tag (hk->toks[0][ti]) : 'S';
+        if (tag == 'U') continue;
         if (hk->text[0][off] == '\n') {
             if (nl < cap)
                 out[nl] = (bro_lineinfo){line_lo, off, in_b, rm_b, eq_b,
@@ -984,7 +988,9 @@ static b8 bro_screen_to_byte(BROstate *st, u32 row, u32 col,
     while (pos < line_end) {
         while (ti < ntoks && tok32Offset(hk->toks[0][ti]) <= pos) ti++;
         u8 side = (ti < ntoks) ? tok32Side(hk->toks[0][ti]) : TOK_SIDE_EQ;
-        b8 hidden = (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+        u8 tag  = (ti < ntoks) ? tok32Tag (hk->toks[0][ti]) : 'S';
+        b8 hidden = (tag == 'U') ||
+                    (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
                     (pass == BRO_PASS_IN && side == TOK_SIDE_RM);
         u8 ch = hk->text[0][pos];
         u32 clen = UTF8_LEN[ch >> 4];
@@ -1478,8 +1484,10 @@ static void BRORender(BROstate *st) {
             u8 side = (tok_i < ntoks)
                           ? tok32Side(hk->toks[0][tok_i]) : TOK_SIDE_EQ;
             // Skip bytes hidden by this pass (the row width already
-            // accounts for them, so just don't emit).
-            if ((pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+            // accounts for them, so just don't emit).  'U'-tagged
+            // tokens carry click-target URI bytes — invisible too.
+            if (fg_tag == 'U' ||
+                (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
                 (pass == BRO_PASS_IN && side == TOK_SIDE_RM)) {
                 j += clen;
                 continue;
@@ -1998,7 +2006,8 @@ static ok64 BROPlain(hunkcs hunks) {
                             ? tok32Tag(hk->toks[0][tok_i]) : 'S';
             u8 side = (tok_i < ntoks)
                           ? tok32Side(hk->toks[0][tok_i]) : TOK_SIDE_EQ;
-            if ((pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
+            if (fg_tag == 'U' ||
+                (pass == BRO_PASS_RM && side == TOK_SIDE_IN) ||
                 (pass == BRO_PASS_IN && side == TOK_SIDE_RM)) {
                 j += clen;
                 continue;
@@ -2592,6 +2601,34 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
                 if (mev.type == MAUS_PRESS && mev.button == MAUS_LEFT) {
                     u32 line = st->scroll + mev.row - 1;
                     if (line < bro_nlines(st)) {
+                        range32 const *ln = &bro_lines(st)[line];
+                        b8 is_title = (ln->hi == BRO_TITLE_LINE);
+                        hunk const *hk = NULL;
+                        u32 byte_off = 0;
+                        if (!is_title &&
+                            bro_screen_to_byte(st, mev.row, mev.col,
+                                               &hk, &byte_off)) {
+                            int ntoks = (int)$len(hk->toks);
+                            int ti = 0;
+                            while (ti < ntoks &&
+                                   tok32Offset(hk->toks[0][ti]) <= byte_off)
+                                ti++;
+                            int nxt = ti + 1;
+                            if (nxt < ntoks &&
+                                tok32Tag(hk->toks[0][nxt]) == 'U') {
+                                u8cs uri_slice = {};
+                                tok32Val(uri_slice, hk->toks, hk->text[0], nxt);
+                                size_t n = (size_t)$len(uri_slice);
+                                char uri[512];
+                                if (n > 0 && n < sizeof(uri)) {
+                                    for (size_t k = 0; k < n; k++)
+                                        uri[k] = (char)uri_slice[0][k];
+                                    uri[n] = 0;
+                                    (void)BROForkBe(st, uri);
+                                    return BRO_KEY_CHANGED;
+                                }
+                            }
+                        }
                         BROTryOpen(st, line, repo);
                         return BRO_KEY_CHANGED;
                     }

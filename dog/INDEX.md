@@ -31,6 +31,7 @@ but without the tree-sitter dependency.
 | N   | Defined name (from DEF pass) | — |
 | C   | Function call (from DEF pass) | — |
 | F   | Filename or path | #490d49 |
+| U   | URI (invisible click target; preceding token navigates here) | — |
 
 ## Language tokenizers
 

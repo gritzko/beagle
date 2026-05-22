@@ -142,6 +142,7 @@ tok32 arrays with these tags:
 | `N` | Defined name | bold |
 | `C` | Function call | bold |
 | `F` | Filename/path | violet |
+| `U` | URI (invisible click target — left-click on the preceding token navigates here) | — |
 
 ### View stack
 

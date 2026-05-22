@@ -128,6 +128,7 @@ The dispatcher **TOK.c** routes file extensions to the appropriate lexer.
 | R   | Keyword                | red        |
 | P   | Punctuation            | gray       |
 | S   | Default (id/whitespace)| default    |
+| U   | URI (invisible click target) | —          |
 
 ## Regenerating ragel output
 

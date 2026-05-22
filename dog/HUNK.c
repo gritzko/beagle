@@ -219,20 +219,24 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk) {
 // Does any token have a non-eq side?
 static b8 hunk_has_diff(hunk const *hk) {
     int n = (int)$len(hk->toks);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+        if (tok32Tag(hk->toks[0][i]) == 'U') continue;
         if (tok32Side(hk->toks[0][i]) != TOK_SIDE_EQ) return YES;
+    }
     return NO;
 }
 
 // Walk tokens overlapping byte range [lo, hi) and OR-combine their sides.
-// Returns a mask: bit 0 = saw IN, bit 1 = saw RM.
+// Returns a mask: bit 0 = saw IN, bit 1 = saw RM.  'U' tokens (click-
+// target URIs) are skipped — they carry no diff side.
 static u8 hunk_line_sides(hunk const *hk, u32 lo, u32 hi) {
     u8 mask = 0;
     int n = (int)$len(hk->toks);
     u32 prev = 0;
     for (int i = 0; i < n; i++) {
         u32 end = tok32Offset(hk->toks[0][i]);
-        if (end > lo && prev < hi) {
+        if (end > lo && prev < hi
+            && tok32Tag(hk->toks[0][i]) != 'U') {
             u8 side = tok32Side(hk->toks[0][i]);
             if (side == TOK_SIDE_IN) mask |= 1;
             else if (side == TOK_SIDE_RM) mask |= 2;
@@ -241,6 +245,38 @@ static u8 hunk_line_sides(hunk const *hk, u32 lo, u32 hi) {
         if (prev >= hi) break;
     }
     return mask;
+}
+
+// Emit hk->text[lo,hi) into `into`, skipping bytes covered by 'U'
+// (URI) tokens.  URI bytes are invisible click-target metadata —
+// see dog/tok/TOK.h.  No-op when lo>=hi.
+static ok64 hunk_feed_visible(u8s into, hunk const *hk, u32 lo, u32 hi) {
+    sane(u8sOK(into) && hk != NULL);
+    if (lo >= hi) done;
+    int n = (int)$len(hk->toks);
+    u32 prev = 0;
+    u32 emit_lo = lo;
+    for (int i = 0; i < n; i++) {
+        u32 end = tok32Offset(hk->toks[0][i]);
+        u32 tlo = prev;
+        u32 thi = end;
+        prev = end;
+        if (thi <= lo) continue;
+        if (tlo >= hi) break;
+        if (tok32Tag(hk->toks[0][i]) != 'U') continue;
+        if (tlo < lo) tlo = lo;
+        if (thi > hi) thi = hi;
+        if (emit_lo < tlo) {
+            a$part(u8c, vis, hk->text, emit_lo, tlo - emit_lo);
+            call(u8sFeed, into, vis);
+        }
+        emit_lo = thi;
+    }
+    if (emit_lo < hi) {
+        a$part(u8c, vis, hk->text, emit_lo, hi - emit_lo);
+        call(u8sFeed, into, vis);
+    }
+    done;
 }
 
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
@@ -260,10 +296,12 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
 
     if (!hunk_has_diff(hk)) {
-        // Plain hunk (grep / search / cat): emit text verbatim.
-        u8cs t = {hk->text[0], hk->text[1]};
-        u8sFeed(into, t);
-        if (*$last(t) != '\n') u8sFeed1(into, '\n');
+        // Plain hunk (grep / search / cat): emit text verbatim,
+        // minus any 'U'-tagged URI ranges.
+        u32 tlen = (u32)$len(hk->text);
+        call(hunk_feed_visible, into, hk, 0, tlen);
+        if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
+            u8sFeed1(into, '\n');
         u8sFeed1(into, '\n');
         done;
     }
@@ -283,8 +321,7 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
         if (sides & 1) prefix = '+';
         if (sides & 2) prefix = '-';
         u8sFeed1(into, prefix);
-        u8cs line = {cur[0], line_end};
-        u8sFeed(into, line);
+        call(hunk_feed_visible, into, hk, line_lo, line_hi);
         u8sFeed1(into, '\n');
         cur[0] = had_nl ? line_end + 1 : line_end;
     }
@@ -316,10 +353,12 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
     if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
 
     if (!hunk_has_diff(hk)) {
-        //  Plain hunk (grep / search / cat): emit text verbatim, no colour.
-        u8cs t = {hk->text[0], hk->text[1]};
-        u8sFeed(into, t);
-        if (*$last(t) != '\n') u8sFeed1(into, '\n');
+        //  Plain hunk (grep / search / cat): emit text verbatim, no
+        //  colour; 'U'-tagged URI bytes stay hidden.
+        u32 tlen = (u32)$len(hk->text);
+        call(hunk_feed_visible, into, hk, 0, tlen);
+        if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
+            u8sFeed1(into, '\n');
         u8sFeed1(into, '\n');
         done;
     }
@@ -345,8 +384,7 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
         if (col_add) { a_cstr(s, HUNK_ANSI_GREEN); u8sFeed(into, s); }
         if (col_del) { a_cstr(s, HUNK_ANSI_RED);   u8sFeed(into, s); }
         u8sFeed1(into, prefix);
-        u8cs line = {cur[0], line_end};
-        u8sFeed(into, line);
+        call(hunk_feed_visible, into, hk, line_lo, line_hi);
         if (col_add || col_del) {
             a_cstr(off, HUNK_ANSI_RESET); u8sFeed(into, off);
         }
@@ -598,9 +636,10 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
             a_cstr(sfx, " ---\n");
             u8sFeed(into, sfx);
         }
-        u8cs t = {hk->text[0], hk->text[1]};
-        u8sFeed(into, t);
-        if (*$last(t) != '\n') u8sFeed1(into, '\n');
+        u32 tlen = (u32)$len(hk->text);
+        call(hunk_feed_visible, into, hk, 0, tlen);
+        if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
+            u8sFeed1(into, '\n');
         u8sFeed1(into, '\n');
         done;
     }
@@ -637,6 +676,8 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
     for (int i = 0; i < n_toks; i++) {
         u32 span_hi = tok32Offset(hk->toks[0][i]);
         u8  side    = tok32Side(hk->toks[0][i]);
+        u8  tag     = tok32Tag (hk->toks[0][i]);
+        if (tag == 'U') { prev = span_hi; continue; }
         u8c *p = base + prev;
         u8c *e = base + span_hi;
         for (; p < e; p++) {
