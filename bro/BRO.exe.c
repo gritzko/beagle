@@ -44,7 +44,12 @@ static void bro_usage(void) {
 ok64 BROExec(bro *b, cli *c) {
     sane(b && c);
 
-    b->color = c->tty_out;
+    //  Universal three-mode rule: `HUNKMode` (set in main via
+    //  `CLISetHUNKMode`) tracks --tlv / --color / --plain / ANSIIsTTY().
+    //  BRO_COLOR=1 from the parent BEProjector still forces ANSI even
+    //  when bro's own stdout is a pipe; NO_COLOR (de-facto standard,
+    //  see https://no-color.org) wins outright.
+    b->color = (HUNKMode == HUNKOutColor);
     if (getenv("BRO_COLOR")) b->color = YES;
     if (getenv("NO_COLOR"))  b->color = NO;
 

@@ -10,6 +10,7 @@ static ok64 brocli_inner(cli *c) {
     sane(c);
     call(FILEInit);
     call(CLIParse, c, NULL, NULL);  // no verbs, no val-flags
+    CLISetHUNKMode(c);
 
     home h = {};
     call(HOMEOpenAt, &h, $path(c->repo), NO);

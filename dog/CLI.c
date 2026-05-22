@@ -154,8 +154,11 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
 }
 
 void CLISetHUNKMode(cli const *c) {
-    if (c && CLIHas(c, "--tlv"))        HUNKMode = HUNKOutTLV;
-    else if (c && CLIHas(c, "--color")) HUNKMode = HUNKOutColor;
+    //  --ansi accepted as a legacy alias for --color; the documented
+    //  rule is the three-flag set (--tlv / --color / --plain).
+    if      (c && CLIHas(c, "--tlv"))   HUNKMode = HUNKOutTLV;
+    else if (c && (CLIHas(c, "--color") || CLIHas(c, "--ansi")))
+                                        HUNKMode = HUNKOutColor;
     else if (c && CLIHas(c, "--plain")) HUNKMode = HUNKOutPlain;
     else HUNKMode = ANSIIsTTY() ? HUNKOutColor : HUNKOutPlain;
 }

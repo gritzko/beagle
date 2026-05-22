@@ -448,20 +448,19 @@ static ok64 BEProjector(cli *c, uri *u) {
     }
     a_cstr(dog_s, dog_cstr);
 
-    //  `--color` (alias `--ansi`) forces the bro pager pipeline even
-    //  when stdout is not a terminal — useful for capturing the
-    //  ANSI-coloured renderer output (vs. the plain unified-diff text
-    //  that graf emits when piped).  Bro reads BRO_COLOR=1 from the
-    //  environment and uses BROPlain to one-shot dump ANSI when its
-    //  own stdout is non-TTY.
-    b8 force_color = CLIHas(c, "--color") || CLIHas(c, "--ansi");
-    if (force_color) setenv("BRO_COLOR", "1", 1);
-    //  `--tlv` forces TLV passthrough: the dog emits TLV to stdout,
-    //  no inner bro fork.  Used by an outer bro that opens `be` itself
-    //  to navigate a projector URI.
-    b8 force_tlv = CLIHas(c, "--tlv");
-    b8 tty = (!force_tlv && (isatty(STDOUT_FILENO) || force_color)) ? YES : NO;
-    b8 emit_tlv = tty || force_tlv;
+    //  Universal three-mode rule: `HUNKMode` (set in main via
+    //  `CLISetHUNKMode`) already encodes --tlv / --color / --plain /
+    //  ANSIIsTTY().  Map it onto bro-pager spawn and the dog's --tlv
+    //  arg:
+    //    COLOR → spawn bro, feed it TLV (bro renders ANSI).
+    //    TLV   → run dog with `--tlv`, no inner bro fork.  Used by an
+    //            outer bro that opens `be` itself to navigate a URI.
+    //    PLAIN → run dog with no `--tlv`, dog writes plain text.
+    //  BRO_COLOR=1 keeps bro emitting ANSI even when its own stdout is
+    //  a pipe — useful for capturing coloured output into a file.
+    b8 tty      = (HUNKMode == HUNKOutColor);
+    b8 emit_tlv = (HUNKMode != HUNKOutPlain);
+    if (tty) setenv("BRO_COLOR", "1", 1);
 
     a_path(dogpath);
     a$rg(a0, 0);
