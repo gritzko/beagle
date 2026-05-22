@@ -1094,37 +1094,47 @@ ansi64 ULOGVerbColor(ron60 verb) {
 //  status_dump_verb uses (STATUS_ANSI_UNK = `\033[90m`).
 #define ULOG_VERB_UNK 0x39caf
 
-void ULOGFeedStatusLine(b8 tty, char const *status, ron60 verb,
-                        u8cs path) {
-    //  Date column.  Streaming reports happen "right now", so ts==now
-    //  and DOGutf8sFeedDate renders HH:MM.
+ok64 ULOGFeedStatusLine(u8s into, ulogreccp rec) {
+    sane($ok(into) && rec);
+
+    b8     tty    = ANSIIsTTY();
+    ansi64 c_unk  = ULOGVerbColor(ULOG_VERB_UNK);
+    ansi64 c_verb = ULOGVerbColor(rec->verb);
+
+    //  Date column.  `rec->ts` is the row's RON60 stamp; convert to
+    //  wall-clock seconds via struct tm so DOGutf8sFeedDate can render
+    //  HH:MM / weekday / date depending on age.  Wears unk grey on tty.
     i64 now = (i64)time(NULL);
-    u8 date_buf[8];
-    u8s date_into = {date_buf, date_buf + sizeof(date_buf)};
-    u8cp date_start = date_into[0];
-    (void)DOGutf8sFeedDate(date_into, now, now);
-
-    //  Pre-encode the two color SGRs into stack pads so we don't need
-    //  PRO.h flow here.
-    u8 esc_unk_buf[32], esc_verb_buf[32];
-    u8s esc_unk  = {esc_unk_buf,  esc_unk_buf  + sizeof(esc_unk_buf)};
-    u8s esc_verb = {esc_verb_buf, esc_verb_buf + sizeof(esc_verb_buf)};
-    if (tty) {
-        (void)ANSIu8sFeedDelta(esc_unk,  ULOGVerbColor(ULOG_VERB_UNK), ANSI_DEFAULT);
-        (void)ANSIu8sFeedDelta(esc_verb, ULOGVerbColor(verb),          ANSI_DEFAULT);
+    i64 ts  = now;
+    if (rec->ts) {
+        struct tm tm = {};
+        if (RONToTime(rec->ts, &tm, NULL) == OK) {
+            time_t t = mktime(&tm);
+            if (t != (time_t)-1) ts = (i64)t;
+        }
     }
+    if (tty) call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
+    call(DOGutf8sFeedDate, into, ts, now);
+    if (tty) call(ANSIu8sFeedReset, into, c_unk);
+    call(u8sFeed1, into, '\t');
 
-    if (tty) fwrite(esc_unk_buf, 1, (size_t)(esc_unk[0] - esc_unk_buf), stdout);
-    fwrite(date_start, 1, (size_t)(date_into[0] - date_start), stdout);
-    if (tty) fputs("\033[0m", stdout);
-    fputc('\t', stdout);
+    //  Verb token wears its palette color on a tty.
+    if (tty) call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
+    call(RONutf8sFeed, into, rec->verb);
+    if (tty) call(ANSIu8sFeedReset, into, c_verb);
+    call(u8sFeed1, into, '\t');
 
-    if (tty) fwrite(esc_verb_buf, 1, (size_t)(esc_verb[0] - esc_verb_buf), stdout);
-    fputs(status, stdout);
-    if (tty) fputs("\033[0m", stdout);
-    fputc('\t', stdout);
+    //  URI from rec->uri — the same way ULOGu8sFeed emits the row.
+    uri u = rec->uri;
+    call(URIutf8Feed, into, &u);
+    call(u8sFeed1, into, '\n');
+    done;
+}
 
-    fwrite(path[0], 1, (size_t)$len(path), stdout);
-    fputc('\n', stdout);
-    fflush(stdout);
+ok64 ULOGPrintStatusLine(ulogreccp rec) {
+    sane(rec);
+    a_pad(u8, line, 4096);
+    call(ULOGFeedStatusLine, u8bIdle(line), rec);
+    call(FILEout, u8bDataC(line));
+    done;
 }

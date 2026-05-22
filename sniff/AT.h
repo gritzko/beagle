@@ -231,19 +231,6 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx);
 //  ULOGNONE when no such spec is present.
 ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out);
 
-//  Materialise the wt's non-meta files (excluding `.be/`, `.be*`,
-//  etc — same filter as `SNIFFAtScanDirty`) in lex order into two
-//  parallel buffers.  Same shape as `KEEPTreeListLeaves` so a
-//  `[tree, wt]` pair feeds straight into `KEEPu8ssDrain`.
-//    out_paths — newline-terminated relative paths in lex order.
-//    out_meta  — flat sequence of 1-byte `WALK_KIND_REG/EXE/LNK`
-//                records, indexed by line number in `out_paths`.
-//  Both buffers are reset before writing; caller owns them.
-//  Order is produced via `FILEScanSorted` + `FILEentryZ` (dirs sort as
-//  if "name/" trailing-slash, matching git tree sort) so depth-first
-//  yields strictly lex-sorted full paths.
-ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta);
-
 //  Materialise wt entries as ULOG rows for the heap-merge pipeline:
 //  one row per file, `<mtime-ron60>\t<verb><kind>\t<rel>\n`.  The
 //  caller passes a verb stem (e.g. SNIFFAtVerbOf("wt")); the scanner
@@ -251,8 +238,9 @@ ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta);
 //  l=symlink (no submodule on the wt side).  Recover stem with
 //  `ok64stem` and kind with `ok64Lit(verb, 0)`.  Fragment is left
 //  empty — caller hashes on demand only when classification requires
-//  it.  Same wt-scan filter as `SNIFFWtListPaths` (skips `.be/`,
-//  `.be*`, IGNO matches).  `out` is reset before writing.
+//  it.  Excludes `.be/`, `.be*`, and IGNO matches; rows arrive in
+//  strictly lex-sorted path order (`FILEScanSorted` + `FILEentryZ`,
+//  matching git tree sort).  `out` is reset before writing.
 ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out);
 
 #endif

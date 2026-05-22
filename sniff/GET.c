@@ -63,17 +63,18 @@ typedef struct {
     //  row per `WALK_KIND_SUB` entry seen during the target walk.
     //  Drained by `get_drain_subs` after the parent's WRITE pass.
     u8bp           subs_out;
-    //  stdout tty? — drives ANSI coloring on the per-file `<date>\t
-    //  <status>\t<path>` rows emitted via `ULOGFeedStatusLine`.
-    b8             report_tty;
 } get_ctx;
 
 //  Per-file report verbs.  Encoded via abc/ok64; colors live in
 //  dog/ULOG.c's `ULOG_VERB_COLORS` palette.
-con ron60 GET_V_NEW = 0x32a7b;
-con ron60 GET_V_MOD = 0x31ce8;
-con ron60 GET_V_DEL = 0x28a70;
-con ron60 GET_V_MRG = 0x31dab;
+con ron60 GET_V_NEW  = 0x32a7b;     // "new"
+con ron60 GET_V_MOD  = 0x31ce8;     // "mod"
+con ron60 GET_V_DEL  = 0x28a70;     // "del"
+con ron60 GET_V_MRG  = 0x31dab;     // "mrg"
+//  Internal classifier bucket — never user-facing; WRITE pass uses
+//  it to skip identical-content paths so dirty user edits aren't
+//  clobbered.  No palette entry; never feeds into a status report.
+con ron60 GET_V_NOOP = 0xcb3cf4;    // "noop"
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
 //  symlink if link; then stamp it with ctx->tv.  Caller is
@@ -128,9 +129,10 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             FILEClose(&fd);
             if (kind == WALK_KIND_EXE) FILEChmod($path(fp), 0755);
             call(SNIFFAtStampPath, fp, g->ts);
-            ULOGFeedStatusLine(g->report_tty,
-                pre_present ? "mod" : "new",
-                pre_present ? GET_V_MOD : GET_V_NEW, path);
+            ulogrec rep = {.ts = g->ts,
+                .verb = pre_present ? GET_V_MOD : GET_V_NEW};
+            u8csMv(rep.uri.path, path);
+            call(ULOGPrintStatusLine, &rep);
             done;
         }
         u8bUnMap(bbuf);
@@ -164,9 +166,12 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     u8bUnMap(bbuf);
 
     call(SNIFFAtStampPath, fp, g->ts);
-    ULOGFeedStatusLine(g->report_tty,
-        pre_present ? "mod" : "new",
-        pre_present ? GET_V_MOD : GET_V_NEW, path);
+    {
+        ulogrec rep = {.ts = g->ts,
+            .verb = pre_present ? GET_V_MOD : GET_V_NEW};
+        u8csMv(rep.uri.path, path);
+        call(ULOGPrintStatusLine, &rep);
+    }
     done;
 }
 
@@ -225,7 +230,7 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     }
 
     //  No-op overlay: target's content at this path equals baseline's;
-    //  pre-flight cleared the merged path list in lockstep with this
+    //  pre-flight wrote a GET_V_NOOP ULOG row in lockstep with this
     //  walk's order.  Skip the write so dirty user edits aren't
     //  clobbered by a rewrite of identical bytes.  Don't stamp either —
     //  the file's mtime stays whatever the user left it as.
@@ -233,12 +238,13 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  Exception: if the file was wiped from disk (lstat fails), there
     //  is nothing to preserve — fall through and recreate it.
     if (!u8csEmpty(g->noop_cursor)) {
-        u8cs head = {};
+        ulogrec rec = {};
         a_dup(u8c, peek, g->noop_cursor);
-        if (u8csDrainLine(peek, head) == OK
-            && $len(head) == $len(path)
-            && memcmp(head[0], path[0], (size_t)$len(head)) == 0) {
-            (void)u8csDrainLine(g->noop_cursor, head);
+        if (ULOGu8sDrain(peek, &rec) == OK
+            && $len(rec.uri.path) == $len(path)
+            && memcmp(rec.uri.path[0], path[0], (size_t)$len(path)) == 0) {
+            ulogrec _consume = {};
+            (void)ULOGu8sDrain(g->noop_cursor, &_consume);
             a_path(probe);
             if (SNIFFFullpath(probe, g->reporoot, path) == OK) {
                 filestat fs = {};
@@ -254,12 +260,13 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     //  the wt's edits stay live for the drain to read.  No restamp
     //  either — the drain stamps after writing the merged bytes.
     if (!u8csEmpty(g->merges_cursor)) {
-        u8cs head = {};
+        ulogrec rec = {};
         a_dup(u8c, peek, g->merges_cursor);
-        if (u8csDrainLine(peek, head) == OK
-            && $len(head) == $len(path)
-            && memcmp(head[0], path[0], (size_t)$len(head)) == 0) {
-            (void)u8csDrainLine(g->merges_cursor, head);
+        if (ULOGu8sDrain(peek, &rec) == OK
+            && $len(rec.uri.path) == $len(path)
+            && memcmp(rec.uri.path[0], path[0], (size_t)$len(path)) == 0) {
+            ulogrec _consume = {};
+            (void)ULOGu8sDrain(g->merges_cursor, &_consume);
             return OK;
         }
     }
@@ -288,7 +295,12 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
 //          weave-merge wt-on-disk against tgt afterwards.
 //
 //  `noop_out`, `unlink_out`, and `merges_out` are reset on entry; on
-//  success each carries newline-separated lex-sorted paths.
+//  success each carries a ULOG-row stream (one row per affected
+//  path, lex-sorted by classifier walk order) with verb
+//  GET_V_NOOP / GET_V_DEL / GET_V_MRG respectively and the wt-side
+//  baseline-blob hex in `uri.fragment` where available.  Format is
+//  the same `<ron60-ts>\t<verb>\t<uri>\n` the wtlog uses, so drains
+//  parse via `ULOGu8sDrain`.
 
 typedef struct {
     u8cs   reporoot;
@@ -363,9 +375,10 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
         //  would cover the whole tree and dirty user edits would
         //  silently survive the "reset".
         if (c->force) return OK;
-        u8bFeed(c->noop_out, path);
-        u8bFeed1(c->noop_out, '\n');
-        return OK;
+        ulogrec r = {.verb = GET_V_NOOP};
+        u8csMv(r.uri.path, path);
+        u8csMv(r.uri.fragment, tgt->uri.fragment);
+        return ULOGu8sFeed(u8bIdle(c->noop_out), &r);
     }
     if (!changed) return OK;
 
@@ -437,16 +450,22 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
         } else {
             //  Real local edit: schedule for weave-merge.  The drain
             //  pass (`get_drain_merges`) will read wt-on-disk after
-            //  the checkout pass skips this path.
-            u8bFeed(c->merges_out, path);
-            u8bFeed1(c->merges_out, '\n');
-            return OK;
+            //  the checkout pass skips this path.  `uri.fragment`
+            //  carries the baseline blob sha so future readers can
+            //  do patch-id matching without re-walking the tree.
+            ulogrec r = {.verb = GET_V_MRG};
+            u8csMv(r.uri.path, path);
+            u8csMv(r.uri.fragment, base->uri.fragment);
+            return ULOGu8sFeed(u8bIdle(c->merges_out), &r);
         }
     }
     if (base && !tgt) {
-        //  Clean delete: schedule unlink.
-        u8bFeed(c->unlink_out, path);
-        u8bFeed1(c->unlink_out, '\n');
+        //  Clean delete: schedule unlink.  Baseline blob sha kept in
+        //  `uri.fragment` (future patch-id dedup; unused today).
+        ulogrec r = {.verb = GET_V_DEL};
+        u8csMv(r.uri.path, path);
+        u8csMv(r.uri.fragment, base->uri.fragment);
+        return ULOGu8sFeed(u8bIdle(c->unlink_out), &r);
     }
     return OK;
 }
@@ -540,26 +559,30 @@ static ok64 prune_cb(class_step const *step, void *vctx) {
     return OK;
 }
 
-//  Drain a newline-separated path list and unlink each entry.  Paths
-//  came from get_overlap_check's classifier, which already verified
-//  presence + clean stamp; defensive lstat is omitted.  After
-//  unlinking we walk back up each path's parent chain and `rmdir`
-//  every directory that became empty — git's checkout collapses
-//  empty dirs the same way, and rsync flags surviving ones as
-//  `*deleting <dir>/`.  Reports the file count to stderr.
-static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, b8 tty) {
+//  Drain a ULOG-row buffer (GET_V_DEL rows) and unlink each entry.
+//  Paths came from get_overlap_check's classifier, which already
+//  verified presence + clean stamp; defensive lstat is omitted.
+//  After unlinking we walk back up each path's parent chain and
+//  `rmdir` every directory that became empty — git's checkout
+//  collapses empty dirs the same way, and rsync flags surviving
+//  ones as `*deleting <dir>/`.  Reports the file count to stderr.
+static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, ron60 ts) {
     sane($ok(reporoot));
     u32 dropped = 0;
     a_dup(u8c, scan, unlinks);
     for (;;) {
-        u8cs path = {};
-        if (u8csDrainLine(scan, path) != OK) break;
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;                  // malformed row — skip
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
         if ($empty(path)) continue;
         a_path(fp);
         if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
         if (FILEUnLink($path(fp)) == OK) {
             dropped++;
-            ULOGFeedStatusLine(tty, "del", GET_V_DEL, path);
+            rec.ts = ts;
+            (void)ULOGPrintStatusLine(&rec);
         }
         //  Walk up: rmdir any newly-empty parent until we hit a
         //  non-empty dir, the reporoot, or rmdir fails (ENOTEMPTY).
@@ -588,15 +611,17 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, b8 tty) {
     done;
 }
 
-//  Drain a newline-separated path list of weave-merge targets.  For
-//  each path, call `GRAFMergeWtFile` (which reads the live wt file as
+//  Drain a ULOG-row buffer (GET_V_MRG rows) of weave-merge targets.
+//  For each row, call `GRAFMergeWtFile` (reads the live wt file as
 //  the implicit edit on `base` and merges against `tgt`'s history),
 //  write the merged bytes back to the wt, and stamp the new mtime.
+//  `base`/`tgt` are *commit* shas (shared across rows); per-row
+//  baseline blob sha lives in `rec.uri.fragment` but is unused today.
 //  Best-effort per path: a per-path failure is logged and the rest
 //  continue.
 static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
                              sha1cp base, sha1cp tgt,
-                             ron60 stamp_ts, b8 tty) {
+                             ron60 stamp_ts) {
     sane($ok(reporoot) && base && tgt);
     if (u8csEmpty(merges)) done;
 
@@ -606,8 +631,11 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
     u32 merged = 0, failed = 0;
     a_dup(u8c, scan, merges);
     for (;;) {
-        u8cs path = {};
-        if (u8csDrainLine(scan, path) != OK) break;
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;                  // malformed — skip
+        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
         if ($empty(path)) continue;
 
         ok64 mr = GRAFMergeWtFile(path, reporoot, base, tgt, out);
@@ -639,7 +667,8 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         //  baseline.
         (void)SNIFFAtStampPath(fp, stamp_ts + 1);
         merged++;
-        ULOGFeedStatusLine(tty, "mrg", GET_V_MRG, path);
+        rec.ts = stamp_ts;
+        (void)ULOGPrintStatusLine(&rec);
     }
 
     u8bFree(out);
@@ -1104,8 +1133,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         return o;
     }
 
-    get_ctx ctx = {.k = k, .error = OK,
-                   .report_tty = isatty(STDOUT_FILENO) ? YES : NO};
+    get_ctx ctx = {.k = k, .error = OK};
     u8csMv(ctx.reporoot, reporoot);
     SNIFFAtNow(&ctx.ts, &ctx.tv);
     ctx.noop_cursor[0]   = u8bDataHead(noop);
@@ -1198,7 +1226,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             a_dup(u8c, mlist, u8bData(merges));
             (void)get_drain_merges(reporoot, mlist,
                                    &base_commit_sha, &tgt_commit_sha,
-                                   ctx.ts, ctx.report_tty);
+                                   ctx.ts);
             if (own_open) GRAFClose();
         }
     }
@@ -1206,7 +1234,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  Prune the baseline-only paths the classifier flagged as clean.
     {
         a_dup(u8c, ulist, u8bData(unlinks));
-        (void)get_drain_unlinks(reporoot, ulist, ctx.report_tty);
+        (void)get_drain_unlinks(reporoot, ulist, ctx.ts);
     }
     u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
 

@@ -356,17 +356,22 @@ extern u64 const ULOG_VERB_COLORS[][2];
 //  the verb isn't in the table.
 ansi64 ULOGVerbColor(ron60 verb);
 
-//  Emit one `<date>\t<status>\t<path>\n` line to `stdout` in the
-//  same format `be` (bare status) uses for its per-row dump.  On a
-//  tty, the date column wears `unk` grey and the status column wears
-//  its own palette color; off tty, plain ASCII.  Intended for
-//  "as it happens" streaming reports (sniff GET, keeper fetch, …) —
-//  status-buffer batch consumers continue to use sniff's own
-//  `status_dump_verb` for the buffered case.
-//
-//  `status` is the literal token to print ("new", "mod", "del", "mrg"
-//  …); `verb` is the matching ron60 used for the color lookup.
-void ULOGFeedStatusLine(b8 tty, char const *status, ron60 verb,
-                        u8cs path);
+//  Assemble one `<date>\t<verb>\t<uri>\n` line into `into`'s idle —
+//  the same format `be` (bare status) uses for its per-row dump.
+//  The verb token is rendered from `rec->verb` via the RON64 alphabet
+//  (so 0x32a7b → "new", 0x31ce8 → "mod", …); the date column renders
+//  `rec->ts` via `DOGutf8sFeedDate` against `now=time(NULL)`.  On a
+//  tty (see `ANSIIsTTY`), the date column wears `unk` grey and the
+//  verb column wears its palette color; off tty, plain ASCII.
+//  The caller owns the buffer and pushes the assembled slice to
+//  stdout (e.g. via `FILEout`); the function never writes itself.
+//  Returns `SNOROOM`/`BNOROOM` if `into` runs short.
+ok64 ULOGFeedStatusLine(u8s into, ulogreccp rec);
+
+//  Convenience wrap: assemble one status line into a 4 KB stack
+//  buffer and push it to stdout via `FILEout`.  Common case for
+//  "as it happens" per-file status reports — sniff GET / POST /
+//  PATCH all use this.  Propagates buffer-short / I/O failures.
+ok64 ULOGPrintStatusLine(ulogreccp rec);
 
 #endif

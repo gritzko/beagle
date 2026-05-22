@@ -497,57 +497,6 @@ static ok64 make_commit(sha1 *commit_out, keeper *k,
 
 // --- Main ---
 
-// --- Test: SNIFFWtListPaths ---
-//
-//  Build a small wt fixture, call SNIFFWtListPaths, assert the (paths,
-//  meta) bytes match the expected lex-sorted layout.  Exercises the
-//  meta-file filter (`.be/`) and the kind classification (REG vs EXE
-//  vs LNK).
-
-ok64 SNIFFWtListPathsTest() {
-    sane(1);
-    call(make_tmpdir);
-
-    //  Files: a.txt (REG), b/c.txt (REG), run.sh (EXE), link (LNK→a.txt).
-    //  Meta to filter: .be/ (dir at root) — covers wtlog, refs, config,
-    //  and per-branch puppy files.
-    char buf[400];
-    snprintf(buf, sizeof(buf),
-             "mkdir -p %s/b %s/" DOG_BE_NAME " && "
-             "echo a > %s/a.txt && "
-             "echo c > %s/b/c.txt && "
-             "echo r > %s/run.sh && chmod +x %s/run.sh && "
-             "ln -s a.txt %s/zlink && "
-             "echo x > %s/" DOG_BE_NAME "/dummy",
-             g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir,
-             g_tmpdir, g_tmpdir);
-    want(system(buf) == 0);
-
-    a_dup(u8c, root, ((u8cs){(u8cp)g_tmpdir, (u8cp)g_tmpdir + strlen(g_tmpdir)}));
-
-    Bu8 paths = {}, meta = {};
-    call(u8bAllocate, paths, 1UL << 16);
-    call(u8bAllocate, meta,  1UL << 16);
-    call(SNIFFWtListPaths, root, paths, meta);
-
-    a_cstr(want_paths, "a.txt\nb/c.txt\nrun.sh\nzlink\n");
-    want(u8bDataLen(paths) == (size_t)$len(want_paths));
-    want(memcmp(u8bDataHead(paths), want_paths[0],
-                (size_t)$len(want_paths)) == 0);
-
-    want(u8bDataLen(meta) == 4);
-    u8 const *m = u8bDataHead(meta);
-    want(m[0] == WALK_KIND_REG);   // a.txt
-    want(m[1] == WALK_KIND_REG);   // b/c.txt
-    want(m[2] == WALK_KIND_EXE);   // run.sh
-    want(m[3] == WALK_KIND_LNK);   // zlink
-
-    u8bFree(paths);
-    u8bFree(meta);
-    rm_tmpdir();
-    done;
-}
-
 // --- SNIFFMergeWalk: 3-way grouping by path-key ---------------------
 
 typedef struct {
@@ -857,8 +806,6 @@ ok64 maintest() {
     call(SNIFFAtHelpers);
     fprintf(stderr, "SNIFFCheckoutCommit...\n");
     call(SNIFFCheckoutCommit);
-    fprintf(stderr, "SNIFFWtListPaths...\n");
-    call(SNIFFWtListPathsTest);
     fprintf(stderr, "SNIFFMergeWalk...\n");
     call(SNIFFMergeWalkTest);
     fprintf(stderr, "SUBSBasename...\n");

@@ -851,66 +851,6 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
     return so;
 }
 
-// --- SNIFFWtListPaths -------------------------------------------------
-
-typedef struct {
-    u8cs reporoot;
-    u8bp paths;
-    u8bp meta;
-    ok64 err;
-} at_list_ctx;
-
-static ok64 at_list_cb(void *varg, path8bp path) {
-    sane(varg && path);
-    at_list_ctx *c = (at_list_ctx *)varg;
-
-    a_dup(u8c, full, u8bData(path));
-    u8cs rel = {};
-    if (!SNIFFRelFromFull(rel, c->reporoot, full)) return OK;
-    if (SNIFFSkipMeta(rel))                         return OK;
-
-    filestat fs = {};
-    ok64 lo = FILELStat(&fs, full);
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
-    if (lo != OK) return lo;             // propagate other errors
-    u8 kind;
-    if      (fs.kind == FILE_KIND_LNK) kind = WALK_KIND_LNK;
-    else if (fs.mode & 0100)           kind = WALK_KIND_EXE;
-    else                               kind = WALK_KIND_REG;
-
-    ok64 o = u8bFeed(c->paths, rel);
-    if (o == OK) o = u8bFeed1(c->paths, '\n');
-    if (o == OK) o = u8bFeed1(c->meta,  kind);
-    if (o != OK) { c->err = o; return o; }
-    return OK;
-}
-
-ok64 SNIFFWtListPaths(u8cs reporoot, u8bp out_paths, u8bp out_meta) {
-    sane($ok(reporoot) && out_paths && out_meta);
-    u8bReset(out_paths);
-    u8bReset(out_meta);
-    at_list_ctx c = {.paths = out_paths, .meta = out_meta, .err = OK};
-    u8csMv(c.reporoot, reporoot);
-
-    a_path(wp);
-    u8bFeed(wp, reporoot);
-    call(PATHu8bTerm, wp);
-
-    //  Same sizing rationale as `SNIFFWtULog`: ignored mega-dirs
-    //  (Corpus/, .git/objects/, build/) still get sorted before the
-    //  per-file callback gets to skip them.
-    Bu8 scratch = {};
-    call(u8bMap, scratch, 1UL << 24);
-
-    ok64 so = FILEScanSorted(wp,
-                             (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                                         FILE_SCAN_DEEP),
-                             scratch, FILEentryZ, at_list_cb, &c);
-    u8bUnMap(scratch);
-    if (c.err != OK) return c.err;
-    return so;
-}
-
 // --- SNIFFWtULog: emit wt entries as ULOG rows ----------------------
 
 typedef struct {
