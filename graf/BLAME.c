@@ -31,6 +31,22 @@
 #define BLAME_MAX_VERS 256
 #define BLAME_MAX_AUTHORS 256
 
+//  Anchor → U-token: write `diff:?<10-hex-hashlet>` after the just-
+//  emitted anchor span and pack a 'U' tok past those bytes.  Bytes
+//  are zero-width in the renderer; bro's click handler executes
+//  `be --tlv diff:?<hex>` and KEEPResolveRef widens the hashlet
+//  prefix to a full commit sha.  No-op when `toks` is the zero
+//  slice (plain mode).
+static void blame_pack_uri_diff_sha(Bu32 toks, u8b out, u64 hashlet) {
+    if (!$ok(toks)) return;
+    a_cstr(prefix, "diff:?");
+    (void)u8bFeed(out, prefix);
+    a_pad(u8, hex, 10);
+    (void)WHIFFHexFeed40(hex_idle, hashlet);
+    (void)u8bFeed(out, u8bDataC(hex));
+    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+}
+
 //  Sentinel `src` for the worktree shadow version (uncommitted edits) —
 //  shared with the DIFF projector via `WEAVE_WT_SRC` in WEAVE.h.
 #define BLAME_WT_SRC WEAVE_WT_SRC
@@ -454,11 +470,19 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     Bu8 outbuf = {};
     call(u8bMap, outbuf, 16UL << 20);
 
+    //  TLV mode: emit a toks stream so each row's hashlet column is a
+    //  clickable anchor — `diff:?<hashlet>` rides in a 'U' token right
+    //  after the anchor.  Plain mode keeps toks empty; the renderers
+    //  drop the URI bytes either way.
+    Bu32 toks_buf = {};
+    if (tty) call(u32bAllocate, toks_buf, BLAME_MAX_AUTHORS * 4);
+
     u32 prev_in = 0;        // 0 means "no previous row yet"
     b8  have_prev_in = NO;
     b8  at_bol = YES;
 
     a_cstr(sp1, " ");
+    a_cstr(empty, "");
 
     #define EMIT_BLANK do {                                           \
         for (u32 _j = 0; _j < BLAME_PW; _j++) u8bFeed1(outbuf, ' ');  \
@@ -498,7 +522,19 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
                 a_pad(u8, cd, 8);
                 blame_compact_feed(cd, date_field, cur_year);
                 if (tty) { a_cstr(c, CLR_HASH); (void)u8bFeed(outbuf, c); }
-                blame_fixfeed(outbuf, hash_field, BLAME_HW, sp1);
+                //  Anchor pass: emit BLAME_HW chars + L-tok, then the
+                //  U-token URI, then the column-trailing space.  In
+                //  plain mode the URI bytes never reach text (helper
+                //  no-ops on the null toks slice).
+                blame_fixfeed(outbuf, hash_field, BLAME_HW, empty);
+                if (tty)
+                    (void)u32bFeed1(toks_buf,
+                                    tok32Pack('L', (u32)u8bDataLen(outbuf)));
+                if (tty && ba->commit_hashlet
+                        && ba->commit_hashlet != (u64)BLAME_WT_SRC)
+                    blame_pack_uri_diff_sha(toks_buf, outbuf,
+                                            ba->commit_hashlet);
+                (void)u8bFeed(outbuf, sp1);
                 if (tty) { a_cstr(c, CLR_NAME); (void)u8bFeed(outbuf, c); }
                 blame_fixfeed(outbuf, name_field, BLAME_NW, sp1);
                 if (tty) { a_cstr(c, CLR_DATE); (void)u8bFeed(outbuf, c); }
@@ -545,9 +581,14 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
         hk.uri[1]  = u8bIdleHead(title);
         hk.text[0] = u8bDataHead(outbuf);
         hk.text[1] = u8bIdleHead(outbuf);
+        if (tty) {
+            hk.toks[0] = (tok32 const *)u32bDataHead(toks_buf);
+            hk.toks[1] = (tok32 const *)u32bIdleHead(toks_buf);
+        }
         call(GRAFHunkEmit, &hk, NULL);
     }
 
+    if (tty) u32bFree(toks_buf);
     u8bUnMap(outbuf);
     WEAVEFree(&wA);
     WEAVEFree(&wB);

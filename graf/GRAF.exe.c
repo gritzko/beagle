@@ -19,7 +19,9 @@
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "dog/WHIFF.h"
+#include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
+#include "keeper/RESOLVE.h"
 
 // --- Verb / flag tables ---
 
@@ -114,6 +116,44 @@ static void graf_stop_pager(pid_t pid) {
         if (rc == 127)
             fprintf(stderr, "graf: bro pager not found\n");
     }
+}
+
+// --- First-parent lookup for diff:?<sha> commit-show ---
+//
+//  Resolves `query` (a sha or hashlet hex) to a commit and writes the
+//  40-hex sha of its first parent into `*out_parent`.  Returns OK on
+//  success, GRAFNONE on a root commit (no parent), or the underlying
+//  resolve / fetch error.  Body-parse path mirrors the LOG.c pattern
+//  so it works even when the DAG isn't indexed.
+static ok64 graf_first_parent_hex(u8cs query, sha1hex *out_parent) {
+    sane(out_parent);
+    sha1hex commit_hex = {};
+    call(KEEPResolveHex, &commit_hex, query);
+    sha1 commit_sha = {};
+    call(sha1FromSha1hex, &commit_sha, &commit_hex);
+    u64 commit_h60 = WHIFFHashlet60(&commit_sha);
+
+    Bu8 cbuf = {};
+    call(u8bMap, cbuf, 1UL << 20);
+    u8 ot = 0;
+    ok64 go = KEEPGet(commit_h60, DAG_H60_HEXLEN, cbuf, &ot);
+    if (go != OK || ot != DOG_OBJ_COMMIT) {
+        u8bUnMap(cbuf);
+        return (go != OK) ? go : KEEPNONE;
+    }
+    a_dup(u8c, scan, u8bDataC(cbuf));
+    u8cs field = {}, value = {};
+    ok64 ret = GRAFNONE;
+    while (GITu8sDrainCommit(scan, field, value) == OK) {
+        if (u8csEmpty(field)) break;
+        a_cstr(par_kw, "parent");
+        if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+            if (sha1hexFromHex(out_parent, value) == OK) ret = OK;
+            break;
+        }
+    }
+    u8bUnMap(cbuf);
+    return ret;
 }
 
 // --- URI path helper ---
@@ -381,7 +421,27 @@ ok64 GRAFExec(cli *c) {
                 //  `?branch` → branch vs base (ref-to-ref).
                 u8cs branch = {};
                 u8csMv(branch, u->query);
-                if (!$empty(path)) {
+                //  diff:?<hashlet> (no path) → commit-show:
+                //  diff this commit against its first parent (the
+                //  `git show <sha>` shape).  This is the click-
+                //  through target the log/map/blame projections emit
+                //  via U-tokens.  Falls through to branch-vs-base
+                //  when the parent lookup fails (root commit, unindexed
+                //  commit, or `branch` isn't actually a hashlet).
+                b8 handled = NO;
+                if ($empty(path) && DOGIsHashlet(branch)) {
+                    sha1hex parent_hex = {};
+                    if (graf_first_parent_hex(branch, &parent_hex) == OK) {
+                        u8cs parent_s = {};
+                        sha1hexSlice(parent_s, &parent_hex);
+                        ret = GRAFDiffTreeRefs(parent_s, branch,
+                                               reporoot);
+                        handled = YES;
+                    }
+                }
+                if (handled) {
+                    /* nothing */
+                } else if (!$empty(path)) {
                     ret = GRAFWeaveDiff(path, reporoot,
                                         branch, base_hex);
                 } else {

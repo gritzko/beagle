@@ -53,6 +53,22 @@ static char const MAP_GLYPH_TRUNK[] = "\xe2\x95\x91";   // ║
 static char const MAP_GLYPH_CHILD[] = "\xe2\x94\x83";   // ┃
 static char const MAP_GLYPH_THIN[]  = "\xe2\x94\x82";   // │
 
+//  Anchor → U-token: write `diff:?<40-hex>` after the just-emitted
+//  anchor span and pack a 'U' tok past those bytes.  Bytes are
+//  zero-width in the renderer; bro's click handler executes
+//  `be --tlv diff:?<sha>` on left-click of the preceding anchor.
+//  No-op when `toks` is the zero slice (plain-text mode).
+static void map_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
+    if (!$ok(toks)) return;
+    a_cstr(prefix, "diff:?");
+    (void)u8bFeed(out, prefix);
+    a_pad(u8, hex, 40);
+    u8cs raw = {csha->data, csha->data + 20};
+    (void)HEXu8sFeedSome(hex_idle, raw);
+    (void)u8bFeed(out, u8bDataC(hex));
+    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+}
+
 static char const *map_glyph_for(u8 depth) {
     if (depth == 0) return MAP_GLYPH_TRUNK;
     if (depth == 1) return MAP_GLYPH_CHILD;
@@ -316,10 +332,19 @@ ok64 GRAFMap(uricp u) {
     qsort(commits, ncommits, sizeof(*commits), map_commit_cmp_desc);
 
     //  Render — one row per commit: glyph-per-branch + sha7 + 7-date
-    //  + branch + summary.  Plain text; bro pager hookup is a later
-    //  layer.
+    //  + branch + summary.  TLV mode (graf_emit == HUNKu8sFeed) also
+    //  emits a toks stream so bro can attach a `diff:?<sha>` U-token
+    //  to each sha7 anchor; plain-text mode keeps toks empty.
     Bu8 text = {};
     if (u8bAllocate(text, 1UL << 20) != OK) goto cleanup_commits;
+    b8  want_toks = (graf_emit == HUNKu8sFeed);
+    Bu32 toks_buf = {};
+    if (want_toks) {
+        if (u32bAllocate(toks_buf, ncommits * 4) != OK) {
+            u8bFree(text);
+            goto cleanup_commits;
+        }
+    }
 
     i64 now = (i64)time(NULL);
     for (u32 i = 0; i < ncommits; i++) {
@@ -337,10 +362,14 @@ ok64 GRAFMap(uricp u) {
             }
         }
         (void)u8bFeed1(text, ' ');
-        //  Short sha hashlet.
+        //  Short sha hashlet — anchor for the click-to-diff U-token.
         a_pad(u8, hashlet, SHA1_HASHLEN_LEN);
         (void)SHA1u8sFeedHashlet(hashlet_idle, &mc->csha);
         (void)u8bFeed(text, u8bDataC(hashlet));
+        if (want_toks) {
+            (void)u32bFeed1(toks_buf, tok32Pack('L', (u32)u8bDataLen(text)));
+            map_pack_uri_diff_sha(toks_buf, text, &mc->csha);
+        }
         (void)u8bFeed1(text, ' ');
         //  7-char date.
         a_pad(u8, date, 8);
@@ -374,7 +403,12 @@ ok64 GRAFMap(uricp u) {
     hk.uri[1]  = u8bIdleHead(title);
     hk.text[0] = u8bDataHead(text);
     hk.text[1] = u8bIdleHead(text);
+    if (want_toks) {
+        hk.toks[0] = (tok32 const *)u32bDataHead(toks_buf);
+        hk.toks[1] = (tok32 const *)u32bIdleHead(toks_buf);
+    }
     (void)GRAFHunkEmit(&hk, NULL);
+    if (want_toks) u32bFree(toks_buf);
     u8bFree(text);
     u8bUnMap(commits_buf);
     wh128bFree(union_set);
