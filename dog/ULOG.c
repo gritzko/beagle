@@ -1066,7 +1066,8 @@ u64 const ULOG_VERB_COLORS[][2] = {
     {0x34e78,        ULOG_FG_BASIC(34)},  // put       → blue
     {0x32a7b,        ULOG_FG_BASIC(32)},  // new       → green
     {0x31cfa,        ULOG_FG_BASIC(36)},  // mov       → cyan
-    {0x31ce8,        ULOG_FG_BASIC(33)},  // mod       → yellow
+    {0x31ce8,        ULOG_FG_BASIC(33)},  // mod       → yellow (user-modified, kept by GET)
+    {0x39d28,        ULOG_FG_BASIC(34)},  // upd       → blue (overwritten by GET)
     {0x28a70,        ULOG_FG_256(94)  },  // del       → brown (256)
     {0x31b77,        ULOG_FG_BASIC(31)},  // mis       → red
     {0x39caf,        ULOG_FG_BASIC(90)},  // unk       → grey

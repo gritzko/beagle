@@ -67,13 +67,23 @@ typedef struct {
 
 //  Per-file report verbs.  Encoded via abc/ok64; colors live in
 //  dog/ULOG.c's `ULOG_VERB_COLORS` palette.
+//
+//    new   added in the new version (file didn't exist before)
+//    upd   updated by GET (checkout overwrote previous baseline bytes)
+//    mod   locally modified by user; GET did NOT touch it (kept as-is
+//          either because target == baseline or the noop classifier
+//          decided the user's bytes survive)
+//    mrg   weave-merged (user had a local edit AND target differed —
+//          3-way merge integrated both sides)
+//    del   removed in the target tree
 con ron60 GET_V_NEW  = 0x32a7b;     // "new"
+con ron60 GET_V_UPD  = 0x39d28;     // "upd"
 con ron60 GET_V_MOD  = 0x31ce8;     // "mod"
 con ron60 GET_V_DEL  = 0x28a70;     // "del"
 con ron60 GET_V_MRG  = 0x31dab;     // "mrg"
 //  Internal classifier bucket — never user-facing; WRITE pass uses
-//  it to skip identical-content paths so dirty user edits aren't
-//  clobbered.  No palette entry; never feeds into a status report.
+//  it to skip identical-content paths whose on-disk bytes are clean.
+//  No palette entry; never feeds into a status report.
 con ron60 GET_V_NOOP = 0xcb3cf4;    // "noop"
 
 //  Write one blob to disk, create dirs as needed, chmod if exec,
@@ -130,7 +140,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             if (kind == WALK_KIND_EXE) FILEChmod($path(fp), 0755);
             call(SNIFFAtStampPath, fp, g->ts);
             ulogrec rep = {.ts = g->ts,
-                .verb = pre_present ? GET_V_MOD : GET_V_NEW};
+                .verb = pre_present ? GET_V_UPD : GET_V_NEW};
             u8csMv(rep.uri.path, path);
             call(ULOGPrintStatusLine, &rep);
             done;
@@ -168,7 +178,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     call(SNIFFAtStampPath, fp, g->ts);
     {
         ulogrec rep = {.ts = g->ts,
-            .verb = pre_present ? GET_V_MOD : GET_V_NEW};
+            .verb = pre_present ? GET_V_UPD : GET_V_NEW};
         u8csMv(rep.uri.path, path);
         call(ULOGPrintStatusLine, &rep);
     }
@@ -248,8 +258,18 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
             a_path(probe);
             if (SNIFFFullpath(probe, g->reporoot, path) == OK) {
                 filestat fs = {};
-                if (FILELStat(&fs, $path(probe)) == OK)
-                    return OK;     // present on disk — preserve it
+                if (FILELStat(&fs, $path(probe)) == OK) {
+                    //  Present on disk — preserve user bytes.  Row's
+                    //  verb tells us whether the file was dirty; if
+                    //  so, surface `mod` so the kept-untouched edit
+                    //  doesn't go silent.
+                    if (rec.verb == GET_V_MOD) {
+                        ulogrec rep = {.ts = g->ts, .verb = GET_V_MOD};
+                        u8csMv(rep.uri.path, path);
+                        (void)ULOGPrintStatusLine(&rep);
+                    }
+                    return OK;
+                }
             }
             //  File missing → fall through to get_write_one.
         }
@@ -375,7 +395,22 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
         //  would cover the whole tree and dirty user edits would
         //  silently survive the "reset".
         if (c->force) return OK;
-        ulogrec r = {.verb = GET_V_NOOP};
+
+        //  Probe disk: an unattributed mtime means the user has
+        //  edited the file since the last stamp.  Target bytes match
+        //  baseline so GET has nothing to do, but the user-facing
+        //  report should still surface `mod` so the dirty edit
+        //  doesn't go silent.  Clean / absent cases get GET_V_NOOP
+        //  (internal-only — drives the WRITE-pass skip).
+        a_path(fp);
+        ron60 verb = GET_V_NOOP;
+        if (SNIFFFullpath(fp, c->reporoot, path) == OK) {
+            filestat fs = {};
+            if (FILELStat(&fs, $path(fp)) == OK
+                && !SNIFFAtKnown(fs.mtime))
+                verb = GET_V_MOD;
+        }
+        ulogrec r = {.verb = verb};
         u8csMv(r.uri.path, path);
         u8csMv(r.uri.fragment, tgt->uri.fragment);
         return ULOGu8sFeed(u8bIdle(c->noop_out), &r);
@@ -581,8 +616,12 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, ron60 ts) {
         if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
         if (FILEUnLink($path(fp)) == OK) {
             dropped++;
-            rec.ts = ts;
-            (void)ULOGPrintStatusLine(&rec);
+            //  Report row is path-only: the drained row carries the
+            //  baseline blob sha in its fragment for future patch-id
+            //  dedup, but user-facing status mustn't leak hashes.
+            ulogrec rep = {.ts = ts, .verb = GET_V_DEL};
+            u8csMv(rep.uri.path, path);
+            (void)ULOGPrintStatusLine(&rep);
         }
         //  Walk up: rmdir any newly-empty parent until we hit a
         //  non-empty dir, the reporoot, or rmdir fails (ENOTEMPTY).
@@ -667,8 +706,10 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         //  baseline.
         (void)SNIFFAtStampPath(fp, stamp_ts + 1);
         merged++;
-        rec.ts = stamp_ts;
-        (void)ULOGPrintStatusLine(&rec);
+        //  Same path-only report shape as the unlink drain.
+        ulogrec rep = {.ts = stamp_ts, .verb = GET_V_MRG};
+        u8csMv(rep.uri.path, path);
+        (void)ULOGPrintStatusLine(&rep);
     }
 
     u8bFree(out);
