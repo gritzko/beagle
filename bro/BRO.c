@@ -202,27 +202,6 @@ static ok64 bro_drain_tlv(Bu8 buf) {
     return stop;
 }
 
-// Tag-to-ANSI-color mapping reads from dog/THEME's active palette
-// (see THEMESelect).  Returns fg color in BRO's encoding (positive =
-// ANSI 16 SGR, negative = -(256-color N), 0 = default); sets *bold
-// for definition / call tags so the renderer adds ANSI_BOLD.
-static int BROTagColor(u8 tag, b8 *bold) {
-    *bold = NO;
-    theme const *t = THEMEActive;
-    switch (tag) {
-        case 'D': return t->fg_comment;
-        case 'G': return t->fg_string;
-        case 'L': return t->fg_number;
-        case 'H': return t->fg_preproc;
-        case 'R': return t->fg_keyword;
-        case 'P': return t->fg_punct;
-        case 'N': *bold = YES; return t->fg_defname;
-        case 'C': *bold = YES; return t->fg_funcall;
-        case 'F': return t->fg_filename;
-        default:  return 0;
-    }
-}
-
 // --- Line index ---
 // Maps line number -> (hunk index, byte offset within hunk text).
 // A "line" is range32: lo=hunk index, hi=byte offset within hunk text.
@@ -262,6 +241,30 @@ typedef struct {
 #define BRO_PASS_NORMAL    0u
 #define BRO_PASS_RM        1u
 #define BRO_PASS_IN        2u
+
+//  Resolve one cell's full SGR state from what tok32 already carries.
+//  fg_tag is the dogenizer tag (`tok32Tag`); pass is bro's render
+//  pass (normal / rm / in); side is the diff side (`tok32Side`).  Bg
+//  letters match dog/THEME.h: I=ins, O=del, J=ins_emph, K=del_emph.
+//  (pass, side) → bg:
+//    NORMAL + IN → ins   ;  NORMAL + RM → del   ;  NORMAL + EQ → none
+//    RM     + RM → del_emph ;  RM     + EQ → del   (eq context wears del wash)
+//    IN     + IN → ins_emph ;  IN     + EQ → ins   (eq context wears ins wash)
+//  (NORMAL+RM in PASS_RM and NORMAL+IN in PASS_IN are hidden bytes,
+//   filtered out before this is called.)
+fun ansi64 bro_cell_ansi(u8 fg_tag, u8 pass, u8 side, b8 in_search) {
+    ansi64 want = THEMEAt(fg_tag);
+    if (pass == BRO_PASS_NORMAL) {
+        if (side == TOK_SIDE_IN)      want |= THEMEAt('I');
+        else if (side == TOK_SIDE_RM) want |= THEMEAt('O');
+    } else if (pass == BRO_PASS_RM) {
+        want |= (side == TOK_SIDE_RM) ? THEMEAt('K') : THEMEAt('O');
+    } else {  // BRO_PASS_IN
+        want |= (side == TOK_SIDE_IN) ? THEMEAt('J') : THEMEAt('I');
+    }
+    if (in_search) want |= ANSI64_FLAG(ANSI_REVERSE);
+    return want;
+}
 
 fun u32 bro_line_off (range32 const *ln) { return ln->hi & BRO_LINE_OFF_MASK; }
 fun u8  bro_line_pass(range32 const *ln) {
@@ -1294,26 +1297,9 @@ static void scr_puts(char const *s) {
 
 // Emit the SGR for THEMEActive->fg_title.  Title color is a one-shot
 // escape outside the scr_emit_char SGR-delta machinery, so we render
-// the sequence inline here (matches the old scr_puts(TTY_FG256(56))
-// shape — caller follows with TTY_RESET).
+// the sequence inline here (caller follows with TTY_RESET).
 static void scr_emit_title_color(void) {
-    int c = THEMEActive->fg_title;
-    a_pad(u8, tmp, 24);
-    if (c > 0) {
-        u8sFeed1(tmp_idle, 033);
-        u8sFeed1(tmp_idle, '[');
-        utf8sFeed10(tmp_idle, (u64)c);
-        u8sFeed1(tmp_idle, 'm');
-    } else if (c < 0) {
-        a_cstr(prefix, "\033[38;5;");
-        u8sFeed(tmp_idle, prefix);
-        utf8sFeed10(tmp_idle, (u64)(-c));
-        u8sFeed1(tmp_idle, 'm');
-    } else {
-        a_cstr(def, "\033[39m");
-        u8sFeed(tmp_idle, def);
-    }
-    u8bFeed(bro_scr, u8bDataC(tmp));
+    ANSIu8sFeedDelta(u8bIdle(bro_scr), THEMEAt('T'), ANSI_DEFAULT);
 }
 
 // Feed goto escape: \033[row;colH
@@ -1364,44 +1350,7 @@ static void scr_emit_reset(void) {
 // bro_emit_cur — runs of identical-style chars share one open-SGR.
 // Callers MUST invoke scr_emit_reset() at row end (or before any raw
 // escape sequence written via scr_puts) to flush trailing state.
-static void scr_emit_char(u8cp p, u32 n, u8 fg_tag, u8 bg_tag, b8 in_search) {
-    b8 bold = NO;
-    int fg = BROTagColor(fg_tag, &bold);
-    // bg_tag conventions (values from dog/THEME's active palette):
-    //   'A' = no bg
-    //   'I' = bg_ins        (INS, normal/inline pass)
-    //   'D' = bg_del        (DEL, normal/inline pass)
-    //   'i' = bg_ins_split  (INS bytes in split in-pass)
-    //   'd' = bg_del_split  (RM  bytes in split rm-pass)
-    //   'g' = bg_ins        (eq context in in-pass)
-    //   'p' = bg_del        (eq context in rm-pass)
-    theme const *th = THEMEActive;
-    u8 bg = 0;
-    switch (bg_tag) {
-    case 'I': bg = (u8)th->bg_ins;        break;
-    case 'D': bg = (u8)th->bg_del;        break;
-    case 'i': bg = (u8)th->bg_ins_split;  break;
-    case 'd': bg = (u8)th->bg_del_split;  break;
-    case 'g': bg = (u8)th->bg_ins;        break;
-    case 'p': bg = (u8)th->bg_del;        break;
-    }
-
-    //  Translate BRO's fg encoding (positive = basic SGR, negative =
-    //  -(256-color N), 0 = default) into ansi64's mode-tagged fg.
-    u32 fg_val = 0;
-    u8  fg_mode = ANSI_MODE_DEFAULT;
-    if (fg > 0)      { fg_val = (u32)fg;  fg_mode = ANSI_MODE_BASIC; }
-    else if (fg < 0) { fg_val = (u32)-fg; fg_mode = ANSI_MODE_256;   }
-
-    u32 bg_val = bg;
-    u8  bg_mode = (bg != 0) ? ANSI_MODE_256 : ANSI_MODE_DEFAULT;
-
-    u8 flags = 0;
-    if (bold)      flags |= ANSI_BOLD;
-    if (in_search) flags |= ANSI_REVERSE;
-
-    ansi64 want = ansi64Pack(fg_val, fg_mode, bg_val, bg_mode, flags);
-
+static void scr_emit_char(u8cp p, u32 n, ansi64 want) {
     u8sp out = u8bIdle(bro_scr);
     if (want != bro_emit_cur) {
         ANSIu8sFeedDelta(out, want, bro_emit_cur);
@@ -1535,19 +1484,11 @@ static void BRORender(BROstate *st) {
                 j += clen;
                 continue;
             }
-            u8 bg_tag = 'A';
-            if (pass == BRO_PASS_NORMAL) {
-                if (side == TOK_SIDE_IN) bg_tag = 'I';
-                else if (side == TOK_SIDE_RM) bg_tag = 'D';
-            } else if (pass == BRO_PASS_RM) {
-                bg_tag = (side == TOK_SIDE_RM) ? 'd' : 'p';
-            } else { // BRO_PASS_IN
-                bg_tag = (side == TOK_SIDE_IN) ? 'i' : 'g';
-            }
             if (search_left == 0 && bro_search_at(st, hk->text, pos))
                 search_left = slen;
             b8 in_search = (search_left > 0) ? YES : NO;
-            scr_emit_char(hk->text[0] + pos, clen, fg_tag, bg_tag, in_search);
+            scr_emit_char(hk->text[0] + pos, clen,
+                          bro_cell_ansi(fg_tag, pass, side, in_search));
             if (search_left >= clen) search_left -= clen;
             else search_left = 0;
             j += clen;
@@ -2062,16 +2003,8 @@ static ok64 BROPlain(hunkcs hunks) {
                 j += clen;
                 continue;
             }
-            u8 bg_tag = 'A';
-            if (pass == BRO_PASS_NORMAL) {
-                if (side == TOK_SIDE_IN) bg_tag = 'I';
-                else if (side == TOK_SIDE_RM) bg_tag = 'D';
-            } else if (pass == BRO_PASS_RM) {
-                bg_tag = (side == TOK_SIDE_RM) ? 'd' : 'p';
-            } else {
-                bg_tag = (side == TOK_SIDE_IN) ? 'i' : 'g';
-            }
-            scr_emit_char(hk->text[0] + pos, clen, fg_tag, bg_tag, NO);
+            scr_emit_char(hk->text[0] + pos, clen,
+                          bro_cell_ansi(fg_tag, pass, side, NO));
             j += clen;
         }
         scr_emit_reset();

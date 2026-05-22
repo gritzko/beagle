@@ -3,6 +3,10 @@
 //  Solarized (Ethan Schoonover, MIT) for the dark / light pair; the
 //  "16" table preserves bro's pre-existing terminal-adaptive look.
 //
+//  Each table is a 32-slot ansi64 array indexed by `tag - 'A'`; only
+//  the letters listed in THEME.h are populated, the rest are
+//  ANSI_DEFAULT (zero-init).
+//
 //  Solarized 256-color approximations used below:
 //    base01 = 240   base1  = 245   yellow  = 136   orange = 166
 //    red    = 160   magenta= 125   violet  = 61    blue   = 33
@@ -12,65 +16,70 @@
 #include <stdlib.h>
 #include <string.h>
 
-//  16-color: pure ANSI for fg (terminal re-maps to its own theme so
-//  this adapts to dark+light terminals).  Backgrounds are 256-color
-//  pale tints — present-day terminals all support them and a basic
-//  ANSI bg (BG_GREEN / BG_RED) would drown the fg text.
+#define FG16(n)  ANSI64_FG_BASIC(n)
+#define FG256(n) ANSI64_FG_256(n)
+#define BG256(n) ANSI64_BG_256(n)
+#define BOLD     ANSI64_FLAG(ANSI_BOLD)
+#define IDX(L)   [(L) - 'A']
+
+//  16-color: pure ANSI 16 for fg (terminal re-maps so it adapts to
+//  light+dark terminals).  Bg uses 256-color pale tints — basic ANSI
+//  bg (BG_GREEN / BG_RED) would drown the fg text.
 static theme const THEME16TBL = {
-    .fg_comment   = 90,    // GRAY
-    .fg_string    = 32,    // DARK_GREEN
-    .fg_number    = 96,    // LIGHT_CYAN
-    .fg_preproc   = 35,    // DARK_PINK
-    .fg_keyword   = 94,    // LIGHT_BLUE
-    .fg_punct     = 90,    // GRAY
-    .fg_defname   = 0,     // default + bold
-    .fg_funcall   = 0,     // default + bold
-    .fg_filename  = -56,   // violet 256
-    .fg_title     = -56,   // violet 256
-    .bg_ins       = 194,
-    .bg_del       = 224,
-    .bg_ins_split = 157,
-    .bg_del_split = 217,
+    IDX('D') = FG16(90),    // comment   — GRAY
+    IDX('G') = FG16(32),    // string    — DARK_GREEN
+    IDX('L') = FG16(96),    // number    — LIGHT_CYAN
+    IDX('H') = FG16(35),    // preproc   — DARK_PINK
+    IDX('R') = FG16(94),    // keyword   — LIGHT_BLUE
+    IDX('P') = FG16(90),    // punct     — GRAY
+    IDX('N') = BOLD,        // defname   — default + bold
+    IDX('C') = BOLD,        // funcall   — default + bold
+    IDX('F') = FG256(56),   // filename  — violet 256
+    IDX('T') = FG256(56),   // title     — violet 256
+    IDX('I') = BG256(194),
+    IDX('O') = BG256(224),
+    IDX('J') = BG256(157),
+    IDX('K') = BG256(217),
 };
 
-//  Solarized dark: muted body tones over a dark background, accent
-//  colors shared with the light variant.  Diff bg goes dark-tinted
-//  (22 = dark green, 52 = dark red) so it reads as a wash, not a slap.
+//  Solarized dark: muted base01 (240) body, accents in cyan/magenta/
+//  orange/green/blue/violet, diff bg dark-tinted (22 / 52) so it
+//  reads as a wash, not a slap.
 static theme const THEMEDARKTBL = {
-    .fg_comment   = -240,  // base01
-    .fg_string    = -37,   // cyan
-    .fg_number    = -125,  // magenta
-    .fg_preproc   = -166,  // orange
-    .fg_keyword   = -64,   // green
-    .fg_punct     = -240,  // base01
-    .fg_defname   = -33,   // blue (bold)
-    .fg_funcall   = -33,   // blue (bold)
-    .fg_filename  = -61,   // violet
-    .fg_title     = -61,   // violet
-    .bg_ins       = 22,    // dark green
-    .bg_del       = 52,    // dark red
-    .bg_ins_split = 28,    // mid green
-    .bg_del_split = 88,    // mid red
+    IDX('D') = FG256(240),                // base01
+    IDX('G') = FG256(37),                 // cyan
+    IDX('L') = FG256(125),                // magenta
+    IDX('H') = FG256(166),                // orange
+    IDX('R') = FG256(64),                 // green
+    IDX('P') = FG256(240),
+    IDX('N') = FG256(33) | BOLD,          // blue + bold
+    IDX('C') = FG256(33) | BOLD,
+    IDX('F') = FG256(61),                 // violet
+    IDX('T') = FG256(61),
+    IDX('I') = BG256(22),                 // dark green
+    IDX('O') = BG256(52),                 // dark red
+    IDX('J') = BG256(28),                 // mid green
+    IDX('K') = BG256(88),                 // mid red
 };
 
-//  Solarized light: same accents on a light background, body tones
-//  bumped to base1 (245) for legibility on white.  Diff bg matches
-//  the 16-color table — those pale tints were already light-mode.
+//  Solarized light: same accents over a light background; body bumped
+//  to base1 (245) for legibility on white.  Diff bg matches the
+//  16-color table — those pale tints are already light-mode.
 static theme const THEMELIGHTTBL = {
-    .fg_comment   = -245,  // base1
-    .fg_string    = -37,   // cyan
-    .fg_number    = -125,  // magenta
-    .fg_preproc   = -166,  // orange
-    .fg_keyword   = -64,   // green
-    .fg_punct     = -245,  // base1
-    .fg_defname   = -33,   // blue (bold)
-    .fg_funcall   = -33,   // blue (bold)
-    .fg_filename  = -61,   // violet
-    .fg_title     = -61,   // violet
-    .bg_ins       = 194,
-    .bg_del       = 224,
-    .bg_ins_split = 157,
-    .bg_del_split = 217,
+    IDX('D') = FG256(245),                // base1
+    IDX('G') = FG256(37),
+    IDX('L') = FG256(125),
+    IDX('H') = FG256(166),
+    IDX('R') = FG256(64),
+    IDX('P') = FG256(245),
+    IDX('N') = FG256(33) | BOLD,
+    IDX('C') = FG256(33) | BOLD,
+    IDX('F') = FG256(61),
+    IDX('T') = FG256(61),
+    IDX('I') = BG256(194),
+    IDX('O') = BG256(224),
+    IDX('J') = BG256(157),
+    IDX('K') = BG256(217),
 };
 
 theme const *THEMEActive = &THEME16TBL;
