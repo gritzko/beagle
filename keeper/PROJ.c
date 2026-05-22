@@ -171,7 +171,26 @@ static void proj_feed_title(u8b out, uricp u) {
 static ok64 proj_emit_hunk(uricp u, Bu8 text, tok32cs toks, b8 tlv) {
     sane(u);
     if (!tlv) {
-        fwrite(u8bDataHead(text), 1, u8bDataLen(text), stdout);
+        //  Plain CLI output: walk toks and elide any 'U'-tagged spans
+        //  (invisible URI metadata).  Sans toks (or no U tokens) this
+        //  is a straight fwrite of the entire buffer.
+        u8c *base = u8bDataHead(text);
+        u32  tlen = (u32)u8bDataLen(text);
+        int  n    = toks != NULL ? (int)$len(toks) : 0;
+        u32  prev = 0, emit_lo = 0;
+        for (int i = 0; i < n; i++) {
+            u32 end = tok32Offset(toks[0][i]);
+            if (tok32Tag(toks[0][i]) == 'U') {
+                if (emit_lo < prev) {
+                    fwrite(base + emit_lo, 1, prev - emit_lo, stdout);
+                }
+                emit_lo = end;
+            }
+            prev = end;
+        }
+        if (emit_lo < tlen) {
+            fwrite(base + emit_lo, 1, tlen - emit_lo, stdout);
+        }
         fflush(stdout);
         done;
     }
@@ -202,6 +221,86 @@ static ok64 proj_emit_hunk(uricp u, Bu8 text, tok32cs toks, b8 tlv) {
 // =====================================================================
 //  tree:
 // =====================================================================
+
+//  Push one tok at the current text end-offset.  Tokens carry end
+//  offsets (24-bit), so the caller feeds bytes first and stamps the
+//  token right after.  Returns the new end offset for convenience.
+static u32 proj_push_tok(u8b text, Bu32 toks, u8 tag) {
+    u32 end = (u32)u8bDataLen(text);
+    (void)u32bFeed1(toks, tok32Pack(tag, end));
+    return end;
+}
+
+//  Parent path for the `..` row.  Empty / single-segment / trailing-`/`
+//  inputs collapse to the empty slice (= tree root).
+static void proj_tree_parent_path(u8csp out, u8cs path) {
+    out[0] = out[1] = NULL;
+    if ($empty(path)) return;
+    //  Strip trailing '/' so "src/" and "src" behave identically.
+    u8cp end = path[1];
+    while (end > path[0] && *(end - 1) == '/') end--;
+    if (end == path[0]) return;
+    //  Walk back to the last '/' separator.
+    u8cp p = end;
+    while (p > path[0] && *(p - 1) != '/') p--;
+    if (p == path[0]) return;  //  single segment → root
+    out[0] = path[0];
+    out[1] = p - 1;            //  drop the separator itself
+}
+
+//  Emit a `<scheme>:<path>?<query>` or `<scheme>:<path>#<frag>` URI
+//  composed from the source URI's rev slot and an explicit `path`.
+//  After KEEPProjDispatch normalises a hex-prefix query to fragment,
+//  query and fragment are mutually exclusive on the input URI — so we
+//  carry whichever is set verbatim.
+static void proj_feed_link_uri(u8b out, char const *scheme, u8cs path,
+                                uricp src) {
+    proj_feed_lit(out, scheme);
+    (void)u8bFeed1(out, ':');
+    if (!$empty(path)) (void)u8bFeed(out, path);
+    if (!u8csEmpty(src->query)) {
+        (void)u8bFeed1(out, '?');
+        (void)u8bFeed(out, src->query);
+    } else if (!u8csEmpty(src->fragment)) {
+        (void)u8bFeed1(out, '#');
+        (void)u8bFeed(out, src->fragment);
+    }
+}
+
+//  Emit one entry's anchor (name [+/]) + invisible U-tagged URI bytes
+//  + '\n'.  Tokens: anchor 'F' at end-of-name, U at end-of-URI, W at NL.
+//  The mode/type/sha prefix is emitted by the caller (with its own 'P'
+//  tok at start-of-name).  `base_path` is the directory the listing is
+//  rooted in (the URI's resolved path); it composes with `name` to
+//  produce the full link path inside the rev.
+static ok64 proj_tree_emit_entry(u8b text, Bu32 toks,
+                                 u8cs base_path, u8cs name, b8 is_dir,
+                                 uricp src) {
+    sane(1);
+    //  Visible anchor: just the name (+ '/' for dirs).
+    (void)u8bFeed(text, name);
+    if (is_dir) (void)u8bFeed1(text, '/');
+    proj_push_tok(text, toks, 'F');
+
+    //  Build the full link path in a scratch buffer.
+    a_pad(u8, lp, 4096);
+    if (!$empty(base_path)) {
+        (void)u8bFeed(lp, base_path);
+        if (*$last(base_path) != '/') (void)u8bFeed1(lp, '/');
+    }
+    (void)u8bFeed(lp, name);
+    if (is_dir) (void)u8bFeed1(lp, '/');
+    a_dup(u8c, link_path, u8bData(lp));
+
+    //  Invisible URI bytes — bro hides U-tagged spans, clicking the
+    //  preceding 'F' anchor opens this URI.
+    proj_feed_link_uri(text, is_dir ? "tree" : "blob", link_path, src);
+    proj_push_tok(text, toks, 'U');
+
+    (void)u8bFeed1(text, '\n');
+    proj_push_tok(text, toks, 'W');
+    done;
+}
 
 //  git mode prefix → display columns ("100644 blob", "040000 tree", …).
 //  Wide-enough fixed columns so names line up.
@@ -252,10 +351,45 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
         return go == OK ? PROJFAIL : go;
     }
 
-    //  Format each entry into `text`.
+    //  Format each entry into `text`, with a parallel tok stream so
+    //  every entry's name becomes a clickable anchor (next-token-U
+    //  convention; see dog/tok/TOK.h).
     Bu8 text = {};
     ok64 ao = u8bAllocate(text, 1UL << 20);
     if (ao != OK) { u8bFree(tbuf); return ao; }
+    Bu32 toks = {};
+    ok64 to = u32bAllocate(toks, 1UL << 16);
+    if (to != OK) { u8bFree(text); u8bFree(tbuf); return to; }
+
+    //  `..` row when we're below the tree root.  No mode/type/sha
+    //  prefix — just `..\n` with a tree:<parent>?<rev> U-link.
+    u8cs base_path = {};
+    u8csMv(base_path, u->path);
+    u8cs parent_path = {};
+    proj_tree_parent_path(parent_path, base_path);
+    b8 below_root = NO;
+    {
+        //  "below root" iff base_path has any byte that isn't '/'.
+        $for(u8c, p, base_path) { if (*p != '/') { below_root = YES; break; } }
+    }
+    if (below_root) {
+        a_cstr(dd, "..");
+        a_dup(u8c, ddv, dd);
+        (void)u8bFeed(text, ddv);
+        proj_push_tok(text, toks, 'F');
+        //  Trailing '/' on the parent's link path keeps the tree URI
+        //  shape stable (`tree:foo/?ref` vs `tree:foo?ref`).
+        a_pad(u8, lp, 4096);
+        if (!$empty(parent_path)) {
+            (void)u8bFeed(lp, parent_path);
+            if (*$last(parent_path) != '/') (void)u8bFeed1(lp, '/');
+        }
+        a_dup(u8c, lpath, u8bData(lp));
+        proj_feed_link_uri(text, "tree", lpath, u);
+        proj_push_tok(text, toks, 'U');
+        (void)u8bFeed1(text, '\n');
+        proj_push_tok(text, toks, 'W');
+    }
 
     u8cs scan = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
     u8cs file = {}, esha = {};
@@ -265,19 +399,30 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
         u8 kind = WALKu8sModeKind(mode_s);
         if (kind == 0) continue;
 
+        //  Prefix: <mode> <type>  <sha40>\t  — tagged 'P' (gray punct).
         proj_tree_mode_type(text, kind);
         (void)u8bFeed1(text, ' ');
         sha1 esh = {};
         (void)sha1Drain(esha, &esh);
         proj_feed_sha_hex(text, &esh);
         (void)u8bFeed1(text, '\t');
-        (void)u8bFeed(text, name_s);
-        if (kind == WALK_KIND_DIR) (void)u8bFeed1(text, '/');
-        (void)u8bFeed1(text, '\n');
+        proj_push_tok(text, toks, 'P');
+
+        //  Anchor name + U-URI + '\n'.
+        b8 is_dir = (kind == WALK_KIND_DIR);
+        ok64 ee = proj_tree_emit_entry(text, toks, base_path,
+                                       name_s, is_dir, u);
+        if (ee != OK) {
+            u8bFree(tbuf); u8bFree(text); u32bFree(toks);
+            return ee;
+        }
     }
     u8bFree(tbuf);
 
-    ok64 eo = proj_emit_hunk(u, text, NULL, tlv);
+    tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
+                        (u32 const *)u32bIdleHead(toks)};
+    ok64 eo = proj_emit_hunk(u, text, toks_view, tlv);
+    u32bFree(toks);
     u8bFree(text);
     return eo;
 }
@@ -334,14 +479,23 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
     Bu8 text = {};
     ok64 ao = u8bAllocate(text, 1UL << 20);
     if (ao != OK) { u8bFree(obj); return ao; }
+    Bu32 toks = {};
+    ok64 to = u32bAllocate(toks, 1UL << 14);
+    if (to != OK) { u8bFree(text); u8bFree(obj); return to; }
 
-    //  Header: "commit <sha40>\n".  The remaining headers (tree,
-    //  parent, author, committer) are emitted verbatim from the
-    //  object body — same shape as `git cat-file -p`.
+    //  Header: "commit <sha40>\n" — no link, this object is the page
+    //  itself.  Subsequent `tree <sha>` / `parent <sha>` headers get
+    //  U-tagged links so clicks open the referenced object; other
+    //  headers (author, committer, message) flow through without toks.
     proj_feed_lit(text, "commit ");
+    proj_push_tok(text, toks, 'R');
     proj_feed_sha_hex(text, &csha);
+    proj_push_tok(text, toks, 'L');
     (void)u8bFeed1(text, '\n');
+    proj_push_tok(text, toks, 'W');
 
+    a_cstr(s_tree,   "tree");
+    a_cstr(s_parent, "parent");
     a_dup(u8c, body, u8bData(obj));
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(body, field, value) == OK) {
@@ -355,14 +509,49 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
                 (void)u8bFeed1(text, '\n');
             break;
         }
+
+        b8 is_tree   = $eq(field, s_tree)   && u8csLen(value) >= 40;
+        b8 is_parent = $eq(field, s_parent) && u8csLen(value) >= 40;
+        char const *link_scheme = is_tree ? "tree" : (is_parent ? "commit" : NULL);
+
         (void)u8bFeed(text, field);
         (void)u8bFeed1(text, ' ');
-        (void)u8bFeed(text, value);
+        proj_push_tok(text, toks, 'R');
+
+        if (link_scheme != NULL) {
+            //  Anchor: just the sha40 (the clickable bit).
+            u8cs sha_hex = {value[0], value[0] + 40};
+            (void)u8bFeed(text, sha_hex);
+            proj_push_tok(text, toks, 'L');
+
+            //  Invisible URI bytes: <scheme>:#<sha40>.  Fragment form
+            //  is unambiguous for sha addressing and bypasses
+            //  KEEPProjDispatch's query→fragment hex-prefix promotion.
+            proj_feed_lit(text, link_scheme);
+            (void)u8bFeed1(text, ':');
+            (void)u8bFeed1(text, '#');
+            (void)u8bFeed(text, sha_hex);
+            proj_push_tok(text, toks, 'U');
+
+            //  Any trailing bytes on the value line (none for git tree/
+            //  parent headers, but be tolerant) ride along as default-
+            //  tagged.
+            if (u8csLen(value) > 40) {
+                u8cs rest = {value[0] + 40, value[1]};
+                (void)u8bFeed(text, rest);
+            }
+        } else {
+            (void)u8bFeed(text, value);
+        }
         (void)u8bFeed1(text, '\n');
+        proj_push_tok(text, toks, 'W');
     }
     u8bFree(obj);
 
-    ok64 eo = proj_emit_hunk(u, text, NULL, tlv);
+    tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
+                        (u32 const *)u32bIdleHead(toks)};
+    ok64 eo = proj_emit_hunk(u, text, toks_view, tlv);
+    u32bFree(toks);
     u8bFree(text);
     return eo;
 }

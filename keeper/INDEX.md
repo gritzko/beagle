@@ -170,11 +170,24 @@ URI handlers wired through `KEEPProjDispatch` (called from
 `KEEP.exe.c` when `DOG_PROJECTORS` routes a scheme to "keeper").
 TLV mode goes through `dog/HUNK` so `bro` can render the output.
 
-  - `KEEPProjTree`     `tree:[<path>]?<ref|sha>` — directory entries
-  - `KEEPProjCommit`   `commit:?<ref|sha>` — commit header + body
+  - `KEEPProjTree`     `tree:[<path>]?<ref|sha>` — directory entries.
+                       Each entry's name is an `F` anchor followed by a
+                       `U` URI token (`tree:<sub>/?<rev>` for dirs,
+                       `blob:<path>?<rev>` for files); a `..` row leads
+                       the listing when `<path>` is non-empty.
+  - `KEEPProjCommit`   `commit:?<ref|sha>` — commit header + body.  The
+                       `tree <sha>` and each `parent <sha>` header line
+                       carries an `L` anchor on the sha + a `U` token
+                       (`tree:#<sha>` / `commit:#<sha>`); other headers
+                       and the message body render with default tags.
   - `KEEPProjBlob`     `blob:[<path>]?<ref|sha>` — blob bytes (TLV
                        mode tokenizes via `dog/TOK`)
   - `KEEPProjDispatch` scheme → projector dispatch entry point
+
+`U` token convention: URI bytes follow the visible anchor token in
+`hk->text`; all renderers / line classifiers / search hide them, so a
+left-click on the anchor opens the next-token URI via `be --tlv`
+(see `dog/tok/TOK.h`, `bro/BRO.c`).
 
 
 ##  Implementation files
