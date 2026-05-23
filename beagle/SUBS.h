@@ -55,11 +55,6 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv);
 //  reaps.  Defined in BE.cli.c.
 ok64 BERun(u8csc tool, u8css argv, b8 bg);
 
-//  Spawn `tool` with `argv`, capture its stdout into `out` (mapped
-//  by the caller).  Used to pull keeper/sniff output back into BE
-//  for ULOG drain.  Defined in BE.cli.c.
-ok64 be_capture(u8csc tool, u8css argv, u8bp out);
-
 //  --- `be get` sub-orchestration helpers (per-row spawn + recurse).
 //  Live in beagle/SUBS.c — purely BE-side orchestration; the actual
 //  mount/unmount syscalls land via `sniff sub-mount` (a separate

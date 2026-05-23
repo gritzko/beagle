@@ -191,6 +191,39 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv) {
 // `be get` sub-orchestration helpers.
 // =====================================================================
 
+//  Spawn `tool` with `argv`, drain its stdout into `out` (reset on
+//  entry), reap.  Translates exit into OK / BEDOGEXIT / BEDOGSIG.
+//  Used by BEGetKeeperSubs to capture `keeper subs` ULOG output.
+static ok64 begetsubs_capture(u8csc tool, u8css argv, u8bp out) {
+    sane($ok(tool) && out);
+    u8bReset(out);
+    a_path(path);
+    a$rg(a0, 0);
+    HOMEResolveSibling(NULL, path, tool, a0);
+
+    int stdout_r = -1;
+    pid_t pid = 0;
+    call(FILESpawn, $path(path), argv, NULL, &stdout_r, &pid);
+
+    for (;;) {
+        if (u8bIdleLen(out) == 0) break;
+        u8 *idle = u8bIdleHead(out);
+        size_t cap = (size_t)u8bIdleLen(out);
+        ssize_t n = read(stdout_r, idle, cap);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        u8bFed(out, (u32)n);
+    }
+    close(stdout_r);
+
+    int rc = 0;
+    ok64 r = FILEReap(pid, &rc);
+    if (r == FILESIGNAL) return BEDOGSIG;
+    if (r != OK)         return r;
+    if (rc != 0)         return BEDOGEXIT;
+    done;
+}
+
 ok64 BEGetKeeperSubs(u8cs query, u8bp out) {
     sane(out);
     a_pad(u8cs, args, 4);
@@ -209,7 +242,7 @@ ok64 BEGetKeeperSubs(u8cs query, u8bp out) {
     u8csbFeed1(args, qview);
 
     a_dup(u8cs, argv, u8csbData(args));
-    return be_capture(keeper_d, argv, out);
+    return begetsubs_capture(keeper_d, argv, out);
 }
 
 ok64 BEGetSubMount(u8cs subpath, u8cs pin) {

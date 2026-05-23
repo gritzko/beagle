@@ -854,6 +854,33 @@ static b8 keep_branch_has_subdir(u8cs branchdir) {
     return found;
 }
 
+//  Lay down `<store_root>/<project>/{refs,wtlog}`.  mkdir is
+//  idempotent (FILEMakeDirP); the two seed files are created only
+//  if absent so callers can call this on an existing shard without
+//  truncating it.  Logging is the caller's concern.
+ok64 KEEPInitShard(u8cs store_root, u8cs project) {
+    sane($ok(store_root) && $ok(project) && !u8csEmpty(project));
+
+    a_path(shard);
+    call(PATHu8bFeed, shard, store_root);
+    call(PATHu8bPush, shard, project);
+    call(FILEMakeDirP, $path(shard));
+
+    a_cstr(refs_name,  DOG_REFS_NAME);
+    a_cstr(wtlog_name, DOG_WTLOG_NAME);
+    for (int i = 0; i < 2; i++) {
+        a_path(p);
+        call(PATHu8bFeed, p, u8bDataC(shard));
+        call(PATHu8bPush, p, i == 0 ? refs_name : wtlog_name);
+        filestat fs = {};
+        if (FILEStat(&fs, $path(p)) == OK) continue;     // already there
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+    done;
+}
+
 ok64 KEEPBranchDrop(u8cs branch) {
     sane($ok(branch));
     keeper *k = &KEEP;

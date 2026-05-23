@@ -336,38 +336,20 @@ static ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
         }
     }
 
+    //  URI path: `<prim>/.be/[<proj>/]` with a trailing slash so the
+    //  row-0 invariant (`file://…/.be/<proj>/`) holds.  Anchor write
+    //  itself is sniff's job — same helper be_ensure_project_repo
+    //  uses for the primary-wt layout.
     {
-        //  Compose the row through ULOGu8sFeed instead of hand-feeding
-        //  tabs and newlines.  URI shape: `file://<prim>/.be/[<proj>/]`
-        //  — host empty, path absolute under the primary's `.be/`.
         a_path(repo_path, prim_s);
         call(PATHu8bPush, repo_path, DOG_BE_S);
         if (u8bDataLen(prim_proj) > 0) {
             a_dup(u8c, pp, u8bDataC(prim_proj));
             call(PATHu8bPush, repo_path, pp);
         }
-        //  PATH paths don't include a trailing '/'; the row-0 invariant
-        //  expects `file://<…>/.be/<proj>/` so append it explicitly.
         call(u8bFeed1, repo_path, '/');
-
-        a_cstr(file_scheme, "file");
-        a_cstr(repo_name,   "repo");
-        ulogrec rec = {
-            .ts   = RONNow(),
-            .verb = SNIFFAtVerbOf((u8cs){repo_name[0], repo_name[1]}),
-        };
-        u8csMv(rec.uri.scheme, file_scheme);
-        u8csMv(rec.uri.path,   u8bDataC(repo_path));
-
-        a_pad(u8, row, 1024);
-        call(ULOGu8sFeed, u8bIdle(row), &rec);
-
-        int fd = FILE_CLOSED;
-        ok64 co = FILECreate(&fd, $path(cwd_be));
-        if (co != OK) return co;
-        a_dup(u8c, rowbytes, u8bData(row));
-        (void)FILEFeedAll(fd, rowbytes);
-        FILEClose(&fd);
+        call(SNIFFWtRepoAnchor,
+             u8bDataC(cwd_be), u8bDataC(repo_path));
     }
 
     fprintf(stderr, "be: worktree from %.*s\n",
@@ -625,134 +607,10 @@ static ok64 BEGetLocal(cli *c, b8 seq) {
 //  single-project repos (no `.gitmodules`) keep their pre-recursion
 //  stderr contract — same shape as BEHead.
 
-//  Read child stdout to EOF into `out` (RESET on entry).  Reaps the
-//  child.  Returns the child's translated exit code (OK / BEDOGEXIT
-//  / BEDOGSIG).
-//  Non-static so beagle/SUBS.c can capture `keeper subs` output.
-ok64 be_capture(u8csc tool, u8css argv, u8bp out) {
-    sane($ok(tool) && out);
-    u8bReset(out);
-
-    a_path(path);
-    a$rg(a0, 0);
-    HOMEResolveSibling(NULL, path, tool, a0);
-
-    int stdout_r = -1;
-    pid_t pid = 0;
-    call(FILESpawn, $path(path), argv, NULL, &stdout_r, &pid);
-
-    for (;;) {
-        if (u8bIdleLen(out) == 0) break;     // out full
-        u8 *idle = u8bIdleHead(out);
-        size_t cap = (size_t)u8bIdleLen(out);
-        ssize_t n = read(stdout_r, idle, cap);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (n == 0) break;
-        u8bFed(out, (u32)n);
-    }
-    close(stdout_r);
-
-    int rc = 0;
-    ok64 r = FILEReap(pid, &rc);
-    if (r == FILESIGNAL) return BEDOGSIG;
-    if (r != OK)         return r;
-    if (rc != 0)         return BEDOGEXIT;
-    done;
-}
-
 //  Sub orchestration (beget_keeper_subs / beget_sub_mount /
 //  beget_sub_unmount / beget_drain_subs / beget_drain_removed)
 //  lives in `beagle/SUBS.c` as `BEGet*`.  See beagle/SUBS.h.
 
-#if 0  /* moved to beagle/SUBS.c as BEGetDrainSubs */
-static ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
-                             u8cs *flag_head, u8cs *flag_term) {
-    sane($ok(wt_root));
-    ok64 worst = OK;
-    b8 outer_emitted = NO;
-
-    u8cs scan = {subs_ulog[0], subs_ulog[1]};
-    for (;;) {
-        ulogrec row = {};
-        ok64 dr = ULOGu8sDrain(scan, &row);
-        if (dr == NODATA) break;
-        if (dr != OK) continue;     //  ULOGBADFMT advances past the bad line
-
-        u8cs path = {};
-        u8csMv(path, row.uri.query);
-        u8cs pin  = {};
-        u8csMv(pin,  row.uri.fragment);
-        if (u8csEmpty(path) || u8csLen(pin) != 40) continue;
-
-        if (!outer_emitted) {
-            fprintf(stderr, "be: get .\n");
-            outer_emitted = YES;
-        }
-        fprintf(stderr, "be: get %.*s\n",
-                (int)$len(path), (char *)path[0]);
-
-        u8cs subpath_arg = {};
-        u8csMv(subpath_arg, path);
-        u8cs pin_arg = {};
-        u8csMv(pin_arg, pin);
-
-        //  Always run `sniff sub-mount`: it's idempotent and handles
-        //  both first-time mount (write anchor, seed shard, fetch,
-        //  initial checkout) and re-fetch on an existing mount (fetch
-        //  new commits into the existing shard; the subsequent
-        //  recurse below moves the wt to the new pin).  Skipping
-        //  this on already-mounted subs leaves the sub-shard at the
-        //  old pin and the recursive `be get ?<new_pin>` then fails
-        //  with KEEPNONE.  See SUBS.c for the already_mounted handling.
-        //  If the fetch/checkout itself fails, skip the recursion
-        //  below — there's no usable mount to recurse into.
-        b8 is_mounted = SNIFFSubIsMount(wt_root, subpath_arg);
-        fprintf(stderr,
-                "BE.dbg: sub path=" U8SFMT " pin=" U8SFMT
-                " is_mounted=%s wt_root=" U8SFMT "\n",
-                u8sFmt(subpath_arg), u8sFmt(pin_arg),
-                is_mounted ? "YES" : "NO", u8sFmt(wt_root));
-        {
-            ok64 mr = beget_sub_mount(subpath_arg, pin_arg);
-            fprintf(stderr,
-                    "BE.dbg: beget_sub_mount path=" U8SFMT
-                    " result=%s\n",
-                    u8sFmt(subpath_arg), ok64str(mr));
-            if (mr != OK) {
-                worst = mr;
-                continue;
-            }
-        }
-
-        //  Recurse `be get [flags] ?<pin>` cwd=mount.  Idempotent if
-        //  the sub is already at pin (no-op overlay); otherwise
-        //  switches it.  Also kicks BEGet's wrapper inside the
-        //  child, picking up any deeper sub-of-sub the sub's tree
-        //  declares (head/06-sub-depth3).
-        a_pad(u8, pin_uri, MAX_URI_LEN);
-        call(u8bFeed1, pin_uri, '?');
-        call(u8bFeed,  pin_uri, pin_arg);
-        a_dup(u8c, pin_uri_view, u8bDataC(pin_uri));
-
-        a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
-        a_cstr(get_lit, "get");
-        a_dup(u8c, get_d, get_lit);
-        u8csbFeed1(child_args, get_d);
-        for (u8cs *fp = flag_head; fp < flag_term; fp++) {
-            u8csbFeed1(child_args, *fp);
-        }
-        u8csbFeed1(child_args, pin_uri_view);
-        a_dup(u8cs, child_argv, u8csbData(child_args));
-
-        ok64 r = BERecurseInto(wt_root, subpath_arg, child_argv);
-        if (r != OK) worst = r;
-    }
-    return worst;
-}
-#endif
 
 //  Public BEGet wrapper: local body first (parent project), then
 //  keeper-driven submodule orchestration.
@@ -1334,12 +1192,10 @@ static ok64 be_ensure_project_repo(uricp u) {
         return BEFAIL;
     }
 
-    //  <cwd>/.be/<project>/ — the project shard.  Refuse if it
-    //  already exists on disk: an explicit `?/<proj>` URI must not
-    //  silently clobber a half-initialised shard (anchor missing
-    //  from wtlog so we reached here, but the shard dir is present).
-    //  The anchored-gate above handles the fully-initialised case
-    //  (anchor present, project name matches) as a no-op.
+    //  Refuse if the shard already exists on disk: an explicit
+    //  `?/<proj>` URI must not silently clobber a half-initialised
+    //  shard.  (Fully-initialised anchored case is handled by the
+    //  anchored-gate above as a no-op.)
     a_path(shard_dir);
     call(PATHu8bFeed, shard_dir, cwd_s);
     call(PATHu8bPush, shard_dir, DOG_BE_S);
@@ -1353,64 +1209,22 @@ static ok64 be_ensure_project_repo(uricp u) {
             return BEPRJDUP;
         }
     }
-    call(FILEMakeDirP, $path(shard_dir));
-    a_dup(u8c, shard_s, u8bDataC(shard_dir));
 
-    //  Seed empty refs + wtlog inside the shard.
-    {
-        a_path(p);
-        call(PATHu8bFeed, p, shard_s);
-        call(PATHu8bPush, p, DOG_REFS_S);
-        int fd = -1;
-        call(FILECreate, &fd, $path(p));
-        call(FILEClose, &fd);
-    }
-    {
-        a_path(p);
-        call(PATHu8bFeed, p, shard_s);
-        call(PATHu8bPush, p, DOG_WTLOG_S);
-        int fd = -1;
-        call(FILECreate, &fd, $path(p));
-        call(FILEClose, &fd);
-    }
+    //  Storage skeleton (mkdir + empty refs/wtlog inside the shard)
+    //  belongs to keeper; row-0 anchor file at `<cwd>/.be/wtlog`
+    //  belongs to sniff.  BE only orchestrates.
+    a_path(store_root);
+    call(PATHu8bFeed, store_root, cwd_s);
+    call(PATHu8bPush, store_root, DOG_BE_S);
+    call(KEEPInitShard, u8bDataC(store_root), proj);
 
-    //  Compose row-0 URI: `file:<cwd>/.be/<project>/` (trailing slash
-    //  matches sniff_write_repo_row's output shape).
-    a_path(uri_path);
-    call(PATHu8bFeed, uri_path, shard_s);
-    call(u8bFeed1, uri_path, '/');
-    call(PATHu8bTerm, uri_path);
-
-    uri urow = {};
-    a_cstr(scheme_s, "file");
-    u8csMv(urow.scheme, scheme_s);
-    {
-        a_dup(u8c, p, u8bData(uri_path));
-        u8csMv(urow.path, p);
-    }
-
-    a_pad(u8, row, 1024);
-    ron60 ts = RONNow();
-    call(RONutf8sFeed, u8bIdle(row), ts);
-    call(u8bFeed1, row, '\t');
-    a_cstr(repo_verb, "repo");
-    call(u8bFeed, row, repo_verb);
-    call(u8bFeed1, row, '\t');
-    call(URIutf8Feed, u8bIdle(row), &urow);
-    call(u8bFeed1, row, '\n');
-
-    //  Write <cwd>/.be/wtlog with the row-0 anchor.  Primary-wt
-    //  layout: wtlog sits inside the store dir alongside the
-    //  project shard(s); row-0 pins this wt to one project.
+    a_path(repo_path);
+    call(PATHu8bFeed, repo_path, u8bDataC(shard_dir));
+    call(u8bFeed1,    repo_path, '/');
     a_path(wtlog_path);
-    call(PATHu8bFeed, wtlog_path, cwd_s);
-    call(PATHu8bPush, wtlog_path, DOG_BE_S);
+    call(PATHu8bFeed, wtlog_path, u8bDataC(store_root));
     call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
-    int fd = -1;
-    call(FILECreate, &fd, $path(wtlog_path));
-    a_dup(u8c, body, u8bData(row));
-    call(FILEFeedAll, fd, body);
-    FILEClose(&fd);
+    call(SNIFFWtRepoAnchor, u8bDataC(wtlog_path), u8bDataC(repo_path));
 
     done;
 }

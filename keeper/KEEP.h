@@ -252,6 +252,13 @@ ok64 KEEPSwitchBranch(home *h, u8cs new_branch);
 //  (Phase 2+).
 ok64 KEEPBranchDrop(u8cs branch);
 
+//  Lay down a fresh project shard at `<store_root>/<project>/`:
+//  mkdir the shard dir, touch empty `refs` and `wtlog` seed files.
+//  Idempotent: existing dir + files are left alone (no overwrite).
+//  Caller decides shard-name policy and the "already exists" UX —
+//  KEEPInitShard just creates the storage skeleton.
+ok64 KEEPInitShard(u8cs store_root, u8cs project);
+
 //  Run one CLI invocation — same effect as `keeper ...`.
 ok64 KEEPExec(cli *c);
 

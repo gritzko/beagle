@@ -209,6 +209,36 @@ static ok64 at_check_row0(ron60 verb) {
     done;
 }
 
+ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path) {
+    sane($ok(anchor_path) && $ok(repo_path));
+
+    //  Build the row via ULOGu8sFeed — same shape both BE callers
+    //  (be_ensure_project_repo, BEGetWorktree) used to assemble by
+    //  hand.  scheme `file:`, path = absolute path to the project
+    //  shard, host empty.
+    a_cstr(file_scheme, "file");
+    a_cstr(repo_name,   "repo");
+    ulogrec rec = {
+        .ts   = RONNow(),
+        .verb = SNIFFAtVerbOf((u8cs){repo_name[0], repo_name[1]}),
+    };
+    u8csMv(rec.uri.scheme, file_scheme);
+    u8csMv(rec.uri.path,   repo_path);
+
+    a_pad(u8, row, 1024);
+    call(ULOGu8sFeed, u8bIdle(row), &rec);
+
+    a_path(out_path);
+    a_dup(u8c, ap, anchor_path);
+    call(PATHu8bFeed, out_path, ap);
+    int fd = FILE_CLOSED;
+    call(FILECreate, &fd, $path(out_path));
+    a_dup(u8c, body, u8bData(row));
+    (void)FILEFeedAll(fd, body);
+    FILEClose(&fd);
+    done;
+}
+
 ok64 SNIFFAtAppend(ron60 verb, uricp u) {
     sane(SNIFF.h && u);
     call(at_check_row0, verb);

@@ -69,6 +69,16 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out);
 //  Append one row to the current sniff log using `RONNow()`.
 ok64 SNIFFAtAppend(ron60 verb, uricp u);
 
+//  Write a one-row wt anchor file: composes the ULOG row
+//  `<RONNow()>\trepo\tfile:<repo_path>/\n` and writes it to
+//  `anchor_path`.  Used by both layouts:
+//    * primary wt → `anchor_path = <wt>/.be/wtlog` (file inside
+//      the `.be/` directory)
+//    * secondary wt → `anchor_path = <wt>/.be` (`.be` IS the file)
+//  Caller has already decided the layout + filesystem position.
+//  Creates the file (truncating any prior content).
+ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path);
+
 //  Like SNIFFAtAppend but takes an explicit timestamp.  Used by verbs
 //  that need to know the stamp up-front so it can be applied to
 //  fresh files via `futimens` before the row is committed.
