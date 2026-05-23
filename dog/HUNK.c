@@ -3,6 +3,7 @@
 #include <time.h>
 
 #include "abc/ANSI.h"
+#include "abc/TTY.h"
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
@@ -242,17 +243,47 @@ static ok64 hunk_feed_header_plain(u8s into, hunk const *hk) {
     done;
 }
 
-// Color-mode content-hunk header: `<uri>\n`, painted in theme slot 'T'
-// (title).  The color band visually frames the hunk so the dashes from
-// plain mode aren't needed.  No-op on empty URI.
+// Color-mode content-hunk header: `<date>\t<verb>\t<uri>\n`, the whole
+// line underlined (TTY_UNDERLINE / _OFF) so the bar visually separates
+// adjacent hunks without needing a trailing blank line below the body.
+// `ts` / `verb` are emitted only when set; otherwise the header is just
+// the underlined URI.  No-op on empty URI.
 static ok64 hunk_feed_header_color(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk);
     if ($empty(hk->uri)) done;
+
+    a_cstr(ul_on,  TTY_UNDERLINE);
+    a_cstr(ul_off, TTY_UNDERLINE_OFF);
+    call(u8sFeed, into, ul_on);
+
+    if (hk->ts || hk->verb) {
+        ansi64 c_unk  = ULOGVerbColor(HUNK_VERB_UNK_RON60);
+        ansi64 c_verb = ULOGVerbColor(hk->verb);
+        i64 now = (i64)time(NULL);
+        i64 ts  = now;
+        if (hk->ts) {
+            struct tm tm = {};
+            if (RONToTime(hk->ts, &tm, NULL) == OK) {
+                time_t t = mktime(&tm);
+                if (t != (time_t)-1) ts = (i64)t;
+            }
+        }
+        call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
+        call(DOGutf8sFeedDate, into, ts, now);
+        call(ANSIu8sFeedReset, into, c_unk);
+        call(u8sFeed1, into, '\t');
+        call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
+        call(RONutf8sFeed, into, hk->verb);
+        call(ANSIu8sFeedReset, into, c_verb);
+        call(u8sFeed1, into, '\t');
+    }
+
     ansi64 c = THEMEAt('T');
     call(ANSIu8sFeedDelta, into, c, ANSI_DEFAULT);
     call(u8sFeed,          into, hk->uri);
     call(ANSIu8sFeedReset, into, c);
-    call(u8sFeed1,         into, '\n');
+    call(u8sFeed, into, ul_off);
+    call(u8sFeed1, into, '\n');
     done;
 }
 
@@ -434,9 +465,11 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
             if (prev != ANSI_DEFAULT)
                 call(ANSIu8sFeedReset, into, prev);
         }
-        if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
+        //  No trailing blank line — the underlined header at the top
+        //  of the NEXT hunk is the visual divider.  Just make sure
+        //  the body ends with a newline.
+        if (tlen == 0 || hk->text[0][tlen - 1] != '\n')
             u8sFeed1(into, '\n');
-        u8sFeed1(into, '\n');
         done;
     }
 

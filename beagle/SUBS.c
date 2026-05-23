@@ -12,7 +12,9 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 
+#include "abc/URI.h"        // MAX_URI_LEN
 #include "dog/CLI.h"        // CLI_MAX_FLAGS / CLI_MAX_URIS
+#include "dog/ULOG.h"       // ULOGu8sDrain / ulogrec
 #include "dog/git/SUBS.h"
 #include "sniff/SUBS.h"     // SNIFFSubIsMount
 
@@ -183,4 +185,176 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv) {
     if (r != OK)   return r;
     if (rc != 0)   return BEDOGEXIT;
     done;
+}
+
+// =====================================================================
+// `be get` sub-orchestration helpers.
+// =====================================================================
+
+ok64 BEGetKeeperSubs(u8cs query, u8bp out) {
+    sane(out);
+    a_pad(u8cs, args, 4);
+    a_cstr(keeper_s, "keeper");
+    a_cstr(subs_s,   "subs");
+    a_dup(u8c, keeper_d, keeper_s);
+    a_dup(u8c, subs_d,   subs_s);
+    u8csbFeed1(args, keeper_d);
+    u8csbFeed1(args, subs_d);
+
+    //  `?<query>` URI via URIMake (empty scheme/auth/path/frag).
+    a_pad(u8, qbuf, 256);
+    u8cs empty = {NULL, NULL};
+    call(URIMake, u8bIdle(qbuf), empty, empty, empty, query, empty);
+    a_dup(u8c, qview, u8bData(qbuf));
+    u8csbFeed1(args, qview);
+
+    a_dup(u8cs, argv, u8csbData(args));
+    return be_capture(keeper_d, argv, out);
+}
+
+ok64 BEGetSubMount(u8cs subpath, u8cs pin) {
+    sane($ok(subpath) && $ok(pin));
+
+    //  Compose `./<subpath>#<pin>` via abc/PATH (path part) + URIMake
+    //  (full URI render).  PATHu8bPush handles the `./` prefix and
+    //  segment join; URIMake fills the fragment cleanly.
+    a_path(path_buf);
+    a_cstr(dot, ".");
+    call(PATHu8bFeed, path_buf, dot);
+    call(PATHu8bAdd,  path_buf, subpath);
+
+    a_pad(u8, uri_buf, MAX_URI_LEN);
+    u8cs empty = {NULL, NULL};
+    call(URIMake, u8bIdle(uri_buf), empty, empty,
+                  u8bDataC(path_buf), empty, pin);
+    a_dup(u8c, uri_view, u8bData(uri_buf));
+
+    a_pad(u8cs, args, 4);
+    a_cstr(sniff_s, "sniff");
+    a_cstr(verb_s,  "sub-mount");
+    a_dup(u8c, sniff_d, sniff_s);
+    a_dup(u8c, verb_d,  verb_s);
+    u8csbFeed1(args, sniff_d);
+    u8csbFeed1(args, verb_d);
+    u8csbFeed1(args, uri_view);
+    a_dup(u8cs, argv, u8csbData(args));
+
+    return BERun(sniff_d, argv, NO);
+}
+
+ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath) {
+    sane($ok(wt_root) && $ok(subpath));
+    a_path(anchor);
+    call(PATHu8bFeed, anchor, wt_root);
+    call(PATHu8bAdd,  anchor, subpath);
+    a_cstr(be_s, ".be");
+    call(PATHu8bPush, anchor, be_s);
+    (void)FILEUnLink($path(anchor));
+    fprintf(stderr, "be: get %.*s: unmounted\n",
+            (int)$len(subpath), (char *)subpath[0]);
+    done;
+}
+
+//  YES iff any ULOG row in `ulog` has `subpath` in its query slot.
+static b8 begetsubs_has(u8cs ulog, u8cs subpath) {
+    u8cs scan = {ulog[0], ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        if (u8csEq(row.uri.query, subpath)) return YES;
+    }
+    return NO;
+}
+
+ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
+                    u8cs *flag_head, u8cs *flag_term) {
+    sane($ok(wt_root));
+    ok64 worst = OK;
+    b8 outer_emitted = NO;
+
+    u8cs scan = {subs_ulog[0], subs_ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+
+        u8cs path = {};
+        u8csMv(path, row.uri.query);
+        u8cs pin  = {};
+        u8csMv(pin,  row.uri.fragment);
+        if (u8csEmpty(path) || u8csLen(pin) != 40) continue;
+
+        if (!outer_emitted) {
+            fprintf(stderr, "be: get .\n");
+            outer_emitted = YES;
+        }
+        fprintf(stderr, "be: get %.*s\n",
+                (int)$len(path), (char *)path[0]);
+
+        u8cs subpath_arg = {};
+        u8csMv(subpath_arg, path);
+        u8cs pin_arg = {};
+        u8csMv(pin_arg, pin);
+
+        b8 is_mounted = SNIFFSubIsMount(wt_root, subpath_arg);
+        fprintf(stderr,
+                "BE.dbg: sub path=" U8SFMT " pin=" U8SFMT
+                " is_mounted=%s wt_root=" U8SFMT "\n",
+                u8sFmt(subpath_arg), u8sFmt(pin_arg),
+                is_mounted ? "YES" : "NO", u8sFmt(wt_root));
+        {
+            ok64 mr = BEGetSubMount(subpath_arg, pin_arg);
+            fprintf(stderr,
+                    "BE.dbg: BEGetSubMount path=" U8SFMT
+                    " result=%s\n",
+                    u8sFmt(subpath_arg), ok64str(mr));
+            if (mr != OK) { worst = mr; continue; }
+        }
+
+        //  `?<pin>` URI via URIMake.
+        a_pad(u8, pin_uri, MAX_URI_LEN);
+        u8cs _empty = {NULL, NULL};
+        call(URIMake, u8bIdle(pin_uri),
+                      _empty, _empty, _empty, pin_arg, _empty);
+        a_dup(u8c, pin_uri_view, u8bDataC(pin_uri));
+
+        a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+        a_cstr(get_lit, "get");
+        a_dup(u8c, get_d, get_lit);
+        u8csbFeed1(child_args, get_d);
+        for (u8cs *fp = flag_head; fp < flag_term; fp++) {
+            u8csbFeed1(child_args, *fp);
+        }
+        u8csbFeed1(child_args, pin_uri_view);
+        a_dup(u8cs, child_argv, u8csbData(child_args));
+
+        ok64 r = BERecurseInto(wt_root, subpath_arg, child_argv);
+        if (r != OK) worst = r;
+    }
+    return worst;
+}
+
+ok64 BEGetDrainRemoved(u8cs wt_root, u8cs baseline_ulog,
+                      u8cs target_ulog) {
+    sane($ok(wt_root));
+    ok64 worst = OK;
+    u8cs scan = {baseline_ulog[0], baseline_ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+
+        u8cs path = {};
+        u8csMv(path, row.uri.query);
+        if (u8csEmpty(path)) continue;
+        if (begetsubs_has(target_ulog, path)) continue;
+        if (!SNIFFSubIsMount(wt_root, path)) continue;
+        ok64 ur = BEGetSubUnmount(wt_root, path);
+        if (ur != OK) worst = ur;
+    }
+    return worst;
 }

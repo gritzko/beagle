@@ -49,4 +49,44 @@ ok64 BESubsHere(u8cs wt_root, besub_cb cb, void *ctx);
 //    BEDOGSIG   — child killed by signal.
 ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv);
 
+//  Resolve sibling `tool` (via HOMEResolveSibling), spawn it with
+//  `argv`, wait, translate exit into BEDOGEXIT / BEDOGSIG / NONE
+//  (low-byte *NONE residue) / OK.  `bg=YES` skips the wait — caller
+//  reaps.  Defined in BE.cli.c.
+ok64 BERun(u8csc tool, u8css argv, b8 bg);
+
+//  Spawn `tool` with `argv`, capture its stdout into `out` (mapped
+//  by the caller).  Used to pull keeper/sniff output back into BE
+//  for ULOG drain.  Defined in BE.cli.c.
+ok64 be_capture(u8csc tool, u8css argv, u8bp out);
+
+//  --- `be get` sub-orchestration helpers (per-row spawn + recurse).
+//  Live in beagle/SUBS.c — purely BE-side orchestration; the actual
+//  mount/unmount syscalls land via `sniff sub-mount` (a separate
+//  process) and inline `unlink`.
+
+//  Spawn `keeper subs ?<query>` and capture its ULOG output into
+//  `out`.  Empty `out` on the no-sub case (still OK).
+ok64 BEGetKeeperSubs(u8cs query, u8bp out);
+
+//  Spawn `sniff sub-mount ./<subpath>#<pin>` from the parent wt to
+//  do a first-time mount (anchor + WIREFetchAll + checkout) in a
+//  clean keeper state.  cwd inherits the parent process's cwd.
+ok64 BEGetSubMount(u8cs subpath, u8cs pin);
+
+//  Unmount a sub: unlink `<wt>/<subpath>/.be`.  Leaves the wt files
+//  in place.  Idempotent.  Logs `be: get <subpath>: unmounted`.
+ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath);
+
+//  Iterate `keeper subs` ULOG rows.  Per row: spawn `sniff sub-mount`
+//  for the pin, then BERecurseInto with `be get [flags] ?<pin>` cwd =
+//  mount.  `flag_head`/`flag_term` carry the flags to forward.
+ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
+                    u8cs *flag_head, u8cs *flag_term);
+
+//  Walk `baseline_ulog`; unmount any sub not present in `target_ulog`.
+//  Skips paths whose anchor is already gone.  Worst per-row code or OK.
+ok64 BEGetDrainRemoved(u8cs wt_root, u8cs baseline_ulog,
+                       u8cs target_ulog);
+
 #endif

@@ -92,7 +92,8 @@ static ok64 be_sub_shard_setup(cli *c, uri *u);
 //  need to distinguish.
 #define BE_NONE_LOW_BYTE  ((int)(NONE & 0xFFu))
 
-static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
+//  Non-static so beagle/SUBS.c can spawn `sniff sub-mount` etc.
+ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
     a_path(path);
     a$rg(a0, 0);
@@ -440,29 +441,6 @@ static ok64 BEProjector(cli *c, uri *u) {
     a$rg(a0, 0);
     HOMEResolveSibling(NULL, dogpath, dog_s, a0);
 
-    //  Remote prefetch: a URI carrying an authority slot
-    //  (`be log://origin?main`, `be diff:ssh://origin?main`, …) points
-    //  at a remote ref that keeper needs to materialise locally before
-    //  the projector's dog can resolve it.  Run `keeper get <URI>`
-    //  synchronously first; idempotent when the projector's dog is
-    //  keeper itself, no-op for cached forms with already-fetched
-    //  refs.  Mirrors the now-retired BEDiff's first step.
-    if (!u8csEmpty(u->authority)) {
-        a_cstr(keeper_s, "keeper");
-        a_cstr(get_v,    "get");
-        a_pad(u8cs, kargs, 5);
-        u8csbFeed1(kargs, keeper_s);
-        u8csbFeed1(kargs, get_v);
-        if (u8bDataLen(be_at_buf) > 0) {
-            a_dup(u8c, _atf, be_at_flag);
-            a_dup(u8c, _atv, u8bData(be_at_buf));
-            u8csbFeed1(kargs, _atf);
-            u8csbFeed1(kargs, _atv);
-        }
-        u8csbFeed1(kargs, u->data);
-        a_dup(u8cs, kargv, u8csbData(kargs));
-        call(BERun, keeper_s, kargv, NO);
-    }
 
     //  Verbless: dog argv is `<dog> [--at <uri>] [mode-flag] <URI>`.
     //  Forward the mode explicitly so the child's CLISetHUNKMode picks
@@ -650,7 +628,8 @@ static ok64 BEGetLocal(cli *c, b8 seq) {
 //  Read child stdout to EOF into `out` (RESET on entry).  Reaps the
 //  child.  Returns the child's translated exit code (OK / BEDOGEXIT
 //  / BEDOGSIG).
-static ok64 be_capture(u8csc tool, u8css argv, u8bp out) {
+//  Non-static so beagle/SUBS.c can capture `keeper subs` output.
+ok64 be_capture(u8csc tool, u8css argv, u8bp out) {
     sane($ok(tool) && out);
     u8bReset(out);
 
@@ -684,126 +663,12 @@ static ok64 be_capture(u8csc tool, u8css argv, u8bp out) {
     done;
 }
 
-//  Spawn `keeper subs ?<query>` and capture its ULOG output into
-//  `out`.  Empty `out` on the no-sub case (still OK).
-static ok64 beget_keeper_subs(u8cs query, u8bp out) {
-    sane(out);
-    a_pad(u8cs, args, 4);
-    a_cstr(keeper_s, "keeper");
-    a_cstr(subs_s,   "subs");
-    a_dup(u8c, keeper_d, keeper_s);
-    a_dup(u8c, subs_d,   subs_s);
-    u8csbFeed1(args, keeper_d);
-    u8csbFeed1(args, subs_d);
+//  Sub orchestration (beget_keeper_subs / beget_sub_mount /
+//  beget_sub_unmount / beget_drain_subs / beget_drain_removed)
+//  lives in `beagle/SUBS.c` as `BEGet*`.  See beagle/SUBS.h.
 
-    a_pad(u8, qbuf, 256);
-    call(u8bFeed1, qbuf, '?');
-    call(u8bFeed,  qbuf, query);
-    a_dup(u8c, qview, u8bData(qbuf));
-    u8csbFeed1(args, qview);
-
-    a_dup(u8cs, argv, u8csbData(args));
-    return be_capture(keeper_d, argv, out);
-}
-
-
-//  Check whether `subpath` appears as the query slot of any ULOG row
-//  in `ulog`.  Used to diff baseline-vs-target sub lists: a sub
-//  present in baseline but not in target has been removed by the
-//  target tree and should be unmounted.
-static b8 beget_subs_has(u8cs ulog, u8cs subpath) {
-    u8cs scan = {ulog[0], ulog[1]};
-    for (;;) {
-        ulogrec row = {};
-        ok64 dr = ULOGu8sDrain(scan, &row);
-        if (dr == NODATA) break;
-        if (dr != OK) continue;
-        if (u8csEq(row.uri.query, subpath)) return YES;
-    }
-    return NO;
-}
-
-//  Unmount a sub that's been removed by the target tree: unlink the
-//  secondary-wt anchor file at `<wt>/<subpath>/.be`.  Leaves the
-//  sub's wt files in place — they become plain untracked content
-//  (caller can `rm -rf` separately if desired).  Returns OK whether
-//  or not the anchor was actually there (idempotent for the
-//  already-unmounted case).
-static ok64 beget_sub_unmount(u8cs wt_root, u8cs subpath) {
-    sane($ok(wt_root) && $ok(subpath));
-    a_path(anchor);
-    call(PATHu8bFeed, anchor, wt_root);
-    call(PATHu8bAdd,  anchor, subpath);
-    a_cstr(be_s, ".be");
-    call(PATHu8bPush, anchor, be_s);
-    (void)FILEUnLink($path(anchor));
-    fprintf(stderr, "be: get %.*s: unmounted\n",
-            (int)$len(subpath), (char *)subpath[0]);
-    done;
-}
-
-//  Iterate baseline ULOG rows; for any sub not present in target,
-//  unmount it.  Order is independent of target processing.
-static ok64 beget_drain_removed(u8cs wt_root, u8cs baseline_ulog,
-                                u8cs target_ulog) {
-    sane($ok(wt_root));
-    ok64 worst = OK;
-    u8cs scan = {baseline_ulog[0], baseline_ulog[1]};
-    for (;;) {
-        ulogrec row = {};
-        ok64 dr = ULOGu8sDrain(scan, &row);
-        if (dr == NODATA) break;
-        if (dr != OK) continue;
-
-        u8cs path = {};
-        u8csMv(path, row.uri.query);
-        if (u8csEmpty(path)) continue;
-        if (beget_subs_has(target_ulog, path)) continue;     // still declared
-
-        if (!SNIFFSubIsMount(wt_root, path)) continue;       // already gone
-        ok64 ur = beget_sub_unmount(wt_root, path);
-        if (ur != OK) worst = ur;
-    }
-    return worst;
-}
-
-//  Spawn `sniff sub-mount ./<subpath>#<pin>` from the parent wt to
-//  do a first-time mount (anchor + WIREFetchAll + checkout) in a
-//  clean keeper state.  cwd inherits the parent process's cwd, which
-//  is the parent wt at this point.
-static ok64 beget_sub_mount(u8cs subpath, u8cs pin) {
-    sane($ok(subpath) && $ok(pin));
-
-    a_pad(u8, uri_buf, MAX_URI_LEN);
-    a_cstr(rel, "./");
-    call(u8bFeed,  uri_buf, rel);
-    call(u8bFeed,  uri_buf, subpath);
-    call(u8bFeed1, uri_buf, '#');
-    call(u8bFeed,  uri_buf, pin);
-    a_dup(u8c, uri_view, u8bData(uri_buf));
-
-    a_pad(u8cs, args, 4);
-    a_cstr(sniff_s, "sniff");
-    a_cstr(verb_s,  "sub-mount");
-    a_dup(u8c, sniff_d, sniff_s);
-    a_dup(u8c, verb_d,  verb_s);
-    u8csbFeed1(args, sniff_d);
-    u8csbFeed1(args, verb_d);
-    u8csbFeed1(args, uri_view);
-    a_dup(u8cs, argv, u8csbData(args));
-
-    return BERun(sniff_d, argv, NO);
-}
-
-//  Iterate `keeper subs` ULOG rows via the standard ULOG drain API.
-//  Per row: row's URI is `<url>?<mount-path>#<pin>` (the keeper SUBS
-//  shape), so URILexer fills `uri.query` with the mount path and
-//  `uri.fragment` with the 40-hex pin; URL components land in
-//  scheme/authority/path slots.  If the sub is mounted on disk,
-//  recurse via `be get [flags] ?<pin>` cwd=mount; else hand off to
-//  `sniff sub-mount` for the first-time mount.  Outer `be: get .`
-//  marker fires lazily on the first row.
-static ok64 beget_drain_subs(u8cs wt_root, u8cs subs_ulog,
+#if 0  /* moved to beagle/SUBS.c as BEGetDrainSubs */
+static ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
                              u8cs *flag_head, u8cs *flag_term) {
     sane($ok(wt_root));
     ok64 worst = OK;
@@ -887,6 +752,7 @@ static ok64 beget_drain_subs(u8cs wt_root, u8cs subs_ulog,
     }
     return worst;
 }
+#endif
 
 //  Public BEGet wrapper: local body first (parent project), then
 //  keeper-driven submodule orchestration.
@@ -984,7 +850,7 @@ static ok64 BEGet(cli *c, b8 seq) {
     //  Enumerate target's subs (the post-checkout declarations).
     Bu8 target_subs = {};
     call(u8bAllocate, target_subs, 1UL << 16);
-    ok64 ke = beget_keeper_subs(target_ref, target_subs);
+    ok64 ke = BEGetKeeperSubs(target_ref, target_subs);
     if (ke != OK) {
         u8bFree(target_subs);
         return worst;                          //  keeper failed; bail
@@ -996,7 +862,7 @@ static ok64 BEGet(cli *c, b8 seq) {
     Bu8 baseline_subs = {};
     call(u8bAllocate, baseline_subs, 1UL << 16);
     if (!u8csEmpty(baseline_ref) && !u8csEq(baseline_ref, target_ref)) {
-        (void)beget_keeper_subs(baseline_ref, baseline_subs);
+        (void)BEGetKeeperSubs(baseline_ref, baseline_subs);
     }
 
     //  Build flag tail (sans --at).
@@ -1015,21 +881,21 @@ static ok64 BEGet(cli *c, b8 seq) {
     if (u8bDataLen(baseline_subs) > 0 && u8bDataLen(target_subs) > 0) {
         a_dup(u8c, base_view, u8bData(baseline_subs));
         a_dup(u8c, tgt_view,  u8bData(target_subs));
-        ok64 rr = beget_drain_removed(wt_root, base_view, tgt_view);
+        ok64 rr = BEGetDrainRemoved(wt_root, base_view, tgt_view);
         if (rr != OK) worst = rr;
     } else if (u8bDataLen(baseline_subs) > 0 &&
                u8bDataLen(target_subs) == 0) {
         //  All subs removed.
         u8cs empty = {NULL, NULL};
         a_dup(u8c, base_view, u8bData(baseline_subs));
-        ok64 rr = beget_drain_removed(wt_root, base_view, empty);
+        ok64 rr = BEGetDrainRemoved(wt_root, base_view, empty);
         if (rr != OK) worst = rr;
     }
 
     //  Mount/recurse target's subs.
     if (u8bDataLen(target_subs) > 0) {
         a_dup(u8c, tgt_view, u8bData(target_subs));
-        ok64 sub_worst = beget_drain_subs(wt_root, tgt_view,
+        ok64 sub_worst = BEGetDrainSubs(wt_root, tgt_view,
                                           (u8cs *)flag_view[0],
                                           (u8cs *)flag_view[1]);
         if (sub_worst != OK) worst = sub_worst;
