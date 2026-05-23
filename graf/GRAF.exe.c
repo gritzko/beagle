@@ -58,51 +58,34 @@ static void graf_usage(void) {
 
 // --- Bro pager setup ---
 //
-//  Three output shapes — all producers emit `hunk` records via
-//  GRAFHunkEmit; the formatter pinned in `graf_emit` decides bytes:
-//
-//    tty_out=YES               → spawn bro, formatter = HUNKu8sFeed (TLV)
-//    tty_out=NO, force_tlv=YES → BE→bro pipe upstream, formatter = HUNKu8sFeed
-//    tty_out=NO, force_tlv=NO  → no bro downstream, formatter =
-//                                 HUNKu8sFeedLineBased (proper unified
-//                                 diff `+`/`-`/' ' shape per line —
-//                                 right default for diff/blame/weave).
-//
-//  Projectors whose hunk is plain text (`log:`, `map:`, `ls:`, etc.)
-//  override `graf_emit` to `HUNKu8sFeedText` after this call so the
-//  hunk text is emitted verbatim instead of getting the `' '` prefix.
-static pid_t graf_start_pager(b8 tty_out, b8 force_tlv) {
-    if (!tty_out) {
-        graf_out_fd = STDOUT_FILENO;
-        graf_emit   = force_tlv ? HUNKu8sFeed : HUNKu8sFeedLineBased;
-        if (force_tlv) signal(SIGPIPE, SIG_IGN);
-        return -1;
+//  All producers emit `hunk` records via GRAFHunkEmit, which calls
+//  `HUNKu8sFeedOut` dispatched off `HUNKMode`.  `HUNKMode` is already
+//  resolved by `CLISetHUNKMode` in GRAF.cli.c before GRAFExec runs
+//  (--tlv → TLV; --color → Color; --plain → Plain; default →
+//  ANSIIsTTY() ? Color : Plain).  This function only picks the byte
+//  sink: when the user explicitly asked for TLV on a TTY, spawn bro
+//  to consume the wire; otherwise write directly to stdout.
+static pid_t graf_start_pager(b8 tty_out) {
+    if (HUNKMode == HUNKOutTLV && tty_out) {
+        a_path(bropath);
+        a$rg(a0, 0);
+        a_cstr(bro_name, "bro");
+        HOMEResolveSibling(NULL, bropath, bro_name, a0);
+        u8cs args[] = {u8slit("bro")};
+        u8css argv = {args, args + 1};
+        pid_t pid = 0;
+        int wfd = -1;
+        if (FILESpawn($path(bropath), argv, &wfd, NULL, &pid) == OK) {
+            graf_out_fd = wfd;
+            signal(SIGPIPE, SIG_IGN);
+            return pid;
+        }
+        //  bro missing — fall through to stdout TLV; SIGPIPE still
+        //  matters because the user is likely piping somewhere.
     }
-    a_path(bropath);
-    a$rg(a0, 0);
-    a_cstr(bro_name, "bro");
-    HOMEResolveSibling(NULL, bropath, bro_name, a0);
-    u8cs args[] = {u8slit("bro")};
-    u8css argv = {args, args + 1};
-    pid_t pid = 0;
-    int wfd = -1;
-    if (FILESpawn($path(bropath), argv, &wfd, NULL, &pid) != OK) {
-        graf_out_fd = STDOUT_FILENO;
-        graf_emit   = HUNKu8sFeedLineBased;
-        return -1;
-    }
-    graf_out_fd = wfd;
-    graf_emit   = HUNKu8sFeed;
-    signal(SIGPIPE, SIG_IGN);
-    return pid;
-}
-
-//  Override the non-TLV formatter to plain text — for projectors
-//  whose hunk is grep/cat-shaped (no `+`/`-` line prefixes).  Called
-//  by log/map/ls dispatch after graf_start_pager.  No-op when bro is
-//  downstream (graf_emit is already HUNKu8sFeed).
-static void graf_pager_plain_text(void) {
-    if (graf_emit != HUNKu8sFeed) graf_emit = HUNKu8sFeedText;
+    graf_out_fd = STDOUT_FILENO;
+    if (HUNKMode == HUNKOutTLV) signal(SIGPIPE, SIG_IGN);
+    return -1;
 }
 
 static void graf_stop_pager(pid_t pid) {
@@ -215,10 +198,10 @@ ok64 GRAFExec(cli *c) {
         return FAILSANITY;
     }
 
-    //  `--tlv` (or `-t`) forces HUNK TLV emission on a non-TTY stdout.
-    //  Used when BE pipes graf's stdout into bro on a TTY: graf sees a
-    //  pipe (not a TTY) but must still emit TLV so bro can render.
-    b8 force_tlv = CLIHas(c, "--tlv") || CLIHas(c, "-t");
+    //  HUNKMode is set by CLISetHUNKMode in GRAF.cli.c (--tlv / --color
+    //  / --plain / auto-from-TTY).  Honour the legacy `-t` alias for
+    //  `--tlv` here since CLISetHUNKMode doesn't know about it.
+    if (CLIHas(c, "-t")) HUNKMode = HUNKOutTLV;
 
     u8cs reporoot = {};
     if (u8bHasData(c->repo)) u8csMv(reporoot, $path(c->repo));
@@ -234,8 +217,24 @@ ok64 GRAFExec(cli *c) {
         u64 total_entries = 0;
         for (u32 i = 0; i < g->runs_n; i++)
             total_entries += (u64)(g->runs[i][1] - g->runs[i][0]);
-        fprintf(stdout, "graf: %u index run(s), %llu entries\n",
-                g->runs_n, (unsigned long long)total_entries);
+        a_pad(u8, body, 96);
+        a_cstr(pfx, "graf: ");
+        (void)u8sFeed(body_idle, pfx);
+        (void)utf8sFeed10(body_idle, (u64)g->runs_n);
+        a_cstr(mid, " index run(s), ");
+        (void)u8sFeed(body_idle, mid);
+        (void)utf8sFeed10(body_idle, total_entries);
+        a_cstr(sfx, " entries\n");
+        (void)u8sFeed(body_idle, sfx);
+
+        call(GRAFArenaInit);
+        graf_start_pager(c->tty_out);
+        a_cstr(status_uri, "graf:status");
+        hunk hk = {};
+        u8csMv(hk.uri,  status_uri);
+        u8csMv(hk.text, u8bDataC(body));
+        (void)GRAFHunkEmit(&hk, NULL);
+        graf_stop_pager(-1);
         done;
     }
 
@@ -337,7 +336,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        pid_t pager = graf_start_pager(c->tty_out);
         u8cs path = {};
         graf_uri_path(path, &c->uris[0]);
         //  Resolve URI's #hex/?ref/absent-query to a tip commit
@@ -367,7 +366,7 @@ ok64 GRAFExec(cli *c) {
         //  The base sha comes from `--at`'s fragment (the worktree's
         //  current baseline, forwarded by `be`).  Every form except the
         //  explicit `?from#to` range needs it; missing → `GRAFNOAT`.
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        pid_t pager = graf_start_pager(c->tty_out);
         uri *u = &c->uris[0];
 
         uri at = {};
@@ -461,8 +460,7 @@ ok64 GRAFExec(cli *c) {
         graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_map)) {
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
-        graf_pager_plain_text();
+        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFMap(c->nuris > 0 ? &c->uris[0] : NULL);
         graf_stop_pager(pager);
 
@@ -472,8 +470,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
-        graf_pager_plain_text();
+        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFLog(&c->uris[0]);
         graf_stop_pager(pager);
 
@@ -483,8 +480,7 @@ ok64 GRAFExec(cli *c) {
         //  ahead/behind.  GRAFHead dispatches internally.
         uri empty = {};
         uri *hu = (c->nuris >= 1) ? &c->uris[0] : &empty;
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
-        graf_pager_plain_text();
+        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFHead(hu);
         graf_stop_pager(pager);
 
@@ -494,7 +490,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out, force_tlv);
+        pid_t pager = graf_start_pager(c->tty_out);
         uri *u = &c->uris[0];
         u8cs wf = {}, wt = {};
         if (!u8csEmpty(u->query)) {

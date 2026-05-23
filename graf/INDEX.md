@@ -30,7 +30,7 @@ graf status                        index run/entry counts
 
 | File          | Purpose |
 |---------------|---------|
-| `GRAF.h`      | Singleton state, arena, `graf_emit`, public API. `GRAFOpenBranch(h, branch, rw)` walks trunk → leaf; missing prefix dirs return `GRAFNOPATH` |
+| `GRAF.h`      | Singleton state, arena, output fd (`graf_out_fd`), public API. Byte rendering goes through `HUNKu8sFeedOut` dispatched off the module-global `HUNKMode` (TLV / Color / Plain) — no per-call formatter pointer. `GRAFOpenBranch(h, branch, rw)` walks trunk → leaf; missing prefix dirs return `GRAFNOPATH` |
 | `GRAF.c`      | `GRAFOpen` / `GRAFOpenBranch` / `GRAFClose`, arena init, `GRAFHunkEmit` |
 | `GRAF.exe.c`  | `GRAFExec` — verb dispatch (get / diff / merge / blame / weave / index / status) |
 | `GRAF.cli.c`  | `main()` — parse argv, open singleton, call `GRAFExec` |

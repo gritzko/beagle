@@ -14,9 +14,6 @@
 
 #define GRAF_ARENA_SIZE (1UL << 24)   // 16MB
 
-// Hunk → bytes serializer: HUNKu8sFeed (TLV) or HUNKu8sFeedText (plain).
-typedef ok64 (*graf_emit_fn)(u8s into, hunk const *hk);
-
 // Forward decl for transient ingest state (see graf/DAG.c).
 typedef struct dag_ingest dag_ingest;
 
@@ -36,7 +33,6 @@ typedef struct {
     int          lock_fd;    // flock on leaf dir's .lock; -1 = ro
     Bu8          arena;      // hunk staging buffer
     int          out_fd;     // output fd (-1 = uninitialized)
-    graf_emit_fn emit;       // serializer (TLV or plain text)
 
     //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` along
     //  trunk → leaf.  Pup keys are 60-bit ron60 values.  Mmaps live in
@@ -140,11 +136,12 @@ ok64 GRAFClose(void);
 extern char const *const GRAF_CLI_VERBS[];
 extern char const GRAF_CLI_VAL_FLAGS[];
 
-// --- Legacy globals (used by existing diff/merge code) ---
+// --- Output sink globals.  Bytes flow through `HUNKu8sFeedOut`
+//     dispatched off the module-global `HUNKMode`; graf owns the
+//     scratch arena and the destination fd. ---
 
 extern Bu8          graf_arena;
 extern int          graf_out_fd;
-extern graf_emit_fn graf_emit;
 
 ok64 GRAFArenaInit(void);
 void GRAFArenaCleanup(void);

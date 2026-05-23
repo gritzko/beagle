@@ -13,10 +13,13 @@
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 
-// --- Producer-side staging state (legacy globals) ---
+// --- Producer-side staging state ---
+//
+//  Bytes flow through `HUNKu8sFeedOut`, dispatched off the module-global
+//  `HUNKMode` (TLV / Plain / Color) set once at CLI entry.  graf
+//  contributes the byte sink (`graf_out_fd`) and a scratch arena.
 Bu8          graf_arena   = {};
 int          graf_out_fd  = -1;
-graf_emit_fn graf_emit    = NULL;
 
 // --- Singleton ---
 
@@ -453,7 +456,6 @@ ok64 GRAFClose(void) {
     if (g->lock_fd >= 0) FILEClose(&g->lock_fd);
     g->runs_n = 0;
     g->out_fd = -1;
-    g->emit = NULL;
     g->h = NULL;
     graf_is_rw = NO;
     done;
@@ -475,13 +477,13 @@ void GRAFArenaCleanup(void) {
 ok64 GRAFHunkEmit(hunk const *hk, void *ctx) {
     sane(hk != NULL);
     (void)ctx;
-    if (graf_emit == NULL || graf_out_fd < 0) return OK;
+    if (graf_out_fd < 0) return OK;
 
     // Reuse the trailing portion of graf_arena as TLV scratch.
     range64 mark;
     Bu8mark(graf_arena, &mark);
     u8cp start = u8bIdleHead(graf_arena);
-    if (graf_emit(u8bIdle(graf_arena), hk) != OK) {
+    if (HUNKu8sFeedOut(u8bIdle(graf_arena), hk) != OK) {
         Bu8rewind(graf_arena, mark);
         return OK;
     }

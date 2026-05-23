@@ -583,7 +583,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
     call(GRAFArenaInit);
 
     log_ctx lx = {};
-    lx.tlv = (graf_emit == HUNKu8sFeed);
+    lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
     call(u8bAllocate, lx.text, LOG_TEXT_BUF);
     if (lx.tlv) {
@@ -945,7 +945,7 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     //  3. Open graf, allocate render context.
     call(GRAFArenaInit);
     log_ctx lx = {};
-    lx.tlv = (graf_emit == HUNKu8sFeed);
+    lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
     call(u8bAllocate, lx.text, LOG_TEXT_BUF);
     if (lx.tlv) {
@@ -1132,7 +1132,7 @@ ok64 GRAFLog(uricp u) {
     u32 count = graflog_count_from_frag(u);
 
     log_ctx lx = {};
-    lx.tlv = (graf_emit == HUNKu8sFeed);
+    lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
 
     call(u8bAllocate, lx.text, LOG_TEXT_BUF);

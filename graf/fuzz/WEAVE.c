@@ -84,8 +84,9 @@ static ok64 weave_repro_post(u8bp out, weave const *w) {
 
 // --- Patch-validity property ----------------------------------------
 //
-// `WEAVEEmitDiff` produces hunks; rendering each hunk via
-// `HUNKu8sFeedLineBased` yields unified-diff text:
+// `WEAVEEmitDiff` produces hunks with `diff:` scheme on the URI;
+// rendering via `HUNKu8sFeedText` routes them to the unified-diff
+// renderer (LineBased) internally and yields:
 //   - `-<line>`  removed from to-side
 //   - `+<line>`  added on to-side
 //   - ` <line>`  context (in both)
@@ -157,7 +158,15 @@ static ok64 weave_hunk_check_cb(hunkc *hk, void *vctx) {
     //  Render the hunk in plain unified-diff form.
     Bu8 buf = {};
     if (u8bAlloc(buf, (u32)$len(hk->text) + 1024) != OK) return OK;
-    if (HUNKu8sFeedLineBased(u8bIdle(buf), hk) != OK) {
+    //  Force plain mode so the renderer takes the diff dispatch
+    //  (color would still emit the line-prefix shape via FeedColor,
+    //  which the line-by-line parsing below also accepts, but plain
+    //  is the canonical patch shape and matches the property's check).
+    HUNKout saved_mode = HUNKMode;
+    HUNKMode = HUNKOutPlain;
+    ok64 fr = HUNKu8sFeedText(u8bIdle(buf), hk);
+    HUNKMode = saved_mode;
+    if (fr != OK) {
         u8bFree(buf); return OK;
     }
     a_dup(u8c, rendered, u8bData(buf));

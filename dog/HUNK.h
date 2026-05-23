@@ -101,15 +101,13 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk);
 // green.  Advances into[0].
 ok64 HUNKu8sFeedColor(u8s into, hunk const *hk);
 
-// Render a hunk as proper line-based unified diff: a line with mixed
-// INS+DEL spans is emitted as a `-<old>` + `+<new>` pair where <old>
-// reconstructs the line without INS bytes and <new> reconstructs it
-// without DEL bytes.  Pure-INS lines are `+<line>`, pure-DEL are
-// `-<line>`, untagged are ` <line>` (context).  Suitable for piping
-// to `git apply` / `patch` / IDEs that expect classic unified diff —
-// what `HUNKu8sFeedText` does within a single line is too token-level
-// for that audience.  Advances into[0].
-ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk);
+// Proper line-based unified diff (`-<old>` / `+<new>` pairs with
+// `@@ -L,C +L,C @@` headers, suitable for `git apply` / `patch`) is
+// rendered internally whenever a hunk's URI scheme is `diff:`;
+// `HUNKu8sFeedText` dispatches to it.  Producers opt in by prepending
+// `diff:` to the hunk URI — see `graf/WEAVE.c`.  No standalone entry
+// point: the three public renderers are `HUNKu8sFeed` (TLV),
+// `HUNKu8sFeedText` (plain), and `HUNKu8sFeedColor` (ANSI).
 
 // Clip file-level toks to [lo,hi), arena-write rebased entries.
 // Output slice points into `arena` after this returns.

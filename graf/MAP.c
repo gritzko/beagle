@@ -329,15 +329,56 @@ ok64 GRAFMap(uricp u) {
     }
     u8bUnMap(cbuf);
 
-    qsort(commits, ncommits, sizeof(*commits), map_commit_cmp_desc);
+    //  Topological order (parents → children), then reverse to render
+    //  newest-first like `git log`.  Author-ts sorting is wrong here
+    //  because timezone / clock skew can place a commit's author-ts
+    //  AFTER its descendants (e.g. a +0200 commit at "08:57" looks
+    //  newer than a UTC descendant at "08:30").  Topology is the only
+    //  truth on a linear chain; for unrelated branches the topo-sort's
+    //  internal tiebreak picks a stable order.
+    Bu8 topo_buf = {};
+    if (u8bMap(topo_buf, MAP_MAX_COMMITS * sizeof(u64)) != OK)
+        goto cleanup_commits;
+    u64 *topo = (u64 *)u8bDataHead(topo_buf);
+    wh128css topo_runs = {NULL, NULL};
+    GRAFRuns(topo_runs);
+    u32 ntopo = DAGTopoSort(topo, MAP_MAX_COMMITS, union_set, topo_runs);
+
+    //  Reorder commits[] in-place: for each topo entry (walked in
+    //  reverse so newest is row 0), find its matching commit and swap
+    //  to the next output slot.  O(ncommits²) worst case but ncommits
+    //  ≤ MAP_MAX_COMMITS = 4096 so it stays sub-millisecond.
+    u32 out_i = 0;
+    for (u32 ti = ntopo; ti-- > 0 && out_i < ncommits; ) {
+        u64 want_h = topo[ti];
+        for (u32 ci = out_i; ci < ncommits; ci++) {
+            if (commits[ci].commit_h40 == want_h) {
+                if (ci != out_i) {
+                    map_commit tmp = commits[out_i];
+                    commits[out_i] = commits[ci];
+                    commits[ci] = tmp;
+                }
+                out_i++;
+                break;
+            }
+        }
+    }
+    //  Any commits the topo-sort didn't see (shouldn't happen — every
+    //  commit lives in union_set) keep their tail position; sort the
+    //  tail by author-ts as a fallback so the render stays deterministic.
+    if (out_i < ncommits) {
+        qsort(commits + out_i, ncommits - out_i,
+              sizeof(*commits), map_commit_cmp_desc);
+    }
+    u8bUnMap(topo_buf);
 
     //  Render — one row per commit: glyph-per-branch + sha7 + 7-date
-    //  + branch + summary.  TLV mode (graf_emit == HUNKu8sFeed) also
-    //  emits a toks stream so bro can attach a `diff:?<sha>` U-token
-    //  to each sha7 anchor; plain-text mode keeps toks empty.
+    //  + branch + summary.  TLV mode also emits a toks stream so bro
+    //  can attach a `diff:?<sha>` U-token to each sha7 anchor;
+    //  plain-text mode keeps toks empty.
     Bu8 text = {};
     if (u8bAllocate(text, 1UL << 20) != OK) goto cleanup_commits;
-    b8  want_toks = (graf_emit == HUNKu8sFeed);
+    b8  want_toks = (HUNKMode == HUNKOutTLV);
     Bu32 toks_buf = {};
     if (want_toks) {
         if (u32bAllocate(toks_buf, ncommits * 4) != OK) {
@@ -391,9 +432,8 @@ ok64 GRAFMap(uricp u) {
         (void)u8bFeed1(text, '\n');
     }
 
-    //  Emit one hunk via GRAFHunkEmit; the formatter in `graf_emit`
-    //  (set by graf_start_pager) picks bytes — HUNKu8sFeed (TLV →
-    //  bro) or HUNKu8sFeedText (plain → terminal).
+    //  Emit one hunk via GRAFHunkEmit; HUNKu8sFeedOut dispatches off
+    //  HUNKMode (TLV → bro, Color → ANSI, Plain → text).
     call(GRAFArenaInit);
     a_pad(u8, title, 16);
     a_cstr(prefix, "map:");

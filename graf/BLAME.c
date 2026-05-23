@@ -459,7 +459,10 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     time_t now = time(NULL);
     struct tm *tm = localtime(&now);
     int cur_year = tm ? tm->tm_year + 1900 : 2026;
-    b8 tty = graf_out_fd >= 0 && graf_emit == HUNKu8sFeed;
+    //  ANSI in the body when the output is anything other than plain
+    //  (TLV → bro passes it through to the terminal; Color → rendered
+    //  directly; Plain → strip).
+    b8 tty = graf_out_fd >= 0 && HUNKMode != HUNKOutPlain;
 
     u32cp w_toks   = (u32cp)wsrc->toks[1];
     u32cp w_toks_e = (u32cp)wsrc->toks[2];

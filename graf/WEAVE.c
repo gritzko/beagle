@@ -1020,14 +1020,19 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
 
     //  `win_lo` is the index of the hunk's first line in the merged
     //  (alive_from ∪ alive_to) text — 1-indexed.  Pointing the hunk URI
-    //  at it lets readers jump straight to the change.
+    //  at it lets readers jump straight to the change.  Scheme `diff:`
+    //  flags the hunk so HUNKu8sFeedText routes to the unified-diff
+    //  renderer (HUNKu8sFeedLineBased).
     #define FLUSH_HUNK() do {                                          \
         if (hunk_open) {                                               \
             u8bReset(outuri);                                          \
+            a_cstr(_diff_scheme, "diff:");                             \
+            (void)u8bFeed(outuri, _diff_scheme);                       \
             u8csc _empty_sym = {NULL, NULL};                           \
             if (HUNKu8sMakeURI(u8bIdle(outuri), name,                  \
                                _empty_sym, win_lo + 1) != OK) {        \
                 u8bReset(outuri);                                      \
+                (void)u8bFeed(outuri, _diff_scheme);                   \
                 (void)u8bFeed(outuri, name);                           \
             }                                                          \
             hunk hk = {};                                              \
@@ -1140,6 +1145,10 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     u32  hunk_start_line = 0;
     u32  cur_line = 0;
 
+    //  `cat:` projector — file in full with token-level hili.  Caller
+    //  passes the path in `name`; no scheme prefix here so the hunk
+    //  renders as cat-with-prefix in plain/color mode (not as a
+    //  `diff:` patch).
     #define FLUSH_FULL_HUNK() do {                                       \
         if (hunk_open) {                                                 \
             u8bReset(outuri);                                            \

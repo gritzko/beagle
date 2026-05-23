@@ -309,11 +309,36 @@ static ok64 hunk_feed_visible(u8s into, hunk const *hk, u32 lo, u32 hi) {
     done;
 }
 
+//  Forward decl — line-based unified diff renderer lives below.  It
+//  is internal-only (no header decl): callers reach it through
+//  `HUNKu8sFeedText` for hunks carrying a `diff:` URI scheme.
+static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk);
+
+//  `diff:` is the projector scheme producers use to mark a hunk as a
+//  proper diff (vs. cat / search / log).  In plain mode such hunks
+//  render as `git apply`-able unified diff via HUNKu8sFeedLineBased;
+//  non-diff plain hunks keep the simple tokenised-line shape below.
+static b8 hunk_uri_is_diff(hunk const *hk) {
+    if ($empty(hk->uri)) return NO;
+    uri u = {};
+    u8csc text = {hk->uri[0], hk->uri[1]};
+    if (DOGParseURI(&u, text) != OK) return NO;
+    if ($empty(u.scheme)) return NO;
+    a_cstr(s_diff, "diff");
+    return u8csEq(u.scheme, s_diff);
+}
+
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
 
     //  Status hunk (ULOG-row shape) → single `<ts>\t<verb>\t<uri>\n` line.
     if (hunk_is_status(hk)) return hunk_feed_status_plain(into, hk);
+
+    //  Diff-marked hunks render as proper unified diff so the output
+    //  is `git apply` / `patch` friendly.  Detected via URI scheme so
+    //  producers explicitly opt in (a content hunk with stray rm/in
+    //  tokens still renders as cat).
+    if (hunk_uri_is_diff(hk)) return HUNKu8sFeedLineBased(into, hk);
 
     call(hunk_feed_header_plain, into, hk);
 
@@ -632,7 +657,7 @@ static void hunk_loc(u8csc uri_text, u8cs out_path, u32 *out_line) {
     }
 }
 
-ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
+static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
 
     u8cs path = {};
