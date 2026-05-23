@@ -24,16 +24,12 @@
 
 //  20-byte SHA → 40 hex bytes appended to out.
 static void proj_feed_sha_hex(u8b out, sha1cp s) {
-    sha1hex hex = {};
-    sha1hexFromSha1(&hex, s);
-    a_rawc(hs, hex);
-    (void)u8bFeed(out, hs);
+    (void)SHA1u8bFeedHex(out, s);
 }
 
 //  Append a NUL-terminated literal.
 static void proj_feed_lit(u8b out, char const *s) {
-    size_t n = strlen(s);
-    u8cs sl = {(u8 const *)s, (u8 const *)s + n};
+    a$str(sl, s);
     (void)u8bFeed(out, sl);
 }
 

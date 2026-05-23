@@ -79,6 +79,30 @@ fun ok64 SHA1u8sFeedHashlet(u8s into, sha1cp s) {
     return u8sFeed(into, hashlet);
 }
 
+//  Feed all 40 ASCII hex chars of `s` into a u8 buffer.
+//  All-or-nothing: returns BNOROOM if `into` lacks room.
+fun ok64 SHA1u8bFeedHex(u8b into, sha1cp s) {
+    u8 hexbuf[40];
+    u8s hx = {hexbuf, hexbuf + 40};
+    u8cs bn = {s->data, s->data + 20};
+    HEXu8sFeedSome(hx, bn);
+    u8cs hex = {hexbuf, hexbuf + 40};
+    return u8bFeed(into, hex);
+}
+
+//  Declare `name` as a u8cs view over the 40-hex form of `sha` (a
+//  sha1cp).  Materialises the hex into a stack buffer named
+//  `name##_hb`; the slice `name` is valid until the enclosing scope
+//  exits.  Collapses the sha1hex+sha1hexFromSha1+a_rawc trio.
+#define a_sha1hex(name, sha)                                    \
+    u8 name##_hb[40];                                            \
+    do {                                                         \
+        u8s _hx = {name##_hb, name##_hb + 40};                  \
+        u8cs _bn = {(sha)->data, (sha)->data + 20};             \
+        HEXu8sFeedSome(_hx, _bn);                                \
+    } while (0);                                                 \
+    u8cs name = {name##_hb, name##_hb + 40}
+
 // Copy 20 raw bytes from a slice into a sha1.  Returns BADRANGE
 // when the slice is not exactly 20 bytes; otherwise OK.
 fun ok64 sha1FromBin(sha1* out, u8cs bin) {

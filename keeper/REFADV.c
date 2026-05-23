@@ -223,14 +223,10 @@ u32 REFADVTipDirs(refadv const *adv, sha1cp tip,
 //  `with_caps` adds a NUL + capability list before the trailing '\n'.
 static ok64 refadv_format_line(u8bp out, refadv_entry const *e, b8 with_caps) {
     sane(out && e);
-    sha1hex hex = {};
-    sha1hexFromSha1(&hex, &e->tip);
-    a_rawc(hex_full, hex);
-
     if (u8bIdleLen(out) < 40 + 1 + (size_t)u8csLen(e->refname) + 1 +
                           (with_caps ? 1 + sizeof(REFADV_CAPS) - 1 : 0))
         return BNOROOM;
-    call(u8bFeed, out, hex_full);
+    call(SHA1u8bFeedHex, out, &e->tip);
     u8bFeed1(out, ' ');
     u8bFeed(out, e->refname);
     if (with_caps) {

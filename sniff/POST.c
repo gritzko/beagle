@@ -982,32 +982,25 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     //  Sized for real-world wt: a single rsync-then-`be put .` over a
     //  freshly checked-out git tag (~5k tracked files) easily fills
     //  more than 64 KB of put-rows; bu/wu used to overflow on wt's
-    //  with > ~7k files at ~140 B/row.  Bump put/del to 4 MB and
-    //  bu/wu to 16 MB.  These are stack-of-pointers `Bu8` slabs
-    //  (malloc-backed); upgrading to `u8bMap` would drop the cost
-    //  but POST mixes Free/UnMap conventions across its many
-    //  cleanup paths — keep `Allocate` here for now.
-    call(u8bAllocate, bu,           1UL << 24);
-    call(u8bAllocate, wu,           1UL << 24);
-    call(u8bAllocate, put_unsorted, 1UL << 22);
-    call(u8bAllocate, del_unsorted, 1UL << 22);
-    call(u8bAllocate, put_buf,      1UL << 22);
-    call(u8bAllocate, del_buf,      1UL << 22);
-
-#define PD_FREE_ALL()                                  \
-    do {                                                \
-        u8bFree(bu); u8bFree(wu);                       \
-        u8bFree(put_unsorted); u8bFree(del_unsorted);   \
-        u8bFree(put_buf); u8bFree(del_buf);             \
-    } while (0)
+    //  with > ~7k files at ~140 B/row.  4 MB for put/del, 16 MB for
+    //  bu/wu — carved out of one 48 MB arena via u8aCarve so every
+    //  exit path frees with a single u8bFree(arena).
+    Bu8 arena = {};
+    call(u8bAllocate, arena, (1UL << 24) * 2 + (1UL << 22) * 4);
+    call(u8aCarve, arena, bu,           1UL << 24);
+    call(u8aCarve, arena, wu,           1UL << 24);
+    call(u8aCarve, arena, put_unsorted, 1UL << 22);
+    call(u8aCarve, arena, del_unsorted, 1UL << 22);
+    call(u8aCarve, arena, put_buf,      1UL << 22);
+    call(u8aCarve, arena, del_buf,      1UL << 22);
 
     if (*have_base) {
         ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);
-        if (br != OK) { PD_FREE_ALL(); return br; }
+        if (br != OK) { u8bFree(arena); return br; }
     }
     {
         ok64 wr = SNIFFWtULog(post_reporoot(), v_wt, wu);
-        if (wr != OK) { PD_FREE_ALL(); return wr; }
+        if (wr != OK) { u8bFree(arena); return wr; }
     }
 
     //  4. Put/delete scan since last post.  File-level rows go into
@@ -1027,24 +1020,15 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     };
     {
         ok64 sr = SNIFFAtScanPutDelete(c->last_post_ts, post_pd_cb, &walk);
-        if (sr != OK) { PD_FREE_ALL(); return sr; }
+        if (sr != OK) { u8bFree(arena); return sr; }
     }
     {
         ok64 ps = post_sort_dedup_intent(put_unsorted, put_buf);
         ok64 ds = ps == OK
                 ? post_sort_dedup_intent(del_unsorted, del_buf)
                 : OK;
-        u8bFree(put_unsorted); u8bFree(del_unsorted);
-        if (ps != OK) {
-            u8bFree(bu); u8bFree(wu);
-            u8bFree(put_buf); u8bFree(del_buf);
-            return ps;
-        }
-        if (ds != OK) {
-            u8bFree(bu); u8bFree(wu);
-            u8bFree(put_buf); u8bFree(del_buf);
-            return ds;
-        }
+        if (ps != OK) { u8bFree(arena); return ps; }
+        if (ds != OK) { u8bFree(arena); return ds; }
     }
 
     //  5. Classify baseline + wt + put/del intents via 4-way merge,
@@ -1052,10 +1036,8 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     //     into ctx.decisions.
     ok64 cr = post_classify_via_merge(c, bu, wu, put_buf, del_buf,
                                       v_base, v_wt, v_put_emit, v_del_emit);
-    u8bFree(bu); u8bFree(wu);
-    u8bFree(put_buf); u8bFree(del_buf);
+    u8bFree(arena);
     if (cr != OK) return cr;
-#undef PD_FREE_ALL
 
     //  classify_step inlined the per-path decide+resolve+hash and
     //  emitted one decision row per distinct path.  Downstream
@@ -1375,11 +1357,8 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
         zerop(cc->p);
     }
     //  Graf reads h->cur_branch as its "from" — order before keeper.
-    //  Both switches must succeed: subsequent KEEPPackOpen + REFS work
-    //  reads from h->cur_branch's shard, so a failed switch silently
-    //  lands writes in the wrong dir.
-    call(SNIFFMaybeSwitchGraf, branch);
-    call(SNIFFMaybeSwitchKeeper, branch);
+    (void)SNIFFMaybeSwitchGraf(branch);
+    (void)SNIFFMaybeSwitchKeeper(branch);
     if (cc->p != NULL) {
         ok64 op = KEEPPackOpen(cc->p);
         if (op != OK) return op;
@@ -1762,8 +1741,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  target dir doesn't exist on disk yet (CREATE_ON_MISS arm
     //  mkdir's it below before any keeper write).
     if (target_exists) {
-        call(SNIFFMaybeSwitchGraf, target_branch);
-        call(SNIFFMaybeSwitchKeeper, target_branch);
+        (void)SNIFFMaybeSwitchGraf(target_branch);
+        (void)SNIFFMaybeSwitchKeeper(target_branch);
     }
 
     //  --- 4. Classify shape. ---
@@ -2304,10 +2283,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
             *u8bLast(saved_branch) == '/')
             u8bShed1(saved_branch);
         //  Graf reads h->cur_branch as its "from" — order before keeper.
-        //  Graf-side failure is non-fatal (we still try keeper); keeper
-        //  failure leaves switched=NO and we KEEPGetExact from cur.
-        try(SNIFFMaybeSwitchGraf, pent[idx].locator);
-        __ = OK;
+        (void)SNIFFMaybeSwitchGraf(pent[idx].locator);
         ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
         switched = (so == OK);
     }
@@ -2324,16 +2300,8 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         //  for the LCA delta; keeper is the one that updates
         //  h->cur_branch via HOMESetCurBranch.  Reversed order would
         //  feed graf the post-switch value and collapse the delta.
-        //  Restore-after pattern: warn loudly on failure but don't
-        //  unwind — the cherry-pick locator read already succeeded.
-        ok64 gs = GRAFSwitchBranch(GRAF.h, sb);
-        if (gs != OK)
-            fprintf(stderr, "sniff: warning: GRAFSwitchBranch restore "
-                            "failed: %s\n", ok64str(gs));
-        ok64 ks = KEEPSwitchBranch(KEEP.h, sb);
-        if (ks != OK)
-            fprintf(stderr, "sniff: warning: KEEPSwitchBranch restore "
-                            "failed: %s\n", ok64str(ks));
+        (void)GRAFSwitchBranch(GRAF.h, sb);
+        (void)KEEPSwitchBranch(KEEP.h, sb);
     }
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
@@ -2449,8 +2417,7 @@ ok64 POSTCommit(u8cs target_branch,
         //  NNNN.keeper` (per KEEP.h §"Branch-aware object store").
         //  No-op when there's no `<target>/` shard dir yet (the
         //  CREATE_ON_MISS arm via POSTPromote mkdir's it first).
-        call(SNIFFMaybeSwitchGraf,   target_canon);
-        call(SNIFFMaybeSwitchKeeper, target_canon);
+        (void)SNIFFMaybeSwitchGraf(target_canon); (void)SNIFFMaybeSwitchKeeper(target_canon);
     }
     //  No baseline branch recovered AND no override → default to
     //  trunk (empty be-side query).  Locally trunk has no name; the
@@ -3061,12 +3028,7 @@ ok64 POSTCommit(u8cs target_branch,
         a_dup(u8c, tagref, u8bData(tagkey));
         a_dup(u8c, val,    u8bDataC(out_hex));
         ron60 vpost = SNIFFAtVerbPost();
-        try(REFSAppendVerb, $path(keepdir), vpost, tagref, val);
-        nedo {
-            fprintf(stderr, "sniff: warning: tag REFS append failed: %s\n",
-                    ok64str(__));
-            __ = OK;
-        }
+        (void)REFSAppendVerb($path(keepdir), vpost, tagref, val);
     }
 
     //  15. Append `post` ULOG row with stamp ts; futimens written

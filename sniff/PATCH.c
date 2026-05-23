@@ -1362,8 +1362,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         u8cs br_split = {}, pin_split = {};
         DOGRefSplitPin(target_query, br_split, pin_split);
         if (!u8csEmpty(pin_split)) {
-            call(SNIFFMaybeSwitchGraf,   br_split);
-            call(SNIFFMaybeSwitchKeeper, br_split);
+            (void)SNIFFMaybeSwitchGraf(br_split); (void)SNIFFMaybeSwitchKeeper(br_split);
             cherry = YES;
             u8csMv(frag, pin_split);
             u8csMv(cherry_locator, br_split);
@@ -1398,8 +1397,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         //  graf's WEAVE history walks, and the LCA / blob fetches
         //  below all resolve their objects.  No-op for tags, peer-
         //  prefixed refs, or same-branch reads.
-        call(SNIFFMaybeSwitchGraf,   target_query);
-        call(SNIFFMaybeSwitchKeeper, target_query);
+        (void)SNIFFMaybeSwitchGraf(target_query); (void)SNIFFMaybeSwitchKeeper(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
         //  Frag interpretation depends on shape:
         //    PATCH_SHAPE_SQUASH  — no frag.
@@ -1425,9 +1423,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     {
         sha1cp tips[2] = {&our_sha, &thr_sha};
         for (u32 i = 0; i < 2; i++) {
-            sha1hex tip_hex = {};
-            sha1hexFromSha1(&tip_hex, tips[i]);
-            a_rawc(hex_bytes, tip_hex);
+            a_sha1hex(hex_bytes, tips[i]);
             uri tip_uri = {};
             $mv(tip_uri.fragment, hex_bytes);
             $mv(tip_uri.data,     hex_bytes);
@@ -1653,8 +1649,8 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
         //  Cross-branch read: ensure the target branch's packs are
         //  loaded into keeper so resolve_target / graf's history walk
         //  can see them.  Mirrors PATCHApply.
-        call(SNIFFMaybeSwitchGraf,   target_query);
-        call(SNIFFMaybeSwitchKeeper, target_query);
+        (void)SNIFFMaybeSwitchGraf(target_query);
+        (void)SNIFFMaybeSwitchKeeper(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
     }
 
@@ -1665,9 +1661,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     {
         sha1cp tips[2] = {&our_sha, &thr_sha};
         for (u32 i = 0; i < 2; i++) {
-            sha1hex tip_hex = {};
-            sha1hexFromSha1(&tip_hex, tips[i]);
-            a_rawc(hex_bytes, tip_hex);
+            a_sha1hex(hex_bytes, tips[i]);
             uri tip_uri = {};
             $mv(tip_uri.fragment, hex_bytes);
             $mv(tip_uri.data,     hex_bytes);

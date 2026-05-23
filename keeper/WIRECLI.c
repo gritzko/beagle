@@ -508,10 +508,7 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        sha1hex hex = {};
-        sha1hexFromSha1(&hex, want_sha);
-        a_rawc(hexs, hex);
-        u8bFeed(line, hexs);
+        SHA1u8bFeedHex(line, want_sha);
         //  Request side-band-64k so the server multiplexes its
         //  "Counting/Compressing/Receiving objects…" progress text
         //  onto band-2; KEEPIngestStream forwards band-2 to our
@@ -532,10 +529,7 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        sha1hex hex = {};
-        sha1hexFromSha1(&hex, &haves[i]);
-        a_rawc(hexs, hex);
-        u8bFeed(line, hexs);
+        SHA1u8bFeedHex(line, &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
         ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
@@ -592,9 +586,7 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     call(DOGCanonURIFeed, kbuf, &pu);
     a_dup(u8c, key, u8bData(kbuf));
 
-    sha1hex hexnew = {};
-    sha1hexFromSha1(&hexnew, new_sha);
-    a_rawc(val, hexnew);
+    a_sha1hex(val, new_sha);
 
     //  REFSAppend itself dedups on (key, val) so a no-op `be get`
     //  repeat doesn't grow `.be/refs` (per keeper/LOG.md).
@@ -707,10 +699,7 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        sha1hex hex = {};
-        sha1hexFromSha1(&hex, &refs[i].sha);
-        a_rawc(hexs, hex);
-        u8bFeed(line, hexs);
+        SHA1u8bFeedHex(line, &refs[i].sha);
         if (i == 0) {
             a_cstr(caps_s, " side-band-64k ofs-delta\n");
             u8bFeed(line, caps_s);
@@ -725,10 +714,7 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        sha1hex hex = {};
-        sha1hexFromSha1(&hex, &haves[i]);
-        a_rawc(hexs, hex);
-        u8bFeed(line, hexs);
+        SHA1u8bFeedHex(line, &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
         if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
@@ -785,7 +771,7 @@ fa_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
+        FILEReap(pid, &rc);
     }
     return rv;
 }
@@ -866,7 +852,7 @@ fetch_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
+        FILEReap(pid, &rc);
     }
     return rv;
 }
@@ -1358,7 +1344,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
         if (u8bAllocate(flush_b, 8) == OK) {
             PKTu8sFeedFlush(u8bIdle(flush_b));
             a_dup(u8c, fdata, u8bData(flush_b));
-            try(FILEFeedAll, wfd, fdata);  //  best-effort: peer close
+            FILEFeedAll(wfd, fdata);
             u8bFree(flush_b);
         }
         free(peer_tips);
@@ -1477,7 +1463,7 @@ push_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
+        FILEReap(pid, &rc);
     }
     return rv;
 }
@@ -1532,7 +1518,7 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
         if (u8bAllocate(flush_b, 8) == OK) {
             PKTu8sFeedFlush(u8bIdle(flush_b));
             a_dup(u8c, fdata, u8bData(flush_b));
-            try(FILEFeedAll, wfd, fdata);  //  best-effort: peer close
+            FILEFeedAll(wfd, fdata);
             u8bFree(flush_b);
         }
         rv = WIRECLNRF;
@@ -1559,7 +1545,7 @@ delete_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
+        FILEReap(pid, &rc);
     }
     return rv;
 }

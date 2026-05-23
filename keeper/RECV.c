@@ -278,10 +278,7 @@ static ok64 recv_build_key(u8b out, u8csc refname) {
 //  Compose the to-URI value: bare 40-hex (canonical fragment form).
 static ok64 recv_build_val(u8b out, sha1cp sha) {
     sane(u8bOK(out));
-    sha1hex hex = {};
-    sha1hexFromSha1(&hex, sha);
-    a_rawc(hexs, hex);
-    call(u8bFeed, out, hexs);
+    call(SHA1u8bFeedHex, out, sha);
     done;
 }
 
