@@ -357,6 +357,12 @@ extern u64 const ULOG_VERB_COLORS[][2];
 //  the verb isn't in the table.
 ansi64 ULOGVerbColor(ron60 verb);
 
+//  Resolve `verb`'s palette-tag letter (the index into `dog/THEME.h`'s
+//  active palette).  Returns 'S' (default / no-attribute) when the
+//  verb isn't in the table.  Used by content-hunk producers that want
+//  to paint a verb token via tok32Pack(tag, end).
+u8 ULOGVerbTag(ron60 verb);
+
 //  Lift a ULOG row into a status hunk (empty body, ts/verb populated,
 //  URI rendered into `uri_buf`'s idle).  The hunk's `uri` slice borrows
 //  from `uri_buf`'s data area, so the buffer must outlive every use of

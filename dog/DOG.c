@@ -42,7 +42,8 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"blame",  "graf"},
     {"weave",  "graf"},
     {"map",    "graf"},
-    {"ls",     "sniff"},
+    {"ls",     "sniff"},   // one-level
+    {"lsr",    "sniff"},   // recursive
     {"cat",    "sniff"},
     //  Search projectors — read-only views (VERBS.md §"View projectors").
     //  Scheme picks the search backend; path-slot carries the body.

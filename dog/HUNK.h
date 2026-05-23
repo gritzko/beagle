@@ -81,20 +81,24 @@ ok64 HUNKu8sFeed(u8s into, hunk const *hk);
 // Slices in hk point into the original data (zero-copy).
 ok64 HUNKu8sDrain(u8cs from, hunk *hk);
 
-// Render a hunk as plain ASCII, no ANSI, git-diff-ish style:
-//   - status hunk (ts||verb set, empty text): single
-//     `<ron60-ts>\t<ron60-verb>\t<uri>\n` line (the ULOG wire shape).
-//   - otherwise: formatted title, then each text line prefixed with
-//     '+'/'-'/' ' based on per-token diff side bits in `toks`.
-// If no token has a non-eq side, every line gets a leading space
-// (grep/cat output).  A blank line is appended after the hunk.
-// Advances into[0].
+// Render a hunk as plain ASCII, no ANSI.  Two shapes:
+//   - status hunk (ts||verb set, empty text): one ULOG-wire-shape
+//     `<date>\t<verb>\t<uri>\n` line.
+//   - content hunk (uri+text, optionally with diff sides in `toks`):
+//     `--- <uri> ---\n` header (when URI is set), then body verbatim
+//     with per-token '+'/'-'/' ' diff prefixes when sides are present,
+//     plus a trailing blank line as a separator.  The `--- … ---`
+//     dashes are the only visual cue between adjacent hunks in plain
+//     mode — color mode replaces them with a title-tag color band.
+// `U`-tagged URI bytes in the body stay invisible.  Advances into[0].
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk);
 
-// Render a hunk with ANSI colors — same shape as `HUNKu8sFeedText`
-// but with the date column in grey, the verb in its ULOGVerbColor,
-// and (for diff hunks) '-' lines in red / '+' lines in green.
-// Advances into[0].
+// Render a hunk with ANSI colors.  Same two shapes as
+// `HUNKu8sFeedText`, but the content header is a bare `<uri>\n`
+// painted in theme slot 'T' (title) — the color frames the hunk so the
+// plain-mode dashes aren't needed.  Status lines get date in grey and
+// verb in its `ULOGVerbColor`; diff bodies get `-`/`+` lines in red /
+// green.  Advances into[0].
 ok64 HUNKu8sFeedColor(u8s into, hunk const *hk);
 
 // Render a hunk as proper line-based unified diff: a line with mixed

@@ -7,6 +7,7 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/THEME.h"
 #include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
 
@@ -226,6 +227,35 @@ static b8 hunk_has_diff(hunk const *hk) {
     return NO;
 }
 
+// Plain-mode content-hunk header: `--- <uri> ---\n`.  The dashes are
+// the only visual separator between adjacent hunks in non-color output
+// (color mode gets visual separation from the title-tag color band —
+// see hunk_feed_header_color below).  No-op on empty URI.
+static ok64 hunk_feed_header_plain(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk);
+    if ($empty(hk->uri)) done;
+    a_cstr(pfx, "--- ");
+    a_cstr(sfx, " ---\n");
+    call(u8sFeed,  into, pfx);
+    call(u8sFeed,  into, hk->uri);
+    call(u8sFeed,  into, sfx);
+    done;
+}
+
+// Color-mode content-hunk header: `<uri>\n`, painted in theme slot 'T'
+// (title).  The color band visually frames the hunk so the dashes from
+// plain mode aren't needed.  No-op on empty URI.
+static ok64 hunk_feed_header_color(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk);
+    if ($empty(hk->uri)) done;
+    ansi64 c = THEMEAt('T');
+    call(ANSIu8sFeedDelta, into, c, ANSI_DEFAULT);
+    call(u8sFeed,          into, hk->uri);
+    call(ANSIu8sFeedReset, into, c);
+    call(u8sFeed1,         into, '\n');
+    done;
+}
+
 // Walk tokens overlapping byte range [lo, hi) and OR-combine their sides.
 // Returns a mask: bit 0 = saw IN, bit 1 = saw RM.  'U' tokens (click-
 // target URIs) are skipped — they carry no diff side.
@@ -285,19 +315,17 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     //  Status hunk (ULOG-row shape) → single `<ts>\t<verb>\t<uri>\n` line.
     if (hunk_is_status(hk)) return hunk_feed_status_plain(into, hk);
 
-    if (!$empty(hk->uri)) {
-        a_cstr(pfx, "--- ");
-        u8sFeed(into, pfx);
-        u8sFeed(into, hk->uri);
-        a_cstr(sfx, " ---\n");
-        u8sFeed(into, sfx);
+    call(hunk_feed_header_plain, into, hk);
+
+    if ($empty(hk->text)) {
+        if ($empty(hk->uri)) u8sFeed1(into, '\n');
+        done;
     }
 
-    if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
-
     if (!hunk_has_diff(hk)) {
-        // Plain hunk (grep / search / cat): emit text verbatim,
-        // minus any 'U'-tagged URI ranges.
+        //  Content hunk (grep / search / cat): emit text verbatim,
+        //  minus any 'U'-tagged URI ranges, plus a trailing blank-line
+        //  separator so the next hunk's header stands clear.
         u32 tlen = (u32)$len(hk->text);
         call(hunk_feed_visible, into, hk, 0, tlen);
         if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
@@ -342,19 +370,16 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
     //  Status hunk: ULOG-style coloured line and we're done.
     if (hunk_is_status(hk)) return hunk_feed_status_color(into, hk);
 
-    if (!$empty(hk->uri)) {
-        a_cstr(pfx, "--- ");
-        u8sFeed(into, pfx);
-        u8sFeed(into, hk->uri);
-        a_cstr(sfx, " ---\n");
-        u8sFeed(into, sfx);
+    call(hunk_feed_header_color, into, hk);
+
+    if ($empty(hk->text)) {
+        if ($empty(hk->uri)) u8sFeed1(into, '\n');
+        done;
     }
 
-    if ($empty(hk->text)) { u8sFeed1(into, '\n'); done; }
-
     if (!hunk_has_diff(hk)) {
-        //  Plain hunk (grep / search / cat): emit text verbatim, no
-        //  colour; 'U'-tagged URI bytes stay hidden.
+        //  Content hunk (grep / search / cat): emit text verbatim, no
+        //  colour layer here; 'U'-tagged URI bytes stay hidden.
         u32 tlen = (u32)$len(hk->text);
         call(hunk_feed_visible, into, hk, 0, tlen);
         if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
@@ -614,28 +639,18 @@ ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
     u32 line = 0;
     hunk_loc(hk->uri, path, &line);
 
-    // For grep/cat-style hunks (no diff sides), emit a one-line header
-    // and the verbatim text — not patchable, but informative.
+    // For grep/cat-style hunks (no diff sides), emit a plain-mode-shaped
+    // `--- URI ---` header and the verbatim text — not patchable, but
+    // informative.  LineBased mode targets `git apply` / `patch`, which
+    // are non-color tools, so it tracks plain mode's separator rule.
     if ($empty(hk->text)) {
-        if (!$empty(hk->uri)) {
-            a_cstr(pfx, "--- ");
-            u8sFeed(into, pfx);
-            u8sFeed(into, hk->uri);
-            a_cstr(sfx, " ---\n");
-            u8sFeed(into, sfx);
-        }
-        u8sFeed1(into, '\n');
+        call(hunk_feed_header_plain, into, hk);
+        if ($empty(hk->uri)) u8sFeed1(into, '\n');
         done;
     }
 
     if (!hunk_has_diff(hk)) {
-        if (!$empty(hk->uri)) {
-            a_cstr(pfx, "--- ");
-            u8sFeed(into, pfx);
-            u8sFeed(into, hk->uri);
-            a_cstr(sfx, " ---\n");
-            u8sFeed(into, sfx);
-        }
+        call(hunk_feed_header_plain, into, hk);
         u32 tlen = (u32)$len(hk->text);
         call(hunk_feed_visible, into, hk, 0, tlen);
         if (tlen > 0 && hk->text[0][tlen - 1] != '\n')

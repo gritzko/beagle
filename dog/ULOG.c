@@ -1060,8 +1060,13 @@ ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
 //  you retire a verb or add a new one.
 
 static u64 const ULOG_VERB_TAGS[][2] = {
-    //  file-status verbs (sniff bare-be / ls: / future cat:)
-    {0x34e78,        'U'},  // put       — slot U  (blue)
+    //  file-status verbs (sniff bare-be / ls: / future cat:).  NOTE:
+    //  'U' must NOT be used as a status-verb palette slot — bro's
+    //  renderer treats tok tag 'U' as the invisible URI click-target
+    //  marker (bro/BRO.c hunk_feed_visible / hidden-tag checks), so
+    //  embedded "put"-tagged verb spans in content hunks would vanish.
+    //  `put` shares 'Y' (same blue) with `upd` for that reason.
+    {0x34e78,        'Y'},  // put       — slot Y  (blue, shares with upd)
     {0x32a7b,        'W'},  // new       — slot W  (green)
     {0x31cfa,        'V'},  // mov       — slot V  (cyan)
     {0x31ce8,        'E'},  // mod       — slot E  (yellow)
@@ -1070,8 +1075,9 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     {0x31b77,        'M'},  // mis       — slot M  (red)
     {0x39caf,        'Q'},  // unk       — slot Q  (grey)
     {0x31dab,        'Z'},  // mrg       — slot Z  (magenta)
-    {0xa75,          'B'},  // eq        — slot B  (pale yellow; "baseline")
+    {0xa75,          'D'},  // eq        — slot D  (comment gray; baseline noise)
     {0xb39caf,       'B'},  // hunk      — slot B  (neutral file fragment)
+    {0x28b76,        'D'},  // dir       — slot D  (comment gray; ls: subdirs)
     //  patch-status aliases (sniff/PATCH.c::emit_status).  Same slot
     //  letters as the file-status equivalents — one mental map.
     {0x25d34c2da68,  'W'},  // applied   ≡ new
@@ -1089,6 +1095,15 @@ ansi64 ULOGVerbColor(ron60 verb) {
             return THEMEAt((u8)ULOG_VERB_TAGS[i][1]);
     }
     return ANSI_DEFAULT;
+}
+
+u8 ULOGVerbTag(ron60 verb) {
+    if (verb == 0) return 'S';
+    for (u32 i = 0; ULOG_VERB_TAGS[i][0] != 0; i++) {
+        if (ULOG_VERB_TAGS[i][0] == (u64)verb)
+            return (u8)ULOG_VERB_TAGS[i][1];
+    }
+    return 'S';
 }
 
 //  Lift a parsed row into a status hunk: render the URI bytes into

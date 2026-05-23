@@ -1837,9 +1837,12 @@ ok64 SNIFFExec(cli *c) {
         //  `--tlv` / `--color` / `--plain` rule into the module-global
         //  `HUNKMode`; projectors only emit hunks.
         a_cstr(ls_s,  "ls");
+        a_cstr(lsr_s, "lsr");
         a_cstr(cat_s, "cat");
         if ($eq(proj_u->scheme, ls_s)) {
             ret = SNIFFLs(reporoot, proj_u);
+        } else if ($eq(proj_u->scheme, lsr_s)) {
+            ret = SNIFFLsr(reporoot, proj_u);
         } else if ($eq(proj_u->scheme, cat_s)) {
             ret = SNIFFCat(reporoot, proj_u);
         } else {
