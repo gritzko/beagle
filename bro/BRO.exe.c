@@ -32,7 +32,7 @@ static void bro_usage(void) {
         "        also via $BRO_THEME=16|dark|light\n"
         "\n"
         "Keys: q quit, space/f page down, b page up, j/k line, g/G top/end,\n"
-        "      / or ' search, n/N next/prev,\n"
+        "      / or ' search, n/N next/prev, r reload,\n"
         "      : URI prompt (path#line, #grep.ext, #'snippet'.ext),\n"
         "      [ ] { } prev/next hunk, ( ) prev/next change,\n"
         "      Enter/l open file, h/Backspace back, . list dir,\n"
@@ -71,12 +71,12 @@ ok64 BROExec(bro *b, cli *c) {
         fail(to);
     }
 
-    if (c->nuris > 0) {
+    if (uribDataLen(c->uris) > 0) {
         call(BROArenaInit);
         b8 keeper_open = NO;
-        for (u32 i = 0; i < c->nuris; i++) {
+        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
             if (hunkbIdleLen(b->hunks) == 0) break;
-            uri *u = &c->uris[i];
+            uri *u = uribAtP(c->uris, i);
 
             u8cs file_path = {};
             if (!$empty(u->path)) {

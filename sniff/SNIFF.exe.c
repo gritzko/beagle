@@ -1418,7 +1418,7 @@ ok64 SNIFFExec(cli *c) {
     //  URI or projector still routes through their own arms below.
     b8 is_status = $eq(c->verb, v_status)
                 || CLIHas(c, "--status")
-                || ($empty(c->verb) && c->nuris == 0);
+                || ($empty(c->verb) && uribDataLen(c->uris) == 0);
 
     //  Verb-less projector invocation (VERBS.md §"View projectors"):
     //  `sniff <proj>:<URI>` — no verb.  Scheme selects the projector;
@@ -1427,8 +1427,8 @@ ok64 SNIFFExec(cli *c) {
     //  today; the branch is widened row-by-row in DOG_PROJECTORS.
     b8 is_projector = NO;
     uri *proj_u = NULL;
-    if ($empty(c->verb) && c->nuris > 0) {
-        uri *pu = &c->uris[0];
+    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
+        uri *pu = uribAtP(c->uris, 0);
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "sniff") == 0) {
             is_projector = YES;
@@ -1447,9 +1447,9 @@ ok64 SNIFFExec(cli *c) {
         //  Per VERBS.md: free-form trailing words are folded into a
         //  URI's #fragment by CLIParse.  Prefer that over the legacy
         //  `-m <msg>` flag, which still works for backwards compat.
-        for (u32 i = 0; i < c->nuris; i++) {
-            if (!u8csEmpty(c->uris[i].fragment)) {
-                $mv(commit_msg, c->uris[i].fragment);
+        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+            if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) {
+                $mv(commit_msg, uribAtP(c->uris, i)->fragment);
                 break;
             }
         }
@@ -1501,8 +1501,8 @@ ok64 SNIFFExec(cli *c) {
         //  (empty query but data starts with `?`) as the trunk target
         //  — `be post ?` from a child branch means "FF trunk to cur".
         uri *label_uri = NULL;
-        for (u32 i = 0; i < c->nuris; i++) {
-            uri *uu = &c->uris[i];
+        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+            uri *uu = uribAtP(c->uris, i);
             if (!$empty(uu->query)) { label_uri = uu; break; }
             //  Bare `?` (trunk): data is exactly "?" and every other
             //  slot is empty.
@@ -1543,10 +1543,10 @@ ok64 SNIFFExec(cli *c) {
         //  the commit step AND the dry-run print; BEPost dispatches
         //  `keeper post` after us to do the wire-push.
         b8 pure_push = NO;
-        if (!$ok(commit_msg) && label_uri == NULL && c->nuris > 0) {
+        if (!$ok(commit_msg) && label_uri == NULL && uribDataLen(c->uris) > 0) {
             pure_push = YES;
-            for (u32 i = 0; i < c->nuris; i++) {
-                uri *uu = &c->uris[i];
+            for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+                uri *uu = uribAtP(c->uris, i);
                 if ($empty(uu->authority) ||
                     !$empty(uu->path) ||
                     !$empty(uu->query) ||
@@ -1669,8 +1669,8 @@ ok64 SNIFFExec(cli *c) {
         //  failure aborts.
         uri path_uris[CLI_MAX_URIS] = {};
         u32 npath = 0;
-        for (u32 i = 0; i < c->nuris && ret == OK; i++) {
-            uri u = c->uris[i];
+        for (u32 i = 0; i < uribDataLen(c->uris) && ret == OK; i++) {
+            uri u = (*uribAtP(c->uris, i));
             b8 has_q     = !u8csEmpty(u.query);
             b8 has_path  = !u8csEmpty(u.path);
             b8 has_frag  = !u8csEmpty(u.fragment);
@@ -1751,7 +1751,7 @@ ok64 SNIFFExec(cli *c) {
             //  Path / bare — defer to PUTStage.
             if (npath < CLI_MAX_URIS) path_uris[npath++] = u;
         }
-        if (ret == OK && (npath > 0 || c->nuris == 0)) {
+        if (ret == OK && (npath > 0 || uribDataLen(c->uris) == 0)) {
             //  PUT.c prints its own staged-row count.
             ret = PUTStage(npath, path_uris);
         }
@@ -1767,13 +1767,13 @@ ok64 SNIFFExec(cli *c) {
         //  trailing summary line appears once for the whole
         //  invocation; branch-forms each go through DELBranch
         //  individually (independent ref ops).
-        if (c->nuris == 0) {
+        if (uribDataLen(c->uris) == 0) {
             ret = DELStage(0, NULL);
         } else {
             uri path_uris[CLI_MAX_URIS];
             u32 npath = 0;
-            for (u32 i = 0; i < c->nuris && ret == OK; i++) {
-                uri *u = &c->uris[i];
+            for (u32 i = 0; i < uribDataLen(c->uris) && ret == OK; i++) {
+                uri *u = uribAtP(c->uris, i);
                 //  Branch-form is signalled by a literal leading `?`
                 //  in the original token (u->data).  Bare tokens like
                 //  `a.txt` also land in u->query via DOGNormalizeArg
@@ -1797,7 +1797,7 @@ ok64 SNIFFExec(cli *c) {
                 ret = DELStage(npath, path_uris);
         }
     } else if (is_checkout) {
-        if (c->nuris < 1) {
+        if (uribDataLen(c->uris) < 1) {
             if ($eq(c->verb, v_get)) {
                 ret = sniff_get_summary(reporoot);
             } else {
@@ -1806,7 +1806,7 @@ ok64 SNIFFExec(cli *c) {
                 ret = SNIFFFAIL;
             }
         } else {
-            uri *u = &c->uris[0];
+            uri *u = uribAtP(c->uris, 0);
             if ($eq(c->verb, v_get)) {
                 ret = SNIFFGetURI(reporoot, u);
             } else {
@@ -1819,19 +1819,19 @@ ok64 SNIFFExec(cli *c) {
             }
         }
     } else if (is_patch) {
-        if (c->nuris < 1) {
+        if (uribDataLen(c->uris) < 1) {
             fprintf(stderr,
                 "sniff: patch requires a URI (query = ref or sha)\n");
             ret = SNIFFFAIL;
         } else {
-            uri *u = &c->uris[0];
+            uri *u = uribAtP(c->uris, 0);
             //  Coalesce trailing fragment-only URIs (typical
             //  `be patch ?feat '#merge msg'` shape — argv lexer puts
             //  msg into uris[1] as a fragment-only URI).  Merge that
             //  fragment back into uris[0] so PATCHApply sees one URI
             //  with the full shape.
-            for (u32 i = 1; i < c->nuris; i++) {
-                uri *u2 = &c->uris[i];
+            for (u32 i = 1; i < uribDataLen(c->uris); i++) {
+                uri *u2 = uribAtP(c->uris, i);
                 if (u2->fragment[0] != NULL && u->fragment[0] == NULL) {
                     $mv(u->fragment, u2->fragment);
                 }
@@ -1872,13 +1872,13 @@ ok64 SNIFFExec(cli *c) {
         //  its write lock, so WIREFetchAll's writes land cleanly
         //  in the trunk shard instead of getting tangled in a
         //  branch-shard mid-transaction (the get/12 bug).
-        if (c->nuris < 1 || $empty(c->uris[0].path) ||
-            u8csLen(c->uris[0].fragment) != 40) {
+        if (uribDataLen(c->uris) < 1 || $empty(uribAtP(c->uris, 0)->path) ||
+            u8csLen(uribAtP(c->uris, 0)->fragment) != 40) {
             fprintf(stderr,
                 "sniff: sub-mount requires `<subpath>#<40-hex-pin>`\n");
             ret = SNIFFFAIL;
         } else {
-            uri *u = &c->uris[0];
+            uri *u = uribAtP(c->uris, 0);
             a_path(gm_path);
             u8cs gmrel = {(u8c *)".gitmodules",
                           (u8c *)".gitmodules" + 11};

@@ -85,8 +85,8 @@ static ok64 sniffcli_inner(cli *c) {
     a_cstr(v_list,   "list");
     a_cstr(v_post,   "post");
     a_cstr(v_commit, "commit");
-    b8 is_projector = u8csEmpty(c->verb) && c->nuris > 0 &&
-                      DOGIsProjector(c->uris[0].scheme);
+    b8 is_projector = u8csEmpty(c->verb) && uribDataLen(c->uris) > 0 &&
+                      DOGIsProjector(uribAtP(c->uris, 0)->scheme);
     b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list) || is_projector;
     b8 rw = !ro;
 
@@ -160,6 +160,8 @@ ok64 sniffcli() {
     sane(1);
     cli c = {};
     call(PATHu8bAlloc, c.repo);
+    call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
+    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(sniffcli_inner, &c);
     ok64 ret = __;
     //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
@@ -168,6 +170,8 @@ ok64 sniffcli() {
     if (ret == POSTNONE &&
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
+    u8csbFree(c.flags);
+    uribFree(c.uris);
     PATHu8bFree(c.repo);
     return ret;
 }

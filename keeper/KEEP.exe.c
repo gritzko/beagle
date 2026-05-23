@@ -181,12 +181,12 @@ static ok64 keeper_refs(keeper *k) {
 
 static ok64 keeper_subs(keeper *k, cli *c) {
     sane(k && c);
-    if (c->nuris < 1 ||
-        (u8csEmpty(c->uris[0].query) && u8csEmpty(c->uris[0].fragment))) {
+    if (uribDataLen(c->uris) < 1 ||
+        (u8csEmpty(uribAtP(c->uris, 0)->query) && u8csEmpty(uribAtP(c->uris, 0)->fragment))) {
         fprintf(stderr, "keeper: subs requires `?<ref>` URI\n");
         return KEEPFAIL;
     }
-    uri *u = &c->uris[0];
+    uri *u = uribAtP(c->uris, 0);
 
     //  Resolve ?<ref> to a 40-hex commit sha.  Direct-sha shortcuts:
     //    * `?<branch>#<sha>` — fragment carries the sha; query carries
@@ -542,11 +542,11 @@ static ok64 keeper_get_blob(keeper *k, uri *g) {
 
 static ok64 keeper_get(keeper *k, cli *c) {
     sane(k && c);
-    if (c->nuris == 0) {
+    if (uribDataLen(c->uris) == 0) {
         fprintf(stderr, "keeper: get requires a URI\n");
         return KEEPFAIL;
     }
-    uri *g = &c->uris[0];
+    uri *g = uribAtP(c->uris, 0);
 
     if (!u8csEmpty(g->authority))
         return KEEPGetRemote(g);
@@ -568,11 +568,11 @@ static ok64 keeper_get(keeper *k, cli *c) {
 
 static ok64 keeper_put(keeper *k, cli *c) {
     sane(k && c);
-    if (c->nuris == 0) {
+    if (uribDataLen(c->uris) == 0) {
         fprintf(stderr, "keeper: put requires a URI\n");
         return KEEPFAIL;
     }
-    uri *g = &c->uris[0];
+    uri *g = uribAtP(c->uris, 0);
 
     if (!u8csEmpty(g->authority)) {
         fprintf(stderr, "keeper: remote push not yet implemented\n");
@@ -582,11 +582,11 @@ static ok64 keeper_put(keeper *k, cli *c) {
     u8cs ref_name = {};
     u8cs sha_frag = {};
 
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].query) && !$ok(ref_name))
-            u8csMv(ref_name, c->uris[i].query);
-        if (!u8csEmpty(c->uris[i].fragment) && !$ok(sha_frag))
-            u8csMv(sha_frag, c->uris[i].fragment);
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->query) && !$ok(ref_name))
+            u8csMv(ref_name, uribAtP(c->uris, i)->query);
+        if (!u8csEmpty(uribAtP(c->uris, i)->fragment) && !$ok(sha_frag))
+            u8csMv(sha_frag, uribAtP(c->uris, i)->fragment);
     }
 
     if (!$ok(ref_name) || !$ok(sha_frag)) {
@@ -720,7 +720,7 @@ static b8 keeper_post_is_ancestor(sha1cp from, sha1cp target) {
 //  No URI → this verb is a no-op (sniff already wrote the commit).
 static ok64 keeper_post(keeper *k, cli *c) {
     sane(k && c);
-    uri *g = (c->nuris > 0) ? &c->uris[0] : NULL;
+    uri *g = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
     if (!g || u8csEmpty(g->host)) {
         fprintf(stderr, "keeper: post needs a remote URI "
                         "(ssh://host/path[?branch])\n");
@@ -1007,11 +1007,11 @@ static ok64 keeper_delete_alias(keeper *k, u8cs host) {
 
 static ok64 keeper_delete(keeper *k, cli *c) {
     sane(k && c);
-    if (c->nuris == 0) {
+    if (uribDataLen(c->uris) == 0) {
         fprintf(stderr, "keeper: delete requires a //host[?ref] URI\n");
         return KEEPFAIL;
     }
-    uri *g = &c->uris[0];
+    uri *g = uribAtP(c->uris, 0);
     if (u8csEmpty(g->host)) {
         fprintf(stderr,
                 "keeper: delete needs a remote URI (//host[?ref])\n");
@@ -1102,8 +1102,8 @@ ok64 KEEPExec(cli *c) {
     //  the URI's scheme resolves to this dog ("keeper").  `--tlv`
     //  switches the emitter from raw bytes to a HUNK TLV record so
     //  `bro` (started by BE on a TTY) can render it.
-    if ($empty(c->verb) && c->nuris > 0) {
-        uri *pu = &c->uris[0];
+    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
+        uri *pu = uribAtP(c->uris, 0);
         char const *dog = DOGProjectorDog(pu->scheme);
         if (dog != NULL && strcmp(dog, "keeper") == 0) {
             b8 tlv = CLIHas(c, "--tlv");
@@ -1128,8 +1128,8 @@ ok64 KEEPExec(cli *c) {
     //  every transport.  The keeper-protocol case (`be://`, `keeper://`,
     //  `file://`) execs `keeper upload-pack` / `receive-pack` on the
     //  peer end via wcli_spawn.
-    if (c->nuris >= 1) {
-        uri *u = &c->uris[0];
+    if (uribDataLen(c->uris) >= 1) {
+        uri *u = uribAtP(c->uris, 0);
         a_cstr(be_sch,     "be");
         a_cstr(file_sch,   "file");
         a_cstr(keeper_sch, "keeper");
@@ -1145,26 +1145,26 @@ ok64 KEEPExec(cli *c) {
     if ($eq(c->verb, v_delete))  return keeper_delete(k, c);
 
     if ($eq(c->verb, v_import)) {
-        if (c->nuris < 1) {
+        if (uribDataLen(c->uris) < 1) {
             fprintf(stderr, "keeper: import requires a packfile path\n");
             return KEEPFAIL;
         }
-        return keeper_import(k, c->uris[0].path);
+        return keeper_import(k, uribAtP(c->uris, 0)->path);
     }
 
     if ($eq(c->verb, v_verify)) {
-        if (c->nuris < 1 || u8csEmpty(c->uris[0].fragment)) {
+        if (uribDataLen(c->uris) < 1 || u8csEmpty(uribAtP(c->uris, 0)->fragment)) {
             fprintf(stderr, "keeper: verify requires #sha\n");
             return KEEPFAIL;
         }
-        return keeper_verify(k, c->uris[0].fragment);
+        return keeper_verify(k, uribAtP(c->uris, 0)->fragment);
     }
 
     a_cstr(v_lsfiles, "ls-files");
     if ($eq(c->verb, v_lsfiles)) {
         uri default_uri = {};
-        uri *u = (c->nuris > 0) ? &c->uris[0] : &default_uri;
-        if (c->nuris == 0) {
+        uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : &default_uri;
+        if (uribDataLen(c->uris) == 0) {
             //  Default: local HEAD.  Construct a minimal URI with query = "HEAD".
             a_cstr(head_q, "HEAD");
             default_uri.query[0] = head_q[0];

@@ -24,9 +24,11 @@ static b8 cli_takes_val(char const *val_flags, u8csc flag) {
 
 ok64 CLIParse(cli *c, char const *const *verb_names,
               char const *val_flags) {
-    //  Caller must PATHu8bAlloc(c->repo) before invoking CLIParse
-    //  (CLAUDE.md §5: alloc at the top of the call chain).
-    sane(c != NULL && c->repo[0] != NULL);
+    //  Caller must PATHu8bAlloc(c->repo) + u8csbAlloc(c->flags) +
+    //  uribAlloc(c->uris) before invoking CLIParse (CLAUDE.md §5:
+    //  alloc at the top of the call chain).
+    sane(c != NULL && c->repo[0] != NULL
+         && c->flags[0] != NULL && c->uris[0] != NULL);
 
     // Worktree root — feed into the caller-owned path buffer.  Borrow
     // a temporary `home` just to walk up to the anchor; caller may
@@ -79,7 +81,9 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
         ai++;
 
         if ($len(a) >= 1 && a[0][0] == '-') {
-            if (c->nflags + 2 > CLI_MAX_FLAGS * 2) continue;
+            //  Flag pair (flag + val).  u8csbFeed1 returns SNOROOM
+            //  when the alloc'd cap is hit; skip the pair in that
+            //  case to preserve the existing "drop overflow" shape.
 
             // Check for --flag=value
             u8cs flag_part = {};
@@ -96,10 +100,8 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
 
             if (!$empty(val_part)) {
                 // --flag=value
-                $mv(c->flags[c->nflags], flag_part);
-                c->nflags++;
-                $mv(c->flags[c->nflags], val_part);
-                c->nflags++;
+                if (u8csbFeed1(c->flags, flag_part) != OK) continue;
+                if (u8csbFeed1(c->flags, val_part)  != OK) continue;
             } else if (cli_takes_val(val_flags, a)) {
                 // -f value (separate args) or -fN (attached)
                 // Check for short flag with attached value: -XY where
@@ -109,46 +111,46 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
                     // Short flag: -X is first 2 chars, rest is value
                     u8cs sf = {a[0], a[0] + 2};
                     if (cli_takes_val(val_flags, sf)) {
-                        $mv(c->flags[c->nflags], sf);
-                        c->nflags++;
+                        if (u8csbFeed1(c->flags, sf) != OK) continue;
                         u8cs sv = {a[0] + 2, a[1]};
-                        $mv(c->flags[c->nflags], sv);
-                        c->nflags++;
+                        if (u8csbFeed1(c->flags, sv) != OK) continue;
                         attached = YES;
                     }
                 }
                 if (!attached) {
-                    $mv(c->flags[c->nflags], a);
-                    c->nflags++;
+                    if (u8csbFeed1(c->flags, a) != OK) continue;
+                    u8cs v = {};
                     if (ai < argn) {
-                        a$rg(v, ai);
+                        a$rg(v_local, ai);
                         ai++;
-                        $mv(c->flags[c->nflags], v);
+                        $mv(v, v_local);
                     } else {
-                        $mv(c->flags[c->nflags], empty_val);
+                        $mv(v, empty_val);
                     }
-                    c->nflags++;
+                    if (u8csbFeed1(c->flags, v) != OK) continue;
                 }
             } else {
                 // Boolean flag
-                $mv(c->flags[c->nflags], a);
-                c->nflags++;
-                $mv(c->flags[c->nflags], empty_val);
-                c->nflags++;
+                if (u8csbFeed1(c->flags, a)         != OK) continue;
+                if (u8csbFeed1(c->flags, empty_val) != OK) continue;
             }
         } else {
-            // Non-flag arg → URI via DOGNormalizeArg.
-            if (c->nuris >= CLI_MAX_URIS) {
+            // Non-flag arg → URI via DOGNormalizeArg.  Fill the
+            // buffer's idle slot in place (uri is ~80B; avoids a
+            // value copy through uribFeed1), then commit with
+            // uribFed1.  Overflow → SNOROOM → drop with a hint.
+            uri *u = uribIdleHead(c->uris);
+            if (u == NULL || uribIdleLen(c->uris) == 0) {
                 fprintf(stderr,
                     "cli: too many URIs (cap %u) — dropping %.*s\n",
                     (unsigned)CLI_MAX_URIS,
                     (int)$len(a), (char *)a[0]);
                 continue;
             }
-            uri *u = &c->uris[c->nuris];
+            zerop(u);
             DOGNormalizeArg(u, a);
             $mv(u->data, a);    // restore original data slice
-            c->nuris++;
+            (void)uribFed1(c->uris);
         }
     }
     done;

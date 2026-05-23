@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "abc/FILE.h"
@@ -17,7 +18,7 @@
 #include "dog/ULOG.h"
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
-#include "sniff/SNIFF.h"          // POSTNONE (low-byte exit signal)
+#include "sniff/SNIFF.h"          // POSTNONE  (low-byte exit signal)
 #include "sniff/SUBS.h"
 
 #include "SUBS.h"           // beagle/SUBS.h — BESubsHere / BERecurseInto
@@ -81,6 +82,16 @@ static ok64 be_ensure_project_repo(uricp u);
 static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
 
+//  Every `*NONE` ok64 (POSTNONE, KEEPNONE, GRAFNONE, SPOTNONE, …)
+//  shares the same low byte — `NONE & 0xFFu = 0xCE` — because they
+//  all suffix-match `NONE = 0x5d85ce` (see `abc/OK.h::ok64is`).  POSIX
+//  truncates exit codes to that single byte, so the wire alone can't
+//  tell us which *NONE the child meant — just "some *NONE".  Return
+//  the base `NONE`; callers gate on `ok64is(r, NONE)` (which matches
+//  every flavour) and switch on the tool name themselves when they
+//  need to distinguish.
+#define BE_NONE_LOW_BYTE  ((int)(NONE & 0xFFu))
+
 static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
     a_path(path);
@@ -98,18 +109,7 @@ static ok64 BERun(u8csc tool, u8css argv, b8 bg) {
         return BEDOGSIG;
     }
     if (r != OK) return r;
-    //  Plan §POST: sub-recursion treats POSTNONE as a no-op.  The
-    //  exit byte 0xCE (POSTNONE's RON60 low byte) is the residue
-    //  bepost_spawn_sub inspects one level up — pass it through
-    //  instead of collapsing to BEDOGEXIT.  Scope the pass-through
-    //  to the `sniff` tool because GRAFNONE happens to share the
-    //  same low byte (RON60 encodes the "NONE" suffix identically),
-    //  and graf-head's "no match" exit must keep mapping to
-    //  BEDOGEXIT for upstream tests.
-    if (rc == (int)(POSTNONE & 0xFFu)) {
-        a_cstr(s_sniff, "sniff");
-        if (u8csEq(tool, s_sniff)) return POSTNONE;
-    }
+    if (rc == BE_NONE_LOW_BYTE) return NONE;
     if (rc != 0) return BEDOGEXIT;
     done;
 }
@@ -137,12 +137,9 @@ static ok64 BEReap(pid_t pid, u8csc tool) {
         return BEDOGSIG;
     }
     if (r != OK) return r;
-    //  Same sniff-only POSTNONE pass-through as BERun (see comment
-    //  there); BEReap is the parallel-reap path used by BEGet.
-    if (rc == (int)(POSTNONE & 0xFFu)) {
-        a_cstr(s_sniff, "sniff");
-        if (u8csEq(tool, s_sniff)) return POSTNONE;
-    }
+    //  Same *NONE pass-through as BERun (see comment there); BEReap
+    //  is the parallel-reap path used by BEGet.
+    if (rc == BE_NONE_LOW_BYTE) return NONE;
     if (rc != 0) return BEDOGEXIT;
     return OK;
 }
@@ -156,50 +153,49 @@ static ok64 BEReap(pid_t pid, u8csc tool) {
 static ok64 BERunPipe(path8sc prod, u8css prod_argv,
                       path8sc pager, u8css pager_argv) {
     sane($ok(prod) && $ok(pager));
-    int to_pager_w = -1;
-    pid_t pager_pid = 0;
-    call(FILESpawn, pager, pager_argv, &to_pager_w, NULL, &pager_pid);
 
-    int from_prod_r = -1;
+    //  Shell-style `producer | pager` pipeline: one pipe(2), dup2 it
+    //  to producer's stdout and pager's stdin in the respective
+    //  children, parent closes both ends and waitpids.  The kernel
+    //  buffer handles flow control — no parent-side pump.  POSIX
+    //  primitives only (Linux, BSD, macOS).
+    //
+    //  `FD_CLOEXEC` on the raw pipe fds covers the inherited-fd
+    //  problem: each child gets a dup of *both* pipe ends, but only
+    //  one of them is dup2'd onto stdin/stdout (which clears CLOEXEC
+    //  on the target).  The other inherited copy auto-closes at exec,
+    //  so pipe ref counts collapse correctly and EOF propagates the
+    //  moment the producer exits.  Without CLOEXEC the unused end
+    //  lingers in the sibling child and the reader hangs.
+    int p[2] = {-1, -1};
+    if (pipe(p) != 0) failc(BEFAIL);
+    (void)fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(p[1], F_SETFD, FD_CLOEXEC);
+
     pid_t prod_pid = 0;
-    ok64 so = FILESpawn(prod, prod_argv, NULL, &from_prod_r, &prod_pid);
-    if (so != OK) {
-        //  Bro started but we can't produce.  Close its stdin so it
-        //  exits on EOF and we can reap cleanly.
-        close(to_pager_w);
-        int rc = 0; (void)FILEReap(pager_pid, &rc);
-        return so;
+    ok64 ps = FILESpawnFds(prod, prod_argv, -1, p[1], &prod_pid);
+    if (ps != OK) { close(p[0]); close(p[1]); return ps; }
+
+    pid_t pager_pid = 0;
+    ok64 gs = FILESpawnFds(pager, pager_argv, p[0], -1, &pager_pid);
+    if (gs != OK) {
+        //  Producer started but pager didn't.  Close the pipe ends
+        //  so producer sees EPIPE and exits; reap it.
+        close(p[0]); close(p[1]);
+        int rc = 0; (void)FILEReap(prod_pid, &rc);
+        return gs;
     }
 
-    //  Parent pump: drain producer → feed pager.  Shallow, no framing;
-    //  HUNK TLV is self-framing so any chunk boundary is fine.
-    u8 buf[8192];
-    for (;;) {
-        ssize_t n = read(from_prod_r, buf, sizeof buf);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (n == 0) break;
-        ssize_t off = 0;
-        while (off < n) {
-            ssize_t w = write(to_pager_w, buf + off, (size_t)(n - off));
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                goto drain_done;
-            }
-            off += w;
-        }
-    }
-drain_done:
-    close(from_prod_r);
-    close(to_pager_w);
+    //  Parent's copies must go so the kernel pipe ref count drops to
+    //  the children only (CLOEXEC handled the children's *unused*
+    //  inherited copies above).
+    close(p[0]);
+    close(p[1]);
 
-    int prod_rc = 0;
-    int pager_rc = 0;
-    (void)FILEReap(prod_pid, &prod_rc);
+    int prod_rc = 0, pager_rc = 0;
+    (void)FILEReap(prod_pid,  &prod_rc);
     (void)FILEReap(pager_pid, &pager_rc);
-    if (prod_rc != 0) return BEDOGEXIT;
+    if (prod_rc  != 0) return BEDOGEXIT;
     if (pager_rc != 0) return BEDOGEXIT;
     done;
 }
@@ -258,13 +254,13 @@ static void be_build_argv(u8csb args, u8csc dog, u8csc verb, cli *c) {
     //  sentinel for booleans.  Forward the flag name always; only
     //  forward its value if it's genuinely non-empty, otherwise the
     //  callee's CLIParse would pick it up as a spurious URI.
-    for (u32 j = 0; j + 1 < c->nflags; j += 2) {
-        u8csbFeed1(args, c->flags[j]);
-        if (!u8csEmpty(c->flags[j + 1]))
-            u8csbFeed1(args, c->flags[j + 1]);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        u8csbFeed1(args, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(args, (*u8csbAtP(c->flags, j + 1)));
     }
-    for (u32 j = 0; j < c->nuris; j++)
-        u8csbFeed1(args, c->uris[j].data);
+    for (u32 j = 0; j < uribDataLen(c->uris); j++)
+        u8csbFeed1(args, uribAtP(c->uris, j)->data);
 }
 
 static ok64 BEDispatch(cli *c, dog_step const *steps, u32 nsteps,
@@ -283,19 +279,12 @@ static ok64 BEDispatch(cli *c, dog_step const *steps, u32 nsteps,
 //  keeper/graf/spot with the primary repo via symlinks; sniff is
 //  real (per-worktree).  Returns OK after setup whether or not any
 //  action was taken; only dies on a real error (mkdir/symlink fail).
-//  Static storage for the rewritten URI after a worktree is wired up:
-//  "?<6..40-hex-hashlet>" points every downstream dog at the primary's
-//  HEAD.  Re-filled on each BEGetWorktree call.
-static u8  wt_uri_storage[64];
-static Bu8 wt_uri_buf = {
-    wt_uri_storage, wt_uri_storage,
-    wt_uri_storage,
-    wt_uri_storage + sizeof(wt_uri_storage)
-};
-
 static b8 be_promote_to_ref(uri *u);
 
-static ok64 BEGetWorktree(uri *u) {
+//  `wt_uri_buf` is caller-owned scratch (≥ 64 B) backing the rewritten
+//  `?<hashlet>` URI bytes — must outlive this frame so downstream argv
+//  build can read `u->data` (CLAUDE.md §5).
+static ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     sane(1);
     if (u == NULL || !u8csEmpty(u->authority)) done;
     if (u8csEmpty(u->path)) done;
@@ -330,71 +319,51 @@ static ok64 BEGetWorktree(uri *u) {
     // to bare `<prim>/.be/`.
     a_path(prim_proj);
     {
-        a_path(prim_wtlog);
-        call(u8bFeed, prim_wtlog, prim_s);
-        call(u8bFeed1, prim_wtlog, '/');
-        call(u8bFeed, prim_wtlog, DOG_BE_S);
-        call(u8bFeed1, prim_wtlog, '/');
         a_cstr(wtlog_s, DOG_WTLOG_NAME);
-        call(u8bFeed, prim_wtlog, wtlog_s);
-        call(PATHu8bTerm, prim_wtlog);
+        a_path(prim_wtlog, prim_s);
+        call(PATHu8bPush, prim_wtlog, DOG_BE_S);
+        call(PATHu8bPush, prim_wtlog, wtlog_s);
+        //  Drain row 0 via the ULOG API instead of hand-walking tabs.
         u8bp mapped = NULL;
         if (FILEMapRO(&mapped, $path(prim_wtlog)) == OK) {
-            a_dup(u8c, body, u8bDataC(mapped));
-            //  Row 0 is `<ts>\trepo\t<uri>\n`; pick the URI between
-            //  second tab and newline.
-            u8c const *nl = body[0];
-            while (nl < body[1] && *nl != '\n') nl++;
-            u8c const *tab2 = body[0];
-            int tabs = 0;
-            while (tab2 < nl && tabs < 2) {
-                if (*tab2 == '\t') tabs++;
-                tab2++;
-            }
-            if (tabs == 2 && tab2 < nl) {
-                u8cs r0_uri = {(u8c *)tab2, (u8c *)nl};
-                //  URI path starts after `scheme:` — find the first
-                //  `:` and skip a `//<auth>` if present.
-                uri parsed = {};
-                u8csMv(parsed.data, r0_uri);
-                URILexer(&parsed);
-                if (!u8csEmpty(parsed.path))
-                    DOGProjectFromBe(parsed.path, prim_proj);
-            }
+            a_dup(u8c, scan, u8bDataC(mapped));
+            ulogrec row0 = {};
+            if (ULOGu8sDrain(scan, &row0) == OK
+                && !u8csEmpty(row0.uri.path))
+                DOGProjectFromBe(row0.uri.path, prim_proj);
             FILEUnMap(mapped);
         }
     }
 
     {
+        //  Compose the row through ULOGu8sFeed instead of hand-feeding
+        //  tabs and newlines.  URI shape: `file://<prim>/.be/[<proj>/]`
+        //  — host empty, path absolute under the primary's `.be/`.
+        a_path(repo_path, prim_s);
+        call(PATHu8bPush, repo_path, DOG_BE_S);
+        if (u8bDataLen(prim_proj) > 0) {
+            a_dup(u8c, pp, u8bDataC(prim_proj));
+            call(PATHu8bPush, repo_path, pp);
+        }
+        //  PATH paths don't include a trailing '/'; the row-0 invariant
+        //  expects `file://<…>/.be/<proj>/` so append it explicitly.
+        call(u8bFeed1, repo_path, '/');
+
+        a_cstr(file_scheme, "file");
+        a_cstr(repo_name,   "repo");
+        ulogrec rec = {
+            .ts   = RONNow(),
+            .verb = SNIFFAtVerbOf((u8cs){repo_name[0], repo_name[1]}),
+        };
+        u8csMv(rec.uri.scheme, file_scheme);
+        u8csMv(rec.uri.path,   u8bDataC(repo_path));
+
+        a_pad(u8, row, 1024);
+        call(ULOGu8sFeed, u8bIdle(row), &rec);
+
         int fd = FILE_CLOSED;
         ok64 co = FILECreate(&fd, $path(cwd_be));
         if (co != OK) return co;
-
-        a_path(repo_uri);
-        a_cstr(file_pref, "file://");
-        call(u8bFeed, repo_uri, file_pref);
-        call(u8bFeed, repo_uri, prim_s);
-        call(u8bFeed1, repo_uri, '/');
-        call(u8bFeed, repo_uri, DOG_BE_S);
-        call(u8bFeed1, repo_uri, '/');
-        if (u8bDataLen(prim_proj) > 0) {
-            a_dup(u8c, pp, u8bDataC(prim_proj));
-            call(u8bFeed, repo_uri, pp);
-            call(u8bFeed1, repo_uri, '/');
-        }
-
-        //  Compose the row body: `<ts>\trepo\t<uri>\n`.  ts =
-        //  RONNow(); verb = `repo`; uri = file:///<prim>/.be/.
-        a_pad(u8, row, 1024);
-        ron60 ts = RONNow();
-        call(RONutf8sFeed, u8bIdle(row), ts);
-        call(u8bFeed1, row, '\t');
-        a_cstr(repo_verb, "repo");
-        call(u8bFeed, row, repo_verb);
-        call(u8bFeed1, row, '\t');
-        call(u8bFeed, row, u8bDataC(repo_uri));
-        call(u8bFeed1, row, '\n');
-
         a_dup(u8c, rowbytes, u8bData(row));
         (void)FILEFeedAll(fd, rowbytes);
         FILEClose(&fd);
@@ -403,15 +372,18 @@ static ok64 BEGetWorktree(uri *u) {
     fprintf(stderr, "be: worktree from %.*s\n",
             (int)$len(u->path), (char *)u->path[0]);
 
-    // Resolve the primary's current commit via its wtlog.
-    // Rewrite this URI to "?<sha>" so downstream sniff checks out
-    // that commit in the worktree.
+    // Resolve the primary's current commit via its wtlog.  Rewrite
+    // this URI to "?<sha>" so downstream sniff checks out that commit
+    // in the worktree.  NODATA is fine (primary never posted — leave
+    // the URI alone and let sniff resolve from the primary's keeper);
+    // real errors propagate.
     a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
     a_dup(u8c, prim_root, prim_s);
-    if (SNIFFAtTailOf(prim_root, prim_at) != OK) done;
+    mute(SNIFFAtTailOf(prim_root, prim_at), NODATA);
+    if (u8bDataLen(prim_at) == 0) done;
     uri prim_uri = {};
     u8csMv(prim_uri.data, u8bDataC(prim_at));
-    URILexer(&prim_uri);
+    call(URILexer, &prim_uri);
     //  Hashlet: 6..40 hex chars (full sha1 = 40, prefix abbreviations
     //  shorter).  Anything outside that range is not a valid pin.
     size_t flen = u8csLen(prim_uri.fragment);
@@ -423,10 +395,10 @@ static ok64 BEGetWorktree(uri *u) {
     call(u8bFeed1, wt_uri_buf, '?');
     call(u8bFeed,  wt_uri_buf, prim_uri.fragment);
 
+    //  Downstream (`be_build_argv`) reads only `u->data` — `u->query`
+    //  rewrite was dead code.  Point `data` at the buffer's bytes.
     zerop(u);
-    u8csMv(u->data,  u8bDataC(wt_uri_buf));
-    u8csMv(u->query, u->data);
-    u8csUsed1(u->query);  //  drop leading '?'
+    u8csMv(u->data, u8bDataC(wt_uri_buf));
     done;
 }
 
@@ -467,6 +439,30 @@ static ok64 BEProjector(cli *c, uri *u) {
     a_path(dogpath);
     a$rg(a0, 0);
     HOMEResolveSibling(NULL, dogpath, dog_s, a0);
+
+    //  Remote prefetch: a URI carrying an authority slot
+    //  (`be log://origin?main`, `be diff:ssh://origin?main`, …) points
+    //  at a remote ref that keeper needs to materialise locally before
+    //  the projector's dog can resolve it.  Run `keeper get <URI>`
+    //  synchronously first; idempotent when the projector's dog is
+    //  keeper itself, no-op for cached forms with already-fetched
+    //  refs.  Mirrors the now-retired BEDiff's first step.
+    if (!u8csEmpty(u->authority)) {
+        a_cstr(keeper_s, "keeper");
+        a_cstr(get_v,    "get");
+        a_pad(u8cs, kargs, 5);
+        u8csbFeed1(kargs, keeper_s);
+        u8csbFeed1(kargs, get_v);
+        if (u8bDataLen(be_at_buf) > 0) {
+            a_dup(u8c, _atf, be_at_flag);
+            a_dup(u8c, _atv, u8bData(be_at_buf));
+            u8csbFeed1(kargs, _atf);
+            u8csbFeed1(kargs, _atv);
+        }
+        u8csbFeed1(kargs, u->data);
+        a_dup(u8cs, kargv, u8csbData(kargs));
+        call(BERun, keeper_s, kargv, NO);
+    }
 
     //  Verbless: dog argv is `<dog> [--at <uri>] [mode-flag] <URI>`.
     //  Forward the mode explicitly so the child's CLISetHUNKMode picks
@@ -531,13 +527,18 @@ static ok64 BEGetLocal(cli *c, b8 seq) {
     //  GET is ref-expecting: promote bare `be get other/branch` to
     //  query=other/branch just like POST and PATCH.  Path views
     //  (`be VERBS.md`) are the verbless form, not GET.
-    for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) be_promote_to_ref(uribAtP(c->uris, i));
 
-    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
+    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
     b8  remote = (u != NULL && !$empty(u->authority));
 
     //  Local file: URI → wire this cwd as a worktree of a sibling repo.
-    call(BEGetWorktree, u);
+    //  BEGetWorktree rewrites `u->data` to `?<hashlet>` and the new
+    //  bytes need to outlive its frame (downstream argv pack reads
+    //  them).  Hand it a buffer from our own stack — lifetime ends
+    //  when BEGetLocal returns, well after FILESpawn's argv copy.
+    a_pad(u8, wt_uri_buf, 64);
+    call(BEGetWorktree, u, wt_uri_buf);
 
     //  Single-file overwrite: `be get file.c?feat` (VERBS.md §GET).
     //  Path+query (no authority) is a one-file checkout — bypass the
@@ -973,8 +974,8 @@ static ok64 BEGet(cli *c, b8 seq) {
         }
         (void)u8bFeed1(target_ref_buf, '#');
         (void)u8bFeed(target_ref_buf, tt.fragment);
-    } else if (c->nuris > 0 && !u8csEmpty(c->uris[0].query)) {
-        (void)u8bFeed(target_ref_buf, c->uris[0].query);
+    } else if (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query)) {
+        (void)u8bFeed(target_ref_buf, uribAtP(c->uris, 0)->query);
     }
     if (u8bDataLen(target_ref_buf) == 0) return worst;
     u8cs target_ref = {};
@@ -1000,11 +1001,11 @@ static ok64 BEGet(cli *c, b8 seq) {
 
     //  Build flag tail (sans --at).
     a_pad(u8cs, flags_buf, CLI_MAX_FLAGS * 2);
-    for (u32 j = 0; j + 1 < c->nflags; j += 2) {
-        if ($eq(c->flags[j], be_at_flag)) continue;
-        u8csbFeed1(flags_buf, c->flags[j]);
-        if (!u8csEmpty(c->flags[j + 1]))
-            u8csbFeed1(flags_buf, c->flags[j + 1]);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j + 1)));
     }
     a_dup(u8cs, flag_view, u8csbData(flags_buf));
 
@@ -1068,7 +1069,7 @@ static ok64 BEGet(cli *c, b8 seq) {
 //  into mounted subs lives in the BEHead wrapper below.
 static ok64 BEHeadLocal(cli *c, b8 seq) {
     sane(c);
-    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
+    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
     b8 transport = (u != NULL && !$empty(u->scheme));
     b8 cached    = (u != NULL && !transport && !$empty(u->authority));
 
@@ -1278,9 +1279,9 @@ static ok64 BEHead(cli *c, b8 seq) {
     //  that case the recursion swaps the URL per-sub (each sub
     //  fetches its OWN remote) — see head/07.  Local mode
     //  (`?ref`, bare `?`, cached `//host`) just forwards verbatim.
-    b8 transport = (c->nuris > 0 && !u8csEmpty(c->uris[0].scheme));
+    b8 transport = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->scheme));
     u8cs forwarded_query = {};
-    if (transport) u8csMv(forwarded_query, c->uris[0].query);
+    if (transport) u8csMv(forwarded_query, uribAtP(c->uris, 0)->query);
 
     //  Build the child argv prefix.  Local mode: include the parent's
     //  URIs (child runs against `?<same-ref>` in its own scope).
@@ -1290,15 +1291,15 @@ static ok64 BEHead(cli *c, b8 seq) {
     a_cstr(head_lit, "head");
     a_dup(u8c, head_d, head_lit);
     u8csbFeed1(child_args, head_d);
-    for (u32 j = 0; j + 1 < c->nflags; j += 2) {
-        if ($eq(c->flags[j], be_at_flag)) continue;
-        u8csbFeed1(child_args, c->flags[j]);
-        if (!u8csEmpty(c->flags[j + 1]))
-            u8csbFeed1(child_args, c->flags[j + 1]);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(child_args, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(child_args, (*u8csbAtP(c->flags, j + 1)));
     }
     if (!transport) {
-        for (u32 j = 0; j < c->nuris; j++)
-            u8csbFeed1(child_args, c->uris[j].data);
+        for (u32 j = 0; j < uribDataLen(c->uris); j++)
+            u8csbFeed1(child_args, uribAtP(c->uris, j)->data);
     }
 
     a_dup(u8cs, child_argv, u8csbData(child_args));
@@ -1714,11 +1715,11 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
 static ok64 BEPut(cli *c, b8 seq) {
     sane(c);
     b8 has_remote = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) { has_remote = YES; break; }
     }
     if (!has_remote) {
-        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
         call(be_ensure_project_repo, u0);
     }
     if (has_remote) {
@@ -1748,13 +1749,13 @@ static ok64 BEPut(cli *c, b8 seq) {
 static ok64 BEDelete(cli *c, b8 seq) {
     sane(c);
     b8 has_remote = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) { has_remote = YES; break; }
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) { has_remote = YES; break; }
     }
     //  Local-only DELETE on a fresh dir is an edge case but the test
     //  surface expects auto-bootstrap parity with PUT/POST.
     if (!has_remote) {
-        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
         call(be_ensure_project_repo, u0);
     }
     if (has_remote) {
@@ -1807,16 +1808,16 @@ static ok64 BEPatch(cli *c, b8 seq) {
     sane(c);
     //  PATCH is ref-expecting (absorbs another branch's stack): promote
     //  bare `be patch feat` to query=feat just like POST.
-    for (u32 i = 0; i < c->nuris; i++) be_promote_to_ref(&c->uris[i]);
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) be_promote_to_ref(uribAtP(c->uris, i));
     //  Auto-bootstrap parity with PUT/POST — local PATCH on a fresh
     //  dir needs the same `.be/` markers downstream.
     b8 has_remote = NO, has_transport = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) has_remote = YES;
-        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) has_remote = YES;
+        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
     }
     if (!has_remote) {
-        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
         call(be_ensure_project_repo, u0);
     }
 
@@ -1882,17 +1883,17 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
     //  Mirrors BEPut's call to be_ensure_repo; only meaningful when
     //  there's no remote authority (push targets always have a repo).
     b8 has_remote_pre = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) {
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) {
             has_remote_pre = YES; break;
         }
     }
     if (!has_remote_pre) {
-        uri *u0 = (c->nuris > 0) ? &c->uris[0] : NULL;
+        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
         call(be_ensure_project_repo, u0);
     }
-    for (u32 i = 0; i < c->nuris; i++) {
-        uri *u = &c->uris[i];
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        uri *u = uribAtP(c->uris, i);
         //  POST is ref-expecting: bare `be post feat` should target ref
         //  feat, not be rejected as path-form.  Promote first.
         be_promote_to_ref(u);
@@ -1911,20 +1912,20 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
     }
     b8 has_remote    = NO;
     b8 has_transport = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].authority)) has_remote = YES;
-        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) has_remote = YES;
+        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
     }
     //  Commit-message presence: any URI with a non-empty fragment (the
     //  new convention) or a legacy `-m` flag.
     b8 has_msg = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].fragment)) { has_msg = YES; break; }
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
     }
     if (!has_msg) {
         a_cstr(mf, "-m");
-        for (u32 fi = 0; fi + 1 < c->nflags; fi += 2) {
-            if ($eq(c->flags[fi], mf)) { has_msg = YES; break; }
+        for (u32 fi = 0; fi + 1 < u8csbDataLen(c->flags); fi += 2) {
+            if ($eq((*u8csbAtP(c->flags, fi)), mf)) { has_msg = YES; break; }
         }
     }
     //  Per VERBS.md §POST:
@@ -1942,7 +1943,7 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
     //  Skip only the bare-status case (no msg, no URIs): there's
     //  nothing to commit and sniff would just dry-run.
     b8 ran_sniff = NO;
-    if (has_msg || c->nuris > 0 || !has_remote) {
+    if (has_msg || uribDataLen(c->uris) > 0 || !has_remote) {
         steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("post"), NO};
         ran_sniff = YES;
     }
@@ -1961,7 +1962,7 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
     //  tip without a manual `be get`.  Skip the bare-dry-run case
     //  (no commit, no message, no URI) — sniff just printed the
     //  would-be change-set and `.be/wtlog` baseline is unchanged.
-    b8 dry_run = !has_msg && c->nuris == 0;
+    b8 dry_run = !has_msg && uribDataLen(c->uris) == 0;
     if (ran_sniff && !dry_run) (void)be_reindex(c);
     done;
 }
@@ -2022,19 +2023,16 @@ static ok64 bepost_bump_sub(u8cs subpath) {
 //  (no piping/teeing), so the child's diagnostic lines flow
 //  straight to the user.
 //
-//  POSTNONE detection rides on the exit code.  abc/PRO.h::MAIN
-//  returns the full ok64 from main(), but the kernel truncates to
-//  the low byte via WEXITSTATUS.  POSTNONE = 0x65871d5d85ce, low
-//  byte 0xCE = 206.  POSTNOMSG, KEEPFAIL, SNIFFFAIL etc. have
-//  distinct residues — if a future code ever collides on 0xCE the
-//  RON60 author needs to pick a different encoding.  See plan
-//  §POST: "a sub with no dirty paths just no-ops; parent doesn't
-//  bump that gitlink".
+//  *NONE detection rides on the exit code.  abc/PRO.h::MAIN returns
+//  the full ok64 from main(), but the kernel truncates to the low
+//  byte via WEXITSTATUS.  Every *NONE shares the low byte 0xCE (see
+//  `BE_NONE_LOW_BYTE` near BERun) — `ok64is(NONE, …)` reads that as
+//  "no match / no-op".  See plan §POST: "a sub with no dirty paths
+//  just no-ops; parent doesn't bump that gitlink".
 //
-//  Returns OK on (child exit 0) OR (child exit POSTNONE's
-//  low-byte residue, with *postnone_out = YES).  BEDOGEXIT /
-//  BEDOGSIG otherwise.
-#define BEPOST_POSTNONE_BYTE  ((int)(POSTNONE & 0xFFu))
+//  Returns OK on (child exit 0) OR (child exit *NONE-low-byte
+//  residue, with *postnone_out = YES).  BEDOGEXIT / BEDOGSIG
+//  otherwise.
 
 static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
                               u8css argv, b8 *postnone_out) {
@@ -2117,7 +2115,7 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
     if (rc == 0)          done;
     //  Child exited non-zero.  POSTNONE's low-byte residue is a
     //  no-op signal per plan §POST.
-    if (rc == BEPOST_POSTNONE_BYTE) { *postnone_out = YES; done; }
+    if (rc == BE_NONE_LOW_BYTE) { *postnone_out = YES; done; }
     return BEDOGEXIT;
 }
 
@@ -2147,9 +2145,9 @@ typedef struct {
 static b8 bepost_find_sub_msg(cli const *c, u8cs subpath, u8csp out_msg) {
     out_msg[0] = NULL; out_msg[1] = NULL;
     a_cstr(sm_flag, "--sub-msg");
-    for (u32 i = 0; i + 1 < c->nflags; i += 2) {
-        if (!$eq(c->flags[i], sm_flag)) continue;
-        u8cs val = {c->flags[i + 1][0], c->flags[i + 1][1]};
+    for (u32 i = 0; i + 1 < u8csbDataLen(c->flags); i += 2) {
+        if (!$eq((*u8csbAtP(c->flags, i)), sm_flag)) continue;
+        u8cs val = {(*u8csbAtP(c->flags, i + 1))[0], (*u8csbAtP(c->flags, i + 1))[1]};
         //  Split val on the first '='.
         u8c *eq = NULL;
         $for(u8c, p, val) { if (*p == '=') { eq = p; break; } }
@@ -2234,18 +2232,21 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     a_dup(u8c, q_d,    q_lit);
     u8csbFeed1(child_args, post_d);
     u8csbFeed1(child_args, q_d);
-    for (u32 j = 0; j + 1 < rc->c->nflags; j += 2) {
-        if ($eq(rc->c->flags[j], be_at_flag)) continue;
-        if ($eq(rc->c->flags[j], mf_lit))     continue;
-        if ($eq(rc->c->flags[j], sm_lit))     continue;
-        if ($eq(rc->c->flags[j], q_lit))      continue;
-        if ($eq(rc->c->flags[j], qlong_lit))  continue;
-        u8csbFeed1(child_args, rc->c->flags[j]);
-        if (!u8csEmpty(rc->c->flags[j + 1]))
-            u8csbFeed1(child_args, rc->c->flags[j + 1]);
+    size_t nflags = u8csbDataLen(rc->c->flags);
+    for (size_t j = 0; j + 1 < nflags; j += 2) {
+        u8cs *flag = u8csbAtP(rc->c->flags, j);
+        u8cs *val  = u8csbAtP(rc->c->flags, j + 1);
+        if ($eq(*flag, be_at_flag)) continue;
+        if ($eq(*flag, mf_lit))     continue;
+        if ($eq(*flag, sm_lit))     continue;
+        if ($eq(*flag, q_lit))      continue;
+        if ($eq(*flag, qlong_lit))  continue;
+        u8csbFeed1(child_args, *flag);
+        if (!u8csEmpty(*val)) u8csbFeed1(child_args, *val);
     }
-    for (u32 j = 0; j < rc->c->nuris; j++) {
-        uri *u = &rc->c->uris[j];
+    size_t nuris = uribDataLen(rc->c->uris);
+    for (size_t j = 0; j < nuris; j++) {
+        uri *u = uribAtP(rc->c->uris, j);
         b8 pure_frag = !u8csEmpty(u->fragment) &&
                        u8csEmpty(u->scheme) &&
                        u8csEmpty(u->authority) &&
@@ -2303,17 +2304,17 @@ static ok64 BEPost(cli *c, b8 seq) {
     //  whether to recurse before any commit work runs.  No flag/URI
     //  mutation here — BEPostLocal repeats the parsing.
     b8 has_transport = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].scheme))    has_transport = YES;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
     }
     b8 has_msg = NO;
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].fragment)) { has_msg = YES; break; }
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
     }
     if (!has_msg) {
         a_cstr(mf, "-m");
-        for (u32 fi = 0; fi + 1 < c->nflags; fi += 2) {
-            if ($eq(c->flags[fi], mf)) { has_msg = YES; break; }
+        for (u32 fi = 0; fi + 1 < u8csbDataLen(c->flags); fi += 2) {
+            if ($eq((*u8csbAtP(c->flags, fi)), mf)) { has_msg = YES; break; }
         }
     }
 
@@ -2331,7 +2332,7 @@ static ok64 BEPost(cli *c, b8 seq) {
     //  project status / auto-resolve probe.
     //  Transport scheme: explicit URL — targets one project per
     //  SUBS.plan.md §"URI/argv rules".
-    b8 bare_status = !has_msg && c->nuris == 0;
+    b8 bare_status = !has_msg && uribDataLen(c->uris) == 0;
     if (!dry_only && (bare_status || has_transport))
         return BEPostLocal(c, seq);
 
@@ -2344,17 +2345,17 @@ static ok64 BEPost(cli *c, b8 seq) {
     //  decoration `<parent_msg> [<subpath>]` or a `--sub-msg
     //  <subpath>=<msg>` override.
     u8cs parent_msg = {};
-    for (u32 i = 0; i < c->nuris; i++) {
-        if (!u8csEmpty(c->uris[i].fragment)) {
-            u8csMv(parent_msg, c->uris[i].fragment);
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) {
+            u8csMv(parent_msg, uribAtP(c->uris, i)->fragment);
             break;
         }
     }
     if (u8csEmpty(parent_msg)) {
         a_cstr(mf_lit, "-m");
-        for (u32 fi = 0; fi + 1 < c->nflags; fi += 2) {
-            if ($eq(c->flags[fi], mf_lit)) {
-                u8csMv(parent_msg, c->flags[fi + 1]);
+        for (u32 fi = 0; fi + 1 < u8csbDataLen(c->flags); fi += 2) {
+            if ($eq((*u8csbAtP(c->flags, fi)), mf_lit)) {
+                u8csMv(parent_msg, (*u8csbAtP(c->flags, fi + 1)));
                 break;
             }
         }
@@ -2496,8 +2497,8 @@ static ok64 becli_inner(cli *c) {
             else if ($eq(c->verb, _v_patch)) def = 'q';
         }
         if (def != 'p') {
-            for (u32 i = 0; i < c->nuris; i++) {
-                uri *u = &c->uris[i];
+            for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+                uri *u = uribAtP(c->uris, i);
                 u8cs orig_path = {u->path[0], u->path[1]};
                 ok64 pr = DOGPromoteBareword(u, def);
                 if (pr != OK) continue;
@@ -2521,8 +2522,8 @@ static ok64 becli_inner(cli *c) {
     {
         a_cstr(v_get_s, "get");
         if (!u8csEmpty(c->verb) && u8csEq(c->verb, v_get_s) &&
-            c->nuris > 0)
-            (void)be_sub_shard_setup(c, &c->uris[0]);
+            uribDataLen(c->uris) > 0)
+            (void)be_sub_shard_setup(c, uribAtP(c->uris, 0));
     }
 
     //  Read the wt's tip URI (`<root>?<branch>#<sha>`) once, here at
@@ -2541,7 +2542,7 @@ static ok64 becli_inner(cli *c) {
     }
 
     // No args → default
-    if ($empty(c->verb) && c->nuris == 0 && c->nflags == 0) {
+    if ($empty(c->verb) && uribDataLen(c->uris) == 0 && u8csbDataLen(c->flags) == 0) {
         call(BEDefault);
         done;
     }
@@ -2557,7 +2558,7 @@ static ok64 becli_inner(cli *c) {
     $mv(verb, c->verb);
 
     // Get first URI if available
-    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
+    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
 
     b8 seq = CLIHas(c, "--seq");
 
@@ -2577,13 +2578,13 @@ static ok64 becli_inner(cli *c) {
     //  blame, cat, map, spot, grep, …) is shorthand for `be <proj>:`.
     //  Projections are not verbs (VERBS.md §"View projectors"); they
     //  never live in BE_VERB_NAMES, so CLIParse parks the bareword in
-    //  `c->uris[0].path`.  We detect that shape here, synthesise the
+    //  `uribAtP(c->uris, 0)->path`.  We detect that shape here, synthesise the
     //  matching URI, and route through BEProjector — keeping the
     //  dispatch path single-sourced.  Examples:
     //      be status            → status:
     //      be log               → log:
     //      be diff foo.c?main   → diff:foo.c?main   (foo.c?main lands
-    //                              in c->uris[1] and rides along)
+    //                              in (*uribAtP(c->uris, 1)) and rides along)
     if ($empty(verb) && u != NULL && u8csEmpty(u->scheme) &&
         !u8csEmpty(u->path) && DOGIsProjector(u->path)) {
         a_pad(u8, syn_buf, 4096);
@@ -2591,10 +2592,10 @@ static ok64 becli_inner(cli *c) {
         (void)u8bFeed(syn_buf, ps);
         (void)u8bFeed1(syn_buf, ':');
         //  Trailing argv tokens after the projector name (`be log
-        //  path/to/file?ref`) land in c->uris[1..] — fold the first
+        //  path/to/file?ref`) land in (*uribAtP(c->uris, 1..)) — fold the first
         //  one in as the projector body.
-        if (c->nuris > 1 && !$empty(c->uris[1].data)) {
-            a_dup(u8c, us, c->uris[1].data);
+        if (uribDataLen(c->uris) > 1 && !$empty(uribAtP(c->uris, 1)->data)) {
+            a_dup(u8c, us, uribAtP(c->uris, 1)->data);
             (void)u8bFeed(syn_buf, us);
         }
         uri synthetic = {};
@@ -2660,6 +2661,8 @@ ok64 becli() {
     sane(1);
     cli c = {};
     call(PATHu8bAlloc, c.repo);
+    call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
+    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(becli_inner, &c);
     ok64 ret = __;
     //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
@@ -2669,6 +2672,8 @@ ok64 becli() {
     if (ret == POSTNONE &&
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
+    u8csbFree(c.flags);
+    uribFree(c.uris);
     PATHu8bFree(c.repo);
     return ret;
 }

@@ -23,15 +23,15 @@
 //  emit refs advertisement + pack response on stdout.  Stateless across
 //  requests (one process per ssh invocation, like vanilla git).
 //
-//  Repo path comes from argv (parsed into c->uris[0].data) — it is
+//  Repo path comes from argv (parsed into uribAtP(c->uris, 0)->data) — it is
 //  *not* derived from cwd, so this verb works under any ssh ForceCommand
 //  config.  Path is opened read-only since serving never mutates state.
 static ok64 keeper_upload_pack(cli *c) {
     sane(c);
-    if (c->nuris < 1) {
+    if (uribDataLen(c->uris) < 1) {
         return KEEPFAIL;
     }
-    u8cs path = {c->uris[0].data[0], c->uris[0].data[1]};
+    u8cs path = {uribAtP(c->uris, 0)->data[0], uribAtP(c->uris, 0)->data[1]};
     if (u8csEmpty(path)) return KEEPFAIL;
 
     home h = {};
@@ -51,14 +51,14 @@ static ok64 keeper_upload_pack(cli *c) {
 //  Drop-in for `git-receive-pack <repo-path>`: read pkt-lines + pack on
 //  stdin, emit refs advertisement + unpack/per-ref status on stdout.
 //  Stateless across requests (one process per ssh invocation).  Repo
-//  path comes from argv (parsed into c->uris[0].data); rw mode is
+//  path comes from argv (parsed into uribAtP(c->uris, 0)->data); rw mode is
 //  required because push writes packs + REFS.
 static ok64 keeper_receive_pack(cli *c) {
     sane(c);
-    if (c->nuris < 1) {
+    if (uribDataLen(c->uris) < 1) {
         return KEEPFAIL;
     }
-    u8cs path = {c->uris[0].data[0], c->uris[0].data[1]};
+    u8cs path = {uribAtP(c->uris, 0)->data[0], uribAtP(c->uris, 0)->data[1]};
     if (u8csEmpty(path)) return KEEPFAIL;
 
     home h = {};
@@ -102,8 +102,8 @@ static ok64 keepercli_inner(cli *c) {
          || $eq(c->verb, v_verify);
     //  Verb-less projector dispatch (`keeper tree:?...`, `commit:`,
     //  `blob:`) is also read-only — no pack ingest, no ref writes.
-    if (!ro && $empty(c->verb) && c->nuris > 0) {
-        char const *dog = DOGProjectorDog(c->uris[0].scheme);
+    if (!ro && $empty(c->verb) && uribDataLen(c->uris) > 0) {
+        char const *dog = DOGProjectorDog(uribAtP(c->uris, 0)->scheme);
         if (dog != NULL && strcmp(dog, "keeper") == 0) ro = YES;
     }
     b8 rw = !ro;
@@ -138,10 +138,10 @@ static ok64 keepercli_inner(cli *c) {
     //  the `$ok(branch)` sanity check in KEEPOpenBranch holds.
     static u8c const _zero = 0;
     u8cs branch = {&_zero, &_zero};
-    b8 has_query    = (c->nuris > 0 && !u8csEmpty(c->uris[0].query));
-    b8 query_is_sha = (has_query && u8csLen(c->uris[0].query) == 40 &&
-                       HEXu8sValid(c->uris[0].query));
-    b8 has_authority = (c->nuris > 0 && !u8csEmpty(c->uris[0].authority));
+    b8 has_query    = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query));
+    b8 query_is_sha = (has_query && u8csLen(uribAtP(c->uris, 0)->query) == 40 &&
+                       HEXu8sValid(uribAtP(c->uris, 0)->query));
+    b8 has_authority = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->authority));
     //  Remote-vs-local branch resolution:
     //    Remote (`scheme://host…?ref`) — the query is the REMOTE ref
     //      to fetch.  The local branch (where fetched objects land)
@@ -155,10 +155,10 @@ static ok64 keepercli_inner(cli *c) {
         if (u8bHasData(h.cur_branch))
             u8csMv(branch, u8bDataC(h.cur_branch));
         else if (has_query && !query_is_sha)
-            u8csMv(branch, c->uris[0].query);
+            u8csMv(branch, uribAtP(c->uris, 0)->query);
     } else {
         if (has_query && !query_is_sha)
-            u8csMv(branch, c->uris[0].query);
+            u8csMv(branch, uribAtP(c->uris, 0)->query);
         else if (u8bHasData(h.cur_branch))
             u8csMv(branch, u8bDataC(h.cur_branch));
     }
@@ -175,7 +175,11 @@ ok64 keepercli() {
     sane(1);
     cli c = {};
     call(PATHu8bAlloc, c.repo);
+    call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
+    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(keepercli_inner, &c);
+    u8csbFree(c.flags);
+    uribFree(c.uris);
     PATHu8bFree(c.repo);
     done;
 }

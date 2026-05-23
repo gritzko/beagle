@@ -114,7 +114,7 @@ ok64 SPOTExec(cli *c) {
     //  current tip via `--at`'s fragment.
     if ($eq(c->verb, v_get)) {
         uri empty = {};
-        uri *u = (c->nuris > 0) ? &c->uris[0] : &empty;
+        uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : &empty;
         call(KEEPOpen, dog->h, NO);
         ok64 igr = SPOTIndexFromTips(u);
         KEEPClose();
@@ -163,8 +163,8 @@ ok64 SPOTExec(cli *c) {
     //  are stripped so shell quoting doesn't leak in.
     u8cs proj_ext = {};
     b8 proj_search_uri0 = NO;
-    if ($empty(c->verb) && c->nuris > 0) {
-        uri *pu = &c->uris[0];
+    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
+        uri *pu = uribAtP(c->uris, 0);
         a_cstr(s_spot,  "spot");
         a_cstr(s_grep,  "grep");
         a_cstr(s_regex, "regex");
@@ -213,8 +213,8 @@ ok64 SPOTExec(cli *c) {
     int ntrail = 0;
     if (!$empty(proj_ext)) { $mv(trail[ntrail], proj_ext); ntrail++; }
     uri const *ref_uri = NULL;   // first URI with a real `?ref` query
-    for (u32 ui = 0; ui < c->nuris && ntrail < 16; ui++) {
-        uri *u = &c->uris[ui];
+    for (u32 ui = 0; ui < uribDataLen(c->uris) && ntrail < 16; ui++) {
+        uri *u = uribAtP(c->uris, ui);
         //  Projector consumed the fragment.  Path stays for narrowing
         //  (e.g. `spot:/graf?feat#sym` ⇒ search `sym` under `/graf` on
         //  branch `feat`); the loop below picks it up via u->path.
@@ -355,11 +355,11 @@ ok64 SPOTExec(cli *c) {
             u8css sf = {sfiles, sfiles + snf};
             ret = CAPOSpot(ndl, rep, ext, reporoot, sf, ref_uri);
         }
-    } else if (c->nuris > 0) {
+    } else if (uribDataLen(c->uris) > 0) {
         //  A search projector with no body (e.g. `spot:`, `spot:#name`)
         //  is the most likely cause — body belongs in the URI path slot,
         //  not the fragment.  Catch that case with a targeted hint.
-        uri *u0 = &c->uris[0];
+        uri *u0 = uribAtP(c->uris, 0);
         a_cstr(s_spot,  "spot");
         a_cstr(s_grep,  "grep");
         a_cstr(s_regex, "regex");

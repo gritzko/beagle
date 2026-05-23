@@ -1661,6 +1661,102 @@ static void BROScrollCenter(BROstate *st, u32 target) {
     st->scroll = s;
 }
 
+//  YES iff `ch->uri`'s fragment is empty or a pure-line marker
+//  (`L<digits>` / bare `<digits>`).  Pure-symbol or labelled-line
+//  fragments (`#'sym'`, `#sym:L42`, `#abc1234`, …) return NO — those
+//  hunks own their own URI and the status bar shows them verbatim.
+static b8 bro_uri_is_line_or_empty(hunk const *ch) {
+    if ($empty(ch->uri)) return YES;
+    uri u = {};
+    u8csc text = {ch->uri[0], ch->uri[1]};
+    if (DOGParseURI(&u, text) != OK) return NO;
+    if ($empty(u.fragment)) return YES;
+    //  HUNKu8sFragSplit writes the symbol body slice into sym_s (or
+    //  zeroes it when there's no symbol).  Pure-line iff a line was
+    //  extracted AND the symbol slice ended up empty.
+    u8cs sym_s = {};
+    u8csc fr = {u.fragment[0], u.fragment[1]};
+    u32 line = HUNKu8sFragSplit(fr, sym_s);
+    return (line > 0 && $empty(sym_s));
+}
+
+//  Source line at the screen-centre row.  Walks source-line starts
+//  from the hunk's first display row to the centre row.  Returns 0
+//  when the view is empty.  Centre tracks `st->scroll + visible/2`
+//  clamped to the active hunk's last row.
+//
+//  Two URI shapes for the hunk's fragment land here:
+//    * Pure-line (`#L<n>` / `#<n>` / no fragment) — `<n>` was a
+//      *navigation marker* (cursor parked there on open), not a
+//      hunk-text anchor.  Source line = count from hunk top.
+//    * Labelled line (`#'sym':L<n>`, `#sym:L<n>`) — `<n>` *is* the
+//      hunk-text anchor (snippet from grep/log/blame starts at <n>).
+//      Source line = `<n> + count - 1`.
+static u32 bro_center_src_line(BROstate const *st) {
+    if (bro_nlines(st) == 0) return 0;
+    u32 visible = (st->rows > 1) ? (u32)(st->rows - 1) : 1;
+    u32 cur = st->scroll + visible / 2;
+    if (cur >= bro_nlines(st)) cur = bro_nlines(st) - 1;
+    range32 const *lines = bro_lines((BROstate *)st);
+    u32 cur_hunk = lines[cur].lo;
+    while (cur > st->scroll && lines[cur].lo != cur_hunk) cur--;
+    u32 first = cur;
+    while (first > 0 && lines[first - 1].lo == cur_hunk) first--;
+    u32 count = 0;
+    for (u32 i = first; i <= cur; i++) {
+        if (bro_is_source_start(st->hunks,
+                                range32bDataC(st->linesbuf), i))
+            count++;
+    }
+    //  Snippet anchor only when the fragment carries a symbol body
+    //  (e.g., `#'sym':L42`, `#sym:L42`).  Pure-line / no fragment →
+    //  the URI's L<n> is a navigation marker, not a hunk-anchor;
+    //  source line is just `count` from the hunk's top.
+    hunk const *ch = &st->hunks[0][cur_hunk];
+    b8 use_loc_anchor = NO;
+    if (!$empty(ch->uri)) {
+        uri u = {};
+        u8csc text = {ch->uri[0], ch->uri[1]};
+        if (DOGParseURI(&u, text) == OK && !$empty(u.fragment)) {
+            u8cs sym_s = {};
+            u8csc fr = {u.fragment[0], u.fragment[1]};
+            (void)HUNKu8sFragSplit(fr, sym_s);
+            use_loc_anchor = !$empty(sym_s);
+        }
+    }
+    BROloc loc = {};
+    BROHunkLoc(&loc, ch);
+    return (use_loc_anchor && loc.line > 0) ? loc.line + count - 1 : count;
+}
+
+//  Compose the URI shown in the status bar.  Rule:
+//    * Hunk URI carries a non-line fragment (`#'snippet'`, `#abc…`,
+//      `#sym:L42`) → output `ch->uri` verbatim — the producer owns it.
+//    * Otherwise (no fragment, or pure-line `#L<n>` / `#<n>`) →
+//      `<path>#L<centre-source-line>` so the centre of the screen
+//      becomes a stable, reopenable address.
+//  NUL-terminated; caller-provided buffer.
+static void BROStatusURI(BROstate const *st, char *out, size_t cap) {
+    if (cap == 0) return;
+    out[0] = 0;
+    if (bro_nlines(st) == 0) return;
+    u32 cur_hunk = bro_lines((BROstate *)st)[st->scroll].lo;
+    hunk const *ch = &st->hunks[0][cur_hunk];
+
+    if (!bro_uri_is_line_or_empty(ch)) {
+        if (!$empty(ch->uri)) snprintf(out, cap, U8SFMT, u8sFmt(ch->uri));
+        return;
+    }
+
+    BROloc loc = {};
+    BROHunkLoc(&loc, ch);
+    u32 center = bro_center_src_line(st);
+    if (!$empty(loc.path) && center > 0)
+        snprintf(out, cap, U8SFMT "#L%u", u8sFmt(loc.path), center);
+    else if (!$empty(ch->uri))
+        snprintf(out, cap, U8SFMT, u8sFmt(ch->uri));
+}
+
 static void BROStatusBar(BROstate *st) {
     scr_goto(st->rows, 1);
     scr_puts(TTY_UNDERLINE TTY_ERASE_LINE);
@@ -1742,36 +1838,14 @@ static void BROStatusBar(BROstate *st) {
     if (sn < 0) sn = 0;
     if ((size_t)sn >= sizeof(stats)) sn = (int)(sizeof(stats) - 1);
 
-    // Status URI tracks the current view position.  Cat-style hunks
-    // (those with a path) render as `<path>#L<line>` where <line> is
-    // the source line at the current scroll row.  Other hunks (e.g.
-    // pure-search titles with no path) fall back to the URI verbatim.
-    BROloc loc = {};
-    BROHunkLoc(&loc, ch);
-    u32 src_line = 0;
-    if (bro_nlines(st) > 0) {
-        u32 cur = (st->scroll < bro_nlines(st))
-                      ? st->scroll : bro_nlines(st) - 1;
-        range32 const *lines = bro_lines(st);
-        u32 first = cur;
-        while (first > 0 && lines[first - 1].lo == cur_hunk) first--;
-        u32 count = 0;
-        for (u32 i = first; i <= cur; i++) {
-            if (bro_is_source_start(st->hunks,
-                                    range32bDataC(st->linesbuf), i))
-                count++;
-        }
-        if (count > 0) {
-            src_line = (loc.line > 0) ? loc.line + count - 1 : count;
-        }
-    }
-
+    // Status URI tracks the current view position.  The shared
+    // BROStatusURI helper applies the same logic the `r` reload uses
+    // — centre line for cat-style hunks (no fragment or pure-line),
+    // verbatim for snippet hunks (`#'sym'`, `#abc1234`, …).
     char dtitle[HUNK_TITLE_MAX + 1];
-    int dtlen = 0;
-    if (!$empty(loc.path) && src_line > 0) {
-        dtlen = snprintf(dtitle, sizeof(dtitle), U8SFMT "#L%u",
-                         u8sFmt(loc.path), src_line);
-    } else if (!$empty(ch->uri)) {
+    BROStatusURI(st, dtitle, sizeof(dtitle));
+    int dtlen = (int)strlen(dtitle);
+    if (dtlen == 0 && !$empty(ch->uri)) {
         dtlen = snprintf(dtitle, sizeof(dtitle), U8SFMT, u8sFmt(ch->uri));
     }
     if (dtlen < 0) dtlen = 0;
@@ -2601,6 +2675,50 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         return BRO_KEY_CHANGED;
     }
     if (ch == ':' || ch == '#') { BROReadURI(st, repo); return BRO_KEY_CHANGED; }
+    if (ch == 'r' || ch == 'R') {
+        //  Reload: re-fork `be --tlv <uri>` for the URI currently
+        //  shown in the status bar.  Reads screen state — no cached
+        //  copy — so any view (initial argv, sub-view, search result)
+        //  reloads the bytes the user actually sees.  Pop first so
+        //  the new view replaces the current one.  After the fresh
+        //  view is on top, honour the URI's `#L<line>` fragment
+        //  (BROForkBe drains TLV but doesn't itself jump-to-line —
+        //  bro's BROExec ignores the fragment for argv-passed URIs).
+        char uri[512] = {};
+        BROStatusURI(st, uri, sizeof(uri));
+        if (uri[0] == 0) {
+            bro_flash(st, "reload: no URI on this view");
+            return BRO_KEY_NONE;
+        }
+        if (st->nsaves > 0) (void)BROBack(st);
+        ok64 fo = BROForkBe(st, uri);
+        if (fo != OK && u8bDataLen(st->flash) == 0)
+            bro_flash(st, "reload: %s", ok64str(fo));
+        if (fo == OK) {
+            //  Match BROOpenFile's source-line walk: count only
+            //  source-line starts (wrap continuations share the same
+            //  source line and must not bump the counter), then
+            //  centre the view on the matching row.
+            char const *hash = strchr(uri, '#');
+            unsigned ln = 0;
+            if (hash && (sscanf(hash + 1, "L%u", &ln) == 1
+                      || sscanf(hash + 1, "%u",  &ln) == 1)
+                && ln > 0 && bro_nlines(st) > 1) {
+                u32 file_ln = 0, best = 1;
+                for (u32 i = 0; i < bro_nlines(st); i++) {
+                    if (!bro_is_source_start(st->hunks,
+                                             range32bDataC(st->linesbuf),
+                                             i))
+                        continue;
+                    file_ln++;
+                    if (file_ln == ln) { best = i; break; }
+                    best = i;
+                }
+                BROScrollCenter(st, best);
+            }
+        }
+        return BRO_KEY_CHANGED;
+    }
     if (ch == '/') {
         BROReadSearch(st);
         if (u8bDataLen(st->search) > 0) {
@@ -2949,7 +3067,10 @@ ok64 BRORun(hunkcs hunks) {
     st.mouse_on = YES;
 
     // Initial scroll: if first hunk has a line number in its URI, center
-    // on that line. Otherwise skip the title.
+    // on that line. Otherwise skip the title.  Once the navigation
+    // marker has been consumed, truncate the URI at the `#` so the
+    // status bar's line math doesn't read the fragment as a hunk-anchor
+    // (snippet shape) and double-count.
     {
         BROloc loc0 = {};
         if (!$empty(hunks)) BROHunkLoc(&loc0, hunks[0]);

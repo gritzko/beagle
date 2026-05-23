@@ -53,7 +53,11 @@ ok64 capocli() {
     sane(1);
     cli c = {};
     call(PATHu8bAlloc, c.repo);
+    call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
+    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(capocli_inner, &c);
+    u8csbFree(c.flags);
+    uribFree(c.uris);
     PATHu8bFree(c.repo);
     done;
 }

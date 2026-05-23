@@ -8,33 +8,35 @@
 
 //  CLI_MAX_URIS — caps the URI count per invocation.  Glob expansions
 //  (`be put test/*/*/*.txt`) routinely produce dozens of paths, so 16
-//  was too tight; bumped to 1024.  uri is ~80B so the cli struct is
-//  ~80KB on stack — large but fine for the entry frame.
+//  was too tight; bumped to 1024.  Used as the alloc size for the
+//  uri buffer; the buffer is heap-backed (CLAUDE.md §5).
 #define CLI_MAX_URIS  1024
-#define CLI_MAX_FLAGS 32  // pairs: 16 flags max
+#define CLI_MAX_FLAGS 32  // pairs: 16 flags max — sized in entries
 
 // Parsed CLI state.
 //
 //   dog [verb] [--flags] [URI...]
 //
-// Slices borrow from argv (no allocation).  Every non-flag arg is
-// run through DOGNormalizeArg and stored as one entry in uris[];
-// there is no multi-arg fragment joining.  Free-form text (commit
-// messages, search strings) reaches the dogs as a single
-// whitespace-bearing arg (which DOGNormalizeArg classifies as
-// fragment) or via the explicit `#` sigil; legacy `-m <msg>` is
-// still accepted.
+// Slices borrow from argv (no per-slice allocation).  Every non-flag
+// arg is run through DOGNormalizeArg and appended to `uris`; there
+// is no multi-arg fragment joining.  Free-form text (commit messages,
+// search strings) reaches the dogs as a single whitespace-bearing
+// arg (which DOGNormalizeArg classifies as fragment) or via the
+// explicit `#` sigil; legacy `-m <msg>` is still accepted.
 //
-// flags[] is interleaved: [flag0, val0, flag1, val1, ...].
-// Boolean flags have an empty val. nuris/nflags count entries,
-// not pairs — nflags is always even (flag + val = 2 entries).
+// `flags` is interleaved: [flag0, val0, flag1, val1, …].  Boolean
+// flags get an empty val.  Use $for(u8cs, e, u8csbData(c->flags))
+// to walk, or u8csbDataLen(c->flags) for the entry count
+// (always even: flag + val = 2 per pair).
+//
+// `uris` and `flags` are heap-allocated by the entry frame (e.g.
+// becli_inner) via u8csbAlloc / uribAlloc; CLIParse appends into them
+// via {u8csb,urib}Feed1.  Walk with $for(uri, u, uribData(c->uris)).
 typedef struct {
     u8cs   verb;                     // first arg matching verb_names
-    u8cs   flags[CLI_MAX_FLAGS * 2]; // interleaved [flag, val] pairs
-    u32    nflags;                   // count of entries (= 2 * npairs)
-    uri    uris[CLI_MAX_URIS];       // parsed URI targets
-    u32    nuris;
-    path8b repo;                     // repo root path; heap-allocated by CLIParse, freed by CLIClose
+    u8csb  flags;                    // interleaved [flag, val] u8cs entries
+    urib   uris;                     // parsed URI targets
+    path8b repo;                     // repo root path; heap-allocated by entry frame
 } cli;
 
 // Parse $args into cli struct. verb_names is a NULL-terminated
@@ -54,11 +56,14 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
 fun void CLIFlag(u8csp out, cli const *c, char const *flag) {
     out[0] = NULL; out[1] = NULL;
     a_cstr(fs, flag);
-    for (u32 i = 0; i + 1 < c->nflags; i += 2) {
-        if ($eq(c->flags[i], fs)) {
-            $mv(out, c->flags[i + 1]);
-            return;
-        }
+    //  Buffer layout: c->flags is `u8cs *const [4] = {past, data,
+    //  idle, end}`.  Walk DATA in [flag, val] pairs; an empty `val`
+    //  slot is still non-NULL (CLIParse uses an empty-but-non-NULL
+    //  sentinel).
+    u8cs *head = c->flags[1];
+    u8cs *end  = c->flags[2];
+    for (u8cs *p = head; p + 1 <= end; p += 2) {
+        if ($eq(*p, fs)) { $mv(out, *(p + 1)); return; }
     }
 }
 
