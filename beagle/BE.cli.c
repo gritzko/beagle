@@ -39,11 +39,15 @@ con ok64 BEPRJDUP  = 0x2ce65b4cd799;
 
 // --- Verb table ---
 
+//  HTTP-verb dictionary (VERBS.md §"Verb semantics"): HEAD, GET, POST,
+//  PUT, DELETE, PATCH.  Everything else (diff, status, log, ls, blame,
+//  cat, map, …) is a *projection* — surfaced via `be <proj>:` (URI
+//  form) or `be <proj>` (bareword shorthand — see the dispatcher's
+//  bareword-projector branch).  No projection name lives in this
+//  table; if it did, CLIParse would consume it as a verb and the
+//  bareword shortcut would never fire.
 static char const *const BE_VERB_NAMES[] = {
     "head", "get", "post", "put", "delete", "patch",
-    //  Legacy / read-only sub-verbs surfaced as projectors elsewhere
-    //  but still parsed here for argv compat:
-    "diff", "merge", "sync", "status",
     NULL
 };
 
@@ -1765,21 +1769,6 @@ static ok64 BEDelete(cli *c, b8 seq) {
     return BEDispatch(c, local_steps, 1, seq);
 }
 
-//  `be diff <uri>` — delegate to graf.  For local URIs (no authority)
-//  graf reads objects straight from keeper's store; for a remote URI
-//  we `keeper get` first to materialize the reachable closure, same
-//  as `be patch`.
-static ok64 BEDiff(cli *c, b8 seq) {
-    sane(c);
-    static dog_step const steps[] = {
-        {u8slit("keeper"), u8slit("get"),  NO},
-        {u8slit("graf"),   u8slit("diff"), NO},
-    };
-    u32 nsteps = sizeof(steps) / sizeof(steps[0]);
-    uri *u = (c->nuris > 0) ? &c->uris[0] : NULL;
-    u32 start = (u != NULL && !$empty(u->authority)) ? 0 : 1;
-    return BEDispatch(c, steps + start, nsteps - start, seq);
-}
 
 //  Ref-expecting verbs (post, patch) accept a path-shaped argument as
 //  the ref — `be get feat/sub` → query="feat/sub".  Bareword promotion
@@ -2501,12 +2490,10 @@ static ok64 becli_inner(cli *c) {
             a_cstr(_v_get,   "get");
             a_cstr(_v_head,  "head");
             a_cstr(_v_patch, "patch");
-            a_cstr(_v_diff,  "diff");
             if      ($eq(c->verb, _v_post))  def = 'f';
             else if ($eq(c->verb, _v_get))   def = 'q';
             else if ($eq(c->verb, _v_head))  def = 'q';
             else if ($eq(c->verb, _v_patch)) def = 'q';
-            else if ($eq(c->verb, _v_diff))  def = 'q';
         }
         if (def != 'p') {
             for (u32 i = 0; i < c->nuris; i++) {
@@ -2559,13 +2546,12 @@ static ok64 becli_inner(cli *c) {
         done;
     }
 
-    // Classify verb
+    // Classify verb — HTTP verbs only.  Projections (diff, status, log,
+    // ls, blame, …) take the bareword-projector route below.
     a_cstr(v_head,   "head");
     a_cstr(v_get,    "get");    a_cstr(v_put,    "put");
     a_cstr(v_post,   "post");   a_cstr(v_delete, "delete");
-    a_cstr(v_diff,   "diff");   a_cstr(v_patch,  "patch");
-    a_cstr(v_merge,  "merge");  a_cstr(v_sync,   "sync");
-    a_cstr(v_status, "status");
+    a_cstr(v_patch,  "patch");
 
     u8cs verb = {};
     $mv(verb, c->verb);
@@ -2586,26 +2572,29 @@ static ok64 becli_inner(cli *c) {
         done;
     }
 
-    //  Bareword-as-projector: `be <verb>` where the verb token is a
-    //  known projector scheme (status, diff, log, blame, …) is
-    //  shorthand for `be <verb>:`, with any URI argument folded in as
-    //  the projector body.  Examples:
+    //  Bareword-as-projector: `be <proj>` where the leading non-flag
+    //  token names a known projector scheme (status, diff, log, ls,
+    //  blame, cat, map, spot, grep, …) is shorthand for `be <proj>:`.
+    //  Projections are not verbs (VERBS.md §"View projectors"); they
+    //  never live in BE_VERB_NAMES, so CLIParse parks the bareword in
+    //  `c->uris[0].path`.  We detect that shape here, synthesise the
+    //  matching URI, and route through BEProjector — keeping the
+    //  dispatch path single-sourced.  Examples:
     //      be status            → status:
-    //      be status sub/       → status:sub/
-    //      be diff              → diff:
-    //      be diff foo.c?main   → diff:foo.c?main
-    //  Routes through BEProjector so the dispatch path stays single-
-    //  sourced.  The verb-specific arm below (`be diff` → BEDiff,
-    //  `be status` → BEDefault) is unreachable for these names — kept
-    //  in the table only so CLIParse still classifies them as verbs
-    //  (so e.g. `be diff foo.c` doesn't put `diff` into c->uris[0]).
-    if (!$empty(verb) && DOGIsProjector(verb)) {
+    //      be log               → log:
+    //      be diff foo.c?main   → diff:foo.c?main   (foo.c?main lands
+    //                              in c->uris[1] and rides along)
+    if ($empty(verb) && u != NULL && u8csEmpty(u->scheme) &&
+        !u8csEmpty(u->path) && DOGIsProjector(u->path)) {
         a_pad(u8, syn_buf, 4096);
-        a_dup(u8c, vs, verb);
-        (void)u8bFeed(syn_buf, vs);
+        a_dup(u8c, ps, u->path);
+        (void)u8bFeed(syn_buf, ps);
         (void)u8bFeed1(syn_buf, ':');
-        if (u != NULL && !$empty(u->data)) {
-            a_dup(u8c, us, u->data);
+        //  Trailing argv tokens after the projector name (`be log
+        //  path/to/file?ref`) land in c->uris[1..] — fold the first
+        //  one in as the projector body.
+        if (c->nuris > 1 && !$empty(c->uris[1].data)) {
+            a_dup(u8c, us, c->uris[1].data);
             (void)u8bFeed(syn_buf, us);
         }
         uri synthetic = {};
@@ -2657,10 +2646,6 @@ static ok64 becli_inner(cli *c) {
         call(BEPut, c, seq);
     } else if ($eq(verb, v_delete)) {
         call(BEDelete, c, seq);
-    } else if ($eq(verb, v_status)) {
-        call(BEDefault);
-    } else if ($eq(verb, v_diff)) {
-        call(BEDiff, c, seq);
     } else if ($eq(verb, v_patch)) {
         call(BEPatch, c, seq);
     } else {
