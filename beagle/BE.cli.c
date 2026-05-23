@@ -22,6 +22,7 @@
 #include "sniff/SUBS.h"
 
 #include "SUBS.h"           // beagle/SUBS.h — BESubsHere / BERecurseInto
+#include "DISPATCH.h"       // beagle/DISPATCH.h — exposed helpers + BEExecute
 
 // Distinct codes so the MAIN-wrapper's `Error: <code>` line tells you
 // what kind of failure stopped the pipeline — a dog exited non-zero
@@ -78,7 +79,6 @@ static void BEUsage(void) {
 
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
 // resolved against this process's own argv[0] via HOMEResolveSibling.
-static ok64 be_ensure_project_repo(uricp u);
 static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
 
@@ -118,7 +118,7 @@ ok64 BERun(u8csc tool, u8css argv, b8 bg) {
 //  Spawn a sibling tool without waiting; caller reaps later via
 //  BEReap.  Used by `be get` to run spot/graf/sniff in parallel
 //  after keeper completes (DOG.md §10a).
-static ok64 BESpawn(u8csc tool, u8css argv, pid_t *out_pid) {
+ok64 BESpawn(u8csc tool, u8css argv, pid_t *out_pid) {
     sane($ok(tool) && !$empty(tool) && out_pid);
     a_path(path);
     a$rg(a0, 0);
@@ -128,7 +128,7 @@ static ok64 BESpawn(u8csc tool, u8css argv, pid_t *out_pid) {
 
 //  Wait on a previously-spawned child and translate its exit into
 //  the BEDOG* code surface that `BERun` uses.
-static ok64 BEReap(pid_t pid, u8csc tool) {
+ok64 BEReap(pid_t pid, u8csc tool) {
     int rc = 0;
     ok64 r = FILEReap(pid, &rc);
     if (r == FILESIGNAL) {
@@ -139,7 +139,7 @@ static ok64 BEReap(pid_t pid, u8csc tool) {
     }
     if (r != OK) return r;
     //  Same *NONE pass-through as BERun (see comment there); BEReap
-    //  is the parallel-reap path used by BEGet.
+    //  is the parallel-reap path for fan-out actions.
     if (rc == BE_NONE_LOW_BYTE) return NONE;
     if (rc != 0) return BEDOGEXIT;
     return OK;
@@ -215,12 +215,6 @@ static ok64 BERunPipe(path8sc prod, u8css prod_argv,
 // shape for now; the get-style fork-keeper-then-parallel pattern is
 // expected to generalise but is committed only for `get`.
 
-typedef struct {
-    u8cs dog;
-    u8cs verb;
-    b8 bg;             // run in background (don't wait)
-} dog_step;
-
 //  Process-wide buffer for the `--at <root>?<branch>#<sha>` URI text
 //  forwarded to every sub-dog argv.  Populated once at the top of
 //  `becli` from `<cwd>/.be/wtlog` via `SNIFFAtTailOf`; empty when no
@@ -240,7 +234,7 @@ static u8cs const be_at_flag = {
 //  Build a `<dog> <verb> [--at <uri>] [flags...] [URIs...]` argv
 //  slice into `args`.  Caller-owned: `args` must be a u8cs Bbuf with
 //  space for `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.
-static void be_build_argv(u8csb args, u8csc dog, u8csc verb, cli *c) {
+void BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c) {
     a_dup(u8c, ldog,  dog);
     a_dup(u8c, lverb, verb);
     u8csbFeed1(args, ldog);
@@ -264,28 +258,10 @@ static void be_build_argv(u8csb args, u8csc dog, u8csc verb, cli *c) {
         u8csbFeed1(args, uribAtP(c->uris, j)->data);
 }
 
-static ok64 BEDispatch(cli *c, dog_step const *steps, u32 nsteps,
-                        b8 seq) {
-    sane(c && steps);
-    for (u32 i = 0; i < nsteps; i++) {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-        be_build_argv(args, steps[i].dog, steps[i].verb, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        call(BERun, steps[i].dog, argv, seq ? NO : steps[i].bg);
-    }
-    done;
-}
-
-//  `be get <local-dir>` creates a worktree in cwd that shares
-//  keeper/graf/spot with the primary repo via symlinks; sniff is
-//  real (per-worktree).  Returns OK after setup whether or not any
-//  action was taken; only dies on a real error (mkdir/symlink fail).
-static b8 be_promote_to_ref(uri *u);
-
 //  `wt_uri_buf` is caller-owned scratch (≥ 64 B) backing the rewritten
 //  `?<hashlet>` URI bytes — must outlive this frame so downstream argv
 //  build can read `u->data` (CLAUDE.md §5).
-static ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
+ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     sane(1);
     if (u == NULL || !u8csEmpty(u->authority)) done;
     if (u8csEmpty(u->path)) done;
@@ -338,7 +314,7 @@ static ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
 
     //  URI path: `<prim>/.be/[<proj>/]` with a trailing slash so the
     //  row-0 invariant (`file://…/.be/<proj>/`) holds.  Anchor write
-    //  itself is sniff's job — same helper be_ensure_project_repo
+    //  itself is sniff's job — same helper BEEnsureProjectRepo
     //  uses for the primary-wt layout.
     {
         a_path(repo_path, prim_s);
@@ -378,7 +354,7 @@ static ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     call(u8bFeed1, wt_uri_buf, '?');
     call(u8bFeed,  wt_uri_buf, prim_uri.fragment);
 
-    //  Downstream (`be_build_argv`) reads only `u->data` — `u->query`
+    //  Downstream (`BEBuildArgv`) reads only `u->data` — `u->query`
     //  rewrite was dead code.  Point `data` at the buffer's bytes.
     zerop(u);
     u8csMv(u->data, u8bDataC(wt_uri_buf));
@@ -466,303 +442,6 @@ static ok64 BEProjector(cli *c, uri *u) {
     return BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
 }
 
-//  `be get URI` (DOG.md §10a):
-//
-//    1. keeper get URI  — synchronous.  Fetches/clones (remote URI),
-//       writes the pack to .be, builds keeper's own index.
-//    2. spot get URI, graf get URI, sniff get URI — in parallel.
-//       Each dog opens keeper read-only, walks the URI's tip(s), and
-//       updates its own state (spot/graf indexes; sniff worktree).
-//
-//  `--seq` (debugging) collapses step 2 to sequential keeper-order
-//  execution — same dispatch shape as the other verbs.
-//
-//  Pre-flight: URI normalisation (worktree wiring + fresh-clone
-//  .be/ bootstrap so the downstream dogs have a place to land).
-//
-//  This is the per-project body; the public `BEGet` wraps this with
-//  pre-order submodule recursion (SUBS.plan.md §GET).
-static ok64 BEGetLocal(cli *c, b8 seq) {
-    sane(c);
-    //  GET is ref-expecting: promote bare `be get other/branch` to
-    //  query=other/branch just like POST and PATCH.  Path views
-    //  (`be VERBS.md`) are the verbless form, not GET.
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) be_promote_to_ref(uribAtP(c->uris, i));
-
-    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    b8  remote = (u != NULL && !$empty(u->authority));
-
-    //  Local file: URI → wire this cwd as a worktree of a sibling repo.
-    //  BEGetWorktree rewrites `u->data` to `?<hashlet>` and the new
-    //  bytes need to outlive its frame (downstream argv pack reads
-    //  them).  Hand it a buffer from our own stack — lifetime ends
-    //  when BEGetLocal returns, well after FILESpawn's argv copy.
-    a_pad(u8, wt_uri_buf, 64);
-    call(BEGetWorktree, u, wt_uri_buf);
-
-    //  Single-file overwrite: `be get file.c?feat` (VERBS.md §GET).
-    //  Path+query (no authority) is a one-file checkout — bypass the
-    //  spot/graf parallel index pipeline and route only to sniff,
-    //  which fetches the blob via keeper and overwrites the wt file
-    //  without touching `.be/wtlog` (no `get`/`put` row appended).
-    if (u != NULL && !$empty(u->path) && !$empty(u->query) &&
-        $empty(u->authority)) {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-        a_cstr(get_s,   "get");
-        a_cstr(sniff_s, "sniff");
-        a_dup(u8c, sniff_d, sniff_s);
-        a_dup(u8c, get_d,   get_s);
-        be_build_argv(args, sniff_d, get_d, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        call(BERun, sniff_d, argv, NO);
-        (void)seq;
-        done;
-    }
-
-    //  Auto-bootstrap: GET is a writer (advances cur, stamps files,
-    //  appends a `get` row), so it needs `.be/` markers like PUT/POST.
-    //  Covers both the fresh-clone (remote) and the local
-    //  `be get ?branch` on an empty dir cases.  For remote clones,
-    //  derive the project name from the URL and lay down
-    //  `<cwd>/.be/<project>/{refs,wtlog}` (project-sharded layout —
-    //  see dog/DOG.h §"Canonical on-disk layout").
-    call(be_ensure_project_repo, u);
-
-    //  Step 1: keeper get URI — synchronous.  Only meaningful when
-    //  the URI carries a remote authority (fetch/clone path); for a
-    //  local-only checkout (`?ref`, `?<sha>`, bare `?`) keeper has
-    //  nothing to do — its index is already current — so skip it.
-    a_cstr(get_s,    "get");
-    a_cstr(keeper_s, "keeper");
-    if (remote) {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-        a_dup(u8c, keeper_d, keeper_s);
-        a_dup(u8c, get_d,    get_s);
-        be_build_argv(args, keeper_d, get_d, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        call(BERun, keeper_d, argv, NO);
-    }
-
-    //  Step 2: spot, graf, sniff in parallel.
-    static u8c const spot_lit[]  = "spot";
-    static u8c const graf_lit[]  = "graf";
-    static u8c const sniff_lit[] = "sniff";
-    u8cs const dogs[3] = {
-        {spot_lit,  spot_lit  + 4},
-        {graf_lit,  graf_lit  + 4},
-        {sniff_lit, sniff_lit + 5},
-    };
-
-    if (seq) {
-        for (int i = 0; i < 3; i++) {
-            a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-            a_dup(u8c, dog_d, dogs[i]);
-            a_dup(u8c, get_d, get_s);
-            be_build_argv(args, dog_d, get_d, c);
-            a_dup(u8cs, argv, u8csbData(args));
-            call(BERun, dog_d, argv, NO);
-        }
-        done;
-    }
-
-    pid_t pids[3] = {0};
-    ok64  spawn_err[3] = {OK, OK, OK};
-    for (int i = 0; i < 3; i++) {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-        a_dup(u8c, dog_d, dogs[i]);
-        a_dup(u8c, get_d, get_s);
-        be_build_argv(args, dog_d, get_d, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        spawn_err[i] = BESpawn(dog_d, argv, &pids[i]);
-        if (spawn_err[i] != OK) {
-            fprintf(stderr, "be: spawn " U8SFMT ": %s\n",
-                    u8sFmt(dog_d), ok64str(spawn_err[i]));
-        }
-    }
-    ok64 worst = OK;
-    for (int i = 0; i < 3; i++) {
-        if (spawn_err[i] != OK) { worst = spawn_err[i]; continue; }
-        a_dup(u8c, dog_d, dogs[i]);
-        ok64 r = BEReap(pids[i], dog_d);
-        if (r != OK) worst = r;
-    }
-    return worst;
-}
-
-//  GET recursion (SUBS.plan.md §GET).  Pre-order: parent's WRITE
-//  pass (BEGetLocal above) materialises `.gitmodules` and gitlink
-//  mount points first; then we ask keeper for the canonical
-//  (URL, mount-path, pin) triple per declared submodule.
-//
-//  For each row:
-//    * sub already mounted on disk → fork `be get [flags] ?<pin>`
-//      with cwd = mount.  Idempotent if the sub's at the pin
-//      already; otherwise switches it.
-//    * sub declared in the tree but not on disk → fork `sniff
-//      sub-mount <path>#<pin>` to do the first-time fetch + check-
-//      out in a clean keeper state (no longer mid-parent-WALK, so
-//      WIREFetchAll writes land in a stable shard — fixes get/12).
-//
-//  `be: get <relpath>` markers fire lazily on the first row so
-//  single-project repos (no `.gitmodules`) keep their pre-recursion
-//  stderr contract — same shape as BEHead.
-
-//  Sub orchestration (beget_keeper_subs / beget_sub_mount /
-//  beget_sub_unmount / beget_drain_subs / beget_drain_removed)
-//  lives in `beagle/SUBS.c` as `BEGet*`.  See beagle/SUBS.h.
-
-
-//  Public BEGet wrapper: local body first (parent project), then
-//  keeper-driven submodule orchestration.
-static ok64 BEGet(cli *c, b8 seq) {
-    sane(c);
-
-    //  Snapshot the PRE-checkout tip BEFORE BEGetLocal runs.  After
-    //  the local body, the wtlog's tail moves to the new tip; this
-    //  saved value is the baseline that target_tip will be diffed
-    //  against to find removed/renamed subs (get/13, get/17).
-    u8cs baseline_ref = {};
-    a_pad(u8, baseline_at_buf, FILE_PATH_MAX_LEN + 128);
-    if (u8bHasData(c->repo)) {
-        if (SNIFFAtTailOf($path(c->repo), baseline_at_buf) == OK) {
-            uri bt = {};
-            u8csMv(bt.data, u8bDataC(baseline_at_buf));
-            URILexer(&bt);
-            if (u8csLen(bt.fragment) == 40)
-                u8csMv(baseline_ref, bt.fragment);
-        }
-    }
-
-    //  `--nosub`: skip the submodule recursion entirely.  The user
-    //  asked us to leave declared subs unmounted; print a stderr
-    //  marker (VERBS.md §"GET --nosub") and bail out after the local
-    //  body finishes.  Each level of `be get` honors this flag, so
-    //  cascading clones (parent + sub + leaf) stop at this level.
-    b8 nosub = CLIHas(c, "--nosub");
-
-    ok64 worst = BEGetLocal(c, seq);
-
-    if (nosub) {
-        fprintf(stderr, "be: submodule(s) skipped (--nosub)\n");
-        return worst;
-    }
-
-    //  Re-resolve the wt root after the local body.  Also grab the
-    //  active leaf branch from the anchor (parked in h->cur_branch by
-    //  HOMEOpen via DOGBranchFromBe) so beget_keeper_subs can pass it
-    //  as the URI's branch slot — `?<branch>#<sha>` puts keeper_subs
-    //  at the right leaf shard for sub enumeration.
-    a_pad(u8, post_get_branch, 256);
-    {
-        home rh = {};
-        uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
-            if (!u8bHasData(c->repo))
-                (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
-            if (u8bDataLen(rh.cur_branch) > 0) {
-                a_dup(u8c, rb, u8bDataC(rh.cur_branch));
-                u8bFeed(post_get_branch, rb);
-            }
-        }
-        HOMEClose(&rh);
-    }
-    if (!u8bHasData(c->repo)) return worst;
-    a_dup(u8c, wt_root, $path(c->repo));
-
-    //  Target ref to pass to `keeper subs`: prefer the wtlog tail's
-    //  full `?<branch>#<sha>` form so keeper opens the right leaf
-    //  shard (branch slot) AND can resolve the commit directly via
-    //  the fragment.  Falls back to URI query for truly fresh
-    //  clones (no wtlog tail yet).
-    a_pad(u8, target_ref_buf, 128);
-    a_pad(u8, target_at_buf, FILE_PATH_MAX_LEN + 128);
-    uri tt = {};
-    b8 have_tail = (SNIFFAtTailOf(wt_root, target_at_buf) == OK);
-    if (have_tail) {
-        u8csMv(tt.data, u8bDataC(target_at_buf));
-        URILexer(&tt);
-    }
-    if (have_tail && u8csLen(tt.fragment) == 40) {
-        //  Compose `<branch>#<sha>` (query slot's body, no leading `?`
-        //  — beget_keeper_subs prefixes `?` itself).  Prefer the
-        //  home's cur_branch (set from the row-0 anchor for sub-shard
-        //  / sub-clone contexts) over the wtlog row's query slot —
-        //  the latter records the source URI's ref name (e.g.
-        //  `?master` from `ssh://…?master`), not the local leaf.
-        //  Branch may be empty for trunk; we still emit `#<sha>`
-        //  so keeper_subs's fragment path kicks in.
-        if (u8bDataLen(post_get_branch) > 0) {
-            (void)u8bFeed(target_ref_buf, u8bDataC(post_get_branch));
-        } else if (!u8csEmpty(tt.query)) {
-            (void)u8bFeed(target_ref_buf, tt.query);
-        }
-        (void)u8bFeed1(target_ref_buf, '#');
-        (void)u8bFeed(target_ref_buf, tt.fragment);
-    } else if (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query)) {
-        (void)u8bFeed(target_ref_buf, uribAtP(c->uris, 0)->query);
-    }
-    if (u8bDataLen(target_ref_buf) == 0) return worst;
-    u8cs target_ref = {};
-    u8csMv(target_ref, u8bDataC(target_ref_buf));
-
-    //  Enumerate target's subs (the post-checkout declarations).
-    Bu8 target_subs = {};
-    call(u8bAllocate, target_subs, 1UL << 16);
-    ok64 ke = BEGetKeeperSubs(target_ref, target_subs);
-    if (ke != OK) {
-        u8bFree(target_subs);
-        return worst;                          //  keeper failed; bail
-    }
-
-    //  Enumerate baseline's subs (best-effort).  Skipped if we
-    //  didn't capture a baseline (initial clone) or it's the same
-    //  as target (no checkout move).
-    Bu8 baseline_subs = {};
-    call(u8bAllocate, baseline_subs, 1UL << 16);
-    if (!u8csEmpty(baseline_ref) && !u8csEq(baseline_ref, target_ref)) {
-        (void)BEGetKeeperSubs(baseline_ref, baseline_subs);
-    }
-
-    //  Build flag tail (sans --at).
-    a_pad(u8cs, flags_buf, CLI_MAX_FLAGS * 2);
-    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
-        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
-        u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j)));
-        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
-            u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j + 1)));
-    }
-    a_dup(u8cs, flag_view, u8csbData(flags_buf));
-
-    //  Unmount removed subs (in baseline but not in target).  Runs
-    //  BEFORE the target-driven mount/recurse so the "rename"
-    //  case (path moves) lays down the new mount cleanly.
-    if (u8bDataLen(baseline_subs) > 0 && u8bDataLen(target_subs) > 0) {
-        a_dup(u8c, base_view, u8bData(baseline_subs));
-        a_dup(u8c, tgt_view,  u8bData(target_subs));
-        ok64 rr = BEGetDrainRemoved(wt_root, base_view, tgt_view);
-        if (rr != OK) worst = rr;
-    } else if (u8bDataLen(baseline_subs) > 0 &&
-               u8bDataLen(target_subs) == 0) {
-        //  All subs removed.
-        u8cs empty = {NULL, NULL};
-        a_dup(u8c, base_view, u8bData(baseline_subs));
-        ok64 rr = BEGetDrainRemoved(wt_root, base_view, empty);
-        if (rr != OK) worst = rr;
-    }
-
-    //  Mount/recurse target's subs.
-    if (u8bDataLen(target_subs) > 0) {
-        a_dup(u8c, tgt_view, u8bData(target_subs));
-        ok64 sub_worst = BEGetDrainSubs(wt_root, tgt_view,
-                                          (u8cs *)flag_view[0],
-                                          (u8cs *)flag_view[1]);
-        if (sub_worst != OK) worst = sub_worst;
-    }
-
-    u8bFree(target_subs);
-    u8bFree(baseline_subs);
-    return worst;
-}
 
 //  `be head <uri>` — peek/dry-run.  Per VERBS.md §"HEAD":
 //    - `?br` (local)              — ahead/behind cur vs ?br
@@ -771,124 +450,11 @@ static ok64 BEGet(cli *c, b8 seq) {
 //                                    print diff cur vs origin
 //    - `#frag`                    — commit-msg search; diff cur vs match
 //
-//  Implementation: thin orchestrator (DOG.md §10a "be is a thin
-//  router; sub-dogs do the work"):
-//    transport-scheme remote → keeper get URI (fetches; updates the
-//                              local remote-tracking cache)
-//    cached-or-local target  → no fetch step; sniff/graf print the
-//                              diff against the named ref
-//
-//  HEAD never modifies a branch's history or the wt; the only side
-//  effect on a transport-scheme URI is the cache refresh in
-//  `.be/refs` and the pack data added to keeper.
-//
-//  Skeleton: today HEAD piggy-backs on `keeper get` for the fetch
-//  half (which prints the fetched ref's sha to stderr — enough to
-//  satisfy the canonical "rebase trunk on top of remote main" test's
-//  cache-refresh assertion).  The diff-summary half is TODO once
-//  the underlying graf/sniff "ahead/behind cur vs ref" entry point
-//  lands.  See VERBS.todo.md §"HEAD".
-//  Local body — the original BEHead implementation, unchanged.  The
-//  per-project work for one level of the submodule forest.  Recursion
-//  into mounted subs lives in the BEHead wrapper below.
-static ok64 BEHeadLocal(cli *c, b8 seq) {
-    sane(c);
-    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    b8 transport = (u != NULL && !$empty(u->scheme));
-    b8 cached    = (u != NULL && !transport && !$empty(u->authority));
-
-    //  Transport scheme: forward to keeper get (fetches refs + pack),
-    //  then spot get + graf get in parallel so the freshly-pulled
-    //  commits + trees + blobs get indexed for downstream walks
-    //  (`be log:`, `be patch`, `be spot ...`).  Per VERBS.md §HEAD,
-    //  HEAD with a transport scheme updates `.be/refs` and pulls a
-    //  pack; without the indexing chain, `be log:` on the fetched
-    //  history would walk only as far as graf's DAG already knew.
-    //
-    //  `?*` wildcard query (`be head ssh://origin?*`) routes to keeper
-    //  get just like a single-ref form — keeper detects the literal
-    //  `*` and runs the bulk-fetch (advertise + multi-want) path.
-    if (transport || cached) {
-        a_cstr(get_s,    "get");
-
-        //  Step 1: keeper get URI — synchronous.
-        {
-            a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-            a_cstr(keeper_s, "keeper");
-            a_dup(u8c, keeper_d, keeper_s);
-            a_dup(u8c, get_d,    get_s);
-            be_build_argv(args, keeper_d, get_d, c);
-            a_dup(u8cs, argv, u8csbData(args));
-            call(BERun, keeper_d, argv, NO);
-        }
-
-        //  Step 2: graf + spot get URI in parallel.  HEAD is read-
-        //  only so sniff is NOT included (no wt change, no get row).
-        //  Mirrors BEGet's parallel pattern minus sniff.
-        static u8c const graf_lit[] = "graf";
-        static u8c const spot_lit[] = "spot";
-        u8cs const dogs[2] = {
-            {graf_lit, graf_lit + 4},
-            {spot_lit, spot_lit + 4},
-        };
-
-        if (seq) {
-            for (int i = 0; i < 2; i++) {
-                a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-                a_dup(u8c, dog_d, dogs[i]);
-                a_dup(u8c, get_d2, get_s);
-                be_build_argv(args, dog_d, get_d2, c);
-                a_dup(u8cs, argv, u8csbData(args));
-                call(BERun, dog_d, argv, NO);
-            }
-            done;
-        }
-
-        pid_t pids[2] = {0};
-        ok64  spawn_err[2] = {OK, OK};
-        for (int i = 0; i < 2; i++) {
-            a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-            a_dup(u8c, dog_d, dogs[i]);
-            a_dup(u8c, get_d2, get_s);
-            be_build_argv(args, dog_d, get_d2, c);
-            a_dup(u8cs, argv, u8csbData(args));
-            spawn_err[i] = BESpawn(dog_d, argv, &pids[i]);
-            if (spawn_err[i] != OK) {
-                fprintf(stderr, "be: spawn " U8SFMT ": %s\n",
-                        u8sFmt(dog_d), ok64str(spawn_err[i]));
-            }
-        }
-        ok64 worst = OK;
-        for (int i = 0; i < 2; i++) {
-            if (spawn_err[i] != OK) { worst = spawn_err[i]; continue; }
-            a_dup(u8c, dog_d, dogs[i]);
-            ok64 r = BEReap(pids[i], dog_d);
-            if (r != OK) worst = r;
-        }
-        return worst;
-    }
-
-    //  Local: hand off to `graf head`.  graf dispatches internally:
-    //    fragment-only URI → commit-message substring search;
-    //    `?br` / no URI    → ahead/behind cur vs target + tree diff.
-    //  Bare `be` (no verb) is the spec's "current branch + ahead/
-    //  behind + dirty list" combo and adds `sniff status` upstream;
-    //  `be head` itself stays read-only and refuses to mix in wt
-    //  status (per VERBS.md §HEAD: "never modifies a branch's
-    //  history or the wt").
-    {
-        a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-        a_cstr(head_s, "head");
-        a_cstr(graf_s, "graf");
-        a_dup(u8c, graf_d, graf_s);
-        a_dup(u8c, head_d, head_s);
-        be_build_argv(args, graf_d, head_d, c);
-        a_dup(u8cs, argv, u8csbData(args));
-        call(BERun, graf_d, argv, NO);
-    }
-    (void)seq;
-    done;
-}
+//  Implementation lives in the BE_PLAN_HEAD action table
+//  (DISPATCH.c): keeper-get + spot+graf re-walk on an authority
+//  URI, graf-head on a no-authority URI, then BEHeadSubs once at
+//  the end of the table.  HEAD never modifies a branch's history
+//  or the wt.
 
 //  HEAD recursion context (SUBS.plan.md §HEAD).  Carries the
 //  child-process argv built once for the whole forest walk plus the
@@ -973,30 +539,17 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     return OK;
 }
 
-//  `be head <uri>` — pre-order recursion across mounted submodules.
-//
-//  Algorithm (SUBS.plan.md §HEAD):
-//    1. Run BEHeadLocal (existing per-project body) for the outer.
-//    2. Enumerate one level of subs declared in <wt>/.gitmodules.
-//       If any subs are reported (mounted or declared-not-mounted),
-//       emit `be: head .` marker on stderr before the first sub
-//       marker — single-project repos with no `.gitmodules` keep
-//       their pre-recursion clean-stderr contract.
-//    3. For each mounted sub: emit `be: head <subpath>` marker,
-//       fork-self into the mount with the same head argv (minus
-//       --at, which each level rederives).  For declared-but-not-
-//       mounted entries: report, do not recurse.
-//    4. Return the worst exit code (compiler-style aggregation).
-static ok64 BEHead(cli *c, b8 seq) {
+//  HEAD's pre-order submodule recursion — extracted from the old
+//  `BEHead` wrapper to fit the be_action signature.  Called once
+//  per `be head` invocation (table marks the row as `once`).  The
+//  local body (`graf head` / `keeper get` / spot+graf re-walk) is
+//  driven by the preceding table rows; this function only walks
+//  declared subs.  See VERBS.md / SUBS.plan.md §HEAD.
+ok64 BEHeadSubs(cli *c) {
     sane(c);
 
-    //  Local body for the outer project.  Aggregate but never
-    //  short-circuit on its exit — subs are still worth probing
-    //  (read-only verb).
-    ok64 worst = BEHeadLocal(c, seq);
-
     //  Need a wt root to enumerate / chdir from.
-    if (!u8bHasData(c->repo)) return worst;
+    if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
 
     //  Detect transport mode: parent invoked with `ssh://` etc.  In
@@ -1038,7 +591,207 @@ static ok64 BEHead(cli *c, b8 seq) {
     u8csMv(rc.forwarded_query, forwarded_query);
 
     (void)BESubsHere(wt_root, behead_recurse_cb, &rc);
-    if (rc.worst != OK) worst = rc.worst;
+    return rc.worst;
+}
+
+//  --- GET action bodies (Stage 4 migration) ------------------------
+//
+//  Three actions live here because they need access to BE.cli.c
+//  internals: `BEGetWorktree` (rewrites first URI for secondary-wt
+//  setup), the BEGet* subs helpers in beagle/SUBS.c, and a small
+//  amount of cross-action state captured pre-checkout.
+
+//  Cross-action state populated by BEActGetBaseline (runs before the
+//  table mutates the wt) and consumed by BEActSubsGet (runs after).
+//  Holds the 40-hex sha of the pre-get wtlog tail; empty when no
+//  baseline (fresh dir, no wtlog, no row with a sha).  One static
+//  per process — `be` is one-shot so no reset is needed across
+//  invocations.
+static u8 beget_baseline_sha_storage[64];
+static Bu8 beget_baseline_sha = {
+    beget_baseline_sha_storage, beget_baseline_sha_storage,
+    beget_baseline_sha_storage,
+    beget_baseline_sha_storage + sizeof(beget_baseline_sha_storage)
+};
+
+//  Scratch buffer for BEGetWorktree's `?<hashlet>` URI rewrite.
+//  Must outlive the rest of BE_PLAN_GET because downstream rows
+//  (BEActKeeperGet etc.) read `uribAtP(c->uris, 0)->data`, which
+//  BEGetWorktree may have repointed into this buffer.
+static u8 beget_wt_uri_buf_storage[64];
+static Bu8 beget_wt_uri_buf = {
+    beget_wt_uri_buf_storage, beget_wt_uri_buf_storage,
+    beget_wt_uri_buf_storage,
+    beget_wt_uri_buf_storage + sizeof(beget_wt_uri_buf_storage)
+};
+
+ok64 BEActGetBaseline(cli *c) {
+    sane(c);
+    u8bReset(beget_baseline_sha);
+    if (!u8bHasData(c->repo)) done;
+    a_pad(u8, at_buf, FILE_PATH_MAX_LEN + 128);
+    if (SNIFFAtTailOf($path(c->repo), at_buf) != OK) done;
+    uri bt = {};
+    u8csMv(bt.data, u8bDataC(at_buf));
+    URILexer(&bt);
+    if (u8csLen(bt.fragment) != 40) done;
+    call(u8bFeed, beget_baseline_sha, bt.fragment);
+    done;
+}
+
+ok64 BEActWorktreeAnchor(cli *c) {
+    sane(c);
+    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    if (u0 == NULL) done;
+    u8bReset(beget_wt_uri_buf);
+    return BEGetWorktree(u0, beget_wt_uri_buf);
+}
+
+ok64 BEActSingleFileGet(cli *c) {
+    sane(c);
+    //  Path+query (no authority) on the first URI is a one-file
+    //  overwrite — bypass spot/graf/sniff-index and route only to
+    //  sniff get, which fetches the blob via keeper and rewrites
+    //  the wt file without appending a `get` row.  The aggregate
+    //  gate already passed; double-check the first URI to skip
+    //  edge-case multi-URI invocations (rare).
+    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    if (u0 == NULL)             done;
+    if ($empty(u0->path))       done;
+    if ($empty(u0->query))      done;
+    if (!$empty(u0->authority)) done;
+
+    a_cstr(sniff_s, "sniff");
+    a_cstr(get_s,   "get");
+    a_dup(u8c, sniff_d, sniff_s);
+    a_dup(u8c, get_d,   get_s);
+    a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    BEBuildArgv(args, sniff_d, get_d, c);
+    a_dup(u8cs, argv, u8csbData(args));
+    call(BERun, sniff_d, argv, NO);
+    return BESTOP;
+}
+
+ok64 BEActSubsGet(cli *c) {
+    sane(c);
+
+    //  `--nosub`: leave declared subs unmounted, emit marker, stop.
+    if (CLIHas(c, "--nosub")) {
+        fprintf(stderr, "be: submodule(s) skipped (--nosub)\n");
+        done;
+    }
+
+    //  Re-resolve the wt root + active branch after the local body
+    //  (sniff get) ran — a fresh-clone path may have populated
+    //  `c->repo` only just now.
+    a_pad(u8, post_get_branch, 256);
+    {
+        home rh = {};
+        uri none = {};
+        if (HOMEOpen(&rh, &none, NO) == OK) {
+            if (!u8bHasData(c->repo))
+                (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+            if (u8bDataLen(rh.cur_branch) > 0) {
+                a_dup(u8c, rb, u8bDataC(rh.cur_branch));
+                u8bFeed(post_get_branch, rb);
+            }
+        }
+        HOMEClose(&rh);
+    }
+    if (!u8bHasData(c->repo)) done;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Compose target_ref from the wtlog tail (post-checkout).
+    a_pad(u8, target_ref_buf, 128);
+    a_pad(u8, target_at_buf, FILE_PATH_MAX_LEN + 128);
+    uri tt = {};
+    b8 have_tail = (SNIFFAtTailOf(wt_root, target_at_buf) == OK);
+    if (have_tail) {
+        u8csMv(tt.data, u8bDataC(target_at_buf));
+        URILexer(&tt);
+    }
+    if (have_tail && u8csLen(tt.fragment) == 40) {
+        if (u8bDataLen(post_get_branch) > 0) {
+            (void)u8bFeed(target_ref_buf, u8bDataC(post_get_branch));
+        } else if (!u8csEmpty(tt.query)) {
+            (void)u8bFeed(target_ref_buf, tt.query);
+        }
+        (void)u8bFeed1(target_ref_buf, '#');
+        (void)u8bFeed(target_ref_buf, tt.fragment);
+    } else if (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query)) {
+        (void)u8bFeed(target_ref_buf, uribAtP(c->uris, 0)->query);
+    }
+    if (u8bDataLen(target_ref_buf) == 0) done;
+    u8cs target_ref = {};
+    u8csMv(target_ref, u8bDataC(target_ref_buf));
+
+    //  Enumerate target's subs.
+    Bu8 target_subs = {};
+    call(u8bAllocate, target_subs, 1UL << 16);
+    ok64 ke = BEGetKeeperSubs(target_ref, target_subs);
+    if (ke != OK) {
+        u8bFree(target_subs);
+        done;
+    }
+
+    //  Enumerate baseline's subs (best-effort) when baseline_sha was
+    //  captured and differs from target's fragment.  Baseline_ref
+    //  shape mirrors target: `<branch>#<sha>` if we know the
+    //  branch, else `#<sha>`.
+    Bu8 baseline_subs = {};
+    call(u8bAllocate, baseline_subs, 1UL << 16);
+    if (u8bDataLen(beget_baseline_sha) == 40) {
+        a_pad(u8, baseline_ref_buf, 128);
+        if (u8bDataLen(post_get_branch) > 0) {
+            (void)u8bFeed(baseline_ref_buf,
+                          u8bDataC(post_get_branch));
+        }
+        (void)u8bFeed1(baseline_ref_buf, '#');
+        (void)u8bFeed(baseline_ref_buf,
+                      u8bDataC(beget_baseline_sha));
+        a_dup(u8c, baseline_ref, u8bDataC(baseline_ref_buf));
+        if (!u8csEq(baseline_ref, target_ref)) {
+            (void)BEGetKeeperSubs(baseline_ref, baseline_subs);
+        }
+    }
+
+    //  Flags tail (sans --at).
+    a_pad(u8cs, flags_buf, CLI_MAX_FLAGS * 2);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j + 1)));
+    }
+    a_dup(u8cs, flag_view, u8csbData(flags_buf));
+
+    ok64 worst = OK;
+
+    //  Unmount removed subs first (rename case lays cleanly).
+    if (u8bDataLen(baseline_subs) > 0 && u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, base_view, u8bData(baseline_subs));
+        a_dup(u8c, tgt_view,  u8bData(target_subs));
+        ok64 rr = BEGetDrainRemoved(wt_root, base_view, tgt_view);
+        if (rr != OK) worst = rr;
+    } else if (u8bDataLen(baseline_subs) > 0 &&
+               u8bDataLen(target_subs) == 0) {
+        u8cs empty = {NULL, NULL};
+        a_dup(u8c, base_view, u8bData(baseline_subs));
+        ok64 rr = BEGetDrainRemoved(wt_root, base_view, empty);
+        if (rr != OK) worst = rr;
+    }
+
+    //  Mount/recurse target's subs.
+    if (u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, tgt_view, u8bData(target_subs));
+        ok64 sub_worst = BEGetDrainSubs(wt_root, tgt_view,
+                                          (u8cs *)flag_view[0],
+                                          (u8cs *)flag_view[1]);
+        if (sub_worst != OK) worst = sub_worst;
+    }
+
+    u8bFree(target_subs);
+    u8bFree(baseline_subs);
     return worst;
 }
 
@@ -1145,7 +898,7 @@ static ok64 be_url_project(uricp u, u8csp out) {
 //  populated after HOMEOpen) — established projects aren't
 //  re-initialised; the existing anchor wins.  Refuses with `BEFAIL`
 //  when every derivation arm yields empty (e.g. `cwd == /`).
-static ok64 be_ensure_project_repo(uricp u) {
+ok64 BEEnsureProjectRepo(uri *u) {
     sane(1);
     //  Probe for an existing anchor.  An empty `h->project` after
     //  HOMEOpen means either no `.be/` exists in any parent OR a
@@ -1384,72 +1137,11 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     done;
 }
 
-//  `be put` is the ref-writer (VERBS.md §"PUT").  Per the URI's
-//  `//remote` slot it also doubles as the FF-push verb — the wire
-//  side maps to keeper's old `post` (push) entry point.  Local
-//  shapes (label move, file staging, sha reset) stay in sniff put.
-//
-//  PUT also doubles as the repo-init verb: when nothing is reachable
-//  from cwd it lays down the canonical `.be/refs` + `.be/wtlog`
-//  markers so the dispatched sniff-put has a HOME to walk into.
-static ok64 BEPut(cli *c, b8 seq) {
-    sane(c);
-    b8 has_remote = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) { has_remote = YES; break; }
-    }
-    if (!has_remote) {
-        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-        call(be_ensure_project_repo, u0);
-    }
-    if (has_remote) {
-        //  FF-push: `be put //origin` (cached) and `be put ssh://host`
-        //  (transport) both open the wire — VERBS.md §"Schemes —
-        //  cached vs transport" carves out PUT-to-remote as the one
-        //  cached-form write-through.
-        static dog_step const push_steps[] = {
-            {u8slit("keeper"), u8slit("post"), NO},
-        };
-        return BEDispatch(c, push_steps, 1, seq);
-    }
-    static dog_step const local_steps[] = {
-        {u8slit("sniff"),  u8slit("put"), NO},
-    };
-    return BEDispatch(c, local_steps, 1, seq);
-}
-
-//  `be delete` is the mirror of `be put`: stage tree without a file.
-//  `be delete <uri>` per VERBS.md §DELETE.  Local URIs (paths or
-//  `?branch`) are sniff's job — DELStage / DELBranch.  Remote URIs
-//  (`//host` cached or transport-scheme) open the wire / drop the
-//  alias; both arms live in `keeper delete`.  Mixing local + remote
-//  URIs in one invocation is rejected by the all-or-nothing branch
-//  taken on the first authority-bearing URI — the verbs are too
-//  different to interleave coherently.
-static ok64 BEDelete(cli *c, b8 seq) {
-    sane(c);
-    b8 has_remote = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) { has_remote = YES; break; }
-    }
-    //  Local-only DELETE on a fresh dir is an edge case but the test
-    //  surface expects auto-bootstrap parity with PUT/POST.
-    if (!has_remote) {
-        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-        call(be_ensure_project_repo, u0);
-    }
-    if (has_remote) {
-        static dog_step const remote_steps[] = {
-            {u8slit("keeper"), u8slit("delete"), NO},
-        };
-        return BEDispatch(c, remote_steps, 1, seq);
-    }
-    static dog_step const local_steps[] = {
-        {u8slit("sniff"),  u8slit("delete"), NO},
-    };
-    return BEDispatch(c, local_steps, 1, seq);
-}
-
+//  PUT / DELETE bodies live in DISPATCH.c (BE_PLAN_PUT, BE_PLAN_DELETE).
+//  PUT is the ref-writer (VERBS.md §"PUT"); per the URI's `//remote`
+//  slot it doubles as the FF-push verb (keeper's old `post` entry).
+//  Local shapes (label move, file staging, sha reset) stay in sniff
+//  put.  DELETE is its mirror.
 
 //  Ref-expecting verbs (post, patch) accept a path-shaped argument as
 //  the ref — `be get feat/sub` → query="feat/sub".  Bareword promotion
@@ -1459,7 +1151,7 @@ static ok64 BEDelete(cli *c, b8 seq) {
 //  path (leading `/`) or rides a non-empty scheme (`file:`, `ssh:`,
 //  etc.) — both shapes go to keeper / sniff as paths, not refs.
 //  Returns YES if anything moved.
-static b8 be_promote_to_ref(uri *u) {
+b8 BEPromoteRef(uri *u) {
     if (!$empty(u->query)) return NO;
     if ($empty(u->path)) return NO;
     if (!$empty(u->scheme)) return NO;
@@ -1470,51 +1162,10 @@ static b8 be_promote_to_ref(uri *u) {
     return YES;
 }
 
-//  `be patch <uri>` — 3-way merge `uri`'s target ref/sha into the
-//  worktree.  Steps:
-//    1. (transport-scheme remote only) keeper get URI to fetch
-//       refs+pack, refreshing `.be/refs` and seeding keeper with
-//       the target commit's reachable closure.
-//    2. (any remote) graf get URI to walk the (possibly newly
-//       fetched) commits into graf's DAG index — sniff's PATCH
-//       calls GRAFLca / GRAFResolveTip, which fail if the target's
-//       ancestor set isn't indexed.  No-op when the URI's commits
-//       are already in graf's index.  Mirrors the equivalent step
-//       in BEPost.  Without this, a remote `be patch ssh://host?<sha>`
-//       reports GRAFFAIL even though the pack data sits in keeper.
-//    3. sniff patch — performs the 3-way merge into the wt.
-//  See VERBS.md §PATCH.
-static ok64 BEPatch(cli *c, b8 seq) {
-    sane(c);
-    //  PATCH is ref-expecting (absorbs another branch's stack): promote
-    //  bare `be patch feat` to query=feat just like POST.
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) be_promote_to_ref(uribAtP(c->uris, i));
-    //  Auto-bootstrap parity with PUT/POST — local PATCH on a fresh
-    //  dir needs the same `.be/` markers downstream.
-    b8 has_remote = NO, has_transport = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) has_remote = YES;
-        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
-    }
-    if (!has_remote) {
-        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-        call(be_ensure_project_repo, u0);
-    }
-
-    dog_step steps[3];
-    u32 nsteps = 0;
-    if (has_transport && has_remote) {
-        steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("get"), NO};
-    }
-    if (has_remote) {
-        steps[nsteps++] = (dog_step){u8slit("graf"),   u8slit("get"), NO};
-    }
-    steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("patch"), NO};
-    call(BEDispatch, c, steps, nsteps, seq);
-    //  Patch may move the wt's HEAD via 3-way merge; refresh spot+graf.
-    (void)be_reindex(c);
-    done;
-}
+//  PATCH body lives in DISPATCH.c (BE_PLAN_PATCH).  3-way merge
+//  flow: promote_ref → bootstrap (local) → keeper get (transport
+//  scheme) → graf get (any remote) → sniff patch.  See VERBS.md
+//  §PATCH for semantics.
 
 //  `be post` — commit and/or fast-forward (never rebase; see VERBS.md
 //  §POST).  Rebase is `be patch ?br#` + `be post`, looped.
@@ -1553,32 +1204,14 @@ static b8 be_post_is_path_form(uri *u) {
     return NO;
 }
 
-//  Per-project body — the original BEPost implementation.  The public
-//  BEPost wrapper below does post-order recursion across mounted
-//  submodules (SUBS.plan.md §POST) and calls this for each level.
-static ok64 BEPostLocal(cli *c, b8 seq) {
+//  POST action: refuse path-form URIs early with a hint to use `be
+//  put` first.  Pure-fragment URIs (commit-message tokens) are
+//  skipped — they're message-only and have no path.
+ok64 BEActPathFormCheck(cli *c) {
     sane(c);
-    //  Auto-bootstrap: `be post 'msg'` on a fresh dir is the
-    //  canonical "init + first commit" path (see workflow.sh §1).
-    //  Mirrors BEPut's call to be_ensure_repo; only meaningful when
-    //  there's no remote authority (push targets always have a repo).
-    b8 has_remote_pre = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) {
-            has_remote_pre = YES; break;
-        }
-    }
-    if (!has_remote_pre) {
-        uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-        call(be_ensure_project_repo, u0);
-    }
     for (u32 i = 0; i < uribDataLen(c->uris); i++) {
         uri *u = uribAtP(c->uris, i);
-        //  POST is ref-expecting: bare `be post feat` should target ref
-        //  feat, not be rejected as path-form.  Promote first.
-        be_promote_to_ref(u);
-        //  Pure-fragment URIs (commit-message via `#msg` or whitespace
-        //  arg) — skip the path-form check, they're message-only.
+        //  Pure-fragment URIs are message-only; skip the check.
         if ($empty(u->path) && $empty(u->query) && $empty(u->authority) &&
             !$empty(u->fragment)) continue;
         if (be_post_is_path_form(u)) {
@@ -1590,69 +1223,16 @@ static ok64 BEPostLocal(cli *c, b8 seq) {
             fail(BEFAIL);
         }
     }
-    b8 has_remote    = NO;
-    b8 has_transport = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->authority)) has_remote = YES;
-        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
-    }
-    //  Commit-message presence: any URI with a non-empty fragment (the
-    //  new convention) or a legacy `-m` flag.
-    b8 has_msg = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
-    }
-    if (!has_msg) {
-        a_cstr(mf, "-m");
-        for (u32 fi = 0; fi + 1 < u8csbDataLen(c->flags); fi += 2) {
-            if ($eq((*u8csbAtP(c->flags, fi)), mf)) { has_msg = YES; break; }
-        }
-    }
-    //  Per VERBS.md §POST:
-    //    `be post '#msg'`           — commit on cur.
-    //    `be post ?br`              — commit on cur, then FF-advance ?br
-    //                                 to cur.tip (POSTPromote inside sniff).
-    //    `be post //origin '#msg'`  — commit on cur, then FF-push cur's
-    //    `be post ssh://origin '#msg'` new tip to origin's counterpart.
-    //  POST never rewrites cur (rebase is `be patch ?br#` + `be post`).
-    //  Pure pushes (no commit) belong to PUT (`be put //origin`).  POST
-    //  with `//remote` but no commit content refuses via POSTNONE.
-    dog_step steps[2];
-    u32 nsteps = 0;
-    //  Step 1: sniff post — commit-on-cur + optional ?branch promote.
-    //  Skip only the bare-status case (no msg, no URIs): there's
-    //  nothing to commit and sniff would just dry-run.
-    b8 ran_sniff = NO;
-    if (has_msg || uribDataLen(c->uris) > 0 || !has_remote) {
-        steps[nsteps++] = (dog_step){u8slit("sniff"),  u8slit("post"), NO};
-        ran_sniff = YES;
-    }
-    //  Step 2: keeper post — FF-push cur's new tip to remote.  Picks
-    //  up the post-commit `--at <root>?<branch>#<sha>` injected by `be`
-    //  between dispatch steps so the wire side knows what tip to send.
-    //  No transport scheme on `//remote`: keeper_post resolves the
-    //  authority via REFSResolve (alias table) and opens the wire.
-    if (has_remote) {
-        steps[nsteps++] = (dog_step){u8slit("keeper"), u8slit("post"), NO};
-    }
-    call(BEDispatch, c, steps, nsteps, seq);
-
-    //  Local reindex: a successful sniff post moved the wt's HEAD;
-    //  refresh spot/graf so subsequent log/diff/search see the new
-    //  tip without a manual `be get`.  Skip the bare-dry-run case
-    //  (no commit, no message, no URI) — sniff just printed the
-    //  would-be change-set and `.be/wtlog` baseline is unchanged.
-    b8 dry_run = !has_msg && uribDataLen(c->uris) == 0;
-    if (ran_sniff && !dry_run) (void)be_reindex(c);
     done;
 }
 
+
 //  Spawn `be put <subpath>` in the parent wt to stage a `put
 //  <subpath>#<40-hex>` row reflecting the sub's current tip
-//  (SNIFFSubReadTip).  Used by BEPost after a sub's recursive POST
-//  returns OK: BEPostLocal then reads that row and emits the gitlink
-//  ADD in the parent commit.  A clean sub (tip == baseline) just gets
-//  re-stamped — no decision row, no parent bump.
+//  (SNIFFSubReadTip).  Used by BEActSubsPost after a sub's recursive
+//  POST returns OK: BEActSniffPost then reads that row and emits the
+//  gitlink ADD in the parent commit.  A clean sub (tip == baseline)
+//  just gets re-stamped — no decision row, no parent bump.
 static ok64 bepost_bump_sub(u8cs subpath) {
     sane($ok(subpath));
 
@@ -1941,10 +1521,10 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     }
     a_dup(u8cs, child_argv, u8csbData(child_args));
 
-    //  Child runs its own BEPost: depth recursion is its responsibility.
-    //  bepost_spawn_sub returns OK with `postnone=YES` when the sub had
-    //  nothing to commit; we skip the bump in that case so the parent
-    //  doesn't move that gitlink (plan §POST).
+    //  Child runs its own `be post`: depth recursion is its
+    //  responsibility.  bepost_spawn_sub returns OK with `postnone=YES`
+    //  when the sub had nothing to commit; we skip the bump in that
+    //  case so the parent doesn't move that gitlink (plan §POST).
     b8 postnone = NO;
     ok64 r = bepost_spawn_sub(rc->wt_root, subpath, child_argv, &postnone);
     if (r != OK) { rc->worst = r; return OK; }
@@ -1953,7 +1533,7 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
 
     //  Sub returned OK with a real commit.  Fork `be put <subpath>` in
     //  the parent so the parent's wtlog gets a `put <subpath>#<40-hex>`
-    //  row at the new tip; BEPostLocal picks that up and emits the
+    //  row at the new tip; BEActSniffPost picks that up and emits the
     //  gitlink ADD in the parent commit.
     ok64 br = bepost_bump_sub(subpath);
     if (br != OK) rc->worst = br;
@@ -1961,31 +1541,24 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
 }
 
 
-//  `be post <uri>` — post-order recursion across mounted submodules
-//  (SUBS.plan.md §POST).  Each sub commits its own changes first; the
-//  parent then reads each sub's new tip via `be put <subpath>` to
-//  stage a `put <subpath>#<40-hex>` row, and commits last so the new
-//  tree records the bumped gitlinks.
-//
-//  Cases that skip the wrapper (recursion adds nothing):
-//    * transport scheme present (`be post ssh://...`) — explicit URL
-//      targets a single project per SUBS.plan.md §"URI/argv rules".
-//    * bare status (no msg, no URIs)                  — dry-run printer.
-//    * no wt root resolved                            — fresh-dir bootstrap.
-//
-//  TODO (next): `--dry-run` aggregation pass (post/13), `--sub-msg`
-//  per-sub message override (post/14), `.gitmodules` synth when the
-//  live mount set differs from baseline (post/15), post-order push
-//  for `//origin` (post/16).
-static ok64 BEPost(cli *c, b8 seq) {
+
+//  --- POST action bodies (Stage 5 migration) -----------------------
+
+//  Pre-order submodule recursion: each sub commits before the
+//  parent.  Self-gates on bare-status / transport / no-wt-root so
+//  the recursion only fires when it makes sense.  Returns BESTOP
+//  in --dry-run mode after emitting the parent's status, so the
+//  subsequent BEActSniffPost / BEActKeeperPush / BEActReindex rows
+//  don't run.
+ok64 BEActSubsPost(cli *c) {
     sane(c);
 
-    //  Same transport / msg detection as BEPostLocal so we can decide
-    //  whether to recurse before any commit work runs.  No flag/URI
-    //  mutation here — BEPostLocal repeats the parsing.
+    //  Detect transport / msg shape from URIs and -m flag.  No URI
+    //  mutation here — BEActPromoteRef already ran above us in the
+    //  table.
     b8 has_transport = NO;
     for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->scheme))    has_transport = YES;
+        if (!u8csEmpty(uribAtP(c->uris, i)->scheme)) has_transport = YES;
     }
     b8 has_msg = NO;
     for (u32 i = 0; i < uribDataLen(c->uris); i++) {
@@ -1998,32 +1571,19 @@ static ok64 BEPost(cli *c, b8 seq) {
         }
     }
 
-    //  Plan §"dry-run pass": explicit `--dry-run` walks the forest
-    //  reporting per-level dirty paths / msg-resolution / .gitmodules
-    //  drift, never committing or bumping.  Takes precedence over
-    //  the bare-status short-circuit so the recursion fires even when
-    //  the parent invocation has no msg / no URIs.
-    b8 dry_only = CLIHas(c, "--dry-run") ? YES : NO;
-
-    //  Bare status (no msg + no URIs): dry-run printer; let the
-    //  per-project body do auto-resolve (possibly committing via
-    //  in-scope patch rows, possibly refusing POSTNOMSG).  No
-    //  forest recursion — bare-mode is intentionally a single-
-    //  project status / auto-resolve probe.
-    //  Transport scheme: explicit URL — targets one project per
-    //  SUBS.plan.md §"URI/argv rules".
+    b8 dry_only   = CLIHas(c, "--dry-run") ? YES : NO;
     b8 bare_status = !has_msg && uribDataLen(c->uris) == 0;
-    if (!dry_only && (bare_status || has_transport))
-        return BEPostLocal(c, seq);
+
+    //  Skip recursion on transport (explicit URL → single project)
+    //  or bare-status (no commit work to recurse into).  Dry-only
+    //  always recurses (it's the audit pass).
+    if (!dry_only && (bare_status || has_transport)) done;
 
     //  Need a wt root to enumerate / chdir from.
-    if (!u8bHasData(c->repo)) return BEPostLocal(c, seq);
+    if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
 
-    //  Compute parent's effective commit msg (from `#frag` or `-m`).
-    //  The cb uses this to derive each sub's msg, either via the
-    //  decoration `<parent_msg> [<subpath>]` or a `--sub-msg
-    //  <subpath>=<msg>` override.
+    //  Effective parent msg for sub argv composition.
     u8cs parent_msg = {};
     for (u32 i = 0; i < uribDataLen(c->uris); i++) {
         if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) {
@@ -2053,11 +1613,10 @@ static ok64 BEPost(cli *c, b8 seq) {
     (void)BESubsHere(wt_root, bepost_recurse_cb, &rc);
 
     if (dry_only) {
-        //  Parent's status: spawn a bare `sniff post` (no msg, no
-        //  URIs) so we emit the same dirty-paths / "0 changes"
-        //  report the per-project body would print.  Skip
-        //  BEPostLocal entirely — it would commit when a msg is
-        //  present (no `--dry-run` plumbing in sniff yet).
+        //  Parent's status report: spawn a bare `sniff post` (no
+        //  msg, no URIs) so the dirty-paths / "0 changes" line
+        //  prints uniformly.  Then short-circuit the rest of the
+        //  plan — actual commits never fire in dry-only mode.
         a_pad(u8cs, args, 4);
         a_cstr(sniff_s, "sniff");
         a_cstr(post_s,  "post");
@@ -2073,17 +1632,12 @@ static ok64 BEPost(cli *c, b8 seq) {
         }
         a_dup(u8cs, argv, u8csbData(args));
         (void)BERun(sniff_d, argv, NO);
-        return rc.worst;
+        return BESTOP;
     }
 
-    //  Sub failure bail-out: any sub that exited non-OK (other than
-    //  POSTNONE, which the cb already swallowed as a no-op) halts
-    //  the cascade.  Committing the parent on top of a half-applied
-    //  forest lands a tree that misses the failed sub's gitlink
-    //  bump (or worse, references the unchanged old sha while the
-    //  user thinks the cascade ran).  Refusing here keeps the user
-    //  in a clean retry state — fix / retry the sub, then re-run
-    //  `be post`.
+    //  Sub failure → abort parent commit.  Committing on top of a
+    //  half-applied forest lands a tree that misses the failed
+    //  sub's gitlink bump.
     if (rc.worst != OK) {
         fprintf(stderr,
                 "be: post: aborting parent commit — sub recursion "
@@ -2091,13 +1645,28 @@ static ok64 BEPost(cli *c, b8 seq) {
                 ok64str(rc.worst));
         return rc.worst;
     }
+    done;
+}
 
-    //  Now the parent commit.  After bumps were staged by
-    //  bepost_bump_sub above, BEPostLocal sees them as put-rows and
-    //  the gitlink decisions fold into this commit.
-    ok64 r = BEPostLocal(c, seq);
-    if (r != OK) return r;
-    return rc.worst;
+//  POST post-pass: refresh spot+graf against the new tip.  Self-
+//  gates on dry-run (no msg + no URIs → nothing committed → nothing
+//  to reindex).
+ok64 BEActReindex(cli *c) {
+    sane(c);
+    b8 has_msg = NO;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
+    }
+    if (!has_msg) {
+        a_cstr(mf, "-m");
+        for (u32 fi = 0; fi + 1 < u8csbDataLen(c->flags); fi += 2) {
+            if ($eq((*u8csbAtP(c->flags, fi)), mf)) { has_msg = YES; break; }
+        }
+    }
+    b8 dry_run = !has_msg && uribDataLen(c->uris) == 0;
+    if (dry_run) done;
+    (void)be_reindex(c);
+    done;
 }
 
 // --- Bare `be`: --update all dogs, then --status each ---
@@ -2158,11 +1727,11 @@ static ok64 becli_inner(cli *c) {
     //  slot.  POST → fragment (commit msg); GET / HEAD / PATCH →
     //  query (branch); PUT / DELETE / verbless → path (no-op).  When
     //  a promotion fires we also rewrite u->data with a leading `?`
-    //  or `#` so be_build_argv forwards a URI shape that sub-dogs
+    //  or `#` so BEBuildArgv forwards a URI shape that sub-dogs
     //  re-parse the same way (no second round of bareword promotion
     //  at the sub-dog layer).  Bareword bytes get packed into one
-    //  scratch buffer that lives for becli's full frame (covers the
-    //  later BEDispatch → be_build_argv hand-off).
+    //  scratch buffer that lives for becli's full frame (covers
+    //  the later BEExecute → BEBuildArgv hand-off).
     a_pad(u8, bareword_scratch, CLI_MAX_URIS * 65);
     {
         u8 def = 'p';
@@ -2207,7 +1776,7 @@ static ok64 becli_inner(cli *c) {
     }
 
     //  Read the wt's tip URI (`<root>?<branch>#<sha>`) once, here at
-    //  the top of the call chain, and stash it for `BEDispatch` to
+    //  the top of the call chain, and stash it for `BEBuildArgv` to
     //  forward to every sub-dog as `--at <uri>`.  Sub-dogs that need
     //  to know the worktree's current branch / commit (sniff bare
     //  `get` resume, keeper `get //origin` default branch, graf `log`
@@ -2240,12 +1809,13 @@ static ok64 becli_inner(cli *c) {
     // Get first URI if available
     uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
 
-    b8 seq = CLIHas(c, "--seq");
+    //  `--seq` flag is reserved for the dispatch table's parallel-
+    //  batch fan-out (DISPATCH.c BEExecute) once it lands.
 
     //  Projector URIs are pure views (VERBS.md Invariant 7).  Route
     //  them through BEProjector regardless of verb — `be get diff:f?r`
-    //  must land in graf's diff machinery, not in BEGet's keeper+sniff
-    //  checkout pipeline.  GET is the canonical projector verb per
+    //  must land in graf's diff machinery, not in BE_PLAN_GET's
+    //  keeper+sniff checkout pipeline.  GET is the canonical projector verb per
     //  VERBS.md, but the table only specifies the read-only intent;
     //  any verb on a projector URI is treated as GET-equivalent here.
     if (u != NULL && DOGIsProjector(u->scheme)) {
@@ -2318,17 +1888,17 @@ static ok64 becli_inner(cli *c) {
             call(BEDefault);
         }
     } else if ($eq(verb, v_head)) {
-        call(BEHead, c, seq);
+        call(BEExecute, c, BE_PLAN_HEAD);
     } else if ($eq(verb, v_get)) {
-        call(BEGet, c, seq);
+        call(BEExecute, c, BE_PLAN_GET);
     } else if ($eq(verb, v_post)) {
-        call(BEPost, c, seq);
+        call(BEExecute, c, BE_PLAN_POST);
     } else if ($eq(verb, v_put)) {
-        call(BEPut, c, seq);
+        call(BEExecute, c, BE_PLAN_PUT);
     } else if ($eq(verb, v_delete)) {
-        call(BEDelete, c, seq);
+        call(BEExecute, c, BE_PLAN_DELETE);
     } else if ($eq(verb, v_patch)) {
-        call(BEPatch, c, seq);
+        call(BEExecute, c, BE_PLAN_PATCH);
     } else {
         fprintf(stderr, "be: verb '" U8SFMT "' not yet implemented\n",
                 u8sFmt(verb));

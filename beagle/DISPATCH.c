@@ -1,0 +1,220 @@
+//  Per-verb dispatch executor + action library (DISPATCH.plan.md).
+//
+//  The executor aggregates `URIPattern` across `c->uris` and walks
+//  the action table once, firing each row whose gate matches.
+//  Action bodies receive only `cli *c` and pass `c->uris` en bloc
+//  to the dog spawn — preserving batch atomicity (sniff put, sniff
+//  post, keeper post see every URI in one invocation).
+
+#include "DISPATCH.h"
+#include "SUBS.h"          // BERun
+
+#include "abc/PRO.h"
+
+//  --- Executor ------------------------------------------------------
+
+ok64 BEExecute(cli *c, be_action const *plan) {
+    sane(c && plan);
+
+    //  Aggregate URI-slot pattern across every input URI.
+    u8 pat = 0;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        pat |= URIPattern(uribAtP(c->uris, i));
+    }
+
+    //  *NONE-class codes within a row mean "this action had nothing
+    //  to do — continue with the next row".  But the *latest* NONE
+    //  seen must still surface as the verb's exit code: tests like
+    //  `be head '#nomatch'` rely on GRAFNONE propagating out so the
+    //  shell can detect "no match".  Real errors (non-NONE non-OK)
+    //  abort immediately.
+    ok64 last_none = OK;
+    for (be_action const *a = plan; a->fn != NULL; a++) {
+        if ((pat & a->require_mask) != a->require_mask) continue;
+        if ((pat & a->exclude_mask) != 0)               continue;
+
+        //  Parallel batching is a planned optimisation: contiguous
+        //  `parallel=YES` rows should fan out via BESpawn and reap
+        //  together.  For now every row runs serially regardless of
+        //  the flag — correctness first, perf later.
+        ok64 rc = a->fn(c);
+        if (rc == BESTOP)             return OK;
+        if (rc == OK)                 continue;
+        if (ok64is(rc, NONE))         { last_none = rc; continue; }
+        return rc;
+    }
+    return last_none;
+}
+
+//  --- Spawn helper --------------------------------------------------
+//
+//  Compose `<dog> <verb> [--at] [flags] [URIs...]` and run it
+//  synchronously via BERun.  Batched argv shape — every URI in
+//  `c->uris` is forwarded together so the dog can apply slot
+//  composition (POST's #frag + ?ref + //remote) or atomic batch
+//  semantics (sniff put's auto-pair across multi-arg lists).
+
+static ok64 be_spawn_all(char const *dog_cstr, char const *verb_cstr,
+                         cli *c) {
+    sane(c);
+    a_cstr(dog_s,  dog_cstr);
+    a_cstr(verb_s, verb_cstr);
+    a_dup(u8c, dog_d,  dog_s);
+    a_dup(u8c, verb_d, verb_s);
+    a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    BEBuildArgv(args, dog_d, verb_d, c);
+    a_dup(u8cs, argv, u8csbData(args));
+    return BERun(dog_d, argv, NO);
+}
+
+//  --- Action library: URI rewriters --------------------------------
+
+ok64 BEActPromoteRef(cli *c) {
+    sane(c);
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        (void)BEPromoteRef(uribAtP(c->uris, i));
+    }
+    done;
+}
+
+//  BEActPathFormCheck lives in BE.cli.c — close to its
+//  `be_post_is_path_form` helper.
+
+ok64 BEActBootstrap(cli *c) {
+    sane(c);
+    //  The legacy BEPut/BEDelete/BEPostLocal each took the first URI
+    //  as the project-name probe (the only URI that could carry
+    //  `?/<proj>/...`).  Same shape here.
+    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    return BEEnsureProjectRepo(u0);
+}
+
+//  BEActWorktreeAnchor, BEActGetBaseline, BEActSingleFileGet,
+//  BEActSubsGet, BEActSubsHead live in BE.cli.c — they need access
+//  to BE.cli.c-internal helpers and/or static cross-action state.
+
+//  --- Action library: sniff-side spawns ----------------------------
+
+ok64 BEActSniffPut    (cli *c) { return be_spawn_all("sniff", "put",    c); }
+ok64 BEActSniffDelete (cli *c) { return be_spawn_all("sniff", "delete", c); }
+
+ok64 BEActSniffGet    (cli *c) { return be_spawn_all("sniff", "get",   c); }
+ok64 BEActSniffPost   (cli *c) { return be_spawn_all("sniff", "post",  c); }
+ok64 BEActSniffPatch  (cli *c) { return be_spawn_all("sniff", "patch", c); }
+
+//  BEActSingleFileGet, BEActWorktreeAnchor, BEActGetBaseline, and the
+//  three subs-recursion actions live in BE.cli.c — they need access
+//  to static BE.cli.c state (the rewrite buffer, the captured baseline
+//  wtlog tail) or to internal helpers (BEGetWorktree, BEGet*Subs).
+
+//  --- Action library: keeper-side spawns ---------------------------
+
+ok64 BEActKeeperGet    (cli *c) { return be_spawn_all("keeper", "get",    c); }
+ok64 BEActKeeperPush   (cli *c) { return be_spawn_all("keeper", "post",   c); }
+ok64 BEActKeeperDelete (cli *c) { return be_spawn_all("keeper", "delete", c); }
+
+//  --- Action library: indexer spawns -------------------------------
+
+ok64 BEActSpotGet  (cli *c) { return be_spawn_all("spot", "get",  c); }
+ok64 BEActGrafGet  (cli *c) { return be_spawn_all("graf", "get",  c); }
+ok64 BEActGrafHead (cli *c) { return be_spawn_all("graf", "head", c); }
+
+//  --- Action library: submodule recursion --------------------------
+
+ok64 BEActSubsHead (cli *c) {
+    //  Body lives in BE.cli.c so the recursion logic (transport-mode
+    //  URL swap, lazy stderr markers, etc.) sits next to the
+    //  recurse_cb closure it drives.
+    return BEHeadSubs(c);
+}
+
+//  BEActSubsGet / BEActSubsPost / BEActReindex: see BE.cli.c.
+
+//  --- Per-verb plans ------------------------------------------------
+//
+//  Rows whose actions are still stubs (GET/POST/PATCH bodies above)
+//  fill in during their respective migration stages.
+
+be_action const BE_PLAN_HEAD[] = {
+    //  Authority-bearing URI (transport or cached) → refresh remote
+    //  refs via keeper, then re-walk into spot/graf indexes.
+    //  Authority-free URI → local graf head (ahead/behind diff).
+    //  Submodule recursion runs after the local body.
+    { URI_AUTHORITY, 0,             NO,  BEActKeeperGet },
+    { URI_AUTHORITY, 0,             YES, BEActSpotGet   },
+    { URI_AUTHORITY, 0,             YES, BEActGrafGet   },
+    { 0,             URI_AUTHORITY, NO,  BEActGrafHead  },
+    { 0,             0,             NO,  BEActSubsHead  },
+    BE_ACTION_END,
+};
+
+be_action const BE_PLAN_GET[] = {
+    //  Pre-checkout baseline snapshot must happen BEFORE any row
+    //  that may mutate the wt (sniff get below).  Capture the
+    //  current wtlog tail so BEActSubsGet can diff baseline vs
+    //  target for removed/renamed subs.
+    { 0,                  0,             NO,  BEActPromoteRef     },
+    { 0,                  0,             NO,  BEActGetBaseline    },
+    { URI_PATH,           URI_AUTHORITY, NO,  BEActWorktreeAnchor },
+    { URI_PATH|URI_QUERY, URI_AUTHORITY, NO,  BEActSingleFileGet  },
+    //  GET's bootstrap is unconditional — `be get be://host?/proj`
+    //  derives the project name from the query and creates the
+    //  shard before the wire fetch.  Distinct from PUT/POST/DELETE
+    //  where bootstrap is local-only.
+    { 0,                  0,             NO,  BEActBootstrap      },
+    //  Fire keeper get on ANY remote (transport or cached) — matches
+    //  the legacy BEGetLocal behavior; the cached form is a no-op
+    //  on keeper's side but keeps the call-shape uniform.
+    { URI_AUTHORITY,      0,             NO,  BEActKeeperGet      },
+    { URI_AUTHORITY,      0,             YES, BEActSpotGet        },
+    { URI_AUTHORITY,      0,             YES, BEActGrafGet        },
+    { 0,                  0,             YES, BEActSniffGet       },
+    { 0,                  0,             NO,  BEActSubsGet        },
+    BE_ACTION_END,
+};
+
+be_action const BE_PLAN_POST[] = {
+    { 0,             0,             NO, BEActPromoteRef    },
+    { 0,             0,             NO, BEActPathFormCheck },
+    //  Bootstrap on local-only POSTs (`be post 'msg'` on a fresh
+    //  dir is the canonical init+first-commit path).  Remote-only
+    //  POSTs (`be post //origin`) have their store already.
+    { 0,             URI_AUTHORITY, NO, BEActBootstrap     },
+    //  Pre-order submodule recursion: each sub commits before the
+    //  parent, then the parent's `be put <sub>` row bumps the
+    //  gitlink so the parent's commit picks up the new tip.
+    { 0,             0,             NO, BEActSubsPost      },
+    { 0,             0,             NO, BEActSniffPost     },
+    { URI_AUTHORITY, 0,             NO, BEActKeeperPush    },
+    //  Post-pass: refresh spot+graf against the new tip so future
+    //  `be log:` / `be spot:` see the just-committed work.  Self-
+    //  gates on dry-run (no msg, no URIs).
+    { 0,             0,             NO, BEActReindex       },
+    BE_ACTION_END,
+};
+
+be_action const BE_PLAN_PATCH[] = {
+    { 0,                       0,             NO, BEActPromoteRef },
+    { 0,                       URI_AUTHORITY, NO, BEActBootstrap  },
+    { URI_SCHEME|URI_AUTHORITY, 0,            NO, BEActKeeperGet  },
+    { URI_AUTHORITY,           0,             NO, BEActGrafGet    },
+    { 0,                       0,             NO, BEActSniffPatch },
+    BE_ACTION_END,
+};
+
+be_action const BE_PLAN_PUT[] = {
+    //  Mutually exclusive arms.  With an authority slot, FF-push
+    //  (or non-FF — PUT is unconstrained); without one, auto-
+    //  bootstrap + stage in sniff.
+    { URI_AUTHORITY, 0,             NO, BEActKeeperPush },
+    { 0,             URI_AUTHORITY, NO, BEActBootstrap  },
+    { 0,             URI_AUTHORITY, NO, BEActSniffPut   },
+    BE_ACTION_END,
+};
+
+be_action const BE_PLAN_DELETE[] = {
+    { URI_AUTHORITY, 0,             NO, BEActKeeperDelete },
+    { 0,             URI_AUTHORITY, NO, BEActBootstrap    },
+    { 0,             URI_AUTHORITY, NO, BEActSniffDelete  },
+    BE_ACTION_END,
+};

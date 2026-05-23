@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 include_directories(.. .)
 
-add_executable(be-cli BE.cli.c SUBS.c)
+add_executable(be-cli BE.cli.c DISPATCH.c SUBS.c)
 target_compile_definitions(be-cli PRIVATE NDEBUG)
 target_link_libraries(be-cli snifflib graflib spotlib keeplib dog abc-core)
 set_target_properties(be-cli PROPERTIES OUTPUT_NAME be RUNTIME_OUTPUT_DIRECTORY ${DOG_BIN_DIR})
