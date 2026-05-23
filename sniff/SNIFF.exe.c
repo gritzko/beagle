@@ -911,7 +911,8 @@ static ok64 sniff_get_blob_to_wt_switch(uri *u) {
     u8cs target = {};
     if (u8csEmpty(pin_split)) u8csMv(target, u->query);
     else                       u8csMv(target, br_split);
-    (void)SNIFFMaybeSwitchGraf(target); (void)SNIFFMaybeSwitchKeeper(target);
+    call(SNIFFMaybeSwitchGraf,   target);
+    call(SNIFFMaybeSwitchKeeper, target);
     done;
 }
 
@@ -1026,7 +1027,8 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
         u8cs target = {};
         if (u8csEmpty(pin_split)) u8csMv(target, u->query);
         else                       u8csMv(target, br_split);
-        (void)SNIFFMaybeSwitchGraf(target); (void)SNIFFMaybeSwitchKeeper(target);
+        call(SNIFFMaybeSwitchGraf,   target);
+        call(SNIFFMaybeSwitchKeeper, target);
     }
 
     sha1 tree_sha = {};

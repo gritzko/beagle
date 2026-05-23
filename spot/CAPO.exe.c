@@ -534,6 +534,7 @@ static b8 spot_probe_uri(keeper *k, uricp u, uri *out, u8b frag_buf) {
 //  are silently skipped; the next walk will re-evaluate.
 static ok64 spot_index_one(keeper *k, spot_todo const *row,
                             u8cs path, Bu8 bbuf) {
+    sane(k && row);
     spotp s = &SPOT;
     u8 btype = 0;
     u8bReset(bbuf);
@@ -551,11 +552,13 @@ static ok64 spot_index_one(keeper *k, spot_todo const *row,
 
     (void)path;   // path is currently unused at index time; reserved
                   // for future per-path diagnostics.
-    (void)CAPOIndexBlob(source, ext, row->path_h20);
+    //  Per the function's best-effort contract (above), use try() so
+    //  failures show up in trace without short-circuiting the walk.
+    try(CAPOIndexBlob, source, ext, row->path_h20);
     SPOT.dbg_tokenised++;
 
     u64 blob_hl40 = WHIFFHashlet40(&sha);
-    (void)CAPOEmit(wh64Pack(SPOT_BLOBFN, row->path_h20, blob_hl40));
+    try(CAPOEmit, wh64Pack(SPOT_BLOBFN, row->path_h20, blob_hl40));
     return OK;
 }
 
@@ -608,10 +611,10 @@ static void spot_index_worker_child(u32 w, spot_todo const *todos,
 
     if (spot_index_slice_serial(todos, lo, hi, ulog_buf) != OK)
         _exit(1);
-    (void)CAPOFlushRun();
+    if (CAPOFlushRun() != OK)    _exit(1);
     //  Collapse to a single pup so the parent merge stack is
     //  bounded by `nw`, not `nw * cascade`.
-    (void)CAPOCompactAll();
+    if (CAPOCompactAll() != OK)  _exit(1);
     _exit(0);
 }
 
@@ -747,7 +750,7 @@ ok64 SPOTIndexFromTips(uricp u) {
     u32 nw = (u32)nw_by_size;
 
     if (nw == 1) {
-        (void)spot_index_slice_serial(todos, 0, ntodo, ulog_buf);
+        try(spot_index_slice_serial, todos, 0, ntodo, ulog_buf);
         u8bUnMap(todo_buf);
         u8bUnMap(ulog_buf);
         done;
@@ -758,14 +761,15 @@ ok64 SPOTIndexFromTips(uricp u) {
     //  then forks `nw` children and waits.  Children re-walk their
     //  slice into their own BOX, BOXu64Flush at end, write a pup
     //  run with their pre-assigned seqno, exit.
-    (void)CAPOFlushRun();
+    try(CAPOFlushRun);
+    nedo { u8bUnMap(todo_buf); u8bUnMap(ulog_buf); done; }
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     {
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
         if (spot_branch_dir(leafdir, s->h, leaf) != OK) {
             //  Can't compute leaf dir → fall back to serial.
-            (void)spot_index_slice_serial(todos, 0, ntodo, ulog_buf);
+            try(spot_index_slice_serial, todos, 0, ntodo, ulog_buf);
             u8bUnMap(todo_buf);
             u8bUnMap(ulog_buf);
             done;
@@ -780,8 +784,10 @@ ok64 SPOTIndexFromTips(uricp u) {
         pid_t pid = fork();
         if (pid < 0) {
             //  Fork failed — fall back to inline serial for this slice
-            //  in the parent.
-            (void)spot_index_slice_serial(todos, lo, hi, ulog_buf);
+            //  in the parent.  Log a per-slice failure but continue —
+            //  partial coverage beats aborting the whole walk.
+            try(spot_index_slice_serial, todos, lo, hi, ulog_buf);
+            __ = OK;
             continue;
         }
         if (pid == 0) {
@@ -796,15 +802,17 @@ ok64 SPOTIndexFromTips(uricp u) {
     for (u32 w = 0; w < nw; w++) {
         if (pids[w] > 0) {
             int status = 0;
-            (void)waitpid(pids[w], &status, 0);
+            (void)waitpid(pids[w], &status, 0);  //  zombie reap
         }
     }
 
     //  Merge every worker subdir's pup into a single new pup at the
     //  leaf level, drop the worker subdirs, then fold the merged run
     //  into the parent's pre-fork ladder via the usual compact.
-    (void)CAPOMergeWorkers(nw);
-    (void)CAPOCompact();
+    try(CAPOMergeWorkers, nw);
+    nedo { u8bUnMap(todo_buf); u8bUnMap(ulog_buf); done; }
+    try(CAPOCompact);
+    nedo { u8bUnMap(todo_buf); u8bUnMap(ulog_buf); done; }
 
     u8bUnMap(todo_buf);
     u8bUnMap(ulog_buf);

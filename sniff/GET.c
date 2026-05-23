@@ -893,7 +893,11 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             if (u8csEmpty(pin_split)) u8csMv(to_switch, t_branch);
             else                      u8csMv(to_switch, br_split);
             //  Graf reads h->cur_branch as its "from" — order before keeper.
-            (void)SNIFFMaybeSwitchGraf(to_switch);
+            //  Graf-side switch is best-effort: a graf miss only affects
+            //  history-walk side-effects, not the KEEPGet below; keeper
+            //  is the one we hard-check.
+            try(SNIFFMaybeSwitchGraf, to_switch);
+            __ = OK;
             ok64 so = SNIFFMaybeSwitchKeeper(to_switch);
             if (so != OK && so != KEEPOPEN) {
                 fprintf(stderr,
@@ -1245,7 +1249,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             u8bFeed(key_buf, ref_q);
         }
         a_dup(u8c, key_s, u8bData(key_buf));
-        (void)REFSAppendVerb($path(keepdir), REFSVerbPost(), key_s, hex);
+        try(REFSAppendVerb, $path(keepdir), REFSVerbPost(), key_s, hex);
+        __ = OK;  //  explicit non-fatal — see comment above
     }
     //  --- end commit point --------------------------------------
 

@@ -37,11 +37,11 @@ static ok64 home_git_config_get(char const *key, u8s out) {
     if (FILESpawn(gitp, argv, NULL, &rfd, &pid) != OK) return NODATA;
 
     a_pad(u8, buf, 256);
-    FILEEnsureSoft(rfd, buf, u8bIdleLen(buf));
+    try(FILEEnsureSoft, rfd, buf, u8bIdleLen(buf));
     FILEClose(&rfd);
 
     int rc = -1;
-    FILEReap(pid, &rc);
+    try(FILEReap, pid, &rc);  //  rc carries the subprocess outcome
     if (rc != 0) return NODATA;
 
     u8cs raw = {u8bDataHead(buf), u8bIdleHead(buf)};
@@ -102,7 +102,7 @@ static void home_bootstrap_config(home *h) {
     int fd = -1;
     if (FILECreate(&fd, $path(cfgp)) != OK) return;
     u8cs data = {u8bDataHead(body), u8bIdleHead(body)};
-    FILEFeedAll(fd, data);
+    (void)FILEFeedAll(fd, data);  //  best-effort: home_bootstrap_config is void
     FILEClose(&fd);
 }
 

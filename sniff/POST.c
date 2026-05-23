@@ -1375,8 +1375,11 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
         zerop(cc->p);
     }
     //  Graf reads h->cur_branch as its "from" — order before keeper.
-    (void)SNIFFMaybeSwitchGraf(branch);
-    (void)SNIFFMaybeSwitchKeeper(branch);
+    //  Both switches must succeed: subsequent KEEPPackOpen + REFS work
+    //  reads from h->cur_branch's shard, so a failed switch silently
+    //  lands writes in the wrong dir.
+    call(SNIFFMaybeSwitchGraf, branch);
+    call(SNIFFMaybeSwitchKeeper, branch);
     if (cc->p != NULL) {
         ok64 op = KEEPPackOpen(cc->p);
         if (op != OK) return op;
@@ -1759,8 +1762,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  target dir doesn't exist on disk yet (CREATE_ON_MISS arm
     //  mkdir's it below before any keeper write).
     if (target_exists) {
-        (void)SNIFFMaybeSwitchGraf(target_branch);
-        (void)SNIFFMaybeSwitchKeeper(target_branch);
+        call(SNIFFMaybeSwitchGraf, target_branch);
+        call(SNIFFMaybeSwitchKeeper, target_branch);
     }
 
     //  --- 4. Classify shape. ---
@@ -2301,7 +2304,10 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
             *u8bLast(saved_branch) == '/')
             u8bShed1(saved_branch);
         //  Graf reads h->cur_branch as its "from" — order before keeper.
-        (void)SNIFFMaybeSwitchGraf(pent[idx].locator);
+        //  Graf-side failure is non-fatal (we still try keeper); keeper
+        //  failure leaves switched=NO and we KEEPGetExact from cur.
+        try(SNIFFMaybeSwitchGraf, pent[idx].locator);
+        __ = OK;
         ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
         switched = (so == OK);
     }
@@ -2318,8 +2324,16 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         //  for the LCA delta; keeper is the one that updates
         //  h->cur_branch via HOMESetCurBranch.  Reversed order would
         //  feed graf the post-switch value and collapse the delta.
-        (void)GRAFSwitchBranch(GRAF.h, sb);
-        (void)KEEPSwitchBranch(KEEP.h, sb);
+        //  Restore-after pattern: warn loudly on failure but don't
+        //  unwind — the cherry-pick locator read already succeeded.
+        ok64 gs = GRAFSwitchBranch(GRAF.h, sb);
+        if (gs != OK)
+            fprintf(stderr, "sniff: warning: GRAFSwitchBranch restore "
+                            "failed: %s\n", ok64str(gs));
+        ok64 ks = KEEPSwitchBranch(KEEP.h, sb);
+        if (ks != OK)
+            fprintf(stderr, "sniff: warning: KEEPSwitchBranch restore "
+                            "failed: %s\n", ok64str(ks));
     }
     if (ko != OK) { u8bFree(cbuf); return ko; }
     if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
@@ -2435,7 +2449,8 @@ ok64 POSTCommit(u8cs target_branch,
         //  NNNN.keeper` (per KEEP.h §"Branch-aware object store").
         //  No-op when there's no `<target>/` shard dir yet (the
         //  CREATE_ON_MISS arm via POSTPromote mkdir's it first).
-        (void)SNIFFMaybeSwitchGraf(target_canon); (void)SNIFFMaybeSwitchKeeper(target_canon);
+        call(SNIFFMaybeSwitchGraf,   target_canon);
+        call(SNIFFMaybeSwitchKeeper, target_canon);
     }
     //  No baseline branch recovered AND no override → default to
     //  trunk (empty be-side query).  Locally trunk has no name; the
@@ -3046,7 +3061,12 @@ ok64 POSTCommit(u8cs target_branch,
         a_dup(u8c, tagref, u8bData(tagkey));
         a_dup(u8c, val,    u8bDataC(out_hex));
         ron60 vpost = SNIFFAtVerbPost();
-        (void)REFSAppendVerb($path(keepdir), vpost, tagref, val);
+        try(REFSAppendVerb, $path(keepdir), vpost, tagref, val);
+        nedo {
+            fprintf(stderr, "sniff: warning: tag REFS append failed: %s\n",
+                    ok64str(__));
+            __ = OK;
+        }
     }
 
     //  15. Append `post` ULOG row with stamp ts; futimens written

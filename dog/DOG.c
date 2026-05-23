@@ -553,7 +553,7 @@ ok64 DOGPupCreateAt(kv64b pups, path8s dir, u8cs ext, u8cs bytes,
     int wfd = -1;
     call(FILECreate, &wfd, $path(tmppath));
     if (wfd >= 0) {
-        FILEFeedAll(wfd, bytes);
+        callsafe(FILEFeedAll(wfd, bytes), close(wfd));
         close(wfd);
     }
     call(FILERename, $path(tmppath), $path(idxpath));

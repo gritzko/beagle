@@ -1005,7 +1005,7 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
             t[0] = u8bDataHead(tabuf);
             t[1] = u8bIdleHead(tabuf);
         }
-        (void)GRAFSwitchBranch(k->h, t);
+        call(GRAFSwitchBranch, k->h, t);
     }
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
@@ -1183,7 +1183,14 @@ ok64 GRAFLog(uricp u) {
         return go;
     }
     //  Whether or not we opened, ensure the active leaf is cur.
-    (void)GRAFSwitchBranch(k->h, cur_branch);
+    //  Restore-after pattern — warn loudly but don't unwind.
+    {
+        ok64 gs = GRAFSwitchBranch(k->h, cur_branch);
+        if (gs != OK)
+            fprintf(stderr,
+                    "graf: log: cur-branch restore failed: %s\n",
+                    ok64str(gs));
+    }
 
     ok64 wo = $empty(path)
         ? graflog_branch(&lx, k, &tip, count)

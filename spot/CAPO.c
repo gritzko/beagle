@@ -1562,7 +1562,13 @@ void SPOTClose(void) {
         //  Final flush of any postings still in the BOX.  Tokenisation
         //  happened inline in the tip-walker's visitor.  CAPOFlushRun
         //  also runs CAPOCompact, so the puppy ladder stays balanced.
-        CAPOFlushRun();
+        //  SPOTClose is void — log a final-flush failure loudly so a
+        //  half-written index doesn't go silent.
+        ok64 fr = CAPOFlushRun();
+        if (fr != OK)
+            fprintf(stderr,
+                    "spot: SPOTClose: final flush failed: %s\n",
+                    ok64str(fr));
         u8bUnMap(s->entries_mem);
         if (!BNULL(s->flush_buf)) u8bUnMap(s->flush_buf);
         if (s->ingest_toks[0] != NULL) u32bUnMap(s->ingest_toks);

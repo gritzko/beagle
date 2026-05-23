@@ -785,7 +785,7 @@ fa_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        FILEReap(pid, &rc);
+        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
     }
     return rv;
 }
@@ -866,7 +866,7 @@ fetch_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        FILEReap(pid, &rc);
+        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
     }
     return rv;
 }
@@ -1358,7 +1358,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
         if (u8bAllocate(flush_b, 8) == OK) {
             PKTu8sFeedFlush(u8bIdle(flush_b));
             a_dup(u8c, fdata, u8bData(flush_b));
-            FILEFeedAll(wfd, fdata);
+            try(FILEFeedAll, wfd, fdata);  //  best-effort: peer close
             u8bFree(flush_b);
         }
         free(peer_tips);
@@ -1477,7 +1477,7 @@ push_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        FILEReap(pid, &rc);
+        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
     }
     return rv;
 }
@@ -1532,7 +1532,7 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
         if (u8bAllocate(flush_b, 8) == OK) {
             PKTu8sFeedFlush(u8bIdle(flush_b));
             a_dup(u8c, fdata, u8bData(flush_b));
-            FILEFeedAll(wfd, fdata);
+            try(FILEFeedAll, wfd, fdata);  //  best-effort: peer close
             u8bFree(flush_b);
         }
         rv = WIRECLNRF;
@@ -1559,7 +1559,7 @@ delete_close:
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
-        FILEReap(pid, &rc);
+        try(FILEReap, pid, &rc);  //  zombie reap; rc unused
     }
     return rv;
 }

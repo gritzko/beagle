@@ -355,13 +355,26 @@ ok64 GRAFExec(cli *c) {
             //  so the per-ref tree+blob fetches downstream resolve.
             //  When from/to look like branch names (non-hex), switch
             //  through each so its idx/pack pups land in PAST or DATA.
+            //  `wf` / `wt` may name a tag (no shard dir under <store>);
+            //  KEEPSwitchBranch / GRAFSwitchBranch return KEEPNONE /
+            //  GRAFNOPATH in that case, but the REFS rows under cur's
+            //  shard still resolve the tag.  Treat the missing-dir
+            //  arms as "stay on cur" and propagate other failures.
             if (!DOGIsHashlet(wf)) {
-                (void)KEEPSwitchBranch(KEEP.h, wf);
-                (void)GRAFSwitchBranch(KEEP.h, wf);
+                try(KEEPSwitchBranch, KEEP.h, wf);
+                on(KEEPNONE) __ = OK;
+                nedo return __;
+                try(GRAFSwitchBranch, KEEP.h, wf);
+                on(GRAFNOPATH) __ = OK;
+                nedo return __;
             }
             if (!DOGIsHashlet(wt)) {
-                (void)KEEPSwitchBranch(KEEP.h, wt);
-                (void)GRAFSwitchBranch(KEEP.h, wt);
+                try(KEEPSwitchBranch, KEEP.h, wt);
+                on(KEEPNONE) __ = OK;
+                nedo return __;
+                try(GRAFSwitchBranch, KEEP.h, wt);
+                on(GRAFNOPATH) __ = OK;
+                nedo return __;
             }
             if (!$empty(path)) {
                 ret = GRAFWeaveDiff(path, reporoot, wf, wt);

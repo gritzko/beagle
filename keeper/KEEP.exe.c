@@ -469,8 +469,10 @@ ok64 KEEPGetRemote(uri *g) {
         if (!u8csEmpty(want_ref)) u8bFeed(key_buf, want_ref);
         a_dup(u8c, key, u8bData(key_buf));
         a_cstr(empty_to, "");
-        (void)REFSAppendVerb($path(keepdir), REFSVerbGetFail(),
-                             key, empty_to);
+        //  Best-effort journal — preserve the underlying fetch error; log
+        //  any append failure via try().
+        try(REFSAppendVerb, $path(keepdir), REFSVerbGetFail(),
+            key, empty_to);
     }
     u8bUnMap(rarena);
     return fo;
@@ -891,7 +893,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
     a_dup(u8c, v, at_sha);
     //  Push is a local move (we updated the peer's tip), so record
     //  with verb `post`, not the back-compat `get` shim.
-    REFSAppendVerb($path(keepdir), REFSVerbPost(), remote_key, v);
+    call(REFSAppendVerb, $path(keepdir), REFSVerbPost(), remote_key, v);
 
     fprintf(stdout, "keeper: pushed %s%.*s → %.*s\n",
             $empty(branch) ? "(trunk)" : "?",
@@ -1064,8 +1066,8 @@ static ok64 keeper_delete(keeper *k, cli *c) {
             a_cstr(zeros, KEEP_DEL_ZERO_HEX);
             //  Canonical tombstone: one row, verb=`delete`.  REFS's
             //  URI-key-only dedup ensures it masks any prior write.
-            (void)REFSAppendVerb($path(keepdir), REFSVerbDelete(),
-                                 key, zeros);
+            call(REFSAppendVerb, $path(keepdir), REFSVerbDelete(),
+                 key, zeros);
         }
     }
 

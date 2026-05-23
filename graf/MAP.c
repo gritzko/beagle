@@ -252,8 +252,8 @@ ok64 GRAFMap(uricp u) {
     //  read-only — the keeper switch is safe (no in-flight pack).
     for (u32 i = 0; i < nk; i++) {
         a_dup(u8c, br, kept[i].path);
-        (void)GRAFSwitchBranch(KEEP.h, br);
-        (void)KEEPSwitchBranch(KEEP.h, br);
+        call(GRAFSwitchBranch, KEEP.h, br);
+        call(KEEPSwitchBranch, KEEP.h, br);
     }
     for (u32 i = 0; i < nk; i++) {
         ok64 ao = wh128bAllocate(kept[i].ancestors, MAP_ANC_SIZE);
