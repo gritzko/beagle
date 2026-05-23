@@ -351,44 +351,8 @@ typedef struct {
     u8cs reporoot;    // for resolving full paths in the wt-eq-base check
 } status_buckets;
 
-//  Hash the on-disk content at `<reporoot>/<rel>` as a git blob and
-//  compare to the baseline blob sha encoded in `base_rec->uri.fragment`
-//  (40-hex).  YES iff the bytes match — i.e. the file is "touched
-//  unchanged" (mtime drift but content equals baseline) and should
-//  count as `ok`, not `mod`.
-static b8 status_wt_eq_base(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
-    if (!base_rec || u8csLen(base_rec->uri.fragment) != 40) return NO;
-    a_path(fp);
-    if (SNIFFFullpath(fp, reporoot, rel) != OK) return NO;
-    filestat fs = {};
-    if (FILELStat(&fs, $path(fp)) != OK) return NO;
-
-    sha1 wt_sha = {};
-    if (fs.kind == FILE_KIND_LNK) {
-        a_pad(u8, tgt, 4096);
-        if (FILEReadLink(tgt, $path(fp)) != OK) return NO;
-        KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, u8bDataC(tgt));
-    } else if (fs.kind == FILE_KIND_REG) {
-        if (fs.size == 0) {
-            u8cs empty = {NULL, NULL};
-            KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, empty);
-        } else {
-            u8bp m = NULL;
-            if (FILEMapRO(&m, $path(fp)) != OK) return NO;
-            u8cs body = {u8bDataHead(m), u8bIdleHead(m)};
-            KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, body);
-            FILEUnMap(m);
-        }
-    } else {
-        return NO;
-    }
-
-    sha1 base_sha = {};
-    u8s bin = {base_sha.data, base_sha.data + 20};
-    a_dup(u8c, hex, base_rec->uri.fragment);
-    if (HEXu8sDrainSome(bin, hex) != OK) return NO;
-    return sha1Eq(&wt_sha, &base_sha);
-}
+//  Touched-unchanged content check lives in CLASS.c so `ls:` and the
+//  bare-status walker share one body of truth.  See CLASSWtEqBase.
 
 //  Convert ron60 (packed local-time encoding via RONOfTime) to
 //  unix-epoch seconds for DOGutf8sFeedDate.  0 → 0 ("?" placeholder).
@@ -519,8 +483,8 @@ static ok64 status_step(class_step const *step, void *ctx) {
             //  and also counts as `ok`.
             if (SNIFFAtKnown(step->wt_rec->ts)) {
                 b->ok_n++;
-            } else if (status_wt_eq_base(b->reporoot, step->base_rec,
-                                         path)) {
+            } else if (CLASSWtEqBase(b->reporoot, step->base_rec,
+                                     path)) {
                 b->ok_n++;
             } else {
                 status_push(b->rows, path,

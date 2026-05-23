@@ -101,8 +101,13 @@ Prefix match is tried first; if no match, substring match.
 ## Status bar
 
 ```
- --- bro/BRO.c :: BROHandleKey ---    42%  H3/12  C2/8
+ bro/BRO.c#L42                         42%  H3/12  C2/8
 ```
+
+The left side is a re-typeable URI of the **current view position**:
+`<path>#L<line>` updates live as you scroll, so `:` re-opens the
+prompt with a URI that points exactly where you are now.  Hunks
+without a path (e.g. pure-search title rows) show their URI verbatim.
 
 - position — `TOP` / `BOT` / `NN%` / `ALL` (fits on screen)
 - `H` — current hunk / total hunks

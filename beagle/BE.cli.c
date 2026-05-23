@@ -761,7 +761,7 @@ static ok64 beget_drain_removed(u8cs wt_root, u8cs baseline_ulog,
 static ok64 beget_sub_mount(u8cs subpath, u8cs pin) {
     sane($ok(subpath) && $ok(pin));
 
-    a_pad(u8, uri_buf, 1024);
+    a_pad(u8, uri_buf, MAX_URI_LEN);
     a_cstr(rel, "./");
     call(u8bFeed,  uri_buf, rel);
     call(u8bFeed,  uri_buf, subpath);
@@ -854,7 +854,7 @@ static ok64 beget_drain_subs(u8cs wt_root, u8cs subs_ulog,
         //  switches it.  Also kicks BEGet's wrapper inside the
         //  child, picking up any deeper sub-of-sub the sub's tree
         //  declares (head/06-sub-depth3).
-        a_pad(u8, pin_uri, 64);
+        a_pad(u8, pin_uri, MAX_URI_LEN);
         call(u8bFeed1, pin_uri, '?');
         call(u8bFeed,  pin_uri, pin_arg);
         a_dup(u8c, pin_uri_view, u8bDataC(pin_uri));
@@ -1215,7 +1215,7 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     //  child fetches the sub's own remote (not the parent's URL).
     //  Build a fresh argv = (caller's prefix: `head` + flags) +
     //  this sub's URI.
-    a_pad(u8, uri_buf, 2048);
+    a_pad(u8, uri_buf, MAX_URI_LEN);
     a_dup(u8c, sub_url, s->url);
     call(u8bFeed, uri_buf, sub_url);
     if (!u8csEmpty(rc->forwarded_query)) {
@@ -2202,7 +2202,7 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     //    4. else: empty — child gets no `#frag` URI and may auto-resolve
     //       from its own put/patch rows (POSTNONE is treated as no-op
     //       by bepost_spawn_sub).
-    a_pad(u8, msg_uri, 1024);
+    a_pad(u8, msg_uri, MAX_URI_LEN);
     if (!rc->dry_only) {
         u8cs override = {};
         b8 have_override = bepost_find_sub_msg(rc->c, subpath, override);

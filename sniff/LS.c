@@ -50,6 +50,7 @@ typedef struct {
 
 typedef struct {
     u8cs     prefix;       // listing scope ("<path>/" or empty)
+    u8cs     reporoot;     // for CLASSWtEqBase content-compare
     b8       recurse;      // YES = lsr:, NO = ls:
     Bu8      dir_seen;     // one-level dedup: last emitted subdir slice
     ls_verbs v;
@@ -234,7 +235,14 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
             ls_emit_row(c, path, empty, 0, c->v.v_mis);
             break;
         case CLASS_BOTH:
+            //  mtime stamp-set hit → baseline content, render `eq`.
+            //  Stamp-miss but bytes hash equal to the baseline blob is
+            //  the "touched-unchanged" case (mtime drift only); also
+            //  `eq`.  Anything else is a real `mod`.  Same three-way
+            //  classification bare `be` uses (sniff/SNIFF.exe.c).
             if (step->wt_rec && SNIFFAtKnown(step->wt_rec->ts))
+                ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_eq);
+            else if (CLASSWtEqBase(c->reporoot, step->base_rec, path))
                 ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_eq);
             else
                 ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_mod);
@@ -249,9 +257,9 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
 
 static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     sane(u);
-    (void)reporoot;
 
     ls_ctx c = {.recurse = recurse, .now = (i64)time(NULL)};
+    u8csMv(c.reporoot, reporoot);
     #define LSV(field, lit) do {                       \
         a_cstr(_s, lit); a_dup(u8c, _d, _s);           \
         c.v.field = SNIFFAtVerbOf(_d);                 \
@@ -280,7 +288,7 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
 
     //  Build the listing's own URI (`ls:<prefix>` / `lsr:<prefix>`)
     //  and emit the one accumulated hunk.
-    a_pad(u8, uri_buf, 1024);
+    a_pad(u8, uri_buf, MAX_URI_LEN);
     if (recurse) { a_cstr(s, "lsr:"); (void)u8bFeed(uri_buf, s); }
     else         { a_cstr(s, "ls:");  (void)u8bFeed(uri_buf, s); }
     if (!u8csEmpty(c.prefix)) (void)u8bFeed(uri_buf, c.prefix);
@@ -296,6 +304,24 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     ok64 fo = (mo == OK)
             ? HUNKu8sFeedOut(u8bIdle(big), &hk)
             : HUNKu8sFeedOut(u8bIdle(line), &hk);
+    //  Trim trailing blank lines.  HUNK's plain/color content-hunk
+    //  renderer can emit 2–3 trailing newlines (the U-tagged invisible
+    //  nav URI is the last raw byte, so the "ensure final \n" guard
+    //  fires, then the unconditional inter-hunk separator adds
+    //  another).  `ls:` emits ONE hunk per call — peel back to a
+    //  single terminating \n.  TLV mode is binary, leave it alone.
+    if (fo == OK && HUNKMode != HUNKOutTLV) {
+        for (;;) {
+            size_t dn = (mo == OK) ? u8bDataLen(big) : u8bDataLen(line);
+            if (dn < 2) break;
+            u8cs view = {};
+            u8csTailS((mo == OK) ? u8bDataC(big) : u8bDataC(line),
+                      view, 2);
+            if (view[0][0] != '\n' || view[0][1] != '\n') break;
+            if (mo == OK) u8bShed1(big);
+            else          u8bShed1(line);
+        }
+    }
     if (fo == OK) (void)FILEout(mo == OK ? u8bDataC(big) : u8bDataC(line));
     if (mo == OK) u8bUnMap(big);
 

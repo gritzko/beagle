@@ -66,7 +66,7 @@ static ok64 pd_collect(ulogreccp rec, void *ctx) {
 
 static ok64 at_append_uri(ron60 ts, ron60 verb, char const *uri_cstr) {
     sane(1);
-    a_pad(u8, urib, 512);
+    a_pad(u8, urib, MAX_URI_LEN);
     a_cstr(src, uri_cstr);
     u8bFeed(urib, src);
     uri urow = {};

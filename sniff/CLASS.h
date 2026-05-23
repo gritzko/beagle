@@ -51,4 +51,13 @@ typedef ok64 (*class_cb)(class_step const *step, void *ctx);
 //  Reads the keeper + sniff singletons (caller has both open).
 ok64 SNIFFClassify(class_cb cb, void *ctx);
 
+//  YES iff the wt bytes at `<reporoot>/<rel>` hash equal to the
+//  baseline blob sha encoded in `base_rec->uri.fragment` (40-hex).
+//  Used by CLASS_BOTH consumers (`be`, `be ls:`, …) to distinguish
+//  "touched-unchanged" (mtime drift, content matches baseline → `ok`)
+//  from a real `mod`.  NO on any I/O or hash error, on a missing
+//  baseline sha, or on a kind the helper can't hash (only regular
+//  files and symlinks are supported — same set CLASS classifies).
+b8 CLASSWtEqBase(u8cs reporoot, ulogreccp base_rec, u8cs rel);
+
 #endif

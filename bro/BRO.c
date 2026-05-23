@@ -1742,9 +1742,40 @@ static void BROStatusBar(BROstate *st) {
     if (sn < 0) sn = 0;
     if ((size_t)sn >= sizeof(stats)) sn = (int)(sizeof(stats) - 1);
 
-    // Format display title for current hunk.
+    // Status URI tracks the current view position.  Cat-style hunks
+    // (those with a path) render as `<path>#L<line>` where <line> is
+    // the source line at the current scroll row.  Other hunks (e.g.
+    // pure-search titles with no path) fall back to the URI verbatim.
+    BROloc loc = {};
+    BROHunkLoc(&loc, ch);
+    u32 src_line = 0;
+    if (bro_nlines(st) > 0) {
+        u32 cur = (st->scroll < bro_nlines(st))
+                      ? st->scroll : bro_nlines(st) - 1;
+        range32 const *lines = bro_lines(st);
+        u32 first = cur;
+        while (first > 0 && lines[first - 1].lo == cur_hunk) first--;
+        u32 count = 0;
+        for (u32 i = first; i <= cur; i++) {
+            if (bro_is_source_start(st->hunks,
+                                    range32bDataC(st->linesbuf), i))
+                count++;
+        }
+        if (count > 0) {
+            src_line = (loc.line > 0) ? loc.line + count - 1 : count;
+        }
+    }
+
     char dtitle[HUNK_TITLE_MAX + 1];
-    int dtlen = bro_format_title(dtitle, sizeof(dtitle), ch);
+    int dtlen = 0;
+    if (!$empty(loc.path) && src_line > 0) {
+        dtlen = snprintf(dtitle, sizeof(dtitle), U8SFMT "#L%u",
+                         u8sFmt(loc.path), src_line);
+    } else if (!$empty(ch->uri)) {
+        dtlen = snprintf(dtitle, sizeof(dtitle), U8SFMT, u8sFmt(ch->uri));
+    }
+    if (dtlen < 0) dtlen = 0;
+    if ((size_t)dtlen >= sizeof(dtitle)) dtlen = (int)(sizeof(dtitle) - 1);
 
     // Truncate title to fit: " <title><stats>" within cols.
     u32 cols = st->cols;
