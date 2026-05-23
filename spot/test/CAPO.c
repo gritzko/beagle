@@ -318,7 +318,7 @@ ok64 CAPOtestHunkEmit() {
     int fd = mkstemp(tmppath);
     test(fd >= 0, FAILSANITY);
 
-    spot_emit   = HUNKu8sFeed;
+    HUNKMode    = HUNKOutTLV;
     spot_out_fd = fd;
     call(LESSArenaInit);
 
@@ -338,7 +338,7 @@ ok64 CAPOtestHunkEmit() {
 
     close(fd);
     spot_out_fd = -1;
-    spot_emit   = NULL;
+    HUNKMode    = HUNKOutPlain;
 
     u8bp mapped = NULL;
     a_pad(u8, pathbuf, 256);

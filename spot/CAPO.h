@@ -214,7 +214,6 @@ struct spot_ {
     u32      nmaps;
 
     int          out_fd;
-    spot_emit_fn emit;
 
     //  Puppy stack: (pup_key → fd) for every `<pup_key>.spot.idx`
     //  along trunk → leaf.  Pup keys are 60-bit ron60 values.  Mmaps

@@ -56,50 +56,14 @@ static void graf_usage(void) {
     );
 }
 
-// --- Bro pager setup ---
+// --- Output setup ---
 //
-//  All producers emit `hunk` records via GRAFHunkEmit, which calls
-//  `HUNKu8sFeedOut` dispatched off `HUNKMode`.  `HUNKMode` is already
-//  resolved by `CLISetHUNKMode` in GRAF.cli.c before GRAFExec runs
-//  (--tlv → TLV; --color → Color; --plain → Plain; default →
-//  ANSIIsTTY() ? Color : Plain).  This function only picks the byte
-//  sink: when the user explicitly asked for TLV on a TTY, spawn bro
-//  to consume the wire; otherwise write directly to stdout.
-static pid_t graf_start_pager(b8 tty_out) {
-    if (HUNKMode == HUNKOutTLV && tty_out) {
-        a_path(bropath);
-        a$rg(a0, 0);
-        a_cstr(bro_name, "bro");
-        HOMEResolveSibling(NULL, bropath, bro_name, a0);
-        u8cs args[] = {u8slit("bro")};
-        u8css argv = {args, args + 1};
-        pid_t pid = 0;
-        int wfd = -1;
-        if (FILESpawn($path(bropath), argv, &wfd, NULL, &pid) == OK) {
-            graf_out_fd = wfd;
-            signal(SIGPIPE, SIG_IGN);
-            return pid;
-        }
-        //  bro missing — fall through to stdout TLV; SIGPIPE still
-        //  matters because the user is likely piping somewhere.
-    }
-    graf_out_fd = STDOUT_FILENO;
-    if (HUNKMode == HUNKOutTLV) signal(SIGPIPE, SIG_IGN);
-    return -1;
-}
-
-static void graf_stop_pager(pid_t pid) {
-    if (graf_out_fd >= 0 && graf_out_fd != STDOUT_FILENO) {
-        close(graf_out_fd);
-        graf_out_fd = -1;
-    }
-    if (pid > 0) {
-        int rc = 0;
-        FILEReap(pid, &rc);
-        if (rc == 127)
-            fprintf(stderr, "graf: bro pager not found\n");
-    }
-}
+//  graf writes hunks to stdout exclusively.  `HUNKMode` (resolved by
+//  `CLISetHUNKMode` in GRAF.cli.c — `--tlv` / `--color` / `--plain` /
+//  ANSIIsTTY() default) picks TLV / Color / Plain shape; `be` is the
+//  only thing that forks bro for pagination.  Direct-invocation
+//  pagination (`graf log` on a bare TTY) is the user's responsibility
+//  (`graf log | bro` or `graf log --tlv | bro`).
 
 // --- First-parent lookup for diff:?<sha> commit-show ---
 //
@@ -203,6 +167,14 @@ ok64 GRAFExec(cli *c) {
     //  `--tlv` here since CLISetHUNKMode doesn't know about it.
     if (CLIHas(c, "-t")) HUNKMode = HUNKOutTLV;
 
+    //  Output sink — stdout always; `be` wraps us in a bro pipe when
+    //  it wants pagination.  SIGPIPE handling matters in TLV mode
+    //  because a parent pipe (bro, BE→bro, user shell pipe) may close
+    //  before we finish; let the write fail and graf_emit's EPIPE
+    //  guard tear down cleanly.
+    graf_out_fd = STDOUT_FILENO;
+    if (HUNKMode == HUNKOutTLV) signal(SIGPIPE, SIG_IGN);
+
     u8cs reporoot = {};
     if (u8bHasData(c->repo)) u8csMv(reporoot, $path(c->repo));
     // If CLI parsing didn't supply a repo, fall back to h->root.
@@ -228,13 +200,11 @@ ok64 GRAFExec(cli *c) {
         (void)u8sFeed(body_idle, sfx);
 
         call(GRAFArenaInit);
-        graf_start_pager(c->tty_out);
         a_cstr(status_uri, "graf:status");
         hunk hk = {};
         u8csMv(hk.uri,  status_uri);
         u8csMv(hk.text, u8bDataC(body));
         (void)GRAFHunkEmit(&hk, NULL);
-        graf_stop_pager(-1);
         done;
     }
 
@@ -336,7 +306,6 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out);
         u8cs path = {};
         graf_uri_path(path, &c->uris[0]);
         //  Resolve URI's #hex/?ref/absent-query to a tip commit
@@ -349,7 +318,6 @@ ok64 GRAFExec(cli *c) {
                 tip_h = WHIFFHashlet60(&tip);
         }
         ret = GRAFBlame(path, tip_h, reporoot);
-        graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_diff)) {
         //  URI-driven diff (VERBS.md §"View projectors", `diff:`).  The
@@ -366,7 +334,6 @@ ok64 GRAFExec(cli *c) {
         //  The base sha comes from `--at`'s fragment (the worktree's
         //  current baseline, forwarded by `be`).  Every form except the
         //  explicit `?from#to` range needs it; missing → `GRAFNOAT`.
-        pid_t pager = graf_start_pager(c->tty_out);
         uri *u = &c->uris[0];
 
         uri at = {};
@@ -406,7 +373,6 @@ ok64 GRAFExec(cli *c) {
                 fprintf(stderr,
                     "graf: diff: no --at baseline; need explicit"
                     " 'diff:?<from>#<to>' or a sniff anchor\n");
-                graf_stop_pager(pager);
                 KEEPClose();
                 return GRAFNOAT;
             }
@@ -457,12 +423,9 @@ ok64 GRAFExec(cli *c) {
                 }
             }
         }
-        graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_map)) {
-        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFMap(c->nuris > 0 ? &c->uris[0] : NULL);
-        graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_log)) {
         if (c->nuris < 1) {
@@ -470,9 +433,7 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFLog(&c->uris[0]);
-        graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_head)) {
         //  No URI → ahead/behind cur vs implicit target.  With a URI:
@@ -480,9 +441,7 @@ ok64 GRAFExec(cli *c) {
         //  ahead/behind.  GRAFHead dispatches internally.
         uri empty = {};
         uri *hu = (c->nuris >= 1) ? &c->uris[0] : &empty;
-        pid_t pager = graf_start_pager(c->tty_out);
         ret = GRAFHead(hu);
-        graf_stop_pager(pager);
 
     } else if ($eq(c->verb, v_weave)) {
         if (c->nuris < 1) {
@@ -490,7 +449,6 @@ ok64 GRAFExec(cli *c) {
             KEEPClose();
             return FAILSANITY;
         }
-        pid_t pager = graf_start_pager(c->tty_out);
         uri *u = &c->uris[0];
         u8cs wf = {}, wt = {};
         if (!u8csEmpty(u->query)) {
@@ -508,7 +466,6 @@ ok64 GRAFExec(cli *c) {
         u8cs path = {};
         graf_uri_path(path, u);
         ret = GRAFWeaveDiff(path, reporoot, wf, wt);
-        graf_stop_pager(pager);
 
     } else {
         fprintf(stderr, "graf: unknown verb '%.*s'\n",

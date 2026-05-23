@@ -450,30 +450,32 @@ static ok64 BEProjector(cli *c, uri *u) {
 
     //  Universal three-mode rule: `HUNKMode` (set in main via
     //  `CLISetHUNKMode`) already encodes --tlv / --color / --plain /
-    //  ANSIIsTTY().  Map it onto bro-pager spawn and the dog's --tlv
-    //  arg:
-    //    COLOR → spawn bro, feed it TLV (bro renders ANSI).
+    //  ANSIIsTTY().  Map it onto bro-pager spawn and the dog's
+    //  mode-flag:
+    //    COLOR → spawn bro, feed it TLV (bro renders ANSI), pass
+    //            `--color` to bro so it paints even on a piped stdout.
     //    TLV   → run dog with `--tlv`, no inner bro fork.  Used by an
     //            outer bro that opens `be` itself to navigate a URI.
     //    PLAIN → run dog with no `--tlv`, dog writes plain text.
-    //  BRO_COLOR=1 keeps bro emitting ANSI even when its own stdout is
-    //  a pipe — useful for capturing coloured output into a file.
     b8 tty      = (HUNKMode == HUNKOutColor);
     b8 emit_tlv = (HUNKMode != HUNKOutPlain);
-    if (tty) setenv("BRO_COLOR", "1", 1);
 
     a_path(dogpath);
     a$rg(a0, 0);
     HOMEResolveSibling(NULL, dogpath, dog_s, a0);
 
-    //  Verbless: dog argv is `<dog> [--at <uri>] [--tlv] <URI>`.  The
-    //  dog sees the URI with its projector scheme intact and dispatches
-    //  on u->scheme inside its own CLI.  `--at` carries the wt's tip
-    //  so the projector (graf map / log "you are here", etc.) doesn't
-    //  need to poke at `.be/wtlog` itself.
-    a_cstr(tlv_flag, "--tlv");
+    //  Verbless: dog argv is `<dog> [--at <uri>] [mode-flag] <URI>`.
+    //  Forward the mode explicitly so the child's CLISetHUNKMode picks
+    //  the same shape `be` resolved — without an explicit flag, a child
+    //  that inherits a TTY stdout would default back to Color even when
+    //  `be --plain` had forced Plain.  `--at` carries the wt's tip so
+    //  the projector (graf map / log "you are here", etc.) doesn't need
+    //  to poke at `.be/wtlog` itself.
+    a_cstr(tlv_flag,   "--tlv");
+    a_cstr(plain_flag, "--plain");
+    a_cstr(color_flag, "--color");
     b8 have_at = u8bDataLen(be_at_buf) > 0;
-    a_pad(u8cs, dargs, 5);
+    a_pad(u8cs, dargs, 6);
     u8csbFeed1(dargs, dog_s);
     if (have_at) {
         a_dup(u8c, at_flag, be_at_flag);
@@ -481,7 +483,9 @@ static ok64 BEProjector(cli *c, uri *u) {
         u8csbFeed1(dargs, at_flag);
         u8csbFeed1(dargs, at_val);
     }
-    if (emit_tlv) u8csbFeed1(dargs, tlv_flag);
+    if      (emit_tlv)                   u8csbFeed1(dargs, tlv_flag);
+    else if (HUNKMode == HUNKOutColor)   u8csbFeed1(dargs, color_flag);
+    else if (HUNKMode == HUNKOutPlain)   u8csbFeed1(dargs, plain_flag);
     u8csbFeed1(dargs, u->data);
     a_dup(u8cs, dargv, u8csbData(dargs));
 
@@ -489,11 +493,15 @@ static ok64 BEProjector(cli *c, uri *u) {
 
     //  TTY: pipe through bro.  Bro drains HUNK TLV from stdin (see
     //  bro/BRO.c §BROPipeRun) and opens /dev/tty for keystrokes.
+    //  Forward `--color` so bro renders ANSI without relying on its
+    //  own ANSIIsTTY (its stdout is /dev/tty here, but being explicit
+    //  is one less surprise across NO_COLOR / piped-stdout edge cases).
     a_path(bropath);
     a_cstr(bro_name, "bro");
     HOMEResolveSibling(NULL, bropath, bro_name, a0);
-    a_pad(u8cs, bargs, 1);
+    a_pad(u8cs, bargs, 2);
     u8csbFeed1(bargs, bro_name);
+    u8csbFeed1(bargs, color_flag);
     a_dup(u8cs, bargv, u8csbData(bargs));
     return BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
 }
@@ -2432,9 +2440,18 @@ static ok64 BEPost(cli *c, b8 seq) {
 //  one-liner per dog if it ever matters.
 static ok64 BEDefault(void) {
     sane(1);
-    a_cstr(sniff_s, "sniff");
-    a_pad(u8cs, args, 1);
+    a_cstr(sniff_s,    "sniff");
+    a_cstr(tlv_flag,   "--tlv");
+    a_cstr(plain_flag, "--plain");
+    a_cstr(color_flag, "--color");
+    a_pad(u8cs, args, 2);
     u8csbFeed1(args, sniff_s);
+    //  Forward the resolved mode explicitly — sniff inherits stdout
+    //  but its TTY detection would override `be --plain` / `be --tlv`
+    //  if stdout happens to be a terminal.
+    if      (HUNKMode == HUNKOutTLV)   u8csbFeed1(args, tlv_flag);
+    else if (HUNKMode == HUNKOutColor) u8csbFeed1(args, color_flag);
+    else if (HUNKMode == HUNKOutPlain) u8csbFeed1(args, plain_flag);
     a_dup(u8cs, argv, u8csbData(args));
     return BERun(sniff_s, argv, NO);
 }
@@ -2569,6 +2586,39 @@ static ok64 becli_inner(cli *c) {
         done;
     }
 
+    //  Bareword-as-projector: `be <verb>` where the verb token is a
+    //  known projector scheme (status, diff, log, blame, …) is
+    //  shorthand for `be <verb>:`, with any URI argument folded in as
+    //  the projector body.  Examples:
+    //      be status            → status:
+    //      be status sub/       → status:sub/
+    //      be diff              → diff:
+    //      be diff foo.c?main   → diff:foo.c?main
+    //  Routes through BEProjector so the dispatch path stays single-
+    //  sourced.  The verb-specific arm below (`be diff` → BEDiff,
+    //  `be status` → BEDefault) is unreachable for these names — kept
+    //  in the table only so CLIParse still classifies them as verbs
+    //  (so e.g. `be diff foo.c` doesn't put `diff` into c->uris[0]).
+    if (!$empty(verb) && DOGIsProjector(verb)) {
+        a_pad(u8, syn_buf, 4096);
+        a_dup(u8c, vs, verb);
+        (void)u8bFeed(syn_buf, vs);
+        (void)u8bFeed1(syn_buf, ':');
+        if (u != NULL && !$empty(u->data)) {
+            a_dup(u8c, us, u->data);
+            (void)u8bFeed(syn_buf, us);
+        }
+        uri synthetic = {};
+        a_dup(u8c, syn_text, u8bDataC(syn_buf));
+        call(DOGParseURI, &synthetic, syn_text);
+        //  URILexer consumes `data` while parsing — repoint it at the
+        //  full URI bytes so BEProjector can forward the original text
+        //  to the sub-dog (it uses u->data as the argv URI slot).
+        u8csMv(synthetic.data, syn_text);
+        call(BEProjector, c, &synthetic);
+        done;
+    }
+
     // No verb → view/file mode.  Projector schemes (spot:, grep:, regex:,
     // ls:, tree:, …) were already routed through BEProjector above; here
     // a bare path-shaped URI displays the file via bro.  Search has no
@@ -2577,16 +2627,20 @@ static ok64 becli_inner(cli *c) {
     if ($empty(verb)) {
         u8cs bro  = u8slit("bro");
         if (u != NULL && !$empty(u->path)) {
-            //  Mirror BEProjector: propagate --tlv (and --color via the
-            //  env BRO_COLOR=1) so a parent bro that forked us through
-            //  BROForkBe gets back TLV records instead of plain text.
-            b8 emit_tlv = (HUNKMode != HUNKOutPlain);
-            if (HUNKMode == HUNKOutColor) setenv("BRO_COLOR", "1", 1);
-            a_cstr(tlv_flag_s, "--tlv");
-            u8cs tlv_flag = {tlv_flag_s[0], tlv_flag_s[1]};
+            //  Mirror BEProjector: forward the resolved mode flag so
+            //  bro picks the same shape `be` resolved (no env hack;
+            //  --color / --plain / --tlv straight on bro's argv).
+            a_cstr(tlv_flag_s,   "--tlv");
+            a_cstr(color_flag_s, "--color");
+            a_cstr(plain_flag_s, "--plain");
+            u8cs tlv_flag   = {tlv_flag_s[0],   tlv_flag_s[1]};
+            u8cs color_flag = {color_flag_s[0], color_flag_s[1]};
+            u8cs plain_flag = {plain_flag_s[0], plain_flag_s[1]};
             a_pad(u8cs, args, 3);
             u8csbFeed1(args, bro);
-            if (emit_tlv) u8csbFeed1(args, tlv_flag);
+            if      (HUNKMode == HUNKOutTLV)   u8csbFeed1(args, tlv_flag);
+            else if (HUNKMode == HUNKOutColor) u8csbFeed1(args, color_flag);
+            else if (HUNKMode == HUNKOutPlain) u8csbFeed1(args, plain_flag);
             u8csbFeed1(args, u->data);
             a_dup(u8cs, argv, u8csbData(args));
             call(BERun, bro, argv, NO);

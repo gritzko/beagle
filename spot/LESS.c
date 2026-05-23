@@ -16,8 +16,7 @@ Bu32     less_toks[LESS_MAX_MAPS];
 u32      less_nhunks = 0;
 u32      less_nmaps  = 0;
 
-int          spot_out_fd = -1;
-spot_emit_fn spot_emit   = NULL;
+int spot_out_fd = -1;
 
 ok64 LESSArenaInit(void) {
     less_nhunks = 0;
@@ -51,22 +50,23 @@ void LESSDefer(u8bp mapped, u32bp toks) {
     less_nmaps++;
 }
 
-// Serialize the just-built hunk via spot_emit, write to spot_out_fd,
-// then rewind the entire arena.  After emission the hunk's title, toks
-// and hili slices (which live in the arena) are dead — the pipe owns
-// the bytes now.  Full rewind keeps the arena from filling up across
+// Serialize the just-built hunk via HUNKu8sFeedOut (dispatched off
+// the module-global `HUNKMode`), write to spot_out_fd, then rewind
+// the entire arena.  After emission the hunk's title, toks and hili
+// slices (which live in the arena) are dead — the pipe owns the
+// bytes now.  Full rewind keeps the arena from filling up across
 // hundreds of streaming hunks.
 void LESSHunkEmit(void) {
-    if (spot_emit == NULL || spot_out_fd < 0) {
+    if (spot_out_fd < 0) {
         // No output set up yet — accumulate nhunks for LESSRun.
         less_nhunks++;
         return;
     }
     LESShunk *hk = &less_hunks[less_nhunks];
 
-    // TLV/text serialization goes into arena idle space (past title/toks/hili).
+    // Serialization goes into arena idle space (past title/toks/hili).
     u8cp start = u8bIdleHead(less_arena);
-    if (spot_emit(u8bIdle(less_arena), hk) != OK) {
+    if (HUNKu8sFeedOut(u8bIdle(less_arena), hk) != OK) {
         // Reset arena: drop this hunk's title/toks/hili + failed TLV.
         u8bShedAll(less_arena);
         return;

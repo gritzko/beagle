@@ -122,7 +122,10 @@ ok64 SPOTExec(cli *c) {
     }
 
     b8 do_status = CLIHas(c, "--status");
-    b8 force_tlv = CLIHas(c, "-t") || CLIHas(c, "--tlv");
+    //  HUNKMode (set by CLISetHUNKMode in CAPO.cli.c) picks TLV /
+    //  Color / Plain.  Honour the legacy `-t` alias for `--tlv` here
+    //  because CLISetHUNKMode doesn't know about it.
+    if (CLIHas(c, "-t")) HUNKMode = HUNKOutTLV;
 
     u32 grep_ctx = 3;
     CLIFlag(v, c, "-C");
@@ -255,35 +258,17 @@ ok64 SPOTExec(cli *c) {
         return FAILSANITY;
     }
 
-    pid_t bro_pid = -1;
     b8 produces_hunks =
         (!$empty(grep_ndl) || !$empty(pcre_ndl) || !$empty(spot_ndl)) &&
         $empty(spot_rep);
     if (produces_hunks) {
-        if (force_tlv) {
-            spot_out_fd = STDOUT_FILENO;
-            spot_emit   = HUNKu8sFeed;
-            signal(SIGPIPE, SIG_IGN);
-        } else if (c->tty_out) {
-            a_path(bropath);
-            a$rg(a0, 0);
-            a_cstr(bro_name, "bro");
-            HOMEResolveSibling(NULL, bropath, bro_name, a0);
-            u8cs bargs[] = {u8slit("bro")};
-            u8css bargv = {bargs, bargs + 1};
-            int wfd = -1;
-            call(FILESpawn, $path(bropath), bargv, &wfd, NULL, &bro_pid);
-            dog->out_fd = wfd;
-            dog->emit   = HUNKu8sFeed;
-            spot_out_fd = dog->out_fd;
-            spot_emit   = dog->emit;
-            signal(SIGPIPE, SIG_IGN);
-        } else {
-            dog->out_fd = STDOUT_FILENO;
-            dog->emit   = HUNKu8sFeedText;
-            spot_out_fd = dog->out_fd;
-            spot_emit   = dog->emit;
-        }
+        //  Output sink — stdout always; `be` wraps us in a bro pipe
+        //  when it wants pagination.  SIGPIPE matters in TLV mode
+        //  because a parent pipe (bro, BE→bro, user shell pipe) may
+        //  close before we finish.
+        spot_out_fd = STDOUT_FILENO;
+        dog->out_fd = STDOUT_FILENO;
+        if (HUNKMode == HUNKOutTLV) signal(SIGPIPE, SIG_IGN);
     }
 
     ok64 ret = OK;
@@ -408,18 +393,7 @@ ok64 SPOTExec(cli *c) {
         spot_usage();
     }
 
-    // Cleanup bro pipe (globals)
-    if (spot_out_fd >= 0 && spot_out_fd != STDOUT_FILENO) {
-        close(spot_out_fd);
-        spot_out_fd = -1;
-    }
-    if (bro_pid > 0) {
-        int rc = 0;
-        FILEReap(bro_pid, &rc);
-        if (rc == 127)
-            fprintf(stderr, "spot: bro pager not found\n");
-    }
-
+    spot_out_fd = -1;
     return ret;
 }
 

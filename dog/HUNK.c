@@ -403,10 +403,37 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
     }
 
     if (!hunk_has_diff(hk)) {
-        //  Content hunk (grep / search / cat): emit text verbatim, no
-        //  colour layer here; 'U'-tagged URI bytes stay hidden.
+        //  Content hunk (grep / search / cat / sniff status): emit each
+        //  token's bytes wrapped in its tag's THEME color so per-column
+        //  hili (`L` date, `F` path, verb-palette `Y`/`W`/`V`/…) shows
+        //  up in direct --color mode the same way bro renders TLV via
+        //  the toks stream.  'U'-tagged ranges stay hidden.  No toks →
+        //  fall back to verbatim emission (legacy callers).
         u32 tlen = (u32)$len(hk->text);
-        call(hunk_feed_visible, into, hk, 0, tlen);
+        int n_toks = (int)$len(hk->toks);
+        if (n_toks == 0) {
+            call(hunk_feed_visible, into, hk, 0, tlen);
+        } else {
+            ansi64 prev = ANSI_DEFAULT;
+            u32 lo = 0;
+            for (int i = 0; i < n_toks; i++) {
+                u32 hi = tok32Offset(hk->toks[0][i]);
+                u8 tag = tok32Tag(hk->toks[0][i]);
+                if (tag == 'U') { lo = hi; continue; }   // invisible
+                ansi64 want = THEMEAt(tag);
+                if (want != prev) {
+                    call(ANSIu8sFeedDelta, into, want, prev);
+                    prev = want;
+                }
+                if (hi > lo) {
+                    a$part(u8c, span, hk->text, lo, hi - lo);
+                    call(u8sFeed, into, span);
+                }
+                lo = hi;
+            }
+            if (prev != ANSI_DEFAULT)
+                call(ANSIu8sFeedReset, into, prev);
+        }
         if (tlen > 0 && hk->text[0][tlen - 1] != '\n')
             u8sFeed1(into, '\n');
         u8sFeed1(into, '\n');

@@ -5,8 +5,9 @@
 #include "dog/HUNK.h"
 
 // Producer-side staging: build hunks in `less_arena`, emit them to
-// `spot_out_fd` via `spot_emit` (HUNKu8sFeed for TLV → bro pager,
-// HUNKu8sFeedText for plain text → stdout).
+// `spot_out_fd` via `HUNKu8sFeedOut` (TLV / Color / Plain dispatched
+// off the module-global `HUNKMode`).  `be` is the only thing that
+// forks bro for pagination.
 
 // LESShunk kept as alias for hunk during transition.
 typedef hunk LESShunk;
@@ -22,14 +23,9 @@ extern Bu32     less_toks[LESS_MAX_MAPS];
 extern u32      less_nhunks;
 extern u32      less_nmaps;
 
-// File descriptor for outgoing hunks.  STDOUT_FILENO when piped, else
-// the write end of a pipe to bro.  -1 = uninitialized.
+// File descriptor for outgoing hunks.  STDOUT_FILENO under normal use;
+// -1 = uninitialized.
 extern int spot_out_fd;
-
-// Hunk → bytes serializer.  Either HUNKu8sFeed (TLV) or
-// HUNKu8sFeedText (plain ASCII).  Selected by the CLI at startup.
-typedef ok64 (*spot_emit_fn)(u8s into, hunk const *hk);
-extern spot_emit_fn spot_emit;
 
 ok64 LESSArenaInit(void);
 void LESSArenaCleanup(void);

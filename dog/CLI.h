@@ -35,7 +35,6 @@ typedef struct {
     uri    uris[CLI_MAX_URIS];       // parsed URI targets
     u32    nuris;
     path8b repo;                     // repo root path; heap-allocated by CLIParse, freed by CLIClose
-    b8     tty_out;                  // isatty(STDOUT)
 } cli;
 
 // Parse $args into cli struct. verb_names is a NULL-terminated

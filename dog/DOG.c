@@ -45,6 +45,7 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"ls",     "sniff"},   // one-level
     {"lsr",    "sniff"},   // recursive
     {"cat",    "sniff"},
+    {"status", "sniff"},   // worktree status — same hunk as bare `be`
     //  Search projectors — read-only views (VERBS.md §"View projectors").
     //  Scheme picks the search backend; path-slot carries the body.
     //  Examples:

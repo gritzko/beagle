@@ -501,14 +501,100 @@ static ok64 status_step(class_step const *step, void *ctx) {
 //  column wears grey, status wears its own colour, path stays
 //  default.  Walked once per bucket (≤7 passes) — trivial for
 //  status sizes.
-//  Walk `rows` (ULOG-formatted), drain row by row, and ship each row
-//  matching `verb_filter` through `HUNKu8sFeedOut` as a status hunk.
-//  The renderer reads `HUNKMode` (set by `CLISetHUNKMode` in main) and
-//  picks TLV/color/plain — same three-flag rule as every other dog.
-//  No tty / marker / ansi args: the verb token is rendered from the
-//  ron60 `rec.verb` and the colour comes from `ULOGVerbColor` via the
-//  HUNK renderer, so the palette stays in sync without per-call wiring.
-static void status_dump_verb(Bu8 rows, ron60 verb_filter) {
+//  Append one tok32 to `toks`, end-offset = current text size.  Mirror
+//  of `sniff/LS.c::ls_pack` — same idiom across all sniff per-file
+//  emitters.
+static void status_pack(Bu32 toks, Bu8 text, u8 tag) {
+    (void)u32bFeed1(toks, tok32Pack(tag, (u32)u8bDataLen(text)));
+}
+
+//  Render one row into `(text, toks)` in the same column layout as
+//  `sniff/LS.c::ls_emit_row`:
+//
+//    <7-date> <3-verb> <path>[ -> <dst>]\n<cat:URI>
+//      tag 'L'  verb's tag  tag 'F'         tag 'U' (invisible)
+//
+//  ULOGVerbTag picks the palette slot per verb (Y for put, W for new,
+//  …); the colour comes from THEME via HUNKu8sFeedColor.  The `cat:`
+//  nav target is what `sniff/LS.c` uses for file rows — clicking the
+//  row in bro opens the file.
+//  YES iff a row of `verb` should click-nav to `diff:<path>` instead
+//  of `cat:<path>` — i.e. the file diverges from baseline and the
+//  user's likely first action is "show me what changed".  Only `mod`
+//  qualifies today (mov already carries the dst so cat: lands on the
+//  new file; new/unk have no baseline to diff against; del/mis are
+//  gone from disk — diff would error).
+static b8 status_verb_wants_diff_nav(ulogreccp rec, status_verbs const *v) {
+    return rec->verb == v->v_mod;
+}
+
+static void status_emit_row_buf(Bu8 text, Bu32 toks,
+                                 ulogreccp rec, i64 now,
+                                 status_verbs const *v) {
+    u8cs path    = {rec->uri.path[0],     rec->uri.path[1]};
+    u8cs mov_dst = {rec->uri.fragment[0], rec->uri.fragment[1]};
+
+    //  Date column (7 cols).
+    if (rec->ts) {
+        a_pad(u8, date, 8);
+        i64 secs = status_ron60_to_secs(rec->ts);
+        if (secs > 0) (void)DOGutf8sFeedDate(date_idle, secs, now);
+        (void)u8bFeed(text, u8bDataC(date));
+    } else {
+        a_cstr(sp7, "       ");
+        (void)u8bFeed(text, sp7);
+    }
+    status_pack(toks, text, 'L');
+    (void)u8bFeed1(text, ' ');
+    status_pack(toks, text, 'S');
+
+    //  Verb column (3 cols, left-justified, space-padded).
+    {
+        a_pad(u8, vbuf, 16);
+        (void)RONutf8sFeed(vbuf_idle, rec->verb);
+        a_dup(u8c, vs, u8bDataC(vbuf));
+        (void)u8bFeed(text, vs);
+        size_t need = ($len(vs) < 3) ? 3 - $len(vs) : 0;
+        for (size_t i = 0; i < need; i++) (void)u8bFeed1(text, ' ');
+    }
+    status_pack(toks, text, ULOGVerbTag(rec->verb));
+    (void)u8bFeed1(text, ' ');
+    status_pack(toks, text, 'S');
+
+    //  Path column.  Moves render as `<src>#<dst>` — the URI-fragment
+    //  form `put` rows actually store, so tooling that greps for
+    //  `mov a.txt#a2.txt` (test/put/04-file-dir-mv) keeps matching.
+    //  Tagged 'S' (neutral) — paths in bare-be status read better
+    //  uncoloured against the verb-palette column to their left.
+    (void)u8bFeed(text, path);
+    if (!u8csEmpty(mov_dst)) {
+        (void)u8bFeed1(text, '#');
+        (void)u8bFeed(text, mov_dst);
+    }
+    (void)u8bFeed1(text, '\n');
+    status_pack(toks, text, 'S');
+
+    //  Invisible navigation URI.  `mod` rows go to the diff: projector
+    //  (bro click → unified diff); everything else opens the file in
+    //  cat: view.  Same `sniff/LS.c` convention for non-changed rows.
+    if (status_verb_wants_diff_nav(rec, v)) {
+        a_cstr(s, "diff:"); (void)u8bFeed(text, s);
+    } else {
+        a_cstr(s, "cat:");  (void)u8bFeed(text, s);
+    }
+    if (!u8csEmpty(mov_dst))
+        (void)u8bFeed(text, mov_dst);
+    else
+        (void)u8bFeed(text, path);
+    status_pack(toks, text, 'U');
+}
+
+//  Drain `rows`, emit every row matching `verb_filter` into the shared
+//  `(text, toks)` accumulator.  One ≤7-pass sweep across the bucket
+//  list per call from `sniff_status_work`.
+static void status_dump_verb(Bu8 rows, ron60 verb_filter,
+                              Bu8 text, Bu32 toks, i64 now,
+                              status_verbs const *v) {
     a_dup(u8c, scan, u8bData(rows));
     while (!u8csEmpty(scan)) {
         ulogrec rec = {};
@@ -516,88 +602,124 @@ static void status_dump_verb(Bu8 rows, ron60 verb_filter) {
         if (dr == NODATA) break;
         if (dr != OK) continue;                  // skip malformed
         if (rec.verb != verb_filter) continue;
-        (void)ULOGPrintStatusLine(&rec);
+        status_emit_row_buf(text, toks, &rec, now, v);
     }
+}
+
+//  Render the trailing summary line ("<rel>?<branch>\t<n> ok, <m> put,
+//  …\n") into `(text, toks)`.  Each `<n> <verb>` segment carries the
+//  verb's palette tag so colour mode picks up the per-bucket hue
+//  (Y put, W new, V mov, E mod, X del, M mis, Q unk, D ok).  `ok`
+//  uses 'D' (gray) — informational, deliberately low-contrast.
+static void status_emit_summary_buf(Bu8 text, Bu32 toks,
+                                     status_buckets const *b) {
+    //  Resolve cwd-relative path + current branch for the `<rel>?<br>`
+    //  prefix.  Empty when cwd == wt root and branch == trunk.
+    u8cs cur_br = {};
+    {
+        ron60 bts = 0, bverb = 0;
+        uri bu = {};
+        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK)
+            u8csMv(cur_br, bu.query);
+    }
+    a_path(cwd_path);
+    u8cs rel = {};
+    if (FILEGetCwd(cwd_path) == OK && SNIFF.h != NULL &&
+        u8bDataLen(SNIFF.h->wt) > 0) {
+        a_dup(u8c, cwd_s, u8bDataC(cwd_path));
+        a_dup(u8c, wt_s,  u8bDataC(SNIFF.h->wt));
+        size_t wt_len = $len(wt_s);
+        if ($len(cwd_s) > wt_len &&
+            memcmp(cwd_s[0], wt_s[0], wt_len) == 0 &&
+            cwd_s[0][wt_len] == '/') {
+            rel[0] = cwd_s[0] + wt_len + 1;
+            rel[1] = cwd_s[1];
+        }
+    }
+    if (!u8csEmpty(rel)) (void)u8bFeed(text, rel);
+    (void)u8bFeed1(text, '?');
+    if (!u8csEmpty(cur_br)) (void)u8bFeed(text, cur_br);
+    (void)u8bFeed1(text, '\t');
+    status_pack(toks, text, 'S');
+
+    //  Per-bucket `<n> <verb>` pair tagged with the verb's palette slot.
+    #define STATUS_BUCKET(count, verb_lit, tag) do {                   \
+        if (count > 0) {                                               \
+            if (u8bDataLen(text) > 0 && *(u8bIdleHead(text) - 1) != '\t')\
+                { (void)u8bFeed1(text, ','); (void)u8bFeed1(text, ' '); \
+                  status_pack(toks, text, 'S'); }                      \
+            a_pad(u8, nbuf, 16);                                       \
+            (void)utf8sFeed10(nbuf_idle, (u64)count);                  \
+            (void)u8bFeed(text, u8bDataC(nbuf));                       \
+            (void)u8bFeed1(text, ' ');                                 \
+            a_cstr(vs, verb_lit);                                      \
+            (void)u8bFeed(text, vs);                                   \
+            status_pack(toks, text, (tag));                            \
+        }                                                              \
+    } while (0)
+    STATUS_BUCKET(b->ok_n,  "ok",  'D');
+    STATUS_BUCKET(b->put_n, "put", 'Y');
+    STATUS_BUCKET(b->new_n, "new", 'W');
+    STATUS_BUCKET(b->mov_n, "mov", 'V');
+    STATUS_BUCKET(b->mod_n, "mod", 'E');
+    STATUS_BUCKET(b->del_n, "del", 'X');
+    STATUS_BUCKET(b->mis_n, "mis", 'M');
+    STATUS_BUCKET(b->unk_n, "unk", 'Q');
+    #undef STATUS_BUCKET
+    (void)u8bFeed1(text, '\n');
+    status_pack(toks, text, 'S');
 }
 
 //  Worker: assumes b's rows buffer is already mapped.  Returns the
 //  classification result; never frees.
+//
+//  Output shape: one hunk per invocation (URI = `status:`), text is
+//  the concatenation of per-file rows + a trailing summary line.
+//  Per-file rows carry a 'U'-tagged `cat:<path>` nav target after the
+//  `\n`, mirroring `sniff/LS.c`; bro turns those into click-anchors.
 static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
     call(SNIFFClassify, status_step, b);
 
+    Bu8  text = {};
+    Bu32 toks = {};
+    call(u8bAllocate,  text, 1UL << 20);
+    call(u32bAllocate, toks, 1UL << 16);
+
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
-    //  ANSI is decided by HUNKMode (set in main from --tlv/--color/--plain
-    //  per the universal rule); no per-call tty branching here.
-    b8 tty = isatty(STDOUT_FILENO) ? YES : NO;
-    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put);
-    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new);
-    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov);
-    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod);
-    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del);
-    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis);
-    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk);
-    //  Color the count + tag pair when the count is non-zero, on tty
-    //  only.  `ok` is uncolored — its tag is informational, never
-    //  surfaced as a row above.
-    #define STATUS_PAINT(n, tag, ansi)                                  \
-        do {                                                            \
-            if (tty && (n) > 0)                                         \
-                fprintf(stdout, ", " ansi "%u %s" STATUS_ANSI_OFF,      \
-                        (n), (tag));                                    \
-            else                                                        \
-                fprintf(stdout, ", %u %s", (n), (tag));                 \
-        } while (0)
-    //  Lead with the local-position URI: `<rel>?<branch>` where
-    //  `<rel>` is cwd's path inside the wt (empty when cwd == wt root)
-    //  and `<branch>` is the current be-branch (empty == trunk).  Tells
-    //  the user where they are at a glance — wt subdir + branch.
+    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, text, toks, b->now, &b->v);
+    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, text, toks, b->now, &b->v);
+    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, text, toks, b->now, &b->v);
+    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, text, toks, b->now, &b->v);
+    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, text, toks, b->now, &b->v);
+    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, text, toks, b->now, &b->v);
+    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, text, toks, b->now, &b->v);
+
+    //  Summary line finalises the hunk.
+    status_emit_summary_buf(text, toks, b);
+
+    a_cstr(status_uri, "status:");
+    hunk hk = {};
+    u8csMv(hk.uri,  status_uri);
+    u8csMv(hk.text, u8bDataC(text));
     {
-        ron60 bts = 0, bverb = 0;
-        uri bu = {};
-        u8cs cur_br = {};
-        if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-            u8csMv(cur_br, bu.query);
-        }
-
-        //  Resolve cwd's path relative to the wt root.  When the
-        //  worktree is colocated with cwd (or cwd is the wt root),
-        //  the relative path is empty.
-        a_path(cwd_path);
-        u8cs rel = {};
-        if (FILEGetCwd(cwd_path) == OK && SNIFF.h != NULL &&
-            u8bDataLen(SNIFF.h->wt) > 0) {
-            a_dup(u8c, cwd_s, u8bDataC(cwd_path));
-            a_dup(u8c, wt_s,  u8bDataC(SNIFF.h->wt));
-            size_t wt_len = $len(wt_s);
-            if ($len(cwd_s) > wt_len &&
-                memcmp(cwd_s[0], wt_s[0], wt_len) == 0 &&
-                cwd_s[0][wt_len] == '/') {
-                rel[0] = cwd_s[0] + wt_len + 1;
-                rel[1] = cwd_s[1];
-            }
-        }
-
-        if (u8csEmpty(cur_br)) {
-            fprintf(stdout, "%.*s?\t%u ok",
-                    (int)$len(rel), (char *)rel[0], b->ok_n);
-        } else {
-            fprintf(stdout, "%.*s?%.*s\t%u ok",
-                    (int)$len(rel), (char *)rel[0],
-                    (int)$len(cur_br), (char *)cur_br[0], b->ok_n);
-        }
+        tok32cs kv = {};
+        kv[0] = (tok32c *)u32bDataHead(toks);
+        kv[1] = (tok32c *)u32bDataHead(toks) + u32bDataLen(toks);
+        u32csMv(hk.toks, kv);
     }
-    STATUS_PAINT(b->put_n, "put", STATUS_ANSI_PUT);
-    STATUS_PAINT(b->new_n, "new", STATUS_ANSI_NEW);
-    STATUS_PAINT(b->mov_n, "mov", STATUS_ANSI_MOV);
-    STATUS_PAINT(b->mod_n, "mod", STATUS_ANSI_MOD);
-    STATUS_PAINT(b->del_n, "del", STATUS_ANSI_DEL);
-    STATUS_PAINT(b->mis_n, "mis", STATUS_ANSI_MIS);
-    STATUS_PAINT(b->unk_n, "unk", STATUS_ANSI_UNK);
-    fprintf(stdout, "\n");
-    #undef STATUS_PAINT
-    fflush(stdout);
+    a_pad(u8, line, 4096);
+    Bu8 big = {};
+    ok64 mo = u8bAllocate(big, u8bDataLen(text) + (1UL << 16));
+    ok64 fo = (mo == OK)
+            ? HUNKu8sFeedOut(u8bIdle(big), &hk)
+            : HUNKu8sFeedOut(u8bIdle(line), &hk);
+    if (fo == OK) (void)FILEout(mo == OK ? u8bDataC(big) : u8bDataC(line));
+    if (mo == OK) u8bFree(big);
+
+    u32bFree(toks);
+    u8bFree(text);
     done;
 }
 
@@ -1800,15 +1922,20 @@ ok64 SNIFFExec(cli *c) {
         //  color) is set once at process start via the universal
         //  `--tlv` / `--color` / `--plain` rule into the module-global
         //  `HUNKMode`; projectors only emit hunks.
-        a_cstr(ls_s,  "ls");
-        a_cstr(lsr_s, "lsr");
-        a_cstr(cat_s, "cat");
+        a_cstr(ls_s,     "ls");
+        a_cstr(lsr_s,    "lsr");
+        a_cstr(cat_s,    "cat");
+        a_cstr(status_s, "status");
         if ($eq(proj_u->scheme, ls_s)) {
             ret = SNIFFLs(reporoot, proj_u);
         } else if ($eq(proj_u->scheme, lsr_s)) {
             ret = SNIFFLsr(reporoot, proj_u);
         } else if ($eq(proj_u->scheme, cat_s)) {
             ret = SNIFFCat(reporoot, proj_u);
+        } else if ($eq(proj_u->scheme, status_s)) {
+            //  `status:` projector → same one-hunk worktree status
+            //  bare `sniff` produces.  Body slot ignored.
+            ret = sniff_status(reporoot);
         } else {
             //  Table says sniff owns this scheme but we don't have a
             //  handler wired — should not happen once DOG_PROJECTORS

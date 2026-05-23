@@ -27,7 +27,6 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     //  Caller must PATHu8bAlloc(c->repo) before invoking CLIParse
     //  (CLAUDE.md §5: alloc at the top of the call chain).
     sane(c != NULL && c->repo[0] != NULL);
-    c->tty_out = isatty(STDOUT_FILENO) ? YES : NO;
 
     // Worktree root — feed into the caller-owned path buffer.  Borrow
     // a temporary `home` just to walk up to the anchor; caller may
@@ -49,7 +48,9 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     int argn = (int)$arglen;
     int ai = 1;  // skip argv[0]
 
-    // Verb: first arg that matches a known verb name
+    // Verb: first arg that matches a known verb name.  Argv order is
+    // fixed: `be [verb] [flags] [URIs]` (VERBS.md).  No verb scan past
+    // leading flags — flags before the verb don't classify here.
     if (ai < argn && verb_names != NULL) {
         a$rg(a, ai);
         for (char const *const *vn = verb_names; *vn != NULL; vn++) {
