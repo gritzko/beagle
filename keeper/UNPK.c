@@ -45,8 +45,8 @@
 //  nodes[] is 1-based; index 0 is sentinel.
 typedef struct { u64 offset; u32 child; u32 sibling; } unpk_node;
 
-fun int unpk_nodecmp(unpk_node const *a, unpk_node const *b) {
-    return a->offset < b->offset ? -1 : (a->offset == b->offset ? 0 : 1);
+fun b8 unpk_nodeZ(unpk_node const *a, unpk_node const *b) {
+    return a->offset < b->offset;
 }
 
 #define X(M, n) M##unpk_node##n

@@ -20,10 +20,6 @@ fun b8 sha1empty(sha1 const* s) {
     return (w[0] | w[1] | *t) == 0;
 }
 
-fun int sha1cmp(sha1 const* a, sha1 const* b) {
-    return memcmp(a->data, b->data, 20);
-}
-
 fun b8 sha1Z(sha1 const* a, sha1 const* b) {
     return memcmp(a->data, b->data, 20) < 0;
 }

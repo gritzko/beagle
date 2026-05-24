@@ -999,7 +999,7 @@ static ok64 capo_class_step(class_step const *step, void *ctx_) {
         u64 fn_hash = (u64)CAPOFnRap20(path);
         u64s th = {(u64p)cx->opts->tri_hashes[0],
                    (u64p)cx->opts->tri_hashes[1]};
-        if (!u64sBsearch(&fn_hash, th)) {
+        if (!u64sBinSearch(&fn_hash, th)) {
             SPOT_SCAN_FILTER_REJ++;
             if (SPOT.trace_rej) {
                 fprintf(stderr, "spot:   reject %.*s fn_hash=%llx\n",

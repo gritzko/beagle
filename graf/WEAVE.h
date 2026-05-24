@@ -54,12 +54,6 @@ typedef inrm const inrmc;
 typedef inrm *inrmp;
 typedef inrm const *inrmcp;
 
-fun int inrmcmp(inrmcp a, inrmcp b) {
-    if (a->in != b->in) return (a->in < b->in) ? -1 : 1;
-    if (a->rm != b->rm) return (a->rm < b->rm) ? -1 : 1;
-    return 0;
-}
-
 fun b8 inrmZ(inrmcp a, inrmcp b) {
     return a->in < b->in || (a->in == b->in && a->rm < b->rm);
 }

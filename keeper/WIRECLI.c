@@ -882,10 +882,9 @@ static b8 sha_set_has(sha_set const *s, sha1cp q) {
     u32 lo = 0, hi = s->n;
     while (lo < hi) {
         u32 mid = (lo + hi) >> 1;
-        int c = sha1cmp(&s->items[mid], q);
-        if (c == 0) return YES;
-        if (c < 0) lo = mid + 1;
-        else       hi = mid;
+        if (sha1Z(&s->items[mid], q)) lo = mid + 1;
+        else if (sha1Z(q, &s->items[mid])) hi = mid;
+        else return YES;
     }
     return NO;
 }
@@ -894,7 +893,7 @@ static void sha_set_add(sha_set *s, sha1cp v) {
     if (!s || s->n >= s->cap) return;
     //  Insertion sort: find the position and shift.
     u32 i = s->n;
-    while (i > 0 && sha1cmp(&s->items[i - 1], v) > 0) {
+    while (i > 0 && sha1Z(v, &s->items[i - 1])) {
         s->items[i] = s->items[i - 1];
         i--;
     }

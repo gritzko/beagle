@@ -1297,7 +1297,7 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
     SHA1Sum(&actual_sha, u8bDataC(tmp));
     u8bFree(tmp);
 
-    if (sha1cmp(&actual_sha, &expected_sha) != 0) {
+    if (!sha1Eq(&actual_sha, &expected_sha)) {
         a_pad(u8, hex_exp, 16);
         WHIFFHexFeed60(hex_exp_idle, WHIFFHashlet60(&expected_sha));
         u8bFeed1(hex_exp, 0);
