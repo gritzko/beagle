@@ -47,7 +47,7 @@ static bro *bro_state = NULL;
 
 #define bro_arena  (bro_state->arena)
 #define bro_hunks  hunkbDataHead(bro_state->hunks)   // hunk* into DATA
-#define bro_toks   (bro_state->toks)                 // shared u32b arena
+#define bro_toks   (bro_state->toks)                 // shared tok32b arena
 #define BRO_COLOR  (bro_state->color)
 #define bro_nhunks ((u32)hunkbDataLen(bro_state->hunks))
 
@@ -87,22 +87,24 @@ ok64 BROOpen(bro *b, home *h, b8 rw) {
     call(u8bMap, b->arena, BRO_ARENA_SIZE);
     call(BROScratchInit);
     call(hunkbMap, b->hunks, BRO_MAX_HUNKS);
-    call(u32bMap,  b->toks,  BRO_TOKS_SIZE);
-    call(u8bbMap,  b->maps,  BRO_MAX_MAPS);
+    call(tok32bMap,  b->toks,  BRO_TOKS_SIZE);
+    call(i32bMap,  b->maps,  BRO_MAX_MAPS);
     done;
 }
 
 ok64 BROClose(bro *b) {
     sane(b);
     if (bro_state == b) {
-        size_t n = u8bbDataLen(b->maps);
-        u8b *head = u8bbDataHead(b->maps);
+        size_t n = i32bDataLen(b->maps);
+        i32 const *fds = i32bDataHead(b->maps);
         for (size_t i = 0; i < n; i++) {
-            u8bp mp = (u8bp)head[i];
-            if (mp && mp[0]) FILEUnMap(mp);
+            int fd = (int)fds[i];
+            if (fd < 0 || fd >= FILE_MAX_OPEN) continue;
+            u8bp slot = FILE_WANT_BUFS[fd];
+            if (slot && slot[0]) FILEUnMap(slot);
         }
-        if (b->maps[0])  u8bbUnMap(b->maps);
-        if (b->toks[0])  u32bUnMap(b->toks);
+        if (b->maps[0])  i32bUnMap(b->maps);
+        if (b->toks[0])  tok32bUnMap(b->toks);
         if (b->hunks[0]) hunkbUnMap(b->hunks);
         if (b->arena[0]) u8bUnMap(b->arena);
         // bro_scratch_buf is process-wide; leak at exit.
@@ -124,7 +126,7 @@ ok64 BROArenaInit(void) {
     sane(bro_state);
     u8bShedAll(bro_state->arena);
     hunkbShedAll(bro_state->hunks);
-    u32bShedAll(bro_state->toks);
+    tok32bShedAll(bro_state->toks);
     // Deferred maps stay recorded across a reset so the owning
     // files remain valid for hunks already handed to BRORun.
     return OK;
@@ -132,25 +134,13 @@ ok64 BROArenaInit(void) {
 
 void BROArenaCleanup(void) { /* cleanup lives in BROClose */ }
 
-// Copy `orig` into the arena.  If `in_arena` is non-NULL, populate it
-// with the resulting slice (borders point into the arena).  Returns
-// NOROOM if the arena lacks room; the arena is not mutated in that case.
-ok64 BROArenaWrite(u8csp in_arena, u8cs orig) {
-    sane(1);
-    u8p p = u8bIdleHead(bro_arena);
-    call(u8bFeed, bro_arena, orig);
-    if (in_arena) {
-        in_arena[0] = p;
-        in_arena[1] = u8bIdleHead(bro_arena);
-    }
-    done;
-}
-
 // Record a mmap'd file so BROClose can FILEUnMap it after the view
 // that references it has been drained.
 void BRODefer(u8bp mapped) {
-    if (!mapped || u8bbIdleLen(bro_state->maps) == 0) return;
-    u8bbFeed1(bro_state->maps, mapped);
+    if (!mapped || i32bIdleLen(bro_state->maps) == 0) return;
+    int fd = FILEBookedFD(mapped);
+    if (fd < 0) return;
+    i32bFeed1(bro_state->maps, (i32)fd);
 }
 
 // Copy one TLV-drained record's uri/text/toks into bro_arena and
@@ -163,16 +153,16 @@ static ok64 bro_stage_hunk(hunk *hk, hunk *tlv_hk) {
     hk->ts   = tlv_hk->ts;
     hk->verb = tlv_hk->verb;
     if (!$empty(tlv_hk->uri))
-        call(BROArenaWrite, hk->uri, tlv_hk->uri);
+        call(u8bHost, bro_arena, hk->uri, tlv_hk->uri);
     if (!$empty(tlv_hk->text))
-        call(BROArenaWrite, hk->text, tlv_hk->text);
+        call(u8bHost, bro_arena, hk->text, tlv_hk->text);
     if (!$empty(tlv_hk->toks)) {
         // tok32cs is u32 elements; arena is u8 — view the same
         // bytes through a u8 slice for the copy, then rebrand the
         // resulting borders as u32cp.
         u8cs tok_in = {(u8cp)tlv_hk->toks[0], (u8cp)tlv_hk->toks[1]};
         u8cs tok_out = {};
-        call(BROArenaWrite, tok_out, tok_in);
+        call(u8bHost, bro_arena, tok_out, tok_in);
         hk->toks[0] = (u32cp)tok_out[0];
         hk->toks[1] = (u32cp)tok_out[1];
     }
@@ -795,19 +785,19 @@ static ok64 listdir_emit(void0p arg, path8p path) {
     PATHu8sBase(name, full);
     if ($empty(name)) return OK;
 
-    if (BROArenaWrite(NULL, name) != OK) return OK;
+    if (u8bFeed(bro_arena, name) != OK) return OK;
     u32 name_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
-    u32bFeed1(bro_state->toks, tok32Pack('F', name_end));
+    tok32bFeed1(bro_state->toks, tok32Pack('F', name_end));
     if (is_dir) {
         a_cstr(slash, "/");
-        BROArenaWrite(NULL, slash);
+        if (u8bFeed(bro_arena, slash) != OK) return OK;
         u32 sl_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
-        u32bFeed1(bro_state->toks, tok32Pack('P', sl_end));
+        tok32bFeed1(bro_state->toks, tok32Pack('P', sl_end));
     }
     a_cstr(nl, "\n");
-    BROArenaWrite(NULL, nl);
+    if (u8bFeed(bro_arena, nl) != OK) return OK;
     u32 nl_end = (u32)(u8bIdleHead(bro_arena) - ctx->text_start);
-    u32bFeed1(bro_state->toks, tok32Pack('W', nl_end));
+    tok32bFeed1(bro_state->toks, tok32Pack('W', nl_end));
     return OK;
 }
 
@@ -818,29 +808,28 @@ ok64 BROListDir(u8csc dirpath) {
     a_path(dir);
     call(PATHu8bFeed, dir, dirpath);
 
-    // Snapshot arena/toks heads so the callback's entries can be
-    // sliced into this hunk's text/toks ranges.
+    // Snapshot the arena head so the callback's text bytes can be
+    // sliced into this hunk's text range; toks accumulate in DATA
+    // and get captured via bDataC + bUsedAll below.
     listdir_ctx ctx = {.text_start = u8bIdleHead(bro_arena)};
-    u32 *tok_start = u32bIdleHead(bro_state->toks);
 
     call(FILEScan, dir, FILE_SCAN_ALL, listdir_emit, &ctx);
 
     u8p text_end = u8bIdleHead(bro_arena);
     if (text_end == ctx.text_start) done;  // empty dir
 
-    u32 *tok_end = u32bIdleHead(bro_state->toks);
     hunk *hk = hunkbIdleHead(bro_state->hunks);
     *hk = (hunk){};
     hk->verb = HUNK_VERB_HUNK;
 
     // URI = dirpath
     a_dup(u8 const, dp, dirpath);
-    BROArenaWrite(hk->uri, dp);
+    call(u8bHost, bro_arena, hk->uri, dp);
 
     hk->text[0] = ctx.text_start;
     hk->text[1] = text_end;
-    hk->toks[0] = (u32cp)tok_start;
-    hk->toks[1] = (u32cp)tok_end;
+    tok32csMv(hk->toks, tok32bDataC(bro_state->toks));
+    tok32bUsedAll(bro_state->toks);
 
     hunkbFed1(bro_state->hunks);
     done;
@@ -858,17 +847,19 @@ b8 BROTokenize(hunk *hk, u8csc pathslice) {
     if ($empty(ext) || !TOKKnownExt(ext)) return NO;
 
     u32 srclen = (u32)$len(hk->text);
-    if (u32bIdleLen(bro_state->toks) < (size_t)srclen + 1) return NO;
+    if (tok32bIdleLen(bro_state->toks) < (size_t)srclen + 1) return NO;
 
-    u32 *begin = u32bIdleHead(bro_state->toks);
     u8cs source = {hk->text[0], hk->text[1]};
     if (HUNKu32bTokenize(bro_state->toks, source, ext) != OK) return NO;
-    u32 *end = u32bIdleHead(bro_state->toks);
 
-    u32 *dts[2] = {begin, end};
+    // DATA now holds the freshly-tokenized range; capture as both a
+    // mutable view for DEFMark and a const slice for hk->toks, then
+    // commit via bUsedAll (DATA → PAST) so the slice locks in.
+    tok32s dts;
+    tok32sMv(dts, tok32bData(bro_state->toks));
     DEFMark(dts, source, ext);
-    hk->toks[0] = (u32cp)begin;
-    hk->toks[1] = (u32cp)end;
+    tok32csMv(hk->toks, tok32bDataC(bro_state->toks));
+    tok32bUsedAll(bro_state->toks);
     return YES;
 }
 
@@ -912,7 +903,7 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
 
     // Copy URI (= path) into arena
     a_dup(u8 const, rp, relpath);
-    BROArenaWrite(fv->hunk.uri, rp);
+    call(u8bHost, bro_arena, fv->hunk.uri, rp);
 
     BROTokenize(&fv->hunk, relpath);
 

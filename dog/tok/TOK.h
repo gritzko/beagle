@@ -18,10 +18,15 @@ con ok64 TOKFAIL = 0x1d6143ca495;
 // renderers (zero visible width) and to search/diff classification;
 // a left click on the preceding token navigates to the URI bytes.
 typedef u32 tok32;
-typedef tok32 const tok32c;
-typedef tok32 *tok32s[2];
-typedef tok32 const *tok32cs[2];
-typedef tok32 const *const tok32csc[2];
+
+fun int tok32cmp(tok32 const *a, tok32 const *b) {
+    if (*a == *b) return 0;
+    return *a < *b ? -1 : 1;
+}
+
+#define X(M, name) M##tok32##name
+#include "abc/Bx.h"
+#undef X
 
 #define TOK_OFF_BITS  24
 #define TOK_OFF_MASK  ((1u << TOK_OFF_BITS) - 1)

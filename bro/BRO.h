@@ -29,10 +29,10 @@ typedef struct {
     int   pipe_fd;      // TLV hunk input pipe; -1 when not piped
     int   worker_pid;   // child PID feeding the pipe; -1 when none
 
-    Bu8   arena;        // hunk staging arena (URI/text/toks bytes)
-    hunkb hunks;        // typed buffer of hunks (DATA length = count)
-    u32b  toks;         // flat tokens arena for all hunks
-    u8bb  maps;         // buffer of mmap'd files awaiting cleanup
+    Bu8    arena;       // hunk staging arena (URI/text/toks bytes)
+    hunkb  hunks;       // typed buffer of hunks (DATA length = count)
+    tok32b toks;        // flat tokens arena for all hunks
+    i32b   maps;        // fds of mmap'd files; FILEUnMap'd in BROClose
 } bro;
 
 #define BRO_NONE UINT32_MAX
@@ -73,11 +73,6 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
 // own the actual mmap lifecycle.
 ok64 BROArenaInit(void);
 void BROArenaCleanup(void);
-// Copy `orig`'s bytes into the bro arena and, if `in_arena` is
-// non-NULL, populate it with the resulting slice (borders point into
-// the arena).  Returns NOROOM if the arena lacks room; the arena is
-// not mutated in that case.
-ok64 BROArenaWrite(u8csp in_arena, u8cs orig);
 
 // Map the process-wide scratch buffer used by BROCountLines /
 // BROAppendLines. Idempotent. BROOpen calls this; tests that exercise
