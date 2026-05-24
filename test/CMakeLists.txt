@@ -67,6 +67,7 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-14-sub-msg-override"
     "be-post-16-sub-push-postorder"
     "be-post-17-sub-msg-resolution-per-level"
+    "be-get-20-sub-already-mounted"
 )
 
 foreach(_run ${_be_case_runs})

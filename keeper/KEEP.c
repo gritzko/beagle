@@ -1104,7 +1104,8 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
                 if (rc != OK) goto cleanup;
                 obj_type = btype;
                 u8bReset(k->buf1);
-                (void)u8bFeed(k->buf1, u8bData(k->buf3));
+                a_dup(u8c, b3view, u8bData(k->buf3));
+                (void)u8bFeed(k->buf1, b3view);
                 u8bReset(k->buf3);
                 buf1 = u8bHead(k->buf1);
                 outsz = u8bDataLen(k->buf1);

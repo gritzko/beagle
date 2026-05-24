@@ -294,7 +294,7 @@ typedef struct {
 // truth — `range32 *lines` and `u32 nlines` would just cache them and
 // drift if a mid-flight realloc happens.
 fun range32 *bro_lines (BROstate *st) { return range32bDataHead(st->linesbuf); }
-fun u32      bro_nlines(BROstate *st) { return (u32)range32bDataLen(st->linesbuf); }
+fun u32      bro_nlines(BROstate const *st) { return (u32)range32bDataLen(st->linesbuf); }
 
 // Global for signal handler
 static volatile sig_atomic_t bro_resized = 0;
@@ -367,7 +367,7 @@ static void BROGetSize(BROstate *st) {
 
 // Forward declarations for functions used before definition.
 static void BROScrollCenter(BROstate *st, u32 target);
-static b8 bro_is_source_start(hunkcs hunks, range32cs lines, u32 i);
+static b8 bro_is_source_start(hunkcsc hunks, range32cs lines, u32 i);
 static void BROReadSpot(BROstate *st, char *buf, int bufsz,
                         char const *prompt);
 static ok64 BROForkSpot(BROstate *st, char const *flag,
@@ -1125,7 +1125,7 @@ static b8 bro_side_real(u8 side) {
 // A row is a source-start if it begins with offset 0 OR the previous
 // row covers a different hunk OR pass changes OR the previous source
 // byte is '\n'.
-static b8 bro_is_source_start(hunkcs hunks, range32cs lines, u32 i) {
+static b8 bro_is_source_start(hunkcsc hunks, range32cs lines, u32 i) {
     u32 nlines = (u32)$len(lines);
     if (i >= nlines) return NO;
     range32 const *ln = &lines[0][i];

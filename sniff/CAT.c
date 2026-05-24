@@ -114,8 +114,9 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     else if (br != KEEPNONE) { u8bFree(base); return br; }
 
     //  Load wt bytes (may be empty for a tracked-but-rm'd file).
+    a_dup(u8c, upath, u->path);
     a_path(wt_path);
-    call(SNIFFFullpath, wt_path, reporoot, u->path);
+    call(SNIFFFullpath, wt_path, reporoot, upath);
     u8bp wt_mapped = NULL;
     u8cs to_data = {};
     ok64 wto = FILEMapRO(&wt_mapped, $path(wt_path));
@@ -125,7 +126,7 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     }
 
     u8cs ext = {};
-    PATHu8sExt(ext, u->path);
+    PATHu8sExt(ext, upath);
 
     //  Build the same 2-layer weave `diff:` uses, then call the
     //  no-windowing emitter.  Reuses graf's arena conventions —
@@ -147,7 +148,7 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     if (ret == OK) ret = WEAVEFromBlob(&wnu, to_data, ext, WEAVE_WT_SRC);
     if (ret == OK) ret = WEAVEDiff(&wB, &wA, &wnu, WEAVE_WT_SRC);
     if (ret == OK) {
-        ret = WEAVEEmitFull(&wB, u->path,
+        ret = WEAVEEmitFull(&wB, upath,
                             cat_in_from, NULL,
                             cat_in_to,   NULL,
                             cat_hunk_emit, NULL);

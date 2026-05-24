@@ -49,6 +49,14 @@
   A follow-up `be get --force ?feat` (chmod restored) completes the
   materialisation idempotently — the documented recovery path for
   a baseline-correct / wt-mid-flux state.
+* `20-sub-already-mounted/` — second `be get $PARENT_URL?master` on a
+  parent whose submodule is already mounted at the requested pin must
+  skip the upstream fetch.  Regression for "be get hangs on submod
+  update": `SNIFFSubMount` used to call `WIREFetchAll` unconditionally
+  on every parent get, even when the sub wt was already at pin.  Test
+  moves `$SUB_BARE` aside between the two gets so any sub fetch would
+  fail fast; with the fix the second get short-circuits and succeeds.
+  Gated on `WITH_SSH`.
 * `19-be-url-project/` — `be get be://host?/project/branch`:
   project segment comes from the FIRST path component of the
   query, not from the URL-path basename (the rule for non-be

@@ -260,6 +260,27 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             u8sFmt(reporoot), u8sFmt(parent_root),
             already_mounted ? "YES" : "NO");
 
+    //  Fast path: sub already mounted AND at the requested pin.
+    //  Skip WIREFetchAll + child checkout — both are no-ops on the
+    //  happy path and the fetch round-trips github/ssh for nothing.
+    //  Matches git-submodule semantics: don't refetch when the wt is
+    //  already at the pin recorded in the parent's tree.
+    if (already_mounted) {
+        a_pad(u8, hexpad, 40);
+        ok64 tr = SNIFFSubReadTip(reporoot, path, u8bIdle(hexpad));
+        if (tr == OK) {
+            u8bFed(hexpad, 40);
+            a_dup(u8c, cur_tip, u8bDataC(hexpad));
+            if (subs_eq(cur_tip, hex_sha)) {
+                fprintf(stderr,
+                        "SUBS.dbg: SubMount path=" U8SFMT
+                        " already at pin — skip fetch\n",
+                        u8sFmt(path));
+                done;
+            }
+        }
+    }
+
     //  1. URL lookup.  The URL bytes get copied into a frame-local
     //  buffer so the slice remains valid past SubsParseFind's return.
     a_pad(u8, url_buf, 2048);
