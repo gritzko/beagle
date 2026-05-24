@@ -66,6 +66,7 @@ typedef enum {
     HUNKOutTLV   = 0,
     HUNKOutColor = 1,
     HUNKOutPlain = 2,
+    HUNKOutHtml  = 3,
 } HUNKout;
 
 extern HUNKout HUNKMode;
@@ -100,6 +101,24 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk);
 // verb in its `ULOGVerbColor`; diff bodies get `-`/`+` lines in red /
 // green.  Advances into[0].
 ok64 HUNKu8sFeedColor(u8s into, hunk const *hk);
+
+// Render a hunk as HTML.  Three shapes match plain/color:
+//   - status hunk (ts || verb set, empty text): one
+//     `<div class="ulog"><span class="ts">…</span>
+//      <span class="verb">…</span>
+//      <span class="uri"><a href="…">…</a></span></div>` row.
+//   - content hunk: `<div class="hunk"><h3>uri</h3>
+//                    <pre>…tag-classed spans…</pre></div>`.
+//     Each visible token becomes `<span class="t-X">bytes</span>` where
+//     X is the syntax tag (`D`/`G`/`L`/`R`/`P`/`S`/`N`/`C`/`F`).
+//     `U`-tagged tokens stay invisible (`.t-U { display: none }` in
+//     the consumer's CSS).
+//   - diff-marked hunks (per-token `inrm` side) wrap added tokens in
+//     `<span class="diff-in">` and removed tokens in
+//     `<span class="diff-rm">` — same pre-block, no separate table.
+// All emitted bytes are HTML-safe (`<`/`>`/`&`/`"` escaped).
+// Advances into[0].
+ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk);
 
 // Proper line-based unified diff (`-<old>` / `+<new>` pairs with
 // `@@ -L,C +L,C @@` headers, suitable for `git apply` / `patch`) is

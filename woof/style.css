@@ -1,0 +1,138 @@
+/* woof — solarized (Ethan Schoonover).
+   Tag classes match dog/tok/TOK.h; diff classes match the 2-bit
+   side encoded in tok32 (eq/in/rm).  Dark by default, light on
+   prefers-color-scheme. */
+
+:root {
+    --base03:  #002b36;
+    --base02:  #073642;
+    --base01:  #586e75;
+    --base00:  #657b83;
+    --base0:   #839496;
+    --base1:   #93a1a1;
+    --base2:   #eee8d5;
+    --base3:   #fdf6e3;
+    --yellow:  #b58900;
+    --orange:  #cb4b16;
+    --red:     #dc322f;
+    --magenta: #d33682;
+    --violet:  #6c71c4;
+    --blue:    #268bd2;
+    --cyan:    #2aa198;
+    --green:   #859900;
+
+    --bg:      var(--base03);
+    --bg-alt:  var(--base02);
+    --fg:      var(--base0);
+    --fg-em:   var(--base1);
+    --fg-low:  var(--base01);
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg:     var(--base3);
+        --bg-alt: var(--base2);
+        --fg:     var(--base00);
+        --fg-em:  var(--base01);
+        --fg-low: var(--base1);
+    }
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+body { padding: 1rem; }
+
+a          { color: var(--blue); text-decoration: none; }
+a:hover    { text-decoration: underline; }
+
+/* hunk container — one per HUNK record */
+.hunk {
+    margin: 1rem 0;
+    border: 1px solid var(--bg-alt);
+    border-radius: 4px;
+    background: var(--bg-alt);
+    overflow: hidden;
+}
+.hunk h3 {
+    margin: 0;
+    padding: 0.4rem 0.8rem;
+    background: var(--base02);
+    color: var(--fg-em);
+    font-size: 0.9em;
+    font-weight: normal;
+    border-bottom: 1px solid var(--bg);
+}
+.hunk pre {
+    margin: 0;
+    padding: 0.6rem 0.8rem;
+    overflow-x: auto;
+    white-space: pre;
+}
+
+/* syntax tags — see dog/tok/TOK.h tag mapping */
+.t-D { color: var(--base01); font-style: italic; } /* comment */
+.t-G { color: var(--green); }                      /* string */
+.t-L { color: var(--cyan); }                       /* number */
+.t-H { color: var(--magenta); }                    /* preproc / annotation */
+.t-R { color: var(--blue); }                       /* keyword */
+.t-P { color: var(--base00); }                     /* punctuation */
+.t-S { color: var(--fg); }                         /* default */
+.t-N { color: var(--yellow); font-weight: bold; }  /* defined name */
+.t-C { color: var(--orange); }                     /* function call */
+.t-F { color: var(--violet); }                     /* filename / path */
+.t-U { display: none; }                            /* invisible URI target */
+
+/* per-token diff side (top 2 bits of tok32 below the syntax tag) */
+.diff-eq { }
+.diff-in { background: rgba(133, 153, 0, 0.15); }  /* green tint */
+.diff-rm { background: rgba(220, 50, 47, 0.18);    /* red tint */
+           text-decoration: line-through;
+           text-decoration-color: var(--red); }
+
+/* line-based unified diff (diff: scheme) */
+table.diff {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95em;
+}
+table.diff td {
+    padding: 0 0.4rem;
+    white-space: pre;
+}
+table.diff td.ln {
+    color: var(--fg-low);
+    text-align: right;
+    user-select: none;
+    border-right: 1px solid var(--bg-alt);
+    width: 4em;
+}
+table.diff tr.add td:last-child { background: rgba(133, 153, 0, 0.12); }
+table.diff tr.del td:last-child { background: rgba(220, 50, 47, 0.12); }
+table.diff tr.ctx td:last-child { color: var(--fg-low); }
+table.diff tr.hdr td { color: var(--violet); background: var(--bg); }
+
+/* ULOG status rows (ts<TAB>verb<TAB>uri) */
+.ulog {
+    display: grid;
+    grid-template-columns: 11ch 8ch auto;
+    column-gap: 1ch;
+    font-size: 0.95em;
+}
+.ulog .ts   { color: var(--fg-low); }
+.ulog .verb { color: var(--yellow); }
+.ulog .uri a { color: var(--fg-em); }
+
+/* tree listing (tree: scheme) */
+ul.tree { list-style: none; padding-left: 1rem; margin: 0.5rem 0; }
+ul.tree li::before { content: "· "; color: var(--fg-low); }
+ul.tree .dir  a { color: var(--blue); }
+ul.tree .file a { color: var(--fg); }
+ul.tree .up   a { color: var(--fg-low); }

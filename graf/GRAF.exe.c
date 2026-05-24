@@ -244,12 +244,16 @@ ok64 GRAFExec(cli *c) {
     //  chain so cross-branch reads (KEEPGet for `?other` commits in
     //  the head/log/map projectors) resolve.  Falls back to trunk
     //  when `--at` didn't carry a branch.
+    //
+    //  graf only ever READS keeper (commits/trees/blobs); it writes
+    //  only to its own `.graf.idx` files.  Open keeper RO so concurrent
+    //  readers (e.g. woof requests) don't serialise through `.lock`.
     {
         static u8c const _zero = 0;
         u8cs br = {&_zero, &_zero};
         if (u8bHasData(g->h->cur_branch))
             u8csMv(br, u8bDataC(g->h->cur_branch));
-        call(KEEPOpenBranch, g->h, br, YES);
+        call(KEEPOpenBranch, g->h, br, NO);
     }
     ok64 ret = OK;
 

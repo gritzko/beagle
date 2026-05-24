@@ -505,6 +505,187 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
     done;
 }
 
+// --- HTML renderer -------------------------------------------------
+
+//  Escape `src` into `into`, replacing `<` `>` `&` `"` with their HTML
+//  entities; every other byte passes through verbatim.  No allocation.
+static ok64 hunk_html_escape(u8s into, u8cs src) {
+    sane(1);
+    if (src[0] == NULL) done;
+    for (u8c *p = src[0]; p < src[1]; p++) {
+        switch (*p) {
+            case '<':  { a_cstr(e, "&lt;");   call(u8sFeed, into, e); break; }
+            case '>':  { a_cstr(e, "&gt;");   call(u8sFeed, into, e); break; }
+            case '&':  { a_cstr(e, "&amp;");  call(u8sFeed, into, e); break; }
+            case '"':  { a_cstr(e, "&quot;"); call(u8sFeed, into, e); break; }
+            default:   call(u8sFeed1, into, *p);
+        }
+    }
+    done;
+}
+
+//  Status-hunk row: one CSS-grid line with date / verb / uri columns.
+//  Mirrors `hunk_feed_status_plain` shape (ts → human-readable date,
+//  verb → symbolic token) but laid out as nested spans + an anchor on
+//  the URI.  `.ulog` / `.ts` / `.verb` / `.uri` come from the
+//  consumer's CSS (see woof/style.css for the reference palette).
+static ok64 hunk_feed_status_html(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk);
+    if ($len(into) < 192) fail(BNOROOM);
+
+    i64 now = (i64)time(NULL);
+    i64 ts  = now;
+    if (hk->ts) {
+        struct tm tm = {};
+        if (RONToTime(hk->ts, &tm, NULL) == OK) {
+            time_t t = mktime(&tm);
+            if (t != (time_t)-1) ts = (i64)t;
+        }
+    }
+
+    { a_cstr(s, "<div class=\"ulog\"><span class=\"ts\">");
+      call(u8sFeed, into, s); }
+    call(DOGutf8sFeedDate, into, ts, now);
+    { a_cstr(s, "</span><span class=\"verb\">"); call(u8sFeed, into, s); }
+    call(RONutf8sFeed, into, hk->verb);
+    { a_cstr(s, "</span><span class=\"uri\">"); call(u8sFeed, into, s); }
+    if (!$empty(hk->uri)) {
+        { a_cstr(s, "<a href=\""); call(u8sFeed, into, s); }
+        //  href: same URI, escaped enough that `"` can't break the
+        //  attribute (the broader URI-escape rules are the producer's
+        //  job; our floor is "don't blow up the markup").
+        a_dup(u8c, esc_src, hk->uri);
+        call(hunk_html_escape, into, esc_src);
+        { a_cstr(s, "\">"); call(u8sFeed, into, s); }
+        a_dup(u8c, lbl_src, hk->uri);
+        call(hunk_html_escape, into, lbl_src);
+        { a_cstr(s, "</a>"); call(u8sFeed, into, s); }
+    }
+    { a_cstr(s, "</span></div>\n"); call(u8sFeed, into, s); }
+    done;
+}
+
+//  Map a syntax tag to its `<span class="t-X">` open / close pair.
+//  The plain-default `S` and unknown tags emit no wrapper — saves
+//  bytes on the heaviest token type.  `U`-tagged tokens never reach
+//  here (caller skips them).
+static b8 hunk_tag_wraps(u8 tag) {
+    switch (tag) {
+        case 'D': case 'G': case 'L': case 'R': case 'P':
+        case 'N': case 'C': case 'F': case 'H':
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+static ok64 hunk_feed_tag_open(u8s into, u8 tag) {
+    sane(1);
+    //  Wire form: `<span class="t-X">` = 18 bytes.  Stack buf must
+    //  fit that or u8bFeed returns SNOROOM and the whole renderer
+    //  aborts mid-hunk.
+    a_pad(u8, buf, 32);
+    call(u8bFeed, buf, ((u8cs){(u8c *)"<span class=\"t-",
+                                (u8c *)"<span class=\"t-" + 15}));
+    call(u8bFeed1, buf, tag);
+    call(u8bFeed, buf, ((u8cs){(u8c *)"\">", (u8c *)"\">" + 2}));
+    a_dup(u8c, out_s, u8bData(buf));
+    call(u8sFeed, into, out_s);
+    done;
+}
+
+static ok64 hunk_feed_tag_close(u8s into) {
+    a_cstr(s, "</span>");
+    return u8sFeed(into, s);
+}
+
+//  Per-token side wrapper for diff-marked hunks.  Mirrors the
+//  `.diff-in` / `.diff-rm` classes in woof/style.css.
+static b8 hunk_side_wraps(u8 side) {
+    return side == TOK_SIDE_IN || side == TOK_SIDE_RM;
+}
+
+static ok64 hunk_feed_side_open(u8s into, u8 side) {
+    if (side == TOK_SIDE_IN) {
+        a_cstr(s, "<span class=\"diff-in\">");
+        return u8sFeed(into, s);
+    }
+    if (side == TOK_SIDE_RM) {
+        a_cstr(s, "<span class=\"diff-rm\">");
+        return u8sFeed(into, s);
+    }
+    return OK;
+}
+
+ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk) {
+    sane(u8sOK(into) && hk != NULL);
+
+    //  Status hunk → ULOG-row grid line, no header / pre wrap.
+    if (hunk_is_status(hk)) return hunk_feed_status_html(into, hk);
+
+    //  Header: `<div class="hunk"><h3>uri</h3><pre>`.  Empty URI →
+    //  skip the `<h3>` but keep the `<div>` so per-hunk margins still
+    //  apply.
+    { a_cstr(s, "<div class=\"hunk\">"); call(u8sFeed, into, s); }
+    if (!$empty(hk->uri)) {
+        a_cstr(s_h0, "<h3>");
+        a_cstr(s_h1, "</h3>");
+        call(u8sFeed, into, s_h0);
+        a_dup(u8c, esc_uri, hk->uri);
+        call(hunk_html_escape, into, esc_uri);
+        call(u8sFeed, into, s_h1);
+    }
+    { a_cstr(s, "<pre>"); call(u8sFeed, into, s); }
+
+    if (!$empty(hk->text)) {
+        u32 tlen = (u32)$len(hk->text);
+        int n_toks = (int)$len(hk->toks);
+
+        if (n_toks == 0) {
+            //  No toks: dump the whole text escaped, verbatim.
+            a_dup(u8c, esc, hk->text);
+            call(hunk_html_escape, into, esc);
+        } else {
+            //  Walk tokens; wrap each visible span in the matching
+            //  tag class (and diff side, if present).  `U` tokens
+            //  are click-target URIs — emit them as `</span><a href=…>`
+            //  wrapping the *following* visible token would be ideal,
+            //  but for v1 we just hide them (CSS `.t-U { display:none }`
+            //  in the consumer).
+            u32 lo = 0;
+            for (int i = 0; i < n_toks; i++) {
+                u32 hi  = tok32Offset(hk->toks[0][i]);
+                u8  tag = tok32Tag   (hk->toks[0][i]);
+                u8  side= tok32Side  (hk->toks[0][i]);
+                if (tag == 'U') { lo = hi; continue; }
+                if (hi <= lo)   continue;
+
+                b8 want_tag  = hunk_tag_wraps(tag);
+                b8 want_side = hunk_side_wraps(side);
+
+                if (want_side) call(hunk_feed_side_open, into, side);
+                if (want_tag)  call(hunk_feed_tag_open,  into, tag);
+
+                a$part(u8c, span, hk->text, lo, hi - lo);
+                call(hunk_html_escape, into, span);
+
+                if (want_tag)  call(hunk_feed_tag_close, into);
+                if (want_side) call(hunk_feed_tag_close, into);
+
+                lo = hi;
+            }
+            //  Tail bytes past the last token (rare but legal).
+            if (lo < tlen) {
+                a$part(u8c, span, hk->text, lo, tlen - lo);
+                call(hunk_html_escape, into, span);
+            }
+        }
+    }
+
+    { a_cstr(s, "</pre></div>\n"); call(u8sFeed, into, s); }
+    done;
+}
+
 //  Module-global mode resolved at process entry (main / MAIN / TEST).
 //  Default PLAIN matches the "stdout is a pipe" non-TTY case, which is
 //  the safe choice for an uninitialised tool (e.g. a unit test that
@@ -517,6 +698,7 @@ ok64 HUNKu8sFeedOut(u8s into, hunk const *hk) {
     case HUNKOutTLV:   return HUNKu8sFeed     (into, hk);
     case HUNKOutColor: return HUNKu8sFeedColor(into, hk);
     case HUNKOutPlain: return HUNKu8sFeedText (into, hk);
+    case HUNKOutHtml:  return HUNKu8sFeedHtml (into, hk);
     }
     fail(FAILSANITY);
 }
