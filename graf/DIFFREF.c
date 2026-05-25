@@ -56,25 +56,14 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
     done;
 }
 
-//  Compose `<lead><ref>` into `ubuf`.  `#` for an all-hex ref (full or
-//  short sha — KEEPResolveTree's fragment branch handles both, with
-//  `WHIFFHexHashlet60` driving keeper's prefix lookup); `?` for ref
-//  names (`tags/v1`, `heads/main`) which go through REFS.
-static b8 ref_is_hex(u8cs ref) {
-    if ($empty(ref)) return NO;
-    for (u8cp p = ref[0]; p < ref[1]; p++) {
-        u8 c = *p;
-        b8 d = (c >= '0' && c <= '9');
-        b8 lo = (c >= 'a' && c <= 'f');
-        b8 up = (c >= 'A' && c <= 'F');
-        if (!d && !lo && !up) return NO;
-    }
-    return YES;
-}
-
+//  Compose `<lead><ref>` into `ubuf`.  `#` for an all-hex ref of
+//  hashlet length (full or short sha — KEEPResolveTree's fragment
+//  branch handles both, with `WHIFFHexHashlet60` driving keeper's
+//  prefix lookup); `?` for ref names (`tags/v1`, `heads/main`) which
+//  go through REFS.
 static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
     sane(ubuf);
-    u8 lead = ref_is_hex(ref) ? '#' : '?';
+    u8 lead = DOGIsHashlet(ref) ? '#' : '?';
     call(u8bFeed1, ubuf, lead);
     call(u8bFeed,  ubuf, ref);
     done;
@@ -86,19 +75,6 @@ static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
         if (u8csEq(entry, path)) return &s->v[i];
     }
     return NULL;
-}
-
-// --- Shared: mmap wt file (ok to fail with FILEOPEN → empty) ------
-
-static ok64 diffref_load_wt(u8bp *mapped, u8cs out_data,
-                             u8cs reporoot, u8cs path) {
-    sane(mapped);
-    a_path(fp, reporoot, path);
-    ok64 o = FILEMapRO(mapped, $path(fp));
-    if (o != OK) { out_data[0] = NULL; out_data[1] = NULL; return o; }
-    out_data[0] = u8bDataHead(*mapped);
-    out_data[1] = u8bIdleHead(*mapped);
-    done;
 }
 
 // --- 2-layer weave diff -------------------------------------------

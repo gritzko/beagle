@@ -198,21 +198,11 @@ ok64 GRAFIndexFromTips(uricp u) {
                u8csLen(probe.path) == 40) {
         $mv(hex_src, probe.path);
     }
-    if (!u8csEmpty(hex_src)) {
-        b8 hex = YES;
-        for (u8cp p = hex_src[0]; p < hex_src[1]; p++) {
-            u8 ch = *p;
-            b8 d = (ch >= '0' && ch <= '9');
-            b8 l = (ch >= 'a' && ch <= 'f');
-            b8 U_ = (ch >= 'A' && ch <= 'F');
-            if (!(d || l || U_)) { hex = NO; break; }
-        }
-        if (hex) {
-            probe.fragment[0] = hex_src[0];
-            probe.fragment[1] = hex_src[1];
-            probe.query[0] = probe.query[1] = NULL;
-            probe.path[0]  = probe.path[1]  = NULL;
-        }
+    if (!u8csEmpty(hex_src) && DOGIsHashlet(hex_src)) {
+        probe.fragment[0] = hex_src[0];
+        probe.fragment[1] = hex_src[1];
+        probe.query[0] = probe.query[1] = NULL;
+        probe.path[0]  = probe.path[1]  = NULL;
     }
 
     //  TODO: this swallows GRAFResolveTip errors silently, which

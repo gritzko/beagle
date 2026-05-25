@@ -165,7 +165,7 @@ ok64 test_clean_merge(void) {
 
     call(KEEPPackClose, &p);
 
-    //  Build the DAG so build_tip_weave can walk history.
+    //  Build the DAG so build_tip_weave_tunable can walk history.
     call(GRAFOpen, &g_home, YES);
     call(GRAFIndex);
 

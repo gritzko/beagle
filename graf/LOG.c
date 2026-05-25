@@ -200,14 +200,10 @@ static void graflog_pack(u32b toks, u8b out, u8 tag) {
 //  zero-width in the renderer; bro's click handler executes
 //  `be --tlv diff:?<sha>` on left-click.
 static void graflog_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
-    if (!$ok(toks)) return;
-    a_cstr(prefix, "diff:?");
-    (void)u8bFeed(out, prefix);
     a_pad(u8, hex, 40);
     u8cs raw = {csha->data, csha->data + 20};
     (void)HEXu8sFeedSome(hex_idle, raw);
-    (void)u8bFeed(out, u8bDataC(hex));
-    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+    GRAFEmitDiffUri(toks, out, u8bDataC(hex));
 }
 
 //  Emit "<sha7> <7-date> <summary> (<author>)\n" with matching tok32
@@ -369,20 +365,7 @@ static ok64 graflog_path_sha(sha1 *out, b8 *present, keeper *k, u64 h40,
         ct != DOG_OBJ_COMMIT) done;
 
     sha1 cur = {};
-    {
-        a_dup(u8c, scan, u8bDataC(cbuf));
-        u8cs field = {}, value = {};
-        b8 got = NO;
-        while (GITu8sDrainCommit(scan, field, value) == OK) {
-            if (u8csEmpty(field)) break;
-            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                DAGsha1FromHex(&cur, (char const *)value[0]);
-                got = YES;
-                break;
-            }
-        }
-        if (!got) done;
-    }
+    if (GITu8sCommitTree(u8bDataC(cbuf), cur.data) != OK) done;
 
     //  Walk down each tree level reusing `tbuf`.
     u8cs rest = {path[0], path[1]};
@@ -703,19 +686,9 @@ static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
     u8 ct = 0;
     ok64 o = KEEPGet(commit_h60, DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
-    a_dup(u8c, scan, u8bDataC(cbuf));
-    u8cs field = {}, value = {};
-    b8 got = NO;
-    while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if (u8csEmpty(field)) break;
-        if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-            DAGsha1FromHex(out, (char const *)value[0]);
-            got = YES;
-            break;
-        }
-    }
+    ok64 ret = GITu8sCommitTree(u8bDataC(cbuf), out->data) == OK ? OK : KEEPNONE;
     u8bFree(cbuf);
-    return got ? OK : KEEPNONE;
+    return ret;
 }
 
 //  Per-row context for `graf_head_pick_remote_cb`.

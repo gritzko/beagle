@@ -474,6 +474,14 @@ void GRAFArenaCleanup(void) {
         ((u8 **)graf_arena)[2] = graf_arena[1];
 }
 
+void GRAFEmitDiffUri(u32b toks, u8b out, u8cs hex) {
+    if (!$ok(toks)) return;
+    a_cstr(prefix, "diff:?");
+    (void)u8bFeed(out, prefix);
+    (void)u8bFeed(out, hex);
+    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+}
+
 ok64 GRAFHunkEmit(hunk const *hk, void *ctx) {
     sane(hk != NULL);
     (void)ctx;

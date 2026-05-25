@@ -1,24 +1,8 @@
 //  REBASE: linear-history replay primitives.  See graf/REBASE.h.
 //
-//  Three primitives, all keeper-read-only, no DAG dependencies:
-//    GRAFPatchId       — stable diff-id of a commit vs first parent
-//    GRAFMergeExplicit — 3-way blob merge with explicit base sha
-//    GRAFRebase        — replay child_tip onto base_new
-//
-//  Implementation notes:
-//    * Patch-id walks the two trees via WALKTreeLazy into per-side
-//      flat (path, sha) lists, sorts each by path, and emits diff
-//      tuples in path-ascending order.  Tree-walk recursion handled
-//      by WALKTreeLazy; collection happens in a small heap buffer.
-//    * GRAFMergeExplicit fetches three blobs through KEEPGetExact,
-//      then JOINTokenize / JOINMerge.  Same fallbacks as GET.c: a
-//      missing base behaves like an empty file (JOINMerge takes ours
-//      in that case).
-//    * GRAFRebase walks parent chain, dedups via patch-id set built
-//      from base_new's ancestors, and per commit produces a new tree
-//      by recursively 3-way-merging tree(parent), tree(head),
-//      tree(commit).  Conflicts return GRAFCNFL with no further emits.
-//
+//  Two primitives, all keeper-read-only, no DAG dependencies:
+//    GRAFPatchId — stable diff-id of a commit vs first parent
+//    GRAFRebase  — replay child_tip onto base_new
 #include "REBASE.h"
 
 #include <stdlib.h>
@@ -1066,15 +1050,7 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
     if (p != OK) return p;
 
     sha1 cur = tree_sha;
-    u8cs rest = {filepath[0], filepath[1]};
-    while (!$empty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs name = {rest[0], slash};
-        ok64 s = GRAFTreeStep(&cur, name);
-        if (s != OK) return s;
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
-    }
+    call(GRAFPathDescend, &cur, filepath);
 
     u8 btype = 0;
     call(KEEPGetExact, &cur, buf, &btype);

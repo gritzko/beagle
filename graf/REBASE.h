@@ -63,7 +63,7 @@ typedef ok64 (*graf_rebase_emit_cb)(void *ctx,
 //      the same patch-id, skip (cherry-pick already upstream),
 //    - else 3-way merge tree(parent(Cᵢ)) (base) vs tree(running_head)
 //      (ours) vs tree(Cᵢ) (theirs); per-leaf merges go through
-//      GRAFMergeExplicit, recursive tree assembly produces fresh
+//      `GRAFRebaseBlobMerge`, recursive tree assembly produces fresh
 //      tree bodies.  Each new object is emitted via `cb`.
 //    - build a fresh commit object: tree=<new_tree>,
 //      parent=<running_head>, author + author-date preserved,

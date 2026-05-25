@@ -39,8 +39,6 @@
 #include "abc/DIFF.h"
 #include "abc/INT.h"
 
-con ok64 BRAMFAIL = 0x2db2963ca495;
-
 ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes);
 
 #endif

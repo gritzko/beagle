@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "abc/PRO.h"
+#include "abc/BUF.h"
 #include "dog/DOG.h"
 #include "graf/DAG.h"
 #include "dog/git/GIT.h"
@@ -34,6 +35,22 @@ ok64 GRAFTreeStep(sha1 *cur, u8cs name) {
     return result;
 }
 
+ok64 GRAFPathDescend(sha1 *cur, u8cs path) {
+    sane(cur);
+    a_dup(u8c, rest, path);
+    while (!u8csEmpty(rest)) {
+        u8c const *start = rest[0];
+        a_dup(u8c, scan, rest);
+        (void)u8csFind(scan, '/');
+        u8cs name = {start, scan[0]};
+        rest[0] = scan[0];
+        if (!u8csEmpty(rest)) u8csUsed1(rest);  // step past '/'
+        if (u8csEmpty(name)) continue;
+        call(GRAFTreeStep, cur, name);
+    }
+    done;
+}
+
 ok64 GRAFBlobAtCommit(u8bp buf, u64 commit_hashlet60, u8cs filepath) {
     sane(buf);
 
@@ -44,33 +61,12 @@ ok64 GRAFBlobAtCommit(u8bp buf, u64 commit_hashlet60, u8cs filepath) {
                      DAG_H60_HEXLEN, cbuf, &ct);
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
 
-    sha1 tree_sha = {};
-    b8 got_tree = NO;
-    {
-        a_dup(u8c, scan, u8bDataC(cbuf));
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(scan, field, value) == OK) {
-            if (u8csEmpty(field)) break;
-            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                DAGsha1FromHex(&tree_sha, (char const *)value[0]);
-                got_tree = YES;
-                break;
-            }
-        }
-    }
+    sha1 cur = {};
+    o = GITu8sCommitTree(u8bDataC(cbuf), cur.data);
     u8bFree(cbuf);
-    if (!got_tree) return KEEPNONE;
+    if (o != OK) return KEEPNONE;
 
-    sha1 cur = tree_sha;
-    u8cs rest = {filepath[0], filepath[1]};
-    while (!$empty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs name = {rest[0], slash};
-        ok64 s = GRAFTreeStep(&cur, name);
-        if (s != OK) return s;
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
-    }
+    call(GRAFPathDescend, &cur, filepath);
 
     u8 btype = 0;
     call(KEEPGetExact, &cur, buf, &btype);

@@ -79,17 +79,6 @@ struct dag_ingest {
     u8      finished;
 };
 
-// --- COMMIT bookmark dir existence helpers ---
-
-static b8 dag_is_hex_sha(char const *s, size_t len) {
-    if (len < 40) return NO;
-    for (int i = 0; i < 40; i++) {
-        u8 c = (u8)s[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return NO;
-    }
-    return YES;
-}
-
 // --- LSM file I/O ---
 //
 //  Reads come from `GRAF.puppies` (set up by `GRAFOpenBranch` walking
@@ -208,42 +197,7 @@ b8 DAGAncestorsHas(wh128b set, u64 commit_h) {
 }
 
 ok64 DAGAncestors(Bwh128 set, wh128css runs, u64 tip) {
-    sane(set);
-    if (tip == 0) done;
-
-    // BFS queue sized to match the set's capacity (the queue never
-    // outgrows the set — every queue entry also lives in the set).
-    size_t cap = (size_t)(wh128bTerm(set) - wh128bHead(set));
-    if (cap == 0) return DAGFAIL;
-
-    Bwh128 queue = {};
-    call(wh128bMap, queue, cap);
-
-    dag_anc_put(set, tip);
-    wh128 q0 = { .key = DAGPack(0, tip), .val = 0 };
-    wh128bFeed1(queue, q0);
-
-    size_t head = 0;
-    wh64 par_buf[16];
-    while (head < wh128bDataLen(queue)) {
-        wh128cp cur = wh128bDataHead(queue) + head;
-        u64 c = DAGHashlet(cur->key);
-        head++;
-
-        wh64s parents = {par_buf, par_buf + 16};
-        wh64 *pbase = parents[0];
-        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, c));
-        for (wh64 *p = pbase; p < parents[0]; p++) {
-            u64 ph = DAGHashlet(*p);
-            if (DAGAncestorsHas(set, ph)) continue;
-            if (dag_anc_put(set, ph) != OK) continue;
-            wh128 qr = { .key = DAGPack(0, ph), .val = 0 };
-            if (wh128bFeed1(queue, qr) != OK) break;
-        }
-    }
-
-    wh128bUnMap(queue);
-    done;
+    return DAGAncestorsTunable(set, runs, tip, DAG_EDGE_PARENT, NULL, 0);
 }
 
 ok64 DAGEdgesOf(wh128css runs, u64 commit_h, u8 kind,

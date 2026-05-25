@@ -15,6 +15,12 @@
 //  if no entry with `name` exists, KEEPFAIL on malformed tree.
 ok64 GRAFTreeStep(sha1 *cur, u8cs name);
 
+//  Descend a slash-separated `path` into the tree rooted at `*cur`.
+//  Calls `GRAFTreeStep` per segment; empty segments are skipped.  On
+//  OK `*cur` holds the leaf entry's sha.  Empty path is a no-op.
+//  Propagates `GRAFTreeStep` errors.
+ok64 GRAFPathDescend(sha1 *cur, u8cs path);
+
 //  Resolve (commit_hashlet60, filepath) → blob body into `buf`.
 //  Reads the commit object via KEEPGet (60-bit hashlet, hexlen=15),
 //  parses its tree header, then walks `filepath` segment by segment

@@ -23,6 +23,7 @@
 #include "abc/PRO.h"
 #include "abc/RAP.h"
 #include "abc/UTF8.h"
+#include "dog/DOG.h"
 #include "dog/HUNK.h"
 #include "dog/WHIFF.h"
 #include "dog/git/GIT.h"
@@ -38,13 +39,9 @@
 //  prefix to a full commit sha.  No-op when `toks` is the zero
 //  slice (plain mode).
 static void blame_pack_uri_diff_sha(Bu32 toks, u8b out, u64 hashlet) {
-    if (!$ok(toks)) return;
-    a_cstr(prefix, "diff:?");
-    (void)u8bFeed(out, prefix);
     a_pad(u8, hex, 10);
     (void)WHIFFHexFeed40(hex_idle, hashlet);
-    (void)u8bFeed(out, u8bDataC(hex));
-    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+    GRAFEmitDiffUri(toks, out, u8bDataC(hex));
 }
 
 //  Sentinel `src` for the worktree shadow version (uncommitted edits) —
@@ -54,7 +51,6 @@ static void blame_pack_uri_diff_sha(Bu32 toks, u8b out, u64 hashlet) {
 // --- Author table: gen → author + date ---
 
 typedef struct {
-    u32  gen;
     u64  commit_hashlet;
     char author[48];
     char date[12];   // YYYY-MM-DD
@@ -164,7 +160,7 @@ static blame_author const *blame_lookup_in(blame_author const *authors,
     return NULL;
 }
 
-static blame_author const blame_unknown = {.gen = 0, .commit_hashlet = 0, .author = "?", .date = ""};
+static blame_author const blame_unknown = {.commit_hashlet = 0, .author = "?", .date = ""};
 
 // --- Shared weave builder ---
 //
@@ -398,7 +394,6 @@ static ok64 blame_step_cb(u32 src_id, u64 commit_h, void *vctx) {
     blame_step_ctx *bs = vctx;
     if (*bs->nauthors >= bs->cap) done;
     blame_author *a = &bs->authors[*bs->nauthors];
-    a->gen = 0;
     if (commit_h == 0) {
         // Worktree layer: no keeper lookup, synthetic label.
         a->commit_hashlet = (u64)src_id;
@@ -611,16 +606,7 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
     //  Pick `#<sha>` for an all-hex ref (KEEPResolveTree's fragment fast
     //  path handles full + short shas via `WHIFFHexHashlet60`); `?<ref>`
     //  for everything else (REFS-resolved name).
-    b8 hex_only = !$empty(ref);
-    if (hex_only) {
-        for (u8cp p = ref[0]; p < ref[1]; p++) {
-            u8 c = *p;
-            b8 d = (c >= '0' && c <= '9');
-            b8 lo = (c >= 'a' && c <= 'f');
-            b8 up = (c >= 'A' && c <= 'F');
-            if (!d && !lo && !up) { hex_only = NO; break; }
-        }
-    }
+    b8 hex_only = DOGIsHashlet(ref);
     uri target = {};
     a_pad(u8, ubuf, 512);
     u8bFeed1(ubuf, hex_only ? '#' : '?');
@@ -638,15 +624,7 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
 
     sha1 cur = {};
     call(KEEPResolveTree, &target, &cur);
-
-    u8cs rest = {filepath[0], filepath[1]};
-    while (!$empty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs name = {rest[0], slash};
-        call(GRAFTreeStep, &cur, name);
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
-    }
+    call(GRAFPathDescend, &cur, filepath);
 
     u8 btype = 0;
     call(KEEPGetExact, &cur, buf, &btype);

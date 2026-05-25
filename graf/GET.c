@@ -223,11 +223,6 @@ ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b) {
 
 //  Forward decls — implementations live further down with
 //  `get_weave_union`'s helpers.
-static ok64 build_tip_weave(weave *out, u8cs path, u8cs ext,
-                            u64 const *tip_hs, u32 ntips);
-static ok64 build_tip_weave_with_ids(weave *out, u8cs path, u8cs ext,
-                                     u64 const *tip_hs, u32 ntips,
-                                     Bu32 out_ids);
 static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
                                     u64 const *tip_hs, u32 ntips,
                                     u32 edges,
@@ -236,7 +231,7 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
 static ok64 emit_alive_bytes(u8b into, weave const *w);
 
 //  Per-side membership predicate for `WEAVEEmitMerged`.  Backed by a
-//  Bu32 of `sc` values used during `build_tip_weave_with_ids` (and
+//  Bu32 of `sc` values used during `build_tip_weave_tunable` (and
 //  optionally augmented with WEAVE_WT_SRC for the wt-folded side).
 typedef struct {
     u32cp ids;     // u32 array of in-stamps reachable via this side
@@ -457,31 +452,10 @@ cleanup:
 //  the path's content at the most recent ancestor where it was last
 //  written.  Caller owns `out` (must be inited and reset).
 //
-//  This is a first-pass approximation for histories with multi-parent
-//  commits — they're treated as linear WEAVEDiff steps off whatever
-//  came before in topo order, not recursive WEAVEReplay.  Good enough
-//  for case-A merges where both sides feed into WEAVEMerge; correct
-//  case-B (importing a multi-parent commit) is a follow-up that swaps
-//  the per-step WEAVEDiff for WEAVEReplay when the topo step has >1
-//  parent.
-//
 //  When `out_ids` is non-NULL, every 32-bit `sc` value passed to
 //  `WEAVEDiff` is appended to `*out_ids` in walk order.  Callers
 //  driving `WEAVEEmitMerged` use these to build per-side membership
 //  predicates over token `inrm.in` values.
-static ok64 build_tip_weave_with_ids(weave *out, u8cs path, u8cs ext,
-                                     u64 const *tip_hs, u32 ntips,
-                                     Bu32 out_ids) {
-    return build_tip_weave_tunable(out, path, ext, tip_hs, ntips,
-                                   DAG_EDGE_PARENT, NULL, 0, out_ids);
-}
-
-static ok64 build_tip_weave(weave *out, u8cs path, u8cs ext,
-                            u64 const *tip_hs, u32 ntips) {
-    Bu32 noids = {};
-    return build_tip_weave_with_ids(out, path, ext, tip_hs, ntips, noids);
-}
-
 static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
                                     u64 const *tip_hs, u32 ntips,
                                     u32 edges,
@@ -637,34 +611,11 @@ static ok64 get_tree_at(u8b into, keeper *k, u64 commit_h40, u8cs path) {
     if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
 
     sha1 cur = {};
-    b8 got_tree = NO;
-    {
-        a_dup(u8c, scan, u8bDataC(cbuf));
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(scan, field, value) == OK) {
-            if (u8csEmpty(field)) break;
-            if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                DAGsha1FromHex(&cur, (char const *)value[0]);
-                got_tree = YES;
-                break;
-            }
-        }
-    }
+    o = GITu8sCommitTree(u8bDataC(cbuf), cur.data);
     u8bFree(cbuf);
-    if (!got_tree) return KEEPNONE;
+    if (o != OK) return KEEPNONE;
 
-    //  Walk into `path` one segment at a time.  Empty path = root tree.
-    u8cs rest = {path[0], path[1]};
-    while (!$empty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs name = {rest[0], slash};
-        if (!$empty(name)) {
-            ok64 s = GRAFTreeStep(&cur, name);
-            if (s != OK) return s;
-        }
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
-    }
+    call(GRAFPathDescend, &cur, path);
 
     Bu8 tbuf = {};
     call(u8bAllocate, tbuf, 1UL << 20);

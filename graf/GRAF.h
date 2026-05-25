@@ -76,13 +76,6 @@ con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
 //  baseline (any URI without an explicit `?h1..h2` range) refuse with
 //  this rather than silently falling back to "wt as base".
 con ok64 GRAFNOAT    = 0x41b28f5d829d;
-//  Ref token couldn't be classified into a keeper-resolvable object
-//  (not a valid full sha, no matching hashlet prefix, no matching
-//  branch / tag).  Distinct from GRAFFAIL (which is for I/O / state
-//  failures): GRAFREFBAD means "the token is syntactically a ref but
-//  nothing matches it".  Callers echo the offending token to stderr.
-con ok64 GRAFREFBAD  = 0x41b28f6ce3cb28d;
-
 // --- Public API (DOG 4-fn, singleton) ---
 
 //  Open graf state on the trunk.  Thin wrapper over `GRAFOpenBranch`
@@ -149,6 +142,14 @@ void GRAFArenaCleanup(void);
 // Serialize one hunk via graf_emit and write to graf_out_fd.
 ok64 GRAFHunkEmit(hunk const *hk, void *ctx);
 
+// Emit `diff:?<hex>` into `out` after the just-rendered anchor bytes
+// and pack a 'U' tok past those bytes via `toks`.  Bytes are
+// zero-width in the renderer; bro's click handler executes
+// `be --tlv diff:?<hex>` on left-click of the preceding anchor.
+// No-op when `toks` is the zero slice (plain-text mode).  `hex`
+// may be any length (10 for a 40-bit hashlet, 40 for a full sha).
+void GRAFEmitDiffUri(u32b toks, u8b out, u8cs hex);
+
 // 3-way merge entry.
 ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
                u8cs outpath);
@@ -208,12 +209,11 @@ ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                          sha1cp chain, u32 nchain,
                          GRAFweaveStepCb cb, void *cb_ctx);
 
-// Single-blob WEAVE merge for the rebase replay loop — replaces the
-// 3-way `JOINMerge` step that `GRAFMergeExplicit` performs today.
-// `running` is the file's weave on the post-rebase head's history;
-// `branch` is the file's weave on the to-be-replayed commit's
-// history.  Both must share an NCA-bootstrap layer (`src=0`) so
-// WEAVEMerge can recover the spine.
+// Single-blob WEAVE merge for the rebase replay loop.  `running` is
+// the file's weave on the post-rebase head's history; `branch` is the
+// file's weave on the to-be-replayed commit's history.  Both must
+// share an NCA-bootstrap layer (`src=0`) so WEAVEMerge can recover
+// the spine.
 //
 // `WEAVEMerge` combines the two histories; `WEAVEEmitMerged` then
 // renders the alive byte stream into `out` (reset before writing),
