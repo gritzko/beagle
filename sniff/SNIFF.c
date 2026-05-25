@@ -301,8 +301,7 @@ static b8 merge_path_eq(ulogreccp a, ulogreccp b) {
     else                        u8csMv(ka, a->uri.path);
     if (u8csEmpty(b->uri.path)) u8csMv(kb, b->uri.query);
     else                        u8csMv(kb, b->uri.path);
-    if (u8csLen(ka) != u8csLen(kb)) return NO;
-    return memcmp(ka[0], kb[0], u8csLen(ka)) == 0;
+    return u8csEq(ka, kb);
 }
 
 ok64 SNIFFMergeWalk(u8css cursors, sniff_step_fn cb, void *ctx) {

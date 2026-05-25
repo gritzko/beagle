@@ -68,9 +68,7 @@ static ok64 del_classify_step(class_step const *step, void *ctx_) {
         return OK;
     for (u32 j = 0; j < w->n; j++) {
         if (!$ok(w->reqs[j].raw)) continue;
-        if ($len(w->reqs[j].raw) != $len(step->path)) continue;
-        if (memcmp(w->reqs[j].raw[0], step->path[0],
-                   (size_t)$len(step->path)) != 0) continue;
+        if (!u8csEq(w->reqs[j].raw, step->path)) continue;
         w->reqs[j].in_baseline = YES;
     }
     return OK;
@@ -210,15 +208,10 @@ static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
     sane(emitted_out);
     *emitted_out = 0;
 
-    ron60 bts = 0, bverb = 0;
-    uri u = {};
-    if (SNIFFAtBaseline(&bts, &bverb, &u) != OK) done;
-    sha1hex hex = {};
-    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) done;
-    sha1 commit_sha = {};
-    if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
     sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) done;
+    b8 have_tree = NO;
+    ok64 br = SNIFFAtBaselineTreeSha(NO, &tree_sha, &have_tree);
+    if (br != OK || !have_tree) done;
 
     del_sweep_ctx ctx = {.ts = ts, .verb = verb};
     u8csMv(ctx.reporoot, reporoot);

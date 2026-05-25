@@ -135,6 +135,22 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out);
 //  is present.
 ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out);
 
+//  Resolve the baseline tree sha from sniff's ULOG.  Chains the four
+//  steps every commit-time / classify-time helper used to open-code:
+//  pick the baseline row (cur_tip_only ? SNIFFAtCurTip : SNIFFAtBaseline),
+//  extract its first 40-hex sha, decode to a commit sha, ask keeper
+//  for that commit's tree sha.
+//
+//    *out      receives the tree sha on success.
+//    *have_out is YES iff `*out` was populated (a missing baseline,
+//              missing sha spec, or malformed hex all yield NO without
+//              an error).
+//
+//  Returns ULOGNONE only when the underlying baseline row read fails
+//  with ULOGNONE (empty log); other failures collapse to OK + *have=NO
+//  so callers that "no baseline → treat as empty tree" stay one-liners.
+ok64 SNIFFAtBaselineTreeSha(b8 cur_tip_only, sha1 *out, b8 *have_out);
+
 //  Append every `patch` row's `theirs` sha (decoded from the row's
 //  40-hex query or fragment slot) into `out`, oldest-first, walking
 //  from the row immediately after the latest `get`/`post` to the
@@ -217,6 +233,16 @@ void SNIFFAtPathBytes(uri const *u, u8cs out);
 //  callback return.
 typedef ok64 (*sniff_at_pd_cb)(ulogreccp rec, void *ctx);
 ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx);
+
+//  Pre-resolve a relative `?./X`, `?../X`, or `?..` URI in place.
+//  No-op when `u->query` has no relative prefix.  Reads the wt's
+//  current branch from `.be/wtlog` baseline and writes the absolute
+//  branch path into `qbuf`; rebuilds `u->data` as `?<absolute>` in
+//  `databuf`.  Both buffers must outlive the caller's use of `u`.
+//  `was_relative_out` (optional) receives YES iff the input had a
+//  relative prefix — callers use this to enable create-on-miss.
+ok64 SNIFFAtResolveRelativeURI(uri *u, path8b qbuf, u8b databuf,
+                               b8 *was_relative_out);
 
 //  Walk the wt rooted at `reporoot` and invoke `cb(rel, ctx)` for
 //  every non-meta file whose mtime is NOT in the ULOG stamp-set

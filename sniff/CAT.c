@@ -70,16 +70,10 @@ static ok64 cat_resolve_baseline(uricp u, Bu8 out) {
     if (!u8csEmpty(u->query)) {
         call(KEEPResolveTree, u, &root_tree);
     } else {
-        ron60 ts = 0, verb = 0;
-        uri base = {};
-        ok64 br = SNIFFAtCurTip(&ts, &verb, &base);
-        if (br == ULOGNONE) return KEEPNONE;     // fresh repo
+        b8 have_tree = NO;
+        ok64 br = SNIFFAtBaselineTreeSha(YES, &root_tree, &have_tree);
+        if (br == ULOGNONE || !have_tree) return KEEPNONE;
         if (br != OK) return br;
-        sha1hex hex = {};
-        if (SNIFFAtQueryFirstSha(&base, &hex) != OK) return KEEPNONE;
-        sha1 commit = {};
-        if (sha1FromSha1hex(&commit, &hex) != OK) return KEEPNONE;
-        call(KEEPCommitTreeSha, &commit, &root_tree);
     }
 
     //  Descend `u->path` inside the tree.  KEEPGetByPath does the

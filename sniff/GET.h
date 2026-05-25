@@ -18,4 +18,28 @@
 ok64 GETCheckout(u8cs reporoot, u8csc hex,
                  u8csc source);
 
+//  URI dispatch: parses one `be get` URI shape into the right
+//  checkout / overlay action.
+//
+//    path+query  (no authority)  — single-file or subtree overlay
+//                                  from another branch's tip
+//                                  (no `.be/wtlog` row).
+//    path only                   — `be get <hex>` (commit checkout
+//                                  by sha prefix).
+//    query / authority           — REFSResolve over the canonicalised
+//                                  URI; falls back to local trunk on
+//                                  miss.  Resolves relative refs in
+//                                  place; refuses on missing branch
+//                                  (use `be post ?./X` to create).
+ok64 SNIFFGetURI(u8cs reporoot, uri *u);
+
+//  Bare `be get` (no URI args): print every local branch tip from
+//  keeper REFS (current branch starred) plus every remote-tracking
+//  ref.  No wt mutation.
+ok64 SNIFFGetSummary(u8cs reporoot);
+
+//  `be checkout <hex>` — thin wrapper over GETCheckout that builds
+//  the source URI as `?<hex>`.
+ok64 SNIFFCheckout(u8cs reporoot, u8cs hex);
+
 #endif

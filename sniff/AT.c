@@ -13,6 +13,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"   // WALK_KIND_*
@@ -121,17 +122,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             uri u = rec.uri;
             if (!u8csEmpty(u.authority)) continue;
             if (u8csLen(u.fragment) != 40) continue;
-            a_dup(u8c, q, u.query);
-            while (!u8csEmpty(q)) {
-                u8cs chunk = {};
-                DOGRefDrain(q, chunk);
-                if ($empty(chunk)) continue;
-                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
-                if (!is_sha && u8csEmpty(ref_body)) {
-                    u8csMv(ref_body, chunk);
-                    break;
-                }
-            }
+            DOGQueryBranchOnly(u.query, ref_body);
             if (!u8csEmpty(ref_body)) break;
         }
     }
@@ -356,6 +347,57 @@ ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
         }
     }
     return ULOGNONE;
+}
+
+ok64 SNIFFAtBaselineTreeSha(b8 cur_tip_only, sha1 *out, b8 *have_out) {
+    sane(out && have_out);
+    *have_out = NO;
+    ron60 ts = 0, verb = 0;
+    uri u = {};
+    ok64 br = cur_tip_only
+            ? SNIFFAtCurTip  (&ts, &verb, &u)
+            : SNIFFAtBaseline(&ts, &verb, &u);
+    if (br != OK) return br;   // propagates ULOGNONE + real errors
+
+    //  Row exists but missing/malformed sha or tree-lookup failure
+    //  collapses to OK + have_out=NO so callers can treat "no usable
+    //  baseline" uniformly.
+    sha1hex hex = {};
+    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) done;
+    sha1 commit_sha = {};
+    if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
+    sha1 tree_sha = {};
+    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) done;
+
+    *out = tree_sha;
+    *have_out = YES;
+    done;
+}
+
+ok64 SNIFFAtResolveRelativeURI(uri *u, path8b qbuf, u8b databuf,
+                               b8 *was_relative_out) {
+    sane(u);
+    if (was_relative_out) *was_relative_out = NO;
+    if (u->query[0] == NULL || $empty(u->query)) done;
+
+    //  Current branch from sniff baseline.  Empty / missing baseline
+    //  = trunk.
+    ron60 bts = 0, bverb = 0;
+    uri bu = {};
+    u8cs current = {};
+    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK)
+        u8csMv(current, bu.query);
+
+    b8 was_rel = NO;
+    call(DPATHBranchResolveRel, qbuf, current, u->query, &was_rel);
+    if (was_relative_out) *was_relative_out = was_rel;
+    if (!was_rel) done;
+
+    u8bFeed1(databuf, '?');
+    u8bFeed(databuf, $path(qbuf));
+    u8csMv(u->query, $path(qbuf));
+    u8csMv(u->data,  u8bDataC(databuf));
+    done;
 }
 
 //  Pick the 40-hex sha out of a patch row's URI into `out`.  Query
@@ -816,15 +858,10 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
 static void at_collect_baseline(u8bp rows_out, u8bp gitlinks_out) {
     u8bReset(rows_out);
     u8bReset(gitlinks_out);
-    ron60 ts = 0, verb = 0;
-    uri u = {};
-    if (SNIFFAtBaseline(&ts, &verb, &u) != OK) return;
-    sha1hex hex = {};
-    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return;
-    sha1 commit_sha = {};
-    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return;
     sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) return;
+    b8 have_tree = NO;
+    if (SNIFFAtBaselineTreeSha(NO, &tree_sha, &have_tree) != OK ||
+        !have_tree) return;
 
     //  Verb stem irrelevant here; we read `kind` via `ok64Lit` later.
     a_cstr(stem_name, "base");

@@ -3,7 +3,6 @@
 //
 #include "SNIFF.h"
 
-#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -18,8 +17,10 @@
 #include "PATCH.h"
 #include "POST.h"
 #include "PUT.h"
+#include "WATCH.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/git/IGNO.h"
 #include "dog/ULOG.h"
@@ -32,256 +33,11 @@
 
 #include "abc/B.h"
 #include "abc/FILE.h"
-#include "abc/FSW.h"
 #include "abc/HEX.h"
 #include "abc/RON.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/UTF8.h"
-
-// --- Mode: Watch daemon ---
-
-static volatile sig_atomic_t sniff_quit = 0;
-
-static void sniff_sighandler(int sig) {
-    (void)sig;
-    sniff_quit = 1;
-}
-
-static ok64 sniff_write_pid(u8cs reporoot) {
-    sane($ok(reporoot));
-    a_cstr(pidname, "sniff.pid");
-    a_path(pp, reporoot, DOG_BE_S, pidname);
-    FILE *fp = fopen((char *)u8bDataHead(pp), "w");
-    if (!fp) fail(SNIFFFAIL);
-    fprintf(fp, "%d\n", (int)getpid());
-    fclose(fp);
-    done;
-}
-
-static ok64 sniff_rm_pid(u8cs reporoot) {
-    sane($ok(reporoot));
-    a_cstr(pidname, "sniff.pid");
-    a_path(pp, reporoot, DOG_BE_S, pidname);
-    FILEUnLink($path(pp));
-    done;
-}
-
-typedef struct { int wfd; u32 count; } watchdir_ctx;
-
-static ok64 sniff_watchdir_cb(void0p arg, path8p path) {
-    watchdir_ctx *ctx = (watchdir_ctx *)arg;
-    u8csc p = {u8bDataHead(path), u8bIdleHead(path)};
-    ok64 o = FSWDir(ctx->wfd, p);
-    if (o == OK) ctx->count++;
-    return OK;
-}
-
-static ok64 sniff_drain_cb(u8cs path, void *ctx) {
-    (void)path; (void)ctx; return OK;
-}
-
-//  The watch daemon emits one `mod <dir/>` ULOG row per directory
-//  containing dirty files (mtime ∉ stamp set).  Dedup is via .be/wtlog
-//  itself: a directory whose `mod <dir/>` row already exists since the
-//  most recent baseline (get/post/patch) is skipped.  Coarse-grained
-//  by design — POST does its own wt scan; the row is just an advisory
-//  "something happened in this area" signal for external tools.
-
-typedef struct {
-    u8cs   reporoot;
-    Bu8   *seen_dirs;    // newline-sep set of dir paths already mod'd
-} watch_scan_ctx;
-
-//  YES iff `dir` already appears in `*seen` (linear scan; the set is
-//  bounded by the number of distinct dirs touched between two
-//  get/post events — small in practice).
-static b8 watch_dir_seen(Bu8 *seen, u8cs dir) {
-    a_dup(u8c, scan, u8bData(*seen));
-    while (!u8csEmpty(scan)) {
-        u8cs line = {};
-        if (u8csDrainLine(scan, line) != OK) break;
-        if (u8csLen(line) == u8csLen(dir) &&
-            memcmp(line[0], dir[0], u8csLen(dir)) == 0) return YES;
-    }
-    return NO;
-}
-
-static void watch_dir_remember(Bu8 *seen, u8cs dir) {
-    u8bFeed(*seen, dir);
-    u8bFeed1(*seen, '\n');
-}
-
-//  Compute the parent dir slice (with trailing '/') for `rel` into
-//  `out`.  Files at the wt root use "/".
-static void watch_parent_dir(u8csc rel, u8b out) {
-    u8bReset(out);
-    u8c const *slash_last = NULL;
-    for (u8c const *p = rel[0]; p < rel[1]; p++) {
-        if (*p == '/') slash_last = p;
-    }
-    if (slash_last) {
-        u8cs parent = {rel[0], slash_last + 1};   // include trailing '/'
-        u8bFeed(out, parent);
-    } else {
-        u8bFeed1(out, '/');                       // root marker
-    }
-}
-
-//  Seed `*seen` from the .be/wtlog log: every `mod <dir/>` row whose ts
-//  is past the most recent get/post/patch baseline contributes its
-//  path.
-static ok64 watch_seed_seen(Bu8 *seen) {
-    sane(seen);
-    u8bReset(*seen);
-    ron60 base_ts = 0, bv = 0;
-    uri bu = {};
-    if (SNIFFAtBaseline(&base_ts, &bv, &bu) != OK) base_ts = 0;
-    ron60 v_mod = SNIFFAtVerbMod();
-    u32 n = ULOGCount(SNIFF.log_idx);
-    for (u32 i = 0; i < n; i++) {
-        ulogrec rec = {};
-        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec) != OK) continue;
-        if (rec.ts <= base_ts) continue;
-        if (rec.verb != v_mod) continue;
-        u8cs path = {rec.uri.path[0], rec.uri.path[1]};
-        if ($empty(path)) continue;
-        if (!watch_dir_seen(seen, path)) watch_dir_remember(seen, path);
-    }
-    done;
-}
-
-static ok64 watch_scan_cb(void *varg, path8bp path) {
-    sane(varg && path);
-    watch_scan_ctx *w = (watch_scan_ctx *)varg;
-    a_dup(u8c, full, u8bData(path));
-
-    u8cs rel = {};
-    if (!SNIFFRelFromFull(rel, w->reporoot, full)) return OK;
-    if (SNIFFSkipMeta(rel))                         return OK;
-    //  The daemon's own pidfile (`<root>/.be/sniff.pid`) is filtered
-    //  by SNIFFSkipMeta above (anything under `.be/`).
-
-    filestat fs = {};
-    ok64 lo = FILELStat(&fs, full);
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
-    if (lo != OK) return lo;             // propagate
-    ron60 mtime = fs.mtime;
-
-    //  Clean against some baseline → nothing to log.
-    if (SNIFFAtKnown(mtime)) return OK;
-
-    a_pad(u8, dirbuf, 1024);
-    watch_parent_dir(rel, dirbuf);
-    a_dup(u8c, dir, u8bData(dirbuf));
-    if (watch_dir_seen(w->seen_dirs, dir)) return OK;
-
-    //  Append one `mod <dir/>` row via the usual URI-struct path.
-    uri urow = {};
-    urow.path[0] = dir[0];
-    urow.path[1] = dir[1];
-    ron60 vmod = SNIFFAtVerbMod();
-    if (SNIFFAtAppend(vmod, &urow) == OK) {
-        watch_dir_remember(w->seen_dirs, dir);
-    }
-    return OK;
-}
-
-static ok64 watch_rescan(u8cs reporoot, Bu8 *seen_dirs) {
-    sane($ok(reporoot) && seen_dirs);
-    //  Rebuild the seen set from .be/wtlog each scan — the baseline may
-    //  have advanced (get/post/patch) since the last invocation,
-    //  invalidating prior `mod` rows.
-    call(watch_seed_seen, seen_dirs);
-
-    watch_scan_ctx wc = {.seen_dirs = seen_dirs};
-    wc.reporoot[0] = reporoot[0];
-    wc.reporoot[1] = reporoot[1];
-
-    a_path(wp);
-    u8bFeed(wp, reporoot);
-    call(PATHu8bTerm, wp);
-    call(FILEScan, wp,
-         (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
-         watch_scan_cb, &wc);
-    done;
-}
-
-static ok64 sniff_daemon(u8cs reporoot) {
-    sane(1);
-    pid_t pid = fork();
-    if (pid < 0) fail(SNIFFFAIL);
-    if (pid > 0) {
-        fprintf(stderr, "sniff: daemon pid %d\n", (int)pid);
-        _exit(0);
-    }
-    setsid();
-    int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0) {
-        dup2(devnull, STDIN_FILENO);
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO) close(devnull);
-    }
-    call(sniff_write_pid, reporoot);
-    struct sigaction sa = {.sa_handler = sniff_sighandler};
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    int wfd = -1;
-    call(FSWInit, &wfd);
-    { u8csc rp = {reporoot[0], reporoot[1]}; FSWDir(wfd, rp); }
-    watchdir_ctx wctx = {.wfd = wfd};
-    {
-        a_path(wp, reporoot);
-        FILEScan(wp, (FILE_SCAN)(FILE_SCAN_DIRS | FILE_SCAN_DEEP),
-                 sniff_watchdir_cb, &wctx);
-    }
-
-    //  Newline-sep set of directories whose `mod <dir/>` row has
-    //  already been written since the most recent baseline.  Rebuilt
-    //  per scan in watch_rescan().
-    Bu8 seen_dirs = {};
-    call(u8bAllocate, seen_dirs, 1UL << 16);
-
-    //  Seed scan: emit mod rows for anything already dirty when the
-    //  daemon starts.
-    (void)watch_rescan(reporoot, &seen_dirs);
-
-    while (!sniff_quit) {
-        ok64 o = FSWPoll(wfd, 1000);
-        if (o != OK) continue;
-        FSWDrain(wfd, sniff_drain_cb, NULL);
-        (void)watch_rescan(reporoot, &seen_dirs);
-    }
-
-    u8bFree(seen_dirs);
-    FSWClose(wfd);
-    sniff_rm_pid(reporoot);
-    done;
-}
-
-// --- Mode: Stop daemon ---
-
-static ok64 sniff_stop(u8cs reporoot) {
-    sane($ok(reporoot));
-    a_cstr(pidname, "sniff.pid");
-    a_path(pp, reporoot, DOG_BE_S, pidname);
-    FILE *fp = fopen((char *)u8bDataHead(pp), "r");
-    if (!fp) { fprintf(stderr, "sniff: no daemon running\n"); done; }
-    int dpid = 0;
-    if (fscanf(fp, "%d", &dpid) != 1 || dpid <= 0) {
-        fclose(fp); fail(SNIFFFAIL);
-    }
-    fclose(fp);
-    if (kill(dpid, SIGTERM) != 0) {
-        FILEUnLink($path(pp)); fail(SNIFFFAIL);
-    }
-    fprintf(stderr, "sniff: stopped pid %d\n", dpid);
-    FILEUnLink($path(pp));
-    done;
-}
 
 // --- Mode: Status ---
 //
@@ -630,7 +386,7 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
         a_dup(u8c, wt_s,  u8bDataC(SNIFF.h->wt));
         size_t wt_len = $len(wt_s);
         if ($len(cwd_s) > wt_len &&
-            memcmp(cwd_s[0], wt_s[0], wt_len) == 0 &&
+            u8csHasPrefix(cwd_s, wt_s) &&
             cwd_s[0][wt_len] == '/') {
             rel[0] = cwd_s[0] + wt_len + 1;
             rel[1] = cwd_s[1];
@@ -741,596 +497,6 @@ static ok64 sniff_status(u8cs reporoot) {
     return r;
 }
 
-// --- Mode: Get summary (bare `be get`) ---
-//
-//  Bare `be get` (no URI) prints a worktree-anchored snapshot of
-//  what's reachable: every local branch tip from keeper REFS, with
-//  the current branch starred; then every remote-tracking ref so
-//  the user can see which `//host?ref` rows are on file.
-
-static ok64 sniff_get_branch_cb(keep_tipcp t, void *ctx) {
-    u8cs *cp = (u8cs *)ctx;
-    u8cs cur = {(*cp)[0], (*cp)[1]};
-    char marker = ' ';
-    if ($len(t->path) == $len(cur) &&
-        ($len(cur) == 0 ||
-         memcmp(t->path[0], cur[0], $len(cur)) == 0)) {
-        marker = '*';
-    }
-    fprintf(stdout, "%c ?%.*s\t%.*s\n",
-            marker,
-            (int)$len(t->path), (char *)t->path[0],
-            (int)$len(t->sha),  (char *)t->sha[0]);
-    return OK;
-}
-
-static ok64 sniff_get_remote_cb(keep_remotecp r, void *ctx) {
-    (void)ctx;
-    fprintf(stdout, "  %.*s\t%.*s\n",
-            (int)$len(r->key), (char *)r->key[0],
-            (int)$len(r->sha), (char *)r->sha[0]);
-    return OK;
-}
-
-static ok64 sniff_get_summary(u8cs reporoot) {
-    sane($ok(reporoot));
-    (void)reporoot;
-    keeper *k = &KEEP;
-
-    //  Current branch from sniff baseline (empty == trunk).
-    ron60 bts = 0, bverb = 0;
-    uri bu = {};
-    u8cs cur = {};
-    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-        u8csMv(cur, bu.query);
-    }
-
-    fprintf(stdout, "branches:\n");
-    ok64 to = KEEPEachTip(sniff_get_branch_cb, &cur);
-    if (to != OK && to != REFSNONE) {
-        fprintf(stderr, "sniff: get: branches: %s\n", ok64str(to));
-        fail(to);
-    }
-
-    fprintf(stdout, "remotes:\n");
-    ok64 ro = KEEPEachRemote(sniff_get_remote_cb, NULL);
-    if (ro != OK && ro != REFSNONE) {
-        fprintf(stderr, "sniff: get: remotes: %s\n", ok64str(ro));
-        fail(ro);
-    }
-    done;
-}
-
-// --- Mode: Checkout ---
-
-static ok64 sniff_checkout(u8cs reporoot, u8cs hex) {
-    sane($ok(hex));
-    a_pad(u8, src, 256);
-    u8bFeed1(src, '?');
-    u8bFeed(src, hex);
-    a_dup(u8c, source, u8bData(src));
-    return GETCheckout(reporoot, hex, source);
-}
-
-//  Pre-resolve a relative `?./X`, `?../X`, or `?..` URI in place.
-//  No-op when the query has no relative prefix.  Reads the wt's
-//  current branch from `.be/wtlog` baseline and writes the absolute
-//  branch path into `qbuf`; rebuilds the URI's `data` slice as
-//  `?<absolute>` in `databuf`.  Both buffers must outlive the
-//  caller's use of `u`.  When `was_relative_out` is non-NULL it
-//  receives YES iff the input had a relative prefix (callers use
-//  this to enable create-on-miss).
-static ok64 sniff_resolve_rel(uri *u, path8b qbuf, u8b databuf,
-                              b8 *was_relative_out) {
-    sane(u);
-    if (was_relative_out) *was_relative_out = NO;
-    if (u->query[0] == NULL || $empty(u->query)) done;
-    a_dup(u8c, q_in, u->query);
-    path8s first = {};
-    DOGRefDrain(q_in, first);
-    if ($empty(first)) done;
-    //  Only `.`-prefixed relative refs need absolutising.
-    if (first[0][0] != '.') done;
-    if (was_relative_out) *was_relative_out = YES;
-
-    //  Current branch from sniff baseline.  Empty / missing baseline
-    //  = trunk.
-    ron60 bts = 0, bverb = 0;
-    uri bu = {};
-    path8s current = {};
-    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK)
-        u8csMv(current, bu.query);
-
-    //  Resolve `./X` / `../X` / `..` against `current` using
-    //  abc/PATH primitives: PATHu8bFeed for the base, PATHu8bPop
-    //  to climb, PATHu8bPush for the new leaf.  Branch semantics:
-    //  popping past trunk yields trunk (empty), not "..".
-    u8bReset(qbuf);
-    if (!$empty(current)) call(PATHu8bFeed, qbuf, current);
-    path8s rel = {first[0], first[1]};
-    if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
-        u8csUsed(rel, 2);
-    } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
-               rel[0][1] == '.' && rel[0][2] == '/') {
-        call(PATHu8bPop, qbuf);
-        u8csUsed(rel, 3);
-    } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
-        call(PATHu8bPop, qbuf);
-        u8csUsed(rel, 2);
-    }
-    if (!$empty(rel)) call(PATHu8bPush, qbuf, rel);
-
-    u8bFeed1(databuf, '?');
-    u8bFeed(databuf, $path(qbuf));
-    u8csMv(u->query, $path(qbuf));
-    u8csMv(u->data,  u8bDataC(databuf));
-    done;
-}
-
-// Checkout from a parsed URI: resolve ?ref via keeper REFS, then checkout.
-//
-//  Resolution strategy (keeper WIREFetch no longer records per-origin
-//  aliases — only `?heads/X → ?<sha>` and `?tags/X → ?<sha>`):
-//
-//    URI has ?query:
-//      1. Try REFSResolve on the full URI (picks up any legacy
-//         origin-qualified entries, plus the resolver's own
-//         authority+query variant matcher).
-//      2. Fallback: REFSResolve on a local-only `?<query>` (with a
-//         leading `refs/` stripped) — lets `?refs/tags/v1` / `?v1` /
-//         `?heads/main` all hit keeper's local refs file.
-//      3. Last resort: treat query as a raw 40-hex SHA (covers the
-//         `?<40hex>` URI that BEGetWorktree rewrites to).
-//
-//    URI has no ?query (fresh clone / re-clone):
-//      1. If sniff at.log has a branch, resolve `?heads/<branch>`.
-//      2. Else scan local REFS for a `?heads/*` entry, preferring
-//         master/main/trunk; its sha is the checkout target and its
-//         key becomes the at.log `source` so the branch is recorded.
-static ok64 sniff_get_by_refkey(u8cs reporoot, u8csc keepdir,
-                                 u8csc refkey) {
-    a_pad(u8, arena, 1024);
-    uri resolved = {};
-    ok64 o = REFSResolve(&resolved, arena, keepdir, refkey);
-    if (o != OK || $empty(resolved.query)) return KEEPNONE;
-    return GETCheckout(reporoot, resolved.query, refkey);
-}
-
-// --- Path+query GET helpers -----------------------------------------
-//
-//  Both helpers are no-staging (no `.be/wtlog` row) overwrites of wt
-//  files from another branch's tip.  Single-file form fetches one
-//  blob via `KEEPGetByURI`; subtree form drains the target tree's
-//  leaves via `KEEPTreeULog` and writes every leaf under the
-//  requested prefix.
-
-static ok64 sniff_get_blob_to_wt_switch(uri *u) {
-    sane(u);
-    u8cs br_split = {}, pin_split = {};
-    DOGRefSplitPin(u->query, br_split, pin_split);
-    u8cs target = {};
-    if (u8csEmpty(pin_split)) u8csMv(target, u->query);
-    else                       u8csMv(target, br_split);
-    call(SNIFFMaybeSwitchGraf,   target);
-    call(SNIFFMaybeSwitchKeeper, target);
-    done;
-}
-
-static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
-    //  Same cross-branch consideration as the subtree overlay below:
-    //  `be get file.c?feat` reads a blob from feat's tree, so feat's
-    //  packs must be loaded.
-    (void)sniff_get_blob_to_wt_switch(u);
-    sane(u);
-    keeper *k = &KEEP;
-    Bu8 blob = {};
-    call(u8bMap, blob, 64UL << 20);
-    ok64 go = KEEPGetByURI(u, blob);
-    if (go != OK) {
-        u8bUnMap(blob);
-        fprintf(stderr,
-            "sniff: get: cannot resolve %.*s?%.*s\n",
-            (int)$len(u->path),  (char const *)u->path[0],
-            (int)$len(u->query), (char const *)u->query[0]);
-        return go;
-    }
-    a_path(fp);
-    a_dup(u8c, rr_s, reporoot);
-    call(PATHu8bFeed, fp, rr_s);
-    a_dup(u8c, path_s, u->path);
-    call(PATHu8bPush, fp, path_s);
-    int fd = -1;
-    ok64 co = FILECreate(&fd, $path(fp));
-    if (co != OK) {
-        u8bUnMap(blob);
-        fprintf(stderr, "sniff: get: cannot open %.*s for write: %s\n",
-                (int)u8bDataLen(fp), (char const *)u8bDataHead(fp),
-                ok64str(co));
-        return co;
-    }
-    a_dup(u8c, body, u8bData(blob));
-    ok64 wo = FILEFeedAll(fd, body);
-    FILEClose(&fd);
-    u8bUnMap(blob);
-    if (wo != OK) {
-        fprintf(stderr,
-            "sniff: get: write %.*s failed: %s\n",
-            (int)$len(u->path), (char const *)u->path[0],
-            ok64str(wo));
-        return wo;
-    }
-    fprintf(stderr,
-        "sniff: get: %.*s overwritten from ?%.*s (no staging)\n",
-        (int)$len(u->path),  (char const *)u->path[0],
-        (int)$len(u->query), (char const *)u->query[0]);
-    done;
-}
-
-//  Resolve `?ref` (URI's data) to the commit's tree sha-1.  Mirror of
-//  graf/LOG.c's commit→tree extractor; lives here to avoid a graf
-//  dependency in sniff for one helper.
-static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
-    sane(u && tree_out);
-    keeper *k = &KEEP;
-    a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
-
-    a_pad(u8, arena, 1024);
-    uri resolved = {};
-    a_dup(u8c, in_uri, u->data);
-    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), in_uri);
-    if (ro != OK || u8csLen(resolved.query) != 40) return SNIFFNONE;
-
-    sha1 commit_sha = {};
-    {
-        u8s sb = {commit_sha.data, commit_sha.data + 20};
-        a_dup(u8c, hx, resolved.query);
-        if (HEXu8sDrainSome(sb, hx) != OK) return SNIFFFAIL;
-    }
-    Bu8 cbuf = {};
-    call(u8bMap, cbuf, 1UL << 20);
-    u8 ot = 0;
-    ok64 go = KEEPGetExact(&commit_sha, cbuf, &ot);
-    if (go != OK || ot != DOG_OBJ_COMMIT) {
-        u8bUnMap(cbuf);
-        return go == OK ? SNIFFFAIL : go;
-    }
-    a_dup(u8c, scan, u8bDataC(cbuf));
-    u8cs field = {}, value = {};
-    b8 got = NO;
-    while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if (u8csEmpty(field)) break;
-        a_cstr(ft, "tree");
-        if ($eq(field, ft) && u8csLen(value) >= 40) {
-            u8s sb = {tree_out->data, tree_out->data + 20};
-            a_dup(u8c, hx2, value);
-            if (HEXu8sDrainSome(sb, hx2) == OK) got = YES;
-            break;
-        }
-    }
-    u8bUnMap(cbuf);
-    return got ? OK : SNIFFFAIL;
-}
-
-static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
-    sane(u);
-    keeper *k = &KEEP;
-
-    //  Cross-branch overlay: when the URI's query names a different
-    //  branch (`be get src/?feat`), load feat's packs into PAST so
-    //  the tree-walk + blob fetches below resolve via PastData.
-    //  Path-prefix overlays don't change the wt's anchor; the
-    //  switch is read-only context, no DATA shuffling for writes.
-    {
-        u8cs br_split = {}, pin_split = {};
-        DOGRefSplitPin(u->query, br_split, pin_split);
-        u8cs target = {};
-        if (u8csEmpty(pin_split)) u8csMv(target, u->query);
-        else                       u8csMv(target, br_split);
-        call(SNIFFMaybeSwitchGraf,   target);
-        call(SNIFFMaybeSwitchKeeper, target);
-    }
-
-    sha1 tree_sha = {};
-    ok64 tr = sniff_get_subtree_resolve_tree(u, &tree_sha);
-    if (tr != OK) {
-        fprintf(stderr,
-            "sniff: get: cannot resolve %.*s?%.*s\n",
-            (int)$len(u->path),  (char const *)u->path[0],
-            (int)$len(u->query), (char const *)u->query[0]);
-        return tr;
-    }
-
-    //  Drain the target tree's full leaf set.  KEEPTreeULog's verb
-    //  stem is arbitrary — we only read uri.path / uri.fragment from
-    //  each row.
-    a_cstr(stem_s, "leaf");
-    a_dup(u8c, stem_dup, stem_s);
-    ron60 v_leaf = 0;
-    call(RONutf8sDrain, &v_leaf, stem_dup);
-    Bu8 ulog = {};
-    call(u8bAllocate, ulog, 4UL << 20);
-    ok64 lr = KEEPTreeULog(tree_sha.data, 0, v_leaf, ulog);
-    if (lr != OK) { u8bFree(ulog); return lr; }
-
-    //  Filter rows by the requested subtree prefix.  Path slice
-    //  carries the trailing `/`; KEEPTreeULog emits paths with no
-    //  trailing slash, so `<prefix>` matches `<prefix>/<...>` after
-    //  comparing the prefix bytes including the final `/`.
-    u8cs prefix = {u->path[0], u->path[1]};
-    Bu8 blob = {};
-    call(u8bMap, blob, 64UL << 20);
-    u32 n_written = 0;
-    a_dup(u8c, scan, u8bData(ulog));
-    while (!u8csEmpty(scan)) {
-        ulogrec rec = {};
-        ok64 dr = ULOGu8sDrain(scan, &rec);
-        if (dr == NODATA) break;
-        if (dr != OK) continue;
-        u8cs rp = {rec.uri.path[0], rec.uri.path[1]};
-        if ($len(rp) <= $len(prefix)) continue;
-        if (memcmp(rp[0], prefix[0], (size_t)$len(prefix)) != 0) continue;
-        if (u8csLen(rec.uri.fragment) != 40) continue;
-
-        sha1 leaf_sha = {};
-        {
-            u8s sb = {leaf_sha.data, leaf_sha.data + 20};
-            a_dup(u8c, hx, rec.uri.fragment);
-            if (HEXu8sDrainSome(sb, hx) != OK) continue;
-        }
-        u8bReset(blob);
-        u8 ot = 0;
-        if (KEEPGetExact(&leaf_sha, blob, &ot) != OK) continue;
-
-        a_path(fp);
-        a_dup(u8c, rr_s, reporoot);
-        call(PATHu8bFeed, fp, rr_s);
-        //  rp is multi-segment (e.g. "src/x.c"); use Add (segment-
-        //  by-segment) — PATHu8bPush would reject the embedded '/'.
-        a_dup(u8c, path_s, rp);
-        call(PATHu8bAdd, fp, path_s);
-        //  mkdir -p the parent dir.
-        a_path(parent);
-        a_dup(u8c, fp_s, u8bDataC(fp));
-        call(PATHu8bFeed, parent, fp_s);
-        call(PATHu8bPop, parent);
-        (void)FILEMakeDirP($path(parent));
-
-        int fd = -1;
-        ok64 co = FILECreate(&fd, $path(fp));
-        if (co != OK) {
-            fprintf(stderr,
-                "sniff: get: cannot open %.*s for write: %s\n",
-                (int)u8bDataLen(fp), (char const *)u8bDataHead(fp),
-                ok64str(co));
-            continue;
-        }
-        a_dup(u8c, body, u8bData(blob));
-        (void)FILEFeedAll(fd, body);
-        FILEClose(&fd);
-        n_written++;
-    }
-    u8bUnMap(blob);
-    u8bFree(ulog);
-
-    fprintf(stderr,
-        "sniff: get: %u file(s) under %.*s overwritten from ?%.*s "
-        "(no staging, no prune)\n",
-        n_written,
-        (int)$len(u->path),  (char const *)u->path[0],
-        (int)$len(u->query), (char const *)u->query[0]);
-    done;
-}
-
-static ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
-    sane(u);
-    keeper *k = &KEEP;
-    a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
-
-    //  Remote URI: under DOG.md §10a `be get` is the orchestrator —
-    //  it already ran `keeper get URI` synchronously before forking
-    //  the parallel spot/graf/sniff children.  Sniff is a worktree
-    //  updater; it does not fetch from peers itself.  Standalone
-    //  `sniff get ssh://...` will fail at REFSResolve below if the
-    //  pack hasn't been pre-fetched — that's intentional (use `be
-    //  get` for clones).
-
-    //  Path+query, no authority — single-file or subtree overlay
-    //  from another branch's tip (VERBS.md §GET).  Trailing `/` on
-    //  the path picks subtree mode; no slash means single file.
-    //  No `.be/wtlog` row is appended either way (no staging — the
-    //  written paths land as regular user edits).  No pruning — wt
-    //  files outside the target tree stay put (per project rule:
-    //  GET overwrites unconditionally; we don't try to be clever
-    //  about dirty wt state, but also don't sweep extras).
-    if (!$empty(u->path) && !$empty(u->query) && $empty(u->authority)) {
-        b8 is_subtree = (*u8csLast(u->path) == '/');
-        if (!is_subtree)
-            return sniff_get_blob_to_wt(reporoot, u);
-        return sniff_get_subtree_to_wt(reporoot, u);
-    }
-
-    //  Path-only URI (no authority, no query) → `be get <hex>` or
-    //  `be get <local-dir>` (the latter is rewritten by BEGetWorktree
-    //  to a query-only URI before we get here).
-    if ($empty(u->query) && $empty(u->authority) && !$empty(u->path)) {
-        a_pad(u8, src, 256);
-        u8bFeed1(src, '?');
-        u8bFeed(src, u->path);
-        a_dup(u8c, source, u8bData(src));
-        return GETCheckout(reporoot, u->path, source);
-    }
-
-    //  Everything else: resolve the (canonicalised) URI against REFS
-    //  and check out the resulting sha.  Treat *presence* of `?` —
-    //  even with an empty query (`?` for trunk) — as an explicit ref
-    //  lookup, distinct from "no query at all" (which falls through
-    //  to the at-log branch resume below).
-    b8 has_q = (u->query[0] != NULL);
-
-    //  Pre-resolve relative refs (`?./X`, `?../X`, `?..`).  Storage
-    //  must outlive the call (REFSResolve and GETCheckout both
-    //  consume slices into u->query / u->data); _reluri rebases
-    //  those into our stack-local buffer.
-    a_pad(u8, abs_qbuf,    256);
-    a_pad(u8, abs_databuf, 260);
-    if (sniff_resolve_rel(u, abs_qbuf, abs_databuf, NULL) != OK)
-        fail(SNIFFFAIL);
-
-    if (has_q || !$empty(u->authority)) {
-        a_pad(u8, arena1, 1024);
-        uri resolved = {};
-        //  REFSResolve fallback chain: leaf (k->h->cur_branch) first,
-        //  then trunk, then — when the URI query names a non-sha
-        //  ref — a speculative `<root>/.be/<query>/refs` dir.  The
-        //  last branch covers the fresh-clone case where keeper has
-        //  just fetched into `<query>` leaf but sniff has no anchor /
-        //  cur_branch to derive it from.
-        a_path(leaf_keepdir);
-        b8 has_leaf = (!BNULL(k->h->cur_branch) &&
-                       u8bDataLen(k->h->cur_branch) > 0);
-        if (has_leaf) {
-            a_dup(u8c, trunk_s, u8bDataC(keepdir));
-            call(PATHu8bFeed, leaf_keepdir, trunk_s);
-            a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
-            call(PATHu8bAdd, leaf_keepdir, leaf_s);
-        }
-        ok64 o = REFSNONE;
-        if (has_leaf) {
-            o = REFSResolve(&resolved, arena1, $path(leaf_keepdir),
-                            u->data);
-        }
-        if (o != OK || $empty(resolved.query)) {
-            zero(resolved);
-            o = REFSResolve(&resolved, arena1, $path(keepdir), u->data);
-        }
-        if ((o != OK || $empty(resolved.query)) && has_q &&
-            !u8csEmpty(u->query)) {
-            u8cs vq = {};
-            u8csMv(vq, u->query);
-            b8 q_is_sha = (u8csLen(vq) == 40 && HEXu8sValid(vq));
-            if (!q_is_sha) {
-                a_path(q_keepdir);
-                a_dup(u8c, trunk_s, u8bDataC(keepdir));
-                call(PATHu8bFeed, q_keepdir, trunk_s);
-                a_dup(u8c, vq_const, vq);
-                call(PATHu8bAdd, q_keepdir, vq_const);
-                zero(resolved);
-                o = REFSResolve(&resolved, arena1, $path(q_keepdir),
-                                u->data);
-            }
-        }
-
-        //  Local lookup miss → retry with shorter query prefixes.
-        //  `keeper get //host?refs/heads/X` stores under a
-        //  peer-prefixed key with the wire-canonical query (e.g.
-        //  `?master` after wcli_wire_to_be strips `refs/heads/`,
-        //  `?tags/v1` after stripping `refs/`).  User input may be
-        //  fully-qualified (`?refs/heads/X`) or already-stripped.
-        //  Try `refs/`-then-`refs/heads/` peels.  When the URI has
-        //  no authority of its own, also probe with `.` so peer
-        //  rows participate (`sniff get ?master` finds remote
-        //  tracking too).
-        if ((o != OK || $empty(resolved.query)) && !$empty(u->query)) {
-            char const *strips[] = {"refs/heads/", "refs/", "heads/", "", NULL};
-            b8 bare = $empty(u->authority);
-            for (u32 si = 0; strips[si] != NULL && (o != OK ||
-                                $empty(resolved.query)); si++) {
-                u8cs q = {u->query[0], u->query[1]};
-                size_t plen = strlen(strips[si]);
-                if (plen > 0) {
-                    if ($len(q) <= plen) continue;
-                    if (memcmp(q[0], strips[si], plen) != 0) continue;
-                    u8csUsed(q, plen);
-                }
-                //  Local probe with stripped query (`?<stripped>`).
-                //  Build via URIutf8Feed off `u`'s parsed components so
-                //  the result is consistent regardless of whether the
-                //  caller (e.g. sniff_resolve_rel) has rewired query
-                //  and data into different buffers.
-                uri retry_u = *u;
-                u8csMv(retry_u.query, q);
-                retry_u.data[0] = retry_u.data[1] = NULL;
-                a_pad(u8, retry_buf, 512);
-                call(URIutf8Feed, u8bIdle(retry_buf), &retry_u);
-                a_dup(u8c, retry_uri, u8bDataC(retry_buf));
-                zero(resolved);
-                o = REFSResolve(&resolved, arena1,
-                                $path(keepdir), retry_uri);
-                if (o == OK && !$empty(resolved.query)) break;
-                //  Peer-relay probe (`.?<stripped>`): bare-query inputs
-                //  (no authority) — feed an authority-only `.` URI so
-                //  peer-prefixed tracking rows match.
-                if (!bare) continue;
-                uri dot_u = retry_u;
-                a_cstr(dot_path, ".");
-                u8csMv(dot_u.path, dot_path);
-                a_pad(u8, dot_buf, 512);
-                call(URIutf8Feed, u8bIdle(dot_buf), &dot_u);
-                a_dup(u8c, dot_uri, u8bDataC(dot_buf));
-                zero(resolved);
-                o = REFSResolve(&resolved, arena1,
-                                $path(keepdir), dot_uri);
-            }
-        }
-
-        //  GET never creates branches on miss — absolute and relative
-        //  refs alike error out when REFS has no row.  `be post ?./X`
-        //  is the spec-aligned create path (per VERBS.md).
-        if (o == OK && !$empty(resolved.query)) {
-            a_pad(u8, src, 256);
-            u8bFeed1(src, '?');
-            if (has_q) {
-                if (!$empty(u->query)) u8bFeed(src, u->query);
-            } else if (!$empty(resolved.fragment)) {
-                //  Fresh-clone path: user gave no `?ref` (e.g.
-                //  `be get ssh://sniff/src/dogs`).  Carry the matched
-                //  row's refname (`heads/<branch>`) into the at-log so
-                //  SNIFFAtBaseline → POSTCommit → keeper REFS chain
-                //  records branch-keyed local moves.
-                u8bFeed(src, resolved.fragment);
-            }
-            a_dup(u8c, source, u8bData(src));
-            return GETCheckout(reporoot, resolved.query, source);
-        }
-        //  Raw hex fallback when the query is already a 40-hex sha
-        //  that keeper has in its local store.
-        if (!$empty(u->query)) {
-            a_pad(u8, qbuf, 256);
-            u8bFeed1(qbuf, '?');
-            u8bFeed(qbuf, u->query);
-            a_dup(u8c, qkey, u8bData(qbuf));
-            return GETCheckout(reporoot, u->query, qkey);
-        }
-        //  Present-but-empty query (`?`, trunk): explicit fail rather
-        //  than falling through to the at-log resume below — the user
-        //  asked for trunk and the row isn't there.
-        if (has_q) fail(SNIFFFAIL);
-    }
-
-    //  Bare `be get` (no URI args at all): resume the worktree's
-    //  current branch (from `--at` forwarded by `be`, parked in
-    //  `KEEP.h->cur_branch` by HOMEOpen) against the local trunk row
-    //  `?#<sha>`.  Empty branch == trunk → falls through to the bare
-    //  `?` lookup below.
-    if (u8bDataLen(KEEP.h->cur_branch) > 0) {
-        a_pad(u8, qbuf, 256);
-        u8bFeed1(qbuf, '?');
-        u8bFeed(qbuf, u8bDataC(KEEP.h->cur_branch));
-        a_dup(u8c, qkey, u8bData(qbuf));
-        ok64 o = sniff_get_by_refkey(reporoot, $path(keepdir), qkey);
-        if (o == OK) return OK;
-    }
-
-    //  Last resort: a bare `?` (trunk) lookup — catches the case of
-    //  a worktree with a local trunk row but no at.log branch name yet.
-    a_cstr(trunk_s, "?");
-    ok64 o = sniff_get_by_refkey(reporoot, $path(keepdir), trunk_s);
-    if (o == OK) return OK;
-
-    fail(SNIFFFAIL);
-}
 
 // --- Usage ---
 
@@ -1407,7 +573,7 @@ ok64 SNIFFExec(cli *c) {
     }
 
     if ($eq(c->verb, v_stop)) {
-        call(sniff_stop, reporoot); done;
+        call(SNIFFWatchStop, reporoot); done;
     }
 
     b8 is_checkout = $eq(c->verb, v_checkout) || $eq(c->verb, v_get);
@@ -1532,7 +698,7 @@ ok64 SNIFFExec(cli *c) {
         a_pad(u8, label_qbuf,    256);
         a_pad(u8, label_databuf, 260);
         if (label_uri != NULL) {
-            if (sniff_resolve_rel(label_uri, label_qbuf, label_databuf,
+            if (SNIFFAtResolveRelativeURI(label_uri, label_qbuf, label_databuf,
                                   NULL) != OK) {
                 ret = SNIFFFAIL;
             }
@@ -1715,7 +881,7 @@ ok64 SNIFFExec(cli *c) {
             if (has_q && !has_path && !has_auth) {
                 a_pad(u8, abs_qbuf,    256);
                 a_pad(u8, abs_databuf, 260);
-                if (sniff_resolve_rel(&u, abs_qbuf, abs_databuf,
+                if (SNIFFAtResolveRelativeURI(&u, abs_qbuf, abs_databuf,
                                       NULL) != OK) {
                     ret = SNIFFFAIL;
                     break;
@@ -1785,7 +951,7 @@ ok64 SNIFFExec(cli *c) {
                 if (branch_form) {
                     a_pad(u8, del_qbuf,    256);
                     a_pad(u8, del_databuf, 260);
-                    if (sniff_resolve_rel(u, del_qbuf, del_databuf,
+                    if (SNIFFAtResolveRelativeURI(u, del_qbuf, del_databuf,
                                           NULL) != OK) {
                         ret = SNIFFFAIL; break;
                     }
@@ -1801,7 +967,7 @@ ok64 SNIFFExec(cli *c) {
     } else if (is_checkout) {
         if (uribDataLen(c->uris) < 1) {
             if ($eq(c->verb, v_get)) {
-                ret = sniff_get_summary(reporoot);
+                ret = SNIFFGetSummary(reporoot);
             } else {
                 fprintf(stderr,
                     "sniff: checkout requires a URI or hex\n");
@@ -1817,7 +983,7 @@ ok64 SNIFFExec(cli *c) {
                     u8csMv(hex, u->path);
                 else
                     u8csMv(hex, u->data);
-                ret = sniff_checkout(reporoot, hex);
+                ret = SNIFFCheckout(reporoot, hex);
             }
         }
     } else if (is_patch) {
@@ -1916,7 +1082,7 @@ ok64 SNIFFExec(cli *c) {
             }
         }
     } else if (is_watch) {
-        ret = sniff_daemon(reporoot);
+        ret = SNIFFWatch(reporoot);
     } else if (is_status) {
         ret = sniff_status(reporoot);
     } else if (is_projector) {

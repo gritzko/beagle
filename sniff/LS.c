@@ -69,7 +69,7 @@ static void ls_pack(ls_ctx *c, u8 tag) {
 //  Count '/' separators in `path` after stripping `prefix`.  Used by
 //  `lsr:` to indent descendants by depth, building a visible tree.
 //  Returns 0 if `path` is shorter than `prefix` (defensive — caller
-//  has already passed `ls_path_in_scope`).
+//  has already passed the prefix-scope check).
 static u32 ls_depth(u8cs prefix, u8cs path) {
     size_t plen = (size_t)$len(prefix);
     if ((size_t)$len(path) < plen) return 0;
@@ -166,12 +166,6 @@ static void ls_emit_row(ls_ctx *c, u8cs path, u8cs mov_dst, ron60 ts,
     ls_pack(c, 'U');
 }
 
-static b8 ls_path_in_scope(u8cs path, u8cs prefix) {
-    if (u8csEmpty(prefix)) return YES;
-    if ((size_t)$len(path) < (size_t)$len(prefix)) return NO;
-    return memcmp(path[0], prefix[0], (size_t)$len(prefix)) == 0;
-}
-
 //  One-level mode: collapse anything below the prefix dir's immediate
 //  children into a single `dir` row per subdir.  Returns YES iff the
 //  step was absorbed.
@@ -184,9 +178,7 @@ static b8 ls_one_level_dir(ls_ctx *c, u8cs path) {
     if (slash == NULL) return NO;
     u8cs dir_full = {path[0], slash + 1};
     a_dup(u8c, last, u8bData(c->dir_seen));
-    if ($len(last) == $len(dir_full) &&
-        memcmp(last[0], dir_full[0], (size_t)$len(last)) == 0)
-        return YES;
+    if (u8csEq(last, dir_full)) return YES;
     u8bReset(c->dir_seen);
     u8bFeed(c->dir_seen, dir_full);
     u8cs empty = {NULL, NULL};
@@ -199,7 +191,7 @@ static b8 ls_one_level_dir(ls_ctx *c, u8cs path) {
 static ok64 ls_step(class_step const *step, void *ctx_) {
     ls_ctx *c = (ls_ctx *)ctx_;
     u8cs path = {step->path[0], step->path[1]};
-    if (!ls_path_in_scope(path, c->prefix)) return OK;
+    if (!u8csHasPrefix(path, c->prefix)) return OK;
     if (!c->recurse && ls_one_level_dir(c, path)) return OK;
 
     u8cs empty = {NULL, NULL};

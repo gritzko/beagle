@@ -150,19 +150,10 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
 //  *tree_sha_out.
 static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     sane(tree_sha_out);
-    ron60 ts = 0, verb = 0;
-    uri u = {};
-    ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
-    if (br == ULOGNONE) return ULOGNONE;
+    b8 have = NO;
+    ok64 br = SNIFFAtBaselineTreeSha(YES, tree_sha_out, &have);
     if (br != OK) return br;
-
-    sha1hex hex = {};
-    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return ULOGNONE;
-
-    sha1 commit_sha = {};
-    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return ULOGNONE;
-
-    return KEEPCommitTreeSha(&commit_sha, tree_sha_out);
+    return have ? OK : ULOGNONE;
 }
 
 // --- Per-path classification via SNIFFClassify ----------------------
@@ -185,9 +176,7 @@ typedef struct {
 static ok64 put_classify_step(class_step const *step, void *ctx_) {
     put_ctx *w = (put_ctx *)ctx_;
     for (u32 j = 0; j < w->n; j++) {
-        if ($len(w->reqs[j].raw) != $len(step->path)) continue;
-        if (memcmp(w->reqs[j].raw[0], step->path[0],
-                   (size_t)$len(step->path)) != 0) continue;
+        if (!u8csEq(w->reqs[j].raw, step->path)) continue;
         put_req *r = &w->reqs[j];
         r->seen = YES;
         if (step->kind == CLASS_BASE_ONLY) {
@@ -241,17 +230,11 @@ typedef struct {
     ok64    err;
 } dir_collect_ctx;
 
-static b8 dir_path_under(u8cs path, u8cs prefix) {
-    size_t pl = (size_t)$len(prefix);
-    if ((size_t)$len(path) < pl) return NO;
-    return memcmp(path[0], prefix[0], pl) == 0;
-}
-
 static ok64 dir_collect_step(class_step const *step, void *vctx) {
     sane(step && vctx);
     dir_collect_ctx *c = (dir_collect_ctx *)vctx;
     u8cs path = {step->path[0], step->path[1]};
-    if (!dir_path_under(path, c->prefix)) return OK;
+    if (!u8csHasPrefix(path, c->prefix)) return OK;
 
     //  VERBS.md §PUT dir-form contract:
     //    BOTH    + mtime ∈ stamp-set   → settled, skip
@@ -885,17 +868,9 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
         ron60 ts = 0, verb = 0;
         uri u = {};
         if (SNIFFAtCurTip(&ts, &verb, &u) == OK) {
-            a_dup(u8c, q, u.query);
-            while (!$empty(q)) {
-                u8cs chunk = {};
-                DOGRefDrain(q, chunk);
-                if ($empty(chunk)) continue;
-                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
-                if (!is_sha) {
-                    u8bFeed(cur_buf, chunk);
-                    break;
-                }
-            }
+            u8cs branch = {};
+            DOGQueryBranchOnly(u.query, branch);
+            if (!u8csEmpty(branch)) u8bFeed(cur_buf, branch);
         }
     }
     a_dup(u8c, cur_branch, u8bData(cur_buf));

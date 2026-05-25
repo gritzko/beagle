@@ -14,6 +14,7 @@ add_library(snifflib STATIC
     PATCH.h PATCH.c
     LS.h LS.c CAT.h CAT.c
     SUBS.h SUBS.c
+    WATCH.h WATCH.c
     ../abc/FSW.c)
 target_link_libraries(snifflib graflib keeplib dog abc-core)
 

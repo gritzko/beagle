@@ -27,26 +27,13 @@
 #define CLASS_BU_BUF (1UL << 22)
 #define CLASS_WU_BUF (1UL << 22)
 
-// --- Resolve baseline tree sha (mirror of POST/PUT/DEL helpers) ---
+// --- Resolve baseline tree sha ---
 
 static ok64 class_baseline_tree(sha1 *out, b8 *have_out) {
     sane(out && have_out);
-    *have_out = NO;
-    ron60 ts = 0, verb = 0;
-    uri u = {};
-    ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
-    if (br == ULOGNONE) return OK;          // fresh repo
-    if (br != OK) return br;
-
-    sha1hex hex = {};
-    if (SNIFFAtQueryFirstSha(&u, &hex) != OK) return OK;
-
-    sha1 commit_sha = {};
-    if (sha1FromSha1hex(&commit_sha, &hex) != OK) return OK;
-
-    if (KEEPCommitTreeSha(&commit_sha, out) != OK) return OK;
-    *have_out = YES;
-    done;
+    ok64 br = SNIFFAtBaselineTreeSha(YES, out, have_out);
+    if (br == ULOGNONE) { *have_out = NO; done; }    // fresh repo
+    return br;
 }
 
 // --- Staged put/delete row collector ---

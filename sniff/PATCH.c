@@ -32,6 +32,7 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
@@ -57,6 +58,20 @@ typedef struct {
     b8   present;    // has this side got an entry with this name?
     b8   is_dir;     // mode starts with '4' (git tree-of-trees)
 } entry;
+
+//  Order by name bytes (git tree sort).  Required by abc/Sx.h's search
+//  primitives; entries are sorted in place by `sort_entries` below.
+fun b8 entryZ(entry const *a, entry const *b) {
+    size_t la = $len(a->name), lb = $len(b->name);
+    size_t ml = la < lb ? la : lb;
+    int c = (ml == 0) ? 0 : memcmp(a->name[0], b->name[0], ml);
+    if (c != 0) return c < 0;
+    return la < lb;
+}
+
+#define X(M, n) M##entry##n
+#include "abc/Bx.h"
+#undef X
 
 static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
     sane(out && nout);
@@ -353,23 +368,30 @@ b8 SNIFFHasConflictMarker(u8cs bytes) {
 
 // --- Per-level walk ------------------------------------------------
 
-//  Apply the patch recursively.  `dir_path` is the current subtree's
-//  repo-relative path (empty at the root).  `fork` is the merge base
-//  — `tree(arg.fork_commit)` per VERBS.md §PATCH, computed by the
-//  caller as `LCA(arg_parent_tip, thr)`.
+//  Forward decl: the worker recurses via the entry wrapper below so
+//  each recursion frame gets its own scratch buffers (the parent's
+//  entries are still being walked when the child fires).
 static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                        sha1cp fork, sha1cp our, sha1cp thr,
                        sha1cp fork_commit,
                        sha1cp our_commit,
                        sha1cp thr_commit,
-                       patch_stats *st) {
+                       patch_stats *st);
+
+//  Worker for `patch_walk`.  All scratch buffers are pre-allocated by
+//  the entry wrapper and released unconditionally on its exit path —
+//  see CLAUDE.md §5 (resources at top of call chain).
+static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
+                             sha1cp fork, sha1cp our, sha1cp thr,
+                             sha1cp fork_commit,
+                             sha1cp our_commit,
+                             sha1cp thr_commit,
+                             patch_stats *st,
+                             u8b lbuf, u8b obuf, u8b tbuf, u8b mbuf,
+                             Bentry leb, Bentry oeb, Bentry teb) {
     sane(fork && our && thr && st &&
          fork_commit && our_commit && thr_commit);
-
-    Bu8 lbuf = {}, obuf = {}, tbuf = {};
-    call(u8bAllocate, lbuf, PATCH_TREE_BUF);
-    call(u8bAllocate, obuf, PATCH_TREE_BUF);
-    call(u8bAllocate, tbuf, PATCH_TREE_BUF);
+    (void)fork;
 
     //  Missing-at-commit is not fatal — the dir just didn't exist
     //  on that side, we treat its entry set as empty.
@@ -387,14 +409,9 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
             (unsigned long long)oo, u8bDataLen(obuf),
             (unsigned long long)to, u8bDataLen(tbuf));
 
-    entry *le = calloc(PATCH_MAX_ENTRIES, sizeof(entry));
-    entry *oe = calloc(PATCH_MAX_ENTRIES, sizeof(entry));
-    entry *te = calloc(PATCH_MAX_ENTRIES, sizeof(entry));
-    if (!le || !oe || !te) {
-        free(le); free(oe); free(te);
-        u8bFree(lbuf); u8bFree(obuf); u8bFree(tbuf);
-        return PATCHFAIL;
-    }
+    entry *le = entrybDataHead(leb);
+    entry *oe = entrybDataHead(oeb);
+    entry *te = entrybDataHead(teb);
     u32 ln = 0, on = 0, tn = 0;
     {
         a_dup(u8c, lb, u8bData(lbuf));
@@ -407,9 +424,6 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
     sort_entries(le, ln);
     sort_entries(oe, on);
     sort_entries(te, tn);
-
-    Bu8 mbuf = {};
-    call(u8bAllocate, mbuf, PATCH_BLOB_BUF);
 
     //  Lockstep walk over three sorted arrays.  At each iteration
     //  we pick the smallest head-of-arrays name, collect the
@@ -763,9 +777,36 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
         }
     }
 
+    return ret;
+}
+
+//  Entry wrapper for `patch_walk_inner`: owns the per-recursion scratch
+//  buffers, hands them to the worker, releases unconditionally.
+static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
+                       sha1cp fork, sha1cp our, sha1cp thr,
+                       sha1cp fork_commit,
+                       sha1cp our_commit,
+                       sha1cp thr_commit,
+                       patch_stats *st) {
+    sane(1);
+    Bu8 lbuf = {}, obuf = {}, tbuf = {}, mbuf = {};
+    Bentry leb = {}, oeb = {}, teb = {};
+    call(u8bAllocate,    lbuf, PATCH_TREE_BUF);
+    call(u8bAllocate,    obuf, PATCH_TREE_BUF);
+    call(u8bAllocate,    tbuf, PATCH_TREE_BUF);
+    call(u8bAllocate,    mbuf, PATCH_BLOB_BUF);
+    call(entrybAllocate, leb,  PATCH_MAX_ENTRIES);
+    call(entrybAllocate, oeb,  PATCH_MAX_ENTRIES);
+    call(entrybAllocate, teb,  PATCH_MAX_ENTRIES);
+
+    try(patch_walk_inner, reporoot, dir_path, fork, our, thr,
+        fork_commit, our_commit, thr_commit, st,
+        lbuf, obuf, tbuf, mbuf, leb, oeb, teb);
+    ok64 ret = __;
+
+    entrybFree(teb); entrybFree(oeb); entrybFree(leb);
     u8bFree(mbuf);
-    u8bFree(lbuf); u8bFree(obuf); u8bFree(tbuf);
-    free(le); free(oe); free(te);
+    u8bFree(tbuf); u8bFree(obuf); u8bFree(lbuf);
     return ret;
 }
 
@@ -780,42 +821,15 @@ static ok64 resolve_current_branch(u8cs out_branch);
 //  reset; on success `*out_q` is the slice the caller should use for
 //  REFS lookup — either pointing into `qbuf` (when relative) or back
 //  into the original `target_query` (when absolute / SHA / unparsable).
-//  Mirrors sniff/SNIFF.exe.c:sniff_resolve_rel which does the same
-//  dance for POST/GET.  Output slice's lifetime matches qbuf's data.
+//  Output slice's lifetime matches qbuf's data.
 static ok64 absolutise_query(u8cs out_q, path8b qbuf, u8cs target_query) {
     sane(out_q && qbuf);
     u8csMv(out_q, target_query);
-    if (u8csEmpty(target_query)) done;
-
-    //  Only relative refs (`./X`, `../X`, `..`) need absolutising; any
-    //  absolute path is passed through.  Drain the first chunk so a
-    //  legacy `<branch>&<sha>` query routes through the branch slot.
-    a_dup(u8c, q_in, target_query);
-    path8s first = {};
-    DOGRefDrain(q_in, first);
-    if ($empty(first)) done;
-    if (first[0][0] != '.') done;
-
-    path8s current = {};
+    u8cs current = {};
     (void)resolve_current_branch(current);
-    //  Resolve `./X` / `../X` / `..` against `current` via PATH
-    //  primitives — branch semantics (popping past trunk yields
-    //  trunk, not "..").
-    u8bReset(qbuf);
-    if (!$empty(current)) call(PATHu8bFeed, qbuf, current);
-    path8s rel = {first[0], first[1]};
-    if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
-        u8csUsed(rel, 2);
-    } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
-               rel[0][1] == '.' && rel[0][2] == '/') {
-        call(PATHu8bPop, qbuf);
-        u8csUsed(rel, 3);
-    } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
-        call(PATHu8bPop, qbuf);
-        u8csUsed(rel, 2);
-    }
-    if (!$empty(rel)) call(PATHu8bPush, qbuf, rel);
-    u8csMv(out_q, $path(qbuf));
+    b8 was_rel = NO;
+    call(DPATHBranchResolveRel, qbuf, current, target_query, &was_rel);
+    if (was_rel) u8csMv(out_q, $path(qbuf));
     done;
 }
 
@@ -891,23 +905,9 @@ static ok64 resolve_current_branch(u8cs out_branch) {
     out_branch[1] = NULL;
     ron60 bts = 0, bverb = 0;
     uri bu = {};
-    ok64 br = SNIFFAtCurTip(&bts, &bverb, &bu);
-    if (br != OK) done;        //  no baseline → trunk
-    a_dup(u8c, q, bu.query);
-    while (!u8csEmpty(q)) {
-        u8cs chunk = {};
-        DOGRefDrain(q, chunk);
-        if ($empty(chunk)) continue;
-        b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
-        if (!is_sha) {
-            //  Chunk slice points into the ULOG mmap; same lifetime
-            //  as the caller's `bu` reference.  Slices live until
-            //  ULOGClose / ULOGTruncate (per SNIFFAtBaseline contract).
-            out_branch[0] = chunk[0];
-            out_branch[1] = chunk[1];
-            done;
-        }
-    }
+    //  Slice lifetime matches `bu` (ULOG mmap, valid until ULOGClose).
+    if (SNIFFAtCurTip(&bts, &bverb, &bu) != OK) done;
+    DOGQueryBranchOnly(bu.query, out_branch);
     done;
 }
 
@@ -1220,30 +1220,28 @@ static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
 //  as a broader safety net is a follow-up.
 #define RBASEONE_MAX 4096
 #define RBASEONE_REACH_MAX 4096
-static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
-                               sha1cp our) {
+
+//  Worker: scratch buffer pre-allocated by the entry wrapper.
+static ok64 resolve_rebase_one_inner(sha1 *out, sha1cp br_tip,
+                                     sha1cp our, Bsha1 reach_b) {
     sane(out && br_tip && our);
     if (sha1Eq(br_tip, our)) {
         fprintf(stderr,
             "sniff: patch: rebase-one — branch tip is already "
             "reachable from cur (nothing to replay)\n");
-        return PATCHFAIL;
+        fail(PATCHFAIL);
     }
 
-    //  Heap-alloc the reach set: 4096 × 20 = 80 KB, too big for the
-    //  stack frame.
-    sha1 *reach = (sha1 *)calloc(RBASEONE_REACH_MAX, sizeof(sha1));
-    if (reach == NULL) return PATCHFAIL;
+    sha1 *reach = sha1bDataHead(reach_b);
     u32 nreach = 0;
     (void)build_reachable_via_links(reach, RBASEONE_REACH_MAX,
                                     &nreach, our);
 
     if (reach_set_has(reach, nreach, br_tip)) {
-        free(reach);
         fprintf(stderr,
             "sniff: patch: rebase-one — branch tip is already "
             "reachable from cur (nothing to replay)\n");
-        return PATCHFAIL;
+        fail(PATCHFAIL);
     }
 
     //  Walk br_tip's first-parent chain; stop at the first
@@ -1252,26 +1250,33 @@ static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
     sha1 cur = *br_tip;
     for (u32 i = 0; i < RBASEONE_MAX; i++) {
         sha1 par = {};
-        ok64 po = patch_first_parent(&par, &cur);
-        if (po != OK) {
-            free(reach);
-            fprintf(stderr,
-                "sniff: patch: rebase-one — chain from br_tip didn't "
-                "reach a reachable commit (root commit hit?)\n");
-            return po;
-        }
+        call(patch_first_parent, &par, &cur);
         if (reach_set_has(reach, nreach, &par)) {
             *out = cur;
-            free(reach);
-            return OK;
+            done;
         }
         cur = par;
     }
-    free(reach);
     fprintf(stderr,
         "sniff: patch: rebase-one — chain longer than %u hops; "
         "giving up\n", RBASEONE_MAX);
-    return PATCHFAIL;
+    fail(PATCHFAIL);
+}
+
+static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
+                               sha1cp our) {
+    sane(1);
+    //  Heap-alloc the reach set: 4096 × 20 = 80 KB, too big for the
+    //  stack frame.
+    Bsha1 reach_b = {};
+    call(sha1bAllocate, reach_b, RBASEONE_REACH_MAX);
+    try(resolve_rebase_one_inner, out, br_tip, our, reach_b);
+    ok64 ret = __;
+    sha1bFree(reach_b);
+    //  PATCHFAIL from the worker's "chain doesn't reach" arm is the
+    //  one path that needs a custom stderr hint — the worker emits it,
+    //  any propagated parent-walk error already carries its own msg.
+    return ret;
 }
 
 u8 PATCHShape(uricp u) {

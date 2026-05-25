@@ -349,6 +349,25 @@ fun void DOGRefDrain(u8cs q, u8cs out) {
     q[0] = (p < e) ? p + 1 : e;
 }
 
+// Extract the first non-sha (i.e. branch-path) chunk from a query
+// `<branch>(&<sha>)*` per dog/QURY.  Skips empty chunks and 40-hex
+// hashlet chunks.  `out` slice points into `query`; lifetime matches
+// the caller's slice.  Sets `out` empty on a query with no branch
+// chunk (pure sha query, or empty input).
+fun void DOGQueryBranchOnly(u8cs query, u8cs out) {
+    out[0] = NULL; out[1] = NULL;
+    a_dup(u8c, q, query);
+    while (!u8csEmpty(q)) {
+        u8cs chunk = {};
+        DOGRefDrain(q, chunk);
+        if ($empty(chunk)) continue;
+        if (u8csLen(chunk) == 40 && DOGIsHashlet(chunk)) continue;
+        out[0] = chunk[0];
+        out[1] = chunk[1];
+        return;
+    }
+}
+
 // Classify a *new* ref name as branch (dir ref) vs tag (file ref).
 // For refs that already exist in REFS, callers must check the existing
 // kind first and override; this helper only fixes the default for a

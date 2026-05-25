@@ -362,36 +362,16 @@ static ok64 post_sort_dedup_intent(u8b src, u8b dst) {
 //  Resolve the baseline URI to a tree sha (no walk — the merge below
 //  consumes the tree via KEEPTreeListLeaves).  Sets c->has_base as a
 //  side-effect.  Skips patch rows via SNIFFAtCurTip so the baseline
-//  is the wt's anchor commit, not the latest absorbed patch.
+//  is the wt's anchor commit, not the latest absorbed patch.  See
+//  VERBS.md §POST "Per-file classification via stamps" for the squash
+//  rationale (we only need ours as baseline; absorbed patches are
+//  mtime-dirty / implicit-dirty).
 static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
     sane(c && root_out && has_out);
-    *has_out = NO;
-
-    ron60 base_ts = 0, base_verb = 0;
-    uri base_u = {};
-    ok64 br = SNIFFAtCurTip(&base_ts, &base_verb, &base_u);
-    if (br == ULOGNONE) done;  // fresh repo
+    ok64 br = SNIFFAtBaselineTreeSha(YES, root_out, has_out);
+    if (br == ULOGNONE) { *has_out = NO; done; }
     if (br != OK) return br;
     c->has_base = YES;
-
-    //  Baseline query carries the version info (see dog/QURY): one
-    //  branch REF plus 1-to-N SHAs.  For a squash-merge POST we only
-    //  need the ours tree as the baseline — patched files are
-    //  mtime-dirty (PATCH does not stamp), added files aren't in ours
-    //  and fall into add via the implicit-dirty rule, and
-    //  deleted files were unlinked by PATCH so they vanish via the
-    //  implicit-drop rule.  So take the first SHA spec as "ours".
-    sha1hex hex = {};
-    if (SNIFFAtQueryFirstSha(&base_u, &hex) != OK) done;
-
-    sha1 commit_sha = {};
-    if (sha1FromSha1hex(&commit_sha, &hex) != OK) done;
-
-    sha1 tree_sha = {};
-    if (KEEPCommitTreeSha(&commit_sha, &tree_sha) != OK) done;
-
-    *root_out = tree_sha;
-    *has_out = YES;
     done;
 }
 
@@ -927,17 +907,9 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
     //  Walk the query for the branch (first non-sha chunk).
     //  Single-parent invariant: any extra SHAs in the query are
     //  legacy artefacts from pre-rewrite PATCH rows; they're ignored.
-    a_dup(u8c, q, u.query);
-    while (!$empty(q)) {
-        u8cs chunk = {};
-        DOGRefDrain(q, chunk);
-        if ($empty(chunk)) continue;
-        b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
-        if (!is_sha && u8bDataLen(out) == 0) {
-            u8bFeed(out, chunk);
-            break;
-        }
-    }
+    u8cs branch = {};
+    DOGQueryBranchOnly(u.query, branch);
+    if (!u8csEmpty(branch)) u8bFeed(out, branch);
     done;
 }
 
@@ -1655,18 +1627,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         uri u = {};
         ok64 br = SNIFFAtCurTip(&ts, &verb, &u);
         if (br == OK) {
-            //  Baseline branch is the first non-sha chunk in the row's query.
-            a_dup(u8c, q, u.query);
-            while (!$empty(q)) {
-                u8cs chunk = {};
-                DOGRefDrain(q, chunk);
-                if ($empty(chunk)) continue;
-                b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
-                if (!is_sha) {
-                    u8bFeed(cur_buf, chunk);
-                    break;
-                }
-            }
+            u8cs branch = {};
+            DOGQueryBranchOnly(u.query, branch);
+            if (!u8csEmpty(branch)) u8bFeed(cur_buf, branch);
             //  Cur tip from row's #fragment / first SHA in query.
             sha1hex hex = {};
             if (SNIFFAtQueryFirstSha(&u, &hex) == OK &&
@@ -2208,26 +2171,29 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
 
 // --- Public API ---
 
-ok64 POSTPrintStatus(void) {
-    sane(1);
-
-    post_ctx ctx = {};
-    call(post_ctx_init, &ctx);
-
+static ok64 post_print_status_inner(post_ctx *c) {
+    sane(c);
     sha1 base_tree_sha = {};
     b8   have_base = NO;
-    ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
-    if (so != OK) { post_ctx_free(&ctx); return so; }
+    call(post_scan_changeset, c, &base_tree_sha, &have_base);
 
     //  Walk decisions, print one line per changed path.
     post_mad_ctx mad = {.out = stdout, .on = "", .off = "", .changed = 0};
-    post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
+    post_walk_decisions(c, POST_VM_UNLINK | POST_VM_ADD,
                         post_drain_mad_cb, &mad);
     fflush(stdout);
     fprintf(stderr, "sniff: %u change(s)\n", mad.changed);
-
-    post_ctx_free(&ctx);
     done;
+}
+
+ok64 POSTPrintStatus(void) {
+    sane(1);
+    post_ctx ctx = {};
+    call(post_ctx_init, &ctx);
+    try(post_print_status_inner, &ctx);
+    ok64 ret = __;
+    post_ctx_free(&ctx);
+    return ret;
 }
 
 ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,

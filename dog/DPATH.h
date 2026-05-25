@@ -3,6 +3,10 @@
 
 #include "abc/BUF.h"
 #include "abc/INT.h"
+#include "abc/PATH.h"
+#include "abc/PRO.h"
+#include "abc/S.h"
+#include "dog/DOG.h"
 
 con ok64 DPATHFAIL = 0xd64a7513ca495;
 con ok64 DPATHBAD  = 0x35929d44b28d;
@@ -94,6 +98,45 @@ fun b8 DPATHBranchAncestor(u8cs anc, u8cs des) {
 //   ("feat/sub1/", "feat/sub2/") → 5  (feat/ shared)
 //   ("feat/sub/",  "feat/sub/")  → 9  (identical)
 //   ("",           "feat/")      → 0  (trunk LCA)
+// Resolve a relative branch ref (`./X`, `../X`, `..`) against `current`
+// (caller's current branch path, empty == trunk) into the path buffer
+// `out`.  When `raw_query` is empty or its first chunk doesn't start
+// with '.', `out` is left empty (caller treats raw_query as absolute).
+// `was_relative_out` (optional) gets YES iff resolution ran.
+//
+// Branch semantics: popping past trunk yields trunk (no leading "..").
+// Only the first chunk of `raw_query` (as drained by `DOGRefDrain`) is
+// considered for the relative prefix; legacy `?<branch>&<sha>` queries
+// route through the branch slot.
+fun ok64 DPATHBranchResolveRel(u8b out, u8cs current, u8cs raw_query,
+                               b8 *was_relative_out) {
+    sane(out);
+    u8bReset(out);
+    if (was_relative_out) *was_relative_out = NO;
+    if (u8csEmpty(raw_query)) done;
+
+    a_dup(u8c, q_in, raw_query);
+    u8cs first = {};
+    DOGRefDrain(q_in, first);
+    if ($empty(first) || first[0][0] != '.') done;
+    if (was_relative_out) *was_relative_out = YES;
+
+    if (!u8csEmpty(current)) call(PATHu8bFeed, out, current);
+    u8cs rel = {first[0], first[1]};
+    if ($len(rel) >= 2 && rel[0][0] == '.' && rel[0][1] == '/') {
+        u8csUsed(rel, 2);
+    } else if ($len(rel) >= 3 && rel[0][0] == '.' &&
+               rel[0][1] == '.' && rel[0][2] == '/') {
+        call(PATHu8bPop, out);
+        u8csUsed(rel, 3);
+    } else if ($len(rel) == 2 && rel[0][0] == '.' && rel[0][1] == '.') {
+        call(PATHu8bPop, out);
+        u8csUsed(rel, 2);
+    }
+    if (!$empty(rel)) call(PATHu8bPush, out, rel);
+    done;
+}
+
 fun size_t DPATHBranchLcaLen(u8cs a, u8cs b) {
     size_t na = u8csLen(a), nb = u8csLen(b);
     size_t n = na < nb ? na : nb;

@@ -26,13 +26,11 @@
 #include "keeper/KEEP.h"
 
 con ok64 SNIFFFAIL     = 0x1c5d23cf3ca495;
-con ok64 SNIFFNOROM    = 0x71748f3d761b616;
 con ok64 SNIFFOPEN     = 0x1c5d23cf619397;
 con ok64 SNIFFOPRO     = 0x1c5d23cf6196d8;
 con ok64 SNIFFDRTY     = 0x1c5d23cf35b762;
 con ok64 SNIFFOVRL     = 0x1c5d23cf61f6d5;
 con ok64 SNIFFNOFF     = 0x1c5d23cf5d83cf;
-con ok64 SNIFFNOOP     = 0x1c5d23cf5d8619;     // legacy alias, prefer POSTNONE
 con ok64 CLOCKBAD      = 0x31560c50b28d;
 con ok64 PUTNONE       = 0x1979d5d85ce;
 con ok64 PUTDUP        = 0x65e74d799;     // ref already exists
@@ -40,7 +38,6 @@ con ok64 PUTDUP        = 0x65e74d799;     // ref already exists
 con ok64 PUTNOSRC      = 0x65e75761c6cc;     // src path missing
 con ok64 PUTDSTBAD     = 0x1979d35c74b28d;   // dest exists / kind mismatch / dir absent
 con ok64 PUTNODIR      = 0x65e75760d49b;     // dest parent dir missing (no mkdir -p)
-con ok64 PUTDIRTY      = 0x65e74d49b762;     // explicit dest exists dirty
 con ok64 PUTAMBIG      = 0x65e74a58b490;     // bare auto-pair: >1 sha match either way
 con ok64 PUTMVMETA     = 0x1979d59f58e74a;   // move src/dst inside .be/ or other meta
 con ok64 DELDIRTY      = 0x34e54d49b762;
@@ -48,7 +45,6 @@ con ok64 POSTNONE      = 0x65871d5d85ce;
 con ok64 POSTNOMSG     = 0x1961c757616710;     // can't auto-resolve commit msg
 con ok64 POSTCFLCT     = 0x1961c74c3d531d;     // tracked file has conflict markers
 con ok64 POSTNOFF      = 0x65871d5d83cf;     // not a fast-forward — use `be patch` to rebase
-con ok64 MERGEFAIL     = 0x1639b40e3ca495;
 
 //  Switch the open keeper to a different branch when `target_branch`
 //  is non-empty AND names a real on-disk shard (`<root>/.be/<branch>/`).
