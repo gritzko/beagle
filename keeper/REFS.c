@@ -342,6 +342,35 @@ ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx) {
     return o;
 }
 
+ok64 REFSEachRecord(u8csc dir, refs_record_cb cb, void *ctx) {
+    sane($ok(dir) && cb != NULL);
+
+    REFS_LOG_PATH(log_path, dir);
+    u8bp data = NULL;
+    wh128bp idx = NULL;
+    ok64 oo = ULOGOpen(&data, &idx, log_path);
+    if (oo != OK) done;  //  missing file ⇒ zero records, not an error.
+
+    ok64 ret = OK;
+    u32 n = ULOGCount(idx);
+    ron60 verb_get_fail = REFSVerbGetFail();
+    ron60 verb_post_fail = REFSVerbPostFail();
+    for (u32 i = 0; i < n; i++) {
+        ulogrec rec = {};
+        if (ULOGRow(data, idx, i, &rec) != OK) continue;
+        //  Skip fail-marker rows — they're journal-only and never
+        //  represent a peer-side state.
+        if (rec.verb == verb_get_fail ||
+            rec.verb == verb_post_fail) continue;
+        ok64 co = cb(&rec.uri, rec.ts, rec.verb, ctx);
+        if (co == REFSSTOP) { ret = OK; break; }
+        if (co != OK) { ret = co; break; }
+    }
+
+    ULOGClose(data, &idx, YES);
+    return ret;
+}
+
 // --- resolve ---
 
 //  Matcher state for ULOGFindLatest's predicate.

@@ -29,7 +29,9 @@
 #include "dog/DOG.h"
 #include "dog/git/SHA1.h"
 #include "dog/git/GIT.h"
+#include "dog/HOME.h"
 #include "keeper/KEEP.h"
+#include "keeper/REFS.h"
 #include "dog/git/PKT.h"
 #include "keeper/REFADV.h"
 #include "keeper/REFS.h"
@@ -1269,6 +1271,65 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
     return (unpack_ok && ref_ok) ? OK : WIRECLFL;
 }
 
+// --- push-history haveset extension ---
+//
+//  Real git's receive-pack only advertises current refs.  When peer's
+//  current tips don't cover every object peer's keeper still holds
+//  (force-push happened upstream, branch was reset, etc.), the
+//  advertised-tip-only haveset misses objects peer already has from
+//  prior pushes — wpush_build_pack then re-ships them.
+//
+//  Local `<store>/.be/refs` records every successful push as a
+//  `<peer-uri>?<branch> → <new-sha>` row, so the historical "we
+//  shipped this to peer" list is right there.  We walk that history,
+//  filter by the resolved transport URI's scheme/host/path, and add
+//  each row's sha's closure to the haveset.  Caveats:
+//    * `git gc --prune=now` on peer invalidates the cache → we'd
+//      send objects peer already collected (correct, just wasted).
+//    * sha rows whose objects aren't in OUR local keeper anymore:
+//      walk_commit aborts the subtree (haveset-mode tolerates).
+typedef struct {
+    keeper  *k;
+    sha_set *haveset;
+    u8cs     r_scheme, r_host, r_path;
+    u32      n_walked;
+} wpush_hist_ctx;
+
+static ok64 wpush_collect_hist_cb(uri const *u, ron60 ts, ron60 verb,
+                                  void *vctx) {
+    sane(u && vctx);
+    (void)ts;
+    (void)verb;
+    wpush_hist_ctx *c = (wpush_hist_ctx *)vctx;
+    //  Exact scheme/host/path match.  The resolved transport URI is
+    //  written into REFS by keeper_post (KEEP.exe.c step 5), so
+    //  rows for THIS peer are byte-identical on those three slots.
+    if (!u8csEq(u->scheme, c->r_scheme)) done;
+    if (!u8csEq(u->host,   c->r_host))   done;
+    if (!u8csEq(u->path,   c->r_path))   done;
+
+    //  Fragment is `?<40-hex>` (post-WIRECLI write).  Strip the `?`
+    //  and decode; tombstones (empty / zero-sha) drop out.
+    u8cs frag = {u->fragment[0], u->fragment[1]};
+    if (u8csEmpty(frag)) done;
+    if (frag[0][0] == '?') u8csUsed(frag, 1);
+    if (u8csLen(frag) != 40) done;
+    sha1 sh = {};
+    u8s bin = {sh.data, sh.data + 20};
+    a_dup(u8c, hx, frag);
+    if (HEXu8sDrainSome(bin, hx) != OK) done;
+    if (bin[0] != sh.data + 20) done;
+    if (sha1empty(&sh)) done;
+    if (sha_set_has(c->haveset, &sh)) done;
+    //  Walk the closure into haveset.  haveset-build mode (out=NULL)
+    //  tolerates keeper misses so historical shas we no longer have
+    //  locally don't abort the rest of the walk.
+    (void)wpush_walk_commit(c->k, &sh, NULL, &(u32){0}, 0,
+                            NULL, c->haveset);
+    c->n_walked++;
+    done;
+}
+
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip_in) {
     sane($ok(remote_uri));
@@ -1398,6 +1459,33 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
         }
     }
     free(peer_tips);
+
+    //  Extend the haveset with every sha we previously pushed to this
+    //  peer (see comment on wpush_collect_hist_cb).  Critical when
+    //  peer's current advert no longer covers objects from earlier
+    //  pushes (force-push upstream, branch reset, divergent tip).
+    if (haveset.items) {
+        uri ru = {};
+        a_dup(u8c, ruv, remote_uri);
+        if (URIutf8Drain(ruv, &ru) == OK) {
+            a_path(keepdir);
+            if (HOMEBranchDir(k->h, keepdir, NULL) == OK) {
+                wpush_hist_ctx hc = {.k = k, .haveset = &haveset};
+                hc.r_scheme[0] = ru.scheme[0]; hc.r_scheme[1] = ru.scheme[1];
+                hc.r_host[0]   = ru.host[0];   hc.r_host[1]   = ru.host[1];
+                hc.r_path[0]   = ru.path[0];   hc.r_path[1]   = ru.path[1];
+                (void)REFSEachRecord($path(keepdir),
+                                     wpush_collect_hist_cb, &hc);
+                if (hc.n_walked > 0) {
+                    fprintf(stderr,
+                            "wpush: have-set now %u objects "
+                            "(+%u history shas)\n",
+                            haveset.n, hc.n_walked);
+                }
+            }
+        }
+        have = &haveset;
+    }
 
     //  Walk the local commit's reachable closure, skipping anything
     //  the peer already advertised (via `have`) and following the

@@ -151,6 +151,20 @@ ok64 REFSLoad(refp arr, u32p out_n, u32 max, u8b arena, u8csc dir);
 typedef ok64 (*refs_cb)(refcp r, void *ctx);
 ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx);
 
+//  Iterate EVERY record (not deduped per key) in chronological order.
+//  Yields the parsed URI components, timestamp, and verb directly so
+//  callers can filter by host/path or replay history without losing
+//  superseded rows.  `REFSSTOP` semantics match REFSEach.  Fail-marker
+//  rows (`get_fail` / `post_fail`) are skipped; tombstones (`delete`)
+//  and zero-sha rows are passed through — caller decides.
+//
+//  URI component slices passed to the callback point into the ULOG's
+//  mmap and remain valid only for the duration of the callback (the
+//  mmap is unmapped before REFSEachRecord returns).
+typedef ok64 (*refs_record_cb)(uri const *u, ron60 ts, ron60 verb,
+                               void *ctx);
+ok64 REFSEachRecord(u8csc dir, refs_record_cb cb, void *ctx);
+
 //  Compact: rewrite the ULOG keeping only the latest row per key.
 ok64 REFSCompact(u8csc dir);
 
