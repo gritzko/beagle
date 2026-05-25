@@ -1230,6 +1230,77 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
     return KEEPNONE;
 }
 
+// --- KEEPIsAncestor: bounded BFS over commit parent edges ---
+//
+//  VERBS.md §POST / Design invariant 9: POST is FF-only.  This is the
+//  shared FF-test predicate — keeper_post (cache-side check) and
+//  WIREPush (live-advert-side check) both call it.  Capped at
+//  KEEP_FF_MAX commits; NO on cap-exceeded or any keeper miss so
+//  callers treat that as "refuse, user resolves with patch + post".
+
+#include "dog/git/GIT.h"
+
+#define KEEP_FF_MAX 65536u
+
+b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
+    if (!from || !target) return NO;
+    if (sha1Eq(from, target)) return YES;
+
+    sha1 *seen = calloc(KEEP_FF_MAX, sizeof(sha1));
+    if (!seen) return NO;
+    sha1 *queue = calloc(KEEP_FF_MAX, sizeof(sha1));
+    if (!queue) { free(seen); return NO; }
+    u32 nseen = 0;
+    u32 qhead = 0, qtail = 0;
+    queue[qtail++] = *from;
+    seen[nseen++] = *from;
+    b8 found = NO;
+
+    Bu8 cbuf = {};
+    if (u8bMap(cbuf, 1UL << 20) != OK) {
+        free(seen); free(queue);
+        return NO;
+    }
+
+    while (qhead < qtail && !found) {
+        sha1 cur = queue[qhead++];
+        u8bReset(cbuf);
+        u8 ctype = 0;
+        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) continue;
+        if (ctype != KEEP_OBJ_COMMIT) continue;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            if ($len(field) != 6) continue;
+            if (memcmp(field[0], "parent", 6) != 0) continue;
+            if ($len(value) < 40) continue;
+            sha1 par = {};
+            u8s bin = {par.data, par.data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            a_dup(u8c, hx_dup, hx);
+            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
+            if (bin[0] != par.data + 20) continue;
+            if (sha1Eq(&par, target)) { found = YES; break; }
+            //  Dedup against `seen`.  Linear scan is fine — the
+            //  walk is bounded at KEEP_FF_MAX.
+            b8 dup = NO;
+            for (u32 i = 0; i < nseen; i++) {
+                if (sha1Eq(&seen[i], &par)) { dup = YES; break; }
+            }
+            if (dup) continue;
+            if (qtail >= KEEP_FF_MAX || nseen >= KEEP_FF_MAX) continue;
+            queue[qtail++] = par;
+            seen[nseen++] = par;
+        }
+    }
+
+    u8bUnMap(cbuf);
+    free(seen);
+    free(queue);
+    return found;
+}
+
 // --- Verify: get object, check SHA-1, recurse into tree/commit ---
 
 #include "dog/git/GIT.h"

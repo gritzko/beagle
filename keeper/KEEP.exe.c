@@ -630,78 +630,14 @@ static ok64 keeper_put(keeper *k, cli *c) {
 //  VERBS.md §POST / Design invariant 9: POST is FF-only.  Default-
 //  config bare git's receive-pack has `denyNonFastForwards=false`
 //  and would silently accept a non-FF push, so keeper enforces on
-//  the client side.  PUT (force-push) bypasses this entirely —
-//  it's the unconstrained ref-writer.  Keeper doesn't link graf
-//  (graf reads keeper, so the reverse would be a cycle), so the
-//  ancestor probe is a bounded BFS over commit parent edges
-//  resolved via KEEPGetExact.
-#define KEEP_FF_MAX  65536u
-
-//  YES iff `target` is reachable from `from` via commit-parent
-//  edges (i.e., `target` is an ancestor of `from`, so a push of
-//  `from` onto `target` is a fast-forward).  Capped at KEEP_FF_MAX
-//  commits — a tip more than that distance past peer isn't really
-//  a fast-forward by any normal-flow standard.  NO is returned on
-//  cap-exceeded or any keeper miss; callers treat that as "refuse,
-//  user should `be patch //origin?` + `be post` to resolve".
-static b8 keeper_post_is_ancestor(sha1cp from, sha1cp target) {
-    if (!from || !target) return NO;
-    if (sha1Eq(from, target)) return YES;
-
-    sha1 *seen = calloc(KEEP_FF_MAX, sizeof(sha1));
-    if (!seen) return NO;
-    sha1 *queue = calloc(KEEP_FF_MAX, sizeof(sha1));
-    if (!queue) { free(seen); return NO; }
-    u32 nseen = 0;
-    u32 qhead = 0, qtail = 0;
-    queue[qtail++] = *from;
-    seen[nseen++] = *from;
-    b8 found = NO;
-
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, 1UL << 20) != OK) {
-        free(seen); free(queue);
-        return NO;
-    }
-
-    while (qhead < qtail && !found) {
-        sha1 cur = queue[qhead++];
-        u8bReset(cbuf);
-        u8 ctype = 0;
-        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) continue;
-        if (ctype != KEEP_OBJ_COMMIT) continue;
-        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(body, field, value) == OK) {
-            if ($empty(field)) break;
-            if ($len(field) != 6) continue;
-            if (memcmp(field[0], "parent", 6) != 0) continue;
-            if ($len(value) < 40) continue;
-            sha1 par = {};
-            u8s bin = {par.data, par.data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            a_dup(u8c, hx_dup, hx);
-            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-            if (bin[0] != par.data + 20) continue;
-            if (sha1Eq(&par, target)) { found = YES; break; }
-            //  Dedup against `seen`.  Linear scan is fine — the
-            //  walk is bounded at KEEP_FF_MAX.
-            b8 dup = NO;
-            for (u32 i = 0; i < nseen; i++) {
-                if (sha1Eq(&seen[i], &par)) { dup = YES; break; }
-            }
-            if (dup) continue;
-            if (qtail >= KEEP_FF_MAX || nseen >= KEEP_FF_MAX) continue;
-            queue[qtail++] = par;
-            seen[nseen++] = par;
-        }
-    }
-
-    u8bUnMap(cbuf);
-    free(seen);
-    free(queue);
-    return found;
-}
+//  the client side.  Two probes share `KEEPIsAncestor` (KEEP.c):
+//    - cache-side, below in keeper_post — fast pre-flight against
+//      the REFSResolve hit; skipped on cache miss.
+//    - live-advert-side, inside WIREPush (WIRECLI.c) — runs after
+//      the receive-pack advert, so an empty / stale cache no longer
+//      lets a non-FF push slip through.
+//  PUT (force-push) bypasses both — it's the unconstrained
+//  ref-writer.
 
 // --- Verb: post ---
 
@@ -843,7 +779,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
                 HEXu8sDrainSome(pbin, phx) == OK &&
                 pbin[0] == peer_tip.data + 20 &&
                 !sha1Eq(&peer_tip, &at_tip) &&
-                !keeper_post_is_ancestor(&at_tip, &peer_tip)) {
+                !KEEPIsAncestor(&at_tip, &peer_tip)) {
                 fprintf(stderr,
                         "keeper: post: non-fast-forward — local tip "
                         "%.*s is not a descendant of peer tip "

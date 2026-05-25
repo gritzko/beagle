@@ -1350,6 +1350,28 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
         goto push_close;
     }
 
+    //  Live FF check: peer's advertised tip must be an ancestor of
+    //  local_tip.  The cache-side check in keeper_post is skipped on
+    //  cache miss, so a stale/empty cache would otherwise let a non-FF
+    //  push through.  Receive-pack on the wire side won't refuse it
+    //  either (git's `denyNonFastForwards=false` default).  This is
+    //  the authoritative FF gate for `be post //remote`.  PUT-to-
+    //  remote (force-push) lives on a different code path and is
+    //  unaffected (VERBS.md §PUT Design invariant 9).
+    if (have_peer && !KEEPIsAncestor(&local_tip, &peer_tip)) {
+        sha1hex lh = {}, ph = {};
+        sha1hexFromSha1(&lh, &local_tip);
+        sha1hexFromSha1(&ph, &peer_tip);
+        fprintf(stderr,
+                "wpush: non-fast-forward — local tip %.40s is not a "
+                "descendant of peer tip %.40s.  Use `be patch` to "
+                "merge, or `be put` to force-push.\n",
+                lh.data, ph.data);
+        free(peer_tips);
+        rv = WIRECLNFF;
+        goto push_close;
+    }
+
     //  Build the have-set (objects the peer already has).  Walks
     //  EVERY advertised peer ref's commit + tree closure locally so
     //  the local pack-build can prune anything reachable from any

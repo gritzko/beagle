@@ -308,6 +308,14 @@ ok64 KEEPGet(u64 hashlet60, size_t hexlen, u8bp out, u8p out_type);
 //  (e.g. tree entries) to avoid hashlet collisions.
 ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type);
 
+//  Fast-forward predicate: YES iff `target` is reachable from `from`
+//  via commit-parent edges (i.e., `target` is an ancestor of `from`,
+//  so a push of `from` onto `target` is a fast-forward).  Bounded BFS
+//  capped at 65536 commits; NO on cap-exceeded or any keeper miss.
+//  Used by both the POST cache-side FF check and WIREPush's
+//  live-advert FF check.
+b8 KEEPIsAncestor(sha1cp from, sha1cp target);
+
 //  Stream a side-band-64k upload-pack response from `rfd` directly
 //  into the keeper log: band-1 bytes go to disk via u8bFeed (no
 //  intermediate copy buffer), band-2 progress text streams live to

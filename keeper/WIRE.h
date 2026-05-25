@@ -124,6 +124,7 @@ ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv);
 
 con ok64 WIRECLFL  = 0x8126ce3153d5;
 con ok64 WIRECLNRF = 0x2049b38c5576cf;
+con ok64 WIRECLNFF = 0x2049b38c5573cf;
 
 //  Spawn a git-protocol peer (ssh or local exec) and run a fetch
 //  conversation: drain refs advertisement, send wants/haves, read pack.
