@@ -49,10 +49,12 @@ static ok64 setup_repo(void) {
     zero(g_home);
     call(HOMEOpenAt, &g_home, root, YES);
     call(KEEPOpen, &g_home, YES);
+    call(GRAFOpen, &g_home, YES);
     done;
 }
 
 static void teardown_repo(void) {
+    GRAFClose();
     KEEPClose();
     HOMEClose(&g_home);
     char cmd[300];

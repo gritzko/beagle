@@ -604,31 +604,22 @@ static ok64 emit_alive_bytes(u8b into, weave const *w) {
 static ok64 get_tree_at(u8b into, keeper *k, u64 commit_h40, u8cs path) {
     sane(into && k);
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
+    Bu8 *cbuf = &GRAF.obj_buf;
+    u8bReset(*cbuf);
     u8 ct = 0;
-    ok64 o = KEEPGet(commit_h40, DAG_H60_HEXLEN, cbuf, &ct);
-    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
+    ok64 o = KEEPGet(commit_h40, DAG_H60_HEXLEN, *cbuf, &ct);
+    if (o != OK || ct != DOG_OBJ_COMMIT) return KEEPNONE;
 
     sha1 cur = {};
-    o = GITu8sCommitTree(u8bDataC(cbuf), cur.data);
-    u8bFree(cbuf);
+    o = GITu8sCommitTree(u8bDataC(*cbuf), cur.data);
     if (o != OK) return KEEPNONE;
 
     call(GRAFPathDescend, &cur, path);
 
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, 1UL << 20);
     u8 ot = 0;
-    ok64 ko = KEEPGetExact(&cur, tbuf, &ot);
-    if (ko == OK && ot == DOG_OBJ_TREE) {
-        a_dup(u8c, tb, u8bData(tbuf));
-        ko = u8bFeed(into, tb);
-    } else if (ko == OK) {
-        ko = KEEPFAIL;
-    }
-    u8bFree(tbuf);
-    return ko;
+    call(KEEPGetExact, &cur, into, &ot);
+    if (ot != DOG_OBJ_TREE) fail(KEEPFAIL);
+    done;
 }
 
 // --- Public entry ---

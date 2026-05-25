@@ -13,6 +13,7 @@
 #include "graf/WEAVE.h"
 
 #define GRAF_ARENA_SIZE (1UL << 24)   // 16MB
+#define GRAF_OBJ_BUF_SIZE  (1UL << 20)   // 1MB — commit/tree object body
 
 // Forward decl for transient ingest state (see graf/DAG.c).
 typedef struct dag_ingest dag_ingest;
@@ -31,7 +32,15 @@ typedef struct dag_ingest dag_ingest;
 typedef struct {
     home        *h;          // borrowed
     int          lock_fd;    // flock on leaf dir's .lock; -1 = ro
-    Bu8          arena;      // hunk staging buffer
+    Bu8          arena;      // hunk staging buffer (renderer only)
+    //  Per-call scratch for the (commit, path) → blob walk.  Reused
+    //  across `GRAFBlobAtCommit` (`obj_buf`: commit object body) and
+    //  `GRAFTreeStep` (`tree_buf`: one tree-object body).  Not
+    //  reentrant — callers in the same call stack must not overlap
+    //  usage of the same buffer.  Reset on entry, kept mapped for the
+    //  lifetime of GRAFOpen.
+    Bu8          obj_buf;
+    Bu8          tree_buf;
     int          out_fd;     // output fd (-1 = uninitialized)
 
     //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` along

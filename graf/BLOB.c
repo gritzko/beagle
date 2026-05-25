@@ -9,30 +9,27 @@
 #include "abc/BUF.h"
 #include "dog/DOG.h"
 #include "graf/DAG.h"
+#include "graf/GRAF.h"
 #include "dog/git/GIT.h"
 
 ok64 GRAFTreeStep(sha1 *cur, u8cs name) {
     sane(cur);
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, 1UL << 20);
+    Bu8 *tbuf = &GRAF.tree_buf;
+    u8bReset(*tbuf);
     u8 otype = 0;
-    ok64 o = KEEPGetExact(cur, tbuf, &otype);
-    if (o != OK) { u8bFree(tbuf); return o; }
-    if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
+    call(KEEPGetExact, cur, *tbuf, &otype);
+    if (otype != DOG_OBJ_TREE) fail(KEEPFAIL);
 
-    a_dup(u8c, body, u8bDataC(tbuf));
+    a_dup(u8c, body, u8bDataC(*tbuf));
     u8cs field = {}, esha = {};
-    ok64 result = KEEPNONE;
     while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
         u8cs entry_name = {};
         if (GITu8sFileSplit(field, NULL, entry_name) != OK) continue;
         if (!u8csEq(entry_name, name)) continue;
         (void)sha1Drain(esha, cur);
-        result = OK;
-        break;
+        done;
     }
-    u8bFree(tbuf);
-    return result;
+    return KEEPNONE;
 }
 
 ok64 GRAFPathDescend(sha1 *cur, u8cs path) {
@@ -54,16 +51,15 @@ ok64 GRAFPathDescend(sha1 *cur, u8cs path) {
 ok64 GRAFBlobAtCommit(u8bp buf, u64 commit_hashlet60, u8cs filepath) {
     sane(buf);
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
+    Bu8 *cbuf = &GRAF.obj_buf;
+    u8bReset(*cbuf);
     u8 ct = 0;
     ok64 o = KEEPGet(commit_hashlet60,
-                     DAG_H60_HEXLEN, cbuf, &ct);
-    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
+                     DAG_H60_HEXLEN, *cbuf, &ct);
+    if (o != OK || ct != DOG_OBJ_COMMIT) return KEEPNONE;
 
     sha1 cur = {};
-    o = GITu8sCommitTree(u8bDataC(cbuf), cur.data);
-    u8bFree(cbuf);
+    o = GITu8sCommitTree(u8bDataC(*cbuf), cur.data);
     if (o != OK) return KEEPNONE;
 
     call(GRAFPathDescend, &cur, filepath);

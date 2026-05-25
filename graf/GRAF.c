@@ -333,7 +333,9 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
         call(FILELock,   &g->lock_fd, rw);
     }
 
-    call(u8bMap, g->arena, GRAF_ARENA_SIZE);
+    call(u8bMap, g->arena,    GRAF_ARENA_SIZE);
+    call(u8bMap, g->obj_buf,  GRAF_OBJ_BUF_SIZE);
+    call(u8bMap, g->tree_buf, GRAF_OBJ_BUF_SIZE);
 
     done;
 }
@@ -452,7 +454,9 @@ ok64 GRAFClose(void) {
     // Flush any pending ingest (runs the finish walk + compaction).
     if (g->ing) GRAFDagFinish();
     if (!BNULL(g->puppies))     DOGPupClose(g->puppies);
-    if (g->arena[0]) u8bUnMap(g->arena);
+    if (g->arena[0])    u8bUnMap(g->arena);
+    if (g->obj_buf[0])  u8bUnMap(g->obj_buf);
+    if (g->tree_buf[0]) u8bUnMap(g->tree_buf);
     if (g->lock_fd >= 0) FILEClose(&g->lock_fd);
     g->runs_n = 0;
     g->out_fd = -1;
