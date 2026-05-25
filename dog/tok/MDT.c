@@ -1,6 +1,7 @@
 #include "MDT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 // Inline ragel lexer (MDT.rl.c, generated from MDT.c.rl)
 ok64 MDTInlineLexer(MDTstate *state);
@@ -21,7 +22,7 @@ ok64 MDTonCode(u8cs tok, MDTstate *state) {
 
 ok64 MDTonComment(u8cs tok, MDTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 
@@ -40,6 +41,12 @@ ok64 MDTonNumber(u8cs tok, MDTstate *state) {
 ok64 MDTonWord(u8cs tok, MDTstate *state) {
     sane($ok(tok) && state != NULL);
     if (state->cb) return state->cb('S', tok, state->ctx);
+    done;
+}
+
+ok64 MDTonKey(u8cs tok, MDTstate *state) {
+    sane($ok(tok) && state != NULL);
+    if (state->cb) return state->cb('F', tok, state->ctx);
     done;
 }
 

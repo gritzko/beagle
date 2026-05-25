@@ -1,6 +1,7 @@
 #include "VERT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *VERT_KEYWORDS[] = {
     "always",    "always_comb","always_ff","always_latch",
@@ -77,7 +78,7 @@ static b8 VERTIsKeyword(u8cs tok) {
 
 ok64 VERTonComment(u8cs tok, VERTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

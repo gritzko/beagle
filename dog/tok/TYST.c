@@ -1,6 +1,7 @@
 #include "TYST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *TYST_KEYWORDS[] = {
     "let",      "set",      "show",     "if",       "else",
@@ -24,7 +25,7 @@ static b8 TYSTIsKeyword(u8cs tok) {
 
 ok64 TYSTonComment(u8cs tok, TYSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

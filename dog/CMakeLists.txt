@@ -69,6 +69,7 @@ list(APPEND TOK_HEADERS
     tok/SOLT.h
     tok/TYST.h
     tok/TXTT.h
+    tok/FREE.h
     tok/MDT.h
     tok/MKDT.h
     tok/LLT.h
@@ -185,6 +186,8 @@ list(APPEND TOK_SOURCES
     tok/TYST.c
     tok/TYST.rl.c
     tok/TXTT.rl.c
+    tok/FREE.c
+    tok/FREE.rl.c
     tok/MDT.c
     tok/MDT.rl.c
     tok/MKDT.c

@@ -1,6 +1,7 @@
 #include "CT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 #include "dog/tok/KEYW.h"
 
 static u8cs CT_KEYWORDS[] = {
@@ -46,7 +47,7 @@ static b8 CTIsKeyword(u8cs tok) {
 
 ok64 CTonComment(u8cs tok, CTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

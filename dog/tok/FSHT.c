@@ -1,6 +1,7 @@
 #include "FSHT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *FSHT_KEYWORDS[] = {
     "abstract", "and",      "as",       "assert",   "base",
@@ -33,7 +34,7 @@ static b8 FSHTIsKeyword(u8cs tok) {
 
 ok64 FSHTonComment(u8cs tok, FSHTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

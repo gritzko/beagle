@@ -1,6 +1,7 @@
 #include "PHPT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *PHPT_KEYWORDS[] = {
     "abstract",  "and",       "array",     "as",        "break",
@@ -36,7 +37,7 @@ static b8 PHPTIsKeyword(u8cs tok) {
 
 ok64 PHPTonComment(u8cs tok, PHPTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

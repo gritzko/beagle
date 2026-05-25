@@ -1,6 +1,7 @@
 #include "TST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *TST_KEYWORDS[] = {
     "break",    "case",     "catch",    "class",    "const",
@@ -34,7 +35,7 @@ static b8 TSTIsKeyword(u8cs tok) {
 
 ok64 TSTonComment(u8cs tok, TSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

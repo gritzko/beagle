@@ -1,6 +1,7 @@
 #include "SOLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *SOLT_KEYWORDS[] = {
     "pragma",   "solidity",  "import",   "from",     "as",
@@ -38,7 +39,7 @@ static b8 SOLTIsKeyword(u8cs tok) {
 
 ok64 SOLTonComment(u8cs tok, SOLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

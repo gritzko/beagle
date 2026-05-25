@@ -1,6 +1,7 @@
 #include "PRLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *PRLT_KEYWORDS[] = {
     "my",       "our",      "local",    "use",      "require",
@@ -26,7 +27,7 @@ static b8 PRLTIsKeyword(u8cs tok) {
 
 ok64 PRLTonComment(u8cs tok, PRLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

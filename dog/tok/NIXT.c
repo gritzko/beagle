@@ -1,6 +1,7 @@
 #include "NIXT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *NIXT_KEYWORDS[] = {
     "assert",   "builtins", "else",     "if",       "in",
@@ -23,7 +24,7 @@ static b8 NIXTIsKeyword(u8cs tok) {
 
 ok64 NIXTonComment(u8cs tok, NIXTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

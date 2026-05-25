@@ -1,6 +1,7 @@
 #include "JST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *JST_KEYWORDS[] = {
     "break",    "case",     "catch",    "class",    "const",
@@ -30,7 +31,7 @@ static b8 JSTIsKeyword(u8cs tok) {
 
 ok64 JSTonComment(u8cs tok, JSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

@@ -1,6 +1,7 @@
 #include "GOT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *GOT_KEYWORDS[] = {
     "break",       "case",     "chan",      "const",
@@ -29,7 +30,7 @@ static b8 GOTIsKeyword(u8cs tok) {
 
 ok64 GOTonComment(u8cs tok, GOTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

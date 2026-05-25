@@ -1,6 +1,7 @@
 #include "HCLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *HCLT_KEYWORDS[] = {
     "variable", "resource", "data", "module", "output",
@@ -28,7 +29,7 @@ static b8 HCLTIsKeyword(u8cs tok) {
 
 ok64 HCLTonComment(u8cs tok, HCLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

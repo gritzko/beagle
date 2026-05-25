@@ -1,6 +1,7 @@
 #include "GQLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *GQLT_KEYWORDS[] = {
     "query", "mutation", "subscription", "fragment", "on",
@@ -24,7 +25,7 @@ static b8 GQLTIsKeyword(u8cs tok) {
 
 ok64 GQLTonComment(u8cs tok, GQLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

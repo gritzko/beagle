@@ -1,6 +1,7 @@
 #include "RT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *RT_KEYWORDS[] = {
     "if",       "else",     "repeat",   "while",    "function",
@@ -25,7 +26,7 @@ static b8 RTIsKeyword(u8cs tok) {
 
 ok64 RTonComment(u8cs tok, RTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

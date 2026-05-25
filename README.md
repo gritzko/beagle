@@ -3,7 +3,7 @@
 **Beagle** is a revision control system suitable for modern
 workflows.  The data format and the syncing protocol are 100%
 git to stay compatible with the existing mass of git repos. The
-rest is reworked. 
+rest is reworked TEST-123. 
 
  1. The system is made syntax-aware, diffing and merging is finer 
     grained and draws heavily from CRDT ideas. No false conflicts. 

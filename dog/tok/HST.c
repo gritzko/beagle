@@ -1,6 +1,7 @@
 #include "HST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *HST_KEYWORDS[] = {
     "case",     "class",    "data",     "default",  "deriving",
@@ -26,7 +27,7 @@ static b8 HSTIsKeyword(u8cs tok) {
 
 ok64 HSTonComment(u8cs tok, HSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

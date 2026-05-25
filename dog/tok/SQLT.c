@@ -1,6 +1,7 @@
 #include "SQLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *SQLT_KEYWORDS[] = {
     "select", "from", "where", "and", "or", "not", "in",
@@ -42,7 +43,7 @@ static b8 SQLTIsKeyword(u8cs tok) {
 
 ok64 SQLTonComment(u8cs tok, SQLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

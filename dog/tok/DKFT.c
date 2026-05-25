@@ -1,6 +1,7 @@
 #include "DKFT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *DKFT_KEYWORDS[] = {
     "FROM",     "RUN",      "CMD",      "EXPOSE",   "ENV",
@@ -24,7 +25,7 @@ static b8 DKFTIsKeyword(u8cs tok) {
 
 ok64 DKFTonComment(u8cs tok, DKFTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

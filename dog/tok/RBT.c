@@ -1,6 +1,7 @@
 #include "RBT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *RBT_KEYWORDS[] = {
     "alias",    "and",      "begin",    "break",    "case",
@@ -30,7 +31,7 @@ static b8 RBTIsKeyword(u8cs tok) {
 
 ok64 RBTonComment(u8cs tok, RBTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

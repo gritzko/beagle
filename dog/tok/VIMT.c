@@ -1,6 +1,7 @@
 #include "VIMT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *VIMT_KEYWORDS[] = {
     "if",       "else",     "elseif",   "endif",    "while",
@@ -27,7 +28,7 @@ static b8 VIMTIsKeyword(u8cs tok) {
 
 ok64 VIMTonComment(u8cs tok, VIMTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

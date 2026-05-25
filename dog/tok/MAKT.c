@@ -1,6 +1,7 @@
 #include "MAKT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *MAKT_KEYWORDS[] = {
     ".PHONY",   ".DEFAULT", ".PRECIOUS",".INTERMEDIATE",
@@ -27,7 +28,7 @@ static b8 MAKTIsKeyword(u8cs tok) {
 
 ok64 MAKTonComment(u8cs tok, MAKTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

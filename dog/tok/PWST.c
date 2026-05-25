@@ -1,6 +1,7 @@
 #include "PWST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *PWST_KEYWORDS[] = {
     "begin",    "break",    "catch",    "class",    "continue",
@@ -28,7 +29,7 @@ static b8 PWSTIsKeyword(u8cs tok) {
 
 ok64 PWSTonComment(u8cs tok, PWSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

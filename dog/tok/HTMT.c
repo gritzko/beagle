@@ -1,10 +1,11 @@
 #include "HTMT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 ok64 HTMTonComment(u8cs tok, HTMTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

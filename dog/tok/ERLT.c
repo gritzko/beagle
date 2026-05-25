@@ -1,6 +1,7 @@
 #include "ERLT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *ERLT_KEYWORDS[] = {
     "after",    "and",      "andalso",  "band",     "begin",
@@ -26,7 +27,7 @@ static b8 ERLTIsKeyword(u8cs tok) {
 
 ok64 ERLTonComment(u8cs tok, ERLTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

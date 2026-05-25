@@ -1,6 +1,7 @@
 #include "PRTT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *PRTT_KEYWORDS[] = {
     "syntax", "import", "weak", "public", "package",
@@ -30,7 +31,7 @@ static b8 PRTTIsKeyword(u8cs tok) {
 
 ok64 PRTTonComment(u8cs tok, PRTTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

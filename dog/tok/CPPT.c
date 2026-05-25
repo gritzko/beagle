@@ -1,6 +1,7 @@
 #include "CPPT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *CPPT_KEYWORDS[] = {
     /* C keywords */
@@ -42,7 +43,7 @@ static b8 CPPTIsKeyword(u8cs tok) {
 
 ok64 CPPTonComment(u8cs tok, CPPTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

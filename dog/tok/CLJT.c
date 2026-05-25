@@ -1,6 +1,7 @@
 #include "CLJT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *CLJT_KEYWORDS[] = {
     "def",      "defn",     "defmacro", "fn",       "if",
@@ -25,7 +26,7 @@ static b8 CLJTIsKeyword(u8cs tok) {
 
 ok64 CLJTonComment(u8cs tok, CLJTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

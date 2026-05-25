@@ -1,6 +1,7 @@
 #include "CST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *CST_KEYWORDS[] = {
     "abstract",  "as",        "base",      "bool",      "break",
@@ -39,7 +40,7 @@ static b8 CSTIsKeyword(u8cs tok) {
 
 ok64 CSTonComment(u8cs tok, CSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

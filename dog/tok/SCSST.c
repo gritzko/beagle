@@ -1,10 +1,11 @@
 #include "SCSST.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 ok64 SCSSTonComment(u8cs tok, SCSSTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

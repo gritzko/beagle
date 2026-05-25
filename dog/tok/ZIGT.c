@@ -1,6 +1,7 @@
 #include "ZIGT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *ZIGT_KEYWORDS[] = {
     "addrspace",  "align",      "allowzero",  "and",
@@ -33,7 +34,7 @@ static b8 ZIGTIsKeyword(u8cs tok) {
 
 ok64 ZIGTonComment(u8cs tok, ZIGTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

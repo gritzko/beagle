@@ -1,6 +1,7 @@
 #include "KTT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *KTT_KEYWORDS[] = {
     "abstract",   "annotation", "as",         "break",
@@ -37,7 +38,7 @@ static b8 KTTIsKeyword(u8cs tok) {
 
 ok64 KTTonComment(u8cs tok, KTTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

@@ -54,6 +54,7 @@
 #include "TYST.h"
 #include "LLT.h"
 #include "MDT.h"
+#include "FREE.h"
 #include "TOK.h"
 #include "git/CFG.h"
 
@@ -1082,20 +1083,80 @@ ok64 MDTBasicTest() {
     done;
 }
 
+ok64 FREEBasicTest() {
+    sane(1);
+    TOK01Case cases[] = {
+        // plain prose: word + space + word
+        {"hello world",       "SWS"},
+        // issue key fuses as one F (sticky tag)
+        {"ABC-123",           "F"},
+        {"see ABC-123.",      "SWFP"},
+        {"ABC-123 fixed",     "FWS"},
+        // lowercase doesn't fuse: word, punct, number
+        {"abc-123",           "SPL"},
+        // uppercase no digits: word, punct, word
+        {"ABC-DEF",           "SPS"},
+        // hyphenated English word stays split
+        {"multi-word",        "SPS"},
+        // numbers
+        {"42",                "L"},
+        {"3.14",              "L"},
+        {"0xFF",              "L"},
+        {"1 2 3",             "LWLWL"},
+        // hi-byte runs are word chars (no UTF-8 validation)
+        {"caf\xc3\xa9",       "S"},          // café
+        {"\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e", "S"},  // 日本語
+        {"\xff\xff\xff",      "S"},          // garbage hi-bytes still word
+        // newline is its own W token, never fused
+        {"a\nb",              "SWS"},
+        {"line one\nline two","SWSWSWS"},   // line / ' ' / one / \n / line / ' ' / two
+        // horizontal whitespace runs collapse
+        {"  \t ",             "W"},
+        // punctuation is per-byte
+        {"...!?",             "PPPPP"},
+        // mixed
+        {"see ABC-123 at 3:45","SWFWSWLPL"},
+    };
+    int ncases = sizeof(cases) / sizeof(cases[0]);
+    RUN_CASES(FREELexer, FREE, cases, ncases);
+    done;
+}
+
+ok64 FREEOverlayTest() {
+    sane(1);
+    // overlay retags every chunk EXCEPT 'F' (issue key — sticky)
+    const char *input = "see ABC-123 now";
+    TOK01ctx ctx = {};
+    u8cs slice = u8scstr(input);
+    ok64 o = FREEu8sFeed('D', slice, TOK01cb, &ctx);
+    if (o != OK) {
+        fprintf(stderr, "FAIL FREEOverlayTest: error %s\n", ok64str(o));
+        fail(TESTFAIL);
+    }
+    // see / ' ' / ABC-123 / ' ' / now = 5 chunks; the key stays F
+    want(ctx.count == 5);
+    want(ctx.tags[0] == 'D');   // see
+    want(ctx.tags[1] == 'D');   // ' '
+    want(ctx.tags[2] == 'F');   // ABC-123 (sticky)
+    want(ctx.tags[3] == 'D');   // ' '
+    want(ctx.tags[4] == 'D');   // now
+    done;
+}
+
 ok64 MDTIssueKeyTest() {
     sane(1);
     TOK01Case cases[] = {
-        // canonical issue keys — one S token
-        {"ABC-123", "S"},
-        {"PROJ-1", "S"},
-        {"X-99", "S"},
-        {"JIRA-1234", "S"},
+        // canonical issue keys — one F token (filename color, sticky)
+        {"ABC-123", "F"},
+        {"PROJ-1", "F"},
+        {"X-99", "F"},
+        {"JIRA-1234", "F"},
         // digits/underscore allowed after the leading uppercase letter
-        {"A1B2-7", "S"},
-        {"A_B-9", "S"},
+        {"A1B2-7", "F"},
+        {"A_B-9", "F"},
         // followed by punct/space/word — only the key fuses
-        {"See ABC-123.", "SWSP"},
-        {"ABC-123 fixed", "SWS"},
+        {"See ABC-123.", "SWFP"},
+        {"ABC-123 fixed", "FWS"},
         // lowercase shouldn't fuse: word + punct + number
         {"abc-123", "SPL"},
         // uppercase without digits: word + punct + word
@@ -1272,6 +1333,8 @@ ok64 TOK01test() {
     call(GLSTBasicTest);
     call(SOLTBasicTest);
     call(LLTBasicTest);
+    call(FREEBasicTest);
+    call(FREEOverlayTest);
     call(MDTBasicTest);
     call(MDTIssueKeyTest);
     call(MDTEmphTest);

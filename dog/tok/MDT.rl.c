@@ -10,15 +10,16 @@ ok64 MDTonComment (u8cs tok, MDTstate* state);
 ok64 MDTonLink (u8cs tok, MDTstate* state);
 ok64 MDTonNumber (u8cs tok, MDTstate* state);
 ok64 MDTonWord (u8cs tok, MDTstate* state);
+ok64 MDTonKey (u8cs tok, MDTstate* state);
 ok64 MDTonPunct (u8cs tok, MDTstate* state);
 ok64 MDTonSpace (u8cs tok, MDTstate* state);
 
 
-/* #line 145 "MDT.c.rl" */
+/* #line 152 "MDT.c.rl" */
 
 
 
-/* #line 17 "MDT.rl.c" */
+/* #line 18 "MDT.rl.c" */
 static const char _MDT_actions[] = {
 	0, 1, 0, 1, 1, 1, 2, 1, 
 	9, 1, 10, 1, 11, 1, 12, 1, 
@@ -184,7 +185,7 @@ static const int MDT_error = -1;
 static const int MDT_en_main = 23;
 
 
-/* #line 148 "MDT.c.rl" */
+/* #line 155 "MDT.c.rl" */
 
 ok64 MDTInlineLexer(MDTstate* state) {
 
@@ -203,7 +204,7 @@ ok64 MDTInlineLexer(MDTstate* state) {
     u8cs tok = {p, p};
 
     
-/* #line 198 "MDT.rl.c" */
+/* #line 199 "MDT.rl.c" */
 	{
 	cs = MDT_start;
 	ts = 0;
@@ -211,9 +212,9 @@ ok64 MDTInlineLexer(MDTstate* state) {
 	act = 0;
 	}
 
-/* #line 166 "MDT.c.rl" */
+/* #line 173 "MDT.c.rl" */
     
-/* #line 204 "MDT.rl.c" */
+/* #line 205 "MDT.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -232,7 +233,7 @@ _resume:
 /* #line 1 "NONE" */
 	{ts = p;}
 	break;
-/* #line 221 "MDT.rl.c" */
+/* #line 222 "MDT.rl.c" */
 		}
 	}
 
@@ -303,31 +304,31 @@ _eof_trans:
 	{te = p+1;}
 	break;
 	case 3:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{act = 6;}
 	break;
 	case 4:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{act = 7;}
 	break;
 	case 5:
-/* #line 53 "MDT.c.rl" */
+/* #line 54 "MDT.c.rl" */
 	{act = 12;}
 	break;
 	case 6:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{act = 15;}
 	break;
 	case 7:
-/* #line 59 "MDT.c.rl" */
+/* #line 60 "MDT.c.rl" */
 	{act = 18;}
 	break;
 	case 8:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{act = 21;}
 	break;
 	case 9:
-/* #line 35 "MDT.c.rl" */
+/* #line 36 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -336,7 +337,7 @@ _eof_trans:
 }}
 	break;
 	case 10:
-/* #line 35 "MDT.c.rl" */
+/* #line 36 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -345,7 +346,7 @@ _eof_trans:
 }}
 	break;
 	case 11:
-/* #line 41 "MDT.c.rl" */
+/* #line 42 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -354,7 +355,7 @@ _eof_trans:
 }}
 	break;
 	case 12:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -363,7 +364,7 @@ _eof_trans:
 }}
 	break;
 	case 13:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -372,7 +373,7 @@ _eof_trans:
 }}
 	break;
 	case 14:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -381,7 +382,7 @@ _eof_trans:
 }}
 	break;
 	case 15:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -390,7 +391,7 @@ _eof_trans:
 }}
 	break;
 	case 16:
-/* #line 29 "MDT.c.rl" */
+/* #line 30 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -399,7 +400,7 @@ _eof_trans:
 }}
 	break;
 	case 17:
-/* #line 47 "MDT.c.rl" */
+/* #line 48 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -408,7 +409,7 @@ _eof_trans:
 }}
 	break;
 	case 18:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -417,7 +418,7 @@ _eof_trans:
 }}
 	break;
 	case 19:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -426,7 +427,7 @@ _eof_trans:
 }}
 	break;
 	case 20:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -435,7 +436,7 @@ _eof_trans:
 }}
 	break;
 	case 21:
-/* #line 71 "MDT.c.rl" */
+/* #line 78 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -444,7 +445,7 @@ _eof_trans:
 }}
 	break;
 	case 22:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -453,7 +454,7 @@ _eof_trans:
 }}
 	break;
 	case 23:
-/* #line 53 "MDT.c.rl" */
+/* #line 54 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -462,7 +463,7 @@ _eof_trans:
 }}
 	break;
 	case 24:
-/* #line 53 "MDT.c.rl" */
+/* #line 54 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -471,7 +472,7 @@ _eof_trans:
 }}
 	break;
 	case 25:
-/* #line 53 "MDT.c.rl" */
+/* #line 54 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -480,7 +481,7 @@ _eof_trans:
 }}
 	break;
 	case 26:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -489,7 +490,7 @@ _eof_trans:
 }}
 	break;
 	case 27:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -498,7 +499,7 @@ _eof_trans:
 }}
 	break;
 	case 28:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -507,16 +508,16 @@ _eof_trans:
 }}
 	break;
 	case 29:
-/* #line 59 "MDT.c.rl" */
+/* #line 66 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
-    o = MDTonWord(tok, state);
+    o = MDTonKey(tok, state);
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
 	case 30:
-/* #line 59 "MDT.c.rl" */
+/* #line 60 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -525,7 +526,7 @@ _eof_trans:
 }}
 	break;
 	case 31:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -534,7 +535,7 @@ _eof_trans:
 }}
 	break;
 	case 32:
-/* #line 71 "MDT.c.rl" */
+/* #line 78 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -543,7 +544,7 @@ _eof_trans:
 }}
 	break;
 	case 33:
-/* #line 59 "MDT.c.rl" */
+/* #line 60 "MDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -552,7 +553,7 @@ _eof_trans:
 }}
 	break;
 	case 34:
-/* #line 53 "MDT.c.rl" */
+/* #line 54 "MDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -561,7 +562,7 @@ _eof_trans:
 }}
 	break;
 	case 35:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -570,7 +571,7 @@ _eof_trans:
 }}
 	break;
 	case 36:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -579,7 +580,7 @@ _eof_trans:
 }}
 	break;
 	case 37:
-/* #line 59 "MDT.c.rl" */
+/* #line 60 "MDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -588,7 +589,7 @@ _eof_trans:
 }}
 	break;
 	case 38:
-/* #line 65 "MDT.c.rl" */
+/* #line 72 "MDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -650,7 +651,7 @@ _eof_trans:
 	}
 	}
 	break;
-/* #line 600 "MDT.rl.c" */
+/* #line 601 "MDT.rl.c" */
 		}
 	}
 
@@ -663,7 +664,7 @@ _again:
 /* #line 1 "NONE" */
 	{ts = 0;}
 	break;
-/* #line 611 "MDT.rl.c" */
+/* #line 612 "MDT.rl.c" */
 		}
 	}
 
@@ -681,7 +682,7 @@ _again:
 	_out: {}
 	}
 
-/* #line 167 "MDT.c.rl" */
+/* #line 174 "MDT.c.rl" */
 
     state->data[0] = p;
     if (o==OK && cs < MDT_first_final)

@@ -1008,18 +1008,36 @@ static b8 bro_is_word(u8 c) {
         || (c >= '0' && c <= '9') || c == '_';
 }
 
-// Expand [A-Za-z0-9_] left and right of `off` and copy the run into
-// `out` (NUL-terminated).  Returns the byte length (0 if the char at
-// `off` isn't a word char or the word doesn't fit in `cap`).
+// Find the token whose byte range contains `off` and copy its bytes
+// to `out` (NUL-terminated).  Right-click greps for whatever the
+// tokenizer fused — `TEST-123` lives in one F-tagged span, so the
+// grep needle is `TEST-123` and not just `TEST`.  Returns 0 (no-op)
+// when the token is pure whitespace / pure punctuation (nothing
+// useful to grep for) or doesn't fit in `cap`.
 static u32 bro_word_around(hunk const *hk, u32 off, char *out, u32 cap) {
     u32 textlen = (u32)$len(hk->text);
-    if (off >= textlen || !bro_is_word(hk->text[0][off])) return 0;
-    u32 lo = off, hi = off + 1;
-    while (lo > 0 && bro_is_word(hk->text[0][lo - 1])) lo--;
-    while (hi < textlen && bro_is_word(hk->text[0][hi])) hi++;
-    u32 n = hi - lo;
+    if (off >= textlen) return 0;
+
+    u32 ntok = (u32)$len(hk->toks);
+    u32 tlo = 0, thi = 0;
+    b8 found = NO;
+    for (u32 i = 0; i < ntok; i++) {
+        u32 end = tok32Offset(hk->toks[0][i]);
+        if (off < end) { thi = end; found = YES; break; }
+        tlo = end;
+    }
+    if (!found) return 0;
+
+    b8 grepable = NO;
+    for (u32 i = tlo; i < thi; i++) {
+        u8 c = hk->text[0][i];
+        if (bro_is_word(c) || c >= 0x80) { grepable = YES; break; }
+    }
+    if (!grepable) return 0;
+
+    u32 n = thi - tlo;
     if (cap == 0 || n + 1 > cap) return 0;
-    for (u32 i = 0; i < n; i++) out[i] = (char)hk->text[0][lo + i];
+    for (u32 i = 0; i < n; i++) out[i] = (char)hk->text[0][tlo + i];
     out[n] = 0;
     return n;
 }

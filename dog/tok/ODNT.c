@@ -1,6 +1,7 @@
 #include "ODNT.h"
 
 #include "abc/PRO.h"
+#include "dog/tok/FREE.h"
 
 static const char *ODNT_KEYWORDS[] = {
     "break",    "case",     "cast",     "continue", "defer",
@@ -27,7 +28,7 @@ static b8 ODNTIsKeyword(u8cs tok) {
 
 ok64 ODNTonComment(u8cs tok, ODNTstate *state) {
     sane($ok(tok) && state != NULL);
-    if (state->cb) return TOKSplitText('D', tok, state->cb, state->ctx);
+    if (state->cb) return FREEu8sFeed('D', tok, state->cb, state->ctx);
     done;
 }
 

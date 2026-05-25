@@ -8,6 +8,7 @@ ok64 MDTonComment (u8cs tok, MDTstate* state);
 ok64 MDTonLink (u8cs tok, MDTstate* state);
 ok64 MDTonNumber (u8cs tok, MDTstate* state);
 ok64 MDTonWord (u8cs tok, MDTstate* state);
+ok64 MDTonKey (u8cs tok, MDTstate* state);
 ok64 MDTonPunct (u8cs tok, MDTstate* state);
 ok64 MDTonSpace (u8cs tok, MDTstate* state);
 
@@ -62,6 +63,12 @@ action on_word {
     o = MDTonWord(tok, state);
     if (o!=OK) fbreak;
 }
+action on_key {
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MDTonKey(tok, state);
+    if (o!=OK) fbreak;
+}
 action on_punct {
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -114,7 +121,7 @@ main := |*
     "~~"                                                 => on_punct;
 
     # ---- issue keys: ABC-123, PROJ-1234 (uppercase letters + digits) ----
-    [A-Z] [A-Z0-9_]* "-" dgt+                            => on_word;
+    [A-Z] [A-Z0-9_]* "-" dgt+                            => on_key;
 
     # ---- identifiers / words ----
     idalpha idalnum*                                     => on_word;
