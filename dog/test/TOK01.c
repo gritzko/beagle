@@ -1082,6 +1082,36 @@ ok64 MDTBasicTest() {
     done;
 }
 
+ok64 MDTIssueKeyTest() {
+    sane(1);
+    TOK01Case cases[] = {
+        // canonical issue keys — one S token
+        {"ABC-123", "S"},
+        {"PROJ-1", "S"},
+        {"X-99", "S"},
+        {"JIRA-1234", "S"},
+        // digits/underscore allowed after the leading uppercase letter
+        {"A1B2-7", "S"},
+        {"A_B-9", "S"},
+        // followed by punct/space/word — only the key fuses
+        {"See ABC-123.", "SWSP"},
+        {"ABC-123 fixed", "SWS"},
+        // lowercase shouldn't fuse: word + punct + number
+        {"abc-123", "SPL"},
+        // uppercase without digits: word + punct + word
+        {"ABC-DEF", "SPS"},
+        // dangling dash: word + punct
+        {"ABC-", "SP"},
+        // leading dash: punct (list marker eats "- ") + number
+        {"- 123", "PL"},
+        // hyphenated English word stays split
+        {"multi-word", "SPS"},
+    };
+    int ncases = sizeof(cases) / sizeof(cases[0]);
+    RUN_CASES(MDTLexer, MDT, cases, ncases);
+    done;
+}
+
 ok64 MDTEmphTest() {
     sane(1);
     // emphasis in context
@@ -1243,6 +1273,7 @@ ok64 TOK01test() {
     call(SOLTBasicTest);
     call(LLTBasicTest);
     call(MDTBasicTest);
+    call(MDTIssueKeyTest);
     call(MDTEmphTest);
     call(MDTCodeFenceTest);
     call(MDTFenceIsolationTest);

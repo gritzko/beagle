@@ -113,6 +113,9 @@ main := |*
     "__"                                                 => on_punct;
     "~~"                                                 => on_punct;
 
+    # ---- issue keys: ABC-123, PROJ-1234 (uppercase letters + digits) ----
+    [A-Z] [A-Z0-9_]* "-" dgt+                            => on_word;
+
     # ---- identifiers / words ----
     idalpha idalnum*                                     => on_word;
 
