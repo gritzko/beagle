@@ -20,9 +20,7 @@
 
 typedef u64 wh64;
 
-fun int wh64cmp(wh64 const *a, wh64 const *b) {
-    return *a < *b ? -1 : (*a == *b ? 0 : 1);
-}
+fun b8 wh64Z(wh64 const *a, wh64 const *b) { return *a < *b; }
 
 //  Bx instantiation for the wh64 value type — gives us `wh64b`,
 //  `wh64s`, `wh64sFeed1`, etc.  Distinct from `u64*` even though
@@ -58,11 +56,8 @@ typedef struct {
 } wh128;
 
 fun u64  wh128hash(wh128 const *v) { return mix64(v->key ^ v->val); }
-
-fun int wh128cmp(wh128 const *a, wh128 const *b) {
-    if (a->key != b->key) return a->key < b->key ? -1 : 1;
-    if (a->val != b->val) return a->val < b->val ? -1 : 1;
-    return 0;
+fun b8   wh128hashEq(wh128 const *a, wh128 const *b) {
+    return a->key == b->key && a->val == b->val;
 }
 
 fun b8 wh128Z(wh128 const *a, wh128 const *b) {
@@ -81,7 +76,16 @@ fun b8 wh128Z(wh128 const *a, wh128 const *b) {
 //  because wh128cs is array-typed.
 typedef wh128cs const *wh128cscp;
 
-fun int wh128cscmp(wh128cs const *a, wh128cs const *b) { return $cmp(*a, *b); }
+fun b8 wh128csZ(wh128cs const *a, wh128cs const *b) {
+    size_t la = (size_t)((*a)[1] - (*a)[0]);
+    size_t lb = (size_t)((*b)[1] - (*b)[0]);
+    size_t n = la < lb ? la : lb;
+    for (size_t i = 0; i < n; i++) {
+        if (wh128Z(&(*a)[0][i], &(*b)[0][i])) return YES;
+        if (wh128Z(&(*b)[0][i], &(*a)[0][i])) return NO;
+    }
+    return la < lb;
+}
 
 #define X(M, name) M##wh128cs##name
 #define ABC_X_$
@@ -146,8 +150,8 @@ typedef struct {
 
 typedef sha1hex const *sha1hexcp;
 
-fun int sha1hexcmp(sha1hex const *a, sha1hex const *b) {
-    return memcmp(a->data, b->data, 40);
+fun b8 sha1hexZ(sha1hex const *a, sha1hex const *b) {
+    return memcmp(a->data, b->data, 40) < 0;
 }
 
 fun void sha1hexFromSha1(sha1hex *out, sha1cp s) {

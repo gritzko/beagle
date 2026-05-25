@@ -51,7 +51,7 @@ ok64 BOOKMARKtest2() {
         .key = wh64Pack(KEEP_TYPE_PACK, 1, 4096),  // later pack
         .val = keepPackBmVal(3, 8192),
     };
-    want(wh128cmp(&a, &b) < 0);
+    want(wh128Z(&a, &b));
     done;
 }
 

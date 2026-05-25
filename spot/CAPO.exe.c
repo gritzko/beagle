@@ -443,7 +443,7 @@ static b8 spot_memo_hit(u64css runs, u64 blob_hl40, u32 path_h20) {
     a_dup(u64cs, scan, runs);
     $for(u64cs, run, scan) {
         u64s view = {(u64p)(*run)[0], (u64p)(*run)[1]};
-        if (u64sBsearch(&needle, view) != NULL) return YES;
+        if (u64sBinSearch(&needle, view) != NULL) return YES;
     }
     return NO;
 }

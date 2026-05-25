@@ -495,7 +495,7 @@ ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
     FILEIterClose(&it);
 
     a_dup(kv64, ks, kv64bData(seqnos));
-    $kv64sort(ks);
+    kv64sSort(ks);
 
     //  Pup layer is not idempotent: every file in `dir` becomes a new
     //  entry in `pups`.  Avoiding double-scans of the same dir is the

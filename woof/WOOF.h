@@ -107,6 +107,9 @@ typedef struct {
 fun int conncmp(conn const *a, conn const *b) {
     return (a->slot < b->slot) ? -1 : (a->slot > b->slot);
 }
+fun b8 connZ(conn const *a, conn const *b) {
+    return a->slot < b->slot;
+}
 
 #define X(M, name) M##conn##name
 #include "abc/Bx.h"

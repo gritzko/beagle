@@ -43,8 +43,8 @@ typedef struct {
 
 typedef hunk const hunkc;
 
-// Required by the Bx.h template. Order hunks by URI (path + location).
-fun int hunkcmp(hunk const *a, hunk const *b) { return $cmp(a->uri, b->uri); }
+// Order hunks by URI (path + location).
+fun b8 hunkZ(hunk const *a, hunk const *b) { return u8csZ(&a->uri, &b->uri); }
 
 // Generate hunks / hunkcs / hunkb / hunkcb / hunkbp etc.
 // plus the usual bFeed/bFeed1/bDataLen/bDataHead... family.

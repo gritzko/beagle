@@ -646,7 +646,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
 //  user should `be patch //origin?` + `be post` to resolve".
 static b8 keeper_post_is_ancestor(sha1cp from, sha1cp target) {
     if (!from || !target) return NO;
-    if (sha1cmp(from, target) == 0) return YES;
+    if (sha1Eq(from, target)) return YES;
 
     sha1 *seen = calloc(KEEP_FF_MAX, sizeof(sha1));
     if (!seen) return NO;
@@ -683,12 +683,12 @@ static b8 keeper_post_is_ancestor(sha1cp from, sha1cp target) {
             a_dup(u8c, hx_dup, hx);
             if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
             if (bin[0] != par.data + 20) continue;
-            if (sha1cmp(&par, target) == 0) { found = YES; break; }
+            if (sha1Eq(&par, target)) { found = YES; break; }
             //  Dedup against `seen`.  Linear scan is fine — the
             //  walk is bounded at KEEP_FF_MAX.
             b8 dup = NO;
             for (u32 i = 0; i < nseen; i++) {
-                if (sha1cmp(&seen[i], &par) == 0) { dup = YES; break; }
+                if (sha1Eq(&seen[i], &par)) { dup = YES; break; }
             }
             if (dup) continue;
             if (qtail >= KEEP_FF_MAX || nseen >= KEEP_FF_MAX) continue;
@@ -842,7 +842,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
             if (!path_mismatch &&
                 HEXu8sDrainSome(pbin, phx) == OK &&
                 pbin[0] == peer_tip.data + 20 &&
-                sha1cmp(&peer_tip, &at_tip) != 0 &&
+                !sha1Eq(&peer_tip, &at_tip) &&
                 !keeper_post_is_ancestor(&at_tip, &peer_tip)) {
                 fprintf(stderr,
                         "keeper: post: non-fast-forward — local tip "

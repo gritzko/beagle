@@ -590,12 +590,12 @@ ok64 SPOTNext(SPOTstate *st) {
             st->bound = b.bound;
             st->src_rng = (b.nsubs > 0)
                 ? (range32){b.subs[0].lo, b.subs[b.nsubs - 1].hi}
-                : range32Z;
+                : (range32){};
             for (int i = 0; i < SPOT_MAX_BINDS; i++) {
                 if (b.bound & (1ULL << i))
                     st->bind_matches[i] = b.bind_matches[i];
                 else
-                    st->bind_matches[i] = match32Z;
+                    st->bind_matches[i] = (match32){};
             }
             st->nsubs = (u8)b.nsubs;
             for (int i = 0; i < b.nsubs; i++)
