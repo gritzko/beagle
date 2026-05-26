@@ -65,11 +65,9 @@ static ok64 get_resolve_chunk(get_tip *out, u8cs chunk) {
     if (rr != OK) return GETFAIL;
 
     //  Verify the resolved object is a COMMIT (not a tree / blob / tag).
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
+    a_carve(u8, cbuf, 1UL << 20);
     u8 ct = 0;
     ok64 ko = KEEPGetExact(&out->sha, cbuf, &ct);
-    u8bFree(cbuf);
     if (ko != OK || ct != DOG_OBJ_COMMIT) return GETFAIL;
 
     out->h40 = WHIFFHashlet60(&out->sha);
@@ -121,14 +119,10 @@ static ok64 get_drain_uri(u8cs path_out,
 
 static ok64 get_append_blob_at(u8b into, u64 commit_h40, u8cs path) {
     sane(into);
-    Bu8 blob = {};
-    call(u8bMap, blob, GET_BLOB_MAX);
-    ok64 o = GRAFBlobAtCommit(blob, commit_h40, path);
-    if (o != OK) { u8bUnMap(blob); return o; }
+    a_carve(u8, blob, GET_BLOB_MAX);
+    call(GRAFBlobAtCommit, blob, commit_h40, path);
     a_dup(u8c, bdata, u8bData(blob));
-    o = u8bFeed(into, bdata);
-    u8bUnMap(blob);
-    return o;
+    return u8bFeed(into, bdata);
 }
 
 // --- LCA of two commits in the DAG -----------------------------------
@@ -146,23 +140,26 @@ static ok64 get_append_blob_at(u8b into, u64 commit_h40, u8cs path) {
 static u64 get_lca(u64 a_h40, u64 b_h40) {
     if (a_h40 == 0 || b_h40 == 0) return 0;
 
+    //  Non-sane'd helper: called from inside the caller's call() frame
+    //  (GRAFLca + sniff callers); BASS unwind happens at that boundary.
+    //
+    //  Hash-set buffers MUST be zero-filled — `HASHwh128Put/Get` use
+    //  `is0(data, ndx)` to detect empty slots.  Heap allocations from a
+    //  fresh process get zeroed pages from the OS by accident; BASS
+    //  acquires reuse arena memory that holds leftover content from
+    //  prior carves (call() rewind moves IDLE back but the bytes stay).
+    //  `zerob` after each acquire enforces the invariant explicitly.
     Bwh128 set_a = {}, set_b = {}, set_c = {};
-    if (wh128bAllocate(set_a, GET_ANC_SIZE) != OK) return 0;
-    if (wh128bAllocate(set_b, GET_ANC_SIZE) != OK) {
-        wh128bFree(set_a); return 0;
-    }
-    if (wh128bAllocate(set_c, GET_ANC_SIZE) != OK) {
-        wh128bFree(set_a); wh128bFree(set_b); return 0;
-    }
+    if (wh128bAcquire(ABC_BASS, set_a, GET_ANC_SIZE) != OK) return 0;
+    if (wh128bAcquire(ABC_BASS, set_b, GET_ANC_SIZE) != OK) return 0;
+    if (wh128bAcquire(ABC_BASS, set_c, GET_ANC_SIZE) != OK) return 0;
+    zerob(set_a); zerob(set_b); zerob(set_c);
 
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
     ok64 oa = DAGAncestors(set_a, runs, a_h40);
     ok64 ob = DAGAncestors(set_b, runs, b_h40);
-    if (oa != OK || ob != OK) {
-        wh128bFree(set_a); wh128bFree(set_b); wh128bFree(set_c);
-        return 0;
-    }
+    if (oa != OK || ob != OK) return 0;
 
     //  Build the intersection (common ancestors).
     wh128cp cells = wh128bHead(set_a);
@@ -178,16 +175,12 @@ static u64 get_lca(u64 a_h40, u64 b_h40) {
     u64 best = 0;
     size_t cap = (size_t)(wh128bTerm(set_c) - wh128bHead(set_c));
     Bu8 ord_buf = {};
-    if (cap > 0 && u8bMap(ord_buf, cap * sizeof(u64)) == OK) {
+    if (cap > 0 && u8bAcquire(ABC_BASS, ord_buf, cap * sizeof(u64)) == OK) {
         u64 *ordered = (u64 *)u8bDataHead(ord_buf);
         u32 nord = DAGTopoSort(ordered, (u32)cap, set_c, runs);
         if (nord > 0) best = ordered[nord - 1];
-        u8bUnMap(ord_buf);
     }
 
-    wh128bFree(set_a);
-    wh128bFree(set_b);
-    wh128bFree(set_c);
     return best;
 }
 
@@ -206,16 +199,14 @@ ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b) {
     //  Recover the full sha by fetching the commit body from keeper
     //  and rehashing (identical to the trick `get_resolve_chunk`
     //  uses — KEEPObjSha("commit <len>\0<body>") is canonical).
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
+    a_carve(u8, cbuf, 1UL << 20);
     u8 ct = 0;
     ok64 o = KEEPGet(lca_h,
                      DAG_H60_HEXLEN, cbuf, &ct);
-    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); done; }
+    if (o != OK || ct != DOG_OBJ_COMMIT) done;
 
     a_dup(u8c, body, u8bData(cbuf));
     KEEPObjSha(out, DOG_OBJ_COMMIT, body);
-    u8bFree(cbuf);
     done;
 }
 
@@ -466,13 +457,12 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     //  Ancestor union across the supplied tips with the caller's
     //  edge-kind selector + skip set.  edges = DAG_EDGE_PARENT
     //  reproduces the legacy behaviour exactly.
-    Bwh128 anc = {};
-    call(wh128bAllocate, anc, GET_ANC_SIZE);
+    a_carve(wh128, anc, GET_ANC_SIZE);
+    zerob(anc);  // hash set — must be zero-init
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
-    ok64 ao = DAGAncestorsOfManyTunable(anc, runs, tip_hs, ntips,
-                                        edges, skip_hl, nskip);
-    if (ao != OK) { wh128bFree(anc); return ao; }
+    call(DAGAncestorsOfManyTunable, anc, runs, tip_hs, ntips,
+         edges, skip_hl, nskip);
 
     //  Topo-sort using the SAME edge bitmask as the ancestor walk so
     //  foster-attached commits sit before the carrying commit in the
@@ -485,7 +475,7 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     u64 *vers = NULL;
     size_t anc_cap = (size_t)(wh128bTerm(anc) - wh128bHead(anc));
     Bu8 ord_buf = {};
-    if (anc_cap > 0 && u8bMap(ord_buf, anc_cap * sizeof(u64)) == OK) {
+    if (anc_cap > 0 && u8bAcquire(ABC_BASS, ord_buf, anc_cap * sizeof(u64)) == OK) {
         u64 *ordered = (u64 *)u8bDataHead(ord_buf);
         u32 topo_edges = edges & ~DAG_EDGE_PICKED;
         u32 nord = DAGTopoSortTunable(ordered, (u32)anc_cap, anc, runs,
@@ -494,22 +484,25 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
         vers = ordered;
         nvers = nord;
     }
-    wh128bFree(anc);
 
     //  No DAG entries (fresh import without GRAFIndex, isolated blob
     //  URI): fall back to the tip's own blob bytes as a single-version
     //  weave so callers still get something sensible.
     if (nvers == 0) {
-        Bu8 fallback = {};
-        call(u8bMap, fallback, GET_BLOB_MAX);
+        a_carve(u8, fallback, GET_BLOB_MAX);
         ok64 fo = get_append_blob_at(fallback, tip_hs[0], path);
         if (fo == OK) {
             a_dup(u8c, fb, u8bData(fallback));
             fo = WEAVEFromBlob(out, fb, ext, (u32)tip_hs[0]);
         }
-        u8bUnMap(fallback);
         return fo;
     }
+
+    //  Carve blob scratch on BASS BEFORE WEAVEInit so an a_carve early-
+    //  return can't leak weave mmaps.
+    a_carve(u8, blob_a, GET_BLOB_MAX);
+    a_carve(u8, blob_b, GET_BLOB_MAX);
+    Bu8 *cur = &blob_a, *prev = &blob_b;
 
     //  Three weave instances: src accumulates history, dst receives
     //  each WEAVEDiff, nu is rebuilt fresh per blob version.  After
@@ -520,11 +513,6 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     if ((r = WEAVEInit(&wB))  != OK) { WEAVEFree(&wA); goto out; }
     if ((r = WEAVEInit(&wnu)) != OK) { WEAVEFree(&wA); WEAVEFree(&wB); goto out; }
     weave *wsrc = &wA, *wdst = &wB;
-
-    Bu8 blob_a = {}, blob_b = {};
-    if ((r = u8bMap(blob_a, GET_BLOB_MAX)) != OK) goto cleanup_w;
-    if ((r = u8bMap(blob_b, GET_BLOB_MAX)) != OK) { u8bUnMap(blob_a); goto cleanup_w; }
-    Bu8 *cur = &blob_a, *prev = &blob_b;
 
     b8 have_prev = NO;
     for (u32 i = 0; i < nvers; i++) {
@@ -566,14 +554,10 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
         zero(wB);
     }
 
-    u8bUnMap(blob_a);
-    u8bUnMap(blob_b);
-cleanup_w:
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
 out:
-    if (u8bOK(ord_buf)) u8bUnMap(ord_buf);
     return r;
 }
 

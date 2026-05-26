@@ -35,26 +35,27 @@ ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
     call(graf_merge_read, &theirs_data, &map_t, theirs_path);
 
     u64 outsz = $len(ours_data) + $len(theirs_data) + 4096;
-    u8 *out[4] = {};
-    ok64 o = u8bAlloc(out, outsz);
+    Bu8 out = {};
+    //  Direct u8bAcquire (not a_carve) so a failure path still runs the
+    //  FILEUnMap cleanup below; auto-rewound at caller's call() return.
+    ok64 o = u8bAcquire(ABC_BASS, out, outsz);
     if (o != OK) goto cleanup;
 
     o = GRAFMerge3Bytes(base_data, ours_data, theirs_data,
                         ext_nodot, out);
-    if (o != OK) { u8bFree(out); goto cleanup; }
+    if (o != OK) goto cleanup;
 
     u8cs result = {out[1], out[2]};
     if (!$empty(outpath)) {
         a_path(opath, outpath);
         int fd = -1;
         o = FILECreate(&fd, $path(opath));
-        if (o != OK) { u8bFree(out); goto cleanup; }
+        if (o != OK) goto cleanup;
         o = FILEFeedAll(fd, result);
         close(fd);
     } else {
         o = FILEFeedAll(STDOUT_FILENO, result);
     }
-    u8bFree(out);
 
 cleanup:
     if (map_b) FILEUnMap(map_b);

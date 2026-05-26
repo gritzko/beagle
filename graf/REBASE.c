@@ -181,34 +181,26 @@ u64 GRAFPatchId(u8csc commit_body) {
                          &parent_sha, &has_parent) != OK) return 0;
     if (!has_parent) return 0;
 
-    //  Resolve parent tree.
+    //  Resolve parent tree.  Non-sane'd helper — BASS auto-rewinds at
+    //  the caller's call() boundary.
     Bu8 pbuf = {};
-    if (u8bAllocate(pbuf, REBASE_OBJ_BUF) != OK) return 0;
+    if (u8bAcquire(ABC_BASS, pbuf, REBASE_OBJ_BUF) != OK) return 0;
     u8 ot = 0;
     if (KEEPGetExact(&parent_sha, pbuf, &ot) != OK
-        || ot != DOG_OBJ_COMMIT) {
-        u8bFree(pbuf); return 0;
-    }
+        || ot != DOG_OBJ_COMMIT) return 0;
     sha1 tree_p = {}, dummy = {};
     b8 dummy_b = NO;
     a_dup(u8c, pcommit, u8bDataC(pbuf));
-    if (pid_parse_commit(pcommit, &tree_p, &dummy, &dummy_b) != OK) {
-        u8bFree(pbuf); return 0;
-    }
-    u8bFree(pbuf);
+    if (pid_parse_commit(pcommit, &tree_p, &dummy, &dummy_b) != OK) return 0;
 
-    //  Two leaf buffers (4096 pid_leaf each ≈ 144KB; mmap them) +
-    //  one shared string arena.  Sequential tree walks (parent then
-    //  child) keep snapped path slices stable — bytes stay where
-    //  they were fed.
+    //  Two leaf buffers (4096 pid_leaf each ≈ 144KB) + one shared string
+    //  arena.  Sequential tree walks (parent then child) keep snapped
+    //  path slices stable — bytes stay where they were fed.
     Bu8 p_leaves = {}, c_leaves = {}, arena = {};
     u64 h = 0;
-    if (u8bMap(p_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK)
-        goto out_p;
-    if (u8bMap(c_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK)
-        goto out_c;
-    if (u8bAllocate(arena, REBASE_TREE_ENTRIES * 128) != OK)
-        goto out_arena;
+    if (u8bAcquire(ABC_BASS, p_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK) goto out;
+    if (u8bAcquire(ABC_BASS, c_leaves, REBASE_TREE_ENTRIES * sizeof(pid_leaf)) != OK) goto out;
+    if (u8bAcquire(ABC_BASS, arena,    REBASE_TREE_ENTRIES * 128) != OK) goto out;
 
     pid_collector pc = {.leaves = (pid_leaf *)u8bDataHead(p_leaves), .n = 0,
                         .cap = REBASE_TREE_ENTRIES, .arena = arena, .err = OK};
@@ -219,12 +211,7 @@ u64 GRAFPatchId(u8csc commit_body) {
         h = pid_digest(&pc, &cc);
     }
 
-    u8bFree(arena);
-out_arena:
-    u8bUnMap(c_leaves);
-out_c:
-    u8bUnMap(p_leaves);
-out_p:
+out:
     return h;
 }
 
@@ -280,12 +267,10 @@ typedef struct {
 static ok64 tm_parse(sha1cp tree_sha, tm_set *out,
                      u8 *const *arena) {
     sane(out && arena);
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, REBASE_OBJ_BUF);
+    a_carve(u8, tbuf, REBASE_OBJ_BUF);
     u8 ot = 0;
-    ok64 o = KEEPGetExact(tree_sha, tbuf, &ot);
-    if (o != OK) { u8bFree(tbuf); return o; }
-    if (ot != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
+    call(KEEPGetExact, tree_sha, tbuf, &ot);
+    if (ot != DOG_OBJ_TREE) fail(KEEPFAIL);
 
     u8cs body = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
     u8cs file = {}, esha = {};
@@ -306,7 +291,6 @@ static ok64 tm_parse(sha1cp tree_sha, tm_set *out,
         e->kind = WALKu8sModeKind(mode_s);
         e->present = YES;
     }
-    u8bFree(tbuf);
     done;
 }
 
@@ -411,10 +395,12 @@ static ok64 tm_merge_blob(sha1 *out_sha,
         *out_sha = *ours;   done;
     }
 
-    Bu8 bbuf = {}, obuf = {}, tbuf = {};
-    call(u8bMap, bbuf, REBASE_BLOB_MAX);
-    call(u8bMap, obuf, REBASE_BLOB_MAX);
-    call(u8bMap, tbuf, REBASE_BLOB_MAX);
+    //  Carve all BASS scratch BEFORE WEAVEInit so an a_carve early-return
+    //  can't leak weave mmaps (WEAVE handles still need WEAVEFree).
+    a_carve(u8, bbuf, REBASE_BLOB_MAX);
+    a_carve(u8, obuf, REBASE_BLOB_MAX);
+    a_carve(u8, tbuf, REBASE_BLOB_MAX);
+    a_carve(u8, mbuf, REBASE_BLOB_MAX);
 
     ok64 ret = rebase_blob_at(bbuf, base);
     if (ret == OK) ret = rebase_blob_at(obuf, ours);
@@ -422,14 +408,12 @@ static ok64 tm_merge_blob(sha1 *out_sha,
 
     weave bs_o = {}, nu_o = {}, run_w = {};
     weave bs_t = {}, nu_t = {}, br_w  = {};
-    Bu8 mbuf = {};
     if (ret == OK) ret = WEAVEInit(&bs_o);
     if (ret == OK) ret = WEAVEInit(&nu_o);
     if (ret == OK) ret = WEAVEInit(&run_w);
     if (ret == OK) ret = WEAVEInit(&bs_t);
     if (ret == OK) ret = WEAVEInit(&nu_t);
     if (ret == OK) ret = WEAVEInit(&br_w);
-    if (ret == OK) ret = u8bMap(mbuf, REBASE_BLOB_MAX);
 
     if (ret == OK) {
         a_dup(u8c, bdata, u8bData(bbuf));
@@ -468,12 +452,8 @@ static ok64 tm_merge_blob(sha1 *out_sha,
         }
     }
 
-    if (u8bOK(mbuf)) u8bUnMap(mbuf);
     WEAVEFree(&bs_o); WEAVEFree(&nu_o); WEAVEFree(&run_w);
     WEAVEFree(&bs_t); WEAVEFree(&nu_t); WEAVEFree(&br_w);
-    u8bUnMap(bbuf);
-    u8bUnMap(obuf);
-    u8bUnMap(tbuf);
     return ret;
 }
 
@@ -502,15 +482,13 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     //  up front so cleanup labels can reach them on any goto path.
     tm_set bs = {}, os = {}, ts = {};
     bs.cap = os.cap = ts.cap = REBASE_TREE_ENTRIES;
-    Bu8 bs_buf = {}, os_buf = {}, ts_buf = {}, names_buf = {}, arena = {};
-    ok64 mb = u8bMap(bs_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
-    ok64 mo = u8bMap(os_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
-    ok64 mt = u8bMap(ts_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
-    if (mb != OK || mo != OK || mt != OK) { goto fail_alloc; }
+    a_carve(u8, bs_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    a_carve(u8, os_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    a_carve(u8, ts_buf, REBASE_TREE_ENTRIES * sizeof(tm_entry));
+    a_carve(u8, arena,  REBASE_TREE_ENTRIES * 256);
     bs.e = (tm_entry *)u8bDataHead(bs_buf);
     os.e = (tm_entry *)u8bDataHead(os_buf);
     ts.e = (tm_entry *)u8bDataHead(ts_buf);
-    if (u8bAllocate(arena, REBASE_TREE_ENTRIES * 256) != OK) goto fail_alloc;
 
     ok64 ret = OK;
     ret = tm_parse(base_t,   &bs, arena);
@@ -519,10 +497,7 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     if (ret != OK) goto cleanup;
 
     //  Build a deduplicated, sorted list of names across all three.
-    if (u8bMap(names_buf,
-               (bs.n + os.n + ts.n + 1) * sizeof(u8cs)) != OK) {
-        ret = GRAFFAIL; goto cleanup;
-    }
+    a_carve(u8, names_buf, (bs.n + os.n + ts.n + 1) * sizeof(u8cs));
     u8cs *names = (u8cs *)u8bDataHead(names_buf);
     u32 nnames = 0;
     for (u32 src = 0; src < 3; src++) {
@@ -554,10 +529,7 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
     }
 
     //  Build new tree body.
-    Bu8 newtree = {};
-    if (u8bAllocate(newtree, REBASE_OBJ_BUF) != OK) {
-        free(names); ret = GRAFFAIL; goto cleanup;
-    }
+    a_carve(u8, newtree, REBASE_OBJ_BUF);
 
     for (u32 i = 0; i < nnames; i++) {
         u8cs name = {names[i][0], names[i][1]};
@@ -597,8 +569,8 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             sha1 bsub = be ? be->sha : zero;
             ret = tm_merge_trees(&final, &bsub, &o_sha, &t_sha,
                                  childpath, cb, ctx, had_conflict);
-            if (ret != OK) goto loop_fail;
-            if (*had_conflict) { ret = GRAFCNFL; goto loop_fail; }
+            if (ret != OK) goto cleanup;
+            if (*had_conflict) { ret = GRAFCNFL; goto cleanup; }
         } else if (oe && te) {
             //  Both sides present.
             if (sha1Eq(&o_sha, &t_sha)) {
@@ -608,14 +580,14 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             } else if (be && sha1Eq(&b_sha, &t_sha)) {
                 final = o_sha;
             } else if (kind == WALK_KIND_DIR) {
-                ret = GRAFCNFL; *had_conflict = YES; goto loop_fail;
+                ret = GRAFCNFL; *had_conflict = YES; goto cleanup;
             } else {
                 //  Both diverged from base — leaf 3-way merge.
                 b8 cf = NO;
                 ret = tm_merge_blob(&final, &b_sha, &o_sha, &t_sha,
                                     childpath, cb, ctx, &cf);
-                if (ret != OK) goto loop_fail;
-                if (cf) { *had_conflict = YES; ret = GRAFCNFL; goto loop_fail; }
+                if (ret != OK) goto cleanup;
+                if (cf) { *had_conflict = YES; ret = GRAFCNFL; goto cleanup; }
             }
         } else if (oe && !te) {
             //  Only ours has it.
@@ -638,12 +610,8 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
 
         if (keep) {
             ret = tm_emit_entry(newtree, mode, name, &final);
-            if (ret != OK) goto loop_fail;
+            if (ret != OK) goto cleanup;
         }
-        continue;
-    loop_fail:
-        u8bFree(newtree);
-        goto cleanup;
     }
 
     {
@@ -654,21 +622,8 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
         }
     }
 
-    u8bFree(newtree);
 cleanup:
-    if (names_buf[0]) u8bUnMap(names_buf);
-    if (u8bOK(arena)) u8bFree(arena);
-    if (bs_buf[0]) u8bUnMap(bs_buf);
-    if (os_buf[0]) u8bUnMap(os_buf);
-    if (ts_buf[0]) u8bUnMap(ts_buf);
     return ret;
-
-fail_alloc:
-    if (bs_buf[0]) u8bUnMap(bs_buf);
-    if (os_buf[0]) u8bUnMap(os_buf);
-    if (ts_buf[0]) u8bUnMap(ts_buf);
-    if (u8bOK(arena)) u8bFree(arena);
-    { return GRAFFAIL; }
 }
 
 //  Walk parent chain: collect commit SHAs from `child_tip` back to
@@ -676,24 +631,23 @@ fail_alloc:
 static ok64 rebase_walk_chain(sha1cp child_tip, sha1cp base_old,
                               sha1 *list, u32 *nlist, u32 maxlist) {
     sane(child_tip && base_old && list && nlist);
+    //  One BASS allocation, reused across every iteration via u8bReset —
+    //  avoids piling up REBASE_PATH_MAX × REBASE_OBJ_BUF on the arena.
+    a_carve(u8, cbuf, REBASE_OBJ_BUF);
     u32 n = 0;
     sha1 cur = *child_tip;
     while (!sha1Eq(&cur, base_old)) {
-        if (n >= maxlist) { return GRAFFAIL; }
+        if (n >= maxlist) return GRAFFAIL;
         list[n++] = cur;
-        Bu8 cbuf = {};
-        if (u8bAllocate(cbuf, REBASE_OBJ_BUF) != OK) { return GRAFFAIL; }
+        u8bReset(cbuf);
         u8 ot = 0;
         ok64 o = KEEPGetExact(&cur, cbuf, &ot);
-        if (o != OK || ot != DOG_OBJ_COMMIT) {
-            u8bFree(cbuf); { return GRAFFAIL; }
-        }
+        if (o != OK || ot != DOG_OBJ_COMMIT) return GRAFFAIL;
         sha1 tree_unused = {}, parent = {};
         b8 has_p = NO;
         a_dup(u8c, cbody, u8bDataC(cbuf));
         ok64 p = pid_parse_commit(cbody, &tree_unused, &parent, &has_p);
-        u8bFree(cbuf);
-        if (p != OK || !has_p) { return GRAFFAIL; }
+        if (p != OK || !has_p) return GRAFFAIL;
         cur = parent;
     }
     //  Reverse to oldest-first.
@@ -713,19 +667,19 @@ static ok64 rebase_collect_pids(sha1cp base_new, u64 *pids, u32 *n,
     u32 cnt = 0;
     sha1 cur = *base_new;
     if (sha1empty(&cur)) { *n = 0; done; }
+    //  Single BASS allocation reused per iteration — see rebase_walk_chain.
+    a_carve(u8, cbuf, REBASE_OBJ_BUF);
     for (;;) {
-        Bu8 cbuf = {};
-        if (u8bAllocate(cbuf, REBASE_OBJ_BUF) != OK) { return GRAFFAIL; }
+        u8bReset(cbuf);
         u8 ot = 0;
         ok64 o = KEEPGetExact(&cur, cbuf, &ot);
-        if (o != OK || ot != DOG_OBJ_COMMIT) { u8bFree(cbuf); break; }
+        if (o != OK || ot != DOG_OBJ_COMMIT) break;
         a_dup(u8c, cbody, u8bDataC(cbuf));
         u64 pid = GRAFPatchId(cbody);
         if (cnt < maxn) pids[cnt++] = pid;
         sha1 tree_u = {}, parent = {};
         b8 has_p = NO;
         ok64 p = pid_parse_commit(cbody, &tree_u, &parent, &has_p);
-        u8bFree(cbuf);
         if (p != OK || !has_p) break;
         cur = parent;
     }
@@ -830,58 +784,52 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         done;
     }
 
-    //  1. Walk chain.  REBASE_PATH_MAX=4096 sha1s ≈ 80KB; mmap it.
-    Bu8 chain_buf = {};
-    if (u8bMap(chain_buf, REBASE_PATH_MAX * sizeof(sha1)) != OK)
-        return GRAFFAIL;
+    //  1. Walk chain.  REBASE_PATH_MAX=4096 sha1s ≈ 80KB.
+    a_carve(u8, chain_buf, REBASE_PATH_MAX * sizeof(sha1));
     sha1 *chain = (sha1 *)u8bDataHead(chain_buf);
     u32 nchain = 0;
     ok64 ret = rebase_walk_chain(child_tip, base_old,
                                  chain, &nchain, REBASE_PATH_MAX);
-    if (ret != OK) { u8bUnMap(chain_buf); return ret; }
+    if (ret != OK) return ret;
 
     //  2. Patch-id set of base_new ancestors.  REBASE_PIDS_MAX=8192
-    //  u64s = 64KB; mmap it.
-    Bu8 pids_buf = {};
-    if (u8bMap(pids_buf, REBASE_PIDS_MAX * sizeof(u64)) != OK) {
-        u8bUnMap(chain_buf); return GRAFFAIL;
-    }
+    //  u64s = 64KB.
+    a_carve(u8, pids_buf, REBASE_PIDS_MAX * sizeof(u64));
     u64 *pids = (u64 *)u8bDataHead(pids_buf);
     u32 npids = 0;
     ret = rebase_collect_pids(base_new, pids, &npids, REBASE_PIDS_MAX);
-    if (ret != OK) {
-        u8bUnMap(chain_buf); u8bUnMap(pids_buf); return ret;
-    }
+    if (ret != OK) return ret;
 
-    //  3. Replay loop.
+    //  3. Replay loop.  Hoist per-iteration scratch out of the loop —
+    //  one BASS allocation each, reset between iterations via
+    //  u8bReset.  Without hoisting, `nchain * 5 * REBASE_OBJ_BUF`
+    //  (up to ~20 GB at REBASE_PATH_MAX=4096) would pile up on BASS.
     //  `head_body_cache` keeps the most-recently-emitted commit's
     //  bytes around so the next iteration can extract its tree
     //  without going through KEEPGetExact — the just-emitted commit
     //  lives in an in-progress (booked) pack that the keeper index
     //  doesn't see until the pack closes.
+    a_carve(u8, cbuf,            REBASE_OBJ_BUF);
+    a_carve(u8, pbuf,            REBASE_OBJ_BUF);
+    a_carve(u8, hbuf,            REBASE_OBJ_BUF);
+    a_carve(u8, cnew,            REBASE_OBJ_BUF);
+    a_carve(u8, head_body_cache, REBASE_OBJ_BUF);
+    b8 head_body_cached = NO;
     sha1 head = *base_new;
-    Bu8  head_body_cache = {};
-    b8   head_body_cached = NO;
     for (u32 i = 0; i < nchain && ret == OK; i++) {
         sha1cp cmt = &chain[i];
 
         //  Fetch commit body.
-        Bu8 cbuf = {};
-        if (u8bAllocate(cbuf, REBASE_OBJ_BUF) != OK) {
-            { ret = GRAFFAIL; break; }
-        }
+        u8bReset(cbuf);
         u8 ot = 0;
         if (KEEPGetExact(cmt, cbuf, &ot) != OK
-            || ot != DOG_OBJ_COMMIT) {
-            u8bFree(cbuf); { ret = GRAFFAIL; break; }
-        }
+            || ot != DOG_OBJ_COMMIT) { ret = GRAFFAIL; break; }
         a_dup(u8c, cbody, u8bDataC(cbuf));
 
         //  Patch-id dedup.
         u64 pid = GRAFPatchId(cbody);
         if (rebase_pid_seen(pids, npids, pid)) {
             //  Skip this commit silently; head unchanged.
-            u8bFree(cbuf);
             continue;
         }
 
@@ -890,51 +838,38 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         b8 has_p = NO;
         ok64 p = pid_parse_commit(cbody, &tree_c,
                                   &parent_sha, &has_p);
-        if (p != OK || !has_p) { u8bFree(cbuf); { ret = GRAFFAIL; break; } }
+        if (p != OK || !has_p) { ret = GRAFFAIL; break; }
 
         sha1 tree_p = {}, tree_h = {};
         {
             //  Parent's tree — re-fetch parent commit body.
-            Bu8 pbuf = {};
-            if (u8bAllocate(pbuf, REBASE_OBJ_BUF) != OK) {
-                u8bFree(cbuf); { ret = GRAFFAIL; break; }
-            }
+            u8bReset(pbuf);
             u8 pt = 0;
             if (KEEPGetExact(&parent_sha, pbuf, &pt) != OK
-                || pt != DOG_OBJ_COMMIT) {
-                u8bFree(pbuf); u8bFree(cbuf); { ret = GRAFFAIL; break; }
-            }
+                || pt != DOG_OBJ_COMMIT) { ret = GRAFFAIL; break; }
             sha1 dummy_par = {};
             b8 dummy_has = NO;
             a_dup(u8c, pbody, u8bDataC(pbuf));
             if (pid_parse_commit(pbody, &tree_p,
                                  &dummy_par, &dummy_has) != OK) {
-                u8bFree(pbuf); u8bFree(cbuf); { ret = GRAFFAIL; break; }
+                ret = GRAFFAIL; break;
             }
-            u8bFree(pbuf);
         }
         {
             //  Running head's tree.  Use the cached body from the
             //  previous iteration's emit when available — the
             //  just-written commit isn't in keeper's indexed view
             //  until KEEPPackClose finalizes the pack.
-            Bu8 hbuf = {};
-            b8  hbuf_owned = NO;
             u8c *hbody_start = NULL;
             u8c *hbody_end   = NULL;
             if (head_body_cached) {
                 hbody_start = u8bDataHead(head_body_cache);
                 hbody_end   = u8bIdleHead(head_body_cache);
             } else {
-                if (u8bAllocate(hbuf, REBASE_OBJ_BUF) != OK) {
-                    u8bFree(cbuf); { ret = GRAFFAIL; break; }
-                }
-                hbuf_owned = YES;
+                u8bReset(hbuf);
                 u8 ht = 0;
                 if (KEEPGetExact(&head, hbuf, &ht) != OK
-                    || ht != DOG_OBJ_COMMIT) {
-                    u8bFree(hbuf); u8bFree(cbuf); { ret = GRAFFAIL; break; }
-                }
+                    || ht != DOG_OBJ_COMMIT) { ret = GRAFFAIL; break; }
                 hbody_start = u8bDataHead(hbuf);
                 hbody_end   = u8bIdleHead(hbuf);
             }
@@ -943,10 +878,8 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
             u8cs hbody = {hbody_start, hbody_end};
             if (pid_parse_commit(hbody, &tree_h,
                                  &dummy_par, &dummy_has) != OK) {
-                if (hbuf_owned) u8bFree(hbuf);
-                u8bFree(cbuf); { ret = GRAFFAIL; break; }
+                ret = GRAFFAIL; break;
             }
-            if (hbuf_owned) u8bFree(hbuf);
         }
 
         //  3-way tree merge.  Root call: empty dir_path (the
@@ -956,20 +889,13 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         u8cs root_path = {};
         ret = tm_merge_trees(&new_tree, &tree_p, &tree_h, &tree_c,
                              root_path, cb, ctx, &conflict);
-        if (ret == GRAFCNFL || conflict) {
-            u8bFree(cbuf);
-            ret = GRAFCNFL;
-            break;
-        }
-        if (ret != OK) { u8bFree(cbuf); break; }
+        if (ret == GRAFCNFL || conflict) { ret = GRAFCNFL; break; }
+        if (ret != OK) break;
 
         //  Build + emit new commit.
-        Bu8 cnew = {};
-        if (u8bAllocate(cnew, REBASE_OBJ_BUF) != OK) {
-            u8bFree(cbuf); { ret = GRAFFAIL; break; }
-        }
+        u8bReset(cnew);
         ret = rebase_build_commit(cnew, cbody, &new_tree, &head);
-        if (ret != OK) { u8bFree(cnew); u8bFree(cbuf); break; }
+        if (ret != OK) break;
 
         sha1 new_sha = {};
         a_dup(u8c, ndata, u8bData(cnew));
@@ -980,20 +906,9 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         //  Cache the emitted body so the next iteration can extract
         //  its tree without going through KEEPGetExact (the new
         //  commit lives in an in-progress pack until close).
-        if (head_body_cached) {
-            u8bFree(head_body_cache);
-            head_body_cached = NO;
-        }
-        if (u8bAllocate(head_body_cache, REBASE_OBJ_BUF) == OK) {
-            u8cs ndata_cs = {ndata[0], ndata[1]};
-            if (u8bFeed(head_body_cache, ndata_cs) == OK) {
-                head_body_cached = YES;
-            } else {
-                u8bFree(head_body_cache);
-            }
-        }
-        u8bFree(cnew);
-        u8bFree(cbuf);
+        u8bReset(head_body_cache);
+        u8cs ndata_cs = {ndata[0], ndata[1]};
+        head_body_cached = (u8bFeed(head_body_cache, ndata_cs) == OK);
         if (ret != OK) break;
 
         head = new_sha;
@@ -1002,9 +917,6 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         if (npids < REBASE_PIDS_MAX && pid != 0) pids[npids++] = pid;
     }
 
-    u8bUnMap(chain_buf);
-    u8bUnMap(pids_buf);
-    if (head_body_cached) u8bFree(head_body_cache);
     return ret;
 }
 
@@ -1025,19 +937,16 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
                                sha1cp commit_sha, u8cs filepath) {
     sane(buf && k && commit_sha);
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, REBASE_OBJ_BUF);
+    a_carve(u8, cbuf, REBASE_OBJ_BUF);
     u8 ct = 0;
-    ok64 o = KEEPGetExact(commit_sha, cbuf, &ct);
-    if (o != OK) { u8bFree(cbuf); return o; }
-    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
+    call(KEEPGetExact, commit_sha, cbuf, &ct);
+    if (ct != DOG_OBJ_COMMIT) return KEEPNONE;
 
     sha1 tree_sha = {}, parent_unused = {};
     b8 had_parent = NO;
     a_dup(u8c, cbody, u8bDataC(cbuf));
     ok64 p = pid_parse_commit(cbody, &tree_sha,
                               &parent_unused, &had_parent);
-    u8bFree(cbuf);
     if (p != OK) return p;
 
     sha1 cur = tree_sha;
@@ -1058,10 +967,8 @@ ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     *out_final = wsrc;
     if (nchain == 0 || chain == NULL) done;
 
-    Bu8 blob_a = {}, blob_b = {};
-    call(u8bMap, blob_a, REBASE_FW_BLOB_MAX);
-    ok64 mb = u8bMap(blob_b, REBASE_FW_BLOB_MAX);
-    if (mb != OK) { u8bUnMap(blob_a); return mb; }
+    a_carve(u8, blob_a, REBASE_FW_BLOB_MAX);
+    a_carve(u8, blob_b, REBASE_FW_BLOB_MAX);
 
     Bu8 *cur_blob = &blob_a, *prev_blob = &blob_b;
 
@@ -1103,8 +1010,6 @@ ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     }
 
     *out_final = wsrc;
-    u8bUnMap(blob_a);
-    u8bUnMap(blob_b);
     return ret;
 }
 

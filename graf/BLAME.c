@@ -109,13 +109,14 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     ba->author[0] = 0;
     ba->date[0] = 0;
 
+    //  Non-sane'd helper called from inside a parent call() frame —
+    //  BASS unwind happens at that boundary.
     Bu8 cbuf = {};
-    if (u8bMap(cbuf, 1UL << 20) != OK) return;
+    if (u8bAcquire(ABC_BASS, cbuf, 1UL << 20) != OK) return;
     u8 obj_type = 0;
     if (KEEPGet(commit_hashlet,
                 DAG_H60_HEXLEN, cbuf, &obj_type) != OK ||
         obj_type != DOG_OBJ_COMMIT) {
-        u8bUnMap(cbuf);
         return;
     }
 
@@ -143,7 +144,6 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
         }
         break;
     }
-    u8bUnMap(cbuf);
 }
 
 // Forward decl: ref-scoped blob fetch lives at end of file.
@@ -188,17 +188,16 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return go;
 
-    //  Ancestor closure of the tip, topologically sorted parents-first.
-    //  No PATH_VER pre-filter — the blob fetch loop below skips commits
-    //  where the path is absent and dedups byte-identical adjacent
-    //  versions.  When tip_h == 0 (caller couldn't resolve a tip), fall
-    //  back to all commits recorded in the index.
+    //  Per-call scratch on BASS — auto-rewound at caller's call() return.
+    //  Use direct *bAcquire (not a_carve) so a failure path can still run
+    //  the `if (own_open) GRAFClose()` epilogue rather than short-circuit.
     Bwh128 ancestors = {};
-    ok64 ao = wh128bAllocate(ancestors, BLAME_ANC_SIZE);
+    ok64 ao = wh128bAcquire(ABC_BASS, ancestors, BLAME_ANC_SIZE);
     if (ao != OK) {
         if (own_open) GRAFClose();
         return ao;
     }
+    zerob(ancestors);  // hash set — must be zero-init
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
     if (tip_h != 0) {
@@ -212,21 +211,17 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     Bu8 ord_buf = {};
     u64 *ordered = NULL;
     u32  nord    = 0;
-    if (anc_cap > 0 && u8bMap(ord_buf, anc_cap * sizeof(u64)) == OK) {
+    if (anc_cap > 0 && u8bAcquire(ABC_BASS, ord_buf, anc_cap * sizeof(u64)) == OK) {
         ordered = (u64 *)u8bDataHead(ord_buf);
         nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors, runs);
     }
 
-    // Two mapped blob buffers, swap each iteration
+    // Two BASS-carved blob buffers, swap each iteration
     #define GRAF_FW_BLOB_MAX (16UL << 20)  // 16 MB per blob
     Bu8 blob_a = {}, blob_b = {};
-    ok64 ma = u8bMap(blob_a, GRAF_FW_BLOB_MAX);
-    ok64 mb = u8bMap(blob_b, GRAF_FW_BLOB_MAX);
+    ok64 ma = u8bAcquire(ABC_BASS, blob_a, GRAF_FW_BLOB_MAX);
+    ok64 mb = u8bAcquire(ABC_BASS, blob_b, GRAF_FW_BLOB_MAX);
     if (ma != OK || mb != OK) {
-        if (blob_a[0]) u8bUnMap(blob_a);
-        if (blob_b[0]) u8bUnMap(blob_b);
-        if (ord_buf[0]) u8bUnMap(ord_buf);
-        wh128bFree(ancestors);
         if (own_open) GRAFClose();
         return (ma != OK) ? ma : mb;
     }
@@ -249,11 +244,11 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     u32 *npar_arr   = NULL;
     u32 *child_count = NULL;
     if (nord > 0) {
-        if (u8bMap(th_buf, nord * sizeof(u64)) == OK)
+        if (u8bAcquire(ABC_BASS, th_buf, nord * sizeof(u64)) == OK)
             tree_hs = (u64 *)u8bDataHead(th_buf);
-        if (u8bMap(np_buf, nord * sizeof(u32)) == OK)
+        if (u8bAcquire(ABC_BASS, np_buf, nord * sizeof(u32)) == OK)
             npar_arr = (u32 *)u8bDataHead(np_buf);
-        if (u8bMap(cc_buf, nord * sizeof(u32)) == OK)
+        if (u8bAcquire(ABC_BASS, cc_buf, nord * sizeof(u32)) == OK)
             child_count = (u32 *)u8bDataHead(cc_buf);
     }
     if (tree_hs && npar_arr && child_count) {
@@ -367,13 +362,6 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 
     *out_final = wsrc;
 
-    u8bUnMap(blob_a);
-    u8bUnMap(blob_b);
-    if (cc_buf[0]) u8bUnMap(cc_buf);
-    if (np_buf[0]) u8bUnMap(np_buf);
-    if (th_buf[0]) u8bUnMap(th_buf);
-    if (ord_buf[0]) u8bUnMap(ord_buf);
-    wh128bFree(ancestors);
     if (own_open) GRAFClose();
     return ret;
 }
@@ -465,15 +453,21 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     inrmcp w_irm   = (inrmcp)wsrc->inrm[1];
     u8cp  w_text   = (u8cp)wsrc->text[1];
 
-    Bu8 outbuf = {};
-    call(u8bMap, outbuf, 16UL << 20);
+    a_carve(u8, outbuf, 16UL << 20);
 
     //  TLV mode: emit a toks stream so each row's hashlet column is a
     //  clickable anchor — `diff:?<hashlet>` rides in a 'U' token right
     //  after the anchor.  Plain mode keeps toks empty; the renderers
     //  drop the URI bytes either way.
     Bu32 toks_buf = {};
-    if (tty) call(u32bAllocate, toks_buf, BLAME_MAX_AUTHORS * 4);
+    if (tty) {
+        __ = u32bAcquire(ABC_BASS, toks_buf, BLAME_MAX_AUTHORS * 4);
+        if (__ != OK) {
+            WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
+            GRAFArenaCleanup();
+            return __;
+        }
+    }
 
     u32 prev_in = 0;        // 0 means "no previous row yet"
     b8  have_prev_in = NO;
@@ -586,8 +580,6 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
         call(GRAFHunkEmit, &hk, NULL);
     }
 
-    if (tty) u32bFree(toks_buf);
-    u8bUnMap(outbuf);
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
@@ -638,9 +630,8 @@ ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
     keeper *k = &KEEP;
     (void)reporoot;
 
-    Bu8 from_buf = {}, to_buf = {};
-    call(u8bMap, from_buf, 16UL << 20);
-    call(u8bMap, to_buf,   16UL << 20);
+    a_carve(u8, from_buf, 16UL << 20);
+    a_carve(u8, to_buf,   16UL << 20);
 
     //  Fetch the `to` blob.  Empty `to` ref means HEAD (legacy
     //  callers); diff: dispatch always supplies an explicit ref.
@@ -661,9 +652,5 @@ ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
     u8cs ext = {};
     PATHu8sExt(ext, filepath);
 
-    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data);
-
-    u8bUnMap(from_buf);
-    u8bUnMap(to_buf);
-    return ret;
+    return GRAFDiff2Layer(filepath, ext, from_data, to_data);
 }

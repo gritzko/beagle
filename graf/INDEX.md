@@ -49,6 +49,38 @@ graf status                        index run/entry counts
 | `WEAVE.{h,c}` | Double-buffered weave of token versions with intro/del gens.  `WEAVEDiff` runs `DIFFu64s` over alive-src vs nu hashlets, then `NEIL.Cleanup` + `NEIL.Shift` over the EDL (alive-only text/toks views are materialised once per step) so spurious whitespace/punctuation EQ matches between unrelated lines don't pollute the weave's `inrm` attributions.  `WEAVEMerge` (3-way concurrent-branch merge) diffs the *full* hashlet streams of two derived weaves with each token's `inrm.in` mixed into the diff key (Knuth multiplier + `in`) so Myers can't spuriously align same-byte tokens of different provenance — the LCS recovers the shared spine cleanly when both inputs come from a common ancestor via `WEAVEDiff`.  EQ runs reconcile `(in, rm)` per-token (deleter wins; alive-on-both takes `min(in_a, in_b)`); non-EQ runs canonicalise as INS-then-DEL with each side's tokens carrying their original `inrm`.  When both sides have *alive* inserts at the same logical slot AND the inserted bytes differ, synthetic conflict-marker tokens (`<<<<` / `||||` / `>>>>`, src = `WEAVE_CFLCT_SRC`) frame the divergence — alive on output so downstream `has_conflict_marker` detectors keep working.  `WEAVEEmitDiff` walks a built weave and emits unified-diff hunks with context (3 lines on each side, clusters merge through gaps ≤ 2×CTX) classified by caller-supplied `(in_from, in_to)` predicates.  Each hunk carries `text` + `toks` (lexer syntax tags from the weave) + `hili` (`I`/`D`/`' '`) |
 | `LOG.c`       | `GRAFLog` + `GRAFHead`.  `GRAFHead` is `be head '#<msg>'` (VERBS.md §HEAD): walks cur's first-parent chain via the DAG COMMIT_PARENT index, fetches each commit body via keeper, emits the first commit whose message body contains the fragment as a substring.  Bounded by `GRAFHEAD_MAX_WALK` (65536); no-match returns `GRAFNONE`. `GRAFLog` — `be log:[path]?ref[#N]` projector. Branch history walks `(COMMIT,COMMIT)` parent edges via the DAG index; file history (`./path/file?ref`) topo-sorts the tip's ancestor closure and emits a row whenever the blob bytes at `path` differ from the prior commit's. Commit body fetched from keeper for the `<sha7> <date> <author> <summary>` render |
 
+## Memory
+
+Per-call scratch (commit/tree object buffers, topo-sort stacks, ancestor sets,
+weave-diff workspaces, hunk-render text/toks/uri buffers, rebase replay
+scratch) rides on `ABC_BASS` via `a_carve` / `a_lign` / `u8bAcquire` etc.
+— acquired inside the function and auto-rewound at the caller's `call()`
+boundary; no per-buffer `u8bFree` / `u8bUnMap`.
+
+Long-lived singleton state stays on heap/mmap:
+- `GRAF.arena` / `GRAF.obj_buf` / `GRAF.tree_buf` — populated in `GRAFOpen`,
+  released in `GRAFClose`; survive across every `GRAFExec` invocation.
+- `dag_ingest::batch` (graf/DAG.c) — owned by the long-running ingest state,
+  outlives the `call()` frame that allocates it.
+- `weave *w` member buffers (`w->text`, `w->toks`, `w->hashlets`, `w->inrm`) —
+  caller-owned via `WEAVEInit` / `WEAVEFree`; the weave instance outlives any
+  single graf operation that fills it.
+
+In the GRAFRebase replay loop (`graf/REBASE.c`), per-iteration commit/parent/
+head/cnew buffers are hoisted to function scope as a single `a_carve` each and
+reused via `u8bReset` between iterations — without this, `nchain × N × 1 MiB`
+would pile up on BASS for long rebases.
+
+**`wh128` hash-set acquires must `zerob`** — `HASHwh128Put`/`Get` rely on
+`is0(slot)` to detect empty entries.  `wh128bMap` (mmap) gave zeroed pages
+implicitly; `wh128bAcquire` (BASS) reuses arena memory that may carry leftover
+content from previously-rewound carves.  Heap allocations from a fresh process
+happened to get zero pages from the OS, which masked the bug for years.  Every
+`a_carve(wh128, …)` / `wh128bAcquire(...)` site that feeds `DAGAncestors` /
+`DAGAncestorsHas` / `dag_anc_put` (i.e. uses the buffer as a hash set, not as
+a plain feed-array like the BFS `queue`) must follow the acquire with
+`zerob(name)`.
+
 ## Pager
 
 When diff/weave/blame runs with a tty stdout, graf forks `bro`

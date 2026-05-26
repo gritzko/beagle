@@ -80,14 +80,11 @@ static ok64 graf_first_parent_hex(u8cs query, sha1hex *out_parent) {
     call(sha1FromSha1hex, &commit_sha, &commit_hex);
     u64 commit_h60 = WHIFFHashlet60(&commit_sha);
 
-    Bu8 cbuf = {};
-    call(u8bMap, cbuf, 1UL << 20);
+    a_carve(u8, cbuf, 1UL << 20);
     u8 ot = 0;
     ok64 go = KEEPGet(commit_h60, DAG_H60_HEXLEN, cbuf, &ot);
-    if (go != OK || ot != DOG_OBJ_COMMIT) {
-        u8bUnMap(cbuf);
+    if (go != OK || ot != DOG_OBJ_COMMIT)
         return (go != OK) ? go : KEEPNONE;
-    }
     a_dup(u8c, scan, u8bDataC(cbuf));
     u8cs field = {}, value = {};
     ok64 ret = GRAFNONE;
@@ -99,8 +96,23 @@ static ok64 graf_first_parent_hex(u8cs query, sha1hex *out_parent) {
             break;
         }
     }
-    u8bUnMap(cbuf);
     return ret;
+}
+
+// --- `graf get <path>?<sha>[&...]` helper: deterministic blob/tree fetch.
+//
+//  Split out so the 16MB output buffer can ride on BASS via `a_carve`:
+//  on a_carve's allocation failure (or any downstream call() failure),
+//  this helper returns early with BASS rewound; GRAFExec's outer frame
+//  proceeds to KEEPClose at its tail.
+static ok64 graf_get_op(uri *u) {
+    sane(u);
+    a_carve(u8, out, 16UL << 20);
+    a_dup(u8c, uri_in, u->data);
+    call(GRAFGet, out, uri_in);
+    a_dup(u8c, obytes, u8bData(out));
+    call(FILEFeedAll, STDOUT_FILENO, obytes);
+    done;
 }
 
 // --- URI path helper ---
@@ -285,17 +297,8 @@ ok64 GRAFExec(cli *c) {
         }
         if (is_get_op) {
             uri *u = uribAtP(c->uris, 0);
-            Bu8 out = {};
-            ret = u8bMap(out, 16UL << 20);
-            if (ret == OK) {
-                a_dup(u8c, uri_in, u->data);
-                ret = GRAFGet(out, uri_in);
-                if (ret == OK) {
-                    a_dup(u8c, obytes, u8bData(out));
-                    ret = FILEFeedAll(STDOUT_FILENO, obytes);
-                }
-                u8bUnMap(out);
-            }
+            try(graf_get_op, u);
+            ret = __;
         } else {
             //  Tip-walk indexer.  Bare `graf get` (no URI) walks the
             //  worktree's current tip (via `--at` parked in cur_sha).

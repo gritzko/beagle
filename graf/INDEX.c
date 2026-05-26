@@ -231,23 +231,15 @@ ok64 GRAFIndexFromTips(uricp u) {
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
 
-    Bu8 body = {};
-    call(u8bMap, body, GRAF_INGEST_BUFSZ);
+    a_carve(u8,    body,  GRAF_INGEST_BUFSZ);
+    a_carve(wh128, seen,  GRAF_WALK_SET_CAP);
+    a_carve(wh128, queue, GRAF_WALK_SET_CAP);
+    zerob(seen);  // hash set — must be zero-init (see graf/GET.c::get_lca)
 
-    Bwh128 seen = {};
-    Bwh128 queue = {};
-    ok64 rc = wh128bMap(seen, GRAF_WALK_SET_CAP);
-    if (rc != OK) { u8bUnMap(body); return rc; }
-    rc = wh128bMap(queue, GRAF_WALK_SET_CAP);
-    if (rc != OK) { wh128bUnMap(seen); u8bUnMap(body); return rc; }
-
-    rc = graf_walk_from_tip(k, tip_h, body, seen, queue, runs);
+    ok64 rc = graf_walk_from_tip(k, tip_h, body, seen, queue, runs);
 
     GRAFDagFinish();
 
-    wh128bUnMap(queue);
-    wh128bUnMap(seen);
-    u8bUnMap(body);
     return rc;
 }
 
@@ -312,14 +304,10 @@ ok64 GRAFIndex(void) {
     sane(YES);
     keeper *k = &KEEP;
 
-    Bu8 body = {};
-    call(u8bMap, body, GRAF_INGEST_BUFSZ);
-
-    Bwh128 seen = {}, queue = {};
-    ok64 rc = wh128bMap(seen, GRAF_WALK_SET_CAP);
-    if (rc != OK) { u8bUnMap(body); return rc; }
-    rc = wh128bMap(queue, GRAF_WALK_SET_CAP);
-    if (rc != OK) { wh128bUnMap(seen); u8bUnMap(body); return rc; }
+    a_carve(u8,    body,  GRAF_INGEST_BUFSZ);
+    a_carve(wh128, seen,  GRAF_WALK_SET_CAP);
+    a_carve(wh128, queue, GRAF_WALK_SET_CAP);
+    zerob(seen);  // hash set — must be zero-init
 
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
@@ -339,11 +327,8 @@ ok64 GRAFIndex(void) {
     if (ctx.rc == OK)
         (void)graf_feed_type(k, DOG_OBJ_COMMIT, YES, body);
 
-    rc = GRAFDagFinish();
+    ok64 rc = GRAFDagFinish();
     if (rc == OK) rc = ctx.rc;
 
-    wh128bUnMap(queue);
-    wh128bUnMap(seen);
-    u8bUnMap(body);
     return rc;
 }

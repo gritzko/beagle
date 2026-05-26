@@ -215,11 +215,15 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
     Bi32 work        = {};
     Bu32 edlbuf      = {};
 
-    __ = u64bAlloc(alive_h, src_len + 1); if (__ != OK) goto cleanup;
+    //  All per-call scratch on BASS.  Direct *bAcquire (not a_carve) so
+    //  failures hit the existing `goto cleanup` chain — no labels need
+    //  to remove anything (BASS auto-rewinds at caller's call() return),
+    //  the chain just falls through to `return __`.
+    __ = u64bAcquire(ABC_BASS, alive_h, src_len + 1); if (__ != OK) goto cleanup;
     u32 src_text_len = (u32)u8bDataLen(src->text);
     if (src_text_len == 0) src_text_len = 1;
-    __ = u8bMap (alive_text, src_text_len + 1); if (__ != OK) goto cleanup;
-    __ = u32bAlloc(alive_toks, src_len + 1);    if (__ != OK) goto cleanup;
+    __ = u8bAcquire (ABC_BASS, alive_text, src_text_len + 1); if (__ != OK) goto cleanup;
+    __ = u32bAcquire(ABC_BASS, alive_toks, src_len + 1);      if (__ != OK) goto cleanup;
     {
         u32 cum = 0;
         for (u32 i = 0; i < src_len; i++) {
@@ -241,8 +245,8 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
 
     u64 work_sz = DIFFWorkSize(olen, nlen);
     u64 edl_sz  = DIFFEdlMaxEntries(olen, nlen);
-    if (work_sz > 0) { __ = i32bAllocate(work,   work_sz); if (__ != OK) goto cleanup; }
-    if (edl_sz  > 0) { __ = u32bAllocate(edlbuf, edl_sz);  if (__ != OK) goto cleanup; }
+    if (work_sz > 0) { __ = i32bAcquire(ABC_BASS, work,   work_sz); if (__ != OK) goto cleanup; }
+    if (edl_sz  > 0) { __ = u32bAcquire(ABC_BASS, edlbuf, edl_sz);  if (__ != OK) goto cleanup; }
 
     u64cs oh = {u64bDataHead(alive_h), u64bDataHead(alive_h) + olen};
     u64cs nh = {nu_hash, nu_hash + nlen};
@@ -331,7 +335,7 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
         u32 *adi = NULL;
         u32  adi_n = 0;
         if (sum_del > 0 && sum_ins > 0) {
-            __ = u32bAllocate(adi_buf, sum_del);
+            __ = u32bAcquire(ABC_BASS, adi_buf, sum_del);
             if (__ != OK) goto cleanup;
             adi = adi_buf[0];
             u32 wi_p = wi;
@@ -378,7 +382,6 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
                 suffix++;
             }
         }
-        u32bFree(adi_buf);
 
         //  Prefix lift: emit `prefix` tokens as EQ-context, carrying
         //  the src token's original inrm (these bytes lived in src and
@@ -458,11 +461,6 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
     }
 
 cleanup:
-    u64bFree(alive_h);
-    if (alive_text[0]) u8bUnMap(alive_text);
-    u32bFree(alive_toks);
-    i32bFree(work);
-    u32bFree(edlbuf);
     return __;
 }
 
@@ -567,10 +565,10 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
     u64 work_sz = DIFFWorkSize(olen, nlen);
     u64 edl_sz  = DIFFEdlMaxEntries(olen, nlen);
 
-    if (work_sz > 0) { __ = i32bAllocate(work,   work_sz); if (__ != OK) goto cleanup; }
-    if (edl_sz  > 0) { __ = u32bAllocate(edlbuf, edl_sz);  if (__ != OK) goto cleanup; }
-    __ = u64bAlloc(ah_buf, olen + 1); if (__ != OK) goto cleanup;
-    __ = u64bAlloc(bh_buf, nlen + 1); if (__ != OK) goto cleanup;
+    if (work_sz > 0) { __ = i32bAcquire(ABC_BASS, work,   work_sz); if (__ != OK) goto cleanup; }
+    if (edl_sz  > 0) { __ = u32bAcquire(ABC_BASS, edlbuf, edl_sz);  if (__ != OK) goto cleanup; }
+    __ = u64bAcquire(ABC_BASS, ah_buf, olen + 1); if (__ != OK) goto cleanup;
+    __ = u64bAcquire(ABC_BASS, bh_buf, nlen + 1); if (__ != OK) goto cleanup;
 
     //  Bias the LCS toward provenance-aware matches: encode `in` into
     //  the hashlet so tokens only LCS-match when they share BOTH the
@@ -798,10 +796,6 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
     }
 
 cleanup:
-    i32bFree(work);
-    u32bFree(edlbuf);
-    u64bFree(ah_buf);
-    u64bFree(bh_buf);
     return __;
 }
 
@@ -859,9 +853,10 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
         for (u32 b = 0; b < tlen; b++) if (text[b] == '\n') total_lines_est++;
     }
 
-    Bu8 changed = {};
-    call(u8bMap, changed, total_lines_est + 4);
-    //  Anonymous mmap delivers zero-filled pages — no memset needed.
+    a_carve(u8, changed, total_lines_est + 4);
+    //  a_carve leaves IDLE uninitialized; zero before use since the
+    //  cluster-marking below assumes default-0.
+    memset(changed[0], 0, total_lines_est + 4);
     u8bFed(changed, total_lines_est);
 
     u8 *cmark = (u8 *)u8bDataHead(changed);
@@ -895,8 +890,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     //  Pass 2: cluster changed lines into visible windows.  Adjacent
     //  changed regions whose context (CTX_LINES on each side) overlaps
     //  fold into one window.
-    Bu32 windows = {};
-    call(u32bMap, windows, (total_lines + 4) * 2);
+    a_carve(u32, windows, (total_lines + 4) * 2);
     u32 *wbuf = (u32 *)u32bDataHead(windows);
     u32 nwin = 0;
     {
@@ -928,24 +922,17 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     }
     u32bFed(windows, nwin * 2);
 
-    if (nwin == 0) {
-        u8bUnMap(changed);
-        u32bUnMap(windows);
-        done;
-    }
+    if (nwin == 0) done;
 
     //  Pass 3: emit one hunk per window.  Walk tokens once, accumulate
     //  output for the active window, flush + advance when we cross a
     //  window boundary.
-    Bu8  outtext = {};
-    Bu32 outtoks = {};
-    Bu8  outuri  = {};
-    call(u8bMap,  outtext, 16UL << 20);
-    call(u32bMap, outtoks, 1UL << 16);
+    a_carve(u8,  outtext, 16UL << 20);
+    a_carve(u32, outtoks, 1UL << 16);
     //  Per-hunk URI scratch — `<name>#L<lineno>` rendered fresh on each
     //  FLUSH_HUNK and consumed synchronously by `cb`, so this single
     //  small buffer is reused.
-    call(u8bMap,  outuri,  1UL << 12);
+    a_carve(u8,  outuri,  1UL << 12);
 
     ok64 ret = OK;
     u32 wi = 0;          // active window index
@@ -1036,11 +1023,6 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     #undef FLUSH_HUNK
 
 cleanup:
-    u8bUnMap(outtext);
-    u32bUnMap(outtoks);
-    u8bUnMap(outuri);
-    u8bUnMap(changed);
-    u32bUnMap(windows);
     return ret;
 }
 
@@ -1069,12 +1051,9 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     u8cp   text  = (u8cp)w->text[1];
     if (ntok == 0) done;
 
-    Bu8  outtext = {};
-    Bu32 outtoks = {};
-    Bu8  outuri  = {};
-    call(u8bMap,  outtext, 16UL << 20);
-    call(u32bMap, outtoks, 1UL << 16);
-    call(u8bMap,  outuri,  1UL << 12);
+    a_carve(u8,  outtext, 16UL << 20);
+    a_carve(u32, outtoks, 1UL << 16);
+    a_carve(u8,  outuri,  1UL << 12);
 
     ok64 ret = OK;
     b8   hunk_open = NO;
@@ -1146,9 +1125,6 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     #undef FLUSH_FULL_HUNK
 
 cleanup:
-    u8bUnMap(outtext);
-    u32bUnMap(outtoks);
-    u8bUnMap(outuri);
     return ret;
 }
 

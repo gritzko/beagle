@@ -190,8 +190,7 @@ ok64 GRAFMap(uricp u) {
 
     //  Per-call string arena: path / summary / author bytes interned
     //  here.  Every u8cs in map_branch / map_commit points into it.
-    Bu8 strs_arena = {};
-    if (u8bAllocate(strs_arena, 1UL << 20) != OK) fail(GRAFFAIL);
+    a_carve(u8, strs_arena, 1UL << 20);
 
     //  Resolve current branch — sourced from `--at <root>?<branch>#<sha>`
     //  forwarded by `be` and parked in KEEP.h->cur_branch by HOMEOpen.
@@ -231,9 +230,8 @@ ok64 GRAFMap(uricp u) {
     //  GRAFOpen is idempotent — close only if we owned the open.
     ok64 go = GRAFOpen(KEEP.h, NO);
     b8 own_graf = (go == OK);
-    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
-        u8bFree(strs_arena); return go;
-    }
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
+        return go;
     //  Walk every kept branch's idx pups into graf's PAST/DATA so
     //  subsequent DAG queries span every branch.  Mirror on keeper
     //  so per-branch commit bodies (KEEPGet) resolve.  Map is
@@ -244,8 +242,9 @@ ok64 GRAFMap(uricp u) {
         call(KEEPSwitchBranch, KEEP.h, br);
     }
     for (u32 i = 0; i < nk; i++) {
-        ok64 ao = wh128bAllocate(kept[i].ancestors, MAP_ANC_SIZE);
-        if (ao != OK) goto cleanup_branches;
+        __ = wh128bAcquire(ABC_BASS, kept[i].ancestors, MAP_ANC_SIZE);
+        if (__ != OK) return __;
+        zerob(kept[i].ancestors);  // hash set — must be zero-init
         kept[i].anc_init = YES;
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
@@ -254,8 +253,8 @@ ok64 GRAFMap(uricp u) {
 
     //  Union all hashlets.  Deepest-claiming branch owns each commit
     //  (kept[] is shallow→deep; first match in kept[] order wins).
-    Bwh128 union_set = {};
-    if (wh128bAllocate(union_set, MAP_ANC_SIZE) != OK) goto cleanup_branches;
+    a_carve(wh128, union_set, MAP_ANC_SIZE);
+    zerob(union_set);
     if (nk > 0) {
         u64 tips[MAP_MAX_BRANCHES];
         for (u32 i = 0; i < nk; i++) tips[i] = kept[i].tip_h40;
@@ -264,15 +263,12 @@ ok64 GRAFMap(uricp u) {
         DAGAncestorsOfMany(union_set, runs, tips, nk);
     }
 
-    //  commits[] is 320KB — too large for the stack; mmap and cast.
-    Bu8 commits_buf = {};
-    if (u8bMap(commits_buf, MAP_MAX_COMMITS * sizeof(map_commit)) != OK)
-        goto cleanup_union;
+    //  commits[] is 320KB — too large for the stack; carve on BASS.
+    a_carve(u8, commits_buf, MAP_MAX_COMMITS * sizeof(map_commit));
     map_commit *commits = (map_commit *)u8bDataHead(commits_buf);
     u32 ncommits = 0;
 
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, MAP_OBJ_BUF) != OK) goto cleanup_commits;
+    a_carve(u8, cbuf, MAP_OBJ_BUF);
 
     //  Walk the union: records live as hashtable slots (key == 0 ==
     //  empty), not packed.  Walk the full slot range, skip empties.
@@ -315,7 +311,6 @@ ok64 GRAFMap(uricp u) {
             map_intern(strs_arena, mc->author,  gc_author_id_c);
         }
     }
-    u8bUnMap(cbuf);
 
     //  Topological order (parents → children), then reverse to render
     //  newest-first like `git log`.  Author-ts sorting is wrong here
@@ -324,9 +319,7 @@ ok64 GRAFMap(uricp u) {
     //  newer than a UTC descendant at "08:30").  Topology is the only
     //  truth on a linear chain; for unrelated branches the topo-sort's
     //  internal tiebreak picks a stable order.
-    Bu8 topo_buf = {};
-    if (u8bMap(topo_buf, MAP_MAX_COMMITS * sizeof(u64)) != OK)
-        goto cleanup_commits;
+    a_carve(u8, topo_buf, MAP_MAX_COMMITS * sizeof(u64));
     u64 *topo = (u64 *)u8bDataHead(topo_buf);
     wh128css topo_runs = {NULL, NULL};
     GRAFRuns(topo_runs);
@@ -358,21 +351,17 @@ ok64 GRAFMap(uricp u) {
         qsort(commits + out_i, ncommits - out_i,
               sizeof(*commits), map_commit_cmp_desc);
     }
-    u8bUnMap(topo_buf);
 
     //  Render — one row per commit: glyph-per-branch + sha7 + 7-date
     //  + branch + summary.  TLV mode also emits a toks stream so bro
     //  can attach a `diff:?<sha>` U-token to each sha7 anchor;
     //  plain-text mode keeps toks empty.
-    Bu8 text = {};
-    if (u8bAllocate(text, 1UL << 20) != OK) goto cleanup_commits;
+    a_carve(u8, text, 1UL << 20);
     b8  want_toks = (HUNKMode == HUNKOutTLV);
     Bu32 toks_buf = {};
     if (want_toks) {
-        if (u32bAllocate(toks_buf, ncommits * 4) != OK) {
-            u8bFree(text);
-            goto cleanup_commits;
-        }
+        __ = u32bAcquire(ABC_BASS, toks_buf, ncommits * 4);
+        if (__ != OK) return __;
     }
 
     i64 now = (i64)time(NULL);
@@ -436,24 +425,6 @@ ok64 GRAFMap(uricp u) {
         hk.toks[1] = (tok32 const *)u32bIdleHead(toks_buf);
     }
     (void)GRAFHunkEmit(&hk, NULL);
-    if (want_toks) u32bFree(toks_buf);
-    u8bFree(text);
-    u8bUnMap(commits_buf);
-    wh128bFree(union_set);
-    for (u32 i = 0; i < nk; i++)
-        if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
     if (own_graf) GRAFClose();
-    u8bFree(strs_arena);
     done;
-
-cleanup_commits:
-    u8bUnMap(commits_buf);
-cleanup_union:
-    wh128bFree(union_set);
-cleanup_branches:
-    for (u32 i = 0; i < nk; i++)
-        if (kept[i].anc_init) wh128bFree(kept[i].ancestors);
-    if (own_graf) GRAFClose();
-    u8bFree(strs_arena);
-    fail(GRAFFAIL);
 }

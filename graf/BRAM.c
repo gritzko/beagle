@@ -135,13 +135,12 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     u64cp new_h = new_hashes[0];
 
     //  Step 1: split into lines (allocate capacity for the worst case
-    //  where every token ends a line).
-    Bu8 la_buf = {}, lb_buf = {};
-    ok64 r = OK;
-    if ((r = u8bAlloc(la_buf, (na + 1) * sizeof(bram_line))) != OK) return r;
-    if ((r = u8bAlloc(lb_buf, (nb + 1) * sizeof(bram_line))) != OK) {
-        u8bFree(la_buf); return r;
-    }
+    //  where every token ends a line).  All scratch on BASS — auto-
+    //  rewound at the caller's call() boundary.  Note: a_carve does NOT
+    //  zero — use a_carve0 / memset where the original u8bAlloc relied
+    //  on Balloc's zero-fill.
+    a_carve(u8, la_buf, (na + 1) * sizeof(bram_line));
+    a_carve(u8, lb_buf, (nb + 1) * sizeof(bram_line));
     bram_line *lines_a = (bram_line *)la_buf[0];
     bram_line *lines_b = (bram_line *)lb_buf[0];
     u32 la_n = bram_lines(lines_a, old_h, na);
@@ -149,17 +148,12 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
 
     //  No lines on at least one side → nothing for patience to anchor.
     //  Fall back to plain Myers on the whole input.
-    if (la_n == 0 || lb_n == 0) {
-        u8bFree(la_buf); u8bFree(lb_buf);
+    if (la_n == 0 || lb_n == 0)
         return DIFFu64s(edl, work, old_hashes, new_hashes);
-    }
 
     //  Step 2: count line-hashes on each side, mark unique-on-both
     //  lines as anchors.
-    Bu8 pairs_buf = {};
-    if ((r = u8bAlloc(pairs_buf, (la_n + lb_n) * sizeof(bram_pair))) != OK) {
-        u8bFree(la_buf); u8bFree(lb_buf); return r;
-    }
+    a_carve(u8, pairs_buf, (la_n + lb_n) * sizeof(bram_pair));
     bram_pair *pairs = (bram_pair *)pairs_buf[0];
     u32 npairs = 0;
     for (u32 i = 0; i < la_n; i++) {
@@ -176,15 +170,12 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     }
     qsort(pairs, npairs, sizeof(bram_pair), bram_pair_cmp);
 
-    Bu8 ina_buf = {}, inb_buf = {};
-    if ((r = u8bAlloc(ina_buf, la_n)) != OK) {
-        u8bFree(la_buf); u8bFree(lb_buf); u8bFree(pairs_buf); return r;
-    }
-    if ((r = u8bAlloc(inb_buf, lb_n)) != OK) {
-        u8bFree(la_buf); u8bFree(lb_buf); u8bFree(pairs_buf);
-        u8bFree(ina_buf); return r;
-    }
-    //  u8bAlloc zero-fills via Balloc/memset — no manual reset needed.
+    a_carve(u8, ina_buf, la_n);
+    a_carve(u8, inb_buf, lb_n);
+    //  u8bAlloc would have zero-filled; a_carve doesn't, so do it manually:
+    //  the anchor flags below rely on default-0.
+    memset(ina_buf[0], 0, la_n);
+    memset(inb_buf[0], 0, lb_n);
     u8 *is_anchor_a = ina_buf[0];
     u8 *is_anchor_b = inb_buf[0];
 
@@ -208,15 +199,12 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
             i = j;
         }
     }
-    u8bFree(pairs_buf);
 
     //  Step 3: build anchor-hash arrays in source order; LCS them.
-    Bu8 ah_a_buf = {}, ah_b_buf = {};
-    Bu8 ai_a_buf = {}, ai_b_buf = {};
-    if ((r = u8bAlloc(ah_a_buf, la_n * sizeof(u64))) != OK) goto fail0;
-    if ((r = u8bAlloc(ah_b_buf, lb_n * sizeof(u64))) != OK) goto fail1;
-    if ((r = u8bAlloc(ai_a_buf, la_n * sizeof(u32))) != OK) goto fail2;
-    if ((r = u8bAlloc(ai_b_buf, lb_n * sizeof(u32))) != OK) goto fail3;
+    a_carve(u8, ah_a_buf, la_n * sizeof(u64));
+    a_carve(u8, ah_b_buf, lb_n * sizeof(u64));
+    a_carve(u8, ai_a_buf, la_n * sizeof(u32));
+    a_carve(u8, ai_b_buf, lb_n * sizeof(u32));
 
     u64 *ah_a = (u64 *)ah_a_buf[0]; u32 ana = 0;
     u64 *ah_b = (u64 *)ah_b_buf[0]; u32 anb = 0;
@@ -232,23 +220,15 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
         ai_b[anb] = k;
         anb++;
     }
-    u8bFree(ina_buf);
-    u8bFree(inb_buf);
 
     //  No anchors on either side — fall back.
-    if (ana == 0 || anb == 0) {
-        u8bFree(la_buf); u8bFree(lb_buf);
-        u8bFree(ah_a_buf); u8bFree(ah_b_buf);
-        u8bFree(ai_a_buf); u8bFree(ai_b_buf);
+    if (ana == 0 || anb == 0)
         return DIFFu64s(edl, work, old_hashes, new_hashes);
-    }
 
-    Bu32 anchor_edl_buf = {};
-    Bi32 anchor_work_buf = {};
     u64  aedl_sz  = DIFFEdlMaxEntries((u64)ana, (u64)anb);
     u64  awork_sz = DIFFWorkSize((u64)ana, (u64)anb);
-    if ((r = u32bAllocate(anchor_edl_buf,  aedl_sz))  != OK) goto fail4;
-    if ((r = i32bAllocate(anchor_work_buf, awork_sz)) != OK) goto fail5;
+    a_carve(u32, anchor_edl_buf,  aedl_sz);
+    a_carve(i32, anchor_work_buf, awork_sz);
 
     e32g aedl = {anchor_edl_buf[0], anchor_edl_buf[3], anchor_edl_buf[0]};
     i32s awork = {i32bHead(anchor_work_buf), i32bTerm(anchor_work_buf)};
@@ -257,12 +237,9 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     ok64 ar = DIFFu64s(aedl, awork, aha_s, ahb_s);
     if (ar != OK) {
         //  Anchor LCS hit budget — fall back to plain Myers.
-        u32bFree(anchor_edl_buf); i32bFree(anchor_work_buf);
-        u8bFree(la_buf); u8bFree(lb_buf);
-        u8bFree(ah_a_buf); u8bFree(ah_b_buf);
-        u8bFree(ai_a_buf); u8bFree(ai_b_buf);
         return DIFFu64s(edl, work, old_hashes, new_hashes);
     }
+    ok64 r = OK;
 
     //  Step 4 + 5: walk anchor EDL, recurse on between-anchor regions
     //  and emit matched-anchor EQ runs.
@@ -320,20 +297,8 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
         if (ro != OK) r = ro;
     }
 
+    return r;
+
 cleanup:
-    u32bFree(anchor_edl_buf);
-    i32bFree(anchor_work_buf);
-fail5: (void)0;
-fail4:
-    u8bFree(ai_b_buf);
-fail3:
-    u8bFree(ai_a_buf);
-fail2:
-    u8bFree(ah_b_buf);
-fail1:
-    u8bFree(ah_a_buf);
-fail0:
-    u8bFree(la_buf);
-    u8bFree(lb_buf);
     return r;
 }

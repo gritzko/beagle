@@ -137,8 +137,7 @@ ok64 JOINMerge(u8bp out, JOINfile *base, JOINfile *ours, JOINfile *theirs) {
 
     // Single allocation for diff workspace
     u64 total = wsize * sizeof(i32) + (emax_o + emax_t) * sizeof(e32);
-    u8 *mem[4] = {};
-    call(u8bAlloc, mem, total);
+    a_carve(u8, mem, total);
 
     // Carve work buffer
     i32p workp = (i32p)mem[1];
@@ -253,6 +252,5 @@ ok64 JOINMerge(u8bp out, JOINfile *base, JOINfile *ours, JOINfile *theirs) {
         }
     }
 
-    u8bFree(mem);
     done;
 }

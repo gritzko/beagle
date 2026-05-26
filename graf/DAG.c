@@ -423,14 +423,16 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     size_t set_cap = (size_t)(wh128bTerm(set) - wh128bHead(set));
     if (set_cap == 0) return 0;
 
+    //  Non-sane'd helper (returns u32 count); called from inside the
+    //  caller's call() frame, so BASS auto-rewinds at that boundary.
+    //  `visited` is a hash set — zero-init mandatory (see graf/GET.c
+    //  ::get_lca for the why).
     Bwh128 visited = {};
-    if (wh128bMap(visited, set_cap) != OK) return 0;
+    if (wh128bAcquire(ABC_BASS, visited, set_cap) != OK) return 0;
+    zerob(visited);
 
     Bu8 stk_buf = {};
-    if (u8bMap(stk_buf, set_cap * sizeof(topo_frame)) != OK) {
-        wh128bUnMap(visited);
-        return 0;
-    }
+    if (u8bAcquire(ABC_BASS, stk_buf, set_cap * sizeof(topo_frame)) != OK) return 0;
     topo_frame *stack = (topo_frame *)u8bDataHead(stk_buf);
     u32 stack_max = (u32)set_cap;
 
@@ -442,10 +444,7 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     //  different topo orders → different WEAVE replays → different
     //  output bytes.  Stable hashlet order makes the merge reproducible.
     Bu8 roots_buf = {};
-    if (u8bMap(roots_buf, set_cap * sizeof(u64)) != OK) {
-        u8bUnMap(stk_buf); wh128bUnMap(visited);
-        return 0;
-    }
+    if (u8bAcquire(ABC_BASS, roots_buf, set_cap * sizeof(u64)) != OK) return 0;
     u64 *roots = (u64 *)u8bDataHead(roots_buf);
     u32 nroots = 0;
     {
@@ -510,9 +509,6 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     }
 
 outta_room:
-    u8bUnMap(roots_buf);
-    u8bUnMap(stk_buf);
-    wh128bUnMap(visited);
     return written;
 }
 
@@ -523,17 +519,17 @@ u32 DAGTopoSort(u64 *out, u32 cap,
     size_t set_cap = (size_t)(wh128bTerm(set) - wh128bHead(set));
     if (set_cap == 0) return 0;
 
+    //  Non-sane'd helper; BASS auto-rewinds at caller's call() boundary.
+    //  `visited` is a hash set — zero-init mandatory.
     Bwh128 visited = {};
-    if (wh128bMap(visited, set_cap) != OK) return 0;
+    if (wh128bAcquire(ABC_BASS, visited, set_cap) != OK) return 0;
+    zerob(visited);
 
     //  Stack capacity = set capacity is overkill but safe (a DFS stack
     //  is bounded by the longest chain in the subgraph, which never
     //  exceeds the number of nodes).
     Bu8 stk_buf = {};
-    if (u8bMap(stk_buf, set_cap * sizeof(topo_frame)) != OK) {
-        wh128bUnMap(visited);
-        return 0;
-    }
+    if (u8bAcquire(ABC_BASS, stk_buf, set_cap * sizeof(topo_frame)) != OK) return 0;
     topo_frame *stack = (topo_frame *)u8bDataHead(stk_buf);
     u32 stack_max = (u32)set_cap;
 
@@ -586,8 +582,6 @@ u32 DAGTopoSort(u64 *out, u32 cap,
     }
 
 outta_room:
-    u8bUnMap(stk_buf);
-    wh128bUnMap(visited);
     return written;
 }
 
@@ -623,14 +617,13 @@ static ok64 dag_compact(graf *g) {
     for (u32 i = 0; i < nview; i++)
         total += (size_t)(runs[i][1] - runs[i][0]);
 
-    Bwh128 cbuf = {};
-    call(wh128bAllocate, cbuf, total);
+    a_carve(wh128, cbuf, total);
     wh128 *base = cbuf[0];
     wh128s into = {cbuf[0], cbuf[3]};
     size_t before_len = $len(stack);
     call(HITwh128Compact, stack, into);
     size_t m = before_len - $len(stack) + 1;
-    if (m < 2) { wh128bFree(cbuf); done; }
+    if (m < 2) done;
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
@@ -641,7 +634,6 @@ static ok64 dag_compact(graf *g) {
     call(GRAFPupCreateNext, $path(leafdir), ext, merged);
 
     GRAFRefreshView();
-    wh128bFree(cbuf);
     done;
 }
 

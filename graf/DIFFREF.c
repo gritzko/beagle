@@ -144,8 +144,7 @@ ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot) {
     sane($ok(filepath) && $ok(reporoot));
     keeper *k = &KEEP;
 
-    Bu8 base_buf = {};
-    call(u8bMap, base_buf, 16UL << 20);
+    a_carve(u8, base_buf, 16UL << 20);
     ok64 bo = GRAFBlobAtCommit(base_buf, base_h40, filepath);
     u8cs from_data = {};
     if (bo == OK) {
@@ -167,7 +166,6 @@ ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot) {
     ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data);
 
     if (wt_mapped) FILEUnMap(wt_mapped);
-    u8bUnMap(base_buf);
     return ret;
 }
 
@@ -244,7 +242,9 @@ static b8 diffref_under_submodule(diffref_wt_ctx const *c, u8cs path) {
 
 static ok64 diffref_remember_submodule(diffref_wt_ctx *c, u8cs path) {
     if (!c->sub_init) {
-        ok64 ao = u8bAllocate(c->sub_prefixes, 1UL << 12);
+        //  Acquired into the surrounding ULOGMergeWalk's call() frame;
+        //  BASS rewinds when that frame returns.
+        ok64 ao = u8bAcquire(ABC_BASS, c->sub_prefixes, 1UL << 12);
         if (ao != OK) return ao;
         c->sub_init = YES;
     }
@@ -331,18 +331,11 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
         a_dup(u8c, sw, s_wt);   RONutf8sDrain(&v_wt,   sw);
     }
 
-    Bu8 bu = {}, wu = {};
-    ok64 mb = u8bMap(bu, DIFFREF_WT_BASE_BUF);
-    ok64 mw = u8bMap(wu, DIFFREF_WT_WT_BUF);
-    if (mb != OK || mw != OK) {
-        if (bu[0]) u8bUnMap(bu);
-        if (wu[0]) u8bUnMap(wu);
-        return (mb != OK) ? mb : mw;
-    }
+    a_carve(u8, bu, DIFFREF_WT_BASE_BUF);
+    a_carve(u8, wu, DIFFREF_WT_WT_BUF);
 
     //  Base side: keeper tree → ULOG rows (`<ts>\t<verb>\t<path>?<mode>#<hex-sha>\n`).
-    ok64 to = KEEPTreeULog(base_tree.data, 0, v_base, bu);
-    if (to != OK) { u8bUnMap(bu); u8bUnMap(wu); return to; }
+    call(KEEPTreeULog, base_tree.data, 0, v_base, bu);
 
     //  Wt side: filesystem walk → ULOG rows (no sha; computed on demand).
     //  Load reporoot's `.gitignore` so build/Corpus/etc. drop out; the
@@ -353,7 +346,7 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
     (void)IGNOLoad(&ig, ig_root);
     ok64 wo = ULOGu8bScanWt(reporoot, v_wt,
                              diffref_wt_skip, &ig, wu);
-    if (wo != OK) { IGNOFree(&ig); u8bUnMap(bu); u8bUnMap(wu); return wo; }
+    if (wo != OK) { IGNOFree(&ig); return wo; }
 
     //  Heap-merge by URI key, fan to the per-path step.
     a_dup(u8c, view_b, u8bData(bu));
@@ -368,10 +361,7 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
     u8csMv(ctx.reporoot, reporoot);
     ok64 mr = ULOGMergeWalk(cursors, diffref_wt_step, &ctx);
 
-    if (ctx.sub_init) u8bFree(ctx.sub_prefixes);
     IGNOFree(&ig);
-    u8bUnMap(bu);
-    u8bUnMap(wu);
     return mr;
 }
 
@@ -472,23 +462,17 @@ ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot) {
     diffref_set from_set = {.v = from_entries, .cap = DIFFREF_MAX_FILES};
     diffref_entry to_entries[DIFFREF_MAX_FILES];
     diffref_set to_set = {.v = to_entries, .cap = DIFFREF_MAX_FILES};
-    Bu8 old_buf = {}, new_buf = {};
 
-    ok64 ret = u8bAllocate(from_set.arena,
-                           DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
-    if (ret == OK)
-        ret = u8bAllocate(to_set.arena,
-                          DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
-    if (ret == OK) ret = u8bMap(old_buf, 16UL << 20);
-    if (ret == OK) ret = u8bMap(new_buf, 16UL << 20);
-    if (ret == OK)
-        ret = graf_diff_tree_refs_inner(k, from, to,
-                                        &from_set, &to_set,
-                                        old_buf, new_buf);
+    a_carve(u8, from_set_arena, DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
+    a_carve(u8, to_set_arena,   DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
+    a_carve(u8, old_buf,        16UL << 20);
+    a_carve(u8, new_buf,        16UL << 20);
+    //  diffref_set::arena is a Bu8 (4-pointer array) — point each set's
+    //  arena field at our carved buffer.
+    memcpy(from_set.arena, from_set_arena, sizeof(Bu8));
+    memcpy(to_set.arena,   to_set_arena,   sizeof(Bu8));
 
-    if (new_buf[0])        u8bUnMap(new_buf);
-    if (old_buf[0])        u8bUnMap(old_buf);
-    if (to_set.arena[0])   u8bFree(to_set.arena);
-    if (from_set.arena[0]) u8bFree(from_set.arena);
-    return ret;
+    return graf_diff_tree_refs_inner(k, from, to,
+                                     &from_set, &to_set,
+                                     old_buf, new_buf);
 }

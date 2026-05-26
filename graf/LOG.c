@@ -288,8 +288,7 @@ static void graflog_strip_dotslash(u8cs path) {
 static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
                            u32 count) {
     sane(k && tip);
-    Bu8 cbuf = {};
-    call(u8bMap, cbuf, LOG_OBJ_BUF);
+    a_carve(u8, cbuf, LOG_OBJ_BUF);
 
     u64 cur_h40 = WHIFFHashlet60(tip);
     for (u32 i = 0; i < count && cur_h40 != 0; i++) {
@@ -344,7 +343,6 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
         }
         if (!found) break;            // truly a root commit
     }
-    u8bUnMap(cbuf);
     done;
 }
 
@@ -418,8 +416,8 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
 
     u64 tip_h40 = WHIFFHashlet60(tip);
 
-    Bwh128 ancestors = {};
-    call(wh128bAllocate, ancestors, LOG_ANC_SIZE);
+    a_carve(wh128, ancestors, LOG_ANC_SIZE);
+    zerob(ancestors);  // hash set — must be zero-init
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
     DAGAncestors(ancestors, runs, tip_h40);
@@ -427,29 +425,14 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
     //  Topo-sort parents-before-children, then walk in reverse for
     //  newest-first emission.
     size_t anc_cap = (size_t)(wh128bTerm(ancestors) - wh128bHead(ancestors));
-    Bu8 ord_buf = {};
-    if (u8bMap(ord_buf, anc_cap * sizeof(u64)) != OK) {
-        if (wh128bHead(ancestors) != wh128bTerm(ancestors))
-            wh128bFree(ancestors);
-        fail(GRAFFAIL);
-    }
+    a_carve(u8, ord_buf, anc_cap * sizeof(u64));
     u64 *ordered = (u64 *)u8bDataHead(ord_buf);
     u32 nord = DAGTopoSort(ordered, (u32)anc_cap, ancestors, runs);
 
-    Bu8 cbuf = {}, tbuf = {}, sha_buf = {}, keep_buf = {};
-    if (u8bMap(cbuf,     LOG_OBJ_BUF)            != OK ||
-        u8bMap(tbuf,     LOG_OBJ_BUF)            != OK ||
-        u8bMap(sha_buf,  anc_cap * 21)           != OK ||
-        u8bMap(keep_buf, anc_cap * sizeof(u64))  != OK) {
-        if (cbuf[0])     u8bUnMap(cbuf);
-        if (tbuf[0])     u8bUnMap(tbuf);
-        if (sha_buf[0])  u8bUnMap(sha_buf);
-        if (keep_buf[0]) u8bUnMap(keep_buf);
-        u8bUnMap(ord_buf);
-        if (wh128bHead(ancestors) != wh128bTerm(ancestors))
-            wh128bFree(ancestors);
-        fail(GRAFFAIL);
-    }
+    a_carve(u8, cbuf,     LOG_OBJ_BUF);
+    a_carve(u8, tbuf,     LOG_OBJ_BUF);
+    a_carve(u8, sha_buf,  anc_cap * 21);
+    a_carve(u8, keep_buf, anc_cap * sizeof(u64));
     //  Per-commit leaf cache: 21 bytes = 1 present-flag + 20 SHA bytes,
     //  indexed by topo position.
     u8 *leaf = (u8 *)u8bDataHead(sha_buf);
@@ -520,13 +503,6 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
         emitted++;
     }
 
-    u8bUnMap(tbuf);
-    u8bUnMap(sha_buf);
-    u8bUnMap(cbuf);
-    u8bUnMap(keep_buf);
-    u8bUnMap(ord_buf);
-    if (wh128bHead(ancestors) != wh128bTerm(ancestors))
-        wh128bFree(ancestors);
     done;
 }
 
@@ -568,27 +544,19 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
     log_ctx lx = {};
     lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
-    call(u8bAllocate, lx.text, LOG_TEXT_BUF);
+    __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
+    if (__ != OK) return __;
     if (lx.tlv) {
-        ok64 to = u32bAllocate(lx.toks, LOG_TOKS_CAP);
-        if (to != OK) { u8bFree(lx.text); return to; }
+        __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
+        if (__ != OK) return __;
     }
 
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, LOG_OBJ_BUF) != OK) {
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
-        return GRAFFAIL;
-    }
+    a_carve(u8, cbuf, LOG_OBJ_BUF);
 
     ok64 go = GRAFOpen(k->h, NO);
     b8 own_open = (go == OK);
-    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
-        u8bUnMap(cbuf);
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
-    }
 
     u64 cur_h40 = WHIFFHashlet60(&cur_tip);
     b8  found = NO;
@@ -652,9 +620,6 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
     }
 
     if (own_open) GRAFClose();
-    u8bUnMap(cbuf);
-    if (lx.tlv) u32bFree(lx.toks);
-    u8bFree(lx.text);
     return ret;
 }
 
@@ -681,14 +646,11 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
 //  GRAFBlobAtCommit's first half — we only want the tree row.
 static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
     sane(k && out);
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 20);
+    a_carve(u8, cbuf, 1UL << 20);
     u8 ct = 0;
     ok64 o = KEEPGet(commit_h60, DAG_H60_HEXLEN, cbuf, &ct);
-    if (o != OK || ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return KEEPNONE; }
-    ok64 ret = GITu8sCommitTree(u8bDataC(cbuf), out->data) == OK ? OK : KEEPNONE;
-    u8bFree(cbuf);
-    return ret;
+    if (o != OK || ct != DOG_OBJ_COMMIT) return KEEPNONE;
+    return GITu8sCommitTree(u8bDataC(cbuf), out->data) == OK ? OK : KEEPNONE;
 }
 
 //  Per-row context for `graf_head_pick_remote_cb`.
@@ -834,8 +796,10 @@ static u32 graf_head_emit_diverged(log_ctx *lx, keeper *k,
                                    Bu8 cbuf) {
     size_t cap = (size_t)(wh128bTerm(set) - wh128bHead(set));
     if (cap == 0) return 0;
+    //  Non-sane'd helper called from inside the caller's call() frame:
+    //  acquired bytes rewind when the caller returns from call().
     Bu8 ord_buf = {};
-    if (u8bMap(ord_buf, cap * sizeof(u64)) != OK) return 0;
+    if (u8bAcquire(ABC_BASS, ord_buf, cap * sizeof(u64)) != OK) return 0;
     u64 *ordered = (u64 *)u8bDataHead(ord_buf);
     u32 nord = DAGTopoSort(ordered, (u32)cap, set, runs);
 
@@ -854,7 +818,6 @@ static u32 graf_head_emit_diverged(log_ctx *lx, keeper *k,
         if (graf_head_render_prefixed(lx, prefix, &csha, body) != OK) break;
         emitted++;
     }
-    u8bUnMap(ord_buf);
     return emitted;
 }
 
@@ -915,17 +878,13 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     log_ctx lx = {};
     lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
-    call(u8bAllocate, lx.text, LOG_TEXT_BUF);
+    __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
+    if (__ != OK) return __;
     if (lx.tlv) {
-        ok64 to = u32bAllocate(lx.toks, LOG_TOKS_CAP);
-        if (to != OK) { u8bFree(lx.text); return to; }
+        __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
+        if (__ != OK) return __;
     }
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, LOG_OBJ_BUF) != OK) {
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
-        return GRAFFAIL;
-    }
+    a_carve(u8, cbuf, LOG_OBJ_BUF);
     //  Branch-aware open: cur first (from --at's `h->cur_branch`), then
     //  switch to the URI's `?branch` so both cur and target chains are
     //  visible in PAST+DATA for the ancestor walks.  Same-branch hint
@@ -939,12 +898,8 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     }
     ok64 go = GRAFOpenBranch(k->h, open_branch_h, NO);
     b8 own_open = (go == OK);
-    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
-        u8bUnMap(cbuf);
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
-    }
     //  Switch graf to the target branch from u->query so target's
     //  commits land in DATA while cur is preserved in PAST.  No-op
     //  when target is empty or already covered.  Resolves the
@@ -978,18 +933,10 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
 
-    //  4. Build ancestor sets for both tips.
-    Bwh128 anc_cur = {}, anc_target = {};
-    if (wh128bAllocate(anc_cur, GRAFHEAD_ANC_SIZE) != OK ||
-        wh128bAllocate(anc_target, GRAFHEAD_ANC_SIZE) != OK) {
-        if (wh128bHead(anc_cur)    != wh128bTerm(anc_cur))    wh128bFree(anc_cur);
-        if (wh128bHead(anc_target) != wh128bTerm(anc_target)) wh128bFree(anc_target);
-        if (own_open) GRAFClose();
-        u8bUnMap(cbuf);
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
-        return GRAFFAIL;
-    }
+    //  4. Build ancestor sets for both tips.  Hash sets — zero-init.
+    a_carve(wh128, anc_cur,    GRAFHEAD_ANC_SIZE);
+    a_carve(wh128, anc_target, GRAFHEAD_ANC_SIZE);
+    zerob(anc_cur); zerob(anc_target);
     DAGAncestors(anc_cur,    runs, cur_h);
     DAGAncestors(anc_target, runs, target_h);
 
@@ -1005,29 +952,26 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     ok64 tt = graf_head_commit_tree(k, target_h, &target_tree);
     u32 nchanged = 0;
     if (ct == OK && tt == OK) {
-        Bu8 diff_buf = {};
-        if (u8bAllocate(diff_buf, 1UL << 20) == OK) {
-            //  KEEPTreeDiff(target → cur): `add` rows = paths on cur
-            //  side only (`+`), `del` = paths on target side only (`-`),
-            //  `mod` = both, sha differs (rendered as `+` then `-`).
-            ok64 dr = KEEPTreeDiff(target_tree.data, cur_tree.data,
-                                   diff_buf);
-            if (dr == OK) {
-                a_cstr(s_add, "add"); a_dup(u8c, dvadd, s_add);
-                a_cstr(s_del, "del"); a_dup(u8c, dvdel, s_del);
-                a_cstr(s_mod, "mod"); a_dup(u8c, dvmod, s_mod);
-                ron60 v_add = 0, v_del = 0, v_mod = 0;
-                (void)RONutf8sDrain(&v_add, dvadd);
-                (void)RONutf8sDrain(&v_del, dvdel);
-                (void)RONutf8sDrain(&v_mod, dvmod);
+        a_carve(u8, diff_buf, 1UL << 20);
+        //  KEEPTreeDiff(target → cur): `add` rows = paths on cur
+        //  side only (`+`), `del` = paths on target side only (`-`),
+        //  `mod` = both, sha differs (rendered as `+` then `-`).
+        ok64 dr = KEEPTreeDiff(target_tree.data, cur_tree.data,
+                               diff_buf);
+        if (dr == OK) {
+            a_cstr(s_add, "add"); a_dup(u8c, dvadd, s_add);
+            a_cstr(s_del, "del"); a_dup(u8c, dvdel, s_del);
+            a_cstr(s_mod, "mod"); a_dup(u8c, dvmod, s_mod);
+            ron60 v_add = 0, v_del = 0, v_mod = 0;
+            (void)RONutf8sDrain(&v_add, dvadd);
+            (void)RONutf8sDrain(&v_del, dvdel);
+            (void)RONutf8sDrain(&v_mod, dvmod);
 
-                u8cs diff = {u8bDataHead(diff_buf), u8bIdleHead(diff_buf)};
-                nchanged += graf_head_emit_path_side(&lx, diff, v_add, '+');
-                nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '+');
-                nchanged += graf_head_emit_path_side(&lx, diff, v_del, '-');
-                nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '-');
-            }
-            u8bFree(diff_buf);
+            u8cs diff = {u8bDataHead(diff_buf), u8bIdleHead(diff_buf)};
+            nchanged += graf_head_emit_path_side(&lx, diff, v_add, '+');
+            nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '+');
+            nchanged += graf_head_emit_path_side(&lx, diff, v_del, '-');
+            nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '-');
         }
     }
 
@@ -1062,12 +1006,7 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     if (lx.tlv) u32csMv(hk.toks, u32bDataC(lx.toks));
     (void)GRAFHunkEmit(&hk, NULL);
 
-    wh128bFree(anc_cur);
-    wh128bFree(anc_target);
     if (own_open) GRAFClose();
-    u8bUnMap(cbuf);
-    if (lx.tlv) u32bFree(lx.toks);
-    u8bFree(lx.text);
     done;
 }
 
@@ -1103,10 +1042,11 @@ ok64 GRAFLog(uricp u) {
     lx.tlv = (HUNKMode == HUNKOutTLV);
     lx.now = (i64)time(NULL);
 
-    call(u8bAllocate, lx.text, LOG_TEXT_BUF);
+    __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
+    if (__ != OK) return __;
     if (lx.tlv) {
-        ok64 to = u32bAllocate(lx.toks, LOG_TOKS_CAP);
-        if (to != OK) { u8bFree(lx.text); return to; }
+        __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
+        if (__ != OK) return __;
     }
 
     a_pad(u8, title, 256);
@@ -1145,11 +1085,8 @@ ok64 GRAFLog(uricp u) {
     }
     ok64 go = GRAFOpenBranch(k->h, cur_branch, NO);
     b8 own_open = (go == OK);
-    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) {
-        if (lx.tlv) u32bFree(lx.toks);
-        u8bFree(lx.text);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
-    }
     //  Whether or not we opened, ensure the active leaf is cur.
     //  Restore-after pattern — warn loudly but don't unwind.
     {
@@ -1180,7 +1117,5 @@ ok64 GRAFLog(uricp u) {
     }
 
     if (own_open) GRAFClose();
-    if (lx.tlv) u32bFree(lx.toks);
-    u8bFree(lx.text);
     return wo;
 }
