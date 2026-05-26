@@ -38,7 +38,7 @@ static ok64 keeper_upload_pack(cli *c) {
     call(HOMEOpenAt, &h, path, NO);
     call(KEEPOpen, &h, NO);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     call(REFADVEmit, STDOUT_FILENO, &adv);
     ok64 wo = WIREServeUpload(STDIN_FILENO, STDOUT_FILENO, &adv);
@@ -65,7 +65,7 @@ static ok64 keeper_receive_pack(cli *c) {
     call(HOMEOpenAt, &h, path, YES);
     call(KEEPOpen, &h, YES);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     call(REFADVEmit, STDOUT_FILENO, &adv);
     ok64 ro = RECVServe(STDIN_FILENO, STDOUT_FILENO, &adv);

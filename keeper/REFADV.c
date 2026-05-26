@@ -37,8 +37,8 @@ static b8 refadv_decode_terminal(sha1 *out, u8csc val) {
 
 // --- iteration context ---
 
-#define REFADV_MAX_ENTRIES REFS_MAX_REFS
-#define REFADV_ARENA_BYTES (REFS_MAX_REFS * 256)
+//  REFADV_MAX_ENTRIES + REFADV_ARENA_BYTES moved to REFADV.h so
+//  the a_refadv macro can use them at every call site.
 
 typedef struct {
     refadv *adv;
@@ -143,23 +143,12 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
 
 // --- Open / Close ---
 
+//  Caller pre-acquires out->ents + out->arena via a_refadv (see
+//  REFADV.h); here we just populate by walking REFS.
 ok64 REFADVOpen(refadv *out) {
-    sane(out);
+    sane(out && out->ents && out->arena[0]);
     keeper *k = &KEEP;
-
-    out->ents  = NULL;
     out->count = 0;
-    memset((void *)out->arena, 0, sizeof(out->arena));
-
-    out->ents = calloc(REFADV_MAX_ENTRIES, sizeof(refadv_entry));
-    if (!out->ents) fail(REFADVFAIL);
-
-    ok64 ao = u8bAllocate(out->arena, REFADV_ARENA_BYTES);
-    if (ao != OK) {
-        free(out->ents);
-        out->ents = NULL;
-        return ao;
-    }
 
     //  Phase 1c: only the trunk shard exists.  Walk its REFS at
     //  <root>/.be/REFS.  Future phases iterate every shard dir.
@@ -169,23 +158,14 @@ ok64 REFADVOpen(refadv *out) {
     //  Two-pass: local rows first (authoritative), then peer-observed
     //  rows for branches not yet covered (relay role).
     refadv_ctx ctx = {.adv = out, .peer_pass = NO};
-    ok64 eo = REFSEach($path(keepdir), refadv_each_cb, &ctx);
-    if (eo != OK) { REFADVClose(out); return eo; }
+    call(REFSEach, $path(keepdir), refadv_each_cb, &ctx);
     ctx.peer_pass = YES;
-    eo = REFSEach($path(keepdir), refadv_each_cb, &ctx);
-    if (eo != OK) { REFADVClose(out); return eo; }
+    call(REFSEach, $path(keepdir), refadv_each_cb, &ctx);
     done;
 }
 
 void REFADVClose(refadv *adv) {
     if (!adv) return;
-    if (adv->ents) {
-        free(adv->ents);
-        adv->ents = NULL;
-    }
-    if (adv->arena[0] != NULL) {
-        u8bFree(adv->arena);
-    }
     adv->count = 0;
 }
 

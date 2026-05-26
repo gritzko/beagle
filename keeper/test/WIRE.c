@@ -132,7 +132,7 @@ ok64 WIREtest_empty() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
 
     //  Build a request that's just "done\n" (no wants).
@@ -203,7 +203,7 @@ ok64 WIREtest_single_want() {
     want(fid == 1);
     want(kv64bDataLen(KEEP.packs) == 1);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
 
     wire_req req = {};
@@ -256,7 +256,7 @@ ok64 WIREtest_have_ff() {
     call(add_blob_pack, &sha_b, &fid_b, "bravo\n");
     want(fid_b == 1);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
 
     wire_req req = {};
@@ -301,7 +301,7 @@ ok64 WIREtest_nosha() {
     u32  fid   = 0;
     call(add_blob_pack, &known, &fid, "real blob\n");
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
 
     wire_req req = {};
@@ -430,7 +430,7 @@ ok64 WIREtest_end_to_end() {
     u32  fid      = 0;
     call(add_blob_pack, &blob_sha, &fid, "end to end\n");
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
 
     wire_req req = {};

@@ -30,6 +30,14 @@
 
 con ok64 REFADVFAIL = 0x6ce3ca35f3ca495;
 
+//  Sizing — exposed in the header so a_refadv (below) can use them.
+#ifndef REFADV_MAX_ENTRIES
+#define REFADV_MAX_ENTRIES 1024
+#endif
+#ifndef REFADV_ARENA_BYTES
+#define REFADV_ARENA_BYTES (1024 * 256)
+#endif
+
 //  One advertised ref: the resolved tip sha + the refname (e.g.
 //  "refs/heads/main") + the dir slice (which dir's REFS this came
 //  from, used for tip → dir lookup).  Refname and dir bytes are
@@ -53,12 +61,29 @@ typedef struct {
 typedef refadv *refadvp;
 typedef refadv const *refadvcp;
 
-//  Walk the keeper's REFS, populate `out`.  Caller frees with
-//  REFADVClose.  `out` is reset (zeroed) on entry.
+//  Walk the keeper's REFS, populate `out`.  Caller pre-acquires
+//  `out->ents` + `out->arena` from BASS via `a_refadv` below; both
+//  die when the caller's procedure returns (BASS auto-rewind).
 ok64 REFADVOpen(refadv *out);
 
-//  Release arena + entries array.  Safe on a zeroed `adv`.
+//  Reset state.  No-op for the BASS-acquired buffers; safe to call
+//  zero or more times.
 void REFADVClose(refadv *adv);
+
+//  Declare a `refadv` and pre-acquire its `ents` array + arena from
+//  BASS.  Must be invoked inside a sane()'d procedure (uses `call`-
+//  shape error propagation).  Pair with `call(REFADVOpen, &name)`.
+#define a_refadv(name)                                                  \
+    refadv name = {};                                                   \
+    Bu8 _##name##_ents_b = {};                                          \
+    do {                                                                \
+        __ = u8bAcquire(ABC_BASS, _##name##_ents_b,                     \
+                        REFADV_MAX_ENTRIES * sizeof(refadv_entry));     \
+        if (__ != OK) return __;                                        \
+        name.ents = (refadv_entry *)u8bDataHead(_##name##_ents_b);      \
+        __ = u8bAcquire(ABC_BASS, name.arena, REFADV_ARENA_BYTES);      \
+        if (__ != OK) return __;                                        \
+    } while (0)
 
 //  Look up: which dir(s) hold this sha as a tip?
 //  Writes up to `cap` matches into `out_dirs`, returns the match count.

@@ -111,7 +111,7 @@ ok64 REFADVtest_empty() {
     call(HOMEOpenAt, &h, root, YES);
     call(KEEPOpen, &h, YES);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     want(adv.count == 0);
 
@@ -151,7 +151,7 @@ ok64 REFADVtest_single_trunk() {
     char const *hex = "0123456789abcdef0123456789abcdef01234567";
     call(push_branch, $path(keepdir), "", hex);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     want(adv.count == 1);
 
@@ -218,7 +218,7 @@ ok64 REFADVtest_multi() {
     call(push_branch, $path(keepdir), "",     hex_trunk);
     call(push_branch, $path(keepdir), "feat", hex_feat);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     want(adv.count == 2);
 
@@ -292,7 +292,7 @@ ok64 REFADVtest_tip_lookup() {
     call(push_branch, $path(keepdir), "",     hex_trunk);
     call(push_branch, $path(keepdir), "feat", hex_feat);
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     want(adv.count == 2);
 
@@ -347,7 +347,7 @@ ok64 REFADVtest_round_trip() {
     call(push_branch, $path(keepdir), "feat", hex_b);
     call(push_branch, $path(keepdir), "v2.0", hex_c);  // literal branch
 
-    refadv adv = {};
+    a_refadv(adv);
     call(REFADVOpen, &adv);
     want(adv.count == 3);
 

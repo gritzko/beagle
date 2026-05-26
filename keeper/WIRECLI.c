@@ -611,24 +611,16 @@ typedef struct {
     u8cs name;   //  slice into the per-call names_arena
 } wcli_advert_ref;
 
-ok64 WIREFetchAll(u8csc remote_uri) {
-    sane($ok(remote_uri));
+//  Worker: assumes wcli_spawn has populated *wfd / *rfd.  Closes
+//  them at the protocol-required points (setting the int to -1 so
+//  the wrapper knows not to re-close).  All scratch buffers acquired
+//  from BASS — auto-rewound at the wrapper's `try()` boundary.
+static ok64 wire_fetch_all_inner(u8csc remote_uri, int *wfd, int *rfd) {
+    sane(wfd && rfd && *wfd >= 0 && *rfd >= 0);
     keeper *k = &KEEP;
-    if (u8csEmpty(remote_uri)) return WIRECLFL;
 
-    int wfd = -1, rfd = -1;
-    pid_t pid = 0;
-    ok64 so = wcli_spawn(remote_uri, "upload-pack", &wfd, &rfd, &pid);
-    if (so != OK) return WIRECLFL;
-
-    Bu8 advbuf      = {};
-    Bu8 frame       = {};
-    Bu8 names_arena = {};
-    ok64 rv = WIRECLFL;
-    if (u8bAllocate(advbuf, WCLI_BUF) != OK) goto fa_close;
-    if (u8bAllocate(names_arena,
-                    WIRECLI_FETCHALL_MAX * WIRECLI_REFNAME_CAP) != OK)
-        goto fa_close;
+    a_carve(u8, advbuf, WCLI_BUF);
+    a_carve(u8, names_arena, WIRECLI_FETCHALL_MAX * WIRECLI_REFNAME_CAP);
 
     wcli_advert_ref refs[WIRECLI_FETCHALL_MAX];
     u32 nrefs = 0;
@@ -639,10 +631,10 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         u8cs adv = {u8bDataHead(advbuf), u8bDataHead(advbuf)};
         for (;;) {
             u8cs line = {};
-            ok64 d = wcli_read_pkt(rfd, advbuf, adv, line);
+            ok64 d = wcli_read_pkt(*rfd, advbuf, adv, line);
             if (d == PKTFLUSH) break;
             if (d == PKTDELIM) continue;
-            if (d != OK) goto fa_close;
+            if (d != OK) fail(d);
 
             if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
 
@@ -670,16 +662,14 @@ ok64 WIREFetchAll(u8csc remote_uri) {
             refs[nrefs].sha = sha;
             //  Snapshot the name into the arena's PAST (one-shot rental,
             //  NUL-terminated — ref names are path-shaped).
-            if (PATHu8bAren(names_arena, refs[nrefs].name, name) != OK)
-                goto fa_close;
+            call(PATHu8bAren, names_arena, refs[nrefs].name, name);
             nrefs++;
         }
     }
 
     if (nrefs == 0) {
         //  Peer advertised no heads/tags — clean disconnect, no pack.
-        rv = OK;
-        goto fa_close;
+        done;
     }
 
     //  2. Harvest haves locally so the peer can prune the pack.
@@ -688,7 +678,7 @@ ok64 WIREFetchAll(u8csc remote_uri) {
 
     //  3. Emit multi-want request.  Caps go on the first want; remaining
     //     wants carry only the sha + newline.
-    if (u8bAllocate(frame, 1u << 16) != OK) goto fa_close;
+    a_carve(u8, frame, 1u << 16);
     for (u32 i = 0; i < nrefs; i++) {
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
@@ -701,9 +691,9 @@ ok64 WIREFetchAll(u8csc remote_uri) {
             u8bFeed1(line, '\n');
         }
         a_dup(u8c, payload, u8bData(line));
-        if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
-    if (PKTu8sFeedFlush(u8bIdle(frame)) != OK) goto fa_close;
+    call(PKTu8sFeedFlush, u8bIdle(frame));
     for (u32 i = 0; i < nhaves; i++) {
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
@@ -711,22 +701,21 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         SHA1u8sFeedHex(u8bIdle(line), &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
-        if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
     {
         a_cstr(done_s, "done\n");
-        if (PKTu8sFeed(u8bIdle(frame), done_s) != OK) goto fa_close;
+        call(PKTu8sFeed, u8bIdle(frame), done_s);
     }
     {
         a_dup(u8c, fdata, u8bData(frame));
-        ok64 wo = FILEFeedAll(wfd, fdata);
-        if (wo != OK) goto fa_close;
+        call(FILEFeedAll, *wfd, fdata);
     }
-    close(wfd); wfd = -1;
+    close(*wfd); *wfd = -1;
 
     //  4. Stream-ingest the response packfile.
-    if (KEEPIngestStream(rfd) != OK) goto fa_close;
-    close(rfd); rfd = -1;
+    call(KEEPIngestStream, *rfd);
+    close(*rfd); *rfd = -1;
 
     //  5. Record each ref locally.  Skip refs whose wire_to_be doesn't
     //     classify (e.g. malformed names) — the pack landed regardless,
@@ -755,19 +744,86 @@ ok64 WIREFetchAll(u8csc remote_uri) {
     }
 
     fprintf(stderr, "keeper: fetched %u ref(s)\n", recorded);
-    rv = OK;
+    done;
+}
 
-fa_close:
-    if (frame[0])       u8bFree(frame);
-    if (names_arena[0]) u8bFree(names_arena);
-    if (advbuf[0])      u8bFree(advbuf);
+ok64 WIREFetchAll(u8csc remote_uri) {
+    sane($ok(remote_uri));
+    if (u8csEmpty(remote_uri)) return WIRECLFL;
+
+    int wfd = -1, rfd = -1;
+    pid_t pid = 0;
+    ok64 so = wcli_spawn(remote_uri, "upload-pack", &wfd, &rfd, &pid);
+    if (so != OK) return WIRECLFL;
+
+    try(wire_fetch_all_inner, remote_uri, &wfd, &rfd);
+    ok64 rv = __;
+
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
         FILEReap(pid, &rc);
     }
-    return rv;
+    return rv == OK ? OK : WIRECLFL;
+}
+
+//  Worker for WIREFetch: drain advertisement, send request, ingest
+//  pack, record ref.  Buffers come from BASS.  Closes wfd/rfd at the
+//  protocol-required points.
+static ok64 wire_fetch_inner(u8csc remote_uri, u8cs effective_ref,
+                              keeper *k, int *wfd, int *rfd) {
+    sane(k && wfd && rfd && *wfd >= 0 && *rfd >= 0);
+
+    a_carve(u8, advbuf, WCLI_BUF);
+
+    //  1.  Drain refs advertisement; pick the want sha + capture the
+    //      matched ref name (used for the local REFS write below).
+    sha1 want_sha = {};
+    a_pad(u8, matched_ref_buf, 256);
+    call(wcli_match_advert, *rfd, advbuf, effective_ref, &want_sha,
+                            matched_ref_buf);
+    u8cs matched_ref = {};
+    u8csMv(matched_ref, u8bDataC(matched_ref_buf));
+    if (u8csEmpty(matched_ref)) u8csMv(matched_ref, effective_ref);
+
+    //  2.  Harvest haves from local REFS (every tracked tip — local
+    //      cur AND cached peer-observed rows).
+    sha1 haves[WIRE_MAX_HAVES] = {};
+    u32  nhaves = wcli_collect_haves(k, haves, WIRE_MAX_HAVES);
+
+    //  3.  Send want + haves + done.
+    call(wcli_send_request, *wfd, &want_sha, haves, nhaves);
+    close(*wfd); *wfd = -1;
+
+    //  4.  Stream-ingest the upload-pack response straight into the
+    //  keeper tail log.  KEEPIngestStream parses pkt-line headers
+    //  inline, dispatches side-band frames in real time (band-2
+    //  progress to stderr, band-1 bytes to log via u8bFeed), and
+    //  drops the trailing 20-byte SHA-1 + the embedded git PACK
+    //  header.  No intermediate response/pack buffer.
+    {
+        ok64 io = KEEPIngestStream(*rfd);
+        if (io != OK) {
+            fprintf(stderr, "be: KEEPIngestStream failed: %s\n",
+                    ok64str(io));
+            fail(io);
+        }
+    }
+    close(*rfd); *rfd = -1;
+
+    //  6.  Record the ref locally under the actually-matched name,
+    //  attributed to the peer URI.
+    {
+        ok64 rr = wcli_record_ref(k, remote_uri, matched_ref, &want_sha);
+        if (rr != OK) {
+            fprintf(stderr,
+                    "be: wcli_record_ref failed: %s\n", ok64str(rr));
+            fail(rr);
+        }
+    }
+
+    done;
 }
 
 ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
@@ -786,69 +842,16 @@ ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
     ok64 so = wcli_spawn(remote_uri, "upload-pack", &wfd, &rfd, &pid);
     if (so != OK) return WIRECLFL;
 
-    Bu8 advbuf = {};
-    ok64 rv = WIRECLFL;
-    if (u8bAllocate(advbuf, WCLI_BUF) != OK) goto fetch_close;
+    try(wire_fetch_inner, remote_uri, effective_ref, k, &wfd, &rfd);
+    ok64 rv = __;
 
-    //  1.  Drain refs advertisement; pick the want sha + capture the
-    //      matched ref name (used for the local REFS write below).
-    sha1 want_sha = {};
-    a_pad(u8, matched_ref_buf, 256);
-    ok64 mo = wcli_match_advert(rfd, advbuf, effective_ref, &want_sha,
-                                matched_ref_buf);
-    if (mo != OK) { rv = mo; goto fetch_close; }
-    u8cs matched_ref = {};
-    u8csMv(matched_ref, u8bDataC(matched_ref_buf));
-    if (u8csEmpty(matched_ref)) u8csMv(matched_ref, effective_ref);
-
-    //  2.  Harvest haves from local REFS (every tracked tip — local
-    //      cur AND cached peer-observed rows).
-    sha1 haves[WIRE_MAX_HAVES] = {};
-    u32  nhaves = wcli_collect_haves(k, haves, WIRE_MAX_HAVES);
-
-    //  3.  Send want + haves + done.
-    if (wcli_send_request(wfd, &want_sha, haves, nhaves) != OK)
-        goto fetch_close;
-    close(wfd); wfd = -1;
-
-    //  4.  Stream-ingest the upload-pack response straight into the
-    //  keeper tail log.  KEEPIngestStream parses pkt-line headers
-    //  inline, dispatches side-band frames in real time (band-2
-    //  progress to stderr, band-1 bytes to log via u8bFeed), and
-    //  drops the trailing 20-byte SHA-1 + the embedded git PACK
-    //  header.  No intermediate response/pack buffer.
-    {
-        ok64 io = KEEPIngestStream(rfd);
-        if (io != OK) {
-            fprintf(stderr, "be: KEEPIngestStream failed: %s\n",
-                    ok64str(io));
-            goto fetch_close;
-        }
-    }
-    close(rfd); rfd = -1;
-
-    //  6.  Record the ref locally under the actually-matched name,
-    //  attributed to the peer URI.
-    {
-        ok64 rr = wcli_record_ref(k, remote_uri, matched_ref, &want_sha);
-        if (rr != OK) {
-            fprintf(stderr,
-                    "be: wcli_record_ref failed: %s\n", ok64str(rr));
-            goto fetch_close;
-        }
-    }
-
-    rv = OK;
-
-fetch_close:
-    if (advbuf[0]) u8bFree(advbuf);
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
         int rc = 0;
         FILEReap(pid, &rc);
     }
-    return rv;
+    return rv == OK ? OK : WIRECLFL;
 }
 
 // --- WIREPush ----------------------------------------------------------
@@ -1204,8 +1207,7 @@ static ok64 wpush_send_update(int wfd, sha1cp old_sha,
 //  Drain push response, scanning for "unpack ok" + "ok <refname>".
 static ok64 wpush_drain_status(int rfd, u8csc refname) {
     sane(rfd >= 0);
-    Bu8 buf = {};
-    call(u8bAllocate, buf, WCLI_BUF);
+    a_carve(u8, buf, WCLI_BUF);
     u8cs adv = {u8bDataHead(buf), u8bDataHead(buf)};
     b8 unpack_ok = NO;
     b8 ref_ok    = NO;
@@ -1254,7 +1256,6 @@ static ok64 wpush_drain_status(int rfd, u8csc refname) {
             ref_ok = NO;
         }
     }
-    u8bFree(buf);
     return (unpack_ok && ref_ok) ? OK : WIRECLFL;
 }
 
@@ -1317,47 +1318,18 @@ static ok64 wpush_collect_hist_cb(uri const *u, ron60 ts, ron60 verb,
     done;
 }
 
-ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1cp local_tip_in) {
-    sane($ok(remote_uri));
-    keeper *k = &KEEP;
-    //  `local_branch` is be-side; empty (NULL or zero-length) selects
-    //  the trunk shard, which goes on the wire as `refs/heads/main`.
-    if (u8csEmpty(remote_uri)) return WIRECLFL;
-    if (!local_tip_in || sha1empty(local_tip_in)) return WIRECLNRF;
-
-    //  Caller-supplied tip is authoritative.  We do NOT re-derive it
-    //  from keeper REFS / REFADV — the worktree's at-log can be ahead
-    //  of REFS (e.g. when sniff POST's REFSAppendVerb append is lost),
-    //  and pulling local_tip from the lagging side made the
-    //  `local_tip == peer_tip` short-circuit fire falsely, no-op'ing
-    //  real pushes while still claiming success.
+//  Worker for WIREPush.  All scratch buffers (advbuf, packbuf,
+//  peer_tips, haveset, shas, seen) acquired from BASS — auto-rewound
+//  at the wrapper's `try()` boundary.  Closes wfd/rfd at the
+//  protocol-required points.
+#define WPUSH_PEER_TIPS_MAX 4096
+static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
+                             keeper *k, sha1cp local_tip_in,
+                             int *wfd, int *rfd) {
+    sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0);
     sha1 local_tip = *local_tip_in;
 
-    //  Build the wire refname (refs/heads/X, trunk → main) once.
-    a_pad(u8, refname_buf, 256);
-    call(wcli_be_to_wire, refname_buf, local_branch);
-    u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
-
-    //  Spawn receive-pack on the peer.
-    fprintf(stderr, "wpush: spawning receive-pack, remote=%.*s\n",
-            (int)u8csLen(remote_uri), (char const *)remote_uri[0]);
-    int wfd = -1, rfd = -1;
-    pid_t pid = 0;
-    ok64 so = wcli_spawn(remote_uri, "receive-pack", &wfd, &rfd, &pid);
-    if (so != OK) {
-        fprintf(stderr, "wpush: spawn failed (so=%llx)\n",
-                (unsigned long long)so);
-        return WIRECLFL;
-    }
-    fprintf(stderr, "wpush: spawned ok, pid=%d\n", (int)pid);
-
-    Bu8 advbuf = {};
-    ok64 rv = WIRECLFL;
-    if (u8bAllocate(advbuf, WCLI_BUF) != OK) {
-        fprintf(stderr, "wpush: advbuf alloc failed\n");
-        goto push_close;
-    }
+    a_carve(u8, advbuf, WCLI_BUF);
 
     //  Drain peer advert; capture old tip if peer already has the ref.
     //  Also collect EVERY advertised tip — used below as roots for the
@@ -1365,19 +1337,15 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     //  against the peer's full ref set, not just our specific branch.
     sha1 peer_tip = {};
     b8   have_peer = NO;
-    enum { WPUSH_PEER_TIPS_MAX = 4096 };
-    sha1 *peer_tips = calloc(WPUSH_PEER_TIPS_MAX, sizeof(sha1));
+    a_carve(sha1, peer_tips_b, WPUSH_PEER_TIPS_MAX);
+    sha1 *peer_tips = sha1bDataHead(peer_tips_b);
     u32   peer_tips_n = 0;
-    if (!peer_tips) {
-        fprintf(stderr, "wpush: peer_tips calloc failed\n");
-        goto push_close;
-    }
-    if (wpush_peer_tip(rfd, advbuf, refname, &peer_tip, &have_peer,
-                       peer_tips, &peer_tips_n,
-                       WPUSH_PEER_TIPS_MAX) != OK) {
+    ok64 pt = wpush_peer_tip(*rfd, advbuf, refname, &peer_tip, &have_peer,
+                             peer_tips, &peer_tips_n,
+                             WPUSH_PEER_TIPS_MAX);
+    if (pt != OK) {
         fprintf(stderr, "wpush: peer_tip drain failed\n");
-        free(peer_tips);
-        goto push_close;
+        fail(pt);
     }
     fprintf(stderr,
             "wpush: peer advert drained, have_peer=%d peer_tips=%u\n",
@@ -1385,14 +1353,12 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
 
     //  Short-circuit: peer already at our tip — nothing to push.
     if (have_peer && sha1Eq(&peer_tip, &local_tip)) {
-        rv = OK;
         //  Still need to send a flush so the peer closes cleanly.
         a_pad(u8, flush_b, 8);
         PKTu8sFeedFlush(u8bIdle(flush_b));
         a_dup(u8c, fdata, u8bData(flush_b));
-        FILEFeedAll(wfd, fdata);
-        free(peer_tips);
-        goto push_close;
+        FILEFeedAll(*wfd, fdata);
+        done;
     }
 
     //  Live FF check: peer's advertised tip must be an ancestor of
@@ -1412,9 +1378,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
                 "descendant of peer tip %.40s.  Use `be patch` to "
                 "merge, or `be put` to force-push.\n",
                 lh.data, ph.data);
-        free(peer_tips);
-        rv = WIRECLNFF;
-        goto push_close;
+        return WIRECLNFF;
     }
 
     //  Build the have-set (objects the peer already has).  Walks
@@ -1428,27 +1392,25 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     //  remains valid.
     sha_set haveset = {};
     sha_set *have = NULL;
+    a_carve(sha1, haveset_b, WPUSH_MAX_OBJS);
+    haveset.items = sha1bDataHead(haveset_b);
+    haveset.cap   = WPUSH_MAX_OBJS;
     if (peer_tips_n > 0) {
-        haveset.items = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
-        haveset.cap   = WPUSH_MAX_OBJS;
-        if (haveset.items) {
-            for (u32 i = 0; i < peer_tips_n; i++) {
-                (void)wpush_walk_commit(k, &peer_tips[i], NULL,
-                                        &(u32){0}, 0, NULL, &haveset);
-            }
-            have = &haveset;
-            fprintf(stderr,
-                    "wpush: have-set has %u objects (from %u peer refs)\n",
-                    haveset.n, peer_tips_n);
+        for (u32 i = 0; i < peer_tips_n; i++) {
+            (void)wpush_walk_commit(k, &peer_tips[i], NULL,
+                                    &(u32){0}, 0, NULL, &haveset);
         }
+        have = &haveset;
+        fprintf(stderr,
+                "wpush: have-set has %u objects (from %u peer refs)\n",
+                haveset.n, peer_tips_n);
     }
-    free(peer_tips);
 
     //  Extend the haveset with every sha we previously pushed to this
     //  peer (see comment on wpush_collect_hist_cb).  Critical when
     //  peer's current advert no longer covers objects from earlier
     //  pushes (force-push upstream, branch reset, divergent tip).
-    if (haveset.items) {
+    {
         uri ru = {};
         a_dup(u8c, ruv, remote_uri);
         if (URIutf8Drain(ruv, &ru) == OK) {
@@ -1475,83 +1437,91 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     //  the peer already advertised (via `have`) and following the
     //  parent chain so multi-commit FF pushes carry intermediate
     //  commits.
-    sha1 *shas = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
-    if (!shas) {
-        fprintf(stderr, "wpush: shas calloc failed\n");
-        if (haveset.items) free(haveset.items);
-        goto push_close;
-    }
+    a_carve(sha1, shas_b, WPUSH_MAX_OBJS);
+    sha1 *shas = sha1bDataHead(shas_b);
     //  Dedup-set for the local-side walk.  Without it, every tree
     //  shared by N parents (every history fan-in) gets walked N
     //  times, blowing past WPUSH_MAX_OBJS on any non-trivial repo.
     //  `have` (from peer's matching ref) prunes shared-with-peer
     //  ancestors; this fresh set prunes within our own closure.
     sha_set seen = {};
-    seen.items = calloc(WPUSH_MAX_OBJS, sizeof(sha1));
+    a_carve(sha1, seen_b, WPUSH_MAX_OBJS);
+    seen.items = sha1bDataHead(seen_b);
     seen.cap   = WPUSH_MAX_OBJS;
-    if (!seen.items) {
-        fprintf(stderr, "wpush: seen-set calloc failed\n");
-        free(shas);
-        if (haveset.items) free(haveset.items);
-        goto push_close;
-    }
     u32 nshas = 0;
     ok64 wro = wpush_walk_commit(k, &local_tip, shas, &nshas,
                                  WPUSH_MAX_OBJS, have, &seen);
     fprintf(stderr, "wpush: walk_commit rc=%llx nshas=%u\n",
             (unsigned long long)wro, nshas);
-    free(seen.items);
-    if (wro != OK || nshas == 0) {
-        free(shas);
-        if (haveset.items) free(haveset.items);
-        goto push_close;
-    }
-    if (haveset.items) free(haveset.items);
+    if (wro != OK || nshas == 0) fail(wro != OK ? wro : WIRECLFL);
     fprintf(stderr, "wpush: walked %u objects\n", nshas);
 
     //  Build the pack.
-    Bu8 packbuf = {};
-    if (u8bAllocate(packbuf, 1ULL << 26) != OK) {
-        fprintf(stderr, "wpush: packbuf alloc failed\n");
-        free(shas);
-        goto push_close;
-    }
-    if (wpush_build_pack(k, shas, nshas, packbuf) != OK) {
+    a_carve(u8, packbuf, 1ULL << 26);
+    ok64 bp = wpush_build_pack(k, shas, nshas, packbuf);
+    if (bp != OK) {
         fprintf(stderr, "wpush: build_pack failed\n");
-        free(shas);
-        u8bFree(packbuf);
-        goto push_close;
+        fail(bp);
     }
-    free(shas);
     fprintf(stderr, "wpush: pack built (%llu bytes)\n",
             (unsigned long long)u8bDataLen(packbuf));
 
     //  Send the ref-update line + flush.
-    if (wpush_send_update(wfd, &peer_tip, &local_tip, refname,
-                          have_peer) != OK) {
+    ok64 su = wpush_send_update(*wfd, &peer_tip, &local_tip, refname,
+                                have_peer);
+    if (su != OK) {
         fprintf(stderr, "wpush: send_update failed\n");
-        u8bFree(packbuf);
-        goto push_close;
+        fail(su);
     }
     //  Send the pack bytes.
     {
         a_dup(u8c, pdata, u8bData(packbuf));
-        ok64 wo = FILEFeedAll(wfd, pdata);
-        u8bFree(packbuf);
+        ok64 wo = FILEFeedAll(*wfd, pdata);
         if (wo != OK) {
             fprintf(stderr, "wpush: pack send failed\n");
-            goto push_close;
+            fail(wo);
         }
     }
-    close(wfd); wfd = -1;
+    close(*wfd); *wfd = -1;
 
     //  Drain status.
-    rv = wpush_drain_status(rfd, refname);
+    ok64 rv = wpush_drain_status(*rfd, refname);
     if (rv != OK) fprintf(stderr, "wpush: drain_status returned non-OK\n");
-    close(rfd); rfd = -1;
+    close(*rfd); *rfd = -1;
+    return rv;
+}
 
-push_close:
-    if (advbuf[0]) u8bFree(advbuf);
+ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
+              sha1cp local_tip_in) {
+    sane($ok(remote_uri));
+    keeper *k = &KEEP;
+    //  `local_branch` is be-side; empty (NULL or zero-length) selects
+    //  the trunk shard, which goes on the wire as `refs/heads/main`.
+    if (u8csEmpty(remote_uri)) return WIRECLFL;
+    if (!local_tip_in || sha1empty(local_tip_in)) return WIRECLNRF;
+
+    //  Build the wire refname (refs/heads/X, trunk → main) once.
+    a_pad(u8, refname_buf, 256);
+    call(wcli_be_to_wire, refname_buf, local_branch);
+    u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
+
+    //  Spawn receive-pack on the peer.
+    fprintf(stderr, "wpush: spawning receive-pack, remote=%.*s\n",
+            (int)u8csLen(remote_uri), (char const *)remote_uri[0]);
+    int wfd = -1, rfd = -1;
+    pid_t pid = 0;
+    ok64 so = wcli_spawn(remote_uri, "receive-pack", &wfd, &rfd, &pid);
+    if (so != OK) {
+        fprintf(stderr, "wpush: spawn failed (so=%llx)\n",
+                (unsigned long long)so);
+        return WIRECLFL;
+    }
+    fprintf(stderr, "wpush: spawned ok, pid=%d\n", (int)pid);
+
+    try(wire_push_inner, remote_uri, refname, k, local_tip_in,
+                          &wfd, &rfd);
+    ok64 rv = __;
+
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
     if (pid > 0) {
@@ -1568,10 +1538,51 @@ push_close:
 //  pack — see git's pack-protocol.txt §"updates" ("If the only
 //  commands are deletes, the client MAY skip the pack data").
 
+//  Worker for WIREPushDelete: drain peer advert, send delete update
+//  (or just flush if peer doesn't have the ref), drain status.
+static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
+    sane(wfd && rfd && *wfd >= 0 && *rfd >= 0);
+
+    a_carve(u8, advbuf, WCLI_BUF);
+
+    sha1 peer_tip = {};
+    b8   have_peer = NO;
+    ok64 pt = wpush_peer_tip(*rfd, advbuf, refname, &peer_tip, &have_peer,
+                             NULL, NULL, 0);
+    if (pt != OK) {
+        fprintf(stderr, "wpush: delete peer_tip drain failed\n");
+        fail(pt);
+    }
+
+    if (!have_peer) {
+        //  Peer did not advertise the ref — nothing to delete.  Send a
+        //  flush so the peer closes cleanly, surface as WIRECLNRF.
+        a_pad(u8, flush_b, 8);
+        PKTu8sFeedFlush(u8bIdle(flush_b));
+        a_dup(u8c, fdata, u8bData(flush_b));
+        FILEFeedAll(*wfd, fdata);
+        return WIRECLNRF;
+    }
+
+    sha1 zero = {};
+    ok64 su = wpush_send_update(*wfd, &peer_tip, &zero, refname, YES);
+    if (su != OK) {
+        fprintf(stderr, "wpush: delete send_update failed\n");
+        fail(su);
+    }
+    //  No pack body: receive-pack treats a delete-only command list as
+    //  not requiring a packfile.  Close writer to signal end-of-input.
+    close(*wfd); *wfd = -1;
+
+    ok64 rv = wpush_drain_status(*rfd, refname);
+    if (rv != OK)
+        fprintf(stderr, "wpush: delete drain_status returned non-OK\n");
+    close(*rfd); *rfd = -1;
+    return rv;
+}
+
 ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
     sane($ok(remote_uri));
-    keeper *k = &KEEP;
-    (void)k;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     a_pad(u8, refname_buf, 256);
@@ -1589,48 +1600,9 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
         return WIRECLFL;
     }
 
-    Bu8 advbuf = {};
-    ok64 rv = WIRECLFL;
-    if (u8bAllocate(advbuf, WCLI_BUF) != OK) {
-        fprintf(stderr, "wpush: delete advbuf alloc failed\n");
-        goto delete_close;
-    }
+    try(wire_push_delete_inner, refname, &wfd, &rfd);
+    ok64 rv = __;
 
-    sha1 peer_tip = {};
-    b8   have_peer = NO;
-    if (wpush_peer_tip(rfd, advbuf, refname, &peer_tip, &have_peer,
-                       NULL, NULL, 0) != OK) {
-        fprintf(stderr, "wpush: delete peer_tip drain failed\n");
-        goto delete_close;
-    }
-
-    if (!have_peer) {
-        //  Peer did not advertise the ref — nothing to delete.  Send a
-        //  flush so the peer closes cleanly, surface as WIRECLNRF.
-        a_pad(u8, flush_b, 8);
-        PKTu8sFeedFlush(u8bIdle(flush_b));
-        a_dup(u8c, fdata, u8bData(flush_b));
-        FILEFeedAll(wfd, fdata);
-        rv = WIRECLNRF;
-        goto delete_close;
-    }
-
-    sha1 zero = {};
-    if (wpush_send_update(wfd, &peer_tip, &zero, refname, YES) != OK) {
-        fprintf(stderr, "wpush: delete send_update failed\n");
-        goto delete_close;
-    }
-    //  No pack body: receive-pack treats a delete-only command list as
-    //  not requiring a packfile.  Close writer to signal end-of-input.
-    close(wfd); wfd = -1;
-
-    rv = wpush_drain_status(rfd, refname);
-    if (rv != OK)
-        fprintf(stderr, "wpush: delete drain_status returned non-OK\n");
-    close(rfd); rfd = -1;
-
-delete_close:
-    if (advbuf[0]) u8bFree(advbuf);
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
     if (pid > 0) {

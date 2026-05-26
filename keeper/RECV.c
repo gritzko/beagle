@@ -96,20 +96,14 @@ static ok64 recv_read_pkt(int in_fd, u8b buf, u8cs adv, u8csp line) {
 
 // --- request reader ---
 
+//  Caller (RECVServe) pre-acquires req->upds_b / req->arena / req->tail
+//  from BASS so their pointers survive across the call() boundary into
+//  this fn.  Here we just fill them and zero state.
 ok64 RECVReadRequest(int in_fd, recv_reqp req) {
     sane(in_fd >= 0 && req);
-
-    zerop(req);
-    if (u8bAllocate(req->upds_b,
-                    RECV_MAX_UPDATES * sizeof(recv_update)) != OK)
-        fail(RECVFAIL);
     req->upds = (recv_update *)u8bDataHead(req->upds_b);
-    ok64 ao = u8bAllocate(req->arena, RECV_ARENA_BYTES);
-    if (ao != OK) {
-        u8bFree(req->upds_b);
-        req->upds = NULL;
-        return ao;
-    }
+    req->count = 0;
+    req->caps  = 0;
 
     a_carve(u8, buf, RECV_REQ_BUF);
 
@@ -157,33 +151,21 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
     }
 
     //  Preserve any bytes past `adv[0]` — they are the first bytes of
-    //  the packfile the client streamed right after the flush.  The
-    //  pipe reader may have pulled them in while filling buf for
-    //  pkt-line parsing; without this stash they would be lost when
-    //  buf is freed, and KEEPIngestFile would see a truncated pack.
+    //  the packfile the client streamed right after the flush.  Goes
+    //  into req->tail (pre-acquired by caller); KEEPIngestFile reads
+    //  it via {u8bDataHead(req.tail), u8bIdleHead(req.tail)}.
     if (rc == OK) {
         u8cs leftover = {adv[0], u8bIdleHead(buf)};
-        if (!u8csEmpty(leftover)) {
-            ok64 to = u8bAllocate(req->tail, u8csLen(leftover));
-            if (to == OK) u8bFeed(req->tail, leftover);
-        }
+        if (!u8csEmpty(leftover)) u8bFeed(req->tail, leftover);
     }
-    if (rc != OK) RECVCloseRequest(req);
     return rc;
 }
 
+//  RECVServe owns the buffer lifetime via BASS — this is now a
+//  no-op kept for the API contract.  Callers that want the buffers
+//  freed return from the procedure that acquired them.
 void RECVCloseRequest(recv_reqp req) {
     if (!req) return;
-    if (req->tail[0] != NULL) {
-        u8bFree(req->tail);
-    }
-    if (req->upds_b[0] != NULL) {
-        u8bFree(req->upds_b);
-        req->upds = NULL;
-    }
-    if (req->arena[0] != NULL) {
-        u8bFree(req->arena);
-    }
     req->count = 0;
     req->caps  = 0;
 }
@@ -415,6 +397,18 @@ ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
     sane(in_fd >= 0 && out_fd >= 0);
 
     recv_req req = {};
+    //  Pre-acquire the three req buffers from BASS in this scope.  Going
+    //  through `call(u8bAcquire, …)` would snapshot+rewind BASS and
+    //  immediately undo the acquire (see PRO.h's a_carve note); invoke
+    //  u8bAcquire directly and propagate the error manually.
+    __ = u8bAcquire(ABC_BASS, req.upds_b,
+                    RECV_MAX_UPDATES * sizeof(recv_update));
+    if (__ != OK) return __;
+    __ = u8bAcquire(ABC_BASS, req.arena, RECV_ARENA_BYTES);
+    if (__ != OK) return __;
+    __ = u8bAcquire(ABC_BASS, req.tail, RECV_REQ_BUF);
+    if (__ != OK) return __;
+
     ok64 rro = RECVReadRequest(in_fd, &req);
     if (rro != OK) {
         //  No request → no response; surface error to caller.
@@ -443,7 +437,5 @@ ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
         if (ao != OK && unpack_status == OK) unpack_status = ao;
     }
 
-    ok64 eo = RECVEmitResponse(out_fd, unpack_status, results, nres);
-    RECVCloseRequest(&req);
-    return eo;
+    return RECVEmitResponse(out_fd, unpack_status, results, nres);
 }

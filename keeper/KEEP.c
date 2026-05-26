@@ -1257,27 +1257,25 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
 
 #define KEEP_FF_MAX 65536u
 
-b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
-    if (!from || !target) return NO;
-    if (sha1Eq(from, target)) return YES;
+//  Worker for KEEPIsAncestor — all scratch buffers from BASS
+//  (auto-rewound at the wrapper's `try()` boundary).
+static ok64 keep_is_ancestor_inner(sha1cp from, sha1cp target,
+                                    b8 *out_found) {
+    sane(from && target && out_found);
+    *out_found = NO;
 
-    sha1 *seen = calloc(KEEP_FF_MAX, sizeof(sha1));
-    if (!seen) return NO;
-    sha1 *queue = calloc(KEEP_FF_MAX, sizeof(sha1));
-    if (!queue) { free(seen); return NO; }
+    a_carve(sha1, seen_b, KEEP_FF_MAX);
+    sha1 *seen = sha1bDataHead(seen_b);
+    a_carve(sha1, queue_b, KEEP_FF_MAX);
+    sha1 *queue = sha1bDataHead(queue_b);
+    a_carve(u8, cbuf, 1UL << 20);
+
     u32 nseen = 0;
     u32 qhead = 0, qtail = 0;
     queue[qtail++] = *from;
     seen[nseen++] = *from;
-    b8 found = NO;
 
-    Bu8 cbuf = {};
-    if (u8bMap(cbuf, 1UL << 20) != OK) {
-        free(seen); free(queue);
-        return NO;
-    }
-
-    while (qhead < qtail && !found) {
+    while (qhead < qtail && !*out_found) {
         sha1 cur = queue[qhead++];
         u8bReset(cbuf);
         u8 ctype = 0;
@@ -1296,7 +1294,7 @@ b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
             a_dup(u8c, hx_dup, hx);
             if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
             if (bin[0] != par.data + 20) continue;
-            if (sha1Eq(&par, target)) { found = YES; break; }
+            if (sha1Eq(&par, target)) { *out_found = YES; break; }
             //  Dedup against `seen`.  Linear scan is fine — the
             //  walk is bounded at KEEP_FF_MAX.
             b8 dup = NO;
@@ -1309,10 +1307,15 @@ b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
             seen[nseen++] = par;
         }
     }
+    done;
+}
 
-    u8bUnMap(cbuf);
-    free(seen);
-    free(queue);
+b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
+    if (!from || !target) return NO;
+    if (sha1Eq(from, target)) return YES;
+    sane(1);
+    b8 found = NO;
+    try(keep_is_ancestor_inner, from, target, &found);
     return found;
 }
 
