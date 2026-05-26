@@ -489,9 +489,11 @@ ok64 DELBranch(uri const *u, b8 recursive) {
             //  Iterate to a fixed point so deletes that surface
             //  newly-leafed children (after their leaves go) are
             //  picked up.
+            //  One BASS carve for the whole fixed-point loop; reset
+            //  each pass (names is rebuilt from REFSEach every time).
+            a_carve(u8, names, 1UL << 16);
             for (;;) {
-                Bu8 names = {};
-                if (u8bAllocate(names, 1UL << 16) != OK) fail(NOROOM);
+                u8bReset(names);
                 del_descendants_collect_ctx cctx = {
                     .target = {target[0], target[1]},
                     .names  = &names,
@@ -499,14 +501,8 @@ ok64 DELBranch(uri const *u, b8 recursive) {
                 };
                 ok64 co = REFSEach($path(keepdir),
                                    del_collect_descendants_cb, &cctx);
-                if (co != OK || cctx.err != OK) {
-                    u8bFree(names);
-                    fail(SNIFFFAIL);
-                }
-                if ($empty(u8bData(names))) {
-                    u8bFree(names);
-                    break;
-                }
+                if (co != OK || cctx.err != OK) fail(SNIFFFAIL);
+                if ($empty(u8bData(names))) break;
                 //  Pick the longest (deepest) name from the buffer.
                 u8cp p = u8bDataHead(names);
                 u8cp end = u8bIdleHead(names);
@@ -519,7 +515,7 @@ ok64 DELBranch(uri const *u, b8 recursive) {
                     if (l > best_len) { best_b = p; best_len = l; }
                     p = (q < end) ? q + 1 : end;
                 }
-                if (best_b == NULL) { u8bFree(names); break; }
+                if (best_b == NULL) break;
 
                 //  Build a synthetic uri for DELBranch(non-recursive).
                 uri sub = {};
@@ -531,9 +527,7 @@ ok64 DELBranch(uri const *u, b8 recursive) {
                 u8bFeed(dbuf, nm);
                 sub.data[0] = u8bDataHead(dbuf);
                 sub.data[1] = u8bIdleHead(dbuf);
-                ok64 dr = DELBranch(&sub, NO);
-                u8bFree(names);
-                if (dr != OK) fail(dr);
+                call(DELBranch, &sub, NO);
             }
         }
     }

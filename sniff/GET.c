@@ -67,6 +67,12 @@ typedef struct {
     //  row per `WALK_KIND_SUB` entry seen during the target walk.
     //  Drained by `get_drain_subs` after the parent's WRITE pass.
     u8bp           subs_out;
+    //  Per-file blob scratch, reused across every `get_write_one` in
+    //  the WRITE pass (the visitor runs bare per tree entry, so a
+    //  per-call mmap would churn one syscall pair per file).  Mapped
+    //  once with the other GET bufs, `u8bReset` before each fetch.
+    //  256 MB cap (lazy COW) — see get_write_one for the rationale.
+    u8bp           blob;
 } get_ctx;
 
 //  Per-file report verbs.  Encoded via abc/ok64; colors live in
@@ -109,12 +115,13 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
     filestat _pre = {};
     b8 pre_present = (FILELStat(&_pre, $path(fp)) == OK);
 
-    //  256 MB cap (mmap'd, COW): linux.git has generated headers
-    //  >20 MB (drivers/gpu/drm/amd/include/asic_reg/dcn/*) that
-    //  blew through the previous 16 MB malloc.  Anonymous mmap
-    //  pages on demand, so cost is what's actually written.
-    Bu8 bbuf = {};
-    call(u8bMap, bbuf, 1UL << 28);
+    //  Reused 256 MB blob scratch from the GET context (mapped once
+    //  for the whole WRITE pass — see get_ctx.blob): linux.git has
+    //  generated headers >20 MB (drivers/gpu/drm/amd/include/asic_reg/
+    //  dcn/*) that blew through the previous 16 MB malloc.  Anonymous
+    //  mmap pages on demand, so cost is what's actually written.
+    u8bp bbuf = g->blob;
+    u8bReset(bbuf);
     u8 bt = 0;
     sha1 entry_sha = {};
     sha1Mv(&entry_sha, (sha1cp)esha);
@@ -132,7 +139,6 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             0xe4, 0x8c, 0x53, 0x91
         };
         if (memcmp(entry_sha.data, EMPTY_BLOB_SHA, 20) == 0) {
-            u8bUnMap(bbuf);
             //  Unlink first so a stale symlink at this path is replaced
             //  outright; FILECreate's O_CREAT|O_TRUNC otherwise follows
             //  the symlink and clobbers its target instead of the path.
@@ -149,7 +155,6 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             call(ULOGPrintStatusLine, &rep);
             done;
         }
-        u8bUnMap(bbuf);
         return o;
     }
 
@@ -157,7 +162,6 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         FILEUnLink($path(fp));
         u8bFeed1(bbuf, 0);   // NUL-terminate so $path(bbuf) is C-string-safe
         if (FILESymLink($path(bbuf), $path(fp)) != OK) {
-            u8bUnMap(bbuf);
             fail(SNIFFFAIL);
         }
     } else {
@@ -169,15 +173,14 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         FILEUnLink($path(fp));
         int fd = -1;
         o = FILECreate(&fd, $path(fp));
-        if (o != OK) { u8bUnMap(bbuf); return o; }
+        if (o != OK) return o;
         u8cs data = {u8bDataHead(bbuf), u8bIdleHead(bbuf)};
         o = FILEFeedAll(fd, data);
         FILEClose(&fd);
-        if (o != OK) { u8bUnMap(bbuf); return o; }
+        if (o != OK) return o;
         if (kind == WALK_KIND_EXE)
             FILEChmod($path(fp), 0755);
     }
-    u8bUnMap(bbuf);
 
     call(SNIFFAtStampPath, fp, g->ts);
     {
@@ -668,8 +671,7 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
     sane($ok(reporoot) && base && tgt);
     if (u8csEmpty(merges)) done;
 
-    Bu8 out = {};
-    call(u8bAllocate, out, 1UL << 24);
+    a_carve(u8, out, 1UL << 24);
 
     u32 merged = 0, failed = 0;
     a_dup(u8c, scan, merges);
@@ -716,7 +718,6 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         (void)ULOGPrintStatusLine(&rep);
     }
 
-    u8bFree(out);
     if (merged > 0)
         fprintf(stderr, "sniff: weave-merged %u file(s)\n", merged);
     if (failed > 0)
@@ -930,12 +931,10 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         }
     }
 
-    Bu8 buf = {};
-    call(u8bAllocate, buf, 1UL << 24);
+    a_carve(u8, buf, 1UL << 24);
     u8 otype = 0;
     ok64 o = KEEPGet(hashlet, hexlen, buf, &otype);
     if (o != OK) {
-        u8bFree(buf);
         a_path(leafdir);
         (void)HOMEBranchDir(KEEP.h, leafdir, KEEP.h->cur_branch);
         fprintf(stderr,
@@ -974,21 +973,18 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             }
         }
         if (!found) {
-            u8bFree(buf);
             fprintf(stderr, "sniff: bad tag (no object)\n");
             fail(SNIFFFAIL);
         }
         u8bReset(buf);
         o = KEEPGetExact(&tag_sha, buf, &otype);
         if (o != OK || otype != DOG_OBJ_COMMIT) {
-            u8bFree(buf);
             fprintf(stderr, "sniff: tag target not a commit\n");
             fail(SNIFFFAIL);
         }
     }
 
     if (otype != DOG_OBJ_COMMIT) {
-        u8bFree(buf);
         fprintf(stderr, "sniff: not a commit\n");
         fail(SNIFFFAIL);
     }
@@ -997,10 +993,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     u8cs commit = {u8bDataHead(buf), u8bIdleHead(buf)};
     o = GITu8sCommitTree(commit, tree_sha.data);
     //  Hash the commit body for the weave-merge drain (its sha is the
-    //  tgt commit hashlet graf walks from).  Must happen before
-    //  u8bFree(buf) — `commit` borrows into the mapping.
+    //  tgt commit hashlet graf walks from).
     KEEPObjSha(&tgt_commit_sha, DOG_OBJ_COMMIT, commit);
-    u8bFree(buf);
     if (o != OK) {
         fprintf(stderr, "sniff: bad commit (no tree)\n");
         fail(SNIFFFAIL);
@@ -1091,8 +1085,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 u8cs hex_s = {};
                 sha1hexSlice(hex_s, &hex);
                 u64 bhashlet = WHIFFHexHashlet60(hex_s);
-                Bu8 cbuf = {};
-                if (u8bAllocate(cbuf, 1UL << 24) == OK) {
+                a_carve(u8, cbuf, 1UL << 24);
+                {
                     u8 ctype = 0;
                     if (KEEPGet(bhashlet, 40, cbuf, &ctype) == OK) {
                         //  Peel annotated tag → commit (mill-tags
@@ -1135,7 +1129,6 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                                 has_base_tree = YES;
                         }
                     }
-                    u8bFree(cbuf);
                 }
             }
         }
@@ -1148,16 +1141,19 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  in lex order — `tools/v*`, `tools/w*` — those tail entries
     //  silently lost their `u8bFeed` and never reached the unlink
     //  drainer, leaving stale files on disk after checkout).
-    Bu8 noop = {}, unlinks = {}, merges = {}, subs = {};
+    Bu8 noop = {}, unlinks = {}, merges = {}, subs = {}, blob = {};
     //  Cumulative cleanup on partial-allocation failure: u8bUnMap /
     //  u8bFree on a zero-init Bu8 return FAILSANITY / BISNULL, harmless.
-#define GET_BUFS_FREE() \
-    do { u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges); u8bFree(subs); } while (0)
+#define GET_BUFS_FREE()                                                   \
+    do { u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);             \
+         u8bUnMap(blob); u8bFree(subs); } while (0)
     {
         ok64 ao;
         if ((ao = u8bMap(noop,    1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
         if ((ao = u8bMap(unlinks, 1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
         if ((ao = u8bMap(merges,  1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
+        //  Per-file blob scratch for the WRITE pass (get_ctx.blob).
+        if ((ao = u8bMap(blob,    1UL << 28)) != OK) { GET_BUFS_FREE(); return ao; }
         //  Submodule (`160000`) collector — kept small; most trees have
         //  O(10) gitlinks at most.  64 KB ≫ any realistic count.
         if ((ao = u8bAllocate(subs, 1UL << 16)) != OK) { GET_BUFS_FREE(); return ao; }
@@ -1177,8 +1173,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                           tree_sha.data, noop, unlinks, merges,
                           SNIFF.force);
     if (o != OK) {
-        u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
-        u8bFree(subs);
+        GET_BUFS_FREE();
         return o;
     }
 
@@ -1190,6 +1185,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     ctx.merges_cursor[0] = u8bDataHead(merges);
     ctx.merges_cursor[1] = u8bIdleHead(merges);
     ctx.subs_out         = subs;
+    ctx.blob             = blob;
 
     //  --- COMMIT POINT (atomicity) -------------------------------
     //  Append the `get` ULOG row and advance the local branch tip
@@ -1229,8 +1225,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         ron60 verb = SNIFFAtVerbGet();
         ok64 ar = SNIFFAtAppendAt(ctx.ts, verb, &urow);
         if (ar != OK) {
-            u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
-            u8bFree(subs);
+            GET_BUFS_FREE();
             return ar;
         }
 
@@ -1261,8 +1256,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     o = WALKTreeLazy(tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
-        u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
-        u8bFree(subs);
+        GET_BUFS_FREE();
         return o;
     }
 
@@ -1286,7 +1280,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         a_dup(u8c, ulist, u8bData(unlinks));
         (void)get_drain_unlinks(reporoot, ulist, ctx.ts);
     }
-    u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges);
+    u8bUnMap(noop); u8bUnMap(unlinks); u8bUnMap(merges); u8bUnMap(blob);
 
     //  Submodule orchestration moved to beagle's BEGet wrapper
     //  (SUBS.plan.md §GET).  Sniff still classifies `160000` entries
@@ -1448,11 +1442,9 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     (void)sniff_get_blob_to_wt_switch(u);
     sane(u);
     keeper *k = &KEEP;
-    Bu8 blob = {};
-    call(u8bMap, blob, 64UL << 20);
+    a_carve(u8, blob, 64UL << 20);
     ok64 go = KEEPGetByURI(u, blob);
     if (go != OK) {
-        u8bUnMap(blob);
         fprintf(stderr,
             "sniff: get: cannot resolve %.*s?%.*s\n",
             (int)$len(u->path),  (char const *)u->path[0],
@@ -1467,7 +1459,6 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     int fd = -1;
     ok64 co = FILECreate(&fd, $path(fp));
     if (co != OK) {
-        u8bUnMap(blob);
         fprintf(stderr, "sniff: get: cannot open %.*s for write: %s\n",
                 (int)u8bDataLen(fp), (char const *)u8bDataHead(fp),
                 ok64str(co));
@@ -1476,7 +1467,6 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     a_dup(u8c, body, u8bData(blob));
     ok64 wo = FILEFeedAll(fd, body);
     FILEClose(&fd);
-    u8bUnMap(blob);
     if (wo != OK) {
         fprintf(stderr,
             "sniff: get: write %.*s failed: %s\n",
@@ -1512,12 +1502,10 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
         a_dup(u8c, hx, resolved.query);
         if (HEXu8sDrainSome(sb, hx) != OK) return SNIFFFAIL;
     }
-    Bu8 cbuf = {};
-    call(u8bMap, cbuf, 1UL << 20);
+    a_carve(u8, cbuf, 1UL << 20);
     u8 ot = 0;
     ok64 go = KEEPGetExact(&commit_sha, cbuf, &ot);
     if (go != OK || ot != DOG_OBJ_COMMIT) {
-        u8bUnMap(cbuf);
         return go == OK ? SNIFFFAIL : go;
     }
     a_dup(u8c, scan, u8bDataC(cbuf));
@@ -1533,7 +1521,6 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
             break;
         }
     }
-    u8bUnMap(cbuf);
     return got ? OK : SNIFFFAIL;
 }
 
@@ -1573,18 +1560,15 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
     a_dup(u8c, stem_dup, stem_s);
     ron60 v_leaf = 0;
     call(RONutf8sDrain, &v_leaf, stem_dup);
-    Bu8 ulog = {};
-    call(u8bAllocate, ulog, 4UL << 20);
-    ok64 lr = KEEPTreeULog(tree_sha.data, 0, v_leaf, ulog);
-    if (lr != OK) { u8bFree(ulog); return lr; }
+    a_carve(u8, ulog, 4UL << 20);
+    call(KEEPTreeULog, tree_sha.data, 0, v_leaf, ulog);
 
     //  Filter rows by the requested subtree prefix.  Path slice
     //  carries the trailing `/`; KEEPTreeULog emits paths with no
     //  trailing slash, so `<prefix>` matches `<prefix>/<...>` after
     //  comparing the prefix bytes including the final `/`.
     u8cs prefix = {u->path[0], u->path[1]};
-    Bu8 blob = {};
-    call(u8bMap, blob, 64UL << 20);
+    a_carve(u8, blob, 64UL << 20);
     u32 n_written = 0;
     a_dup(u8c, scan, u8bData(ulog));
     while (!u8csEmpty(scan)) {
@@ -1635,8 +1619,6 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
         FILEClose(&fd);
         n_written++;
     }
-    u8bUnMap(blob);
-    u8bFree(ulog);
 
     fprintf(stderr,
         "sniff: get: %u file(s) under %.*s overwritten from ?%.*s "

@@ -789,25 +789,21 @@ static ok64 patch_walk(u8cs reporoot, u8cs dir_path,
                        sha1cp thr_commit,
                        patch_stats *st) {
     sane(1);
-    Bu8 lbuf = {}, obuf = {}, tbuf = {}, mbuf = {};
-    Bentry leb = {}, oeb = {}, teb = {};
-    call(u8bAllocate,    lbuf, PATCH_TREE_BUF);
-    call(u8bAllocate,    obuf, PATCH_TREE_BUF);
-    call(u8bAllocate,    tbuf, PATCH_TREE_BUF);
-    call(u8bAllocate,    mbuf, PATCH_BLOB_BUF);
-    call(entrybAllocate, leb,  PATCH_MAX_ENTRIES);
-    call(entrybAllocate, oeb,  PATCH_MAX_ENTRIES);
-    call(entrybAllocate, teb,  PATCH_MAX_ENTRIES);
+    //  Per-walk scratch, all BASS-carved (rewinds when patch_walk
+    //  returns).  A single allocation reused across patch_walk_inner's
+    //  recursion — same lifetime the malloc/free wrapper provided.
+    a_carve(u8,    lbuf, PATCH_TREE_BUF);
+    a_carve(u8,    obuf, PATCH_TREE_BUF);
+    a_carve(u8,    tbuf, PATCH_TREE_BUF);
+    a_carve(u8,    mbuf, PATCH_BLOB_BUF);
+    a_carve(entry, leb,  PATCH_MAX_ENTRIES);
+    a_carve(entry, oeb,  PATCH_MAX_ENTRIES);
+    a_carve(entry, teb,  PATCH_MAX_ENTRIES);
 
-    try(patch_walk_inner, reporoot, dir_path, fork, our, thr,
-        fork_commit, our_commit, thr_commit, st,
-        lbuf, obuf, tbuf, mbuf, leb, oeb, teb);
-    ok64 ret = __;
-
-    entrybFree(teb); entrybFree(oeb); entrybFree(leb);
-    u8bFree(mbuf);
-    u8bFree(tbuf); u8bFree(obuf); u8bFree(lbuf);
-    return ret;
+    call(patch_walk_inner, reporoot, dir_path, fork, our, thr,
+         fork_commit, our_commit, thr_commit, st,
+         lbuf, obuf, tbuf, mbuf, leb, oeb, teb);
+    done;
 }
 
 // --- Ref resolution -----------------------------------------------
@@ -857,8 +853,7 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
 
     //  If we resolved to an annotated tag, deref to the underlying
     //  commit via the `object` field.
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 16);
+    a_carve(u8, cbuf, 1UL << 16);
     u8 ct = 0;
     ok64 ko = KEEPGetExact(out, cbuf, &ct);
     if (ko == OK && ct == DOG_OBJ_TAG) {
@@ -875,7 +870,6 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
             }
         }
     }
-    u8bFree(cbuf);
     done;
 }
 
@@ -1058,13 +1052,12 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
         return PATCHFAIL;
     }
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 16);
+    a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
     ok64 ko = KEEPGetExact(thr_out, cbuf, &ct);
-    if (ko != OK) { u8bFree(cbuf); return ko; }
-    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(PATCHFAIL); }
+    if (ko != OK) return ko;
+    if (ct != DOG_OBJ_COMMIT) fail(PATCHFAIL);
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
     u8cs field = {}, value = {};
@@ -1081,7 +1074,6 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
             break;
         }
     }
-    u8bFree(cbuf);
 
     if (!found_parent) {
         fprintf(stderr,
@@ -1096,12 +1088,11 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
 //  malformed commit, KEEP* on storage error.
 static ok64 patch_first_parent(sha1 *parent_out, sha1cp commit_sha) {
     sane(parent_out && commit_sha);
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 16);
+    a_carve(u8, cbuf, 1UL << 16);
     u8 ct = 0;
     ok64 ko = KEEPGetExact(commit_sha, cbuf, &ct);
-    if (ko != OK) { u8bFree(cbuf); return ko; }
-    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); return PATCHFAIL; }
+    if (ko != OK) return ko;
+    if (ct != DOG_OBJ_COMMIT) return PATCHFAIL;
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
     u8cs field = {}, value = {};
@@ -1118,7 +1109,6 @@ static ok64 patch_first_parent(sha1 *parent_out, sha1cp commit_sha) {
             break;
         }
     }
-    u8bFree(cbuf);
     return found ? OK : PATCHFAIL;
 }
 
@@ -1266,17 +1256,13 @@ static ok64 resolve_rebase_one_inner(sha1 *out, sha1cp br_tip,
 static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
                                sha1cp our) {
     sane(1);
-    //  Heap-alloc the reach set: 4096 × 20 = 80 KB, too big for the
-    //  stack frame.
-    Bsha1 reach_b = {};
-    call(sha1bAllocate, reach_b, RBASEONE_REACH_MAX);
-    try(resolve_rebase_one_inner, out, br_tip, our, reach_b);
-    ok64 ret = __;
-    sha1bFree(reach_b);
-    //  PATCHFAIL from the worker's "chain doesn't reach" arm is the
-    //  one path that needs a custom stderr hint — the worker emits it,
-    //  any propagated parent-walk error already carries its own msg.
-    return ret;
+    //  Reach set: 4096 × 20 = 80 KB, too big for the stack frame —
+    //  BASS-carved (rewinds on return).  The worker emits its own
+    //  stderr for the "chain doesn't reach" PATCHFAIL arm; any
+    //  propagated parent-walk error already carries its own msg.
+    a_carve(sha1, reach_b, RBASEONE_REACH_MAX);
+    call(resolve_rebase_one_inner, out, br_tip, our, reach_b);
+    done;
 }
 
 u8 PATCHShape(uricp u) {
@@ -1674,10 +1660,9 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
         }
     }
 
-    Bu8 mbuf = {};
-    call(u8bAllocate, mbuf, PATCH_BLOB_BUF);
+    a_carve(u8, mbuf, PATCH_BLOB_BUF);
     ok64 mo = fetch_merge(mbuf, reporoot, filepath, &our_sha, &thr_sha);
-    if (mo != OK) { u8bFree(mbuf); return mo; }
+    if (mo != OK) return mo;
     a_dup(u8c, bytes, u8bData(mbuf));
     b8 conflict = SNIFFHasConflictMarker(bytes);
 
@@ -1685,7 +1670,6 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     //  newly-added file has no on-disk mode yet) — fine for MVP.
     a_cstr(default_mode, "100644");
     ok64 wo = write_blob(reporoot, filepath, default_mode, bytes);
-    u8bFree(mbuf);
     if (wo != OK) return wo;
 
     //  Stamp the file so it counts as patch-written for POST's

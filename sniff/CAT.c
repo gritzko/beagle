@@ -100,12 +100,11 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     }
 
     //  Load baseline (may be empty for untracked / fresh-repo).
-    Bu8 base = {};
-    call(u8bAllocate, base, 64UL << 20);
+    a_carve(u8, base, 64UL << 20);
     ok64 br = cat_resolve_baseline(u, base);
     u8cs from_data = {};
     if (br == OK) { a_dup(u8c, fd, u8bData(base)); u8csMv(from_data, fd); }
-    else if (br != KEEPNONE) { u8bFree(base); return br; }
+    else if (br != KEEPNONE) return br;
 
     //  Load wt bytes (may be empty for a tracked-but-rm'd file).
     a_dup(u8c, upath, u->path);
@@ -134,7 +133,6 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
         WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
         GRAFArenaCleanup();
         if (wt_mapped) FILEUnMap(wt_mapped);
-        u8bFree(base);
         fail(NOROOM);
     }
 
@@ -151,6 +149,5 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
     GRAFArenaCleanup();
     if (wt_mapped) FILEUnMap(wt_mapped);
-    u8bFree(base);
     return ret;
 }

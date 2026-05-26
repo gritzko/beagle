@@ -210,9 +210,10 @@ ok64 SNIFFWatch(u8cs reporoot) {
 
     //  Newline-sep set of directories whose `mod <dir/>` row has
     //  already been written since the most recent baseline.  Rebuilt
-    //  per scan in watch_rescan().
-    Bu8 seen_dirs = {};
-    call(u8bAllocate, seen_dirs, 1UL << 16);
+    //  per scan in watch_rescan().  Carved from BASS in the daemon's
+    //  own frame (before the poll loop, never inside it) so it lives
+    //  for the daemon's lifetime and rewinds on exit.
+    a_carve(u8, seen_dirs, 1UL << 16);
 
     //  Seed scan: emit mod rows for anything already dirty when the
     //  daemon starts.
@@ -225,7 +226,6 @@ ok64 SNIFFWatch(u8cs reporoot) {
         (void)watch_rescan(reporoot, &seen_dirs);
     }
 
-    u8bFree(seen_dirs);
     FSWClose(wfd);
     watch_rm_pid(reporoot);
     done;

@@ -427,17 +427,24 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
                              u32 *emitted_io, ron60 verb_put) {
     sane(ts_io && emitted_io);
     mv_state s = {};
-    call(u8bMap, s.pathbuf, PUT_MV_BUFSZ);
+    //  Path scratch from BASS (rewinds at return); mv_collect_cb's
+    //  `s.base`/`s.wt` slices borrow into it, so it must outlive the
+    //  classify + pairing below — carved here, in the owning frame.
+    a_carve(u8, pathbuf, PUT_MV_BUFSZ);
+    ((u8 **)s.pathbuf)[0] = pathbuf[0];
+    ((u8 **)s.pathbuf)[1] = pathbuf[1];
+    ((u8 **)s.pathbuf)[2] = pathbuf[2];
+    ((u8 **)s.pathbuf)[3] = pathbuf[3];
     ok64 cr = SNIFFClassify(mv_collect_cb, &s);
-    if (cr != OK)        { u8bUnMap(s.pathbuf); return cr; }
-    if (s.nb == 0 || s.nw == 0) { u8bUnMap(s.pathbuf); return OK; }
+    if (cr != OK)        return cr;
+    if (s.nb == 0 || s.nw == 0) return OK;
 
     mv_hash_wt(&s, reporoot);
 
     mv_pair pairs[PUT_MV_MAX];
     u32 npairs = 0;
     ok64 po = mv_pair_unique(&s, pairs, &npairs);
-    if (po != OK) { u8bUnMap(s.pathbuf); return po; }
+    if (po != OK) return po;
 
     for (u32 i = 0; i < npairs; i++) {
         mv_entry const *bb = &s.base[pairs[i].b_idx];
@@ -446,7 +453,7 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
         urow.path[0]     = bb->path[0]; urow.path[1]     = bb->path[1];
         urow.fragment[0] = ww->path[0]; urow.fragment[1] = ww->path[1];
         ok64 ao = SNIFFAtAppendAt(*ts_io, verb_put, &urow);
-        if (ao != OK) { u8bUnMap(s.pathbuf); return ao; }
+        if (ao != OK) return ao;
         a_dup(u8c, dst_rel, ww->path);
         a_path(dstfp);
         if (SNIFFFullpath(dstfp, reporoot, dst_rel) == OK)
@@ -454,7 +461,6 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
         (*ts_io)++;
         (*emitted_io)++;
     }
-    u8bUnMap(s.pathbuf);
     done;
 }
 

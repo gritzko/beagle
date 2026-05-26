@@ -894,10 +894,8 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
     //  recover blob shas for the touched-unchanged check) and a
     //  newline-separated list of gitlink prefixes derived from the
     //  same rows.  Both can stay empty (no baseline / first checkout).
-    Bu8 base_rows = {};
-    Bu8 gitlinks  = {};
-    call(u8bAllocate, base_rows, 1UL << 22);
-    call(u8bAllocate, gitlinks,  1UL << 14);
+    a_carve(u8, base_rows, 1UL << 22);
+    a_carve(u8, gitlinks,  1UL << 14);
     at_collect_baseline(base_rows, gitlinks);
 
     at_dirty_scan_ctx sc = {.cb = cb, .user_ctx = ctx, .cb_err = OK};
@@ -914,8 +912,6 @@ ok64 SNIFFAtScanDirty(u8cs reporoot, sniff_at_dirty_cb cb, void *ctx) {
                        (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                    FILE_SCAN_DIRS  | FILE_SCAN_DEEP),
                        at_dirty_scan_cb, &sc);
-    u8bFree(gitlinks);
-    u8bFree(base_rows);
     if (sc.cb_err != OK) return sc.cb_err;
     return so;
 }
@@ -979,14 +975,12 @@ ok64 SNIFFWtULog(u8cs reporoot, ron60 verb, u8bp out) {
     //  tens of thousands of entries even though no row will be
     //  emitted for them.  Use a 16 MB mmap region — VA only, paged
     //  on demand — to comfortably handle the worst real-world dir.
-    Bu8 scratch = {};
-    call(u8bMap, scratch, 1UL << 24);
+    a_carve(u8, scratch, 1UL << 24);
 
     ok64 so = FILEScanSorted(wp,
                              (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
                                          FILE_SCAN_DEEP),
                              scratch, FILEentryZ, at_ulog_cb, &c);
-    u8bUnMap(scratch);
     if (c.err != OK) return c.err;
     return so;
 }

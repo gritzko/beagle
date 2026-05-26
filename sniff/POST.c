@@ -728,8 +728,7 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
                             u32 *emit_count) {
     sane(tree_out);
 
-    Bu8 tree = {};
-    call(u8bAllocate, tree, $len(subslice) + 256);
+    a_carve(u8, tree, $len(subslice) + 256);
 
     a_dup(u8c, scan, subslice);
     while (!u8csEmpty(scan)) {
@@ -784,10 +783,8 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
             sub_subslice[1] = scan[0];
 
             sha1 sub_sha = {};
-            ok64 so = post_build_tree(sub_subslice, subprefix,
-                                      &sub_sha, tree_body_list,
-                                      emit_count);
-            if (so != OK) { u8bFree(tree); return so; }
+            call(post_build_tree, sub_subslice, subprefix,
+                                  &sub_sha, tree_body_list, emit_count);
 
             if (!sha1empty(&sub_sha)) {
                 post_mode_feed(tree, 040000);
@@ -823,7 +820,6 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
 
     if (u8bDataLen(tree) == 0) {
         zerop(tree_out);
-        u8bFree(tree);
         done;
     }
 
@@ -837,7 +833,6 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
     u8bFeed(tree_body_list, u8bDataC(tree));
     (*emit_count)++;
 
-    u8bFree(tree);
     done;
 }
 
@@ -858,11 +853,9 @@ static ok64 post_parent_sha(keeper *k, u8csc parent_hex, sha1 *out) {
     a_raw(bin, *out);
     HEXu8sDrainSome(bin, hx);
     //  Verify the commit actually lives in keeper (sanity check).
-    Bu8 tmp = {};
-    call(u8bAllocate, tmp, 1UL << 20);
+    a_carve(u8, tmp, 1UL << 20);
     u8 ctype = 0;
     ok64 go = KEEPGetExact(out, tmp, &ctype);
-    u8bFree(tmp);
     if (go != OK || ctype != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
     done;
 }
@@ -948,32 +941,20 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     call(RONutf8sDrain, &v_put_emit, dpv);
     call(RONutf8sDrain, &v_del_emit, ddv);
 
-    Bu8 bu = {}, wu = {};
-    Bu8 put_unsorted = {}, del_unsorted = {};
-    Bu8 put_buf = {}, del_buf = {};
     //  Sized for real-world wt: a single rsync-then-`be put .` over a
     //  freshly checked-out git tag (~5k tracked files) easily fills
     //  more than 64 KB of put-rows; bu/wu used to overflow on wt's
     //  with > ~7k files at ~140 B/row.  4 MB for put/del, 16 MB for
-    //  bu/wu — carved out of one 48 MB arena via u8bAcquire so every
-    //  exit path frees with a single u8bFree(arena).
-    Bu8 arena = {};
-    call(u8bAllocate, arena, (1UL << 24) * 2 + (1UL << 22) * 4);
-    call(u8bAcquire, arena, bu,           1UL << 24);
-    call(u8bAcquire, arena, wu,           1UL << 24);
-    call(u8bAcquire, arena, put_unsorted, 1UL << 22);
-    call(u8bAcquire, arena, del_unsorted, 1UL << 22);
-    call(u8bAcquire, arena, put_buf,      1UL << 22);
-    call(u8bAcquire, arena, del_buf,      1UL << 22);
+    //  bu/wu — all BASS-carved, rewound when this function returns.
+    a_carve(u8, bu,           1UL << 24);
+    a_carve(u8, wu,           1UL << 24);
+    a_carve(u8, put_unsorted, 1UL << 22);
+    a_carve(u8, del_unsorted, 1UL << 22);
+    a_carve(u8, put_buf,      1UL << 22);
+    a_carve(u8, del_buf,      1UL << 22);
 
-    if (*have_base) {
-        ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);
-        if (br != OK) { u8bFree(arena); return br; }
-    }
-    {
-        ok64 wr = SNIFFWtULog(post_reporoot(), v_wt, wu);
-        if (wr != OK) { u8bFree(arena); return wr; }
-    }
+    if (*have_base) call(KEEPTreeULog, base_tree_sha->data, 0, v_base, bu);
+    call(SNIFFWtULog, post_reporoot(), v_wt, wu);
 
     //  4. Put/delete scan since last post.  File-level rows go into
     //     the unsorted intent buffers; dir-prefix rows are expanded
@@ -990,26 +971,15 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
         .v_put_emit   = v_put_emit,
         .v_del_emit   = v_del_emit,
     };
-    {
-        ok64 sr = SNIFFAtScanPutDelete(c->last_post_ts, post_pd_cb, &walk);
-        if (sr != OK) { u8bFree(arena); return sr; }
-    }
-    {
-        ok64 ps = post_sort_dedup_intent(put_unsorted, put_buf);
-        ok64 ds = ps == OK
-                ? post_sort_dedup_intent(del_unsorted, del_buf)
-                : OK;
-        if (ps != OK) { u8bFree(arena); return ps; }
-        if (ds != OK) { u8bFree(arena); return ds; }
-    }
+    call(SNIFFAtScanPutDelete, c->last_post_ts, post_pd_cb, &walk);
+    call(post_sort_dedup_intent, put_unsorted, put_buf);
+    call(post_sort_dedup_intent, del_unsorted, del_buf);
 
     //  5. Classify baseline + wt + put/del intents via 4-way merge,
     //     emitting one keep/unlink/add decision row per distinct path
     //     into ctx.decisions.
-    ok64 cr = post_classify_via_merge(c, bu, wu, put_buf, del_buf,
-                                      v_base, v_wt, v_put_emit, v_del_emit);
-    u8bFree(arena);
-    if (cr != OK) return cr;
+    call(post_classify_via_merge, c, bu, wu, put_buf, del_buf,
+                                  v_base, v_wt, v_put_emit, v_del_emit);
 
     //  classify_step inlined the per-path decide+resolve+hash and
     //  emitted one decision row per distinct path.  Downstream
@@ -1017,17 +987,22 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     done;
 }
 
-//  Initialise the post_ctx for a scan.  Allocates the decisions
-//  buffer and stamps the per-commit ts.  Keeper + reporoot are read
-//  from the SNIFF / KEEP singletons; no need to plumb them through.
-static ok64 post_ctx_init(post_ctx *c) {
-    sane(c);
+//  Initialise the post_ctx for a scan and stamp the per-commit ts.
+//  Keeper + reporoot are read from the SNIFF / KEEP singletons; no
+//  need to plumb them through.  `decisions` is a BASS-carved buffer
+//  owned by the caller's frame (so it survives this init's call()
+//  rewind); we only copy its four boundary pointers into the ctx.
+static ok64 post_ctx_init(post_ctx *c, u8bp decisions) {
+    sane(c && decisions);
     *c = (post_ctx){
         .last_post_ts = SNIFFAtLastPostTs(),
     };
 
     //  Decisions buffer holds the full per-commit ULOG-row stream.
-    call(u8bAllocate, c->decisions, POST_TREE_ULOG_MAX);
+    ((u8 **)c->decisions)[0] = decisions[0];
+    ((u8 **)c->decisions)[1] = decisions[1];
+    ((u8 **)c->decisions)[2] = decisions[2];
+    ((u8 **)c->decisions)[3] = decisions[3];
 
     //  Single per-commit stamp ts; carried in every decision row,
     //  used to re-stamp content-clean drifted files (see
@@ -1163,12 +1138,6 @@ static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
             m->on, code, u8sFmt(rec->uri.path), m->off);
     m->changed++;
     return OK;
-}
-
-//  Free everything post_ctx_init allocated.
-static void post_ctx_free(post_ctx *c) {
-    if (!c) return;
-    u8bFree(c->decisions);
 }
 
 // --- Rebase emit pipeline (Stage 2 phase-2 promote) ---
@@ -1429,8 +1398,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
     //  is a slice into `names_arena`.  No-op when the shard dir
     //  doesn't exist (FILEScan returns non-OK; we still proceed).
     u8cs names[CASCADE_MAX] = {};
-    Bu8  names_arena = {};
-    if (u8bAllocate(names_arena, CASCADE_MAX * 128) != OK) return OK;
+    a_carve(u8, names_arena, CASCADE_MAX * 128);
     pc_collect pc = {.names = names, .cap = CASCADE_MAX, .arena = names_arena};
     (void)FILEScan(bdir, FILE_SCAN_DIRS, post_cascade_collect_cb, &pc);
     u32 nfound = pc.n;
@@ -1460,15 +1428,14 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         //  Stage rebase + record.
         ok64 ro = post_cascade_one(cc, child_branch,
                                    branch_old_tip, branch_new_tip);
-        if (ro != OK) { u8bFree(names_arena); return ro; }
+        if (ro != OK) return ro;
 
         //  Recurse: this child's old/new tips drive the next level.
         sha1 child_new = cc->recs[cc->n - 1].new_tip;
         ok64 rr = post_cascade_walk(cc, child_branch, &child_old,
                                     &child_new);
-        if (rr != OK) { u8bFree(names_arena); return rr; }
+        if (rr != OK) return rr;
     }
-    u8bFree(names_arena);
     return OK;
 }
 
@@ -1572,8 +1539,7 @@ ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
     *reached_stop = NO;
     if (cap == 0) done;
 
-    Bu8 cbuf = {};
-    call(u8bMap, cbuf, 1UL << 16);
+    a_carve(u8, cbuf, 1UL << 16);
     sha1 cur = *from;
     while (*nout < cap) {
         if (stop != NULL && sha1Eq(&cur, stop)) {
@@ -1601,7 +1567,6 @@ ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
         }
         if (!found_par) break;
     }
-    u8bUnMap(cbuf);
     done;
 }
 
@@ -1865,8 +1830,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         #define POST_PARENT_MAX 8192
         sha1 cur = cur_tip;
         b8 ff = NO;
-        Bu8 cbuf = {};
-        (void)u8bMap(cbuf, 1UL << 16);
+        a_carve(u8, cbuf, 1UL << 16);
         for (u32 hop = 0; hop < POST_PARENT_MAX; hop++) {
             if (sha1Eq(&cur, &target_tip)) { ff = YES; break; }
             u8bReset(cbuf);
@@ -1888,7 +1852,6 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
             }
             if (!stepped) break;
         }
-        u8bUnMap(cbuf);
         if (ff) base_old = target_tip;
         else    sha1Zero(&base_old);  //  signal non-FF below
         base_new  = target_tip;
@@ -1962,11 +1925,10 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         //  active leaf with delta-base hints.
         //
         //  Bounded by POST_MIG_MAX so a pathological chain can't
-        //  hang the dispatcher.  Heap-allocated — POST_MIG_MAX × 20 B
+        //  hang the dispatcher.  BASS-carved — POST_MIG_MAX × 20 B
         //  = 160 KB, too large for a comfortable stack frame inside a
         //  function that already carries several a_path / a_pad locals.
-        Bsha1 chainb = {};
-        if (sha1bAllocate(chainb, POST_MIG_MAX) != OK) return SNIFFFAIL;
+        a_carve(sha1, chainb, POST_MIG_MAX);
         sha1 *chain = sha1bIdleHead(chainb);
         u32 nchain = 0;
         b8 reached = NO;
@@ -1988,7 +1950,6 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                 fprintf(stderr,
                         "sniff: post: cross-shard copy failed (%s)\n",
                         ok64str(mv));
-                sha1bFree(chainb);
                 return mv;
             }
 
@@ -2008,24 +1969,20 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
             //  graf failure here doesn't roll back the migrate.
             (void)SNIFFMaybeSwitchGraf(target_branch);
             {
-                Bu8 body = {};
-                if (u8bMap(body, 1UL << 20) == OK) {
-                    for (u32 i = 0; i < nchain; i++) {
-                        u8bReset(body);
-                        u8 ot = 0;
-                        if (KEEPGetExact(&chain[i], body, &ot) != OK)
-                            continue;
-                        if (ot != DOG_OBJ_COMMIT) continue;
-                        a_dup(u8c, bs, u8bData(body));
-                        (void)GRAFDagUpdate(DOG_OBJ_COMMIT,
-                                            &chain[i], bs);
-                    }
-                    (void)GRAFDagFinish();
-                    u8bUnMap(body);
+                a_carve(u8, body, 1UL << 20);
+                for (u32 i = 0; i < nchain; i++) {
+                    u8bReset(body);
+                    u8 ot = 0;
+                    if (KEEPGetExact(&chain[i], body, &ot) != OK)
+                        continue;
+                    if (ot != DOG_OBJ_COMMIT) continue;
+                    a_dup(u8c, bs, u8bData(body));
+                    (void)GRAFDagUpdate(DOG_OBJ_COMMIT,
+                                        &chain[i], bs);
                 }
+                (void)GRAFDagFinish();
             }
         }
-        sha1bFree(chainb);
         stack_was_rewritten = NO;
     } else {
         //  POST is commit-or-FF, never rebase (per VERBS.md).  When
@@ -2049,7 +2006,13 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  the (old, new) tip pair; we just hand it the target's view.
     cascade_ctx casc = {};
     if (stack_was_rewritten) {
-        call(u8bAllocate, casc.arena, CASCADE_MAX * 256);
+        //  Cascade record arena — BASS-carved, lives to function end
+        //  (consumed by post_cascade_persist after the REFS update).
+        a_carve(u8, casc_arena, CASCADE_MAX * 256);
+        ((u8 **)casc.arena)[0] = casc_arena[0];
+        ((u8 **)casc.arena)[1] = casc_arena[1];
+        ((u8 **)casc.arena)[2] = casc_arena[2];
+        ((u8 **)casc.arena)[3] = casc_arena[3];
         keep_pack p3 = {};
         call(KEEPPackOpen, &p3);
         p3.strict_order = NO;
@@ -2102,7 +2065,6 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
 
     //  --- 10. Persist any cascade descendants (best-effort). ---
     if (casc.n > 0) (void)post_cascade_persist(&casc);
-    if (casc.arena[0]) u8bFree(casc.arena);
 
     //  --- 11. Cur auto-sync (?.. and ?<absolute> when target IS cur's
     //  tree-parent).  Race story: if this CAS loses, target already
@@ -2183,11 +2145,10 @@ static ok64 post_print_status_inner(post_ctx *c) {
 ok64 POSTPrintStatus(void) {
     sane(1);
     post_ctx ctx = {};
-    call(post_ctx_init, &ctx);
+    a_carve(u8, decisions, POST_TREE_ULOG_MAX);
+    call(post_ctx_init, &ctx, decisions);
     try(post_print_status_inner, &ctx);
-    ok64 ret = __;
-    post_ctx_free(&ctx);
-    return ret;
+    done;
 }
 
 ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
@@ -2248,8 +2209,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         switched = (so == OK);
     }
 
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, 1UL << 16);
+    a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
     ok64 ko = KEEPGetExact(&pick, cbuf, &ct);
@@ -2263,8 +2223,8 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         (void)GRAFSwitchBranch(GRAF.h, sb);
         (void)KEEPSwitchBranch(KEEP.h, sb);
     }
-    if (ko != OK) { u8bFree(cbuf); return ko; }
-    if (ct != DOG_OBJ_COMMIT) { u8bFree(cbuf); fail(SNIFFFAIL); }
+    if (ko != OK) return ko;
+    if (ct != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
 
     git_commit gc = {};
     GITu8sParseCommit(u8bDataC(cbuf), &gc);
@@ -2314,7 +2274,6 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     u8bFeed(msg_buf, pick_subject);
     u8csMv(*msg_out, u8bDataC(msg_buf));
 
-    u8bFree(cbuf);
     done;
 }
 
@@ -2463,12 +2422,12 @@ ok64 POSTCommit(u8cs target_branch,
     //  Steps 2..5 — the change-set scan — share their entire body
     //  with POSTPrintStatus's dry-run path.  See post_scan_changeset.
     post_ctx ctx = {};
-    call(post_ctx_init, &ctx);
+    a_carve(u8, decisions, POST_TREE_ULOG_MAX);
+    call(post_ctx_init, &ctx, decisions);
 
     sha1 base_tree_sha = {};
     b8   have_base = NO;
-    ok64 so = post_scan_changeset(&ctx, &base_tree_sha, &have_base);
-    if (so != OK) { post_ctx_free(&ctx); return so; }
+    call(post_scan_changeset, &ctx, &base_tree_sha, &have_base);
 
     //  5b. Unlink files marked for delete on disk.  Done BEFORE the
     //      pack feed so a follow-up `be post` doesn't pick them up via
@@ -2484,8 +2443,7 @@ ok64 POSTCommit(u8cs target_branch,
     //     classification merge populated.
     sha1 root_tree = {};
     b8 have_root = NO;
-    Bu8 tree_bodies = {};
-    call(u8bAllocate, tree_bodies, 1UL << 20);
+    a_carve(u8, tree_bodies, 1UL << 20);
     u32 tree_count = 0;
 
     {
@@ -2494,13 +2452,8 @@ ok64 POSTCommit(u8cs target_branch,
         //  byte sub-ranges sliced off via subslice recursion.
         a_dup(u8c, decisions_view, u8bData(ctx.decisions));
         u8cs no_prefix = {};
-        ok64 bo = post_build_tree(decisions_view, no_prefix,
-                                  &root_tree, tree_bodies, &tree_count);
-        if (bo != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return bo;
-        }
+        call(post_build_tree, decisions_view, no_prefix,
+                              &root_tree, tree_bodies, &tree_count);
         have_root = !sha1empty(&root_tree);
     }
 
@@ -2516,21 +2469,12 @@ ok64 POSTCommit(u8cs target_branch,
         //  POSTNONE return is still used by the caller.
         if (!SNIFF.quiet)
             fprintf(stderr, "POSTNONE: no changes since base\n");
-        u8bFree(tree_bodies);
-        post_ctx_free(&ctx);
         return POSTNONE;
     }
 
     //  8. If the result has no files, fall back to the empty-tree sha.
     keep_pack p = {};
-    {
-        ok64 po = KEEPPackOpen(&p);
-        if (po != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return po;
-        }
-    }
+    call(KEEPPackOpen, &p);
     p.strict_order = NO;
 
     if (!have_root) {
@@ -2553,8 +2497,6 @@ ok64 POSTCommit(u8cs target_branch,
                     "keeper — refusing\n",
                     u8sFmt(ph));
             KEEPPackClose(&p);
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
             return SNIFFFAIL;
         }
         parent = ps;
@@ -2658,8 +2600,6 @@ ok64 POSTCommit(u8cs target_branch,
     ok64 fo = KEEPPackFeed(&p, DOG_OBJ_COMMIT, com_body, 0, sha_out);
     if (fo != OK) {
         KEEPPackClose(&p);
-        u8bFree(tree_bodies);
-        post_ctx_free(&ctx);
         return fo;
     }
 
@@ -2679,13 +2619,7 @@ ok64 POSTCommit(u8cs target_branch,
     if (have_root) {
         a_dup(u8c, whole, u8bDataC(tree_bodies));
         u32 wlen = (u32)u8csLen(whole);
-        Bu32 offs = {};
-        if (u32bAllocate(offs, tree_count > 0 ? tree_count : 1) != OK) {
-            KEEPPackClose(&p);
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return SNIFFFAIL;
-        }
+        a_carve(u32, offs, tree_count > 0 ? tree_count : 1);
         a_dup(u8c, scan, whole);
         while (!u8csEmpty(scan)) {
             (void)u32bFeed1(offs, (u32)(scan[0] - whole[0]));
@@ -2716,14 +2650,10 @@ ok64 POSTCommit(u8cs target_branch,
             ok64 to = KEEPPackFeed(&p, DOG_OBJ_TREE, rec,
                                    0, &tsha_dummy);
             if (to != OK) {
-                u32bFree(offs);
                 KEEPPackClose(&p);
-                u8bFree(tree_bodies);
-                post_ctx_free(&ctx);
                 return to;
             }
         }
-        u32bFree(offs);
     }
 
     //  13. Feed all new blobs.  Drains `add` decisions; for each row
@@ -2749,20 +2679,18 @@ ok64 POSTCommit(u8cs target_branch,
             a_path(fp);
             if (SNIFFFullpath(fp, reporoot, path) != OK) continue;
 
-            //  Read the bytes into a scratch buffer.  Symlinks via
-            //  readlink (mmap doesn't compose); regular/exec via
-            //  FILEMapRO.
-            Bu8 body_buf = {};
+            //  Read the bytes.  Symlinks via readlink into the
+            //  iteration-scoped `target` stack buffer (mmap doesn't
+            //  compose); regular/exec via FILEMapRO.  `body` borrows
+            //  whichever source — both outlive the pack feed below.
+            a_pad(u8, target, 1024);
             u8bp mapped = NULL;
             u8cs body = {};
             if (mode == 0120000) {
-                a_pad(u8, target, 1024);
                 if (FILEReadLink(target, $path(fp)) != OK) continue;
                 a_dup(u8c, tgt_data, u8bData(target));
-                if (u8bAllocate(body_buf, (u64)$len(tgt_data)) != OK) continue;
-                u8bFeed(body_buf, tgt_data);
-                body[0] = u8bDataHead(body_buf);
-                body[1] = u8bIdleHead(body_buf);
+                body[0] = tgt_data[0];
+                body[1] = tgt_data[1];
             } else {
                 ok64 mo = FILEMapRO(&mapped, $path(fp));
                 if (mo != OK) continue;
@@ -2786,10 +2714,7 @@ ok64 POSTCommit(u8cs target_branch,
                         "(re-run with --force to override)\n",
                         u8sFmt(path));
                     if (mapped) FILEUnMap(mapped);
-                    if (u8bOK(body_buf)) u8bFree(body_buf);
                     KEEPPackClose(&p);
-                    u8bFree(tree_bodies);
-                    post_ctx_free(&ctx);
                     return POSTCFLCT;
                 }
             }
@@ -2798,11 +2723,8 @@ ok64 POSTCommit(u8cs target_branch,
             ok64 bo = KEEPPackFeed(&p, DOG_OBJ_BLOB, body,
                                    base_hl, &bsha);
             if (mapped) FILEUnMap(mapped);
-            if (u8bOK(body_buf)) u8bFree(body_buf);
             if (bo != OK) {
                 KEEPPackClose(&p);
-                u8bFree(tree_bodies);
-                post_ctx_free(&ctx);
                 return bo;
             }
         }
@@ -2840,12 +2762,7 @@ ok64 POSTCommit(u8cs target_branch,
     cascade_ctx casc = {};
     if (needs_rebase) {
         keep_pack p2 = {};
-        ok64 po2 = KEEPPackOpen(&p2);
-        if (po2 != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return po2;
-        }
+        call(KEEPPackOpen, &p2);
         p2.strict_order = NO;
         post_rebase_ctx rctx = {.p = &p2};
         ok64 rb = GRAFRebase(&parent, &expected_tip_sha, sha_out,
@@ -2855,15 +2772,9 @@ ok64 POSTCommit(u8cs target_branch,
             fprintf(stderr,
                     "sniff: post: rebase aborted (%s)\n",
                     rb == GRAFCNFL ? "merge conflict" : "error");
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
             return rb;
         }
-        if (cl2 != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return cl2;
-        }
+        if (cl2 != OK) return cl2;
         if (rctx.have_last_commit) {
             *sha_out = rctx.last_commit_sha;
         } else {
@@ -2882,18 +2793,14 @@ ok64 POSTCommit(u8cs target_branch,
         a_dup(u8c, branch_view, u8bData(brbuf));
         sha1 br_new = *sha_out;
         keep_pack p3 = {};
-        ok64 po3 = KEEPPackOpen(&p3);
-        if (po3 != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return po3;
-        }
-        if (u8bAllocate(casc.arena, CASCADE_MAX * 256) != OK) {
-            (void)KEEPPackClose(&p3);
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return SNIFFFAIL;
-        }
+        call(KEEPPackOpen, &p3);
+        //  Cascade record arena — BASS-carved, lives to function end
+        //  (consumed by post_cascade_persist after the REFS update).
+        a_carve(u8, casc_arena, CASCADE_MAX * 256);
+        ((u8 **)casc.arena)[0] = casc_arena[0];
+        ((u8 **)casc.arena)[1] = casc_arena[1];
+        ((u8 **)casc.arena)[2] = casc_arena[2];
+        ((u8 **)casc.arena)[3] = casc_arena[3];
         p3.strict_order = NO;
         casc.p = &p3;
         ok64 cw = post_cascade_walk(&casc, branch_view,
@@ -2904,15 +2811,9 @@ ok64 POSTCommit(u8cs target_branch,
                     "sniff: post: cascade aborted (%s)\n",
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
             return cw;
         }
-        if (cl3 != OK) {
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
-            return cl3;
-        }
+        if (cl3 != OK) return cl3;
     }
 
     //  14. Advance keeper REFS for the be-branch the wt is currently
@@ -2953,14 +2854,10 @@ ok64 POSTCommit(u8cs target_branch,
                     "concurrently — retry\n",
                     u8sFmt(branch));
             //  Best-effort: don't undo the pack feed.  Caller may retry
-            //  POST against the new tip.  Mirror the success-path
-            //  cleanup at §17 so we don't leak the per-commit buffers
-            //  (post_ctx's 32 MiB decision arena + the 1 MiB
-            //  tree_bodies + the cascade arena, if any).
+            //  POST against the new tip.  The per-commit buffers
+            //  (decisions, tree_bodies, cascade arena) are BASS-carved
+            //  and rewind automatically when POSTCommit returns.
             if (casc.n > 0) (void)post_cascade_persist(&casc);
-            if (casc.arena[0]) u8bFree(casc.arena);
-            u8bFree(tree_bodies);
-            post_ctx_free(&ctx);
             return REFSCAS;
         }
     }
@@ -2969,7 +2866,6 @@ ok64 POSTCommit(u8cs target_branch,
     //  AFTER cur's REFS update succeeded.  Best-effort on individual
     //  CAS races (logged inside post_cascade_persist).
     if (casc.n > 0) (void)post_cascade_persist(&casc);
-    if (casc.arena[0]) u8bFree(casc.arena);
 
     //  14b. Tag label: when the caller passed a tag-shaped target
     //  (single segment, no slash — see DOGRefIsBranch), the commit
@@ -3031,9 +2927,8 @@ ok64 POSTCommit(u8cs target_branch,
                             post_drain_mad_cb, &mad);
     }
 
-    //  17. Clean up.
-    u8bFree(tree_bodies);
-    post_ctx_free(&ctx);
+    //  17. Per-commit scratch (decisions, tree_bodies, cascade arena)
+    //      is BASS-carved and rewinds when POSTCommit returns.
     fprintf(stderr, "sniff: commit " U8SFMT "\n",
             u8sFmt(u8bDataC(out_hex)));
     done;

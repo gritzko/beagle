@@ -290,12 +290,8 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     u8csMv (hk.text, u8bDataC(c.text));
     u32csMv(hk.toks, u32bDataC(c.toks));
 
-    a_pad(u8, line, 4096);
-    Bu8 big = {};
-    ok64 mo = u8bMap(big, LS_TEXT_CAP + (1UL << 16));
-    ok64 fo = (mo == OK)
-            ? HUNKu8sFeedOut(u8bIdle(big), &hk)
-            : HUNKu8sFeedOut(u8bIdle(line), &hk);
+    a_carve(u8, big, LS_TEXT_CAP + (1UL << 16));
+    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
     //  Trim trailing blank lines.  HUNK's plain/color content-hunk
     //  renderer can emit 2–3 trailing newlines (the U-tagged invisible
     //  nav URI is the last raw byte, so the "ensure final \n" guard
@@ -304,18 +300,14 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     //  single terminating \n.  TLV mode is binary, leave it alone.
     if (fo == OK && HUNKMode != HUNKOutTLV) {
         for (;;) {
-            size_t dn = (mo == OK) ? u8bDataLen(big) : u8bDataLen(line);
-            if (dn < 2) break;
+            if (u8bDataLen(big) < 2) break;
             u8cs view = {};
-            u8csTailS((mo == OK) ? u8bDataC(big) : u8bDataC(line),
-                      view, 2);
+            u8csTailS(u8bDataC(big), view, 2);
             if (view[0][0] != '\n' || view[0][1] != '\n') break;
-            if (mo == OK) u8bShed1(big);
-            else          u8bShed1(line);
+            u8bShed1(big);
         }
     }
-    if (fo == OK) (void)FILEout(mo == OK ? u8bDataC(big) : u8bDataC(line));
-    if (mo == OK) u8bUnMap(big);
+    if (fo == OK) (void)FILEout(u8bDataC(big));
 
     if (!recurse) u8bFree(c.dir_seen);
     u32bFree(c.toks);

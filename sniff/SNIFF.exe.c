@@ -437,10 +437,8 @@ static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
     call(SNIFFClassify, status_step, b);
 
-    Bu8  text = {};
-    Bu32 toks = {};
-    call(u8bAllocate,  text, 1UL << 20);
-    call(u32bAllocate, toks, 1UL << 16);
+    a_carve(u8,  text, 1UL << 20);
+    a_carve(u32, toks, 1UL << 16);
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
@@ -465,17 +463,9 @@ static ok64 sniff_status_work(status_buckets *b) {
         kv[1] = (tok32c *)u32bDataHead(toks) + u32bDataLen(toks);
         u32csMv(hk.toks, kv);
     }
-    a_pad(u8, line, 4096);
-    Bu8 big = {};
-    ok64 mo = u8bAllocate(big, u8bDataLen(text) + (1UL << 16));
-    ok64 fo = (mo == OK)
-            ? HUNKu8sFeedOut(u8bIdle(big), &hk)
-            : HUNKu8sFeedOut(u8bIdle(line), &hk);
-    if (fo == OK) (void)FILEout(mo == OK ? u8bDataC(big) : u8bDataC(line));
-    if (mo == OK) u8bFree(big);
-
-    u32bFree(toks);
-    u8bFree(text);
+    a_carve(u8, big, u8bDataLen(text) + (1UL << 16));
+    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
+    if (fo == OK) (void)FILEout(u8bDataC(big));
     done;
 }
 
@@ -489,12 +479,16 @@ static ok64 sniff_status(u8cs reporoot) {
     status_buckets b = {.now = (i64)time(NULL)};
     status_verbs_init(&b.v);
     u8csMv(b.reporoot, reporoot);
-    call(u8bMap, b.rows, 1UL << 24);
+    //  16 MB row scratch from BASS (lazy); rewinds at return.  Carved
+    //  here, not in the worker, so it outlives the worker's own rewind.
+    a_carve(u8, rows, 1UL << 24);
+    ((u8 **)b.rows)[0] = rows[0];
+    ((u8 **)b.rows)[1] = rows[1];
+    ((u8 **)b.rows)[2] = rows[2];
+    ((u8 **)b.rows)[3] = rows[3];
 
-    ok64 r = sniff_status_work(&b);
-
-    u8bUnMap(b.rows);
-    return r;
+    try(sniff_status_work, &b);
+    done;
 }
 
 

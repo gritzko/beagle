@@ -148,11 +148,9 @@ static b8 class_under_submodule(class_walk_ctx const *w, u8cs path) {
 }
 
 static ok64 class_remember_submodule(class_walk_ctx *w, u8cs path) {
-    if (!w->sub_init) {
-        ok64 ao = u8bAllocate(w->sub_prefixes, CLASS_SUB_BUF);
-        if (ao != OK) return ao;
-        w->sub_init = YES;
-    }
+    //  Buffer is pre-carved by SNIFFClassify; sub_init flags "≥1 sub
+    //  recorded" so class_under_submodule knows whether to scan.
+    w->sub_init = YES;
     (void)u8bFeed(w->sub_prefixes, path);
     (void)u8bFeed1(w->sub_prefixes, '/');
     (void)u8bFeed1(w->sub_prefixes, '\n');
@@ -226,30 +224,20 @@ ok64 SNIFFClassify(class_cb cb, void *ctx) {
     ron60 v_put  = SNIFFAtVerbOf(put_name);
     ron60 v_del  = SNIFFAtVerbOf(del_name);
 
-    Bu8 bu = {}, wu = {}, pu_unsorted = {}, du_unsorted = {};
-    Bu8 pu = {}, du = {};
-    call(u8bMap, bu, CLASS_BU_BUF);
-    call(u8bMap, wu, CLASS_WU_BUF);
-    call(u8bMap, pu_unsorted, CLASS_PD_BUF);
-    call(u8bMap, du_unsorted, CLASS_PD_BUF);
-    call(u8bMap, pu, CLASS_PD_BUF);
-    call(u8bMap, du, CLASS_PD_BUF);
-
-#define CLASS_FREE_ALL()                          \
-    do { u8bUnMap(bu); u8bUnMap(wu);              \
-         u8bUnMap(pu_unsorted); u8bUnMap(du_unsorted); \
-         u8bUnMap(pu); u8bUnMap(du); } while (0)
+    //  Merge-input scratch, all BASS-carved (rewinds when SNIFFClassify
+    //  returns): ~12 MB total, sized once per status/ls/prune run.
+    a_carve(u8, bu, CLASS_BU_BUF);
+    a_carve(u8, wu, CLASS_WU_BUF);
+    a_carve(u8, pu_unsorted, CLASS_PD_BUF);
+    a_carve(u8, du_unsorted, CLASS_PD_BUF);
+    a_carve(u8, pu, CLASS_PD_BUF);
+    a_carve(u8, du, CLASS_PD_BUF);
 
     sha1 base_tree = {};
     b8 have_base = NO;
-    ok64 br = class_baseline_tree(&base_tree, &have_base);
-    if (br != OK) { CLASS_FREE_ALL(); return br; }
-    if (have_base) {
-        ok64 to = KEEPTreeULog(base_tree.data, 0, v_base, bu);
-        if (to != OK) { CLASS_FREE_ALL(); return to; }
-    }
-    ok64 wr = SNIFFWtULog(reporoot, v_wt, wu);
-    if (wr != OK) { CLASS_FREE_ALL(); return wr; }
+    call(class_baseline_tree, &base_tree, &have_base);
+    if (have_base) call(KEEPTreeULog, base_tree.data, 0, v_base, bu);
+    call(SNIFFWtULog, reporoot, v_wt, wu);
 
     //  Pull every put/delete row since the most recent post into the
     //  unsorted intent buffers, then sort each by URI key.
@@ -261,14 +249,10 @@ ok64 SNIFFClassify(class_cb cb, void *ctx) {
         .v_del_emit   = v_del,
     };
     ron60 floor = SNIFFAtLastPostTs();
-    ok64 sr = SNIFFAtScanPutDelete(floor, class_pd_cb, &pdc);
-    if (sr != OK || pdc.err != OK) {
-        CLASS_FREE_ALL(); return sr != OK ? sr : pdc.err;
-    }
-    ok64 spo = class_sort_pd(pu_unsorted, pu);
-    if (spo != OK) { CLASS_FREE_ALL(); return spo; }
-    ok64 sdo = class_sort_pd(du_unsorted, du);
-    if (sdo != OK) { CLASS_FREE_ALL(); return sdo; }
+    call(SNIFFAtScanPutDelete, floor, class_pd_cb, &pdc);
+    if (pdc.err != OK) return pdc.err;
+    call(class_sort_pd, pu_unsorted, pu);
+    call(class_sort_pd, du_unsorted, du);
 
     a_dup(u8c, view_b, u8bData(bu));
     a_dup(u8c, view_w, u8bData(wu));
@@ -281,14 +265,19 @@ ok64 SNIFFClassify(class_cb cb, void *ctx) {
     u8cssFeed1(ins_idle, view_d);
     a_dup(u8cs, cursors, u8csbData(ins));
 
+    //  Submodule-prefix accumulator (filled lazily by
+    //  class_remember_submodule during the walk); BASS-carved here so
+    //  it outlives the bare per-step callback and rewinds on return.
+    a_carve(u8, sub_prefixes, CLASS_SUB_BUF);
     class_walk_ctx wctx = {.cb = cb, .ctx = ctx,
                            .v_base = v_base, .v_wt = v_wt,
                            .v_put = v_put,   .v_del = v_del};
-    ok64 mr = SNIFFMergeWalk(cursors, class_merge_step, &wctx);
-    if (wctx.sub_init) u8bFree(wctx.sub_prefixes);
-    CLASS_FREE_ALL();
-#undef CLASS_FREE_ALL
-    return mr;
+    ((u8 **)wctx.sub_prefixes)[0] = sub_prefixes[0];
+    ((u8 **)wctx.sub_prefixes)[1] = sub_prefixes[1];
+    ((u8 **)wctx.sub_prefixes)[2] = sub_prefixes[2];
+    ((u8 **)wctx.sub_prefixes)[3] = sub_prefixes[3];
+    call(SNIFFMergeWalk, cursors, class_merge_step, &wctx);
+    done;
 }
 
 // --- Touched-unchanged content check -----------------------------------
