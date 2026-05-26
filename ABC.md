@@ -118,7 +118,7 @@ Use ragel parsers for that
 - **`try(f, …)`** — invoke; capture status without returning. Pair
   with `then` / `nedo` / `on(code)` or proceed to cleanup + `done;`.
 - **`fail(code)`** — return that code with a trace.
-- **`MAIN(fn)` / `TEST(fn)` / `fuzz(...)`** declare PRO.h globals;
+- **`MAIN(fn)` / `TEST(fn)` / `FUZZ(...)`** declare PRO.h globals;
   non-MAIN entry points must not use PRO.h macros.
 - **PRO.h must not be included by other headers** (CLAUDE.md §6) —
   its macros pollute namespaces. `.c` files only.

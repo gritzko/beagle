@@ -60,18 +60,10 @@ static bro *bro_state = NULL;
 // Tokens arena size — big enough for every hunk's tokens combined.
 #define BRO_TOKS_SIZE (1UL << 22)   // 16M u32 entries = 64MB
 
-// Per-walk scratch: holds bro_lineinfo[BRO_LINEINFO_CAP] (~192K).
-// Process-wide because the line-index API is callable without a bro
-// instance (e.g. WRAP tests).
-#define BRO_SCRATCH_SIZE (1UL << 18)   // 256K
-static Bu8 bro_scratch_buf;
-
-ok64 BROScratchInit(void) {
-    sane(1);
-    if (bro_scratch_buf[0]) done;
-    call(u8bMap, bro_scratch_buf, BRO_SCRATCH_SIZE);
-    done;
-}
+// Per-walk scratch (bro_lineinfo[BRO_LINEINFO_CAP], ~192K) is carved
+// from BASS inside bro_walk_hunk / bro_hunk_append — no process-wide
+// buffer, no init.  The line-index API is callable without a bro
+// instance (e.g. WRAP tests) as long as BASS is up (MAIN/TEST).
 
 // --- DOG 4-fn: Open / Close / Update ---
 
@@ -85,7 +77,6 @@ ok64 BROOpen(bro *b, home *h, b8 rw) {
     b->worker_pid = -1;
     bro_state = b;
     call(u8bMap, b->arena, BRO_ARENA_SIZE);
-    call(BROScratchInit);
     call(hunkbMap, b->hunks, BRO_MAX_HUNKS);
     call(tok32bMap,  b->toks,  BRO_TOKS_SIZE);
     call(i32bMap,  b->maps,  BRO_MAX_MAPS);
@@ -107,7 +98,6 @@ ok64 BROClose(bro *b) {
         if (b->toks[0])  tok32bUnMap(b->toks);
         if (b->hunks[0]) hunkbUnMap(b->hunks);
         if (b->arena[0]) u8bUnMap(b->arena);
-        // bro_scratch_buf is process-wide; leak at exit.
         bro_state = NULL;
     }
     zerop(b);
@@ -553,8 +543,10 @@ static u8 bro_kind_pass_for_in(bro_linekind k) {
 
 #define BRO_LINEINFO_CAP 8192  // generous; hunks are typically tiny
 
-_Static_assert(BRO_SCRATCH_SIZE >= BRO_LINEINFO_CAP * sizeof(bro_lineinfo),
-               "BRO_SCRATCH_SIZE too small for bro_lineinfo[BRO_LINEINFO_CAP]");
+// Bytes of BASS scratch one walk carves for bro_lineinfo[BRO_LINEINFO_CAP],
+// expressed in u32 cells (4-byte aligned, matching the struct's fields).
+#define BRO_LINEINFO_CELLS \
+    ((BRO_LINEINFO_CAP * sizeof(bro_lineinfo) + sizeof(u32) - 1) / sizeof(u32))
 
 // Append soft-wrap rows for one logical line span in `pass`, between
 // `lo` (inclusive) and `end_nl` (offset of the visible '\n' that
@@ -591,10 +583,13 @@ static u32 bro_count_rows(hunkc const *hk, u32 lo, u32 end_nl,
 // bro_hunk_count_rows (counts) and bro_hunk_append (writes lines[]).
 typedef u32 (*bro_emit_fn)(void *ctx, u32 lo, u32 end_nl, u8 pass);
 
-static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
-    bro_lineinfo *info = (bro_lineinfo*)u8bIdleHead(bro_scratch_buf);
+static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
+                          u32 *total) {
+    sane(hk && emit && total);
+    a_carve(u32, scratch, BRO_LINEINFO_CELLS);
+    bro_lineinfo *info = (bro_lineinfo*)u32bIdleHead(scratch);
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
-    u32 total = 0;
+    *total = 0;
     u32 i = 0;
 
     // Block detection.  An eq-only segment (in_b == 0 && rm_b == 0)
@@ -605,12 +600,12 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
     while (i < nl) {
         bro_linekind k = bro_classify(&info[i]);
         if (k == BRO_LINE_EQ && info[i].bnd_side == TOK_SIDE_EQ) {
-            total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
+            *total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
             i++;
             continue;
         }
         if (k == BRO_LINE_MOD_INLINE && info[i].bnd_side == TOK_SIDE_EQ) {
-            total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
+            *total += emit(ctx, info[i].lo, info[i].hi, BRO_PASS_NORMAL);
             i++;
             continue;
         }
@@ -642,7 +637,7 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
             pend_eq += info[m].eq_b;
             if (bro_pass_sees_nl(BRO_PASS_RM, info[m].bnd_side)) {
                 if (pend_rm > 0 || pend_eq > 0) {
-                    total += emit(ctx, row_start, info[m].hi, BRO_PASS_RM);
+                    *total += emit(ctx, row_start, info[m].hi, BRO_PASS_RM);
                 }
                 row_start = info[m].hi + 1;
                 pend_in = pend_rm = pend_eq = 0;
@@ -659,7 +654,7 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
             pend_eq += info[m].eq_b;
             if (bro_pass_sees_nl(BRO_PASS_IN, info[m].bnd_side)) {
                 if (pend_in > 0 || pend_eq > 0) {
-                    total += emit(ctx, row_start, info[m].hi, BRO_PASS_IN);
+                    *total += emit(ctx, row_start, info[m].hi, BRO_PASS_IN);
                 }
                 row_start = info[m].hi + 1;
                 pend_in = pend_rm = pend_eq = 0;
@@ -668,7 +663,7 @@ static u32 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx) {
 
         i = j;
     }
-    return total;
+    done;
 }
 
 typedef struct {
@@ -680,9 +675,11 @@ static u32 bro_count_emit(void *vctx, u32 lo, u32 end_nl, u8 pass) {
     return bro_count_rows(c->hk, lo, end_nl, c->cols, pass);
 }
 
-static u32 bro_hunk_count_rows(hunkc const *hk, u32 cols) {
+static ok64 bro_hunk_count_rows(hunkc const *hk, u32 cols, u32 *out) {
+    sane(hk && out);
     bro_count_ctx c = {hk, cols};
-    return bro_walk_hunk(hk, bro_count_emit, &c);
+    call(bro_walk_hunk, hk, bro_count_emit, &c, out);
+    done;
 }
 
 typedef struct {
@@ -698,13 +695,15 @@ static u32 bro_append_emit(void *vctx, u32 lo, u32 end_nl, u8 pass) {
     return (u32)(range32bDataLen(c->lines) - before);
 }
 
-static void bro_hunk_append(range32b lines, hunkc const *hk, u32 h,
+static ok64 bro_hunk_append(range32b lines, hunkc const *hk, u32 h,
                             u32 cols) {
+    sane(hk);
     // Stamp custom bit on inrm-line tokens (per any-`\n` segment that
     // has both in and rm bytes).  Used by the renderer to distinguish
     // "this token is on a modified line" from a token in a pure-add
     // or pure-delete line, for any future styling that wants it.
-    bro_lineinfo *info = (bro_lineinfo*)u8bIdleHead(bro_scratch_buf);
+    a_carve(u32, scratch, BRO_LINEINFO_CELLS);
+    bro_lineinfo *info = (bro_lineinfo*)u32bIdleHead(scratch);
     u32 nl = bro_classify_lines(hk, info, BRO_LINEINFO_CAP);
     int ntoks = (int)$len(hk->toks);
     if (ntoks > 0) {
@@ -726,18 +725,24 @@ static void bro_hunk_append(range32b lines, hunkc const *hk, u32 h,
     }
 
     bro_append_ctx c = {(range32 **)lines, hk, h, cols};
-    bro_walk_hunk(hk, bro_append_emit, &c);
+    u32 nrows = 0;
+    call(bro_walk_hunk, hk, bro_append_emit, &c, &nrows);
+    done;
 }
 
-u32 BROCountLines(hunkcs hunks, u32 cols) {
+ok64 BROCountLines(hunkcs hunks, u32 cols, u32 *out) {
+    sane(out);
     if (cols == 0) cols = 1;
     u32 total = 0;
     $for (hunk const, hk, hunks) {
         if (hunk_has_title(hk)) total++;
         if ($empty(hk->text)) continue;
-        total += bro_hunk_count_rows(hk, cols);
+        u32 sub = 0;
+        call(bro_hunk_count_rows, hk, cols, &sub);
+        total += sub;
     }
-    return total;
+    *out = total;
+    done;
 }
 
 // Effective wrap width for the line index.  Wrap mode wraps at the
@@ -752,10 +757,11 @@ static ok64 BROBuildIndex(BROstate *st) {
     sane(st != NULL && !$empty(st->hunks));
 
     u32 cols = bro_wrap_cols(st);
-    u32 total = BROCountLines(st->hunks, cols);
+    u32 total = 0;
+    call(BROCountLines, st->hunks, cols, &total);
     u32 cap = total > 0 ? total : 1;
     call(range32bAlloc, st->linesbuf, cap);
-    BROAppendLines(st->linesbuf, st->hunks, 0, cols);
+    call(BROAppendLines, st->linesbuf, st->hunks, 0, cols);
     done;
 }
 
@@ -1296,14 +1302,19 @@ u32 BROHiliPrevLine(hunkcs hunks, range32cs lines, u32 mid) {
 }
 
 // --- Rendering ---
-// All screen output is built into bro_scr[] buffer, flushed once.
+// All screen output is built into the bro_scr buffer, flushed once.
+// bro_scr is carved from BASS at the top of BRORun / BROPipeRun (the
+// whole-session frame) and reached here via a file-static pointer —
+// the same install-at-entry pattern as bro_state.  No dedicated mmap.
 
 #define BRO_SCR_SIZE (1UL << 20)  // 1MB screen buffer
-static Bu8 bro_scr = {};
+static Bu8 *bro_scr_p = NULL;
+#define bro_scr (*bro_scr_p)
 
 static ok64 BROScreenInit(void) {
-    if (bro_scr[0] != NULL) { u8bReset(bro_scr); return OK; }
-    return u8bMap(bro_scr, BRO_SCR_SIZE);
+    sane(bro_scr_p != NULL);
+    u8bReset(bro_scr);
+    done;
 }
 
 static void BROScreenFlush(void) {
@@ -2219,13 +2230,14 @@ static ok64 BROPlain(hunkcs hunks) {
     // lines and emits two passes) and render each row with the same
     // side+pass→bg mapping the interactive pager uses.
     u32 cols = 200;  // generous; soft-wrap rarely needed in pipe mode
-    u32 nlines_max = BROCountLines(hunks, cols);
+    u32 nlines_max = 0;
+    call(BROCountLines, hunks, cols, &nlines_max);
     if (nlines_max == 0) done;
 
     Brange32 linesbuf = {};
     call(range32bAlloc, linesbuf, nlines_max);
     range32 *lines = linesbuf[0];
-    BROAppendLines(linesbuf, hunks, 0, cols);
+    call(BROAppendLines, linesbuf, hunks, 0, cols);
     u32 nlines = (u32)range32bDataLen(linesbuf);
 
     for (u32 vi = 0; vi < nlines; vi++) {
@@ -2848,7 +2860,10 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
         if (st->fixed_lines) {
             // Rewrite in place; the fixed capacity was set at open.
             range32bReset(st->linesbuf);
-            BROAppendLines(st->linesbuf, st->hunks, 0, cols);
+            if (BROAppendLines(st->linesbuf, st->hunks, 0, cols) != OK) {
+                bro_flash(st, "wrap: rebuild failed");
+                return BRO_KEY_CHANGED;
+            }
         } else {
             range32bFree(st->linesbuf);
             if (BROBuildIndex(st) != OK) {
@@ -3023,6 +3038,11 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
 ok64 BRORun(hunkcs hunks) {
     sane(!$empty(hunks));
 
+    //  Screen buffer for the whole session — carve before the non-tty
+    //  branch so BROPlain sees it too; rewound when this frame returns.
+    a_carve(u8, scr, BRO_SCR_SIZE);
+    bro_scr_p = &scr;
+
     // Fallback: plain output when stdout is not a terminal
     if (!isatty(STDOUT_FILENO))
         return BROPlain(hunks);
@@ -3031,8 +3051,12 @@ ok64 BRORun(hunkcs hunks) {
     st.tty_fd = -1;
     st.wrap = YES;
     $mv(st.hunks, hunks);
-    call(u8bAlloc, st.search, BRO_SEARCH_MAX);
-    call(u8bAlloc, st.flash,  BRO_FLASH_MAX);
+    //  search + flash are whole-session scratch; carve from BASS so they
+    //  need no free path (rewound when BROExec's frame returns).
+    a_carve(u8, search, BRO_SEARCH_MAX);
+    a_carve(u8, flash,  BRO_FLASH_MAX);
+    memcpy(st.search, search, sizeof(Bu8));
+    memcpy(st.flash,  flash,  sizeof(Bu8));
 
     //  Resolve repo root for file navigation — reuse bro's home if set,
     //  otherwise walk up from cwd.  a_path materialises a stack buffer
@@ -3055,8 +3079,6 @@ ok64 BRORun(hunkcs hunks) {
     then try(BRORawEnable, &st);
     nedo {
         range32bFree(st.linesbuf);
-        u8bFree(st.search);
-        u8bFree(st.flash);
         done;
     }
 
@@ -3139,8 +3161,7 @@ ok64 BRORun(hunkcs hunks) {
     // Free any stacked file views
     while (st.nsaves > 0) BROBack(&st);
     range32bFree(st.linesbuf);
-    u8bFree(st.search);
-    u8bFree(st.flash);
+    //  st.search / st.flash are BASS carves — no free.
 
     done;
 }
@@ -3156,7 +3177,8 @@ ok64 BRORun(hunkcs hunks) {
 // `from` is the absolute hunk index assigned to the first entry of
 // `hunks`; subsequent entries get from+1, from+2, ...  Silently caps
 // on idle exhaustion.  Caller reads new count via range32bDataLen().
-void BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols) {
+ok64 BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols) {
+    sane(1);
     if (cols == 0) cols = 1;
     u32 nhunks = (u32)$len(hunks);
     for (u32 i = 0; i < nhunks; i++) {
@@ -3165,8 +3187,9 @@ void BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols) {
         if (hunk_has_title(hk))
             range32bFeed1(lines, (range32){h, BRO_TITLE_LINE});
         if ($empty(hk->text)) continue;
-        bro_hunk_append(lines, hk, h, cols);
+        call(bro_hunk_append, lines, hk, h, cols);
     }
+    done;
 }
 
 // Drain all TLV records from `pipefd` into `bro_hunks` then return.
@@ -3196,6 +3219,11 @@ static ok64 bro_pipe_drain_all(int pipefd) {
 
 ok64 BROPipeRun(int pipefd) {
     sane(pipefd >= 0);
+
+    //  Screen buffer for the whole session — carve before the non-tty
+    //  branch so BROPlain sees it too; rewound when this frame returns.
+    a_carve(u8, scr, BRO_SCR_SIZE);
+    bro_scr_p = &scr;
 
     // Non-TTY stdout: drain all TLV and emit a one-shot ANSI dump via
     // BROPlain.  This is the path `be --color diff:foo | cat` takes —
@@ -3246,12 +3274,14 @@ ok64 BROPipeRun(int pipefd) {
     st.tty_fd = -1;
     st.wrap = YES;
     st.fixed_lines = YES;
-    try(u8bAlloc, st.search, BRO_SEARCH_MAX);
-    nedo { u8bUnMap(rdbuf); done; }
-    try(u8bAlloc, st.flash,  BRO_FLASH_MAX);
-    nedo { u8bFree(st.search); u8bUnMap(rdbuf); done; }
+    //  search + flash carve from BASS (no free path); only linesbuf and
+    //  the growable rdbuf still need explicit cleanup.
+    a_carve(u8, search, BRO_SEARCH_MAX);
+    a_carve(u8, flash,  BRO_FLASH_MAX);
+    memcpy(st.search, search, sizeof(Bu8));
+    memcpy(st.flash,  flash,  sizeof(Bu8));
     try(range32bAlloc, st.linesbuf, PIPE_MAX_LINES);
-    nedo { u8bFree(st.flash); u8bFree(st.search); u8bUnMap(rdbuf); done; }
+    nedo { u8bUnMap(rdbuf); done; }
     st.hunks[0] = st.hunks[1] = bro_hunks;
 
     BROGetSize(&st);
@@ -3260,8 +3290,6 @@ ok64 BROPipeRun(int pipefd) {
     then try(BRORawEnable, &st);
     nedo {
         range32bFree(st.linesbuf);
-        u8bFree(st.flash);
-        u8bFree(st.search);
         u8bUnMap(rdbuf);
         done;
     }
@@ -3301,7 +3329,7 @@ ok64 BROPipeRun(int pipefd) {
             }
             BROGetSize(&st);
             range32bReset(st.linesbuf);
-            BROAppendLines(st.linesbuf, st.hunks, 0, bro_wrap_cols(&st));
+            (void)BROAppendLines(st.linesbuf, st.hunks, 0, bro_wrap_cols(&st));
             indexed_nhunks = bro_nhunks;
             if (have_anchor) {
                 u32 ln = bro_line_for_off(range32bDataC(st.linesbuf),
@@ -3366,7 +3394,7 @@ ok64 BROPipeRun(int pipefd) {
         if (bro_nhunks > indexed_nhunks) {
             hunkcs new_hunks = {bro_hunks + indexed_nhunks,
                                 bro_hunks + bro_nhunks};
-            BROAppendLines(st.linesbuf, new_hunks, indexed_nhunks,
+            (void)BROAppendLines(st.linesbuf, new_hunks, indexed_nhunks,
                             bro_wrap_cols(&st));
             st.hunks[1] = bro_hunks + bro_nhunks;
             indexed_nhunks = bro_nhunks;
@@ -3402,8 +3430,7 @@ ok64 BROPipeRun(int pipefd) {
 
     while (st.nsaves > 0) BROBack(&st);
     range32bFree(st.linesbuf);
-    u8bFree(st.flash);
-    u8bFree(st.search);
+    //  st.search / st.flash are BASS carves — no free.
     u8bUnMap(rdbuf);
     BROArenaCleanup();
 

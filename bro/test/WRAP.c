@@ -37,7 +37,8 @@ static ok64 check_wrap(char const *label, hunkcs hunks, u32 cols,
                        range32cs want) {
     sane(label != NULL);
     u32 want_n = (u32)$len(want);
-    u32 got_n = BROCountLines(hunks, cols);
+    u32 got_n = 0;
+    call(BROCountLines, hunks, cols, &got_n);
     if (got_n != want_n) {
         fprintf(stderr, "%s: BROCountLines: want %u, got %u\n",
                 label, want_n, got_n);
@@ -45,7 +46,7 @@ static ok64 check_wrap(char const *label, hunkcs hunks, u32 cols,
     }
     a_pad(range32, got, 128);
     if (want_n > 128) fail(NOROOM);
-    BROAppendLines(got, hunks, 0, cols);
+    call(BROAppendLines, got, hunks, 0, cols);
     u32 n = (u32)range32bDataLen(got);
     if (n != want_n) {
         fprintf(stderr, "%s: BROAppendLines: want %u, got %u\n",
@@ -210,7 +211,6 @@ ok64 WRAPtest_nowrap() {
 
 ok64 WRAPtest() {
     sane(1);
-    call(BROScratchInit);
     call(WRAPtest_short_no_title);
     call(WRAPtest_exact_cols);
     call(WRAPtest_wrap_ascii);

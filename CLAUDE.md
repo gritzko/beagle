@@ -34,7 +34,7 @@
       - note that ABC APIs like to *consume* slices; that is often signaled
         through type (u8cs consumed, u8csc is not); use that
         To use PRO.h macros (call, done, etc) a function must start with sane() check.
-        Also, the main() has to be MAIN(), TEST() or fuzz() to declare PRO.h globals.
+        Also, the main() has to be MAIN(), TEST() or FUZZ() to declare PRO.h globals.
 2.  Function naming convention: `MOD typ8 VerbStuff ()`, e.g. `HEXu8sFeed()` 
       - MOD is the module (header)
       - ABC record types have fixed bit layout, their name most often ends

@@ -74,11 +74,6 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
 ok64 BROArenaInit(void);
 void BROArenaCleanup(void);
 
-// Map the process-wide scratch buffer used by BROCountLines /
-// BROAppendLines. Idempotent. BROOpen calls this; tests that exercise
-// the line-index APIs without a bro instance must call it explicitly.
-ok64 BROScratchInit(void);
-
 // Record a mmap'd file for cleanup at BROClose time.
 void BRODefer(u8bp mapped);
 
@@ -105,12 +100,13 @@ ok64 BROPipeRun(int pipefd);
 // that hunk's text, or BRO_TITLE_LINE for a title separator.  Long
 // source lines get multiple entries — one per `cols` codepoints —
 // so soft-wrap is baked into the index.  Callers must pre-allocate
-// `lines[0..maxlines)`; returns the new total line count (<=maxlines).
-void BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols);
+// `lines[0..maxlines)`.  Caller reads the new total via range32bDataLen().
+ok64 BROAppendLines(range32b lines, hunkcs hunks, u32 from, u32 cols);
 
 // Total display-line count that BROAppendLines would produce for
-// `hunks` at the given `cols`.  Used to size allocations.
-u32 BROCountLines(hunkcs hunks, u32 cols);
+// `hunks` at the given `cols`, returned via `*out`.  Used to size
+// allocations.
+ok64 BROCountLines(hunkcs hunks, u32 cols, u32 *out);
 
 // --- Navigation primitives (exposed for testing) ---
 

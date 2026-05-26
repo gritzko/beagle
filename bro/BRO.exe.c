@@ -39,6 +39,24 @@ static void bro_usage(void) {
         "      m toggle mouse (wheel scroll, L-click open, R-click grep)\n");
 }
 
+// Fetch a versioned/remote URI's blob via keeper and stage it as a
+// hunk.  The blob lands in a BASS scratch buffer that is rewound when
+// this frame returns (caller invokes via try, once per URI) — the
+// kept bytes are copied into b->arena first, so nothing dangles.
+static ok64 bro_stage_keeper_uri(bro *b, uri *u, u8cs file_path) {
+    sane(b && u);
+    a_carve(u8, blobbuf, 1UL << 24);
+    call(KEEPGetByURI, u, blobbuf);
+    hunk *hk = hunkbIdleHead(b->hunks);
+    *hk = (hunk){};
+    hk->verb = HUNK_VERB_HUNK;
+    call(u8bHost, b->arena, hk->text, u8bDataC(blobbuf));
+    call(u8bHost, b->arena, hk->uri, u->data);
+    BROTokenize(hk, file_path);
+    hunkbFed1(b->hunks);
+    done;
+}
+
 // --- Entry ---
 
 ok64 BROExec(bro *b, cli *c) {
@@ -98,24 +116,9 @@ ok64 BROExec(bro *b, cli *c) {
                     }
                     keeper_open = YES;
                 }
-                Bu8 blobbuf = {};
-                if (u8bAllocate(blobbuf, 1UL << 24) != OK) continue;
-                ok64 go = KEEPGetByURI(u, blobbuf);
-                if (go != OK) {
-                    fprintf(stderr, "bro: cannot fetch " U8SFMT ": %s\n",
-                            u8sFmt(u->data), ok64str(go));
-                    u8bFree(blobbuf);
-                    continue;
-                }
-                hunk *hk = hunkbIdleHead(b->hunks);
-                *hk = (hunk){};
-                hk->verb = HUNK_VERB_HUNK;
-                ok64 wo = u8bHost(b->arena, hk->text, u8bDataC(blobbuf));
-                u8bFree(blobbuf);
-                if (wo != OK) continue;
-                call(u8bHost, b->arena, hk->uri, u->data);
-                BROTokenize(hk, file_path);
-                hunkbFed1(b->hunks);
+                try(bro_stage_keeper_uri, b, u, file_path);
+                nedo fprintf(stderr, "bro: cannot fetch " U8SFMT ": %s\n",
+                             u8sFmt(u->data), ok64str(__));
                 continue;
             }
 
