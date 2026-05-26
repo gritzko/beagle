@@ -10,6 +10,7 @@
 #include "DPATH.h"
 #include "ULOG.h"
 #include "abc/FILE.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "TOMLT.h"
 
@@ -440,13 +441,9 @@ static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out) {
     //  the slice in `rec` points into the soon-to-be-invalid map.
     u8cs ru_path = {rec.uri.path[0], rec.uri.path[1]};
     if (u8csEmpty(ru_path)) { FILEUnMap(map); return NODATA; }
-    u8cp start = u8bIdleHead(arena);
-    ok64 fo = u8bFeed(arena, ru_path);
+    ok64 fo = PATHu8bAren(arena, path_out, ru_path);
     FILEUnMap(map);
-    if (fo != OK) return fo;
-    path_out[0] = start;
-    path_out[1] = u8bIdleHead(arena);
-    return OK;
+    return fo;
 }
 
 //  Given a wt anchor path (where `.be` lives), populate h->wt with

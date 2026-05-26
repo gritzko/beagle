@@ -124,25 +124,18 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     ent->tip = tip;
 
     //  Build refname into the arena via GITFeedRef so the wire form
-    //  is built in exactly one place.
-    u8 *refname_start = u8bIdleHead(adv->arena);
-    {
-        ok64 fo = GITFeedRef(adv->arena, kind, name);
-        if (fo != OK) return fo;
-    }
-    ent->refname[0] = refname_start;
-    ent->refname[1] = u8bIdleHead(adv->arena);
+    //  is built in exactly one place.  bAlign opens the rental; the
+    //  PATHu8bAcq seal parks a NUL after the slice so the refname
+    //  stays NUL-terminated across subsequent rentals.
+    (void)u8bAlign(adv->arena);
+    call(GITFeedRef, adv->arena, kind, name);
+    call(PATHu8bAcq, adv->arena, ent->refname);
 
-    //  Shard dir: trunk → ""; other → "<branch>".  Stored as an
-    //  arena-owned slice so the caller can keep it past REFSEach.
-    u8 *dir_start = u8bIdleHead(adv->arena);
-    if (!$empty(branch)) {
-        if (u8bIdleLen(adv->arena) < (size_t)u8csLen(branch))
-            return BNOROOM;
-        u8bFeed(adv->arena, branch);
-    }
-    ent->dir[0] = dir_start;
-    ent->dir[1] = u8bIdleHead(adv->arena);
+    //  Shard dir: trunk → ""; other → "<branch>".  Same rental shape;
+    //  empty branch yields an empty slice + a NUL byte in PAST.
+    (void)u8bAlign(adv->arena);
+    if (!$empty(branch)) call(u8bFeed, adv->arena, branch);
+    call(PATHu8bAcq, adv->arena, ent->dir);
 
     adv->count++;
     done;

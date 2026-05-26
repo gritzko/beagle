@@ -1351,12 +1351,10 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
             //  Child is already on new spine — point its REFS at the
             //  matching commit (child_tip itself).  No rebase needed.
             cascade_rec *r = &cc->recs[cc->n++];
-            if (u8bFeed(cc->arena, branch) != OK) {
+            if (PATHu8bAren(cc->arena, r->branch, branch) != OK) {
                 cc->n--;
                 return SNIFFFAIL;
             }
-            u8csMv(r->branch, u8bDataC(cc->arena));
-            (void)u8csUsedAll(u8bDataC(cc->arena));
             r->old_tip = child_tip;
             r->new_tip = child_tip;
             return OK;
@@ -1369,12 +1367,10 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (rb != OK) return rb;
 
     cascade_rec *r = &cc->recs[cc->n++];
-    if (u8bFeed(cc->arena, branch) != OK) {
+    if (PATHu8bAren(cc->arena, r->branch, branch) != OK) {
         cc->n--;
         return SNIFFFAIL;
     }
-    u8csMv(r->branch, u8bDataC(cc->arena));
-    (void)u8csUsedAll(u8bDataC(cc->arena));
     r->old_tip = child_tip;
     r->new_tip = rctx.have_last_commit ? rctx.last_commit_sha
                                        : *parent_new_tip;
@@ -1409,9 +1405,7 @@ static ok64 post_cascade_collect_cb(void0p arg, path8p path) {
     if (*base[0] == '.') return OK;            //  skip .lock, etc.
     a_cstr(refs_s, "refs");
     if (u8csEq(base, refs_s)) return OK;
-    if (u8bFeed(pc->arena, base) != OK) return OK;
-    u8csMv(pc->names[pc->n], u8bDataC(pc->arena));
-    (void)u8csUsedAll(u8bDataC(pc->arena));
+    if (PATHu8bAren(pc->arena, pc->names[pc->n], base) != OK) return OK;
     pc->n++;
     return OK;
 }

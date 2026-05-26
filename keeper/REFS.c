@@ -422,10 +422,7 @@ static b8 refs_match_pred(ulogreccp r, void *ctx) {
 
 static ok64 refs_capture_cs(u8bp arena, u8csc src, u8csp out) {
     sane(arena && out);
-    u8 *head = u8bIdleHead(arena);
-    call(u8bFeed, arena, src);
-    out[0] = head;
-    out[1] = u8bIdleHead(arena);
+    call(u8bAren, arena, out, src);
     done;
 }
 

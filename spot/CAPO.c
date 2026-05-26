@@ -629,10 +629,9 @@ ok64 CAPOBuildHunk(u8csc source, u32cs htoks, u32 ctx_lo, u32 ctx_hi,
         u8csMv(fp, filepath);
         u8cs fn = {};
         u8csMv(fn, u8bDataC(funcname));
-        u8gp ug = u8aOpen(less_arena);
+        a_lign(u8, ug, less_arena);
         HUNKu8sMakeURI(u8gRest(ug), fp, fn, ln);
-        u8cs uri_s = {};
-        u8aClose(less_arena, uri_s);
+        a_cq(u8, uri_s, less_arena);
         $mv(hk->uri, uri_s);
     }
 

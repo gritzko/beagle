@@ -11,6 +11,7 @@
 
 #include "abc/FILE.h"
 #include "abc/HEX.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/git/GIT.h"
@@ -146,15 +147,12 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
         u->new_sha = ev.sha;
 
         //  Copy refname into the request arena so the slice outlives `buf`.
+        //  PATHu8bAren keeps a NUL byte after the name in PAST.
         u8csc refname = {ev.name[0], ev.name[1]};
-        if (u8bIdleLen(req->arena) < (size_t)u8csLen(refname)) {
+        if (PATHu8bAren(req->arena, u->refname, refname) != OK) {
             rc = RECVFAIL;
             break;
         }
-        u8 *name_dst = u8bIdleHead(req->arena);
-        u8bFeed(req->arena, refname);
-        u->refname[0] = name_dst;
-        u->refname[1] = u8bIdleHead(req->arena);
 
         //  Capabilities ride after a NUL on the first line only.
         if (req->count == 0 && !u8csEmpty(ev.caps))

@@ -61,14 +61,10 @@ static ok64 pid_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
     if (c->n >= c->cap) { c->err = GRAFFAIL; return WALKSTOP; }
 
     pid_leaf *l = &c->leaves[c->n++];
-    {
-        u8gp g = u8aOpen(c->arena);
-        if (u8gFeed(g, path) != OK) {
-            c->n--;
-            c->err = GRAFFAIL;
-            return WALKSTOP;
-        }
-        u8aClose(c->arena, l->path);
+    if (PATHu8bAren(c->arena, l->path, path) != OK) {
+        c->n--;
+        c->err = GRAFFAIL;
+        return WALKSTOP;
     }
     sha1Mv(&l->sha, (sha1cp)esha);
     return OK;
@@ -299,18 +295,13 @@ static ok64 tm_parse(sha1cp tree_sha, tm_set *out,
         if ($empty(name_s) || u8csLen(esha) != 20) continue;
         if (out->n >= out->cap) break;
 
-        //  Intern bytes into the arena via typed Feed; capture
-        //  before/after-Feed idle heads as slice borders.
-        if (u8bIdleLen(arena) < (u64)$len(mode_s) + (u64)$len(name_s)) break;
-        u8 *mb = u8bIdleHead(arena);
-        (void)u8bFeed(arena, mode_s);
-        u8 *nb = u8bIdleHead(arena);
-        (void)u8bFeed(arena, name_s);
-        u8 *ne = u8bIdleHead(arena);
-
         tm_entry *e = &out->e[out->n++];
-        e->mode[0] = mb; e->mode[1] = nb;
-        e->name[0] = nb; e->name[1] = ne;
+        //  Intern mode (slice-only) then name (NUL-terminated path).
+        if (u8bAren(arena, e->mode, mode_s) != OK ||
+            PATHu8bAren(arena, e->name, name_s) != OK) {
+            out->n--;
+            break;
+        }
         (void)sha1Drain(esha, &e->sha);
         e->kind = WALKu8sModeKind(mode_s);
         e->present = YES;

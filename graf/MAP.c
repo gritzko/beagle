@@ -155,11 +155,7 @@ static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
 
     map_branch *b = &s->v[s->n++];
     zerop(b);
-    {
-        u8gp g = u8aOpen(s->arena);
-        if (u8gFeed(g, t->path) != OK) { s->n--; return OK; }
-        u8aClose(s->arena, b->path);
-    }
+    if (PATHu8bAren(s->arena, b->path, t->path) != OK) { s->n--; return OK; }
     if (sha1hexFromHex(&b->sha, t->sha) != OK) {
         s->n--;
         return OK;
@@ -179,13 +175,11 @@ static ok64 map_collect_cb(keep_tipcp t, void *ctx) {
     return OK;
 }
 
-//  Intern a slice into `arena`: open a u8 gauge over IDLE, feed
-//  bytes, close to commit and snapshot the populated range as `out`.
+//  Intern a slice into `arena`: one-shot bAren copies bytes and snapshots
+//  the populated range as `out`.  Silent on overflow (out stays empty).
 static void map_intern(u8bp arena, u8csp out, u8csc src) {
     if (u8csEmpty(src)) return;
-    u8gp g = u8aOpen(arena);
-    (void)u8gFeed(g, src);
-    u8aClose(arena, out);
+    (void)u8bAren(arena, out, src);
 }
 
 // --- Main -----------------------------------------------------------
@@ -209,9 +203,7 @@ ok64 GRAFMap(uricp u) {
         if (!u8csEmpty(cb) && *cb[0] == '?') u8csUsed1(cb);
         if (!u8csEmpty(cb) && *u8csLast(cb) == '/') u8csShed1(cb);
         if (u8csLen(cb) > 0) {
-            u8gp g = u8aOpen(strs_arena);
-            (void)u8gFeed(g, cb);
-            u8aClose(strs_arena, cur_path);
+            (void)PATHu8bAren(strs_arena, cur_path, cb);
         }
     }
 

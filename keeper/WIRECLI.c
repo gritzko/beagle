@@ -24,6 +24,7 @@
 
 #include "abc/FILE.h"
 #include "abc/HEX.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
@@ -674,12 +675,10 @@ ok64 WIREFetchAll(u8csc remote_uri) {
                 break;
             }
             refs[nrefs].sha = sha;
-            //  Feed the name into the arena, snapshot the just-fed
-            //  range as the record's slice, then UsedAll so the next
-            //  Feed grows from a fresh DATA boundary.
-            if (u8bFeed(names_arena, name) != OK) goto fa_close;
-            u8csMv(refs[nrefs].name, u8bDataC(names_arena));
-            (void)u8csUsedAll(u8bDataC(names_arena));
+            //  Snapshot the name into the arena's PAST (one-shot rental,
+            //  NUL-terminated — ref names are path-shaped).
+            if (PATHu8bAren(names_arena, refs[nrefs].name, name) != OK)
+                goto fa_close;
             nrefs++;
         }
     }

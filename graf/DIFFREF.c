@@ -47,11 +47,9 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
         s->overflow++; done;
     }
     diffref_entry *e = &s->v[s->n++];
-    if (u8bFeed(s->arena, path) != OK) {
+    if (PATHu8bAren(s->arena, e->path, path) != OK) {
         s->n--; s->overflow++; done;
     }
-    u8csMv(e->path, u8bDataC(s->arena));
-    (void)u8csUsedAll(u8bDataC(s->arena));
     sha1Mv(&e->sha, (sha1cp)esha);
     done;
 }
