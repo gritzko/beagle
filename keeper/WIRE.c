@@ -87,8 +87,7 @@ ok64 WIREReadRequest(int in_fd, wire_reqp req) {
 
     zerop(req);
 
-    Bu8 buf = {};
-    call(u8bAllocate, buf, WIRE_READ_BUF);
+    a_carve(u8, buf, WIRE_READ_BUF);
 
     u8cs adv = {u8bDataHead(buf), u8bDataHead(buf)};
     b8  saw_want = NO;
@@ -136,7 +135,6 @@ ok64 WIREReadRequest(int in_fd, wire_reqp req) {
     }
 out:;
 
-    u8bFree(buf);
     return rc;
 }
 

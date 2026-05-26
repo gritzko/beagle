@@ -503,8 +503,7 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
                               sha1cp haves, u32 nhaves) {
     sane(wfd >= 0 && want_sha);
 
-    Bu8 frame = {};
-    call(u8bAllocate, frame, (1u << 16));
+    a_carve(u8, frame, (1u << 16));
 
     //  want line.
     {
@@ -521,11 +520,9 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         a_cstr(caps_s, " side-band-64k ofs-delta\n");
         u8bFeed(line, caps_s);
         a_dup(u8c, payload, u8bData(line));
-        ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
-    ok64 fo = PKTu8sFeedFlush(u8bIdle(frame));
-    if (fo != OK) { u8bFree(frame); return fo; }
+    call(PKTu8sFeedFlush, u8bIdle(frame));
 
     //  have lines.
     for (u32 i = 0; i < nhaves; i++) {
@@ -535,21 +532,17 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         SHA1u8sFeedHex(u8bIdle(line), &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
-        ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
 
     //  done.
     {
         a_cstr(done_s, "done\n");
-        ok64 po = PKTu8sFeed(u8bIdle(frame), done_s);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), done_s);
     }
 
     a_dup(u8c, fdata, u8bData(frame));
-    ok64 wo = FILEFeedAll(wfd, fdata);
-    u8bFree(frame);
-    return wo;
+    return FILEFeedAll(wfd, fdata);
 }
 
 //  Append `<peer-uri>?<be-branch> → <40-hex>` to local REFS.
@@ -1394,13 +1387,10 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     if (have_peer && sha1Eq(&peer_tip, &local_tip)) {
         rv = OK;
         //  Still need to send a flush so the peer closes cleanly.
-        Bu8 flush_b = {};
-        if (u8bAllocate(flush_b, 8) == OK) {
-            PKTu8sFeedFlush(u8bIdle(flush_b));
-            a_dup(u8c, fdata, u8bData(flush_b));
-            FILEFeedAll(wfd, fdata);
-            u8bFree(flush_b);
-        }
+        a_pad(u8, flush_b, 8);
+        PKTu8sFeedFlush(u8bIdle(flush_b));
+        a_dup(u8c, fdata, u8bData(flush_b));
+        FILEFeedAll(wfd, fdata);
         free(peer_tips);
         goto push_close;
     }
@@ -1617,13 +1607,10 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
     if (!have_peer) {
         //  Peer did not advertise the ref — nothing to delete.  Send a
         //  flush so the peer closes cleanly, surface as WIRECLNRF.
-        Bu8 flush_b = {};
-        if (u8bAllocate(flush_b, 8) == OK) {
-            PKTu8sFeedFlush(u8bIdle(flush_b));
-            a_dup(u8c, fdata, u8bData(flush_b));
-            FILEFeedAll(wfd, fdata);
-            u8bFree(flush_b);
-        }
+        a_pad(u8, flush_b, 8);
+        PKTu8sFeedFlush(u8bIdle(flush_b));
+        a_dup(u8c, fdata, u8bData(flush_b));
+        FILEFeedAll(wfd, fdata);
         rv = WIRECLNRF;
         goto delete_close;
     }

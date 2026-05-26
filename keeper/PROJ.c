@@ -52,8 +52,7 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
             return HEXu8sDrainSome(sb, hx);
         }
         //  Short prefix: fetch object to confirm and recompute its sha.
-        Bu8 tmp = {};
-        call(u8bAllocate, tmp, 1UL << 20);
+        a_carve(u8, tmp, 1UL << 20);
         u64 hashlet = WHIFFHexHashlet60(u->fragment);
         u8 type = 0;
         ok64 go = KEEPGet(hashlet, u8csLen(u->fragment), tmp, &type);
@@ -61,7 +60,6 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
             a_dup(u8c, body, u8bData(tmp));
             KEEPObjSha(out, type, body);
         }
-        u8bFree(tmp);
         return go;
     }
 
@@ -83,9 +81,13 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
 //  Descend a '/'-separated subpath inside a tree.  Caller owns `pathbuf`
 //  (used as scratch).  Returns the final entry's sha + kind in *out_*.
 //  Empty / "." subpath returns the input tree as a DIR.
-static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
-                          sha1 *out_sha, u8 *out_kind) {
-    sane(k && root_tree && out_sha && out_kind);
+//  Worker — descends `subpath` segment by segment using a caller-
+//  provided `tbuf` (reused across all KEEPGetExact calls; KEEPGet
+//  internally resets, so no per-segment reset needed).  Each early
+//  return is caught by the wrapper which frees `tbuf` once.
+static ok64 proj_descend_inner(sha1cp root_tree, u8cs subpath,
+                               sha1 *out_sha, u8 *out_kind, u8bp tbuf) {
+    sane(root_tree && out_sha && out_kind && tbuf);
     sha1 cur = *root_tree;
     u8 cur_kind = WALK_KIND_DIR;
 
@@ -109,14 +111,10 @@ static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
 
         if (cur_kind != WALK_KIND_DIR) fail(PROJNONE);
 
-        Bu8 tbuf = {};
-        call(u8bAllocate, tbuf, 1UL << 20);
         u8 otype = 0;
         ok64 go = KEEPGetExact(&cur, tbuf, &otype);
-        if (go != OK || otype != DOG_OBJ_TREE) {
-            u8bFree(tbuf);
+        if (go != OK || otype != DOG_OBJ_TREE)
             return go == OK ? PROJNONE : go;
-        }
 
         u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
         u8cs file = {}, esha = {};
@@ -133,13 +131,21 @@ static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
             found = YES;
             break;
         }
-        u8bFree(tbuf);
         if (!found || next_kind == 0) fail(PROJNONE);
         cur = next_sha;
         cur_kind = next_kind;
     }
     *out_sha = cur;
     *out_kind = cur_kind;
+    done;
+}
+
+static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
+                          sha1 *out_sha, u8 *out_kind) {
+    sane(k && root_tree && out_sha && out_kind);
+    (void)k;
+    a_carve(u8, tbuf, 1UL << 20);
+    call(proj_descend_inner, root_tree, subpath, out_sha, out_kind, tbuf);
     done;
 }
 
@@ -204,14 +210,13 @@ static ok64 proj_emit_hunk(uricp u, Bu8 text, tok32cs toks, b8 tlv) {
     }
 
     size_t tlen = u8bDataLen(text);
-    Bu8 outbuf = {};
-    call(u8bAllocate, outbuf, tlen + (1UL << 16));
+    a_carve(u8, outbuf, tlen + (1UL << 16));
     ok64 fo = HUNKu8sFeed(u8bIdle(outbuf), &hk);
-    if (fo != OK) { u8bFree(outbuf); return fo; }
-    fwrite(u8bDataHead(outbuf), 1, u8bDataLen(outbuf), stdout);
-    fflush(stdout);
-    u8bFree(outbuf);
-    done;
+    if (fo == OK) {
+        fwrite(u8bDataHead(outbuf), 1, u8bDataLen(outbuf), stdout);
+        fflush(stdout);
+    }
+    return fo;
 }
 
 // =====================================================================
@@ -337,25 +342,19 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
     call(proj_descend, k, &root_tree, sub, &target, &target_kind);
     if (target_kind != WALK_KIND_DIR) fail(PROJFAIL);
 
-    //  Fetch the target tree's bytes and walk one level.
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, 1UL << 20);
+    //  All three buffers acquired from BASS; auto-rewound at procedure
+    //  return via caller's call().
+    a_carve(u8, tbuf, 1UL << 20);
     u8 otype = 0;
     ok64 go = KEEPGetExact(&target, tbuf, &otype);
-    if (go != OK || otype != DOG_OBJ_TREE) {
-        u8bFree(tbuf);
+    if (go != OK || otype != DOG_OBJ_TREE)
         return go == OK ? PROJFAIL : go;
-    }
 
     //  Format each entry into `text`, with a parallel tok stream so
     //  every entry's name becomes a clickable anchor (next-token-U
     //  convention; see dog/tok/TOK.h).
-    Bu8 text = {};
-    ok64 ao = u8bAllocate(text, 1UL << 20);
-    if (ao != OK) { u8bFree(tbuf); return ao; }
-    Bu32 toks = {};
-    ok64 to = u32bAllocate(toks, 1UL << 16);
-    if (to != OK) { u8bFree(text); u8bFree(tbuf); return to; }
+    a_carve(u8, text, 1UL << 20);
+    a_carve(u32, toks, 1UL << 16);
 
     //  `..` row when we're below the tree root.  No mode/type/sha
     //  prefix — just `..\n` with a tree:<parent>?<rev> U-link.
@@ -408,19 +407,12 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
         b8 is_dir = (kind == WALK_KIND_DIR);
         ok64 ee = proj_tree_emit_entry(text, toks, base_path,
                                        name_s, is_dir, u);
-        if (ee != OK) {
-            u8bFree(tbuf); u8bFree(text); u32bFree(toks);
-            return ee;
-        }
+        if (ee != OK) return ee;
     }
-    u8bFree(tbuf);
 
     tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
                         (u32 const *)u32bIdleHead(toks)};
-    ok64 eo = proj_emit_hunk(u, text, toks_view, tlv);
-    u32bFree(toks);
-    u8bFree(text);
-    return eo;
+    return proj_emit_hunk(u, text, toks_view, tlv);
 }
 
 // =====================================================================
@@ -434,11 +426,9 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
     sha1 csha = {};
     call(proj_resolve_object_sha, k, u, &csha);
 
-    Bu8 obj = {};
-    call(u8bAllocate, obj, 1UL << 20);
+    a_carve(u8, obj, 1UL << 20);
     u8 otype = 0;
-    ok64 go = KEEPGetExact(&csha, obj, &otype);
-    if (go != OK) { u8bFree(obj); return go; }
+    call(KEEPGetExact, &csha, obj, &otype);
 
     //  Tag → dereference once to its target object.
     if (otype == DOG_OBJ_TAG) {
@@ -460,24 +450,18 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             csha = tgt;
             u8bReset(obj);
             otype = 0;
-            go = KEEPGetExact(&csha, obj, &otype);
-            if (go != OK) { u8bFree(obj); return go; }
+            call(KEEPGetExact, &csha, obj, &otype);
         }
     }
 
     if (otype != DOG_OBJ_COMMIT) {
         fprintf(stderr, "keeper: commit: object is not a commit (type=%u)\n",
                 (unsigned)otype);
-        u8bFree(obj);
         fail(PROJFAIL);
     }
 
-    Bu8 text = {};
-    ok64 ao = u8bAllocate(text, 1UL << 20);
-    if (ao != OK) { u8bFree(obj); return ao; }
-    Bu32 toks = {};
-    ok64 to = u32bAllocate(toks, 1UL << 14);
-    if (to != OK) { u8bFree(text); u8bFree(obj); return to; }
+    a_carve(u8, text, 1UL << 20);
+    a_carve(u32, toks, 1UL << 14);
 
     //  Header: "commit <sha40>\n" — no link, this object is the page
     //  itself.  Subsequent `tree <sha>` / `parent <sha>` headers get
@@ -542,14 +526,10 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
         (void)u8bFeed1(text, '\n');
         proj_push_tok(text, toks, 'W');
     }
-    u8bFree(obj);
 
     tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
                         (u32 const *)u32bIdleHead(toks)};
-    ok64 eo = proj_emit_hunk(u, text, toks_view, tlv);
-    u32bFree(toks);
-    u8bFree(text);
-    return eo;
+    return proj_emit_hunk(u, text, toks_view, tlv);
 }
 
 // =====================================================================
@@ -562,16 +542,15 @@ ok64 KEEPProjBlob(uricp u, b8 tlv) {
 
     //  KEEPGetByURI handles both `?<sha>` (bare blob) and
     //  `<path>?<ref|sha>` (path-in-tree), so we don't duplicate
-    //  resolution here.
-    Bu8 text = {};
-    call(u8bAllocate, text, 64UL << 20);
-    ok64 go = KEEPGetByURI(u, text);
-    if (go != OK) { u8bFree(text); return go; }
+    //  resolution here.  Up to 64 MiB blob + parallel tok stream
+    //  both carved from BASS (1 GiB default; sized to fit Blob
+    //  comfortably).
+    a_carve(u8, text, 64UL << 20);
+    call(KEEPGetByURI, u, text);
 
     if (!tlv) {
         a_dup(u8c, data, u8bData(text));
         write(STDOUT_FILENO, data[0], u8csLen(data));
-        u8bFree(text);
         done;
     }
 
@@ -579,9 +558,7 @@ ok64 KEEPProjBlob(uricp u, b8 tlv) {
     //  can render syntax highlighting.  Without an extension (bare
     //  `blob:?<sha>` or unknown ext) there's no language hint and we
     //  ship the bytes unhighlighted — bro still pages them via HUNK.
-    Bu32 tok_arena = {};
-    ok64 ta = u32bAllocate(tok_arena, (size_t)(u8bDataLen(text) + 16));
-    if (ta != OK) { u8bFree(text); return ta; }
+    a_carve(u32, tok_arena, (size_t)(u8bDataLen(text) + 16));
 
     tok32cs toks_slice = {NULL, NULL};
     if (!u8csEmpty(u->path)) {
@@ -600,10 +577,7 @@ ok64 KEEPProjBlob(uricp u, b8 tlv) {
         }
     }
 
-    ok64 eo = proj_emit_hunk(u, text, toks_slice, YES);
-    u32bFree(tok_arena);
-    u8bFree(text);
-    return eo;
+    return proj_emit_hunk(u, text, toks_slice, YES);
 }
 
 // =====================================================================

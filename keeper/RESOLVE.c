@@ -28,13 +28,12 @@
 //  keeper.  Returns OK on success, RESLVNONE if not found.
 static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
     sane(k && out);
+    (void)k;
     u8s sb = {out->data, out->data + 20};
     call(HEXu8sDrainSome, sb, hex);
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
+    a_carve(u8, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
     ok64 ko = KEEPGetExact(out, cbuf, &ct);
-    u8bFree(cbuf);
     if (ko != OK) return RESLVNONE;
     return OK;
 }
@@ -44,18 +43,18 @@ static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
 //  success, RESLVNONE on miss.
 static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
     sane(k && out);
+    (void)k;
     u64 h60 = WHIFFHexHashlet60(hex);
     size_t hexlen = u8csLen(hex);
     if (hexlen > 15) hexlen = 15;
-    Bu8 cbuf = {};
-    call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
+    a_carve(u8, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
     ok64 ko = KEEPGet(h60, hexlen, cbuf, &ct);
-    if (ko != OK) { u8bFree(cbuf); return RESLVNONE; }
-    a_dup(u8c, body, u8bDataC(cbuf));
-    KEEPObjSha(out, ct, body);
-    u8bFree(cbuf);
-    return OK;
+    if (ko == OK) {
+        a_dup(u8c, body, u8bDataC(cbuf));
+        KEEPObjSha(out, ct, body);
+    }
+    return ko == OK ? OK : RESLVNONE;
 }
 
 //  REFSResolve `?<path>` and decode the resolved 40-hex into `out`.

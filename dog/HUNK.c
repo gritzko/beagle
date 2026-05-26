@@ -1121,7 +1121,7 @@ void HUNKu32sClip(Bu8 arena, u32cs out, u32cs toks, u32 lo, u32 hi) {
         last++;
     }
     if (first >= last) return;
-    a_lign(u32, g, arena);
+    u32gp g = u32bAlign(arena);
     for (int i = first; i < last; i++) {
         u8 tag = tok32Tag(toks[0][i]);
         u8 side = tok32Side(toks[0][i]);

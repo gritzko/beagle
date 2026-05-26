@@ -955,16 +955,16 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     //  freshly checked-out git tag (~5k tracked files) easily fills
     //  more than 64 KB of put-rows; bu/wu used to overflow on wt's
     //  with > ~7k files at ~140 B/row.  4 MB for put/del, 16 MB for
-    //  bu/wu — carved out of one 48 MB arena via u8aCarve so every
+    //  bu/wu — carved out of one 48 MB arena via u8bAcquire so every
     //  exit path frees with a single u8bFree(arena).
     Bu8 arena = {};
     call(u8bAllocate, arena, (1UL << 24) * 2 + (1UL << 22) * 4);
-    call(u8aCarve, arena, bu,           1UL << 24);
-    call(u8aCarve, arena, wu,           1UL << 24);
-    call(u8aCarve, arena, put_unsorted, 1UL << 22);
-    call(u8aCarve, arena, del_unsorted, 1UL << 22);
-    call(u8aCarve, arena, put_buf,      1UL << 22);
-    call(u8aCarve, arena, del_buf,      1UL << 22);
+    call(u8bAcquire, arena, bu,           1UL << 24);
+    call(u8bAcquire, arena, wu,           1UL << 24);
+    call(u8bAcquire, arena, put_unsorted, 1UL << 22);
+    call(u8bAcquire, arena, del_unsorted, 1UL << 22);
+    call(u8bAcquire, arena, put_buf,      1UL << 22);
+    call(u8bAcquire, arena, del_buf,      1UL << 22);
 
     if (*have_base) {
         ok64 br = KEEPTreeULog(base_tree_sha->data, 0, v_base, bu);

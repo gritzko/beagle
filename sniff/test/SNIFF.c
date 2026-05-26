@@ -558,21 +558,21 @@ static ok64 SNIFFMergeWalkTest(void) {
             call(ULOGu8sFeed, u8gRest(g), &_r);                          \
         } while (0)
 
-    a_lign(u8, g_base, arena);
+    b_lign(u8, g_base, arena);
     EMIT(g_base,   v_base,   "a.txt");
     EMIT(g_base,   v_base,   "b.txt");
     EMIT(g_base,   v_base,   "c.txt");
-    a_cq(u8, view_b, arena);
+    b_cq(u8, view_b, arena);
 
-    a_lign(u8, g_ours, arena);
+    b_lign(u8, g_ours, arena);
     EMIT(g_ours,   v_ours,   "a.txt");
     EMIT(g_ours,   v_ours,   "b.txt");
-    a_cq(u8, view_o, arena);
+    b_cq(u8, view_o, arena);
 
-    a_lign(u8, g_theirs, arena);
+    b_lign(u8, g_theirs, arena);
     EMIT(g_theirs, v_theirs, "b.txt");
     EMIT(g_theirs, v_theirs, "c.txt");
-    a_cq(u8, view_t, arena);
+    b_cq(u8, view_t, arena);
     #undef EMIT
 
     a_pad(u8cs, ins, 3);
@@ -717,17 +717,17 @@ static ok64 SUBSSynthTest(void) {
     call(u8bAllocate, arena, 1024);
     call(u8bAllocate, out,   1024);
 
-    a_lign(u8, g_paths, arena);
+    b_lign(u8, g_paths, arena);
     a_cstr(p1, "vendor/sub");   call(u8gFeed, g_paths, p1); call(u8gFeed1, g_paths, '\n');
     a_cstr(p2, "thirdparty/x"); call(u8gFeed, g_paths, p2); call(u8gFeed1, g_paths, '\n');
-    a_cq(u8, paths, arena);
+    b_cq(u8, paths, arena);
 
-    a_lign(u8, g_urls, arena);
+    b_lign(u8, g_urls, arena);
     a_cstr(u1, "ssh://localhost/srv/sub.git");
     call(u8gFeed, g_urls, u1); call(u8gFeed1, g_urls, '\n');
     a_cstr(u2, "https://host/x.git");
     call(u8gFeed, g_urls, u2); call(u8gFeed1, g_urls, '\n');
-    a_cq(u8, urls, arena);
+    b_cq(u8, urls, arena);
 
     call(SNIFFSubsSynth, out, paths, urls);
 

@@ -746,14 +746,13 @@ ok64 KEEPCompact(void) {
     for (u32 i = 0; i < n; i++)
         total += (size_t)(runs[i][1] - runs[i][0]);
 
-    Bwh128 cbuf = {};
-    call(wh128bAllocate, cbuf, total);
+    a_carve(wh128, cbuf, total);
     wh128 *base = cbuf[0];
     wh128s into = {cbuf[0], cbuf[3]};
     size_t before_len = $len(stack);
     call(HITwh128Compact, stack, into);
     size_t m = before_len - $len(stack) + 1;
-    if (m < 2) { wh128bFree(cbuf); done; }
+    if (m < 2) done;
 
     //  Compaction lands in the leaf branch dir (writes only land at
     //  the leaf).  The merged run subsumes the youngest m sources;
@@ -769,7 +768,6 @@ ok64 KEEPCompact(void) {
     call(DOGPupThinTail, k->puppies, $path(leafdir), ext, (u32)m);
     call(keep_pup_create_next, k, $path(leafdir), ext, merged);
 
-    wh128bFree(cbuf);
     done;
 }
 
@@ -1181,6 +1179,23 @@ ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
     return KEEPGetPacked(k, val, out, out_type);
 }
 
+//  Peek the inflated size + type of an object without committing the
+//  result anywhere durable.  Uses k->buf3 as throwaway scratch (which
+//  KEEPGetPacked internally resets on the subsequent fetch anyway).
+//  Lets callers a_carve exactly-sized buffers before the real KEEPGet.
+//  Cost: one extra resolve+inflate pass.  Worth it when the alternative
+//  is over-allocating per-recursion-level (see keep_verify_sha).
+ok64 KEEPGetSize(u64 hashlet, size_t hexlen, u64 *out_size, u8 *out_type) {
+    sane(out_size);
+    keeper *k = &KEEP;
+    u8 type = 0;
+    ok64 r = KEEPGet(hashlet, hexlen, k->buf3, &type);
+    if (r != OK) return r;
+    *out_size = u8bDataLen(k->buf3);
+    if (out_type) *out_type = type;
+    return OK;
+}
+
 // --- GetSha: inflate object, verify full SHA-1 ---
 
 // KEEPObjSha defined below with KEEPPackFeed; declared in KEEP.h.
@@ -1323,25 +1338,29 @@ static void verify_mark(u64 hashlet) {
 
 static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
                              u32 *checked, u32 *failed) {
+    sane(checked && failed);
     u64 hashlet = WHIFFHashlet60(&expected_sha);
     if (verify_seen(hashlet)) return OK;  // already verified
     verify_mark(hashlet);
 
-    #define VERIFY_BUFSZ (1ULL << 24)  // 16 MB
-    Bu8 obj = {};
-    if (u8bAllocate(obj, VERIFY_BUFSZ) != OK) return KEEPNOROOM;
+    //  Peek object size first so we can a_carve exactly from BASS,
+    //  not a worst-case 16 MiB per recursion level.  Cost: one extra
+    //  resolve+inflate pass via KEEPGetSize (cold-path: verify only).
+    u64 obj_size = 0;
     u8 obj_type = 0;
-
-    ok64 rc = KEEPGet(hashlet, 15, obj, &obj_type);
-    if (rc != OK) {
+    ok64 sg = KEEPGetSize(hashlet, 15, &obj_size, &obj_type);
+    if (sg != OK) {
         a_pad(u8, hex, 16);
         WHIFFHexFeed60(hex_idle, hashlet);
         u8bFeed1(hex, 0);
         fprintf(stderr, "  MISS: %s\n", (char *)u8bDataHead(hex));
         (*failed)++;
-        u8bFree(obj);
-        return rc;
+        return sg;
     }
+
+    a_carve(u8, obj, obj_size);
+    obj_type = 0;
+    call(KEEPGet, hashlet, 15, obj, &obj_type);
 
     // Recompute SHA-1
     a_dup(u8c, content, u8bDataC(obj));
@@ -1350,15 +1369,10 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
     if (GITTypeName(type_name, obj_type) != OK) {
         fprintf(stderr, "  BAD TYPE: %u\n", obj_type);
         (*failed)++;
-        u8bFree(obj);
         return KEEPFAIL;
     }
 
-    Bu8 tmp = {};
-    if (u8bAlloc(tmp, 64 + u8csLen(content)) != OK) {
-        u8bFree(obj);
-        return KEEPNOROOM;
-    }
+    a_carve(u8, tmp, 64 + u8csLen(content));
     u8bFeed(tmp, type_name);
     u8bPrintf(tmp, " %lu", (unsigned long)u8csLen(content));
     u8bFeed1(tmp, 0);
@@ -1366,7 +1380,6 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
 
     sha1 actual_sha = {};
     SHA1Sum(&actual_sha, u8bDataC(tmp));
-    u8bFree(tmp);
 
     if (!sha1Eq(&actual_sha, &expected_sha)) {
         a_pad(u8, hex_exp, 16);
@@ -1378,13 +1391,14 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
         fprintf(stderr, "  HASH MISMATCH: expected %s got %s\n",
                 (char *)u8bDataHead(hex_exp), (char *)u8bDataHead(hex_got));
         (*failed)++;
-        u8bFree(obj);
         return KEEPFAIL;
     }
 
     (*checked)++;
 
-    // Recurse based on type
+    // Recurse based on type — try() wraps the recursive call so BASS
+    // is rewound between siblings (each child's a_carve dies before
+    // the next iteration starts).
     if (obj_type == DOG_OBJ_COMMIT) {
         // Parse tree SHA from commit
         a_dup(u8c, body, content);
@@ -1397,8 +1411,8 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
                 u8cs hx = {value[0], value[0] + 40};
                 ok64 ho = HEXu8sDrainSome(sb, hx);
                 if (ho != OK) break;
-                ok64 o = keep_verify_sha(k, tree_sha, checked, failed);
-                if (o != OK) {
+                try(keep_verify_sha, k, tree_sha, checked, failed);
+                if (__ != OK) {
                     a_pad(u8, hex, 16);
                     WHIFFHexFeed60(hex_idle, WHIFFHashlet60(&tree_sha));
                     u8bFeed1(hex, 0);
@@ -1433,8 +1447,8 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
             }
             sha1 child_sha = {};
             sha1FromBin(&child_sha, entry_sha);
-            o = keep_verify_sha(k, child_sha, checked, failed);
-            if (o != OK) {
+            try(keep_verify_sha, k, child_sha, checked, failed);
+            if (__ != OK) {
                 a_pad(u8, hex, 16);
                 WHIFFHexFeed60(hex_idle, WHIFFHashlet60(&child_sha));
                 u8bFeed1(hex, 0);
@@ -1454,15 +1468,14 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
                 u8cs hx = {value[0], value[0] + 40};
                 ok64 ho = HEXu8sDrainSome(sb, hx);
                 if (ho != OK) break;
-                keep_verify_sha(k, target_sha, checked, failed);
+                try(keep_verify_sha, k, target_sha, checked, failed);
                 break;
             }
         }
     }
     // blobs: hash check is sufficient
 
-    u8bFree(obj);
-    return OK;
+    done;
 }
 
 ok64 KEEPVerify(u8cs hex_sha) {
@@ -1480,7 +1493,8 @@ ok64 KEEPVerify(u8cs hex_sha) {
     call(HEXu8sDrainSome, sb, hx);
 
     u32 checked = 0, failed = 0;
-    ok64 rc = keep_verify_sha(k, sha, &checked, &failed);
+    try(keep_verify_sha, k, sha, &checked, &failed);
+    ok64 rc = __;
 
     fprintf(stderr, "keeper: verified %u objects, %u failed\n", checked, failed);
     return (failed == 0 && rc == OK) ? OK : KEEPFAIL;
@@ -3163,10 +3177,7 @@ ok64 KEEPEachRemote(KEEPRemoteCb cb, void *ctx) {
     keeper *k = &KEEP;
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
-    Bu8 seen = {};
-    call(u8bAllocate, seen, 1UL << 14);     //  16K seen-URL set
+    a_carve(u8, seen, 1UL << 14);   //  16K seen-URL set
     keep_remote_walk w = {.cb = cb, .ctx = ctx, .seen = &seen};
-    ok64 rc = REFSEach($path(keepdir), keep_remote_filter, &w);
-    u8bFree(seen);
-    return rc;
+    return REFSEach($path(keepdir), keep_remote_filter, &w);
 }

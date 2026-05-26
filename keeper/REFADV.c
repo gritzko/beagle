@@ -245,26 +245,20 @@ ok64 REFADVEmit(int out_fd, refadv const *adv) {
         if (i == 0) cap += 1 + sizeof(REFADV_CAPS) - 1;
     }
 
-    Bu8 frame = {};
-    call(u8bAllocate, frame, cap);
+    a_carve(u8, frame, cap);
 
     a_pad(u8, line, PKT_MAX);
 
     for (u32 i = 0; i < adv->count; i++) {
         u8bReset(line);
-        ok64 fo = refadv_format_line(line, &adv->ents[i], i == 0);
-        if (fo != OK) { u8bFree(frame); return fo; }
+        call(refadv_format_line, line, &adv->ents[i], i == 0);
         a_dup(u8c, payload, u8bData(line));
-        ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
-    ok64 fo = PKTu8sFeedFlush(u8bIdle(frame));
-    if (fo != OK) { u8bFree(frame); return fo; }
+    call(PKTu8sFeedFlush, u8bIdle(frame));
 
     a_dup(u8c, fdata, u8bData(frame));
-    ok64 wo = FILEFeedAll(out_fd, fdata);
-    u8bFree(frame);
-    if (wo != OK) return wo;
+    call(FILEFeedAll, out_fd, fdata);
 
     done;
 }

@@ -303,6 +303,12 @@ extern char const KEEP_CLI_VAL_FLAGS[];
 //  Returns object body in `out`, type in `*out_type`.
 ok64 KEEPGet(u64 hashlet60, size_t hexlen, u8bp out, u8p out_type);
 
+//  Peek inflated size + type without writing the data to a caller
+//  buffer.  Same resolution cost as KEEPGet (delta chain is fully
+//  resolved internally), but lets callers a_carve exactly-sized
+//  buffers from BASS for the subsequent fetch.
+ok64 KEEPGetSize(u64 hashlet60, size_t hexlen, u64 *out_size, u8 *out_type);
+
 //  Retrieve object by full 20-byte SHA-1.  Scans all hashlet matches,
 //  inflates each, verifies SHA-1.  Use when the full hash is known
 //  (e.g. tree entries) to avoid hashlet collisions.

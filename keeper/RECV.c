@@ -111,12 +111,7 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
         return ao;
     }
 
-    Bu8 buf = {};
-    ok64 bo = u8bAllocate(buf, RECV_REQ_BUF);
-    if (bo != OK) {
-        RECVCloseRequest(req);
-        return bo;
-    }
+    a_carve(u8, buf, RECV_REQ_BUF);
 
     u8cs adv = {u8bDataHead(buf), u8bDataHead(buf)};
     ok64 rc = OK;
@@ -173,7 +168,6 @@ ok64 RECVReadRequest(int in_fd, recv_reqp req) {
             if (to == OK) u8bFeed(req->tail, leftover);
         }
     }
-    u8bFree(buf);
     if (rc != OK) RECVCloseRequest(req);
     return rc;
 }
@@ -361,8 +355,7 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
         cap += 4 + 4 + (u64)u8csLen(results[i].refname) + 64;
     }
 
-    Bu8 frame = {};
-    call(u8bAllocate, frame, cap);
+    a_carve(u8, frame, cap);
 
     //  unpack line.
     {
@@ -378,8 +371,7 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
         }
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
-        ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
 
     //  Per-update lines.
@@ -408,17 +400,13 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
             u8bFeed1(line, '\n');
         }
         a_dup(u8c, payload, u8bData(line));
-        ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-        if (po != OK) { u8bFree(frame); return po; }
+        call(PKTu8sFeed, u8bIdle(frame), payload);
     }
 
-    ok64 fo = PKTu8sFeedFlush(u8bIdle(frame));
-    if (fo != OK) { u8bFree(frame); return fo; }
+    call(PKTu8sFeedFlush, u8bIdle(frame));
 
     a_dup(u8c, fdata, u8bData(frame));
-    ok64 wo = FILEFeedAll(out_fd, fdata);
-    u8bFree(frame);
-    return wo;
+    return FILEFeedAll(out_fd, fdata);
 }
 
 // --- top-level orchestration ---

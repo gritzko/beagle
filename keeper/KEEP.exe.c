@@ -890,24 +890,15 @@ static ok64 keeper_delete_alias(keeper *k, u8cs host) {
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
 
-    Bu8 keys = {};
-    call(u8bAllocate, keys, 1UL << 16);
+    a_carve(u8, keys, 1UL << 16);
 
     keeper_delete_alias_ctx ctx = {.host = {host[0], host[1]},
                                    .keys = &keys, .err = OK};
-    ok64 eo = REFSEach($path(keepdir),
-                       keeper_delete_alias_collect, &ctx);
-    if (eo != OK) {
-        u8bFree(keys);
-        return eo;
-    }
-    if (ctx.err != OK) {
-        u8bFree(keys);
-        return ctx.err;
-    }
+    call(REFSEach, $path(keepdir),
+                   keeper_delete_alias_collect, &ctx);
+    if (ctx.err != OK) return ctx.err;
 
     if (!u8bHasData(keys)) {
-        u8bFree(keys);
         fprintf(stderr,
                 "keeper: delete: no rows for //%.*s\n",
                 (int)u8csLen(host), (char const *)host[0]);
@@ -927,17 +918,12 @@ static ok64 keeper_delete_alias(keeper *k, u8cs host) {
         while (q < end && *q != '\0') q++;
         u8cs row_key = {p, q};
         if (!u8csEmpty(row_key)) {
-            ok64 ao = REFSAppendVerb($path(keepdir), REFSVerbDelete(),
-                                     row_key, zeros);
-            if (ao != OK) {
-                u8bFree(keys);
-                return ao;
-            }
+            call(REFSAppendVerb, $path(keepdir), REFSVerbDelete(),
+                                  row_key, zeros);
             dropped++;
         }
         p = (q < end) ? q + 1 : end;
     }
-    u8bFree(keys);
     fprintf(stdout, "keeper: dropped alias //%.*s (%u row(s))\n",
             (int)u8csLen(host), (char const *)host[0], dropped);
     done;

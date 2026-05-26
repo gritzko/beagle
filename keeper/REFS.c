@@ -12,6 +12,7 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/ULOG.h"
+#include "KEEP.h"
 
 // --- tombstone detection ---
 //
@@ -316,18 +317,13 @@ ok64 REFSLoad(refp arr, u32p out_n, u32 max, u8b arena, u8csc dir) {
 ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx) {
     sane($ok(dir) && cb != NULL);
 
-    Bu8 arena = {};
-    call(u8bMap, arena, (size_t)REFS_MAX_REFS * 320);
-
-    Bu8 arr_b = {};
-    if (u8bAllocate(arr_b, (size_t)REFS_MAX_REFS * sizeof(ref)) != OK) {
-        u8bUnMap(arena); fail(REFSFAIL);
-    }
+    a_carve(u8, scratch, (size_t)REFS_MAX_REFS * 320);
+    a_carve(u8, arr_b,   (size_t)REFS_MAX_REFS * sizeof(ref));
     ref *arr = (ref *)u8bDataHead(arr_b);
 
     u32 n = 0;
-    ok64 o = REFSLoad(arr, &n, REFS_MAX_REFS, arena, dir);
-    if (o != OK) { u8bFree(arr_b); u8bUnMap(arena); return o; }
+    ok64 o = REFSLoad(arr, &n, REFS_MAX_REFS, scratch, dir);
+    if (o != OK) return o;
 
     for (u32 i = 0; i < n; i++) {
         o = cb(&arr[i], ctx);
@@ -337,8 +333,6 @@ ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx) {
     //  real iteration failure from a deliberate early-out.
     if (o == REFSSTOP) o = OK;
 
-    u8bFree(arr_b);
-    u8bUnMap(arena);
     return o;
 }
 

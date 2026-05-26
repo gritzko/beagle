@@ -33,17 +33,20 @@ u8 WALKu8sModeKind(u8cs mode) {
 //  path (no leading/trailing '/'), shared across recursion levels.
 //  Each level owns its own `tbuf` and per-entry `bbuf` (blob) so
 //  nested KEEPGetExact calls don't clobber parent bytes.
+//  `bbuf` is a caller-provided 1 MiB scratch reused across every
+//  blob fetch under this dive AND every recursion level — NULL when
+//  !eager (no blobs are fetched).  `tbuf` is per-level (parent's
+//  tree data must outlive child recursion's tree fetch).
 static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
-                            u8bp pathbuf, b8 eager,
+                            u8bp pathbuf, b8 eager, u8bp bbuf,
                             walk_tree_fn visit, void0p ctx) {
     sane(k && tree_sha && visit);
 
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, 1UL << 20);
+    a_carve(u8, tbuf, 1UL << 20);
     u8 otype = 0;
     ok64 o = KEEPGetExact(tree_sha, tbuf, &otype);
-    if (o != OK) { u8bFree(tbuf); return o; }
-    if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); return WALKBADFMT; }
+    if (o != OK) return o;
+    if (otype != DOG_OBJ_TREE) return WALKBADFMT;
 
     u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
     u8cs file = {}, esha = {};
@@ -70,31 +73,27 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
         if (u8bFeed(pathbuf, name_s) != OK) { result = WALKNOROOM; break; }
         u8cs path = {u8bDataHead(pathbuf), pathbuf[2]};
 
-        // Eager blob resolve for file-like kinds.
-        Bu8 bbuf = {};
+        // Eager blob resolve for file-like kinds — into shared bbuf.
         u8cs blob = {};
         b8 is_file = (kind == WALK_KIND_REG || kind == WALK_KIND_EXE ||
                       kind == WALK_KIND_LNK);
-        if (eager && is_file) {
-            if (u8bAllocate(bbuf, 1UL << 20) == OK) {
-                sha1 entry_sha = {};
-                sha1Mv(&entry_sha, (sha1cp)esha[0]);
-                u8 btype = 0;
-                if (KEEPGetExact(&entry_sha, bbuf, &btype) == OK &&
-                    btype == DOG_OBJ_BLOB) {
-                    blob[0] = u8bDataHead(bbuf);
-                    blob[1] = u8bIdleHead(bbuf);
-                }
+        if (eager && is_file && bbuf) {
+            sha1 entry_sha = {};
+            sha1Mv(&entry_sha, (sha1cp)esha[0]);
+            u8 btype = 0;
+            if (KEEPGetExact(&entry_sha, bbuf, &btype) == OK &&
+                btype == DOG_OBJ_BLOB) {
+                blob[0] = u8bDataHead(bbuf);
+                blob[1] = u8bIdleHead(bbuf);
             }
         }
 
         ok64 vo = visit(path, kind, esha[0], blob, ctx);
-        if (bbuf[0]) u8bFree(bbuf);
 
         if (vo == OK && kind == WALK_KIND_DIR) {
             sha1 sub = {};
             sha1Mv(&sub, (sha1cp)esha[0]);
-            vo = walk_tree_dive(k, &sub, pathbuf, eager, visit, ctx);
+            vo = walk_tree_dive(k, &sub, pathbuf, eager, bbuf, visit, ctx);
         }
 
         // Rewind pathbuf to pre-entry length.
@@ -106,7 +105,6 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
         if (vo != OK) { result = vo; break; }
     }
 
-    u8bFree(tbuf);
     return result;
 }
 
@@ -123,7 +121,12 @@ static ok64 walk_tree_entry(keeper *k, u8cp tree_sha, b8 eager,
     if (vo == WALKSKIP) return OK;
     if (vo != OK) return vo;
 
-    ok64 o = walk_tree_dive(k, &root, pathbuf, eager, visit, ctx);
+    //  One blob buffer shared across every file fetched during the
+    //  walk.  Always carved — the address-space reservation is free
+    //  via mmap+NORESERVE; pages only commit if eager actually fetches.
+    a_carve(u8, bbuf, 1UL << 20);
+    ok64 o = walk_tree_dive(k, &root, pathbuf, eager,
+                             eager ? bbuf : NULL, visit, ctx);
     if (o == WALKSTOP) return OK;
     return o;
 }
@@ -165,13 +168,12 @@ static ok64 lsf_prefix_visit(u8cs path, u8 kind, u8cp esha,
     return pc->inner(full, kind, esha, blob, pc->inner_ctx);
 }
 
-//  Descend a '/'-separated subpath from `root_tree`.  On success,
-//  *out_sha/*out_kind describe the last resolved entry; *out_prefix
-//  gets a slice into `pathbuf` holding the descended prefix (stable
-//  until pathbuf is reused).
-static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
-                         u8bp pathbuf, sha1 *out_sha, u8 *out_kind) {
-    sane(k && root_tree && out_sha && out_kind);
+//  Worker for lsf_descend — uses caller-provided `tbuf` (reused per
+//  segment; KEEPGet internally resets).
+static ok64 lsf_descend_inner(sha1cp root_tree, u8cs subpath,
+                               u8bp pathbuf, sha1 *out_sha, u8 *out_kind,
+                               u8bp tbuf) {
+    sane(root_tree && out_sha && out_kind && tbuf);
 
     sha1 cur_sha = *root_tree;
     u8 cur_kind = WALK_KIND_DIR;
@@ -194,11 +196,9 @@ static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
         if (cur_kind != WALK_KIND_DIR) return KEEPNONE;
 
         //  Fetch current tree, scan entries for `seg`.
-        Bu8 tbuf = {};
-        call(u8bAllocate, tbuf, 1UL << 20);
         u8 otype = 0;
         ok64 o = KEEPGetExact(&cur_sha, tbuf, &otype);
-        if (o != OK || otype != DOG_OBJ_TREE) { u8bFree(tbuf); return o ? o : KEEPNONE; }
+        if (o != OK || otype != DOG_OBJ_TREE) return o ? o : KEEPNONE;
 
         u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
         b8 found = NO;
@@ -215,7 +215,6 @@ static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
             found = YES;
             break;
         }
-        u8bFree(tbuf);
         if (!found || next_kind == 0) return KEEPNONE;
 
         //  Append to prefix pathbuf.
@@ -228,6 +227,19 @@ static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
 
     *out_sha = cur_sha;
     *out_kind = cur_kind;
+    done;
+}
+
+//  Descend a '/'-separated subpath from `root_tree`.  On success,
+//  *out_sha/*out_kind describe the last resolved entry; *out_prefix
+//  gets a slice into `pathbuf` holding the descended prefix (stable
+//  until pathbuf is reused).
+static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
+                         u8bp pathbuf, sha1 *out_sha, u8 *out_kind) {
+    sane(k && root_tree && out_sha && out_kind);
+    (void)k;
+    a_carve(u8, tbuf, 1UL << 20);
+    call(lsf_descend_inner, root_tree, subpath, pathbuf, out_sha, out_kind, tbuf);
     done;
 }
 
@@ -489,18 +501,11 @@ ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out) {
     call(RONutf8sDrain, &v_del, dvdel);
     call(RONutf8sDrain, &v_mod, dvmod);
 
-    Bu8 ula = {}, ulb = {};
-    call(u8bAllocate, ula, 1UL << 20);
-    if (u8bAllocate(ulb, 1UL << 20) != OK) { u8bFree(ula); fail(WALKFAIL); }
+    a_carve(u8, ula, 1UL << 20);
+    a_carve(u8, ulb, 1UL << 20);
 
-    if (sha_a != NULL) {
-        ok64 ar = KEEPTreeULog(sha_a, 0, v_a, ula);
-        if (ar != OK) { u8bFree(ula); u8bFree(ulb); return ar; }
-    }
-    if (sha_b != NULL) {
-        ok64 br = KEEPTreeULog(sha_b, 0, v_b, ulb);
-        if (br != OK) { u8bFree(ula); u8bFree(ulb); return br; }
-    }
+    if (sha_a != NULL) call(KEEPTreeULog, sha_a, 0, v_a, ula);
+    if (sha_b != NULL) call(KEEPTreeULog, sha_b, 0, v_b, ulb);
 
     //  Build the cursor array — two slices over the row buffers.
     u8cs cur[2] = {};
@@ -513,9 +518,5 @@ ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out) {
         .v_a = v_a, .v_b = v_b, .err = OK,
     };
     ok64 mo = ULOGMergeWalk(cursors, treediff_step, &ctx);
-
-    u8bFree(ula);
-    u8bFree(ulb);
-    if (mo != OK) return mo;
-    return ctx.err;
+    return (mo != OK) ? mo : ctx.err;
 }

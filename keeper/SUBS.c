@@ -19,16 +19,16 @@
 //     parsed octal mode.  Returns KEEPNONE if no entry, KEEPFAIL on
 //     malformed tree, OK on success.
 
+//  `tbuf` is a caller-provided scratch buffer reused across every
+//  KEEPGetExact (KEEPGet internally resets, so no manual reset).
 static ok64 keep_subs_tree_step(sha1cp tree_sha, u8cs name,
-                                sha1 *out_sha, u32 *out_mode) {
-    sane(tree_sha && out_sha);
+                                sha1 *out_sha, u32 *out_mode, u8bp tbuf) {
+    sane(tree_sha && out_sha && tbuf);
 
-    Bu8 tbuf = {};
-    call(u8bAllocate, tbuf, 1UL << 20);
     u8 otype = 0;
     ok64 o = KEEPGetExact(tree_sha, tbuf, &otype);
-    if (o != OK)               { u8bFree(tbuf); return o; }
-    if (otype != DOG_OBJ_TREE) { u8bFree(tbuf); fail(KEEPFAIL); }
+    if (o != OK)               return o;
+    if (otype != DOG_OBJ_TREE) fail(KEEPFAIL);
 
     a_dup(u8c, body, u8bDataC(tbuf));
     u8cs field = {}, esha = {};
@@ -39,21 +39,21 @@ static ok64 keep_subs_tree_step(sha1cp tree_sha, u8cs name,
         if (GITu8sFileSplit(field, NULL, entry_name) != OK) continue;
         if (!u8csEq(entry_name, name)) continue;
         ok64 dr = sha1Drain(esha, out_sha);
-        if (dr != OK) { u8bFree(tbuf); fail(KEEPFAIL); }
+        if (dr != OK) fail(KEEPFAIL);
         if (out_mode) *out_mode = mode;
         result = OK;
         break;
     }
-    u8bFree(tbuf);
     return result;
 }
 
 //  Walk `path` (slash-separated segments) starting at `root_tree`
 //  through nested tree steps; on success fills the final entry's sha
-//  + mode.  Returns KEEPNONE if any segment misses.
+//  + mode.  Returns KEEPNONE if any segment misses.  `tbuf` is shared
+//  scratch passed down to each `keep_subs_tree_step`.
 static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
-                                sha1 *out_sha, u32 *out_mode) {
-    sane(root_tree && out_sha);
+                                sha1 *out_sha, u32 *out_mode, u8bp tbuf) {
+    sane(root_tree && out_sha && tbuf);
     sha1 cur = *root_tree;
     u8cs rest = {path[0], path[1]};
     while (!u8csEmpty(rest)) {
@@ -67,7 +67,7 @@ static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
         }
         sha1 step = {};
         u32  mode = 0;
-        ok64 so = keep_subs_tree_step(&cur, seg, &step, &mode);
+        ok64 so = keep_subs_tree_step(&cur, seg, &step, &mode, tbuf);
         if (so != OK) return so;
         cur = step;
         if (out_mode) *out_mode = mode;
@@ -82,6 +82,7 @@ static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
 typedef struct {
     sha1cp tree_sha;
     u8bp        out;
+    u8bp        tbuf;       // shared 1 MiB scratch for tree fetches
     ron60       ts;
     ron60       verb;
     ok64        err;        // sticky write error
@@ -136,7 +137,7 @@ static ok64 keep_subs_step(u8cs path, u8cs url, void *vctx) {
 
     sha1 pin = {};
     u32  mode = 0;
-    ok64 wo = keep_subs_walk_path(kc->tree_sha, path, &pin, &mode);
+    ok64 wo = keep_subs_walk_path(kc->tree_sha, path, &pin, &mode, kc->tbuf);
     if (wo == KEEPNONE) return OK;        //  declared but not in tree
     if (wo != OK)       return wo;
     if (mode != 0160000) return OK;       //  not a gitlink — skip
@@ -146,8 +147,10 @@ static ok64 keep_subs_step(u8cs path, u8cs url, void *vctx) {
     return r;
 }
 
-ok64 KEEPSubsAt(sha1cp tree_sha, ron60 ts, ron60 verb, u8bp out) {
-    sane(tree_sha && out);
+//  Worker: assumes `tbuf` and `bbuf` are pre-allocated by the wrapper.
+static ok64 keep_subs_at_inner(sha1cp tree_sha, ron60 ts, ron60 verb,
+                               u8bp out, u8bp tbuf, u8bp bbuf) {
+    sane(tree_sha && out && tbuf && bbuf);
     u8bReset(out);
 
     //  Find `.gitmodules` in the root tree.  Absence is signalled as
@@ -157,31 +160,38 @@ ok64 KEEPSubsAt(sha1cp tree_sha, ron60 ts, ron60 verb, u8bp out) {
     u32  gm_mode = 0;
     a_cstr(gm_name, ".gitmodules");
     a_dup(u8c, gm, gm_name);
-    ok64 lo = keep_subs_tree_step(tree_sha, gm, &gm_sha, &gm_mode);
+    ok64 lo = keep_subs_tree_step(tree_sha, gm, &gm_sha, &gm_mode, tbuf);
     if (lo == KEEPNONE) done;
     if (lo != OK)       return lo;
     if (gm_mode != 0100644 && gm_mode != 0100755) done;
 
-    //  Pull the blob bytes.
-    Bu8 bbuf = {};
-    call(u8bAllocate, bbuf, 1UL << 20);
+    //  Pull the blob bytes into `bbuf`.
     u8 btype = 0;
-    ok64 bo = KEEPGetExact(&gm_sha, bbuf, &btype);
-    if (bo != OK)                { u8bFree(bbuf); return bo; }
-    if (btype != DOG_OBJ_BLOB)   { u8bFree(bbuf); fail(KEEPFAIL); }
+    call(KEEPGetExact, &gm_sha, bbuf, &btype);
+    if (btype != DOG_OBJ_BLOB) fail(KEEPFAIL);
 
     //  Drive the parser; per declared (path, url) resolve the pin
-    //  and emit one ULOG row.
+    //  and emit one ULOG row.  `tbuf` is shared scratch for nested
+    //  tree-step lookups; safe because the parser callback runs to
+    //  completion before returning.
     keep_subs_emit_ctx kc = {
         .tree_sha = tree_sha,
         .out      = out,
+        .tbuf     = tbuf,
         .ts       = ts,
         .verb     = verb,
         .err      = OK,
     };
     a_dup(u8c, blob, u8bData(bbuf));
     ok64 po = SUBSu8sParse(blob, keep_subs_step, &kc);
-    u8bFree(bbuf);
     if (kc.err != OK) return kc.err;
     return po;
+}
+
+ok64 KEEPSubsAt(sha1cp tree_sha, ron60 ts, ron60 verb, u8bp out) {
+    sane(tree_sha && out);
+    a_carve(u8, tbuf, 1UL << 20);
+    a_carve(u8, bbuf, 1UL << 20);
+    call(keep_subs_at_inner, tree_sha, ts, verb, out, tbuf, bbuf);
+    done;
 }
