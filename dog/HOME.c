@@ -22,7 +22,7 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor);
 // cannot be spawned.  Trailing '\n' is trimmed.
 static ok64 home_git_config_get(char const *key, u8s out) {
     sane($ok(out));
-    a_cstr(gitp, "/usr/bin/git");
+    a_cstr(gitp, "git");  // bare name: FILESpawn/execvp resolves it via PATH
     u8cs av[] = {
         u8slit("git"),
         u8slit("config"),

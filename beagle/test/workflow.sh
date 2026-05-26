@@ -27,13 +27,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
 #  Portable mtime in `sec.nanosec` form.  GNU coreutils stat exposes
-#  this as `%.Y`; BSD stat (macOS, FreeBSD) doesn't, so we fall back
-#  to Python which reads the underlying timespec.  Sub-second
+#  this as `%.Y`; BSD stat (macOS, FreeBSD) spells it `-f %Fm`; only
+#  if neither is present do we fall back to Python.  Sub-second
 #  precision matters for the re-stamp test below: POST writes mtimes
 #  via futimens(), so two writes inside one wall-clock second still
 #  diverge in the nanosecond component.
 mtime_ns() {
     stat -c %.Y "$1" 2>/dev/null \
+        || stat -f %Fm "$1" 2>/dev/null \
         || python3 -c 'import os, sys; s=os.stat(sys.argv[1]); \
 print(f"{s.st_mtime_ns}")' "$1"
 }

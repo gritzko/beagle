@@ -51,10 +51,12 @@ done
 
 #  Ref rows are `<ts>\tset\t<key>#<40-hex-sha>`; grab the 40-hex
 #  after the `#` separator.
-awk_sha='/v0\.0\.'"X"'/ { n = index($3, "#"); if (n) print substr($3, n + 1) }'
-SHA1=$(awk -F'\t' "${awk_sha/X/1}" .be/repo/refs)
-SHA2=$(awk -F'\t' "${awk_sha/X/2}" .be/repo/refs)
-SHA3=$(awk -F'\t' "${awk_sha/X/3}" .be/repo/refs)
+sha_for() {  # $1: version digit — print the 40-hex after the `#`
+    awk -F'\t' '/v0\.0\.'"$1"'/ { n = index($3, "#"); if (n) print substr($3, n + 1) }' .be/repo/refs
+}
+SHA1=$(sha_for 1)
+SHA2=$(sha_for 2)
+SHA3=$(sha_for 3)
 [ -n "$SHA1" ] && [ -n "$SHA2" ] && [ -n "$SHA3" ] \
     || fail "could not read commit shas from .be/repo/refs"
 note "shas: $SHA1 $SHA2 $SHA3"

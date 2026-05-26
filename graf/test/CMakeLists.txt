@@ -47,14 +47,14 @@ add_test(NAME MERGE3B01test COMMAND MERGE3B01test)
 #  toy.sh — full-pipeline smoke test: be post x3, merge, blame,
 #  weave, index/status.  Exercises dog/DOG.md §8 entry points.
 add_test(NAME GRAFtoy
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/toy.sh
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/toy.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(GRAFtoy PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFtoy")
 
 #  get.sh — URI-driven deterministic blob merge (`graf get <uri>`).
 add_test(NAME GRAFget
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/get.sh
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/get.sh
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(GRAFget PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFget")

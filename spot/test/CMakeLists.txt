@@ -29,7 +29,7 @@ set(_SPOT_INIT_REPO
     trap 'rm -rf \"$W\"' EXIT && cd \"$W\"")
 
 add_test(NAME SPOTcli_slice_init
-    COMMAND bash -c "${_SPOT_INIT_REPO} && \
+    COMMAND sh -c "${_SPOT_INIT_REPO} && \
         $<TARGET_FILE:spot-cli> -s 'T n = {a[0],a[1]};' \
         spot/test/data/slice_init.c 2>/dev/null \
         | diff -u ${CMAKE_CURRENT_SOURCE_DIR}/data/slice_init.spot -")
@@ -42,7 +42,7 @@ add_test(NAME SPOTcli_slice_init
 #   - dedup of overlapping match ranges from the SPOT engine
 #     (line 1 must NOT have '+')
 add_test(NAME SPOTcli_slice_init_hili
-    COMMAND bash -c "${_SPOT_INIT_REPO} && \
+    COMMAND sh -c "${_SPOT_INIT_REPO} && \
         SPOT_COLOR=1 $<TARGET_FILE:spot-cli> \
         -s 'T n = {a[0],a[1]};' \
         spot/test/data/slice_init.c 2>/dev/null \

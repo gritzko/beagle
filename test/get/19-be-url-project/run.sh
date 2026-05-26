@@ -69,7 +69,7 @@ head -n1 .be/wtlog | grep -F 'repo	file:' >/dev/null && \
 #  Witness: `.be/wtlog` row count stays at 1 (no duplicate row-0
 #  anchor appended).
 wtlog_rows_before=$(wc -l < .be/wtlog)
-[ "$wtlog_rows_before" = "1" ] || {
+[ "$wtlog_rows_before" -eq 1 ] || {
     echo "pre-condition: expected 1 wtlog row, got $wtlog_rows_before" >&2
     exit 1
 }
@@ -79,7 +79,7 @@ timeout 10 "$BE" get 'be://nonexistent.invalid?/myproj/main' \
     >02.get.got.out 2>02.get.got.err || rc=$?
 
 wtlog_rows_after=$(wc -l < .be/wtlog)
-[ "$wtlog_rows_after" = "1" ] || {
+[ "$wtlog_rows_after" -eq 1 ] || {
     echo "anchored-gate failed: wtlog grew from 1 to $wtlog_rows_after row(s) on re-invocation" >&2
     cat .be/wtlog >&2
     exit 1
