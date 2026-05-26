@@ -22,15 +22,15 @@
 //  Helpers
 // =====================================================================
 
-//  20-byte SHA → 40 hex bytes appended to out.
-static void proj_feed_sha_hex(u8b out, sha1cp s) {
-    (void)SHA1u8bFeedHex(out, s);
+//  20-byte SHA → 40 hex bytes appended via streaming cursor `out`.
+static void proj_feed_sha_hex(u8s out, sha1cp s) {
+    (void)SHA1u8sFeedHex(out, s);
 }
 
-//  Append a NUL-terminated literal.
-static void proj_feed_lit(u8b out, char const *s) {
+//  Append a NUL-terminated literal to streaming cursor `out`.
+static void proj_feed_lit(u8s out, char const *s) {
     a$str(sl, s);
-    (void)u8bFeed(out, sl);
+    (void)u8sFeed(out, sl);
 }
 
 //  Resolve `u` (#hex or ?ref) to a binary commit/tree SHA.  Mirrors
@@ -145,19 +145,19 @@ static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
 
 //  Title for the hunk header bar: "<scheme>:<path>?<query>" or
 //  "<scheme>:#<frag>".  Display label only — not a protocol URI.
-static void proj_feed_title(u8b out, uricp u) {
+static void proj_feed_title(u8s out, uricp u) {
     if (!u8csEmpty(u->scheme)) {
-        (void)u8bFeed(out, u->scheme);
-        (void)u8bFeed1(out, ':');
+        (void)u8sFeed(out, u->scheme);
+        (void)u8sFeed1(out, ':');
     }
-    if (!u8csEmpty(u->path)) (void)u8bFeed(out, u->path);
+    if (!u8csEmpty(u->path)) (void)u8sFeed(out, u->path);
     if (!u8csEmpty(u->query)) {
-        (void)u8bFeed1(out, '?');
-        (void)u8bFeed(out, u->query);
+        (void)u8sFeed1(out, '?');
+        (void)u8sFeed(out, u->query);
     }
     if (!u8csEmpty(u->fragment)) {
-        (void)u8bFeed1(out, '#');
-        (void)u8bFeed(out, u->fragment);
+        (void)u8sFeed1(out, '#');
+        (void)u8sFeed(out, u->fragment);
     }
 }
 
@@ -191,7 +191,7 @@ static ok64 proj_emit_hunk(uricp u, Bu8 text, tok32cs toks, b8 tlv) {
         done;
     }
     a_pad(u8, title, 512);
-    proj_feed_title(title, u);
+    proj_feed_title(u8bIdle(title), u);
 
     hunk hk = {};
     hk.uri[0]  = u8bDataHead(title);
@@ -249,17 +249,17 @@ static void proj_tree_parent_path(u8csp out, u8cs path) {
 //  After KEEPProjDispatch normalises a hex-prefix query to fragment,
 //  query and fragment are mutually exclusive on the input URI — so we
 //  carry whichever is set verbatim.
-static void proj_feed_link_uri(u8b out, char const *scheme, u8cs path,
+static void proj_feed_link_uri(u8s out, char const *scheme, u8cs path,
                                 uricp src) {
     proj_feed_lit(out, scheme);
-    (void)u8bFeed1(out, ':');
-    if (!$empty(path)) (void)u8bFeed(out, path);
+    (void)u8sFeed1(out, ':');
+    if (!$empty(path)) (void)u8sFeed(out, path);
     if (!u8csEmpty(src->query)) {
-        (void)u8bFeed1(out, '?');
-        (void)u8bFeed(out, src->query);
+        (void)u8sFeed1(out, '?');
+        (void)u8sFeed(out, src->query);
     } else if (!u8csEmpty(src->fragment)) {
-        (void)u8bFeed1(out, '#');
-        (void)u8bFeed(out, src->fragment);
+        (void)u8sFeed1(out, '#');
+        (void)u8sFeed(out, src->fragment);
     }
 }
 
@@ -290,7 +290,7 @@ static ok64 proj_tree_emit_entry(u8b text, Bu32 toks,
 
     //  Invisible URI bytes — bro hides U-tagged spans, clicking the
     //  preceding 'F' anchor opens this URI.
-    proj_feed_link_uri(text, is_dir ? "tree" : "blob", link_path, src);
+    proj_feed_link_uri(u8bIdle(text), is_dir ? "tree" : "blob", link_path, src);
     proj_push_tok(text, toks, 'U');
 
     (void)u8bFeed1(text, '\n');
@@ -300,7 +300,7 @@ static ok64 proj_tree_emit_entry(u8b text, Bu32 toks,
 
 //  git mode prefix → display columns ("100644 blob", "040000 tree", …).
 //  Wide-enough fixed columns so names line up.
-static void proj_tree_mode_type(u8b out, u8 kind) {
+static void proj_tree_mode_type(u8s out, u8 kind) {
     char const *mode = "??????";
     char const *type = "?????";
     switch (kind) {
@@ -312,11 +312,11 @@ static void proj_tree_mode_type(u8b out, u8 kind) {
         default: break;
     }
     proj_feed_lit(out, mode);
-    (void)u8bFeed1(out, ' ');
+    (void)u8sFeed1(out, ' ');
     proj_feed_lit(out, type);
     //  Pad type to a stable 6-char column ("commit" is the widest).
     size_t tn = strlen(type);
-    while (tn++ < 6) (void)u8bFeed1(out, ' ');
+    while (tn++ < 6) (void)u8sFeed1(out, ' ');
 }
 
 ok64 KEEPProjTree(uricp u, b8 tlv) {
@@ -381,7 +381,7 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
             if (*$last(parent_path) != '/') (void)u8bFeed1(lp, '/');
         }
         a_dup(u8c, lpath, u8bData(lp));
-        proj_feed_link_uri(text, "tree", lpath, u);
+        proj_feed_link_uri(u8bIdle(text), "tree", lpath, u);
         proj_push_tok(text, toks, 'U');
         (void)u8bFeed1(text, '\n');
         proj_push_tok(text, toks, 'W');
@@ -396,11 +396,11 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
         if (kind == 0) continue;
 
         //  Prefix: <mode> <type>  <sha40>\t  — tagged 'P' (gray punct).
-        proj_tree_mode_type(text, kind);
+        proj_tree_mode_type(u8bIdle(text), kind);
         (void)u8bFeed1(text, ' ');
         sha1 esh = {};
         (void)sha1Drain(esha, &esh);
-        proj_feed_sha_hex(text, &esh);
+        proj_feed_sha_hex(u8bIdle(text), &esh);
         (void)u8bFeed1(text, '\t');
         proj_push_tok(text, toks, 'P');
 
@@ -483,9 +483,9 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
     //  itself.  Subsequent `tree <sha>` / `parent <sha>` headers get
     //  U-tagged links so clicks open the referenced object; other
     //  headers (author, committer, message) flow through without toks.
-    proj_feed_lit(text, "commit ");
+    proj_feed_lit(u8bIdle(text), "commit ");
     proj_push_tok(text, toks, 'R');
-    proj_feed_sha_hex(text, &csha);
+    proj_feed_sha_hex(u8bIdle(text), &csha);
     proj_push_tok(text, toks, 'L');
     (void)u8bFeed1(text, '\n');
     proj_push_tok(text, toks, 'W');
@@ -523,7 +523,7 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             //  Invisible URI bytes: <scheme>:#<sha40>.  Fragment form
             //  is unambiguous for sha addressing and bypasses
             //  KEEPProjDispatch's query→fragment hex-prefix promotion.
-            proj_feed_lit(text, link_scheme);
+            proj_feed_lit(u8bIdle(text), link_scheme);
             (void)u8bFeed1(text, ':');
             (void)u8bFeed1(text, '#');
             (void)u8bFeed(text, sha_hex);

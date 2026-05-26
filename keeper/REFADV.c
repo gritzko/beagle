@@ -219,7 +219,7 @@ static ok64 refadv_format_line(u8bp out, refadv_entry const *e, b8 with_caps) {
     if (u8bIdleLen(out) < 40 + 1 + (size_t)u8csLen(e->refname) + 1 +
                           (with_caps ? 1 + sizeof(REFADV_CAPS) - 1 : 0))
         return BNOROOM;
-    call(SHA1u8bFeedHex, out, &e->tip);
+    call(SHA1u8sFeedHex, u8bIdle(out), &e->tip);
     u8bFeed1(out, ' ');
     u8bFeed(out, e->refname);
     if (with_caps) {

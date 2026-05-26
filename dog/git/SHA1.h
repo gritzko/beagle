@@ -75,15 +75,17 @@ fun ok64 SHA1u8sFeedHashlet(u8s into, sha1cp s) {
     return u8sFeed(into, hashlet);
 }
 
-//  Feed all 40 ASCII hex chars of `s` into a u8 buffer.
-//  All-or-nothing: returns BNOROOM if `into` lacks room.
-fun ok64 SHA1u8bFeedHex(u8b into, sha1cp s) {
+//  Feed all 40 ASCII hex chars of `s` into a u8 slice cursor.
+//  All-or-nothing: returns SNOROOM if `into` lacks room.  Streams
+//  forward, never looks back — buffer callers pass `u8bIdle(buf)`,
+//  gauge callers pass `u8gRest(g)`.  See abc/S.md §"u8s vs u8sp".
+fun ok64 SHA1u8sFeedHex(u8s into, sha1cp s) {
     u8 hexbuf[40];
     u8s hx = {hexbuf, hexbuf + 40};
     u8cs bn = {s->data, s->data + 20};
     HEXu8sFeedSome(hx, bn);
     u8cs hex = {hexbuf, hexbuf + 40};
-    return u8bFeed(into, hex);
+    return u8sFeed(into, hex);
 }
 
 //  Declare `name` as a u8cs view over the 40-hex form of `sha` (a

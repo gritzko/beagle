@@ -2562,8 +2562,7 @@ ok64 POSTCommit(u8cs target_branch,
 
     //  10. Build commit body.  Single-parent invariant: at most one
     //      `parent <hex>\n` line.
-    Bu8 com = {};
-    call(u8bAllocate, com, 4096);
+    a_pad(u8, com, 4096);
     a_cstr(tree_label, "tree ");
     u8bFeed(com, tree_label);
     a_pad(u8, thex, 40);
@@ -2655,9 +2654,8 @@ ok64 POSTCommit(u8cs target_branch,
     }
 
     //  11. Feed pack: commit first.
-    a_dup(u8c, com_data, u8bData(com));
-    ok64 fo = KEEPPackFeed(&p, DOG_OBJ_COMMIT, com_data, 0, sha_out);
-    u8bFree(com);
+    a_dup(u8c, com_body, u8bData(com));
+    ok64 fo = KEEPPackFeed(&p, DOG_OBJ_COMMIT, com_body, 0, sha_out);
     if (fo != OK) {
         KEEPPackClose(&p);
         u8bFree(tree_bodies);

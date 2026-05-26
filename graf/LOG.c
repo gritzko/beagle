@@ -742,8 +742,7 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
 
-    Bu8 arena = {};
-    call(u8bAllocate, arena, 4096);
+    a_pad(u8, arena, 4096);
     uri resolved = {};
 
     a_dup(u8c, cur_branch, u8bData(k->h->cur_branch));
@@ -781,7 +780,6 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
             ok64 rv = (ro == OK)
                     ? graf_head_decode_sha(out, resolved.query)
                     : GRAFNONE;
-            u8bFree(arena);
             return rv;
         }
         a_dup(u8c, in_uri, u->data);
@@ -789,7 +787,6 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
         ok64 rv = (ro == OK)
                 ? graf_head_decode_sha(out, resolved.query)
                 : GRAFNONE;
-        u8bFree(arena);
         return rv;
     }
     //  Implicit (no query): same trunk-or-remote dispatch below.
@@ -801,7 +798,6 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
         ok64 rv = (ro == OK)
                 ? graf_head_decode_sha(out, resolved.query)
                 : GRAFNONE;
-        u8bFree(arena);
         return rv;
     }
 
@@ -811,7 +807,6 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
     //  remote" notion later.
     rt_ctx rt = {.found = NO};
     (void)REFSEach($path(keepdir), graf_head_pick_remote_cb, &rt);
-    u8bFree(arena);
     if (rt.found) {
         sha1Mv(out, &rt.sha);
         return OK;

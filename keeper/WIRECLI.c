@@ -511,7 +511,7 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        SHA1u8bFeedHex(line, want_sha);
+        SHA1u8sFeedHex(u8bIdle(line), want_sha);
         //  Request side-band-64k so the server multiplexes its
         //  "Counting/Compressing/Receiving objects…" progress text
         //  onto band-2; KEEPIngestStream forwards band-2 to our
@@ -532,7 +532,7 @@ static ok64 wcli_send_request(int wfd, sha1cp want_sha,
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        SHA1u8bFeedHex(line, &haves[i]);
+        SHA1u8sFeedHex(u8bIdle(line), &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
         ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
@@ -700,7 +700,7 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         a_pad(u8, line, 256);
         a_cstr(want_pfx, "want ");
         u8bFeed(line, want_pfx);
-        SHA1u8bFeedHex(line, &refs[i].sha);
+        SHA1u8sFeedHex(u8bIdle(line), &refs[i].sha);
         if (i == 0) {
             a_cstr(caps_s, " side-band-64k ofs-delta\n");
             u8bFeed(line, caps_s);
@@ -715,7 +715,7 @@ ok64 WIREFetchAll(u8csc remote_uri) {
         a_pad(u8, line, 64);
         a_cstr(have_pfx, "have ");
         u8bFeed(line, have_pfx);
-        SHA1u8bFeedHex(line, &haves[i]);
+        SHA1u8sFeedHex(u8bIdle(line), &haves[i]);
         u8bFeed1(line, '\n');
         a_dup(u8c, payload, u8bData(line));
         if (PKTu8sFeed(u8bIdle(frame), payload) != OK) goto fa_close;
@@ -1179,8 +1179,7 @@ static ok64 wpush_send_update(int wfd, sha1cp old_sha,
                               sha1cp new_sha, u8csc refname,
                               b8 have_old) {
     sane(wfd >= 0 && new_sha);
-    Bu8 frame = {};
-    call(u8bAllocate, frame, 1024);
+    a_pad(u8, frame, 1024);
 
     a_pad(u8, line, 512);
     sha1hex oh = {}, nh = {};
@@ -1202,15 +1201,11 @@ static ok64 wpush_send_update(int wfd, sha1cp old_sha,
     u8bFeed(line, caps);
     u8bFeed1(line, '\n');
     a_dup(u8c, payload, u8bData(line));
-    ok64 po = PKTu8sFeed(u8bIdle(frame), payload);
-    if (po != OK) { u8bFree(frame); return po; }
-    ok64 fo = PKTu8sFeedFlush(u8bIdle(frame));
-    if (fo != OK) { u8bFree(frame); return fo; }
+    call(PKTu8sFeed, u8bIdle(frame), payload);
+    call(PKTu8sFeedFlush, u8bIdle(frame));
 
     a_dup(u8c, fdata, u8bData(frame));
-    ok64 wo = FILEFeedAll(wfd, fdata);
-    u8bFree(frame);
-    return wo;
+    return FILEFeedAll(wfd, fdata);
 }
 
 //  Drain push response, scanning for "unpack ok" + "ok <refname>".

@@ -537,10 +537,8 @@ static ok64 SNIFFMergeWalkTest(void) {
     //    ours : a, b
     //    theirs : b, c
     //  Expected steps: a (base, ours), b (base, ours, theirs), c (base, theirs).
-    Bu8 b_base = {}, b_ours = {}, b_theirs = {};
-    call(u8bAllocate, b_base,   1024);
-    call(u8bAllocate, b_ours,   1024);
-    call(u8bAllocate, b_theirs, 1024);
+    Bu8 arena = {};
+    call(u8bAllocate, arena, 4096);
 
     a_cstr(s_base,   "base");   a_dup(u8c, dup_b, s_base);
     a_cstr(s_ours,   "ours");   a_dup(u8c, dup_o, s_ours);
@@ -551,27 +549,32 @@ static ok64 SNIFFMergeWalkTest(void) {
     call(RONutf8sDrain, &v_theirs, dup_t);
 
     //  Helper: feed one row with given (verb, path bytes) — empty mode/sha.
-    #define EMIT(buf, vv, txt)                                          \
+    #define EMIT(g, vv, txt)                                            \
         do {                                                            \
-            a_cstr(_p, txt);                                            \
-            uri _u = {};                                                \
-            _u.path[0] = _p[0]; _u.path[1] = _p[1];                     \
-            ulogrec _r = {.ts = 0, .verb = (vv), .uri = _u};            \
-            call(ULOGu8sFeed, u8bIdle(buf), &_r);                       \
+            a_cstr(_p, txt);                                             \
+            uri _u = {};                                                 \
+            _u.path[0] = _p[0]; _u.path[1] = _p[1];                      \
+            ulogrec _r = {.ts = 0, .verb = (vv), .uri = _u};             \
+            call(ULOGu8sFeed, u8gRest(g), &_r);                          \
         } while (0)
 
-    EMIT(b_base,   v_base,   "a.txt");
-    EMIT(b_base,   v_base,   "b.txt");
-    EMIT(b_base,   v_base,   "c.txt");
-    EMIT(b_ours,   v_ours,   "a.txt");
-    EMIT(b_ours,   v_ours,   "b.txt");
-    EMIT(b_theirs, v_theirs, "b.txt");
-    EMIT(b_theirs, v_theirs, "c.txt");
+    a_lign(u8, g_base, arena);
+    EMIT(g_base,   v_base,   "a.txt");
+    EMIT(g_base,   v_base,   "b.txt");
+    EMIT(g_base,   v_base,   "c.txt");
+    a_cq(u8, view_b, arena);
+
+    a_lign(u8, g_ours, arena);
+    EMIT(g_ours,   v_ours,   "a.txt");
+    EMIT(g_ours,   v_ours,   "b.txt");
+    a_cq(u8, view_o, arena);
+
+    a_lign(u8, g_theirs, arena);
+    EMIT(g_theirs, v_theirs, "b.txt");
+    EMIT(g_theirs, v_theirs, "c.txt");
+    a_cq(u8, view_t, arena);
     #undef EMIT
 
-    a_dup(u8c, view_b, u8bData(b_base));
-    a_dup(u8c, view_o, u8bData(b_ours));
-    a_dup(u8c, view_t, u8bData(b_theirs));
     a_pad(u8cs, ins, 3);
     u8cssFeed1(ins_idle, view_b);
     u8cssFeed1(ins_idle, view_o);
@@ -594,9 +597,7 @@ static ok64 SNIFFMergeWalkTest(void) {
     want(mctx.sizes[2] == 2);
     want(mctx.base[2] == 1 && mctx.ours[2] == 0 && mctx.theirs[2] == 1);
 
-    u8bFree(b_base);
-    u8bFree(b_ours);
-    u8bFree(b_theirs);
+    u8bFree(arena);
     done;
 }
 
@@ -712,20 +713,22 @@ static ok64 SUBSParseTest(void) {
 static ok64 SUBSSynthTest(void) {
     sane(1);
 
-    Bu8 paths_b = {}, urls_b = {}, out = {};
-    call(u8bAllocate, paths_b, 256);
-    call(u8bAllocate, urls_b,  512);
-    call(u8bAllocate, out,     1024);
+    Bu8 arena = {}, out = {};
+    call(u8bAllocate, arena, 1024);
+    call(u8bAllocate, out,   1024);
 
-    a_cstr(p1, "vendor/sub");        u8bFeed(paths_b, p1); u8bFeed1(paths_b, '\n');
-    a_cstr(p2, "thirdparty/x");      u8bFeed(paths_b, p2); u8bFeed1(paths_b, '\n');
+    a_lign(u8, g_paths, arena);
+    a_cstr(p1, "vendor/sub");   call(u8gFeed, g_paths, p1); call(u8gFeed1, g_paths, '\n');
+    a_cstr(p2, "thirdparty/x"); call(u8gFeed, g_paths, p2); call(u8gFeed1, g_paths, '\n');
+    a_cq(u8, paths, arena);
+
+    a_lign(u8, g_urls, arena);
     a_cstr(u1, "ssh://localhost/srv/sub.git");
-    u8bFeed(urls_b, u1); u8bFeed1(urls_b, '\n');
+    call(u8gFeed, g_urls, u1); call(u8gFeed1, g_urls, '\n');
     a_cstr(u2, "https://host/x.git");
-    u8bFeed(urls_b, u2); u8bFeed1(urls_b, '\n');
+    call(u8gFeed, g_urls, u2); call(u8gFeed1, g_urls, '\n');
+    a_cq(u8, urls, arena);
 
-    a_dup(u8c, paths, u8bData(paths_b));
-    a_dup(u8c, urls,  u8bData(urls_b));
     call(SNIFFSubsSynth, out, paths, urls);
 
     char const *expect =
@@ -749,8 +752,7 @@ static ok64 SUBSSynthTest(void) {
     want(strcmp(c.path[1], "thirdparty/x") == 0);
     want(strcmp(c.url [1], "https://host/x.git") == 0);
 
-    u8bFree(paths_b);
-    u8bFree(urls_b);
+    u8bFree(arena);
     u8bFree(out);
     done;
 }
