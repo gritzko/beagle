@@ -34,6 +34,7 @@
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/ULOG.h"
+#include "graf/DAG.h"
 #include "graf/GRAF.h"
 #include "dog/git/GIT.h"
 #include "keeper/REFS.h"
@@ -853,6 +854,132 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     done;
 }
 
+// --- Commit-range banner ------------------------------------------------
+//
+//  Before WALKTreeLazy lays down per-file rows, summarise the commit
+//  range this checkout traverses: walk each tip's ancestor closure
+//  through graf's DAG and emit one ULOG row per commit in the symmetric
+//  difference as
+//      <ts>\tpost\t?<hashlet8>#<subject>\n
+//  Disapplied (base \ tgt) commits come out first newest-first; applied
+//  (tgt \ base) commits follow newest-first.  Both directions use verb
+//  `post` — the wt's narrative reads top-to-bottom as "rolling back …
+//  applying …".
+//
+//  Best-effort: missing DAG runs / commit body / graf open quietly skip
+//  the banner — the checkout proceeds and per-file rows still emit.
+
+#define GET_CRANGE_ANC_CAP   (1u << 16)
+#define GET_CRANGE_OBJ_BUF   (1UL << 20)
+#define GET_CRANGE_SUBJ_MAX  120
+
+static void get_emit_one_commit(u64 h40, ron60 ts, Bu8 cbuf) {
+    u8bReset(cbuf);
+    u8 ot = 0;
+    if (KEEPGet(h40, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
+        ot != DOG_OBJ_COMMIT) return;
+    a_dup(u8c, body, u8bData(cbuf));
+    sha1 csha = {};
+    KEEPObjSha(&csha, DOG_OBJ_COMMIT, body);
+
+    //  Walk headers: grab the author header's ts (so each row carries
+    //  the commit's own wall-clock time, not the GET command's now),
+    //  then the empty-field sentinel hands us the message body.
+    u8cs  message  = {};
+    ron60 ctime_ts = 0;
+    {
+        a_dup(u8c, scan, body);
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(scan, field, value) == OK) {
+            if (u8csEmpty(field)) { $mv(message, value); break; }
+            if (ctime_ts == 0 && u8csEq(field, GIT_FIELD_AUTHOR)) {
+                u8csc ident = {value[0], value[1]};
+                u8cs  nm = {}, em = {};
+                GITu8sIdent(ident, nm, em, &ctime_ts);
+            }
+        }
+    }
+    //  Trim leading blank lines, clip to the first line; treat TAB as
+    //  a row terminator too so a stray tab in the subject can't break
+    //  ULOG's field separator.  Cap to keep the row terminal-friendly.
+    u8cp ms = message[0];
+    u8cp mend = message[1];
+    while (ms < mend && (*ms == '\n' || *ms == '\r')) ms++;
+    u8cp me = ms;
+    while (me < mend && *me != '\n' && *me != '\r' && *me != '\t') me++;
+    if ((size_t)(me - ms) > GET_CRANGE_SUBJ_MAX)
+        me = ms + GET_CRANGE_SUBJ_MAX;
+
+    a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
+    if (SHA1u8sFeedHashlet(qbuf_idle, &csha) != OK) return;
+
+    ulogrec rep = {.ts = ctime_ts ? ctime_ts : ts,
+                   .verb = SNIFFAtVerbPost()};
+    a_dup(u8c, q, u8bData(qbuf));
+    u8csMv(rep.uri.query, q);
+    rep.uri.fragment[0] = ms;
+    rep.uri.fragment[1] = me;
+    (void)ULOGPrintStatusLine(&rep);
+}
+
+static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
+                                 ron60 ts) {
+    if (!base_commit || !tgt_commit) return;
+    if (sha1Eq(base_commit, tgt_commit)) return;
+
+    ok64 go = GRAFOpen(SNIFF.h, NO);
+    b8 own_open = (go == OK);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return;
+
+    wh128css runs = {NULL, NULL};
+    GRAFRuns(runs);
+
+    Bwh128 anc_base = {}, anc_tgt = {};
+    Bu8    ord_base = {}, ord_tgt = {}, cbuf = {};
+    do {
+        if (wh128bAllocate(anc_base, GET_CRANGE_ANC_CAP) != OK) break;
+        if (wh128bAllocate(anc_tgt,  GET_CRANGE_ANC_CAP) != OK) break;
+        if (u8bMap(ord_base, GET_CRANGE_ANC_CAP * sizeof(u64)) != OK) break;
+        if (u8bMap(ord_tgt,  GET_CRANGE_ANC_CAP * sizeof(u64)) != OK) break;
+        if (u8bMap(cbuf,     GET_CRANGE_OBJ_BUF) != OK) break;
+
+        u64 base_h = WHIFFHashlet60(base_commit);
+        u64 tgt_h  = WHIFFHashlet60(tgt_commit);
+        DAGAncestors(anc_base, runs, base_h);
+        DAGAncestors(anc_tgt,  runs, tgt_h);
+
+        u64 *ob = (u64 *)u8bDataHead(ord_base);
+        u64 *ot = (u64 *)u8bDataHead(ord_tgt);
+        u32  nb = DAGTopoSort(ob, GET_CRANGE_ANC_CAP, anc_base, runs);
+        u32  nt = DAGTopoSort(ot, GET_CRANGE_ANC_CAP, anc_tgt,  runs);
+
+        //  Disapplied (base \ tgt), newest-first.
+        for (u32 i = nb; i > 0; i--) {
+            u64 h = ob[i - 1];
+            if (h == 0) continue;
+            if (DAGAncestorsHas(anc_tgt, h)) continue;
+            get_emit_one_commit(h, ts, cbuf);
+        }
+        //  Applied (tgt \ base), newest-first.
+        for (u32 i = nt; i > 0; i--) {
+            u64 h = ot[i - 1];
+            if (h == 0) continue;
+            if (DAGAncestorsHas(anc_base, h)) continue;
+            get_emit_one_commit(h, ts, cbuf);
+        }
+    } while (0);
+
+    //  u8bUnMap / wh128bFree on a zero-init buf return FAILSANITY /
+    //  BISNULL — harmless, so the partial-allocation cleanup is
+    //  unconditional.
+    u8bUnMap(cbuf);
+    u8bUnMap(ord_tgt);
+    u8bUnMap(ord_base);
+    if (wh128bHead(anc_tgt)  != wh128bTerm(anc_tgt))  wh128bFree(anc_tgt);
+    if (wh128bHead(anc_base) != wh128bTerm(anc_base)) wh128bFree(anc_base);
+    if (own_open) GRAFClose();
+}
+
 // --- Public API ---
 
 ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
@@ -1141,7 +1268,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  in lex order — `tools/v*`, `tools/w*` — those tail entries
     //  silently lost their `u8bFeed` and never reached the unlink
     //  drainer, leaving stale files on disk after checkout).
-    Bu8 noop = {}, unlinks = {}, merges = {}, subs = {}, blob = {};
+    Bu8 noop = {}, unlinks = {}, merges = {}, blob = {}, subs = {};
     //  Cumulative cleanup on partial-allocation failure: u8bUnMap /
     //  u8bFree on a zero-init Bu8 return FAILSANITY / BISNULL, harmless.
 #define GET_BUFS_FREE()                                                   \
@@ -1252,6 +1379,13 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         __ = OK;  //  explicit non-fatal — see comment above
     }
     //  --- end commit point --------------------------------------
+
+    //  Banner: list commits crossing into / out of the wt as ULOG
+    //  rows before the per-file rows from WALKTreeLazy/drains land
+    //  underneath.  Skipped on first checkout (no baseline commit)
+    //  and on same-commit refreshes (sha1Eq inside).
+    if (has_base_commit)
+        get_emit_commit_list(&base_commit_sha, &tgt_commit_sha, ctx.ts);
 
     o = WALKTreeLazy(tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
