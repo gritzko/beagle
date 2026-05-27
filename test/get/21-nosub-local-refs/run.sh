@@ -96,6 +96,28 @@ grep -q "$SRC_DOGS_TIP" dest/.be/src-dogs/refs || {
     head -c 400 dest/.be/src-dogs/refs >&2; echo >&2; exit 1
 }
 
+# Sanity: the clone must also CHECK OUT the worktree, not just write
+# the refs row.  A local `file:///abs/path` clone has no host and no
+# `?ref`, so REFSResolve has to wildcard-match the host-less local
+# row keeper just wrote; when that funnel breaks, keeper's fetch still
+# lands the refs row but sniff's checkout aborts (SNIFFFAIL) and the
+# tree is empty.  Assert the source blob bytes actually materialised.
+# (Regression for the authority-less file:// resolve gap; the bug was
+# silent here because the test only inspected REFS, never the wt.)
+for pair in "dest/abc.txt:abc" "dest/sub/dogs.txt:dogs"; do
+    wtfile=${pair%%:*}
+    [ -f "$wtfile" ] || {
+        echo "FAIL(setup): clone did not check out $wtfile" >&2
+        find dest -maxdepth 2 ! -path '*/.be/*' >&2
+        exit 1
+    }
+    if ! cmp -s "$CASE/01.greet.txt" "$wtfile"; then
+        echo "FAIL(setup): $wtfile content differs from source blob" >&2
+        xxd "$wtfile" | head -3 >&2
+        exit 1
+    fi
+done
+
 # ---------------------------------------------------------------------
 # 3. THE TEST — `keeper upload-pack` against the healthy dest must
 #    leave every shard's REFS byte-exact.

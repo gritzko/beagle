@@ -457,11 +457,25 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
         m.host_needle[1] = NULL;
     }
 
+    //  Local-filesystem clone URI (`file:///abs/path`, no `?ref`): the
+    //  authority is empty (host-less), so there is no host needle and
+    //  no query — but it is a genuine resource, not bare text.  The
+    //  predicate restricts host-less inputs to host-less (local) rows,
+    //  which is exactly what a fresh local clone wants: match the one
+    //  local `get` row keeper just wrote into this shard.  Mark it so
+    //  the no-discriminator guard below lets it through.
+    a_cstr(s_file, "file");
+    u8cs in_scheme = {in.scheme[0], in.scheme[1]};
+    b8 is_local_fs = u8csEq(in_scheme, s_file);
+
     //  No discriminator — bare text with no URI sigils (`?`, `//`,
     //  `.`) has nothing to match on.  Use presence (`[0] != NULL`)
     //  not emptiness: a canonical trunk lookup has present-but-empty
     //  query (`?` with nothing after) and is a legitimate request.
-    if (in.query[0] == NULL && u8csEmpty(m.host_needle) && !m.auth_is_dot)
+    //  A `file:` scheme is a real URI even when host-less, so it is
+    //  exempt — it wildcard-matches the local rows in `dir`.
+    if (in.query[0] == NULL && u8csEmpty(m.host_needle) && !m.auth_is_dot &&
+        !is_local_fs)
         fail(REFSNONE);
 
     REFS_LOG_PATH(log_path, dir);
