@@ -368,6 +368,25 @@ fun void DOGQueryBranchOnly(u8cs query, u8cs out) {
     }
 }
 
+// Strip the absolute-form project prefix from a query slice in
+// place.  Per VERBS.md §"Ref resolution":
+//   `?/<project>/<branch>` (leading `/`) → `<branch>` slice
+//   `?/<project>`           (no branch)   → empty (= trunk)
+//   `?<branch>`             (no leading `/`)→ left unchanged
+//   `?`                     (empty)        → left unchanged
+// The query slice's bounds are rewritten so downstream branch /
+// REFS-lookup code sees just the branch portion.  Project info is
+// local-side state (already consumed by home_open_inner /
+// be_ensure_project_repo).
+fun void DOGQueryStripProject(u8cs query) {
+    if (u8csEmpty(query) || query[0][0] != '/') return;
+    u8csUsed1(query);
+    u8c const *p = query[0];
+    while (p < query[1] && *p != '/') p++;
+    if (p < query[1]) query[0] = (u8c *)(p + 1);
+    else              query[0] = query[1];
+}
+
 // Classify a *new* ref name as branch (dir ref) vs tag (file ref).
 // For refs that already exist in REFS, callers must check the existing
 // kind first and override; this helper only fixes the default for a

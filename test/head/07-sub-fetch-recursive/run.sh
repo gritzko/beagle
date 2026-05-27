@@ -18,7 +18,7 @@
 
 . "$(dirname "$0")/../../lib/sub-deep.sh"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- Seed checkout (mounts all three levels). ------------------------
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err
@@ -43,11 +43,11 @@ grep -q '^be: head vendor/sub'  02.head.got.err \
 grep -q '^be: head vendor/leaf' 02.head.got.err \
     || fail "leaf marker missing — recursion didn't reach 3rd level"
 
-# At least three fetch attempts — one per project.  WIREDBG's
-# `match_advert: picked sha=…` is emitted once per upload-pack
-# session; `Total N` is the git-side count of objects transferred.
-# Either is a stable per-fetch marker.
-nfetch=$(grep -c 'match_advert' 02.head.got.err)
+# At least three fetch attempts — one per project.  git-upload-pack
+# emits `Total N` per session on stderr; that's the stable
+# per-fetch marker.  (Older builds also emitted `match_advert: …`
+# from WIREDBG; not in current builds.)
+nfetch=$(grep -c '^Total [0-9]' 02.head.got.err)
 [ "$nfetch" -ge 3 ] \
     || fail "expected >=3 fetch sessions, got $nfetch; stderr:
 $(cat 02.head.got.err)"

@@ -18,7 +18,7 @@
 rm -rf "$LEAF_BARE"
 [ ! -e "$LEAF_BARE" ] || fail "leaf bare did not get removed"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 #  `be get parent` — outer + sub should succeed, leaf should fail.
 #  set -e is on; the intentional non-zero exit needs a `||` capture.

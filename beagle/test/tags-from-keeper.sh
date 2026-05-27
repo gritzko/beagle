@@ -57,7 +57,10 @@ mkdir -p "$KSRV/.be"
 cd "$KSRV"
 git init --quiet .
 mkdir -p .be
-for REF in refs/heads/master refs/tags/v1 refs/tags/v2; do
+# Be-side ref form: bare branch / `tags/<name>` (per VERBS.md
+# §"Ref resolution").  Wire form `refs/heads/<X>` / `refs/tags/<X>`
+# isn't accepted by be's URI parser.
+for REF in master tags/v1 tags/v2; do
     be get "//localhost/$SRC_REL?$REF" >/dev/null
 done
 KSRV_REL=${KSRV#$HOME/}
@@ -77,17 +80,21 @@ git clone --quiet --no-checkout --upload-pack="PATH='$BIN':\$PATH keeper upload-
 
 # --- 4. iterate v1 → v2 → master ---
 FAIL=0
-for STEP in "v1 refs/tags/v1" "v2 refs/tags/v2" "master refs/heads/master"; do
+for STEP in "v1 tags/v1 refs/tags/v1" \
+            "v2 tags/v2 refs/tags/v2" \
+            "master master refs/heads/master"; do
     NAME=${STEP%% *}
-    REF=${STEP##* }
+    REST=${STEP#* }
+    BE_REF=${REST%% *}
+    GIT_REF=${REST##* }
 
     cd "$TMP/be-clone"
-    be get "be://localhost/$KSRV_REL?$REF" >/dev/null
+    be get "be://localhost/$KSRV_REL?$BE_REF" >/dev/null
 
     git -C "$TMP/git-clone" \
         fetch --quiet --no-tags \
         --upload-pack="PATH='$BIN':\$PATH keeper upload-pack" \
-        origin "$REF:refs/keep/$NAME"
+        origin "$GIT_REF:refs/keep/$NAME"
     git -C "$TMP/git-clone" checkout --quiet "refs/keep/$NAME"
 
     RDIFF=$(rsync -rlcni --delete \

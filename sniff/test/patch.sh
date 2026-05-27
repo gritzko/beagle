@@ -76,14 +76,14 @@ EOF
 
     SRC_REL=${SRC#$HOME/}
     cd "$CLI"
-    keeper get "//$HOST/$SRC_REL?refs/heads/master" >/dev/null
-    keeper get "//$HOST/$SRC_REL?refs/heads/feat-a" >/dev/null
+    keeper get "//$HOST/$SRC_REL?master" >/dev/null
+    keeper get "//$HOST/$SRC_REL?feat-a" >/dev/null
 
-    sniff get "?heads/master" >/dev/null 2>&1 \
+    sniff get "?master" >/dev/null 2>&1 \
         || fail "sniff get master failed"
     grep -qF 'return x + 1' f.c || fail "wt missing base line"
 
-    sniff patch "?heads/feat-a" 2>&1 | sed 's/^/  | /'
+    sniff patch "?feat-a" 2>&1 | sed 's/^/  | /'
     grep -qF 'int foo(' f.c || fail "patch lost feat-a prepend"
     grep -qF 'return x + 1' f.c || fail "patch dropped base function"
     ! grep -qF '<<<<' f.c \
@@ -137,14 +137,14 @@ EOF
 
     SRC_REL=${SRC#$HOME/}
     cd "$CLI"
-    keeper get "//$HOST/$SRC_REL?refs/heads/master" >/dev/null
-    keeper get "//$HOST/$SRC_REL?refs/heads/feat-x" >/dev/null
+    keeper get "//$HOST/$SRC_REL?master" >/dev/null
+    keeper get "//$HOST/$SRC_REL?feat-x" >/dev/null
 
-    sniff get "?heads/master" >/dev/null 2>&1 \
+    sniff get "?master" >/dev/null 2>&1 \
         || fail "sniff get master failed"
 
     set +e
-    sniff patch "?heads/feat-x" >"$TMP/s2.out" 2>&1
+    sniff patch "?feat-x" >"$TMP/s2.out" 2>&1
     PATCH_RC=$?
     set -e
     sed 's/^/  | /' "$TMP/s2.out"
@@ -188,14 +188,14 @@ EOF
 
     SRC_REL=${SRC#$HOME/}
     cd "$CLI"
-    keeper get "//$HOST/$SRC_REL?refs/heads/master" >/dev/null
-    keeper get "//$HOST/$SRC_REL?refs/heads/feat-add" >/dev/null
+    keeper get "//$HOST/$SRC_REL?master" >/dev/null
+    keeper get "//$HOST/$SRC_REL?feat-add" >/dev/null
 
-    sniff get "?heads/master" >/dev/null 2>&1 \
+    sniff get "?master" >/dev/null 2>&1 \
         || fail "sniff get master failed"
     [ ! -f b.c ] || fail "b.c should be absent before patch"
 
-    sniff patch "?heads/feat-add" 2>&1 | sed 's/^/  | /'
+    sniff patch "?feat-add" 2>&1 | sed 's/^/  | /'
     [ -f b.c ] || fail "patch did not add b.c"
     grep -qF 'int b(void)' b.c || fail "b.c content missing"
 

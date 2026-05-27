@@ -57,6 +57,21 @@
   moves `$SUB_BARE` aside between the two gets so any sub fetch would
   fail fast; with the fix the second get short-circuits and succeeds.
   Gated on `WITH_SSH`.
+* `23-triangle/` — triangular `be get` propagation across a 3-node
+  ring with all three edge types: be↔be (`be://localhost/<A>?`),
+  be→git (`git fetch --upload-pack="keeper upload-pack"
+  ssh://localhost$ABS_B main:main` against the be peer), git→be
+  (`be get ssh://localhost/<C.git>?` against a git bare).  Three
+  commit rounds (modify / add new / delete) propagate around the
+  triangle; an empty rotation at the end is a no-op + a final
+  `be sha1:?` tip-equality check.  Gated on `WITH_SSH`.
+* `24-uri-refs/` — `be get be://localhost/<U>?<form>` URI-ref
+  resolution probe (VERBS.md §"Ref resolution"): all four query
+  shapes — absolute `?/proj`, absolute-with-branch `?/proj/feat`,
+  project-relative `?feat`, cur trunk `?`.  Currently `WILL_FAIL`
+  — absolute trunk + `?` work; `?/proj/feat` and `?feat` still
+  trip on `keeper upload-pack`'s single-shard serve path (see
+  test/TRIANGLE.todo.md).  Gated on `WITH_SSH`.
 * `19-be-url-project/` — `be get be://host?/project/branch`:
   project segment comes from the FIRST path component of the
   query, not from the URL-path basename (the rule for non-be

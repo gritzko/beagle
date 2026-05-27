@@ -26,7 +26,7 @@
 . "$(dirname "$0")/../../lib/submodules.sh"
 
 # --- 1. Clone parent — auto-mounts vendor/sub via .gitmodules. -------
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err
 
 [ -f main.c ]               || fail "parent main.c missing"

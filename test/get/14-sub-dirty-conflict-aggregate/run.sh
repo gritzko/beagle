@@ -49,7 +49,7 @@ git -C "$BUMP_SEED" update-index --add --cacheinfo \
 git -C "$BUMP_SEED" commit -qm 'parent: bump vendor/sub to C3'
 git -C "$BUMP_SEED" push -q "$PARENT_BARE" master:refs/heads/bump
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- Step 1: clone (sub mounts at SUB_C2). ---------------------------
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err

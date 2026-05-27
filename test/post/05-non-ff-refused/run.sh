@@ -52,7 +52,7 @@ git -C "$SEED" push -q "$ORIGIN" master:master
 # ====================================================================
 # 2. clone into wt via ssh
 # ====================================================================
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "ssh://localhost/$REL_ORIGIN?master" \
     >01.clone.got.out 2>01.clone.got.err
 match "$CASE/01.A.hello.c" hello.c

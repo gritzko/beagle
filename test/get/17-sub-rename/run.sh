@@ -34,7 +34,7 @@ git -C "$RENAME_SEED" add .gitmodules
 git -C "$RENAME_SEED" commit -qm 'parent: rename vendor/sub -> libs/sub'
 git -C "$RENAME_SEED" push -q "$PARENT_BARE" master:refs/heads/rename
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- Step 1: clone at master (vendor/sub mounted). -------------------
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err

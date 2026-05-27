@@ -116,7 +116,10 @@ SRC_REL=${SRC#$HOME/}
 CLI=$TMP/client
 mkdir -p "$CLI/.be"
 cd "$CLI"
-for REF in refs/heads/master refs/heads/feat-a refs/heads/feat-b; do
+#  Be-side branch form (`?master`), not wire form (`?refs/heads/master`)
+#  — VERBS.md §"Ref resolution": query is the project-relative branch,
+#  the wire layer maps it to `refs/heads/<X>` internally.
+for REF in master feat-a feat-b; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null
     graf get   "//localhost/$SRC_REL?$REF" >/dev/null
 done

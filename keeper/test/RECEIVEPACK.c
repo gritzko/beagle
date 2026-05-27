@@ -398,6 +398,20 @@ ok64 RECEIVEPACKtest_single_create() {
     want(lookup_ref(tmpdir, "refs/heads/feat", got));
     want(memcmp(got, hex, 40) == 0);
 
+    //  Verify a keeper pack actually landed on disk.  Previously
+    //  RECVIngestPack's broken `u8sJoin` could silently drop the
+    //  pack while still advancing REFS — REFS-only assertions miss
+    //  the regression.  Look for the smallest pack name we know
+    //  KEEPIngestFile uses on a fresh store.
+    {
+        char ppath[1024];
+        snprintf(ppath, sizeof(ppath),
+                 "%s/.be/0000000001.keeper", tmpdir);
+        struct stat st;
+        want(stat(ppath, &st) == 0);
+        want(st.st_size > 12);  //  PACK header + at least one obj
+    }
+
     tmp_rm(tmpdir);
     tmp_rm(gitdir);
     done;

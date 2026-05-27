@@ -62,15 +62,28 @@ mkdir -p "$CLONE/.be"; cd "$CLONE"
 [ -f a.txt ] && [ -f b.txt ] || fail "clone missing seed files"
 note "clone has a.txt, b.txt"
 
-# --- 3. be get <clone> → worktree ---
-echo "=== 3. be get <clone> (worktree) ==="
-mkdir -p "$WT/.be"; cd "$WT"
-"$BE" get --seq "$CLONE" >/dev/null 2>&1 || true
-[ -L "$WT/.be" ] || fail "worktree .be not a symlink"
-[ -f "$WT/.be/wtlog" ] && [ ! -L "$WT/.be/wtlog" ] \
-    || fail "worktree .be/wtlog should be a real file"
+# --- 3. be get file:<clone>?master → secondary worktree ---
+#  Per VERBS.md §"Worktree management" Example 2, the canonical
+#  sibling-wt form is `be get file:../proj?<ref>` (file:// scheme
+#  + explicit ref).  A bare `be get <path>` does not trigger the
+#  secondary-wt setup — it tries to read the path as a clone URL.
+#  Drop the pre-created `.be/` placeholder so home_open_inner's
+#  ensure-secondary-wt path actually fires.
+echo "=== 3. be get file:<clone>?master (worktree) ==="
+rm -rf "$WT/.be"
+mkdir -p "$WT"; cd "$WT"
+"$BE" get --seq "file:$CLONE?master" >/dev/null 2>&1 || true
+#  Per VERBS.md §"Worktree management" and beagle/BE.cli.c
+#  `BEGetWorktree`: secondary wt's `.be` is a REGULAR FILE (the
+#  wtlog itself, with row 0 being a `repo` anchor pointing at the
+#  primary store).  Older roundtrip implementations used a
+#  symlink → primary's `.be/`; that's no longer the layout.
+[ -f "$WT/.be" ] && [ ! -d "$WT/.be" ] \
+    || fail "worktree .be should be a regular file (secondary-wt anchor)"
+grep -q '	repo	file:' "$WT/.be" \
+    || fail "worktree .be missing row-0 'repo file:' anchor"
 [ -f a.txt ] && [ -f b.txt ] || fail "worktree missing checked-out files"
-note "worktree has .be symlink + local .be/wtlog + checked-out files"
+note "worktree has .be anchor file + checked-out files"
 
 # --- 4. edits in clone and worktree ---
 echo "=== 4. edits ==="
@@ -97,13 +110,20 @@ cd "$WT"
     || fail "be delete a.txt failed"
 "$BE" post   --seq 'worktree commit' >/dev/null 2>&1 \
     || fail "be post failed"
-# Read the committed SHA from the tail of .be/wtlog.  Rows are
+# Read the committed SHA from the tail of the wtlog.  Rows are
 # `<ts>\t<verb>\t<uri>`; the canonical format is `?<branch>#<sha>` —
 # 40-hex commit lives in the URI fragment.
+#
+# Secondary-wt anchor: `$WT/.be` is the wtlog itself (a regular
+# file).  Primary wt would have `$WT/.be/wtlog`.  Pick whichever
+# shape this wt happens to be.
+if [ -f "$WT/.be" ]; then WT_LOG="$WT/.be"
+else                       WT_LOG="$WT/.be/wtlog"
+fi
 WT_SHA=$(awk -F'\t' '$2 == "post" { last = $3 } END {
     h = last; sub(/^[^#]*#/, "", h)
     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
-}' "$WT/.be/wtlog")
+}' "$WT_LOG")
 [ ${#WT_SHA} -eq 40 ] || fail "no 40-hex worktree commit recorded"
 [ "$WT_SHA" != "$SEED_SHA" ] || fail "worktree commit didn't advance"
 note "worktree commit=$WT_SHA"
@@ -127,8 +147,13 @@ note "origin master == worktree commit"
 git clone -q "$ORIGIN" "$VERIFY"
 # Compare just the tracked files, not .git vs .be.
 ( cd "$VERIFY" && git ls-files ) | sort > "$TMP/git.list"
+#  Exclusions cover both layouts:
+#    primary wt    : `.be` is a dir → exclude `./.be/*`
+#    secondary wt  : `.be` is a regular file (wtlog) at wt root; its
+#                    index sidecar is `..be.idx` (dot-prefix sibling)
 ( cd "$WT" && find . -type f \
-    -not -path './.be/*' -not -name '.be/wtlog' -not -name '.be' \
+    -not -path './.be/*' \
+    -not -name '.be' -not -name '..be.idx' \
     | sed 's|^\./||' ) | sort > "$TMP/wt.list"
 diff -u "$TMP/git.list" "$TMP/wt.list" || fail "file sets differ"
 while IFS= read -r f; do

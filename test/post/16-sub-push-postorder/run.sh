@@ -34,7 +34,7 @@
 # Rewind sub.git/master so the local mount is at-tip → FF clean.
 git -C "$SUB_BARE" update-ref refs/heads/master "$PARENT_PINNED"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be get exited $rc; stderr:

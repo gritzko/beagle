@@ -368,8 +368,31 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         b8 parent_rw = (KEEP.lock_fd >= 0);
         KEEPClose();
 
+        //  Sub IS its own project at the parent's `.be/<basename>/`
+        //  (per the layout `.be/<project>/<branch>` where
+        //  `.be/<project>/` is the project trunk).  Opening the sub
+        //  with `KEEPOpenBranch(parent_home, basename, ...)` while
+        //  parent_home->project is set to the parent's project
+        //  composes the leafdir as `.be/<parent-project>/<basename>/`
+        //  (basename treated as a branch under parent) — wrong shard.
+        //  Temporarily override parent_home->project to basename and
+        //  open with empty branch (= sub's trunk) so the leafdir
+        //  comes out as `.be/<basename>/`.  Restored below.
         a_dup(u8c, basename_const, basename);
-        ok64 ko = KEEPOpenBranch(parent_home, basename_const, YES);
+        a_pad(u8, saved_proj_buf, 256);
+        if (!BNULL(parent_home->project) &&
+            u8bDataLen(parent_home->project) > 0) {
+            a_dup(u8c, pp, u8bDataC(parent_home->project));
+            u8bFeed(saved_proj_buf, pp);
+        }
+        u8bReset(parent_home->project);
+        u8bFeed(parent_home->project, basename_const);
+
+        //  Empty-but-valid slice so KEEPOpenBranch's $ok(branch)
+        //  sanity check passes (matches KEEPOpen's idiom).
+        static u8c const _zero_byte = 0;
+        u8cs sub_trunk = {(u8cp)&_zero_byte, (u8cp)&_zero_byte};
+        ok64 ko = KEEPOpenBranch(parent_home, sub_trunk, YES);
         ok64 fo = NONE;
         if (ko == OK) {
             a_dup(u8c, url_const, url);
@@ -387,10 +410,15 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                     u8sFmt(basename_const), ok64str(ko));
         }
 
-        //  Restore parent's trunk open regardless of fetch outcome
-        //  so cleanup paths (FILEUnLink, FILERmDir) and the caller
-        //  frame see a sane KEEP.
-        u8cs trunk = {NULL, NULL};
+        //  Restore parent's project + trunk open regardless of fetch
+        //  outcome so cleanup paths (FILEUnLink, FILERmDir) and the
+        //  caller frame see a sane KEEP.
+        u8bReset(parent_home->project);
+        if (u8bDataLen(saved_proj_buf) > 0) {
+            a_dup(u8c, sp, u8bDataC(saved_proj_buf));
+            u8bFeed(parent_home->project, sp);
+        }
+        u8cs trunk = {(u8cp)&_zero_byte, (u8cp)&_zero_byte};
         (void)KEEPOpenBranch(parent_home, trunk, parent_rw);
 
         if (ko != OK || fo != OK) {

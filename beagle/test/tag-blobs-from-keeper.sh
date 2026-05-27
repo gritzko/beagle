@@ -66,7 +66,10 @@ SRC_REL=${SRC#$HOME/}
 KSRV=$TMP/keeper-srv
 mkdir -p "$KSRV/.be"
 cd "$KSRV"
-for REF in refs/tags/v1 refs/tags/v2 refs/heads/master; do
+# Be-side ref form (`tags/X` / bare branch) per VERBS.md
+# §"Ref resolution"; wire form (`refs/tags/X` / `refs/heads/X`)
+# isn't accepted by be's URI parser.
+for REF in tags/v1 tags/v2 master; do
     keeper get "//localhost/$SRC_REL?$REF" >/dev/null
 done
 KSRV_REL=${KSRV#$HOME/}
@@ -79,11 +82,13 @@ mkdir -p "$TMP/be-client/.be"
 
 #  Step table: <name> <git-ref> <keeper-fetch-ref> <keeper-projector-ref>
 #  - git-ref       : how git names the ref (`git show <git-ref>:<path>`)
-#  - fetch-ref     : how WIREFetch wants it (refs/tags/X — git wire form)
-#  - projector-ref : how keeper REFS stores it (tags/X — see keeper/REF.md)
-STEPS="v1:v1:refs/tags/v1:tags/v1
-v2:v2:refs/tags/v2:tags/v2
-master:master:refs/heads/master:heads/master"
+#  - fetch-ref     : how `keeper get //host/path?<ref>` wants it
+#                    (be-side branch form, NOT wire form)
+#  - projector-ref : how keeper REFS stores it (matches fetch-ref for
+#                    be-side input — see keeper/REF.md)
+STEPS="v1:v1:tags/v1:tags/v1
+v2:v2:tags/v2:tags/v2
+master:master:master:heads/master"
 PATHS="f.txt g.txt"
 
 FAIL=0

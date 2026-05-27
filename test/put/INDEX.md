@@ -5,6 +5,15 @@
   behaves when one of the listed paths is unchanged versus modified or
   new.
 * `02-put-dir/` — `be put <dir>/` on a tracked subtree.
+* `06-triangle/` — triangular `be put` propagation across a 3-node
+  ring (be↔be, be→git, git→be).  Three FF rounds (modify / add /
+  delete) plus a non-FF rewrite tail in which B rewinds cur's tip
+  via `be put ?#<sha>` and propagates the rewound history around —
+  POST would refuse `POSTNOFF`, PUT must accept.  Currently
+  `WILL_FAIL` at R4: `be put ssh://...` doesn't actually force-push
+  (TRIANGLE.todo.md gap #3b — `WIREPush` refuses non-FF the same
+  way POST does).  R0-R3 pass since the receive-pack pack-drop fix.
+  Gated on `WITH_SSH`.  Companion: get/23, post/18.
 * `05-submodule-bump/` — `be put <subpath>` on a sub-mount: PUT reads
   the sub-wt's pinned tip from its `.be` anchor and stages one
   `put <subpath>#<40-hex>` row.  No dir walk, no per-file hashing.

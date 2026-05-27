@@ -20,7 +20,7 @@
 
 . "$(dirname "$0")/../../lib/submodules.sh"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- first checkout: real fetch + mount ------------------------------
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err

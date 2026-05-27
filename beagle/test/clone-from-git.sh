@@ -76,7 +76,14 @@ sh "$VERIFY" "$TMP/be-clone" || { echo "FAIL: be-clone refs not canonical"; exit
 #         Per keeper/LOG.md: the log is append-of-packs; a no-op fetch
 #         produces zero file changes (no new .keeper, no new .idx, no
 #         append to existing ones).
-snapshot_dogs() { (cd "$1/.be" && find . -type f -not -name '.lock' \
+#  wtlog grows by one `get` row per invocation even on a no-op
+#  fetch (sniff stamps a fresh row); `.refs.idx` / `.wtlog.idx`
+#  rebuild against any wtlog change.  Per keeper/LOG.md "no-op
+#  fetch produces zero file changes" refers to the pack / REFS
+#  stores, not the wtlog journal — exclude those from the snapshot.
+snapshot_dogs() { (cd "$1/.be" && find . -type f \
+    -not -name '.lock*' -not -name 'wtlog' -not -name '.refs.idx' \
+    -not -name '.wtlog.idx' \
     | sort | xargs sha256sum); }
 SNAP1=$(snapshot_dogs "$TMP/be-clone")
 be get "//localhost/$SRC_REL"

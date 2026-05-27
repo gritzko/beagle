@@ -84,7 +84,7 @@ git -C "$PSEED" push -q "$PARENT_BARE" master:master
 note "post/15 fixture: parent_tip=$PARENT_TIP sub_tip=$SUB_TIP"
 
 # ---- 1. clone parent (no sub) ---------------------------------------
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be get exited $rc; stderr:

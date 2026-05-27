@@ -13,7 +13,7 @@
 #  fails → beagle aggregates worst exit; outer + sub stay intact.
 rm -rf "$LEAF_BARE"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 #  Intentional non-zero exit; capture with `||` so `set -e` doesn't
 #  abort the script.

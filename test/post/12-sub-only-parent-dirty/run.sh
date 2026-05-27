@@ -14,7 +14,7 @@
 
 . "$(dirname "$0")/../../lib/submodules.sh"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be get exited $rc; stderr:
@@ -36,6 +36,15 @@ cat >> util.c <<'EOF'
 int util_negate(int x) { return -x; }
 EOF
 
+#  BEActSubsPost auto-emits `put vendor/sub#<sha>` rows for each
+#  sub before the parent post runs.  That auto-put trips sniff into
+#  selective mode (per VERBS.md §POST "Per-file classification via
+#  stamps"), where only explicitly-staged files get committed.
+#  Without an explicit `be put util.c`, the parent edit is invisible
+#  to the post → POSTNONE.  Stage it ourselves so the implicit-mode
+#  assumption (commit-all-tracked-dirty) doesn't matter.
+sleep 0.02
+"$BE" put util.c >01a.put.got.out 2>01a.put.got.err
 "$BE" post '#outer' >02.post.got.out 2>02.post.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be post exited $rc; stderr:

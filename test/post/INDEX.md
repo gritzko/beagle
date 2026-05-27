@@ -13,6 +13,13 @@
   two authors, then bare `be post`: the resulting commit must inherit
   message + author from the topologically latest patched commit, with
   ` (+N)` and ` (et al)` decorations for the count and author mix.
+* `18-triangle/` — triangular `be post` (FF push) propagation across
+  a 3-node ring (be↔be, be→git, git→be).  Three commit rounds
+  (modify / add / delete) push around the triangle, plus a no-op
+  empty rotation.  Surfaced the `keeper receive-pack` pack-drop
+  bug (fixed in `keeper/RECV.c::RECVIngestPack`, locked in via
+  `keeper/test/RECEIVEPACK.c::RECEIVEPACKtest_single_create`).
+  Gated on `WITH_SSH`.  Companion: get/23, put/06.
 * `09-sub-flat-both-dirty/` — `be post '#round1'` with outer + sub
   both dirty (SUBS.plan.md §POST): sub commits first via the BEPost
   wrapper's post-order recursion, parent's commit records the bumped

@@ -408,8 +408,14 @@ ok64 KEEPGetRemote(uri *g) {
     a_dup(u8c, remote_uri, u8bDataC(ubuf));
 
     //  Default ref: current worktree branch (`be get //origin` semantics).
+    //
+    //  Absolute query (`?/<project>/<branch>`) carries a project
+    //  prefix that's local-side state (already consumed by
+    //  home_open_inner + be_ensure_project_repo).  Strip it so the
+    //  wire sees just the branch portion (`DOGQueryStripProject`).
     u8cs want_ref = {};
     u8csMv(want_ref, g->query);
+    DOGQueryStripProject(want_ref);
 
     //  `?*` wildcard: bulk-fetch every advertised heads/tags ref in
     //  one upload-pack session (multi-want).  See VERBS.md §HEAD —

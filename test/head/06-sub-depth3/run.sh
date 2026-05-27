@@ -11,7 +11,7 @@
 
 . "$(dirname "$0")/../../lib/sub-deep.sh"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- Seed checkout: be get parent → recursively mounts sub + leaf. ---
 "$BE" get "$PARENT_URL?master" >01.get.got.out 2>01.get.got.err

@@ -57,15 +57,22 @@ git clone --quiet --no-checkout "ssh://localhost/$SRC" "$TMP/git-clone"
 
 # --- 3. iterate v1 → v2 → master ---
 FAIL=0
-for STEP in "v1 refs/tags/v1" "v2 refs/tags/v2" "master refs/heads/master"; do
+# Be-side ref form: bare branch / `tags/<name>` (per VERBS.md
+# §"Ref resolution").  Wire form `refs/heads/<X>` / `refs/tags/<X>`
+# isn't accepted by be's URI parser.
+for STEP in "v1 tags/v1 refs/tags/v1" \
+            "v2 tags/v2 refs/tags/v2" \
+            "master master refs/heads/master"; do
     NAME=${STEP%% *}
-    REF=${STEP##* }
+    REST=${STEP#* }
+    BE_REF=${REST%% *}
+    GIT_REF=${REST##* }
 
     cd "$TMP/be-clone"
-    be get "//localhost/$SRC_REL?$REF" >/dev/null
+    be get "//localhost/$SRC_REL?$BE_REF" >/dev/null
 
     git -C "$TMP/git-clone" fetch --quiet --no-tags origin \
-        "$REF:refs/keep/$NAME"
+        "$GIT_REF:refs/keep/$NAME"
     git -C "$TMP/git-clone" checkout --quiet "refs/keep/$NAME"
 
     RDIFF=$(rsync -rlcni --delete \

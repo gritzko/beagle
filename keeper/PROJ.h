@@ -30,6 +30,17 @@ ok64 KEEPProjCommit(uricp u, b8 tlv);
 //  into a hunk so `bro` can render syntax highlighting.
 ok64 KEEPProjBlob(uricp u, b8 tlv);
 
+//  sha1:[<path>]?<ref|sha>  — emit 40-hex SHA-1 of the resource +
+//  newline.  Resource shape:
+//    sha1:?<ref>          tip sha of <ref> (commit on the branch)
+//    sha1:?#<hex>         resolved sha for the (possibly short) hex
+//    sha1:?               cur's tip (trunk if cur is trunk)
+//    sha1:<path>?<ref>    blob sha of <path> at <ref>'s tree
+//  Path-without-ref / empty-ref forms (sniff territory: wt on-disk
+//  bytes vs tracked blob) are NOT handled here — keeper has no wt;
+//  caller should route those through sniff.
+ok64 KEEPProjSha1(uricp u, b8 tlv);
+
 //  Dispatch on `u->scheme`.  Returns PROJNONE for schemes the keeper
 //  table claims but no handler is wired (helpful diagnostic).
 ok64 KEEPProjDispatch(uricp u, b8 tlv);

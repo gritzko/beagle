@@ -60,7 +60,9 @@ SRC_DOGS_TIP=$(git -C src-dogs rev-parse master | cut -c1-12)
 #    that keeps the two shards co-resident under one parent .be/.
 #    Mirrors fi:~/src/beagle's clone-from-root + clone-from-subdir.
 # ---------------------------------------------------------------------
-mkdir dest
+#  Shield dest with its own empty `.be/` so HOMEFindDogs anchors
+#  here instead of walking up into $HOME/.be (normal user-store).
+mkdir dest dest/.be
 ( cd dest
   "$BE" get --nosub "file://$SCRATCH/src-abc" \
       > ../02.get-abc.got.out  2> ../02.get-abc.got.err

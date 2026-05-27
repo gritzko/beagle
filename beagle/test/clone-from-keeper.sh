@@ -92,7 +92,15 @@ sh "$VERIFY" "$TMP/be-clone" || { echo "FAIL: be-clone refs not canonical";    e
 # --- 7. idempotency: a repeat `be get` against the keeper mirror must
 #         leave .be bit-identical.  Per keeper/LOG.md: the log is
 #         append-of-packs; a no-op fetch produces zero file changes.
-snapshot_dogs() { (cd "$1/.be" && find . -type f -not -name '.lock' \
+#  wtlog grows by one `get` row per invocation (even when the fetch
+#  itself is a no-op, sniff stamps a fresh row).  `.refs.idx`
+#  rebuilds against any wtlog change.  Per keeper/LOG.md "no-op
+#  fetch produces zero file changes" refers to the PACK / REFS
+#  stores, not the wtlog journal — so exclude those two from the
+#  idempotency snapshot.
+snapshot_dogs() { (cd "$1/.be" && find . -type f \
+    -not -name '.lock*' -not -name 'wtlog' -not -name '.refs.idx' \
+    -not -name '.wtlog.idx' \
     | sort | xargs sha256sum); }
 SNAP1=$(snapshot_dogs "$TMP/be-clone")
 be get "be://localhost/$KSRV_REL"

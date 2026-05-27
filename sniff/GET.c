@@ -1769,6 +1769,30 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
 
+    //  Absolute-form query (`?/<project>/<branch>`) carries a
+    //  project prefix that's local-side state (already consumed by
+    //  home_open_inner / be_ensure_project_repo).  Strip it so the
+    //  branch-side resolution paths below see just the branch
+    //  portion; otherwise REFSResolve misses the row and the
+    //  raw-hex fallback treats `/U` as a sha prefix.  Per VERBS.md
+    //  §"Ref resolution".  Both u->query and u->data need updating —
+    //  REFSResolve re-parses u->data internally, so a query-only
+    //  strip wouldn't reach it.
+    if (!u8csEmpty(u->query) && u->query[0][0] == '/') {
+        DOGQueryStripProject(u->query);
+        //  Recompose u->data from the stripped components.  Stack
+        //  buffer outlives the function since we never store the
+        //  slice past this scope's REFSResolve uses (resolved.*
+        //  slices index into `arena`).
+        static u8 _recompose_buf[1024];
+        u8s into = {_recompose_buf, _recompose_buf + sizeof(_recompose_buf)};
+        u8s save = {into[0], into[1]};
+        if (URIutf8Feed(into, u) == OK) {
+            u->data[0] = save[0];
+            u->data[1] = into[0];
+        }
+    }
+
     //  Remote URI: under DOG.md §10a `be get` is the orchestrator —
     //  it already ran `keeper get URI` synchronously before forking
     //  the parallel spot/graf/sniff children.  Sniff is a worktree

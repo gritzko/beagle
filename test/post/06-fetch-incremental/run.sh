@@ -52,7 +52,7 @@ git -C "$SEED" push -q "$ORIGIN" master:master
 # ====================================================================
 # 2. clone via ssh
 # ====================================================================
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get "ssh://localhost/$REL_ORIGIN?master" \
     >01.clone.got.out 2>01.clone.got.err
 [ -f hello.txt ] || { echo "post/06: clone left no hello.txt" >&2; exit 1; }

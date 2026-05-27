@@ -580,6 +580,57 @@ ok64 KEEPProjBlob(uricp u, b8 tlv) {
     return proj_emit_hunk(u, text, toks_slice, YES);
 }
 
+//  sha1: — emit 40-hex SHA-1 of the resource + newline.
+ok64 KEEPProjSha1(uricp u, b8 tlv) {
+    sane(u);
+    keeper *k = &KEEP;
+
+    sha1 target = {};
+
+    if (!u8csEmpty(u->path)) {
+        //  Path-bearing: resolve to the containing tree, descend the
+        //  path, target is whatever sits there (blob or subtree sha).
+        sha1 root_tree = {};
+        call(KEEPResolveTree, u, &root_tree);
+        u8 target_kind = 0;
+        u8cs sub = {};
+        u8csMv(sub, u->path);
+        call(proj_descend, k, &root_tree, sub, &target, &target_kind);
+    } else if (!u8csEmpty(u->query) || !u8csEmpty(u->fragment)) {
+        //  Ref/hex form: tip sha of the named ref, or resolved sha
+        //  for the (possibly short) hex prefix.
+        call(proj_resolve_object_sha, k, u, &target);
+    } else {
+        //  Bare `sha1:` — cur's tip.  REFSResolve with the trunk
+        //  key (`?`) goes through the same path as `?<branch>` but
+        //  for an empty branch name (= trunk per the recv_build_key
+        //  convention).
+        a_path(keepdir);
+        call(HOMEBranchDir, k->h, keepdir, NULL);
+        a_pad(u8, arena_buf, 1024);
+        uri resolved = {};
+        a_cstr(trunk_uri, "?");
+        ok64 ro = REFSResolve(&resolved, arena_buf,
+                              $path(keepdir), trunk_uri);
+        if (ro != OK || u8csLen(resolved.query) < 40) fail(PROJNONE);
+        u8s sb = {target.data, target.data + 20};
+        u8cs hx = {resolved.query[0], resolved.query[0] + 40};
+        call(HEXu8sDrainSome, sb, hx);
+    }
+
+    //  Emit 40 hex + newline.  41 bytes total — small enough to skip
+    //  TLV/hunk framing entirely; bare-sha output is a shell-friendly
+    //  one-liner regardless of tty.  (tlv arg accepted for ABI
+    //  uniformity with the other projectors.)
+    (void)tlv;
+    a_pad(u8, line, 64);
+    proj_feed_sha_hex(u8bIdle(line), &target);
+    (void)u8bFeed1(line, '\n');
+    a_dup(u8c, payload, u8bData(line));
+    write(STDOUT_FILENO, payload[0], u8csLen(payload));
+    done;
+}
+
 // =====================================================================
 //  Dispatch
 // =====================================================================
@@ -607,6 +658,7 @@ ok64 KEEPProjDispatch(uricp u, b8 tlv) {
     a_cstr(s_tree,   "tree");
     a_cstr(s_commit, "commit");
     a_cstr(s_blob,   "blob");
+    a_cstr(s_sha1,   "sha1");
 
     //  Per VERBS.md §"Ref resolution", `?<hex-prefix>` is a sha
     //  lookup.  KEEPResolveTree (used by tree:/commit: and the
@@ -628,6 +680,7 @@ ok64 KEEPProjDispatch(uricp u, b8 tlv) {
     if ($eq(un->scheme, s_tree))   return KEEPProjTree(un, tlv);
     if ($eq(un->scheme, s_commit)) return KEEPProjCommit(un, tlv);
     if ($eq(un->scheme, s_blob))   return KEEPProjBlob(un, tlv);
+    if ($eq(un->scheme, s_sha1))   return KEEPProjSha1(un, tlv);
 
     //  DOG_PROJECTORS routed this scheme to keeper but no handler is
     //  wired here.  Surface that explicitly so the gap is obvious.

@@ -28,6 +28,17 @@ set(_BE_WILL_FAIL_CASES
     # auto-merges dirty-vs-target divergence via WEAVE, so the
     # refusal the test expects doesn't fire.  See test header.
     "be-get-14-sub-dirty-conflict-aggregate"
+    # Triangular put — R0-R3 pass; R4 non-FF tail stalls because
+    # `be put ssh://...` doesn't force-push (TRIANGLE.todo.md gap #3b).
+    # post/18-triangle passes since receive-pack pack-drop was fixed.
+    "be-put-06-triangle"
+    # Four-shape URI-ref probe.  Absolute trunk (`?/proj`) + bare `?`
+    # work; absolute-with-branch (`?/proj/feat`) and project-relative
+    # (`?feat`) fail because keeper upload-pack serves only the
+    # currently-open shard's packs (TRIANGLE.todo.md gap #2b — multi-
+    # branch fan-out is "Phase 1c: dir chain is always [trunk
+    # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
+    "be-get-24-uri-refs"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what
@@ -68,6 +79,11 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-16-sub-push-postorder"
     "be-post-17-sub-msg-resolution-per-level"
     "be-get-20-sub-already-mounted"
+    # Triangular tests (be→be, be→git, git→be peer ring).
+    "be-get-23-triangle"
+    "be-post-18-triangle"
+    "be-put-06-triangle"
+    "be-get-24-uri-refs"
 )
 
 foreach(_run ${_be_case_runs})

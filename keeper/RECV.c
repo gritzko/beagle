@@ -190,6 +190,14 @@ ok64 RECVIngestPack(int in_fd, u8csc tail) {
         u8bFeed(buf, tail);
     }
 
+    //  Drain stdin to EOF.  Each iteration forks the buffer's idle
+    //  slice, reads into it, joins back so DATA grows.  Per abc/Sx.h
+    //  §sJoin, the fork+join contract requires `fill[1] == idle[1]`
+    //  (sIs bounds check); a cap that rewrites `fill[1]` silently
+    //  drops the just-read bytes because the join then fails its
+    //  bounds check and the data border never advances.  read(2)
+    //  already caps each call to whatever the kernel hands back —
+    //  no need for our own ceiling here.
     for (;;) {
         if (!u8bHasRoom(buf)) {
             //  Pack larger than our cap — bail rather than truncate.
@@ -198,11 +206,6 @@ ok64 RECVIngestPack(int in_fd, u8csc tail) {
         }
         u8s fill;
         u8sFork(u8bIdle(buf), fill);
-        //  Cap one read so we don't try to map huge contiguous chunks.
-        size_t want = $len(fill);
-        if (want > RECV_PACK_BUF) {
-            fill[1] = fill[0] + RECV_PACK_BUF;
-        }
         ok64 fr = FILEDrain(in_fd, fill);
         if (fr == FILEEND) break;
         if (fr != OK) {

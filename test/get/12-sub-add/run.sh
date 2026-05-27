@@ -25,7 +25,7 @@
 
 . "$(dirname "$0")/../../lib/submodules.sh"
 
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 
 # --- Stage 1: clone parent at C2 (no submodule) ----------------------
 #  Keeper's wire side fetches by ref name, not raw sha — use the

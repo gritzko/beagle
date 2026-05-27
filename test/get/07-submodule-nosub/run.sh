@@ -68,10 +68,19 @@ git -C "$PARENT_SEED" push -q "$PARENT_BARE" master:master
 #    `be`'s upward walk for an ambient repo; we want a fresh wt root
 #    *inside* SCRATCH, so drop the placeholder before cd-ing in.
 rm -rf "$SCRATCH/.be"
-mkdir wt && cd wt
+mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 "$BE" get --nosub "ssh://localhost/$REL_PARENT?master" \
     > 01.get.got.out 2> 01.get.got.err
-empty 01.get.got.out
+#  `be get` prints a status report on stdout (commit 366259dd);
+#  assert the expected new-file lines instead of empty stdout.
+for f in .gitmodules main.c; do
+    grep -qE "^[[:space:]]*[0-9:]+[[:space:]]+new[[:space:]]+$f$" \
+            01.get.got.out || {
+        echo "FAIL: missing 'new $f' line in stdout" >&2
+        cat 01.get.got.out >&2
+        exit 1
+    }
+done
 
 # 4. parent files materialised ---------------------------------------
 [ -f main.c ] || { echo "FAIL: wt/main.c missing" >&2; exit 1; }

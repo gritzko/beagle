@@ -436,7 +436,38 @@ static ok64 wcli_match_advert(int rfd, u8b buf, u8csc want_branch,
         }
     }
     if (!picked) {
+        //  Empty want_branch fallback chain (mirrors `git clone`'s
+        //  default-branch discovery):
+        //    1. HEAD symref already handled in the loop above.
+        //    2. refs/heads/main — be's canonical trunk wire alias.
+        //    3. first advertised ref (legacy fallback).
         if (u8csEmpty(want_branch) && first_seen) {
+            //  Second pass: prefer the entry whose be-side name maps
+            //  to empty (= trunk via wcli_wire_to_be — picks up
+            //  refs/heads/main).
+            u8cs scan = {u8bDataHead(buf), u8bDataHead(buf)};
+            scan[1] = u8bIdleHead(buf);
+            for (;;) {
+                u8cs line = {};
+                ok64 d = PKTu8sDrain(scan, line);
+                if (d == PKTFLUSH || d == PKTDELIM) break;
+                if (d != OK) break;
+                if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
+                wire_evt ev = {};
+                if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+                if (ev.kind != WIRE_REF) continue;
+                u8cs name = {ev.name[0], ev.name[1]};
+                gitref_kind gk = GITREF_NONE;
+                u8cs be_name = {};
+                if (wcli_wire_to_be(name, &gk, be_name) != OK) continue;
+                if (gk != GITREF_BRANCH) continue;
+                if (!u8csEmpty(be_name)) continue;
+                //  Found refs/heads/main (be-side empty).
+                *out_sha = ev.sha;
+                WCLI_RECORD_NAME(name);
+                done;
+            }
+            //  Fall through: legacy first-ref behaviour.
             *out_sha = first_sha;
             a_dup(u8c, fn, first_name);
             WCLI_RECORD_NAME(fn);

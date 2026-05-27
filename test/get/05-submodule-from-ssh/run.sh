@@ -97,10 +97,25 @@ git -C "$PARENT_SEED" push -q "$PARENT_BARE" master:master
 # ====================================================================
 # 3. THE TEST: `be get ssh://localhost/<rel>/parent.git?master` into wt/
 # ====================================================================
-mkdir wt && cd wt
+#  Shield wt with its own empty `.be/` so HOMEFindDogs anchors here
+#  instead of walking up into $HOME/.be (a normal user-store with
+#  unrelated projects).  Tests that need a fresh wt must create
+#  their own .be explicitly — see CLAUDE.md / test/lib/case.sh.
+mkdir wt wt/.be && cd wt
 "$BE" get "ssh://localhost/$REL_PARENT?master" \
     > 01.get.got.out 2> 01.get.got.err
-empty 01.get.got.out
+#  `be get` now prints a status report (`<HH:MM>\tnew\t<path>` per
+#  materialised file) to stdout — see commit 366259dd "reflect the
+#  commit difference in be get status report".  Assert the expected
+#  paths appear; don't pin the timestamp.
+for f in .gitmodules main.c; do
+    grep -qE "^[[:space:]]*[0-9:]+[[:space:]]+new[[:space:]]+$f$" \
+            01.get.got.out || {
+        echo "FAIL: missing 'new $f' line in stdout" >&2
+        cat 01.get.got.out >&2
+        exit 1
+    }
+done
 
 # ====================================================================
 # 4. parent files materialised

@@ -1,4 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
+
+# In-source builds litter the tree with Makefiles, CMakeFiles/, etc.
+# All builds must go into ./build* — see CLAUDE.md §0.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+    message(FATAL_ERROR
+        "In-source builds are not allowed.  "
+        "Run cmake from a build*/ subdir, e.g.:\n"
+        "  mkdir build && cd build && cmake -GNinja ..\n"
+        "(remove the stray CMakeCache.txt + CMakeFiles/ from the source root first)")
+endif()
+
 project(rdx C)
 
 set(CMAKE_C_STANDARD 23)
