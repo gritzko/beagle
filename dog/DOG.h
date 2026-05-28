@@ -1,6 +1,7 @@
 #ifndef DOG_DOG_H
 #define DOG_DOG_H
 
+#include "abc/HEX.h"
 #include "abc/KV.h"
 #include "abc/PATH.h"
 #include "abc/RAP.h"
@@ -385,6 +386,62 @@ fun void DOGQueryStripProject(u8cs query) {
     while (p < query[1] && *p != '/') p++;
     if (p < query[1]) query[0] = (u8c *)(p + 1);
     else              query[0] = query[1];
+}
+
+// Detect and split the canonic resolved query form (STORE.md
+// §"URI structure" → "Every input query shape resolves to a single
+// canonical form"):
+//
+//     /<project>/<branch-path>/<pin>
+//
+// Leading `/` is mandatory; at least three '/'-separated segments
+// total (project + ≥1 branch segment + pin).  Pin is a 40-hex sha
+// (resolved tip); tag-like pins land in a later phase.
+//
+// On a canonic match this populates the three out slices to alias
+// slices of `query` (no copy) and returns YES.  On miss it returns
+// NO and leaves the out slices untouched — callers fall through to
+// their existing query-as-branch parsing.
+fun b8 DOGCanonQueryParse(u8csc query, u8cs project,
+                          u8cs branch, u8cs pin) {
+    if (u8csLen(query) < 5)        return NO;   // "/a/b/c" minimum
+    if (query[0][0] != '/')        return NO;
+
+    u8cs q = {};
+    u8csMv(q, query);
+    u8csUsed1(q);                  // step past the leading '/'
+
+    u8cs head_scan = {};
+    u8csMv(head_scan, q);
+    if (u8csFind(head_scan, '/') != OK) return NO;
+
+    u8cs tail_scan = {};
+    u8csMv(tail_scan, q);
+    if (u8csRevFind(tail_scan, '/') != OK) return NO;
+
+    //  After RevFind, tail_scan[1] is one past the trailing '/' —
+    //  i.e. exactly the start of the pin.  Pin must be 40-hex.
+    u8cs pin_local = {tail_scan[1], q[1]};
+    if (u8csLen(pin_local) != 40)        return NO;
+    if (!HEXu8sValid(pin_local))         return NO;
+
+    //  Project = head segment up to the first '/'.  head_scan[0]
+    //  points AT that '/' after Find.
+    u8cs proj_local = {q[0], head_scan[0]};
+    if (u8csEmpty(proj_local))           return NO;
+
+    //  Branch = bytes between first and last '/', exclusive.  When
+    //  there's a single segment in the middle the slice is non-empty;
+    //  zero-segment (e.g. "/proj//sha") is rejected as malformed.
+    u8c const *branch_start = head_scan[0] + 1;
+    u8c const *branch_end   = tail_scan[1] - 1;
+    if (branch_start >= branch_end)      return NO;
+    u8cs branch_local = {(u8c *)branch_start, (u8c *)branch_end};
+
+    u8csMv(project, proj_local);
+    u8csMv(branch,  branch_local);
+    u8csMv(pin,     pin_local);
+    return YES;
 }
 
 // Classify a *new* ref name as branch (dir ref) vs tag (file ref).

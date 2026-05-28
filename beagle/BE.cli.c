@@ -16,6 +16,8 @@
 #include "dog/HOME.h"
 #include "dog/THEME.h"
 #include "dog/ULOG.h"
+#include "graf/GRAF.h"            // GRAFResolveVersion (top-of-chain pass)
+#include "keeper/KEEP.h"           // KEEPOpenBranch (resolver needs refs)
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
 #include "sniff/SNIFF.h"          // POSTNONE  (low-byte exit signal)
@@ -971,6 +973,17 @@ ok64 BEEnsureProjectRepo(uri *u) {
     call(PATHu8bPush, store_root, DOG_BE_S);
     call(KEEPInitShard, u8bDataC(store_root), proj);
 
+    //  Remote shard alongside the project shard when the seed URI
+    //  carries a host (`be get ssh://h/p?...` etc.).  STORE.md §"Repo
+    //  dir layout": `<store>/<project>/remotes/<host>/refs` lives in
+    //  a `remotes/` class dir parallel to branch dirs.  Cache-only —
+    //  no wtlog seed.  Skipped silently when the URI is local-only.
+    if (u && !u8csEmpty(u->host)) {
+        a_dup(u8c, host_s, u->host);
+        call(KEEPInitRemoteShard,
+             u8bDataC(store_root), proj, host_s);
+    }
+
     a_path(repo_path);
     call(PATHu8bFeed, repo_path, u8bDataC(shard_dir));
     call(u8bFeed1,    repo_path, '/');
@@ -1089,6 +1102,19 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
         int fd = -1;
         call(FILECreate, &fd, $path(p));
         call(FILEClose, &fd);
+    }
+
+    //  Per-host remote shard parallel to the sub's branch dirs.  Sub
+    //  bootstrap only fires for remote-bearing URIs (the early-out at
+    //  the top of this function gates on `u->authority`), so `u->host`
+    //  is almost always populated — but stay defensive.
+    if (!u8csEmpty(u->host)) {
+        a_path(sub_store);
+        call(PATHu8bFeed, sub_store, store_root_s);
+        call(PATHu8bPush, sub_store, DOG_BE_S);
+        a_dup(u8c, host_s, u->host);
+        call(KEEPInitRemoteShard,
+             u8bDataC(sub_store), basename, host_s);
     }
 
     //  Compose row-0 URI: `file:<parent>/.be/<basename>/`.  Routed
@@ -1773,6 +1799,80 @@ static ok64 becli_inner(cli *c) {
         if (!u8csEmpty(c->verb) && u8csEq(c->verb, v_get_s) &&
             uribDataLen(c->uris) > 0)
             (void)be_sub_shard_setup(c, uribAtP(c->uris, 0));
+    }
+
+    //  Top-of-chain version resolver pass.  Every user-supplied URI
+    //  with a non-empty `?query` runs through `GRAFResolveVersion`
+    //  (graf/GRAF.h) so downstream dogs see only the canonic
+    //  `?/<project>.<hashlet>/<branch>/<sha-or-tag>` form
+    //  (STORE.md §"URI structure").  Projector schemes own their
+    //  own grammar (`sha1:`, `log:`, `diff:`, ...) — skipped here;
+    //  the projector dog parses its URI itself.  Per-URI failure
+    //  isolates: a single GRAFNONE leaves that URI as-is so
+    //  downstream can surface the diagnosis in context.
+    //
+    //  Currently a pass-through stub — wiring lands first so future
+    //  resolution arms (magic refs, project-relative paths,
+    //  hashlets, commit-msg search) can ship behind a stable be-side
+    //  surface.
+    //
+    //  Scratch buffer lives at function scope so the rewritten
+    //  `u->data` slices outlive the resolution if-block (CLAUDE.md §5
+    //  — resource lifetime).
+    //  Verb gate: only read-shaped verbs (GET / HEAD / PATCH)
+    //  benefit from a pinned source sha.  Write verbs (POST / PUT /
+    //  DELETE) operate on ref names and would only get confused by
+    //  receiving a canonic `?/<project>/<branch>/<sha>` they then
+    //  have to parse back out.  Resolver is a no-op for them.
+    a_pad(u8, resolve_scratch, MAX_URI_LEN * CLI_MAX_URIS);
+    b8 verb_wants_resolve = NO;
+    {
+        a_cstr(v_get_s,   "get");
+        a_cstr(v_head_s,  "head");
+        a_cstr(v_patch_s, "patch");
+        if ($eq(c->verb, v_get_s) || $eq(c->verb, v_head_s)
+                                  || $eq(c->verb, v_patch_s))
+            verb_wants_resolve = YES;
+    }
+    if (verb_wants_resolve
+        && u8bHasData(c->repo) && uribDataLen(c->uris) > 0) {
+        home rh = {};
+        uri none = {};
+        if (HOMEOpen(&rh, &none, NO) == OK) {
+            static u8c const _zero = 0;
+            u8cs trunk = {&_zero, &_zero};
+            ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+            if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
+                ok64 go = GRAFOpen(&rh, NO);
+                if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
+                    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+                        uri *u = uribAtP(c->uris, i);
+                        if (u8csEmpty(u->query)) continue;
+                        if (!u8csEmpty(u->scheme) &&
+                            DOGIsProjector(u->scheme)) continue;
+                        //  Skip transport/remote URIs.  `ssh://h?ref`
+                        //  expresses remote intent — the local REFS
+                        //  row is a stale cache of last-fetched tip;
+                        //  pinning here would prevent keeper from
+                        //  re-contacting the wire.  Keeper has its own
+                        //  freshness logic for transport URIs.
+                        if (!u8csEmpty(u->authority)) continue;
+                        u8c *before = *u8bIdle(resolve_scratch);
+                        u8cs given = {};
+                        u8csMv(given, u->data);
+                        ok64 rr = GRAFResolveVersion(
+                            u8bIdle(resolve_scratch), given);
+                        if (rr != OK) continue;
+                        u8c *after = *u8bIdle(resolve_scratch);
+                        u->data[0] = before;
+                        u->data[1] = after;
+                    }
+                    if (go == OK) (void)GRAFClose();
+                }
+                if (ko == OK) (void)KEEPClose();
+            }
+            HOMEClose(&rh);
+        }
     }
 
     //  Read the wt's tip URI (`<root>?<branch>#<sha>`) once, here at

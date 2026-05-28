@@ -1327,6 +1327,18 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     a_dup(u8c, target_query_raw, u->query);
     a_dup(u8c, frag,             u->fragment);
 
+    //  Canonic-form peel.  When the resolver-emitted shape
+    //  `/<project>/<branch>/<pin>` (STORE.md §"URI structure") lands
+    //  here, the trailing pin would otherwise trip the located-cherry
+    //  promotion below.  Reduce to bare `<branch>` so PATCH sees the
+    //  user's original intent (SQUASH/MERGE/REBASE1, not CHERRY).
+    //  Pin is dropped — REFSResolve below will re-derive the tip.
+    {
+        u8cs c_proj = {}, c_branch = {}, c_pin = {};
+        if (DOGCanonQueryParse(target_query_raw, c_proj, c_branch, c_pin))
+            u8csMv(target_query_raw, c_branch);
+    }
+
     //  Absolutise the query slot up front (`?./fix` from cur=feature
     //  → `feature/fix`) so the SNIFFMaybeSwitch* probes below see a
     //  real shard dir name, not a relative anchor.  `tq_buf` outlives

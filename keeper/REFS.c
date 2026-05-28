@@ -432,6 +432,23 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     call(URILexer, &in);
     u8cs in_query = {in.query[0], in.query[1]};
 
+    //  Canonic-form short-circuit.  When the query is already in the
+    //  resolver-emitted shape `/<project>/<branch-path>/<pin>` (per
+    //  STORE.md §"URI structure"), the pin IS the resolution — no
+    //  REFS row walk needed.  Feed the 40-hex pin into `resolved->query`
+    //  using `arena` as backing storage (same shape as the success-
+    //  path in the row walk below).
+    {
+        u8cs cproj = {}, cbranch = {}, cpin = {};
+        if (DOGCanonQueryParse(in_query, cproj, cbranch, cpin)) {
+            u8c const *pin_start = *u8bIdle(arena);
+            call(u8bFeed, arena, cpin);
+            resolved->query[0] = (u8c *)pin_start;
+            resolved->query[1] = *u8bIdle(arena);
+            done;
+        }
+    }
+
     match_ctx m = {};
     //  Presence test (not emptiness): input `?` = match trunk only;
     //  input with no `?` = match any ref on the host (wildcard).

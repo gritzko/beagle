@@ -50,10 +50,23 @@ Same applies to URIs, each component reflects some aspect of a command:
  1. scheme stands for app/protocol,
  2. host for remotes,
  3. path for file path (relative to the project root),
- 4. query for branch/commit (be branches are structured like paths,
-    e.g. `/feature/fix` or `feature/phase1/phase2`,
- 5. fragment is for free-form values (commit messages, search 
-    strings, etc).
+ 4. query for project / branch / tag / commit.  Beagle is
+    multi-project: every store hosts an arbitrary set of
+    projects, each with its own branch tree.  Shapes (full
+    grammar in `BRANCHES.md`):
+      - `?/project/branch/tag`  — absolute,
+      - `?branch/`              — project-relative **branch**;
+                                  the trailing slash forces
+                                  branch over a same-named tag,
+      - `?v1.2.3`               — bare = tag (no trailing slash),
+      - `?./fix`, `?..`         — branch-relative,
+      - `?abc1234`              — sha-prefix lookup,
+      - `?free text`            — commit-message search
+                                  (whitespace = search),
+      - `?null`, `?back`        — magic: no-branch / previous-
+                                  branch (cd -).
+ 5. fragment is for free-form payload (commit-message **body**
+    for `be post '#fix'`, line jumps, extension filters, etc).
 
 Changing the shape of URI changes the command's semantics, e.g.
 `patch` becomes merge, rebase or cherry-pick, depending of the shape.
@@ -62,7 +75,9 @@ These three (git) commands all do merge-then-commit, but details differ.
 ### GET: checkout / fetch / view / search
 
     be get ssh://host/repo.git       # clone (fetch + checkout + index)
-    be get ?v1.2                     # checkout the "v1.2" ref locally
+    be get ?v1.2                     # checkout the "v1.2" tag locally
+    be get ?feat/                    # switch to branch `feat` (trailing slash)
+    be get ?back                     # cd - : previously checked-out branch
     be path/to/file.c                # open the file in the pager (bro)
     be grep:path/to/file.c#TODO      # grep inside one file
     be spot:#FuncName                # structural search across repo

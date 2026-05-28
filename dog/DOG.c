@@ -366,6 +366,22 @@ void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out) {
     pin_out[0]    = NULL; pin_out[1]    = NULL;
     if (u8csLen(query) == 0) return;
 
+    //  Canonic form (STORE.md §"URI structure"):
+    //      /<project>/<branch-path>/<pin>
+    //  When matched, project is consumed by upstream resolution —
+    //  callers want just the branch portion + pin.  Defer to
+    //  DOGCanonQueryParse for the strict-shape arm.
+    {
+        u8cs c_proj = {}, c_branch = {}, c_pin = {};
+        u8cs q_in = {};
+        u8csMv(q_in, query);
+        if (DOGCanonQueryParse(q_in, c_proj, c_branch, c_pin)) {
+            u8csMv(branch_out, c_branch);
+            u8csMv(pin_out,    c_pin);
+            return;
+        }
+    }
+
     //  Find the last '/'-separated segment.  When query is just
     //  `abc1234` (no '/'), the whole slice is the candidate.
     u8cp head  = query[0];

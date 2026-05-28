@@ -81,3 +81,10 @@
   (nonexistent `.invalid` host); only the on-disk layout is
   checked because `be_ensure_project_repo` runs BEFORE the keeper
   fetch step.
+* `25-remote-shard/` — `be get be://host?/project/branch` lays
+  down the per-host remote shard `.be/<project>/remotes/<host>/refs`
+  parallel to the project shard.  STORE.md §"Repo dir layout":
+  remotes live in a `remotes/` class dir next to branches, one
+  subdir per host; cache-only (no wtlog inside).  Same
+  wire-intentionally-fails shape as 19; asserts the dispatcher-
+  side mkdir + idempotency on re-invocation.

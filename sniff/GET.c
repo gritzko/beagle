@@ -1769,17 +1769,29 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     a_path(keepdir);
     call(HOMEBranchDir, k->h, keepdir, NULL);
 
-    //  Absolute-form query (`?/<project>/<branch>`) carries a
+    //  Absolute-form query (`?/<project>/<branch>...`) carries a
     //  project prefix that's local-side state (already consumed by
     //  home_open_inner / be_ensure_project_repo).  Strip it so the
     //  branch-side resolution paths below see just the branch
     //  portion; otherwise REFSResolve misses the row and the
     //  raw-hex fallback treats `/U` as a sha prefix.  Per VERBS.md
-    //  §"Ref resolution".  Both u->query and u->data need updating —
-    //  REFSResolve re-parses u->data internally, so a query-only
-    //  strip wouldn't reach it.
+    //  §"Ref resolution".  Two shapes hit this gate:
+    //    - Canonic resolved form (STORE.md §"URI structure"):
+    //          /<project>/<branch>/<pin>
+    //      → DOGCanonQueryParse splits into project/branch/pin.
+    //        Pin is dropped here — REFSResolve will re-derive the
+    //        tip from the branch's REFS row.  (Race-protection via
+    //        the canonic pin lands in a later phase.)
+    //    - User-typed absolute `?/<project>[/<branch>]`
+    //      → DOGQueryStripProject peels the first segment.
+    //  Both update u->query AND u->data — REFSResolve re-parses
+    //  u->data internally so a query-only strip wouldn't reach it.
     if (!u8csEmpty(u->query) && u->query[0][0] == '/') {
-        DOGQueryStripProject(u->query);
+        u8cs c_proj = {}, c_branch = {}, c_pin = {};
+        if (DOGCanonQueryParse(u->query, c_proj, c_branch, c_pin))
+            u8csMv(u->query, c_branch);
+        else
+            DOGQueryStripProject(u->query);
         //  Recompose u->data from the stripped components.  Stack
         //  buffer outlives the function since we never store the
         //  slice past this scope's REFSResolve uses (resolved.*

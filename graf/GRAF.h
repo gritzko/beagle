@@ -85,6 +85,8 @@ con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
 //  baseline (any URI without an explicit `?h1..h2` range) refuse with
 //  this rather than silently falling back to "wt as base".
 con ok64 GRAFNOAT    = 0x41b28f5d829d;
+//  Resolver output buffer too small for the canonic URI bytes.
+con ok64 GRAFFULL    = 0x41b28f59d54d;
 // --- Public API (DOG 4-fn, singleton) ---
 
 //  Open graf state on the trunk.  Thin wrapper over `GRAFOpenBranch`
@@ -241,6 +243,36 @@ ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
 // Resolve a URI's `#hex` / `?ref` / absent-query to a 20-byte commit
 // SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
 ok64 GRAFResolveTip(uricp u, sha1 *out);
+
+//  Universal version resolver.  Takes any user-supplied URI shape
+//  and rewrites the `?query` slot into the canonic form
+//      ?/<project>.<hashlet>/<branch-path>/<sha-or-tag>
+//  (see STORE.md §"URI structure").  Magic refs (`?null`, `?back`),
+//  trailing-slash branch/tag rules, project-relative paths,
+//  hashlets, commit-message search by whitespace shape — all
+//  handled here, in one place, so callers downstream of
+//  GRAFResolveVersion see only canonic input.
+//
+//  Reads `given` (not consumed); feeds canonic bytes into `canonic`
+//  (writable slice; caller pre-sizes to MAX_URI_LEN).  The
+//  scheme / authority / path / fragment slots of `given` pass
+//  through verbatim — only the `?query` is rewritten.  Fragment
+//  is opaque verb payload; never reinterpreted here.
+//
+//  Open-once: requires GRAFOpen(home*) to have been called by the
+//  caller's frame so refs / DAG lookups can hit disk.
+//
+//  Returns:
+//    OK         — canonic written; bytes in `canonic` are the
+//                 rewritten URI.  Idempotent on already-canonic
+//                 input (copy-through).
+//    GRAFNONE   — no resolution exists (search returned zero,
+//                 magic `?back` with empty reflog, ref missing).
+//                 Caller decides whether to escalate to a full-
+//                 project fallback scan (see TRIANGLE.todo.md).
+//    GRAFFULL   — `canonic` is too small for the rewritten bytes.
+//    GRAFFAIL   — data error (refs unreadable, no project context).
+ok64 GRAFResolveVersion(u8s canonic, u8csc given);
 
 // Weave diff between two commits (reads blobs from keeper).
 ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,

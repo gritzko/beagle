@@ -259,6 +259,13 @@ ok64 KEEPBranchDrop(u8cs branch);
 //  KEEPInitShard just creates the storage skeleton.
 ok64 KEEPInitShard(u8cs store_root, u8cs project);
 
+//  Lay down a per-host remote shard at
+//  `<store_root>/<project>/remotes/<host>/`: mkdir the dir chain and
+//  touch an empty `refs` seed file.  No wtlog — remote shards cache
+//  refs/packs/indexes; they are not worktrees (see STORE.md §"Repo
+//  dir layout").  Idempotent on existing dir + refs.
+ok64 KEEPInitRemoteShard(u8cs store_root, u8cs project, u8cs host);
+
 //  Run one CLI invocation — same effect as `keeper ...`.
 ok64 KEEPExec(cli *c);
 

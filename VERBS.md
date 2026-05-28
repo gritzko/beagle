@@ -42,25 +42,42 @@ things.
   - `path`      — file or directory inside the branch's tree.
                   With a `file:` scheme, the path is a filesystem
                   path to another store/wt on this host.
-  - `?ref`      — branch path or sha/range.  Three shapes by
-                  leading character: `?/<project>/<branch>` is
-                  **absolute** (`<store>/<project>/<branch>/`);
-                  `?<branch>` is **project-relative** (under
-                  cur's project, no leading `/`); `?./<sub>` /
-                  `?../<sib>` / `?..` are **current-branch-
-                  relative**.  Sha prefix (`?abc1234`) is its own
-                  arm — object lookup, detached checkout.
-  - `#frag`     — free-form payload.  No grammar; each verb / projector
-                  interprets it as it sees fit.  Established conventions:
-                  object hash (`#abc1234`); commit-message search
-                  (`#parallel` finds the commit reachable from cur whose
-                  message contains "parallel"); line jump (`#L42`,
-                  GitHub-style); extension filter (`#.c.h`); a count
-                  (`be log:?feat#10`).  Hunk URIs emitted by graf/spot
-                  use `<path>#<symbol>:L<line>` for navigation.  Search
-                  bodies for structural / regex search live in their own
-                  projector schemes (`spot:`, `grep:`, `regex:`), not
-                  in the fragment slot.
+  - `?ref`      — branch, tag, sha, or commit-message search.
+                  Shape rules (see BRANCHES.md §"URI structure" /
+                  §"Ref resolution"):
+                    * `?/<project>/<branch>/<tag>` — **absolute**
+                      (`<store>/<project>/<branch>/`); any tail
+                      segment after the branch is a tag.
+                    * `?<name>/` — **project-relative branch**
+                      (trailing slash forces branch interpretation
+                      regardless of any same-named tag).
+                    * `?<name>` (bare) — tag in cur's project; falls
+                      back to a same-named branch if no tag exists.
+                    * `?./<sub>` / `?../<sib>` / `?..` —
+                      **branch-relative**.
+                    * `?<hashlet>` — sha-prefix lookup (≥ 4 hex);
+                      detached checkout.
+                    * `?<free text with spaces>` — commit-message
+                      search (`be head '?parallel example'` finds the
+                      commit reachable from cur whose message
+                      contains "parallel example").
+                    * `?null` (magic) — no branch; used for stash-
+                      style commits via `be post '?null#belay'`.
+                    * `?back` (magic) — the previously checked-out
+                      branch; the `cd -` of branch switching.
+  - `#frag`     — free-form payload.  No grammar; each verb /
+                  projector interprets it as it sees fit.
+                  Established conventions: object hash (`#abc1234`);
+                  commit-message **body** for new commits
+                  (`be post '#fix'`); line jump (`#L42`, GitHub-
+                  style); extension filter (`#.c.h`); a count
+                  (`be log:?feat#10`); the stash anchor name in the
+                  `?null#<name>` form.  Hunk URIs emitted by graf /
+                  spot use `<path>#<symbol>:L<line>` for navigation.
+                  Commit-message **search** moved out of `#frag`
+                  into `?<text>` (above); structural / regex search
+                  bodies live in their own projector schemes
+                  (`spot:`, `grep:`, `regex:`).
 
 Branches form a tree; the **trunk** is the root.  Branches are
 `mkdir`-cheap: an **empty branch is one row in the reflog and an
@@ -80,21 +97,38 @@ the absorbed sha(s) in `.be/wtlog` for the next POST.
 ##  Ref resolution
 
 Every project lives in its own `<store>/<project>/` shard;
-branches are subdirs within.  `?ref` resolves in this order:
+branches are subdirs within.  The project label is opaque —
+cross-clone identity ("is `abc` the same project as `libabc`?")
+is handled structurally via merge-base check at PATCH time
+(unrelated histories refused), not by any identity field baked
+into the path.  Remote-tracking shards sit under a `remotes/`
+class dir parallel to branches (`<store>/<project>/remotes/<host>/`).
+`?ref` resolves in this order:
 
- 1. **Absolute** (`?/<project>/<branch>`, leading `/`) ⇒
-    `<store>/<project>/<branch>/`.  Names the full path; valid
-    from any cur (including detached).  Bare `?/<project>` is
-    that project's trunk.
- 2. **Project-relative** (`?<branch>`, no leading `/`) ⇒
-    `<store>/<curproject>/<branch>/`.  Resolved against cur's
-    project.  Refused from a detached wt with no project anchor.
- 3. **Branch-relative** (`?./<sub>`, `?../<sib>`, `?..`) ⇒
+ 1. **Magic refs** ⇒ `?null` is the empty branch (stash target,
+    no checkout); `?back` is the previously checked-out branch
+    (the `cd -` of branch switching, read from cur's reflog).
+ 2. **Absolute** (`?/<project>/<branch>[/<tag>]`, leading `/`) ⇒
+    `<store>/<project>/<branch>/`, optionally pinned at `<tag>`.
+    Names the full path; valid from any cur (including
+    detached).  Bare `?/<project>` is that project's trunk.
+ 3. **Branch by trailing slash** (`?<name>/`) ⇒
+    `<store>/<curproject>/<name>/` — the slash forces the
+    project-relative branch interpretation even when a same-named
+    tag exists.  Refused from a detached wt with no project anchor.
+ 4. **Tag / project-relative bare** (`?<name>`, no slash) ⇒ tag
+    `<name>` under cur's project if one exists; falls back to
+    branch `<store>/<curproject>/<name>/` otherwise.
+ 5. **Branch-relative** (`?./<sub>`, `?../<sib>`, `?..`) ⇒
     rooted at the current branch dir within cur's project.
     Refused from a detached wt (ambiguous — pick an explicit
     branch first).
- 4. **Sha prefix** (`?abc1234`) ⇒ object lookup; attaches as a
-    detached wt.
+ 6. **Sha prefix** (`?abc1234`, hex) ⇒ object lookup; attaches
+    as a detached wt.
+ 7. **Commit-message search** (`?<free text with spaces>`) ⇒
+    walks cur's first-parent chain for the most recent commit
+    whose message contains the text; read-only — refused by
+    write verbs.
 
 Branch creation goes through PUT only.  GET refuses on a missing
 ref (mirror of `cd nonexistent`).  `be put ?./fix` mints the
@@ -106,10 +140,14 @@ existing branch is `be delete ?<branch>` then `be put ?<branch>`.
 | `?./fix`            | Child branch `beagle/feature/fix`.  GET refuses if absent; PUT creates. |
 | `?../fix`           | Sibling branch `beagle/fix`.  GET refuses if absent; PUT creates. |
 | `?..`               | Parent branch (the trunk of project `beagle` if `feature` is top-level). |
-| `?fix`              | Project-relative: `beagle/fix`; error if missing. |
-| `?feat/fix`         | Project-relative: `beagle/feat/fix`; same regardless of current branch. |
+| `?fix/`             | Project-relative **branch** `beagle/fix` (trailing slash forces branch). |
+| `?v1.2.3`           | **Tag** `v1.2.3` in `beagle`; if no such tag, falls back to branch `beagle/v1.2.3/`. |
+| `?feat/fix`         | Absolute leaf inside project `feat`: project-relative branch `beagle/feat/fix` only when both segments name dirs under cur's project; otherwise read as `?/feat/fix`. |
 | `?/abc`             | Absolute: project `abc`'s trunk. |
 | `?/abc/feat`        | Absolute: branch `feat` in project `abc`. |
+| `?/abc/feat/v1`     | Absolute: tag `v1` in `abc/feat`. |
+| `?null`             | Magic: no branch (stash via `be post '?null#belay'`). |
+| `?back`             | Magic: previously checked-out branch. |
 
 ##  Verb × URI aspect
 
@@ -180,15 +218,24 @@ feat/fix` is the path `feat/fix`, not the branch — type
 
 `//host` is a **label**; `scheme://host` is a **wire**.
 
-  - **Cached form (no transport scheme)**: `be ... //origin` reads
-    only the locally-cached remote-tracking refs in
-    `.be/refs`.  No network.  Useful for "what does the cache
-    say" inspection and for verbs that can use the last-known
-    remote tip without refresh (rebase, ahead/behind diff).
+  - **Cached form (no transport scheme)**: `be ... //host` reads
+    only the locally-cached remote-tracking refs in the per-
+    project remote shard `.be/<project>/remotes/<host>/refs`
+    (remotes live in a `remotes/` class dir parallel to branch
+    dirs, with one subdir per host).  The `//host` lookup is a
+    **reverse reflog grep** — walk the project's reflog newest-
+    first and pick the most recent row whose authority (and, if
+    given, `?branch`) matches.  No network, no registration
+    step.  Useful for "what does the cache say" inspection and
+    for verbs that can use the last-known remote tip without
+    refresh (rebase, ahead/behind diff).
   - **Transport form (`ssh:`, `https:`, `be:`)**: opens a
-    connection.  `be get ssh://origin?feat` fetches `feat`'s pack
-    and updates the cached refs.  `be head ssh://origin?feat`
-    fetches refs (and just enough pack to compute the diff).
+    connection.  `be get ssh://host/path?feat` fetches `feat`'s
+    pack into `.be/<project>/remotes/<host>/` and appends a row
+    naming the full URI to the project's reflog — so a later
+    `be ... //host` (cached form) finds it by reverse grep.
+    `be head ssh://host/path?feat` fetches refs (and just
+    enough pack to compute the diff).
 
 | Scheme  | Meaning |
 |---------|---------|
@@ -246,9 +293,28 @@ cur vs cur's remote counterpart when cur = trunk.
 
 ##  Remote resolution
 
-Aliases live in `<store>/ALIAS`, looked up by walking up the dir
-tree to the store root.  Cached remote-tracking refs live in
-`.be/refs` keyed by alias.
+There is no alias-registration step and no `ALIAS` file.  Every
+remote URI we touch (`ssh://github.com/gritzko/beagle.git?master`,
+`be://peer.host/proj?feat`) is logged into the project's reflog
+on first contact as a normal row.  Later, a short reference
+resolves by walking the reflog **backwards** newest-first and
+picking the most recent row whose authority — and, when given,
+`?branch` — matches:
+
+  - `//host`         — most recent row with that authority.
+  - `//host?branch`  — most recent row with that authority AND
+                       that branch.
+  - `//host/path`    — most recent row with matching authority
+                       and path (disambiguates same-host repos).
+
+The resolved row supplies the full URL (scheme + path) for any
+follow-up transport call.  Cached refs land in the per-project
+remote shard `<store>/<project>/remotes/<host>/refs`, under a
+`remotes/` class dir parallel to the branch dirs (one subdir
+per host).  Dropping a `remotes/<host>/` dir drops that
+remote's cache; the canonical URI history stays in the
+project's reflog and can re-populate the cache on next contact
+(see `keeper/REF.md`).
 
   - `be ... //origin?feat` — read only the cache.
   - `be get ssh://origin?feat` — fetch + checkout; on first use,
@@ -275,7 +341,7 @@ the diff.
 | `be head`                          | **Implicit target.**  When cur ≠ trunk: ahead/behind cur vs trunk.  When cur = trunk: ahead/behind cur vs the cached remote counterpart (no fetch — use `be head ssh://origin` for that).  Equivalent to bare `be`. |
 | `be head ?br`                      | **Explicit target.**  Ahead/behind commits between cur and `?br`, plus list of files that differ. |
 | `be head ./path?br`                | Same diff scoped to `path`. |
-| `be head '#parallel'`              | Find the commit reachable from cur whose message contains "parallel"; show diff cur vs that commit. |
+| `be head '?parallel walk'`         | Commit-message search: find the commit reachable from cur whose message contains "parallel walk"; show diff cur vs that commit.  (Was `#frag` pre-BRANCHES.md; the `?` slot now owns search.) |
 | `be head //origin`                 | Print cached diff cur vs origin's cur counterpart.  No network. |
 | `be head ssh://origin`             | Fetch refs + minimal pack from origin, update `.be/refs`, print diff cur vs origin's cur. |
 | `be head ssh://origin?feat`        | Same scoped to `feat`. |
@@ -656,17 +722,51 @@ of foster / parent headers and picked trailers in row order.
 ##  Worktree management
 
 A **store** is the `.be/` directory holding packs, indexes,
-REFS, and aliases.  A **worktree (wt)** is a checked-out tree on
-disk; per-wt state — base branch, base tip, pending PATCH
-parents — lives in `<wt>/.be/wtlog` (see `sniff/AT.md`).  A
-secondary wt shares the primary's store via a `.be` symlink.
+REFS, and aliases — multi-project: `~/.be` is the canonical
+root, every project hangs off `~/.be/<project>/`, branches nest
+under projects, and remote-tracking caches live in
+`~/.be/<project>/remote.<alias>/`.  Shard walk for object
+retrieval is branch + ancestors + project (see BRANCHES.md
+§"Repo dir layout").
+
+A **worktree (wt)** is a checked-out tree on disk; per-wt state
+— base branch, base tip, pending PATCH parents — lives in
+`<wt>/.be/wtlog` (see `sniff/AT.md`).  In a secondary wt the
+`.be` entry is a regular **file** (not a symlink) whose first
+wtlog row is a `repo` URI pointing at the primary's store root;
+sniff follows it on open and shares packs, indexes, and refs
+through that anchor.
 
 One branch can only have one active worktree; that is tracked
 in the branch reflog.
 
 The guiding rule: **a machine only needs one store per upstream
-repo**.  Every extra wt is just another dir with a `.be`
-symlink back.
+repo**.  Every extra wt is just another dir with its own `.be`
+wtlog file pointing back.
+
+###  Worker coordinates
+
+Every `be` invocation relays exactly one coordinate to each
+sub-dog worker on the argv:
+
+    --at <branch-uri>#<sha>
+
+  - **`<branch-uri>`** — cur's branch URI (scheme, authority,
+    project, branch).  The *intent* of the invocation.
+  - **`<sha>`** — cur's tip sha at the moment `be` resolved
+    the URI.  The *tip pin* — protects the worker against a
+    concurrent `post` moving the tip mid-call.
+
+Everything else the worker derives itself: it walks up from
+cwd to the nearest `.be/` (the standard HOMEOpen walk) to find
+the store root, and reads row 0 of the wtlog to learn the wt's
+base branch.  Cwd vs wt root and wt root vs store root are
+both available as path slices; integer depths would only
+restate what those paths already say.  If a future caller ever
+needs to communicate explicit *scope* (e.g. "operate as if cwd
+were here even though you'll be invoked from elsewhere"), the
+right shape is a textual `--scope <rel-path>`, not a pair of
+digit counts.  See `STORE.md` §"Coordinates".
 
 ###  Eager branching: the canonical workflow
 

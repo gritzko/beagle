@@ -85,24 +85,59 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
         done;
     }
 
+    //  Each branch's own keeper shard carries its own REFS reflog —
+    //  `keeper get //host/path?<branch>` writes the peer-form row into
+    //  `.be/[<project>/]<branch>/refs`, NOT the trunk REFS, so the
+    //  parent's reflog stays clean for sub-shard isolation (see
+    //  wcli_record_ref).  We look in two places, longest match wins:
+    //   1. Trunk REFS — local POSTs, sniff get rows, anything written
+    //      while cur_branch was trunk.
+    //   2. `.be/[<project>/]<path>/refs` — the leaf shard the branch
+    //      itself owns; peer-form rows from `keeper get //host?<path>`
+    //      land here.
+    //  Per-location: try each refname-strip variant.  Per-attempt:
+    //   pass 0 — local-only (no authority key).
+    //   pass 1 — `//.` authority trips REFSResolve's auth_is_dot so
+    //            peer-form rows (`//<host>/<repo>?<br>#<sha>`) match.
+    //  See TRIANGLE.todo.md gap #6 for the spec rationale.
     char const *strips[] = {"", "refs/heads/", "refs/", "heads/", NULL};
-    for (u32 si = 0; strips[si] != NULL; si++) {
-        a_dup(u8c, p, path);
-        a_cstr(strip, strips[si]);
-        if (!u8csEmpty(strip)) {
-            if (u8csLen(p) <= u8csLen(strip)) continue;
-            if (!u8csHasPrefix(p, strip)) continue;
-            u8csUsed(p, u8csLen(strip));
+    a_cstr(dot_auth, "//.");
+    for (u32 loc = 0; loc < 2; loc++) {
+        a_path(lookup_dir);
+        if (loc == 0) {
+            call(PATHu8bFeed, lookup_dir, $path(keepdir));
+        } else {
+            call(HOMEBranchDir, k->h, lookup_dir, NULL);
+            call(PATHu8bAdd, lookup_dir, path);
         }
-        a_uri(qkey, 0, 0, 0, p, 0);
-        a_pad(u8, arena, 512);
-        uri resolved = {};
-        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
-        if (ro == OK && u8csLen(resolved.query) >= 40) {
-            u8s sb = {out->data, out->data + 20};
-            u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-            call(HEXu8sDrainSome, sb, hx);
-            return OK;
+        for (u32 pass = 0; pass < 2; pass++) {
+            for (u32 si = 0; strips[si] != NULL; si++) {
+                a_dup(u8c, p, path);
+                a_cstr(strip, strips[si]);
+                if (!u8csEmpty(strip)) {
+                    if (u8csLen(p) <= u8csLen(strip)) continue;
+                    if (!u8csHasPrefix(p, strip)) continue;
+                    u8csUsed(p, u8csLen(strip));
+                }
+                a_pad(u8, arena, 512);
+                uri resolved = {};
+                ok64 ro;
+                if (pass == 0) {
+                    a_uri(qkey, 0, 0, 0, p, 0);
+                    ro = REFSResolve(&resolved, arena, $path(lookup_dir),
+                                     qkey);
+                } else {
+                    a_uri(qkey, 0, dot_auth, 0, p, 0);
+                    ro = REFSResolve(&resolved, arena, $path(lookup_dir),
+                                     qkey);
+                }
+                if (ro == OK && u8csLen(resolved.query) >= 40) {
+                    u8s sb = {out->data, out->data + 20};
+                    u8cs hx = {resolved.query[0], resolved.query[0] + 40};
+                    call(HEXu8sDrainSome, sb, hx);
+                    return OK;
+                }
+            }
         }
     }
     return RESLVNONE;

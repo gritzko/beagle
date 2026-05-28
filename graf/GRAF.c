@@ -12,6 +12,9 @@
 #include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
+#include "keeper/KEEP.h"
+#include "keeper/REFS.h"
+#include "keeper/RESOLVE.h"
 
 // --- Producer-side staging state ---
 //
@@ -344,6 +347,144 @@ ok64 GRAFOpen(home *h, b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
     return GRAFOpenBranch(h, trunk, rw);
+}
+
+//  --- GRAFResolveVersion (universal version resolver) --------------
+//
+//  Phase 1: project-relative branch arm.  `?<branch>` (optional
+//  trailing `/`) gets resolved against trunk REFS via REFSResolve;
+//  on hit, the query slot is rewritten to canonic form
+//      ?/<project>/<branch>/<40-hex-tip>
+//  (hashlet suffix deferred — see STORE.md §"Project identity").
+//
+//  Anything else (absolute `/`, relative `./`, hashlet, magic,
+//  search) currently passes through verbatim so downstream dogs
+//  keep their existing resolution behavior — those arms land in
+//  Phase 1.x.  GRAFNONE is reserved for the future full-project
+//  fallback scan (test/TRIANGLE.todo.md); the pass-through case
+//  returns OK so be's top-of-chain loop doesn't surface false
+//  negatives.
+//
+//  Requires keeper opened on the same home (REFSResolve reads
+//  `<store>/<project>/refs`).
+ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
+    sane(1);
+    test(!u8csEmpty(given), GRAFNONE);
+    test($len(given) <= $len(canonic), GRAFFULL);
+
+    //  Parse `given` via URILexer (no manual parsing — ABC.md §"Never
+    //  ever do manual parsing in C").  URILexer consumes its `u.data`
+    //  slice; `given` itself stays untouched because `u.data` is its
+    //  own member-array storage.
+    uri u = {};
+    u8csMv(u.data, given);
+    ok64 lo = URILexer(&u);
+    if (lo != OK) return u8sFeed(canonic, given);
+
+    //  No query slot to resolve — pass through.
+    if (u8csEmpty(u.query)) return u8sFeed(canonic, given);
+
+    u8cs q = {};
+    u8csMv(q, u.query);
+
+    //  Already-canonic input (`?/<project>/<branch>/<sha>`):
+    //  pass through.  The full-project fallback / future phases
+    //  may revisit this gate but today re-resolving an already-
+    //  resolved URI is a no-op.
+    if (*q[0] == '/') return u8sFeed(canonic, given);
+
+    //  TODO (no test coverage yet): magic ?null / ?back, pure-hex
+    //  hashlet prefix expansion via KEEPResolveRef, commit-msg
+    //  search by whitespace shape.  Leave as pass-through so the
+    //  downstream legacy resolvers continue handling them.
+    {
+        a_cstr(s_null, "null");
+        a_cstr(s_back, "back");
+        if (u8csEq(q, s_null) || u8csEq(q, s_back))
+            return u8sFeed(canonic, given);
+    }
+    if (HEXu8sValid(q) && u8csLen(q) >= 4 && u8csLen(q) <= 40)
+        return u8sFeed(canonic, given);
+    {
+        u8cs scan = {};
+        u8csMv(scan, q);
+        if (u8csFind(scan, ' ') == OK) return u8sFeed(canonic, given);
+    }
+
+    //  Resolve branch-relative anchors (`?./<sub>`, `?../<sib>`,
+    //  `?..`) via dog/DPATH's path arithmetic, producing the
+    //  absolute branch path under cur's project.  `was_rel == NO`
+    //  for non-relative shapes leaves `branch_abs` empty and we
+    //  fall through to the project-relative path below.
+    keeper *k = &KEEP;
+    if (k->h == NULL)                return u8sFeed(canonic, given);
+    if (!u8bHasData(k->h->project))  return u8sFeed(canonic, given);
+
+    a_path(branch_abs);
+    b8 was_rel = NO;
+    {
+        u8cs cur_branch = {};
+        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+        call(DPATHBranchResolveRel, branch_abs, cur_branch, q, &was_rel);
+    }
+    //  Relative resolved to trunk (`?..` from a top-level branch
+    //  pops past root) — defer to the downstream legacy resolver
+    //  for now; empty-branch canonic emit needs a dedicated trunk
+    //  arm we haven't designed yet.
+    if (was_rel && u8bDataLen(branch_abs) == 0)
+        return u8sFeed(canonic, given);
+
+    //  Branch slice for canonic emit + REFS lookup: relative
+    //  resolution wrote the absolute path into `branch_abs`; for
+    //  non-relative inputs, fall back to the user-typed query with
+    //  any trailing '/' stripped (branch-form hint, not part of
+    //  the name).
+    u8cs branch = {};
+    if (was_rel) {
+        u8csMv(branch, u8bDataC(branch_abs));
+    } else {
+        u8csMv(branch, q);
+        if (!u8csEmpty(branch) && *u8csLast(branch) == '/')
+            u8csShed1(branch);
+    }
+    if (u8csEmpty(branch)) return u8sFeed(canonic, given);
+
+    //  Ref lookup via keeper/RESOLVE.c's two-axis resolver:
+    //  KEEPResolveRef walks trunk REFS, then falls back to the
+    //  branch's own leaf-shard REFS (where peer-form rows from
+    //  `keeper get //h?<branch>` actually land — gap #1 fix
+    //  2026-05-27).  This catches the sub-mount `?master` case
+    //  REFSResolve-on-trunk-alone misses.
+    sha1 sha = {};
+    {
+        u8cs cur_branch = {};
+        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+        ok64 rr = KEEPResolveRef(&sha, branch, cur_branch);
+        if (rr != OK) return u8sFeed(canonic, given);
+    }
+    sha1hex resolved_hex = {};
+    sha1hexFromSha1(&resolved_hex, &sha);
+    u8cs resolved_query = {};
+    sha1hexSlice(resolved_query, &resolved_hex);
+    if (u8csLen(resolved_query) < 40) return u8sFeed(canonic, given);
+
+    //  Build canonic query slot:
+    //      /<project>/<branch>/<40-hex>
+    //  Leading '/' is mandatory (STORE.md §"URI structure"); use
+    //  a_abspath so PATHu8bPush composes on top of an existing '/'.
+    //  Project segment is a plain opaque label — hashlet suffix was
+    //  abandoned (genesis isn't knowable pre-fetch from the wire, so
+    //  hashlet-based dedup at clone time can't work without partial-
+    //  clone support; the canonic gains no value from carrying it).
+    a_abspath(canon_q);
+    call(PATHu8bPush, canon_q, u8bDataC(k->h->project));
+    call(PATHu8bPush, canon_q, branch);
+    call(PATHu8bPush, canon_q, resolved_query);
+
+    //  Splice the new query back into the URI shape via URIutf8Feed
+    //  (no manual serialize).  Mutate `u` in place — function-local.
+    u8csMv(u.query, u8bData(canon_q));
+    return URIutf8Feed(canonic, &u);
 }
 
 // --- GRAFSwitchBranch ------------------------------------------------

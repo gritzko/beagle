@@ -879,6 +879,37 @@ ok64 KEEPInitShard(u8cs store_root, u8cs project) {
     done;
 }
 
+//  Per-host remote shard at `<store_root>/<project>/remotes/<host>/`.
+//  Cache-only — no wtlog (remote shards are never worktrees; the
+//  primary wt always sits on a local branch, and remote shards just
+//  hold the most recent refs/packs we fetched from <host>).  Refs
+//  seed file is touched empty so the keeper-side reflog appender can
+//  open-and-append on first fetch without an extra mkdir step.
+ok64 KEEPInitRemoteShard(u8cs store_root, u8cs project, u8cs host) {
+    sane($ok(store_root) && $ok(project) && !u8csEmpty(project) &&
+         $ok(host) && !u8csEmpty(host));
+
+    a_path(shard);
+    call(PATHu8bFeed, shard, store_root);
+    call(PATHu8bPush, shard, project);
+    a_cstr(remotes_name, "remotes");
+    call(PATHu8bPush, shard, remotes_name);
+    call(PATHu8bPush, shard, host);
+    call(FILEMakeDirP, $path(shard));
+
+    a_cstr(refs_name, DOG_REFS_NAME);
+    a_path(p);
+    call(PATHu8bFeed, p, u8bDataC(shard));
+    call(PATHu8bPush, p, refs_name);
+    filestat fs = {};
+    if (FILEStat(&fs, $path(p)) != OK) {
+        int fd = -1;
+        call(FILECreate, &fd, $path(p));
+        call(FILEClose, &fd);
+    }
+    done;
+}
+
 ok64 KEEPBranchDrop(u8cs branch) {
     sane($ok(branch));
     keeper *k = &KEEP;
