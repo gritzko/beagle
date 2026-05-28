@@ -103,19 +103,23 @@ grep -q 'no shared ancestry' "$LOGS/10.err" \
     || { echo "FAIL: ?feat moved despite refusal: $(ref_tip '?feat')" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 5. Drop ?feat, then `be put ?feat#T2` (new ref).  Migration runs.
+# 5. Drop ?feat, then `be put ?feat#T2` (new ref).  ?feat lives as a
+#    child of trunk (cur), so the descendant short-circuit at
+#    sniff/PUT.c::PUTSetBranch fires — KEEPMoveCommits is skipped
+#    and the new shard holds no packs.  Reads bubble up via
+#    child → parent → root (keeper/INDEX.md §"Storage layout").
+#    Pinned by sibling case test/put/07-newbranch-no-migrate.
 # ------------------------------------------------------------------
 must "$BE" delete '?feat' > "$LOGS/11.out" 2> "$LOGS/11.err"
 
-PRE_PACKS=$(pack_bytes .be/$P/feat)
 must "$BE" put "?feat#$T2" \
     > "$LOGS/12.out" 2> "$LOGS/12.err"
 [ "$(ref_tip '?feat')" = "$T2" ] \
     || { echo "?feat didn't land at T2=$T2 (got $(ref_tip '?feat'))" >&2
          cat "$LOGS/12.err" >&2; exit 1; }
 POST_PACKS=$(pack_bytes .be/$P/feat)
-[ "$POST_PACKS" -gt "$PRE_PACKS" ] \
-    || { echo "?feat shard pack bytes didn't grow (was $PRE_PACKS, now $POST_PACKS) — KEEPMoveCommits didn't copy" >&2
+[ "$POST_PACKS" -eq 0 ] \
+    || { echo "?feat shard grew $POST_PACKS pack byte(s) — descendant short-circuit didn't fire" >&2
          ls -la .be/$P/feat/ >&2 2>/dev/null
          exit 1; }
 

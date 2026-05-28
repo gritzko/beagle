@@ -39,6 +39,15 @@ set(_BE_WILL_FAIL_CASES
     # branch fan-out is "Phase 1c: dir chain is always [trunk
     # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
     "be-get-24-uri-refs"
+    # Bug 2: cached `be get //host` opens the wire.  Site:
+    # keeper/KEEP.exe.c::keeper_get dispatches on
+    # `!u8csEmpty(g->authority)` without gating on `g->scheme` (cf.
+    # BE_PLAN_PATCH which correctly requires URI_SCHEME|URI_AUTHORITY).
+    "be-get-26-cached-no-wire"
+    # Bug 5: `be post --force` silently accepted; VERBS.md defines
+    # --force only for GET.  Either spec the POSTCFLCT-override
+    # semantics or refuse the flag at the dispatcher.
+    "be-post-20-force-flag-spec"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what
@@ -84,6 +93,11 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-18-triangle"
     "be-put-06-triangle"
     "be-get-24-uri-refs"
+    # Bug repro cases — all need an ssh-cloneable origin.
+    "be-get-26-cached-no-wire"
+    "be-get-27-ff-refuse"
+    "be-get-28-linear-ahead-preserved"
+    "be-post-19-pure-push-no-commit"
 )
 
 foreach(_run ${_be_case_runs})

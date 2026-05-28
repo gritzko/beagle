@@ -23,6 +23,16 @@
   with a shared-ancestry guard.  Covers: existing-target FP-mismatch
   refusal, new-target migration (pack bytes grow, wt resolves), and
   bogus-sha resolver refusal.
+* `07-newbranch-no-migrate/` — `be put ?<newbranch>/#<sha>` where
+  the new branch will live as a child of cur's shard MUST NOT migrate
+  cur's first-parent chain into the new shard.  Object retrieval
+  already walks child → parent → root (keeper/INDEX.md §"Storage
+  layout"), so the child reads cur's pack for free.  WILL_FAIL today
+  — `sniff/PUT.c::PUTSetBranch` always calls KEEPMoveCommits on a new
+  ref; on long histories the originating `be put ?recover/#<sha>`
+  trace hung outright.  Asserts: new shard dir is created but holds
+  zero `.keeper` packs; switching into the new branch reads the
+  N-th-commit content via parent-shard fallback.
 * `03-branch-shard/` — `be put ?<branch>` creates the branch's keeper
   shard dir (`.be/<branch>/`), and any subsequent `be post` on that
   branch writes its pack log INTO that shard (`.be/<branch>/NNNN.keeper`)

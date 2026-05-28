@@ -88,3 +88,26 @@
   subdir per host; cache-only (no wtlog inside).  Same
   wire-intentionally-fails shape as 19; asserts the dispatcher-
   side mkdir + idempotency on re-invocation.
+* `26-cached-no-wire/` — `be get //host?<ref>` (cached form, no
+  transport scheme) must NOT open the wire.  WILL_FAIL today —
+  `keeper/KEEP.exe.c::keeper_get` dispatches on
+  `!u8csEmpty(g->authority)` and skips the `g->scheme` check; the
+  matching `BE_PLAN_PATCH` row at `beagle/DISPATCH.c:199` correctly
+  requires `URI_SCHEME|URI_AUTHORITY`.  Repro clones over ssh,
+  moves the origin tree aside, then issues the cached form — under
+  the bug the wire dies on the missing path.  Gated on `WITH_SSH`.
+* `27-ff-refuse/` — `be get` against a linear-ahead local cur
+  (server tip is local's parent) must refuse (FF rule on the local
+  branch tip, VERBS.md §GET).  Regression guard: today the gate at
+  `sniff/GET.c::~1131` fires correctly for `ssh://origin?master`,
+  `ssh://origin`, and `//localhost`.  The sub-mount path may bypass
+  it (originating `be get //spot` trace) — that gap is tracked
+  separately in `test/TRIANGLE.todo.md`.  Gated on `WITH_SSH`.
+* `28-linear-ahead-preserved/` — three-shape sweep around Bug 6:
+  with cur ahead of origin by one local commit, every `be get`
+  shape (`ssh://origin?master`, `ssh://origin`, `//origin`) must
+  leave the local commit reachable — either by refusing the GET or
+  by parking the displaced tip on a recoverable ref.  Originating
+  trace: `f922149d4c44e987…` was dropped quietly by `be get //spot`
+  on a sub-mount setup.  Passes today in flat-repo shape; the
+  sub-mount repro stays open.  Gated on `WITH_SSH`.

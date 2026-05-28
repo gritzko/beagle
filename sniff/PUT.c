@@ -28,6 +28,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -916,6 +917,45 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
         ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
         if (tr == OK) has_target_tip = YES;
         else if (tr != REFSNONE) return tr;
+    }
+
+    //  Descendant short-circuit (NEW refs only): when target_branch
+    //  lives UNDER cur_branch in the shard tree, keeper's child →
+    //  parent → root lookup walks through cur's pack naturally
+    //  (keeper/INDEX.md §"Storage layout").  KEEPMoveCommits would
+    //  re-emit every commit/tree/blob of the chain into the child
+    //  shard for no semantic gain, and hangs on long histories
+    //  (originating `be put ?recover/#<sha>` trace).  Verify new_tip
+    //  resolves from cur's shard (KEEPGetExact) before claiming the
+    //  label so a typo'd sha surfaces here instead of dangling in
+    //  the new shard.  EXISTING targets still go through the FF
+    //  check below — `be put ?<sibling>#<sha>` on a sibling branch
+    //  must refuse when the new tip doesn't FP-reach the sibling's
+    //  existing tip.
+    if (!has_target_tip) {
+        a_pad(u8, ccur_buf, 256);
+        a_pad(u8, ctgt_buf, 256);
+        (void)DPATHBranchNormFeed(ccur_buf, cur_branch);
+        (void)DPATHBranchNormFeed(ctgt_buf, target_branch);
+        a_dup(u8c, ccur, u8bData(ccur_buf));
+        a_dup(u8c, ctgt, u8bData(ctgt_buf));
+        if (DPATHBranchAncestor(ccur, ctgt)) {
+            a_carve(u8, tipbuf, 1UL << 16);
+            u8 otyp = 0;
+            if (KEEPGetExact(&new_tip, tipbuf, &otyp) != OK ||
+                otyp != DOG_OBJ_COMMIT) {
+                fprintf(stderr,
+                        "sniff: put: ?%.*s#%.*s: cannot read new tip\n",
+                        (int)u8csLen(target_branch),
+                        (char *)target_branch[0],
+                        (int)u8csLen(sha_hex), (char *)sha_hex[0]);
+                return SNIFFFAIL;
+            }
+            ok64 ko = KEEPCreateBranch(k->h, target_branch);
+            if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
+            return REFSAppendVerb($path(keepdir), REFSVerbPost(),
+                                  refkey, val);
+        }
     }
 
     sha1 chain[POST_MIG_MAX];
