@@ -210,6 +210,38 @@ static M3BCase const M3B_CASES[] = {
         .expected = "z\n",
         .must_be_clean = YES,
     },
+    //  --- Same-line divergent edits ---
+    //  Mirrors sniff/test/patch.sh scenario 2.  Both sides edit the
+    //  same expression — ours rewrites `+ 0` to `- 100`; theirs
+    //  rewrites `+ 0` to `+ 42`.  WEAVEMerge / WEAVEEmitMerged must
+    //  flag this as a conflict (`<<<<` framing); a clean splice is a
+    //  silent data-loss regression.
+    {
+        .name   = "same_line_divergent_edit",
+        .base   = "int g(int y) {\n    return y + 0;\n}\n",
+        .ours   = "int g(int y) {\n    return y - 100;\n}\n",
+        .theirs = "int g(int y) {\n    return y + 42;\n}\n",
+        .must_contain = {"<<<<", "||||", ">>>>", NULL},
+        .must_be_clean = NO,
+    },
+    //  Minimal repro for the (alive-in=0 vs dead-in=0) mispairing.
+    //  Theirs's WEAVEDiff prefix-lifts the `+` and ` ` as alive
+    //  context (in=0).  Ours's WEAVEDiff has the same `+` and ` `
+    //  dead (rm=OURS).  WEAVEMerge's LCS over mixed hashlets pairs
+    //  them as a short EQ run, but NEILCleanup kills it as a
+    //  "small EQ sandwiched between non-EQs" — losing the deleter-
+    //  wins reconciliation.  Without the fix, theirs's `+ ` ends
+    //  up in the disjoint-tail with in=0, the renderer treats it
+    //  as spine, and the non-spine conflict run gets cut in two —
+    //  producing a clean splice `x - 1+ 2;\n` with no markers.
+    {
+        .name   = "rm_reconciliation_in_disjoint_tail",
+        .base   = "x + 0;\n",
+        .ours   = "x - 1;\n",
+        .theirs = "x + 2;\n",
+        .must_contain = {"<<<<", "||||", ">>>>", NULL},
+        .must_be_clean = NO,
+    },
 };
 
 #define M3B_NCASES (sizeof(M3B_CASES) / sizeof(M3B_CASES[0]))

@@ -773,11 +773,53 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
         //  each side's original inrm.  When no dedup ran, sum_del /
         //  sum_ins are the whole-run counts; after partial dedup they
         //  are the trailing remainder.
+        //
+        //  Per-token rm-reconciliation rescue: when LCS+NEIL fails to
+        //  pair shared-provenance tokens (`in_a == in_b` of same bytes)
+        //  as an EQ entry — typically because NEILCleanup killed a
+        //  "small EQ sandwiched between non-EQs" — they land here as
+        //  separate (a-dead, b-alive) or (a-alive, b-dead) tokens.
+        //  Without rescue, the alive side's `in==0` (or any shared
+        //  ancestor stamp) tricks `WEAVEEmitMerged` into treating it
+        //  as spine, breaking the non-spine conflict run.  Reconcile
+        //  per the EQ table's deleter-wins rule: claim the alive
+        //  side's counterpart as deleted (copy the deleter's rm into
+        //  the emitted token) and skip the duplicate emission on the
+        //  other side.  See test/MERGE3B01.c
+        //  `rm_reconciliation_in_disjoint_tail`.
+        Bu8 b_claim_buf = {};
+        u8cp b_claim = NULL;
+        if (sum_del > 0 && sum_ins > 0) {
+            __ = u8bAcquire(ABC_BASS, b_claim_buf, sum_ins);
+            if (__ != OK) goto cleanup;
+            b_claim = (u8cp)u8bDataHead(b_claim_buf);
+            memset((void *)b_claim, 0, sum_ins);
+        }
+        u32 b_start = bi;
         for (u32 j = 0; j < sum_del && ai < a_len; j++, ai++) {
-            __ = weave_append(dst, a_text, a_toks, a_hash, ai, a_irm[ai]);
+            inrm out = a_irm[ai];
+            if (b_claim != NULL) {
+                for (u32 k = 0; k < sum_ins && b_start + k < b_len; k++) {
+                    if (b_claim[k]) continue;
+                    inrm be = b_irm[b_start + k];
+                    if (be.in != out.in) continue;
+                    if ((out.rm == 0) == (be.rm == 0)) continue;
+                    if (!weave_byte_equal(a_text, a_toks, ai, 1,
+                                          b_text, b_toks, b_start + k, 1))
+                        continue;
+                    //  Reconciliation: the side with rm != 0 deleted;
+                    //  output one DEAD token carrying that rm.  Claim
+                    //  b's counterpart so the b-arm skips it.
+                    if (out.rm == 0) out.rm = be.rm;
+                    ((u8 *)b_claim)[k] = 1;
+                    break;
+                }
+            }
+            __ = weave_append(dst, a_text, a_toks, a_hash, ai, out);
             if (__ != OK) goto cleanup;
         }
         for (u32 j = 0; j < sum_ins && bi < b_len; j++, bi++) {
+            if (b_claim != NULL && b_claim[j]) continue;
             __ = weave_append(dst, b_text, b_toks, b_hash, bi, b_irm[bi]);
             if (__ != OK) goto cleanup;
         }
