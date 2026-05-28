@@ -33,12 +33,14 @@ things.
                   a **view projector** (`sha1:`, `blob:`, `tree:`,
                   …).  No scheme = act locally on the resource per
                   the verb.
-  - `//auth`    — remote alias (`//origin`, `//github`).  A bare
-                  `//host` resolves through `<store>/ALIAS` and
+  - `//auth`    — remote authority (`//origin`, `//github`).  A
+                  bare `//host` resolves via reverse-grep of the
+                  project's reflog (see §"Remote resolution") and
                   reads only the **cached** remote-tracking refs
-                  in `.be/refs`; it never opens a network
-                  connection.  To talk to the wire, attach a
-                  transport scheme (`ssh://origin`, `be://github`).
+                  in `<store>/<project>/remotes/<host>/refs`; it
+                  never opens a network connection.  To talk to
+                  the wire, attach a transport scheme
+                  (`ssh://origin`, `be://github`).
   - `path`      — file or directory inside the branch's tree.
                   With a `file:` scheme, the path is a filesystem
                   path to another store/wt on this host.
@@ -117,8 +119,12 @@ class dir parallel to branches (`<store>/<project>/remotes/<host>/`).
     project-relative branch interpretation even when a same-named
     tag exists.  Refused from a detached wt with no project anchor.
  4. **Tag / project-relative bare** (`?<name>`, no slash) ⇒ tag
-    `<name>` under cur's project if one exists; falls back to
-    branch `<store>/<curproject>/<name>/` otherwise.
+    `<name>` under cur's project if one exists; else branch
+    `<store>/<curproject>/<name>/` if one exists.  For
+    ref-creating verbs (PUT) on a missing name: the lack of
+    trailing slash signals **tag** intent, so `be put ?v1.2.3`
+    on a fresh name mints a tag (use `?<name>/` to force a
+    branch).
  5. **Branch-relative** (`?./<sub>`, `?../<sib>`, `?..`) ⇒
     rooted at the current branch dir within cur's project.
     Refused from a detached wt (ambiguous — pick an explicit
@@ -161,7 +167,7 @@ its effect.
 | GET    | switch wt+cur to branch                | restore one file in wt         | (transport scheme) clone / fetch + checkout | sha pin / detach                    |
 | POST   | FF-advance ?branch to cur.tip          | —                              | FF-advance remote's counterpart to cur.tip | commit msg                           |
 | PUT    | name the ref to write                  | stage path (blob + reflog row) | push to remote (non-FF allowed)            | sha to reset ref to                  |
-| DELETE | drop branch                            | unlink + stage delete          | drop alias / push delete                   | —                                    |
+| DELETE | drop branch                            | unlink + stage delete          | drop cached remote shard / push delete     | —                                    |
 | PATCH  | source branch — squash whole stack     | scope absorption to path (no header recorded) | (transport scheme) fetch + absorb | empty `#` = rebase one; `#msg` = merge; bare `#hash` = cherry-pick |
 
 The default for an empty `?branch` slot is **cur**.  POST commits
@@ -317,13 +323,13 @@ project's reflog and can re-populate the cache on next contact
 (see `keeper/REF.md`).
 
   - `be ... //origin?feat` — read only the cache.
-  - `be get ssh://origin?feat` — fetch + checkout; on first use,
-    register the URL as alias `origin` (default name from host
-    or from `--as=origin`).
+  - `be get ssh://origin?feat` — fetch + checkout; first contact
+    appends the URL to the project's reflog so later `//origin`
+    invocations resolve via reverse-grep.
   - `be head ssh://origin?feat` — fetch refs + minimal pack to
     compute the ahead/behind diff; cache updated, no checkout.
-  - `be put ssh://host/path` — register an alias (no `?ref`,
-    no other side-effect).
+  - `be put ssh://host/path` — log the URL to the project's
+    reflog (no `?ref`, no other side-effect).
   - `be put //origin` — push our cur to origin's counterpart
     trunk.  Wire goes through the registered transport.  Non-FF
     allowed (PUT is unconstrained); use POST for FF-only.
@@ -375,7 +381,7 @@ not to local branch switches.
 | `be get '#~1'`                    | Rewind cur ref by one commit and reset wt.  Stays attached to cur. |
 | `be get file.c?feat`              | Overwrite one file in the wt from another branch's tip (no staging). |
 | `be get //origin?feat`            | Cached read of origin's `feat` ref + pack already in store; reset wt to its tip.  No network. |
-| `be get ssh://host/path?feat`     | Open wire, fetch `feat` (pack + REFS), checkout, register alias on first use. |
+| `be get ssh://host/path?feat`     | Open wire, fetch `feat` (pack + REFS), checkout; first contact logs the URL to the project's reflog. |
 | `be get file:../proj?feat`        | Local sibling: wire this empty cwd as a wt sharing `../proj`'s store, reset files to `feat`'s tip. |
 
 After a successful GET, `.be/wtlog` records the new base as
@@ -425,9 +431,9 @@ effect, none implies any other.  Cur is the only ref POST ever
     FF check on the remote side.  Standalone (`be post //origin`)
     is a pure push — no commit; equivalent in effect to
     `be put //origin` per VERBS.md §PUT.  Cached form (`//host`
-    alone) opens the wire via the resolved transport alias from
-    `<store>/ALIAS`; if no alias is registered the keeper side
-    refuses with `KEEPFAIL`.
+    alone) resolves the transport URL via reverse-grep of the
+    project's reflog; refuses with `KEEPFAIL` if no prior reflog
+    row matches the authority.
 
 Combinations compose: `be post '#msg' ?feat //origin` commits
 on cur, FF-advances `?feat`, and pushes to `//origin` — all in
@@ -543,7 +549,7 @@ typo'`).  Single-word messages need explicit `#`:
 | `be post ?feat`                    | FF-advance `?feat` to cur's tip. **No commit.** |
 | `be post '#fix' ?feat`             | Commit on cur (msg = "fix"), then FF-advance `?feat` to cur's new tip. |
 | `be post ssh://origin`             | FF-push cur's tip to origin's counterpart over the wire. **No commit.** |
-| `be post //origin`                 | Same as above using the alias-resolved transport scheme; the wire opens regardless of whether the URI carries an explicit `ssh:` / `https:` / `be:` prefix.  `KEEPFAIL` if no alias is registered for `origin`. |
+| `be post //origin`                 | Same as above using the transport URL resolved by reverse-grep of the project's reflog; the wire opens regardless of whether the URI carries an explicit `ssh:` / `https:` / `be:` prefix.  `KEEPFAIL` if no reflog row matches `origin`. |
 | `be post '#sync' //origin`         | Commit on cur (msg = "sync"), then FF-push cur's new tip to origin's counterpart. |
 
 Each POST appends one entry to cur's `REFS` for the new commit.
@@ -587,7 +593,7 @@ with the command's ts.
 | `be put ?br#abc1234`    | Reset `?br` to sha `abc1234`.  Non-FF rewrite is allowed (PUT is unconstrained — local or remote). |
 | `be put //origin`       | Push cur to origin's counterpart trunk.  Non-FF (force) is allowed; use POST for FF-only semantics. |
 | `be put //origin?br`    | Push our `?br` to origin's `?br`.  Non-FF allowed. |
-| `be put ssh://host/path`| Register as a remote alias (name from host, or `--as=name`).  No `?ref` ⇒ alias-register only. |
+| `be put ssh://host/path`| Log the URL to the project's reflog (host name supplies the `//host` shortform).  No `?ref` ⇒ log-only, no other side-effect. |
 
 PUT writes to `<wt>/.be/wtlog` (for `./path` rows) and
 `.be/REFS` (for `?branch` and `?branch#sha`); blobs land in
@@ -616,7 +622,7 @@ Already-absent paths are an OK no-op.
 | `be delete ?feat/fix1`              | Drop a branch dir.  Leaf-only by default; refused with `DELDESC` if descendants exist or any wt's `.be/wtlog` records this branch as base.  Reclaims unreachable shards. |
 | `be delete -r ?feat`                | Drop the branch and every descendant, depth-first (leaves first).  Still refused if any wt has it as base. |
 | `be delete //origin?feat`           | Push a delete (`<old> 000…0 refs/heads/feat`) via `keeper receive-pack`. |
-| `be delete //origin`                | Drop the remote alias entry from `<store>/ALIAS`.  No network. |
+| `be delete //origin`                | Drop the cached remote shard `<store>/<project>/remotes/origin/`.  No network; the project reflog history is retained, so a later `ssh://origin?ref` can repopulate the cache. |
 
 ##  PATCH — absorb commits into wt
 
@@ -722,10 +728,10 @@ of foster / parent headers and picked trailers in row order.
 ##  Worktree management
 
 A **store** is the `.be/` directory holding packs, indexes,
-REFS, and aliases — multi-project: `~/.be` is the canonical
+REFS, and reflogs — multi-project: `~/.be` is the canonical
 root, every project hangs off `~/.be/<project>/`, branches nest
 under projects, and remote-tracking caches live in
-`~/.be/<project>/remote.<alias>/`.  Shard walk for object
+`~/.be/<project>/remotes/<host>/`.  Shard walk for object
 retrieval is branch + ancestors + project (see BRANCHES.md
 §"Repo dir layout").
 

@@ -223,7 +223,8 @@ run) file along the path on the keeper-level `packs` and `puppies`
 `Bkv32` registries.  `branch` is normalized via
 `DPATHBranchNormFeed`; missing prefix dirs return `KEEPNONE` (use
 `KEEPCreateBranch` to mkdir the leaf first).  In rw mode, exclusive
-flock lands on `<store>/<leaf>/.lock` (or `<store>/.lock` for trunk).
+flock lands on `<store>/<project>/<leaf>/.lock` (or
+`<store>/<project>/.lock` for trunk).
 `KEEPOpen` is a thin wrapper that passes empty trunk.
 
 The singleton `keeper` carries:
@@ -251,14 +252,15 @@ files, removes the lock, and rmdir's the leaf.  Refuses trunk
 (`KEEPTRUNK`); refuses while branch has subdirs or is the active
 leaf (`KEEPDIRTY`); refuses missing dirs (`KEEPNONE`).
 
-On-disk layout (Step 2 multi-branch):
-  * `<store>/`              — trunk dir + `REFS` reflog.
-  * `<store>/NNNNN.keeper`  — trunk pack log (10-char RON64 seqno).
-  * `<store>/NNNNN.keeper.idx`  — trunk index run.
-  * `<store>/<branch>/...`  — branch subdir, same file shape.
-  * `<store>/<a>/<b>/...`   — nested branches.
+On-disk layout (multi-project):
+  * `<store>/<project>/`              — project root: trunk dir + `REFS` reflog.
+  * `<store>/<project>/NNNNN.keeper`  — trunk pack log (10-char RON64 seqno).
+  * `<store>/<project>/NNNNN.keeper.idx`  — trunk index run.
+  * `<store>/<project>/<branch>/...`  — branch subdir, same file shape.
+  * `<store>/<project>/<a>/<b>/...`   — nested branches.
+  * `<store>/<project>/remotes/<host>/...`  — per-host remote shard, same shape.
 Writes only ever land in the active leaf dir; reads fan out across
-the whole open path.
+the whole open path (branch → ancestors → project root).
 
 ### WALK.h — git object graph traversal
 
