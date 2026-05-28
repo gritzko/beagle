@@ -503,9 +503,22 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
     graf *g = &GRAF;
     if (!graf_is_open()) return GRAFFAIL;
 
+    //  Inner APIs receive canonic URIs from beagle (STORE.md
+    //  §"URI structure": `/<project>/<branch-path>/<pin>`).  Pull
+    //  the branch slice out before normalisation; otherwise the
+    //  segment walk below would try to enter
+    //  `.be/<project>/<project>/<branch>/<pin>/` and bail GRAFNOPATH.
+    u8cs branch_in = {};
+    u8csMv(branch_in, new_branch);
+    {
+        u8cs c_proj = {}, c_branch = {}, c_pin = {};
+        if (DOGCanonQueryParse(branch_in, c_proj, c_branch, c_pin))
+            u8csMv(branch_in, c_branch);
+    }
+
     //  Normalize the new branch.
     a_pad(u8, nb, GRAF_LEAF_BRANCH_MAX);
-    call(DPATHBranchNormFeed, nb, new_branch);
+    call(DPATHBranchNormFeed, nb, branch_in);
     a_dup(u8c, norm, u8bDataC(nb));
 
     //  No-op when already on the requested branch.  `g->h->cur_branch`

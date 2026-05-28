@@ -1697,6 +1697,53 @@ ok64 BEActReindex(cli *c) {
 
 // --- Bare `be`: --update all dogs, then --status each ---
 
+//  Canonize a user-typed file path slice into wt-relative form.
+//  Handles cwd-relative inputs (`README`, `sub/file.c`, `./foo`,
+//  `../sib`) and absolute inputs (`/home/me/proj/README`).
+//
+//  STORE.md §"URI structure" pins the path slot to "for all other
+//  cases: relative path within a project".  Beagle is the only
+//  normalization point — sub-dogs receive canonic paths and never
+//  re-resolve cwd.
+//
+//  Returns OK on success; `out` holds the wt-rel bytes (no leading
+//  '/', trailing '/' preserved iff the user typed it that way — the
+//  dir-form signal sniff PUT / DELETE use).  Returns PATHBAD when
+//  the resolved absolute path lies outside `wt_root`.
+static ok64 be_canon_path(path8b out, u8cs cwd, u8cs wt_root,
+                          u8cs user_path) {
+    sane(u8bOK(out));
+    u8bReset(out);
+    if (u8csEmpty(user_path)) done;
+
+    b8 dir_form = (*u8csLast(user_path) == '/');
+
+    a_path(absbuf);
+    if (PATHu8sIsAbsolute(user_path)) {
+        call(PATHu8bNorm, absbuf, user_path);
+    } else {
+        call(PATHu8bAbs, absbuf, cwd, user_path);
+    }
+
+    a_dup(u8c, abs, u8bDataC(absbuf));
+    a_dup(u8c, base, wt_root);
+    if (!u8csEmpty(base) && *u8csLast(base) == '/') u8csShed1(base);
+
+    if (u8csEq(abs, base)) done;             //  the wt root itself
+
+    a_dup(u8c, rel, abs);
+    if (!u8csHasPrefix(rel, base))           return PATHBAD;
+    u8csUsed(rel, u8csLen(base));
+    if (u8csEmpty(rel) || *rel[0] != '/')    return PATHBAD;
+    u8csUsed1(rel);
+
+    call(u8bFeed, out, rel);
+    if (dir_form && *u8csLast(u8bDataC(out)) != '/')
+        call(u8bFeed1, out, '/');
+    call(PATHu8bTerm, out);
+    done;
+}
+
 //  Bare `be` — overview of the working tree.  Forwards to bare
 //  `sniff`, which lists Changed: and Untracked: against the baseline
 //  tree (untracked-but-gitignored filtered).  spot / graf / keeper
@@ -1872,6 +1919,57 @@ static ok64 becli_inner(cli *c) {
                 if (ko == OK) (void)KEEPClose();
             }
             HOMEClose(&rh);
+        }
+    }
+
+    //  Top-of-chain path canonization pass.  Mirror of the query
+    //  resolver above (STORE.md §"URI structure": every input path
+    //  shape resolves to a project-relative form).  Sub-dogs receive
+    //  canonic paths and never re-walk cwd.
+    //
+    //  Skipped for URIs with an authority (`ssh://host/path` — path
+    //  is server-side) and for inputs whose lex doesn't even find a
+    //  path slot.  Projector schemes (`tree:`, `blob:`, …) are NOT
+    //  skipped: their path is wt-rel just like the verb forms.
+    //
+    //  Buffer is sized for the worst case — every URI fully rewritten.
+    //  The rewritten bytes live in `path_scratch` for becli's full
+    //  frame (covers BEExecute → BEBuildArgv hand-off).
+    a_pad(u8, path_scratch, MAX_URI_LEN * CLI_MAX_URIS);
+    if (u8bHasData(c->repo) && uribDataLen(c->uris) > 0) {
+        a_path(cwdbuf);
+        if (FILEGetCwd(cwdbuf) == OK) {
+            a_dup(u8c, cwd_s, u8bDataC(cwdbuf));
+            a_dup(u8c, wt_s,  u8bDataC(c->repo));
+            for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+                uri *u = uribAtP(c->uris, i);
+                //  Re-lex `u->data` so component slices reflect the
+                //  current (post-query-canon) bytes.  URILexer
+                //  CONSUMES `data`, so capture component slices off
+                //  the local `lexed` and leave `u->data` alone for
+                //  now — we'll point it at the rewritten bytes below.
+                uri lexed = {};
+                u8csMv(lexed.data, u->data);
+                if (URILexer(&lexed) != OK) continue;
+                if (u8csEmpty(lexed.path))           continue;
+                if (!u8csEmpty(lexed.authority))     continue;
+
+                a_path(rel);
+                if (be_canon_path(rel, cwd_s, wt_s, lexed.path) != OK)
+                    continue;
+                a_dup(u8c, rel_s, u8bDataC(rel));
+                if (u8csEq(rel_s, lexed.path)) continue;  // unchanged
+
+                //  Splice the new path back into the URI shape; keep
+                //  every other component.  Sub-dogs re-lex from data.
+                u8csMv(lexed.path, rel_s);
+                u8c *before = *u8bIdle(path_scratch);
+                if (URIutf8Feed(u8bIdle(path_scratch), &lexed) != OK)
+                    continue;
+                u8c *after = *u8bIdle(path_scratch);
+                u->data[0] = before;
+                u->data[1] = after;
+            }
         }
     }
 

@@ -148,3 +148,7 @@ A normal commit-and-tag would look like:
 
     be post '#highly informative commit message'
     be put ?v1.2.3
+
+A worktree reset can be achieved by:
+
+    be post '?null'

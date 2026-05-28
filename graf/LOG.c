@@ -38,6 +38,7 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/HUNK.h"
 #include "dog/tok/TOK.h"
 #include "dog/ULOG.h"
@@ -657,23 +658,42 @@ static ok64 graf_head_commit_tree(keeper *k, u64 commit_h60, sha1 *out) {
 typedef struct {
     sha1 sha;
     b8   found;
+    u8cs want_query;   //  empty = wildcard (any peer row);
+                       //  set = peer row's `?<q>` must equal this slice
 } rt_ctx;
 
 //  REFSEach callback: pick the first authority-bearing (peer-tracking)
-//  ref row.  Stops the walk via REFSSTOP after the first match.
+//  ref row whose `?<query>` matches `want_query` (or any row when
+//  `want_query` is empty).  Stops the walk via REFSSTOP after the
+//  first match.
 static ok64 graf_head_pick_remote_cb(refcp r, void *ctx) {
     rt_ctx *rt = (rt_ctx *)ctx;
     if (rt->found) return REFSSTOP;
     //  Key has `//` iff two consecutive '/' bytes appear before any '?'.
+    //  At the same time, locate the LAST '?' so we can extract the
+    //  row's query slot when filtering by `want_query`.
     u8cs key = {};
     u8csMv(key, r->key);
     u8cp p = key[0];
     b8 has_auth = NO;
-    while (p + 1 < key[1]) {
-        if (p[0] == '/' && p[1] == '/') { has_auth = YES; break; }
+    u8cp last_q = NULL;
+    while (p < key[1]) {
+        if (p + 1 < key[1] && p[0] == '/' && p[1] == '/') has_auth = YES;
+        if (*p == '?') last_q = p;
         p++;
     }
     if (!has_auth) return OK;
+    //  Filter by query when the caller named one (trunk-alias
+    //  resolution: `?master` matches only peer rows whose URL ends
+    //  in `?master`, not arbitrary `?feat`).
+    if (!u8csEmpty(rt->want_query)) {
+        u8cs key_query = {NULL, NULL};
+        if (last_q != NULL && last_q + 1 <= key[1]) {
+            key_query[0] = last_q + 1;
+            key_query[1] = key[1];
+        }
+        if (!u8csEq(key_query, rt->want_query)) return OK;
+    }
     //  val = `?<40-hex>` (REFS layout); strip the leading `?`.
     u8cs val = {};
     u8csMv(val, r->val);
@@ -743,6 +763,49 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
                     ? graf_head_decode_sha(out, resolved.query)
                     : GRAFNONE;
             return rv;
+        }
+        //  Trunk-alias detection.  In beagle, git's `master`/`main`/
+        //  `trunk` are not standalone branches — they map to the
+        //  project's trunk (DPATHBranchNormFeed collapses each to the
+        //  empty branch).  `be head ?master` on a clone-from-git
+        //  parent should therefore compare cur to the most recently
+        //  fetched peer `?master` tip, NOT to a local `?master` REFS
+        //  row that just records cur's own post on trunk (which would
+        //  always report 0/0 ahead/behind).
+        //
+        //  Pull the branch slice out of the query: canonic form
+        //  `/<project>/<branch>/<sha>` splits via DOGCanonQueryParse;
+        //  bare `?master` is the query itself.  Normalising the
+        //  branch slice and getting an empty result is the canonical
+        //  trunk-alias signal.
+        u8cs query_branch = {};
+        u8csMv(query_branch, u->query);
+        {
+            u8cs c_proj = {}, c_branch = {}, c_pin = {};
+            if (DOGCanonQueryParse(u->query, c_proj, c_branch, c_pin))
+                u8csMv(query_branch, c_branch);
+        }
+        a_pad(u8, norm_buf, 256);
+        (void)DPATHBranchNormFeed(norm_buf, query_branch);
+        if (u8bDataLen(norm_buf) == 0) {
+            //  Prefer the peer-form row whose URL carries the same
+            //  alias (`ssh://…?master` for input `?master`).  The
+            //  alias label is opaque to be — the peer wrote it, we
+            //  echo it.  No alias canonicalisation here.
+            rt_ctx rt = {.found = NO};
+            u8csMv(rt.want_query, query_branch);
+            (void)REFSEach($path(keepdir), graf_head_pick_remote_cb, &rt);
+            if (rt.found) { sha1Mv(out, &rt.sha); return OK; }
+            //  No peer row — fall back to trunk REFS (`?`) lookup.
+            //  Catches `be head ?master` on a self-hosted be repo
+            //  with no upstream: still resolves to the local trunk
+            //  tip (yields 0/0 — accurate).
+            a_cstr(qmark, "?");
+            a_dup(u8c, qkey, qmark);
+            ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+            return (ro == OK)
+                    ? graf_head_decode_sha(out, resolved.query)
+                    : GRAFNONE;
         }
         a_dup(u8c, in_uri, u->data);
         ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), in_uri);
@@ -928,7 +991,14 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
             t[0] = u8bDataHead(tabuf);
             t[1] = u8bIdleHead(tabuf);
         }
-        call(GRAFSwitchBranch, k->h, t);
+        //  Trunk aliases (`master`/`main`/`trunk`/heads-prefixed) and
+        //  tag pins have no shard dir to switch into — both shapes
+        //  surface as GRAFNOPATH.  Treat them as "stay on cur": the
+        //  ancestor walks below run over cur's runs, which carry the
+        //  full reachable closure for these light-weight forms.
+        try(GRAFSwitchBranch, k->h, t);
+        on(GRAFNOPATH) __ = OK;
+        nedo return __;
     }
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
