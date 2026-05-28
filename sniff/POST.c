@@ -2281,7 +2281,7 @@ ok64 POSTCommit(u8cs target_branch,
                 u8cs message, u8cs author,
                 cli const *inv, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
-    b8 force = inv && CLIHas(inv, "--force");
+    (void)inv;
     keeper *k = &KEEP;
     //  Repo root from the SNIFF singleton (see post_reporoot()).
     a_dup(u8c, reporoot, post_reporoot());
@@ -2705,18 +2705,17 @@ ok64 POSTCommit(u8cs target_branch,
             //  (VERBS.md §PATCH "Reporting" — conflict-loud
             //  rule).  Lone `<<<<` (prose mentions) doesn't
             //  trigger — see `SNIFFHasConflictMarker` for the
-            //  exact predicate.  `force=YES` skips the scan.
-            if (!force) {
-                if (SNIFFHasConflictMarker(body)) {
-                    fprintf(stderr,
-                        "sniff: post: refusing — conflict "
-                        "marker in tracked file " U8SFMT " "
-                        "(re-run with --force to override)\n",
-                        u8sFmt(path));
-                    if (mapped) FILEUnMap(mapped);
-                    KEEPPackClose(&p);
-                    return POSTCFLCT;
-                }
+            //  exact predicate.  No `--force` escape hatch: per
+            //  VERBS.md §POST the verb is fail-loud, the only
+            //  way past is to resolve the markers.
+            if (SNIFFHasConflictMarker(body)) {
+                fprintf(stderr,
+                    "sniff: post: refusing — conflict "
+                    "marker in tracked file " U8SFMT "\n",
+                    u8sFmt(path));
+                if (mapped) FILEUnMap(mapped);
+                KEEPPackClose(&p);
+                return POSTCFLCT;
             }
             u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
             sha1 bsha = {};

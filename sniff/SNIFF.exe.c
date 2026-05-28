@@ -605,6 +605,19 @@ ok64 SNIFFExec(cli *c) {
     ok64 ret = OK;
 
     if (is_post) {
+        //  VERBS.md §POST defines no `--force` (the spec lists it
+        //  only under §GET as a tree-reset override).  Sniff used
+        //  to silently consume `--force` to bypass the POSTCFLCT
+        //  conflict-marker scan, an undocumented escape hatch.
+        //  Refuse at the dispatcher: the right way to commit a
+        //  half-merged file is to resolve the markers first.
+        if (CLIHas(c, "--force")) {
+            fprintf(stderr,
+                    "sniff: post: --force is not a valid flag for POST "
+                    "(VERBS.md §POST).  Resolve conflict markers in "
+                    "the wt before committing.\n");
+            fail(SNIFFFAIL);
+        }
         u8cs commit_msg = {};
         //  Per VERBS.md: free-form trailing words are folded into a
         //  URI's #fragment by CLIParse.  Prefer that over the legacy
@@ -1001,7 +1014,11 @@ ok64 SNIFFExec(cli *c) {
             //  Accept `path?query` for single-file merge, bare
             //  `?query` (with optional `#hash` clamp) for whole-wt
             //  merge, or bare `#hash` for single-commit cherry-pick.
-            if (!$empty(u->path) && !$empty(u->query)) {
+            //  Transport-form URIs (authority + scheme present) carry
+            //  the remote's path in `u->path`; that's NOT a local file
+            //  path and must route through the whole-tree PATCHApply.
+            if (!$empty(u->path) && !$empty(u->query) &&
+                $empty(u->authority)) {
                 a_dup(u8c, path,  u->path);
                 a_dup(u8c, query, u->query);
                 a_dup(u8c, frag,  u->fragment);

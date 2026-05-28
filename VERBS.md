@@ -107,6 +107,13 @@ into the path.  Remote-tracking shards sit under a `remotes/`
 class dir parallel to branches (`<store>/<project>/remotes/<host>/`).
 `?ref` resolves in this order:
 
+ 0. **Empty `?` and bare `?.`** ⇒
+      * No query slot at all (e.g. `be get ./file.c`) — use **cur**.
+      * Query slot present but empty (`be get ./file.c?`) — use
+        cur project's **trunk**.
+      * Query slot is a single dot (`be get ./file.c?.`) — explicit
+        "use cur" alias (same as no query slot).
+    Path-bearing GET relies on this three-way split — see §GET.
  1. **Magic refs** ⇒ `?null` is the empty branch (stash target,
     no checkout); `?back` is the previously checked-out branch
     (the `cd -` of branch switching, read from cur's reflog).
@@ -198,12 +205,21 @@ moves it into the verb's natural slot via `DOGPromoteBareword`
 | Verb       | Bareword lands in | Example          | Equivalent           |
 |------------|-------------------|------------------|----------------------|
 | POST       | fragment (msg)    | `be post fix`    | `be post '#fix'`     |
-| GET        | query (branch)    | `be get feat`    | `be get ?feat`       |
+| GET        | path if tracked, else query | `be get file.c` / `be get feat` | `be get ./file.c` / `be get ?feat` |
 | HEAD       | query (branch)    | `be head main`   | `be head ?main`      |
 | PATCH      | query (branch)    | `be patch trunk` | `be patch ?trunk`    |
 | PUT        | path (file)       | `be put file.c`  | `be put ./file.c`    |
 | DELETE     | path (file)       | `be delete README` | `be delete ./README` |
 | verbless   | path (file)       | `be file.c`      | `be ./file.c` (bro)  |
+
+GET's split: a bareword that names a tracked path (file present in
+cur's tree or on disk in the wt) goes to the path slot and triggers
+the single-file restore form (`be get file.c` ≡ `be get ./file.c`;
+see §GET below).  Any other bareword goes to the query slot for the
+branch-switch form (`be get feat` ≡ `be get ?feat`).  The path-
+sniff happens in `DOGPromoteBareword`; on ambiguous matches (a
+bareword that exists as both a tracked file and a branch name) the
+file wins and the user types `?feat` to disambiguate.
 
 Tokens with explicit markers bypass the bareword default and
 parse as URIs per `dog/DOG.md`:
@@ -379,6 +395,9 @@ not to local branch switches.
 | `be get ?./fix`                   | Switch wt+cur to child branch `fix`; error if missing (PUT first). |
 | `be get ?abc1234`                 | Detached checkout on a sha.  POST/PATCH refuse until re-attached. |
 | `be get '#~1'`                    | Rewind cur ref by one commit and reset wt.  Stays attached to cur. |
+| `be get file.c`                   | Restore one file in the wt from cur's baseline tree.  Discards user edits to that path; resurrects it if deleted.  Bareword promoted to path because `file.c` matches a tracked entry — see §"Bareword defaults". |
+| `be get file.c?.`                 | Same as above, explicit form (`?.` = cur per §"Ref resolution" rule 0). |
+| `be get file.c?`                  | Take one file from cur project's **trunk** (empty `?` = trunk per §"Ref resolution" rule 0).  No staging.  Same single-file shape, different source. |
 | `be get file.c?feat`              | Overwrite one file in the wt from another branch's tip (no staging). |
 | `be get //origin?feat`            | Cached read of origin's `feat` ref + pack already in store; reset wt to its tip.  No network. |
 | `be get ssh://host/path?feat`     | Open wire, fetch `feat` (pack + REFS), checkout; first contact logs the URL to the project's reflog. |

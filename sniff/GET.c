@@ -1813,24 +1813,113 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  pack hasn't been pre-fetched — that's intentional (use `be
     //  get` for clones).
 
-    //  Path+query, no authority — single-file or subtree overlay
-    //  from another branch's tip (VERBS.md §GET).  Trailing `/` on
-    //  the path picks subtree mode; no slash means single file.
-    //  No `.be/wtlog` row is appended either way (no staging — the
-    //  written paths land as regular user edits).  No pruning — wt
-    //  files outside the target tree stay put (per project rule:
-    //  GET overwrites unconditionally; we don't try to be clever
-    //  about dirty wt state, but also don't sweep extras).
-    if (!$empty(u->path) && !$empty(u->query) && $empty(u->authority)) {
+    //  Path-bearing GET, no authority (local restore / overlay).
+    //  Per VERBS.md §GET + §"Bareword defaults" + §"Ref resolution":
+    //
+    //    path  + ?<branch>  → take from branch.tip (existing form)
+    //    path  + ?          → take from cur project's trunk
+    //                         (empty `?` = trunk per ref-resolution rule 0)
+    //    path  + (no ?)     → restore from cur baseline
+    //                         (bareword promoted to path because the
+    //                         file is tracked in cwd; see
+    //                         §"Bareword defaults")
+    //
+    //  All three reuse the blob/subtree fetch path; they differ only
+    //  in how `u->query` is composed before sniff_get_blob_to_wt is
+    //  called.  No `.be/wtlog` row is appended in any of the three
+    //  (no staging — written paths land as regular user edits).
+    //  Hex-shaped path is `be get <sha>` (legacy sub-mount spawn
+    //  path) — skip the file-restore block and fall through to
+    //  the path-only branch below (which builds `?<hex>` for
+    //  GETCheckout).  Uses dog/DOG.h's DOGIsHashlet predicate
+    //  (6..40 hex chars).  A full 40-hex path can't be a real
+    //  filename and never makes sense as a file overlay target.
+    b8 path_is_full_hex = !$empty(u->path) &&
+                          u8csLen(u->path) == 40 &&
+                          DOGIsHashlet(u->path);
+    if (!$empty(u->path) && $empty(u->authority) && !path_is_full_hex) {
+        b8 has_query_slot     = (u->query[0] != NULL);
+        b8 query_slot_empty   = has_query_slot && $empty(u->query);
+        //  Treat `?.` (single dot) as the cur-branch alias — same as
+        //  the no-? case (restore from baseline).  Per the
+        //  branch-relative rule in VERBS.md §"Ref resolution", `?.`
+        //  is the implicit "current branch" marker.
+        b8 query_is_dot       = has_query_slot && u8csLen(u->query) == 1 &&
+                                u->query[0][0] == '.';
+        if (query_is_dot) {
+            has_query_slot = NO;
+            query_slot_empty = NO;
+        }
+
+        //  Synthesize a hex query for the no-? and empty-? cases.
+        //  cur_hex / trunk_hex storage lives on the stack and must
+        //  outlive sniff_get_blob_to_wt, which slices through u.
+        a_pad(u8, synth_qbuf, 64);
+        a_pad(u8, synth_dbuf, 320);
+        if (!has_query_slot) {
+            //  Restore-from-baseline: pull cur's tip sha from the
+            //  latest get/post/patch wtlog row.
+            ron60 cts = 0, cverb = 0;
+            uri cu = {};
+            if (SNIFFAtCurTip(&cts, &cverb, &cu) == OK) {
+                sha1hex chex = {};
+                if (SNIFFAtQueryFirstSha(&cu, &chex) == OK) {
+                    a_rawc(chex_s, chex);
+                    u8bFeed(synth_qbuf, chex_s);
+                }
+            }
+            if (u8bDataLen(synth_qbuf) != 40) {
+                fprintf(stderr,
+                    "sniff: get: cannot restore %.*s — no baseline "
+                    "in `.be/wtlog`\n",
+                    (int)$len(u->path), (char const *)u->path[0]);
+                fail(SNIFFFAIL);
+            }
+        } else if (query_slot_empty) {
+            //  Empty `?` → trunk (ref-resolution rule 0).  Look up
+            //  trunk's tip from the project's REFS via the bare
+            //  `?` key.
+            a_pad(u8, ar, 1024);
+            uri resolved = {};
+            a_cstr(qkey, "?");
+            ok64 ro = REFSResolve(&resolved, ar, $path(keepdir),
+                                   qkey);
+            if (ro != OK || u8csLen(resolved.query) != 40) {
+                fprintf(stderr,
+                    "sniff: get: cannot resolve trunk tip for %.*s?\n",
+                    (int)$len(u->path), (char const *)u->path[0]);
+                fail(SNIFFFAIL);
+            }
+            u8bFeed(synth_qbuf, resolved.query);
+        }
+
+        if (!has_query_slot || query_slot_empty) {
+            //  Splice the synthesized sha into u->fragment (not
+            //  u->query): KEEPResolveTree routes # to a hex lookup
+            //  and ? to a REFSResolve ref-name lookup.  Rebuild
+            //  u->data as `path#40hex` so the URI re-parse downstream
+            //  sees the same shape.
+            a_dup(u8c, q40, u8bData(synth_qbuf));
+            u8bFeed(synth_dbuf, u->path);
+            u8bFeed1(synth_dbuf, '#');
+            u8bFeed(synth_dbuf, q40);
+            a_dup(u8c, dview, u8bData(synth_dbuf));
+            u8csMv(u->fragment, q40);
+            u->query[0] = NULL;
+            u->query[1] = NULL;
+            u8csMv(u->data, dview);
+        }
+
         b8 is_subtree = (*u8csLast(u->path) == '/');
         if (!is_subtree)
             return sniff_get_blob_to_wt(reporoot, u);
         return sniff_get_subtree_to_wt(reporoot, u);
     }
 
-    //  Path-only URI (no authority, no query) → `be get <hex>` or
-    //  `be get <local-dir>` (the latter is rewritten by BEGetWorktree
-    //  to a query-only URI before we get here).
+    //  Path-only URI (no authority, no query, AND path doesn't look
+    //  like a tracked file) → `be get <hex>` or `be get <local-dir>`.
+    //  Today this is unreachable because the dispatcher above eats
+    //  every path-bearing case; left as a defensive fall-through.
     if ($empty(u->query) && $empty(u->authority) && !$empty(u->path)) {
         a_pad(u8, src, 256);
         u8bFeed1(src, '?');

@@ -402,12 +402,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
     ok64 lo = fetch_tree(lbuf, dir_path, fork_commit);
     ok64 oo = fetch_tree(obuf, dir_path, our_commit);
     ok64 to = fetch_tree(tbuf, dir_path, thr_commit);
-    fprintf(stderr,
-            "PATCHDBG walk dir='%.*s' lo=%llx(%zu) oo=%llx(%zu) to=%llx(%zu)\n",
-            (int)$len(dir_path), (char *)dir_path[0],
-            (unsigned long long)lo, u8bDataLen(lbuf),
-            (unsigned long long)oo, u8bDataLen(obuf),
-            (unsigned long long)to, u8bDataLen(tbuf));
+    (void)lo; (void)oo; (void)to;
 
     entry *le = entrybDataHead(leb);
     entry *oe = entrybDataHead(oeb);

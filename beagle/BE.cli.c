@@ -1819,9 +1819,26 @@ static ok64 becli_inner(cli *c) {
             else if ($eq(c->verb, _v_patch)) def = 'q';
         }
         if (def != 'p') {
+            a_cstr(_v_get, "get");
+            b8 is_get = !$empty(c->verb) && $eq(c->verb, _v_get);
             for (u32 i = 0; i < uribDataLen(c->uris); i++) {
                 uri *u = uribAtP(c->uris, i);
                 u8cs orig_path = {u->path[0], u->path[1]};
+
+                //  GET path-sniff (VERBS.md §"Bareword defaults"): a
+                //  bareword that names a file present on disk in the
+                //  cwd stays in the path slot (single-file restore
+                //  form, `be get file.c` ≡ `be get ./file.c`).
+                //  Deleted-file restore needs the explicit `./` form
+                //  since stat misses it.  Skips promotion entirely.
+                if (is_get && !u8csEmpty(orig_path)) {
+                    a_path(probe);
+                    if (PATHu8bFeed(probe, orig_path) == OK) {
+                        filestat fs = {};
+                        if (FILEStat(&fs, $path(probe)) == OK) continue;
+                    }
+                }
+
                 ok64 pr = DOGPromoteBareword(u, def);
                 if (pr != OK) continue;
                 if (u->path[0] != NULL) continue;        // not promoted
