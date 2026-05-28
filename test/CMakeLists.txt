@@ -39,15 +39,22 @@ set(_BE_WILL_FAIL_CASES
     # branch fan-out is "Phase 1c: dir chain is always [trunk
     # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
     "be-get-24-uri-refs"
-    # Bug 2: cached `be get //host` opens the wire.  Site:
-    # keeper/KEEP.exe.c::keeper_get dispatches on
-    # `!u8csEmpty(g->authority)` without gating on `g->scheme` (cf.
-    # BE_PLAN_PATCH which correctly requires URI_SCHEME|URI_AUTHORITY).
-    "be-get-26-cached-no-wire"
     # Bug 5: `be post --force` silently accepted; VERBS.md defines
     # --force only for GET.  Either spec the POSTCFLCT-override
     # semantics or refuse the flag at the dispatcher.
     "be-post-20-force-flag-spec"
+    # `be patch ssh://host?<branch>` when theirs.tip is already in
+    # cur's ancestry returns GRAFFAIL/BEDOGEXIT instead of a clean
+    # no-op.  Site: graf merge-base path doesn't handle
+    # `theirs ⊆ cur` (zero commits to absorb) case.
+    "be-patch-18-noop-already-absorbed"
+    # `be patch ssh://host?<branch>` on a genuinely divergent remote
+    # (cur and theirs share LCA, each has unique commits on top)
+    # GRAFFAIL/BEDOGEXIT even when the unique commits touch disjoint
+    # files (text-clean merge).  Matches the 2026-05-28 originating
+    # trace where cur was e76a669e and recover was 5c3bd26, both
+    # children of f922149.
+    "be-patch-20-divergent-merge"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what
@@ -98,6 +105,8 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-27-ff-refuse"
     "be-get-28-linear-ahead-preserved"
     "be-post-19-pure-push-no-commit"
+    "be-patch-18-noop-already-absorbed"
+    "be-patch-20-divergent-merge"
 )
 
 foreach(_run ${_be_case_runs})
