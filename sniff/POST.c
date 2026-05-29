@@ -2182,7 +2182,95 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         usable++;
         idx = i;
     }
-    if (usable != 1) return ULOGNONE;
+    if (usable == 0) return ULOGNONE;
+    if (usable > 1) {
+        //  Ambiguous: surface every candidate so the user can pick
+        //  one to retype as `#frag` on retry.  Switch keeper to the
+        //  picked branch (or cur, for non-located rows) before
+        //  KEEPGetExact so subject reads succeed even when the
+        //  picked sha lives in a sibling shard.
+        fprintf(stderr,
+                "sniff: post: multiple eligible messages — re-run "
+                "with explicit `#<subject>` to pick one:\n");
+        i64 now = 0;
+        {
+            struct timespec tv = {};
+            if (clock_gettime(CLOCK_REALTIME, &tv) == 0) now = tv.tv_sec;
+        }
+        a_pad(u8, saved, 256);
+        u8bFeed(saved, u8bDataC(KEEP.h->cur_branch));
+        if (u8bDataLen(saved) > 0 && *u8bLast(saved) == '/')
+            u8bShed1(saved);
+        a_carve(u8, cbuf, 1UL << 16);
+        for (u32 i = 0; i < n_pent; i++) {
+            if (pent[i].shape == 1 /* SQUASH */) continue;
+            //  Switch to the row's locator branch (if any) so a
+            //  rebase-one against `?feat#` can read feat's pack.
+            //  No locator → stay on cur.
+            b8 switched = NO;
+            if (!u8csEmpty(pent[i].locator)) {
+                if (SNIFFMaybeSwitchKeeper(pent[i].locator) == OK)
+                    switched = YES;
+            }
+            u8bReset(cbuf);
+            u8 ct = 0;
+            ok64 ko = KEEPGetExact(&pent[i].sha, cbuf, &ct);
+            //  Fallback: emit a minimal "sha + locator" hint when the
+            //  body isn't reachable (sibling shard not on the open
+            //  chain).  User can still match by sha.
+            a_pad(u8, date, 8);
+            u8cs subject = {};
+            if (ko == OK && ct == DOG_OBJ_COMMIT) {
+                git_commit gc = {};
+                GITu8sParseCommit(u8bDataC(cbuf), &gc);
+                u8csMv(subject, gc.subject);
+                i64 secs = 0;
+                struct tm t = {};
+                if (RONToTime(gc.author_ts, &t, NULL) == OK) {
+                    t.tm_isdst = -1;
+                    time_t s = mktime(&t);
+                    if (s != (time_t)-1) secs = (i64)s;
+                }
+                if (secs > 0) (void)DOGutf8sFeedDate(date_idle, secs, now);
+            }
+            if (u8bDataLen(date) == 0) {
+                a_cstr(sp7, "       ");
+                (void)u8bFeed(date, sp7);
+            }
+            if (!u8csEmpty(subject)) {
+                fprintf(stderr, "  %.*s\tpat\t#%.*s\n",
+                        (int)u8bDataLen(date),
+                        (char *)u8bDataHead(date),
+                        (int)$len(subject), (char *)subject[0]);
+            } else {
+                //  Body unreachable — show sha (8 hex) + locator hint.
+                sha1hex hx = {};
+                sha1hexFromSha1(&hx, &pent[i].sha);
+                if (!u8csEmpty(pent[i].locator)) {
+                    fprintf(stderr,
+                            "  %.*s\tpat\t#%.8s (in ?%.*s — body "
+                            "not in cur's shard)\n",
+                            (int)u8bDataLen(date),
+                            (char *)u8bDataHead(date),
+                            hx.data,
+                            (int)$len(pent[i].locator),
+                            (char *)pent[i].locator[0]);
+                } else {
+                    fprintf(stderr,
+                            "  %.*s\tpat\t#%.8s (body not in cur's "
+                            "shard)\n",
+                            (int)u8bDataLen(date),
+                            (char *)u8bDataHead(date),
+                            hx.data);
+                }
+            }
+            if (switched) {
+                a_dup(u8c, sb, u8bData(saved));
+                (void)KEEPSwitchBranch(KEEP.h, sb);
+            }
+        }
+        return ULOGNONE;
+    }
 
     sha1 pick = pent[idx].sha;
     u8   pshape = pent[idx].shape;
