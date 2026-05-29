@@ -17,6 +17,22 @@ BE=${BE:-$(command -v be || true)}
 }
 export BE
 
+# 1b. wire-transport env for ssh/keeper cases --------------------------
+#   The be:// / keeper:// wire edge spawns `ssh <host> keeper upload-pack`
+#   on the remote side; keeper/WIRECLI.c prepends $DOG_REMOTE_PATH to the
+#   remote shell PATH and honours $KEEPER_BIN for local transport.  Point
+#   both at the dir holding `be` (keeper sits beside it in the build's
+#   bin/) so wire / submodule / triangle cases pass under a plain `ctest`
+#   without the caller exporting anything.  Pre-set values win.
+_BE_BIN=$(dirname "$BE")
+: "${KEEPER_BIN:=$_BE_BIN/keeper}"
+: "${DOG_REMOTE_PATH:=$_BE_BIN}"
+export KEEPER_BIN DOG_REMOTE_PATH
+case ":$PATH:" in
+    *":$_BE_BIN:"*) ;;
+    *) PATH="$_BE_BIN:$PATH"; export PATH ;;
+esac
+
 # 2. resolve TMP --------------------------------------------------------
 : "${TMP:=/tmp}"
 export TMP

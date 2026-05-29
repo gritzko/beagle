@@ -104,11 +104,13 @@ set(DOG_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
 #  Per-configure run dir for toy-repo tests' scratch files.  Each
 #  script puts its workspace at `$TMP/$TEST_ID/` and cleans it up on
 #  exit; the run dir itself is rmdir'd best-effort once empty.
-#  /tmp by default so test scratch never lives under $HOME, where
-#  a user-owned `.be/` would poison the HOME walk-up.  Override via
-#  -DDOG_TEST_TMP_BASE=... when /tmp is too small (LSM mill-* tests
-#  can hit GBs).
-set(DOG_TEST_TMP_BASE "/tmp" CACHE PATH
+#  Defaults to `$HOME/tmp`: the WITH_SSH wire/submodule cases require
+#  scratch under $HOME for keeper's ssh-side path resolution, and a
+#  stray user `.be/` is not a hazard since every case creates its own
+#  `.be/` shield to stop the HOME walk-up.  Override via
+#  -DDOG_TEST_TMP_BASE=... (e.g. point at a bigger volume when the LSM
+#  mill-* tests hit GBs).
+set(DOG_TEST_TMP_BASE "$ENV{HOME}/tmp" CACHE PATH
     "Parent dir for toy-repo test scratch run dirs")
 string(TIMESTAMP _dog_test_run_ts "%Y%m%d-%H%M%S")
 set(DOG_TEST_TMP_ROOT "${DOG_TEST_TMP_BASE}/be-tests-${_dog_test_run_ts}")
