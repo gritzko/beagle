@@ -82,7 +82,7 @@
 //  these never persist — the buffer is mmap'd and freed inside one
 //  status invocation.  Re-encoded each call (cheap; <10 bytes each).
 typedef struct {
-    ron60 v_put, v_new, v_mov, v_mod, v_del, v_mis, v_unk;
+    ron60 v_put, v_new, v_mov, v_mod, v_pat, v_del, v_mis, v_unk;
 } status_verbs;
 
 static void status_verbs_init(status_verbs *v) {
@@ -90,6 +90,7 @@ static void status_verbs_init(status_verbs *v) {
     a_cstr(s_new, "new"); v->v_new = SNIFFAtVerbOf(s_new);
     a_cstr(s_mov, "mov"); v->v_mov = SNIFFAtVerbOf(s_mov);
     a_cstr(s_mod, "mod"); v->v_mod = SNIFFAtVerbOf(s_mod);
+    a_cstr(s_pat, "pat"); v->v_pat = SNIFFAtVerbOf(s_pat);
     a_cstr(s_del, "del"); v->v_del = SNIFFAtVerbOf(s_del);
     a_cstr(s_mis, "mis"); v->v_mis = SNIFFAtVerbOf(s_mis);
     a_cstr(s_unk, "unk"); v->v_unk = SNIFFAtVerbOf(s_unk);
@@ -101,7 +102,7 @@ typedef struct {
     //  The `ok` bucket never lists rows — clean tracked files would
     //  flood the output — so it's a counter only.
     Bu8 rows;
-    u32 ok_n, put_n, new_n, mov_n, mod_n, del_n, mis_n, unk_n;
+    u32 ok_n, put_n, new_n, mov_n, mod_n, pat_n, del_n, mis_n, unk_n;
     status_verbs v;
     i64 now;          // unix epoch seconds, for relative-date format
     u8cs reporoot;    // for resolving full paths in the wt-eq-base check
@@ -158,6 +159,19 @@ static b8 status_wt_is_mov_dst(ron60 mtime) {
     if (SNIFFAtRowAtTs(mtime, &ow_verb, &ow_u) != OK) return NO;
     if (ow_verb != SNIFFAtVerbPut()) return NO;
     return !u8csEmpty(ow_u.fragment) ? YES : NO;
+}
+
+//  YES iff `mtime` stamps a `patch` row — file's current bytes are
+//  the merged result of an in-scope PATCH absorption, staged for the
+//  next POST but not yet committed.  Status surfaces these as `pat`
+//  so the user sees the full staged set (otherwise PATCH-modifies of
+//  baseline files are silently bucketed as `ok`).
+static b8 status_wt_is_patched(ron60 mtime) {
+    if (mtime == 0 || !SNIFFAtKnown(mtime)) return NO;
+    ron60 ow_verb = 0;
+    uri ow_u = {};
+    if (SNIFFAtRowAtTs(mtime, &ow_verb, &ow_u) != OK) return NO;
+    return ow_verb == SNIFFAtVerbPatch() ? YES : NO;
 }
 
 static ok64 status_step(class_step const *step, void *ctx) {
@@ -232,13 +246,20 @@ static ok64 status_step(class_step const *step, void *ctx) {
             break;
         case CLASS_BOTH:
             //  mtime fast-path: file last touched by a tracked op
-            //  → unchanged from baseline content (counted as `ok`).
-            //  Otherwise the file was edited since last get/post —
-            //  unless its bytes hash equal to the baseline blob,
-            //  which is the "touched-unchanged" / clean-drift case
-            //  and also counts as `ok`.
+            //  → unchanged from baseline content (counted as `ok`),
+            //  EXCEPT when the stamping op is `patch` — those rows
+            //  represent merged-but-uncommitted bytes that the user
+            //  needs to see (`pat`).  Otherwise the file was edited
+            //  since last get/post — unless its bytes hash equal to
+            //  the baseline blob, which is the "touched-unchanged" /
+            //  clean-drift case and also counts as `ok`.
             if (SNIFFAtKnown(step->wt_rec->ts)) {
-                b->ok_n++;
+                if (status_wt_is_patched(step->wt_rec->ts)) {
+                    status_push(b->rows, path, step->wt_rec->ts,
+                                b->v.v_pat, &b->pat_n);
+                } else {
+                    b->ok_n++;
+                }
             } else if (CLASSWtEqBase(b->reporoot, step->base_rec,
                                      path)) {
                 b->ok_n++;
@@ -417,6 +438,7 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
     STATUS_BUCKET(b->put_n, "put", 'Y');
     STATUS_BUCKET(b->new_n, "new", 'W');
     STATUS_BUCKET(b->mov_n, "mov", 'V');
+    STATUS_BUCKET(b->pat_n, "pat", 'C');
     STATUS_BUCKET(b->mod_n, "mod", 'E');
     STATUS_BUCKET(b->del_n, "del", 'X');
     STATUS_BUCKET(b->mis_n, "mis", 'M');
@@ -445,6 +467,7 @@ static ok64 sniff_status_work(status_buckets *b) {
     if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, text, toks, b->now, &b->v);
     if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, text, toks, b->now, &b->v);
     if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, text, toks, b->now, &b->v);
+    if (b->pat_n > 0) status_dump_verb(b->rows, b->v.v_pat, text, toks, b->now, &b->v);
     if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, text, toks, b->now, &b->v);
     if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, text, toks, b->now, &b->v);
     if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, text, toks, b->now, &b->v);

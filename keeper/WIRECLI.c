@@ -1356,7 +1356,7 @@ static ok64 wpush_collect_hist_cb(uri const *u, ron60 ts, ron60 verb,
 #define WPUSH_PEER_TIPS_MAX 4096
 static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                              keeper *k, sha1cp local_tip_in,
-                             int *wfd, int *rfd) {
+                             int *wfd, int *rfd, b8 force) {
     sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0);
     sha1 local_tip = *local_tip_in;
 
@@ -1397,10 +1397,9 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     //  cache miss, so a stale/empty cache would otherwise let a non-FF
     //  push through.  Receive-pack on the wire side won't refuse it
     //  either (git's `denyNonFastForwards=false` default).  This is
-    //  the authoritative FF gate for `be post //remote`.  PUT-to-
-    //  remote (force-push) lives on a different code path and is
-    //  unaffected (VERBS.md §PUT Design invariant 9).
-    if (have_peer && !KEEPIsAncestor(&local_tip, &peer_tip)) {
+    //  the authoritative FF gate for `be post //remote`.  `force=YES`
+    //  (PUT-to-remote per VERBS.md §PUT Design invariant 9) skips it.
+    if (!force && have_peer && !KEEPIsAncestor(&local_tip, &peer_tip)) {
         sha1hex lh = {}, ph = {};
         sha1hexFromSha1(&lh, &local_tip);
         sha1hexFromSha1(&ph, &peer_tip);
@@ -1523,7 +1522,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
 }
 
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1cp local_tip_in) {
+              sha1cp local_tip_in, b8 force) {
     sane($ok(remote_uri));
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
@@ -1550,7 +1549,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     fprintf(stderr, "wpush: spawned ok, pid=%d\n", (int)pid);
 
     try(wire_push_inner, remote_uri, refname, k, local_tip_in,
-                          &wfd, &rfd);
+                          &wfd, &rfd, force);
     ok64 rv = __;
 
     if (wfd >= 0) close(wfd);

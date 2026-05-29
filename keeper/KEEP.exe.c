@@ -764,7 +764,10 @@ static ok64 keeper_post(keeper *k, cli *c) {
     //  can return a sibling-project row when parent + sub share
     //  a hostname.  Filter additionally by path when the user
     //  supplied an explicit transport URI with a path.
-    {
+    //  `--force` skips this cache-side FF check entirely (PUT's
+    //  force-push path per VERBS.md §PUT Design invariant 9).
+    b8 force = CLIHas(c, "--force") ? YES : NO;
+    if (!force) {
         a_pad(u8, ffarena, 1024);
         uri resolved = {};
         a_dup(u8c, in_uri, g->data);
@@ -801,7 +804,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
         }
     }
 
-    ok64 pu = WIREPush(remote_uri, local_branch, &at_tip);
+    ok64 pu = WIREPush(remote_uri, local_branch, &at_tip, force);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 

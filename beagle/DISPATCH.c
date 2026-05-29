@@ -195,6 +195,28 @@ ok64 BEActSniffPatch  (cli *c) { return be_spawn_all("sniff", "patch", c); }
 
 ok64 BEActKeeperGet    (cli *c) { return be_spawn_all("keeper", "get",    c); }
 ok64 BEActKeeperPush   (cli *c) { return be_spawn_all("keeper", "post",   c); }
+
+//  PUT-to-remote: same wire path as POST-push (BEActKeeperPush) but
+//  with a `--force` flag so keeper-side skips its FF check.  PUT is
+//  unconstrained per VERBS.md §PUT Design invariant 9.
+ok64 BEActKeeperPushForce(cli *c) {
+    sane(c);
+    a_cstr(dog_s,  "keeper");
+    a_cstr(verb_s, "post");
+    a_cstr(force_s, "--force");
+    a_dup(u8c, dog_d,  dog_s);
+    a_dup(u8c, verb_d, verb_s);
+    a_dup(u8c, force_d, force_s);
+    a_pad(u8cs, args, 5 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    BEBuildArgv(args, dog_d, verb_d, c);
+    //  Append --force to the spawn argv (BEBuildArgv already wrote
+    //  dog/verb/flags/uris in order; we add one more flag at the
+    //  end — keeper's CLIParse handles flags positionally with the
+    //  URIs so the trailing position is fine).
+    u8csbFeed1(args, force_d);
+    a_dup(u8cs, argv, u8csbData(args));
+    return BERun(dog_d, argv, NO);
+}
 ok64 BEActKeeperDelete (cli *c) { return be_spawn_all("keeper", "delete", c); }
 
 //  --- Action library: indexer spawns -------------------------------
@@ -292,7 +314,7 @@ be_action const BE_PLAN_PUT[] = {
     //  Mutually exclusive arms.  With an authority slot, FF-push
     //  (or non-FF — PUT is unconstrained); without one, auto-
     //  bootstrap + stage in sniff.
-    { URI_AUTHORITY, 0,             NO, BEActKeeperPush },
+    { URI_AUTHORITY, 0,             NO, BEActKeeperPushForce },
     { 0,             URI_AUTHORITY, NO, BEActBootstrap  },
     { 0,             URI_AUTHORITY, NO, BEActSniffPut   },
     BE_ACTION_END,

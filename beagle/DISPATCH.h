@@ -89,9 +89,10 @@ ok64 BEActReindex       (cli *c);
 ok64 BEActSingleFileGet (cli *c);
 
 //  Keeper-side spawns (object store + transport).
-ok64 BEActKeeperGet     (cli *c);
-ok64 BEActKeeperPush    (cli *c);
-ok64 BEActKeeperDelete  (cli *c);
+ok64 BEActKeeperGet      (cli *c);
+ok64 BEActKeeperPush     (cli *c);
+ok64 BEActKeeperPushForce(cli *c);
+ok64 BEActKeeperDelete   (cli *c);
 
 //  Post-fetch URI rewriter — collapses transport URIs to local
 //  `?<40hex>` form so sub-dogs only see local references.  Runs

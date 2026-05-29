@@ -260,7 +260,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(uri, branch_cs, &tip);
+        ok64 po = WIREPush(uri, branch_cs, &tip, NO);
         want(po == OK);
 
         KEEPClose();
@@ -314,7 +314,7 @@ ok64 WIRECLIENTtest_round_trip() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(uri, branch_cs, &tip);
+        ok64 po = WIREPush(uri, branch_cs, &tip, NO);
         want(po == OK);
 
         KEEPClose();
