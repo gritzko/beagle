@@ -1011,34 +1011,13 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
         if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
     }
 
-    //  Switch keeper to target.  cur's pack registry slides into PAST,
-    //  so KEEPMoveCommits' KEEPGetExact reads still resolve commits
-    //  living in cur's shard.  Writes land in target's new DATA leaf.
-    call(KEEPSwitchBranch, k->h, target_branch);
-
-    if (nchain > 0) {
-        //  Reverse to oldest-first for KEEPMoveCommits.
-        for (u32 i = 0, j = nchain - 1; i < j; i++, j--) {
-            sha1 tmp = chain[i]; chain[i] = chain[j]; chain[j] = tmp;
-        }
-        sha1cs slice = {chain, chain + nchain};
-        a_dup(u8c, src, cur_branch);
-        ok64 mv = KEEPMoveCommits(slice, src);
-        if (mv != OK && mv != KEEPMVNOOP) {
-            (void)KEEPSwitchBranch(k->h, cur_branch);
-            fprintf(stderr,
-                    "sniff: put: cross-shard copy failed (%s)\n",
-                    ok64str(mv));
-            return mv;
-        }
-    }
-
-    ok64 ar = REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
-
-    //  Restore cur as the active leaf so subsequent operations in this
-    //  invocation (reindex, status print) see what they expect.
-    (void)KEEPSwitchBranch(k->h, cur_branch);
-    return ar;
+    //  Flat store: new_tip's objects already live in the shared pool,
+    //  so there is no cross-shard switch or copy — the label move is a
+    //  pure REFS append.  The FP-chain walk above is retained only for
+    //  its FF / shared-ancestry validation (refuses non-descendant
+    //  label moves before the ref is written).
+    (void)nchain;
+    return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
 }
 
 ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {

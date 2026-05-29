@@ -81,32 +81,37 @@ pass naturally.
 
 ##  Repo dir layout
 
-Git objects (blobs, trees, commits) get appended to pack logs and
-indexed by the workdogs (spot for search, graf for version history,
-etc).
+Git objects (blobs, trees, commits, tags) get appended to pack logs
+and indexed by the workdogs (spot for search, graf for version
+history, etc).  Each project is a single flat object shard: one dir
+holds the objects for *all* local branches, all tags, and all
+remote-tracking refs.  There are no per-branch object subdirectories
+and no separate remotes store.
 
     .be/                                    # repo root
     .be/wtlog                               # default worktree log
-    .be/project                             # project root
-    .be/project/*.keeper                    # pack log files
-    .be/project/*.dog.idx                   # index files
-    .be/project/refs                        # ref log
-    .be/project/branch/*.keeper             # branch pack logs
-    .be/project/branch/*.dog.idx            # branch indexes
-    .be/project/branch/refs                 # branch reflog
-    .be/project/remotes/                    # remotes class dir
-    .be/project/remotes/host/               # per-host remote shard
-    .be/project/remotes/host/refs           # remote reflog
-    .be/project/remotes/host/*.keeper       # remote pack logs
-    .be/project/remotes/host/*.dog.idx      # remote indexes
-    .be/project/remotes/host/branch/        # remote branch
-    .be/project/remotes/host/branch/refs    # remote branch reflog
-    .be/project/remotes/host/branch/*.keeper   # remote branch packlogs
-    .be/project/remotes/host/branch/*.dog.idx  # remote branch indexes
+    .be/<project>/                          # project shard (one dir)
+    .be/<project>/refs                      # single ref log (ULOG)
+    .be/<project>/wtlog                     # colocated worktree log
+    .be/<project>/NNNNN.keeper              # pack log files (RON64 seqno)
+    .be/<project>/NNNNN.keeper.idx          # keeper LSM index runs
+    .be/<project>/NNNNN.graf.idx            # graf history index runs
+    .be/<project>/NNNNN.spot.idx            # spot trigram index runs
 
-Object retrieval normally checks the branch dir and all ancestor
-dirs as well. As branches can be dropped, beagle maintains object
-closure for each branch in reachable state.
+Branches and tags are not directories; they are pure ref rows in the
+single `<project>/refs` reflog.  A branch tip is `?heads/<name>` → sha;
+creating a branch writes one ref row (no mkdir), dropping a branch
+writes a ref tombstone (no dir or object deletion).  Remotes fold into
+the same shard: fetched remote objects land in the project's pack logs
+and remote-tracking refs (`//host?heads/...`) live in the same
+`<project>/refs`.  Object retrieval consults exactly one dir — there is
+no fan-out across a trunk → leaf dir chain.
+
+Garbage collection is epoch-based and out of band.  A dropped branch's
+objects simply linger in the shard; there is no per-branch GC and no
+live object deletion.  At a major release the repo is recompacted by
+copying the reachable closure into a fresh project id (e.g. `beagle` →
+`beagle2`), leaving the dead objects behind in the old shard.
 
 For secondary worktrees, `.be` is a wtlog file with its very
 first record pointing at the repo root.

@@ -3,14 +3,15 @@
 #  (PARENT_C2) to one that introduces the sub (PARENT_C3) mounts the
 #  sub on the second `be get` without needing a fresh clone.
 #
-#  Currently WILL_FAIL: stage 2 trips a pre-existing bug in the
-#  sniff-side submodule mount-on-switch path (`SNIFFSubMount` →
-#  forked `sniff get <pin>` reports "object not found", suggesting
-#  `WIREFetchAll` doesn't deliver the pinned ancestor commit in the
-#  fetch).  Beagle's recursion wrapper correctly identifies the
-#  resulting state as `declared, not mounted` — orchestration is
-#  fine; the upstream mount-driver is the bug.  Flip off once the
-#  sniff path is fixed.
+#  Regression: stage 2 used to fail with "keeper: subs: commit not
+#  found" (KEEPNONE).  Root cause was in the wire-fetch shard
+#  placement, not sniff: `be get ssh://…?master` while cur=`prev`
+#  landed C3's pack in the `prev/` leaf shard (the stale active
+#  leaf), so a later `keeper subs ?master#<C3>` opening trunk could
+#  not reach C3 (object resolution only walks child→parent→root,
+#  never into a sibling leaf).  Fixed in keeper/KEEP.cli.c: wire
+#  fetches now always land objects in the project trunk (root),
+#  which is reachable from every branch.
 #
 #  Setup (from submodules.sh):
 #      parent.git/  — 3 commits.  C1 main.c only, C2 + util.c (no sub),

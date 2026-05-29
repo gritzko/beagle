@@ -1,9 +1,9 @@
 #!/bin/sh
-#  08-sibling-ff-migrate — `be post ?<branch>` (no msg) FF-promotes
-#  the target label to cur.tip and copies the missing commit/tree/
-#  blob objects from cur's shard into the target's shard via
-#  KEEPMoveCommits (keeper/MIGRATE.c).  Cur stays put; only the
-#  named ref moves and only its pack log grows.
+#  08-sibling-ff-migrate — under the FLAT store layout, `be post
+#  ?<branch>` (no msg) FF-promotes the target label to cur.tip as a pure
+#  REF move over the ONE shared object pool `.be/$P/`.  Cur stays put;
+#  only the named ref moves.  Objects are shared — there is no
+#  per-branch pack growth.
 #
 #  Topology built without any remote / git fixture:
 #
@@ -12,25 +12,21 @@
 #                 ?fix1, ?fix2 forked at T2
 #
 #       on ?fix1: C1 (inline edit b.c), C2 (block edit c.c + rm d.c)
-#       be post ?fix2          → ?fix2 FF to C2; objects migrate
-#                                into .be/$P/fix2/
+#       be post ?fix2          → ?fix2 FF to C2 (ref move; shared pool)
 #       switch to ?fix2 — wt at C2 state
 #       on ?fix2: C3 (add f.c)
-#       be post ?fix1          → ?fix1 FF to C3; objects migrate
-#                                into .be/$P/fix1/
+#       be post ?fix1          → ?fix1 FF to C3 (ref move; shared pool)
 #       switch to ?fix1 — wt at C3 state
 #       switch to trunk — still at T2; wt has the original four files
 #       switch back to ?fix1
-#       be post ?..            → trunk FF to C3; objects migrate
-#                                into .be/
+#       be post ?..            → trunk FF to C3 (ref move; shared pool)
 #       switch to trunk — wt at C3; log T1..C3 is complete
 #
 #  Asserts:
 #    * cur (the promoting branch) never moves on `be post ?<other>`.
 #    * Target REFS advance to cur.tip.
-#    * Target's shard dir grows new pack files after each promote
-#      (proves KEEPMoveCommits copied objects, not just labels).
 #    * wt content matches expectations on every switch.
+#    * spot finds the migrated symbols; `be log:` walks the full chain.
 #    * First-parent chain on trunk after final FF reaches T1 via
 #      C3 → C2 → C1 → T2 → T1.
 
@@ -68,22 +64,6 @@ ref_tip() {
           n = split($0, toks, /[[:space:]]+/)
           v = toks[n]; sub(/^\?/, "", v); print v; exit
         }'
-}
-
-#  Total bytes across *.keeper pack files in a shard dir (0 if
-#  missing).  KEEPPackOpen appends to the tail pack rather than
-#  creating a new file (keeper/KEEP.c §KEEPPackOpen), so file count
-#  is invariant across promotes — bytes are not.
-pack_bytes() {
-    _dir=$1
-    [ -d "$_dir" ] || { echo 0; return; }
-    _total=0
-    for _f in "$_dir"/*.keeper; do
-        [ -f "$_f" ] || continue
-        _sz=$(wc -c < "$_f" | tr -d ' ')
-        _total=$((_total + _sz))
-    done
-    echo "$_total"
 }
 
 # ------------------------------------------------------------------
@@ -162,10 +142,9 @@ C2=$(head_hex)
     || { echo "?fix1 didn't advance past C1 for C2" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 7. `be post ?fix2` — FF ?fix2 to C2, migrate objects into .be/$P/fix2/.
-#    Cur stays on ?fix1.  This is the cross-shard copy under test.
+# 7. `be post ?fix2` — FF ?fix2 to C2 as a pure ref move over the shared
+#    pool.  Cur stays on ?fix1.
 # ------------------------------------------------------------------
-PRE_FIX2_PACKS=$(pack_bytes .be/$P/fix2)
 sleep 0.2
 must "$BE" post '?fix2' \
     > "$LOGS/13.promote-fix2.out" 2> "$LOGS/13.promote-fix2.err"
@@ -176,12 +155,6 @@ FIX2_AFTER=$(ref_tip '?fix2')
     || { echo "?fix1 (cur) drifted: want $C2 got $FIX1_AFTER" >&2; exit 1; }
 [ "$FIX2_AFTER" = "$C2" ] \
     || { echo "?fix2 didn't FF to C2=$C2 (got $FIX2_AFTER)" >&2; exit 1; }
-
-POST_FIX2_PACKS=$(pack_bytes .be/$P/fix2)
-[ "$POST_FIX2_PACKS" -gt "$PRE_FIX2_PACKS" ] \
-    || { echo "?fix2 shard pack bytes didn't grow (was $PRE_FIX2_PACKS, now $POST_FIX2_PACKS); KEEPMoveCommits didn't copy" >&2
-         ls -la .be/$P/fix2/ >&2 2>/dev/null
-         exit 1; }
 
 # ------------------------------------------------------------------
 # 8. Switch to ?fix2.  Wt resets to C2 state.
@@ -234,10 +207,9 @@ C3=$(head_hex)
     || { echo "?fix2 didn't advance past C2 for C3" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 10. `be post ?fix1` — FF ?fix1 to C3, migrate objects into
-#     .be/$P/fix1/.  Cur stays on ?fix2.
+# 10. `be post ?fix1` — FF ?fix1 to C3 as a pure ref move over the
+#     shared pool.  Cur stays on ?fix2.
 # ------------------------------------------------------------------
-PRE_FIX1_PACKS=$(pack_bytes .be/$P/fix1)
 sleep 0.2
 must "$BE" post '?fix1' \
     > "$LOGS/17.promote-fix1.out" 2> "$LOGS/17.promote-fix1.err"
@@ -248,12 +220,6 @@ FIX1_AFTER2=$(ref_tip '?fix1')
     || { echo "?fix2 (cur) drifted: want $C3 got $FIX2_AFTER2" >&2; exit 1; }
 [ "$FIX1_AFTER2" = "$C3" ] \
     || { echo "?fix1 didn't FF to C3=$C3 (got $FIX1_AFTER2)" >&2; exit 1; }
-
-POST_FIX1_PACKS=$(pack_bytes .be/$P/fix1)
-[ "$POST_FIX1_PACKS" -gt "$PRE_FIX1_PACKS" ] \
-    || { echo "?fix1 shard pack bytes didn't grow after promote-back (was $PRE_FIX1_PACKS, now $POST_FIX1_PACKS)" >&2
-         ls -la .be/$P/fix1/ >&2 2>/dev/null
-         exit 1; }
 
 # ------------------------------------------------------------------
 # 11. Switch to ?fix1.  Wt resets to C3 state (all five files,
@@ -306,13 +272,12 @@ match "$CASE/06.e.t2.c" e.c
 [ ! -e f.c ] || { echo "trunk@T2 should not have f.c" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 13. Switch back to ?fix1, `be post ?..` — FF trunk to C3 with
-#     object migration into .be/ (trunk's own shard).
+# 13. Switch back to ?fix1, `be post ?..` — FF trunk to C3 as a pure
+#     ref move over the shared pool.
 # ------------------------------------------------------------------
 sleep 0.2
 must "$BE" get '?fix1' \
     > "$LOGS/20.get-fix1.out" 2> "$LOGS/20.get-fix1.err"
-PRE_TRUNK_PACKS=$(pack_bytes .be/$P)
 sleep 0.2
 must "$BE" post '?..' \
     > "$LOGS/21.promote-trunk.out" 2> "$LOGS/21.promote-trunk.err"
@@ -322,12 +287,6 @@ TRUNK_TIP_FF=$(ref_tip '?')
     || { echo "trunk didn't FF to C3=$C3 (got $TRUNK_TIP_FF)" >&2; exit 1; }
 [ "$(ref_tip '?fix1')" = "$C3" ] \
     || { echo "?fix1 (cur) drifted after post ?.." >&2; exit 1; }
-
-POST_TRUNK_PACKS=$(pack_bytes .be/$P)
-[ "$POST_TRUNK_PACKS" -gt "$PRE_TRUNK_PACKS" ] \
-    || { echo "trunk shard pack bytes didn't grow after promote (was $PRE_TRUNK_PACKS, now $POST_TRUNK_PACKS)" >&2
-         ls -la .be/$P/ >&2 2>/dev/null
-         exit 1; }
 
 # ------------------------------------------------------------------
 # 14. Switch to trunk.  Wt resets to C3 state; trunk now carries

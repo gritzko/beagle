@@ -39,7 +39,8 @@ NEW32=$(ref_tip "?feat/new")
 F1_TIP_32_AFTER=$(ref_tip "?fix1")
 [ "$F1_TIP_32_AFTER" = "$F1_TIP_32" ] \
     || fail "§32: cur ?fix1 moved: $F1_TIP_32 -> $F1_TIP_32_AFTER"
-[ -d ".be/$P/feat/new" ] || fail "§32: .be/$P/feat/new shard missing"
+# flat layout: no per-branch dir; the leaf is a REFS row that resolves.
+[ ! -d ".be/$P/feat/new" ] || fail "§32: per-branch shard .be/$P/feat/new must not exist (flat layout)"
 
 seen_feat=NO
 cur="$NEW32"; n=0
@@ -91,7 +92,8 @@ NEW33=$(ref_tip "?feat/fix1")
 F1_AFTER_33=$(ref_tip "?fix1")
 [ "$F1_AFTER_33" = "$F1_PRE_33" ] \
     || fail "§33: cur ?fix1 moved"
-[ -d ".be/$P/feat/fix1" ] || fail "§33: .be/$P/feat/fix1 shard missing"
+# flat layout: no per-branch dir; the leaf is a REFS row that resolves.
+[ ! -d ".be/$P/feat/fix1" ] || fail "§33: per-branch shard .be/$P/feat/fix1 must not exist (flat layout)"
 seen_feat=NO
 cur="$NEW33"; n=0
 #  Same rationale as §32 — explicit branch hint required for keeper.

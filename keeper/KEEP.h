@@ -156,7 +156,6 @@ typedef struct {
     //  `keep_scan_branch_dir`.  Used to no-op repeat scans (cross-
     //  branch loads / migrate sweeps re-visit shared ancestor dirs);
     //  the dog-layer pup primitive deliberately doesn't dedup.
-    Bu8     loaded_dirs;
     int     lock_fd;              // flock on <leaf>/.lock; -1 = none
     //  Monotonic high-water mark for fresh pup_keys.  Updated by
     //  `keep_next_pup_key` to `max(RONNow(), last_pup_key + 1)` so

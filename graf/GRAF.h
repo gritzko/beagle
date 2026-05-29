@@ -20,18 +20,18 @@ typedef struct dag_ingest dag_ingest;
 
 // --- graf control struct (per DOG.md rule 8) ---
 //
-// Mirrors keeper's branch-aware shape: per-branch dirs hold
-// `<seqno>.graf.idx` files, registered as a DOGPup* puppy stack
-// (`puppies`).  GRAFOpenBranch walks trunk → … → leaf calling
-// DOGPupOpenAll per dir; reads fan out across the whole path; writes
-// only land in the leaf dir.  The typed `wh128cs runs[]` view is
-// rebuilt from the puppy stack on every Open and after each
-// DOGPupCreate / DOGPupThinTail; queries (DAGLookup et al) consume it
-// via `GRAFRuns()`.
+// Single-shard layout: one per-project dir `<root>/.be/<project>`
+// holds every `<seqno>.graf.idx` file, registered as a DOGPup* puppy
+// stack (`puppies`).  Branch is pure ref context (`h->cur_branch`),
+// not a directory.  GRAFOpenBranch scans that one dir via
+// DOGPupOpenAll; all runs are always visible (PAST stays empty).  The
+// typed `wh128cs runs[]` view is rebuilt from the puppy stack on every
+// Open and after each DOGPupCreate / DOGPupThinTail; queries (DAGLookup
+// et al) consume it via `GRAFRuns()`.
 
 typedef struct {
     home        *h;          // borrowed
-    int          lock_fd;    // flock on leaf dir's .lock; -1 = ro
+    int          lock_fd;    // flock on project shard dir's .lock; -1 = ro
     Bu8          arena;      // hunk staging buffer (renderer only)
     //  Per-call scratch for the (commit, path) → blob walk.  Reused
     //  across `GRAFBlobAtCommit` (`obj_buf`: commit object body) and
@@ -43,10 +43,11 @@ typedef struct {
     Bu8          tree_buf;
     int          out_fd;     // output fd (-1 = uninitialized)
 
-    //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` along
-    //  trunk → leaf.  Pup keys are 60-bit ron60 values.  Mmaps live in
-    //  FILE_WANT_BUFS[fd].  Compaction appends a new puppy to the tail
-    //  (DOGPupCreate) and drops the young suffix (DOGPupThinTail).
+    //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` in
+    //  the single project shard dir.  Pup keys are 60-bit ron60 values.
+    //  Mmaps live in FILE_WANT_BUFS[fd].  Compaction appends a new puppy
+    //  to the tail (DOGPupCreate) and drops the young suffix
+    //  (DOGPupThinTail).
     Bkv64        puppies;
     //  Active leaf-branch path lives in `h->cur_branch`.  Graf's
     //  switch hook runs BEFORE keeper updates `h->cur_branch` (per
@@ -79,7 +80,10 @@ ok64 GRAFDagFinish(void);
 con ok64 GRAFFAIL    = 0x41b28f3ca495;
 con ok64 GRAFOPEN    = 0x41b28f619397;
 con ok64 GRAFOPENRO  = 0x41b28f6193976d8;
-//  Missing prefix dir along the trunk → leaf branch path.
+//  Branch dir not found.  No longer raised by graf itself under the
+//  single-shard layout (every run lives in the one project dir);
+//  retained because GRAF.exe.c / LOG.c still match on it as a
+//  "stay on cur" signal from downstream resolvers.
 con ok64 GRAFNOPATH  = 0x41b28f5d864a751;
 //  No `--at` anchor available — `diff:` projector forms that need a
 //  baseline (any URI without an explicit `?h1..h2` range) refuse with
@@ -95,20 +99,22 @@ con ok64 GRAFFULL    = 0x41b28f59d54d;
 ok64 GRAFOpen(home *h, b8 rw);
 
 //  Branch-aware Open.  Normalizes `branch` via DPATHBranchNormFeed,
-//  registers it on the home singleton via HOMEOpenBranch, then walks
-//  trunk → … → leaf under `<root>/.be/`, calling
-//  `DOGPupOpenAll(GRAF.puppies, dir, ".graf.idx")` per dir.  Locks
-//  the leaf's `.lock` when rw.  Refreshes the typed `runs[]` view.
-//  Mirrors `KEEPOpenBranch`.  Missing prefix dirs return `GRAFNOPATH`.
+//  registers it on the home singleton via HOMEOpenBranch, then scans
+//  the single project shard dir `<root>/.be/<project>`, calling
+//  `DOGPupOpenAll(GRAF.puppies, dir, ".graf.idx")` once.  Branch is
+//  pure ref context (`h->cur_branch`), not a directory.  Locks the
+//  shard dir's `.lock` when rw.  Refreshes the typed `runs[]` view.
+//  Mirrors `KEEPOpenBranch`.
 ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw);
 
-//  Re-target an open graf from current leaf to `new_branch` WITHOUT
-//  closing.  Collapses current DATA into PAST on `g->puppies`, walks
-//  segments of `new_branch` past LCA(old, new) scanning new dirs,
-//  refreshes the runs view, swaps the leaf flock.  Mirrors
-//  `KEEPSwitchBranch`.  Cross-branch DAG walks (POSTPromote-style
-//  rebases, located cherry-pick) get visibility into both branches'
-//  `.graf.idx` runs via the unified PAST/DATA view.
+//  Re-target an open graf from current branch to `new_branch` WITHOUT
+//  closing.  Single-shard layout makes this label-only: every
+//  `.graf.idx` run already lives in the one project dir loaded at
+//  open, so the switch just re-points `h->cur_branch` (via
+//  HOMESetCurBranch).  No dir walk, no PAST/DATA flip, no rescan, no
+//  lock swap.  Mirrors `KEEPSwitchBranch`.  Cross-branch DAG walks
+//  (POSTPromote-style rebases, located cherry-pick) already see every
+//  run.
 ok64 GRAFSwitchBranch(home *h, u8cs new_branch);
 
 //  Fill `out` with a live `wh128css` view over the open puppy stack

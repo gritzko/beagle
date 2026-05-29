@@ -282,13 +282,12 @@ ok64 KEEPBranchDropTable() {
         {"heads/main",    KEEPTRUNK},
         {"heads/master",  KEEPTRUNK},
         {"heads/trunk",   KEEPTRUNK},
-        //  Step 2: drop validates against on-disk state.  None of
-        //  these dirs exist in this fresh store, so the answer is
-        //  KEEPNONE.
-        {"feature",       KEEPNONE},
-        {"heads/feature", KEEPNONE},
-        {"tags/v0.0.1",   KEEPNONE},
-        {"feature/fix1",  KEEPNONE},
+        //  Flat store: non-trunk drop is an idempotent OK (REFS
+        //  tombstone; shared object pool untouched).
+        {"feature",       OK},
+        {"heads/feature", OK},
+        {"tags/v0.0.1",   OK},
+        {"feature/fix1",  OK},
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         u8cs in = {(u8cp)cases[i].input,
@@ -331,32 +330,22 @@ ok64 KEEPbranchRoundTrip() {
     call(KEEPOpen, &h, YES);
     call(KEEPClose);
 
-    //  Re-open from a fresh home for create — KEEPCreateBranch is a
-    //  pure mkdir over an existing parent.  Trunk is the parent of
-    //  "feat"; "feat" is the parent of "feat/fix".  Order matters.
+    //  Re-open from a fresh home for create.  Flat store: creating any
+    //  branch label just records a REFS row — no per-branch dir and no
+    //  parent ordering requirement.
     a_cstr(feat,    "feat");
     a_cstr(featfix, "feat/fix");
 
-    //  Parent missing → KEEPNONE.
-    want(KEEPCreateBranch(&h, featfix) == KEEPNONE);
+    //  Any label is OK in the flat model (no KEEPNONE parent gate).
+    want(KEEPCreateBranch(&h, featfix) == OK);
 
-    //  Materialise "feat" first.
+    //  Create "feat".
     want(KEEPCreateBranch(&h, feat) == OK);
-    {
-        a_pad(u8, p, 256);
-        u8bFeed(p, root);
-        a_cstr(rel, "/" DOG_BE_NAME "/feat");
-        u8bFeed(p, rel);
-        u8bFeed1(p, 0);
-        struct stat st = {};
-        want(stat((char *)u8bDataHead(p), &st) == 0);
-        want((st.st_mode & S_IFMT) == S_IFDIR);
-    }
 
-    //  Re-create same branch → KEEPDUP.
-    want(KEEPCreateBranch(&h, feat) == KEEPDUP);
+    //  Idempotent re-create → OK (no KEEPDUP in the flat model).
+    want(KEEPCreateBranch(&h, feat) == OK);
 
-    //  Now nested.
+    //  Nested label again → OK.
     want(KEEPCreateBranch(&h, featfix) == OK);
 
     //  Open feat/fix.  Trunk + feat + feat/fix all exist on disk.
@@ -371,48 +360,49 @@ ok64 KEEPbranchRoundTrip() {
     }
     want(KEEP.lock_fd >= 0);
 
-    //  Verify leaf lock file exists.
+    //  Flat shard lock lives at <root>/.be/.lock (HOMEBranchDir
+    //  ignores the branch arg; no project set in this test).
     {
         a_pad(u8, p, 256);
         u8bFeed(p, root);
-        a_cstr(rel, "/" DOG_BE_NAME "/feat/fix/.lock");
+        a_cstr(rel, "/" DOG_BE_NAME "/.lock");
         u8bFeed(p, rel);
         u8bFeed1(p, 0);
         struct stat st = {};
         want(stat((char *)u8bDataHead(p), &st) == 0);
     }
 
+    //  Flat-model property: ingest one object on the open leaf, then
+    //  verify it survives a branch drop — objects live in one shared
+    //  pool; a drop only tombstones the REFS row.
+    a_cstr(blob, "flat store object survives branch drop");
+    u8csc objs[1] = {
+        {blob[0], blob[1]},
+    };
+    wh64 wh[1] = {
+        wh64Pack(DOG_OBJ_BLOB, 0, 0),
+    };
+    sha1 blob_sha = {};
+    KEEPObjSha(&blob_sha, DOG_OBJ_BLOB, objs[0]);
+    u64 obj_hashlet = WHIFFHashlet60(&blob_sha);
+    call(KEEPPut, objs, wh, 1);
+    want(KEEPHas(obj_hashlet, 15) == OK);
+
     call(KEEPClose);
 
-    //  Reopen on trunk so we can drop feat/fix.
+    //  Reopen on trunk to exercise the drops.
     call(KEEPOpen, &h, YES);
 
-    //  Refuses dropping while branch has children.
-    want(KEEPBranchDrop(feat) == KEEPDIRTY);
+    //  Object still present after reopen (shared pool, not branch-owned).
+    want(KEEPHas(obj_hashlet, 15) == OK);
 
-    //  Drop the leaf.  Dir must be gone afterwards.
+    //  Flat store: dropping any non-trunk branch is an idempotent OK
+    //  (REFS tombstone only; no KEEPDIRTY, no dir unlink).
+    want(KEEPBranchDrop(feat) == OK);
     call(KEEPBranchDrop, featfix);
-    {
-        a_pad(u8, p, 256);
-        u8bFeed(p, root);
-        a_cstr(rel, "/" DOG_BE_NAME "/feat/fix");
-        u8bFeed(p, rel);
-        u8bFeed1(p, 0);
-        struct stat st = {};
-        want(stat((char *)u8bDataHead(p), &st) != 0);
-    }
 
-    //  Now feat is empty leaf — drop succeeds.
-    call(KEEPBranchDrop, feat);
-    {
-        a_pad(u8, p, 256);
-        u8bFeed(p, root);
-        a_cstr(rel, "/" DOG_BE_NAME "/feat");
-        u8bFeed(p, rel);
-        u8bFeed1(p, 0);
-        struct stat st = {};
-        want(stat((char *)u8bDataHead(p), &st) != 0);
-    }
+    //  Objects linger: still retrievable after the branch drops.
+    want(KEEPHas(obj_hashlet, 15) == OK);
 
     call(KEEPClose);
     HOMEClose(&h);

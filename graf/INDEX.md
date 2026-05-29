@@ -15,7 +15,7 @@ object data is keeper's pack store.
 ## Verbs
 
 ```
-graf get    path?sha1&sha2[&...]   URI-driven deterministic blob merge
+graf get    path?<sha>             single-tip blob/tree read (`dir/?<sha>` = tree)
 graf get    URI (any other shape)  tip-walk indexer (incremental)
 graf merge  base ours theirs       3-way merge; -o <file> to write out
 graf blame  path                   token-level blame (reads keeper + DAG)
@@ -30,7 +30,7 @@ graf status                        index run/entry counts
 
 | File          | Purpose |
 |---------------|---------|
-| `GRAF.h`      | Singleton state, arena, output fd (`graf_out_fd`), public API. Byte rendering goes through `HUNKu8sFeedOut` dispatched off the module-global `HUNKMode` (TLV / Color / Plain) — no per-call formatter pointer. `GRAFOpenBranch(h, branch, rw)` walks trunk → leaf; missing prefix dirs return `GRAFNOPATH` |
+| `GRAF.h`      | Singleton state, arena, output fd (`graf_out_fd`), public API. Byte rendering goes through `HUNKu8sFeedOut` dispatched off the module-global `HUNKMode` (TLV / Color / Plain) — no per-call formatter pointer. `GRAFOpenBranch(h, branch, rw)` opens the single project shard; `branch` selects the ref context only (no per-branch dirs, no trunk → leaf walk) |
 | `GRAF.c`      | `GRAFOpen` / `GRAFOpenBranch` / `GRAFClose`, arena init, `GRAFHunkEmit` |
 | `GRAF.exe.c`  | `GRAFExec` — verb dispatch (get / diff / merge / blame / weave / index / status) |
 | `GRAF.cli.c`  | `main()` — parse argv, open singleton, call `GRAFExec` |

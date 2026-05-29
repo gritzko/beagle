@@ -60,16 +60,6 @@ set_tests_properties(GRAFget PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFget")
 
 if (WITH_SSH)
-    #  merge-from-git.sh — toy git source with two branches, keeper fetch
-    #  drives graf indexing, `graf get path?sha_a&sha_b` merges concurrent
-    #  disjoint edits.  Requires ssh-to-localhost (same as the beagle
-    #  git-backed tests).
-    add_test(NAME GRAFmergeFromGit
-        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/merge-from-git.sh
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-    set_tests_properties(GRAFmergeFromGit PROPERTIES
-        ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFmergeFromGit")
-
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh
     #  localhost, same transport as mill-tags.sh) and compares

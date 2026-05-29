@@ -1273,38 +1273,17 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     if (cr == REFSNONE) return OK;     //  branch has no REFS tip — skip
     if (cr != OK) return cr;
 
-    //  Cross-branch visibility: child's commits live in
-    //  `<.be>/<branch>/`, not loaded under cur.  Switch keeper + graf
-    //  to the descendant so GRAFLca, GRAFRebase, and the rebase emit's
-    //  KEEPGet calls see the child_tip's body and ancestry.  cc->p was
-    //  opened on cur's leaf — close it before the switch so the swept-
-    //  out DATA's file_id can't collide with the new leaf's allocator;
-    //  reopen on the new leaf so emits land in
-    //  `.be/<branch>/<NNNN>.keeper`.  We don't restore cur on the way
-    //  out — persist writes REFS, then either the next child gets
-    //  switched-to (collapsing this one likewise into PAST), or the
-    //  cascade finishes and the keeper close handles the rest.
-    //
-    //  TODO(cascade): pack reopen on the new leaf currently confuses
-    //  `keep_recompute_next_seqno` — the rebased commit body lands in
-    //  the pack but isn't reachable via `keeper get .#<sha>` afterward.
-    //  See test/branches/04-cascade.  Likely fix: have KEEPPackOpen on
-    //  a freshly-switched leaf use the PastData max+1 directly without
-    //  re-scanning `.be/*` on disk (which can see still-mmap'd packs
-    //  with the same seqno as the new pack's allocation).
-    if (cc->p != NULL) {
-        ok64 cl = KEEPPackClose(cc->p);
-        if (cl != OK) return cl;
-        zerop(cc->p);
-    }
-    //  Graf reads h->cur_branch as its "from" — order before keeper.
-    (void)SNIFFMaybeSwitchGraf(branch);
-    (void)SNIFFMaybeSwitchKeeper(branch);
-    if (cc->p != NULL) {
-        ok64 op = KEEPPackOpen(cc->p);
-        if (op != OK) return op;
-        cc->p->strict_order = NO;
-    }
+    //  Flat single-shard store: every branch's objects live in the one
+    //  `<root>/.be/<project>/` shard, and the cascade shares a single
+    //  open pack (`cc->p`) for the whole walk.  Objects emitted by the
+    //  parent's same-branch rebase were flushed into a now-closed,
+    //  registered pack; objects emitted by earlier cascade steps live
+    //  in `cc->p` (visible to KEEPGetExact while it stays open).  So
+    //  there is NO per-branch keeper/graf switch and NO pack close/
+    //  reopen here — that dance (needed by the old per-branch layout)
+    //  would drop visibility of the just-rebased parent tip and break
+    //  `KEEPGetExact` mid-cascade.  GRAFLca/GRAFRebase below resolve all
+    //  ancestry against the single shard.
 
     //  Old fork point = LCA(parent_old_tip, child_tip).
     sha1 fork_old = {};
@@ -1347,76 +1326,89 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
 }
 
 //  Collector for `post_cascade_collect_cb`: accumulates child-branch
-//  basenames into a single arena, with one `u8cs` slice per name.
+//  absolute paths into a single arena, with one `u8cs` slice per name.
+//  `parent` is the branch whose direct children we want (e.g. `L1`);
+//  trunk-leaf is the empty slice.
 typedef struct {
-    u8cs *names;
+    u8cs  parent;            // branch whose direct children we collect
+    u8cs *names;             // each: absolute child path (e.g. `L1/L2`)
     u32   cap;
     u32   n;
     u8bp  arena;
 } pc_collect;
 
-//  FILEScan callback (FILE_SCAN_DIRS): one entry per subdirectory of
-//  the parent branch dir.  We keep only "branch" entries — skip the
-//  `refs` reflog dir and anything dot-prefixed (`.lock`).  Basename is
-//  extracted as the slice after the last '/'.
-static ok64 post_cascade_collect_cb(void0p arg, path8p path) {
-    pc_collect *pc = (pc_collect *)arg;
+//  REFSEach callback: one entry per latest-per-key REFS row.  In the
+//  flat single-shard store there are no per-branch object subdirs —
+//  the branch hierarchy lives purely in REFS keys (`?L1`, `?L1/L2`).
+//  A *direct child* of `parent` is a key `?<parent>/<seg>` with exactly
+//  one extra path segment (no further `/`).  Trunk-leaf (empty parent)
+//  matches any single-segment key `?<seg>`.  We record the child's
+//  absolute branch path (`<parent>/<seg>` or `<seg>`).
+static ok64 post_cascade_collect_cb(refcp r, void *ctx) {
+    pc_collect *pc = (pc_collect *)ctx;
     if (pc->n >= pc->cap) return OK;
-    a_dup(u8c, base, u8bDataC(path));
-    //  Trailing '/' on dir entries from FILE_SCAN_DIRS — strip first.
-    if (!u8csEmpty(base) && *u8csLast(base) == '/') u8csShed1(base);
-    u8cp last_slash = NULL;
-    $for(u8c, p, base) {
-        if (*p == '/') last_slash = p;
+    a_dup(u8c, key, (u8c **)r->key);
+    //  Keys are `?<branch>`; only local-branch keys (leading '?', no
+    //  host) participate in the cascade.  Skip anything else.
+    if (u8csEmpty(key) || *key[0] != '?') return OK;
+    u8csUsed(key, 1);                          //  drop leading '?'
+    //  `?` (bare) is trunk-leaf itself, never its own child.
+    if (u8csEmpty(key)) return OK;
+    //  Must sit under `parent`: consume the `<parent>/` prefix.  Build
+    //  `<parent>/` once and prefix-check `key` against it.
+    if (!u8csEmpty(pc->parent)) {
+        a_pad(u8, pfxbuf, 256);
+        u8bFeed(pfxbuf, pc->parent);
+        u8bFeed1(pfxbuf, '/');
+        a_dup(u8c, pfx, u8bData(pfxbuf));
+        if (!u8csHasPrefix(key, pfx)) return OK;
+        u8csUsed(key, u8csLen(pfx));           //  drop `<parent>/`
     }
-    if (last_slash != NULL) base[0] = last_slash + 1;
-    if (u8csEmpty(base)) return OK;
-    if (*base[0] == '.') return OK;            //  skip .lock, etc.
-    a_cstr(refs_s, "refs");
-    if (u8csEq(base, refs_s)) return OK;
-    if (PATHu8bAren(pc->arena, pc->names[pc->n], base) != OK) return OK;
+    //  Remaining `key` is the child path relative to parent; a *direct*
+    //  child has no further '/'.  Grandchildren are reached by recursion.
+    if (u8csEmpty(key)) return OK;
+    $for(u8c, p, key) {
+        if (*p == '/') return OK;              //  not a direct child
+    }
+    //  Record the absolute child branch path.
+    a_pad(u8, abs, 256);
+    if (!u8csEmpty(pc->parent)) {
+        u8bFeed(abs, pc->parent);
+        u8bFeed1(abs, '/');
+    }
+    u8bFeed(abs, key);
+    a_dup(u8c, abs_view, u8bData(abs));
+    if (PATHu8bAren(pc->arena, pc->names[pc->n], abs_view) != OK) return OK;
     pc->n++;
     return OK;
 }
 
-//  Recursive walker.  For each subdir of `<store>/<branch>/` that has
-//  a `refs` file, stage its rebase, then recurse with the child as the
-//  new parent.  `branch_old_tip` and `branch_new_tip` are the stage's
+//  Recursive walker.  For each REFS branch that is a direct child of
+//  `branch`, stage its rebase, then recurse with the child as the new
+//  parent.  `branch_old_tip` and `branch_new_tip` are the stage's
 //  current parent before/after the rewrite.
 static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
                               sha1cp branch_old_tip,
                               sha1cp branch_new_tip) {
     sane(cc);
-    a_path(bdir);
-    call(HOMEBranchDir, SNIFF.h, bdir, NULL);
-    if (!u8csEmpty(branch)) {
-        ok64 ar = PATHu8bAdd(bdir, branch);
-        if (ar != OK) return ar;
-    }
+    a_path(rdir);
+    call(HOMEBranchDir, SNIFF.h, rdir, NULL);
 
-    //  Snapshot child branch basenames via FILEScan; each `names[i]`
-    //  is a slice into `names_arena`.  No-op when the shard dir
-    //  doesn't exist (FILEScan returns non-OK; we still proceed).
+    //  Snapshot direct-child branch paths via REFSEach; each `names[i]`
+    //  is a slice into `names_arena`.  No children → cascade ends here.
     u8cs names[CASCADE_MAX] = {};
-    a_carve(u8, names_arena, CASCADE_MAX * 128);
-    pc_collect pc = {.names = names, .cap = CASCADE_MAX, .arena = names_arena};
-    (void)FILEScan(bdir, FILE_SCAN_DIRS, post_cascade_collect_cb, &pc);
+    a_carve(u8, names_arena, CASCADE_MAX * 256);
+    pc_collect pc = {.names = names,
+                     .cap = CASCADE_MAX, .arena = names_arena};
+    u8csMv(pc.parent, branch);
+    (void)REFSEach($path(rdir), post_cascade_collect_cb, &pc);
     u32 nfound = pc.n;
 
     for (u32 i = 0; i < nfound; i++) {
-        //  Build absolute child branch path: <branch>/<name>.
-        a_pad(u8, child_path, 256);
-        if (!u8csEmpty(branch)) {
-            u8bFeed(child_path, branch);
-            u8bFeed1(child_path, '/');
-        }
-        u8bFeed(child_path, names[i]);
-        a_dup(u8c, child_branch, u8bData(child_path));
+        a_dup(u8c, child_branch, names[i]);
 
         //  Capture the child's tip BEFORE the rebase via the global
-        //  REFS lookup.  No tip → not a real branch (could be a stale
-        //  shard dir or a non-branch sibling like `graf`/`spot` at
-        //  trunk level); skip.
+        //  REFS lookup.  No tip → skip (stale/deleted row).
         sha1 child_old = {};
         ok64 cr = POSTResolveBranchTip(&child_old, child_branch);
         if (cr != OK) continue;     //  no row → skip
@@ -1917,72 +1909,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     b8   stack_was_rewritten = NO;
     if (sha1Eq(&base_old, &base_new)) {
         target_new_tip = child_tip;
-        //  Trivial FF — but `child_tip`'s pack may live in a
-        //  different shard (cur's leaf) and the active leaf (target)
-        //  doesn't have a copy.  Collect the FP chain
-        //  `child_tip → base_old (exclusive)` and KEEPMoveCommits
-        //  copies each commit's reachable trees+blobs into the
-        //  active leaf with delta-base hints.
-        //
-        //  Bounded by POST_MIG_MAX so a pathological chain can't
-        //  hang the dispatcher.  BASS-carved — POST_MIG_MAX × 20 B
-        //  = 160 KB, too large for a comfortable stack frame inside a
-        //  function that already carries several a_path / a_pad locals.
-        a_carve(sha1, chainb, POST_MIG_MAX);
-        sha1 *chain = sha1bIdleHead(chainb);
-        u32 nchain = 0;
-        b8 reached = NO;
-        (void)POSTFpChainTo(&child_tip, &base_old,
-                            chain, POST_MIG_MAX, &nchain, &reached);
-        if (nchain > 0) {
-            //  Reverse to oldest-first for KEEPMoveCommits.
-            for (u32 i = 0, j = nchain - 1; i < j; i++, j--) {
-                sha1 tmp = chain[i]; chain[i] = chain[j]; chain[j] = tmp;
-            }
-            sha1cs slice = {chain, chain + nchain};
-            //  src_branch = cur's leaf (where the objects live today).
-            //  Caller has already switched KEEP to target = active
-            //  leaf, so source sits in PAST.  Empty cur_branch =
-            //  trunk (legitimate when promoting trunk's own commits).
-            a_dup(u8c, src, cur_branch);
-            ok64 mv = KEEPMoveCommits(slice, src);
-            if (mv != OK && mv != KEEPMVNOOP) {
-                fprintf(stderr,
-                        "sniff: post: cross-shard copy failed (%s)\n",
-                        ok64str(mv));
-                return mv;
-            }
-
-            //  KEEPMoveCommits only touched keeper-side packs+idx;
-            //  graf's DAG for the target shard is unaware of the
-            //  migrated commits.  GRAFIndexFromTips wouldn't help:
-            //  graf is currently open on cur (the source shard,
-            //  loaded as PAST after the switch to target), so the
-            //  walk's runs-snapshot includes cur's DAG and the
-            //  first migrated commit looks "already known" — the
-            //  walk stops with 0 commits added to target.  Emit
-            //  DAG entries directly off the chain we already have
-            //  (oldest → newest), pulling each commit body via
-            //  KEEPGetExact (resolves into target's shard since
-            //  the migrate just populated it) and piping through
-            //  GRAFDagUpdate / GRAFDagFinish.  Best-effort: a
-            //  graf failure here doesn't roll back the migrate.
-            (void)SNIFFMaybeSwitchGraf(target_branch);
-            {
-                a_carve(u8, body, 1UL << 20);
-                for (u32 i = 0; i < nchain; i++) {
-                    u8bReset(body);
-                    u8 ot = 0;
-                    if (KEEPGetExact(&chain[i], body, &ot) != OK)
-                        continue;
-                    if (ot != DOG_OBJ_COMMIT) continue;
-                    a_dup(u8c, bs, u8bData(body));
-                    (void)GRAFDagUpdate(DOG_OBJ_COMMIT,
-                                        &chain[i], bs);
-                }
-                (void)GRAFDagFinish();
-            }
-        }
+        // Flat store: child_tip's objects are already in the shared pool; FF is a pure REFS advance below.
         stack_was_rewritten = NO;
     } else {
         //  POST is commit-or-FF, never rebase (per VERBS.md).  When

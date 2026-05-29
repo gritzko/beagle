@@ -89,9 +89,10 @@ struct dag_ingest {
 //  truth, and `GRAFRefreshView` keeps the typed `wh128cs` view in
 //  sync.
 
-//  Compose the leaf branch dir `<root>/.be[/<leaf>]` and feed it into
-//  `out` (NUL-terminated).  Trunk is the bare `.be/` dir.  Mirrors
-//  `keep_branch_dir` and `spot_branch_dir`.
+//  Compose the flat project shard dir `<root>/.be/<project>` and feed
+//  it into `out` (NUL-terminated).  Flat store: one shard per project,
+//  so the leaf branch never gets its own subdir.  Mirrors
+//  `graf_branch_dir`, `keep_branch_dir` and `spot_branch_dir`.
 static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     sane(h && $ok(leaf_branch) && out);
     u8bReset(out);
@@ -106,11 +107,9 @@ static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     //  fall out of sync.
     a_dup(u8c, proj, u8bDataC(h->project));
     if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
-    if (!u8csEmpty(leaf_branch)) {
-        a_dup(u8c, br, leaf_branch);
-        if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
-        if (!$empty(br)) call(PATHu8bAdd, out, br);
-    }
+    //  Flat store: one shard per project.  The leaf branch never gets
+    //  its own subdir — mirrors `graf_branch_dir` and `HOMEBranchDir`.
+    (void)leaf_branch;
     call(PATHu8bTerm, out);
     done;
 }

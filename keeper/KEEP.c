@@ -53,47 +53,17 @@ u8c *const KEEP_DIR_S[2] = {
 
 // --- Helpers ---
 
-// YES iff `dir` is already in `k->loaded_dirs` (NUL-separated list).
-static b8 keep_dir_loaded(keeper *k, u8csc dir) {
-    if (BNULL(k->loaded_dirs)) return NO;
-    a_dup(u8c, scan, u8bDataC(k->loaded_dirs));
-    while (!u8csEmpty(scan)) {
-        u8cp nul = scan[0];
-        while (nul < scan[1] && *nul != 0) nul++;
-        u8cs entry = {scan[0], nul};
-        if (u8csLen(entry) == u8csLen(dir) &&
-            (u8csEmpty(entry) ||
-             memcmp(entry[0], dir[0], u8csLen(entry)) == 0))
-            return YES;
-        if (nul < scan[1]) nul++;  // step past the NUL
-        scan[0] = nul;
-    }
-    return NO;
-}
-
-// Append `dir` to `k->loaded_dirs` (with trailing NUL).  Best-effort —
-// allocates on first use; silent no-op on alloc failure.
-static void keep_dir_mark(keeper *k, u8csc dir) {
-    if (BNULL(k->loaded_dirs))
-        if (u8bAllocate(k->loaded_dirs, 16 * 1024) != OK) return;
-    (void)u8bFeed(k->loaded_dirs, dir);
-    (void)u8bFeed1(k->loaded_dirs, 0);
-}
-
-// Scan one branch dir for both .keeper and .keeper.idx files,
-// extending the keeper-level registries.  Lockless-reader invariant:
-// pack scan first, then idx, so any idx entry references a pack
-// already in our maps.  Idempotent at the dir level: a repeat scan
-// of the same path is a no-op (the dog-layer pup primitive doesn't
-// dedup; keeper does it here).  Non-static so MIGRATE.c can reuse.
+// Scan the project object shard dir for both .keeper and .keeper.idx
+// files, extending the keeper-level registries.  Lockless-reader
+// invariant: pack scan first, then idx, so any idx entry references a
+// pack already in our maps.  Flat store: called exactly once at open
+// with the single `<root>/.be/<project>/` dir.
 ok64 keep_scan_branch_dir(keeper *k, u8csc keepdir) {
     sane(k);
-    if (keep_dir_loaded(k, keepdir)) done;
     a_cstr(pack_ext, KEEP_PACK_EXT);
     call(DOGPupOpenAll, k->packs, keepdir, pack_ext);
     a_cstr(idx_ext, KEEP_IDX_EXT);
     call(DOGPupOpenAll, k->puppies, keepdir, idx_ext);
-    keep_dir_mark(k, keepdir);
     done;
 }
 
@@ -194,20 +164,6 @@ static u32 keep_packs_max_seqno(keeper const *k) {
     return max;
 }
 
-// Largest file_id across PastData (loaded packs from trunk + every
-// ancestor + active leaf).  Used to pick a globally-unique file_id
-// for the first pack in a fresh leaf — the leaf's DATA is empty, so
-// `keep_packs_max_seqno` alone would return 0 and collide with a
-// PAST entry's file_id.
-static u32 keep_packs_max_seqno_all(keeper const *k) {
-    u32 max = 0;
-    kv64s all = {};
-    kv64PastDataS(k->packs, all);
-    for (kv64 const *p = all[0]; p < all[1]; p++)
-        if ((u32)p->key > max) max = (u32)p->key;
-    return max;
-}
-
 // Largest pack file_id across the whole `.be/<project>/` tree on
 // disk (recursive scan; not just loaded shards).  Used to pick the
 // first file_id of a fresh leaf so it doesn't collide with sibling
@@ -291,21 +247,6 @@ static void keep_pack_drop(keeper *k, u64 file_id) {
     }
 }
 
-//  Drop the (pup_key) entry from the keeper-level puppies registry.
-//  Mirrors keep_pack_drop; caller is responsible for unmapping the
-//  slot first when needed.
-static void keep_idx_drop(keeper *k, u64 pup_key) {
-    if (pup_key == 0) return;
-    kv64 *db = (kv64 *)kv64bDataHead(k->puppies);
-    kv64 *de = (kv64 *)kv64bIdleHead(k->puppies);
-    for (kv64 *p = db; p < de; p++) {
-        if (p->key != pup_key) continue;
-        for (kv64 *q = p; q + 1 < de; q++) *q = *(q + 1);
-        ((kv64 **)k->puppies)[2] = de - 1;
-        return;
-    }
-}
-
 //  Read the i-th index run as a wh128 slice (zero-copy view into
 //  FILE_WANT_BUFS via the puppy's fd).  DATA only — the leaf branch's
 //  runs.  Used by `KEEPCompact` (which by spec only ever merges /
@@ -365,92 +306,9 @@ static b8 keep_is_rw = NO;
 
 // --- Open: mmap pack files + load index runs ---
 
-//  YES iff `path` (NUL-terminated u8b) is an existing directory.
-static b8 keep_dir_exists(path8s path) {
-    filestat fs = {};
-    if (FILEStat(&fs, path) != OK) return NO;
-    return fs.kind == FILE_KIND_DIR;
-}
-
-//  Walk one branch path component at a time, calling `dir_cb` for
-//  each prefix dir (trunk first).  `dir_cb` receives a freshly-built
-//  path8 slice (NUL-terminated) for each prefix dir along trunk → leaf
-//  plus an `is_leaf` flag — YES on the last call (trunk's call when
-//  `leaf` is empty, otherwise the deepest segment's call).  Callbacks
-//  use the flag to flip a PAST/DATA boundary on the active branch
-//  registries before scanning the owned leaf dir.
-//  Stops on first non-OK from `dir_cb`.
-typedef ok64 (*keep_dir_cb)(keeper *k, u8cs dir, b8 is_leaf, void0p ctx);
-
-static ok64 keep_walk_branch(keeper *k, u8cs leaf, keep_dir_cb cb, void0p ctx) {
-    sane(k && cb);
-    a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, NULL);
-    //  Trunk first.  Empty `leaf` means trunk IS the leaf.
-    b8 trunk_is_leaf = u8csEmpty(leaf);
-    {
-        a_path(d);
-        call(PATHu8bDup, d, $path(kdir));
-        call(cb, k, $path(d), trunk_is_leaf, ctx);
-    }
-    if (trunk_is_leaf) done;
-
-    //  Identify where the last segment begins; we need the cb to know
-    //  it's looking at the leaf BEFORE the scan runs (so it can flip
-    //  its PAST/DATA boundary first).  We scan once to find the last
-    //  '/'+1 offset, then the main loop checks against it.
-    u8cp last_seg_start = leaf[0];
-    for (u8cp p = leaf[0]; p < leaf[1]; p++)
-        if (*p == '/' && p + 1 < leaf[1]) last_seg_start = p + 1;
-
-    //  Each '/'-separated leaf component, accumulating.
-    a_path(d);
-    call(PATHu8bDup, d, $path(kdir));
-    u8cp p = leaf[0];
-    u8cp seg_start = p;
-    while (p <= leaf[1]) {
-        b8 at_end = (p == leaf[1]);
-        if (at_end || *p == '/') {
-            if (p > seg_start) {
-                u8cs seg = {seg_start, p};
-                call(PATHu8bPush, d, seg);
-                b8 is_leaf = (seg_start == last_seg_start);
-                call(cb, k, $path(d), is_leaf, ctx);
-            }
-            seg_start = p + 1;
-        }
-        p++;
-    }
-    done;
-}
-
-static ok64 keep_open_dir_cb(keeper *k, u8cs dir, b8 is_leaf, void0p ctx) {
-    (void)ctx;
-    //  Branch shard dirs are materialised lazily: a branch may be
-    //  created (REFS row written) before any commit shards land in
-    //  its own dir.  Treat a missing ancestor/leaf dir as "no shards
-    //  inherited from here" — REFS at the sniff layer is the source
-    //  of truth on branch existence.  Writes (KEEPPackOpen) mkdir
-    //  the leaf on demand.
-    b8 exists = keep_dir_exists(dir);
-    //  About to scan the leaf dir: freeze the parents' DATA (everything
-    //  accumulated so far for trunk + intermediate ancestor dirs) into
-    //  PAST on both `packs` and `puppies`.  Writes target the leaf
-    //  (`KEEPPackOpen` picks `file_id` from packs-max+1; KEEPCompact
-    //  iterates DATA-only via `kv64bDataLen(k->puppies)`).  Reads use
-    //  `kv64PastDataS` so cross-branch resolution stays whole.
-    //  Trunk-only branches skip the flip — DATA = trunk entries,
-    //  PAST stays empty.  See KEEP.h §"Branch-aware object store" and
-    //  abc/Bx.h §PastDataS.
-    if (is_leaf) {
-        if (kv64bDataLen(k->packs) > 0)
-            ((kv64 **)k->packs)[1] = (kv64 *)k->packs[2];
-        if (kv64bDataLen(k->puppies) > 0)
-            ((kv64 **)k->puppies)[1] = (kv64 *)k->puppies[2];
-    }
-    if (!exists) return OK;
-    return keep_scan_branch_dir(k, dir);
-}
+//  Flat store: object resolution scans the single project shard dir;
+//  the old trunk → leaf branch-dir walk (and its PAST/DATA boundary
+//  flip) is gone.  See keep_scan_branch_dir + KEEPOpenBranch.
 
 ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     sane(h != NULL && $ok(branch));
@@ -502,16 +360,14 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     call(HOMEBranchDir, h, trunkdir, NULL);
     call(FILEMakeDirP, $path(trunkdir));
 
-    //  Walk trunk → … → leaf, registering every pack + idx file along
-    //  the way.  Missing prefix dirs short-circuit with KEEPNONE.
+    //  Flat store: scan the single project shard dir for every pack +
+    //  idx file.  No branch-dir chain to walk.
     {
-        a_dup(u8c, leaf, u8bDataC(h->cur_branch));
-        ok64 wo = keep_walk_branch(k, leaf, keep_open_dir_cb, NULL);
+        ok64 wo = keep_scan_branch_dir(k, $path(trunkdir));
         if (wo != OK) {
             //  Tear down partially-allocated state to keep the singleton clean.
-            if (!BNULL(k->packs))       DOGPupClose(k->packs);
-            if (!BNULL(k->puppies))     DOGPupClose(k->puppies);
-            if (!BNULL(k->loaded_dirs)) u8bFree(k->loaded_dirs);
+            if (!BNULL(k->packs))   DOGPupClose(k->packs);
+            if (!BNULL(k->puppies)) DOGPupClose(k->puppies);
             zerop(k);
             keep_is_rw = NO;
             return wo;
@@ -582,14 +438,14 @@ ok64 KEEPOpen(home *h, b8 rw) {
 
 ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
     sane(h != NULL && $ok(new_branch));
-    keeper *k = &KEEP;
     if (!keep_is_open()) return KEEPFAIL;
 
-    //  Inner APIs receive canonic URIs from beagle (STORE.md
-    //  §"URI structure": `/<project>/<branch-path>/<pin>`).  Pull
-    //  the branch slice out before normalisation; otherwise the
-    //  segment walk would try to enter
-    //  `.be/<project>/<project>/<branch>/<pin>/` and bail KEEPNONE.
+    //  Flat store: one object shard per project.  Switching branches
+    //  re-targets only the ref context (which `?<branch>` tip we
+    //  read/write) — every object already lives in the single project
+    //  pool, so there is no dir to rescan, no PAST/DATA flip, and no
+    //  lock to swap.  Strip any leading `/<project>/…/<pin>` so we set
+    //  cur_branch to the bare branch path.
     u8cs branch_in = {};
     u8csMv(branch_in, new_branch);
     {
@@ -597,82 +453,7 @@ ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
         if (DOGCanonQueryParse(branch_in, c_proj, c_branch, c_pin))
             u8csMv(branch_in, c_branch);
     }
-
-    //  Normalize.
-    a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
-    call(DPATHBranchNormFeed, nb, branch_in);
-    a_dup(u8c, norm, u8bDataC(nb));
-
-    //  No-op when already on the requested branch.
-    a_dup(u8c, cur, u8bDataC(h->cur_branch));
-    if (u8csLen(cur) == u8csLen(norm) &&
-        (u8csLen(norm) == 0 ||
-         memcmp(cur[0], norm[0], u8csLen(norm)) == 0))
-        done;
-
-    //  LCA: bytes of `norm` already covered by k->packs PAST (and
-    //  by the old leaf's DATA, which we're about to PAST).
-    size_t lca = DPATHBranchLcaLen(cur, norm);
-
-    //  1. Collapse old leaf's DATA into PAST on both registries.
-    if (kv64bDataLen(k->packs) > 0)
-        ((kv64 **)k->packs)[1] = (kv64 *)k->packs[2];
-    if (kv64bDataLen(k->puppies) > 0)
-        ((kv64 **)k->puppies)[1] = (kv64 *)k->puppies[2];
-
-    //  2. Walk the new tail.  PATHu8bDup the trunk-keepdir, push
-    //  every full-prefix path of `norm`, but only INVOKE scan for
-    //  segments past the LCA.
-    a_path(d);
-    call(HOMEBranchDir, h, d, NULL);
-    if (u8csLen(norm) > 0) {
-        u8cp p = norm[0];
-        u8cp seg_start = p;
-        size_t off = 0;
-        while (p <= norm[1]) {
-            b8 at_end = (p == norm[1]);
-            if (at_end || *p == '/') {
-                if (p > seg_start) {
-                    u8cs seg = {seg_start, p};
-                    call(PATHu8bPush, d, seg);
-                    //  Only scan if we've crossed the LCA boundary.
-                    if (off >= lca) {
-                        if (!keep_dir_exists($path(d))) return KEEPNONE;
-                        call(keep_scan_branch_dir, k, $path(d));
-                    }
-                }
-                seg_start = p + 1;
-                off = (size_t)(p - norm[0]) + 1;
-            }
-            p++;
-        }
-    }
-
-    //  3. last_pup_key: span PastData ∪ PastData on both registries.
-    keep_recompute_last_pup_key(k);
-
-    //  4. Swap the flock if we held one.  The old lock lives at the
-    //  cur leaf dir; the new lock at the new leaf dir.  Trunk →
-    //  leaf swaps `<root>/.be/.lock` for `<root>/.be/<leaf>/.lock`.
-    if (k->lock_fd >= 0) {
-        a_path(leafdir);
-        call(HOMEBranchDir, h, leafdir, nb);
-        a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
-        u8bFeed(lockpath, $path(leafdir));
-        a_cstr(lockrel, "/.lock");
-        u8bFeed(lockpath, lockrel);
-        PATHu8bTerm(lockpath);
-        int newfd = -1;
-        ok64 co = FILECreate(&newfd, $path(lockpath));
-        if (co != OK) return co;
-        ok64 lo = FILELock(&newfd, YES);
-        if (lo != OK) { FILEClose(&newfd); return lo; }
-        FILEClose(&k->lock_fd);
-        k->lock_fd = newfd;
-    }
-
-    //  5. Update home's cur_branch (single source of truth).
-    call(HOMESetCurBranch, h, norm);
+    call(HOMESetCurBranch, h, branch_in);
     done;
 }
 
@@ -683,34 +464,11 @@ ok64 KEEPCreateBranch(home *h, u8cs branch) {
     call(DPATHBranchNormFeed, nb, branch);
     a_dup(u8c, norm, u8bDataC(nb));
 
-    //  Trunk is always present.
+    //  Flat store: a branch is a REFS row, not a dir — there is nothing
+    //  to materialise on disk.  The caller (sniff PUT/POST) writes the
+    //  branch tip into REFS.  Trunk always exists; any other branch is
+    //  an idempotent no-op success.
     if (u8csEmpty(norm)) return KEEPTRUNK;
-
-    //  Find the parent by trimming off the last '/'-separated component.
-    //  Canonical form ends with '/', so first strip it, then look for
-    //  the last internal '/'.  No internal '/' → parent is trunk.
-    u8cs body = {norm[0], norm[1]};
-    if (!u8csEmpty(body) && *(body[1] - 1) == '/') body[1]--;
-    u8cp slash = NULL;
-    for (u8cp p = body[0]; p < body[1]; p++) if (*p == '/') slash = p;
-    u8cs parent = {body[0], slash ? slash : body[0]};
-
-    //  Validate parent exists.
-    a_pad(u8, pb, KEEP_LEAF_BRANCH_MAX);
-    call(u8bFeed, pb, parent);
-    a_path(pdir);
-    call(HOMEBranchDir, h, pdir, pb);
-    if (!keep_dir_exists($path(pdir))) return KEEPNONE;
-
-    //  Refuse if leaf already exists.
-    a_path(leafdir);
-    call(HOMEBranchDir, h, leafdir, nb);
-    if (keep_dir_exists($path(leafdir))) return KEEPDUP;
-
-    //  mkdir leaf.  FILEMakeDirP is forgiving (idempotent), but we've
-    //  already verified the leaf doesn't exist, so this materialises
-    //  exactly the new dir.
-    call(FILEMakeDirP, $path(leafdir));
     done;
 }
 
@@ -789,9 +547,8 @@ ok64 KEEPClose(void) {
     if (!keep_is_open()) return OK;
     keeper *k = &KEEP;
     if (keep_is_rw) (void)KEEPCompact();
-    if (!BNULL(k->packs))       DOGPupClose(k->packs);
-    if (!BNULL(k->puppies))     DOGPupClose(k->puppies);
-    if (!BNULL(k->loaded_dirs)) u8bFree(k->loaded_dirs);
+    if (!BNULL(k->packs))   DOGPupClose(k->packs);
+    if (!BNULL(k->puppies)) DOGPupClose(k->puppies);
     if (k->buf1[0]) u8bUnMap(k->buf1);
     if (k->buf2[0]) u8bUnMap(k->buf2);
     if (k->buf3[0]) u8bUnMap(k->buf3);
@@ -800,69 +557,6 @@ ok64 KEEPClose(void) {
     zerop(k);
     keep_is_rw = NO;
     done;
-}
-
-// --- Drop-a-dir: KEEPBranchDrop ---
-
-typedef struct {
-    keeper *k;
-    u8cs    ext;
-    void  (*drop_fn)(keeper *, u64);
-} keep_drop_ctx;
-
-static ok64 keep_branch_drop_cb(void0p arg, path8p path) {
-    keep_drop_ctx *c = (keep_drop_ctx *)arg;
-    u8cs base = {};
-    PATHu8sBase(base, u8bDataC(path));
-    if (u8csLen(base) != DOG_PUP_SEQNO_W + u8csLen(c->ext)) return OK;
-    a_dup(u8c, ext_tail, base);
-    u8csUsed(ext_tail, DOG_PUP_SEQNO_W);
-    if (!u8csEq(ext_tail, c->ext)) return OK;
-
-    u8cs seqno_slice = {base[0], base[0] + DOG_PUP_SEQNO_W};
-    ok64 v = 0;
-    if (RONutf8sDrain(&v, seqno_slice) != OK) return OK;
-    u64 sq = (u64)v;
-
-    Bkv64 *reg = (c->drop_fn == keep_pack_drop) ? &c->k->packs
-                                                : &c->k->puppies;
-    kv64 *db = (kv64 *)kv64bDataHead(*reg);
-    kv64 *de = (kv64 *)kv64bIdleHead(*reg);
-    for (kv64 *p = db; p < de; p++) {
-        if (p->key != sq) continue;
-        u8bp slot = FILE_WANT_BUFS[p->val];
-        if (slot && slot[0]) FILEUnMap(slot);
-        break;
-    }
-    c->drop_fn(c->k, sq);
-    FILEUnLink(u8bDataC(path));
-    return OK;
-}
-
-//  ls one branch dir for files matching `ext`; for each match, parse
-//  its pup_key, evict the entry from `reg` (closing any FILE_WANT_BUFS
-//  slot), and unlink the file.  Returns OK even when the dir is empty.
-static ok64 keep_branch_drop_files(keeper *k, u8cs branchdir, u8cs ext,
-                                   void (*drop_fn)(keeper *, u64)) {
-    sane(k);
-    a_path(dpat, branchdir);
-    keep_drop_ctx c = {.k = k, .ext = {ext[0], ext[1]}, .drop_fn = drop_fn};
-    (void)FILEScanFiles(dpat, keep_branch_drop_cb, &c);
-    done;
-}
-
-static ok64 keep_subdir_seen_cb(void0p arg, path8p path) {
-    (void)path;
-    *(b8 *)arg = YES;
-    return KEEPNONE;  //  any non-OK aborts the scan
-}
-
-//  YES iff `branchdir` has any subdirectory (other than . / ..).
-static b8 keep_branch_has_subdir(u8cs branchdir) {
-    a_path(dpat, branchdir);
-    b8 found = NO;
-    (void)FILEScan(dpat, FILE_SCAN_DIRS, keep_subdir_seen_cb, &found);
-    return found;
 }
 
 //  Lay down `<store_root>/<project>/{refs,wtlog}`.  mkdir is
@@ -892,127 +586,39 @@ ok64 KEEPInitShard(u8cs store_root, u8cs project) {
     done;
 }
 
-//  Per-host remote shard at `<store_root>/<project>/remotes/<host>/`.
-//  Cache-only — no wtlog (remote shards are never worktrees; the
-//  primary wt always sits on a local branch, and remote shards just
-//  hold the most recent refs/packs we fetched from <host>).  Refs
-//  seed file is touched empty so the keeper-side reflog appender can
-//  open-and-append on first fetch without an extra mkdir step.
+//  Flat store: remotes are folded into the single project shard —
+//  there is no per-host `remotes/<host>/` dir.  Remote-tracking refs
+//  (authority-keyed, e.g. `//host?heads/main`) land in the project's
+//  flat `refs`, and fetched remote objects share the one pool.  Kept
+//  as a no-op so beagle's clone path links unchanged.
 ok64 KEEPInitRemoteShard(u8cs store_root, u8cs project, u8cs host) {
     sane($ok(store_root) && $ok(project) && !u8csEmpty(project) &&
          $ok(host) && !u8csEmpty(host));
-
-    a_path(shard);
-    call(PATHu8bFeed, shard, store_root);
-    call(PATHu8bPush, shard, project);
-    a_cstr(remotes_name, "remotes");
-    call(PATHu8bPush, shard, remotes_name);
-    call(PATHu8bPush, shard, host);
-    call(FILEMakeDirP, $path(shard));
-
-    a_cstr(refs_name, DOG_REFS_NAME);
-    a_path(p);
-    call(PATHu8bFeed, p, u8bDataC(shard));
-    call(PATHu8bPush, p, refs_name);
-    filestat fs = {};
-    if (FILEStat(&fs, $path(p)) != OK) {
-        int fd = -1;
-        call(FILECreate, &fd, $path(p));
-        call(FILEClose, &fd);
-    }
+    (void)store_root; (void)project; (void)host;
     done;
 }
 
 ok64 KEEPBranchDrop(u8cs branch) {
     sane($ok(branch));
-    keeper *k = &KEEP;
 
     a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
     call(DPATHBranchNormFeed, nb, branch);
     a_dup(u8c, norm, u8bDataC(nb));
 
-    //  Trunk is never droppable — store root plus paths registry plus
-    //  the root-level `refs` (which carries host aliases) live there.
+    //  Flat store: a branch is a REFS row, not a dir.  Dropping it is a
+    //  REFS tombstone (written by sniff/DEL); the shared object pool is
+    //  untouched — dropped objects linger until an epoch recompaction.
+    //  Trunk is never droppable.
     if (u8csEmpty(norm)) return KEEPTRUNK;
-
-    //  Branch must exist on disk.
-    a_path(bdir);
-    call(HOMEBranchDir, k->h, bdir, nb);
-    if (!keep_dir_exists($path(bdir))) return KEEPNONE;
-
-    //  Refuse if `branch` IS the active leaf — caller must close+reopen
-    //  on a different branch first.
-    {
-        a_dup(u8c, leaf, u8bDataC(k->h->cur_branch));
-        if (u8csEq(norm, leaf)) return KEEPDIRTY;
-    }
-
-    //  Refuse if branch has subdirs (descendants).
-    if (keep_branch_has_subdir($path(bdir))) return KEEPDIRTY;
-
-    //  Evict + unlink all .keeper.idx and .keeper files.  Idx first
-    //  (preserves "idx references valid pack" invariant for any
-    //  concurrent reader).
-    {
-        a_cstr(idx_ext, KEEP_IDX_EXT);
-        u8cs ext = {idx_ext[0], idx_ext[1]};
-        call(keep_branch_drop_files, k, $path(bdir), ext, keep_idx_drop);
-    }
-    {
-        a_cstr(pack_ext, KEEP_PACK_EXT);
-        u8cs ext = {pack_ext[0], pack_ext[1]};
-        call(keep_branch_drop_files, k, $path(bdir), ext, keep_pack_drop);
-    }
-
-    //  Best-effort: unlink any sidecar shard files keeper doesn't
-    //  own — branch-scoped `refs` ULOG + its `.refs.idx` sidecar
-    //  (keeper/README.md §"refs and aliases"), graf's `.graf.idx`
-    //  runs and lock, spot's lock.  These show up when a verb
-    //  switched graf into this branch via `GRAFSwitchBranch` for a
-    //  cross-branch read but the higher-level branch-delete only
-    //  knows about keeper files.  Iterate the dir once and unlink
-    //  anything matching the known suffixes.
-    {
-        a_path(scratch);
-        call(PATHu8bDup, scratch, $path(bdir));
-        size_t base_len = u8bDataLen(scratch);
-        char const *names[] = {
-            ".lock", ".lock.graf", ".lock.spot",
-            "refs", ".refs.idx",
-        };
-        for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
-            ((u8 **)scratch)[2] = u8bDataHead(scratch) + base_len;
-            a_cstr(rel_dummy, "x");  (void)rel_dummy;
-            u8cs nm = {(u8c *)names[i],
-                       (u8c *)names[i] + strlen(names[i])};
-            if (PATHu8bPush(scratch, nm) == OK)
-                FILEUnLink($path(scratch));
-        }
-        //  Also unlink any `.graf.idx` files matching `<seqno>.graf.idx`.
-        ((u8 **)scratch)[2] = u8bDataHead(scratch) + base_len;
-        call(PATHu8bTerm, scratch);
-        fileit it = {};
-        a_path(dpat);
-        a_dup(u8c, bd, u8bDataC(bdir));
-        call(PATHu8bFeed, dpat, bd);
-        if (FILEIterOpen(&it, dpat) == OK) {
-            scan(FILENext, &it) {
-                if (it.type != DT_REG) continue;
-                u8cs base = {};
-                PATHu8sBase(base, u8bDataC(it.path));
-                size_t n = u8csLen(base);
-                static char const SUF[] = ".graf.idx";
-                size_t s = sizeof(SUF) - 1;
-                if (n <= s) continue;
-                if (memcmp(base[0] + n - s, SUF, s) != 0) continue;
-                FILEUnLink(u8bDataC(it.path));
-            }
-            seen(END);
-            FILEIterClose(&it);
-        }
-    }
-    call(FILERmDir, $path(bdir), false);
     done;
+}
+
+//  Flat store: all objects share one project pool, so cross-shard
+//  migration is unnecessary — KEEPMoveCommits is a no-op (MIGRATE.c
+//  retired).  Kept for source compatibility.
+ok64 KEEPMoveCommits(sha1cs commits, path8sc src_branch) {
+    (void)commits; (void)src_branch;
+    return KEEPMVNOOP;
 }
 
 // --- Lookup: hashlet → wh64 val ---

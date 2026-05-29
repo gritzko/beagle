@@ -1,8 +1,9 @@
 #!/bin/sh
-#  put/05-cross-shard-set — `be put ?<branch>#<sha>` migrates the
-#  named tip's reachable closure into the target branch's shard via
-#  KEEPMoveCommits, so a reader opening only the target shard finds
-#  every commit/tree/blob the new REFS row claims to cover.
+#  put/05-cross-shard-set — under the FLAT store layout, `be put
+#  ?<branch>#<sha>` is a pure REF move: objects are SHARED in the one
+#  project pool, so pointing a branch at an existing commit/tree copies
+#  no pack bytes.  We keep the behavioural invariants: ?feat resolves to
+#  the target tree, and the negative cases still refuse.
 #
 #  Topology:
 #
@@ -13,11 +14,9 @@
 #    * `be put ?feat#T2` (existing ?feat at F1).  FP chain from T2 is
 #      [T2, T1]; stop = F1 which is on a sibling — !reached_stop.
 #      Refuse with "no shared ancestry".
-#    * `be delete ?feat` then `be put ?feat#T2` (new ref).  Chain
-#      walks to root (T1 has no parent) without cap-hit.  Migration
-#      copies T2 + T1 into .be/$P/feat/.  Reads from `?feat` then see
-#      T2's tree.
-#    * `be put ?feat#<bogus-40-hex>` → RESOLVE rejects pre-migration.
+#    * `be delete ?feat` then `be put ?feat#T2` (new ref).  ?feat now
+#      resolves to T2's tree (pure ref move over the shared pool).
+#    * `be put ?feat#<bogus-40-hex>` → RESOLVE rejects.
 
 . "$(dirname "$0")/../../lib/case.sh"
 
@@ -36,18 +35,6 @@ ref_tip() {
           n = split($0, toks, /[[:space:]]+/)
           v = toks[n]; sub(/^\?/, "", v); print v; exit
         }'
-}
-
-pack_bytes() {
-    _dir=$1
-    [ -d "$_dir" ] || { echo 0; return; }
-    _total=0
-    for _f in "$_dir"/*.keeper; do
-        [ -f "$_f" ] || continue
-        _sz=$(wc -c < "$_f" | tr -d ' ')
-        _total=$((_total + _sz))
-    done
-    echo "$_total"
 }
 
 # ------------------------------------------------------------------
@@ -103,12 +90,10 @@ grep -q 'no shared ancestry' "$LOGS/10.err" \
     || { echo "FAIL: ?feat moved despite refusal: $(ref_tip '?feat')" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 5. Drop ?feat, then `be put ?feat#T2` (new ref).  ?feat lives as a
-#    child of trunk (cur), so the descendant short-circuit at
-#    sniff/PUT.c::PUTSetBranch fires — KEEPMoveCommits is skipped
-#    and the new shard holds no packs.  Reads bubble up via
-#    child → parent → root (keeper/INDEX.md §"Storage layout").
-#    Pinned by sibling case test/put/07-newbranch-no-migrate.
+# 5. Drop ?feat, then `be put ?feat#T2` (new ref).  Flat layout: this
+#    is a pure REF move over the shared object pool — no per-branch dir
+#    is created, no pack bytes are copied.  Reads resolve from the one
+#    project shard (keeper/INDEX.md §"Storage layout").
 # ------------------------------------------------------------------
 must "$BE" delete '?feat' > "$LOGS/11.out" 2> "$LOGS/11.err"
 
@@ -117,10 +102,9 @@ must "$BE" put "?feat#$T2" \
 [ "$(ref_tip '?feat')" = "$T2" ] \
     || { echo "?feat didn't land at T2=$T2 (got $(ref_tip '?feat'))" >&2
          cat "$LOGS/12.err" >&2; exit 1; }
-POST_PACKS=$(pack_bytes .be/$P/feat)
-[ "$POST_PACKS" -eq 0 ] \
-    || { echo "?feat shard grew $POST_PACKS pack byte(s) — descendant short-circuit didn't fire" >&2
-         ls -la .be/$P/feat/ >&2 2>/dev/null
+[ ! -d .be/$P/feat ] \
+    || { echo "per-branch shard .be/$P/feat must not exist (flat layout)" >&2
+         ls -la .be/$P/feat >&2 2>/dev/null
          exit 1; }
 
 # ------------------------------------------------------------------

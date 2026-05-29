@@ -31,8 +31,10 @@ FIX1_REFS=$(ref_tip "?fix1")
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] || fail "trunk REFS moved by branch create"
 note "?fix1 forked at $FIX1_REFS; trunk unchanged"
-[ -d .be/$P/fix1 ] || fail ".be/$P/fix1 shard missing after be put ?./fix1"
-note ".be/$P/fix1 shard materialised"
+# flat layout: create makes the branch a REFS row, NOT a directory
+[ ! -d .be/$P/fix1 ] || fail "per-branch shard .be/$P/fix1 must not exist (flat layout)"
+"$BE" get "?fix1" >/dev/null || fail "?fix1 does not resolve after create"
+note "?fix1 resolves after create (REFS row, no dir)"
 
 # 3. switch wt to the child
 echo "=== 3. be get ?fix1 — switch wt ==="
@@ -81,7 +83,11 @@ FIX1_REFS=$(ref_tip "?fix1")
 [ -z "$FIX1_REFS" ] || fail "?fix1 still visible in REFS after delete: $FIX1_REFS"
 TRUNK_REFS=$(ref_tip "?")
 [ "$TRUNK_REFS" = "$T1" ] || fail "trunk REFS moved across delete"
-[ ! -e .be/$P/fix1 ] || fail ".be/$P/fix1 left behind after delete"
-note "?fix1 deleted; trunk unchanged at T1=$T1"
+# flat layout: delete writes a REFS tombstone; objects linger, no dir removed.
+# ?fix1 must no longer resolve (ref unresolvable).
+if "$BE" get "?fix1" >/dev/null 2>&1; then
+    fail "?fix1 still resolves after delete (should be unresolvable)"
+fi
+note "?fix1 deleted; ref unresolvable; trunk unchanged at T1=$T1"
 
 echo "=== branches/01-lifecycle: OK ==="

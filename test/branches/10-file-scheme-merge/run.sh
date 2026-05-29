@@ -31,7 +31,8 @@ note "primary trunk T1=$T1"
 
 # 2. primary creates ?fix1 (cur stays on trunk)
 "$BE" put "?./fix1" >/dev/null || fail "be put ?./fix1 failed"
-[ -d ".be/$P/fix1" ] || fail ".be/$P/fix1 shard missing"
+# flat layout: create makes ?fix1 a REFS row, NOT a directory.
+[ ! -d ".be/$P/fix1" ] || fail "per-branch shard .be/$P/fix1 must not exist (flat layout)"
 [ "$(ref_tip "?fix1")" = "$T1" ] \
     || fail "?fix1 should fork at T1"
 [ "$(cur_branch)" = "" ] || fail "primary cur should still be trunk"

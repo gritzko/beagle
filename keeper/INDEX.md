@@ -5,13 +5,16 @@ Parsers for git wire protocol (pkt-line, packfile) and git objects
 index.  Uses zlib for pack decompression and OpenSSL for SHA-1
 object IDs.
 
-Store layout is **sharded by branch directory** (see `README.md`
-§"Storage layout" and `LOG.md`): each branch dir holds its own
-`NNNNN.keeper` + `NNNNN.idx` files plus `refs` (a `dog/ULOG`
-reflog — see `REF.md`) and optional `WT`.
-`file_id`s are store-global sequential.  Object resolution walks
-the dir chain child → parent → root; REF_DELTA bases are constrained
-to the same dir or an ancestor.
+Store layout is a **single flat object shard per project** (see
+`STORE.md` §"Repo dir layout"): one dir
+`<store>/<project>/` holds every `NNNNN.keeper` pack log +
+`NNNNN.keeper.idx` index run for *all* local branches, tags and
+remote-tracking refs, plus one `refs` (a `dog/ULOG` reflog — see
+`REF.md`).  There are no per-branch object subdirectories and no
+separate remotes store.  Branches and tags are pure ref rows in the
+single `refs`.  `file_id`s are store-global sequential.  Object
+resolution consults exactly one dir — no dir-chain walk; REF_DELTA
+bases resolve within the same shard.
 
 ##  Headers
 
@@ -36,9 +39,9 @@ Types: none (output via slices).
 
 ### REFADV.h — git-protocol refs advertisement
 
-  - `REFADVOpen`     walk every dir's REFS; collect (sha, refname, dir) tuples
+  - `REFADVOpen`     read the project's single REFS; collect (sha, refname) tuples
   - `REFADVClose`    free arena + entries
-  - `REFADVTipDirs`  reverse-lookup: which dir(s) hold this sha as a tip?
+  - `REFADVTipDirs`  reverse-lookup: which ref(s) hold this sha as a tip?
   - `REFADVEmit`     write the pkt-line advertisement (caps on first line + flush)
 
 ### dog/git/PACK.h — packfile parser
@@ -83,11 +86,11 @@ bookmarks (`keepPackBmCount`/`keepPackBmLen`).
                   (WIRE.md Phases 4 & 7)
 
 Server side: reads a client request (wants/haves/caps) from a fd via
-pkt-line, resolves each want sha to a (dir, end-of-pack) pair (REFADV
-tip→dir lookup with LSM fallback), takes the max have-pack-end per dir
-as the watermark, and emits the ordered `pstr_seg` list ready for
-`PSTRWrite`.  Phase 1c covers the trunk shard only — the dir chain is
-always `[trunk]`, one segment per request.
+pkt-line, resolves each want sha to an end-of-pack offset in the single
+project shard (REFADV tip lookup with LSM fallback), takes the max
+have-pack-end as the watermark, and emits the ordered `pstr_seg` list
+ready for `PSTRWrite`.  All objects live in one shard, so the segment
+set comes from that single dir.
 
 Client side (Phase 7, `WIRECLI.c`): spawns a peer via ssh
 (`//host/path`) or local exec (`file:///path`, `keeper://local/path`),
@@ -118,7 +121,7 @@ ref-update line + pack, drains unpack/per-ref status.
 Symmetric to `WIRE.h` for the push direction.  Reads pkt-line
 ref-update commands from a fd, drains the raw packfile that
 follows the request flush, hands it to `KEEPIngestFile`
-(UNPK-indexed + linked into the trunk shard), then verifies
+(UNPK-indexed + appended to the single project shard), then verifies
 fast-forward + appends each accepted update to REFS.  Per-update
 results plus the unpack status are emitted back over pkt-line.
 Refname → REFS-key convention: `refs/heads/<X>` → `?heads/<X>`,
@@ -197,10 +200,12 @@ left-click on the anchor opens the next-token URI via `be --tlv`
                  Push + tip/remote enumeration
   - `KEEP.exe.c` CLI verb dispatch (`get`, `put`, `post`, `status`,
                  `refs`, `alias`, `sync`, `upload-pack`, …)
-  - `MIGRATE.c`  `KEEPMoveCommits` — cross-shard pack copy with
-                 delta-base hints (`be post ?<other>`)
+  - `MIGRATE.c`  `KEEPMoveCommits` — **retired**: with one flat object
+                 pool per project, promote/drop are REFS-only and there
+                 is no cross-shard pack copy to perform (`be post
+                 ?<other>` just appends a ref).
   - `REFS.c`     URI→URI reflog (append + load + resolve)
-  - `REFADV.c`   refs advertisement (walk shards, emit pkt-lines)
+  - `REFADV.c`   refs advertisement (read the single refs, emit pkt-lines)
   - `RESOLVE.c`  user-input → canonical sha funnel
   - `WALK.c`     KEEP-backed tree walker (eager + lazy)
   - `UNPK.c`     single-pass pack indexer (delta chase + thin-pack)
@@ -215,60 +220,64 @@ left-click on the anchor opens the next-token URI via `be --tlv`
                  + FF-check + REFS append + response emit)
   - `PROJ.c`     view projectors (`tree:` / `commit:` / `blob:`)
 
-### KEEP.h — branch-aware Open + per-shard state
+### KEEP.h — flat-shard Open + branch-as-ref state
 
-`KEEPOpenBranch(home *h, u8cs branch, b8 rw)` walks trunk → … → leaf
-and registers every `.keeper` (pack log) and `.keeper.idx` (LSM index
-run) file along the path on the keeper-level `packs` and `puppies`
-`Bkv32` registries.  `branch` is normalized via
-`DPATHBranchNormFeed`; missing prefix dirs return `KEEPNONE` (use
-`KEEPCreateBranch` to mkdir the leaf first).  In rw mode, exclusive
-flock lands on `<store>/<project>/<leaf>/.lock` (or
-`<store>/<project>/.lock` for trunk).
-`KEEPOpen` is a thin wrapper that passes empty trunk.
+`KEEPOpenBranch(home *h, u8cs branch, b8 rw)` opens the single project
+shard `<store>/<project>/` and registers every `.keeper` (pack log)
+and `.keeper.idx` (LSM index run) file in it on the keeper-level
+`packs` and `puppies` `Bkv32` registries.  `branch` is normalized via
+`DPATHBranchNormFeed` and merely selects the *ref context* (which
+`?heads/<name>` tip the session reads/advances) — it never names a
+directory.  In rw mode, exclusive flock lands on
+`<store>/<project>/.lock`.  `KEEPOpen` is a thin wrapper that passes
+the empty (trunk) branch.
 
 The singleton `keeper` carries:
   * `home *h` — the borrowed home pointer.
-  * `Bkv32 packs` — `seqno → fd` for every pack file in the open
-    branch path.  Lookups are linear scans; seqnos are globally
-    unique across the keeper instance.
+  * `Bkv32 packs` — `seqno → fd` for every pack file in the project
+    shard.  Lookups are linear scans; seqnos are globally unique
+    across the keeper instance.
   * `Bkv32 puppies` — `seqno → fd` for every index run; iterated by
     LSM lookups (`KEEPLookup` / `KEEPGetExact`).
-  * `path8b leaf_branch` — canonical leaf-branch path (trailing '/';
-    empty for trunk); heap-allocated in `KEEPOpenBranch` so it owns
-    its bytes (no caller-slice borrow).  Read via `u8bDataC()`.
-  * `int lock_fd` — flock on the leaf dir's `.lock`; -1 = ro.
+  * `path8b leaf_branch` — canonical current-branch ref path (trailing
+    '/'; empty for trunk); heap-allocated in `KEEPOpenBranch` so it
+    owns its bytes (no caller-slice borrow).  Read via `u8bDataC()`.
+    Selects the ref context only; not a directory.
+  * `int lock_fd` — flock on the shard's `.lock`; -1 = ro.
   * `u32 next_seqno` — `max(seqno) + 1` across both registries.
   * `Bu8 buf1..buf4` — KEEPGet scratch.
 
-`KEEPCreateBranch(home *h, u8cs branch)` mkdirs a new leaf dir under
-an existing parent.  Returns `KEEPTRUNK` on empty branch, `KEEPNONE`
-on missing parent, `KEEPDUP` if the leaf already exists.  Doesn't
-open anything; caller follows up with `KEEPOpenBranch`.
+`KEEPSwitchBranch` changes the active ref context (which tip the
+session reads/advances) without touching the filesystem — there are
+no per-branch dirs to open or close.
 
-`KEEPBranchDrop(keeper *k, u8cs branch)` walks the leaf branch dir,
-evicts every `.keeper` and `.keeper.idx` registry entry, unlinks the
-files, removes the lock, and rmdir's the leaf.  Refuses trunk
-(`KEEPTRUNK`); refuses while branch has subdirs or is the active
-leaf (`KEEPDIRTY`); refuses missing dirs (`KEEPNONE`).
+`KEEPCreateBranch(home *h, u8cs branch)` creates a branch by writing
+one `?heads/<name>` ref row into the single `refs` reflog; it makes no
+directory.  Returns `KEEPTRUNK` on empty branch, `KEEPDUP` if the ref
+already exists.
 
-On-disk layout (multi-project):
-  * `<store>/<project>/`              — project root: trunk dir + `REFS` reflog.
-  * `<store>/<project>/NNNNN.keeper`  — trunk pack log (10-char RON64 seqno).
-  * `<store>/<project>/NNNNN.keeper.idx`  — trunk index run.
-  * `<store>/<project>/<branch>/...`  — branch subdir, same file shape.
-  * `<store>/<project>/<a>/<b>/...`   — nested branches.
-  * `<store>/<project>/remotes/<host>/...`  — per-host remote shard, same shape.
-Writes only ever land in the active leaf dir; reads fan out across
-the whole open path (branch → ancestors → project root).
+`KEEPBranchDrop(keeper *k, u8cs branch)` drops a branch by appending a
+REFS tombstone for its `?heads/<name>` ref; it deletes no objects and
+no directories (the objects linger for epoch-based GC).  Refuses trunk
+(`KEEPTRUNK`); refuses the active branch (`KEEPDIRTY`); refuses an
+unknown ref (`KEEPNONE`).
+
+On-disk layout (one flat shard per project):
+  * `<store>/<project>/`              — the only object dir; holds the `refs` reflog.
+  * `<store>/<project>/NNNNN.keeper`  — pack log (10-char RON64 seqno).
+  * `<store>/<project>/NNNNN.keeper.idx`  — keeper index run.
+  * `<store>/<project>/NNNNN.graf.idx` / `NNNNN.spot.idx` — workdog indexes, flat.
+All objects for every local branch, tag and remote-tracking ref live
+here; writes append to this dir and reads consult only this dir (no
+dir-chain fan-out, no per-branch or remotes subdirectories).
 
 ### WALK.h — git object graph traversal
 
 Types: `walk` (walker state), `walk_fn` (visitor callback).
 
-  - `WALKOpen`         open walker on a branch dir (mmaps that dir's
-                       logs + index runs; ancestor dirs resolved lazily
-                       via the keeper-wide lookup path)
+  - `WALKOpen`         open walker on the project shard (mmaps the
+                       shard's pack logs + index runs; all objects
+                       resolve from the single keeper-wide lookup path)
   - `WALKClose`        close walker, unmap everything
   - `WALKGet`          get object by hashlet
   - `WALKGetSha`       get object by raw 20-byte SHA-1

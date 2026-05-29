@@ -121,7 +121,9 @@ out complex tasks.
   * **Graf**: does token-level diffing, 3-way merges, history
     navigation. Maintains a history index. 
   * **Sniff**: serves the worktree, detects changes.
-  * **Keeper**: keeps the data per se (git blobs, trees, commits).
+  * **Keeper**: keeps the data per se (git blobs, trees, commits) in
+    one flat object pool per project — branches, tags and remotes are
+    just refs into that shared pool.
 
 New dogs may join, old dogs may learn new tricks.
 If it works, it gets used. If it's used, it evolves.

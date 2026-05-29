@@ -7,6 +7,10 @@
 #include "WEAVE.h"
 
 #include <string.h>
+#ifdef WEAVE_MERGE_DBG
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 #include "abc/DIFF.h"
 #include "abc/PRO.h"
@@ -617,6 +621,30 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
     e32c *ep = edlbuf[0];
     e32c *ee = edlg[0];
 
+#ifdef WEAVE_MERGE_DBG
+    if (getenv("WEAVE_DBG")) {
+        FILE *df = fopen(getenv("WEAVE_DBG"), "a");
+        if (df) {
+            fprintf(df, "=== WEAVEMerge a_len=%u b_len=%u ===\n", a_len, b_len);
+            for (u32 i = 0; i < a_len; i++) {
+                u32 lo=(i==0)?0:tok32Offset(a_toks[i-1]); u32 hi=tok32Offset(a_toks[i]);
+                fprintf(df,"a[%u] in=%08x rm=%08x \"", i, a_irm[i].in, a_irm[i].rm);
+                for(u32 j=lo;j<hi;j++){u8 c=a_text[j]; fprintf(df, c=='\n'?"\\n":"%c", c);}
+                fprintf(df,"\"\n");
+            }
+            for (u32 i = 0; i < b_len; i++) {
+                u32 lo=(i==0)?0:tok32Offset(b_toks[i-1]); u32 hi=tok32Offset(b_toks[i]);
+                fprintf(df,"b[%u] in=%08x rm=%08x \"", i, b_irm[i].in, b_irm[i].rm);
+                for(u32 j=lo;j<hi;j++){u8 c=b_text[j]; fprintf(df, c=='\n'?"\\n":"%c", c);}
+                fprintf(df,"\"\n");
+            }
+            for (e32c *q=edlbuf[0]; q<ee; q++)
+                fprintf(df,"EDL op=%u len=%u\n", DIFF_OP(*q), DIFF_LEN(*q));
+            fclose(df);
+        }
+    }
+#endif
+
     u32 ai = 0;  // cursor in a
     u32 bi = 0;  // cursor in b
 
@@ -838,6 +866,24 @@ ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b) {
     }
 
 cleanup:
+#ifdef WEAVE_MERGE_DBG
+    if (getenv("WEAVE_DBG") && __ == OK) {
+        FILE *df = fopen(getenv("WEAVE_DBG"), "a");
+        if (df) {
+            u32cp dt=(u32cp)dst->toks[1], dte=(u32cp)dst->toks[2];
+            u32 dn=(u32)(dte-dt); inrmcp di=(inrmcp)dst->inrm[1];
+            u8cp dx=(u8cp)dst->text[1];
+            fprintf(df,"--- MERGED OUT n=%u ---\n", dn);
+            for(u32 i=0;i<dn;i++){ if(di[i].rm!=0) continue;
+                u32 lo=(i==0)?0:tok32Offset(dt[i-1]); u32 hi=tok32Offset(dt[i]);
+                fprintf(df,"o[%u] in=%08x \"",i,di[i].in);
+                for(u32 j=lo;j<hi;j++){u8 c=dx[j]; fprintf(df,c=='\n'?"\\n":"%c",c);}
+                fprintf(df,"\"\n");
+            }
+            fclose(df);
+        }
+    }
+#endif
     return __;
 }
 

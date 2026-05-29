@@ -38,11 +38,15 @@ static b8 graf_is_rw = NO;
 #define GRAF_LOCK_S      ".lock.graf"
 #define GRAF_LEAF_BRANCH_MAX 1024
 
-//  Compose `<root>/.be[/<branch>]` (with `<branch>` empty for trunk).
-//  `branch` is the canonical leaf-branch (trailing '/' if non-empty).
+//  Compose `<root>/.be/<project>` — the single per-project graf shard.
+//  Branch is no longer a directory: every `.graf.idx` run lives directly
+//  under the project dir, with branch as pure ref context
+//  (`h->cur_branch`).  Mirrors dog/HOME.c `HOMEBranchDir`'s flattened
+//  shape.  `branch` is ignored; kept for call-site compatibility.
 //  `out` is NUL-terminated.
 static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
     sane(h && out);
+    (void)branch;
     u8bReset(out);
     a_dup(u8c, root_s, u8bDataC(h->root));
     call(PATHu8bFeed, out, root_s);
@@ -53,89 +57,7 @@ static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
     //  collapses to the legacy single-project shape.
     a_dup(u8c, proj, u8bDataC(h->project));
     if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
-    if ($ok(branch) && !u8csEmpty(branch)) {
-        a_dup(u8c, br, branch);
-        //  Strip trailing '/' from canonical branch path before
-        //  PATHu8bAdd (which inserts its own separator).
-        if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
-        if (!$empty(br)) call(PATHu8bAdd, out, br);
-    }
     call(PATHu8bTerm, out);
-    done;
-}
-
-//  YES iff `path` (NUL-terminated u8b) is an existing directory.
-static b8 graf_dir_exists(path8s path) {
-    filestat fs = {};
-    if (FILEStat(&fs, path) != OK) return NO;
-    return fs.kind == FILE_KIND_DIR;
-}
-
-//  Walk one branch path component at a time, calling `cb` per prefix
-//  dir (trunk first → leaf last).  `cb` receives a freshly-built
-//  NUL-terminated path slice for each prefix dir plus an `is_leaf`
-//  flag (YES on the final call — trunk's call when `leaf` is empty,
-//  otherwise the deepest segment's call).  Mirrors keeper's
-//  `keep_walk_branch` so PAST/DATA boundary flipping happens in the
-//  same place.  Stops at first non-OK return.
-typedef ok64 (*graf_dir_cb)(graf *g, u8cs dir, b8 is_leaf, void0p ctx);
-
-static ok64 graf_walk_branch(graf *g, u8cs leaf, graf_dir_cb cb,
-                              void0p ctx) {
-    sane(g && cb);
-    a_pad(u8, gdir, FILE_PATH_MAX_LEN);
-    a_dup(u8c, root_s, u8bDataC(g->h->root));
-    call(PATHu8bFeed, gdir, root_s);
-    a_cstr(rel, GRAF_DIR_S);
-    call(PATHu8bAdd, gdir, rel);
-    //  Project shard prefix — see graf_branch_dir's comment above.
-    a_dup(u8c, proj, u8bDataC(g->h->project));
-    if (!u8csEmpty(proj)) call(PATHu8bAdd, gdir, proj);
-    call(PATHu8bTerm, gdir);
-
-    //  Trunk first.  Empty leaf → trunk is the leaf.
-    b8 trunk_is_leaf = u8csEmpty(leaf);
-    {
-        a_pad(u8, d, FILE_PATH_MAX_LEN);
-        a_dup(u8c, gd, u8bDataC(gdir));
-        call(PATHu8bFeed, d, gd);
-        call(cb, g, $path(d), trunk_is_leaf, ctx);
-    }
-    if (trunk_is_leaf) done;
-
-    //  Pre-scan: where does the last segment start?  We need the cb
-    //  to know it's the leaf BEFORE the scan runs, so PAST/DATA can
-    //  flip first.
-    u8cp last_seg_start = leaf[0];
-    for (u8cp p = leaf[0]; p < leaf[1]; p++)
-        if (*p == '/' && p + 1 < leaf[1]) last_seg_start = p + 1;
-
-    //  Each '/'-separated component, accumulating.
-    a_pad(u8, d, FILE_PATH_MAX_LEN);
-    a_dup(u8c, gd, u8bDataC(gdir));
-    call(PATHu8bFeed, d, gd);
-    u8cp p = leaf[0];
-    u8cp seg_start = p;
-    while (p <= leaf[1]) {
-        b8 at_end = (p == leaf[1]);
-        if (at_end || *p == '/') {
-            if (p > seg_start) {
-                u8cs seg = {seg_start, p};
-                call(PATHu8bPush, d, seg);
-                call(PATHu8bTerm, d);
-                b8 is_leaf = (seg_start == last_seg_start);
-                call(cb, g, $path(d), is_leaf, ctx);
-                //  No `idle--`: PATHu8bPush writes its NUL via
-                //  PATHu8bTerm WITHOUT advancing idle, so DATA is
-                //  already at the correct end-of-segment.  Backing
-                //  idle up would eat one byte of the segment (bug
-                //  that surfaces on nested branches like
-                //  `feature/fix`, see graf/GRAF.c history).
-            }
-            seg_start = p + 1;
-        }
-        p++;
-    }
     done;
 }
 
@@ -207,32 +129,12 @@ ok64 GRAFPupCreateNext(path8s dir, u8cs ext, u8cs data) {
     return DOGPupCreateAt(g->puppies, dir, ext, data, pup_key);
 }
 
-static ok64 graf_open_dir_cb(graf *g, u8cs dir, b8 is_leaf, void0p ctx) {
-    (void)ctx;
-    //  Branch shard dirs are materialised lazily — mirror
-    //  keep_open_dir_cb's "missing dir = no inherited shards"
-    //  policy.  REFS (sniff) is the source of truth on branch
-    //  existence; here we just accumulate what's on disk.
-    b8 exists = graf_dir_exists(dir);
-    //  Mirror keeper's leaf-flip: freeze inherited (trunk + ancestor)
-    //  graf-idx entries into PAST before scanning the leaf dir.  The
-    //  active leaf's entries then accumulate in DATA, where writes
-    //  (DOGPupCreate / DAGCompact) target.  Reads scan PastData via
-    //  GRAFRefreshView so cross-branch DAG walks see every loaded
-    //  run.  See KEEP.h §"Branch-aware object store".
-    if (is_leaf && kv64bDataLen(g->puppies) > 0)
-        ((kv64 **)g->puppies)[1] = (kv64 *)g->puppies[2];
-    if (!exists) return OK;
-    a_cstr(ext, GRAF_IDX_EXT);
-    return DOGPupOpenAll(g->puppies, dir, ext);
-}
-
 void GRAFRefreshView(void) {
     graf *g = &GRAF;
     g->runs_n = 0;
-    //  Span PastData — inherited (parent / sibling-after-switch) runs
-    //  in PAST plus leaf-owned runs in DATA — so cross-branch DAG
-    //  reads (LCA, WEAVE history walks) see every loaded run.
+    //  Span PastData — single-shard layout keeps PAST empty, so
+    //  PastData == DATA: every `.graf.idx` run in the one project dir.
+    //  DAG reads (LCA, WEAVE history walks) see the whole set.
     //  Compaction (DAGCompact) operates on DATA only via DOGPupCount.
     u32 n = DOGPupCountAll(g->puppies);
     for (u32 i = 0; i < n && g->runs_n < MSET_MAX_LEVELS; i++) {
@@ -289,23 +191,27 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     //  HOMEOpenBranch above).
     if (u8csLen(norm) >= HOME_BRANCH_MAX) return GRAFFAIL;
 
-    //  Trunk dir always exists after this — first writer creates it.
-    a_pad(u8, trunkdir, FILE_PATH_MAX_LEN);
+    //  Single per-project shard dir: `<root>/.be/<project>`.  Branch is
+    //  pure ref context now (`h->cur_branch`); every `.graf.idx` run
+    //  lives directly here, no per-branch subdirs.  First writer creates
+    //  it.  Mirrors keeper's flattened layout.
+    a_pad(u8, projdir, FILE_PATH_MAX_LEN);
     {
-        u8cs empty = {};
-        ok64 to = graf_branch_dir(trunkdir, h, empty);
+        u8cs nobranch = {};
+        ok64 to = graf_branch_dir(projdir, h, nobranch);
         if (to != OK) {
             DOGPupClose(g->puppies);
             zerop(g); graf_is_rw = NO;
             return to;
         }
     }
-    call(FILEMakeDirP, $path(trunkdir));
+    call(FILEMakeDirP, $path(projdir));
 
-    //  Walk trunk → leaf, scanning each branch dir for `<seqno>.graf.idx`.
+    //  Scan the project dir for `<seqno>.graf.idx` runs.  Single shard —
+    //  no trunk→leaf walk, no PAST/DATA flip (PAST stays empty).
     {
-        a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
-        ok64 wo = graf_walk_branch(g, leaf, graf_open_dir_cb, NULL);
+        a_cstr(ext, GRAF_IDX_EXT);
+        ok64 wo = DOGPupOpenAll(g->puppies, $path(projdir), ext);
         if (wo != OK) {
             DOGPupClose(g->puppies);
             zerop(g); graf_is_rw = NO;
@@ -316,18 +222,12 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     GRAFRefreshView();
     graf_recompute_last_pup_key(g);
 
-    //  Worktree sharing: lock the LEAF dir (writes only land in the
-    //  deepest dir).  For trunk leaf this is `<.be>/.lock`.
-    //  Readers open lockless — runs are immutable (tmp+rename
-    //  publication) and DOGPupOpenAll retries on ENOENT.
+    //  Worktree sharing: lock the project shard dir (the only dir writes
+    //  ever land in).  Readers open lockless — runs are immutable
+    //  (tmp+rename publication) and DOGPupOpenAll retries on ENOENT.
     if (rw) {
-        a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
-        a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
-        call(graf_branch_dir, leafdir, h, leaf);
-        //  Lazy materialisation, see keeper/KEEP.c §KEEPOpenBranch.
-        call(FILEMakeDirP, $path(leafdir));
         a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
-        a_dup(u8c, lds, u8bDataC(leafdir));
+        a_dup(u8c, lds, u8bDataC(projdir));
         call(PATHu8bFeed, lockpath, lds);
         a_cstr(lockrel, GRAF_LOCK_S);
         call(PATHu8bAdd, lockpath, lockrel);
@@ -483,20 +383,22 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
 
     //  Splice the new query back into the URI shape via URIutf8Feed
     //  (no manual serialize).  Mutate `u` in place — function-local.
-    u8csMv(u.query, u8bData(canon_q));
+    //  `u.query` is `u8cs` (const); take the const data view so the
+    //  move target / source qualifiers match (no discards-qualifiers).
+    u8csMv(u.query, u8bDataC(canon_q));
     return URIutf8Feed(canonic, &u);
 }
 
 // --- GRAFSwitchBranch ------------------------------------------------
 //
-// Re-target graf from current leaf to `new_branch` without closing.
-// Slides current DATA (the active leaf's `.graf.idx` runs) into PAST
-// on `g->puppies`, walks segments past LCA(old, new) scanning each
-// new dir, refreshes `g->runs[]`, swaps the leaf flock.  Mirrors
-// keeper's `KEEPSwitchBranch`.  Use case: cross-branch ops (POST
-// promote-to-sibling, located-cherry PATCH from another branch)
-// need both branches' DAG runs visible — `SNIFFMaybeSwitchGraf`
-// pairs this with `KEEPSwitchBranch` at every cross-branch call site.
+// Re-target graf from current branch to `new_branch` without closing.
+// With the single-shard layout, branch is pure ref context: every
+// `.graf.idx` run already lives in the one project dir loaded at open,
+// so a switch is a label-only operation — re-point `h->cur_branch`.
+// No dir walk, no PAST/DATA flip, no rescans, no lock swap.  Mirrors
+// keeper's flattened `KEEPSwitchBranch`.  Use case: cross-branch ops
+// (POST promote-to-sibling, located-cherry PATCH from another branch)
+// — `SNIFFMaybeSwitchGraf` pairs this with `KEEPSwitchBranch`.
 
 ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
     sane(h != NULL && $ok(new_branch));
@@ -505,9 +407,8 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
 
     //  Inner APIs receive canonic URIs from beagle (STORE.md
     //  §"URI structure": `/<project>/<branch-path>/<pin>`).  Pull
-    //  the branch slice out before normalisation; otherwise the
-    //  segment walk below would try to enter
-    //  `.be/<project>/<project>/<branch>/<pin>/` and bail GRAFNOPATH.
+    //  the branch slice out of any canonic query form before handing
+    //  it to HOMESetCurBranch (which normalises).
     u8cs branch_in = {};
     u8csMv(branch_in, new_branch);
     {
@@ -516,88 +417,10 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
             u8csMv(branch_in, c_branch);
     }
 
-    //  Normalize the new branch.
-    a_pad(u8, nb, GRAF_LEAF_BRANCH_MAX);
-    call(DPATHBranchNormFeed, nb, branch_in);
-    a_dup(u8c, norm, u8bDataC(nb));
-
-    //  No-op when already on the requested branch.  `g->h->cur_branch`
-    //  is normalized (trailing '/' for non-trunk) so direct compare
-    //  is sufficient if both sides match the convention.  Strip a
-    //  trailing slash on either side before compare.
-    a_dup(u8c, cur, u8bDataC(g->h->cur_branch));
-    {
-        u8cs a = {}, b = {};
-        u8csMv(a, cur);
-        u8csMv(b, norm);
-        if (!u8csEmpty(a) && *u8csLast(a) == '/') u8csShed1(a);
-        if (!u8csEmpty(b) && *u8csLast(b) == '/') u8csShed1(b);
-        if (u8csEq(a, b)) done;
-    }
-
-    //  Strip trailing slash on cur for LCA comparison.
-    u8cs cur_for_lca = {};
-    u8csMv(cur_for_lca, cur);
-    if (!u8csEmpty(cur_for_lca) && *u8csLast(cur_for_lca) == '/')
-        u8csShed1(cur_for_lca);
-    size_t lca = DPATHBranchLcaLen(cur_for_lca, norm);
-
-    //  1. Collapse old leaf's DATA into PAST.
-    if (kv64bDataLen(g->puppies) > 0)
-        ((kv64 **)g->puppies)[1] = (kv64 *)g->puppies[2];
-
-    //  2. Walk the new branch past LCA, scanning each new dir.
-    a_path(d);
-    {
-        a_dup(u8c, root_s, u8bDataC(h->root));
-        call(PATHu8bFeed, d, root_s);
-        a_cstr(rel, GRAF_DIR_S);
-        call(PATHu8bAdd, d, rel);
-        //  Project shard segment (project-sharded layout — see
-        //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
-        //  collapses to the legacy single-project shape.
-        a_dup(u8c, proj, u8bDataC(h->project));
-        if (!u8csEmpty(proj)) call(PATHu8bAdd, d, proj);
-        call(PATHu8bTerm, d);
-    }
-    if (u8csLen(norm) > 0) {
-        u8cp p = norm[0];
-        u8cp seg_start = p;
-        size_t off = 0;
-        while (p <= norm[1]) {
-            b8 at_end = (p == norm[1]);
-            if (at_end || *p == '/') {
-                if (p > seg_start) {
-                    u8cs seg = {seg_start, p};
-                    call(PATHu8bPush, d, seg);
-                    if (off >= lca) {
-                        if (!graf_dir_exists($path(d)))
-                            return GRAFNOPATH;
-                        a_cstr(ext, GRAF_IDX_EXT);
-                        call(DOGPupOpenAll, g->puppies, $path(d), ext);
-                    }
-                }
-                seg_start = p + 1;
-                off = (size_t)(p - norm[0]) + 1;
-            }
-            p++;
-        }
-    }
-
-    //  3. Refresh the typed runs[] view + global last_pup_key.
-    GRAFRefreshView();
-    graf_recompute_last_pup_key(g);
-
-    //  Lock stays on the original leaf: cross-branch graf access is
-    //  read-only context (writes still target the originally-opened
-    //  leaf).  Swapping the flock would create stray `.lock.graf`
-    //  files in sibling shard dirs that `be delete ?branch` can't
-    //  clean up via REFS tombstone alone.
-
-    //  Note: keeper is the sole writer of h->cur_branch (per the
-    //  dog dep graph, graf depends on keeper).  Graf's switch runs
-    //  first; keeper updates h->cur_branch after.
-    (void)h;
+    //  Re-target the worktree current branch.  No-op handling and
+    //  normalisation live in HOMESetCurBranch.  All runs already
+    //  visible from the single project shard, so nothing to rescan.
+    call(HOMESetCurBranch, h, branch_in);
     done;
 }
 

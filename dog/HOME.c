@@ -405,10 +405,11 @@ ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
     call(PATHu8bPush, abs_dir, DOG_BE_S);
     a_dup(u8c, proj, u8bDataC(h->project));
     if (!u8csEmpty(proj)) call(PATHu8bPush, abs_dir, proj);
-    if (branch != NULL) {
-        a_dup(u8c, br, u8bDataC(branch));
-        if (!u8csEmpty(br)) call(PATHu8bAdd, abs_dir, br);
-    }
+    //  Flat store: one object shard per project.  The branch is purely
+    //  ref context (which `?<branch>` tip we read/write), never a dir
+    //  component — every local consumer (keeper packs/idx, graf idx,
+    //  refs) resolves to `<root>/.be/<project>/`.  See STORE.md.
+    (void)branch;
     done;
 }
 

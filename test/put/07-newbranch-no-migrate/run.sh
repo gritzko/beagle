@@ -1,29 +1,22 @@
 #!/bin/sh
-#  put/07-newbranch-no-migrate — `be put ?<newbranch>/#<sha>` where
-#  the new branch will live as a CHILD of cur's shard must NOT migrate
-#  cur's first-parent chain into the new shard.
+#  put/07-newbranch-no-migrate — under the FLAT store layout, creating a
+#  new branch at the parent tip is a pure REF op: no per-branch dir, no
+#  object migration.  The child resolves the parent tip from the one
+#  shared project pool, and the operation must not hang on a long chain.
 #
 #  Spec / rationale (keeper/INDEX.md §"Storage layout"):
-#    Object retrieval walks child → parent → root.  A new sub-branch
-#    created under cur reads cur's pack for free; copying the whole
-#    FP chain into the child's shard is wasted work AND blows up on
-#    long histories (the originating report: `be put ?recover/#<sha>`
-#    hangs on a long trunk chain).
-#
-#  Bug site: sniff/PUT.c::PUTSetBranch always calls KEEPMoveCommits
-#  on a new ref, regardless of whether target_branch will be a
-#  descendant of cur_branch in the shard tree.  Should short-circuit
-#  the migration when the target sits under cur (reads bubble up).
+#    All objects live in the one project shard `.be/$P/`; branches are
+#    REFS rows.  A new branch pointed at an existing tip copies nothing.
+#    (The originating report: `be put ?recover/#<sha>` hung on a long
+#    trunk chain because it tried to migrate the whole FP chain.)
 #
 #  Repro shape:
 #    1. Build N>5 commits on trunk (long-ish FP chain).
 #    2. `be put ?recover/#<trunk-tip>` mints a new child branch
-#       label pointing at trunk's current tip.
-#    3. Assert: `.be/$P/recover/` exists (label dir) but holds NO
-#       `.keeper` packs — every commit on the chain already lives
-#       in trunk's shard one level up.
-#    4. Switch into ?recover and read x.txt — content resolves via
-#       parent-shard lookup, no migration required.
+#       label pointing at trunk's current tip (must not hang).
+#    3. Assert: NO per-branch dir `.be/$P/recover/` is created.
+#    4. Switch into ?recover and read x.txt — content resolves from
+#       the shared pool, no migration required.
 
 . "$(dirname "$0")/../../lib/case.sh"
 
@@ -80,8 +73,8 @@ if ! timeout 30 "$BE" put "?recover/#$TRUNK_TIP" \
     exit 1
 fi
 
-[ -d ".be/$P/recover" ] || {
-    echo "FAIL: .be/$P/recover shard dir missing after 'be put ?recover/#<sha>'" >&2
+[ ! -d ".be/$P/recover" ] || {
+    echo "FAIL: per-branch shard dir .be/$P/recover must NOT exist (flat layout)" >&2
     ls -la ".be/$P" >&2
     exit 1
 }
@@ -92,25 +85,18 @@ fi
 }
 
 # ------------------------------------------------------------------
-# 3. The recover shard MUST NOT contain its own pack file: the
-#    commits live in trunk one level up, and keeper's child→parent
-#    lookup chain resolves them without a copy.
+# 3. Flat layout: NO per-branch shard dir exists.  All commits live in
+#    the one project pool; the new branch is a REFS row only.
 # ------------------------------------------------------------------
-RECOVER_PACKS=$(ls -1 ".be/$P/recover"/*.keeper 2>/dev/null || true)
-if [ -n "$RECOVER_PACKS" ]; then
-    BYTES=0
-    for f in $RECOVER_PACKS; do
-        sz=$(wc -c < "$f" | tr -d ' ')
-        BYTES=$((BYTES + sz))
-    done
-    echo "FAIL: ?recover/ shard got its own pack ($BYTES bytes) — PUTSetBranch migrated the FP chain into a child shard:" >&2
+[ ! -d ".be/$P/recover" ] || {
+    echo "FAIL: per-branch shard dir .be/$P/recover must NOT exist (flat layout)" >&2
     ls -la ".be/$P/recover" >&2
     exit 1
-fi
+}
 
 # ------------------------------------------------------------------
 # 4. Switch into ?recover and check the wt reads the last commit's
-#    content (resolved via parent-shard fallback, not migration).
+#    content (resolved from the shared pool, no migration).
 # ------------------------------------------------------------------
 "$BE" get '?recover/' > "$LOGS/get-recover.out" 2> "$LOGS/get-recover.err" || {
     echo "FAIL: be get ?recover/ failed after non-migrating PUT" >&2

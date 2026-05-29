@@ -49,9 +49,10 @@ git -C "$SEED" commit -qm A
 git -C "$SEED" push -q "$ORIGIN" master:master
 
 # ----------------------------------------------------------------
-# 2. clone into wt via the transport form (`ssh://...`).  This
-#    populates `.be/<P>/remotes/localhost/refs` AND logs the URL
-#    into the project reflog so later `//localhost` resolves.
+# 2. clone into wt via the transport form (`ssh://...`).  Under the
+#    flat layout this records the peer-URI remote-tracking ref in the
+#    project's flat reflog `.be/<P>/refs` (no remotes/ dir) so later
+#    `//localhost` resolves from cache.
 # ----------------------------------------------------------------
 mkdir wt wt/.be
 cd wt

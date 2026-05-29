@@ -1,16 +1,16 @@
 #!/bin/sh
-#  get/26-remote-shard-refs — a fresh-clone wire fetch lands its
-#  peer-URI ref row in the project trunk's reflog at
-#  `.be/<project>/refs`.  Local branches and remote refs are not in
-#  1:1 correspondence, so the row carries the peer URI verbatim and
-#  is keyed by `(scheme,host,path,?ref)` — no per-leaf shard, no
-#  per-branch remote sub-dir.
+#  get/26-remote-shard-refs — under the FLAT store layout, a fresh-clone
+#  wire fetch lands its peer-URI ref row in the project's single flat
+#  reflog at `.be/<project>/refs`.  Local branches and remote refs are
+#  not in 1:1 correspondence, so the row carries the peer URI verbatim
+#  and is keyed by `(scheme,host,path,?ref)` — no per-leaf shard, no
+#  per-branch remote sub-dir, no remotes/ class dir.
 #
 #  Negative: the row MUST NOT land in `<project>/<ref>/refs` (a leaf
-#  shard named after the remote's ref — the stale 1:1 mapping).
+#  shard named after the remote's ref — that path never exists in the
+#  flat model).
 #
-#  Companion to get/25-remote-shard (which checks the empty-seed dir
-#  layout BEEnsureProjectRepo lays down before the wire opens).
+#  Companion to get/25-remote-shard (flat remote-ref layout).
 #
 #  Requires passwordless ssh to localhost (gated by WITH_SSH).
 
@@ -56,7 +56,7 @@ cd "$WT"
 #  Pick whichever project name BEEnsureProjectRepo derived (basename
 #  of $SRC_BARE without `.git` → `src`).  Find it dynamically so the
 #  test doesn't bake the convention.
-PROJ=$(ls .be | grep -vE '^(\.lock|config|refs|wtlog|remotes|sniff\.pid|\.refs\.idx|\.wtlog\.idx)$' | head -1)
+PROJ=$(ls .be | grep -vE '^(\.lock|config|refs|wtlog|sniff\.pid|\.refs\.idx|\.wtlog\.idx)$' | head -1)
 [ -n "$PROJ" ] || { echo "FAIL: no project shard under .be/" >&2; ls -la .be >&2; exit 1; }
 
 # --- 3. assert the row landed in the project trunk's refs -------------
@@ -72,12 +72,16 @@ grep -q '//localhost' "$TRUNK_REFS" || {
     exit 1
 }
 
-# --- 4. negative: peer URI must NOT be in a leaf shard named after ---
-#       the remote's ref (stale 1:1 local-branch=remote-ref mapping).
-LEAF_REFS=".be/$PROJ/master/refs"
-if [ -f "$LEAF_REFS" ] && grep -q '//localhost' "$LEAF_REFS"; then
-    echo "FAIL: legacy leaf $LEAF_REFS carries a peer URI row" >&2
-    echo "      (a wire fetch should not mint a local leaf branch)" >&2
-    cat "$LEAF_REFS" >&2
+# --- 4. negative: flat layout has no per-branch leaf shard at all. ---
+#       The path `<project>/<ref>/refs` must not exist; a wire fetch
+#       does not mint a local leaf branch or any remotes/ class dir.
+[ ! -d ".be/$PROJ/master" ] || {
+    echo "FAIL: per-branch leaf shard .be/$PROJ/master must not exist (flat layout)" >&2
+    ls -la ".be/$PROJ" >&2
     exit 1
-fi
+}
+[ ! -d ".be/$PROJ/remotes" ] || {
+    echo "FAIL: remotes/ class dir must not exist (flat layout)" >&2
+    ls -la ".be/$PROJ" >&2
+    exit 1
+}

@@ -186,13 +186,12 @@ ok64 HOMEWriteBranch(home const *h, u8cs out);
 // trailing `/`).
 b8 HOMEBranchVisible(home const *h, u8cs branch);
 
-// Compose `<root>/.be/<project>[/<branch>]` into `abs_dir`
-// (NUL-terminated).  `branch` is a path8b buffer in canonical
-// form (DPATHBranchNormFeed: trunk = empty DATA; non-trunk ends
-// with '/'); NULL or empty DATA == trunk (no branch segment).
-// Empty `h->project` (legacy single-project layout) collapses
-// to no project segment.  Caller passes `&h->cur_branch[0]`
-// directly when targeting the active leaf.
+// Compose the project object shard dir `<root>/.be/<project>` into
+// `abs_dir` (NUL-terminated).  Flat store: there is ONE shard per
+// project, so the `branch` argument is ignored — it is retained only
+// for source compatibility with the many call sites that still pass
+// `&h->cur_branch[0]`.  Branch identity lives in REFS rows, not on
+// disk.  Empty `h->project` collapses to no project segment.
 ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch);
 
 #endif

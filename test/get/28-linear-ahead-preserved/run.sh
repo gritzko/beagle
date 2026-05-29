@@ -92,9 +92,10 @@ assert_b_preserved() {
         echo "  OK  $_shape: cur still pinned to TIP_B ($TIP_B)"
         return 0
     fi
-    #  cur moved off B — look for B in REFS by grep.
-    if grep -q "$TIP_B" .be/$P/refs 2>/dev/null \
-       || grep -q "$TIP_B" .be/$P/*/refs 2>/dev/null; then
+    #  cur moved off B — look for B in the flat project REFS by grep.
+    #  Flat layout: there is one refs file per project (no per-branch
+    #  `.be/$P/<branch>/refs` glob).
+    if grep -q "$TIP_B" .be/$P/refs 2>/dev/null; then
         echo "  OK  $_shape: cur moved to $_cur but TIP_B is parked in REFS"
         return 0
     fi
