@@ -236,15 +236,24 @@ static ok64 ssh_clone(char const *repo, char const *gitdir,
 
 // --- main test ---
 
-con char TMILL[] = "/home/gritzko/src/treadmill/gits";
-
 ok64 maintest() {
     sane(1);
 
+    //  Unique per-run scratch root.  $TMPDIR (CMake points it at the
+    //  shared test run dir) or /tmp; mkdtemp guarantees uniqueness so
+    //  parallel ctest jobs never collide on a shared fixed path.
+    char root[256];
+    {
+        char const *base = getenv("TMPDIR");
+        if (!base || !*base) base = "/tmp";
+        snprintf(root, sizeof(root), "%s/round-XXXXXX", base);
+        want(mkdtemp(root) != NULL);
+    }
+
     char origin[256], worktree[256], checkout[256];
-    snprintf(origin, sizeof(origin), "%s/origin", TMILL);
-    snprintf(worktree, sizeof(worktree), "%s/copy2", TMILL);
-    snprintf(checkout, sizeof(checkout), "%s/checkout", TMILL);
+    snprintf(origin, sizeof(origin), "%s/origin", root);
+    snprintf(worktree, sizeof(worktree), "%s/copy2", root);
+    snprintf(checkout, sizeof(checkout), "%s/checkout", root);
 
     // --- 1. Create fresh bare origin with seed content ---
     fprintf(stderr, "--- create origin ---\n");
@@ -373,6 +382,14 @@ ok64 maintest() {
     }
 
     fprintf(stderr, "--- round trip OK ---\n");
+
+    //  Best-effort scratch cleanup (only reached on success; a failing
+    //  want() short-circuits and leaves the dir for inspection).
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", root);
+        (void)runcmd(cmd);
+    }
 
     done;
 }

@@ -72,8 +72,47 @@ ok64 maintest() {
 
     char const *repo = getenv("FETCH_REPO");
     char const *outdir = getenv("FETCH_OUT");
-    if (!repo) repo = "/home/gritzko/src/treadmill/gits/repo";
-    if (!outdir) outdir = "/home/gritzko/src/treadmill/gits/copy";
+
+    //  Unless the caller fully specifies both paths, pick a unique
+    //  per-run scratch root.  $TMPDIR (CMake points it at the shared
+    //  test run dir) or /tmp; mkdtemp guarantees uniqueness so parallel
+    //  ctest jobs never collide on a shared fixed path.
+    char root[200] = {};
+    char repo_buf[256], out_buf[256];
+    if (!repo || !outdir) {
+        char const *base = getenv("TMPDIR");
+        if (!base || !*base) base = "/tmp";
+        snprintf(root, sizeof(root), "%s/fetch-XXXXXX", base);
+        want(mkdtemp(root) != NULL);
+    }
+
+    //  No source repo supplied: build a throwaway bare fixture seeded
+    //  with one README.md commit (mirrors ROUND's origin setup).  The
+    //  bare form is required — `repo` is later used as a git --git-dir
+    //  and served via git-upload-pack.
+    if (!repo) {
+        snprintf(repo_buf, sizeof(repo_buf), "%s/repo", root);
+        repo = repo_buf;
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd),
+            "git init --bare -b master %s 2>/dev/null && "
+            "T=$(mktemp -d) && "
+            "git init -b master $T 2>/dev/null && "
+            "git -C $T config user.email test@test && "
+            "git -C $T config user.name Test && "
+            "printf 'hello fetch\\n' > $T/README.md && "
+            "git -C $T add . && git -C $T commit -m seed 2>/dev/null && "
+            "git -C $T remote add origin %s && "
+            "git -C $T push origin master 2>/dev/null && "
+            "rm -rf $T",
+            repo, repo);
+        want(system(cmd) == 0);
+    }
+
+    if (!outdir) {
+        snprintf(out_buf, sizeof(out_buf), "%s/copy", root);
+        outdir = out_buf;
+    }
 
     // --- init output as bare repo ---
     {
@@ -285,6 +324,14 @@ ok64 maintest() {
     }
 
     { int status; waitpid(pid, &status, 0); }
+
+    //  Best-effort scratch cleanup when we created the fixture (only
+    //  reached on success; a failing want() leaves it for inspection).
+    if (root[0]) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", root);
+        (void)system(cmd);
+    }
 
     done;
 }

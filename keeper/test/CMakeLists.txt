@@ -49,6 +49,11 @@ if (WITH_SSH)
     target_link_libraries(ROUNDtest dog abc-core)
     add_test(NAME ROUNDtest COMMAND ROUNDtest)
 
+    #  Land each test's mkdtemp scratch under the shared per-configure
+    #  run dir (same place the shell suites use), not /tmp.
+    set_tests_properties(FETCHtest ROUNDtest PROPERTIES
+        ENVIRONMENT "TMPDIR=${DOG_TEST_TMP_ROOT}")
+
 endif()
 
 add_executable(WALKtest WALK.c)
