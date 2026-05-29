@@ -55,7 +55,7 @@ mkdir -p "$KSRV/.be"
 cd "$KSRV"
 git init --quiet .
 mkdir -p .be
-be get "//localhost/$SRC_REL"
+be get "ssh://localhost/$SRC_REL"
 KSRV_REL=${KSRV#$HOME/}
 
 # --- 3. git clones from the keeper mirror via upload-pack override ---

@@ -605,19 +605,6 @@ ok64 SNIFFExec(cli *c) {
     ok64 ret = OK;
 
     if (is_post) {
-        //  VERBS.md §POST defines no `--force` (the spec lists it
-        //  only under §GET as a tree-reset override).  Sniff used
-        //  to silently consume `--force` to bypass the POSTCFLCT
-        //  conflict-marker scan, an undocumented escape hatch.
-        //  Refuse at the dispatcher: the right way to commit a
-        //  half-merged file is to resolve the markers first.
-        if (CLIHas(c, "--force")) {
-            fprintf(stderr,
-                    "sniff: post: --force is not a valid flag for POST "
-                    "(VERBS.md §POST).  Resolve conflict markers in "
-                    "the wt before committing.\n");
-            fail(SNIFFFAIL);
-        }
         u8cs commit_msg = {};
         //  Per VERBS.md: free-form trailing words are folded into a
         //  URI's #fragment by CLIParse.  Prefer that over the legacy

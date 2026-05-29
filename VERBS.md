@@ -576,6 +576,19 @@ Patch-id dedup (`GRAFPatchId`) acts as a safety net to skip a
 foster/parent absorption whose diff is already reachable from
 cur — distinct from header assembly, which always runs.
 
+###  `--force` (POSTCFLCT bypass)
+
+POST refuses by default to commit any tracked file containing
+PATCH's conflict-marker triple (`<<<<…||||…>>>>`); the rule
+keeps an unattended `patch && post` chain from recording a
+half-merged commit.  `be post --force` bypasses that scan.  Use
+it when the predicate false-positives (string literals describing
+the marker shape inside the file's own source, prose mentions in
+a doc the scan misclassifies, etc.) — not to commit a genuinely
+unmerged file.  The flag does NOT relax POST's FF rule, doesn't
+change `?branch` / `//remote` advance semantics, and doesn't
+affect message resolution.
+
 ##  PUT — write a ref
 
 PUT is the **ref-writer**: it writes one row to `.be/REFS` (or

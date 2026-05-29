@@ -846,6 +846,8 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
         fail(PATCHFAIL);
     }
 
+resolved_ok:;
+
     //  If we resolved to an annotated tag, deref to the underlying
     //  commit via the `object` field.
     a_carve(u8, cbuf, 1UL << 16);
@@ -1359,7 +1361,15 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         !u8csEmpty(target_query)) {
         u8cs br_split = {}, pin_split = {};
         DOGRefSplitPin(target_query, br_split, pin_split);
-        if (!u8csEmpty(pin_split)) {
+        //  CHERRY-LOCATED needs BOTH a branch locator and a pin
+        //  (`?<branch>/<sha>`).  Bare `?<40hex>` (no slash, no
+        //  branch) is a SQUASH target — DOGRefSplitPin returns
+        //  pin_split=<sha> + br_split=empty for that shape, but
+        //  treating it as cherry crashes on root commits and
+        //  loses the "squash all of theirs onto cur" intent that
+        //  the post-fetch URI rewrite (BEActResolveRemote) relies
+        //  on.
+        if (!u8csEmpty(pin_split) && !u8csEmpty(br_split)) {
             (void)SNIFFMaybeSwitchGraf(br_split); (void)SNIFFMaybeSwitchKeeper(br_split);
             cherry = YES;
             u8csMv(frag, pin_split);

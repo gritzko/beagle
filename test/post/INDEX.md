@@ -48,9 +48,3 @@
   test/TRIANGLE.todo.md §"BEActSubsPost…selective mode" for the
   conditions that did mint a commit in the originating trace.
   Gated on `WITH_SSH`.
-* `20-force-flag-spec/` — `be post --force "msg"` is silently
-  accepted (used internally to bypass the POSTCFLCT conflict-marker
-  scan) but VERBS.md §POST defines no `--force`.  WILL_FAIL until
-  the spec documents the override OR the dispatcher refuses the
-  flag.  Per the originating report (item 5): "Either define it or
-  refuse the flag at the dispatcher."

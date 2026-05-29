@@ -39,14 +39,6 @@ set(_BE_WILL_FAIL_CASES
     # branch fan-out is "Phase 1c: dir chain is always [trunk
     # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
     "be-get-24-uri-refs"
-    # `be patch ssh://host?<branch>` on a genuinely divergent remote
-    # (cur and theirs share LCA, each has unique commits on top).
-    # GRAFFAIL is gone after the SNIFF.exe.c routing fix (transport-
-    # form URI no longer hits PATCHApplyFile single-file path), but
-    # the merge still doesn't pick up theirs's added file because the
-    # freshly-fetched commit isn't visible to graf's DAG walk.  See
-    # TRIANGLE.todo.md.
-    "be-patch-20-divergent-merge"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what

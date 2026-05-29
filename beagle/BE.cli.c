@@ -1256,9 +1256,11 @@ ok64 BEActPathFormCheck(cli *c) {
 //  Spawn `be put <subpath>` in the parent wt to stage a `put
 //  <subpath>#<40-hex>` row reflecting the sub's current tip
 //  (SNIFFSubReadTip).  Used by BEActSubsPost after a sub's recursive
-//  POST returns OK: BEActSniffPost then reads that row and emits the
-//  gitlink ADD in the parent commit.  A clean sub (tip == baseline)
-//  just gets re-stamped — no decision row, no parent bump.
+//  POST returns OK *and* the parent has commit intent: BEActSniffPost
+//  then reads that row and emits the gitlink ADD in the parent
+//  commit.  Gated on parent_msg in the caller (Bug 4): pure-push
+//  shapes (`be post //host` no #frag) skip the bump so the parent
+//  isn't tricked into a selective-mode commit on cur.
 static ok64 bepost_bump_sub(u8cs subpath) {
     sane($ok(subpath));
 
@@ -1557,10 +1559,20 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     if (rc->dry_only) return OK;       //  status-only walk; no bump.
     if (postnone) return OK;
 
-    //  Sub returned OK with a real commit.  Fork `be put <subpath>` in
-    //  the parent so the parent's wtlog gets a `put <subpath>#<40-hex>`
-    //  row at the new tip; BEActSniffPost picks that up and emits the
-    //  gitlink ADD in the parent commit.
+    //  Pure-push gate (Bug 4): if the PARENT has no commit intent
+    //  (no #frag from the user, no -m flag), we're in a pure-push
+    //  shape — `be post //host` whose only effect should be to
+    //  push existing tips, not mint a new commit.  Skipping the
+    //  bump here prevents the synthesised put row from tripping
+    //  sniff into a selective-mode commit on cur.  Gitlink lag is
+    //  intentional in that shape; the user runs `be post '#bump
+    //  sub' //host` to actually commit the gitlink update.
+    if (u8csEmpty(rc->parent_msg)) return OK;
+
+    //  Parent has commit intent + sub returned OK with a real commit.
+    //  Fork `be put <subpath>` so the parent's wtlog gets a `put
+    //  <subpath>#<40-hex>` row at the new tip; BEActSniffPost picks
+    //  that up and emits the gitlink ADD in the parent commit.
     ok64 br = bepost_bump_sub(subpath);
     if (br != OK) rc->worst = br;
     return OK;

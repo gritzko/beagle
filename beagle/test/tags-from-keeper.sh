@@ -61,7 +61,7 @@ mkdir -p .be
 # §"Ref resolution").  Wire form `refs/heads/<X>` / `refs/tags/<X>`
 # isn't accepted by be's URI parser.
 for REF in master tags/v1 tags/v2; do
-    be get "//localhost/$SRC_REL?$REF" >/dev/null
+    be get "ssh://localhost/$SRC_REL?$REF" >/dev/null
 done
 KSRV_REL=${KSRV#$HOME/}
 

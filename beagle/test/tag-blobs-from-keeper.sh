@@ -70,7 +70,7 @@ cd "$KSRV"
 # §"Ref resolution"; wire form (`refs/tags/X` / `refs/heads/X`)
 # isn't accepted by be's URI parser.
 for REF in tags/v1 tags/v2 master; do
-    keeper get "//localhost/$SRC_REL?$REF" >/dev/null
+    keeper get "ssh://localhost/$SRC_REL?$REF" >/dev/null
 done
 KSRV_REL=${KSRV#$HOME/}
 

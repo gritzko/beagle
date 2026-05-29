@@ -56,7 +56,7 @@ mkdir -p "$TMP/be-clone"
 cd "$TMP/be-clone"
 git init --quiet .
 mkdir -p .be
-be get "//localhost/$SRC_REL"
+be get "ssh://localhost/$SRC_REL"
 
 # --- 4. compare worktrees ---
 RDIFF=$(rsync -rlcni --delete \
@@ -86,7 +86,7 @@ snapshot_dogs() { (cd "$1/.be" && find . -type f \
     -not -name '.wtlog.idx' \
     | sort | xargs sha256sum); }
 SNAP1=$(snapshot_dogs "$TMP/be-clone")
-be get "//localhost/$SRC_REL"
+be get "ssh://localhost/$SRC_REL"
 SNAP2=$(snapshot_dogs "$TMP/be-clone")
 if [ "$SNAP1" != "$SNAP2" ]; then
     echo "FAIL: repeat be get changed files in .be"

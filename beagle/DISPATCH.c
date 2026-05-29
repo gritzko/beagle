@@ -10,6 +10,10 @@
 #include "SUBS.h"          // BERun
 
 #include "abc/PRO.h"
+#include "abc/PATH.h"
+#include "abc/URI.h"
+#include "dog/HOME.h"
+#include "keeper/REFS.h"
 
 //  --- Executor ------------------------------------------------------
 
@@ -73,6 +77,86 @@ ok64 BEActPromoteRef(cli *c) {
     sane(c);
     for (u32 i = 0; i < uribDataLen(c->uris); i++) {
         (void)BEPromoteRef(uribAtP(c->uris, i));
+    }
+    done;
+}
+
+//  After a wire fetch (BEActKeeperGet) has written the remote-
+//  tracking ref row to `<store>/<project>/refs`, transport URIs
+//  (`scheme://host?ref`) carry no more useful information for the
+//  downstream sub-dogs (graf, sniff) — they only need the local
+//  sha the fetch landed.  Sub-dogs that re-resolve the bare query
+//  alone (`?master`) hit the LOCAL ref of that name, which on a
+//  non-FF fetch points at cur, NOT at the freshly-fetched
+//  theirs.tip.  Rewriting `scheme://host?ref` to a local `?<sha>`
+//  shape eliminates this footgun and centralises authority
+//  handling in BE.
+//
+//  Rewrite shape (caller-bytes scratch): clear scheme, authority,
+//  host, path; replace query with the 40-hex sha; data is rebuilt
+//  as the literal `?<40hex>`.  Sub-dogs see PATCH_SHAPE_SQUASH /
+//  CHERRY / MERGE / REBASE1 classification unchanged (the leading
+//  `?` and any user-supplied `#frag` still mark the same shape).
+//
+//  Skipped for URIs that lack an authority or whose query already
+//  resolves through a local row (no-op fast path).
+ok64 BEActResolveRemote(cli *c) {
+    sane(c);
+    if (uribDataLen(c->uris) == 0) done;
+
+    static u8 _resolved_scratch[CLI_MAX_URIS * 64];
+    u8b scratch = {_resolved_scratch,
+                   _resolved_scratch,
+                   _resolved_scratch,
+                   _resolved_scratch + sizeof(_resolved_scratch)};
+
+    a_path(keepdir);
+    {
+        home h = {};
+        uri at = {};
+        CLIAtURI(&at, c);
+        if (u8csEmpty(at.path) && u8bHasData(c->repo))
+            u8csMv(at.path, $path(c->repo));
+        if (HOMEOpen(&h, &at, NO) != OK) { HOMEClose(&h); done; }
+        if (HOMEBranchDir(&h, keepdir, NULL) != OK) {
+            HOMEClose(&h); done;
+        }
+        HOMEClose(&h);
+    }
+
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        uri *u = uribAtP(c->uris, i);
+        if (u8csEmpty(u->authority)) continue;
+        if (u8csEmpty(u->data))      continue;
+
+        a_pad(u8, arena, 1024);
+        uri resolved = {};
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), u->data);
+        if (ro != OK || u8csLen(resolved.query) != 40) continue;
+
+        u8cs frag_save = {u->fragment[0], u->fragment[1]};
+
+        //  Compose `?<sha>` or `?<sha>#<frag>` into the persistent
+        //  scratch buffer; the result outlives this BE plan frame
+        //  so BEBuildArgv can forward `u->data` to the sub-dog argv.
+        u8c *uri_before = u8bIdleHead(scratch);
+        if (u8bFeed1(scratch, '?') != OK) continue;
+        if (u8bFeed (scratch, resolved.query) != OK) continue;
+        if (!u8csEmpty(frag_save)) {
+            if (u8bFeed1(scratch, '#') != OK) continue;
+            if (u8bFeed (scratch, frag_save) != OK) continue;
+        }
+        u8c *uri_after = u8bIdleHead(scratch);
+        u8cs full_uri = {uri_before, uri_after};
+
+        //  URILexer CONSUMES u->data — save a copy of the bytes
+        //  pointer pair separately so we can restore after parsing.
+        zerop(u);
+        u8csMv(u->data, full_uri);
+        if (URILexer(u) != OK) continue;
+        //  Restore u->data to the full URI span (URILexer left it
+        //  pointing past the consumed bytes).
+        u8csMv(u->data, full_uri);
     }
     done;
 }
@@ -162,10 +246,11 @@ be_action const BE_PLAN_GET[] = {
     //  shard before the wire fetch.  Distinct from PUT/POST/DELETE
     //  where bootstrap is local-only.
     { 0,                  0,             NO,  BEActBootstrap      },
-    //  Fire keeper get on ANY remote (transport or cached) — matches
-    //  the legacy BEGetLocal behavior; the cached form is a no-op
-    //  on keeper's side but keeps the call-shape uniform.
-    { URI_AUTHORITY,      0,             NO,  BEActKeeperGet      },
+    //  Fire keeper get only on transport URIs (scheme present);
+    //  cached `//host` form reads local cache without opening the
+    //  wire (VERBS.md §"Schemes — cached vs transport", Bug 2).
+    //  Mirrors BE_PLAN_PATCH row at line ~287.
+    { URI_SCHEME|URI_AUTHORITY, 0,        NO,  BEActKeeperGet      },
     { URI_AUTHORITY,      0,             YES, BEActSpotGet        },
     { URI_AUTHORITY,      0,             YES, BEActGrafGet        },
     { 0,                  0,             YES, BEActSniffGet       },
@@ -194,11 +279,12 @@ be_action const BE_PLAN_POST[] = {
 };
 
 be_action const BE_PLAN_PATCH[] = {
-    { 0,                       0,             NO, BEActPromoteRef },
-    { 0,                       URI_AUTHORITY, NO, BEActBootstrap  },
-    { URI_SCHEME|URI_AUTHORITY, 0,            NO, BEActKeeperGet  },
-    { URI_AUTHORITY,           0,             NO, BEActGrafGet    },
-    { 0,                       0,             NO, BEActSniffPatch },
+    { 0,                       0,             NO, BEActPromoteRef    },
+    { 0,                       URI_AUTHORITY, NO, BEActBootstrap     },
+    { URI_SCHEME|URI_AUTHORITY, 0,            NO, BEActKeeperGet     },
+    { URI_AUTHORITY,           0,             NO, BEActResolveRemote },
+    { URI_AUTHORITY,           0,             NO, BEActGrafGet       },
+    { 0,                       0,             NO, BEActSniffPatch    },
     BE_ACTION_END,
 };
 

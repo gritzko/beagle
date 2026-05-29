@@ -556,20 +556,8 @@ static ok64 keeper_get(keeper *k, cli *c) {
     }
     uri *g = uribAtP(c->uris, 0);
 
-    if (!u8csEmpty(g->authority)) {
-        //  Cached form (no transport scheme): per VERBS.md §"Schemes
-        //  — cached vs transport", `be ... //host` reads only the
-        //  locally-cached remote-tracking refs.  No network, no
-        //  fetch.  The actual cached-ref → wt resolution happens
-        //  downstream in sniff GET; keeper's side is a no-op.  The
-        //  matching `BE_PLAN_PATCH` row at beagle/DISPATCH.c
-        //  already requires URI_SCHEME|URI_AUTHORITY before this
-        //  spawn fires; BE_PLAN_GET's row stays on URI_AUTHORITY
-        //  only and we gate here instead, so the cli call-shape
-        //  stays uniform.
-        if (u8csEmpty(g->scheme)) return OK;
+    if (!u8csEmpty(g->authority))
         return KEEPGetRemote(g);
-    }
     if (!u8csEmpty(g->fragment))
         return keeper_get_object(k, g->fragment);
     //  path+query (no authority) is a blob projector: resolve `path` in

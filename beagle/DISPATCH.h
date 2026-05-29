@@ -93,6 +93,12 @@ ok64 BEActKeeperGet     (cli *c);
 ok64 BEActKeeperPush    (cli *c);
 ok64 BEActKeeperDelete  (cli *c);
 
+//  Post-fetch URI rewriter — collapses transport URIs to local
+//  `?<40hex>` form so sub-dogs only see local references.  Runs
+//  after BEActKeeperGet so the freshly-written REFS row is
+//  resolvable.
+ok64 BEActResolveRemote (cli *c);
+
 //  Indexer spawns (parallel-capable, after a keeper-side write).
 ok64 BEActSpotGet       (cli *c);
 ok64 BEActGrafGet       (cli *c);

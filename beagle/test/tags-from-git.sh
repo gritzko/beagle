@@ -69,7 +69,7 @@ for STEP in "v1 tags/v1 refs/tags/v1" \
     GIT_REF=${REST##* }
 
     cd "$TMP/be-clone"
-    be get "//localhost/$SRC_REL?$BE_REF" >/dev/null
+    be get "ssh://localhost/$SRC_REL?$BE_REF" >/dev/null
 
     git -C "$TMP/git-clone" fetch --quiet --no-tags origin \
         "$GIT_REF:refs/keep/$NAME"
