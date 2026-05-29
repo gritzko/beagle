@@ -484,15 +484,8 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             //  a zero sha that would never match a real tree sha).
             if (l && o && t &&
                 sha_eq(&lsub, &osub) && sha_eq(&osub, &tsub)) {
-                fprintf(stderr,
-                        "PATCHDBG short-circuit dir='%.*s'\n",
-                        (int)$len(childpath), (char *)childpath[0]);
                 continue;
             }
-            fprintf(stderr,
-                    "PATCHDBG recurse dir='%.*s' l=%d o=%d t=%d\n",
-                    (int)$len(childpath), (char *)childpath[0],
-                    l ? 1 : 0, o ? 1 : 0, t ? 1 : 0);
             //  If either subtree is missing AND absent on LCA, the
             //  whole subtree is a pure add/delete — for MVP skeleton
             //  we still descend with empty-stand-in.  Real add/delete

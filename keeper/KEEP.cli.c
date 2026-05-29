@@ -146,16 +146,21 @@ static ok64 keepercli_inner(cli *c) {
     //    Remote (`scheme://host…?ref`) — the query is the REMOTE ref
     //      to fetch.  The local branch (where fetched objects land)
     //      is the wt's cur_branch (parked by HOMEOpen from the row-0
-    //      anchor for sub-shard contexts); falls back to query when
-    //      no cur_branch.
+    //      anchor for sub-shard contexts).  Fresh-clone fallback is
+    //      TRUNK (empty branch) — a first wire fetch lands its whole
+    //      reachable closure in the project root pack so subsequent
+    //      sibling-ref fetches can resolve objects via the standard
+    //      child→parent→root shard walk.  Landing the initial pack in
+    //      the requested ref's leaf isolates it from later siblings
+    //      (e.g. `?tags/v1` then `?master` would never find master's
+    //      objects in tags/v1's sibling shard).
     //    Local (`?ref`, no authority) — query IS the branch name
     //      (switch op); falls back to cur_branch when query is
     //      empty or a sha (detached pin, not a branch).
     if (has_authority) {
         if (u8bHasData(h.cur_branch))
             u8csMv(branch, u8bDataC(h.cur_branch));
-        else if (has_query && !query_is_sha)
-            u8csMv(branch, uribAtP(c->uris, 0)->query);
+        //  else: fresh clone — leave `branch` empty (trunk).
     } else {
         if (has_query && !query_is_sha)
             u8csMv(branch, uribAtP(c->uris, 0)->query);
