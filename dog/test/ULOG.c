@@ -800,8 +800,68 @@ static ok64 T_verb_prefilter(void) {
     done;
 }
 
+//  Regression: a deep ignored directory holding tens of thousands of
+//  entries must not overflow ULOGu8bScanWt's sort scratch.  The walk
+//  descends into ignored dirs unconditionally (the skip predicate
+//  filters per-file, *after* FILEScanSorted has loaded+sorted the whole
+//  directory into scratch), so a real `Corpus/` dir blew the old fixed
+//  1 MB heap buffer and `be diff:` failed with NOROOM.  Carving 16 MB
+//  from BASS fixes it.  Build `big/` with enough long-named files that
+//  their entry list (capped at ~half the scratch by LSMSort tmp space)
+//  exceeds 1 MB but stays well under 16 MB.
+
+static b8 scanwt_skip_big(u8cs rel, void *ctx) {
+    (void)ctx;
+    a_cstr(pfx, "big/");
+    return u8csHasPrefix(rel, pfx);
+}
+
+static ok64 T_scanwt_big_ignored(void) {
+    sane(1);
+    call(FILEInit);
+    rm_tmp("/tmp/ulog-scanwt");
+
+    //  ~15000 files with ~68-char names under an ignored `big/` dir,
+    //  plus two emitted files at the root.  awk formats the names so
+    //  xargs can batch the touches (no per-file fork).
+    {
+        char cmd[1024];
+        snprintf(cmd, sizeof cmd,
+            "mkdir -p /tmp/ulog-scanwt/big && "
+            "printf 'hello\\n' > /tmp/ulog-scanwt/a.txt && "
+            "printf 'world\\n' > /tmp/ulog-scanwt/b.txt && "
+            "cd /tmp/ulog-scanwt/big && seq 1 15000 | awk "
+            "'{printf \"padding_padding_padding_padding_padding_padding_"
+            "padding_%%012d\\n\",$1}' | xargs touch");
+        int rc = system(cmd);
+        if (rc != 0) return TESTFAIL;
+    }
+
+    a_carve(u8, out, 1UL << 16);
+    a_cstr(root, "/tmp/ulog-scanwt");   // clean slice (no trailing NUL)
+
+    //  The regression: old code returned NOROOM here.
+    call(ULOGu8bScanWt, root, verb_of("wt"), scanwt_skip_big, NULL, out);
+
+    //  Root files emitted; nothing from the ignored `big/` subtree.
+    char buf[4096];
+    a_dup(u8c, od, u8bData(out));
+    size_t n = (size_t)$len(od);
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, od[0], n);
+    buf[n] = 0;
+    want(strstr(buf, "a.txt") != NULL);
+    want(strstr(buf, "b.txt") != NULL);
+    want(strstr(buf, "big/")  == NULL);
+    want(strstr(buf, "padding_padding") == NULL);
+
+    rm_tmp("/tmp/ulog-scanwt");
+    done;
+}
+
 ok64 ULOGtest(void) {
     sane(1);
+    fprintf(stderr, "T_scanwt_big_ignored...\n"); call(T_scanwt_big_ignored);
     fprintf(stderr, "T_roundtrip...\n");     call(T_roundtrip);
     fprintf(stderr, "T_persist...\n");       call(T_persist);
     fprintf(stderr, "T_seek...\n");          call(T_seek);

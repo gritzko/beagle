@@ -172,6 +172,31 @@ static blame_author const blame_unknown = {.commit_hashlet = 0, .author = "?", .
 //  on missing-file or byte-identical-to-prev).  `cb` (optional) fires
 //  once per kept layer so callers (BLAME) can populate side tables.
 
+//  Per-commit baseline predicate for the single-weave replay: a token's
+//  inserter `seq` ((u32) commit hashlet) is in the current commit's
+//  parent closure iff its topo index is set in `clo` (this commit's
+//  ancestor bitmap).  `map` is an open-addressed (seq -> idx+1) lookup
+//  built over the topo order (rare (u32) collisions keep the first).
+typedef struct {
+    u32 const *mapkey;
+    u32 const *mapval;   // 0 = empty, else idx+1
+    u32        mapcap;   // power of two
+    u64 const *clo;      // current commit's closure row (set per iteration)
+} blame_base_ctx;
+
+static b8 blame_base_pred(u32 seq, void *vctx) {
+    blame_base_ctx const *c = vctx;
+    u32 h = (u32)((seq * 0x9e3779b1u) >> 8) & (c->mapcap - 1);
+    while (c->mapval[h] != 0) {
+        if (c->mapkey[h] == seq) {
+            u32 idx = c->mapval[h] - 1;
+            return (c->clo[idx >> 6] >> (idx & 63)) & 1u;
+        }
+        h = (h + 1) & (c->mapcap - 1);
+    }
+    return NO;
+}
+
 ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                    weave **out_final,
                    keeper *k, u8cs filepath, u64 tip_h,
@@ -251,6 +276,40 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         if (u8bAcquire(ABC_BASS, cc_buf, nord * sizeof(u32)) == OK)
             child_count = (u32 *)u8bDataHead(cc_buf);
     }
+
+    //  Per-commit ancestor-closure bitmaps for PRECISE single-weave
+    //  replay: each commit diffs against its parent CLOSURE, not just the
+    //  previous topo layer — so a merge correctly sees BOTH parents' lines
+    //  as already present (else the second parent's lines mis-attribute to
+    //  the merge).  Bounded to ~128MB (≈32k commits); beyond that, fall
+    //  back to the linear accumulate (WEAVEDiff vs previous).
+    Bu8 clo_buf = {}, mk_buf = {}, mv_buf = {};
+    u64 *closures = NULL;     // nord rows of `words` u64
+    u32 *mapkey = NULL, *mapval = NULL;
+    u32  words = (nord + 63) / 64;
+    u32  mapcap = 1;
+    while (mapcap < nord * 2 + 1) mapcap <<= 1;
+    b8 use_closures = NO;
+    if (tree_hs && npar_arr && child_count && nord > 0 &&
+        (size_t)nord * words * 8 <= (128UL << 20)) {
+        if (u8bAcquire(ABC_BASS, clo_buf, (size_t)nord * words * 8) == OK &&
+            u8bAcquire(ABC_BASS, mk_buf, (size_t)mapcap * 4) == OK &&
+            u8bAcquire(ABC_BASS, mv_buf, (size_t)mapcap * 4) == OK) {
+            closures = (u64 *)u8bDataHead(clo_buf);
+            mapkey   = (u32 *)u8bDataHead(mk_buf);
+            mapval   = (u32 *)u8bDataHead(mv_buf);
+            memset(closures, 0, (size_t)nord * words * 8);
+            memset(mapval, 0, (size_t)mapcap * 4);
+            for (u32 i = 0; i < nord; i++) {
+                u32 seq = (u32)ordered[i];
+                u32 h = (u32)((seq * 0x9e3779b1u) >> 8) & (mapcap - 1);
+                while (mapval[h] != 0) h = (h + 1) & (mapcap - 1);
+                mapkey[h] = seq; mapval[h] = i + 1;   // first occurrence wins
+            }
+            use_closures = YES;
+        }
+    }
+
     if (tree_hs && npar_arr && child_count) {
         for (u32 i = 0; i < nord; i++) {
             tree_hs[i] = DAGCommitTree(runs, ordered[i]);
@@ -259,17 +318,25 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             wh64 *pbase = parents[0];
             DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, ordered[i]));
             npar_arr[i] = (u32)(parents[0] - pbase);
+            u64 *clo_i = use_closures ? &closures[(size_t)i * words] : NULL;
+            if (clo_i) clo_i[i >> 6] |= (u64)1 << (i & 63);   // self
             for (wh64 *p = pbase; p < parents[0]; p++) {
                 u64 ph = DAGHashlet(*p);
                 for (u32 j = i; j > 0; j--) {
                     if (ordered[j - 1] == ph) {
                         child_count[j - 1]++;
+                        if (clo_i) {
+                            u64 const *clo_p = &closures[(size_t)(j - 1) * words];
+                            for (u32 w = 0; w < words; w++) clo_i[w] |= clo_p[w];
+                        }
                         break;
                     }
                 }
             }
         }
     }
+
+    blame_base_ctx bctx = {mapkey, mapval, mapcap, NULL};
 
     ok64 ret = OK;
     b8 have_prev = NO;
@@ -315,7 +382,14 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 
         ret = WEAVEFromBlob(wnu, new_data, ext, sc);
         if (ret != OK) break;
-        ret = WEAVEDiff(wdst, wsrc, wnu, sc);
+        if (use_closures) {
+            //  Diff against THIS commit's parent closure (precise — a
+            //  concurrent branch already in the weave passes through).
+            bctx.clo = &closures[(size_t)i * words];
+            ret = WEAVEApply(wdst, wsrc, wnu, sc, blame_base_pred, &bctx);
+        } else {
+            ret = WEAVEDiff(wdst, wsrc, wnu, sc);
+        }
         if (ret != OK) break;
         weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
 

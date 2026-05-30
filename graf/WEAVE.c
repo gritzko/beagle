@@ -753,6 +753,15 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
         }
         if (wi >= nwin) break;
         if (cur_line >= win_lo && cur_line <= win_hi) {
+            //  Flush before the next token overflows a fixed carve: a
+            //  fully-rewritten file collapses into one window whose token
+            //  stream can exceed outtext/outtoks (mirrors WEAVEEmitFull).
+            if (hunk_open &&
+                (u8bIdleLen(outtext) < (size_t)(hi - lo) ||
+                 u32bIdleLen(outtoks) < 1)) {
+                FLUSH_HUNK();
+                win_lo = cur_line;   // continuation hunk starts here
+            }
             u8cs tb = {text + lo, text + hi};
             ok64 fo = u8bFeed(outtext, tb);
             if (fo != OK) { ret = fo; goto cleanup; }

@@ -1005,7 +1005,19 @@ static ok64 ulog_wt_cb(void *varg, path8bp path) {
     a_dup(u8c, full, u8bData(path));
     u8cs rel = {};
     if (!ULOGu8sRelFromFull(rel, c->reporoot, full)) return OK;
-    if (c->skip && c->skip(rel, c->skip_ctx))         return OK;
+
+    //  Prune ignored subtrees at the directory boundary.  FILE_SCAN_DIRS
+    //  delivers each dir to this cb *before* FILEScanSorted descends, so
+    //  returning FILESKIP here stops the walk ever entering (and sorting
+    //  the entries of) the dir — wholesale-pruning IGNO-ignored trees
+    //  (Corpus/, build/, .git/) instead of walking every file in them.
+    //  Dir entries arrive with a trailing '/'.  FILESKIP on an ignored
+    //  *file* is just a no-recurse continue, so the predicate runs once
+    //  for both kinds.
+    a_cstr(slash, "/");
+    b8 is_dir = u8csHasSuffix(rel, slash);
+    if (c->skip && c->skip(rel, c->skip_ctx)) return FILESKIP;
+    if (is_dir) return OK;   // non-ignored dir: descend, emit no row
 
     filestat fs = {};
     if (FILELStat(&fs, full) != OK) return OK;
@@ -1035,14 +1047,18 @@ ok64 ULOGu8bScanWt(u8cs reporoot, ron60 verb,
     u8bFeed(wp, reporoot);
     call(PATHu8bTerm, wp);
 
-    Bu8 scratch = {};
-    call(u8bAllocate, scratch, 1UL << 20);
+    //  FILE_SCAN_DIRS lets ulog_wt_cb FILESKIP whole ignored subtrees
+    //  before descent (see the cb), so the sorted walk never loads a
+    //  giant ignored dir (Corpus/ = tens of thousands of entries) into
+    //  scratch.  Carve a generous 16 MB BASS region — VA only, paged on
+    //  demand — to still cover a large *non*-ignored source dir; the old
+    //  fixed 1 MB heap buffer overflowed to NOROOM (mirrors SNIFFWtULog).
+    a_carve(u8, scratch, 1UL << 24);
 
     ok64 so = FILEScanSorted(wp,
                              (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                                         FILE_SCAN_DEEP),
+                                         FILE_SCAN_DIRS  | FILE_SCAN_DEEP),
                              scratch, FILEentryZ, ulog_wt_cb, &c);
-    u8bFree(scratch);
     if (c.err != OK) return c.err;
     return so;
 }
