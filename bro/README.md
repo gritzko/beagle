@@ -10,8 +10,10 @@ from `graf` in an interactive TUI pager.
 bro [URI...]
 ```
 
-Arguments are URIs (see `dog/DOG.md`).  No args = pipe mode
-(reads TLV hunks from stdin, used by spot/graf).
+Arguments are URIs (see `dog/DOG.md`).  No args + piped stdin =
+pipe mode (reads TLV hunks from stdin, used by spot/graf).  No args
+at an interactive terminal prints the one-screen key-map cheat sheet
+(the `## Keys` table below).
 
 ### View files
 

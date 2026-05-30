@@ -9,7 +9,8 @@ passed as arguments.
 ## Modes
 
 ```
-bro                  pager mode (read TLV hunks from stdin)
+bro                  bare at a tty: print the key-map cheat sheet;
+                     piped stdin: pager mode (read TLV hunks)
 bro file.c [...]     cat mode (syntax-highlighted file display)
 ```
 

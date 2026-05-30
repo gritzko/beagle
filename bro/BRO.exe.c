@@ -22,7 +22,8 @@ static void bro_usage(void) {
     fprintf(stderr,
         "Usage: bro [URI...]\n"
         "\n"
-        "  bro                   read TLV hunks from stdin (pager mode)\n"
+        "  bro                   key map (when run bare at a terminal);\n"
+        "                        read piped TLV hunks (pager mode) otherwise\n"
         "  bro file.c [...]      syntax-highlighted cat\n"
         "  bro file.c#42         open file at line 42\n"
         "  bro dir/              list directory\n"
@@ -37,6 +38,38 @@ static void bro_usage(void) {
         "      [ ] { } prev/next hunk, ( ) prev/next change,\n"
         "      Enter/l open file, h/Backspace back, . list dir,\n"
         "      m toggle mouse (wheel scroll, L-click open, R-click grep)\n");
+}
+
+// --- Key-map cheat sheet ---
+//
+//  Printed by bare `bro` at an interactive terminal (no URI args, stdin
+//  is a tty so nothing is piped in).  Two columns so the whole map fits
+//  one ~24-line screen.  Rows mirror BRO.c's BROHandleKey switch — keep
+//  the two in sync.
+static void bro_keymap(void) {
+    static char const *const rows[][2] = {
+        {"Move",                           "Search"},
+        {"  j / k       line down / up",   "  / or '     search in view"},
+        {"  d / u       half page d / u",  "  n / N      next / prev match"},
+        {"  space / f   page down",        "  : or #     URI prompt (below)"},
+        {"  b           page up",          ""},
+        {"  g / G       top / end",        "Files"},
+        {"  ] }  [ {    next / prev hunk", "  Enter / l  open file at hunk"},
+        {"  ) / (       next / prev chg",  "  h / Bksp   go back"},
+        {"",                               "  .          list current dir"},
+        {"Display",                        "  q          quit"},
+        {"  m   toggle mouse",             "  r          reload"},
+        {"  w   toggle soft-wrap",         ""},
+        {"  Esc toggle off mouse",         ""},
+    };
+    printf("bro - key bindings  (interactive pager)\n\n");
+    for (u32 i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        printf("  %-35s%s\n", rows[i][0], rows[i][1]);
+    printf(
+"\n"
+"  URI prompt (:)  :42  :path#L42  :path#Token  :#grep.ext  :#'snip'.ext  :#/re/.ext\n"
+"  Invoke          bro FILE (cat)   bro DIR/ (list)   <piped TLV> (pager)\n"
+"  Themes          --16 (default)   --dark   --light   $BRO_THEME\n");
 }
 
 // Fetch a versioned/remote URI's blob via keeper and stage it as a
@@ -158,6 +191,12 @@ ok64 BROExec(bro *b, cli *c) {
             BRORun(hunkbDataC(b->hunks));
         BROArenaCleanup();
         if (keeper_open) KEEPClose();
+    } else if (isatty(STDIN_FILENO)) {
+        //  Bare `bro` typed at a terminal: no URIs and nothing piped in,
+        //  so there are no hunks to page — print the key cheat sheet
+        //  instead of blocking on an empty stdin.  Piped stdin (spot /
+        //  graf TLV) is not a tty and still drives the pager below.
+        bro_keymap();
     } else {
         call(BROPipeRun, STDIN_FILENO);
     }
