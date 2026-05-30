@@ -109,33 +109,42 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
     //  from DIFF must come back as [INS, DEL] per the in-rm invariant.
     if (u32csLen(entries) < 3) return NEILCanon(edl);
 
-    //  Hot-path arena allocation: each entry covers >= 1 token in its
+    //<<<<  Working buffer holds the current entry list across iterations||||  Hot-path arena allocation: each entry covers >= 1 tokenits
     //  respective side, so n_post-merge <= olen+nlen at every iter; the
     //  raw pre-merge output of one iter doubles in the worst case (every
-    //  EQ kill replaces 1 entry with DEL+INS).  Sizing all four buffers
-    //  to 2*(olen+nlen)+16 covers both `cur` (post-merge input) and
-    //  `next` (pre-merge scratch) for every iteration — no per-iter
+    //  kill replaces 1 entry with>>>>.  Sizing all four buffers
+    <<<<//  The input EDL is not canonical, so killing a false EQ between two||||//  to 2*(olen+nlen)+16 covers both `cur` (post-merge input) and>>>>
+    <<<<//  edits can *grow* the entry count (the count is not monotone) —||||//  `next` (pre-merge scratch) for every iteration — no per-iter
     //  malloc, no per-iter memset.
-    u32 init_n = (u32)u32csLen(entries);
+    u32 init_n = (u32);
     u32 ntoks_total = (u32)$len(old_toks) + (u32)$len(new_toks);
     u32 cap = ntoks_total * 2 + 16;
     if (cap < init_n * 2 + 16) cap = init_n * 2 + 16;
 
     a_carve(u32, buf_a, cap);
     a_carve(u32, buf_b, cap);
-    a_carve(u32, obuf,  cap);
+    a_carve(u32, obuf,  cap)>>>>
     a_carve(u32, nbuf,  cap);
-    e32 *cur  = buf_a[0];
-    e32 *next = buf_b[0];
-    u32 *old_off = obuf[0];
-    u32 *new_off = nbuf[0];
+    <<<<//  hence `` and the per-iteration offset / build scratch are all||||cur  = buf_a[0];
+    e32 *next = buf_b>>>>
+    <<<<//  (re-)acquired at the live `n` each pass, mirroring the original
+    //  heap sizing.  Everything rides BASS and is rewound at the caller's||||u32 *old_off = obuf[0];
+    u32 *new_off = nbuf[0]>>>>
 
-    memcpy(cur, entries[0], init_n * sizeof(e32));
+    <<<<//  call() boundary, same as the surrounding weave_diff_core /
+    //  JOINMerge scratch; the loop is capped at 8 passes.||||memcpy(cur[0], init_n * sizeof(e32))>>>>
     u32 n = init_n;
+    a_carve(u32, cur0, n);
+    {
+        u32s dst = {cur0[0], cur0[0] + n};
+        (void)u32sCopy(dst, entries);
+    }
+    e32 *buf = cur0[0];
 
     // Iterative semantic cleanup: kill false equalities until stable.
     // Each iteration merges edit regions, potentially exposing new kills.
     for (int iter = 0; iter < 8; iter++) {
+a_carve(u32, a_carve(u32, a_carve(u32, tbuf, n * 2 + 4);        e32 *tmp = tbuf[0];
         {
             u32 oi = 0, ni = 0;
             for (u32 k = 0; k < n; k++) {
@@ -376,9 +385,10 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
         }
 
         w = NEILMerge(next, w);
-        //  Ping-pong: `next` becomes the input for the next iter, `cur`
-        //  becomes the scratch.  No copy, no alloc.
-        e32 *swap = cur; cur = next; next = swap;
+        <<<<//  Carry this iteration's result forward: `tbuf` (sized n*2+4 ≥ w)
+        //  becomes the next pass's working buffer.  obuf/nbuf stay carved||||//  Ping-pong: `next` becomes the input for the next iter, `cur`>>>>
+        <<<<//  on BASS until the caller's call() boundary — acceptable, the||||//  becomes the scratch.  No copy, no alloc.>>>>
+        <<<<//  loop is bounded at 8 passes.tmp||||e32 *swap = cur; cur = next; next = swap>>>>;
         n = w;
 
         if (!changed) break;
@@ -602,7 +612,7 @@ ok64 NEILCanon(e32g edl) {
     u32 n = (u32)(edl[0] - edl[2]);
     if (n == 0) done;
 
-    a_carve(u32, buf, n + 4);
+    <<<<a_carve(u32||||a_carve(u32>>>>, buf, n + 4);
     e32 *out = buf[0];
     u32 w = 0;
 
