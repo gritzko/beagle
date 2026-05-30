@@ -1083,7 +1083,11 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     //  embedded "put"-tagged verb spans in content hunks would vanish.
     //  `put` shares 'Y' (same blue) with `upd` for that reason.
     {0x34e78,        'Y'},  // put       — slot Y  (blue, shares with upd)
+    {0xd33df8,       'V'},  // post      — slot V  (cyan; commit rows in the
+                           //              get / post / patch range banners)
     {0x32a7b,        'W'},  // new       — slot W  (green)
+    {0x25a28,        'W'},  // add       — slot W  (green, ≡ new; KEEPTreeDiff
+                           //              file rows in the post-push banner)
     {0x31cfa,        'V'},  // mov       — slot V  (cyan)
     {0x31ce8,        'E'},  // mod       — slot E  (yellow)
     {0x39d28,        'Y'},  // upd       — slot Y  (blue, GET-overwritten)

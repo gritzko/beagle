@@ -269,17 +269,19 @@ typedef struct {
     b8    use_fork_base;
 } patch_stats;
 
-//  Emit a per-file status row in the `patch <status> <path>` form
-//  required by VERBS.md §PATCH "Reporting".  Status is one of
-//  applied / merged / dirty / conflict.  Caller passes the path
-//  (no leading `./` — that's left to the consumer's regex).
-//  Routed to stdout so consumers can capture the report via `>`;
-//  conflict rows are additionally echoed to stderr by the caller.
+//  Emit a per-file status row (VERBS.md §PATCH "Reporting"): status is
+//  one of applied / merged / dirty / conflict.  Rendered through
+//  `ULOGPrintStatusLine` so it shares the GET/POST banner's ULOG status
+//  shape (`<date>\t<verb>\t<path>`) and palette colour — all four verbs
+//  have entries in dog/ULOG.c.  Conflict rows are additionally echoed
+//  to stderr (loud).
 static void emit_status(const char *status, u8cs path) {
     if ($empty(path)) return;
-    fprintf(stdout, "patch\t%s\t%.*s\n",
-            status,
-            (int)$len(path), (char *)path[0]);
+    ron60 verb = 0;
+    { a_cstr(s, status); a_dup(u8c, d, s); (void)RONutf8sDrain(&verb, d); }
+    ulogrec rep = {.ts = 0, .verb = verb};
+    u8csMv(rep.uri.path, path);
+    (void)ULOGPrintStatusLine(&rep);
     if (strcmp(status, "conflict") == 0) {
         fprintf(stderr, "patch\tconflict\t%.*s\n",
                 (int)$len(path), (char *)path[0]);
@@ -1715,7 +1717,6 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
                 (int)$len(filepath), (char *)filepath[0]);
         return PATCHCFLCT;
     }
-    fprintf(stdout, "patch\tapplied\t%.*s\n",
-            (int)$len(filepath), (char *)filepath[0]);
+    emit_status("applied", filepath);
     done;
 }
