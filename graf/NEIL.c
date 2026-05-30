@@ -109,33 +109,40 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
     //  from DIFF must come back as [INS, DEL] per the in-rm invariant.
     if (u32csLen(entries) < 3) return NEILCanon(edl);
 
-    // Work in a heap buffer (killed EQ expands to DEL+INS).
-    Bu32 bbuf = {};
-    call(u32bAlloc, bbuf, u32csLen(entries) * 2 + 4);
-    e32 *buf = bbuf[0];
-    u32s dst = {buf, buf + u32csLen(entries)};
-    (void)u32sCopy(dst, entries);
-    u32 n = (u32)u32csLen(entries);
+    //  Hot-path arena allocation: each entry covers >= 1 token in its
+    //  respective side, so n_post-merge <= olen+nlen at every iter; the
+    //  raw pre-merge output of one iter doubles in the worst case (every
+    //  EQ kill replaces 1 entry with DEL+INS).  Sizing all four buffers
+    //  to 2*(olen+nlen)+16 covers both `cur` (post-merge input) and
+    //  `next` (pre-merge scratch) for every iteration — no per-iter
+    //  malloc, no per-iter memset.
+    u32 init_n = (u32)u32csLen(entries);
+    u32 ntoks_total = (u32)$len(old_toks) + (u32)$len(new_toks);
+    u32 cap = ntoks_total * 2 + 16;
+    if (cap < init_n * 2 + 16) cap = init_n * 2 + 16;
+
+    a_carve(u32, buf_a, cap);
+    a_carve(u32, buf_b, cap);
+    a_carve(u32, obuf,  cap);
+    a_carve(u32, nbuf,  cap);
+    e32 *cur  = buf_a[0];
+    e32 *next = buf_b[0];
+    u32 *old_off = obuf[0];
+    u32 *new_off = nbuf[0];
+
+    memcpy(cur, entries[0], init_n * sizeof(e32));
+    u32 n = init_n;
 
     // Iterative semantic cleanup: kill false equalities until stable.
     // Each iteration merges edit regions, potentially exposing new kills.
     for (int iter = 0; iter < 8; iter++) {
-        Bu32 obuf = {}, nbuf = {};
-        ok64 ao = u32bAlloc(obuf, n);
-        ok64 no = u32bAlloc(nbuf, n);
-        if (ao != OK || no != OK) {
-            u32bFree(obuf); u32bFree(nbuf); u32bFree(bbuf);
-            fail(NEILBAD);
-        }
-        u32 *old_off = obuf[0];
-        u32 *new_off = nbuf[0];
         {
             u32 oi = 0, ni = 0;
             for (u32 k = 0; k < n; k++) {
                 old_off[k] = oi;
                 new_off[k] = ni;
-                u32 len = DIFF_LEN(buf[k]);
-                u32 op = DIFF_OP(buf[k]);
+                u32 len = DIFF_LEN(cur[k]);
+                u32 op = DIFF_OP(cur[k]);
                 if (op == DIFF_EQ) { oi += len; ni += len; }
                 else if (op == DIFF_DEL) { oi += len; }
                 else { ni += len; }
@@ -143,19 +150,10 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
         }
 
         b8 changed = NO;
-        u32 tcap = n * 2 + 4;
-        Bu32 tbuf = {};
-        ok64 to = u32bAlloc(tbuf, tcap);
-        if (to != OK) {
-            u32bFree(obuf); u32bFree(nbuf); u32bFree(bbuf);
-            fail(NEILBAD);
-        }
-        e32 *tmp = tbuf[0];
-
         u32 w = 0;
         for (u32 k = 0; k < n; k++) {
-            if (DIFF_OP(buf[k]) != DIFF_EQ) { tmp[w++] = buf[k]; continue; }
-            u32 eq_len = DIFF_LEN(buf[k]);
+            if (DIFF_OP(cur[k]) != DIFF_EQ) { next[w++] = cur[k]; continue; }
+            u32 eq_len = DIFF_LEN(cur[k]);
             u32 eq_bytes = NEILByteSpan(new_toks, new_src[0],
                                         new_off[k], eq_len);
 
@@ -163,9 +161,9 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
             u32 before_bytes = 0;
             for (u32 j = k; j > 0; ) {
                 j--;
-                u32 jop = DIFF_OP(buf[j]);
+                u32 jop = DIFF_OP(cur[j]);
                 if (jop == DIFF_EQ) break;
-                u32 jlen = DIFF_LEN(buf[j]);
+                u32 jlen = DIFF_LEN(cur[j]);
                 if (jop == DIFF_DEL)
                     before_bytes += NEILByteSpan(old_toks, old_src[0],
                                                  old_off[j], jlen);
@@ -177,9 +175,9 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
             // Accumulate edit bytes after (until next EQ)
             u32 after_bytes = 0;
             for (u32 j = k + 1; j < n; j++) {
-                u32 jop = DIFF_OP(buf[j]);
+                u32 jop = DIFF_OP(cur[j]);
                 if (jop == DIFF_EQ) break;
-                u32 jlen = DIFF_LEN(buf[j]);
+                u32 jlen = DIFF_LEN(cur[j]);
                 if (jop == DIFF_DEL)
                     after_bytes += NEILByteSpan(old_toks, old_src[0],
                                                  old_off[j], jlen);
@@ -189,7 +187,7 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
             }
 
             if (before_bytes == 0 || after_bytes == 0) {
-                tmp[w++] = buf[k]; continue;
+                next[w++] = cur[k]; continue;
             }
 
             // Protect EQs that contain at least one alphanumeric token
@@ -242,7 +240,7 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                     //  function-rewrite case where a repeated
                     //  identifier picks an arbitrary pairing, the
                     //  resulting visual noise is the lesser evil.
-                    tmp[w++] = buf[k]; continue;
+                    next[w++] = cur[k]; continue;
                 }
             }
 
@@ -272,7 +270,7 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                     }
                 }
                 if (has_newline) {
-                    tmp[w++] = buf[k]; continue;
+                    next[w++] = cur[k]; continue;
                 }
             }
 
@@ -303,8 +301,8 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                 u32 raw_eq    = NEILByteSpanX(new_toks, new_src[0],
                                               new_off[k], eq_len, NO);
                 if (line_span >= 4 && raw_eq * 4 < line_span) {
-                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
-                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
+                    if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
+                    if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
                     changed = YES;
                     continue;
                 }
@@ -315,18 +313,18 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                 u32 raw = NEILByteSpanX(new_toks, new_src[0],
                                         new_off[k], eq_len, NO);
                 if (raw < before_bytes + after_bytes) {
-                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
-                    if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
+                    if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
+                    if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
                     changed = YES;
                 } else {
-                    tmp[w++] = buf[k];
+                    next[w++] = cur[k];
                 }
                 continue;
             }
 
             // Never kill EQs larger than the tunable ceiling.
             if (NEIL_MAX_KILL > 0 && eq_bytes >= NEIL_MAX_KILL) {
-                tmp[w++] = buf[k]; continue;
+                next[w++] = cur[k]; continue;
             }
 
             // Protect EQs that contain a line with >= 6 non-ws bytes.
@@ -354,7 +352,7 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                     }
                     if (!has_code_line && nw >= 6) has_code_line = YES;
                     if (has_code_line) {
-                        tmp[w++] = buf[k]; continue;
+                        next[w++] = cur[k]; continue;
                     }
                 }
             }
@@ -369,22 +367,18 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
                 do_kill = eq_bytes < before_bytes &&
                           eq_bytes < after_bytes;
             if (do_kill) {
-                if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
-                if (eq_len > 0) tmp[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
+                if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_DEL, eq_len);
+                if (eq_len > 0) next[w++] = DIFF_ENTRY(DIFF_INS, eq_len);
                 changed = YES;
             } else {
-                tmp[w++] = buf[k];
+                next[w++] = cur[k];
             }
         }
 
-        u32bFree(obuf);
-        u32bFree(nbuf);
-
-        w = NEILMerge(tmp, w);
-        u32bFree(bbuf);
-        memcpy(bbuf, tbuf, sizeof(Bu32));
-        BNULLify(tbuf);
-        buf = bbuf[0];
+        w = NEILMerge(next, w);
+        //  Ping-pong: `next` becomes the input for the next iter, `cur`
+        //  becomes the scratch.  No copy, no alloc.
+        e32 *swap = cur; cur = next; next = swap;
         n = w;
 
         if (!changed) break;
@@ -394,11 +388,9 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
     u32 ecap = (u32)(edl[1] - edl[2]);
     u32 final_n = (n < ecap) ? n : ecap;
     u32s  edst = {edl[2], edl[2] + final_n};
-    u32cs esrc = {buf, buf + final_n};
+    u32cs esrc = {cur, cur + final_n};
     (void)u32sCopy(edst, esrc);
     edl[0] = edl[2] + final_n;
-
-    u32bFree(bbuf);
 
     //  Splice canonicalization (in-rm invariant): WEAVE.h's compose
     //  pass and the unified-diff renderers both assume each non-EQ run
@@ -580,18 +572,27 @@ ok64 NEILShift(e32g edl, u32cs old_toks, u32cs new_toks,
     //  Without iteration NEILShift is non-idempotent — running it
     //  twice can change the EDL further, breaking property 6.
     //
-    //  Cap at 8 iterations: each iteration either changes nothing
-    //  (loop exits) or strictly merges entries (entry count is monotone
-    //  non-increasing), so 8 is generous in practice.
-    for (int iter = 0; iter < 8; iter++) {
+    //  Both convergence properties — count monotone non-increasing
+    //  per iter that changes anything, AND a true fixed point — must
+    //  hold for idempotence.  We track both: shift_pass's changed bit
+    //  AND canon-induced entry-count drops.  Loop exits only when
+    //  shift_pass reports no change AND canon didn't merge anything;
+    //  that's the joint fixed point the second NEILShift call needs
+    //  to find immediately.  Cap is the entry count: each productive
+    //  iter strictly decreases it, so this can't loop forever.
+    u32 max_iter = (u32)(edl[0] - edl[2]) + 4;
+    for (u32 iter = 0; iter < max_iter; iter++) {
+        u32 n_before = (u32)(edl[0] - edl[2]);
         b8 changed = NO;
         call(neil_shift_pass, edl, old_toks, new_toks, old_src, new_src,
              &changed);
         //  Drop 0-length entries and re-canonicalise so the next pass
         //  sees merged regions (this is also where post-shift
-        //  `[DEL, INS]` orderings get collapsed to `[INS, DEL]`).
+        //  `[DEL, INS]` orderings get collapsed to `[INS, DEL]` and
+        //  non-EQ runs separated by len-0 EQs get merged).
         call(NEILCanon, edl);
-        if (!changed) done;
+        u32 n_after = (u32)(edl[0] - edl[2]);
+        if (!changed && n_before == n_after) done;
     }
     done;
 }
@@ -601,8 +602,7 @@ ok64 NEILCanon(e32g edl) {
     u32 n = (u32)(edl[0] - edl[2]);
     if (n == 0) done;
 
-    Bu32 buf = {};
-    call(u32bAlloc, buf, n + 4);
+    a_carve(u32, buf, n + 4);
     e32 *out = buf[0];
     u32 w = 0;
 
@@ -624,12 +624,17 @@ ok64 NEILCanon(e32g edl) {
             k++;
             continue;
         }
-        //  Maximal non-EQ run starting at k.
+        //  Maximal non-EQ run starting at k.  Length-0 entries (of
+        //  any op, including EQ) are transparent — `neil_shift_pass`
+        //  can collapse an EQ to length 0 between two non-EQ runs,
+        //  and breaking on it would leave the two runs as separate
+        //  `(INS,DEL)` pairs in the output, violating in-rm canon.
         u32 sum_ins = 0, sum_del = 0;
         while (k < n) {
             e32 ek = edl[2][k];
             u32 op_k  = DIFF_OP(ek);
             u32 len_k = DIFF_LEN(ek);
+            if (len_k == 0) { k++; continue; }
             if (op_k == DIFF_EQ) break;
             if (op_k == DIFF_INS) sum_ins += len_k;
             else if (op_k == DIFF_DEL) sum_del += len_k;
@@ -648,6 +653,5 @@ ok64 NEILCanon(e32g edl) {
     (void)u32sCopy(edst, esrc);
     edl[0] = edl[2] + final_n;
 
-    u32bFree(buf);
     done;
 }
