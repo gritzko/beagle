@@ -139,12 +139,20 @@ ok64 BEActResolveRemote(cli *c) {
         //  Compose `?<sha>` or `?<sha>#<frag>` into the persistent
         //  scratch buffer; the result outlives this BE plan frame
         //  so BEBuildArgv can forward `u->data` to the sub-dog argv.
+        //  Re-attach `#` whenever the fragment is PRESENT — including a
+        //  present-but-empty one — not merely when it's non-empty: an
+        //  empty `#` is the rebase-one marker (patch_shape's `has_f`).
+        //  Testing `u8csEmpty` here dropped it and degraded
+        //  `?<branch>#` (rebase-one) to `?<branch>` (squash), so the
+        //  next POST couldn't reuse the replayed commit's message.
+        b8 has_frag = (frag_save[0] != NULL);
         u8c *uri_before = u8bIdleHead(scratch);
         if (u8bFeed1(scratch, '?') != OK) continue;
         if (u8bFeed (scratch, resolved.query) != OK) continue;
-        if (!u8csEmpty(frag_save)) {
+        if (has_frag) {
             if (u8bFeed1(scratch, '#') != OK) continue;
-            if (u8bFeed (scratch, frag_save) != OK) continue;
+            if (!u8csEmpty(frag_save) &&
+                u8bFeed(scratch, frag_save) != OK) continue;
         }
         u8c *uri_after = u8bIdleHead(scratch);
         u8cs full_uri = {uri_before, uri_after};

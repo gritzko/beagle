@@ -75,15 +75,16 @@ echo "scratch" > scratch.tmp
 # ------------------------------------------------------------------
 "$BE" patch '?./feat' > "$LOGS/patch.out" 2> "$LOGS/patch.err"
 
-#  edit.txt must appear in a `patch dirty edit.txt` row.
-grep -E '[[:space:]]+dirty[[:space:]]+(\./)?edit\.txt$' "$LOGS/patch.out" \
-    || { echo "FAIL: edit.txt not reported as dirty" >&2
+#  edit.txt must appear in a `patch mod edit.txt` row (ours-diverged,
+#  theirs untouched, preserved — fork-relative, not wt-dirty).
+grep -E '[[:space:]]+mod[[:space:]]+(\./)?edit\.txt$' "$LOGS/patch.out" \
+    || { echo "FAIL: edit.txt not reported as mod" >&2
          cat "$LOGS/patch.err" >&2
          exit 1; }
 
 #  bump.txt / new.txt / scratch.tmp must NOT be flagged.
 for forbidden in 'bump\.txt' 'new\.txt' 'scratch\.tmp'; do
-    if grep -E "[[:space:]]+(dirty|merged|conflict|applied)[[:space:]]+(\./)?$forbidden" "$LOGS/patch.out"; then
+    if grep -E "[[:space:]]+(mod|merged|conflict|applied)[[:space:]]+(\./)?$forbidden" "$LOGS/patch.out"; then
         echo "FAIL: $forbidden was flagged (should not be):" >&2
         cat "$LOGS/patch.err" >&2
         exit 1

@@ -715,7 +715,7 @@ Per-file status is one of:
 |------------|---------|
 | `applied`  | file was clean (at baseline or stamped) and has been overlaid with *theirs* bytes — no merge needed. |
 | `merged`   | file had non-baseline bytes (user edits or prior PATCH output) AND theirs touched it; WEAVE 3-way merge integrated both sides cleanly. |
-| `dirty`    | file had non-baseline bytes; theirs did **not** touch this path; the dirty bytes are preserved untouched. |
+| `mod`      | file had non-baseline bytes (ours diverged from the merge base, e.g. your own committed-since-fork or uncommitted edits) and theirs did **not** touch this path; the bytes are kept as-is.  Fork-relative — **not** "uncommitted-dirty". |
 | `conflict` | file had non-baseline bytes AND theirs touched it AND WEAVE could not auto-resolve; conflict markers are now in the file. |
 
 Conflicts are **loud**: every `conflict` row is also written to

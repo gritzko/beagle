@@ -85,11 +85,12 @@ echo "user scribble before step 2" >> note.txt
 "$BE" patch '?feat' >"$ETMP/p2.out" 2>"$ETMP/p2.err" \
     || fail "patch ?feat failed: $(cat $ETMP/p2.err)"
 
-# Per-file status: lib.c → merged; note.txt → dirty (preserved).
+# Per-file status: lib.c → merged; note.txt → mod (ours-diverged,
+# theirs untouched, preserved).
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/p2.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/p2.err)"
-grep -E '[[:space:]]+dirty[[:space:]]+(\./)?note\.txt$' "$ETMP/p2.out" \
-    || fail "expected 'patch dirty note.txt'; got: $(cat $ETMP/p2.err)"
+grep -E '[[:space:]]+mod[[:space:]]+(\./)?note\.txt$' "$ETMP/p2.out" \
+    || fail "expected 'patch mod note.txt'; got: $(cat $ETMP/p2.err)"
 
 match "$CASE/08.lib.want_step2.c" lib.c
 match "$CASE/10.note.want.txt"   note.txt

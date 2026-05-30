@@ -270,7 +270,9 @@ typedef struct {
 } patch_stats;
 
 //  Emit a per-file status row (VERBS.md §PATCH "Reporting"): status is
-//  one of applied / merged / dirty / conflict.  Rendered through
+//  one of applied / merged / mod / conflict.  (`mod` = ours diverged
+//  from the merge base and theirs didn't touch it, so the file is kept
+//  as-is — fork-relative, NOT "uncommitted-dirty".)  Rendered through
 //  `ULOGPrintStatusLine` so it shares the GET/POST banner's ULOG status
 //  shape (`<date>\t<verb>\t<path>`) and palette colour — all four verbs
 //  have entries in dog/ULOG.c.  Conflict rows are additionally echoed
@@ -303,7 +305,7 @@ static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
     KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
     FILEUnMap(mapped);
     if (!sha1Eq(&disk_sha, baseline_sha)) {
-        emit_status("dirty", childpath);
+        emit_status("mod", childpath);
     }
 }
 
@@ -562,7 +564,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             //  did not touch this path, the user/prior-PATCH bytes
             //  are preserved).
             st->noop++;
-            emit_status("dirty", childpath);
+            emit_status("mod", childpath);
             continue;
         }
         if (l && o && t && o_eq_t) {

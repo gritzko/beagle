@@ -88,6 +88,7 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-20-push-prints-diff"
     "be-patch-18-noop-already-absorbed"
     "be-patch-20-divergent-merge"
+    "be-patch-21-rebase-one-remote"
 )
 
 foreach(_run ${_be_case_runs})
