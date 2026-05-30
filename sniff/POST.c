@@ -29,6 +29,7 @@
 #include "abc/RON.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
+#include "dog/HUNK.h"
 #include "dog/git/IGNO.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
@@ -1116,26 +1117,41 @@ static ok64 post_drain_stamp_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     return OK;
 }
 
-//  M/A/D printer.  ctx is FILE* (stdout for dry run, stderr for commit
-//  with optional grey ANSI on/off pair).
+//  Per-file change printer.  Emits the same ULOG status line as
+//  GET/PATCH/push (`<date>\t<verb>\t<path>`, palette-coloured via
+//  HUNKMode) rather than the old single-letter `M/A/D` shape — verbs
+//  `add` (new file), `mod` (rewrite), `del` (unlink), all in the
+//  dog/ULOG.c palette.  `fd` is the sink: STDOUT for the dry-run
+//  status, STDERR for the commit-time report.
+con ron60 POST_DISP_MOD = 0x31ce8;   // "mod" — rewrite of a tracked file
+con ron60 POST_DISP_DEL = 0x28a70;   // "del" — unlink  (add reuses POST_V_ADD)
+
 typedef struct {
-    FILE       *out;
-    char const *on;
-    char const *off;
-    u32         changed;
+    int fd;
+    u32 changed;
 } post_mad_ctx;
 
 static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
+    (void)c;
     post_mad_ctx *m = (post_mad_ctx *)vctx;
-    char code = 0;
-    if (rec->verb == POST_V_UNLINK)   code = 'D';
+    ron60 verb = 0;
+    if (rec->verb == POST_V_UNLINK)   verb = POST_DISP_DEL;
     else if (ok64stem(rec->verb) == POST_V_ADD) {
         sha1 old = {};
-        code = post_decision_old_sha(&rec->uri, &old) ? 'M' : 'A';
+        verb = post_decision_old_sha(&rec->uri, &old) ? POST_DISP_MOD
+                                                      : POST_V_ADD;
     }
-    if (code == 0) return OK;
-    fprintf(m->out, "%s%c " U8SFMT "%s\n",
-            m->on, code, u8sFmt(rec->uri.path), m->off);
+    if (verb == 0) return OK;
+    ulogrec rep = {.ts = 0, .verb = verb};
+    u8csMv(rep.uri.path, rec->uri.path);
+    a_pad(u8, ub,   1024);
+    a_pad(u8, line, 4096);
+    hunk hk = {};
+    if (ULOGToHunk(&rep, &hk, ub) == OK &&
+        HUNKu8sFeedOut(u8bIdle(line), &hk) == OK) {
+        a_dup(u8c, out, u8bDataC(line));
+        (void)FILEFeedAll(m->fd, out);
+    }
     m->changed++;
     return OK;
 }
@@ -2061,7 +2077,7 @@ static ok64 post_print_status_inner(post_ctx *c) {
     call(post_scan_changeset, c, &base_tree_sha, &have_base);
 
     //  Walk decisions, print one line per changed path.
-    post_mad_ctx mad = {.out = stdout, .on = "", .off = "", .changed = 0};
+    post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
     post_walk_decisions(c, POST_VM_UNLINK | POST_VM_ADD,
                         post_drain_mad_cb, &mad);
     fflush(stdout);
@@ -2931,15 +2947,10 @@ ok64 POSTCommit(u8cs target_branch,
     //  their previous get/post stamp — re-stamping them is redundant.
     post_walk_decisions(&ctx, POST_VM_ADD, post_drain_stamp_cb, NULL);
 
-    //  16. Pretty-print actually-changed paths in grey (TTY only).
+    //  16. Per-file change report on stderr (ULOG status lines; colour
+    //      via HUNKMode — see post_drain_mad_cb).
     {
-        b8 tty = isatty(STDERR_FILENO) ? YES : NO;
-        post_mad_ctx mad = {
-            .out = stderr,
-            .on  = tty ? "\033[90m" : "",
-            .off = tty ? "\033[0m"  : "",
-            .changed = 0,
-        };
+        post_mad_ctx mad = {.fd = STDERR_FILENO, .changed = 0};
         post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
                             post_drain_mad_cb, &mad);
     }

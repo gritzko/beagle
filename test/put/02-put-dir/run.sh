@@ -92,13 +92,13 @@ fi
 
 # --- 7. post commits both tracked-dirty files ---------------------
 "$BE" post 'mod a + b' >"$OUT/post.out" 2>"$OUT/post.err"
-grep -q 'M dir/a\.txt' "$OUT/post.out" "$OUT/post.err" || {
+grep -qE 'mod[[:space:]]dir/a\.txt' "$OUT/post.out" "$OUT/post.err" || {
     echo "FAIL: post didn't commit M dir/a.txt" >&2
     echo "stdout:" >&2; cat "$OUT/post.out" >&2
     echo "stderr:" >&2; cat "$OUT/post.err" >&2
     exit 1
 }
-grep -q 'M dir/b\.txt' "$OUT/post.out" "$OUT/post.err" || {
+grep -qE 'mod[[:space:]]dir/b\.txt' "$OUT/post.out" "$OUT/post.err" || {
     echo "FAIL: post didn't commit M dir/b.txt" >&2
     echo "stdout:" >&2; cat "$OUT/post.out" >&2
     echo "stderr:" >&2; cat "$OUT/post.err" >&2
