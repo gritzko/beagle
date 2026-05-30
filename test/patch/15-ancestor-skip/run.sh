@@ -94,12 +94,17 @@ grep -E '[[:space:]]+dirty[[:space:]]+(\./)?note\.txt$' "$ETMP/p2.out" \
 match "$CASE/08.lib.want_step2.c" lib.c
 match "$CASE/10.note.want.txt"   note.txt
 
-# Step 2 reporting must mention only ONE applied commit (F3).
-# Commit-level `applied <sha>` row is on stdout (p2.out); summary
-# counters are on stderr (p2.err).
-grep -q "applied=1" "$ETMP/p2.err" \
-    || grep -q "$F3" "$ETMP/p2.out" \
-    || fail "patch report did not show single-commit absorption (F3 only)"
+# Step 2 reporting: ancestor-skip means exactly ONE absorbed commit
+# (F3).  The banner lists it as a `post\t?<hashlet>#<subject>` row on
+# stdout (p2.out); F1/F2 are already reachable via the prior foster
+# chain, so they must NOT appear (by subject or by sha).
+nb=$(grep -Ec 'post[[:space:]]+\?' "$ETMP/p2.out")
+[ "$nb" -eq 1 ] \
+    || fail "expected exactly 1 absorbed-commit row (F3), got $nb: $(cat $ETMP/p2.out)"
+grep -Eq 'post[[:space:]]+\?[0-9a-f]+#f3 divmod' "$ETMP/p2.out" \
+    || fail "banner should list F3 (f3 divmod); got: $(cat $ETMP/p2.out)"
+grep -Eq 'add sub|add mul' "$ETMP/p2.out" \
+    && fail "F1/F2 subjects leaked into step-2 banner (should be skipped)"
 grep -q "$F1" "$ETMP/p2.out" "$ETMP/p2.err" \
     && fail "F1 should have been skipped (already reachable via prior foster)"
 grep -q "$F2" "$ETMP/p2.out" "$ETMP/p2.err" \

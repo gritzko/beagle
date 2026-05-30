@@ -32,6 +32,7 @@
 #include "dog/git/GIT.h"
 #include "dog/HOME.h"
 #include "keeper/KEEP.h"
+#include "keeper/WALK.h"
 #include "keeper/REFS.h"
 #include "dog/git/PKT.h"
 #include "keeper/REFADV.h"
@@ -1068,6 +1069,47 @@ static ok64 wpush_walk_commit(keeper *k, sha1cp commit_sha,
     return wpush_walk_tree(k, &tree_sha, out, n, cap, have, add_to_have);
 }
 
+//  Collect commit shas reachable from `tip` but absent from `have`
+//  (= the commits this push introduces to the peer).  Pre-order parent
+//  walk → newest-first; `seen` dedups merge fan-in.  Commit-only —
+//  never descends into trees/blobs.  Best-effort: a missing or
+//  non-commit object just stops that subtree.
+static ok64 wpush_collect_commits(keeper *k, sha1cp tip,
+                                  sha_set const *have, sha_set *seen,
+                                  sha1 *out, u32 *n, u32 cap) {
+    sane(k && tip && n && out);
+    if (have && sha_set_has(have, tip)) done;
+    if (seen && sha_set_has(seen, tip)) done;
+
+    Bu8 cbuf = {};
+    if (u8bMap(cbuf, 1UL << 20) != OK) done;
+    u8 ct = 0;
+    if (KEEPGetExact(tip, cbuf, &ct) != OK || ct != KEEP_OBJ_COMMIT) {
+        u8bUnMap(cbuf);
+        done;
+    }
+    if (seen) sha_set_add(seen, tip);
+    if (*n < cap) out[(*n)++] = *tip;
+
+    u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+    u8cs field = {}, value = {};
+    while (GITu8sDrainCommit(body, field, value) == OK) {
+        if ($empty(field)) break;
+        if ($len(field) == 6 && memcmp(field[0], "parent", 6) == 0 &&
+            $len(value) >= 40) {
+            sha1 par = {};
+            u8s  bin = {par.data, par.data + 20};
+            u8cs hx  = {value[0], value[0] + 40};
+            a_dup(u8c, hx_dup, hx);
+            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
+            if (bin[0] != par.data + 20) continue;
+            wpush_collect_commits(k, &par, have, seen, out, n, cap);
+        }
+    }
+    u8bUnMap(cbuf);
+    done;
+}
+
 //  Append a pack object header (type + size varint, big-endian-ish) to
 //  `buf`.  Mirrors keep_feed_obj_hdr in KEEP.c.
 static void wpush_feed_obj_hdr(u8b buf, u8 type, u64 size) {
@@ -1518,6 +1560,31 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     ok64 rv = wpush_drain_status(*rfd, refname);
     if (rv != OK) fprintf(stderr, "wpush: drain_status returned non-OK\n");
     close(*rfd); *rfd = -1;
+
+    //  Pushed-difference banner (POST only).  List the commits this
+    //  push introduced to the peer and the files they touch, in ULOG
+    //  status format on stdout — mirrors GET's checkout banner
+    //  (VERBS.md §POST).  `force` pushes (PUT) advance refs without a
+    //  diff promise, so they stay silent — and where the remote tip is
+    //  unknowable that is the only safe path (use `be put`).  Empty
+    //  peer (`!have_peer`) ⇒ base is the empty tree, so every commit /
+    //  file prints as new.  Best-effort: a render hiccup never fails an
+    //  already-successful push.
+    if (rv == OK && !force) {
+        a_carve(sha1, pc_b, WPUSH_PEER_TIPS_MAX);
+        sha1 *pcommits = sha1bDataHead(pc_b);
+        u32   npc = 0;
+        sha_set cseen = {};
+        a_carve(sha1, cseen_b, WPUSH_MAX_OBJS);
+        cseen.items = sha1bDataHead(cseen_b);
+        cseen.cap   = WPUSH_MAX_OBJS;
+        (void)wpush_collect_commits(k, &local_tip, have, &cseen,
+                                    pcommits, &npc, WPUSH_PEER_TIPS_MAX);
+        for (u32 i = 0; i < npc; i++)
+            try(KEEPEmitCommitLine, &pcommits[i], (ron60)0);
+        try(KEEPEmitTreeDiffFiles,
+            have_peer ? &peer_tip : NULL, &local_tip, (ron60)0);
+    }
     return rv;
 }
 

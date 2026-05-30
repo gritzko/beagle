@@ -85,6 +85,7 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-27-ff-refuse"
     "be-get-28-linear-ahead-preserved"
     "be-post-19-pure-push-no-commit"
+    "be-post-20-push-prints-diff"
     "be-patch-18-noop-already-absorbed"
     "be-patch-20-divergent-merge"
 )

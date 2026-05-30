@@ -54,6 +54,17 @@ F2=$(head_hex)
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/patch.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/patch.err)"
 
+# Absorbed-commit banner: feat's whole stack (F1, F2) listed as
+# `post\t?<hashlet>#<subject>` rows, newest-first — replaces the old
+# single-tip `patch applied` placeholder (VERBS.md §PATCH "Reporting").
+grep -Eq 'post[[:space:]]+\?[0-9a-f]+#f2 add mul'    "$ETMP/patch.out" \
+    || fail "banner missing F2 commit row; got: $(cat $ETMP/patch.out)"
+grep -Eq 'post[[:space:]]+\?[0-9a-f]+#f1 add parens' "$ETMP/patch.out" \
+    || fail "banner missing F1 commit row; got: $(cat $ETMP/patch.out)"
+nbanner=$(grep -Ec 'post[[:space:]]+\?' "$ETMP/patch.out")
+[ "$nbanner" -eq 2 ] \
+    || fail "expected 2 absorbed-commit rows, got $nbanner: $(cat $ETMP/patch.out)"
+
 # Wt must carry every edit from both sides.
 match "$CASE/06.lib.want.c" lib.c
 

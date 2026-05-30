@@ -41,6 +41,7 @@
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
 #include "keeper/RESOLVE.h"
+#include "keeper/WALK.h"
 
 #include "AT.h"
 #include "SNIFF.h"
@@ -1504,6 +1505,21 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     struct timespec tv = {};
     SNIFFAtNow(&ts, &tv);
 
+    //  Banner: list the commits this PATCH absorbs, one
+    //  `post\t?<hashlet>#<subject>` row each, before the per-file rows
+    //  the walk emits below — mirrors GET's checkout banner (VERBS.md
+    //  §PATCH "Reporting").  Squash/merge absorb a whole stack, so list
+    //  theirs's commits NOT already reachable from cur (parent ∪
+    //  foster) — the ancestor-skip set.  Cherry-pick / rebase-one
+    //  absorb exactly one commit (thr_sha, already resolved to the
+    //  picked commit above).  Best-effort via `try`: a banner hiccup
+    //  never fails the patch.
+    if (shape == PATCH_SHAPE_CHERRY || shape == PATCH_SHAPE_REBASE1) {
+        try(KEEPEmitCommitLine, &thr_sha, ts);
+    } else {
+        try(KEEPEmitCommitsSince, &our_sha, &thr_sha, ts);
+    }
+
     //  Cherry-pick AND rebase-one need the explicit-fork-base JOIN
     //  path: each absorbs a single commit's diff into ours, so the
     //  3-way base must be parent(thr) (= parent(picked) for rebase-
@@ -1606,12 +1622,9 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     ron60 verb = SNIFFAtVerbPatch();
     (void)SNIFFAtAppendAt(ts, verb, &urow);
 
-    //  Per-commit applied report (VERBS.md §PATCH "Reporting": one
-    //  line per applied commit).  For now, emit just the resolved
-    //  theirs sha — squash absorbs many commits but only the tip is
-    //  the row's anchor; ancestor-skip enumeration is TODO.
-    fprintf(stdout, "patch\tapplied\t%.*s\n",
-            (int)u8bDataLen(thex), (char *)u8bDataHead(thex));
+    //  The absorbed-commit list was emitted up-front via
+    //  SNIFFEmitCommitRange (before patch_walk); per-file rows came
+    //  from the walk.  No single-tip placeholder line here anymore.
 
     fprintf(stderr,
             "sniff: patch: noop=%u take-theirs=%u merged=%u "

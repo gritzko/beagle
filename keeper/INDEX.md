@@ -289,7 +289,19 @@ Types: `walk` (walker state), `walk_fn` (visitor callback).
                        newline-sep paths in lex order + parallel 21-byte
                        `{kind, sha[20]}` records.  Feeds `KEEPu8ssDrain` for
                        N-way tree merges (sniff/GET overlap pre-flight uses it).
+  - `KEEPTreeDiff`     tree-vs-tree diff → `add`/`del`/`mod` ULOG rows (NULL
+                       side = empty tree)
   - Commit-graph traversal lives in `graf/`, not here.
+
+  Range-banner renderers (the "what moved" ULOG status banner GET prints
+  on checkout; POST-push and PATCH reuse them for the range they advance —
+  all output via `ULOGPrintStatusLine`, no graf, so deterministic
+  mid-command):
+  - `KEEPEmitCommitLine`     one `post\t?<hashlet8>#<subject>` row for a sha
+  - `KEEPEmitTreeDiffFiles`  `<add|del|mod>\t<path>` rows for tree(base)↔tree(tgt)
+  - `KEEPEmitCommitsSince`   commit rows for `tip\base` — base reach follows
+                             parent **and** foster, so it is ancestor-skip-
+                             correct (used by PATCH's absorbed-range banner)
 
 ### dog/git/DELT.h — git delta instruction applier + encoder
 

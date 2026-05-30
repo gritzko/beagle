@@ -39,6 +39,40 @@ the canonical docs — read them for full coverage:
   call(u8sFeed...) etc to prevent garbage/incomplete data. This
   does not apply with explicit const lengths only, then just u8sFeed()
 
+## BASS scratch — `a_carve` and friends
+
+Per-call scratch comes from **ABC_BASS**, a process-wide arena. The
+PRO.h macros acquire from it implicitly; everything acquired in a
+procedure dies at the surrounding `call()` / `try()` boundary — no
+manual `u8bFree` / `u8bUnMap`. Prefer these over heap `u8bAllocate` or
+fixed `u8 pad[N]` for scratch (fixed heap bufs overflow to NOROOM).
+
+- **`a_carve(T, name, cap)`** — acquire a writable buffer of `cap`
+  elements (the workhorse, e.g. `a_carve(u8, buf, 1UL<<20)`). Use for
+  scratch you feed into.
+- **`a_lign(T, gauge)`** … **`a_cquire(T, slice)`** — open a gauge on
+  BASS, fill it, then close it into a slice. The bracketing pair for
+  "build a slice of unknown length in place".
+- **`a_rent(T, news, src)` / `a_ren(news, src)`** — one-shot copy of
+  `src` into a fresh BASS slice `news` (`a_ren` = the `u8` case).
+- Stack-only (no BASS): **`a_pad(T, name, len)`** (fixed `T name[len]`
+  buffer), **`a_dup(T, name, src)`** (alias a slice), **`a_cstr(name,
+  "lit")`** (literal slice), **`a_path(name, …)`** (path buffer).
+
+Rules (PRO.h §"BASS-implicit arena macros"):
+- They invoke the underlying op **directly**, not via `call()` —
+  `call()` snapshots+restores BASS and would undo the acquisition.
+  Acquire in the op's own `sane()` frame; a `call(...)` rewinds BASS to
+  its entry, freeing whatever the callee carved (so a per-iteration
+  `call`/`try` frees that iteration's carves).
+- Errors still propagate via `__` + `return __`, exactly like `call()`.
+- Do **not** `a_carve` / `a_rent` between an `a_lign` and its matching
+  `a_cquire` — those advance both DATA and IDLE and corrupt the
+  in-flight gauge (a `must()` guard enforces DATA-empty at entry).
+- A carve used as a **hash set** (`wh128` etc.) must `zerob(name)` after
+  acquire — BASS reuses memory that carries leftover bytes from
+  previously-rewound carves (see `graf/INDEX.md`).
+
 ## Paths
 
 - **`path8b`** — owned path buffer, **NUL-terminated by

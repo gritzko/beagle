@@ -103,4 +103,33 @@ ok64 KEEPTreeULog(u8cp tree_sha, ron60 ts, ron60 verb, u8bp out);
 //  the empty tree (every leaf on the other side fires `add` or `del`).
 ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out);
 
+// --- Range banner renderers (commit list + per-file diff) ----------
+//
+//  Shared output for the "what moved" banner: GET prints it on
+//  checkout; POST(-push) and PATCH print it for the range they
+//  advance.  Rows go through `ULOGPrintStatusLine` (stdout, active
+//  HUNKMode) so they match sniff's bare-`be` status shape.  Both are
+//  best-effort: a missing / garbled object emits nothing and still
+//  returns OK, so a banner loop never aborts on one bad row.
+
+//  Emit one `post\t?<hashlet8>#<subject>` status row for `commit_sha`.
+//  `fallback_ts` stamps the row when the commit body carries no author
+//  time.  Non-commit / absent object → no output.
+ok64 KEEPEmitCommitLine(sha1cp commit_sha, ron60 fallback_ts);
+
+//  Resolve `tgt_commit` (and `base_commit`, NULL = empty tree) to their
+//  root trees and emit one `<add|del|mod>\t<path>` status row per
+//  differing leaf (via `KEEPTreeDiff`).
+ok64 KEEPEmitTreeDiffFiles(sha1cp base_commit, sha1cp tgt_commit,
+                           ron60 fallback_ts);
+
+//  Emit one commit row (via KEEPEmitCommitLine, newest-first) for every
+//  commit reachable from `tip` (parent edges) that is NOT already
+//  reachable from `base` (parent + foster edges) — i.e. the commits a
+//  squash/merge of `tip` introduces over a wt that already holds
+//  `base`.  `base` NULL ⇒ `tip`'s whole closure.  This is a direct
+//  keeper walk (no graf DAG) so it is deterministic mid-command.
+//  Bounded at KEEP_RANGE_CAP commits each side (best-effort banner).
+ok64 KEEPEmitCommitsSince(sha1cp base, sha1cp tip, ron60 fallback_ts);
+
 #endif

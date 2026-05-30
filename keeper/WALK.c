@@ -520,3 +520,203 @@ ok64 KEEPTreeDiff(u8cp sha_a, u8cp sha_b, u8bp out) {
     ok64 mo = ULOGMergeWalk(cursors, treediff_step, &ctx);
     return (mo != OK) ? mo : ctx.err;
 }
+
+// --- Range banner renderers (commit list + per-file diff) ----------
+//
+//  See WALK.h: render the "what moved" banner shared by GET / POST /
+//  PATCH.  Best-effort throughout — a bad object skips, never aborts.
+
+#define KEEP_BANNER_SUBJ_MAX 120
+
+//  `post` status verb, RON-encoded once (mirrors SNIFFAtVerbPost
+//  without pulling the sniff layer down into keeper).
+static ron60 keep_v_post(void) {
+    static ron60 v = 0;
+    if (v == 0) { a_cstr(s, "post"); a_dup(u8c, d, s); (void)RONutf8sDrain(&v, d); }
+    return v;
+}
+
+ok64 KEEPEmitCommitLine(sha1cp commit_sha, ron60 fallback_ts) {
+    sane(commit_sha);
+    a_carve(u8, cbuf, 1UL << 20);
+    u8 ot = 0;
+    if (KEEPGetExact(commit_sha, cbuf, &ot) != OK || ot != KEEP_OBJ_COMMIT)
+        done;
+    git_commit gc = {};
+    a_dup(u8c, body, u8bData(cbuf));
+    GITu8sParseCommit(body, &gc);
+
+    //  hashlet8 = first SHA1_HASHLEN_LEN hex of the commit sha.
+    a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
+    u8 *q0 = qbuf_idle[0];
+    if (SHA1u8sFeedHashlet(qbuf_idle, commit_sha) != OK) done;
+    u8cs hashlet = {q0, q0 + SHA1_HASHLEN_LEN};
+
+    u8cs subj = {gc.subject[0], gc.subject[1]};
+    if ($len(subj) > KEEP_BANNER_SUBJ_MAX)
+        subj[1] = subj[0] + KEEP_BANNER_SUBJ_MAX;   // fixed-length cap
+
+    ulogrec rep = {.ts   = gc.author_ts ? gc.author_ts : fallback_ts,
+                   .verb = keep_v_post()};
+    u8csMv(rep.uri.query, hashlet);
+    rep.uri.fragment[0] = subj[0];
+    rep.uri.fragment[1] = subj[1];
+    (void)ULOGPrintStatusLine(&rep);
+    done;
+}
+
+ok64 KEEPEmitTreeDiffFiles(sha1cp base_commit, sha1cp tgt_commit,
+                           ron60 fallback_ts) {
+    sane(tgt_commit);
+    sha1 tree_a = {}, tree_b = {};
+    b8   have_a = NO;
+
+    if (base_commit) {
+        a_carve(u8, ba, 1UL << 20);
+        u8 t = 0;
+        if (KEEPGetExact(base_commit, ba, &t) == OK && t == KEEP_OBJ_COMMIT) {
+            a_dup(u8c, body, u8bData(ba));
+            if (GITu8sCommitTree(body, tree_a.data) == OK) have_a = YES;
+        }
+    }
+    {
+        a_carve(u8, bb, 1UL << 20);
+        u8 t = 0;
+        if (KEEPGetExact(tgt_commit, bb, &t) != OK || t != KEEP_OBJ_COMMIT)
+            done;
+        a_dup(u8c, body, u8bData(bb));
+        if (GITu8sCommitTree(body, tree_b.data) != OK) done;
+    }
+
+    a_carve(u8, diff, 1UL << 22);
+    call(KEEPTreeDiff, have_a ? tree_a.data : NULL, tree_b.data, diff);
+
+    //  Re-emit each diff row as a clean `<verb>\t<path>` status line:
+    //  drop KEEPTreeDiff's sha query/fragment, strip the kind letter
+    //  via ok64stem so the bare add/del/mod verb hits the palette.
+    a_dup(u8c, scan, u8bDataC(diff));
+    for (;;) {
+        ulogrec rec = {};
+        ok64 dr = ULOGu8sDrain(scan, &rec);
+        if (dr == NODATA) break;
+        if (dr != OK) continue;
+        ulogrec rep = {.ts = fallback_ts, .verb = ok64stem(rec.verb)};
+        u8csMv(rep.uri.path, rec.uri.path);
+        (void)ULOGPrintStatusLine(&rep);
+    }
+    done;
+}
+
+//  Commit-range banner via a direct keeper walk (no graf — the DAG's
+//  in-process ingest batch isn't flushed mid-command, so its runs
+//  can't be trusted here; see graf/INDEX.c GRAFIndexFromTips).  This
+//  is what makes PATCH's banner ancestor-skip-correct.
+
+#define KEEP_RANGE_CAP (1u << 14)   // commit-set / range bound (best-effort)
+
+static b8 keep_sha_in(sha1 const *set, u32 n, sha1cp q) {
+    for (u32 i = 0; i < n; i++)
+        if (sha1Eq(&set[i], q)) return YES;
+    return NO;
+}
+
+//  Decode a 40-hex commit-header value into `out`; YES on success.
+static b8 keep_hex40_sha(u8cs value, sha1 *out) {
+    if ($len(value) < 40) return NO;
+    u8s  bin = {out->data, out->data + 20};
+    u8cs hx  = {value[0], value[0] + 40};
+    a_dup(u8c, hd, hx);
+    return (HEXu8sDrainSome(bin, hd) == OK && bin[0] == out->data + 20);
+}
+
+//  Iterative reachable-commit closure of `root` over `parent` (and,
+//  when `with_foster`, `foster`) headers into `set` (deduped, capped).
+//  One reused 1 MB commit buffer; worklist on BASS so deep history
+//  doesn't recurse.  Best-effort — cap / read error just truncates.
+static ok64 keep_commit_reach(sha1cp root, b8 with_foster,
+                              sha1 *set, u32 *n, u32 cap) {
+    sane(root && set && n);
+    a_carve(sha1, wl_b, cap);
+    sha1 *wl = sha1bDataHead(wl_b);
+    u32 wn = 0;
+    wl[wn++] = *root;
+    a_carve(u8, cbuf, 1UL << 20);
+    while (wn > 0) {
+        sha1 cur = wl[--wn];
+        if (keep_sha_in(set, *n, &cur)) continue;
+        if (*n >= cap) break;
+        u8bReset(cbuf);
+        u8 ct = 0;
+        if (KEEPGetExact(&cur, cbuf, &ct) != OK || ct != KEEP_OBJ_COMMIT)
+            continue;
+        set[(*n)++] = cur;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            b8 par = u8csEq(field, GIT_FIELD_PARENT);
+            b8 fos = with_foster && u8csEq(field, GIT_FIELD_FOSTER);
+            if (!par && !fos) continue;
+            sha1 p = {};
+            if (keep_hex40_sha(value, &p) && wn < cap) wl[wn++] = p;
+        }
+    }
+    done;
+}
+
+//  Walk `tip`'s parent closure, pruning at any commit already in
+//  `base` (= the absorbed-already set), collecting the rest into `out`
+//  pre-order (≈ newest-first).  Foster on `tip` is intentionally not
+//  followed — `tip`'s mainline is the absorbed stack.
+static ok64 keep_commit_collect_since(sha1cp tip, sha1 const *base, u32 nbase,
+                                      sha1 *out, u32 *nout, u32 cap) {
+    sane(tip && out && nout);
+    a_carve(sha1, wl_b, cap);
+    sha1 *wl = sha1bDataHead(wl_b);
+    u32 wn = 0;
+    wl[wn++] = *tip;
+    a_carve(u8, cbuf, 1UL << 20);
+    while (wn > 0) {
+        sha1 cur = wl[--wn];
+        if (keep_sha_in(base, nbase, &cur)) continue;   // already absorbed
+        if (keep_sha_in(out, *nout, &cur)) continue;     // dedup
+        if (*nout >= cap) break;
+        u8bReset(cbuf);
+        u8 ct = 0;
+        if (KEEPGetExact(&cur, cbuf, &ct) != OK || ct != KEEP_OBJ_COMMIT)
+            continue;
+        out[(*nout)++] = cur;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            if (u8csEq(field, GIT_FIELD_PARENT)) {
+                sha1 p = {};
+                if (keep_hex40_sha(value, &p) && wn < cap) wl[wn++] = p;
+            }
+        }
+    }
+    done;
+}
+
+ok64 KEEPEmitCommitsSince(sha1cp base, sha1cp tip, ron60 fallback_ts) {
+    sane(tip);
+    a_carve(sha1, base_b, KEEP_RANGE_CAP);
+    sha1 *baseset = sha1bDataHead(base_b);
+    u32   nbase = 0;
+    //  Base reach follows parent AND foster — a wt that absorbed a
+    //  sub-branch via `foster` already holds those commits, so they
+    //  must be pruned from the new range (ancestor-skip).
+    if (base) call(keep_commit_reach, base, YES, baseset, &nbase,
+                   KEEP_RANGE_CAP);
+
+    a_carve(sha1, out_b, KEEP_RANGE_CAP);
+    sha1 *out = sha1bDataHead(out_b);
+    u32   nout = 0;
+    call(keep_commit_collect_since, tip, baseset, nbase, out, &nout,
+         KEEP_RANGE_CAP);
+
+    for (u32 i = 0; i < nout; i++)
+        call(KEEPEmitCommitLine, &out[i], fallback_ts);
+    done;
+}
