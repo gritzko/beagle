@@ -876,6 +876,25 @@ static u32 weave_emit_membership(u32 seq,
     return m;
 }
 
+//  Concatenate (into the reset buffer `dst`) the bytes of every alive
+//  token in [run_lo, run_hi) whose emit-membership equals `gmask`.
+//  Used by WEAVEEmitMerged's byte-equality collapse below.
+static ok64 weave_gather_group(u8b dst, wdp const *p, u32 run_lo, u32 run_hi,
+                               u32 gmask, WEAVEsetfn const *preds,
+                               void *const *ctxs, u32 npreds, u32 spine_mask) {
+    sane(p && dst);
+    u8bReset(dst);
+    for (u32 j = run_lo; j < run_hi; j++) {
+        if (!wd_alive(p, j)) continue;
+        if (weave_emit_membership(p->seq[j], preds, ctxs, npreds, spine_mask)
+            != gmask)
+            continue;
+        u8cs tb = {p->base + wd_lo(p, j), p->base + wd_hi(p, j)};
+        call(u8bFeed, dst, tb);
+    }
+    done;
+}
+
 ok64 WEAVEEmitMerged(weave const *w,
                      WEAVEsetfn const *preds, void *const *ctxs,
                      u32 npreds, u8b out) {
@@ -889,6 +908,11 @@ ok64 WEAVEEmitMerged(weave const *w,
     wd_view(&p, &d);
     u32 ntok = p.ntok;
     if (ntok == 0) done;
+
+    //  Scratch for the byte-equality collapse (see the conflict branch):
+    //  a divergent group's bytes are at most the whole decoded text.
+    a_carve(u8, cgA, u8bDataLen(d.text) + 1);
+    a_carve(u8, cgB, u8bDataLen(d.text) + 1);
 
     #define EMITTOK(i) do { u32 _lo = wd_lo(&p,(i)), _hi = wd_hi(&p,(i)); \
         u8cs _tb = {p.base + _lo, p.base + _hi}; call(u8bFeed, out, _tb); } while (0)
@@ -946,6 +970,30 @@ ok64 WEAVEEmitMerged(weave const *w,
             b8 dup = NO;
             for (u32 k = 0; k < ngroups; k++) if (groups[k] == mj) { dup = YES; break; }
             if (!dup && ngroups < WEAVE_EMIT_MAX_GROUPS) groups[ngroups++] = mj;
+        }
+
+        //  Byte-equality collapse (FOSTER.plan.md #1).  Content
+        //  re-absorbed under a different WEAVE birth-id (foster /
+        //  cherry-pick) surfaces as disjoint ours-only / theirs-only
+        //  groups that are nevertheless byte-identical — not a real
+        //  conflict.  If every group emits the same bytes, emit it once
+        //  with no markers.
+        if (ngroups >= 2) {
+            call(weave_gather_group, cgA, &p, run_lo, run_hi, groups[0],
+                 preds, ctxs, npreds, spine_mask);
+            a_dup(u8c, ga, u8bDataC(cgA));
+            b8 all_eq = YES;
+            for (u32 g = 1; g < ngroups && all_eq; g++) {
+                call(weave_gather_group, cgB, &p, run_lo, run_hi, groups[g],
+                     preds, ctxs, npreds, spine_mask);
+                a_dup(u8c, gb, u8bDataC(cgB));
+                if (!u8csEq(ga, gb)) all_eq = NO;
+            }
+            if (all_eq) {
+                call(u8bFeed, out, u8bDataC(cgA));
+                i = run_hi;
+                continue;
+            }
         }
         call(u8bFeed, out, mk_open);
         for (u32 g = 0; g < ngroups; g++) {

@@ -895,13 +895,29 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
     return KEEPNONE;
 }
 
-// --- KEEPIsAncestor: bounded BFS over commit parent edges ---
+// --- KEEPIsAncestor: bounded BFS over commit parent + foster edges ---
 //
-//  VERBS.md §POST / Design invariant 9: POST is FF-only.  This is the
-//  shared FF-test predicate — keeper_post (cache-side check) and
-//  WIREPush (live-advert-side check) both call it.  Capped at
-//  KEEP_FF_MAX commits; NO on cap-exceeded or any keeper miss so
+//  VERBS.md §POST / Design invariant 9: POST is FF-only, and divergence
+//  is resolved client-side with PATCH + POST.  A `be patch ?remote#`
+//  rebase records the absorbed remote commit as a `foster`, NOT a
+//  `parent` — so the FF test must follow foster edges too, else a
+//  freshly-rebased tip is wrongly seen as non-descendant and
+//  `be post //remote` refuses (FOSTER.plan.md, FF-push companion).
+//  Foster reachability is sound for the FF gate: a foster names the
+//  absorbed commit's tip, so the peer tip's objects are all reachable
+//  from `from` (no history loss when the remote ref advances to it).
+//  `picked` trailers are NOT followed — cherry-pick is dedup-only and
+//  deliberately does not create reachability (VERBS.md §PATCH).
+//
+//  This is the shared FF-test predicate — keeper_post (cache-side
+//  check) and WIREPush (live-advert-side check) both call it.  Capped
+//  at KEEP_FF_MAX commits; NO on cap-exceeded or any keeper miss so
 //  callers treat that as "refuse, user resolves with patch + post".
+//
+//  Caveat: a git peer's receive-pack only knows `parent` edges, so a
+//  foster-rebased tip is still a non-FF *to git* — this client-side
+//  relaxation only makes be-to-be (keeper receive-pack, which CAS-es
+//  on old_sha) accept it.
 
 #include "dog/git/GIT.h"
 
@@ -935,8 +951,10 @@ static ok64 keep_is_ancestor_inner(sha1cp from, sha1cp target,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if ($empty(field)) break;
-            if ($len(field) != 6) continue;
-            if (memcmp(field[0], "parent", 6) != 0) continue;
+            //  Follow both `parent` and `foster`: a rebase records the
+            //  absorbed remote commit as a foster, not a parent.
+            if (!u8csEq(field, GIT_FIELD_PARENT) &&
+                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
             if ($len(value) < 40) continue;
             sha1 par = {};
             u8s bin = {par.data, par.data + 20};
