@@ -372,12 +372,22 @@ ok64 maintest() {
         fprintf(stderr, "  prog.c OK\n");
 
         // compare git log
-        snprintf(cmd, sizeof(cmd),
-            "bash -c 'diff "
-            "<(git -C %s log --oneline) "
-            "<(git -C %s log --oneline)' 2>&1",
-            worktree, checkout);
-        want(runcmd(cmd) == 0);
+        //  Stage via temp files — `<()` isn't POSIX; on FreeBSD-style
+        //  hosts popen()'s /bin/sh is BSD sh, not bash.
+        {
+            char t1[] = "/tmp/round.XXXXXX", t2[] = "/tmp/round.XXXXXX";
+            int f1 = mkstemp(t1); want(f1 >= 0); close(f1);
+            int f2 = mkstemp(t2); want(f2 >= 0); close(f2);
+            snprintf(cmd, sizeof(cmd),
+                "git -C %s log --oneline > %s", worktree, t1);
+            want(runcmd(cmd) == 0);
+            snprintf(cmd, sizeof(cmd),
+                "git -C %s log --oneline > %s", checkout, t2);
+            want(runcmd(cmd) == 0);
+            snprintf(cmd, sizeof(cmd), "diff %s %s 2>&1", t1, t2);
+            want(runcmd(cmd) == 0);
+            unlink(t1); unlink(t2);
+        }
         fprintf(stderr, "  history OK\n");
     }
 

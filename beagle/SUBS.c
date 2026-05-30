@@ -81,16 +81,15 @@ ok64 BESubsHere(u8cs wt_root, besub_cb cb, void *ctx) {
 // BERecurseInto — fork + chdir(<wt>/<subpath>) + execvp(self).
 // =====================================================================
 
-//  Resolve /proc/self/exe; on success feed into `out` (NUL-terminated
-//  path8b).  Used by both the recursion child and parent.  Falls back
-//  silently on failure — caller's check on $path(out) catches.
+//  Resolve `be` to a NUL-terminated path8b via argv[0] + PATH.
+//  Portable across Linux and FreeBSD; /proc/self/exe is Linux-only
+//  and absent on this build host's native procfs.  HOMEResolveSibling
+//  walks PATH for a bare argv[0] and uses dirname for an absolute one,
+//  falling back to the bare name (which execvp still resolves via PATH).
 static void be_resolve_self(path8b out) {
-    char buf[FILE_PATH_MAX_LEN];
-    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-    if (n <= 0) return;
-    buf[n] = 0;
-    a_cstr(buf_s, buf);
-    (void)PATHu8bFeed(out, buf_s);
+    a$rg(a0, 0);
+    a_cstr(self_name, "be");
+    (void)HOMEResolveSibling(NULL, out, self_name, a0);
 }
 
 //  Copy `s` into `pool` followed by a NUL byte; on success, write the

@@ -308,18 +308,27 @@ ok64 maintest() {
     }
 
     // --- verify: content match ---
+    //  Stage each side into a temp file then diff; POSIX sh can't do
+    //  `<()` process substitution and bash isn't visible to popen()'s
+    //  shell on every platform (FreeBSD's /bin/sh doesn't fall back).
     {
+        char t1[] = "/tmp/fetch.XXXXXX", t2[] = "/tmp/fetch.XXXXXX";
+        int f1 = mkstemp(t1); want(f1 >= 0); close(f1);
+        int f2 = mkstemp(t2); want(f2 >= 0); close(f2);
         char vcmd[1024];
         snprintf(vcmd, sizeof(vcmd),
-                 "bash -c 'diff "
-                 "<(git --git-dir=%s show HEAD:README.md) "
-                 "<(git --git-dir=%s show HEAD:README.md)' 2>&1",
-                 repo, outdir);
+                 "git --git-dir=%s show HEAD:README.md > %s", repo, t1);
+        want(system(vcmd) == 0);
+        snprintf(vcmd, sizeof(vcmd),
+                 "git --git-dir=%s show HEAD:README.md > %s", outdir, t2);
+        want(system(vcmd) == 0);
+        snprintf(vcmd, sizeof(vcmd), "diff %s %s 2>&1", t1, t2);
         FILE *p = popen(vcmd, "r");
         char buf[1024];
         while (fgets(buf, sizeof(buf), p))
             fprintf(stderr, "  diff: %s", buf);
         want(pclose(p) == 0);
+        unlink(t1); unlink(t2);
         fprintf(stderr, "  content OK\n");
     }
 

@@ -1266,19 +1266,18 @@ static ok64 bepost_bump_sub(u8cs subpath) {
 
     //  Resolve self so the child's argv[0] is the full self path —
     //  HOMEResolveSibling needs that to find the sibling `sniff`,
-    //  `keeper`, etc.  Matches BERecurseInto's convention.
+    //  `keeper`, etc.  argv[0] + PATH is portable across Linux and
+    //  FreeBSD; /proc/self/exe is Linux-only.
     a_path(self_path);
     {
-        char buf[FILE_PATH_MAX_LEN];
-        ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-        if (n <= 0) {
+        a$rg(a0, 0);
+        a_cstr(self_name, "be");
+        (void)HOMEResolveSibling(NULL, self_path, self_name, a0);
+        if (!u8bHasData(self_path)) {
             fprintf(stderr, "be: post: bump %.*s: cannot resolve self\n",
                     (int)$len(subpath), (char *)subpath[0]);
             return BEDOGEXIT;
         }
-        buf[n] = 0;
-        a_cstr(buf_s, buf);
-        call(PATHu8bFeed, self_path, buf_s);
     }
 
     a_pad(u8cs, args, 4);
@@ -1328,20 +1327,18 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
     *postnone_out = NO;
 
     //  Resolve self (absolute path); use as argv[0] so the child's
-    //  HOMEResolveSibling finds the right bin dir.  Mirrors
-    //  BERecurseInto's convention.
+    //  HOMEResolveSibling finds the right bin dir.  argv[0] + PATH is
+    //  portable across Linux and FreeBSD; /proc/self/exe is Linux-only.
     a_path(self_path);
     {
-        char buf[FILE_PATH_MAX_LEN];
-        ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-        if (n <= 0) {
+        a$rg(a0, 0);
+        a_cstr(self_name, "be");
+        (void)HOMEResolveSibling(NULL, self_path, self_name, a0);
+        if (!u8bHasData(self_path)) {
             fprintf(stderr, "be: post: %.*s: cannot resolve self\n",
                     (int)$len(subpath), (char *)subpath[0]);
             return BEDOGEXIT;
         }
-        buf[n] = 0;
-        a_cstr(buf_s, buf);
-        call(PATHu8bFeed, self_path, buf_s);
     }
 
     //  Compose mount path: <wt_root>/<subpath>.

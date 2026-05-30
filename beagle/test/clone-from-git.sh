@@ -90,7 +90,11 @@ be get "ssh://localhost/$SRC_REL"
 SNAP2=$(snapshot_dogs "$TMP/be-clone")
 if [ "$SNAP1" != "$SNAP2" ]; then
     echo "FAIL: repeat be get changed files in .be"
-    diff <(printf '%s\n' "$SNAP1") <(printf '%s\n' "$SNAP2") | head -20
+    #  Stage via tmp files — process substitution isn't POSIX (BSD sh
+    #  rejects it).
+    printf '%s\n' "$SNAP1" > "$TMP/.snap1"
+    printf '%s\n' "$SNAP2" > "$TMP/.snap2"
+    diff "$TMP/.snap1" "$TMP/.snap2" | head -20
     exit 1
 fi
 
