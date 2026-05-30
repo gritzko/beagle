@@ -237,6 +237,15 @@ static b8 merge_id_set_has(u32 in, void *vctx) {
     return NO;
 }
 
+//  Sentinel seq for the tgt side, applied as ONE edit onto the base weave.
+#define GET_TGT_SRC 0x5A5A5A5Au
+
+//  Tgt-side membership: the sentinel, or any tgt-closure commit (so the
+//  common ancestors a tgt token sits among also read as tgt).
+static b8 get_tgt_pred(u32 in, void *vctx) {
+    return in == GET_TGT_SRC || merge_id_set_has(in, vctx);
+}
+
 //  Fold the wt-on-disk bytes for `path` (relative to `reporoot`) into
 //  the weave `cur` as a final WEAVE_WT_SRC layer, writing the result
 //  into `next` and reporting via `*used_next` whether the fold ran
@@ -295,6 +304,7 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
     weave wbase = {}, wbase_wt = {}, wnu = {};
     weave wtgt = {}, wmerge = {};
     Bu32 base_ids = {}, tgt_ids = {};
+    Bu8  tgt_blob = {};
     ok64 ret = OK;
     if ((ret = WEAVEInit(&wbase))    != OK) return ret;
     if ((ret = WEAVEInit(&wbase_wt)) != OK) goto cleanup;
@@ -303,6 +313,7 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
     if ((ret = WEAVEInit(&wmerge))   != OK) goto cleanup;
     if ((ret = u32bMap(base_ids, 4096)) != OK) goto cleanup;
     if ((ret = u32bMap(tgt_ids,  4096)) != OK) goto cleanup;
+    if ((ret = u8bMap(tgt_blob, 64UL << 20)) != OK) goto cleanup;
 
     //  Base side: ancestor closure of base commit, plus wt layer.
     ret = build_tip_weave_tunable(&wbase, path, ext, &base_h40, 1,
@@ -331,10 +342,10 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
     if (base_empty) { ret = emit_alive_bytes(out, &wtgt); goto cleanup; }
     if (tgt_empty)  { ret = emit_alive_bytes(out, wcur);  goto cleanup; }
 
-    ret = WEAVEMerge(&wmerge, wcur, &wtgt);
-    if (ret != OK) goto cleanup;
-
-    //  Build per-side predicates and render with conflict markers.
+    //  Single weave: apply tgt's tip content onto the base weave as ONE
+    //  edit, diffed against the tgt-closure (common-ancestor) baseline.
+    //  tgt's net change lands as GET_TGT_SRC tokens; base's divergent
+    //  tokens pass through untouched.  No second weave to reconcile.
     merge_id_set base_set = {
         .ids = (u32cp)u32bDataHead(base_ids),
         .n   = (u32)u32bDataLen(base_ids),
@@ -343,12 +354,26 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
         .ids = (u32cp)u32bDataHead(tgt_ids),
         .n   = (u32)u32bDataLen(tgt_ids),
     };
-    WEAVEsetfn preds[2] = { merge_id_set_has, merge_id_set_has };
+    {
+        ret = emit_alive_bytes(tgt_blob, &wtgt);     // tgt tip content
+        if (ret != OK) goto cleanup;
+        a_dup(u8c, tgt_data, u8bData(tgt_blob));
+        ret = WEAVEFromBlob(&wnu, tgt_data, ext, GET_TGT_SRC);
+        if (ret == OK)
+            ret = WEAVEApply(&wmerge, wcur, &wnu, GET_TGT_SRC,
+                             merge_id_set_has, &tgt_set);
+    }
+    if (ret != OK) goto cleanup;
+
+    //  Render with conflict markers: base side by closure membership, tgt
+    //  side by the sentinel or any tgt-closure commit.
+    WEAVEsetfn preds[2] = { merge_id_set_has, get_tgt_pred };
     void *ctxs[2] = { &base_set, &tgt_set };
 
     ret = WEAVEEmitMerged(&wmerge, preds, ctxs, 2, out);
 
 cleanup:
+    if (tgt_blob[0]) u8bUnMap(tgt_blob);
     if (tgt_ids[0])  u32bUnMap(tgt_ids);
     if (base_ids[0]) u32bUnMap(base_ids);
     WEAVEFree(&wmerge);
@@ -390,6 +415,23 @@ static b8 merge3_pred(u32 in, void *vctx) {
     return in == *(u32 *)vctx;
 }
 
+//  Baseline predicate for ours/theirs: each diffs against the BASE alone.
+static b8 merge3_base_pred(u32 seq, void *vctx) {
+    (void)vctx;
+    return seq == MERGE3_BASE_SRC;
+}
+
+//  Apply `content` (stamped `seq`) to `*W`, ping-ponging into `*Wn`.
+//  `base` is the baseline predicate (NULL ⇒ empty baseline / root).
+static ok64 merge3_apply(weave **W, weave **Wn, weave *nu,
+                         u8cs content, u8cs ext, u32 seq, WEAVEsetfn base) {
+    sane(W && Wn && nu);
+    call(WEAVEFromBlob, nu, content, ext, seq);
+    call(WEAVEApply, *Wn, *W, nu, seq, base, NULL);
+    weave *t = *W; *W = *Wn; *Wn = t;
+    done;
+}
+
 ok64 GRAFMerge3Bytes(u8cs base, u8cs ours, u8cs theirs,
                      u8cs ext, u8b out) {
     sane(out);
@@ -400,38 +442,33 @@ ok64 GRAFMerge3Bytes(u8cs base, u8cs ours, u8cs theirs,
     if ($empty(ours))  return u8bFeed(out, theirs);
     if ($empty(theirs)) return u8bFeed(out, ours);
 
-    weave wbase = {}, wours_n = {}, wthrs_n = {};
-    weave wours = {}, wthrs = {}, wmerge = {};
+    //  Replay base → ours → theirs into ONE weave (insert/delete in
+    //  place, never reconcile two weaves).  ours and theirs each diff
+    //  against the BASE view; their tokens coexist in the one weave and
+    //  WEAVEEmitMerged frames divergent regions by per-side membership.
+    weave w0 = {}, w1 = {}, nu = {};
     ok64 ret = OK;
-    if ((ret = WEAVEInit(&wbase))   != OK) return ret;
-    if ((ret = WEAVEInit(&wours_n)) != OK) goto cleanup;
-    if ((ret = WEAVEInit(&wthrs_n)) != OK) goto cleanup;
-    if ((ret = WEAVEInit(&wours))   != OK) goto cleanup;
-    if ((ret = WEAVEInit(&wthrs))   != OK) goto cleanup;
-    if ((ret = WEAVEInit(&wmerge))  != OK) goto cleanup;
+    if ((ret = WEAVEInit(&w0)) != OK) return ret;
+    if ((ret = WEAVEInit(&w1)) != OK) goto cleanup;
+    if ((ret = WEAVEInit(&nu)) != OK) goto cleanup;
+    weave *W = &w0, *Wn = &w1;
 
-    //  Base may be empty: WEAVEFromBlob on empty data yields a
-    //  zero-token weave, which WEAVEDiff handles as "everything is
-    //  INS on the nu side".
-    if ((ret = WEAVEFromBlob(&wbase,   base,   ext, MERGE3_BASE_SRC)) != OK) goto cleanup;
-    if ((ret = WEAVEFromBlob(&wours_n, ours,   ext, MERGE3_BASE_SRC)) != OK) goto cleanup;
-    if ((ret = WEAVEFromBlob(&wthrs_n, theirs, ext, MERGE3_BASE_SRC)) != OK) goto cleanup;
-    if ((ret = WEAVEDiff(&wours, &wbase, &wours_n, MERGE3_OURS_SRC))   != OK) goto cleanup;
-    if ((ret = WEAVEDiff(&wthrs, &wbase, &wthrs_n, MERGE3_THEIRS_SRC)) != OK) goto cleanup;
-    if ((ret = WEAVEMerge(&wmerge, &wours, &wthrs))                    != OK) goto cleanup;
+    if ((ret = merge3_apply(&W, &Wn, &nu, base,   ext, MERGE3_BASE_SRC, NULL)) != OK)
+        goto cleanup;
+    if ((ret = merge3_apply(&W, &Wn, &nu, ours,   ext, MERGE3_OURS_SRC,
+                            merge3_base_pred)) != OK) goto cleanup;
+    if ((ret = merge3_apply(&W, &Wn, &nu, theirs, ext, MERGE3_THEIRS_SRC,
+                            merge3_base_pred)) != OK) goto cleanup;
 
     u32 ours_src = MERGE3_OURS_SRC, theirs_src = MERGE3_THEIRS_SRC;
     WEAVEsetfn preds[2] = { merge3_pred, merge3_pred };
     void *ctxs[2]       = { &ours_src, &theirs_src };
-    ret = WEAVEEmitMerged(&wmerge, preds, ctxs, 2, out);
+    ret = WEAVEEmitMerged(W, preds, ctxs, 2, out);
 
 cleanup:
-    WEAVEFree(&wmerge);
-    WEAVEFree(&wthrs);
-    WEAVEFree(&wours);
-    WEAVEFree(&wthrs_n);
-    WEAVEFree(&wours_n);
-    WEAVEFree(&wbase);
+    WEAVEFree(&nu);
+    WEAVEFree(&w1);
+    WEAVEFree(&w0);
     return ret;
 }
 

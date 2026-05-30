@@ -71,12 +71,10 @@ static ok64 w2_blob(weave *w, u8cs content, u32 src) {
     weavebld b;
     WEAVEBldInit(&b, w);
     u32 n = (u32)$len(content);
-    u32 one[1] = {src};
-    u32cs is = {one, one + 1};
     u32cs rs = {NULL, NULL};
     for (u32 i = 0; i < n; i++) {
         u8csc seg = {content[0] + i, content[0] + i + 1};
-        call(WEAVEBldPut, &b, seg, is, rs);
+        call(WEAVEBldPut, &b, seg, src, i, rs);   // seq=src, pos=token index
     }
     done;
 }
@@ -148,12 +146,8 @@ static ok64 w2_recover(u8bp out, weave const *w, u8 const *anc, u32 n_idx) {
     weavecur c;
     WEAVECurInit(&c, w);
     while (WEAVECurNext(&c)) {
-        //  Inserted by some line in a's history.
-        b8 in_ok = NO;
-        for (u32 k = 0; k < c.ni; k++) {
-            u32 in = c.iset[k];
-            if (in < n_idx && anc[in]) { in_ok = YES; break; }
-        }
+        //  Inserted by a line in a's history.
+        b8 in_ok = (c.seq < n_idx && anc[c.seq]);
         //  Alive unless removed by some line in a's history.
         b8 rm_ok = YES;
         for (u32 k = 0; k < c.nr; k++) {
@@ -209,6 +203,15 @@ static ok64 w2_parse(u8cs input, w2_line *lines, u32 *nlines) {
     done;
 }
 
+// --- Parent-closure membership predicate (WEAVEApply baseline) -----
+
+typedef struct { u8 const *set; u32 n; } w2_pred_ctx;
+
+static b8 w2_pred(u32 seq, void *vctx) {
+    w2_pred_ctx const *c = vctx;
+    return (seq < c->n && c->set[seq]) ? YES : NO;
+}
+
 // --- Entry point ---------------------------------------------------
 
 FUZZ(u8, WEAVE2fuzz) {
@@ -219,19 +222,21 @@ FUZZ(u8, WEAVE2fuzz) {
     u32 n = 0;
     if (w2_parse(input, lines, &n) != OK) done;
 
-    //  Per-line accumulated weaves.
-    weave w[W2_MAX_LINES] = {};
-    weave nu = {}, wm = {};
+    //  ONE weave the whole DAG is replayed into (ping-pong buffers), plus
+    //  a scratch weave holding each commit's pre-tokenized content.
+    weave wa = {}, wb = {}, nu = {};
     Bu8   out = {};
-    u8    anc[W2_MAX_LINES];
-    u8    anc_i[W2_MAX_LINES];
+    u8    panc[W2_MAX_LINES];   // parent closure (WEAVEApply baseline)
+    u8    anc[W2_MAX_LINES];    // a rev's own closure (recovery)
     ok64  ret = OK;
 
-    for (u32 i = 0; i < n; i++)
-        if ((ret = WEAVEInit(&w[i])) != OK) goto out;
+    if ((ret = WEAVEInit(&wa)) != OK) goto out;
+    if ((ret = WEAVEInit(&wb)) != OK) goto out;
     if ((ret = WEAVEInit(&nu)) != OK) goto out;
-    if ((ret = WEAVEInit(&wm)) != OK) goto out;
-    if ((ret = u8bAlloc(out, W2_MAX_CONTENT + 16)) != OK) goto out;
+    if ((ret = u8bAlloc(out, (size_t)W2_MAX_LINES * W2_MAX_CONTENT + 16)) != OK)
+        goto out;
+
+    weave *W = &wa, *Wn = &wb;   // W = accumulated weave (starts empty)
 
     if (getenv("W2_DBG")) {
         fprintf(stderr, "\nDAG:");
@@ -245,94 +250,75 @@ FUZZ(u8, WEAVE2fuzz) {
         fprintf(stderr, "\n");
     }
 
+    //  Replay every commit (topo order = input order) into the ONE weave:
+    //  apply its content against its PARENT closure (union of all parents'
+    //  closures) — insert/delete in place, never rebuilding a second weave
+    //  to merge.  A root (no parents) applies against an empty baseline, so
+    //  all of its content is inserted.
     for (u32 i = 0; i < n; i++) {
         w2_line *ln = &lines[i];
-        u32 s = i;   // insertion stamp = line index (root = line 0 = 0)
-        u32 mpar[W2_MAX_LINES];
-        u32 nm = (ln->npar == 0) ? 0
-               : w2_norm_parents(lines, n, ln->par, ln->npar, mpar);
-        if (ln->npar == 0) {
-            ret = w2_blob(&w[i], ln->content, s);
-            if (ret != OK) { must(0, "blob root failed on valid input"); }
-        } else if (nm == 1) {
-            ret = w2_blob(&nu, ln->content, s);
-            if (ret != OK) must(0, "blob nu failed (1 parent)");
-            ret = WEAVEDiff(&w[i], &w[mpar[0]], &nu, s);
-            if (ret != OK) must(0, "WEAVEDiff failed (1 parent)");
-        } else {
-            //  Fold the minimized, topo-sorted parents pairwise into wm.
-            ret = WEAVEMerge(&wm, &w[mpar[0]], &w[mpar[1]]);
-            if (ret != OK) must(0, "WEAVEMerge failed (first pair)");
-            for (u32 k = 2; k < nm; k++) {
-                ret = WEAVEMerge(&nu, &wm, &w[mpar[k]]);
-                if (ret != OK) must(0, "WEAVEMerge failed (fold)");
-                //  swap, reuse storage (weave has an array member → memcpy)
-                weave tmp;
-                memcpy(&tmp, &wm, sizeof(weave));
-                memcpy(&wm, &nu, sizeof(weave));
-                memcpy(&nu, &tmp, sizeof(weave));
-            }
-            ret = w2_blob(&nu, ln->content, s);
-            if (ret != OK) must(0, "blob nu failed (merge)");
-            ret = WEAVEDiff(&w[i], &wm, &nu, s);
-            if (ret != OK) must(0, "WEAVEDiff failed (post-merge)");
-        }
+        ret = w2_blob(&nu, ln->content, i);   // content tokens (1/byte), seq=i
+        if (ret != OK) must(0, "blob failed on valid input");
 
-        //  w[i] must reproduce the EXACT content of every revision i
-        //  can see — itself and all ancestors, INCLUDING those
-        //  reachable only through a merge.  This is the point of the
-        //  test (non-linear recovery).  Attribution is deliberately
-        //  ignored: identical tokens make "which commit added this one"
-        //  inherently fuzzy, so we assert CONTENT only, never the inrm
-        //  stamps.  Each rev a is recovered "as of a" — keep tokens
-        //  introduced within a's closure and not deleted within it.
-        //  A mismatch is a real finding (the weave lost or corrupted a
-        //  recoverable revision), not a property to weaken.
-        if (getenv("W2_DBG")) {
-            //  Per token: <char><I-set RON64>/<R-set RON64>.
-            fprintf(stderr,"w[%u]:",i);
-            weavecur dc; WEAVECurInit(&dc, &w[i]);
-            while (WEAVECurNext(&dc)) {
-                fprintf(stderr," %.*s",(int)$len(dc.text),dc.text[0]);
-                for (u32 z=0; z<dc.ni; z++) fputc(RON64_CHARS[dc.iset[z]&63], stderr);
-                fputc('/', stderr);
-                for (u32 z=0; z<dc.nr; z++) fputc(RON64_CHARS[dc.rset[z]&63], stderr);
-            }
-            fprintf(stderr,"\n");
-        }
-        memset(anc_i, 0, n);
-        w2_closure(lines, n, i, anc_i);      // every rev i can see
-        for (u32 a = 0; a <= i; a++) {
-            if (!anc_i[a]) continue;
-            memset(anc, 0, n);
-            w2_closure(lines, n, a, anc);    // closure of a (recover as-of-a)
-            ret = w2_recover(out, &w[i], anc, n);
-            if (ret != OK) must(0, "recover failed on valid input");
+        memset(panc, 0, n);
+        for (u32 k = 0; k < ln->npar; k++) panc[ln->par[k]] = 1;
+        for (u32 j = i; j-- > 0;)
+            if (panc[j])
+                for (u32 k = 0; k < lines[j].npar; k++) panc[lines[j].par[k]] = 1;
+        w2_pred_ctx pc = {panc, n};
 
-            u8 **gd = u8bData(out);
-            u32  glen = (u32)$len(gd);
-            u8cp wlo = lines[a].content[0];
-            u8cp whi = lines[a].content[1];
-            u32  wlen = (u32)(whi - wlo);
-            b8 okrec = glen == wlen &&
-                 (wlen == 0 ||
-                  memcmp(gd[0], wlo, (size_t)wlen) == 0);
-            if (!okrec && getenv("W2_DBG")) {
-                fprintf(stderr, "\nFAIL recover rev a=%u from w[%u]: anc={", a, i);
-                for (u32 z=0; z<n; z++) if (anc[z]) fprintf(stderr, "%u", z);
-                fprintf(stderr, "} want='%.*s' got='%.*s'\n",
-                        (int)wlen, wlo, (int)glen, gd[0]);
-            }
-            must(okrec,
-                 "weave failed to recover a revision's content");
+        //  try() frees the op's BASS scratch (this driver is the call-chain
+        //  top).  base = NULL for a root → empty baseline.
+        try(WEAVEApply, Wn, W, &nu, i, ln->npar ? w2_pred : NULL, &pc);
+        if (__ != OK) must(0, "WEAVEApply failed on valid input");
+
+        weave *t = W; W = Wn; Wn = t;
+    }
+
+    if (getenv("W2_DBG")) {
+        fprintf(stderr, "W:");
+        weavecur dc; WEAVECurInit(&dc, W);
+        while (WEAVECurNext(&dc)) {
+            fprintf(stderr, " %.*s%c.%c/", (int)$len(dc.text), dc.text[0],
+                    RON64_CHARS[dc.seq & 63], RON64_CHARS[dc.pos & 63]);
+            for (u32 z = 0; z < dc.nr; z++) fputc(RON64_CHARS[dc.rset[z] & 63], stderr);
         }
+        fprintf(stderr, "\n");
+    }
+
+    //  Every revision must recover its EXACT content from the ONE weave by
+    //  filtering tokens through its own closure (inserter reachable, no
+    //  remover reachable).  Later commits never disturb an earlier rev's
+    //  view, so reading them all from the final weave is "as of a".  A
+    //  mismatch is a real finding (the weave lost/corrupted a recoverable
+    //  revision), not a property to weaken.
+    for (u32 a = 0; a < n; a++) {
+        memset(anc, 0, n);
+        w2_closure(lines, n, a, anc);
+        ret = w2_recover(out, W, anc, n);
+        if (ret != OK) must(0, "recover failed on valid input");
+
+        u8 **gd = u8bData(out);
+        u32  glen = (u32)$len(gd);
+        u8cp wlo = lines[a].content[0];
+        u8cp whi = lines[a].content[1];
+        u32  wlen = (u32)(whi - wlo);
+        b8 okrec = glen == wlen &&
+             (wlen == 0 || memcmp(gd[0], wlo, (size_t)wlen) == 0);
+        if (!okrec && getenv("W2_DBG")) {
+            fprintf(stderr, "\nFAIL recover rev a=%u: anc={", a);
+            for (u32 z = 0; z < n; z++) if (anc[z]) fprintf(stderr, "%u", z);
+            fprintf(stderr, "} want='%.*s' got='%.*s'\n",
+                    (int)wlen, wlo, (int)glen, gd[0]);
+        }
+        must(okrec, "weave failed to recover a revision's content");
     }
 
 out:
     u8bFree(out);
     WEAVEFree(&nu);
-    WEAVEFree(&wm);
-    for (u32 i = 0; i < n; i++) WEAVEFree(&w[i]);
+    WEAVEFree(&wa);
+    WEAVEFree(&wb);
     if (ret != OK) fail(ret);
     done;
 }

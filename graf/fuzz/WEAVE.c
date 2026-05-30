@@ -52,7 +52,7 @@ static ok64 weave_repro_pre(u8bp out, weave const *w, u32 side) {
     weavecur c;
     WEAVECurInit(&c, w);
     while (WEAVECurNext(&c)) {
-        if (WEAVESetHas(c.iset, c.ni, side)) continue;  // inserted by side
+        if (c.seq == side) continue;   // inserted by side
         call(u8bFeed, out, c.text);
     }
     if (c.bad) return WEAVEFAIL;
@@ -327,34 +327,9 @@ FUZZ(u8, WEAVEfuzz) {
         if (r2 != OK) fail(r2);
     }
 
-    //  Merge round-trip: build woa, wob then WEAVEMerge them; the
-    //  call should not crash regardless of input shape.  Detailed
-    //  property checks live in WEAVE01test (the table-driven test);
-    //  this fuzz just keeps `WEAVEMerge` from regressing on adversarial
-    //  inputs.
-    if (!$empty(b_data)) {
-        weave wo = {}, wa_raw = {}, wb_raw = {};
-        weave woa = {}, wob = {}, wm = {};
-        if (WEAVEInit(&wo)     != OK) goto merge_out;
-        if (WEAVEInit(&wa_raw) != OK) goto merge_out;
-        if (WEAVEInit(&wb_raw) != OK) goto merge_out;
-        if (WEAVEInit(&woa)    != OK) goto merge_out;
-        if (WEAVEInit(&wob)    != OK) goto merge_out;
-        if (WEAVEInit(&wm)     != OK) goto merge_out;
-        if (WEAVEFromBlob(&wo,     o_data, ext, WEAVE_BASE_SRC) != OK) goto merge_out;
-        if (WEAVEFromBlob(&wa_raw, a_data, ext, WEAVE_A_SRC)    != OK) goto merge_out;
-        if (WEAVEFromBlob(&wb_raw, b_data, ext, WEAVE_B_SRC)    != OK) goto merge_out;
-        if (WEAVEDiff(&woa, &wo, &wa_raw, WEAVE_A_SRC) != OK) goto merge_out;
-        if (WEAVEDiff(&wob, &wo, &wb_raw, WEAVE_B_SRC) != OK) goto merge_out;
-        (void)WEAVEMerge(&wm, &woa, &wob);
-    merge_out:
-        WEAVEFree(&wo);
-        WEAVEFree(&wa_raw);
-        WEAVEFree(&wb_raw);
-        WEAVEFree(&woa);
-        WEAVEFree(&wob);
-        WEAVEFree(&wm);
-    }
+    //  Concurrent-branch merge round-trips live in graf/{test,fuzz}/WEAVE2
+    //  now (single-weave WEAVEApply); this fuzz covers the WEAVEDiff
+    //  round-trip only.
 
     done;
 }

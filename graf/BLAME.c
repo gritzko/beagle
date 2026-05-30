@@ -479,9 +479,8 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
 
     while (WEAVECurNext(&wcur)) {
         if (wcur.nr != 0) continue;
-        //  Representative inserter for blame attribution: the min of the
-        //  I-set (deterministic; usually a singleton along a linear tip).
-        u32 in_rep = (wcur.ni > 0) ? wcur.iset[0] : 0;
+        //  Inserter for blame attribution: the token's birth-id seq.
+        u32 in_rep = wcur.seq;
 
         u8cp tp = (u8cp)wcur.text[0];
         u8cp te = (u8cp)wcur.text[1];

@@ -406,15 +406,6 @@ static ok64 tm_merge_blob(sha1 *out_sha,
     if (ret == OK) ret = rebase_blob_at(obuf, ours);
     if (ret == OK) ret = rebase_blob_at(tbuf, theirs);
 
-    weave bs_o = {}, nu_o = {}, run_w = {};
-    weave bs_t = {}, nu_t = {}, br_w  = {};
-    if (ret == OK) ret = WEAVEInit(&bs_o);
-    if (ret == OK) ret = WEAVEInit(&nu_o);
-    if (ret == OK) ret = WEAVEInit(&run_w);
-    if (ret == OK) ret = WEAVEInit(&bs_t);
-    if (ret == OK) ret = WEAVEInit(&nu_t);
-    if (ret == OK) ret = WEAVEInit(&br_w);
-
     if (ret == OK) {
         a_dup(u8c, bdata, u8bData(bbuf));
         a_dup(u8c, odata, u8bData(obuf));
@@ -426,34 +417,19 @@ static ok64 tm_merge_blob(sha1 *out_sha,
         u8cs ext = {};
         if (!$empty(filepath)) PATHu8sExt(ext, filepath);
 
-        ret = WEAVEFromBlob(&bs_o, bdata, ext, 0);
-        if (ret == OK) ret = WEAVEFromBlob(&nu_o, odata, ext, TM_RUN_SRC);
-        if (ret == OK) ret = WEAVEDiff(&run_w, &bs_o, &nu_o, TM_RUN_SRC);
-
-        if (ret == OK) ret = WEAVEFromBlob(&bs_t, bdata, ext, 0);
-        if (ret == OK) ret = WEAVEFromBlob(&nu_t, tdata, ext, TM_BR_SRC);
-        if (ret == OK) ret = WEAVEDiff(&br_w, &bs_t, &nu_t, TM_BR_SRC);
-
-        if (ret == OK) {
-            b8 conflict = NO;
-            ret = GRAFRebaseBlobMerge(&run_w, &br_w,
-                                      tm_pred_run,    NULL,
-                                      tm_pred_branch, NULL,
-                                      mbuf, &conflict);
-            if (ret == OK && conflict) {
-                *out_conflict = YES;
-            } else if (ret == OK) {
-                a_dup(u8c, mdata, u8bData(mbuf));
-                KEEPObjSha(out_sha, DOG_OBJ_BLOB, mdata);
-                if (cb != NULL) {
-                    ret = cb(ctx, DOG_OBJ_BLOB, out_sha, mdata);
-                }
+        b8 conflict = NO;
+        ret = GRAFRebaseBlobMerge(bdata, odata, tdata, ext, mbuf, &conflict);
+        if (ret == OK && conflict) {
+            *out_conflict = YES;
+        } else if (ret == OK) {
+            a_dup(u8c, mdata, u8bData(mbuf));
+            KEEPObjSha(out_sha, DOG_OBJ_BLOB, mdata);
+            if (cb != NULL) {
+                ret = cb(ctx, DOG_OBJ_BLOB, out_sha, mdata);
             }
         }
     }
 
-    WEAVEFree(&bs_o); WEAVEFree(&nu_o); WEAVEFree(&run_w);
-    WEAVEFree(&bs_t); WEAVEFree(&nu_t); WEAVEFree(&br_w);
     return ret;
 }
 
@@ -1018,30 +994,50 @@ ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 //  migration).  Pure weave work: no keeper IO, no DAG dependency.
 // ---------------------------------------------------------------------
 
-ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
-                         WEAVEsetfn in_running, void *in_running_ctx,
-                         WEAVEsetfn in_branch,  void *in_branch_ctx,
+//  Baseline predicate for ours/theirs: each diffs against the shared
+//  base (seq 0).
+static b8 tm_base_pred(u32 seq, void *ctx) { (void)ctx; return seq == 0; }
+
+//  Apply `content` (stamped `seq`) to `*W`, ping-ponging into `*Wn`.
+static ok64 tm_apply(weave **W, weave **Wn, weave *nu,
+                     u8cs content, u8cs ext, u32 seq, WEAVEsetfn base) {
+    sane(W && Wn && nu);
+    call(WEAVEFromBlob, nu, content, ext, seq);
+    call(WEAVEApply, *Wn, *W, nu, seq, base, NULL);
+    weave *t = *W; *W = *Wn; *Wn = t;
+    done;
+}
+
+ok64 GRAFRebaseBlobMerge(u8cs base, u8cs ours, u8cs theirs, u8cs ext,
                          u8 *const *out, b8 *out_conflict) {
-    sane(running && branch && in_running && in_branch &&
-         out && out_conflict);
+    sane(out && out_conflict);
     *out_conflict = NO;
 
-    weave merged = {};
-    call(WEAVEInit, &merged);
+    //  Replay base → ours (TM_RUN_SRC) → theirs (TM_BR_SRC) into ONE
+    //  weave; ours and theirs each diff against the base view.  No second
+    //  weave to reconcile — WEAVEEmitMerged frames divergent regions by
+    //  per-side membership.
+    weave w0 = {}, w1 = {}, nu = {};
+    call(WEAVEInit, &w0);
+    call(WEAVEInit, &w1);
+    call(WEAVEInit, &nu);
+    weave *W = &w0, *Wn = &w1;
 
-    ok64 ret = WEAVEMerge(&merged, running, branch);
-    if (ret != OK) { WEAVEFree(&merged); return ret; }
-
-    WEAVEsetfn preds[2] = {in_running, in_branch};
-    void *ctxs[2] = {in_running_ctx, in_branch_ctx};
-    ret = WEAVEEmitMerged(&merged, preds, ctxs, 2, out);
-    WEAVEFree(&merged);
+    ok64 ret = tm_apply(&W, &Wn, &nu, base, ext, 0, NULL);
+    if (ret == OK) ret = tm_apply(&W, &Wn, &nu, ours,   ext, TM_RUN_SRC, tm_base_pred);
+    if (ret == OK) ret = tm_apply(&W, &Wn, &nu, theirs, ext, TM_BR_SRC,  tm_base_pred);
+    if (ret == OK) {
+        WEAVEsetfn preds[2] = {tm_pred_run, tm_pred_branch};
+        void *ctxs[2] = {NULL, NULL};
+        ret = WEAVEEmitMerged(W, preds, ctxs, 2, out);
+    }
+    WEAVEFree(&w0);
+    WEAVEFree(&w1);
+    WEAVEFree(&nu);
     if (ret != OK) return ret;
 
     //  Conflict detection: WEAVEEmitMerged frames divergent runs with
-    //  `<<<<` markers.  A 4-byte `<` run is the unambiguous signal —
-    //  the same heuristic `tm_has_conflict_v2` uses for JOINMerge
-    //  output, kept here so the migration's signal shape matches.
+    //  `<<<<` markers.  A 4-byte `<` run is the unambiguous signal.
     a_dup(u8c, rendered, u8bData(out));
     if ($len(rendered) >= 4) {
         for (u8c *p = rendered[0]; p + 4 <= rendered[1]; p++) {

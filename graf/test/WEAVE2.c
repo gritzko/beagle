@@ -54,12 +54,10 @@ static ok64 w2_blob(weave *w, u8cs content, u32 src) {
     weavebld b;
     WEAVEBldInit(&b, w);
     u32 n = (u32)$len(content);
-    u32 one[1] = {src};
-    u32cs is = {one, one + 1};
     u32cs rs = {NULL, NULL};
     for (u32 i = 0; i < n; i++) {
         u8csc seg = {content[0] + i, content[0] + i + 1};
-        call(WEAVEBldPut, &b, seg, is, rs);
+        call(WEAVEBldPut, &b, seg, src, i, rs);   // seq=src, pos=token index
     }
     done;
 }
@@ -155,11 +153,7 @@ static ok64 w2_recover(u8bp out, weave const *w, u8 const *anc, u32 n_idx) {
     weavecur c;
     WEAVECurInit(&c, w);
     while (WEAVECurNext(&c)) {
-        b8 in_ok = NO;
-        for (u32 k = 0; k < c.ni; k++) {
-            u32 in = c.iset[k];
-            if (in < n_idx && anc[in]) { in_ok = YES; break; }
-        }
+        b8 in_ok = (c.seq < n_idx && anc[c.seq]);
         b8 rm_ok = YES;
         for (u32 k = 0; k < c.nr; k++) {
             u32 rm = c.rset[k];
@@ -179,8 +173,17 @@ typedef struct {
     u32         check;     // verify EVERY revision in this weave's closure
 } W2Case;
 
-//  Build all per-line weaves for one case; verify w[check] recovers each
-//  revision in its closure byte-for-byte.
+//  Parent-closure membership predicate for the WEAVEApply baseline.
+typedef struct { u8 const *set; u32 n; } w2_pred_ctx;
+static b8 w2_pred(u32 seq, void *vctx) {
+    w2_pred_ctx const *c = vctx;
+    return (seq < c->n && c->set[seq]) ? YES : NO;
+}
+
+//  Replay the whole DAG (input order = topo order) into ONE weave via
+//  WEAVEApply — each commit applies against its parent closure — then
+//  verify EVERY revision recovers its content byte-for-byte from that one
+//  weave.
 static ok64 w2_build(W2Case const *c) {
     sane(1);
     u8cs input = {(u8cp)c->input, (u8cp)c->input + strlen(c->input)};
@@ -189,77 +192,61 @@ static ok64 w2_build(W2Case const *c) {
     u32 n = 0;
     call(w2_parse, input, lines, &n);
 
-    weave w[W2_MAX_LINES] = {};
-    weave nu = {}, wm = {};
+    weave wa = {}, wb = {}, nu = {};
     Bu8 out = {};
-    for (u32 i = 0; i < n; i++) call(WEAVEInit, &w[i]);
+    call(WEAVEInit, &wa);
+    call(WEAVEInit, &wb);
     call(WEAVEInit, &nu);
-    call(WEAVEInit, &wm);
     call(u8bMap, out, 1UL << 16);
+    weave *W = &wa, *Wn = &wb;
 
     ok64 ret = OK;
+    u8 panc[W2_MAX_LINES];
     for (u32 i = 0; ret == OK && i < n; i++) {
         w2_line *ln = &lines[i];
-        u32 s = i;
-        u32 mpar[W2_MAX_LINES];
-        u32 nm = (ln->npar == 0) ? 0
-               : w2_norm_parents(lines, n, ln->par, ln->npar, mpar);
-        if (ln->npar == 0) {
-            ret = w2_blob(&w[i], ln->content, s);
-        } else if (nm == 1) {
-            ret = w2_blob(&nu, ln->content, s);
-            if (ret == OK) ret = WEAVEDiff(&w[i], &w[mpar[0]], &nu, s);
-        } else {
-            ret = WEAVEMerge(&wm, &w[mpar[0]], &w[mpar[1]]);
-            for (u32 k = 2; ret == OK && k < nm; k++) {
-                ret = WEAVEMerge(&nu, &wm, &w[mpar[k]]);
-                if (ret == OK) {
-                    weave tmp;
-                    memcpy(&tmp, &wm, sizeof(weave));
-                    memcpy(&wm, &nu, sizeof(weave));
-                    memcpy(&nu, &tmp, sizeof(weave));
-                }
-            }
-            if (ret == OK) ret = w2_blob(&nu, ln->content, s);
-            if (ret == OK) ret = WEAVEDiff(&w[i], &wm, &nu, s);
-        }
+        ret = w2_blob(&nu, ln->content, i);
+        if (ret != OK) break;
+        memset(panc, 0, n);
+        for (u32 k = 0; k < ln->npar; k++) panc[ln->par[k]] = 1;
+        for (u32 j = i; j-- > 0;)
+            if (panc[j])
+                for (u32 k = 0; k < lines[j].npar; k++) panc[lines[j].par[k]] = 1;
+        w2_pred_ctx pc = {panc, n};
+        try(WEAVEApply, Wn, W, &nu, i, ln->npar ? w2_pred : NULL, &pc);
+        ret = __;
+        if (ret != OK) break;
+        weave *t = W; W = Wn; Wn = t;
     }
 
-    //  Recover every revision in check's closure from w[check] — each
-    //  rev `a` is recovered "as of a", i.e. using a's OWN closure.
-    if (ret == OK) {
-        u8 reach[W2_MAX_LINES];
-        memset(reach, 0, n);
-        w2_closure(lines, n, c->check, reach);
-        for (u32 a = 0; ret == OK && a < n; a++) {
-            if (!reach[a]) continue;
-            u8 anc[W2_MAX_LINES];
-            memset(anc, 0, n);
-            w2_closure(lines, n, a, anc);
-            ret = w2_recover(out, &w[c->check], anc, n);
-            if (ret != OK) break;
-            a_dup(u8c, got, u8bDataC(out));
-            u8cs want = {};
-            u8csMv(want, lines[a].content);
-            b8 okrec = $len(got) == $len(want) &&
-                       ($len(got) == 0 ||
-                        memcmp(got[0], want[0], (size_t)$len(got)) == 0);
-            if (!okrec) {
-                fprintf(stderr,
-                        "\n FAIL: %s w[%u] recover rev %u\n"
-                        "  got:  '%.*s'\n  want: '%.*s'\n",
-                        c->name, c->check, a,
-                        (int)$len(got), (char *)got[0],
-                        (int)$len(want), (char *)want[0]);
-                ret = TESTFAIL;
-            }
+    //  Every revision recovers "as of a" from the single weave (later
+    //  commits never disturb an earlier rev's view).
+    for (u32 a = 0; ret == OK && a < n; a++) {
+        u8 anc[W2_MAX_LINES];
+        memset(anc, 0, n);
+        w2_closure(lines, n, a, anc);
+        ret = w2_recover(out, W, anc, n);
+        if (ret != OK) break;
+        a_dup(u8c, got, u8bDataC(out));
+        u8cs want = {};
+        u8csMv(want, lines[a].content);
+        b8 okrec = $len(got) == $len(want) &&
+                   ($len(got) == 0 ||
+                    memcmp(got[0], want[0], (size_t)$len(got)) == 0);
+        if (!okrec) {
+            fprintf(stderr,
+                    "\n FAIL: %s recover rev %u\n"
+                    "  got:  '%.*s'\n  want: '%.*s'\n",
+                    c->name, a,
+                    (int)$len(got), (char *)got[0],
+                    (int)$len(want), (char *)want[0]);
+            ret = TESTFAIL;
         }
     }
 
     u8bUnMap(out);
-    for (u32 i = 0; i < n; i++) WEAVEFree(&w[i]);
+    WEAVEFree(&wa);
+    WEAVEFree(&wb);
     WEAVEFree(&nu);
-    WEAVEFree(&wm);
     if (ret != OK) fail(ret);
     done;
 }
@@ -312,6 +299,25 @@ static W2Case cases[] = {
     //  between anchors ours-only precede theirs-only).
     {"merge_order_ours_only_after_anchor",
      " a\n a\n1 ab\n02 \n1 \n34 ",                                  5u},
+    //  Fuzz-found (graf/fuzz/WEAVE2, crash-9ba5…, hand-minimized).
+    //  Merge of {1,2,3} where parent 3 is a DISJOINT empty root.  Token
+    //  'c' (from root 0) is shared by parents 1 and 2 but NOT 3, so a
+    //  single "skeleton" pass anchoring only on tokens common to ALL
+    //  parents had no anchor for it and emitted the lone-'c' parent (1,
+    //  which deletes c) ahead of parent 2's "3c", flipping rev2 to "c3".
+    //  Fixed by an order-preserving pairwise FOLD: each 2-way merge aligns
+    //  on the birth-ids it shares, so the accumulator respects every
+    //  parent's internal order (a valid common supersequence).
+    {"merge_subset_shared_reorder",
+     " c\n0 \n0 3c\n \n123 ",                                       4u},
+    //  Fuzz-found (graf/fuzz/WEAVE2, crash-db6a…, hand-minimized).
+    //  Concurrent roots b(0) and a(1): merge 2 orders them b<a, but the
+    //  4←0 "db" branch puts d before b, and merge 5 = merge(3,4) orders
+    //  a<…<b — a CYCLIC constraint on {a,b} that no LCS re-derivation can
+    //  linearize, so the old merge flipped rev4 to "bd".  The single weave
+    //  anchors d before b once (insert, never reorder), so rev4 = "db".
+    {"merge_cyclic_concurrent_order",
+     " b\n a\n01 \n1 \n0 db\n34 a\n25 ",                            6u},
     {NULL, NULL, 0u},
 };
 

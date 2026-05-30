@@ -241,9 +241,7 @@ ok64 GRAFRebaseFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 // divergence with `<<<<` / `||||` / `>>>>` JOIN-format markers; the
 // post-render scan sets `*out_conflict = YES` and the caller maps
 // that to `GRAFCNFL`.  No keeper IO; pure weave/predicate work.
-ok64 GRAFRebaseBlobMerge(weave const *running, weave const *branch,
-                         WEAVEsetfn in_running, void *in_running_ctx,
-                         WEAVEsetfn in_branch,  void *in_branch_ctx,
+ok64 GRAFRebaseBlobMerge(u8cs base, u8cs ours, u8cs theirs, u8cs ext,
                          u8 *const *out, b8 *out_conflict);
 
 // Resolve a URI's `#hex` / `?ref` / absent-query to a 20-byte commit

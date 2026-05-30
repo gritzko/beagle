@@ -606,10 +606,6 @@ ok64 test_rebase_blob_merge(void) {
     sane(1);
 
     a_cstr(ext, "txt");
-    u32 R_h32 = 0xa1a1a1a1u;
-    u32 B_h32 = 0xb2b2b2b2u;
-    u32_set rset = {.hs = {R_h32}, .n = 1};
-    u32_set bset = {.hs = {B_h32}, .n = 1};
 
     //  --- (n) disjoint edits ----------------------------------------
     {
@@ -617,20 +613,10 @@ ok64 test_rebase_blob_merge(void) {
         a_cstr(rbytes, "x = 10\ny = 2\nz = 3\n");
         a_cstr(bbytes, "x = 1\ny = 2\nz = 30\n");
 
-        weave bs_r = {}, nu_r = {}, run_w = {};
-        weave bs_b = {}, nu_b = {}, br_w  = {};
-        call(WEAVEInit, &bs_r); call(WEAVEInit, &nu_r); call(WEAVEInit, &run_w);
-        call(WEAVEInit, &bs_b); call(WEAVEInit, &nu_b); call(WEAVEInit, &br_w);
-
-        call(build_2v_weave, &run_w, &bs_r, &nu_r, anc, rbytes, ext, R_h32);
-        call(build_2v_weave, &br_w,  &bs_b, &nu_b, anc, bbytes, ext, B_h32);
-
         Bu8 out = {};
         call(u8bMap, out, 1UL << 16);
         b8 conflict = YES;
-        call(GRAFRebaseBlobMerge, &run_w, &br_w,
-             in_u32_set, &rset, in_u32_set, &bset,
-             out, &conflict);
+        call(GRAFRebaseBlobMerge, anc, rbytes, bbytes, ext, out, &conflict);
 
         if (conflict) {
             fprintf(stderr, "  bm n: unexpected conflict\n");
@@ -645,9 +631,6 @@ ok64 test_rebase_blob_merge(void) {
             u8bUnMap(out); fail(TESTFAIL);
         }
         u8bUnMap(out);
-
-        WEAVEFree(&bs_r); WEAVEFree(&nu_r); WEAVEFree(&run_w);
-        WEAVEFree(&bs_b); WEAVEFree(&nu_b); WEAVEFree(&br_w);
     }
 
     //  --- (o) same-line conflict ------------------------------------
@@ -656,20 +639,10 @@ ok64 test_rebase_blob_merge(void) {
         a_cstr(rbytes, "v = new1\n");
         a_cstr(bbytes, "v = new2\n");
 
-        weave bs_r = {}, nu_r = {}, run_w = {};
-        weave bs_b = {}, nu_b = {}, br_w  = {};
-        call(WEAVEInit, &bs_r); call(WEAVEInit, &nu_r); call(WEAVEInit, &run_w);
-        call(WEAVEInit, &bs_b); call(WEAVEInit, &nu_b); call(WEAVEInit, &br_w);
-
-        call(build_2v_weave, &run_w, &bs_r, &nu_r, anc, rbytes, ext, R_h32);
-        call(build_2v_weave, &br_w,  &bs_b, &nu_b, anc, bbytes, ext, B_h32);
-
         Bu8 out = {};
         call(u8bMap, out, 1UL << 16);
         b8 conflict = NO;
-        call(GRAFRebaseBlobMerge, &run_w, &br_w,
-             in_u32_set, &rset, in_u32_set, &bset,
-             out, &conflict);
+        call(GRAFRebaseBlobMerge, anc, rbytes, bbytes, ext, out, &conflict);
 
         if (!conflict) {
             a_dup(u8c, od, u8bData(out));
@@ -678,9 +651,6 @@ ok64 test_rebase_blob_merge(void) {
             u8bUnMap(out); fail(TESTFAIL);
         }
         u8bUnMap(out);
-
-        WEAVEFree(&bs_r); WEAVEFree(&nu_r); WEAVEFree(&run_w);
-        WEAVEFree(&bs_b); WEAVEFree(&nu_b); WEAVEFree(&br_w);
     }
 
     fprintf(stderr, "  rebase_blob_merge (n)PASS (o)PASS\n");
