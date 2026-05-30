@@ -48,37 +48,20 @@
 
 static ok64 weave_repro_pre(u8bp out, weave const *w, u32 side) {
     sane(out && w);
-    u32cp toks = (u32cp)w->toks[1];
-    u32cp toks_e = (u32cp)w->toks[2];
-    u32   ntok = (u32)(toks_e - toks);
-    inrmcp irm = (inrmcp)w->inrm[1];
-    u8cp   text = (u8cp)w->text[1];
     u8bReset(out);
-    for (u32 i = 0; i < ntok; i++) {
-        if (irm[i].in == side) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        u8cs tb = {text + lo, text + hi};
-        call(u8bFeed, out, tb);
+    weavecur c;
+    WEAVECurInit(&c, w);
+    while (WEAVECurNext(&c)) {
+        if (WEAVESetHas(c.iset, c.ni, side)) continue;  // inserted by side
+        call(u8bFeed, out, c.text);
     }
+    if (c.bad) return WEAVEFAIL;
     done;
 }
 
 static ok64 weave_repro_post(u8bp out, weave const *w) {
     sane(out && w);
-    u32cp toks = (u32cp)w->toks[1];
-    u32cp toks_e = (u32cp)w->toks[2];
-    u32   ntok = (u32)(toks_e - toks);
-    inrmcp irm = (inrmcp)w->inrm[1];
-    u8cp   text = (u8cp)w->text[1];
-    u8bReset(out);
-    for (u32 i = 0; i < ntok; i++) {
-        if (irm[i].rm != 0) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        u8cs tb = {text + lo, text + hi};
-        call(u8bFeed, out, tb);
-    }
+    call(WEAVEAliveBytes, w, out);
     done;
 }
 

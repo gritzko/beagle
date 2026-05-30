@@ -375,7 +375,16 @@ static u32 topo_parents_of(wh128css runs, u64 commit_h,
 }
 
 //  Edge-set-aware variant of `topo_parents_of`.  Concatenates targets
-//  of each edge kind in `edges` into `out` (capped at `cap`).
+//  of each edge kind in `edges` into `out` (capped at `cap`): PARENT
+//  edges first, then FOSTER.  Within each kind the targets are sorted
+//  by hashlet so the DFS descent is reproducible regardless of the
+//  LSM-scan order DAGEdgesOf returns.  The PARENT/FOSTER boundary is
+//  preserved across the two segments — that ordering is causal (a
+//  merge's first-parent spine is replayed before its foster subtree)
+//  and must NOT be collapsed into a single by-hashlet sort, which is
+//  what made the ancestor-closure weave replay non-deterministic
+//  (see DAGTopoSortTunable + graf/GET.c::build_tip_weave_tunable).
+static void topo_sort_u64(u64 *a, u32 n);   // fwd decl
 static u32 topo_links_of(wh128css runs, u64 commit_h,
                          u32 edges,
                          u64 *out, u32 cap) {
@@ -384,6 +393,7 @@ static u32 topo_links_of(wh128css runs, u64 commit_h,
         u32 nn = 0;
         if (DAGEdgesOf(runs, commit_h, DAG_T_COMMIT,
                        out + n, cap - n, &nn) == OK) {
+            topo_sort_u64(out + n, nn);
             n += nn;
         }
     }
@@ -391,6 +401,7 @@ static u32 topo_links_of(wh128css runs, u64 commit_h,
         u32 nn = 0;
         if (DAGEdgesOf(runs, commit_h, DAG_T_FOSTER,
                        out + n, cap - n, &nn) == OK) {
+            topo_sort_u64(out + n, nn);
             n += nn;
         }
     }
@@ -442,6 +453,35 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     //  (which assign different ts → different commit shas) produce
     //  different topo orders → different WEAVE replays → different
     //  output bytes.  Stable hashlet order makes the merge reproducible.
+    //  Mark every set member that is an edge-target (parent/foster) of
+    //  another set member — those are NOT tips.  The DFS must start at
+    //  the tips (heads), so the first-parent spine of a merge tip
+    //  linearizes contiguously; starting at an interior commit would
+    //  fragment the order.  `pointed` is a hash set (zero-init).
+    Bwh128 pointed = {};
+    if (wh128bAcquire(ABC_BASS, pointed, set_cap) != OK) return 0;
+    zerob(pointed);
+    {
+        wh128cp set_head = wh128bHead(set);
+        wh128cp set_term = wh128bTerm(set);
+        for (wh128cp p = set_head; p < set_term; p++) {
+            if (p->key == 0) continue;
+            u64 c = DAGHashlet(p->key);
+            u64 links[DAG_TOPO_MAX_PARENTS];
+            u32 nl = topo_links_of(runs, c, edges, links, DAG_TOPO_MAX_PARENTS);
+            for (u32 li = 0; li < nl; li++) {
+                if (links[li] == 0) continue;
+                if (DAGAncestorsHas(set, links[li]))
+                    dag_anc_put(pointed, links[li]);
+            }
+        }
+    }
+
+    //  Roots in two strata: tips (not pointed-to) first, interior
+    //  members after.  Each stratum is hashlet-sorted for a stable
+    //  tie-break among genuinely independent heads.  Starting at tips
+    //  makes the post-order replay follow real causal order rather
+    //  than commit-sha order.
     Bu8 roots_buf = {};
     if (u8bAcquire(ABC_BASS, roots_buf, set_cap * sizeof(u64)) != OK) return 0;
     u64 *roots = (u64 *)u8bDataHead(roots_buf);
@@ -449,11 +489,20 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
     {
         wh128cp set_head = wh128bHead(set);
         wh128cp set_term = wh128bTerm(set);
+        u32 ntips = 0;
         for (wh128cp p = set_head; p < set_term; p++) {
             if (p->key == 0) continue;
-            roots[nroots++] = DAGHashlet(p->key);
+            u64 c = DAGHashlet(p->key);
+            if (!DAGAncestorsHas(pointed, c)) roots[nroots++] = c;
         }
-        topo_sort_u64(roots, nroots);
+        ntips = nroots;
+        topo_sort_u64(roots, ntips);
+        for (wh128cp p = set_head; p < set_term; p++) {
+            if (p->key == 0) continue;
+            u64 c = DAGHashlet(p->key);
+            if (DAGAncestorsHas(pointed, c)) roots[nroots++] = c;
+        }
+        topo_sort_u64(roots + ntips, nroots - ntips);
     }
 
     u32 written = 0;
@@ -471,9 +520,10 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
                                        DAG_TOPO_MAX_PARENTS);
         if (stack[sp].npar > DAG_TOPO_MAX_PARENTS)
             stack[sp].npar = DAG_TOPO_MAX_PARENTS;
-        //  Sort the parent list too — DAGEdgesOf returns LSM-scan
-        //  order, also non-deterministic across runs.
-        topo_sort_u64(stack[sp].pars, stack[sp].npar);
+        //  Parent/foster targets are already kind-segmented and
+        //  per-segment hashlet-sorted by topo_links_of; do NOT
+        //  re-sort here (that would mix PARENT and FOSTER targets by
+        //  hashlet and destroy the first-parent-before-foster order).
         sp++;
         dag_anc_put(visited, root);
 
@@ -494,7 +544,8 @@ u32 DAGTopoSortTunable(u64 *out, u32 cap,
                                                DAG_TOPO_MAX_PARENTS);
                 if (stack[sp].npar > DAG_TOPO_MAX_PARENTS)
                     stack[sp].npar = DAG_TOPO_MAX_PARENTS;
-                topo_sort_u64(stack[sp].pars, stack[sp].npar);
+                //  Already kind-segmented + per-segment sorted by
+                //  topo_links_of; no re-sort (preserves parent-first).
                 sp++;
                 dag_anc_put(visited, par);
                 descended = YES;

@@ -1,32 +1,41 @@
 #ifndef GRAF_WEAVE_H
 #define GRAF_WEAVE_H
 
-//  WEAVE: token-level history of one file as a single sequence.
+//  WEAVE: token-level history of one file as a single interleaved-delta
+//  TLV stream (SCCS-weave style).  One `u8b tlv` holds, in weave order:
 //
-//  Per token, four parallel arrays of equal length N:
-//    text     — token bytes, indexed by tok32 cumulative end-offset.
-//               Token i spans tok32Offset(toks[i-1]) .. tok32Offset(toks[i]).
-//    toks     — tok32(tag, end_offset_in_text).
-//    hashlets — RAPHash of the token's bytes; used for u64 token diffing.
-//    inrm     — (in, rm) pair of 32-bit commit hashlets.
-//                 in == 0 → token predates the timeframe (NCA bootstrap).
-//                 rm == 0 → token still alive.
+//    T <token bytes>      one token's literal text
+//    I <sorted u32 set>   the set of commit hashlets that INSERTED the
+//                         following run of tokens (LE-packed u32s)
+//    R <sorted u32 set>   the set of commit hashlets that REMOVED the
+//                         following run of tokens
 //
-//  A weave is rebuilt fresh by every operation: WEAVEFromBlob (one-version
-//  weave from raw bytes), WEAVEDiff (linear chain step), WEAVEMerge
-//  (concurrent branches).  Each writes into a destination weave that
-//  the caller has reset.  Three weave instances (src, nu, dst) is the
-//  typical caller pattern for incremental builds along a blob chain.
+//  `I` / `R` records are run-length: one is emitted only when the set
+//  changes from the previous token ("per change, not per token").  A
+//  decoder keeps a running `(curI, curR)`; each `I`/`R` record REPLACES
+//  the corresponding running set, and every `T` inherits the current
+//  pair.  A token is ALIVE iff its R-set is empty; a token is SPINE
+//  (member of every revision — the NCA bootstrap) iff `0` is in its
+//  I-set.  Concurrent inserts of the same token list every inserter in
+//  one I-set; concurrent removes list every remover in one R-set.
 //
-//  Splice canonicalization (compose-time invariant):
-//    Within any maximal run of non-EQ EDL ops between two EQs,
-//    all INS tokens precede all DEL tokens in the output.  No
-//    rm-then-in adjacency, no in-rm-in alternation.
+//  No lexer/syntax tag is stored — every token is a bare `T`.
+//
+//  A weave is rebuilt fresh by every operation: WEAVEFromBlob (one
+//  version from raw bytes), WEAVEDiff (linear chain step), WEAVEMerge
+//  (concurrent branches).  Each writes into a destination weave the
+//  caller reset.  Three weave instances (src, nu, dst) is the typical
+//  caller pattern for incremental builds along a blob chain.
+//
+//  Splice canonicalization (compose-time invariant, enforced by
+//  `NEILCanon`): within any maximal run of non-EQ EDL ops between two
+//  EQs, all INS tokens precede all DEL tokens — no rm-then-in, no
+//  in-rm-in alternation.
 
+#include "abc/B.h"
 #include "abc/INT.h"
-#include "abc/RAP.h"
+#include "abc/S.h"
 #include "dog/HUNK.h"
-#include "dog/tok/TOK.h"
 
 con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 
@@ -39,92 +48,114 @@ con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 
 //  Sentinel `src` for synthetic conflict-marker tokens that frame
 //  divergent regions in a merged weave's alive byte stream.  Picked
-//  one shy of WEAVE_WT_SRC so the same arithmetic-rare-value rationale
-//  applies (bottom 32 bits of a real `WHIFFHashlet40` are unlikely
-//  to be 0xFFFFFFFE).  Only ever observed at render time — never
+//  one shy of WEAVE_WT_SRC; only ever observed at render time, never
 //  stored in committed history.
 #define WEAVE_CFLCT_SRC 0xFFFFFFFEu
 
-typedef struct {
-    u32 in;
-    u32 rm;
-} inrm;
+//  Record-type letters in the TLV stream (uppercase => TLV-long form,
+//  so tokens / sets may exceed 255 bytes).
+#define WEAVE_REC_T 'T'
+#define WEAVE_REC_I 'I'
+#define WEAVE_REC_R 'R'
 
-typedef inrm const inrmc;
-typedef inrm *inrmp;
-typedef inrm const *inrmcp;
-
-fun b8 inrmZ(inrmcp a, inrmcp b) {
-    return a->in < b->in || (a->in == b->in && a->rm < b->rm);
-}
-
-#define X(M, name) M##inrm##name
-#include "abc/Bx.h"
-#undef X
+//  Max elements decoded from one I/R set by the public cursor.  A token
+//  set is the number of commits that concurrently inserted (or removed)
+//  the exact same bytes at the same slot — tiny in practice.
+#define WEAVE_SET_MAX 256
 
 typedef struct {
-    Bu8    text;
-    Bu32   toks;
-    Bu64   hashlets;
-    Binrm  inrm;
+    u8b tlv;
 } weave;
 
 ok64 WEAVEInit (weave *w);
 void WEAVEReset(weave *w);
 void WEAVEFree (weave *w);
 
+//  A weave is empty (zero tokens) iff its TLV stream is empty.
+fun b8 WEAVEEmpty(weave const *w) { return u8bDataLen(w->tlv) == 0; }
+
+//  --- Builder: append tokens, RLE-encoding the I/R records --------------
+//
+//  `WEAVEBldInit` resets `w` and arms the builder over it.  Each
+//  `WEAVEBldPut` appends one `T` record, preceded by an `I` and/or `R`
+//  record only when the sorted set differs from the previous token's.
+//  `iset` / `rset` are sorted, deduplicated u32 slices (rset empty =>
+//  alive token).  The builder borrows `w`; it owns no memory.
+typedef struct {
+    weave *w;
+    u32    previ[WEAVE_SET_MAX];
+    u32    npi;
+    u32    prevr[WEAVE_SET_MAX];
+    u32    npr;
+    b8     started;
+} weavebld;
+
+void WEAVEBldInit(weavebld *b, weave *w);
+ok64 WEAVEBldPut (weavebld *b, u8csc text, u32cs iset, u32cs rset);
+
+//  --- Cursor: sequential token reader ----------------------------------
+//
+//  `WEAVECurInit` arms a cursor over a built weave.  Each `WEAVECurNext`
+//  advances to the next `T` token, exposing its bytes in `text` and its
+//  decoded provenance in `iset[0..ni)` / `rset[0..nr)`.  Returns NO at
+//  end of stream (or on a malformed record, with `bad` set).
+typedef struct {
+    u8cs rest;
+    u8cs text;
+    u32  iset[WEAVE_SET_MAX];
+    u32  ni;
+    u32  rset[WEAVE_SET_MAX];
+    u32  nr;
+    b8   bad;
+} weavecur;
+
+void WEAVECurInit(weavecur *c, weave const *w);
+b8   WEAVECurNext(weavecur *c);
+
+//  Emit `w`'s alive byte stream (tokens with empty R-set) into `out`
+//  (reset on entry), in weave order.
+ok64 WEAVEAliveBytes(weave const *w, u8b out);
+
+//  Set helpers (used by external readers of the cursor).
+fun b8 WEAVESetHas(u32 const *set, u32 n, u32 v) {
+    for (u32 i = 0; i < n; i++) if (set[i] == v) return YES;
+    return NO;
+}
+//  A token is spine (member of every revision) iff its I-set carries the
+//  NCA bootstrap stamp 0 (or, defensively, is empty).
+fun b8 WEAVEIsSpine(u32 const *iset, u32 ni) {
+    return ni == 0 || WEAVESetHas(iset, ni, 0);
+}
+
 //  Build a one-version weave from raw blob bytes.  Tokenizes `data`
-//  with the lexer for `ext`, hashes each token, stamps every token
-//  with inrm = {src, 0}.  Pass src=0 to mark all tokens as
-//  pre-timeframe (NCA bootstrap).
+//  with the lexer for `ext`, splits multi-line tokens at '\n', stamps
+//  every token I={src}, R={}.  Pass src=0 to mark all tokens as
+//  pre-timeframe spine (NCA bootstrap).
 ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src);
 
 //  dst = src diffed against nu.  `nu` is a one-version weave produced
-//  by WEAVEFromBlob; tokens that the diff classifies as INS are copied
-//  from nu into dst with in=src_commit, rm=0.  dst is reset before
-//  composition.  src and nu are read-only.
+//  by WEAVEFromBlob; tokens the diff classifies as INS are copied from
+//  nu into dst with I={src_commit}, R={}; tokens classified DEL gain
+//  src_commit in their R-set; surviving tokens keep their provenance.
+//  dst is reset before composition.  src and nu are read-only.
 ok64 WEAVEDiff (weave *dst, weave const *src, weave const *nu, u32 src_commit);
 
 //  dst = a merged with b (concurrent branches sharing an ancestor).
 //  Both inputs must be weaves built incrementally from a common
-//  ancestor (typically via `WEAVEFromBlob` + `WEAVEDiff`); their full
-//  hashlet streams (including dead tokens) are run through `DIFFu64s`
-//  + NEIL cleanup to recover the shared spine, then EQ runs reconcile
-//  `inrm` per-token (deleter wins; alive-on-both keeps the lower
-//  `in` for determinism), and non-EQ runs canonicalize as INS-then-DEL
-//  with each side's tokens carrying their original `inrm`.  When both
-//  sides have *alive* tokens at the same logical slot whose bytes
-//  agree, the alive token is dedup'd (one copy with `in = 0` —
-//  pre-timeframe spine, so `WEAVEEmitMerged` treats it as member
-//  of every predicate; neither side's commit stamp alone correctly
-//  reflects "shared content reached both sides through different
-//  attribution" — e.g. tokens absorbed via foster on one side and
-//  original on the other).  When the alive bytes differ, both
-//  sides' tokens are emitted in order with their original `inrm`
-//  — the weave records both histories.  Conflict-marker bytes (`<<<<` etc.) are NEVER stored
-//  in the weave; producing them is a render-time concern (a renderer
-//  walking dst can detect concurrent-alive divergence by inrm and
-//  emit framing bytes in its output stream).  dst is reset before
-//  composition.
+//  ancestor.  EQ tokens reconcile by I=union, R=union; byte-equal
+//  alive tokens that align across the two sides of a non-EQ run collapse
+//  to ONE token whose I-set unions both inserters (concurrent identical
+//  insert); divergent tokens emit on both sides with their own
+//  provenance — the weave records every history.  No conflict-marker
+//  bytes are ever stored.  dst is reset before composition.
 ok64 WEAVEMerge(weave *dst, weave const *a, weave const *b);
 
-//  WEAVEReplay: build a weave for a known merge commit.
-//
-//  Given N parent weaves and the result blob the merge commit shipped,
-//  produce dst = WEAVEMerge of all parents pairwise, then WEAVEDiff
-//  against the result.  The merge step combines histories; the diff
-//  step reconciles toward the actually-shipped bytes — INS tokens
-//  (manual conflict-resolution bytes, no parent had them) get
-//  `in = merge_in`, DEL tokens (dropped at the merge) get
-//  `rm = merge_in`.  The output weave's alive byte sequence equals
-//  `result_blob` exactly.
-//
-//  No conflict markers are ever stored: WEAVEMerge produces a
-//  marker-free weave, and the WEAVEDiff resolves divergence into the
-//  shipped bytes directly.
-//
-//  parents[] must be non-NULL with nparents >= 1.  N == 1 reduces to
-//  WEAVEDiff(dst, parents[0], blob_weave, merge_in).
+//  WEAVEReplay: build a weave for a known merge commit.  Merge all
+//  parents pairwise, then WEAVEDiff against the shipped result blob:
+//  INS tokens (manual conflict-resolution bytes) get I={merge_in},
+//  DEL tokens (dropped at the merge) gain merge_in in their R-set.  The
+//  output weave's alive byte sequence equals `result_blob` exactly.
+//  parents[] non-NULL, nparents >= 1; N==1 reduces to WEAVEDiff.
 ok64 WEAVEReplay(weave *dst,
                  weave const *const *parents, u32 nparents,
                  u8cs result_blob, u8cs ext,
@@ -132,18 +163,13 @@ ok64 WEAVEReplay(weave *dst,
 
 // --- Diff emission ---
 //
-//  Walk a built weave and emit one hunk classifying every alive token
-//  by its `inrm` membership in the `from` and `to` reachable sets.
-//  Per token:
-//    alive_from = in_from(in) && (rm == 0 || !in_from(rm))
-//    alive_to   = in_to  (in) && (rm == 0 || !in_to  (rm))
-//    alive_to && !alive_from → 'I' (inserted on the to-side)
-//    alive_from && !alive_to → 'D' (deleted on the to-side)
-//    alive_from && alive_to  → context
-//    else                    → skipped
-//  Output hunk: `text` is the concatenation of every kept token in weave
-//  order; `hili` is a complete tiling of `text` with tok32(tag, end_off)
-//  spans (`I`, `D`, or `' '` for context).  Suitable for HUNK rendering.
+//  Walk a built weave and emit hunks classifying every relevant token by
+//  its I/R-set membership in the `from` and `to` reachable sets.  Per
+//  token (alive = some inserter reachable and no remover reachable):
+//    alive_to && !alive_from -> 'I'  (inserted on the to-side)
+//    alive_from && !alive_to -> 'D'  (deleted on the to-side)
+//    alive_from && alive_to  -> context
+//    else                    -> skipped
 typedef b8 (*WEAVEsetfn)(u32 commit_h32, void *ctx);
 
 ok64 WEAVEEmitDiff(weave const *w, u8cs name,
@@ -151,14 +177,9 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);
 
-//  Like `WEAVEEmitDiff` but without context-windowing.  Walks every
-//  alive token (classify as `I` / `D` / `' '` exactly as
-//  `WEAVEEmitDiff` does) and ships them as one hunk: `text` is the
-//  concatenation of every kept token; per-tok `toks` carries the
-//  lexer tag (top 5 bits) and the diff side (`TOK_SIDE_EQ` / `IN` /
-//  `RM`).  Backs the `cat:` projector ("file in full, with hili").
-//  Splits into multiple hunks only when the rendered text would
-//  exceed `WEAVE_FULL_HUNK_MAX` bytes — bro can stream them in order.
+//  Like `WEAVEEmitDiff` but without context-windowing: walks every
+//  classified token and ships them as hunks (split only past
+//  `WEAVE_FULL_HUNK_MAX` bytes).  Backs the `cat:` projector.
 ok64 WEAVEEmitFull(weave const *w, u8cs name,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
@@ -166,29 +187,12 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
 
 // --- Conflict-aware merged-weave render ---
 //
-//  Emit alive bytes of a merged weave (output of `WEAVEMerge`) into
-//  `out`, framing divergent regions with `<<<<` / `||||` / `>>>>`
-//  marker bytes when the merge inputs disagreed.
-//
-//  `preds[0..npreds)` carry one membership predicate per merge input
-//  head — `WEAVEsetfn(commit_h32, ctx)` returns YES iff the supplied
-//  32-bit commit hashlet is in that head's reachable history (the
-//  natural backing is the `Bwh128` ancestor closure produced by
-//  `DAGAncestors`, optionally augmented with `WEAVE_WT_SRC` for a
-//  wt-as-final-layer side).  Tokens with `inrm.in == 0` (pre-timeframe
-//  bootstrap) are treated as spine (member of every predicate).
-//
-//  Conflict criterion (per non-EQ run): the run is a conflict iff it
-//  contains two alive tokens whose membership signatures are disjoint
-//  (no `P_i` satisfies both).  Otherwise the run's alive bytes emit
-//  verbatim in weave order.
-//
-//  Conflict emission: `<<<<`, then per-distinct-membership cluster
-//  bytes interleaved with `||||`, then `>>>>`.  Cluster order matches
-//  first-appearance order in the run.  No newline framing — JOIN
-//  format compatibility.
-//
-//  `out` is reset on entry.  npreds <= 32.
+//  Emit alive bytes of a merged weave into `out`, framing divergent
+//  regions with `<<<<` / `||||` / `>>>>` when the merge inputs disagree.
+//  `preds[0..npreds)` carry one membership predicate per merge head;
+//  tokens whose I-set is spine (`0` present) are member of every
+//  predicate.  Conflict per non-EQ run: two alive tokens with disjoint
+//  memberships.  `out` is reset on entry.  npreds <= 32.
 ok64 WEAVEEmitMerged(weave const *w,
                      WEAVEsetfn const *preds, void *const *ctxs,
                      u32 npreds, u8b out);

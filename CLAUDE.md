@@ -47,7 +47,7 @@
         It helps to fill that table before you start implementing the feature itself.
       - fuzz tests: based on respective property tests. Fuzz fails, once minimized, 
         get fed back into property tests to prevent regressions. Use clang/libfuzzer.
-        On long runs, use all cores, put the corpus into appropriate $HOME/Corpus/ dir.
+        On long runs, use all cores, put the corpus into appropriate $HOME/Corpus/ or ./Corpus dir.
         Run fuzzer with `nice`. Use `must()`, not `assert()`. I repeat:
           * fuzz, find a crash
           * minimize

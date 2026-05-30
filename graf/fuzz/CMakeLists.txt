@@ -19,3 +19,6 @@ target_link_libraries(NEILfuzz graflib dog abc-core)
 
 add_executable(WEAVEfuzz WEAVE.c)
 target_link_libraries(WEAVEfuzz graflib dog abc-core)
+
+add_executable(WEAVE2fuzz WEAVE2.c)
+target_link_libraries(WEAVE2fuzz graflib dog abc-core)

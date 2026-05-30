@@ -548,18 +548,7 @@ ok64 test_rebase_file_weave(void) {
     Bu8 ab = {};
     call(u8bMap, ab, 1UL << 16);
 
-    u32cp toks   = (u32cp)out->toks[1];
-    u32cp toks_e = (u32cp)out->toks[2];
-    u32   wlen   = (u32)(toks_e - toks);
-    inrmcp irm   = (inrmcp)out->inrm[1];
-    u8cp   text  = (u8cp)out->text[1];
-    for (u32 i = 0; i < wlen; i++) {
-        if (irm[i].rm != 0) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        u8cs chunk = {text + lo, text + hi};
-        u8bFeed(ab, chunk);
-    }
+    call(WEAVEAliveBytes, out, ab);
     a_dup(u8c, alive, u8bData(ab));
     a_cstr(want_s, "alpha\nBETA\nGAMMA\n");
     if ($len(alive) != $len(want_s) ||

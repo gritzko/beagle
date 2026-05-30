@@ -447,11 +447,8 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     //  directly; Plain → strip).
     b8 tty = graf_out_fd >= 0 && HUNKMode != HUNKOutPlain;
 
-    u32cp w_toks   = (u32cp)wsrc->toks[1];
-    u32cp w_toks_e = (u32cp)wsrc->toks[2];
-    u32   wlen     = (u32)(w_toks_e - w_toks);
-    inrmcp w_irm   = (inrmcp)wsrc->inrm[1];
-    u8cp  w_text   = (u8cp)wsrc->text[1];
+    weavecur wcur;
+    WEAVECurInit(&wcur, wsrc);
 
     a_carve(u8, outbuf, 16UL << 20);
 
@@ -480,18 +477,19 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
         for (u32 _j = 0; _j < BLAME_PW; _j++) u8bFeed1(outbuf, ' ');  \
     } while(0)
 
-    for (u32 wi = 0; wi < wlen; wi++) {
-        if (w_irm[wi].rm != 0) continue;
+    while (WEAVECurNext(&wcur)) {
+        if (wcur.nr != 0) continue;
+        //  Representative inserter for blame attribution: the min of the
+        //  I-set (deterministic; usually a singleton along a linear tip).
+        u32 in_rep = (wcur.ni > 0) ? wcur.iset[0] : 0;
 
-        u32 tlo = (wi == 0) ? 0 : tok32Offset(w_toks[wi - 1]);
-        u32 thi = tok32Offset(w_toks[wi]);
-        u8cp tp = w_text + tlo;
-        u8cp te = w_text + thi;
+        u8cp tp = (u8cp)wcur.text[0];
+        u8cp te = (u8cp)wcur.text[1];
 
         if (at_bol) {
-            blame_author const *ba = blame_lookup_in(authors, nauthors, w_irm[wi].in);
+            blame_author const *ba = blame_lookup_in(authors, nauthors, in_rep);
             if (!ba) ba = &blame_unknown;
-            b8 diff_commit = !have_prev_in || prev_in != w_irm[wi].in;
+            b8 diff_commit = !have_prev_in || prev_in != in_rep;
 
             if (diff_commit) {
                 //  Hash column: "wt" for worktree, first 7 hex of the
@@ -532,7 +530,7 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
                 if (tty) { a_cstr(c, CLR_DATE); (void)u8bFeed(outbuf, c); }
                 blame_fixfeed(outbuf, u8bDataC(cd), BLAME_DW, sp1);
                 if (tty) { a_cstr(c, CLR_OFF);  (void)u8bFeed(outbuf, c); }
-                prev_in = w_irm[wi].in;
+                prev_in = in_rep;
                 have_prev_in = YES;
             } else {
                 EMIT_BLANK;

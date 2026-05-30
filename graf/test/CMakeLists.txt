@@ -16,6 +16,12 @@ target_compile_options(WEAVE01test PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WEAVE01test graflib dog abc-core)
 add_test(NAME WEAVE01test COMMAND WEAVE01test)
 
+add_executable(WEAVE2test WEAVE2.c)
+target_link_options(WEAVE2test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WEAVE2test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WEAVE2test graflib dog abc-core)
+add_test(NAME WEAVE2test COMMAND WEAVE2test)
+
 add_executable(NEIL01test NEIL01.c)
 target_link_options(NEIL01test PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(NEIL01test PRIVATE ${TEST_CXX_FLAGS})

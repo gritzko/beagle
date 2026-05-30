@@ -34,22 +34,23 @@
 //  Dump a weave's tokens with inrm + bytes to stderr.  Used by
 //  failure paths in test cases to localise WEAVE pipeline bugs.
 static void weave_dump_tokens(char const *label, weave const *w) {
-    fprintf(stderr, "  %s tokens (%u):\n", label,
-            (u32)((u32cp)w->toks[2] - (u32cp)w->toks[1]));
-    u32cp toks = (u32cp)w->toks[1];
-    u32cp toks_e = (u32cp)w->toks[2];
-    u32 ntok = (u32)(toks_e - toks);
-    inrmcp irm = (inrmcp)w->inrm[1];
-    u8cp text = (u8cp)w->text[1];
-    for (u32 i = 0; i < ntok; i++) {
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        fprintf(stderr, "    [%u] in=%08x rm=%08x \"", i,
-                irm[i].in, irm[i].rm);
-        for (u32 j = lo; j < hi && j < lo + 16; j++) {
-            u8 c = text[j];
-            if (c >= 0x20 && c < 0x7f) fputc(c, stderr);
-            else fprintf(stderr, "\\x%02x", c);
+    fprintf(stderr, "  %s tokens:\n", label);
+    weavecur c;
+    WEAVECurInit(&c, w);
+    u32 i = 0;
+    while (WEAVECurNext(&c)) {
+        fprintf(stderr, "    [%u] in={", i++);
+        for (u32 k = 0; k < c.ni; k++)
+            fprintf(stderr, "%08x%s", c.iset[k], k + 1 < c.ni ? "," : "");
+        fprintf(stderr, "} rm={");
+        for (u32 k = 0; k < c.nr; k++)
+            fprintf(stderr, "%08x%s", c.rset[k], k + 1 < c.nr ? "," : "");
+        fprintf(stderr, "} \"");
+        u8cp tp = (u8cp)c.text[0], te = (u8cp)c.text[1];
+        for (u8cp q = tp; q < te && q < tp + 16; q++) {
+            u8 ch = *q;
+            if (ch >= 0x20 && ch < 0x7f) fputc(ch, stderr);
+            else fprintf(stderr, "\\x%02x", ch);
         }
         fprintf(stderr, "\"\n");
     }
@@ -58,19 +59,7 @@ static void weave_dump_tokens(char const *label, weave const *w) {
 //  Walk a weave and reproduce its alive byte stream into `out`.
 static ok64 weave_repro_alive(u8bp out, weave const *w) {
     sane(out && w);
-    u32cp toks   = (u32cp)w->toks[1];
-    u32cp toks_e = (u32cp)w->toks[2];
-    u32   ntok   = (u32)(toks_e - toks);
-    inrmcp irm   = (inrmcp)w->inrm[1];
-    u8cp   text  = (u8cp)w->text[1];
-    u8bReset(out);
-    for (u32 i = 0; i < ntok; i++) {
-        if (irm[i].rm != 0) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        u8cs tb = {text + lo, text + hi};
-        call(u8bFeed, out, tb);
-    }
+    call(WEAVEAliveBytes, w, out);
     done;
 }
 
@@ -86,16 +75,20 @@ static b8 weave_contains(u8s const got, char const *needle) {
     return NO;
 }
 
-//  Find a token whose hashlet is `h` and inrm.rm == 0; return its
-//  in-stamp (or 0xFFFFFFFF if not found).
-static u32 weave_alive_in(weave const *w, u64 h) {
-    u64cp hashes = (u64cp)w->hashlets[1];
-    u64cp hash_e = (u64cp)w->hashlets[2];
-    u32 n = (u32)(hash_e - hashes);
-    inrmcp irm = (inrmcp)w->inrm[1];
-    for (u32 i = 0; i < n; i++)
-        if (irm[i].rm == 0 && hashes[i] == h) return irm[i].in;
-    return 0xFFFFFFFFu;
+//  Find the first ALIVE token whose hashlet is `h`; copy its I-set into
+//  out[0..cap) and return the element count (0 if not found).
+static u32 weave_alive_iset(weave const *w, u64 h, u32 *out, u32 cap) {
+    weavecur c;
+    WEAVECurInit(&c, w);
+    while (WEAVECurNext(&c)) {
+        if (c.nr != 0) continue;
+        if (RAPHash(c.text) == h) {
+            u32 nn = c.ni < cap ? c.ni : cap;
+            for (u32 i = 0; i < nn; i++) out[i] = c.iset[i];
+            return nn;
+        }
+    }
+    return 0;
 }
 
 //  Slice byte-equality (works around the inability to assign u8cs).
@@ -294,22 +287,21 @@ static ok64 weave_test_pre_lca(void) {
         fail(TESTFAIL);
     }
 
-    //  Pick a known token (the literal 'x') and verify in == 0.
-    //  Deduped alive-on-both tokens get `in = 0` (pre-timeframe
-    //  spine) — neither side's stamp alone reflects the truth, and
-    //  WEAVEEmitMerged needs them to be auto-member-of-every-
-    //  predicate so shared content doesn't get grouped with one
-    //  side's non-spine tokens into a spurious conflict run
-    //  (regression: test/patch/15-ancestor-skip step 2 produced
-    //  a `<<<<sub mul||||divmod>>>>` conflict when the dedup
-    //  inherited a one-sided commit stamp).
+    //  Pick a known token (the literal 'x') and verify its provenance.
+    //  Concurrent identical inserts off two independent blobs (src=A,B)
+    //  collapse to ONE alive token whose I-set carries BOTH inserters,
+    //  sorted {A,B} (see graf/WEAVE.c WEAVEMerge union branch and
+    //  graf/test/WEAVE2 dedup_merge_post_fork).
     WEAVE_CSV(xtok, "x");
     u64 h = RAPHash(xtok);
-    u32 in_stamp = weave_alive_in(&wm, h);
-    if (in_stamp != 0) {
+    u32 iset[8];
+    u32 ni = weave_alive_iset(&wm, h, iset, 8);
+    u32 lo = (WEAVE_TEST_A < WEAVE_TEST_B) ? WEAVE_TEST_A : WEAVE_TEST_B;
+    u32 hi = (WEAVE_TEST_A < WEAVE_TEST_B) ? WEAVE_TEST_B : WEAVE_TEST_A;
+    if (ni != 2 || iset[0] != lo || iset[1] != hi) {
         fprintf(stderr,
-                " FAIL: 'x' token in=%08x, want 00000000 (spine)\n",
-                in_stamp);
+                " FAIL: 'x' I-set must be {%08x,%08x} (both inserters), "
+                "got %u elems\n", lo, hi, ni);
         fail(TESTFAIL);
     }
 
@@ -410,12 +402,114 @@ static WEAVECase cases[] = {
     {NULL, NULL, NULL, NULL, NULL, NULL, NULL},
 };
 
+// --- Multi-version ours-chain replay vs single-version theirs ---------
+//
+//  Regression guard for the patch-15 "transposed inserted line vs spine
+//  blank" merge bug (test/patch/15-ancestor-skip).  Unlike the 2-layer
+//  `cases` table (single base->a, base->b), this drives the SQUASH 3-way
+//  shape that GET.c::build_tip_weave_tunable builds: the ours side is one
+//  weave accumulated by WEAVEFromBlob(v0) then a chain of WEAVEDiff over
+//  an ordered list of blob versions (each with its own src id), and the
+//  intermediate list deliberately reverts mid-chain so the accumulated
+//  weave carries DEAD-DUPLICATE regions (dead `sub`/`mul`-style blocks
+//  with their own inrm).  Theirs is a single diff off the same NCA base.
+//
+//  The reduced analog mirrors the fixtures' geometry: a code line `m;`,
+//  a blank spine line, another code line `g;`; ours inserts `s;`,`u;`,
+//  `d;` after `m;` (mirroring sub/mul/divmod) with a revert to t0 in the
+//  middle; theirs changes `g;`->`G;`.  The invariant the bug violated:
+//  the last inserted code line `d;` must land BEFORE the spine blank in
+//  the merged alive stream — never transposed after it.
+//
+//  NOTE: with the current (fixed) WEAVE.c + WEAVEDiff this passes for any
+//  replay order; the actual transposition required a dead-blank RESTAMP
+//  that only DAG's foster-descent replay-order construction produced
+//  (graf/DAG.c, the fix site).  This guard pins the observable WEAVE-layer
+//  invariant so a regression in the replay-accumulate/merge path that let
+//  a dead-duplicate leak would be caught here.
+static ok64 weave_test_replay_insert_order(void) {
+    sane(1);
+    fprintf(stderr, "  replay_insert_order...");
+    WEAVE_CSV(ext, "c");
+
+    //  Reduced patch-15 analog.  Ours-chain replay order is BAD on
+    //  purpose: t0 -> +s -> revert(t0) -> +s,u,d  (the revert makes a
+    //  dead-duplicate region in the accumulated ours weave).
+    char const *vers[] = {
+        "m;\n\ng;\n",            // v0 (NCA base, src=0)
+        "m;\ns;\n\ng;\n",        // +s;
+        "m;\n\ng;\n",            // revert -> dead-dup
+        "m;\ns;\nu;\nd;\n\ng;\n",// +s;u;d;
+    };
+    u32 nvers = (u32)(sizeof(vers) / sizeof(vers[0]));
+    char const *theirs   = "m;\n\nG;\n";              // g; -> G;
+    char const *expected = "m;\ns;\nu;\nd;\n\nG;\n";  // d; before blank
+
+    weave wo = {}, wA = {}, wB = {}, wnu = {}, wt = {}, wtn = {}, wm = {};
+    Bu8 outbuf = {};
+    call(WEAVEInit, &wo);
+    call(WEAVEInit, &wA);
+    call(WEAVEInit, &wB);
+    call(WEAVEInit, &wnu);
+    call(WEAVEInit, &wt);
+    call(WEAVEInit, &wtn);
+    call(WEAVEInit, &wm);
+    call(u8bMap, outbuf, 1UL << 16);
+
+    //  Shared NCA base weave (src=0 spine), reused for ours and theirs.
+    { WEAVE_CSV(v0, vers[0]); call(WEAVEFromBlob, &wo, v0, ext, WEAVE_TEST_BASE); }
+
+    //  ours: accumulate over the (bad-order) version list, mirroring
+    //  build_tip_weave_tunable's src/dst/nu swap with a distinct src per
+    //  version so any restamp/collision could surface.
+    weave *wsrc = &wA, *wdst = &wB;
+    { WEAVE_CSV(v0, vers[0]); call(WEAVEFromBlob, wsrc, v0, ext, WEAVE_TEST_BASE); }
+    for (u32 i = 1; i < nvers; i++) {
+        WEAVE_CSV(vd, vers[i]);
+        u32 sc = 0x10000000u + i;
+        WEAVEReset(&wnu);
+        call(WEAVEFromBlob, &wnu, vd, ext, sc);
+        call(WEAVEDiff, wdst, wsrc, &wnu, sc);
+        weave *t = wsrc; wsrc = wdst; wdst = t;
+    }
+
+    //  theirs: single diff off the shared base.
+    { WEAVE_CSV(td, theirs); call(WEAVEFromBlob, &wtn, td, ext, WEAVE_TEST_B); }
+    call(WEAVEDiff, &wt, &wo, &wtn, WEAVE_TEST_B);
+
+    call(WEAVEMerge, &wm, wsrc, &wt);
+    call(weave_repro_alive, outbuf, &wm);
+    u8s got = {u8bDataHead(outbuf),
+               u8bDataHead(outbuf) + u8bDataLen(outbuf)};
+    if (!weave_slice_eq_lit(got, expected)) {
+        fprintf(stderr,
+                " FAIL: replay merge mismatch\n  got:  '%.*s'\n  want: '%s'\n",
+                (int)$len(got), (char *)got[0], expected);
+        weave_dump_tokens("wm", &wm);
+        fail(TESTFAIL);
+    }
+    //  Explicit transposition guard: `d;` line must precede the spine
+    //  blank, and the blank must not appear before `d;`.
+    if (!weave_contains(got, "d;\n\n")) {
+        fprintf(stderr, " FAIL: inserted 'd;' not immediately before blank\n");
+        fail(TESTFAIL);
+    }
+
+    u8bUnMap(outbuf);
+    WEAVEFree(&wo);
+    WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
+    WEAVEFree(&wt); WEAVEFree(&wtn); WEAVEFree(&wm);
+    fprintf(stderr, " ok\n");
+    done;
+}
+
 ok64 WEAVEtest(void) {
     sane(1);
 
     call(weave_test_self, "int x = 1;\nint y = 2;\n");
     call(weave_test_self, "");
     call(weave_test_pre_lca);
+    call(weave_test_replay_insert_order);
 
     for (WEAVECase *c = cases; c->name != NULL; c++) {
         call(weave_run, c);

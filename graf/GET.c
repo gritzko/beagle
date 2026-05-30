@@ -325,11 +325,11 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
     if (ret != OK) goto cleanup;
 
     //  Empty-side degeneracy.
-    u32 base_n = (u32)((u32cp)wcur->toks[2] - (u32cp)wcur->toks[1]);
-    u32 tgt_n  = (u32)((u32cp)wtgt.toks[2]  - (u32cp)wtgt.toks[1]);
-    if (base_n == 0 && tgt_n == 0) { ret = GRAFFAIL; goto cleanup; }
-    if (base_n == 0) { ret = emit_alive_bytes(out, &wtgt); goto cleanup; }
-    if (tgt_n == 0)  { ret = emit_alive_bytes(out, wcur);  goto cleanup; }
+    b8 base_empty = WEAVEEmpty(wcur);
+    b8 tgt_empty  = WEAVEEmpty(&wtgt);
+    if (base_empty && tgt_empty) { ret = GRAFFAIL; goto cleanup; }
+    if (base_empty) { ret = emit_alive_bytes(out, &wtgt); goto cleanup; }
+    if (tgt_empty)  { ret = emit_alive_bytes(out, wcur);  goto cleanup; }
 
     ret = WEAVEMerge(&wmerge, wcur, &wtgt);
     if (ret != OK) goto cleanup;
@@ -564,18 +564,7 @@ out:
 //  Render `w`'s alive tokens into `into` in weave order.
 static ok64 emit_alive_bytes(u8b into, weave const *w) {
     sane(into && w);
-    u32cp toks   = (u32cp)w->toks[1];
-    u32cp toks_e = (u32cp)w->toks[2];
-    u32   ntok   = (u32)(toks_e - toks);
-    inrmcp irm   = (inrmcp)w->inrm[1];
-    u8cp   text  = (u8cp)w->text[1];
-    for (u32 i = 0; i < ntok; i++) {
-        if (irm[i].rm != 0) continue;
-        u32 lo = (i == 0) ? 0 : tok32Offset(toks[i - 1]);
-        u32 hi = tok32Offset(toks[i]);
-        u8cs ts = {text + lo, text + hi};
-        call(u8bFeed, into, ts);
-    }
+    call(WEAVEAliveBytes, w, into);
     done;
 }
 
