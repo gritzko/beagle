@@ -1,5 +1,6 @@
-//  ZINF: zlib inflate/deflate wrapper
-//  zlib.h before abc to avoid voidp/voidpc typedef clash.
+//  ZINF: zlib inflate/deflate wrapper.
+//  zlib.h first, defensively, in case a future zlib/abc revision
+//  reintroduces a voidp-style typedef name collision (cheap ordering).
 //
 #include <limits.h>
 #include <zlib.h>
@@ -7,7 +8,7 @@
 #include "ZINF.h"
 #include "abc/BUF.h"
 
-ok64 ZINFInflate(u8p *into, u8cp *zipped) {
+ok64 ZINFInflate(u8s into, u8cs zipped) {
     u64 srclen = zipped[1] - zipped[0];
     u64 dstlen = into[1] - into[0];
     if (srclen > UINT_MAX || dstlen > UINT_MAX)
@@ -40,7 +41,7 @@ ok64 ZINFInflate(u8p *into, u8cp *zipped) {
     return OK;
 }
 
-ok64 ZINFDeflate(u8p *into, u8cp *plain) {
+ok64 ZINFDeflate(u8s into, u8cs plain) {
     u64 srclen = plain[1] - plain[0];
     u64 dstlen = into[1] - into[0];
     if (srclen > UINT_MAX || dstlen > UINT_MAX)

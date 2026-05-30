@@ -45,7 +45,7 @@ static ok64 write_loose(u8cp outdir, u64 outdirlen,
              (int)outdirlen, outdir, hex[0], hex[1], hex + 2);
 
     a_pad(u8, zbuf, 1 << 18);
-    u8csc zsrc = {objdata, objdata + objlen};
+    u8cs zsrc = {objdata, objdata + objlen};
     u64 idle_before = u8bIdleLen(zbuf);
     ok64 zr = ZINFDeflate(u8bIdle(zbuf), zsrc);
     if (zr != OK) return PACKFAIL;

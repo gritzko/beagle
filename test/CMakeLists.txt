@@ -35,6 +35,16 @@ set(_BE_WILL_FAIL_CASES
     # branch fan-out is "Phase 1c: dir chain is always [trunk
     # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
     "be-get-24-uri-refs"
+    # WEAVE births: content re-absorbed without a reachability edge
+    # (cherry-pick `picked`, or a foster the merge's ancestor-skip
+    # can't see) is re-inserted under the absorbing commit's birth-id;
+    # a later merge re-weaves it against the original's birth-id and
+    # frames the identical tokens as a (false) conflict
+    # (`<<<<111||||111>>>>`).  Same identity-re-stamp that makes a
+    # rebased/foster remote un-FF-pushable (KEEPIsAncestor is parent-
+    # only).  Drop from this list when the merge matches re-absorbed
+    # tokens by identity (or byte-equality) instead of raw birth-id.
+    "be-patch-22-rebased-remerge"
 )
 
 # Tests that need passwordless ssh to localhost (mirror what

@@ -133,33 +133,29 @@ static ok64 get_append_blob_at(u8b into, u64 commit_h40, u8cs path) {
 //  in DFS post-order over parent edges, the last-emitted node is the
 //  one farthest from the roots.
 //
-//  Returns 0 when:
+//  Sets `*out = 0` (still OK) when no shared ancestor is indexed:
 //    * the DAG index is empty (graf hasn't indexed yet), or
 //    * the two tips share no ancestors.
+//  Real failures (BASS exhaustion, DAG read errors) propagate as ok64
+//  rather than collapsing into the same 0 the empty case uses.
+static ok64 get_lca(u64 *out, u64 a_h40, u64 b_h40) {
+    sane(out);
+    *out = 0;
+    if (a_h40 == 0 || b_h40 == 0) done;
 
-static u64 get_lca(u64 a_h40, u64 b_h40) {
-    if (a_h40 == 0 || b_h40 == 0) return 0;
-
-    //  Non-sane'd helper: called from inside the caller's call() frame
-    //  (GRAFLca + sniff callers); BASS unwind happens at that boundary.
-    //
+    //  Carved on BASS; rewound at the caller's call(get_lca, …) boundary.
     //  Hash-set buffers MUST be zero-filled — `HASHwh128Put/Get` use
-    //  `is0(data, ndx)` to detect empty slots.  Heap allocations from a
-    //  fresh process get zeroed pages from the OS by accident; BASS
-    //  acquires reuse arena memory that holds leftover content from
-    //  prior carves (call() rewind moves IDLE back but the bytes stay).
-    //  `zerob` after each acquire enforces the invariant explicitly.
-    Bwh128 set_a = {}, set_b = {}, set_c = {};
-    if (wh128bAcquire(ABC_BASS, set_a, GET_ANC_SIZE) != OK) return 0;
-    if (wh128bAcquire(ABC_BASS, set_b, GET_ANC_SIZE) != OK) return 0;
-    if (wh128bAcquire(ABC_BASS, set_c, GET_ANC_SIZE) != OK) return 0;
+    //  `is0(data, ndx)` to detect empty slots, and BASS acquires reuse
+    //  arena memory that holds leftover content from prior carves.
+    a_carve(wh128, set_a, GET_ANC_SIZE);
+    a_carve(wh128, set_b, GET_ANC_SIZE);
+    a_carve(wh128, set_c, GET_ANC_SIZE);
     zerob(set_a); zerob(set_b); zerob(set_c);
 
     wh128css runs = {NULL, NULL};
     GRAFRuns(runs);
-    ok64 oa = DAGAncestors(set_a, runs, a_h40);
-    ok64 ob = DAGAncestors(set_b, runs, b_h40);
-    if (oa != OK || ob != OK) return 0;
+    call(DAGAncestors, set_a, runs, a_h40);
+    call(DAGAncestors, set_b, runs, b_h40);
 
     //  Build the intersection (common ancestors).
     wh128cp cells = wh128bHead(set_a);
@@ -172,16 +168,15 @@ static u64 get_lca(u64 a_h40, u64 b_h40) {
     }
 
     //  Topo-sort the intersection; LCA = last (deepest) entry.
-    u64 best = 0;
     size_t cap = (size_t)(wh128bTerm(set_c) - wh128bHead(set_c));
-    Bu8 ord_buf = {};
-    if (cap > 0 && u8bAcquire(ABC_BASS, ord_buf, cap * sizeof(u64)) == OK) {
+    if (cap > 0) {
+        a_carve(u8, ord_buf, cap * sizeof(u64));
         u64 *ordered = (u64 *)u8bDataHead(ord_buf);
         u32 nord = DAGTopoSort(ordered, (u32)cap, set_c, runs);
-        if (nord > 0) best = ordered[nord - 1];
+        if (nord > 0) *out = ordered[nord - 1];
     }
 
-    return best;
+    done;
 }
 
 // Public wrapper: `sha1 *` in/out for callers outside graf (sniff's
@@ -193,7 +188,8 @@ ok64 GRAFLca(sha1 *out, sha1cp a, sha1cp b) {
 
     u64 a_h40 = WHIFFHashlet60(a);
     u64 b_h40 = WHIFFHashlet60(b);
-    u64 lca_h = get_lca(a_h40, b_h40);
+    u64 lca_h = 0;
+    call(get_lca, &lca_h, a_h40, b_h40);
     if (lca_h == 0) done;   // unrelated histories — leave out zero
 
     //  Recover the full sha by fetching the commit body from keeper
