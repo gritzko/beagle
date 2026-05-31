@@ -21,10 +21,7 @@
 #include "abc/FILE.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
-#include "abc/RAP.h"
-#include "abc/URI.h"
 #include "dog/DOG.h"
-#include "dog/HUNK.h"
 #include "dog/WHIFF.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
@@ -90,20 +87,18 @@ static ok64 get_drain_uri(u8cs path_out,
     *ntips = 0;
     *is_tree = NO;
 
-    u8cs data = {uri[0], uri[1]};
-
     //  Split on `?`.  URIs in this surface don't carry scheme /
     //  authority / fragment — keep the parser trivial.
-    u8cp q = data[0];
-    while (q < data[1] && *q != '?') q++;
+    u8cs query = {uri[0], uri[1]};
+    ok64 has_q = u8csFind(query, '?');  // head advances to '?' or end
 
-    path_out[0] = data[0];
-    path_out[1] = q;
-    if ($len(path_out) > 0 && path_out[1][-1] == '/') *is_tree = YES;
+    path_out[0] = uri[0];
+    path_out[1] = query[0];
+    if ($len(path_out) > 0 && *u8csLast(path_out) == '/') *is_tree = YES;
 
-    if (q >= data[1]) done;  // path only; caller handles
+    if (has_q != OK) done;  // path only; caller handles
 
-    u8cs query = {q + 1, data[1]};
+    call(u8csUsed1, query);  // skip the '?'
     while (!$empty(query)) {
         if (*ntips >= maxtips) return GETBAD;
         u8cs chunk = {};

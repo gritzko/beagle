@@ -135,19 +135,16 @@ ok64 JOINMerge(u8bp out, JOINfile *base, JOINfile *ours, JOINfile *theirs) {
     u64 emax_o = DIFFEdlMaxEntries(bn, on);
     u64 emax_t = DIFFEdlMaxEntries(bn, tn);
 
-    // Single allocation for diff workspace
-    u64 total = wsize * sizeof(i32) + (emax_o + emax_t) * sizeof(e32);
-    a_carve(u8, mem, total);
+    //  Diff workspace + two EDL buffers (e32 == u32) as separate BASS
+    //  carves — no manual sub-allocation pointer math (mirrors WEAVE.c).
+    a_carve(i32, work, wsize);
+    a_carve(u32, edl_o_buf, emax_o);
+    a_carve(u32, edl_t_buf, emax_t);
 
-    // Carve work buffer
-    i32p workp = (i32p)mem[1];
-    i32s ws = {workp, workp + wsize};
-
-    // Carve EDL gauges
-    e32 *edl_o_buf = (e32 *)(workp + wsize);
-    e32 *edl_t_buf = edl_o_buf + emax_o;
-    e32g edl_o = {edl_o_buf, edl_o_buf + emax_o, edl_o_buf};
-    e32g edl_t = {edl_t_buf, edl_t_buf + emax_t, edl_t_buf};
+    i32s ws = {i32bHead(work), i32bTerm(work)};
+    //  DIFF gauge layout is {start, end, cursor}; cursor starts at start.
+    e32g edl_o = {edl_o_buf[0], edl_o_buf[3], edl_o_buf[0]};
+    e32g edl_t = {edl_t_buf[0], edl_t_buf[3], edl_t_buf[0]};
 
     // Clear mark bits from all hashes before diffing
     {

@@ -370,18 +370,18 @@ ok64 GRAFExec(cli *c) {
             if (!DOGIsHashlet(wf)) {
                 try(KEEPSwitchBranch, KEEP.h, wf);
                 on(KEEPNONE) __ = OK;
-                nedo return __;
+                nedo { KEEPClose(); return __; }
                 try(GRAFSwitchBranch, KEEP.h, wf);
                 on(GRAFNOPATH) __ = OK;
-                nedo return __;
+                nedo { KEEPClose(); return __; }
             }
             if (!DOGIsHashlet(wt)) {
                 try(KEEPSwitchBranch, KEEP.h, wt);
                 on(KEEPNONE) __ = OK;
-                nedo return __;
+                nedo { KEEPClose(); return __; }
                 try(GRAFSwitchBranch, KEEP.h, wt);
                 on(GRAFNOPATH) __ = OK;
-                nedo return __;
+                nedo { KEEPClose(); return __; }
             }
             if (!$empty(path)) {
                 ret = GRAFWeaveDiff(path, reporoot, wf, wt);

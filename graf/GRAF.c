@@ -13,7 +13,6 @@
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "keeper/KEEP.h"
-#include "keeper/REFS.h"
 #include "keeper/RESOLVE.h"
 
 // --- Producer-side staging state ---
@@ -154,6 +153,63 @@ void GRAFRuns(wh128cssp out) {
     out[1] = GRAF.runs + GRAF.runs_n;
 }
 
+//  Worker: acquires every resource (puppies kv, project-dir lock fd, the
+//  three u8bMap arenas).  The wrapper has already zero-inited the
+//  singleton and set g->h / g->lock_fd, so a failing `call(...)` is
+//  recoverable: the wrapper runs GRAFClose() on any non-OK return, which
+//  idempotently releases whatever was acquired so far (DOGPupClose on a
+//  zero/partial kv, lock_fd<0 skip, u8bUnMap no-op on never-mapped bufs).
+static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
+    sane(g != NULL && h != NULL);
+
+    call(kv64bAllocate, g->puppies, FILE_MAX_OPEN);
+
+    //  Canonical leaf-branch bytes live in `h->cur_branch` (claimed by
+    //  HOMEOpenBranch in the wrapper).
+    if (u8csLen(norm) >= HOME_BRANCH_MAX) return GRAFFAIL;
+
+    //  Single per-project shard dir: `<root>/.be/<project>`.  Branch is
+    //  pure ref context now (`h->cur_branch`); every `.graf.idx` run
+    //  lives directly here, no per-branch subdirs.  First writer creates
+    //  it.  Mirrors keeper's flattened layout.
+    a_pad(u8, projdir, FILE_PATH_MAX_LEN);
+    {
+        u8cs nobranch = {};
+        call(graf_branch_dir, projdir, h, nobranch);
+    }
+    call(FILEMakeDirP, $path(projdir));
+
+    //  Scan the project dir for `<seqno>.graf.idx` runs.  Single shard —
+    //  no trunk→leaf walk, no PAST/DATA flip (PAST stays empty).
+    {
+        a_cstr(ext, GRAF_IDX_EXT);
+        call(DOGPupOpenAll, g->puppies, $path(projdir), ext);
+    }
+
+    GRAFRefreshView();
+    graf_recompute_last_pup_key(g);
+
+    //  Worktree sharing: lock the project shard dir (the only dir writes
+    //  ever land in).  Readers open lockless — runs are immutable
+    //  (tmp+rename publication) and DOGPupOpenAll retries on ENOENT.
+    if (rw) {
+        a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
+        a_dup(u8c, lds, u8bDataC(projdir));
+        call(PATHu8bFeed, lockpath, lds);
+        a_cstr(lockrel, GRAF_LOCK_S);
+        call(PATHu8bAdd, lockpath, lockrel);
+        call(PATHu8bTerm, lockpath);
+        call(FILECreate, &g->lock_fd, $path(lockpath));
+        call(FILELock,   &g->lock_fd, rw);
+    }
+
+    call(u8bMap, g->arena,    GRAF_ARENA_SIZE);
+    call(u8bMap, g->obj_buf,  GRAF_OBJ_BUF_SIZE);
+    call(u8bMap, g->tree_buf, GRAF_OBJ_BUF_SIZE);
+
+    done;
+}
+
 ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     sane(h != NULL && $ok(branch));
 
@@ -180,67 +236,21 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
 
     graf *g = &GRAF;
     zerop(g);
-    g->h = h;
+    g->h = h;               //  arms graf_is_open() so GRAFClose cleans up
     g->lock_fd = -1;
     g->out_fd = -1;
     graf_is_rw = rw;
 
-    call(kv64bAllocate, g->puppies, FILE_MAX_OPEN);
-
-    //  Canonical leaf-branch bytes live in `h->cur_branch` (claimed by
-    //  HOMEOpenBranch above).
-    if (u8csLen(norm) >= HOME_BRANCH_MAX) return GRAFFAIL;
-
-    //  Single per-project shard dir: `<root>/.be/<project>`.  Branch is
-    //  pure ref context now (`h->cur_branch`); every `.graf.idx` run
-    //  lives directly here, no per-branch subdirs.  First writer creates
-    //  it.  Mirrors keeper's flattened layout.
-    a_pad(u8, projdir, FILE_PATH_MAX_LEN);
-    {
-        u8cs nobranch = {};
-        ok64 to = graf_branch_dir(projdir, h, nobranch);
-        if (to != OK) {
-            DOGPupClose(g->puppies);
-            zerop(g); graf_is_rw = NO;
-            return to;
-        }
+    //  All resource acquisition is in the worker; on any non-OK return
+    //  GRAFClose() releases whatever was acquired so far (idempotent on a
+    //  partially-initialised singleton).  Avoids the per-failure cleanup
+    //  duplication that previously leaked the mapped bufs / lock fd.
+    ok64 r = graf_open_branch_w(g, h, norm, rw);
+    if (r != OK) {
+        GRAFClose();
+        graf_is_rw = NO;
     }
-    call(FILEMakeDirP, $path(projdir));
-
-    //  Scan the project dir for `<seqno>.graf.idx` runs.  Single shard —
-    //  no trunk→leaf walk, no PAST/DATA flip (PAST stays empty).
-    {
-        a_cstr(ext, GRAF_IDX_EXT);
-        ok64 wo = DOGPupOpenAll(g->puppies, $path(projdir), ext);
-        if (wo != OK) {
-            DOGPupClose(g->puppies);
-            zerop(g); graf_is_rw = NO;
-            return wo;
-        }
-    }
-
-    GRAFRefreshView();
-    graf_recompute_last_pup_key(g);
-
-    //  Worktree sharing: lock the project shard dir (the only dir writes
-    //  ever land in).  Readers open lockless — runs are immutable
-    //  (tmp+rename publication) and DOGPupOpenAll retries on ENOENT.
-    if (rw) {
-        a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
-        a_dup(u8c, lds, u8bDataC(projdir));
-        call(PATHu8bFeed, lockpath, lds);
-        a_cstr(lockrel, GRAF_LOCK_S);
-        call(PATHu8bAdd, lockpath, lockrel);
-        call(PATHu8bTerm, lockpath);
-        call(FILECreate, &g->lock_fd, $path(lockpath));
-        call(FILELock,   &g->lock_fd, rw);
-    }
-
-    call(u8bMap, g->arena,    GRAF_ARENA_SIZE);
-    call(u8bMap, g->obj_buf,  GRAF_OBJ_BUF_SIZE);
-    call(u8bMap, g->tree_buf, GRAF_OBJ_BUF_SIZE);
-
-    done;
+    return r;
 }
 
 ok64 GRAFOpen(home *h, b8 rw) {

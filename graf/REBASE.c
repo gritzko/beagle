@@ -10,7 +10,6 @@
 
 #include "BLOB.h"
 #include "GRAF.h"
-#include "JOIN.h"
 
 #include "abc/PATH.h"
 #include "abc/PRO.h"
@@ -331,20 +330,6 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
                            u8cs dir_path,
                            graf_rebase_emit_cb cb, void *ctx,
                            b8 *had_conflict);
-
-//  Detect JOIN's conflict markers in merged bytes.  JOIN emits ">>>>"
-//  / "||||" / "<<<<" four-character runs around divergent inserts.
-//  Scan once for a 4-byte run of '>' or '<'.
-static b8 tm_has_conflict_v2(u8cs bytes) {
-    if ($len(bytes) < 4) return NO;
-    for (u8c *p = bytes[0]; p + 4 <= bytes[1]; p++) {
-        if (p[0] == '>' && p[1] == '>' && p[2] == '>' && p[3] == '>')
-            return YES;
-        if (p[0] == '<' && p[1] == '<' && p[2] == '<' && p[3] == '<')
-            return YES;
-    }
-    return NO;
-}
 
 //  Synthetic per-side hashlets for the leaf merge.  Disjoint, distinct
 //  from `WEAVE_WT_SRC` / `WEAVE_CFLCT_SRC`, and stable across the
@@ -888,9 +873,12 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         if (ret != OK) break;
 
         head = new_sha;
-        //  Extend pid-set so subsequent commits in this loop don't
-        //  re-emit equivalent diffs.
-        if (npids < REBASE_PIDS_MAX && pid != 0) pids[npids++] = pid;
+        //  Do NOT extend the pid-set with this replayed commit's own
+        //  patch-id.  Dedup is only against base_new's ancestor patch-
+        //  ids (rebase_collect_pids).  Self-extending here drops a
+        //  legitimate revert->reapply pair: the reapply's patch-id
+        //  matches the earlier reverted commit's and gets silently
+        //  skipped at the rebase_pid_seen gate above, losing content.
     }
 
     return ret;

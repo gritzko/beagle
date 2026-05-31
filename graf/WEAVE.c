@@ -82,8 +82,10 @@ static b8 weave_set_eq(u32 const *a, u32 na, u32 const *b, u32 nb) {
 }
 
 //  Sorted merge-union of two sorted/deduped sets.
-static ok64 weave_set_union(u32 const *a, u32 na, u32 const *b, u32 nb,
+static ok64 weave_set_union(u32cs aset, u32 const *b, u32 nb,
                             u32 *out, u32 cap, u32 *n) {
+    u32 const *a = aset[0];
+    u32 na = (u32)u32csLen(aset);
     u32 i = 0, j = 0, c = 0;
     #define PUSH(V) do { u32 _v = (V); \
         if (!(c > 0 && out[c - 1] == _v)) { \
@@ -155,6 +157,11 @@ b8 WEAVECurNext(weavecur *c) {
             u8cs bid = {p + 1, p + 1 + idl};
             u64 seq = 0, pos = 0;
             if (ZINTu8sDrain128(bid, &seq, &pos) != OK) { c->bad = YES; return NO; }
+            //  Guard the u32 narrowing: a corrupt ZINT could carry a
+            //  value that silently truncates.  WEAVE_WT_SRC (0xFFFFFFFF)
+            //  is the largest legitimate src and must still pass, so
+            //  reject strictly above it.
+            if (seq > 0xFFFFFFFFu || pos > 0xFFFFFFFFu) { c->bad = YES; return NO; }
             c->seq = (u32)seq;
             c->pos = (u32)pos;
             u8cs txt = {p + 1 + idl, e};
@@ -215,18 +222,20 @@ typedef struct {
 } wdec;
 
 typedef struct {
-    u8cp  base; u32cp tok; u32 ntok;
-    u32cp seq, pos;
-    u32cp rpool, roff, rlen;
+    u8cs  base;               // range-accessed: decoded token bytes
+    u32cp tok; u32 ntok;      // index-accessed: cumulative end offsets
+    u32cp seq, pos;           // index-accessed: birth-id columns
+    u32cs rpool;              // range-accessed: R-set pool
+    u32cp roff, rlen;         // index-accessed: per-token R-set window
 } wdp;
 
 static void wd_view(wdp *p, wdec const *d) {
-    p->base  = (u8cp)u8bDataHead(d->text);
+    u8csMv(p->base, u8bDataC(d->text));
     p->tok   = (u32cp)u32bDataHead(d->tok);
     p->ntok  = d->ntok;
     p->seq   = (u32cp)u32bDataHead(d->seq);
     p->pos   = (u32cp)u32bDataHead(d->pos);
-    p->rpool = (u32cp)u32bDataHead(d->rpool);
+    u32csMv(p->rpool, u32bDataC(d->rpool));
     p->roff  = (u32cp)u32bDataHead(d->roff);
     p->rlen  = (u32cp)u32bDataHead(d->rlen);
 }
@@ -234,9 +243,6 @@ static void wd_view(wdp *p, wdec const *d) {
 static u32 wd_lo(wdp const *p, u32 i) { return i ? p->tok[i - 1] : 0; }
 static u32 wd_hi(wdp const *p, u32 i) { return p->tok[i]; }
 static b8  wd_alive(wdp const *p, u32 i) { return p->rlen[i] == 0; }
-static u64 wd_key(wdp const *p, u32 i) {
-    return ((u64)p->seq[i] << 32) | (u64)p->pos[i];
-}
 
 //  Fill a wdec whose buffers the CALLER already acquired (empty).
 static ok64 weave_decode_fill(wdec *d, weave const *w) {
@@ -291,8 +297,8 @@ static ok64 weave_decode_fill(wdec *d, weave const *w) {
 static ok64 wd_emit(weavebld *b, wdp const *p, u32 i) {
     sane(b);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
-    u8csc t = {p->base + lo, p->base + hi};
-    u32cs rs = {p->rpool + p->roff[i], p->rpool + p->roff[i] + p->rlen[i]};
+    a$part(u8c, t, p->base, lo, hi - lo);
+    a$part(u32c, rs, p->rpool, p->roff[i], p->rlen[i]);
     return WEAVEBldPut(b, t, p->seq[i], p->pos[i], rs);
 }
 
@@ -300,22 +306,15 @@ static ok64 wd_emit(weavebld *b, wdp const *p, u32 i) {
 static ok64 wd_emit_del(weavebld *b, wdp const *p, u32 i, u32 add_rm) {
     sane(b);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
-    u8csc t = {p->base + lo, p->base + hi};
+    a$part(u8c, t, p->base, lo, hi - lo);
     u32 rbuf[WEAVE_SET_MAX], rn = 0;
     u32 one[1] = {add_rm};
-    call(weave_set_union, p->rpool + p->roff[i], p->rlen[i], one, 1,
-         rbuf, WEAVE_SET_MAX, &rn);
+    a$part(u32c, cur, p->rpool, p->roff[i], p->rlen[i]);
+    call(weave_set_union, cur, one, 1, rbuf, WEAVE_SET_MAX, &rn);
     u32cs rs = {rbuf, rbuf + rn};
     return WEAVEBldPut(b, t, p->seq[i], p->pos[i], rs);
 }
 
-static b8 wd_tok_eq(wdp const *a, u32 ai, wdp const *b, u32 bi) {
-    u32 alo = wd_lo(a, ai), ahi = wd_hi(a, ai);
-    u32 blo = wd_lo(b, bi), bhi = wd_hi(b, bi);
-    if (ahi - alo != bhi - blo) return NO;
-    if (ahi == alo) return YES;
-    return memcmp(a->base + alo, b->base + blo, ahi - alo) == 0;
-}
 
 // ============================================================
 //  WEAVEFromBlob
@@ -369,7 +368,14 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
 
     weave_blob_ctx ctx = {.b = &b, .base = data[0], .src = src, .pos = 0, .covered = 0};
     TOKstate st = {.data = {data[0], data[1]}, .cb = weave_blob_cb, .ctx = &ctx};
-    TOKLexer(&st, ext);  // best effort
+    //  TOKLexer returns the callback's ok64.  weave_blob_cb fails only
+    //  when WEAVEBldPut overflows (NOROOM) — a real error we must not
+    //  swallow, else the tail loop below would re-emit tokens on top of a
+    //  partially-built weave.  A lexer that doesn't cover `ext` still
+    //  returns OK (covered stays short) and the tail loop handles the
+    //  uncovered remainder — that fallback is preserved.
+    ok64 lo_err = TOKLexer(&st, ext);
+    if (lo_err != OK) return lo_err;
 
     u32 total = (u32)$len(data);
     u32 lo = ctx.covered;
@@ -417,7 +423,7 @@ static b8 wbase_closure(wdp const *p, u32 i, void *vctx) {
     if (!c->pred || !c->pred(p->seq[i], c->ctx)) return NO;
     u32 off = p->roff[i], n = p->rlen[i];
     for (u32 z = 0; z < n; z++)
-        if (c->pred(p->rpool[off + z], c->ctx)) return NO;
+        if (c->pred(p->rpool[0][off + z], c->ctx)) return NO;
     return YES;
 }
 
@@ -438,7 +444,7 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
     BACQ(u32bAcquire(ABC_BASS, alive_toks, s->ntok + 1));
     for (u32 i = 0; i < nuv->ntok; i++) {
         u32 lo = wd_lo(nuv, i), hi = wd_hi(nuv, i);
-        u8csc tb = {nuv->base + lo, nuv->base + hi};
+        a$part(u8c, tb, nuv->base, lo, hi - lo);
         call(u64bFeed1, nu_h, RAPHash(tb));
     }
     {
@@ -446,7 +452,7 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
         for (u32 i = 0; i < s->ntok; i++) {
             if (!isbase(s, i, bctx)) continue;
             u32 lo = wd_lo(s, i), hi = wd_hi(s, i);
-            u8csc tb = {s->base + lo, s->base + hi};
+            a$part(u8c, tb, s->base, lo, hi - lo);
             call(u64bFeed1, alive_h, RAPHash(tb));
             call(u8bFeed, alive_text, tb);
             cum += (hi - lo);
@@ -464,7 +470,7 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
     if (olen == 0) {
         for (u32 i = 0; i < nuv->ntok; i++) {
             u32 lo = wd_lo(nuv, i), hi = wd_hi(nuv, i);
-            u8csc t = {nuv->base + lo, nuv->base + hi};
+            a$part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
             call(WEAVEBldPut, bld, t, seq, ins_pos++, rs);
         }
@@ -501,7 +507,7 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
         u8cs  at_text = {u8bDataHead(alive_text),
                          u8bDataHead(alive_text) + u8bDataLen(alive_text)};
         size_t nu_text_len = (nuv->ntok > 0) ? wd_hi(nuv, nuv->ntok - 1) : 0;
-        u8cs  nt_text = {(u8cp)nuv->base, (u8cp)nuv->base + nu_text_len};
+        a$part(u8c, nt_text, nuv->base, 0, nu_text_len);
         NEILCleanup(edlg, at_view, nt_view, at_text, nt_text);
         NEILShift  (edlg, at_view, nt_view, at_text, nt_text);
     }
@@ -536,7 +542,7 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
         while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, bld, s, wi); wi++; }
         for (u32 j = 0; j < sum_ins; j++) {
             u32 lo = wd_lo(nuv, ni), hi = wd_hi(nuv, ni);
-            u8csc t = {nuv->base + lo, nuv->base + hi};
+            a$part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
             call(WEAVEBldPut, bld, t, seq, ins_pos++, rs);
             ni++;
@@ -641,9 +647,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     wd_view(&p, &d);
     u32 ntok = p.ntok;
     if (ntok == 0) done;
-    u8cp text = p.base;
-
-    #define RSET(i) ((u32cs){p.rpool + p.roff[i], p.rpool + p.roff[i] + p.rlen[i]})
+    u8cp text = p.base[0];
 
     u32 total_lines_est = 1;
     {
@@ -656,7 +660,8 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     u8 *cmark = (u8 *)u8bDataHead(changed);
     u32 cur_line = 0;
     for (u32 i = 0; i < ntok; i++) {
-        u8 tag = weave_diff_classify(p.seq[i], RSET(i),
+        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
         u32 lo = wd_lo(&p, i), hi = wd_hi(&p, i);
@@ -740,7 +745,8 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     } while (0)
 
     for (u32 i = 0; i < ntok; i++) {
-        u8 tag = weave_diff_classify(p.seq[i], RSET(i),
+        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
         u32 lo = wd_lo(&p, i), hi = wd_hi(&p, i);
@@ -762,7 +768,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                 FLUSH_HUNK();
                 win_lo = cur_line;   // continuation hunk starts here
             }
-            u8cs tb = {text + lo, text + hi};
+            a$part(u8c, tb, p.base, lo, hi - lo);
             ok64 fo = u8bFeed(outtext, tb);
             if (fo != OK) { ret = fo; goto cleanup; }
             u8 side = (tag == 'I') ? TOK_SIDE_IN
@@ -778,7 +784,6 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     #undef FLUSH_HUNK
 
 cleanup:
-    #undef RSET
     return ret;
 }
 
@@ -796,9 +801,7 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     wd_view(&p, &d);
     u32 ntok = p.ntok;
     if (ntok == 0) done;
-    u8cp text = p.base;
-
-    #define RSET(i) ((u32cs){p.rpool + p.roff[i], p.rpool + p.roff[i] + p.rlen[i]})
+    u8cp text = p.base[0];
 
     a_carve(u8,  outtext, 16UL << 20);
     a_carve(u32, outtoks, 1UL << 16);
@@ -836,7 +839,8 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     } while (0)
 
     for (u32 i = 0; i < ntok; i++) {
-        u8 tag = weave_diff_classify(p.seq[i], RSET(i),
+        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
         u32 lo = wd_lo(&p, i), hi = wd_hi(&p, i);
@@ -844,7 +848,7 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
         for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
         if (hunk_open && u8bDataLen(outtext) + (hi - lo) > WEAVE_FULL_HUNK_MAX)
             FLUSH_FULL_HUNK();
-        u8cs tb = {text + lo, text + hi};
+        a$part(u8c, tb, p.base, lo, hi - lo);
         ok64 fo = u8bFeed(outtext, tb);
         if (fo != OK) { ret = fo; goto cleanup; }
         u8 side = (tag == 'I') ? TOK_SIDE_IN
@@ -859,7 +863,6 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     #undef FLUSH_FULL_HUNK
 
 cleanup:
-    #undef RSET
     return ret;
 }
 
@@ -889,7 +892,8 @@ static ok64 weave_gather_group(u8b dst, wdp const *p, u32 run_lo, u32 run_hi,
         if (weave_emit_membership(p->seq[j], preds, ctxs, npreds, spine_mask)
             != gmask)
             continue;
-        u8cs tb = {p->base + wd_lo(p, j), p->base + wd_hi(p, j)};
+        u32 lo = wd_lo(p, j), hi = wd_hi(p, j);
+        a$part(u8c, tb, p->base, lo, hi - lo);
         call(u8bFeed, dst, tb);
     }
     done;
@@ -915,7 +919,7 @@ ok64 WEAVEEmitMerged(weave const *w,
     a_carve(u8, cgB, u8bDataLen(d.text) + 1);
 
     #define EMITTOK(i) do { u32 _lo = wd_lo(&p,(i)), _hi = wd_hi(&p,(i)); \
-        u8cs _tb = {p.base + _lo, p.base + _hi}; call(u8bFeed, out, _tb); } while (0)
+        a$part(u8c, _tb, p.base, _lo, _hi - _lo); call(u8bFeed, out, _tb); } while (0)
 
     u32 spine_mask =
         (npreds == 0) ? 0

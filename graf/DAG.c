@@ -19,12 +19,8 @@
 #include <fcntl.h>
 
 #include "abc/FILE.h"
-#include "abc/HEX.h"
-#include "abc/KV.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
-#include "abc/RON.h"
-#include "dog/DPATH.h"
 #include "dog/git/SHA1.h"
 #include "dog/git/GIT.h"
 
@@ -137,18 +133,18 @@ ok64 DAGRange(wh128css hits, wh128css runs, wh64 key) {
     sane(hits);
     a_dup(wh128cs, scan, runs);
     $for(wh128cs, run, scan) {
-        wh128cp base = (*run)[0];
-        size_t  len  = (size_t)((*run)[1] - base);
-        size_t  lo   = 0, hi = len;
+        size_t len = wh128csLen(*run);
+        size_t lo  = 0, hi = len;
         while (lo < hi) {
             size_t mid = lo + (hi - lo) / 2;
-            if (base[mid].key < key) lo = mid + 1;
+            if (wh128csAtP(*run, mid)->key < key) lo = mid + 1;
             else hi = mid;
         }
         size_t end = lo;
-        while (end < len && base[end].key == key) end++;
+        while (end < len && wh128csAtP(*run, end)->key == key) end++;
         if (end > lo) {
-            wh128cs hit = {base + lo, base + end};
+            a_rest(wh128c, from_lo, *run, lo);
+            a_head(wh128c, hit, from_lo, end - lo);
             if (wh128cssFeed1(hits, hit) != OK) return DAGNOROOM;
         }
     }
@@ -250,6 +246,11 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
 
     size_t head = 0;
     u64 nbuf[16];
+    //  Set when the ancestor set's probe line / BFS queue overflows.  A
+    //  truncated walk yields a SILENTLY-WRONG ancestor set (bad ahead/
+    //  behind, blame, dedup), so we surface DAGNOROOM to the caller
+    //  instead of swallowing the overflow.  No stdio here (see file head).
+    b8 overflow = NO;
     while (head < wh128bDataLen(queue)) {
         wh128cp cur = wh128bDataHead(queue) + head;
         u64 c = DAGHashlet(cur->key);
@@ -258,15 +259,17 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
         //  Helper closure: try to add `nh` to the set.  When `traverse`
         //  is YES, also enqueue for further BFS expansion.  Skip-set
         //  entries are dropped silently and no traversal happens
-        //  through them.
+        //  through them.  On a set/queue overflow set `overflow` and
+        //  stop expanding this node — the loop exits and we return
+        //  DAGNOROOM rather than a silently-partial set.
         #define DAG_TUN_VISIT(nh, traverse) do {                    \
             u64 _h = (nh);                                          \
             if (dag_in_skip(skip_hl, nskip, _h)) break;             \
             if (DAGAncestorsHas(set, _h)) break;                    \
-            if (dag_anc_put(set, _h) != OK) break;                  \
+            if (dag_anc_put(set, _h) != OK) { overflow = YES; break; } \
             if (traverse) {                                         \
                 wh128 _qr = { .key = DAGPack(0, _h), .val = 0 };    \
-                if (wh128bFeed1(queue, _qr) != OK) break;           \
+                if (wh128bFeed1(queue, _qr) != OK) { overflow = YES; break; } \
             }                                                       \
         } while (0)
 
@@ -297,9 +300,11 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
         }
 
         #undef DAG_TUN_VISIT
+        if (overflow) break;
     }
 
     wh128bUnMap(queue);
+    if (overflow) return DAGNOROOM;
     done;
 }
 

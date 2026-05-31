@@ -36,6 +36,14 @@ add_test(NAME REBASE01test COMMAND REBASE01test)
 set_tests_properties(REBASE01test PROPERTIES
     ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=REBASE01test")
 
+add_executable(REBASE02test REBASE02.c)
+target_link_options(REBASE02test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(REBASE02test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(REBASE02test graflib dog keeplib abc-core)
+add_test(NAME REBASE02test COMMAND REBASE02test)
+set_tests_properties(REBASE02test PROPERTIES
+    ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=REBASE02test")
+
 add_executable(MERGEWT01test MERGEWT01.c)
 target_link_options(MERGEWT01test PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(MERGEWT01test PRIVATE ${TEST_CXX_FLAGS})

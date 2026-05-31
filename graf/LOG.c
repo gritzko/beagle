@@ -21,19 +21,15 @@
 //  break the walk.
 //
 #include "GRAF.h"
-#include "BLOB.h"
 #include "DAG.h"
 
-#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "abc/B.h"
-#include "abc/FILE.h"
 #include "abc/HEX.h"
-#include "abc/UTF8.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
@@ -53,6 +49,11 @@
 //  blocks once the pager kernel-buffer fills) paces the producer.
 //  `#N` is a hard ceiling when the caller wants one.
 #define LOG_DEFAULT_COUNT 0xffffffffu
+//  Hard cap on the first-parent walk.  A cyclic DAG (reachable via a
+//  60-bit hashlet collision) would otherwise spin up to LOG_DEFAULT_COUNT
+//  (~4e9) iterations.  1<<20 ancestors is far beyond any real linear
+//  history, so the loop always terminates.
+#define LOG_MAX_WALK (1u << 20)
 #define LOG_OBJ_BUF       (1UL << 20)
 #define LOG_TEXT_BUF      (4UL << 20)   // one big hunk; ~40k commits @ 100B
 #define LOG_TOKS_CAP      (1u << 16)    // tok32 entries (~9 per commit)
@@ -292,7 +293,10 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
     a_carve(u8, cbuf, LOG_OBJ_BUF);
 
     u64 cur_h40 = WHIFFHashlet60(tip);
-    for (u32 i = 0; i < count && cur_h40 != 0; i++) {
+    //  Cap the walk so a cyclic DAG (hashlet collision) can't spin
+    //  ~4e9 times; stop cleanly at the cap.
+    u32 walk_cap = count < LOG_MAX_WALK ? count : LOG_MAX_WALK;
+    for (u32 i = 0; i < walk_cap && cur_h40 != 0; i++) {
         if (graf_out_fd < 0) break;
 
         u8bReset(cbuf);

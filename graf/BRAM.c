@@ -102,19 +102,16 @@ static int bram_pair_cmp(void const *a, void const *b) {
 //  no anchors are found.  Falls back to wholesale DEL+INS on
 //  budget bail-out.
 static ok64 bram_region(e32g edl, i32s work,
-                        u64cp old_h, u32 oa, u32 ob,
-                        u64cp new_h, u32 na, u32 nb) {
-    u32 olen = ob - oa;
-    u32 nlen = nb - na;
+                        u64cs old_region, u64cs new_region) {
+    u32 olen = (u32)$len(old_region);
+    u32 nlen = (u32)$len(new_region);
     if (olen == 0 && nlen == 0) return OK;
     if (olen == 0) return DIFFu64AddEntry(edl, DIFF_INS, nlen);
     if (nlen == 0) return DIFFu64AddEntry(edl, DIFF_DEL, olen);
-    u64cs ra = {old_h + oa, old_h + ob};
-    u64cs rb = {new_h + na, new_h + nb};
     //  Recursive patience: re-anchor on lines that are unique within
     //  this region but weren't unique in the parent.  Bottoms out at
     //  DIFFu64s when no within-region anchors exist.
-    ok64 r = BRAMu64s(edl, work, ra, rb);
+    ok64 r = BRAMu64s(edl, work, old_region, new_region);
     if (r == OK) return OK;
     ok64 d = DIFFu64AddEntry(edl, DIFF_DEL, olen); if (d != OK) return d;
     return DIFFu64AddEntry(edl, DIFF_INS, nlen);
@@ -262,8 +259,11 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
 
                 //  Region between previous anchor (or start) and this
                 //  one — token-level Myers handles intra-region detail.
-                ok64 ro = bram_region(edl, work, old_h, a_tok, tok_a_lo,
-                                                  new_h, b_tok, tok_b_lo);
+                a_rest(u64c, oa_rest, old_hashes, a_tok);
+                a_head(u64c, oreg, oa_rest, tok_a_lo - a_tok);
+                a_rest(u64c, nb_rest, new_hashes, b_tok);
+                a_head(u64c, nreg, nb_rest, tok_b_lo - b_tok);
+                ok64 ro = bram_region(edl, work, oreg, nreg);
                 if (ro != OK) { r = ro; goto cleanup; }
 
                 //  Anchor itself — full EQ run.  DIFFu64AddEntry
@@ -292,8 +292,9 @@ ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     //  Trailing region after the last matched anchor (or whole input
     //  when no anchor matched).
     {
-        ok64 ro = bram_region(edl, work, old_h, a_tok, na,
-                                          new_h, b_tok, nb);
+        a_rest(u64c, oreg, old_hashes, a_tok);
+        a_rest(u64c, nreg, new_hashes, b_tok);
+        ok64 ro = bram_region(edl, work, oreg, nreg);
         if (ro != OK) r = ro;
     }
 
