@@ -265,7 +265,7 @@ feat/fix` is the path `feat/fix`, not the branch — type
 | `ssh:`  | Remote host over ssh; opens a wire. |
 | `https:`| Remote host over https. |
 | `be:`   | Peer dog over `keeper upload-pack` / `receive-pack` (`keeper/WIRE.md`). |
-| `file:` | Local sibling worktree/store at the given path (see §"Worktree management"). |
+| `file:` | Local path.  Routes by the target's on-disk type: a **git repo** (`.git/objects` or bare `objects/`+`refs/`) is **cloned** by spawning `git-upload-pack` locally — same transport flow as `ssh://`, slash count irrelevant (`file:/abs` ≡ `file:///abs`); a **beagle store** (`.be/`) is wired as a **sibling worktree** (see §"Worktree management").  When a dir is both (a dogfooded checkout), git wins. |
 
 PUT-to-remote (`be put //origin`) is the one exception that
 opens the wire from a `//host` URI — PUT-to-remote is by
@@ -402,6 +402,7 @@ not to local branch switches.
 | `be get //origin?feat`            | Cached read of origin's `feat` ref + pack already in store; reset wt to its tip.  No network. |
 | `be get ssh://host/path?feat`     | Open wire, fetch `feat` (pack + REFS), checkout; first contact logs the URL to the project's reflog. |
 | `be get file:../proj?feat`        | Local sibling: wire this empty cwd as a wt sharing `../proj`'s store, reset files to `feat`'s tip. |
+| `be get file:/path/to/repo.git`   | Clone a local **git** repo (spawns `git-upload-pack` locally; `?ref` optional, defaults to the peer's HEAD).  `file:/abs` and `file:///abs` are equivalent here. |
 
 After a successful GET, `.be/wtlog` records the new base as
 `(branch, tip-sha)` and clears any pending PATCH parents.  Bare

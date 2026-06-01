@@ -260,6 +260,82 @@ void BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c) {
         u8csbFeed1(args, uribAtP(c->uris, j)->data);
 }
 
+//  YES iff dir `path` looks like a git repo — a worktree
+//  (`<path>/.git/objects`) or a bare repo (`<path>/objects` +
+//  `<path>/refs`).  Mirrors keeper/WIRECLI.c::wcli_path_is_git_layout
+//  so be's `file:` routing agrees with the transport spawn's choice of
+//  git-upload-pack vs keeper upload-pack.
+static b8 be_path_is_git(u8csc path) {
+    if (u8csEmpty(path)) return NO;
+    a_cstr(dotgit_s,  ".git");
+    a_cstr(objects_s, "objects");
+    a_cstr(refs_s,    "refs");
+    //  Worktree layout: <path>/.git/objects/
+    a_path(wtobj, path, dotgit_s, objects_s);
+    if (FILEisdir($path(wtobj)) == OK) return YES;
+    //  Bare layout: <path>/objects/ + <path>/refs/
+    a_path(objp, path, objects_s);
+    a_path(refp, path, refs_s);
+    if (FILEisdir($path(objp)) == OK && FILEisdir($path(refp)) == OK)
+        return YES;
+    return NO;
+}
+
+//  Backing store for the rewritten `file:///abs` URI text — must
+//  outlive be_file_get_route so the later BEExecute → BEBuildArgv
+//  hand-off can forward `u->data` to keeper / sniff (CLAUDE.md §5).
+static u8 befile_uri_storage[FILE_PATH_MAX_LEN + 32];
+static Bu8 befile_uri_buf = {
+    befile_uri_storage, befile_uri_storage,
+    befile_uri_storage,
+    befile_uri_storage + sizeof(befile_uri_storage)
+};
+
+//  `be get file:<path>` routing.  The keeper side already serves a
+//  local `file:` git repo by spawning git-upload-pack (KEEP.exe.c +
+//  keeper/WIRECLI.c), but both keeper and sniff key transport routing
+//  off the `file://` (authority-present) form: a single-slash
+//  `file:/abs` reads as a bare path, so be sends it down the local
+//  sibling-worktree plan and sniff then tries to *restore* the path.
+//  When the target is a git repo, rewrite `file:/abs` →
+//  `file:///abs` (preserving any ?query / #fragment) and re-lex, so
+//  URIPattern reports URI_AUTHORITY and the forwarded text routes the
+//  clone exactly like ssh://.  A `file:` beagle store (no git layout)
+//  is left untouched and stays a sibling worktree (VERBS.md
+//  §"Worktree management" Example 2).
+static void be_file_get_route(cli *c) {
+    if (c == NULL || uribDataLen(c->uris) == 0) return;
+    uri *u = uribAtP(c->uris, 0);
+    a_cstr(file_sch, "file");
+    if (!u8csEq(u->scheme, file_sch)) return;   // file: scheme only
+    if (u->authority[0] != NULL)      return;   // already file:///abs form
+    if (u8csEmpty(u->path))           return;
+    a_dup(u8c, p, u->path);
+    if (!be_path_is_git(p))           return;   // beagle store → worktree
+
+    //  Rebuild `file://` + <path> [+ ?query] [+ #frag].  The path is
+    //  rooted (leading '/'), so `file://` + `/abs` = `file:///abs`.
+    u8bReset(befile_uri_buf);
+    a_cstr(pfx, "file://");
+    if (u8bFeed(befile_uri_buf, pfx)     != OK) return;
+    if (u8bFeed(befile_uri_buf, u->path) != OK) return;
+    if (!u8csEmpty(u->query)) {
+        if (u8bFeed1(befile_uri_buf, '?')      != OK) return;
+        if (u8bFeed(befile_uri_buf, u->query)  != OK) return;
+    }
+    if (!u8csEmpty(u->fragment)) {
+        if (u8bFeed1(befile_uri_buf, '#')        != OK) return;
+        if (u8bFeed(befile_uri_buf, u->fragment) != OK) return;
+    }
+    //  Re-lex in place so scheme/authority/path reflect the triple-slash
+    //  form (URIPattern then reports URI_AUTHORITY).  URILexer *consumes*
+    //  `data` as it scans, so restore the full slice afterwards —
+    //  BEBuildArgv forwards `u->data` verbatim to keeper / sniff.
+    a_dup(u8c, newtext, u8bDataC(befile_uri_buf));
+    (void)DOGParseURI(u, newtext);
+    u8csMv(u->data, newtext);
+}
+
 //  `wt_uri_buf` is caller-owned scratch (≥ 64 B) backing the rewritten
 //  `?<hashlet>` URI bytes — must outlive this frame so downstream argv
 //  build can read `u->data` (CLAUDE.md §5).
@@ -919,6 +995,23 @@ ok64 BEEnsureProjectRepo(uri *u) {
     a_path(cwd);
     call(FILEGetCwd, cwd);
     a_dup(u8c, cwd_s, u8bDataC(cwd));
+
+    //  Secondary worktree: `<cwd>/.be` is a regular FILE (the row-0
+    //  `repo` anchor), not a store dir.  Its store lives at the primary
+    //  it points to, which may use the legacy elided layout (empty
+    //  project) — so the anchored-gate above doesn't fire.  A project
+    //  shard must never be created here: `mkdir <cwd>/.be/<proj>` would
+    //  ENOTDIR against the wtlog file.  BEGetWorktree already wired the
+    //  anchor; there is nothing to init.
+    {
+        a_path(cwd_be);
+        call(PATHu8bFeed, cwd_be, cwd_s);
+        call(PATHu8bPush, cwd_be, DOG_BE_S);
+        filestat fs = {};
+        if (FILELStat(&fs, $path(cwd_be)) == OK
+            && fs.kind == FILE_KIND_REG)
+            done;
+    }
 
     //  Project name derivation chain.
     u8cs proj = {};
@@ -2114,6 +2207,10 @@ static ok64 becli_inner(cli *c) {
     } else if ($eq(verb, v_head)) {
         call(BEExecute, c, BE_PLAN_HEAD);
     } else if ($eq(verb, v_get)) {
+        //  Route `be get file:<git-repo>` through the transport/clone
+        //  plan (like ssh://) before the pattern is computed; a `file:`
+        //  beagle store stays on the sibling-worktree plan.
+        be_file_get_route(c);
         call(BEExecute, c, BE_PLAN_GET);
     } else if ($eq(verb, v_post)) {
         call(BEExecute, c, BE_PLAN_POST);

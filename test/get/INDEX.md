@@ -111,3 +111,12 @@
   trace: `f922149d4c44e987…` was dropped quietly by `be get //spot`
   on a sub-mount setup.  Passes today in flat-repo shape; the
   sub-mount repro stays open.  Gated on `WITH_SSH`.
+* `29-file-worktree/` — `be get file:<beagle-store>` wires a local
+  sibling worktree: cwd's `.be` becomes a regular wtlog file pointing
+  back at the shared store, tip tree checked out (VERBS.md
+  §"Worktree management" Example 2).  Local-only, no ssh.
+* `30-file-git-clone/` — `be get file:<git-repo>` clones a LOCAL git
+  repo via a locally-spawned `git-upload-pack` (same transport flow as
+  `ssh://`), exercising the single-slash `file:<abs>` form.  Companion
+  to get/29: same URI form, on-disk-type routing (store → worktree,
+  git repo → clone).  Local-only, no ssh.

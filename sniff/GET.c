@@ -146,7 +146,14 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             FILEUnLink($path(fp));
             int fd = -1;
             ok64 co = FILECreate(&fd, $path(fp));
-            if (co != OK) return co;
+            if (co != OK) {
+                fprintf(stderr,
+                    "sniff: get: cannot write %.*s: %s "
+                    "(a parent path component is not a directory?)\n",
+                    (int)u8bDataLen(fp), (char const *)u8bDataHead(fp),
+                    ok64str(co));
+                return co;
+            }
             FILEClose(&fd);
             if (kind == WALK_KIND_EXE) FILEChmod($path(fp), 0755);
             call(SNIFFAtStampPath, fp, g->ts);
@@ -174,7 +181,14 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         FILEUnLink($path(fp));
         int fd = -1;
         o = FILECreate(&fd, $path(fp));
-        if (o != OK) return o;
+        if (o != OK) {
+            fprintf(stderr,
+                "sniff: get: cannot write %.*s: %s "
+                "(a parent path component is not a directory?)\n",
+                (int)u8bDataLen(fp), (char const *)u8bDataHead(fp),
+                ok64str(o));
+            return o;
+        }
         u8cs data = {u8bDataHead(bbuf), u8bIdleHead(bbuf)};
         o = FILEFeedAll(fd, data);
         FILEClose(&fd);
@@ -431,6 +445,12 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     filestat fs = {};
     ok64 lo = FILELStat(&fs, $path(fp));
     if (lo == FILENOENT) return OK;    // vanished mid-walk
+    //  ENOTDIR == a parent path component is a non-directory (e.g. the
+    //  wt has a regular file where the target tree wants a subdir).
+    //  The path simply isn't present as a wt file — same as ENOENT for
+    //  overlap purposes.  Don't abort the whole checkout here; let the
+    //  WRITE pass hit it and report the offending path (get_write_one).
+    if (lo == FILENOTDIR) return OK;
     if (lo != OK) return lo;             // permissions etc — propagate
     ron60 mr = fs.mtime;
 
