@@ -184,9 +184,15 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     //  store before keeper opens.
     if (ULOGCount(s->log_idx) == 0) {
         if (!rw) {
-            //  Read-only open against an empty log — there is no state
-            //  yet; leave the row unwritten and treat h->root as the
-            //  colocated default.
+            //  Read-only open against an empty wtlog: the `.be/` repo
+            //  exists but no worktree is anchored here (row 0's `repo`
+            //  URI is written by the first rw open below).  Refuse with
+            //  NOTAWT rather than treating h->root's tree as a worktree
+            //  and enumerating it — regression: a stray $HOME/.be with an
+            //  empty wtlog turned bare `be` under $HOME into a full-home
+            //  scan (see sniff/test/norepo.sh).
+            ULOGClose(s->log_data, &s->log_idx, s->log_rw);
+            zerop(s); return NOTAWT;
         } else {
             ok64 wr = sniff_write_repo_row(wt_root);
             if (wr != OK) {

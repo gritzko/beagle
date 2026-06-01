@@ -468,7 +468,15 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
     if (so == OK && fs.kind == FILE_KIND_REG) {
         a_path(arena);
         u8cs repo_path = {};
-        if (home_peek_repo_uri($path(probe), arena, repo_path) == OK) {
+        //  Secondary wt: the `.be` file IS the wtlog; row 0 must be a
+        //  valid `repo` anchor naming the shared store (it points
+        //  elsewhere than this dir, but is validated the same way as a
+        //  primary `.be/wtlog` row 0).  Empty / unparsable row 0 ⇒ no
+        //  worktree is anchored here — refuse instead of falling through
+        //  to the store==wt fallback (see sniff/test/norepo.sh).
+        if (home_peek_repo_uri($path(probe), arena, repo_path) != OK)
+            return NOTAWT;
+        {
             a_path(stripped);
             DOGRepoFromBe(repo_path, stripped);
             if (u8bDataLen(stripped) > 0) {
@@ -528,6 +536,9 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
                 done;
             }
         }
+        //  Row 0 parsed but did not name a `/.be/` store ⇒ invalid
+        //  secondary anchor, not a worktree.
+        return NOTAWT;
     }
     //  Primary / colocated / unreadable row 0: store == wt.
     a_dup(u8c, wt_s, u8bDataC(h->wt));
@@ -545,6 +556,12 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
         call(PATHu8bPush,  wtlog_probe, DOG_WTLOG_S);
         a_path(arena2);
         u8cs repo_path = {};
+        //  A `.be/` *dir* is a repo even with an empty wtlog (it may hold
+        //  only config / packs); reading it RO is legitimate.  The
+        //  "empty wtlog ⇒ no worktree" refusal lives in the worktree dog
+        //  (SNIFFOpen), which is the layer that actually enumerates the
+        //  tree.  Here we only opportunistically pull the project shard
+        //  from row 0 when present.
         if (home_peek_repo_uri($path(wtlog_probe), arena2, repo_path) == OK) {
             a_path(proj_buf);
             DOGProjectFromBe(repo_path, proj_buf);

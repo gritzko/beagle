@@ -322,6 +322,66 @@ ok64 HOMETestRoNoBootstrap() {
     done;
 }
 
+//  Repo-vs-worktree taxonomy at the HOME layer:
+//    * a `.be/` *dir* is a repo — opening it RO is legitimate even with
+//      an empty wtlog (it may hold only config / packs).  The "empty
+//      wtlog ⇒ no worktree" refusal lives in the worktree dog
+//      (SNIFFOpen), covered by sniff/test/norepo.sh.
+//    * a `.be` *file* is ONLY ever a secondary-wt anchor; its row 0
+//      must be a valid `repo` URI.  Empty / invalid ⇒ NOHOME, the same
+//      row-0 validation a primary wtlog gets, regardless of rw.
+ok64 HOMETestRoEmptyAnchor() {
+    sane(1);
+    call(FILEInit);
+
+    enum { K_DIR, K_FILE };
+    struct {
+        char const *name;
+        int         kind;   // K_DIR: .be/ dir + empty wtlog; K_FILE: empty .be file
+        b8          rw;
+        ok64        want_ret;
+    } const cases[] = {
+        {"repo .be/ + empty wtlog, RO",  K_DIR,  NO,  OK},     // bare repo open is OK
+        {"repo .be/ + empty wtlog, RW",  K_DIR,  YES, OK},     // rw bootstraps row 0
+        {"secondary empty .be file, RO", K_FILE, NO,  NOTAWT}, // invalid anchor
+        {"secondary empty .be file, RW", K_FILE, YES, NOTAWT}, // never bootstraps over it
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tmp[] = "/tmp/dog-home-empty-XXXXXX";
+        want(mkdtemp(tmp) != NULL);
+        fprintf(stderr, "  case: %s\n", cases[i].name);
+
+        char p[512];
+        if (cases[i].kind == K_DIR) {
+            snprintf(p, sizeof(p), "%s/" DOG_BE_NAME, tmp);
+            want(mkdir(p, 0755) == 0);
+            //  Lay down empty marker logs, exactly as a half-bootstrapped
+            //  store would have them (home_ensure_markers shape).
+            snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_WTLOG_NAME, tmp);
+            FILE *f = fopen(p, "w"); want(f != NULL); fclose(f);
+            snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_REFS_NAME, tmp);
+            f = fopen(p, "w"); want(f != NULL); fclose(f);
+        } else {
+            //  Secondary anchor: `.be` is an empty regular file.
+            snprintf(p, sizeof(p), "%s/" DOG_BE_NAME, tmp);
+            FILE *f = fopen(p, "w"); want(f != NULL); fclose(f);
+        }
+
+        want(chdir(tmp) == 0);
+        home h = {};
+        uri none = {};
+        ok64 got = HOMEOpen(&h, &none, cases[i].rw);
+        want(got == cases[i].want_ret);
+        HOMEClose(&h);
+
+        char rm[512];
+        snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
+        system(rm);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "HOMETestGet...\n");
@@ -334,6 +394,8 @@ ok64 maintest() {
     call(HOMETestRwBootstrap);
     fprintf(stderr, "HOMETestRoNoBootstrap...\n");
     call(HOMETestRoNoBootstrap);
+    fprintf(stderr, "HOMETestRoEmptyAnchor...\n");
+    call(HOMETestRoEmptyAnchor);
     fprintf(stderr, "all passed\n");
     done;
 }

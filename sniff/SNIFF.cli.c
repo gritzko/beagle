@@ -58,7 +58,14 @@ static ok64 sniffcli_inner(cli *c) {
 
     char cwd[1024];
     u8cs reporoot = {};
-    if (u8bHasData(c->repo)) {
+    //  `anchored` == CLIParse's walk-up found a `.be/` in cwd or some
+    //  ancestor.  When it didn't, we fall back to cwd so write verbs
+    //  (post/put/get) and help/stop still have a root — but a *read-
+    //  only* status must NOT (see the no-repo refusal below): treating
+    //  cwd as a worktree and enumerating it, run from $HOME, reads as a
+    //  hang, and an rw open would bootstrap a stray `<cwd>/.be/`.
+    b8 anchored = u8bHasData(c->repo);
+    if (anchored) {
         u8csMv(reporoot, $path(c->repo));
     } else {
         if (!getcwd(cwd, sizeof(cwd))) fail(SNIFFFAIL);
@@ -87,7 +94,15 @@ static ok64 sniffcli_inner(cli *c) {
     a_cstr(v_commit, "commit");
     b8 is_projector = u8csEmpty(c->verb) && uribDataLen(c->uris) > 0 &&
                       DOGIsProjector(uribAtP(c->uris, 0)->scheme);
-    b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list) || is_projector;
+    //  Bare `sniff` (empty verb, no URI) and explicit `--status` are
+    //  read-only status prints — mirror SNIFFExec's `is_status`.  They
+    //  MUST be RO so HOMEOpen(rw=NO) never bootstraps `<cwd>/.be/`
+    //  markers in a directory that is not a repo (regression: a stray
+    //  `$HOME/.be` created this way turned every later bare `be` under
+    //  $HOME into a full-home-tree scan — see norepo.sh).
+    b8 bare_status = u8csEmpty(c->verb) && uribDataLen(c->uris) == 0;
+    b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list)
+         || is_projector || bare_status || CLIHas(c, "--status");
     b8 rw = !ro;
 
     //  Prefer the explicit `--at <root>?<branch>#<sha>` flag forwarded
@@ -98,6 +113,18 @@ static ok64 sniffcli_inner(cli *c) {
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8csOK(reporoot) && !u8csEmpty(reporoot))
         u8csMv(at.path, reporoot);
+
+    //  No `.be/` anchor in any ancestor and no `--at` tip forwarded by
+    //  `be`: a read-only status / projector has nothing to read.
+    //  Refuse cleanly (like `git status` outside a repo) instead of
+    //  treating cwd as a worktree and enumerating it.  Write verbs keep
+    //  the cwd fallback above so `be post` / `be get` in an empty dir
+    //  still bootstrap a fresh store.
+    if (ro && !anchored && !CLIHas(c, "--at")) {
+        fprintf(stderr, "sniff: not a beagle repository "
+                "(no .be/ in this directory or any ancestor)\n");
+        fail(NOHOME);
+    }
 
     //  HOMEOpen failure self-cleans via its own try/nedo wrapper, so
     //  we can `call(...)` it safely.  From here on we own `h` and

@@ -87,3 +87,11 @@ add_test(NAME SNIFFrefuse
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(SNIFFrefuse PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFrefuse")
+
+#  norepo.sh — bare `sniff` outside any repo refuses cleanly and never
+#  bootstraps a stray `.be/` (regression: $HOME-tree scan / hang).
+add_test(NAME SNIFFnorepo
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/norepo.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFnorepo PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFnorepo")
