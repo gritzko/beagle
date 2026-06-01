@@ -189,12 +189,22 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
             u8csc gbin = {u8bDataHead(gitverb), u8bIdleHead(gitverb)};
             return FILESpawn(gbin, argv, wfd, rfd, pid);
         }
+        //  Keeper peer: convey an explicit project selector (`?/proj`)
+        //  so the server serves THAT shard instead of the store's
+        //  row-0 default project.  Git peers (above) get the bare path
+        //  — git repos are single-project.
+        a_pad(u8, kpath, FILE_PATH_MAX_LEN + 64);
+        (void)u8bFeed(kpath, path);
+        if (!u8csEmpty(u.query) && *u.query[0] == '/') {
+            (void)u8bFeed1(kpath, '?');
+            (void)u8bFeed(kpath, u.query);
+        }
         u8cs kbin = {};
         wcli_keeper_bin(kbin);
         u8cs argv_arr[3] = {
             {(u8cp)"keeper", (u8cp)"keeper" + 6},
             {verb_s[0], verb_s[1]},
-            {path[0], path[1]},
+            {u8bDataHead(kpath), u8bIdleHead(kpath)},
         };
         u8css argv = {argv_arr, argv_arr + 3};
         u8csc kbin_cs = {kbin[0], kbin[1]};

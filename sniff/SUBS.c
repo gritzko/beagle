@@ -13,7 +13,9 @@
 #include "abc/RON.h"
 #include "abc/URI.h"
 #include "dog/HOME.h"
+#include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
+#include "keeper/REFS.h"
 #include "keeper/WIRE.h"
 
 #include "AT.h"
@@ -235,6 +237,89 @@ static ok64 subs_spawn_be_get(u8cs exe_path, u8cs wt_path, u8cs arg) {
     fail(SUBSPARSE);
 }
 
+//  Reverse-grep the currently-open project's REFS for the most-recent
+//  transport `get` row and render its source LOCATOR (scheme + auth +
+//  path, NO query) into `loc`.  `*beagle` is set when that source is a
+//  beagle remote — scheme `be:`/`keeper:`, or an absolute `?/project`
+//  query (the multi-project addressing form).  Last matching row wins
+//  (REFS rows are chronological), so each fetched sub-shard's own
+//  source row makes the locator self-propagate parent→child→…
+//  Local-path probes (mirror beagle/BE.cli.c be_path_is_git): a git
+//  repo has `<p>/.git/objects` or bare `<p>/objects`+`<p>/refs`; a
+//  beagle store has a `<p>/.be` directory.
+static b8 subs_path_is_git(u8cs path) {
+    if (u8csEmpty(path)) return NO;
+    a_cstr(dotgit, ".git");
+    a_cstr(objs,   "objects");
+    a_cstr(rfs,    "refs");
+    a_path(p1, path, dotgit, objs);
+    if (FILEisdir($path(p1)) == OK) return YES;
+    a_path(p2, path, objs);
+    a_path(p3, path, rfs);
+    return FILEisdir($path(p2)) == OK && FILEisdir($path(p3)) == OK;
+}
+static b8 subs_path_is_be_store(u8cs path) {
+    if (u8csEmpty(path)) return NO;
+    a_cstr(be, ".be");
+    a_path(p, path, be);
+    return FILEisdir($path(p)) == OK;
+}
+
+typedef struct { u8bp loc; ron60 vget; b8 beagle; b8 found; } subs_loc_ctx;
+
+static ok64 subs_loc_cb(uri const *u, ron60 ts, ron60 verb, void *vc) {
+    subs_loc_ctx *c = (subs_loc_ctx *)vc;
+    (void)ts;
+    if (verb != c->vget) return OK;
+    u8cs sch  = {u->scheme[0],    u->scheme[1]};
+    u8cs auth = {u->authority[0], u->authority[1]};
+    u8cs pth  = {u->path[0],      u->path[1]};
+    u8cs qry  = {u->query[0],     u->query[1]};
+    if (u8csEmpty(sch) && u8csEmpty(auth)) return OK;   // local row, skip
+    a_pad(u8, tmp, MAX_URI_LEN);
+    u8cs none = {NULL, NULL};
+    if (URIMake(u8bIdle(tmp), sch, auth, pth, none, none) != OK) return OK;
+    a_dup(u8c, made, u8bData(tmp));
+    u8bReset(c->loc);
+    if (u8bFeed(c->loc, made) != OK) return OK;
+    //  Beagle remote iff: scheme be:/keeper:; OR a `file:` path that is
+    //  a beagle store (`.be/`) and NOT a git repo (a dogfooded checkout
+    //  with both → git wins, stays git); OR an absolute `?/project`
+    //  query survived (be:// cached form).  The recorded `get` row
+    //  often normalizes `?/proj` → the remote branch, so the `file:`
+    //  store probe is the reliable signal there.
+    a_cstr(be_s,   "be");
+    a_cstr(kp_s,   "keeper");
+    a_cstr(file_s, "file");
+    b8 file_beagle = u8csEq(sch, file_s) &&
+                     !subs_path_is_git(pth) && subs_path_is_be_store(pth);
+    c->beagle = u8csEq(sch, be_s) || u8csEq(sch, kp_s) || file_beagle
+             || (!u8csEmpty(qry) && *qry[0] == '/');
+    c->found = YES;
+    return OK;   // keep scanning — last (newest) match wins
+}
+
+static ok64 subs_recover_locator(u8bp loc, b8 *is_beagle) {
+    sane(loc && is_beagle);
+    *is_beagle = NO;
+    u8bReset(loc);
+    a_path(keepdir);
+    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    subs_loc_ctx c = {.loc = loc, .vget = REFSVerbGet()};
+    (void)REFSEachRecord($path(keepdir), subs_loc_cb, &c);
+    *is_beagle = c.beagle;
+    if (!c.found) return NONE;
+    done;
+}
+
+//  YES iff the gitlink pin `hex_sha` (40 hex) is present in the
+//  currently-open keeper — used to validate a candidate sub fetch.
+static b8 subs_pin_present(u8cs hex_sha) {
+    if (u8csLen(hex_sha) != 40) return NO;
+    a_dup(u8c, hx, hex_sha);
+    return KEEPHas(WHIFFHexHashlet60(hx), 40) == OK;
+}
+
 ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                    u8cs path, u8cs hex_sha,
                    u8cs gitmodules, u8cs argv0) {
@@ -366,6 +451,34 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     {
         home *parent_home = KEEP.h;
         b8 parent_rw = (KEEP.lock_fd >= 0);
+
+        //  Resolve the sub's fetch source while KEEP is still on the
+        //  parent project.  For a beagle-remote parent the sub is a
+        //  sibling project in the SAME store ("if it has the parent,
+        //  it has subs"): try the parent's source locator addressing
+        //  the sub by url-basename, then by path-basename, before the
+        //  `.gitmodules` URL as specified.  A git-source parent has an
+        //  empty/NO locator, so only the declared URL is tried (git's
+        //  own resolution).  We hold the gitlink pin, so each beagle
+        //  candidate is validated by whether that commit actually lands.
+        a_pad(u8, loc_buf, MAX_URI_LEN);
+        b8 src_beagle = NO;
+        (void)subs_recover_locator(loc_buf, &src_beagle);
+        u8cs pathbase = {};
+        (void)SNIFFSubBasename(path, pathbase);
+        a_pad(u8, cand0_buf, MAX_URI_LEN);     // <loc>?/<url-basename>
+        a_pad(u8, cand1_buf, MAX_URI_LEN);     // <loc>?/<path-basename>
+        if (src_beagle && u8bDataLen(loc_buf) > 0) {
+            a_dup(u8c, loc_s, u8bDataC(loc_buf));
+            a_cstr(qsl, "?/");
+            (void)u8bFeed(cand0_buf, loc_s);
+            (void)u8bFeed(cand0_buf, qsl);
+            (void)u8bFeed(cand0_buf, basename);
+            (void)u8bFeed(cand1_buf, loc_s);
+            (void)u8bFeed(cand1_buf, qsl);
+            (void)u8bFeed(cand1_buf, pathbase);
+        }
+
         KEEPClose();
 
         //  Sub IS its own project at the parent's `.be/<basename>/`
@@ -395,13 +508,38 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         ok64 ko = KEEPOpenBranch(parent_home, sub_trunk, YES);
         ok64 fo = NONE;
         if (ko == OK) {
-            a_dup(u8c, url_const, url);
-            fo = WIREFetchAll(url_const);
-            fprintf(stderr,
-                    "SUBS.dbg: WIREFetchAll url=" U8SFMT
-                    " basename=" U8SFMT " result=%s\n",
-                    u8sFmt(url_const), u8sFmt(basename_const),
-                    ok64str(fo));
+            //  Candidate sources, in order; the declared `.gitmodules`
+            //  URL is always last.  A non-final beagle candidate counts
+            //  as success only when the pin lands (else fall through);
+            //  the final candidate succeeds on a clean fetch (git's
+            //  semantics — preserves prior behavior for git subs).
+            u8cs cands[3];
+            int nc = 0;
+            if (src_beagle && u8bDataLen(loc_buf) > 0) {
+                cands[nc][0] = u8bDataHead(cand0_buf);
+                cands[nc][1] = u8bIdleHead(cand0_buf);
+                nc++;
+                if (!u8csEq(pathbase, basename)) {
+                    cands[nc][0] = u8bDataHead(cand1_buf);
+                    cands[nc][1] = u8bIdleHead(cand1_buf);
+                    nc++;
+                }
+            }
+            u8csMv(cands[nc], url);
+            nc++;
+            for (int ci = 0; ci < nc; ci++) {
+                a_dup(u8c, cu, cands[ci]);
+                ok64 f = WIREFetchAll(cu);
+                fprintf(stderr,
+                        "SUBS.dbg: sub fetch try=" U8SFMT " => %s\n",
+                        u8sFmt(cu), ok64str(f));
+                b8 last = (ci == nc - 1);
+                if (f == OK && (last || subs_pin_present(hex_sha))) {
+                    fo = OK;
+                    break;
+                }
+                fo = (f != OK) ? f : NONE;
+            }
             KEEPClose();
         } else {
             fprintf(stderr,

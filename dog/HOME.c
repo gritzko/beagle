@@ -590,10 +590,28 @@ static ok64 home_walk_up(home *h) {
         call(PATHu8bFeed, probe, cur);
         call(PATHu8bPush, probe, DOG_BE_S);
         filestat fs = {};
-        if (FILEStat(&fs, $path(probe)) == OK &&
-            (fs.kind == FILE_KIND_DIR || fs.kind == FILE_KIND_REG)) {
-            a_dup(u8c, anchor, u8bDataC(here));
-            return home_anchor_resolve(h, anchor);
+        if (FILEStat(&fs, $path(probe)) == OK) {
+            //  A worktree is anchored here iff `.be` is a regular FILE
+            //  (secondary-wt wtlog) OR a directory that CONTAINS a
+            //  `wtlog` (primary wt).  A `.be/` dir with no `wtlog` is a
+            //  bare store (no checked-out worktree here) — keep walking
+            //  up so bare `be`/`sniff` near a multi-project store (e.g.
+            //  `~/.be`) refuse instead of treating the store as a wt.
+            b8 is_wt = (fs.kind == FILE_KIND_REG);
+            if (fs.kind == FILE_KIND_DIR) {
+                a_path(wtl);
+                a_dup(u8c, pbe, u8bDataC(probe));
+                (void)PATHu8bFeed(wtl, pbe);
+                (void)PATHu8bPush(wtl, DOG_WTLOG_S);
+                filestat wfs = {};
+                if (FILEStat(&wfs, $path(wtl)) == OK &&
+                    wfs.kind == FILE_KIND_REG)
+                    is_wt = YES;
+            }
+            if (is_wt) {
+                a_dup(u8c, anchor, u8bDataC(here));
+                return home_anchor_resolve(h, anchor);
+            }
         }
 
         size_t before = $len(u8bDataC(here));

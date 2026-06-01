@@ -1088,6 +1088,43 @@ ok64 BEEnsureProjectRepo(uri *u) {
     done;
 }
 
+//  YES iff the URI names a remote the wt ALREADY knows — a transport
+//  row matching its host (or, for a host-less `file:` URL, its path)
+//  exists in the project's REFS.  A known remote means `be get` from a
+//  subdir targets the WHOLE wt (a normal fetch), not a new submodule
+//  at cwd; only an UNKNOWN remote in a subdir mounts as a submodule.
+typedef struct { u8cs host; u8cs path; b8 known; } be_known_ctx;
+
+static ok64 be_known_cb(uri const *r, ron60 ts, ron60 verb, void *vc) {
+    (void)ts; (void)verb;
+    be_known_ctx *k = (be_known_ctx *)vc;
+    u8cs rhost = {r->host[0],   r->host[1]};
+    u8cs rsch  = {r->scheme[0], r->scheme[1]};
+    u8cs rpath = {r->path[0],   r->path[1]};
+    //  Only transport rows (scheme or host present) name a remote.
+    if (u8csEmpty(rsch) && u8csEmpty(rhost)) return OK;
+    //  Same remote ⇒ BOTH host and path match.  Same host but a
+    //  DIFFERENT path is a different repo (e.g. parent.git vs sub.git
+    //  on one server) → NOT known, so it mounts as a submodule.
+    //  Host-less transports (`file:`) match on path alone.
+    b8 host_ok = u8csEmpty(k->host) ? u8csEmpty(rhost)
+                                    : u8csEq(rhost, k->host);
+    b8 path_ok = u8csEmpty(k->path) ? u8csEmpty(rpath)
+                                    : (!u8csEmpty(rpath) && u8csEq(rpath, k->path));
+    if (host_ok && path_ok) { k->known = YES; return REFSSTOP; }
+    return OK;
+}
+
+static b8 be_remote_is_known(uri *u, home *rh) {
+    a_path(keepdir);
+    if (HOMEBranchDir(rh, keepdir, NULL) != OK) return NO;
+    be_known_ctx ctx = {};
+    ctx.host[0] = u->host[0]; ctx.host[1] = u->host[1];
+    ctx.path[0] = u->path[0]; ctx.path[1] = u->path[1];
+    (void)REFSEachRecord($path(keepdir), be_known_cb, &ctx);
+    return ctx.known;
+}
+
 //  Subdir-of-existing-repo + remote clone = treat cwd as a submodule
 //  worktree of a fresh shard under the ancestor's `.be/`.
 //
@@ -1137,6 +1174,19 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     {
         filestat fs = {};
         if (FILELStat(&fs, $path(cwd_be)) == OK) done;
+    }
+
+    //  A KNOWN remote (already recorded in the wt's REFS) targets the
+    //  WHOLE wt — `be get <known-remote>` from a subdir is a normal
+    //  fetch, not a new submodule.  Only an UNKNOWN remote mounts here.
+    {
+        home rh = {};
+        uri none = {};
+        b8 known = NO;
+        if (HOMEOpen(&rh, &none, NO) == OK)
+            known = be_remote_is_known(u, &rh);
+        HOMEClose(&rh);
+        if (known) done;
     }
 
     //  Derive shard name from the URL basename — same rule the

@@ -1812,6 +1812,19 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             u8csMv(u->query, c_branch);
         else
             DOGQueryStripProject(u->query);
+        //  A pure project selector (`?/proj`) leaves an EMPTY branch —
+        //  the `?/proj` slot picks the store shard (consumed locally /
+        //  conveyed to the peer), it is NOT a local ref to resolve.
+        //  Drop the now-empty query so downstream takes the fresh-clone
+        //  tip-checkout path (the fetched shard's `get` row carries the
+        //  remote refname → local tip) instead of a trunk ref lookup
+        //  that would miss on a remote-`master` vs local-trunk mismatch
+        //  and fail with SNIFFFAIL.  A `?/proj/branch` form keeps its
+        //  non-empty branch and resolves normally.
+        if (u8csEmpty(u->query)) {
+            u->query[0] = NULL;
+            u->query[1] = NULL;
+        }
         //  Recompose u->data from the stripped components.  Stack
         //  buffer outlives the function since we never store the
         //  slice past this scope's REFSResolve uses (resolved.*

@@ -26,7 +26,25 @@
 //  Repo path comes from argv (parsed into uribAtP(c->uris, 0)->data) — it is
 //  *not* derived from cwd, so this verb works under any ssh ForceCommand
 //  config.  Path is opened read-only since serving never mutates state.
-//  Worker: keeper is already open via HOMEOpenAt; this carries the
+//  Split the served argv into a raw store path + optional `?/proj`
+//  selector, WITHOUT URI-parsing: the peer may send a `//abs` path
+//  (`//home/…`) whose first segment the URI lexer mis-reads as an
+//  authority (dropping a leading dir → FILEACCES).  Everything before
+//  the first `?` is the store path verbatim; the rest is the project
+//  query the keeper-peer client appended (empty ⇒ row-0 default).
+static void keeper_served_at(uri *at, uri *g) {
+    u8cs data = {g->data[0], g->data[1]};
+    u8c const *q = NULL;
+    $for(u8c, p, data) if (*p == '?') { q = p; break; }
+    at->path[0] = data[0];
+    at->path[1] = q ? q : data[1];
+    if (q && q + 1 < data[1]) {
+        at->query[0] = q + 1;
+        at->query[1] = data[1];
+    }
+}
+
+//  Worker: keeper is already open via HOMEOpen; this carries the
 //  KEEP/REFADV opens + wire serve.  Any `call` failure returns to the
 //  wrapper's `try`, which runs the (idempotent / null-safe) closers —
 //  so a half-open never leaks `h`'s buffers.
@@ -47,11 +65,17 @@ static ok64 keeper_upload_pack(cli *c) {
     if (uribDataLen(c->uris) < 1) {
         return KEEPFAIL;
     }
-    u8cs path = {uribAtP(c->uris, 0)->data[0], uribAtP(c->uris, 0)->data[1]};
+    uri *g = uribAtP(c->uris, 0);
+    u8cs path = {g->data[0], g->data[1]};
     if (u8csEmpty(path)) return KEEPFAIL;
 
+    //  Serve the requested project: a `?/proj` selector forwarded to
+    //  HOMEOpen routes through that shard (home_open_inner step 5).
+    //  Absent ⇒ HOMEOpen falls back to the store's row-0 default.
     home h = {};
-    call(HOMEOpenAt, &h, path, NO);
+    uri at = {};
+    keeper_served_at(&at, g);
+    call(HOMEOpen, &h, &at, NO);
     try(keeper_upload_pack_inner, &h);
     KEEPClose();
     HOMEClose(&h);
@@ -80,11 +104,16 @@ static ok64 keeper_receive_pack(cli *c) {
     if (uribDataLen(c->uris) < 1) {
         return KEEPFAIL;
     }
-    u8cs path = {uribAtP(c->uris, 0)->data[0], uribAtP(c->uris, 0)->data[1]};
+    uri *g = uribAtP(c->uris, 0);
+    u8cs path = {g->data[0], g->data[1]};
     if (u8csEmpty(path)) return KEEPFAIL;
 
+    //  Serve the requested project (see keeper_upload_pack); absent ⇒
+    //  row-0 default.
     home h = {};
-    call(HOMEOpenAt, &h, path, YES);
+    uri at = {};
+    keeper_served_at(&at, g);
+    call(HOMEOpen, &h, &at, YES);
     try(keeper_receive_pack_inner, &h);
     KEEPClose();
     HOMEClose(&h);
