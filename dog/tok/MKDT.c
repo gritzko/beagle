@@ -53,7 +53,7 @@ ok64 MKDTonSpace(u8cs tok, MKDTstate *state) {
 
 // Check if line is a StrictMark code fence (3-4 backticks after div markup).
 // Returns fence length (3 or 4) or 0.
-static int MKDTFenceOpen(u8csc line) {
+int MKDTFenceOpen(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     // Skip 4-char indent blocks (div markup)
@@ -68,7 +68,7 @@ static int MKDTFenceOpen(u8csc line) {
 }
 
 // Check if line closes a fenced code block.
-static b8 MKDTFenceClose(u8csc line, int flen) {
+b8 MKDTFenceClose(u8csc line, int flen) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     // Skip 4-char indent blocks
@@ -89,7 +89,7 @@ static b8 MKDTFenceClose(u8csc line, int flen) {
 
 // Check ATX heading level (1-4 only), with 4-char-wide markup.
 // Returns level or 0.
-static int MKDTHeadingLevel(u8csc line) {
+int MKDTHeadingLevel(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     // Skip 4-char indent blocks (nesting)
@@ -105,7 +105,7 @@ static int MKDTHeadingLevel(u8csc line) {
 }
 
 // Check horizontal rule: exactly "----"
-static b8 MKDTHRule(u8csc line) {
+b8 MKDTHRule(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     // Skip 4-char indent blocks
@@ -124,7 +124,7 @@ static b8 MKDTHRule(u8csc line) {
 }
 
 // Check reference definition: [x]: ...
-static b8 MKDTRefDef(u8csc line) {
+b8 MKDTRefDef(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     // Skip 4-char indent blocks
@@ -143,7 +143,7 @@ static b8 MKDTRefDef(u8csc line) {
 }
 
 // Count leading 4-space indent blocks (div markup depth).
-static int MKDTIndentDepth(u8csc line) {
+int MKDTIndentDepth(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
     int depth = 0;
@@ -153,6 +153,51 @@ static int MKDTIndentDepth(u8csc line) {
         depth++;
     }
     return depth;
+}
+
+// Classify the block marker in the 4-char group after `depth` indents.
+mkdtmark MKDTLineMarker(u8csc line, int depth, u8c **markend) {
+    u8c *content = (u8c *)line[0] + depth * 4;
+    u8c *cur = (u8c *)line[1];
+    *markend = content;
+    if (content + 4 > cur) return MKDT_MARK_NONE;
+    // Blockquote: >___
+    if (content[0] == '>' ||
+        (content[0] == ' ' && content[1] == '>') ||
+        (content[0] == ' ' && content[1] == ' ' && content[2] == '>') ||
+        (content[0] == ' ' && content[1] == ' ' && content[2] == ' ' &&
+         content[3] == '>')) {
+        *markend = content + 4;
+        return MKDT_MARK_QUOTE;
+    }
+    // Unordered list: -___
+    if (content[0] == '-' ||
+        (content[0] == ' ' && content[1] == '-') ||
+        (content[0] == ' ' && content[1] == ' ' && content[2] == '-') ||
+        (content[0] == ' ' && content[1] == ' ' && content[2] == ' ' &&
+         content[3] == '-')) {
+        *markend = content + 4;
+        return MKDT_MARK_ULIST;
+    }
+    // Ordered list: N. or NN. etc
+    if ((content[0] >= '0' && content[0] <= '9') ||
+        (content[0] == ' ' && content[1] >= '0' && content[1] <= '9')) {
+        u8c *q = content;
+        while (q < content + 4 && *q == ' ') q++;
+        while (q < content + 4 && *q >= '0' && *q <= '9') q++;
+        if (q < content + 4 && *q == '.') {
+            *markend = content + 4;
+            return MKDT_MARK_OLIST;
+        }
+    }
+    // TODO: [ ] [x] [X]
+    if (content[0] == '[' &&
+        (content[1] == ' ' || content[1] == 'x' || content[1] == 'X') &&
+        content[2] == ']' && content[3] == ' ') {
+        *markend = content + 4;
+        return MKDT_MARK_TODO;
+    }
+    return MKDT_MARK_NONE;
 }
 
 // Emit heading: prefix (div markup + #+ space) as R, content through inline.
@@ -253,52 +298,13 @@ ok64 MKDTLexer(MKDTstate *state) {
             // Paragraph / list / blockquote / div — inline machine
             // Emit leading 4-char div markup blocks as R
             int depth = MKDTIndentDepth(line);
-            u8c *content = sol + depth * 4;
 
             // Check for block markers in the first non-indent 4-char group
-            b8 has_marker = NO;
-            u8c *marker_end = content;
-            if (content + 4 <= cur) {
-                // Blockquote: >___
-                if (content[0] == '>' ||
-                    (content[0] == ' ' && content[1] == '>') ||
-                    (content[0] == ' ' && content[1] == ' ' && content[2] == '>') ||
-                    (content[0] == ' ' && content[1] == ' ' && content[2] == ' ' && content[3] == '>')) {
-                    has_marker = YES;
-                    marker_end = content + 4;
-                }
-                // Unordered list: -___
-                else if (content[0] == '-' ||
-                         (content[0] == ' ' && content[1] == '-') ||
-                         (content[0] == ' ' && content[1] == ' ' && content[2] == '-') ||
-                         (content[0] == ' ' && content[1] == ' ' && content[2] == ' ' && content[3] == '-')) {
-                    has_marker = YES;
-                    marker_end = content + 4;
-                }
-                // Ordered list: N. or NN. etc
-                else if ((content[0] >= '0' && content[0] <= '9') ||
-                         (content[0] == ' ' && content[1] >= '0' && content[1] <= '9')) {
-                    // Scan for digits then dot
-                    u8c *q = content;
-                    while (q < content + 4 && *q == ' ') q++;
-                    while (q < content + 4 && *q >= '0' && *q <= '9') q++;
-                    if (q < content + 4 && *q == '.') {
-                        has_marker = YES;
-                        marker_end = content + 4;
-                    }
-                }
-                // TODO: [ ] [x] [X]
-                else if (content + 4 <= cur &&
-                         content[0] == '[' &&
-                         (content[1] == ' ' || content[1] == 'x' || content[1] == 'X') &&
-                         content[2] == ']' && content[3] == ' ') {
-                    has_marker = YES;
-                    marker_end = content + 4;
-                }
-            }
+            u8c *marker_end = NULL;
+            MKDTLineMarker(line, depth, &marker_end);
 
             // Emit div markup (indents + marker) as R
-            u8c *text_start = has_marker ? marker_end : content;
+            u8c *text_start = marker_end;
             if (text_start > sol && state->cb) {
                 u8cs markup = {sol, text_start};
                 ok64 o = TOKSplitText('R', markup, state->cb, state->ctx);

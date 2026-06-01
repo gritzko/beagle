@@ -20,6 +20,7 @@ Each dog follows the [DOG API](dog/DOG.md): static lib + executable,
 | **keeper** | Object store: packs, fetch, refs. Native replacement for git's object store. State in `.be/`. | [keeper/INDEX.md](keeper/INDEX.md) |
 | **sniff** | Worktree management: checkout, status, stage, commit.  State is one append-only ULOG file at `<wt>/.be/wtlog`; no caches. | [sniff/INDEX.md](sniff/INDEX.md) |
 | **beagle** | Dispatcher: ties the dogs together. URI-based CLI (`be verb URI`). | [beagle/README.md](beagle/README.md) |
+| **mark** | StrictMark → HTML renderer for the wiki. Drives MKDT, enforces WikiWeb structure + size budgets (`--strict`). | [mark/README.mkd](mark/README.mkd) |
 
 ## Other
 
@@ -39,7 +40,8 @@ abc          foundation (slices, buffers, crypto, diff, TLV)
       ├── graf     diff & merge
       ├── keeper   object store & fetch
       ├── sniff    worktree ops
-      └── beagle   dispatcher (be)
+      ├── beagle   dispatcher (be)
+      └── mark     StrictMark → HTML wiki renderer
 ```
 
 Dogs communicate via TLV hunks on pipes (`--tlv` flag) or through

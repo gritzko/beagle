@@ -88,6 +88,12 @@ main := |*
     # ---- image/transclusion ![text][x] ----
     "![" (any8 - [\]\n])+ "][" [0-9A-Za-z] "]"           => on_link;
 
+    # ---- collapsed link [text][] (label = text) ----
+    "[" (any8 - [\]\n])+ "][]"                           => on_link;
+
+    # ---- shortcut link [text] (label = text) ----
+    "[" (any8 - [\]\n])+ "]"                             => on_link;
+
     # ---- numbers ----
     "0" [xX] xdgt+                                       => on_number;
     dgt+ "." dgt*                                        => on_number;
@@ -111,6 +117,9 @@ main := |*
 
     # ---- UTF-8 multibyte ----
     (0x80..0xff) (0x80..0xbf)*                           => on_word;
+
+    # ---- any other byte: punctuation (keeps the lexer total) ----
+    any8                                                 => on_punct;
 
 *|;
 

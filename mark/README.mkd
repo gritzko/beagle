@@ -1,0 +1,52 @@
+#   mark: StrictMark to HTML, with enforced limits
+
+mark renders StrictMark wiki pages to standalone HTML. The goal is a lightweight, greppable wiki whose structure and size limits are enforced at build time, with no host renderer in the loop. The method: drive MKDT for block structure and inline tokens, generate HTML via u8b feed helpers, sanitize literal text through a ragel escaper, decompose emphasis and links through a second ragel machine, and check each page against the WikiWeb budgets — warn by default, fail under `--strict`.
+
+##  Pipeline
+
+Each page is parsed by MKDT, not by mark: MKDT's line classifiers give block structure and MKDTInlineLexer gives inline tokens. mark turns that token stream into HTML and never reparses Markdown by hand.
+
+ -  Block structure comes from MKDT helpers: heading level, fence open/close, indent depth, line marker.
+ -  Inline tokens come from MKDTInlineLexer; emphasis and links arrive as whole `G` tokens.
+ -  Generation is u8b feed only: `MARKu8bLit` for tags, `MARKu8bFeedEsc` for text.
+
+##  Sanitizing
+
+All text reaches HTML through ragel, never a hand-rolled byte scan. The MARKE machine maps the four HTML-special bytes to entities; MARKG splits a `G` token into kind, text, and label.
+
+ -  MARKE escapes `&` `<` `>` `"` to entities and copies every other run verbatim.
+ -  MARKG decomposes `*strong*`, `_emph_`, `~~del~~`, `[t][x]`, `![t][x]`, `[t][]`, and `[t]`.
+ -  Shortcut and collapsed links key on their text; reference labels stay one symbol.
+
+##  Links
+
+Inter-page links are rewritten so the rendered site is self-contained. A link target ending in `.mkd` is emitted as `.html`; everything else passes through escaped.
+
+ -  A reference definition `[key]: url` is collected in a first pass and never rendered.
+ -  A shortcut `[Page]` resolves against those definitions, then `.mkd` becomes `.html`.
+
+##  Enforced limits
+
+mark is also the wiki linter: it checks the WikiWeb page shape and the 64-char-line budgets, reporting any breach. `--strict` turns the first breach into a non-zero exit for CI.
+
+ -  Budgets in characters: header 64, bullet 128, summary 256, opener summary 512.
+ -  Structure: exactly one H1 opener per page, since each page covers one concept.
+ -  Default warns to stderr and still renders; `--strict` fails with `MARKLIMIT`.
+
+##  CLI use
+
+mark takes files or a directory. A file renders to a sibling `.html`; a directory renders every `.mkd` in it, so a whole wiki builds in one call.
+
+````sh
+    mark page.mkd           # -> page.html beside it
+    mark --strict wiki/     # build a dir, fail on any budget breach
+    mark a.mkd b.mkd        # several files at once
+````
+
+##  Build and test
+
+mark is a standard dog: a static library plus a CLI, with table-driven tests. The two ragel units are pre-generated and committed alongside their sources.
+
+ -  Sources: `MARK.c` driver, `MARKE.c.rl` escaper, `MARKG.c.rl` decomposer, `MARK.cli.c` entry.
+ -  Regenerate ragel with `ragel -C MARKE.c.rl -o MARKE.rl.c -L` (likewise MARKG).
+ -  Tests in `test/MARK.c` render snippets and assert HTML; repros for past lexer gaps live there.

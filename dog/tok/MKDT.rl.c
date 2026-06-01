@@ -13,7 +13,7 @@ ok64 MKDTonPunct (u8cs tok, MKDTstate* state);
 ok64 MKDTonSpace (u8cs tok, MKDTstate* state);
 
 
-/* #line 117 "MKDT.c.rl" */
+/* #line 126 "MKDT.c.rl" */
 
 
 
@@ -25,22 +25,22 @@ static const char _MKDT_actions[] = {
 	15, 1, 16, 1, 17, 1, 18, 1, 
 	19, 1, 20, 1, 21, 1, 22, 1, 
 	23, 1, 24, 1, 25, 1, 26, 1, 
-	27, 2, 2, 3, 2, 2, 4, 2, 
+	27, 1, 28, 1, 29, 1, 30, 1, 
+	31, 2, 2, 3, 2, 2, 4, 2, 
 	2, 5, 2, 2, 6
 };
 
 static const unsigned char _MKDT_key_offsets[] = {
-	0, 0, 2, 4, 5, 11, 12, 14, 
-	20, 22, 23, 29, 30, 32, 34, 36, 
-	38, 74, 78, 79, 83, 85, 90, 92, 
-	95, 101, 108, 110, 120, 128, 130, 131, 
-	135
+	0, 2, 4, 5, 11, 12, 14, 20, 
+	22, 29, 30, 32, 34, 36, 38, 74, 
+	78, 79, 83, 85, 90, 92, 95, 101, 
+	108, 110, 111, 121, 129, 131, 132, 136
 };
 
 static const unsigned char _MKDT_trans_keys[] = {
 	10u, 93u, 10u, 93u, 91u, 48u, 57u, 65u, 
 	90u, 97u, 122u, 93u, 10u, 42u, 48u, 57u, 
-	65u, 70u, 97u, 102u, 10u, 93u, 91u, 48u, 
+	65u, 70u, 97u, 102u, 10u, 93u, 93u, 48u, 
 	57u, 65u, 90u, 97u, 122u, 93u, 10u, 95u, 
 	10u, 96u, 10u, 126u, 10u, 126u, 10u, 32u, 
 	33u, 42u, 46u, 48u, 63u, 91u, 95u, 96u, 
@@ -51,108 +51,105 @@ static const unsigned char _MKDT_trans_keys[] = {
 	42u, 9u, 13u, 48u, 57u, 46u, 88u, 120u, 
 	48u, 57u, 48u, 57u, 46u, 48u, 57u, 48u, 
 	57u, 65u, 70u, 97u, 102u, 95u, 48u, 57u, 
-	65u, 90u, 97u, 122u, 10u, 93u, 32u, 95u, 
-	9u, 13u, 48u, 57u, 65u, 90u, 97u, 122u, 
-	10u, 95u, 48u, 57u, 65u, 90u, 97u, 122u, 
-	10u, 96u, 126u, 32u, 126u, 9u, 13u, 128u, 
-	191u, 0
+	65u, 90u, 97u, 122u, 10u, 93u, 91u, 32u, 
+	95u, 9u, 13u, 48u, 57u, 65u, 90u, 97u, 
+	122u, 10u, 95u, 48u, 57u, 65u, 90u, 97u, 
+	122u, 10u, 96u, 126u, 32u, 126u, 9u, 13u, 
+	128u, 191u, 0
 };
 
 static const char _MKDT_single_lengths[] = {
-	0, 2, 2, 1, 0, 1, 2, 0, 
-	2, 1, 0, 1, 2, 2, 2, 2, 
-	12, 2, 1, 2, 0, 3, 0, 1, 
-	0, 1, 2, 2, 2, 2, 1, 2, 
-	0
+	2, 2, 1, 0, 1, 2, 0, 2, 
+	1, 1, 2, 2, 2, 2, 12, 2, 
+	1, 2, 0, 3, 0, 1, 0, 1, 
+	2, 1, 2, 2, 2, 1, 2, 0
 };
 
 static const char _MKDT_range_lengths[] = {
-	0, 0, 0, 0, 3, 0, 0, 3, 
-	0, 0, 3, 0, 0, 0, 0, 0, 
-	12, 1, 0, 1, 1, 1, 1, 1, 
-	3, 3, 0, 4, 3, 0, 0, 1, 
-	1
+	0, 0, 0, 3, 0, 0, 3, 0, 
+	3, 0, 0, 0, 0, 0, 12, 1, 
+	0, 1, 1, 1, 1, 1, 3, 3, 
+	0, 0, 4, 3, 0, 0, 1, 1
 };
 
 static const unsigned char _MKDT_index_offsets[] = {
-	0, 0, 3, 6, 8, 12, 14, 17, 
-	21, 24, 26, 30, 32, 35, 38, 41, 
-	44, 69, 73, 75, 79, 81, 86, 88, 
-	91, 95, 100, 103, 110, 116, 119, 121, 
-	125
+	0, 3, 6, 8, 12, 14, 17, 21, 
+	24, 29, 31, 34, 37, 40, 43, 68, 
+	72, 74, 78, 80, 85, 87, 90, 94, 
+	99, 102, 104, 111, 117, 120, 122, 126
 };
 
 static const char _MKDT_indicies[] = {
 	0, 0, 1, 0, 2, 1, 3, 0, 
 	4, 4, 4, 0, 5, 0, 0, 7, 
 	6, 9, 9, 9, 8, 0, 11, 10, 
-	12, 0, 13, 13, 13, 0, 14, 0, 
-	15, 17, 16, 0, 19, 18, 20, 22, 
-	21, 20, 23, 21, 26, 24, 27, 29, 
-	30, 31, 25, 34, 35, 36, 37, 25, 
-	25, 24, 25, 28, 25, 28, 32, 28, 
-	33, 28, 33, 28, 38, 24, 24, 24, 
-	39, 41, 40, 40, 40, 40, 6, 43, 
-	42, 45, 46, 46, 32, 44, 45, 47, 
-	45, 32, 44, 9, 9, 9, 48, 33, 
-	33, 33, 33, 42, 40, 40, 10, 49, 
-	33, 49, 50, 50, 50, 16, 49, 51, 
-	50, 50, 50, 16, 40, 40, 18, 52, 
-	40, 53, 53, 53, 21, 38, 54, 0
+	14, 13, 13, 13, 12, 15, 12, 16, 
+	18, 17, 0, 20, 19, 21, 23, 22, 
+	21, 24, 22, 27, 26, 28, 30, 31, 
+	32, 25, 35, 36, 37, 38, 25, 25, 
+	26, 25, 29, 25, 29, 33, 29, 34, 
+	29, 34, 29, 39, 26, 26, 26, 40, 
+	42, 41, 41, 41, 41, 6, 44, 43, 
+	46, 47, 47, 33, 45, 46, 48, 46, 
+	33, 45, 9, 9, 9, 49, 34, 34, 
+	34, 34, 43, 41, 41, 10, 51, 50, 
+	52, 34, 52, 53, 53, 53, 17, 52, 
+	54, 53, 53, 53, 17, 41, 41, 19, 
+	55, 41, 56, 56, 56, 22, 39, 57, 
+	0
 };
 
 static const char _MKDT_trans_targs[] = {
-	16, 2, 3, 4, 5, 16, 6, 16, 
-	16, 24, 8, 9, 10, 11, 16, 16, 
-	12, 16, 13, 16, 16, 14, 15, 16, 
-	17, 0, 16, 18, 16, 19, 20, 21, 
-	23, 25, 26, 27, 29, 30, 32, 16, 
-	16, 1, 16, 20, 16, 22, 7, 16, 
-	16, 16, 28, 25, 31, 16, 16
+	14, 1, 2, 3, 4, 14, 5, 14, 
+	14, 22, 7, 25, 14, 9, 14, 14, 
+	14, 10, 14, 11, 14, 14, 12, 13, 
+	14, 14, 15, 14, 16, 14, 17, 18, 
+	19, 21, 23, 24, 26, 28, 29, 31, 
+	14, 14, 0, 14, 18, 14, 20, 6, 
+	14, 14, 14, 8, 14, 27, 23, 30, 
+	14, 14
 };
 
 static const char _MKDT_trans_actions[] = {
-	45, 0, 0, 0, 0, 17, 0, 9, 
-	39, 0, 0, 0, 0, 0, 15, 43, 
-	0, 11, 0, 7, 41, 0, 0, 13, 
-	0, 0, 21, 5, 19, 5, 58, 5, 
-	0, 55, 5, 5, 5, 0, 0, 35, 
-	33, 0, 47, 52, 27, 0, 0, 25, 
-	23, 31, 5, 49, 5, 29, 37
+	53, 0, 0, 0, 0, 17, 0, 9, 
+	47, 0, 0, 5, 45, 0, 19, 15, 
+	51, 0, 11, 0, 7, 49, 0, 0, 
+	13, 25, 0, 23, 5, 21, 5, 66, 
+	5, 0, 63, 5, 5, 5, 0, 0, 
+	41, 39, 0, 55, 60, 33, 0, 0, 
+	31, 29, 27, 0, 37, 5, 57, 5, 
+	35, 43
 };
 
 static const char _MKDT_to_state_actions[] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 
+	0, 0, 0, 0, 0, 0, 1, 0, 
 	0, 0, 0, 0, 0, 0, 0, 0, 
-	1, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0
+	0, 0, 0, 0, 0, 0, 0, 0
 };
 
 static const char _MKDT_from_state_actions[] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 
+	0, 0, 0, 0, 0, 0, 3, 0, 
 	0, 0, 0, 0, 0, 0, 0, 0, 
-	3, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0
+	0, 0, 0, 0, 0, 0, 0, 0
 };
 
 static const unsigned char _MKDT_eof_trans[] = {
-	0, 1, 1, 1, 1, 1, 1, 9, 
-	1, 1, 1, 1, 16, 1, 21, 21, 
-	0, 40, 41, 41, 43, 45, 48, 45, 
-	49, 43, 41, 50, 50, 41, 41, 54, 
-	55
+	1, 1, 1, 1, 1, 1, 9, 1, 
+	13, 13, 17, 1, 22, 22, 0, 41, 
+	42, 42, 44, 46, 49, 46, 50, 44, 
+	42, 51, 53, 53, 42, 42, 57, 58
 };
 
-static const int MKDT_start = 16;
-static const int MKDT_first_final = 16;
-static const int MKDT_error = 0;
+static const int MKDT_start = 14;
+static const int MKDT_first_final = 14;
+static const int MKDT_error = -1;
 
-static const int MKDT_en_main = 16;
+static const int MKDT_en_main = 14;
 
 
-/* #line 120 "MKDT.c.rl" */
+/* #line 129 "MKDT.c.rl" */
 
 ok64 MKDTInlineLexer(MKDTstate* state) {
 
@@ -171,7 +168,7 @@ ok64 MKDTInlineLexer(MKDTstate* state) {
     u8cs tok = {p, p};
 
     
-/* #line 166 "MKDT.rl.c" */
+/* #line 163 "MKDT.rl.c" */
 	{
 	cs = MKDT_start;
 	ts = 0;
@@ -179,9 +176,9 @@ ok64 MKDTInlineLexer(MKDTstate* state) {
 	act = 0;
 	}
 
-/* #line 138 "MKDT.c.rl" */
+/* #line 147 "MKDT.c.rl" */
     
-/* #line 172 "MKDT.rl.c" */
+/* #line 169 "MKDT.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -191,8 +188,6 @@ ok64 MKDTInlineLexer(MKDTstate* state) {
 
 	if ( p == pe )
 		goto _test_eof;
-	if ( cs == 0 )
-		goto _out;
 _resume:
 	_acts = _MKDT_actions + _MKDT_from_state_actions[cs];
 	_nacts = (unsigned int) *_acts++;
@@ -202,7 +197,7 @@ _resume:
 /* #line 1 "NONE" */
 	{ts = p;}
 	break;
-/* #line 191 "MKDT.rl.c" */
+/* #line 186 "MKDT.rl.c" */
 		}
 	}
 
@@ -278,15 +273,15 @@ _eof_trans:
 	break;
 	case 4:
 /* #line 46 "MKDT.c.rl" */
-	{act = 9;}
+	{act = 11;}
 	break;
 	case 5:
 /* #line 52 "MKDT.c.rl" */
-	{act = 12;}
+	{act = 14;}
 	break;
 	case 6:
 /* #line 58 "MKDT.c.rl" */
-	{act = 13;}
+	{act = 15;}
 	break;
 	case 7:
 /* #line 34 "MKDT.c.rl" */
@@ -343,15 +338,24 @@ _eof_trans:
 }}
 	break;
 	case 13:
-/* #line 58 "MKDT.c.rl" */
+/* #line 40 "MKDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
-    o = MKDTonPunct(tok, state);
+    o = MKDTonLink(tok, state);
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
 	case 14:
+/* #line 58 "MKDT.c.rl" */
+	{te = p+1;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonPunct(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 15:
 /* #line 64 "MKDT.c.rl" */
 	{te = p+1;{
     tok[0] = (u8c*)ts;
@@ -360,25 +364,25 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 15:
-/* #line 46 "MKDT.c.rl" */
-	{te = p;p--;{
-    tok[0] = (u8c*)ts;
-    tok[1] = (u8c*)te;
-    o = MKDTonNumber(tok, state);
-    if (o!=OK) {p++; goto _out; }
-}}
-	break;
 	case 16:
-/* #line 46 "MKDT.c.rl" */
-	{te = p;p--;{
+/* #line 58 "MKDT.c.rl" */
+	{te = p+1;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
-    o = MKDTonNumber(tok, state);
+    o = MKDTonPunct(tok, state);
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
 	case 17:
+/* #line 40 "MKDT.c.rl" */
+	{te = p;p--;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonLink(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 18:
 /* #line 46 "MKDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
@@ -387,39 +391,30 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 18:
-/* #line 58 "MKDT.c.rl" */
-	{te = p;p--;{
-    tok[0] = (u8c*)ts;
-    tok[1] = (u8c*)te;
-    o = MKDTonPunct(tok, state);
-    if (o!=OK) {p++; goto _out; }
-}}
-	break;
 	case 19:
-/* #line 52 "MKDT.c.rl" */
+/* #line 46 "MKDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
-    o = MKDTonWord(tok, state);
+    o = MKDTonNumber(tok, state);
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
 	case 20:
+/* #line 46 "MKDT.c.rl" */
+	{te = p;p--;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonNumber(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 21:
 /* #line 58 "MKDT.c.rl" */
 	{te = p;p--;{
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
     o = MKDTonPunct(tok, state);
-    if (o!=OK) {p++; goto _out; }
-}}
-	break;
-	case 21:
-/* #line 64 "MKDT.c.rl" */
-	{te = p;p--;{
-    tok[0] = (u8c*)ts;
-    tok[1] = (u8c*)te;
-    o = MKDTonSpace(tok, state);
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
@@ -433,6 +428,42 @@ _eof_trans:
 }}
 	break;
 	case 23:
+/* #line 58 "MKDT.c.rl" */
+	{te = p;p--;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonPunct(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 24:
+/* #line 64 "MKDT.c.rl" */
+	{te = p;p--;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonSpace(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 25:
+/* #line 52 "MKDT.c.rl" */
+	{te = p;p--;{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonWord(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 26:
+/* #line 40 "MKDT.c.rl" */
+	{{p = ((te))-1;}{
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonLink(tok, state);
+    if (o!=OK) {p++; goto _out; }
+}}
+	break;
+	case 27:
 /* #line 46 "MKDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
@@ -441,7 +472,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 24:
+	case 28:
 /* #line 58 "MKDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
@@ -450,7 +481,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 25:
+	case 29:
 /* #line 52 "MKDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
@@ -459,7 +490,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 26:
+	case 30:
 /* #line 58 "MKDT.c.rl" */
 	{{p = ((te))-1;}{
     tok[0] = (u8c*)ts;
@@ -468,7 +499,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }}
 	break;
-	case 27:
+	case 31:
 /* #line 1 "NONE" */
 	{	switch( act ) {
 	case 3:
@@ -479,7 +510,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }
 	break;
-	case 9:
+	case 11:
 	{{p = ((te))-1;}
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -487,7 +518,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }
 	break;
-	case 12:
+	case 14:
 	{{p = ((te))-1;}
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -495,7 +526,7 @@ _eof_trans:
     if (o!=OK) {p++; goto _out; }
 }
 	break;
-	case 13:
+	case 15:
 	{{p = ((te))-1;}
     tok[0] = (u8c*)ts;
     tok[1] = (u8c*)te;
@@ -506,7 +537,7 @@ _eof_trans:
 	}
 	}
 	break;
-/* #line 468 "MKDT.rl.c" */
+/* #line 495 "MKDT.rl.c" */
 		}
 	}
 
@@ -519,12 +550,10 @@ _again:
 /* #line 1 "NONE" */
 	{ts = 0;}
 	break;
-/* #line 479 "MKDT.rl.c" */
+/* #line 506 "MKDT.rl.c" */
 		}
 	}
 
-	if ( cs == 0 )
-		goto _out;
 	if ( ++p != pe )
 		goto _resume;
 	_test_eof: {}
@@ -539,7 +568,7 @@ _again:
 	_out: {}
 	}
 
-/* #line 139 "MKDT.c.rl" */
+/* #line 148 "MKDT.c.rl" */
 
     state->data[0] = p;
     if (o==OK && cs < MKDT_first_final)
