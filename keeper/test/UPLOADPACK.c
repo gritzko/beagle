@@ -302,12 +302,69 @@ ok64 UPLOADPACKtest_fetch() {
     done;
 }
 
+// ---- Test 3: bad-repo path must not leak ----
+//
+//  Repro for the KEEP.cli leak: `keeper upload-pack <bad-path>` opens
+//  HOME (allocates 6 buffers), then KEEPOpen fails (FILEACCES on a
+//  non-existent store).  The old code returned via `call` without
+//  reaching HOMEClose, leaking the home buffers.  We spawn the binary
+//  on a non-existent path, capture its stderr, and assert the child's
+//  LeakSanitizer never fires (no "LeakSanitizer" / "leaked" banner).
+ok64 UPLOADPACKtest_badrepo_noleak() {
+    sane(1);
+    call(FILEInit);
+
+    int err[2];
+    want(pipe(err) == 0);
+
+    pid_t pid = fork();
+    want(pid >= 0);
+    if (pid == 0) {
+        //  Silence stdout, route stderr to the pipe so ASAN's leak
+        //  report (if any) is captured by the parent.
+        int devnull = open("/dev/null", O_WRONLY);
+        dup2(devnull, 1);
+        dup2(err[1], 2);
+        close(err[0]);
+        close(err[1]);
+        close(devnull);
+        //  A path with no `.be` store under a non-existent root: HOME
+        //  opens, KEEPOpen fails — the leak window.
+        execl(keeper_bin(), "keeper", "upload-pack",
+              "/nonexistent/beagle-noleak", (char *)NULL);
+        _exit(127);
+    }
+    close(err[1]);
+
+    static char ebuf[1 << 16];
+    size_t have = 0;
+    for (;;) {
+        if (have >= sizeof(ebuf) - 1) break;
+        ssize_t n = read(err[0], ebuf + have, sizeof(ebuf) - 1 - have);
+        if (n <= 0) break;
+        have += (size_t)n;
+    }
+    ebuf[have] = 0;
+    close(err[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    //  The child should fail cleanly (FILEACCES) — and crucially leave
+    //  no LeakSanitizer report on stderr.
+    want(strstr(ebuf, "LeakSanitizer") == NULL);
+    want(strstr(ebuf, "detected memory leaks") == NULL);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "UPLOADPACKtest_smoke...\n");
     call(UPLOADPACKtest_smoke);
     fprintf(stderr, "UPLOADPACKtest_fetch...\n");
     call(UPLOADPACKtest_fetch);
+    fprintf(stderr, "UPLOADPACKtest_badrepo_noleak...\n");
+    call(UPLOADPACKtest_badrepo_noleak);
     fprintf(stderr, "all passed\n");
     done;
 }

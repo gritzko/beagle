@@ -26,6 +26,22 @@
 //  Repo path comes from argv (parsed into uribAtP(c->uris, 0)->data) — it is
 //  *not* derived from cwd, so this verb works under any ssh ForceCommand
 //  config.  Path is opened read-only since serving never mutates state.
+//  Worker: keeper is already open via HOMEOpenAt; this carries the
+//  KEEP/REFADV opens + wire serve.  Any `call` failure returns to the
+//  wrapper's `try`, which runs the (idempotent / null-safe) closers —
+//  so a half-open never leaks `h`'s buffers.
+static ok64 keeper_upload_pack_inner(home *h) {
+    sane(h);
+    call(KEEPOpen, h, NO);
+
+    a_refadv(adv);
+    call(REFADVOpen, &adv);
+    call(REFADVEmit, STDOUT_FILENO, &adv);
+    ok64 wo = WIREServeUpload(STDIN_FILENO, STDOUT_FILENO, &adv);
+    REFADVClose(&adv);
+    return wo;
+}
+
 static ok64 keeper_upload_pack(cli *c) {
     sane(c);
     if (uribDataLen(c->uris) < 1) {
@@ -36,16 +52,10 @@ static ok64 keeper_upload_pack(cli *c) {
 
     home h = {};
     call(HOMEOpenAt, &h, path, NO);
-    call(KEEPOpen, &h, NO);
-
-    a_refadv(adv);
-    call(REFADVOpen, &adv);
-    call(REFADVEmit, STDOUT_FILENO, &adv);
-    ok64 wo = WIREServeUpload(STDIN_FILENO, STDOUT_FILENO, &adv);
-    REFADVClose(&adv);
+    try(keeper_upload_pack_inner, &h);
     KEEPClose();
     HOMEClose(&h);
-    return wo;
+    done;
 }
 
 //  Drop-in for `git-receive-pack <repo-path>`: read pkt-lines + pack on
@@ -53,6 +63,18 @@ static ok64 keeper_upload_pack(cli *c) {
 //  Stateless across requests (one process per ssh invocation).  Repo
 //  path comes from argv (parsed into uribAtP(c->uris, 0)->data); rw mode is
 //  required because push writes packs + REFS.
+static ok64 keeper_receive_pack_inner(home *h) {
+    sane(h);
+    call(KEEPOpen, h, YES);
+
+    a_refadv(adv);
+    call(REFADVOpen, &adv);
+    call(REFADVEmit, STDOUT_FILENO, &adv);
+    ok64 ro = RECVServe(STDIN_FILENO, STDOUT_FILENO, &adv);
+    REFADVClose(&adv);
+    return ro;
+}
+
 static ok64 keeper_receive_pack(cli *c) {
     sane(c);
     if (uribDataLen(c->uris) < 1) {
@@ -63,17 +85,10 @@ static ok64 keeper_receive_pack(cli *c) {
 
     home h = {};
     call(HOMEOpenAt, &h, path, YES);
-    call(KEEPOpen, &h, YES);
-
-    a_refadv(adv);
-    call(REFADVOpen, &adv);
-    call(REFADVEmit, STDOUT_FILENO, &adv);
-    ok64 ro = RECVServe(STDIN_FILENO, STDOUT_FILENO, &adv);
-    REFADVClose(&adv);
-
+    try(keeper_receive_pack_inner, &h);
     KEEPClose();
     HOMEClose(&h);
-    return ro;
+    done;
 }
 
 static ok64 keepercli_inner(cli *c) {
