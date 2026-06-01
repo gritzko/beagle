@@ -48,7 +48,7 @@ ok64 MARKu8bFeedEsc(u8bp out, u8csc text);
 typedef struct {
     u8 kind;     // 'B' strong, 'I' emph, 'D' del, 'A' link, 'M' image, 0 none
     u8cs text;   // inner text / link text / alt text
-    u8cs label;  // ref label; for shortcut/collapsed it equals text
+    u8cs label;  // explicit label; for a shortcut it equals the bracket text
 } markg;
 
 //  Classify a G inline token (emphasis / link / image).  ragel: MARKG.

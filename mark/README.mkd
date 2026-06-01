@@ -15,8 +15,8 @@ Each page is parsed by MKDT, not by mark: MKDT's line classifiers give block str
 All text reaches HTML through ragel, never a hand-rolled byte scan. The MARKE machine maps the four HTML-special bytes to entities; MARKG splits a `G` token into kind, text, and label.
 
  -  MARKE escapes `&` `<` `>` `"` to entities and copies every other run verbatim.
- -  MARKG decomposes `*strong*`, `_emph_`, `~~del~~`, `[t][x]`, `![t][x]`, `[t][]`, and `[t]`.
- -  Shortcut and collapsed links key on their text; reference labels stay one symbol.
+ -  MARKG decomposes `*strong*`, `_emph_`, `~~del~~`, the two link cases `[text][l]` / `[page]`, and `![alt][l]`.
+ -  A shortcut `[page]` keys on its bracket text; an explicit `[text][l]` uses a one-symbol label `l`.
 
 ##  Links
 

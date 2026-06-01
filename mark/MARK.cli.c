@@ -5,6 +5,10 @@
 //  A file → file.html next to it.  A directory → every *.mkd in it,
 //  rewriting inter-page links from .mkd to .html.  --strict makes a
 //  WikiWeb structure/limit violation a hard failure.
+//
+//  Memory is bounded by the input: the renderer keeps nothing across
+//  files, and the per-file output buffer is sized to that file (escaping
+//  expands at most ~6x), so there is no fixed multi-megabyte allocation.
 
 #include "MARK.h"
 
@@ -33,44 +37,55 @@ static ok64 mark_outpath(path8b out, u8csc in) {
     done;
 }
 
-//  Read inpath, render to opath.  `out` is the (reset) HTML buffer.
-static ok64 mark_render_inner(u8bp out, path8s inpath, path8b opath,
-                              markopts opts) {
-    sane($ok(inpath) && out != NULL);
+//  Map inpath, render to opath.  The output buffer is allocated here,
+//  sized to the mapped input, and freed before returning — so memory is
+//  proportional to one file and nothing is retained between files.
+static ok64 mark_render_inner(path8s inpath, path8b opath, markopts opts) {
+    sane($ok(inpath));
 
     u8bp m = NULL;
     call(FILEMapRO, &m, inpath);
     if (m == NULL) fail(MARKFAIL);
     u8cs src = {u8bDataHead(m), u8bIdleHead(m)};
 
+    u8b out = {};
+    size_t cap = (size_t)u8csLen(src) * 8 + 16384;
+    try(u8bAllocate, out, cap);
+    if (__ != OK) {
+        FILEUnMap(m);
+        return __;
+    }
+
     u8cs title = {};
     PATHu8sBase(title, inpath);
     mark_dropext(title);
 
-    call(mark_outpath, opath, inpath);
-    u8bReset(out);
-    try(MARKRenderDoc, out, src, title, opts);
+    try(mark_outpath, opath, inpath);
+    then try(MARKRenderDoc, out, src, title, opts);
+    then {
+        int fd = -1;
+        FILEUnLink($path(opath));
+        try(FILECreate, &fd, $path(opath));
+        then {
+            u8cs body = {u8bDataHead(out), u8bIdleHead(out)};
+            try(FILEFeedAll, fd, body);
+            FILEClose(&fd);
+        }
+        then fprintf(stderr, "mark: wrote %s\n", (char const *)*$path(opath));
+    }
     ok64 ro = __;
-    FILEUnMap(m);
-    if (ro != OK) return ro;
 
-    int fd = -1;
-    FILEUnLink($path(opath));
-    call(FILECreate, &fd, $path(opath));
-    u8cs body = {u8bDataHead(out), u8bIdleHead(out)};
-    try(FILEFeedAll, fd, body);
-    ro = __;
-    FILEClose(&fd);
-    fprintf(stderr, "mark: wrote %s\n", (char const *)*$path(opath));
+    u8bFree(out);
+    FILEUnMap(m);
     return ro;
 }
 
 typedef struct {
     markopts opts;
-    u8bp out;
 } mark_dir_ctx;
 
-//  FILEScanFiles callback: render each *.mkd in the directory.
+//  FILEScanFiles callback: render each *.mkd in the directory.  One bad
+//  page warns and is skipped so the batch continues.
 static ok64 mark_dir_cb(void0p arg, path8bp path) {
     sane(arg != NULL && path != NULL);
     mark_dir_ctx *dc = (mark_dir_ctx *)arg;
@@ -79,14 +94,13 @@ static ok64 mark_dir_cb(void0p arg, path8bp path) {
     a_tail(u8c, suf, p, 4);
     if (memcmp(suf[0], ".mkd", 4) != 0) done;
     a_path(opath);
-    //  Don't let one bad page abort the whole batch; warn and continue.
-    try(mark_render_inner, dc->out, p, opath, dc->opts);
+    try(mark_render_inner, p, opath, dc->opts);
     nedo fprintf(stderr, "mark: %s failed: %s\n", (char const *)*p, ok64str(__));
     return OK;
 }
 
-static ok64 markcli_inner(markopts opts, u8bp out) {
-    sane(out != NULL);
+static ok64 markcli_inner(markopts opts) {
+    sane(1);
     b8 any = NO;
     for (size_t i = 1; i < (size_t)$arglen; ++i) {
         a$rg(arg, i);
@@ -96,11 +110,11 @@ static ok64 markcli_inner(markopts opts, u8bp out) {
         filestat fs = {};
         call(FILEStat, &fs, $path(inpath));
         if (fs.kind == FILE_KIND_DIR) {
-            mark_dir_ctx dc = {.opts = opts, .out = out};
+            mark_dir_ctx dc = {.opts = opts};
             call(FILEScanFiles, inpath, mark_dir_cb, &dc);
         } else {
             a_path(opath);
-            call(mark_render_inner, out, $path(inpath), opath, opts);
+            call(mark_render_inner, $path(inpath), opath, opts);
         }
     }
     if (!any) {
@@ -123,12 +137,8 @@ ok64 markcli() {
             opts.strict = YES;
     }
 
-    u8b out = {};
-    call(u8bAllocate, out, 1UL << 20);
-    try(markcli_inner, opts, out);
-    ok64 ret = __;
-    u8bFree(out);
-    return ret;
+    try(markcli_inner, opts);
+    done;
 }
 
 MAIN(markcli);

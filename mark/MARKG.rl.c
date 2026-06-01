@@ -5,9 +5,9 @@
 //  ragel machine splits one into (kind, text, label) so the renderer can
 //  emit <strong>/<em>/<del>/<a>/<img> without a hand-rolled scan.
 //
-//  Forms: *strong*  _emph_  ~~del~~  [text][x]  ![text][x]  [text][]  [text]
-//  Reference labels (the [x] in [text][x]) stay one symbol; collapsed and
-//  shortcut links carry no label, so the renderer keys them on `text`.
+//  Forms: *strong*  _emph_  ~~del~~  [text text][l]  [page]  ![alt][l]
+//  The explicit label l stays one symbol; a shortcut [page] carries no label,
+//  so the renderer keys it on the bracket text.
 //
 //  Build: ragel -C MARKG.c.rl -o MARKG.rl.c -L
 
@@ -16,38 +16,37 @@
 #include "MARK.h"
 
 
-/* #line 39 "MARKG.c.rl" */
+/* #line 38 "MARKG.c.rl" */
 
 
 
 /* #line 19 "MARKG.rl.c" */
 static const char _markg_actions[] = {
 	0, 1, 0, 1, 1, 1, 2, 1, 
-	6, 1, 7, 2, 0, 1, 2, 1, 
-	4, 2, 1, 5, 2, 1, 7, 2, 
-	3, 7, 2, 3, 8, 3, 0, 1, 
-	4, 3, 0, 1, 5, 3, 0, 1, 
-	7
+	6, 2, 0, 1, 2, 1, 4, 2, 
+	1, 5, 2, 1, 7, 2, 3, 7, 
+	2, 3, 8, 3, 0, 1, 4, 3, 
+	0, 1, 5, 3, 0, 1, 7
 };
 
 static const char _markg_key_offsets[] = {
 	0, 0, 5, 6, 8, 10, 11, 17, 
-	18, 20, 22, 24, 26, 33, 34, 36, 
-	38, 39, 41, 43, 45, 45
+	18, 20, 22, 24, 26, 32, 33, 35, 
+	37, 38, 40, 42, 44, 44
 };
 
 static const unsigned char _markg_trans_keys[] = {
 	33u, 42u, 91u, 95u, 126u, 91u, 10u, 93u, 
 	10u, 93u, 91u, 48u, 57u, 65u, 90u, 97u, 
 	122u, 93u, 10u, 42u, 10u, 42u, 10u, 93u, 
-	10u, 93u, 93u, 48u, 57u, 65u, 90u, 97u, 
-	122u, 93u, 10u, 95u, 10u, 95u, 126u, 10u, 
-	126u, 10u, 126u, 10u, 126u, 91u, 0
+	10u, 93u, 48u, 57u, 65u, 90u, 97u, 122u, 
+	93u, 10u, 95u, 10u, 95u, 126u, 10u, 126u, 
+	10u, 126u, 10u, 126u, 91u, 0
 };
 
 static const char _markg_single_lengths[] = {
 	0, 5, 1, 2, 2, 1, 0, 1, 
-	2, 2, 2, 2, 1, 1, 2, 2, 
+	2, 2, 2, 2, 0, 1, 2, 2, 
 	1, 2, 2, 2, 0, 1
 };
 
@@ -59,8 +58,8 @@ static const char _markg_range_lengths[] = {
 
 static const char _markg_index_offsets[] = {
 	0, 0, 6, 8, 11, 14, 16, 20, 
-	22, 25, 28, 31, 34, 39, 41, 44, 
-	47, 49, 52, 55, 58, 59
+	22, 25, 28, 31, 34, 38, 40, 43, 
+	46, 48, 51, 54, 57, 58
 };
 
 static const char _markg_trans_targs[] = {
@@ -68,21 +67,21 @@ static const char _markg_trans_targs[] = {
 	0, 5, 4, 0, 5, 4, 6, 0, 
 	7, 7, 7, 0, 20, 0, 0, 20, 
 	9, 0, 20, 9, 0, 21, 11, 0, 
-	21, 11, 20, 13, 13, 13, 0, 20, 
-	0, 0, 20, 15, 0, 20, 15, 17, 
-	0, 0, 19, 18, 0, 19, 18, 0, 
-	20, 18, 0, 12, 0, 0
+	21, 11, 13, 13, 13, 0, 20, 0, 
+	0, 20, 15, 0, 20, 15, 17, 0, 
+	0, 19, 18, 0, 19, 18, 0, 20, 
+	18, 0, 12, 0, 0
 };
 
 static const char _markg_trans_actions[] = {
 	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 11, 1, 0, 3, 0, 0, 0, 
-	5, 5, 5, 0, 26, 0, 0, 29, 
-	1, 0, 14, 0, 0, 37, 1, 0, 
-	20, 0, 9, 5, 5, 5, 0, 23, 
-	0, 0, 33, 1, 0, 17, 0, 0, 
-	0, 0, 11, 1, 0, 3, 0, 0, 
-	7, 0, 0, 0, 0, 0
+	0, 9, 1, 0, 3, 0, 0, 0, 
+	5, 5, 5, 0, 24, 0, 0, 27, 
+	1, 0, 12, 0, 0, 35, 1, 0, 
+	18, 0, 5, 5, 5, 0, 21, 0, 
+	0, 31, 1, 0, 15, 0, 0, 0, 
+	0, 9, 1, 0, 3, 0, 0, 7, 
+	0, 0, 0, 0, 0
 };
 
 static const int markg_start = 1;
@@ -92,7 +91,7 @@ static const int markg_error = 0;
 static const int markg_en_main = 1;
 
 
-/* #line 42 "MARKG.c.rl" */
+/* #line 41 "MARKG.c.rl" */
 
 ok64 MARKDecomposeG(markg *g, u8csc tok) {
     a_dup(u8c, data, tok);
@@ -105,14 +104,14 @@ ok64 MARKDecomposeG(markg *g, u8csc tok) {
     u8 kind = 0;
 
     
-/* #line 100 "MARKG.rl.c" */
+/* #line 99 "MARKG.rl.c" */
 	{
 	cs = markg_start;
 	}
 
-/* #line 54 "MARKG.c.rl" */
+/* #line 53 "MARKG.c.rl" */
     
-/* #line 103 "MARKG.rl.c" */
+/* #line 102 "MARKG.rl.c" */
 	{
 	int _klen;
 	unsigned int _trans;
@@ -221,7 +220,7 @@ _match:
 /* #line 28 "MARKG.c.rl" */
 	{ kind = 'M'; }
 	break;
-/* #line 202 "MARKG.rl.c" */
+/* #line 201 "MARKG.rl.c" */
 		}
 	}
 
@@ -234,7 +233,7 @@ _again:
 	_out: {}
 	}
 
-/* #line 55 "MARKG.c.rl" */
+/* #line 54 "MARKG.c.rl" */
 
     if (cs < markg_first_final) {
         g->kind = 0;
@@ -247,7 +246,7 @@ _again:
         g->label[0] = lbl0;
         g->label[1] = lbl1;
     } else {
-        //  collapsed/shortcut: key the link on its text
+        //  shortcut: key the link on its bracket text
         g->label[0] = g->text[0];
         g->label[1] = g->text[1];
     }

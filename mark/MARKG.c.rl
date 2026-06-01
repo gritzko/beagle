@@ -3,9 +3,9 @@
 //  ragel machine splits one into (kind, text, label) so the renderer can
 //  emit <strong>/<em>/<del>/<a>/<img> without a hand-rolled scan.
 //
-//  Forms: *strong*  _emph_  ~~del~~  [text][x]  ![text][x]  [text][]  [text]
-//  Reference labels (the [x] in [text][x]) stay one symbol; collapsed and
-//  shortcut links carry no label, so the renderer keys them on `text`.
+//  Forms: *strong*  _emph_  ~~del~~  [text text][l]  [page]  ![alt][l]
+//  The explicit label l stays one symbol; a shortcut [page] carries no label,
+//  so the renderer keys it on the bracket text.
 //
 //  Build: ragel -C MARKG.c.rl -o MARKG.rl.c -L
 
@@ -31,11 +31,10 @@
     emph    = '_'  ( (any - [_\n])* )  >ts0 %ts1 '_'  @k_emph ;
     strike  = '~~' ( (any - [~\n] | '~' (any - [~\n]))* ) >ts0 %ts1 '~~' @k_strike ;
     reflink = '['  ( (any - [\]\n])* ) >ts0 %ts1 '][' ( [0-9A-Za-z] >lb0 %lb1 ) ']' @k_link ;
-    collink = '['  ( (any - [\]\n])* ) >ts0 %ts1 '][]' @k_link ;
     shrlink = '['  ( (any - [\]\n])* ) >ts0 %ts1 ']' @k_link ;
     image   = '![' ( (any - [\]\n])* ) >ts0 %ts1 '][' ( [0-9A-Za-z] >lb0 %lb1 ) ']' @k_image ;
 
-    main := strong | emph | strike | reflink | collink | shrlink | image ;
+    main := strong | emph | strike | reflink | shrlink | image ;
 }%%
 
 %% write data;
@@ -64,7 +63,7 @@ ok64 MARKDecomposeG(markg *g, u8csc tok) {
         g->label[0] = lbl0;
         g->label[1] = lbl1;
     } else {
-        //  collapsed/shortcut: key the link on its text
+        //  shortcut: key the link on its bracket text
         g->label[0] = g->text[0];
         g->label[1] = g->text[1];
     }

@@ -61,6 +61,11 @@ static ok64 MARKrender_cases() {
         {"uri-q", "#   T\n\nthe `?ref` slot, 50% done\n", "<code>?ref</code>"},
         {"short-suffix", "#   T\n\nan [URI]s link\n\n[URI]: URI.mkd\n",
          "<a href=\"URI.html\">URI</a>s"},
+        //  the two link cases, and that collapsed [page][] is NOT special.
+        {"explicit-multiword", "#   T\n\nread [two words][1] now\n\n[1]: x.mkd\n",
+         "<a href=\"x.html\">two words</a>"},
+        {"no-collapsed", "#   T\n\nsee [Home][] now\n\n[Home]: Home.mkd\n",
+         "<a href=\"Home.html\">Home</a>[]"},
     };
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
         call(render, out, T[i].src, NO);

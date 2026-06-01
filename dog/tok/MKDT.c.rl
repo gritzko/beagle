@@ -88,10 +88,7 @@ main := |*
     # ---- image/transclusion ![text][x] ----
     "![" (any8 - [\]\n])+ "][" [0-9A-Za-z] "]"           => on_link;
 
-    # ---- collapsed link [text][] (label = text) ----
-    "[" (any8 - [\]\n])+ "][]"                           => on_link;
-
-    # ---- shortcut link [text] (label = text) ----
+    # ---- shortcut link [page] (key = bracket text) ----
     "[" (any8 - [\]\n])+ "]"                             => on_link;
 
     # ---- numbers ----

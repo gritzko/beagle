@@ -39,8 +39,9 @@ against `dog/test/TOK01.c`:
   (`MKDTFenceOpen`, `MKDTFenceClose`, `MKDTHeadingLevel`, `MKDTHRule`,
   `MKDTRefDef`, `MKDTIndentDepth`) plus a new `MKDTLineMarker` extracted from
   `MKDTLexer`'s marker logic (one source of truth). No grammar change.
-- **Inline grammar:** added shortcut `[text]` and collapsed `[text][]` link
-  forms (reference labels stay one symbol).
+- **Inline grammar:** added the shortcut link form `[page]` (keyed on its
+  bracket text) alongside the existing explicit `[text][l]` (one-symbol label
+  `l`). These are the only two link cases — no collapsed `[page][]`.
 - **Inline grammar:** added an `any8 => on_punct` fallback so the lexer is
   total — prose bytes outside the original punct set (`?`, `%`, …) no longer
   yield `MKDTBAD`. Purely additive (only reclassifies bytes that matched
