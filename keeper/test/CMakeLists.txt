@@ -116,6 +116,12 @@ target_compile_options(WIRERLtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WIRERLtest keeplib dog abc-core)
 add_test(NAME WIRERLtest COMMAND WIRERLtest)
 
+add_executable(SERVEPATHtest SERVEPATH.c)
+target_link_options(SERVEPATHtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(SERVEPATHtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(SERVEPATHtest keeplib dog abc-core)
+add_test(NAME SERVEPATHtest COMMAND SERVEPATHtest)
+
 #  upload-pack CLI verb (WIRE.md Phase 5).  The test spawns the built
 #  `keeper` binary, so it depends on it being present in DOG_BIN_DIR.
 add_executable(UPLOADPACKtest UPLOADPACK.c)

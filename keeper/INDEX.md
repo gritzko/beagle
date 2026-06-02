@@ -101,11 +101,23 @@ commit's reachable closure, builds a v2 packfile inline, sends one
 ref-update line + pack, drains unpack/per-ref status.
 
   - `wire_req`           parsed wants[] + haves[] + caps bitmask
+  - `WIREServePath`      build the served repo-path argv element:
+                          `path` + absolute `?/<project>` selector (so
+                          a keeper peer routes to that shard, not its
+                          row-0 default).  Both transport branches
+                          (local exec + ssh) funnel through it; a bare
+                          `?ref` (the want) is NOT appended.
+                          (`test/SERVEPATH.c`)
   - `WIREReadRequest`    drain pkt-lines, populate wire_req
   - `WIREBuildSegments`  resolve wants/haves → ordered pstr_seg list
   - `WIREServeUpload`    one-shot: read request, build segs, write pack
   - `WIREFetch`          client: spawn upload-pack peer, ingest pack,
-                          append REFS tip
+                          append REFS tip.  A 40-hex `want_ref` is a
+                          WANT-BY-HASH: sends `want <sha>` directly
+                          (bypasses advert matching), lands the pin even
+                          from a zero-/wrong-refs shard, records it as
+                          trunk.  Used by sniff sub-mount for the
+                          gitlink pin (`test/WIRE_CLIENT.c` case 4).
   - `WIREFetchAll`       client: single upload-pack session, multi-want
                           for every advertised heads/tags ref.  Backs
                           `be head ssh://origin?*` (VERBS.md §HEAD).

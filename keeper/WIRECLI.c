@@ -138,6 +138,17 @@ static b8 wcli_path_is_git_layout(u8csc path) {
     return NO;
 }
 
+//  See WIRE.h.  Path, then optional absolute `?/<project>` selector.
+ok64 WIREServePath(u8b out, u8csc path, u8csc query) {
+    sane(u8bOK(out));
+    call(u8bFeed, out, path);
+    if (!u8csEmpty(query) && *query[0] == '/') {
+        call(u8bFeed1, out, '?');
+        call(u8bFeed, out, query);
+    }
+    done;
+}
+
 static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
                        int *wfd, int *rfd, pid_t *pid) {
     sane(verb && wfd && rfd && pid);
@@ -194,11 +205,7 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
         //  row-0 default project.  Git peers (above) get the bare path
         //  — git repos are single-project.
         a_pad(u8, kpath, FILE_PATH_MAX_LEN + 64);
-        (void)u8bFeed(kpath, path);
-        if (!u8csEmpty(u.query) && *u.query[0] == '/') {
-            (void)u8bFeed1(kpath, '?');
-            (void)u8bFeed(kpath, u.query);
-        }
+        call(WIREServePath, kpath, path, u.query);
         u8cs kbin = {};
         wcli_keeper_bin(kbin);
         u8cs argv_arr[3] = {
@@ -232,7 +239,14 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     b8 force_git      = wcli_path_is_git(path);
 
     if (use_keeper_ssh && !force_git) {
-        //  ssh <host> [PATH=...] keeper <verb> <path>
+        //  ssh <host> [PATH=...] keeper <verb> <path>[?/proj]
+        //
+        //  Carry the `?/<project>` selector on the served path so a
+        //  remote keeper peer routes to that shard, not its row-0
+        //  default — symmetric with the local-exec branch above.
+        a_pad(u8, spath, FILE_PATH_MAX_LEN + 64);
+        call(WIREServePath, spath, path, u.query);
+        a_dup(u8c, spath_s, u8bData(spath));
         //
         //  $DOG_REMOTE_PATH is prepended to the remote shell's PATH so
         //  test harnesses can point at an out-of-tree `keeper` binary
@@ -250,7 +264,7 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
             u8bFeed(rcmd, pre2);
             u8bFeed(rcmd, verb_s);
             u8bFeed1(rcmd, ' ');
-            u8bFeed(rcmd, path);
+            u8bFeed(rcmd, spath_s);
             u8cs argv_arr[3] = {
                 {(u8cp)"ssh", (u8cp)"ssh" + 3},
                 {host[0], host[1]},
@@ -264,7 +278,7 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
             {host[0], host[1]},
             {(u8cp)"keeper", (u8cp)"keeper" + 6},
             {verb_s[0], verb_s[1]},
-            {path[0], path[1]},
+            {spath_s[0], spath_s[1]},
         };
         u8css argv = {argv_arr, argv_arr + 5};
         return FILESpawn(ssh_path_s, argv, wfd, rfd, pid);
@@ -819,15 +833,36 @@ static ok64 wire_fetch_inner(u8csc remote_uri, u8cs effective_ref,
 
     a_carve(u8, advbuf, WCLI_BUF);
 
+    //  Want-by-hash: a bare 40-hex `want_ref` (e.g. a submodule gitlink
+    //  pin) names the exact object to pull, not a branch.  The server's
+    //  wire_locate_sha serves any present object, so this works even
+    //  when the source shard advertises no ref whose closure covers the
+    //  pin (the zero-/wrong-refs case WIREFetchAll cannot satisfy).
+    sha1 pin_sha = {};
+    b8   want_pin = wcli_haves_decode_val(&pin_sha, effective_ref);
+
     //  1.  Drain refs advertisement; pick the want sha + capture the
     //      matched ref name (used for the local REFS write below).
+    //      For a by-hash want we still drain the advertisement (wire
+    //      order) but ignore its picks: WIRECLNRF (no branch matched a
+    //      40-hex name) is expected, only a genuine wire failure aborts.
     sha1 want_sha = {};
     a_pad(u8, matched_ref_buf, 256);
-    call(wcli_match_advert, *rfd, advbuf, effective_ref, &want_sha,
-                            matched_ref_buf);
+    try(wcli_match_advert, *rfd, advbuf, effective_ref, &want_sha,
+                           matched_ref_buf);
+    ok64 mo = __;
+    if (mo != OK && !(want_pin && mo == WIRECLNRF)) fail(mo);
+
     u8cs matched_ref = {};
-    u8csMv(matched_ref, u8bDataC(matched_ref_buf));
-    if (u8csEmpty(matched_ref)) u8csMv(matched_ref, effective_ref);
+    if (want_pin) {
+        //  Override with the pin; leave matched_ref empty so
+        //  wcli_record_ref writes the peer-trunk key (`<uri>?` → pin) —
+        //  the by-hash clone counts as the shard's trunk ref.
+        want_sha = pin_sha;
+    } else {
+        u8csMv(matched_ref, u8bDataC(matched_ref_buf));
+        if (u8csEmpty(matched_ref)) u8csMv(matched_ref, effective_ref);
+    }
 
     //  2.  Harvest haves from local REFS (every tracked tip — local
     //      cur AND cached peer-observed rows).

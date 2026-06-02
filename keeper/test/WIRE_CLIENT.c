@@ -138,6 +138,33 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     done;
 }
 
+//  Ingest `pack_path` into a fresh keeper at `keeper_root` WITHOUT
+//  seeding any REFS row — the shard holds the objects but advertises
+//  zero refs.  Models a sub-shard whose only registration row never
+//  resolved to a tip, or a detached pin not reachable from any
+//  advertised ref: `WIREFetchAll` (fetch every advertised ref) cannot
+//  carry the pin, so a want-by-hash fetch is the only path.
+static ok64 stage_local_keeper_norefs(char const *keeper_root,
+                                      char const *pack_path) {
+    sane(keeper_root && pack_path);
+
+    static u8 pbuf[1 << 20];
+    size_t plen = 0;
+    call(slurp_file, pack_path, pbuf, sizeof(pbuf), &plen);
+
+    a_cstr(root_s, keeper_root);
+    home h = {};
+    call(HOMEOpenAt, &h, root_s, YES);
+    call(KEEPOpen, &h, YES);
+
+    u8csc bytes = {pbuf, pbuf + plen};
+    call(KEEPIngestFile, bytes);
+
+    call(KEEPClose);
+    HOMEClose(&h);
+    done;
+}
+
 //  Look up the REFS tip for be-branch `branch` (`""` = trunk) in a
 //  keeper, copying 40 hex bytes into out_41.  Returns NO if missing.
 static b8 lookup_local_ref(char const *keeper_root, char const *branch,
@@ -351,6 +378,71 @@ ok64 WIRECLIENTtest_round_trip() {
     done;
 }
 
+// ---- Test 4: fetch by pin (want-by-hash) ------------------------------
+//
+//  The submodule fix: the parent holds the gitlink pin sha and must
+//  fetch THAT exact commit, regardless of what the source shard
+//  advertises.  Here the server shard holds the commit but advertises
+//  ZERO refs.  `WIREFetch(uri, <40-hex pin>)` must send `want <pin>`
+//  directly (bypassing advertisement matching) and land the object.
+//
+//  Pre-fix this fails: wcli_match_advert treats the 40-hex want as a
+//  branch name, finds no matching advertised ref, and returns
+//  WIRECLNRF.  Post-fix, a 40-hex want_ref decodes straight to the
+//  want sha; the server's wire_locate_sha serves any present object.
+ok64 WIRECLIENTtest_fetch_by_pin() {
+    sane(1);
+    call(FILEInit);
+
+    char gitdir[]    = "/tmp/wcli-pin-git-XXXXXX";
+    want(mkdtemp(gitdir) != NULL);
+    char serverdir[] = "/tmp/wcli-pin-srv-XXXXXX";
+    want(mkdtemp(serverdir) != NULL);
+    char clientdir[] = "/tmp/wcli-pin-cli-XXXXXX";
+    want(mkdtemp(clientdir) != NULL);
+
+    //  Server holds the pin commit's objects but NO advertised ref.
+    char hex[41];
+    char packpath[1024];
+    call(stage_git_commit, gitdir, "pinned\\n", hex, packpath,
+         sizeof(packpath));
+    call(stage_local_keeper_norefs, serverdir, packpath);
+
+    //  Fetch the pin by hash into a fresh client keeper.
+    {
+        a_cstr(client_root_s, clientdir);
+        home h = {};
+        call(HOMEOpenAt, &h, client_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, serverdir);
+        u8csc pin_cs = {(u8cp)hex, (u8cp)hex + 40};
+        ok64 fo = WIREFetch(uri, pin_cs);
+        want(fo == OK);
+
+        //  The pinned object must now be present (+ integrity-verified)
+        //  in the client keeper — proves the want-by-hash pull worked
+        //  even though the server advertised nothing.
+        a_dup(u8c, pin_hx, pin_cs);
+        want(KEEPVerify(pin_hx) == OK);
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    //  Piece B tie-in: the by-pin fetch records the pin as the shard's
+    //  trunk (the clone `get`-row counts as the trunk ref), so a later
+    //  serve of this client re-advertises it.
+    char got[41];
+    want(lookup_local_ref(clientdir, "", got));
+    want(memcmp(got, hex, 40) == 0);
+
+    tmp_rm(gitdir);
+    tmp_rm(serverdir);
+    tmp_rm(clientdir);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "WIRECLIENTtest_fetch_smoke...\n");
@@ -359,6 +451,8 @@ ok64 maintest() {
     call(WIRECLIENTtest_push_smoke);
     fprintf(stderr, "WIRECLIENTtest_round_trip...\n");
     call(WIRECLIENTtest_round_trip);
+    fprintf(stderr, "WIRECLIENTtest_fetch_by_pin...\n");
+    call(WIRECLIENTtest_fetch_by_pin);
     fprintf(stderr, "all passed\n");
     done;
 }

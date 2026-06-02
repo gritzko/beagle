@@ -529,7 +529,21 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             nc++;
             for (int ci = 0; ci < nc; ci++) {
                 a_dup(u8c, cu, cands[ci]);
+                //  Fetch every advertised ref first — git-compatible and
+                //  the common case (the gitlink pin is reachable from an
+                //  advertised tip, so its closure carries it).  Must run
+                //  on a clean shard: a git peer refuses an unadvertised
+                //  `want <sha>` ("not our ref"), and a failed attempt
+                //  before fetch-all corrupts the negotiation.
                 ok64 f = WIREFetchAll(cu);
+                //  Want-by-hash TOP-UP: if fetch-all didn't land the pin
+                //  (a keeper peer whose shard advertises no ref whose
+                //  closure covers it — the zero-/wrong-refs case), ask
+                //  for the pin object directly.  Keeper peers serve any
+                //  present object; git peers refuse and this is a no-op.
+                a_dup(u8c, pin_ref, hex_sha);
+                if (f == OK && !subs_pin_present(hex_sha))
+                    (void)WIREFetch(cu, pin_ref);
                 fprintf(stderr,
                         "SUBS.dbg: sub fetch try=" U8SFMT " => %s\n",
                         u8sFmt(cu), ok64str(f));

@@ -126,6 +126,15 @@ con ok64 WIRECLFL  = 0x8126ce3153d5;
 con ok64 WIRECLNRF = 0x2049b38c5576cf;
 con ok64 WIRECLNFF = 0x2049b38c5573cf;
 
+//  Build the repo-path argv element a keeper peer receives: `path`
+//  followed by an absolute `?/<project>` selector when `query` carries
+//  one (leading '/').  The server splits on '?' in `keeper_served_at`
+//  to route to that shard instead of its row-0 default project.  A
+//  bare `?ref` (no leading '/') is the want, sent in-band — it is NOT
+//  appended.  Both wcli_spawn transport branches (local exec + ssh)
+//  funnel through this so the selector survives identically.
+ok64 WIREServePath(u8b out, u8csc path, u8csc query);
+
 //  Spawn a git-protocol peer (ssh or local exec) and run a fetch
 //  conversation: drain refs advertisement, send wants/haves, read pack.
 //  Ingest the pack into `k` (via KEEPIngestFile) and append a REFS
@@ -137,14 +146,22 @@ con ok64 WIRECLNFF = 0x2049b38c5573cf;
 //    file:///path       → exec "keeper upload-pack path" locally
 //    keeper://local/p   → exec "keeper upload-pack p" locally
 //
-//  `want_ref` selects the advertised ref the caller wants.  Forms:
+//  `want_ref` selects the want.  Forms:
 //    "heads/<name>"     match against "refs/heads/<name>"
 //    "tags/<name>"      match against "refs/tags/<name>"
 //    "refs/<...>"       match the full refname
 //    ""                 use the peer's first-line / HEAD ref
+//    <40-hex sha>       WANT-BY-HASH: send `want <sha>` directly,
+//                       bypassing advertisement matching.  A keeper
+//                       peer's wire_locate_sha serves any present
+//                       object, so this lands the pin even when the
+//                       source shard advertises no ref whose closure
+//                       covers it (submodule gitlink fetch).  The pin
+//                       is recorded as the shard's trunk (`<uri>?`).
 //
-//  Returns OK on success, WIRECLNRF if the peer doesn't advertise
-//  the requested ref, WIRECLFL on transport / ingest errors.
+//  Returns OK on success, WIRECLNRF if a named want_ref isn't
+//  advertised (a 40-hex want never needs a match), WIRECLFL on
+//  transport / ingest errors.
 ok64 WIREFetch(u8csc remote_uri, u8csc want_ref);
 
 //  Bulk fetch: drive a single upload-pack session that sends one

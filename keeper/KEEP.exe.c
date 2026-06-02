@@ -388,6 +388,15 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
         if (*rpath[0] != '/') u8bFeed1(out, '/');
         u8bFeed(out, rpath);
     }
+    //  Preserve an absolute `?/<project>` selector so the rebuilt URI
+    //  still names the requested shard; wcli_spawn forwards it on the
+    //  served path (the peer routes via keeper_served_at → HOMEOpen
+    //  step 5).  Leading '/' gates it to the project form — a bare
+    //  `?ref` is the want, carried separately by WIREFetch.
+    if (!u8csEmpty(g->query) && *g->query[0] == '/') {
+        u8bFeed1(out, '?');
+        u8bFeed(out, g->query);
+    }
     done;
 }
 
