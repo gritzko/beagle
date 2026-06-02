@@ -33,6 +33,31 @@ case ":$PATH:" in
     *) PATH="$_BE_BIN:$PATH"; export PATH ;;
 esac
 
+# 1c. portable `timeout` ------------------------------------------------
+#   macOS / BSD ship no `timeout(1)` (it's GNU coreutils), so tests that
+#   guard a possibly-hanging `be` with `timeout <secs> ...` would fail
+#   with "timeout: command not found" — the guarded command never runs.
+#   Provide a shim only when the real tool is absent: prefer `gtimeout`
+#   (coreutils via brew), else a pure-sh background-kill fallback that
+#   returns the command's status (or 124-ish on expiry, like timeout).
+if ! command -v timeout >/dev/null 2>&1; then
+    if command -v gtimeout >/dev/null 2>&1; then
+        timeout() { gtimeout "$@"; }
+    else
+        timeout() {
+            _to_secs=$1; shift
+            "$@" &
+            _to_cmd=$!
+            ( sleep "$_to_secs"; kill -TERM "$_to_cmd" 2>/dev/null ) &
+            _to_killer=$!
+            if wait "$_to_cmd" 2>/dev/null; then _to_rc=0; else _to_rc=$?; fi
+            kill -KILL "$_to_killer" 2>/dev/null || true
+            wait "$_to_killer" 2>/dev/null || true
+            return "$_to_rc"
+        }
+    fi
+fi
+
 # 2. resolve TMP --------------------------------------------------------
 : "${TMP:=/tmp}"
 export TMP
