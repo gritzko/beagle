@@ -13,7 +13,10 @@
 
 #include "dog/ULOG.h"
 
+#include <fcntl.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "abc/FILE.h"
 #include "abc/PRO.h"
@@ -859,8 +862,58 @@ static ok64 T_scanwt_big_ignored(void) {
     done;
 }
 
+//  Regression (the .be/wtlog wipe): an EXISTING log whose FILEBook fails
+//  must NOT fall through to the O_TRUNC FILEBookCreate and destroy the
+//  bytes — ULOGOpenBooked must propagate the error and leave content
+//  intact.  In the wild the trigger was a 9p mount rejecting
+//  mmap(MAP_SHARED) with EINVAL.  We reproduce a comparable FILEBook
+//  failure portably: grow the file PAST the book_size so FILEBookFD's
+//  `map_size <= book_size` guard returns BADARG.  The file stays
+//  writable, so the OLD unconditional-create fallback WOULD truncate it.
+static ok64 T_no_truncate_on_book_fail(void) {
+    sane(1);
+    call(FILEInit);
+    rm_tmp("/tmp/ulog-nt.log");
+    LOGPATH(path, "/tmp/ulog-nt.log");
+
+    //  Seed a valid one-row log and close it.
+    u8bp l_data = NULL; wh128bp l_idx = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
+    saved_uri s1 = {};
+    call(parse_uri_lit, &s1, "//localhost/repo?heads/master");
+    ulogrec r1 = rec_of(2000, verb_of("get"), &s1);
+    call(ULOGAppendAt, l_data, l_idx, &r1);
+    call(ULOGClose, l_data, &l_idx, YES);
+
+    //  Grow it to 1 MiB — comfortably larger than any page-rounded
+    //  4 KiB book_size, so the next FILEBook fails the size guard.
+    {
+        int fd = open("/tmp/ulog-nt.log", O_RDWR);
+        want(fd >= 0);
+        want(ftruncate(fd, 1UL << 20) == 0);
+        close(fd);
+    }
+    struct stat st0 = {};
+    want(stat("/tmp/ulog-nt.log", &st0) == 0);
+    want(st0.st_size == (off_t)(1UL << 20));
+
+    //  FILEBook fails on an EXISTING, writable file → must propagate,
+    //  NOT truncate.  (Old bug: file shrinks to the book/init size.)
+    u8bp d2 = NULL; wh128bp i2 = NULL;
+    ok64 rc = ULOGOpenBooked(&d2, &i2, path, 4096, 4096);
+    want(rc != OK);
+
+    struct stat st1 = {};
+    want(stat("/tmp/ulog-nt.log", &st1) == 0);
+    want(st1.st_size == st0.st_size);   // preserved; the bug zeroed/shrank it
+
+    rm_tmp("/tmp/ulog-nt.log");
+    done;
+}
+
 ok64 ULOGtest(void) {
     sane(1);
+    fprintf(stderr, "T_no_truncate_on_book_fail...\n"); call(T_no_truncate_on_book_fail);
     fprintf(stderr, "T_scanwt_big_ignored...\n"); call(T_scanwt_big_ignored);
     fprintf(stderr, "T_roundtrip...\n");     call(T_roundtrip);
     fprintf(stderr, "T_persist...\n");       call(T_persist);

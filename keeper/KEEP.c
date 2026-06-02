@@ -859,6 +859,13 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
     u64 key_lo = keepKeyPack(KEEP_OBJ_COMMIT, hashlet60);
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG, hashlet60);
 
+    //  A hashlet match whose KEEPGetPacked fails is NOT the same as
+    //  "object absent": surface the underlying retrieval error (delta
+    //  base unresolved, pack unregistered, corrupt offset) instead of
+    //  masking every failure as KEEPNONE.  60-bit hashlet collisions
+    //  are astronomically rare, so a matching key that won't inflate
+    //  is effectively our object failing to retrieve.
+    ok64 last_fail = OK;
     u32 nruns = keep_run_count_all(k);
     for (u32 r = 0; r < nruns; r++) {
         wh128cs run = {NULL, NULL};
@@ -880,7 +887,7 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
             u8bReset(out);
             u8 otype = 0;
             ok64 rc = KEEPGetPacked(k, base[i].val, out, &otype);
-            if (rc != OK) continue;
+            if (rc != OK) { last_fail = rc; continue; }
 
             // Verify full SHA-1
             sha1 actual = {};
@@ -892,7 +899,7 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
             }
         }
     }
-    return KEEPNONE;
+    return last_fail != OK ? last_fail : KEEPNONE;
 }
 
 // --- KEEPIsAncestor: bounded BFS over commit parent + foster edges ---

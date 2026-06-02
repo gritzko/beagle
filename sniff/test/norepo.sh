@@ -18,7 +18,12 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
+# This test asserts "no .be in any ANCESTOR dir".  The suite pins TMP
+# under $HOME, where a real `~/.be` store may live — the cwd walk-up
+# would then find it and (mis)treat $HOME as a worktree, hanging bare
+# sniff.  Anchor our scratch under /tmp instead (no ssh here, so no
+# $HOME dependency); its ancestor chain up to / has no `.be`.
+TMP=${TMPDIR:-/tmp}/be-tests-norepo
 TEST_ID=${TEST_ID:-SNIFFnorepo}
 TMP=$TMP/$TEST_ID/$$
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM

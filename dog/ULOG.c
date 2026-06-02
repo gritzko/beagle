@@ -430,6 +430,15 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
 
     ok64 o = FILEBook(data, path, book_size);
     if (o != OK) {
+        //  Only seed a fresh log when the file is genuinely ABSENT.
+        //  A FILEBook failure on an EXISTING file must NOT fall through
+        //  to the O_TRUNC FILEBookCreate — that destroys the log.  The
+        //  trigger in the wild: a 9p / NFS shared mount rejecting
+        //  mmap(MAP_SHARED|MAP_FIXED) with EINVAL (→ FILEINVAL); the old
+        //  fallback then truncated the worktree's wtlog/refs on every
+        //  RW open.  Propagate the real error so callers see it instead.
+        filestat fs = {};
+        if (FILEStat(&fs, path) == OK) return o;   // exists → real error
         call(FILEBookCreate, data, path, book_size, init_size);
     }
 
