@@ -80,5 +80,31 @@ echo "$BODY" | grep -q "^foster $F2$" || fail "foster $F2 missing in commit $SQ"
 echo "$BODY" | grep -q "^parent $F2$" && fail "feat tip recorded as parent (should be foster)"
 echo "$BODY" | grep -q '^picked' && fail "picked trailer leaked into squash"
 
+# Header order must be git-valid: tree, parent(s), author, committer,
+# THEN beagle's `foster` header.  Git's fsck requires `author` right
+# after the parent line(s); a `foster` line there makes it reject the
+# object ("missingAuthor: invalid format - expected 'author' line") —
+# exactly the failure seen on `git push github`.  Regression: foster
+# used to be emitted before author.
+auth_ln=$(echo "$BODY" | grep -n '^author '    | head -1 | cut -d: -f1)
+com_ln=$( echo "$BODY" | grep -n '^committer ' | head -1 | cut -d: -f1)
+par_ln=$( echo "$BODY" | grep -n '^parent '    | head -1 | cut -d: -f1)
+fos_ln=$( echo "$BODY" | grep -n '^foster '    | head -1 | cut -d: -f1)
+[ "$par_ln"  -lt "$auth_ln" ] || fail "parent must precede author (parent=$par_ln author=$auth_ln)"
+[ "$auth_ln" -lt "$com_ln"  ] || fail "author must precede committer (author=$auth_ln committer=$com_ln)"
+[ "$com_ln"  -lt "$fos_ln"  ] || fail "foster must follow committer (committer=$com_ln foster=$fos_ln)"
+
+# Gold standard: feed the real commit body to git's strict object
+# check, which runs the same fsck github does on push.
+if command -v git >/dev/null 2>&1; then
+    gfsck="$ETMP/fsck.git"; git init -q "$gfsck"
+    echo "$BODY" | git -C "$gfsck" hash-object -t commit --stdin \
+        >/dev/null 2>"$ETMP/fsck.err" \
+        || fail "git rejects the foster commit object:
+$(cat "$ETMP/fsck.err")
+--- body ---
+$BODY"
+fi
+
 note "squash OK: cur=$SQ has parent=$T2 + foster=$F2"
 echo "=== patch/10-squash-foster: OK ==="

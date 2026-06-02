@@ -2566,23 +2566,30 @@ ok64 POSTCommit(u8cs target_branch,
     }
 
     //  Headers from in-scope patch rows (VERBS.md §POST "Parent /
-    //  foster / picked assembly").  Walk oldest → newest; classify
-    //  each row by URI shape:
+    //  foster / picked assembly").  Classify each row by URI shape:
     //
-    //    SQUASH   `?<sha>`         → foster <sha>\n
-    //    REBASE1  `?<sha>#`        → foster <sha>\n
-    //    MERGE    `?<sha>#<msg>`   → parent <sha>\n
+    //    SQUASH   `?<sha>`         → foster <sha>\n   (after committer)
+    //    REBASE1  `?<sha>#`        → foster <sha>\n   (after committer)
+    //    MERGE    `?<sha>#<msg>`   → parent <sha>\n   (here, pre-author)
     //    CHERRY   `#<sha>`         → collected for `picked: <sha>`
     //                                 trailer appended to msg below.
+    //
+    //  Git's commit grammar is strict: `tree`, then ALL `parent` lines,
+    //  then `author`, then `committer`.  So MERGE parents must be
+    //  emitted HERE (consecutive with the first-parent line, before
+    //  author).  `foster` is a beagle-only header git doesn't know — it
+    //  rides AFTER `committer` (like `gpgsig`); emitting it before
+    //  `author` breaks the required parent→author adjacency and git
+    //  fsck rejects the object ("missingAuthor: expected 'author'
+    //  line").  Walk oldest → newest within each class to preserve row
+    //  order.
     sniff_pe pent[64];
     u32 n_pent = 0;
     (void)SNIFFAtPatchEntries(pent, 64, &n_pent);
     for (u32 i = 0; i < n_pent; i++) {
-        if (pent[i].shape == 2 /* CHERRY */) continue;
-        const char *lab =
-            (pent[i].shape == 3 /* MERGE */) ? "parent " : "foster ";
-        u8cs lab_cs = {(u8cp)lab, (u8cp)lab + 7};
-        u8bFeed(com, lab_cs);
+        if (pent[i].shape != 3 /* MERGE */) continue;
+        a_cstr(mpar_label, "parent ");
+        u8bFeed(com, mpar_label);
         a_pad(u8, fhex, 40);
         a_rawc(fraw, pent[i].sha);
         HEXu8sFeedSome(fhex_idle, fraw);
@@ -2610,6 +2617,22 @@ ok64 POSTCommit(u8cs target_branch,
     u8bFeed(com, comm_label);
     u8bFeed(com, author);
     u8bFeed(com, ts_s);
+
+    //  `foster <sha>` headers from SQUASH / REBASE1 patch rows — a
+    //  beagle-only header, so it rides after `committer` (still inside
+    //  the header block, before the blank line) where git treats
+    //  unknown headers the way it treats `gpgsig`.  Row order preserved.
+    for (u32 i = 0; i < n_pent; i++) {
+        if (pent[i].shape == 2 /* CHERRY */ ||
+            pent[i].shape == 3 /* MERGE  */) continue;
+        a_cstr(fos_label, "foster ");
+        u8bFeed(com, fos_label);
+        a_pad(u8, fhex, 40);
+        a_rawc(fraw, pent[i].sha);
+        HEXu8sFeedSome(fhex_idle, fraw);
+        u8bFeed(com, u8bDataC(fhex));
+        u8bFeed1(com, '\n');
+    }
 
     u8bFeed1(com, '\n');
     u8bFeed(com, message);
