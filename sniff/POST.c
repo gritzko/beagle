@@ -1578,9 +1578,15 @@ ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
     done;
 }
 
-ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
+ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
     sane($ok(target_branch));
     keeper *k = &KEEP;
+    //  Default verb tag is "post"; callers that originate from a PUT
+    //  pass "put" so user-facing log lines name the verb the user typed.
+    a_cstr(default_tag, "post");
+    u8cs vtag = {};
+    if (u8csEmpty(verb_tag)) u8csMv(vtag, default_tag);
+    else                      u8csMv(vtag, verb_tag);
     //  Repo root reachable from SNIFF.h->root.  Use `a_dup` for a
     //  local, consumable copy where the body needs slice ops.
     a_dup(u8c, reporoot, post_reporoot());
@@ -1608,7 +1614,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
 
     if (!has_cur_tip) {
         fprintf(stderr,
-                "sniff: post: no cur tip — cannot promote\n");
+                "sniff: " U8SFMT ": no cur tip — cannot promote\n",
+                u8sFmt(vtag));
         return SNIFFFAIL;
     }
 
@@ -1630,8 +1637,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
             post_basename(base_in, cur_branch);
             if ($empty(base_in)) {
                 fprintf(stderr,
-                        "sniff: post: trailing-slash target needs a "
-                        "non-empty cur basename\n");
+                        "sniff: " U8SFMT ": trailing-slash target needs a "
+                        "non-empty cur basename\n",
+                        u8sFmt(vtag));
                 return SNIFFFAIL;
             }
             //  Rebuild target as `<stripped>/<basename(cur)>`.
@@ -1713,9 +1721,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
     //  allow_create=YES to reuse the create-on-miss arm below.
     if (!target_exists && !allow_create) {
         fprintf(stderr,
-                "sniff: post: ?" U8SFMT " does not exist — "
+                "sniff: " U8SFMT ": ?" U8SFMT " does not exist — "
                 "`be put ?<branch>` first\n",
-                u8sFmt(target_branch));
+                u8sFmt(vtag), u8sFmt(target_branch));
         return POSTNONE;
     }
 
@@ -1769,8 +1777,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                 ok64 cl = KEEPPackClose(&pp);
                 if (rb != OK) {
                     fprintf(stderr,
-                            "sniff: post: leaf-create rebase aborted "
+                            "sniff: " U8SFMT ": leaf-create rebase aborted "
                             "(%s)\n",
+                            u8sFmt(vtag),
                             rb == GRAFCNFL ? "merge conflict" : "error");
                     return rb;
                 }
@@ -1810,7 +1819,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         } else {
             //  Created.  Cur unchanged.  Done.
             fprintf(stderr,
-                    "sniff: post: created ?" U8SFMT " at " U8SFMT "\n",
+                    "sniff: " U8SFMT ": created ?" U8SFMT " at " U8SFMT "\n",
+                    u8sFmt(vtag),
                     u8sFmt(target_branch), u8sFmt(u8bDataC(val_hex)));
             return OK;
         }
@@ -1903,15 +1913,15 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                                                 expected, val);
                 if (cas == REFSCAS) {
                     fprintf(stderr,
-                            "sniff: post: cur auto-sync raced on "
+                            "sniff: " U8SFMT ": cur auto-sync raced on "
                             "?" U8SFMT " — run `be get ?..` to refresh\n",
-                            u8sFmt(cur_branch));
+                            u8sFmt(vtag), u8sFmt(cur_branch));
                 } else if (cas != OK) return cas;
             }
             fprintf(stderr,
-                    "sniff: post: nothing to promote (?" U8SFMT " already "
+                    "sniff: " U8SFMT ": nothing to promote (?" U8SFMT " already "
                     "contains cur)\n",
-                    u8sFmt(target_branch));
+                    u8sFmt(vtag), u8sFmt(target_branch));
             return OK;
         }
     }
@@ -1935,10 +1945,10 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         //  removed: rebase semantics belong in PATCH; see
         //  VERBS.md §POST and the cheat sheet for `git rebase`.)
         fprintf(stderr,
-                "sniff: post: ?" U8SFMT " — not a fast-forward (cur is "
+                "sniff: " U8SFMT ": ?" U8SFMT " — not a fast-forward (cur is "
                 "not a descendant of target.tip); use `be patch ?" U8SFMT
                 "#` + `be post` to rebase\n",
-                u8sFmt(target_branch), u8sFmt(target_branch));
+                u8sFmt(vtag), u8sFmt(target_branch), u8sFmt(target_branch));
         return POSTNOFF;
     }
 
@@ -1967,7 +1977,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         ok64 cl3 = KEEPPackClose(&p3);
         if (cw != OK) {
             fprintf(stderr,
-                    "sniff: post: cascade aborted (%s)\n",
+                    "sniff: " U8SFMT ": cascade aborted (%s)\n",
+                    u8sFmt(vtag),
                     cw == GRAFCNFL ? "merge conflict in descendant"
                                    : "error");
             return cw;
@@ -1997,9 +2008,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                                         expected, val);
         if (cas == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: REFS for `?" U8SFMT "` advanced "
+                    "sniff: " U8SFMT ": REFS for `?" U8SFMT "` advanced "
                     "concurrently — retry\n",
-                    u8sFmt(target_branch));
+                    u8sFmt(vtag), u8sFmt(target_branch));
             return REFSCAS;
         }
         if (cas != OK) return cas;
@@ -2033,9 +2044,9 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
                                         expected, val);
         if (cas == REFSCAS) {
             fprintf(stderr,
-                    "sniff: post: cur auto-sync raced on `?" U8SFMT "` "
+                    "sniff: " U8SFMT ": cur auto-sync raced on `?" U8SFMT "` "
                     "— run `be get ?..` to refresh\n",
-                    u8sFmt(cur_branch));
+                    u8sFmt(vtag), u8sFmt(cur_branch));
             //  Don't surface — target already advanced; cur staleness
             //  is recoverable.
         } else if (cas != OK) return cas;
@@ -2062,8 +2073,8 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create) {
         a_rawc(osha, target_new_tip);
         HEXu8sFeedSome(hex_out_idle, osha);
         fprintf(stderr,
-                "sniff: post: ?" U8SFMT " -> " U8SFMT "\n",
-                u8sFmt(target_branch), u8sFmt(u8bDataC(hex_out)));
+                "sniff: " U8SFMT ": ?" U8SFMT " -> " U8SFMT "\n",
+                u8sFmt(vtag), u8sFmt(target_branch), u8sFmt(u8bDataC(hex_out)));
     }
     return OK;
 }
@@ -2730,15 +2741,21 @@ ok64 POSTCommit(u8cs target_branch,
             }
 
             //  Refuse to commit any file containing PATCH's
-            //  conflict-marker triple (`<<<<…||||…>>>>`).  An
-            //  unattended `patch && post` chain stops here with
-            //  POSTCFLCT before recording a half-merged commit
-            //  (VERBS.md §PATCH "Reporting" — conflict-loud
-            //  rule).  Lone `<<<<` (prose mentions) doesn't
-            //  trigger — see `SNIFFHasConflictMarker` for the
-            //  exact predicate.  `--force` skips the scan as an
-            //  escape hatch for false positives (string literals
-            //  describing the marker shape, etc.).
+            //  conflict-marker triple (open + mid + close, each
+            //  four chars; see PATCH.c for the exact byte
+            //  pattern).  An unattended `patch && post` chain
+            //  stops here with POSTCFLCT before recording a
+            //  half-merged commit (VERBS.md §PATCH "Reporting"
+            //  — conflict-loud rule).  Lone open or close (prose
+            //  mentions) doesn't trigger — see
+            //  `SNIFFHasConflictMarker` for the exact predicate.
+            //  `--force` skips the scan as an escape hatch for
+            //  false positives (string literals describing the
+            //  marker shape, etc.).  This comment deliberately
+            //  avoids writing the triple inline because the
+            //  predicate doesn't know it's reading a comment and
+            //  would refuse to commit this file (POST.c) on its
+            //  own self-description.
             if (!force) {
                 if (SNIFFHasConflictMarker(body)) {
                     fprintf(stderr,

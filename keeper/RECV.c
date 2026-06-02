@@ -5,8 +5,11 @@
 
 #include "RECV.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "abc/FILE.h"
@@ -394,6 +397,116 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
     return FILEFeedAll(out_fd, fdata);
 }
 
+// --- colocated primary-wt advance ---
+//
+//  After REFS moves on an FF push, the local primary wt sitting at
+//  `dirname(dirname(<project>))` (the colocated layout, where the
+//  project shard lives at `<wt>/.be/<proj>/`) must follow — otherwise
+//  the user's on-disk tree silently lags REFS.  We verify the layout
+//  by stat-ing `<wt>/.be/wtlog` (the primary-wt anchor file) and then
+//  fork+exec `be get ?` with cwd at the wt root.  Conflicts or dirty
+//  files cause `be get` to refuse — we warn to stderr and let the
+//  push response succeed regardless (the wire-side push already
+//  committed; the wt-advance is a courtesy).
+//
+//  Non-colocated layouts (canonical store with secondary wts elsewhere)
+//  are skipped silently — there's no reverse mapping from the store
+//  back to those wts in this MVP.  See `<project>/wtlog` for a future
+//  registry-based discovery path.
+//
+//  Split into two phases because `be get ?` needs the project store
+//  lock that the receive-pack process is still holding mid-RECVServe:
+//
+//    1. RECVCaptureWtPath() — runs while KEEP is open; reads the
+//       project shard path off KEEP.h and stashes the parent-dir into
+//       a process-static slot.
+//    2. RECVAdvanceColocatedWt() — runs from the receive-pack driver
+//       AFTER KEEPClose releases the lock; consumes the slot and
+//       fork+exec's `be get ?`.
+
+static char recv_wt_path[1024];
+static b8   recv_wt_path_set = NO;
+
+void RECVCaptureWtPath(void) {
+    recv_wt_path_set = NO;
+    keeper *k = &KEEP;
+    a_path(keepdir);
+    if (HOMEBranchDir(k->h, keepdir, NULL) != OK) return;
+
+    //  keepdir = `<wt>/.be/<proj>/`.  Two pops → `<wt>`.
+    if (PATHu8bPop(keepdir) != OK) return;   // → <wt>/.be
+    if (PATHu8bPop(keepdir) != OK) return;   // → <wt>
+
+    //  Anchor probe: `<wt>/.be/wtlog` must be a regular file.  A dir
+    //  there means this is the store root itself, not a primary wt.
+    a_path(anchor);
+    if (PATHu8bFeed(anchor, $path(keepdir)) != OK) return;
+    a_cstr(be_seg, ".be");
+    if (PATHu8bPush(anchor, be_seg) != OK) return;
+    a_cstr(wtlog_seg, "wtlog");
+    if (PATHu8bPush(anchor, wtlog_seg) != OK) return;
+    struct stat st = {};
+    if (stat((char const *)anchor[0], &st) != 0) return;
+    if (!S_ISREG(st.st_mode)) return;
+
+    //  Stash the wt root into our static slot for the post-KEEPClose
+    //  phase.  Truncate (with a warning) rather than overrun.
+    char const *src = (char const *)keepdir[0];
+    size_t n = strlen(src);
+    if (n >= sizeof(recv_wt_path)) {
+        fprintf(stderr,
+                "keeper: recv: wt path too long (%zu) for advance slot\n",
+                n);
+        return;
+    }
+    memcpy(recv_wt_path, src, n + 1);
+    recv_wt_path_set = YES;
+}
+
+void RECVAdvanceColocatedWt(void) {
+    if (!recv_wt_path_set) return;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr,
+                "keeper: recv: fork failed for wt-advance: %s\n",
+                strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        if (chdir(recv_wt_path) != 0) {
+            fprintf(stderr,
+                    "keeper: recv: chdir(%s) failed: %s\n",
+                    recv_wt_path, strerror(errno));
+            _exit(127);
+        }
+        //  Inherit the parent's stderr so the user sees any conflict /
+        //  refusal report from sniff GET.  stdin/stdout → /dev/null
+        //  so we never spew into the wire response.
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) {
+            dup2(dn, STDIN_FILENO);
+            dup2(dn, STDOUT_FILENO);
+            if (dn > STDERR_FILENO) close(dn);
+        }
+        execlp("be", "be", "get", "?", (char *)NULL);
+        fprintf(stderr,
+                "keeper: recv: exec `be get ?` failed: %s\n",
+                strerror(errno));
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr,
+                "keeper: recv: wt-advance via `be get ?` returned %d "
+                "(wt at %s left at old tip; resolve and run `be get ?` "
+                "manually)\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                recv_wt_path);
+    }
+}
+
 // --- top-level orchestration ---
 
 ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
@@ -440,5 +553,18 @@ ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
         if (ao != OK && unpack_status == OK) unpack_status = ao;
     }
 
+    //  If at least one ref was accepted, capture the colocated wt
+    //  path now (while KEEP is still open) so the receive-pack
+    //  driver can advance the wt after closing the store lock.
+    if (unpack_status == OK) {
+        for (u32 i = 0; i < nres; i++) {
+            if (results[i].result == OK) {
+                RECVCaptureWtPath();
+                break;
+            }
+        }
+    }
+
     return RECVEmitResponse(out_fd, unpack_status, results, nres);
 }
+

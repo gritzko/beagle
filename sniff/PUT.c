@@ -862,8 +862,10 @@ ok64 PUTCreateBranch(u8cs reporoot, u8cs target_branch) {
     if (er != REFSNONE) return er;
     //  Create-only: POSTPromote with allow_create=YES handles the
     //  create-on-miss arm, but doesn't auto-sync cur (per spec).
+    //  Pass "put" so its log lines name the verb the user typed.
     (void)reporoot;
-    return POSTPromote(target_branch, YES);
+    a_cstr(put_tag, "put");
+    return POSTPromote(target_branch, YES, put_tag);
 }
 
 ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {

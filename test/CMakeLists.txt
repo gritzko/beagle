@@ -82,11 +82,13 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-24-uri-refs"
     # Bug repro cases — all need an ssh-cloneable origin.
     "be-get-26-cached-no-wire"
+    "be-get-26-remote-shard-refs"
     "be-get-27-ff-refuse"
     "be-get-28-linear-ahead-preserved"
     "be-post-19-pure-push-no-commit"
     "be-post-20-push-prints-diff"
     "be-post-21-foster-ff-push"
+    "be-post-22-recv-advances-wt"
     "be-patch-18-noop-already-absorbed"
     "be-patch-20-divergent-merge"
     "be-patch-21-rebase-one-remote"

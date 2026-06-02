@@ -130,4 +130,19 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
 //  Refs advertisement is emitted by the caller before this is called.
 ok64 RECVServe(int in_fd, int out_fd, refadvcp adv);
 
+//  Capture the colocated primary wt's root path off KEEP, for the
+//  post-KEEPClose wt-advance step.  Called automatically by
+//  RECVServe when at least one ref accepted; safe to call directly
+//  if a caller wants finer control.  Idempotent within a process.
+void RECVCaptureWtPath(void);
+
+//  Fork+exec `be get ?` in the previously-captured wt root.  Must
+//  run AFTER KEEPClose so the spawned child can acquire the project
+//  store lock without deadlocking against the receive-pack server.
+//  No-op when no path was captured (no accepted updates, or the
+//  receiving project isn't colocated with a primary wt).  Conflicts
+//  / dirty-wt refusals are surfaced to stderr; the wire response is
+//  not affected (push already succeeded).
+void RECVAdvanceColocatedWt(void);
+
 #endif

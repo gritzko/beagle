@@ -85,7 +85,10 @@ ok64 POSTPrintStatus(void);
 //    GRAFCNFL    — three-way merge conflict mid-rebase.
 //    REFSCAS     — concurrent advance of target REFS row.
 //    SNIFFFAIL   — generic dispatcher / resource error.
-ok64 POSTPromote(u8cs target_branch, b8 allow_create);
+//  `verb_tag` labels the user-facing log lines POSTPromote emits
+//  ("created ?X at Y", FF refusals, etc.).  POST callers pass "post";
+//  PUT callers pass "put".  Pass NULL for the default "post".
+ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag);
 
 //  Look up a branch's current tip via keeper REFS.  Empty `branch`
 //  means trunk.  Returns OK with `*out` populated on hit, REFSNONE

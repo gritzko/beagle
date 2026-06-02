@@ -836,7 +836,8 @@ ok64 SNIFFExec(cli *c) {
                     t_br[1] = (u8cp)&_z;
                 }
                 a_dup(u8c, tb, t_br);
-                ret = POSTPromote(tb, NO);
+                a_cstr(post_tag, "post");
+                ret = POSTPromote(tb, NO, post_tag);
             }
         }
     } else if (is_put) {
@@ -893,6 +894,51 @@ ok64 SNIFFExec(cli *c) {
                 static u8c const _z = 0;
                 u8cs empty_branch = {(u8cp)&_z, (u8cp)&_z};
                 ret = PUTSetBranch(reporoot, empty_branch, full_s);
+                continue;
+            }
+            //  `?<40-hex>` (no fragment) — user typed a bare full sha
+            //  as the query.  No real branch name is 40 hex chars long,
+            //  so the only sane interpretation is "set cur's tip to
+            //  this sha".  Rewrite to PUTSetBranch on cur's own branch.
+            //  Shorter hashlets are NOT caught here — they may collide
+            //  with legit branch names (`abc123`); the user can disambiguate
+            //  with `?<sha>/` (forbidden, sha not branch) or use `?#<sha>`
+            //  explicitly.
+            if (has_q && !has_path && !has_auth && !has_frag &&
+                u8csLen(u.query) == 40 &&
+                HEXu8sValid(u.query)) {
+                a_dup(u8c, qhex, u.query);
+                sha1hex full = {};
+                ok64 rr = KEEPResolveHex(&full, qhex);
+                if (rr != OK) {
+                    fprintf(stderr,
+                        "sniff: put: cannot resolve ?%.*s\n",
+                        (int)$len(qhex), (char *)qhex[0]);
+                    ret = SNIFFFAIL;
+                    break;
+                }
+                a_rawc(full_s, full);
+                //  Resolve cur's branch via SNIFFAtCurTip (empty branch
+                //  = trunk).  PUTSetBranch accepts an empty-but-valid
+                //  slice for trunk; we mirror the trunk_reset arm above.
+                a_pad(u8, curbuf, 256);
+                {
+                    ron60 ts = 0, verb = 0;
+                    uri cu = {};
+                    if (SNIFFAtCurTip(&ts, &verb, &cu) == OK) {
+                        u8cs br = {};
+                        DOGQueryBranchOnly(cu.query, br);
+                        if (!u8csEmpty(br)) u8bFeed(curbuf, br);
+                    }
+                }
+                a_dup(u8c, cur_target, u8bData(curbuf));
+                if (u8csEmpty(cur_target)) {
+                    static u8c const _z = 0;
+                    u8cs empty_branch = {(u8cp)&_z, (u8cp)&_z};
+                    ret = PUTSetBranch(reporoot, empty_branch, full_s);
+                } else {
+                    ret = PUTSetBranch(reporoot, cur_target, full_s);
+                }
                 continue;
             }
             if (has_q && !has_path && !has_auth) {

@@ -117,6 +117,9 @@ static ok64 keeper_receive_pack(cli *c) {
     try(keeper_receive_pack_inner, &h);
     KEEPClose();
     HOMEClose(&h);
+    //  Lock is released — safe to spawn `be get ?` in the colocated
+    //  primary wt (if any).  See RECV.h §RECVAdvanceColocatedWt.
+    RECVAdvanceColocatedWt();
     done;
 }
 
