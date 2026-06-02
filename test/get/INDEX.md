@@ -111,6 +111,13 @@
   trace: `f922149d4c44e987…` was dropped quietly by `be get //spot`
   on a sub-mount setup.  Passes today in flat-repo shape; the
   sub-mount repro stays open.  Gated on `WITH_SSH`.
+* `32-sub-same-project-twice/` — the SAME sub project mounted twice by
+  one parent, each gitlink pinned to a different branch/commit
+  (`first`@A on `master`, `second`@B on `other`).  Both mounts share a
+  single store shard (`.be/sub/`, keyed by url-basename) yet each
+  checks out its own pin; asserts the two mounts hold distinct bytes
+  (alpha vs beta), the recorded pins differ, and no private
+  `.be/first`/`.be/second` shard was spun up.  Gated on `WITH_SSH`.
 * `29-file-worktree/` — `be get file:<beagle-store>` wires a local
   sibling worktree: cwd's `.be` becomes a regular wtlog file pointing
   back at the shared store, tip tree checked out (VERBS.md

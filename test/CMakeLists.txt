@@ -75,6 +75,7 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-16-sub-push-postorder"
     "be-post-17-sub-msg-resolution-per-level"
     "be-get-20-sub-already-mounted"
+    "be-get-32-sub-same-project-twice"
     # Triangular tests (be→be, be→git, git→be peer ring).
     "be-get-23-triangle"
     "be-post-18-triangle"
