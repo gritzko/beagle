@@ -84,3 +84,9 @@ target_compile_options(CFGtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(CFGtest dog abc-core)
 add_test(NAME CFGtest COMMAND CFGtest)
 
+add_executable(HUNKtest HUNK.c)
+target_link_options(HUNKtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(HUNKtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(HUNKtest dog abc-core)
+add_test(NAME HUNKtest COMMAND HUNKtest)
+

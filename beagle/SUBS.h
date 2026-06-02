@@ -49,6 +49,20 @@ ok64 BESubsHere(u8cs wt_root, besub_cb cb, void *ctx);
 //    BEDOGSIG   — child killed by signal.
 ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv);
 
+//  Relay one submodule's report.  Spawn `be <argv...>` (with `--tlv`
+//  forced) in the sub mount `<wt_root>/<subpath>`, capture its TLV
+//  hunk stream, then re-emit every hunk to stdout in the *parent's*
+//  HUNKMode with each hunk URI's path rebased under `<subpath>`
+//  (HUNKu8sRelay).  Hunks stay one sequential stream — never nested;
+//  a sub-of-sub child already carries its own inner prefix, so the
+//  prefixes accumulate.  This is the per-verb submodule-aggregation
+//  step: the verb prints its own per-file report, then calls this
+//  once per mounted sub so the affected files inside subs are listed
+//  too.  Captured output is relayed even when the child exits
+//  non-zero (e.g. a PATCH conflict); the child's status is then
+//  returned (BEDOGEXIT / BEDOGSIG / OK).
+ok64 BERelaySub(u8cs wt_root, u8cs subpath, u8css argv);
+
 //  Resolve sibling `tool` (via HOMEResolveSibling), spawn it with
 //  `argv`, wait, translate exit into BEDOGEXIT / BEDOGSIG / NONE
 //  (low-byte *NONE residue) / OK.  `bg=YES` skips the wait — caller

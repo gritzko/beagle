@@ -585,9 +585,11 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     u8csMv(subpath, s->path);
 
     if (!rc->transport_mode) {
-        //  Local recursion: forward parent's argv verbatim.
+        //  Local recursion: forward parent's argv verbatim, capturing
+        //  the sub's report and relaying it with the sub's path prefix
+        //  so the parent's stream lists the sub's affected files too.
         u8css argv = {rc->argv_head, rc->argv_term};
-        ok64 r = BERecurseInto(rc->wt_root, subpath, argv);
+        ok64 r = BERelaySub(rc->wt_root, subpath, argv);
         if (r != OK) rc->worst = r;
         return OK;
     }
@@ -612,7 +614,7 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     u8csbFeed1(child_args, uri_view);
     a_dup(u8cs, child_argv, u8csbData(child_args));
 
-    ok64 r = BERecurseInto(rc->wt_root, subpath, child_argv);
+    ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
     if (r != OK) rc->worst = r;
     return OK;
 }
@@ -866,6 +868,82 @@ ok64 BEActSubsGet(cli *c) {
                                           (u8cs *)flag_view[0],
                                           (u8cs *)flag_view[1]);
         if (sub_worst != OK) worst = sub_worst;
+    }
+
+    u8bFree(target_subs);
+    u8bFree(baseline_subs);
+    return worst;
+}
+
+//  PATCH submodule recursion (VERBS.md / Submodules.mkd): gitlink-diff
+//  driven.  A patch that absorbs `?branch` may move a sub's `160000`
+//  pin; where the source (applied) pin differs from cur's base pin, the
+//  sub is checked out at the new pin and its report relayed.  We reuse
+//  GET's subs machinery: enumerate the source branch's subs (target)
+//  and cur's subs (baseline), unmount removed, then mount + relay-`get`
+//  each target sub.  Unchanged subs are safe — GET no-ops a clean sub
+//  already at its pin and refuses a dirty one, so only moved pins
+//  actually update.  Path-scoped / transport patches don't recurse
+//  (not a whole-tree absorption).
+ok64 BEActSubsPatch(cli *c) {
+    sane(c);
+    if (CLIHas(c, "--nosub")) done;
+    if (!u8bHasData(c->repo)) done;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    if (u == NULL) done;
+    if (!u8csEmpty(u->scheme)) done;    //  transport — fetch+absorb, no recurse
+    if (!u8csEmpty(u->path))   done;    //  path-scoped — partial, no recurse
+    if (u8csEmpty(u->query))   done;    //  no source branch — nothing to diff
+
+    //  Source (applied) ref = the patched branch.
+    u8cs source_ref = {};
+    u8csMv(source_ref, u->query);
+
+    //  Base ref = cur's tip (the pre-patch gitlink pins).
+    a_pad(u8, base_at_buf, FILE_PATH_MAX_LEN + 128);
+    u8cs base_ref = {};
+    if (SNIFFAtTailOf(wt_root, base_at_buf) == OK) {
+        uri tt = {};
+        u8csMv(tt.data, u8bDataC(base_at_buf));
+        URILexer(&tt);
+        if (u8csLen(tt.fragment) == 40) u8csMv(base_ref, tt.fragment);
+    }
+
+    //  Enumerate source (target) and base subs.
+    Bu8 target_subs = {};
+    call(u8bAllocate, target_subs, 1UL << 16);
+    ok64 ke = BEGetKeeperSubs(source_ref, target_subs);
+    if (ke != OK) { u8bFree(target_subs); done; }
+
+    Bu8 baseline_subs = {};
+    call(u8bAllocate, baseline_subs, 1UL << 16);
+    if (!u8csEmpty(base_ref))
+        (void)BEGetKeeperSubs(base_ref, baseline_subs);
+
+    //  Flags tail (sans --at) to forward to each sub `get`.
+    a_pad(u8cs, flags_buf, CLI_MAX_FLAGS * 2);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(flags_buf, (*u8csbAtP(c->flags, j + 1)));
+    }
+    a_dup(u8cs, flag_view, u8csbData(flags_buf));
+
+    ok64 worst = OK;
+    if (u8bDataLen(baseline_subs) > 0 && u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, base_view, u8bData(baseline_subs));
+        a_dup(u8c, tgt_view,  u8bData(target_subs));
+        ok64 rr = BEGetDrainRemoved(wt_root, base_view, tgt_view);
+        if (rr != OK) worst = rr;
+    }
+    if (u8bDataLen(target_subs) > 0) {
+        a_dup(u8c, tgt_view, u8bData(target_subs));
+        ok64 sr = BEGetDrainSubs(wt_root, tgt_view,
+                                 (u8cs *)flag_view[0], (u8cs *)flag_view[1]);
+        if (sr != OK) worst = sr;
     }
 
     u8bFree(target_subs);
@@ -1511,6 +1589,21 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
         call(u8bFeed1, pool, 0);
         nargs++;
     }
+    //  Force `--tlv` so the child routes its commit report to stdout as
+    //  a capturable TLV hunk stream (sniff/POST.c step 16 gates on TLV);
+    //  we relay it below with the sub's path prefix.
+    {
+        a_cstr(tlv_lit, "--tlv");
+        a_dup(u8c, tlv_v, tlv_lit);
+        if (nargs >= MAX_ARGS) return BEDOGEXIT;
+        size_t need = (size_t)u8csLen(tlv_v) + 1;
+        if ((size_t)u8bIdleLen(pool) < need) return BEDOGEXIT;
+        offs[nargs] = (size_t)(u8bIdleHead(pool) - u8bDataHead(pool));
+        call(u8bFeed, pool, tlv_v);
+        call(u8bFeed1, pool, 0);
+        nargs++;
+    }
+
     char *argv_c[MAX_ARGS + 1];
     for (u32 i = 0; i < nargs; i++) {
         argv_c[i] = (char *)(u8bDataHead(pool) + offs[i]);
@@ -1518,13 +1611,23 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
     argv_c[nargs] = NULL;
     char const *mount_cstr = (char const *)u8bDataHead(mount);
 
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        fprintf(stderr, "be: post: %.*s: pipe failed: %s\n",
+                (int)$len(subpath), (char *)subpath[0], strerror(errno));
+        return BEDOGEXIT;
+    }
     pid_t pid = fork();
     if (pid < 0) {
+        close(pfd[0]); close(pfd[1]);
         fprintf(stderr, "be: post: %.*s: fork failed: %s\n",
                 (int)$len(subpath), (char *)subpath[0], strerror(errno));
         return BEDOGEXIT;
     }
     if (pid == 0) {
+        close(pfd[0]);
+        if (dup2(pfd[1], STDOUT_FILENO) < 0) _exit(127);
+        close(pfd[1]);
         if (chdir(mount_cstr) != 0) {
             fprintf(stderr, "be: post: chdir %s: %s\n",
                     mount_cstr, strerror(errno));
@@ -1536,8 +1639,36 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
         _exit(127);
     }
 
+    //  Capture the child's TLV commit report to EOF (before reaping so
+    //  the report is complete even on a non-zero exit), then relay it
+    //  path-prefixed to the parent's stdout in the parent's HUNKMode.
+    close(pfd[1]);
+    a_carve(u8, capbuf, 1UL << 20);
+    for (;;) {
+        if (u8bIdleLen(capbuf) == 0) break;
+        u8 *idle = u8bIdleHead(capbuf);
+        size_t cap = (size_t)u8bIdleLen(capbuf);
+        ssize_t n = read(pfd[0], idle, cap);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        u8bFed(capbuf, (u32)n);
+    }
+    close(pfd[0]);
+
     int rc = 0;
     ok64 wo = FILEReap(pid, &rc);
+
+    a_dup(u8c, captured, u8bData(capbuf));
+    if (!$empty(captured)) {
+        a_carve(u8, obuf, 1UL << 20);
+        (void)HUNKu8sRelay(u8bIdle(obuf), subpath, captured);
+        a_dup(u8c, relayed, u8bData(obuf));
+        if (!$empty(relayed)) {
+            fflush(stdout);
+            (void)write(STDOUT_FILENO, relayed[0], (size_t)$len(relayed));
+        }
+    }
+
     if (wo == FILESIGNAL) return BEDOGSIG;
     if (wo != OK)         return wo;
     if (rc == 0)          done;
@@ -1896,13 +2027,84 @@ static ok64 be_canon_path(path8b out, u8cs cwd, u8cs wt_root,
     done;
 }
 
+//  Generic submodule-report aggregation for verbs that recurse: for
+//  each mounted sub under `c`'s wt, relay the sub's report for the
+//  given child `argv` (the child runs `be <argv> --tlv` in the mount,
+//  emitting its own per-file report plus any deeper subs).  Relayed
+//  hunks land in the parent's stream with each path prefixed by the
+//  sub's mount path.  No-op when there's no wt or no mounted subs.
+typedef struct {
+    u8cs   wt_root;
+    u8cs  *argv_head;   // child argv as head/term (u8css can't be a member)
+    u8cs  *argv_term;
+    ok64   worst;
+} be_relay_ctx;
+
+static ok64 be_relay_subs_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    be_relay_ctx *rc = (be_relay_ctx *)vctx;
+    if (!s->mounted) return OK;   // declared-not-mounted → nothing to relay
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    u8css argv = {rc->argv_head, rc->argv_term};
+    ok64 r = BERelaySub(rc->wt_root, subpath, argv);
+    if (r != OK) rc->worst = r;
+    return OK;                     // keep enumerating other subs
+}
+
+static ok64 be_relay_subs(cli *c, u8css argv) {
+    sane(c);
+    if (!u8bHasData(c->repo)) done;
+    a_dup(u8c, wt_root, $path(c->repo));
+    be_relay_ctx rc = {
+        .argv_head = (u8cs *)argv[0],
+        .argv_term = (u8cs *)argv[1],
+        .worst     = OK,
+    };
+    u8csMv(rc.wt_root, wt_root);
+    (void)BESubsHere(wt_root, be_relay_subs_cb, &rc);
+    return rc.worst;
+}
+
+//  PUT / DELETE submodule recursion: the bare (stage-all / delete-all)
+//  form recurses the same verb into each mounted sub so dirty / missing
+//  files inside subs are staged / removed and listed too — the
+//  "commit recursively with submodules" workflow.  Path-scoped or
+//  remote forms don't recurse (they target specific parent paths).
+ok64 BEActSubsRelay(cli *c) {
+    sane(c);
+    if (CLIHas(c, "--nosub"))      done;
+    if (uribDataLen(c->uris) > 0)  done;   //  bare form only
+    if (u8csEmpty(c->verb))        done;
+    if (!u8bHasData(c->repo))      done;
+
+    a_pad(u8cs, cargs, 5 + CLI_MAX_FLAGS * 2);
+    u8csbFeed1(cargs, c->verb);
+    //  `-q`: a sub with nothing to stage / delete exits `*NONE`, which
+    //  the child becli swallows to OK under `-q` — so a clean submodule
+    //  doesn't turn a bare `be put` / `be delete` into an error.
+    a_cstr(q_lit, "-q");
+    a_dup(u8c, q_d, q_lit);
+    u8csbFeed1(cargs, q_d);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(cargs, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(cargs, (*u8csbAtP(c->flags, j + 1)));
+    }
+    a_dup(u8cs, cargv, u8csbData(cargs));
+    return be_relay_subs(c, cargv);
+}
+
 //  Bare `be` — overview of the working tree.  Forwards to bare
 //  `sniff`, which lists Changed: and Untracked: against the baseline
 //  tree (untracked-but-gitignored filtered).  spot / graf / keeper
 //  dogs aren't surfaced here — they're index/storage layers without
 //  user-relevant state to print.  Adding their summaries back is a
-//  one-liner per dog if it ever matters.
-static ok64 BEDefault(void) {
+//  one-liner per dog if it ever matters.  After the local status, each
+//  mounted submodule's status is relayed (path-prefixed) so bare `be`
+//  lists affected files across the whole tree.
+static ok64 BEDefault(cli *c) {
     sane(1);
     a_cstr(sniff_s,    "sniff");
     a_cstr(tlv_flag,   "--tlv");
@@ -1917,7 +2119,15 @@ static ok64 BEDefault(void) {
     else if (HUNKMode == HUNKOutColor) u8csbFeed1(args, color_flag);
     else if (HUNKMode == HUNKOutPlain) u8csbFeed1(args, plain_flag);
     a_dup(u8cs, argv, u8csbData(args));
-    return BERun(sniff_s, argv, NO);
+    try(BERun, sniff_s, argv, NO);
+    ok64 sniff_rc = __;
+
+    //  Relay each mounted sub's bare-status report.  Child argv is
+    //  empty — bare `be` (BERelaySub forces `--tlv`), which re-enters
+    //  this same path inside the mount.
+    u8css empty_argv = {NULL, NULL};
+    (void)be_relay_subs(c, empty_argv);
+    return sniff_rc;
 }
 
 // --- Main ---
@@ -2159,7 +2369,7 @@ static ok64 becli_inner(cli *c) {
 
     // No args → default
     if ($empty(c->verb) && uribDataLen(c->uris) == 0 && u8csbDataLen(c->flags) == 0) {
-        call(BEDefault);
+        call(BEDefault, c);
         done;
     }
 
@@ -2252,7 +2462,7 @@ static ok64 becli_inner(cli *c) {
             a_dup(u8cs, argv, u8csbData(args));
             call(BERun, bro, argv, NO);
         } else {
-            call(BEDefault);
+            call(BEDefault, c);
         }
     } else if ($eq(verb, v_head)) {
         call(BEExecute, c, BE_PLAN_HEAD);
@@ -2286,11 +2496,12 @@ ok64 becli() {
     call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(becli_inner, &c);
     ok64 ret = __;
-    //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
-    //  real error) so the outer `be post` recursion's
-    //  bepost_spawn_sub passes `-q` to every sub-shard and gets
-    //  clean output for shards with no changes.
-    if (ret == POSTNONE &&
+    //  `-q` / `--quiet` swallows any `*NONE` (POSTNONE / PUTNONE /
+    //  DELNONE — all suffix-match NONE), a no-op signal rather than a
+    //  real error, so the submodule recursion (bepost_spawn_sub,
+    //  BEActSubsRelay) passes `-q` to every sub-shard and gets clean
+    //  output / exit 0 for shards with no changes.
+    if (ok64is(ret, NONE) &&
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
     u8csbFree(c.flags);

@@ -218,6 +218,66 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk) {
     done;
 }
 
+ok64 HUNKu8sRebaseURI(u8s into, u8csc prefix, u8csc child_uri) {
+    sane(u8sOK(into));
+
+    //  Empty prefix → copy the URI through unchanged.
+    if ($empty(prefix)) {
+        if (!$empty(child_uri)) { a_dup(u8c, u, child_uri); call(u8sFeed, into, u); }
+        done;
+    }
+
+    //  Parse the child URI (RFC, no dog promotion) so only the path is
+    //  prefixed and scheme/authority/query/fragment survive intact.
+    //  URIutf8Drain consumes its input, so lex a stable copy.
+    a_pad(u8, dbuf, MAX_URI_LEN);
+    if (!$empty(child_uri)) { a_dup(u8c, src, child_uri); call(u8bFeed, dbuf, src); }
+    uri u = {};
+    a_dup(u8c, dview, u8bData(dbuf));
+    ok64 pe = URIutf8Drain(dview, &u);
+
+    //  Build the prefixed path: <prefix>/<path-without-leading-slash>.
+    a_pad(u8, pbuf, MAX_URI_LEN);
+    call(u8bFeed, pbuf, prefix);
+    if (pe == OK) {
+        u8cs path = {};
+        $mv(path, u.path);
+        if (!$empty(path) && *path[0] == '/') u8csUsed(path, 1);
+        if (!$empty(path)) { call(u8bFeed1, pbuf, '/'); call(u8bFeed, pbuf, path); }
+        a_dup(u8c, ppath, u8bData(pbuf));
+        return URIMake(into, u.scheme, u.authority, ppath, u.query, u.fragment);
+    }
+
+    //  Unparseable URI → literal `<prefix>/<uri>` join (best effort).
+    if (!$empty(child_uri)) {
+        a_dup(u8c, raw, child_uri);
+        call(u8bFeed1, pbuf, '/');
+        call(u8bFeed,  pbuf, raw);
+    }
+    a_dup(u8c, lit, u8bData(pbuf));
+    return u8sFeed(into, lit);
+}
+
+ok64 HUNKu8sRelay(u8s into, u8csc prefix, u8csc child_tlv) {
+    sane(u8sOK(into));
+    a_dup(u8c, scan, child_tlv);
+    while (!$empty(scan)) {
+        hunk hk = {};
+        ok64 dr = HUNKu8sDrain(scan, &hk);
+        if (dr == TLVNODATA || dr == NODATA) break;  // clean end of stream
+        if (dr != OK) return dr;                      // malformed record
+
+        a_pad(u8, ubuf, MAX_URI_LEN);
+        a_dup(u8c, orig, hk.uri);
+        call(HUNKu8sRebaseURI, u8bIdle(ubuf), prefix, orig);
+        a_dup(u8c, newuri, u8bData(ubuf));
+        $mv(hk.uri, newuri);
+
+        call(HUNKu8sFeedOut, into, &hk);
+    }
+    done;
+}
+
 // Does any token have a non-eq side?
 static b8 hunk_has_diff(hunk const *hk) {
     int n = (int)$len(hk->toks);

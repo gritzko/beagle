@@ -143,6 +143,17 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     (void)SNIFFAtStampPath(fp, c->ts);
     c->emitted++;
     c->ts++;        // strict-increase invariant for the next row
+
+    //  Report each staged file as a ULOG status hunk on stdout (like
+    //  GET / PATCH): the user sees what `be put` staged, and a parent
+    //  `be put` recursing into this submodule captures the TLV stream
+    //  and relays it path-prefixed (BERelaySub).  The `staged N row(s)`
+    //  stderr line stays as a summary.
+    {
+        ulogrec rep = {.ts = 0, .verb = c->verb_put};
+        u8csMv(rep.uri.path, path);
+        (void)ULOGPrintStatusLine(&rep);
+    }
     return OK;
 }
 
@@ -573,9 +584,10 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         sha1 tree_sha = {};
         ok64 bo = put_baseline_tree(&tree_sha);
         if (bo == ULOGNONE) {
-            fprintf(stderr,
-                    "sniff: put: no baseline (fresh repo); name "
-                    "files explicitly\n");
+            if (!SNIFF.quiet)
+                fprintf(stderr,
+                        "sniff: put: no baseline (fresh repo); name "
+                        "files explicitly\n");
             return PUTNONE;
         }
         if (bo != OK) return bo;
@@ -609,10 +621,11 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         if (wo != OK) return wo;
         u32 total = wc.emitted + mv_emitted;
         if (total == 0) {
-            fprintf(stderr, "sniff: put: no changes\n");
+            if (!SNIFF.quiet) fprintf(stderr, "sniff: put: no changes\n");
             return PUTNONE;
         }
-        fprintf(stderr, "sniff: staged %u put row(s)\n", total);
+        if (!SNIFF.quiet)
+            fprintf(stderr, "sniff: staged %u put row(s)\n", total);
         done;
     }
 

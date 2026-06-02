@@ -2947,10 +2947,16 @@ ok64 POSTCommit(u8cs target_branch,
     //  their previous get/post stamp — re-stamping them is redundant.
     post_walk_decisions(&ctx, POST_VM_ADD, post_drain_stamp_cb, NULL);
 
-    //  16. Per-file change report on stderr (ULOG status lines; colour
-    //      via HUNKMode — see post_drain_mad_cb).
+    //  16. Per-file change report (ULOG status lines; colour via
+    //      HUNKMode — see post_drain_mad_cb).  Interactive (plain /
+    //      color) routes to stderr so stdout stays clean; TLV (capture)
+    //      mode routes to stdout so a parent `be post` recursing into
+    //      this submodule can capture the hunk stream and relay it with
+    //      a path prefix (BERelaySub).
     {
-        post_mad_ctx mad = {.fd = STDERR_FILENO, .changed = 0};
+        int report_fd = (HUNKMode == HUNKOutTLV) ? STDOUT_FILENO
+                                                 : STDERR_FILENO;
+        post_mad_ctx mad = {.fd = report_fd, .changed = 0};
         post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
                             post_drain_mad_cb, &mad);
     }

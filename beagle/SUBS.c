@@ -14,6 +14,7 @@
 
 #include "abc/URI.h"        // MAX_URI_LEN
 #include "dog/CLI.h"        // CLI_MAX_FLAGS / CLI_MAX_URIS
+#include "dog/HUNK.h"       // HUNKu8sRelay
 #include "dog/ULOG.h"       // ULOGu8sDrain / ulogrec
 #include "dog/git/SUBS.h"
 #include "sniff/SUBS.h"     // SNIFFSubIsMount
@@ -184,6 +185,145 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv) {
     if (r != OK)   return r;
     if (rc != 0)   return BEDOGEXIT;
     done;
+}
+
+// =====================================================================
+// BERelaySub — capture a sub's TLV report, relay it with path prefix.
+// =====================================================================
+
+//  fork + chdir(<wt>/<subpath>) + execvp(self, argv) with the child's
+//  stdout piped into `out` (reset on entry).  Mirror of BERecurseInto
+//  but capturing instead of inheriting stdout (à la begetsubs_capture).
+//  Reads the pipe to EOF *before* reaping, so `out` holds the child's
+//  full report even when it exits non-zero.
+static ok64 be_recurse_capture(u8cs wt_root, u8cs subpath, u8css argv,
+                               u8bp out) {
+    sane($ok(wt_root) && $ok(subpath) && out);
+    u8bReset(out);
+
+    a_path(self_path);
+    be_resolve_self(self_path);
+    if (!u8bHasData(self_path)) {
+        fprintf(stderr, "be: be_recurse_capture: cannot resolve self\n");
+        return BEDOGEXIT;
+    }
+
+    a_path(mount);
+    call(PATHu8bFeed, mount, wt_root);
+    call(PATHu8bAdd,  mount, subpath);
+
+    enum { POOL_BYTES = 8192, MAX_ARGS = 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS };
+    a_pad(u8, pool, POOL_BYTES);
+    size_t offs[MAX_ARGS];
+    u32    nargs = 0;
+
+    a_dup(u8c, self_view, u8bDataC(self_path));
+    if (nargs >= MAX_ARGS) return BEDOGEXIT;
+    call(be_pool_push, pool, self_view, &offs[nargs]);
+    nargs++;
+    $for(u8cs, ap, argv) {
+        if (nargs >= MAX_ARGS) return BEDOGEXIT;
+        call(be_pool_push, pool, *ap, &offs[nargs]);
+        nargs++;
+    }
+
+    char *argv_c[MAX_ARGS + 1];
+    for (u32 i = 0; i < nargs; i++)
+        argv_c[i] = (char *)(u8bDataHead(pool) + offs[i]);
+    argv_c[nargs] = NULL;
+
+    char const *mount_cstr = (char const *)u8bDataHead(mount);
+
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        fprintf(stderr, "be: be_recurse_capture: pipe: %s\n", strerror(errno));
+        return BEDOGEXIT;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pfd[0]); close(pfd[1]);
+        fprintf(stderr, "be: be_recurse_capture: fork: %s\n", strerror(errno));
+        return BEDOGEXIT;
+    }
+    if (pid == 0) {
+        close(pfd[0]);
+        if (dup2(pfd[1], STDOUT_FILENO) < 0) _exit(127);
+        close(pfd[1]);
+        if (chdir(mount_cstr) != 0) {
+            fprintf(stderr, "be: be_recurse_capture: chdir %s: %s\n",
+                    mount_cstr, strerror(errno));
+            _exit(127);
+        }
+        execvp(argv_c[0], argv_c);
+        fprintf(stderr, "be: be_recurse_capture: execvp %s: %s\n",
+                argv_c[0], strerror(errno));
+        _exit(127);
+    }
+
+    close(pfd[1]);
+    for (;;) {
+        if (u8bIdleLen(out) == 0) {
+            fprintf(stderr,
+                    "be: %.*s: report truncated (capture buffer full)\n",
+                    (int)$len(subpath), (char *)subpath[0]);
+            break;
+        }
+        u8 *idle = u8bIdleHead(out);
+        size_t cap = (size_t)u8bIdleLen(out);
+        ssize_t n = read(pfd[0], idle, cap);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        u8bFed(out, (u32)n);
+    }
+    close(pfd[0]);
+
+    int rc = 0;
+    ok64 r = FILEReap(pid, &rc);
+    if (r == FILESIGNAL) return BEDOGSIG;
+    if (r != OK)         return r;
+    //  A child `*NONE` exit (PUTNONE / DELNONE / POSTNONE — all share
+    //  the NONE low byte) means the sub had nothing to do.  That's a
+    //  no-op, not a failure of the parent's aggregation: treat it as OK
+    //  so a clean submodule doesn't abort a bare `be put` / `be delete`.
+    if (rc != 0 && rc != (int)(NONE & 0xFFu)) return BEDOGEXIT;
+    done;
+}
+
+ok64 BERelaySub(u8cs wt_root, u8cs subpath, u8css argv) {
+    sane($ok(wt_root) && $ok(subpath));
+
+    //  Build the child argv with `--tlv` forced on, so the child emits
+    //  a capturable TLV hunk stream regardless of the parent's render
+    //  mode.  CLISetHUNKMode lets `--tlv` win over any forwarded
+    //  `--color` / `--plain`, so appending it last is safe.
+    a_pad(u8cs, cargs, 8 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
+    $for(u8cs, ap, argv) { u8csbFeed1(cargs, *ap); }
+    a_cstr(tlv_lit, "--tlv");
+    a_dup(u8c, tlv_d, tlv_lit);
+    u8csbFeed1(cargs, tlv_d);
+    a_dup(u8cs, cargv, u8csbData(cargs));
+
+    //  Capture the child's report, then relay it even if the child
+    //  exited non-zero (a PATCH conflict still lists the touched
+    //  files).  The child's status is propagated after the relay.
+    a_carve(u8, capbuf, 1UL << 20);
+    try(be_recurse_capture, wt_root, subpath, cargv, capbuf);
+    ok64 child_rc = __;
+
+    a_dup(u8c, captured, u8bData(capbuf));
+    if (!$empty(captured)) {
+        a_carve(u8, obuf, 1UL << 20);
+        call(HUNKu8sRelay, u8bIdle(obuf), subpath, captured);
+        a_dup(u8c, relayed, u8bData(obuf));
+        if (!$empty(relayed)) {
+            fflush(stdout);
+            size_t len = (size_t)$len(relayed);
+            ssize_t w = write(STDOUT_FILENO, relayed[0], len);
+            (void)w;
+        }
+    }
+    return child_rc;
 }
 
 // =====================================================================
@@ -363,7 +503,11 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         u8csbFeed1(child_args, pin_uri_view);
         a_dup(u8cs, child_argv, u8csbData(child_args));
 
-        ok64 r = BERecurseInto(wt_root, subpath_arg, child_argv);
+        //  Relay (not bare-recurse) so the sub's checkout report lands
+        //  in the parent's stream with each restored path prefixed by
+        //  the sub's mount path.  The child still performs the actual
+        //  checkout; we just capture + re-emit its report.
+        ok64 r = BERelaySub(wt_root, subpath_arg, child_argv);
         if (r != OK) worst = r;
     }
     return worst;

@@ -200,6 +200,16 @@ static ok64 del_sweep_visit(u8cs path, u8 kind, u8cp esha,
     if (ar != OK) { c->err = ar; return ar; }
     c->ts++;
     c->emitted++;
+
+    //  Report each removed file as a ULOG status hunk on stdout (like
+    //  GET / PATCH): the user sees what `be delete` staged, and a parent
+    //  `be delete` recursing into this submodule captures the TLV stream
+    //  and relays it path-prefixed (BERelaySub).
+    {
+        ulogrec rep = {.ts = 0, .verb = c->verb};
+        u8csMv(rep.uri.path, path);
+        (void)ULOGPrintStatusLine(&rep);
+    }
     return OK;
 }
 
@@ -235,7 +245,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         ok64 so = del_sweep_missing(sweep_root, sweep_ts, sweep_verb,
                                     &sweep_n);
         if (so != OK) return so;
-        if (sweep_n > 0)
+        if (sweep_n > 0 && !SNIFF.quiet)
             fprintf(stderr,
                     "sniff: delete: swept %u missing file(s)\n", sweep_n);
         done;

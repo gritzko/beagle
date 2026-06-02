@@ -1,5 +1,6 @@
 #include "HOME.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -578,6 +579,43 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
 // Fills h->wt with the anchor location and h->root via
 // `home_anchor_resolve` (primary: wt; secondary: row-0 redirect).
 // Returns NOHOME if the walk reaches / without finding an anchor.
+//  YES iff the directory at `p` contains no SUBDIRECTORIES (only files,
+//  or nothing).  A `.be` dir like this is a fresh-bootstrap target /
+//  worktree shield: empty, or seeded with only `config`/`refs` before
+//  the first command.  A populated multi-project store (e.g. a bare
+//  `~/.be`) has per-project shard subdirs, so it returns NO and the
+//  walk keeps ascending.  See home_walk_up.
+static b8 home_dir_no_subdirs(path8s p) {
+    DIR *d = opendir((char const *)*p);
+    if (d == NULL) return NO;
+    a_dup(u8c, base, p);
+    b8 no_sub = YES;
+    struct dirent *e = NULL;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') {
+            if (e->d_name[1] == 0) continue;
+            if (e->d_name[1] == '.' && e->d_name[2] == 0) continue;
+        }
+        b8 is_dir = NO;
+        if (e->d_type == DT_DIR) {
+            is_dir = YES;
+        } else if (e->d_type == DT_UNKNOWN) {
+            a_path(child);
+            (void)PATHu8bFeed(child, base);
+            a_cstr(fn, e->d_name);
+            if (PATHu8bPush(child, fn) == OK) {
+                filestat fs = {};
+                if (FILEStat(&fs, $path(child)) == OK &&
+                    fs.kind == FILE_KIND_DIR)
+                    is_dir = YES;
+            }
+        }
+        if (is_dir) { no_sub = NO; break; }
+    }
+    closedir(d);
+    return no_sub;
+}
+
 static ok64 home_walk_up(home *h) {
     sane(h != NULL);
 
@@ -607,6 +645,14 @@ static ok64 home_walk_up(home *h) {
                 if (FILEStat(&wfs, $path(wtl)) == OK &&
                     wfs.kind == FILE_KIND_REG)
                     is_wt = YES;
+                //  A `.be` dir with no project-shard subdirs is a
+                //  worktree shield / fresh-bootstrap target (`be put` /
+                //  `be get` in a new dir, possibly with a pre-seeded
+                //  `config`): stop here so discovery doesn't escape to
+                //  an ancestor store (e.g. the dogfooding dev's
+                //  `~/.be`).  A populated multi-project store has shard
+                //  subdirs — keep walking up.
+                if (!is_wt && home_dir_no_subdirs($path(probe))) is_wt = YES;
             }
             if (is_wt) {
                 a_dup(u8c, anchor, u8bDataC(here));

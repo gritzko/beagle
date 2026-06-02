@@ -191,10 +191,11 @@ ok64 sniffcli() {
     call(uribAlloc,  c.uris,  CLI_MAX_URIS);
     try(sniffcli_inner, &c);
     ok64 ret = __;
-    //  `-q` / `--quiet` swallows POSTNONE (a no-op signal, not a
-    //  real error) so callers like `be post` recursion don't see
-    //  "Error: POSTNONE" for every sibling shard with no changes.
-    if (ret == POSTNONE &&
+    //  `-q` / `--quiet` swallows any `*NONE` (POSTNONE / PUTNONE /
+    //  DELNONE — all suffix-match NONE), a no-op signal rather than a
+    //  real error, so the submodule recursion (`be put` / `be delete` /
+    //  `be post` into clean sub-shards) doesn't surface "Error: …NONE".
+    if (ok64is(ret, NONE) &&
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
     u8csbFree(c.flags);

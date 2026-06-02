@@ -315,6 +315,9 @@ be_action const BE_PLAN_PATCH[] = {
     { URI_AUTHORITY,           0,             NO, BEActResolveRemote },
     { URI_AUTHORITY,           0,             NO, BEActGrafGet       },
     { 0,                       0,             NO, BEActSniffPatch    },
+    //  After the local absorb, recurse into subs whose gitlink pin the
+    //  patch moved (gitlink-diff driven); skipped on transport.
+    { 0,                       URI_AUTHORITY, NO, BEActSubsPatch     },
     BE_ACTION_END,
 };
 
@@ -325,6 +328,8 @@ be_action const BE_PLAN_PUT[] = {
     { URI_AUTHORITY, 0,             NO, BEActKeeperPushForce },
     { 0,             URI_AUTHORITY, NO, BEActBootstrap  },
     { 0,             URI_AUTHORITY, NO, BEActSniffPut   },
+    //  Bare `be put` recurses stage-all into mounted subs.
+    { 0,             URI_AUTHORITY, NO, BEActSubsRelay  },
     BE_ACTION_END,
 };
 
@@ -332,5 +337,7 @@ be_action const BE_PLAN_DELETE[] = {
     { URI_AUTHORITY, 0,             NO, BEActKeeperDelete },
     { 0,             URI_AUTHORITY, NO, BEActBootstrap    },
     { 0,             URI_AUTHORITY, NO, BEActSniffDelete  },
+    //  Bare `be delete` recurses delete-all-missing into mounted subs.
+    { 0,             URI_AUTHORITY, NO, BEActSubsRelay    },
     BE_ACTION_END,
 };

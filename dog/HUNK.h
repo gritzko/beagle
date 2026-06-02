@@ -82,6 +82,21 @@ ok64 HUNKu8sFeed(u8s into, hunk const *hk);
 // Slices in hk point into the original data (zero-copy).
 ok64 HUNKu8sDrain(u8cs from, hunk *hk);
 
+// Rewrite a hunk URI by prefixing its path component with `prefix/`.
+// Used to relay a submodule's report into the parent's stream: a child
+// hunk for `src/foo.c` mounted at `vendor/sub` becomes
+// `vendor/sub/src/foo.c`, with scheme/authority/query/fragment kept.
+// An empty `prefix` copies the URI through unchanged.  Advances into[0].
+ok64 HUNKu8sRebaseURI(u8s into, u8csc prefix, u8csc child_uri);
+
+// Relay a child's TLV hunk stream (a `be --tlv` report — a sequence of
+// HUNK 'H' records) into `into`, rendered via the current `HUNKMode`,
+// with every hunk's URI path rebased under `prefix` (HUNKu8sRebaseURI).
+// Hunks are emitted sequentially — never nested.  A clean end of stream
+// (TLVNODATA) stops the relay; a malformed record propagates its error.
+// Advances into[0].
+ok64 HUNKu8sRelay(u8s into, u8csc prefix, u8csc child_tlv);
+
 // Render a hunk as plain ASCII, no ANSI.  Two shapes:
 //   - status hunk (ts||verb set, empty text): one ULOG-wire-shape
 //     `<date>\t<verb>\t<uri>\n` line.
