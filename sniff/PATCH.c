@@ -284,9 +284,10 @@ static void emit_status(const char *status, u8cs path) {
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, path);
     (void)ULOGPrintStatusLine(&rep);
-    if (strcmp(status, "conflict") == 0) {
-        fprintf(stderr, "patch\tconflict\t%.*s\n",
-                (int)$len(path), (char *)path[0]);
+    if (strcmp(status, "conflict") == 0 ||
+        strcmp(status, "failed") == 0) {
+        fprintf(stderr, "patch\t%s\t%.*s\n",
+                status, (int)$len(path), (char *)path[0]);
     }
 }
 
@@ -477,6 +478,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                     "sniff: patch: type conflict at %.*s — skipped\n",
                     (int)$len(childpath), (char *)childpath[0]);
                 st->failed++;
+                emit_status("failed", childpath);
                 continue;
             }
             sha1 lsub = l ? l->sha : (sha1){};
@@ -554,6 +556,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                 emit_status("applied", childpath);
             } else {
                 st->failed++;
+                emit_status("failed", childpath);
             }
             u8bReset(mbuf);
             continue;
@@ -652,6 +655,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                 }
             } else {
                 st->failed++;
+                emit_status("failed", childpath);
             }
             u8bReset(mbuf);
             continue;
@@ -669,6 +673,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                 emit_status("applied", childpath);
             } else {
                 st->failed++;
+                emit_status("failed", childpath);
             }
             u8bReset(mbuf);
             continue;
@@ -703,6 +708,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                 }
             } else {
                 st->failed++;
+                emit_status("failed", childpath);
             }
             u8bReset(mbuf);
             continue;
@@ -719,7 +725,12 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             if (sha_eq(&l->sha, &o->sha)) {
                 //  Theirs deleted; ours unchanged → delete from wt.
                 ok64 d = delete_blob(reporoot, childpath);
-                if (d == OK) st->deleted++; else st->failed++;
+                if (d == OK) {
+                    st->deleted++;
+                } else {
+                    st->failed++;
+                    emit_status("failed", childpath);
+                }
             } else {
                 //  Theirs deleted; ours modified → keep ours (content
                 //  side wins).  Warn loudly so the user can decide
@@ -758,6 +769,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                     emit_status("kept", childpath);
                 } else {
                     st->failed++;
+                    emit_status("failed", childpath);
                 }
                 u8bReset(mbuf);
             }
