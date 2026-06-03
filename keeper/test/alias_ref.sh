@@ -17,23 +17,19 @@ if [ ! -x "$KEEPER" ]; then
     exit 1
 fi
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-keeper-alias}
-TMPDIR=$TMP/$TEST_ID
+#  Shared isolated repo-setup (the empty-`.be/` shield stops `be`/keeper
+#  store discovery from escaping to a real `$HOME/.be`).
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMPDIR=$(rs_repo_base)
 mkdir -p "$TMPDIR"
-trap 'rm -rf "$TMPDIR"; rmdir "$TMP" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMPDIR"; rmdir "${TMPDIR%/*}" 2>/dev/null || true' EXIT
 
 WORK="$TMPDIR/work"
-mkdir -p "$WORK/.be"
+rs_wt_at "$WORK"
 
-# Fake a .git so HOMEFind works
-echo "fake" > "$WORK/.git"
-mkdir -p "$WORK/.git" 2>/dev/null || true  # won't work since .git is a file
-# Actually just make it a dir
-rm "$WORK/.git"
 git init "$WORK" >/dev/null 2>&1
 echo "hello" > "$WORK/README"
-cd "$WORK"
 git add README
 git commit -m "test" >/dev/null 2>&1
 

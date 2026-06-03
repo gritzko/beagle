@@ -23,9 +23,12 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 SNIFF="$BIN/sniff"
 KEEPER="$BIN/keeper"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFworkflow}
-TMP=$TMP/$TEST_ID/$$
+#  Shared isolated repo-setup: rs_fresh_wt seeds the empty-`.be/` shield
+#  that stops `be`'s walk-up from escaping to a real `$HOME/.be`.
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+RS_ROOT=$(rs_repo_base)
+TMP=$RS_ROOT
 mkdir -p "$TMP"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
@@ -59,7 +62,7 @@ head_hex() {
 # ------------------------------------------------------------------
 echo "=== 1. initial post auto-stages worktree ==="
 D1="$TMP/r1"
-mkdir -p "$D1/.be"; cd "$D1"
+rs_wt_at "$D1"
 echo "hello" > README.md
 "$SNIFF" post 'initial msg' >/dev/null
 H1=$(head_hex)
@@ -99,7 +102,7 @@ note "README.md restored from $H1"
 # ------------------------------------------------------------------
 echo "=== 3. put a; put b; post ==="
 D3="$TMP/r3"
-mkdir -p "$D3/.be"; cd "$D3"
+rs_wt_at "$D3"
 echo alpha > a.txt
 echo bravo > b.txt
 
@@ -118,7 +121,7 @@ note "HEAD after post=$C3"
 
 #  Checkout into a fresh dir — both files must land.
 D3b="$TMP/r3b"
-mkdir -p "$D3b/.be"; cd "$D3b"
+rs_wt_at "$D3b"
 cp -r "$D3/.be/." .be/
 "$SNIFF" get "$C3" >/dev/null
 want_file a.txt "alpha"
@@ -145,7 +148,7 @@ C4=$(head_hex)
 [ "$C4" != "$C3" ] || fail "HEAD unchanged after modify+post"
 note "new HEAD=$C4"
 
-D4b="$TMP/r4b"; mkdir -p "$D4b/.be"; cd "$D4b"
+D4b="$TMP/r4b"; rs_wt_at "$D4b"
 cp -r "$D3b/.be/." .be/
 "$SNIFF" get "$C4" >/dev/null
 want_file a.txt "alpha-two"
@@ -169,7 +172,7 @@ want_missing a.txt                      # POST must unlink
 C5=$(head_hex)
 note "HEAD after delete=$C5"
 
-D5b="$TMP/r5b"; mkdir -p "$D5b/.be"; cd "$D5b"
+D5b="$TMP/r5b"; rs_wt_at "$D5b"
 cp -r "$D4b/.be/." .be/
 "$SNIFF" get "$C5" >/dev/null
 want_missing a.txt
@@ -188,7 +191,7 @@ echo "=== 6. implicit delete via vanished file ==="
 #  no attached "rewind to old sha" form.  Reworked to a fresh attached
 #  trunk wt with both files; the implicit-delete-sweep under test is
 #  unchanged.
-D6="$TMP/r6"; mkdir -p "$D6/.be"; cd "$D6"
+D6="$TMP/r6"; rs_wt_at "$D6"
 echo alpha > a.txt
 echo bravo > b.txt
 "$SNIFF" post 'two files' >/dev/null    # attached trunk commit
@@ -199,7 +202,7 @@ rm a.txt                                # vanish one without a `delete` row
 "$SNIFF" post 'auto delete' >/dev/null
 C6=$(head_hex)
 
-D6b="$TMP/r6b"; mkdir -p "$D6b/.be"; cd "$D6b"
+D6b="$TMP/r6b"; rs_wt_at "$D6b"
 cp -r "$D6/.be/." .be/
 "$SNIFF" get "$C6" >/dev/null
 want_missing a.txt
@@ -212,7 +215,7 @@ note "a.txt removed by implicit-delete sweep"
 # `<name> <<email>>`, not the bland `sniff <sniff@dogs>` fallback.
 # ------------------------------------------------------------------
 echo "=== 7. .be/config drives the commit author ==="
-D7="$TMP/r7"; mkdir -p "$D7/.be"; cd "$D7"
+D7="$TMP/r7"; rs_wt_at "$D7"
 cat > .be/config <<'EOF'
 [user]
 name = "Test User"

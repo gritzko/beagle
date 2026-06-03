@@ -8,17 +8,20 @@
 
 REMOTE="${1:?usage: treadmill.sh <remote> [keeper-binary]}"
 KEEPER="${2:-keeper}"
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-keeper-treadmill}
-WORKDIR="${WORKDIR:-$TMP/$TEST_ID}"
+#  Shared isolated repo-setup (empty-`.be/` shield → no escape to a real
+#  `$HOME/.be`).
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
+WORKDIR="${WORKDIR:-$TMP/work}"
 mkdir -p "$WORKDIR"
-trap 'rm -rf "$WORKDIR"; rmdir "$TMP" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -rf "$WORKDIR"; rmdir "${TMP%/*}" 2>/dev/null || true' EXIT INT TERM
 HOST="${REMOTE%% *}"
 REPO="${REMOTE#* }"
 
 echo "=== treadmill: remote=$REMOTE workdir=$WORKDIR ==="
 
-mkdir -p "$WORKDIR/.be"
+rs_shield "$WORKDIR"
 
 # Get tags via git-upload-pack ref advertisement
 echo "--- listing tags ---"

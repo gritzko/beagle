@@ -10,6 +10,8 @@
 
 #include "abc/FILE.h"
 
+#include "dog/test/TESTBE.h"
+
 #include <string.h>
 #include <unistd.h>
 
@@ -34,17 +36,15 @@ static void bump_mtime(char const *abs_path, int bump_sec) {
 
 static char g_tmpdir[256];
 
+//  Hermetic scratch root via the shared C test setup (dog/test/TESTBE.h).
 static ok64 make_tmpdir(void) {
     sane(1);
-    snprintf(g_tmpdir, sizeof(g_tmpdir), "/tmp/sniff-test-XXXXXX");
-    want(mkdtemp(g_tmpdir) != NULL);
+    call(TESTBEmkdtemp, g_tmpdir, sizeof(g_tmpdir));
     done;
 }
 
 static void rm_tmpdir(void) {
-    char cmd[300];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmpdir);
-    system(cmd);
+    TESTBErmrf(g_tmpdir);
 }
 
 // --- Test: AT helpers (verb constants, baseline, last-post, scan) ---

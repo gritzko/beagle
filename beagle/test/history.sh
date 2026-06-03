@@ -22,9 +22,9 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEhistory}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 mkdir -p "$TMP"; echo "Running in $PWD"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
@@ -43,7 +43,7 @@ want_gone() { [ ! -e "$1" ] || fail "$1: should be gone"; }
 
 # --- 1. v1 (seed) -----------------------------------------------------
 echo "=== 1. seed commit tagged v0.0.1 ==="
-R="$TMP/r"; mkdir -p "$R/.be"; cd "$R"
+R="$TMP/r"; rs_wt_at "$R"
 git init --quiet .
 echo "alpha v1" > hello.txt
 echo "stable"   > other.txt

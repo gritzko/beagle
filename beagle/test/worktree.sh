@@ -17,9 +17,9 @@ BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 KEEPER="$BIN/keeper"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEworktree}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 mkdir -p "$TMP"; echo "Running in $PWD"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
@@ -48,7 +48,7 @@ head_hex_of() {
 
 # --- 1. primary ------------------------------------------------------
 echo "=== 1. primary: seed commit ==="
-PRIM="$TMP/prim"; mkdir -p "$PRIM/.be"; cd "$PRIM"
+PRIM="$TMP/prim"; rs_wt_at "$PRIM"
 echo hello > README
 "$BE" post --seq -m "seed" >/dev/null
 SEED_HEAD=$(head_hex_of "$PRIM")

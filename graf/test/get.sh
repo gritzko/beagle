@@ -24,17 +24,17 @@ for tool in "$BE" "$GRAF"; do
     [ -x "$tool" ] || { echo "FAIL: $tool not executable"; exit 1; }
 done
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-GRAFget}
-TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP/.be"
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
+mkdir -p "$TMP"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
 echo "=== 1. seed 3 commits ==="
-R="$TMP/repo"; mkdir -p "$R/.be"; cd "$R"
+R="$TMP/repo"; rs_wt_at "$R"
 git init --quiet -b main .
 git config user.email t@t
 git config user.name  t

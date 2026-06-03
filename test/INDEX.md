@@ -12,8 +12,31 @@ are forbidden — case names + the per-verb `INDEX.md` carry the prose.
 * [put/](put/INDEX.md)   — `be put`  (stage)    cases.
 * [diff/](diff/INDEX.md) — `be diff` (`diff:` projector) cases.
 
-(Existing beagle/test/ shell tests remain untouched — they are not
-migrated.)
+## Shared repo-setup lib (`lib/repo-setup.sh`)
+
+THE one isolated-store bootstrap for the whole suite.  Every test family
+routes its `.be` setup through it — beagle `be-*` (via `verbcheck.sh`'s
+`vc_fresh_wt`), the data-driven `<verb>/<case>` runners (via `case.sh`),
+the sniff/graf/keeper dog scripts, and the C tests (via the parallel
+`dog/test/TESTBE.h`).  Do NOT hand-roll `mkdir -p <wt>/.be` in a test.
+
+* `rs_fresh_wt [name]` / `rs_wt_at <dir>` / `rs_shield <dir>` — seed the
+  empty-`.be/` shield (a `.be/` dir with no `wtlog`/shards stops `be`'s
+  cwd walk-up here instead of escaping to a real `$HOME/.be`).  Repo
+  scratch roots under `$HOME` (ext4, RW-safe for MAP_SHARED store mmaps;
+  also where keeper's ssh-side path resolution expects it).
+* `rs_fresh_norepo [name]` / `rs_norepo_base` — a genuine NO-STORE area
+  rooted under `/tmp` (clean `.be`-free ancestry up to `/`), for
+  SNIFFnorepo-style "no repo anywhere above" refusal tests.
+* `rs_repo_base` — the `$HOME`-rooted per-process scratch base.
+
+C tests use `dog/test/TESTBE.h`: `TESTBEmkdtemp` (a `/tmp`-rooted
+hermetic scratch dir) + `TESTBErmrf`.
+
+NOTE for ssh-clone tests: the remote keeper resolves the source-side
+store at `$HOME/.be/<source-basename>`, so an ssh-cloned SOURCE repo
+must have a UNIQUE basename (e.g. `$TEST_ID-src`), never a generic
+`src`, or it corrupts the developer's real `$HOME/.be/src` shard.
 
 ## Layout
 
@@ -21,6 +44,7 @@ migrated.)
     ├── INDEX.md
     ├── run.sh                        # suite runner
     ├── lib/
+    │   ├── repo-setup.sh             # THE shared isolated-store setup
     │   ├── case.sh                   # sourced by every case run.sh
     │   └── verb.sh                   # sourced by every verb run.sh
     └── <verb>/

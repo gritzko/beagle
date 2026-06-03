@@ -12,6 +12,8 @@
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 
+#include "dog/test/TESTBE.h"
+
 static void seed_config(char const *root, char const *body) {
     char dir[256];
     snprintf(dir, sizeof(dir), "%s/" DOG_BE_NAME, root);
@@ -27,8 +29,8 @@ ok64 HOMETestGet() {
     sane(1);
     call(FILEInit);
 
-    char tmp[] = "/tmp/dog-home-XXXXXX";
-    want(mkdtemp(tmp) != NULL);
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
 
     seed_config(tmp,
         "# dogs config\n"
@@ -105,9 +107,7 @@ ok64 HOMETestGet() {
     }
 
     HOMEClose(&h);
-    char rm[512];
-    snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-    system(rm);
+    TESTBErmrf(tmp);
     done;
 }
 
@@ -115,8 +115,8 @@ ok64 HOMETestMissingFile() {
     sane(1);
     call(FILEInit);
 
-    char tmp[] = "/tmp/dog-home-XXXXXX";
-    want(mkdtemp(tmp) != NULL);
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
 
     a_cstr(root, tmp);
     home h = {};
@@ -130,9 +130,7 @@ ok64 HOMETestMissingFile() {
     want(HOMEGetConfig(&h, val, $path(needle)) == NOCONF);
 
     HOMEClose(&h);
-    char rm[512];
-    snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-    system(rm);
+    TESTBErmrf(tmp);
     done;
 }
 
@@ -147,8 +145,8 @@ ok64 HOMETestBranches() {
     sane(1);
     call(FILEInit);
 
-    char tmp[] = "/tmp/dog-home-XXXXXX";
-    want(mkdtemp(tmp) != NULL);
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
 
     a_cstr(root, tmp);
     home h = {};
@@ -232,9 +230,7 @@ ok64 HOMETestBranches() {
     }
 
     HOMEClose(&h);
-    char rm[512];
-    snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-    system(rm);
+    TESTBErmrf(tmp);
     done;
 }
 
@@ -258,8 +254,8 @@ ok64 HOMETestRwBootstrap() {
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        char tmp[] = "/tmp/dog-home-rw-XXXXXX";
-        want(mkdtemp(tmp) != NULL);
+        char tmp[256];
+        want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
         fprintf(stderr, "  case: %s\n", cases[i].name);
 
         if (cases[i].preexisting_be) {
@@ -288,9 +284,7 @@ ok64 HOMETestRwBootstrap() {
         want(S_ISREG(st.st_mode));
 
         HOMEClose(&h);
-        char rm[512];
-        snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-        system(rm);
+        TESTBErmrf(tmp);
     }
     done;
 }
@@ -302,8 +296,8 @@ ok64 HOMETestRoNoBootstrap() {
     sane(1);
     call(FILEInit);
 
-    char tmp[] = "/tmp/dog-home-ro-XXXXXX";
-    want(mkdtemp(tmp) != NULL);
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
     want(chdir(tmp) == 0);
 
     home h = {};
@@ -316,9 +310,7 @@ ok64 HOMETestRoNoBootstrap() {
     struct stat st = {};
     want(stat(p, &st) != 0);   // .be must NOT have been created
 
-    char rm[512];
-    snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-    system(rm);
+    TESTBErmrf(tmp);
     done;
 }
 
@@ -348,8 +340,8 @@ ok64 HOMETestRoEmptyAnchor() {
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        char tmp[] = "/tmp/dog-home-empty-XXXXXX";
-        want(mkdtemp(tmp) != NULL);
+        char tmp[256];
+        want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
         fprintf(stderr, "  case: %s\n", cases[i].name);
 
         char p[512];
@@ -375,9 +367,7 @@ ok64 HOMETestRoEmptyAnchor() {
         want(got == cases[i].want_ret);
         HOMEClose(&h);
 
-        char rm[512];
-        snprintf(rm, sizeof(rm), "rm -rf %s", tmp);
-        system(rm);
+        TESTBErmrf(tmp);
     }
     done;
 }

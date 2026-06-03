@@ -23,9 +23,14 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-get-nosub}
-TMP=$TMP/$TEST_ID/$$
+#  Shared isolated repo-setup.  This test ssh-clones a SOURCE repo: the
+#  remote keeper resolves the source-side object store at
+#  `$HOME/.be/<source-basename>`, so the source dir MUST have a unique
+#  basename (not a generic `src`) or it lands in — and corrupts — the
+#  developer's REAL `$HOME/.be/src` shard.  We name it `$TEST_ID-src`.
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 mkdir -p "$TMP"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
@@ -41,7 +46,7 @@ fi
 
 # --- 1. seed: file + .gitmodules + gitlink ---------------------------
 echo "=== 1. seed git repo with a bogus submodule ==="
-SRC="$TMP/src"; mkdir -p "$SRC/.be"; cd "$SRC"
+SRC="$TMP/$TEST_ID-src"; rs_wt_at "$SRC"
 git init --quiet -b main
 git config user.email t@t
 git config user.name  t
@@ -75,7 +80,7 @@ URI="ssh://localhost${REL}"
 
 # --- 2. be get --nosub -----------------------------------------------
 echo "=== 2. be get --nosub <uri> ==="
-WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
+WT="$TMP/wt"; rs_wt_at "$WT"
 
 #  Cap wall time at 30s — the bogus URL would take far longer than
 #  that on a misconfigured network (DNS retries, TCP backoff).  A

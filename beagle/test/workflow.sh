@@ -17,9 +17,9 @@ BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 export PATH="$BIN:$PATH"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEworkflow}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 mkdir -p "$TMP"; echo "Running in $PWD"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
@@ -61,7 +61,7 @@ head_hex() {
 # Scenario 1: be post on a fresh dir auto-stages the single file
 # ------------------------------------------------------------------
 echo "=== 1. be post (auto-stage) on a fresh worktree ==="
-D1="$TMP/r1"; mkdir -p "$D1/.be"; cd "$D1"
+D1="$TMP/r1"; rs_wt_at "$D1"
 echo hello > README
 "$BE" post 'initial msg' >/dev/null
 H1=$(head_hex)
@@ -86,7 +86,7 @@ note "README restored by be get"
 # scope) is supposed to ignore untracked-without-put paths.
 # ------------------------------------------------------------------
 echo "=== 3. be put a; be put b; be post (untracked stray must stay out) ==="
-D3="$TMP/r3"; mkdir -p "$D3/.be"; cd "$D3"
+D3="$TMP/r3"; rs_wt_at "$D3"
 echo alpha > a.txt
 echo bravo > b.txt
 echo stray > stray.txt                   # untracked, never put-ed
@@ -116,7 +116,7 @@ note "HEAD=$C3"
 
 # Verify: fresh worktree + be get restores both files; stray.txt and
 # late.txt + side/ were never committed.
-D3b="$TMP/r3b"; mkdir -p "$D3b/.be"; cd "$D3b"
+D3b="$TMP/r3b"; rs_wt_at "$D3b"
 cp -r "$D3/.be/." .be/
 "$BE" get "$C3" >/dev/null
 want_file a.txt "alpha"
@@ -144,7 +144,7 @@ C4=$(head_hex)
 [ "$C4" != "$C3" ] || fail "HEAD unchanged after modify + post"
 note "HEAD=$C4"
 
-D4b="$TMP/r4b"; mkdir -p "$D4b/.be"; cd "$D4b"
+D4b="$TMP/r4b"; rs_wt_at "$D4b"
 cp -r "$D3b/.be/." .be/
 "$BE" get "$C4" >/dev/null
 want_file a.txt "alpha-v2"
@@ -164,7 +164,7 @@ cd "$D4b"
 want_missing a.txt                    # POST must unlink explicit deletes
 C5=$(head_hex)
 
-D5b="$TMP/r5b"; mkdir -p "$D5b/.be"; cd "$D5b"
+D5b="$TMP/r5b"; rs_wt_at "$D5b"
 cp -r "$D4b/.be/." .be/
 "$BE" get "$C5" >/dev/null
 want_missing a.txt
@@ -194,7 +194,7 @@ rm a.txt                              # vanish one without a `delete` row
 "$BE" post 'auto delete' >/dev/null
 C6=$(head_hex)
 
-D6b="$TMP/r6b"; mkdir -p "$D6b/.be"; cd "$D6b"
+D6b="$TMP/r6b"; rs_wt_at "$D6b"
 cp -r "$D6/.be/." .be/
 "$BE" get "$C6" >/dev/null
 want_missing a.txt
@@ -221,7 +221,7 @@ C7=$(head_hex)
 [ -n "$C7" ] || fail "HEAD unset after be post"
 note "HEAD=$C7"
 
-D7b="$TMP/r7b"; mkdir -p "$D7b/.be"; cd "$D7b"
+D7b="$TMP/r7b"; rs_wt_at "$D7b"
 cp -r "$D7/.be/." .be/
 "$BE" get "$C7" >/dev/null
 want_file lib/a.txt     "alpha"
@@ -249,7 +249,7 @@ echo deep-gone  > mk/sub/inner.tmp
 C8=$(head_hex)
 note "HEAD=$C8"
 
-D8b="$TMP/r8b"; mkdir -p "$D8b/.be"; cd "$D8b"
+D8b="$TMP/r8b"; rs_wt_at "$D8b"
 cp -r "$D8/.be/." .be/
 "$BE" get "$C8" >/dev/null
 want_file    mk/keep.txt     "keep"
@@ -288,7 +288,7 @@ C9b=$(head_hex)
 [ "$C9b" != "$C9a" ] || fail "HEAD unchanged after modify+put dir"
 note "updated HEAD=$C9b"
 
-D9c="$TMP/r9c"; mkdir -p "$D9c/.be"; cd "$D9c"
+D9c="$TMP/r9c"; rs_wt_at "$D9c"
 cp -r "$D9/.be/." .be/
 "$BE" get "$C9b" >/dev/null
 want_file    src/foo.c "v2"
@@ -321,7 +321,7 @@ want_missing dd/a.txt
 want_missing dd/inner/b.txt
 note "dd/ unlinked from worktree"
 
-D10c="$TMP/r10c"; mkdir -p "$D10c/.be"; cd "$D10c"
+D10c="$TMP/r10c"; rs_wt_at "$D10c"
 cp -r "$D10/.be/." .be/
 "$BE" get "$C10b" >/dev/null
 want_file    keep.txt "k"
@@ -371,7 +371,7 @@ C11b=$(head_hex)
 [ "$C11b" != "$C11a" ] || fail "HEAD unchanged after bare-put + post"
 note "updated HEAD=$C11b"
 
-D11c="$TMP/r11c"; mkdir -p "$D11c/.be"; cd "$D11c"
+D11c="$TMP/r11c"; rs_wt_at "$D11c"
 cp -r "$D11/.be/." .be/
 "$BE" get "$C11b" >/dev/null
 want_file    lib/foo.c        "v2"
@@ -396,7 +396,7 @@ note "commit tree carries the modified tracked file; untracked subtree stayed ou
 #   clean and a second bare put returned PUTNONE.
 # ------------------------------------------------------------------
 echo "=== 12. bare be put is content-driven (mtime is just an optimization) ==="
-D12="$TMP/r12"; mkdir -p "$D12/.be"; cd "$D12"
+D12="$TMP/r12"; rs_wt_at "$D12"
 echo v1 > foo.c
 "$BE" post 'seed msg' >/dev/null
 C12a=$(head_hex)
@@ -430,7 +430,7 @@ note "second bare put correctly avoided false-clean refusal"
 #   KEEP files retain their old mtime + content byte-for-byte.
 # ------------------------------------------------------------------
 echo "=== 13. be post leaves untouched files alone (mtime + bytes) ==="
-D13="$TMP/r13"; mkdir -p "$D13/.be"; cd "$D13"
+D13="$TMP/r13"; rs_wt_at "$D13"
 echo a-v1 > a.txt
 echo b-v1 > b.txt
 "$BE" post 'seed two' >/dev/null
@@ -468,7 +468,7 @@ note "untouched a.txt: mtime + bytes preserved across post"
 #   substring after the rename must find the file at its new name.
 # ------------------------------------------------------------------
 echo "=== 14. rename keeps content searchable at the new path ==="
-D14="$TMP/r14"; mkdir -p "$D14/.be"; cd "$D14"
+D14="$TMP/r14"; rs_wt_at "$D14"
 printf 'int rendezvous_alpha(void) { return 42; }\n' > old_name.c
 "$BE" post 'seed msg' >/dev/null
 mv old_name.c new_name.c

@@ -51,10 +51,10 @@ KEEPER="$BIN/keeper"
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-BEworkflowBranches}
-TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP/.be"
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
+rs_shield "$TMP"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -91,7 +91,7 @@ ref_tip() {
 }
 
 WT="$TMP/wt"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 
 # ------------------------------------------------------------------
 # 1. seed trunk: first commit gives us T1
@@ -367,7 +367,7 @@ note "?fix1 cleaned up"
 
 echo "=== 16. setup secondary wt (WT2) sharing one keeper ==="
 WT2="$TMP/wt2"
-mkdir -p "$WT2/.be"
+rs_shield "$WT2"
 ln -s "$WT/.be" "$WT2/.be"
 cp "$WT/x.txt" "$WT2/x.txt"
 cp "$WT/.be/wtlog" "$WT2/.be/wtlog"

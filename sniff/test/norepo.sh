@@ -18,14 +18,15 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-# This test asserts "no .be in any ANCESTOR dir".  The suite pins TMP
-# under $HOME, where a real `~/.be` store may live — the cwd walk-up
-# would then find it and (mis)treat $HOME as a worktree, hanging bare
-# sniff.  Anchor our scratch under /tmp instead (no ssh here, so no
-# $HOME dependency); its ancestor chain up to / has no `.be`.
-TMP=${TMPDIR:-/tmp}/be-tests-norepo
+# This test asserts "no .be in any ANCESTOR dir".  The suite pins the
+# repo-wt TMP under $HOME, where a real `~/.be` store may live — the
+# cwd walk-up would then find it and (mis)treat $HOME as a worktree,
+# hanging bare sniff.  The shared lib's rs_norepo_base anchors a genuine
+# no-store scratch under /tmp (clean ancestry up to /), exactly what
+# this test needs.  ONE shared procedure, used here too.
 TEST_ID=${TEST_ID:-SNIFFnorepo}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_norepo_base)
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 mkdir -p "$TMP"
 

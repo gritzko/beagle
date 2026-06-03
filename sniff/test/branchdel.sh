@@ -11,9 +11,9 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFbranchdel}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 mkdir -p "$TMP"
 
@@ -37,7 +37,7 @@ ref_present() {
 # ====================================================================
 echo "=== 1. basic delete + REFS hides tombstone ==="
 WT="$TMP/wt1"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
 sniff put "?feat" >/dev/null
@@ -60,7 +60,7 @@ note "tombstone row recorded in .be/refs"
 # ====================================================================
 echo "=== 2. delete ?<current> refused ==="
 WT="$TMP/wt2"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
 sniff put "?feat" >/dev/null
@@ -81,7 +81,7 @@ note "delete ?feat refused while wt is on feat"
 # ====================================================================
 echo "=== 3. delete ?parent with active descendant refused ==="
 WT="$TMP/wt3"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
 sniff put "?parent" >/dev/null
@@ -109,7 +109,7 @@ note "?parent deletable once descendant tombstoned"
 # ====================================================================
 echo "=== 4. resurrection via post ==="
 WT="$TMP/wt4"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "base" >/dev/null
 sniff put "?feat" >/dev/null

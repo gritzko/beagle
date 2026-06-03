@@ -33,11 +33,13 @@ REPO=${REPO:-$HOME/src/git}
 REPO_REL=${REPO#$HOME/}
 HOST=${HOST:-localhost}
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-GRAFmillMerges}
-TMILL=$TMP/$TEST_ID
-mkdir -p "$TMILL/client/.be"
-trap 'rm -rf "$TMILL"; rmdir "$TMP" 2>/dev/null || true' EXIT
+#  Shared isolated repo-setup (empty-`.be/` shield → no escape to a real
+#  `$HOME/.be`).
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMILL=$(rs_repo_base)
+rs_shield "$TMILL/client"
+trap 'rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true' EXIT
 
 #  Curated merges: 2-parent, file-overlapping, and CLEAN under
 #  `git merge-tree --write-tree P1 P2`.  Small ones first so a
@@ -160,7 +162,7 @@ for M in $MERGES; do
     PATCH_TOTAL=$((PATCH_TOTAL + 1))
 
     WT="$TMILL/wt.$M"
-    mkdir -p "$WT/.be"
+    rs_shield "$WT"
 
     echo ""
     echo "=== $M  $SUBJ ==="

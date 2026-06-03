@@ -20,11 +20,11 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 BIN=$(cd "$BIN" && pwd)
 export PATH="$BIN:$PATH"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-map-projector}
-T=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+T=$(rs_repo_base)
 rm -rf "$T"
-mkdir -p "$T/.be"
+rs_shield "$T"
 trap 'rm -rf "$T"; rmdir "${T%/*}" 2>/dev/null || true; rmdir "${TMP}" 2>/dev/null || true' EXIT INT TERM
 
 FAIL=0
@@ -45,7 +45,7 @@ want_no_grep() {
 }
 
 # --- 4 branches each with one own commit ----------------------------
-R=$T/repo; mkdir -p "$R/.be"; cd "$R"
+R=$T/repo; rs_wt_at "$R"
 sniff init >/dev/null
 
 echo "trunk content" > base.txt

@@ -13,12 +13,14 @@ export PATH="$BIN:$PATH"
 #  Keeper treats URI paths in `//host/path` as HOME-relative (see
 #  keeper/KEEP.exe.c); $TMILL must live under $HOME and the URI must
 #  use the HOME-relative form.  CMake seeds TMP=$HOME/tmp by default.
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-mill}
-TMILL=$TMP/$TEST_ID/$$
+#  Shared isolated repo-setup.  rs_repo_base roots under $HOME (ext4),
+#  which mill.sh requires anyway for keeper's HOME-relative URI form.
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMILL=$(rs_repo_base)
 TMILL_REL=${TMILL#$HOME/}
-mkdir -p "$TMILL/.be"
-trap 'rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true; rmdir "$TMP" 2>/dev/null || true' EXIT
+rs_shield "$TMILL"
+trap 'rm -rf "$TMILL"; rmdir "${TMILL%/*}" 2>/dev/null || true; rmdir "${TMILL%/*/*}" 2>/dev/null || true' EXIT
 
 echo "=== mill: be get + verify ==="
 
@@ -51,10 +53,8 @@ echo "origin HEAD: $GIT_HEAD"
 git clone --quiet "$TMILL/origin" "$TMILL/git01"
 
 # --- 3. Dogs clone via be get ---
-mkdir -p "$TMILL/be01/.be"
-cd "$TMILL/be01"
+rs_wt_at "$TMILL/be01"
 git init --quiet .
-mkdir -p .be
 
 be get "//localhost/${TMILL_REL}/origin" 2>&1
 

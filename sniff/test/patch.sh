@@ -28,9 +28,9 @@ HOST=${HOST:-localhost}
 #  Per-run scratch dir: $TMP/<test-id>/.  Base TMP and TEST_ID come
 #  from ctest (see sniff/test/CMakeLists.txt); standalone runs fall
 #  back to $HOME/tmp/run-<timestamp> and the script's basename.
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFpatch}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 trap 'rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true' EXIT
 mkdir -p "$TMP"
 
@@ -43,7 +43,7 @@ scenario1() {
     echo "=== 1. disjoint-edit merge ==="
     SRC=$TMP/s1/src
     CLI=$TMP/s1/client
-    mkdir -p "$SRC" "$CLI/.be"
+    mkdir -p "$SRC"; rs_shield "$CLI"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)
@@ -98,7 +98,7 @@ scenario2() {
     echo "=== 2. conflict merge ==="
     SRC=$TMP/s2/src
     CLI=$TMP/s2/client
-    mkdir -p "$SRC" "$CLI/.be"
+    mkdir -p "$SRC"; rs_shield "$CLI"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)
@@ -161,7 +161,7 @@ scenario3() {
     echo "=== 3. target-side add ==="
     SRC=$TMP/s3/src
     CLI=$TMP/s3/client
-    mkdir -p "$SRC" "$CLI/.be"
+    mkdir -p "$SRC"; rs_shield "$CLI"
     git init --quiet --bare "$SRC"
 
     W=$(mktemp -d)

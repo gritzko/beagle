@@ -30,9 +30,9 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFsquash}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 mkdir -p "$TMP"
 
@@ -40,8 +40,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 note() { echo "  - $*"; }
 
 WT="$TMP/wt"
-mkdir -p "$WT/.be"
-cd "$WT"
+rs_wt_at "$WT"
 
 #  Current commit recorded in .be/wtlog — `?<branch>#<curhash>` shape:
 #  fragment of the most recent get/post/patch row holds the sha.

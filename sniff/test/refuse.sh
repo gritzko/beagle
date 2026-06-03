@@ -16,9 +16,9 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFrefuse}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 mkdir -p "$TMP"
 
@@ -47,8 +47,7 @@ expect_refuse() {
 # ====================================================================
 # Setup: tiny repo with one file committed.
 # ====================================================================
-mkdir -p "$TMP/r/.be"
-cd "$TMP/r"
+rs_wt_at "$TMP/r"
 echo "alpha" > a.txt
 "$SNIFF" post -m "init" >/dev/null
 

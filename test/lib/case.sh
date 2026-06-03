@@ -72,10 +72,16 @@ VERB=$(basename "$(dirname "$CASE")")
 export CASE NAME VERB
 
 # 4. scratch dir --------------------------------------------------------
-SCRATCH="$TMP/$$/$VERB/$NAME"
-rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/.be"
-cd "$SCRATCH"
+#   Route the `.be` bootstrap through the ONE shared repo-setup
+#   procedure (rs_fresh_wt) so case scratch isolation is identical to
+#   every other test family.  $SCRATCH keeps its historical layout
+#   ($TMP/$$/$VERB/$NAME) for callers that build sibling fixtures off
+#   it; rs_fresh_wt seeds the empty-`.be/` shield that stops `be`'s
+#   walk-up from escaping to a real `$HOME/.be`.
+. "$(dirname "$0")/../../lib/repo-setup.sh"
+RS_ROOT="$TMP/$$"
+rs_fresh_wt "$VERB/$NAME"
+SCRATCH="$RS_WT"
 export SCRATCH
 
 # 5. project shard name ------------------------------------------------

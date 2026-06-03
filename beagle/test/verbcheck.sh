@@ -48,16 +48,34 @@ vc_step() { echo "=== $* ==="; }
 # ----- worktree setup -------------------------------------------------
 #
 #  vc_fresh_wt creates a wt subdir under $TMP (which is itself
-#  $TMP_ROOT/$TEST_ID) and cd's into it.  Wipes any leftover state so
-#  back-to-back ctest invocations against the same configure-time
-#  $TMP_ROOT can't inherit a torn .be/wtlog / .be from a prior run.
+#  $TMP_ROOT/$TEST_ID/$$) and cd's into it.  It is a thin wrapper over
+#  the shared repo-setup procedure (test/lib/repo-setup.sh::rs_fresh_wt)
+#  so there is ONE isolated-store bootstrap in the whole suite.  The
+#  empty-`.be/` shield it seeds stops `be`'s cwd walk-up from escaping
+#  to a real `$HOME/.be` store.  Wipes leftover state so back-to-back
+#  ctest invocations against the same configure-time root can't inherit
+#  a torn .be/wtlog / .be from a prior run.
+
+#  Locate the shared lib relative to this file (verbcheck.sh lives at
+#  beagle/test/; the lib at test/lib/).  $0 is the *caller's* script, so
+#  resolve from a path captured when this file is sourced is unreliable
+#  in POSIX sh; fall back to walking from the be binary's source tree
+#  is overkill — instead try the two known relative locations.
+_vc_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+for _vc_cand in \
+    "$_vc_dir/../../test/lib/repo-setup.sh" \
+    "$_vc_dir/../test/lib/repo-setup.sh"; do
+    if [ -f "$_vc_cand" ]; then . "$_vc_cand"; break; fi
+done
 
 vc_fresh_wt() {
     name=${1:-wt}
-    wt="$TMP/$name"
-    rm -rf "$wt"
-    mkdir -p "$wt/.be"
-    cd "$wt"
+    #  Anchor the shared procedure at verbcheck's already-isolated $TMP
+    #  (cmake-supplied, $HOME-rooted ext4 run dir) for full backward
+    #  compatibility with the ~200 existing callers' `$TMP/$name` cwd.
+    RS_ROOT="$TMP"
+    rs_fresh_wt "$name"
+    wt="$RS_WT"
 }
 
 # ----- snapshot ------------------------------------------------------

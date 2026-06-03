@@ -18,9 +18,9 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 export PATH="$BIN:$PATH"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-SNIFFcrosspost}
-TMP=$TMP/$TEST_ID/$$
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 mkdir -p "$TMP"
 
@@ -64,7 +64,7 @@ parent_of() {
 # ====================================================================
 echo "=== 1. cross-branch post commits on target ==="
 WT="$TMP/wt1"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "trunk base" >/dev/null
 TRUNK_BASE=$(head_hex)
@@ -108,7 +108,7 @@ note "wt switched to feat"
 # ====================================================================
 echo "=== 2. cross-branch non-ff refused ==="
 WT="$TMP/wt2"
-mkdir -p "$WT/.be"; cd "$WT"
+rs_wt_at "$WT"
 echo "x" > x.txt
 sniff post -m "trunk base" >/dev/null
 sniff put "?feat" >/dev/null              # label feat at trunk's tip

@@ -20,10 +20,14 @@ BIN=${BIN:-$(dirname "$(command -v be)")}
 BIN=$(cd "$BIN" && pwd)
 BE="$BIN/be"
 
-TMP=${TMP:-$HOME/tmp/run-$(date +%Y%m%d-%H%M%S)}
 TEST_ID=${TEST_ID:-be-clone-sniff}
-TMP=$TMP/$TEST_ID/$$
-mkdir -p "$TMP/.be"
+#  Shared isolated repo-setup.  This ssh-clones a SOURCE repo whose
+#  basename names the remote-side keeper shard ($HOME/.be/<basename>),
+#  so the source dir MUST be uniquely named (not a generic `src`) or it
+#  corrupts the developer's REAL `$HOME/.be/src`.  Use `$TEST_ID-src`.
+. "$(dirname "$0")/../../test/lib/repo-setup.sh"
+TMP=$(rs_repo_base)
+rs_shield "$TMP"
 trap '_rc=$?; [ "$_rc" -eq 0 ] && { rm -rf "$TMP"; rmdir "${TMP%/*}" 2>/dev/null || true; rmdir "${TMP%/*/*}" 2>/dev/null || true; }' EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -44,7 +48,7 @@ fi
 #  repo under $TMP (which lives under $HOME/tmp by default) and pass
 #  the leading-slash form `/path-relative-to-home` in the URI.
 echo "=== 1. seed git repo over ssh-reachable path ==="
-SRC="$TMP/src"; mkdir -p "$SRC/.be"; cd "$SRC"
+SRC="$TMP/$TEST_ID-src"; rs_wt_at "$SRC"
 git init --quiet -b main
 git config user.email t@t
 git config user.name  t
@@ -65,7 +69,7 @@ note "seed sha=$SEED, ssh URI=$URI"
 
 # --- 2. clone via be get ssh:// ------------------------------------
 echo "=== 2. be get ssh://... in fresh wt ==="
-WT="$TMP/wt"; mkdir -p "$WT/.be"; cd "$WT"
+WT="$TMP/wt"; rs_wt_at "$WT"
 "$BE" get "$URI" >/dev/null 2>&1 || fail "wt: be get failed"
 
 [ -f .be/wtlog ] || fail "wt: .be/wtlog missing"
