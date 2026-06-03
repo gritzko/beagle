@@ -15,6 +15,7 @@
 
 #include "WIRE.h"
 
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -805,6 +806,7 @@ static ok64 wire_fetch_all_inner(u8csc remote_uri, int *wfd, int *rfd) {
 
 ok64 WIREFetchAll(u8csc remote_uri) {
     sane($ok(remote_uri));
+    FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     int wfd = -1, rfd = -1;
@@ -905,6 +907,7 @@ static ok64 wire_fetch_inner(u8csc remote_uri, u8cs effective_ref,
 
 ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
     sane($ok(remote_uri));
+    FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
     keeper *k = &KEEP;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
@@ -1323,10 +1326,64 @@ static ok64 wpush_send_update(int wfd, sha1cp old_sha,
 }
 
 //  Drain push response, scanning for "unpack ok" + "ok <refname>".
-static ok64 wpush_drain_status(int rfd, u8csc refname) {
+//  Send the pack body to the peer while concurrently draining any
+//  status/progress it emits, so a peer that interleaves output with
+//  reading the pack (git-receive-pack with sideband, or any large
+//  push) can never deadlock us — the classic both-sides-blocked-on-a-
+//  full-pipe hang.  `wfd` is switched to non-blocking; early status
+//  bytes read during the send accumulate in `early` for the following
+//  wpush_drain_status to consume before reading more.  Caller closes
+//  `wfd` after this returns OK.
+static ok64 wpush_send_pack_interleaved(int wfd, int rfd, u8csc pdata,
+                                        u8b early) {
+    sane(wfd >= 0 && rfd >= 0);
+    int fl = fcntl(wfd, F_GETFL, 0);
+    if (fl >= 0) (void)fcntl(wfd, F_SETFL, fl | O_NONBLOCK);
+
+    a_dup(u8c, rest, pdata);   //  unsent tail; head advances as we write
+    b8 rfd_live = YES;         //  cleared once the peer closes its report side
+    while (!u8csEmpty(rest)) {
+        struct pollfd pfd[2];
+        pfd[0].fd = wfd;                 pfd[0].events = POLLOUT; pfd[0].revents = 0;
+        pfd[1].fd = rfd_live ? rfd : -1; pfd[1].events = POLLIN;  pfd[1].revents = 0;
+        int pr = poll(pfd, 2, -1);
+        if (pr < 0) { if (errno == EINTR) continue; return FILEFAIL; }
+
+        //  Drain whatever the peer has sent first, so it never blocks
+        //  on its own write side while we are trying to write the pack.
+        if (rfd_live && (pfd[1].revents & (POLLIN | POLLHUP))) {
+            u8s idle;
+            u8sFork(u8bIdle(early), idle);
+            if ($len(idle) == 0) return WIRECLFL;  //  pre-pack status overflow
+            ssize_t rn;
+            do { rn = read(rfd, idle[0], (size_t)$len(idle)); }
+            while (rn < 0 && errno == EINTR);
+            if (rn > 0) { idle[0] += rn; u8sJoin(u8bIdle(early), idle); }
+            else if (rn == 0) rfd_live = NO;       //  peer closed report side
+        }
+
+        if (pfd[0].revents & POLLOUT) {
+            ssize_t wn;
+            do { wn = write(wfd, rest[0], (size_t)$len(rest)); }
+            while (wn < 0 && errno == EINTR);
+            if (wn > 0) rest[0] += wn;
+            else if (wn < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { }
+            else return FILEFAIL;                  //  EPIPE etc.
+        } else if (pfd[0].revents & (POLLERR | POLLHUP)) {
+            return FILEFAIL;
+        }
+    }
+    return OK;
+}
+
+//  `prefill` carries any status bytes already read off `rfd` during the
+//  interleaved pack send; they are consumed before reading more.  Pass
+//  an empty slice when no early read happened.
+static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
     sane(rfd >= 0);
     a_carve(u8, buf, WCLI_BUF);
-    u8cs adv = {u8bDataHead(buf), u8bDataHead(buf)};
+    if (!u8csEmpty(prefill)) call(u8bFeed, buf, prefill);
+    u8cs adv = {u8bDataHead(buf), u8bIdleHead(buf)};
     b8 unpack_ok = NO;
     b8 ref_ok    = NO;
 
@@ -1590,10 +1647,13 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
         fprintf(stderr, "wpush: send_update failed\n");
         fail(su);
     }
-    //  Send the pack bytes.
+    //  Send the pack bytes, interleaving with a status drain so a peer
+    //  that emits progress/status while still reading the pack can't
+    //  deadlock us (both sides blocked on full pipe buffers).
+    a_carve(u8, status_pre, WCLI_BUF);
     {
         a_dup(u8c, pdata, u8bData(packbuf));
-        ok64 wo = FILEFeedAll(*wfd, pdata);
+        ok64 wo = wpush_send_pack_interleaved(*wfd, *rfd, pdata, status_pre);
         if (wo != OK) {
             fprintf(stderr, "wpush: pack send failed\n");
             fail(wo);
@@ -1601,8 +1661,8 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     }
     close(*wfd); *wfd = -1;
 
-    //  Drain status.
-    ok64 rv = wpush_drain_status(*rfd, refname);
+    //  Drain status (seeded with any bytes read during the send).
+    ok64 rv = wpush_drain_status(*rfd, refname, u8bDataC(status_pre));
     if (rv != OK) fprintf(stderr, "wpush: drain_status returned non-OK\n");
     close(*rfd); *rfd = -1;
 
@@ -1636,6 +1696,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip_in, b8 force) {
     sane($ok(remote_uri));
+    FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
     //  the trunk shard, which goes on the wire as `refs/heads/main`.
@@ -1716,7 +1777,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
     //  not requiring a packfile.  Close writer to signal end-of-input.
     close(*wfd); *wfd = -1;
 
-    ok64 rv = wpush_drain_status(*rfd, refname);
+    ok64 rv = wpush_drain_status(*rfd, refname, (u8csc){0});
     if (rv != OK)
         fprintf(stderr, "wpush: delete drain_status returned non-OK\n");
     close(*rfd); *rfd = -1;
@@ -1725,6 +1786,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
 
 ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
     sane($ok(remote_uri));
+    FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     a_pad(u8, refname_buf, 256);

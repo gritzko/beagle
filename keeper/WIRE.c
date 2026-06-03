@@ -335,6 +335,7 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
 
 ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv) {
     sane(in_fd >= 0 && out_fd >= 0);
+    FILEIgnoreSIGPIPE();  //  a client closing early must not kill us
 
     wire_req req = {};
     call(WIREReadRequest, in_fd, &req);

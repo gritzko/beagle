@@ -521,6 +521,7 @@ void RECVAdvanceColocatedWt(void) {
 
 ok64 RECVServe(int in_fd, int out_fd, refadvcp adv) {
     sane(in_fd >= 0 && out_fd >= 0);
+    FILEIgnoreSIGPIPE();  //  a client closing early must not kill us
 
     recv_req req = {};
     //  Pre-acquire the three req buffers from BASS in this scope.  Going
