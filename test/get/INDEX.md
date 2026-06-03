@@ -127,3 +127,10 @@
   `ssh://`), exercising the single-slash `file:<abs>` form.  Companion
   to get/29: same URI form, on-disk-type routing (store → worktree,
   git repo → clone).  Local-only, no ssh.
+* `34-restore-deleted-tracked/` — DIS-017: a bareword `be get <file>`
+  classifies path-vs-branch by TRACKED-in-baseline-tree status, not
+  on-disk stat. Asserts (A) a deleted tracked file is resurrected from
+  cur's baseline, (B) a present-but-edited tracked file is restored,
+  (C) a non-tracked bareword still routes to `?branch` (real branch
+  switches, bogus name refuses; an untracked on-disk file never hijacks
+  the path slot). Local-only, no ssh.

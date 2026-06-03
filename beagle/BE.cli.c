@@ -16,7 +16,10 @@
 #include "dog/HOME.h"
 #include "dog/THEME.h"
 #include "dog/ULOG.h"
+#include "graf/BLOB.h"            // GRAFPathDescend (bareword tracked probe)
 #include "graf/GRAF.h"            // GRAFResolveVersion (top-of-chain pass)
+#include "dog/git/GIT.h"          // GITu8sCommitTree (baseline-tree probe)
+#include "dog/WHIFF.h"            // sha1hexFromHex / sha1FromSha1hex
 #include "keeper/KEEP.h"           // KEEPOpenBranch (resolver needs refs)
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
@@ -2282,6 +2285,71 @@ static ok64 BEDefault(cli *c) {
     return sniff_rc;
 }
 
+//  DIS-017: bareword GET classification probe.  Returns YES iff
+//  `rel` (a project-relative path slice) names a TRACKED entry in
+//  cur's baseline version tree — the tip the wt is currently
+//  anchored to — regardless of whether it exists on disk.  This is
+//  what decides whether a bareword `be get file.c` stays in the path
+//  slot (single-file restore, resurrecting a deleted file — GET.mkd
+//  §"resurrecting if deleted") or falls through to a `?branch`
+//  switch (Verbs.mkd §"Bareword defaults": "path if it names a
+//  tracked file, else query branch").
+//
+//  Mechanics mirror the resolver pass below (HOMEOpen →
+//  KEEPOpenBranch → GRAFOpen), then read the baseline commit sha
+//  from the wtlog tail (`SNIFFAtTailOf`, same standalone peek
+//  `BEActGetBaseline` uses), decode it, fetch the commit object,
+//  extract its root tree, and descend `rel` segment-by-segment via
+//  GRAFPathDescend.  An OK descent (file OR dir entry) → tracked.
+//  NO on any missing store / missing baseline / absent path — the
+//  caller then routes the bareword to `?branch`, preserving the
+//  real-branch-switch case.
+static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
+    if (!u8bHasData(c->repo)) return NO;
+    if (u8csEmpty(rel))       return NO;
+
+    //  Baseline commit sha from the wtlog tail's `@<at>#<sha>`.
+    a_pad(u8, at_buf, FILE_PATH_MAX_LEN + 128);
+    if (SNIFFAtTailOf($path(c->repo), at_buf) != OK) return NO;
+    uri bt = {};
+    u8csMv(bt.data, u8bDataC(at_buf));
+    URILexer(&bt);
+    u8cs frag = {bt.fragment[0], bt.fragment[1]};
+    if (u8csLen(frag) != 40) return NO;
+    sha1hex chex = {};
+    if (sha1hexFromHex(&chex, frag) != OK) return NO;
+    sha1 csha = {};
+    if (sha1FromSha1hex(&csha, &chex) != OK) return NO;
+
+    b8 tracked = NO;
+    home rh = {};
+    uri none = {};
+    if (HOMEOpen(&rh, &none, NO) != OK) return NO;
+    static u8c const _zero = 0;
+    u8cs trunk = {&_zero, &_zero};
+    ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+    if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
+        ok64 go = GRAFOpen(&rh, NO);
+        if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
+            //  Commit object → root tree sha → descend the path.
+            Bu8 *cbuf = &GRAF.obj_buf;
+            u8bReset(*cbuf);
+            u8 ct = 0;
+            if (KEEPGetExact(&csha, *cbuf, &ct) == OK
+                && ct == DOG_OBJ_COMMIT) {
+                sha1 cur = {};
+                if (GITu8sCommitTree(u8bDataC(*cbuf), cur.data) == OK
+                    && GRAFPathDescend(&cur, rel) == OK)
+                    tracked = YES;
+            }
+            if (go == OK) (void)GRAFClose();
+        }
+        if (ko == OK) (void)KEEPClose();
+    }
+    HOMEClose(&rh);
+    return tracked;
+}
+
 // --- Main ---
 
 static ok64 becli_inner(cli *c) {
@@ -2339,17 +2407,30 @@ static ok64 becli_inner(cli *c) {
                 uri *u = uribAtP(c->uris, i);
                 u8cs orig_path = {u->path[0], u->path[1]};
 
-                //  GET path-sniff (VERBS.md §"Bareword defaults"): a
-                //  bareword that names a file present on disk in the
-                //  cwd stays in the path slot (single-file restore
-                //  form, `be get file.c` ≡ `be get ./file.c`).
-                //  Deleted-file restore needs the explicit `./` form
-                //  since stat misses it.  Skips promotion entirely.
+                //  GET bareword classification (DIS-017; Verbs.mkd
+                //  §"Bareword defaults", GET.mkd §"resurrecting if
+                //  deleted"): a bareword that names a TRACKED entry in
+                //  cur's baseline tree stays in the path slot (single-
+                //  file restore — resurrecting it even when deleted on
+                //  disk), else it falls through to a `?branch` switch.
+                //  Keying on tracked-in-baseline status (not on-disk
+                //  stat) is what lets `be get file.c` resurrect a
+                //  deleted tracked file and what stops an UNTRACKED
+                //  on-disk file from hijacking a branch name.  The
+                //  bareword is cwd-relative as typed; canonicalize to
+                //  the project-relative key the baseline tree uses.
                 if (is_get && !u8csEmpty(orig_path)) {
-                    a_path(probe);
-                    if (PATHu8bFeed(probe, orig_path) == OK) {
-                        filestat fs = {};
-                        if (FILEStat(&fs, $path(probe)) == OK) continue;
+                    a_path(cwdbuf);
+                    if (FILEGetCwd(cwdbuf) == OK) {
+                        a_dup(u8c, cwd_s, u8bDataC(cwdbuf));
+                        a_dup(u8c, wt_s,  u8bDataC(c->repo));
+                        a_path(rel);
+                        if (be_canon_path(rel, cwd_s, wt_s, orig_path)
+                                == OK) {
+                            a_dup(u8c, rel_s, u8bDataC(rel));
+                            if (be_bareword_tracked_in_baseline(c, rel_s))
+                                continue;
+                        }
                     }
                 }
 

@@ -1,0 +1,1 @@
+^sniff: get: greet\.txt overwritten from \? \(no staging\)$
