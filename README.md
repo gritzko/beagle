@@ -3,7 +3,7 @@
 **Beagle** is a revision control system suitable for modern
 workflows.  The data format and the syncing protocol are 100%
 git to stay compatible with the existing mass of git repos. The
-rest is reworked TEST-123. 
+rest is reworked. 
 
  1. The system is made syntax-aware, diffing and merging is finer 
     grained and draws heavily from CRDT ideas. No false conflicts. 
@@ -14,7 +14,8 @@ rest is reworked TEST-123.
     CLI flags, but *uniform* language/syntax for everything.
  4. The branching model is tree-like (e.g. `feature/fix`), very
     patch stack friendly (e.g. to rebase the stack as one),
- 5. The UI is reworked as well. 
+ 5. The UI is reworked as well, to the text-mode repo browser
+    level.
 
 Beagle focuses on making a comfortable git client for local
 multi-branch multi-worktree development.  While Beagle's command

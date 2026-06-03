@@ -106,8 +106,10 @@ ok64 RECVIngestPack(int in_fd, u8csc tail);
 //
 //  For each:
 //    * Resolve current local tip via the REFADV map.
-//    * Refuse with RECVNOTFF unless old_sha matches the current tip
-//      (or old_sha is all-zeros for ref creation).
+//    * Refuse with RECVNOTFF unless old_sha matches the current tip.
+//    * A create (old_sha all-zeros) is accepted only when the ref
+//      does not already exist; a create over an existing tip is an
+//      unguarded overwrite and is refused with RECVNOTFF.
 //    * Refuse with RECVBADREF for ref deletion (new_sha all-zeros).
 //    * On accept, append to REFS via REFSAppend.
 //

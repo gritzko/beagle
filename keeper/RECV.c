@@ -296,24 +296,34 @@ ok64 RECVApplyUpdates(refadvcp adv, recv_reqcp req,
         b8 is_create = sha1empty(&u->old_sha);
         b8 is_delete = sha1empty(&u->new_sha);
 
-        //  FF check: unless creating or deleting, old_sha must equal
-        //  the current tip.  Deletes are unconditional — git's
-        //  receive-pack accepts them as long as the client knew the
-        //  current tip (handshake rule), which the wire layer
-        //  enforces upstream.
-        if (!is_create && !is_delete) {
-            sha1 cur = {};
-            b8 have_tip = NO;
-            recv_lookup_tip(adv, u->refname, &cur, &have_tip);
+        //  Phase 6 MVP: ref deletion (new_sha all-zeros) is not yet
+        //  wired through REFS.  Refuse loudly with RECVBADREF rather
+        //  than falling through to write a zero-sha tombstone — which
+        //  also silently bypassed the fast-forward gate.
+        if (is_delete) { r->result = RECVBADREF; continue; }
+
+        //  Current local tip for this ref (captured pre-ingest in the
+        //  advert).  Both the create-guard and the FF check need it.
+        sha1 cur = {};
+        b8 have_tip = NO;
+        recv_lookup_tip(adv, u->refname, &cur, &have_tip);
+
+        if (is_create) {
+            //  A create (old_sha all-zeros) must name a ref that does
+            //  not already exist.  An existing tip means this is an
+            //  unguarded overwrite masquerading as a create — refuse
+            //  as non-fast-forward.
+            if (have_tip) { r->result = RECVNOTFF; continue; }
+        } else {
+            //  FF check: old_sha must equal the current tip.
             if (!have_tip || !sha1Eq(&cur, &u->old_sha)) {
                 r->result = RECVNOTFF;
                 continue;
             }
         }
 
-        //  Build REFS key + val for this update.  For deletes,
-        //  recv_build_val writes the all-zeros sha — exactly the
-        //  tombstone shape REFS recognises.
+        //  Build REFS key + val for this (create or fast-forward)
+        //  update; new_sha is guaranteed non-zero here.
         a_pad(u8, kbuf, 512);
         ok64 ko = recv_build_key(kbuf, u->refname);
         if (ko != OK) { r->result = ko; continue; }

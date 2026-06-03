@@ -594,6 +594,163 @@ ok64 RECEIVEPACKtest_non_ff() {
     done;
 }
 
+// ---- Test 5: delete rejection — seed A, push A → 0000 (delete) ----
+//  Phase 6 MVP refuses ref deletion (RECV.h §contract).  Regression
+//  guard: a delete must NOT silently write a zero-sha tombstone, and
+//  must NOT bypass the FF gate.  REFS must still hold A afterwards.
+
+ok64 RECEIVEPACKtest_delete_refused() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/recv-del-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+
+    char gitA[] = "/tmp/recv-del-A-XXXXXX";
+    want(mkdtemp(gitA) != NULL);
+    char hexA[41]; char packA[1024];
+    call(stage_git_commit, gitA, "alpha\\n", hexA, packA, sizeof(packA));
+
+    call(seed_ref, tmpdir, "refs/heads/main", hexA);
+
+    pid_t pid = -1;
+    int wfd = -1, rfd = -1;
+    call(spawn_receive_pack, tmpdir, &pid, &wfd, &rfd);
+
+    static u8 rbuf[1 << 20];
+    size_t adv_end = 0;
+    u32 nrefs = 0;
+    call(drain_advert, rfd, rbuf, sizeof(rbuf), &adv_end, &nrefs);
+    want(nrefs >= 1);
+
+    //  Client asks to delete main: old=A, new=all-zeros.  No pack.
+    {
+        Bu8 outb = {};
+        call(u8bAllocate, outb, 1024);
+        char const zeros[41] =
+            "0000000000000000000000000000000000000000";
+        call(build_update_line, outb,
+             hexA, zeros, "refs/heads/main", "report-status");
+        call(PKTu8sFeedFlush, u8bIdle(outb));
+        a_dup(u8c, framed, u8bData(outb));
+        want(write(wfd, framed[0], $len(framed)) == (ssize_t)$len(framed));
+        u8bFree(outb);
+    }
+    close(wfd);
+
+    size_t resp_off = adv_end;
+    drain_until_eof(rfd, rbuf, sizeof(rbuf), &resp_off);
+    close(rfd);
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    u8cs resp = {rbuf + adv_end, rbuf + resp_off};
+    b8 saw_ng = NO;
+    for (;;) {
+        u8cs line = {};
+        ok64 d = PKTu8sDrain(resp, line);
+        if (d == PKTFLUSH) break;
+        if (d != OK) break;
+        if ($len(line) >= 18 &&
+            memcmp(line[0], "ng refs/heads/main", 18) == 0)
+            saw_ng = YES;
+    }
+    want(saw_ng);
+
+    //  REFS must still hold A — no tombstone written.
+    char got[41];
+    want(lookup_ref(tmpdir, "refs/heads/main", got));
+    want(memcmp(got, hexA, 40) == 0);
+
+    tmp_rm(tmpdir);
+    tmp_rm(gitA);
+    done;
+}
+
+// ---- Test 6: create over existing — seed A, push 0000 → B ----
+//  A create (old=all-zeros) of an already-existing ref is an
+//  unguarded overwrite masquerading as a create; it must be refused
+//  (not silently FF-bypassed).  REFS must still hold A.
+
+ok64 RECEIVEPACKtest_create_over_existing() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/recv-coe-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+
+    char gitA[] = "/tmp/recv-coe-A-XXXXXX";
+    want(mkdtemp(gitA) != NULL);
+    char hexA[41]; char packA[1024];
+    call(stage_git_commit, gitA, "alpha\\n", hexA, packA, sizeof(packA));
+
+    char gitB[] = "/tmp/recv-coe-B-XXXXXX";
+    want(mkdtemp(gitB) != NULL);
+    char hexB[41]; char packB[1024];
+    call(stage_git_commit, gitB, "bravo\\n", hexB, packB, sizeof(packB));
+
+    call(seed_ref, tmpdir, "refs/heads/main", hexA);
+
+    pid_t pid = -1;
+    int wfd = -1, rfd = -1;
+    call(spawn_receive_pack, tmpdir, &pid, &wfd, &rfd);
+
+    static u8 rbuf[1 << 20];
+    size_t adv_end = 0;
+    u32 nrefs = 0;
+    call(drain_advert, rfd, rbuf, sizeof(rbuf), &adv_end, &nrefs);
+    want(nrefs >= 1);
+
+    //  Client claims a create (old=all-zeros) but main already exists.
+    {
+        Bu8 outb = {};
+        call(u8bAllocate, outb, 1024);
+        char const zeros[41] =
+            "0000000000000000000000000000000000000000";
+        call(build_update_line, outb,
+             zeros, hexB, "refs/heads/main", "report-status");
+        call(PKTu8sFeedFlush, u8bIdle(outb));
+        a_dup(u8c, framed, u8bData(outb));
+        want(write(wfd, framed[0], $len(framed)) == (ssize_t)$len(framed));
+        u8bFree(outb);
+
+        static u8 pbuf[1 << 20];
+        size_t plen = 0;
+        call(slurp_file, packB, pbuf, sizeof(pbuf), &plen);
+        want(write(wfd, pbuf, plen) == (ssize_t)plen);
+    }
+    close(wfd);
+
+    size_t resp_off = adv_end;
+    drain_until_eof(rfd, rbuf, sizeof(rbuf), &resp_off);
+    close(rfd);
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    u8cs resp = {rbuf + adv_end, rbuf + resp_off};
+    b8 saw_ng = NO;
+    for (;;) {
+        u8cs line = {};
+        ok64 d = PKTu8sDrain(resp, line);
+        if (d == PKTFLUSH) break;
+        if (d != OK) break;
+        if ($len(line) >= 18 &&
+            memcmp(line[0], "ng refs/heads/main", 18) == 0)
+            saw_ng = YES;
+    }
+    want(saw_ng);
+
+    //  REFS must still hold A — the bogus create did not overwrite it.
+    char got[41];
+    want(lookup_ref(tmpdir, "refs/heads/main", got));
+    want(memcmp(got, hexA, 40) == 0);
+
+    tmp_rm(tmpdir);
+    tmp_rm(gitA);
+    tmp_rm(gitB);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "RECEIVEPACKtest_smoke...\n");
@@ -604,6 +761,10 @@ ok64 maintest() {
     call(RECEIVEPACKtest_ff_update);
     fprintf(stderr, "RECEIVEPACKtest_non_ff...\n");
     call(RECEIVEPACKtest_non_ff);
+    fprintf(stderr, "RECEIVEPACKtest_delete_refused...\n");
+    call(RECEIVEPACKtest_delete_refused);
+    fprintf(stderr, "RECEIVEPACKtest_create_over_existing...\n");
+    call(RECEIVEPACKtest_create_over_existing);
     fprintf(stderr, "all passed\n");
     done;
 }
