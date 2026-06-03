@@ -1970,6 +1970,10 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
 ok64 BEActSubsPost(cli *c) {
     sane(c);
 
+    //  `--nosub`: skip all submodule recursion for this invocation,
+    //  mirroring BEActSubsGet / BEActSubsPatch / BEActSubsRelay.
+    if (CLIHas(c, "--nosub")) done;
+
     //  Detect transport / msg shape from URIs and -m flag.  No URI
     //  mutation here — BEActPromoteRef already ran above us in the
     //  table.

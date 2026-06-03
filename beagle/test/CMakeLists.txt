@@ -47,6 +47,15 @@ add_test(NAME be-get-nosub
 set_tests_properties(be-get-nosub PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-get-nosub")
 
+# be-post-nosub.sh — `be post --nosub <msg>` must commit the PARENT
+# only and NOT recurse into mounted subs (POST-001).  Seeds a parent
+# with a real vendor/sub submodule, be-get mounts it, then posts.
+add_test(NAME be-post-nosub
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-post-nosub.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-post-nosub PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-post-nosub")
+
 # history.sh — put/post, delete/post, edit/post, then checkout an
 # older commit by SHA (version handle = at.log tail).  No ssh.
 add_test(NAME BEhistory
