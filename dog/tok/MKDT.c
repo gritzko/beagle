@@ -49,6 +49,18 @@ ok64 MKDTonSpace(u8cs tok, MKDTstate *state) {
     done;
 }
 
+//  Backslash escape \<punct>: emit the literal run with the leading
+//  backslash dropped, as plain punctuation text (kind 'P'). The escaped
+//  opener has already cancelled its bracketing role in the lexer, so the
+//  whole run reaches HTML verbatim (escaped), never as an inline span.
+ok64 MKDTonEscape(u8cs tok, MKDTstate *state) {
+    sane($ok(tok) && state != NULL);
+    a_dup(u8c, lit, tok);
+    u8csUsed(lit, 1);  //  drop the leading backslash
+    if (state->cb) return state->cb('P', lit, state->ctx);
+    done;
+}
+
 // --- Block-level helpers ---
 
 // Check if line is a StrictMark code fence (3-4 backticks after div markup).
@@ -104,7 +116,9 @@ int MKDTHeadingLevel(u8csc line) {
     return level;
 }
 
-// Check horizontal rule: exactly "----"
+// Check horizontal rule: a 3-dash "---" (the short case) or 4-dash "----".
+// Per StrictMark: "---"/"--- "/"----" is a ruler; structural markup is
+// 4-char-wide except two shorter cases, one being the 3-dash ruler.
 b8 MKDTHRule(u8csc line) {
     u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
@@ -112,9 +126,11 @@ b8 MKDTHRule(u8csc line) {
     while (p + 4 <= e && p[0] == ' ' && p[1] == ' ' &&
            p[2] == ' ' && p[3] == ' ')
         p += 4;
-    if (p + 4 > e) return NO;
-    if (p[0] != '-' || p[1] != '-' || p[2] != '-' || p[3] != '-') return NO;
-    p += 4;
+    // Need at least three dashes.
+    if (p + 3 > e || p[0] != '-' || p[1] != '-' || p[2] != '-') return NO;
+    p += 3;
+    // Optional fourth dash (the 4-char-wide form), then the gap.
+    if (p < e && *p == '-') p++;
     // Rest must be whitespace/newline
     while (p < e) {
         if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') return NO;

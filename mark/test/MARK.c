@@ -66,6 +66,12 @@ static ok64 MARKrender_cases() {
          "<a href=\"x.html\">two words</a>"},
         {"no-collapsed", "#   T\n\nsee [Home][] now\n\n[Home]: Home.mkd\n",
          "<a href=\"Home.html\">Home</a>[]"},
+        //  DIS-014: \* escape emits a literal * (no backslash) and cancels
+        //  that char's bracketing role, suppressing the following strong span.
+        {"escape-star", "#   T\n\na \\* b *strong* c\n", "a * b *strong* c"},
+        //  DIS-014: a 3-dash --- line is a ruler, like ----.
+        {"hr3", "#   T\n\nbefore\n\n---\n\nafter\n", "<hr"},
+        {"hr4", "#   T\n\nbefore\n\n----\n\nafter\n", "<hr"},
     };
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
         call(render, out, T[i].src, NO);

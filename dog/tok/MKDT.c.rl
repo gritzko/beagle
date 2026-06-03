@@ -9,6 +9,7 @@ ok64 MKDTonNumber (u8cs tok, MKDTstate* state);
 ok64 MKDTonWord (u8cs tok, MKDTstate* state);
 ok64 MKDTonPunct (u8cs tok, MKDTstate* state);
 ok64 MKDTonSpace (u8cs tok, MKDTstate* state);
+ok64 MKDTonEscape (u8cs tok, MKDTstate* state);
 
 %%{
 
@@ -67,11 +68,25 @@ action on_space {
     o = MKDTonSpace(tok, state);
     if (o!=OK) fbreak;
 }
+action on_escape {
+    tok[0] = (u8c*)ts;
+    tok[1] = (u8c*)te;
+    o = MKDTonEscape(tok, state);
+    if (o!=OK) fbreak;
+}
 
 main := |*
 
     # ---- inline code `content` (highest precedence) ----
     "`" ( any8 - [`\n] )+ "`"                            => on_code;
+
+    # ---- backslash escape \<punct> (StrictMark: 2nd-highest precedence) ----
+    # An escaped opener cancels its bracketing role: \* swallows up to the
+    # next matching close so the span never forms; the callback strips the
+    # backslash and emits the literal run.
+    "\\*" (any8 - [*\n])* "*"                            => on_escape;
+    "\\_" (any8 - [_\n])* "_"                            => on_escape;
+    "\\" (nws - [*_])                                    => on_escape;
 
     # ---- strong *content* (single star, no doubles) ----
     "*" (nws - [*]) (any8 - [*\n])* "*"                  => on_emph;
