@@ -1,15 +1,15 @@
 # keeper refs format
 
-Each keeper branch dir has one append-only reflog file:
+Each keeper project shard has one append-only reflog file holding
+*all* of the project's refs — every branch tip, tag and host alias:
 
     <store>/
-        refs                       trunk reflog
-        feature/
-            refs                   feature branch reflog
-        tags/v1.0/
-            refs                   tag history
+        <project>/
+            refs                   the project's only reflog
 
-The file is a [dog/ULOG][U] — a plain-text append-only URI event log.
+Branches and tags are not directories; they are pure rows in this
+single `refs`.  The file is a [dog/ULOG][U] — a plain-text
+append-only URI event log.
 
   [U]: ../dog/ULOG.md
 
@@ -39,7 +39,7 @@ Typical rows:
 Keys in use:
 
   - `?heads/<name>` / `?tags/<name>` / `?HEAD` — local refs in this
-    branch dir.  The key starts with `?` because in URI terms only
+    project shard.  The key starts with `?` because in URI terms only
     the query component is present.
   - `<origin>?heads/<name>` / `<origin>?tags/<name>` — remote-tracking
     views of the same branch seen on a peer.  `<origin>` is whatever
@@ -51,17 +51,16 @@ Keys in use:
     (Aliases sit in the same file as refs; see
     **Aliases without a sidecar** below.)
 
-## Per-branch scoping
+## Project scoping
 
-`<branch-dir>/refs` records **this one branch's** tip plus peer
-views of the same branch.  Cross-branch entries do not belong
-here: if a wt on `feature` learns origin's `main` tip, that row
-lives in the trunk's `refs` (the dir that owns `main`), not in
-`feature/`.  Placement rule: the entry's branch-part must match
-the owning dir.
+`<project>/refs` records **every** branch tip in the project plus
+peer views of those branches.  All branches and tags share this one
+file: a wt on `feature` and the trunk's `main` tip both live as rows
+here, distinguished by their `?heads/<name>` key, not by directory.
 
-Resolution is scoped to the dir: looking up `?heads/feature` reads
-`feature/refs` directly and does **not** walk up the dir chain.
+Resolution scans the single `refs`: looking up `?heads/feature`
+reads `<project>/refs` and a branch's own rows are authoritative —
+there is no dir chain and nothing to walk up.
 
 ## Aliases without a sidecar
 
@@ -73,26 +72,27 @@ authority in one reverse pass, so `//github?master` matches
 `?heads/master` for a local ref.  Most-recent row wins on
 ambiguity.
 
-Because aliases are just rows in the dir's reflog, dropping a dir
-drops its alias rows too — exactly like its local tips.  Cross-host
-aliases that must survive a branch-dir drop belong in the root's
-`refs`.
+Aliases are just rows in the project's single reflog, alongside
+every branch tip and tag.  Dropping a branch tombstones only that
+branch's tip rows (see below); alias rows are unaffected.
 
 ## What's not in keeper's ref state
 
 **Worktree state** is not in keeper.  The per-wt branch pointer
-lives in the wt's `.be` file; the reverse pointer lives in the
-branch dir's `WT` file (see `sniff/AT.md`).  Keeper's refs carry
-only replicated refs (local + remote-attributed for the same
-branch) — never "which wt is where".
+lives in the wt's `.be` file (tracked by `sniff`, see `sniff/AT.md`);
+keeper keeps no per-branch `WT` file.  Keeper's refs carry only
+replicated refs (local + remote-attributed) — never "which wt is
+where".
 
-## Drop-a-dir and reflogs
+## Dropping a branch
 
-Squash/rebase/drop of a branch dir removes its `refs` together
-with its packs.  Peer views of that branch held in that dir's
-`refs` vanish too, which is exactly right: the dropped commits
-are gone, so the memory of where peers had them no longer
-matters.
+Dropping a branch appends a `refs` tombstone for its
+`?heads/<name>`; it deletes no objects and no files.  The branch's
+objects linger in the single shard until an out-of-band epoch
+recompaction (which copies the reachable closure into a fresh
+project id).  Resolution stops returning the tombstoned tip, so
+peer views of that branch effectively go stale — which is exactly
+right once the branch is gone.
 
 ## Compaction
 

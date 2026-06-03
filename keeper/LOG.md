@@ -4,30 +4,28 @@ Pack logs are numbered append-only files holding concatenated
 *packs*.  They are the sole storage for object bytes; nothing is
 ever mutated in place.  The pack format is based on git packfiles.
 
-Logs are sharded **by branch directory**; each branch dir holds its
-own sequence of log files plus its own indexes, reflog and (if the
-branch is checked out) a worktree back-pointer:
+Logs live in **one flat object pool per project**; a single
+`<store>/<project>/` dir holds the whole project's log files plus
+its indexes and one `refs` reflog — for *all* local branches, tags
+and remote-tracking refs.  There are no per-branch object
+subdirectories:
 
-    <store>/                    trunk (heads/main|master|trunk → "")
-        00001.keeper
-        00003.keeper
-        00001.idx
-        refs                    dog/ULOG reflog (see REF.md)
-        WT
-        feature/
+    <store>/
+        <project>/              the only object dir
+            00001.keeper
             00002.keeper
-            00004.keeper
-            00001.idx
-            refs
+            00003.keeper
+            00001.keeper.idx
+            refs                dog/ULOG reflog (see REF.md)
 
-File numbering (`NNNNN`) is **store-wide and sequential** — pack
-logs in different branch dirs never share a number.  The physical
-file sits in whichever branch dir the pack was written to.
+File numbering (`NNNNN`) is **store-wide and sequential**, so a
+`file_id` names a log uniquely; the file sits in the single project
+shard that wrote it.
 
 ## Append-only pack logs
 
 One log file holds **many packs** appended back-to-back.  Small
-packs (e.g. a single local commit) MUST be appended to that dir's
+packs (e.g. a single local commit) MUST be appended to the shard's
 current tail log file — never open a new file just to store one
 pack.  A new log file is only started when the current one crosses
 a size threshold.  A file has the git packfile header but no
@@ -59,19 +57,25 @@ rely on it.
 DFS order and are repacked canonically on `be post` (commit first,
 then trees via staging walk, then blobs).  A handful of legacy
 tests that hand-roll non-canonical packs clear the flag explicitly.
+`strict_order` checks only **non-decreasing** type, so a pack may
+legally start with a tree, blob or tag; a blob-only or tree-only
+pack (`KEEPPut` / `KEEPUpdate`) is valid.
 
 Consequences:
 
-  * A pack's first object is always a commit (or empty / tag-only
-    in degenerate cases).  Sync and graf can cheaply identify
-    commits by scanning pack prefixes.
+  * Objects within a pack follow non-decreasing git type order;
+    the pack's first object is **not** required to be a commit.
+    Commits are located via the kv64 `type4`-keyed index (range
+    over the commit type), NOT by a pack-prefix scan; sync and
+    graf find commits through that index, not by inflating bodies.
   * Trees never reference commits; blobs never reference trees or
     commits; delta bases therefore point earlier in the same pack
     or into an earlier pack.  This rules out forward references
     within a pack.
   * Incoming git packfiles already satisfy the ordering when
-    produced by stock git; `KEEPImport` must verify and reject
-    packs that violate it rather than silently reorder.
+    produced by stock git; `KEEPImport` copies git's stream
+    verbatim (no `Feed`), so the order check does not apply on
+    import.
 
 ## Stripped git pack framing
 
@@ -94,24 +98,19 @@ git-compat trailing SHA-1 is recomputed on the fly over the
 freshly framed bytes when an outgoing pack is sent on the wire.
 Per-object 60-bit hashlets in the LSM are untouched.
 
-## Delta-dependency DAG
+## Delta dependencies
 
 OFS_DELTA is **pack-local**: the base sits earlier in the same
 pack at a known offset.  A pack file can therefore be copied
-verbatim between stores (dog-to-dog sync, branch-dir moves)
-without rewriting deltas.
+verbatim between stores (dog-to-dog sync) without rewriting
+deltas.
 
-REF_DELTA resolves by hash lookup.  Keeper constrains the lookup
-to the **dir chain from the pack's home dir up to the store root**:
-a REF_DELTA's base MUST live in the same branch dir or in an
-ancestor.  Writers that would otherwise delta against an object in
-a sibling or descendant dir must materialize the base (emit it raw
-into the target dir's pack) instead.
-
-The invariant turns the branch tree into a dependency DAG: leaf
-dirs can be dropped wholesale, interior dirs only after descendants
-have materialized every cross-dir reference into the ancestor
-chain.  See "Drop-a-dir" below.
+REF_DELTA resolves by hashlet lookup **within the single project
+pool**: a base may be any earlier object in the shard.  There is
+no dir-chain walk-up.  The only constraint is cross-project: a
+REF_DELTA base MUST live in the same project shard, never in
+another project, which keeps every shard self-contained and
+movable / recompactable in isolation.
 
 ## Pack bookmarks
 
@@ -151,59 +150,58 @@ the key's low 4 bits keeps them from colliding (objects use
 1..4 for commit/tree/blob/tag; pack bookmarks use a reserved
 value outside that range — TBD, propose 15).
 
-## Drop-a-dir (replaces GC / repack)
+## Epoch recompaction (replaces GC / repack)
 
-Keeper never rewrites packs.  Consolidation and cleanup happen at
-the granularity of a **branch dir**:
+Keeper never rewrites or GCs packs live.  Cleanup happens out of
+band, at the granularity of a **project shard**:
 
-  - **Squash / rebase a leaf branch**: delete the dir (pack logs,
-    indexes, REFS, WT).  The DAG invariant guarantees no surviving
-    REF_DELTA pointed into it from a sibling/descendant; ancestor
-    resolution is unaffected because writers never delta upward-
-    against-downward.
-  - **Drop an interior dir**: precondition — every descendant's
-    cross-dir REF_DELTAs into this dir must be materialized into
-    the descendant (or into an ancestor that survives).  If not,
-    the operation is refused; there is no automatic rewrite.
-  - **Uncommitted staging or a live WT**: refused.  `be stash` or
-    close the worktree first.
+  - **Drop a branch**: write a `refs` tombstone for its
+    `?heads/<name>` (see REF.md).  No log file is deleted and no
+    objects are removed — the dropped branch's objects simply
+    linger in the single shard.  There is no live object deletion
+    and no per-branch GC.
+  - **Epoch recompaction**: at a major release the project is
+    recompacted by copying the reachable closure into a fresh
+    project id (e.g. `beagle` → `beagle2`), leaving the now-dead
+    objects behind in the old shard.
 
-Readers holding mmaps of dropped files continue to work until they
-close; new lookups route around the missing dir.
+Readers holding mmaps of an old shard continue to work until they
+close.  Because all objects live in one pool, in-shard lookups
+never have to route around a missing dir.
 
-Peer watermarks pointing at dropped `file_id`s become stale — the
-affected peers fall back to full sync on next contact via the standard
-have/want negotiation (`WIRE.md`).  This is acceptable: drops are
-user-initiated and watermarks rebuild cheaply.
+Peer watermarks pointing at recompacted `file_id`s become stale —
+the affected peers fall back to full sync on next contact via the
+standard have/want negotiation (`WIRE.md`).  This is acceptable:
+recompaction is user-initiated and watermarks rebuild cheaply.
 
 ## Implications for sync
 
 See `keeper/WIRE.md` for the active wire protocol (git pkt-line,
-upload-pack / receive-pack compatible).  Sync scopes to a branch
-dir: a fetch ships a contiguous byte prefix of the dir's log
-(plus its ancestor dirs' logs up to the relevant watermark) as
-one freshly-framed git packfile.  Per-pack `(obj_count, byte_len)`
-in the bookmark is exactly what the encoder needs to sum object
-counts for the new PACK header and to sendfile each segment in
-one syscall.  The TLV-based predecessor (`SYNC.md`) and its
-per-pack hashlet were removed once `WIRE.md` Phase 10 landed.
+upload-pack / receive-pack compatible).  All of a project's objects
+live in one shard, so a fetch resolves its wants/haves within that
+single pool and ships the ordered segment list as one freshly-framed
+git packfile — there is no per-dir or ancestor-dir fan-out.  Per-pack
+`(obj_count, byte_len)` in the bookmark is exactly what the encoder
+needs to sum object counts for the new PACK header and to sendfile
+each segment in one syscall.  The TLV-based predecessor (`SYNC.md`)
+and its per-pack hashlet were removed once `WIRE.md` Phase 10 landed.
 
 ## Current code vs. this spec
 
-As of 2026-04-28, Step 2 multi-branch open/create/drop is live:
-`keeper_shard` is gone — the singleton `keeper` carries flat
+The flat single-pool model is live.  `KEEPOpenBranch(h, branch, rw)`
+opens the one project shard `<store>/<project>/` and registers every
+`.keeper` (pack log) and `.keeper.idx` file in it on the
 keeper-level `Bkv32 packs` (seqno → fd) and `Bkv32 puppies` (seqno →
-fd) directly, plus `u8cs leaf_branch` and one `int lock_fd` on the
-leaf.  `KEEPOpenBranch(h, "feat/fix", rw)` walks trunk → feat →
-feat/fix, registering every `.keeper` and `.keeper.idx` file along
-the way; missing prefix dirs return `KEEPNONE`.
-`KEEPCreateBranch(h, branch)` mkdirs a leaf under an existing parent
-(`KEEPDUP` on collision, `KEEPNONE` on missing parent).
-`KEEPBranchDrop(k, branch)` evicts + unlinks every file in the leaf
-dir and rmdirs it; refuses trunk (`KEEPTRUNK`), the active leaf, or
-a branch with subdirs (both `KEEPDIRTY`).  Writes (`KEEPPackOpen`,
-`KEEPPackClose`, `KEEPIngestFile`, `KEEPIngestStream`) all land in
-the leaf branch dir; `KEEPCompact` writes its merged run into the leaf dir
-too.  The REF_DELTA visibility check is now structural: every entry
-in `k->packs` is by construction visible to a delta encoded into the
-leaf, since the open walk only loads packs from trunk → … → leaf.
+fd) registries; `branch` merely selects the *ref context* (which
+`?heads/<name>` tip the session reads/advances) — it never names a
+directory.  `KEEPLookup` scans all runs in the one pool with no
+parent-dir retry.  `KEEPCreateBranch(h, branch)` writes one
+`?heads/<name>` ref row (no mkdir).  `KEEPBranchDrop(k, branch)`
+appends a REFS tombstone and deletes no objects and no directories
+(objects linger for epoch recompaction); it refuses trunk
+(`KEEPTRUNK`) and the active branch (`KEEPDIRTY`).  Writes
+(`KEEPPackOpen`, `KEEPPackClose`, `KEEPIngestFile`,
+`KEEPIngestStream`) and `KEEPCompact` all land in the single shard.
+The REF_DELTA visibility check is structural: every entry in
+`k->packs` is by construction in the one pool and so visible to any
+delta encoded into the shard.
