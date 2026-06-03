@@ -120,6 +120,35 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src);
 //  src_commit in their R-set; surviving tokens keep their birth-id.
 ok64 WEAVEDiff (weave *dst, weave const *src, weave const *nu, u32 src_commit);
 
+//  --- Linear-chain replay with a carried decode (GET-001) ------------
+//
+//  A long linear history replayed by repeated WEAVEDiff re-decodes the
+//  WHOLE growing accumulator weave from its TLV every step (the per-call
+//  WEAVE_DECODE), making the replay super-linear.  `weavedec` is a
+//  PERSISTENT decode (heap-backed columns, NOT BASS scratch) that the
+//  caller carries across steps so the accumulator is decoded ONCE, not
+//  per version.  Each `WEAVEDiffCarry` step diffs the carried src decode
+//  against `nu`, writes dst's TLV, and refills `dst_dec` from the tokens
+//  it emits (no TLV re-parse).  The caller double-buffers two decodes
+//  and swaps, exactly like the dst/src TLV double-buffer.
+typedef struct {
+    Bu8  text;
+    Bu32 tok;                 // [ntok] cumulative end offsets
+    Bu32 seq, pos;            // [ntok] birth-id columns
+    Bu32 rpool, roff, rlen;   // token i R-set = rpool[roff[i] .. +rlen[i])
+    u32  ntok;
+} weavedec;
+
+ok64 WEAVEDecInit (weavedec *d);   // allocate empty persistent columns
+void WEAVEDecFree (weavedec *d);
+void WEAVEDecReset(weavedec *d);
+
+//  dst (TLV) = `src` (carried decode) diffed against `nu`; on success
+//  `dst_dec` (reset first) holds dst's decode for the next step.  `src`
+//  with ntok==0 ⇒ empty baseline (first version).
+ok64 WEAVEDiffCarry(weave *dst, weavedec *dst_dec,
+                    weavedec const *src, weave const *nu, u32 src_commit);
+
 //  Single-weave DAG replay step: dst = src with commit `seq`'s edit
 //  applied IN PLACE.  Unlike WEAVEDiff (baseline = all alive), the
 //  baseline is src's alive view restricted to `base`/`base_ctx` — the

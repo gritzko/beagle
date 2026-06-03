@@ -240,6 +240,18 @@ static void wd_view(wdp *p, wdec const *d) {
     p->rlen  = (u32cp)u32bDataHead(d->rlen);
 }
 
+//  Same view, over a persistent (heap-backed) weavedec.
+static void wd_view_dec(wdp *p, weavedec const *d) {
+    u8csMv(p->base, u8bDataC(d->text));
+    p->tok   = (u32cp)u32bDataHead(d->tok);
+    p->ntok  = d->ntok;
+    p->seq   = (u32cp)u32bDataHead(d->seq);
+    p->pos   = (u32cp)u32bDataHead(d->pos);
+    u32csMv(p->rpool, u32bDataC(d->rpool));
+    p->roff  = (u32cp)u32bDataHead(d->roff);
+    p->rlen  = (u32cp)u32bDataHead(d->rlen);
+}
+
 static u32 wd_lo(wdp const *p, u32 i) { return i ? p->tok[i - 1] : 0; }
 static u32 wd_hi(wdp const *p, u32 i) { return p->tok[i]; }
 static b8  wd_alive(wdp const *p, u32 i) { return p->rlen[i] == 0; }
@@ -293,18 +305,47 @@ static ok64 weave_decode_fill(wdec *d, weave const *w) {
     call(weave_decode_fill, &(D), (W));                                  \
 } while (0)
 
-//  Emit decoded token `i` verbatim through the builder.
-static ok64 wd_emit(weavebld *b, wdp const *p, u32 i) {
-    sane(b);
+//  --- Emit sink: TLV builder + optional carried-decode capture --------
+//
+//  Every token the diff core emits goes through `wsink_put`, which feeds
+//  the TLV builder AND, when `cap` is non-NULL, appends the same token to
+//  a persistent `weavedec` so the next replay step reads it without re-
+//  decoding dst's TLV (GET-001).  The capture mirrors weave_decode_fill's
+//  column layout, but the R-set is always materialized per token here
+//  (no run-length dedup) — that is exactly what a wdp view expects.
+typedef struct { weavebld *b; weavedec *cap; } wsink;
+
+static ok64 wsink_put(wsink *k, u8csc text, u32 seq, u32 pos, u32cs rset) {
+    sane(k && k->b);
+    call(WEAVEBldPut, k->b, text, seq, pos, rset);
+    weavedec *d = k->cap;
+    if (d != NULL) {
+        u32 roff = (u32)u32bDataLen(d->rpool);
+        u32 nr = (u32)u32csLen(rset);
+        for (u32 i = 0; i < nr; i++) call(u32bFeed1, d->rpool, ((u32 const *)rset[0])[i]);
+        call(u8bFeed, d->text, text);
+        call(u32bFeed1, d->tok, (u32)u8bDataLen(d->text));
+        call(u32bFeed1, d->seq, seq);
+        call(u32bFeed1, d->pos, pos);
+        call(u32bFeed1, d->roff, roff);
+        call(u32bFeed1, d->rlen, nr);
+        d->ntok++;
+    }
+    done;
+}
+
+//  Emit decoded token `i` verbatim through the sink.
+static ok64 wd_emit(wsink *k, wdp const *p, u32 i) {
+    sane(k);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
     a$part(u8c, t, p->base, lo, hi - lo);
     a$part(u32c, rs, p->rpool, p->roff[i], p->rlen[i]);
-    return WEAVEBldPut(b, t, p->seq[i], p->pos[i], rs);
+    return wsink_put(k, t, p->seq[i], p->pos[i], rs);
 }
 
 //  Emit decoded token `i` with `add_rm` folded into its R-set (DEL).
-static ok64 wd_emit_del(weavebld *b, wdp const *p, u32 i, u32 add_rm) {
-    sane(b);
+static ok64 wd_emit_del(wsink *k, wdp const *p, u32 i, u32 add_rm) {
+    sane(k);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
     a$part(u8c, t, p->base, lo, hi - lo);
     u32 rbuf[WEAVE_SET_MAX], rn = 0;
@@ -312,7 +353,7 @@ static ok64 wd_emit_del(weavebld *b, wdp const *p, u32 i, u32 add_rm) {
     a$part(u32c, cur, p->rpool, p->roff[i], p->rlen[i]);
     call(weave_set_union, cur, one, 1, rbuf, WEAVE_SET_MAX, &rn);
     u32cs rs = {rbuf, rbuf + rn};
-    return WEAVEBldPut(b, t, p->seq[i], p->pos[i], rs);
+    return wsink_put(k, t, p->seq[i], p->pos[i], rs);
 }
 
 
@@ -427,9 +468,9 @@ static b8 wbase_closure(wdp const *p, u32 i, void *vctx) {
     return YES;
 }
 
-static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
+static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
                             u32 seq, weave_basefn isbase, void *bctx) {
-    sane(bld);
+    sane(k);
     u32 ins_pos = 0;   // ordinal of INS tokens within this step
 
     Bu64 alive_h = {}, nu_h = {};
@@ -472,15 +513,15 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
             u32 lo = wd_lo(nuv, i), hi = wd_hi(nuv, i);
             a$part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
-            call(WEAVEBldPut, bld, t, seq, ins_pos++, rs);
+            call(wsink_put, k, t, seq, ins_pos++, rs);
         }
-        for (u32 i = 0; i < s->ntok; i++) call(wd_emit, bld, s, i);
+        for (u32 i = 0; i < s->ntok; i++) call(wd_emit, k, s, i);
         done;
     }
     if (nlen == 0) {
         for (u32 i = 0; i < s->ntok; i++) {
-            if (isbase(s, i, bctx)) { call(wd_emit_del, bld, s, i, seq); }
-            else                    { call(wd_emit, bld, s, i); }
+            if (isbase(s, i, bctx)) { call(wd_emit_del, k, s, i, seq); }
+            else                    { call(wd_emit, k, s, i); }
         }
         done;
     }
@@ -520,8 +561,8 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
         u32 len = DIFF_LEN(*ep);
         if (op == DIFF_EQ) {
             for (u32 j = 0; j < len; j++) {
-                while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, bld, s, wi); wi++; }
-                if (wi < s->ntok) { call(wd_emit, bld, s, wi); wi++; }
+                while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, k, s, wi); wi++; }
+                if (wi < s->ntok) { call(wd_emit, k, s, wi); wi++; }
                 ni++;
             }
             ep++;
@@ -539,20 +580,20 @@ static ok64 weave_diff_core(weavebld *bld, wdp const *s, wdp const *nuv,
         //  this commit's inserts.  Inserts still land before the next
         //  baseline token, so anchoring is unchanged; recovery is
         //  order-independent (the sides are in different closures).
-        while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, bld, s, wi); wi++; }
+        while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, k, s, wi); wi++; }
         for (u32 j = 0; j < sum_ins; j++) {
             u32 lo = wd_lo(nuv, ni), hi = wd_hi(nuv, ni);
             a$part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
-            call(WEAVEBldPut, bld, t, seq, ins_pos++, rs);
+            call(wsink_put, k, t, seq, ins_pos++, rs);
             ni++;
         }
         for (u32 j = 0; j < sum_del; j++) {
-            while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, bld, s, wi); wi++; }
-            if (wi < s->ntok) { call(wd_emit_del, bld, s, wi, seq); wi++; }
+            while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, k, s, wi); wi++; }
+            if (wi < s->ntok) { call(wd_emit_del, k, s, wi, seq); wi++; }
         }
     }
-    while (wi < s->ntok) { call(wd_emit, bld, s, wi); wi++; }
+    while (wi < s->ntok) { call(wd_emit, k, s, wi); wi++; }
     done;
 }
 
@@ -573,7 +614,77 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
 
     weavebld bld;
     WEAVEBldInit(&bld, dst);
-    call(weave_diff_core, &bld, &s, &nuv, src_commit, wbase_alive, NULL);
+    wsink k = {&bld, NULL};
+    call(weave_diff_core, &k, &s, &nuv, src_commit, wbase_alive, NULL);
+    done;
+}
+
+// ============================================================
+//  Carried-decode linear replay (GET-001)
+// ============================================================
+
+//  Capacity reserves for a carried decode.  The accumulator weave can
+//  grow to WEAVE_TLV_MAX of TLV; its decode columns are bounded by that:
+//  the text never exceeds the TLV, and each per-token column has at most
+//  one entry per token (≤ TLV bytes worth of records).  rpool holds one
+//  u32 per stored remover, also ≤ TLV slots.  mmap with MAP_NORESERVE
+//  (u8bMap/u32bMap) reserves VA cheaply and pages in on demand, so these
+//  generous reserves cost nothing until actually written.
+#define WEAVE_DEC_TEXT_MAX  WEAVE_TLV_MAX
+#define WEAVE_DEC_TOK_MAX   (WEAVE_TLV_MAX + 2)
+
+ok64 WEAVEDecInit(weavedec *d) {
+    sane(d);
+    zerop(d);
+    call(u8bMap,  d->text,  WEAVE_DEC_TEXT_MAX);
+    call(u32bMap, d->tok,   WEAVE_DEC_TOK_MAX);
+    call(u32bMap, d->seq,   WEAVE_DEC_TOK_MAX);
+    call(u32bMap, d->pos,   WEAVE_DEC_TOK_MAX);
+    call(u32bMap, d->rpool, WEAVE_DEC_TOK_MAX);
+    call(u32bMap, d->roff,  WEAVE_DEC_TOK_MAX);
+    call(u32bMap, d->rlen,  WEAVE_DEC_TOK_MAX);
+    done;
+}
+
+void WEAVEDecReset(weavedec *d) {
+    if (!d) return;
+    u8bReset(d->text);
+    u32bReset(d->tok);  u32bReset(d->seq);  u32bReset(d->pos);
+    u32bReset(d->rpool); u32bReset(d->roff); u32bReset(d->rlen);
+    d->ntok = 0;
+}
+
+void WEAVEDecFree(weavedec *d) {
+    if (!d) return;
+    if (d->text[0])  u8bUnMap(d->text);
+    if (d->tok[0])   u32bUnMap(d->tok);
+    if (d->seq[0])   u32bUnMap(d->seq);
+    if (d->pos[0])   u32bUnMap(d->pos);
+    if (d->rpool[0]) u32bUnMap(d->rpool);
+    if (d->roff[0])  u32bUnMap(d->roff);
+    if (d->rlen[0])  u32bUnMap(d->rlen);
+    zerop(d);
+}
+
+//  dst (TLV) = `src` (carried decode) diffed against `nu`; `dst_dec`
+//  (reset on entry) receives dst's decode, captured token-by-token as
+//  the diff core emits — no TLV re-parse of the accumulator (GET-001).
+ok64 WEAVEDiffCarry(weave *dst, weavedec *dst_dec,
+                    weavedec const *src, weave const *nu, u32 src_commit) {
+    sane(dst && dst_dec && src);
+    if (!nu) return FAILSANITY;
+
+    wdec nd = {};
+    WEAVE_DECODE(nd, nu);
+    wdp s = {}, nuv = {};
+    wd_view_dec(&s, src);
+    wd_view(&nuv, &nd);
+
+    WEAVEDecReset(dst_dec);
+    weavebld bld;
+    WEAVEBldInit(&bld, dst);
+    wsink k = {&bld, dst_dec};
+    call(weave_diff_core, &k, &s, &nuv, src_commit, wbase_alive, NULL);
     done;
 }
 
@@ -607,7 +718,8 @@ ok64 WEAVEApply(weave *dst, weave const *src, weave const *nu,
     weavebld bld;
     WEAVEBldInit(&bld, dst);
     wbase_clos clos = {base, base_ctx};
-    call(weave_diff_core, &bld, &s, &nuv, seq, wbase_closure, &clos);
+    wsink k = {&bld, NULL};
+    call(weave_diff_core, &k, &s, &nuv, seq, wbase_closure, &clos);
     done;
 }
 

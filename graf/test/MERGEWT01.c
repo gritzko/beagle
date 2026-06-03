@@ -329,12 +329,141 @@ ok64 test_conflict(void) {
     done;
 }
 
+//  (e) Large file (~80 KB) with a long linear history (~90 versions),
+//  mirroring the BE.cli.c-scale repro in GET-001.  The unfixed
+//  build_tip_weave_tunable replay loop never rewinds the per-version
+//  WEAVE_DECODE scratch, so BASS use grows ~O(versions^2 * tokens) and
+//  the 1 GB arena overflows with BNOROOM long before the merge
+//  finishes.  With the per-version call()/try() boundary the scratch is
+//  reclaimed each step and the merge completes (OK).
+//
+//  The fixture is fully synthetic and deterministic: a NLINES-line file
+//  whose i-th version rewrites one rotating line, chained over NVERS
+//  commits.  The wt edits a single far-apart line so it merges cleanly
+//  with the tip and we can assert the merged bytes.
+
+#define BIG_NLINES 2000u    // ~80 KB at ~40 bytes/line
+#define BIG_NVERS  90u      // long history; overflows the unfixed loop
+
+//  Render version `v` of the big file into `out` (reset first).  Line i
+//  reads "line <i> base\n" except the rotating line for this version
+//  which reads "line <i> v<v>\n".  Version 0 is the all-base baseline.
+static ok64 big_render(Bu8 out, u32 v) {
+    sane(1);
+    u8bReset(out);
+    u32 hot = (v == 0) ? BIG_NLINES : (v % BIG_NLINES);
+    for (u32 i = 0; i < BIG_NLINES; i++) {
+        char line[64];
+        int n;
+        if (v != 0 && i == hot)
+            n = snprintf(line, sizeof(line), "line %05u v%05u\n", i, v);
+        else
+            n = snprintf(line, sizeof(line), "line %05u base\n", i);
+        u8cs ls = {(u8cp)line, (u8cp)line + n};
+        call(u8bFeed, out, ls);
+    }
+    done;
+}
+
+ok64 test_big_history(void) {
+    sane(1);
+    call(setup_repo);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    Bu8 content = {};
+    call(u8bAllocate, content, (BIG_NLINES + 4) * 64);
+
+    //  Chain BIG_NVERS commits, each touching one rotating line of the
+    //  big file.  Keep the last two commit shas as base/tgt.
+    sha1 parent = {}, prev = {}, c_base = {}, c_tgt = {};
+    b8 have_parent = NO;
+    for (u32 v = 0; v < BIG_NVERS; v++) {
+        call(big_render, content, v);
+        char msg[32];
+        snprintf(msg, sizeof(msg), "v%u", v);
+        sha1 c = {};
+        sha1 blob = {}, tree = {};
+        a_dup(u8c, cd, u8bData(content));
+        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, cd, 0, &blob);
+        a_pad(u8, tb, 256);
+        a_cstr(prefix, "100644 ");
+        call(u8bFeed, tb, prefix);
+        a_cstr(nm, "big.txt");
+        call(u8bFeed, tb, nm);
+        u8bFeed1(tb, 0);
+        a_rawc(ss, blob);
+        call(u8bFeed, tb, ss);
+        a_dup(u8c, tc, u8bData(tb));
+        call(KEEPPackFeed, &p, DOG_OBJ_TREE, tc, 0, &tree);
+        call(commit_one, &p, &tree, have_parent ? &parent : NULL,
+             msg, 1700000000L + (long)v, &c);
+        prev = parent;
+        parent = c;
+        have_parent = YES;
+    }
+    c_base = prev;     // second-to-last commit
+    c_tgt  = parent;   // last commit
+
+    call(KEEPPackClose, &p);
+    call(GRAFOpen, &g_home, YES);
+    call(GRAFIndex);
+
+    //  wt edits a line that neither base nor tgt touch (tgt rotates a
+    //  high line index; we edit line 0), so the fold merges cleanly.
+    call(big_render, content, BIG_NVERS - 2);  // wt starts from base text
+    {
+        //  Mutate line 0 in the rendered base text → "line 00000 WT\n".
+        char abs[512];
+        snprintf(abs, sizeof(abs), "%s/%s", g_tmp, "big.txt");
+        int fd = open(abs, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) fail(FILEFAIL);
+        a_cstr(l0, "line 00000 WT\n");
+        ssize_t w = write(fd, l0[0], (size_t)$len(l0));
+        //  Append the rest of the base text from line 1 onward.
+        u8s body = {u8bDataHead(content), u8bIdleHead(content)};
+        size_t blen = (size_t)$len(body);
+        //  Skip the first line of `body` (line 0).
+        size_t off = 0;
+        while (off < blen && body[0][off] != '\n') off++;
+        if (off < blen) off++;
+        ssize_t w2 = write(fd, body[0] + off, blen - off);
+        close(fd);
+        if (w < 0 || w2 < 0) fail(FILEFAIL);
+    }
+
+    Bu8 out = {};
+    call(u8bAllocate, out, (BIG_NLINES + 8) * 64);
+
+    a_cstr(path, "big.txt");
+    a_dup(u8c, root, u8bData(g_home.wt));
+
+    //  Before the fix this returns BNOROOM (arena overflow); after, OK.
+    call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);
+
+    //  The wt edit to line 0 must survive in the merged output.
+    u8s ov = {u8bDataHead(out), u8bIdleHead(out)};
+    size_t olen = (size_t)$len(ov);
+    b8 has_wt = NO;
+    for (size_t i = 0; i + 13 <= olen; i++)
+        if (memcmp(ov[0] + i, "line 00000 WT", 13) == 0) { has_wt = YES; break; }
+    want(has_wt);
+
+    u8bFree(out);
+    u8bFree(content);
+    teardown_repo();
+    done;
+}
+
 ok64 maintest(void) {
     sane(1);
     call(test_clean_merge);
     call(test_wt_absent);
     call(test_wt_clean_drift);
     call(test_conflict);
+    call(test_big_history);
     done;
 }
 

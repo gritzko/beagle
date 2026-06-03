@@ -465,6 +465,27 @@ cleanup:
 
 // --- Weave-replay helpers: shared by N-tip union and 2-way merge ---
 
+//  One replay step (GET-001): tokenize `new_data` into `wnu`, then diff
+//  it onto the carried `*src_dec` (the accumulator's PERSISTENT decode)
+//  to produce `*dst` (TLV) AND `*dst_dec` (its decode, captured as the
+//  core emits).  Invoked under a `try()` boundary so the per-version
+//  scratch — `wnu`'s decode plus the diff's NEIL/EDL buffers, all BACQ'd
+//  off the version-sized TLVs — is rewound each iteration; that bounds
+//  transient BASS and avoids the BNOROOM arena overflow.  Crucially we
+//  do NOT re-decode the accumulator from its growing TLV each step: the
+//  carried `src_dec`/`dst_dec` (heap-backed, survive the rewind) make
+//  the replay's decode cost linear in total history instead of
+//  quadratic.  `*dst` (TLV) stays the durable per-step output the caller
+//  swaps into place; `wnu`'s own mmap also survives the rewind.
+static ok64 build_weave_step(weave *dst, weavedec *dst_dec,
+                            weavedec const *src_dec, weave *wnu,
+                            u8cs new_data, u8cs ext, u32 sc) {
+    sane(dst && dst_dec && src_dec && wnu);
+    call(WEAVEFromBlob, wnu, new_data, ext, sc);
+    call(WEAVEDiffCarry, dst, dst_dec, src_dec, wnu, sc);
+    done;
+}
+
 //  Build a weave by replaying `path`'s blob versions across the
 //  ancestor union of `tip_hs[0..ntips)` in topo order.  The result
 //  weave's inrm carries provenance per token; alive tokens reproduce
@@ -472,7 +493,7 @@ cleanup:
 //  written.  Caller owns `out` (must be inited and reset).
 //
 //  When `out_ids` is non-NULL, every 32-bit `sc` value passed to
-//  `WEAVEDiff` is appended to `*out_ids` in walk order.  Callers
+//  `WEAVEDiffCarry` is appended to `*out_ids` in walk order.  Callers
 //  driving `WEAVEEmitMerged` use these to build per-side membership
 //  predicates over token `inrm.in` values.
 static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
@@ -532,15 +553,22 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     a_carve(u8, blob_b, GET_BLOB_MAX);
     Bu8 *cur = &blob_a, *prev = &blob_b;
 
-    //  Three weave instances: src accumulates history, dst receives
-    //  each WEAVEDiff, nu is rebuilt fresh per blob version.  After
-    //  WEAVEDiff we swap so src always carries the latest state.
+    //  Per-step state.  `wsrc`/`wdst` double-buffer the accumulator TLV
+    //  (the last one becomes `out`); `dec_src`/`dec_dst` double-buffer
+    //  the accumulator's PERSISTENT decode, carried across steps so it
+    //  is never re-parsed from the growing TLV (GET-001 — the quadratic
+    //  cost).  `wnu` holds each version's freshly tokenized blob.  After
+    //  every step we swap BOTH pairs in lock-step.
     weave wA = {}, wB = {}, wnu = {};
+    weavedec dA = {}, dB = {};
     ok64 r = OK;
-    if ((r = WEAVEInit(&wA))  != OK) { goto out; }
-    if ((r = WEAVEInit(&wB))  != OK) { WEAVEFree(&wA); goto out; }
-    if ((r = WEAVEInit(&wnu)) != OK) { WEAVEFree(&wA); WEAVEFree(&wB); goto out; }
-    weave *wsrc = &wA, *wdst = &wB;
+    if ((r = WEAVEInit(&wA))     != OK) { goto out; }
+    if ((r = WEAVEInit(&wB))     != OK) { WEAVEFree(&wA); goto out; }
+    if ((r = WEAVEInit(&wnu))    != OK) { WEAVEFree(&wA); WEAVEFree(&wB); goto out; }
+    if ((r = WEAVEDecInit(&dA))  != OK) { WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu); goto out; }
+    if ((r = WEAVEDecInit(&dB))  != OK) { WEAVEDecFree(&dA); WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu); goto out; }
+    weave    *wsrc = &wA, *wdst = &wB;
+    weavedec *dec_src = &dA, *dec_dst = &dB;
 
     b8 have_prev = NO;
     for (u32 i = 0; i < nvers; i++) {
@@ -557,13 +585,16 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
 
         a_dup(u8c, new_data, u8bDataC(*cur));
         u32 sc = (u32)commit_h;
-        ok64 fbo = WEAVEFromBlob(&wnu, new_data, ext, sc);
-        if (fbo == OK) {
-            ok64 dfo = WEAVEDiff(wdst, wsrc, &wnu, sc);
-            if (dfo == OK) {
-                weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
-                if (out_ids[0]) (void)u32bFeed1(out_ids, sc);
-            }
+        //  Run the FromBlob+DiffCarry pair under a `try()` so the per-
+        //  version BASS scratch (wnu decode + diff buffers) is rewound
+        //  each iteration; the wnu/wsrc/wdst weaves and the heap-backed
+        //  dec_src/dec_dst carried decodes persist.  See
+        //  build_weave_step / GET-001.
+        try(build_weave_step, wdst, dec_dst, dec_src, &wnu, new_data, ext, sc);
+        if (__ == OK) {
+            weave    *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
+            weavedec *dtmp = dec_src; dec_src = dec_dst; dec_dst = dtmp;
+            if (out_ids[0]) (void)u32bFeed1(out_ids, sc);
         }
 
         Bu8 *tmp = cur; cur = prev; prev = tmp;
@@ -571,9 +602,8 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     }
 
     //  Move wsrc's contents into out (caller's buffer).  Cheapest
-    //  route: copy the four buffer headers; wsrc's mappings now
-    //  belong to out, and we replace wsrc/wdst before freeing so we
-    //  don't double-free.
+    //  route: copy the buffer header; wsrc's mappings now belong to
+    //  out, and we zero wsrc before freeing so we don't double-free.
     if (wsrc == &wA) {
         memcpy(out, &wA, sizeof(weave));
         zero(wA);
@@ -582,6 +612,8 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
         zero(wB);
     }
 
+    WEAVEDecFree(&dA);
+    WEAVEDecFree(&dB);
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
