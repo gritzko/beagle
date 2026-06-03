@@ -102,8 +102,8 @@ ok64 SNIFFAtHelpers() {
     want(vu != vd);
     want(SNIFFAtVerbGet() == vg);   // cached
 
-    //  SNIFFOpen writes the row-0 `repo` anchor; synthetic ULOG rows
-    //  must therefore start strictly after it.
+    //  SNIFFOpen writes the row-0 anchor (verb `get`; the get-
+    //  unification, wiki/Title.mkd); synthetic ULOG rows start after it.
     ron60 t_repo = 0, v_repo = 0;
     {
         uri ru = {};
@@ -113,7 +113,7 @@ ok64 SNIFFAtHelpers() {
         ulogrec _r0 = {};
         call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &_r0);
         t_repo = _r0.ts; v_repo = _r0.verb; ru = _r0.uri;
-        want(v_repo == vr);
+        want(v_repo == vg);   // anchor verb is now `get`, not `repo`
         //  URI path is `/…/.be/`.
         a_dup(u8c, rp, ru.path);
         a_cstr(tail, DOG_BE_NAME "/");
@@ -802,10 +802,111 @@ static ok64 SUBSIsMountTest(void) {
     done;
 }
 
+// --- Test: absolute ?/project query strips to trunk/branch ---
+//  Repro for the ref-adoption bug: a local `get` row whose query is
+//  the absolute `?/<project>[/<branch>]` form must resolve cur to the
+//  branch WITHIN the project (trunk = empty), never to a branch named
+//  literally `/<project>`.  See wiki/URI.mkd §"Ref shapes".
+ok64 SNIFFAtProjectStrip() {
+    sane(1);
+    call(FILEInit);
+    call(make_tmpdir);
+
+    a_cstr(root, g_tmpdir);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+    call(SNIFFOpen, &h, YES);
+
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 t0 = 0;
+    {
+        ulogrec r0 = {};
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &r0);
+        t0 = r0.ts;
+    }
+    ron60 base = t0 + 1000;
+
+    //  Scenario 1: `?/beagle#<sha>` ⇒ project trunk (empty query slot
+    //  in the composed --at URI), NOT a branch named `/beagle`.
+    call(at_append_uri, base + 0, vg,
+         "?/beagle#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    {
+        a_pad(u8, tail, MAX_URI_LEN);
+        a_dup(u8c, wt_s, root);
+        call(SNIFFAtTailOf, wt_s, tail);
+        a_dup(u8c, td, u8bData(tail));
+        uri tu = {};
+        call(URIutf8Drain, td, &tu);
+        a_dup(u8c, q, tu.query);
+        want(u8csEmpty(q));            // trunk, NOT `/beagle`
+        a_dup(u8c, frag, tu.fragment);
+        want($len(frag) == 40);
+    }
+
+    //  Scenario 2: `?/beagle/feat#<sha>` ⇒ branch `feat` within the
+    //  project (project segment stripped, branch tail kept).
+    call(at_append_uri, base + 100, vg,
+         "?/beagle/feat#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    {
+        a_pad(u8, tail, MAX_URI_LEN);
+        a_dup(u8c, wt_s, root);
+        call(SNIFFAtTailOf, wt_s, tail);
+        a_dup(u8c, td, u8bData(tail));
+        uri tu = {};
+        call(URIutf8Drain, td, &tu);
+        a_dup(u8c, q, tu.query);
+        a_cstr(feat, "feat");
+        want(u8csEq(q, feat));
+    }
+
+    call(SNIFFClose);
+    KEEPClose();
+    HOMEClose(&h);
+    rm_tmpdir();
+    done;
+}
+
+// --- Test: DOGTitleFromUri 3-step precedence ---
+//  Canonical title derivation (wiki/Title.mkd).  The two qlog/CLI URI
+//  shapes both resolve here: official `…/title.git` (basename) and
+//  beagle `?/title` (query override).  `/.be/<seg>/` is the local-
+//  shard anchor case.
+ok64 DOGTitleTest() {
+    sane(1);
+    struct { char const *uri; char const *want; } cases[] = {
+        { "ssh://host/path/dogs.git?/beagle",      "beagle" }, // 1 query override
+        { "ssh://host/path/dogs.git?/beagle/feat", "beagle" }, // 1 proj before branch
+        { "file:/home/u/.be/myproj/",              "myproj" }, // 2 /.be/ anchor
+        { "ssh://host/gritzko/libabc.git",         "libabc" }, // 3 basename + .git
+        { "https://host/beagle.git/",              "beagle" }, // 3 trailing slash
+    };
+    for (u32 i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        a_pad(u8, urib, MAX_URI_LEN);
+        a_cstr(src, cases[i].uri);
+        u8bFeed(urib, src);
+        uri u = {};
+        a_dup(u8c, ud, u8bData(urib));
+        call(URIutf8Drain, ud, &u);
+
+        a_pad(u8, out, 256);
+        DOGTitleFromUri(&u, out);
+        a_dup(u8c, got, u8bData(out));
+        u32 wl = (u32)strlen(cases[i].want);
+        want((u32)$len(got) == wl);
+        want(memcmp(got[0], cases[i].want, wl) == 0);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
+    fprintf(stderr, "DOGTitle...\n");
+    call(DOGTitleTest);
     fprintf(stderr, "SNIFFAtHelpers...\n");
     call(SNIFFAtHelpers);
+    fprintf(stderr, "SNIFFAtProjectStrip...\n");
+    call(SNIFFAtProjectStrip);
     fprintf(stderr, "SNIFFCheckoutCommit...\n");
     call(SNIFFCheckoutCommit);
     fprintf(stderr, "SNIFFMergeWalk...\n");

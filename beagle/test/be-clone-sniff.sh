@@ -71,22 +71,25 @@ WT="$TMP/wt"; mkdir -p "$WT/.be"; cd "$WT"
 [ -f .be/wtlog ] || fail "wt: .be/wtlog missing"
 
 # --- 3. .be/wtlog must carry both rows --------------------------------
-echo "=== 3. .be/wtlog has repo + get rows ==="
-NREPO=$(awk -F'\t' '$2=="repo"' .be/wtlog | wc -l)
-NGET=$(awk -F'\t' '$2=="get"'  .be/wtlog | wc -l)
+echo "=== 3. .be/wtlog has anchor + checkout get rows ==="
+#  Row 0 is the wt->store anchor: verb `get` (the get-unification;
+#  formerly `repo`), $3 = `file:<wt>/.be/`.  The clone checkout is a
+#  later `get ?...#<sha>` row whose $3 is NOT a `file:` store path.
+NANCHOR=$(awk -F'\t' 'NR==1 && $2=="get" && $3 ~ /^file:/' .be/wtlog | wc -l)
+NCHK=$(awk -F'\t' '$2=="get" && $3 !~ /^file:/'  .be/wtlog | wc -l)
 
-[ "$NREPO" -eq 1 ] || fail ".be/wtlog: expected 1 repo row, got $NREPO"
-[ "$NGET"  -eq 1 ] || {
+[ "$NANCHOR" -eq 1 ] || fail ".be/wtlog: row-0 get anchor missing"
+[ "$NCHK"  -eq 1 ] || {
     echo "--- .be/wtlog hex dump ---" >&2
     xxd .be/wtlog >&2
     echo "-----------------------" >&2
     echo "--- .be/refs ---" >&2
     cat .be/refs 2>/dev/null >&2
     echo "------------------" >&2
-    fail ".be/wtlog: expected 1 get row after clone, got $NGET"
+    fail ".be/wtlog: expected 1 checkout get row after clone, got $NCHK"
 }
 
-GROW=$(awk -F'\t' '$2=="get"{print $3}' .be/wtlog)
+GROW=$(awk -F'\t' '$2=="get" && $3 !~ /^file:/ {print $3}' .be/wtlog)
 case "$GROW" in
     *"#$SEED") note "get row OK: $GROW" ;;
     *)        fail "get row sha mismatch: row=$GROW, expected #$SEED" ;;

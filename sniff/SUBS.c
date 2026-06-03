@@ -146,7 +146,8 @@ ok64 SNIFFSubsSynth(u8bp out, u8cs paths, u8cs urls) {
 //  used to emit the three-slash `file:///…` form, which differs
 //  textually from the primary's `file:/…` and tripped exact-match
 //  comparisons.
-static ok64 subs_write_anchor(u8cs sub_be_path, u8cs shard_root) {
+static ok64 subs_write_anchor(u8cs sub_be_path, u8cs shard_root,
+                              u8cs title, u8cs branch, u8cs hash) {
     sane($ok(sub_be_path) && $ok(shard_root));
 
     a_path(pathbuf);
@@ -164,13 +165,18 @@ static ok64 subs_write_anchor(u8cs sub_be_path, u8cs shard_root) {
         urow.path[0] = pb[0];
         urow.path[1] = pb[1];
     }
+    //  Sha-bearing row 0 (DIS-001): `?/<title>/<branch>#<hash>` carries
+    //  the sub title + the gitlink pin; tip-less callers pass empty.
+    a_path(qbuf);
+    call(SNIFFAtAnchorRef, &urow, qbuf, title, branch, hash);
 
     a_pad(u8, row, 1024);
     ron60 ts = RONNow();
     call(RONutf8sFeed, u8bIdle(row), ts);
     call(u8bFeed1, row, '\t');
-    ron60 vrepo = SNIFFAtVerbRepo();
-    call(RONutf8sFeed, u8bIdle(row), vrepo);
+    //  Anchor verb `get` (the wt→store anchor / last-get baseline;
+    //  wiki/Title.mkd), formerly `repo`.
+    call(RONutf8sFeed, u8bIdle(row), SNIFFAtVerbGet());
     call(u8bFeed1, row, '\t');
     call(URIutf8Feed, u8bIdle(row), &urow);
     call(u8bFeed1, row, '\n');
@@ -431,9 +437,20 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     a_cstr(be_s, ".be");
     call(PATHu8bPush, anchor, be_s);
     a_dup(u8c, anchor_s, u8bDataC(anchor));
-    a_dup(u8c, shard_s,  u8bDataC(store_dir));
+    //  Anchor path is the parent store's `.be/` (store root); the sub
+    //  title moves into the query `?/<basename>` and the gitlink pin
+    //  into the fragment `#<hex_sha>` (sha-bearing row 0, DIS-001).
+    //  Branch is empty — the gitlink pins a detached commit.
+    a_path(store_root);
+    a_dup(u8c, parent_s, parent_root);
+    call(PATHu8bFeed, store_root, parent_s);
+    call(PATHu8bPush, store_root, be_s);
+    call(u8bFeed1, store_root, '/');
+    a_dup(u8c, shard_s,  u8bDataC(store_root));
+    u8cs empty_br = {};
     if (!already_mounted) {
-        call(subs_write_anchor, anchor_s, shard_s);
+        call(subs_write_anchor, anchor_s, shard_s, basename, empty_br,
+             hex_sha);
     }
 
     //  5. Pre-fetch the sub's pack into the SUB's keeper shard.

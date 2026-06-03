@@ -15,7 +15,7 @@ on-disk files are "clean" vs user-edited.
 
 | Verb | URI shape | Stamps files? |
 |------|-----------|---------------|
-| `repo`   | `file:///abs/path/.be/` (row 0 only; worktree → store anchor) | no |
+| `get` (row 0) | `file:<store>/.be/` bare, or `file:<store>/.be/?/<title>/<branch>#<hash>` sha-bearing (worktree → store anchor; legacy verb `repo` still read) | no |
 | `get`    | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
 | `post`   | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
 | `patch`  | one of four shapes — see "Patch row shapes" below     | yes |
@@ -77,10 +77,27 @@ writers; do not run `sniff watch` concurrently with commits unless
 the ULOG writer path is protected by a `flock` — currently it is
 not (see `dog/ULOG.md` §"No concurrent writers").
 
-Row 0 must be `repo`; no other verb may appear at row 0, and `repo`
-must not appear elsewhere.  Walk-up discovery (`dog/HOME`) treats a
-`.be/wtlog` file in an ancestor as a worktree anchor and records its
-dir as `h->wt`; SNIFFOpen reads the `repo` URI to set `h->root`
+Row 0 is the wt→store anchor: verb `get` (the get-unification;
+legacy stores wrote `repo`, readers accept both).  Two shapes:
+
+  * **bare / tip-less** — `file:<store>/.be/[<proj>/]` with no query
+    or fragment (fresh local init, legacy stores).  It self-excludes
+    from cur-tip resolution (no `#sha`) while doubling as the "last
+    get" baseline floor.
+  * **sha-bearing** — `file:<store>/.be/?/<title>/<branch>#<hash>`
+    (DIS-001): title+branch move OUT of the path INTO the QUERY (the
+    standard absolute ref grammar, trunk = `?/<title>`), the checked-
+    out tip in the FRAGMENT.  Written by the secondary-wt seed
+    (`BEGetWorktree`) and submodule mount (`SNIFFSubMount`, gitlink
+    pin in the fragment).  `dog/HOME`'s `home_anchor_proj_branch`
+    reads title+branch query-first, path-after-`.be` as the fallback;
+    `SNIFFWtRepoAnchor` / `SNIFFAtAnchorRef` write it.
+
+Exclusion from baseline/cur-tip is by TIP-PRESENCE (query AND fragment
+both empty), not row position, so a sha-bearing row 0 is a valid
+baseline AND cur-tip.  Walk-up discovery (`dog/HOME`)
+treats a `.be/wtlog` file in an ancestor as a worktree anchor and
+records its dir as `h->wt`; SNIFFOpen reads the anchor URI to set `h->root`
 (the store path where `.be/` lives).  For colocated wts the two
 are the same directory.
 

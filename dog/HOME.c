@@ -181,7 +181,8 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     if (!u8csEmpty(at_path)) {
         //  Resolve the anchor at `at_path` (peek `.be`'s shape; if it's
         //  a regular file, redirect h->root to the primary store via
-        //  the wtlog's row-0 `repo` URI; otherwise h->root == at_path).
+        //  the wtlog's row-0 anchor URI (verb `get`, legacy `repo`);
+        //  otherwise h->root == at_path).
         //
         //  `at_path` is the **wt root** (`sniff/AT.c::SNIFFAtTailOf`
         //  composes `--at` with the wt root in the path slot, not the
@@ -419,14 +420,18 @@ ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
 //  Peek the first line of a wtlog (either a secondary-wt's `.be`
 //  file OR a primary's `<wt>/.be/wtlog`) and extract the URI's path
 //  bytes into `path_out` (a slice that lives inside `arena`'s busy
-//  region).
+//  region).  When `query_out` is non-NULL, the row's QUERY slice is
+//  also copied into the same arena (empty slice when the URI carries
+//  no `?` component) — this is the sha-bearing row-0 anchor's
+//  `?/<title>/<branch>` carrier (replicated.wiki todo/DIS-001).
 //
 //  Returns OK on success, NODATA when the file is empty or row 0 is
 //  not parsable.  Callers must defend against non-anchor row-0
 //  shapes — typically by passing the result through
 //  DOGProjectFromBe, which returns empty for any URI without a
 //  `/.be/` segment.
-static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out) {
+static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out,
+                               u8csp query_out) {
     sane($ok(be_path) && arena && path_out);
     u8bp map = NULL;
     if (FILEMapRO(&map, be_path) != OK) return NODATA;
@@ -444,14 +449,61 @@ static ok64 home_peek_repo_uri(path8s be_path, u8bp arena, u8csp path_out) {
     u8cs ru_path = {rec.uri.path[0], rec.uri.path[1]};
     if (u8csEmpty(ru_path)) { FILEUnMap(map); return NODATA; }
     ok64 fo = PATHu8bAren(arena, path_out, ru_path);
+    if (fo == OK && query_out) {
+        u8cs ru_query = {rec.uri.query[0], rec.uri.query[1]};
+        fo = PATHu8bAren(arena, query_out, ru_query);
+    }
     FILEUnMap(map);
     return fo;
+}
+
+//  Resolve (project, branch) from a row-0 anchor.  Prefers the QUERY
+//  `?/<title>/<branch>` when present (the sha-bearing row-0 shape —
+//  see replicated.wiki todo/DIS-001); falls back to the legacy
+//  path-after-`.be` encoding (`/.be/<proj>/<branch>/`) when the query
+//  is empty (old on-disk stores).  `repo_path` is the row-0 URI PATH,
+//  `repo_query` its QUERY (both already copied into the caller's
+//  arena).  Fills proj_out / br_out (reset inside); br_out carries the
+//  branch path WITHIN the project (empty for the project's trunk).
+static void home_anchor_proj_branch(u8cs repo_path, u8cs repo_query,
+                                    u8bp proj_out, u8bp br_out) {
+    u8bReset(proj_out);
+    u8bReset(br_out);
+    a_dup(u8c, q, repo_query);
+    if (!u8csEmpty(q)) {
+        //  New shape: title + branch live in the query as the standard
+        //  absolute ref `?/<title>/<branch>`.
+        u8cs qproj = {};
+        DOGQueryProject(q, qproj);
+        if (!u8csEmpty(qproj)) u8bFeed(proj_out, qproj);
+        a_dup(u8c, qbr, repo_query);
+        DOGQueryStripProject(qbr);          //  qbr → <branch> (project-free)
+        if (!u8csEmpty(qbr)) u8bFeed(br_out, qbr);
+        return;
+    }
+    //  Legacy shape: title + branch encoded in the path after `/.be/`.
+    //  DOGBranchFromBe returns `<project>[/<branch>]`; strip the leading
+    //  project segment so br_out carries the branch within the project.
+    DOGProjectFromBe(repo_path, proj_out);
+    a_path(br_all_buf);
+    DOGBranchFromBe(repo_path, br_all_buf);
+    a_dup(u8c, br_all, u8bDataC(br_all_buf));
+    a_dup(u8c, proj_strip, u8bDataC(proj_out));
+    if (!u8csEmpty(proj_strip) && !u8csEmpty(br_all) &&
+        u8csLen(br_all) >= u8csLen(proj_strip)) {
+        u8cs head = {br_all[0], br_all[0] + u8csLen(proj_strip)};
+        if (u8csEq(head, proj_strip)) {
+            br_all[0] += u8csLen(proj_strip);
+            if (!u8csEmpty(br_all) && *br_all[0] == '/') u8csUsed1(br_all);
+        }
+    }
+    if (!u8csEmpty(br_all)) u8bFeed(br_out, br_all);
 }
 
 //  Given a wt anchor path (where `.be` lives), populate h->wt with
 //  the anchor itself and h->root with the store root:
 //    * `.be` is a DIR (primary)        → h->root = anchor
-//    * `.be` is a regular FILE (sec)   → h->root from row-0 `repo` URI
+//    * `.be` is a regular FILE (sec)   → h->root from row-0 anchor URI (get/repo)
 //    * absent / unparsable             → h->root = anchor (fallback)
 static ok64 home_anchor_resolve(home *h, u8cs anchor) {
     sane(h && $ok(anchor));
@@ -469,13 +521,15 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
     if (so == OK && fs.kind == FILE_KIND_REG) {
         a_path(arena);
         u8cs repo_path = {};
+        u8cs repo_query = {};
         //  Secondary wt: the `.be` file IS the wtlog; row 0 must be a
         //  valid `repo` anchor naming the shared store (it points
         //  elsewhere than this dir, but is validated the same way as a
         //  primary `.be/wtlog` row 0).  Empty / unparsable row 0 ⇒ no
         //  worktree is anchored here — refuse instead of falling through
         //  to the store==wt fallback (see sniff/test/norepo.sh).
-        if (home_peek_repo_uri($path(probe), arena, repo_path) != OK)
+        if (home_peek_repo_uri($path(probe), arena, repo_path, repo_query)
+            != OK)
             return NOTAWT;
         {
             a_path(stripped);
@@ -483,54 +537,25 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
             if (u8bDataLen(stripped) > 0) {
                 a_dup(u8c, sb, u8bDataC(stripped));
                 call(PATHu8bFeed, h->root, sb);
-                //  Project-sharded layout: the first segment after
-                //  `/.be/` in the anchor URI names the project shard.
-                //  Pre-fill `h->project` so downstream openers can
-                //  route reads/writes through the right shard.  Empty
-                //  result == legacy single-project anchor; leave
-                //  `h->project` empty and let consumers fall back to
-                //  the implicit single project.
+                //  Resolve project + branch: prefer the row-0 QUERY
+                //  `?/<title>/<branch>` (sha-bearing anchor), else the
+                //  legacy path-after-`.be` encoding.  Pre-filling
+                //  `h->project` / `h->cur_branch` lets downstream openers
+                //  route reads/writes through the right keeper leaf even
+                //  when no `get`/`post` row yet exists in the secondary
+                //  wtlog.  (Without the right branch, keeper would land
+                //  the fetched pack one level too deep — see the
+                //  subdir-clone scenario in be_sub_shard_setup.)
                 a_path(proj_buf);
-                DOGProjectFromBe(repo_path, proj_buf);
+                a_path(br_buf);
+                home_anchor_proj_branch(repo_path, repo_query,
+                                        proj_buf, br_buf);
                 if (u8bDataLen(proj_buf) > 0) {
                     a_dup(u8c, ps, u8bDataC(proj_buf));
                     call(u8bFeed, h->project, ps);
                 }
-                //  Anchor URI may carry a branch suffix after `/.be/`
-                //  (`file:<root>/.be/<basename>/` for a submodule mount).
-                //  Pre-fill `h->cur_branch` so downstream openers route
-                //  reads/writes through the right keeper leaf even when
-                //  no `get`/`post` row yet exists in the secondary wtlog.
-                //
-                //  Project-aware strip: `DOGBranchFromBe` returns the
-                //  full path after `/.be/` (e.g. "abc" for anchor
-                //  `file:/path/.be/abc/`, or "abc/feat" for
-                //  `.../.be/abc/feat/`).  When the project segment is
-                //  populated, strip it from the front so cur_branch
-                //  carries the branch path WITHIN the project (empty
-                //  for the project's trunk).  Without this, keeper
-                //  composes `<root>/.be/<project>/<project>/` for the
-                //  leaf dir and the fetched pack lands one level too
-                //  deep — sniff opens `.be/<project>/` (no branch),
-                //  doesn't see the pack, fails with "object not
-                //  found".  Surfaced by the subdir-clone scenario
-                //  (`be_sub_shard_setup` writes anchor
-                //  `file:/parent/.be/<sub>/`).
-                a_path(br_buf);
-                DOGBranchFromBe(repo_path, br_buf);
-                a_dup(u8c, br_all, u8bDataC(br_buf));
-                a_dup(u8c, proj_strip, u8bDataC(proj_buf));
-                if (!u8csEmpty(proj_strip) && !u8csEmpty(br_all) &&
-                    u8csLen(br_all) >= u8csLen(proj_strip)) {
-                    u8cs head = {br_all[0],
-                                 br_all[0] + u8csLen(proj_strip)};
-                    if (u8csEq(head, proj_strip)) {
-                        br_all[0] += u8csLen(proj_strip);
-                        if (!u8csEmpty(br_all) && *br_all[0] == '/')
-                            u8csUsed1(br_all);
-                    }
-                }
-                if (!u8csEmpty(br_all)) {
+                if (u8bDataLen(br_buf) > 0) {
+                    a_dup(u8c, br_all, u8bDataC(br_buf));
                     u8bReset(h->cur_branch);
                     call(u8bFeed, h->cur_branch, br_all);
                 }
@@ -557,15 +582,22 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
         call(PATHu8bPush,  wtlog_probe, DOG_WTLOG_S);
         a_path(arena2);
         u8cs repo_path = {};
+        u8cs repo_query = {};
         //  A `.be/` *dir* is a repo even with an empty wtlog (it may hold
         //  only config / packs); reading it RO is legitimate.  The
         //  "empty wtlog ⇒ no worktree" refusal lives in the worktree dog
         //  (SNIFFOpen), which is the layer that actually enumerates the
         //  tree.  Here we only opportunistically pull the project shard
-        //  from row 0 when present.
-        if (home_peek_repo_uri($path(wtlog_probe), arena2, repo_path) == OK) {
+        //  (and branch) from row 0 when present — preferring the
+        //  sha-bearing anchor's QUERY over the legacy path encoding.
+        if (home_peek_repo_uri($path(wtlog_probe), arena2, repo_path,
+                               repo_query) == OK) {
+            //  Project only here (branch context for a primary comes from
+            //  later get/post rows) — stay behavior-preserving while
+            //  honoring the new QUERY-carried title.
             a_path(proj_buf);
-            DOGProjectFromBe(repo_path, proj_buf);
+            a_path(br_buf);
+            home_anchor_proj_branch(repo_path, repo_query, proj_buf, br_buf);
             if (u8bDataLen(proj_buf) > 0) {
                 a_dup(u8c, ps, u8bDataC(proj_buf));
                 call(u8bFeed, h->project, ps);

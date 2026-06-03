@@ -390,50 +390,73 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
         }
     }
 
-    //  URI path: `<prim>/.be/[<proj>/]` with a trailing slash so the
-    //  row-0 invariant (`file://…/.be/<proj>/`) holds.  Anchor write
-    //  itself is sniff's job — same helper BEEnsureProjectRepo
-    //  uses for the primary-wt layout.
+    //  Resolve the primary's current tip + branch up front: SNIFFAtTailOf
+    //  yields `<prim_root>?/<title>/<branch>#<sha>`.  We carry (title,
+    //  branch, hash) into the secondary's row-0 anchor (sha-bearing shape,
+    //  DIS-001) AND reuse the tip to pin the downstream checkout.  NODATA
+    //  (primary never posted) is fine — write a tip-less anchor and let
+    //  sniff resolve from the primary's keeper.
+    a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
+    a_dup(u8c, prim_root, prim_s);
+    mute(SNIFFAtTailOf(prim_root, prim_at), NODATA);
+    uri prim_uri = {};
+    if (u8bDataLen(prim_at) > 0) {
+        u8csMv(prim_uri.data, u8bDataC(prim_at));
+        call(URILexer, &prim_uri);
+    }
+
+    //  Title: prefer the resolved query's project segment, else the
+    //  primary wtlog's path-encoded project (prim_proj), else empty
+    //  (legacy elided primary → bare anchor).
+    a_path(title_buf);
+    {
+        a_dup(u8c, q, prim_uri.query);
+        u8cs qproj = {};
+        DOGQueryProject(q, qproj);
+        if (!u8csEmpty(qproj)) {
+            call(u8bFeed, title_buf, qproj);
+        } else if (u8bDataLen(prim_proj) > 0) {
+            a_dup(u8c, pp, u8bDataC(prim_proj));
+            call(u8bFeed, title_buf, pp);
+        }
+    }
+    //  Branch within the project (empty = trunk).
+    a_path(branch_buf);
+    {
+        a_dup(u8c, q2, prim_uri.query);
+        DOGQueryStripProject(q2);
+        if (!u8csEmpty(q2)) call(u8bFeed, branch_buf, q2);
+    }
+    //  Hash: the primary tip, when a valid hashlet (6..40 hex).
+    u8cs hash = {};
+    size_t flen = u8csLen(prim_uri.fragment);
+    if (flen >= 6 && flen <= 40) u8csMv(hash, prim_uri.fragment);
+
+    //  Write the secondary-wt row-0 anchor.  Path is the primary store's
+    //  `.be/` (store root; title+branch now live in the query, not the
+    //  path), plus `?/<title>/<branch>#<hash>`.  Anchor write itself is
+    //  sniff's job — same helper the primary-wt layout uses.
     {
         a_path(repo_path, prim_s);
         call(PATHu8bPush, repo_path, DOG_BE_S);
-        if (u8bDataLen(prim_proj) > 0) {
-            a_dup(u8c, pp, u8bDataC(prim_proj));
-            call(PATHu8bPush, repo_path, pp);
-        }
         call(u8bFeed1, repo_path, '/');
-        call(SNIFFWtRepoAnchor,
-             u8bDataC(cwd_be), u8bDataC(repo_path));
+        a_dup(u8c, tt, u8bDataC(title_buf));
+        a_dup(u8c, bb, u8bDataC(branch_buf));
+        call(SNIFFWtRepoAnchor, u8bDataC(cwd_be), u8bDataC(repo_path),
+             tt, bb, hash);
     }
 
     fprintf(stderr, "be: worktree from %.*s\n",
             (int)$len(u->path), (char *)u->path[0]);
 
-    // Resolve the primary's current commit via its wtlog.  Rewrite
-    // this URI to "?<sha>" so downstream sniff checks out that commit
-    // in the worktree.  NODATA is fine (primary never posted — leave
-    // the URI alone and let sniff resolve from the primary's keeper);
-    // real errors propagate.
-    a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
-    a_dup(u8c, prim_root, prim_s);
-    mute(SNIFFAtTailOf(prim_root, prim_at), NODATA);
-    if (u8bDataLen(prim_at) == 0) done;
-    uri prim_uri = {};
-    u8csMv(prim_uri.data, u8bDataC(prim_at));
-    call(URILexer, &prim_uri);
-    //  Hashlet: 6..40 hex chars (full sha1 = 40, prefix abbreviations
-    //  shorter).  Anything outside that range is not a valid pin.
-    size_t flen = u8csLen(prim_uri.fragment);
-    if (flen < 6 || flen > 40) done;
-
-    //  Compose "?<hashlet>" into the static buffer; expose data and
-    //  query slices into it (other URI components stay empty).
+    //  Pin the downstream checkout to the resolved tip.  Row 0 now also
+    //  carries the tip, but sniff's checkout still reads `u`; rewrite to
+    //  `?<hashlet>` (data slot — `BEBuildArgv` reads only `u->data`).
+    //  No tip (primary never posted) → leave `u` alone.
+    if (u8csEmpty(hash)) done;
     u8bReset(wt_uri_buf);
     call(u8bFeed1, wt_uri_buf, '?');
-    call(u8bFeed,  wt_uri_buf, prim_uri.fragment);
-
-    //  Downstream (`BEBuildArgv`) reads only `u->data` — `u->query`
-    //  rewrite was dead code.  Point `data` at the buffer's bytes.
+    call(u8bFeed,  wt_uri_buf, hash);
     zerop(u);
     u8csMv(u->data, u8bDataC(wt_uri_buf));
     done;
@@ -1032,14 +1055,11 @@ static ok64 be_reindex(cli *c) {
 //  carry an absolute-query project.
 static ok64 be_url_project(uricp u, u8csp out) {
     if (!u) return SUBSPARSE;
-    if (u8csEmpty(u->query)) return SUBSPARSE;
+    //  Canonical extractor (dog/DOG.h): `?/<title>[/<branch>]` → title.
     a_dup(u8c, q, u->query);
-    if (*q[0] != '/') return SUBSPARSE;
-    u8csUsed1(q);
-    u8c const *end = q[0];
-    while (end < q[1] && *end != '/') end++;
-    if (end == q[0]) return SUBSPARSE;
-    u8cs proj_slice = {q[0], (u8c *)end};
+    u8cs proj_slice = {};
+    DOGQueryProject(q, proj_slice);
+    if (u8csEmpty(proj_slice)) return SUBSPARSE;
     u8csMv(out, proj_slice);
     return OK;
 }
@@ -1161,7 +1181,12 @@ ok64 BEEnsureProjectRepo(uri *u) {
     a_path(wtlog_path);
     call(PATHu8bFeed, wtlog_path, u8bDataC(store_root));
     call(PATHu8bPush, wtlog_path, DOG_WTLOG_S);
-    call(SNIFFWtRepoAnchor, u8bDataC(wtlog_path), u8bDataC(repo_path));
+    //  Bootstrap anchor is tip-less here (clone has not fetched yet);
+    //  the combined `?/<title>/<branch>#<hash>` row is written after
+    //  the keeper get resolves the tip (step 5, DIS-001).
+    u8cs empty_q = {};
+    call(SNIFFWtRepoAnchor, u8bDataC(wtlog_path), u8bDataC(repo_path),
+         empty_q, empty_q, empty_q);
 
     done;
 }
@@ -1853,6 +1878,89 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
 
 //  --- POST action bodies (Stage 5 migration) -----------------------
 
+//  Is `u` a BEAGLE (keeper-protocol) push target?  Mirrors the
+//  keeper-vs-git split in keeper/WIRECLI.c wcli_spawn: keeper:// /
+//  be:// (and file:// / local store paths that aren't git repos)
+//  speak the keeper protocol and carry submodules as sibling shards
+//  we recurse into on get AND post; plain ssh:// / //host / *.git are
+//  vanilla git peers the user manages themselves (no recursion — see
+//  post/16, which drives that push order by hand).
+static b8 be_post_target_is_keeper(uri const *u) {
+    a_cstr(keeper_s, "keeper");
+    a_cstr(be_s,     "be");
+    a_cstr(file_s,   "file");
+    if (u8csEq(u->scheme, keeper_s) || u8csEq(u->scheme, be_s)) return YES;
+    //  `.git` suffix marks a git repo regardless of scheme.
+    a_cstr(git_dot, ".git");
+    if (u8csLen(u->path) >= u8csLen(git_dot)) {
+        u8cs tail = {u->path[1] - u8csLen(git_dot), u->path[1]};
+        if (u8csEq(tail, git_dot)) return NO;
+    }
+    if (u8csEq(u->scheme, file_s)) return YES;
+    //  Local form: no scheme, no authority → a local keeper store.
+    if (u8csEmpty(u->scheme) && u8csEmpty(u->authority)) return YES;
+    //  ssh://host, //host, http(s):// → git peer.
+    return NO;
+}
+
+//  Transport-push recursion state: forward the parent's transport URI
+//  verbatim to each mounted sub so the sub pushes to the SAME beagle
+//  peer (which holds it as a sibling shard) before the parent push.
+typedef struct {
+    cli  *c;
+    u8cs  wt_root;
+    u8cs  fwd_uri;          //  parent's transport URI, forwarded as-is
+    b8    outer_emitted;
+    ok64  worst;
+} bepush_recurse_ctx;
+
+static void bepush_emit_outer(bepush_recurse_ctx *rc) {
+    if (rc->outer_emitted) return;
+    fprintf(stderr, "be: post .\n");
+    rc->outer_emitted = YES;
+}
+
+static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    bepush_recurse_ctx *rc = (bepush_recurse_ctx *)vctx;
+
+    if (!s->mounted) {
+        bepush_emit_outer(rc);
+        fprintf(stderr, "be: post %.*s: declared, not mounted\n",
+                (int)$len(s->path), (char *)s->path[0]);
+        return OK;
+    }
+    bepush_emit_outer(rc);
+    fprintf(stderr, "be: post %.*s\n",
+            (int)$len(s->path), (char *)s->path[0]);
+
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+
+    //  child argv: `post` + flags(sans --at) + the forwarded transport
+    //  URI.  The sub runs its own `be post <url>` (recursing into its
+    //  own subs first), pushing to the same peer.  Runs BEFORE the
+    //  parent's BEActKeeperPush, so a fresh `--recurse` clone never
+    //  sees a parent tree pointing at a sub sha the peer lacks.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    a_cstr(post_lit, "post");
+    a_dup(u8c, post_d, post_lit);
+    u8csbFeed1(child_args, post_d);
+    for (size_t j = 0; j + 1 < u8csbDataLen(rc->c->flags); j += 2) {
+        u8cs *flag = u8csbAtP(rc->c->flags, j);
+        u8cs *val  = u8csbAtP(rc->c->flags, j + 1);
+        if ($eq(*flag, be_at_flag)) continue;
+        u8csbFeed1(child_args, *flag);
+        if (!u8csEmpty(*val)) u8csbFeed1(child_args, *val);
+    }
+    u8csbFeed1(child_args, rc->fwd_uri);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
+    if (r != OK) rc->worst = r;
+    return OK;
+}
+
 //  Pre-order submodule recursion: each sub commits before the
 //  parent.  Self-gates on bare-status / transport / no-wt-root so
 //  the recursion only fires when it makes sense.  Returns BESTOP
@@ -1883,10 +1991,50 @@ ok64 BEActSubsPost(cli *c) {
     b8 dry_only   = CLIHas(c, "--dry-run") ? YES : NO;
     b8 bare_status = !has_msg && uribDataLen(c->uris) == 0;
 
-    //  Skip recursion on transport (explicit URL → single project)
-    //  or bare-status (no commit work to recurse into).  Dry-only
-    //  always recurses (it's the audit pass).
-    if (!dry_only && (bare_status || has_transport)) done;
+    //  Transport push.  For a BEAGLE peer the sub shards live on the
+    //  same peer, so recurse the push into each mounted sub (post-
+    //  order: subs land before the parent tree that references them).
+    //  For a git peer, do nothing — the user manages git submodules
+    //  (post/16 drives that order by hand).  Dry-only skips this and
+    //  falls through to the audit walk below.
+    if (!dry_only && has_transport) {
+        uri *tu = NULL;
+        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+            if (!u8csEmpty(uribAtP(c->uris, i)->scheme)) {
+                tu = uribAtP(c->uris, i);
+                break;
+            }
+        }
+        if (tu && be_post_target_is_keeper(tu) && u8bHasData(c->repo)) {
+            a_dup(u8c, push_root, $path(c->repo));
+            //  Forward the store locator (scheme + authority + path),
+            //  dropping the parent's project/branch query: a beagle
+            //  store is multi-project, so the SAME locator hosts the
+            //  sub's shard.  Each sub reverse-greps its own reflog for
+            //  this locator and pushes its own project's tip.  Keeping
+            //  the path is essential for file:/// (store lives in the
+            //  path, authority empty) and be://host/store alike.
+            a_pad(u8, fwd_buf, FILE_PATH_MAX_LEN + 64);
+            u8bFeed(fwd_buf, tu->scheme);
+            a_cstr(sep_s, "://");
+            u8bFeed(fwd_buf, sep_s);
+            u8bFeed(fwd_buf, tu->authority);
+            u8bFeed(fwd_buf, tu->path);
+            a_dup(u8c, fwd_view, u8bData(fwd_buf));
+            bepush_recurse_ctx prc = {
+                .c = c, .outer_emitted = NO, .worst = OK,
+            };
+            u8csMv(prc.wt_root, push_root);
+            u8csMv(prc.fwd_uri, fwd_view);
+            (void)BESubsHere(push_root, bepush_recurse_cb, &prc);
+            return prc.worst;   //  OK → plan proceeds to parent push
+        }
+        done;   //  git peer (or no wt): user manages submodules
+    }
+
+    //  Skip recursion on bare-status (no commit work to recurse into).
+    //  Dry-only always recurses (it's the audit pass).
+    if (!dry_only && bare_status) done;
 
     //  Need a wt root to enumerate / chdir from.
     if (!u8bHasData(c->repo)) done;

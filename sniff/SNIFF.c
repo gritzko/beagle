@@ -125,8 +125,9 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
         urow.path[0] = pb[0];
         urow.path[1] = pb[1];
     }
-    ron60 vrepo = SNIFFAtVerbRepo();
-    ulogrec rec = {.verb = vrepo, .uri = urow};
+    //  Anchor verb `get` — the wt→store anchor doubles as the "last
+    //  get" baseline (wiki/Title.mkd); see SNIFFWtRepoAnchor in AT.c.
+    ulogrec rec = {.verb = SNIFFAtVerbGet(), .uri = urow};
     return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 

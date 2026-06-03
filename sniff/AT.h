@@ -10,7 +10,9 @@
 //  to the matching row's URI".
 //
 //  URI schema for rows (new ULOG-only model):
-//    repo   `file:///abs/path/.be/`      (wt → store anchor; row 0 only)
+//    get    `file:///abs/path/.be/`      (wt → store anchor; row 0;
+//                                          doubles as the "last get"
+//                                          baseline — carries no #sha)
 //    get    `//origin/path?heads/X#<sha>`  (checkout from remote)
 //    get    `?heads/X#<sha>`               (local checkout by ref)
 //    get    `#<sha>`                       (detached checkout)
@@ -22,12 +24,14 @@
 //    mod    `<path>`                       (daemon-observed modification;
 //                                           advisory hint for POST's change-set)
 //
-//  Row-0 invariant: every non-empty `.be/wtlog` ULOG has a `repo` row
-//  at row 0 naming the store (the directory whose `.be/` subdir
-//  holds the keeper pack-log).  Colocated default: the wt's own
-//  `.be/`.  Secondary worktrees sharing a primary's store record
-//  that primary's URI here.  `repo` is appendable only to an empty
-//  log; any other verb is appendable only to a non-empty log.
+//  Row-0 invariant: every non-empty `.be/wtlog` ULOG has an anchor
+//  row at row 0 naming the store (the directory whose `.be/` subdir
+//  holds the keeper pack-log).  Its verb is `get` (the get-
+//  unification; legacy stores wrote `repo` — readers accept both).
+//  Colocated default: the wt's own `.be/`.  Secondary worktrees
+//  sharing a primary's store record that primary's URI here.  The
+//  anchor `get` carries no `#sha`, so it self-excludes from cur-tip
+//  resolution while serving as the "last get" baseline floor.
 //
 //  Baseline rule: the worktree's current baseline tree URI is the URI
 //  of the most recent `get`, `post`, or `patch` row.  Hash count
@@ -69,15 +73,27 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out);
 //  Append one row to the current sniff log using `RONNow()`.
 ok64 SNIFFAtAppend(ron60 verb, uricp u);
 
-//  Write a one-row wt anchor file: composes the ULOG row
-//  `<RONNow()>\trepo\tfile:<repo_path>/\n` and writes it to
-//  `anchor_path`.  Used by both layouts:
+//  Populate an anchor URI's QUERY `/<title>[/<branch>]` and FRAGMENT
+//  `<hash>` for the sha-bearing row-0 shape (DIS-001).  `qbuf` backs
+//  the query bytes and must outlive `urow`'s serialization; `hash` is
+//  referenced in place.  Empty title → no query (bare anchor); empty
+//  hash → no fragment; empty branch → the project's trunk.
+ok64 SNIFFAtAnchorRef(uri *urow, u8bp qbuf, u8cs title, u8cs branch,
+                      u8cs hash);
+
+//  Write a one-row wt anchor file: composes the ULOG `get` row
+//  `<RONNow()>\tget\tfile:<repo_path>[?/<title>/<branch>][#<hash>]\n`
+//  and writes it to `anchor_path`.  Used by both layouts:
 //    * primary wt → `anchor_path = <wt>/.be/wtlog` (file inside
 //      the `.be/` directory)
 //    * secondary wt → `anchor_path = <wt>/.be` (`.be` IS the file)
-//  Caller has already decided the layout + filesystem position.
-//  Creates the file (truncating any prior content).
-ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path);
+//  When (title, branch, hash) are non-empty the row carries the
+//  sha-bearing `?/<title>/<branch>#<hash>` (DIS-001); pass empty for
+//  the bare tip-less anchor.  Caller has already decided the layout +
+//  filesystem position.  Creates the file (truncating any prior
+//  content).
+ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path, u8cs title,
+                       u8cs branch, u8cs hash);
 
 //  Like SNIFFAtAppend but takes an explicit timestamp.  Used by verbs
 //  that need to know the stamp up-front so it can be applied to
@@ -110,7 +126,7 @@ ron60 SNIFFAtVerbPut   (void);
 ron60 SNIFFAtVerbDelete(void);
 ron60 SNIFFAtVerbMod   (void);
 
-//  Read row 0 — the `repo` anchor.  On OK, `u_out` is parsed via
+//  Read row 0 — the anchor (verb `get`, legacy `repo`).  On OK, `u_out` is parsed via
 //  URILexer (slices point into the mmap, stable until ULOGClose);
 //  its path component is the on-disk path of the store's `.be/`
 //  directory.  ULOGNONE on an empty log.  Returns SNIFFFAIL if the

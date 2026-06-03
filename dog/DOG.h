@@ -68,9 +68,9 @@ fun u64 DOGChildPathHash(u8csc name, u64 parent) {
 //                                              dir per leaf branch
 //
 // Secondary worktree (wt sits elsewhere; `.be` is a regular file =
-// the wtlog; row 0's `repo` URI pins the project):
+// the wtlog; row 0's anchor URI pins the project):
 //   <wt>/.be                                 — regular file = the wtlog
-//   row 0 = `repo file:<store>/.be/<project>`
+//   row 0 = `get file:<store>/.be/<project>` (anchor; legacy `repo`)
 //
 // The branch the wt is on is NOT carried in the anchor URI; it is the
 // latest `get`/`post` row's `?branch` in the wtlog.  Switching
@@ -386,6 +386,58 @@ fun void DOGQueryStripProject(u8cs query) {
     while (p < query[1] && *p != '/') p++;
     if (p < query[1]) query[0] = (u8c *)(p + 1);
     else              query[0] = query[1];
+}
+
+// Read-only project-segment extractor — the non-consuming sibling of
+// `DOGQueryStripProject`.  Absolute `?/<title>` or `?/<title>/<branch>…`
+// → `<title>`; a non-absolute (no leading `/`) or empty query → empty.
+// `out` slice points into `query` (no copy).
+fun void DOGQueryProject(u8csc query, u8cs out) {
+    out[0] = NULL; out[1] = NULL;
+    if (query[0] == NULL || query[0] >= query[1] || query[0][0] != '/')
+        return;
+    u8c const *s = query[0] + 1;            // past the leading '/'
+    u8c const *p = s;
+    while (p < query[1] && *p != '/') p++;
+    out[0] = (u8c *)s;
+    out[1] = (u8c *)p;
+}
+
+// Canonical project TITLE from a parsed source/clone URI (wiki
+// Title.mkd: "title IS the project segment").  Three-step precedence:
+//   1. `?/<title>` query segment (the manual override)        → title
+//   2. `/.be/<seg>/` in the path (a local-shard anchor URI)    → seg
+//   3. URL path basename, trailing `/` + `.git` stripped       → base
+// Step 3 makes this a DERIVATION function — right for naming a shard
+// from a fetch source, but NOT for anchor readback, where an empty
+// result must stay empty (legacy elided single-project): use
+// `DOGProjectFromBe` (== step 2 alone) there.  `SNIFFSubBasename` is
+// the raw-string (unparsed, SCP-aware) sibling of step 3.  `out` is
+// reset before the feed.
+fun void DOGTitleFromUri(uricp u, u8bp out) {
+    u8bReset(out);
+    //  1. Override: the query's absolute project segment wins.
+    a_dup(u8c, q, u->query);
+    u8cs qproj = {};
+    DOGQueryProject(q, qproj);
+    if (!u8csEmpty(qproj)) { u8bFeed(out, qproj); return; }
+    //  2. Local-shard anchor: first segment after `/.be/`.
+    a_dup(u8c, apath, u->path);
+    DOGProjectFromBe(apath, out);
+    if (u8bDataLen(out) > 0) return;
+    //  3. Default: basename of the URI path, sans trailing `/` + `.git`.
+    a_dup(u8c, base, u->path);
+    while (!u8csEmpty(base) && *(base[1] - 1) == '/') u8csShed1(base);
+    u8c const *slash = NULL;
+    for (u8c const *c = base[0]; c < base[1]; c++)
+        if (*c == '/') slash = c;
+    if (slash) base[0] = (u8c *)(slash + 1);
+    if (u8csLen(base) >= 4) {
+        u8c const *suf = base[1] - 4;
+        if (suf[0] == '.' && suf[1] == 'g' && suf[2] == 'i' && suf[3] == 't')
+            base[1] -= 4;
+    }
+    if (!u8csEmpty(base)) u8bFeed(out, base);
 }
 
 // Detect and split the canonic resolved query form (STORE.md

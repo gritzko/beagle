@@ -90,7 +90,9 @@ sp_make_dirty() {
 sp_refs_path() {
     _wt=".be/wtlog"
     [ -f .be ] && [ ! -d .be ] && _wt=".be"
-    _anchor=$(awk -F'\t' '$2 == "repo" { print $3; exit }' "$_wt" 2>/dev/null)
+    #  Row 0 is the wt->store anchor: verb `get` (current) or `repo`
+    #  (legacy stores), $3 = `file:<shard>/`.  Match by position.
+    _anchor=$(awk -F'\t' 'NR==1 && ($2 == "get" || $2 == "repo") { print $3; exit }' "$_wt" 2>/dev/null)
     if [ -n "$_anchor" ]; then
         _shard=${_anchor#file:}
         _shard=${_shard%/}

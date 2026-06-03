@@ -75,13 +75,19 @@ mkdir -p "$WT"; cd "$WT"
 "$BE" get --seq "file:$CLONE?master" >/dev/null 2>&1 || true
 #  Per VERBS.md §"Worktree management" and beagle/BE.cli.c
 #  `BEGetWorktree`: secondary wt's `.be` is a REGULAR FILE (the
-#  wtlog itself, with row 0 being a `repo` anchor pointing at the
+#  wtlog itself, row 0 being the wt→store anchor pointing at the
 #  primary store).  Older roundtrip implementations used a
-#  symlink → primary's `.be/`; that's no longer the layout.
+#  symlink → primary's `.be/`; that's no longer the layout.  The
+#  anchor verb is `get` (the get-unification; legacy `repo` still
+#  read) and, since the primary has a resolvable tip, it carries the
+#  sha-bearing shape `file:<store>/.be/?/<title>/<branch>#<hash>`
+#  (DIS-001).
 [ -f "$WT/.be" ] && [ ! -d "$WT/.be" ] \
     || fail "worktree .be should be a regular file (secondary-wt anchor)"
-grep -q '	repo	file:' "$WT/.be" \
-    || fail "worktree .be missing row-0 'repo file:' anchor"
+grep -q '	get	file:' "$WT/.be" \
+    || fail "worktree .be missing row-0 'get file:' anchor"
+grep -Eq 'file:[^ 	]*/\.be/\?/[^ 	]*#[0-9a-f]{40}' "$WT/.be" \
+    || fail "worktree .be missing sha-bearing ?/<title>/<branch>#<sha> row 0"
 [ -f a.txt ] && [ -f b.txt ] || fail "worktree missing checked-out files"
 note "worktree has .be anchor file + checked-out files"
 

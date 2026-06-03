@@ -48,8 +48,14 @@ mkdir wt
     || { echo "FAIL: wt/.be must be a regular file (wtlog)" >&2; ls -la wt >&2; exit 1; }
 [ ! -L wt/.be ] \
     || { echo "FAIL: wt/.be must not be a symlink" >&2; exit 1; }
-grep -q 'repo' wt/.be \
-    || { echo "FAIL: wt/.be row-0 should carry a repo anchor" >&2; cat -v wt/.be >&2; exit 1; }
+#  Row 0 is the wt->store anchor: verb `get` (the get-unification;
+#  formerly `repo`), URI = `file:<store>/.be/?/<title>/<branch>#<hash>`
+#  (sha-bearing row 0, DIS-001): title+branch live in the QUERY, the
+#  primary tip in the FRAGMENT.
+head -n1 wt/.be | grep -qF 'get	file:' \
+    || { echo "FAIL: wt/.be row-0 should carry a get anchor" >&2; cat -v wt/.be >&2; exit 1; }
+head -n1 wt/.be | grep -Eq 'file:[^ 	]*/\.be/\?/[^ 	]*#[0-9a-f]{40}$' \
+    || { echo "FAIL: wt/.be row-0 should carry ?/<title>/<branch>#<sha>" >&2; cat -v wt/.be >&2; exit 1; }
 
 match prim/x.txt   wt/x.txt
 match prim/d/y.txt wt/d/y.txt

@@ -76,10 +76,11 @@ WT="$TMP/wt"; mkdir -p "$WT"; cd "$WT"
 #  the project segment, which keeper resolves to the legacy bare-shard
 #  layout.  Rewrite to `.be/<project>/` so the secondary opens the
 #  sharded store.
-PRIM_ANCHOR=$(awk -F'\t' '$2 == "repo" { print $3; exit }' "$PRIM/.be/wtlog")
-[ -n "$PRIM_ANCHOR" ] || fail "primary wtlog missing row-0 repo anchor"
+#  Row 0 is the anchor: verb `get` (current) or `repo` (legacy).
+PRIM_ANCHOR=$(awk -F'\t' 'NR==1 && ($2=="get" || $2=="repo") { print $3; exit }' "$PRIM/.be/wtlog")
+[ -n "$PRIM_ANCHOR" ] || fail "primary wtlog missing row-0 anchor"
 awk -F'\t' -v anchor="$PRIM_ANCHOR" \
-    'BEGIN{OFS=FS} NR==1 && $2=="repo" { $3=anchor } { print }' \
+    'BEGIN{OFS=FS} NR==1 && ($2=="get" || $2=="repo") { $3=anchor } { print }' \
     "$WT/.be" > "$WT/.be.fixed"
 mv "$WT/.be.fixed" "$WT/.be"
 note "wt: .be is the secondary's local wtlog file"

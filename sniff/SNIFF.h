@@ -5,8 +5,8 @@
 //
 //  On disk: a single file `<wt>/.be/wtlog` — a ULOG (see dog/ULOG.md):
 //  `<ron60-ms>\t<verb>\t<uri>\n` rows record every op that changed
-//  the worktree.  Row 0 is a `repo` anchor naming the store's
-//  `.be/` via a `file://` URI.  Every file sniff writes is
+//  the worktree.  Row 0 is the anchor (verb `get`, legacy `repo`)
+//  naming the store's `.be/` via a `file://` URI.  Every file sniff writes is
 //  `futimens`-stamped to the op's ts, so `mtime ∈ {row timestamps}`
 //  means "clean, attributed".
 //
@@ -67,8 +67,8 @@ ok64 SNIFFMaybeSwitchGraf(u8cs target_branch);
 //   * directory (primary / colocated wt)  → `<wt_root>/.be/wtlog`
 //   * regular file (secondary wt)         → `<wt_root>/.be`
 //                                           (the file IS the wtlog;
-//                                           row 0's `repo` URI names
-//                                           the shared store)
+//                                           row 0's anchor URI (verb
+//                                           `get`) names the shared store)
 //   * missing                              → `<wt_root>/.be/wtlog`
 //                                           (primary-wt default; the
 //                                           caller is expected to

@@ -45,10 +45,11 @@ timeout 10 "$BE" get 'be://nonexistent.invalid?/myproj/main' \
     exit 1
 }
 
-#  Row-0 shape: `<ts>\trepo\tfile:<abs>/.be/myproj/`.  Loose match on
-#  the suffix (skip the timestamp + absolute path) so realpath drift
-#  between $SCRATCH and `pwd` doesn't break the assertion.
-head -n1 .be/wtlog | grep -F 'repo	file:' >/dev/null && \
+#  Row-0 shape: `<ts>\tget\tfile:<abs>/.be/myproj/` (the wt->store
+#  anchor; verb `get` since the get-unification, formerly `repo`).
+#  Loose match on the suffix (skip the timestamp + absolute path) so
+#  realpath drift between $SCRATCH and `pwd` doesn't break it.
+head -n1 .be/wtlog | grep -F 'get	file:' >/dev/null && \
     head -n1 .be/wtlog | grep -F '/.be/myproj/' >/dev/null || {
     echo ".be/wtlog row-0 missing project anchor; got:" >&2
     head -n1 .be/wtlog >&2

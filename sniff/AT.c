@@ -47,8 +47,11 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     a_pad(u8, anchor_branch_buf, 256);
     {
         ulogrec r0 = {};
+        //  Row 0 is the anchor: verb `get` (current) or `repo` (legacy
+        //  stores written before the get-unification) — accept both.
         if (ULOGRow(data, idx, 0, &r0) != OK ||
-            r0.verb != SNIFFAtVerbRepo()) {
+            (r0.verb != SNIFFAtVerbGet() &&
+             r0.verb != SNIFFAtVerbRepo())) {
             ULOGClose(data, &idx, NO); fail(SNIFFNONE);
         }
         DOGRepoFromBe(r0.uri.path, root_buf);
@@ -75,6 +78,10 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         if (ULOGRow(data, idx, i, &rec) != OK) continue;
         if (rec.verb != v_get && rec.verb != v_post) continue;
         uri u = rec.uri;
+        //  Row 0 (the wt→store anchor `get`) participates here like any
+        //  other get: a bare/tip-less anchor (no #sha) contributes
+        //  nothing (sha_body stays empty below); a sha-bearing combined
+        //  anchor IS the cur tip.  No positional skip (get-unification).
 
         //  Canonical at-log shape: `?<branch>#<curhash>` — fragment
         //  carries the sha, query carries the be-branch (empty for
@@ -85,6 +92,11 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         if (u8csLen(u.fragment) == 40) u8csMv(sha_body, u.fragment);
         b8 row_is_local = u8csEmpty(u.authority);
         a_dup(u8c, q, u.query);
+        //  Absolute `?/<project>/<branch>` starts with the project
+        //  name (wiki/URI.mkd §"Ref shapes"); strip it so the branch
+        //  tail is adopted, never the literal `/project` segment.
+        //  No-op on project-relative / legacy `<branch>&<sha>` shapes.
+        DOGQueryStripProject(q);
         while (!u8csEmpty(q)) {
             u8cs chunk = {};
             DOGRefDrain(q, chunk);
@@ -122,7 +134,11 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             uri u = rec.uri;
             if (!u8csEmpty(u.authority)) continue;
             if (u8csLen(u.fragment) != 40) continue;
-            DOGQueryBranchOnly(u.query, ref_body);
+            //  Strip the absolute project prefix before adopting the
+            //  branch (same rule as the first walk above).
+            a_dup(u8c, q2, u.query);
+            DOGQueryStripProject(q2);
+            DOGQueryBranchOnly(q2, ref_body);
             if (!u8csEmpty(ref_body)) break;
         }
     }
@@ -189,32 +205,70 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     done;
 }
 
-//  Row-0 invariant guard: `repo` only at row 0, every other verb only
-//  at row ≥ 1.  Returns OK if the append is allowed.
+//  Row-0 invariant guard: row 0 is the wt→store anchor (verb `get`,
+//  legacy `repo`).  Rows ≥1 may be any verb (`get` checkouts included),
+//  so the only rule is that a fresh log opens with the anchor.  Returns
+//  OK if the append is allowed.
 static ok64 at_check_row0(ron60 verb) {
     sane(SNIFF.h);
-    ron60 vrepo = SNIFFAtVerbRepo();
     u32 n = ULOGCount(SNIFF.log_idx);
-    if (n == 0 && verb != vrepo) fail(SNIFFFAIL);
-    if (n > 0 && verb == vrepo)  fail(SNIFFFAIL);
+    if (n == 0 && verb != SNIFFAtVerbGet() && verb != SNIFFAtVerbRepo())
+        fail(SNIFFFAIL);
     done;
 }
 
-ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path) {
+//  Populate an anchor URI's QUERY (`/<title>[/<branch>]`) and FRAGMENT
+//  (`<hash>`) for the sha-bearing row-0 shape (replicated.wiki
+//  todo/DIS-001).  `qbuf` backs the query bytes and must outlive
+//  `urow`'s serialization; `hash` is referenced in place (same).  An
+//  empty `title` leaves the query unset (bare anchor); an empty `hash`
+//  leaves the fragment unset.  `branch` empty = the project's trunk
+//  (`?/<title>`).  Mirror reader: `home_anchor_proj_branch` (dog/HOME.c).
+ok64 SNIFFAtAnchorRef(uri *urow, u8bp qbuf, u8cs title, u8cs branch,
+                      u8cs hash) {
+    sane(urow && qbuf);
+    if (!u8csEmpty(title)) {
+        call(u8bFeed1, qbuf, '/');
+        call(u8bFeed,  qbuf, title);
+        if (!u8csEmpty(branch)) {
+            call(u8bFeed1, qbuf, '/');
+            call(u8bFeed,  qbuf, branch);
+        }
+        a_dup(u8c, qd, u8bData(qbuf));
+        urow->query[0] = qd[0];
+        urow->query[1] = qd[1];
+    }
+    if (!u8csEmpty(hash)) {
+        urow->fragment[0] = hash[0];
+        urow->fragment[1] = hash[1];
+    }
+    done;
+}
+
+ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path, u8cs title,
+                       u8cs branch, u8cs hash) {
     sane($ok(anchor_path) && $ok(repo_path));
 
     //  Build the row via ULOGu8sFeed — same shape both BE callers
     //  (be_ensure_project_repo, BEGetWorktree) used to assemble by
-    //  hand.  scheme `file:`, path = absolute path to the project
-    //  shard, host empty.
+    //  hand.  scheme `file:`, path = absolute path to the store root's
+    //  `.be/` (sha-bearing shape) or the project shard (legacy).
+    //  Anchor verb is `get`: the wt→store anchor doubles as the "last
+    //  get" baseline (wiki/Title.mkd get-unification).  When (title,
+    //  branch, hash) are supplied it carries `?/<title>/<branch>#<hash>`
+    //  (the sha-bearing row 0, DIS-001); tip-less callers pass empty and
+    //  get the bare `file:<repo_path>` anchor.  Readers accept `get` OR
+    //  legacy `repo` (pre-unification on-disk stores).
     a_cstr(file_scheme, "file");
-    a_cstr(repo_name,   "repo");
     ulogrec rec = {
         .ts   = RONNow(),
-        .verb = SNIFFAtVerbOf((u8cs){repo_name[0], repo_name[1]}),
+        .verb = SNIFFAtVerbGet(),
     };
     u8csMv(rec.uri.scheme, file_scheme);
     u8csMv(rec.uri.path,   repo_path);
+
+    a_path(qbuf);
+    call(SNIFFAtAnchorRef, &rec.uri, qbuf, title, branch, hash);
 
     a_pad(u8, row, 1024);
     call(ULOGu8sFeed, u8bIdle(row), &rec);
@@ -303,7 +357,10 @@ ok64 SNIFFAtRepo(urip u_out) {
     if (ULOGCount(SNIFF.log_idx) == 0) return ULOGNONE;
     ulogrec rec = {};
     call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &rec);
-    if (rec.verb != SNIFFAtVerbRepo()) fail(SNIFFFAIL);
+    //  Anchor verb is `get` (current) or `repo` (legacy stores) —
+    //  accept both (the get-unification, wiki/Title.mkd).
+    if (rec.verb != SNIFFAtVerbGet() && rec.verb != SNIFFAtVerbRepo())
+        fail(SNIFFFAIL);
     *u_out = rec.uri;
     done;
 }
@@ -316,11 +373,24 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
     u32 n = ULOGCount(SNIFF.log_idx);
+    //  Scan newest→oldest for a get/post/patch row that carries a sha.
+    //  The bare store-anchor row (a get/repo row 0 that pins the store
+    //  with no #sha) is excluded by the sha check, NOT by position —
+    //  so a sha-bearing anchor (a combined `get <store>?<br>#<sha>`
+    //  row 0) is itself a valid baseline (the get-unification).
     for (u32 i = n; i > 0; i--) {
         ulogrec rec = {};
         ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
         if (o != OK) return o;
         if (rec.verb == vg || rec.verb == vp || rec.verb == vx) {
+            //  Skip a bare/tip-less store-anchor row (no branch and no
+            //  sha — query AND fragment both empty); a sha-bearing row
+            //  (incl. a combined `get <store>?<br>#<sha>` anchor) is a
+            //  valid baseline.  Patch rows carry a multi-sha fragment,
+            //  so they pass this gate (the get-unification).
+            u8cs q = {rec.uri.query[0],    rec.uri.query[1]};
+            u8cs f = {rec.uri.fragment[0], rec.uri.fragment[1]};
+            if (u8csEmpty(q) && u8csEmpty(f)) continue;
             *ts_out   = rec.ts;
             *verb_out = rec.verb;
             *u_out    = rec.uri;
@@ -335,11 +405,19 @@ ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     u32 n = ULOGCount(SNIFF.log_idx);
+    //  Scan newest→oldest for a get/post row carrying a sha; the bare
+    //  store-anchor (no #sha) is excluded by the sha check, not by
+    //  position (see SNIFFAtBaseline).
     for (u32 i = n; i > 0; i--) {
         ulogrec rec = {};
         ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
         if (o != OK) return o;
         if (rec.verb == vg || rec.verb == vp) {
+            //  Skip a bare/tip-less store anchor (query AND fragment
+            //  both empty); see SNIFFAtBaseline.
+            u8cs q = {rec.uri.query[0],    rec.uri.query[1]};
+            u8cs f = {rec.uri.fragment[0], rec.uri.fragment[1]};
+            if (u8csEmpty(q) && u8csEmpty(f)) continue;
             *ts_out   = rec.ts;
             *verb_out = rec.verb;
             *u_out    = rec.uri;
