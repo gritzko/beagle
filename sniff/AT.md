@@ -16,8 +16,8 @@ on-disk files are "clean" vs user-edited.
 | Verb | URI shape | Stamps files? |
 |------|-----------|---------------|
 | `get` (row 0) | `file:<store>/.be/` bare, or `file:<store>/.be/?/<title>/<branch>#<hash>` sha-bearing (worktree → store anchor; legacy verb `repo` still read) | no |
-| `get`    | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
-| `post`   | `?<branch>#<sha>` (or `?<sha>` detached)              | yes |
+| `get`    | `?<branch>#<sha>`, or `?#<sha>` trunk-state, or `?<sha>` detached | yes |
+| `post`   | `?<branch>#<sha>`, or `?#<sha>` trunk-state, or `?<sha>` detached | yes |
 | `patch`  | one of four shapes — see "Patch row shapes" below     | yes |
 | `put`    | `<path>`  *or* `<old>#<new>` (move; see below)        | yes (the staged file / move dst) |
 | `delete` | `<path>`                                              | no (file unlinked) |
@@ -110,9 +110,23 @@ round-trips to exactly the row's `ts`, and `SNIFFAtKnown` answers YES.
 
 Whatever branch the wt is on is encoded as the first REF spec in the
 query of the most recent `get` / `post` / `patch` row (`heads/main`,
-`heads/feat`, ...).  A detached checkout's query has only SHA specs
-and no ref.  `SNIFFAtBaseline` parses the latest such row; callers
-walk `u.query` with `DOGRefDrain` to pull out the ref and SHA(s).
+`heads/feat`, ...).  `SNIFFAtBaseline` parses the latest such row;
+callers walk `u.query` with `DOGRefDrain` to pull out the ref and SHA(s).
+
+Three mutually exclusive attachment shapes (the sha is the 40-hex tip):
+
+  * **attached branch** — `?<branch>#<sha>`: branch ref in the QUERY,
+    tip sha in the FRAGMENT.  POST/PATCH record against `<branch>`.
+  * **trunk-state** — `?#<sha>`: QUERY empty (= trunk per ref-resolution
+    rule 0), sha in the FRAGMENT.  Attached to trunk at that sha; POST
+    commits legitimately back to trunk.
+  * **detached** — `?<sha>`: a 40-hex SHA spec in the QUERY with NO ref,
+    FRAGMENT empty.  This is what GET writes for `be get ?<sha>` and
+    bare `be get <sha>`.  There is no branch to record against, so POST
+    and PATCH **refuse** (`POSTDET` / `PATCHDET`) until the wt re-attaches
+    (`be get ?<branch>`).  Moving the sha into the fragment (turning
+    `?<sha>` into `?#<sha>`) is a bug — it aliases trunk-state and lets
+    commits slip through; see DIS-009.
 
 ## Baseline URI
 

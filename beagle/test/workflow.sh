@@ -132,6 +132,11 @@ note "both put-staged files present; pre-put + post-put untracked all absent"
 # ------------------------------------------------------------------
 echo "=== 4. modify + bare be post (implicit all-dirty) ==="
 cd "$D3b"
+#  DIS-009: scenario 3 left D3b on a DETACHED checkout (`be get $C3`,
+#  bare sha → `?<sha>`).  POST refuses on a detached wt, so re-attach
+#  to trunk first — the intent here is "commit on the branch", which
+#  requires an attached wt.
+"$BE" get '?' >/dev/null
 sleep 0.2                          # force distinct mtime
 echo alpha-v2 > a.txt
 "$BE" post 'a v2' >/dev/null
@@ -151,6 +156,9 @@ note "a.txt updated on disk after be get"
 # ------------------------------------------------------------------
 echo "=== 5. be delete a.txt ==="
 cd "$D4b"
+#  DIS-009: D4b was left detached by `be get $C4`; re-attach to trunk
+#  (its tip is C4, same content) before committing the delete.
+"$BE" get '?' >/dev/null
 "$BE" delete a.txt >/dev/null
 "$BE" post 'drop a' >/dev/null
 want_missing a.txt                    # POST must unlink explicit deletes
@@ -165,10 +173,20 @@ note "a.txt removed, b.txt preserved"
 
 # ------------------------------------------------------------------
 # Scenario 6: implicit-delete via vanished tracked file
+#
+#  DIS-009: this used to `be get <C3>` to rewind the wt to the two-file
+#  state on an EXISTING shard, but a bare-sha get is a DETACHED checkout
+#  and POST refuses on it (and trunk-state `?#<sha>` resolves to the
+#  trunk TIP, not an old sha — there is no attached "rewind to old sha"
+#  form).  Reworked to a fresh attached trunk wt that commits both files
+#  first, then vanishes one without a `delete` row.  The behavior under
+#  test (POST sweeps the missing tracked file) is unchanged.
 # ------------------------------------------------------------------
 echo "=== 6. bare be delete (implicit sweep via missing file) ==="
-cd "$D5b"
-"$BE" get "$C3" >/dev/null            # restore two-file state
+D6="$TMP/r6"; mkdir -p "$D6/.be"; cd "$D6"
+echo alpha > a.txt
+echo bravo > b.txt
+"$BE" post 'two files' >/dev/null     # attached trunk commit
 want_file a.txt "alpha"
 want_file b.txt "bravo"
 rm a.txt                              # vanish one without a `delete` row
@@ -177,7 +195,7 @@ rm a.txt                              # vanish one without a `delete` row
 C6=$(head_hex)
 
 D6b="$TMP/r6b"; mkdir -p "$D6b/.be"; cd "$D6b"
-cp -r "$D5b/.be/." .be/
+cp -r "$D6/.be/." .be/
 "$BE" get "$C6" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"

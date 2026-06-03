@@ -1194,6 +1194,17 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 t_branch[1] = source[1];
             }
             u8cs b_branch = {bu.query[0], bu.query[1]};
+            //  DIS-009: a detached baseline row is `?<40hex>` — the
+            //  query slot holds a sha, not a branch.  The target side
+            //  already drops a detached `?<sha>` (len 41) to an empty
+            //  branch; mirror that here so detached→detached overlays
+            //  (`be get <sha>` then `be get <other-sha>`) are NOT seen
+            //  as a cross-branch switch and the dirty gate stays open
+            //  for the weave-merge path.
+            if (u8csLen(b_branch) == 40 && HEXu8sValid(b_branch)) {
+                b_branch[0] = NULL;
+                b_branch[1] = NULL;
+            }
             ssize_t bl = $len(b_branch), tl = $len(t_branch);
             b8 same_branch =
                 (bl == tl) &&
@@ -1353,21 +1364,40 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     {
         uri urow = {};
         a_pad(u8, qbuf, 128);
+        //  Row-shape decision (AT.md §"Row vocabulary"):
+        //    * detached `?<40hex>` (source len 41) → keep the sha in the
+        //      QUERY, leave the fragment EMPTY: `?<sha>`.  Turning this
+        //      into `?#<sha>` would alias trunk-state (attached to trunk
+        //      at that sha) and let POST/PATCH silently commit — see
+        //      DIS-009.  Detached must stay detached.
+        //    * attached branch `?<branch>` (len != 41) → branch in the
+        //      QUERY, tip sha in the FRAGMENT: `?<branch>#<sha>`.
+        //    * empty source (trunk) → empty query, sha in fragment:
+        //      `?#<sha>` (trunk-state; POST commits back to trunk).
+        b8 detached = $ok(source) && !u8csEmpty(source) &&
+                      *source[0] == '?' && $len(source) == 41;
         if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
             $len(source) != 41) {
             a_dup(u8c, q, source);
             u8csUsed1(q);
             u8bFeed(qbuf, q);
         }
-        {
-            a_dup(u8c, q, u8bData(qbuf));
-            urow.query[0] = q[0];
-            urow.query[1] = q[1];
-        }
-        {
+        if (detached) {
+            //  sha → query slot, fragment stays empty.
             a_dup(u8c, h, hex);
-            urow.fragment[0] = h[0];
-            urow.fragment[1] = h[1];
+            urow.query[0] = h[0];
+            urow.query[1] = h[1];
+        } else {
+            {
+                a_dup(u8c, q, u8bData(qbuf));
+                urow.query[0] = q[0];
+                urow.query[1] = q[1];
+            }
+            {
+                a_dup(u8c, h, hex);
+                urow.fragment[0] = h[0];
+                urow.fragment[1] = h[1];
+            }
         }
         ron60 verb = SNIFFAtVerbGet();
         ok64 ar = SNIFFAtAppendAt(ctx.ts, verb, &urow);

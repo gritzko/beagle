@@ -29,7 +29,11 @@ vc_run delete_clean "$BE" get "$T2"
 vc_snapshot after
 
 vc_assert_exit 0
-vc_assert_appended sniff "^get	\\?#${T2}"
+#  DIS-009: bare-sha `be get <sha>` → DETACHED row `?<sha>` (sha in
+#  QUERY, empty fragment), not trunk-state `?#<sha>`.  This case tests
+#  the delete-overlay WRITE behavior (d.txt vanishes); shape updated to
+#  the detached form per the model.
+vc_assert_appended sniff "^get	\\?${T2}"
 
 [ ! -e d.txt ] || vc_fail "d.txt still on disk after GET T2"
 [ -f k.txt ]   || vc_fail "k.txt missing after GET T2"

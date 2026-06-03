@@ -33,7 +33,12 @@ vc_run overlay "$BE" get "$T1"
 vc_snapshot after
 
 vc_assert_exit 0
-vc_assert_appended sniff "^get	\\?#${T1}"
+#  DIS-009: bare-sha `be get <sha>` is a DETACHED checkout, so the row
+#  is `?<sha>` (sha in QUERY, empty fragment), NOT the trunk-state
+#  `?#<sha>`.  This case exercises the overlay/weave WRITE behavior
+#  (a.txt reverts, b.txt dirty preserved), not branch attachment; the
+#  shape assertion is updated to the detached form per the model.
+vc_assert_appended sniff "^get	\\?${T1}"
 
 #  a.txt reverted to T1 content "a v1".
 got_a=$(awk 'NR==1' a.txt)

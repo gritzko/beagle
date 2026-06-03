@@ -871,6 +871,25 @@ static ok64 post_parent_sha(keeper *k, u8csc parent_hex, sha1 *out) {
 //  Single-parent everywhere on the write path: after the PATCH rewrite
 //  the baseline query no longer chains `&<theirs>` SHAs; one ours sha
 //  is the only parent the new commit gets.
+//  Detached-wt detector — mirror of PATCH.c's is_detached_wt (DIS-009).
+//  Detached iff the cur-tip row is `?<sha>` (40-hex query, EMPTY
+//  fragment): GET writes this for `be get ?<sha>` / bare `be get <sha>`.
+//  The attached branch form `?<branch>#<sha>` (query-side ref) and the
+//  trunk-state form `?#<sha>` (empty query = trunk, sha in fragment)
+//  both carry either a query ref or a non-empty fragment, so neither
+//  trips the gate — POST commits legitimately in those cases.  POST
+//  refuses on a detached wt: there is no branch to record the commit
+//  against (would silently graft onto trunk/empty branch).
+static b8 post_is_detached_wt(void) {
+    ron60 ts = 0, verb = 0;
+    uri u = {};
+    if (SNIFFAtCurTip(&ts, &verb, &u) != OK) return NO;
+    if (!u8csEmpty(u.fragment)) return NO;
+    a_dup(u8c, q, u.query);
+    if (u8csLen(q) != 40) return NO;
+    return HEXu8sValid(q);
+}
+
 static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
                                  b8 *had_baseline_out) {
     sane(out && parent_out && has_parent_out && had_baseline_out);
@@ -2323,6 +2342,18 @@ ok64 POSTCommit(u8cs target_branch,
                 u8cs message, u8cs author,
                 cli const *inv, sha1 *sha_out) {
     sane($ok(message) && $ok(author) && sha_out);
+    //  DIS-009: refuse to commit from a detached wt (`?<sha>` cur-tip).
+    //  A detached checkout has no branch to record the new commit
+    //  against; committing would silently graft it onto trunk/empty
+    //  branch.  Re-attach (`be get ?<branch>`) first.  Trunk-state
+    //  `?#<sha>` is NOT detached and is allowed through (commits back
+    //  to trunk).
+    if (post_is_detached_wt()) {
+        fprintf(stderr,
+            "sniff: post: refusing on detached wt — re-attach to a "
+            "branch first (be get ?<branch>)\n");
+        return POSTDET;
+    }
     b8 force = inv && CLIHas(inv, "--force");
     keeper *k = &KEEP;
     //  Repo root from the SNIFF singleton (see post_reporoot()).

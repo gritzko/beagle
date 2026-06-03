@@ -1285,17 +1285,13 @@ u8 PATCHShape(uricp u) {
     return PATCH_SHAPE_BAD;
 }
 
-//  Detached-wt detector.  Two failure modes:
-//    1. Cur-tip URI is `?<sha>` (sha-only query, no fragment) — the
-//       explicit detached form per AT.md "Branch tracking".  Not
-//       currently emitted by GET (folds to `?#<sha>` instead), but
-//       supported by the parser for forward compatibility.
-//    2. Cur-tip URI is `?<branch>#<wt_sha>` but `wt_sha` does NOT
-//       match the branch's reflog tip — i.e., the user rewound the
-//       wt to an older commit on cur's branch (or to a sibling
-//       branch's commit that the URI shape happens to alias to
-//       trunk).  This is the path users actually take to detach
-//       today: `be get ?#<old-sha>`.
+//  Detached-wt detector.  Detached iff the cur-tip URI is `?<sha>`
+//  (sha-only query, EMPTY fragment) — the explicit detached form per
+//  AT.md "Branch tracking", now emitted by GET for `be get ?<sha>`
+//  and bare `be get <sha>`.  The attached branch form `?<branch>#<sha>`
+//  and the trunk-state form `?#<sha>` (empty query = trunk, sha in
+//  fragment) are NOT detached: a branch carries a query-side ref to
+//  record against, and trunk-state commits legitimately back to trunk.
 //  Per VERBS.md Invariant 7, PATCH refuses on detached wts — the
 //  merge would have no branch to record the absorbed sha against.
 static b8 is_detached_wt(u8cs reporoot) {
@@ -1305,10 +1301,13 @@ static b8 is_detached_wt(u8cs reporoot) {
     if (SNIFFAtCurTip(&ts, &verb, &u) != OK) return NO;
 
     //  Detached URI shape per AT.md "Branch tracking": query carries
-    //  a 40-hex SHA spec with no REF, fragment empty.  Attached form
-    //  is `?<branch>#<sha>` (fragment non-empty).  Today GET only
-    //  emits the attached form, so this triggers when an external
-    //  process (test harness, subs mount) writes a detached row.
+    //  a 40-hex SHA spec with no REF, fragment empty (`?<sha>`).  This
+    //  is what GET writes for a detached checkout (`be get ?<sha>` or
+    //  bare `be get <sha>`); see GET.c row writer.  Distinct from the
+    //  attached forms `?<branch>#<sha>` (branch in query) and the
+    //  trunk-state `?#<sha>` (empty query, sha in fragment) — both of
+    //  which carry a non-empty query-side ref OR a non-empty fragment,
+    //  so neither trips this gate.
     if (!u8csEmpty(u.fragment)) return NO;
     a_dup(u8c, q, u.query);
     if (u8csLen(q) != 40) return NO;

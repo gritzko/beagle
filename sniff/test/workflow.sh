@@ -131,6 +131,10 @@ note "both files present after get"
 # ------------------------------------------------------------------
 echo "=== 4. implicit all-dirty via bare post ==="
 cd "$D3b"
+#  DIS-009: scenario 3 left D3b detached (`sniff get $C3`, bare sha →
+#  `?<sha>`).  POST refuses on a detached wt; re-attach to trunk (tip
+#  is C3, same content) before committing.
+"$SNIFF" get '?' >/dev/null
 sleep 0.1                                 # force a distinct mtime
 echo alpha-two > a.txt                  # modify
 "$SNIFF" put >/dev/null                 # no-op: no args
@@ -154,6 +158,9 @@ note "modified content on disk after get"
 # ------------------------------------------------------------------
 echo "=== 5. delete a.txt ==="
 cd "$D4b"
+#  DIS-009: D4b was left detached by `sniff get $C4`; re-attach to trunk
+#  (tip is C4, same content) before committing the delete.
+"$SNIFF" get '?' >/dev/null
 "$SNIFF" delete a.txt >/dev/null
 awk -F'\t' '$2 == "delete" && $3 == "a.txt"' .be/wtlog | grep -q . \
     || fail "no \`delete a.txt\` row in ULOG"
@@ -175,8 +182,16 @@ note "a.txt pruned, b.txt preserved"
 # tracked file is a deletion).
 # ------------------------------------------------------------------
 echo "=== 6. implicit delete via vanished file ==="
-cd "$D5b"
-"$SNIFF" get "$C3" >/dev/null           # restore two-file state
+#  DIS-009: this used to `sniff get $C3` to rewind to the two-file state,
+#  but a bare-sha get is a DETACHED checkout (POST refuses), and trunk-
+#  state `?#<sha>` resolves to the trunk TIP, not an old sha — there is
+#  no attached "rewind to old sha" form.  Reworked to a fresh attached
+#  trunk wt with both files; the implicit-delete-sweep under test is
+#  unchanged.
+D6="$TMP/r6"; mkdir -p "$D6/.be"; cd "$D6"
+echo alpha > a.txt
+echo bravo > b.txt
+"$SNIFF" post 'two files' >/dev/null    # attached trunk commit
 want_file a.txt "alpha"
 want_file b.txt "bravo"
 rm a.txt                                # vanish one without a `delete` row
@@ -185,7 +200,7 @@ rm a.txt                                # vanish one without a `delete` row
 C6=$(head_hex)
 
 D6b="$TMP/r6b"; mkdir -p "$D6b/.be"; cd "$D6b"
-cp -r "$D5b/.be/." .be/
+cp -r "$D6/.be/." .be/
 "$SNIFF" get "$C6" >/dev/null
 want_missing a.txt
 want_file b.txt "bravo"
