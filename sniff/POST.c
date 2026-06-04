@@ -1743,7 +1743,12 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
                 "sniff: " U8SFMT ": ?" U8SFMT " does not exist — "
                 "`be put ?<branch>` first\n",
                 u8sFmt(vtag), u8sFmt(target_branch));
-        return POSTNONE;
+        //  DIS-020: a missing target branch is a HARD error, distinct
+        //  from "nothing to post" (POSTNONE).  NOBRANCH's low byte
+        //  differs from NONE's, so `be`'s plan runner aborts on it
+        //  (no doomed BEActKeeperPush wire push) instead of swallowing
+        //  it as a no-op.
+        return NOBRANCH;
     }
 
     sha1 absolute_parent_tip = {};
@@ -1759,8 +1764,11 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
         if (dr == OK) create_under_absolute = YES;
         else if (dr != REFSNONE) return dr;
         if (!create_under_absolute) {
-            //  Parent branch missing — surface as POSTNONE.
-            return POSTNONE;
+            //  DIS-020: the absolute parent branch doesn't exist — a
+            //  HARD error (NOBRANCH), not "nothing to post" (POSTNONE).
+            //  `be`'s plan runner aborts on NOBRANCH's distinct low
+            //  byte rather than swallowing it as a no-op.
+            return NOBRANCH;
         }
     }
     if (!target_exists) {

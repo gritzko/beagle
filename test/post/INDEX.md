@@ -48,3 +48,12 @@
   test/TRIANGLE.todo.md §"BEActSubsPost…selective mode" for the
   conditions that did mint a commit in the originating trace.
   Gated on `WITH_SSH`.
+* `24-missing-branch-no-push/` — DIS-020: `be post //host?<branch>`
+  where the target branch doesn't exist locally must ABORT before any
+  wire push.  Previously `POSTPromote` returned `POSTNONE` (overloaded
+  with "nothing to post"), whose low byte matches `NONE`, so `be`
+  swallowed it as no-op-OK and proceeded to `BEActKeeperPush` (doomed
+  WIRECLNFF).  Now the missing-branch sites return the distinct
+  `NOBRANCH` (`sniff/SNIFF.h`); its low byte differs from `NONE`, so
+  the plan runner aborts.  Local-only (no ssh): asserts non-zero exit,
+  `NOBRANCH` on stderr, and that the keeper push stage never fired.
