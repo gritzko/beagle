@@ -1116,10 +1116,14 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     //  DIS-018: PATCH no longer hard-fails on a content conflict /
     //  modify-delete divergence (a non-zero exit broke parent
     //  recursion when a submodule conflicted).  Both now report in
-    //  bright red (slot 'S') and return OK; markers stay in the file
-    //  so POST's POSTCFLCT scan is the patch→test→post safety net.
-    {0x9f3caa,       'S'},  // conf      — bright red (genuine conflict)
-    {0xc73a30,       'S'},  // modl      — bright red (modify/delete)
+    //  bright red and return OK; markers stay in the file so POST's
+    //  POSTCFLCT scan is the patch→test→post safety net.
+    //  BE-001: red is reserved for the conflict family — slot 'M' (the
+    //  same bright-red slot as `mis`/`conflict`).  The old slot 'S' is
+    //  the tok / status DEFAULT (neutral) and must NOT be red, else
+    //  ordinary code tokens and clean status columns leak red.
+    {0x9f3caa,       'M'},  // conf      — bright red (genuine conflict)
+    {0xc73a30,       'M'},  // modl      — bright red (modify/delete)
     {0, 0},
 };
 

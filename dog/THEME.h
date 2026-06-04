@@ -31,9 +31,15 @@ con ok64 THEMEBAD = 0x75139638b28d;       // unknown theme name
 //         V mov       (rename; also `kept`)
 //         E mod       (user-edited tracked file)
 //         X del       (staged remove)
-//         M mis       (in baseline, missing on disk; also `conflict`)
-//         S bright red (PATCH `conf` genuine conflict + `modl`
-//                       modify/delete divergence — DIS-018)
+//         M bright red — the CONFLICT family: `mis` (baseline file
+//                       missing on disk), PATCH `conflict`, plus the
+//                       DIS-018 `conf` (genuine WEAVE conflict) and
+//                       `modl` (modify/delete divergence).  Red is
+//                       reserved for these (BE-001).
+//         S DEFAULT (no attribute) — the tok / status neutral tag:
+//                       ordinary code identifiers, whitespace, and the
+//                       neutral status columns.  Stays ANSI_DEFAULT so
+//                       non-conflict content never renders red (BE-001).
 //         Q unk       (untracked; also `dirty`)
 //         Y upd       (GET-overwritten)
 //         Z mrg       (weave-merge write; also `merged`)

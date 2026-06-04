@@ -2,8 +2,12 @@
 
 #include <string.h>
 
+#include "abc/ANSI.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
+#include "dog/THEME.h"
+#include "dog/ULOG.h"
+#include "dog/tok/TOK.h"
 
 //  Verb used for the synthetic status hunks below.  Any non-zero
 //  ron60 makes hunk_is_status() true (with empty text/toks), so the
@@ -135,10 +139,167 @@ static ok64 HUNKTestRelayRoundtrip() {
     done;
 }
 
+// =====================================================================
+// BE-001 — red is reserved for CONFLICT statuses (conf/modl) only.
+//
+// Two render sites historically over-applied the bright-red palette
+// slot because the THEME table indexes a 32-slot array by a single
+// ASCII tag letter, and the tok-namespace "default" tag ('S', emitted
+// for identifiers / whitespace and used as the neutral status column
+// fill) collided with the status-namespace conflict slot.  That painted
+// ordinary code tokens and clean status rows bright red.  Red must
+// appear ONLY for the genuine conflict statuses.
+// =====================================================================
+
+//  An ansi64 is "red" iff its fg carries one of the red SGR/256 values.
+static b8 ansi_is_red(ansi64 c) {
+    u8  mode = ansi64FgMode(c);
+    u32 fg   = ansi64Fg(c);
+    if (mode == ANSI_MODE_BASIC) return fg == DARK_RED || fg == LIGHT_RED;
+    if (mode == ANSI_MODE_256)   return fg == 160 || fg == 196;
+    return NO;
+}
+
+//  Render text wrapped in the named theme, scan the emitted bytes for a
+//  red SGR sequence (basic 31/91 or 256 38;5;160 / 38;5;196).
+static b8 bytes_have_red_sgr(u8cs out) {
+    static const char *RED[] = {
+        "\033[31m", "\033[91m", "\033[38;5;160m", "\033[38;5;196m",
+    };
+    for (size_t k = 0; k < sizeof(RED) / sizeof(RED[0]); k++) {
+        size_t rl = strlen(RED[k]);
+        if ((size_t)$len(out) < rl) continue;
+        for (u8c *p = out[0]; p + rl <= out[1]; p++)
+            if (memcmp(p, RED[k], rl) == 0) return YES;
+    }
+    return NO;
+}
+
+//  Tag-level contract: only the conflict slot 'S' is red; every other
+//  populated tok / status slot is non-red.  Checked across all themes.
+typedef struct {
+    u8 tag;
+    b8 want_red;
+} TagRedCase;
+
+static const TagRedCase TAG_RED_CASES[] = {
+    {'M', YES},   // conflict family (mis/conf/modl) — the ONLY red slot
+    {'S', NO},    // DEFAULT tok / neutral status column — must NOT be red
+    {'D', NO},    // comment
+    {'G', NO},    // string
+    {'L', NO},    // number
+    {'H', NO},    // preproc
+    {'R', NO},    // keyword  (was historically red; must not be now)
+    {'P', NO},    // punctuation
+    {'N', NO},    // defname
+    {'C', NO},    // funcall
+    {'F', NO},    // filename
+    {'T', NO},    // title
+    {'E', NO},    // mod
+    {'W', NO},    // new / applied
+    {'V', NO},    // mov / post
+    {'X', NO},    // del
+    {'Q', NO},    // unk / dirty
+    {'Y', NO},    // put / upd
+    {'Z', NO},    // mrg / merged
+    {'B', NO},    // eq / hunk
+};
+#define TAG_RED_N (sizeof(TAG_RED_CASES) / sizeof(TAG_RED_CASES[0]))
+
+//  Verb-level contract: conf/modl map red; ordinary verbs and the
+//  zero / unknown fallback map to a non-red colour.
+typedef struct {
+    const char *verb;
+    b8          want_red;
+} VerbRedCase;
+
+static const VerbRedCase VERB_RED_CASES[] = {
+    {"conf", YES},   // genuine WEAVE conflict
+    {"modl", YES},   // modify/delete divergence
+    {"new",  NO},
+    {"mod",  NO},
+    {"del",  NO},
+    {"mov",  NO},
+    {"mrg",  NO},
+    {"unk",  NO},
+    {"put",  NO},
+    {"upd",  NO},
+    {"applied", NO},
+    {"merged",  NO},
+    {"",     NO},    // unknown / zero verb → default (must not be red)
+};
+#define VERB_RED_N (sizeof(VERB_RED_CASES) / sizeof(VERB_RED_CASES[0]))
+
+static const char *const THEMES[] = {THEME_16, THEME_DARK, THEME_LIGHT};
+
+static ok64 HUNKTestRedReserved() {
+    sane(1);
+    for (size_t t = 0; t < sizeof(THEMES) / sizeof(THEMES[0]); t++) {
+        if (THEMESelect(THEMES[t]) != OK) fail(TESTFAIL);
+
+        //  (a) Tag palette: only 'S' (conflict) is red.
+        for (size_t i = 0; i < TAG_RED_N; i++) {
+            TagRedCase const *tc = &TAG_RED_CASES[i];
+            b8 red = ansi_is_red(THEMEAt(tc->tag));
+            if (red != tc->want_red) {
+                fprintf(stderr,
+                        "FAIL theme=%s tag '%c': red=%d want=%d\n",
+                        THEMES[t], tc->tag, red, tc->want_red);
+                fail(TESTFAIL);
+            }
+        }
+
+        //  (b) Code-render path: a content hunk made of default 'S'
+        //  tokens (ordinary identifiers / whitespace) must emit NO red
+        //  SGR.  This is the `bro file.c` / `be` code-block render.
+        {
+            const char *src = "int answer = 42;\n";
+            HUNK_SLICE(text, src);
+            //  one default-tagged span covering the whole line
+            tok32 toks_arr[] = {tok32Pack('S', (u32)strlen(src))};
+            tok32cs toks = {toks_arr, toks_arr + 1};
+            HUNK_SLICE(uri, "cat:sample.c");
+            hunk hk = {.uri = {uri[0], uri[1]},
+                       .text = {text[0], text[1]},
+                       .toks = {toks[0], toks[1]}};
+            a_pad(u8, ob, 4096);
+            call(HUNKu8sFeedColor, ob_idle, &hk);
+            a_dup(u8c, got, u8bData(ob));
+            if (bytes_have_red_sgr(got)) {
+                fprintf(stderr,
+                        "FAIL theme=%s code-render: red SGR on default "
+                        "tokens\n", THEMES[t]);
+                fail(TESTFAIL);
+            }
+        }
+
+        //  (c) Status / ulog rows: conf/modl red, everything else not.
+        for (size_t i = 0; i < VERB_RED_N; i++) {
+            VerbRedCase const *vc = &VERB_RED_CASES[i];
+            ron60 verb = 0;
+            if (vc->verb[0] != 0) {
+                a_cstr(vs, vc->verb);
+                a_dup(u8c, vd, vs);
+                (void)RONutf8sDrain(&verb, vd);
+            }
+            b8 red = ansi_is_red(ULOGVerbColor(verb));
+            if (red != vc->want_red) {
+                fprintf(stderr,
+                        "FAIL theme=%s verb '%s': red=%d want=%d\n",
+                        THEMES[t], vc->verb, red, vc->want_red);
+                fail(TESTFAIL);
+            }
+        }
+    }
+    (void)THEMESelect(THEME_16);
+    done;
+}
+
 ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
     call(HUNKTestRelayRoundtrip);
+    call(HUNKTestRedReserved);
     done;
 }
 

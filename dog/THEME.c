@@ -48,8 +48,13 @@ static theme const THEME16TBL = {
     IDX('V') = FG16(36),    // mov       — cyan
     IDX('E') = FG16(33),    // mod       — yellow
     IDX('X') = FG256(94),   // del       — 256-brown
-    IDX('M') = FG16(31),    // mis       — red
-    IDX('S') = FG16(91),    // conf/modl — bright red (DIS-018)
+    //  BE-001: red is reserved for CONFLICT statuses only.  Slot 'M'
+    //  carries the conflict family (mis/conflict/conf/modl) in bright
+    //  red; slot 'S' is the tok / status DEFAULT and MUST stay neutral
+    //  (ANSI_DEFAULT) — it tags ordinary code identifiers, whitespace
+    //  and the neutral status columns, none of which are conflicts.
+    IDX('M') = FG16(91),    // mis/conf/modl — bright red (DIS-018, BE-001)
+    //  'S' intentionally ANSI_DEFAULT (zero-init) — see note above.
     IDX('Q') = FG16(90),    // unk       — grey
     IDX('Y') = FG16(34),    // upd       — blue (== put)
     IDX('Z') = FG16(35),    // mrg       — magenta
@@ -84,8 +89,10 @@ static theme const THEMEDARKTBL = {
     IDX('V') = FG256(37),                 // mov       — cyan
     IDX('E') = FG256(136),                // mod       — yellow
     IDX('X') = FG256(166),                // del       — orange (Solarized)
-    IDX('M') = FG256(160),                // mis       — red
-    IDX('S') = FG256(196),                // conf/modl — bright red (DIS-018)
+    //  BE-001: conflict family (mis/conf/modl) → slot 'M' bright red;
+    //  slot 'S' is the DEFAULT tag and stays ANSI_DEFAULT (neutral).
+    IDX('M') = FG256(196),                // mis/conf/modl — bright red
+    //  'S' intentionally ANSI_DEFAULT (zero-init).
     IDX('Q') = FG256(240),                // unk       — base01 grey
     IDX('Y') = FG256(33),                 // upd       — blue
     IDX('Z') = FG256(125),                // mrg       — magenta
@@ -118,8 +125,10 @@ static theme const THEMELIGHTTBL = {
     IDX('V') = FG256(37),
     IDX('E') = FG256(136),
     IDX('X') = FG256(166),
-    IDX('M') = FG256(160),
-    IDX('S') = FG256(196),                // conf/modl — bright red (DIS-018)
+    //  BE-001: conflict family (mis/conf/modl) → slot 'M' bright red;
+    //  slot 'S' is the DEFAULT tag and stays ANSI_DEFAULT (neutral).
+    IDX('M') = FG256(196),                // mis/conf/modl — bright red
+    //  'S' intentionally ANSI_DEFAULT (zero-init).
     IDX('Q') = FG256(245),                // base1 (lighter than base01)
     IDX('Y') = FG256(33),
     IDX('Z') = FG256(125),
