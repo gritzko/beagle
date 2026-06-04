@@ -524,7 +524,18 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         u8cs sub_trunk = {(u8cp)&_zero_byte, (u8cp)&_zero_byte};
         ok64 ko = KEEPOpenBranch(parent_home, sub_trunk, YES);
         ok64 fo = NONE;
-        if (ko == OK) {
+        if (ko == OK && subs_pin_present(hex_sha)) {
+            //  Pin already in the sub-shard (fetched into the local
+            //  store out of band, e.g. a sibling clone): skip the wire
+            //  fetch entirely and go straight to checkout.  Lets an
+            //  offline / local-only store satisfy the gitlink without
+            //  round-tripping the (possibly unreachable) declared
+            //  remote.
+            fprintf(stderr,
+                    "SUBS.dbg: pin present in sub-shard — skip fetch\n");
+            fo = OK;
+            KEEPClose();
+        } else if (ko == OK) {
             //  Candidate sources, in order; the declared `.gitmodules`
             //  URL is always last.  A non-final beagle candidate counts
             //  as success only when the pin lands (else fall through);

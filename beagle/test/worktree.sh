@@ -125,4 +125,30 @@ PRIM_HEAD=$(head_hex_of "$PRIM")
     || fail "primary HEAD moved ($PRIM_HEAD, was $SEED_HEAD)"
 note "primary HEAD still at seed (per-wt sniff state respected)"
 
+# --- 5. worktree straight from the .be store dir --------------------
+#  A bare store has no default worktree to read a tip from.  Pointing
+#  `be get` straight at `<store>/.be?/<project>/` must still wire a
+#  secondary wt: row-0 anchor is the store `.be/` + the project query,
+#  and the checkout resolves the trunk tip from the shared refs.
+echo "=== 5. be get file:<store>/.be?/<project>/ ==="
+WT2="$TMP/wt2"; mkdir -p "$WT2"; cd "$WT2"
+"$BE" get --seq "file:$PRIM/.be?/prim/" >/dev/null 2>/dev/null \
+    || fail "be get file:<store>/.be?/prim/ failed"
+[ -f "$WT2/.be" ] && [ ! -d "$WT2/.be" ] && [ ! -L "$WT2/.be" ] \
+    || fail "store-direct .be should be a regular file (secondary wt)"
+#  Row 0 anchors at the store `.be/` with the project in the query.
+grep -q 'file:.*/\.be/?/prim' "$WT2/.be" \
+    || fail "store-direct row-0 anchor missing project query"
+#  Trunk tip after step 4 is WT_HEAD (README deleted, CHANGES added).
+[ -f CHANGES ] || fail "store-direct checkout missing trunk content"
+[ ! -f README ] || fail "store-direct checkout has stale README"
+#  Fresh checkout records a `get` row (not `post`); read the tip from
+#  the latest get/post row's `#fragment`.
+WT2_HEAD=$(awk -F'\t' '$2=="get" || $2=="post" { last=$3 } END {
+    h=last; sub(/^[^#]*#/, "", h)
+    if (length(h)==40 && h ~ /^[0-9a-f]+$/) print h }' "$WT2/.be")
+[ "$WT2_HEAD" = "$WT_HEAD" ] \
+    || fail "store-direct wt at wrong tip ($WT2_HEAD, want $WT_HEAD)"
+note "store-direct worktree at trunk tip $WT2_HEAD"
+
 echo "=== worktree OK ==="

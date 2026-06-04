@@ -347,10 +347,24 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     if (u == NULL || !u8csEmpty(u->authority)) done;
     if (u8csEmpty(u->path)) done;
 
-    // Primary candidate has to be an existing dir containing .be/.
+    // Source candidate: either an existing dir containing `.be/` (a
+    // worktree, primary-wt layout) or the `.be` store dir itself (a
+    // bare store with no default worktree — point `file:` straight at
+    // `<store>/.be`).  `path_is_store` selects the branch below.
     a_dup(u8c, prim_s, u->path);
+    a_path(prim_path, prim_s);
     a_path(prim_be, prim_s, DOG_BE_S);
-    if (FILEisdir($path(prim_be)) != OK) done;
+    b8 path_is_store = NO;
+    if (FILEisdir($path(prim_be)) != OK) {
+        //  Not `<wt>/.be` — accept `u->path` when it IS the `.be`
+        //  store dir (basename `.be`, an existing dir).
+        u8cs base = {};
+        PATHu8sBase(base, prim_s);
+        if (FILEisdir($path(prim_path)) == OK && u8csEq(base, DOG_BE_S))
+            path_is_store = YES;
+        else
+            done;
+    }
 
     // Skip if cwd already has a .be (dir, symlink, or wtlog file).
     a_path(cwd);
@@ -361,7 +375,22 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     call(PATHu8bPush, cwd_be, DOG_BE_S);
     {
         filestat fs = {};
-        if (FILELStat(&fs, $path(cwd_be)) == OK) done;
+        if (FILELStat(&fs, $path(cwd_be)) == OK) {
+            //  cwd is already a worktree.  For the store-direct form,
+            //  rewrite the `file:<store>?<ref>` URI to its bare branch
+            //  ref so a re-run is a clean local switch — otherwise the
+            //  unresolvable `file:<store>` falls through to keeper get
+            //  (KEEPNONE).  The worktree-layout source keeps its prior
+            //  no-op behavior.
+            if (path_is_store && !u8csEmpty(u->query)) {
+                u8bReset(wt_uri_buf);
+                call(u8bFeed1, wt_uri_buf, '?');
+                call(u8bFeed,  wt_uri_buf, u->query);
+                zerop(u);
+                u8csMv(u->data, u8bDataC(wt_uri_buf));
+            }
+            done;
+        }
     }
 
     // Worktree layout: secondary wt has `<wt>/.be` as a REGULAR FILE
@@ -376,36 +405,48 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     // the primary is still on the legacy elided layout — fall back
     // to bare `<prim>/.be/`.
     a_path(prim_proj);
-    {
-        a_cstr(wtlog_s, DOG_WTLOG_NAME);
-        a_path(prim_wtlog, prim_s);
-        call(PATHu8bPush, prim_wtlog, DOG_BE_S);
-        call(PATHu8bPush, prim_wtlog, wtlog_s);
-        //  Drain row 0 via the ULOG API instead of hand-walking tabs.
-        u8bp mapped = NULL;
-        if (FILEMapRO(&mapped, $path(prim_wtlog)) == OK) {
-            a_dup(u8c, scan, u8bDataC(mapped));
-            ulogrec row0 = {};
-            if (ULOGu8sDrain(scan, &row0) == OK
-                && !u8csEmpty(row0.uri.path))
-                DOGProjectFromBe(row0.uri.path, prim_proj);
-            FILEUnMap(mapped);
-        }
-    }
-
-    //  Resolve the primary's current tip + branch up front: SNIFFAtTailOf
-    //  yields `<prim_root>?/<title>/<branch>#<sha>`.  We carry (title,
-    //  branch, hash) into the secondary's row-0 anchor (sha-bearing shape,
-    //  DIS-001) AND reuse the tip to pin the downstream checkout.  NODATA
-    //  (primary never posted) is fine — write a tip-less anchor and let
-    //  sniff resolve from the primary's keeper.
-    a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
-    a_dup(u8c, prim_root, prim_s);
-    mute(SNIFFAtTailOf(prim_root, prim_at), NODATA);
     uri prim_uri = {};
-    if (u8bDataLen(prim_at) > 0) {
-        u8csMv(prim_uri.data, u8bDataC(prim_at));
-        call(URILexer, &prim_uri);
+    //  Backs prim_uri.{data,query} — must outlive the title/branch
+    //  derivation below, so it lives at function scope.
+    a_pad(u8, prim_at, FILE_PATH_MAX_LEN + 128);
+    if (path_is_store) {
+        //  Bare store, no default worktree: there is no primary tip to
+        //  read.  Take the project/branch straight from the request
+        //  query (`?/<title>/<branch>`) and leave the tip unresolved —
+        //  the downstream sniff get resolves the branch tip from the
+        //  shared store's refs.
+        u8csMv(prim_uri.query, u->query);
+    } else {
+        {
+            a_cstr(wtlog_s, DOG_WTLOG_NAME);
+            a_path(prim_wtlog, prim_s);
+            call(PATHu8bPush, prim_wtlog, DOG_BE_S);
+            call(PATHu8bPush, prim_wtlog, wtlog_s);
+            //  Drain row 0 via the ULOG API instead of hand-walking tabs.
+            u8bp mapped = NULL;
+            if (FILEMapRO(&mapped, $path(prim_wtlog)) == OK) {
+                a_dup(u8c, scan, u8bDataC(mapped));
+                ulogrec row0 = {};
+                if (ULOGu8sDrain(scan, &row0) == OK
+                    && !u8csEmpty(row0.uri.path))
+                    DOGProjectFromBe(row0.uri.path, prim_proj);
+                FILEUnMap(mapped);
+            }
+        }
+
+        //  Resolve the primary's current tip + branch up front:
+        //  SNIFFAtTailOf yields `<prim_root>?/<title>/<branch>#<sha>`.
+        //  We carry (title, branch, hash) into the secondary's row-0
+        //  anchor (sha-bearing shape, DIS-001) AND reuse the tip to pin
+        //  the downstream checkout.  NODATA (primary never posted) is
+        //  fine — write a tip-less anchor and let sniff resolve from the
+        //  primary's keeper.
+        a_dup(u8c, prim_root, prim_s);
+        mute(SNIFFAtTailOf(prim_root, prim_at), NODATA);
+        if (u8bDataLen(prim_at) > 0) {
+            u8csMv(prim_uri.data, u8bDataC(prim_at));
+            call(URILexer, &prim_uri);
+        }
     }
 
     //  Title: prefer the resolved query's project segment, else the
@@ -441,7 +482,9 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     //  sniff's job — same helper the primary-wt layout uses.
     {
         a_path(repo_path, prim_s);
-        call(PATHu8bPush, repo_path, DOG_BE_S);
+        //  `prim_s` is the store `.be/` itself when path_is_store; only
+        //  the worktree layout needs the `.be` segment appended.
+        if (!path_is_store) call(PATHu8bPush, repo_path, DOG_BE_S);
         call(u8bFeed1, repo_path, '/');
         a_dup(u8c, tt, u8bDataC(title_buf));
         a_dup(u8c, bb, u8bDataC(branch_buf));
@@ -455,8 +498,20 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     //  Pin the downstream checkout to the resolved tip.  Row 0 now also
     //  carries the tip, but sniff's checkout still reads `u`; rewrite to
     //  `?<hashlet>` (data slot — `BEBuildArgv` reads only `u->data`).
-    //  No tip (primary never posted) → leave `u` alone.
-    if (u8csEmpty(hash)) done;
+    if (u8csEmpty(hash)) {
+        //  No tip resolved up front.  For the worktree layout (primary
+        //  never posted) leave `u` as-is.  For the store-direct layout
+        //  the file: URI carries the branch ref in its query — rewrite
+        //  to the bare `?<query>` so the downstream sniff get switches
+        //  to that branch and resolves its tip from the shared store.
+        if (!path_is_store || u8csEmpty(u->query)) done;
+        u8bReset(wt_uri_buf);
+        call(u8bFeed1, wt_uri_buf, '?');
+        call(u8bFeed,  wt_uri_buf, u->query);
+        zerop(u);
+        u8csMv(u->data, u8bDataC(wt_uri_buf));
+        done;
+    }
     u8bReset(wt_uri_buf);
     call(u8bFeed1, wt_uri_buf, '?');
     call(u8bFeed,  wt_uri_buf, hash);
