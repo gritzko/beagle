@@ -250,10 +250,13 @@ ok64 BEActSubsHead (cli *c) {
 //  fill in during their respective migration stages.
 
 be_action const BE_PLAN_HEAD[] = {
-    //  Authority-bearing URI (transport or cached) → refresh remote
-    //  refs via keeper, then re-walk into spot/graf indexes.
-    //  Authority-free URI → local graf head (ahead/behind diff).
-    //  Submodule recursion runs after the local body.
+    //  Transport URI (scheme + authority) → fetch remote refs via
+    //  keeper, then re-walk into spot/graf indexes.  Per [URI]/[HEAD]
+    //  the SCHEME alone flips cached vs wire: `//origin` (authority,
+    //  NO scheme) reads the cache, `ssh://origin` opens the wire.  So
+    //  the keeper/reindex wire arms require URI_SCHEME|URI_AUTHORITY,
+    //  mirroring BE_PLAN_GET's network gate (DIS-016); gating on
+    //  authority alone fetched a cached `//origin` over the wire.
     //  A bare SCHEME-ONLY transport URI (`ssh:` / `file:` — scheme but
     //  no authority AND no path, GET-002 part 2) routes to keeper too:
     //  it completes from the recentmost same-scheme get/post row.
@@ -261,15 +264,17 @@ be_action const BE_PLAN_HEAD[] = {
     //  a URI_SCHEME bit here is always a transport scheme.  Excluding
     //  URI_PATH keeps a path-bearing local form (`file:<store>/.be/...`
     //  sibling-worktree wiring) on its own checkout pipeline.  GrafHead
-    //  excludes the bare scheme so the scheme-only fetch does not also
-    //  run the local ahead/behind diff.
-    { URI_AUTHORITY, 0,                       NO,  BEActKeeperGet },
+    //  is the cached cur-vs-remote diff: it excludes only URI_SCHEME, so
+    //  authority-WITHOUT-scheme (`//origin`) reads the cache here with
+    //  no network, while a transport scheme suppresses the local diff
+    //  in favour of the fetch arms above.
+    { URI_SCHEME|URI_AUTHORITY, 0,            NO,  BEActKeeperGet },
     { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  NO,  BEActKeeperGet },
-    { URI_AUTHORITY, 0,                       YES, BEActSpotGet   },
+    { URI_SCHEME|URI_AUTHORITY, 0,            YES, BEActSpotGet   },
     { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActSpotGet   },
-    { URI_AUTHORITY, 0,                       YES, BEActGrafGet   },
+    { URI_SCHEME|URI_AUTHORITY, 0,            YES, BEActGrafGet   },
     { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActGrafGet   },
-    { 0,             URI_AUTHORITY|URI_SCHEME, NO, BEActGrafHead  },
+    { 0,             URI_SCHEME,              NO,  BEActGrafHead  },
     { 0,             0,                       NO,  BEActSubsHead  },
     BE_ACTION_END,
 };
