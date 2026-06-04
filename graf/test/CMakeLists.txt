@@ -73,6 +73,14 @@ add_test(NAME GRAFget
 set_tests_properties(GRAFget PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFget")
 
+#  blame-perf.sh — BLAME-001 guard: blob inflated ~per-change, not
+#  ~per-ancestor (asserts GRAF_BLAME_STATS blobfetch is bounded).
+add_test(NAME GRAFblameperf
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/blame-perf.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(GRAFblameperf PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameperf")
+
 if (WITH_SSH)
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh

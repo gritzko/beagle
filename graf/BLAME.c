@@ -14,6 +14,7 @@
 #include "WEAVE.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -197,6 +198,87 @@ static b8 blame_base_pred(u32 seq, void *vctx) {
     return NO;
 }
 
+#define BLAME_MAX_PATH_LEV 64   // path-depth cap for the OID early-stop
+
+//  Top-down path descent result.
+enum { BLAME_DESC_CHANGED = 0, BLAME_DESC_SAME, BLAME_DESC_ABSENT };
+
+//  Resolve `filepath`'s blob OID at the tree `root_h` by reading each
+//  path component's git OID out of its PARENT tree — no blob inflate.
+//  Each component hashlet is compared to `prev[]` (the last folded
+//  version's chain, used iff `have_prev`); the descent STOPS at the
+//  first component equal to prev — the subtree, hence the file, is
+//  unchanged ⇒ BLAME_DESC_SAME — unless `full` (an anchor, which must
+//  fold regardless and so descends to the leaf).  Fills `cur[]`
+//  (cur[0]=root_h, then one hashlet per consumed segment) and `*cur_n`;
+//  on CHANGED sets `*out_leaf` to the leaf blob sha.  `*infl` counts
+//  tree inflates for GRAF_BLAME_STATS.  The commit object is never
+//  inflated — the root tree comes from the index (`tree_hs`).
+static int blame_descend_leaf(sha1 *out_leaf, u64 root_h, u8cs filepath,
+                              u64 const *prev, u32 prev_n, b8 have_prev,
+                              u64 *cur, u32 *cur_n, b8 full, u32 *infl) {
+    Bu8 *tb = &GRAF.tree_buf;
+    cur[0] = root_h;
+    u32 lvl = 0;
+
+    u8 otype = 0;
+    u8bReset(*tb);
+    (*infl)++;
+    if (KEEPGet(root_h, DAG_H60_HEXLEN, *tb, &otype) != OK ||
+        otype != DOG_OBJ_TREE)
+        return BLAME_DESC_ABSENT;
+
+    a_dup(u8c, rest, filepath);
+    while (!u8csEmpty(rest)) {
+        u8c const *start = rest[0];
+        a_dup(u8c, scan, rest);
+        (void)u8csFind(scan, '/');
+        u8cs name = {start, scan[0]};
+        rest[0] = scan[0];
+        if (!u8csEmpty(rest)) u8csUsed1(rest);   // step past '/'
+        if (u8csEmpty(name)) continue;
+
+        //  Find `name` in the current tree body → child sha.
+        sha1 child = {};
+        b8 found = NO;
+        a_dup(u8c, body, u8bDataC(*tb));
+        u8cs field = {}, esha = {};
+        while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
+            u8cs ename = {};
+            if (GITu8sFileSplit(field, NULL, ename) != OK) continue;
+            if (!u8csEq(ename, name)) continue;
+            (void)sha1Drain(esha, &child);
+            found = YES;
+            break;
+        }
+        if (!found) return BLAME_DESC_ABSENT;
+
+        if (lvl + 1 >= BLAME_MAX_PATH_LEV) return BLAME_DESC_ABSENT;
+        u64 child_h = WHIFFHashlet60(&child);
+        lvl++;
+        cur[lvl] = child_h;
+
+        //  Early-stop: identical component ⇒ file unchanged below it.
+        if (!full && have_prev && lvl <= prev_n && child_h == prev[lvl]) {
+            *cur_n = lvl;
+            return BLAME_DESC_SAME;
+        }
+
+        if (u8csEmpty(rest)) {            // leaf reached, OID differs
+            *out_leaf = child;
+            *cur_n = lvl;
+            return BLAME_DESC_CHANGED;
+        }
+
+        //  Descend into the subtree.
+        u8bReset(*tb);
+        (*infl)++;
+        if (KEEPGetExact(&child, *tb, &otype) != OK || otype != DOG_OBJ_TREE)
+            return BLAME_DESC_ABSENT;
+    }
+    return BLAME_DESC_ABSENT;             // empty path
+}
+
 ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                    weave **out_final,
                    keeper *k, u8cs filepath, u64 tip_h,
@@ -341,6 +423,9 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     ok64 ret = OK;
     b8 have_prev = NO;
     u64 prev_root_h = 0;   // root-tree hashlet of the last folded layer
+    u64 prev_oids[BLAME_MAX_PATH_LEV] = {};   // path-OID chain of last fold
+    u32 prev_n = 0;
+    u32 dbg_blobfetch = 0, dbg_fold = 0, dbg_treeinfl = 0;  // GRAF_BLAME_STATS
     for (u32 i = 0; i < nord; i++) {
         u64 commit_h = ordered[i];
 
@@ -360,16 +445,38 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             tree_hs && tree_hs[i] != 0 && tree_hs[i] == prev_root_h)
             continue;
 
-        u8bReset(*cur_blob);
-        ok64 fo = GRAFBlobAtCommit(*cur_blob, commit_h, filepath);
-        if (fo != OK) continue;
-
-        // Byte-level dedup safety net for non-anchors when the index
-        // side didn't help (different root tree, identical leaf bytes).
-        if (have_prev && !is_anchor) {
-            a_dup(u8c, cur_data,  u8bDataC(*cur_blob));
-            a_dup(u8c, prev_data, u8bDataC(*prev_blobp));
-            if (u8csEq(cur_data, prev_data)) continue;
+        //  Resolve the file's blob OID top-down, stopping at the first
+        //  unchanged subtree (no blob inflate); fetch the blob content
+        //  only when it actually changed (or at an anchor).  `tree_hs[i]`
+        //  is the commit's root tree from the index — no commit inflate.
+        //  Every ancestor commit carries a (COMMIT,TREE) edge, so
+        //  tree_hs[i] != 0 here; the fallback covers a missing array.
+        u64 cur_oids[BLAME_MAX_PATH_LEV];
+        u32 cur_n = 0;
+        if (tree_hs && tree_hs[i] != 0) {
+            sha1 leaf = {};
+            int dr = blame_descend_leaf(&leaf, tree_hs[i], filepath,
+                                        prev_oids, prev_n, have_prev,
+                                        cur_oids, &cur_n, is_anchor,
+                                        &dbg_treeinfl);
+            if (dr == BLAME_DESC_ABSENT) continue;
+            if (dr == BLAME_DESC_SAME)   continue;   // unchanged (anchors never SAME)
+            u8bReset(*cur_blob);
+            u8 bt = 0;
+            if (KEEPGetExact(&leaf, *cur_blob, &bt) != OK || bt != DOG_OBJ_BLOB)
+                continue;
+            dbg_blobfetch++;
+        } else {
+            //  Fallback: no index tree info — old commit-based fetch +
+            //  byte-dedup (correct, just not faster).
+            u8bReset(*cur_blob);
+            if (GRAFBlobAtCommit(*cur_blob, commit_h, filepath) != OK) continue;
+            dbg_blobfetch++;
+            if (have_prev && !is_anchor) {
+                a_dup(u8c, cur_data,  u8bDataC(*cur_blob));
+                a_dup(u8c, prev_data, u8bDataC(*prev_blobp));
+                if (u8csEq(cur_data, prev_data)) continue;
+            }
         }
 
         u32 sc = (u32)commit_h;
@@ -391,13 +498,27 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             ret = WEAVEDiff(wdst, wsrc, wnu, sc);
         }
         if (ret != OK) break;
+        dbg_fold++;
         weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
 
         // Swap blob buffers (prev kept for next iter's byte-dedup).
         Bu8 *tmp = cur_blob; cur_blob = prev_blobp; prev_blobp = tmp;
         have_prev = YES;
         if (tree_hs) prev_root_h = tree_hs[i];
+        //  Remember this folded version's path-OID chain for the next
+        //  commit's early-stop comparison.
+        if (cur_n > 0 && cur_n < BLAME_MAX_PATH_LEV) {
+            for (u32 q = 0; q <= cur_n; q++) prev_oids[q] = cur_oids[q];
+            prev_n = cur_n;
+        }
     }
+
+    //  Opt-in perf counters (GRAF_BLAME_STATS): folds = layers actually
+    //  woven; blobfetch = file-content inflates.  The fix's win shows as
+    //  blobfetch dropping from ~nord to ~folds.  Off by default.
+    if (getenv("GRAF_BLAME_STATS"))
+        fprintf(stderr, "BLAMESTATS nord=%u folds=%u blobfetch=%u treeinfl=%u\n",
+                nord, dbg_fold, dbg_blobfetch, dbg_treeinfl);
 
     //  --- Worktree shadow version ---
     //  When wt_src != 0, read the on-disk file at reporoot/filepath
