@@ -81,6 +81,46 @@ static ok64 stage_git_commit(char const *gitdir, char const *content,
     done;
 }
 
+//  Extend an existing git repo at gitdir with a second commit c2 on
+//  top of c1 (shared history).  Writes c2's 40-hex into out_hex_41 and
+//  a pack covering the FULL history (c1+c2) into pack_path.
+static ok64 stage_git_commit2(char const *gitdir, char const *content,
+                              char *out_hex_41, char *pack_path,
+                              size_t pcap) {
+    sane(gitdir && content && out_hex_41 && pack_path);
+    char cmd[2048];
+    int rc;
+
+    snprintf(cmd, sizeof(cmd),
+             GIT_UNSET
+             "cd %s && "
+             "printf '%s' > b.txt && "
+             "git add b.txt && git commit -q -m c2",
+             gitdir, content);
+    rc = system(cmd);
+    if (rc != 0) return FAIL;
+
+    snprintf(cmd, sizeof(cmd),
+             GIT_UNSET
+             "cd %s && git rev-parse HEAD",
+             gitdir);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return FAIL;
+    if (fread(out_hex_41, 1, 40, fp) != 40) { pclose(fp); return FAIL; }
+    out_hex_41[40] = 0;
+    pclose(fp);
+
+    snprintf(pack_path, pcap, "%s/objects2.pack", gitdir);
+    snprintf(cmd, sizeof(cmd),
+             GIT_UNSET
+             "cd %s && git rev-list --objects HEAD | "
+             "git pack-objects --stdout > %s",
+             gitdir, pack_path);
+    rc = system(cmd);
+    if (rc != 0) return FAIL;
+    done;
+}
+
 //  Slurp a file into buf (caller-allocated).  Updates *out_len.
 static ok64 slurp_file(char const *path, u8 *buf, size_t cap, size_t *out_len) {
     sane(path && buf && out_len);
@@ -443,6 +483,118 @@ ok64 WIRECLIENTtest_fetch_by_pin() {
     done;
 }
 
+// ---- Test 5: title clash — disjoint history is refused ----------------
+//
+//  DIS-012: a shard already holds project `t` (history A).  A `be get`
+//  of an UNRELATED repo (history B, no common ancestor) forcing the
+//  same title must REFUSE with TITLECLSH — never co-mingle B's commit
+//  into A's referenced history.  Pre-fix this case mis-passes: the
+//  unrelated tip is silently recorded as the trunk.
+ok64 WIRECLIENTtest_title_clash() {
+    sane(1);
+    call(FILEInit);
+
+    char gitA[]      = "/tmp/wcli-clash-A-XXXXXX";
+    want(mkdtemp(gitA) != NULL);
+    char gitB[]      = "/tmp/wcli-clash-B-XXXXXX";
+    want(mkdtemp(gitB) != NULL);
+    char serverB[]   = "/tmp/wcli-clash-srvB-XXXXXX";
+    want(mkdtemp(serverB) != NULL);
+    char clientdir[] = "/tmp/wcli-clash-cli-XXXXXX";
+    want(mkdtemp(clientdir) != NULL);
+
+    //  Repo A → client shard trunk (the established project `t`).
+    char hexA[41], packA[1024];
+    call(stage_git_commit, gitA, "alpha\\n", hexA, packA, sizeof(packA));
+    call(stage_local_keeper, clientdir, packA, "", hexA);
+
+    //  Unrelated repo B → its own server shard, trunk.
+    char hexB[41], packB[1024];
+    call(stage_git_commit, gitB, "bravo\\n", hexB, packB, sizeof(packB));
+    call(stage_local_keeper, serverB, packB, "", hexB);
+
+    //  Fetch B into the client shard that already holds A.  Disjoint
+    //  histories under one title ⇒ TITLECLSH.
+    {
+        a_cstr(client_root_s, clientdir);
+        home h = {};
+        call(HOMEOpenAt, &h, client_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, serverB);
+        u8csc want_cs = {NULL, NULL};
+        ok64 fo = WIREFetch(uri, want_cs);
+        want(fo == TITLECLSH);
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    //  The client trunk must still point at A — B never co-mingled.
+    char got[41];
+    want(lookup_local_ref(clientdir, "", got));
+    want(memcmp(got, hexA, 40) == 0);
+
+    tmp_rm(gitA);
+    tmp_rm(gitB);
+    tmp_rm(serverB);
+    tmp_rm(clientdir);
+    done;
+}
+
+// ---- Test 6: same title, shared history still converges ---------------
+//
+//  DIS-012 negative case: the SAME title with a COMMON ancestor is the
+//  normal mirror/converge path — one shard.  A shard holding A(c1)
+//  fetching A's descendant (c1→c2) must advance, not refuse.
+ok64 WIRECLIENTtest_title_converge() {
+    sane(1);
+    call(FILEInit);
+
+    char gitdir[]    = "/tmp/wcli-conv-git-XXXXXX";
+    want(mkdtemp(gitdir) != NULL);
+    char serverdir[] = "/tmp/wcli-conv-srv-XXXXXX";
+    want(mkdtemp(serverdir) != NULL);
+    char clientdir[] = "/tmp/wcli-conv-cli-XXXXXX";
+    want(mkdtemp(clientdir) != NULL);
+
+    //  c1 → client shard trunk.
+    char hex1[41], pack1[1024];
+    call(stage_git_commit, gitdir, "alpha\\n", hex1, pack1, sizeof(pack1));
+    call(stage_local_keeper, clientdir, pack1, "", hex1);
+
+    //  c2 (descendant of c1) → server shard trunk; full history pack.
+    char hex2[41], pack2[1024];
+    call(stage_git_commit2, gitdir, "beta\\n", hex2, pack2, sizeof(pack2));
+    call(stage_local_keeper, serverdir, pack2, "", hex2);
+
+    //  Fetch the descendant into the shard holding the ancestor.
+    //  Shared history ⇒ converge (OK), trunk advances to c2.
+    {
+        a_cstr(client_root_s, clientdir);
+        home h = {};
+        call(HOMEOpenAt, &h, client_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, serverdir);
+        u8csc want_cs = {NULL, NULL};
+        ok64 fo = WIREFetch(uri, want_cs);
+        want(fo == OK);
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    char got[41];
+    want(lookup_local_ref(clientdir, "", got));
+    want(memcmp(got, hex2, 40) == 0);
+
+    tmp_rm(gitdir);
+    tmp_rm(serverdir);
+    tmp_rm(clientdir);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "WIRECLIENTtest_fetch_smoke...\n");
@@ -453,6 +605,10 @@ ok64 maintest() {
     call(WIRECLIENTtest_round_trip);
     fprintf(stderr, "WIRECLIENTtest_fetch_by_pin...\n");
     call(WIRECLIENTtest_fetch_by_pin);
+    fprintf(stderr, "WIRECLIENTtest_title_clash...\n");
+    call(WIRECLIENTtest_title_clash);
+    fprintf(stderr, "WIRECLIENTtest_title_converge...\n");
+    call(WIRECLIENTtest_title_converge);
     fprintf(stderr, "all passed\n");
     done;
 }

@@ -118,6 +118,14 @@ ref-update line + pack, drains unpack/per-ref status.
                           from a zero-/wrong-refs shard, records it as
                           trunk.  Used by sniff sub-mount for the
                           gitlink pin (`test/WIRE_CLIENT.c` case 4).
+                          DIS-012 title-clash gate: after ingest, a
+                          branch fetch (not a by-hash pin) into a shard
+                          that already holds a local project tip refuses
+                          with `TITLECLSH` when the incoming tip shares
+                          no common ancestor with any existing tip
+                          (`KEEPSharesAncestor`); the orphaned objects
+                          stay unreferenced.  Shared history converges
+                          (`test/WIRE_CLIENT.c` cases 5/6).
   - `WIREFetchAll`       client: single upload-pack session, multi-want
                           for every advertised heads/tags ref.  Backs
                           `be head ssh://origin?*` (VERBS.md §HEAD).
@@ -127,6 +135,10 @@ ref-update line + pack, drains unpack/per-ref status.
                           drain status
   - `WIREFAIL` / `WIREBADREQ` / `WIRENOWANT` / `WIRENOSHA`
   - `WIRECLIFAIL` / `WIRECLINOREF`
+  - `TITLECLSH`          title clash: same-title clone with disjoint
+                          history ([Title] §"Same title, different
+                          history is an error"); resolve via
+                          `be get <uri>?/<title>` override
 
 ### RECV.h — receive-pack server (WIRE.md Phase 6)
 

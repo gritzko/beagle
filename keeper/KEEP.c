@@ -994,6 +994,118 @@ b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
     return found;
 }
 
+// --- KEEPSharesAncestor: do two commits belong to one history? --------
+//
+//  DIS-012 / [Title] §"Same title, different history is an error".
+//  Collect `a`'s parent/foster closure (a included) into a set, then
+//  BFS `b`'s closure looking for ANY member — a common ancestor.  NO
+//  only for fully disjoint roots (the title clash).  Mirrors the
+//  parent+foster traversal of keep_is_ancestor_inner; capped at
+//  KEEP_FF_MAX per side.  On cap-overflow or a keeper miss the worker
+//  sets `*out_shared = YES` (fail-open — never refuse a legitimate but
+//  oversized/partial history), so a returned NO is a confident clash.
+static ok64 keep_shares_ancestor_inner(sha1cp a, sha1cp b,
+                                        b8 *out_shared) {
+    sane(a && b && out_shared);
+    *out_shared = NO;
+
+    a_carve(sha1, aset_b,  KEEP_FF_MAX);
+    sha1 *aset  = sha1bDataHead(aset_b);
+    a_carve(sha1, aq_b,    KEEP_FF_MAX);
+    sha1 *aq    = sha1bDataHead(aq_b);
+    a_carve(sha1, bseen_b, KEEP_FF_MAX);
+    sha1 *bseen = sha1bDataHead(bseen_b);
+    a_carve(sha1, bq_b,    KEEP_FF_MAX);
+    sha1 *bq    = sha1bDataHead(bq_b);
+    a_carve(u8, cbuf, 1UL << 20);
+
+    //  Helper: drain a commit's parent+foster shas, invoking `visit`
+    //  on each; visit returns whether to keep going (always YES here).
+    //  We inline two near-identical BFS loops to keep buffers distinct.
+
+    //  Phase 1 — build `a`'s ancestor set (a included).
+    u32 naset = 0, ahead = 0, atail = 0;
+    aq[atail++] = *a;
+    aset[naset++] = *a;
+    while (ahead < atail) {
+        sha1 cur = aq[ahead++];
+        u8bReset(cbuf);
+        u8 ctype = 0;
+        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) { *out_shared = YES; done; }
+        if (ctype != KEEP_OBJ_COMMIT) continue;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            if (!u8csEq(field, GIT_FIELD_PARENT) &&
+                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
+            if ($len(value) < 40) continue;
+            sha1 par = {};
+            u8s bin = {par.data, par.data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            a_dup(u8c, hx_dup, hx);
+            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
+            if (bin[0] != par.data + 20) continue;
+            b8 dup = NO;
+            for (u32 i = 0; i < naset; i++)
+                if (sha1Eq(&aset[i], &par)) { dup = YES; break; }
+            if (dup) continue;
+            if (atail >= KEEP_FF_MAX || naset >= KEEP_FF_MAX) {
+                *out_shared = YES; done;       //  fail-open on overflow
+            }
+            aq[atail++] = par;
+            aset[naset++] = par;
+        }
+    }
+
+    //  Phase 2 — BFS `b`'s closure; any hit in `aset` is a shared root.
+    u32 nbseen = 0, bhead = 0, btail = 0;
+    bq[btail++] = *b;
+    bseen[nbseen++] = *b;
+    while (bhead < btail) {
+        sha1 cur = bq[bhead++];
+        for (u32 i = 0; i < naset; i++)
+            if (sha1Eq(&aset[i], &cur)) { *out_shared = YES; done; }
+        u8bReset(cbuf);
+        u8 ctype = 0;
+        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) { *out_shared = YES; done; }
+        if (ctype != KEEP_OBJ_COMMIT) continue;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        u8cs field = {}, value = {};
+        while (GITu8sDrainCommit(body, field, value) == OK) {
+            if ($empty(field)) break;
+            if (!u8csEq(field, GIT_FIELD_PARENT) &&
+                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
+            if ($len(value) < 40) continue;
+            sha1 par = {};
+            u8s bin = {par.data, par.data + 20};
+            u8cs hx = {value[0], value[0] + 40};
+            a_dup(u8c, hx_dup, hx);
+            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
+            if (bin[0] != par.data + 20) continue;
+            b8 dup = NO;
+            for (u32 i = 0; i < nbseen; i++)
+                if (sha1Eq(&bseen[i], &par)) { dup = YES; break; }
+            if (dup) continue;
+            if (btail >= KEEP_FF_MAX || nbseen >= KEEP_FF_MAX) {
+                *out_shared = YES; done;       //  fail-open on overflow
+            }
+            bq[btail++] = par;
+            bseen[nbseen++] = par;
+        }
+    }
+    done;
+}
+
+b8 KEEPSharesAncestor(sha1cp a, sha1cp b) {
+    if (!a || !b) return YES;          //  unknown ⇒ don't refuse
+    if (sha1Eq(a, b)) return YES;
+    sane(1);
+    b8 shared = NO;
+    try(keep_shares_ancestor_inner, a, b, &shared);
+    return shared;
+}
+
 // --- Verify: get object, check SHA-1, recurse into tree/commit ---
 
 #include "dog/git/GIT.h"

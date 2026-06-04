@@ -125,6 +125,13 @@ ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv);
 con ok64 WIRECLFL  = 0x8126ce3153d5;
 con ok64 WIRECLNRF = 0x2049b38c5576cf;
 con ok64 WIRECLNFF = 0x2049b38c5573cf;
+//  DIS-012 / [Title] §"Same title, different history is an error":
+//  a fetch into a shard whose existing referenced tips share NO common
+//  ancestor with the incoming tip is a title clash — refuse instead of
+//  co-mingling two unrelated histories into one object pool.  The user
+//  resolves it by overriding one title (`be get …?/<title>`) to give
+//  the unrelated repo its own shard.
+con ok64 TITLECLSH = 0x1d49d54e315711;
 
 //  Build the repo-path argv element a keeper peer receives: `path`
 //  followed by an absolute `?/<project>` selector when `query` carries

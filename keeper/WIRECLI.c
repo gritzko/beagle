@@ -554,6 +554,53 @@ static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
     return c.n;
 }
 
+//  DIS-012 title-clash gate.  Collect only this shard's LOCAL project
+//  tips — rows whose key begins with `?` (`?`, `?heads/main`, …), NOT
+//  peer-observed `<host>?<branch>` rows.  A local tip is the project's
+//  own referenced history; an incoming clone must share an ancestor
+//  with at least one of them, else the two histories are disjoint.
+static ok64 wcli_local_tips_cb(refcp r, void *vctx) {
+    sane(r && vctx);
+    wcli_haves_ctx *c = (wcli_haves_ctx *)vctx;
+    if (c->n >= c->cap) return REFSSTOP;
+    //  Local key ⇒ first byte is '?' (no scheme/authority prefix).
+    if (u8csEmpty(r->key) || r->key[0][0] != '?') done;
+    sha1 sh = {};
+    if (!wcli_haves_decode_val(&sh, r->val)) done;
+    if (sha1empty(&sh)) done;
+    for (u32 i = 0; i < c->n; i++)
+        if (sha1Eq(&c->out[i], &sh)) done;            // dedup
+    c->out[c->n++] = sh;
+    done;
+}
+
+static u32 wcli_collect_local_tips(keeper *k, sha1 *out, u32 cap) {
+    if (!k) return 0;
+    a_path(keepdir);
+    (void)HOMEBranchDir(k->h, keepdir, NULL);
+    wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
+    (void)REFSEach($path(keepdir), wcli_local_tips_cb, &c);
+    return c.n;
+}
+
+//  Refuse a disjoint-history clone into an existing shard ([Title]
+//  §"Same title, different history is an error").  Returns TITLECLSH
+//  when the shard already holds at least one local project tip and the
+//  freshly-ingested `incoming` tip shares NO common ancestor with ANY
+//  of them; OK otherwise (fresh shard, or shared history converges).
+//  Both `incoming` and the existing tips are present post-ingest, so
+//  KEEPSharesAncestor can walk both closures.
+static ok64 wcli_title_clash_check(keeper *k, sha1cp incoming) {
+    sane(k && incoming);
+    sha1 tips[WIRE_MAX_HAVES] = {};
+    u32  ntips = wcli_collect_local_tips(k, tips, WIRE_MAX_HAVES);
+    if (ntips == 0) return OK;                  //  fresh shard: no clash
+    for (u32 i = 0; i < ntips; i++) {
+        if (KEEPSharesAncestor(&tips[i], incoming)) return OK;
+    }
+    return TITLECLSH;
+}
+
 //  Send the upload-pack request: want <sha> caps + flush + haves +
 //  flush + done.  No multi_ack — server replies with one NAK + pack.
 static ok64 wcli_send_request(int wfd, sha1cp want_sha,
@@ -891,6 +938,26 @@ static ok64 wire_fetch_inner(u8csc remote_uri, u8cs effective_ref,
     }
     close(*rfd); *rfd = -1;
 
+    //  5.  DIS-012 title-clash gate ([Title] §"Same title, different
+    //  history is an error").  A by-hash pin fetch is exempt: it is a
+    //  submodule gitlink pull whose history legitimately differs from
+    //  the parent shard, and a fresh sub-shard has no local tips
+    //  anyway.  For a branch fetch, refuse before recording the ref if
+    //  the incoming tip shares no ancestor with any existing local
+    //  tip — the orphaned objects stay unreferenced (never co-mingled
+    //  into the project's reachable history) and the trunk is untouched.
+    if (!want_pin) {
+        ok64 co = wcli_title_clash_check(k, &want_sha);
+        if (co != OK) {
+            fprintf(stderr,
+                    "be: title clash — the incoming history shares no "
+                    "common ancestor with this project's shard.  "
+                    "Override the title to give it a distinct shard: "
+                    "`be get <uri>?/<title>`.\n");
+            fail(co);
+        }
+    }
+
     //  6.  Record the ref locally under the actually-matched name,
     //  attributed to the peer URI.
     {
@@ -931,7 +998,11 @@ ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
         int rc = 0;
         FILEReap(pid, &rc);
     }
-    return rv == OK ? OK : WIRECLFL;
+    //  Preserve TITLECLSH so callers (and tests) see the clash refusal
+    //  distinctly; every other failure collapses to WIRECLFL.
+    if (rv == OK) return OK;
+    if (rv == TITLECLSH) return TITLECLSH;
+    return WIRECLFL;
 }
 
 // --- WIREPush ----------------------------------------------------------

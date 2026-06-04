@@ -328,6 +328,16 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type);
 //  live-advert FF check.
 b8 KEEPIsAncestor(sha1cp from, sha1cp target);
 
+//  Shared-ancestor predicate (DIS-012 title-clash gate): YES iff `a`
+//  and `b` belong to ONE history — they are equal, one is an ancestor
+//  of the other, or their parent/foster closures intersect (a common
+//  ancestor / merge base exists).  NO only when the two histories are
+//  fully DISJOINT (no shared root commit).  Both commits must already
+//  be present in the shard.  Bounded by KEEP_FF_MAX on each side; on
+//  cap-exceeded or any keeper miss it errs toward YES (do not refuse a
+//  legitimate large/partial history), so a NO is a confident clash.
+b8 KEEPSharesAncestor(sha1cp a, sha1cp b);
+
 //  Stream a side-band-64k upload-pack response from `rfd` directly
 //  into the keeper log: band-1 bytes go to disk via u8bFeed (no
 //  intermediate copy buffer), band-2 progress text streams live to
