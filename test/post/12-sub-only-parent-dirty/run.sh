@@ -21,10 +21,10 @@ rc=$?
 $(cat 01.get.got.err)"
 
 baseline_sub=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                            END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                            END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                vendor/sub/.be)
 baseline_outer=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                              END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                              END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                  .be/wtlog)
 [ "$baseline_sub" = "$PARENT_PINNED" ] \
     || fail "expected sub baseline=$PARENT_PINNED got $baseline_sub"
@@ -51,10 +51,10 @@ rc=$?
 $(cat 02.post.got.err)"
 
 sub_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 outer_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                           END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                           END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
               .be/wtlog)
 
 [ "$sub_after" = "$baseline_sub" ] \

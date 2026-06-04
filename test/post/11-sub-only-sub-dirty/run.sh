@@ -27,10 +27,10 @@ $(cat 01.get.got.err)"
 [ -f vendor/sub/core.c ] || fail "vendor/sub/core.c missing"
 
 baseline_sub=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                            END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                            END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                vendor/sub/.be)
 baseline_outer=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                              END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                              END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                  .be/wtlog)
 
 #  Outer is left clean.  Only the sub gets an edit.
@@ -46,10 +46,10 @@ rc=$?
 $(cat 02.post.got.err)"
 
 sub_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 outer_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                           END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                           END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
               .be/wtlog)
 
 [ "$sub_after" != "$baseline_sub" ] \

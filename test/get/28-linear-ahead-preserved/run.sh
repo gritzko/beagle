@@ -76,7 +76,7 @@ echo "version B (local only)" > hello.c
 
 # Capture local tip B's sha from the wtlog.
 TIP_B=$(awk -F'\t' '$2=="post" { last=$3 }
-                    END { h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
+                    END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' .be/wtlog)
 [ -n "$TIP_B" ] && [ "$TIP_B" != "$TIP_A" ] || {
     echo "FAIL: local TIP_B (= $TIP_B) didn't advance past TIP_A (= $TIP_A)" >&2
     exit 1
@@ -87,7 +87,7 @@ TIP_B=$(awk -F'\t' '$2=="post" { last=$3 }
 assert_b_preserved() {
     _shape=$1; _logbase=$2
     _cur=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                       END { h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
+                       END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' .be/wtlog)
     if [ "$_cur" = "$TIP_B" ]; then
         echo "  OK  $_shape: cur still pinned to TIP_B ($TIP_B)"
         return 0

@@ -24,10 +24,10 @@ $(cat 01.get.got.err)"
 
 # Snapshot tips.
 outer_pre=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             .be/wtlog)
 sub_pre=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                       END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                       END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
           vendor/sub/.be)
 outer_log_pre=$(wc -c < .be/wtlog)
 sub_log_pre=$(wc -c < vendor/sub/.be)
@@ -51,10 +51,10 @@ $(cat 02.post.got.err)"
 
 # Tips unchanged (no commits anywhere).
 outer_post=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                          END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                          END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
              .be/wtlog)
 sub_post=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                        END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                        END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
            vendor/sub/.be)
 [ "$outer_post" = "$outer_pre" ] || fail "outer tip moved during --dry-run ($outer_pre -> $outer_post)"
 [ "$sub_post"   = "$sub_pre"   ] || fail "sub tip moved during --dry-run ($sub_pre -> $sub_post)"

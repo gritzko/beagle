@@ -29,13 +29,13 @@ $(cat 01.get.got.err)"
 [ -f vendor/sub/vendor/leaf/leaf.txt ] || fail "vendor/sub/vendor/leaf/leaf.txt missing"
 
 base_outer=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                          END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                          END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
              .be/wtlog)
 base_sub=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                        END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                        END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
            vendor/sub/.be)
 base_leaf=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/vendor/leaf/.be)
 [ "$base_outer" = "$PARENT_TIP" ] || fail "outer baseline=$PARENT_TIP got $base_outer"
 [ "$base_sub"   = "$SUB_TIP"    ] || fail "sub baseline=$SUB_TIP got $base_sub"
@@ -60,13 +60,13 @@ rc=$?
 $(cat 02.post.got.err)"
 
 after_outer=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                            END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                            END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
               .be/wtlog)
 after_sub=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                          END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                          END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 after_leaf=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                          END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                          END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
              vendor/sub/vendor/leaf/.be)
 
 [ "$after_outer" != "$base_outer" ] || fail "outer tip stuck"

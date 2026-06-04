@@ -66,7 +66,7 @@ sleep 0.02
 ) || fail "sub-side post failed: $(cat $ETMP/03.subpost.err 2>/dev/null)"
 
 sub_tip_after_local_post=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                                        END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                                        END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                              vendor/sub/.be)
 
 #  PARENT must still be at its baseline tip — we only edited the sub.

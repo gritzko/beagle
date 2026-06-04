@@ -61,10 +61,10 @@ rc=$?
 $(cat 02.post.got.err)"
 
 sub_local=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 par_local=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             .be/wtlog)
 [ "$sub_local" != "$PARENT_PINNED" ] || fail "sub did not commit locally"
 [ "$par_local" != "$PARENT_TIP"    ] || fail "parent did not commit locally"

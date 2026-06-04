@@ -28,10 +28,10 @@ match_re "$CASE/02.miss.err.txt" 02.miss.got.err
 
 # HEAD must NOT mutate cur (no commit, no ref move).
 TIP_BEFORE=$(awk -F'\t' '$2=="post"{last=$3} END{
-    h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
+    h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' .be/wtlog)
 "$BE" head '#wonderful' >/dev/null 2>&1
 TIP_AFTER=$(awk -F'\t' '$2=="post"{last=$3} END{
-    h=last; sub(/^[^#]*#/, "", h); print h }' .be/wtlog)
+    h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' .be/wtlog)
 [ "$TIP_AFTER" = "$TIP_BEFORE" ] || {
     echo "head: cur tip changed after read-only HEAD" >&2
     exit 1

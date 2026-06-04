@@ -1827,6 +1827,142 @@ static void bepost_emit_outer(bepost_recurse_ctx *rc) {
     rc->outer_emitted = YES;
 }
 
+//  Compose the synthetic commit target for a beagle submodule POST
+//  (SUBS.plan.md §"detached-sub commit"; wiki design): a mounted sub
+//  is detached at the gitlink pin, so a parent-driven POST commits it
+//  onto a synthetic branch `?/<subproj>/.<parentproj>[/<parentbranch>]`
+//  in the SHARED store.  The branch is a real REFS tip → the new
+//  commit stays GC-reachable in the sub's self-contained shard, where
+//  a ref-less detached commit would be dropped at epoch recompaction.
+//
+//  THIS level's coordinate (parentproj, parentbranch) comes from the
+//  explicit branch-query URI the invocation carries (a parent's
+//  target, including a synthetic coord injected by an OUTER recursion
+//  — this is what makes the prefix nest `?/leaf/.sub/.proj/br`), else
+//  from the wt's own tail (a bare top-level post on an attached
+//  branch).  `subproj` is read from the sub mount's row-0 anchor.
+//  Returns NONE (→ caller skips injection, sub refuses if detached)
+//  when no real parent project resolves (e.g. detached top-level wt
+//  with no target).
+//  Read a worktree's project TITLE from its row-0 anchor, handling
+//  BOTH anchor encodings: project in the PATH (`file:<store>/.be/<proj>/`
+//  — primary / colocated wt) and project in the QUERY (`file:<store>/.be/
+//  ?/<proj>` — secondary-wt / submodule anchor, DIS-001).  SNIFFAtTailOf
+//  only surfaces the path form, so we read the anchor directly here.
+static ok64 bepost_wt_project(u8cs wt_root, u8bp out) {
+    sane($ok(wt_root) && out);
+    u8bReset(out);
+    a_path(be);
+    call(PATHu8bFeed, be, wt_root);
+    call(PATHu8bPush, be, DOG_BE_S);
+    a_path(anchor);
+    {
+        filestat fs = {};
+        if (FILELStat(&fs, $path(be)) != OK) return NONE;
+        a_dup(u8c, bes, u8bDataC(be));
+        call(PATHu8bFeed, anchor, bes);
+        if (fs.kind == FILE_KIND_DIR) {
+            a_cstr(wl, "wtlog");
+            call(PATHu8bPush, anchor, wl);
+        }
+    }
+    u8bp mapped = NULL;
+    if (FILEMapRO(&mapped, $path(anchor)) != OK) return NONE;
+    a_dup(u8c, scan, u8bDataC(mapped));
+    ulogrec row0 = {};
+    ok64 ret = NONE;
+    if (ULOGu8sDrain(scan, &row0) == OK) {
+        a_path(pp);
+        DOGProjectFromBe(row0.uri.path, pp);     //  path form
+        if (u8bDataLen(pp) > 0) {
+            a_dup(u8c, ppv, u8bDataC(pp));
+            u8bFeed(out, ppv); ret = OK;
+        } else {
+            u8cs qp = {};
+            DOGQueryProject(row0.uri.query, qp); //  query form
+            if (!u8csEmpty(qp)) { u8bFeed(out, qp); ret = OK; }
+        }
+    }
+    FILEUnMap(mapped);
+    return ret;
+}
+
+static ok64 bepost_synth_child_uri(cli *c, u8cs wt_root, u8cs subpath,
+                                   u8bp out) {
+    sane(c && $ok(wt_root) && $ok(subpath) && out);
+    u8bReset(out);
+
+    a_pad(u8, pproj_buf, 128);
+    a_pad(u8, pbr_buf,   256);
+    {
+        //  Prefer an explicit local branch-query URI on this invocation
+        //  (a parent's target, incl. an outer recursion's synthetic
+        //  coord — this is what nests the prefix).
+        u8cs lq = {};
+        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+            uri *u = uribAtP(c->uris, i);
+            if (u8csEmpty(u->scheme) && u8csEmpty(u->authority) &&
+                !u8csEmpty(u->query)) { u8csMv(lq, u->query); break; }
+        }
+        if (!u8csEmpty(lq)) {
+            u8cs qp = {};
+            DOGQueryProject(lq, qp);             //  absolute → project
+            if (!u8csEmpty(qp)) u8bFeed(pproj_buf, qp);
+            a_dup(u8c, lq2, lq);
+            DOGQueryStripProject(lq2);           //  → <branch> (relative: unchanged)
+            if (!u8csEmpty(lq2)) u8bFeed(pbr_buf, lq2);
+        } else {
+            //  Bare top-level post: branch from the wt's tail.
+            a_pad(u8, tail, FILE_PATH_MAX_LEN + 128);
+            if (SNIFFAtTailOf(wt_root, tail) == OK) {
+                uri tu = {};
+                u8csMv(tu.data, u8bDataC(tail));
+                if (URILexer(&tu) == OK) {
+                    a_dup(u8c, tq, tu.query);
+                    DOGQueryStripProject(tq);
+                    if (!u8csEmpty(tq)) u8bFeed(pbr_buf, tq);
+                }
+            }
+        }
+    }
+    //  Project fallback: this wt's own title (covers project-relative
+    //  targets `?feat` and path-encoded anchors alike).
+    if (u8bDataLen(pproj_buf) == 0) {
+        a_pad(u8, wp, 128);
+        if (bepost_wt_project(wt_root, wp) == OK && u8bDataLen(wp) > 0) {
+            a_dup(u8c, wpv, u8bDataC(wp));
+            u8bFeed(pproj_buf, wpv);
+        }
+    }
+    if (u8bDataLen(pproj_buf) == 0) return NONE;
+
+    //  subproj from the sub mount's row-0 anchor (path OR query form).
+    a_path(submount);
+    call(PATHu8bFeed, submount, wt_root);
+    call(PATHu8bAdd,  submount, subpath);
+    a_pad(u8, subproj_buf, 128);
+    {
+        a_dup(u8c, sroot, u8bDataC(submount));
+        if (bepost_wt_project(sroot, subproj_buf) != OK ||
+            u8bDataLen(subproj_buf) == 0)
+            return NONE;
+    }
+
+    //  Build `?/<subproj>/.<pproj>[/<pbranch>]`.
+    call(u8bFeed1, out, '?');
+    call(u8bFeed1, out, '/');
+    { a_dup(u8c, sp, u8bDataC(subproj_buf)); call(u8bFeed, out, sp); }
+    call(u8bFeed1, out, '/');
+    call(u8bFeed1, out, '.');
+    { a_dup(u8c, pp, u8bDataC(pproj_buf)); call(u8bFeed, out, pp); }
+    if (u8bDataLen(pbr_buf) > 0) {
+        call(u8bFeed1, out, '/');
+        a_dup(u8c, pb, u8bDataC(pbr_buf));
+        call(u8bFeed, out, pb);
+    }
+    done;
+}
+
 static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     sane(s && vctx);
     bepost_recurse_ctx *rc = (bepost_recurse_ctx *)vctx;
@@ -1902,6 +2038,15 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
         u8csbFeed1(child_args, *flag);
         if (!u8csEmpty(*val)) u8csbFeed1(child_args, *val);
     }
+    //  Compute the sub's synthetic commit target up front so we can
+    //  both (a) skip forwarding THIS level's branch-query URI (the
+    //  child must commit onto its OWN synthetic branch, not the
+    //  parent's) and (b) append the freshly-composed target below.
+    a_pad(u8, synth_uri, MAX_URI_LEN);
+    b8 have_synth = (bepost_synth_child_uri(rc->c, rc->wt_root, subpath,
+                                            synth_uri) == OK)
+                    && u8bDataLen(synth_uri) > 0;
+
     size_t nuris = uribDataLen(rc->c->uris);
     for (size_t j = 0; j < nuris; j++) {
         uri *u = uribAtP(rc->c->uris, j);
@@ -1911,7 +2056,19 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
                        u8csEmpty(u->path) &&
                        u8csEmpty(u->query);
         if (pure_frag) continue;
+        //  Local branch-query URI = this level's commit target; do not
+        //  forward verbatim (project belongs to THIS level, not the
+        //  sub).  Its coordinate is already folded into synth_uri.
+        b8 local_branch = !u8csEmpty(u->query) &&
+                          u8csEmpty(u->scheme) &&
+                          u8csEmpty(u->authority) &&
+                          u8csEmpty(u->path);
+        if (local_branch && have_synth) continue;
         u8csbFeed1(child_args, u->data);
+    }
+    if (have_synth) {
+        a_dup(u8c, synth_view, u8bDataC(synth_uri));
+        u8csbFeed1(child_args, synth_view);
     }
     if (u8bDataLen(msg_uri) > 0) {
         a_dup(u8c, msg_view, u8bData(msg_uri));

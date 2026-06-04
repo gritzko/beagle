@@ -117,7 +117,7 @@ done
 # --- recorded pins differ: first=A, second=B --------------------------
 pin_of() {
     awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-               END { h=last; sub(/^[^#]*#/, "", h); print h }' "$1"
+               END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' "$1"
 }
 first_pin=$(pin_of first/.be)
 second_pin=$(pin_of second/.be)

@@ -38,7 +38,7 @@ rc=$?
 $(cat 02.post.got.err)"
 
 sub_a_sha=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 
 (cd vendor/sub && "$BE" "commit:?$sub_a_sha" >../../03.subcommit.out 2>../../03.subcommit.err)
@@ -67,7 +67,7 @@ rc=$?
 $(cat 04.post.got.err)"
 
 sub_b_sha=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 
 (cd vendor/sub && "$BE" "commit:?$sub_b_sha" >../../05.subcommit.out 2>../../05.subcommit.err)
@@ -81,7 +81,7 @@ fi
 
 # Outer's commit uses the parent's `#round2` (no decoration).
 outer_b_sha=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                           END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                           END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
               .be/wtlog)
 "$BE" "commit:?$outer_b_sha" >06.outercommit.out 2>06.outercommit.err
 grep -q 'round2' 06.outercommit.out \

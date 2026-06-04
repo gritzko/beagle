@@ -69,7 +69,7 @@ $(cat 02.get.got.err)"
 
 # --- Sub pin matches what C3 pinned (= SUB_C2) -----------------------
 sub_tip=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                      END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                      END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
           vendor/sub/.be)
 [ "$sub_tip" = "$PARENT_PINNED" ] \
     || fail "sub tip mismatch: got '$sub_tip' want '$PARENT_PINNED'"

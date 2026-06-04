@@ -31,13 +31,13 @@ $(cat 01.get.got.err)"
 [ -f vendor/sub/.be ]    || fail "vendor/sub/.be anchor missing"
 
 baseline_sub=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                            END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                            END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                vendor/sub/.be)
 [ "$baseline_sub" = "$PARENT_PINNED" ] \
     || fail "expected sub baseline=$PARENT_PINNED got $baseline_sub"
 
 baseline_outer=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                              END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                              END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                  .be/wtlog)
 [ "$baseline_outer" = "$PARENT_TIP" ] \
     || fail "expected outer baseline=$PARENT_TIP got $baseline_outer"
@@ -61,7 +61,7 @@ $(cat 02.post.got.err)"
 
 # --- 4.  sub's tip moved ---------------------------------------------
 sub_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             vendor/sub/.be)
 [ -n "$sub_after" ] || fail "sub tip empty after post"
 [ "$sub_after" != "$baseline_sub" ] \
@@ -70,7 +70,7 @@ $(cat 02.post.got.err)"
 
 # --- 5.  outer's tip moved -------------------------------------------
 outer_after=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                           END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                           END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
               .be/wtlog)
 [ -n "$outer_after" ] || fail "outer tip empty after post"
 [ "$outer_after" != "$baseline_outer" ] \

@@ -128,10 +128,10 @@ rc=$?
 $(cat 04.post.got.err)"
 
 outer_tip=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                         END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                         END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
             .be/wtlog)
 sub_committed=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }
-                              END { h=last; sub(/^[^#]*#/, "", h); print h }' \
+                              END { h=last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h); print h }' \
                 vendor/sub/.be)
 [ -n "$outer_tip" ]                    || fail "outer tip empty"
 [ "$sub_committed" != "$SUB_TIP" ]     || fail "sub did not commit"

@@ -2348,7 +2348,17 @@ ok64 POSTCommit(u8cs target_branch,
     //  branch.  Re-attach (`be get ?<branch>`) first.  Trunk-state
     //  `?#<sha>` is NOT detached and is allowed through (commits back
     //  to trunk).
-    if (post_is_detached_wt()) {
+    //  Detached wt (`?<sha>` cur-tip): refuse ONLY when no explicit
+    //  branch target was given.  With a target (`be post ?/proj/branch`
+    //  — e.g. a parent POST recursing into a beagle submodule), commit
+    //  onto that branch, auto-creating it at the detached pin: the new
+    //  commit becomes a real REFS tip, GC-reachable inside the sub's
+    //  self-contained shard (a ref-less detached commit would be
+    //  dropped at epoch recompaction — STORE.md §"recompacts in
+    //  isolation").  The wt attaches to the target.  A bare detached
+    //  `be post` (no target) still refuses — there is no branch to
+    //  record the commit against.
+    if (post_is_detached_wt() && u8csEmpty(target_branch)) {
         fprintf(stderr,
             "sniff: post: refusing on detached wt — re-attach to a "
             "branch first (be get ?<branch>)\n");

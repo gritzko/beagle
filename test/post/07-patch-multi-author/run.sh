@@ -42,7 +42,7 @@ EOF
 head_hex() {
     awk -F'\t' '$2=="post"||$2=="get"||$2=="patch" { last=$3 }
                 END {
-                    h = last; sub(/^[^#]*#/, "", h)
+                    h = last; if (h ~ /#/) sub(/^.*#/, "", h); else sub(/^[^?]*\?/, "", h)
                     if (length(h) == 40 && h ~ /^[0-9a-f]+$/) print h
                 }' .be/wtlog
 }
