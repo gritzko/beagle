@@ -2514,8 +2514,14 @@ static ok64 becli_inner(cli *c) {
                         //  row is a stale cache of last-fetched tip;
                         //  pinning here would prevent keeper from
                         //  re-contacting the wire.  Keeper has its own
-                        //  freshness logic for transport URIs.
+                        //  freshness logic for transport URIs.  This
+                        //  also covers the SCHEME-ONLY form (`ssh:` /
+                        //  `file:` — authority absent, GET-002 part 2):
+                        //  its `?ref` is the REMOTE want, not a local
+                        //  branch to pin to a `/project/branch/sha`.
                         if (!u8csEmpty(u->authority)) continue;
+                        if (!u8csEmpty(u->scheme) &&
+                            DOGIsTransport(u->scheme)) continue;
                         u8c *before = *u8bIdle(resolve_scratch);
                         u8cs given = {};
                         u8csMv(given, u->data);

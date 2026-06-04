@@ -312,6 +312,54 @@ static ok64 keeper_tips(keeper *k) {
 //  ref/object selector, not the transport target.  `rarena_out` is a
 //  caller-owned buffer backing the resolved slices; caller u8bUnMap's
 //  it after finishing with the resolved URI bytes.
+//  Scheme-only completion (GET-002 part 2).  `be get ssh:` names a
+//  transport but no authority/path — reuse the RECENTMOST get/post row
+//  recorded under that same transport scheme (its full
+//  authority+path+query).  REFSEachRecord walks every row in
+//  chronological order; we keep the last one whose scheme matches and
+//  that carries a host (a real wire target), copying its bytes into the
+//  caller-owned `arena` (the row's mmap slices die when the callback
+//  returns).
+typedef struct {
+    u8cs scheme;     //  needle — the bare transport scheme to match
+    u8bp arena;      //  caller buffer backing the copied-out slices
+    u8cs host;       //  most-recent matched host   (into arena)
+    u8cs path;       //  most-recent matched path   (into arena)
+    u8cs query;      //  most-recent matched query  (into arena)
+    b8   found;
+} keeper_scheme_ctx;
+
+static ok64 keeper_scheme_match(uri const *u, ron60 ts, ron60 verb,
+                                void *vctx) {
+    sane(u && vctx);
+    (void)ts; (void)verb;
+    keeper_scheme_ctx *m = (keeper_scheme_ctx *)vctx;
+    u8cs row_scheme = {u->scheme[0], u->scheme[1]};
+    if (u8csEmpty(row_scheme) || !u8csEq(row_scheme, m->scheme)) done;
+    u8cs row_host  = {u->host[0],  u->host[1]};
+    u8cs row_path  = {u->path[0],  u->path[1]};
+    u8cs row_query = {u->query[0], u->query[1]};
+    //  Need a wire target: a host (`ssh://host/...`) OR a path (a
+    //  host-less `file://<abs>` clone source).  Host-only `//alias`
+    //  rows with no transport are no use here.
+    if (u8csEmpty(row_host) && u8csEmpty(row_path)) done;
+    //  Latest-wins: overwrite the previous match (chronological order).
+    //  Copy each component's bytes into the caller arena and record the
+    //  copied-out slice (the row's mmap dies when this callback returns).
+    u8bp arena = m->arena;
+    u8cp head = u8bIdleHead(arena);
+    try(u8bFeed, arena, row_host);
+    m->host[0] = head; m->host[1] = u8bIdleHead(arena);
+    head = u8bIdleHead(arena);
+    if (!u8csEmpty(row_path)) try(u8bFeed, arena, row_path);
+    m->path[0] = head; m->path[1] = u8bIdleHead(arena);
+    head = u8bIdleHead(arena);
+    if (!u8csEmpty(row_query)) try(u8bFeed, arena, row_query);
+    m->query[0] = head; m->query[1] = u8bIdleHead(arena);
+    m->found = YES;
+    done;
+}
+
 static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     sane(k && g && u8bOK(out) && u8bOK(rarena_out));
     a_path(keepdir);
@@ -320,6 +368,7 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     u8cs rscheme = {};
     u8cs rhost = {};
     u8cs rpath = {};
+    u8cs rquery = {};   //  recovered project selector (scheme-only path)
     u8csMv(rscheme, g->scheme);
     u8csMv(rhost, g->host);
     u8csMv(rpath, g->path);
@@ -350,15 +399,28 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
                 rr = REFSResolve(&resolved, rarena_out, $path(leafdir),
                                  in_uri);
             }
-            if (rr != OK || u8csEmpty(resolved.host)) {
+            //  Retry against the trunk shard when the leaf lookup found
+            //  no usable transport target.  A host-less `file://` clone
+            //  source resolves a path but no host, so "usable" is host OR
+            //  path — gating on host alone would skip a local source
+            //  (replicated.wiki todo/GET-002 part 1).
+            if (rr != OK ||
+                (u8csEmpty(resolved.host) && u8csEmpty(resolved.path))) {
                 zero(resolved);
                 rr = REFSResolve(&resolved, rarena_out, $path(keepdir),
                                  in_uri);
             }
         }
-        if (!explicit_full && rr == OK && !u8csEmpty(resolved.host)) {
+        //  Fill the missing transport components from the persisted clone
+        //  source.  A host-bearing source (`ssh://host/path`) refills
+        //  host+path; a host-less `file://` source has no host but a real
+        //  path — gating on host alone dropped that path and shipped an
+        //  empty repo to the wire (WIRECLFL).  So the completion fires
+        //  whenever the resolved source carries a host OR a path.
+        if (!explicit_full && rr == OK &&
+            (!u8csEmpty(resolved.host) || !u8csEmpty(resolved.path))) {
             if (!u8csEmpty(resolved.scheme)) u8csMv(rscheme, resolved.scheme);
-            u8csMv(rhost, resolved.host);
+            if (!u8csEmpty(resolved.host))   u8csMv(rhost, resolved.host);
             if (!u8csEmpty(resolved.path))   u8csMv(rpath, resolved.path);
         } else if (!explicit_full &&
                    u8csEmpty(rscheme) && u8csEmpty(rpath)) {
@@ -370,6 +432,27 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
                 "keeper: unknown remote //%.*s — register first with "
                 "`be get scheme://host/path?ref`, or pass a full URL\n",
                 (int)$len(rhost), (char const *)rhost[0]);
+            return KEEPNONE;
+        }
+    } else if (!u8csEmpty(g->scheme)) {
+        //  SCHEME ONLY (`ssh:` / `file:` — no authority, GET-002 part
+        //  2).  Adopt the full transport target (host + path + project
+        //  query) of the RECENTMOST get/post row recorded under this
+        //  same transport scheme.  The user's own `?ref` (g->query) is
+        //  still the want — only an absolute `?/<project>` selector is
+        //  rebuilt onto the wire URI below.
+        keeper_scheme_ctx sc = {.scheme = {g->scheme[0], g->scheme[1]},
+                                .arena = rarena_out};
+        ok64 se = REFSEachRecord($path(keepdir), keeper_scheme_match, &sc);
+        if (se == OK && sc.found) {
+            u8csMv(rhost, sc.host);
+            if (!u8csEmpty(sc.path))  u8csMv(rpath, sc.path);
+            if (!u8csEmpty(sc.query)) u8csMv(rquery, sc.query);
+        } else {
+            fprintf(stderr,
+                "keeper: bare scheme %.*s: — no prior get/post recorded "
+                "for this transport; pass a full URL\n",
+                (int)$len(rscheme), (char const *)rscheme[0]);
             return KEEPNONE;
         }
     }
@@ -392,10 +475,15 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     //  still names the requested shard; wcli_spawn forwards it on the
     //  served path (the peer routes via keeper_served_at → HOMEOpen
     //  step 5).  Leading '/' gates it to the project form — a bare
-    //  `?ref` is the want, carried separately by WIREFetch.
+    //  `?ref` is the want, carried separately by WIREFetch.  Precedence:
+    //  the user's explicit `?/<project>` wins; else the project query
+    //  recovered from the recentmost same-scheme row (GET-002 part 2).
     if (!u8csEmpty(g->query) && *g->query[0] == '/') {
         u8bFeed1(out, '?');
         u8bFeed(out, g->query);
+    } else if (!u8csEmpty(rquery) && *rquery[0] == '/') {
+        u8bFeed1(out, '?');
+        u8bFeed(out, rquery);
     }
     done;
 }
@@ -566,6 +654,14 @@ static ok64 keeper_get(keeper *k, cli *c) {
     uri *g = uribAtP(c->uris, 0);
 
     if (!u8csEmpty(g->authority))
+        return KEEPGetRemote(g);
+    //  Scheme-only transport URI (`ssh:` / `https:` — authority absent,
+    //  GET-002 part 2): route to the remote path so keeper_remote_uri
+    //  can complete it from the recentmost same-scheme get/post row.
+    //  (`file:` / `be:` / `keeper:` land here via KEEPExec's `plain`
+    //  block above.)  A scheme with a `?query` would otherwise be
+    //  mis-read as a local ref lookup below.
+    if (!u8csEmpty(g->scheme) && DOGIsTransport(g->scheme))
         return KEEPGetRemote(g);
     if (!u8csEmpty(g->fragment))
         return keeper_get_object(k, g->fragment);

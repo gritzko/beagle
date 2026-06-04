@@ -254,11 +254,23 @@ be_action const BE_PLAN_HEAD[] = {
     //  refs via keeper, then re-walk into spot/graf indexes.
     //  Authority-free URI → local graf head (ahead/behind diff).
     //  Submodule recursion runs after the local body.
-    { URI_AUTHORITY, 0,             NO,  BEActKeeperGet },
-    { URI_AUTHORITY, 0,             YES, BEActSpotGet   },
-    { URI_AUTHORITY, 0,             YES, BEActGrafGet   },
-    { 0,             URI_AUTHORITY, NO,  BEActGrafHead  },
-    { 0,             0,             NO,  BEActSubsHead  },
+    //  A bare SCHEME-ONLY transport URI (`ssh:` / `file:` — scheme but
+    //  no authority AND no path, GET-002 part 2) routes to keeper too:
+    //  it completes from the recentmost same-scheme get/post row.
+    //  Projectors are filtered out before any plan runs (BE.cli.c), so
+    //  a URI_SCHEME bit here is always a transport scheme.  Excluding
+    //  URI_PATH keeps a path-bearing local form (`file:<store>/.be/...`
+    //  sibling-worktree wiring) on its own checkout pipeline.  GrafHead
+    //  excludes the bare scheme so the scheme-only fetch does not also
+    //  run the local ahead/behind diff.
+    { URI_AUTHORITY, 0,                       NO,  BEActKeeperGet },
+    { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  NO,  BEActKeeperGet },
+    { URI_AUTHORITY, 0,                       YES, BEActSpotGet   },
+    { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActSpotGet   },
+    { URI_AUTHORITY, 0,                       YES, BEActGrafGet   },
+    { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActGrafGet   },
+    { 0,             URI_AUTHORITY|URI_SCHEME, NO, BEActGrafHead  },
+    { 0,             0,                       NO,  BEActSubsHead  },
     BE_ACTION_END,
 };
 
@@ -281,10 +293,19 @@ be_action const BE_PLAN_GET[] = {
     //  wire (VERBS.md §"Schemes — cached vs transport", Bug 2).
     //  Mirrors BE_PLAN_PATCH row at line ~287.
     { URI_SCHEME|URI_AUTHORITY, 0,        NO,  BEActKeeperGet      },
-    { URI_AUTHORITY,      0,             YES, BEActSpotGet        },
-    { URI_AUTHORITY,      0,             YES, BEActGrafGet        },
-    { 0,                  0,             YES, BEActSniffGet       },
-    { 0,                  0,             NO,  BEActSubsGet        },
+    //  Bare scheme-only transport (`ssh:` / `file:` — authority AND
+    //  path both absent, GET-002 part 2): keeper completes it from the
+    //  recentmost same-scheme get/post row.  Projectors are filtered
+    //  out before the plan, so URI_SCHEME here is always a transport.
+    //  Excluding URI_PATH leaves a path-bearing local `file:<store>`
+    //  sibling-worktree form on the checkout pipeline below.
+    { URI_SCHEME,      URI_AUTHORITY|URI_PATH, NO,  BEActKeeperGet  },
+    { URI_AUTHORITY,   0,                      YES, BEActSpotGet    },
+    { URI_SCHEME,      URI_AUTHORITY|URI_PATH, YES, BEActSpotGet    },
+    { URI_AUTHORITY,   0,                      YES, BEActGrafGet    },
+    { URI_SCHEME,      URI_AUTHORITY|URI_PATH, YES, BEActGrafGet    },
+    { 0,               0,                      YES, BEActSniffGet   },
+    { 0,               0,                      NO,  BEActSubsGet    },
     BE_ACTION_END,
 };
 

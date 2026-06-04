@@ -110,9 +110,17 @@ ok64 DOGParseURI(urip uri, u8csc text) {
     // (proper RFC schemes have either an authority or a path
     // starting with '/').  Projector schemes are exempt — `tree:src/`,
     // `ls:subdir`, etc. keep `tree` / `ls` as the scheme.
+    //
+    // A PATHLESS bare transport scheme (`ssh:`, `file:?master`) is
+    // exempt too: promoting it would mint a phantom host named after
+    // the scheme (`//ssh`), which never resolves.  It is instead the
+    // "scheme only" form — keeper completes it from the recentmost
+    // get/post recorded under that transport scheme (GET-002 part 2).
+    // The host:path ergonomic (`github.com:u/repo`) always carries a
+    // path, so it still promotes.
     if (!$empty(uri->scheme) && $empty(uri->authority)
-        && !dog_is_projector(uri->scheme)) {
-        b8 rooted = !$empty(uri->path) && $at(uri->path, 0) == '/';
+        && !dog_is_projector(uri->scheme) && !$empty(uri->path)) {
+        b8 rooted = $at(uri->path, 0) == '/';
         if (!rooted) {
             u8csMv(uri->authority, uri->scheme);
             u8csMv(uri->host, uri->scheme);
