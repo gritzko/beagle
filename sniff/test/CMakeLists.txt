@@ -32,6 +32,15 @@ add_test(NAME SNIFFdirty
 set_tests_properties(SNIFFdirty PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFdirty")
 
+#  idempotent.sh — `be`/`sniff status` is idempotent: a genuinely
+#  modified file stays `mod` across re-runs (no mtime-only flip to
+#  `ok`), content-confirmed against the baseline blob (DIS-023).
+add_test(NAME SNIFFidempotent
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/idempotent.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFidempotent PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFidempotent")
+
 #  post-ff.sh — POST pre-flight: empty-commit refuse + non-ff refuse
 #  (REFS tip vs .be/wtlog base divergence).
 add_test(NAME SNIFFpostff

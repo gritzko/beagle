@@ -227,17 +227,15 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
             ls_emit_row(c, path, empty, 0, c->v.v_mis);
             break;
         case CLASS_BOTH:
-            //  mtime stamp-set hit → baseline content, render `eq`.
-            //  Stamp-miss but bytes hash equal to the baseline blob is
-            //  the "touched-unchanged" case (mtime drift only); also
-            //  `eq`.  Anything else is a real `mod`.  Same three-way
-            //  classification bare `be` uses (sniff/SNIFF.exe.c).
-            if (step->wt_rec && SNIFFAtKnown(step->wt_rec->ts))
-                ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_eq);
-            else if (CLASSWtEqBase(c->reporoot, step->base_rec, path))
-                ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_eq);
-            else
+            //  CLASSWtState is the one body of truth shared with bare
+            //  `be` status (sniff/SNIFF.exe.c).  CLEAN / PATCHED bytes
+            //  list as `eq`; a content-confirmed change lists as `mod`.
+            //  Content-confirmed, never mtime-only — a restored-stamp
+            //  mtime over edited bytes still lists as `mod` (DIS-023).
+            if (CLASSWtState(c->reporoot, step) == CLASS_WT_MODIFIED)
                 ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_mod);
+            else
+                ls_emit_row(c, path, empty, step->wt_rec->ts, c->v.v_eq);
             break;
     }
     return OK;

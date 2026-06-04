@@ -315,3 +315,33 @@ b8 CLASSWtEqBase(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
     if (HEXu8sDrainSome(bin, hex) != OK) return NO;
     return sha1Eq(&wt_sha, &base_sha);
 }
+
+// --- CLASS_BOTH verdict (DIS-023) --------------------------------------
+
+//  YES iff `mtime` stamps a `patch` row — the file's current bytes are
+//  the merged result of an in-scope PATCH absorption, staged for the
+//  next POST but not yet committed.
+static b8 class_mtime_is_patch(ron60 mtime) {
+    if (mtime == 0 || !SNIFFAtKnown(mtime)) return NO;
+    ron60 verb = 0;
+    uri u = {};
+    if (SNIFFAtRowAtTs(mtime, &verb, &u) != OK) return NO;
+    return verb == SNIFFAtVerbPatch() ? YES : NO;
+}
+
+class_wt_state CLASSWtState(u8cs reporoot, class_step const *step) {
+    if (step->wt_rec == NULL) return CLASS_WT_MODIFIED;
+    ron60 mtime = step->wt_rec->ts;
+    //  Patched-in bytes surface as their own state regardless of the
+    //  baseline hash (the merge result is intentionally != baseline).
+    if (class_mtime_is_patch(mtime)) return CLASS_WT_PATCHED;
+    //  CLEAN only when the on-disk bytes actually hash to the baseline
+    //  blob.  A known-stamp mtime is just a hint: confirm by content so
+    //  a restored-stamp mtime over edited bytes can't read as clean
+    //  (the non-idempotent-status bug, DIS-023).  A drifted mtime whose
+    //  bytes still equal baseline is the "touched-unchanged" case and
+    //  is likewise CLEAN.
+    u8cs rel = {step->path[0], step->path[1]};
+    if (CLASSWtEqBase(reporoot, step->base_rec, rel)) return CLASS_WT_CLEAN;
+    return CLASS_WT_MODIFIED;
+}

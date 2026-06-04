@@ -60,4 +60,25 @@ ok64 SNIFFClassify(class_cb cb, void *ctx);
 //  files and symlinks are supported — same set CLASS classifies).
 b8 CLASSWtEqBase(u8cs reporoot, ulogreccp base_rec, u8cs rel);
 
+//  Verdict for a CLASS_BOTH step (path present in both baseline and
+//  wt, no in-scope put/del intent).
+typedef enum {
+    CLASS_WT_CLEAN    = 0,   // bytes == baseline (`ok` / `eq`)
+    CLASS_WT_PATCHED  = 1,   // mtime stamps a `patch` row (`pat`)
+    CLASS_WT_MODIFIED = 2,   // bytes differ from baseline (`mod`)
+} class_wt_state;
+
+//  Classify a CLASS_BOTH `step` into CLEAN / PATCHED / MODIFIED, the
+//  one body of truth bare `be` status and `be ls:` share (DIS-023).
+//
+//  A `patch`-stamped file is PATCHED (merged-but-uncommitted bytes the
+//  user must see).  Otherwise the file is CLEAN iff its on-disk bytes
+//  still hash to the baseline blob sha — CONFIRMED by content, never by
+//  mtime alone.  The mtime stamp-set hit is only a fast hint that the
+//  file *should* be baseline; an editor that restores a stamped mtime
+//  onto changed bytes (build tool, `touch -r`, rsync) would otherwise
+//  read as clean and silently hide a real modification.  Read-only:
+//  hashes on-disk bytes, never writes a stamp.
+class_wt_state CLASSWtState(u8cs reporoot, class_step const *step);
+
 #endif

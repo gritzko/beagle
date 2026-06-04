@@ -161,18 +161,9 @@ static b8 status_wt_is_mov_dst(ron60 mtime) {
     return !u8csEmpty(ow_u.fragment) ? YES : NO;
 }
 
-//  YES iff `mtime` stamps a `patch` row — file's current bytes are
-//  the merged result of an in-scope PATCH absorption, staged for the
-//  next POST but not yet committed.  Status surfaces these as `pat`
-//  so the user sees the full staged set (otherwise PATCH-modifies of
-//  baseline files are silently bucketed as `ok`).
-static b8 status_wt_is_patched(ron60 mtime) {
-    if (mtime == 0 || !SNIFFAtKnown(mtime)) return NO;
-    ron60 ow_verb = 0;
-    uri ow_u = {};
-    if (SNIFFAtRowAtTs(mtime, &ow_verb, &ow_u) != OK) return NO;
-    return ow_verb == SNIFFAtVerbPatch() ? YES : NO;
-}
+//  The `patch`-stamp test and the CLASS_BOTH baseline verdict now live
+//  in sniff/CLASS.c::CLASSWtState — the one body of truth bare `be`
+//  status and `be ls:` share (DIS-023).
 
 static ok64 status_step(class_step const *step, void *ctx) {
     status_buckets *b = (status_buckets *)ctx;
@@ -245,27 +236,25 @@ static ok64 status_step(class_step const *step, void *ctx) {
             status_push(b->rows, path, 0, b->v.v_mis, &b->mis_n);
             break;
         case CLASS_BOTH:
-            //  mtime fast-path: file last touched by a tracked op
-            //  → unchanged from baseline content (counted as `ok`),
-            //  EXCEPT when the stamping op is `patch` — those rows
-            //  represent merged-but-uncommitted bytes that the user
-            //  needs to see (`pat`).  Otherwise the file was edited
-            //  since last get/post — unless its bytes hash equal to
-            //  the baseline blob, which is the "touched-unchanged" /
-            //  clean-drift case and also counts as `ok`.
-            if (SNIFFAtKnown(step->wt_rec->ts)) {
-                if (status_wt_is_patched(step->wt_rec->ts)) {
+            //  Classify against the baseline.  CLASSWtState is the one
+            //  body of truth shared with `be ls:` (sniff/LS.c): a
+            //  `patch`-stamped file is `pat` (merged-but-uncommitted),
+            //  a file whose bytes hash to the baseline blob is `ok`
+            //  (mtime-known or clean-drift), everything else is `mod`.
+            //  Content-confirmed, never mtime-only — a restored-stamp
+            //  mtime over edited bytes still reads as `mod` (DIS-023).
+            switch (CLASSWtState(b->reporoot, step)) {
+                case CLASS_WT_PATCHED:
                     status_push(b->rows, path, step->wt_rec->ts,
                                 b->v.v_pat, &b->pat_n);
-                } else {
+                    break;
+                case CLASS_WT_CLEAN:
                     b->ok_n++;
-                }
-            } else if (CLASSWtEqBase(b->reporoot, step->base_rec,
-                                     path)) {
-                b->ok_n++;
-            } else {
-                status_push(b->rows, path,
-                            step->wt_rec->ts, b->v.v_mod, &b->mod_n);
+                    break;
+                case CLASS_WT_MODIFIED:
+                    status_push(b->rows, path,
+                                step->wt_rec->ts, b->v.v_mod, &b->mod_n);
+                    break;
             }
             break;
     }
