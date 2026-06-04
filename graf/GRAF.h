@@ -42,6 +42,10 @@ typedef struct {
     Bu8          obj_buf;
     Bu8          tree_buf;
     int          out_fd;     // output fd (-1 = uninitialized)
+    b8           keep_owned; // YES iff GRAFOpenBranch opened keeper (vs
+                             // finding it already open) → GRAFClose owns
+                             // the matching KEEPClose.  Resource lifecycle
+                             // lives in Open/Close, never in GRAFExec.
 
     //  Puppy stack: (pup_key → fd) for every `<pup_key>.graf.idx` in
     //  the single project shard dir.  Pup keys are 60-bit ron60 values.

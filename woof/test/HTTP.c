@@ -15,7 +15,6 @@
 
 #include "woof/WOOF.h"
 
-#include "abc/HEX.h"     // BASE16rev for percent-decode
 #include "abc/HTTP.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
@@ -24,32 +23,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// --- extractor (slated for woof/CONN.c) ---
-
-//  Strip the leading '/' from `target` and percent-decode the
-//  remainder into `out` (reset first).  Refuses malformed '%XX' with
-//  WOOFBADREQ.
-static ok64 extract_be_uri(Bu8 out, u8cs target) {
-    sane(1);
-    u8bReset(out);
-    test(!$empty(target) && *target[0] == '/', WOOFBADREQ);
-    u8csUsed1(target);
-    while (!$empty(target)) {
-        u8 c = *target[0];
-        if (c == '%') {
-            test($len(target) >= 3, WOOFBADREQ);
-            u8 hi = BASE16rev[target[0][1]];
-            u8 lo = BASE16rev[target[0][2]];
-            test(hi != 0xff && lo != 0xff, WOOFBADREQ);
-            call(u8bFeed1, out, (u8)((hi << 4) | lo));
-            u8csUsed(target, 3);
-        } else {
-            call(u8bFeed1, out, c);
-            u8csUsed1(target);
-        }
-    }
-    done;
-}
+//  The be-URI extractor now lives in woof/CONN.c as the exported
+//  WOOFutf8ExtractURI; this test links wooflib and drives it directly.
 
 // --- route table mirror (slated for woof/ROUTE.c) ---
 
@@ -168,7 +143,7 @@ static ok64 run_case(request_case const *c) {
     // 4. extract be-URI
     Bu8 beuri = {};
     call(u8bAllocate, beuri, MAX_URI_LEN);
-    ok64 ex = extract_be_uri(beuri, req.uri);
+    ok64 ex = WOOFutf8ExtractURI(beuri, req.uri);
     if (c->want_err == WOOFBADREQ) {
         u8bFree(beuri);
         testeqv((long long)ex, (long long)WOOFBADREQ, "%lld");

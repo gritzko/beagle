@@ -174,6 +174,7 @@ ok64 WOOFClose(void) {
     }
 
     WOOFConnCloseAll();
+    WOOFApiClose();           //  release in-process dog(s); no-op if !api
     connbFree(WOOF.conns);
     pool_free();
     zerop(&WOOF);
@@ -242,6 +243,19 @@ static ok64 woof_serve(cli *c) {
         }
     }
 
+    //  --api: dispatch projector schemes in-process (library call) for
+    //  the dogs that support it; the rest still fork.  Open the dog set
+    //  once now; on failure, warn and fall back to fork-only so the
+    //  server still serves.
+    if (CLIHas(c, "--api")) {
+        WOOF.api = YES;
+        if (WOOFApiOpen() != OK) {
+            fprintf(stderr, "woof: --api: in-process open failed; "
+                            "falling back to fork dispatch\n");
+            WOOF.api = NO;
+        }
+    }
+
     a_pad(u8, addrbuf, 64);
     call(compose_listen_uri, addrbuf, WOOF.bind_addr, WOOF.port);
     a_dup(u8c, addr, u8bData(addrbuf));
@@ -294,7 +308,8 @@ ok64 WOOFExec(cli *c) {
 
     if (CLIHas(c, "-h") || CLIHas(c, "--help") || $eq(c->verb, v_help)) {
         fprintf(stderr,
-                "usage: woof [serve|status]  [--bind ADDR] [--port N]\n");
+                "usage: woof [serve|status]  [--bind ADDR] [--port N] [--api]\n"
+                "  --api   dispatch projector schemes in-process (no fork)\n");
         done;
     }
 

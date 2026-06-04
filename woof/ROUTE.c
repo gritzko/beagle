@@ -19,16 +19,34 @@
 //  The scheme rows are still distinct entries so a 404 fires cleanly
 //  on schemes outside this set (the table is the read-only safelist).
 
+//  One row per read-only projector scheme (the safelist).  Mirrors
+//  dog/DOG.c's DOG_PROJECTORS so every projection `be` can serve is
+//  reachable over HTTP; the binary is always `be` for the fork path,
+//  while `--api` mode resolves the owning dog via DOGProjectorDog and
+//  dispatches in-process.  Keep these two tables in sync.
 woof_route const WOOF_ROUTES[] = {
     //  keeper-owned views.
+    { u8slit("sha1"),   u8slit("be") },
     { u8slit("blob"),   u8slit("be") },
     { u8slit("tree"),   u8slit("be") },
     { u8slit("commit"), u8slit("be") },
+    { u8slit("refs"),   u8slit("be") },
+    { u8slit("size"),   u8slit("be") },
+    { u8slit("type"),   u8slit("be") },
 
     //  graf-owned views.
     { u8slit("log"),    u8slit("be") },
     { u8slit("diff"),   u8slit("be") },
     { u8slit("head"),   u8slit("be") },
+    { u8slit("blame"),  u8slit("be") },
+    { u8slit("weave"),  u8slit("be") },
+    { u8slit("map"),    u8slit("be") },
+
+    //  sniff-owned views (worktree).
+    { u8slit("ls"),     u8slit("be") },
+    { u8slit("lsr"),    u8slit("be") },
+    { u8slit("cat"),    u8slit("be") },
+    { u8slit("status"), u8slit("be") },
 
     //  spot-owned views.
     { u8slit("spot"),   u8slit("be") },

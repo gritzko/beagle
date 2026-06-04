@@ -103,8 +103,8 @@ static ok64 graf_first_parent_hex(u8cs query, sha1hex *out_parent) {
 //
 //  Split out so the 16MB output buffer can ride on BASS via `a_carve`:
 //  on a_carve's allocation failure (or any downstream call() failure),
-//  this helper returns early with BASS rewound; GRAFExec's outer frame
-//  proceeds to KEEPClose at its tail.
+//  this helper returns early with BASS rewound; keeper itself is opened
+//  and closed by GRAFOpenBranch / GRAFClose, not here.
 static ok64 graf_get_op(uri *u) {
     sane(u);
     a_carve(u8, out, 16UL << 20);
@@ -252,21 +252,10 @@ ok64 GRAFExec(cli *c) {
     }
 
 
-    //  Branch-aware open: keeper sees `h->cur_branch`'s PAST+DATA
-    //  chain so cross-branch reads (KEEPGet for `?other` commits in
-    //  the head/log/map projectors) resolve.  Falls back to trunk
-    //  when `--at` didn't carry a branch.
-    //
-    //  graf only ever READS keeper (commits/trees/blobs); it writes
-    //  only to its own `.graf.idx` files.  Open keeper RO so concurrent
-    //  readers (e.g. woof requests) don't serialise through `.lock`.
-    {
-        static u8c const _zero = 0;
-        u8cs br = {&_zero, &_zero};
-        if (u8bHasData(g->h->cur_branch))
-            u8csMv(br, u8bDataC(g->h->cur_branch));
-        call(KEEPOpenBranch, g->h, br, NO);
-    }
+    //  Keeper is already open RO (GRAFOpenBranch did it, at the top of
+    //  the call chain).  GRAFExec is a pure read: it resolves the URI's
+    //  `?ref` against the flat pool's REFS and never opens/closes keeper
+    //  itself — the open-once store serves every branch.
     ok64 ret = OK;
 
     if ($eq(c->verb, v_index)) {
@@ -310,7 +299,6 @@ ok64 GRAFExec(cli *c) {
     } else if ($eq(c->verb, v_blame)) {
         if (uribDataLen(c->uris) < 1) {
             fprintf(stderr, "graf: blame requires a file URI\n");
-            KEEPClose();
             return FAILSANITY;
         }
         u8cs path = {};
@@ -370,18 +358,18 @@ ok64 GRAFExec(cli *c) {
             if (!DOGIsHashlet(wf)) {
                 try(KEEPSwitchBranch, KEEP.h, wf);
                 on(KEEPNONE) __ = OK;
-                nedo { KEEPClose(); return __; }
+                nedo { return __; }
                 try(GRAFSwitchBranch, KEEP.h, wf);
                 on(GRAFNOPATH) __ = OK;
-                nedo { KEEPClose(); return __; }
+                nedo { return __; }
             }
             if (!DOGIsHashlet(wt)) {
                 try(KEEPSwitchBranch, KEEP.h, wt);
                 on(KEEPNONE) __ = OK;
-                nedo { KEEPClose(); return __; }
+                nedo { return __; }
                 try(GRAFSwitchBranch, KEEP.h, wt);
                 on(GRAFNOPATH) __ = OK;
-                nedo { KEEPClose(); return __; }
+                nedo { return __; }
             }
             if (!$empty(path)) {
                 ret = GRAFWeaveDiff(path, reporoot, wf, wt);
@@ -393,7 +381,6 @@ ok64 GRAFExec(cli *c) {
                 fprintf(stderr,
                     "graf: diff: no --at baseline; need explicit"
                     " 'diff:?<from>#<to>' or a sniff anchor\n");
-                KEEPClose();
                 return GRAFNOAT;
             }
             sha1 base_sha = {};
@@ -450,7 +437,6 @@ ok64 GRAFExec(cli *c) {
     } else if ($eq(c->verb, v_log)) {
         if (uribDataLen(c->uris) < 1) {
             fprintf(stderr, "graf: log requires a URI\n");
-            KEEPClose();
             return FAILSANITY;
         }
         ret = GRAFLog(uribAtP(c->uris, 0));
@@ -466,7 +452,6 @@ ok64 GRAFExec(cli *c) {
     } else if ($eq(c->verb, v_weave)) {
         if (uribDataLen(c->uris) < 1) {
             fprintf(stderr, "graf: weave requires a file URI\n");
-            KEEPClose();
             return FAILSANITY;
         }
         uri *u = uribAtP(c->uris, 0);
@@ -493,6 +478,5 @@ ok64 GRAFExec(cli *c) {
         ret = FAILSANITY;
     }
 
-    KEEPClose();
     return ret;
 }

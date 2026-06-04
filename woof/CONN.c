@@ -21,6 +21,10 @@
 //  the virtual mapping stays in place for the next conn that lands
 //  on the same slot.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE          // memfd_create (in-process projection capture)
+#endif
+
 #include "WOOF.h"
 
 #include "abc/FILE.h"
@@ -29,8 +33,14 @@
 #include "abc/PRO.h"
 #include "abc/TCP.h"
 #include "abc/URI.h"
+#include "dog/DOG.h"         // DOGProjectorDog (scheme → dog)
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
+#include "graf/GRAF.h"       // in-process projections (--api mode):
+#include "keeper/KEEP.h"     //   graf (log/diff/...), keeper (blob/tree/
+#include "spot/CAPO.h"       //   ...), spot (grep/...), sniff (ls/cat/...)
+#include "sniff/SNIFF.h"
+#include "sniff/AT.h"        // SNIFFAtTailOf — forward the wtlog tip
 
 #include <errno.h>
 #include <fcntl.h>
@@ -110,7 +120,7 @@ static char const RESP_500[] =
 
 //  Carve c->in, c->pipe_in, c->out into the three sub-regions of the
 //  slot's 4 MB at WOOF.pool[c->slot * WOOF_SLOT_BYTES].
-static void slot_carve_views(conn *c) {
+void WOOFConnCarve(conn *c) {
     u8 *base = WOOF.pool + (size_t)c->slot * WOOF_SLOT_BYTES;
     u8 *p_in  = base;
     u8 *p_pin = p_in  + WOOF_REQBUF_BYTES;
@@ -136,7 +146,7 @@ static conn *slot_claim(int sock_fd) {
             c->worker_pid = -1;
             c->state      = WOOF_RD_HEAD;
             c->last_io_ns = POLNow();
-            slot_carve_views(c);
+            WOOFConnCarve(c);
             WOOF.live_conns++;
             return c;
         }
@@ -345,8 +355,9 @@ static ok64 html_escape_into(Bu8 out, u8csc from) {
 }
 
 //  Strip leading '/' from `target`; percent-decode the rest into
-//  `out`.  Mirrors the test-scaffold in woof/test/HTTP.c.
-static ok64 extract_be_uri(Bu8 out, u8cs target) {
+//  `out`.  Exposed via WOOF.h so tests and woof/fuzz drive the exact
+//  same decode read_cb does.
+ok64 WOOFutf8ExtractURI(Bu8 out, u8cs target) {
     sane(1);
     u8bReset(out);
     test(!$empty(target) && *target[0] == '/', WOOFBADREQ);
@@ -408,6 +419,264 @@ static short read_cb (int fd, poller *p);
 static short pipe_cb (int fd, poller *p);
 static short write_cb(int fd, poller *p);
 
+// --- routing decision (shared with woof/fuzz) ---
+//
+//  Given c->uri (the decoded be-URI), run the non-fork part of
+//  dispatch: a "static/…" first segment is served inline into c->out;
+//  any known scheme yields its route; everything else is an error.
+//  This is read_cb's parse path lifted out so the fuzz harness can
+//  exercise it in-process without forking a worker.
+woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err) {
+    *route = NULL;
+    *err   = OK;
+
+    //  Static assets short-circuit: first segment "static" → serve
+    //  <root>/.be/static/<rest> with no worker fork.  `cur` advances
+    //  past the consumed segment, so the tail IS the relative path.
+    {
+        u8cs cur   = { c->uri[0], c->uri[1] };
+        u8cs first = {};
+        a$str(s_static, "static");
+        if (PATHu8sDrainNE(cur, first) == OK && $eq(first, s_static)) {
+            ok64 sr = serve_static(c, cur);
+            if (sr == OK) return WOOF_DISP_STATIC;
+            *err = (sr == WOOFBADREQ) ? WOOFBADREQ : WOOFNOROUTE;
+            return WOOF_DISP_ERROR;
+        }
+    }
+
+    //  Scheme → worker route.
+    uri u = {};
+    a_dup(u8c, view, c->uri);
+    if (URIutf8Drain(view, &u) != OK) {
+        *err = WOOFBADREQ;
+        return WOOF_DISP_ERROR;
+    }
+    woof_route const *r = WOOFRouteFind(u.scheme);
+    if (r == NULL) {
+        *err = WOOFNOROUTE;
+        return WOOF_DISP_ERROR;
+    }
+    *route = r;
+    return WOOF_DISP_WORKER;
+}
+
+// --- TLV → HTML render (shared by worker pipe + in-process paths) ---
+
+//  Drain complete TLV frames from c->pipe_in, rendering each as HTML
+//  into c->out's idle range while ≥ WOOF_HUNK_HEADROOM idle bytes
+//  remain.  Advances both data heads; short trailing frames wait.
+static void render_hunks(conn *c) {
+    while ((size_t)(c->out[3] - c->out[2]) >= WOOF_HUNK_HEADROOM
+           && c->pipe_in[1] < c->pipe_in[2]) {
+        hunk hk = {};
+        u8cs frame = { c->pipe_in[1], c->pipe_in[2] };
+        if (HUNKu8sDrain(frame, &hk) != OK) break;
+        c->pipe_in[1] = (u8 *)frame[0];
+        //  HUNKu8sFeedHtml writes a `u8s` (head/term) — hand it the idle
+        //  range, commit the advanced head back into c->out's idle ptr.
+        u8s idle = { c->out[2], c->out[3] };
+        (void)HUNKu8sFeedHtml(idle, &hk);
+        c->out[2] = idle[0];
+    }
+}
+
+// --- in-process projection dispatch (`--api` mode) ---
+//
+//  Instead of fork+exec'ing `be --tlv <uri>`, run the owning dog's
+//  Exec as a library call against singletons opened once at serve
+//  start.  All four projector dogs are wired: keeper (sha1/blob/tree/
+//  commit/refs/size/type), graf (log/diff/blame/weave/map), spot
+//  (spot/grep/regex), sniff (ls/lsr/cat/status).  A dog that fails to
+//  open (e.g. sniff with no worktree) leaves its schemes on the fork
+//  path.  Single project — multi-project dispatch (a per-project dog
+//  cache keyed off the URI's project) is a TODO.
+//
+//  keeper is the shared object store: woof opens it once and owns it;
+//  graf/spot find it already open (KEEPOPEN) and never close it, so
+//  the four singletons coexist over one keeper.
+
+static cli  woof_api_cli   = {};
+static int  woof_api_memfd = -1;
+static b8   woof_api_ready = NO;
+static b8   woof_api_keep_owned = NO;
+static b8   woof_api_have_keep  = NO;
+static b8   woof_api_have_graf  = NO;
+static b8   woof_api_have_spot  = NO;
+static b8   woof_api_have_sniff = NO;
+static char const *woof_api_dog = NULL;   //  selects the Exec in run_capture
+
+ok64 WOOFApiOpen(void) {
+    sane(1);
+    if (woof_api_ready) return OK;
+    if (WOOF.h == NULL) fail(WOOFFAIL);
+
+    //  Forward the worktree tip into the home, exactly as `be` resolves
+    //  `--at <root>?<branch>#<sha>` for the fork path.  Without it,
+    //  tip-scoped projections (blame, log:<file>, wt-diff) run unscoped;
+    //  with it they match fork.  SNIFFAtTailOf peeks `<wt>/.be/wtlog`
+    //  RO (no keeper).  Missing/no-tip ⇒ leave cur_sha empty (unscoped,
+    //  as before).
+    {
+        a_pad(u8, at_buf, FILE_PATH_MAX_LEN + 128);
+        a_dup(u8c, wt, u8bDataC(WOOF.h->wt));
+        if (SNIFFAtTailOf(wt, at_buf) == OK) {
+            uri at = {};
+            u8csMv(at.data, u8bDataC(at_buf));
+            URILexer(&at);
+            if (u8csLen(at.fragment) == 40) {
+                u8bReset(WOOF.h->cur_sha);
+                (void)u8bFeed(WOOF.h->cur_sha, at.fragment);
+            }
+            //  Tail query is `?/<project>/<branch>`; strip the project
+            //  and set cur_branch (empty == trunk) so opens + ref
+            //  resolution land on the wt's branch.
+            if (!u8csEmpty(at.query)) {
+                a_dup(u8c, q, at.query);
+                DOGQueryStripProject(q);
+                (void)HOMESetCurBranch(WOOF.h, q);
+            }
+        }
+    }
+
+    a_dup(u8c, br, u8bDataC(WOOF.h->cur_branch));
+
+    //  Keeper first — the shared object store every projector reads
+    //  through.  woof owns it; KEEPOPEN means someone else already did.
+    {
+        ok64 ko = KEEPOpenBranch(WOOF.h, br, NO);
+        if (ko != OK && ko != KEEPOPEN) return ko;
+        woof_api_have_keep  = YES;
+        woof_api_keep_owned = (ko == OK);
+    }
+    //  Best-effort per dog: graf/spot find keeper open (won't close it);
+    //  sniff serves the worktree.  Flat store ⇒ one open serves every
+    //  branch (per-request `?ref` resolves via REFS, no reopen).
+    {
+        ok64 go = GRAFOpenBranch(WOOF.h, br, NO);
+        woof_api_have_graf = (go == OK || go == GRAFOPEN);
+    }
+    {
+        ok64 so = SPOTOpenBranch(WOOF.h, br, NO);
+        woof_api_have_spot = (so == OK || so == SPOTOPEN);
+    }
+    woof_api_have_sniff = (SNIFFOpen(WOOF.h, NO) == OK);
+
+    call(PATHu8bAlloc, woof_api_cli.repo);
+    call(u8csbAlloc,   woof_api_cli.flags, CLI_MAX_FLAGS * 2);
+    call(uribAlloc,    woof_api_cli.uris,  CLI_MAX_URIS);
+    //  cli repo = the WORKTREE root (where tracked files live), matching
+    //  the cwd graf inherits in fork mode.  graf blame / wt-diff / weave
+    //  read the wt file from here; objects still come from the store via
+    //  the open keeper.  Differs from h->root for a secondary worktree.
+    {
+        a_dup(u8c, wt, u8bDataC(WOOF.h->wt));
+        if (u8csEmpty(wt)) u8csMv(wt, u8bDataC(WOOF.h->root));
+        call(PATHu8bFeed, woof_api_cli.repo, wt);
+    }
+
+    woof_api_memfd = memfd_create("woof-api", 0);
+    if (woof_api_memfd < 0) fail(WOOFFAIL);
+
+    woof_api_ready = YES;
+    done;
+}
+
+void WOOFApiClose(void) {
+    if (!woof_api_ready) return;
+    //  Close in reverse open order; keeper last (woof owns it — graf /
+    //  spot opened it as KEEPOPEN and left it for us).
+    if (woof_api_have_sniff) SNIFFClose();
+    if (woof_api_have_spot)  SPOTClose();
+    if (woof_api_have_graf)  (void)GRAFClose();
+    if (woof_api_keep_owned) (void)KEEPClose();
+    if (woof_api_memfd >= 0) { (void)close(woof_api_memfd); woof_api_memfd = -1; }
+    uribFree(woof_api_cli.uris);
+    u8csbFree(woof_api_cli.flags);
+    PATHu8bFree(woof_api_cli.repo);
+    zerop(&woof_api_cli);
+    woof_api_have_keep = woof_api_have_graf = NO;
+    woof_api_have_spot = woof_api_have_sniff = NO;
+    woof_api_keep_owned = NO;
+    woof_api_ready = NO;
+}
+
+//  YES iff the dog that owns this scheme was opened in-process.
+static b8 woof_api_dog_open(char const *dog) {
+    if (strcmp(dog, "keeper") == 0) return woof_api_have_keep;
+    if (strcmp(dog, "graf")   == 0) return woof_api_have_graf;
+    if (strcmp(dog, "spot")   == 0) return woof_api_have_spot;
+    if (strcmp(dog, "sniff")  == 0) return woof_api_have_sniff;
+    return NO;
+}
+
+//  Run the selected dog's Exec with stdout captured into the memfd.
+//  Reached via `try` from serve_inproc so call/try snapshot+rewind
+//  ABC_BASS — the dogs' per-call carves don't accumulate across
+//  requests (the trap the fuzzer hit).
+static ok64 run_capture(void) {
+    sane(1);
+    GRAFArenaCleanup();   //  reset graf's render arena; harmless for others
+    int save = dup(STDOUT_FILENO);
+    (void)ftruncate(woof_api_memfd, 0);
+    (void)lseek(woof_api_memfd, 0, SEEK_SET);
+    (void)dup2(woof_api_memfd, STDOUT_FILENO);
+    if      (strcmp(woof_api_dog, "keeper") == 0) (void)KEEPExec(&woof_api_cli);
+    else if (strcmp(woof_api_dog, "graf")   == 0) (void)GRAFExec(&woof_api_cli);
+    else if (strcmp(woof_api_dog, "spot")   == 0) (void)SPOTExec(&woof_api_cli);
+    else if (strcmp(woof_api_dog, "sniff")  == 0) (void)SNIFFExec(&woof_api_cli);
+    (void)dup2(save, STDOUT_FILENO);
+    (void)close(save);
+    done;
+}
+
+//  Serve a projector in-process: <dog>Exec → TLV (memfd) → c->pipe_in →
+//  HTML in c->out (same render the worker path uses) → DRAIN.  No fork.
+//  OK on success; non-OK lets read_cb fork instead.
+static ok64 serve_inproc(conn *c, uri *u, char const *dog) {
+    sane(c && u && dog);
+    if (!woof_api_ready) fail(WOOFFAIL);
+
+    //  Verbless projector cli — each dog synthesizes the verb from the
+    //  scheme.  `u`'s slices point into c->uri, stable for the call.
+    uribReset(woof_api_cli.uris);
+    call(uribFeed1, woof_api_cli.uris, *u);
+    zerop(&woof_api_cli.verb);
+    HUNKMode = HUNKOutTLV;
+    woof_api_dog = dog;
+
+    try(run_capture);
+    __ = OK;   //  ignore projection-level errors; render whatever landed
+
+    //  TLV → c->pipe_in (the buffer the worker path fills), capped.
+    (void)lseek(woof_api_memfd, 0, SEEK_SET);
+    {
+        size_t room = (size_t)(c->pipe_in[3] - c->pipe_in[2]);
+        if (room > 0) {
+            ssize_t n = read(woof_api_memfd, c->pipe_in[2], room);
+            if (n > 0) c->pipe_in[2] += n;
+        }
+    }
+
+    //  HTTP envelope + HTML prelude, render the TLV, then postlude.
+    Bu8 out = { c->out[0], c->out[1], c->out[2], c->out[3] };
+    call(u8bFeed, out, LIT(RESP_200_HEAD));
+    call(u8bFeed, out, LIT(HTML_PRELUDE_HEAD));
+    call(html_escape_into, out, c->uri);
+    call(u8bFeed, out, LIT(HTML_PRELUDE_TAIL));
+    c->out[2] = out[2];
+
+    render_hunks(c);
+
+    {
+        Bu8 tail = { c->out[0], c->out[1], c->out[2], c->out[3] };
+        call(u8bFeed, tail, LIT(HTML_POSTLUDE));
+        c->out[2] = tail[2];
+    }
+    c->state = WOOF_DRAIN;
+    done;
+}
+
 // --- read_cb ---
 
 static short read_cb(int fd, poller *p) {
@@ -453,46 +722,48 @@ static short read_cb(int fd, poller *p) {
     //  Stash the decoded be-URI in c->in's idle tail.  The bytes
     //  live as long as the slot.
     Bu8 beuri_buf = { c->in[2], c->in[2], c->in[2], c->in[3] };
-    if (extract_be_uri(beuri_buf, req->uri) != OK) {
+    if (WOOFutf8ExtractURI(beuri_buf, req->uri) != OK) {
         fail_reply(c, RESP_400, sizeof(RESP_400)-1); return 0;
     }
     c->in[2] = beuri_buf[2];
     c->uri[0] = beuri_buf[1];
     c->uri[1] = beuri_buf[2];
 
-    //  Static assets short-circuit: any path whose first segment is
-    //  "static" is served from `<root>/.be/static/<rest>` with no
-    //  worker fork.  `cur` advances past the consumed segment, so
-    //  whatever PATHu8sDrainNE leaves behind IS the relative tail.
-    {
-        u8cs cur   = { c->uri[0], c->uri[1] };
-        u8cs first = {};
-        a$str(s_static, "static");
-        if (PATHu8sDrainNE(cur, first) == OK && $eq(first, s_static)) {
-            ok64 sr = serve_static(c, cur);
-            if (sr == WOOFBADREQ) {
-                fail_reply(c, RESP_400, sizeof(RESP_400)-1); return 0;
-            }
-            if (sr == WOOFNOROUTE) {
-                fail_reply(c, RESP_404, sizeof(RESP_404)-1); return 0;
-            }
+    //  Decide: static asset (served inline), worker route, or error.
+    //  WOOFConnRoute runs the same parse path woof/fuzz drives; only
+    //  the worker fork + HTML envelope below are read_cb's own.
+    woof_route const *route = NULL;
+    ok64 rerr = OK;
+    switch (WOOFConnRoute(c, &route, &rerr)) {
+        case WOOF_DISP_ERROR:
+            if (rerr == WOOFBADREQ)
+                fail_reply(c, RESP_400, sizeof(RESP_400) - 1);
+            else
+                fail_reply(c, RESP_404, sizeof(RESP_404) - 1);
+            return 0;
+        case WOOF_DISP_STATIC:
             //  serve_static populated c->out and flipped to DRAIN.
             //  Swap our callback to write_cb and return POLLOUT —
             //  same shape as the worker-spawn path.
             p->callback = write_cb;
             return POLLOUT;
-        }
+        case WOOF_DISP_WORKER:
+            break;
     }
 
-    //  Scheme → worker.
-    uri u = {};
-    a_dup(u8c, view2, c->uri);
-    if (URIutf8Drain(view2, &u) != OK) {
-        fail_reply(c, RESP_400, sizeof(RESP_400)-1); return 0;
-    }
-    woof_route const *route = WOOFRouteFind(u.scheme);
-    if (route == NULL) {
-        fail_reply(c, RESP_404, sizeof(RESP_404)-1); return 0;
+    //  --api: dispatch in-process to whichever projector dog owns the
+    //  scheme and is open; otherwise fall through to the fork path.
+    if (WOOF.api) {
+        uri au = {};
+        a_dup(u8c, av, c->uri);
+        if (URIutf8Drain(av, &au) == OK) {
+            char const *dog = DOGProjectorDog(au.scheme);
+            if (dog != NULL && woof_api_dog_open(dog)
+                && serve_inproc(c, &au, dog) == OK) {
+                p->callback = write_cb;
+                return POLLOUT;
+            }
+        }
     }
 
     //  Spawn worker → c->pipe_fd, c->worker_pid.
@@ -560,19 +831,7 @@ static short pipe_cb(int fd, poller *p) {
     //  past the consumed bytes; we mirror that on pipe_in's data head.
     //  Short frames (HUNKu8sDrain != OK) wait for more bytes via the
     //  next POLLIN.
-    while ((size_t)(c->out[3] - c->out[2]) >= WOOF_HUNK_HEADROOM
-           && c->pipe_in[1] < c->pipe_in[2]) {
-        hunk hk = {};
-        u8cs frame = { c->pipe_in[1], c->pipe_in[2] };
-        if (HUNKu8sDrain(frame, &hk) != OK) break;
-        c->pipe_in[1] = (u8 *)frame[0];
-        //  HUNKu8sFeedHtml writes into a `u8s` (head/term slice), not a
-        //  `Bu8` (past/data/idle/term).  Hand it the idle range and
-        //  commit the advanced head back into c->out's idle pointer.
-        u8s idle = { c->out[2], c->out[3] };
-        (void)HUNKu8sFeedHtml(idle, &hk);
-        c->out[2] = idle[0];
-    }
+    render_hunks(c);
     //  Fully drained: reset pipe_in so the next read starts at base
     //  (cheap compaction; avoids fragmentation as records arrive).
     if (c->pipe_in[1] == c->pipe_in[2]) {

@@ -207,6 +207,21 @@ static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
     call(u8bMap, g->obj_buf,  GRAF_OBJ_BUF_SIZE);
     call(u8bMap, g->tree_buf, GRAF_OBJ_BUF_SIZE);
 
+    //  graf only ever READS keeper (commits/trees/blobs; it writes only
+    //  its own `.graf.idx`).  Open it RO here — at the top of the call
+    //  chain — so GRAFExec is a pure read against an already-open store
+    //  (CLAUDE.md §5; resource open/close never belongs in Exec).  The
+    //  flat single-pool store means this open serves every branch: the
+    //  `?ref` slot is resolved per-Exec via REFS, no per-branch reopen.
+    //  If keeper is already open (a caller or sibling dog opened it),
+    //  KEEPOPEN says so and we leave the close to whoever owns it.
+    {
+        ok64 ko = KEEPOpenBranch(h, norm, NO);
+        if (ko == OK)            g->keep_owned = YES;
+        else if (ko == KEEPOPEN) g->keep_owned = NO;
+        else                     return ko;
+    }
+
     done;
 }
 
@@ -445,6 +460,9 @@ ok64 GRAFClose(void) {
     if (g->obj_buf[0])  u8bUnMap(g->obj_buf);
     if (g->tree_buf[0]) u8bUnMap(g->tree_buf);
     if (g->lock_fd >= 0) FILEClose(&g->lock_fd);
+    //  Release the keeper we opened in graf_open_branch_w (skip when a
+    //  caller/sibling owns it — KEEPOPEN at open time set keep_owned=NO).
+    if (g->keep_owned) { KEEPClose(); g->keep_owned = NO; }
     g->runs_n = 0;
     g->out_fd = -1;
     g->h = NULL;

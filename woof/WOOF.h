@@ -150,6 +150,11 @@ typedef struct {
     u8cs  bind_addr;     // borrowed from argv; default "127.0.0.1"
     u16   port;          // default WOOF_PORT_DEFAULT
     b8    rw;             // YES → enable mutating verbs (reserved; v1=NO)
+    b8    api;            // YES (`--api`) → dispatch projector schemes
+                         // in-process (library call) instead of fork+
+                         // exec'ing a worker.  Single project, opened
+                         // once at serve start (WOOFApiOpen).  Schemes
+                         // without an in-process path still fork.
 } woof;
 
 extern woof WOOF;
@@ -161,8 +166,45 @@ ok64 WOOFClose(void);
 
 ok64 WOOFExec(cli *c);
 
+//  In-process projection dispatch (`--api` mode).  WOOFApiOpen opens
+//  the projector dog(s) once against WOOF.h's project (single project;
+//  multi-project dispatch is a TODO — see WOOF.cli.c); WOOFApiClose
+//  releases them.  Implemented in CONN.c (it links the dog libs); no-op
+//  unless WOOF.api.  Called by woof_serve / WOOFClose.
+ok64 WOOFApiOpen(void);
+void WOOFApiClose(void);
+
 //  Verb + value-flag tables for CLIParse.
 extern char const *const WOOF_VERBS[];     // "serve", "status", NULL
 extern char const WOOF_VAL_FLAGS[];        // "bp" — --bind, --port
+
+// --- Request pipeline (shared by CONN.c read_cb, tests, fuzz) ---
+//
+//  These three carry the URI-parse-and-dispatch path that read_cb
+//  runs after the HTTP layer hands it a request-target.  They are
+//  fork-free and side-effect-light (the only resource serve_static
+//  touches is a balanced mmap), so woof/fuzz can drive the exact same
+//  parsing in-process — "dispatch at API level, not by proc fork".
+
+//  Routing verdict from WOOFConnRoute.  No fork, no socket writes.
+typedef enum {
+    WOOF_DISP_ERROR  = 0,   // *err set (WOOFBADREQ→400 / WOOFNOROUTE→404)
+    WOOF_DISP_STATIC,       // served inline into c->out (state := DRAIN)
+    WOOF_DISP_WORKER,       // *route set; caller forks route->binary
+} woof_disp;
+
+//  Strip the leading '/' from `target` and percent-decode the rest
+//  into `out` (reset first).  WOOFBADREQ on missing slash / bad '%XX'.
+ok64 WOOFutf8ExtractURI(Bu8 out, u8cs target);
+
+//  Carve a slot's 4 MB at WOOF.pool[c->slot * WOOF_SLOT_BYTES] into the
+//  conn's in / pipe_in / out views.  WOOF.pool must be mapped.
+void WOOFConnCarve(conn *c);
+
+//  Decide what to do with a request whose `c->uri` already holds the
+//  decoded be-URI: serve a static asset inline (fills c->out), route
+//  to a worker (sets *route), or fail (sets *err).  Mirrors read_cb's
+//  parse path verbatim, minus the worker fork.
+woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err);
 
 #endif
