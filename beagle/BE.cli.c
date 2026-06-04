@@ -625,11 +625,6 @@ static ok64 BEProjector(cli *c, uri *u) {
 }
 
 
-//  POST-001 p2 submodule-recursion gate (defined below, used by the
-//  five verb sites: BEHeadSubs / BEActSubsGet / BEActSubsPatch /
-//  BEActSubsPost local path / BEActSubsRelay).
-static b8   be_subs_recurse_default(cli *c);
-static void be_subs_skip_marker(cli *c);
 
 //  `be head <uri>` — peek/dry-run.  Per VERBS.md §"HEAD":
 //    - `?br` (local)              — ahead/behind cur vs ?br
@@ -738,10 +733,12 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
 ok64 BEHeadSubs(cli *c) {
     sane(c);
 
-    //  Scheme gate (POST-001 p2): recurse by default only for a
-    //  keeper-protocol source (also honors --nosub / --sub).  A git
-    //  source skips sub recursion unless --sub is given.
-    if (!be_subs_recurse_default(c)) { be_subs_skip_marker(c); done; }
+    //  Local sub status is unconditional — every mounted sub is a
+    //  beagle worktree, so HEAD always reports it.  Only the per-sub
+    //  REMOTE ahead/behind (transport mode below) can't recurse into a
+    //  git peer; that is handled by swapping each sub's own URL.
+    //  `--nosub` is the explicit opt-out.
+    if (CLIHas(c, "--nosub")) done;
 
     //  Need a wt root to enumerate / chdir from.
     if (!u8bHasData(c->repo)) done;
@@ -875,9 +872,11 @@ ok64 BEActSubsGet(cli *c) {
         fprintf(stderr, "be: submodule(s) skipped (--nosub)\n");
         done;
     }
-    //  Scheme gate (POST-001 p2): recurse by default only for a
-    //  keeper-protocol source; a git source needs an explicit --sub.
-    if (!be_subs_recurse_default(c)) { be_subs_skip_marker(c); done; }
+    //  Otherwise recurse unconditionally: mounting each declared sub is
+    //  the default for every source.  A sub is fetched from its OWN
+    //  `.gitmodules` URL (its own remote, not the parent's), or skipped
+    //  when its pin is already present in the local shard (offline-safe);
+    //  recursion is never gated on the parent's source scheme.
 
     //  Re-resolve the wt root + active branch after the local body
     //  (sniff get) ran — a fresh-clone path may have populated
@@ -1006,8 +1005,8 @@ ok64 BEActSubsGet(cli *c) {
 ok64 BEActSubsPatch(cli *c) {
     sane(c);
     if (CLIHas(c, "--nosub")) done;
-    //  Scheme gate (POST-001 p2): git source → no recurse (need --sub).
-    if (!be_subs_recurse_default(c)) { be_subs_skip_marker(c); done; }
+    //  Local absorb is unconditional — patching a mounted sub at a
+    //  moved pin is local work, never gated on the parent's source.
     if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
 
@@ -2079,6 +2078,12 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
                        u8csEmpty(u->path) &&
                        u8csEmpty(u->query);
         if (pure_frag) continue;
+        //  Transport URI = the PARENT's remote.  Never forward it to a
+        //  sub: the sub commits LOCALLY only here (a git remote can't
+        //  take a beagle sub; a keeper remote is pushed by the separate
+        //  push-recursion path).  The commit message still reaches the
+        //  sub via parent_msg → msg_uri, composed above.
+        if (!u8csEmpty(u->scheme)) continue;
         //  Local branch-query URI = this level's commit target; do not
         //  forward verbatim (project belongs to THIS level, not the
         //  sub).  Its coordinate is already folded into synth_uri.
@@ -2155,69 +2160,6 @@ static b8 be_post_target_is_keeper(uri const *u) {
     if (u8csEmpty(u->scheme) && u8csEmpty(u->authority)) return YES;
     //  ssh://host, //host, http(s):// → git peer.
     return NO;
-}
-
-//  Submodule-recursion default gate (POST-001 phase 2).  Recursion
-//  into mounted subs is the DEFAULT only when the parent's SOURCE
-//  speaks the keeper protocol (be:/keeper:/file:/local store), where
-//  a sub is fetched by [Title] from that same remote.  A git source
-//  (ssh:/https:/http:/git:/*.git) does NOT recurse by default — its
-//  submodules are managed by hand (post/16) and would otherwise reach
-//  a dead `.gitmodules` URL offline.  Resolution order:
-//    * `--nosub`  → NO  (explicit opt-out always wins)
-//    * `--sub`    → YES (explicit opt-in: force recurse on a git src)
-//    * transport URI present (uris[0]->scheme) → judge that URI
-//    * else (local verb) → the project's persisted line-1 `get` source
-//                          scheme (REFSSourceScheme); see Title.mkd
-//    * unreadable / unknown source → NO (offline-safe default)
-static b8 be_subs_recurse_default(cli *c) {
-    if (CLIHas(c, "--nosub")) return NO;
-    if (CLIHas(c, "--sub"))   return YES;
-    //  Transport invocation: the target URI on the command line is the
-    //  source for this op — judge it directly.
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        uri *u = uribAtP(c->uris, i);
-        if (!u8csEmpty(u->scheme))
-            return be_post_target_is_keeper(u);
-    }
-    //  Local verb (no transport URI): read the PERSISTED source from
-    //  the project's line-1 `get` row.
-    home rh = {};
-    uri none = {};
-    if (HOMEOpen(&rh, &none, NO) != OK) { HOMEClose(&rh); return NO; }
-    a_path(keepdir);
-    if (HOMEBranchDir(&rh, keepdir, NULL) != OK) { HOMEClose(&rh); return NO; }
-    a_pad(u8, src_arena, MAX_URI_LEN);
-    uri src = {};
-    ok64 sr = REFSSourceScheme($path(keepdir), &src, src_arena);
-    HOMEClose(&rh);
-    if (sr != OK) return NO;   //  no get row / unreadable → no-recurse
-    return be_post_target_is_keeper(&src);
-}
-
-//  Count declared subs at `wt_root` — so the git-source skip marker
-//  only prints when there is actually something to skip (a no-sub
-//  project on a git remote stays silent, matching the bulk of the
-//  test golden files).
-static ok64 be_subs_count_cb(besub const *s, void *vc) {
-    (void)s;
-    (*(u32 *)vc)++;
-    return OK;
-}
-static b8 be_subs_declared_at(u8cs wt_root) {
-    u32 n = 0;
-    (void)BESubsHere(wt_root, be_subs_count_cb, &n);
-    return n > 0;
-}
-
-//  Emit the "git source" skip marker iff `wt_root` declares subs.
-//  Centralises the message so the five gate sites stay uniform.
-static void be_subs_skip_marker(cli *c) {
-    if (!u8bHasData(c->repo)) return;
-    a_dup(u8c, wt_root, $path(c->repo));
-    if (be_subs_declared_at(wt_root))
-        fprintf(stderr,
-                "be: submodule(s) skipped (git source; use --sub)\n");
 }
 
 //  Transport-push recursion state: forward the parent's transport URI
@@ -2350,15 +2292,22 @@ ok64 BEActSubsPost(cli *c) {
             (void)BESubsHere(push_root, bepush_recurse_cb, &prc);
             return prc.worst;   //  OK → plan proceeds to parent push
         }
-        done;   //  git peer (or no wt): user manages submodules
+        //  Git peer: the REMOTE push can't recurse into a git submodule,
+        //  but the LOCAL commits still MUST happen — fall through to the
+        //  local commit recursion below.  It forwards a local `be post`
+        //  (transport URI stripped) into each mounted sub, so a dirty
+        //  sub commits + bumps its gitlink BEFORE the parent's own git
+        //  push (BEActKeeperPush) runs.  No `done` here — local sub work
+        //  is unconditional; only the sub PUSH is suppressed for git.
     }
 
-    //  Local commit path (no transport URI).  Scheme gate (POST-001
-    //  p2): recurse the local commit into subs only when the parent's
-    //  PERSISTED source is a keeper remote; a git-sourced parent
-    //  manages its subs by hand (--sub forces it).  The transport-push
-    //  block above already gates on be_post_target_is_keeper(tu).
-    if (!be_subs_recurse_default(c)) { be_subs_skip_marker(c); done; }
+    //  Local commit path: ALWAYS recurse.  Every mounted sub is a beagle
+    //  worktree — there is no git locally — so a commit must descend into
+    //  subs regardless of the parent's remote (a git remote only governs
+    //  whether the PUSH recurses, handled above).  Reached for both
+    //  no-transport posts and git-peer transport posts.  `--nosub`
+    //  already short-circuited at the top of this function.
+    if (CLIHas(c, "--nosub")) done;
 
     //  Skip recursion on bare-status (no commit work to recurse into).
     //  Dry-only always recurses (it's the audit pass).
@@ -2550,8 +2499,9 @@ static ok64 be_relay_subs(cli *c, u8css argv) {
 ok64 BEActSubsRelay(cli *c) {
     sane(c);
     if (CLIHas(c, "--nosub"))      done;
-    //  Scheme gate (POST-001 p2): git source → no recurse (need --sub).
-    if (!be_subs_recurse_default(c)) { be_subs_skip_marker(c); done; }
+    //  Bare stage-all / delete-all recurses into mounted subs
+    //  unconditionally — staging is local work, never gated on source.
+    //  Path-scoped / remote forms target the parent and stop here.
     if (uribDataLen(c->uris) > 0)  done;   //  bare form only
     if (u8csEmpty(c->verb))        done;
     if (!u8bHasData(c->repo))      done;

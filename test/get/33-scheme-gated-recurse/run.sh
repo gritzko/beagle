@@ -1,18 +1,17 @@
 #!/bin/sh
-#  get/33-scheme-gated-recurse — POST-001 phase 2: submodule recursion
-#  is the DEFAULT only for a keeper/beagle source.  A git source
-#  (here: a `file:…par.git` path — `.git` suffix marks it git, so
-#  be_post_target_is_keeper says NO) does NOT recurse by default; the
-#  explicit `--sub` flag forces it.  Fully offline (file://), no ssh.
+#  get/33-scheme-gated-recurse — submodule recursion is UNCONDITIONAL.
+#  `be get` mounts declared subs by default for EVERY source; there is
+#  no scheme gate and no `--sub` flag.  A sub is fetched from its OWN
+#  `.gitmodules` URL (its own remote), so a dead URL is a real fetch
+#  failure (git-consistent: `git clone --recursive` fails too), and the
+#  ONLY opt-out is `--nosub`.  Fully offline (file://), no ssh.
 #
-#  Three scenarios, all hermetic:
-#    A. git source, declared sub with a DEAD .gitmodules URL → `be get`
-#       SKIPS the sub (prints the git-source marker), exits 0, and
-#       never reaches the unreachable URL.  (Offline-failure-becomes-
-#       success: the whole point of the scheme gate.)
-#    B. git source + `--sub` → recursion is forced; the sub mounts.
-#    C. keeper source (file:// beagle store) → recurses by DEFAULT;
-#       the sub mounts with no flag.
+#    A. git source, REACHABLE sub → recurses + mounts by default, no
+#       skip marker, exit 0.
+#    B. git source, DEAD sub URL → recursion fires and the fetch fails
+#       (get exits non-zero, no silent skip); `--nosub` is the escape
+#       hatch — sub left unmounted, parent checked out, exit 0.
+#    C. keeper source (file:// beagle store) → recurses by default.
 
 . "$(dirname "$0")/../../lib/case.sh"
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -36,73 +35,69 @@ printf 'subblob\n' > sub/s.txt
 git -C sub add -A; git -C sub commit -qm sub
 
 # =====================================================================
-# A. git source with a DEAD submodule URL — must SKIP, not fetch.
-#    `parA.git` has a `.git` basename → be_post_target_is_keeper = NO.
+# A. git source, REACHABLE sub — recurses + mounts by default.
 # =====================================================================
 mkg parA.git || { echo "FAIL(setup): git init parA.git"; exit 1; }
 printf 'parA\n' > parA.git/p.txt
 git -C parA.git -c protocol.file.allow=always \
     submodule add -q "$SCRATCH/sub" vsub >/dev/null 2>&1 \
     || { echo "FAIL(setup): submodule add (A)"; exit 1; }
-#  Point the declared URL at an unreachable path: if the gate ever
-#  regresses to recurse, the fetch hits this and the test fails loudly.
-cat > parA.git/.gitmodules <<EOF
-[submodule "vsub"]
-	path = vsub
-	url = file:///nonexistent-dead-$$/dead.git
-EOF
 git -C parA.git add -A; git -C parA.git commit -qm parA
 
 mkdir -p wtA/.be
 ( cd wtA && "$BE" get "file:$SCRATCH/parA.git" >../A.out 2>../A.err )
 rcA=$?
 [ "$rcA" = 0 ] \
-    || { echo "FAIL(A): git source get exited $rcA (sub skip should keep it green)" >&2
+    || { echo "FAIL(A): git source get exited $rcA" >&2; cat A.err >&2; exit 1; }
+[ -f wtA/p.txt ]      || { echo "FAIL(A): parent p.txt missing" >&2; exit 1; }
+[ -f wtA/vsub/s.txt ] \
+    || { echo "FAIL(A): git source did NOT mount the sub by default" >&2
          cat A.err >&2; exit 1; }
-[ -f wtA/p.txt ] \
-    || { echo "FAIL(A): parent p.txt missing" >&2; exit 1; }
-grep -q 'skipped (git source' A.err \
-    || { echo "FAIL(A): expected git-source skip marker on stderr" >&2
-         cat A.err >&2; exit 1; }
-[ ! -e wtA/vsub/s.txt ] \
-    || { echo "FAIL(A): sub materialised on a git source without --sub" >&2; exit 1; }
-[ ! -e wtA/vsub/.be ] \
-    || { echo "FAIL(A): sub mounted on a git source without --sub" >&2; exit 1; }
-#  Proof it never reached the dead URL: no fetch/wire error recorded.
-! grep -qiE 'dead\.git|nonexistent-dead|WIRECLFL|WIREFAIL' A.err \
-    || { echo "FAIL(A): get reached the dead submodule URL (gate regressed)" >&2
-         cat A.err >&2; exit 1; }
+match sub/s.txt wtA/vsub/s.txt
+! grep -q 'skipped (git source' A.err \
+    || { echo "FAIL(A): obsolete git-source skip marker" >&2; cat A.err >&2; exit 1; }
 
 # =====================================================================
-# B. git source + --sub — recursion FORCED; sub mounts.
-#    parB.git pins a REACHABLE sub url so the forced fetch succeeds.
+# B. git source, DEAD sub URL — recursion fires, fetch fails (no silent
+#    skip); `--nosub` is the only opt-out.
 # =====================================================================
 mkg parB.git || { echo "FAIL(setup): git init parB.git"; exit 1; }
 printf 'parB\n' > parB.git/p.txt
 git -C parB.git -c protocol.file.allow=always \
     submodule add -q "$SCRATCH/sub" vsub >/dev/null 2>&1 \
     || { echo "FAIL(setup): submodule add (B)"; exit 1; }
+cat > parB.git/.gitmodules <<EOF
+[submodule "vsub"]
+	path = vsub
+	url = file:///nonexistent-dead-$$/dead.git
+EOF
 git -C parB.git add -A; git -C parB.git commit -qm parB
 
+#  B1: default recurse → the dead fetch is reached and fails the get.
+#  Guard with `if` (not `cmd; rc=$?`) so set -e doesn't abort on the
+#  expected non-zero exit.
 mkdir -p wtB/.be
-( cd wtB && "$BE" get --sub "file:$SCRATCH/parB.git" >../B.out 2>../B.err )
-rcB=$?
-[ "$rcB" = 0 ] \
-    || { echo "FAIL(B): git source --sub get exited $rcB" >&2; cat B.err >&2; exit 1; }
-[ -f wtB/vsub/s.txt ] \
-    || { echo "FAIL(B): --sub did not force sub recursion on a git source" >&2
-         cat B.err >&2; exit 1; }
-match sub/s.txt wtB/vsub/s.txt
+if ( cd wtB && "$BE" get "file:$SCRATCH/parB.git" >../B.out 2>../B.err ); then
+    echo "FAIL(B1): dead sub URL should fail the get (no silent skip)" >&2
+    cat B.err >&2; exit 1
+fi
+[ -f wtB/p.txt ] || { echo "FAIL(B1): parent p.txt missing" >&2; exit 1; }
+grep -qiE 'dead\.git|nonexistent-dead|WIRECLFL' B.err \
+    || { echo "FAIL(B1): recursion did not reach the sub fetch" >&2; cat B.err >&2; exit 1; }
+
+#  B2: --nosub is the escape hatch — sub left unmounted, get succeeds.
+mkdir -p wtB2/.be
+( cd wtB2 && "$BE" get --nosub "file:$SCRATCH/parB.git" >../B2.out 2>../B2.err )
+rcB2=$?
+[ "$rcB2" = 0 ] \
+    || { echo "FAIL(B2): --nosub get exited $rcB2" >&2; cat B2.err >&2; exit 1; }
+[ -f wtB2/p.txt ]       || { echo "FAIL(B2): parent p.txt missing" >&2; exit 1; }
+[ ! -e wtB2/vsub/.be ]  || { echo "FAIL(B2): --nosub still mounted the sub" >&2; exit 1; }
+grep -q 'skipped (--nosub' B2.err \
+    || { echo "FAIL(B2): expected the --nosub skip marker" >&2; cat B2.err >&2; exit 1; }
 
 # =====================================================================
 # C. keeper source (file:// beagle store) — recurses by DEFAULT.
-#    Build a plain (non-`.git`) git parent `parC` whose sub is added by
-#    `git submodule add` (so the gitlink path == the sub url basename
-#    `sub`, and the beagle clone titles its shard `sub`).  Clone it
-#    into a beagle store K (git source → git's own recursion mounts the
-#    sub there), then re-get the beagle project with NO flag: the
-#    keeper-source default recurses.  Mirrors get/31's working keeper
-#    leg.
 # =====================================================================
 mkg parC || { echo "FAIL(setup): git init parC"; exit 1; }
 printf 'parC\n' > parC/p.txt
@@ -124,15 +119,13 @@ mkdir -p wtC/.be
 rcC=$?
 [ "$rcC" = 0 ] \
     || { echo "FAIL(C): keeper source get exited $rcC" >&2; cat C.err >&2; exit 1; }
-[ -f wtC/p.txt ] \
-    || { echo "FAIL(C): keeper parent p.txt missing" >&2; exit 1; }
+[ -f wtC/p.txt ]      || { echo "FAIL(C): keeper parent p.txt missing" >&2; exit 1; }
 [ -f wtC/sub/s.txt ] \
     || { echo "FAIL(C): keeper source did NOT recurse into the sub by default" >&2
          cat C.err >&2; find wtC ! -path '*/.be/*' >&2; exit 1; }
 match K/sub/s.txt wtC/sub/s.txt
-#  No git-source skip marker on a keeper source.
 ! grep -q 'skipped (git source' C.err \
-    || { echo "FAIL(C): keeper source emitted the git-source skip marker" >&2
+    || { echo "FAIL(C): obsolete git-source skip marker on a keeper source" >&2
          cat C.err >&2; exit 1; }
 
 echo "get/33-scheme-gated-recurse: OK"

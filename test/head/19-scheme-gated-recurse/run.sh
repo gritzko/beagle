@@ -1,16 +1,15 @@
 #!/bin/sh
-#  head/19-scheme-gated-recurse — POST-001 phase 2 for the LOCAL-verb
-#  path: `be head` (no transport URI) decides sub recursion off the
-#  project's PERSISTED source scheme (REFSSourceScheme, line-1 get row).
-#  A git-sourced checkout does NOT recurse into subs; a keeper-sourced
-#  checkout does.  Fully offline (file://), no ssh.
+#  head/19-scheme-gated-recurse — submodule recursion is UNCONDITIONAL.
+#  `be head` (a local, read-only dry-run) reports every mounted sub
+#  regardless of the project's source scheme — there is no scheme gate
+#  and no `--sub` flag.  A git-sourced checkout recurses its local head
+#  exactly like a keeper-sourced one; only the per-sub REMOTE ahead/
+#  behind can't recurse into a git peer.  Fully offline (file://), no ssh.
 #
-#    A. git source (`file:…parA.git`, --sub forces the initial mount so
-#       there's a sub on disk), then bare `be head`: the LOCAL head must
-#       NOT recurse — persisted source is git → git-source skip marker,
-#       no `be: head <sub>` recursion line.
-#    B. keeper source (file:// beagle store), bare `be head`: recurses —
-#       a `be: head <sub>` line appears, no git-source skip marker.
+#    A. git source (`file:…parA.git`): `be get` mounts the sub by default,
+#       then bare `be head` recurses — a `be: head vsub` line, no
+#       git-source skip marker.
+#    B. keeper source (file:// beagle store): same — recurses by default.
 
 . "$(dirname "$0")/../../lib/case.sh"
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -28,7 +27,7 @@ mkg sub || { echo "FAIL(setup): git init sub"; exit 1; }
 printf 'subblob\n' > sub/s.txt
 git -C sub add -A; git -C sub commit -qm sub
 
-# --- A. git source: local head must NOT recurse ----------------------
+# --- A. git source: local head recurses ------------------------------
 mkg parA.git || { echo "FAIL(setup): git init parA.git"; exit 1; }
 printf 'parA\n' > parA.git/p.txt
 git -C parA.git -c protocol.file.allow=always \
@@ -37,18 +36,20 @@ git -C parA.git -c protocol.file.allow=always \
 git -C parA.git add -A; git -C parA.git commit -qm parA
 
 mkdir -p wtA/.be
-#  --sub on the initial get forces the sub mount (git source) so the
-#  later LOCAL head has a mounted sub to (not) recurse into.
-( cd wtA && "$BE" get --sub "file:$SCRATCH/parA.git" >../A.get.out 2>../A.get.err ) \
-    || { echo "FAIL(A): seed git get --sub" >&2; cat A.get.err >&2; exit 1; }
+#  No --sub: a git source recurses and mounts the sub by default.
+( cd wtA && "$BE" get "file:$SCRATCH/parA.git" >../A.get.out 2>../A.get.err ) \
+    || { echo "FAIL(A): seed git get" >&2; cat A.get.err >&2; exit 1; }
 [ -f wtA/vsub/s.txt ] || { echo "FAIL(A): seed sub not mounted" >&2; exit 1; }
 
-( cd wtA && "$BE" head >../A.head.out 2>../A.head.err )
-grep -q 'skipped (git source' A.head.err \
-    || { echo "FAIL(A): local head on a git source should print the skip marker" >&2
+#  The recursion FIRING (the `be: head vsub` line) is what this case
+#  asserts; a detached sub's own head may resolve to nothing, so don't
+#  let a non-zero exit abort under set -e.
+( cd wtA && "$BE" head >../A.head.out 2>../A.head.err ) || true
+grep -q '^be: head vsub' A.head.err \
+    || { echo "FAIL(A): local head did NOT recurse into the sub on a git source" >&2
          cat A.head.err >&2; exit 1; }
-! grep -q '^be: head vsub' A.head.err \
-    || { echo "FAIL(A): local head recursed into the sub on a git source" >&2
+! grep -q 'skipped (git source' A.head.err \
+    || { echo "FAIL(A): obsolete git-source skip marker on local head" >&2
          cat A.head.err >&2; exit 1; }
 
 # --- B. keeper source: local head recurses ---------------------------
@@ -68,9 +69,9 @@ mkdir -p wtB/.be
     || { echo "FAIL(B): keeper seed get" >&2; cat B.get.err >&2; exit 1; }
 [ -f wtB/sub/s.txt ] || { echo "FAIL(B): keeper seed sub not mounted" >&2; exit 1; }
 
-( cd wtB && "$BE" head >../B.head.out 2>../B.head.err )
+( cd wtB && "$BE" head >../B.head.out 2>../B.head.err ) || true
 ! grep -q 'skipped (git source' B.head.err \
-    || { echo "FAIL(B): keeper-source local head emitted the git-source skip marker" >&2
+    || { echo "FAIL(B): obsolete git-source skip marker on keeper head" >&2
          cat B.head.err >&2; exit 1; }
 grep -q '^be: head sub' B.head.err \
     || { echo "FAIL(B): keeper-source local head did NOT recurse into the sub" >&2
