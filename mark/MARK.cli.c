@@ -82,10 +82,15 @@ static ok64 mark_render_inner(path8s inpath, path8b opath, markopts opts) {
 
 typedef struct {
     markopts opts;
+    ok64     breach;  // first non-OK render across the walk (CI gate)
 } mark_dir_ctx;
 
-//  FILEScanFiles callback: render each *.mkd in the directory.  One bad
-//  page warns and is skipped so the batch continues.
+//  FILEScanFiles callback: render each *.mkd in the directory.  A bad
+//  page warns and the batch continues so every breach is reported; the
+//  first non-OK result is remembered in the ctx and propagated by the
+//  caller, so a directory build still fails (non-zero exit) under
+//  --strict.  Returning OK here is deliberate — a non-OK return would
+//  abort the scan and hide the remaining breaches.
 static ok64 mark_dir_cb(void0p arg, path8bp path) {
     sane(arg != NULL && path != NULL);
     mark_dir_ctx *dc = (mark_dir_ctx *)arg;
@@ -95,7 +100,11 @@ static ok64 mark_dir_cb(void0p arg, path8bp path) {
     if (memcmp(suf[0], ".mkd", 4) != 0) done;
     a_path(opath);
     try(mark_render_inner, p, opath, dc->opts);
-    nedo fprintf(stderr, "mark: %s failed: %s\n", (char const *)*p, ok64str(__));
+    nedo {
+        fprintf(stderr, "mark: %s failed: %s\n", (char const *)*p,
+                ok64str(__));
+        if (dc->breach == OK) dc->breach = __;
+    }
     return OK;
 }
 
@@ -110,8 +119,9 @@ static ok64 markcli_inner(markopts opts) {
         filestat fs = {};
         call(FILEStat, &fs, $path(inpath));
         if (fs.kind == FILE_KIND_DIR) {
-            mark_dir_ctx dc = {.opts = opts};
+            mark_dir_ctx dc = {.opts = opts, .breach = OK};
             call(FILEScanFiles, inpath, mark_dir_cb, &dc);
+            if (dc.breach != OK) return dc.breach;  // CI gate: fail the build
         } else {
             a_path(opath);
             call(mark_render_inner, $path(inpath), opath, opts);
