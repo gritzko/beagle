@@ -91,6 +91,20 @@ be 'log:./a.txt?v4#1' > "$T/E.out" 2>&1 || true
 want_lines "$T/E.out" 1
 want_grep  "$T/E.out" 'c3'
 
+# --- Case G: detached checkout `?<sha>` — bare `log:` lists history
+#   from the detached base, NOT empty (DIS-022).  `be log` resolves the
+#   current base whether attached or detached, via the shared cur-tip
+#   that `be` forwards as `--at` (graf reads cur_sha); a detached cur
+#   must not print an empty hunk.
+CASE=G
+C2=$(grep c2 "$T/A.out" | head -1 | awk '{print $1}')
+be get "?$C2" >/dev/null 2>&1 || true
+be 'log:' > "$T/G.out" 2>&1 || true
+want_grep "$T/G.out" 'c2'
+want_grep "$T/G.out" 'c1'
+#  Re-attach so Case F's wtlog surgery runs against a known tip.
+be get '?v4' >/dev/null 2>&1 || true
+
 # --- Case F: bare `log:` resolves cur via wtlog, ignoring intervening
 #   put-with-40hex-fragment rows (submodule/sub-shard pointers).
 #   Regression: SNIFFAtTailOf used to walk every row with a 40-hex
@@ -121,7 +135,7 @@ want_lines "$T/F.out" 4
 # --- Summary -----------------------------------------------------
 echo ""
 if [ "$FAIL" = "0" ]; then
-    echo "=== be-log-projector OK (6 cases) ==="
+    echo "=== be-log-projector OK (7 cases) ==="
 else
     echo "=== be-log-projector FAIL ($FAIL case(s)) ==="
     exit 1
