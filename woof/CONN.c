@@ -757,6 +757,13 @@ static short read_cb(int fd, poller *p) {
         uri au = {};
         a_dup(u8c, av, c->uri);
         if (URIutf8Drain(av, &au) == OK) {
+            //  Restore data to the full URI — URIutf8Drain consumes it,
+            //  but downstream dogs expect the canonical slice CLIParse
+            //  hands them (GRAFResolveTip rebuilds the pre-query text
+            //  from data[0]..query[0]; a consumed data[0] makes that
+            //  slice negative-length → memcpy abort).
+            au.data[0] = c->uri[0];
+            au.data[1] = c->uri[1];
             char const *dog = DOGProjectorDog(au.scheme);
             if (dog != NULL && woof_api_dog_open(dog)
                 && serve_inproc(c, &au, dog) == OK) {

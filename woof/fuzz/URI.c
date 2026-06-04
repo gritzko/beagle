@@ -118,10 +118,16 @@ static ok64 woof_fuzz_one(u8sc input) {
                 WOOF_FUZZ_DECODE + sizeof(WOOF_FUZZ_DECODE) };
     call(WOOFutf8ExtractURI, dec, target);
 
-    //  Lex the be-URI.
+    //  Lex the be-URI.  URIutf8Drain consumes u.data; restore it to the
+    //  full decoded slice (as CLIParse does) so dispatch sees the same
+    //  canonical uri a forked worker would — GRAFResolveTip rebuilds the
+    //  pre-query text from data[0]..query[0].
     uri u = {};
     a_dup(u8c, beuri, u8bData(dec));
     call(URIutf8Drain, beuri, &u);
+    a_dup(u8c, full, u8bData(dec));
+    u.data[0] = full[0];
+    u.data[1] = full[1];
 
     //  Verbless projector cli — GRAFExec synthesizes the verb from the
     //  scheme (diff/log/map/blame/weave).  u's slices point into the
