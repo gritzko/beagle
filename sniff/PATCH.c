@@ -269,14 +269,18 @@ typedef struct {
     b8    use_fork_base;
 } patch_stats;
 
-//  Emit a per-file status row (VERBS.md §PATCH "Reporting"): status is
-//  one of applied / merged / mod / conflict.  (`mod` = ours diverged
+//  Emit a per-file status row (PATCH.mkd §"Reporting"): status is one
+//  of applied / merged / mod / conf / modl.  (`mod` = ours diverged
 //  from the merge base and theirs didn't touch it, so the file is kept
-//  as-is — fork-relative, NOT "uncommitted-dirty".)  Rendered through
+//  as-is — fork-relative, NOT "uncommitted-dirty".)  DIS-018: a genuine
+//  WEAVE conflict reports `conf` and modify/delete divergence reports
+//  `modl` — both bright red (slot 'S'), both return OK; the conflict
+//  markers stay in the file so POST's POSTCFLCT scan is the
+//  patch→test→post safety net at commit time.  Rendered through
 //  `ULOGPrintStatusLine` so it shares the GET/POST banner's ULOG status
-//  shape (`<date>\t<verb>\t<path>`) and palette colour — all four verbs
-//  have entries in dog/ULOG.c.  Conflict rows are additionally echoed
-//  to stderr (loud).
+//  shape (`<date>\t<verb>\t<path>`) and palette colour — every verb has
+//  an entry in dog/ULOG.c.  Conflict rows are additionally echoed to
+//  stderr (loud).
 static void emit_status(const char *status, u8cs path) {
     if ($empty(path)) return;
     ron60 verb = 0;
@@ -284,7 +288,7 @@ static void emit_status(const char *status, u8cs path) {
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, path);
     (void)ULOGPrintStatusLine(&rep);
-    if (strcmp(status, "conflict") == 0 ||
+    if (strcmp(status, "conf") == 0 ||
         strcmp(status, "failed") == 0) {
         fprintf(stderr, "patch\t%s\t%.*s\n",
                 status, (int)$len(path), (char *)path[0]);
@@ -648,7 +652,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                         "sniff: patch: CONFLICT (content) %.*s\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->merged_conflict++;
-                    emit_status("conflict", childpath);
+                    emit_status("conf", childpath);
                 } else {
                     st->merged++;
                     emit_status("merged", childpath);
@@ -703,8 +707,10 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                         "sniff: patch: CONFLICT (add/add) %.*s\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->merged_conflict++;
+                    emit_status("conf", childpath);
                 } else {
                     st->merged++;
+                    emit_status("merged", childpath);
                 }
             } else {
                 st->failed++;
@@ -716,11 +722,13 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         //  Structural: one side absent at leaf, LCA had the path.
         //  Modify/delete asymmetry is preserved conservatively: the
         //  side with content wins, the deletion is dropped, and a
-        //  warning is logged.  Both directions return OK; only true
-        //  content conflicts (merged_conflict, failed) flip PATCH to
-        //  PATCHCFLCT.  Rationale: silently losing user-edited bytes
+        //  warning is logged.  DIS-018: this divergence reports a
+        //  distinct `modl` status (bright red) and returns OK — like
+        //  a genuine `conf` content conflict, it no longer flips the
+        //  exit code.  Rationale: silently losing user-edited bytes
         //  is far worse than carrying along a file the other side
-        //  meant to delete — the user can re-delete in one keystroke.
+        //  meant to delete — the user can re-delete in one keystroke,
+        //  and a non-zero exit broke parent recursion on submodules.
         if (l && o && !t) {
             if (sha_eq(&l->sha, &o->sha)) {
                 //  Theirs deleted; ours unchanged → delete from wt.
@@ -741,7 +749,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                     "intentional\n",
                     (int)$len(childpath), (char *)childpath[0]);
                 st->mod_del_kept++;
-                emit_status("kept", childpath);
+                emit_status("modl", childpath);
             }
             continue;
         }
@@ -766,7 +774,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                         "re-delete if intentional\n",
                         (int)$len(childpath), (char *)childpath[0]);
                     st->mod_del_kept++;
-                    emit_status("kept", childpath);
+                    emit_status("modl", childpath);
                 } else {
                     st->failed++;
                     emit_status("failed", childpath);
@@ -1649,7 +1657,13 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
             st.added, st.deleted, st.merged_conflict,
             st.mod_del_kept, st.failed);
 
-    if (st.merged_conflict > 0 || st.failed > 0) {
+    //  DIS-018: a content conflict (merged_conflict) no longer flips
+    //  the exit code — a non-zero exit broke parent recursion when a
+    //  submodule conflicted.  Conflicts are reported as `conf` (bright
+    //  red) with markers left in the file; POST's POSTCFLCT scan is the
+    //  patch→test→post safety net at commit time.  Only a genuine
+    //  failure (I/O / write_blob) still fails the run.
+    if (st.failed > 0) {
         return PATCHCFLCT;
     }
     done;
@@ -1726,9 +1740,13 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     }
 
     if (conflict) {
+        //  DIS-018: report `conf` (bright red) and return OK — markers
+        //  stay in the file for POST's POSTCFLCT scan.  No non-zero exit
+        //  (it broke parent recursion on a submodule conflict).
         fprintf(stderr, "sniff: patch: CONFLICT (content) %.*s\n",
                 (int)$len(filepath), (char *)filepath[0]);
-        return PATCHCFLCT;
+        emit_status("conf", filepath);
+        done;
     }
     emit_status("applied", filepath);
     done;

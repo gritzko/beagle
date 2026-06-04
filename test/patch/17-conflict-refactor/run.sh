@@ -45,14 +45,14 @@ F1=$(head_hex)
 
 "$BE" get '?..' >/dev/null
 
-# THE ACTION: merge feat into trunk — must conflict.
-if "$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err"; then
-    fail "be patch ?feat should have failed (conflict expected)"
-fi
+# THE ACTION: merge feat into trunk — conflicts, but DIS-018 says
+# PATCH returns OK and reports `conf`; markers stay in the file.
+"$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err" \
+    || fail "be patch ?feat should exit 0 now (DIS-018); err: $(cat $ETMP/c.err)"
 
-# Per-file status row: lib.c → conflict.
-grep -E '[[:space:]]+conflict[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \
-    || fail "expected 'patch conflict lib.c' status row; got: $(cat $ETMP/c.err)"
+# Per-file status row: lib.c → conf (DIS-018, was `conflict`).
+grep -E '[[:space:]]+conf[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \
+    || fail "expected 'patch conf lib.c' status row; got: $(cat $ETMP/c.err)"
 
 # WEAVE conflict markers — 4-char `<<<<` / `||||` / `>>>>` framing
 # the divergent refactors.  Must NOT use git's 7-char markers.
@@ -73,5 +73,5 @@ match "$CASE/04.lib.merged.c" lib.c
 # POST must be refused — conflict markers in tracked file.
 mustnt "$BE" post '#try anyway'
 
-note "conflict-refactor OK: WEAVE markers present, patch exited non-zero"
+note "conflict-refactor OK: WEAVE markers present, patch reported conf, exit 0; POST refused"
 echo "=== patch/17-conflict-refactor: OK ==="

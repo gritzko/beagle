@@ -41,17 +41,19 @@ T30_NEW=$(ref_tip "?")
 [ "$T30_NEW" != "$T30_BASE" ] || fail "§30: trunk didn't advance"
 note "§30: trunk advanced T30_BASE=$T30_BASE -> T30_NEW=$T30_NEW"
 
-# `be patch ?..#` should hit a 3-way conflict on the shared line.
+# `be patch ?..#` hits a 3-way conflict on the shared line.  DIS-018:
+# PATCH now returns OK (exit 0) and reports `conf`; markers stay in the
+# file and POST is the safety net below.
 set +e
 "$BE" patch "?..#" 2>"$ETMP/p30.err" >"$ETMP/p30.out"
 EC30=$?
 set -e
 
-[ "$EC30" != "0" ] \
-    || { cat "$ETMP/p30.err" >&2; fail "§30: be patch ?..# should fail on conflict"; }
-grep -qE '[[:space:]]+conflict[[:space:]]+(\./)?conflict30\.txt$' \
+[ "$EC30" = "0" ] \
+    || { cat "$ETMP/p30.err" >&2; fail "§30: be patch ?..# should exit 0 now (DIS-018)"; }
+grep -qE '[[:space:]]+conf[[:space:]]+(\./)?conflict30\.txt$' \
         "$ETMP/p30.out" \
-    || fail "§30: status row should report 'conflict conflict30.txt'; got: $(cat $ETMP/p30.out $ETMP/p30.err)"
+    || fail "§30: status row should report 'conf conflict30.txt'; got: $(cat $ETMP/p30.out $ETMP/p30.err)"
 
 # Wt must have token-level 4-char conflict markers.
 grep -F '<<<<' conflict30.txt \

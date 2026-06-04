@@ -87,8 +87,9 @@ git -C "$SEED" push -q "$ORIGIN" master:master
 
 # ----------------------------------------------------------------
 # 5. `be patch ssh://origin?master` — divergent, disjoint files.
-#    Must NOT exit GRAFFAIL.  Either clean merge (zero exit) or
-#    conflict markers + non-zero exit; both are valid outcomes.
+#    Must NOT exit GRAFFAIL.  DIS-018: PATCH returns exit 0 on both a
+#    clean merge and a conflict (markers in the file), so this case
+#    asserts exit 0 either way; GRAFFAIL is the only failure.
 #    For non-overlapping file changes the spec-correct outcome is
 #    clean merge, so we also assert local.c and server.c BOTH
 #    exist in the wt after the patch.

@@ -1,8 +1,10 @@
 #!/bin/sh
 #  16-conflict-loud — when WEAVE cannot auto-resolve, PATCH must:
 #    1. write the file with 4-char `<<<<` / `>>>>` markers,
-#    2. emit a `patch conflict <path>` row on stderr,
-#    3. exit non-zero so an unattended `patch && post` chain stops.
+#    2. emit a `patch conf <path>` row (bright red),
+#    3. DIS-018: return OK (exit 0) — a non-zero exit broke parent
+#       recursion on a conflicting submodule; the markered file is the
+#       POST-time safety net (POSTCFLCT) instead.
 #
 #  Topology: trunk T1 and feat F1 both edit the SAME line of lib.c.
 #       T0 ── T1   ← cur (trunk)  greet = "hello"
@@ -33,14 +35,14 @@ F1=$(head_hex)
 
 "$BE" get '?..' >/dev/null
 
-# THE ACTION: merge feat into trunk — must conflict.
-if "$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err"; then
-    fail "be patch ?feat should have failed (conflict expected)"
-fi
+# THE ACTION: merge feat into trunk — conflicts, but DIS-018 says
+# PATCH returns OK (exit 0) and reports `conf`; markers stay in the file.
+"$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err" \
+    || fail "be patch ?feat should exit 0 now (DIS-018); err: $(cat $ETMP/c.err)"
 
-# Per-file status row: lib.c → conflict.
-grep -E '[[:space:]]+conflict[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \
-    || fail "expected 'patch conflict lib.c' status row; got: $(cat $ETMP/c.err)"
+# Per-file status row: lib.c → conf (DIS-018, was `conflict`).
+grep -E '[[:space:]]+conf[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \
+    || fail "expected 'patch conf lib.c' status row; got: $(cat $ETMP/c.err)"
 
 # Wt must contain token-level 4-char markers (inline).  Format:
 # `>>>>theirs||||ours<<<<` — graf's WEAVE engine marks the
@@ -58,5 +60,5 @@ grep -F '<<<<<<<' lib.c \
 # POST must be refused — conflict markers in tracked file.
 mustnt "$BE" post '#try anyway'
 
-note "conflict-loud OK: lib.c has 4-char markers; patch exited non-zero"
+note "conflict-loud OK: lib.c has 4-char markers; patch reported conf, exit 0; POST refused"
 echo "=== patch/16-conflict-loud: OK ==="

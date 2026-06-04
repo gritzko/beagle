@@ -32,6 +32,8 @@ con ok64 THEMEBAD = 0x75139638b28d;       // unknown theme name
 //         E mod       (user-edited tracked file)
 //         X del       (staged remove)
 //         M mis       (in baseline, missing on disk; also `conflict`)
+//         S bright red (PATCH `conf` genuine conflict + `modl`
+//                       modify/delete divergence — DIS-018)
 //         Q unk       (untracked; also `dirty`)
 //         Y upd       (GET-overwritten)
 //         Z mrg       (weave-merge write; also `merged`)

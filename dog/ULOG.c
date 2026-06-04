@@ -1113,7 +1113,13 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     {0xc69daba68,    'Z'},  // merged    ≡ mrg
     {0x9f3caac2d9f8, 'M'},  // conflict  ≡ mis
     {0x28b76e3d,     'Q'},  // dirty     ≡ unk
-    {0xbe9d38,       'V'},  // kept      ≡ mov
+    //  DIS-018: PATCH no longer hard-fails on a content conflict /
+    //  modify-delete divergence (a non-zero exit broke parent
+    //  recursion when a submodule conflicted).  Both now report in
+    //  bright red (slot 'S') and return OK; markers stay in the file
+    //  so POST's POSTCFLCT scan is the patch→test→post safety net.
+    {0x9f3caa,       'S'},  // conf      — bright red (genuine conflict)
+    {0xc73a30,       'S'},  // modl      — bright red (modify/delete)
     {0, 0},
 };
 

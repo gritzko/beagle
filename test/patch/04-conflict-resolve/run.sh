@@ -78,13 +78,15 @@ sleep 0.02; cp "$CASE/09.lib.f4.c" lib.c
 # --- back to trunk, weave fix1 in ----------------------------------
 "$BE" get '?..' >/dev/null
 
-# `be patch` exits non-zero on conflict — trap it explicitly.
+# DIS-018: `be patch` now returns OK (exit 0) on conflict and reports
+# `conf`; the markers stay in the file (POST is the safety net).
 set +e
 "$BE" patch '?./fix1' >"$OUT/patch.out" 2>"$OUT/patch.err"
 PATCH_RC=$?
 set -e
-[ "$PATCH_RC" != "0" ] || {
-    echo "FAIL: patch exited 0 — expected non-zero on conflict" >&2
+[ "$PATCH_RC" = "0" ] || {
+    echo "FAIL: patch exited $PATCH_RC — expected 0 on conflict (DIS-018)" >&2
+    cat "$OUT/patch.err" >&2
     exit 1
 }
 

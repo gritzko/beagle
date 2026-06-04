@@ -5,9 +5,14 @@
 #    1. Disjoint-edit merge — feat-a prepends, feat-b appends.  Both
 #       additions must survive in the worktree file, exit 0.
 #    2. Conflict merge — same-line edit on both sides — JOIN emits
-#       `<<<<<<<` markers, exit non-zero.
+#       `<<<<` markers.  DIS-018: reports `conf`, exit 0, markers
+#       stay in the file (POST's POSTCFLCT scan is the safety net).
 #    3. Target-side add — theirs adds a new file, ours unchanged.
 #       File appears in wt, exit 0.
+#    4. Modify/delete divergence — theirs deletes a path ours
+#       modified.  DIS-018: reports `modl`, exit 0, ours kept.
+#    5. POST safety net — after the conflicting PATCH (scenario 2)
+#       `be post` still REFUSES on the conflict markers (POSTCFLCT).
 #
 #  Each scenario builds its own bare git source, keeper-fetches both
 #  branches via ssh localhost (same transport as
@@ -148,11 +153,19 @@ EOF
     PATCH_RC=$?
     set -e
     sed 's/^/  | /' "$TMP/s2.out"
-    [ "$PATCH_RC" != "0" ] || fail "conflict merge should exit non-zero"
-
+    #  DIS-018: a genuine WEAVE conflict reports `conf` and returns OK
+    #  (exit 0) — a non-zero exit broke parent recursion on a
+    #  conflicting submodule.  The markers stay in the file so POST's
+    #  POSTCFLCT scan is the patch→test→post safety net (scenario 5).
+    [ "$PATCH_RC" = "0" ] \
+        || fail "conflict merge should exit 0 now (DIS-018), got $PATCH_RC"
+    grep -qE "$(printf '\t')conf$(printf '\t')" "$TMP/s2.out" \
+        || fail "expected 'conf' status row in report"
     grep -qF '<<<<' g.c \
         || fail "expected conflict markers in g.c"
-    note "g.c carries conflict markers, exit=$PATCH_RC"
+    #  Stash the conflicted client dir for scenario 5's POST check.
+    S2_CLI=$CLI
+    note "g.c carries conflict markers, report=conf, exit=$PATCH_RC"
 }
 
 # --- Scenario 3: target adds a new file -------------------------------
@@ -202,9 +215,110 @@ EOF
     note "b.c appeared with target's bytes"
 }
 
+# --- Scenario 4: modify/delete divergence → modl ----------------------
+
+scenario4() {
+    echo "=== 4. modify/delete divergence ==="
+    SRC=$TMP/s4/src
+    CLI=$TMP/s4/client
+    mkdir -p "$SRC"; rs_shield "$CLI"
+    git init --quiet --bare "$SRC"
+
+    W=$(mktemp -d)
+    git -c init.defaultBranch=master init --quiet "$W"
+    git -C "$W" config user.email t@t
+    git -C "$W" config user.name  t
+    git -C "$W" remote add origin "$SRC"
+
+    cat >"$W/d.c" <<'EOF'
+int d(int z) {
+    return z + 0;
+}
+EOF
+    git -C "$W" add d.c
+    git -C "$W" commit --quiet -m "base"
+    git -C "$W" push --quiet origin master
+
+    #  feat-del deletes d.c.
+    git -C "$W" checkout --quiet -b feat-del master
+    git -C "$W" rm --quiet d.c
+    git -C "$W" commit --quiet -m "delete d.c"
+    git -C "$W" push --quiet origin feat-del
+
+    #  master modifies d.c (so ours diverges from the merge base).
+    git -C "$W" checkout --quiet master
+    cat >"$W/d.c" <<'EOF'
+int d(int z) {
+    return z + 99;
+}
+EOF
+    git -C "$W" commit --quiet -am "master modify d.c"
+    git -C "$W" push --quiet origin master
+    rm -rf "$W"
+
+    SRC_REL=${SRC#$HOME/}
+    cd "$CLI"
+    keeper get "//$HOST/$SRC_REL?master"   >/dev/null
+    keeper get "//$HOST/$SRC_REL?feat-del" >/dev/null
+
+    sniff get "?master" >/dev/null 2>&1 \
+        || fail "sniff get master failed"
+    grep -qF 'return z + 99' d.c || fail "wt missing master's edit"
+
+    set +e
+    sniff patch "?feat-del" >"$TMP/s4.out" 2>&1
+    PATCH_RC=$?
+    set -e
+    sed 's/^/  | /' "$TMP/s4.out"
+    #  DIS-018: theirs deleted, ours modified → keep ours, report
+    #  `modl` (distinct from the old undocumented `kept`), exit 0.
+    [ "$PATCH_RC" = "0" ] \
+        || fail "modify/delete should exit 0, got $PATCH_RC"
+    #  Status rows are tab-delimited (`<date>\t<verb>\t<path>`); match
+    #  the verb column so the loud "kept ours" warning prose doesn't
+    #  produce a false hit.
+    grep -qE "$(printf '\t')modl$(printf '\t')" "$TMP/s4.out" \
+        || fail "expected 'modl' status row in report"
+    ! grep -qE "$(printf '\t')kept$(printf '\t')" "$TMP/s4.out" \
+        || fail "old 'kept' status row should be gone (now 'modl')"
+    [ -f d.c ] || fail "modify/delete dropped ours (d.c missing)"
+    grep -qF 'return z + 99' d.c || fail "ours bytes not kept"
+
+    note "d.c kept (ours modified), report=modl, exit=$PATCH_RC"
+}
+
+# --- Scenario 5: POST still refuses the conflict markers ---------------
+
+scenario5() {
+    echo "=== 5. POST refuses conflict markers (safety net) ==="
+    [ -n "${S2_CLI:-}" ] || fail "scenario 2 must run first"
+    cd "$S2_CLI"
+    grep -qF '<<<<' g.c || fail "scenario 2 left no markers to test"
+
+    set +e
+    #  Explicit message → POST takes the commit path (POSTCommit),
+    #  where the conflict-marker scan lives; bare `be post` may fall
+    #  to a dry-run status preview that never reaches the scan.
+    be post "merge feat-x" >"$TMP/s5.out" 2>&1
+    POST_RC=$?
+    set -e
+    sed 's/^/  | /' "$TMP/s5.out"
+    #  CRITICAL: the conflict safety net moved from PATCH to POST.
+    #  POST must REFUSE (POSTCFLCT, non-zero) on the markered file,
+    #  proving patch→test→post still blocks a bad commit.
+    [ "$POST_RC" != "0" ] \
+        || fail "POST must refuse on conflict markers (POSTCFLCT)"
+    grep -qiE 'conflict|POSTCFLCT' "$TMP/s5.out" \
+        || fail "POST refusal should mention the conflict"
+
+    note "POST refused the markered g.c, exit=$POST_RC"
+}
+
 scenario1
 scenario2
 scenario3
+scenario4
+scenario5
 
 echo
 echo "=== sniff patch toys: OK ==="
