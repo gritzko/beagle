@@ -33,6 +33,21 @@
 
 export GIT_CONFIG_GLOBAL=/dev/null
 
+# POST-001 phase 2: this fixture's parent is an ssh (git) source, which
+# no longer recurses into subs by default.  Wrap $BE in a shim that
+# appends `--sub` so the deep-mount fixture keeps exercising recursion;
+# `--nosub` still wins inside `be`.  Mirrors test/lib/submodules.sh.
+REAL_BE="$BE"
+_BE_SHIM="$ETMP/be-sub-shim"
+mkdir -p "$(dirname "$_BE_SHIM")"
+cat > "$_BE_SHIM" <<SHIM
+#!/bin/sh
+exec "$REAL_BE" "\$@" --sub
+SHIM
+chmod +x "$_BE_SHIM"
+BE="$_BE_SHIM"
+export BE REAL_BE
+
 [ -n "${HOME:-}" ] || fail "sub-deep.sh: \$HOME unset"
 case "$SCRATCH" in
     "$HOME"/*) ;;

@@ -1,6 +1,11 @@
 #!/bin/sh
-#  get/05-submodule-from-ssh — `be get` materialises a submodule from
-#  an ssh:// URL.  See MODULES.plan.md.
+#  get/05-submodule-from-ssh — `be get --sub` materialises a submodule
+#  from an ssh:// URL.  See MODULES.plan.md, POST-001.
+#
+#  POST-001 phase 2: an ssh (git) parent does NOT recurse into subs by
+#  default — that is reserved for keeper/beagle sources.  This test
+#  exercises the explicit `--sub` opt-in that forces sub recursion on a
+#  git-source parent; the mount machinery itself is unchanged.
 #
 #  Layout (under $SCRATCH, which lives under $HOME so keeper's
 #  remote-HOME-relative path resolution works):
@@ -102,7 +107,7 @@ git -C "$PARENT_SEED" push -q "$PARENT_BARE" master:master
 #  unrelated projects).  Tests that need a fresh wt must create
 #  their own .be explicitly — see CLAUDE.md / test/lib/case.sh.
 mkdir wt wt/.be && cd wt
-"$BE" get "ssh://localhost/$REL_PARENT?master" \
+"$BE" get --sub "ssh://localhost/$REL_PARENT?master" \
     > 01.get.got.out 2> 01.get.got.err
 #  `be get` now prints a status report (`<HH:MM>\tnew\t<path>` per
 #  materialised file) to stdout — see commit 366259dd "reflect the

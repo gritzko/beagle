@@ -134,6 +134,15 @@ ron60 REFSVerbSet(void);   //  legacy — only for reading old logs
 //  outlive the caller's use of `resolved`.
 ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc uri);
 
+//  Fill `out` with the source LOCATOR (scheme + authority + path, no
+//  query/fragment) of this project's line-1 `get` row — its persisted
+//  clone source (see Title.mkd "line-1 get row is the source").  The
+//  first `get` row wins.  Slices point into `arena` — caller owns it
+//  and must keep it alive while using `out`.  Returns REFSNONE when
+//  the project has no `get` row (init-only / unreadable); callers that
+//  gate submodule-recursion default treat that as no-recurse.
+ok64 REFSSourceScheme(u8csc dir, urip out, u8bp arena);
+
 //  Bulk append: each entry contributes one `set` row.  Timestamps are
 //  assigned monotonically (the `time` field on input entries is
 //  ignored — ULOG enforces strict monotonicity per file).

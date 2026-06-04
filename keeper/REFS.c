@@ -365,6 +365,50 @@ ok64 REFSEachRecord(u8csc dir, refs_record_cb cb, void *ctx) {
     return ret;
 }
 
+static ok64 refs_capture_cs(u8bp arena, u8csc src, u8csp out);
+
+// --- source (line-1 get row) accessor ---
+
+//  Per Title.mkd, line 1 of a project's REFS is its `get` row — the
+//  persisted SOURCE.  Fill `out` with that row's source LOCATOR
+//  (scheme + authority + path, NO query/fragment), backed by `arena`.
+//  Used by beagle to decide submodule-recursion default off the
+//  parent's persisted source scheme (be_post_target_is_keeper).  The
+//  FIRST `get` row wins (it is the clone source; later get rows are
+//  remote observations).  Returns REFSNONE when no `get` row exists
+//  (fresh/init-only project) — caller defaults to no-recurse.
+ok64 REFSSourceScheme(u8csc dir, urip out, u8bp arena) {
+    sane($ok(dir) && out != NULL && arena != NULL);
+    zerop(out);
+
+    REFS_LOG_PATH(log_path, dir);
+    u8bp data = NULL;
+    wh128bp idx = NULL;
+    ok64 oo = ULOGOpen(&data, &idx, log_path);
+    if (oo != OK) return REFSNONE;  //  missing file ⇒ no source.
+
+    ok64 ret = REFSNONE;
+    u32 n = ULOGCount(idx);
+    ron60 verb_get = REFSVerbGet();
+    for (u32 i = 0; i < n; i++) {
+        ulogrec rec = {};
+        if (ULOGRow(data, idx, i, &rec) != OK) continue;
+        if (rec.verb != verb_get) continue;
+        u8cs sch  = {rec.uri.scheme[0],    rec.uri.scheme[1]};
+        u8cs auth = {rec.uri.authority[0], rec.uri.authority[1]};
+        u8cs pth  = {rec.uri.path[0],      rec.uri.path[1]};
+        //  Capture into arena (rec points into the mmap, freed below).
+        ret = OK;
+        if (refs_capture_cs(arena, sch,  out->scheme)    != OK) { ret = REFSFAIL; break; }
+        if (refs_capture_cs(arena, auth, out->authority) != OK) { ret = REFSFAIL; break; }
+        if (refs_capture_cs(arena, pth,  out->path)      != OK) { ret = REFSFAIL; break; }
+        break;  //  first get row is the source
+    }
+
+    ULOGClose(data, &idx, YES);
+    return ret;
+}
+
 // --- resolve ---
 
 //  Matcher state for ULOGFindLatest's predicate.
