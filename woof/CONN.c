@@ -602,13 +602,17 @@ void WOOFApiClose(void) {
 }
 
 //  YES iff the dog that owns this scheme was opened in-process.
-static b8 woof_api_dog_open(char const *dog) {
+b8 WOOFApiDogOpen(char const *dog) {
     if (strcmp(dog, "keeper") == 0) return woof_api_have_keep;
     if (strcmp(dog, "graf")   == 0) return woof_api_have_graf;
     if (strcmp(dog, "spot")   == 0) return woof_api_have_spot;
     if (strcmp(dog, "sniff")  == 0) return woof_api_have_sniff;
     return NO;
 }
+
+//  The capture fd holding the most recent WOOFApiRun output (TLV).
+//  Exposed so the fuzz harness can drain it; read after WOOFApiRun.
+int WOOFApiMemfd(void) { return woof_api_memfd; }
 
 //  Run the selected dog's Exec with stdout captured into the memfd.
 //  Reached via `try` from serve_inproc so call/try snapshot+rewind
@@ -630,23 +634,34 @@ static ok64 run_capture(void) {
     done;
 }
 
-//  Serve a projector in-process: <dog>Exec → TLV (memfd) → c->pipe_in →
-//  HTML in c->out (same render the worker path uses) → DRAIN.  No fork.
-//  OK on success; non-OK lets read_cb fork instead.
-static ok64 serve_inproc(conn *c, uri *u, char const *dog) {
-    sane(c && u && dog);
+//  Run `dog`'s Exec on the verbless projector URI `u`, capturing its
+//  TLV into the shared memfd (WOOFApiMemfd).  No conn, no render — the
+//  reusable dispatch core shared by serve_inproc (server) and the fuzz
+//  harness, so both exercise the identical in-process path.  Caller
+//  must have WOOFApiDogOpen(dog).
+ok64 WOOFApiRun(uri *u, char const *dog) {
+    sane(u && dog);
     if (!woof_api_ready) fail(WOOFFAIL);
 
     //  Verbless projector cli — each dog synthesizes the verb from the
-    //  scheme.  `u`'s slices point into c->uri, stable for the call.
+    //  scheme.  `u`'s slices must stay alive for the call.
     uribReset(woof_api_cli.uris);
     call(uribFeed1, woof_api_cli.uris, *u);
     zerop(&woof_api_cli.verb);
     HUNKMode = HUNKOutTLV;
     woof_api_dog = dog;
 
-    try(run_capture);
-    __ = OK;   //  ignore projection-level errors; render whatever landed
+    try(run_capture);   //  BASS rewound here; projection errors ignored
+    __ = OK;
+    done;
+}
+
+//  Serve a projector in-process: WOOFApiRun → TLV (memfd) → c->pipe_in →
+//  HTML in c->out (same render the worker path uses) → DRAIN.  No fork.
+//  OK on success; non-OK lets read_cb fork instead.
+static ok64 serve_inproc(conn *c, uri *u, char const *dog) {
+    sane(c && u && dog);
+    call(WOOFApiRun, u, dog);
 
     //  TLV → c->pipe_in (the buffer the worker path fills), capped.
     (void)lseek(woof_api_memfd, 0, SEEK_SET);
@@ -765,7 +780,7 @@ static short read_cb(int fd, poller *p) {
             au.data[0] = c->uri[0];
             au.data[1] = c->uri[1];
             char const *dog = DOGProjectorDog(au.scheme);
-            if (dog != NULL && woof_api_dog_open(dog)
+            if (dog != NULL && WOOFApiDogOpen(dog)
                 && serve_inproc(c, &au, dog) == OK) {
                 p->callback = write_cb;
                 return POLLOUT;

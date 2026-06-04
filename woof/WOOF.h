@@ -174,6 +174,15 @@ ok64 WOOFExec(cli *c);
 ok64 WOOFApiOpen(void);
 void WOOFApiClose(void);
 
+//  Reusable in-process dispatch core (shared by the server and the fuzz
+//  harness).  WOOFApiDogOpen reports whether the dog owning a scheme was
+//  opened; WOOFApiRun runs that dog's Exec on a verbless projector URI,
+//  capturing its TLV output into the fd returned by WOOFApiMemfd (read
+//  it after the call).  Caller gates on WOOFApiDogOpen first.
+b8   WOOFApiDogOpen(char const *dog);
+ok64 WOOFApiRun(uri *u, char const *dog);
+int  WOOFApiMemfd(void);
+
 //  Verb + value-flag tables for CLIParse.
 extern char const *const WOOF_VERBS[];     // "serve", "status", NULL
 extern char const WOOF_VAL_FLAGS[];        // "bp" — --bind, --port
