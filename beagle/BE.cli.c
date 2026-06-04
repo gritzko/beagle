@@ -495,9 +495,8 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     fprintf(stderr, "be: worktree from %.*s\n",
             (int)$len(u->path), (char *)u->path[0]);
 
-    //  Pin the downstream checkout to the resolved tip.  Row 0 now also
-    //  carries the tip, but sniff's checkout still reads `u`; rewrite to
-    //  `?<hashlet>` (data slot — `BEBuildArgv` reads only `u->data`).
+    //  Set the downstream checkout target (data slot — `BEBuildArgv`
+    //  reads only `u->data`).
     if (u8csEmpty(hash)) {
         //  No tip resolved up front.  For the worktree layout (primary
         //  never posted) leave `u` as-is.  For the store-direct layout
@@ -511,6 +510,30 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
         zerop(u);
         u8csMv(u->data, u8bDataC(wt_uri_buf));
         done;
+    }
+    //  GET-002: the row-0 anchor names the branch (DIS-001), so when a
+    //  title resolved the secondary wt must land ATTACHED — rewrite to
+    //  the absolute-branch form `?/<title>[/<branch>]` (mirrors the
+    //  store-direct arm above) so the downstream sniff get switches to
+    //  that branch and a follow-up POST is allowed.  Without a resolved
+    //  title (legacy elided primary) fall back to pinning the tip
+    //  `?<hashlet>` — detached, as before.
+    {
+        a_dup(u8c, tt2, u8bDataC(title_buf));
+        if (!u8csEmpty(tt2)) {
+            a_dup(u8c, bb2, u8bDataC(branch_buf));
+            u8bReset(wt_uri_buf);
+            call(u8bFeed1, wt_uri_buf, '?');
+            call(u8bFeed1, wt_uri_buf, '/');
+            call(u8bFeed,  wt_uri_buf, tt2);
+            if (!u8csEmpty(bb2)) {
+                call(u8bFeed1, wt_uri_buf, '/');
+                call(u8bFeed,  wt_uri_buf, bb2);
+            }
+            zerop(u);
+            u8csMv(u->data, u8bDataC(wt_uri_buf));
+            done;
+        }
     }
     u8bReset(wt_uri_buf);
     call(u8bFeed1, wt_uri_buf, '?');

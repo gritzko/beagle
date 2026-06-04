@@ -1322,9 +1322,41 @@ static b8 is_detached_wt(u8cs reporoot) {
     return HEXu8sValid(q);
 }
 
+//  Secondary-worktree (submodule mount) detector.  A mounted sub's
+//  `<wt>/.be` is a FILE (the row-0 `repo` anchor pointing back to the
+//  parent's shared store, see Submodules.mkd §"Inner workings"); a
+//  primary wt's `.be` is a DIRECTORY (the local store).  A `.be` file
+//  is ONLY ever a secondary-wt anchor (dog/test/HOME.c §K_FILE), so
+//  the file/dir kind is the authoritative discriminator.
+//
+//  POST-004: a submodule mount is ALWAYS detached at the gitlink pin
+//  by design — the detached-wt refusal (Invariant 7, aimed at an
+//  explicit primary `be get ?<sha>`) must NOT fire there.  PATCH only
+//  stages the absorbed sha into `.be/wtlog`; it writes no REFS tip, so
+//  there is nothing to record against a branch.  The synthetic branch
+//  is created at commit time by the FOLLOWING parent-driven POST
+//  (Submodules.mkd §"Committing detached subs"; sniff/POST.c
+//  POSTCommit + beagle/BE.cli.c bepost_synth_child_uri) — leaving the
+//  wt detached through PATCH is correct and keeps the patch→test→post
+//  invariant: nothing lands until POST, and POST is the commit gate.
+static b8 wt_is_secondary(u8cs reporoot) {
+    if (!$ok(reporoot)) return NO;
+    a_path(be);
+    if (PATHu8bFeed(be, reporoot) != OK) return NO;
+    if (PATHu8bPush(be, DOG_BE_S) != OK) return NO;
+    filestat fs = {};
+    if (FILELStat(&fs, $path(be)) != OK) return NO;
+    return fs.kind == FILE_KIND_REG ? YES : NO;
+}
+
 ok64 PATCHApply(u8cs reporoot, uricp u) {
     sane($ok(reporoot) && u != NULL);
-    if (is_detached_wt(reporoot)) {
+    //  POST-004: a submodule mount is detached at its pin by design;
+    //  PATCH stages the absorbed sha into wtlog (no REFS tip), and the
+    //  following parent-driven POST creates/attaches the synthetic
+    //  branch.  Only a detached PRIMARY wt (explicit `be get ?<sha>`)
+    //  still refuses (Invariant 7).
+    if (is_detached_wt(reporoot) && !wt_is_secondary(reporoot)) {
         fprintf(stderr,
             "sniff: patch: refusing on detached wt — re-attach to a "
             "branch first (be get ?<branch>)\n");
@@ -1674,7 +1706,9 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     b8 cherry = $empty(target_query) && !$empty(frag);
     sane($ok(reporoot) && $ok(filepath) &&
          (cherry || $ok(target_query)));
-    if (is_detached_wt(reporoot)) {
+    //  POST-004: skip the detached refusal for a submodule mount
+    //  (secondary wt); see PATCHApply above.
+    if (is_detached_wt(reporoot) && !wt_is_secondary(reporoot)) {
         fprintf(stderr,
             "sniff: patch: refusing on detached wt — re-attach to a "
             "branch first (be get ?<branch>)\n");

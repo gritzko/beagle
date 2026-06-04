@@ -93,10 +93,10 @@ note "seed commit reachable via .be row-0 anchor"
 
 # --- 4. put / delete / post from the worktree -----------------------
 echo "=== 4. put/del/post from worktree ==="
-#  DIS-009: `be get ?<sha>` is a DETACHED checkout — POST/PATCH refuse
-#  on it.  This wt needs to commit forward, so attach to trunk (`?`)
-#  instead; trunk's tip is the seed, so the checked-out content is the
-#  same, but the wt stays attached and POST is allowed.
+#  GET-002: `be get <primary>` now lands the secondary wt ATTACHED to
+#  the branch the row-0 anchor names (trunk here), so POST works without
+#  a manual re-attach.  This explicit `be get ?` (trunk) is therefore a
+#  no-op switch now, kept as a belt-and-suspenders re-attach guard.
 "$BE" get --seq '?' >/dev/null 2>&1 \
     || fail "be get ? (trunk) failed in worktree"
 [ -f README ] || fail "README not checked out in worktree"

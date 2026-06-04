@@ -25,6 +25,23 @@
 
 export GIT_CONFIG_GLOBAL=/dev/null
 
+#  POST-001 phase 2: an ssh:// (git) parent does NOT recurse into subs
+#  by default — only keeper/beagle sources do.  This fixture uses an ssh
+#  (git) parent (PARENT_URL below), so `be get` must opt in with `--sub`
+#  to mount the declared submodules.  Wrap $BE in a shim that appends
+#  `--sub` to every call, mirroring test/lib/submodules.sh; `--nosub`
+#  still wins inside `be`, and $REAL_BE keeps the unwrapped binary.
+REAL_BE="$BE"
+_BE_SHIM="$ETMP/be-sub-shim"
+mkdir -p "$(dirname "$_BE_SHIM")"
+cat > "$_BE_SHIM" <<SHIM
+#!/bin/sh
+exec "$REAL_BE" "\$@" --sub
+SHIM
+chmod +x "$_BE_SHIM"
+BE="$_BE_SHIM"
+export BE REAL_BE
+
 #  keeper resolves ssh://localhost/<rel> as $HOME-relative on the peer
 #  side, so $SCRATCH must live under $HOME.
 [ -n "${HOME:-}" ] || fail "\$HOME unset"

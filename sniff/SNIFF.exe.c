@@ -820,6 +820,53 @@ ok64 SNIFFExec(cli *c) {
                 //  short-circuited above via POSTRebaseOntoSha.  Those
                 //  pull remote work into cur, which is the inverse
                 //  direction.)
+                //  POST-004: a parent recursion into a detached sub
+                //  passes the synthetic target `?/<sub>/.<proj>[/<br>]`
+                //  but may blank the per-sub `#msg` (`--sub-msg sub=`)
+                //  to force the sub to auto-resolve from its OWN patch
+                //  rows (test post/17).  When in-scope patch rows exist
+                //  and a usable msg auto-resolves, COMMIT onto the
+                //  target (creating the synthetic branch at the pin) —
+                //  this is the absorb-into-detached-sub path that
+                //  mirrors the bare-post auto-resolve above, not a pure
+                //  label move.  Only when there is nothing to commit do
+                //  we fall through to the FF label-promote.
+                a_pad(u8, sm_buf,   1024);
+                a_pad(u8, sa_buf,   512);
+                u8cs sm_msg  = {};
+                u8cs sa_auth = {};
+                u32  sm_n    = 0;
+                ok64 sdr = POSTPatchDefaults(sm_buf,  &sm_msg,
+                                             sa_buf, &sa_auth,
+                                             &sm_n);
+                if (sdr == OK && sm_n > 0) {
+                    u8cs target = {};
+                    target[0] = label_uri->query[0];
+                    target[1] = label_uri->query[1];
+                    sha1 sha = {};
+                    ret = POSTCommit(target, sm_msg, sa_auth, c, &sha);
+                    if (ret == OK) {
+                        a_pad(u8, hex, 40);
+                        a_rawc(rs, sha);
+                        HEXu8sFeedSome(hex_idle, rs);
+                        fprintf(stderr, "sniff: commit " U8SFMT "\n",
+                                u8sFmt(u8bDataC(hex)));
+                    }
+                } else {
+                //  No commit_msg + label_uri (`be post ?<br>`).  Per
+                //  VERBS.md §POST `?branch` row: "FF-advance ?branch
+                //  to cur's tip".  This is the local-branch promote
+                //  — we move target's REFS row forward to cur.tip,
+                //  migrate any commit/tree/blob objects from cur's
+                //  shard into target's shard along the way, and leave
+                //  cur untouched.  Refuses if cur is not a descendant
+                //  of target.tip (POSTNOFF) or if the rebase produces
+                //  a conflict.
+                //
+                //  (Remote-target shapes — `//host`, `ssh://...` —
+                //  short-circuited above via POSTRebaseOntoSha.  Those
+                //  pull remote work into cur, which is the inverse
+                //  direction.)
                 u8cs br_split = {}, pin_split = {};
                 DOGRefSplitPin(label_uri->query, br_split, pin_split);
                 u8cs t_br = {};
@@ -838,6 +885,7 @@ ok64 SNIFFExec(cli *c) {
                 a_dup(u8c, tb, t_br);
                 a_cstr(post_tag, "post");
                 ret = POSTPromote(tb, NO, post_tag);
+                }
             }
         }
     } else if (is_put) {
