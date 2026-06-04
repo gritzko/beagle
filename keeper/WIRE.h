@@ -207,6 +207,14 @@ ok64 WIREFetchAll(u8csc remote_uri);
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip, b8 force);
 
+//  Diagnostic: number of objects placed into the pack by the most
+//  recent `WIREPush` (the size of the walked closure after have-set
+//  pruning).  0 when the push short-circuited (peer already at tip) or
+//  was rejected before the pack was built (non-FF / funny ref) — i.e.
+//  "no pack on error".  Test-only observable; not part of the wire
+//  contract.
+extern u32 WIREPushLastObjCount;
+
 //  Spawn a git-protocol peer and run a delete-only push: drain the
 //  advertisement, look up the peer's tip for `local_branch`, send
 //  `<peer_old> 000…0 refs/heads/<X>` + flush (no pack body — git's

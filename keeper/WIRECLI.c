@@ -1069,7 +1069,7 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
         if (*n >= cap) return WIRECLFL;
         out[(*n)++] = *tree_sha;
         sha1hex _h = {}; sha1hexFromSha1(&_h, tree_sha);
-        fprintf(stderr, "wpush_dump: tree %.40s\n", _h.data);
+        trace("wpush_dump: tree %.40s\n", _h.data);
     }
     if (add_to_have) sha_set_add(add_to_have, tree_sha);
 
@@ -1105,7 +1105,7 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
                 if (*n >= cap) break;
                 out[(*n)++] = entry_sha;
                 sha1hex _h = {}; sha1hexFromSha1(&_h, &entry_sha);
-                fprintf(stderr, "wpush_dump: blob %.40s\n", _h.data);
+                trace("wpush_dump: blob %.40s\n", _h.data);
             }
             if (add_to_have) sha_set_add(add_to_have, &entry_sha);
         }
@@ -1136,7 +1136,7 @@ static ok64 wpush_walk_commit(keeper *k, sha1cp commit_sha,
         if (*n >= cap) return WIRECLFL;
         out[(*n)++] = *commit_sha;
         sha1hex _h = {}; sha1hexFromSha1(&_h, commit_sha);
-        fprintf(stderr, "wpush_dump: commit %.40s\n", _h.data);
+        trace("wpush_dump: commit %.40s\n", _h.data);
     }
     if (add_to_have) sha_set_add(add_to_have, commit_sha);
 
@@ -1265,7 +1265,7 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         Bu8 obuf = {};
         ok64 mo = u8bMap(obuf, 1UL << 24);
         if (mo != OK) {
-            fprintf(stderr,
+            trace(
                     "wpush: build_pack obj#%u: u8bMap rc=%llx\n",
                     i, (unsigned long long)mo);
             return mo;
@@ -1274,7 +1274,7 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         ok64 go = KEEPGetExact(&shas[i], obuf, &otype);
         if (go != OK) {
             sha1hex h = {}; sha1hexFromSha1(&h, &shas[i]);
-            fprintf(stderr,
+            trace(
                     "wpush: build_pack obj#%u sha=%.40s: "
                     "KEEPGetExact rc=%llx\n",
                     i, h.data, (unsigned long long)go);
@@ -1288,7 +1288,7 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         a_dup(u8c, oh, u8bData(ohdr));
         ok64 fho = u8bFeed(pack_out, oh);
         if (fho != OK) {
-            fprintf(stderr,
+            trace(
                     "wpush: build_pack obj#%u type=%u: hdr feed rc=%llx "
                     "(pack_out idle=%zu need=%zu)\n",
                     i, (unsigned)otype, (unsigned long long)fho,
@@ -1300,7 +1300,7 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         a_dup(u8c, osrc, u8bData(obuf));
         ok64 zo = ZINFDeflate(u8bIdle(pack_out), osrc);
         if (zo != OK) {
-            fprintf(stderr,
+            trace(
                     "wpush: build_pack obj#%u type=%u olen=%llu: "
                     "ZINFDeflate rc=%llx (pack_out idle=%zu)\n",
                     i, (unsigned)otype, (unsigned long long)olen,
@@ -1474,7 +1474,7 @@ static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
         if (d == PKTFLUSH) break;
         if (d == PKTDELIM) continue;
         if (d != OK) {
-            fprintf(stderr, "wpush: drain read returned %llx\n",
+            trace("wpush: drain read returned %llx\n",
                     (unsigned long long)d);
             break;
         }
@@ -1486,7 +1486,7 @@ static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
             unpack_ok = YES;
         } else if (u8csHasPrefix(ln, GIT_PKT_UNPACK_PFX)) {
             //  "unpack <reason>" — remote refused the pack itself.
-            fprintf(stderr, "wpush: remote unpack failed: %.*s\n",
+            trace("wpush: remote unpack failed: %.*s\n",
                     (int)u8csLen(ln) - 7, (char const *)ln[0] + 7);
         } else if (u8csHasPrefix(ln, ok_match)) {
             ref_ok = YES;
@@ -1496,7 +1496,7 @@ static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
             //  the user-facing message.
             size_t skip = u8csLen(ng_match);
             if ((ssize_t)skip < u8csLen(ln) && ln[0][skip] == ' ') skip++;
-            fprintf(stderr, "wpush: remote rejected ref update: %.*s\n",
+            trace("wpush: remote rejected ref update: %.*s\n",
                     (int)(u8csLen(ln) - (ssize_t)skip),
                     (char const *)ln[0] + skip);
             ref_ok = NO;
@@ -1569,11 +1569,17 @@ static ok64 wpush_collect_hist_cb(uri const *u, ron60 ts, ron60 verb,
 //  at the wrapper's `try()` boundary.  Closes wfd/rfd at the
 //  protocol-required points.
 #define WPUSH_PEER_TIPS_MAX 4096
+
+//  See WIRE.h — number of objects in the last push's pack.  Reset at
+//  the top of every push so a short-circuit / pre-pack reject leaves 0.
+u32 WIREPushLastObjCount = 0;
+
 static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                              keeper *k, sha1cp local_tip_in,
                              int *wfd, int *rfd, b8 force) {
     sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0);
     sha1 local_tip = *local_tip_in;
+    WIREPushLastObjCount = 0;
 
     a_carve(u8, advbuf, WCLI_BUF);
 
@@ -1590,11 +1596,17 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                              peer_tips, &peer_tips_n,
                              WPUSH_PEER_TIPS_MAX);
     if (pt != OK) {
-        fprintf(stderr, "wpush: peer_tip drain failed\n");
+        trace("wpush: peer_tip drain failed\n");
         fail(pt);
     }
-    fprintf(stderr,
-            "wpush: peer advert drained, have_peer=%d peer_tips=%u\n",
+    //  `have_ref` = peer advertises OUR target ref (drives the FF
+    //  gate / old-sha on the update line).  `peer_tips` = total refs
+    //  peer advertises; ALL of them seed the have-set below, so an
+    //  incremental push prunes against the peer's whole ref set even
+    //  when our own ref is brand new (have_ref=0, peer_tips>0 — no
+    //  longer a self-contradictory pair).
+    trace(
+            "wpush: peer advert drained, have_ref=%d peer_tips=%u\n",
             (int)have_peer, peer_tips_n);
 
     //  Short-circuit: peer already at our tip — nothing to push.
@@ -1618,7 +1630,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
         sha1hex lh = {}, ph = {};
         sha1hexFromSha1(&lh, &local_tip);
         sha1hexFromSha1(&ph, &peer_tip);
-        fprintf(stderr,
+        trace(
                 "wpush: non-fast-forward — local tip %.40s is not a "
                 "descendant of peer tip %.40s.  Use `be patch` to "
                 "merge, or `be put` to force-push.\n",
@@ -1646,7 +1658,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                                     &(u32){0}, 0, NULL, &haveset);
         }
         have = &haveset;
-        fprintf(stderr,
+        trace(
                 "wpush: have-set has %u objects (from %u peer refs)\n",
                 haveset.n, peer_tips_n);
     }
@@ -1668,7 +1680,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                 (void)REFSEachRecord($path(keepdir),
                                      wpush_collect_hist_cb, &hc);
                 if (hc.n_walked > 0) {
-                    fprintf(stderr,
+                    trace(
                             "wpush: have-set now %u objects "
                             "(+%u history shas)\n",
                             haveset.n, hc.n_walked);
@@ -1696,26 +1708,27 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     u32 nshas = 0;
     ok64 wro = wpush_walk_commit(k, &local_tip, shas, &nshas,
                                  WPUSH_MAX_OBJS, have, &seen);
-    fprintf(stderr, "wpush: walk_commit rc=%llx nshas=%u\n",
+    trace("wpush: walk_commit rc=%llx nshas=%u\n",
             (unsigned long long)wro, nshas);
     if (wro != OK || nshas == 0) fail(wro != OK ? wro : WIRECLFL);
-    fprintf(stderr, "wpush: walked %u objects\n", nshas);
+    trace("wpush: walked %u objects\n", nshas);
+    WIREPushLastObjCount = nshas;  //  pack size after have-set pruning
 
     //  Build the pack.
     a_carve(u8, packbuf, 1ULL << 26);
     ok64 bp = wpush_build_pack(k, shas, nshas, packbuf);
     if (bp != OK) {
-        fprintf(stderr, "wpush: build_pack failed\n");
+        trace("wpush: build_pack failed\n");
         fail(bp);
     }
-    fprintf(stderr, "wpush: pack built (%llu bytes)\n",
+    trace("wpush: pack built (%llu bytes)\n",
             (unsigned long long)u8bDataLen(packbuf));
 
     //  Send the ref-update line + flush.
     ok64 su = wpush_send_update(*wfd, &peer_tip, &local_tip, refname,
                                 have_peer);
     if (su != OK) {
-        fprintf(stderr, "wpush: send_update failed\n");
+        trace("wpush: send_update failed\n");
         fail(su);
     }
     //  Send the pack bytes, interleaving with a status drain so a peer
@@ -1726,7 +1739,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
         a_dup(u8c, pdata, u8bData(packbuf));
         ok64 wo = wpush_send_pack_interleaved(*wfd, *rfd, pdata, status_pre);
         if (wo != OK) {
-            fprintf(stderr, "wpush: pack send failed\n");
+            trace("wpush: pack send failed\n");
             fail(wo);
         }
     }
@@ -1734,7 +1747,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
 
     //  Drain status (seeded with any bytes read during the send).
     ok64 rv = wpush_drain_status(*rfd, refname, u8bDataC(status_pre));
-    if (rv != OK) fprintf(stderr, "wpush: drain_status returned non-OK\n");
+    if (rv != OK) trace("wpush: drain_status returned non-OK\n");
     close(*rfd); *rfd = -1;
 
     //  Pushed-difference banner (POST only).  List the commits this
@@ -1768,6 +1781,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip_in, b8 force) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
+    WIREPushLastObjCount = 0;  //  no-pack-on-error: reset before any return
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
     //  the trunk shard, which goes on the wire as `refs/heads/main`.
@@ -1780,17 +1794,17 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
 
     //  Spawn receive-pack on the peer.
-    fprintf(stderr, "wpush: spawning receive-pack, remote=%.*s\n",
+    trace("wpush: spawning receive-pack, remote=%.*s\n",
             (int)u8csLen(remote_uri), (char const *)remote_uri[0]);
     int wfd = -1, rfd = -1;
     pid_t pid = 0;
     ok64 so = wcli_spawn(remote_uri, "receive-pack", &wfd, &rfd, &pid);
     if (so != OK) {
-        fprintf(stderr, "wpush: spawn failed (so=%llx)\n",
+        trace("wpush: spawn failed (so=%llx)\n",
                 (unsigned long long)so);
         return WIRECLFL;
     }
-    fprintf(stderr, "wpush: spawned ok, pid=%d\n", (int)pid);
+    trace("wpush: spawned ok, pid=%d\n", (int)pid);
 
     try(wire_push_inner, remote_uri, refname, k, local_tip_in,
                           &wfd, &rfd, force);
@@ -1824,7 +1838,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
     ok64 pt = wpush_peer_tip(*rfd, advbuf, refname, &peer_tip, &have_peer,
                              NULL, NULL, 0);
     if (pt != OK) {
-        fprintf(stderr, "wpush: delete peer_tip drain failed\n");
+        trace("wpush: delete peer_tip drain failed\n");
         fail(pt);
     }
 
@@ -1841,7 +1855,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
     sha1 zero = {};
     ok64 su = wpush_send_update(*wfd, &peer_tip, &zero, refname, YES);
     if (su != OK) {
-        fprintf(stderr, "wpush: delete send_update failed\n");
+        trace("wpush: delete send_update failed\n");
         fail(su);
     }
     //  No pack body: receive-pack treats a delete-only command list as
@@ -1850,7 +1864,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
 
     ok64 rv = wpush_drain_status(*rfd, refname, (u8csc){0});
     if (rv != OK)
-        fprintf(stderr, "wpush: delete drain_status returned non-OK\n");
+        trace("wpush: delete drain_status returned non-OK\n");
     close(*rfd); *rfd = -1;
     return rv;
 }
@@ -1864,13 +1878,13 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
     call(wcli_be_to_wire, refname_buf, local_branch);
     u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
 
-    fprintf(stderr, "wpush: spawning receive-pack (delete), remote=%.*s\n",
+    trace("wpush: spawning receive-pack (delete), remote=%.*s\n",
             (int)u8csLen(remote_uri), (char const *)remote_uri[0]);
     int wfd = -1, rfd = -1;
     pid_t pid = 0;
     ok64 so = wcli_spawn(remote_uri, "receive-pack", &wfd, &rfd, &pid);
     if (so != OK) {
-        fprintf(stderr, "wpush: delete spawn failed (so=%llx)\n",
+        trace("wpush: delete spawn failed (so=%llx)\n",
                 (unsigned long long)so);
         return WIRECLFL;
     }

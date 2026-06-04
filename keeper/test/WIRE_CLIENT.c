@@ -595,6 +595,189 @@ ok64 WIRECLIENTtest_title_converge() {
     done;
 }
 
+//  Decode a 40-hex sha (NUL-terminated `hex`) into a sha1 on the stack.
+#define HEX2SHA(name, hex)                                       \
+    sha1 name = {};                                              \
+    do {                                                         \
+        u8s _b = {name.data, name.data + 20};                    \
+        u8cs _h = {(u8cp)(hex), (u8cp)(hex) + 40};               \
+        want(HEXu8sDrainSome(_b, _h) == OK);                     \
+    } while (0)
+
+// ---- Test 7: incremental push prunes the have-set (DIS-021) -----------
+//
+//  B already holds c1 on its trunk.  A holds c1+c2 (c2 is c1's child).
+//  Pushing c2 → B must send ONLY c2's new objects (its commit, its
+//  tree, the new blob b.txt = 3), NOT the full c1+c2 closure (≥5).
+//  The have-set, seeded from B's advertised c1 tip, prunes the shared
+//  history.  `WIREPushLastObjCount` is the observable.
+ok64 WIRECLIENTtest_incremental_prune() {
+    sane(1);
+    call(FILEInit);
+
+    char gitdir[]    = "/tmp/wcli-incr-git-XXXXXX";
+    want(mkdtemp(gitdir) != NULL);
+    char Adir[]      = "/tmp/wcli-incr-A-XXXXXX";
+    want(mkdtemp(Adir) != NULL);
+    char Bdir[]      = "/tmp/wcli-incr-B-XXXXXX";
+    want(mkdtemp(Bdir) != NULL);
+
+    //  c1, then c2 (c1's child); full-history pack covers both.
+    char hex1[41], pack1[1024];
+    call(stage_git_commit, gitdir, "alpha\\n", hex1, pack1, sizeof(pack1));
+    char hex2[41], pack2[1024];
+    call(stage_git_commit2, gitdir, "beta\\n", hex2, pack2, sizeof(pack2));
+
+    //  A holds the full c1+c2 history on its trunk.
+    call(stage_local_keeper, Adir, pack2, "", hex2);
+    //  B holds ONLY c1 on its trunk (its single advertised tip).
+    call(stage_local_keeper, Bdir, pack1, "", hex1);
+
+    //  Push c2 from A → B.  B advertises c1, so the have-set prunes
+    //  c1's commit/tree/blob; only c2's new objects ship.
+    u32 nshas = 0;
+    {
+        a_cstr(A_root_s, Adir);
+        home h = {};
+        call(HOMEOpenAt, &h, A_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, Bdir);
+        u8csc branch_cs = {NULL, NULL};
+        HEX2SHA(tip2, hex2);
+        ok64 po = WIREPush(uri, branch_cs, &tip2, NO);
+        want(po == OK);
+        nshas = WIREPushLastObjCount;
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    //  B's trunk advanced to c2.
+    char got[41];
+    want(lookup_local_ref(Bdir, "", got));
+    want(memcmp(got, hex2, 40) == 0);
+
+    //  The pruned pack carries only c2's introduced objects (commit +
+    //  its tree + the new blob = 3), NOT the full c1+c2 closure (≥5).
+    //  A loose `< 5` makes a pruning regression (full closure resent)
+    //  brutally obvious without over-pinning the exact object count.
+    fprintf(stderr, "incremental_prune: pushed %u objects\n", nshas);
+    want(nshas > 0);
+    want(nshas < 5);
+
+    tmp_rm(gitdir);
+    tmp_rm(Adir);
+    tmp_rm(Bdir);
+    done;
+}
+
+// ---- Test 8: up-to-date push builds no pack (DIS-021) -----------------
+//
+//  B already holds c1 on its trunk.  Pushing c1 again must short-circuit
+//  (peer already at tip): OK, no pack built (`WIREPushLastObjCount == 0`).
+ok64 WIRECLIENTtest_uptodate_nopack() {
+    sane(1);
+    call(FILEInit);
+
+    char gitdir[]    = "/tmp/wcli-utd-git-XXXXXX";
+    want(mkdtemp(gitdir) != NULL);
+    char Adir[]      = "/tmp/wcli-utd-A-XXXXXX";
+    want(mkdtemp(Adir) != NULL);
+    char Bdir[]      = "/tmp/wcli-utd-B-XXXXXX";
+    want(mkdtemp(Bdir) != NULL);
+
+    char hex1[41], pack1[1024];
+    call(stage_git_commit, gitdir, "alpha\\n", hex1, pack1, sizeof(pack1));
+    call(stage_local_keeper, Adir, pack1, "", hex1);
+    call(stage_local_keeper, Bdir, pack1, "", hex1);
+
+    u32 nshas = 99;
+    {
+        a_cstr(A_root_s, Adir);
+        home h = {};
+        call(HOMEOpenAt, &h, A_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, Bdir);
+        u8csc branch_cs = {NULL, NULL};
+        HEX2SHA(tip1, hex1);
+        ok64 po = WIREPush(uri, branch_cs, &tip1, NO);
+        want(po == OK);
+        nshas = WIREPushLastObjCount;
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    //  Peer already at tip ⇒ no pack built.
+    want(nshas == 0);
+
+    tmp_rm(gitdir);
+    tmp_rm(Adir);
+    tmp_rm(Bdir);
+    done;
+}
+
+// ---- Test 9: non-FF push builds no pack (DIS-021) ---------------------
+//
+//  B holds c2 (ahead).  A pushes c1 (an ancestor of c2, so a non-FF
+//  rewind) without force.  The client FF gate must refuse with
+//  WIRECLNFF BEFORE building the pack (`WIREPushLastObjCount == 0`), and
+//  B's trunk must stay at c2.
+ok64 WIRECLIENTtest_nonff_nopack() {
+    sane(1);
+    call(FILEInit);
+
+    char gitdir[]    = "/tmp/wcli-nff-git-XXXXXX";
+    want(mkdtemp(gitdir) != NULL);
+    char Adir[]      = "/tmp/wcli-nff-A-XXXXXX";
+    want(mkdtemp(Adir) != NULL);
+    char Bdir[]      = "/tmp/wcli-nff-B-XXXXXX";
+    want(mkdtemp(Bdir) != NULL);
+
+    char hex1[41], pack1[1024];
+    call(stage_git_commit, gitdir, "alpha\\n", hex1, pack1, sizeof(pack1));
+    char hex2[41], pack2[1024];
+    call(stage_git_commit2, gitdir, "beta\\n", hex2, pack2, sizeof(pack2));
+
+    //  A holds c1 (the ancestor it will try to push).  B is ahead at c2.
+    call(stage_local_keeper, Adir, pack2, "", hex1);
+    call(stage_local_keeper, Bdir, pack2, "", hex2);
+
+    u32 nshas = 99;
+    ok64 po = WIRENOWANT;
+    {
+        a_cstr(A_root_s, Adir);
+        home h = {};
+        call(HOMEOpenAt, &h, A_root_s, YES);
+        call(KEEPOpen, &h, YES);
+
+        FILE_URI(uri, Bdir);
+        u8csc branch_cs = {NULL, NULL};
+        HEX2SHA(tip1, hex1);
+        po = WIREPush(uri, branch_cs, &tip1, NO);
+        nshas = WIREPushLastObjCount;
+
+        KEEPClose();
+        HOMEClose(&h);
+    }
+
+    //  Rejected up front: non-FF, no pack built.
+    want(po == WIRECLNFF);
+    want(nshas == 0);
+
+    //  B unchanged at c2.
+    char got[41];
+    want(lookup_local_ref(Bdir, "", got));
+    want(memcmp(got, hex2, 40) == 0);
+
+    tmp_rm(gitdir);
+    tmp_rm(Adir);
+    tmp_rm(Bdir);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "WIRECLIENTtest_fetch_smoke...\n");
@@ -609,6 +792,12 @@ ok64 maintest() {
     call(WIRECLIENTtest_title_clash);
     fprintf(stderr, "WIRECLIENTtest_title_converge...\n");
     call(WIRECLIENTtest_title_converge);
+    fprintf(stderr, "WIRECLIENTtest_incremental_prune...\n");
+    call(WIRECLIENTtest_incremental_prune);
+    fprintf(stderr, "WIRECLIENTtest_uptodate_nopack...\n");
+    call(WIRECLIENTtest_uptodate_nopack);
+    fprintf(stderr, "WIRECLIENTtest_nonff_nopack...\n");
+    call(WIRECLIENTtest_nonff_nopack);
     fprintf(stderr, "all passed\n");
     done;
 }
