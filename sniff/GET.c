@@ -1639,7 +1639,10 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     a_dup(u8c, rr_s, reporoot);
     call(PATHu8bFeed, fp, rr_s);
     a_dup(u8c, path_s, u->path);
-    call(PATHu8bPush, fp, path_s);
+    //  u->path is multi-segment (e.g. "sub/file.txt"); use Add
+    //  (segment-by-segment) — PATHu8bPush would reject the embedded
+    //  '/' and fail PATHBAD.  Mirrors sniff_get_subtree_to_wt.
+    call(PATHu8bAdd, fp, path_s);
     int fd = -1;
     ok64 co = FILECreate(&fd, $path(fp));
     if (co != OK) {

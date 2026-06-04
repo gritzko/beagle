@@ -88,6 +88,14 @@ add_test(NAME SNIFFrefuse
 set_tests_properties(SNIFFrefuse PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFrefuse")
 
+#  restore.sh — single-file `sniff get <path>` baseline restore for
+#  subdir paths (regression: PATHu8bPush rejected embedded '/' → PATHBAD).
+add_test(NAME SNIFFrestore
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/restore.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFrestore PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFrestore")
+
 #  norepo.sh — bare `sniff` outside any repo refuses cleanly and never
 #  bootstraps a stray `.be/` (regression: $HOME-tree scan / hang).
 add_test(NAME SNIFFnorepo
