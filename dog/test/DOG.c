@@ -402,6 +402,56 @@ static ok64 DOGTestRefSplitPin(void) {
     done;
 }
 
+//  DOGIsTransport / DOGIsGitTransport scheme classification (DIS-019).
+//  Git transports (ssh/https/http/git) speak git-{upload,receive}-pack;
+//  be/keeper speak the beagle protocol; file is a local exec.  A be-only
+//  synthetic dot-branch must never be pushed to a git transport.
+static ok64 DOGTestGitTransport(void) {
+    sane(1);
+    struct {
+        char const *scheme;
+        b8          is_transport;
+        b8          is_git;
+    } cases[] = {
+        {"ssh",    YES, YES},
+        {"https",  YES, YES},
+        {"http",   YES, YES},
+        {"git",    YES, YES},
+        {"be",     YES, NO},    // beagle protocol — dot-branch is fine
+        {"keeper", NO,  NO},    // not even a known transport here
+        {"file",   YES, NO},    // local exec; path decides git-vs-keeper
+        {"sha1",   NO,  NO},    // projector, not a transport
+        {"",       NO,  NO},    // empty
+        {"bogus",  NO,  NO},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(s, cases[i].scheme);
+        a_dup(u8c, sc, s);
+        b8 t = DOGIsTransport(sc);
+        a_dup(u8c, sc2, s);
+        b8 g = DOGIsGitTransport(sc2);
+        if (t != cases[i].is_transport) {
+            fprintf(stderr, "DOGIsTransport('%s') want %d got %d\n",
+                    cases[i].scheme, cases[i].is_transport, t);
+            fail(FAIL);
+        }
+        if (g != cases[i].is_git) {
+            fprintf(stderr, "DOGIsGitTransport('%s') want %d got %d\n",
+                    cases[i].scheme, cases[i].is_git, g);
+            fail(FAIL);
+        }
+        //  A git transport is always a transport; the converse may not
+        //  hold (be/file).  Pin the invariant.
+        if (g && !t) {
+            fprintf(stderr, "DOGIsGitTransport('%s') YES but "
+                    "DOGIsTransport NO — invariant broken\n",
+                    cases[i].scheme);
+            fail(FAIL);
+        }
+    }
+    done;
+}
+
 ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
@@ -409,6 +459,7 @@ ok64 DOGtest() {
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
     call(DOGTestRefSplitPin);
+    call(DOGTestGitTransport);
     done;
 }
 

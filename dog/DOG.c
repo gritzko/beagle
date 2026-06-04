@@ -93,6 +93,23 @@ b8 DOGIsTransport(u8cs scheme) {
     return NO;
 }
 
+//  Git-protocol transport schemes — the wire edge runs
+//  `git-upload-pack` / `git-receive-pack`.  Subset of DOG_TRANSPORTS:
+//  excludes `be`/`keeper` (beagle protocol) and `file` (a local exec
+//  whose git-vs-keeper choice is path-driven, not scheme-driven).
+static char const *const DOG_GIT_TRANSPORTS[] = {
+    "ssh", "https", "http", "git", NULL
+};
+
+b8 DOGIsGitTransport(u8cs scheme) {
+    if (u8csEmpty(scheme)) return NO;
+    for (char const *const *t = DOG_GIT_TRANSPORTS; *t; t++) {
+        a_cstr(t_s, *t);
+        if (u8csEq(scheme, t_s)) return YES;
+    }
+    return NO;
+}
+
 static b8 dog_is_projector(u8cs scheme) {
     return DOGIsProjector(scheme);
 }

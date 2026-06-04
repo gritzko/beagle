@@ -242,6 +242,15 @@ char const *DOGProjectorDog(u8cs scheme);
 // at the start of an arg is a URI scheme or a prose colon.
 b8 DOGIsTransport(u8cs scheme);
 
+// YES iff `scheme` names a GIT-protocol transport — one whose wire
+// edge speaks `git-upload-pack` / `git-receive-pack` (`ssh`, `https`,
+// `http`, `git`).  Subset of `DOGIsTransport`: `be`/`keeper` are the
+// beagle protocol, `file` is a local exec that the path (`.git`
+// suffix / on-disk layout) decides between git and keeper.  Used by
+// POST to refuse putting a be-only synthetic dot-coordinate branch on
+// a git wire (it would forge `refs/heads/.<…>`, a "funny ref").
+b8 DOGIsGitTransport(u8cs scheme);
+
 // Parse a URI string with dog-specific normalization:
 //   1. Invoke abc/URILexer for strict RFC 3986 parsing.
 //   2. If the parsed URI has a scheme but no authority and its

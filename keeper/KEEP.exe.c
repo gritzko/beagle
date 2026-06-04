@@ -752,6 +752,38 @@ static ok64 keeper_put(keeper *k, cli *c) {
 
 // --- Verb: post ---
 
+//  YES iff posting to `remote_uri` would reach a GIT peer's
+//  `git-receive-pack` — a git wire that rejects be-only synthetic
+//  dot-coordinate refnames as "funny refs" (DIS-019).
+//
+//  Two cases, mirroring keeper/WIRECLI.c::wcli_spawn's dispatch:
+//    1. A git-protocol transport scheme (ssh/https/http/git) —
+//       `DOGIsGitTransport`.  (`be`/`keeper` speak the beagle
+//       protocol; a be-only dot-branch is legitimate there.)
+//    2. A local exec (`file://` or schemeless) whose path is a git
+//       repo — `.git` suffix or on-disk `objects/`+`refs/` layout.
+static b8 keep_post_is_git_wire(u8csc remote_uri) {
+    uri u = {};
+    a_dup(u8c, ru, remote_uri);
+    if (DOGParseURI(&u, ru) != OK) return NO;
+    if (DOGIsGitTransport(u.scheme)) return YES;
+    //  Local exec: only file:// / schemeless land on a local path.
+    a_cstr(file_s, "file");
+    b8 local = u8csEmpty(u.scheme) || u8csEq(u.scheme, file_s);
+    if (!local || u8csEmpty(u.path)) return NO;
+    a_cstr(dotgit_s, ".git");
+    a_dup(u8c, p, u.path);
+    if (u8csHasSuffix(p, dotgit_s)) return YES;
+    //  On-disk layout sniff (bare repo): <path>/objects + <path>/refs.
+    a_cstr(objects_s, "objects");
+    a_cstr(refs_s,    "refs");
+    a_path(objp, p, objects_s);
+    a_path(refp, p, refs_s);
+    if (FILEisdir($path(objp)) == OK && FILEisdir($path(refp)) == OK)
+        return YES;
+    return NO;
+}
+
 //  Push the current worktree commit to a remote.  Nothing is staged
 //  locally (sniff already committed if anything was).  Flow:
 //    1. Determine target branch from URI query (`?main` / `?heads/X`)
@@ -840,6 +872,25 @@ static ok64 keeper_post(keeper *k, cli *c) {
         return ru;
     }
     a_dup(u8c, remote_uri, u8bDataC(ubuf));
+
+    //  DIS-019: a be-only synthetic dot-coordinate branch
+    //  (`?/<sub>/.<parent>[/<br>]`, branch[0]=='.') must never reach a
+    //  git wire — the peer's receive-pack rejects `refs/heads/.<…>` as
+    //  a "funny ref" AFTER a full pack build.  The local commit (sniff)
+    //  already happened; there is nothing to push to a git peer (a
+    //  beagle sub can't live in a git remote).  Skip the push for a git
+    //  transport; be://-style dot-branch pushes (beagle protocol) and
+    //  normal-branch git pushes are unaffected.
+    if (!$empty(branch) && branch[0][0] == '.' &&
+        keep_post_is_git_wire(remote_uri)) {
+        fprintf(stderr,
+                "keeper: post: branch ?%.*s is a be-only synthetic "
+                "coordinate; not pushing to git remote %.*s\n",
+                (int)$len(branch), (char const *)branch[0],
+                (int)$len(remote_uri), (char const *)remote_uri[0]);
+        u8bUnMap(rarena);
+        done;
+    }
 
     //  4. Push.  WIREPush handles peer-tip advert + pack build + status.
     //  We pass at_sha (decoded from sniff's at-log) as the authoritative

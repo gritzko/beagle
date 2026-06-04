@@ -57,3 +57,11 @@
   `NOBRANCH` (`sniff/SNIFF.h`); its low byte differs from `NONE`, so
   the plan runner aborts.  Local-only (no ssh): asserts non-zero exit,
   `NOBRANCH` on stderr, and that the keeper push stage never fired.
+* `25-dot-branch-no-git-wire/` — DIS-019: a submodule's current branch
+  is a be-only synthetic dot-coordinate (`?/<sub>/.<parent>`); posting
+  that worktree DIRECTLY to a git remote forged `refs/heads/.<x>/`
+  ("funny ref") after a full pack build.  `keeper_post` now skips the
+  wire (no pack) when the branch is a dot-coordinate and the resolved
+  remote is a git transport (`DOGIsGitTransport`).  Fully offline
+  (file://): asserts exit 0, no pack built, no funny ref, the bare
+  repo's refs byte-identical.
