@@ -547,21 +547,56 @@ static u8 at_patch_row_shape(uricp u) {
     return 0;  // BAD
 }
 
+//  A `post` row at index `idx` is commit-all iff no `put`/`delete`
+//  row lies between its own pd boundary (the most recent `get`/`post`
+//  strictly before it) and itself (wiki/POST.mkd §"Boundaries and
+//  guards": "A `post` is commit-all iff no `put`/`delete` lies between
+//  its pd boundary and itself — one forward scan, no new verb").
+//  One backward scan from idx-1: the first `get`/`post` we hit before
+//  any `put`/`delete` means commit-all; a `put`/`delete` first means
+//  selective.  Verb constants are passed in to avoid re-resolving.
+static b8 at_post_is_commit_all(u32 idx, ron60 vg, ron60 vp,
+                                ron60 vu, ron60 vd) {
+    for (u32 j = idx; j > 0; ) {
+        j--;
+        ulogrec rec = {};
+        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, j, &rec) != OK) return NO;
+        if (rec.verb == vu || rec.verb == vd) return NO;   // selective
+        if (rec.verb == vg || rec.verb == vp) return YES;  // pd boundary, none seen
+    }
+    return YES;  // nothing before it → no put/delete → commit-all
+}
+
+//  patch boundary = most recent `get` OR commit-all `post` row
+//  (wiki/POST.mkd / wiki/Sniff.mkd §"Boundaries").  `patch` rows after
+//  this are in scope for the next POST.  A selective `post` (one with a
+//  put/delete in its pd scope) does NOT reset the patch boundary, so
+//  earlier `patch` rows keep contributing their foster/parent/picked
+//  provenance to the following commit.  Returns the first in-scope row
+//  index (0 when no get/commit-all-post anchor exists — whole log).
+static u32 at_patch_boundary_start(u32 n, ron60 vg, ron60 vp,
+                                   ron60 vu, ron60 vd) {
+    for (u32 i = n; i > 0; i--) {
+        ulogrec rec = {};
+        if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec) != OK) return 0;
+        if (rec.verb == vg) return i;
+        if (rec.verb == vp && at_post_is_commit_all(i - 1, vg, vp, vu, vd))
+            return i;
+    }
+    return 0;
+}
+
 ok64 SNIFFAtPatchChain(sha1b out) {
     sane(SNIFF.h && Bok(out));
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
+    ron60 vu = SNIFFAtVerbPut();
+    ron60 vd = SNIFFAtVerbDelete();
     u32 n = ULOGCount(SNIFF.log_idx);
     if (n == 0) return ULOGNONE;
 
-    u32 start = 0;
-    for (u32 i = n; i > 0; i--) {
-        ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
-        if (o != OK) return o;
-        if (rec.verb == vg || rec.verb == vp) { start = i; break; }
-    }
+    u32 start = at_patch_boundary_start(n, vg, vp, vu, vd);
 
     for (u32 i = start; i < n && sha1bHasRoom(out); i++) {
         ulogrec rec = {};
@@ -586,16 +621,12 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
+    ron60 vu = SNIFFAtVerbPut();
+    ron60 vd = SNIFFAtVerbDelete();
     u32 n = ULOGCount(SNIFF.log_idx);
     if (n == 0) return ULOGNONE;
 
-    u32 start = 0;
-    for (u32 i = n; i > 0; i--) {
-        ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
-        if (o != OK) return o;
-        if (rec.verb == vg || rec.verb == vp) { start = i; break; }
-    }
+    u32 start = at_patch_boundary_start(n, vg, vp, vu, vd);
 
     for (u32 i = start; i < n && *n_out < cap; i++) {
         ulogrec rec = {};
@@ -625,17 +656,24 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
     done;
 }
 
-// --- Last-post timestamp ---
+// --- pd-boundary timestamp ---
 
+//  pd boundary = most recent `get` OR `post` row (wiki/POST.mkd
+//  §"Boundaries and guards", wiki/Sniff.mkd §"Boundaries in the
+//  wtlog").  put/delete rows after this are in scope for the next
+//  POST.  A `get` (a hard reset of the world) resets the pd boundary
+//  just like a `post` does, so a checkout between a stale `put` and a
+//  commit drops that `put` from scope rather than leaking it.
 ron60 SNIFFAtLastPostTs(void) {
     if (!SNIFF.h) return 0;
+    ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     u32 n = ULOGCount(SNIFF.log_idx);
     for (u32 i = n; i > 0; ) {
         i--;
         ulogrec rec = {};
         if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec) != OK) return 0;
-        if (rec.verb == vp) return rec.ts;
+        if (rec.verb == vg || rec.verb == vp) return rec.ts;
     }
     return 0;
 }

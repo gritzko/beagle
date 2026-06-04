@@ -122,13 +122,16 @@ ok64 SNIFFAtHelpers() {
     }
     ron60 base = t_repo + 1000;
 
-    //  Post-repo log invariants: baseline/last-post/stamp-set all
-    //  still empty except for the repo stamp itself.
+    //  Post-repo log invariants: baseline empty, stamp-set empty except
+    //  for the repo stamp itself.  The pd floor (DIS-010: most recent
+    //  `get` OR `post`) is the row-0 anchor's ts — the anchor verb is
+    //  now `get` (line above), and a `get` is a valid pd boundary per
+    //  wiki/POST.mkd §"Boundaries", so the floor is `t_repo`, not 0.
     {
         ron60 ts = 0, verb = 0;
         uri u = {};
         want(SNIFFAtBaseline(&ts, &verb, &u) == ULOGNONE);
-        want(SNIFFAtLastPostTs() == 0);
+        want(SNIFFAtLastPostTs() == t_repo);
         want(!SNIFFAtKnown(base + 9999));
     }
 
@@ -170,7 +173,8 @@ ok64 SNIFFAtHelpers() {
         want(has_comma);
     }
 
-    //  Last post ts = base + 400.
+    //  Last post ts = base + 400 (most recent get/post; the patch at
+    //  +600 is not a pd boundary).
     want(SNIFFAtLastPostTs() == base + 400);
 
     //  Scan put/delete since last post: only src/d.c at +500.
@@ -203,6 +207,97 @@ ok64 SNIFFAtHelpers() {
         pd_capture cap = {};
         call(SNIFFAtScanPutDelete, base + 99999, pd_collect, &cap);
         want(cap.n == 0);
+    }
+
+    call(SNIFFClose);
+    KEEPClose();
+    HOMEClose(&h);
+    rm_tmpdir();
+    done;
+}
+
+// --- Test: POST boundary scans match the spec (DIS-010) ---
+//  Two boundaries anchored at the latest GET scope what the next POST
+//  consumes (wiki/POST.mkd §"Boundaries and guards", sniff/INDEX.md):
+//    pd boundary    = most recent `get` OR `post` row.
+//    patch boundary = most recent `get` OR *commit-all* `post`
+//                     (commit-all = no put/delete between that post's
+//                      pd boundary and itself).
+//
+//  Repro A (pd floor): `put fileA; get ?branch; post`.  The intervening
+//  `get` resets the pd boundary, so the stale pre-checkout `put fileA`
+//  must NOT be in scope for the next POST.  Before the fix
+//  SNIFFAtLastPostTs() matched only `post`, leaving the floor below the
+//  `get` and leaking `put fileA`.
+//
+//  Repro B (patch boundary): `patch ?X; put f; post (selective); post`.
+//  The first post is selective (a put lies between its pd boundary and
+//  itself), so it is NOT commit-all and must not reset the patch
+//  boundary.  The second POST must therefore still see `patch ?X`'s
+//  provenance.  Before the fix any `post` reset the patch boundary,
+//  dropping `?X`.
+ok64 SNIFFAtBoundaries() {
+    sane(1);
+    call(FILEInit);
+    call(make_tmpdir);
+
+    a_cstr(root, g_tmpdir);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+    call(SNIFFOpen, &h, YES);
+
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 vp = SNIFFAtVerbPost();
+    ron60 vx = SNIFFAtVerbPatch();
+    ron60 vu = SNIFFAtVerbPut();
+
+    ron60 t0 = 0;
+    {
+        ulogrec r0 = {};
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &r0);
+        t0 = r0.ts;
+    }
+    ron60 base = t0 + 1000;
+
+    // --- Repro A: pd floor matches the most recent get OR post ---
+    //  Timeline:
+    //    +0   get   ?heads/main#aaaa…   (initial checkout)
+    //    +100 put   src/old.c           (stale, pre-checkout stage)
+    //    +200 get   ?heads/feat#bbbb…   (checkout resets pd boundary)
+    //  The pd floor must now be the +200 get, so a put/delete scan from
+    //  the floor sees NOTHING (no put/delete after +200).
+    call(at_append_uri, base + 0,   vg, "?heads/main#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    call(at_append_uri, base + 100, vu, "src/old.c");
+    call(at_append_uri, base + 200, vg, "?heads/feat#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+    //  Floor sits at the +200 get, NOT at 0.
+    want(SNIFFAtLastPostTs() == base + 200);
+    {
+        pd_capture cap = {};
+        call(SNIFFAtScanPutDelete, SNIFFAtLastPostTs(), pd_collect, &cap);
+        want(cap.n == 0);   // stale `put src/old.c` is below the floor
+    }
+
+    // --- Repro B: patch boundary resets only at get or commit-all post ---
+    //  Continue the timeline:
+    //    +300 patch ?heads/feat#cccc…   (merge — carries provenance)
+    //    +400 put   src/f.c             (makes the next post selective)
+    //    +500 post  ?heads/feat#dddd…   (SELECTIVE: put in its pd scope)
+    //  The selective +500 post is NOT commit-all, so it must not reset
+    //  the patch boundary.  A patch-entries read after it must still
+    //  surface the +300 patch row's provenance.
+    call(at_append_uri, base + 300, vx, "?heads/feat#cccccccccccccccccccccccccccccccccccccccc");
+    call(at_append_uri, base + 400, vu, "src/f.c");
+    call(at_append_uri, base + 500, vp, "?heads/feat#dddddddddddddddddddddddddddddddddddddddd");
+
+    {
+        sniff_pe pent[16] = {};
+        u32 n_pent = 0;
+        call(SNIFFAtPatchEntries, pent, 16, &n_pent);
+        //  The +300 merge row's provenance must survive the selective post.
+        want(n_pent == 1);
+        want(pent[0].shape == 3 /* MERGE → parent header */);
     }
 
     call(SNIFFClose);
@@ -905,6 +1000,8 @@ ok64 maintest() {
     call(DOGTitleTest);
     fprintf(stderr, "SNIFFAtHelpers...\n");
     call(SNIFFAtHelpers);
+    fprintf(stderr, "SNIFFAtBoundaries...\n");
+    call(SNIFFAtBoundaries);
     fprintf(stderr, "SNIFFAtProjectStrip...\n");
     call(SNIFFAtProjectStrip);
     fprintf(stderr, "SNIFFCheckoutCommit...\n");
