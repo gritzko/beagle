@@ -695,7 +695,7 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
         //  so the parent's stream lists the sub's affected files too.
         u8css argv = {rc->argv_head, rc->argv_term};
         ok64 r = BERelaySub(rc->wt_root, subpath, argv);
-        if (r != OK) rc->worst = r;
+        if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
         return OK;
     }
 
@@ -720,7 +720,7 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
     a_dup(u8cs, child_argv, u8csbData(child_args));
 
     ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
-    if (r != OK) rc->worst = r;
+    if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
     return OK;
 }
 
@@ -2216,7 +2216,7 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
     a_dup(u8cs, child_argv, u8csbData(child_args));
 
     ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
-    if (r != OK) rc->worst = r;
+    if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
     return OK;
 }
 
@@ -2463,6 +2463,7 @@ typedef struct {
     u8cs  *argv_head;   // child argv as head/term (u8css can't be a member)
     u8cs  *argv_term;
     ok64   worst;
+    b8     did_work;    // any sub returned OK (staged/removed real work)?
 } be_relay_ctx;
 
 static ok64 be_relay_subs_cb(besub const *s, void *vctx) {
@@ -2473,21 +2474,34 @@ static ok64 be_relay_subs_cb(besub const *s, void *vctx) {
     u8csMv(subpath, s->path);
     u8css argv = {rc->argv_head, rc->argv_term};
     ok64 r = BERelaySub(rc->wt_root, subpath, argv);
-    if (r != OK) rc->worst = r;
+    //  OK  → the sub staged / removed real work (verb did something).
+    //  NONE→ the sub was clean (no-op); never marks did_work.
+    //  else→ a real failure; record as worst.
+    if (r == OK)                     rc->did_work = YES;
+    else if (!ok64is(r, NONE))       rc->worst    = r;
     return OK;                     // keep enumerating other subs
 }
 
-static ok64 be_relay_subs(cli *c, u8css argv) {
+//  Relay the given child argv into every mounted sub.  Returns:
+//    *NONE-class via *worst untouched aside,
+//  but the real signal is *out_did_work — set YES iff at least one sub
+//  did real work — which the put/delete relay turns into an OK exit
+//  even when the parent side was *NONE (SUBS-004).  `out_did_work` may
+//  be NULL for callers (status) that only relay reports.
+static ok64 be_relay_subs(cli *c, u8css argv, b8 *out_did_work) {
     sane(c);
+    if (out_did_work) *out_did_work = NO;
     if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
     be_relay_ctx rc = {
         .argv_head = (u8cs *)argv[0],
         .argv_term = (u8cs *)argv[1],
         .worst     = OK,
+        .did_work  = NO,
     };
     u8csMv(rc.wt_root, wt_root);
     (void)BESubsHere(wt_root, be_relay_subs_cb, &rc);
+    if (out_did_work) *out_did_work = rc.did_work;
     return rc.worst;
 }
 
@@ -2508,12 +2522,11 @@ ok64 BEActSubsRelay(cli *c) {
 
     a_pad(u8cs, cargs, 5 + CLI_MAX_FLAGS * 2);
     u8csbFeed1(cargs, c->verb);
-    //  `-q`: a sub with nothing to stage / delete exits `*NONE`, which
-    //  the child becli swallows to OK under `-q` — so a clean submodule
+    //  No `-q` here: a clean sub exits `*NONE`, which be_recurse_capture
+    //  surfaces as the NONE class so be_relay_subs can tell a clean sub
+    //  (no-op) from one that staged real work.  The NONE is treated as a
+    //  no-op below (it never marks did_work), so a clean submodule still
     //  doesn't turn a bare `be put` / `be delete` into an error.
-    a_cstr(q_lit, "-q");
-    a_dup(u8c, q_d, q_lit);
-    u8csbFeed1(cargs, q_d);
     for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
         if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
         u8csbFeed1(cargs, (*u8csbAtP(c->flags, j)));
@@ -2521,7 +2534,17 @@ ok64 BEActSubsRelay(cli *c) {
             u8csbFeed1(cargs, (*u8csbAtP(c->flags, j + 1)));
     }
     a_dup(u8cs, cargv, u8csbData(cargs));
-    return be_relay_subs(c, cargv);
+    b8 did_work = NO;
+    try(be_relay_subs, c, cargv, &did_work);
+    ok64 worst = __;
+    if (worst != OK) return worst;
+    //  SUBS-004: a sub staged / removed real work even though the parent
+    //  side was empty (`*NONE`).  Return BESTOP so the executor exits OK,
+    //  clearing the parent's stale last-NONE.  If every sub was clean
+    //  (and no real failure), fall through to OK so the parent's `*NONE`
+    //  still surfaces (truly-empty bare put → PUTNONE preserved).
+    if (did_work) return BESTOP;
+    done;
 }
 
 //  Bare `be` — overview of the working tree.  Forwards to bare
@@ -2554,7 +2577,7 @@ static ok64 BEDefault(cli *c) {
     //  empty — bare `be` (BERelaySub forces `--tlv`), which re-enters
     //  this same path inside the mount.
     u8css empty_argv = {NULL, NULL};
-    (void)be_relay_subs(c, empty_argv);
+    (void)be_relay_subs(c, empty_argv, NULL);
     return sniff_rc;
 }
 

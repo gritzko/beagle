@@ -284,9 +284,14 @@ static ok64 be_recurse_capture(u8cs wt_root, u8cs subpath, u8css argv,
     if (r != OK)         return r;
     //  A child `*NONE` exit (PUTNONE / DELNONE / POSTNONE — all share
     //  the NONE low byte) means the sub had nothing to do.  That's a
-    //  no-op, not a failure of the parent's aggregation: treat it as OK
-    //  so a clean submodule doesn't abort a bare `be put` / `be delete`.
-    if (rc != 0 && rc != (int)(NONE & 0xFFu)) return BEDOGEXIT;
+    //  no-op, not a failure of the parent's aggregation, so it must not
+    //  abort a bare `be put` / `be delete`.  Surface it as the NONE
+    //  class (not collapsed to OK) so the put/delete relay can tell a
+    //  clean sub apart from one that staged real work (SUBS-004); the
+    //  get/head/post recursion callers explicitly map NONE → no-op, so
+    //  their exit is unchanged.
+    if (rc == (int)(NONE & 0xFFu)) return NONE;
+    if (rc != 0)                   return BEDOGEXIT;
     done;
 }
 
@@ -508,7 +513,7 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         //  the sub's mount path.  The child still performs the actual
         //  checkout; we just capture + re-emit its report.
         ok64 r = BERelaySub(wt_root, subpath_arg, child_argv);
-        if (r != OK) worst = r;
+        if (r != OK && !ok64is(r, NONE)) worst = r;   //  NONE = sub no-op
     }
     return worst;
 }

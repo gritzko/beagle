@@ -80,6 +80,8 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-23-triangle"
     "be-post-18-triangle"
     "be-put-06-triangle"
+    # SUBS-004 repro: bare `be put`, parent clean + sub dirty → exit 0.
+    "be-put-09-sub-only-dirty-exit"
     "be-get-24-uri-refs"
     # Bug repro cases — all need an ssh-cloneable origin.
     "be-get-26-cached-no-wire"
