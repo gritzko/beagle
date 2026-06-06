@@ -363,8 +363,15 @@ be_action const BE_PLAN_PATCH[] = {
     { 0,                       URI_AUTHORITY, NO, BEActResolveRef    },
     { 0,                       0,             NO, BEActSniffPatch    },
     //  After the local absorb, recurse into subs whose gitlink pin the
-    //  patch moved (gitlink-diff driven); skipped on transport.
-    { 0,                       URI_AUTHORITY, NO, BEActSubsPatch     },
+    //  patch moved (gitlink-diff driven).  SUBS-002: this runs on the
+    //  transport form too — `be patch ssh://host?adv` (git pull --squash)
+    //  is exactly when a gitlink bump arrives and the sub must be re-got.
+    //  By the time this row fires, BEActResolveRemote has rewritten the
+    //  fetched URI to a local `?<sha>` form (scheme/authority cleared),
+    //  so BEActSubsPatch consumes a clean local source ref regardless of
+    //  the original transport.  No exclude_mask — the action's own
+    //  scheme/path/query guards gate it.
+    { 0,                       0,             NO, BEActSubsPatch     },
     BE_ACTION_END,
 };
 
