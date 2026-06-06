@@ -5,6 +5,14 @@
   behaves when one of the listed paths is unchanged versus modified or
   new.
 * `02-put-dir/` — `be put <dir>/` on a tracked subtree.
+* `11-sub-add-refusal/` — SUBS-009 repro.  `be put <subpath>` on a
+  directory declared in `.gitmodules` (or already holding a child
+  `.be`) but NOT yet mounted gives an actionable refusal that names the
+  missing `sniff sub-mount` step, instead of the misleading bare "does
+  not exist — skipped" / PUTNONE.  Probe B then follows the named flow
+  (sub-mount → `be put` → POST) and asserts the parent commit records
+  both the `160000` gitlink and the `.gitmodules` section — proving the
+  refusal points at a flow that actually works.  Gated on `WITH_SSH`.
 * `09-sub-only-dirty-exit/` — SUBS-004 repro.  Parent worktree left
   clean, only a mounted submodule's file edited; bare `be put` recurses,
   stages the sub blob, and MUST exit 0 (not 206/PUTNONE — the parent
