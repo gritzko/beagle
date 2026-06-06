@@ -25,6 +25,7 @@ non-zero entry count to catch regressions on this path.
 | 07-uri-fragment    | `be '#text.ext'` routes to spot via URI fragment |
 | 08-status          | `spot status` reports index stack summary |
 | 09-index-filter    | committed (filter-passing) **and** uncommitted file both surface — proves both ULOG spines run |
+| 10-sub-recurse-search | SUBS-011.  Repo-wide `be grep:` descends into a mounted sub: `be get` indexes the sub on mount (`BEIndexMount`), `BEProjector` fans the search into mounts (`BEProjectorSubs`), hits path-prefixed under `vendor/sub/`; `--nosub` opts out.  (ssh fixture.) |
 
 ## Helpers
 

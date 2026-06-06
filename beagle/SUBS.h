@@ -63,6 +63,18 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv);
 //  returned (BEDOGEXIT / BEDOGSIG / OK).
 ok64 BERelaySub(u8cs wt_root, u8cs subpath, u8css argv);
 
+//  Index a freshly-mounted sub's checked-out tree (SUBS-011).  Forks
+//  `spot get` and `graf get` with cwd = `<wt_root>/<subpath>` so each
+//  indexer dog walks the sub shard's current tip and writes its
+//  `.be/<subshard>/*.spot.idx` / `*.graf.idx`.  A normal sub mount goes
+//  through a LOCAL `be get ?<pin>` (no transport scheme), which does
+//  not trip BE_PLAN_GET's transport-gated spot/graf rows — so without
+//  this the sub content is fetched but never trigram-indexed, and a
+//  repo-wide search into it has nothing to query.  Best-effort: a
+//  per-dog failure is returned (worst code) but never re-checks-out
+//  the sub, so a miss degrades search recall only.
+ok64 BEIndexMount(u8cs wt_root, u8cs subpath);
+
 //  Resolve sibling `tool` (via HOMEResolveSibling), spawn it with
 //  `argv`, wait, translate exit into BEDOGEXIT / BEDOGSIG / NONE
 //  (low-byte *NONE residue) / OK.  `bg=YES` skips the wait — caller

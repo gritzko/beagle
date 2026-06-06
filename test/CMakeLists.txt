@@ -44,7 +44,9 @@ set(_BE_WILL_FAIL_CASES
     # SUBS-004 (put/09) + SUBS-005 (delete/08) landed via the dogs merge
     # (5fb56d6f / 9aabd863) — off WILL_FAIL so they must pass normally.
     "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
-    "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
+    # SUBS-011 (be-spot-10-sub-recurse-search) FIXED: BEProjector now
+    # fans search projectors into mounted subs (BEProjectorSubs) and
+    # be get indexes each sub on mount (BEIndexMount) — off WILL_FAIL.
     # POST-005 (post/28) fixed — absorbed-tree (theirs) ULOG cursor gates the
     # untracked-file ADD; off WILL_FAIL so it must pass normally.
 )
@@ -130,6 +132,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-head-21-sub-dirty-reported"
     "be-all-01-subs-all-verbs"
     "be-spot-10-sub-recurse-search"
+    # SUBS-012: projector sub-recursion (diff fan-out + object routing).
+    "be-diff-06-sub-change"
+    "be-tree-01-sub-object-routing"
 )
 
 foreach(_run ${_be_case_runs})

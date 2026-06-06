@@ -11,6 +11,8 @@ are forbidden — case names + the per-verb `INDEX.md` carry the prose.
 * [post/](post/INDEX.md) — `be post` (commit)   cases.
 * [put/](put/INDEX.md)   — `be put`  (stage)    cases.
 * [diff/](diff/INDEX.md) — `be diff` (`diff:` projector) cases.
+* [tree/](tree/INDEX.md) — `tree:` / `blob:` object-projector cases
+  (incl. SUBS-012 sub-path routing).
 
 ## Shared repo-setup lib (`lib/repo-setup.sh`)
 
