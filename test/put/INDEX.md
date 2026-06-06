@@ -5,6 +5,13 @@
   behaves when one of the listed paths is unchanged versus modified or
   new.
 * `02-put-dir/` — `be put <dir>/` on a tracked subtree.
+* `09-sub-only-dirty-exit/` — SUBS-004 repro.  Parent worktree left
+  clean, only a mounted submodule's file edited; bare `be put` recurses,
+  stages the sub blob, and MUST exit 0 (not 206/PUTNONE — the parent
+  sniff's empty-stage NONE must not mask the successful sub stage).
+  Also asserts the must-still-PUTNONE invariant: a truly-empty bare put
+  (parent clean AND every sub clean, on a fresh clone) still surfaces
+  PUTNONE.  Gated on `WITH_SSH` (submodules.sh fixture).
 * `06-triangle/` — triangular `be put` propagation across a 3-node
   ring (be↔be, be→git, git→be).  Three FF rounds (modify / add /
   delete) plus a non-FF rewrite tail in which B rewinds cur's tip

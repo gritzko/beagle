@@ -41,8 +41,8 @@ set(_BE_WILL_FAIL_CASES
     # must now pass normally (sniff/POST.c post_pd_cb).
     # SUBS-002 fixed (patch/28): sniff PATCH skips 160000 gitlinks + the be
     # entry-point resolver hands BEActSubsPatch a context-free pin.
-    "be-put-09-sub-only-dirty-exit"                 # SUBS-004
-    "be-delete-08-sub-path-scoped-deldirty"         # SUBS-005
+    # SUBS-004 (put/09) + SUBS-005 (delete/08) landed via the dogs merge
+    # (5fb56d6f / 9aabd863) — off WILL_FAIL so they must pass normally.
     "be-head-21-sub-dirty-reported"                 # SUBS-007
     "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
     "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
@@ -93,6 +93,10 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-23-triangle"
     "be-post-18-triangle"
     "be-put-06-triangle"
+    # SUBS-004 repro: bare `be put`, parent clean + sub dirty → exit 0.
+    "be-put-09-sub-only-dirty-exit"
+    # SUBS-005 repro: path-scoped delete of a sub / sub-interior file.
+    "be-delete-08-sub-path-scoped-deldirty"
     "be-get-24-uri-refs"
     # Bug repro cases — all need an ssh-cloneable origin.
     "be-get-26-cached-no-wire"
