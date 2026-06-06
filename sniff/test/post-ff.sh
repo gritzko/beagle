@@ -84,8 +84,8 @@ note "v2 = $T2 (wt.base)"
 #  the fake as the trunk tip.  GRAFLca(v2, deadbeef…) → 0 (unrelated
 #  histories) — the ff guard sees lca != tip and refuses.
 FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-TS=$(awk 'END { print $1 }' .be/refs)
-printf '%sz\tpost\t?#%s\n' "$TS" "$FAKE" >> .be/refs
+TS=$(awk 'END { print $1 }' "$RS_SHARD/refs")
+printf '%sz\tpost\t?#%s\n' "$TS" "$FAKE" >> "$RS_SHARD/refs"
 note "REFS poisoned with unrelated tip $FAKE; wt.base still $T2"
 
 before_tail=$(last_row)

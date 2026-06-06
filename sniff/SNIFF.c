@@ -104,27 +104,56 @@ static b8 sniff_opened_keep = NO;
 
 // --- Open / close ---
 
-//  Write the initial `repo` row into a freshly-created wtlog.  The
-//  URI anchors the wt to its store; default is colocated (`<wt>/.be/`).
-//  `wt_root` is the wt path (where `.be/` lives).
+//  Write the initial `repo` row into a freshly-created wtlog and lay
+//  down the project shard.  The colocated anchor is
+//  `file:<wt>/.be/<project>` (Store.mkd "Worktrees and the anchor");
+//  `<project>` is the store's Title.  `wt_root` is the wt path (where
+//  `.be/` lives).
 static ok64 sniff_write_repo_row(u8cs wt_root) {
     sane(SNIFF.h);
-    //  Compose `file:<wt_root>/.be/` via URI component fields;
-    //  ULOGAppend serializes through URIutf8Feed.
+    home *h = SNIFF.h;
+
+    //  Project (Title) for the anchor.  Honour an already-resolved
+    //  project (the `be` path passes it down via --at); otherwise mint
+    //  the colocated default for a local in-place store: the wt dir
+    //  basename.  Minting also sets h->project so keeper opens the shard.
+    a_pad(u8, projbuf, 256);
+    if (u8bDataLen(h->project) > 0) {
+        a_dup(u8c, hp, u8bDataC(h->project));
+        call(u8bFeed, projbuf, hp);
+    } else {
+        u8cs base = {};
+        PATHu8sBase(base, wt_root);
+        test(!u8csEmpty(base), SNIFFFAIL);
+        call(u8bFeed, projbuf, base);
+        call(u8bFeed, h->project, base);
+    }
+    a_dup(u8c, proj, u8bData(projbuf));
+
+    //  Lay down the shard `<wt>/.be/<project>/` so keeper's refs/packs
+    //  land there (born-sharded; no top-level flat objects).
+    a_path(sharddir, wt_root, DOG_BE_S);
+    call(PATHu8bPush, sharddir, proj);
+    call(FILEMakeDirP, $path(sharddir));
+
+    //  Row-0 colocated anchor `file:<wt>/.be/<project>` (Store.mkd
+    //  "Worktrees and the anchor").  Path via abc/PATH, URI via abc/URI
+    //  (URIMake → URIutf8Drain), no hand-assembled struct fields.  The
+    //  path after `/.be/` is the project (Title) segment; readers split
+    //  it off (DOGProjectFromBe / SNIFFAtTailOf), never read as a branch.
     a_path(pathbuf, wt_root, DOG_BE_S);
-    //  URI path for a directory carries a trailing slash.
-    call(u8bFeed1, pathbuf, '/');
-    call(PATHu8bTerm, pathbuf);
+    call(PATHu8bPush, pathbuf, proj);
+
+    a_pad(u8, uribuf, MAX_URI_LEN);
+    a_cstr(file_scheme, "file");
+    u8cs none = {NULL, NULL};
+    a_dup(u8c, pth, u8bData(pathbuf));
+    call(URIMake, u8bIdle(uribuf), file_scheme, none, pth, none, none);
+    a_dup(u8c, made, u8bData(uribuf));
 
     uri urow = {};
-    a_cstr(scheme, "file");
-    urow.scheme[0] = scheme[0];
-    urow.scheme[1] = scheme[1];
-    {
-        a_dup(u8c, pb, u8bData(pathbuf));
-        urow.path[0] = pb[0];
-        urow.path[1] = pb[1];
-    }
+    call(URIutf8Drain, made, &urow);
+
     //  Anchor verb `get` — the wt→store anchor doubles as the "last
     //  get" baseline (wiki/Title.mkd); see SNIFFWtRepoAnchor in AT.c.
     ulogrec rec = {.verb = SNIFFAtVerbGet(), .uri = urow};

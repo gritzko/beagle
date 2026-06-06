@@ -51,9 +51,9 @@ fi
 note "?feat hidden by tombstone"
 
 #  Internal: the delete row IS in the refs ULOG; just not advertised.
-grep -F '?feat#0000000000000000000000000000000000000000' .be/refs \
-    >/dev/null || fail "no tombstone row in .be/refs"
-note "tombstone row recorded in .be/refs"
+grep -F '?feat#0000000000000000000000000000000000000000' "$RS_SHARD/refs" \
+    >/dev/null || fail "no tombstone row in $RS_SHARD/refs"
+note "tombstone row recorded in $RS_SHARD/refs"
 
 # ====================================================================
 # Scenario 2 — refuse to delete the wt's current branch.

@@ -189,6 +189,16 @@ static ok64 keepercli_inner(cli *c) {
     b8 query_is_sha = (has_query && u8csLen(uribAtP(c->uris, 0)->query) == 40 &&
                        HEXu8sValid(uribAtP(c->uris, 0)->query));
     b8 has_authority = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->authority));
+
+    //  Remote fetch into a project-less store: derive the project
+    //  (Title) from the SOURCE URL — Store.mkd "shard named by Title =
+    //  URL basename" — so fetched objects land sharded in
+    //  `.be/<title>/`, not flat.  `be get` sets the project via --at;
+    //  direct `keeper get` derives it here.  Local checkouts (no
+    //  authority) keep the store's own project (HOMEOpen single-shard
+    //  scan).
+    if (rw && has_authority && u8bEmpty(h.project))
+        DOGTitleFromUri(uribAtP(c->uris, 0), h.project);
     //  Remote-vs-local branch resolution:
     //    Remote (`scheme://host…?ref`) — the query is the REMOTE ref
     //      to fetch.  The local branch (where fetched objects land)

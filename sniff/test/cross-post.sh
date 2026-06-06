@@ -115,8 +115,8 @@ sniff put "?feat" >/dev/null              # label feat at trunk's tip
 
 #  Poison feat's REFS with an unrelated sha so the ff check fires.
 FAKE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-TS=$(awk 'END { print $1 }' .be/refs)
-printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> .be/refs
+TS=$(awk 'END { print $1 }' "$RS_SHARD/refs")
+printf '%sz\tpost\t?feat#%s\n' "$TS" "$FAKE" >> "$RS_SHARD/refs"
 
 sleep 0.1
 echo "x v2" > x.txt

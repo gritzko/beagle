@@ -33,6 +33,21 @@
 #       `$HOME/.be` sits above any $HOME-rooted dir and the walk would
 #       find it.)  norepo tests only refuse / bootstrap-in-place; they
 #       never mmap a pre-existing pack, so tmpfs is safe for them.
+#
+# --- HERMETIC FIREWALL (DIS-024 stage 0) -------------------------------
+#   Belt-and-suspenders to the per-wt shield: every REPO-mode entry
+#   drops an EMPTY `.be` FILE at the scratch base (`$HOME/tmp`, the
+#   parent of every per-run dir).  An empty `.be` file is an INVALID
+#   secondary-wt anchor — `home_walk_up` hitting it returns NOTAWT
+#   (dog/HOME.c::home_anchor_resolve), covered by HOMEtest's
+#   "secondary empty .be file" case.  So if a wt shield ever breaks
+#   (e.g. a stray shard subdir flips home_dir_no_subdirs), the walk is
+#   stopped at the base instead of ascending into the dev box's real
+#   `$HOME/.be` — silent real-store corruption becomes a contained,
+#   loud test failure.  The file sits strictly below `$HOME` (so
+#   `$HOME/.be` is unreachable) yet above all test scratch (so a
+#   wt's own `.be/` shield is always found first).  No env var, no
+#   discovery-code change: it rides the existing empty-anchor refusal.
 
 # rs_repo_base — echo (creating) the $HOME-rooted ext4 scratch base for
 # REPO worktrees.  Honours a caller/cmake-supplied $TMP.
@@ -46,24 +61,48 @@ rs_norepo_base() {
     printf '%s\n' "${TMPDIR:-/tmp}/be-tests-norepo/${TEST_ID:-norepo}/$$"
 }
 
+# rs_firewall — drop an empty `.be` FILE at the REPO scratch base (the
+# parent of the per-run dir, i.e. $HOME/tmp by default).  A walk that
+# escapes a broken wt shield stops there with NOTAWT instead of reaching
+# the dev box's real `$HOME/.be`.  Idempotent; refuses to touch `$HOME`
+# or `/` themselves so it can never clobber the real store.
+rs_firewall() {
+    _rs_fw_base=$(dirname "${TMP:-$HOME/tmp/_}")
+    [ -n "$_rs_fw_base" ] && [ "$_rs_fw_base" != "$HOME" ] \
+        && [ "$_rs_fw_base" != "/" ] || return 0
+    mkdir -p "$_rs_fw_base" 2>/dev/null || return 0
+    [ -e "$_rs_fw_base/.be" ] || : > "$_rs_fw_base/.be"
+}
+
 # rs_fresh_wt [name] — create an isolated REPO worktree, cd into it, and
 # seed the empty-`.be/` shield.  Wipes any leftover same-root state.
 # Sets/exports $RS_ROOT (process scratch root) and $RS_WT.
 rs_fresh_wt() {
     _rs_name=${1:-wt}
     : "${RS_ROOT:=$(rs_repo_base)}"
+    rs_firewall
     RS_WT="$RS_ROOT/$_rs_name"
     rm -rf "$RS_WT"
     mkdir -p "$RS_WT/.be"
     cd "$RS_WT"
-    export RS_ROOT RS_WT
+    #  The first rw command bootstraps a born-sharded store; the project
+    #  (Title) defaults to the wt basename, so its `refs`/packs live in
+    #  `.be/<name>/`.  Export RS_SHARD (relative to the wt root, where
+    #  tests run) so assertions read `$RS_SHARD/refs`, not flat `.be/refs`.
+    RS_SHARD=".be/$_rs_name"
+    export RS_ROOT RS_WT RS_SHARD
 }
 
 # rs_shield <dir> — seed ONLY the empty-`.be/` repo shield at an
 # explicit scratch dir (no cd).  The one place the shield is created;
 # rs_wt_at / rs_fresh_wt build on it.  Use when the test cd's later.
 rs_shield() {
+    rs_firewall
     mkdir -p "$1/.be"
+    #  Shard path the bootstrap will mint (project = wt basename); see
+    #  rs_fresh_wt.  Path only — no dir created here.
+    RS_SHARD=".be/$(basename "$1")"
+    export RS_SHARD
 }
 
 # rs_wt_at <dir> — seed the empty-`.be/` repo shield at an explicit

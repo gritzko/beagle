@@ -18,6 +18,7 @@
 // --- HOMEOpen / HOMEClose ---
 
 static ok64 home_anchor_resolve(home *h, u8cs anchor);
+static ok64 home_single_shard(path8s p, u8b out);
 
 // Capture stdout of `git config --global --get <key>` into out.
 // Returns NODATA if git exits non-zero (key unset) or the subprocess
@@ -109,12 +110,12 @@ static void home_bootstrap_config(home *h) {
 }
 
 // rw bootstrap: idempotently materialize the canonical empty-state
-// layout under <h->root>/.be — directory plus the two append-only
-// marker logs (`refs`, `wtlog`).  Stat-then-create avoids truncating
-// existing data; an empty file is the well-defined "no rows yet"
-// state for both logs, so creating fresh ones is safe.  Best-effort
-// from the caller's perspective: downstream code will still fail
-// loudly if it can't read what it needs.
+// layout under <h->root>/.be — the `.be/` dir plus the per-worktree
+// `wtlog` (always top-level).  `refs` is NOT created here: it belongs to
+// the project shard (`.be/<project>/refs`) and is keeper's job (Store.mkd
+// "Repo dir layout"; DIS-024 retires the top-level `.be/refs`).  An
+// empty wtlog is the well-defined "no rows yet" state.  Best-effort:
+// downstream code still fails loudly if it can't read what it needs.
 static ok64 home_ensure_markers(home *h) {
     sane(h != NULL && u8bHasData(h->root));
     a_dup(u8c, root_s, u8bDataC(h->root));
@@ -124,16 +125,11 @@ static ok64 home_ensure_markers(home *h) {
     call(FILEMakeDirP, $path(bedir));
     a_dup(u8c, bedir_s, u8bDataC(bedir));
 
-    u8cs const markers[2] = {
-        {DOG_REFS_S[0],  DOG_REFS_S[1]},
-        {DOG_WTLOG_S[0], DOG_WTLOG_S[1]},
-    };
-    for (int i = 0; i < 2; i++) {
-        a_path(mp);
-        call(PATHu8bFeed, mp, bedir_s);
-        call(PATHu8bPush, mp, markers[i]);
-        filestat fs = {};
-        if (FILEStat(&fs, $path(mp)) == OK) continue;
+    a_path(mp);
+    call(PATHu8bFeed, mp, bedir_s);
+    call(PATHu8bPush, mp, DOG_WTLOG_S);
+    filestat fs = {};
+    if (FILEStat(&fs, $path(mp)) != OK) {
         int fd = -1;
         call(FILECreate, &fd, $path(mp));
         FILEClose(&fd);
@@ -210,6 +206,33 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         } else if (fr != OK) {
             return fr;
         }
+    }
+
+    //  Project derivation (DIS-024 step 1): a primary wt whose row-0
+    //  anchor carried no project (a flat / legacy store) takes its
+    //  project from the worktree's own store — the single
+    //  `<root>/.be/<project>/` shard.  Reading the name FROM THE STORE
+    //  (not the wt dir basename) keeps it stable when a store is copied
+    //  or checked out into a differently-named wt dir — a pervasive test
+    //  pattern (`cp -r src/.be/. .be/`).  A flat store (no shard) leaves
+    //  the project empty → flat layout; a multi-project store (>1 shard)
+    //  is ambiguous and also left empty (callers pass an explicit
+    //  `?/<project>/` query).  Secondary wts never reach here empty —
+    //  home_anchor_resolve fills h->project from the `.be` file anchor.
+    if (u8bEmpty(h->project)) {
+        a_path(bedir);
+        a_dup(u8c, root_s, u8bDataC(h->root));
+        call(PATHu8bFeed, bedir, root_s);
+        call(PATHu8bPush, bedir, DOG_BE_S);
+        a_pad(u8, shardbuf, 256);
+        ok64 ss = home_single_shard($path(bedir), shardbuf);
+        if (ss == OK) {
+            call(u8bFeed, h->project, u8bDataC(shardbuf));
+        } else if (ss != NODATA) {
+            return ss;                          //  real scan error, propagate
+        }
+        //  NODATA (flat store / ambiguous multi-project) leaves the
+        //  project empty → flat layout, removed in DIS-024 step 4.
     }
 
     //  rw bootstrap: ensure `<root>/.be/{refs,wtlog}` exist.  Idempotent
@@ -407,10 +430,13 @@ ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
     call(PATHu8bPush, abs_dir, DOG_BE_S);
     a_dup(u8c, proj, u8bDataC(h->project));
     if (!u8csEmpty(proj)) call(PATHu8bPush, abs_dir, proj);
-    //  Flat store: one object shard per project.  The branch is purely
-    //  ref context (which `?<branch>` tip we read/write), never a dir
-    //  component — every local consumer (keeper packs/idx, graf idx,
-    //  refs) resolves to `<root>/.be/<project>/`.  See STORE.md.
+    //  One object shard per project.  The branch is purely ref context
+    //  (which `?<branch>` tip we read/write), never a dir component —
+    //  every local consumer (keeper packs/idx, graf idx, refs) resolves
+    //  to `<root>/.be/<project>/`.  See Store.mkd.  (DIS-024 step 4 —
+    //  making the project strictly mandatory — is deferred: it trips
+    //  BEEnsureProjectRepo's row-0 gate and the bare keeper/graf C-test
+    //  opens; needs per-flow project resolution.)
     (void)branch;
     done;
 }
@@ -611,17 +637,19 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
 // Fills h->wt with the anchor location and h->root via
 // `home_anchor_resolve` (primary: wt; secondary: row-0 redirect).
 // Returns NOHOME if the walk reaches / without finding an anchor.
-//  YES iff the directory at `p` contains no SUBDIRECTORIES (only files,
-//  or nothing).  A `.be` dir like this is a fresh-bootstrap target /
-//  worktree shield: empty, or seeded with only `config`/`refs` before
-//  the first command.  A populated multi-project store (e.g. a bare
-//  `~/.be`) has per-project shard subdirs, so it returns NO and the
-//  walk keeps ascending.  See home_walk_up.
-static b8 home_dir_no_subdirs(path8s p) {
+//  YES iff the directory at `p` has AT MOST ONE subdirectory — a fresh
+//  worktree shield (empty `.be/`, or seeded with only `config`/`refs`)
+//  OR a single-project store (one `.be/<project>/` shard, DIS-024).
+//  Both are valid anchors: discovery should stop here.  A populated
+//  MULTI-project store (e.g. a bare `~/.be` with many shards) has >1
+//  subdir, so it returns NO and the walk keeps ascending — bare
+//  `be`/`sniff` near such a store refuses instead of adopting it as a
+//  wt.  See home_walk_up.
+static b8 home_dir_shieldlike(path8s p) {
     DIR *d = opendir((char const *)*p);
     if (d == NULL) return NO;
     a_dup(u8c, base, p);
-    b8 no_sub = YES;
+    int subdirs = 0;
     struct dirent *e = NULL;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') {
@@ -642,10 +670,54 @@ static b8 home_dir_no_subdirs(path8s p) {
                     is_dir = YES;
             }
         }
-        if (is_dir) { no_sub = NO; break; }
+        if (is_dir && ++subdirs > 1) break;   // >1 subdir ⇒ multi-project
     }
     closedir(d);
-    return no_sub;
+    return subdirs <= 1;
+}
+
+//  If the `.be` dir at `p` has EXACTLY ONE subdirectory (a single
+//  project shard), feed its name into `out` and return OK.  Returns
+//  NODATA for zero subdirs (flat store) or more than one (ambiguous
+//  multi-project store).  This is the store-side project source for a
+//  primary wt whose row-0 anchor names no project (DIS-024).
+static ok64 home_single_shard(path8s p, u8b out) {
+    DIR *d = opendir((char const *)*p);
+    if (d == NULL) return NODATA;
+    a_dup(u8c, base, p);
+    int subdirs = 0;
+    ok64 ret = NODATA;                         //  zero subdirs ⇒ no shard
+    struct dirent *e = NULL;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') {
+            if (e->d_name[1] == 0) continue;
+            if (e->d_name[1] == '.' && e->d_name[2] == 0) continue;
+        }
+        b8 is_dir = NO;
+        if (e->d_type == DT_DIR) {
+            is_dir = YES;
+        } else if (e->d_type == DT_UNKNOWN) {
+            //  No d_type from this fs: stat to classify.  A stat failure
+            //  here just means "not a usable subdir" — skip the entry.
+            a_path(child);
+            (void)PATHu8bFeed(child, base);
+            a_cstr(fn, e->d_name);
+            if (PATHu8bPush(child, fn) == OK) {
+                filestat fs = {};
+                if (FILEStat(&fs, $path(child)) == OK &&
+                    fs.kind == FILE_KIND_DIR)
+                    is_dir = YES;
+            }
+        }
+        if (!is_dir) continue;
+        if (++subdirs > 1) { ret = NODATA; break; }   // ambiguous — give up
+        u8bReset(out);
+        a_cstr(nm, e->d_name);
+        ret = u8bFeed(out, nm);                //  OK, or a real buffer error
+        if (ret != OK) break;
+    }
+    closedir(d);                              //  owned resource: close on all paths
+    return ret;
 }
 
 static ok64 home_walk_up(home *h) {
@@ -677,14 +749,14 @@ static ok64 home_walk_up(home *h) {
                 if (FILEStat(&wfs, $path(wtl)) == OK &&
                     wfs.kind == FILE_KIND_REG)
                     is_wt = YES;
-                //  A `.be` dir with no project-shard subdirs is a
-                //  worktree shield / fresh-bootstrap target (`be put` /
-                //  `be get` in a new dir, possibly with a pre-seeded
-                //  `config`): stop here so discovery doesn't escape to
-                //  an ancestor store (e.g. the dogfooding dev's
-                //  `~/.be`).  A populated multi-project store has shard
-                //  subdirs — keep walking up.
-                if (!is_wt && home_dir_no_subdirs($path(probe))) is_wt = YES;
+                //  A `.be` dir that is a worktree shield / fresh-
+                //  bootstrap target (empty or `config`/`refs` only) OR a
+                //  single-project store (one `.be/<project>/` shard,
+                //  DIS-024) is an anchor: stop here so discovery doesn't
+                //  escape to an ancestor store (e.g. the dogfooding dev's
+                //  `~/.be`).  A populated MULTI-project store has >1 shard
+                //  subdir — keep walking up.
+                if (!is_wt && home_dir_shieldlike($path(probe))) is_wt = YES;
             }
             if (is_wt) {
                 a_dup(u8c, anchor, u8bDataC(here));

@@ -274,14 +274,16 @@ ok64 HOMETestRwBootstrap() {
             call(HOMEOpen, &h, &none, YES);
         }
 
+        //  rw bootstrap lays down `.be/wtlog` (top-level, per-wt).  It no
+        //  longer creates a top-level `.be/refs` — `refs` belongs to the
+        //  project shard and is keeper's job (DIS-024; Store.mkd).
         char p[512];
-        snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_REFS_NAME, tmp);
         struct stat st = {};
-        want(stat(p, &st) == 0);
-        want(S_ISREG(st.st_mode));
         snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_WTLOG_NAME, tmp);
         want(stat(p, &st) == 0);
         want(S_ISREG(st.st_mode));
+        snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_REFS_NAME, tmp);
+        want(stat(p, &st) != 0);   //  no top-level refs
 
         HOMEClose(&h);
         TESTBErmrf(tmp);
@@ -372,6 +374,62 @@ ok64 HOMETestRoEmptyAnchor() {
     done;
 }
 
+//  Project derivation (DIS-024 step 1): a primary wt with no row-0
+//  project anchor takes its project from the store's single
+//  `<root>/.be/<project>/` shard — read FROM THE STORE, not the wt dir
+//  basename, so a store copied into a differently-named wt keeps its
+//  project (the `cp -r src/.be/. .be/` checkout pattern).  A flat store
+//  (no shard) or an ambiguous multi-project store (>1 shard) leaves the
+//  project empty.
+ok64 HOMETestProjectDerive() {
+    sane(1);
+    call(FILEInit);
+
+    struct {
+        char const *name;
+        char const *shards[2];   // shard dirs to create under .be/ (NULL pad)
+        char const *want;        // expected project ("" = empty)
+    } const cases[] = {
+        {"flat primary -> empty",           {NULL,    NULL},   ""},
+        {"single shard -> shard name",      {"alpha",  NULL},  "alpha"},
+        {"two shards -> empty (ambiguous)", {"alpha",  "beta"}, ""},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tmp[256];
+        want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
+        fprintf(stderr, "  case: %s\n", cases[i].name);
+
+        char p[400];
+        snprintf(p, sizeof p, "%s/" DOG_BE_NAME, tmp);
+        want(mkdir(p, 0755) == 0);
+        //  empty wtlog: home_anchor_resolve derives no project from row 0.
+        snprintf(p, sizeof p, "%s/" DOG_BE_NAME "/" DOG_WTLOG_NAME, tmp);
+        { FILE *f = fopen(p, "w"); want(f != NULL); fclose(f); }
+        for (int s = 0; s < 2; s++) {
+            if (cases[i].shards[s] == NULL) continue;
+            snprintf(p, sizeof p, "%s/" DOG_BE_NAME "/%s", tmp,
+                     cases[i].shards[s]);
+            want(mkdir(p, 0755) == 0);
+        }
+
+        a_cstr(root, tmp);
+        home h = {};
+        call(HOMEOpenAt, &h, root, NO);
+
+        if (cases[i].want[0] != 0) {
+            a_dup(u8c, pj, u8bDataC(h.project));
+            want(slice_is(pj, cases[i].want));
+        } else {
+            want(u8bEmpty(h.project));
+        }
+
+        HOMEClose(&h);
+        TESTBErmrf(tmp);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "HOMETestGet...\n");
@@ -386,6 +444,8 @@ ok64 maintest() {
     call(HOMETestRoNoBootstrap);
     fprintf(stderr, "HOMETestRoEmptyAnchor...\n");
     call(HOMETestRoEmptyAnchor);
+    fprintf(stderr, "HOMETestProjectDerive...\n");
+    call(HOMETestProjectDerive);
     fprintf(stderr, "all passed\n");
     done;
 }

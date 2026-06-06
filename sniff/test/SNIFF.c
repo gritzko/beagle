@@ -114,9 +114,15 @@ ok64 SNIFFAtHelpers() {
         call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &_r0);
         t_repo = _r0.ts; v_repo = _r0.verb; ru = _r0.uri;
         want(v_repo == vg);   // anchor verb is now `get`, not `repo`
-        //  URI path is `/…/.be/`.
+        //  URI path is the colocated shard anchor `…/.be/<project>`; the
+        //  project (Title) defaults to the wt basename (DIS-024;
+        //  Store.mkd "Worktrees and the anchor").
         a_dup(u8c, rp, ru.path);
-        a_cstr(tail, DOG_BE_NAME "/");
+        char const *bn = strrchr(g_tmpdir, '/');
+        bn = bn ? bn + 1 : g_tmpdir;
+        char tailbuf[300];
+        snprintf(tailbuf, sizeof tailbuf, "%s/%s", DOG_BE_NAME, bn);
+        a_cstr(tail, tailbuf);
         want($len(rp) >= $len(tail));
         want(memcmp(rp[1] - $len(tail), tail[0], $len(tail)) == 0);
     }
@@ -314,12 +320,25 @@ ok64 SNIFFCheckoutCommit() {
     call(FILEInit);
     call(make_tmpdir);
 
+    //  Born-sharded (DIS-024): pre-create the project shard so
+    //  HOMEOpenAt's single-shard scan resolves the project up front.
+    //  This keeps the manual KEEPOpen (below) and the later SNIFFOpen
+    //  bootstrap on the SAME shard — otherwise KEEPOpen would write the
+    //  objects flat and the SNIFFOpen mint would read them sharded.
+    {
+        char sp[300];
+        snprintf(sp, sizeof sp, "%s/" DOG_BE_NAME, g_tmpdir);
+        mkdir(sp, 0755);
+        snprintf(sp, sizeof sp, "%s/" DOG_BE_NAME "/proj", g_tmpdir);
+        want(mkdir(sp, 0755) == 0);
+    }
+
     a_cstr(root, g_tmpdir);
     home h = {};
     call(HOMEOpenAt, &h, root, YES);
 
     // Open keeper, create a blob + tree + commit manually
-    
+
     call(KEEPOpen, &h, YES);
 
     keep_pack p = {};
@@ -922,8 +941,15 @@ ok64 SNIFFAtProjectStrip() {
     }
     ron60 base = t0 + 1000;
 
-    //  Scenario 1: `?/beagle#<sha>` ⇒ project trunk (empty query slot
-    //  in the composed --at URI), NOT a branch named `/beagle`.
+    //  The composed --at is absolute `?/<project>/<branch>` (VERBS.md
+    //  "Ref resolution"); the project comes from the colocated anchor
+    //  (= wt basename), and a row's own leading `/<proj>` segment is
+    //  stripped so it is never read as a branch.
+    char const *bn = strrchr(g_tmpdir, '/');
+    bn = bn ? bn + 1 : g_tmpdir;
+
+    //  Scenario 1: `?/beagle#<sha>` ⇒ project trunk `?/<project>`, with
+    //  the row's `/beagle` stripped — NOT a branch named `/beagle`.
     call(at_append_uri, base + 0, vg,
          "?/beagle#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     {
@@ -934,13 +960,17 @@ ok64 SNIFFAtProjectStrip() {
         uri tu = {};
         call(URIutf8Drain, td, &tu);
         a_dup(u8c, q, tu.query);
-        want(u8csEmpty(q));            // trunk, NOT `/beagle`
+        char wq1[300];
+        snprintf(wq1, sizeof wq1, "/%s", bn);
+        a_cstr(want1, wq1);
+        want(u8csEq(q, want1));        // `/<project>` trunk
         a_dup(u8c, frag, tu.fragment);
         want($len(frag) == 40);
     }
 
-    //  Scenario 2: `?/beagle/feat#<sha>` ⇒ branch `feat` within the
-    //  project (project segment stripped, branch tail kept).
+    //  Scenario 2: `?/beagle/feat#<sha>` ⇒ `?/<project>/feat` (row's
+    //  `/beagle` stripped, branch tail `feat` kept under the anchor's
+    //  project).
     call(at_append_uri, base + 100, vg,
          "?/beagle/feat#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     {
@@ -951,8 +981,10 @@ ok64 SNIFFAtProjectStrip() {
         uri tu = {};
         call(URIutf8Drain, td, &tu);
         a_dup(u8c, q, tu.query);
-        a_cstr(feat, "feat");
-        want(u8csEq(q, feat));
+        char wq2[300];
+        snprintf(wq2, sizeof wq2, "/%s/feat", bn);
+        a_cstr(want2, wq2);
+        want(u8csEq(q, want2));
     }
 
     call(SNIFFClose);

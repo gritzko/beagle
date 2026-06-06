@@ -19,7 +19,11 @@
 set -eu
 
 ROOT=${1:-.}
-REFS="$ROOT/.be/refs"
+#  Sharded layout (DIS-024): `refs` lives in the project shard
+#  `.be/<project>/refs`, not at the top level.  Fall back to the legacy
+#  flat `.be/refs` for old stores.
+REFS=$(ls "$ROOT"/.be/*/refs 2>/dev/null | head -1)
+[ -n "$REFS" ] || REFS="$ROOT/.be/refs"
 
 if [ ! -f "$REFS" ]; then
     echo "verify-canonical-refs: missing $REFS" >&2
