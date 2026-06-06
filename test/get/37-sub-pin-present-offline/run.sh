@@ -47,11 +47,11 @@ git -C par -c protocol.file.allow=always submodule add -q "$SCRATCH/sub" vendor/
 git -C par add -A; git -C par commit -qm par
 
 # ---------------------------------------------------------------------
-# 2. clone git `par` into beagle store B1 WITH --sub: the parent
-#    checks out AND the sub's pin lands in B1/.be/sub.
+# 2. clone git `par` into beagle store B1: the parent checks out AND
+#    the sub's pin lands in B1/.be/sub (recursion is the default).
 # ---------------------------------------------------------------------
 mkdir -p B1/.be
-( cd B1 && "$BE" get --sub "file:$SCRATCH/par" >../02.b1.out 2>../02.b1.err ) \
+( cd B1 && "$BE" get "file:$SCRATCH/par" >../02.b1.out 2>../02.b1.err ) \
     || { cat 02.b1.err >&2; echo "FAIL(setup): clone par into B1" >&2; exit 1; }
 [ -f B1/vendor/sub/sub.txt ] \
     || { echo "FAIL(setup): sub not mounted in B1" >&2; cat 02.b1.err >&2; exit 1; }
@@ -67,11 +67,11 @@ rm -rf "$SCRATCH/sub"
 [ -f B1/.be/sub/refs ] || { echo "FAIL(setup): sub shard vanished" >&2; exit 1; }
 
 # ---------------------------------------------------------------------
-# 4. THE TEST: re-checkout trunk WITH --sub.  vendor/sub is gone, so
-#    SubMount runs again; the declared URL is dead, but the pin is in
-#    B1/.be/sub → skip-fetch → offline mount.
+# 4. THE TEST: re-checkout trunk (recursion default-on).  vendor/sub is
+#    gone, so SubMount runs again; the declared URL is dead, but the pin
+#    is in B1/.be/sub → skip-fetch → offline mount.
 # ---------------------------------------------------------------------
-( cd B1 && "$BE" get --sub '?master' >../04.remount.out 2>../04.remount.err ) \
+( cd B1 && "$BE" get '?master' >../04.remount.out 2>../04.remount.err ) \
     || { cat 04.remount.err >&2; echo "FAIL: offline re-mount failed" >&2; exit 1; }
 
 grep -q 'pin present in sub-shard' 04.remount.err \

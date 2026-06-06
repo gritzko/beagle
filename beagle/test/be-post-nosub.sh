@@ -91,13 +91,12 @@ PARENT_URI=$(home_uri "$PARENT")
 note "parent sha=$PARENT_C1  uri=$PARENT_URI"
 
 # --- 3. be get (recursive): parent + mounted vendor/sub --------------
-echo "=== 3. be get --sub parent?master (mounts vendor/sub) ==="
-#  POST-001 phase 2: an ssh (git) parent does NOT recurse into subs by
-#  default; `--sub` is the explicit opt-in that forces the mount so the
-#  rest of this --nosub-post regression has a sub to (not) recurse into.
+echo "=== 3. be get parent?master (mounts vendor/sub by default) ==="
+#  Recursion is the default; `be get` mounts subs for every source type
+#  including ssh:// (git) — no --sub flag needed.
 WT="$TMP/wt"; rs_wt_at "$WT"
 GETLOG="$TMP/be-get.log"
-if ! timeout 30 "$BE" get --sub "$PARENT_URI?master" >"$GETLOG" 2>&1; then
+if ! timeout 30 "$BE" get "$PARENT_URI?master" >"$GETLOG" 2>&1; then
     cat "$GETLOG" >&2
     fail "be get (recursive) failed"
 fi
