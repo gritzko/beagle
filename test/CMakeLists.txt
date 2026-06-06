@@ -121,6 +121,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-patch-29-sub-unchanged-gitlink-ok"
     "be-post-26-sub-both-dirty-keeps-parent-edit"
     "be-post-27-sub-only-parent-dirty-commits"
+    # SUBS-006 repro: clean nested sub must no-op a git-peer push, not
+    # abort it with NOBRANCH.
+    "be-post-29-sub-clean-nested-remote-push"
     "be-head-21-sub-dirty-reported"
     "be-all-01-subs-all-verbs"
     "be-spot-10-sub-recurse-search"
