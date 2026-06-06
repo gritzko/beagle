@@ -274,6 +274,22 @@ be_action const BE_PLAN_HEAD[] = {
     { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActSpotGet   },
     { URI_SCHEME|URI_AUTHORITY, 0,            YES, BEActGrafGet   },
     { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  YES, BEActGrafGet   },
+    //  HEAD-001: after the transport fetch+reindex above has landed
+    //  the remote tip into the local cache, run the SAME cached
+    //  cur-vs-remote diff the no-scheme `//origin` form runs below so
+    //  `be head ssh://host?ref` prints the `ahead N, behind M` summary
+    //  + differing-file rows instead of exiting 0 with empty stdout (a
+    //  behind/diverged branch otherwise read identical to up-to-date,
+    //  masking the divergence until a later POST hit WIRECLNFF).
+    //  graf head's target resolver (REFSResolve, authority-substring)
+    //  ignores the leading transport scheme, so it reads the freshly-
+    //  fetched peer-tracking ref with no second wire trip — gating
+    //  these rows to fire only AFTER the keeper/spot/graf-get rows.
+    //  Mirror the wire arm's two gates (scheme+authority, scheme-only)
+    //  so both transport shapes get the summary; the no-scheme cached
+    //  row below stays exclusive (it excludes URI_SCHEME).
+    { URI_SCHEME|URI_AUTHORITY, 0,            NO,  BEActGrafHead  },
+    { URI_SCHEME,    URI_AUTHORITY|URI_PATH,  NO,  BEActGrafHead  },
     { 0,             URI_SCHEME,              NO,  BEActGrafHead  },
     { 0,             0,                       NO,  BEActSubsHead  },
     BE_ACTION_END,
