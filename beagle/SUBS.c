@@ -421,12 +421,32 @@ ok64 BEGetSubMount(u8cs subpath, u8cs pin) {
 
 ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath) {
     sane($ok(wt_root) && $ok(subpath));
+
+    //  Mount dir <wt_root>/<subpath>.
+    a_path(mount);
+    call(PATHu8bFeed, mount, wt_root);
+    call(PATHu8bAdd,  mount, subpath);
+
+    //  1. Drop the `.be` anchor — the *logical* unmount.
     a_path(anchor);
     call(PATHu8bFeed, anchor, wt_root);
     call(PATHu8bAdd,  anchor, subpath);
     a_cstr(be_s, ".be");
     call(PATHu8bPush, anchor, be_s);
     (void)FILEUnLink($path(anchor));
+
+    //  2. SUBS-008: the gitlink (and `.gitmodules` entry) are gone in
+    //  the target tree, so the whole mount is being removed — not just
+    //  the anchor.  Remove the sub's checked-out worktree files and
+    //  internal metadata (`..be.idx`, `core.c`, …) too, mirroring
+    //  `git submodule deinit` + the tree-switch that drops the path.
+    //  The sub's objects live in the parent shard (see Submodules.mkd),
+    //  so the on-disk copy under the parent wt is pure clutter once the
+    //  gitlink is gone.  `FILErmrf` is depth-first, so the now-empty
+    //  mount dir collapses too.  Best-effort: the logical unmount above
+    //  already succeeded; a leftover-file failure must not abort GET.
+    (void)FILErmrf($path(mount));
+
     fprintf(stderr, "be: get %.*s: unmounted\n",
             (int)$len(subpath), (char *)subpath[0]);
     done;
