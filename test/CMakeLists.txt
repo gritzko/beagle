@@ -82,6 +82,8 @@ set(_BE_NEEDS_SSH_CASES
     "be-put-06-triangle"
     # SUBS-004 repro: bare `be put`, parent clean + sub dirty → exit 0.
     "be-put-09-sub-only-dirty-exit"
+    # SUBS-005 repro: path-scoped delete of a sub / sub-interior file.
+    "be-delete-08-sub-path-scoped-deldirty"
     "be-get-24-uri-refs"
     # Bug repro cases — all need an ssh-cloneable origin.
     "be-get-26-cached-no-wire"

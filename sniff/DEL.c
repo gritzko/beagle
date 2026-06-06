@@ -38,6 +38,7 @@
 
 #include "AT.h"
 #include "CLASS.h"
+#include "SUBS.h"
 
 // --- Per-URI baseline-membership classifier -------------------------
 //
@@ -72,6 +73,63 @@ static ok64 del_classify_step(class_step const *step, void *ctx_) {
         w->reqs[j].in_baseline = YES;
     }
     return OK;
+}
+
+// --- Submodule (gitlink) path classifier ----------------------------
+//
+//  SUBS-005: a path-scoped `be delete` that names a submodule mount, or
+//  a file inside one, must not false-positive DELDIRTY.  The parent's
+//  dirty check refuses on `mtime ∉ stamp-set AND content ≠ baseline`,
+//  but a gitlink's on-disk form is a directory carrying a `.be` mount —
+//  it never hashes to the parent tree's `160000` pin, and a sub-interior
+//  file has no parent-tree baseline entry at all.  Both legitimately
+//  fail the predicate, so we must recognise them up front.
+//
+//  del_sub_kind classifies `raw` (a reporoot-relative path slice, no
+//  trailing slash) against the live mount table:
+//    DEL_SUB_NONE      — not a mount and not inside one.
+//    DEL_SUB_SELF      — `raw` itself is a mounted sub (`<raw>/.be` reg).
+//    DEL_SUB_INTERIOR  — `raw` lives under a mounted sub (a parent
+//                        component is a mount).
+//  For SELF / INTERIOR the matched mount path is written to `mount_out`
+//  (a window into `raw`); the caller uses it for the user message.
+
+typedef enum {
+    DEL_SUB_NONE = 0,
+    DEL_SUB_SELF,
+    DEL_SUB_INTERIOR,
+} del_sub_kind;
+
+static del_sub_kind del_sub_classify(u8cs reporoot, u8cs raw,
+                                     u8cs mount_out) {
+    if (u8csEmpty(raw)) return DEL_SUB_NONE;
+
+    //  Whole-sub case: `<reporoot>/<raw>/.be` is a regular file.
+    if (SNIFFSubIsMount(reporoot, raw)) {
+        mount_out[0] = raw[0];
+        mount_out[1] = raw[1];
+        return DEL_SUB_SELF;
+    }
+
+    //  Interior case: walk parent components right-to-left, testing each
+    //  ancestor prefix against the mount table.  `cand` shrinks from the
+    //  full path by shedding one trailing `/<seg>` per step (no pointer
+    //  arithmetic — u8csRevFind retreats term to the last '/').
+    u8cs cand = {raw[0], raw[1]};
+    for (;;) {
+        //  Retreat term to the last '/'; on miss there is no parent left.
+        if (u8csRevFind(cand, '/') != OK) break;
+        //  `cand` now ends just after the matched '/'; shed it so the
+        //  candidate is the ancestor directory path (no trailing slash).
+        if (u8csShed1(cand) != OK) break;
+        if (u8csEmpty(cand)) break;
+        if (SNIFFSubIsMount(reporoot, cand)) {
+            mount_out[0] = cand[0];
+            mount_out[1] = cand[1];
+            return DEL_SUB_INTERIOR;
+        }
+    }
+    return DEL_SUB_NONE;
 }
 
 // --- Dir-form recursive delete --------------------------------------
@@ -288,6 +346,39 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         u8cs raw = {};
         SNIFFAtPathBytes(&uris[i], raw);
         if (u8csEmpty(raw)) continue;
+
+        //  SUBS-005: sub-aware short-circuit.  A path naming a mounted
+        //  submodule (or a file inside one) must not be treated as
+        //  dirty parent content — its on-disk form legitimately differs
+        //  from the parent tree's `160000` pin / has no parent baseline
+        //  entry, so the dirty check would false-positive DELDIRTY.
+        //  Classify against a slash-trimmed probe (SubIsMount wants no
+        //  trailing slash); skip cleanly with a sub-aware message.  Full
+        //  unmount + gitlink/.gitmodules staging is SUBS-008.
+        {
+            u8cs probe = {raw[0], raw[1]};
+            if (!u8csEmpty(probe) && *u8csLast(probe) == '/')
+                (void)u8csShed1(probe);
+            u8cs mount = {};
+            del_sub_kind sk = del_sub_classify(reporoot, probe, mount);
+            if (sk == DEL_SUB_SELF) {
+                fprintf(stderr,
+                        "sniff: delete: %.*s is a submodule mount — "
+                        "removal not supported yet (SUBS-008); skipped\n",
+                        (int)$len(mount), (char *)mount[0]);
+                skipped++;
+                continue;
+            }
+            if (sk == DEL_SUB_INTERIOR) {
+                fprintf(stderr,
+                        "sniff: delete: %.*s lives inside submodule %.*s "
+                        "— delete it from within the sub; skipped\n",
+                        (int)$len(raw), (char *)raw[0],
+                        (int)$len(mount), (char *)mount[0]);
+                skipped++;
+                continue;
+            }
+        }
 
         //  Trailing-slash dir form: atomic recursive delete.  Refuses
         //  DELDIRTY on the first dirty descendant; otherwise
