@@ -35,6 +35,16 @@ set(_BE_WILL_FAIL_CASES
     # branch fan-out is "Phase 1c: dir chain is always [trunk
     # shard 0]" per keeper/WIRE.c::WIREBuildSegments).
     "be-get-24-uri-refs"
+    # SUBS audit (2026-06-05) bug repros — expected to FAIL until the named
+    # ticket lands.  See ~/src/replicated.wiki/todo/SUBS.mkd.
+    # SUBS-001 (post/26, post/27) fixed — removed from this list so they
+    # must now pass normally (sniff/POST.c post_pd_cb).
+    "be-patch-28-sub-gitlink-bump-reget"            # SUBS-002
+    "be-put-09-sub-only-dirty-exit"                 # SUBS-004
+    "be-delete-08-sub-path-scoped-deldirty"         # SUBS-005
+    "be-head-21-sub-dirty-reported"                 # SUBS-007
+    "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
+    "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
 )
 
 # Tests that need passwordless ssh to localhost (mirror what
@@ -93,6 +103,21 @@ set(_BE_NEEDS_SSH_CASES
     "be-patch-18-noop-already-absorbed"
     "be-patch-20-divergent-merge"
     "be-patch-21-rebase-one-remote"
+    # SUBS audit (2026-06-05): per-verb submodule recursion cases.  All use
+    # the test/lib/submodules.sh ssh://localhost fixture.
+    "be-put-08-sub-stage-all-both-dirty"
+    "be-put-09-sub-only-dirty-exit"
+    "be-put-10-sub-nosub-suppress"
+    "be-delete-07-sub-delete-all-missing"
+    "be-delete-08-sub-path-scoped-deldirty"
+    "be-delete-09-sub-nosub-suppress"
+    "be-patch-28-sub-gitlink-bump-reget"
+    "be-patch-29-sub-unchanged-gitlink-ok"
+    "be-post-26-sub-both-dirty-keeps-parent-edit"
+    "be-post-27-sub-only-parent-dirty-commits"
+    "be-head-21-sub-dirty-reported"
+    "be-all-01-subs-all-verbs"
+    "be-spot-10-sub-recurse-search"
 )
 
 foreach(_run ${_be_case_runs})
