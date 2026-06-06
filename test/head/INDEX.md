@@ -18,8 +18,16 @@ beagle-side BERecurseVerb wrapper and BEHead wiring land.
   `be head ?` visits both projects in pre-order; neither wtlog
   grows (read-only invariant).
 * `04-sub-dirty/` — edit one file inside vendor/sub; `be head ?`
-  surfaces the dirty path in the sub's section while the outer
-  stays clean.
+  surfaces the dirty path in the sub's section (a `mod`/`dirty`
+  marker, not just the bareword) while the outer stays clean.
+  SUBS-007: assertion tightened from a bare `core.c` grep (which the
+  committed pin-vs-trunk diff already prints) to require the dirty
+  marker, so it actually exercises the dirty-state contract.
+* `21-sub-dirty-reported/` — SUBS-007 diff pin: `be head ?` run on a
+  clean tree vs after dirtying one sub file must produce DIFFERENT
+  output, and the added bytes name the sub's dirty path with a
+  mod/dirty marker.  Guards against HEAD's per-sub report being
+  byte-identical regardless of working-tree state.
 * `05-sub-parent-ahead/` — commit on the parent only; `be head ?master`
   reports the parent's local commit in its ahead list and does NOT
   leak it into the sub's section.

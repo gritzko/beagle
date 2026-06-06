@@ -43,7 +43,6 @@ set(_BE_WILL_FAIL_CASES
     # entry-point resolver hands BEActSubsPatch a context-free pin.
     # SUBS-004 (put/09) + SUBS-005 (delete/08) landed via the dogs merge
     # (5fb56d6f / 9aabd863) — off WILL_FAIL so they must pass normally.
-    "be-head-21-sub-dirty-reported"                 # SUBS-007
     "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
     "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
     # POST-005 (post/28) fixed — absorbed-tree (theirs) ULOG cursor gates the

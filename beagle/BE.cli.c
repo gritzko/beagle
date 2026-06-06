@@ -698,6 +698,20 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
         u8css argv = {rc->argv_head, rc->argv_term};
         ok64 r = BERelaySub(rc->wt_root, subpath, argv);
         if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
+
+        //  SUBS-007: the `be head ?` relay above is the committed
+        //  pin-vs-trunk ahead/behind only — it is byte-identical whether
+        //  or not a sub file is dirty (Submodules.mkd line 20 promises
+        //  "dirty state per sub").  Also relay the sub's bare status
+        //  (empty argv re-enters BEDefault → `sniff` in the mount, the
+        //  same path bare `be` already uses to surface `mod core.c`), so
+        //  a dirtied sub working-tree file shows up in HEAD's per-sub
+        //  report.  Read-only: `sniff` status writes no wtlog rows, so
+        //  the head/03 read-only invariant holds.  A clean sub returns
+        //  *NONE (no-op); never an error.
+        u8css status_argv = {NULL, NULL};
+        ok64 sr = BERelaySub(rc->wt_root, subpath, status_argv);
+        if (sr != OK && !ok64is(sr, NONE)) rc->worst = sr;   //  NONE = no-op
         return OK;
     }
 
