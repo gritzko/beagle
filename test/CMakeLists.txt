@@ -39,7 +39,8 @@ set(_BE_WILL_FAIL_CASES
     # ticket lands.  See ~/src/replicated.wiki/todo/SUBS.mkd.
     # SUBS-001 (post/26, post/27) fixed — removed from this list so they
     # must now pass normally (sniff/POST.c post_pd_cb).
-    "be-patch-28-sub-gitlink-bump-reget"            # SUBS-002
+    # SUBS-002 fixed (patch/28): sniff PATCH skips 160000 gitlinks + the be
+    # entry-point resolver hands BEActSubsPatch a context-free pin.
     "be-put-09-sub-only-dirty-exit"                 # SUBS-004
     "be-delete-08-sub-path-scoped-deldirty"         # SUBS-005
     "be-head-21-sub-dirty-reported"                 # SUBS-007

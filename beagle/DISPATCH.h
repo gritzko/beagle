@@ -68,6 +68,7 @@ extern be_action const BE_PLAN_DELETE[];
 
 //  URI rewriters (no spawn).
 ok64 BEActPromoteRef    (cli *c);  // bareword → query on each URI
+ok64 BEActResolveRef    (cli *c);  // local ?ref → canonical /proj/branch/hash
 ok64 BEActPathFormCheck (cli *c);  // POST refuses path-form URIs
 ok64 BEActBootstrap     (cli *c);  // be_ensure_project_repo
 ok64 BEActWorktreeAnchor(cli *c);  // BEGetWorktree (rewrites first URI)

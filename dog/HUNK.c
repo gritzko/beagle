@@ -54,6 +54,11 @@ static ok64 hunk_feed_status_plain(u8s into, hunk const *hk) {
     if (hk->ts) {
         struct tm tm = {};
         if (RONToTime(hk->ts, &tm, NULL) == OK) {
+            //  RON encodes the local wall-clock; let mktime resolve DST
+            //  itself (tm_isdst=0 would shift a summer stamp +1h, pushing
+            //  it into the future so DOGutf8sFeedDate renders DDMon, not
+            //  HH:MM — see SUBS-003 / test/get/05,07).
+            tm.tm_isdst = -1;
             time_t t = mktime(&tm);
             if (t != (time_t)-1) ts = (i64)t;
         }
@@ -82,6 +87,7 @@ static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
     if (hk->ts) {
         struct tm tm = {};
         if (RONToTime(hk->ts, &tm, NULL) == OK) {
+            tm.tm_isdst = -1;   // resolve DST (see hunk_feed_status_plain)
             time_t t = mktime(&tm);
             if (t != (time_t)-1) ts = (i64)t;
         }

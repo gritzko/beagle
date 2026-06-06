@@ -340,6 +340,11 @@ be_action const BE_PLAN_PATCH[] = {
     { URI_SCHEME|URI_AUTHORITY, 0,            NO, BEActKeeperGet     },
     { URI_AUTHORITY,           0,             NO, BEActResolveRemote },
     { URI_AUTHORITY,           0,             NO, BEActGrafGet       },
+    //  Resolve the local source ?ref to the canonical context-free form
+    //  `?/proj/branch/hash` (URI.mkd §"Resolution boundary") so sniff AND
+    //  the sub-recursion both consume a fully-resolved URI — no `./feat`
+    //  relative ref ever reaches a sub-worker with a different cur.
+    { 0,                       URI_AUTHORITY, NO, BEActResolveRef    },
     { 0,                       0,             NO, BEActSniffPatch    },
     //  After the local absorb, recurse into subs whose gitlink pin the
     //  patch moved (gitlink-diff driven); skipped on transport.

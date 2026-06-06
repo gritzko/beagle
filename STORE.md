@@ -67,9 +67,11 @@ These are relayed to each be worker as one command-line argument:
     line jump, cherry-pick sha, projector count, etc.).  Never
     reinterpreted by the resolver, never amended in flight.
 
-Every input query shape resolves to a single canonical form:
+Every input query shape resolves to a single canonical context-free
+form (see `$HOME/src/replicated.wiki/wiki/URI.mkd` §"Resolution
+boundary" for the authoritative spec):
 
-    ?/<project>/<branch-path>/<sha-or-tag>
+    ?/<project>/<branch>/<full-hash>
 
 Project segment is an opaque label.  Cross-clone identity (the
 "is `abc` the same project as `libabc`?" question) is handled

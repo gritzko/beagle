@@ -74,6 +74,16 @@ fun b8 entryZ(entry const *a, entry const *b) {
 #include "abc/Bx.h"
 #undef X
 
+//  SUBS-002: is this side a 160000 gitlink (submodule pin)?  A gitlink is
+//  not a blob — its delta is the submodule's own concern, re-got by the
+//  parent's BEActSubsPatch gitlink-diff recursion (reuses GET), never by
+//  this WEAVE tree merge.  A NULL / absent side is not a gitlink.
+static b8 entry_is_gitlink(entry const *e) {
+    if (e == NULL || !e->present) return NO;
+    a_cstr(gl, "160000");
+    return u8csEq(e->mode, gl) ? YES : NO;
+}
+
 static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
     sane(out && nout);
     u32 n = 0;
@@ -508,6 +518,19 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                              &lsub, &osub, &tsub,
                              fork_commit, our_commit, thr_commit,
                              st);
+            continue;
+        }
+
+        //  SUBS-002: a 160000 gitlink leaf is not a blob.  Its pin delta is
+        //  re-got by the parent's BEActSubsPatch gitlink-diff recursion
+        //  (reuses GET, post-order) — feeding the gitlink to fetch_blob /
+        //  write_blob (or resolving its sha as a ref) fails and aborts the
+        //  whole parent patch (PATCHCFLCT, `bad ref ''` / `failed <sub>`).
+        //  Skip it on every side and count it a no-op so BEExecute proceeds
+        //  to the sub re-get; the sub relays its own checkout report.
+        if (entry_is_gitlink(l) || entry_is_gitlink(o) ||
+            entry_is_gitlink(t)) {
+            st->noop++;
             continue;
         }
 

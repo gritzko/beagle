@@ -13,6 +13,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/THEME.h"
 #include "dog/ULOG.h"
@@ -21,6 +22,7 @@
 #include "dog/git/GIT.h"          // GITu8sCommitTree (baseline-tree probe)
 #include "dog/WHIFF.h"            // sha1hexFromHex / sha1FromSha1hex
 #include "keeper/KEEP.h"           // KEEPOpenBranch (resolver needs refs)
+#include "keeper/RESOLVE.h"        // KEEPResolveRef (entry-point resolver)
 #include "keeper/REFS.h"
 #include "sniff/AT.h"
 #include "sniff/SNIFF.h"          // POSTNONE  (low-byte exit signal)
@@ -1016,18 +1018,33 @@ ok64 BEActSubsPatch(cli *c) {
     if (!u8csEmpty(u->path))   done;    //  path-scoped — partial, no recurse
     if (u8csEmpty(u->query))   done;    //  no source branch — nothing to diff
 
-    //  Source (applied) ref = the patched branch.
-    u8cs source_ref = {};
-    u8csMv(source_ref, u->query);
-
-    //  Base ref = cur's tip (the pre-patch gitlink pins).
+    //  Base ref = cur's tip (the pre-patch gitlink pins); the tail also
+    //  yields cur's branch, against which a relative source query is
+    //  absolutised below.
     a_pad(u8, base_at_buf, FILE_PATH_MAX_LEN + 128);
     u8cs base_ref = {};
+    u8cs cur_branch = {};
     if (SNIFFAtTailOf(wt_root, base_at_buf) == OK) {
         uri tt = {};
         u8csMv(tt.data, u8bDataC(base_at_buf));
         URILexer(&tt);
         if (u8csLen(tt.fragment) == 40) u8csMv(base_ref, tt.fragment);
+        u8csMv(cur_branch, tt.query);
+    }
+
+    //  Source (applied) ref = the patched branch.  SUBS-002: a relative
+    //  query (`?./feat`, `?../sib`, `?..`) is meaningless to `keeper subs`
+    //  (it has no cur-branch context and REFSResolve rejects the `./`
+    //  prefix → REFSNONE).  Absolutise it against cur's branch first, the
+    //  same way sniff PATCH resolves its own target.
+    u8cs source_ref = {};
+    u8csMv(source_ref, u->query);
+    a_path(src_qbuf);
+    {
+        b8 was_rel = NO;
+        if (DPATHBranchResolveRel(src_qbuf, cur_branch, u->query,
+                                  &was_rel) == OK && was_rel)
+            u8csMv(source_ref, $path(src_qbuf));
     }
 
     //  Enumerate source (target) and base subs.
@@ -2621,6 +2638,173 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
     }
     HOMEClose(&rh);
     return tracked;
+}
+
+//  Resolve a branch query to its BRANCH-ONLY path (project stripped),
+//  against `cur_leaf` (also branch-only, e.g. `master`).  `./x`/`../x`/`..`
+//  resolve relative; a bare `feat`/`feat/` passes through (slash stripped);
+//  an absolute `/proj/branch` is project-stripped to `branch`.  Leaves
+//  `out` EMPTY for a hex (sha/hashlet) query — the caller writes those
+//  detached.  REFS keys are branch-only, so the project is re-attached
+//  only at canonical-form composition.  See URI.mkd §"Resolution boundary".
+static ok64 be_abs_branch(u8b out, u8cs cur_leaf, u8cs query) {
+    sane(u8bOK(out));
+    u8bReset(out);
+    if (u8csEmpty(query)) done;
+    a_dup(u8c, q, query);
+    if (HEXu8sValid(q) && u8csLen(q) >= 4) done;     //  sha/hashlet → detached
+    if (q[0][0] == '.') {                            //  relative
+        b8 rel = NO;
+        call(DPATHBranchResolveRel, out, cur_leaf, query, &rel);
+        done;
+    }
+    if (q[0][0] == '/') {                            //  absolute → strip project
+        a_dup(u8c, br, q);
+        DOGQueryStripProject(br);
+        if (!u8csEmpty(br)) call(u8bFeed, out, br);
+        done;
+    }
+    a_dup(u8c, body, q);                             //  bare project-relative
+    if (!u8csEmpty(body) && *u8csLast(body) == '/') u8csShed1(body);
+    call(u8bFeed, out, body);
+    done;
+}
+
+//  Entry-point URI resolver (URI.mkd §"Resolution boundary").  `be` is
+//  the only component with context, so it resolves every local,
+//  query-bearing URI to the single canonical context-free form
+//  `?/<project>/<branch>/<full-hash>` here, before sniff / keeper / the
+//  sub-recursion ever see it.  A query already ending in a 40-hex pin
+//  (DOGCanonQueryParse) is resolved — left untouched (idempotent).
+//  Remote URIs (scheme/authority) are handled by BEActResolveRemote;
+//  search / magic shapes KEEPResolveRef can't pin are left for the
+//  downstream verb (staged: full coverage tracked in URI.mkd).
+ok64 BEActResolveRef(cli *c) {
+    sane(c);
+    if (uribDataLen(c->uris) == 0) done;
+
+    //  cur's branch (`/<project>/<branch>`) from the wtlog tail — the
+    //  same standalone peek the bareword/baseline paths use.  (`be`'s own
+    //  c->flags has no `--at`; that flag is only composed onto child argv.)
+    a_pad(u8, cur_at_buf, FILE_PATH_MAX_LEN + 128);
+    u8cs cur_branch = {};
+    if (u8bHasData(c->repo) &&
+        SNIFFAtTailOf($path(c->repo), cur_at_buf) == OK) {
+        uri bt = {};
+        u8csMv(bt.data, u8bDataC(cur_at_buf));
+        URILexer(&bt);
+        u8csMv(cur_branch, bt.query);
+    }
+
+    //  Anything to do?  (a local, query-bearing, not-yet-canonical URI)
+    b8 any = NO;
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        uri *u = uribAtP(c->uris, i);
+        if (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority)) continue;
+        if (u8csEmpty(u->query)) continue;
+        u8cs pr = {}, br = {}, pn = {};
+        if (DOGCanonQueryParse(u->query, pr, br, pn)) continue;
+        any = YES; break;
+    }
+    if (!any) done;
+
+    home rh = {};
+    uri hat = {};
+    if (u8bHasData(c->repo)) u8csMv(hat.path, $path(c->repo));
+    if (!u8csEmpty(cur_branch)) u8csMv(hat.query, cur_branch);  // project=parent
+    if (HOMEOpen(&rh, &hat, NO) != OK) done;
+    //  A colocated/default wt leaves h->project empty (HOME defers it to
+    //  the caller's get/post-row scan; STORE.md: never the top-level
+    //  `.be/refs`, which is meaningless).  Take cur's project as default.
+    if (!u8bHasData(rh.project)) {
+        u8cs proj = {};
+        DOGQueryProject(cur_branch, proj);
+        if (!u8csEmpty(proj)) {
+            u8bReset(rh.project);
+            (void)u8bFeed(rh.project, proj);
+        }
+    }
+    //  Open keeper at CUR's leaf (not trunk): KEEPOpenBranch walks
+    //  trunk→…→leaf and registers each shard, so cur's children (the
+    //  usual `?./feat` patch source) are reachable by REFS — a trunk-only
+    //  open leaves them RESLVNONE.  Branch-only form (project stripped).
+    u8cs cur_leaf = {};
+    u8csMv(cur_leaf, cur_branch);
+    DOGQueryStripProject(cur_leaf);     // `/parent/master` → `master`
+    static u8c const _zero = 0;
+    u8cs open_branch = {&_zero, &_zero};
+    if (!u8csEmpty(cur_leaf)) u8csMv(open_branch, cur_leaf);
+    ok64 ko = KEEPOpenBranch(&rh, open_branch, NO);
+    if (!(ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO)) {
+        HOMEClose(&rh);
+        done;
+    }
+
+    //  Resolved URIs must outlive this plan frame (BEBuildArgv forwards
+    //  `u->data`), so compose into a process-scoped scratch buffer.
+    static u8 _resolve_scratch[CLI_MAX_URIS * 96];
+    u8b scratch = {_resolve_scratch, _resolve_scratch, _resolve_scratch,
+                   _resolve_scratch + sizeof(_resolve_scratch)};
+
+    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        uri *u = uribAtP(c->uris, i);
+        if (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority)) continue;
+        if (u8csEmpty(u->query)) continue;
+        //  Rebase-one (`?br#`, present-but-empty fragment): the source is a
+        //  branch to WALK (foster = next-unreplayed commit, NOT the tip), so
+        //  pinning it to the tip-hash here is wrong until sniff's rebase-one
+        //  walks from the resolved pin.  Leave it relative for sniff.
+        //  (Staged — full per-shape coverage tracked in URI.mkd.)
+        if (u->fragment[0] != NULL && u8csEmpty(u->fragment)) continue;
+        {
+            u8cs pr = {}, br = {}, pn = {};
+            if (DOGCanonQueryParse(u->query, pr, br, pn)) continue;
+        }
+
+        //  Resolve against the BRANCH-ONLY cur (REFS keys are
+        //  project-stripped); the project is re-attached below.
+        sha1 pin = {};
+        if (KEEPResolveRef(&pin, u->query, cur_leaf) != OK) continue;
+        sha1hex pinhex = {};
+        sha1hexFromSha1(&pinhex, &pin);
+        u8cs pinslice = {};
+        sha1hexSlice(pinslice, &pinhex);
+
+        a_path(absb);                       //  branch-only (empty = detached)
+        if (be_abs_branch(absb, cur_leaf, u->query) != OK) continue;
+
+        u8cs project = {};
+        DOGQueryProject(cur_branch, project);
+        u8cs frag_save = {u->fragment[0], u->fragment[1]};
+        b8   has_frag  = (frag_save[0] != NULL);
+
+        //  Compose `?/<project>/<branch>/<pin>` (detached: empty branch
+        //  slot `/<project>//<pin>`).
+        u8c *before = u8bIdleHead(scratch);
+        if (u8bFeed1(scratch, '?') != OK) continue;
+        if (u8bFeed1(scratch, '/') != OK) continue;
+        if (!u8csEmpty(project) && u8bFeed(scratch, project) != OK) continue;
+        if (u8bFeed1(scratch, '/') != OK) continue;
+        if (u8bHasData(absb) && u8bFeed(scratch, u8bDataC(absb)) != OK) continue;
+        if (u8bFeed1(scratch, '/') != OK) continue;
+        if (u8bFeed(scratch, pinslice) != OK) continue;
+        if (has_frag) {
+            if (u8bFeed1(scratch, '#') != OK) continue;
+            if (!u8csEmpty(frag_save) &&
+                u8bFeed(scratch, frag_save) != OK) continue;
+        }
+        u8c *after = u8bIdleHead(scratch);
+        u8cs full  = {before, after};
+
+        zerop(u);
+        u8csMv(u->data, full);
+        if (URILexer(u) != OK) continue;
+        u8csMv(u->data, full);
+    }
+
+    if (ko == OK) (void)KEEPClose();
+    HOMEClose(&rh);
+    done;
 }
 
 // --- Main ---
