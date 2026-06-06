@@ -45,6 +45,8 @@ set(_BE_WILL_FAIL_CASES
     "be-head-21-sub-dirty-reported"                 # SUBS-007
     "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
     "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
+    # POST-005 (post/28) fixed — absorbed-tree (theirs) ULOG cursor gates the
+    # untracked-file ADD; off WILL_FAIL so it must pass normally.
 )
 
 # Tests that need passwordless ssh to localhost (mirror what

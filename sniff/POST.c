@@ -426,6 +426,7 @@ typedef struct {
     ron60     v_wt;
     ron60     v_put;
     ron60     v_del;
+    ron60     v_thr;   // absorbed (theirs) patch-tree cursor — POST-005
 } post_classify_step_ctx;
 
 //  SNIFFMergeWalk step callback.  Inspects the tie group (one record
@@ -453,11 +454,12 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  by KEEPTreeULog / SNIFFWtULog), so source dispatch tests the
     //  stem.  Put/delete intent rows carry no suffix — equality match.
     ulogreccp src_base = NULL, src_wt = NULL, src_put = NULL;
-    b8 has_put = NO, has_del = NO;
+    b8 has_put = NO, has_del = NO, has_thr = NO;
     for (u32 i = 0; i < n; i++) {
         ulogreccp m = &recs[i];
         if      (ok64stem(m->verb) == cctx->v_base) src_base = m;
         else if (ok64stem(m->verb) == cctx->v_wt)   src_wt   = m;
+        else if (ok64stem(m->verb) == cctx->v_thr)  has_thr  = YES;
         else if (m->verb == cctx->v_put)          { has_put = YES; src_put = m; }
         else if (m->verb == cctx->v_del)            has_del  = YES;
     }
@@ -609,6 +611,18 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
                 return OK;  // untracked clean — shouldn't happen
             }
             //  patch / put / mod stamp owns this mtime → add.
+            //
+            //  POST-005: SNIFFAtRowAtTs resolves the owning row by ts
+            //  ALONE — it never checks the row's path.  An UNTRACKED file
+            //  (no baseline) whose mtime merely *aliases* some other path's
+            //  put/patch stamp must not be swept into the commit.  The only
+            //  legitimate reason to commit an untracked file here is that an
+            //  absorbed patch genuinely introduced it — i.e. it is present
+            //  in a theirs (absorbed) tree, signalled by `has_thr`.  No
+            //  src_thr ⇒ alias ⇒ ignore.  (Explicit `be put` of a new file
+            //  sets src_put and is handled by the has_put branch above, so
+            //  it never reaches here.)
+            if (!src_base && !has_thr) return OK;
             sha1 new_sha = {};
             if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
                 return OK;
@@ -675,26 +689,31 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
 //  per record.
 static ok64 post_classify_via_merge(post_ctx *c,
                                     u8b bu, u8b wu,
-                                    u8b put_buf, u8b del_buf,
+                                    u8b put_buf, u8b del_buf, u8b thr_buf,
                                     ron60 v_base, ron60 v_wt,
-                                    ron60 v_put,  ron60 v_del) {
+                                    ron60 v_put,  ron60 v_del, ron60 v_thr) {
     sane(c);
 
-    //  Heap-walk all 4 cursors; dispatch per row in `post_classify_step`.
+    //  Heap-walk all 5 cursors; dispatch per row in `post_classify_step`.
+    //  thr_buf carries the absorbed (theirs) patch tree(s) as a ULOG so an
+    //  untracked file's "is this path genuinely in an absorbed tree?" check
+    //  rides the merge instead of a side lookup (POST-005).
     a_dup(u8c, view_b, u8bData(bu));
     a_dup(u8c, view_w, u8bData(wu));
     a_dup(u8c, view_p, u8bData(put_buf));
     a_dup(u8c, view_d, u8bData(del_buf));
-    a_pad(u8cs, ins, 4);
+    a_dup(u8c, view_t, u8bData(thr_buf));
+    a_pad(u8cs, ins, 5);
     u8cssFeed1(ins_idle, view_b);
     u8cssFeed1(ins_idle, view_w);
     u8cssFeed1(ins_idle, view_p);
     u8cssFeed1(ins_idle, view_d);
+    u8cssFeed1(ins_idle, view_t);
     a_dup(u8cs, cursors, u8csbData(ins));
 
     post_classify_step_ctx cctx = {
         .c = c, .v_base = v_base, .v_wt = v_wt,
-        .v_put = v_put, .v_del = v_del,
+        .v_put = v_put, .v_del = v_del, .v_thr = v_thr,
     };
     return SNIFFMergeWalk(cursors, post_classify_step, &cctx);
 }
@@ -969,11 +988,13 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     a_cstr(s_wtv,   "wt");   a_dup(u8c, dwv, s_wtv);
     a_cstr(s_putv,  "put");  a_dup(u8c, dpv, s_putv);
     a_cstr(s_delv,  "del");  a_dup(u8c, ddv, s_delv);
-    ron60 v_base = 0, v_wt = 0, v_put_emit = 0, v_del_emit = 0;
+    a_cstr(s_thrv,  "thr");  a_dup(u8c, dtv, s_thrv);
+    ron60 v_base = 0, v_wt = 0, v_put_emit = 0, v_del_emit = 0, v_thr = 0;
     call(RONutf8sDrain, &v_base,     dbv);
     call(RONutf8sDrain, &v_wt,       dwv);
     call(RONutf8sDrain, &v_put_emit, dpv);
     call(RONutf8sDrain, &v_del_emit, ddv);
+    call(RONutf8sDrain, &v_thr,      dtv);
 
     //  Sized for real-world wt: a single rsync-then-`be put .` over a
     //  freshly checked-out git tag (~5k tracked files) easily fills
@@ -986,9 +1007,33 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     a_carve(u8, del_unsorted, 1UL << 22);
     a_carve(u8, put_buf,      1UL << 22);
     a_carve(u8, del_buf,      1UL << 22);
+    a_carve(u8, thr_unsorted, 1UL << 24);
+    a_carve(u8, thr_buf,      1UL << 24);
 
     if (*have_base) call(KEEPTreeULog, base_tree_sha->data, 0, v_base, bu);
     call(SNIFFWtULog, post_reporoot(), v_wt, wu);
+
+    //  POST-005: union the absorbed (theirs) patch tree(s) into thr_buf as
+    //  a ULOG cursor.  Each in-scope `patch` row names a theirs commit; its
+    //  root tree's leaves tell the classifier which untracked-on-disk files
+    //  a patch genuinely introduced (vs. files whose mtime merely aliases a
+    //  patch/put stamp — see post_classify_step).  thr_buf doubles as the
+    //  per-entry scratch (KEEPTreeULog resets its out); we append each tree
+    //  into thr_unsorted, then sort+dedup back into thr_buf below.  An empty
+    //  set (no patch rows — e.g. an only-sub-dirty put-bump post) means no
+    //  untracked file is ever ADDed, which is exactly the SUBS-001 case.
+    {
+        sniff_pe pent[64];
+        u32 n_pent = 0;
+        (void)SNIFFAtPatchEntries(pent, 64, &n_pent);
+        for (u32 i = 0; i < n_pent; i++) {
+            sha1 thr_tree = {};
+            if (KEEPCommitTreeSha(&pent[i].sha, &thr_tree) != OK) continue;
+            if (KEEPTreeULog(thr_tree.data, 0, v_thr, thr_buf) != OK) continue;
+            call(u8bFeed, thr_unsorted, u8bDataC(thr_buf));
+        }
+    }
+    call(post_sort_dedup_intent, thr_unsorted, thr_buf);
 
     //  4. Put/delete scan since last post.  File-level rows go into
     //     the unsorted intent buffers; dir-prefix rows are expanded
@@ -1009,11 +1054,11 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
     call(post_sort_dedup_intent, put_unsorted, put_buf);
     call(post_sort_dedup_intent, del_unsorted, del_buf);
 
-    //  5. Classify baseline + wt + put/del intents via 4-way merge,
-    //     emitting one keep/unlink/add decision row per distinct path
-    //     into ctx.decisions.
-    call(post_classify_via_merge, c, bu, wu, put_buf, del_buf,
-                                  v_base, v_wt, v_put_emit, v_del_emit);
+    //  5. Classify baseline + wt + put/del + theirs intents via 5-way
+    //     merge, emitting one keep/unlink/add decision row per distinct
+    //     path into ctx.decisions.
+    call(post_classify_via_merge, c, bu, wu, put_buf, del_buf, thr_buf,
+                                  v_base, v_wt, v_put_emit, v_del_emit, v_thr);
 
     //  classify_step inlined the per-path decide+resolve+hash and
     //  emitted one decision row per distinct path.  Downstream
