@@ -1356,10 +1356,17 @@ typedef struct {
 //  Stage one descendant: compute its old fork point relative to the
 //  parent's old tip, run GRAFRebase onto the parent's new tip, capture
 //  new tip into recs[].  Returns OK on success or a GRAFCNFL/error.
+//  `*appended` (must be non-NULL) reports whether a `cascade_rec` was
+//  actually pushed onto `cc->recs`.  The REFSNONE skip path returns OK
+//  *without* appending, so callers must consult `*appended` before
+//  indexing `cc->recs[cc->n - 1]` (MEM-028: an unconditional read there
+//  is an OOB read of recs[-1] when nothing was appended).
 static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
                              sha1cp parent_old_tip,
-                             sha1cp parent_new_tip) {
-    sane(cc);
+                             sha1cp parent_new_tip,
+                             b8 *appended) {
+    sane(cc && appended);
+    *appended = NO;
     if (cc->n >= CASCADE_MAX) return SNIFFFAIL;
 
     sha1 child_tip = {};
@@ -1399,6 +1406,7 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
             }
             r->old_tip = child_tip;
             r->new_tip = child_tip;
+            *appended = YES;
             return OK;
         }
     }
@@ -1416,6 +1424,7 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     r->old_tip = child_tip;
     r->new_tip = rctx.have_last_commit ? rctx.last_commit_sha
                                        : *parent_new_tip;
+    *appended = YES;
     return OK;
 }
 
@@ -1512,9 +1521,17 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         if (!u8csEmpty(cc->skip) && u8csEq(child_branch, cc->skip)) continue;
 
         //  Stage rebase + record.
+        b8 appended = NO;
         ok64 ro = post_cascade_one(cc, child_branch,
-                                   branch_old_tip, branch_new_tip);
+                                   branch_old_tip, branch_new_tip,
+                                   &appended);
         if (ro != OK) return ro;
+
+        //  post_cascade_one may skip without appending (REFSNONE on a
+        //  re-resolve race).  Only index recs[cc->n - 1] when a record
+        //  was actually pushed; otherwise there is nothing to recurse
+        //  into for this child (MEM-028: guard against recs[-1] OOB).
+        if (!appended) continue;
 
         //  Recurse: this child's old/new tips drive the next level.
         sha1 child_new = cc->recs[cc->n - 1].new_tip;
@@ -1523,6 +1540,36 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
         if (rr != OK) return rr;
     }
     return OK;
+}
+
+//  Test-only accessor (MEM-028): replicate the walker's per-child step
+//  in isolation, sharing its append/read discipline.  `branch` is a
+//  child branch with NO REFS tip, so post_cascade_one takes its
+//  REFSNONE skip and leaves `cc->n == 0`.  The walker then drives the
+//  next recursion level from the just-appended record's `new_tip`.
+//  Before the fix the walker read `cc->recs[cc->n - 1].new_tip`
+//  unconditionally — an out-of-bounds read of `recs[-1]` when nothing
+//  was appended (ASan flags it).  After the fix the read is guarded by
+//  an explicit `appended` signal, so the skip path is simply continued.
+//  `*n_after` reports `cc->n` post-call (must stay 0 on the skip path),
+//  `*appended_out` reports whether a record was added, and `*read_back`
+//  receives `new_tip` only when one was.
+ok64 POSTCascadeOneReproForTest(u8cs branch, u32 *n_after,
+                                b8 *appended_out, sha1 *read_back) {
+    sane(n_after && appended_out && read_back);
+    //  The REFSNONE skip path never touches cc.arena, so a zeroed ctx
+    //  suffices for the repro.
+    cascade_ctx cc = {};
+    sha1 dummy = {};
+    b8 appended = NO;
+    ok64 ro = post_cascade_one(&cc, branch, &dummy, &dummy, &appended);
+    *n_after = cc.n;
+    *appended_out = appended;
+    //  Same append/read discipline as post_cascade_walk: only index recs
+    //  when a record was actually pushed.  Pre-fix this read was
+    //  unconditional and went OOB to recs[-1] when nothing was appended.
+    if (appended) *read_back = cc.recs[cc.n - 1].new_tip;
+    return ro;
 }
 
 //  Persist staged cascade REFS writes.  Top-down (parent first ⇒ index

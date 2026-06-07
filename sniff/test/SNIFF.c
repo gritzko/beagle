@@ -715,6 +715,59 @@ static ok64 SNIFFMergeWalkTest(void) {
     done;
 }
 
+// --- MEM-028: cascade skip-without-append must not read recs[-1] --------
+
+//  Test seam exported from sniff/POST.c.  Drives the walker's per-child
+//  step against a branch with NO REFS tip, so post_cascade_one takes
+//  its REFSNONE skip and leaves n == 0.  Before the fix the walker read
+//  recs[cc->n - 1] unconditionally → OOB read of recs[-1] (caught by
+//  ASan); after the fix the read is guarded by an `appended` signal.
+extern ok64 POSTCascadeOneReproForTest(u8cs branch, u32 *n_after,
+                                       b8 *appended_out, sha1 *read_back);
+
+static ok64 SNIFFCascadeSkipNoAppend(void) {
+    sane(1);
+    call(FILEInit);
+    call(make_tmpdir);
+
+    //  Born-sharded scratch store (mirrors SNIFFCheckoutCommit).
+    {
+        char sp[300];
+        snprintf(sp, sizeof sp, "%s/" DOG_BE_NAME, g_tmpdir);
+        mkdir(sp, 0755);
+        snprintf(sp, sizeof sp, "%s/" DOG_BE_NAME "/proj", g_tmpdir);
+        want(mkdir(sp, 0755) == 0);
+    }
+    a_cstr(root, g_tmpdir);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+    call(SNIFFOpen, &h, YES);
+
+    //  A branch with no REFS row at all resolves REFSNONE, forcing the
+    //  skip-without-append path on the very first (n == 0) child.
+    a_cstr(noexist, "no/such/branch");
+    a_dup(u8c, branch, noexist);
+
+    u32 n_after = 99;
+    b8  appended = YES;
+    sha1 read_back = {};
+    ok64 ro = POSTCascadeOneReproForTest(branch, &n_after, &appended,
+                                         &read_back);
+
+    //  The skip path returns OK, appends nothing, and (post-fix) never
+    //  indexes recs.  Pre-fix: ASan aborts at the recs[-1] read above.
+    want(ro == OK);
+    want(n_after == 0);
+    want(appended == NO);
+
+    call(SNIFFClose);
+    call(KEEPClose);
+    HOMEClose(&h);
+    rm_tmpdir();
+    done;
+}
+
 // --- SUBS: URL basename + .gitmodules parse/synth -----------------------
 
 static b8 slice_eq_cstr(u8cs s, char const *c) {
@@ -1040,6 +1093,8 @@ ok64 maintest() {
     call(SNIFFCheckoutCommit);
     fprintf(stderr, "SNIFFMergeWalk...\n");
     call(SNIFFMergeWalkTest);
+    fprintf(stderr, "SNIFFCascadeSkipNoAppend...\n");
+    call(SNIFFCascadeSkipNoAppend);
     fprintf(stderr, "SUBSBasename...\n");
     call(SUBSBasenameTest);
     fprintf(stderr, "SUBSParse...\n");
