@@ -1921,13 +1921,23 @@ static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
         if (ln->hi == BRO_TITLE_LINE) continue;
         hunk const *hk = &st->hunks[0][ln->lo];
         u32 textlen = (u32)$len(hk->text);
-        u32 off = ln->hi;
+        // `hi` packs (pass<<24)|offset — decode like every other reader.
+        // Using the raw word as a byte index reads ~16 MB OOB for any
+        // non-NORMAL-pass row (MEM-006).
+        u32 off = bro_line_off(ln);
+        u8 pass = bro_line_pass(ln);
         // Byte span of this display row (bounded by next row in same
         // source line, else source-line end at '\n').
         u32 row_end;
-        if (i + 1 < bro_nlines(st) && bro_lines(st)[i + 1].lo == ln->lo &&
-            bro_lines(st)[i + 1].hi != BRO_TITLE_LINE) {
-            u32 nhi = bro_lines(st)[i + 1].hi;
+        range32 const *nln =
+            (i + 1 < bro_nlines(st)) ? &bro_lines(st)[i + 1] : NULL;
+        // The next row continues this one only when it is the same hunk,
+        // the same render pass (a different pass = a separate rm/in view
+        // of the same source line, not a wrap continuation), and not a
+        // title sentinel.
+        if (nln && nln->lo == ln->lo && nln->hi != BRO_TITLE_LINE &&
+            bro_line_pass(nln) == pass) {
+            u32 nhi = bro_line_off(nln);
             // Continuation if no '\n' between; otherwise nhi sits past
             // the '\n'.  Either way, the row's first-byte limit is nhi
             // (continuations) or the '\n' (new source line).

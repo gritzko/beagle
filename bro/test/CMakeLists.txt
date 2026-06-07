@@ -27,3 +27,13 @@ target_link_options(WRAPtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WRAPtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WRAPtest brolib dog abc-core)
 add_test(NAME WRAPtest COMMAND WRAPtest)
+
+# SEARCHtest includes ../BRO.c directly to reach file-static symbols
+# (BROSearchNext, BROstate, bro_line_* encoding).  It must NOT link
+# brolib — that would duplicate every BRO.c symbol — so it links the
+# same downstream libs brolib pulls in (MEM-006 regression).
+add_executable(SEARCHtest SEARCH.c ${CMAKE_CURRENT_SOURCE_DIR}/../MAUS.c)
+target_link_options(SEARCHtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(SEARCHtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(SEARCHtest keeplib dog abc-core)
+add_test(NAME SEARCHtest COMMAND SEARCHtest)
