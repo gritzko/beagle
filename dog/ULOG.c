@@ -241,12 +241,23 @@ static ok64 ulog_idx_path(path8b out, path8s log_path) {
     done;
 }
 
+//  Test-only fault injection: when non-zero, the next call to
+//  `ulog_idx_alloc_anon` fails with ULOGFAIL (after decrementing) so
+//  tests can force the scratch-alloc failure path that follows a
+//  successful `FILEBook` and verify the booked log is unbooked rather
+//  than leaked.  Defaults to 0 — never trips in production.
+u32 ULOG_FAULT_ALLOC_ANON = 0;
+
 //  Allocate an anonymous-mmap-backed wh128b descriptor on the heap.
 //  Used for RO + missing sidecar.  The caller's `*idx_out` is set to
 //  point at a 4-pointer slot; ULOGCloseIdx detects this via
 //  `FILEIsBooked` and frees both the slot and the mapping.
 static ok64 ulog_idx_alloc_anon(wh128bp *idx_out, size_t entry_cap) {
     sane(idx_out);
+    if (ULOG_FAULT_ALLOC_ANON) {
+        ULOG_FAULT_ALLOC_ANON--;
+        fail(ULOGFAIL);
+    }
     size_t bytes = entry_cap * sizeof(wh128);
     void *mem = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -446,7 +457,11 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
     //  the idx scan/load — we need the byte size right.
     {
         wh128bp tmp = NULL;
-        call(ulog_idx_alloc_anon, &tmp, 1024);
+        ok64 ao = ulog_idx_alloc_anon(&tmp, 1024);
+        if (ao != OK) {                 // scratch alloc failed AFTER book
+            if (*data && (*data)[0]) FILEUnBook(*data);
+            return ao;
+        }
         ok64 so = ulog_scan_log(*data, tmp);
         ulog_idx_free_anon(tmp);
         if (so != OK) {
@@ -489,7 +504,11 @@ ok64 ULOGOpenRO(u8bp *data, wh128bp *idx, path8s path) {
     //  we won't write the sidecar from here).
     {
         wh128bp tmp = NULL;
-        call(ulog_idx_alloc_anon, &tmp, 1024);
+        ok64 ao = ulog_idx_alloc_anon(&tmp, 1024);
+        if (ao != OK) {                 // scratch alloc failed AFTER book
+            if (*data && (*data)[0]) FILEUnBook(*data);
+            return ao;
+        }
         ok64 so = ulog_scan_log(*data, tmp);
         ulog_idx_free_anon(tmp);
         if (so != OK) {

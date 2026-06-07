@@ -13,6 +13,7 @@
 
 #include "dog/ULOG.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -862,6 +863,72 @@ static ok64 T_scanwt_big_ignored(void) {
     done;
 }
 
+//  Count the process's currently-open file descriptors (entries in
+//  /proc/self/fd, minus the opendir's own handle).  Used to assert a
+//  failed open did not leak the booked log's fd.
+static int open_fd_count(void) {
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        n++;
+    }
+    closedir(d);
+    return n - 1;   // discount the opendir fd itself
+}
+
+//  Test hook (dog/ULOG.c): force the next ulog_idx_alloc_anon to fail.
+extern u32 ULOG_FAULT_ALLOC_ANON;
+
+//  MEM-016 repro: ULOGOpenBooked / ULOGOpenRO FILEBook the log, then
+//  call ulog_idx_alloc_anon for a scratch scan idx.  When that scratch
+//  alloc fails (memory pressure), the old `call()` returned immediately
+//  WITHOUT unbooking the log — leaking the mmap + fd for the process
+//  lifetime.  We force the alloc failure right after the book and assert
+//  the open fails AND the booked fd was released (no leak), for both the
+//  RW and RO open paths.
+static ok64 T_open_alloc_fail_no_leak(void) {
+    sane(1);
+    call(FILEInit);
+    rm_tmp("/tmp/ulog-leak.log");
+    LOGPATH(path, "/tmp/ulog-leak.log");
+
+    //  Seed a valid one-row log so the file exists for both opens.
+    u8bp l_data = NULL; wh128bp l_idx = NULL;
+    call(ULOGOpen, &l_data, &l_idx, path);
+    saved_uri s1 = {};
+    call(parse_uri_lit, &s1, "//localhost/repo?heads/master");
+    ulogrec r1 = rec_of(2000, verb_of("get"), &s1);
+    call(ULOGAppendAt, l_data, l_idx, &r1);
+    call(ULOGClose, l_data, &l_idx, YES);
+
+    //  --- RW open path (ULOGOpenBooked) ---
+    int fd0 = open_fd_count();
+    want(fd0 >= 0);
+
+    ULOG_FAULT_ALLOC_ANON = 1;       // trip the scratch alloc after book
+    u8bp d2 = NULL; wh128bp i2 = NULL;
+    ok64 rc = ULOGOpenBooked(&d2, &i2, path, 4096, 4096);
+    ULOG_FAULT_ALLOC_ANON = 0;
+    want(rc != OK);                  // the forced alloc failure propagates
+    want(d2 == NULL || d2[0] == NULL);   // booked slot was unbooked
+    want(open_fd_count() == fd0);    // no leaked fd
+
+    //  --- RO open path (ULOGOpenRO) ---
+    ULOG_FAULT_ALLOC_ANON = 1;
+    u8bp d3 = NULL; wh128bp i3 = NULL;
+    ok64 rc2 = ULOGOpenRO(&d3, &i3, path);
+    ULOG_FAULT_ALLOC_ANON = 0;
+    want(rc2 != OK);
+    want(d3 == NULL || d3[0] == NULL);
+    want(open_fd_count() == fd0);    // still no leaked fd
+
+    rm_tmp("/tmp/ulog-leak.log");
+    done;
+}
+
 //  Regression (the .be/wtlog wipe): an EXISTING log whose FILEBook fails
 //  must NOT fall through to the O_TRUNC FILEBookCreate and destroy the
 //  bytes — ULOGOpenBooked must propagate the error and leave content
@@ -913,6 +980,7 @@ static ok64 T_no_truncate_on_book_fail(void) {
 
 ok64 ULOGtest(void) {
     sane(1);
+    fprintf(stderr, "T_open_alloc_fail_no_leak...\n"); call(T_open_alloc_fail_no_leak);
     fprintf(stderr, "T_no_truncate_on_book_fail...\n"); call(T_no_truncate_on_book_fail);
     fprintf(stderr, "T_scanwt_big_ignored...\n"); call(T_scanwt_big_ignored);
     fprintf(stderr, "T_roundtrip...\n");     call(T_roundtrip);
