@@ -437,15 +437,9 @@ ok64 MARKRenderDoc(u8bp out, u8csc src, u8csc title, markopts opts) {
         call(MARKu8bLit, out, "wiki");
     }
     call(MARKu8bLit, out,
-         "</title>\n<style>\n"
-         "body{max-width:48rem;margin:2rem auto;padding:0 1rem;"
-         "font:16px/1.5 system-ui,-apple-system,sans-serif;color:#222}\n"
-         "pre{background:#f4f4f4;padding:.6rem;overflow:auto}\n"
-         "code{background:#f4f4f4;padding:0 .2rem;border-radius:3px}\n"
-         "pre code{background:none;padding:0}\n"
-         "a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}\n"
-         "h1,h2,h3,h4{line-height:1.2}\n"
-         "</style>\n</head>\n<body>\n");
+         "</title>\n"
+         "<link rel=\"stylesheet\" href=\"/assets/css/style.css\">\n"
+         "</head>\n<body>\n");
     call(mark_body, out, src, opts);
     call(MARKu8bLit, out, "</body>\n</html>\n");
     done;
