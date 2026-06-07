@@ -436,10 +436,11 @@ ok64 MARKRenderDoc(u8bp out, u8csc src, u8csc title, markopts opts) {
     } else {
         call(MARKu8bLit, out, "wiki");
     }
-    call(MARKu8bLit, out,
-         "</title>\n"
-         "<link rel=\"stylesheet\" href=\"/assets/css/style.css\">\n"
-         "</head>\n<body>\n");
+    call(MARKu8bLit, out, "</title>\n");
+    //  Site-owned head extras (stylesheet, favicon, meta...) carried in
+    //  --head=FILE; mark itself bakes in no page policy.
+    if (!$empty(opts.head)) call(u8bFeed, out, opts.head);
+    call(MARKu8bLit, out, "</head>\n<body>\n");
     call(mark_body, out, src, opts);
     call(MARKu8bLit, out, "</body>\n</html>\n");
     done;

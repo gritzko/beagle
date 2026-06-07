@@ -26,7 +26,8 @@ con ok64 MARKARG = 0x1629b50a6d0;        // bad CLI argument
 #define MARK_OPEN_MAX (8 * MARK_LINE)    // opener  <= 512
 
 typedef struct {
-    b8 strict;  // YES: a structure/limit violation aborts with MARKLIMIT
+    b8   strict;  // YES: a structure/limit violation aborts with MARKLIMIT
+    u8cs head;    // raw HTML injected before </head> (from --head=FILE); empty = none
 } markopts;
 
 //  Render StrictMark `src` to a standalone HTML document in `out`.

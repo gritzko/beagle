@@ -1,10 +1,13 @@
 //  mark CLI — render StrictMark to standalone HTML.
 //
-//    mark [--strict] <file.mkd | dir>...
+//    mark [--strict] [--head=FILE] <file.mkd | dir>...
 //
 //  A file → file.html next to it.  A directory → every *.mkd in it,
 //  rewriting inter-page links from .mkd to .html.  --strict makes a
-//  WikiWeb structure/limit violation a hard failure.
+//  WikiWeb structure/limit violation a hard failure.  --head=FILE inlines
+//  that file's contents verbatim into every page's <head> (stylesheet,
+//  favicon, meta...), so mark bakes in no site policy; the file is mapped
+//  once and shared across the whole render.
 //
 //  Memory is bounded by the input: the renderer keeps nothing across
 //  files, and the per-file output buffer is sized to that file (escaping
@@ -139,16 +142,39 @@ ok64 markcli() {
     call(FILEInit);
 
     markopts opts = {};
+    a_path(headpath);
+    b8 want_head = NO;
     for (size_t i = 1; i < (size_t)$arglen; ++i) {
         a$rg(a, i);
         a_cstr(strict, "--strict");
         if (u8csLen(a) == u8csLen(strict) &&
-            memcmp(a[0], strict[0], u8csLen(strict)) == 0)
+            memcmp(a[0], strict[0], u8csLen(strict)) == 0) {
             opts.strict = YES;
+            continue;
+        }
+        a_cstr(headpfx, "--head=");
+        if (u8csLen(a) > u8csLen(headpfx) &&
+            memcmp(a[0], headpfx[0], u8csLen(headpfx)) == 0) {
+            a_rest(u8c, val, a, u8csLen(headpfx));
+            call(PATHu8bDup, headpath, val);
+            want_head = YES;
+        }
+    }
+
+    //  Map the head snippet once (resource at the top of the chain); the
+    //  slice stays valid for the whole render and is unmapped after.
+    u8bp hm = NULL;
+    if (want_head) {
+        call(FILEMapRO, &hm, $path(headpath));
+        if (hm == NULL) return MARKARG;
+        opts.head[0] = u8bDataHead(hm);
+        opts.head[1] = u8bIdleHead(hm);
     }
 
     try(markcli_inner, opts);
-    done;
+    ok64 ro = __;
+    if (hm != NULL) FILEUnMap(hm);
+    return ro;
 }
 
 MAIN(markcli);
