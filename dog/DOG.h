@@ -491,12 +491,17 @@ fun b8 DOGCanonQueryParse(u8csc query, u8cs project,
     u8cs proj_local = {q[0], head_scan[0]};
     if (u8csEmpty(proj_local))           return NO;
 
-    //  Branch = bytes between first and last '/', exclusive.  When
-    //  there's a single segment in the middle the slice is non-empty;
-    //  zero-segment (e.g. "/proj//sha") is rejected as malformed.
+    //  Branch = bytes between first and last '/', exclusive.  An empty
+    //  middle segment (`/proj//sha`, branch_start == branch_end) is the
+    //  CANONICAL detached / branchless form — a bare sha, tag checkout,
+    //  or `?null` — per URI.mkd §"Resolution boundary" ("a detached or
+    //  branchless target has an empty branch slot: a double slash
+    //  /<project>//<full-hash>").  Accept it with an empty branch slice
+    //  (DIS-025); only `branch_start > branch_end` (a single-slash
+    //  `/proj/sha`, no branch slot at all) is genuinely malformed.
     u8c const *branch_start = head_scan[0] + 1;
     u8c const *branch_end   = tail_scan[1] - 1;
-    if (branch_start >= branch_end)      return NO;
+    if (branch_start > branch_end)       return NO;
     u8cs branch_local = {(u8c *)branch_start, (u8c *)branch_end};
 
     u8csMv(project, proj_local);

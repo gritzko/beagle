@@ -1399,13 +1399,28 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  Canonic-form peel.  When the resolver-emitted shape
     //  `/<project>/<branch>/<pin>` (STORE.md §"URI structure") lands
     //  here, the trailing pin would otherwise trip the located-cherry
-    //  promotion below.  Reduce to bare `<branch>` so PATCH sees the
-    //  user's original intent (SQUASH/MERGE/REBASE1, not CHERRY).
-    //  Pin is dropped — REFSResolve below will re-derive the tip.
+    //  promotion below.
+    //
+    //  DIS-025: an EMPTY branch slot (`/<project>//<sha>`) is the
+    //  canonical DETACHED form — a bare sha SQUASH target, NOT a
+    //  `?<branch>/<sha>` cherry-locate (URI.mkd §"Resolution boundary").
+    //  Reduce it to the bare pin (a full 40-hex sha) so resolve_target
+    //  does a sha lookup and the squash base falls to LCA(cur, sha) —
+    //  absorbing every commit in (cur..sha], not just the target's last
+    //  commit.  (resolve_parent_tip bails on a 40-hex first chunk, so
+    //  the fork correctly defaults to LCA(cur, theirs).)
+    //
+    //  A NON-empty branch is the ordinary `?branch` form: reduce to bare
+    //  `<branch>` so PATCH sees the user's intent (SQUASH/MERGE/REBASE1);
+    //  the pin is dropped — the resolver re-derives the branch tip.
     {
         u8cs c_proj = {}, c_branch = {}, c_pin = {};
-        if (DOGCanonQueryParse(target_query_raw, c_proj, c_branch, c_pin))
-            u8csMv(target_query_raw, c_branch);
+        if (DOGCanonQueryParse(target_query_raw, c_proj, c_branch, c_pin)) {
+            if (u8csEmpty(c_branch))
+                u8csMv(target_query_raw, c_pin);
+            else
+                u8csMv(target_query_raw, c_branch);
+        }
     }
 
     //  Absolutise the query slot up front (`?./fix` from cur=feature
