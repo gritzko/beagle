@@ -242,7 +242,7 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
     //  move (`put <old>#<new>`, fragment is a path, not 40 hex).
     if (verb == w->v_put_filter && !$empty(path) && *u8csLast(path) != '/') {
         u8cs frag = {src->uri.fragment[0], src->uri.fragment[1]};
-        if (u8csLen(frag) == 40 && HEXu8sValid(frag)) {
+        if (DOGIsFullSha(frag)) {
             ulogrec rec = {.ts = ts, .verb = w->v_put_emit,
                            .uri = src->uri};
             return ULOGu8sFeed(u8bIdle(w->put_unsorted), &rec);
@@ -486,7 +486,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         if (src_put) {
             u8cs put_frag = {src_put->uri.fragment[0],
                              src_put->uri.fragment[1]};
-            if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
+            if (DOGIsFullSha(put_frag)) {
                 sha1 new_sha = {};
                 a_raw(bin_s, new_sha);
                 a_dup(u8c, frag_dup, put_frag);
@@ -522,7 +522,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         if (!src_base && !src_wt && src_put) {
             u8cs put_frag = {src_put->uri.fragment[0],
                              src_put->uri.fragment[1]};
-            if (u8csLen(put_frag) == 40 && HEXu8sValid(put_frag)) {
+            if (DOGIsFullSha(put_frag)) {
                 sha1 new_sha = {};
                 a_raw(bin_s, new_sha);
                 a_dup(u8c, frag_dup, put_frag);

@@ -339,6 +339,15 @@ void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out);
 // the same hashlet test (sniff URI normalisers, ref parsers).
 b8   DOGIsHashlet(u8cs s);
 
+// YES iff `s` is a FULL git object id in hex: all [0-9a-fA-F] and
+// exactly a known sha width — 40 (sha1) or 64 (sha256).  This is the
+// length-agnostic replacement for the scattered `len==40 && HEXu8sValid`
+// "is this a full sha?" recognizers (URI-001 §"The one rule": the index
+// knows sha1 vs sha256, callers never test a length).  Purely syntactic
+// (no pack lookup) — it distinguishes a resolved object id from a path
+// or branch name; when sha256 objects land, this one predicate widens.
+b8   DOGIsFullSha(u8cs s);
+
 // Consume one `&`-separated chunk from a multi-ref query body
 // (`A&B&C` shape — `graf get` blob/tree merges, `sniff` baseline
 // rows that store `<branch>&<sha>`).  Advances `q[0]` past the

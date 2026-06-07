@@ -24,6 +24,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 
+#include "dog/DOG.h"
 #include "dog/HUNK.h"
 #include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
@@ -203,7 +204,7 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
         u8cs frag = {step->put_rec->uri.fragment[0],
                      step->put_rec->uri.fragment[1]};
         ron60 ts = step->put_rec->ts;
-        b8 is_bump = (u8csLen(frag) == 40 && HEXu8sValid(frag));
+        b8 is_bump = DOGIsFullSha(frag);
         if (!u8csEmpty(frag) && !is_bump) {
             ls_emit_row(c, path, frag, ts, c->v.v_mov);
             return OK;

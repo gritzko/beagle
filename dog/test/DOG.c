@@ -402,6 +402,40 @@ static ok64 DOGTestRefSplitPin(void) {
     done;
 }
 
+// --- DOGIsFullSha (URI-001 Stage 2 length-agnostic recognizer) ------
+
+static ok64 DOGTestIsFullSha(void) {
+    sane(1);
+    char sha1hex[]   = "d268baf01234567890123456789012345678abcd";  // 40
+    char sha256hex[] = "d268baf01234567890123456789012345678abcd"
+                       "0123456789abcdef01234567";                  // 40+24 = 64
+    struct { char const *in; b8 want; } cases[] = {
+        {sha1hex,    YES},   // 40 hex  → sha1
+        {sha256hex,  YES},   // 64 hex  → sha256
+        {"abc1234",  NO},    // hashlet, not full
+        {"feat",     NO},    // branch name
+        {"feat/sub", NO},    // path
+        {"",         NO},    // empty
+        // 40 chars but a non-hex byte ('g') → not a sha
+        {"g268baf01234567890123456789012345678abcd", NO},
+        // 39 hex (one short of sha1)
+        {"268baf01234567890123456789012345678abcd",  NO},
+        // 41 hex (one over sha1, under sha256)
+        {"d268baf01234567890123456789012345678abcd1", NO},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].in);
+        a_dup(u8c, in, src);
+        b8 got = DOGIsFullSha(in);
+        if (got != cases[i].want) {
+            fprintf(stderr, "IsFullSha '%s': want %d got %d\n",
+                    cases[i].in, cases[i].want, got);
+            fail(FAIL);
+        }
+    }
+    done;
+}
+
 // --- DOGCanonQueryParse ---------------------------------------------
 //
 //  The canonical resolved query splits into (project, branch, pin).  The
@@ -521,6 +555,7 @@ ok64 DOGtest() {
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
     call(DOGTestRefSplitPin);
+    call(DOGTestIsFullSha);
     call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);
     done;

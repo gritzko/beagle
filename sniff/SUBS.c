@@ -12,6 +12,7 @@
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
+#include "dog/DOG.h"
 #include "dog/HOME.h"
 #include "dog/WHIFF.h"
 #include "keeper/KEEP.h"
@@ -330,7 +331,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                    u8cs path, u8cs hex_sha,
                    u8cs gitmodules, u8cs argv0) {
     sane($ok(reporoot) && $ok(parent_root) && $ok(path) &&
-         $ok(hex_sha) && u8csLen(hex_sha) == 40);
+         $ok(hex_sha) && DOGIsFullSha(hex_sha));
 
     //  Idempotency probe: if the anchor `<mount>/.be` is already a
     //  regular file, this is a re-fetch (sync-existing-mount-to-new-pin)

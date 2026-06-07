@@ -376,6 +376,18 @@ b8 DOGIsHashlet(u8cs s) {
     return YES;
 }
 
+b8 DOGIsFullSha(u8cs s) {
+    size_t n = u8csLen(s);
+    if (n != 40 && n != 64) return NO;   // sha1 / sha256 hex widths
+    for (size_t i = 0; i < n; i++) {
+        u8 c = s[0][i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return NO;
+    }
+    return YES;
+}
+
 b8 DOGRefIsBranch(u8cs ref) {
     size_t n = u8csLen(ref);
     if (n == 0) return YES;  // trunk

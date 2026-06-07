@@ -116,7 +116,7 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
     //  authority-substring match finds the cached row instead of
     //  silently rewriting "remote tip" as "local cur".
     if (u->query[0] == NULL && u8csEmpty(u->authority)) {
-        if (u8bDataLen(k->h->cur_sha) == 40) {
+        if (DOGIsFullSha(u8bDataC(k->h->cur_sha))) {
             u8s sb = {out->data, out->data + 20};
             a_dup(u8c, hx, u8bData(k->h->cur_sha));
             return HEXu8sDrainSome(sb, hx);

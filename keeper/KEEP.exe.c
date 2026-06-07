@@ -196,14 +196,14 @@ static ok64 keeper_subs(keeper *k, cli *c) {
     //  Either skips REFSResolve.  Falls through to REFSResolve when
     //  the input is a ref name to look up.
     sha1 commit_sha = {};
-    if (u8csLen(u->fragment) == 40 && HEXu8sValid(u->fragment)) {
+    if (DOGIsFullSha(u->fragment)) {
         u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
         a_dup(u8c, hex40, u->fragment);
         if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
             fprintf(stderr, "keeper: subs: bad sha\n");
             fail(KEEPFAIL);
         }
-    } else if (u8csLen(u->query) == 40 && HEXu8sValid(u->query)) {
+    } else if (DOGIsFullSha(u->query)) {
         u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
         a_dup(u8c, hex40, u->query);
         if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
@@ -528,21 +528,12 @@ ok64 KEEPGetRemote(uri *g) {
     //  so the supported flow is "seed with a named ref first, then
     //  look up by sha".  If the object is already in the local store,
     //  skip the wire round-trip entirely.
-    if (u8csLen(want_ref) == 40) {
-        b8 all_hex = YES;
-        $for(u8c, p, want_ref) {
-            u8 c = *p;
-            if (!((c >= '0' && c <= '9') ||
-                  (c >= 'a' && c <= 'f') ||
-                  (c >= 'A' && c <= 'F'))) { all_hex = NO; break; }
-        }
-        if (all_hex) {
-            u64 hashlet = WHIFFHexHashlet60(want_ref);
-            u64 val = 0;
-            if (KEEPLookup(hashlet, 40, &val) == OK) {
-                u8bUnMap(rarena);
-                return OK;
-            }
+    if (DOGIsFullSha(want_ref)) {
+        u64 hashlet = WHIFFHexHashlet60(want_ref);
+        u64 val = 0;
+        if (KEEPLookup(hashlet, 40, &val) == OK) {
+            u8bUnMap(rarena);
+            return OK;
         }
     }
 
@@ -930,7 +921,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
         b8 path_mismatch = NO;
         if (REFSResolve(&resolved, ffarena,
                         $path(keepdir), in_uri) == OK &&
-            u8csLen(resolved.query) == 40) {
+            DOGIsFullSha(resolved.query)) {
             //  Reject the match if the user supplied an explicit
             //  path that disagrees with what REFSResolve returned.
             if (!u8csEmpty(g->path) && !u8csEmpty(resolved.path) &&

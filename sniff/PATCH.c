@@ -982,7 +982,7 @@ static ok64 resolve_parent_tip(sha1 *out, u8cs reporoot,
     path8s first = {};
     DOGRefDrain(q_in, first);
     if ($empty(first)) return PATCHURELT;
-    if (u8csLen(first) == 40 && DOGIsHashlet(first)) return PATCHURELT;
+    if (DOGIsFullSha(first)) return PATCHURELT;
 
     //  Build the target's absolute branch path.  `.`-prefix refs
     //  resolve against cur via PATH primitives (Pop/Push) — branch

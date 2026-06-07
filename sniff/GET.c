@@ -842,7 +842,7 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     if (u8csEmpty(branch)) return NONE;
     //  40-hex `branch` means caller really passed a detached sha; nothing
     //  to advance, no FF check applies.
-    if ($len(branch) == 40) return NONE;
+    if (DOGIsFullSha(branch)) return NONE;
 
     //  Look up the local-only tip via bare `?<branch>` (the shape
     //  sniff POST writes — peer-keyed rows from wire fetches use
@@ -1011,7 +1011,8 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  missing.  Runs from the wt's current cur context so a broken
     //  target shard doesn't trip the KEEPSwitchBranch path that would
     //  otherwise hide the holes.
-    if (SNIFF.force && $len(hex) == 40) {
+    u8cs hexs = {hex[0], hex[1]};
+    if (SNIFF.force && DOGIsFullSha(hexs)) {
         call(get_verify_closure, k, hex);
     }
 
@@ -1201,7 +1202,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             //  (`be get <sha>` then `be get <other-sha>`) are NOT seen
             //  as a cross-branch switch and the dirty gate stays open
             //  for the weave-merge path.
-            if (u8csLen(b_branch) == 40 && HEXu8sValid(b_branch)) {
+            if (DOGIsFullSha(b_branch)) {
                 b_branch[0] = NULL;
                 b_branch[1] = NULL;
             }
@@ -1900,9 +1901,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  GETCheckout).  Uses dog/DOG.h's DOGIsHashlet predicate
     //  (6..40 hex chars).  A full 40-hex path can't be a real
     //  filename and never makes sense as a file overlay target.
-    b8 path_is_full_hex = !$empty(u->path) &&
-                          u8csLen(u->path) == 40 &&
-                          DOGIsHashlet(u->path);
+    b8 path_is_full_hex = !$empty(u->path) && DOGIsFullSha(u->path);
     if (!$empty(u->path) && $empty(u->authority) && !path_is_full_hex) {
         b8 has_query_slot     = (u->query[0] != NULL);
         b8 query_slot_empty   = has_query_slot && $empty(u->query);
@@ -2041,7 +2040,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             !u8csEmpty(u->query)) {
             u8cs vq = {};
             u8csMv(vq, u->query);
-            b8 q_is_sha = (u8csLen(vq) == 40 && HEXu8sValid(vq));
+            b8 q_is_sha = DOGIsFullSha(vq);
             if (!q_is_sha) {
                 a_path(q_keepdir);
                 a_dup(u8c, trunk_s, u8bDataC(keepdir));

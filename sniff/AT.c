@@ -89,7 +89,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
         //  through and walk the `&`-chain when the fragment is empty.
         u8csMv0(ref_body);
         u8csMv0(sha_body);
-        if (u8csLen(u.fragment) == 40) u8csMv(sha_body, u.fragment);
+        if (DOGIsFullSha(u.fragment)) u8csMv(sha_body, u.fragment);
         b8 row_is_local = u8csEmpty(u.authority);
         a_dup(u8c, q, u.query);
         //  Absolute `?/<project>/<branch>` starts with the project
@@ -101,7 +101,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             u8cs chunk = {};
             DOGRefDrain(q, chunk);
             if ($empty(chunk)) continue;
-            b8 is_sha = (u8csLen(chunk) == 40 && DOGIsHashlet(chunk));
+            b8 is_sha = DOGIsFullSha(chunk);
             if (!is_sha && u8csEmpty(ref_body) && row_is_local) {
                 //  Only adopt the query as the cur branch when the
                 //  row is a LOCAL action (no remote authority).

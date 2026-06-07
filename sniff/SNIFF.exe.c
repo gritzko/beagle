@@ -187,7 +187,7 @@ static ok64 status_step(class_step const *step, void *ctx) {
         //  Sub-mount bump (`put <sub>#<40-hex>`): fragment is a sha,
         //  not a destination path.  Bucket as `put` (or `new`) — the
         //  `mov` renderer would print the sha as a path.
-        b8 is_bump = (u8csLen(frag) == 40 && HEXu8sValid(frag));
+        b8 is_bump = DOGIsFullSha(frag);
         if (!u8csEmpty(frag) && !is_bump) {
             status_push_mov(b->rows, path, frag, ts,
                             b->v.v_mov, &b->mov_n);
@@ -942,8 +942,7 @@ ok64 SNIFFExec(cli *c) {
             //  with `?<sha>/` (forbidden, sha not branch) or use `?#<sha>`
             //  explicitly.
             if (has_q && !has_path && !has_auth && !has_frag &&
-                u8csLen(u.query) == 40 &&
-                HEXu8sValid(u.query)) {
+                DOGIsFullSha(u.query)) {
                 a_dup(u8c, qhex, u.query);
                 sha1hex full = {};
                 ok64 rr = KEEPResolveHex(&full, qhex);

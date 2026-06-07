@@ -186,8 +186,7 @@ static ok64 keepercli_inner(cli *c) {
     static u8c const _zero = 0;
     u8cs branch = {&_zero, &_zero};
     b8 has_query    = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query));
-    b8 query_is_sha = (has_query && u8csLen(uribAtP(c->uris, 0)->query) == 40 &&
-                       HEXu8sValid(uribAtP(c->uris, 0)->query));
+    b8 query_is_sha = (has_query && DOGIsFullSha(uribAtP(c->uris, 0)->query));
     b8 has_authority = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->authority));
 
     //  Remote fetch into a project-less store: derive the project
