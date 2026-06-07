@@ -27,6 +27,19 @@
 //  BASS acquire must NOT go through call() (it snapshots+rewinds BASS).
 #define BACQ(expr) do { __ = (expr); if (__ != OK) return __; } while (0)
 
+//  Wholesale DEL+INS fallback for the diff-core EDL.  See WEAVE.h.
+//  Rewinds the gauge cursor to its base (dropping any partial BRAM
+//  output), then appends DEL(olen)+INS(nlen) through the bounds-checked
+//  DIFFu64AddEntry — no raw pointer writes, NOROOM propagates, edl[0]
+//  advances so downstream n=edl[0]-edl[2] readers see the entries.
+ok64 WEAVEFallbackEdl(e32g edl, u32 olen, u32 nlen) {
+    sane(edl != NULL);
+    edl[0] = edl[2];                       // rewind cursor to base
+    call(DIFFu64AddEntry, edl, DIFF_DEL, olen);
+    call(DIFFu64AddEntry, edl, DIFF_INS, nlen);
+    done;
+}
+
 // ============================================================
 //  TLV record writers
 // ============================================================
@@ -537,9 +550,13 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
     i32s ws = {i32bHead(work), i32bTerm(work)};
     ok64 diff_o = BRAMu64s(edlg, ws, oh, nh);
     if (diff_o != OK) {
-        edlg[1] = edlg[0];
-        *edlg[1]++ = DIFF_ENTRY(DIFF_DEL, (u32)olen);
-        *edlg[1]++ = DIFF_ENTRY(DIFF_INS, (u32)nlen);
+        //  BRAM ran out of room (or otherwise failed): discard its partial
+        //  output and emit a wholesale DEL(olen)+INS(nlen) through the
+        //  bounds-checked gauge.  Cap = olen+nlen >= 2 here (both sides
+        //  non-empty per the degenerate guards above), so this always
+        //  fits; the checked path propagates NOROOM instead of an OOB
+        //  raw write if it ever doesn't.
+        call(WEAVEFallbackEdl, edlg, (u32)olen, (u32)nlen);
         call(NEILCanon, edlg);
     } else {
         u32cs at_view = {(u32cp)u32bDataHead(alive_toks),
