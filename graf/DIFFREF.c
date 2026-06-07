@@ -244,8 +244,13 @@ static b8 diffref_under_submodule(diffref_wt_ctx const *c, u8cs path) {
 
 static ok64 diffref_remember_submodule(diffref_wt_ctx *c, u8cs path) {
     if (!c->sub_init) {
-        //  Acquired into the surrounding ULOGMergeWalk's call() frame;
-        //  BASS rewinds when that frame returns.
+        //  Acquired once and reused across every subsequent step (the
+        //  cross-step submodule-prefix filter).  It must OUTLIVE the
+        //  per-step BASS rewind diffref_wt_step performs (MEM-018), so
+        //  this acquire happens on the submodule-remember path, which
+        //  returns BEFORE that step takes its mark — the buffer sits
+        //  below the mark and survives.  It is released only when the
+        //  outer GRAFDiffWtTree call() frame unwinds.
         ok64 ao = u8bAcquire(ABC_BASS, c->sub_prefixes, 1UL << 12);
         if (ao != OK) return ao;
         c->sub_init = YES;
@@ -284,6 +289,17 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
         return OK;
     }
 
+    //  MEM-018: ULOGMergeWalk fires this step via a raw fn-ptr (no
+    //  call()/try() boundary), so any BASS scratch acquired below would
+    //  accumulate across every changed path — GRAFDiffWtFile alone
+    //  carves 16 MB per file — until `a_carve` returns NOROOM and the
+    //  remaining diffs are silently dropped.  Mark BASS here and rewind
+    //  before returning so each path's sha-skip + 16 MB diff scratch
+    //  dies per step.  The mark sits ABOVE the cross-step `sub_prefixes`
+    //  buffer (acquired on the submodule-remember path, which returns
+    //  earlier), so that persistent filter survives the rewind.
+    u8 *mark = u8aMark(ABC_BASS);
+
     //  BOTH: sha-skip.  Hash wt bytes once and compare with the base
     //  entry's `#<sha>` fragment.  Equal → no diff.
     if (base != NULL && wt != NULL) {
@@ -299,13 +315,14 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
             b8 same = (HEXu8sDrainSome(sb, hx) == OK &&
                        sha1Eq(&wt_sha, &base_sha));
             FILEUnMap(wt_mapped);
-            if (same) return OK;
+            if (same) { u8aRewind(ABC_BASS, mark); return OK; }
         }
     }
 
     //  Real diff.  GRAFDiffWtFile handles the empty-base / empty-wt
     //  edge cases internally (deletion / addition both emit hunks).
     (void)GRAFDiffWtFile(path, c->base_h40, c->reporoot);
+    u8aRewind(ABC_BASS, mark);
     return OK;
 }
 

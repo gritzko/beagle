@@ -110,16 +110,41 @@ static ok64 bram_region(e32g edl, i32s work,
     if (nlen == 0) return DIFFu64AddEntry(edl, DIFF_DEL, olen);
     //  Recursive patience: re-anchor on lines that are unique within
     //  this region but weren't unique in the parent.  Bottoms out at
-    //  DIFFu64s when no within-region anchors exist.
+    //  DIFFu64s when no within-region anchors exist.  `BRAMu64s` is
+    //  BASS-neutral (it marks/rewinds its own scratch — see below), so
+    //  this plain recursion no longer piles per-level scratch on BASS
+    //  across the recursion tree (MEM-018).
     ok64 r = BRAMu64s(edl, work, old_region, new_region);
     if (r == OK) return OK;
     ok64 d = DIFFu64AddEntry(edl, DIFF_DEL, olen); if (d != OK) return d;
     return DIFFu64AddEntry(edl, DIFF_INS, nlen);
 }
 
-// --- Public API ------------------------------------------------------
+// --- Core (BASS scratch may be left dangling; the wrapper rewinds) ---
+//
+//  Forward decl so bram_region (above) can recurse through the
+//  BASS-neutral public wrapper, not into the core directly.
+static ok64 bram_core(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes);
 
+// --- Public API ------------------------------------------------------
+//
+//  MEM-018: every buffer bram_core carves (line/pair/anchor arrays, the
+//  inner anchor edl/work) is pure scratch — only the caller-owned `edl`
+//  carries results out.  bram_core is invoked by a plain (non-call())
+//  recursion from bram_region, so without an explicit rewind its scratch
+//  would accumulate `depth × region_size` on BASS until `a_carve`
+//  returns NOROOM and the diff silently truncates.  Mark BASS on entry
+//  and rewind on exit, making BRAMu64s BASS-neutral at every recursion
+//  level — the high-water stays bounded by a single level's footprint.
 ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
+    sane(edl != NULL && work != NULL);
+    u8 *mark = u8aMark(ABC_BASS);
+    ok64 r = bram_core(edl, work, old_hashes, new_hashes);
+    u8aRewind(ABC_BASS, mark);
+    return r;
+}
+
+static ok64 bram_core(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes) {
     sane(edl != NULL && work != NULL);
     u32 na = (u32)$len(old_hashes);
     u32 nb = (u32)$len(new_hashes);

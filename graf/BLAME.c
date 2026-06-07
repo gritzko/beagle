@@ -110,20 +110,27 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     ba->author[0] = 0;
     ba->date[0] = 0;
 
-    //  Non-sane'd helper called from inside a parent call() frame —
-    //  BASS unwind happens at that boundary.
-    Bu8 cbuf = {};
-    if (u8bAcquire(ABC_BASS, cbuf, 1UL << 20) != OK) return;
+    //  MEM-018: this helper is invoked once per folded commit by the
+    //  weave step callback, which GRAFFileWeave fires via a raw fn-ptr
+    //  (no call()/try() boundary).  A per-call `u8bAcquire(ABC_BASS, …,
+    //  1 MiB)` would therefore never rewind — 1 MiB/commit piles up on
+    //  BASS until `a_carve` returns NOROOM and authors silently go
+    //  blank.  Read the commit body into the long-lived, reset-per-use
+    //  `GRAF.obj_buf` singleton instead: it is free at the callback
+    //  point (GRAFBlobAtCommit / blame_descend_leaf have finished with
+    //  it before the step fires) and costs no BASS at all.
+    Bu8 *cbuf = &GRAF.obj_buf;
+    u8bReset(*cbuf);
     u8 obj_type = 0;
     if (KEEPGet(commit_hashlet,
-                DAG_H60_HEXLEN, cbuf, &obj_type) != OK ||
+                DAG_H60_HEXLEN, *cbuf, &obj_type) != OK ||
         obj_type != DOG_OBJ_COMMIT) {
         return;
     }
 
     //  Walk via the shared commit-body parser; pick name + ts from
     //  the author header.
-    a_dup(u8c, scan, u8bDataC(cbuf));
+    a_dup(u8c, scan, u8bDataC(*cbuf));
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;
