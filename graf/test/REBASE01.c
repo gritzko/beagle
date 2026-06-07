@@ -657,12 +657,215 @@ ok64 test_rebase_blob_merge(void) {
     done;
 }
 
+// --- (p) BASS-bounded long-chain rebase (MEM-008) -----------------------
+//
+//  Repro for MEM-008: GRAFRebase replayed the chain calling the heavy
+//  carving helpers (tm_merge_trees / tm_merge_blob / GRAFPatchId) by
+//  plain assignment, so ABC_BASS was never rewound between iterations.
+//  Each modify/modify leaf carves 4*REBASE_BLOB_MAX (=64MiB); over a
+//  chain the arena grows unbounded and a_carve eventually returns
+//  BNOROOM, aborting the rebase.
+//
+//  This test builds a chain of `CHAIN_N` commits that each modify the
+//  SAME file f.txt divergently from a base_new spine that also modified
+//  it — so every replay step is a real 3-way leaf merge (the 64MiB
+//  path).  At each COMMIT emit we sample the BASS dispense offset; with
+//  the bug it climbs ~tens of MiB per iteration (and at CHAIN_N=24 the
+//  whole rebase aborts with BNOROOM before completing).  With the fix,
+//  BASS is rewound per iteration so the offset stays flat and all
+//  commits replay cleanly.
+
+//  Long enough that pre-fix BASS (1GiB) overflows: ~66MiB/iter * 24 >> 1GiB.
+#define BASS_CHAIN_N 24
+
+typedef struct {
+    keep_pack *p;       //  emitted objects persisted here
+    u32 commits;
+    size_t first_off;   //  BASS dispense offset at first commit emit
+    size_t last_off;    //  ... at last commit emit
+    size_t max_off;     //  peak across all emits
+} bass_rec;
+
+static size_t bass_dispensed(void) {
+    //  IDLE head minus the arena base = bytes currently dispensed.
+    return (size_t)(ABC_BASS[2] - ABC_BASS[0]);
+}
+
+//  Mirror sniff/POST.c::post_rebase_emit_cb: persist every emitted
+//  object and checkpoint the pack on each commit so the next rebase
+//  iteration can resolve the prior step's tree/blob via KEEPGetExact.
+//  Also sample the BASS dispense offset at each commit emit — this is
+//  what climbs unbounded with the MEM-008 bug.
+static ok64 bass_cb(void *ctx, u8 type, sha1cp sha, u8csc body) {
+    (void)sha;
+    bass_rec *r = (bass_rec *)ctx;
+    sha1 fed = {};
+    ok64 fo = KEEPPackFeed(r->p, type, body, 0, &fed);
+    if (fo != OK) return fo;
+    if (type == DOG_OBJ_COMMIT) {
+        size_t off = bass_dispensed();
+        if (r->commits == 0) r->first_off = off;
+        r->last_off = off;
+        if (off > r->max_off) r->max_off = off;
+        r->commits++;
+        //  Checkpoint so the just-emitted objects index for the next
+        //  iteration's KEEPGetExact lookups.
+        ok64 cl = KEEPPackClose(r->p);
+        if (cl != OK) return cl;
+        zero(*r->p);
+        ok64 op = KEEPPackOpen(r->p);
+        if (op != OK) return op;
+        r->p->strict_order = NO;
+    }
+    return OK;
+}
+
+//  Feed a tree carrying a single "100644 f.txt" leaf whose blob is the
+//  joined `lines` (each already including its trailing '\n').
+static ok64 feed_ftxt_tree(keep_pack *p, u8csc content,
+                           sha1 *blob_out, sha1 *tree_out) {
+    sane(p && blob_out && tree_out);
+    call(KEEPPackFeed, p, DOG_OBJ_BLOB, content, 0, blob_out);
+    a_pad(u8, tb, 256);
+    a_cstr(mn, "100644 f.txt");
+    call(u8bFeed, tb, mn);
+    u8bFeed1(tb, 0);
+    a_rawc(ss, *blob_out);
+    call(u8bFeed, tb, ss);
+    a_dup(u8c, tc, u8bData(tb));
+    call(KEEPPackFeed, p, DOG_OBJ_TREE, tc, 0, tree_out);
+    done;
+}
+
+ok64 test_rebase_bass_bounded(void) {
+    sane(1);
+    call(setup_repo);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    //  Base file: a block of distinct lines so chain edits to the tail
+    //  and the base_new edit to the head never overlap → clean 3-way
+    //  merges (no conflict), but a real modify/modify leaf each step.
+    Bu8 buf = {};
+    call(u8bMap, buf, 1UL << 16);
+    a_cstr(base_line, "line 00 base\n");
+    for (u32 i = 0; i < 40; i++) {
+        char ln[32];
+        int n = snprintf(ln, sizeof(ln), "line %02u base\n", i);
+        u8cs s = {(u8cp)ln, (u8cp)ln + n};
+        u8bFeed(buf, s);
+    }
+    (void)base_line;
+    a_dup(u8c, base_content, u8bData(buf));
+
+    sha1 b0 = {}, t0 = {};
+    call(feed_ftxt_tree, &p, base_content, &b0, &t0);
+    sha1 base_old = {};
+    call(feed_commit, &p, &t0, NULL, "alice", 100, "v0", &base_old);
+
+    //  base_new spine: modify the FIRST line only.
+    u8bReset(buf);
+    {
+        a_cstr(hl, "line 00 HEAD\n");
+        u8bFeed(buf, hl);
+        for (u32 i = 1; i < 40; i++) {
+            char ln[32];
+            int n = snprintf(ln, sizeof(ln), "line %02u base\n", i);
+            u8cs s = {(u8cp)ln, (u8cp)ln + n};
+            u8bFeed(buf, s);
+        }
+    }
+    a_dup(u8c, bn_content, u8bData(buf));
+    sha1 b_bn = {}, t_bn = {};
+    call(feed_ftxt_tree, &p, bn_content, &b_bn, &t_bn);
+    sha1 base_new = {};
+    call(feed_commit, &p, &t_bn, &base_old, "alice", 200, "head edit", &base_new);
+
+    //  Chain off base_old: commit i modifies the LAST line uniquely.
+    //  Each is a real modify/modify vs base_new (different region).
+    sha1 chain_tip = base_old;
+    long ts = 300;
+    for (u32 c = 0; c < BASS_CHAIN_N; c++) {
+        u8bReset(buf);
+        for (u32 i = 0; i < 39; i++) {
+            char ln[32];
+            int n = snprintf(ln, sizeof(ln), "line %02u base\n", i);
+            u8cs s = {(u8cp)ln, (u8cp)ln + n};
+            u8bFeed(buf, s);
+        }
+        char last[40];
+        int n = snprintf(last, sizeof(last), "line 39 chain step %02u\n", c);
+        u8cs ls = {(u8cp)last, (u8cp)last + n};
+        u8bFeed(buf, ls);
+        a_dup(u8c, cc, u8bData(buf));
+        sha1 bc = {}, tc = {};
+        call(feed_ftxt_tree, &p, cc, &bc, &tc);
+        sha1 cm = {};
+        char msg[32];
+        snprintf(msg, sizeof(msg), "step %02u", c);
+        call(feed_commit, &p, &tc, &chain_tip, "alice", ts++, msg, &cm);
+        chain_tip = cm;
+    }
+    u8bUnMap(buf);
+
+    //  Close the chain-building pack so its objects are indexed, then
+    //  open a fresh pack the rebase's emit cb feeds into.
+    call(KEEPPackClose, &p);
+    keep_pack rp = {};
+    call(KEEPPackOpen, &rp);
+    rp.strict_order = NO;
+
+    //  Replay the whole chain onto base_new.  Pre-fix: each
+    //  modify/modify leaf leaks 64MiB of BASS scratch, so the dispense
+    //  offset climbs ~tens of MiB per commit and (at BASS_CHAIN_N=24)
+    //  a_carve eventually returns BNOROOM, aborting mid-chain.
+    //  Post-fix: OK + every commit emitted + a flat BASS offset.
+    bass_rec r = {.p = &rp};
+    ok64 o = GRAFRebase(&base_old, &base_new, &chain_tip, bass_cb, &r);
+    KEEPPackClose(&rp);
+
+    fprintf(stderr,
+            "  bass: ret=0x%lx commits=%u first_off=%zu last_off=%zu max=%zu\n",
+            (unsigned long)o, r.commits, r.first_off, r.last_off, r.max_off);
+
+    if (o != OK) {
+        fprintf(stderr,
+                "  bass (p)FAIL: rebase aborted (BASS leak → NOROOM) "
+                "after %u/%u commits\n", r.commits, BASS_CHAIN_N);
+        fail(TESTFAIL);
+    }
+    if (r.commits != BASS_CHAIN_N) {
+        fprintf(stderr, "  bass (p)FAIL: %u/%u commits replayed\n",
+                r.commits, BASS_CHAIN_N);
+        fail(TESTFAIL);
+    }
+    //  Bounded growth: across the whole chain the per-iteration BASS
+    //  footprint must not creep.  With the bug the last emit sits tens
+    //  of MiB above the first; with the fix it is essentially constant.
+    //  Allow a generous 2MiB slack for benign one-time allocations.
+    size_t spread = (r.last_off > r.first_off) ? r.last_off - r.first_off : 0;
+    if (spread > (2UL << 20)) {
+        fprintf(stderr,
+                "  bass (p)FAIL: BASS grew %zu bytes across %u iterations "
+                "(unbounded per-iteration scratch)\n", spread, r.commits);
+        fail(TESTFAIL);
+    }
+
+    teardown_repo();
+    fprintf(stderr, "  rebase_bass_bounded (p)PASS  (spread=%zu bytes)\n",
+            spread);
+    done;
+}
+
 ok64 maintest(void) {
     sane(1);
     call(test_patchid);
     call(test_rebase);
     call(test_rebase_file_weave);
     call(test_rebase_blob_merge);
+    call(test_rebase_bass_bounded);
     done;
 }
 

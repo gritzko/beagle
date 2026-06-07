@@ -528,8 +528,12 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             //  through the recursive function, though for now we just
             //  treat oe/te disagreement as a conflict if base absent).
             sha1 bsub = be ? be->sha : zero;
-            ret = tm_merge_trees(&final, &bsub, &o_sha, &t_sha,
-                                 childpath, cb, ctx, had_conflict);
+            //  Snapshot-restore BASS around the recursion: the subtree
+            //  merge carves its own multi-MiB scratch which must not
+            //  pile up on the arena across sibling entries.
+            try(tm_merge_trees, &final, &bsub, &o_sha, &t_sha,
+                childpath, cb, ctx, had_conflict);
+            ret = __;
             if (ret != OK) goto cleanup;
             if (*had_conflict) { ret = GRAFCNFL; goto cleanup; }
         } else if (oe && te) {
@@ -543,10 +547,14 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
             } else if (kind == WALK_KIND_DIR) {
                 ret = GRAFCNFL; *had_conflict = YES; goto cleanup;
             } else {
-                //  Both diverged from base — leaf 3-way merge.
+                //  Both diverged from base — leaf 3-way merge.  Wrap in
+                //  try() so the 4*REBASE_BLOB_MAX (=64MiB) of weave
+                //  scratch it carves is rewound off BASS before the next
+                //  leaf, not leaked per modify/modify entry.
                 b8 cf = NO;
-                ret = tm_merge_blob(&final, &b_sha, &o_sha, &t_sha,
-                                    childpath, cb, ctx, &cf);
+                try(tm_merge_blob, &final, &b_sha, &o_sha, &t_sha,
+                    childpath, cb, ctx, &cf);
+                ret = __;
                 if (ret != OK) goto cleanup;
                 if (cf) { *had_conflict = YES; ret = GRAFCNFL; goto cleanup; }
             }
@@ -636,7 +644,13 @@ static ok64 rebase_collect_pids(sha1cp base_new, u64 *pids, u32 *n,
         ok64 o = KEEPGetExact(&cur, cbuf, &ot);
         if (o != OK || ot != DOG_OBJ_COMMIT) break;
         a_dup(u8c, cbody, u8bDataC(cbuf));
+        //  GRAFPatchId leaks ~2.7MiB of scratch per call (u64 return →
+        //  no call()/try() rewind); over ≤8192 ancestors that exhausts
+        //  BASS.  Bracket with mark/rewind; the hoisted cbuf sits below
+        //  the mark and survives (MEM-008).
+        u8 *pid_mark = u8aMark(ABC_BASS);
         u64 pid = GRAFPatchId(cbody);
+        u8aRewind(ABC_BASS, pid_mark);
         if (cnt < maxn) pids[cnt++] = pid;
         sha1 tree_u = {}, parent = {};
         b8 has_p = NO;
@@ -787,8 +801,13 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
             || ot != DOG_OBJ_COMMIT) { ret = GRAFFAIL; break; }
         a_dup(u8c, cbody, u8bDataC(cbuf));
 
-        //  Patch-id dedup.
+        //  Patch-id dedup.  GRAFPatchId returns u64 (not ok64) so it
+        //  can't ride a call()/try() BASS snapshot — bracket its ~1.7MiB
+        //  of leaf/object scratch with an explicit mark/rewind so it
+        //  doesn't accumulate per chain commit (MEM-008).
+        u8 *pid_mark = u8aMark(ABC_BASS);
         u64 pid = GRAFPatchId(cbody);
+        u8aRewind(ABC_BASS, pid_mark);
         if (rebase_pid_seen(pids, npids, pid)) {
             //  Skip this commit silently; head unchanged.
             continue;
@@ -844,12 +863,18 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
         }
 
         //  3-way tree merge.  Root call: empty dir_path (the
-        //  recursion appends each entry name as it descends).
+        //  recursion appends each entry name as it descends).  Wrap in
+        //  try() so the merge's tree/leaf scratch (up to tens of MiB per
+        //  commit) is rewound off BASS each iteration instead of piling
+        //  up over the whole chain → NOROOM (MEM-008).  The hoisted
+        //  cbuf/pbuf/hbuf/cnew/head_body_cache carves sit BELOW this
+        //  snapshot and survive the rewind.
         sha1 new_tree = {};
         b8 conflict = NO;
         u8cs root_path = {};
-        ret = tm_merge_trees(&new_tree, &tree_p, &tree_h, &tree_c,
-                             root_path, cb, ctx, &conflict);
+        try(tm_merge_trees, &new_tree, &tree_p, &tree_h, &tree_c,
+            root_path, cb, ctx, &conflict);
+        ret = __;
         if (ret == GRAFCNFL || conflict) { ret = GRAFCNFL; break; }
         if (ret != OK) break;
 
