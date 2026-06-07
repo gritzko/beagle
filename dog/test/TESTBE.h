@@ -28,14 +28,36 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "abc/01.h"
 
 //  Create a fresh hermetic scratch dir under /tmp (clean `.be`-free
 //  ancestry) and copy its path into `buf`.  Returns OK on success.
+//
+//  The harness OWNS the documented invariant that `/tmp` carries no
+//  `.be` in the ancestry of its scratch dirs (see file header): the C
+//  tests chdir into the scratch and let `HOMEOpen` walk UP, which must
+//  hit no ancestor `.be` (else discovery escapes into the stray store —
+//  the bootstrap lands in the wrong place and escaping rw ops corrupt
+//  it).  A stray `/tmp/.be` (a leaked bare bootstrap) silently breaks
+//  HOMEtest/SNIFFnorepo and pollutes whatever sits there.  Enforce the
+//  invariant: if `/tmp/.be` exists, remove it loudly before handing back
+//  a scratch dir.  `/tmp` is volatile and no legitimate store lives at
+//  `/tmp/.be`, so this is harness hygiene, not data loss.
+static inline void TESTBEShieldTmp(void) {
+    struct stat st;
+    if (stat("/tmp/.be", &st) != 0) return;   //  clean — nothing to do
+    fprintf(stderr,
+        "TESTBE: removing stray /tmp/.be (violates the .be-free /tmp "
+        "test invariant — leaked bare bootstrap)\n");
+    if (system("rm -rf /tmp/.be") != 0) { /* best-effort */ }
+}
+
 static inline ok64 TESTBEmkdtemp(char *buf, size_t cap) {
     if (buf == NULL || cap < sizeof("/tmp/be-test-XXXXXX")) return FAIL;
+    TESTBEShieldTmp();
     snprintf(buf, cap, "/tmp/be-test-XXXXXX");
     return mkdtemp(buf) != NULL ? OK : FAIL;
 }

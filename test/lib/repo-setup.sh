@@ -57,8 +57,29 @@ rs_repo_base() {
 
 # rs_norepo_base — echo (creating) a /tmp-rooted scratch base whose
 # ancestor chain has no `.be`, for genuine no-store tests.
+#
+# The no-store invariant ("no `.be` in any ancestor up to `/`") is what
+# lets bare `sniff`/`be` refuse cleanly instead of escaping to a stray
+# store and enumerating it (a hang).  A leaked bare bootstrap can drop a
+# stray `.be` at a /tmp-level ancestor (`/tmp/.be`, `$TMPDIR/.be`) and
+# silently break it — and escaping rw ops then corrupt that store.
+# Enforce the invariant: strip any `.be` sitting on the scratch's
+# ancestor chain *within /tmp*.  Never touches `$HOME`/`/` (guarded), so
+# it can only ever remove volatile /tmp scratch, never a real store.
 rs_norepo_base() {
-    printf '%s\n' "${TMPDIR:-/tmp}/be-tests-norepo/${TEST_ID:-norepo}/$$"
+    _rs_nr_base="${TMPDIR:-/tmp}/be-tests-norepo/${TEST_ID:-norepo}/$$"
+    _rs_nr_d="$_rs_nr_base"
+    while [ "$_rs_nr_d" != "/" ] && [ "$_rs_nr_d" != "$HOME" ]; do
+        case "$_rs_nr_d" in
+            /tmp|/tmp/*)
+                [ -e "$_rs_nr_d/.be" ] && {
+                    echo "  rs_norepo: removing stray $_rs_nr_d/.be (.be-free /tmp invariant)" >&2
+                    rm -rf "$_rs_nr_d/.be"
+                } ;;
+        esac
+        _rs_nr_d=$(dirname "$_rs_nr_d")
+    done
+    printf '%s\n' "$_rs_nr_base"
 }
 
 # rs_firewall — drop an empty `.be` FILE at the REPO scratch base (the
