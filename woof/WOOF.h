@@ -216,4 +216,12 @@ void WOOFConnCarve(conn *c);
 //  parse path verbatim, minus the worker fork.
 woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err);
 
+//  Serve `<WOOF.h->root>/.be/static/<rel>` into c->out.  Exposed so the
+//  test/fuzz harness can drive it directly (a too-small out ring makes
+//  the body feed return BNOROOM) and assert the mmap+fd are released on
+//  every exit path.  OK on hit; WOOFBADREQ on a dotfile / bad segment;
+//  WOOFNOROUTE when the file isn't there; BNOROOM when c->out can't hold
+//  envelope+body.
+ok64 WOOFServeStatic(conn *c, u8cs rel);
+
 #endif

@@ -288,8 +288,10 @@ static ok64 static_envelope(Bu8 out, char const *mt, size_t content_len) {
 //  flips state to WOOF_DRAIN.  No worker fork, no pipe registration.
 //
 //  Returns OK on hit; WOOFBADREQ on a dotfile / bad segment;
-//  WOOFNOROUTE when the file isn't there.
-static ok64 serve_static(conn *c, u8cs rel) {
+//  WOOFNOROUTE when the file isn't there; BNOROOM when c->out lacks
+//  room for the envelope+body (the mapping is still released).
+//  Exported (WOOF.h) so test/fuzz drives the exact map/unmap path.
+ok64 WOOFServeStatic(conn *c, u8cs rel) {
     sane(c);
     call(static_segs_ok, rel);
 
@@ -318,9 +320,15 @@ static ok64 serve_static(conn *c, u8cs rel) {
     u8cs name = {};
     $eachseg(seg, rel) { $mv(name, seg); }
 
+    //  From here on `mapped` owns a VMA + fd: every exit MUST unmap.
+    //  `static_envelope`/`u8bFeed` can return BNOROOM (ring idle <
+    //  body); a plain `call()` would `return` past FILEUnMap, leaking
+    //  one file-sized mapping + fd per request (MEM-030).  `callsafe`
+    //  runs the unmap on the failure arm before propagating.
     Bu8 out = { c->out[0], c->out[1], c->out[2], c->out[3] };
-    call(static_envelope, out, mime_for(name), blen);
-    call(u8bFeed, out, body);
+    callsafe(static_envelope(out, mime_for(name), blen),
+             (void)FILEUnMap(mapped));
+    callsafe(u8bFeed(out, body), (void)FILEUnMap(mapped));
     c->out[2] = out[2];   //  commit advanced idle pointer
 
     (void)FILEUnMap(mapped);
@@ -438,7 +446,7 @@ woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err) {
         u8cs first = {};
         a$str(s_static, "static");
         if (PATHu8sDrainNE(cur, first) == OK && $eq(first, s_static)) {
-            ok64 sr = serve_static(c, cur);
+            ok64 sr = WOOFServeStatic(c, cur);
             if (sr == OK) return WOOF_DISP_STATIC;
             *err = (sr == WOOFBADREQ) ? WOOFBADREQ : WOOFNOROUTE;
             return WOOF_DISP_ERROR;

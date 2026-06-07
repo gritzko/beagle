@@ -14,3 +14,11 @@ target_link_options(WOOFHTTPtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WOOFHTTPtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WOOFHTTPtest wooflib dog abc)
 add_test(NAME WOOFHTTPtest COMMAND WOOFHTTPtest)
+
+#  MEM-030: WOOFServeStatic must not leak the asset mmap (VMA + fd) when
+#  the conn out-ring is too small for envelope+body (BNOROOM path).
+add_executable(WOOFStatictest STATIC.c)
+target_link_options(WOOFStatictest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WOOFStatictest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WOOFStatictest wooflib dog abc)
+add_test(NAME WOOFStatictest COMMAND WOOFStatictest)
