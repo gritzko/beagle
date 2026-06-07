@@ -44,7 +44,14 @@ void LESSArenaCleanup(void) {
 //  descriptors).  Caller must not use them after the call —
 //  buffers are single-owner; LESS will unmap them at cleanup.
 void LESSDefer(u8bp mapped, u32bp toks) {
-    if (less_nmaps >= LESS_MAX_MAPS) return;
+    if (less_nmaps >= LESS_MAX_MAPS) {
+        // Table full: cannot record the descriptors, so cleanup could
+        // never reclaim them — unmap here instead of leaking. `toks`
+        // may be an empty (Bu32){} descriptor from the grep callbacks.
+        if (mapped != NULL) FILEUnMap(mapped);
+        if (toks[0] != NULL) u32bUnMap(toks);
+        return;
+    }
     less_maps[less_nmaps] = mapped;
     for (int i = 0; i < 4; i++) less_toks[less_nmaps][i] = toks[i];
     less_nmaps++;

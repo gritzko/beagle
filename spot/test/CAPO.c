@@ -387,6 +387,57 @@ ok64 CAPOtestKnownExt() {
     done;
 }
 
+// --- MEM-029: LESSDefer must not leak mmap+tokens when the map table
+//   is full.  Pre-fill less_nmaps to the cap, then hand LESSDefer a real
+//   whole-file mmap plus a token buffer.  On the table-full path it must
+//   reclaim (unmap, hence zero) both descriptors instead of silently
+//   dropping them.  Under ASan the leaked mmap stays mapped; the
+//   deterministic, build-independent check is that the descriptors are
+//   zeroed (FILEUnMap/u32bUnMap clear all four pointers on success).
+ok64 CAPOtestDeferFull() {
+    sane(1);
+    char tmppath[] = "/tmp/spot_defer_full_XXXXXX";
+    int  fd        = mkstemp(tmppath);
+    test(fd >= 0, FAILSANITY);
+    const char *src = "void foo() {\n    int x = 1;\n}\n";
+    test(write(fd, src, strlen(src)) == (ssize_t)strlen(src), FAILSANITY);
+    close(fd);
+
+    call(LESSArenaInit);
+
+    // Map the whole file and tokenize it — exactly what the file
+    // callbacks hand to LESSDefer.
+    u8bp mapped = NULL;
+    a_pad(u8, pathbuf, 256);
+    u8cs ps = {(u8cp)tmppath, (u8cp)tmppath + strlen(tmppath)};
+    call(u8bFeed, pathbuf, ps);
+    call(PATHu8bTerm, pathbuf);
+    call(FILEMapRO, &mapped, $path(pathbuf));
+    a_dup(u8c, source, u8bDataC(mapped));
+    u8cs ext  = $u8str(".c");
+    Bu32 toks = {};
+    call(u32bMap, toks, $len(source) + 1);
+    call(SPOTTokenize, toks, source, ext);
+
+    want(mapped[0] != NULL);
+    want(toks[0] != NULL);
+
+    // Simulate a scan that has already filled the deferral table.
+    less_nmaps = LESS_MAX_MAPS;
+
+    LESSDefer(mapped, toks);
+
+    // Table was full: the descriptors must have been reclaimed, not
+    // stored (count unchanged) and not dropped (pointers cleared).
+    testeq(less_nmaps, (u32)LESS_MAX_MAPS);
+    want(mapped[0] == NULL);
+    want(toks[0] == NULL);
+
+    LESSArenaCleanup();
+    unlink(tmppath);
+    done;
+}
+
 ok64 CAPOtest() {
     sane(1);
     call(CAPO0);
@@ -401,6 +452,7 @@ ok64 CAPOtest() {
     call(CAPObasenameCollision);
     call(CAPOtestHunkEmit);
     call(CAPOtestKnownExt);
+    call(CAPOtestDeferFull);
     done;
 }
 
