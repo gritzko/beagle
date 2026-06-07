@@ -189,6 +189,50 @@ ok64 HUNKu8sFeed(u8s into, hunk const *hk) {
     done;
 }
 
+// Copy a raw 'K' (TOK) record's bytes into aligned BASS scratch and
+// assign the typed slice to `hk->toks`.  The wire bytes arrive at an
+// arbitrary byte boundary (the TLV header offset), so they must NOT be
+// aliased as `tok32c *` directly — that is an unaligned load.  We read
+// each token's 4 LE bytes by hand and feed it into an aligned tok32
+// gauge, then seal it.  Rejects a `'K'` length that isn't a whole
+// multiple of sizeof(tok32) (HUNKTOKLEN) — a partial tail can't form a
+// token and silently dropping it (the old behaviour) hides corruption.
+static ok64 hunk_drain_toks(u8cs val, hunk *hk) {
+    sane(1);
+    size_t blen = (size_t)$len(val);
+    if (blen % sizeof(tok32) != 0) fail(HUNKTOKLEN);
+    size_t n = blen / sizeof(tok32);
+    //  Gauge feeds advance BASS in place — they must NOT be wrapped in
+    //  call() (which snapshots+rewinds BASS and would undo the feed, see
+    //  ABC.md §BASS).  Feed directly and propagate the rc by hand.
+    a_lign(tok32, g);
+    a_dup(u8c, src, val);
+    for (size_t i = 0; i < n; i++) {
+        u32 v = 0;
+        for (int b = 0; b < 4; b++)
+            v |= ((u32)u8csAt(src, (size_t)b)) << (8 * b);
+        u8csUsed(src, 4);
+        __ = tok32gFeed1(g, (tok32)v);
+        if (__ != OK) return __;
+    }
+    a_cquire(tok32, toks);
+    $mv(hk->toks, toks);
+    done;
+}
+
+// Every renderer indexes `hk->text` by `tok32Offset(...)`; an offset
+// past the text length drives an OOB read (MEM-005).  Token offsets are
+// monotonic end-offsets, so the last one bounds them all — but check
+// each so a non-monotonic / corrupt stream can't slip a large value in
+// behind a small final token.
+static b8 hunk_toks_valid(hunk const *hk) {
+    u32 tlen = (u32)$len(hk->text);
+    int n = (int)$len(hk->toks);
+    for (int i = 0; i < n; i++)
+        if (tok32Offset(hk->toks[0][i]) > tlen) return NO;
+    return YES;
+}
+
 ok64 HUNKu8sDrain(u8cs from, hunk *hk) {
     sane($ok(from) && hk != NULL);
     u8 t = 0;
@@ -214,13 +258,23 @@ ok64 HUNKu8sDrain(u8cs from, hunk *hk) {
             $mv(hk->text, val);
             break;
         case HUNK_TLV_TOK:
-            hk->toks[0] = (tok32c *)val[0];
-            hk->toks[1] = (tok32c *)val[1];
+            //  Validated + aligned copy into BASS scratch; never alias
+            //  raw wire bytes.  Invoked directly (not via call()) so the
+            //  call()-boundary BASS rewind can't reclaim the carved toks
+            //  before the caller renders them — same lifetime as the
+            //  zero-copy URI/text slices above (see ABC.md §BASS).
+            __ = hunk_drain_toks(val, hk);
+            if (__ != OK) return __;
             break;
         default:
             break;
         }
     }
+    //  Cross-record gate: TXT and TOK are drained independently, so the
+    //  text length is only known once the whole body is consumed.  Bound
+    //  every token offset to it here so all renderers inherit the
+    //  invariant `tok32Offset(t) <= $len(hk->text)`.
+    if (!hunk_toks_valid(hk)) fail(HUNKTOKOOB);
     done;
 }
 
@@ -282,6 +336,16 @@ ok64 HUNKu8sRelay(u8s into, u8csc prefix, u8csc child_tlv) {
         call(HUNKu8sFeedOut, into, &hk);
     }
     done;
+}
+
+// Belt-and-suspenders: clamp a (drain-validated) token offset to the
+// text length before using it as a byte index.  HUNKu8sDrain already
+// rejects any hunk with `tok32Offset > $len(text)` (HUNKTOKOOB), so in
+// a correctly-drained hunk this is a no-op — but a renderer reached on
+// a hunk built by some other path stays memory-safe regardless.
+static u32 hunk_clamp(hunk const *hk, u32 off) {
+    u32 tlen = (u32)$len(hk->text);
+    return off > tlen ? tlen : off;
 }
 
 // Does any token have a non-eq side?
@@ -361,7 +425,7 @@ static u8 hunk_line_sides(hunk const *hk, u32 lo, u32 hi) {
     int n = (int)$len(hk->toks);
     u32 prev = 0;
     for (int i = 0; i < n; i++) {
-        u32 end = tok32Offset(hk->toks[0][i]);
+        u32 end = hunk_clamp(hk, tok32Offset(hk->toks[0][i]));
         if (end > lo && prev < hi
             && tok32Tag(hk->toks[0][i]) != 'U') {
             u8 side = tok32Side(hk->toks[0][i]);
@@ -384,7 +448,7 @@ static ok64 hunk_feed_visible(u8s into, hunk const *hk, u32 lo, u32 hi) {
     u32 prev = 0;
     u32 emit_lo = lo;
     for (int i = 0; i < n; i++) {
-        u32 end = tok32Offset(hk->toks[0][i]);
+        u32 end = hunk_clamp(hk, tok32Offset(hk->toks[0][i]));
         u32 tlo = prev;
         u32 thi = end;
         prev = end;
@@ -514,7 +578,7 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
             ansi64 prev = ANSI_DEFAULT;
             u32 lo = 0;
             for (int i = 0; i < n_toks; i++) {
-                u32 hi = tok32Offset(hk->toks[0][i]);
+                u32 hi = hunk_clamp(hk, tok32Offset(hk->toks[0][i]));
                 u8 tag = tok32Tag(hk->toks[0][i]);
                 if (tag == 'U') { lo = hi; continue; }   // invisible
                 ansi64 want = THEMEAt(tag);
@@ -720,7 +784,7 @@ ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk) {
             //  in the consumer).
             u32 lo = 0;
             for (int i = 0; i < n_toks; i++) {
-                u32 hi  = tok32Offset(hk->toks[0][i]);
+                u32 hi  = hunk_clamp(hk, tok32Offset(hk->toks[0][i]));
                 u8  tag = tok32Tag   (hk->toks[0][i]);
                 u8  side= tok32Side  (hk->toks[0][i]);
                 if (tag == 'U') { lo = hi; continue; }
@@ -1022,7 +1086,7 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
 
     u32 prev = 0;
     for (int i = 0; i < n_toks; i++) {
-        u32 span_hi = tok32Offset(hk->toks[0][i]);
+        u32 span_hi = hunk_clamp(hk, tok32Offset(hk->toks[0][i]));
         u8  side    = tok32Side(hk->toks[0][i]);
         u8  tag     = tok32Tag (hk->toks[0][i]);
         if (tag == 'U') { prev = span_hi; continue; }

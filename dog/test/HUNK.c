@@ -295,11 +295,171 @@ static ok64 HUNKTestRedReserved() {
     done;
 }
 
+// =====================================================================
+// MEM-005 — drain-time validation of untrusted token records.
+//
+// `tok32Offset` is a 24-bit value taken verbatim from the wire; every
+// renderer used to treat it as a byte index into `hk->text` with no
+// cross-check against the (independently drained) TXT record length.  A
+// relayed/received hunk whose largest offset exceeds the text length
+// drove `a$part` / pointer-walk reads past `hk->text` (ASan heap OOB).
+// Separately the 'K' value bytes were aliased directly as `tok32c *`
+// (unaligned load + silent non-4-multiple-tail drop).  Both must be
+// caught once, at drain time, so every renderer inherits a safe hunk.
+// =====================================================================
+
+//  Serialize one hunk to a stable TLV buffer, drain it back, then run
+//  every renderer over the drained hunk.  Returns the drain rc; the
+//  renderers run only when the drain accepted the hunk (a rejected
+//  hunk's slices are not safe to render — that is the whole point).
+static ok64 hunk_roundtrip_render(hunk const *hk, ok64 *drain_rc) {
+    sane(u8sOK(NULL) || 1);
+    a_pad(u8, wire, 1UL << 16);
+    call(HUNKu8sFeed, wire_idle, hk);
+    a_dup(u8c, scan, u8bData(wire));
+
+    hunk got = {};
+    ok64 dr = HUNKu8sDrain(scan, &got);
+    *drain_rc = dr;
+    if (dr != OK) done;   // rejected cleanly — nothing to render
+
+    a_pad(u8, ob, 1UL << 16);
+    call(HUNKu8sFeedText,  ob_idle, &got);
+    a_pad(u8, oc, 1UL << 16);
+    call(HUNKu8sFeedColor, oc_idle, &got);
+    a_pad(u8, oh, 1UL << 16);
+    call(HUNKu8sFeedHtml,  oh_idle, &got);
+    done;
+}
+
+//  Build a raw hunk 'H' container with a TXT record of `tlen` bytes and
+//  a 'K' (TOK) record of exactly `klen` raw bytes (caller controls the
+//  bytes so we can force a non-4-multiple / misaligned tail), then run
+//  the same drain+render path.  This reaches the aliasing hazard that a
+//  well-typed `hunk` can't express.
+static ok64 hunk_raw_render(u8csc text, u8csc kbytes, ok64 *drain_rc) {
+    sane(1);
+    a_pad(u8, wire, 1UL << 16);
+    u8s inner = {};
+    call(TLVu8sStart, wire_idle, inner, HUNK_TLV);
+    a_cstr(uri, "cat:sample.c");
+    call(TLVu8sFeed, inner, HUNK_TLV_URI, uri);
+    if (!$empty(text)) call(TLVu8sFeed, inner, HUNK_TLV_TXT, text);
+    if (!$empty(kbytes)) call(TLVu8sFeed, inner, HUNK_TLV_TOK, kbytes);
+    call(TLVu8sEnd, wire_idle, inner, HUNK_TLV);
+
+    a_dup(u8c, scan, u8bData(wire));
+    hunk got = {};
+    ok64 dr = HUNKu8sDrain(scan, &got);
+    *drain_rc = dr;
+    if (dr != OK) done;
+
+    a_pad(u8, ob, 1UL << 16);
+    call(HUNKu8sFeedText,  ob_idle, &got);
+    a_pad(u8, oc, 1UL << 16);
+    call(HUNKu8sFeedColor, oc_idle, &got);
+    a_pad(u8, oh, 1UL << 16);
+    call(HUNKu8sFeedHtml,  oh_idle, &got);
+    done;
+}
+
+static ok64 HUNKTestDrainBounds() {
+    sane(1);
+    const char *src = "int answer = 42;\n";   // 17 bytes
+    u32 tlen = (u32)strlen(src);
+
+    //  (a) Largest tok32Offset == tlen exactly: legal upper bound, must
+    //  drain OK and render without OOB.
+    {
+        HUNK_SLICE(text, src);
+        tok32 toks_arr[] = {tok32Pack('S', tlen)};
+        tok32cs toks = {toks_arr, toks_arr + 1};
+        HUNK_SLICE(uri, "cat:sample.c");
+        hunk hk = {.uri  = {uri[0], uri[1]},
+                   .text = {text[0], text[1]},
+                   .toks = {toks[0], toks[1]}};
+        ok64 dr = 0;
+        call(hunk_roundtrip_render, &hk, &dr);
+        if (dr != OK) {
+            fprintf(stderr, "FAIL bounds(a): in-range offset rejected: %s\n",
+                    ok64str(dr));
+            fail(TESTFAIL);
+        }
+    }
+
+    //  (b) tok32Offset > tlen: out-of-bounds index.  Pre-fix this drove
+    //  a heap OOB read in every renderer; post-fix the drain must reject
+    //  it (HUNKTOKOOB) and never hand a poisoned hunk to a renderer.
+    {
+        HUNK_SLICE(text, src);
+        tok32 toks_arr[] = {tok32Pack('S', tlen + 64)};   // way past text
+        tok32cs toks = {toks_arr, toks_arr + 1};
+        HUNK_SLICE(uri, "cat:sample.c");
+        hunk hk = {.uri  = {uri[0], uri[1]},
+                   .text = {text[0], text[1]},
+                   .toks = {toks[0], toks[1]}};
+        ok64 dr = 0;
+        call(hunk_roundtrip_render, &hk, &dr);
+        if (dr != HUNKTOKOOB) {
+            fprintf(stderr, "FAIL bounds(b): OOB offset not rejected: %s\n",
+                    ok64str(dr));
+            fail(TESTFAIL);
+        }
+    }
+
+    //  (c) 'K' record length not a multiple of sizeof(tok32): a tail of
+    //  raw bytes that can't form a whole token.  Pre-fix the alias
+    //  `(tok32c*)val[1]` silently dropped the tail (and the cast was an
+    //  unaligned load); post-fix the drain must reject it (HUNKTOKLEN).
+    {
+        HUNK_SLICE(text, src);
+        //  6 bytes = 1.5 tok32 — non-4-multiple length.
+        static const u8 kbad[6] = {0x11, 0x00, 0x00, 0x06, 0xAB, 0xCD};
+        u8csc kb = {kbad, kbad + sizeof(kbad)};
+        HUNK_SLICE(tx, src);
+        u8csc txt = {tx[0], tx[1]};
+        (void)tlen;
+        ok64 dr = 0;
+        call(hunk_raw_render, txt, kb, &dr);
+        if (dr != HUNKTOKLEN) {
+            fprintf(stderr, "FAIL bounds(c): bad-length 'K' not rejected: %s\n",
+                    ok64str(dr));
+            fail(TESTFAIL);
+        }
+    }
+
+    //  (d) Misaligned-but-valid-length 'K': 4 bytes whose encoded offset
+    //  exceeds tlen.  The TLV header places the value at an arbitrary
+    //  (odd) byte boundary, so aliasing it as `tok32c*` is an unaligned
+    //  load; with the offset OOB the drain must reject (HUNKTOKOOB)
+    //  after an *aligned* copy, never a raw aliased read.
+    {
+        HUNK_SLICE(text, src);
+        //  one tok32 LE: tag 'S', offset = tlen+100 (0x6d = 109) → OOB.
+        u32 packed = tok32Pack('S', tlen + 100);
+        u8 kbuf[4] = {(u8)(packed), (u8)(packed >> 8),
+                      (u8)(packed >> 16), (u8)(packed >> 24)};
+        u8csc kb = {kbuf, kbuf + 4};
+        HUNK_SLICE(tx, src);
+        u8csc txt = {tx[0], tx[1]};
+        ok64 dr = 0;
+        call(hunk_raw_render, txt, kb, &dr);
+        if (dr != HUNKTOKOOB) {
+            fprintf(stderr, "FAIL bounds(d): OOB raw 'K' not rejected: %s\n",
+                    ok64str(dr));
+            fail(TESTFAIL);
+        }
+    }
+
+    done;
+}
+
 ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
     call(HUNKTestRelayRoundtrip);
     call(HUNKTestRedReserved);
+    call(HUNKTestDrainBounds);
     done;
 }
 

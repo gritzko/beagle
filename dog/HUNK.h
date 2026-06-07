@@ -11,6 +11,14 @@
 // `--- … ---` decoration.
 con ron60 HUNK_VERB_HUNK = 0xb39caf;
 
+// Drain-time validation failures for an untrusted token ('K') record.
+//   HUNKTOKLEN — 'K' value length is not a whole multiple of sizeof(tok32).
+//   HUNKTOKOOB — a tok32Offset exceeds the text length ($len(hk->text)).
+// Both reject the hunk in HUNKu8sDrain so no renderer ever indexes
+// hk->text past its end or aliases unaligned wire bytes as tok32.
+con ok64 HUNKTOKLEN = 0x45e5d4758515397;
+con ok64 HUNKTOKOOB = 0x45e5d475851860b;
+
 // TLV type letters for hunk records
 #define HUNK_TLV      'H'  // outer container
 #define HUNK_TLV_TS   'T'  // ron60 timestamp (8 bytes LE)
