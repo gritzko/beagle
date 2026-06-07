@@ -96,8 +96,8 @@ set_author "Carol" "carol@example.com"
 # ------------------------------------------------------------------
 # 6. Two cherry-picks: F1 then F2.
 # ------------------------------------------------------------------
-"$BE" patch "?fix1/$F1" > "$LOGS/p1.out" 2> "$LOGS/p1.err"
-"$BE" patch "?fix1/$F2" > "$LOGS/p2.out" 2> "$LOGS/p2.err"
+"$BE" patch "#$F1" > "$LOGS/p1.out" 2> "$LOGS/p1.err"
+"$BE" patch "#$F2" > "$LOGS/p2.out" 2> "$LOGS/p2.err"
 
 # Post-cherry-pick wt content: union of F1 and F2's edits.
 match "$CASE/04.lib.f1.c"   lib.c

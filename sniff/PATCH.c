@@ -1465,38 +1465,11 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     u8cs target_query = {};
     call(absolutise_query, target_query, tq_buf, target_query_raw);
 
-    //  Located cherry-pick (`?br/sha`).  When the query has a
-    //  trailing 6..40-hex segment (per dog/DOG.h §DOGRefSplitPin),
-    //  treat the query as "branch as locator + sha as commit": load
-    //  the branch's packs into PAST/DATA, promote the shape to
-    //  CHERRY, and let `resolve_cherry` below decode the pin as
-    //  frag.  Same semantics as bare `#sha` (apply this commit's
-    //  diff onto cur) but with the locator hint that lets keeper
-    //  find the pack.
-    //  Track the branch locator so we can serialise the patch row
-    //  as `?<branch>/<sha>` (preserving the hint) instead of bare
-    //  `#<sha>`.  POSTPatchDefaults uses the locator to switch keeper
-    //  before KEEPGetExact on the picked sha.
-    u8cs cherry_locator = {};
-    if (!cherry && shape != PATCH_SHAPE_BAD &&
-        !u8csEmpty(target_query)) {
-        u8cs br_split = {}, pin_split = {};
-        DOGRefSplitPin(target_query, br_split, pin_split);
-        //  CHERRY-LOCATED needs BOTH a branch locator and a pin
-        //  (`?<branch>/<sha>`).  Bare `?<40hex>` (no slash, no
-        //  branch) is a SQUASH target — DOGRefSplitPin returns
-        //  pin_split=<sha> + br_split=empty for that shape, but
-        //  treating it as cherry crashes on root commits and
-        //  loses the "squash all of theirs onto cur" intent that
-        //  the post-fetch URI rewrite (BEActResolveRemote) relies
-        //  on.
-        if (!u8csEmpty(pin_split) && !u8csEmpty(br_split)) {
-            (void)SNIFFMaybeSwitchGraf(br_split); (void)SNIFFMaybeSwitchKeeper(br_split);
-            cherry = YES;
-            u8csMv(frag, pin_split);
-            u8csMv(cherry_locator, br_split);
-        }
-    }
+    //  URI-001 Stage 4: the located cherry-pick shape (`?<branch>/<sha>`)
+    //  is RETIRED — cherry-pick is the bare `#<sha>` form.  The flat
+    //  per-project object pool resolves any commit without a branch
+    //  locator hint, so there is no `?<branch>/<sha>` → CHERRY promotion
+    //  here any more (and no `cherry_locator` to serialise).
 
     //  Per VERBS.md §PATCH "Weave merge into dirty wt" — PATCH no
     //  longer refuses on dirty wt.  Dirty bytes are preserved by
@@ -1689,13 +1662,11 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  keeper/graf to read the foster commit's body):
     //    SQUASH (`?br`)        → no locator (foster header only;
     //                            POST doesn't read the commit body).
-    //    CHERRY-bare (`#sha`)  → no locator.
-    //    CHERRY-located, MERGE, REBASE_ONE → locator preserved.
+    //    CHERRY (`#sha`)       → no locator (bare; located form retired).
+    //    MERGE, REBASE_ONE     → locator preserved (branch hint).
     u8cs row_locator = {};
-    if (cherry && !u8csEmpty(cherry_locator)) {
-        u8csMv(row_locator, cherry_locator);
-    } else if (!cherry && !u8csEmpty(target_query) &&
-               shape != PATCH_SHAPE_SQUASH) {
+    if (!cherry && !u8csEmpty(target_query) &&
+        shape != PATCH_SHAPE_SQUASH) {
         u8cs br_split = {}, pin_split = {};
         DOGRefSplitPin(target_query, br_split, pin_split);
         if (!u8csEmpty(br_split)) u8csMv(row_locator, br_split);

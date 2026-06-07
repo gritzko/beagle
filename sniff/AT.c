@@ -533,14 +533,11 @@ static u8 at_patch_row_shape(uricp u) {
     b8 has_q = (u->query[0]    != NULL);
     b8 has_f = (u->fragment[0] != NULL);
     b8 frag_empty = has_f && u8csEmpty(u->fragment);
-    if (has_q && !has_f) {
-        u8cs br_s = {}, pin_s = {};
-        u8cs q = {u->query[0], u->query[1]};
-        DOGRefSplitPin(q, br_s, pin_s);
-        //  Located cherry: branch + hashlet pin.
-        if (!u8csEmpty(pin_s) && !u8csEmpty(br_s)) return 2; // CHERRY
-        return 1;                                            // SQUASH
-    }
+    //  URI-001 Stage 4: the located cherry shape (`?<br>/<sha>`, no
+    //  fragment) is RETIRED — a query-only, fragment-less patch row is
+    //  always SQUASH.  Cherry-pick is the bare `#<sha>` form below;
+    //  located MERGE / REBASE_ONE rows carry a fragment (handled after).
+    if (has_q && !has_f) return 1;                  // SQUASH
     if (!has_q &&  has_f && !frag_empty) return 2; // CHERRY
     if ( has_q &&  has_f && !frag_empty) return 3; // MERGE
     if ( has_q &&  has_f &&  frag_empty) return 4; // REBASE1
