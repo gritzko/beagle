@@ -789,8 +789,10 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
 
     //  Pick `#<sha>` for an all-hex ref (KEEPResolveTree's fragment fast
     //  path handles full + short shas via `WHIFFHexHashlet60`); `?<ref>`
-    //  for everything else (REFS-resolved name).
-    b8 hex_only = DOGIsHashlet(ref);
+    //  for everything else (REFS-resolved name).  URI-001 §"one rule":
+    //  branch-FIRST — a ref whose name is all-hex but exists as a REFS
+    //  name (`GRAFRefIsName`) takes the `?<ref>` path, never the hashlet.
+    b8 hex_only = DOGIsHashlet(ref) && GRAFRefIsName(ref) != OK;
     uri target = {};
     a_pad(u8, ubuf, 512);
     u8bFeed1(ubuf, hex_only ? '#' : '?');

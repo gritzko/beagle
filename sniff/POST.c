@@ -2258,27 +2258,17 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
             struct timespec tv = {};
             if (clock_gettime(CLOCK_REALTIME, &tv) == 0) now = tv.tv_sec;
         }
-        a_pad(u8, saved, 256);
-        u8bFeed(saved, u8bDataC(KEEP.h->cur_branch));
-        if (u8bDataLen(saved) > 0 && *u8bLast(saved) == '/')
-            u8bShed1(saved);
         a_carve(u8, cbuf, 1UL << 16);
         for (u32 i = 0; i < n_pent; i++) {
             if (pent[i].shape == 1 /* SQUASH */) continue;
-            //  Switch to the row's locator branch (if any) so a
-            //  rebase-one against `?feat#` can read feat's pack.
-            //  No locator → stay on cur.
-            b8 switched = NO;
-            if (!u8csEmpty(pent[i].locator)) {
-                if (SNIFFMaybeSwitchKeeper(pent[i].locator) == OK)
-                    switched = YES;
-            }
+            //  URI-001 Stage 4b: the flat per-project object pool makes
+            //  every foster / picked / replayed commit readable from
+            //  cur's shard, so there is no locator branch to switch to.
             u8bReset(cbuf);
             u8 ct = 0;
             ok64 ko = KEEPGetExact(&pent[i].sha, cbuf, &ct);
-            //  Fallback: emit a minimal "sha + locator" hint when the
-            //  body isn't reachable (sibling shard not on the open
-            //  chain).  User can still match by sha.
+            //  Fallback: emit a minimal "sha" hint when the body isn't
+            //  reachable.  User can still match by sha.
             a_pad(u8, date, 8);
             u8cs subject = {};
             if (ko == OK && ct == DOG_OBJ_COMMIT) {
@@ -2304,30 +2294,15 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
                         (char *)u8bDataHead(date),
                         (int)$len(subject), (char *)subject[0]);
             } else {
-                //  Body unreachable — show sha (8 hex) + locator hint.
+                //  Body unreachable — show sha (8 hex).
                 sha1hex hx = {};
                 sha1hexFromSha1(&hx, &pent[i].sha);
-                if (!u8csEmpty(pent[i].locator)) {
-                    fprintf(stderr,
-                            "  %.*s\tpat\t#%.8s (in ?%.*s — body "
-                            "not in cur's shard)\n",
-                            (int)u8bDataLen(date),
-                            (char *)u8bDataHead(date),
-                            hx.data,
-                            (int)$len(pent[i].locator),
-                            (char *)pent[i].locator[0]);
-                } else {
-                    fprintf(stderr,
-                            "  %.*s\tpat\t#%.8s (body not in cur's "
-                            "shard)\n",
-                            (int)u8bDataLen(date),
-                            (char *)u8bDataHead(date),
-                            hx.data);
-                }
-            }
-            if (switched) {
-                a_dup(u8c, sb, u8bData(saved));
-                (void)KEEPSwitchBranch(KEEP.h, sb);
+                fprintf(stderr,
+                        "  %.*s\tpat\t#%.8s (body not in cur's "
+                        "shard)\n",
+                        (int)u8bDataLen(date),
+                        (char *)u8bDataHead(date),
+                        hx.data);
             }
         }
         return ULOGNONE;
@@ -2336,42 +2311,14 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     sha1 pick = pent[idx].sha;
     u8   pshape = pent[idx].shape;
 
-    //  Located cherry-pick rows (`?<branch>/<sha>`) carry the branch
-    //  prefix in `pent[idx].locator`.  Switch keeper to that branch
-    //  long enough to read the picked commit's body, then switch
-    //  BACK so any subsequent POSTCommit pack write lands in cur's
-    //  shard, not the locator's.
-    a_pad(u8, saved_branch, 256);
-    b8 switched = NO;
-    if (!u8csEmpty(pent[idx].locator)) {
-        u8bFeed(saved_branch, u8bDataC(KEEP.h->cur_branch));
-        //  KEEPOpenBranch normalises with a trailing '/'; strip it
-        //  so the round-trip via DPATHBranchNormFeed doesn't
-        //  re-add another.  Empty saved_branch (= trunk) stays
-        //  empty.
-        if (u8bDataLen(saved_branch) > 0 &&
-            *u8bLast(saved_branch) == '/')
-            u8bShed1(saved_branch);
-        //  Graf reads h->cur_branch as its "from" — order before keeper.
-        (void)SNIFFMaybeSwitchGraf(pent[idx].locator);
-        ok64 so = SNIFFMaybeSwitchKeeper(pent[idx].locator);
-        switched = (so == OK);
-    }
-
+    //  URI-001 Stage 4b: the flat per-project object pool makes the
+    //  picked / foster / replayed commit body readable from cur's
+    //  shard directly — no locator branch to switch to.
     a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
     ok64 ko = KEEPGetExact(&pick, cbuf, &ct);
 
-    if (switched) {
-        a_dup(u8c, sb, u8bData(saved_branch));
-        //  Graf BEFORE keeper: graf reads h->cur_branch as its "from"
-        //  for the LCA delta; keeper is the one that updates
-        //  h->cur_branch via HOMESetCurBranch.  Reversed order would
-        //  feed graf the post-switch value and collapse the delta.
-        (void)GRAFSwitchBranch(GRAF.h, sb);
-        (void)KEEPSwitchBranch(KEEP.h, sb);
-    }
     if (ko != OK) return ko;
     if (ct != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
 

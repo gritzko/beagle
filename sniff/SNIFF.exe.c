@@ -856,13 +856,11 @@ ok64 SNIFFExec(cli *c) {
                 //  short-circuited above via POSTRebaseOntoSha.  Those
                 //  pull remote work into cur, which is the inverse
                 //  direction.)
-                u8cs br_split = {}, pin_split = {};
-                DOGRefSplitPin(label_uri->query, br_split, pin_split);
+                //  URI-001 Stage 4b: the query IS the target branch —
+                //  the located `?<branch>/<sha>` form is retired, so
+                //  there is no trailing pin to split off here.
                 u8cs t_br = {};
-                if (u8csEmpty(pin_split))
-                    u8csMv(t_br, label_uri->query);
-                else
-                    u8csMv(t_br, br_split);
+                u8csMv(t_br, label_uri->query);
                 //  Normalise trunk-targets: `?` (empty) and `?/` (one
                 //  slash) both mean trunk.  Reduce to empty so
                 //  POSTPromote's trunk-leaf path fires cleanly.

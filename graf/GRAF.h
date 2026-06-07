@@ -252,6 +252,16 @@ ok64 GRAFRebaseBlobMerge(u8cs base, u8cs ours, u8cs theirs, u8cs ext,
 // SHA-1 — the same policy `log:` uses (sniff/at.log → REFS fallback).
 ok64 GRAFResolveTip(uricp u, sha1 *out);
 
+//  Branch-first disambiguation probe (URI-001 §"The one rule").
+//  OK iff `ref` resolves as a REFS NAME (branch / tag / wire-prefixed
+//  ref) in the open keeper store; GRAFNONE otherwise (bare sha,
+//  no keeper, miss).  Lets the diff / blame ref-URI composers pick
+//  `?<name>` over `#<sha>` branch-first, so a ref whose name is all
+//  hex still wins over a same-spelled hashlet.  Best-effort: callers
+//  treat any non-OK as "not a name" and fall back to the syntactic
+//  hashlet test.  Requires GRAFOpen / KEEPOpen on the same home.
+ok64 GRAFRefIsName(u8cs ref);
+
 //  Universal version resolver.  Takes any user-supplied URI shape
 //  and rewrites the `?query` slot into the canonic form
 //      ?/<project>.<hashlet>/<branch-path>/<sha-or-tag>

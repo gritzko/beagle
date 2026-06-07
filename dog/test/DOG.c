@@ -338,68 +338,13 @@ ok64 DOGTestFeedDate() {
     done;
 }
 
-// --- DOGRefSplitPin / DOGIsHashlet ----------------------------------
+// --- canonical-query parse helpers ----------------------------------
 
 static b8 slice_eq_cstr_dog(u8cs s, char const *c) {
     size_t n = strlen(c);
     if (u8csLen(s) != n) return NO;
     if (n == 0) return YES;
     return memcmp(s[0], (u8 const *)c, n) == 0;
-}
-
-static ok64 DOGTestRefSplitPin(void) {
-    sane(1);
-
-    struct {
-        char const *in;
-        char const *want_branch;
-        char const *want_pin;
-    } cases[] = {
-        // Plain branch refs (no pin)
-        {"feat",                  "feat",          ""},
-        {"feat/sub",              "feat/sub",      ""},
-        {"stable/v1.2.3",         "stable/v1.2.3", ""},   // non-hex tail
-        {"tags/v2",               "tags/v2",       ""},   // not hex
-        // Hashlet pin shapes
-        {"abc1234",               "",              "abc1234"},
-        {"feat/abc1234",          "feat",          "abc1234"},
-        {"feat/sub/abc1234",      "feat/sub",      "abc1234"},
-        {"d268baf01234567890123456789012345678abcd",
-                                  "",
-                                  "d268baf01234567890123456789012345678abcd"},
-        // Boundary length cases
-        {"feat/abcdef",           "feat",          "abcdef"},  // 6-char ok
-        {"feat/abcde",            "feat/abcde",    ""},        // 5 too short
-        {"feat/12345",            "feat/12345",    ""},        // 5 too short
-        // 41 chars too long
-        {"feat/abc1234567890123456789012345678901234567890",
-                                  "feat/abc1234567890123456789012345678901234567890",
-                                  ""},
-        // Empty input
-        {"",                      "",              ""},
-    };
-
-    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
-        a_cstr(src, cases[i].in);
-        a_dup(u8c, in, src);
-        u8cs branch = {}, pin = {};
-        DOGRefSplitPin(in, branch, pin);
-        if (!slice_eq_cstr_dog(branch, cases[i].want_branch)) {
-            fprintf(stderr,
-                "RefSplitPin '%s': branch want '%s' got '%.*s'\n",
-                cases[i].in, cases[i].want_branch,
-                (int)u8csLen(branch), (char *)branch[0]);
-            fail(FAIL);
-        }
-        if (!slice_eq_cstr_dog(pin, cases[i].want_pin)) {
-            fprintf(stderr,
-                "RefSplitPin '%s': pin want '%s' got '%.*s'\n",
-                cases[i].in, cases[i].want_pin,
-                (int)u8csLen(pin), (char *)pin[0]);
-            fail(FAIL);
-        }
-    }
-    done;
 }
 
 // --- DOGIsFullSha (URI-001 Stage 2 length-agnostic recognizer) ------
@@ -554,7 +499,6 @@ ok64 DOGtest() {
     call(DOGTestCanonical);
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
-    call(DOGTestRefSplitPin);
     call(DOGTestIsFullSha);
     call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);

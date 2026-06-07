@@ -478,26 +478,15 @@ ok64 SNIFFAtResolveRelativeURI(uri *u, path8b qbuf, u8b databuf,
     done;
 }
 
-//  Pick the 40-hex sha out of a patch row's URI into `out`.  Query
-//  slot wins for squash/merge/rebase-one shapes; fragment slot for
-//  cherry-pick.  `out` is left empty when neither slot has 40+ hex.
+//  Pick the 40-hex sha out of a patch row's URI into `out`.  URI-001
+//  Stage 4b: rows are BARE — the query slot holds the sha alone for
+//  squash/merge/rebase-one, the fragment slot for cherry-pick (no
+//  `<branch>/` locator prefix to split off).  `out` is left empty when
+//  neither slot has 40+ hex.
 static void at_patch_row_sha_hex(u8cs out, uricp u) {
-    if (u->query[0] != NULL) {
-        //  Located-cherry row: `?<branch>/<sha>` — split off the
-        //  trailing-hashlet via DOGRefSplitPin (path-form convention,
-        //  see dog/DOG.h).  Empty pin → query carries the sha alone
-        //  (the pre-locator shape: `?<sha>` from SQUASH and friends).
-        u8cs br_s = {}, pin_s = {};
-        u8cs q = {u->query[0], u->query[1]};
-        DOGRefSplitPin(q, br_s, pin_s);
-        if (!u8csEmpty(pin_s) && u8csLen(pin_s) >= 40) {
-            $mv(out, pin_s);
-            return;
-        }
-        if (u8csLen(u->query) >= 40) {
-            $mv(out, u->query);
-            return;
-        }
+    if (u->query[0] != NULL && u8csLen(u->query) >= 40) {
+        $mv(out, u->query);
+        return;
     }
     if (u->fragment[0] != NULL && u8csLen(u->fragment) >= 40) {
         $mv(out, u->fragment);
@@ -507,28 +496,11 @@ static void at_patch_row_sha_hex(u8cs out, uricp u) {
     out[1] = NULL;
 }
 
-//  Locator branch from a patch row's URI (only present for located-
-//  cherry shape `?<branch>/<sha>`).  Returns the `<branch>` slice
-//  (slices into `u->query`); empty slice when the row carries no
-//  locator (bare cherry `#<sha>` or sha-only query).  Used by POST
-//  to switch keeper before reading the picked commit body.
-static void at_patch_row_locator(u8cs out, uricp u) {
-    out[0] = NULL; out[1] = NULL;
-    if (u->query[0] == NULL) return;
-    u8cs br_s = {}, pin_s = {};
-    u8cs q = {u->query[0], u->query[1]};
-    DOGRefSplitPin(q, br_s, pin_s);
-    if (!u8csEmpty(pin_s) && !u8csEmpty(br_s)) $mv(out, br_s);
-}
-
 //  Classify a patch row's URI into one of the four PATCH_SHAPE_*
 //  values.  Mirrors PATCHShape() in sniff/PATCH.c but lives here
-//  to keep AT.c self-contained.
-//
-//  A `?<branch>/<sha>` query (located form, see dog/DOG.h
-//  §DOGRefSplitPin) reads as CHERRY-with-locator: POST treats it
-//  like a single-commit pick (msg lookup, `picked:` trailer).  The
-//  bare-sha query `?<sha>` (locator empty) stays SQUASH.
+//  to keep AT.c self-contained.  URI-001 Stage 4: rows are bare; the
+//  shape is read from URI structure alone (query / fragment presence
+//  and fragment emptiness), no locator.
 static u8 at_patch_row_shape(uricp u) {
     b8 has_q = (u->query[0]    != NULL);
     b8 has_f = (u->fragment[0] != NULL);
@@ -646,8 +618,6 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
             e->msg[0] = NULL;
             e->msg[1] = NULL;
         }
-        //  Capture the locator branch (only set for located cherry).
-        at_patch_row_locator(e->locator, &rec.uri);
         (*n_out)++;
     }
     done;
@@ -799,7 +769,7 @@ ok64 SNIFFAtQueryFirstSha(uricp u, sha1hex *out) {
     while (!$empty(q)) {
         u8cs chunk = {};
         DOGRefDrain(q, chunk);
-        if ($len(chunk) == sizeof(out->data) && DOGIsHashlet(chunk)) {
+        if ($len(chunk) == sizeof(out->data) && DOGIsFullSha(chunk)) {
             sha1hexMv(out, (sha1hex const *)chunk[0]);
             done;
         }

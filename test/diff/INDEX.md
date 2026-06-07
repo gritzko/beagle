@@ -18,6 +18,11 @@
   under the mount (`vendor/sub/core.c`); `--nosub` suppresses the sub
   side.  Driven by `BEProjectorSubs` (BE.cli.c) fanning whole-tree
   projectors into mounts via `BERelaySub`.  (ssh fixture.)
+* `07-hex-named-branch/` — URI-001 §"The one rule" (Stage 4c).  A
+  clone of `02` with `fix2` renamed to the all-hex `c0ffee`; the
+  byte-identical want files prove a branch whose NAME is hex resolves
+  BRANCH-FIRST in a diff ref (`GRAFRefIsName`), never misrouted into
+  keeper's hashlet (`#<sha>`) path.  RED before Stage 4c, GREEN after.
 
 ## Label form note
 

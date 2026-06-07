@@ -1,0 +1,11 @@
+--- a/foo.c
++++ b/foo.c
+@@ -1,6 +1,6 @@
+ #include <stdio.h>
+ 
++int main(void) {
++    puts("hello, world");
+-int main(int argc, char **argv) {
+-    puts("hello");
+     return 0;
+ }

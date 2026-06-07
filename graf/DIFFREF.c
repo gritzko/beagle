@@ -58,10 +58,12 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
 //  hashlet length (full or short sha — KEEPResolveTree's fragment
 //  branch handles both, with `WHIFFHexHashlet60` driving keeper's
 //  prefix lookup); `?` for ref names (`tags/v1`, `heads/main`) which
-//  go through REFS.
+//  go through REFS.  URI-001 §"one rule": branch-FIRST — a ref whose
+//  name is all-hex but exists as a REFS name (`GRAFRefIsName`) takes
+//  the `?` path, never the hashlet `#`.
 static ok64 diffref_compose_ref_uri(u8bp ubuf, u8cs ref) {
     sane(ubuf);
-    u8 lead = DOGIsHashlet(ref) ? '#' : '?';
+    u8 lead = (DOGIsHashlet(ref) && GRAFRefIsName(ref) != OK) ? '#' : '?';
     call(u8bFeed1, ubuf, lead);
     call(u8bFeed,  ubuf, ref);
     done;

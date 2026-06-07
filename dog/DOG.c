@@ -398,54 +398,6 @@ b8 DOGRefIsBranch(u8cs ref) {
     return NO;
 }
 
-void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out) {
-    branch_out[0] = NULL; branch_out[1] = NULL;
-    pin_out[0]    = NULL; pin_out[1]    = NULL;
-    if (u8csLen(query) == 0) return;
-
-    //  Canonic form (STORE.md §"URI structure"):
-    //      /<project>/<branch-path>/<pin>
-    //  When matched, project is consumed by upstream resolution —
-    //  callers want just the branch portion + pin.  Defer to
-    //  DOGCanonQueryParse for the strict-shape arm.
-    {
-        u8cs c_proj = {}, c_branch = {}, c_pin = {};
-        u8cs q_in = {};
-        u8csMv(q_in, query);
-        if (DOGCanonQueryParse(q_in, c_proj, c_branch, c_pin)) {
-            u8csMv(branch_out, c_branch);
-            u8csMv(pin_out,    c_pin);
-            return;
-        }
-    }
-
-    //  Find the last '/'-separated segment.  When query is just
-    //  `abc1234` (no '/'), the whole slice is the candidate.
-    u8cp head  = query[0];
-    u8cp term  = query[1];
-    u8cp slash = NULL;
-    for (u8cp p = head; p < term; p++) if (*p == '/') slash = p;
-
-    u8cs tail = {};
-    if (slash) { tail[0] = slash + 1; tail[1] = term; }
-    else       { tail[0] = head;      tail[1] = term; }
-
-    if (DOGIsHashlet(tail)) {
-        //  Trailing hashlet: split branch / pin at the last '/'.
-        //  When no '/' is present the whole query is the pin and
-        //  the branch is empty (trunk).
-        if (slash) {
-            branch_out[0] = head;
-            branch_out[1] = slash;
-        }
-        pin_out[0] = tail[0];
-        pin_out[1] = tail[1];
-    } else {
-        branch_out[0] = head;
-        branch_out[1] = term;
-    }
-}
-
 ok64 DOGCanonURIFeed(u8bp out, urip u) {
     sane(out != NULL && u != NULL);
     call(DOGCanonURI, u);

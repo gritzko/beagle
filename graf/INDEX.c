@@ -198,7 +198,7 @@ ok64 GRAFIndexFromTips(uricp u) {
                u8csLen(probe.path) == 40) {
         $mv(hex_src, probe.path);
     }
-    if (!u8csEmpty(hex_src) && DOGIsHashlet(hex_src)) {
+    if (!u8csEmpty(hex_src) && DOGIsFullSha(hex_src)) {
         probe.fragment[0] = hex_src[0];
         probe.fragment[1] = hex_src[1];
         probe.query[0] = probe.query[1] = NULL;

@@ -355,7 +355,11 @@ ok64 GRAFExec(cli *c) {
             //  GRAFNOPATH in that case, but the REFS rows under cur's
             //  shard still resolve the tag.  Treat the missing-dir
             //  arms as "stay on cur" and propagate other failures.
-            if (!DOGIsHashlet(wf)) {
+            //  URI-001 §"one rule": branch-FIRST.  Switch for any
+            //  non-hex ref (as before) and also for a hex-NAMED branch
+            //  (`GRAFRefIsName`), which `DOGIsHashlet` alone would
+            //  wrongly skip.  A bare sha still skips the switch.
+            if (!DOGIsHashlet(wf) || GRAFRefIsName(wf) == OK) {
                 try(KEEPSwitchBranch, KEEP.h, wf);
                 on(KEEPNONE) __ = OK;
                 nedo { return __; }
@@ -363,7 +367,7 @@ ok64 GRAFExec(cli *c) {
                 on(GRAFNOPATH) __ = OK;
                 nedo { return __; }
             }
-            if (!DOGIsHashlet(wt)) {
+            if (!DOGIsHashlet(wt) || GRAFRefIsName(wt) == OK) {
                 try(KEEPSwitchBranch, KEEP.h, wt);
                 on(KEEPNONE) __ = OK;
                 nedo { return __; }
@@ -400,8 +404,12 @@ ok64 GRAFExec(cli *c) {
                 //  via U-tokens.  Falls through to branch-vs-base
                 //  when the parent lookup fails (root commit, unindexed
                 //  commit, or `branch` isn't actually a hashlet).
+                //  URI-001 §"one rule": branch-FIRST — a ref whose name
+                //  is all-hex but exists as a REFS name is a branch, not
+                //  a commit-show hashlet; route it to branch-vs-base.
                 b8 handled = NO;
-                if ($empty(path) && DOGIsHashlet(branch)) {
+                if ($empty(path) && DOGIsHashlet(branch) &&
+                    GRAFRefIsName(branch) != OK) {
                     sha1hex parent_hex = {};
                     if (graf_first_parent_hex(branch, &parent_hex) == OK) {
                         u8cs parent_s = {};

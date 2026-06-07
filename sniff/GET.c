@@ -1035,16 +1035,14 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             t_branch[1] = source[1];
         }
         if (!u8csEmpty(t_branch)) {
-            //  Strip a trailing-hashlet pin off the branch path (per
-            //  dog/DOG.h §DOGRefSplitPin) before the switch — the
-            //  branch is the locator, the pin is the commit.  The
-            //  caller already resolved hex into `hex`, so we only
-            //  need the branch slice here.
-            u8cs br_split = {}, pin_split = {};
-            DOGRefSplitPin(t_branch, br_split, pin_split);
+            //  URI-001 Stage 4b: the branch portion IS the whole
+            //  `t_branch` slice — the located `?<branch>/<sha>` form is
+            //  retired, and the `$len(source) != 41` gate above already
+            //  excludes a bare detached full-sha.  SNIFFMaybeSwitch*
+            //  probes `<root>/.be/<branch>/` and no-ops on a non-branch,
+            //  so no string heuristic is needed here.
             u8cs to_switch = {};
-            if (u8csEmpty(pin_split)) u8csMv(to_switch, t_branch);
-            else                      u8csMv(to_switch, br_split);
+            u8csMv(to_switch, t_branch);
             //  Graf reads h->cur_branch as its "from" — order before keeper.
             //  Graf-side switch is best-effort: a graf miss only affects
             //  history-walk side-effects, not the KEEPGet below; keeper
@@ -1610,11 +1608,12 @@ static ok64 sniff_get_by_refkey(u8cs reporoot, u8csc keepdir,
 
 static ok64 sniff_get_blob_to_wt_switch(uri *u) {
     sane(u);
-    u8cs br_split = {}, pin_split = {};
-    DOGRefSplitPin(u->query, br_split, pin_split);
+    //  URI-001 Stage 4b: the query IS the branch scope — the located
+    //  `?<branch>/<sha>` form is retired, and SNIFFMaybeSwitch* probe
+    //  the on-disk shard, no-opping when the target isn't a branch
+    //  (bare sha, tag).  No string heuristic needed.
     u8cs target = {};
-    if (u8csEmpty(pin_split)) u8csMv(target, u->query);
-    else                       u8csMv(target, br_split);
+    u8csMv(target, u->query);
     call(SNIFFMaybeSwitchGraf,   target);
     call(SNIFFMaybeSwitchKeeper, target);
     done;
@@ -1717,16 +1716,14 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
     keeper *k = &KEEP;
 
     //  Cross-branch overlay: when the URI's query names a different
-    //  branch (`be get src/?feat`), load feat's packs into PAST so
-    //  the tree-walk + blob fetches below resolve via PastData.
-    //  Path-prefix overlays don't change the wt's anchor; the
-    //  switch is read-only context, no DATA shuffling for writes.
+    //  branch (`be get src/?feat`), re-target the read context to it.
+    //  URI-001 Stage 4b: the query IS the branch scope (located
+    //  `?<branch>/<sha>` retired); SNIFFMaybeSwitch* probe the on-disk
+    //  shard and no-op on a non-branch.  Read-only context switch, no
+    //  DATA shuffling for writes.
     {
-        u8cs br_split = {}, pin_split = {};
-        DOGRefSplitPin(u->query, br_split, pin_split);
         u8cs target = {};
-        if (u8csEmpty(pin_split)) u8csMv(target, u->query);
-        else                       u8csMv(target, br_split);
+        u8csMv(target, u->query);
         call(SNIFFMaybeSwitchGraf,   target);
         call(SNIFFMaybeSwitchKeeper, target);
     }
@@ -1898,8 +1895,8 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  Hex-shaped path is `be get <sha>` (legacy sub-mount spawn
     //  path) — skip the file-restore block and fall through to
     //  the path-only branch below (which builds `?<hex>` for
-    //  GETCheckout).  Uses dog/DOG.h's DOGIsHashlet predicate
-    //  (6..40 hex chars).  A full 40-hex path can't be a real
+    //  GETCheckout).  Uses dog/DOG.h's DOGIsFullSha predicate (a
+    //  resolved 40/64-hex object id).  A full-sha path can't be a real
     //  filename and never makes sense as a file overlay target.
     b8 path_is_full_hex = !$empty(u->path) && DOGIsFullSha(u->path);
     if (!$empty(u->path) && $empty(u->authority) && !path_is_full_hex) {

@@ -13,6 +13,7 @@
 #include "dog/HOME.h"
 #include "dog/HUNK.h"
 #include "keeper/KEEP.h"
+#include "keeper/REFS.h"
 #include "keeper/RESOLVE.h"
 
 // --- Producer-side staging state ---
@@ -272,6 +273,49 @@ ok64 GRAFOpen(home *h, b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
     return GRAFOpenBranch(h, trunk, rw);
+}
+
+//  --- GRAFRefIsName (branch-first disambiguation probe) -----------
+//
+//  URI-001 §"The one rule": branch-vs-hash disambiguation is
+//  BRANCH-FIRST.  Returns OK iff `ref` resolves as a REFS NAME
+//  (branch / tag / wire-prefixed ref) in the open keeper store — so a
+//  ref whose NAME is all-hex (`dead`, `c0ffee`) is recognised as a
+//  name and NOT misrouted into the hashlet path.  A bare commit sha
+//  (not stored as a ref) returns GRAFNONE.  The diff / blame ref-URI
+//  composers call this to pick `?<name>` (REFS) vs `#<sha>` (hashlet)
+//  instead of the old syntactic `DOGIsHashlet` guess.  Best-effort:
+//  any miss / no-keeper / lookup error reads as "not a name", and the
+//  caller falls back to the syntactic hashlet test.
+ok64 GRAFRefIsName(u8cs ref) {
+    sane(1);
+    if (u8csEmpty(ref)) return GRAFNONE;
+    keeper *k = &KEEP;
+    if (k->h == NULL || u8bDataLen(k->h->root) == 0) return GRAFNONE;
+
+    a_path(keepdir);
+    if (HOMEBranchDir(k->h, keepdir, NULL) != OK) return GRAFNONE;
+
+    //  Try the raw name plus the wire-prefix peels REFS may have
+    //  canonicalised away (`refs/heads/X` → `X`) — mirrors
+    //  resolve_branch_path / graf_log_resolve_target.
+    char const *strips[] = {"", "refs/heads/", "refs/", "heads/", NULL};
+    for (u32 si = 0; strips[si] != NULL; si++) {
+        a_dup(u8c, q, ref);
+        a_cstr(strip, strips[si]);
+        if (!u8csEmpty(strip)) {
+            if (u8csLen(q) <= u8csLen(strip)) continue;
+            if (!u8csHasPrefix(q, strip)) continue;
+            u8csUsed(q, u8csLen(strip));
+        }
+        a_pad(u8, arena, 512);
+        uri resolved = {};
+        a_uri(qkey, 0, 0, 0, q, 0);
+        if (REFSResolve(&resolved, arena, $path(keepdir), qkey) == OK &&
+            u8csLen(resolved.query) >= 40)
+            done;
+    }
+    return GRAFNONE;
 }
 
 //  --- GRAFResolveVersion (universal version resolver) --------------

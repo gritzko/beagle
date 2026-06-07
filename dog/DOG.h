@@ -316,27 +316,11 @@ ok64 DOGCanonURI(urip u);
 // writer goes through.
 ok64 DOGCanonURIFeed(u8bp out, urip u);
 
-// Split a branch ref like `feat/sub/abc1234` into branch + commit pin.
-// When the LAST '/'-separated segment is 6..40 hex chars, it's read
-// as a commit hashlet pinning the branch's lineage at that commit:
-//
-//     feat                  → branch = "feat",     pin = ""
-//     feat/sub              → branch = "feat/sub", pin = ""
-//     feat/abc1234          → branch = "feat",     pin = "abc1234"
-//     abc1234               → branch = "",         pin = "abc1234"
-//     stable/v1.2.3         → branch = "stable/v1.2.3", pin = ""  (v1.2.3
-//                              is non-hex; whole path stays as branch)
-//
-// Pin slices are 0 (no pin) or 6..40 bytes inclusive (a sha1 hashlet).
-// `query` may be the URI query body (no leading `?`) or a path-form
-// ref string — same rule.  Slices in (branch_out, pin_out) point
-// into `query`; valid as long as `query`'s storage lives.  Empty
-// `query` → both outputs empty.  Caller-owned outputs.
-void DOGRefSplitPin(u8cs query, u8csp branch_out, u8csp pin_out);
-
-// YES iff `s` is 6..40 bytes of [0-9a-fA-F].  Used by DOGRefSplitPin
-// to classify the trailing segment; exposed for callers that need
-// the same hashlet test (sniff URI normalisers, ref parsers).
+// YES iff `s` is 6..40 bytes of [0-9a-fA-F].  Syntactic hashlet test
+// (sha prefix vs branch path) for the few callers that still split a
+// multi-ref query body (DOGRefDrain).  URI-001 §"The one rule":
+// branch-vs-hashlet DISAMBIGUATION now lives in keeper (branch-first,
+// `KEEPResolveRef`); do not reach for this as a disambiguator.
 b8   DOGIsHashlet(u8cs s);
 
 // YES iff `s` is a FULL git object id in hex: all [0-9a-fA-F] and
@@ -380,7 +364,7 @@ fun void DOGQueryBranchOnly(u8cs query, u8cs out) {
         u8cs chunk = {};
         DOGRefDrain(q, chunk);
         if ($empty(chunk)) continue;
-        if (u8csLen(chunk) == 40 && DOGIsHashlet(chunk)) continue;
+        if (DOGIsFullSha(chunk)) continue;   // skip a resolved object id
         out[0] = chunk[0];
         out[1] = chunk[1];
         return;

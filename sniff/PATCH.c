@@ -1654,64 +1654,31 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     a_rawc(tsha, thr_sha);
     HEXu8sFeedSome(thex_idle, tsha);
 
-    //  Compose the row's query slot.  Preserve the user-typed branch
-    //  locator in `?<branch>/<sha>` form for every query-bearing
-    //  shape so a subsequent POST can split via DOGRefSplitPin and
-    //  switch keeper/graf to the locator branch.
-    //  Locator rule (preserves the branch hint so POST can switch
-    //  keeper/graf to read the foster commit's body):
-    //    SQUASH (`?br`)        → no locator (foster header only;
-    //                            POST doesn't read the commit body).
-    //    CHERRY (`#sha`)       → no locator (bare; located form retired).
-    //    MERGE, REBASE_ONE     → locator preserved (branch hint).
-    u8cs row_locator = {};
-    if (!cherry && !u8csEmpty(target_query) &&
-        shape != PATCH_SHAPE_SQUASH) {
-        u8cs br_split = {}, pin_split = {};
-        DOGRefSplitPin(target_query, br_split, pin_split);
-        if (!u8csEmpty(br_split)) u8csMv(row_locator, br_split);
-    } else if (!cherry && !u8csEmpty(target_query) &&
-               shape == PATCH_SHAPE_SQUASH) {
-        //  SQUASH may still carry an explicit pin (`?br/sha`): if so,
-        //  preserve the locator (route through CHERRY-located shape
-        //  on read), otherwise drop it (plain `?br` = bare squash).
-        u8cs br_split = {}, pin_split = {};
-        DOGRefSplitPin(target_query, br_split, pin_split);
-        if (!u8csEmpty(pin_split) && !u8csEmpty(br_split))
-            u8csMv(row_locator, br_split);
-    }
-    a_pad(u8, qbuf, 256);
-    if (!u8csEmpty(row_locator)) {
-        u8bFeed(qbuf, row_locator);
-        u8bFeed1(qbuf, '/');
-    }
-    u8bFeed(qbuf, u8bDataC(thex));
-
+    //  Compose the row's query slot.  URI-001 Stage 4b: patch rows are
+    //  BARE — the query (or, for cherry, the fragment) carries ONLY the
+    //  resolved 40-hex `<theirs>` sha, never a `<branch>/` locator
+    //  prefix.  The flat per-project object pool makes the foster /
+    //  picked / replayed commit body readable from cur's shard, so POST
+    //  no longer needs a locator branch to switch keeper/graf to.
     uri urow = {};
     {
         a_dup(u8c, h, u8bDataC(thex));
-        a_dup(u8c, q, u8bData(qbuf));
-        if (cherry && u8csEmpty(row_locator)) {
-            //  Bare fragment-only cherry: `#<sha>`
+        if (cherry) {
+            //  Cherry-pick: bare `#<sha>`.
             urow.fragment[0] = h[0];
             urow.fragment[1] = h[1];
-        } else if (cherry) {
-            //  Located cherry: `?<locator>/<sha>` in query, no frag.
-            urow.query[0] = q[0];
-            urow.query[1] = q[1];
         } else {
-            //  SQUASH / MERGE / REBASE_ONE — query carries the
-            //  qbuf (`<branch>/<sha>` or just `<sha>`).
-            urow.query[0] = q[0];
-            urow.query[1] = q[1];
+            //  SQUASH / MERGE / REBASE_ONE — query carries the bare sha.
+            urow.query[0] = h[0];
+            urow.query[1] = h[1];
             if (shape == PATCH_SHAPE_MERGE) {
                 urow.fragment[0] = u->fragment[0];
                 urow.fragment[1] = u->fragment[1];
             } else if (shape == PATCH_SHAPE_REBASE1) {
-                //  present-but-empty fragment marker; anchor on
-                //  the qbuf tail so the pointer stays live.
-                urow.fragment[0] = q[1];
-                urow.fragment[1] = q[1];
+                //  present-but-empty fragment marker; anchor on the sha
+                //  tail so the pointer stays live.
+                urow.fragment[0] = h[1];
+                urow.fragment[1] = h[1];
             }
             //  SQUASH: fragment slot left absent.
         }
