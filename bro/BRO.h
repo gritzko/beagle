@@ -74,8 +74,10 @@ fun void BROHunkLoc(BROloc *loc, hunkc const *hk) {
 ok64 BROArenaInit(void);
 void BROArenaCleanup(void);
 
-// Record a mmap'd file for cleanup at BROClose time.
-void BRODefer(u8bp mapped);
+// Record a mmap'd file for cleanup at BROClose time.  Returns NOROOM
+// if the maps table is full and a real booked map could not be
+// recorded — the caller must then FILEUnMap it itself (MEM-020).
+ok64 BRODefer(u8bp mapped);
 
 // List a directory; one hunk per entry tagged 'F'.
 ok64 BROListDir(u8csc dirpath);

@@ -176,16 +176,30 @@ ok64 BROExec(bro *b, cli *c) {
                 continue;
             }
 
+            //  Register the mapping for teardown BEFORE any fallible
+            //  staging step.  The URI/text copies below can return
+            //  BNOROOM (arena full) and must not leave the mmap
+            //  dangling — BROClose unmaps everything in b->maps, so
+            //  recording here makes every exit path release it
+            //  (MEM-020).  If the maps table itself is full, unmap now
+            //  and skip this URI.
+            if (BRODefer(mapped) != OK) {
+                FILEUnMap(mapped);
+                continue;
+            }
+
             hunk *hk = hunkbIdleHead(b->hunks);
             *hk = (hunk){};
             hk->verb = HUNK_VERB_HUNK;
-            call(u8bHost, b->arena, hk->uri, u->data);
+            //  Arena overflow here is non-fatal: stop staging more
+            //  URIs but fall through to BRORun + cleanup + KEEPClose so
+            //  the keeper (and every recorded map) is still torn down.
+            if (u8bHost(b->arena, hk->uri, u->data) != OK) break;
             hk->text[0] = u8bDataHead(mapped);
             hk->text[1] = u8bIdleHead(mapped);
 
             BROTokenize(hk, file_path);
             hunkbFed1(b->hunks);
-            BRODefer(mapped);
         }
         if (hunkbDataLen(b->hunks) > 0)
             BRORun(hunkbDataC(b->hunks));

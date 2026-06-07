@@ -125,12 +125,18 @@ ok64 BROArenaInit(void) {
 void BROArenaCleanup(void) { /* cleanup lives in BROClose */ }
 
 // Record a mmap'd file so BROClose can FILEUnMap it after the view
-// that references it has been drained.
-void BRODefer(u8bp mapped) {
-    if (!mapped || i32bIdleLen(bro_state->maps) == 0) return;
+// that references it has been drained.  Returns OK when there is
+// nothing to track (NULL / unbooked map) or the fd was recorded;
+// NOROOM when a real booked map could NOT be recorded because the
+// maps table is full — the caller MUST then FILEUnMap it itself, or
+// the mapping leaks (MEM-020).
+ok64 BRODefer(u8bp mapped) {
+    if (!mapped) return OK;
     int fd = FILEBookedFD(mapped);
-    if (fd < 0) return;
+    if (fd < 0) return OK;  // not a booked map: nothing to unmap later
+    if (i32bIdleLen(bro_state->maps) == 0) return NOROOM;
     i32bFeed1(bro_state->maps, (i32)fd);
+    return OK;
 }
 
 // Copy one TLV-drained record's uri/text/toks into bro_arena and
