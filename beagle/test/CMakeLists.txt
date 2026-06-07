@@ -56,6 +56,17 @@ add_test(NAME be-post-nosub
 set_tests_properties(be-post-nosub PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-post-nosub")
 
+# be-get-sub-unmount-clean.sh — SUBS-008.  `be get ?<branch>` switching
+# to a tree where a gitlink was removed must FULLY clean the mount:
+# unmount the `.be` anchor AND remove the sub's orphaned worktree files
+# (core.c, helper.c, ..be.idx).  Seeds a parent whose `master` has a
+# vendor/sub gitlink and whose `norm` drops it.
+add_test(NAME be-get-sub-unmount-clean
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-get-sub-unmount-clean.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-get-sub-unmount-clean PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-get-sub-unmount-clean")
+
 # history.sh — put/post, delete/post, edit/post, then checkout an
 # older commit by SHA (version handle = at.log tail).  No ssh.
 add_test(NAME BEhistory

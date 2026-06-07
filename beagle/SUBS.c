@@ -188,6 +188,79 @@ ok64 BERecurseInto(u8cs wt_root, u8cs subpath, u8css argv) {
 }
 
 // =====================================================================
+// BEIndexMount — index a freshly-mounted sub's checked-out tree.
+// =====================================================================
+
+//  fork + chdir(<wt>/<subpath>) + execvp(<dog>, [<dog>, get]) — run
+//  one indexer dog (spot / graf) against the sub mount's current tip.
+//  Bare `<dog> get` (no URI) reads the mount's own `.be/wtlog` tail to
+//  pick the tip, so no `--at` plumbing is needed here.  stderr is
+//  inherited (quiet on success); stdout is left on the inherited fd
+//  (indexers don't print on `get`).  Used by BEIndexMount.
+static ok64 be_index_mount_dog(u8cs wt_root, u8cs subpath, u8csc dog) {
+    sane($ok(wt_root) && $ok(subpath));
+
+    a_path(dogpath);
+    a$rg(a0, 0);
+    HOMEResolveSibling(NULL, dogpath, dog, a0);
+    if (!u8bHasData(dogpath)) return BEDOGEXIT;
+
+    a_path(mount);
+    call(PATHu8bFeed, mount, wt_root);
+    call(PATHu8bAdd,  mount, subpath);
+    char const *mount_cstr = (char const *)u8bDataHead(mount);
+
+    //  argv: [<dog>, "get", NULL].  argv[0] = resolved dog path so the
+    //  child's HOMEResolveSibling finds its own bin dir.
+    char *dog_cstr = (char *)u8bDataHead(dogpath);
+    char  verb_c[4] = {'g', 'e', 't', 0};
+    char *argv_c[3] = {dog_cstr, verb_c, NULL};
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "be: BEIndexMount: fork failed: %s\n",
+                strerror(errno));
+        return BEDOGEXIT;
+    }
+    if (pid == 0) {
+        if (chdir(mount_cstr) != 0) {
+            fprintf(stderr, "be: BEIndexMount: chdir %s: %s\n",
+                    mount_cstr, strerror(errno));
+            _exit(127);
+        }
+        execvp(argv_c[0], argv_c);
+        fprintf(stderr, "be: BEIndexMount: execvp %s: %s\n",
+                argv_c[0], strerror(errno));
+        _exit(127);
+    }
+
+    int rc = 0;
+    ok64 r = FILEReap(pid, &rc);
+    if (r == FILESIGNAL) return BEDOGSIG;
+    if (r != OK)         return r;
+    if (rc != 0)         return BEDOGEXIT;
+    done;
+}
+
+ok64 BEIndexMount(u8cs wt_root, u8cs subpath) {
+    sane($ok(wt_root) && $ok(subpath));
+    //  Index spot first (search) then graf (history); a failure in one
+    //  is reported but does not abort the other — best-effort, like the
+    //  POST post-pass reindex.  Sub content is never re-checked-out, so
+    //  an indexing miss only degrades search recall, never correctness.
+    ok64 worst = OK;
+    a_cstr(spot_s, "spot");
+    a_cstr(graf_s, "graf");
+    a_dup(u8c, spot_d, spot_s);
+    a_dup(u8c, graf_d, graf_s);
+    ok64 sr = be_index_mount_dog(wt_root, subpath, spot_d);
+    if (sr != OK) worst = sr;
+    ok64 gr = be_index_mount_dog(wt_root, subpath, graf_d);
+    if (gr != OK) worst = gr;
+    return worst;
+}
+
+// =====================================================================
 // BERelaySub — capture a sub's TLV report, relay it with path prefix.
 // =====================================================================
 
@@ -421,12 +494,32 @@ ok64 BEGetSubMount(u8cs subpath, u8cs pin) {
 
 ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath) {
     sane($ok(wt_root) && $ok(subpath));
+
+    //  Mount dir <wt_root>/<subpath>.
+    a_path(mount);
+    call(PATHu8bFeed, mount, wt_root);
+    call(PATHu8bAdd,  mount, subpath);
+
+    //  1. Drop the `.be` anchor — the *logical* unmount.
     a_path(anchor);
     call(PATHu8bFeed, anchor, wt_root);
     call(PATHu8bAdd,  anchor, subpath);
     a_cstr(be_s, ".be");
     call(PATHu8bPush, anchor, be_s);
     (void)FILEUnLink($path(anchor));
+
+    //  2. SUBS-008: the gitlink (and `.gitmodules` entry) are gone in
+    //  the target tree, so the whole mount is being removed — not just
+    //  the anchor.  Remove the sub's checked-out worktree files and
+    //  internal metadata (`..be.idx`, `core.c`, …) too, mirroring
+    //  `git submodule deinit` + the tree-switch that drops the path.
+    //  The sub's objects live in the parent shard (see Submodules.mkd),
+    //  so the on-disk copy under the parent wt is pure clutter once the
+    //  gitlink is gone.  `FILErmrf` is depth-first, so the now-empty
+    //  mount dir collapses too.  Best-effort: the logical unmount above
+    //  already succeeded; a leftover-file failure must not abort GET.
+    (void)FILErmrf($path(mount));
+
     fprintf(stderr, "be: get %.*s: unmounted\n",
             (int)$len(subpath), (char *)subpath[0]);
     done;
@@ -514,6 +607,17 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         //  checkout; we just capture + re-emit its report.
         ok64 r = BERelaySub(wt_root, subpath_arg, child_argv);
         if (r != OK && !ok64is(r, NONE)) worst = r;   //  NONE = sub no-op
+
+        //  SUBS-011 cause #1: the sub was checked out via a LOCAL
+        //  `be get ?<pin>`, which doesn't fire BE_PLAN_GET's transport-
+        //  gated spot/graf reindex rows — so the sub shard has a
+        //  keeper.idx but no `.spot.idx`.  Index it now so a repo-wide
+        //  search projector (cause #2 below, BEProjector recursion) has
+        //  a sub trigram index to query.  Best-effort.
+        if (r == OK || ok64is(r, NONE)) {
+            ok64 ir = BEIndexMount(wt_root, subpath_arg);
+            if (ir != OK) worst = ir;
+        }
     }
     return worst;
 }

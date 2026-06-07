@@ -35,14 +35,17 @@ $(cat 02.head.got.err)"
 grep -q '^be: head [.]'         02.head.got.err || fail "outer marker missing"
 grep -q '^be: head vendor/sub'  02.head.got.err || fail "sub marker missing"
 
-# The sub's report must mention the dirty path.  The output format is
-# graf-head-defined; we pin only that `core.c` appears in the
-# combined stdout/stderr after the sub marker, and does NOT appear
-# before the outer's marker resolves (i.e., the outer's section is
-# clean).
+# The sub's report must surface core.c's *dirty* state — a `mod`
+# (or `dirty`) marker on the path.  SUBS-007: an earlier version of
+# this test only grepped for the bareword `core.c`, which already
+# appears in HEAD's committed pin-vs-trunk ahead/behind file list
+# (`+ core.c`) regardless of the dirty edit — a false positive that
+# passed even when working-tree state was never wired in.  Require the
+# mod/dirty marker so the test actually exercises the dirty-state
+# contract (see head/21-sub-dirty-reported for the diff-based pin).
 combined=$(cat 02.head.got.out 02.head.got.err)
-echo "$combined" | grep -q 'core\.c' \
-    || fail "sub's dirty file (core.c) not surfaced by be head; got:
+echo "$combined" | grep -qiE '(mod|dirty).*core\.c|core\.c.*(mod|dirty)' \
+    || fail "sub's dirty file (core.c) not surfaced as mod/dirty by be head; got:
 $combined"
 
 # Outer wt is clean; main.c / util.c must NOT be flagged as dirty.

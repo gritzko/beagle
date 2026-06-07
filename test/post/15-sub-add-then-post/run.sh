@@ -122,13 +122,9 @@ rc=$?
 $(cat 03.put.got.err)"
 
 # ---- 6. recursive post ----------------------------------------------
-#  The fixture's source is an ssh:// (git) parent, so submodule
-#  recursion is OFF by default (POST-001 phase 2, see post/23); the
-#  user opts in with `--sub`, exactly as the shared submodules.sh
-#  fixture wraps every $BE call.  Without it `be post` correctly
-#  prints "submodule(s) skipped (git source; use --sub)" and the new
-#  sub never commits.
-"$BE" post --sub '#add vendor/sub' >04.post.got.out 2>04.post.got.err
+#  Recursion is the default; `be post` recurses into mounted subs for
+#  every source type, including ssh:// (git).  No --sub flag needed.
+"$BE" post '#add vendor/sub' >04.post.got.out 2>04.post.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be post exited $rc; stderr:
 $(cat 04.post.got.err)"

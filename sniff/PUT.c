@@ -563,6 +563,67 @@ static ok64 put_move(u8cs src_raw, u8cs dst_in_raw, u8cs reporoot,
     done;
 }
 
+// --- Sub-add candidate detection (SUBS-009) -------------------------
+//
+//  `be put <subpath>` on a directory that is *meant to become a new
+//  submodule* but is not yet mounted (no child `.be` anchor) can't be
+//  staged as a file and isn't a parent dir either.  The plain
+//  classifier would report a bare "does not exist", which is
+//  misleading — the dir is right there.  Recognise the sub-add intent
+//  so the caller can emit an actionable refusal that names the missing
+//  mount step (`sniff sub-mount`) instead.
+//
+//  A path qualifies when ALL of:
+//    * it is an on-disk directory under reporoot,
+//    * it is NOT already a mount (`SNIFFSubIsMount` is NO — the
+//      mounted case is handled by the gitlink-bump short-circuit), and
+//    * it is named as a submodule by the wt's `.gitmodules`, OR it
+//      already holds a child `.be` entry (a partially-set-up sub).
+//
+//  Pure read-only probe — opens `.gitmodules` RO if present, never
+//  mutates.  `subpath` is the normalised, trailing-slash-stripped
+//  rel path.  Returns YES on a sub-add candidate, NO otherwise.
+static b8 put_is_sub_add_candidate(u8cs reporoot, u8cs subpath) {
+    if (u8csEmpty(subpath)) return NO;
+    if (SNIFFSubIsMount(reporoot, subpath)) return NO;
+
+    //  Must be an on-disk directory.
+    a_path(dirfp);
+    if (SNIFFFullpath(dirfp, reporoot, subpath) != OK) return NO;
+    filestat ds = {};
+    if (FILELStat(&ds, $path(dirfp)) != OK ||
+        ds.kind != FILE_KIND_DIR) return NO;
+
+    //  (a) Child `.be` entry present — a partially-set-up sub.
+    {
+        a_path(bep);
+        if (PATHu8bFeed(bep, reporoot) == OK &&
+            PATHu8bAdd (bep, subpath) == OK) {
+            a_cstr(be_s, ".be");
+            if (PATHu8bPush(bep, be_s) == OK) {
+                filestat bs = {};
+                if (FILELStat(&bs, $path(bep)) == OK) return YES;
+            }
+        }
+    }
+
+    //  (b) Declared in the wt's `.gitmodules` (URL present).
+    a_path(gmp);
+    u8cs gmrel = {(u8c *)".gitmodules", (u8c *)".gitmodules" + 11};
+    if (SNIFFFullpath(gmp, reporoot, gmrel) != OK) return NO;
+    filestat gs = {};
+    if (FILELStat(&gs, $path(gmp)) != OK ||
+        gs.kind != FILE_KIND_REG) return NO;
+    u8bp gm_map = NULL;
+    if (FILEMapRO(&gm_map, $path(gmp)) != OK || gm_map == NULL) return NO;
+    u8cs gm_blob = {u8bDataHead(gm_map), u8bIdleHead(gm_map)};
+    a_pad(u8, url_buf, 2048);
+    u8cs url = {};
+    ok64 fr = SNIFFSubsParseFind(gm_blob, subpath, url_buf, url);
+    FILEUnMap(gm_map);
+    return fr == OK ? YES : NO;
+}
+
 // --- Public API ---
 
 ok64 PUTStage(u32 nuris, uri const *uris) {
@@ -727,6 +788,31 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 ts++;
                 emitted++;
                 continue;
+            }
+        }
+
+        //  Sub-add candidate (SUBS-009): a dir named without a trailing
+        //  slash that is declared in `.gitmodules` (or already holds a
+        //  child `.be`) but is NOT yet mounted.  PUT can't stage it as a
+        //  file, and synthesising a portable `.gitmodules` URL + picking
+        //  a pin are open CLI-grammar decisions (the local anchor's
+        //  row-0 is a `file:` shard pointer, not the upstream).  So emit
+        //  an actionable refusal that names the missing mount step
+        //  rather than the misleading "does not exist".  A trailing
+        //  slash (`<sub>/`) is an explicit "stage the dir's contents"
+        //  intent and falls through to the dir-form below unchanged.
+        if (!u8csEmpty(raw) && !($len(raw) > 0 && *(raw[1] - 1) == '/')) {
+            u8cs probe2 = {raw[0], raw[1]};
+            if (put_is_sub_add_candidate(reporoot, probe2)) {
+                fprintf(stderr,
+                        "sniff: put: %.*s is an unmounted submodule — "
+                        "mount it first with `sniff sub-mount "
+                        "./%.*s#<pin>`, then `be put %.*s` stages the "
+                        "gitlink\n",
+                        (int)$len(probe2), (char *)probe2[0],
+                        (int)$len(probe2), (char *)probe2[0],
+                        (int)$len(probe2), (char *)probe2[0]);
+                skipped++; continue;
             }
         }
 

@@ -65,3 +65,17 @@
   remote is a git transport (`DOGIsGitTransport`).  Fully offline
   (file://): asserts exit 0, no pack built, no funny ref, the bare
   repo's refs byte-identical.
+* `29-sub-clean-nested-remote-push/` — SUBS-006: `be post
+  ssh://host/<parent>.git?master` (git peer) recurses the local-commit
+  step into mounted subs.  A CLEAN, detached nested sub forwarded
+  `be post -q ?/<sub>/.<parent>/master` (no `#msg`, no patch rows),
+  which routed to `POSTPromote` and refused the not-yet-materialised
+  synthetic branch with `NOBRANCH` ("does not exist"), aborting the
+  whole push (exit 157).  `POSTPromote` now returns `POSTNONE` (no-op)
+  when the missing target is reached from a DETACHED wt (always a clean
+  sub — a dirty one routes through `POSTCommit`, which auto-creates the
+  branch at the pin); an attached wt still refuses `NOBRANCH` per
+  DIS-020 (see `24-missing-branch-no-push`).  Depth-3 forest (parent →
+  vendor/sub → vendor/leaf), only the parent edited: asserts the push
+  exits 0, no NOBRANCH/abort on stderr, the parent git origin advanced,
+  and both clean sub tips stayed put.

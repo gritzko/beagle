@@ -880,10 +880,17 @@ static ok64 resolve_target(sha1 *out, u8cs reporoot, u8cs target_query_in) {
 
     ok64 rr = KEEPResolveRef(out, target_query_in, cur_branch);
     if (rr != OK) {
-        fprintf(stderr,
-            "sniff: patch: bad ref '%.*s'\n",
-            (int)$len(target_query_in),
-            (char const *)target_query_in[0]);
+        //  An empty query is the parent-tip probe (resolve_parent_tip)
+        //  asking "does the target's parent branch resolve?"  For a flat
+        //  git-imported top-level branch there is no trunk to fall back
+        //  to, so the bare `?` lookup fails — that's expected, and the
+        //  caller silently drops to a DAG-LCA fork base.  Don't print the
+        //  misleading `bad ref ''` user error for it (SUBS-002).
+        if (!u8csEmpty(target_query_in))
+            fprintf(stderr,
+                "sniff: patch: bad ref '%.*s'\n",
+                (int)$len(target_query_in),
+                (char const *)target_query_in[0]);
         fail(PATCHFAIL);
     }
 

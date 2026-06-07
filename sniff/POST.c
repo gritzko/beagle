@@ -1798,6 +1798,27 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
     //  PUT-side wrapper (`PUTCreateBranch`) calls us with
     //  allow_create=YES to reuse the create-on-miss arm below.
     if (!target_exists && !allow_create) {
+        //  SUBS-006: a clean, detached sub driven by a parent POST
+        //  forwards `be post ?/<sub>/.<parent>/<branch>` (no `#msg`,
+        //  no in-scope patch rows) which lands here as a label-FF
+        //  promote onto a not-yet-materialised synthetic branch.  A
+        //  detached wt reaching this arm is always clean — a DIRTY
+        //  detached sub routes through POSTCommit instead (it
+        //  auto-creates the synthetic branch at the pin; see the
+        //  cross-branch override in POSTCommit).  So there is nothing
+        //  to promote: no-op (POSTNONE), not NOBRANCH.  The parent's
+        //  recursion treats POSTNONE's low byte as a clean-sub skip,
+        //  so the git-peer push proceeds.  An attached wt (a user
+        //  typing `be post ?nonexistent` on a real branch) still
+        //  refuses NOBRANCH per DIS-020.
+        if (post_is_detached_wt()) {
+            if (!SNIFF.quiet)
+                fprintf(stderr,
+                        "sniff: " U8SFMT ": ?" U8SFMT " not materialised on "
+                        "a clean detached wt — nothing to promote\n",
+                        u8sFmt(vtag), u8sFmt(target_branch));
+            return POSTNONE;
+        }
         fprintf(stderr,
                 "sniff: " U8SFMT ": ?" U8SFMT " does not exist — "
                 "`be put ?<branch>` first\n",

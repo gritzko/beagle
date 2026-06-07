@@ -43,9 +43,11 @@ set(_BE_WILL_FAIL_CASES
     # entry-point resolver hands BEActSubsPatch a context-free pin.
     # SUBS-004 (put/09) + SUBS-005 (delete/08) landed via the dogs merge
     # (5fb56d6f / 9aabd863) — off WILL_FAIL so they must pass normally.
-    "be-head-21-sub-dirty-reported"                 # SUBS-007
-    "be-all-01-subs-all-verbs"                      # SUBS-001/002/007 capstone
-    "be-spot-10-sub-recurse-search"                 # SUBS-011 (projector recursion)
+    # SUBS-001/002/007 capstone (be-all-01-subs-all-verbs) — all three landed
+    # (dogs merge 7d37f90f) — off WILL_FAIL; every verb's sub-recursion passes.
+    # SUBS-011 (be-spot-10-sub-recurse-search) FIXED: BEProjector now
+    # fans search projectors into mounted subs (BEProjectorSubs) and
+    # be get indexes each sub on mount (BEIndexMount) — off WILL_FAIL.
     # POST-005 (post/28) fixed — absorbed-tree (theirs) ULOG cursor gates the
     # untracked-file ADD; off WILL_FAIL so it must pass normally.
 )
@@ -95,6 +97,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-put-06-triangle"
     # SUBS-004 repro: bare `be put`, parent clean + sub dirty → exit 0.
     "be-put-09-sub-only-dirty-exit"
+    # SUBS-009 repro: `be put <subpath>` on a declared-but-unmounted
+    # sub-add candidate gives an actionable refusal, not "does not exist".
+    "be-put-11-sub-add-refusal"
     # SUBS-005 repro: path-scoped delete of a sub / sub-interior file.
     "be-delete-08-sub-path-scoped-deldirty"
     "be-get-24-uri-refs"
@@ -122,9 +127,15 @@ set(_BE_NEEDS_SSH_CASES
     "be-patch-29-sub-unchanged-gitlink-ok"
     "be-post-26-sub-both-dirty-keeps-parent-edit"
     "be-post-27-sub-only-parent-dirty-commits"
+    # SUBS-006 repro: clean nested sub must no-op a git-peer push, not
+    # abort it with NOBRANCH.
+    "be-post-29-sub-clean-nested-remote-push"
     "be-head-21-sub-dirty-reported"
     "be-all-01-subs-all-verbs"
     "be-spot-10-sub-recurse-search"
+    # SUBS-012: projector sub-recursion (diff fan-out + object routing).
+    "be-diff-06-sub-change"
+    "be-tree-01-sub-object-routing"
 )
 
 foreach(_run ${_be_case_runs})

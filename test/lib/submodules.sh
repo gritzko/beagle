@@ -37,25 +37,12 @@
 # Silence the git 2.30+ "initial branch name" hint; we pin `master`.
 export GIT_CONFIG_GLOBAL=/dev/null
 
-# POST-001 phase 2: an ssh:// (git) parent does NOT recurse into subs
-# by default — keeper/beagle sources do.  This fixture builds an ssh
-# (git) parent, so every recursing verb here must opt in with `--sub`.
-# Wrap $BE in a generated shim that appends `--sub` to each call so the
-# whole fixture (and the suites built on it) keep exercising the
-# recurse path unchanged.  `--nosub` still wins inside `be`, so cases
-# that pass it explicitly are unaffected.  The shim lives under $ETMP
-# (process-scoped); $REAL_BE keeps the unwrapped binary for any case
-# that needs it.
+# Recursion is the default for every source type including ssh:// (git).
+# No shim or --sub flag needed; $BE recurses into declared subs unless
+# the caller passes --nosub.  $REAL_BE is kept as a convenience alias in
+# case any future case wants the unwrapped binary explicitly.
 REAL_BE="$BE"
-_BE_SHIM="$ETMP/be-sub-shim"
-mkdir -p "$(dirname "$_BE_SHIM")"
-cat > "$_BE_SHIM" <<SHIM
-#!/bin/sh
-exec "$REAL_BE" "\$@" --sub
-SHIM
-chmod +x "$_BE_SHIM"
-BE="$_BE_SHIM"
-export BE REAL_BE
+export REAL_BE
 
 # Keeper's ssh-side path resolution requires $SCRATCH under $HOME.
 [ -n "${HOME:-}" ] || fail "submodules.sh: \$HOME unset"

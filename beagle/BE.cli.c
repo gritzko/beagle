@@ -545,6 +545,200 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     done;
 }
 
+//  --- Projector submodule recursion (SUBS-011 / SUBS-012) ----------
+//
+//  A repo-wide read-only projector (search: grep/spot/regex; whole-
+//  tree views: diff/tree/refs) must descend into every mounted sub,
+//  run the SAME projector there, and merge each sub's hits into the
+//  parent's stream path-prefixed under the mount — exactly the
+//  HUNKu8sRelay pattern the verbs use (BERelaySub).  Path-scoped
+//  projectors that already land inside a mount (`grep:vendor/sub/#…`,
+//  `blob:vendor/sub/core.c?…`) are routed by the dog itself and don't
+//  need this fan-out; whole-tree forms do.  `--nosub` opts out.
+
+//  YES iff `scheme` names a projector that fans out into subs.  Search
+//  projectors (SUBS-011) merge per-sub hits; whole-tree views
+//  (SUBS-012: diff, tree, refs) merge per-sub path-prefixed reports.
+//  Object/history projectors that resolve a single path (sha1, blob,
+//  commit, size, type, log, blame) are NOT here — a sub path on those
+//  is handled by the dog's own in-mount resolution, not a fan-out.
+static b8 be_projector_recurses(u8cs scheme) {
+    a_cstr(s_grep,  "grep");
+    a_cstr(s_spot,  "spot");
+    a_cstr(s_regex, "regex");
+    a_cstr(s_diff,  "diff");
+    a_cstr(s_tree,  "tree");
+    a_cstr(s_refs,  "refs");
+    return $eq(scheme, s_grep) || $eq(scheme, s_spot)
+        || $eq(scheme, s_regex) || $eq(scheme, s_diff)
+        || $eq(scheme, s_tree)  || $eq(scheme, s_refs);
+}
+
+//  Per-sub closure for the projector fan-out.  Carries the parent's
+//  projector argv prefix (`be [flags] <proj-uri>` minus the leading
+//  `be`) so each mounted sub re-runs the identical projector, with
+//  BERelaySub path-prefixing the sub's hunk URIs under the mount.
+typedef struct {
+    u8cs  wt_root;
+    u8cs *argv_head;
+    u8cs *argv_term;
+    ok64  worst;
+} beproj_recurse_ctx;
+
+static ok64 beproj_recurse_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    beproj_recurse_ctx *rc = (beproj_recurse_ctx *)vctx;
+    if (!s->mounted) return OK;   //  declared-not-mounted: nothing to query
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    u8css argv = {rc->argv_head, rc->argv_term};
+    ok64 r = BERelaySub(rc->wt_root, subpath, argv);
+    //  A clean sub (no hits / empty report) returns *NONE — a no-op,
+    //  not a failure of the aggregation.  Only real errors stick.
+    if (r != OK && !ok64is(r, NONE)) rc->worst = r;
+    return OK;
+}
+
+//  Fan the projector `u` (its full `u->data` URI) out into every
+//  mounted sub, path-prefixed.  Runs AFTER the parent projector has
+//  emitted its own hunks, so the merged stream is parent-then-subs in
+//  one sequential HUNK stream.  Honours `--nosub`.  Returns the worst
+//  sub exit (OK when every sub was clean / a no-op).
+static ok64 BEProjectorSubs(cli *c, uri *u) {
+    sane(c && u);
+    if (CLIHas(c, "--nosub"))        done;
+    if (!be_projector_recurses(u->scheme)) done;
+    if (!u8bHasData(c->repo))        done;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Child argv = the projector URI plus the forwarded flags (drop
+    //  `--at`: each sub resolves its own tip from its mount wtlog, and
+    //  BERelaySub appends `--tlv` itself).  Mirror BEHeadSubs.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
+        if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(child_args, (*u8csbAtP(c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
+            u8csbFeed1(child_args, (*u8csbAtP(c->flags, j + 1)));
+    }
+    a_dup(u8c, proj_uri, u->data);
+    u8csbFeed1(child_args, proj_uri);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    beproj_recurse_ctx rc = {
+        .argv_head = (u8cs *)child_argv[0],
+        .argv_term = (u8cs *)child_argv[1],
+        .worst     = OK,
+    };
+    u8csMv(rc.wt_root, wt_root);
+    (void)BESubsHere(wt_root, beproj_recurse_cb, &rc);
+    return rc.worst;
+}
+
+//  --- Projector path-in-mount routing (SUBS-012) -------------------
+//
+//  A path-bearing projector (`blob:vendor/sub/core.c?ref`,
+//  `tree:vendor/sub?ref`, `log:vendor/sub/core.c`, `blame:…`) whose
+//  path lands inside a mounted sub must resolve in the SUB shard, not
+//  the parent — the parent tree holds only a `160000` gitlink there,
+//  so keeper/graf return KEEPNONE / PROJFAIL.  Route it: rebuild the
+//  projector URI with the path made mount-relative and relay it into
+//  the sub (BERelaySub re-prefixes the hunk URIs under the mount).
+
+//  YES iff `path` == `sub` or `path` starts with `sub/` — i.e. `path`
+//  lands at or inside the mount `sub`.  On a match, `*rel_out` is the
+//  mount-relative remainder (empty when `path`==`sub`).
+static b8 be_path_in_mount(u8csc path, u8csc sub, u8csp rel_out) {
+    if (u8csEmpty(path) || u8csEmpty(sub)) return NO;
+    u32 pl = (u32)$len(path), sl = (u32)$len(sub);
+    if (pl < sl) return NO;
+    u8cs head = {path[0], path[0] + sl};
+    if (!u8csEq(head, sub)) return NO;
+    if (pl == sl) { rel_out[0] = rel_out[1] = NULL; return YES; }
+    if (path[0][sl] != '/') return NO;     //  `vendorX` must not match `vendor`
+    rel_out[0] = path[0] + sl + 1;
+    rel_out[1] = path[1];
+    return YES;
+}
+
+typedef struct {
+    cli  *c;
+    uri  *u;
+    u8cs  wt_root;
+    b8    handled;
+    ok64  rc;
+} beproj_route_ctx;
+
+static ok64 beproj_route_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    beproj_route_ctx *rc = (beproj_route_ctx *)vctx;
+    if (rc->handled) return OK;            //  first matching mount wins
+    if (!s->mounted) return OK;
+
+    u8cs rel = {};
+    if (!be_path_in_mount(rc->u->path, s->path, rel)) return OK;
+
+    //  Rebuild `<scheme>:<rel>?<query>#<frag>` for the child.  URIMake
+    //  serialises a generic URI; prepend `<scheme>:` so the child's
+    //  BEProjector routes it (the scheme is the projector selector).
+    a_pad(u8, uri_buf, MAX_URI_LEN);
+    a_dup(u8c, sch, rc->u->scheme);
+    call(u8bFeed,  uri_buf, sch);
+    call(u8bFeed1, uri_buf, ':');
+    if (!u8csEmpty(rel)) { a_dup(u8c, r, rel); call(u8bFeed, uri_buf, r); }
+    if (rc->u->query[0] != NULL) {
+        call(u8bFeed1, uri_buf, '?');
+        if (!u8csEmpty(rc->u->query)) {
+            a_dup(u8c, q, rc->u->query); call(u8bFeed, uri_buf, q);
+        }
+    }
+    if (rc->u->fragment[0] != NULL) {
+        call(u8bFeed1, uri_buf, '#');
+        if (!u8csEmpty(rc->u->fragment)) {
+            a_dup(u8c, f, rc->u->fragment); call(u8bFeed, uri_buf, f);
+        }
+    }
+    a_dup(u8c, child_uri, u8bDataC(uri_buf));
+
+    //  argv = forwarded flags (drop `--at`) + the rewritten projector.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    for (u32 j = 0; j + 1 < u8csbDataLen(rc->c->flags); j += 2) {
+        if ($eq((*u8csbAtP(rc->c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(child_args, (*u8csbAtP(rc->c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(rc->c->flags, j + 1))))
+            u8csbFeed1(child_args, (*u8csbAtP(rc->c->flags, j + 1)));
+    }
+    u8csbFeed1(child_args, child_uri);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    u8css argv = {(u8cs *)child_argv[0], (u8cs *)child_argv[1]};
+    rc->rc = BERelaySub(rc->wt_root, subpath, argv);
+    rc->handled = YES;
+    return OK;
+}
+
+//  If the projector's path lands inside a mounted sub, run it in the
+//  sub shard (path-prefixed) and set `*handled`.  Otherwise leave
+//  `*handled` NO and let the caller run the parent projector.  Honours
+//  `--nosub` (a sub-path projector under `--nosub` stays parent-bound,
+//  which is the documented opt-out — it then fails as before).
+static ok64 BEProjectorRouteToMount(cli *c, uri *u, b8 *handled) {
+    sane(c && u && handled);
+    *handled = NO;
+    if (CLIHas(c, "--nosub"))   done;
+    if (u8csEmpty(u->path))     done;   //  whole-tree form → fan-out, not route
+    if (!u8bHasData(c->repo))   done;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    beproj_route_ctx rc = { .c = c, .u = u, .handled = NO, .rc = OK };
+    u8csMv(rc.wt_root, wt_root);
+    (void)BESubsHere(wt_root, beproj_route_cb, &rc);
+    *handled = rc.handled;
+    return rc.rc;
+}
+
 //  View-projector routing (VERBS.md §"View projectors").
 //
 //  Invocation: `be <scheme>:<URI>` — no verb.  `be` is a scheme
@@ -566,6 +760,16 @@ static ok64 BEProjector(cli *c, uri *u) {
         fail(BEFAIL);
     }
     a_cstr(dog_s, dog_cstr);
+
+    //  SUBS-012: a path-bearing projector whose path lands inside a
+    //  mounted sub resolves in the SUB shard (the parent tree holds a
+    //  bare gitlink there).  Route + relay it; if handled, we're done —
+    //  the parent dog would only return KEEPNONE / PROJFAIL.
+    {
+        b8 routed = NO;
+        ok64 rr = BEProjectorRouteToMount(c, u, &routed);
+        if (routed) return rr;
+    }
 
     //  Universal three-mode rule: `HUNKMode` (set in main via
     //  `CLISetHUNKMode`) already encodes --tlv / --color / --plain /
@@ -609,7 +813,22 @@ static ok64 BEProjector(cli *c, uri *u) {
     u8csbFeed1(dargs, u->data);
     a_dup(u8cs, dargv, u8csbData(dargs));
 
-    if (!tty) return BERun(dog_s, dargv, NO);
+    if (!tty) {
+        //  Run the parent projector (writes its own hunks straight to
+        //  stdout in the resolved mode), then fan out into mounted subs
+        //  (SUBS-011 / SUBS-012): each sub's hits are captured and
+        //  re-emitted path-prefixed in the same stream.  A sub-only or
+        //  whole-tree projector that recurses appends after the
+        //  parent's output; a non-recursing one is a no-op fan-out.
+        ok64 pr = BERun(dog_s, dargv, NO);
+        //  Parent *NONE (no hits) must not suppress the sub descent —
+        //  the sub may still have hits.  Keep the parent code as the
+        //  floor but let a successful sub relay surface OK.
+        ok64 sr = BEProjectorSubs(c, u);
+        if (pr != OK && !ok64is(pr, NONE)) return pr;
+        if (sr != OK) return sr;
+        return pr;
+    }
 
     //  TTY: pipe through bro.  Bro drains HUNK TLV from stdin (see
     //  bro/BRO.c §BROPipeRun) and opens /dev/tty for keystrokes.
@@ -623,7 +842,16 @@ static ok64 BEProjector(cli *c, uri *u) {
     u8csbFeed1(bargs, bro_name);
     u8csbFeed1(bargs, color_flag);
     a_dup(u8cs, bargv, u8csbData(bargs));
-    return BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
+    //  TTY fan-out: the parent's hunks page through bro; the sub
+    //  relays (BERelaySub re-emits in the parent's Color HUNKMode)
+    //  follow on the terminal once bro returns.  A merged single-bro
+    //  stream is a future refinement; correctness (hits are shown)
+    //  holds today.
+    ok64 pr = BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
+    ok64 sr = BEProjectorSubs(c, u);
+    if (pr != OK && !ok64is(pr, NONE)) return pr;
+    if (sr != OK) return sr;
+    return pr;
 }
 
 
@@ -698,6 +926,20 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
         u8css argv = {rc->argv_head, rc->argv_term};
         ok64 r = BERelaySub(rc->wt_root, subpath, argv);
         if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
+
+        //  SUBS-007: the `be head ?` relay above is the committed
+        //  pin-vs-trunk ahead/behind only — it is byte-identical whether
+        //  or not a sub file is dirty (Submodules.mkd line 20 promises
+        //  "dirty state per sub").  Also relay the sub's bare status
+        //  (empty argv re-enters BEDefault → `sniff` in the mount, the
+        //  same path bare `be` already uses to surface `mod core.c`), so
+        //  a dirtied sub working-tree file shows up in HEAD's per-sub
+        //  report.  Read-only: `sniff` status writes no wtlog rows, so
+        //  the head/03 read-only invariant holds.  A clean sub returns
+        //  *NONE (no-op); never an error.
+        u8css status_argv = {NULL, NULL};
+        ok64 sr = BERelaySub(rc->wt_root, subpath, status_argv);
+        if (sr != OK && !ok64is(sr, NONE)) rc->worst = sr;   //  NONE = no-op
         return OK;
     }
 

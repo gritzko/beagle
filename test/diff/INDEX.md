@@ -13,6 +13,11 @@
   loop skipped the segment with the IN bytes (its boundary `\n` was
   RM-side, hidden in IN-pass).  Plaintext (`HUNKu8sFeedLineBased`)
   was unaffected; only the ANSI path lost the line.
+* `06-sub-change/` — SUBS-012.  `diff:` aggregates a mounted sub's
+  working-tree change into the parent's hunk stream, path-prefixed
+  under the mount (`vendor/sub/core.c`); `--nosub` suppresses the sub
+  side.  Driven by `BEProjectorSubs` (BE.cli.c) fanning whole-tree
+  projectors into mounts via `BERelaySub`.  (ssh fixture.)
 
 ## Label form note
 
