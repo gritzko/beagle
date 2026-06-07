@@ -246,22 +246,12 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
         return resolve_branch_path(k, out, t);
     }
 
-    //  Hex token: classify by length.  4..39 hex → hashlet expand;
-    //  exactly 40 → verify-exists.
-    if (HEXu8sValid(t)) {
-        size_t len = u8csLen(t);
-        if (len == 40) return resolve_sha40(k, out, t);
-        if (len >= 6) return resolve_hashlet(k, out, t);
-        //  Short alpha-only-looking shape (3-char) might also be a
-        //  legal branch name — fall through to branch resolution.
-    }
-
     //  Branch path, possibly relative.  Queries are path-shaped:
     //  `./X`, `../X`, `..` resolve against `cur_branch` via PATH
     //  primitives (Pop/Push) — branch semantics: popping past
     //  trunk yields trunk (empty), not "..".  Everything else
-    //  passes through verbatim (absolute / project-relative; the
-    //  branch resolver disambiguates).
+    //  passes through verbatim (absolute / project-relative / a bare
+    //  hex token; the branch resolver disambiguates).
     a_path(abs_path);
     path8s ref_in = {t[0], t[1]};
     if (!$empty(ref_in) && ref_in[0][0] == '.') {
@@ -281,7 +271,26 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     } else if (!$empty(ref_in)) {
         call(PATHu8bFeed, abs_path, ref_in);
     }
-    return resolve_branch_path(k, out, $path(abs_path));
+
+    //  URI-001 §"The one rule": disambiguation is BRANCH-FIRST and
+    //  hash-length-agnostic.
+    //   1. Does the ref name a branch (REFS lookup)?  → branch / trunk.
+    ok64 bo = resolve_branch_path(k, out, $path(abs_path));
+    if (bo == OK) return OK;
+
+    //   2. Else, is the ref all-hex AND does that hash exist (pack
+    //      index)?  → hashlet / detached.  The index knows sha1 (40)
+    //      vs sha256 (64); a `.`-prefixed (relative) token never gets
+    //      here — it has no hex spelling.
+    if (HEXu8sValid(t)) {
+        size_t len = u8csLen(t);
+        if (len == 40) return resolve_sha40(k, out, t);
+        if (len >= 6)  return resolve_hashlet(k, out, t);
+    }
+
+    //   3. Else → not found: surface the branch lookup's outcome
+    //      (RESLVNONE on a clean miss, RESLVFAIL on no-home).
+    return bo;
 }
 
 ok64 KEEPResolveHex(sha1hex *out, u8cs token) {
@@ -360,30 +369,41 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
     if (u8csEmpty(project)) u8csMv(project, u8bDataC(h->project));
     if (u8csEmpty(project)) fail(RESLVFAIL);
 
-    //  Classify the kind + compute the branch-only path.
+    //  URI-001 §"The one rule": classify by RESOLUTION, branch-first —
+    //  never by hex syntax.  Compute the branch-only path, try it as a
+    //  branch (REFS lookup); a hit is BRANCH (or TRUNK when the path is
+    //  empty).  Only on a branch miss AND an all-hex ref naming an
+    //  existing object is the target DETACHED.  This is what lets a
+    //  branch whose NAME is all-hex (`?c0ffee`) win over a same-spelled
+    //  hashlet.  Empty-but-non-NULL trunk token: KEEPResolveRef's
+    //  `sane($ok(token))` rejects a {NULL,NULL} slice, so spell trunk as
+    //  a zero-length slice over a real address.
+    keeper *k = &KEEP;
     a_path(branchb);
     refkind kind;
-    if (u8csEmpty(in)) {
-        kind = REFKIND_TRUNK;
-    } else if (HEXu8sValid(in) && u8csLen(in) >= 4) {
-        kind = REFKIND_DETACHED;                 //  bare sha / hashlet
-    } else {
-        call(resolve_abs_branch, branchb, cur_leaf, in);
-        kind = u8bHasData(branchb) ? REFKIND_BRANCH : REFKIND_TRUNK;
-    }
-
-    //  Resolve the pin sha for the classified target.
     sha1 pin = {};
-    if (kind == REFKIND_DETACHED) {
-        call(KEEPResolveRef, &pin, in, cur_leaf);
-    } else if (kind == REFKIND_TRUNK) {
-        //  Empty-but-non-NULL token: KEEPResolveRef's `sane($ok(token))`
-        //  rejects a {NULL,NULL} slice, so spell trunk as a zero-length
-        //  slice over a real address.
+    if (u8csEmpty(in)) {
         a_cstr(trunk, "");
         call(KEEPResolveRef, &pin, trunk, cur_leaf);
+        kind = REFKIND_TRUNK;
     } else {
-        call(KEEPResolveRef, &pin, u8bDataC(branchb), cur_leaf);
+        call(resolve_abs_branch, branchb, cur_leaf, in);
+        ok64 bo;
+        if (u8bHasData(branchb)) {
+            bo = resolve_branch_path(k, &pin, u8bDataC(branchb));
+            kind = REFKIND_BRANCH;
+        } else {
+            a_cstr(trunk, "");
+            bo = KEEPResolveRef(&pin, trunk, cur_leaf);
+            kind = REFKIND_TRUNK;
+        }
+        if (bo != OK) {
+            //  Branch miss → detached only if the raw ref is an all-hex
+            //  object that exists; otherwise surface the branch outcome.
+            if (!HEXu8sValid(in)) return bo;
+            call(KEEPResolveRef, &pin, in, cur_leaf);
+            kind = REFKIND_DETACHED;
+        }
     }
     sha1hex pinhex = {};
     sha1hexFromSha1(&pinhex, &pin);

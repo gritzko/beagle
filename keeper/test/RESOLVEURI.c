@@ -123,13 +123,22 @@ ok64 RESOLVEURItest() {
     call(add_ref, &h, "?",         S0);
     call(add_ref, &h, "?feat",     S1);
     call(add_ref, &h, "?feat/sub", S1);
+    //  URI-001 Stage 1: branches whose NAMES are all-hex.  Branch-first
+    //  resolution must pick the branch over a same-spelled hashlet.
+    //  `dead` (4 hex) and `c0ffee` (6 hex) never collide with a real
+    //  object prefix, so the only way they resolve is as branches.
+    call(add_ref, &h, "?dead",     S0);
+    call(add_ref, &h, "?c0ffee",   S1);
 
     //  Expected canonical strings.
     char e_trunk[64], e_feat[96], e_featsub[96], e_detach[64];
+    char e_dead[96], e_coffee[96];
     snprintf(e_trunk,   sizeof e_trunk,   "?/proj/%s", S0);
     snprintf(e_feat,    sizeof e_feat,    "?/proj/feat/%s", S1);
     snprintf(e_featsub, sizeof e_featsub, "?/proj/feat/sub/%s", S1);
     snprintf(e_detach,  sizeof e_detach,  "?/proj//%s", S0);
+    snprintf(e_dead,    sizeof e_dead,    "?/proj/dead/%s", S0);
+    snprintf(e_coffee,  sizeof e_coffee,  "?/proj/c0ffee/%s", S1);
 
     //  --- REF arm ---
     //  trunk (empty / bare ?)
@@ -142,6 +151,15 @@ ok64 RESOLVEURItest() {
     call(check_ref, &h, "?feat/sub", e_featsub);
     call(check_ref, &h, "?./sub",    e_featsub);   // ./sub from feat/
     call(check_ref, &h, "?..",       e_trunk);     // parent of feat = trunk
+
+    //  URI-001 Stage 1: hex-spelled branch names resolve branch-first.
+    //  `dead` (4 hex) used to mis-emit as detached `?/proj//<sha>`;
+    //  `c0ffee` (6 hex) used to be unreachable (shadowed by a failing
+    //  hashlet lookup).  Bareword (no `?`) must promote identically.
+    call(check_ref, &h, "?dead",   e_dead);
+    call(check_ref, &h, "dead",    e_dead);
+    call(check_ref, &h, "?c0ffee", e_coffee);
+    call(check_ref, &h, "c0ffee",  e_coffee);
 
     //  detached: full sha + hashlet, both → ?/proj//<sha>
     {
