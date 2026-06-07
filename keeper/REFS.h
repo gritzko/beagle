@@ -19,6 +19,7 @@
 #include "abc/URI.h"
 #include "abc/RON.h"
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 
 con ok64 REFSFAIL  = 0x6ce3dc3ca495;
 con ok64 REFSNONE  = 0x6ce3dc5d85ce;
@@ -70,6 +71,77 @@ fun int REFKeyCmp(refcp a, refcp b) {
     int c = (ml == 0) ? 0 : memcmp(a->key[0], b->key[0], ml);
     if (c != 0) return c;
     return al < bl ? -1 : al > bl ? 1 : 0;
+}
+
+// --- Canonical-query kind probe (DIS-025 Stage 2) ---
+//
+// The CANONICAL resolved query form (the single context-free shape
+// every input resolves to — user-confirmed 2026-06-07; the wiki
+// URI.mkd spec is in flux) is structural in three ways:
+//
+//     ?/<project>/<40hex>            REFKIND_TRUNK     (trunk waypoint)
+//     ?/<project>//<40hex>           REFKIND_DETACHED  (no branch slot)
+//     ?/<project>/<branch>/<40hex>   REFKIND_BRANCH    (named branch)
+//
+// i.e. NO branch slot = attached to trunk; an EMPTY branch slot (the
+// double slash) = detached/branchless (bare sha, tag checkout,
+// `?null`); a FILLED slot = that named branch.  `REFSQueryKind` is the
+// owner of this distinction — the legacy `DOGCanonQueryParse` collapses
+// trunk and detached together (both yield an empty branch) and rejects
+// the single-slash trunk form outright, so callers that need the
+// 3-way split use this probe instead.
+typedef enum {
+    REFKIND_NONE     = 0,   // not a canonical resolved query (no 40-hex
+                            // pin tail, no project, relative ref, …)
+    REFKIND_TRUNK    = 1,   // /<project>/<40hex>
+    REFKIND_DETACHED = 2,   // /<project>//<40hex>
+    REFKIND_BRANCH   = 3,   // /<project>/<branch>/<40hex>
+    REFKIND_TAG      = 4,   // /<project>/<branch>/<tag>/<40hex>
+                            // SYNTACTICALLY identical to a nested BRANCH
+                            // (`/<project>/<a>/<b>/<40hex>`) — only the
+                            // tags-namespace REFS lookup tells them
+                            // apart, so `REFSQueryKind` NEVER returns
+                            // this; a home/REFS-aware refinement does.
+} refkind;
+
+// Classify a canonical resolved query by SHAPE only — no allocation,
+// no REFS / pack lookup.  Returns one of REFKIND_TRUNK / _DETACHED /
+// _BRANCH, or _NONE.  It does NOT return REFKIND_TAG: a tag waypoint
+// (`/<project>/<branch>/<tag>/<sha>`) is byte-identical to a nested
+// branch, so distinguishing the two requires a REFS tags-namespace
+// lookup — done by the home-aware funnel (REFSResolveURI), never here.
+// A leading `?` is tolerated and skipped.  The pin tail MUST be exactly
+// 40 hex; anything else (a bare name, a relative ref, a short hashlet,
+// a missing pin) is REFKIND_NONE — those are pre-canonical inputs, not
+// resolved forms.  `canon` is not consumed (a local copy is walked).
+fun refkind REFSQueryKind(u8csc canon) {
+    a_dup(u8c, q, canon);
+    if (!u8csEmpty(q) && *q[0] == '?') u8csUsed1(q);
+    if (u8csEmpty(q) || *q[0] != '/') return REFKIND_NONE;
+    u8csUsed1(q);                              // step past leading '/'
+
+    //  Pin = bytes after the LAST '/'; must be exactly 40 hex.
+    u8cs tail = {};
+    u8csMv(tail, q);
+    if (u8csRevFind(tail, '/') != OK) return REFKIND_NONE;
+    u8cs pin = {tail[1], q[1]};
+    if (u8csLen(pin) != 40 || !HEXu8sValid(pin)) return REFKIND_NONE;
+
+    //  body = project (+ branch slot) between the leading '/' (already
+    //  stepped) and the pin's leading '/'.
+    u8cs body = {q[0], tail[1]};
+    u8csShed1(body);                           // drop the pin's '/'
+    if (u8csEmpty(body)) return REFKIND_NONE;   // "//<pin>" — no project
+
+    //  First '/' in body splits project from the branch slot.  None at
+    //  all => trunk waypoint (body is the whole project).
+    u8cs scan = {};
+    u8csMv(scan, body);
+    if (u8csFind(scan, '/') != OK) return REFKIND_TRUNK;
+    u8cs project = {body[0], scan[0]};
+    if (u8csEmpty(project)) return REFKIND_NONE;  // "/<branch>/<pin>" — no project
+    u8csUsed1(scan);                           // past the branch-slot '/'
+    return u8csEmpty(scan) ? REFKIND_DETACHED : REFKIND_BRANCH;
 }
 
 // --- Public API ---

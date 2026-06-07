@@ -1396,30 +1396,45 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     a_dup(u8c, target_query_raw, u->query);
     a_dup(u8c, frag,             u->fragment);
 
-    //  Canonic-form peel.  When the resolver-emitted shape
-    //  `/<project>/<branch>/<pin>` (STORE.md §"URI structure") lands
-    //  here, the trailing pin would otherwise trip the located-cherry
-    //  promotion below.
+    //  DIS-025 Stage 2: route the target ref through the keeper funnel,
+    //  classify it once with REFSQueryKind, then peel to the shape the
+    //  downstream resolver expects.  This replaces the ad-hoc
+    //  DOGCanonQueryParse peel: REFSResolveURI + REFSQueryKind now own
+    //  the trunk / detached / branch distinction (incl. the single-slash
+    //  trunk form DOGCanonQueryParse rejects).  The funnel is idempotent
+    //  on the canonical query `be` already produced and uses the one
+    //  per-process home (the KEEP singleton) for project + cur context.
     //
-    //  DIS-025: an EMPTY branch slot (`/<project>//<sha>`) is the
-    //  canonical DETACHED form — a bare sha SQUASH target, NOT a
-    //  `?<branch>/<sha>` cherry-locate (URI.mkd §"Resolution boundary").
-    //  Reduce it to the bare pin (a full 40-hex sha) so resolve_target
-    //  does a sha lookup and the squash base falls to LCA(cur, sha) —
-    //  absorbing every commit in (cur..sha], not just the target's last
-    //  commit.  (resolve_parent_tip bails on a 40-hex first chunk, so
-    //  the fork correctly defaults to LCA(cur, theirs).)
+    //  Peel per kind:
+    //    DETACHED (`/<proj>//<sha>`, a bare sha / hashlet) → bare 40-hex
+    //      pin, so resolve_target does a sha lookup and the squash base
+    //      falls to LCA(cur, sha) — every commit in (cur..sha] is
+    //      absorbed, not just theirs's last commit (the DIS-025 fix).
+    //    BRANCH / TAG → the branch path; resolve_target re-derives the
+    //      tip and resolve_parent_tip finds the parent-branch base.
+    //    TRUNK → empty (resolve_target → trunk tip; resolve_parent_tip
+    //      bails with no parent → LCA(cur, trunk tip)).
     //
-    //  A NON-empty branch is the ordinary `?branch` form: reduce to bare
-    //  `<branch>` so PATCH sees the user's intent (SQUASH/MERGE/REBASE1);
-    //  the pin is dropped — the resolver re-derives the branch tip.
-    {
+    //  A ref the funnel can't resolve (a `?<br>/<hashlet>` located
+    //  cherry, an empty cherry-only query, …) is left untouched for the
+    //  absolutise + cherry-detector path below.
+    u8 canon_pad[320];
+    u8s canon_w = {canon_pad, canon_pad + sizeof canon_pad};
+    if (!u8csEmpty(target_query_raw) && KEEP.h != NULL &&
+        REFSResolveURI(KEEP.h, canon_w, target_query_raw) == OK) {
+        u8cs canon = {canon_pad, canon_w[0]};
+        if (!u8csEmpty(canon) && *canon[0] == '?') u8csUsed1(canon);
+        refkind k = REFSQueryKind(canon);
         u8cs c_proj = {}, c_branch = {}, c_pin = {};
-        if (DOGCanonQueryParse(target_query_raw, c_proj, c_branch, c_pin)) {
-            if (u8csEmpty(c_branch))
-                u8csMv(target_query_raw, c_pin);
-            else
-                u8csMv(target_query_raw, c_branch);
+        if (k == REFKIND_DETACHED &&
+            DOGCanonQueryParse(canon, c_proj, c_branch, c_pin)) {
+            u8csMv(target_query_raw, c_pin);
+        } else if ((k == REFKIND_BRANCH || k == REFKIND_TAG) &&
+                   DOGCanonQueryParse(canon, c_proj, c_branch, c_pin)) {
+            u8csMv(target_query_raw, c_branch);
+        } else if (k == REFKIND_TRUNK) {
+            target_query_raw[0] = canon_pad;     // empty = trunk
+            target_query_raw[1] = canon_pad;
         }
     }
 

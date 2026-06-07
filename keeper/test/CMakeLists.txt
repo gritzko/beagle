@@ -104,6 +104,18 @@ target_compile_options(REFADVtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(REFADVtest keeplib dog abc-core)
 add_test(NAME REFADVtest COMMAND REFADVtest)
 
+add_executable(REFKINDtest REFKIND.c)
+target_link_options(REFKINDtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(REFKINDtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(REFKINDtest keeplib dog abc-core)
+add_test(NAME REFKINDtest COMMAND REFKINDtest)
+
+add_executable(RESOLVEURItest RESOLVEURI.c)
+target_link_options(RESOLVEURItest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(RESOLVEURItest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(RESOLVEURItest keeplib dog abc-core)
+add_test(NAME RESOLVEURItest COMMAND RESOLVEURItest)
+
 add_executable(WIREtest WIRE.c)
 target_link_options(WIREtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WIREtest PRIVATE ${TEST_CXX_FLAGS})

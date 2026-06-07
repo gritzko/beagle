@@ -2663,36 +2663,6 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
     return tracked;
 }
 
-//  Resolve a branch query to its BRANCH-ONLY path (project stripped),
-//  against `cur_leaf` (also branch-only, e.g. `master`).  `./x`/`../x`/`..`
-//  resolve relative; a bare `feat`/`feat/` passes through (slash stripped);
-//  an absolute `/proj/branch` is project-stripped to `branch`.  Leaves
-//  `out` EMPTY for a hex (sha/hashlet) query — the caller writes those
-//  detached.  REFS keys are branch-only, so the project is re-attached
-//  only at canonical-form composition.  See URI.mkd §"Resolution boundary".
-static ok64 be_abs_branch(u8b out, u8cs cur_leaf, u8cs query) {
-    sane(u8bOK(out));
-    u8bReset(out);
-    if (u8csEmpty(query)) done;
-    a_dup(u8c, q, query);
-    if (HEXu8sValid(q) && u8csLen(q) >= 4) done;     //  sha/hashlet → detached
-    if (q[0][0] == '.') {                            //  relative
-        b8 rel = NO;
-        call(DPATHBranchResolveRel, out, cur_leaf, query, &rel);
-        done;
-    }
-    if (q[0][0] == '/') {                            //  absolute → strip project
-        a_dup(u8c, br, q);
-        DOGQueryStripProject(br);
-        if (!u8csEmpty(br)) call(u8bFeed, out, br);
-        done;
-    }
-    a_dup(u8c, body, q);                             //  bare project-relative
-    if (!u8csEmpty(body) && *u8csLast(body) == '/') u8csShed1(body);
-    call(u8bFeed, out, body);
-    done;
-}
-
 //  Entry-point URI resolver (URI.mkd §"Resolution boundary").  `be` is
 //  the only component with context, so it resolves every local,
 //  query-bearing URI to the single canonical context-free form
@@ -2763,6 +2733,18 @@ ok64 BEActResolveRef(cli *c) {
         done;
     }
 
+    //  REFSResolveURI reads the funnel's project + cur leaf from `rh`.
+    //  HOMEOpen / KEEPOpenBranch leave rh.cur_branch as the un-stripped
+    //  `<project>/<branch>`, so pin it to the project-stripped leaf for
+    //  relative refs (`?./x`, `?..`).  Set the LITERAL leaf bytes — NOT
+    //  via HOMESetCurBranch, whose DPATHBranchNormFeed collapses a
+    //  trunk-named leaf (`master`/`main`) to "".  The branch tree stores
+    //  trunk-named segments literally (children live under `master/…`),
+    //  so `?./fix` from cur=`master` must resolve to `master/fix`, not
+    //  `fix` — matching the prior be_abs_branch behaviour.
+    u8bReset(rh.cur_branch);
+    (void)u8bFeed(rh.cur_branch, cur_leaf);
+
     //  Resolved URIs must outlive this plan frame (BEBuildArgv forwards
     //  `u->data`), so compose into a process-scoped scratch buffer.
     static u8 _resolve_scratch[CLI_MAX_URIS * 96];
@@ -2784,35 +2766,22 @@ ok64 BEActResolveRef(cli *c) {
             if (DOGCanonQueryParse(u->query, pr, br, pn)) continue;
         }
 
-        //  Resolve against the BRANCH-ONLY cur (REFS keys are
-        //  project-stripped); the project is re-attached below.
-        sha1 pin = {};
-        if (KEEPResolveRef(&pin, u->query, cur_leaf) != OK) continue;
-        sha1hex pinhex = {};
-        sha1hexFromSha1(&pinhex, &pin);
-        u8cs pinslice = {};
-        sha1hexSlice(pinslice, &pinhex);
-
-        a_path(absb);                       //  branch-only (empty = detached)
-        if (be_abs_branch(absb, cur_leaf, u->query) != OK) continue;
-
-        u8cs project = {};
-        DOGQueryProject(cur_branch, project);
-        u8cs frag_save = {u->fragment[0], u->fragment[1]};
-        b8   has_frag  = (frag_save[0] != NULL);
-
-        //  Compose `?/<project>/<branch>/<pin>` (detached: empty branch
-        //  slot `/<project>//<pin>`).
+        //  Ref arm: the keeper funnel produces the canonical query with
+        //  the correct trunk (single-slash `/<proj>/<sha>`) / detached
+        //  (double-slash `/<proj>//<sha>`) / branch (`/<proj>/<br>/<sha>`)
+        //  shape, resolving the pin against rh's project + cur leaf.  The
+        //  original fragment is preserved verbatim.
         u8c *before = u8bIdleHead(scratch);
-        if (u8bFeed1(scratch, '?') != OK) continue;
-        if (u8bFeed1(scratch, '/') != OK) continue;
-        if (!u8csEmpty(project) && u8bFeed(scratch, project) != OK) continue;
-        if (u8bFeed1(scratch, '/') != OK) continue;
-        if (u8bHasData(absb) && u8bFeed(scratch, u8bDataC(absb)) != OK) continue;
-        if (u8bFeed1(scratch, '/') != OK) continue;
-        if (u8bFeed(scratch, pinslice) != OK) continue;
-        if (has_frag) {
+        {
+            u8 _qpad[320];
+            u8s qw = {_qpad, _qpad + sizeof _qpad};
+            if (REFSResolveURI(&rh, qw, u->query) != OK) continue;
+            u8cs cq = {_qpad, qw[0]};        //  `?…` canonical query
+            if (u8bFeed(scratch, cq) != OK) continue;
+        }
+        if (u->fragment[0] != NULL) {
             if (u8bFeed1(scratch, '#') != OK) continue;
+            u8cs frag_save = {u->fragment[0], u->fragment[1]};
             if (!u8csEmpty(frag_save) &&
                 u8bFeed(scratch, frag_save) != OK) continue;
         }

@@ -16,6 +16,7 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/DPATH.h"
 #include "dog/HOME.h"
 
 #include "dog/git/GIT.h"
@@ -289,5 +290,160 @@ ok64 KEEPResolveHex(sha1hex *out, u8cs token) {
     u8cs cur_branch = {NULL, NULL};
     call(KEEPResolveRef, &sh, token, cur_branch);
     sha1hexFromSha1(out, &sh);
+    done;
+}
+
+//  --- DIS-025 Stage 2: text-in / text-out canonicalising funnel ---
+
+//  Branch-only absolute path (project stripped) for a non-hex ref.
+//  Empty result == trunk (relative `..` popped past root, or an
+//  absolute `/<proj>` with no branch).  Relative refs (`./x`, `../x`,
+//  `..`) resolve against `cur_leaf`; absolute refs get their project
+//  stripped; bare project-relative refs pass through (trailing '/'
+//  trimmed).  Mirrors beagle/BE.cli.c::be_abs_branch (keeper may not
+//  depend on beagle, so the logic is duplicated here).
+static ok64 resolve_abs_branch(u8b out, u8cs cur_leaf, u8cs query) {
+    sane($ok(out));
+    u8bReset(out);
+    if (u8csEmpty(query)) done;
+    a_dup(u8c, q, query);
+    if (*q[0] == '.') {                          //  relative
+        b8 rel = NO;
+        call(DPATHBranchResolveRel, out, cur_leaf, query, &rel);
+        done;
+    }
+    if (*q[0] == '/') {                          //  absolute → strip project
+        a_dup(u8c, br, q);
+        DOGQueryStripProject(br);
+        if (!u8csEmpty(br)) call(u8bFeed, out, br);
+        done;
+    }
+    a_dup(u8c, body, q);                         //  bare project-relative
+    if (!u8csEmpty(body) && *u8csLast(body) == '/') u8csShed1(body);
+    call(u8bFeed, out, body);
+    done;
+}
+
+ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
+    sane(h && $ok(abs_ref) && $ok(rel_ref));
+
+    //  Idempotent: an already-canonical input is re-emitted verbatim
+    //  (with a single leading `?`).  This makes the funnel a no-op on
+    //  text it has already produced — the common case when a caller
+    //  re-resolves a URI a prior `be` invocation canonicalised.
+    if (REFSQueryKind(rel_ref) != REFKIND_NONE) {
+        a_dup(u8c, body, rel_ref);
+        if (!u8csEmpty(body) && *body[0] == '?') u8csUsed1(body);
+        call(URIMake, abs_ref, NULL, NULL, NULL, body, NULL);
+        done;
+    }
+
+    //  Strip a leading `?` from the raw input.
+    a_dup(u8c, in, rel_ref);
+    if (!u8csEmpty(in) && *in[0] == '?') u8csUsed1(in);
+
+    //  cur's branch leaf (project-stripped) from home.  HOME stores the
+    //  canonical trailing-'/' form (`feat/`), but the relative resolver
+    //  (DPATHBranchResolveRel → PATHu8bPop) expects the slash-less shape
+    //  the wtlog-derived callers feed it — a trailing slash makes `..`
+    //  pop the empty tail segment instead of the branch.  Trim it.
+    u8cs cur_leaf = {};
+    u8csMv(cur_leaf, u8bDataC(h->cur_branch));
+    while (!u8csEmpty(cur_leaf) && *u8csLast(cur_leaf) == '/')
+        u8csShed1(cur_leaf);
+
+    //  Project segment: an absolute input carries its own; otherwise
+    //  take cur's project from home.  No project anywhere → can't
+    //  compose a canonical form.
+    u8cs project = {};
+    if (!u8csEmpty(in) && *in[0] == '/') DOGQueryProject(in, project);
+    if (u8csEmpty(project)) u8csMv(project, u8bDataC(h->project));
+    if (u8csEmpty(project)) fail(RESLVFAIL);
+
+    //  Classify the kind + compute the branch-only path.
+    a_path(branchb);
+    refkind kind;
+    if (u8csEmpty(in)) {
+        kind = REFKIND_TRUNK;
+    } else if (HEXu8sValid(in) && u8csLen(in) >= 4) {
+        kind = REFKIND_DETACHED;                 //  bare sha / hashlet
+    } else {
+        call(resolve_abs_branch, branchb, cur_leaf, in);
+        kind = u8bHasData(branchb) ? REFKIND_BRANCH : REFKIND_TRUNK;
+    }
+
+    //  Resolve the pin sha for the classified target.
+    sha1 pin = {};
+    if (kind == REFKIND_DETACHED) {
+        call(KEEPResolveRef, &pin, in, cur_leaf);
+    } else if (kind == REFKIND_TRUNK) {
+        //  Empty-but-non-NULL token: KEEPResolveRef's `sane($ok(token))`
+        //  rejects a {NULL,NULL} slice, so spell trunk as a zero-length
+        //  slice over a real address.
+        a_cstr(trunk, "");
+        call(KEEPResolveRef, &pin, trunk, cur_leaf);
+    } else {
+        call(KEEPResolveRef, &pin, u8bDataC(branchb), cur_leaf);
+    }
+    sha1hex pinhex = {};
+    sha1hexFromSha1(&pinhex, &pin);
+    u8cs pinslice = {};
+    sha1hexSlice(pinslice, &pinhex);
+
+    //  Compose the canonical query BODY (no leading `?`), then let
+    //  URIMake prepend the `?` and write into abs_ref:
+    //    TRUNK     /<project>/<pin>
+    //    DETACHED  /<project>//<pin>
+    //    BRANCH    /<project>/<branch>/<pin>
+    a_pad(u8, body, 320);
+    call(u8bFeed1, body, '/');
+    call(u8bFeed, body, project);
+    call(u8bFeed1, body, '/');
+    if (kind == REFKIND_DETACHED) {
+        call(u8bFeed1, body, '/');
+    } else if (kind == REFKIND_BRANCH) {
+        call(u8bFeed, body, u8bDataC(branchb));
+        call(u8bFeed1, body, '/');
+    }
+    call(u8bFeed, body, pinslice);
+    call(URIMake, abs_ref, NULL, NULL, NULL, u8bDataC(body), NULL);
+    done;
+}
+
+ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri) {
+    sane(h && $ok(abs_uri) && $ok(rel_uri));
+
+    uri u = {};
+    u.data[0] = rel_uri[0];
+    u.data[1] = rel_uri[1];
+    call(URILexer, &u);
+
+    //  No query slot → nothing for the REF arm to canonicalise; emit
+    //  the URI unchanged (path / authority arms are Stage-3 TODOs).
+    if (u.query[0] == NULL) {
+        u8cs sc = {u.scheme[0], u.scheme[1]};
+        u8cs au = {u.authority[0], u.authority[1]};
+        u8cs pa = {u.path[0], u.path[1]};
+        u8cs fr = {u.fragment[0], u.fragment[1]};
+        call(URIMake, abs_uri, sc, au, pa, NULL, fr);
+        done;
+    }
+
+    //  REF arm: canonicalise the query into a scratch, then strip its
+    //  leading `?` (URIMake re-adds it on the recompose).
+    u8 _qpad[320];
+    u8s qw = {_qpad, _qpad + sizeof(_qpad)};
+    u8cs qin = {u.query[0], u.query[1]};
+    call(REFSResolveURI, h, qw, qin);
+    u8cs qbody = {_qpad, qw[0]};
+    if (!u8csEmpty(qbody) && *qbody[0] == '?') u8csUsed1(qbody);
+
+    //  Recompose, preserving authority / path / fragment verbatim
+    //  (path arm = cwd→root, auth arm = //alias→URL are Stage-3 TODOs).
+    u8cs sc = {u.scheme[0], u.scheme[1]};
+    u8cs au = {u.authority[0], u.authority[1]};
+    u8cs pa = {u.path[0], u.path[1]};
+    u8cs fr = {u.fragment[0], u.fragment[1]};
+    call(URIMake, abs_uri, sc, au, pa, qbody, fr);
     done;
 }

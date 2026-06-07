@@ -51,4 +51,36 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch);
 //  RESLVNONE on miss, RESLVFAIL on malformed input.
 ok64 KEEPResolveHex(sha1hex *out, u8cs token);
 
+//  --- DIS-025 Stage 2: text-in / text-out canonicalising funnel ---
+//
+//  REFSResolveURI is the REF arm: it turns one raw user ref query
+//  (`?feat`, `?.`, `?./fix`, `?<sha>`, `?<hashlet>`, `?/<proj>/<br>`,
+//  empty=trunk) into the single canonical resolved query string, one
+//  of the three structural shapes `REFSQueryKind` recognises:
+//
+//      ?/<project>/<pin>            TRUNK    (attached to trunk)
+//      ?/<project>//<pin>           DETACHED (bare sha / hashlet)
+//      ?/<project>/<branch>/<pin>   BRANCH   (named branch)
+//
+//  Context (project, cur_branch) comes from `h`; the pin sha is looked
+//  up through KEEPResolveRef against the open keeper.  `rel_ref` is a
+//  query body (a leading `?` is tolerated); it is NOT consumed.  `out`
+//  is a caller pad slice — on success `out[0]` is advanced past the
+//  written canonical query text (`?…`), same convention as
+//  abc/URI.h::URIMake / u8sFeed.  Already-canonical input passes
+//  through idempotently.  Bareword promotion stays UPSTREAM (be/dog),
+//  so `rel_ref` always arrives marker-bearing.
+//
+//  Returns RESLVFAIL when no project is available; propagates
+//  KEEPResolveRef's RESLVNONE / underlying errors on a pin miss.
+ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref);
+
+//  KEEPResolveURI is the full funnel: it lexes `rel_uri`, runs the REF
+//  arm (REFSResolveURI) on the query, and recomposes the absolute URI
+//  text into `out`, preserving authority / path / fragment.  The path
+//  arm (cwd-relative → project-root-relative) and auth arm (`//alias`
+//  → transport URL) are Stage-3 TODOs — today those components pass
+//  through verbatim.  Same `out` write convention as REFSResolveURI.
+ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri);
+
 #endif

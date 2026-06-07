@@ -402,6 +402,68 @@ static ok64 DOGTestRefSplitPin(void) {
     done;
 }
 
+// --- DOGCanonQueryParse ---------------------------------------------
+//
+//  The canonical resolved query splits into (project, branch, pin).  The
+//  three structural shapes (URI.mkd "Ref shapes"; user-confirmed):
+//    /<proj>/<sha>          TRUNK    → branch empty, pin = sha
+//    /<proj>//<sha>         DETACHED → branch empty, pin = sha
+//    /<proj>/<branch>/<sha> BRANCH   → branch = path, pin = sha
+//  (trunk vs detached are byte-distinct but both parse to an empty
+//  branch — REFSQueryKind owns that distinction; this parser only
+//  extracts project/branch/pin.)
+
+#define CQ_H40 "507226561c499d3d167f0b2f03b9035f0816bc82"
+
+static ok64 DOGTestCanonQueryParse(void) {
+    sane(1);
+    struct {
+        char const *in;
+        b8          want_ok;
+        char const *want_proj;
+        char const *want_branch;
+        char const *want_pin;
+    } cases[] = {
+        //  trunk waypoint: single slash → empty branch
+        {"/proj/" CQ_H40,              YES, "proj", "",         CQ_H40},
+        //  detached: double slash → empty branch
+        {"/proj//" CQ_H40,             YES, "proj", "",         CQ_H40},
+        //  named branch + nested branch
+        {"/proj/feat/" CQ_H40,         YES, "proj", "feat",     CQ_H40},
+        {"/proj/feat/fix/" CQ_H40,     YES, "proj", "feat/fix", CQ_H40},
+        //  not canonical
+        {"feat",                       NO,  "", "", ""},        // no leading /
+        {"/proj/feat",                 NO,  "", "", ""},        // no 40-hex pin
+        {"/proj/" "5072265",           NO,  "", "", ""},        // short pin
+        {"//" CQ_H40,                  NO,  "", "", ""},        // empty project
+        {"",                           NO,  "", "", ""},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].in);
+        u8cs proj = {}, branch = {}, pin = {};
+        b8 ok = DOGCanonQueryParse(src, proj, branch, pin);
+        if (ok != cases[i].want_ok) {
+            fprintf(stderr, "CanonQueryParse '%s': ok want %d got %d\n",
+                    cases[i].in, cases[i].want_ok, ok);
+            fail(FAIL);
+        }
+        if (!ok) continue;
+        if (!slice_eq_cstr_dog(proj, cases[i].want_proj) ||
+            !slice_eq_cstr_dog(branch, cases[i].want_branch) ||
+            !slice_eq_cstr_dog(pin, cases[i].want_pin)) {
+            fprintf(stderr,
+                "CanonQueryParse '%s': got (%.*s, %.*s, %.*s) want (%s, %s, %s)\n",
+                cases[i].in,
+                (int)u8csLen(proj), (char *)proj[0],
+                (int)u8csLen(branch), (char *)branch[0],
+                (int)u8csLen(pin), (char *)pin[0],
+                cases[i].want_proj, cases[i].want_branch, cases[i].want_pin);
+            fail(FAIL);
+        }
+    }
+    done;
+}
+
 //  DOGIsTransport / DOGIsGitTransport scheme classification (DIS-019).
 //  Git transports (ssh/https/http/git) speak git-{upload,receive}-pack;
 //  be/keeper speak the beagle protocol; file is a local exec.  A be-only
@@ -459,6 +521,7 @@ ok64 DOGtest() {
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
     call(DOGTestRefSplitPin);
+    call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);
     done;
 }

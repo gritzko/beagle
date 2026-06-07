@@ -491,17 +491,22 @@ fun b8 DOGCanonQueryParse(u8csc query, u8cs project,
     u8cs proj_local = {q[0], head_scan[0]};
     if (u8csEmpty(proj_local))           return NO;
 
-    //  Branch = bytes between first and last '/', exclusive.  An empty
-    //  middle segment (`/proj//sha`, branch_start == branch_end) is the
-    //  CANONICAL detached / branchless form — a bare sha, tag checkout,
-    //  or `?null` — per URI.mkd §"Resolution boundary" ("a detached or
-    //  branchless target has an empty branch slot: a double slash
-    //  /<project>//<full-hash>").  Accept it with an empty branch slice
-    //  (DIS-025); only `branch_start > branch_end` (a single-slash
-    //  `/proj/sha`, no branch slot at all) is genuinely malformed.
+    //  Branch = bytes between first and last '/', exclusive.  Two empty
+    //  shapes both yield an empty branch slice here; only REFSQueryKind
+    //  tells them apart (this parser is pin-extraction only):
+    //    * EMPTY middle (`/proj//sha`, double slash, branch_start ==
+    //      branch_end) — the canonical DETACHED / branchless form (bare
+    //      sha, tag checkout, `?null`) per URI.mkd; accepted since
+    //      DIS-025.
+    //    * NO middle slot (`/proj/sha`, single slash — the first and last
+    //      '/' coincide so branch_start == branch_end + 1) — the
+    //      canonical TRUNK WAYPOINT.  Collapse the inverted region to an
+    //      empty branch so trunk waypoints round-trip through every
+    //      pin-extraction consumer.  Any wider gap is impossible given
+    //      the slash structure.
     u8c const *branch_start = head_scan[0] + 1;
     u8c const *branch_end   = tail_scan[1] - 1;
-    if (branch_start > branch_end)       return NO;
+    if (branch_start > branch_end) branch_start = branch_end;  // trunk waypoint
     u8cs branch_local = {(u8c *)branch_start, (u8c *)branch_end};
 
     u8csMv(project, proj_local);

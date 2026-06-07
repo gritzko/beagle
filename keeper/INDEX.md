@@ -179,6 +179,21 @@ absolute branch paths.
                       relative-branch-path / (postponed) commit-msg
                       fragment into a 40-byte sha
   - `KEEPResolveHex`  same for a hex (sha-prefix / branch tip) lookup
+  - `REFSResolveURI`  DIS-025 Stage 2 REF arm: raw user ref query (text)
+                      → canonical resolved query text, one of three
+                      structural shapes — `?/<proj>/<sha>` (TRUNK),
+                      `?/<proj>//<sha>` (DETACHED), `?/<proj>/<br>/<sha>`
+                      (BRANCH).  Idempotent on already-canonical input;
+                      pin via KEEPResolveRef, context from `home`.
+  - `KEEPResolveURI`  full funnel: REF arm + (Stage-3 TODO) path arm
+                      (cwd→root) and auth arm (`//alias`→URL), which today
+                      pass through verbatim; recomposes the absolute URI.
+  - `REFSQueryKind`   (inline in `keeper/REFS.h`) syntactic kind probe
+                      over the canonical query → `refkind`
+                      NONE/TRUNK/DETACHED/BRANCH; never returns TAG (a tag
+                      waypoint is byte-identical to a nested branch — the
+                      tags-namespace refinement is REFS-aware, done in the
+                      funnel, not the probe).
 
 ### UNPK.h — single-pass packfile indexer
 
@@ -390,6 +405,14 @@ Executables: `keeper` (`KEEP.cli.c`), `git-dl` (`git-dl.cli.c`).
                      edit+commit, push back, verify files match
   - `test/REFADV.c` REFADVOpen/Emit/TipDirs round-trip on a temp
                      keeper: empty REFS, single trunk ref, multi-ref
+  - `test/REFKIND.c` `REFSQueryKind` syntactic kind probe — table over
+                     canonical trunk/detached/branch shapes + non-canonical
+                     rejects (23 cases, no store)
+  - `test/RESOLVEURI.c` `REFSResolveURI`/`KEEPResolveURI` funnel — hermetic
+                     store (one project, two commits, REFS rows): trunk /
+                     detached (sha+hashlet) / branch / nested / relative
+                     (`?./sub`, `?..`) / idempotency, plus KEEPResolveURI
+                     path + authority passthrough
   - `test/PSTR.c`   pack-stitcher: header-only (zero segs), single
                      segment passthrough, multi-segment concat,
                      round-trip header+SHA-1 verification, plus
