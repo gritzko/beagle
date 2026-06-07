@@ -1408,23 +1408,31 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         //  Advance the keeper-side local-branch tip with verb `post`.
         //  Failure here is non-fatal: the worktree update below
         //  proceeds, and the next `be get` re-resolves via the
-        //  peer-prefixed row.
+        //  peer-prefixed row.  HOMEBranchDir was a bare `call()` whose
+        //  early return on error (e.g. PATHNOROOM on an over-long
+        //  store path) skipped GET_BUFS_FREE(), leaking 4×256 MB mmaps
+        //  + the subs heap (MEM-026).  Route it through the SAME
+        //  non-fatal `try()` path as the adjacent REFSAppendVerb: on
+        //  failure skip the keeper-tip advance entirely (keepdir is
+        //  unusable) and fall through with `__ = OK`.
         a_path(keepdir);
-        call(HOMEBranchDir, KEEP.h, keepdir, NULL);
-        a_pad(u8, key_buf, 128);
-        u8bFeed1(key_buf, '?');
-        if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
-            $len(source) != 41) {
-            a_dup(u8c, ref_q, source);
-            u8csUsed1(ref_q);
-            a_cstr(refs_pfx, "refs/");
-            if ($len(ref_q) > 5 &&
-                memcmp(ref_q[0], refs_pfx[0], 5) == 0)
-                u8csUsed(ref_q, 5);
-            u8bFeed(key_buf, ref_q);
+        try(HOMEBranchDir, KEEP.h, keepdir, NULL);
+        then {
+            a_pad(u8, key_buf, 128);
+            u8bFeed1(key_buf, '?');
+            if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
+                $len(source) != 41) {
+                a_dup(u8c, ref_q, source);
+                u8csUsed1(ref_q);
+                a_cstr(refs_pfx, "refs/");
+                if ($len(ref_q) > 5 &&
+                    memcmp(ref_q[0], refs_pfx[0], 5) == 0)
+                    u8csUsed(ref_q, 5);
+                u8bFeed(key_buf, ref_q);
+            }
+            a_dup(u8c, key_s, u8bData(key_buf));
+            try(REFSAppendVerb, $path(keepdir), REFSVerbPost(), key_s, hex);
         }
-        a_dup(u8c, key_s, u8bData(key_buf));
-        try(REFSAppendVerb, $path(keepdir), REFSVerbPost(), key_s, hex);
         __ = OK;  //  explicit non-fatal — see comment above
     }
     //  --- end commit point --------------------------------------

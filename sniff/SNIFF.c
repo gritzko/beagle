@@ -245,7 +245,17 @@ ok64 SNIFFOpen(home *h, b8 rw) {
             if (u8bDataLen(storebuf) > 0) {
                 u8bReset(h->root);
                 a_dup(u8c, sb, u8bData(storebuf));
-                call(PATHu8bFeed, h->root, sb);
+                //  Bare `call()` here early-returned past the open ULOG
+                //  mmap, leaving the SNIFF singleton half-initialised
+                //  (MEM-026).  Route failure (e.g. PATHNOROOM on an
+                //  over-long store path) through the SAME cleanup every
+                //  sibling early-return arm uses: close the wtlog and
+                //  zero the singleton before propagating.
+                ok64 fr = PATHu8bFeed(h->root, sb);
+                if (fr != OK) {
+                    ULOGClose(s->log_data, &s->log_idx, s->log_rw);
+                    zerop(s); return fr;
+                }
             }
         }
     }

@@ -2,6 +2,7 @@
 #include "sniff/AT.h"
 #include "sniff/DEL.h"
 #include "sniff/GET.h"
+#include "sniff/LS.h"
 #include "sniff/POST.h"
 #include "sniff/PUT.h"
 #include "sniff/SUBS.h"
@@ -1079,8 +1080,58 @@ ok64 DOGTitleTest() {
     done;
 }
 
+// --- Test: LS scratch-buffer acquisition unwinds on partial failure ---
+//  MEM-026 repro.  `SNIFFLsBufsAcquire` maps the 4 MiB `text` buffer,
+//  then heap-allocs `toks`, then (non-recurse only) heap-allocs
+//  `dir_seen`.  The old code was a bare `call()` chain: a failure on a
+//  later acquisition early-returned, leaking the buffers already
+//  acquired.  Force each later acquisition to fail by pre-occupying its
+//  target buffer (a non-NULL buffer makes Balloc return BNOTNULL) and
+//  assert every earlier-acquired buffer was released.
+ok64 SNIFFLsBufsLeak() {
+    sane(1);
+
+    //  Case 1 (toks fails after text mapped): pre-occupy `toks`.
+    {
+        Bu8 text = {}, dir_seen = {};
+        Bu32 toks = {};
+        call(u32bAllocate, toks, 8);          // occupy → second acquire BNOTNULL
+        ok64 o = SNIFFLsBufsAcquire(text, toks, dir_seen, YES /*recurse*/);
+        want(o != OK);                        // acquisition failed
+        want(text[0] == NULL);                // text mmap was unwound (no leak)
+        u32bFree(toks);                        // free the deliberately-occupied buf
+    }
+
+    //  Case 2 (dir_seen fails after text+toks): non-recurse, pre-occupy
+    //  `dir_seen`.  Both the text mmap AND toks heap must be unwound.
+    {
+        Bu8 text = {}, dir_seen = {};
+        Bu32 toks = {};
+        call(u8bAllocate, dir_seen, 8);       // occupy → third acquire BNOTNULL
+        ok64 o = SNIFFLsBufsAcquire(text, toks, dir_seen, NO /*ls:*/);
+        want(o != OK);
+        want(text[0] == NULL);                // text mmap unwound
+        want(toks[0] == NULL);                // toks heap unwound
+        u8bFree(dir_seen);
+    }
+
+    //  Case 3 (happy path): all three acquire, caller releases them.
+    {
+        Bu8 text = {}, dir_seen = {};
+        Bu32 toks = {};
+        call(SNIFFLsBufsAcquire, text, toks, dir_seen, NO);
+        want(text[0] != NULL && toks[0] != NULL && dir_seen[0] != NULL);
+        u8bFree(dir_seen);
+        u32bFree(toks);
+        u8bUnMap(text);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
+    fprintf(stderr, "SNIFFLsBufsLeak...\n");
+    call(SNIFFLsBufsLeak);
     fprintf(stderr, "DOGTitle...\n");
     call(DOGTitleTest);
     fprintf(stderr, "SNIFFAtHelpers...\n");

@@ -246,6 +246,18 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
 //  Entry point
 // =====================================================================
 
+ok64 SNIFFLsBufsAcquire(Bu8 text, Bu32 toks, Bu8 dir_seen, b8 recurse) {
+    sane(text != NULL && toks != NULL);
+    call(u8bMap, text, LS_TEXT_CAP);
+    ok64 to = u32bAllocate(toks, LS_TOKS_CAP);
+    if (to != OK) { u8bUnMap(text); return to; }
+    if (!recurse) {
+        ok64 do_ = u8bAllocate(dir_seen, 4096);
+        if (do_ != OK) { u32bFree(toks); u8bUnMap(text); return do_; }
+    }
+    done;
+}
+
 static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     sane(u);
 
@@ -268,9 +280,7 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
 
     u8csMv(c.prefix, u->path);
 
-    call(u8bMap,       c.text, LS_TEXT_CAP);
-    call(u32bAllocate, c.toks, LS_TOKS_CAP);
-    if (!recurse) call(u8bAllocate, c.dir_seen, 4096);
+    call(SNIFFLsBufsAcquire, c.text, c.toks, c.dir_seen, recurse);
 
     //  TODO: `?ref` baseline override.  CLASS today resolves baseline
     //  via SNIFFAtCurTip; for `ls:?ref` we'd want SNIFFClassifyAt

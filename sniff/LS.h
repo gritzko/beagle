@@ -44,4 +44,12 @@
 ok64 SNIFFLs (u8cs reporoot, uri const *u);   // one-level
 ok64 SNIFFLsr(u8cs reporoot, uri const *u);   // recursive
 
+//  All-or-nothing acquisition of the projector's three scratch
+//  buffers (text mmap, toks heap, and — for `ls:` only — the dir-seen
+//  dedup heap).  On any failure every already-acquired buffer is
+//  released, so the failure path owns nothing (MEM-026 leak fix).
+//  Exposed for the leak-repro test (sniff/test/SNIFF.c); not part of
+//  the projector's public contract.
+ok64 SNIFFLsBufsAcquire(Bu8 text, Bu32 toks, Bu8 dir_seen, b8 recurse);
+
 #endif
