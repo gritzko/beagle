@@ -410,23 +410,27 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
     u8cs pinslice = {};
     sha1hexSlice(pinslice, &pinhex);
 
-    //  Compose the canonical query BODY (no leading `?`), then let
-    //  URIMake prepend the `?` and write into abs_ref:
-    //    TRUNK     /<project>/<pin>
-    //    DETACHED  /<project>//<pin>
-    //    BRANCH    /<project>/<branch>/<pin>
-    a_pad(u8, body, 320);
-    call(u8bFeed1, body, '/');
-    call(u8bFeed, body, project);
-    call(u8bFeed1, body, '/');
-    if (kind == REFKIND_DETACHED) {
-        call(u8bFeed1, body, '/');
-    } else if (kind == REFKIND_BRANCH) {
-        call(u8bFeed, body, u8bDataC(branchb));
-        call(u8bFeed1, body, '/');
+    //  Compose the canonical resolved SCOPE (URI-001 §"Canonical form").
+    //  This funnel canonicalises the QUERY only — it NEVER pins the tip
+    //  into a fragment: in argv URIs the fragment is verb payload
+    //  (PATCH squash/merge/rebase mode, GET `#~N`/`#sha`), so a tip pin
+    //  there would collide.  The sha pin lives in `--at` (wtlog) and
+    //  REFS storage.  DETACHED carries the sha IN the query — it is the
+    //  ref's identity, there is no branch to scope by:
+    //    TRUNK     query=/<project>           → ?/proj
+    //    BRANCH    query=/<project>/<branch>  → ?/proj/branch
+    //    DETACHED  query=/<project>/<full-sha>→ ?/proj/<sha>
+    a_pad(u8, qbody, 320);
+    call(u8bFeed1, qbody, '/');
+    call(u8bFeed, qbody, project);
+    if (kind == REFKIND_BRANCH) {
+        call(u8bFeed1, qbody, '/');
+        call(u8bFeed, qbody, u8bDataC(branchb));
+    } else if (kind == REFKIND_DETACHED) {
+        call(u8bFeed1, qbody, '/');
+        call(u8bFeed, qbody, pinslice);
     }
-    call(u8bFeed, body, pinslice);
-    call(URIMake, abs_ref, NULL, NULL, NULL, u8bDataC(body), NULL);
+    call(URIMake, abs_ref, NULL, NULL, NULL, u8bDataC(qbody), NULL);
     done;
 }
 
@@ -449,8 +453,11 @@ ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri) {
         done;
     }
 
-    //  REF arm: canonicalise the query into a scratch, then strip its
-    //  leading `?` (URIMake re-adds it on the recompose).
+    //  REF arm: canonicalise the QUERY (scope) into a scratch, then strip
+    //  its leading `?` (URIMake re-adds it).  The funnel canonicalises the
+    //  scope only — it never pins a tip into a fragment — so the input
+    //  fragment (verb payload: PATCH mode, GET `#~N`, …) is preserved
+    //  VERBATIM on the recompose.
     u8 _qpad[320];
     u8s qw = {_qpad, _qpad + sizeof(_qpad)};
     u8cs qin = {u.query[0], u.query[1]};
@@ -458,8 +465,8 @@ ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri) {
     u8cs qbody = {_qpad, qw[0]};
     if (!u8csEmpty(qbody) && *qbody[0] == '?') u8csUsed1(qbody);
 
-    //  Recompose, preserving authority / path / fragment verbatim
-    //  (path arm = cwd→root, auth arm = //alias→URL are Stage-3 TODOs).
+    //  Recompose, preserving authority / path / fragment verbatim (path
+    //  arm = cwd→root, auth arm = //alias→URL are Stage-3 TODOs).
     u8cs sc = {u.scheme[0], u.scheme[1]};
     u8cs au = {u.authority[0], u.authority[1]};
     u8cs pa = {u.path[0], u.path[1]};

@@ -1432,13 +1432,25 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         u8cs canon = {canon_pad, canon_w[0]};
         if (!u8csEmpty(canon) && *canon[0] == '?') u8csUsed1(canon);
         refkind k = REFSQueryKind(canon);
+        //  URI-001 Stage 3 forms: scope in the query, sha in the
+        //  fragment (`/proj/br#<sha>`, `/proj#<sha>`), except DETACHED
+        //  which is a bare query pin (`/proj/<sha>`).  Split off the
+        //  `#<sha>` to recover the scope; peel to the downstream shape.
+        u8cs scope = {};
+        u8csMv(scope, canon);
+        {
+            a_dup(u8c, s, scope);
+            if (u8csFind(s, '#') == OK) scope[1] = s[0];  // drop `#<sha>`
+        }
         u8cs c_proj = {}, c_branch = {}, c_pin = {};
         if (k == REFKIND_DETACHED &&
-            DOGCanonQueryParse(canon, c_proj, c_branch, c_pin)) {
-            u8csMv(target_query_raw, c_pin);
-        } else if ((k == REFKIND_BRANCH || k == REFKIND_TAG) &&
-                   DOGCanonQueryParse(canon, c_proj, c_branch, c_pin)) {
-            u8csMv(target_query_raw, c_branch);
+            DOGCanonQueryParse(scope, c_proj, c_branch, c_pin)) {
+            u8csMv(target_query_raw, c_pin);     // bare sha → cherry/sha lookup
+        } else if (k == REFKIND_BRANCH || k == REFKIND_TAG) {
+            //  scope = `/proj/<branch-path>` → strip project → branch.
+            a_dup(u8c, br, scope);
+            DOGQueryStripProject(br);
+            u8csMv(target_query_raw, br);
         } else if (k == REFKIND_TRUNK) {
             target_query_raw[0] = canon_pad;     // empty = trunk
             target_query_raw[1] = canon_pad;

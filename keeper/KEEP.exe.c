@@ -4,6 +4,7 @@
 #include "KEEP.h"
 #include "PROJ.h"
 #include "REFS.h"
+#include "RESOLVE.h"
 #include "SUBS.h"
 #include "WIRE.h"
 
@@ -211,42 +212,23 @@ static ok64 keeper_subs(keeper *k, cli *c) {
             fail(KEEPFAIL);
         }
     } else {
-        a_path(trunk_dir);
-        call(HOMEBranchDir, k->h, trunk_dir, NULL);
-        a_pad(u8, qbuf, 256);
-        u8bFeed1(qbuf, '?');
-        u8bFeed(qbuf, u->query);
-        a_dup(u8c, qkey, u8bData(qbuf));
-
-        a_pad(u8, arena, 1024);
-        uri resolved = {};
-        ok64 ro = REFSNONE;
-        //  Leaf-first lookup: writes from `wcli_record_ref` land in the
-        //  active leaf branch dir when one is open (sub-shard fetch
-        //  isolation).  Try leaf first, then fall back to trunk for
-        //  locally-committed refs that sniff POST writes to trunk.
-        if (u8bDataLen(k->h->cur_branch) > 0) {
-            a_path(leafdir);
-            a_dup(u8c, trunk_s, u8bDataC(trunk_dir));
-            call(PATHu8bFeed, leafdir, trunk_s);
-            a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
-            call(PATHu8bAdd, leafdir, leaf_s);
-            ro = REFSResolve(&resolved, arena, $path(leafdir), qkey);
-        }
-        if (ro != OK || u8csLen(resolved.query) != 40) {
-            zero(resolved);
-            ro = REFSResolve(&resolved, arena, $path(trunk_dir), qkey);
-        }
-        if (ro != OK || u8csLen(resolved.query) != 40) {
+        //  Scope-only canonical ref (`/<project>/<branch>`, no pin —
+        //  URI-001 Stage 3): strip the project and resolve the branch
+        //  tip through the canonical funnel.  KEEPResolveRef is
+        //  branch-first and walks the leaf shard + trunk with the
+        //  refname-strip retries (sub-shard fetch isolation), so it
+        //  subsumes the old manual leaf/trunk REFSResolve.  The legacy
+        //  pin-in-query form relied on REFSResolve's canonic
+        //  short-circuit to lift the pin; scope-only has none.
+        a_dup(u8c, branch, u->query);
+        DOGQueryStripProject(branch);
+        u8cs cur_b = {};
+        u8csMv(cur_b, u8bDataC(k->h->cur_branch));
+        ok64 ro = KEEPResolveRef(&commit_sha, branch, cur_b);
+        if (ro != OK) {
             fprintf(stderr, "keeper: subs: ref %.*s not resolvable\n",
                     (int)u8csLen(u->query), (char *)u->query[0]);
-            return ro == OK ? REFSNONE : ro;
-        }
-        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
-        a_dup(u8c, hex40, resolved.query);
-        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
-            fprintf(stderr, "keeper: subs: bad sha\n");
-            fail(KEEPFAIL);
+            return ro;
         }
     }
 

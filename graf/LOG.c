@@ -786,8 +786,14 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
         u8csMv(query_branch, u->query);
         {
             u8cs c_proj = {}, c_branch = {}, c_pin = {};
-            if (DOGCanonQueryParse(u->query, c_proj, c_branch, c_pin))
-                u8csMv(query_branch, c_branch);
+            if (DOGCanonQueryParse(u->query, c_proj, c_branch, c_pin)) {
+                u8csMv(query_branch, c_branch);          // legacy pin-in-query
+            } else if (!u8csEmpty(query_branch) &&
+                       *query_branch[0] == '/') {
+                //  URI-001 Stage 3 scope-only form `/<proj>/<branch>`:
+                //  strip the project to recover the branch slice.
+                DOGQueryStripProject(query_branch);
+            }
         }
         a_pad(u8, norm_buf, 256);
         (void)DPATHBranchNormFeed(norm_buf, query_branch);
@@ -811,12 +817,15 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
                     ? graf_head_decode_sha(out, resolved.query)
                     : GRAFNONE;
         }
-        a_dup(u8c, in_uri, u->data);
-        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), in_uri);
-        ok64 rv = (ro == OK)
-                ? graf_head_decode_sha(out, resolved.query)
-                : GRAFNONE;
-        return rv;
+        //  Real (non-alias) branch: resolve its tip through the
+        //  canonical funnel (branch-first, leaf+trunk, strip retries).
+        //  The legacy pin-in-query form let REFSResolve's canonic
+        //  short-circuit lift the pin; the scope-only form (URI-001
+        //  Stage 3) carries no pin, so resolve the branch slice itself.
+        sha1 bsha = {};
+        ok64 ro = KEEPResolveRef(&bsha, query_branch, cur_branch);
+        if (ro == OK) { sha1Mv(out, &bsha); return OK; }
+        return GRAFNONE;
     }
     //  Implicit (no query): same trunk-or-remote dispatch below.
 

@@ -3018,7 +3018,12 @@ ok64 BEActResolveRef(cli *c) {
             u8 _qpad[320];
             u8s qw = {_qpad, _qpad + sizeof _qpad};
             if (REFSResolveURI(&rh, qw, u->query) != OK) continue;
-            u8cs cq = {_qpad, qw[0]};        //  `?…` canonical query
+            //  URI-001 Stage 3: the funnel canonicalises the SCOPE only
+            //  (`?/proj/branch`, or `?/proj/<sha>` detached) — it never
+            //  pins a tip into the fragment.  The original fragment is
+            //  the verb payload (PATCH mode, GET `#~N`, …) and is
+            //  preserved verbatim below.
+            u8cs cq = {_qpad, qw[0]};        //  `?<scope>` canonical query
             if (u8bFeed(scratch, cq) != OK) continue;
         }
         if (u->fragment[0] != NULL) {

@@ -133,12 +133,15 @@ ok64 RESOLVEURItest() {
     //  Expected canonical strings.
     char e_trunk[64], e_feat[96], e_featsub[96], e_detach[64];
     char e_dead[96], e_coffee[96];
-    snprintf(e_trunk,   sizeof e_trunk,   "?/proj/%s", S0);
-    snprintf(e_feat,    sizeof e_feat,    "?/proj/feat/%s", S1);
-    snprintf(e_featsub, sizeof e_featsub, "?/proj/feat/sub/%s", S1);
-    snprintf(e_detach,  sizeof e_detach,  "?/proj//%s", S0);
-    snprintf(e_dead,    sizeof e_dead,    "?/proj/dead/%s", S0);
-    snprintf(e_coffee,  sizeof e_coffee,  "?/proj/c0ffee/%s", S1);
+    //  URI-001 Stage 3 canonical forms: the funnel canonicalises the
+    //  SCOPE only (no tip pinned into a fragment).  Detached carries the
+    //  full sha IN the query (the ref's identity, no branch to scope by).
+    snprintf(e_trunk,   sizeof e_trunk,   "?/proj");
+    snprintf(e_feat,    sizeof e_feat,    "?/proj/feat");
+    snprintf(e_featsub, sizeof e_featsub, "?/proj/feat/sub");
+    snprintf(e_detach,  sizeof e_detach,  "?/proj/%s", S0);
+    snprintf(e_dead,    sizeof e_dead,    "?/proj/dead");
+    snprintf(e_coffee,  sizeof e_coffee,  "?/proj/c0ffee");
 
     //  --- REF arm ---
     //  trunk (empty / bare ?)
@@ -181,12 +184,12 @@ ok64 RESOLVEURItest() {
     {
         char in_path[96], ex_path[128];
         snprintf(in_path, sizeof in_path, "./file.c?feat");
-        snprintf(ex_path, sizeof ex_path, "./file.c?/proj/feat/%s", S1);
+        snprintf(ex_path, sizeof ex_path, "./file.c?/proj/feat");
         call(check_uri, &h, in_path, ex_path);
 
         char in_auth[96], ex_auth[128];
         snprintf(in_auth, sizeof in_auth, "//host?feat");
-        snprintf(ex_auth, sizeof ex_auth, "//host?/proj/feat/%s", S1);
+        snprintf(ex_auth, sizeof ex_auth, "//host?/proj/feat");
         call(check_uri, &h, in_auth, ex_auth);
     }
 

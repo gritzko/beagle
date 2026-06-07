@@ -20,6 +20,7 @@
 #include "abc/RON.h"
 #include "abc/FILE.h"
 #include "abc/HEX.h"
+#include "dog/DOG.h"   // DOGIsFullSha (REFSQueryKind pin test)
 
 con ok64 REFSFAIL  = 0x6ce3dc3ca495;
 con ok64 REFSNONE  = 0x6ce3dc5d85ce;
@@ -73,75 +74,62 @@ fun int REFKeyCmp(refcp a, refcp b) {
     return al < bl ? -1 : al > bl ? 1 : 0;
 }
 
-// --- Canonical-query kind probe (DIS-025 Stage 2) ---
+// --- Canonical-scope kind probe (URI-001 Stage 3) ---
 //
-// The CANONICAL resolved query form (the single context-free shape
-// every input resolves to — user-confirmed 2026-06-07; the wiki
-// URI.mkd spec is in flux) is structural in three ways:
+// The funnel canonicalises a ref's SCOPE (the query) into one of three
+// context-free shapes (revised 2026-06-07, see URI.mkd "Ref shapes").
+// It does NOT pin a tip into a fragment — in argv URIs the fragment is
+// verb payload (PATCH mode, GET `#~N`/`#sha`).  The resolved-sha pin
+// lives in `--at` / REFS / display, never here:
 //
-//     ?/<project>/<40hex>            REFKIND_TRUNK     (trunk waypoint)
-//     ?/<project>//<40hex>           REFKIND_DETACHED  (no branch slot)
-//     ?/<project>/<branch>/<40hex>   REFKIND_BRANCH    (named branch)
+//     ?/<project>             REFKIND_TRUNK     (trunk scope)
+//     ?/<project>/<branch>    REFKIND_BRANCH    (branch scope, may nest)
+//     ?/<project>/<full-sha>  REFKIND_DETACHED  (bare commit, no branch)
 //
-// i.e. NO branch slot = attached to trunk; an EMPTY branch slot (the
-// double slash) = detached/branchless (bare sha, tag checkout,
-// `?null`); a FILLED slot = that named branch.  `REFSQueryKind` is the
-// owner of this distinction — the legacy `DOGCanonQueryParse` collapses
-// trunk and detached together (both yield an empty branch) and rejects
-// the single-slash trunk form outright, so callers that need the
-// 3-way split use this probe instead.
+// DETACHED carries the sha IN the query — it is the ref's identity, with
+// no branch to scope by; a full sha (`DOGIsFullSha`) distinguishes it
+// from a branch named like a hash.
 typedef enum {
-    REFKIND_NONE     = 0,   // not a canonical resolved query (no 40-hex
-                            // pin tail, no project, relative ref, …)
-    REFKIND_TRUNK    = 1,   // /<project>/<40hex>
-    REFKIND_DETACHED = 2,   // /<project>//<40hex>
-    REFKIND_BRANCH   = 3,   // /<project>/<branch>/<40hex>
-    REFKIND_TAG      = 4,   // /<project>/<branch>/<tag>/<40hex>
-                            // SYNTACTICALLY identical to a nested BRANCH
-                            // (`/<project>/<a>/<b>/<40hex>`) — only the
-                            // tags-namespace REFS lookup tells them
-                            // apart, so `REFSQueryKind` NEVER returns
-                            // this; a home/REFS-aware refinement does.
+    REFKIND_NONE     = 0,   // not a canonical scope (no leading /<project>)
+    REFKIND_TRUNK    = 1,   // /<project>
+    REFKIND_DETACHED = 2,   // /<project>/<full-sha>
+    REFKIND_BRANCH   = 3,   // /<project>/<branch-path>
+    REFKIND_TAG      = 4,   // reserved — REFSQueryKind never returns it
+                            // (a tag waypoint needs a REFS lookup).
 } refkind;
 
-// Classify a canonical resolved query by SHAPE only — no allocation,
-// no REFS / pack lookup.  Returns one of REFKIND_TRUNK / _DETACHED /
-// _BRANCH, or _NONE.  It does NOT return REFKIND_TAG: a tag waypoint
-// (`/<project>/<branch>/<tag>/<sha>`) is byte-identical to a nested
-// branch, so distinguishing the two requires a REFS tags-namespace
-// lookup — done by the home-aware funnel (REFSResolveURI), never here.
-// A leading `?` is tolerated and skipped.  The pin tail MUST be exactly
-// 40 hex; anything else (a bare name, a relative ref, a short hashlet,
-// a missing pin) is REFKIND_NONE — those are pre-canonical inputs, not
-// resolved forms.  `canon` is not consumed (a local copy is walked).
+// Classify a canonical scope query by SHAPE only — no allocation, no
+// REFS / pack lookup.  A leading `?` is tolerated; any `#<frag>` is
+// ignored (the canonical scope carries none).  Requires a leading
+// `/<project>`; a bareword / relative / unqualified query is
+// REFKIND_NONE.  `canon` is not consumed.
 fun refkind REFSQueryKind(u8csc canon) {
     a_dup(u8c, q, canon);
     if (!u8csEmpty(q) && *q[0] == '?') u8csUsed1(q);
+    //  Defensive: drop any `#<frag>` — the canonical scope has none.
+    {
+        a_dup(u8c, s, q);
+        if (u8csFind(s, '#') == OK) q[1] = s[0];
+    }
     if (u8csEmpty(q) || *q[0] != '/') return REFKIND_NONE;
-    u8csUsed1(q);                              // step past leading '/'
+    u8csUsed1(q);                              // past leading '/'
+    if (u8csEmpty(q)) return REFKIND_NONE;
 
-    //  Pin = bytes after the LAST '/'; must be exactly 40 hex.
-    u8cs tail = {};
-    u8csMv(tail, q);
-    if (u8csRevFind(tail, '/') != OK) return REFKIND_NONE;
-    u8cs pin = {tail[1], q[1]};
-    if (u8csLen(pin) != 40 || !HEXu8sValid(pin)) return REFKIND_NONE;
-
-    //  body = project (+ branch slot) between the leading '/' (already
-    //  stepped) and the pin's leading '/'.
-    u8cs body = {q[0], tail[1]};
-    u8csShed1(body);                           // drop the pin's '/'
-    if (u8csEmpty(body)) return REFKIND_NONE;   // "//<pin>" — no project
-
-    //  First '/' in body splits project from the branch slot.  None at
-    //  all => trunk waypoint (body is the whole project).
+    //  Project = up to the first '/'.  One segment ⇒ `/<project>` trunk.
     u8cs scan = {};
-    u8csMv(scan, body);
+    u8csMv(scan, q);
     if (u8csFind(scan, '/') != OK) return REFKIND_TRUNK;
-    u8cs project = {body[0], scan[0]};
-    if (u8csEmpty(project)) return REFKIND_NONE;  // "/<branch>/<pin>" — no project
-    u8csUsed1(scan);                           // past the branch-slot '/'
-    return u8csEmpty(scan) ? REFKIND_DETACHED : REFKIND_BRANCH;
+    u8cs project = {q[0], scan[0]};
+    if (u8csEmpty(project)) return REFKIND_NONE;
+    u8csUsed1(scan);                           // past the project '/'
+
+    //  Rest = branch path or a detached full-sha.  A lone full-sha
+    //  segment ⇒ DETACHED; anything else (incl. nested) ⇒ BRANCH.
+    a_dup(u8c, rest, scan);
+    if (u8csFind(rest, '/') == OK) return REFKIND_BRANCH;  // /<proj>/<a>/<b…>
+    u8cs rs = {scan[0], scan[1]};
+    if (DOGIsFullSha(rs)) return REFKIND_DETACHED;         // /<proj>/<sha>
+    return REFKIND_BRANCH;                                  // /<proj>/<branch>
 }
 
 // --- Public API ---

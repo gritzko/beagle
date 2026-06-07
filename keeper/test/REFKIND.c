@@ -1,11 +1,12 @@
 //  REFKIND — REFSQueryKind: syntactic kind probe over the canonical
-//  resolved query form (DIS-025 Stage 2).  Pure string→enum classifier,
+//  resolved ref form (URI-001 Stage 3).  Pure string→enum classifier,
 //  no store, no allocation.  Table-driven.
 //
-//  Canonical forms (user-confirmed 2026-06-07; URI.mkd in flux):
-//      ?/<project>/<40hex>            TRUNK     (trunk waypoint)
-//      ?/<project>//<40hex>           DETACHED  (no branch slot)
-//      ?/<project>/<branch>/<40hex>   BRANCH    (named branch)
+//  Canonical forms (revised 2026-06-07; URI.mkd "Ref shapes"): scope in
+//  the query, resolved sha in the fragment, except detached (bare pin):
+//      ?/<project>#<sha>             TRUNK     (commit on trunk)
+//      ?/<project>/<branch>#<sha>    BRANCH    (commit on branch)
+//      ?/<project>/<sha>             DETACHED  (bare commit, no branch)
 
 #include "keeper/REFS.h"
 
@@ -15,8 +16,10 @@
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 
-//  A real 40-hex sha (DIS-025's SUBS-008 tip) and a few derived strings.
+//  A real 40-hex sha (DIS-025's SUBS-008 tip), plus a 64-hex (sha256)
+//  string to prove the probe is hash-length-agnostic via DOGIsFullSha.
 #define H40  "507226561c499d3d167f0b2f03b9035f0816bc82"
+#define H64  H40 "0123456789abcdef01234567"
 
 typedef struct {
     char const *q;       // input query (canonical or not)
@@ -36,34 +39,35 @@ static char const *kindname(refkind k) {
 ok64 REFKINDtest_table() {
     sane(1);
     static kind_case const cases[] = {
-        //  --- the three canonical shapes ---
-        { "?/proj/" H40,                  REFKIND_TRUNK    },
-        { "?/proj//" H40,                 REFKIND_DETACHED },
-        { "?/proj/feat/" H40,             REFKIND_BRANCH   },
-        //  multi-segment branch path
-        { "?/proj/feat/fix/" H40,         REFKIND_BRANCH   },
+        //  --- canonical scopes (no fragment pin) ---
+        { "?/proj",                       REFKIND_TRUNK    },
+        { "?/proj/feat",                  REFKIND_BRANCH   },
+        { "?/proj/feat/fix",              REFKIND_BRANCH   },  // nested
+        { "?/proj/" H40,                  REFKIND_DETACHED },  // full sha
+        //  hash-length-agnostic: a 64-hex (sha256) → detached too
+        { "?/proj/" H64,                  REFKIND_DETACHED },
         //  leading '?' is optional
-        { "/proj/" H40,                   REFKIND_TRUNK    },
-        { "/proj//" H40,                  REFKIND_DETACHED },
-        { "/proj/feat/" H40,              REFKIND_BRANCH   },
+        { "/proj",                        REFKIND_TRUNK    },
+        { "/proj/feat",                   REFKIND_BRANCH   },
+        { "/proj/" H40,                   REFKIND_DETACHED },
         //  longer / dotted project label
-        { "?/replicated/" H40,            REFKIND_TRUNK    },
-        { "?/replicated//" H40,           REFKIND_DETACHED },
+        { "?/replicated",                 REFKIND_TRUNK    },
+        { "?/replicated/main",            REFKIND_BRANCH   },
 
-        //  --- non-canonical: REFKIND_NONE ---
+        //  --- not a canonical scope: REFKIND_NONE ---
         { "",                             REFKIND_NONE },   // empty
         { "?",                            REFKIND_NONE },   // just the marker
         { "?/",                           REFKIND_NONE },
-        { "?feat",                        REFKIND_NONE },   // bareword
-        { "?feat/",                       REFKIND_NONE },   // branch, no pin
+        { "?feat",                        REFKIND_NONE },   // not project-qualified
+        { "?feat/",                       REFKIND_NONE },   // not project-qualified
         { "?./fix",                       REFKIND_NONE },   // relative ref
-        { "?/proj/feat",                  REFKIND_NONE },   // no pin
-        { "?/proj/" "5072265",            REFKIND_NONE },   // short hashlet
-        { "?/proj/507226561c499d3d167f0b2f03b9035f0816bc8",  REFKIND_NONE }, // 39 hex
-        { "?/proj/507226561c499d3d167f0b2f03b9035f0816bcZZ", REFKIND_NONE }, // 40 non-hex
-        { "?//" H40,                      REFKIND_NONE },   // empty project (detached)
-        { "?/" H40,                       REFKIND_NONE },   // empty project (trunk)
+        { "?//" H40,                      REFKIND_NONE },   // empty project
         { "//host?feat",                  REFKIND_NONE },   // authority form
+
+        //  --- a non-full-sha post-project segment is a BRANCH name ---
+        { "?/proj/5072265",               REFKIND_BRANCH }, // short hashlet
+        { "?/proj/507226561c499d3d167f0b2f03b9035f0816bc8",  REFKIND_BRANCH }, // 39 hex
+        { "?/proj/507226561c499d3d167f0b2f03b9035f0816bcZZ", REFKIND_BRANCH }, // 40 non-hex
     };
 
     for (size_t i = 0; i < sizeof(cases)/sizeof(*cases); i++) {

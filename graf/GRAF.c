@@ -387,24 +387,20 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
         ok64 rr = KEEPResolveRef(&sha, branch, cur_branch);
         if (rr != OK) return u8sFeed(canonic, given);
     }
-    sha1hex resolved_hex = {};
-    sha1hexFromSha1(&resolved_hex, &sha);
-    u8cs resolved_query = {};
-    sha1hexSlice(resolved_query, &resolved_hex);
-    if (u8csLen(resolved_query) < 40) return u8sFeed(canonic, given);
+    (void)sha;   //  resolved only to VALIDATE the branch exists (above)
 
-    //  Build canonic query slot:
-    //      /<project>/<branch>/<40-hex>
-    //  Leading '/' is mandatory (STORE.md §"URI structure"); use
-    //  a_abspath so PATHu8bPush composes on top of an existing '/'.
-    //  Project segment is a plain opaque label — hashlet suffix was
-    //  abandoned (genesis isn't knowable pre-fetch from the wire, so
-    //  hashlet-based dedup at clone time can't work without partial-
-    //  clone support; the canonic gains no value from carrying it).
+    //  URI-001 Stage 3: canonicalise the SCOPE only — emit
+    //      /<project>/<branch>
+    //  NOT a pin-in-query `/<project>/<branch>/<sha>`.  In argv URIs the
+    //  fragment is verb payload (PATCH squash/merge/rebase mode, GET
+    //  `#~N`/`#sha`), so pinning the tip into the query would read back
+    //  as a located-cherry / wrong shape downstream; the resolved sha
+    //  pin lives in `--at` (wtlog) and REFS storage.  KEEPResolveRef
+    //  above already validated the branch (passed through on miss).
+    //  Leading '/' is mandatory (URI.mkd "Ref shapes").
     a_abspath(canon_q);
     call(PATHu8bPush, canon_q, u8bDataC(k->h->project));
     call(PATHu8bPush, canon_q, branch);
-    call(PATHu8bPush, canon_q, resolved_query);
 
     //  Splice the new query back into the URI shape via URIutf8Feed
     //  (no manual serialize).  Mutate `u` in place — function-local.
