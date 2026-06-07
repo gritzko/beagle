@@ -1,7 +1,7 @@
 #!/bin/sh
 #  branches/10-file-scheme-merge — sibling worktree wired via the
 #  `file:` scheme, edits + commits on a child branch, then primary
-#  patches + posts the branch's stack into trunk (VERBS.md
+#  patches + posts the branch's stack into trunk (https://replicated.wiki/html/wiki/Verbs.html
 #  §"Worktree management" Example 2 + Example 3 merge step).
 #
 #  Walks the full happy path:

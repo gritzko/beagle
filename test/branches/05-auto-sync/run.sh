@@ -1,7 +1,7 @@
 #!/bin/sh
 #  branches/05-auto-sync — `be patch ?<other>#` + `be post` rebases CUR
 #  by absorbing ?<other>'s newest unreachable commit as a foster
-#  header.  POST never moves a non-cur ref (per VERBS.md §POST).
+#  header.  POST never moves a non-cur ref (per https://replicated.wiki/html/wiki/POST.html §POST).
 #  Three flavours: parent (`?..`), descendant (`?./child`), sibling.
 
 . "$(dirname "$0")/../../lib/branches.sh"

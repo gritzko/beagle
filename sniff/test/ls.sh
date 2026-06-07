@@ -1,6 +1,6 @@
 #!/bin/sh
 #  ls.sh — `sniff ls:` / `sniff lsr:` / `be ls:` smoke test (verbless
-#  per VERBS.md §"View projectors").  `ls:` lists one level (immediate
+#  per https://replicated.wiki/html/wiki/Projector.html §"View projectors").  `ls:` lists one level (immediate
 #  files + one `dir` row per subdir); `lsr:` is recursive — every
 #  descendant gets its own status row (put/new/mov/mod/del/mis/unk/eq).
 #  Confirms `be ls:` is non-destructive (does not fall through to

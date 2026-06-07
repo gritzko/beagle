@@ -324,7 +324,7 @@ ok64 GRAFRefIsName(u8cs ref) {
 //  trailing `/`) gets resolved against trunk REFS via REFSResolve;
 //  on hit, the query slot is rewritten to canonic form
 //      ?/<project>/<branch>/<40-hex-tip>
-//  (hashlet suffix deferred — see STORE.md §"Project identity").
+//  (hashlet suffix deferred — see https://replicated.wiki/html/wiki/Store.html §"Project identity").
 //
 //  Anything else (absolute `/`, relative `./`, hashlet, magic,
 //  search) currently passes through verbatim so downstream dogs
@@ -470,7 +470,7 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
     graf *g = &GRAF;
     if (!graf_is_open()) return GRAFFAIL;
 
-    //  Inner APIs receive canonic URIs from beagle (STORE.md
+    //  Inner APIs receive canonic URIs from beagle (https://replicated.wiki/html/wiki/Store.html
     //  §"URI structure": `/<project>/<branch-path>/<pin>`).  Pull
     //  the branch slice out of any canonic query form before handing
     //  it to HOMESetCurBranch (which normalises).

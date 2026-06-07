@@ -8,7 +8,7 @@ sleep 0.02; cp "$CASE/u.c" u.c
 
 # 02: `be grep:.c#bar` — projector scheme picks the backend, the URI
 #     path slot carries the `.ext` filter, fragment body is the needle
-#     (VERBS.md §"View projectors").
+#     (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
 "$BE" 'grep:.c#bar' > 03.uri.got.out 2> 03.uri.got.err
 match "$CASE/03.uri.want.out" 03.uri.got.out
 empty 03.uri.got.err

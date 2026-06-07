@@ -1,7 +1,7 @@
 #ifndef KEEPER_PROJ_H
 #define KEEPER_PROJ_H
 
-//  PROJ: keeper-owned view projectors (VERBS.md §"View projectors").
+//  PROJ: keeper-owned view projectors (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
 //
 //  Each handler takes a pre-parsed URI whose `scheme` matches the
 //  projector and emits a formatted view to stdout.  When `tlv` is YES

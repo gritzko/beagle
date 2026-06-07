@@ -3,7 +3,7 @@
 #  where ?feat doesn't exist yet, lands the new commit on ?feat
 #  only.  Trunk's REFS tip is unchanged; ?feat is born at the new
 #  commit; baseline switches to feat.  Trailing slash is the "new
-#  branch" marker (see VERBS.md §"Ref kinds" / dog/DOG.h
+#  branch" marker (see https://replicated.wiki/html/wiki/URI.html §"Ref kinds" / dog/DOG.h
 #  §DOGRefIsBranch); bareword `?feat` is a tag (file ref), which
 #  POST never switches to.
 

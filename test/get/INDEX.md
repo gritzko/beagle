@@ -3,11 +3,11 @@
 * `01-checkout/` — put + post + `be get '?'` on a fresh repo with one
   file (greet.txt = "hello world\n"); pins down post stderr shape and
   that GET succeeds against the just-committed branch tip.
-* `02-single-file-overwrite/` — `be get file.c?feat` (VERBS.md §GET):
+* `02-single-file-overwrite/` — `be get file.c?feat` (https://replicated.wiki/html/wiki/GET.html §GET):
   fork ?feat with a different `lib.c`, switch back to trunk, then
   pull only `lib.c`'s feat-side blob into the wt.  Asserts the file
   bytes flip and `.be/wtlog` does NOT grow (no staging — no `get` row).
-* `03-subtree-overlay/` — `be get src/?feat` (trailing slash, VERBS.md
+* `03-subtree-overlay/` — `be get src/?feat` (trailing slash, https://replicated.wiki/html/wiki/Verbs.html
   §GET).  Overlays every leaf under `src/` from feat's tip into the
   wt; files outside `src/` (here `common.txt`) and `.be/wtlog` row count
   stay put.  Exercises modified leaves + an added leaf.  No prune.
@@ -66,7 +66,7 @@
   triangle; an empty rotation at the end is a no-op + a final
   `be sha1:?` tip-equality check.  Gated on `WITH_SSH`.
 * `24-uri-refs/` — `be get be://localhost/<U>?<form>` URI-ref
-  resolution probe (VERBS.md §"Ref resolution"): all four query
+  resolution probe (https://replicated.wiki/html/wiki/URI.html §"Ref resolution"): all four query
   shapes — absolute `?/proj`, absolute-with-branch `?/proj/feat`,
   project-relative `?feat`, cur trunk `?`.  Currently `WILL_FAIL`
   — absolute trunk + `?` work; `?/proj/feat` and `?feat` still
@@ -83,7 +83,7 @@
   fetch step.
 * `25-remote-shard/` — `be get be://host?/project/branch` lays
   down the per-host remote shard `.be/<project>/remotes/<host>/refs`
-  parallel to the project shard.  STORE.md §"Repo dir layout":
+  parallel to the project shard.  https://replicated.wiki/html/wiki/Store.html §"Repo dir layout":
   remotes live in a `remotes/` class dir next to branches, one
   subdir per host; cache-only (no wtlog inside).  Same
   wire-intentionally-fails shape as 19; asserts the dispatcher-
@@ -98,7 +98,7 @@
   the bug the wire dies on the missing path.  Gated on `WITH_SSH`.
 * `27-ff-refuse/` — `be get` against a linear-ahead local cur
   (server tip is local's parent) must refuse (FF rule on the local
-  branch tip, VERBS.md §GET).  Regression guard: today the gate at
+  branch tip, https://replicated.wiki/html/wiki/GET.html §GET).  Regression guard: today the gate at
   `sniff/GET.c::~1131` fires correctly for `ssh://origin?master`,
   `ssh://origin`, and `//localhost`.  The sub-mount path may bypass
   it (originating `be get //spot` trace) — that gap is tracked
@@ -120,7 +120,7 @@
   `.be/first`/`.be/second` shard was spun up.  Gated on `WITH_SSH`.
 * `29-file-worktree/` — `be get file:<beagle-store>` wires a local
   sibling worktree: cwd's `.be` becomes a regular wtlog file pointing
-  back at the shared store, tip tree checked out (VERBS.md
+  back at the shared store, tip tree checked out (https://replicated.wiki/html/wiki/Verbs.html
   §"Worktree management" Example 2).  Local-only, no ssh.
 * `30-file-git-clone/` — `be get file:<git-repo>` clones a LOCAL git
   repo via a locally-spawned `git-upload-pack` (same transport flow as

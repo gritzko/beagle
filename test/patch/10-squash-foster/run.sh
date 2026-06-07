@@ -56,7 +56,7 @@ grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/patch.out" \
 
 # Absorbed-commit banner: feat's whole stack (F1, F2) listed as
 # `post\t?<hashlet>#<subject>` rows, newest-first — replaces the old
-# single-tip `patch applied` placeholder (VERBS.md §PATCH "Reporting").
+# single-tip `patch applied` placeholder (https://replicated.wiki/html/wiki/PATCH.html §PATCH "Reporting").
 grep -Eq 'post[[:space:]]+\?[0-9a-f]+#f2 add mul'    "$ETMP/patch.out" \
     || fail "banner missing F2 commit row; got: $(cat $ETMP/patch.out)"
 grep -Eq 'post[[:space:]]+\?[0-9a-f]+#f1 add parens' "$ETMP/patch.out" \

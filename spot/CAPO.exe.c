@@ -151,7 +151,7 @@ ok64 SPOTExec(cli *c) {
     CLIFlag(v, c, "--pcre");
     if (!$empty(v)) { $mv(pcre_ndl, v); }
 
-    //  Projector dispatch (VERBS.md §"View projectors"):
+    //  Projector dispatch (https://replicated.wiki/html/wiki/Projector.html §"View projectors"):
     //    be spot:#body[.ext]   structural search
     //    be grep:#body[.ext]   literal grep
     //    be regex:#body[.ext]  PCRE

@@ -2,7 +2,7 @@
 #  post/20-push-prints-diff — `be post //origin` (FF push) prints the
 #  pushed difference: the commits it introduced to the remote and the
 #  files they touched, in ULOG status format on stdout.  Mirrors the
-#  banner GET prints on checkout (VERBS.md §POST: POST(-push) shows the
+#  banner GET prints on checkout (https://replicated.wiki/html/wiki/POST.html §POST: POST(-push) shows the
 #  remote-tip → pushed-tip range; PUT/force pushes stay silent).
 #
 #  Setup:

@@ -5,7 +5,7 @@
 #  commit.  Switch back to trunk; wt has the trunk version.  Then
 #  `be get lib.c?feat` overwrites lib.c with the feat-side blob; the
 #  baseline branch (cur) stays trunk and `.be/wtlog` does NOT grow a
-#  `get` row (no staging — VERBS.md §GET).
+#  `get` row (no staging — https://replicated.wiki/html/wiki/GET.html §GET).
 
 . "$(dirname "$0")/../../lib/case.sh"
 

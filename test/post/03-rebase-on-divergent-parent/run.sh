@@ -1,7 +1,7 @@
 #!/bin/sh
 #  03-rebase-on-divergent-parent — `be patch ?..#` + `be post` from
 #  a child branch whose parent has advanced absorbs the parent's tip
-#  as a foster on cur's new tip.  Per VERBS.md §POST: cur is the only
+#  as a foster on cur's new tip.  Per https://replicated.wiki/html/wiki/POST.html §POST: cur is the only
 #  ref POST moves; the named branch is read-only.
 #
 #  Sequence:

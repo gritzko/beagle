@@ -2,7 +2,7 @@
 #  get/27-ff-refuse — `be get ssh://origin?<br>` must refuse when
 #  cur's local tip is NOT an ancestor of the incoming remote tip.
 #
-#  Spec (VERBS.md §GET):
+#  Spec (https://replicated.wiki/html/wiki/GET.html §GET):
 #    "For the transport-scheme remote form ... GET is also fast-forward-
 #     only on the local branch's tip: it refuses if the local tip is
 #     not an ancestor of the incoming remote tip."
@@ -90,7 +90,7 @@ cd ..; cd wt  # noop, keeps cwd consistent for the remaining steps
 
 # ----------------------------------------------------------------
 # 5. `be get //localhost` — bare cached form, default branch.
-#    Per VERBS.md the FF refusal applies to the "transport-scheme
+#    Per https://replicated.wiki/html/wiki/Verbs.html the FF refusal applies to the "transport-scheme
 #    remote form"; the cached form should also not silently demote
 #    the local tip past where the cached refs say.  In the
 #    originating trace this shape silently reset 5 files.

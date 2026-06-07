@@ -5,7 +5,7 @@
 #  remote commit as a `foster`, not a `parent`.  The push FF gate
 #  `KEEPIsAncestor` must follow foster edges, else `be post //origin`
 #  wrongly refuses a freshly-rebased tip as non-fast-forward — which
-#  contradicts VERBS.md Invariant 9 ("divergence is resolved
+#  contradicts https://replicated.wiki/html/wiki/Invariants.html Invariant 9 ("divergence is resolved
 #  client-side with PATCH + POST").  See FOSTER.plan.md (FF-push
 #  companion).  (Server is keeper receive-pack, which CAS-es on
 #  old_sha; a git peer would still refuse — foster is be-only.)

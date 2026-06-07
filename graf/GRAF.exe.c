@@ -146,7 +146,7 @@ ok64 GRAFExec(cli *c) {
         graf_usage(); done;
     }
 
-    //  Verb-less projector invocation (VERBS.md §"View projectors"):
+    //  Verb-less projector invocation (https://replicated.wiki/html/wiki/Projector.html §"View projectors"):
     //  `graf <proj>:<URI>` — no verb.  The URI's scheme must resolve
     //  through DOG_PROJECTORS to "graf"; today that's only `diff:`.
     //  We synthesize the matching verb so the existing dispatch below
@@ -315,7 +315,7 @@ ok64 GRAFExec(cli *c) {
         ret = GRAFBlame(path, tip_h, reporoot);
 
     } else if ($eq(c->verb, v_diff)) {
-        //  URI-driven diff (VERBS.md §"View projectors", `diff:`).  The
+        //  URI-driven diff (https://replicated.wiki/html/wiki/Projector.html §"View projectors", `diff:`).  The
         //  right-hand side of every diff is *ours* (the changed state).
         //  URI shape table:
         //

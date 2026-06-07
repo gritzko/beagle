@@ -74,7 +74,7 @@ static ok64 get_resolve_chunk(get_tip *out, u8cs chunk) {
 
 // --- Drain a URI into (path, tips[]) ---
 //
-//  Accepts the two shapes in VERBS.md:
+//  Accepts the two shapes in https://replicated.wiki/html/wiki/Verbs.html:
 //      file.c?sha1&sha2          blob merge
 //      dir/?sha1&sha2            tree merge  (is_tree = YES)
 //  Also accepts the degenerate `path` (no `?`) as a single-tip lookup

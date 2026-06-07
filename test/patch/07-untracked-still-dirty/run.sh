@@ -16,7 +16,7 @@
 #
 #  This test sets up all four conditions in one wt and runs
 #  `be patch ?./feat` against a divergent feat branch.  Per the
-#  new spec (VERBS.md §PATCH "Weave merge into dirty wt"), PATCH
+#  new spec (https://replicated.wiki/html/wiki/PATCH.html §PATCH "Weave merge into dirty wt"), PATCH
 #  no longer refuses on dirty wt — it weaves and reports per-file
 #  status.  edit.txt must appear with `patch dirty edit.txt`;
 #  bump.txt / new.txt / scratch.tmp must NOT.

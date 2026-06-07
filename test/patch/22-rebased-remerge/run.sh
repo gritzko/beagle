@@ -6,7 +6,7 @@
 #
 #  Root cause: the absorbing commit re-inserts the picked commit's
 #  tokens under its OWN WEAVE birth-id `(seq,pos)`.  `picked` trailers
-#  are dedup-only and do NOT participate in reachability (VERBS.md
+#  are dedup-only and do NOT participate in reachability (https://replicated.wiki/html/wiki/Verbs.html
 #  §PATCH "Ancestor-skip walk"), so the merge does NOT skip the
 #  original commit — it replays it, and WEAVE sees the same tokens with
 #  two different birth-ids (ours = the absorbing commit, theirs = the

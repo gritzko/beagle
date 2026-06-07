@@ -15,13 +15,13 @@
 //  subsequent `sniff post` picks up the merged wt as staged
 //  content.
 //
-//  See VERBS.md §PATCH for the user-facing semantics.
+//  See https://replicated.wiki/html/wiki/PATCH.html §PATCH for the user-facing semantics.
 
 #include "abc/INT.h"
 #include "abc/BUF.h"
 #include "abc/URI.h"
 
-//  PATCH URI shapes (see VERBS.md §PATCH four-shapes table and
+//  PATCH URI shapes (see https://replicated.wiki/html/wiki/PATCH.html §PATCH four-shapes table and
 //  sniff/AT.md "Patch row shapes").  Classified from URIPattern(u)
 //  bits plus u8csEmpty(u->fragment):
 //
@@ -85,7 +85,7 @@ con ok64 PATCHBUSY     = 0x1929d3112de722;   // merge already in progress —
                                              // abort by checking out the
                                              // pre-patch commit
 con ok64 PATCHDET      = 0x64a74c44d39d;     // detached wt: PATCH refuses
-                                             // (per VERBS.md Invariant 7);
+                                             // (per https://replicated.wiki/html/wiki/Invariants.html Invariant 7);
                                              // re-attach to a branch first
 
 #endif

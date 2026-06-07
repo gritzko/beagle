@@ -7,7 +7,7 @@
 #    4. Edit in both the clone and the worktree.
 #    5. `be post msg` in the worktree (local commit).
 #    6. `be put ssh://localhost:<origin>?master` (push the commit;
-#       VERBS.md §"PUT" — `//remote` is the FF-push form).
+#       https://replicated.wiki/html/wiki/PUT.html §"PUT" — `//remote` is the FF-push form).
 #    7. Fetch origin into a fresh git clone and diff against our worktree.
 #
 #  Requires passwordless ssh to localhost (same as POSTtest did).
@@ -63,7 +63,7 @@ mkdir -p "$CLONE/.be"; cd "$CLONE"
 note "clone has a.txt, b.txt"
 
 # --- 3. be get file:<clone>?master → secondary worktree ---
-#  Per VERBS.md §"Worktree management" Example 2, the canonical
+#  Per https://replicated.wiki/html/wiki/Worktree.html §"Worktree management" Example 2, the canonical
 #  sibling-wt form is `be get file:../proj?<ref>` (file:// scheme
 #  + explicit ref).  A bare `be get <path>` does not trigger the
 #  secondary-wt setup — it tries to read the path as a clone URL.
@@ -73,7 +73,7 @@ echo "=== 3. be get file:<clone>?master (worktree) ==="
 rm -rf "$WT/.be"
 mkdir -p "$WT"; cd "$WT"
 "$BE" get --seq "file:$CLONE?master" >/dev/null 2>&1 || true
-#  Per VERBS.md §"Worktree management" and beagle/BE.cli.c
+#  Per https://replicated.wiki/html/wiki/Worktree.html §"Worktree management" and beagle/BE.cli.c
 #  `BEGetWorktree`: secondary wt's `.be` is a REGULAR FILE (the
 #  wtlog itself, row 0 being the wt→store anchor pointing at the
 #  primary store).  Older roundtrip implementations used a
@@ -100,7 +100,7 @@ echo bravo-WT > "$WT/b.txt"
 note "clone edited a.txt; worktree adds c.txt and modifies b.txt"
 
 # --- 5. stage + commit ---
-#  Per VERBS.md §"POST": implicit mode (bare `be post`) commits all
+#  Per https://replicated.wiki/html/wiki/POST.html §"POST": implicit mode (bare `be post`) commits all
 #  dirty *tracked* files; an untracked sibling (`c.txt`) needs an
 #  explicit `be put`, and removing a tracked file needs an explicit
 #  `be delete` (it would have swept in via implicit mode, but as
@@ -135,7 +135,7 @@ WT_SHA=$(awk -F'\t' '$2 == "post" { last = $3 } END {
 note "worktree commit=$WT_SHA"
 
 # --- 6. be put ssh://... → push ---
-#  Per VERBS.md §"PUT" the FF-push verb is now PUT (was POST in the
+#  Per https://replicated.wiki/html/wiki/POST.html §"PUT" the FF-push verb is now PUT (was POST in the
 #  pre-rewrite model).  `be post //remote` rebases cur from cached.
 echo "=== 6. be put ssh://localhost:<origin>?master ==="
 "$BE" put --seq "ssh://localhost/$REL_ORIGIN?master" 2>&1 \

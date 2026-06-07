@@ -1625,7 +1625,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     //  push through.  Receive-pack on the wire side won't refuse it
     //  either (git's `denyNonFastForwards=false` default).  This is
     //  the authoritative FF gate for `be post //remote`.  `force=YES`
-    //  (PUT-to-remote per VERBS.md §PUT Design invariant 9) skips it.
+    //  (PUT-to-remote per https://replicated.wiki/html/wiki/PUT.html §PUT Design invariant 9) skips it.
     if (!force && have_peer && !KEEPIsAncestor(&local_tip, &peer_tip)) {
         sha1hex lh = {}, ph = {};
         sha1hexFromSha1(&lh, &local_tip);
@@ -1753,7 +1753,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     //  Pushed-difference banner (POST only).  List the commits this
     //  push introduced to the peer and the files they touch, in ULOG
     //  status format on stdout — mirrors GET's checkout banner
-    //  (VERBS.md §POST).  `force` pushes (PUT) advance refs without a
+    //  (https://replicated.wiki/html/wiki/POST.html §POST).  `force` pushes (PUT) advance refs without a
     //  diff promise, so they stay silent — and where the remote tip is
     //  unknowable that is the only safe path (use `be put`).  Empty
     //  peer (`!have_peer`) ⇒ base is the empty tree, so every commit /

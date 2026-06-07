@@ -1,7 +1,7 @@
 #!/bin/sh
 #  be-get-create-on-miss.sh — `be get ?./sub` from wt on `?feat`,
 #  where `?feat/sub` doesn't exist, must error.  GET never creates a
-#  branch (per VERBS.md); the spec-aligned create path is `be post
+#  branch (per https://replicated.wiki/html/wiki/Verbs.html); the spec-aligned create path is `be post
 #  ?./sub` followed by `be get ?./sub`.  All observables intact on the
 #  miss.
 

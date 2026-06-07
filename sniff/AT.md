@@ -142,7 +142,7 @@ Readers that only need "current tip" take the fragment via
 
 ## Patch row shapes
 
-Per VERBS.md §PATCH, PATCH has four URI shapes; each maps to a row
+Per https://replicated.wiki/html/wiki/PATCH.html §PATCH, PATCH has four URI shapes; each maps to a row
 that POST consumes when assembling the next commit's headers.  All
 user inputs (branch names, hashlets, msg-substring searches) are
 resolved at PATCH time into the canonical 40-hex sha of the commit

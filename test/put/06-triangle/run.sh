@@ -17,7 +17,7 @@
 #                              receive-pack" --force ssh://localhost$ABS_A
 #                              main:main`
 #
-#  Per VERBS.md §PUT: PUT is *unconstrained* — non-FF (force) pushes
+#  Per https://replicated.wiki/html/wiki/PUT.html §PUT: PUT is *unconstrained* — non-FF (force) pushes
 #  are allowed; PUT is the force-push verb (POST is FF-only).  The
 #  three R1/R2/R3 rounds are still FF-shaped (each is one commit
 #  forward); R4 (non-FF tail) is the distinguishing case: B rewinds
@@ -202,7 +202,7 @@ sleep 0.02
 # R1/R2/R3), creating a tip that is NOT a descendant of the current
 # refs.  PUT must let this propagate; POST would refuse.
 #
-# Mechanism: `be put ?#<sha>` resets cur to <sha>.  Per VERBS.md §PUT:
+# Mechanism: `be put ?#<sha>` resets cur to <sha>.  Per https://replicated.wiki/html/wiki/PUT.html §PUT:
 # "PUT writes one row to .be/REFS … (`be put ?br#sha`) Reset `?br`
 # to sha `abc1234`.  Non-FF rewrite is allowed (PUT is unconstrained
 # — local or remote)."

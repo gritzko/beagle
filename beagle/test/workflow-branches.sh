@@ -218,7 +218,7 @@ note "?fix1 deleted; trunk unchanged at T1=$T1"
 #
 #  Increment 2 — exercise the spec-aligned PATCH verb:
 #  re-create a child, give it a multi-commit stack, then squash it
-#  into trunk via `be patch` + `be post`.  Per VERBS.md §PATCH and
+#  into trunk via `be patch` + `be post`.  Per https://replicated.wiki/html/wiki/PATCH.html §PATCH and
 #  Invariant 2, PATCH erases provenance: the next POST emits a
 #  *single-parent* commit on cur (no `&theirs`, no merge commit), and
 #  the child branch is left untouched.

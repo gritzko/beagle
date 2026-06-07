@@ -1,6 +1,6 @@
 #!/bin/sh
 #  post/05-non-ff-refused — `be post //origin` refuses when cur is
-#  not a fast-forward of the remote's counterpart.  Per VERBS.md §POST
+#  not a fast-forward of the remote's counterpart.  Per https://replicated.wiki/html/wiki/POST.html §POST
 #  POST is commit-and/or-FF only (never rebase); divergent remotes are
 #  reconciled with `be patch //origin?` + `be post`, not by POST alone.
 #

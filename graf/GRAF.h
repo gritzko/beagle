@@ -265,7 +265,7 @@ ok64 GRAFRefIsName(u8cs ref);
 //  Universal version resolver.  Takes any user-supplied URI shape
 //  and rewrites the `?query` slot into the canonic form
 //      ?/<project>.<hashlet>/<branch-path>/<sha-or-tag>
-//  (see STORE.md §"URI structure").  Magic refs (`?null`, `?back`),
+//  (see https://replicated.wiki/html/wiki/URI.html §"URI structure").  Magic refs (`?null`, `?back`),
 //  trailing-slash branch/tag rules, project-relative paths,
 //  hashlets, commit-message search by whitespace shape — all
 //  handled here, in one place, so callers downstream of
@@ -392,7 +392,7 @@ ok64 GRAFLog(uricp u);
 // commit-message body, emit the first matching commit's log row.
 // Returns GRAFNONE when no commit matches; FAILSANITY on bad URI;
 // GRAFFAIL on transport / object-fetch error.  Used by `be head
-// '#parallel'` (VERBS.md §HEAD).
+// '#parallel'` (https://replicated.wiki/html/wiki/HEAD.html §HEAD).
 con ok64 GRAFNONE    = 0x41b28f5d85ce;
 ok64 GRAFHead(uricp u);
 

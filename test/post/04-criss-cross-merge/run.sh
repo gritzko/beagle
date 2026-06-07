@@ -1,7 +1,7 @@
 #!/bin/sh
 #  04-criss-cross-merge — exercise WEAVEMerge() against a real
 #  two-LCA criss-cross DAG.  dogs's POST is single-parent only
-#  (VERBS.md Invariant 2), so the criss-cross history can't be
+#  (https://replicated.wiki/html/wiki/Invariants.html Invariant 2), so the criss-cross history can't be
 #  built with `be`; we seed it via `git commit-tree` plumbing into
 #  a bare git repo, then `be get file://…?fix2` imports the
 #  multi-parent topology over the keeper-side git-upload-pack
@@ -39,7 +39,7 @@
 #      git-over-file dispatch).
 #    * `be patch ?fix1` succeeds with no conflict markers.
 #    * Post-merge wt content matches the want files.
-#    * The new tip on ?fix2 is single-parent (VERBS.md Invariant 2)
+#    * The new tip on ?fix2 is single-parent (https://replicated.wiki/html/wiki/Invariants.html Invariant 2)
 #      with parent == M2's imported sha.
 
 . "$(dirname "$0")/../../lib/case.sh"

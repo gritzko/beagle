@@ -6,7 +6,7 @@ index.  Uses zlib for pack decompression and OpenSSL for SHA-1
 object IDs.
 
 Store layout is a **single flat object shard per project** (see
-`STORE.md` §"Repo dir layout"): one dir
+`https://replicated.wiki/html/wiki/Store.html` §"Repo dir layout"): one dir
 `<store>/<project>/` holds every `NNNNN.keeper` pack log +
 `NNNNN.keeper.idx` index run for *all* local branches, tags and
 remote-tracking refs, plus one `refs` (a `dog/ULOG` reflog — see
@@ -128,7 +128,7 @@ ref-update line + pack, drains unpack/per-ref status.
                           (`test/WIRE_CLIENT.c` cases 5/6).
   - `WIREFetchAll`       client: single upload-pack session, multi-want
                           for every advertised heads/tags ref.  Backs
-                          `be head ssh://origin?*` (VERBS.md §HEAD).
+                          `be head ssh://origin?*` (https://replicated.wiki/html/wiki/HEAD.html §HEAD).
                           Capped at WIRECLI_FETCHALL_MAX (64) refs per
                           session
   - `WIREPush`           client: spawn receive-pack peer, send pack,

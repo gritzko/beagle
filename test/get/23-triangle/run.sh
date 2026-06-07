@@ -11,7 +11,7 @@
 #         ▲                                              │
 #         └──────────────────────────────────────────────┘
 #
-#  Edge types covered (per VERBS.md "Schemes — cached vs transport"
+#  Edge types covered (per https://replicated.wiki/html/wiki/URI.html "Schemes — cached vs transport"
 #  and keeper/WIRECLI.c "transport spawn"):
 #    A → B   be→be       B does `be get be://localhost/<A>?master`
 #                        → `ssh localhost keeper upload-pack <A>`
@@ -216,7 +216,7 @@ git -C "$C_BARE" fetch --upload-pack="$UP" \
 # ====================================================================
 # R4 — empty rotation.  No commits anywhere.  Re-running each edge
 # must leave on-disk file state at each node unchanged from R3.
-# (Per VERBS.md §GET: "GET is also fast-forward-only ... [refuses if
+# (Per https://replicated.wiki/html/wiki/GET.html §GET: "GET is also fast-forward-only ... [refuses if
 # the local tip is not an ancestor of the incoming remote tip]" —
 # equal tips are an ancestor → no-op accepted.)
 # ====================================================================

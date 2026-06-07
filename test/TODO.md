@@ -99,7 +99,7 @@ Missing `//auth` resolves via branch↔remote assoc.
 
 ## PUT — create / stage / register
 
-PUT has **no `#frag` aspect** per VERBS.md.  Cross-branch staging
+PUT has **no `#frag` aspect** per https://replicated.wiki/html/wiki/Verbs.html.  Cross-branch staging
 (`path?ref`) and remote-branch creation (`//auth?ref` w/o URL) are
 also undefined.
 
@@ -138,7 +138,7 @@ also undefined.
 
 ## DELETE — remove
 
-DELETE has **no `#frag` aspect** per VERBS.md.  Cross-branch
+DELETE has **no `#frag` aspect** per https://replicated.wiki/html/wiki/Verbs.html.  Cross-branch
 delete (`path?ref`) is also undefined.  Missing `//auth` resolves
 via branch↔remote assoc for push-delete forms.
 

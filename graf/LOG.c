@@ -516,7 +516,7 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
 //  `graf head '#parallel'` walks cur's first-parent chain via the DAG
 //  COMMIT_PARENT index, fetches each commit body via keeper, and emits
 //  the first commit whose message body contains the fragment as a
-//  substring.  Used by `be head '#parallel'` (VERBS.md §HEAD).
+//  substring.  Used by `be head '#parallel'` (https://replicated.wiki/html/wiki/HEAD.html §HEAD).
 //
 //  Resolution policy: cur tip comes from `--at <root>?<branch>#<sha>`
 //  forwarded by `be` and parked in `k->h->cur_sha` by HOMEOpen.  No
@@ -595,7 +595,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
             break;
         }
 
-        //  First-parent walk — branches are linear (VERBS.md Inv. 2).
+        //  First-parent walk — branches are linear (https://replicated.wiki/html/wiki/Verbs.html Inv. 2).
         wh64 par_buf[2] = {};
         wh64s parents = {par_buf, par_buf + 2};
         wh64 *pbase = parents[0];

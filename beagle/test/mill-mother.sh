@@ -194,7 +194,7 @@ for TAG in $TAGS; do
     cd "$TMILL/dog01"
     T0=$(date +%s)
     #  Stage every wt path before posting.  `be post` only commits
-    #  tracked files in implicit mode (per VERBS.md §POST: an untracked
+    #  tracked files in implicit mode (per https://replicated.wiki/html/wiki/POST.html §POST: an untracked
     #  sibling must be explicitly `be put`-staged), and `be put` does
     #  NOT auto-record deletions — that's `be delete`'s job.  So we
     #  need both:

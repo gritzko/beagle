@@ -1,7 +1,7 @@
 #!/bin/sh
-#  be-diff-projector.sh — VERBS.md `diff:` projector.
+#  be-diff-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `diff:` projector.
 #
-#  Per VERBS.md the right-hand-side is always *ours* (the changed state):
+#  Per https://replicated.wiki/html/wiki/Verbs.html the right-hand-side is always *ours* (the changed state):
 #
 #    diff:                 → wt vs base    (whole tree)
 #    diff:file.c           → wt vs base    (single file)

@@ -62,7 +62,7 @@ echo "beta v3"  > other.txt
 echo "new file" > extra.txt
 #  Selective mode: any explicit put/delete row puts POST in
 #  selective mode, where only files named by put rows land in the
-#  commit (per VERBS.md §POST classification).  Both files have to
+#  commit (per https://replicated.wiki/html/wiki/POST.html §POST classification).  Both files have to
 #  be put-staged or the modification gets ignored.
 "$BE" put other.txt >/dev/null
 "$BE" put extra.txt >/dev/null

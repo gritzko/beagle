@@ -178,7 +178,7 @@ ok64 SNIFFAtBaselineTreeSha(b8 cur_tip_only, sha1 *out, b8 *have_out);
 //  ULOG has no rows at all.
 ok64 SNIFFAtPatchChain(sha1b out);
 
-//  Shape-aware patch-row reader.  Per VERBS.md §POST "Parent /
+//  Shape-aware patch-row reader.  Per https://replicated.wiki/html/wiki/POST.html §POST "Parent /
 //  foster / picked assembly", POST needs more than just the sha
 //  list — it needs each row's URI shape (squash / cherry-pick /
 //  merge / rebase-one) to decide whether to emit a `parent` /

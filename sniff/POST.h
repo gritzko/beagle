@@ -1,7 +1,7 @@
 #ifndef SNIFF_POST_H
 #define SNIFF_POST_H
 
-//  POST: two-phase commit-and-promote (see VERBS.md §POST).
+//  POST: two-phase commit-and-promote (see https://replicated.wiki/html/wiki/POST.html §POST).
 //
 //  Phase 1 — Commit-if-staged: any wt edits or PATCH-staged content
 //  produces one new single-parent commit on cur (trailing words become
@@ -37,7 +37,7 @@
 //  URIs.  POSTCommit consults the bits it needs via CLIHas / etc.;
 //  currently `--force` bypasses the conflict-marker refusal
 //  (POSTCFLCT) for files whose legitimate content contains `<<<<`
-//  (e.g. VERBS.md describing the marker syntax).  More flags follow
+//  (e.g. https://replicated.wiki/html/wiki/Verbs.html describing the marker syntax).  More flags follow
 //  without further signature churn.
 #include "dog/CLI.h"
 ok64 POSTCommit(u8cs target_branch,
@@ -68,7 +68,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
 //  no `?label`) so the user can sanity-check before committing.
 ok64 POSTPrintStatus(void);
 
-//  Cross-branch promote (no-msg `be post ?<X>` shapes per VERBS.md
+//  Cross-branch promote (no-msg `be post ?<X>` shapes per https://replicated.wiki/html/wiki/Verbs.html
 //  §POST).  `target_branch` is the absolute branch path the user
 //  named (already absolutised from `?./X`/`?../X`/`?..` by the
 //  caller); empty means trunk.  Decides between four shapes:
@@ -79,7 +79,7 @@ ok64 POSTPrintStatus(void);
 //    other absolute existing branch   ?<absolute>      peer-promote
 //
 //  Operands per shape and cur auto-sync rules: see post_promote
-//  body and the table in VERBS.md.  Returns:
+//  body and the table in https://replicated.wiki/html/wiki/Verbs.html.  Returns:
 //    OK          — promote landed (REFS advanced).
 //    POSTNONE    — nothing to do (already in sync).
 //    GRAFCNFL    — three-way merge conflict mid-rebase.

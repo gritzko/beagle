@@ -206,7 +206,7 @@ ok64 BEActKeeperPush   (cli *c) { return be_spawn_all("keeper", "post",   c); }
 
 //  PUT-to-remote: same wire path as POST-push (BEActKeeperPush) but
 //  with a `--force` flag so keeper-side skips its FF check.  PUT is
-//  unconstrained per VERBS.md §PUT Design invariant 9.
+//  unconstrained per https://replicated.wiki/html/wiki/PUT.html §PUT Design invariant 9.
 ok64 BEActKeeperPushForce(cli *c) {
     sane(c);
     a_cstr(dog_s,  "keeper");
@@ -311,7 +311,7 @@ be_action const BE_PLAN_GET[] = {
     { 0,                  0,             NO,  BEActBootstrap      },
     //  Fire keeper get only on transport URIs (scheme present);
     //  cached `//host` form reads local cache without opening the
-    //  wire (VERBS.md §"Schemes — cached vs transport", Bug 2).
+    //  wire (https://replicated.wiki/html/wiki/URI.html §"Schemes — cached vs transport", Bug 2).
     //  Mirrors BE_PLAN_PATCH row at line ~287.
     { URI_SCHEME|URI_AUTHORITY, 0,        NO,  BEActKeeperGet      },
     //  Bare scheme-only transport (`ssh:` / `file:` — authority AND

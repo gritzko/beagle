@@ -38,7 +38,7 @@ EOF
 
 #  BEActSubsPost auto-emits `put vendor/sub#<sha>` rows for each
 #  sub before the parent post runs.  That auto-put trips sniff into
-#  selective mode (per VERBS.md §POST "Per-file classification via
+#  selective mode (per https://replicated.wiki/html/wiki/POST.html §POST "Per-file classification via
 #  stamps"), where only explicitly-staged files get committed.
 #  Without an explicit `be put util.c`, the parent edit is invisible
 #  to the post → POSTNONE.  Stage it ourselves so the implicit-mode

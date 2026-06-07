@@ -1,6 +1,6 @@
 #!/bin/sh
 #  07-patch-multi-author — two cherry-picks from different authors,
-#  followed by POST.  Per the new spec (VERBS.md §POST "Message
+#  followed by POST.  Per the new spec (https://replicated.wiki/html/wiki/POST.html §POST "Message
 #  resolution"), bare `be post` with >1 applied commit is AMBIGUOUS
 #  and must refuse with POSTNOMSG; the user supplies an explicit
 #  msg.  The resulting commit carries `picked: <sha>` trailers for

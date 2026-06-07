@@ -66,7 +66,7 @@ SRC_REL=${SRC#$HOME/}
 KSRV=$TMP/keeper-srv
 mkdir -p "$KSRV/.be"
 cd "$KSRV"
-# Be-side ref form (`tags/X` / bare branch) per VERBS.md
+# Be-side ref form (`tags/X` / bare branch) per https://replicated.wiki/html/wiki/Verbs.html
 # §"Ref resolution"; wire form (`refs/tags/X` / `refs/heads/X`)
 # isn't accepted by be's URI parser.
 for REF in tags/v1 tags/v2 master; do

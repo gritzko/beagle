@@ -4,7 +4,7 @@
 # Two child branches forked off trunk, each with two commits editing
 # disjoint files.  From cur=?fix1, iterated `be patch ?fix2#` + `be
 # post` absorbs ?fix2's commits as fosters, leaving cur with both
-# edits on disk.  Per VERBS.md §POST, only cur (?fix1) moves; trunk
+# edits on disk.  Per https://replicated.wiki/html/wiki/POST.html §POST, only cur (?fix1) moves; trunk
 # and ?fix2 are read-only.
 
 OUT="$SCRATCH/../out"

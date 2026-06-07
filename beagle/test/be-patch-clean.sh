@@ -1,6 +1,6 @@
 #!/bin/sh
 #  be-patch-clean.sh — patch a sibling branch into trunk.  Per
-#  VERBS.md §PATCH and Invariant 2 (linear branches, single-parent
+#  https://replicated.wiki/html/wiki/PATCH.html §PATCH and Invariant 2 (linear branches, single-parent
 #  commits), PATCH erases provenance: the baseline stays single-tip
 #  and the next POST emits a single-parent commit on cur.
 
@@ -48,7 +48,7 @@ vc_snapshot after_post
 vc_assert_exit 0
 
 #  Verify the new commit has exactly 1 parent (cur's prior tip).
-#  Per VERBS.md §PATCH, PATCH never produces a merge commit.
+#  Per https://replicated.wiki/html/wiki/PATCH.html §PATCH, PATCH never produces a merge commit.
 SQUASH=$(vc_section after_post sniff | awk '$1=="post"{last=$2} END{
     h=last; sub(/^[^#]*#/, "", h); print h
 }')

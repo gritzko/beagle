@@ -471,7 +471,7 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
 }
 
 //  `keeper get //remote[?ref]` — fetch via WIREFetch.  Empty ?ref means
-//  fast-forward the current worktree branch (per VERBS.md `be get //origin`).
+//  fast-forward the current worktree branch (per https://replicated.wiki/html/wiki/Verbs.html `be get //origin`).
 ok64 KEEPGetRemote(uri *g) {
     sane(g);
     keeper *k = &KEEP;
@@ -497,7 +497,7 @@ ok64 KEEPGetRemote(uri *g) {
     DOGQueryStripProject(want_ref);
 
     //  `?*` wildcard: bulk-fetch every advertised heads/tags ref in
-    //  one upload-pack session (multi-want).  See VERBS.md §HEAD —
+    //  one upload-pack session (multi-want).  See https://replicated.wiki/html/wiki/HEAD.html §HEAD —
     //  `be head ssh://origin?*` mirrors `git fetch`.
     if ($len(want_ref) == 1 && want_ref[0][0] == '*') {
         ok64 fa = WIREFetchAll(remote_uri);
@@ -711,7 +711,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
 
 // --- POST fast-forward check ---
 //
-//  VERBS.md §POST / Design invariant 9: POST is FF-only.  Default-
+//  https://replicated.wiki/html/wiki/POST.html §POST / Design invariant 9: POST is FF-only.  Default-
 //  config bare git's receive-pack has `denyNonFastForwards=false`
 //  and would silently accept a non-FF push, so keeper enforces on
 //  the client side.  Two probes share `KEEPIsAncestor` (KEEP.c):
@@ -764,7 +764,7 @@ static b8 keep_post_is_git_wire(u8csc remote_uri) {
 //    2. Build the transport URI from the URI's authority/scheme (with
 //       alias resolution).
 //    3. Check that the peer's cached tip is an ancestor of cur's tip
-//       (POST is FF-only — VERBS.md §POST).  Cache is whatever the
+//       (POST is FF-only — https://replicated.wiki/html/wiki/POST.html §POST).  Cache is whatever the
 //       last `be head ssh://...` (or transport-scheme POST/PATCH/GET)
 //       populated in `<store>/.be/refs`.  Skipped when the peer ref
 //       is unknown (fresh ref creation).
@@ -884,7 +884,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
 
     //  4a. POST is FF-only.  Look up the peer's cached tip and
     //  refuse if it's not an ancestor of at_tip.  PUT bypasses
-    //  this (see VERBS.md §PUT — non-FF on either namespace is
+    //  this (see https://replicated.wiki/html/wiki/PUT.html §PUT — non-FF on either namespace is
     //  allowed for PUT).  Skipped when the peer ref isn't cached
     //  (fresh ref creation, or user didn't `be head` first; the
     //  receive-pack will accept whatever we send).
@@ -894,7 +894,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
     //  a hostname.  Filter additionally by path when the user
     //  supplied an explicit transport URI with a path.
     //  `--force` skips this cache-side FF check entirely (PUT's
-    //  force-push path per VERBS.md §PUT Design invariant 9).
+    //  force-push path per https://replicated.wiki/html/wiki/PUT.html §PUT Design invariant 9).
     b8 force = CLIHas(c, "--force") ? YES : NO;
     if (!force) {
         a_pad(u8, ffarena, 1024);
@@ -985,7 +985,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
 //                            row whose authority is the named host.
 //                            No network.
 //
-//  VERBS.md spec stores aliases in `<store>/ALIAS`; the current
+//  https://replicated.wiki/html/wiki/Verbs.html spec stores aliases in `<store>/ALIAS`; the current
 //  keeper folds aliases into REFS rows keyed by host (REFS.h:16),
 //  so dropping the alias is the same as tombstoning every row that
 //  carries that authority.
@@ -1158,7 +1158,7 @@ ok64 KEEPExec(cli *c) {
         keep_usage(); done;
     }
 
-    //  Verb-less projector invocation (VERBS.md §"View projectors"):
+    //  Verb-less projector invocation (https://replicated.wiki/html/wiki/Projector.html §"View projectors"):
     //  `keeper <proj>:<URI>` — no verb.  Scheme selects the projector;
     //  dog/DOG.c owns the scheme→dog table so we dispatch only when
     //  the URI's scheme resolves to this dog ("keeper").  `--tlv`

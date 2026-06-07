@@ -1,6 +1,6 @@
 #!/bin/sh
 #  get/29-file-worktree — `be get file:<beagle-store>` wires a local
-#  SIBLING WORKTREE (VERBS.md §"Worktree management" Example 2).
+#  SIBLING WORKTREE (https://replicated.wiki/html/wiki/Worktree.html §"Worktree management" Example 2).
 #
 #  The target's `.be/` is a beagle store, so be takes the worktree
 #  path (NOT the git-clone transport path): the new cwd's `.be`

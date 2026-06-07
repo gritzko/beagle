@@ -23,7 +23,7 @@ a_cstr(DOG_REFS_S,   DOG_REFS_NAME);
 a_cstr(DOG_WTLOG_S,  DOG_WTLOG_NAME);
 a_cstr(DOG_CONFIG_S, DOG_CONFIG_NAME);
 
-//  Known view-projector schemes (VERBS.md §"View projectors") with
+//  Known view-projector schemes (https://replicated.wiki/html/wiki/Projector.html §"View projectors") with
 //  the dog that implements each.  Shared source of truth: DOGParseURI
 //  uses the scheme column to exempt these from the scheme→authority
 //  promotion; BE (beagle/BE.cli.c) uses the dog column to dispatch
@@ -46,7 +46,7 @@ static DOGProjRoute const DOG_PROJECTORS[] = {
     {"lsr",    "sniff"},   // recursive
     {"cat",    "sniff"},
     {"status", "sniff"},   // worktree status — same hunk as bare `be`
-    //  Search projectors — read-only views (VERBS.md §"View projectors").
+    //  Search projectors — read-only views (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
     //  Scheme picks the search backend; path-slot carries the body.
     //  Examples:
     //    be spot:'u8sFeed( a, b )'      structural
@@ -76,7 +76,7 @@ char const *DOGProjectorDog(u8cs scheme) {
     return r ? r->dog : NULL;
 }
 
-//  Known transport schemes (VERBS.md §"Transport schemes").  Kept as a
+//  Known transport schemes (https://replicated.wiki/html/wiki/URI.html §"Transport schemes").  Kept as a
 //  table next to DOG_PROJECTORS so adding a transport is a one-row
 //  edit.  CLI.c uses this to disambiguate `word:` — known scheme = URI,
 //  unknown = prose (e.g. a `cli:` conventional-commit prefix).

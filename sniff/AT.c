@@ -157,7 +157,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
     //  longer used in the URI; `anchor_branch_buf` still feeds the
     //  query slot, since `<project>/<branch>` is encoded inside the
     //  anchor URI's path-after-`.be/`.
-    //  VERBS.md §"Ref resolution" — absolute form with leading `/` so
+    //  https://replicated.wiki/html/wiki/URI.html §"Ref resolution" — absolute form with leading `/` so
     //  the receiver picks the right project shard.
     u8bReset(out);
     u8bFeed(out, wt);

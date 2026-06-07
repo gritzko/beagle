@@ -660,7 +660,7 @@ ok64 KEEPProjDispatch(uricp u, b8 tlv) {
     a_cstr(s_blob,   "blob");
     a_cstr(s_sha1,   "sha1");
 
-    //  Per VERBS.md §"Ref resolution", `?<hex-prefix>` is a sha
+    //  Per https://replicated.wiki/html/wiki/URI.html §"Ref resolution", `?<hex-prefix>` is a sha
     //  lookup.  KEEPResolveTree (used by tree:/commit: and the
     //  path-bearing blob: form) only special-cases the fragment slot;
     //  mirror the user's intent into the fragment so any prefix from

@@ -216,7 +216,7 @@ static ok64 put_classify_step(class_step const *step, void *ctx_) {
 // --- Dir-form expansion --------------------------------------------
 //
 //  `be put <dir>/` (trailing slash): expand to one per-file `put` row
-//  per path.  VERBS.md §PUT contract:
+//  per path.  https://replicated.wiki/html/wiki/PUT.html §PUT contract:
 //
 //      tracked dir   (any baseline entry under prefix) → stage every
 //                    tracked-dirty file, skip untracked siblings
@@ -248,7 +248,7 @@ static ok64 dir_collect_step(class_step const *step, void *vctx) {
     u8cs path = {step->path[0], step->path[1]};
     if (!u8csHasPrefix(path, c->prefix)) return OK;
 
-    //  VERBS.md §PUT dir-form contract:
+    //  https://replicated.wiki/html/wiki/PUT.html §PUT dir-form contract:
     //    BOTH    + mtime ∈ stamp-set   → settled, skip
     //    BOTH    + otherwise           → stage (tracked-and-dirty)
     //    WT_ONLY                       → stage (untracked sibling)
@@ -824,7 +824,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         if (is_dir) {
             //  Dir-form: confirm the dir exists, then expand into
             //  per-file `put` rows according to the tracked/untracked
-            //  rule from VERBS.md §PUT.  Empty expansion (no dirty
+            //  rule from https://replicated.wiki/html/wiki/PUT.html §PUT.  Empty expansion (no dirty
             //  files under a tracked dir, or empty wt subtree) is a
             //  no-op for this argument — the per-arg result mirrors
             //  the single-file `be put file.c` `is unchanged` skip.
@@ -931,7 +931,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
 //                              PUTSetLabel (canonicalise key, append REFS)
 //
 //  These are PUT-side ref-writers — they never create commits.  Naming
-//  matches VERBS.md's verb semantics (POST = commit-maker, PUT =
+//  matches https://replicated.wiki/html/wiki/POST.html's verb semantics (POST = commit-maker, PUT =
 //  ref-writer); historical residence in POST.c was an accumulation
 //  artefact.  See git history for the move.
 

@@ -378,7 +378,7 @@ static ok64 post_sort_dedup_intent(u8b src, u8b dst) {
 //  consumes the tree via KEEPTreeListLeaves).  Sets c->has_base as a
 //  side-effect.  Skips patch rows via SNIFFAtCurTip so the baseline
 //  is the wt's anchor commit, not the latest absorbed patch.  See
-//  VERBS.md §POST "Per-file classification via stamps" for the squash
+//  https://replicated.wiki/html/wiki/POST.html §POST "Per-file classification via stamps" for the squash
 //  rationale (we only need ours as baseline; absorbed patches are
 //  mtime-dirty / implicit-dirty).
 static ok64 post_resolve_baseline(post_ctx *c, sha1 *root_out, b8 *has_out) {
@@ -674,7 +674,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         return post_emit_decision(c, POST_V_ADD, path, wt_mode,
                                   NULL, &new_sha);
     }
-    //  Untracked + dirty + has-base.  Per VERBS.md §POST: implicit
+    //  Untracked + dirty + has-base.  Per https://replicated.wiki/html/wiki/POST.html §POST: implicit
     //  mode commits all dirty *tracked* files; an untracked sibling
     //  must be explicitly `be put`-staged to land in the next commit.
     //  Same in selective mode.  Either way, ignore here.
@@ -961,7 +961,7 @@ static ok64 post_collect_parents(u8bp out, sha1 *parent_out, b8 *has_parent_out,
 
 //  Single-parent invariant: the multi-parent injection helpers
 //  `post_patch_theirs` / `post_add_patch_parents` were removed when
-//  PATCH stopped chaining `&<theirs>` onto baseline.  See VERBS.md
+//  PATCH stopped chaining `&<theirs>` onto baseline.  See https://replicated.wiki/html/wiki/Verbs.html
 //  §POST: parents = [ours] only on the write path.
 
 // --- Shared scan: produce the change-set into a post_ctx ---
@@ -1565,7 +1565,7 @@ static ok64 post_cascade_persist(cascade_ctx *cc) {
 // --- Cross-branch promote dispatcher (Stage 2d) ---
 //
 //  `be post ?<X>` (no -m): the URI names a different branch and the
-//  user wants cur's stack moved over.  Four shapes per VERBS.md §POST:
+//  user wants cur's stack moved over.  Four shapes per https://replicated.wiki/html/wiki/POST.html §POST:
 //
 //    (a) ?..             upstream   target == dirname(cur)
 //    (b) ?./fix          child      target == cur + '/' + name (existing)
@@ -1981,7 +1981,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
         else    sha1Zero(&base_old);  //  signal non-FF below
         base_new  = target_tip;
         child_tip = cur_tip;
-        //  Spec (VERBS.md §POST): the named target advances; cur is
+        //  Spec (https://replicated.wiki/html/wiki/POST.html §POST): the named target advances; cur is
         //  never auto-modified.  User runs `be get ?<target>` if they
         //  want the wt to follow.
         auto_sync_cur = NO;
@@ -2045,12 +2045,12 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
         // Flat store: child_tip's objects are already in the shared pool; FF is a pure REFS advance below.
         stack_was_rewritten = NO;
     } else {
-        //  POST is commit-or-FF, never rebase (per VERBS.md).  When
+        //  POST is commit-or-FF, never rebase (per https://replicated.wiki/html/wiki/Verbs.html).  When
         //  cur is not a descendant of target.tip, refuse with
         //  POSTNOFF — user runs `be patch ?target#` + `be post` per
         //  commit to rebase explicitly.  (Old `GRAFRebase` path
         //  removed: rebase semantics belong in PATCH; see
-        //  VERBS.md §POST and the cheat sheet for `git rebase`.)
+        //  https://replicated.wiki/html/wiki/POST.html §POST and the cheat sheet for `git rebase`.)
         fprintf(stderr,
                 "sniff: " U8SFMT ": ?" U8SFMT " — not a fast-forward (cur is "
                 "not a descendant of target.tip); use `be patch ?" U8SFMT
@@ -2218,7 +2218,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
     *n_out = 0;
 
-    //  New msg-resolution per VERBS.md §POST:
+    //  New msg-resolution per https://replicated.wiki/html/wiki/POST.html §POST:
     //    1. POST's own #frag wins (handled by caller before us).
     //    2. Else if exactly one in-scope patch row applied a commit
     //       AND it carries a usable msg — use it.  Usable msgs:
@@ -2389,7 +2389,7 @@ ok64 POSTCommit(u8cs target_branch,
     //  onto that branch, auto-creating it at the detached pin: the new
     //  commit becomes a real REFS tip, GC-reachable inside the sub's
     //  self-contained shard (a ref-less detached commit would be
-    //  dropped at epoch recompaction — STORE.md §"recompacts in
+    //  dropped at epoch recompaction — https://replicated.wiki/html/wiki/Store.html §"recompacts in
     //  isolation").  The wt attaches to the target.  A bare detached
     //  `be post` (no target) still refuses — there is no branch to
     //  record the commit against.
@@ -2405,7 +2405,7 @@ ok64 POSTCommit(u8cs target_branch,
     a_dup(u8c, reporoot, post_reporoot());
 
     //  1. Resolve baseline parent.  Single-parent invariant on the
-    //     write path (see VERBS.md §POST):
+    //     write path (see https://replicated.wiki/html/wiki/POST.html §POST):
     //       * no baseline row at all  → root commit (0 parents, OK).
     //       * baseline + parent sha   → normal commit.
     //       * baseline + no sha       → corrupt at-log; refuse.
@@ -2428,13 +2428,13 @@ ok64 POSTCommit(u8cs target_branch,
     //  branch-shaped target (DOGRefIsBranch=YES — has '/', is `.`/`..`,
     //  or names an existing dir ref), the new commit lands on that
     //  branch and keeper/graf swap shards.  Tag-shaped targets (single
-    //  segment, no slash) are pure labels per VERBS.md §POST: commit
+    //  segment, no slash) are pure labels per https://replicated.wiki/html/wiki/POST.html §POST: commit
     //  lands on cur (brbuf unchanged), then a REFS row points the tag
     //  at the new tip — no shard swap, no cur rewrite.  See
     //  `dog/DOG.h §DOGRefIsBranch`.
     //
     //  A trailing slash on the target (`?feat/`) is the "new branch"
-    //  syntactic marker per VERBS.md §"Ref kinds": branch with no
+    //  syntactic marker per https://replicated.wiki/html/wiki/URI.html §"Ref kinds": branch with no
     //  hierarchy.  The slash itself is stripped before storage — the
     //  canonical ref key is `?feat`, the slash was just the signal.
     b8 target_is_branch = NO;
@@ -2475,7 +2475,7 @@ ok64 POSTCommit(u8cs target_branch,
     //  <tip>` so concurrent posters see REFSCAS.  Today this is a
     //  legacy ff-only pre-flight: we still bail with SNIFFNOFF on
     //  non-ff, the rebase-or-promote pathway is implemented in the
-    //  caller (sniff post phase 2).  See VERBS.md §POST for the
+    //  caller (sniff post phase 2).  See https://replicated.wiki/html/wiki/POST.html §POST for the
     //  ff-or-rebase shape that replaces it.
     sha1 expected_tip_sha = {};
     b8   has_expected_tip = NO;
@@ -2577,7 +2577,7 @@ ok64 POSTCommit(u8cs target_branch,
 
     //  7b. Empty-commit refuse: if the new root tree matches the
     //      baseline's tree exactly, the wt has nothing to record.
-    //      Refusing here keeps `.be/wtlog` and REFS clean — VERBS.md
+    //      Refusing here keeps `.be/wtlog` and REFS clean — https://replicated.wiki/html/wiki/Verbs.html
     //      says "empty POSTs are refused."  Skip on a fresh repo
     //      (no baseline tree to compare against).
     if (had_baseline && have_root && have_base &&
@@ -2641,7 +2641,7 @@ ok64 POSTCommit(u8cs target_branch,
         u8bFeed1(com, '\n');
     }
 
-    //  Headers from in-scope patch rows (VERBS.md §POST "Parent /
+    //  Headers from in-scope patch rows (https://replicated.wiki/html/wiki/POST.html §POST "Parent /
     //  foster / picked assembly").  Classify each row by URI shape:
     //
     //    SQUASH   `?<sha>`         → foster <sha>\n   (after committer)
@@ -2676,7 +2676,7 @@ ok64 POSTCommit(u8cs target_branch,
     //  Wall-clock seconds for the commit body — sourced from the
     //  monotonicity-guarded ts already stamped on ctx, so the commit
     //  object, the post ULOG row, and the on-disk file mtimes all
-    //  agree (per VERBS.md §POST "Wall-clock guard").
+    //  agree (per https://replicated.wiki/html/wiki/POST.html §POST "Wall-clock guard").
     a_pad(u8, tsbuf, 64);
     int tslen = snprintf((char *)u8bIdleHead(tsbuf), u8bIdleLen(tsbuf),
                          " %lld +0000\n",
@@ -2715,7 +2715,7 @@ ok64 POSTCommit(u8cs target_branch,
     u8bFeed1(com, '\n');
 
     //  Append `picked: <sha>` trailers for any cherry-pick entries
-    //  in the patch chain (VERBS.md §POST).  One blank line between
+    //  in the patch chain (https://replicated.wiki/html/wiki/POST.html §POST).  One blank line between
     //  message body and trailers so a downstream reader can split
     //  them cleanly.
     {
@@ -2844,7 +2844,7 @@ ok64 POSTCommit(u8cs target_branch,
             //  four chars; see PATCH.c for the exact byte
             //  pattern).  An unattended `patch && post` chain
             //  stops here with POSTCFLCT before recording a
-            //  half-merged commit (VERBS.md §PATCH "Reporting"
+            //  half-merged commit (https://replicated.wiki/html/wiki/PATCH.html §PATCH "Reporting"
             //  — conflict-loud rule).  Lone open or close (prose
             //  mentions) doesn't trigger — see
             //  `SNIFFHasConflictMarker` for the exact predicate.
@@ -2903,7 +2903,7 @@ ok64 POSTCommit(u8cs target_branch,
     //       TODO(spec): cross-branch promote (target_branch != cur's
     //       baseline branch) — `?..` auto-sync, `?<absolute>` sibling/
     //       cousin promote, create-on-miss leaf, trailing-slash basename
-    //       reuse.  The dispatch table from VERBS.md §POST stays
+    //       reuse.  The dispatch table from https://replicated.wiki/html/wiki/POST.html §POST stays
     //       deferred.  Today cross-branch non-ff still reports SNIFFNOFF
     //       via the early pre-flight on the OTHER branch's REFS row,
     //       since needs_rebase is gated by the baseline-branch lookup

@@ -84,7 +84,7 @@ static ok64 sniffcli_inner(cli *c) {
 
     // rw for anything that mutates the ULOG at `<wt>/.be/wtlog` or the
     // store.  View projectors (verbless `sniff <proj>:<URI>`) are
-    // always RO per VERBS.md §"View projectors are pure".  Bare
+    // always RO per https://replicated.wiki/html/wiki/Projector.html §"View projectors are pure".  Bare
     // `sniff post` (no -m, no `?label`) is a dry-run change-set
     // print — also RO; otherwise FILEBook's page-align grows .be/wtlog
     // and ULOGClose can't trim under a non-dirty handle.

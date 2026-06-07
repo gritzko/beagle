@@ -216,7 +216,7 @@ fun void DOGBranchFromBe(u8cs in, u8bp out) {
 // trunk (canonical form = empty slice); later phases widen this.
 con ok64 DOGNOBR = 0xd6105d82db;
 
-// --- View-projector schemes (VERBS.md §"View projectors") ---
+// --- View-projector schemes (https://replicated.wiki/html/wiki/Projector.html §"View projectors") ---
 //
 // One shared table for the whole repo.  DOGParseURI uses it to skip
 // the scheme→authority promotion for projector schemes.  BE uses it
@@ -258,7 +258,7 @@ b8 DOGIsGitTransport(u8cs scheme);
 //      rather than `proto://host/path`), treat the scheme as a
 //      remote alias: move scheme → authority.  View-projector
 //      schemes (`sha1:`, `blob:`, `tree:`, `commit:`, `log:`,
-//      `refs:`, `diff:`, `size:`, `type:`, `ls:` — see VERBS.md)
+//      `refs:`, `diff:`, `size:`, `type:`, `ls:` — see https://replicated.wiki/html/wiki/Verbs.html)
 //      are exempt: they stay as the scheme so `ls:subdir` and
 //      `tree:src/?heads/feat` round-trip intact.
 //   3. Non-numeric "ports" (`ssh://host:src/...` — `src` isn't a
@@ -372,7 +372,7 @@ fun void DOGQueryBranchOnly(u8cs query, u8cs out) {
 }
 
 // Strip the absolute-form project prefix from a query slice in
-// place.  Per VERBS.md §"Ref resolution":
+// place.  Per https://replicated.wiki/html/wiki/URI.html §"Ref resolution":
 //   `?/<project>/<branch>` (leading `/`) → `<branch>` slice
 //   `?/<project>`           (no branch)   → empty (= trunk)
 //   `?<branch>`             (no leading `/`)→ left unchanged
@@ -442,7 +442,7 @@ fun void DOGTitleFromUri(uricp u, u8bp out) {
     if (!u8csEmpty(base)) u8bFeed(out, base);
 }
 
-// Detect and split the canonic resolved query form (STORE.md
+// Detect and split the canonic resolved query form (https://replicated.wiki/html/wiki/Store.html
 // §"URI structure" → "Every input query shape resolves to a single
 // canonical form"):
 //
@@ -513,7 +513,7 @@ fun b8 DOGCanonQueryParse(u8csc query, u8cs project,
 // kind first and override; this helper only fixes the default for a
 // fresh ref so PUT/POST know whether to materialise a dir shard.
 //
-// Rule (VERBS.md §"Ref kinds"):
+// Rule (https://replicated.wiki/html/wiki/URI.html §"Ref kinds"):
 //     empty           → BRANCH (trunk)
 //     contains '/'    → BRANCH (`feat/fix`, `feat/`, `./sub`, `../sib`)
 //     is `.` or `..`  → BRANCH (bare relative anchor)
@@ -662,7 +662,7 @@ ok64 DOGNormalizeArg(urip u, u8csc arg);
 //               'f' → fragment (#frag)
 //               'p' (or anything else) → leave as path
 //
-// Per-verb defaults (see VERBS.md §"Bareword defaults"):
+// Per-verb defaults (see https://replicated.wiki/html/wiki/Verbs.html §"Bareword defaults"):
 //   POST    → 'f'   commit message
 //   GET     → 'q'   branch
 //   HEAD    → 'q'   branch

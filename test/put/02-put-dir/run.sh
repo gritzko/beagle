@@ -1,7 +1,7 @@
 #!/bin/sh
 #  put/02-put-dir — `be put <dir>/` on a tracked subtree.
 #
-#  Per VERBS.md §PUT line 278: "If `src/` is **tracked** (any baseline
+#  Per https://replicated.wiki/html/wiki/PUT.html §PUT line 278: "If `src/` is **tracked** (any baseline
 #  entry under it): tracked-dirty files only."  This is the contract.
 #  Three sub-properties verified here:
 #
@@ -10,7 +10,7 @@
 #        silently rolled into the `ok` count.
 #    (b) dir-prefix expansion — `be put dir/` must stage every
 #        tracked-dirty file under the prefix as one `put` row each
-#        (matching VERBS.md's "one put row per path" model), so a
+#        (matching https://replicated.wiki/html/wiki/Verbs.html's "one put row per path" model), so a
 #        subsequent `be` reports them as `put`.
 #    (c) idempotence — re-running `be put dir/` once nothing is
 #        dirty under the prefix must refuse with `PUTNONE`, not

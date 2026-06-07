@@ -275,7 +275,7 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         //  When at_query is non-empty it's authoritative; when empty,
         //  preserve the anchor-derived branch.
         //
-        //  Query shape (per VERBS.md §"Ref resolution"):
+        //  Query shape (per https://replicated.wiki/html/wiki/URI.html §"Ref resolution"):
         //    `?/<project>/<branch>` — absolute (leading `/`).  Splits
         //                              into h->project + h->cur_branch.
         //                              Override h->project (the

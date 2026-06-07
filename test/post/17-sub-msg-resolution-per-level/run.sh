@@ -1,6 +1,6 @@
 #!/bin/sh
 #  post/17-sub-msg-resolution-per-level — POST's "exactly one usable
-#  msg" rule (VERBS.md §POST "Message resolution") runs at each
+#  msg" rule (https://replicated.wiki/html/wiki/POST.html §POST "Message resolution") runs at each
 #  level INDEPENDENTLY: the sub auto-resolves its commit msg from
 #  its own in-scope patch row, while the parent uses its explicit
 #  #frag.  No msg inheritance across the recursion boundary.

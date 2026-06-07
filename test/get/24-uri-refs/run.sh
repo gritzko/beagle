@@ -1,5 +1,5 @@
 #!/bin/sh
-#  get/24-uri-refs — `be get` URI-ref resolution probe.  Per VERBS.md
+#  get/24-uri-refs — `be get` URI-ref resolution probe.  Per https://replicated.wiki/html/wiki/Verbs.html
 #  §"Ref resolution" the query slot has four shapes:
 #
 #    Shape          | Form                | Resolves to
@@ -13,7 +13,7 @@
 #  trunk + a sibling branch `feat`, then probes each shape from an
 #  empty local wt.  Project-relative `?feat` requires the local wt to
 #  be already anchored to a project (no implicit default project
-#  exists today — VERBS.md spec, also `be put ?/<project>` is the
+#  exists today — https://replicated.wiki/html/wiki/Verbs.html spec, also `be put ?/<project>` is the
 #  only way to anchor); the test exercises both the un-anchored
 #  failure mode AND the post-anchor success path.
 #

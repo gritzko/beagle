@@ -265,7 +265,7 @@ note "*.tmp patterns honoured at every depth under mk/"
 # Scenario 9: be put existing_dir/ stages dirty + untracked together
 #
 #   Starting from a commit that has `src/foo.c`, modify foo.c and add a
-#   brand-new untracked `src/bar.c`.  Per VERBS.md §PUT, `be put src/`
+#   brand-new untracked `src/bar.c`.  Per https://replicated.wiki/html/wiki/PUT.html §PUT, `be put src/`
 #   stages every dirty-tracked file plus every untracked file under the
 #   subtree — both foo.c (modified) and bar.c (new) land in the commit.
 # ------------------------------------------------------------------

@@ -202,7 +202,7 @@ ok64 WIREFetchAll(u8csc remote_uri);
 //  Returns OK on success, WIRECLNRF if local_tip is zero,
 //  WIRECLFL on transport / pack-build / refusal.
 //  `force=YES` skips the wire-side FF gate (peer's tip need not be
-//  an ancestor of local_tip).  Used by PUT-to-remote per VERBS.md
+//  an ancestor of local_tip).  Used by PUT-to-remote per https://replicated.wiki/html/wiki/Verbs.html
 //  §PUT Design invariant 9.  POST-to-remote always passes NO.
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip, b8 force);

@@ -809,7 +809,7 @@ static ok64 get_verify_closure(keeper *k, u8csc target_hex) {
 
 // --- FF-only check for branch-named GET ---
 //
-//  VERBS.md §GET: when GET advances a local branch to a new tip
+//  https://replicated.wiki/html/wiki/GET.html §GET: when GET advances a local branch to a new tip
 //  (`be get ssh://origin?A` or its cached `//origin?A` form), the
 //  local tip must be an ancestor of (or equal to) the incoming
 //  tip.  Refuse SNIFFNOFF on divergence; user reconciles with
@@ -1147,7 +1147,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     }
 
     //  --- FF-only gate for branch-named GET ---------------------
-    //  VERBS.md §GET: `be get ssh://origin?A` is fast-forward only
+    //  https://replicated.wiki/html/wiki/GET.html §GET: `be get ssh://origin?A` is fast-forward only
     //  on the local tip of branch A.  Local switches (`be get ?feat`)
     //  resolve target == local-tip so this check is a no-op; the
     //  walk only runs when a remote-tracking row advances `?A` past
@@ -1476,7 +1476,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     u8bFree(subs);
     b8 sub_fail = NO;
 
-    //  `--prune` sweep (VERBS.md §"--force and --prune"): drop every
+    //  `--prune` sweep (https://replicated.wiki/html/wiki/Verbs.html §"--force and --prune"): drop every
     //  wt-only path that isn't in the target tree.  Runs after the
     //  `get` row is appended so `SNIFFClassify` resolves the
     //  baseline to the freshly-checked-out tree — `CLASS_WT_ONLY`
@@ -1825,9 +1825,9 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  home_open_inner / be_ensure_project_repo).  Strip it so the
     //  branch-side resolution paths below see just the branch
     //  portion; otherwise REFSResolve misses the row and the
-    //  raw-hex fallback treats `/U` as a sha prefix.  Per VERBS.md
+    //  raw-hex fallback treats `/U` as a sha prefix.  Per https://replicated.wiki/html/wiki/Verbs.html
     //  §"Ref resolution".  Two shapes hit this gate:
-    //    - Canonic resolved form (STORE.md §"URI structure"):
+    //    - Canonic resolved form (https://replicated.wiki/html/wiki/URI.html §"URI structure"):
     //          /<project>/<branch>/<pin>
     //      → DOGCanonQueryParse splits into project/branch/pin.
     //        Pin is dropped here — REFSResolve will re-derive the
@@ -1878,7 +1878,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  get` for clones).
 
     //  Path-bearing GET, no authority (local restore / overlay).
-    //  Per VERBS.md §GET + §"Bareword defaults" + §"Ref resolution":
+    //  Per https://replicated.wiki/html/wiki/GET.html §GET + §"Bareword defaults" + §"Ref resolution":
     //
     //    path  + ?<branch>  → take from branch.tip (existing form)
     //    path  + ?          → take from cur project's trunk
@@ -1904,7 +1904,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
         b8 query_slot_empty   = has_query_slot && $empty(u->query);
         //  Treat `?.` (single dot) as the cur-branch alias — same as
         //  the no-? case (restore from baseline).  Per the
-        //  branch-relative rule in VERBS.md §"Ref resolution", `?.`
+        //  branch-relative rule in https://replicated.wiki/html/wiki/URI.html §"Ref resolution", `?.`
         //  is the implicit "current branch" marker.
         b8 query_is_dot       = has_query_slot && u8csLen(u->query) == 1 &&
                                 u->query[0][0] == '.';
@@ -2105,7 +2105,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
 
         //  GET never creates branches on miss — absolute and relative
         //  refs alike error out when REFS has no row.  `be post ?./X`
-        //  is the spec-aligned create path (per VERBS.md).
+        //  is the spec-aligned create path (per https://replicated.wiki/html/wiki/Verbs.html).
         if (o == OK && !$empty(resolved.query)) {
             a_pad(u8, src, 256);
             u8bFeed1(src, '?');

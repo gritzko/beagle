@@ -8,7 +8,7 @@
 //  pass-through bytes come from `GRAFGet <path>?<theirs>`.  Sniff
 //  never reads keeper directly here.
 //
-//  Per VERBS.md §PATCH and Invariant 2, PATCH absorbs the target
+//  Per https://replicated.wiki/html/wiki/PATCH.html §PATCH and Invariant 2, PATCH absorbs the target
 //  branch's full (fork_commit..tip) stack into cur's wt as a single
 //  squash with `base = tree(arg.fork_commit)`.  `arg.fork_commit` is
 //  the LCA of the target's parent-branch tip and the target's tip —
@@ -345,7 +345,7 @@ static void stamp_wrote(u8cs reporoot, u8cs childpath, patch_stats *st) {
 //
 //  Order is fixed: open `<<<<`, then at least one mid `||||`, then close
 //  `>>>>`.  A bare `<<<<` (or `>>>>`) without the matching partners — as
-//  appears in documentation prose like VERBS.md — is *not* a conflict.
+//  appears in documentation prose like https://replicated.wiki/html/wiki/Verbs.html — is *not* a conflict.
 //  A nested `<<<<` before the close aborts the candidate triple and the
 //  scan continues past the inner open.
 b8 SNIFFHasConflictMarker(u8cs bytes) {
@@ -1057,7 +1057,7 @@ static ok64 refuse_if_dirty(u8cs reporoot) {
     return PATCHDIRTY;
 }
 
-//  TODO: PATCH-on-PATCH overlapping files (VERBS.md §PATCH).
+//  TODO: PATCH-on-PATCH overlapping files (https://replicated.wiki/html/wiki/PATCH.html §PATCH).
 //  Today the dirty scan refuses any file that a prior patch touched,
 //  so two patches in a row must edit disjoint file sets.  The proper
 //  composition is per-file weave-driven:
@@ -1205,7 +1205,7 @@ static b8 reach_set_has(sha1cp set, u32 nset, sha1cp q) {
 //  BFS from `seed` over parent ∪ foster edges, populating `set[]`.
 //  Caller-provided `set` array has capacity `cap` shas; `*nset` is
 //  the live count.  picked: trailers are intentionally NOT followed
-//  per VERBS.md §PATCH "Ancestor-skip walk" — they are dedup-only
+//  per https://replicated.wiki/html/wiki/PATCH.html §PATCH "Ancestor-skip walk" — they are dedup-only
 //  and do not participate in reachability.
 static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
                                       sha1cp seed) {
@@ -1330,7 +1330,7 @@ u8 PATCHShape(uricp u) {
 //  and the trunk-state form `?#<sha>` (empty query = trunk, sha in
 //  fragment) are NOT detached: a branch carries a query-side ref to
 //  record against, and trunk-state commits legitimately back to trunk.
-//  Per VERBS.md Invariant 7, PATCH refuses on detached wts — the
+//  Per https://replicated.wiki/html/wiki/Invariants.html Invariant 7, PATCH refuses on detached wts — the
 //  merge would have no branch to record the absorbed sha against.
 static b8 is_detached_wt(u8cs reporoot) {
     (void)reporoot;
@@ -1471,7 +1471,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  locator hint, so there is no `?<branch>/<sha>` → CHERRY promotion
     //  here any more (and no `cherry_locator` to serialise).
 
-    //  Per VERBS.md §PATCH "Weave merge into dirty wt" — PATCH no
+    //  Per https://replicated.wiki/html/wiki/PATCH.html §PATCH "Weave merge into dirty wt" — PATCH no
     //  longer refuses on dirty wt.  Dirty bytes are preserved by
     //  the weave merge and reported via `patch dirty <path>` status
     //  rows (emitted from patch_walk's noop arms when the wt's
@@ -1537,7 +1537,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  `fork_sha` from theirs's parent edge, so we skip this for
     //  cherry-pick.
     //
-    //  Per VERBS.md §PATCH and Invariant 2: the merge base is
+    //  Per https://replicated.wiki/html/wiki/PATCH.html §PATCH and Invariant 2: the merge base is
     //  `tree(arg.fork_commit)`, the commit on arg's parent branch
     //  where arg was forked.  We model that as
     //  `LCA(arg_parent_tip, arg_tip)` — the most recent shared
@@ -1607,7 +1607,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
 
     //  Banner: list the commits this PATCH absorbs, one
     //  `post\t?<hashlet>#<subject>` row each, before the per-file rows
-    //  the walk emits below — mirrors GET's checkout banner (VERBS.md
+    //  the walk emits below — mirrors GET's checkout banner (https://replicated.wiki/html/wiki/Verbs.html
     //  §PATCH "Reporting").  Squash/merge absorb a whole stack, so list
     //  theirs's commits NOT already reachable from cur (parent ∪
     //  foster) — the ancestor-skip set.  Cherry-pick / rebase-one
@@ -1647,7 +1647,7 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //
     //  POST consumes these via SNIFFAtPatchChain to assemble parent /
     //  foster headers and `picked` trailers on the next commit (see
-    //  VERBS.md §POST "Parent / foster / picked assembly").
+    //  https://replicated.wiki/html/wiki/POST.html §POST "Parent / foster / picked assembly").
     //  Per-file forensic tracking lives in stamp_wrote (the row's
     //  ts matches every touched file's mtime).
     a_pad(u8, thex, 40);
@@ -1770,7 +1770,7 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
 
     //  Stamp the file so it counts as patch-written for POST's
     //  classification (not "dirty/untracked").  ts is fresh — path-
-    //  scoped PATCH doesn't write a patch row (per VERBS.md §"Path-
+    //  scoped PATCH doesn't write a patch row (per https://replicated.wiki/html/wiki/Verbs.html §"Path-
     //  scoped PATCH": no header recorded), so the stamp is purely a
     //  baseline-marker for POST's mtime lookup.
     {

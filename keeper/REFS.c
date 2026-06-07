@@ -478,7 +478,7 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
 
     //  Canonic-form short-circuit.  When the query is already in the
     //  resolver-emitted shape `/<project>/<branch-path>/<pin>` (per
-    //  STORE.md §"URI structure"), the pin IS the resolution — no
+    //  https://replicated.wiki/html/wiki/URI.html §"URI structure"), the pin IS the resolution — no
     //  REFS row walk needed.  Feed the 40-hex pin into `resolved->query`
     //  using `arena` as backing storage (same shape as the success-
     //  path in the row walk below).

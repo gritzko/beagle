@@ -904,7 +904,7 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
 
 // --- KEEPIsAncestor: bounded BFS over commit parent + foster edges ---
 //
-//  VERBS.md §POST / Design invariant 9: POST is FF-only, and divergence
+//  https://replicated.wiki/html/wiki/POST.html §POST / Design invariant 9: POST is FF-only, and divergence
 //  is resolved client-side with PATCH + POST.  A `be patch ?remote#`
 //  rebase records the absorbed remote commit as a `foster`, NOT a
 //  `parent` — so the FF test must follow foster edges too, else a
@@ -914,7 +914,7 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
 //  absorbed commit's tip, so the peer tip's objects are all reachable
 //  from `from` (no history loss when the remote ref advances to it).
 //  `picked` trailers are NOT followed — cherry-pick is dedup-only and
-//  deliberately does not create reachability (VERBS.md §PATCH).
+//  deliberately does not create reachability (https://replicated.wiki/html/wiki/PATCH.html §PATCH).
 //
 //  This is the shared FF-test predicate — keeper_post (cache-side
 //  check) and WIREPush (live-advert-side check) both call it.  Capped

@@ -57,7 +57,7 @@ mkdir -p "$KSRV/.be"
 cd "$KSRV"
 git init --quiet .
 mkdir -p .be
-# Be-side ref form: bare branch / `tags/<name>` (per VERBS.md
+# Be-side ref form: bare branch / `tags/<name>` (per https://replicated.wiki/html/wiki/Verbs.html
 # §"Ref resolution").  Wire form `refs/heads/<X>` / `refs/tags/<X>`
 # isn't accepted by be's URI parser.
 for REF in master tags/v1 tags/v2; do

@@ -1,5 +1,5 @@
 #!/bin/sh
-#  be-log-projector.sh — VERBS.md `log:` projector.
+#  be-log-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `log:` projector.
 #
 #  Wires `be log:?<ref>[#N]` (branch history) and
 #  `be log:./<path>?<ref>[#N]` (file history) through to graf's LOG

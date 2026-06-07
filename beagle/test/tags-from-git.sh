@@ -57,7 +57,7 @@ git clone --quiet --no-checkout "ssh://localhost/$SRC" "$TMP/git-clone"
 
 # --- 3. iterate v1 → v2 → master ---
 FAIL=0
-# Be-side ref form: bare branch / `tags/<name>` (per VERBS.md
+# Be-side ref form: bare branch / `tags/<name>` (per https://replicated.wiki/html/wiki/Verbs.html
 # §"Ref resolution").  Wire form `refs/heads/<X>` / `refs/tags/<X>`
 # isn't accepted by be's URI parser.
 for STEP in "v1 tags/v1 refs/tags/v1" \

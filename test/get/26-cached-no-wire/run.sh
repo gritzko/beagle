@@ -2,7 +2,7 @@
 #  get/26-cached-no-wire — `be get //host?<ref>` (cached form, no
 #  transport scheme) must NOT open the wire.
 #
-#  Spec (VERBS.md §"Schemes — cached vs transport"):
+#  Spec (https://replicated.wiki/html/wiki/URI.html §"Schemes — cached vs transport"):
 #    "Cached form (no transport scheme): be ... //host reads only the
 #     locally-cached remote-tracking refs in the per-project remote
 #     shard ... No network, no registration step."

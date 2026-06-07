@@ -7,7 +7,7 @@
 #      creates a commit on feat with first-parent = trunk's tip,
 #      switches the wt's recorded branch to feat,
 #      leaves trunk's REFS tip unchanged.
-#      (Trailing slash is the "new branch" marker — see VERBS.md
+#      (Trailing slash is the "new branch" marker — see https://replicated.wiki/html/wiki/Verbs.html
 #      §"Ref kinds" / dog/DOG.h §DOGRefIsBranch.)
 #    * non-ff cross-branch POST refused (target on unrelated lineage).
 #

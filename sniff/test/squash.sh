@@ -13,7 +13,7 @@
 #        base=tree(arg.fork_commit)=LCA(parent_tip, theirs)).
 #    6. `sniff post -m "squash feat"` lands the merged wt as ONE new
 #       commit on trunk whose parent is trunk's concurrent tip.
-#       Per VERBS.md §PATCH and Invariant 2 the commit is single-
+#       Per https://replicated.wiki/html/wiki/PATCH.html §PATCH and Invariant 2 the commit is single-
 #       parent — provenance from feat is erased.
 #
 #  Verifies:
@@ -159,7 +159,7 @@ TRUNK_REF=$(ref_tip "?")
     || fail "trunk not advanced to squash ($TRUNK_REF vs $SQUASH)"
 note "trunk -> $SQUASH"
 
-#  History check: per VERBS.md §PATCH the squash is single-parent.
+#  History check: per https://replicated.wiki/html/wiki/PATCH.html §PATCH the squash is single-parent.
 #  Its only parent must be trunk's concurrent tip.  feat's tip
 #  contributed to the merged tree but is NOT recorded as a parent —
 #  provenance is erased at PATCH time.

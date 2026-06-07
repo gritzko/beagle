@@ -1,7 +1,7 @@
 #ifndef SNIFF_PUT_H
 #define SNIFF_PUT_H
 
-//  PUT: ref-writer for the worktree (VERBS.md §PUT).  Two surfaces:
+//  PUT: ref-writer for the worktree (https://replicated.wiki/html/wiki/PUT.html §PUT).  Two surfaces:
 //
 //    1. Path-form (`be put <path>`, `be put <dir>/`, `be put <old>#<new>`)
 //       — append one `put` row per URI to the ULOG; no tree work, no

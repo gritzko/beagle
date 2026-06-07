@@ -66,7 +66,7 @@ static const ParseCase CASES[] = {
     // --- View-projector schemes: exempt from scheme→authority promotion ---
     // `ls:`, `tree:`, `blob:`, `sha1:`, etc. stay as the scheme so
     // `ls:subdir` and `tree:src/?heads/feat` are view projections, not
-    // scp-like remote paths.  See VERBS.md §"View projectors".
+    // scp-like remote paths.  See https://replicated.wiki/html/wiki/Projector.html §"View projectors".
     {"ls:",                   "ls", NULL, NULL,        NULL,         NULL},
     {"ls:subdir",             "ls", NULL, "subdir",    NULL,         NULL},
     {"ls:./subdir",           "ls", NULL, "./subdir",  NULL,         NULL},

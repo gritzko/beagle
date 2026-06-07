@@ -48,7 +48,7 @@ con ok64 BEPRJDUP  = 0x2ce65b4cd799;
 
 // --- Verb table ---
 
-//  HTTP-verb dictionary (VERBS.md §"Verb semantics"): HEAD, GET, POST,
+//  HTTP-verb dictionary (https://replicated.wiki/html/wiki/Verbs.html §"Verb semantics"): HEAD, GET, POST,
 //  PUT, DELETE, PATCH.  Everything else (diff, status, log, ls, blame,
 //  cat, map, …) is a *projection* — surfaced via `be <proj>:` (URI
 //  form) or `be <proj>` (bareword shorthand — see the dispatcher's
@@ -64,7 +64,7 @@ static void BEUsage(void) {
     fprintf(stderr,
         "Usage: be [verb] [--flags] [URI...]\n"
         "\n"
-        "Verbs (VERBS.md):\n"
+        "Verbs (https://replicated.wiki/html/wiki/Verbs.html):\n"
         "  head [uri]           peek/dry-run; fetch refs from remote;\n"
         "                       show ahead/behind cur vs the target\n"
         "  get  [uri]           switch wt+cur (mkdir/cd model)\n"
@@ -306,7 +306,7 @@ static Bu8 befile_uri_buf = {
 //  `file:///abs` (preserving any ?query / #fragment) and re-lex, so
 //  URIPattern reports URI_AUTHORITY and the forwarded text routes the
 //  clone exactly like ssh://.  A `file:` beagle store (no git layout)
-//  is left untouched and stays a sibling worktree (VERBS.md
+//  is left untouched and stays a sibling worktree (https://replicated.wiki/html/wiki/Verbs.html
 //  §"Worktree management" Example 2).
 static void be_file_get_route(cli *c) {
     if (c == NULL || uribDataLen(c->uris) == 0) return;
@@ -739,7 +739,7 @@ static ok64 BEProjectorRouteToMount(cli *c, uri *u, b8 *handled) {
     return rc.rc;
 }
 
-//  View-projector routing (VERBS.md §"View projectors").
+//  View-projector routing (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
 //
 //  Invocation: `be <scheme>:<URI>` — no verb.  `be` is a scheme
 //  router; the dog that owns the scheme receives the URI verbatim
@@ -856,7 +856,7 @@ static ok64 BEProjector(cli *c, uri *u) {
 
 
 
-//  `be head <uri>` — peek/dry-run.  Per VERBS.md §"HEAD":
+//  `be head <uri>` — peek/dry-run.  Per https://replicated.wiki/html/wiki/HEAD.html §"HEAD":
 //    - `?br` (local)              — ahead/behind cur vs ?br
 //    - `//host` (cached)          — diff cur vs cached origin tracking
 //    - `ssh://host` (transport)   — fetch refs+pack, update .be/refs,
@@ -973,7 +973,7 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
 //  per `be head` invocation (table marks the row as `once`).  The
 //  local body (`graf head` / `keeper get` / spot+graf re-walk) is
 //  driven by the preceding table rows; this function only walks
-//  declared subs.  See VERBS.md / SUBS.plan.md §HEAD.
+//  declared subs.  See https://replicated.wiki/html/wiki/Verbs.html / SUBS.plan.md §HEAD.
 ok64 BEHeadSubs(cli *c) {
     sane(c);
 
@@ -1236,7 +1236,7 @@ ok64 BEActSubsGet(cli *c) {
     return worst;
 }
 
-//  PATCH submodule recursion (VERBS.md / Submodules.mkd): gitlink-diff
+//  PATCH submodule recursion (https://replicated.wiki/html/wiki/Verbs.html / Submodules.mkd): gitlink-diff
 //  driven.  A patch that absorbs `?branch` may move a sub's `160000`
 //  pin; where the source (applied) pin differs from cur's base pin, the
 //  sub is checked out at the new pin and its report relayed.  We reuse
@@ -1520,7 +1520,7 @@ ok64 BEEnsureProjectRepo(uri *u) {
     call(KEEPInitShard, u8bDataC(store_root), proj);
 
     //  Remote shard alongside the project shard when the seed URI
-    //  carries a host (`be get ssh://h/p?...` etc.).  STORE.md §"Repo
+    //  carries a host (`be get ssh://h/p?...` etc.).  https://replicated.wiki/html/wiki/Store.html §"Repo
     //  dir layout": `<store>/<project>/remotes/<host>/refs` lives in
     //  a `remotes/` class dir parallel to branch dirs.  Cache-only —
     //  no wtlog seed.  Skipped silently when the URI is local-only.
@@ -1765,14 +1765,14 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
 }
 
 //  PUT / DELETE bodies live in DISPATCH.c (BE_PLAN_PUT, BE_PLAN_DELETE).
-//  PUT is the ref-writer (VERBS.md §"PUT"); per the URI's `//remote`
+//  PUT is the ref-writer (https://replicated.wiki/html/wiki/PUT.html §"PUT"); per the URI's `//remote`
 //  slot it doubles as the FF-push verb (keeper's old `post` entry).
 //  Local shapes (label move, file staging, sha reset) stay in sniff
 //  put.  DELETE is its mirror.
 
 //  Ref-expecting verbs (post, patch) accept a path-shaped argument as
 //  the ref — `be get feat/sub` → query="feat/sub".  Bareword promotion
-//  is centralised in DOGPromoteBareword (per VERBS.md §"Bareword
+//  is centralised in DOGPromoteBareword (per https://replicated.wiki/html/wiki/Verbs.html §"Bareword
 //  defaults"); this is the safety net for paths that URILexer already
 //  parked in `u->path`.  Skip when the path looks like a filesystem
 //  path (leading `/`) or rides a non-empty scheme (`file:`, `ssh:`,
@@ -1791,10 +1791,10 @@ b8 BEPromoteRef(uri *u) {
 
 //  PATCH body lives in DISPATCH.c (BE_PLAN_PATCH).  3-way merge
 //  flow: promote_ref → bootstrap (local) → keeper get (transport
-//  scheme) → graf get (any remote) → sniff patch.  See VERBS.md
+//  scheme) → graf get (any remote) → sniff patch.  See https://replicated.wiki/html/wiki/Verbs.html
 //  §PATCH for semantics.
 
-//  `be post` — commit and/or fast-forward (never rebase; see VERBS.md
+//  `be post` — commit and/or fast-forward (never rebase; see https://replicated.wiki/html/wiki/Verbs.html
 //  §POST).  Rebase is `be patch ?br#` + `be post`, looped.
 //    <free-form tail> → fragment carries the commit message; sniff
 //                       commits on cur.  (Legacy `-m <msg>` flag still
@@ -2668,7 +2668,7 @@ ok64 BEActReindex(cli *c) {
 //  Handles cwd-relative inputs (`README`, `sub/file.c`, `./foo`,
 //  `../sib`) and absolute inputs (`/home/me/proj/README`).
 //
-//  STORE.md §"URI structure" pins the path slot to "for all other
+//  https://replicated.wiki/html/wiki/URI.html §"URI structure" pins the path slot to "for all other
 //  cases: relative path within a project".  Beagle is the only
 //  normalization point — sub-dogs receive canonic paths and never
 //  re-resolve cwd.
@@ -2949,7 +2949,7 @@ ok64 BEActResolveRef(cli *c) {
     if (!u8csEmpty(cur_branch)) u8csMv(hat.query, cur_branch);  // project=parent
     if (HOMEOpen(&rh, &hat, NO) != OK) done;
     //  A colocated/default wt leaves h->project empty (HOME defers it to
-    //  the caller's get/post-row scan; STORE.md: never the top-level
+    //  the caller's get/post-row scan; https://replicated.wiki/html/wiki/Store.html: never the top-level
     //  `.be/refs`, which is meaningless).  Take cur's project as default.
     if (!u8bHasData(rh.project)) {
         u8cs proj = {};
@@ -3073,7 +3073,7 @@ static ok64 becli_inner(cli *c) {
     if (CLIHas(c, "--light")) theme_name = THEME_LIGHT;
     if (theme_name != NULL) call(THEMESelect, theme_name);
 
-    //  Per-verb bareword default (VERBS.md §"Bareword defaults"):
+    //  Per-verb bareword default (https://replicated.wiki/html/wiki/Verbs.html §"Bareword defaults"):
     //  promote a bareword sitting in u->path into the verb's natural
     //  slot.  POST → fragment (commit msg); GET / HEAD / PATCH →
     //  query (branch); PUT / DELETE / verbless → path (no-op).  When
@@ -3160,7 +3160,7 @@ static ok64 becli_inner(cli *c) {
     //  with a non-empty `?query` runs through `GRAFResolveVersion`
     //  (graf/GRAF.h) so downstream dogs see only the canonic
     //  `?/<project>.<hashlet>/<branch>/<sha-or-tag>` form
-    //  (STORE.md §"URI structure").  Projector schemes own their
+    //  (https://replicated.wiki/html/wiki/URI.html §"URI structure").  Projector schemes own their
     //  own grammar (`sha1:`, `log:`, `diff:`, ...) — skipped here;
     //  the projector dog parses its URI itself.  Per-URI failure
     //  isolates: a single GRAFNONE leaves that URI as-is so
@@ -3237,7 +3237,7 @@ static ok64 becli_inner(cli *c) {
     }
 
     //  Top-of-chain path canonization pass.  Mirror of the query
-    //  resolver above (STORE.md §"URI structure": every input path
+    //  resolver above (https://replicated.wiki/html/wiki/URI.html §"URI structure": every input path
     //  shape resolves to a project-relative form).  Sub-dogs receive
     //  canonic paths and never re-walk cwd.
     //
@@ -3324,11 +3324,11 @@ static ok64 becli_inner(cli *c) {
     //  `--seq` flag is reserved for the dispatch table's parallel-
     //  batch fan-out (DISPATCH.c BEExecute) once it lands.
 
-    //  Projector URIs are pure views (VERBS.md Invariant 7).  Route
+    //  Projector URIs are pure views (https://replicated.wiki/html/wiki/Invariants.html Invariant 7).  Route
     //  them through BEProjector regardless of verb — `be get diff:f?r`
     //  must land in graf's diff machinery, not in BE_PLAN_GET's
     //  keeper+sniff checkout pipeline.  GET is the canonical projector verb per
-    //  VERBS.md, but the table only specifies the read-only intent;
+    //  https://replicated.wiki/html/wiki/Verbs.html, but the table only specifies the read-only intent;
     //  any verb on a projector URI is treated as GET-equivalent here.
     if (u != NULL && DOGIsProjector(u->scheme)) {
         call(BEProjector, c, u);
@@ -3338,7 +3338,7 @@ static ok64 becli_inner(cli *c) {
     //  Bareword-as-projector: `be <proj>` where the leading non-flag
     //  token names a known projector scheme (status, diff, log, ls,
     //  blame, cat, map, spot, grep, …) is shorthand for `be <proj>:`.
-    //  Projections are not verbs (VERBS.md §"View projectors"); they
+    //  Projections are not verbs (https://replicated.wiki/html/wiki/Projector.html §"View projectors"); they
     //  never live in BE_VERB_NAMES, so CLIParse parks the bareword in
     //  `uribAtP(c->uris, 0)->path`.  We detect that shape here, synthesise the
     //  matching URI, and route through BEProjector — keeping the
@@ -3375,7 +3375,7 @@ static ok64 becli_inner(cli *c) {
     // ls:, tree:, …) were already routed through BEProjector above; here
     // a bare path-shaped URI displays the file via bro.  Search has no
     // implicit `#frag` form anymore — use `be spot:body`, `be grep:body`,
-    // `be regex:body` (VERBS.md §"View projectors").
+    // `be regex:body` (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
     if ($empty(verb)) {
         u8cs bro  = u8slit("bro");
         if (u != NULL && !$empty(u->path)) {

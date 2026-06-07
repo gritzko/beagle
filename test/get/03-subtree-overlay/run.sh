@@ -5,7 +5,7 @@
 #  adds a new one.  After the overlay, all three feat-side files
 #  land in the wt; files outside `src/` (here `common.txt`) and the
 #  baseline (cur stays on trunk) are untouched.  No `.be/wtlog` row
-#  is appended (no staging — VERBS.md §GET).
+#  is appended (no staging — https://replicated.wiki/html/wiki/GET.html §GET).
 
 . "$(dirname "$0")/../../lib/case.sh"
 

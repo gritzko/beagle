@@ -1,5 +1,5 @@
 #!/bin/sh
-#  be-map-projector.sh — VERBS.md `map:` projector.
+#  be-map-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `map:` projector.
 #
 #  Builds a 4-branch layout, each with its own commit so every
 #  branch shows up as a distinct row in the map output:

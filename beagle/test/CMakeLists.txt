@@ -75,7 +75,7 @@ add_test(NAME BEhistory
 set_tests_properties(BEhistory PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=BEhistory")
 
-# be-diff-projector.sh — VERBS.md `diff:` projector (file/tree, ref-vs-wt
+# be-diff-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `diff:` projector (file/tree, ref-vs-wt
 # and ref-to-ref) routed through `be get diff:...` and verb-less
 # `be diff:...` to graf's diff machinery.
 add_test(NAME be-diff-projector
@@ -84,7 +84,7 @@ add_test(NAME be-diff-projector
 set_tests_properties(be-diff-projector PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-diff-projector")
 
-# be-log-projector.sh — VERBS.md `log:` projector (branch parent-chain
+# be-log-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `log:` projector (branch parent-chain
 # walk and per-file PATH_VER walk), one commit per line.
 add_test(NAME be-log-projector
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-log-projector.sh
@@ -92,7 +92,7 @@ add_test(NAME be-log-projector
 set_tests_properties(be-log-projector PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-log-projector")
 
-# be-map-projector.sh — VERBS.md `map:` projector (branch tree filter:
+# be-map-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `map:` projector (branch tree filter:
 # trunk + current branch + ancestors-up-to-trunk + descendants;
 # siblings excluded).
 add_test(NAME be-map-projector

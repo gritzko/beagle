@@ -54,7 +54,7 @@ Same applies to URIs, each component reflects some aspect of a command:
  4. query for project / branch / tag / commit.  Beagle is
     multi-project: every store hosts an arbitrary set of
     projects, each with its own branch tree.  Shapes (full
-    grammar in `BRANCHES.md`):
+    grammar at <https://replicated.wiki/html/wiki/URI.html>):
       - `?/project/branch/tag`  — absolute,
       - `?branch/`              — project-relative **branch**;
                                   the trailing slash forces

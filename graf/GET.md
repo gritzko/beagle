@@ -198,6 +198,6 @@ across runs; size bounded by `Σ input_blob_size × k` for small
     into `into`.
  4. **Commit shas only.**  Blob/tree shas are terminal identities
     (`KEEPGetExact` territory), not history inputs.
- 5. **Linear per branch.**  Matches `VERBS.md` invariant 2; merge
+ 5. **Linear per branch.**  Matches `https://replicated.wiki/html/wiki/Invariants.html` invariant 2; merge
     provenance already gossiped into REFS contributes to the
     ancestor union naturally.

@@ -941,7 +941,7 @@ ok64 SNIFFAtProjectStrip() {
     }
     ron60 base = t0 + 1000;
 
-    //  The composed --at is absolute `?/<project>/<branch>` (VERBS.md
+    //  The composed --at is absolute `?/<project>/<branch>` (https://replicated.wiki/html/wiki/Verbs.html
     //  "Ref resolution"); the project comes from the colocated anchor
     //  (= wt basename), and a row's own leading `/<proj>` segment is
     //  stripped so it is never read as a branch.

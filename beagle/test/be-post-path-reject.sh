@@ -1,5 +1,5 @@
 #!/bin/sh
-#  be-post-path-reject.sh — POST refuses path-form URIs per VERBS.md
+#  be-post-path-reject.sh — POST refuses path-form URIs per https://replicated.wiki/html/wiki/Verbs.html
 #  §POST.  POST takes only branch URIs (`?<branch>`) or is bare; paths
 #  must go through `be put` first.
 
@@ -14,7 +14,7 @@ echo "edited" > x.txt
 vc_snapshot before
 
 vc_step "be post ./x.txt msg — should be refused (explicit path-form)"
-#  Bareword `x.txt` is a fragment under VERBS.md §"Bareword
+#  Bareword `x.txt` is a fragment under https://replicated.wiki/html/wiki/Verbs.html §"Bareword
 #  defaults" — POST's bareword default is fragment (commit msg).
 #  The path-reject rule fires only for an EXPLICIT path-form URI
 #  (`./x.txt`, `/x.txt`, or anything with a `/`).

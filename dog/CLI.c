@@ -51,7 +51,7 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     int ai = 1;  // skip argv[0]
 
     // Verb: first arg that matches a known verb name.  Argv order is
-    // fixed: `be [verb] [flags] [URIs]` (VERBS.md).  No verb scan past
+    // fixed: `be [verb] [flags] [URIs]` (https://replicated.wiki/html/wiki/Verbs.html).  No verb scan past
     // leading flags — flags before the verb don't classify here.
     if (ai < argn && verb_names != NULL) {
         a$rg(a, ai);

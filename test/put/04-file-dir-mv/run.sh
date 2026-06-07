@@ -2,7 +2,7 @@
 #  put/04-file-dir-mv — `be put` move-form: explicit `<old>#<new>` and
 #  bare-put auto-pair by content sha.
 #
-#  Pinned behaviour (VERBS.md §PUT "Move form", sniff/AT.md "Move-form
+#  Pinned behaviour (https://replicated.wiki/html/wiki/PUT.html §PUT "Move form", sniff/AT.md "Move-form
 #  put rows"):
 #
 #    * `be put <old>#<new>`  — perform rename(2), write one `put` row

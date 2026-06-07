@@ -3,7 +3,7 @@
 #  must NOT mint a new commit on cur, even when a sub-mount triggers
 #  BEActSubsPost's gitlink-bump auto-`put`.
 #
-#  Spec (VERBS.md §POST):
+#  Spec (https://replicated.wiki/html/wiki/POST.html §POST):
 #    "`be post //origin` — FF-push cur's tip to origin's counterpart
 #     over the wire. **No commit.**"
 #    "Standalone (`be post //origin`) is a pure push — no commit;

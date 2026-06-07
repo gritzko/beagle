@@ -522,7 +522,7 @@ static void sniff_usage(void) {
             "  sniff patch ?<ref|sha>      weave-merge the given ref/sha\n"
             "                              into the wt via graf\n"
             "  sniff status                list mtime-dirty files\n"
-            "  sniff [--tlv] ls:[<URI>]    view projector (VERBS.md §View\n"
+            "  sniff [--tlv] ls:[<URI>]    view projector (https://replicated.wiki/html/wiki/Projector.html §View\n"
             "                              projectors); verb-less; --tlv\n"
             "                              emits HUNK TLV for `bro`\n"
             "  sniff watch                 start inotify daemon (fork;\n"
@@ -594,7 +594,7 @@ ok64 SNIFFExec(cli *c) {
                 || CLIHas(c, "--status")
                 || ($empty(c->verb) && uribDataLen(c->uris) == 0);
 
-    //  Verb-less projector invocation (VERBS.md §"View projectors"):
+    //  Verb-less projector invocation (https://replicated.wiki/html/wiki/Projector.html §"View projectors"):
     //  `sniff <proj>:<URI>` — no verb.  Scheme selects the projector;
     //  dog/DOG.c owns the scheme→dog table so we dispatch only when
     //  the URI's scheme resolves to this dog ("sniff").  Only `ls:`
@@ -618,7 +618,7 @@ ok64 SNIFFExec(cli *c) {
 
     if (is_post) {
         u8cs commit_msg = {};
-        //  Per VERBS.md: free-form trailing words are folded into a
+        //  Per https://replicated.wiki/html/wiki/Verbs.html: free-form trailing words are folded into a
         //  URI's #fragment by CLIParse.  Prefer that over the legacy
         //  `-m <msg>` flag, which still works for backwards compat.
         for (u32 i = 0; i < uribDataLen(c->uris); i++) {
@@ -689,7 +689,7 @@ ok64 SNIFFExec(cli *c) {
             }
         }
 
-        //  VERBS.md §POST invariant 3: POST never rewrites cur's
+        //  https://replicated.wiki/html/wiki/POST.html §POST invariant 3: POST never rewrites cur's
         //  history; rebase is `be patch ?br#` + `be post`, looped.
         //  The `//remote` slot on POST means "FF-advance remote's
         //  counterpart to cur.tip" — i.e. push — handled at the
@@ -711,7 +711,7 @@ ok64 SNIFFExec(cli *c) {
         }
 
         //  Pure-push intent: every URI carries only `//remote` (no
-        //  `#frag`, no `?branch`, no path).  Per VERBS.md §POST, the
+        //  `#frag`, no `?branch`, no path).  Per https://replicated.wiki/html/wiki/POST.html §POST, the
         //  `//remote` slot is orthogonal — standalone it's a label
         //  move on the remote side, not a commit trigger.  Skip both
         //  the commit step AND the dry-run print; BEPost dispatches
@@ -760,7 +760,7 @@ ok64 SNIFFExec(cli *c) {
                 }
             } else if (def_n > 0) {
                 //  Patch rows in scope but msg can't be auto-resolved
-                //  (zero or >1 usable msgs).  Refuse per VERBS.md §POST
+                //  (zero or >1 usable msgs).  Refuse per https://replicated.wiki/html/wiki/POST.html §POST
                 //  message-resolution; user must supply `#msg`.
                 fprintf(stderr,
                     "sniff: post: cannot auto-resolve commit msg "
@@ -796,7 +796,7 @@ ok64 SNIFFExec(cli *c) {
                 }
             } else if (label_uri != NULL) {
                 //  No commit_msg + label_uri (`be post ?<br>`).  Per
-                //  VERBS.md §POST `?branch` row: "FF-advance ?branch
+                //  https://replicated.wiki/html/wiki/POST.html §POST `?branch` row: "FF-advance ?branch
                 //  to cur's tip".  This is the local-branch promote
                 //  — we move target's REFS row forward to cur.tip,
                 //  migrate any commit/tree/blob objects from cur's
@@ -843,7 +843,7 @@ ok64 SNIFFExec(cli *c) {
                     }
                 } else {
                 //  No commit_msg + label_uri (`be post ?<br>`).  Per
-                //  VERBS.md §POST `?branch` row: "FF-advance ?branch
+                //  https://replicated.wiki/html/wiki/POST.html §POST `?branch` row: "FF-advance ?branch
                 //  to cur's tip".  This is the local-branch promote
                 //  — we move target's REFS row forward to cur.tip,
                 //  migrate any commit/tree/blob objects from cur's
@@ -876,7 +876,7 @@ ok64 SNIFFExec(cli *c) {
             }
         }
     } else if (is_put) {
-        //  Split URIs by aspect (VERBS.md §PUT):
+        //  Split URIs by aspect (https://replicated.wiki/html/wiki/PUT.html §PUT):
         //    * `?branch` (query, no path) → PUTCreateBranch (create
         //      label at cur.tip; refuses with PUTDUP if exists).
         //    * `?branch#<sha>` (query + sha fragment) → PUTSetBranch
@@ -984,7 +984,7 @@ ok64 SNIFFExec(cli *c) {
                     break;
                 }
                 a_dup(u8c, target, u.query);
-                //  `?br#<sha>` aspect (VERBS.md §PUT): the fragment
+                //  `?br#<sha>` aspect (https://replicated.wiki/html/wiki/PUT.html §PUT): the fragment
                 //  pins the target sha — write the ref to that value,
                 //  bypassing the create-only PUTDUP check.  Non-FF
                 //  rewrite is allowed.  Short hashlets (6..40 hex)

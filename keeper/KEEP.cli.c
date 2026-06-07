@@ -228,7 +228,7 @@ static ok64 keepercli_inner(cli *c) {
     //  home_open_inner / be_ensure_project_repo).  Strip it so
     //  KEEPOpenBranch normalises the BRANCH portion only — otherwise
     //  `?/U` would mint a phantom local branch named `U` under
-    //  project `U` (.be/U/U/).  Per VERBS.md §"Ref resolution".
+    //  project `U` (.be/U/U/).  Per https://replicated.wiki/html/wiki/URI.html §"Ref resolution".
     DOGQueryStripProject(branch);
     call(KEEPOpenBranch, &h, branch, rw);
 

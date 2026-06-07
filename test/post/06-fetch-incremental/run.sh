@@ -1,11 +1,11 @@
 #!/bin/sh
 #  post/06-fetch-incremental — incremental fetch regression.
 #
-#  Per VERBS.md §POST, `be post ssh://origin` is FF-push-only — it
+#  Per https://replicated.wiki/html/wiki/POST.html §POST, `be post ssh://origin` is FF-push-only — it
 #  does not fetch or rebase.  The original incremental-fetch
 #  regression (haves-from-REFADV bug) lives under HEAD now, since
 #  fetching from a remote into the local cache is `be head
-#  ssh://origin`'s job (VERBS.md §HEAD: "Fetch refs + minimal pack
+#  ssh://origin`'s job (https://replicated.wiki/html/wiki/HEAD.html §HEAD: "Fetch refs + minimal pack
 #  from origin, update `.be/refs`").  This case retains the same
 #  shape of assertion — second-pass `Total N` from upload-pack must
 #  be small (incremental haves negotiated) — but drives it through
