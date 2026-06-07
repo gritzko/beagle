@@ -2,6 +2,7 @@
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
+#include "dog/git/PACK.h"
 
 // --- wh64 hashlet tests ---
 
@@ -413,6 +414,292 @@ ok64 KEEPbranchRoundTrip() {
     done;
 }
 
+// --- MEM-022: KEEPGetPacked OFS_DELTA offset underflow ---
+//
+//  Build a 2-object pack (v0 raw blob + v1 OFS_DELTA against v0) with
+//  the real writer, then corrupt v1's on-disk ofs_delta varint to a
+//  value larger than v1's own pack offset.  KEEPGetPacked does
+//  `cur = cur - obj.ofs_delta` with no underflow guard, so `cur`
+//  wraps to a wild base pointer and `{pack+cur, pack+packlen}` reads
+//  out of bounds (ASan trap in Debug; UB / wild read in Release where
+//  sane() is compiled out).  After the fix the resolver must reject
+//  the underflow and return KEEPFAIL — no OOB.
+
+//  Locate the OFS_DELTA object in `pack` (after the 12-byte header)
+//  and return, in `*ofs_pos` / `*ofs_len`, the byte position+length of
+//  its negative-offset varint (the bytes right after the type/size
+//  varint).  Returns OK iff a single OFS_DELTA object was found.
+static ok64 find_ofs_varint(u8csc pack, u64 *ofs_pos, u64 *ofs_len) {
+    sane(ofs_pos && ofs_len);
+    //  Plain by-value slice copies (two pointers) — NOT a_dup, which
+    //  would carve BASS that the nested call() rewinds out from under us.
+    u8cs scan = {pack[0], pack[1]};
+    pack_hdr hdr = {};
+    call(PACKDrainHdr, scan, &hdr);
+    for (u32 i = 0; i < hdr.count; i++) {
+        //  Peek the full header (copy) to learn the type + header end.
+        u8cs peek = {scan[0], scan[1]};
+        pack_obj obj = {};
+        call(PACKDrainObjHdr, peek, &obj);
+        if (obj.type == PACK_OBJ_OFS_DELTA) {
+            //  Re-scan just the type/size varint to find where the
+            //  ofs varint starts (first header byte after the
+            //  continuation run).
+            u8cs vs = {scan[0], scan[1]};
+            u8 c = 0;
+            call(u8sDrain8, vs, &c);
+            while (c & 0x80) call(u8sDrain8, vs, &c);
+            u64 ofs_start = (u64)(vs[0] - pack[0]);
+            u64 hdr_end   = (u64)(peek[0] - pack[0]);
+            *ofs_pos = ofs_start;
+            *ofs_len = hdr_end - ofs_start;
+            done;
+        }
+        //  Advance scan past this object's header + zlib body.
+        pack_obj o2 = {};
+        call(PACKDrainObjHdr, scan, &o2);
+        static u8 sink[1 << 16];
+        u8s into = {sink, sink + sizeof(sink)};
+        call(PACKInflate, scan, into, o2.size);
+    }
+    return KEEPFAIL;
+}
+
+ok64 KEEPofsUnderflow() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/keeper-ofs-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+    a_cstr(root, tmpdir);
+
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    //  Pack 1: v0 raw + v1 OFS_DELTA(v0).  Mirrors DELTA_ROUND pack 1.
+    //  v0 is deliberately large and poorly-compressible (pseudo-random
+    //  hex) so v1's OFS_DELTA sits >127 bytes into the pack — that makes
+    //  the on-disk ofs varint MULTI-byte, so we can patch it to a value
+    //  thousands of bytes large.  The resulting `cur - ofs_delta`
+    //  underflow then lands `pack + cur` far (≈ -16k) before the mmap,
+    //  i.e. a *deterministic* OOB (ASan trap) rather than a near-miss
+    //  inside the same page.
+    a_pad(u8, v0b, 1024);
+    {
+        u32 s = 0x9e3779b9;
+        for (int i = 0; i < 512; i++) {
+            s = s * 1664525u + 1013904223u;
+            u8 nib = (u8)((s >> 24) & 0xf);
+            u8bFeed1(v0b, (u8)(nib < 10 ? '0' + nib : 'a' + nib - 10));
+        }
+    }
+    a_dup(u8c, v0, u8bData(v0b));
+    //  v1 = v0 with a short suffix appended (a near-copy → delta-able).
+    a_pad(u8, v1b, 1024);
+    u8bFeed(v1b, v0);
+    a_cstr(suffix, " THE END.");
+    u8bFeed(v1b, suffix);
+    a_dup(u8c, v1, u8bData(v1b));
+
+    sha1 sha0 = {}, sha1v = {};
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, v0, 0, &sha0);
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, v1, WHIFFHashlet60(&sha0), &sha1v);
+    call(KEEPPackClose, &p);
+    call(KEEPClose);
+
+    //  Corrupt v1's ofs_delta on disk: map the log RW, find the ofs
+    //  varint, overwrite it with the max value its byte-length can
+    //  hold so the delta exceeds v1's pack offset (underflow).
+    a_pad(u8, lp, 1100);
+    u8bFeed(lp, root);
+    a_cstr(rel, "/" DOG_BE_NAME "/0000000001.keeper");
+    u8bFeed(lp, rel);
+    u8cs lpt = {u8bDataHead(lp), u8bIdleHead(lp)};
+    u8bp logmap = NULL;
+    call(FILEMapRW, &logmap, lpt);
+
+    //  RW maps land the file bytes in the IDLE region (FILEMapFD leaves
+    //  data empty for PROT_WRITE), so read+patch off the idle slice.
+    u8cs logbytes = {u8bIdleHead(logmap), u8bTerm(logmap)};
+    u8p  logbase  = u8bIdleHead(logmap);
+    u64 ofs_pos = 0, ofs_len = 0;
+    ok64 fr = find_ofs_varint(logbytes, &ofs_pos, &ofs_len);
+    want(fr == OK);
+    want(ofs_len >= 2);  // multi-byte → patchable to a far underflow
+
+    //  Overwrite the ofs varint with the maximal value its byte-length
+    //  can hold (MSB-first per PACKDrainOfs): [0xff]*(len-1) + [0x7f].
+    //  With a 2-byte varint the decoded ofs_delta is ~16511, far past
+    //  v1's pack offset, so `cur = cur - ofs_delta` underflows to a huge
+    //  value (`pack + cur` ≈ pack-16k).  Same byte-length keeps the
+    //  following zlib body position valid; only the decoded value grows.
+    {
+        u8s patch = {logbase + ofs_pos, logbase + ofs_pos + ofs_len};
+        for (u64 i = 0; i + 1 < ofs_len; i++) patch[0][i] = 0xff;
+        patch[0][ofs_len - 1] = 0x7f;
+    }
+    FILEUnMap(logmap);
+
+    //  Reopen (re-scans the existing idx, whose v1 val still points at
+    //  the OFS_DELTA object at its correct offset) and resolve v1.
+    //  Before the fix: OOB read inside KEEPGetPacked (ASan abort).
+    //  After the fix: bounded KEEPFAIL, no OOB.
+    home h2 = {};
+    call(HOMEOpenAt, &h2, root, YES);
+    call(KEEPOpen, &h2, YES);
+
+    Bu8 out = {};
+    call(u8bMap, out, 1UL << 20);
+    u8 ot = 0;
+    u64 v1_hashlet = WHIFFHashlet60(&sha1v);
+    ok64 got = KEEPGet(v1_hashlet, 15, out, &ot);
+    if (got != KEEPFAIL) {
+        fprintf(stderr,
+                "KEEPofsUnderflow: expected KEEPFAIL, got %s\n",
+                ok64str(got));
+        fail(TESTFAIL);
+    }
+
+    u8bUnMap(out);
+    call(KEEPClose);
+    HOMEClose(&h2);
+    HOMEClose(&h);
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+    system(cmd);
+    done;
+}
+
+// --- MEM-022: deep cross-file REF_DELTA recursion (stack-overflow DoS) ---
+//
+//  Lay down two raw `.keeper` packs that form a REF_DELTA cycle across
+//  two file_ids: pack 1's object X is REF_DELTA(base=Y), pack 2's
+//  object Y is REF_DELTA(base=X).  The index maps hashlet(X_sha)→pack1
+//  and hashlet(Y_sha)→pack2.  KEEPGet(X) then ping-pongs
+//  KEEPGetPacked -> keep_get_rec -> KEEPGetPacked over the two
+//  file_ids; without a recursion cap each cross-file hop spends a C
+//  stack frame → unbounded recursion → stack-overflow DoS.  With the
+//  KEEP_XFILE_RECUR_MAX bound the call returns KEEPFAIL after a finite
+//  number of hops.  (UNPK's same-pair cycle guard sits on the ingest
+//  path; this hand-built corrupt index bypasses it, exercising the
+//  resolver's own bound.)
+
+//  Write `bytes` to `<root>/.be/<name>`.
+static ok64 write_be_file(u8cs root, char const *name, u8cs bytes) {
+    sane($ok(root) && name);
+    a_pad(u8, path, 1100);
+    u8bFeed(path, root);
+    a_cstr(be, "/" DOG_BE_NAME "/");
+    u8bFeed(path, be);
+    u8cs ns = {(u8cp)name, (u8cp)name + strlen(name)};
+    u8bFeed(path, ns);
+    u8cs pt = {u8bDataHead(path), u8bIdleHead(path)};
+    int fd = -1;
+    call(FILECreate, &fd, pt);
+    callsafe(FILEFeedAll(fd, bytes), close(fd));
+    close(fd);
+    done;
+}
+
+//  Append a REF_DELTA object header (type=7, size=1) + 20-byte base
+//  sha + a single zlib-ish body byte into `pack`.  The body is never
+//  inflated (the recursion aborts at base lookup), so its content is
+//  irrelevant — it only has to keep the file non-empty.
+static void feed_ref_delta_obj(u8bp pack, u8 const base_sha[20]) {
+    u8bFeed1(pack, (u8)((PACK_OBJ_REF_DELTA << 4) | 1));  // type|size, no cont
+    u8cs sha = {(u8cp)base_sha, (u8cp)base_sha + 20};
+    u8bFeed(pack, sha);
+    u8bFeed1(pack, 0x00);  // placeholder body byte
+}
+
+ok64 KEEPxfileRecursion() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/keeper-xrec-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+    a_cstr(root, tmpdir);
+
+    //  Open+close once so the .be/ trunk dir + refs skeleton exist.
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+    call(KEEPClose);
+
+    //  Two distinct base shas X and Y (arbitrary — only used as lookup
+    //  keys + ref bytes; no content verification on the KEEPGet path).
+    u8 X_sha[20], Y_sha[20];
+    for (int i = 0; i < 20; i++) { X_sha[i] = (u8)(0x10 + i); Y_sha[i] = (u8)(0xA0 + i); }
+    u64 X_h = WHIFFHashlet60((sha1cp)X_sha);
+    u64 Y_h = WHIFFHashlet60((sha1cp)Y_sha);
+
+    //  Pack 1 (file_id 1): header + objX = REF_DELTA(base=Y) at off 12.
+    a_pad(u8, pk1, 256);
+    {
+        u8s into = {u8bIdleHead(pk1), u8bTerm(pk1)};
+        call(PACKu8sFeedHdr, into, 1);
+        u8bFed(pk1, 12);  // PACK header is always 12 bytes
+    }
+    feed_ref_delta_obj(pk1, Y_sha);
+
+    //  Pack 2 (file_id 2): header + objY = REF_DELTA(base=X) at off 12.
+    a_pad(u8, pk2, 256);
+    {
+        u8s into = {u8bIdleHead(pk2), u8bTerm(pk2)};
+        call(PACKu8sFeedHdr, into, 1);
+        u8bFed(pk2, 12);
+    }
+    feed_ref_delta_obj(pk2, X_sha);
+
+    //  Idx 1: one entry keyed by hashlet(X_sha) → (file_id 1, off 12).
+    //  Idx 2: one entry keyed by hashlet(Y_sha) → (file_id 2, off 12).
+    wh128 e1 = { .key = keepKeyPack(KEEP_OBJ_BLOB, X_h),
+                 .val = wh64Pack(KEEP_VAL_FLAGS, 1, 12) };
+    wh128 e2 = { .key = keepKeyPack(KEEP_OBJ_BLOB, Y_h),
+                 .val = wh64Pack(KEEP_VAL_FLAGS, 2, 12) };
+    u8cs idx1 = {(u8cp)&e1, (u8cp)&e1 + sizeof(e1)};
+    u8cs idx2 = {(u8cp)&e2, (u8cp)&e2 + sizeof(e2)};
+
+    a_dup(u8c, pk1b, u8bData(pk1));
+    a_dup(u8c, pk2b, u8bData(pk2));
+    call(write_be_file, root, "0000000001.keeper",     pk1b);
+    call(write_be_file, root, "0000000002.keeper",     pk2b);
+    call(write_be_file, root, "0000000001.keeper.idx", idx1);
+    call(write_be_file, root, "0000000002.keeper.idx", idx2);
+
+    //  Reopen: the scan registers both packs (file_ids 1, 2) + idx runs.
+    home h2 = {};
+    call(HOMEOpenAt, &h2, root, YES);
+    call(KEEPOpen, &h2, YES);
+
+    Bu8 out = {};
+    call(u8bMap, out, 1UL << 20);
+    u8 ot = 0;
+    //  Without the cap this recurses until the C stack overflows; with
+    //  it the resolver returns a bounded failure.
+    ok64 got = KEEPGet(X_h, 15, out, &ot);
+    if (got == OK) {
+        fprintf(stderr,
+                "KEEPxfileRecursion: expected bounded failure, got OK\n");
+        fail(TESTFAIL);
+    }
+
+    u8bUnMap(out);
+    call(KEEPClose);
+    HOMEClose(&h2);
+    HOMEClose(&h);
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+    system(cmd);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "WH64hashlet...\n");
@@ -429,6 +716,10 @@ ok64 maintest() {
     call(KEEPBranchDropTable);
     fprintf(stderr, "KEEPbranchRoundTrip...\n");
     call(KEEPbranchRoundTrip);
+    fprintf(stderr, "KEEPofsUnderflow...\n");
+    call(KEEPofsUnderflow);
+    fprintf(stderr, "KEEPxfileRecursion...\n");
+    call(KEEPxfileRecursion);
     fprintf(stderr, "all passed\n");
     done;
 }

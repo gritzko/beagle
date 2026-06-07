@@ -46,6 +46,14 @@
 
 #define KEEP_BUFSZ (1ULL << 30)  // 1 GB working buffer (mmap'd, pages on demand)
 
+//  In-pack delta-chain cap (OFS/REF deltas resolved inside one pack).
+#define KEEP_DELTA_CHAIN_MAX 256
+//  Cross-file REF_DELTA recursion cap.  Each cross-file hop spends one
+//  C stack frame via KEEPGet -> KEEPGetPacked; a corrupt index that
+//  ping-pongs a REF_DELTA base over two file_ids would otherwise stack
+//  unbounded frames (stack-overflow DoS, MEM-022).  Bound it.
+#define KEEP_XFILE_RECUR_MAX 64
+
 u8c *const KEEP_DIR_S[2] = {
     (u8c *)KEEP_DIR,
     (u8c *)KEEP_DIR + sizeof(KEEP_DIR) - 1,
@@ -676,7 +684,13 @@ ok64 KEEPHas(u64 hashlet60, size_t hexlen) {
 
 // --- Resolve: inflate object at pack val (file_id + offset) ---
 
-static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
+//  Cross-file REF_DELTA recursion threads `rdepth` so a corrupt index
+//  cannot stack frames without bound; bumped once per cross-file hop.
+static ok64 keep_get_rec(u64 hashlet, size_t hexlen, u8bp out,
+                         u8p out_type, int rdepth);
+
+static ok64 keep_get_packed_rec(keeper *k, u64 val, u8bp out, u8p out_type,
+                                int rdepth) {
     u32 file_id = wh64Id(val);
     u64 offset  = wh64Off(val);
 
@@ -688,7 +702,7 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
     if (offset >= packlen) return KEEPFAIL;
 
     // Chase delta chain, resolve to base object
-    u64 chain[256];
+    u64 chain[KEEP_DELTA_CHAIN_MAX];
     int depth = 0;
     u64 cur = offset;
     u8 obj_type = 0;
@@ -704,6 +718,14 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
     ok64 rc = OK;
 
     for (;;) {
+        //  Re-validate the chased offset every iteration: `cur` is
+        //  re-derived from on-disk delta bases (OFS subtraction below,
+        //  REF_DELTA base_val), so the entry-time `offset < packlen`
+        //  guard does NOT carry over.  A corrupt base could land `cur`
+        //  past the pack tail (or, after an underflow, at a wild huge
+        //  value) — bound it here before building the read slice.
+        if (cur >= packlen) { rc = KEEPFAIL; goto cleanup; }
+
         pack_obj obj = {};
         u8cs from = {pack + cur, pack + packlen};
         rc = PACKDrainObjHdr(from, &obj);
@@ -721,10 +743,22 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
             break;
         }
 
-        if (depth >= 256) { rc = KEEPFAIL; goto cleanup; }
+        if (depth >= KEEP_DELTA_CHAIN_MAX) { rc = KEEPFAIL; goto cleanup; }
         chain[depth++] = cur;
 
         if (obj.type == PACK_OBJ_OFS_DELTA) {
+            //  OFS_DELTA base sits `ofs_delta` bytes BEFORE `cur`.  A
+            //  corrupt pack may carry `ofs_delta == 0` (self-reference)
+            //  or `ofs_delta > cur` (underflow → wild base pointer).
+            //  PACKDrainOfs caps only at UINT64_MAX>>7, so reject both
+            //  here (MEM-022).  The loop-top `cur < packlen` recheck
+            //  alone is not enough: an unsigned underflow yields a huge
+            //  `cur` that the recheck catches, but `cur == 0` (exact
+            //  underflow to pack base) would slip through — so bound
+            //  the subtraction at its source.
+            if (obj.ofs_delta == 0 || obj.ofs_delta > cur) {
+                rc = KEEPFAIL; goto cleanup;
+            }
             cur = cur - obj.ofs_delta;
         } else if (obj.type == PACK_OBJ_REF_DELTA) {
             // Look up base by SHA-1 prefix
@@ -746,9 +780,19 @@ static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
                 //     append onto our just-loaded base.  Reset buf3
                 //     after the copy so the final feed lands in an
                 //     empty buffer regardless of aliasing.
+                //   * Bound the cross-file recursion: each hop spends a
+                //     C stack frame, and a corrupt index ping-ponging a
+                //     REF_DELTA base over two file_ids would otherwise
+                //     stack frames without bound (stack-overflow DoS,
+                //     MEM-022).  The in-pack `depth` cap does not see
+                //     cross-file hops (each recursion starts fresh).
+                if (rdepth >= KEEP_XFILE_RECUR_MAX) {
+                    rc = KEEPFAIL; goto cleanup;
+                }
                 u8bReset(k->buf3);
                 u8 btype = 0;
-                rc = KEEPGet(base_hashlet, 15, k->buf3, &btype);
+                rc = keep_get_rec(base_hashlet, 15, k->buf3, &btype,
+                                  rdepth + 1);
                 if (rc != OK) goto cleanup;
                 obj_type = btype;
                 u8bReset(k->buf1);
@@ -816,9 +860,17 @@ cleanup:
     return rc;
 }
 
+//  Top-of-chain resolver: starts a fresh cross-file recursion budget.
+static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
+    return keep_get_packed_rec(k, val, out, out_type, 0);
+}
+
 // --- Get: inflate object from pack by hashlet ---
 
-ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
+//  Recursive variant: `rdepth` carries the cross-file REF_DELTA
+//  recursion budget so a corrupt index can't stack frames unbounded.
+static ok64 keep_get_rec(u64 hashlet, size_t hexlen, u8bp out,
+                         u8p out_type, int rdepth) {
     sane(out);
     keeper *k = &KEEP;
 
@@ -826,7 +878,11 @@ ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
     ok64 lo = KEEPLookup(hashlet, hexlen, &val);
     if (lo != OK) return lo;
 
-    return KEEPGetPacked(k, val, out, out_type);
+    return keep_get_packed_rec(k, val, out, out_type, rdepth);
+}
+
+ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
+    return keep_get_rec(hashlet, hexlen, out, out_type, 0);
 }
 
 //  Peek the inflated size + type of an object without committing the
