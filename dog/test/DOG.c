@@ -493,6 +493,101 @@ static ok64 DOGTestGitTransport(void) {
     done;
 }
 
+// --- DOGRepoFromBe / DOGProjectFromBe / DOGBranchFromBe -------------
+//
+//  The three `/.be/`-splitting anchor scanners.  MEM-017: the loop
+//  bound was `end = p[1]-4` while the probe reads `q[0..4]` (5 bytes),
+//  so on the final iteration `q[4]` dereferenced `*p[1]` — one byte
+//  past the slice.  This fires whenever the path *ends* in `/.be`
+//  (the legacy single-project anchor): the `/.be/` literal is not
+//  found (no trailing slash), and the last loop start sits at the
+//  `.` of `.be`, reading one byte past the end.
+//
+//  To make the over-read observable under ASan we feed a
+//  HEAP-allocated, NON-NUL-terminated slice whose bytes end exactly
+//  at `…/.be`; the byte past `p[1]` then lands in the malloc redzone.
+//  (URI/ULOG field slices are non-terminated in production, hence the
+//  real OOB.)
+
+typedef struct {
+    char const *input;      // path fed to the *FromBe scanners
+    char const *repo;       // DOGRepoFromBe result
+    char const *project;    // DOGProjectFromBe result
+    char const *branch;     // DOGBranchFromBe result
+} BeCase;
+
+static BeCase const BE_CASES[] = {
+    //  Sharded anchors: `/.be/<project>[/<branch>]`.
+    {"/abs/path/.be/beagle",        "/abs/path", "beagle", "beagle"},
+    {"/abs/path/.be/beagle/",       "/abs/path", "beagle", "beagle"},
+    {"/abs/path/.be/beagle/feat",   "/abs/path", "beagle", "beagle/feat"},
+    {"/abs/path/.be/beagle/feat/x", "/abs/path", "beagle", "beagle/feat/x"},
+    //  Bare `/.be/` — project elided (legacy single-project).
+    {"/abs/path/.be/",              "/abs/path", "",       ""},
+    //  *** MEM-017 over-read trigger ***  Path ENDS in `/.be` with no
+    //  trailing slash: `/.be/` literal is absent, last probe start is
+    //  the `.` of `.be`, `q[4]` reads one past the slice end.
+    {"/abs/path/.be",               "/abs/path", "",       ""},
+    {"/x/.be",                      "/x",        "",       ""},
+    //  No `/.be/` at all — fallback path, no over-read but pins behaviour.
+    {"/abs/path/repo",              "/abs/path/repo", "",  ""},
+};
+
+#define NBE (sizeof(BE_CASES) / sizeof(BE_CASES[0]))
+
+static ok64 DOGTestFromBe(void) {
+    sane(1);
+    for (size_t i = 0; i < NBE; i++) {
+        BeCase const *tc = &BE_CASES[i];
+        size_t n = strlen(tc->input);
+        //  Heap copy WITHOUT a NUL terminator: the byte after the
+        //  slice end is a malloc redzone, so any over-read past `p[1]`
+        //  is caught by ASan.  This mirrors the non-NUL-terminated
+        //  URI/ULOG field slices the scanners run on in production.
+        u8 *raw = (u8 *)malloc(n ? n : 1);
+        if (n) memcpy(raw, tc->input, n);
+        u8cs in = {raw, raw + n};
+
+        a_pad(u8, repobuf, 256);
+        a_pad(u8, projbuf, 256);
+        a_pad(u8, brbuf, 256);
+
+        a_dup(u8c, in1, in);
+        DOGRepoFromBe(in1, repobuf);
+        a_dup(u8c, in2, in);
+        DOGProjectFromBe(in2, projbuf);
+        a_dup(u8c, in3, in);
+        DOGBranchFromBe(in3, brbuf);
+
+        a_dup(u8c, repo_got, u8bData(repobuf));
+        a_dup(u8c, proj_got, u8bData(projbuf));
+        a_dup(u8c, br_got,   u8bData(brbuf));
+
+        b8 bad = NO;
+        if (!s_eq(repo_got, tc->repo)) {
+            fprintf(stderr, "FromBe[%zu] '%s' repo: got '%.*s' want '%s'\n",
+                    i, tc->input, (int)$len(repo_got),
+                    $empty(repo_got) ? "" : (char *)repo_got[0], tc->repo);
+            bad = YES;
+        }
+        if (!s_eq(proj_got, tc->project)) {
+            fprintf(stderr, "FromBe[%zu] '%s' project: got '%.*s' want '%s'\n",
+                    i, tc->input, (int)$len(proj_got),
+                    $empty(proj_got) ? "" : (char *)proj_got[0], tc->project);
+            bad = YES;
+        }
+        if (!s_eq(br_got, tc->branch)) {
+            fprintf(stderr, "FromBe[%zu] '%s' branch: got '%.*s' want '%s'\n",
+                    i, tc->input, (int)$len(br_got),
+                    $empty(br_got) ? "" : (char *)br_got[0], tc->branch);
+            bad = YES;
+        }
+        free(raw);
+        if (bad) fail(TESTFAIL);
+    }
+    done;
+}
+
 ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
@@ -502,6 +597,7 @@ ok64 DOGtest() {
     call(DOGTestIsFullSha);
     call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);
+    call(DOGTestFromBe);
     done;
 }
 

@@ -131,7 +131,10 @@ fun void DOGRepoFromBe(u8cs in, u8bp out) {
     DOGa_be(be);
     if (u8csLen(p) > u8csLen(be) + 1) {
         u8c const *scan = p[0];
-        u8c const *end  = p[1] - u8csLen(be) - 1;  // last possible start
+        //  `/.be/` is `u8csLen(be)+2` bytes (the be name plus its two
+        //  bounding slashes); the probe reads `q[0..u8csLen(be)+1]`, so
+        //  the last in-bounds start is `p[1] - (u8csLen(be)+2)`.
+        u8c const *end  = p[1] - u8csLen(be) - 2;  // last possible start
         for (u8c const *q = scan; q <= end; q++) {
             if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
                 && q[4] == '/') {
@@ -169,7 +172,8 @@ fun void DOGProjectFromBe(u8cs in, u8bp out) {
     DOGa_be(be);
     if (u8csLen(p) <= u8csLen(be) + 1) return;
     u8c const *scan = p[0];
-    u8c const *end  = p[1] - u8csLen(be) - 1;
+    //  `q[0..u8csLen(be)+1]` is probed; last in-bounds start = p[1]-5.
+    u8c const *end  = p[1] - u8csLen(be) - 2;
     for (u8c const *q = scan; q <= end; q++) {
         if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
             && q[4] == '/') {
@@ -200,7 +204,8 @@ fun void DOGBranchFromBe(u8cs in, u8bp out) {
     DOGa_be(be);
     if (u8csLen(p) <= u8csLen(be) + 1) return;
     u8c const *scan = p[0];
-    u8c const *end  = p[1] - u8csLen(be) - 1;
+    //  `q[0..u8csLen(be)+1]` is probed; last in-bounds start = p[1]-5.
+    u8c const *end  = p[1] - u8csLen(be) - 2;
     for (u8c const *q = scan; q <= end; q++) {
         if (q[0] == '/' && q[1] == '.' && q[2] == 'b' && q[3] == 'e'
             && q[4] == '/') {
