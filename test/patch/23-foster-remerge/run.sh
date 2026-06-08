@@ -49,7 +49,7 @@ match "$CASE/02.f.c1.c" f.c        # wt carries C1's `return 100;`
 # merge ?feat (tip C2) — theirs extends C1's tokens; must merge clean.
 sleep 0.02
 rc=0
-"$BE" patch '?feat' '#merge feat' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
+"$BE" patch '?feat#merge feat' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
 
 if grep -q '<<<<' f.c; then
     echo "FAIL: foster'd content re-stamped -> conflict on extend:" >&2

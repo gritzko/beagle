@@ -1,5 +1,5 @@
 #!/bin/sh
-#  12-merge — `be patch ?feat '#merge feat into trunk'` records a
+#  12-merge — `be patch '?feat#merge feat into trunk'` records a
 #  `parent <feat.tip>` header on next POST (true merge, multi-parent).
 #  Msg comes from the patch row's fragment.
 #
@@ -38,9 +38,9 @@ F2=$(head_hex)
 [ "$(head_hex)" = "$T2" ] || fail "wt should be at T2"
 
 # THE ACTION: merge feat into trunk with explicit msg.
-"$BE" patch '?feat' '#merge feat into trunk' \
+"$BE" patch '?feat#merge feat into trunk' \
     >"$ETMP/m.out" 2>"$ETMP/m.err" \
-    || fail "be patch ?feat '#merge ...' failed: $(cat $ETMP/m.err)"
+    || fail "be patch '?feat#merge ...' failed: $(cat $ETMP/m.err)"
 
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/m.err)"

@@ -33,7 +33,7 @@ A verb = an action with a direction.
     be put .                          stage subtree
     be post '#fix MSET'               commit cur with msg
     be patch ?feat#                   absorb one commit from feat (rebase atom)
-    be patch ?feat '#sync feat'       merge feat into cur
+    be patch '?feat#sync feat'        merge feat into cur
 
 ## Put (repo → repo)
 

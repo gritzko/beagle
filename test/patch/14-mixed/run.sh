@@ -53,8 +53,8 @@ grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.out" \
     || fail "cherry-pick: expected 'patch merged lib.c'; got: $(cat $ETMP/cp.err)"
 
 # Merge feat with explicit msg.
-"$BE" patch '?feat' '#feat+bug' >"$ETMP/m.out" 2>"$ETMP/m.err" \
-    || fail "be patch ?feat '#feat+bug' failed: $(cat $ETMP/m.err)"
+"$BE" patch '?feat#feat+bug' >"$ETMP/m.out" 2>"$ETMP/m.err" \
+    || fail "be patch '?feat#feat+bug' failed: $(cat $ETMP/m.err)"
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.out" \
     || fail "merge: expected 'patch merged lib.c'; got: $(cat $ETMP/m.err)"
 

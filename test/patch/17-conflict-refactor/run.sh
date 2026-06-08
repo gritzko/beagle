@@ -47,7 +47,7 @@ F1=$(head_hex)
 
 # THE ACTION: merge feat into trunk — conflicts, but DIS-018 says
 # PATCH returns OK and reports `conf`; markers stay in the file.
-"$BE" patch '?feat' '#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err" \
+"$BE" patch '?feat#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err" \
     || fail "be patch ?feat should exit 0 now (DIS-018); err: $(cat $ETMP/c.err)"
 
 # Per-file status row: lib.c → conf (DIS-018, was `conflict`).

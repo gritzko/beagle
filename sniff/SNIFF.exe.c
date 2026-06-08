@@ -1099,17 +1099,10 @@ ok64 SNIFFExec(cli *c) {
             ret = SNIFFFAIL;
         } else {
             uri *u = uribAtP(c->uris, 0);
-            //  Coalesce trailing fragment-only URIs (typical
-            //  `be patch ?feat '#merge msg'` shape — argv lexer puts
-            //  msg into uris[1] as a fragment-only URI).  Merge that
-            //  fragment back into uris[0] so PATCHApply sees one URI
-            //  with the full shape.
-            for (u32 i = 1; i < uribDataLen(c->uris); i++) {
-                uri *u2 = uribAtP(c->uris, i);
-                if (u2->fragment[0] != NULL && u->fragment[0] == NULL) {
-                    $mv(u->fragment, u2->fragment);
-                }
-            }
+            //  One URI = one shell token: the merge message rides in
+            //  the same token as the query (`be patch '?feat#merge msg'`),
+            //  never a separate `'#msg'` arg.  No cross-token fragment
+            //  coalescing — URILexer already lexes the spaced fragment.
             //  Accept `path?query` for single-file merge, bare
             //  `?query` (with optional `#hash` clamp) for whole-wt
             //  merge, or bare `#hash` for single-commit cherry-pick.

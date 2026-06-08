@@ -98,7 +98,7 @@ fi
 #     Same shape — must succeed cleanly.
 # ----------------------------------------------------------------
 set +e
-"$BE" patch "ssh://localhost/$REL_ORIGIN?master" '#merge master' \
+"$BE" patch "ssh://localhost/$REL_ORIGIN?master#merge master" \
     > "$LOGS/04.patch-merge.out" 2> "$LOGS/04.patch-merge.err"
 RC_MERGE=$?
 set -e
