@@ -91,3 +91,12 @@
   `side-band-64k`, `wpush_drain_status` demuxes band-2/3 → stderr and
   re-parses band-1 report lines, and `wpush_classify_report` prints the
   `ng`/`unpack` reason (`keeper/WIRECLI.c`).  Gated on `WITH_SSH`.
+* `31-remote-branch-push/` — DIS-026: `be post ssh://peer?<branch>` must
+  push cur's tip onto the peer's `refs/heads/<branch>` (FF), reading
+  `?<branch>` as the REMOTE target — not a local label (was `NOBRANCH`).
+  Positive: a full ssh:// URL `?master` advances the bare peer's master
+  to cur, exit 0.  Negative: a no-authority `?nonexistent` still refuses
+  `NOBRANCH` (DIS-020 preserved — the fix only skips full-transport URIs
+  with a scheme; bare `//alias?branch` is unchanged).  Fix:
+  `sniff/SNIFF.exe.c` skips a transport-scheme URI in local label-target
+  selection so the wire refname reaches `keeper post`.  Gated on `WITH_SSH`.

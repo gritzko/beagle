@@ -677,6 +677,15 @@ ok64 SNIFFExec(cli *c) {
         uri *label_uri = NULL;
         for (u32 i = 0; i < uribDataLen(c->uris); i++) {
             uri *uu = uribAtP(c->uris, i);
+            //  DIS-026: a `?branch` riding a FULL transport URL
+            //  (`ssh://host/repo?main`) names the REMOTE push target —
+            //  the wire refname `keeper post` (BEActKeeperPush) pushes
+            //  onto, not a local label.  Skip only full-transport URIs
+            //  (a non-empty transport scheme) so the refname reaches
+            //  keeper untouched; a bare `//alias?branch` (no scheme) and
+            //  local `?branch` promotes still fire — DIS-020's NOBRANCH
+            //  for a missing local label is preserved.  See POST.mkd §POST.
+            if (!$empty(uu->scheme) && DOGIsTransport(uu->scheme)) continue;
             if (!$empty(uu->query)) { label_uri = uu; break; }
             //  Bare `?` (trunk): data is exactly "?" and every other
             //  slot is empty.

@@ -43,7 +43,7 @@ static void keep_usage(void) {
         "    get .#hashprefix           cat object to stdout\n"
         "    get .?refname              resolve ref to SHA\n"
         "    put .?ref .#sha            move local ref pointer\n"
-        "    put //remote?ref           push to remote (stub)\n"
+        "    put //remote?ref           force-push cur's tip to remote ref\n"
         "    post //remote              push HEAD's tip to remote\n"
         "    delete //remote?ref        push-delete a remote ref\n"
         "    delete //remote            drop alias (tombstone host rows)\n"
