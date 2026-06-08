@@ -109,6 +109,8 @@ set(_BE_NEEDS_SSH_CASES
     "be-get-27-ff-refuse"
     "be-get-28-linear-ahead-preserved"
     "be-post-19-pure-push-no-commit"
+    # DIS-027: a refused push must surface the peer's reason, not WIRECLFL.
+    "be-post-30-push-refused-reason"
     "be-post-20-push-prints-diff"
     "be-post-21-foster-ff-push"
     "be-post-22-recv-advances-wt"

@@ -1362,7 +1362,7 @@ static ok64 wpush_peer_tip(int rfd, u8b advbuf, u8csc branch_refname,
     done;
 }
 
-//  Send "<old> <new> <refname>\0report-status\n" + flush.
+//  Send "<old> <new> <refname>\0report-status side-band-64k\n" + flush.
 static ok64 wpush_send_update(int wfd, sha1cp old_sha,
                               sha1cp new_sha, u8csc refname,
                               b8 have_old) {
@@ -1385,7 +1385,16 @@ static ok64 wpush_send_update(int wfd, sha1cp old_sha,
     u8bFeed1(line, ' ');
     u8bFeed(line, refname);
     u8bFeed1(line, 0);
-    a_cstr(caps, "report-status");
+    //  Request side-band-64k so a refusing peer (pre-receive hook,
+    //  denyCurrentBranch, dirty `updateInstead` checkout) multiplexes
+    //  its `remote: …` diagnostic text onto band-2 — wpush_drain_status
+    //  demuxes it to our stderr.  `report-status` still carries the
+    //  in-band `unpack`/`ng <ref> <reason>` report (on band-1 when the
+    //  peer honours side-band, bare otherwise — keeper's RECVEmitResponse
+    //  never multiplexes, so the drain handles both shapes).  Without
+    //  this the peer's reason was lost and a push failure collapsed to
+    //  an opaque WIRECLFL (DIS-027).
+    a_cstr(caps, "report-status side-band-64k");
     u8bFeed(line, caps);
     u8bFeed1(line, '\n');
     a_dup(u8c, payload, u8bData(line));
@@ -1447,9 +1456,58 @@ static ok64 wpush_send_pack_interleaved(int wfd, int rfd, u8csc pdata,
     return OK;
 }
 
+//  Classify one report-status line (`unpack …`/`ok …`/`ng …`), update
+//  the *unpack_ok / *ref_ok flags, and — critically for DIS-027 — print
+//  the peer's own refusal reason to stderr so a failed push is
+//  diagnosable.  `ng_match` is the `ng <refname>` prefix for our ref.
+static void wpush_classify_report(u8csc raw, u8csc ng_match,
+                                  b8 *unpack_ok, b8 *ref_ok) {
+    //  Strip a trailing newline so our prints stay tidy.
+    a_dup(u8c, ln, raw);
+    if (!u8csEmpty(ln) && *u8csLast(ln) == '\n') ln[1]--;
+
+    if (u8csEq(ln, GIT_PKT_UNPACK_OK)) {
+        *unpack_ok = YES;
+    } else if (u8csHasPrefix(ln, GIT_PKT_UNPACK_PFX)) {
+        //  "unpack <reason>" — remote refused the pack itself.
+        size_t skip = (size_t)u8csLen(GIT_PKT_UNPACK_PFX);
+        fprintf(stderr, "remote: unpack %.*s\n",
+                (int)(u8csLen(ln) - (ssize_t)skip),
+                (char const *)ln[0] + skip);
+    } else if (u8csHasPrefix(ln, GIT_PKT_OK_PFX)) {
+        //  "ok <ref>" — accept regardless of which ref (the only ref
+        //  update we sent), so a peer that reports a normalized refname
+        //  still satisfies the ref_ok gate.
+        *ref_ok = YES;
+    } else if (u8csHasPrefix(ln, ng_match) ||
+               u8csHasPrefix(ln, GIT_PKT_NG_PFX)) {
+        //  "ng <ref> <reason>" — remote refused the ref update.  Body
+        //  after "ng " is "<ref> <reason>"; trim "<ref> " for the
+        //  user-facing message and surface it (DIS-027).
+        size_t skip = (size_t)u8csLen(GIT_PKT_NG_PFX);
+        //  skip the refname token up to the first space.
+        while ((ssize_t)skip < u8csLen(ln) && ln[0][skip] != ' ') skip++;
+        if ((ssize_t)skip < u8csLen(ln) && ln[0][skip] == ' ') skip++;
+        fprintf(stderr, "remote: ref update rejected: %.*s\n",
+                (int)(u8csLen(ln) - (ssize_t)skip),
+                (char const *)ln[0] + skip);
+        *ref_ok = NO;
+    }
+}
+
 //  `prefill` carries any status bytes already read off `rfd` during the
 //  interleaved pack send; they are consumed before reading more.  Pass
 //  an empty slice when no early read happened.
+//
+//  Side-band demux (DIS-027): the push update advertises side-band-64k,
+//  so a git-receive-pack peer multiplexes the response — band-1 carries
+//  the report-status pkt-lines, band-2 the human-readable `remote: …`
+//  diagnostics (hook stderr, denyCurrentBranch, dirty checkout), band-3
+//  a fatal message.  We forward band-2/3 to our stderr live and re-parse
+//  band-1 as the report stream.  A peer that ignores the cap (keeper's
+//  own RECVEmitResponse never multiplexes) sends bare report pkt-lines —
+//  their first byte is a printable letter, never a 0x01..0x03 band tag,
+//  so the same loop handles both shapes.
 static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
     sane(rfd >= 0);
     a_carve(u8, buf, WCLI_BUF);
@@ -1458,15 +1516,14 @@ static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
     b8 unpack_ok = NO;
     b8 ref_ok    = NO;
 
-    a_pad(u8, ok_line, 512);
-    u8bFeed(ok_line, GIT_PKT_OK_PFX);
-    u8bFeed(ok_line, refname);
-    a_dup(u8c, ok_match, u8bDataC(ok_line));
-
     a_pad(u8, ng_line, 512);
     u8bFeed(ng_line, GIT_PKT_NG_PFX);
     u8bFeed(ng_line, refname);
     a_dup(u8c, ng_match, u8bDataC(ng_line));
+
+    //  band-1 (report pkt-lines) re-assembly buffer: a report line may
+    //  arrive split across several side-band frames.
+    a_carve(u8, b1, WCLI_BUF);
 
     for (;;) {
         u8cs line = {};
@@ -1478,29 +1535,47 @@ static ok64 wpush_drain_status(int rfd, u8csc refname, u8csc prefill) {
                     (unsigned long long)d);
             break;
         }
-        //  Strip a trailing newline so our own prints stay tidy.
-        a_dup(u8c, ln, line);
-        if (!u8csEmpty(ln) && *u8csLast(ln) == '\n') ln[1]--;
 
-        if (u8csEq(ln, GIT_PKT_UNPACK_OK)) {
-            unpack_ok = YES;
-        } else if (u8csHasPrefix(ln, GIT_PKT_UNPACK_PFX)) {
-            //  "unpack <reason>" — remote refused the pack itself.
-            trace("wpush: remote unpack failed: %.*s\n",
-                    (int)u8csLen(ln) - 7, (char const *)ln[0] + 7);
-        } else if (u8csHasPrefix(ln, ok_match)) {
-            ref_ok = YES;
-        } else if (u8csHasPrefix(ln, ng_match)) {
-            //  "ng <ref> <reason>" — remote refused the ref update.
-            //  Body after "ng " is "<ref> <reason>"; trim "<ref> " for
-            //  the user-facing message.
-            size_t skip = u8csLen(ng_match);
-            if ((ssize_t)skip < u8csLen(ln) && ln[0][skip] == ' ') skip++;
-            trace("wpush: remote rejected ref update: %.*s\n",
-                    (int)(u8csLen(ln) - (ssize_t)skip),
-                    (char const *)ln[0] + skip);
-            ref_ok = NO;
+        //  Side-band frame?  First byte 0x01..0x03 is the band tag; a
+        //  bare report line starts with a printable letter ('u'/'o'/'n').
+        if (!u8csEmpty(line) && line[0][0] <= 0x03) {
+            u8 band = line[0][0];
+            a_rest(u8c, data, line, 1);     //  drop the band tag byte
+            if (band == 0x02 || band == 0x03) {
+                //  Progress / fatal text → stderr live (mirrors the
+                //  fetch-path band-2 forwarder, KEEPIngestStream).
+                while (!u8csEmpty(data)) {
+                    ssize_t w = write(STDERR_FILENO, data[0],
+                                      (size_t)u8csLen(data));
+                    if (w > 0) { data[0] += w; continue; }
+                    if (w < 0 && errno == EINTR) continue;
+                    break;
+                }
+                continue;
+            }
+            //  band-1: accumulate, then drain embedded report pkt-lines.
+            if (!u8csEmpty(data)) {
+                if (u8bHasRoom(b1)) u8bFeed(b1, data);
+            }
+            u8cs b1adv = {u8bDataHead(b1), u8bIdleHead(b1)};
+            for (;;) {
+                u8cs rl = {};
+                ok64 rd = PKTu8sDrain(b1adv, rl);
+                if (rd == NODATA) break;
+                if (rd == PKTFLUSH || rd == PKTDELIM) continue;
+                if (rd != OK) break;
+                wpush_classify_report(rl, ng_match, &unpack_ok, &ref_ok);
+            }
+            //  Reclaim the consumed prefix so the buffer can keep filling.
+            {
+                size_t consumed = (size_t)(b1adv[0] - u8bDataC(b1)[0]);
+                if (consumed) { u8bUsed(b1, consumed); u8bShift(b1, 0); }
+            }
+            continue;
         }
+
+        //  Bare report pkt-line (non-sideband peer).
+        wpush_classify_report(line, ng_match, &unpack_ok, &ref_ok);
     }
     return (unpack_ok && ref_ok) ? OK : WIRECLFL;
 }

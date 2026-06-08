@@ -79,3 +79,15 @@
   vendor/sub → vendor/leaf), only the parent edited: asserts the push
   exits 0, no NOBRANCH/abort on stderr, the parent git origin advanced,
   and both clean sub tips stayed put.
+* `30-push-refused-reason/` — DIS-027: a refused `be post //remote` must
+  SURFACE the peer's own reason, not collapse to an opaque `WIRECLFL`.
+  A bare git origin installs a `pre-receive` hook that prints a known
+  marker to stderr and exits 1; the wt makes a clean fast-forward commit
+  (so the refusal is the peer's, not the client-side non-FF gate) and
+  pushes.  Asserts non-zero exit AND that be's stderr carries both the
+  report-status `ng` reason (`pre-receive hook declined`, the in-band
+  signal be parses — previously only `trace()`'d) and the hook marker
+  (relayed over side-band-2).  Fix: `wpush_send_update` advertises
+  `side-band-64k`, `wpush_drain_status` demuxes band-2/3 → stderr and
+  re-parses band-1 report lines, and `wpush_classify_report` prints the
+  `ng`/`unpack` reason (`keeper/WIRECLI.c`).  Gated on `WITH_SSH`.
