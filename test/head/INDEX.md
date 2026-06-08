@@ -35,6 +35,12 @@ beagle-side BERecurseVerb wrapper and BEHead wiring land.
   but the anchor + checkout are removed.  HEAD reports
   "declared, not mounted" for the path and continues (does not
   recurse into the absent mount, does not refuse).
+* `23-trunk-no-remote/` — HEAD-002 regression.  (a) bare `be head`
+  on a self-hosted trunk with NO cached remote-tracking row resolves
+  the trunk's own `?` tip → "up to date" (0/0/0), not GRAFNONE
+  "cannot resolve target" / exit 206.  (b) a genuinely-unresolvable
+  leg (`#nomatch`) exits non-zero with an `Error:` line that AGREES
+  with graf's own GRAFNONE — never a contradictory `Error: NONE`.
 
 TODO, blocked on fixture extensions:
 

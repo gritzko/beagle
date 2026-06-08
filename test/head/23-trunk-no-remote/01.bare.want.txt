@@ -1,0 +1,3 @@
+^--- head: ---$
+^head: \?trunk: 0 ahead, 0 behind, 0 changed$
+^$

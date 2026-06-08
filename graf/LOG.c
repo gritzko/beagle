@@ -849,7 +849,23 @@ static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
         sha1Mv(out, &rt.sha);
         return OK;
     }
-    return GRAFNONE;
+    //  HEAD-002: a self-hosted trunk with NO cached remote-tracking row
+    //  has no upstream counterpart, but bare `be head` must still
+    //  report "up to date" (0/0), not GRAFNONE "cannot resolve target"
+    //  — the trunk tip IS resolvable from the local `?` REFS row.  Fall
+    //  back to it (mirrors the trunk-alias `?master`-with-no-peer path
+    //  above): target == cur → the ahead/behind walk renders 0/0.  Per
+    //  https://replicated.wiki/html/wiki/HEAD.html §HEAD: bare `be head`
+    //  on trunk is cur vs its cached remote counterpart; absent one, cur
+    //  vs itself is the accurate (and only) honest answer.
+    {
+        a_cstr(qmark, "?");
+        a_dup(u8c, qkey, qmark);
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), qkey);
+        return (ro == OK)
+                ? graf_head_decode_sha(out, resolved.query)
+                : GRAFNONE;
+    }
 }
 
 //  Render one log row prefixed by `+ ` or `- `.  Reuses

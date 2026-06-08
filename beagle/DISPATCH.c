@@ -14,6 +14,7 @@
 #include "abc/URI.h"
 #include "dog/HOME.h"
 #include "keeper/REFS.h"
+#include "graf/GRAF.h"     // GRAFNONE (HEAD-002 leg-flavour mapping)
 
 //  --- Executor ------------------------------------------------------
 
@@ -231,7 +232,24 @@ ok64 BEActKeeperDelete (cli *c) { return be_spawn_all("keeper", "delete", c); }
 
 ok64 BEActSpotGet  (cli *c) { return be_spawn_all("spot", "get",  c); }
 ok64 BEActGrafGet  (cli *c) { return be_spawn_all("graf", "get",  c); }
-ok64 BEActGrafHead (cli *c) { return be_spawn_all("graf", "head", c); }
+
+//  HEAD-002 (facet 2): the graf-head leg's exit byte (POSIX-truncated)
+//  can only carry the generic NONE low byte (0xCE), so `BERun` collapses
+//  any *NONE — including graf's GRAFNONE "cannot resolve target" / "no
+//  commit message matches" — to the generic `NONE`.  `BEExecute` then
+//  surfaces that as a trailing `Error: NONE`, which CONTRADICTS the
+//  `Error: GRAFNONE` graf's own MAIN already printed.  This leg knows it
+//  spawned `graf head`, so re-flavour the NONE-class result back to
+//  GRAFNONE: the be-level `Error:` now agrees with graf's, the exit code
+//  is unchanged (both share the 0xCE low byte → exit 206, still
+//  non-zero), and a real graf failure can never read as a benign
+//  no-op.  A genuine GRAFFAIL/BEDOGEXIT leg (non-NONE) propagates
+//  verbatim — never swallowed, never exit 0.
+ok64 BEActGrafHead (cli *c) {
+    ok64 r = be_spawn_all("graf", "head", c);
+    if (ok64is(r, NONE)) return GRAFNONE;
+    return r;
+}
 
 //  --- Action library: submodule recursion --------------------------
 
