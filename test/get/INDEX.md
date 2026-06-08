@@ -134,3 +134,12 @@
   (C) a non-tracked bareword still routes to `?branch` (real branch
   switches, bogus name refuses; an untracked on-disk file never hijacks
   the path slot). Local-only, no ssh.
+* `38-remote-main-branch/` — DIS-028: an explicit `?main` against a git
+  remote resolves the peer's literal `refs/heads/main`, like `?master`
+  already does, instead of failing `WIRECLFL` / `the remote end hung up
+  unexpectedly` (exit 157).  The trunk⇔`refs/heads/main` wire alias used
+  to fold the ADVERTISED `main` to be-side empty in the ref matcher, so
+  a literal `?main` want never matched its own ref.  Bare git peer with
+  `refs/heads/main` AND `refs/heads/master` at one tip; asserts `?master`
+  resolves (contrast), `?main` resolves (the fix), and bare-trunk (no
+  `?ref`) still maps to `refs/heads/main`.  Gated on `WITH_SSH`.

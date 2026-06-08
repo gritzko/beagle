@@ -126,6 +126,15 @@ ref-update line + pack, drains unpack/per-ref status.
                           (`KEEPSharesAncestor`); the orphaned objects
                           stay unreferenced.  Shared history converges
                           (`test/WIRE_CLIENT.c` cases 5/6).
+                          DIS-028: the trunk⇔`refs/heads/main` wire alias
+                          fires ONLY on the empty-want (trunk-discovery)
+                          path.  The non-empty ref matcher
+                          (`wcli_refname_match`) parses the ADVERTISED
+                          name with `GITParseRef` (raw bare name), so an
+                          explicit `?main` resolves the peer's literal
+                          `refs/heads/main` like any other branch instead
+                          of folding to empty and failing `WIRECLFL`
+                          (`test/get/38-remote-main-branch`).
   - `WIREFetchAll`       client: single upload-pack session, multi-want
                           for every advertised heads/tags ref.  Backs
                           `be head ssh://origin?*` (https://replicated.wiki/html/wiki/HEAD.html §HEAD).

@@ -352,10 +352,20 @@ static ok64 wcli_wire_to_be(u8csc wire_refname, gitref_kind *kind_out,
 //  bare `vN…` routes to TAG (matches `GITParseRef`'s heuristic).
 //  Empty `want_branch` is handled by the caller (HEAD discovery), so
 //  this function only deals with non-empty wants.
+//
+//  DIS-028: the advertised side parses with `GITParseRef`, NOT the
+//  trunk-collapsing `wcli_wire_to_be` — the latter folds
+//  `refs/heads/main` to be-side empty, so a literal `?main` want
+//  (`want_bare = "main"`) never matched its own advertised ref and
+//  the fetch failed `WIRECLFL`.  The trunk⇔`main` alias belongs only
+//  to the empty-want path (caller / fallback loop), where the user
+//  asked for trunk, not the literal `main`.  Matching the raw bare
+//  name here resolves explicit `?main` like any other branch while
+//  leaving bare-trunk discovery untouched.
 static b8 wcli_refname_match(u8csc adv_name, u8csc want_branch) {
     gitref_kind adv_k = GITREF_NONE;
-    u8cs adv_be = {};
-    if (wcli_wire_to_be(adv_name, &adv_k, adv_be) != OK) return NO;
+    u8cs adv_bare = {};
+    if (GITParseRef(adv_name, &adv_k, adv_bare) != OK) return NO;
     if (adv_k != GITREF_BRANCH && adv_k != GITREF_TAG) return NO;
 
     gitref_kind want_k = GITREF_NONE;
@@ -363,9 +373,9 @@ static b8 wcli_refname_match(u8csc adv_name, u8csc want_branch) {
     if (GITParseRef(want_branch, &want_k, want_bare) != OK) return NO;
     if (want_k != adv_k) return NO;
 
-    if (u8csLen(adv_be) != u8csLen(want_bare)) return NO;
-    if ($empty(want_bare)) return $empty(adv_be);
-    return memcmp(adv_be[0], want_bare[0],
+    if (u8csLen(adv_bare) != u8csLen(want_bare)) return NO;
+    if ($empty(want_bare)) return $empty(adv_bare);
+    return memcmp(adv_bare[0], want_bare[0],
                   (size_t)u8csLen(want_bare)) == 0;
 }
 

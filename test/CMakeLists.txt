@@ -113,6 +113,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-post-30-push-refused-reason"
     # DIS-026: be post //git-remote?<branch> pushes cur onto the peer's branch.
     "be-post-31-remote-branch-push"
+    # DIS-028: explicit ?main resolves the peer's literal refs/heads/main
+    # (like ?master), not WIRECLFL; bare-trunk still maps to refs/heads/main.
+    "be-get-38-remote-main-branch"
     "be-post-20-push-prints-diff"
     "be-post-21-foster-ff-push"
     "be-post-22-recv-advances-wt"
