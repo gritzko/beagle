@@ -2072,10 +2072,20 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
                             u8sFmt(vtag), u8sFmt(cur_branch));
                 } else if (cas != OK) return cas;
             }
-            fprintf(stderr,
-                    "sniff: " U8SFMT ": nothing to promote (?" U8SFMT " already "
-                    "contains cur)\n",
-                    u8sFmt(vtag), u8sFmt(target_branch));
+            //  POST-012: in submodule-recursion contexts (`-q` local
+            //  commit, or `--tlv` push relay — see beagle/BE.cli.c
+            //  bepost/bepush recurse cbs) this per-sub no-op line is pure
+            //  clutter: the parent's `0 change(s)` summary already conveys
+            //  it, and it reads like an error.  Per the verb report-
+            //  channels rule, post reports a sub only when it promotes a
+            //  real change.  Keep the line for a direct interactive
+            //  `be post ?branch` no-op; stay silent under recursion.
+            //  (Mirrors the clean-detached no-op gate above.)
+            if (!SNIFF.quiet && HUNKMode != HUNKOutTLV)
+                fprintf(stderr,
+                        "sniff: " U8SFMT ": nothing to promote (?" U8SFMT
+                        " already contains cur)\n",
+                        u8sFmt(vtag), u8sFmt(target_branch));
             return OK;
         }
     }
