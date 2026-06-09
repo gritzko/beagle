@@ -775,9 +775,29 @@ static b8 keep_post_is_git_wire(u8csc remote_uri) {
 static ok64 keeper_post(keeper *k, cli *c) {
     sane(k && c);
     uri *g = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    if (!g || u8csEmpty(g->host)) {
+    //  POST-008: a valid push target is anything `wcli_spawn` /
+    //  `keeper_remote_uri` can route, NOT just a host-bearing ssh URI.
+    //  The old `u8csEmpty(g->host)` gate rejected a host-less local
+    //  keeper store (`file:///abs`, authority-empty) and the
+    //  scheme-only completion forms — even though fetch already
+    //  accepts them (mirrors `keeper_get`'s acceptance: authority OR a
+    //  transport scheme).  Accept when ANY of these is present:
+    //    - host          (ssh/be/keeper/https://host/...)
+    //    - authority      (//host or //host:port; HOME-relative forms)
+    //    - path           (file:///abs, //host/path, scheme path)
+    //    - a `?/<project>` selector (be://host?/proj — empty path)
+    //    - a transport scheme alone (file:/be:/ssh: — keeper_remote_uri
+    //      completes host+path from the recentmost same-scheme REFS row)
+    b8 has_proj_query = g && !u8csEmpty(g->query) && *g->query[0] == '/';
+    b8 routable = g && (!u8csEmpty(g->host)   ||
+                        !u8csEmpty(g->authority) ||
+                        !u8csEmpty(g->path)   ||
+                        has_proj_query        ||
+                        (!u8csEmpty(g->scheme) && DOGIsTransport(g->scheme)));
+    if (!routable) {
         fprintf(stderr, "keeper: post needs a remote URI "
-                        "(ssh://host/path[?branch])\n");
+                        "(ssh://host/path[?branch], be://host/path, "
+                        "or file:///abs/path)\n");
         return KEEPFAIL;
     }
     a_path(keepdir);

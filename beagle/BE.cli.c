@@ -75,8 +75,9 @@ static void BEUsage(void) {
         "  patch [uri]          weave-merge another branch into wt\n"
         "\n"
         "URI format: [scheme:][//host][path][?ref][#frag]\n"
-        "  //host  = cached remote-tracking refs only (no network)\n"
-        "  ssh:    = open a wire (clone, fetch, push)\n"
+        "  //host       = cached remote-tracking refs only (no network)\n"
+        "  ssh:         = open a git wire (clone, fetch, push)\n"
+        "  be://, file: = open a beagle wire (clone, fetch, push)\n"
         "\n"
         "Bare `be` = status (current branch, ahead/behind, dirty).\n"
     );

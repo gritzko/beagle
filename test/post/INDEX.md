@@ -100,3 +100,16 @@
   with a scheme; bare `//alias?branch` is unchanged).  Fix:
   `sniff/SNIFF.exe.c` skips a transport-scheme URI in local label-target
   selection so the wire refname reaches `keeper post`.  Gated on `WITH_SSH`.
+* `32-push-file-local-store/` — POST-008: `be post` must push to a
+  HOST-LESS local beagle store (`file:///abs/path`), not just a
+  host-bearing ssh/be:// URI.  `keeper_post`'s old `u8csEmpty(g->host)`
+  gate rejected `file://` (no authority/host) with `keeper: post needs a
+  remote URI (ssh://...)` / `KEEPFAIL`, so pushing to a LOCAL store was
+  unreachable even though fetch over the same edge worked.  Drives the
+  LOCAL-EXEC keeper edge (`file://` → `keeper receive-pack` spawned
+  directly), so it needs NO ssh and runs in the default suite (unlike
+  post/22's `be://localhost` ssh hop).  Clones A→B via `file://`, B
+  commits + FF-pushes back; asserts the push reports success, A's trunk
+  ff-advances to B's tip, and A's wt followed.  Fix: `keep_post`'s gate
+  now accepts any routable target (host OR authority OR path OR
+  `?/<proj>` OR a transport scheme), mirroring fetch (`keeper/KEEP.exe.c`).

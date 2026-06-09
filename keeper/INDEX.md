@@ -256,7 +256,12 @@ left-click on the anchor opens the next-token URI via `be --tlv`
                  writer (PackOpen/Feed/Close) + Import/Ingest +
                  Push + tip/remote enumeration
   - `KEEP.exe.c` CLI verb dispatch (`get`, `put`, `post`, `status`,
-                 `refs`, `alias`, `sync`, `upload-pack`, …)
+                 `refs`, `alias`, `sync`, `upload-pack`, …).  POST-008:
+                 `keeper_post`'s target gate is scheme-symmetric with
+                 fetch — accepts host OR authority OR path OR `?/<proj>`
+                 OR a transport scheme, so a host-less `file:///abs`
+                 local store (and `be://`) is a valid push target, not
+                 just ssh.
   - `MIGRATE.c`  `KEEPMoveCommits` — **retired**: with one flat object
                  pool per project, promote/drop are REFS-only and there
                  is no cross-shard pack copy to perform (`be post
