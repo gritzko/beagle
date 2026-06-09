@@ -2308,12 +2308,15 @@ ok64 KEEPIngestFile(u8csc bytes) {
     call(UNPKIndex, &uin, entries, &ust);
 
     //  Pack bookmark: key points at the append offset, val carries
-    //  (obj_count, byte_len) for O(1) wire reconstruction.
+    //  (obj_count, byte_len) for O(1) wire reconstruction.  UNPKIndex
+    //  may have grown `entries` past its initial cap (dup emits from
+    //  forked workers), so reserve one slot before pushing.
     {
         wh128 bm = {
             .key = wh64Pack(KEEP_TYPE_PACK, file_id, pack_offset),
             .val = keepPackBmVal(ph.count, (u32)pack_byte_len),
         };
+        call(wh128bReserve, entries, 1);
         call(wh128bPush, entries, &bm);
     }
 
@@ -2596,6 +2599,7 @@ ok64 KEEPIngestStream(int rfd) {
             .key = wh64Pack(KEEP_TYPE_PACK, file_id, pack_offset),
             .val = keepPackBmVal(ph.count, (u32)pack_byte_len),
         };
+        call(wh128bReserve, entries, 1);
         call(wh128bPush, entries, &bm);
     }
 

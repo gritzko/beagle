@@ -74,6 +74,21 @@ static void unpk_drain_waiters(wh128cs waiters, unpk_node *nodes,
     }
 }
 
+//  Grow-then-push one entry into a heap-allocated wh128 buffer.  The
+//  caller pre-sizes `out` to the pack's object count, but UNPK can
+//  emit MORE than `count` entries: forked phase-B workers each carry a
+//  COW-private `resolved[]`, so a delta object reachable from two roots
+//  owned by different workers is emitted once per worker.  Those dups
+//  collapse in the caller's post-index sort+dedup, but the buffer must
+//  hold the pre-dedup total first (GET-005: a 289862-object pack emits
+//  290616 entries → fixed `count+16` cap overflowed → SNOROOM).  Grow
+//  one slot at a time; Breserve rounds up so this isn't quadratic.
+static ok64 unpk_push(Bwh128 out, wh128 const *e) {
+    ok64 r = wh128bReserve(out, 1);
+    if (r != OK) return r;
+    return wh128bPush(out, e);
+}
+
 //  Emit one wh128 entry for a resolved object at `obj_off` in the log.
 static ok64 unpk_emit(Bwh128 out, u32 file_id,
                        u8 type, sha1cp sha, u64 obj_off) {
@@ -81,7 +96,7 @@ static ok64 unpk_emit(Bwh128 out, u32 file_id,
         .key = keepKeyPack(type, WHIFFHashlet60(sha)),
         .val = wh64Pack(KEEP_VAL_FLAGS, file_id, obj_off),
     };
-    return wh128bPush(out, &e);
+    return unpk_push(out, &e);
 }
 
 //  Fire the per-object emit callback with `(type, sha, content)`.
@@ -492,7 +507,7 @@ worker_alloc_ok:;
         u64 nemit = workers[w].shared->nemit;
         wh128 const *src = workers[w].shared->entries;
         for (u64 i = 0; i < nemit; i++) {
-            if (wh128bPush(out, &src[i]) != OK) { st.skipped++; break; }
+            if (unpk_push(out, &src[i]) != OK) { st.skipped++; break; }
         }
         st.indexed += (u32)nemit;
         u8bUnMap(workers[w].buf_a);

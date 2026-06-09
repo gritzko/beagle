@@ -210,10 +210,19 @@ Given a pack mapped in memory, resolve every object's SHA-1
 (chasing OFS_DELTA / REF_DELTA) and emit one `wh128` entry per
 object: `key = hashlet60 | type`, `val = flags | file_id | log_off`.
 Thin-pack fallback resolves REF_DELTA bases via `KEEPGet` against
-earlier packs / index runs.
+earlier packs / index runs.  Phase B forks workers that carry
+COW-private `resolved[]`, so a delta reachable from two roots owned
+by different workers is emitted once per worker — `UNPKIndex` may
+emit MORE than `count` entries (the duplicates collapse in the
+caller's post-index sort+dedup).  The `out` buffer therefore grows
+on demand (`unpk_push` → `wh128bReserve`); the caller must NOT assume
+a `count`-sized cap (GET-005: a 289862-object beagle clone emitted
+290616 entries and a fixed `count + 16` cap tripped SNOROOM on the
+trailing bookmark push in `KEEPIngestStream`/`KEEPIngestFile`).
 
   - `unpk_in`     mmapped pack slice + file_id + log_off
   - `UNPKIndex`   index pack → emit sorted/deduped wh128 entries
+                  (grows `out`; may emit > count pre-dedup)
 
 ### PROJ.h — keeper-owned view projectors
 

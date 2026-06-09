@@ -88,6 +88,8 @@ endif ()
 
 option(WITH_MILL "build treadmill integration tests" OFF)
 
+option(WITH_LOAD "build heavy long-running load tests (large clones, etc.)" OFF)
+
 option(WITH_SSH "build tests that require passwordless ssh localhost" OFF)
 
 option(WITH_FUZZ "build with libFuzzer" OFF)

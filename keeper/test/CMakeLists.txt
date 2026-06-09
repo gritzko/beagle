@@ -169,3 +169,17 @@ add_test(NAME RECEIVEPACKtest COMMAND RECEIVEPACKtest)
 set_tests_properties(RECEIVEPACKtest PROPERTIES
     ENVIRONMENT "KEEPER_BIN=${DOG_BIN_DIR}/keeper")
 
+#  GET-005 load regression: clone a LARGE repo over the keeper wire and
+#  assert the ingest doesn't die SNOROOM (the over-emit / fixed-cap bug
+#  in UNPKIndex + KEEPIngestStream).  Needs a large source store under
+#  $HOME/.be and passwordless ssh localhost; the script SKIPs (exit 0)
+#  when neither is present.  Heavy, so gated behind WITH_LOAD.
+if (WITH_LOAD)
+    add_test(NAME GET005loadclone
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/LOAD_CLONE.sh"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    set_tests_properties(GET005loadclone PROPERTIES
+        ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=$ENV{HOME}/tmp"
+        TIMEOUT 300)
+endif()
+
