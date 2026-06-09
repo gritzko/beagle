@@ -2842,6 +2842,147 @@ ok64 BEActSubsRelay(cli *c) {
     done;
 }
 
+//  PUT-001: path-scoped `be put <sub>/<path>` relay.  PUT resolves
+//  paths against the PARENT tree only; a `<sub>/<path>` argument names
+//  a file INSIDE a mounted submodule (the parent holds a bare gitlink
+//  there), so sniff put classifies it BASE_ONLY/not-seen and reports
+//  "does not exist — skipped" → PUTNONE.  POST/GET/DELETE descend into
+//  mounted subs (BEActSubsRelay / the projector route); PUT was the odd
+//  verb out.  This action routes each path argument that lands inside a
+//  mounted sub to the sub's own `be put` (BERelaySub, mirroring
+//  beproj_route_cb), then rebuilds `c->uris` to keep only the
+//  parent-bound arguments so the downstream BEActSniffPut row stages
+//  those against the parent tree.  Honours `--nosub` (the documented
+//  opt-out — a sub-path then stays parent-bound and fails as before).
+//
+//  Runs BEFORE BEActSniffPut.  Returns:
+//    BESTOP  every argument was a sub-path AND at least one sub staged
+//            real work — clean exit, no parent put (and the bare
+//            BEActSubsRelay below stays a no-op since URIs are present).
+//    OK      mixed / nothing relayed — fall through to BEActSniffPut for
+//            the remaining (parent-bound) arguments.
+typedef struct {
+    cli  *c;
+    uri  *u;
+    u8cs  wt_root;
+    b8    routed;       //  this URI landed in a mount and was relayed
+    b8    did_work;     //  the relayed sub staged real work (not *NONE)
+    ok64  worst;
+} be_put_route_ctx;
+
+static ok64 be_put_route_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    be_put_route_ctx *rc = (be_put_route_ctx *)vctx;
+    if (rc->routed)    return OK;          //  first matching mount wins
+    if (!s->mounted)   return OK;
+
+    u8cs rel = {};
+    if (!be_path_in_mount(rc->u->path, s->path, rel)) return OK;
+    //  `be put <sub>` (no interior path) is the gitlink-bump form sniff
+    //  put already handles via its sub-mount short-circuit; leave it for
+    //  the parent.  Only an interior `<sub>/<path>` relays here.
+    if (u8csEmpty(rel)) return OK;
+
+    //  child argv = `put` + forwarded flags (drop `--at`) + the
+    //  mount-relative path.  BERelaySub appends `--tlv` itself.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    a_cstr(put_lit, "put");
+    a_dup(u8c, put_d, put_lit);
+    u8csbFeed1(child_args, put_d);
+    for (u32 j = 0; j + 1 < u8csbDataLen(rc->c->flags); j += 2) {
+        if ($eq((*u8csbAtP(rc->c->flags, j)), be_at_flag)) continue;
+        u8csbFeed1(child_args, (*u8csbAtP(rc->c->flags, j)));
+        if (!u8csEmpty((*u8csbAtP(rc->c->flags, j + 1))))
+            u8csbFeed1(child_args, (*u8csbAtP(rc->c->flags, j + 1)));
+    }
+    a_dup(u8c, rel_d, rel);
+    u8csbFeed1(child_args, rel_d);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    u8css argv = {(u8cs *)child_argv[0], (u8cs *)child_argv[1]};
+    ok64 r = BERelaySub(rc->wt_root, subpath, argv);
+    rc->routed = YES;
+    //  OK → the sub staged real work; *NONE → the sub had nothing to do
+    //  (e.g. the path is already settled); else → a real failure.
+    if (r == OK)               rc->did_work = YES;
+    else if (!ok64is(r, NONE)) rc->worst    = r;
+    return OK;
+}
+
+ok64 BEActSubsPut(cli *c) {
+    sane(c);
+    if (CLIHas(c, "--nosub"))   done;      //  documented opt-out
+    if (uribDataLen(c->uris) == 0) done;   //  bare form → BEActSubsRelay
+    if (!u8bHasData(c->repo))   done;
+    a_dup(u8c, wt_root, $path(c->repo));
+
+    //  Walk every requested URI: relay each path that lands inside a
+    //  mounted sub, and keep the parent-bound ones for sniff put.  Kept
+    //  entries are compacted forward in `c->uris` IN PLACE (the write
+    //  index never exceeds the read index, so the borrowed argv views
+    //  are preserved); the routed tail is shed afterwards.  No big stack
+    //  array — a single uri is ~160B and CLI_MAX_URIS is 1024.
+    u32  n          = (u32)uribDataLen(c->uris);
+    u32  nkeep      = 0;
+    b8   any_routed = NO;
+    b8   any_work   = NO;
+    ok64 worst      = OK;
+
+    for (u32 i = 0; i < n; i++) {
+        uri ucur = *uribAtP(c->uris, i);   //  copy before any compaction
+        uri *u   = &ucur;
+        //  Only plain path arguments route into subs.  Scheme-bearing
+        //  (`file:`, `ssh:`) or authority/query/fragment forms are PUT's
+        //  remote-push / ref-write / move shapes — leave them parent-bound.
+        b8 plain_path = !u8csEmpty(u->path) && u8csEmpty(u->scheme)
+                      && u8csEmpty(u->authority) && u8csEmpty(u->query)
+                      && u8csEmpty(u->fragment);
+        b8 keep_it = YES;
+        if (plain_path) {
+            be_put_route_ctx rc = {
+                .c = c, .u = u, .routed = NO, .did_work = NO, .worst = OK,
+            };
+            u8csMv(rc.wt_root, wt_root);
+            (void)BESubsHere(wt_root, be_put_route_cb, &rc);
+            if (rc.routed) {
+                keep_it    = NO;           //  relayed → drop from parent set
+                any_routed = YES;
+                if (rc.did_work)    any_work = YES;
+                if (rc.worst != OK) worst    = rc.worst;
+            }
+        }
+        if (keep_it) {
+            *uribAtP(c->uris, nkeep) = ucur;   //  forward copy (w <= i)
+            nkeep++;
+        }
+    }
+
+    if (!any_routed) done;                 //  nothing relayed → unchanged
+    if (worst != OK) return worst;         //  a sub failed for real
+
+    //  Drop the now-stale tail entries so only the kept (parent-bound)
+    //  args remain visible to BEActSniffPut / BEBuildArgv.
+    (void)uribShed(c->uris, (size_t)(n - nkeep));
+
+    //  Every argument was a relayed sub-path: there is no parent-bound
+    //  path left, so the downstream BEActSniffPut MUST NOT run (an empty
+    //  c->uris would make it a bare stage-all of the parent).  Short-
+    //  circuit here:
+    //    any sub staged real work → BESTOP (clean OK exit, clears the
+    //                               executor's stale last-NONE).
+    //    every sub was a no-op     → PUTNONE (the subs' own empty result;
+    //                               preserve the natural "nothing to do").
+    if (nkeep == 0) return any_work ? BESTOP : PUTNONE;
+    //  Mixed: parent-bound paths remain — fall through to BEActSniffPut,
+    //  whose result (OK if any stages, else PUTNONE) becomes the exit.
+    //  A relayed sub having done work does NOT override a parent PUTNONE
+    //  here (explicitly-listed parent paths all-unchanged is honest
+    //  feedback); only the all-sub-paths case above clears it.
+    done;
+}
+
 //  Bare `be` — overview of the working tree.  Forwards to bare
 //  `sniff`, which lists Changed: and Untracked: against the baseline
 //  tree (untracked-but-gitignored filtered).  spot / graf / keeper

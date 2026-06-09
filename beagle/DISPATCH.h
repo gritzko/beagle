@@ -112,6 +112,7 @@ ok64 BEActSubsGet       (cli *c);
 ok64 BEActSubsPost      (cli *c);
 ok64 BEActSubsPatch     (cli *c);
 ok64 BEActSubsRelay     (cli *c);   //  bare put / delete
+ok64 BEActSubsPut       (cli *c);   //  path-scoped put → mounted sub
 
 //  --- Shared helpers (defined in BE.cli.c) ---------------------------
 

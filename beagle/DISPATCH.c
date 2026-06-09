@@ -419,6 +419,11 @@ be_action const BE_PLAN_PUT[] = {
     //  bootstrap + stage in sniff.
     { URI_AUTHORITY, 0,             NO, BEActKeeperPushForce },
     { 0,             URI_AUTHORITY, NO, BEActBootstrap  },
+    //  PUT-001: a path-scoped `be put <sub>/<path>` relays into the
+    //  mounted sub's own put (and drops the routed args from c->uris)
+    //  BEFORE the parent sniff put runs.  Gated to the path form
+    //  (require URI_PATH, exclude URI_AUTHORITY) — the push form skips it.
+    { URI_PATH,      URI_AUTHORITY, NO, BEActSubsPut    },
     { 0,             URI_AUTHORITY, NO, BEActSniffPut   },
     //  Bare `be put` recurses stage-all into mounted subs.
     { 0,             URI_AUTHORITY, NO, BEActSubsRelay  },

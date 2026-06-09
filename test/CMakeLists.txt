@@ -127,6 +127,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-put-08-sub-stage-all-both-dirty"
     "be-put-09-sub-only-dirty-exit"
     "be-put-10-sub-nosub-suppress"
+    # PUT-001 repro: path-scoped `be put <sub>/<file>` relays into the
+    # mounted sub's own staging (like POST/GET/DELETE); --nosub opts out.
+    "be-put-12-sub-path-scoped"
     "be-delete-07-sub-delete-all-missing"
     "be-delete-08-sub-path-scoped-deldirty"
     "be-delete-09-sub-nosub-suppress"

@@ -20,6 +20,16 @@
   Also asserts the must-still-PUTNONE invariant: a truly-empty bare put
   (parent clean AND every sub clean, on a fresh clone) still surfaces
   PUTNONE.  Gated on `WITH_SSH` (submodules.sh fixture).
+* `12-sub-path-scoped/` — PUT-001 repro.  A path-scoped `be put
+  <sub>/<file>` naming a file INSIDE a mounted submodule must relay
+  into the sub's own put (BEActSubsPut → BERelaySub), mirroring how
+  POST/GET/DELETE descend into mounted subs.  Before the fix PUT
+  resolved paths against the PARENT tree only and reported "does not
+  exist — skipped" → PUTNONE.  Asserts (A) `be put vendor/sub/newfile.c`
+  stages the file in the sub (its wtlog gains a real `put newfile.c`
+  row, exit 0) and (B) `be put --nosub vendor/sub/newfile.c` does NOT
+  relay (stays parent-bound → PUTNONE).  Gated on `WITH_SSH`
+  (submodules.sh fixture).
 * `06-triangle/` — triangular `be put` propagation across a 3-node
   ring (be↔be, be→git, git→be).  Three FF rounds (modify / add /
   delete) plus a non-FF rewrite tail in which B rewinds cur's tip
