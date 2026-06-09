@@ -130,7 +130,8 @@ foreach(vc
         be-delete-branch-descendants
         be-delete-branch-resurrect
         be-delete-alias
-        be-patch-clean)
+        be-patch-clean
+        be-patch-noop)
     add_test(NAME ${vc}
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/${vc}.sh
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

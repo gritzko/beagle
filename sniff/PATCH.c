@@ -1651,6 +1651,30 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
          &fork_sha, &our_sha, &thr_sha,
          &st);
 
+    //  POST-011: skip the provenance row on a TRUE noop.  A PATCH that
+    //  absorbs nothing — theirs is already reachable from cur, or its
+    //  objects aren't fully readable — leaves the worktree byte-identical
+    //  and so has no work for the next POST to commit.  Recording a row
+    //  anyway accumulates dead `patch` lines that poison the next POST
+    //  (`POSTNOMSG`: the mixed-shape msg guard can't pick a message from
+    //  N empty rows) with no `be` way to clear them short of editing
+    //  `.be/wtlog` by hand.  A noop = every absorption counter zero
+    //  (`failed` is handled by the PATCHCFLCT return below; it is zero
+    //  here).  When that holds, append no row and return OK — the patch
+    //  banner already reported the (absorbed-into-noop) commit line.
+    u32 absorbed = st.take_theirs + st.merged + st.merged_conflict +
+                   st.added + st.deleted + st.mod_del_kept + st.failed;
+    if (absorbed == 0) {
+        fprintf(stderr,
+                "sniff: patch: noop=%u take-theirs=%u merged=%u "
+                "added=%u deleted=%u content-conflict=%u mod-del-kept=%u "
+                "failed=%u (nothing absorbed — no patch row staged)\n",
+                st.noop, st.take_theirs, st.merged,
+                st.added, st.deleted, st.merged_conflict,
+                st.mod_del_kept, st.failed);
+        done;
+    }
+
     //  Append a `patch` ULOG row.  DIS-030: the row carries the resolved
     //  40-hex `<theirs>` sha plus the SCOPE, and the slot it lives in is
     //  the named-flag POST reads for provenance:
