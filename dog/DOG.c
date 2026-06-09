@@ -232,6 +232,28 @@ ok64 DOGNormalizeArg(urip u, u8csc arg) {
     // `#wild msg` — get the bypass into the fragment slot.  This way
     // `spot:'u8sFeed( a, b )'` reaches URILexer, but `URI/verb routing`
     // doesn't get parsed as a path-form URI.
+    // A `#`-led arg is a commit message (POST's fragment slot), NOT a
+    // URI to lex.  RFC 3986 `fragment = *( pchar / "/" / "?" )` cannot
+    // hold a newline, so feeding a multi-line message (e.g. one with a
+    // `Co-Authored-By:` trailer) to the URILexer spills its tail into
+    // `u->path` and POST then refuses it as path-form (POST-002).  Drop
+    // the body verbatim into the fragment slot — newlines, dots, and
+    // embedded `//` and all — mirroring the URILexer's fragment rule
+    // which strips the leading `#` (`#fix` → `fix`).  Path/query/
+    // authority/scheme stay empty, so BEActPathFormCheck's pure-fragment
+    // skip handles the rest.  The grammar is untouched and stays RFC
+    // 3986-compliant: a raw newline is opaque message payload handled
+    // OUTSIDE the URI grammar, the same way free-text search is.
+    if (!u8csEmpty(arg) && arg[0][0] == '#') {
+        u->data[0]     = arg[0];
+        u->data[1]     = arg[1];
+        u8cs body      = {arg[0], arg[1]};
+        u8csUsed1(body);           // skip the leading `#` sigil (no ptr math)
+        u->fragment[0] = body[0];
+        u->fragment[1] = body[1];
+        done;
+    }
+
     b8 starts_uri = NO;
     if (!u8csEmpty(arg)) {
         u8 c0 = arg[0][0];

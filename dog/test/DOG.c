@@ -241,6 +241,69 @@ ok64 DOGTestCanonical() {
     done;
 }
 
+// --- DOGNormalizeArg: `#`-led message → fragment verbatim ----------
+//
+// POST-002 repro.  A `#`-led arg is a commit message: the whole body
+// AFTER the `#` lands in `u->fragment` verbatim (newlines, dots, and
+// embedded `//` included), with EMPTY path/query/authority/scheme.
+// The pre-`#` byte is stripped exactly as the URILexer fragment rule
+// does (`#fix` → `fix`).  Before the fix a multi-line dotted body
+// (e.g. a `Co-Authored-By:` trailer) spilled its tail into `u->path`
+// and POST refused it as path-form.
+typedef struct {
+    const char *input;
+    const char *fragment;   // whole post-`#` body, verbatim
+} MsgFragCase;
+
+static const MsgFragCase MSGFRAG_CASES[] = {
+    // Plain single-line message.
+    {"#fix",                                 "fix"},
+    // Multi-line body with a dotted Co-Authored-By trailer — the bug.
+    {"#a\n\nCo-Authored-By: X <a@b.c>",      "a\n\nCo-Authored-By: X <a@b.c>"},
+    // Body containing a `//` transport-ish marker — kept verbatim, no
+    // `//`-collapse / normalization.
+    {"#see be://localhost/x for details",    "see be://localhost/x for details"},
+    // Dotted single-line subject.
+    {"#refactor URI.c.rl and DOG.c",         "refactor URI.c.rl and DOG.c"},
+    // Empty message (`#` alone) → present-but-empty fragment.
+    {"#",                                     ""},
+};
+
+#define NMSGFRAG (sizeof(MSGFRAG_CASES) / sizeof(MSGFRAG_CASES[0]))
+
+ok64 DOGTestMsgFragment() {
+    sane(1);
+    for (size_t i = 0; i < NMSGFRAG; i++) {
+        const MsgFragCase *tc = &MSGFRAG_CASES[i];
+        u8csc text = {(u8cp)tc->input, (u8cp)tc->input + strlen(tc->input)};
+
+        uri u = {};
+        ok64 o = DOGNormalizeArg(&u, text);
+        if (o != OK) {
+            fprintf(stderr, "FAIL [%zu] '%s': normalize error %s\n",
+                    i, tc->input, ok64str(o));
+            fail(TESTFAIL);
+        }
+        struct { const char *field; u8cs got; const char *want; } slots[] = {
+            {"fragment",  {u.fragment[0],  u.fragment[1]},  tc->fragment},
+            {"path",      {u.path[0],      u.path[1]},      NULL},
+            {"query",     {u.query[0],     u.query[1]},     NULL},
+            {"authority", {u.authority[0], u.authority[1]}, NULL},
+            {"scheme",    {u.scheme[0],    u.scheme[1]},    NULL},
+        };
+        for (size_t k = 0; k < sizeof(slots)/sizeof(slots[0]); k++) {
+            if (s_eq(slots[k].got, slots[k].want)) continue;
+            fprintf(stderr, "FAIL [%zu] '%s': %s got '%.*s' want '%s'\n",
+                    i, tc->input, slots[k].field,
+                    (int)$len(slots[k].got),
+                    $empty(slots[k].got) ? "" : (char *)slots[k].got[0],
+                    slots[k].want ? slots[k].want : "(empty)");
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
 // Folding leaves through DOGChildPathHash from ROOT must match
 // DOGPathHash on the joined path.
 ok64 DOGTestPathHash() {
@@ -592,6 +655,7 @@ ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
     call(DOGTestCanonical);
+    call(DOGTestMsgFragment);
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
     call(DOGTestIsFullSha);
