@@ -782,16 +782,18 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
 
     switch (obj_type) {
     case DOG_OBJ_COMMIT: {
-        //  Parse headers: tree (mandatory), parents[], fosters[].
-        //  GITu8sDrainCommit walks line-by-line; an empty `field` row
-        //  marks the header/body separator.  After it we keep walking
-        //  the body to scan for `picked: <40hex>` trailers.
+        //  Parse headers: tree (mandatory), parents[], fosters[],
+        //  pickeds[].  GITu8sDrainCommit walks line-by-line; an empty
+        //  `field` row marks the header/body separator.  `picked` is a
+        //  beagle-only header riding next to `foster` (after committer,
+        //  before the blank line) — same wire shape, read identically.
         a_dup(u8c, scan, blob);
         u8cs field = {}, value = {};
         sha1 tree_sha = {};
         sha1 parents[16] = {};
         sha1 fosters[16] = {};
-        u32 npar = 0, nfost = 0;
+        sha1 pickeds[16] = {};
+        u32 npar = 0, nfost = 0, npick = 0;
         b8 got_tree = NO;
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
@@ -806,35 +808,13 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
                        && nfost < 16) {
                 DAGsha1FromHex(&fosters[nfost], (char const *)value[0]);
                 nfost++;
+            } else if (u8csEq(field, GIT_FIELD_PICKED) && u8csLen(value) >= 40
+                       && npick < 16) {
+                DAGsha1FromHex(&pickeds[npick], (char const *)value[0]);
+                npick++;
             }
         }
         if (!got_tree) return DAGFAIL;
-
-        //  Trailer scan: walk remaining bytes for `picked: <40hex>`
-        //  lines.  Each picked target maps to one (COMMIT, PICKED)
-        //  edge.  Bounded loop — stops at end of body.
-        sha1 pickeds[16] = {};
-        u32 npick = 0;
-        {
-            u8cp p = scan[0];
-            u8cp e = scan[1];
-            a_dup(u8c, pkl, GIT_TRAILER_PICKED);
-            size_t klen = (size_t)(pkl[1] - pkl[0]);
-            while (p < e && npick < 16) {
-                //  Find line start.  Either p == start-of-body or just
-                //  past a '\n'.
-                u8cp lend = p;
-                while (lend < e && *lend != '\n') lend++;
-                size_t llen = (size_t)(lend - p);
-                if (llen >= klen + 40 &&
-                    memcmp(p, pkl[0], klen) == 0) {
-                    DAGsha1FromHex(&pickeds[npick],
-                                   (char const *)(p + klen));
-                    npick++;
-                }
-                p = (lend < e) ? lend + 1 : e;
-            }
-        }
 
         u64 commit_h = dag_obj_hashlet(DOG_OBJ_COMMIT, sha, blob);
 
@@ -843,7 +823,7 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
         //  (COMMIT, commit_h) → (TREE,   tree_h)    root-tree edge
         //  (COMMIT, commit_h) → (COMMIT, parent_h)  one per parent
         //  (COMMIT, commit_h) → (FOSTER, foster_h)  one per foster
-        //  (COMMIT, commit_h) → (PICKED, picked_h)  one per picked:
+        //  (COMMIT, commit_h) → (PICKED, picked_h)  one per picked header
         dag_emit(g, DAG_T_COMMIT, commit_h,
                     DAG_T_TREE,   tree_h);
         for (u32 i = 0; i < npar; i++) {

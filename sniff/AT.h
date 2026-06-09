@@ -182,7 +182,7 @@ ok64 SNIFFAtPatchChain(sha1b out);
 //  foster / picked assembly", POST needs more than just the sha
 //  list — it needs each row's URI shape (squash / cherry-pick /
 //  merge / rebase-one) to decide whether to emit a `parent` /
-//  `foster` header or a `picked:` trailer, and the user-supplied
+//  `foster` / `picked` header, and the user-supplied
 //  msg (merge shape only).
 //
 //  `entries` array is filled oldest-first with up to `cap` rows;

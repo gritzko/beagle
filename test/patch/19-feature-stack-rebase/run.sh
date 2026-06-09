@@ -23,7 +23,7 @@
 #
 #    * topology — parent / foster / picked headers in each commit body
 #      reflect the ?feature# rebase chain (foster F1, F2, F3 in order;
-#      picked: FixA on CP1; no leakage from FixB, FixC into trunk),
+#      picked FixA header on CP1; no leakage from FixB, FixC into trunk),
 #    * content — final R3 has every trunk + feature + FixA zone bumped
 #      to 1; FB and FC stay 0 (?fix's tail never reaches trunk).
 #
@@ -100,8 +100,8 @@ CP1=$(head_hex)
 BODY=$("$KEEPER" get ".#$CP1" 2>/dev/null) || fail "keeper get .#$CP1 failed"
 echo "$BODY" | grep -q "^parent $T2$" \
     || fail "CP1 first parent != T2 ($T2); body:\n$BODY"
-echo "$BODY" | grep -q "^picked: $FIXA$" \
-    || fail "CP1 missing 'picked: $FIXA' trailer; body:\n$BODY"
+echo "$BODY" | grep -q "^picked $FIXA$" \
+    || fail "CP1 missing 'picked $FIXA' header; body:\n$BODY"
 echo "$BODY" | grep -q '^foster ' \
     && fail "CP1 carries unexpected foster header; body:\n$BODY"
 

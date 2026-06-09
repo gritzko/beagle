@@ -2694,8 +2694,8 @@ ok64 POSTCommit(u8cs target_branch,
     //    SQUASH   `?<sha>`         → foster <sha>\n   (after committer)
     //    REBASE1  `?<sha>#`        → foster <sha>\n   (after committer)
     //    MERGE    `?<sha>#<msg>`   → parent <sha>\n   (here, pre-author)
-    //    CHERRY   `#<sha>`         → collected for `picked: <sha>`
-    //                                 trailer appended to msg below.
+    //    CHERRY   `#<sha>`         → picked <sha>\n   (after foster,
+    //                                 same header block, before body)
     //
     //  Git's commit grammar is strict: `tree`, then ALL `parent` lines,
     //  then `author`, then `committer`.  So MERGE parents must be
@@ -2757,31 +2757,25 @@ ok64 POSTCommit(u8cs target_branch,
         u8bFeed1(com, '\n');
     }
 
+    //  `picked <sha>` headers from CHERRY patch rows — same beagle-only
+    //  header block as `foster`, recording the cherry-picked source
+    //  commit.  Per spec `picked` is dedup-only and NOT a reachability
+    //  edge (the FF/merge-base walks whitelist only parent+foster).
+    //  Row order preserved.
+    for (u32 i = 0; i < n_pent; i++) {
+        if (pent[i].shape != 2 /* CHERRY */) continue;
+        a_cstr(pck_label, "picked ");
+        u8bFeed(com, pck_label);
+        a_pad(u8, fhex, 40);
+        a_rawc(fraw, pent[i].sha);
+        HEXu8sFeedSome(fhex_idle, fraw);
+        u8bFeed(com, u8bDataC(fhex));
+        u8bFeed1(com, '\n');
+    }
+
     u8bFeed1(com, '\n');
     u8bFeed(com, message);
     u8bFeed1(com, '\n');
-
-    //  Append `picked: <sha>` trailers for any cherry-pick entries
-    //  in the patch chain (https://replicated.wiki/html/wiki/POST.html §POST).  One blank line between
-    //  message body and trailers so a downstream reader can split
-    //  them cleanly.
-    {
-        b8 any_picked = NO;
-        for (u32 i = 0; i < n_pent; i++) {
-            if (pent[i].shape != 2 /* CHERRY */) continue;
-            if (!any_picked) {
-                u8bFeed1(com, '\n');
-                any_picked = YES;
-            }
-            a_cstr(pkl, "picked: ");
-            u8bFeed(com, pkl);
-            a_pad(u8, phex, 40);
-            a_rawc(praw, pent[i].sha);
-            HEXu8sFeedSome(phex_idle, praw);
-            u8bFeed(com, u8bDataC(phex));
-            u8bFeed1(com, '\n');
-        }
-    }
 
     //  11. Feed pack: commit first.
     a_dup(u8c, com_body, u8bData(com));

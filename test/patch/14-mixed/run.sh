@@ -68,11 +68,12 @@ MX=$(head_hex)
 BODY=$("$KEEPER" get ".#$MX" 2>/dev/null) || fail "keeper get failed"
 echo "$BODY" | grep -q "^parent $T1$" || fail "first parent != T1"
 echo "$BODY" | grep -q "^parent $F2$" || fail "feat.tip parent missing"
-echo "$BODY" | grep -q "^picked: $B1$" || fail "picked: B1 trailer missing"
+echo "$BODY" | grep -q "^picked $B1$" || fail "picked B1 header missing"
+echo "$BODY" | grep -q '^picked: '     && fail "legacy picked: trailer still present"
 echo "$BODY" | grep -q "^foster" && fail "no foster expected (merge form, not squash/rebase)"
 echo "$BODY" | grep -q 'mixed: feat+bug fix' || fail "POST msg not used"
 
 match "$CASE/06.lib.want.c" lib.c
 
-note "mixed OK: cur=$MX has parents [$T1, $F2] + picked: $B1"
+note "mixed OK: cur=$MX has parents [$T1, $F2] + picked $B1 header"
 echo "=== patch/14-mixed: OK ==="

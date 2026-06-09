@@ -3,8 +3,9 @@
 #  followed by POST.  Per the new spec (https://replicated.wiki/html/wiki/POST.html §POST "Message
 #  resolution"), bare `be post` with >1 applied commit is AMBIGUOUS
 #  and must refuse with POSTNOMSG; the user supplies an explicit
-#  msg.  The resulting commit carries `picked: <sha>` trailers for
-#  every cherry-picked source (no DAG edge, just provenance).
+#  msg.  The resulting commit carries `picked <sha>` headers (next to
+#  foster) for every cherry-picked source (dedup-only provenance, not
+#  a reachability edge).
 #  Author comes from the live `.be/config` — no inheritance from
 #  patch rows in the new spec.
 #
@@ -119,8 +120,9 @@ grep -q 'cannot auto-resolve commit msg' "$LOGS/post1.err" \
          cat "$LOGS/post1.err" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 8. Explicit msg POST — succeeds.  Commit must carry picked: F1
-#    and picked: F2 trailers.  Author from live config (Carol).
+# 8. Explicit msg POST — succeeds.  Commit must carry `picked F1`
+#    and `picked F2` headers (next to foster).  Author from live
+#    config (Carol).
 # ------------------------------------------------------------------
 "$BE" post '#cherry-pick F1+F2' > "$LOGS/post.out" 2> "$LOGS/post.err"
 
@@ -145,16 +147,29 @@ SUBJECT=$(awk '/^$/{p=1; next} p { print; exit }' "$LOGS/commit.out")
     || { echo "FAIL: expected subject 'cherry-pick F1+F2', got '$SUBJECT'" >&2
          exit 1; }
 
-#  picked: F1 and picked: F2 trailers.
-grep -q "^picked: $F1\$" "$LOGS/commit.out" \
-    || { echo "FAIL: missing 'picked: $F1' trailer" >&2
+#  picked F1 and picked F2 are now HEADERS (next to foster), not
+#  `picked:` body trailers.  Assert the new form, both shas present,
+#  legacy trailer gone, and both inside the header block.
+grep -q "^picked $F1\$" "$LOGS/commit.out" \
+    || { echo "FAIL: missing 'picked $F1' header" >&2
          cat "$LOGS/commit.out" >&2; exit 1; }
-grep -q "^picked: $F2\$" "$LOGS/commit.out" \
-    || { echo "FAIL: missing 'picked: $F2' trailer" >&2
+grep -q "^picked $F2\$" "$LOGS/commit.out" \
+    || { echo "FAIL: missing 'picked $F2' header" >&2
+         cat "$LOGS/commit.out" >&2; exit 1; }
+grep -q '^picked: ' "$LOGS/commit.out" \
+    && { echo "FAIL: legacy 'picked:' trailer still present" >&2
+         cat "$LOGS/commit.out" >&2; exit 1; }
+#  Header zone: `picked` lines must precede the blank line that ends
+#  the header block.
+HDR=$(sed -n '1,/^$/p' "$LOGS/commit.out")
+echo "$HDR" | grep -q "^picked $F1\$" \
+    && echo "$HDR" | grep -q "^picked $F2\$" \
+    || { echo "FAIL: picked headers not in commit header block" >&2
          cat "$LOGS/commit.out" >&2; exit 1; }
 
 #  First-parent linearity: exactly one `parent` line (cur's prior
-#  tip = T0).  Cherry-picks contribute trailers, not parents.
+#  tip = T0).  Cherry-picks contribute headers, not parents.
+#  (one parent only; cherry-picks add picked headers, not parents.)
 PARENTS=$(grep -c '^parent ' "$LOGS/commit.out" || true)
 [ "$PARENTS" = "1" ] \
     || { echo "post-merge tip has $PARENTS parents; want 1" >&2

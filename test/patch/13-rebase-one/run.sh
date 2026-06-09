@@ -59,7 +59,7 @@ BODY=$("$KEEPER" get ".#$R" 2>/dev/null) || fail "keeper get failed"
 echo "$BODY" | grep -q "^parent $T1$" || fail "first parent != T1"
 echo "$BODY" | grep -q "^foster $F1$" || fail "foster $F1 missing"
 echo "$BODY" | grep -q "^parent $F1$" && fail "F1 recorded as parent (should be foster)"
-echo "$BODY" | grep -q '^picked' && fail "picked trailer leaked"
+echo "$BODY" | grep -q '^picked' && fail "picked header leaked"
 echo "$BODY" | grep -q 'f1 add sub function' || fail "F1 msg not reused"
 
 note "rebase-one OK: cur=$R has parent=$T1 + foster=$F1, msg reused"

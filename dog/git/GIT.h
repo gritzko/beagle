@@ -38,17 +38,18 @@ extern u8csc GIT_FIELD_PARENT;
 //  but doesn't participate in standard git first-parent walks; the DAG
 //  indexer keys it as DAG_T_FOSTER so reachability walks can opt in.
 extern u8csc GIT_FIELD_FOSTER;
+//  Beagle-only commit header — emitted by sniff/POST.c on cherry-pick
+//  (`#<sha>`).  `picked <40-hex>\n` lines ride in the header block next
+//  to `foster` (after `committer`, before the blank line), same wire
+//  shape as `parent`/`foster`.  Per spec these do NOT participate in
+//  standard reachability, but a tunable walk may opt in (one-step
+//  dedup only — picked targets are leaves, their own ancestors are NOT
+//  followed).  The DAG indexer keys it as DAG_T_PICKED.
+extern u8csc GIT_FIELD_PICKED;
 extern u8csc GIT_FIELD_AUTHOR;
 extern u8csc GIT_FIELD_COMMITTER;
 extern u8csc GIT_FIELD_GPGSIG;
 extern u8csc GIT_FIELD_OBJECT;
-//  Beagle-only commit-message trailer — emitted by sniff/POST.c on
-//  cherry-pick.  `picked: <40-hex>\n` lines after the message body
-//  record the cherry-picked source commit; per spec these do NOT
-//  participate in standard reachability, but a tunable walk may opt
-//  in (one-step only — picked targets are leaves, their own ancestors
-//  are NOT followed).
-extern u8csc GIT_TRAILER_PICKED;
 
 extern u8csc GIT_REFS_HEADS_PFX;
 extern u8csc GIT_REFS_TAGS_PFX;

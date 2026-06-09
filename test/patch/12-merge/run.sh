@@ -55,7 +55,7 @@ BODY=$("$KEEPER" get ".#$M" 2>/dev/null) || fail "keeper get failed"
 echo "$BODY" | grep -q "^parent $T2$" || fail "first parent != T2"
 echo "$BODY" | grep -q "^parent $F2$" || fail "second parent (feat.tip $F2) missing"
 echo "$BODY" | grep -q '^foster ' && fail "foster header leaked into merge"
-echo "$BODY" | grep -q '^picked' && fail "picked trailer leaked into merge"
+echo "$BODY" | grep -q '^picked' && fail "picked header leaked into merge"
 echo "$BODY" | grep -q 'merge feat into trunk' || fail "merge msg not used"
 
 note "merge OK: cur=$M has parents [$T2, $F2], msg from patch row"

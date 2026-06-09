@@ -1,8 +1,8 @@
 #!/bin/sh
 #  11-cherry-pick — `be patch '#<F1-sha>'` applies one named commit;
-#  POST records `picked: <F1>` trailer (no DAG edge), and reuses F1's
-#  message because no own fragment was given and exactly one commit
-#  was applied with a usable msg.
+#  POST records a `picked <F1>` header (next to foster, dedup-only, not
+#  a reachability edge), and reuses F1's message because no own fragment
+#  was given and exactly one commit was applied with a usable msg.
 #
 #  Topology:
 #       T0 ── T1            ← cur (trunk)
@@ -56,8 +56,16 @@ CP=$(head_hex)
 BODY=$("$KEEPER" get ".#$CP" 2>/dev/null) || fail "keeper get .#$CP failed"
 echo "$BODY" | grep -q "^parent $T1$"  || fail "first parent != T1"
 echo "$BODY" | grep -q '^foster '       && fail "foster header leaked into cherry-pick"
-echo "$BODY" | grep -q "^picked: $F1$" || fail "picked: $F1 trailer missing"
+#  `picked <F1>` is now a HEADER (next to foster), NOT a `picked:` body
+#  trailer.  Assert the new header form and that the old trailer is gone.
+echo "$BODY" | grep -q "^picked $F1$" || fail "picked $F1 header missing"
+echo "$BODY" | grep -q '^picked: '     && fail "legacy picked: trailer still present"
+#  Header zone check: `picked` must sit between `committer` and the
+#  blank line that ends the header block (same region as `foster`).
+HDR=$(echo "$BODY" | sed -n '1,/^$/p')
+echo "$HDR" | grep -q "^picked $F1$" \
+    || fail "picked header not inside the commit header block; body:\n$BODY"
 echo "$BODY" | grep -q 'f1 add mul function' || fail "F1 msg not reused"
 
-note "cherry-pick OK: cur=$CP has picked: $F1, msg reused"
+note "cherry-pick OK: cur=$CP has picked $F1 header, msg reused"
 echo "=== patch/11-cherry-pick: OK ==="

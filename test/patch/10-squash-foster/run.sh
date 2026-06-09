@@ -78,7 +78,7 @@ BODY=$("$KEEPER" get ".#$SQ" 2>/dev/null) || fail "keeper get .#$SQ failed"
 echo "$BODY" | grep -q "^parent $T2$" || fail "first parent != T2 in commit $SQ"
 echo "$BODY" | grep -q "^foster $F2$" || fail "foster $F2 missing in commit $SQ"
 echo "$BODY" | grep -q "^parent $F2$" && fail "feat tip recorded as parent (should be foster)"
-echo "$BODY" | grep -q '^picked' && fail "picked trailer leaked into squash"
+echo "$BODY" | grep -q '^picked' && fail "picked header leaked into squash"
 
 # Header order must be git-valid: tree, parent(s), author, committer,
 # THEN beagle's `foster` header.  Git's fsck requires `author` right

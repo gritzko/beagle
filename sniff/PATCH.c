@@ -1204,7 +1204,7 @@ static b8 reach_set_has(sha1cp set, u32 nset, sha1cp q) {
 
 //  BFS from `seed` over parent ∪ foster edges, populating `set[]`.
 //  Caller-provided `set` array has capacity `cap` shas; `*nset` is
-//  the live count.  picked: trailers are intentionally NOT followed
+//  the live count.  `picked` headers are intentionally NOT followed
 //  per https://replicated.wiki/html/wiki/PATCH.html §PATCH "Ancestor-skip walk" — they are dedup-only
 //  and do not participate in reachability.
 static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
@@ -1251,7 +1251,7 @@ static ok64 build_reachable_via_links(sha1 *set, u32 cap, u32 *nset,
 //            following, reach would still be {our..T0} and the walk
 //            would pick F1 again.
 //
-//  picked: trailers NOT followed (spec: dedup-only).  Patch-id dedup
+//  `picked` headers NOT followed (spec: dedup-only).  Patch-id dedup
 //  as a broader safety net is a follow-up.
 #define RBASEONE_MAX 4096
 #define RBASEONE_REACH_MAX 4096

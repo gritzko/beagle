@@ -57,8 +57,9 @@ con ok64 DAGNOROOM   = 0xd2905d86d8616;
 //                         emitted by `?br#`/`?br` POSTs to record the
 //                         absorbed branch tip without making it a
 //                         standard parent.
-//      (COMMIT, PICKED) — `picked: <hex>` trailer on the commit.
-//                         emitted by `#<sha>` cherry-pick POSTs.
+//      (COMMIT, PICKED) — `picked <hex>` header on the commit (next
+//                         to `foster`).  emitted by `#<sha>`
+//                         cherry-pick POSTs.
 //                         Walked one-step only by the tunable walker:
 //                         the picked target enters the reach set but
 //                         its own parents/fosters/pickeds are NOT
@@ -180,7 +181,7 @@ ok64 DAGAncestorsOfMany(Bwh128 set, wh128css runs,
 //  picking which edge kinds to traverse:
 //      DAG_EDGE_PARENT  — `parent` headers (= DAGAncestors).
 //      DAG_EDGE_FOSTER  — `foster` headers (beagle-only).
-//      DAG_EDGE_PICKED  — `picked: <sha>` trailers; targets are added
+//      DAG_EDGE_PICKED  — `picked <sha>` headers; targets are added
 //                         as reach-set leaves but their own outgoing
 //                         edges are NOT followed (one-step only).
 //  `skip_hl[0..nskip)` are commit hashlets to omit entirely from the
