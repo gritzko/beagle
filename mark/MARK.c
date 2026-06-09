@@ -278,6 +278,37 @@ static ok64 mark_close_quote(markctx *c, b8 *in_quote) {
     done;
 }
 
+//  Close the current leaf (paragraph/list/blockquote).  A leaf never spans
+//  a block-stack depth change, a blank line, or a structural line.
+static ok64 mark_close_leaf(markctx *c, b8 *in_para, b8 *in_list,
+                            b8 *in_quote) {
+    sane(c != NULL);
+    call(mark_close_para, c, in_para);
+    call(mark_close_list, c, in_list);
+    call(mark_close_quote, c, in_quote);
+    done;
+}
+
+//  Reconcile the open <div> nesting to `target`: a bare 4-space indent opens
+//  a generic container, so each depth level is one <div>.  A depth change is
+//  a hard leaf boundary, so the open leaf is closed first either way; then
+//  surplus divs are closed (depth fell) or new divs opened (depth rose).
+static ok64 mark_reconcile_divs(markctx *c, int *div_depth, int target,
+                                b8 *in_para, b8 *in_list, b8 *in_quote) {
+    sane(c != NULL);
+    if (target == *div_depth) done;
+    call(mark_close_leaf, c, in_para, in_list, in_quote);
+    while (*div_depth > target) {
+        call(MARKu8bLit, c->out, "</div>\n");
+        --*div_depth;
+    }
+    while (*div_depth < target) {
+        call(MARKu8bLit, c->out, "<div>\n");
+        ++*div_depth;
+    }
+    done;
+}
+
 static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
     sane(c != NULL && $ok(src));
 
@@ -286,6 +317,7 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
     b8 in_fence = NO, in_para = NO, in_list = NO, in_quote = NO;
     b8 h1_seen = NO, opener = NO;
     int fence_len = 0;
+    int div_depth = 0;  // open <div> nesting (one per 4-space indent level)
 
     while (mark_nextline(cur, linec, linef) == YES) {
         //  fenced code: copy raw, escaped, until the closing fence.
@@ -301,24 +333,25 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         }
         int fl = MKDTFenceOpen(linef);
         if (fl > 0) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_list, c, &in_list);
-            call(mark_close_quote, c, &in_quote);
+            int fdepth = MKDTIndentDepth(linef);
+            call(mark_reconcile_divs, c, &div_depth, fdepth, &in_para,
+                 &in_list, &in_quote);
             in_fence = YES;
             fence_len = fl;
             call(MARKu8bLit, c->out, "<pre><code>");
             continue;
         }
         if (mark_blank(linec)) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_list, c, &in_list);
-            call(mark_close_quote, c, &in_quote);
+            //  A blank closes the open leaf; the surrounding div(s) persist so
+            //  a blank-separated multi-paragraph div stays one container.  The
+            //  next non-blank line reconciles div_depth to its own indent.
+            call(mark_close_leaf, c, &in_para, &in_list, &in_quote);
             continue;
         }
         if (MKDTHRule(linef)) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_list, c, &in_list);
-            call(mark_close_quote, c, &in_quote);
+            int rdepth = MKDTIndentDepth(linef);
+            call(mark_reconcile_divs, c, &div_depth, rdepth, &in_para,
+                 &in_list, &in_quote);
             call(MARKu8bLit, c->out, "<hr>\n");
             continue;
         }
@@ -329,10 +362,9 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
 
         int hl = MKDTHeadingLevel(linef);
         if (hl > 0) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_list, c, &in_list);
-            call(mark_close_quote, c, &in_quote);
             int depth = MKDTIndentDepth(linef);
+            call(mark_reconcile_divs, c, &div_depth, depth, &in_para,
+                 &in_list, &in_quote);
             a_dup(u8c, hc, linec);
             u8csUsed(hc, (size_t)depth * 4);
             for (int i = 0; i < hl && !u8csEmpty(hc) && u8csAt(hc, 0) == '#'; ++i)
@@ -360,6 +392,11 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         int depth = MKDTIndentDepth(linef);
         u8c *mend = NULL;
         mkdtmark mk = MKDTLineMarker(linef, depth, &mend);
+
+        //  A depth change is a hard nesting boundary: open/close the div(s)
+        //  (which also closes the open leaf) before rendering this line.
+        call(mark_reconcile_divs, c, &div_depth, depth, &in_para, &in_list,
+             &in_quote);
 
         if (mk == MKDT_MARK_ULIST) {
             call(mark_close_para, c, &in_para);
@@ -390,23 +427,25 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
             continue;
         }
 
-        //  paragraph / summary
+        //  paragraph / summary.  Strip the indent gutter: the marker is NONE
+        //  for a bare div, so `mend` points just past the depth*4 indents.
+        u8cs pc = {mend, linec[1]};
         call(mark_close_list, c, &in_list);
         call(mark_close_quote, c, &in_quote);
         if (!in_para) {
             call(MARKu8bLit, c->out, "<p>\n");
             in_para = YES;
             call(mark_budget, opts, opener ? "opener summary" : "summary",
-                 linec, opener ? MARK_OPEN_MAX : MARK_SUMM_MAX);
+                 pc, opener ? MARK_OPEN_MAX : MARK_SUMM_MAX);
             opener = NO;
         }
-        call(mark_inline, c, linec);
+        call(mark_inline, c, pc);
         call(MARKu8bLit, c->out, "\n");
     }
 
-    call(mark_close_para, c, &in_para);
-    call(mark_close_list, c, &in_list);
-    call(mark_close_quote, c, &in_quote);
+    //  EOF: close the open leaf and unwind every remaining div.
+    call(mark_close_leaf, c, &in_para, &in_list, &in_quote);
+    call(mark_reconcile_divs, c, &div_depth, 0, &in_para, &in_list, &in_quote);
     if (in_fence) call(MARKu8bLit, c->out, "</code></pre>\n");
     if (!h1_seen) call(mark_violate, opts, "no H1 opener (one concept per page)");
     done;

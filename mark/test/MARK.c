@@ -72,6 +72,20 @@ static ok64 MARKrender_cases() {
         //  DIS-014: a 3-dash --- line is a ruler, like ----.
         {"hr3", "#   T\n\nbefore\n\n---\n\nafter\n", "<hr"},
         {"hr4", "#   T\n\nbefore\n\n----\n\nafter\n", "<hr"},
+        //  DIS-029: a bare 4-space indent opens a <div> with an implied <p>,
+        //  the gutter is stripped, and a depth drop closes the div (the
+        //  depth-0 line lands in its own <p>).  Whitespace matches the
+        //  existing multiline <p> style: <div>\n<p>\ncontent\n</p>\n</div>\n.
+        {"div-indent", "#   Header\n    Indented\nNon indented\n",
+         "<div>\n<p>\nIndented\n</p>\n</div>\n"},
+        {"div-dedent", "#   Header\n    Indented\nNon indented\n",
+         "</div>\n<p>\nNon indented\n</p>\n"},
+        {"div-nested", "#   Header\n        Deeper\n",
+         "<div>\n<div>\n<p>\nDeeper\n</p>\n</div>\n</div>\n"},
+        //  depth-restore: indent, dedent to 0, then a list — the div must be
+        //  closed before the <ul> opens.
+        {"div-restore", "#   T\n\n    Inner\n\n -  item\n",
+         "<div>\n<p>\nInner\n</p>\n</div>\n<ul>\n<li>item</li>"},
     };
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
         call(render, out, T[i].src, NO);
