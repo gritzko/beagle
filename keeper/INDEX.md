@@ -261,7 +261,12 @@ left-click on the anchor opens the next-token URI via `be --tlv`
                  fetch — accepts host OR authority OR path OR `?/<proj>`
                  OR a transport scheme, so a host-less `file:///abs`
                  local store (and `be://`) is a valid push target, not
-                 just ssh.
+                 just ssh.  POST-009: `keeper_post` strips an absolute
+                 `?/<proj>[/<branch>]` project selector
+                 (DOGQueryStripProject) before using the query as the
+                 push branch — the raw `/proj` was treated as a branch
+                 and landed objects on a phantom `refs/heads//proj`, so
+                 the peer trunk never advanced.
   - `MIGRATE.c`  `KEEPMoveCommits` — **retired**: with one flat object
                  pool per project, promote/drop are REFS-only and there
                  is no cross-shard pack copy to perform (`be post
