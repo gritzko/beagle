@@ -122,6 +122,18 @@ target_compile_options(WIREtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WIREtest keeplib dog abc-core)
 add_test(NAME WIREtest COMMAND WIREtest)
 
+add_executable(WIREREFETCHtest WIREREFETCH.c)
+target_link_options(WIREREFETCHtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WIREREFETCHtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WIREREFETCHtest keeplib dog abc-core)
+add_test(NAME WIREREFETCHtest COMMAND WIREREFETCHtest)
+
+add_executable(WIREE2EREFETCHtest WIREE2EREFETCH.c)
+target_link_options(WIREE2EREFETCHtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WIREE2EREFETCHtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WIREE2EREFETCHtest keeplib dog abc-core)
+add_test(NAME WIREE2EREFETCHtest COMMAND WIREE2EREFETCHtest)
+
 add_executable(WIRERLtest WIRE_RL.c)
 target_link_options(WIRERLtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WIRERLtest PRIVATE ${TEST_CXX_FLAGS})

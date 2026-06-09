@@ -207,10 +207,18 @@ static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {
     return (u32)total;
 }
 
-//  Resolve a sha to (file_id, log_off) by scanning every LSM run for
-//  the first object-type entry whose hashlet matches.  Trust the
-//  60-bit hashlet (collision rate ~2^-60); callers that need stricter
-//  guarantees can re-verify by inflating via KEEPGetExact.
+//  Resolve a sha to the LATEST (largest log_off) object-type entry whose
+//  hashlet matches, scanning every LSM run.  The plain "first match wins"
+//  scan (KEEPLookup-style) returns whichever copy a run holds first,
+//  which for a re-ingested / duplicated object is the EARLIEST copy.
+//  The segment builder must instead anchor on the copy nearest the log
+//  tail: the want's `end_offset` should be the true tail of the object's
+//  newest pack, and a have's watermark should sit as high as possible.
+//  Using the earliest copy decouples the shipped byte range from the
+//  log tail (GET-007: `end_offset` could even fall below the watermark,
+//  re-shipping duplicate packs).  Trust the 60-bit hashlet (collision
+//  rate ~2^-60); callers needing stricter guarantees re-verify via
+//  KEEPGetExact.
 static ok64 wire_locate_sha(keeper *k, sha1cp sha,
                             u32 *out_file_id, u64 *out_off) {
     sane(k && sha && out_file_id && out_off);
@@ -218,6 +226,9 @@ static ok64 wire_locate_sha(keeper *k, sha1cp sha,
     u64 key_lo = keepKeyPack(KEEP_OBJ_COMMIT, hashlet60);
     u64 key_hi = keepKeyPack(KEEP_OBJ_TAG, hashlet60);
 
+    b8  found    = NO;
+    u32 best_fid = 0;
+    u64 best_off = 0;
     for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         size_t  len  = (size_t)((wh128cp)_raw_[1] - base);
@@ -228,13 +239,24 @@ static ok64 wire_locate_sha(keeper *k, sha1cp sha,
             if (base[mid].key < key_lo) lo = mid + 1;
             else hi = mid;
         }
-        if (lo < len && base[lo].key >= key_lo && base[lo].key <= key_hi) {
-            *out_file_id = wh64Id(base[lo].val);
-            *out_off     = wh64Off(base[lo].val);
-            done;
+        //  A run may hold several same-hashlet entries (COMMIT..TAG, and
+        //  duplicate offsets from re-ingest).  Walk the whole matching
+        //  span and keep the largest offset seen across all runs.
+        for (size_t i = lo; i < len && base[i].key <= key_hi; i++) {
+            if (base[i].key < key_lo) continue;
+            u32 fid = wh64Id(base[i].val);
+            u64 off = wh64Off(base[i].val);
+            if (!found || off > best_off) {
+                best_fid = fid;
+                best_off = off;
+                found    = YES;
+            }
         }
     }
-    return KEEPNONE;
+    if (!found) return KEEPNONE;
+    *out_file_id = best_fid;
+    *out_off     = best_off;
+    done;
 }
 
 ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,

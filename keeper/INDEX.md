@@ -109,7 +109,13 @@ ref-update line + pack, drains unpack/per-ref status.
                           `?ref` (the want) is NOT appended.
                           (`test/SERVEPATH.c`)
   - `WIREReadRequest`    drain pkt-lines, populate wire_req
-  - `WIREBuildSegments`  resolve wants/haves → ordered pstr_seg list
+  - `WIREBuildSegments`  resolve wants/haves → ordered pstr_seg list.
+                          wire_locate_sha resolves a sha to its LATEST
+                          (largest-offset) copy so the want's end_offset
+                          and a have's watermark track the log tail; the
+                          earliest copy would re-ship duplicate-laden
+                          packs (GET-007, `test/WIREREFETCH.c` /
+                          `test/WIREE2EREFETCH.c`)
   - `WIREServeUpload`    one-shot: read request, build segs, write pack
   - `WIREFetch`          client: spawn upload-pack peer, ingest pack,
                           append REFS tip.  A 40-hex `want_ref` is a
