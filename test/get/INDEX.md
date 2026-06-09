@@ -156,3 +156,12 @@
   `be head`/`be get keeper://local?/proj` resolve + clone, and the
   selector-less keeper empty path AND git-transport empty path both
   still `WIRECLFL`.  Local-only, no ssh.
+* `40-no-ancestor-wtlog-escape/` — GET-006: `be get file:<store>` from a
+  FRESH subdir (no `.be`) of someone else's worktree must not let store
+  discovery walk UP and append a `get` row into the ANCESTOR store's
+  `.be/wtlog` (self-anchoring / poisoning it).  Fix
+  (`BEActWorktreeAnchor`): after `BEGetWorktree` wires `<cwd>/.be`,
+  re-target `c->repo` + the `--at` URI at cwd so the downstream get
+  opens THIS worktree, never the ancestor.  Hermetic — the fake
+  ancestor store lives inside `$SCRATCH` so the walk-up can never reach
+  the real `$HOME/.be` (also asserted byte-identical).  Local-only.

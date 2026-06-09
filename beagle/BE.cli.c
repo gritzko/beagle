@@ -1081,7 +1081,42 @@ ok64 BEActWorktreeAnchor(cli *c) {
     uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
     if (u0 == NULL) done;
     u8bReset(beget_wt_uri_buf);
-    return BEGetWorktree(u0, beget_wt_uri_buf);
+    call(BEGetWorktree, u0, beget_wt_uri_buf);
+
+    //  GET-006: BEGetWorktree may have just wired a NEW secondary
+    //  worktree at cwd (`<cwd>/.be` written as a row-0 anchor FILE)
+    //  when the destination dir had no `.be` of its own.  CLIParse's
+    //  earlier cwd-walk resolved `c->repo` (and, downstream, the
+    //  `--at` URI in `be_at_buf`) to an ANCESTOR store — running from
+    //  a subdir of someone else's worktree.  Left unfixed, the
+    //  downstream `sniff get` opens that ancestor rw and appends its
+    //  `get` row into the ancestor's `.be/wtlog`, poisoning it.
+    //  Mirror be_sub_shard_setup's re-anchor: now that cwd owns a
+    //  `.be`, re-target c->repo at cwd so the be_at_buf fill (and any
+    //  later c->repo reader) sees THIS worktree, never the ancestor.
+    a_path(cwd);
+    call(FILEGetCwd, cwd);
+    a_dup(u8c, cwd_s, u8bDataC(cwd));
+    a_path(cwd_be);
+    call(PATHu8bFeed, cwd_be, cwd_s);
+    call(PATHu8bPush, cwd_be, DOG_BE_S);
+    filestat fs = {};
+    if (FILELStat(&fs, $path(cwd_be)) != OK) done;   // no cwd anchor → leave as-is
+    a_dup(u8c, repo_s, u8bDataC(c->repo));
+    b8 was_cwd = u8csEq(cwd_s, repo_s);
+    if (!was_cwd) {
+        u8bReset(c->repo);
+        call(PATHu8bFeed, c->repo, cwd_s);
+    }
+    //  The `--at` URI was composed from the (then-ancestor) c->repo
+    //  before this plan ran (BEExecute's caller fills be_at_buf at the
+    //  top of the call chain).  Re-derive it from the now-cwd-anchored
+    //  worktree so the downstream sniff/keeper get open THIS wt's store
+    //  (the secondary anchor redirects h->root to the shared store; the
+    //  `get` row lands in cwd's own `.be`, never the ancestor's wtlog).
+    u8bReset(be_at_buf);
+    (void)SNIFFAtTailOf(cwd_s, be_at_buf);
+    done;
 }
 
 ok64 BEActSingleFileGet(cli *c) {
