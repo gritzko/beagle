@@ -143,3 +143,16 @@
   `refs/heads/main` AND `refs/heads/master` at one tip; asserts `?master`
   resolves (contrast), `?main` resolves (the fix), and bare-trunk (no
   `?ref`) still maps to `refs/heads/main`.  Gated on `WITH_SSH`.
+* `39-be-pathless-project/` — GET-003: the keeper clone form with the
+  project in the QUERY and an EMPTY path (`be get be://host?/proj`,
+  `be head be://host?/proj`) — empty path = the peer's default store,
+  `?/<project>` selects the shard.  Pre-fix `wcli_spawn`
+  (keeper/WIRECLI.c) rejected an empty path with `WIRECLFL` BEFORE
+  scheme classification, so the pathless keeper form died exit 157.
+  Fix: the empty-path rejection is now scheme-specific — keeper peers
+  with a `?/<project>` query accept an empty path (serve `?/proj`);
+  git transports (ssh/https/git) still require a repo path.  Hermetic
+  via the LOCAL-EXEC keeper (`keeper://local`, no ssh): asserts
+  `be head`/`be get keeper://local?/proj` resolve + clone, and the
+  selector-less keeper empty path AND git-transport empty path both
+  still `WIRECLFL`.  Local-only, no ssh.

@@ -161,8 +161,16 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     //  Path is what the peer's upload-pack sees as argv[1].  URI parser
     //  delivers it with a leading '/' for absolute forms (file:///foo,
     //  //host/foo) which is exactly what the peer expects.
+    //
+    //  GET-003: the empty-path rejection is scheme-SPECIFIC and lives
+    //  AFTER classification below.  An empty path is legal for the
+    //  keeper protocol (`be://host?/proj`): it denotes the peer's
+    //  default `$HOME/.be` store, with the `?/<project>` query selecting
+    //  the shard (WIREServePath emits `?/proj`; the server's
+    //  keeper_served_at + home_open_inner walk-up resolve it).  Git
+    //  transports (ssh/https/git) still require a path — `git-upload-pack
+    //  <path>` has nowhere to go otherwise — so they keep rejecting it.
     a_dup(u8c, path, u.path);
-    if (u8csEmpty(path)) return WIRECLFL;
 
     a_cstr(file_s,    "file");
     a_cstr(keeper_s,  "keeper");
@@ -171,6 +179,12 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     b8 is_keeper = u8csEq(u.scheme, keeper_s);
     b8 is_be     = u8csEq(u.scheme, be_s);
     b8 has_host  = !u8csEmpty(u.host);
+
+    //  A keeper project selector: an absolute `?/<project>` query.  When
+    //  present it stands in for the repo path (the shard within the
+    //  peer's default store), so the keeper branches accept an empty
+    //  path.  Mirrors WIREServePath's `*query[0] == '/'` gate.
+    b8 has_proj_query = !u8csEmpty(u.query) && *u.query[0] == '/';
 
     //  Build a verb slice to pass into argv.
     a_cstr(verb_s, verb);
@@ -205,6 +219,12 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
         //  so the server serves THAT shard instead of the store's
         //  row-0 default project.  Git peers (above) get the bare path
         //  — git repos are single-project.
+        //
+        //  GET-003: an empty path is legal only when a `?/<project>`
+        //  query supplies the shard selector (`keeper://local?/proj` →
+        //  the default store's `proj` shard).  Empty path AND no
+        //  selector has nothing to serve.
+        if (u8csEmpty(path) && !has_proj_query) return WIRECLFL;
         a_pad(u8, kpath, FILE_PATH_MAX_LEN + 64);
         call(WIREServePath, kpath, path, u.query);
         u8cs kbin = {};
@@ -234,10 +254,21 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
     //  remote paths need to come through file:/// or be encoded
     //  differently — matching what keeper_get_remote did pre-Phase8.
     if (!u8csEmpty(path) && *path[0] == '/') path[0]++;
-    if (u8csEmpty(path)) return WIRECLFL;
 
     b8 use_keeper_ssh = is_keeper || is_be;
     b8 force_git      = wcli_path_is_git(path);
+
+    //  GET-003: empty-path rejection is scheme-specific.  A keeper peer
+    //  (`be://host?/proj`) may send an empty path when the `?/<project>`
+    //  query selects the shard within the peer's default `$HOME/.be`
+    //  store; WIREServePath then emits a bare `?/proj` argv and the
+    //  remote keeper walk-up resolves the store.  Git transports
+    //  (ssh/https/git) genuinely need a repo path for
+    //  `git-upload-pack <path>`, so they keep rejecting an empty path.
+    if (u8csEmpty(path)) {
+        if (!(use_keeper_ssh && !force_git && has_proj_query))
+            return WIRECLFL;
+    }
 
     if (use_keeper_ssh && !force_git) {
         //  ssh <host> [PATH=...] keeper <verb> <path>[?/proj]
