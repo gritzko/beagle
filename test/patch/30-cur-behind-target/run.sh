@@ -39,10 +39,11 @@ match "$CASE/01.a.v0.c" a.c
 match "$CASE/03.b.v0.c" b.c
 
 # squash the trunk tip into cur via a short sha-prefix (the real-world
-# form).  Must absorb BOTH C1 and C2, not just the target's last commit.
+# form).  Whole-branch scope (`!`) must absorb BOTH C1 and C2, not just
+# the target's last commit.
 HASHLET=$(printf '%s' "$C2" | cut -c1-10)
-"$BE" patch "?$HASHLET" >"$ETMP/p.out" 2>"$ETMP/p.err" \
-    || fail "patch ?$HASHLET failed: $(cat "$ETMP/p.err")"
+"$BE" patch "?$HASHLET!" >"$ETMP/p.out" 2>"$ETMP/p.err" \
+    || fail "patch ?$HASHLET! failed: $(cat "$ETMP/p.err")"
 
 #  DIS-025 regression check: a.c (C1's edit) must NOT be silently
 #  dropped.  Without the fix it stays at v0 and is reported `mod`.

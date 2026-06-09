@@ -52,11 +52,12 @@ git -C "$SEED" commit -qm B; git -C "$SEED" push -q "$ORIGIN" master:master
 BSHA=$(git -C "$ORIGIN" rev-parse master)
 cd wt
 
-# 5. rebase-one B onto local -> P fosters B (disjoint edits merge clean)
+# 5. rebase-one B onto local -> P fosters B (disjoint edits merge clean).
+#    DIS-030/031: next-one = bare `?master`; `#!` = reuse msg + forget.
 sleep 0.02
-"$BE" patch "ssh://localhost/$REL_ORIGIN?master#" >03.patch.out 2>03.patch.err \
+"$BE" patch "ssh://localhost/$REL_ORIGIN?master" >03.patch.out 2>03.patch.err \
     || { echo "post/21: rebase-one failed" >&2; cat 03.patch.err >&2; exit 1; }
-"$BE" post >04.post.out 2>04.post.err \
+"$BE" post '#!' >04.post.out 2>04.post.err \
     || { echo "post/21: post after rebase failed" >&2; cat 04.post.err >&2; exit 1; }
 # wt now carries both edits (a() from L1, b() from B).
 grep -q 'return 1' f.c && grep -q 'return 2' f.c \

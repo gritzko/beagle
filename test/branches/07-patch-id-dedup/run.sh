@@ -58,14 +58,14 @@ F29_C1P=$(head_hex)
     || fail "§29: C1' should be a distinct commit object"
 note "§29: ?fix2 has C1'=$F29_C1P"
 
-# Switch to ?fix1; rebase via `be patch ?fix2#` + `be post`.
+# Switch to ?fix1; rebase via `be patch ?fix2` (next-one) + `be post`.
 "$BE" get "?fix1" >/dev/null || fail "§29: switch back to ?fix1 failed"
 F2_TIP_PRE=$(ref_tip "?fix2")
 F1_TIP_PRE=$(ref_tip "?fix1")
 [ "$F2_TIP_PRE" = "$F29_C1P" ] || fail "§29: ?fix2 unexpectedly moved"
 
-"$BE" patch "?fix2#" 2>"$ETMP/p29.err" >/dev/null \
-    || { cat "$ETMP/p29.err"; fail "§29: be patch ?fix2# failed"; }
+"$BE" patch "?fix2" 2>"$ETMP/p29.err" >/dev/null \
+    || { cat "$ETMP/p29.err"; fail "§29: be patch ?fix2 failed"; }
 
 #  C1''s diff matches C1's diff, both already on disk in cur's wt → all
 #  files noop; `be post` should refuse for lack of content changes.

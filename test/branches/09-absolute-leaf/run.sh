@@ -116,10 +116,10 @@ rm -f x33.txt f33.txt
 "$BE" delete f33.txt >/dev/null 2>&1 || true
 "$BE" post '33-cleanup msg' >/dev/null 2>&1 || true
 
-# === 34. `be patch ?feat#` from cur=?feat/fix is a no-op when ?feat
-#         is an ancestor of cur — patch refuses with "nothing to
+# === 34. `be patch ?feat` (next-one) from cur=?feat/fix is a no-op when
+#         ?feat is an ancestor of cur — patch refuses with "nothing to
 #         replay"; both refs stay put. ===
-echo "=== 34. be patch ?feat# from ?feat/fix refuses (parent is ancestor) ==="
+echo "=== 34. be patch ?feat from ?feat/fix refuses (parent is ancestor) ==="
 cd "$WT"
 sleep 0.01
 echo "x34" > x34.txt
@@ -138,11 +138,11 @@ FF_PRE_34=$(ref_tip "?feat/fix")
 FEAT_PRE_34=$(ref_tip "?feat")
 
 set +e
-"$BE" patch "?feat#" 2>"$ETMP/p34.err" >/dev/null
+"$BE" patch "?feat" 2>"$ETMP/p34.err" >/dev/null
 EC34=$?
 set -e
 [ "$EC34" != "0" ] \
-    || fail "§34: be patch ?feat# should refuse (ancestor)"
+    || fail "§34: be patch ?feat should refuse (ancestor)"
 grep -q "already reachable\|nothing to replay" "$ETMP/p34.err" \
     || fail "§34: stderr should mention 'already reachable'; got: $(cat $ETMP/p34.err)"
 

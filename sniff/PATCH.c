@@ -1310,16 +1310,29 @@ static ok64 resolve_rebase_one(sha1 *out, sha1cp br_tip,
     done;
 }
 
+//  DIS-030 scope classifier.  PATCH selects only the scope; provenance
+//  + message moved to POST (DIS-031).  The bang `!` is lexed by URILexer
+//  as an ordinary query sub-delim (RFC 3986), so a trailing `!` on the
+//  query is the whole-branch modifier (branch names carry no `!`):
+//
+//    `?br`   query, no trailing `!`  → PATCH_SCOPE_NEXT  (one next commit)
+//    `?br!`  query, trailing `!`     → PATCH_SCOPE_WHOLE (the whole branch)
+//    `#sha`  fragment only           → PATCH_SCOPE_NAMED (one named commit)
+//
+//  The old `?br#msg` (merge) and `?br#` (rebase-one) fragment-bearing
+//  query forms are retired; a query+fragment URI is no longer a PATCH
+//  shape.
 u8 PATCHShape(uricp u) {
     if (u == NULL) return PATCH_SHAPE_BAD;
     u8 p = URIPattern(u);
     b8 has_q = (p & URI_QUERY)    != 0;
     b8 has_f = (p & URI_FRAGMENT) != 0;
-    b8 frag_empty = has_f && u8csEmpty(u->fragment);
-    if ( has_q && !has_f)              return PATCH_SHAPE_SQUASH;
-    if (!has_q &&  has_f && !frag_empty) return PATCH_SHAPE_CHERRY;
-    if ( has_q &&  has_f && !frag_empty) return PATCH_SHAPE_MERGE;
-    if ( has_q &&  has_f &&  frag_empty) return PATCH_SHAPE_REBASE1;
+    if (has_q && !has_f) {
+        a_dup(u8c, q, u->query);
+        if (!u8csEmpty(q) && *u8csLast(q) == '!') return PATCH_SCOPE_WHOLE;
+        return PATCH_SCOPE_NEXT;
+    }
+    if (!has_q && has_f && !u8csEmpty(u->fragment)) return PATCH_SCOPE_NAMED;
     return PATCH_SHAPE_BAD;
 }
 
@@ -1395,13 +1408,22 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     u8 shape = PATCHShape(u);
     if (shape == PATCH_SHAPE_BAD) {
         fprintf(stderr,
-            "sniff: patch URI must be one of `?<br>`, `#<sha>`, "
-            "`?<br>#<msg>`, or `?<br>#`\n");
+            "sniff: patch URI must be one of `?<br>` (one commit), "
+            "`?<br>!` (whole branch), or `#<sha>` (one named commit)\n");
         fail(PATCHFAIL);
     }
-    b8 cherry = (shape == PATCH_SHAPE_CHERRY);
+    b8 cherry = (shape == PATCH_SCOPE_NAMED);
+    b8 whole  = (shape == PATCH_SCOPE_WHOLE);
     a_dup(u8c, target_query_raw, u->query);
     a_dup(u8c, frag,             u->fragment);
+
+    //  DIS-030: the whole-branch `!` modifier is the LAST char of the
+    //  query (`?feat!`).  Shed it here so the downstream branch resolver
+    //  sees a bare `feat`; the scope is already captured in `whole`.
+    if (whole && !u8csEmpty(target_query_raw) &&
+        *u8csLast(target_query_raw) == '!') {
+        u8csShed1(target_query_raw);
+    }
 
     //  DIS-025 Stage 2: route the target ref through the keeper funnel,
     //  classify it once with REFSQueryKind, then peel to the shape the
@@ -1501,19 +1523,13 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
         //  prefixed refs, or same-branch reads.
         (void)SNIFFMaybeSwitchGraf(target_query); (void)SNIFFMaybeSwitchKeeper(target_query);
         call(resolve_target, &thr_sha, reporoot, target_query);
-        //  Frag interpretation depends on shape:
-        //    PATCH_SHAPE_SQUASH  — no frag.
-        //    PATCH_SHAPE_MERGE   — frag is the user-supplied merge
-        //                          msg, recorded into the patch row
-        //                          but does not affect resolution.
-        //    PATCH_SHAPE_REBASE1 — frag empty (marker only); resolve
-        //                          theirs to the NEXT not-yet-
-        //                          replayed commit on the branch
-        //                          (TODO Phase 4); for now fall
-        //                          through to branch-tip behavior.
-        //  No `?branch#hash` clamp form in the new model — that's
-        //  the cherry-pick shape (fragment-only) instead.
-        (void)shape;
+        //  DIS-030 scope (the branch-sourced arm — NEXT or WHOLE):
+        //    PATCH_SCOPE_WHOLE (`?br!`) — absorb the full stack; keep
+        //      theirs = branch tip, base = LCA (the squash/merge path).
+        //    PATCH_SCOPE_NEXT  (`?br`)  — absorb ONE commit; theirs is
+        //      reset to the next not-yet-replayed commit by the
+        //      next-one resolver below (same engine the old rebase-one
+        //      marker drove).  No fragment is read in either case.
     }
 
     //  Lazy-index both branches' commit chains into graf so the LCA
@@ -1576,11 +1592,11 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  base.  TODO: extend reachability to follow `foster` headers
     //  on cur's history once Phase 4 lands; today the LCA-based
     //  fork captures parent-only reachability.
-    if (shape == PATCH_SHAPE_REBASE1) {
+    if (shape == PATCH_SCOPE_NEXT) {
         sha1 br_tip = thr_sha;
         sha1 picked = {};
         //  Reachability seed = cur (our_sha), not fork_sha: prior
-        //  rebase-one + post cycles attach absorbed commits via
+        //  next-one + post cycles attach absorbed commits via
         //  `foster` headers that aren't on the DAG-LCA fork chain.
         call(resolve_rebase_one, &picked, &br_tip, &our_sha);
         thr_sha = picked;
@@ -1608,28 +1624,26 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  Banner: list the commits this PATCH absorbs, one
     //  `post\t?<hashlet>#<subject>` row each, before the per-file rows
     //  the walk emits below — mirrors GET's checkout banner (https://replicated.wiki/html/wiki/Verbs.html
-    //  §PATCH "Reporting").  Squash/merge absorb a whole stack, so list
+    //  §PATCH "Reporting").  WHOLE scope absorbs a whole stack, so list
     //  theirs's commits NOT already reachable from cur (parent ∪
-    //  foster) — the ancestor-skip set.  Cherry-pick / rebase-one
-    //  absorb exactly one commit (thr_sha, already resolved to the
-    //  picked commit above).  Best-effort via `try`: a banner hiccup
-    //  never fails the patch.
-    if (shape == PATCH_SHAPE_CHERRY || shape == PATCH_SHAPE_REBASE1) {
+    //  foster) — the ancestor-skip set.  NAMED / NEXT absorb exactly one
+    //  commit (thr_sha, already resolved to the picked commit above).
+    //  Best-effort via `try`: a banner hiccup never fails the patch.
+    if (shape == PATCH_SCOPE_NAMED || shape == PATCH_SCOPE_NEXT) {
         try(KEEPEmitCommitLine, &thr_sha, ts);
     } else {
         try(KEEPEmitCommitsSince, &our_sha, &thr_sha, ts);
     }
 
-    //  Cherry-pick AND rebase-one need the explicit-fork-base JOIN
-    //  path: each absorbs a single commit's diff into ours, so the
-    //  3-way base must be parent(thr) (= parent(picked) for rebase-
-    //  one).  fetch_merge's auto-LCA(our, thr) goes back further
-    //  than parent(thr) when thr's commit chain has work that ours
-    //  absorbed via foster (not an LCA-DAG ancestor) — the resulting
-    //  "both sides added X" framing then misclassifies as conflict.
-    //  Squash and merge keep the auto-LCA path: they're meant to
-    //  absorb the FULL stack between LCA and theirs's tip.
-    b8 explicit_fork = cherry || (shape == PATCH_SHAPE_REBASE1);
+    //  NAMED and NEXT need the explicit-fork-base JOIN path: each
+    //  absorbs a single commit's diff into ours, so the 3-way base must
+    //  be parent(thr) (= parent(picked) for next-one).  fetch_merge's
+    //  auto-LCA(our, thr) goes back further than parent(thr) when thr's
+    //  commit chain has work that ours absorbed via foster (not an
+    //  LCA-DAG ancestor) — the resulting "both sides added X" framing
+    //  then misclassifies as conflict.  WHOLE keeps the auto-LCA path:
+    //  it absorbs the FULL stack between LCA and theirs's tip.
+    b8 explicit_fork = cherry || (shape == PATCH_SCOPE_NEXT);
     patch_stats st = { .ts = ts, .use_fork_base = explicit_fork };
     u8cs root = {NULL, NULL};   // empty dir_path → root tree
     call(patch_walk, reporoot, root,
@@ -1637,50 +1651,42 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
          &fork_sha, &our_sha, &thr_sha,
          &st);
 
-    //  Append a `patch` ULOG row.  The URI shape encodes the op,
-    //  the `<theirs>` slot always holds the resolved 40-hex sha:
+    //  Append a `patch` ULOG row.  DIS-030: the row carries the resolved
+    //  40-hex `<theirs>` sha plus the SCOPE, and the slot it lives in is
+    //  the named-flag POST reads for provenance:
     //
-    //    PATCH_SHAPE_SQUASH   →  `?<sha>`
-    //    PATCH_SHAPE_CHERRY   →  `#<sha>`
-    //    PATCH_SHAPE_MERGE    →  `?<sha>#<msg>`
-    //    PATCH_SHAPE_REBASE1  →  `?<sha>#`            (empty fragment)
+    //    PATCH_SCOPE_NEXT   (`?br`)   →  `?<sha>`    (query, no `!`)
+    //    PATCH_SCOPE_WHOLE  (`?br!`)  →  `?<sha>!`   (query, trailing `!`)
+    //    PATCH_SCOPE_NAMED  (`#sha`)  →  `#<sha>`    (fragment)
     //
-    //  POST consumes these via SNIFFAtPatchChain to assemble parent /
-    //  foster headers and `picked` trailers on the next commit (see
-    //  https://replicated.wiki/html/wiki/POST.html §POST "Parent / foster / picked assembly").
-    //  Per-file forensic tracking lives in stamp_wrote (the row's
-    //  ts matches every touched file's mtime).
-    a_pad(u8, thex, 40);
+    //  A FRAGMENT-slot sha = named → POST emits `picked`.  A QUERY-slot
+    //  sha = branch-sourced → POST emits `parent` (no post `!`) or
+    //  `foster` (post `!`).  The trailing `!` preserves the whole-vs-next
+    //  distinction for the message-reuse heuristic (a WHOLE squash has no
+    //  single reusable subject).  No user merge-msg is stored at PATCH any
+    //  more — message moved to POST (DIS-031).
+    //
+    //  URI-001 Stage 4b: rows are BARE — no `<branch>/` locator prefix;
+    //  the flat per-project object pool makes every absorbed commit body
+    //  readable from cur's shard.  Per-file forensic tracking lives in
+    //  stamp_wrote (the row's ts matches every touched file's mtime).
+    a_pad(u8, thex, 41);
     a_rawc(tsha, thr_sha);
     HEXu8sFeedSome(thex_idle, tsha);
+    if (whole) u8bFeed1(thex, '!');
 
-    //  Compose the row's query slot.  URI-001 Stage 4b: patch rows are
-    //  BARE — the query (or, for cherry, the fragment) carries ONLY the
-    //  resolved 40-hex `<theirs>` sha, never a `<branch>/` locator
-    //  prefix.  The flat per-project object pool makes the foster /
-    //  picked / replayed commit body readable from cur's shard, so POST
-    //  no longer needs a locator branch to switch keeper/graf to.
     uri urow = {};
     {
         a_dup(u8c, h, u8bDataC(thex));
         if (cherry) {
-            //  Cherry-pick: bare `#<sha>`.
+            //  NAMED: bare `#<sha>` in the fragment slot.
             urow.fragment[0] = h[0];
             urow.fragment[1] = h[1];
         } else {
-            //  SQUASH / MERGE / REBASE_ONE — query carries the bare sha.
+            //  NEXT / WHOLE: `<sha>` (+ trailing `!` for WHOLE) in the
+            //  query slot.
             urow.query[0] = h[0];
             urow.query[1] = h[1];
-            if (shape == PATCH_SHAPE_MERGE) {
-                urow.fragment[0] = u->fragment[0];
-                urow.fragment[1] = u->fragment[1];
-            } else if (shape == PATCH_SHAPE_REBASE1) {
-                //  present-but-empty fragment marker; anchor on the sha
-                //  tail so the pointer stays live.
-                urow.fragment[0] = h[1];
-                urow.fragment[1] = h[1];
-            }
-            //  SQUASH: fragment slot left absent.
         }
     }
 

@@ -342,10 +342,15 @@ static ok64 wcli_spawn(u8csc remote_uri, char const *verb,
 //  be branch → wire refname into `out`.  Pre-reset.
 //      ""        → "refs/heads/main"
 //      "X"       → "refs/heads/X"
+//      "X!"      → "refs/heads/X"   (DIS-030: a trailing `!` is the
+//                                    PATCH whole-branch scope modifier,
+//                                    never part of a git refname — shed
+//                                    it before composing the wire ref)
 static ok64 wcli_be_to_wire(u8b out, u8csc be_branch) {
     sane(u8bOK(out));
     u8cs name = {};
     u8csMv(name, u8csEmpty(be_branch) ? GIT_MAIN_LIT : be_branch);
+    if (!u8csEmpty(name) && *u8csLast(name) == '!') u8csShed1(name);
     return GITFeedRef(out, GITREF_BRANCH, name);
 }
 
@@ -1024,6 +1029,11 @@ ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
     //  discovery).  Callers that want an explicit fallback should pass
     //  e.g. "heads/main" themselves.
     u8cs effective_ref = {want_ref[0], want_ref[1]};
+    //  DIS-030: shed a trailing `!` — the PATCH whole-branch scope
+    //  modifier rides on the query (`?master!`) but is never part of the
+    //  wire refname the peer advertises.
+    if (!u8csEmpty(effective_ref) && *u8csLast(effective_ref) == '!')
+        u8csShed1(effective_ref);
 
     int wfd = -1, rfd = -1;
     pid_t pid = 0;

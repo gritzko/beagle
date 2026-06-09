@@ -38,18 +38,20 @@ sleep 0.02; cp "$CASE/03.f.c2.c" f.c
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T0" ] || fail "should be at T0, got $(head_hex)"
 
-# rebase-one C1 onto trunk (foster), then POST.
+# rebase-one C1 onto trunk (foster), then POST.  DIS-030/031: next-one
+# scope is bare `?feat`; `#!` = reuse msg + forget (foster).
 sleep 0.02
-"$BE" patch '?feat#' >"$ETMP/p1.out" 2>"$ETMP/p1.err" \
+"$BE" patch '?feat' >"$ETMP/p1.out" 2>"$ETMP/p1.err" \
     || fail "rebase-one failed: $(cat $ETMP/p1.err)"
-"$BE" post >/dev/null 2>"$ETMP/p1post.err" \
+"$BE" post '#!' >/dev/null 2>"$ETMP/p1post.err" \
     || fail "post after rebase-one failed: $(cat $ETMP/p1post.err)"
 match "$CASE/02.f.c1.c" f.c        # wt carries C1's `return 100;`
 
-# merge ?feat (tip C2) — theirs extends C1's tokens; must merge clean.
+# merge ?feat (tip C2) — whole-branch scope; theirs extends C1's
+# tokens; must merge clean.
 sleep 0.02
 rc=0
-"$BE" patch '?feat#merge feat' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
+"$BE" patch '?feat!' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
 
 if grep -q '<<<<' f.c; then
     echo "FAIL: foster'd content re-stamped -> conflict on extend:" >&2

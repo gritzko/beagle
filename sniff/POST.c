@@ -2265,14 +2265,13 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     sane(Bok(msg_buf) && Bok(auth_buf) && msg_out && auth_out && n_out);
     *n_out = 0;
 
-    //  New msg-resolution per https://replicated.wiki/html/wiki/POST.html §POST:
+    //  Msg-resolution per https://replicated.wiki/html/wiki/POST.html §POST (DIS-031):
     //    1. POST's own #frag wins (handled by caller before us).
     //    2. Else if exactly one in-scope patch row applied a commit
-    //       AND it carries a usable msg — use it.  Usable msgs:
-    //         MERGE   → row's fragment (user-supplied).
-    //         CHERRY  → picked commit's subject (looked up here).
-    //         REBASE1 → replayed commit's subject (looked up here).
-    //         SQUASH  → not usable (multiple commits collapsed).
+    //       AND it carries a usable msg — use the absorbed commit's
+    //       subject.  Usable scopes: NEXT (one replayed commit) and
+    //       NAMED (one named commit); WHOLE is NOT usable (multiple
+    //       commits collapsed — caller must supply `#msg`).
     //    3. Else (0 or >1 usable msgs) → return ULOGNONE; caller
     //       refuses with POSTNOMSG.
     sniff_pe pent[64];
@@ -2282,15 +2281,20 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     *n_out = n_pent;
 
     //  Count usable-msg entries; remember the last one's index for
-    //  the "exactly one" path.
+    //  the "exactly one" path.  A WHOLE row collapses multiple commits
+    //  with no single reusable subject; its mere presence (alongside any
+    //  other row) forces an explicit `#msg`.
     u32 usable = 0, idx = 0;
+    b8  whole_present = NO;
     for (u32 i = 0; i < n_pent; i++) {
-        u8 sh = pent[i].shape;
-        if (sh == 1 /* SQUASH */) continue;
+        if (pent[i].shape == PATCH_SCOPE_WHOLE) { whole_present = YES; continue; }
         usable++;
         idx = i;
     }
     if (usable == 0) return ULOGNONE;
+    //  A usable single commit but a WHOLE row also in scope → ambiguous;
+    //  the user must supply `#msg` (matches the old MERGE+CHERRY refusal).
+    if (usable == 1 && whole_present) return ULOGNONE;
     if (usable > 1) {
         //  Ambiguous: surface every candidate so the user can pick
         //  one to retype as `#frag` on retry.  Switch keeper to the
@@ -2307,7 +2311,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         }
         a_carve(u8, cbuf, 1UL << 16);
         for (u32 i = 0; i < n_pent; i++) {
-            if (pent[i].shape == 1 /* SQUASH */) continue;
+            if (pent[i].shape == PATCH_SCOPE_WHOLE) continue;  // multi-commit
             //  URI-001 Stage 4b: the flat per-project object pool makes
             //  every foster / picked / replayed commit readable from
             //  cur's shard, so there is no locator branch to switch to.
@@ -2356,7 +2360,6 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     }
 
     sha1 pick = pent[idx].sha;
-    u8   pshape = pent[idx].shape;
 
     //  URI-001 Stage 4b: the flat per-project object pool makes the
     //  picked / foster / replayed commit body readable from cur's
@@ -2375,12 +2378,8 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     u8cs pick_author_id = {};
     u8csMv(pick_subject,   gc.subject);
     u8csMv(pick_author_id, gc.author_id);
-
-    //  MERGE shape: msg is the row's fragment (user-supplied),
-    //  override the keeper-fetched subject.
-    if (pshape == 3 /* MERGE */ && !u8csEmpty(pent[idx].msg)) {
-        $mv(pick_subject, pent[idx].msg);
-    }
+    //  DIS-031: the absorbed commit's own subject is always the reused
+    //  message — no user merge-msg is stored at PATCH any more.
 
     //  Et-al doesn't apply with the new "exactly one" rule.
     b8 et_al = NO;
@@ -2689,28 +2688,32 @@ ok64 POSTCommit(u8cs target_branch,
     }
 
     //  Headers from in-scope patch rows (https://replicated.wiki/html/wiki/POST.html §POST "Parent /
-    //  foster / picked assembly").  Classify each row by URI shape:
+    //  foster / picked assembly").  DIS-031: provenance is no longer
+    //  baked into the patch row — POST decides it from the row's
+    //  named-flag and a trailing `!` on the post fragment (the `--forget`
+    //  flag injected by SNIFFExec):
     //
-    //    SQUASH   `?<sha>`         → foster <sha>\n   (after committer)
-    //    REBASE1  `?<sha>#`        → foster <sha>\n   (after committer)
-    //    MERGE    `?<sha>#<msg>`   → parent <sha>\n   (here, pre-author)
-    //    CHERRY   `#<sha>`         → picked <sha>\n   (after foster,
-    //                                 same header block, before body)
+    //    NAMED row (`#<sha>`)         → picked <sha>\n  (always)
+    //    branch row, no `!` (refer)   → parent <sha>\n  (here, pre-author)
+    //    branch row, post `!` (forget)→ foster <sha>\n  (after committer)
     //
     //  Git's commit grammar is strict: `tree`, then ALL `parent` lines,
-    //  then `author`, then `committer`.  So MERGE parents must be
+    //  then `author`, then `committer`.  So merge `parent`s must be
     //  emitted HERE (consecutive with the first-parent line, before
-    //  author).  `foster` is a beagle-only header git doesn't know — it
-    //  rides AFTER `committer` (like `gpgsig`); emitting it before
-    //  `author` breaks the required parent→author adjacency and git
-    //  fsck rejects the object ("missingAuthor: expected 'author'
+    //  author).  `foster` / `picked` are beagle-only headers git doesn't
+    //  know — they ride AFTER `committer` (like `gpgsig`); emitting them
+    //  before `author` breaks the required parent→author adjacency and
+    //  git fsck rejects the object ("missingAuthor: expected 'author'
     //  line").  Walk oldest → newest within each class to preserve row
     //  order.
+    b8 forget = inv && CLIHas(inv, "--forget");
     sniff_pe pent[64];
     u32 n_pent = 0;
     (void)SNIFFAtPatchEntries(pent, 64, &n_pent);
+    //  `parent <sha>` from branch-sourced rows when NOT forget (refer
+    //  back = merge).  Named rows never become a parent.
     for (u32 i = 0; i < n_pent; i++) {
-        if (pent[i].shape != 3 /* MERGE */) continue;
+        if (pent[i].named || forget) continue;
         a_cstr(mpar_label, "parent ");
         u8bFeed(com, mpar_label);
         a_pad(u8, fhex, 40);
@@ -2741,13 +2744,13 @@ ok64 POSTCommit(u8cs target_branch,
     u8bFeed(com, author);
     u8bFeed(com, ts_s);
 
-    //  `foster <sha>` headers from SQUASH / REBASE1 patch rows — a
-    //  beagle-only header, so it rides after `committer` (still inside
-    //  the header block, before the blank line) where git treats
-    //  unknown headers the way it treats `gpgsig`.  Row order preserved.
+    //  `foster <sha>` headers from branch-sourced patch rows when forget
+    //  (squash / rebase) — a beagle-only header, so it rides after
+    //  `committer` (still inside the header block, before the blank line)
+    //  where git treats unknown headers the way it treats `gpgsig`.  Row
+    //  order preserved.
     for (u32 i = 0; i < n_pent; i++) {
-        if (pent[i].shape == 2 /* CHERRY */ ||
-            pent[i].shape == 3 /* MERGE  */) continue;
+        if (pent[i].named || !forget) continue;
         a_cstr(fos_label, "foster ");
         u8bFeed(com, fos_label);
         a_pad(u8, fhex, 40);
@@ -2757,13 +2760,13 @@ ok64 POSTCommit(u8cs target_branch,
         u8bFeed1(com, '\n');
     }
 
-    //  `picked <sha>` headers from CHERRY patch rows — same beagle-only
+    //  `picked <sha>` headers from NAMED patch rows — same beagle-only
     //  header block as `foster`, recording the cherry-picked source
     //  commit.  Per spec `picked` is dedup-only and NOT a reachability
     //  edge (the FF/merge-base walks whitelist only parent+foster).
     //  Row order preserved.
     for (u32 i = 0; i < n_pent; i++) {
-        if (pent[i].shape != 2 /* CHERRY */) continue;
+        if (!pent[i].named) continue;
         a_cstr(pck_label, "picked ");
         u8bFeed(com, pck_label);
         a_pad(u8, fhex, 40);

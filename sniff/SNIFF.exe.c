@@ -621,13 +621,54 @@ ok64 SNIFFExec(cli *c) {
         //  Per https://replicated.wiki/html/wiki/Verbs.html: free-form trailing words are folded into a
         //  URI's #fragment by CLIParse.  Prefer that over the legacy
         //  `-m <msg>` flag, which still works for backwards compat.
+        b8 frag_present = NO;   // a `#…` fragment slot was supplied
         for (u32 i = 0; i < uribDataLen(c->uris); i++) {
             if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) {
                 $mv(commit_msg, uribAtP(c->uris, i)->fragment);
+                frag_present = YES;
                 break;
             }
         }
         if (!$ok(commit_msg)) CLIFlag(commit_msg, c, "-m");
+
+        //  DIS-031 forget modifier: a trailing `!` on the post fragment
+        //  means "forget" (no parent ref → foster).  Shed it from the
+        //  message, remember the intent, and inject `--forget` so
+        //  POSTCommit's header block picks `foster` over `parent` for a
+        //  branch-sourced patch row.  A NAMED row stays `picked` either
+        //  way.  Forms: `#!` = reuse-msg + forget, `#msg!` = new-msg +
+        //  forget, `#msg` = new-msg + parent, bare = reuse + parent.
+        b8 forget = NO;
+        if ($ok(commit_msg) && !u8csEmpty(commit_msg) &&
+            *u8csLast(commit_msg) == '!') {
+            forget = YES;
+            u8csShed1(commit_msg);
+        }
+        //  Ban: after shedding the modifier, the real message may not
+        //  itself end in `!` (a literal `fix it!` would be ambiguous with
+        //  the forget modifier) — POSTBANG, refused before any commit.
+        if ($ok(commit_msg) && !u8csEmpty(commit_msg) &&
+            *u8csLast(commit_msg) == '!') {
+            fprintf(stderr,
+                "sniff: post: commit message may not end in `!` — the "
+                "trailing `!` is the forget modifier (use `#msg!` to "
+                "forget, `#msg` to refer back)\n");
+            return POSTBANG;
+        }
+        if (forget) {
+            a_cstr(forget_flag, "--forget");
+            a_cstr(empty_val,   "");
+            (void)u8csbFeed1(c->flags, forget_flag);
+            (void)u8csbFeed1(c->flags, empty_val);
+        }
+        //  `#!` (or `#msg!` shed to empty) — fragment was present but the
+        //  message is now empty.  Drop commit_msg so the reuse path runs
+        //  (original message), still carrying the forget intent via the
+        //  injected flag.
+        if (frag_present && $ok(commit_msg) && u8csEmpty(commit_msg)) {
+            commit_msg[0] = NULL;
+            commit_msg[1] = NULL;
+        }
         u8cs commit_author = {};
         CLIFlag(commit_author, c, "--author");
         //  Default identity: assemble `<name> <<email>>` from the wt's

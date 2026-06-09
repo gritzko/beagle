@@ -35,10 +35,11 @@ F1=$(head_hex)
 
 "$BE" get '?..' >/dev/null
 
-# THE ACTION: merge feat into trunk — conflicts, but DIS-018 says
-# PATCH returns OK (exit 0) and reports `conf`; markers stay in the file.
-"$BE" patch '?feat#merge feat' >"$ETMP/c.out" 2>"$ETMP/c.err" \
-    || fail "be patch ?feat should exit 0 now (DIS-018); err: $(cat $ETMP/c.err)"
+# THE ACTION: merge feat into trunk — `?feat!` whole-branch scope —
+# conflicts, but DIS-018 says PATCH returns OK (exit 0) and reports
+# `conf`; markers stay in the file.
+"$BE" patch '?feat!' >"$ETMP/c.out" 2>"$ETMP/c.err" \
+    || fail "be patch '?feat!' should exit 0 now (DIS-018); err: $(cat $ETMP/c.err)"
 
 # Per-file status row: lib.c → conf (DIS-018, was `conflict`).
 grep -E '[[:space:]]+conf[[:space:]]+(\./)?lib\.c$' "$ETMP/c.out" \

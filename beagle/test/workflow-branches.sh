@@ -282,10 +282,10 @@ note "trunk tip T_pre=$T_pre; wt has only x.txt"
 # ------------------------------------------------------------------
 # 12. be patch ?./fix1 — absorb child's full stack into trunk's wt
 # ------------------------------------------------------------------
-echo "=== 12. be patch ?./fix1 — absorb stack into wt ==="
+echo "=== 12. be patch ?./fix1! — absorb whole stack into wt ==="
 PATCH_OUT="$TMP/patch.err"
-"$BE" patch "?./fix1" 2>"$PATCH_OUT" >/dev/null \
-    || fail "be patch ?./fix1 failed (stderr: $(cat "$PATCH_OUT"))"
+"$BE" patch "?./fix1!" 2>"$PATCH_OUT" >/dev/null \
+    || fail "be patch '?./fix1!' failed (stderr: $(cat "$PATCH_OUT"))"
 grep -q '^sniff: patch:' "$PATCH_OUT" \
     || fail "no 'sniff: patch:' summary in stderr: $(cat "$PATCH_OUT")"
 [ -f a.txt ] || fail "a.txt missing in trunk wt after patch"
@@ -306,7 +306,7 @@ echo "=== 13. be put a.txt + be put b.txt + be post squash ==="
     || fail "be put a.txt (post-patch) failed"
 "$BE" put b.txt >/dev/null \
     || fail "be put b.txt (post-patch) failed"
-"$BE" post 'squash msg' >/dev/null \
+"$BE" post '#squash msg!' >/dev/null \
     || fail "be post squash failed"
 T_squash=$(head_hex)
 [ -n "$T_squash" ] || fail "no trunk tip after post squash"

@@ -77,12 +77,12 @@ echo "version B (local on top)" > hello.c
     echo "FAIL: local B post failed" >&2; cat "$LOGS/02.bpost.err" >&2; exit 1; }
 
 # ----------------------------------------------------------------
-# 4a. `be patch ssh://origin?master` — squash form.  theirs.tip (A)
-#     is already in cur (B)'s ancestry.  Zero commits to absorb.
+# 4a. `be patch ssh://origin?master!` — whole-branch form.  theirs.tip
+#     (A) is already in cur (B)'s ancestry.  Zero commits to absorb.
 #     Must NOT exit non-zero with GRAFFAIL.
 # ----------------------------------------------------------------
 set +e
-"$BE" patch "ssh://localhost/$REL_ORIGIN?master" \
+"$BE" patch "ssh://localhost/$REL_ORIGIN?master!" \
     > "$LOGS/03.patch.out" 2> "$LOGS/03.patch.err"
 RC_PATCH=$?
 set -e
@@ -94,11 +94,11 @@ if [ "$RC_PATCH" -ne 0 ]; then
 fi
 
 # ----------------------------------------------------------------
-# 4b. `be patch ssh://origin?master '#merge master'` — merge form.
-#     Same shape — must succeed cleanly.
+# 4b. `be patch ssh://origin?master!` again — whole-branch form (the
+#     merge message moved to POST).  Same shape — must succeed cleanly.
 # ----------------------------------------------------------------
 set +e
-"$BE" patch "ssh://localhost/$REL_ORIGIN?master#merge master" \
+"$BE" patch "ssh://localhost/$REL_ORIGIN?master!" \
     > "$LOGS/04.patch-merge.out" 2> "$LOGS/04.patch-merge.err"
 RC_MERGE=$?
 set -e

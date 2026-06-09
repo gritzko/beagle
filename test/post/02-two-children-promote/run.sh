@@ -42,15 +42,15 @@ sleep 0.02; cp "$CASE/06.b-fix2-c2.txt" b.txt
 "$BE" post 'c2 msg'   >/dev/null
 
 # Step 6: switch to fix1, then absorb ?fix2's full stack via two
-# rebase-one iterations.  Each `be patch ?fix2#` picks the next
-# unabsorbed commit from ?fix2; `be post` commits with foster.
+# rebase-one iterations.  Each bare `be patch ?fix2` (next-one) picks the
+# next unabsorbed commit; `be post '#msg!'` commits with foster (forget).
 "$BE" get '?fix1' >/dev/null
 sleep 0.02
-must "$BE" patch '?fix2#'
-must "$BE" post 'absorb fix2-c1'
+must "$BE" patch '?fix2'
+must "$BE" post '#absorb fix2-c1!'
 sleep 0.02
-must "$BE" patch '?fix2#'
-must "$BE" post 'absorb fix2-c2'
+must "$BE" patch '?fix2'
+must "$BE" post '#absorb fix2-c2!'
 
 # Final assertion: cur (?fix1) wt has both edits.
 match "$CASE/07.a.want.txt" a.txt

@@ -1,7 +1,9 @@
 #!/bin/sh
-#  13-rebase-one — `be patch ?feat#` applies the next not-yet-replayed
-#  commit on feat (i.e. F1, the oldest unreachable) and records it as
-#  a foster on next POST.  Msg reused from F1.
+#  13-rebase-one — `be patch ?feat` (bare = next-one scope) applies the
+#  next not-yet-replayed commit on feat (i.e. F1, the oldest unreachable);
+#  `be post #!` (reuse msg + forget) records it as a foster on next POST.
+#  Msg reused from F1.  New bang model: scope at patch (bare `?feat` =
+#  one commit), provenance at post (`#!` = reuse + forget → foster).
 #
 #  Topology:
 #       T0 ── T1            ← cur (trunk)
@@ -41,9 +43,9 @@ F3=$(head_hex)
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T1" ] || fail "wt should be at T1"
 
-# THE ACTION: rebase one — applies F1 only.
-"$BE" patch '?feat#' >"$ETMP/r.out" 2>"$ETMP/r.err" \
-    || fail "be patch '?feat#' failed: $(cat $ETMP/r.err)"
+# THE ACTION: rebase one — bare `?feat` = next-one scope, applies F1 only.
+"$BE" patch '?feat' >"$ETMP/r.out" 2>"$ETMP/r.err" \
+    || fail "be patch '?feat' failed: $(cat $ETMP/r.err)"
 
 # T1 edited lib.c (greet=hello), F1 edited lib.c (sub block) → merged.
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/r.out" \
@@ -51,8 +53,8 @@ grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/r.out" \
 
 match "$CASE/06.lib.want.c" lib.c
 
-# POST with no msg — must reuse F1's msg.
-"$BE" post >/dev/null || fail "be post failed (expected F1 msg reuse)"
+# POST `#!` — reuse F1's msg + forget (foster, not parent).
+"$BE" post '#!' >/dev/null || fail "be post '#!' failed (expected F1 msg reuse)"
 R=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$R" 2>/dev/null) || fail "keeper get failed"

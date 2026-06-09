@@ -139,7 +139,10 @@ note "trunk tip after rewrite b=$TRUNK1"
 
 # --- step 5: squash feat into trunk ----------------------------------
 echo "=== 5. patch feat into trunk wt ==="
-sniff patch "?feat" 2>&1 | sed 's/^/  | /'
+#  DIS-030: whole-branch scope is the explicit `?feat!` (bare `?feat`
+#  now absorbs one commit).  Squash provenance (forget → foster) is set
+#  at POST via the trailing `!` on the message fragment (step 6).
+sniff patch "?feat!" 2>&1 | sed 's/^/  | /'
 [ -f c.txt ] || fail "patch did not bring in c.txt from feat"
 grep -qF '(feat mod)'  a.txt || fail "patch did not merge feat's a"
 grep -qF '(trunk mod)' b.txt || fail "patch clobbered trunk's b"
@@ -149,7 +152,8 @@ grep -qF 'c line 1'    c.txt || fail "patch's c.txt has wrong content"
 note "merged wt: a(feat), b(trunk), c(feat)"
 
 echo "=== 6. squash commit on trunk ==="
-sniff post -m "squash feat into trunk" >/dev/null
+#  DIS-031: `#msg!` = new message + forget (foster, not parent) = squash.
+sniff post "#squash feat into trunk!" >/dev/null
 SQUASH=$(head_hex)
 [ "$SQUASH" != "$TRUNK1" ] || fail "no new commit after squash post"
 note "squash commit=$SQUASH"

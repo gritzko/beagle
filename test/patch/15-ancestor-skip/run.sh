@@ -65,12 +65,13 @@ G1=$(head_hex)
 "$BE" get '?'  >/dev/null
 [ "$(head_hex)" = "$T1" ] || fail "wt should be at T1"
 
-# Step 1: squash gizmo.  Absorbs F1+F2+G1.
-"$BE" patch '?feat/gizmo' >"$ETMP/p1.out" 2>"$ETMP/p1.err" \
-    || fail "patch ?feat/gizmo failed: $(cat $ETMP/p1.err)"
+# Step 1: squash gizmo (whole-branch).  Absorbs F1+F2+G1.
+"$BE" patch '?feat/gizmo!' >"$ETMP/p1.out" 2>"$ETMP/p1.err" \
+    || fail "patch '?feat/gizmo!' failed: $(cat $ETMP/p1.err)"
 match "$CASE/07.lib.want_step1.c" lib.c
 
-"$BE" post '#absorb gizmo' >/dev/null || fail "post #1 failed"
+# `#msg!` = new msg + forget (foster) = squash.
+"$BE" post '#absorb gizmo!' >/dev/null || fail "post #1 failed"
 P1=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$P1" 2>/dev/null) || fail "keeper get $P1 failed"
@@ -82,8 +83,8 @@ echo "user scribble before step 2" >> note.txt
 
 # Step 2: squash feat.  Already-applied = ancestors(P1) which
 # includes G1, F2, F1, T1, T0.  Only F3 should weave in.
-"$BE" patch '?feat' >"$ETMP/p2.out" 2>"$ETMP/p2.err" \
-    || fail "patch ?feat failed: $(cat $ETMP/p2.err)"
+"$BE" patch '?feat!' >"$ETMP/p2.out" 2>"$ETMP/p2.err" \
+    || fail "patch '?feat!' failed: $(cat $ETMP/p2.err)"
 
 # Per-file status: lib.c → merged; note.txt → mod (ours-diverged,
 # theirs untouched, preserved).
@@ -111,11 +112,11 @@ grep -q "$F1" "$ETMP/p2.out" "$ETMP/p2.err" \
 grep -q "$F2" "$ETMP/p2.out" "$ETMP/p2.err" \
     && fail "F2 should have been skipped (already reachable via prior foster)"
 
-# POST with explicit msg: squash shape never auto-reuses msg
-# (per spec — multiple commits collapsed in general).  Even though
-# in this case only F3 was effectively new, the row is squash so
-# the user supplies the msg.
-"$BE" post '#absorb feat (F3)' >/dev/null || fail "be post failed"
+# POST with explicit msg + forget (`#msg!` → foster): whole-branch
+# scope never auto-reuses a msg (multiple commits collapsed in general).
+# Even though only F3 was effectively new, the row is WHOLE so the user
+# supplies the msg; the trailing `!` records feat.tip as a foster.
+"$BE" post '#absorb feat (F3)!' >/dev/null || fail "be post failed"
 P2=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$P2" 2>/dev/null) || fail "keeper get $P2 failed"

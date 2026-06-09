@@ -1,7 +1,9 @@
 #!/bin/sh
-#  12-merge — `be patch '?feat#merge feat into trunk'` records a
-#  `parent <feat.tip>` header on next POST (true merge, multi-parent).
-#  Msg comes from the patch row's fragment.
+#  12-merge — `be patch '?feat!'` (whole-branch scope) + `be post
+#  '#merge feat into trunk'` (new msg, no trailing `!` = refer back)
+#  records a `parent <feat.tip>` header on next POST (true merge,
+#  multi-parent).  New bang model: scope at patch (`?feat!` = whole),
+#  msg + provenance at post (`#msg` no `!` → parent).
 #
 #  Topology:
 #       T0 ── T1 ── T2     ← cur (trunk)
@@ -37,18 +39,18 @@ F2=$(head_hex)
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T2" ] || fail "wt should be at T2"
 
-# THE ACTION: merge feat into trunk with explicit msg.
-"$BE" patch '?feat#merge feat into trunk' \
+# THE ACTION: merge feat into trunk — `?feat!` = whole-branch scope.
+"$BE" patch '?feat!' \
     >"$ETMP/m.out" 2>"$ETMP/m.err" \
-    || fail "be patch '?feat#merge ...' failed: $(cat $ETMP/m.err)"
+    || fail "be patch '?feat!' failed: $(cat $ETMP/m.err)"
 
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/m.out" \
     || fail "expected 'patch merged lib.c'; got: $(cat $ETMP/m.err)"
 
 match "$CASE/06.lib.want.c" lib.c
 
-# POST with no own fragment — msg reused from patch row's "merge feat into trunk".
-"$BE" post >/dev/null || fail "be post failed"
+# POST `#merge feat into trunk` — new msg, no trailing `!` → parent (merge).
+"$BE" post '#merge feat into trunk' >/dev/null || fail "be post failed"
 M=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$M" 2>/dev/null) || fail "keeper get failed"

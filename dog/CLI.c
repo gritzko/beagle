@@ -53,13 +53,28 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     // Verb: first arg that matches a known verb name.  Argv order is
     // fixed: `be [verb] [flags] [URIs]` (https://replicated.wiki/html/wiki/Verbs.html).  No verb scan past
     // leading flags — flags before the verb don't classify here.
+    //
+    // DIS-031 verb-token bang: a trailing `!` on the verb (`post!`) is
+    // the `--force` modifier — match the bare verb and inject `--force`.
+    // Branch / message langauge uses `!` only as a query/fragment suffix,
+    // never on the verb token, so a bare `verb!` is unambiguous.
     if (ai < argn && verb_names != NULL) {
         a$rg(a, ai);
+        //  Candidate with any single trailing `!` shed, for the match.
+        a_dup(u8c, cand, a);
+        b8 bang = (!u8csEmpty(cand) && *u8csLast(cand) == '!');
+        if (bang) u8csShed1(cand);
         for (char const *const *vn = verb_names; *vn != NULL; vn++) {
             a_cstr(vs, *vn);
-            if ($eq(a, vs)) {
-                $mv(c->verb, a);
+            if ($eq(cand, vs)) {
+                $mv(c->verb, cand);
                 ai++;
+                if (bang) {
+                    a_cstr(force_flag, "--force");
+                    a_cstr(empty_force, "");
+                    (void)u8csbFeed1(c->flags, force_flag);
+                    (void)u8csbFeed1(c->flags, empty_force);
+                }
                 break;
             }
         }

@@ -79,7 +79,8 @@ note "?fix1 advanced to $FIX1_TIP"
 [ ! -e extra.txt ] \
     || fail "extra.txt should not be on trunk before patch"
 
-# 6. primary: patch ?./fix1 — absorb fix1's stack into trunk wt
+# 6. primary: patch ?./fix1 — fix1 has one divergent commit, so the
+#    bare (next-one) scope absorbs its whole stack into trunk wt.
 "$BE" patch "?./fix1" 2>"$ETMP/patch.err" >/dev/null \
     || { cat "$ETMP/patch.err"; fail "be patch ?./fix1 failed"; }
 [ -f extra.txt ] || fail "extra.txt missing in trunk wt after patch"
@@ -88,9 +89,10 @@ note "?fix1 advanced to $FIX1_TIP"
 note "patch landed extra.txt in trunk wt; trunk REFS still T1"
 
 # 7. primary: put + post merge — single-parent commit on trunk
+#    (`#msg!` = forget → foster, so the absorbed tip is not a parent).
 "$BE" put extra.txt >/dev/null \
     || fail "be put extra.txt failed"
-"$BE" post 'merge fix1' >/dev/null \
+"$BE" post '#merge fix1!' >/dev/null \
     || fail "be post merge fix1 failed"
 T_MERGE=$(head_hex)
 [ -n "$T_MERGE" ] && [ "$T_MERGE" != "$T1" ] \

@@ -178,21 +178,21 @@ ok64 SNIFFAtBaselineTreeSha(b8 cur_tip_only, sha1 *out, b8 *have_out);
 //  ULOG has no rows at all.
 ok64 SNIFFAtPatchChain(sha1b out);
 
-//  Shape-aware patch-row reader.  Per https://replicated.wiki/html/wiki/POST.html §POST "Parent /
-//  foster / picked assembly", POST needs more than just the sha
-//  list — it needs each row's URI shape (squash / cherry-pick /
-//  merge / rebase-one) to decide whether to emit a `parent` /
-//  `foster` / `picked` header, and the user-supplied
-//  msg (merge shape only).
+//  Scope-aware patch-row reader (DIS-030 / DIS-031).  POST needs each
+//  row's scope (PATCH_SCOPE_NEXT / WHOLE / NAMED) and a `named` flag to
+//  decide provenance: a NAMED row → `picked`; a branch-sourced row →
+//  `parent` (no post `!`) or `foster` (post `!`).  Provenance no longer
+//  comes from the row — it is decided at POST by the named-flag + the
+//  trailing `!` on the post fragment.
 //
 //  `entries` array is filled oldest-first with up to `cap` rows;
 //  on overflow extra rows are dropped (no error).  `*n_out` gets
-//  the number written.  Each entry's `msg` slice points into the
-//  ULOG buffer — valid until the next ULOG mutation.
+//  the number written.
 typedef struct {
-    u8   shape;     //  PATCH_SHAPE_SQUASH/CHERRY/MERGE/REBASE1
+    u8   shape;     //  PATCH_SCOPE_NEXT / WHOLE / NAMED
+    b8   named;     //  YES iff a named (`#sha`) row → POST emits `picked`
     sha1 sha;       //  resolved 40-hex theirs
-    u8cs msg;       //  merge: row's fragment; otherwise empty
+    u8cs msg;       //  reserved (no user merge-msg at PATCH any more)
 } sniff_pe;
 
 ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out);

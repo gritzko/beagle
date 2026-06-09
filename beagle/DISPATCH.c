@@ -130,14 +130,31 @@ ok64 BEActResolveRemote(cli *c) {
         if (u8csEmpty(u->authority)) continue;
         if (u8csEmpty(u->data))      continue;
 
+        //  DIS-030: a trailing `!` on the query is the PATCH whole-branch
+        //  scope modifier, not part of the ref.  Remember it, then re-add
+        //  it to the rewritten local `?<sha>!` so the scope survives the
+        //  transport→local rewrite all the way to sniff PATCH.  (The wire
+        //  fetch already sheds it in keeper's wcli_be_to_wire.)
+        b8 whole_scope = (!u8csEmpty(u->query) && *u8csLast(u->query) == '!');
+
+        //  Resolve against a `!`-shed view of the URI: the modifier sits
+        //  at the very tail (query is the last component on a fragment-
+        //  less patch URI), so a single tail-shed yields the bare ref the
+        //  local tracking ref was fetched under.
+        a_dup(u8c, resolve_in, u->data);
+        if (whole_scope && !u8csEmpty(resolve_in) &&
+            *u8csLast(resolve_in) == '!') {
+            u8csShed1(resolve_in);
+        }
+
         a_pad(u8, arena, 1024);
         uri resolved = {};
-        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), u->data);
+        ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), resolve_in);
         if (ro != OK || u8csLen(resolved.query) != 40) continue;
 
         u8cs frag_save = {u->fragment[0], u->fragment[1]};
 
-        //  Compose `?<sha>` or `?<sha>#<frag>` into the persistent
+        //  Compose `?<sha>[!]` or `?<sha>#<frag>` into the persistent
         //  scratch buffer; the result outlives this BE plan frame
         //  so BEBuildArgv can forward `u->data` to the sub-dog argv.
         //  Re-attach `#` whenever the fragment is PRESENT — including a
@@ -150,6 +167,9 @@ ok64 BEActResolveRemote(cli *c) {
         u8c *uri_before = u8bIdleHead(scratch);
         if (u8bFeed1(scratch, '?') != OK) continue;
         if (u8bFeed (scratch, resolved.query) != OK) continue;
+        if (whole_scope) {
+            if (u8bFeed1(scratch, '!') != OK) continue;
+        }
         if (has_frag) {
             if (u8bFeed1(scratch, '#') != OK) continue;
             if (!u8csEmpty(frag_save) &&

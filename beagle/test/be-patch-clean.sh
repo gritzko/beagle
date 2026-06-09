@@ -25,7 +25,9 @@ echo "x v2" > x.txt
 
 vc_snapshot before
 
-vc_step "be patch ?feat — pull feat into wt"
+vc_step "be patch ?feat — pull feat's one divergent commit into wt"
+#  DIS-030: bare `?feat` = next-one scope (feat has a single divergent
+#  commit here); single-parent provenance comes via `#!` at POST.
 vc_run patch "$BE" patch "?feat"
 
 vc_snapshot after_patch
@@ -40,8 +42,9 @@ pp=$(printf '%s\n' "$b" | awk -F= '$1=="patch_parents"{print $2}')
 [ "$pp" = "0" ] || vc_fail "patch_parents=$pp (want 0; PATCH erases provenance)"
 vc_note ".be/wtlog baseline single-tip after PATCH (history erased)"
 
-vc_step "be post merge feat — emit a single-parent commit on cur"
-vc_run merge "$BE" post 'merge feat'
+vc_step "be post '#merge feat!' — emit a single-parent commit on cur"
+#  DIS-031: `#msg!` = new msg + forget → foster (single-parent absorb).
+vc_run merge "$BE" post '#merge feat!'
 
 vc_snapshot after_post
 

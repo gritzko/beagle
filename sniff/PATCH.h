@@ -21,21 +21,27 @@
 #include "abc/BUF.h"
 #include "abc/URI.h"
 
-//  PATCH URI shapes (see https://replicated.wiki/html/wiki/PATCH.html §PATCH four-shapes table and
-//  sniff/AT.md "Patch row shapes").  Classified from URIPattern(u)
-//  bits plus u8csEmpty(u->fragment):
+//  PATCH URI scopes (DIS-030, blog/uris.mkd §"Git's dirty words").
+//  PATCH selects only the SCOPE of what is absorbed; the
+//  merge/squash/rebase/cherry provenance + message decision moved
+//  entirely to POST (DIS-031, keyed on the row's named-flag + a
+//  trailing `!` on the post fragment).  Classified from URIPattern(u)
+//  bits plus a trailing-`!` test on the query:
 //
-//    PATCH_SQUASH       URI_QUERY only                — `?br`
-//    PATCH_CHERRY       URI_FRAGMENT only             — `#hash`
-//    PATCH_MERGE        QUERY + FRAGMENT (non-empty)  — `?br#msg`
-//    PATCH_REBASE_ONE   QUERY + FRAGMENT (empty)      — `?br#`
+//    PATCH_SCOPE_NEXT    URI_QUERY, no `!`        — `?br`   one (next) commit
+//    PATCH_SCOPE_WHOLE   URI_QUERY, trailing `!`  — `?br!`  the whole branch
+//    PATCH_SCOPE_NAMED   URI_FRAGMENT only        — `#sha`  one named commit
+//
+//  The default flipped (DIS-030): bare `?br` was a whole-stack squash,
+//  now it absorbs ONE commit; the whole branch is the explicit `?br!`.
+//  The old empty-fragment `?br#` rebase-one marker and the `?br#msg`
+//  merge form are RETIRED — message moves to POST.
 #define PATCH_SHAPE_BAD     0
-#define PATCH_SHAPE_SQUASH  1
-#define PATCH_SHAPE_CHERRY  2
-#define PATCH_SHAPE_MERGE   3
-#define PATCH_SHAPE_REBASE1 4
+#define PATCH_SCOPE_NEXT    1
+#define PATCH_SCOPE_WHOLE   2
+#define PATCH_SCOPE_NAMED   3
 
-//  Classify the user's PATCH URI into one of the four shapes above.
+//  Classify the user's PATCH URI into one of the three scopes above.
 //  Returns PATCH_SHAPE_BAD if the URI is neither query- nor
 //  fragment-bearing.  Path-scoped URIs are routed to PATCHApplyFile
 //  by the caller and are not classified here.
@@ -47,11 +53,14 @@ u8 PATCHShape(uricp u);
 //              the caller via HOMEOpen).
 //  `u`         the user's parsed URI.  PATCH classifies via
 //              PATCHShape(u) and writes a `patch` row whose URI
-//              carries the resolved commit sha:
-//                  squash      → `?<sha>`
-//                  cherry-pick → `#<sha>`
-//                  merge       → `?<sha>#<msg>`
-//                  rebase-one  → `?<sha>#`
+//              carries the resolved commit sha + the scope:
+//                  next-one (`?br`)   → `?<sha>`
+//                  whole    (`?br!`)  → `?<sha>!`   (trailing `!`)
+//                  named    (`#sha`)  → `#<sha>`
+//              POST reads scope + the named-flag (query vs fragment
+//              slot) to choose provenance: a fragment-slot sha →
+//              `picked`; a query-slot sha → `parent` (no post `!`) or
+//              `foster` (post `!`).
 //
 //  Returns OK on clean merge (exit 0).  Returns PATCHCFLCT when at
 //  least one path ended up with conflict markers or a modify/delete

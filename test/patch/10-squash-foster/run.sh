@@ -1,7 +1,9 @@
 #!/bin/sh
-#  10-squash-foster — `be patch ?feat` (no fragment) absorbs feat's
-#  whole stack as a squash; next POST records ONE foster header
-#  pointing at feat.tip, no parent-from-feat in the DAG.
+#  10-squash-foster — `be patch ?feat!` (whole-branch scope) absorbs
+#  feat's whole stack; `be post '#squash feat!'` (new msg + trailing `!`
+#  = forget) records ONE foster header pointing at feat.tip, no
+#  parent-from-feat in the DAG.  New bang model: scope at patch (`?feat!`
+#  = whole), msg + provenance at post (`#msg!` → new msg + foster).
 #
 #  Topology:
 #       T0 ── T1 ── T2     ← cur (trunk)
@@ -46,9 +48,9 @@ F2=$(head_hex)
 "$BE" get '?..' >/dev/null
 [ "$(head_hex)" = "$T2" ] || fail "wt should be at T2 after switch back"
 
-# THE ACTION: squash feat into wt.
-"$BE" patch '?feat' >"$ETMP/patch.out" 2>"$ETMP/patch.err" \
-    || fail "be patch ?feat failed: $(cat $ETMP/patch.err)"
+# THE ACTION: squash feat into wt — `?feat!` = whole-branch scope.
+"$BE" patch '?feat!' >"$ETMP/patch.out" 2>"$ETMP/patch.err" \
+    || fail "be patch '?feat!' failed: $(cat $ETMP/patch.err)"
 
 # Per-file status: lib.c was edited on both sides → merged.
 grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/patch.out" \
@@ -68,8 +70,8 @@ nbanner=$(grep -Ec 'post[[:space:]]+\?' "$ETMP/patch.out")
 # Wt must carry every edit from both sides.
 match "$CASE/06.lib.want.c" lib.c
 
-# POST the squash.
-"$BE" post '#squash feat' >/dev/null || fail "be post failed"
+# POST the squash — `#squash feat!` = new msg + forget (foster).
+"$BE" post '#squash feat!' >/dev/null || fail "be post failed"
 SQ=$(head_hex)
 [ -n "$SQ" ] && [ "$SQ" != "$T2" ] || fail "post did not advance cur"
 

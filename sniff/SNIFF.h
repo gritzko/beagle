@@ -47,6 +47,9 @@ con ok64 POSTNOMSG     = 0x1961c757616710;     // can't auto-resolve commit msg
 con ok64 POSTCFLCT     = 0x1961c74c3d531d;     // tracked file has conflict markers
 con ok64 POSTNOFF      = 0x65871d5d83cf;     // not a fast-forward — use `be patch` to rebase
 con ok64 POSTDET       = 0x1961c74d39d;        // detached wt: POST refuses
+con ok64 POSTBANG      = 0x65871d2ca5d0;     // commit message may not end in `!`
+                                             // (DIS-031: trailing `!` is the
+                                             // forget modifier — use `#msg!`)
 
 //  Switch the open keeper to a different branch when `target_branch`
 //  is non-empty AND names a real on-disk shard (`<root>/.be/<branch>/`).

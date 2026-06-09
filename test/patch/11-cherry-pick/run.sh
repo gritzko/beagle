@@ -49,8 +49,8 @@ grep -E '[[:space:]]+merged[[:space:]]+(\./)?lib\.c$' "$ETMP/cp.out" \
 
 match "$CASE/05.lib.want.c" lib.c
 
-# POST with no fragment — msg must be reused from F1.
-"$BE" post >/dev/null || fail "be post (no msg) failed; expected F1 msg reuse"
+# POST `#!` — reuse msg from F1; named-sha row → picked regardless of `!`.
+"$BE" post '#!' >/dev/null || fail "be post '#!' failed; expected F1 msg reuse"
 CP=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$CP" 2>/dev/null) || fail "keeper get .#$CP failed"

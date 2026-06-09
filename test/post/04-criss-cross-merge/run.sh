@@ -155,10 +155,10 @@ GET_TIP=$(head_hex)
     || { echo "imported tip $GET_TIP != M2 $M2" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 3. `be patch ?fix1` — the criss-cross 3-way merge.
+# 3. `be patch ?fix1!` — the criss-cross 3-way whole-branch merge.
 # ------------------------------------------------------------------
 sleep 0.2                            # distinct mtime
-must "$BE" patch "?fix1" \
+must "$BE" patch "?fix1!" \
     > "$LOGS/02.patch.out" 2> "$LOGS/02.patch.err"
 
 #  No conflict markers anywhere in the wt.
@@ -171,10 +171,10 @@ for f in a.txt b.txt c.txt; do
 done
 
 # ------------------------------------------------------------------
-# 4. `be post sync` — single-parent commit on ?fix2 carrying the
-#    merged tree.
+# 4. `be post '#sync msg!'` — `#msg!` = new msg + forget → single-parent
+#    commit on ?fix2 carrying the merged tree (M1's tip as foster).
 # ------------------------------------------------------------------
-must "$BE" post 'sync msg' \
+must "$BE" post '#sync msg!' \
     > "$LOGS/03.post.out" 2> "$LOGS/03.post.err"
 
 POST_TIP=$(head_hex)

@@ -81,7 +81,7 @@ sleep 0.02; cp "$CASE/09.lib.f4.c" lib.c
 # DIS-018: `be patch` now returns OK (exit 0) on conflict and reports
 # `conf`; the markers stay in the file (POST is the safety net).
 set +e
-"$BE" patch '?./fix1' >"$OUT/patch.out" 2>"$OUT/patch.err"
+"$BE" patch '?./fix1!' >"$OUT/patch.out" 2>"$OUT/patch.err"
 PATCH_RC=$?
 set -e
 [ "$PATCH_RC" = "0" ] || {

@@ -64,7 +64,7 @@ match "$CASE/02.f.c1.c" f.c        # wt now carries C1's alpha edit
 # it — must NOT conflict, only C2's beta() edit applies.
 sleep 0.02
 rc=0
-"$BE" patch '?feat#merge feat' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
+"$BE" patch '?feat!' >"$ETMP/m.out" 2>"$ETMP/m.err" || rc=$?
 
 # (1) no conflict markers may appear in f.c (alpha is the same bytes
 #     on both sides — there is nothing to conflict over).

@@ -30,7 +30,7 @@
 #               edit   bye        → "Goodbye"
 #    C2 child : insert debug_    (after info)
 #
-#  After `be patch ?./child` from cur=T2 the wt's lib.c must hold ALL
+#  After `be patch ?./child!` (whole-branch) from cur=T2 the wt's lib.c must hold ALL
 #  four parent + three child edits interleaved (06.lib.want.c).
 
 . "$(dirname "$0")/../../lib/case.sh"
@@ -74,7 +74,7 @@ sleep 0.02; cp "$CASE/05.lib.c2.c" lib.c
 
 # THE TEST: 3-way merge with all three blob shas distinct →
 # patch_walk must hit the merge arm and invoke WEAVE via fetch_merge.
-"$BE" patch '?./child' >"$OUT/patch.out" 2>"$OUT/patch.err"
+"$BE" patch '?./child!' >"$OUT/patch.out" 2>"$OUT/patch.err"
 
 # wt must carry the integrated result; no conflict markers anywhere.
 match "$CASE/06.lib.want.c" lib.c

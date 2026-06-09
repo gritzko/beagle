@@ -56,20 +56,21 @@ git -C "$SEED" add . >/dev/null
 git -C "$SEED" commit -qm 'remote commit B'
 git -C "$SEED" push -q "$ORIGIN" master:master
 
-# 4. rebase-one B onto cur over the wire (the bug site).
+# 4. rebase-one B onto cur over the wire (the bug site).  DIS-030:
+#    next-one scope is the bare query (no `#`).
 cd wt
 sleep 0.02
-"$BE" patch "ssh://localhost/$REL_ORIGIN?master#" \
+"$BE" patch "ssh://localhost/$REL_ORIGIN?master" \
     >"$L/02.patch.out" 2>"$L/02.patch.err" \
-    || { echo "patch/21: be patch ?master# failed" >&2
+    || { echo "patch/21: be patch ?master failed" >&2
          cat "$L/02.patch.err" >&2; exit 1; }
 # sanity: B's change actually landed in the wt.
 grep -q two f.txt || { echo "patch/21: rebase didn't apply B (no 'two')" >&2; exit 1; }
 
-# 5. THE CHECK: `be post` with NO message must succeed (rebase-one
-#    auto-reuses B's subject).  Degraded-to-squash → POSTNOMSG → fail.
+# 5. THE CHECK: `be post '#!'` (reuse msg + forget) must succeed —
+#    rebase-one auto-reuses B's subject.  Degraded → POSTNOMSG → fail.
 sleep 0.02
-"$BE" post >"$L/03.post.out" 2>"$L/03.post.err" || {
-    echo "patch/21: be post (no msg) failed — rebase-one degraded to squash?" >&2
+"$BE" post '#!' >"$L/03.post.out" 2>"$L/03.post.err" || {
+    echo "patch/21: be post '#!' failed — rebase-one degraded to squash?" >&2
     cat "$L/03.post.err" >&2
     exit 1; }

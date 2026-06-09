@@ -1,5 +1,6 @@
 #include "sniff/SNIFF.h"
 #include "sniff/AT.h"
+#include "sniff/PATCH.h"   // PATCH_SCOPE_*
 #include "sniff/DEL.h"
 #include "sniff/GET.h"
 #include "sniff/LS.h"
@@ -287,14 +288,14 @@ ok64 SNIFFAtBoundaries() {
     }
 
     // --- Repro B: patch boundary resets only at get or commit-all post ---
-    //  Continue the timeline:
-    //    +300 patch ?heads/feat#cccc…   (merge — carries provenance)
-    //    +400 put   src/f.c             (makes the next post selective)
-    //    +500 post  ?heads/feat#dddd…   (SELECTIVE: put in its pd scope)
+    //  Continue the timeline (DIS-030 row format — `?<sha>!` = WHOLE):
+    //    +300 patch ?cccc…!  (whole-branch scope — carries provenance)
+    //    +400 put   src/f.c  (makes the next post selective)
+    //    +500 post  ?heads/feat#dddd…  (SELECTIVE: put in its pd scope)
     //  The selective +500 post is NOT commit-all, so it must not reset
     //  the patch boundary.  A patch-entries read after it must still
     //  surface the +300 patch row's provenance.
-    call(at_append_uri, base + 300, vx, "?heads/feat#cccccccccccccccccccccccccccccccccccccccc");
+    call(at_append_uri, base + 300, vx, "?cccccccccccccccccccccccccccccccccccccccc!");
     call(at_append_uri, base + 400, vu, "src/f.c");
     call(at_append_uri, base + 500, vp, "?heads/feat#dddddddddddddddddddddddddddddddddddddddd");
 
@@ -302,9 +303,11 @@ ok64 SNIFFAtBoundaries() {
         sniff_pe pent[16] = {};
         u32 n_pent = 0;
         call(SNIFFAtPatchEntries, pent, 16, &n_pent);
-        //  The +300 merge row's provenance must survive the selective post.
+        //  The +300 whole-branch row's provenance must survive the
+        //  selective post (DIS-030: branch-sourced → not named).
         want(n_pent == 1);
-        want(pent[0].shape == 3 /* MERGE → parent header */);
+        want(pent[0].shape == PATCH_SCOPE_WHOLE);
+        want(!pent[0].named);
     }
 
     call(SNIFFClose);

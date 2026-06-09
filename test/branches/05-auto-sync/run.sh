@@ -48,9 +48,9 @@ note "§25: trunk advanced to $T25_advance"
 # into cur's stack as foster.  Subsequent `be post` creates the new
 # fix1 tip with parent=F25_C1, foster=T25_advance.  Trunk stays put.
 cd "$WT"
-"$BE" patch "?..#" 2>"$ETMP/p25.err" >/dev/null \
-    || { cat "$ETMP/p25.err"; fail "§25: be patch ?..# failed"; }
-"$BE" post 'fix1 absorb trunk' 2>>"$ETMP/p25.err" >/dev/null \
+"$BE" patch "?.." 2>"$ETMP/p25.err" >/dev/null \
+    || { cat "$ETMP/p25.err"; fail "§25: be patch ?.. failed"; }
+"$BE" post '#fix1 absorb trunk!' 2>>"$ETMP/p25.err" >/dev/null \
     || { cat "$ETMP/p25.err"; fail "§25: be post (after patch) failed"; }
 T25_after=$(ref_tip "?")
 F25_after=$(ref_tip "?fix1")
@@ -102,9 +102,9 @@ F1_PRE=$(ref_tip "?fix1")
 F2_PRE=$(ref_tip "?fix1/fix2")
 [ "$F1_PRE" = "$F1_TIP" ] || fail "§26: ?fix1 unexpectedly moved"
 
-"$BE" patch "?./fix2#" 2>"$ETMP/p26.err" >/dev/null \
-    || { cat "$ETMP/p26.err"; fail "§26: be patch ?./fix2# failed"; }
-"$BE" post 'fix1 absorb fix2' 2>>"$ETMP/p26.err" >/dev/null \
+"$BE" patch "?./fix2" 2>"$ETMP/p26.err" >/dev/null \
+    || { cat "$ETMP/p26.err"; fail "§26: be patch ?./fix2 failed"; }
+"$BE" post '#fix1 absorb fix2!' 2>>"$ETMP/p26.err" >/dev/null \
     || { cat "$ETMP/p26.err"; fail "§26: be post (after patch) failed"; }
 
 F1_POST=$(ref_tip "?fix1")
@@ -151,9 +151,9 @@ F1_TIP_PRE=$(ref_tip "?fix1")
 TRUNK_PRE_27=$(ref_tip "?")
 [ "$(cur_branch)" = "fix1" ] || fail "§27: wt should be on ?fix1"
 
-"$BE" patch "?fix2#" 2>"$ETMP/p27.err" >/dev/null \
-    || { cat "$ETMP/p27.err"; fail "§27: be patch ?fix2# failed"; }
-"$BE" post 'fix1 absorb fix2 sibling' 2>>"$ETMP/p27.err" >/dev/null \
+"$BE" patch "?fix2" 2>"$ETMP/p27.err" >/dev/null \
+    || { cat "$ETMP/p27.err"; fail "§27: be patch ?fix2 failed"; }
+"$BE" post '#fix1 absorb fix2 sibling!' 2>>"$ETMP/p27.err" >/dev/null \
     || { cat "$ETMP/p27.err"; fail "§27: be post (after patch) failed"; }
 
 F2_TIP_POST=$(ref_tip "?fix2")

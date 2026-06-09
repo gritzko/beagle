@@ -2,6 +2,7 @@
 //
 #include "AT.h"
 #include "SNIFF.h"
+#include "PATCH.h"   // PATCH_SCOPE_*
 
 #include <stdio.h>
 #include <string.h>
@@ -486,6 +487,9 @@ ok64 SNIFFAtResolveRelativeURI(uri *u, path8b qbuf, u8b databuf,
 static void at_patch_row_sha_hex(u8cs out, uricp u) {
     if (u->query[0] != NULL && u8csLen(u->query) >= 40) {
         $mv(out, u->query);
+        //  DIS-030: a WHOLE-scope row is `?<sha>!` — shed the trailing
+        //  `!` modifier so only the 40-hex sha is decoded.
+        if (!u8csEmpty(out) && *u8csLast(out) == '!') u8csShed1(out);
         return;
     }
     if (u->fragment[0] != NULL && u8csLen(u->fragment) >= 40) {
@@ -496,23 +500,24 @@ static void at_patch_row_sha_hex(u8cs out, uricp u) {
     out[1] = NULL;
 }
 
-//  Classify a patch row's URI into one of the four PATCH_SHAPE_*
-//  values.  Mirrors PATCHShape() in sniff/PATCH.c but lives here
-//  to keep AT.c self-contained.  URI-001 Stage 4: rows are bare; the
-//  shape is read from URI structure alone (query / fragment presence
-//  and fragment emptiness), no locator.
+//  Classify a patch row's URI into a PATCH_SCOPE_* value (DIS-030).
+//  Mirrors PATCHShape() in sniff/PATCH.c but reads the stored row:
+//
+//    `?<sha>`   query, no trailing `!`  → PATCH_SCOPE_NEXT  (one commit)
+//    `?<sha>!`  query, trailing `!`     → PATCH_SCOPE_WHOLE (whole branch)
+//    `#<sha>`   fragment only           → PATCH_SCOPE_NAMED (one named)
+//
+//  POST keys provenance on the slot (query = branch-sourced, fragment =
+//  named); the WHOLE/NEXT split steers only the message-reuse heuristic.
 static u8 at_patch_row_shape(uricp u) {
     b8 has_q = (u->query[0]    != NULL);
     b8 has_f = (u->fragment[0] != NULL);
-    b8 frag_empty = has_f && u8csEmpty(u->fragment);
-    //  URI-001 Stage 4: the located cherry shape (`?<br>/<sha>`, no
-    //  fragment) is RETIRED — a query-only, fragment-less patch row is
-    //  always SQUASH.  Cherry-pick is the bare `#<sha>` form below;
-    //  located MERGE / REBASE_ONE rows carry a fragment (handled after).
-    if (has_q && !has_f) return 1;                  // SQUASH
-    if (!has_q &&  has_f && !frag_empty) return 2; // CHERRY
-    if ( has_q &&  has_f && !frag_empty) return 3; // MERGE
-    if ( has_q &&  has_f &&  frag_empty) return 4; // REBASE1
+    if (has_q) {
+        a_dup(u8c, q, u->query);
+        if (!u8csEmpty(q) && *u8csLast(q) == '!') return PATCH_SCOPE_WHOLE;
+        return PATCH_SCOPE_NEXT;
+    }
+    if (has_f && !u8csEmpty(u->fragment)) return PATCH_SCOPE_NAMED;
     return 0;  // BAD
 }
 
@@ -609,15 +614,13 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
         if (u8csLen(sha_hex) < 40) continue;
         sniff_pe *e = &entries[*n_out];
         e->shape = sh;
+        e->named = (sh == PATCH_SCOPE_NAMED) ? YES : NO;
         a_raw(sb, e->sha);
         a_dup(u8c, hx, sha_hex);
         if (HEXu8sDrainSome(sb, hx) != OK) continue;
-        if (sh == 3 /* MERGE */) {
-            $mv(e->msg, rec.uri.fragment);
-        } else {
-            e->msg[0] = NULL;
-            e->msg[1] = NULL;
-        }
+        //  No user merge-msg at PATCH any more (DIS-031); msg reserved.
+        e->msg[0] = NULL;
+        e->msg[1] = NULL;
         (*n_out)++;
     }
     done;

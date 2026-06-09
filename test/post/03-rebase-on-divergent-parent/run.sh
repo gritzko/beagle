@@ -116,16 +116,17 @@ FIX1_OLD_TIP=$(ref_tip "?fix1")
     || { echo "?fix1 tip drifted: want $FIX1_C1 got $FIX1_OLD_TIP" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 6. `be patch ?..#` then `be post` from ?fix1: absorbs T2 as foster.
-#    fix1 moves from C1 → C1' (parent C1, foster T2); trunk stays at T2.
+# 6. `be patch ?..` (next-one) then `be post '#…!'` (forget) from ?fix1:
+#    absorbs T2 as foster.  fix1 moves from C1 → C1' (parent C1, foster
+#    T2); trunk stays at T2.
 # ------------------------------------------------------------------
 sleep 0.02
-if ! "$BE" patch '?..#' > "$LOGS/11.patch.out" 2> "$LOGS/11.patch.err"; then
-    echo "be patch ?..# failed; stderr:" >&2
+if ! "$BE" patch '?..' > "$LOGS/11.patch.out" 2> "$LOGS/11.patch.err"; then
+    echo "be patch ?.. failed; stderr:" >&2
     cat "$LOGS/11.patch.err" >&2
     exit 1
 fi
-if ! "$BE" post 'fix1 absorb trunk' > "$LOGS/12.post.out" 2> "$LOGS/12.post.err"; then
+if ! "$BE" post '#fix1 absorb trunk!' > "$LOGS/12.post.out" 2> "$LOGS/12.post.err"; then
     echo "be post (after patch) failed; stderr:" >&2
     cat "$LOGS/12.post.err" >&2
     exit 1

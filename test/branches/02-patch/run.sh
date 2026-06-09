@@ -46,11 +46,11 @@ TRUNK_REFS=$(ref_tip "?")
 [ ! -e b.txt ] || fail "b.txt should not be on trunk before patch"
 note "trunk tip T_pre=$T_pre; wt has only x.txt"
 
-# 12. be patch ?./fix1
-echo "=== 12. be patch ?./fix1 — absorb stack into wt ==="
+# 12. be patch ?./fix1! (whole-branch scope)
+echo "=== 12. be patch ?./fix1! — absorb stack into wt ==="
 PATCH_OUT="$ETMP/patch.err"
-"$BE" patch "?./fix1" 2>"$PATCH_OUT" >/dev/null \
-    || fail "be patch ?./fix1 failed (stderr: $(cat "$PATCH_OUT"))"
+"$BE" patch "?./fix1!" 2>"$PATCH_OUT" >/dev/null \
+    || fail "be patch '?./fix1!' failed (stderr: $(cat "$PATCH_OUT"))"
 grep -q '^sniff: patch:' "$PATCH_OUT" \
     || fail "no 'sniff: patch:' summary in stderr"
 [ -f a.txt ] || fail "a.txt missing in trunk wt after patch"
@@ -60,11 +60,11 @@ TRUNK_REFS=$(ref_tip "?")
     || fail "trunk REFS moved by PATCH (must wait for POST)"
 note "patch landed a.txt + b.txt in wt; trunk REFS still T_pre"
 
-# 13. squash via put + post
+# 13. squash via put + post (`#msg!` = new msg + forget → foster)
 echo "=== 13. be put a.txt + be put b.txt + be post squash ==="
 "$BE" put a.txt >/dev/null || fail "be put a.txt (post-patch) failed"
 "$BE" put b.txt >/dev/null || fail "be put b.txt (post-patch) failed"
-"$BE" post 'squash msg' >/dev/null || fail "be post squash failed"
+"$BE" post '#squash msg!' >/dev/null || fail "be post squash failed"
 T_squash=$(head_hex)
 [ -n "$T_squash" ] || fail "no trunk tip after post squash"
 [ "$T_squash" != "$T_pre" ] || fail "post squash did not advance trunk tip"

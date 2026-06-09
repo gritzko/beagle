@@ -131,12 +131,14 @@ F3=$(head_hex)
 "$BE" get '?' >/dev/null
 [ "$(head_hex)" = "$T3" ] || fail "trunk should be at T3; head=$(head_hex)"
 
+#  DIS-030/031: rebase iter = bare `?feature` (next-one) + `post '#!'`
+#  (reuse msg + forget → foster).
 sleep 0.02
-"$BE" patch '?feature#' >"$ETMP/r1.out" 2>"$ETMP/r1.err" \
+"$BE" patch '?feature' >"$ETMP/r1.out" 2>"$ETMP/r1.err" \
     || fail "rebase iter 1 failed: $(cat $ETMP/r1.err)"
 match "$CASE/12.lib.r1.c" lib.c
 
-"$BE" post >/dev/null || fail "post iter 1 failed"
+"$BE" post '#!' >/dev/null || fail "post iter 1 failed"
 R1=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$R1" 2>/dev/null) || fail "keeper get .#$R1 failed"
@@ -148,11 +150,11 @@ echo "$BODY" | grep -q "^foster $FIXA$" \
     && fail "R1 leaked FixA into foster; body:\n$BODY"
 
 sleep 0.02
-"$BE" patch '?feature#' >"$ETMP/r2.out" 2>"$ETMP/r2.err" \
+"$BE" patch '?feature' >"$ETMP/r2.out" 2>"$ETMP/r2.err" \
     || fail "rebase iter 2 failed: $(cat $ETMP/r2.err)"
 match "$CASE/13.lib.r2.c" lib.c
 
-"$BE" post >/dev/null || fail "post iter 2 failed"
+"$BE" post '#!' >/dev/null || fail "post iter 2 failed"
 R2=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$R2" 2>/dev/null) || fail "keeper get .#$R2 failed"
@@ -166,11 +168,11 @@ echo "$BODY" | grep -q "^foster $FIXB$" \
     && fail "R2 leaked FixB into foster; body:\n$BODY"
 
 sleep 0.02
-"$BE" patch '?feature#' >"$ETMP/r3.out" 2>"$ETMP/r3.err" \
+"$BE" patch '?feature' >"$ETMP/r3.out" 2>"$ETMP/r3.err" \
     || fail "rebase iter 3 failed: $(cat $ETMP/r3.err)"
 match "$CASE/14.lib.r3.c" lib.c
 
-"$BE" post >/dev/null || fail "post iter 3 failed"
+"$BE" post '#!' >/dev/null || fail "post iter 3 failed"
 R3=$(head_hex)
 
 BODY=$("$KEEPER" get ".#$R3" 2>/dev/null) || fail "keeper get .#$R3 failed"
