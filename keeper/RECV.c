@@ -404,7 +404,18 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
     call(PKTu8sFeedFlush, u8bIdle(frame));
 
     a_dup(u8c, fdata, u8bData(frame));
-    return FILEFeedAll(out_fd, fdata);
+    ok64 wr = FILEFeedAll(out_fd, fdata);
+    //  POST-010: a no-op push (`n == 0` — peer was already at our tip, so
+    //  the client short-circuited, sent only a flush, and closed its read
+    //  end) leaves no client reading this `unpack ok` reply.  Our write
+    //  then races that early close and trips EPIPE → FILEFAIL, surfacing a
+    //  stray `Error: FILEFAIL` even though the push reported success.  With
+    //  zero ref updates to report there is nothing the client needs from
+    //  this reply, so a broken pipe here is a benign no-op — return OK.  A
+    //  real ref-update response (`n > 0`) failing to reach the client is a
+    //  genuine error and still surfaces as FILEFAIL.
+    if (wr != OK && n == 0 && errno == EPIPE) return OK;
+    return wr;
 }
 
 // --- colocated primary-wt advance ---
