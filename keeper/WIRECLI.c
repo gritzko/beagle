@@ -1374,6 +1374,75 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
     done;
 }
 
+//  POST-013: resolve a git remote's DEFAULT branch wire refname from a
+//  receive-pack advertisement we have already drained into `advbuf`.
+//  Used when a synthetic be-only coordinate (`?/<sub>/.<parent>`, the
+//  mounted-submodule state) is pushed to a git wire: the dot-branch has
+//  no git counterpart, so instead of refusing we land on the remote's
+//  default — exactly what `git push` (no refspec, push.default=current
+//  on a checkout of HEAD) targets.  Resolution order mirrors git
+//  `clone`'s default-branch discovery:
+//    1. the `refs/heads/*` entry whose sha equals the advertised symref
+//       HEAD's sha (the remote's checked-out default);
+//    2. `refs/heads/main`  (be's canonical trunk alias);
+//    3. `refs/heads/master`(classic git default);
+//    4. the first advertised `refs/heads/*` entry (legacy fallback).
+//  Feeds the chosen wire refname into `out` (pre-RESET).  Returns
+//  WIRECLNRF if the peer advertises no head at all (empty repo) — the
+//  caller then falls back to `refs/heads/main` so a first push still
+//  creates the default branch.
+static ok64 wpush_default_refname(u8b advbuf, u8b out) {
+    sane(u8bOK(out));
+    u8bReset(out);
+
+    a_cstr(master_lit, "master");
+    sha1 head_sha = {};
+    b8   have_head = NO;
+    //  Captured candidates (slice into advbuf, valid for this scan).
+    u8cs head_match = {NULL, NULL};   //  head whose sha == HEAD sha
+    u8cs main_ref   = {NULL, NULL};   //  refs/heads/main
+    u8cs master_ref = {NULL, NULL};   //  refs/heads/master
+    u8cs first_ref  = {NULL, NULL};   //  first refs/heads/* seen
+
+    u8cs scan = {u8bDataHead(advbuf), u8bIdleHead(advbuf)};
+    for (;;) {
+        u8cs line = {};
+        ok64 d = PKTu8sDrain(scan, line);
+        if (d == PKTFLUSH || d == PKTDELIM) break;
+        if (d != OK) break;
+        if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
+        wire_evt ev = {};
+        if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+        if (ev.kind != WIRE_REF) continue;
+        u8cs name = {ev.name[0], ev.name[1]};
+        if (u8csEq(name, GIT_HEAD_LIT)) {
+            head_sha = ev.sha; have_head = YES; continue;
+        }
+        //  Branch refs only — parse via GITParseRef (no pointer math).
+        //  GITParseRef folds nothing: the bare name is the refs/heads/
+        //  suffix verbatim, so `main`/`master` compare cleanly.
+        gitref_kind gk = GITREF_NONE;
+        u8cs bare = {};
+        if (GITParseRef(name, &gk, bare) != OK || gk != GITREF_BRANCH)
+            continue;
+        if (u8csEmpty(first_ref)) u8csMv(first_ref, name);
+        if (u8csEq(bare, GIT_MAIN_LIT))   u8csMv(main_ref, name);
+        if (u8csEq(bare, master_lit))     u8csMv(master_ref, name);
+        if (have_head && sha1Eq(&ev.sha, &head_sha) && u8csEmpty(head_match))
+            u8csMv(head_match, name);
+    }
+
+    u8cs chosen = {NULL, NULL};
+    if      (!u8csEmpty(head_match)) u8csMv(chosen, head_match);
+    else if (!u8csEmpty(main_ref))   u8csMv(chosen, main_ref);
+    else if (!u8csEmpty(master_ref)) u8csMv(chosen, master_ref);
+    else if (!u8csEmpty(first_ref))  u8csMv(chosen, first_ref);
+    else return WIRECLNRF;            //  empty repo — caller defaults to main
+
+    call(u8bFeed, out, chosen);
+    done;
+}
+
 //  Drain peer's refs advertisement.  Two outputs:
 //    * if `branch_refname` matches an advertised entry, capture its
 //      sha into `*out_sha` and set `*out_have=YES`;
@@ -1705,7 +1774,7 @@ u32 WIREPushLastObjCount = 0;
 
 static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                              keeper *k, sha1cp local_tip_in,
-                             int *wfd, int *rfd, b8 force) {
+                             int *wfd, int *rfd, b8 force, b8 to_default) {
     sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0);
     sha1 local_tip = *local_tip_in;
     WIREPushLastObjCount = 0;
@@ -1716,17 +1785,55 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     //  Also collect EVERY advertised tip — used below as roots for the
     //  "objects peer already has" walk, so we prune the local closure
     //  against the peer's full ref set, not just our specific branch.
+    //
+    //  POST-013: `to_default` (synthetic be-only coordinate → git wire)
+    //  means the refname passed in is a placeholder; the REAL target is
+    //  the remote's default branch, which we only learn from the advert.
+    //  Drain first with an unmatchable refname, resolve the default from
+    //  the buffered advert, then re-scan for our peer-tip below.
     sha1 peer_tip = {};
     b8   have_peer = NO;
     a_carve(sha1, peer_tips_b, WPUSH_PEER_TIPS_MAX);
     sha1 *peer_tips = sha1bDataHead(peer_tips_b);
     u32   peer_tips_n = 0;
-    ok64 pt = wpush_peer_tip(*rfd, advbuf, refname, &peer_tip, &have_peer,
+    ok64 pt = wpush_peer_tip(*rfd, advbuf,
+                             to_default ? (u8csc){NULL, NULL} : refname,
+                             &peer_tip, &have_peer,
                              peer_tips, &peer_tips_n,
                              WPUSH_PEER_TIPS_MAX);
     if (pt != OK) {
         trace("wpush: peer_tip drain failed\n");
         fail(pt);
+    }
+    a_pad(u8, defref_buf, 256);
+    if (to_default) {
+        //  Resolve the remote's default branch wire refname from the
+        //  buffered advert (HEAD-follow → main → master → first head).
+        //  Empty repo (WIRECLNRF) → default to refs/heads/main so the
+        //  first push still creates the canonical default branch.
+        ok64 dr = wpush_default_refname(advbuf, defref_buf);
+        if (dr != OK) {
+            if (dr != WIRECLNRF) fail(dr);
+            u8bReset(defref_buf);
+            call(GITFeedRef, defref_buf, GITREF_BRANCH, GIT_MAIN_LIT);
+        }
+        u8csMv(refname, u8bDataC(defref_buf));
+        trace("wpush: synthetic→git, default refname=%.*s\n",
+                (int)u8csLen(refname), (char const *)refname[0]);
+        //  Re-scan the buffered advert for the chosen refname's peer tip.
+        u8cs scan = {u8bDataHead(advbuf), u8bIdleHead(advbuf)};
+        for (;;) {
+            u8cs line = {};
+            ok64 d = PKTu8sDrain(scan, line);
+            if (d == PKTFLUSH || d == PKTDELIM) break;
+            if (d != OK) break;
+            if (u8csLen(line) > 0 && line[1][-1] == '\n') line[1]--;
+            wire_evt ev = {};
+            if (WIREClassify(line, WIRE_ADVERT, &ev) != OK) continue;
+            if (ev.kind != WIRE_REF) continue;
+            u8cs name = {ev.name[0], ev.name[1]};
+            if (u8csEq(name, refname)) { peer_tip = ev.sha; have_peer = YES; }
+        }
     }
     //  `have_ref` = peer advertises OUR target ref (drives the FF
     //  gate / old-sha on the update line).  `peer_tips` = total refs
@@ -1907,17 +2014,22 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
 }
 
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1cp local_tip_in, b8 force) {
+              sha1cp local_tip_in, b8 force, b8 to_default) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
     WIREPushLastObjCount = 0;  //  no-pack-on-error: reset before any return
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
     //  the trunk shard, which goes on the wire as `refs/heads/main`.
+    //  `to_default` (POST-013): ignore `local_branch` and target the
+    //  remote's advertised default branch (synthetic-coordinate → git
+    //  wire); the real refname is resolved inside wire_push_inner from
+    //  the drained advert.
     if (u8csEmpty(remote_uri)) return WIRECLFL;
     if (!local_tip_in || sha1empty(local_tip_in)) return WIRECLNRF;
 
-    //  Build the wire refname (refs/heads/X, trunk → main) once.
+    //  Build the wire refname (refs/heads/X, trunk → main) once.  When
+    //  `to_default` is set it is a placeholder, overwritten post-advert.
     a_pad(u8, refname_buf, 256);
     call(wcli_be_to_wire, refname_buf, local_branch);
     u8cs refname = {u8bDataHead(refname_buf), u8bIdleHead(refname_buf)};
@@ -1936,7 +2048,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     trace("wpush: spawned ok, pid=%d\n", (int)pid);
 
     try(wire_push_inner, remote_uri, refname, k, local_tip_in,
-                          &wfd, &rfd, force);
+                          &wfd, &rfd, force, to_default);
     ok64 rv = __;
 
     if (wfd >= 0) close(wfd);

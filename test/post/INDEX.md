@@ -57,14 +57,27 @@
   `NOBRANCH` (`sniff/SNIFF.h`); its low byte differs from `NONE`, so
   the plan runner aborts.  Local-only (no ssh): asserts non-zero exit,
   `NOBRANCH` on stderr, and that the keeper push stage never fired.
-* `25-dot-branch-no-git-wire/` — DIS-019: a submodule's current branch
-  is a be-only synthetic dot-coordinate (`?/<sub>/.<parent>`); posting
-  that worktree DIRECTLY to a git remote forged `refs/heads/.<x>/`
-  ("funny ref") after a full pack build.  `keeper_post` now skips the
-  wire (no pack) when the branch is a dot-coordinate and the resolved
-  remote is a git transport (`DOGIsGitTransport`).  Fully offline
-  (file://): asserts exit 0, no pack built, no funny ref, the bare
-  repo's refs byte-identical.
+* `25-dot-branch-no-git-wire/` — DIS-019 + POST-013: a submodule's
+  current branch is a be-only synthetic dot-coordinate
+  (`?/<sub>/.<parent>`); posting that worktree DIRECTLY to a git remote
+  would forge `refs/heads/.<x>/` ("funny ref") after a full pack build.
+  DIS-019 refused outright; POST-013 refines that — since the user named
+  a usable git target, the push now DEFAULTS to the remote's OWN default
+  branch (advertised symref HEAD, here `master`) instead of refusing.
+  Fully offline (file://): asserts exit 0, no funny ref, no dot-branch
+  forged on the remote, and the remote's default branch FF-advances to
+  cur's tip.  Fix in `keeper/KEEP.exe.c::keeper_post` (synthetic-coord
+  guard → `git_wire_default`) + `keeper/WIRECLI.c::WIREPush`
+  (`to_default` → `wpush_default_refname`, HEAD→main→master→first head).
+* `37-sub-synth-git-default-branch/` — POST-013: the synthetic-coordinate
+  → git-wire branch-resolution decision, both halves against one
+  `.gitmodules`-declared git remote.  DEFAULT: `be post <git-remote>`
+  (no `?branch`) on a sub on `?/<sub>/.<parent>` resolves to the remote's
+  advertised default branch `main` (distinct from post/25's `master`, so
+  a hard-coded fallback would mis-resolve), without touching the
+  non-default `other` branch.  EXPLICIT: `be post <git-remote>?other`
+  still pushes to the named ref `other` (the POST-013 default does not
+  override an explicit `?branch`).  Fully offline (file://).
 * `29-sub-clean-nested-remote-push/` — SUBS-006: `be post
   ssh://host/<parent>.git?master` (git peer) recurses the local-commit
   step into mounted subs.  A CLEAN, detached nested sub forwarded

@@ -204,8 +204,16 @@ ok64 WIREFetchAll(u8csc remote_uri);
 //  `force=YES` skips the wire-side FF gate (peer's tip need not be
 //  an ancestor of local_tip).  Used by PUT-to-remote per https://replicated.wiki/html/wiki/Verbs.html
 //  §PUT Design invariant 9.  POST-to-remote always passes NO.
+//
+//  `to_default=YES` (POST-013) ignores `local_branch` and pushes onto
+//  the remote's DEFAULT branch, resolved from the receive-pack advert
+//  (symref HEAD → `refs/heads/main` → `refs/heads/master` → first head,
+//  empty repo → `refs/heads/main`).  Used when a synthetic be-only
+//  coordinate (`?/<sub>/.<parent>`, the mounted-submodule state) is
+//  pushed to a git wire: the dot-branch has no git counterpart, so the
+//  push lands on the remote's default branch instead of refusing.
 ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
-              sha1cp local_tip, b8 force);
+              sha1cp local_tip, b8 force, b8 to_default);
 
 //  Diagnostic: number of objects placed into the pack by the most
 //  recent `WIREPush` (the size of the walked closure after have-set

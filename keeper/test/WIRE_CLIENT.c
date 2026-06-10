@@ -327,7 +327,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(uri, branch_cs, &tip, NO);
+        ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
         want(po == OK);
 
         KEEPClose();
@@ -381,7 +381,7 @@ ok64 WIRECLIENTtest_round_trip() {
         u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
         want(HEXu8sDrainSome(bin, hx) == OK);
-        ok64 po = WIREPush(uri, branch_cs, &tip, NO);
+        ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
         want(po == OK);
 
         KEEPClose();
@@ -645,7 +645,7 @@ ok64 WIRECLIENTtest_incremental_prune() {
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
         HEX2SHA(tip2, hex2);
-        ok64 po = WIREPush(uri, branch_cs, &tip2, NO);
+        ok64 po = WIREPush(uri, branch_cs, &tip2, NO, NO);
         want(po == OK);
         nshas = WIREPushLastObjCount;
 
@@ -702,7 +702,7 @@ ok64 WIRECLIENTtest_uptodate_nopack() {
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
         HEX2SHA(tip1, hex1);
-        ok64 po = WIREPush(uri, branch_cs, &tip1, NO);
+        ok64 po = WIREPush(uri, branch_cs, &tip1, NO, NO);
         want(po == OK);
         nshas = WIREPushLastObjCount;
 
@@ -756,7 +756,7 @@ ok64 WIRECLIENTtest_nonff_nopack() {
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
         HEX2SHA(tip1, hex1);
-        po = WIREPush(uri, branch_cs, &tip1, NO);
+        po = WIREPush(uri, branch_cs, &tip1, NO, NO);
         nshas = WIREPushLastObjCount;
 
         KEEPClose();

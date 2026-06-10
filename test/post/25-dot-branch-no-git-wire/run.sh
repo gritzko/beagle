@@ -1,28 +1,32 @@
 #!/bin/sh
-#  post/25-dot-branch-no-git-wire — DIS-019.  A be-only synthetic
-#  dot-coordinate branch (`?/<sub>/.<parent>[/<br>]`, branch[0]=='.';
-#  the form a mounted beagle submodule sits on) must NEVER reach a git
-#  wire.  Posting such a worktree DIRECTLY to a git remote would derive
-#  the dot-branch as the wire refname and send `refs/heads/.<…>`, which
-#  the git peer rejects as a "funny ref" — but only AFTER a full pack
-#  build (WIRECLFL / BEDOGEXIT).
+#  post/25-dot-branch-no-git-wire — DIS-019 + POST-013.
 #
-#  The fix (keeper/KEEP.exe.c keeper_post): when the resolved branch is
-#  a dot-coordinate AND the remote is a git wire (DOGIsGitTransport, or
-#  a local file:// path that is a git repo), print a one-line note and
-#  return OK — build NO pack, forge NO ref.  The local commit (sniff)
-#  already happened; a beagle sub can't live in a git remote.
+#  A be-only synthetic dot-coordinate branch (`?/<sub>/.<parent>[/<br>]`,
+#  branch[0]=='.'; the normal cur of a mounted beagle submodule after a
+#  parent POST) has no git counterpart — a git peer's receive-pack would
+#  reject `refs/heads/.<…>` as a "funny ref" AFTER a full pack build.
+#
+#  DIS-019 used to REFUSE such a push outright ("be-only synthetic
+#  coordinate; not pushing").  POST-013 refines that: the user DID name a
+#  usable git target (`be post <git-remote>`), so instead of refusing we
+#  DEFAULT to the remote's OWN default branch (advertised symref HEAD,
+#  else main/master) — exactly what a `git push` of a HEAD checkout does.
+#  No more `?main` friction; the dot-branch is forged onto NO ref, the
+#  remote's default branch FF-advances to cur's tip.
+#
+#  The synthetic coordinate stays meaningful to a be peer (beagle
+#  protocol), where the dot-branch is a real REFS tip — that path is
+#  unchanged; this case only exercises the GIT-wire default.
 #
 #  Fully offline (file://), no ssh — runs under WITH_SSH=OFF.
 #
-#    1. Bare git remote `subA.git`; seed one commit on master.
+#    1. Bare git remote `subA.git` on `master`; seed one commit.
 #    2. Clone it into a beagle worktree (git source → keeper dest).
 #    3. `be post '#…' ?/<proj>/.<parent>` — commit onto a SYNTHETIC
 #       dot-coordinate branch, putting cur on `?/subA/.parentproj`.
-#    4. `be post file://localhost/<subA.git>` — direct git-remote post.
-#       MUST: exit 0, build no pack, forge no `refs/heads/.parentproj`,
-#       print the be-only-coordinate note, leave the bare repo's refs
-#       byte-identical.
+#    4. `be post file://localhost/<subA.git>` — direct git-remote post,
+#       NO `?branch`.  MUST: exit 0, push cur onto the remote's default
+#       branch `master` (FF), forge NO `refs/heads/.parentproj`.
 
 . "$(dirname "$0")/../../lib/case.sh"
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -33,9 +37,6 @@ command -v git >/dev/null 2>&1 || { echo "SKIP: git not found" >&2; exit 0; }
 git init -q --bare -b master subA.git \
     || { echo "FAIL(setup): git init --bare subA.git" >&2; exit 1; }
 git -C subA.git config protocol.file.allow always
-#  A git peer rejects a funny ref regardless of denyCurrentBranch; set
-#  it anyway so a (buggy) normal-looking push wouldn't trip on that
-#  instead and mask the funny-ref check.
 git -C subA.git config receive.denyCurrentBranch ignore
 
 git init -q -b master seed
@@ -69,9 +70,12 @@ printf 'subblob2\n' >> wt/s.txt
 grep -q 'post	?/subA/.parentproj#' wt/.be/wtlog \
     || { echo "FAIL: wt not on the synthetic dot-branch" >&2
          cat wt/.be/wtlog >&2; exit 1; }
+cur=$(awk -F'\t' '$2=="post" { h=$3; sub(/^.*#/, "", h); last=h }
+                  END { print last }' wt/.be/wtlog)
+[ -n "$cur" ] || { echo "FAIL: no cur tip after dot-branch commit" >&2; exit 1; }
 
 # --- 4. THE CHECK: direct git-remote post of the dot-branch wt -------
-refs_before=$(git -C subA.git show-ref | sort)
+master_before=$(git -C subA.git rev-parse master)
 ( cd wt && "$BE" post "file://localhost${SCRATCH}/subA.git" \
         >../04.gitpush.out 2>../04.gitpush.err )
 rc=$?
@@ -80,27 +84,24 @@ rc=$?
 [ "$rc" = 0 ] || { echo "FAIL: dot-branch git post exited $rc (expected 0)" >&2
                    cat 04.gitpush.err >&2; exit 1; }
 
-#  (b) MUST NOT have built a pack (the whole point — bail BEFORE the
-#  expensive, doomed pack build).
-! grep -q 'pack built' 04.gitpush.err \
-    || { echo "FAIL: a pack was built for a doomed dot-branch git push" >&2
-         cat 04.gitpush.err >&2; exit 1; }
-
-#  (c) MUST NOT have forged / attempted a funny ref.
+#  (b) MUST NOT have forged / attempted a funny ref.
 ! grep -q 'funny ref' 04.gitpush.err \
     || { echo "FAIL: forged a funny ref refs/heads/.<…> on the git wire" >&2
          cat 04.gitpush.err >&2; exit 1; }
 
-#  (d) MUST print the be-only-coordinate note so the user knows why.
-grep -q 'be-only synthetic coordinate' 04.gitpush.err \
-    || { echo "FAIL: missing the be-only-coordinate skip note" >&2
+#  (c) MUST NOT have created a `refs/heads/.parentproj` on the remote.
+git -C subA.git show-ref | grep -q 'refs/heads/\.' \
+    && { echo "FAIL: forged a dot-coordinate ref on the git remote" >&2
+         git -C subA.git show-ref >&2; exit 1; }
+
+#  (d) the remote's DEFAULT branch (master) FF-advanced to cur — the
+#  POST-013 behaviour: a synthetic-coordinate git push defaults to the
+#  remote's own default branch instead of refusing.
+master_after=$(git -C subA.git rev-parse master)
+[ "$master_after" = "$cur" ] \
+    || { echo "FAIL: remote master did not advance to cur (POST-013)" >&2
+         printf 'before:%s\ncur   :%s\nafter :%s\n' \
+                "$master_before" "$cur" "$master_after" >&2
          cat 04.gitpush.err >&2; exit 1; }
 
-#  (e) the bare git remote's refs are byte-identical — nothing pushed.
-refs_after=$(git -C subA.git show-ref | sort)
-[ "$refs_before" = "$refs_after" ] \
-    || { echo "FAIL: dot-branch post mutated the git remote's refs" >&2
-         printf 'before:\n%s\nafter:\n%s\n' "$refs_before" "$refs_after" >&2
-         exit 1; }
-
-echo "post/25-dot-branch-no-git-wire: OK"
+echo "post/25-dot-branch-no-git-wire: OK (default-branch push: master $master_before -> $cur)"

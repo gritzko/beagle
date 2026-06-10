@@ -899,23 +899,30 @@ static ok64 keeper_post(keeper *k, cli *c) {
     }
     a_dup(u8c, remote_uri, u8bDataC(ubuf));
 
-    //  DIS-019: a be-only synthetic dot-coordinate branch
-    //  (`?/<sub>/.<parent>[/<br>]`, branch[0]=='.') must never reach a
-    //  git wire — the peer's receive-pack rejects `refs/heads/.<…>` as
-    //  a "funny ref" AFTER a full pack build.  The local commit (sniff)
-    //  already happened; there is nothing to push to a git peer (a
-    //  beagle sub can't live in a git remote).  Skip the push for a git
-    //  transport; be://-style dot-branch pushes (beagle protocol) and
-    //  normal-branch git pushes are unaffected.
+    //  DIS-019 / POST-013: a be-only synthetic dot-coordinate branch
+    //  (`?/<sub>/.<parent>[/<br>]`, branch[0]=='.') is the normal cur of
+    //  a mounted beagle submodule after a parent POST.  It has no git
+    //  counterpart: a git peer's receive-pack rejects `refs/heads/.<…>`
+    //  as a "funny ref" AFTER a full pack build.  The synthetic
+    //  coordinate is meaningful ONLY to a be peer (beagle protocol),
+    //  where the dot-branch is a real REFS tip — push it there as-is.
+    //
+    //  For a GIT wire the user nonetheless named a usable git target
+    //  (`be post <git-remote>/abc`).  Rather than refuse (the old DIS-019
+    //  behavior — friction: the user had to remember `?main`), default
+    //  to the remote's OWN default branch (advertised symref HEAD, else
+    //  main/master — resolved on the wire inside WIREPush).  An explicit
+    //  `?branch` is NOT synthetic (branch[0] != '.') and pushes to that
+    //  named ref exactly as before.
+    b8 git_wire_default = NO;
     if (!$empty(branch) && branch[0][0] == '.' &&
         keep_post_is_git_wire(remote_uri)) {
+        git_wire_default = YES;
         fprintf(stderr,
                 "keeper: post: branch ?%.*s is a be-only synthetic "
-                "coordinate; not pushing to git remote %.*s\n",
+                "coordinate; pushing to git remote %.*s default branch\n",
                 (int)$len(branch), (char const *)branch[0],
                 (int)$len(remote_uri), (char const *)remote_uri[0]);
-        u8bUnMap(rarena);
-        done;
     }
 
     //  4. Push.  WIREPush handles peer-tip advert + pack build + status.
@@ -949,7 +956,11 @@ static ok64 keeper_post(keeper *k, cli *c) {
     //  `--force` skips this cache-side FF check entirely (PUT's
     //  force-push path per https://replicated.wiki/html/wiki/PUT.html §PUT Design invariant 9).
     b8 force = CLIHas(c, "--force") ? YES : NO;
-    if (!force) {
+    //  Cache-side FF probe keys on the local (synthetic) branch; for a
+    //  git-wire default push the wire target is the remote's OWN default
+    //  branch, so the synthetic-keyed cache row is irrelevant — skip the
+    //  cache probe and let WIREPush's live advert-side FF gate decide.
+    if (!force && !git_wire_default) {
         a_pad(u8, ffarena, 1024);
         uri resolved = {};
         a_dup(u8c, in_uri, g->data);
@@ -986,7 +997,8 @@ static ok64 keeper_post(keeper *k, cli *c) {
         }
     }
 
-    ok64 pu = WIREPush(remote_uri, local_branch, &at_tip, force);
+    ok64 pu = WIREPush(remote_uri, local_branch, &at_tip, force,
+                       git_wire_default);
     u8bUnMap(rarena);
     if (pu != OK) return pu;
 
@@ -1004,7 +1016,11 @@ static ok64 keeper_post(keeper *k, cli *c) {
         (void)URILexer(&gk);
         u8csMv(gk.data, remote_uri);
     }
-    if (u8csEmpty(branch)) {
+    //  A git-wire default push landed on the remote's default branch
+    //  (its alias is be-side trunk), NOT on the local synthetic
+    //  coordinate — record the cache row keyed on trunk (bare `?`) so a
+    //  subsequent fetch resolves it, never on the synthetic dot-branch.
+    if (u8csEmpty(branch) || git_wire_default) {
         //  Present-but-empty query so DOGCanonURIFeed emits the `?`.
         gk.query[0] = remote_uri[1];
         gk.query[1] = remote_uri[1];
@@ -1023,8 +1039,9 @@ static ok64 keeper_post(keeper *k, cli *c) {
     call(REFSAppendVerb, $path(keepdir), REFSVerbPost(), remote_key, v);
 
     fprintf(stdout, "keeper: pushed %s%.*s → %.*s\n",
-            $empty(branch) ? "(trunk)" : "?",
-            (int)$len(branch), (char *)branch[0],
+            (git_wire_default || $empty(branch)) ? "(default)" : "?",
+            git_wire_default ? 0 : (int)$len(branch),
+            git_wire_default ? (char *)"" : (char *)branch[0],
             (int)$len(at_sha), (char *)at_sha[0]);
     done;
 }
