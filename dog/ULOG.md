@@ -65,11 +65,17 @@ clock jumps (NTP steps, VM time travel, `date -s`).
 - **Sidecar index**: hidden sibling at `<dir>/.<base>.idx`, a packed
   array of `wh128` entries — `{u64 ts-key, u64 (offset40, verbHash20,
   type4)}`.  One entry per row plus a tail sentinel that records the
-  log's `(mtime, byte size)` as of the last close.  On open, if the
-  sentinel's mtime AND size match the log file's current `fstat`, the
-  sidecar is mapped as-is and the open completes in O(1) — no scan,
-  no row re-parse.  Any mismatch falls through to a linear rebuild
-  (and the rebuilt index is written back to the sidecar).
+  log's `(mtime, byte size)` as of the last close.  On open, the sidecar
+  is trusted as-is (O(1) — no scan, no row re-parse) only when ALL of:
+  the sentinel's mtime matches the log's current `fstat`, the sentinel's
+  size matches, AND the index's LAST real row actually spans to the
+  log's content end (`ulog_idx_spans_log`).  The row-coverage check
+  guards against a "false-fresh" sidecar (DIS-033): a clone-copied or
+  sentinel-only-refreshed sidecar can carry a matching `(mtime, size)`
+  while its row entries describe just an older, shorter prefix — reading
+  it would silently drop the tail rows.  Any failing condition falls
+  through to a linear rebuild (and the rebuilt index is written back to
+  the sidecar).
 - **In RAM**: the sidecar mapping itself.  Reads index into it directly.
 
 The mmap-backed log text is the ground truth; the sidecar is a derived
@@ -156,8 +162,12 @@ A genuinely all-NUL or 0-byte file is still treated as empty.
 - **No concurrent writers**.  Single-writer by construction; use an
   external lock (`flock`, keeper's shard lock, etc.) if multiple
   processes may append.
-- **No partial-trust sidecar**.  The freshness check is whole-file
-  (mtime AND size); there is no per-entry validation.  A torn sidecar
-  whose sentinel happens to match the log's mtime+size by accident
-  would be trusted — but the sentinel is the LAST write, so a torn
-  sidecar normally has a sentinel that does NOT match.
+- **Coarse + tail-coverage freshness**.  The freshness check is
+  whole-file `(mtime, size)` plus a single tail-row span check
+  (`ulog_idx_spans_log`): the last indexed row must reach the log's
+  content end.  There is still no full per-entry validation, but the
+  tail check catches the "false-fresh" sidecar (DIS-033) whose
+  `(mtime, size)` match the log while its rows cover only a shorter
+  prefix — exactly the shape a clone-copied or sentinel-only-refreshed
+  sidecar can take.  A torn sidecar whose sentinel matches by accident
+  is likewise caught when its rows do not span the log.

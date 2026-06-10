@@ -651,6 +651,106 @@ static ok64 T_sidecar_stale_rebuild(void) {
     done;
 }
 
+//  DIS-033: a "false-fresh" sidecar — its tail SENTINEL records the
+//  current log's (size, mtime) but its ROW entries describe only an
+//  older, shorter PREFIX (rows appended after that prefix are missing).
+//  The (size, mtime) signal alone is too coarse to catch this: a
+//  sidecar streamed/copied during a clone, or one whose sentinel was
+//  refreshed without its rows being rebuilt, lands in exactly this
+//  shape.  Reading it drops the tail rows — `SNIFFAtTailOf` then misses
+//  the wt's current tip and `be log:` resolves no `--at`.  Open must
+//  detect that the indexed rows do not span the whole log and rebuild,
+//  surfacing every row (here: all 4, with tail ts == 403).
+static ok64 T_sidecar_false_fresh(void) {
+    sane(1);
+    rm_tmp("/tmp/ulog-ff.log");
+    rm_tmp("/tmp/.ulog-ff.log.idx");
+    LOGPATH(path, "/tmp/ulog-ff.log");
+
+    saved_uri s = {};
+    call(parse_uri_lit, &s, "?heads/main");
+
+    //  Session 1: append the first THREE rows, close (writes a sidecar
+    //  whose entries cover exactly those 3 rows).  Snapshot that sidecar.
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        for (u32 i = 0; i < 3; i++) {
+            ulogrec r = rec_of((ron60)(400 + i), verb_of("get"), &s);
+            call(ULOGAppendAt, l_data, l_idx, &r);
+        }
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+    //  Snapshot the 3-row sidecar bytes (rows-prefix; its own sentinel
+    //  is discarded below — we want a sentinel that matches the FULL log).
+    u8 prefix_idx[4 * 16] = {};
+    u32 prefix_len = 0;
+    {
+        int fd = open("/tmp/.ulog-ff.log.idx", O_RDONLY);
+        if (fd < 0) fail(TESTFAIL);
+        ssize_t got = read(fd, prefix_idx, sizeof(prefix_idx));
+        close(fd);
+        if (got <= 16) fail(TESTFAIL);
+        prefix_len = (u32)got;              // 3 rows + 1 sentinel = 64 B
+    }
+
+    //  Session 2: append a FOURTH row, close (sidecar now covers 4 rows
+    //  and its sentinel records the full log's size+mtime).  Snapshot the
+    //  full-log sentinel (the last 16 bytes).
+    u8 full_sentinel[16] = {};
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        ulogrec r = rec_of((ron60)403, verb_of("get"), &s);
+        call(ULOGAppendAt, l_data, l_idx, &r);
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+    {
+        int fd = open("/tmp/.ulog-ff.log.idx", O_RDONLY);
+        if (fd < 0) fail(TESTFAIL);
+        u8 buf[5 * 16] = {};
+        ssize_t got = read(fd, buf, sizeof(buf));
+        close(fd);
+        if (got < 32) fail(TESTFAIL);       // at least 1 row + sentinel
+        memcpy(full_sentinel, buf + (got - 16), 16);
+    }
+
+    //  Forge the false-fresh sidecar: the 3-row PREFIX entries (drop the
+    //  prefix's own size=3 sentinel) followed by the FULL-log sentinel.
+    //  Now (size, mtime) match the 4-row log, but the row entries only
+    //  describe the first 3 rows.
+    {
+        int fd = open("/tmp/.ulog-ff.log.idx", O_RDWR | O_TRUNC);
+        if (fd < 0) fail(TESTFAIL);
+        u32 rows_bytes = prefix_len - 16;   // drop prefix sentinel
+        if (write(fd, prefix_idx, rows_bytes) != (ssize_t)rows_bytes) {
+            close(fd); fail(TESTFAIL);
+        }
+        if (write(fd, full_sentinel, 16) != 16) { close(fd); fail(TESTFAIL); }
+        close(fd);
+    }
+
+    //  Reopen: the freshness check sees matching (size, mtime) but the
+    //  indexed rows stop short of the log's end — it must REBUILD and
+    //  surface all 4 rows (tail ts == 403), not the stale 3-row prefix.
+    {
+        u8bp    l_data = NULL;
+        wh128bp l_idx  = NULL;
+        call(ULOGOpen, &l_data, &l_idx, path);
+        want(ULOGCount(l_idx) == 4);        // rebuilt — not the stale 3
+        ulogrec g = {};
+        call(ULOGTail, l_data, l_idx, &g);
+        want(g.ts == 403);
+        call(ULOGClose, l_data, &l_idx, YES);
+    }
+
+    rm_tmp("/tmp/ulog-ff.log");
+    rm_tmp("/tmp/.ulog-ff.log.idx");
+    done;
+}
+
 //  Sidecar fast-path: when the log is unchanged (same size AND same
 //  mtime), Open must trust the on-disk sidecar verbatim — NO rebuild
 //  scan.  Verified by poking a bogus verb-hash into a row entry
@@ -1119,6 +1219,7 @@ ok64 ULOGtest(void) {
     fprintf(stderr, "T_aborted_leftover...\n"); call(T_aborted_leftover);
     fprintf(stderr, "T_sidecar_reuse...\n");        call(T_sidecar_reuse);
     fprintf(stderr, "T_sidecar_stale_rebuild...\n");call(T_sidecar_stale_rebuild);
+    fprintf(stderr, "T_sidecar_false_fresh...\n");  call(T_sidecar_false_fresh);
     fprintf(stderr, "T_sidecar_fast_path...\n");    call(T_sidecar_fast_path);
     fprintf(stderr, "T_sidecar_ro_fallback...\n");  call(T_sidecar_ro_fallback);
     fprintf(stderr, "T_verb_prefilter...\n");       call(T_verb_prefilter);

@@ -326,9 +326,34 @@ static ron60 ulog_log_mtime(u8b data) {
     return fs.mtime;
 }
 
+//  Coverage check: the index is only fresh if its LAST real row reaches
+//  the end of the log's content.  The sentinel's (size, mtime) signal is
+//  coarse — a sidecar copied/streamed during a clone, or one whose
+//  sentinel was refreshed without the row entries being rebuilt, can
+//  carry a (size, mtime) that matches the current log while its row
+//  entries still describe an OLDER, shorter prefix (DIS-033).  Reading
+//  such a "false-fresh" index drops every row appended after the stale
+//  prefix — `SNIFFAtTailOf` then misses the wt's current tip and `be
+//  log:` resolves no `--at`.  Verifying that the last indexed row's
+//  byte span actually ends at `actual_size` makes the staleness check
+//  catch this: a short prefix can never reach the (longer) real tail.
+static b8 ulog_idx_spans_log(wh128bp idx, u8b data, u64 actual_size) {
+    u32 rows = ULOGCount(idx);            // real rows, excludes sentinel
+    if (rows == 0) return actual_size == 0;
+    wh128 last = ulog_idx_at(idx, rows - 1);
+    u64 off = ulogIdxOff(last);
+    if (off >= actual_size) return NO;    // row start past content end
+    u8 const *base      = (u8 const *)data[0];
+    u8 const *row_start = base + off;     // ulogIdxOff is the row's byte offset
+    u8 const *row_end   = ulog_row_end(data, row_start);
+    if (row_end == NULL) return NO;       // no terminating '\n' before idle
+    return (u64)(row_end - base) == actual_size;
+}
+
 //  Validate the sidecar's tail sentinel against the log's actual size
 //  AND `expected_mtime` (the log's mtime captured BEFORE `FILEBook`'s
-//  ftruncate-up clobbered it).  Returns YES iff both match.
+//  ftruncate-up clobbered it).  Returns YES iff both match AND the
+//  indexed rows span the whole log (ulog_idx_spans_log, DIS-033).
 //  `expected_mtime == 0` falls back to size-only freshness — used for
 //  RO opens where the on-disk mtime is undisturbed and the caller
 //  may pre-fstat the fd.
@@ -341,8 +366,10 @@ static b8 ulog_idx_is_fresh(wh128bp idx, u8b data, ron60 expected_mtime) {
     if (logged_size != actual_size) return NO;
     ron60 logged_mtime = ulogIdxSentinelMtime(sentinel);
     if (logged_mtime == 0) return NO;        // no mtime recorded yet
-    if (expected_mtime  == 0) return YES;    // mtime check disabled
-    return logged_mtime == expected_mtime;
+    if (expected_mtime != 0 && logged_mtime != expected_mtime) return NO;
+    //  Sentinel size + mtime agree — but verify the row entries actually
+    //  span the whole log before trusting them (DIS-033 false-fresh).
+    return ulog_idx_spans_log(idx, data, actual_size);
 }
 
 //  Append the tail sentinel to idx.  The sentinel records the log's
