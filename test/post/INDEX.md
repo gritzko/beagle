@@ -113,7 +113,23 @@
   ff-advances to B's tip, and A's wt followed.  Fix: `keep_post`'s gate
   now accepts any routable target (host OR authority OR path OR
   `?/<proj>` OR a transport scheme), mirroring fetch (`keeper/KEEP.exe.c`).
-* `37-push-central-store-no-home-escape/` — POST-014: a push to a CENTRAL
+<<<<* `38-sub-push-beagle-peer-shard/` — SUBS-017: a parent
+  `be post file://<peer>?/<parent>` (beagle peer holding BOTH projects)
+  must recurse the push into a mounted, detached sub so the sub's commit
+  lands on the sub's OWN sibling shard `?/<subproj>` — not the peer's
+  row-0 default (the parent's shard) under the synthetic dot-branch.
+  Pre-fix the parent forwarded the bare locator (no `?/<subproj>`
+  selector) AND built it `scheme + "://" + authority`, double-emitting
+  the `//` for `file:///abs` (`file://///abs`); the sub push died
+  `WIRECLFL` / exit 157.  Fully local (`file://`, no ssh): clones a git
+  parent+sub chain into a beagle peer store, re-clones into a wt, edits
+  the sub, recursive-commits, then pushes; asserts each project's shard
+  advanced to its OWN local tip and the parent shard carries no
+  `?/sub/.par` dot-branch.  Fix: `BEActSubsPost` / `bepush_sub_uri`
+  compose the locator via `URIMake` and re-attach each sub's
+  `?/<subproj>` selector, mirroring GET's `subs_candidate_from_source`
+  (`beagle/BE.cli.c`).
+||||* `37-push-central-store-no-home-escape/` — POST-014: a push to a CENTRAL
   (multi-project `~/.be`-style) store must NOT escape the recv-side
   colocated wt-advance up to the store PARENT (`$HOME`).  The recv derived
   the wt root as `dirname(dirname(<shard>))` (= the store parent) and
@@ -130,3 +146,4 @@
   advances when `h->wt` (the home's own wt) equals the two-pop wt root —
   a central store fails that gate and is skipped; a deferred advance is
   reported honestly.  Drives the local-exec `file://` edge; no ssh.
+>>>>

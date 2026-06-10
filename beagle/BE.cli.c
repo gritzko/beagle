@@ -2511,16 +2511,56 @@ static b8 be_post_target_is_keeper(uri const *u) {
     return NO;
 }
 
-//  Transport-push recursion state: forward the parent's transport URI
-//  verbatim to each mounted sub so the sub pushes to the SAME beagle
-//  peer (which holds it as a sibling shard) before the parent push.
+//  Transport-push recursion state: forward the parent's transport
+//  LOCATOR (scheme + authority + path, project query dropped) to each
+//  mounted sub.  The locator alone is multi-project; per-sub the
+//  callback re-attaches the sub's OWN project selector `?/<subproj>`
+//  (SUBS-017) so the sub pushes to its OWN sibling shard on the same
+//  peer, never the synthetic dot-coordinate or the parent's default
+//  project shard.  Mirrors the GET-side `subs_candidate_from_source`
+//  (sniff/SUBS.c) which re-targets the FETCH the same way.
 typedef struct {
     cli  *c;
     u8cs  wt_root;
-    u8cs  fwd_uri;          //  parent's transport URI, forwarded as-is
+    u8cs  fwd_uri;          //  parent's transport LOCATOR (no ?/proj)
     b8    outer_emitted;
     ok64  worst;
 } bepush_recurse_ctx;
+
+//  Build the per-sub push URI = `<locator>?/<subproj>` (SUBS-017).
+//  `subproj` is read from the sub mount's row-0 anchor (path OR query
+//  form) via bepost_wt_project.  When the sub's project can't be
+//  resolved (a non-beagle-store mount, or a malformed anchor) the
+//  locator is emitted verbatim so the prior behavior is preserved for
+//  callers that relied on the peer's row-0 default.  Returns OK with
+//  `out` populated; NONE when even the locator copy fails.
+static ok64 bepush_sub_uri(u8cs wt_root, u8cs subpath, u8cs locator,
+                           u8bp out) {
+    sane($ok(wt_root) && $ok(subpath) && $ok(locator) && out);
+    u8bReset(out);
+    if (u8csEmpty(locator)) return NONE;
+    call(u8bFeed, out, locator);
+
+    //  subproj from the sub mount's row-0 anchor (path OR query form).
+    a_path(submount);
+    call(PATHu8bFeed, submount, wt_root);
+    call(PATHu8bAdd,  submount, subpath);
+    a_pad(u8, subproj_buf, 128);
+    {
+        a_dup(u8c, sroot, u8bDataC(submount));
+        if (bepost_wt_project(sroot, subproj_buf) != OK ||
+            u8bDataLen(subproj_buf) == 0)
+            done;                       //  locator-only fallback
+    }
+    //  Append the absolute `?/<subproj>` shard selector.  keeper's
+    //  keeper_remote_uri preserves it onto the served path, so the peer
+    //  routes to the sub's own shard (keeper_served_at → HOMEOpen).
+    call(u8bFeed1, out, '?');
+    call(u8bFeed1, out, '/');
+    a_dup(u8c, sp, u8bDataC(subproj_buf));
+    call(u8bFeed, out, sp);
+    done;
+}
 
 static void bepush_emit_outer(bepush_recurse_ctx *rc) {
     if (rc->outer_emitted) return;
@@ -2545,11 +2585,26 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
     u8cs subpath = {};
     u8csMv(subpath, s->path);
 
-    //  child argv: `post` + flags(sans --at) + the forwarded transport
-    //  URI.  The sub runs its own `be post <url>` (recursing into its
-    //  own subs first), pushing to the same peer.  Runs BEFORE the
-    //  parent's BEActKeeperPush, so a fresh `--recurse` clone never
-    //  sees a parent tree pointing at a sub sha the peer lacks.
+    //  child argv: `post` + flags(sans --at) + the per-sub transport
+    //  URI.  The sub runs its own `be post <locator>?/<subproj>`
+    //  (recursing into its own subs first), pushing its OWN project's
+    //  tip to the SAME peer's sibling shard (SUBS-017).  Without the
+    //  `?/<subproj>` selector the sub's commit lands on the peer's
+    //  row-0 default project (the parent's shard) under the synthetic
+    //  dot-branch — the wrong target that aborted the push WIRECLFL.
+    //  Runs BEFORE the parent's BEActKeeperPush, so a fresh `--recurse`
+    //  clone never sees a parent tree pointing at a sub sha the peer
+    //  lacks.
+    a_pad(u8, sub_uri_buf, FILE_PATH_MAX_LEN + 128);
+    u8cs sub_uri = {};
+    if (bepush_sub_uri(rc->wt_root, subpath, rc->fwd_uri, sub_uri_buf) == OK
+        && u8bDataLen(sub_uri_buf) > 0) {
+        a_dup(u8c, sv, u8bDataC(sub_uri_buf));
+        u8csMv(sub_uri, sv);
+    } else {
+        u8csMv(sub_uri, rc->fwd_uri);   //  locator-only fallback
+    }
+
     a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
     a_cstr(post_lit, "post");
     a_dup(u8c, post_d, post_lit);
@@ -2561,7 +2616,7 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
         u8csbFeed1(child_args, *flag);
         if (!u8csEmpty(*val)) u8csbFeed1(child_args, *val);
     }
-    u8csbFeed1(child_args, rc->fwd_uri);
+    u8csbFeed1(child_args, sub_uri);
     a_dup(u8cs, child_argv, u8csbData(child_args));
 
     ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
@@ -2619,19 +2674,26 @@ ok64 BEActSubsPost(cli *c) {
         }
         if (tu && be_post_target_is_keeper(tu) && u8bHasData(c->repo)) {
             a_dup(u8c, push_root, $path(c->repo));
-            //  Forward the store locator (scheme + authority + path),
+            //  Forward the store LOCATOR (scheme + authority + path),
             //  dropping the parent's project/branch query: a beagle
             //  store is multi-project, so the SAME locator hosts the
-            //  sub's shard.  Each sub reverse-greps its own reflog for
-            //  this locator and pushes its own project's tip.  Keeping
-            //  the path is essential for file:/// (store lives in the
-            //  path, authority empty) and be://host/store alike.
+            //  sub's shard.  bepush_sub_uri (SUBS-017) re-attaches each
+            //  sub's OWN `?/<subproj>` selector so the sub pushes its
+            //  own sibling shard.  Keeping the path is essential for
+            //  file:/// (store lives in the path, authority empty) and
+            //  be://host/store alike.  Compose via URIMake — the manual
+            //  `scheme + "://" + authority` form double-emitted the `//`
+            //  for a `file:///abs` URI (authority lexes as `//`),
+            //  yielding `file://///abs` which broke the per-sub query
+            //  re-attach (WIRECLFL).
             a_pad(u8, fwd_buf, FILE_PATH_MAX_LEN + 64);
-            u8bFeed(fwd_buf, tu->scheme);
-            a_cstr(sep_s, "://");
-            u8bFeed(fwd_buf, sep_s);
-            u8bFeed(fwd_buf, tu->authority);
-            u8bFeed(fwd_buf, tu->path);
+            {
+                u8cs none = {NULL, NULL};
+                u8cs sch  = {tu->scheme[0],    tu->scheme[1]};
+                u8cs auth = {tu->authority[0], tu->authority[1]};
+                u8cs pth  = {tu->path[0],      tu->path[1]};
+                (void)URIMake(u8bIdle(fwd_buf), sch, auth, pth, none, none);
+            }
             a_dup(u8c, fwd_view, u8bData(fwd_buf));
             bepush_recurse_ctx prc = {
                 .c = c, .outer_emitted = NO, .worst = OK,
