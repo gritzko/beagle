@@ -303,7 +303,13 @@ and `.keeper.idx` (LSM index run) file in it on the keeper-level
 `?heads/<name>` tip the session reads/advances) — it never names a
 directory.  In rw mode, exclusive flock lands on
 `<store>/<project>/.lock`.  `KEEPOpen` is a thin wrapper that passes
-the empty (trunk) branch.
+the empty (trunk) branch.  A **read-only open never creates
+directories** (GET-010): the trunk-dir `FILEMakeDirP` is gated on `rw`,
+so e.g. `keeper upload-pack` serving a clone of an empty/missing shard
+cannot manufacture a stray `<store>/<project>/` shard (with placeholder
+0-byte `refs`) in someone else's store on a mere read — the pack/idx
+scan tolerates an absent dir, so the serve reads zero refs and the
+clone fails cleanly.
 
 The singleton `keeper` carries:
   * `home *h` — the borrowed home pointer.

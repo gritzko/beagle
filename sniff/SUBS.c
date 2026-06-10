@@ -108,6 +108,13 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
     }
 
     if (u8csEmpty(base)) return SUBSPARSE;
+    //  GET-004: a basename of literally `.be` would compose
+    //  `<store>/.be/.be` — the store dir leaking in as a sub name.
+    //  Refuse it; `.be` is never a valid project/sub basename.
+    {
+        a_cstr(be_nm, DOG_BE_NAME);
+        if (u8csEq(base, be_nm)) return SUBSPARSE;
+    }
     u8csMv(out, base);
     return OK;
 }
@@ -439,11 +446,12 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  HOME walk-up classifies the dir as a well-formed store.  Skip
     //  the seed creates on re-fetch — `FILECreate` is O_TRUNC and
     //  would zero a working shard's reflog.
+    //  GET-004: compose `<parent_root>/.be/<basename>` through the single
+    //  store-dir composer (parent_root == KEEP.h->root here; honors
+    //  *.be-is-store and drops a `.be` basename).  The mkdir stays
+    //  explicit — this dir IS the sub's store and must always exist.
     a_path(store_dir);
-    call(PATHu8bFeed, store_dir, parent_root);
-    a_cstr(be_dir, ".be");
-    call(PATHu8bPush, store_dir, be_dir);
-    call(PATHu8bPush, store_dir, basename);
+    call(HOMEBeDir, KEEP.h, basename, store_dir);
     call(FILEMakeDirP, $path(store_dir));
     //  Seed refs+wtlog.  Hardened (SUBS-016): the seed is non-truncating
     //  (subs_seed_log uses O_CREAT|O_WRONLY, never O_TRUNC), so a live
@@ -476,10 +484,13 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  title moves into the query `?/<basename>` and the gitlink pin
     //  into the fragment `#<hex_sha>` (sha-bearing row 0, DIS-001).
     //  Branch is empty — the gitlink pins a detached commit.
+    //  GET-004: the anchor's URI base is the parent store dir
+    //  `<parent_root>/.be/`.  Compose through the single composer
+    //  (parent_root == KEEP.h->root; *.be-is-store handled), then add the
+    //  directory-URI trailing slash.
     a_path(store_root);
-    a_dup(u8c, parent_s, parent_root);
-    call(PATHu8bFeed, store_root, parent_s);
-    call(PATHu8bPush, store_root, be_s);
+    u8cs noseg = {};
+    call(HOMEBeDir, KEEP.h, noseg, store_root);
     call(u8bFeed1, store_root, '/');
     a_dup(u8c, shard_s,  u8bDataC(store_root));
     u8cs empty_br = {};

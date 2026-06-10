@@ -181,7 +181,11 @@ fun void DOGProjectFromBe(u8cs in, u8bp out) {
             u8c const *seg_end = seg_start;
             while (seg_end < p[1] && *seg_end != '/') seg_end++;
             u8cs proj = {(u8 *)seg_start, (u8 *)seg_end};
-            if (!u8csEmpty(proj)) u8bFeed(out, proj);
+            //  GET-004: a `.be` segment after `/.be/` is a doubled store
+            //  dir (`/.be/.be/…`) leaking in via a bad anchor — it is NOT
+            //  a project.  Treat it as elided (empty == legacy single-
+            //  project) so the store dir never becomes the project name.
+            if (!u8csEmpty(proj) && !u8csEq(proj, be)) u8bFeed(out, proj);
             return;
         }
     }

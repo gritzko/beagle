@@ -71,11 +71,11 @@ static void home_bootstrap_config(home *h) {
     b8 got_name  = (home_git_config_get("user.name",  name)  == OK);
     if (!got_email && !got_name) return;
 
+    //  <root>/.be via the single store-dir composer (honors *.be-is-store,
+    //  drops a `.be` seg, rw-gated mkdir).  h->rw is YES here (guarded above).
     a_path(bedir);
-    a_dup(u8c, root_s, u8bDataC(h->root));
-    if (PATHu8bFeed(bedir, root_s) != OK) return;
-    if (PATHu8bPush(bedir, DOG_BE_S) != OK) return;
-    if (FILEMakeDirP($path(bedir)) != OK) return;
+    u8cs noseg = {};
+    if (HOMEMakeBeDir(h, noseg, bedir) != OK) return;
 
     a_path(cfgp);
     a_dup(u8c, be_s, u8bDataC(bedir));
@@ -118,11 +118,9 @@ static void home_bootstrap_config(home *h) {
 // downstream code still fails loudly if it can't read what it needs.
 static ok64 home_ensure_markers(home *h) {
     sane(h != NULL && u8bHasData(h->root));
-    a_dup(u8c, root_s, u8bDataC(h->root));
     a_path(bedir);
-    call(PATHu8bFeed, bedir, root_s);
-    call(PATHu8bPush, bedir, DOG_BE_S);
-    call(FILEMakeDirP, $path(bedir));
+    u8cs noseg = {};
+    call(HOMEMakeBeDir, h, noseg, bedir);   // <root>/.be (*.be-guarded), mkdir in rw
     a_dup(u8c, bedir_s, u8bDataC(bedir));
 
     a_path(mp);
@@ -134,6 +132,54 @@ static ok64 home_ensure_markers(home *h) {
         call(FILECreate, &fd, $path(mp));
         FILEClose(&fd);
     }
+    done;
+}
+
+//  Compose the store dir <h->root>/.be[/<seg>] into `out` — or
+//  <h->root>[/<seg>] when h->root already ends in `.be` (a *.be path IS
+//  the store).  Pure: no filesystem.  Empty `seg` → the bare `.be` dir.
+ok64 HOMEBeDir(home const *h, u8cs seg, path8b out) {
+    sane(h && out && u8bHasData(h->root));
+    u8bReset(out);
+    a_dup(u8c, root_s, u8bDataC(h->root));
+    //  Strip any trailing '/' so the *.be suffix test is robust
+    //  (`~/.be/` must still count as the store, not become `~/.be/.be`).
+    while (!u8csEmpty(root_s) && *$last(root_s) == '/') u8csShed1(root_s);
+    call(PATHu8bFeed, out, root_s);
+    a_cstr(be_suf, DOG_BE_NAME);
+    if (!u8csHasSuffix(root_s, be_suf)) call(PATHu8bPush, out, DOG_BE_S);
+    //  A `.be` "project" segment is the store dir leaking in via a bad
+    //  project derivation (DOGProjectFromBe on a `/.be/.be/` path) — never
+    //  compose `<store>/.be/.be`.  Drop it.
+    a_cstr(be_nm, DOG_BE_NAME);
+    if (!u8csEmpty(seg) && !u8csEq(seg, be_nm)) call(PATHu8bPush, out, seg);
+    done;
+}
+
+//  Compose, then create the dir — but only in rw mode (never mkdir a shard
+//  read-only).  A read-only home just gets the composed path back.
+ok64 HOMEMakeBeDir(home const *h, u8cs seg, path8b out) {
+    sane(h && out);
+    call(HOMEBeDir, h, seg, out);
+    if (h->rw) call(FILEMakeDirP, $path(out));
+    done;
+}
+
+//  OK iff <h->root>/.be/<project> exists AND its `refs` is non-empty — a
+//  real populated store, not a missing/empty/stray shard.  Else HOMENOPROJ.
+ok64 HOMEProjectExists(home const *h, u8cs project) {
+    sane(h);
+    a_path(shard);
+    call(HOMEBeDir, h, project, shard);
+    filestat fs = {};
+    if (FILEStat(&fs, $path(shard)) != OK || fs.kind != FILE_KIND_DIR)
+        fail(HOMENOPROJ);
+    a_path(refsp);
+    a_dup(u8c, shard_s, u8bDataC(shard));
+    call(PATHu8bFeed, refsp, shard_s);
+    call(PATHu8bPush, refsp, DOG_REFS_S);
+    filestat rfs = {};
+    if (FILEStat(&rfs, $path(refsp)) != OK || rfs.size == 0) fail(HOMENOPROJ);
     done;
 }
 
@@ -424,19 +470,13 @@ b8 HOMEBranchVisible(home const *h, u8cs branch) {
 
 ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
     sane(h != NULL && abs_dir != NULL);
-    u8bReset(abs_dir);
-    a_dup(u8c, root_s, u8bDataC(h->root));
-    call(PATHu8bFeed, abs_dir, root_s);
-    call(PATHu8bPush, abs_dir, DOG_BE_S);
+    //  <root>/.be/<project> via the single dog/HOME composer (honors the
+    //  *.be-is-store rule, DIS-024).  The branch is purely ref context
+    //  (which `?<branch>` tip), never a dir component — every local
+    //  consumer (keeper packs/idx, graf idx, refs) resolves to
+    //  `<root>/.be/<project>/`.  See Store.mkd.
     a_dup(u8c, proj, u8bDataC(h->project));
-    if (!u8csEmpty(proj)) call(PATHu8bPush, abs_dir, proj);
-    //  One object shard per project.  The branch is purely ref context
-    //  (which `?<branch>` tip we read/write), never a dir component —
-    //  every local consumer (keeper packs/idx, graf idx, refs) resolves
-    //  to `<root>/.be/<project>/`.  See Store.mkd.  (DIS-024 step 4 —
-    //  making the project strictly mandatory — is deferred: it trips
-    //  BEEnsureProjectRepo's row-0 gate and the bare keeper/graf C-test
-    //  opens; needs per-flow project resolution.)
+    call(HOMEBeDir, h, proj, abs_dir);
     (void)branch;
     done;
 }
@@ -652,10 +692,9 @@ static b8 home_dir_shieldlike(path8s p) {
     int subdirs = 0;
     struct dirent *e = NULL;
     while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') {
-            if (e->d_name[1] == 0) continue;
-            if (e->d_name[1] == '.' && e->d_name[2] == 0) continue;
-        }
+        //  Dotdirs (".", "..", and the store's own ".be") are never
+        //  project shards — never adopt one as `h->project`.
+        if (e->d_name[0] == '.') continue;
         b8 is_dir = NO;
         if (e->d_type == DT_DIR) {
             is_dir = YES;
@@ -689,10 +728,9 @@ static ok64 home_single_shard(path8s p, u8b out) {
     ok64 ret = NODATA;                         //  zero subdirs ⇒ no shard
     struct dirent *e = NULL;
     while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') {
-            if (e->d_name[1] == 0) continue;
-            if (e->d_name[1] == '.' && e->d_name[2] == 0) continue;
-        }
+        //  Dotdirs (".", "..", and the store's own ".be") are never
+        //  project shards — never adopt one as `h->project`.
+        if (e->d_name[0] == '.') continue;
         b8 is_dir = NO;
         if (e->d_type == DT_DIR) {
             is_dir = YES;
@@ -725,6 +763,12 @@ static ok64 home_walk_up(home *h) {
 
     a_path(here);
     test(FILEGetCwd(here) == OK, NOHOME);
+    //  GET-010: stop the walk at `$HOME` (taken raw from the env) so
+    //  discovery never escapes above the user's home — a hermetic test's
+    //  scratch `$HOME` can't reach the dev box's real `~/.be`.  The `/`
+    //  stop is the PATHu8bPop below.
+    u8cs henv = {};
+    FILEGetEnv("HOME", henv);
 
     for (;;) {
         a_path(probe);
@@ -762,6 +806,13 @@ static ok64 home_walk_up(home *h) {
                 a_dup(u8c, anchor, u8bDataC(here));
                 return home_anchor_resolve(h, anchor);
             }
+        }
+
+        //  Stop at `$HOME` — don't ascend above it.  AFTER the `.be` probe
+        //  so `$HOME/.be` is still considered an anchor.
+        if (!u8csEmpty(henv)) {
+            a_dup(u8c, here_now, u8bDataC(here));
+            if (u8csEq(here_now, henv)) return NOHOME;
         }
 
         size_t before = $len(u8bDataC(here));

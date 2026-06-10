@@ -797,6 +797,13 @@ static ok64 SUBSBasenameTest(void) {
         {"single",                                   "single"},
         {"",                                         NULL},
         {"http://host/.git",                         NULL}, // empty basename
+        //  GET-004: a `.be` basename would compose `<store>/.be/.be`
+        //  (the store dir leaking in as a sub name) — refuse it.  The
+        //  `.git` suffix strip can also distill `.be.git` down to `.be`,
+        //  which must likewise be rejected.
+        {"ssh://localhost/srv/repos/.be",            NULL},
+        {"git@github.com:foo/.be.git",               NULL},
+        {".be",                                      NULL},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         a_cstr(src, cases[i].url);

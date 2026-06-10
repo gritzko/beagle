@@ -165,3 +165,18 @@
   opens THIS worktree, never the ancestor.  Hermetic — the fake
   ancestor store lives inside `$SCRATCH` so the walk-up can never reach
   the real `$HOME/.be` (also asserted byte-identical).  Local-only.
+* `42-empty-source-refuse/` — GET-010: `be get "file://<store>.be?/proj"`
+  from a SOURCE store whose `refs` is empty/elided must refuse cleanly,
+  never manufacture store damage on the source side.  Pre-fix the keeper
+  upload-pack SERVER (opened read-only to serve the clone) resolved the
+  `.be`-suffixed source path as a worktree ROOT, re-appended `.be`
+  (→ `<store>/.be/.be/<proj>`), then `KEEPOpenBranch` `FILEMakeDirP`'d
+  that doubled trunk dir even on a READ — a stray nested shard with a
+  fresh 0-byte `refs` + `.refs.idx` written into someone else's store on
+  a mere read, while the clone STILL failed.  Fix
+  (`keeper/KEEP.c::KEEPOpenBranch`): a read-only keeper open never
+  creates directories (the trunk-dir mkdir is now `if (rw)`); the
+  pack/idx scan already tolerates an absent dir, so RO reads zero refs
+  and the clone fails CLEANLY (`WIRECLFL`) with no stray shard / files.
+  Hermetic; asserts the source `.be` tree is byte-identical after.
+  Local-only.

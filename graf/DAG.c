@@ -91,22 +91,16 @@ struct dag_ingest {
 //  `graf_branch_dir`, `keep_branch_dir` and `spot_branch_dir`.
 static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     sane(h && $ok(leaf_branch) && out);
-    u8bReset(out);
-    a_dup(u8c, root_s, u8bDataC(h->root));
-    call(PATHu8bFeed, out, root_s);
-    call(PATHu8bPush, out, DOG_BE_S);
-    //  Project shard segment (project-sharded layout — see
-    //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
-    //  collapses to the legacy single-project shape.  Without this,
-    //  graf publishes its idx into `<root>/.be/` even when keeper
-    //  has written packs into `<root>/.be/<project>/` — the two
-    //  fall out of sync.
+    //  `<root>/.be/<project>` via the single store-dir composer (GET-004;
+    //  honors *.be-is-store, drops a `.be` project).  Empty `h->project`
+    //  collapses to the legacy single-project shape (bare `.be`).  Without
+    //  the project segment graf would publish its idx into `<root>/.be/`
+    //  while keeper wrote packs into `<root>/.be/<project>/` — out of sync.
+    //  Flat store: one shard per project; the leaf branch never gets its
+    //  own subdir — mirrors `graf_branch_dir` and `HOMEBranchDir`.
     a_dup(u8c, proj, u8bDataC(h->project));
-    if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
-    //  Flat store: one shard per project.  The leaf branch never gets
-    //  its own subdir — mirrors `graf_branch_dir` and `HOMEBranchDir`.
+    call(HOMEBeDir, h, proj, out);
     (void)leaf_branch;
-    call(PATHu8bTerm, out);
     done;
 }
 

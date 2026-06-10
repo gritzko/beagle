@@ -47,16 +47,10 @@ static b8 graf_is_rw = NO;
 static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
     sane(h && out);
     (void)branch;
-    u8bReset(out);
-    a_dup(u8c, root_s, u8bDataC(h->root));
-    call(PATHu8bFeed, out, root_s);
-    a_cstr(rel, GRAF_DIR_S);
-    call(PATHu8bAdd, out, rel);
-    //  Project shard segment (project-sharded layout — see
-    //  dog/DOG.h §"Canonical on-disk layout").  Empty `h->project`
-    //  collapses to the legacy single-project shape.
+    //  <root>/.be/<project> via the single dog/HOME composer (honors the
+    //  *.be-is-store rule).  Empty `h->project` collapses to `<root>/.be`.
     a_dup(u8c, proj, u8bDataC(h->project));
-    if (!u8csEmpty(proj)) call(PATHu8bAdd, out, proj);
+    call(HOMEBeDir, h, proj, out);
     call(PATHu8bTerm, out);
     done;
 }
@@ -174,11 +168,12 @@ static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
     //  lives directly here, no per-branch subdirs.  First writer creates
     //  it.  Mirrors keeper's flattened layout.
     a_pad(u8, projdir, FILE_PATH_MAX_LEN);
+    //  Compose + create the project shard via dog/HOME (mkdir only in rw).
     {
-        u8cs nobranch = {};
-        call(graf_branch_dir, projdir, h, nobranch);
+        a_dup(u8c, proj, u8bDataC(h->project));
+        call(HOMEMakeBeDir, h, proj, projdir);
+        call(PATHu8bTerm, projdir);
     }
-    call(FILEMakeDirP, $path(projdir));
 
     //  Scan the project dir for `<seqno>.graf.idx` runs.  Single shard —
     //  no trunk→leaf walk, no PAST/DATA flip (PAST stays empty).

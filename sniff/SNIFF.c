@@ -131,18 +131,21 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
     a_dup(u8c, proj, u8bData(projbuf));
 
     //  Lay down the shard `<wt>/.be/<project>/` so keeper's refs/packs
-    //  land there (born-sharded; no top-level flat objects).
-    a_path(sharddir, wt_root, DOG_BE_S);
-    call(PATHu8bPush, sharddir, proj);
-    call(FILEMakeDirP, $path(sharddir));
+    //  land there (born-sharded; no top-level flat objects).  Composed
+    //  through the single store-dir composer (GET-004): h->root == wt_root
+    //  on this colocated-bootstrap path, and HOMEMakeBeDir honors
+    //  *.be-is-store + the rw mkdir gate.
+    a_path(sharddir);
+    call(HOMEMakeBeDir, h, proj, sharddir);
 
     //  Row-0 colocated anchor `file:<wt>/.be/<project>` (Store.mkd
-    //  "Worktrees and the anchor").  Path via abc/PATH, URI via abc/URI
-    //  (URIMake → URIutf8Drain), no hand-assembled struct fields.  The
-    //  path after `/.be/` is the project (Title) segment; readers split
-    //  it off (DOGProjectFromBe / SNIFFAtTailOf), never read as a branch.
-    a_path(pathbuf, wt_root, DOG_BE_S);
-    call(PATHu8bPush, pathbuf, proj);
+    //  "Worktrees and the anchor").  Path via the store-dir composer,
+    //  URI via abc/URI (URIMake → URIutf8Drain), no hand-assembled struct
+    //  fields.  The path after `/.be/` is the project (Title) segment;
+    //  readers split it off (DOGProjectFromBe / SNIFFAtTailOf), never read
+    //  as a branch.
+    a_path(pathbuf);
+    call(HOMEBeDir, h, proj, pathbuf);
 
     a_pad(u8, uribuf, MAX_URI_LEN);
     a_cstr(file_scheme, "file");
@@ -186,6 +189,10 @@ ok64 SNIFFOpen(home *h, b8 rw) {
     if (rw) {
         //  Primary-wt mkdir: harmless if `.be/` already exists,
         //  no-op (EEXIST as a file) if this is a secondary wt.
+        //  GET-004: this is WT-relative (`<h->wt>/.be`), NOT the store
+        //  composer — for a secondary wt h->root != h->wt, so it must
+        //  stay on wt_root and cannot route through HOMEBeDir (which
+        //  composes from h->root).  Bare `.be`, no seg → never `.be/.be`.
         a_path(bedir, wt_root, DOG_BE_S);
         (void)FILEMakeDirP($path(bedir));
     }

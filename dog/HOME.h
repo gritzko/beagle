@@ -16,6 +16,7 @@ con ok64 HOMEOPEN  = 0x45858e619397;       // branch already open
 con ok64 HOMEROBR  = 0x45858e6d82db;       // rw asked after a ro open,
                                            // or aux already pinned elsewhere
 con ok64 HOMENOBR  = 0x45858e5d82db;       // no writable branch opened
+con ok64 HOMENOPROJ = 0x45858e5d865b613;   // project shard absent / empty refs
 
 #define HOME_ARENA_SIZE   (1ULL << 32)     // 4 GB VA, pages on demand
 #define HOME_CONFIG_MAX   (1UL  << 16)     // 64 KB is plenty for .be/config
@@ -172,6 +173,18 @@ ok64 HOMEHost(home *h, u8s out);
 // KEEPSwitchBranch / GRAFSwitchBranch internals), use
 // `HOMESetCurBranch` instead — it does not enforce the pinning rule.
 ok64 HOMEOpenBranch(home *h, u8cs branch, b8 rw);
+
+// --- Store-dir composition (the single place that knows `<root>/.be`) ---
+// Compose <h->root>/.be[/<seg>] into `out` — or <h->root>[/<seg>] when
+// h->root already ends in ".be" (a *.be path IS the store).  Pure, no fs.
+// `seg` empty → the bare ".be" store dir.
+ok64 HOMEBeDir(home const *h, u8cs seg, path8b out);
+// Same compose, then FILEMakeDirP it — ONLY when h->rw (never mkdirs a
+// shard read-only).  Read-only homes get the path, fs untouched.
+ok64 HOMEMakeBeDir(home const *h, u8cs seg, path8b out);
+// OK iff the shard <h->root>/.be/<project> exists AND its `refs` is
+// non-empty (a real populated store); else HOMENOPROJ.
+ok64 HOMEProjectExists(home const *h, u8cs project);
 
 // Re-target `h->cur_branch` to `new_branch` (normalized).  Used by
 // keeper / graf switch helpers and by sniff's POST cross-branch path.

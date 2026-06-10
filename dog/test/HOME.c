@@ -430,6 +430,104 @@ ok64 HOMETestProjectDerive() {
     done;
 }
 
+//  GET-010 Defect-2 — the HOME-escape.  `home_walk_up` is an unbounded
+//  cwd→`/` ascent.  When a process runs under `$HOME` with no local `.be`
+//  shield it used to keep climbing PAST `$HOME` and grab/create a store
+//  sitting above it (on the dev box, the real `~/.be`) — breaking test
+//  hermeticity.  The bound: if the walk STARTS under `$HOME` (canonical
+//  prefix), `$HOME` is the ceiling and the ascent stops there; if the
+//  start dir is NOT under `$HOME`, the walk stays UNBOUNDED (single-
+//  project `~` anchors / stores outside `$HOME` keep working).
+//
+//  Each case lays a single-project STORE one level ABOVE a `home` dir
+//  (`<base>/store/.be/proj`), with `<base>/store/home/work/deep` as cwd.
+//  The `home` dir itself has NO `.be` shield, so the OLD walk escapes to
+//  `<base>/store/.be`.  We then point `$HOME` at one of two places and
+//  assert the walk's outcome.
+ok64 HOMETestWalkHomeBound() {
+    sane(1);
+    call(FILEInit);
+
+    enum { HOME_AT_HOMEDIR, HOME_ELSEWHERE };
+    struct {
+        char const *name;
+        int         home_at;     // where $HOME points
+        ok64        want_ret;     // expected HOMEFind result
+    } const cases[] = {
+        //  $HOME == the shield-less `home` dir, cwd under it: the ascent
+        //  must NOT escape to the store above $HOME → NOHOME (bounded).
+        {"started under $HOME -> bound at $HOME (no escape)",
+         HOME_AT_HOMEDIR, NOHOME},
+        //  $HOME points OUTSIDE the cwd's ancestry: walk stays unbounded
+        //  and finds the store above cwd → OK (semantics preserved).
+        {"started outside $HOME -> unbounded (finds store above cwd)",
+         HOME_ELSEWHERE, OK},
+    };
+
+    //  Save and restore the inherited $HOME around the whole run.
+    char const *home_saved = getenv("HOME");
+    char home_save_buf[512] = {0};
+    if (home_saved != NULL) snprintf(home_save_buf, sizeof home_save_buf,
+                                     "%s", home_saved);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char base[256];
+        want(TESTBEmkdtemp(base, sizeof base) == OK);
+        fprintf(stderr, "  case: %s\n", cases[i].name);
+
+        char p[512];
+        //  store above $HOME: <base>/store/.be/proj (single-project,
+        //  shieldlike — an anchor the old walk would adopt).
+        snprintf(p, sizeof p, "%s/store", base);            want(mkdir(p, 0755) == 0);
+        snprintf(p, sizeof p, "%s/store/" DOG_BE_NAME, base); want(mkdir(p, 0755) == 0);
+        snprintf(p, sizeof p, "%s/store/" DOG_BE_NAME "/proj", base);
+        want(mkdir(p, 0755) == 0);
+        //  the `home` dir (NO `.be` of its own) and a deep cwd under it.
+        snprintf(p, sizeof p, "%s/store/home", base);            want(mkdir(p, 0755) == 0);
+        snprintf(p, sizeof p, "%s/store/home/work", base);       want(mkdir(p, 0755) == 0);
+        snprintf(p, sizeof p, "%s/store/home/work/deep", base);  want(mkdir(p, 0755) == 0);
+        //  the "elsewhere" HOME — outside the cwd's ancestry.
+        snprintf(p, sizeof p, "%s/elsewhere", base);             want(mkdir(p, 0755) == 0);
+
+        char homedir[512];
+        if (cases[i].home_at == HOME_AT_HOMEDIR)
+            snprintf(homedir, sizeof homedir, "%s/store/home", base);
+        else
+            snprintf(homedir, sizeof homedir, "%s/elsewhere", base);
+        want(setenv("HOME", homedir, 1) == 0);
+
+        char cwd[512];
+        snprintf(cwd, sizeof cwd, "%s/store/home/work/deep", base);
+        want(chdir(cwd) == 0);
+
+        //  Drive the walk through HOMEOpen (rw=NO) — it allocates the
+        //  h->wt / h->root buffers the walk's anchor-resolve writes into.
+        //  A bare HOMEFind(&h={}) would hit those buffers unallocated.
+        home h = {};
+        uri none = {};
+        ok64 got = HOMEOpen(&h, &none, NO);
+        want(got == cases[i].want_ret);
+        if (got == OK) {
+            //  unbounded path discovered the store ABOVE cwd, not the
+            //  shield-less home dir — confirm root lands on .../store.
+            char wantroot[512];
+            snprintf(wantroot, sizeof wantroot, "%s/store", base);
+            a_dup(u8c, rt, u8bDataC(h.root));
+            want(slice_is(rt, wantroot));
+        }
+        HOMEClose(&h);
+
+        //  Step out of the scratch before removing it.
+        want(chdir("/tmp") == 0);
+        TESTBErmrf(base);
+    }
+
+    //  Restore the inherited HOME so later tests / teardown are unaffected.
+    if (home_save_buf[0] != 0) setenv("HOME", home_save_buf, 1);
+    else                       unsetenv("HOME");
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "HOMETestGet...\n");
@@ -446,6 +544,8 @@ ok64 maintest() {
     call(HOMETestRoEmptyAnchor);
     fprintf(stderr, "HOMETestProjectDerive...\n");
     call(HOMETestProjectDerive);
+    fprintf(stderr, "HOMETestWalkHomeBound...\n");
+    call(HOMETestWalkHomeBound);
     fprintf(stderr, "all passed\n");
     done;
 }

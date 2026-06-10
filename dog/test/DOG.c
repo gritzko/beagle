@@ -594,6 +594,13 @@ static BeCase const BE_CASES[] = {
     {"/x/.be",                      "/x",        "",       ""},
     //  No `/.be/` at all — fallback path, no over-read but pins behaviour.
     {"/abs/path/repo",              "/abs/path/repo", "",  ""},
+    //  GET-004: a doubled store dir `/.be/.be/` must NOT yield `.be` as
+    //  the project — the store dir is never a project.  DOGProjectFromBe
+    //  drops the `.be` segment and reports the project as elided ("").
+    //  (Branch still carries the after-first-`/.be/` tail per the legacy
+    //  path encoding; project is the load-bearing guarantee here.)
+    {"/abs/path/.be/.be/",          "/abs/path", "",       ".be"},
+    {"/abs/path/.be/.be",           "/abs/path", "",       ".be"},
 };
 
 #define NBE (sizeof(BE_CASES) / sizeof(BE_CASES[0]))

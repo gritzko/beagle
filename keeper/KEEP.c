@@ -363,10 +363,18 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     //  HOMEOpenBranch above).  Readers consult `u8bDataC(k->h->cur_branch)`.
     if (u8csLen(norm) >= HOME_BRANCH_MAX) return KEEPFAIL;
 
-    //  Trunk dir always exists after this — sniff/init creates it.
+    //  Trunk dir: materialise it only on an rw open (a writer will land
+    //  packs/idx here).  A READ-ONLY open must never create directories
+    //  — e.g. `keeper upload-pack` serving a clone (GET-010): if the
+    //  requested store resolves to an empty/missing shard, mkdir'ing the
+    //  trunk dir manufactures store damage (a stray `<store>/.be/<proj>/`
+    //  shard, with placeholder 0-byte refs) in someone else's store on a
+    //  mere read.  The pack/idx scan below (DOGPupOpenAll) already
+    //  tolerates an absent dir (empty stack), so RO reads zero refs and
+    //  the caller fails cleanly.
     a_path(trunkdir);
     call(HOMEBranchDir, h, trunkdir, NULL);
-    call(FILEMakeDirP, $path(trunkdir));
+    if (rw) call(FILEMakeDirP, $path(trunkdir));
 
     //  Flat store: scan the single project shard dir for every pack +
     //  idx file.  No branch-dir chain to walk.

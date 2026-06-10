@@ -1528,6 +1528,16 @@ ok64 BEEnsureProjectRepo(uri *u) {
                 "directory\n");
         return BEFAIL;
     }
+    //  GET-004: never let a derived project be literally `.be` — that
+    //  would mint a `<cwd>/.be/.be` doubled-store shard.  `.be` is the
+    //  store dir name, never a project.
+    {
+        a_cstr(be_nm, DOG_BE_NAME);
+        if (u8csEq(proj, be_nm)) {
+            fprintf(stderr, "be: refusing `.be` as a project name\n");
+            return BEFAIL;
+        }
+    }
 
     //  Refuse if the shard already exists on disk: an explicit
     //  `?/<proj>` URI must not silently clobber a half-initialised
@@ -1697,27 +1707,52 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     //  fills h->root with the redirected store root; we use that.
     //  If HOMEOpen fails (e.g. the anchor URI is corrupted) we fall
     //  back to the wt dir's own `.be/` — the legacy behavior.
+    //
+    //  GET-004: compose BOTH `<store>/.be[/seg]` paths through the single
+    //  HOME composer (handles *.be-is-store + drops a `.be` basename)
+    //  while rh is open, then close rh in this same block so no early
+    //  return between open and close can leak the home.  rh stays rw=NO
+    //  so HOMEBeDir is pure compose — the sub shard is mkdir'd explicitly
+    //  below (it must always exist).  `shard_be` / `sub_store` outlive the
+    //  block; `store_root_buf` carries the resolved root for the logging.
     a_path(store_root_buf);
+    a_path(shard_be);
+    a_path(sub_store);
+    b8 sub_store_set = NO;
     {
         home rh = {};
         uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK && u8bHasData(rh.root)) {
+        b8 have_home = (HOMEOpen(&rh, &none, NO) == OK && u8bHasData(rh.root));
+        ok64 ro = OK;
+        if (have_home) {
             a_dup(u8c, rs, u8bDataC(rh.root));
-            call(PATHu8bFeed, store_root_buf, rs);
+            ro = PATHu8bFeed(store_root_buf, rs);
+            if (ro == OK) ro = HOMEBeDir(&rh, basename, shard_be);
+            if (ro == OK && !u8csEmpty(u->host)) {
+                u8cs noseg = {};
+                ro = HOMEBeDir(&rh, noseg, sub_store);
+                if (ro == OK) sub_store_set = YES;
+            }
         } else {
-            call(PATHu8bFeed, store_root_buf, repo_s);
+            ro = PATHu8bFeed(store_root_buf, repo_s);
         }
         HOMEClose(&rh);
+        if (ro != OK) fail(ro);
     }
     a_dup(u8c, store_root_s, u8bDataC(store_root_buf));
 
     //  mkdir <store>/.be/<basename>/  (flat: this dir IS the sub's
-    //  store, same shape as <store>/.be/ itself)
-    a_path(shard_be);
-    call(PATHu8bFeed, shard_be, store_root_s);
-    call(PATHu8bPush, shard_be, DOG_BE_S);
-    a_dup(u8c, base_s, basename);
-    call(PATHu8bPush, shard_be, base_s);
+    //  store, same shape as <store>/.be/ itself).  Fall back to the
+    //  guarded manual compose only when the anchor was unreadable (no
+    //  home) — HOMEBeDir already ran above when a home was available.
+    if (u8bEmpty(shard_be)) {
+        call(PATHu8bFeed, shard_be, store_root_s);
+        a_cstr(be_suf, DOG_BE_NAME);
+        if (!u8csHasSuffix(store_root_s, be_suf))
+            call(PATHu8bPush, shard_be, DOG_BE_S);
+        a_dup(u8c, base_s, basename);
+        call(PATHu8bPush, shard_be, base_s);
+    }
     call(FILEMakeDirP, $path(shard_be));
 
     //  Seed empty refs + wtlog so HOME walk-up finds a well-formed
@@ -1746,9 +1781,10 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     //  the top of this function gates on `u->authority`), so `u->host`
     //  is almost always populated — but stay defensive.
     if (!u8csEmpty(u->host)) {
-        a_path(sub_store);
-        call(PATHu8bFeed, sub_store, store_root_s);
-        call(PATHu8bPush, sub_store, DOG_BE_S);
+        if (!sub_store_set) {
+            call(PATHu8bFeed, sub_store, store_root_s);
+            call(PATHu8bPush, sub_store, DOG_BE_S);
+        }
         a_dup(u8c, host_s, u->host);
         call(KEEPInitRemoteShard,
              u8bDataC(sub_store), basename, host_s);
