@@ -189,6 +189,14 @@ static ok64 keeper_subs(keeper *k, cli *c) {
     }
     uri *u = uribAtP(c->uris, 0);
 
+    //  DIS-035: the PATCH whole-branch scope `!` rides on the query
+    //  (`?/<proj>/<sha>!` — the local form `be`'s BEActResolveRemote
+    //  rewrites a fetched source to).  It is a sniff PATCH concern, never
+    //  part of a sub-pin resolution; shed it so `<sha>!` classifies as a
+    //  direct sha (DOGIsFullSha) instead of falling through to an
+    //  unresolvable banged refname (RESLVNONE).
+    (void)DOGDebangSlice(u->query);
+
     //  Resolve ?<ref> to a 40-hex commit sha.  Direct-sha shortcuts:
     //    * `?<branch>#<sha>` — fragment carries the sha; query carries
     //      the branch (already consumed by KEEP.cli.c to open the
@@ -475,6 +483,20 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
 ok64 KEEPGetRemote(uri *g) {
     sane(g);
     keeper *k = &KEEP;
+
+    //  DIS-035: the PATCH whole-branch scope modifier `!` rides on the
+    //  QUERY (`?<proj>!` / `?<proj>/<br>!`) — but it is purely a sniff
+    //  PATCH concern (carried separately to sniff by `be`'s
+    //  BEActResolveRemote), NEVER part of the wire fetch.  Shed it here,
+    //  at the single fetch chokepoint, BEFORE any project / ref
+    //  derivation: otherwise the trailing `!` leaks into the
+    //  `?/<project>` shard selector, the project title derives as
+    //  `<proj>!` (a shard that doesn't exist), and both the local
+    //  resolution AND the wire-served path die `HOMENOPROJ` → `WIRECLFL`.
+    //  WIREFetch already debangs the want-ref, but the project selector
+    //  needed the same treatment — so one debang on the whole query
+    //  covers both `?<proj>!` and `?<proj>/<br>!`.
+    (void)DOGDebangSlice(g->query);
 
     Bu8 rarena = {};
     call(u8bMap, rarena, (size_t)REFS_MAX_REFS * 320);
