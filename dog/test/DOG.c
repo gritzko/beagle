@@ -182,6 +182,15 @@ static const CanonCase CANON_CASES[] = {
     {"feat: add foo",                      "#feat: add foo"},
     // Whitespace fragment with single-quoted spot body.
     {"#'u8sFeed( a, b )'",                 "#'u8sFeed( a, b )'"},
+    // POST-007 (1): a commit message carrying a `scheme://` (or any
+    // `//`) must round-trip BYTE-IDENTICAL through the canonical
+    // pipeline — the message slot is opaque free text, NOT a path, so
+    // the doubled slash is NEVER collapsed (`be://` must not become
+    // `be:/`).  Both the explicit `#`-led and the whitespace-bypass
+    // forms land in the fragment verbatim.
+    {"#fix the be:// scheme",              "#fix the be:// scheme"},
+    {"fix the be:// scheme",               "#fix the be:// scheme"},
+    {"#see be://localhost/x for details",  "#see be://localhost/x for details"},
     // Bare fragment.
     {"#symbol",                            "#symbol"},
     // Bare query (version-like).
@@ -263,6 +272,12 @@ static const MsgFragCase MSGFRAG_CASES[] = {
     // Body containing a `//` transport-ish marker — kept verbatim, no
     // `//`-collapse / normalization.
     {"#see be://localhost/x for details",    "see be://localhost/x for details"},
+    // POST-007 (1) repro: a `scheme://` in the subject must NOT have
+    // its doubled slash collapsed (`be://` must stay `be://`, never
+    // `be:/`).  The message slot is opaque text — no path normalization.
+    {"#fix the be:// scheme",                "fix the be:// scheme"},
+    {"#be://x",                              "be://x"},
+    {"#a//b",                                "a//b"},
     // Dotted single-line subject.
     {"#refactor URI.c.rl and DOG.c",         "refactor URI.c.rl and DOG.c"},
     // Empty message (`#` alone) → present-but-empty fragment.

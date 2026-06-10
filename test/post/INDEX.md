@@ -113,7 +113,7 @@
   ff-advances to B's tip, and A's wt followed.  Fix: `keep_post`'s gate
   now accepts any routable target (host OR authority OR path OR
   `?/<proj>` OR a transport scheme), mirroring fetch (`keeper/KEEP.exe.c`).
-<<<<* `38-sub-push-beagle-peer-shard/` — SUBS-017: a parent
+* `38-sub-push-beagle-peer-shard/` — SUBS-017: a parent
   `be post file://<peer>?/<parent>` (beagle peer holding BOTH projects)
   must recurse the push into a mounted, detached sub so the sub's commit
   lands on the sub's OWN sibling shard `?/<subproj>` — not the peer's
@@ -129,7 +129,7 @@
   compose the locator via `URIMake` and re-attach each sub's
   `?/<subproj>` selector, mirroring GET's `subs_candidate_from_source`
   (`beagle/BE.cli.c`).
-||||* `37-push-central-store-no-home-escape/` — POST-014: a push to a CENTRAL
+* `37-push-central-store-no-home-escape/` — POST-014: a push to a CENTRAL
   (multi-project `~/.be`-style) store must NOT escape the recv-side
   colocated wt-advance up to the store PARENT (`$HOME`).  The recv derived
   the wt root as `dirname(dirname(<shard>))` (= the store parent) and
@@ -146,4 +146,11 @@
   advances when `h->wt` (the home's own wt) equals the two-pop wt root —
   a central store fails that gate and is skipped; a deferred advance is
   reported honestly.  Drives the local-exec `file://` edge; no ssh.
->>>>
+* `37-msg-scheme-roundtrip/` — POST-007 (1): a commit message
+  containing `be://` (or any `scheme://` / doubled `//`) must round-trip
+  BYTE-IDENTICAL — the message is opaque free text, never path-
+  normalized, so the doubled slash is preserved (`be://`, not `be:/`).
+  Guards all three message forms (explicit `#`-led, whitespace-bypass,
+  legacy `-m`); the underlying verbatim-fragment routing landed with
+  POST-002 (`dog/DOG.c::DOGNormalizeArg`), this case is the e2e lock-in.
+  No ssh; runs in the default suite.
