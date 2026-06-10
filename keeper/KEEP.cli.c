@@ -50,6 +50,16 @@ static void keeper_served_at(uri *at, uri *g) {
 //  so a half-open never leaks `h`'s buffers.
 static ok64 keeper_upload_pack_inner(home *h) {
     sane(h);
+    //  Refuse a non-existent store up front (git-parity): a RO open
+    //  tolerates an absent shard (KEEPOpenBranch reads zero refs), so
+    //  without this gate `upload-pack <bad-repo>` would advertise an
+    //  empty `0000` then block on read(0) — a serve that can never ship
+    //  anything.  HOMEProjectExists gates on the store DIR existing (not
+    //  refs being non-empty): a shard that holds objects but advertises
+    //  zero refs is still served (want-by-hash pin fetch — see
+    //  WIRE_CLIENT fetch_by_pin).  Fail fast before any advertisement.
+    a_dup(u8c, proj, u8bDataC(h->project));
+    call(HOMEProjectExists, h, proj);
     call(KEEPOpen, h, NO);
 
     a_refadv(adv);

@@ -315,35 +315,38 @@ ok64 UPLOADPACKtest_badrepo_noleak() {
     call(FILEInit);
 
     int err[2];
+    int out[2];
     want(pipe(err) == 0);
+    want(pipe(out) == 0);
 
     pid_t pid = fork();
     want(pid >= 0);
     if (pid == 0) {
-        //  Silence stdout, route stderr to the pipe so ASAN's leak
-        //  report (if any) is captured by the parent.  Crucially, give
-        //  the child a /dev/null *stdin* too: upload-pack tolerates an
-        //  absent RO store (KEEPOpenBranch reads zero refs), advertises
-        //  an empty `0000`, then blocks on read(0).  Without this the
-        //  child inherits the test's stdin — if that stays open the
-        //  read never returns and the parent deadlocks on read(err)
-        //  (the 1500s ctest timeout).  EOF here ⇒ the child exits fast.
-        int devnull = open("/dev/null", O_WRONLY);
+        //  Capture stdout (the wire) so the parent can assert the child
+        //  emits NO advertisement, and route stderr to its own pipe for
+        //  the ASAN leak check.  Give the child a /dev/null stdin as
+        //  belt-and-suspenders: even if the up-front store gate ever
+        //  regressed and the server fell through to WIREServeUpload, the
+        //  inherited stdin would not keep read(0) blocking (the old
+        //  1500s ctest deadlock).
         int devnull_r = open("/dev/null", O_RDONLY);
-        dup2(devnull, 1);
+        dup2(out[1], 1);
         dup2(err[1], 2);
         dup2(devnull_r, 0);
         close(err[0]);
         close(err[1]);
-        close(devnull);
+        close(out[0]);
+        close(out[1]);
         close(devnull_r);
-        //  A path with no `.be` store under a non-existent root: HOME
-        //  opens, KEEPOpen fails — the leak window.
+        //  A path with no `.be` store under a non-existent root: the
+        //  store-dir existence gate rejects it before any advertisement,
+        //  so the server exits non-zero without serving the wire.
         execl(keeper_bin(), "keeper", "upload-pack",
               "/nonexistent/beagle-noleak", (char *)NULL);
         _exit(127);
     }
     close(err[1]);
+    close(out[1]);
 
     static char ebuf[1 << 16];
     size_t have = 0;
@@ -356,11 +359,25 @@ ok64 UPLOADPACKtest_badrepo_noleak() {
     ebuf[have] = 0;
     close(err[0]);
 
+    //  Drain stdout: on a refused store the server must ship nothing
+    //  (no pkt-line advertisement, not even an empty `0000` flush).
+    static char obuf[4096];
+    size_t ohave = 0;
+    for (;;) {
+        if (ohave >= sizeof(obuf)) break;
+        ssize_t n = read(out[0], obuf + ohave, sizeof(obuf) - ohave);
+        if (n <= 0) break;
+        ohave += (size_t)n;
+    }
+    close(out[0]);
+
     int status = 0;
     waitpid(pid, &status, 0);
 
-    //  The child should fail cleanly (FILEACCES) — and crucially leave
-    //  no LeakSanitizer report on stderr.
+    //  Fast-fail: no advertisement reached the wire, the child exited
+    //  non-zero, and no LeakSanitizer report fired on stderr.
+    want(ohave == 0);
+    want(WIFEXITED(status) && WEXITSTATUS(status) != 0);
     want(strstr(ebuf, "LeakSanitizer") == NULL);
     want(strstr(ebuf, "detected memory leaks") == NULL);
     done;

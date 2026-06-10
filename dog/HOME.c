@@ -174,12 +174,6 @@ ok64 HOMEProjectExists(home const *h, u8cs project) {
     filestat fs = {};
     if (FILEStat(&fs, $path(shard)) != OK || fs.kind != FILE_KIND_DIR)
         fail(HOMENOPROJ);
-    a_path(refsp);
-    a_dup(u8c, shard_s, u8bDataC(shard));
-    call(PATHu8bFeed, refsp, shard_s);
-    call(PATHu8bPush, refsp, DOG_REFS_S);
-    filestat rfs = {};
-    if (FILEStat(&rfs, $path(refsp)) != OK || rfs.size == 0) fail(HOMENOPROJ);
     done;
 }
 

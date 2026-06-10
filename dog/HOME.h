@@ -182,8 +182,12 @@ ok64 HOMEBeDir(home const *h, u8cs seg, path8b out);
 // Same compose, then FILEMakeDirP it — ONLY when h->rw (never mkdirs a
 // shard read-only).  Read-only homes get the path, fs untouched.
 ok64 HOMEMakeBeDir(home const *h, u8cs seg, path8b out);
-// OK iff the shard <h->root>/.be/<project> exists AND its `refs` is
-// non-empty (a real populated store); else HOMENOPROJ.
+// OK iff the project shard dir <h->root>/.be/<project> exists; else
+// HOMENOPROJ.  Existence only — a shard that holds objects but
+// advertises zero refs is still a real store (want-by-hash pin fetch,
+// see WIRE_CLIENT fetch_by_pin), so this does NOT require `refs` to be
+// non-empty.  Used by `keeper upload-pack` to fast-fail a truly absent
+// store before emitting any advertisement.
 ok64 HOMEProjectExists(home const *h, u8cs project);
 
 // Re-target `h->cur_branch` to `new_branch` (normalized).  Used by
