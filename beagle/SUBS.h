@@ -90,10 +90,14 @@ ok64 BERun(u8csc tool, u8css argv, b8 bg);
 //  `out`.  Empty `out` on the no-sub case (still OK).
 ok64 BEGetKeeperSubs(u8cs query, u8bp out);
 
-//  Spawn `sniff sub-mount ./<subpath>#<pin>` from the parent wt to
-//  do a first-time mount (anchor + WIREFetchAll + checkout) in a
-//  clean keeper state.  cwd inherits the parent process's cwd.
-ok64 BEGetSubMount(u8cs subpath, u8cs pin);
+//  Spawn `sniff sub-mount [--source <src_uri>] ./<subpath>#<pin>` from
+//  the parent wt to do a first-time mount (anchor + WIREFetchAll +
+//  checkout) in a clean keeper state.  cwd inherits the parent process's
+//  cwd.  GET-011: `src_uri` is the in-flight `be get` source URI (the
+//  remote we are actually cloning from); empty when the parent came
+//  from a git source.  Forwarded as `--source` so sniff's SubMount
+//  builds the PRIMARY sub-fetch candidate from the SAME store.
+ok64 BEGetSubMount(u8cs subpath, u8cs pin, u8cs src_uri);
 
 //  Unmount a sub: unlink `<wt>/<subpath>/.be`.  Leaves the wt files
 //  in place.  Idempotent.  Logs `be: get <subpath>: unmounted`.
@@ -102,8 +106,11 @@ ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath);
 //  Iterate `keeper subs` ULOG rows.  Per row: spawn `sniff sub-mount`
 //  for the pin, then BERecurseInto with `be get [flags] ?<pin>` cwd =
 //  mount.  `flag_head`/`flag_term` carry the flags to forward.
+//  GET-011: `src_uri` is the in-flight `be get` source URI, forwarded
+//  to `sniff sub-mount --source` so each sub is fetched from the SAME
+//  remote we are talking to.  Empty for a git-source parent.
 ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
-                    u8cs *flag_head, u8cs *flag_term);
+                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri);
 
 //  Walk `baseline_ulog`; unmount any sub not present in `target_ulog`.
 //  Skips paths whose anchor is already gone.  Worst per-row code or OK.

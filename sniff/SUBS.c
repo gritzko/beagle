@@ -325,7 +325,9 @@ static b8 subs_path_is_be_store(u8cs path) {
     return FILEisdir($path(p)) == OK;
 }
 
-typedef struct { u8bp loc; ron60 vget; b8 beagle; b8 found; } subs_loc_ctx;
+typedef struct {
+    u8bp loc; ron60 vget; b8 beagle; b8 found; b8 src_is_live_git;
+} subs_loc_ctx;
 
 static ok64 subs_loc_cb(uri const *u, ron60 ts, ron60 verb, void *vc) {
     subs_loc_ctx *c = (subs_loc_ctx *)vc;
@@ -355,19 +357,159 @@ static ok64 subs_loc_cb(uri const *u, ron60 ts, ron60 verb, void *vc) {
                      !subs_path_is_git(pth) && subs_path_is_be_store(pth);
     c->beagle = u8csEq(sch, be_s) || u8csEq(sch, kp_s) || file_beagle
              || (!u8csEmpty(qry) && *qry[0] == '/');
+    //  GET-011: a `file:` source whose path is a LIVE git repo means the
+    //  sub is resolvable from that git source (git's own recursion) — do
+    //  NOT then fall back to the local parent store (which during a fresh
+    //  git→beagle bootstrap has an empty sub shard, a self-fetch that
+    //  poisons the negotiation).  Only a non-git, non-reachable recorded
+    //  source (deleted git path, `ssh://` upstream) warrants the fallback.
+    c->src_is_live_git = u8csEq(sch, file_s) && subs_path_is_git(pth);
     c->found = YES;
     return OK;   // keep scanning — last (newest) match wins
 }
 
-static ok64 subs_recover_locator(u8bp loc, b8 *is_beagle) {
+//  Render `file://<store_root>` (authority-bearing TRANSPORT form) into
+//  `loc` so a `<loc>?/<sub-project>` candidate addresses a sibling shard
+//  of `store_root`'s `.be/` (GET-004 `?/proj` store addressing) and
+//  routes through keeper upload-pack — NOT the single-slash `file:<abs>`
+//  bare-path form, which be/sniff read as a local clone/restore (see
+//  be_file_get_route, beagle/BE.cli.c).  `store_root` is rooted (leading
+//  '/'), so `file://` + `/abs` = `file:///abs`, the same triple-slash
+//  shape a typed `be get file://<store>?/<proj>` produces.
+static ok64 subs_locator_from_root(u8bp loc, u8cs store_root) {
+    sane(loc && $ok(store_root));
+    u8bReset(loc);
+    a_cstr(pfx, "file://");
+    call(u8bFeed, loc, pfx);
+    a_path(pathbuf);
+    call(PATHu8bFeed, pathbuf, store_root);
+    a_dup(u8c, pth, u8bDataC(pathbuf));
+    call(u8bFeed, loc, pth);
+    done;
+}
+
+//  GET-011: build the PRIMARY sub-fetch candidate from the in-flight
+//  `be get` SOURCE URI — the remote we are actually talking to.  Takes
+//  the source's scheme + authority + store-PATH and replaces its
+//  `?/<project>` project query with `/<sub_proj>`, so
+//  `file:///home/gritzko/.be?/dogs` + sub `abc` → `file:///home/gritzko/.be?/abc`.
+//  The sub is a sibling project in the SAME multi-project store ("if it
+//  has the parent, it has subs"); addressing it by `?/<sub_proj>` routes
+//  through keeper upload-pack against that store.  `out` receives the
+//  rendered candidate text.
+//
+//  Fires only when `src_uri` is a BEAGLE MULTI-PROJECT remote — a
+//  transport URI (scheme `be`/`keeper`, or `file` in the authority-
+//  bearing `file://…` form) that ALSO carries a `?/<project>` shard
+//  query.  That `?/<proj>` query is the discriminator: a beagle store
+//  clone is always addressed `<store>?/<proj>` (GET-004), whereas a git
+//  `file:` source — which be_file_get_route rewrites to the same
+//  triple-slash `file:///abs` transport shape — carries NO query and is
+//  git's own to recurse.  A bare `file:<path>` (no authority, a local
+//  sibling-worktree route) and a query-less transport both return NONE,
+//  so the caller keeps the `.gitmodules` URL / git resolution.
+//  `sub_proj` is the sub's path-basename (e.g. `abc`), never the
+//  `.gitmodules` url-basename.
+static ok64 subs_candidate_from_source(u8bp out, u8cs src_uri,
+                                       u8cs sub_proj) {
+    sane(out);
+    if (u8csEmpty(src_uri) || u8csEmpty(sub_proj)) return NONE;
+
+    //  Lex a private copy (URILexer consumes its data slice).
+    a_dup(u8c, work, src_uri);
+    uri u = {};
+    u8csMv(u.data, work);
+    if (URILexer(&u) != OK) return NONE;
+
+    u8cs sch  = {u.scheme[0],    u.scheme[1]};
+    u8cs auth = {u.authority[0], u.authority[1]};
+    u8cs pth  = {u.path[0],      u.path[1]};
+    u8cs qry  = {u.query[0],     u.query[1]};
+
+    //  Transport classification.  `be:`/`keeper:` are always wire
+    //  remotes.  A `file:` source is a transport only in the
+    //  authority-bearing form (`file://…`); the bare `file:<path>` form
+    //  (authority absent) is the local sibling-worktree route.
+    a_cstr(be_s,   "be");
+    a_cstr(kp_s,   "keeper");
+    a_cstr(file_s, "file");
+    b8 transport = u8csEq(sch, be_s) || u8csEq(sch, kp_s) ||
+                   (u8csEq(sch, file_s) && u.authority[0] != NULL);
+    if (!transport) return NONE;
+
+    //  Multi-project gate: the source must address a project shard
+    //  (`?/<proj>`).  No such query → a git source (or a project-less
+    //  bare store form); git keeps its own recursion, so return NONE.
+    if (u8csEmpty(qry) || *qry[0] != '/') return NONE;
+
+    //  New query = `/<sub_proj>` — the GET-004 `?/proj` shard form.
+    a_pad(u8, qbuf, 512);
+    call(u8bFeed1, qbuf, '/');
+    call(u8bFeed,  qbuf, sub_proj);
+    a_dup(u8c, subq, u8bDataC(qbuf));
+
+    u8bReset(out);
+    u8cs none = {NULL, NULL};
+    a_pad(u8, made, MAX_URI_LEN);
+    call(URIMake, u8bIdle(made), sch, auth, pth, subq, none);
+    a_dup(u8c, made_s, u8bData(made));
+    call(u8bFeed, out, made_s);
+    done;
+}
+
+//  GET-011: recover the locator of the remote the parent is actually
+//  being cloned from / talking to, so each submodule can be fetched
+//  from that SAME source (the sibling sub shard), with the declared
+//  `.gitmodules` URL only as a last-resort fallback.
+//
+//  Two sources, in order:
+//    1. The parent project's REFS `get` rows (newest beagle row wins) —
+//       self-propagates parent→child→… when a chain of beagle remotes
+//       recorded their sources.
+//    2. FALLBACK — the live parent STORE itself (`store_root`).  A
+//       worktree's own beagle store is, by the "if it has the parent,
+//       it has subs" invariant, the authoritative LOCAL source for any
+//       sibling sub shard.  This covers the real `~/.be/<proj>` case
+//       where the recorded `get` row names an unreachable upstream
+//       (`ssh://…`, or a deleted `file://` git source) rather than the
+//       `file:<store>` we are presently addressing: subs_loc_cb then
+//       reports `!beagle`, and without this fallback only the declared
+//       (offline) URL would be tried.  `store_root` is the parent wt's
+//       open store root (`KEEP.h->root`); it is a beagle store iff it
+//       holds a `.be/` dir, so the fallback fires only for a genuine
+//       local beagle parent (a git-source parent keeps an empty/NO
+//       locator → git's own resolution, preserving prior behavior).
+//  `via_parent_store` (optional out) is set YES only when the locator
+//  came from the parent-store FALLBACK (case 2) rather than a recovered
+//  REFS row (case 1) — the signal that this is the local-store GET-011
+//  case where the sub may already sit in a sibling shard.
+static ok64 subs_recover_locator(u8bp loc, b8 *is_beagle, u8cs store_root,
+                                 b8 *via_parent_store) {
     sane(loc && is_beagle);
     *is_beagle = NO;
+    if (via_parent_store) *via_parent_store = NO;
     u8bReset(loc);
     a_path(keepdir);
     call(HOMEBranchDir, KEEP.h, keepdir, NULL);
     subs_loc_ctx c = {.loc = loc, .vget = REFSVerbGet()};
     (void)REFSEachRecord($path(keepdir), subs_loc_cb, &c);
-    *is_beagle = c.beagle;
+    if (c.beagle) { *is_beagle = YES; done; }
+    //  No recoverable beagle row.  Fall back to the live parent store —
+    //  UNLESS the recorded source is a reachable git repo (the sub is
+    //  git's to resolve; a self-fetch from the still-empty bootstrap
+    //  shard would only poison the negotiation).  The fallback fires
+    //  only for a genuine local beagle parent whose recorded upstream is
+    //  unreachable (deleted git path / `ssh://`), i.e. the real
+    //  `~/.be/<proj>` GET-011 case.
+    if (!c.src_is_live_git && !u8csEmpty(store_root) &&
+        subs_path_is_be_store(store_root) && !subs_path_is_git(store_root)) {
+        ok64 lo = subs_locator_from_root(loc, store_root);
+        if (lo == OK) {
+            *is_beagle = YES;
+            if (via_parent_store) *via_parent_store = YES;
+            done;
+        }
+    }
     if (!c.found) return NONE;
     done;
 }
@@ -380,9 +522,68 @@ static b8 subs_pin_present(u8cs hex_sha) {
     return KEEPHas(WHIFFHexHashlet60(hx), 40) == OK;
 }
 
+//  GET-011: YES iff a sibling shard `<parent_home root>/.be/<shard>/`
+//  exists AND already holds the gitlink pin.  Used to detect that the
+//  sub is locally satisfiable from a sibling project shard of the very
+//  store we are operating on — the in-place re-get case where the
+//  recorded source is unreachable and a wire round-trip to the same
+//  store would be a self-fetch.  The parent KEEP is open (RW) on entry;
+//  this closes it, opens the sibling shard READ-ONLY, probes, then
+//  closes and reopens the parent's trunk in its original mode so the
+//  caller frame sees the same KEEP it started with.  A missing or empty
+//  shard simply reports NO.  `shard` must be a non-empty, non-`.be`
+//  basename (the caller passes a path/url basename).
+static b8 subs_sibling_shard_has_pin(home *parent_home, u8cs shard,
+                                     u8cs hex_sha) {
+    if (parent_home == NULL || u8csEmpty(shard) ||
+        u8csLen(hex_sha) != 40)
+        return NO;
+    //  A populated project shard has a non-empty `refs` (HOMENOPROJ
+    //  guards the empty/seeded case) — cheap existence gate before the
+    //  keeper churn.
+    if (HOMEProjectExists(parent_home, shard) != OK) return NO;
+
+    b8 parent_rw = (KEEP.lock_fd >= 0);
+
+    //  Preserve the parent project, then close + reopen on `shard`.
+    //  KEEPOpenBranch is a no-op when KEEP is already open (returns
+    //  KEEPOPEN, keeps the current shard), so the close is mandatory to
+    //  actually switch shards.
+    a_pad(u8, saved_proj, 256);
+    if (!BNULL(parent_home->project) && u8bDataLen(parent_home->project) > 0) {
+        a_dup(u8c, pp, u8bDataC(parent_home->project));
+        u8bFeed(saved_proj, pp);
+    }
+
+    KEEPClose();
+    u8bReset(parent_home->project);
+    {
+        a_dup(u8c, sh, shard);
+        u8bFeed(parent_home->project, sh);
+    }
+
+    static u8c const _zb = 0;
+    u8cs trunk = {(u8cp)&_zb, (u8cp)&_zb};
+    b8 has = NO;
+    if (KEEPOpenBranch(parent_home, trunk, NO) == OK) {
+        has = subs_pin_present(hex_sha);
+        KEEPClose();
+    }
+
+    //  Restore parent project + trunk open in its original mode.
+    u8bReset(parent_home->project);
+    if (u8bDataLen(saved_proj) > 0) {
+        a_dup(u8c, sp, u8bDataC(saved_proj));
+        u8bFeed(parent_home->project, sp);
+    }
+    u8cs trunk2 = {(u8cp)&_zb, (u8cp)&_zb};
+    (void)KEEPOpenBranch(parent_home, trunk2, parent_rw);
+    return has;
+}
+
 ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                    u8cs path, u8cs hex_sha,
-                   u8cs gitmodules, u8cs argv0) {
+                   u8cs gitmodules, u8cs argv0, u8cs src_uri) {
     sane($ok(reporoot) && $ok(parent_root) && $ok(path) &&
          $ok(hex_sha) && DOGIsFullSha(hex_sha));
 
@@ -432,9 +633,75 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     u8cs url = {};
     call(SNIFFSubsParseFind, gitmodules, path, url_buf, url);
 
-    //  2. Basename.
+    //  Recover the parent's fetch-source locator while KEEP is still on
+    //  the parent project (the recovery scans the parent's REFS).  Held
+    //  in frame buffers + flags so the fetch block below reuses them.
+    a_pad(u8, loc_buf, MAX_URI_LEN);
+    b8 src_beagle = NO;
+    b8 src_via_parent_store = NO;
+    (void)subs_recover_locator(loc_buf, &src_beagle, parent_root,
+                               &src_via_parent_store);
+
+    //  2. Basename.  The sub-shard is normally named by the declared
+    //  `.gitmodules` URL's basename.  GET-011: when the locator came
+    //  from the PARENT-STORE fallback (the local-store case — the
+    //  recorded source is unreachable and the live store is the only
+    //  candidate), and a SIBLING shard named by the sub's PATH-basename
+    //  already holds the gitlink pin (e.g. `~/.be/abc` while the URL
+    //  declares `libabc`), prefer that path-basename so the sub mounts
+    //  directly from the present sibling shard — no wire round-trip
+    //  (which, against the same store, would be a self-fetch the
+    //  recorded-but-unreachable source can't satisfy).  Every other case
+    //  (recovered beagle remote, fresh cross-store clones, git parents)
+    //  keeps the URL basename, preserving prior behavior.
     u8cs basename = {};
     call(SNIFFSubBasename, url, basename);
+
+    //  Resolve the sub's PATH basename once (reused for the
+    //  `<loc>?/<path-basename>` candidate below).  Backed by a frame
+    //  buffer so the slice stays valid for the whole function.
+    a_pad(u8, pathbase_buf, 512);
+    u8cs pathbase = {};
+    {
+        u8cs pb = {};
+        (void)SNIFFSubBasename(path, pb);
+        if (!u8csEmpty(pb)) {
+            call(u8bFeed, pathbase_buf, pb);
+            u8csMv(pathbase,
+                   ((u8cs){u8bDataHead(pathbase_buf), u8bIdleHead(pathbase_buf)}));
+        }
+    }
+
+    //  GET-011 PRIMARY candidate — built from the in-flight `be get`
+    //  SOURCE URI (the remote we are actually talking to), addressing
+    //  the sub by its PATH-basename project in the SAME multi-project
+    //  store: `file:///home/gritzko/.be?/dogs` + sub `abc` →
+    //  `file:///home/gritzko/.be?/abc`.  This takes priority over the
+    //  declared `.gitmodules` URL AND over any historical-REFS recovery
+    //  below.  `src_inflight_ok` records whether it was built (the
+    //  source is a beagle remote); the candidate text lives in
+    //  `srccand_buf` for the fetch block.
+    a_pad(u8, srccand_buf, MAX_URI_LEN);
+    b8 src_inflight_ok = NO;
+    if (!u8csEmpty(pathbase)) {
+        ok64 sc = subs_candidate_from_source(srccand_buf, src_uri, pathbase);
+        if (sc == OK && u8bDataLen(srccand_buf) > 0) src_inflight_ok = YES;
+    }
+
+    //  GET-011: when the in-flight source is a beagle remote, the sub is
+    //  a sibling project of the very store we are talking to.  If a
+    //  SIBLING shard named by the sub's PATH-basename already holds the
+    //  gitlink pin, mount from it directly — no wire round-trip (which,
+    //  against the same `file://` store, would be a self-fetch).  Also
+    //  covers the historical parent-store fallback (`src_via_parent_store`).
+    if ((src_inflight_ok || src_via_parent_store) &&
+        !u8csEmpty(pathbase) && !u8csEq(pathbase, basename) &&
+        subs_sibling_shard_has_pin(KEEP.h, pathbase, hex_sha)) {
+        u8csMv(basename, pathbase);
+        fprintf(stderr,
+                "SUBS.dbg: SubMount prefer path-basename shard "
+                U8SFMT " (holds pin)\n", u8sFmt(pathbase));
+    }
 
     fprintf(stderr,
             "SUBS.dbg: SubMount url=" U8SFMT " basename=" U8SFMT "\n",
@@ -515,23 +782,28 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         home *parent_home = KEEP.h;
         b8 parent_rw = (KEEP.lock_fd >= 0);
 
-        //  Resolve the sub's fetch source while KEEP is still on the
-        //  parent project.  For a beagle-remote parent the sub is a
-        //  sibling project in the SAME store ("if it has the parent,
-        //  it has subs"): try the parent's source locator addressing
-        //  the sub by url-basename, then by path-basename, before the
-        //  `.gitmodules` URL as specified.  A git-source parent has an
-        //  empty/NO locator, so only the declared URL is tried (git's
-        //  own resolution).  We hold the gitlink pin, so each beagle
+        //  GET-011 PRIMARY: the in-flight `be get` SOURCE candidate
+        //  (`srccand_buf`, built above from the remote on the command
+        //  line) is the FIRST source tried — the sub is fetched from the
+        //  exact store we are talking to.  Below it, the historical-REFS
+        //  recovery candidates (`loc_buf` / `src_beagle`) act as a
+        //  lower-priority fallback; the declared `.gitmodules` URL is
+        //  always last (preserving git-submodule recursion for non-beagle
+        //  parents).  We hold the gitlink pin, so every non-final beagle
         //  candidate is validated by whether that commit actually lands.
-        a_pad(u8, loc_buf, MAX_URI_LEN);
-        b8 src_beagle = NO;
-        (void)subs_recover_locator(loc_buf, &src_beagle);
-        u8cs pathbase = {};
-        (void)SNIFFSubBasename(path, pathbase);
+        //
+        //  The historical wire candidates fire only when the locator came
+        //  from a real REFS row (`src_beagle && !src_via_parent_store`) —
+        //  the parent-STORE fallback points at the very store we operate
+        //  on, where a `?/proj` wire fetch is a self-fetch; that case is
+        //  satisfied locally by the path-basename sibling-shard swap
+        //  above (pin present → skip fetch).  `pathbase` (the sub's PATH
+        //  basename) feeds the historical path-basename candidate.
+        b8 use_wire_candidates = src_beagle && !src_via_parent_store &&
+                                 u8bDataLen(loc_buf) > 0;
         a_pad(u8, cand0_buf, MAX_URI_LEN);     // <loc>?/<url-basename>
         a_pad(u8, cand1_buf, MAX_URI_LEN);     // <loc>?/<path-basename>
-        if (src_beagle && u8bDataLen(loc_buf) > 0) {
+        if (use_wire_candidates) {
             a_dup(u8c, loc_s, u8bDataC(loc_buf));
             a_cstr(qsl, "?/");
             (void)u8bFeed(cand0_buf, loc_s);
@@ -587,9 +859,17 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             //  as success only when the pin lands (else fall through);
             //  the final candidate succeeds on a clean fetch (git's
             //  semantics — preserves prior behavior for git subs).
-            u8cs cands[3];
+            //  Order: [in-flight SOURCE] [historical-REFS wire…] [URL].
+            u8cs cands[4];
             int nc = 0;
-            if (src_beagle && u8bDataLen(loc_buf) > 0) {
+            //  GET-011 PRIMARY — the in-flight `be get` source addressing
+            //  the sub's path-basename shard in the same store.
+            if (src_inflight_ok) {
+                cands[nc][0] = u8bDataHead(srccand_buf);
+                cands[nc][1] = u8bIdleHead(srccand_buf);
+                nc++;
+            }
+            if (use_wire_candidates) {
                 cands[nc][0] = u8bDataHead(cand0_buf);
                 cands[nc][1] = u8bIdleHead(cand0_buf);
                 nc++;

@@ -1178,6 +1178,19 @@ ok64 BEActSubsGet(cli *c) {
     if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
 
+    //  GET-011: the in-flight `be get` SOURCE URI — the remote on the
+    //  command line we are actually cloning from (`c->uris[0]->data`,
+    //  forwarded verbatim downstream, see the BEGetWorktree note above).
+    //  A transport source (scheme present) is the remote each sub must be
+    //  fetched from; pass it down so `sniff sub-mount --source` builds the
+    //  PRIMARY sub-fetch candidate against the SAME store.  Local/no-URI
+    //  forms leave it empty → git's own recursion / declared URL.
+    u8cs src_uri = {};
+    if (uribDataLen(c->uris) > 0) {
+        uri *su = uribAtP(c->uris, 0);
+        if (!u8csEmpty(su->scheme)) u8csMv(src_uri, su->data);
+    }
+
     //  Compose target_ref from the wtlog tail (post-checkout).
     a_pad(u8, target_ref_buf, 128);
     a_pad(u8, target_at_buf, FILE_PATH_MAX_LEN + 128);
@@ -1263,7 +1276,7 @@ ok64 BEActSubsGet(cli *c) {
         a_dup(u8c, tgt_view, u8bData(target_subs));
         ok64 sub_worst = BEGetDrainSubs(wt_root, tgt_view,
                                           (u8cs *)flag_view[0],
-                                          (u8cs *)flag_view[1]);
+                                          (u8cs *)flag_view[1], src_uri);
         if (sub_worst != OK) worst = sub_worst;
     }
 
@@ -1355,8 +1368,13 @@ ok64 BEActSubsPatch(cli *c) {
     }
     if (u8bDataLen(target_subs) > 0) {
         a_dup(u8c, tgt_view, u8bData(target_subs));
+        //  PATCH has no in-flight clone source — the sub's gitlink moves
+        //  via a local tree-diff absorb, not a remote fetch.  Empty
+        //  src_uri → sniff keeps the declared `.gitmodules` URL.
+        u8cs no_src = {NULL, NULL};
         ok64 sr = BEGetDrainSubs(wt_root, tgt_view,
-                                 (u8cs *)flag_view[0], (u8cs *)flag_view[1]);
+                                 (u8cs *)flag_view[0], (u8cs *)flag_view[1],
+                                 no_src);
         if (sr != OK) worst = sr;
     }
 

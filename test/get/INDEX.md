@@ -180,3 +180,35 @@
   and the clone fails CLEANLY (`WIRECLFL`) with no stray shard / files.
   Hermetic; asserts the source `.be` tree is byte-identical after.
   Local-only.
+* `44-file-subs-parent-no-getrow/` — GET-011: a `be get` against a
+  beagle store whose parent shard's recorded `get` row is NOT a
+  recoverable beagle remote (an unreachable upstream — the real
+  `~/.be/<proj>` shape) must still source each submodule from the live
+  source store, with the declared `.gitmodules` URL only last.  The sub
+  objects sit in a SIBLING shard named by the beagle PROJECT (`ch`) while
+  the declared URL's basename differs (`dead-libch`, an UNREACHABLE
+  github-style URL) — so the url-basename sub-shard misses the pin.
+  Pre-fix, sniff built no parent-source candidate and tried only the
+  offline URL → `WIRECLFL`/`BEDOGEXIT`.  Fix (`sniff/SUBS.c`):
+  `subs_recover_locator` falls back to the live parent STORE root when no
+  beagle `get` row is recoverable, and `SNIFFSubMount` prefers the
+  path-basename sibling shard when it already holds the pin (mounts
+  locally, no wire self-fetch).  Hermetic; asserts the sub materialises
+  and the declared URL is never the landing source.  Local-only, no ssh.
+* `45-file-subs-inflight-source/` — GET-011 (primary mechanism): when
+  `be get` clones from a beagle remote (`file://<store>?/<proj>`), each
+  submodule is fetched from THE EXACT SOURCE WE ARE TALKING TO — the
+  in-flight `be get` source URI on the command line — as the PRIMARY
+  candidate, with the declared `.gitmodules` URL only the LAST fallback.
+  Cross-store: source store B1 holds sibling shards `par`+`ch` (sub
+  objects in the path-basename `ch` shard), the committed `.gitmodules`
+  URL is UNREACHABLE with a differing basename (`dead-libch` != `ch`,
+  the dogs `libabc.git` vs `abc` shape), and we clone `file://B1?/par`
+  into a FRESH dest B2 so the sub fetch is a genuine wire round-trip
+  (not a same-store local sibling swap).  The fix threads the in-flight
+  source down beagle → `sniff sub-mount --source` → `SNIFFSubMount`,
+  which builds the PRIMARY candidate `file://B1?/ch` (source
+  scheme+authority+store-path, `?/<proj>` swapped to the sub's
+  path-basename).  Asserts `B2/ch/c.txt` materialises byte-exact, the
+  in-flight `?/ch` candidate is the landing source, and the dead URL is
+  never fetched.  Local-only, no ssh.

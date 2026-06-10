@@ -103,13 +103,23 @@ ok64 SNIFFSubsSynth(u8bp out, u8cs paths, u8cs urls);
 //    gitmodules   — bytes of the parent tree's `.gitmodules` blob.
 //    argv0        — caller's argv[0], used by `HOMEResolveSibling` to
 //                   find the sibling `be` binary.
+//    src_uri      — GET-011: the in-flight `be get` SOURCE URI we are
+//                   actually cloning from (the remote on the command
+//                   line, e.g. `file:///home/gritzko/.be?/dogs`).  Empty
+//                   for a git-source parent.  When this names a beagle
+//                   remote (scheme `file`/`be`/`keeper`), the PRIMARY
+//                   fetch candidate for each sub is built from it —
+//                   scheme+authority+store-path with the `?/<proj>`
+//                   query replaced by the sub's path-basename — so the
+//                   sub is sourced from the SAME store we are talking
+//                   to, with the `.gitmodules` URL only a last fallback.
 //
 //  Returns OK on success.  Per-sub failures (URL missing, fetch fail,
 //  child non-zero exit) are propagated; the caller may choose to log
 //  and continue.
 ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                    u8cs path, u8cs hex_sha,
-                   u8cs gitmodules, u8cs argv0);
+                   u8cs gitmodules, u8cs argv0, u8cs src_uri);
 
 //  YES iff `<wt_root>/<subpath>/.be` exists as a regular file (the
 //  secondary-wt anchor that GET writes when materialising a sub).

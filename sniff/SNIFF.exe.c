@@ -550,7 +550,7 @@ char const *const SNIFF_VERBS[] = {
 };
 
 char const SNIFF_VAL_FLAGS[] =
-    "-m\0--author\0--at\0";
+    "-m\0--author\0--at\0--source\0";
 
 // --- Entry: run the parsed CLI against the open state ---
 
@@ -1219,8 +1219,15 @@ ok64 SNIFFExec(cli *c) {
                     u8cs hex_s = {};
                     u8csMv(hex_s, u->fragment);
                     a$rg(argv0, 0);
+                    //  GET-011: the in-flight `be get` source URI (the
+                    //  remote we are actually cloning from) rides in
+                    //  `--source`; SubMount builds the PRIMARY sub-fetch
+                    //  candidate from it.  Empty when absent (git parent).
+                    u8cs src_uri = {};
+                    CLIFlag(src_uri, c, "--source");
                     ret = SNIFFSubMount(reporoot, parent_root_s,
-                                        path_s, hex_s, gm_blob, argv0);
+                                        path_s, hex_s, gm_blob, argv0,
+                                        src_uri);
                     FILEUnMap(gm_map);
                 }
             }

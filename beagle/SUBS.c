@@ -462,7 +462,7 @@ ok64 BEGetKeeperSubs(u8cs query, u8bp out) {
     return begetsubs_capture(keeper_d, argv, out);
 }
 
-ok64 BEGetSubMount(u8cs subpath, u8cs pin) {
+ok64 BEGetSubMount(u8cs subpath, u8cs pin, u8cs src_uri) {
     sane($ok(subpath) && $ok(pin));
 
     //  Compose `./<subpath>#<pin>` via abc/PATH (path part) + URIMake
@@ -479,13 +479,24 @@ ok64 BEGetSubMount(u8cs subpath, u8cs pin) {
                   u8bDataC(path_buf), empty, pin);
     a_dup(u8c, uri_view, u8bData(uri_buf));
 
-    a_pad(u8cs, args, 4);
+    //  GET-011: forward the in-flight `be get` source URI as
+    //  `--source <src_uri>` so sniff's SubMount builds the PRIMARY
+    //  sub-fetch candidate from the SAME remote.  Omitted (no flag)
+    //  when empty — a git-source parent keeps git's own recursion.
+    a_pad(u8cs, args, 6);
     a_cstr(sniff_s, "sniff");
     a_cstr(verb_s,  "sub-mount");
     a_dup(u8c, sniff_d, sniff_s);
     a_dup(u8c, verb_d,  verb_s);
     u8csbFeed1(args, sniff_d);
     u8csbFeed1(args, verb_d);
+    if (!u8csEmpty(src_uri)) {
+        a_cstr(src_flag, "--source");
+        a_dup(u8c, src_flag_d, src_flag);
+        a_dup(u8c, src_uri_d,  src_uri);
+        u8csbFeed1(args, src_flag_d);
+        u8csbFeed1(args, src_uri_d);
+    }
     u8csbFeed1(args, uri_view);
     a_dup(u8cs, argv, u8csbData(args));
 
@@ -539,7 +550,7 @@ static b8 begetsubs_has(u8cs ulog, u8cs subpath) {
 }
 
 ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
-                    u8cs *flag_head, u8cs *flag_term) {
+                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri) {
     sane($ok(wt_root));
     ok64 worst = OK;
     b8 outer_emitted = NO;
@@ -576,7 +587,7 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
                 u8sFmt(subpath_arg), u8sFmt(pin_arg),
                 is_mounted ? "YES" : "NO", u8sFmt(wt_root));
         {
-            ok64 mr = BEGetSubMount(subpath_arg, pin_arg);
+            ok64 mr = BEGetSubMount(subpath_arg, pin_arg, src_uri);
             fprintf(stderr,
                     "BE.dbg: BEGetSubMount path=" U8SFMT
                     " result=%s\n",
