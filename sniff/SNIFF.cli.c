@@ -92,15 +92,17 @@ static ok64 sniffcli_inner(cli *c) {
     a_cstr(v_list,   "list");
     a_cstr(v_post,   "post");
     a_cstr(v_commit, "commit");
-    b8 is_projector = u8csEmpty(c->verb) && uribDataLen(c->uris) > 0 &&
-                      DOGIsProjector(uribAtP(c->uris, 0)->scheme);
+    uri u0 = {};
+    if (CLIUriLen(c) > 0) (void)CLIUriAt(&u0, c, 0);
+    b8 is_projector = u8csEmpty(c->verb) && CLIUriLen(c) > 0 &&
+                      DOGIsProjector(u0.scheme);
     //  Bare `sniff` (empty verb, no URI) and explicit `--status` are
     //  read-only status prints — mirror SNIFFExec's `is_status`.  They
     //  MUST be RO so HOMEOpen(rw=NO) never bootstraps `<cwd>/.be/`
     //  markers in a directory that is not a repo (regression: a stray
     //  `$HOME/.be` created this way turned every later bare `be` under
     //  $HOME into a full-home-tree scan — see norepo.sh).
-    b8 bare_status = u8csEmpty(c->verb) && uribDataLen(c->uris) == 0;
+    b8 bare_status = u8csEmpty(c->verb) && CLIUriLen(c) == 0;
     b8 ro = u8csEq(c->verb, v_status) || u8csEq(c->verb, v_list)
          || is_projector || bare_status || CLIHas(c, "--status");
     b8 rw = !ro;
@@ -188,7 +190,7 @@ ok64 sniffcli() {
     cli c = {};
     call(PATHu8bAlloc, c.repo);
     call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
-    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
+    call(u8csbAlloc,  c.uris,  CLI_MAX_URIS);
     try(sniffcli_inner, &c);
     ok64 ret = __;
     //  `-q` / `--quiet` swallows any `*NONE` (POSTNONE / PUTNONE /
@@ -199,7 +201,7 @@ ok64 sniffcli() {
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
     u8csbFree(c.flags);
-    uribFree(c.uris);
+    u8csbFree(c.uris);
     PATHu8bFree(c.repo);
     return ret;
 }

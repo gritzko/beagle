@@ -113,10 +113,10 @@ ok64 SPOTExec(cli *c) {
     //  BLOBFN memo.  Bare `spot get` (no URI) walks the worktree's
     //  current tip via `--at`'s fragment.
     if ($eq(c->verb, v_get)) {
-        uri empty = {};
-        uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : &empty;
+        uri u0 = {};
+        if (CLIUriLen(c) > 0) (void)CLIUriAt(&u0, c, 0);
         call(KEEPOpen, dog->h, NO);
-        ok64 igr = SPOTIndexFromTips(u);
+        ok64 igr = SPOTIndexFromTips(&u0);
         KEEPClose();
         return igr;
     }
@@ -161,10 +161,18 @@ ok64 SPOTExec(cli *c) {
     //  on the fragment splits off as an extension filter
     //  (`spot:#'body'.c`).  Surrounding `'…'` quotes around the body
     //  are stripped so shell quoting doesn't leak in.
+    //  First URI parsed once into a function-scope transient (URI-004):
+    //  the projector block below MUTATES it (clears the consumed
+    //  fragment / `.ext` path) and the trail loop reuses the SAME
+    //  transient for ui==0 so those clears persist.
+    uri uri0v = {};
+    b8 have_uri0 = (CLIUriLen(c) > 0);
+    if (have_uri0) (void)CLIUriAt(&uri0v, c, 0);
+
     u8cs proj_ext = {};
     b8 proj_search_uri0 = NO;
-    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
-        uri *pu = uribAtP(c->uris, 0);
+    if ($empty(c->verb) && have_uri0) {
+        uri *pu = &uri0v;
         a_cstr(s_spot,  "spot");
         a_cstr(s_grep,  "grep");
         a_cstr(s_regex, "regex");
@@ -212,9 +220,20 @@ ok64 SPOTExec(cli *c) {
     u8cs trail[16] = {};
     int ntrail = 0;
     if (!$empty(proj_ext)) { $mv(trail[ntrail], proj_ext); ntrail++; }
+    uri ref_uriv = {};
     uri const *ref_uri = NULL;   // first URI with a real `?ref` query
-    for (u32 ui = 0; ui < uribDataLen(c->uris) && ntrail < 16; ui++) {
-        uri *u = uribAtP(c->uris, ui);
+    for (u32 ui = 0; ui < CLIUriLen(c) && ntrail < 16; ui++) {
+        //  For ui==0 reuse the projector-mutated transient so its
+        //  consumed-fragment / `.ext`-path clears persist; otherwise
+        //  parse the entry fresh (URI-004).
+        uri uiv = {};
+        uri *u;
+        if (ui == 0) {
+            u = &uri0v;
+        } else {
+            (void)CLIUriAt(&uiv, c, ui);
+            u = &uiv;
+        }
         //  Projector consumed the fragment.  Path stays for narrowing
         //  (e.g. `spot:/graf?feat#sym` ⇒ search `sym` under `/graf` on
         //  branch `feat`); the loop below picks it up via u->path.
@@ -228,7 +247,7 @@ ok64 SPOTExec(cli *c) {
                 if (*p == '?') { has_ref = YES; break; }
             }
         }
-        if (has_ref && ref_uri == NULL) ref_uri = u;
+        if (has_ref && ref_uri == NULL) { ref_uriv = *u; ref_uri = &ref_uriv; }
         //  Path is a file/dir narrowing constraint.  Skip it only when
         //  the URI carries an authority (`//host/repo?ref`) where the
         //  path is the *remote* repo location, not a local subtree.
@@ -355,11 +374,15 @@ ok64 SPOTExec(cli *c) {
             u8css sf = {sfiles, sfiles + snf};
             ret = CAPOSpot(ndl, rep, ext, reporoot, sf, ref_uri);
         }
-    } else if (uribDataLen(c->uris) > 0) {
+    } else if (CLIUriLen(c) > 0) {
         //  A search projector with no body (e.g. `spot:`, `spot:#name`)
         //  is the most likely cause — body belongs in the URI path slot,
         //  not the fragment.  Catch that case with a targeted hint.
-        uri *u0 = uribAtP(c->uris, 0);
+        //  Parse fresh (not uri0v, whose slots the projector block may
+        //  have cleared) so the original path is reported.
+        uri u0v = {};
+        (void)CLIUriAt(&u0v, c, 0);
+        uri *u0 = &u0v;
         a_cstr(s_spot,  "spot");
         a_cstr(s_grep,  "grep");
         a_cstr(s_regex, "regex");

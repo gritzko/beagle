@@ -25,7 +25,7 @@ static b8 cli_takes_val(char const *val_flags, u8csc flag) {
 ok64 CLIParse(cli *c, char const *const *verb_names,
               char const *val_flags) {
     //  Caller must PATHu8bAlloc(c->repo) + u8csbAlloc(c->flags) +
-    //  uribAlloc(c->uris) before invoking CLIParse (CLAUDE.md §5:
+    //  u8csbAlloc(c->uris) before invoking CLIParse (CLAUDE.md §5:
     //  alloc at the top of the call chain).
     sane(c != NULL && c->repo[0] != NULL
          && c->flags[0] != NULL && c->uris[0] != NULL);
@@ -153,25 +153,40 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
                 if (u8csbFeed1(c->flags, empty_val) != OK) continue;
             }
         } else {
-            // Non-flag arg → URI via DOGNormalizeArg.  Fill the
-            // buffer's idle slot in place (uri is ~80B; avoids a
-            // value copy through uribFeed1), then commit with
-            // uribFed1.  Overflow → SNOROOM → drop with a hint.
-            uri *u = uribIdleHead(c->uris);
-            if (u == NULL || uribIdleLen(c->uris) == 0) {
+            // Non-flag arg → store the RAW arg text (URI-004).  The
+            // borrowed argv slice is appended verbatim; downstream
+            // decomposition happens via CLIUriAt parse-on-demand.
+            // Overflow → SNOROOM → drop with a hint.
+            if (u8csbIdleLen(c->uris) == 0
+                || u8csbFeed1(c->uris, a) != OK) {
                 fprintf(stderr,
                     "cli: too many URIs (cap %u) — dropping %.*s\n",
                     (unsigned)CLI_MAX_URIS,
                     (int)$len(a), (char *)a[0]);
                 continue;
             }
-            zerop(u);
-            DOGNormalizeArg(u, a);
-            $mv(u->data, a);    // restore original data slice
-            (void)uribFed1(c->uris);
         }
     }
     done;
+}
+
+ok64 CLIUriParse(uri *out, u8csc raw) {
+    sane(out != NULL);
+    //  Mirror CLIParse's former per-arg normalization: classify and
+    //  decompose the raw arg (DOGNormalizeArg zerops `out` first),
+    //  then restore the full arg text into out->data so downstream
+    //  data-forwarders see the original bytes (matches the old
+    //  `$mv(u->data, a)` restore).
+    call(DOGNormalizeArg, out, raw);
+    u8csMv(out->data, raw);
+    done;
+}
+
+ok64 CLIUriAt(uri *out, cli const *c, size_t i) {
+    sane(out != NULL && c != NULL);
+    u8cs raw = {};
+    CLIUriRawAt(raw, c, i);
+    return CLIUriParse(out, raw);
 }
 
 void CLISetHUNKMode(cli const *c) {

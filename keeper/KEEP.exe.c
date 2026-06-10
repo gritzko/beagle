@@ -182,12 +182,14 @@ static ok64 keeper_refs(keeper *k) {
 
 static ok64 keeper_subs(keeper *k, cli *c) {
     sane(k && c);
-    if (uribDataLen(c->uris) < 1 ||
-        (u8csEmpty(uribAtP(c->uris, 0)->query) && u8csEmpty(uribAtP(c->uris, 0)->fragment))) {
+    uri uv = {};
+    if (CLIUriLen(c) > 0) (void)CLIUriAt(&uv, c, 0);
+    if (CLIUriLen(c) < 1 ||
+        (u8csEmpty(uv.query) && u8csEmpty(uv.fragment))) {
         fprintf(stderr, "keeper: subs requires `?<ref>` URI\n");
         return KEEPFAIL;
     }
-    uri *u = uribAtP(c->uris, 0);
+    uri *u = &uv;
 
     //  DIS-035: the PATCH whole-branch scope `!` rides on the query
     //  (`?/<proj>/<sha>!` — the local form `be`'s BEActResolveRemote
@@ -642,11 +644,13 @@ static ok64 keeper_get_blob(keeper *k, uri *g) {
 
 static ok64 keeper_get(keeper *k, cli *c) {
     sane(k && c);
-    if (uribDataLen(c->uris) == 0) {
+    if (CLIUriLen(c) == 0) {
         fprintf(stderr, "keeper: get requires a URI\n");
         return KEEPFAIL;
     }
-    uri *g = uribAtP(c->uris, 0);
+    uri gv = {};
+    call(CLIUriAt, &gv, c, 0);
+    uri *g = &gv;
 
     if (!u8csEmpty(g->authority))
         return KEEPGetRemote(g);
@@ -676,11 +680,13 @@ static ok64 keeper_get(keeper *k, cli *c) {
 
 static ok64 keeper_put(keeper *k, cli *c) {
     sane(k && c);
-    if (uribDataLen(c->uris) == 0) {
+    if (CLIUriLen(c) == 0) {
         fprintf(stderr, "keeper: put requires a URI\n");
         return KEEPFAIL;
     }
-    uri *g = uribAtP(c->uris, 0);
+    uri gv = {};
+    call(CLIUriAt, &gv, c, 0);
+    uri *g = &gv;
 
     if (!u8csEmpty(g->authority)) {
         fprintf(stderr, "keeper: remote push not yet implemented\n");
@@ -690,11 +696,13 @@ static ok64 keeper_put(keeper *k, cli *c) {
     u8cs ref_name = {};
     u8cs sha_frag = {};
 
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->query) && !$ok(ref_name))
-            u8csMv(ref_name, uribAtP(c->uris, i)->query);
-        if (!u8csEmpty(uribAtP(c->uris, i)->fragment) && !$ok(sha_frag))
-            u8csMv(sha_frag, uribAtP(c->uris, i)->fragment);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        if (!u8csEmpty(uv.query) && !$ok(ref_name))
+            u8csMv(ref_name, uv.query);
+        if (!u8csEmpty(uv.fragment) && !$ok(sha_frag))
+            u8csMv(sha_frag, uv.fragment);
     }
 
     if (!$ok(ref_name) || !$ok(sha_frag)) {
@@ -796,7 +804,9 @@ static b8 keep_post_is_git_wire(u8csc remote_uri) {
 //  No URI → this verb is a no-op (sniff already wrote the commit).
 static ok64 keeper_post(keeper *k, cli *c) {
     sane(k && c);
-    uri *g = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    uri gv = {};
+    uri *g = NULL;
+    if (CLIUriLen(c) > 0) { (void)CLIUriAt(&gv, c, 0); g = &gv; }
     //  POST-008: a valid push target is anything `wcli_spawn` /
     //  `keeper_remote_uri` can route, NOT just a host-bearing ssh URI.
     //  The old `u8csEmpty(g->host)` gate rejected a host-less local
@@ -1139,11 +1149,13 @@ static ok64 keeper_delete_alias(keeper *k, u8cs host) {
 
 static ok64 keeper_delete(keeper *k, cli *c) {
     sane(k && c);
-    if (uribDataLen(c->uris) == 0) {
+    if (CLIUriLen(c) == 0) {
         fprintf(stderr, "keeper: delete requires a //host[?ref] URI\n");
         return KEEPFAIL;
     }
-    uri *g = uribAtP(c->uris, 0);
+    uri gv = {};
+    call(CLIUriAt, &gv, c, 0);
+    uri *g = &gv;
     if (u8csEmpty(g->host)) {
         fprintf(stderr,
                 "keeper: delete needs a remote URI (//host[?ref])\n");
@@ -1234,12 +1246,13 @@ ok64 KEEPExec(cli *c) {
     //  the URI's scheme resolves to this dog ("keeper").  `--tlv`
     //  switches the emitter from raw bytes to a HUNK TLV record so
     //  `bro` (started by BE on a TTY) can render it.
-    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
-        uri *pu = uribAtP(c->uris, 0);
-        char const *dog = DOGProjectorDog(pu->scheme);
+    if ($empty(c->verb) && CLIUriLen(c) > 0) {
+        uri pu = {};
+        (void)CLIUriAt(&pu, c, 0);
+        char const *dog = DOGProjectorDog(pu.scheme);
         if (dog != NULL && strcmp(dog, "keeper") == 0) {
             b8 tlv = CLIHas(c, "--tlv");
-            return KEEPProjDispatch(pu, tlv);
+            return KEEPProjDispatch(&pu, tlv);
         }
     }
 
@@ -1260,8 +1273,10 @@ ok64 KEEPExec(cli *c) {
     //  every transport.  The keeper-protocol case (`be://`, `keeper://`,
     //  `file://`) execs `keeper upload-pack` / `receive-pack` on the
     //  peer end via wcli_spawn.
-    if (uribDataLen(c->uris) >= 1) {
-        uri *u = uribAtP(c->uris, 0);
+    if (CLIUriLen(c) >= 1) {
+        uri uv = {};
+        (void)CLIUriAt(&uv, c, 0);
+        uri *u = &uv;
         a_cstr(be_sch,     "be");
         a_cstr(file_sch,   "file");
         a_cstr(keeper_sch, "keeper");
@@ -1277,32 +1292,37 @@ ok64 KEEPExec(cli *c) {
     if ($eq(c->verb, v_delete))  return keeper_delete(k, c);
 
     if ($eq(c->verb, v_import)) {
-        if (uribDataLen(c->uris) < 1) {
+        if (CLIUriLen(c) < 1) {
             fprintf(stderr, "keeper: import requires a packfile path\n");
             return KEEPFAIL;
         }
-        return keeper_import(k, uribAtP(c->uris, 0)->path);
+        uri iv = {};
+        call(CLIUriAt, &iv, c, 0);
+        return keeper_import(k, iv.path);
     }
 
     if ($eq(c->verb, v_verify)) {
-        if (uribDataLen(c->uris) < 1 || u8csEmpty(uribAtP(c->uris, 0)->fragment)) {
+        uri vv = {};
+        if (CLIUriLen(c) > 0) (void)CLIUriAt(&vv, c, 0);
+        if (CLIUriLen(c) < 1 || u8csEmpty(vv.fragment)) {
             fprintf(stderr, "keeper: verify requires #sha\n");
             return KEEPFAIL;
         }
-        return keeper_verify(k, uribAtP(c->uris, 0)->fragment);
+        return keeper_verify(k, vv.fragment);
     }
 
     a_cstr(v_lsfiles, "ls-files");
     if ($eq(c->verb, v_lsfiles)) {
-        uri default_uri = {};
-        uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : &default_uri;
-        if (uribDataLen(c->uris) == 0) {
+        uri uv = {};
+        if (CLIUriLen(c) > 0) {
+            (void)CLIUriAt(&uv, c, 0);
+        } else {
             //  Default: local HEAD.  Construct a minimal URI with query = "HEAD".
             a_cstr(head_q, "HEAD");
-            default_uri.query[0] = head_q[0];
-            default_uri.query[1] = head_q[1];
+            uv.query[0] = head_q[0];
+            uv.query[1] = head_q[1];
         }
-        return keeper_lsfiles(k, u);
+        return keeper_lsfiles(k, &uv);
     }
 
     fprintf(stderr, "keeper: unknown verb '%.*s'\n",

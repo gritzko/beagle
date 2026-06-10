@@ -18,8 +18,10 @@
 //   dog [verb] [--flags] [URI...]
 //
 // Slices borrow from argv (no per-slice allocation).  Every non-flag
-// arg is run through DOGNormalizeArg and appended to `uris`; there
-// is no multi-arg fragment joining.  Free-form text (commit messages,
+// arg's raw text is appended verbatim to `uris`; decomposition into
+// components (path / query / fragment / …) is deferred to a
+// per-entry parse-on-demand (CLIUriAt → DOGNormalizeArg).  There is
+// no multi-arg fragment joining.  Free-form text (commit messages,
 // search strings) reaches the dogs as a single whitespace-bearing
 // arg (which DOGNormalizeArg classifies as fragment) or via the
 // explicit `#` sigil; legacy `-m <msg>` is still accepted.
@@ -30,15 +32,45 @@
 // (always even: flag + val = 2 per pair).
 //
 // `uris` and `flags` are heap-allocated by the entry frame (e.g.
-// becli_inner) via u8csbAlloc / uribAlloc; CLIParse appends into them
-// via {u8csb,urib}Feed1.  Walk with $for(uri, u, uribData(c->uris)).
+// becli_inner) via u8csbAlloc; CLIParse appends into them via
+// u8csbFeed1.  `uris` carries the UNPARSED arg text (one u8cs per
+// non-flag arg, borrowing argv); decompose a single entry on demand
+// with CLIUriAt (parse-on-demand).  Walk count with CLIUriLen(c).
 typedef struct {
     u8cs   verb;                     // first arg matching verb_names
     u8csb  flags;                    // interleaved [flag, val] u8cs entries
-    urib   uris;                     // parsed URI targets
+    u8csb  uris;                     // raw (unparsed) URI arg text
     path8b repo;                     // repo root path; heap-allocated by entry frame
     u8     bang;                     // URI-002 bang bits (DOG_BANG_VERB set here)
 } cli;
+
+// Number of URI args parsed onto `c->uris`.
+fun size_t CLIUriLen(cli const *c) { return u8csbDataLen(c->uris); }
+
+// Raw (unparsed) text of URI arg `i` — borrows c->uris storage.
+fun void CLIUriRawAt(u8csp out, cli const *c, size_t i) {
+    u8cs const *e = u8csbAtP(c->uris, i);
+    $mv(out, (*e));
+}
+
+// Replace the raw text of URI arg `i` (URI rewriters: bareword
+// promotion, ref/remote resolution).  `raw` must point into storage
+// that outlives `c` (a persistent scratch buffer — see the BE plan
+// actions).
+fun void CLIUriSetRaw(cli *c, size_t i, u8cs raw) {
+    u8cs *slot = u8csbAtP(c->uris, i);
+    $mv((*slot), raw);
+}
+
+// Parse the raw URI text `raw` into the transient `*out`, mirroring
+// the exact normalization CLIParse applies to each non-flag arg
+// (DOGNormalizeArg + restore the full arg into out->data).  The
+// component slices VIEW into `raw`, so `raw` must outlive `*out`.
+ok64 CLIUriParse(uri *out, u8csc raw);
+
+// Parse URI arg `i` of `c` into the transient `*out`.  Slices view
+// into the cli's borrowed argv text, stable for the lifetime of `c`.
+ok64 CLIUriAt(uri *out, cli const *c, size_t i);
 
 // Parse $args into cli struct. verb_names is a NULL-terminated
 // array of known verb strings (or NULL to disable verb detection).

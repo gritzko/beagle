@@ -262,8 +262,8 @@ void BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c) {
         if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
             u8csbFeed1(args, (*u8csbAtP(c->flags, j + 1)));
     }
-    for (u32 j = 0; j < uribDataLen(c->uris); j++)
-        u8csbFeed1(args, uribAtP(c->uris, j)->data);
+    for (u32 j = 0; j < CLIUriLen(c); j++)
+        u8csbFeed1(args, (*u8csbAtP(c->uris, j)));
 }
 
 //  YES iff dir `path` looks like a git repo — a worktree
@@ -310,36 +310,36 @@ static Bu8 befile_uri_buf = {
 //  is left untouched and stays a sibling worktree (https://replicated.wiki/html/wiki/Verbs.html
 //  §"Worktree management" Example 2).
 static void be_file_get_route(cli *c) {
-    if (c == NULL || uribDataLen(c->uris) == 0) return;
-    uri *u = uribAtP(c->uris, 0);
+    if (c == NULL || CLIUriLen(c) == 0) return;
+    uri u = {};
+    if (CLIUriAt(&u, c, 0) != OK) return;
     a_cstr(file_sch, "file");
-    if (!u8csEq(u->scheme, file_sch)) return;   // file: scheme only
-    if (u->authority[0] != NULL)      return;   // already file:///abs form
-    if (u8csEmpty(u->path))           return;
-    a_dup(u8c, p, u->path);
-    if (!be_path_is_git(p))           return;   // beagle store → worktree
+    if (!u8csEq(u.scheme, file_sch)) return;   // file: scheme only
+    if (u.authority[0] != NULL)      return;   // already file:///abs form
+    if (u8csEmpty(u.path))           return;
+    a_dup(u8c, p, u.path);
+    if (!be_path_is_git(p))          return;   // beagle store → worktree
 
     //  Rebuild `file://` + <path> [+ ?query] [+ #frag].  The path is
     //  rooted (leading '/'), so `file://` + `/abs` = `file:///abs`.
     u8bReset(befile_uri_buf);
     a_cstr(pfx, "file://");
-    if (u8bFeed(befile_uri_buf, pfx)     != OK) return;
-    if (u8bFeed(befile_uri_buf, u->path) != OK) return;
-    if (!u8csEmpty(u->query)) {
-        if (u8bFeed1(befile_uri_buf, '?')      != OK) return;
-        if (u8bFeed(befile_uri_buf, u->query)  != OK) return;
+    if (u8bFeed(befile_uri_buf, pfx)    != OK) return;
+    if (u8bFeed(befile_uri_buf, u.path) != OK) return;
+    if (!u8csEmpty(u.query)) {
+        if (u8bFeed1(befile_uri_buf, '?')     != OK) return;
+        if (u8bFeed(befile_uri_buf, u.query)  != OK) return;
     }
-    if (!u8csEmpty(u->fragment)) {
-        if (u8bFeed1(befile_uri_buf, '#')        != OK) return;
-        if (u8bFeed(befile_uri_buf, u->fragment) != OK) return;
+    if (!u8csEmpty(u.fragment)) {
+        if (u8bFeed1(befile_uri_buf, '#')       != OK) return;
+        if (u8bFeed(befile_uri_buf, u.fragment) != OK) return;
     }
-    //  Re-lex in place so scheme/authority/path reflect the triple-slash
-    //  form (URIPattern then reports URI_AUTHORITY).  URILexer *consumes*
-    //  `data` as it scans, so restore the full slice afterwards —
-    //  BEBuildArgv forwards `u->data` verbatim to keeper / sniff.
+    //  Store the triple-slash form back as the raw arg text so the
+    //  downstream parse-on-demand reports URI_AUTHORITY and BEBuildArgv
+    //  forwards the rewritten bytes verbatim to keeper / sniff.  The
+    //  rewrite lives in the static befile_uri_buf, so the slice survives.
     a_dup(u8c, newtext, u8bDataC(befile_uri_buf));
-    (void)DOGParseURI(u, newtext);
-    u8csMv(u->data, newtext);
+    CLIUriSetRaw(c, 0, newtext);
 }
 
 //  `wt_uri_buf` is caller-owned scratch (≥ 64 B) backing the rewritten
@@ -993,9 +993,11 @@ ok64 BEHeadSubs(cli *c) {
     //  that case the recursion swaps the URL per-sub (each sub
     //  fetches its OWN remote) — see head/07.  Local mode
     //  (`?ref`, bare `?`, cached `//host`) just forwards verbatim.
-    b8 transport = (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->scheme));
+    uri u0 = {};
+    if (CLIUriLen(c) > 0) (void)CLIUriAt(&u0, c, 0);
+    b8 transport = (CLIUriLen(c) > 0 && !u8csEmpty(u0.scheme));
     u8cs forwarded_query = {};
-    if (transport) u8csMv(forwarded_query, uribAtP(c->uris, 0)->query);
+    if (transport) u8csMv(forwarded_query, u0.query);
 
     //  Build the child argv prefix.  Local mode: include the parent's
     //  URIs (child runs against `?<same-ref>` in its own scope).
@@ -1012,8 +1014,8 @@ ok64 BEHeadSubs(cli *c) {
             u8csbFeed1(child_args, (*u8csbAtP(c->flags, j + 1)));
     }
     if (!transport) {
-        for (u32 j = 0; j < uribDataLen(c->uris); j++)
-            u8csbFeed1(child_args, uribAtP(c->uris, j)->data);
+        for (u32 j = 0; j < CLIUriLen(c); j++)
+            u8csbFeed1(child_args, (*u8csbAtP(c->uris, j)));
     }
 
     a_dup(u8cs, child_argv, u8csbData(child_args));
@@ -1053,8 +1055,8 @@ static Bu8 beget_baseline_sha = {
 
 //  Scratch buffer for BEGetWorktree's `?<hashlet>` URI rewrite.
 //  Must outlive the rest of BE_PLAN_GET because downstream rows
-//  (BEActKeeperGet etc.) read `uribAtP(c->uris, 0)->data`, which
-//  BEGetWorktree may have repointed into this buffer.
+//  (BEActKeeperGet etc.) read `c->uris[0]` (the raw arg text), which
+//  BEActWorktreeAnchor may have repointed into this buffer.
 static u8 beget_wt_uri_buf_storage[64];
 static Bu8 beget_wt_uri_buf = {
     beget_wt_uri_buf_storage, beget_wt_uri_buf_storage,
@@ -1078,10 +1080,17 @@ ok64 BEActGetBaseline(cli *c) {
 
 ok64 BEActWorktreeAnchor(cli *c) {
     sane(c);
-    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    if (u0 == NULL) done;
+    if (CLIUriLen(c) == 0) done;
+    uri u0v = {};
+    call(CLIUriAt, &u0v, c, 0);
+    uri *u0 = &u0v;
     u8bReset(beget_wt_uri_buf);
     call(BEGetWorktree, u0, beget_wt_uri_buf);
+    //  BEGetWorktree may have rewritten the checkout target into
+    //  beget_wt_uri_buf (`?<hashlet>` / `?/<title>` etc.).  Persist the
+    //  rewritten bytes back as the raw arg text so downstream rows read
+    //  the new target (the buffer is static, so the slice survives).
+    CLIUriSetRaw(c, 0, u0->data);
 
     //  GET-006: BEGetWorktree may have just wired a NEW secondary
     //  worktree at cwd (`<cwd>/.be` written as a row-0 anchor FILE)
@@ -1127,8 +1136,10 @@ ok64 BEActSingleFileGet(cli *c) {
     //  the wt file without appending a `get` row.  The aggregate
     //  gate already passed; double-check the first URI to skip
     //  edge-case multi-URI invocations (rare).
-    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    if (u0 == NULL)             done;
+    if (CLIUriLen(c) == 0)      done;
+    uri u0v = {};
+    call(CLIUriAt, &u0v, c, 0);
+    uri *u0 = &u0v;
     if ($empty(u0->path))       done;
     if ($empty(u0->query))      done;
     if (!$empty(u0->authority)) done;
@@ -1186,9 +1197,10 @@ ok64 BEActSubsGet(cli *c) {
     //  PRIMARY sub-fetch candidate against the SAME store.  Local/no-URI
     //  forms leave it empty → git's own recursion / declared URL.
     u8cs src_uri = {};
-    if (uribDataLen(c->uris) > 0) {
-        uri *su = uribAtP(c->uris, 0);
-        if (!u8csEmpty(su->scheme)) u8csMv(src_uri, su->data);
+    if (CLIUriLen(c) > 0) {
+        uri su = {};
+        (void)CLIUriAt(&su, c, 0);
+        if (!u8csEmpty(su.scheme)) u8csMv(src_uri, su.data);
     }
 
     //  Compose target_ref from the wtlog tail (post-checkout).
@@ -1208,8 +1220,11 @@ ok64 BEActSubsGet(cli *c) {
         }
         (void)u8bFeed1(target_ref_buf, '#');
         (void)u8bFeed(target_ref_buf, tt.fragment);
-    } else if (uribDataLen(c->uris) > 0 && !u8csEmpty(uribAtP(c->uris, 0)->query)) {
-        (void)u8bFeed(target_ref_buf, uribAtP(c->uris, 0)->query);
+    } else if (CLIUriLen(c) > 0) {
+        uri q0 = {};
+        (void)CLIUriAt(&q0, c, 0);
+        if (!u8csEmpty(q0.query))
+            (void)u8bFeed(target_ref_buf, q0.query);
     }
     if (u8bDataLen(target_ref_buf) == 0) done;
     u8cs target_ref = {};
@@ -1303,8 +1318,10 @@ ok64 BEActSubsPatch(cli *c) {
     if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
 
-    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
-    if (u == NULL) done;
+    if (CLIUriLen(c) == 0) done;
+    uri uv = {};
+    call(CLIUriAt, &uv, c, 0);
+    uri *u = &uv;
     if (!u8csEmpty(u->scheme)) done;    //  transport — fetch+absorb, no recurse
     if (!u8csEmpty(u->path))   done;    //  path-scoped — partial, no recurse
     if (u8csEmpty(u->query))   done;    //  no source branch — nothing to diff
@@ -1926,8 +1943,10 @@ static b8 be_post_is_path_form(uri *u) {
 //  skipped — they're message-only and have no path.
 ok64 BEActPathFormCheck(cli *c) {
     sane(c);
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        uri *u = uribAtP(c->uris, i);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        uri *u = &uv;
         //  Pure-fragment URIs are message-only; skip the check.
         if ($empty(u->path) && $empty(u->query) && $empty(u->authority) &&
             !$empty(u->fragment)) continue;
@@ -2270,10 +2289,11 @@ static ok64 bepost_synth_child_uri(cli *c, u8cs wt_root, u8cs subpath,
         //  (a parent's target, incl. an outer recursion's synthetic
         //  coord — this is what nests the prefix).
         u8cs lq = {};
-        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-            uri *u = uribAtP(c->uris, i);
-            if (u8csEmpty(u->scheme) && u8csEmpty(u->authority) &&
-                !u8csEmpty(u->query)) { u8csMv(lq, u->query); break; }
+        for (u32 i = 0; i < CLIUriLen(c); i++) {
+            uri uv = {};
+            call(CLIUriAt, &uv, c, i);
+            if (u8csEmpty(uv.scheme) && u8csEmpty(uv.authority) &&
+                !u8csEmpty(uv.query)) { u8csMv(lq, uv.query); break; }
         }
         if (!u8csEmpty(lq)) {
             u8cs qp = {};
@@ -2418,9 +2438,11 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
                                             synth_uri) == OK)
                     && u8bDataLen(synth_uri) > 0;
 
-    size_t nuris = uribDataLen(rc->c->uris);
+    size_t nuris = CLIUriLen(rc->c);
     for (size_t j = 0; j < nuris; j++) {
-        uri *u = uribAtP(rc->c->uris, j);
+        uri uv = {};
+        call(CLIUriAt, &uv, rc->c, j);
+        uri *u = &uv;
         b8 pure_frag = !u8csEmpty(u->fragment) &&
                        u8csEmpty(u->scheme) &&
                        u8csEmpty(u->authority) &&
@@ -2641,12 +2663,12 @@ ok64 BEActSubsPost(cli *c) {
     //  mutation here — BEActPromoteRef already ran above us in the
     //  table.
     b8 has_transport = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->scheme)) has_transport = YES;
-    }
     b8 has_msg = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        if (!u8csEmpty(uv.scheme))   has_transport = YES;
+        if (!u8csEmpty(uv.fragment)) has_msg = YES;
     }
     if (!has_msg) {
         a_cstr(mf, "-m");
@@ -2656,7 +2678,7 @@ ok64 BEActSubsPost(cli *c) {
     }
 
     b8 dry_only   = CLIHas(c, "--dry-run") ? YES : NO;
-    b8 bare_status = !has_msg && uribDataLen(c->uris) == 0;
+    b8 bare_status = !has_msg && CLIUriLen(c) == 0;
 
     //  Transport push.  For a BEAGLE peer the sub shards live on the
     //  same peer, so recurse the push into each mounted sub (post-
@@ -2665,10 +2687,14 @@ ok64 BEActSubsPost(cli *c) {
     //  (post/16 drives that order by hand).  Dry-only skips this and
     //  falls through to the audit walk below.
     if (!dry_only && has_transport) {
+        uri tuv = {};
         uri *tu = NULL;
-        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-            if (!u8csEmpty(uribAtP(c->uris, i)->scheme)) {
-                tu = uribAtP(c->uris, i);
+        for (u32 i = 0; i < CLIUriLen(c); i++) {
+            uri cand = {};
+            call(CLIUriAt, &cand, c, i);
+            if (!u8csEmpty(cand.scheme)) {
+                tuv = cand;
+                tu  = &tuv;
                 break;
             }
         }
@@ -2730,9 +2756,11 @@ ok64 BEActSubsPost(cli *c) {
 
     //  Effective parent msg for sub argv composition.
     u8cs parent_msg = {};
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) {
-            u8csMv(parent_msg, uribAtP(c->uris, i)->fragment);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        if (!u8csEmpty(uv.fragment)) {
+            u8csMv(parent_msg, uv.fragment);
             break;
         }
     }
@@ -2799,8 +2827,10 @@ ok64 BEActSubsPost(cli *c) {
 ok64 BEActReindex(cli *c) {
     sane(c);
     b8 has_msg = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        if (!u8csEmpty(uribAtP(c->uris, i)->fragment)) { has_msg = YES; break; }
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        if (!u8csEmpty(uv.fragment)) { has_msg = YES; break; }
     }
     if (!has_msg) {
         a_cstr(mf, "-m");
@@ -2808,7 +2838,7 @@ ok64 BEActReindex(cli *c) {
             if ($eq((*u8csbAtP(c->flags, fi)), mf)) { has_msg = YES; break; }
         }
     }
-    b8 dry_run = !has_msg && uribDataLen(c->uris) == 0;
+    b8 dry_run = !has_msg && CLIUriLen(c) == 0;
     if (dry_run) done;
     (void)be_reindex(c);
     done;
@@ -2927,7 +2957,7 @@ ok64 BEActSubsRelay(cli *c) {
     //  Bare stage-all / delete-all recurses into mounted subs
     //  unconditionally — staging is local work, never gated on source.
     //  Path-scoped / remote forms target the parent and stop here.
-    if (uribDataLen(c->uris) > 0)  done;   //  bare form only
+    if (CLIUriLen(c) > 0)          done;   //  bare form only
     if (u8csEmpty(c->verb))        done;
     if (!u8bHasData(c->repo))      done;
 
@@ -3030,24 +3060,27 @@ static ok64 be_put_route_cb(besub const *s, void *vctx) {
 ok64 BEActSubsPut(cli *c) {
     sane(c);
     if (CLIHas(c, "--nosub"))   done;      //  documented opt-out
-    if (uribDataLen(c->uris) == 0) done;   //  bare form → BEActSubsRelay
+    if (CLIUriLen(c) == 0)      done;      //  bare form → BEActSubsRelay
     if (!u8bHasData(c->repo))   done;
     a_dup(u8c, wt_root, $path(c->repo));
 
     //  Walk every requested URI: relay each path that lands inside a
     //  mounted sub, and keep the parent-bound ones for sniff put.  Kept
-    //  entries are compacted forward in `c->uris` IN PLACE (the write
-    //  index never exceeds the read index, so the borrowed argv views
-    //  are preserved); the routed tail is shed afterwards.  No big stack
-    //  array — a single uri is ~160B and CLI_MAX_URIS is 1024.
-    u32  n          = (u32)uribDataLen(c->uris);
+    //  entries (raw text slices) are compacted forward in `c->uris` IN
+    //  PLACE (the write index never exceeds the read index, so the
+    //  borrowed argv views are preserved); the routed tail is shed
+    //  afterwards.  Each entry is parsed on demand (URI-004).
+    u32  n          = (u32)CLIUriLen(c);
     u32  nkeep      = 0;
     b8   any_routed = NO;
     b8   any_work   = NO;
     ok64 worst      = OK;
 
     for (u32 i = 0; i < n; i++) {
-        uri ucur = *uribAtP(c->uris, i);   //  copy before any compaction
+        u8cs raw = {};
+        CLIUriRawAt(raw, c, i);            //  copy slice before compaction
+        uri ucur = {};
+        call(CLIUriParse, &ucur, raw);
         uri *u   = &ucur;
         //  Only plain path arguments route into subs.  Scheme-bearing
         //  (`file:`, `ssh:`) or authority/query/fragment forms are PUT's
@@ -3070,7 +3103,7 @@ ok64 BEActSubsPut(cli *c) {
             }
         }
         if (keep_it) {
-            *uribAtP(c->uris, nkeep) = ucur;   //  forward copy (w <= i)
+            CLIUriSetRaw(c, nkeep, raw);   //  forward copy (w <= i)
             nkeep++;
         }
     }
@@ -3080,7 +3113,7 @@ ok64 BEActSubsPut(cli *c) {
 
     //  Drop the now-stale tail entries so only the kept (parent-bound)
     //  args remain visible to BEActSniffPut / BEBuildArgv.
-    (void)uribShed(c->uris, (size_t)(n - nkeep));
+    (void)u8csbShed(c->uris, (size_t)(n - nkeep));
 
     //  Every argument was a relayed sub-path: there is no parent-bound
     //  path left, so the downstream BEActSniffPut MUST NOT run (an empty
@@ -3209,7 +3242,7 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
 //  downstream verb (staged: full coverage tracked in URI.mkd).
 ok64 BEActResolveRef(cli *c) {
     sane(c);
-    if (uribDataLen(c->uris) == 0) done;
+    if (CLIUriLen(c) == 0) done;
 
     //  cur's branch (`/<project>/<branch>`) from the wtlog tail — the
     //  same standalone peek the bareword/baseline paths use.  (`be`'s own
@@ -3226,8 +3259,10 @@ ok64 BEActResolveRef(cli *c) {
 
     //  Anything to do?  (a local, query-bearing, not-yet-canonical URI)
     b8 any = NO;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        uri *u = uribAtP(c->uris, i);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        uri *u = &uv;
         if (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority)) continue;
         if (u8csEmpty(u->query)) continue;
         u8cs pr = {}, br = {}, pn = {};
@@ -3286,8 +3321,10 @@ ok64 BEActResolveRef(cli *c) {
     u8b scratch = {_resolve_scratch, _resolve_scratch, _resolve_scratch,
                    _resolve_scratch + sizeof(_resolve_scratch)};
 
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        uri *u = uribAtP(c->uris, i);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        call(CLIUriAt, &uv, c, i);
+        uri *u = &uv;
         if (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority)) continue;
         if (u8csEmpty(u->query)) continue;
         //  Rebase-one (`?br#`, present-but-empty fragment): the source is a
@@ -3344,10 +3381,10 @@ ok64 BEActResolveRef(cli *c) {
         u8c *after = u8bIdleHead(scratch);
         u8cs full  = {before, after};
 
-        zerop(u);
-        u8csMv(u->data, full);
-        if (URILexer(u) != OK) continue;
-        u8csMv(u->data, full);
+        //  Persist the canonical `?/<proj>/<branch>[/<sha>][!][#frag]` text
+        //  back as the raw arg (URI-004); the scratch buffer outlives this
+        //  plan frame so downstream parse-on-demand + BEBuildArgv see it.
+        CLIUriSetRaw(c, i, full);
     }
 
     if (ko == OK) (void)KEEPClose();
@@ -3408,8 +3445,10 @@ static ok64 becli_inner(cli *c) {
         if (def != 'p') {
             a_cstr(_v_get, "get");
             b8 is_get = !$empty(c->verb) && $eq(c->verb, _v_get);
-            for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-                uri *u = uribAtP(c->uris, i);
+            for (u32 i = 0; i < CLIUriLen(c); i++) {
+                uri uv = {};
+                call(CLIUriAt, &uv, c, i);
+                uri *u = &uv;
                 u8cs orig_path = {u->path[0], u->path[1]};
 
                 //  GET bareword classification (DIS-017; Verbs.mkd
@@ -3448,8 +3487,11 @@ static ok64 becli_inner(cli *c) {
                              (def == 'q') ? '?' : '#') != OK) continue;
                 if (u8bFeed(bareword_scratch, orig_path) != OK) continue;
                 u8c *after = *u8bIdle(bareword_scratch);
-                u->data[0] = before;
-                u->data[1] = after;
+                //  Persist the promoted `?<word>` / `#<word>` text back as
+                //  the raw arg (URI-004) so downstream parse-on-demand and
+                //  BEBuildArgv forward the promoted URI shape.
+                u8cs promoted = {before, after};
+                CLIUriSetRaw(c, i, promoted);
             }
         }
     }
@@ -3461,8 +3503,11 @@ static ok64 becli_inner(cli *c) {
     {
         a_cstr(v_get_s, "get");
         if (!u8csEmpty(c->verb) && u8csEq(c->verb, v_get_s) &&
-            uribDataLen(c->uris) > 0)
-            (void)be_sub_shard_setup(c, uribAtP(c->uris, 0));
+            CLIUriLen(c) > 0) {
+            uri u0 = {};
+            (void)CLIUriAt(&u0, c, 0);
+            (void)be_sub_shard_setup(c, &u0);
+        }
     }
 
     //  Top-of-chain version resolver pass.  Every user-supplied URI
@@ -3499,7 +3544,7 @@ static ok64 becli_inner(cli *c) {
             verb_wants_resolve = YES;
     }
     if (verb_wants_resolve
-        && u8bHasData(c->repo) && uribDataLen(c->uris) > 0) {
+        && u8bHasData(c->repo) && CLIUriLen(c) > 0) {
         home rh = {};
         uri none = {};
         if (HOMEOpen(&rh, &none, NO) == OK) {
@@ -3509,8 +3554,10 @@ static ok64 becli_inner(cli *c) {
             if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
                 ok64 go = GRAFOpen(&rh, NO);
                 if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
-                    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-                        uri *u = uribAtP(c->uris, i);
+                    for (u32 i = 0; i < CLIUriLen(c); i++) {
+                        uri uv = {};
+                        (void)CLIUriAt(&uv, c, i);
+                        uri *u = &uv;
                         if (u8csEmpty(u->query)) continue;
                         if (!u8csEmpty(u->scheme) &&
                             DOGIsProjector(u->scheme)) continue;
@@ -3534,8 +3581,10 @@ static ok64 becli_inner(cli *c) {
                             u8bIdle(resolve_scratch), given);
                         if (rr != OK) continue;
                         u8c *after = *u8bIdle(resolve_scratch);
-                        u->data[0] = before;
-                        u->data[1] = after;
+                        //  Persist the resolved text back as the raw arg
+                        //  (URI-004); resolve_scratch outlives this frame.
+                        u8cs resolved = {before, after};
+                        CLIUriSetRaw(c, i, resolved);
                     }
                     if (go == OK) (void)GRAFClose();
                 }
@@ -3559,23 +3608,31 @@ static ok64 becli_inner(cli *c) {
     //  The rewritten bytes live in `path_scratch` for becli's full
     //  frame (covers BEExecute → BEBuildArgv hand-off).
     a_pad(u8, path_scratch, MAX_URI_LEN * CLI_MAX_URIS);
-    if (u8bHasData(c->repo) && uribDataLen(c->uris) > 0) {
+    if (u8bHasData(c->repo) && CLIUriLen(c) > 0) {
         a_path(cwdbuf);
         if (FILEGetCwd(cwdbuf) == OK) {
             a_dup(u8c, cwd_s, u8bDataC(cwdbuf));
             a_dup(u8c, wt_s,  u8bDataC(c->repo));
-            for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-                uri *u = uribAtP(c->uris, i);
-                //  Re-lex `u->data` so component slices reflect the
-                //  current (post-query-canon) bytes.  URILexer
-                //  CONSUMES `data`, so capture component slices off
-                //  the local `lexed` and leave `u->data` alone for
-                //  now — we'll point it at the rewritten bytes below.
+            for (u32 i = 0; i < CLIUriLen(c); i++) {
+                //  Lex the raw arg text so component slices reflect the
+                //  current (post-query-canon) bytes.  URILexer CONSUMES
+                //  `data`, so capture component slices off the local
+                //  `lexed`; we point the entry at the rewritten bytes.
+                u8cs raw = {};
+                CLIUriRawAt(raw, c, i);
                 uri lexed = {};
-                u8csMv(lexed.data, u->data);
+                u8csMv(lexed.data, raw);
                 if (URILexer(&lexed) != OK) continue;
                 if (u8csEmpty(lexed.path))           continue;
                 if (!u8csEmpty(lexed.authority))     continue;
+                //  A TRANSPORT-scheme URI's path is the store / remote
+                //  location (`file:<store>`, `ssh:host/path`), NOT a
+                //  wt-relative file to canonicalize — leave it intact so
+                //  the transport/clone plan reads the full path.  (Projector
+                //  schemes like `tree:`/`blob:` keep their wt-relative path
+                //  and ARE canonicalized, per the note above.)
+                if (!u8csEmpty(lexed.scheme)
+                    && DOGIsTransport(lexed.scheme)) continue;
 
                 a_path(rel);
                 if (be_canon_path(rel, cwd_s, wt_s, lexed.path) != OK)
@@ -3590,8 +3647,10 @@ static ok64 becli_inner(cli *c) {
                 if (URIutf8Feed(u8bIdle(path_scratch), &lexed) != OK)
                     continue;
                 u8c *after = *u8bIdle(path_scratch);
-                u->data[0] = before;
-                u->data[1] = after;
+                //  Persist the canonical path text back (URI-004);
+                //  path_scratch outlives this frame.
+                u8cs canon = {before, after};
+                CLIUriSetRaw(c, i, canon);
             }
         }
     }
@@ -3612,7 +3671,7 @@ static ok64 becli_inner(cli *c) {
     }
 
     // No args → default
-    if ($empty(c->verb) && uribDataLen(c->uris) == 0 && u8csbDataLen(c->flags) == 0) {
+    if ($empty(c->verb) && CLIUriLen(c) == 0 && u8csbDataLen(c->flags) == 0) {
         call(BEDefault, c);
         done;
     }
@@ -3627,8 +3686,15 @@ static ok64 becli_inner(cli *c) {
     u8cs verb = {};
     $mv(verb, c->verb);
 
-    // Get first URI if available
-    uri *u = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    // Get first URI if available (parse-on-demand; the transient lives
+    // at function scope so `u` is valid through the routing below — its
+    // component slices view into c->uris's stable raw text).
+    uri u0v = {};
+    uri *u = NULL;
+    if (CLIUriLen(c) > 0) {
+        (void)CLIUriAt(&u0v, c, 0);
+        u = &u0v;
+    }
 
     //  `--seq` flag is reserved for the dispatch table's parallel-
     //  batch fan-out (DISPATCH.c BEExecute) once it lands.
@@ -3648,14 +3714,15 @@ static ok64 becli_inner(cli *c) {
     //  token names a known projector scheme (status, diff, log, ls,
     //  blame, cat, map, spot, grep, …) is shorthand for `be <proj>:`.
     //  Projections are not verbs (https://replicated.wiki/html/wiki/Projector.html §"View projectors"); they
-    //  never live in BE_VERB_NAMES, so CLIParse parks the bareword in
-    //  `uribAtP(c->uris, 0)->path`.  We detect that shape here, synthesise the
-    //  matching URI, and route through BEProjector — keeping the
-    //  dispatch path single-sourced.  Examples:
+    //  never live in BE_VERB_NAMES, so CLIParse parks the bareword as
+    //  the first raw URI arg (parsed on demand into `u->path`).  We
+    //  detect that shape here, synthesise the matching URI, and route
+    //  through BEProjector — keeping the dispatch path single-sourced.
+    //  Examples:
     //      be status            → status:
     //      be log               → log:
-    //      be diff foo.c?main   → diff:foo.c?main   (foo.c?main lands
-    //                              in (*uribAtP(c->uris, 1)) and rides along)
+    //      be diff foo.c?main   → diff:foo.c?main   (foo.c?main is the
+    //                              second raw URI arg and rides along)
     if ($empty(verb) && u != NULL && u8csEmpty(u->scheme) &&
         !u8csEmpty(u->path) && DOGIsProjector(u->path)) {
         a_pad(u8, syn_buf, 4096);
@@ -3663,11 +3730,15 @@ static ok64 becli_inner(cli *c) {
         (void)u8bFeed(syn_buf, ps);
         (void)u8bFeed1(syn_buf, ':');
         //  Trailing argv tokens after the projector name (`be log
-        //  path/to/file?ref`) land in (*uribAtP(c->uris, 1..)) — fold the first
+        //  path/to/file?ref`) are the 2nd+ raw URI args — fold the first
         //  one in as the projector body.
-        if (uribDataLen(c->uris) > 1 && !$empty(uribAtP(c->uris, 1)->data)) {
-            a_dup(u8c, us, uribAtP(c->uris, 1)->data);
-            (void)u8bFeed(syn_buf, us);
+        if (CLIUriLen(c) > 1) {
+            u8cs raw1 = {};
+            CLIUriRawAt(raw1, c, 1);
+            if (!$empty(raw1)) {
+                a_dup(u8c, us, raw1);
+                (void)u8bFeed(syn_buf, us);
+            }
         }
         uri synthetic = {};
         a_dup(u8c, syn_text, u8bDataC(syn_buf));
@@ -3737,7 +3808,7 @@ ok64 becli() {
     cli c = {};
     call(PATHu8bAlloc, c.repo);
     call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
-    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
+    call(u8csbAlloc, c.uris,  CLI_MAX_URIS);
     try(becli_inner, &c);
     ok64 ret = __;
     //  `-q` / `--quiet` swallows any `*NONE` (POSTNONE / PUTNONE /
@@ -3749,7 +3820,7 @@ ok64 becli() {
         (CLIHas(&c, "-q") || CLIHas(&c, "--quiet")))
         ret = OK;
     u8csbFree(c.flags);
-    uribFree(c.uris);
+    u8csbFree(c.uris);
     PATHu8bFree(c.repo);
     return ret;
 }

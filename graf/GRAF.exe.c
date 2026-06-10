@@ -157,15 +157,16 @@ ok64 GRAFExec(cli *c) {
     a_cstr(s_map,   "map");
     a_cstr(s_blame, "blame");
     a_cstr(s_weave, "weave");
-    if ($empty(c->verb) && uribDataLen(c->uris) > 0) {
-        uri *pu = uribAtP(c->uris, 0);
-        char const *dog = DOGProjectorDog(pu->scheme);
+    if ($empty(c->verb) && CLIUriLen(c) > 0) {
+        uri pu = {};
+        (void)CLIUriAt(&pu, c, 0);
+        char const *dog = DOGProjectorDog(pu.scheme);
         if (dog != NULL && strcmp(dog, "graf") == 0) {
-            if      ($eq(pu->scheme, s_diff))  u8csMv(c->verb, s_diff);
-            else if ($eq(pu->scheme, s_log))   u8csMv(c->verb, s_log);
-            else if ($eq(pu->scheme, s_map))   u8csMv(c->verb, s_map);
-            else if ($eq(pu->scheme, s_blame)) u8csMv(c->verb, s_blame);
-            else if ($eq(pu->scheme, s_weave)) u8csMv(c->verb, s_weave);
+            if      ($eq(pu.scheme, s_diff))  u8csMv(c->verb, s_diff);
+            else if ($eq(pu.scheme, s_log))   u8csMv(c->verb, s_log);
+            else if ($eq(pu.scheme, s_map))   u8csMv(c->verb, s_map);
+            else if ($eq(pu.scheme, s_blame)) u8csMv(c->verb, s_blame);
+            else if ($eq(pu.scheme, s_weave)) u8csMv(c->verb, s_weave);
         }
     }
 
@@ -222,7 +223,7 @@ ok64 GRAFExec(cli *c) {
 
     // --- diff: requires a projector URI; resolved against keeper below ---
 
-    if ($eq(c->verb, v_diff) && uribDataLen(c->uris) < 1) {
+    if ($eq(c->verb, v_diff) && CLIUriLen(c) < 1) {
         fprintf(stderr, "graf: diff requires a URI (diff:[<path>][?<ref>])\n");
         return FAILSANITY;
     }
@@ -230,14 +231,18 @@ ok64 GRAFExec(cli *c) {
     // --- merge: file-based, no keeper needed ---
 
     if ($eq(c->verb, v_merge)) {
-        if (uribDataLen(c->uris) < 3) {
+        if (CLIUriLen(c) < 3) {
             fprintf(stderr, "graf: merge requires 3 files: base ours theirs\n");
             return FAILSANITY;
         }
+        uri mb = {}, mo = {}, mt = {};
+        (void)CLIUriAt(&mb, c, 0);
+        (void)CLIUriAt(&mo, c, 1);
+        (void)CLIUriAt(&mt, c, 2);
         u8cs bp = {}, op = {}, tp = {};
-        graf_uri_path(bp, uribAtP(c->uris, 0));
-        graf_uri_path(op, uribAtP(c->uris, 1));
-        graf_uri_path(tp, uribAtP(c->uris, 2));
+        graf_uri_path(bp, &mb);
+        graf_uri_path(op, &mo);
+        graf_uri_path(tp, &mt);
         u8cs merge_out = {};
         CLIFlag(merge_out, c, "-o");
         return GRAFMerge(bp, op, tp, merge_out);
@@ -277,39 +282,39 @@ ok64 GRAFExec(cli *c) {
         //  Distinguish on the path slot: GRAFGet's URIs always carry
         //  a blob/tree path, while `be get`'s URIs (`?ref`, `?sha`,
         //  `//host/path?ref`, bare) target the repo as a whole.
+        uri gu = {};
+        if (CLIUriLen(c) >= 1) (void)CLIUriAt(&gu, c, 0);
         b8 is_get_op = NO;
-        if (uribDataLen(c->uris) >= 1) {
-            uri *gu = uribAtP(c->uris, 0);
-            if (!u8csEmpty(gu->path) && !u8csEmpty(gu->query) &&
-                u8csEmpty(gu->authority))
+        if (CLIUriLen(c) >= 1) {
+            if (!u8csEmpty(gu.path) && !u8csEmpty(gu.query) &&
+                u8csEmpty(gu.authority))
                 is_get_op = YES;
         }
         if (is_get_op) {
-            uri *u = uribAtP(c->uris, 0);
-            try(graf_get_op, u);
+            try(graf_get_op, &gu);
             ret = __;
         } else {
             //  Tip-walk indexer.  Bare `graf get` (no URI) walks the
             //  worktree's current tip (via `--at` parked in cur_sha).
-            uri empty = {};
-            uri *u = (uribDataLen(c->uris) >= 1) ? uribAtP(c->uris, 0) : &empty;
-            ret = GRAFIndexFromTips(u);
+            ret = GRAFIndexFromTips(&gu);
         }
 
     } else if ($eq(c->verb, v_blame)) {
-        if (uribDataLen(c->uris) < 1) {
+        if (CLIUriLen(c) < 1) {
             fprintf(stderr, "graf: blame requires a file URI\n");
             return FAILSANITY;
         }
+        uri bu = {};
+        (void)CLIUriAt(&bu, c, 0);
         u8cs path = {};
-        graf_uri_path(path, uribAtP(c->uris, 0));
+        graf_uri_path(path, &bu);
         //  Resolve URI's #hex/?ref/absent-query to a tip commit
         //  hashlet so blame can scope its history walk.  A failure
         //  here just yields an unscoped (full-index) blame.
         u64 tip_h = 0;
         {
             sha1 tip = {};
-            if (GRAFResolveTip(uribAtP(c->uris, 0), &tip) == OK)
+            if (GRAFResolveTip(&bu, &tip) == OK)
                 tip_h = WHIFFHashlet60(&tip);
         }
         ret = GRAFBlame(path, tip_h, reporoot);
@@ -329,7 +334,9 @@ ok64 GRAFExec(cli *c) {
         //  The base sha comes from `--at`'s fragment (the worktree's
         //  current baseline, forwarded by `be`).  Every form except the
         //  explicit `?from#to` range needs it; missing → `GRAFNOAT`.
-        uri *u = uribAtP(c->uris, 0);
+        uri uv = {};
+        (void)CLIUriAt(&uv, c, 0);
+        uri *u = &uv;
 
         uri at = {};
         CLIAtURI(&at, c);
@@ -440,29 +447,35 @@ ok64 GRAFExec(cli *c) {
         }
 
     } else if ($eq(c->verb, v_map)) {
-        ret = GRAFMap(uribDataLen(c->uris) > 0 ? uribAtP(c->uris, 0) : NULL);
+        uri mu = {};
+        if (CLIUriLen(c) > 0) (void)CLIUriAt(&mu, c, 0);
+        ret = GRAFMap(CLIUriLen(c) > 0 ? &mu : NULL);
 
     } else if ($eq(c->verb, v_log)) {
-        if (uribDataLen(c->uris) < 1) {
+        if (CLIUriLen(c) < 1) {
             fprintf(stderr, "graf: log requires a URI\n");
             return FAILSANITY;
         }
-        ret = GRAFLog(uribAtP(c->uris, 0));
+        uri lu = {};
+        (void)CLIUriAt(&lu, c, 0);
+        ret = GRAFLog(&lu);
 
     } else if ($eq(c->verb, v_head)) {
         //  No URI → ahead/behind cur vs implicit target.  With a URI:
         //  fragment-only does message search; `?branch` does explicit
         //  ahead/behind.  GRAFHead dispatches internally.
-        uri empty = {};
-        uri *hu = (uribDataLen(c->uris) >= 1) ? uribAtP(c->uris, 0) : &empty;
-        ret = GRAFHead(hu);
+        uri hu = {};
+        if (CLIUriLen(c) >= 1) (void)CLIUriAt(&hu, c, 0);
+        ret = GRAFHead(&hu);
 
     } else if ($eq(c->verb, v_weave)) {
-        if (uribDataLen(c->uris) < 1) {
+        if (CLIUriLen(c) < 1) {
             fprintf(stderr, "graf: weave requires a file URI\n");
             return FAILSANITY;
         }
-        uri *u = uribAtP(c->uris, 0);
+        uri uv = {};
+        (void)CLIUriAt(&uv, c, 0);
+        uri *u = &uv;
         u8cs wf = {}, wt = {};
         if (!u8csEmpty(u->query)) {
             a_dup(u8c, q, u->query);

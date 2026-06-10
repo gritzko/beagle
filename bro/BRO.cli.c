@@ -28,10 +28,10 @@ ok64 brocli() {
     cli c = {};
     call(PATHu8bAlloc, c.repo);
     call(u8csbAlloc, c.flags, CLI_MAX_FLAGS * 2);
-    call(uribAlloc,  c.uris,  CLI_MAX_URIS);
+    call(u8csbAlloc, c.uris,  CLI_MAX_URIS);
     try(brocli_inner, &c);
     u8csbFree(c.flags);
-    uribFree(c.uris);
+    u8csbFree(c.uris);
     PATHu8bFree(c.repo);
     done;
 }

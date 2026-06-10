@@ -572,7 +572,7 @@ ok64 WOOFApiOpen(void) {
 
     call(PATHu8bAlloc, woof_api_cli.repo);
     call(u8csbAlloc,   woof_api_cli.flags, CLI_MAX_FLAGS * 2);
-    call(uribAlloc,    woof_api_cli.uris,  CLI_MAX_URIS);
+    call(u8csbAlloc,   woof_api_cli.uris,  CLI_MAX_URIS);
     //  cli repo = the WORKTREE root (where tracked files live), matching
     //  the cwd graf inherits in fork mode.  graf blame / wt-diff / weave
     //  read the wt file from here; objects still come from the store via
@@ -599,7 +599,7 @@ void WOOFApiClose(void) {
     if (woof_api_have_graf)  (void)GRAFClose();
     if (woof_api_keep_owned) (void)KEEPClose();
     if (woof_api_memfd >= 0) { (void)close(woof_api_memfd); woof_api_memfd = -1; }
-    uribFree(woof_api_cli.uris);
+    u8csbFree(woof_api_cli.uris);
     u8csbFree(woof_api_cli.flags);
     PATHu8bFree(woof_api_cli.repo);
     zerop(&woof_api_cli);
@@ -652,9 +652,10 @@ ok64 WOOFApiRun(uri *u, char const *dog) {
     if (!woof_api_ready) fail(WOOFFAIL);
 
     //  Verbless projector cli — each dog synthesizes the verb from the
-    //  scheme.  `u`'s slices must stay alive for the call.
-    uribReset(woof_api_cli.uris);
-    call(uribFeed1, woof_api_cli.uris, *u);
+    //  scheme.  Store the raw URI text (URI-004); the dog's Exec parses
+    //  it on demand.  `u->data` must stay alive for the call.
+    u8csbReset(woof_api_cli.uris);
+    call(u8csbFeed1, woof_api_cli.uris, u->data);
     zerop(&woof_api_cli.verb);
     HUNKMode = HUNKOutTLV;
     woof_api_dog = dog;

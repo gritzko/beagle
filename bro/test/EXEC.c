@@ -54,14 +54,11 @@ static ok64 spit_file(char const *path, char const *content) {
     done;
 }
 
-//  Build a one-URI cli for `arg` exactly as CLIParse does: normalize
-//  into the idle uri slot, then restore the raw data slice.
+//  Build a one-URI cli for `arg` exactly as CLIParse does: store the
+//  raw arg text (decomposed on demand by CLIUriAt downstream).
 static void cli_one_uri(cli *c, u8csc arg) {
-    uri *u = uribIdleHead(c->uris);
-    zerop(u);
-    DOGNormalizeArg(u, arg);
-    $mv(u->data, arg);
-    (void)uribFed1(c->uris);
+    u8cs raw = {arg[0], arg[1]};
+    (void)u8csbFeed1(c->uris, raw);
 }
 
 //  MEM-020 repro: arena overflow at the per-URI uri-host must not leak
@@ -89,7 +86,7 @@ ok64 EXECtest_arena_overflow_no_map_leak(void) {
 
     cli c = {};
     then try(PATHu8bAlloc, c.repo);
-    then try(uribAlloc, c.uris, CLI_MAX_URIS);
+    then try(u8csbAlloc, c.uris, CLI_MAX_URIS);
 
     u32 before = booked_maps_live();
     if (__ == OK) {
@@ -102,7 +99,7 @@ ok64 EXECtest_arena_overflow_no_map_leak(void) {
         (void)BROExec(&b, &c);
     }
 
-    uribFree(c.uris);
+    u8csbFree(c.uris);
     PATHu8bFree(c.repo);
     BROClose(&b);
 

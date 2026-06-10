@@ -22,10 +22,13 @@
 ok64 BEExecute(cli *c, be_action const *plan) {
     sane(c && plan);
 
-    //  Aggregate URI-slot pattern across every input URI.
+    //  Aggregate URI-slot pattern across every input URI (parse-on-
+    //  demand: c->uris carries raw text since URI-004).
     u8 pat = 0;
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        pat |= URIPattern(uribAtP(c->uris, i));
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri u = {};
+        (void)CLIUriAt(&u, c, i);
+        pat |= URIPattern(&u);
     }
 
     //  *NONE-class codes within a row mean "this action had nothing
@@ -77,8 +80,40 @@ static ok64 be_spawn_all(char const *dog_cstr, char const *verb_cstr,
 
 ok64 BEActPromoteRef(cli *c) {
     sane(c);
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        (void)BEPromoteRef(uribAtP(c->uris, i));
+    //  Bareword → ref promotion.  With raw-text c->uris (URI-004), a
+    //  promotion (`feat/sub` → `?feat/sub`) is expressed as a TEXT
+    //  rewrite: `?` + original path, stored back into c->uris so the
+    //  downstream parse-on-demand (and the forwarded argv `u->data`)
+    //  see the promoted query.  Rewrites land in a persistent scratch
+    //  buffer that outlives this BE plan frame (BEBuildArgv reads the
+    //  bytes when it spawns the sub-dog).
+    //
+    //  GET is exempt: becli_inner's DOGPromoteBareword already
+    //  classified GET barewords (tracked file → path for single-file
+    //  restore, else `?branch`).  Re-promoting a tracked path here to
+    //  `?<file>` would mask it from sniff's file-restore (which needs
+    //  the path slot) and degrade `be get file.c` to a branch switch.
+    //  The OLD in-place promotion kept `u->data` = the original path so
+    //  the forward stayed path-shaped; the raw-text rewrite can't split
+    //  pattern from forwarded bytes, so GET simply skips it.
+    {
+        a_cstr(v_get, "get");
+        if ($eq(c->verb, v_get)) done;
+    }
+    static u8 _promote_scratch[CLI_MAX_URIS * 64];
+    u8b promote_scratch = {_promote_scratch, _promote_scratch,
+                           _promote_scratch,
+                           _promote_scratch + sizeof(_promote_scratch)};
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri u = {};
+        call(CLIUriAt, &u, c, i);
+        if (!BEPromoteRef(&u)) continue;   //  no change → keep raw text
+        u8c *from = u8bIdleHead(promote_scratch);
+        if (u8bFeed1(promote_scratch, '?')      != OK) continue;
+        if (u8bFeed (promote_scratch, u.query)  != OK) continue;
+        u8c *till = u8bIdleHead(promote_scratch);
+        u8cs rewritten = {from, till};
+        CLIUriSetRaw(c, i, rewritten);
     }
     done;
 }
@@ -104,7 +139,7 @@ ok64 BEActPromoteRef(cli *c) {
 //  resolves through a local row (no-op fast path).
 ok64 BEActResolveRemote(cli *c) {
     sane(c);
-    if (uribDataLen(c->uris) == 0) done;
+    if (CLIUriLen(c) == 0) done;
 
     static u8 _resolved_scratch[CLI_MAX_URIS * 64];
     u8b scratch = {_resolved_scratch,
@@ -126,8 +161,10 @@ ok64 BEActResolveRemote(cli *c) {
         HOMEClose(&h);
     }
 
-    for (u32 i = 0; i < uribDataLen(c->uris); i++) {
-        uri *u = uribAtP(c->uris, i);
+    for (u32 i = 0; i < CLIUriLen(c); i++) {
+        uri uv = {};
+        (void)CLIUriAt(&uv, c, i);
+        uri *u = &uv;
         if (u8csEmpty(u->authority)) continue;
         if (u8csEmpty(u->data))      continue;
 
@@ -181,14 +218,11 @@ ok64 BEActResolveRemote(cli *c) {
         u8c *uri_after = u8bIdleHead(scratch);
         u8cs full_uri = {uri_before, uri_after};
 
-        //  URILexer CONSUMES u->data — save a copy of the bytes
-        //  pointer pair separately so we can restore after parsing.
-        zerop(u);
-        u8csMv(u->data, full_uri);
-        if (URILexer(u) != OK) continue;
-        //  Restore u->data to the full URI span (URILexer left it
-        //  pointing past the consumed bytes).
-        u8csMv(u->data, full_uri);
+        //  Persist the rewritten `?<sha>[!][#frag]` text back as the raw
+        //  arg (URI-004): the scratch buffer outlives this BE plan frame,
+        //  so the downstream parse-on-demand and BEBuildArgv's `u->data`
+        //  forward see the resolved local form.
+        CLIUriSetRaw(c, i, full_uri);
     }
     done;
 }
@@ -201,7 +235,12 @@ ok64 BEActBootstrap(cli *c) {
     //  The legacy BEPut/BEDelete/BEPostLocal each took the first URI
     //  as the project-name probe (the only URI that could carry
     //  `?/<proj>/...`).  Same shape here.
-    uri *u0 = (uribDataLen(c->uris) > 0) ? uribAtP(c->uris, 0) : NULL;
+    uri u0v = {};
+    uri *u0 = NULL;
+    if (CLIUriLen(c) > 0) {
+        call(CLIUriAt, &u0v, c, 0);
+        u0 = &u0v;
+    }
     return BEEnsureProjectRepo(u0);
 }
 
@@ -372,8 +411,14 @@ be_action const BE_PLAN_GET[] = {
 };
 
 be_action const BE_PLAN_POST[] = {
-    { 0,             0,             NO, BEActPromoteRef    },
+    //  URI-004: PathFormCheck runs BEFORE PromoteRef.  PromoteRef
+    //  rewrites a promoted bareword's raw text to `?<path>`, which
+    //  would mask a path-form arg (`./x.txt`) from the check (it keys
+    //  on the original `?`-less shape).  becli_inner's DOGPromoteBareword
+    //  has already promoted plain barewords (`feat` → `?feat`), so a
+    //  remaining path-slot arg here is genuinely path-form.
     { 0,             0,             NO, BEActPathFormCheck },
+    { 0,             0,             NO, BEActPromoteRef    },
     //  Bootstrap on local-only POSTs (`be post 'msg'` on a fresh
     //  dir is the canonical init+first-commit path).  Remote-only
     //  POSTs (`be post //origin`) have their store already.

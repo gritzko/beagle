@@ -122,12 +122,14 @@ ok64 BROExec(bro *b, cli *c) {
         fail(to);
     }
 
-    if (uribDataLen(c->uris) > 0) {
+    if (CLIUriLen(c) > 0) {
         call(BROArenaInit);
         b8 keeper_open = NO;
-        for (u32 i = 0; i < uribDataLen(c->uris); i++) {
+        for (u32 i = 0; i < CLIUriLen(c); i++) {
             if (hunkbIdleLen(b->hunks) == 0) break;
-            uri *u = uribAtP(c->uris, i);
+            uri uv = {};
+            call(CLIUriAt, &uv, c, i);
+            uri *u = &uv;
 
             u8cs file_path = {};
             if (!$empty(u->path)) {
