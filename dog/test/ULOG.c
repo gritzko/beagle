@@ -978,8 +978,131 @@ static ok64 T_no_truncate_on_book_fail(void) {
     done;
 }
 
+//  ULOG-001: a VALID multi-row log whose first byte got clobbered to
+//  NUL (torn / killed-mid / page-cache-lost write, or a genuinely
+//  zero-padded create that a crash left behind) must NOT be silently
+//  presented as an empty log and then TRUNCATED TO 0 by the next
+//  RW open/close.  The old behaviour: ulog_scan_log stops at the
+//  leading NUL → in-memory data length 0 → ULOGClose's FILETrimBook
+//  ftruncate(fd, 0) destroyed the surviving on-disk history (objects
+//  intact, refs/wtlog zeroed — the production forensics).  The fix
+//  makes the scan refuse a torn log (ULOGTORN), so the open errors
+//  out and the live bytes are never trimmed away.
+static ok64 T_torn_first_byte_no_zero(void) {
+    sane(1);
+    call(FILEInit);
+    rm_tmp("/tmp/ulog-torn1.log");
+    rm_tmp("/tmp/.ulog-torn1.log.idx");
+    LOGPATH(path, "/tmp/ulog-torn1.log");
+
+    //  Seed a valid three-row log.
+    u8bp d = NULL; wh128bp i = NULL;
+    call(ULOGOpen, &d, &i, path);
+    saved_uri s1 = {}, s2 = {}, s3 = {};
+    call(parse_uri_lit, &s1, "?heads/master");
+    call(parse_uri_lit, &s2, "?heads/main");
+    call(parse_uri_lit, &s3, "?heads/dev");
+    ulogrec r1 = rec_of(3001, verb_of("put"), &s1);
+    ulogrec r2 = rec_of(3002, verb_of("put"), &s2);
+    ulogrec r3 = rec_of(3003, verb_of("put"), &s3);
+    call(ULOGAppendAt, d, i, &r1);
+    call(ULOGAppendAt, d, i, &r2);
+    call(ULOGAppendAt, d, i, &r3);
+    call(ULOGClose, d, &i, YES);
+
+    struct stat st0 = {};
+    want(stat("/tmp/ulog-torn1.log", &st0) == 0);
+    want(st0.st_size > 0);
+
+    //  Clobber byte 0 to NUL — the torn-write signature.
+    {
+        int fd = open("/tmp/ulog-torn1.log", O_RDWR);
+        want(fd >= 0);
+        char z = 0;
+        want(pwrite(fd, &z, 1, 0) == 1);
+        close(fd);
+    }
+    //  A reopen must NOT succeed-as-empty.  Either it errors (preferred:
+    //  ULOGTORN) or it recovers the rows; what it must NEVER do is
+    //  silently report 0 rows AND then zero the file on close.
+    u8bp d2 = NULL; wh128bp i2 = NULL;
+    ok64 oo = ULOGOpen(&d2, &i2, path);
+    if (oo == OK) {
+        //  If a future fix chooses to recover instead of refuse, the
+        //  rows must be back — never an empty log.
+        want(ULOGCount(i2) > 0);
+        call(ULOGClose, d2, &i2, YES);
+    } else {
+        want(oo == ULOGTORN || oo == ULOGCLOCK || oo == ULOGBADFMT);
+    }
+
+    //  The decisive assertion: the on-disk bytes survived.  The bug
+    //  shrank this to 0; the fix leaves the original size untouched.
+    struct stat st1 = {};
+    want(stat("/tmp/ulog-torn1.log", &st1) == 0);
+    want(st1.st_size == st0.st_size);
+
+    rm_tmp("/tmp/ulog-torn1.log");
+    rm_tmp("/tmp/.ulog-torn1.log.idx");
+    done;
+}
+
+//  Companion: a NUL planted mid-file (after the first complete row)
+//  must not be trusted as a clean tail either — the scan must refuse
+//  rather than silently drop every row past the NUL on the next trim.
+static ok64 T_torn_mid_no_zero(void) {
+    sane(1);
+    call(FILEInit);
+    rm_tmp("/tmp/ulog-torn2.log");
+    rm_tmp("/tmp/.ulog-torn2.log.idx");
+    LOGPATH(path, "/tmp/ulog-torn2.log");
+
+    u8bp d = NULL; wh128bp i = NULL;
+    call(ULOGOpen, &d, &i, path);
+    saved_uri s1 = {}, s2 = {}, s3 = {};
+    call(parse_uri_lit, &s1, "?heads/master");
+    call(parse_uri_lit, &s2, "?heads/main");
+    call(parse_uri_lit, &s3, "?heads/dev");
+    ulogrec r1 = rec_of(4001, verb_of("put"), &s1);
+    ulogrec r2 = rec_of(4002, verb_of("put"), &s2);
+    ulogrec r3 = rec_of(4003, verb_of("put"), &s3);
+    call(ULOGAppendAt, d, i, &r1);
+    call(ULOGAppendAt, d, i, &r2);
+    call(ULOGAppendAt, d, i, &r3);
+    call(ULOGClose, d, &i, YES);
+
+    struct stat st0 = {};
+    want(stat("/tmp/ulog-torn2.log", &st0) == 0);
+    off_t orig = st0.st_size;
+
+    //  NUL one byte past the first row's newline (so row 0 parses, then
+    //  the scan hits a NUL with real rows still ahead of it).
+    {
+        int fd = open("/tmp/ulog-torn2.log", O_RDWR);
+        want(fd >= 0);
+        char z = 0;
+        want(pwrite(fd, &z, 1, orig / 2) == 1);
+        close(fd);
+    }
+    u8bp d2 = NULL; wh128bp i2 = NULL;
+    ok64 oo = ULOGOpen(&d2, &i2, path);
+    if (oo == OK) { call(ULOGClose, d2, &i2, YES); }
+    else          { want(oo == ULOGTORN || oo == ULOGBADFMT || oo == ULOGCLOCK); }
+
+    //  On-disk bytes preserved — no destructive trim of the live log.
+    struct stat st1 = {};
+    want(stat("/tmp/ulog-torn2.log", &st1) == 0);
+    want(st1.st_size == orig);
+
+    rm_tmp("/tmp/ulog-torn2.log");
+    rm_tmp("/tmp/.ulog-torn2.log.idx");
+    done;
+}
+
 ok64 ULOGtest(void) {
     sane(1);
+    fprintf(stderr, "T_torn_first_byte_no_zero...\n"); call(T_torn_first_byte_no_zero);
+    fprintf(stderr, "T_torn_mid_no_zero...\n");        call(T_torn_mid_no_zero);
     fprintf(stderr, "T_open_alloc_fail_no_leak...\n"); call(T_open_alloc_fail_no_leak);
     fprintf(stderr, "T_no_truncate_on_book_fail...\n"); call(T_no_truncate_on_book_fail);
     fprintf(stderr, "T_scanwt_big_ignored...\n"); call(T_scanwt_big_ignored);

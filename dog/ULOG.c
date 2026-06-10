@@ -178,17 +178,45 @@ static u8 const *ulog_row_end(u8b data, u8 const *row_start) {
 //  monotonicity.  Idle head of `data` is positioned past the last
 //  complete row when this returns OK.  `idx` is reset before scanning;
 //  caller pushes the sentinel after this returns.
+//  A NUL byte stops the scan ("zero-pad tail").  That is only LEGAL
+//  when everything from there to the file's real on-disk content end
+//  is also NUL — i.e. genuine page/ftruncate zero padding past the
+//  last row.  A NUL with any non-NUL byte still ahead of it inside the
+//  content region means the log was torn (interrupted / ENOSPC /
+//  SIGKILL write, or page-cache loss): the surviving bytes are real
+//  history that the caller must NOT mistake for an empty log.  Returns
+//  YES iff [from, content_end) is all-NUL (safe to stop).
+static b8 ulog_tail_all_zero(u8 const *from, u8 const *content_end) {
+    for (u8 const *p = from; p < content_end; p++)
+        if (*p != 0) return NO;
+    return YES;
+}
+
 static ok64 ulog_scan_log(u8bp data, wh128bp idx) {
     sane(data && idx);
     wh128bReset(idx);
 
     u8 *base = (u8 *)data[0];
     u8 *end  = (u8 *)data[3];
+    //  data[2] is the file's real on-disk content end as set by
+    //  FILEBookFD (original size); trailing [content_end, end) is the
+    //  page-aligned zero pad and is legitimately all-NUL.  Capture it
+    //  before the scan overwrites data[2] with the parsed tail.
+    u8 *content_end = (u8 *)data[2];
     u8cs scan = {base, end};
     u8 *last_nl_plus_one = base;
     ron60 prev = 0;
     while (scan[0] < scan[1]) {
-        if (*scan[0] == 0) break;                             // zero-pad tail
+        if (*scan[0] == 0) {
+            //  Torn-log guard (ULOG-001): a NUL inside the real content
+            //  region with non-NUL bytes still ahead is corruption, not
+            //  a clean tail.  Refuse rather than present an empty log
+            //  that ULOGClose would then ftruncate to 0.
+            if (scan[0] < content_end &&
+                !ulog_tail_all_zero((u8 *)scan[0], content_end))
+                fail(ULOGTORN);
+            break;                                           // zero-pad tail
+        }
         if (*scan[0] == '\n') {
             scan[0]++; last_nl_plus_one = (u8 *)scan[0]; continue;  // blank line
         }
@@ -434,9 +462,15 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
     //  sidecar's sentinel recorded the close-time mtime.  This is the
     //  value we hand to the freshness check below.
     ron60 pre_mtime = 0;
+    u64   pre_size  = 0;
+    b8    existed   = NO;
     {
         filestat fs = {};
-        if (FILEStat(&fs, path) == OK) pre_mtime = fs.mtime;
+        if (FILEStat(&fs, path) == OK) {
+            pre_mtime = fs.mtime;
+            pre_size  = fs.size;
+            existed   = YES;
+        }
     }
 
     ok64 o = FILEBook(data, path, book_size);
@@ -465,6 +499,15 @@ ok64 ULOGOpenBooked(u8bp *data, wh128bp *idx, path8s path,
         ok64 so = ulog_scan_log(*data, tmp);
         ulog_idx_free_anon(tmp);
         if (so != OK) {
+            //  Scan refused the log (ULOGTORN / ULOGCLOCK / ULOGBADFMT).
+            //  FILEBook's open-time ftruncate-up grew the file to a page
+            //  boundary; restore the ORIGINAL on-disk size so the
+            //  surviving bytes are left exactly as found — never zeroed,
+            //  never spuriously grown — for an out-of-band repair.
+            if (existed && *data && (*data)[0]) {
+                int fd = FILEBookedFD(*data);
+                if (fd >= 0) (void)FILEResize(&fd, (size_t)pre_size);
+            }
             if (*data && (*data)[0]) FILEUnBook(*data);
             return so;
         }

@@ -72,6 +72,12 @@ con ok64 ULOGFAIL   = 0x7956103ca495;
 con ok64 ULOGNONE   = 0x7956105d85ce;
 con ok64 ULOGCLOCK  = 0x1e55840c558314;
 con ok64 ULOGBADFMT = 0x7956102ca34f59d;
+//  Torn / partially-zeroed log: a NUL byte sits before real content
+//  in a file that is NOT genuinely empty (interrupted/ENOSPC/SIGKILL
+//  write, or page-cache loss).  Refusing the open here is what stops
+//  ULOGClose's FILETrimBook from ftruncate'ing the surviving history
+//  to 0 (ULOG-001).
+con ok64 ULOGTORN   = 0x7956107586d7;
 
 //  Default book reservation — 1 GiB virtual address space, 4 KiB
 //  initial file size.  Callers can tune via ULOGOpenBooked.

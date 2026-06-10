@@ -124,12 +124,26 @@ this primitive at scale.
 | `ULOGNONE` | Requested row / timestamp does not exist |
 | `ULOGCLOCK` | Monotonicity violated (on append or during scan) |
 | `ULOGBADFMT` | Row parse error (missing `\t`, malformed RON timestamp) |
+| `ULOGTORN` | Torn / partially-zeroed log: a NUL byte sits before real content in a file that is not genuinely empty (interrupted / ENOSPC / SIGKILL write, or page-cache loss).  Open refuses rather than present an empty log — see below. |
 
-There is no partial-write recovery: if the process dies mid-append,
-the trailing partial row (no `\n`) is simply ignored by the scanner
-— it parses through newline-terminated rows only.  The next append
-writes after whatever the previous last `\n` was, overwriting the
-partial bytes.
+There is no partial-write recovery for a clean *trailing* partial
+row: if the process dies mid-append, the trailing partial row (no
+`\n`) is simply ignored by the scanner — it parses through
+newline-terminated rows only.  The next append writes after whatever
+the previous last `\n` was, overwriting the partial bytes.
+
+**Torn-log refusal (ULOG-001).**  A NUL byte that appears *before* the
+file's real on-disk content end (e.g. byte 0 clobbered to NUL by a
+torn / interrupted / page-cache-lost write) is NOT a clean zero-pad
+tail.  The scanner used to stop at it and report zero rows; the next
+RW close then `FILETrimBook`'d the in-memory data length (0) back to
+disk, `ftruncate`-ing the surviving history to **0 bytes** while the
+companion object packs stayed intact — the observed `refs`/`wtlog`
+zeroing.  The scanner now returns `ULOGTORN` when it stops at a NUL
+with non-NUL bytes still ahead inside the content region; the open
+errors out, the file's original size is restored, and the live bytes
+are left exactly as found for out-of-band recovery — never zeroed.
+A genuinely all-NUL or 0-byte file is still treated as empty.
 
 ## Non-goals
 
