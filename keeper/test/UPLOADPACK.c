@@ -321,13 +321,22 @@ ok64 UPLOADPACKtest_badrepo_noleak() {
     want(pid >= 0);
     if (pid == 0) {
         //  Silence stdout, route stderr to the pipe so ASAN's leak
-        //  report (if any) is captured by the parent.
+        //  report (if any) is captured by the parent.  Crucially, give
+        //  the child a /dev/null *stdin* too: upload-pack tolerates an
+        //  absent RO store (KEEPOpenBranch reads zero refs), advertises
+        //  an empty `0000`, then blocks on read(0).  Without this the
+        //  child inherits the test's stdin — if that stays open the
+        //  read never returns and the parent deadlocks on read(err)
+        //  (the 1500s ctest timeout).  EOF here ⇒ the child exits fast.
         int devnull = open("/dev/null", O_WRONLY);
+        int devnull_r = open("/dev/null", O_RDONLY);
         dup2(devnull, 1);
         dup2(err[1], 2);
+        dup2(devnull_r, 0);
         close(err[0]);
         close(err[1]);
         close(devnull);
+        close(devnull_r);
         //  A path with no `.be` store under a non-existent root: HOME
         //  opens, KEEPOpen fails — the leak window.
         execl(keeper_bin(), "keeper", "upload-pack",
