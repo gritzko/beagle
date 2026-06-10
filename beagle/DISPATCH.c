@@ -12,6 +12,7 @@
 #include "abc/PRO.h"
 #include "abc/PATH.h"
 #include "abc/URI.h"
+#include "dog/DOG.h"       // DOGDebangSlice / DOGDebangFeed / DOG_BANG_*
 #include "dog/HOME.h"
 #include "keeper/REFS.h"
 #include "graf/GRAF.h"     // GRAFNONE (HEAD-002 leg-flavour mapping)
@@ -130,22 +131,24 @@ ok64 BEActResolveRemote(cli *c) {
         if (u8csEmpty(u->authority)) continue;
         if (u8csEmpty(u->data))      continue;
 
-        //  DIS-030: a trailing `!` on the query is the PATCH whole-branch
-        //  scope modifier, not part of the ref.  Remember it, then re-add
-        //  it to the rewritten local `?<sha>!` so the scope survives the
-        //  transport→local rewrite all the way to sniff PATCH.  (The wire
-        //  fetch already sheds it in keeper's wcli_be_to_wire.)
-        b8 whole_scope = (!u8csEmpty(u->query) && *u8csLast(u->query) == '!');
+        //  URI-002: a trailing `!` on the query is the PATCH whole-branch
+        //  scope modifier (DOG_BANG_QUERY), not part of the ref.  Read it
+        //  via the uniform debanger off a local copy of the query, then
+        //  re-add it to the rewritten local `?<sha>!` so the scope
+        //  survives the transport→local rewrite all the way to sniff
+        //  PATCH.  (The wire fetch already sheds it in keeper's
+        //  wcli_be_to_wire.)
+        u8 bang = 0;
+        a_dup(u8c, qbang, u->query);
+        if (DOGDebangSlice(qbang)) bang |= DOG_BANG_QUERY;
+        b8 whole_scope = (bang & DOG_BANG_QUERY) != 0;
 
         //  Resolve against a `!`-shed view of the URI: the modifier sits
         //  at the very tail (query is the last component on a fragment-
         //  less patch URI), so a single tail-shed yields the bare ref the
         //  local tracking ref was fetched under.
         a_dup(u8c, resolve_in, u->data);
-        if (whole_scope && !u8csEmpty(resolve_in) &&
-            *u8csLast(resolve_in) == '!') {
-            u8csShed1(resolve_in);
-        }
+        if (whole_scope) (void)DOGDebangSlice(resolve_in);
 
         a_pad(u8, arena, 1024);
         uri resolved = {};
@@ -167,9 +170,9 @@ ok64 BEActResolveRemote(cli *c) {
         u8c *uri_before = u8bIdleHead(scratch);
         if (u8bFeed1(scratch, '?') != OK) continue;
         if (u8bFeed (scratch, resolved.query) != OK) continue;
-        if (whole_scope) {
-            if (u8bFeed1(scratch, '!') != OK) continue;
-        }
+        //  URI-002: re-emit the query-bang via the uniform feeder so the
+        //  rewritten `?<sha>!` carries the whole-branch scope downstream.
+        DOGDebangFeed(scratch, bang, DOG_BANG_QUERY);
         if (has_frag) {
             if (u8bFeed1(scratch, '#') != OK) continue;
             if (!u8csEmpty(frag_save) &&

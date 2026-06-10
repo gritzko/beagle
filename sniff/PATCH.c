@@ -1328,8 +1328,11 @@ u8 PATCHShape(uricp u) {
     b8 has_q = (p & URI_QUERY)    != 0;
     b8 has_f = (p & URI_FRAGMENT) != 0;
     if (has_q && !has_f) {
+        //  URI-002: the query-bang (`?br!` = whole-branch) is extracted
+        //  by the uniform debanger — the same tail-shed every parser
+        //  uses — rather than an ad-hoc literal-`!` read.
         a_dup(u8c, q, u->query);
-        if (!u8csEmpty(q) && *u8csLast(q) == '!') return PATCH_SCOPE_WHOLE;
+        if (DOGDebangSlice(q)) return PATCH_SCOPE_WHOLE;
         return PATCH_SCOPE_NEXT;
     }
     if (!has_q && has_f && !u8csEmpty(u->fragment)) return PATCH_SCOPE_NAMED;
@@ -1417,13 +1420,11 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     a_dup(u8c, target_query_raw, u->query);
     a_dup(u8c, frag,             u->fragment);
 
-    //  DIS-030: the whole-branch `!` modifier is the LAST char of the
-    //  query (`?feat!`).  Shed it here so the downstream branch resolver
-    //  sees a bare `feat`; the scope is already captured in `whole`.
-    if (whole && !u8csEmpty(target_query_raw) &&
-        *u8csLast(target_query_raw) == '!') {
-        u8csShed1(target_query_raw);
-    }
+    //  URI-002: the whole-branch `!` modifier is the LAST char of the
+    //  query (`?feat!`).  Shed it via the uniform debanger so the
+    //  downstream branch resolver sees a bare `feat`; the scope is
+    //  already captured in `whole` (from PATCHShape, same debanger).
+    if (whole) (void)DOGDebangSlice(target_query_raw);
 
     //  DIS-025 Stage 2: route the target ref through the keeper funnel,
     //  classify it once with REFSQueryKind, then peel to the shape the

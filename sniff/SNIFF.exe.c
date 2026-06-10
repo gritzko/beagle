@@ -631,22 +631,22 @@ ok64 SNIFFExec(cli *c) {
         }
         if (!$ok(commit_msg)) CLIFlag(commit_msg, c, "-m");
 
-        //  DIS-031 forget modifier: a trailing `!` on the post fragment
-        //  means "forget" (no parent ref → foster).  Shed it from the
-        //  message, remember the intent, and inject `--forget` so
-        //  POSTCommit's header block picks `foster` over `parent` for a
-        //  branch-sourced patch row.  A NAMED row stays `picked` either
-        //  way.  Forms: `#!` = reuse-msg + forget, `#msg!` = new-msg +
-        //  forget, `#msg` = new-msg + parent, bare = reuse + parent.
+        //  URI-002 forget modifier (DOG_BANG_FRAG): a trailing `!` on the
+        //  post fragment means "forget" (no parent ref → foster).  The
+        //  uniform debanger sheds the single `!` (the same tail-shed every
+        //  component parser uses); we remember the intent and inject
+        //  `--forget` so POSTCommit's header block picks `foster` over
+        //  `parent` for a branch-sourced patch row.  A NAMED row stays
+        //  `picked` either way.  Forms: `#!` = reuse-msg + forget,
+        //  `#msg!` = new-msg + forget, `#msg` = new-msg + parent, bare =
+        //  reuse + parent.
         b8 forget = NO;
-        if ($ok(commit_msg) && !u8csEmpty(commit_msg) &&
-            *u8csLast(commit_msg) == '!') {
-            forget = YES;
-            u8csShed1(commit_msg);
-        }
-        //  Ban: after shedding the modifier, the real message may not
-        //  itself end in `!` (a literal `fix it!` would be ambiguous with
-        //  the forget modifier) — POSTBANG, refused before any commit.
+        if ($ok(commit_msg) && DOGDebangSlice(commit_msg)) forget = YES;
+        //  Ban: after shedding the single modifier, the real message may
+        //  not ITSELF still end in `!` (`fix it!!` → `fix it!` here would
+        //  be ambiguous with the forget modifier) — POSTBANG, refused
+        //  before any commit.  DOGDebangSlice only sheds one `!`, so a
+        //  remaining trailing `!` is the literal-message case.
         if ($ok(commit_msg) && !u8csEmpty(commit_msg) &&
             *u8csLast(commit_msg) == '!') {
             fprintf(stderr,

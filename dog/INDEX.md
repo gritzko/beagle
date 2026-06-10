@@ -8,6 +8,7 @@ but without the tree-sitter dependency.
 
 | Header  | Purpose |
 |---------|---------|
+| DOG.h   | Shared dog primitives: URI parse/normalize/canonicalize (`DOGParseURI`, `DOGNormalizeArg`, `DOGCanonURI`/`DOGCanonURIFeed`), `/.be/`-anchor splitters (`DOGRepoFromBe`/`DOGProjectFromBe`/`DOGBranchFromBe`), path-hash, puppy-stack, and the **URI-002 bang factor**: bit byte `DOG_BANG_VERB`/`_PATH`/`_QUERY`/`_FRAG` (one per URI component, dog-side only — abc's `uri` stays pristine), plus the single uniform debanger every parser funnels through. `DOGDebangSlice(u8cs)` tail-sheds at most ONE trailing `!` (idempotent, present-but-empty preserved); `DOGDebang(uri*, u8*)` debangs all components and ORs the bits; `DOGDebangFeed(u8b*, bang, bit)` re-emits `!` for a set bit (used by `be`, the sole canonicalizer, so a bang survives path/branch resolution). Transport rule: URIs forward as full `u8cs` text (`!` rides along); every parser debangs locally. |
 | TOK.h   | Common callback typedef `TOKcb`, dispatch API `TOKLexer()`, `TOKSplitText()` |
 | BRCT.h  | Bracket matching and region detection on tokenized files |
 | DEF.h   | Mark symbol definitions (S→N) via enrichment + NFA patterns, see [DEF.md](DEF.md) |

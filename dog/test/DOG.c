@@ -658,9 +658,166 @@ static ok64 DOGTestFromBe(void) {
     done;
 }
 
+// --- URI-002 bang factor: DOGDebangSlice / DOGDebang / DOGDebangFeed --
+//
+//  REPRO-FIRST (CLAUDE.md §17).  One bitflag byte, one debanger; every
+//  parser debangs uniformly; `be` (the sole canonicalizer) re-emits the
+//  `!` so the bang survives a resolve.  The cross-process leg (a bang on
+//  a forwarded/persisted/wired URI honored by the receiving dog, and a
+//  bang surviving `be`'s canonicalize) is covered end-to-end by the
+//  shell cases test/patch/10-squash-foster (`be patch ?feat!`) and
+//  test/get/41-force-get; this table pins the dog-side primitives the
+//  whole migration funnels through.
+
+//  (1) DOGDebangSlice — the typed tail-shed primitive.  Sheds at most
+//  ONE trailing `!`; a present-but-empty slice is preserved; `!!` keeps
+//  its leading `!` (the receiver's POSTBANG case).
+static ok64 DOGTestDebangSlice(void) {
+    sane(1);
+    struct {
+        char const *in;
+        b8          want_shed;   //  DOGDebangSlice return
+        char const *want_out;    //  slice bytes after the shed
+    } cases[] = {
+        {"feat!",     YES, "feat"},     //  branch ref + whole-branch bang
+        {"feat",      NO,  "feat"},     //  no bang
+        {"",          NO,  ""},         //  empty: nothing to shed
+        {"!",         YES, ""},         //  `?!` body → bang + empty (present)
+        {"fix it!!",  YES, "fix it!"},  //  only ONE `!` shed (POSTBANG tail)
+        {"a!b",       NO,  "a!b"},      //  interior `!` is not a modifier
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].in);
+        a_dup(u8c, s, src);
+        b8 shed = DOGDebangSlice(s);
+        if (shed != cases[i].want_shed) {
+            fprintf(stderr, "DebangSlice '%s': shed want %d got %d\n",
+                    cases[i].in, cases[i].want_shed, shed);
+            fail(TESTFAIL);
+        }
+        if (!s_eq(s, cases[i].want_out)) {
+            fprintf(stderr, "DebangSlice '%s': out got '%.*s' want '%s'\n",
+                    cases[i].in, (int)$len(s),
+                    $empty(s) ? "" : (char *)s[0], cases[i].want_out);
+            fail(TESTFAIL);
+        }
+        //  Present-but-empty must stay PRESENT (non-NULL) — `?!` → empty
+        //  query, not absent.  Pins the `?!` round-trip the model needs.
+        if (!u8csEmpty(src) && s[0] == NULL) {
+            fprintf(stderr, "DebangSlice '%s': slice went NULL\n", cases[i].in);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
+//  (2) DOGDebang on a full forwarded URI — the receiving dog parses the
+//  literal text (DOGParseURI), then the uniform debanger extracts the
+//  per-component bits AND strips the `!` from the component bytes.  This
+//  is exactly how every migrated reader (sniff PATCH/AT, keeper WIRECLI,
+//  SNIFF.exe forget) now honors a bang that rode through as text.
+static ok64 DOGTestDebangURI(void) {
+    sane(1);
+    struct {
+        char const *uri;       //  full forwarded URI text (`!` rides along)
+        u8          want_bang; //  bits DOGDebang should set
+        char const *want_path;
+        char const *want_query;
+        char const *want_frag;
+    } cases[] = {
+        //  `?feat!` — query-bang (PATCH whole-branch); query debangs to `feat`.
+        {"?feat!",   DOG_BANG_QUERY, NULL, "feat", NULL},
+        //  `#msg!` — fragment-bang (forget); fragment debangs to `msg`.
+        {"#msg!",    DOG_BANG_FRAG,  NULL, NULL,   "msg"},
+        //  Bare path with a trailing `!` — path-bang.
+        {"path!",    DOG_BANG_PATH,  "path", NULL, NULL},
+        //  No bang anywhere.
+        {"?feat",    0,              NULL, "feat", NULL},
+        //  `?!` — present-but-empty query keeps the bang and stays present.
+        {"?!",       DOG_BANG_QUERY, NULL, "",     NULL},
+        //  Resolved-sha query with a whole-branch bang (the persisted
+        //  patch-row / wire shape `?<sha>!`).
+        {"?0123456789abcdef0123456789abcdef01234567!",
+                     DOG_BANG_QUERY, NULL,
+                     "0123456789abcdef0123456789abcdef01234567", NULL},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        u8csc text = {(u8cp)cases[i].uri, (u8cp)cases[i].uri + strlen(cases[i].uri)};
+        uri u = {};
+        ok64 o = DOGParseURI(&u, text);
+        if (o != OK) {
+            fprintf(stderr, "DebangURI '%s': parse %s\n", cases[i].uri, ok64str(o));
+            fail(TESTFAIL);
+        }
+        u8 bang = 0;
+        DOGDebang(&u, &bang);
+        if (bang != cases[i].want_bang) {
+            fprintf(stderr, "DebangURI '%s': bang want 0x%x got 0x%x\n",
+                    cases[i].uri, cases[i].want_bang, bang);
+            fail(TESTFAIL);
+        }
+        if (!check(i, "path",     u.path,     cases[i].want_path))  fail(TESTFAIL);
+        if (!check(i, "query",    u.query,    cases[i].want_query)) fail(TESTFAIL);
+        if (!check(i, "fragment", u.fragment, cases[i].want_frag))  fail(TESTFAIL);
+    }
+    done;
+}
+
+//  (3) `be` canonicalize preserves bangs (St.3).  Simulate the
+//  canonicalizer: debang the input query, REWRITE the query to a
+//  resolved sha (as REFSResolveURI does, losing the literal `!`), then
+//  re-emit via DOGDebangFeed.  The `!` must survive the rewrite — this
+//  is the dog-side core of the `be patch ?feat!` → `?<sha>!` repro.
+static ok64 DOGTestDebangCanonSurvive(void) {
+    sane(1);
+    //  Input: `?feat!` (whole-branch).  Debang → bang=QUERY, bare `feat`.
+    a_cstr(qsrc, "feat!");
+    a_dup(u8c, q, qsrc);
+    u8 bang = 0;
+    if (DOGDebangSlice(q)) bang |= DOG_BANG_QUERY;
+    if (bang != DOG_BANG_QUERY) fail(TESTFAIL);
+
+    //  Rewrite: the resolver replaces the bare ref with a canonical
+    //  `/proj/feat/<sha>` (the `!` is GONE from the rewritten bytes).
+    a_pad(u8, out, 128);
+    u8bFeed1(out, '?');
+    a_cstr(canon, "/proj/feat/0123456789abcdef0123456789abcdef01234567");
+    u8bFeed(out, canon);
+    //  Re-emit the bang — the whole point of St.3.
+    DOGDebangFeed(out, bang, DOG_BANG_QUERY);
+
+    a_dup(u8c, got, u8bData(out));
+    a_cstr(want, "?/proj/feat/0123456789abcdef0123456789abcdef01234567!");
+    if (!$eq(got, want)) {
+        fprintf(stderr, "DebangCanonSurvive: got '%.*s' want '%s'\n",
+                (int)$len(got), (char *)got[0],
+                "?/proj/feat/<sha>!");
+        fail(TESTFAIL);
+    }
+
+    //  Negative: a clear bit must NOT emit a `!`.
+    a_pad(u8, out2, 32);
+    a_cstr(plain, "?master");
+    u8bFeed(out2, plain);
+    DOGDebangFeed(out2, 0, DOG_BANG_QUERY);
+    a_dup(u8c, got2, u8bData(out2));
+    a_cstr(want2, "?master");
+    if (!$eq(got2, want2)) fail(TESTFAIL);
+    done;
+}
+
+ok64 DOGTestDebang(void) {
+    sane(1);
+    call(DOGTestDebangSlice);
+    call(DOGTestDebangURI);
+    call(DOGTestDebangCanonSurvive);
+    done;
+}
+
 ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
+    call(DOGTestDebang);
     call(DOGTestCanonical);
     call(DOGTestMsgFragment);
     call(DOGTestPathHash);

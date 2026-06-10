@@ -3234,9 +3234,21 @@ ok64 BEActResolveRef(cli *c) {
         //  walks from the resolved pin.  Leave it relative for sniff.
         //  (Staged — full per-shape coverage tracked in URI.mkd.)
         if (u->fragment[0] != NULL && u8csEmpty(u->fragment)) continue;
+
+        //  URI-002 St.3: `be` is the SOLE canonicalizer.  Debang the
+        //  query (`?feat!`) BEFORE resolution so the funnel sees the bare
+        //  ref `feat`, then re-emit the `!` onto the rewritten canonical
+        //  query so the whole-branch scope survives `be`'s resolve all
+        //  the way to sniff PATCH.  The `!` is shed off a LOCAL copy of
+        //  the query slice — `u->query` itself is left intact so the
+        //  `DOGCanonQueryParse` check and the resolver both run on the
+        //  same bare bytes.
+        u8 bang = 0;
+        a_dup(u8c, qbare, u->query);
+        if (DOGDebangSlice(qbare)) bang |= DOG_BANG_QUERY;
         {
             u8cs pr = {}, br = {}, pn = {};
-            if (DOGCanonQueryParse(u->query, pr, br, pn)) continue;
+            if (DOGCanonQueryParse(qbare, pr, br, pn)) continue;
         }
 
         //  Ref arm: the keeper funnel produces the canonical query with
@@ -3248,7 +3260,7 @@ ok64 BEActResolveRef(cli *c) {
         {
             u8 _qpad[320];
             u8s qw = {_qpad, _qpad + sizeof _qpad};
-            if (REFSResolveURI(&rh, qw, u->query) != OK) continue;
+            if (REFSResolveURI(&rh, qw, qbare) != OK) continue;
             //  URI-001 Stage 3: the funnel canonicalises the SCOPE only
             //  (`?/proj/branch`, or `?/proj/<sha>` detached) — it never
             //  pins a tip into the fragment.  The original fragment is
@@ -3256,6 +3268,10 @@ ok64 BEActResolveRef(cli *c) {
             //  preserved verbatim below.
             u8cs cq = {_qpad, qw[0]};        //  `?<scope>` canonical query
             if (u8bFeed(scratch, cq) != OK) continue;
+            //  URI-002 St.3: re-emit the query-bang onto the canonical
+            //  query so `?feat!` → `?/proj/feat!` carries the
+            //  whole-branch modifier downstream to sniff PATCH.
+            DOGDebangFeed(scratch, bang, DOG_BANG_QUERY);
         }
         if (u->fragment[0] != NULL) {
             if (u8bFeed1(scratch, '#') != OK) continue;

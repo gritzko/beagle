@@ -61,15 +61,18 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     if (ai < argn && verb_names != NULL) {
         a$rg(a, ai);
         //  Candidate with any single trailing `!` shed, for the match.
+        //  URI-002: the verb-bang is extracted by the uniform debanger
+        //  (DOGDebangSlice), the SAME tail-shed every component parser
+        //  uses, and recorded as DOG_BANG_VERB on the cli context.
         a_dup(u8c, cand, a);
-        b8 bang = (!u8csEmpty(cand) && *u8csLast(cand) == '!');
-        if (bang) u8csShed1(cand);
+        b8 bang = DOGDebangSlice(cand);
         for (char const *const *vn = verb_names; *vn != NULL; vn++) {
             a_cstr(vs, *vn);
             if ($eq(cand, vs)) {
                 $mv(c->verb, cand);
                 ai++;
                 if (bang) {
+                    c->bang |= DOG_BANG_VERB;
                     a_cstr(force_flag, "--force");
                     a_cstr(empty_force, "");
                     (void)u8csbFeed1(c->flags, force_flag);

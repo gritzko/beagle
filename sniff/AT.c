@@ -487,9 +487,10 @@ ok64 SNIFFAtResolveRelativeURI(uri *u, path8b qbuf, u8b databuf,
 static void at_patch_row_sha_hex(u8cs out, uricp u) {
     if (u->query[0] != NULL && u8csLen(u->query) >= 40) {
         $mv(out, u->query);
-        //  DIS-030: a WHOLE-scope row is `?<sha>!` — shed the trailing
-        //  `!` modifier so only the 40-hex sha is decoded.
-        if (!u8csEmpty(out) && *u8csLast(out) == '!') u8csShed1(out);
+        //  URI-002: a WHOLE-scope row is `?<sha>!` — shed the trailing
+        //  `!` modifier (DOG_BANG_QUERY) via the uniform debanger so
+        //  only the 40-hex sha is decoded.
+        (void)DOGDebangSlice(out);
         return;
     }
     if (u->fragment[0] != NULL && u8csLen(u->fragment) >= 40) {
@@ -513,8 +514,10 @@ static u8 at_patch_row_shape(uricp u) {
     b8 has_q = (u->query[0]    != NULL);
     b8 has_f = (u->fragment[0] != NULL);
     if (has_q) {
+        //  URI-002: the query-bang (`?<sha>!` = whole-branch) is read
+        //  by the uniform debanger, matching PATCHShape() at parse time.
         a_dup(u8c, q, u->query);
-        if (!u8csEmpty(q) && *u8csLast(q) == '!') return PATCH_SCOPE_WHOLE;
+        if (DOGDebangSlice(q)) return PATCH_SCOPE_WHOLE;
         return PATCH_SCOPE_NEXT;
     }
     if (has_f && !u8csEmpty(u->fragment)) return PATCH_SCOPE_NAMED;

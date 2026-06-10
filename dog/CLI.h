@@ -37,6 +37,7 @@ typedef struct {
     u8csb  flags;                    // interleaved [flag, val] u8cs entries
     urib   uris;                     // parsed URI targets
     path8b repo;                     // repo root path; heap-allocated by entry frame
+    u8     bang;                     // URI-002 bang bits (DOG_BANG_VERB set here)
 } cli;
 
 // Parse $args into cli struct. verb_names is a NULL-terminated

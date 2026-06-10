@@ -14,6 +14,65 @@
 #define DOG_OBJ_BLOB   3
 #define DOG_OBJ_TAG    4
 
+// --- Bang (`!`) factor (URI-002) -------------------------------------
+//
+// The `!` modifier — force / whole-scope in the DIS-030/031 bang model
+// (`post!` = `--force`, `patch!` = whole-branch, `get!` = force-reset
+// per GET-008, `#msg!` = forget/foster) — is a per-component flag, one
+// bit per URI component.  The bit byte travels alongside a `uri`
+// (verb-bang lives on the `cli` context; path/query/fragment bangs on
+// the URI's owning frame); abc's `uri` struct stays pristine — bang
+// state is dog-side only.
+//
+// Transport rule: a URI is ALWAYS forwarded as the full URI text
+// (`u8cs`) and never reserialized from the struct, so the literal `!`
+// rides along transparently.  Every parser DEBANGs locally on parse
+// (DOGDebang); `be` is the sole canonicalizer and re-emits the `!` for
+// any set bit (DOGDebangFeed) so a bang survives path/branch resolution.
+#define DOG_BANG_VERB 0x1u   // a trailing `!` on the verb token (`post!`)
+#define DOG_BANG_PATH 0x2u   // a trailing `!` on the path component
+#define DOG_BANG_QUERY 0x4u  // a trailing `!` on the query (`?br!`)
+#define DOG_BANG_FRAG 0x8u   // a trailing `!` on the fragment (`#msg!`)
+
+// Shed a SINGLE trailing `!` off a component slice in place (typed
+// tail-shed, no pointer arithmetic).  Returns YES iff a `!` was shed.
+//
+// Idempotent in the sense the URI-002 model requires: it removes at
+// most ONE `!`, so a message that *still* ends in `!` after the shed
+// (`fix it!!` → `fix it!`) keeps its remaining `!` — the receiver bans
+// that as a literal-trailing-`!` message (POSTBANG).  A present-but-
+// empty component (`?!` → empty query, `s[0]==s[1]` but non-NULL) is
+// preserved: only the trailing byte moves, the slice's identity and
+// presence are untouched.
+fun b8 DOGDebangSlice(u8cs s) {
+    if (s[0] == NULL || u8csEmpty(s)) return NO;
+    if (*u8csLast(s) != '!') return NO;
+    u8csShed1(s);
+    return YES;
+}
+
+// Debang every component of a parsed URI in place and fold the set
+// bits into `*bang` (ORed — pre-existing bits, e.g. a verb-bang from
+// the CLI, survive).  The single uniform reader every parser calls so
+// the bang bit is extracted the same way at every site.  Mutates the
+// `path`/`query`/`fragment` slices on `u` (tail-shed); `u->data` is
+// left as-is (the full text, `!` included, stays the carrier).
+fun void DOGDebang(urip u, u8 *bang) {
+    if (u == NULL || bang == NULL) return;
+    if (DOGDebangSlice(u->path))     *bang |= DOG_BANG_PATH;
+    if (DOGDebangSlice(u->query))    *bang |= DOG_BANG_QUERY;
+    if (DOGDebangSlice(u->fragment)) *bang |= DOG_BANG_FRAG;
+}
+
+// Re-emit a `!` into `out` iff `bang`'s `bit` is set.  The canonicalizer
+// (DOGCanonURIFeed) calls this after writing each component so a
+// rewritten/resolved URI carries the bang downstream.  No-op when the
+// bit is clear.
+fun void DOGDebangFeed(u8bp out, u8 bang, u8 bit) {
+    if (out == NULL) return;
+    if (bang & bit) u8bFeed1(out, '!');
+}
+
 // --- Path hash ---
 //
 // A 64-bit positional identifier for a tree node.  The root hash is
