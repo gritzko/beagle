@@ -5,6 +5,16 @@
   behaves when one of the listed paths is unchanged versus modified or
   new.
 * `02-put-dir/` — `be put <dir>/` on a tracked subtree.
+* `13-slashless-dir/` — DIS-034 repro.  `be put <dir>` with NO trailing
+  slash must recurse a directory identically to `be put <dir>/`.  The
+  put-arg classifier had regressed to recognise a directory only via the
+  trailing slash, so a slashless dir fell through to the file-form path,
+  never matched the per-file merge, and was reported "<dir> does not
+  exist — skipped" → PUTNONE.  Asserts (a) tracked dir, no slash stages
+  its tracked-dirty files; (b) untracked dir, no slash stages its files;
+  (c) a sibling FILE sharing the dir's name-prefix (`sub.txt` vs `sub/`)
+  is NOT over-matched — the slash boundary guards it; (d) a slashless
+  non-path bareword still reports "does not exist", never mis-recursed.
 * `11-sub-add-refusal/` — SUBS-009 repro.  `be put <subpath>` on a
   directory declared in `.gitmodules` (or already holding a child
   `.be`) but NOT yet mounted gives an actionable refusal that names the

@@ -819,8 +819,36 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         //  Empty raw (`.` or `./` after normalisation) is the
         //  reporoot dir form; trailing `/` is the explicit subdir
         //  dir form.  Both go through the dir-collect path.
+        //
+        //  A slashless arg that `stat`s as an on-disk directory is the
+        //  SAME intent — `be put sub` must recurse exactly like
+        //  `be put sub/` (DIS-034: the trailing slash regressed into a
+        //  hard requirement, so `be put sub` reported "does not exist").
+        //  Normalise it to the trailing-slash form here so the dir-form
+        //  prefix below carries the `/` boundary (else the `u8csHasPrefix`
+        //  expansion would over-match a sibling like `sub-other.txt`).
+        //  A slashless arg that is NOT a directory (a file, a bareword
+        //  branch word, a typo) stays file-form and is handled below.
         b8 is_dir = u8csEmpty(raw) ||
                     ($len(raw) > 0 && *(raw[1] - 1) == '/');
+        a_pad(u8, dir_buf, FILE_PATH_MAX_LEN);
+        if (!is_dir) {
+            a_path(probe_fp);
+            filestat pfs = {};
+            if (SNIFFFullpath(probe_fp, reporoot, raw) == OK &&
+                FILELStat(&pfs, $path(probe_fp)) == OK &&
+                pfs.kind == FILE_KIND_DIR) {
+                //  Re-frame `raw` as `<dir>/` in a per-arg buffer so the
+                //  dir-form prefix below carries the slash boundary.
+                if (u8bFeed(dir_buf, raw) == OK &&
+                    u8bFeed1(dir_buf, '/') == OK) {
+                    a_dup(u8c, slashed, u8bDataC(dir_buf));
+                    raw[0] = slashed[0];
+                    raw[1] = slashed[1];
+                    is_dir = YES;
+                }
+            }
+        }
         if (is_dir) {
             //  Dir-form: confirm the dir exists, then expand into
             //  per-file `put` rows according to the tracked/untracked
@@ -888,8 +916,27 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         for (u32 i = 0; i < nreq; i++) {
             put_req *r = &reqs[i];
             if (!r->stage) {
-                char const *reason = r->seen ? r->skip_reason
-                                             : "does not exist";
+                //  `does not exist` is only accurate when the path is
+                //  truly absent on disk.  An unseen-but-present path
+                //  (anything the classifier couldn't account for —
+                //  directories now recurse above, so this is the
+                //  residual oddball: a special file, a path the merge
+                //  skipped) gets an accurate "exists but is not
+                //  stageable" rather than the misleading "does not
+                //  exist" (DIS-034).
+                char const *reason;
+                if (r->seen) {
+                    reason = r->skip_reason;
+                } else {
+                    a_path(pfp);
+                    filestat pfs = {};
+                    if (SNIFFFullpath(pfp, reporoot, r->raw) == OK &&
+                        FILELStat(&pfs, $path(pfp)) == OK) {
+                        reason = "exists but is not stageable";
+                    } else {
+                        reason = "does not exist";
+                    }
+                }
                 fprintf(stderr, "sniff: put: %.*s %s — skipped\n",
                         (int)$len(r->raw), (char *)r->raw[0], reason);
                 skipped++;
