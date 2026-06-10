@@ -248,7 +248,7 @@ static ok64 delete_blob(u8cs reporoot, u8csc relpath_in) {
     a_path(fp);
     call(SNIFFFullpath, fp, reporoot, relpath);
     ok64 o = FILEUnLink($path(fp));
-    if (o != OK && o != FILENOENT) return o;
+    if (o != OK && o != FILENONE) return o;
     done;
 }
 

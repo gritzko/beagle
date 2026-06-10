@@ -928,6 +928,73 @@ static ok64 SUBSSynthTest(void) {
     done;
 }
 
+// --- SUBS-016: sub-store log seed must never truncate a live log -------
+
+//  Test seam exported from sniff/SUBS.c.  Drives the refs/wtlog seed
+//  path (subs_seed_logs) directly against a store_dir that already
+//  holds a NON-EMPTY refs + wtlog — the false-negative-mount scenario
+//  the production `!already_mounted` guard normally prevents.  Pre-fix
+//  the seed used FILECreate (O_TRUNC) and would zero both logs; post-fix
+//  it is create-if-missing and preserves them.
+extern ok64 SUBSSeedLogsReproForTest(u8cs store_dir);
+
+static ok64 SUBSSeedPreservesLog(void) {
+    sane(1);
+    call(FILEInit);
+    call(make_tmpdir);
+
+    //  Hermetic scratch sub-store dir holding a LIVE (non-empty) refs +
+    //  wtlog, simulating an already-mounted sub whose mount check came
+    //  back a false-negative — so the seed runs over real data.
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd,
+             "rm -rf %s/substore && mkdir -p %s/substore && "
+             "printf 'REFSDATA-not-empty\\n' > %s/substore/refs && "
+             "printf 'WTLOGDATA-not-empty\\n' > %s/substore/wtlog",
+             g_tmpdir, g_tmpdir, g_tmpdir, g_tmpdir);
+    want(system(cmd) == 0);
+
+    a_pad(u8, sd, 512);
+    a_cstr(tmp_lit, g_tmpdir);
+    a_cstr(sub_lit, "/substore");
+    u8bFeed(sd, tmp_lit);
+    u8bFeed(sd, sub_lit);
+    a_dup(u8c, store_dir, u8bData(sd));
+
+    //  Drive the seed directly — the production `!already_mounted` gate
+    //  is bypassed exactly as a false-negative mount check would do.
+    call(SUBSSeedLogsReproForTest, store_dir);
+
+    //  Both logs must survive byte-for-byte (pre-fix: zeroed by O_TRUNC).
+    {
+        a_pad(u8, root_b, 512);
+        u8bFeed(root_b, tmp_lit);
+        u8bFeed(root_b, sub_lit);
+        a_dup(u8c, root_s, u8bData(root_b));
+        call(check_file, root_s, "refs",  "REFSDATA-not-empty\n");
+        call(check_file, root_s, "wtlog", "WTLOGDATA-not-empty\n");
+    }
+
+    //  Fresh-seed still works: an empty store_dir gets both logs created.
+    snprintf(cmd, sizeof cmd,
+             "rm -rf %s/fresh && mkdir -p %s/fresh", g_tmpdir, g_tmpdir);
+    want(system(cmd) == 0);
+    a_pad(u8, fd2, 512);
+    a_cstr(fresh_lit, "/fresh");
+    u8bFeed(fd2, tmp_lit);
+    u8bFeed(fd2, fresh_lit);
+    a_dup(u8c, fresh_dir, u8bData(fd2));
+    call(SUBSSeedLogsReproForTest, fresh_dir);
+    {
+        a_dup(u8c, fr_s, u8bData(fd2));
+        want(!file_gone(fr_s, "refs"));
+        want(!file_gone(fr_s, "wtlog"));
+    }
+
+    rm_tmpdir();
+    done;
+}
+
 static ok64 SUBSIsMountTest(void) {
     sane(1);
     call(FILEInit);
@@ -1157,6 +1224,8 @@ ok64 maintest() {
     call(SUBSSynthTest);
     fprintf(stderr, "SUBSIsMount...\n");
     call(SUBSIsMountTest);
+    fprintf(stderr, "SUBSSeedPreservesLog...\n");
+    call(SUBSSeedPreservesLog);
     fprintf(stderr, "all passed\n");
     done;
 }

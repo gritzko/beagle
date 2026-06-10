@@ -444,7 +444,7 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
     if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
     filestat fs = {};
     ok64 lo = FILELStat(&fs, $path(fp));
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo == FILENONE) return OK;    // vanished mid-walk
     //  ENOTDIR == a parent path component is a non-directory (e.g. the
     //  wt has a regular file where the target tree wants a subdir).
     //  The path simply isn't present as a wt file — same as ENOENT for

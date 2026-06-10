@@ -133,7 +133,7 @@ static ok64 watch_scan_cb(void *varg, path8bp path) {
 
     filestat fs = {};
     ok64 lo = FILELStat(&fs, full);
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo == FILENONE) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate
     ron60 mtime = fs.mtime;
 

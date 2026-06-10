@@ -581,7 +581,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     if (SNIFFFullpath(fp, post_reporoot(), path) != OK) return OK;
     filestat fs = {};
     ok64 lo = FILELStat(&fs, $path(fp));
-    if (lo == FILENOENT) {
+    if (lo == FILENONE) {
         if (src_base) {
             return post_emit_decision(c, POST_V_UNLINK, path,
                                       0, NULL, NULL);

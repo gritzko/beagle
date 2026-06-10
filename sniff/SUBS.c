@@ -244,6 +244,52 @@ static ok64 subs_spawn_be_get(u8cs exe_path, u8cs wt_path, u8cs arg) {
     fail(SUBSPARSE);
 }
 
+//  Seed one log file (`refs` or `wtlog`) under `store_dir`, by NAME.
+//  Create-only, NEVER truncate: an existing non-empty log is left
+//  byte-for-byte intact regardless of any caller-side mount guard
+//  (SUBS-016 — same zeroing class as ULOG-001).  `FILECreate` opens
+//  `O_TRUNC` and would `ftruncate(0)` a live shard's log, so we guard
+//  it behind `FILEExists`: an already-seeded sub's log is left untouched,
+//  only a genuinely-fresh sub gets the empty file.
+static ok64 subs_seed_log(u8cs store_dir, u8cs name) {
+    sane($ok(store_dir) && $ok(name));
+    a_path(p);
+    a_dup(u8c, s, store_dir);
+    call(PATHu8bFeed, p, s);
+    call(PATHu8bPush, p, name);
+    ok64 e = FILEExists($path(p));
+    if (e == OK) done;              // live log present → never truncate (SUBS-016)
+    if (e != FILENONE) return e;    // real error (perms/IO) → propagate, don't create
+    int fd = FILE_CLOSED;
+    call(FILECreate, &fd, $path(p));
+    FILEClose(&fd);
+    done;
+}
+
+//  Seed both `refs` and `wtlog` so HOME walk-up classifies `store_dir`
+//  as a well-formed store.  Each create is non-truncating (see
+//  subs_seed_log), so this is safe to invoke even when the sub is
+//  already a live mount (SUBS-016 hardening — the `!already_mounted`
+//  fast-path stays an optimization, not the safety boundary).
+static ok64 subs_seed_logs(u8cs store_dir) {
+    sane($ok(store_dir));
+    a_cstr(refs_s,  "refs");
+    a_cstr(wtlog_s, "wtlog");
+    call(subs_seed_log, store_dir, refs_s);
+    call(subs_seed_log, store_dir, wtlog_s);
+    done;
+}
+
+//  Test seam (SUBS-016): drive the sub-store log seed directly against
+//  a caller-provided `store_dir` that may already hold a live, non-empty
+//  `refs`/`wtlog`.  This is the false-negative-mount scenario the
+//  production `!already_mounted` guard normally prevents: a unit harness
+//  forces the seed to run over a populated log and asserts it is
+//  preserved.  Exported, not static, so the test links it directly.
+ok64 SUBSSeedLogsReproForTest(u8cs store_dir) {
+    return subs_seed_logs(store_dir);
+}
+
 //  Reverse-grep the currently-open project's REFS for the most-recent
 //  transport `get` row and render its source LOCATOR (scheme + auth +
 //  path, NO query) into `loc`.  `*beagle` is set when that source is a
@@ -399,27 +445,15 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     call(PATHu8bPush, store_dir, be_dir);
     call(PATHu8bPush, store_dir, basename);
     call(FILEMakeDirP, $path(store_dir));
+    //  Seed refs+wtlog.  Hardened (SUBS-016): the seed is non-truncating
+    //  (subs_seed_log uses O_CREAT|O_WRONLY, never O_TRUNC), so a live
+    //  log can never be wiped here even if `already_mounted` is a
+    //  false-negative.  The `!already_mounted` gate stays only as a
+    //  fast-path skip (avoid two no-op opens on the re-fetch path), not
+    //  as the data-loss safety boundary it formerly was.
     if (!already_mounted) {
-        {
-            a_path(p);
-            a_dup(u8c, s, u8bDataC(store_dir));
-            call(PATHu8bFeed, p, s);
-            a_cstr(refs_s, "refs");
-            call(PATHu8bPush, p, refs_s);
-            int fd = FILE_CLOSED;
-            call(FILECreate, &fd, $path(p));
-            FILEClose(&fd);
-        }
-        {
-            a_path(p);
-            a_dup(u8c, s, u8bDataC(store_dir));
-            call(PATHu8bFeed, p, s);
-            a_cstr(wtlog_s, "wtlog");
-            call(PATHu8bPush, p, wtlog_s);
-            int fd = FILE_CLOSED;
-            call(FILECreate, &fd, $path(p));
-            FILEClose(&fd);
-        }
+        a_dup(u8c, s, u8bDataC(store_dir));
+        call(subs_seed_logs, s);
     }
 
     //  4. Sub mount + secondary-wt anchor.  The anchor's row-0 URI

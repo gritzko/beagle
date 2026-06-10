@@ -161,7 +161,7 @@ static ok64 del_dir_cb(void *vctx, path8bp path) {
     if (c->mode == DEL_DIR_PREFLIGHT) {
         filestat fs = {};
         ok64 lo = FILELStat(&fs, full);
-        if (lo == FILENOENT) return OK;    // vanished
+        if (lo == FILENONE) return OK;    // vanished
         if (lo != OK) return lo;             // permissions etc — propagate
         ron60 mr = fs.mtime;
         if (!SNIFFAtKnown(mr)) {

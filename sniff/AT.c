@@ -889,7 +889,7 @@ static ok64 at_dirty_scan_cb(void *varg, path8bp path) {
 
     filestat fs = {};
     ok64 lo = FILELStat(&fs, full);
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo == FILENONE) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
 
     //  Directory hook: any subdir that hosts its own `.git` (file or
@@ -1031,7 +1031,7 @@ static ok64 at_ulog_cb(void *varg, path8bp path) {
 
     filestat fs = {};
     ok64 lo = FILELStat(&fs, full);
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo == FILENONE) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // propagate other errors
 
     uri u = {};

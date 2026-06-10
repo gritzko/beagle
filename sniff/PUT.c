@@ -86,7 +86,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
 
     filestat fs = {};
     ok64 lo = FILELStat(&fs, $path(fp));
-    if (lo == FILENOENT) return OK;    // vanished mid-walk
+    if (lo == FILENONE) return OK;    // vanished mid-walk
     if (lo != OK) return lo;             // permissions etc — propagate
     ron60 mr = fs.mtime;
 
