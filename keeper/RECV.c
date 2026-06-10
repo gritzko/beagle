@@ -420,27 +420,33 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
 
 // --- colocated primary-wt advance ---
 //
-//  After REFS moves on an FF push, the local primary wt sitting at
-//  `dirname(dirname(<project>))` (the colocated layout, where the
-//  project shard lives at `<wt>/.be/<proj>/`) must follow — otherwise
-//  the user's on-disk tree silently lags REFS.  We verify the layout
-//  by stat-ing `<wt>/.be/wtlog` (the primary-wt anchor file) and then
-//  fork+exec `be get ?` with cwd at the wt root.  Conflicts or dirty
-//  files cause `be get` to refuse — we warn to stderr and let the
-//  push response succeed regardless (the wire-side push already
-//  committed; the wt-advance is a courtesy).
+//  After REFS moves on an FF push, a colocated primary wt — one whose
+//  own `<wt>/.be/` directory IS the store we just received into — must
+//  follow, otherwise the user's on-disk tree silently lags REFS.  We
+//  fork+exec `be get ?` with cwd at the wt root; conflicts or dirty
+//  files cause `be get` to refuse, which we warn about (the wire push
+//  already committed; the wt-advance is a courtesy).
 //
-//  Non-colocated layouts (canonical store with secondary wts elsewhere)
-//  are skipped silently — there's no reverse mapping from the store
-//  back to those wts in this MVP.  See `<project>/wtlog` for a future
-//  registry-based discovery path.
+//  POST-014: the ONLY safe wt root is `h->wt` AND only when `h->wt` is
+//  a genuine worktree (`<h->wt>/.be` is the store DIR) rather than the
+//  store dir itself.  A CENTRAL store (`~/.be`) opened directly by its
+//  path resolves `h->wt == h->root == <store>/.be` — the store dir, not
+//  a worktree.  The old `dirname(dirname(<shard>))` derivation produced
+//  `$HOME` there, and then a stat of `$HOME/.be/wtlog` (a stray or
+//  legacy top-level wtlog) wrongly passed the "is a primary wt" probe —
+//  the HOME-escape.  `be get ?` then ran with cwd=$HOME, advancing the
+//  wrong tree (or failing 157 on a multi-project store), while the real
+//  secondary worktree elsewhere was stranded.  There is no reverse map
+//  from a central store to its secondary worktrees, so those are
+//  correctly skipped: we only advance a wt whose own `.be` is this
+//  store.
 //
 //  Split into two phases because `be get ?` needs the project store
 //  lock that the receive-pack process is still holding mid-RECVServe:
 //
-//    1. RECVCaptureWtPath() — runs while KEEP is open; reads the
-//       project shard path off KEEP.h and stashes the parent-dir into
-//       a process-static slot.
+//    1. RECVCaptureWtPath() — runs while KEEP is open; validates the
+//       colocated layout off `k->h` and stashes the wt root into a
+//       process-static slot.
 //    2. RECVAdvanceColocatedWt() — runs from the receive-pack driver
 //       AFTER KEEPClose releases the lock; consumes the slot and
 //       fork+exec's `be get ?`.
@@ -448,24 +454,48 @@ ok64 RECVEmitResponse(int out_fd, ok64 unpack_status,
 static char recv_wt_path[1024];
 static b8   recv_wt_path_set = NO;
 
+//  YES iff `<wt>/.be` is the SAME directory as `<store>/.be/<proj>`'s
+//  parent — i.e. the project shard lives directly under the worktree's
+//  own `.be`.  This is the colocated invariant; a central store (whose
+//  `h->wt` IS `<store>/.be`) fails it because its derived `<wt>` differs
+//  from `h->wt`.  Compares NUL-terminated path strings byte-for-byte
+//  (both come from the same PATH composer, so they are already
+//  canonical — no symlink resolution needed for the same-process case).
+static b8 recv_wt_is_colocated(path8s wt, path8s store_be_parent) {
+    a_dup(u8c, a, wt);
+    a_dup(u8c, b, store_be_parent);
+    return u8csEq(a, b);
+}
+
 void RECVCaptureWtPath(void) {
     recv_wt_path_set = NO;
     keeper *k = &KEEP;
+    if (k->h == NULL || u8bEmpty(k->h->wt)) return;
+
     a_path(keepdir);
     if (HOMEBranchDir(k->h, keepdir, NULL) != OK) return;
 
-    //  keepdir = `<wt>/.be/<proj>/`.  Two pops → `<wt>`.
+    //  keepdir = `<wt>/.be/<proj>/`.  Two pops → the derived wt root.
     if (PATHu8bPop(keepdir) != OK) return;   // → <wt>/.be
     if (PATHu8bPop(keepdir) != OK) return;   // → <wt>
 
-    //  Anchor probe: `<wt>/.be/wtlog` must be a regular file.  A dir
-    //  there means this is the store root itself, not a primary wt.
+    //  POST-014 gate: the derived wt root MUST equal `h->wt`, the home's
+    //  own worktree root.  For a colocated push they coincide (`<wt>`);
+    //  for a central store `h->wt` is the store dir (`<store>/.be`) while
+    //  the two-pop derivation yields its parent — so they differ and we
+    //  skip rather than escape to $HOME.  This is independent of any
+    //  stray `<parent>/.be/wtlog`, which is what made the old probe lie.
+    a_path(hwt);
+    a_dup(u8c, hwt_s, u8bDataC(k->h->wt));
+    if (PATHu8bFeed(hwt, hwt_s) != OK) return;
+    if (!recv_wt_is_colocated($path(hwt), $path(keepdir))) return;
+
+    //  Belt-and-suspenders: `<wt>/.be/wtlog` must be a regular file (the
+    //  primary-wt anchor).  A dir there means a bare store, not a wt.
     a_path(anchor);
     if (PATHu8bFeed(anchor, $path(keepdir)) != OK) return;
-    a_cstr(be_seg, ".be");
-    if (PATHu8bPush(anchor, be_seg) != OK) return;
-    a_cstr(wtlog_seg, "wtlog");
-    if (PATHu8bPush(anchor, wtlog_seg) != OK) return;
+    if (PATHu8bPush(anchor, DOG_BE_S) != OK) return;
+    if (PATHu8bPush(anchor, DOG_WTLOG_S) != OK) return;
     struct stat st = {};
     if (stat((char const *)anchor[0], &st) != 0) return;
     if (!S_ISREG(st.st_mode)) return;
@@ -501,30 +531,38 @@ void RECVAdvanceColocatedWt(void) {
                     recv_wt_path, strerror(errno));
             _exit(127);
         }
-        //  Inherit the parent's stderr so the user sees any conflict /
-        //  refusal report from sniff GET.  stdin/stdout → /dev/null
-        //  so we never spew into the wire response.
+        //  POST-014: route ALL three of the child's std streams to
+        //  /dev/null.  A failing `be get ?` (dirty wt / conflict) prints
+        //  raw `Error: SNIFFFAIL` / `Error: BEDOGEXIT` to stderr — which,
+        //  inherited onto the push's stderr, masquerades as a fatal push
+        //  failure even though the wire push already committed.  We
+        //  instead emit ONE honest, prefixed deferral line from the
+        //  parent (below) that affirms the push and points at the manual
+        //  recovery.  The detailed conflict report is one `be get ?`
+        //  away in the wt.
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) {
             dup2(dn, STDIN_FILENO);
             dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
             if (dn > STDERR_FILENO) close(dn);
         }
         execlp("be", "be", "get", "?", (char *)NULL);
-        fprintf(stderr,
-                "keeper: recv: exec `be get ?` failed: %s\n",
-                strerror(errno));
         _exit(127);
     }
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return;
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        //  Honest report: the push SUCCEEDED (REFS advanced); only the
+        //  courtesy colocated wt-advance was deferred.  Phrase it as a
+        //  deferral, not a failure, and never alter the push exit code —
+        //  this fn is void and its caller's `done;` returns OK.
         fprintf(stderr,
-                "keeper: recv: wt-advance via `be get ?` returned %d "
-                "(wt at %s left at old tip; resolve and run `be get ?` "
-                "manually)\n",
-                WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-                recv_wt_path);
+                "keeper: recv: push OK — colocated wt-advance deferred "
+                "(`be get ?` in %s returned %d; the wt lags REFS, run "
+                "`be get ?` there to sync)\n",
+                recv_wt_path,
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
     }
 }
 

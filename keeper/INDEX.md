@@ -177,6 +177,12 @@ full delete semantics are a follow-up.
   - `RECVApplyUpdates`   FF-check + REFSAppend per update
   - `RECVEmitResponse`   write "unpack ok"/"ng" + per-ref status + flush
   - `RECVServe`          one-shot: read request, ingest, apply, emit
+  - `RECVCaptureWtPath` / `RECVAdvanceColocatedWt` — after an FF push,
+    advance the COLOCATED primary wt (`be get ?`).  POST-014: only fires
+    when `h->wt` (the home's own worktree) equals the two-pop wt root —
+    a central store (`h->wt == <store>/.be`) is skipped, never escaping
+    to the store parent (`$HOME`); a failed courtesy advance is reported
+    as a deferral, never as a raw `Error:`/non-zero push.
   - `RECVFAIL` / `RECVNOTFF` / `RECVBADREF` / `RECVBADREQ`
 
 ### dog/git/ZINF.h — zlib inflate/deflate wrapper

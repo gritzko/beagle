@@ -113,3 +113,20 @@
   ff-advances to B's tip, and A's wt followed.  Fix: `keep_post`'s gate
   now accepts any routable target (host OR authority OR path OR
   `?/<proj>` OR a transport scheme), mirroring fetch (`keeper/KEEP.exe.c`).
+* `37-push-central-store-no-home-escape/` — POST-014: a push to a CENTRAL
+  (multi-project `~/.be`-style) store must NOT escape the recv-side
+  colocated wt-advance up to the store PARENT (`$HOME`).  The recv derived
+  the wt root as `dirname(dirname(<shard>))` (= the store parent) and
+  accepted it as a primary wt whenever ANY `<parent>/.be/wtlog` existed —
+  so a stray/legacy top-level wtlog made `be get ?` run with cwd=`$HOME`,
+  materialising the push into the WRONG tree (or failing 157) while the
+  real secondary worktree was stranded, and the child's raw `Error:
+  SNIFFFAIL`/`BEDOGEXIT` made a SUCCESSFUL push read as a failure.  Builds
+  a private scratch `$HOME` with a central store (shards `proj`+`other`, a
+  stray top wtlog), a secondary wt `A` anchoring back (`.be` is a FILE,
+  like /home/gritzko/beagle), and a peer `B` that FF-pushes; asserts exit
+  0, the store ref advanced, NO stray `$HOME` checkout / wtlog growth, and
+  NO masked-failure noise.  Fix: `keeper/RECV.c::RECVCaptureWtPath` only
+  advances when `h->wt` (the home's own wt) equals the two-pop wt root —
+  a central store fails that gate and is skipped; a deferred advance is
+  reported honestly.  Drives the local-exec `file://` edge; no ssh.
