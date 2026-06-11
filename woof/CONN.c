@@ -474,7 +474,22 @@ woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err) {
 //  Drain complete TLV frames from c->pipe_in, rendering each as HTML
 //  into c->out's idle range while ≥ WOOF_HUNK_HEADROOM idle bytes
 //  remain.  Advances both data heads; short trailing frames wait.
-static void render_hunks(conn *c) {
+//
+//  MEM-038: HUNKu8sDrain carves per-hunk BASS scratch for the TOK array
+//  (hunk_drain_toks, dog/HUNK.c) deliberately WITHOUT a call() wrapper so
+//  the toks outlive the drain and survive into HUNKu8sFeedHtml.  woof's
+//  callbacks (pipe_cb / serve_inproc) reach here with NO enclosing
+//  call()/try() frame — POL invokes them bare (abc/POL.c:248,314) — so
+//  that scratch was never rewound and ABC_BASS grew unbounded for the
+//  server's lifetime, one TOK array per HUNK_TLV_TOK response.  We snapshot
+//  the BASS data+idle heads on entry and rewind them on exit (the same two
+//  stores call()/try() do, PRO.h:82-83): each frame's toks are CONSUMED by
+//  HUNKu8sFeedHtml within this loop, so reclaiming them after the render is
+//  safe and keeps the arena flat across requests.  This is Option (B): a
+//  woof-local per-request rewind, no change to abc/POL's callback contract.
+void WOOFRenderHunks(conn *c) {
+    u8 *bass_data = ((u8 **)ABC_BASS)[1];
+    u8 *bass_idle = ((u8 **)ABC_BASS)[2];
     while ((size_t)(c->out[3] - c->out[2]) >= WOOF_HUNK_HEADROOM
            && c->pipe_in[1] < c->pipe_in[2]) {
         hunk hk = {};
@@ -487,6 +502,10 @@ static void render_hunks(conn *c) {
         (void)HUNKu8sFeedHtml(idle, &hk);
         c->out[2] = idle[0];
     }
+    //  Rewind: free every per-hunk TOK carve back to the entry snapshot.
+    //  All toks were consumed above; nothing below the snapshot moved.
+    ((u8 **)ABC_BASS)[1] = bass_data;
+    ((u8 **)ABC_BASS)[2] = bass_idle;
 }
 
 // --- in-process projection dispatch (`--api` mode) ---
@@ -690,7 +709,7 @@ static ok64 serve_inproc(conn *c, uri *u, char const *dog) {
     call(u8bFeed, out, LIT(HTML_PRELUDE_TAIL));
     c->out[2] = out[2];
 
-    render_hunks(c);
+    WOOFRenderHunks(c);
 
     {
         Bu8 tail = { c->out[0], c->out[1], c->out[2], c->out[3] };
@@ -862,7 +881,7 @@ static short pipe_cb(int fd, poller *p) {
     //  past the consumed bytes; we mirror that on pipe_in's data head.
     //  Short frames (HUNKu8sDrain != OK) wait for more bytes via the
     //  next POLLIN.
-    render_hunks(c);
+    WOOFRenderHunks(c);
     //  Fully drained: reset pipe_in so the next read starts at base
     //  (cheap compaction; avoids fragmentation as records arrive).
     if (c->pipe_in[1] == c->pipe_in[2]) {

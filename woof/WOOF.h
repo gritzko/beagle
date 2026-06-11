@@ -224,4 +224,11 @@ woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err);
 //  envelope+body.
 ok64 WOOFServeStatic(conn *c, u8cs rel);
 
+//  Drain complete TLV frames from c->pipe_in into c->out as HTML — the
+//  exact per-request render the pipe_cb / serve_inproc callbacks run.
+//  Exposed so the test/fuzz harness can drive the leak path directly
+//  (HUNKu8sDrain carves per-hunk BASS scratch for the TOK array) and
+//  assert ABC_BASS returns to baseline after each request (MEM-038).
+void WOOFRenderHunks(conn *c);
+
 #endif
