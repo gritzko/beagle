@@ -600,6 +600,13 @@ static ok64 write_be_file(u8cs root, char const *name, u8cs bytes) {
     u8bFeed(path, be);
     u8cs ns = {(u8cp)name, (u8cp)name + strlen(name)};
     u8bFeed(path, ns);
+    //  FILECreate reads the path as a C-string; `u8bFeed` does not write
+    //  the trailing NUL `PATHu8bFeed` does, and uninitialised stack past
+    //  `idle` can land non-zero bytes there (Apple's libc + ASan layout
+    //  reliably tripped on it — open() saw garbage suffix → ENOENT →
+    //  FILENONE).  Explicit terminator keeps the slice well-formed
+    //  regardless of stack init.
+    call(PATHu8bTerm, path);
     u8cs pt = {u8bDataHead(path), u8bIdleHead(path)};
     int fd = -1;
     call(FILECreate, &fd, pt);

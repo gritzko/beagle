@@ -36,11 +36,24 @@ wtlog_get_rows() {
 }
 
 # ---------------------------------------------------------------------
+# Stash shell-redirected stdout/stderr OUTSIDE the wt.  `be get!` is a
+# clean-slate force reset (GET-016) that may unlink wt-only files whose
+# mtime ties them to a wtlog row (force_orphan_cb's SNIFFAtKnown gate).
+# A coarse-resolution filesystem (1-second mtime granularity, seen on
+# some macOS CI runners) can give shell-created `*.out`/`*.err` files
+# an mtime that collides with a wtlog row's ts (ron60 is ms-resolution),
+# making them look "tracked" — `3.get.err` then vanishes mid-test.
+# Logs live in $LOG_DIR, a sibling of the wt, so sniff never scans them.
+# ---------------------------------------------------------------------
+LOG_DIR="$(dirname "$SCRATCH")/${NAME}-io"
+mkdir -p "$LOG_DIR"
+
+# ---------------------------------------------------------------------
 # 1. Seed a one-commit store.
 # ---------------------------------------------------------------------
 printf 'hello\n' > a.txt
-"$BE" put a.txt   > 1.put.out  2> 1.put.err  || { cat 1.put.err  >&2; echo "FAIL: put a.txt" >&2; exit 1; }
-"$BE" post '#seed' > 1.post.out 2> 1.post.err || { cat 1.post.err >&2; echo "FAIL: post seed" >&2; exit 1; }
+"$BE" put a.txt   > "$LOG_DIR/1.put.out"  2> "$LOG_DIR/1.put.err"  || { cat "$LOG_DIR/1.put.err"  >&2; echo "FAIL: put a.txt" >&2; exit 1; }
+"$BE" post '#seed' > "$LOG_DIR/1.post.out" 2> "$LOG_DIR/1.post.err" || { cat "$LOG_DIR/1.post.err" >&2; echo "FAIL: post seed" >&2; exit 1; }
 
 [ -f .be/wtlog ] || { echo "FAIL(setup): .be/wtlog missing" >&2; exit 1; }
 GETS0=$(wtlog_get_rows .be/wtlog)
@@ -52,9 +65,9 @@ GETS0=$(wtlog_get_rows .be/wtlog)
 #    targets — a stale stage leaking into the next commit).
 # ---------------------------------------------------------------------
 printf 'world\n' > b.txt
-"$BE" put b.txt > 2.put.out 2> 2.put.err || { cat 2.put.err >&2; echo "FAIL: put b.txt" >&2; exit 1; }
+"$BE" put b.txt > "$LOG_DIR/2.put.out" 2> "$LOG_DIR/2.put.err" || { cat "$LOG_DIR/2.put.err" >&2; echo "FAIL: put b.txt" >&2; exit 1; }
 
-cp .be/wtlog 2.wtlog.before
+cp .be/wtlog "$LOG_DIR/2.wtlog.before"
 GETS_BEFORE=$(wtlog_get_rows .be/wtlog)
 
 # ---------------------------------------------------------------------
@@ -62,33 +75,33 @@ GETS_BEFORE=$(wtlog_get_rows .be/wtlog)
 #    overlay).  MUST append a fresh `get` boundary row even though the
 #    target == baseline.  No rows are ever deleted (append-only).
 # ---------------------------------------------------------------------
-"$BE" get! '?' > 3.get.out 2> 3.get.err || { cat 3.get.err >&2; echo "FAIL: be get! '?'" >&2; exit 1; }
-grep -qE '^sniff: checkout done$' 3.get.err || {
+"$BE" get! '?' > "$LOG_DIR/3.get.out" 2> "$LOG_DIR/3.get.err" || { cat "$LOG_DIR/3.get.err" >&2; echo "FAIL: be get! '?'" >&2; exit 1; }
+grep -qE '^sniff: checkout done$' "$LOG_DIR/3.get.err" || {
     echo "FAIL: be get! '?' did not report 'sniff: checkout done'" >&2
-    cat 3.get.err >&2; exit 1
+    cat "$LOG_DIR/3.get.err" >&2; exit 1
 }
 
 GETS_AFTER=$(wtlog_get_rows .be/wtlog)
 if [ "$GETS_AFTER" -le "$GETS_BEFORE" ]; then
     echo "FAIL: no-op force get appended NO boundary row" >&2
     echo "  get-rows before=$GETS_BEFORE after=$GETS_AFTER" >&2
-    echo "  --- wtlog before ---" >&2; strings 2.wtlog.before >&2
+    echo "  --- wtlog before ---" >&2; strings "$LOG_DIR/2.wtlog.before" >&2
     echo "  --- wtlog after  ---" >&2; strings .be/wtlog >&2
     exit 1
 fi
 
 #  Append-only: the pre-reset prefix is preserved byte-for-byte; the
 #  reset only GREW the log (no truncation / row deletion).
-SZ_BEFORE=$(wc -c < 2.wtlog.before)
+SZ_BEFORE=$(wc -c < "$LOG_DIR/2.wtlog.before")
 SZ_AFTER=$(wc -c < .be/wtlog)
 [ "$SZ_AFTER" -gt "$SZ_BEFORE" ] || {
     echo "FAIL: wtlog did not grow (expected append; size $SZ_BEFORE -> $SZ_AFTER)" >&2
     exit 1
 }
-head -c "$SZ_BEFORE" .be/wtlog > 3.wtlog.prefix
-if ! cmp -s 2.wtlog.before 3.wtlog.prefix; then
+head -c "$SZ_BEFORE" .be/wtlog > "$LOG_DIR/3.wtlog.prefix"
+if ! cmp -s "$LOG_DIR/2.wtlog.before" "$LOG_DIR/3.wtlog.prefix"; then
     echo "FAIL: prior wtlog bytes were rewritten (NOT append-only)" >&2
-    cmp 2.wtlog.before 3.wtlog.prefix >&2 || true
+    cmp "$LOG_DIR/2.wtlog.before" "$LOG_DIR/3.wtlog.prefix" >&2 || true
     exit 1
 fi
 
@@ -97,14 +110,14 @@ fi
 #    is a CLEAN no-op (POSTNONE: no changes since base), NOT a commit of
 #    b.txt.  Exit is non-zero (POSTNONE) — assert the message, not 0.
 # ---------------------------------------------------------------------
-if "$BE" post 'should be a no-op' > 4.post.out 2> 4.post.err; then
+if "$BE" post 'should be a no-op' > "$LOG_DIR/4.post.out" 2> "$LOG_DIR/4.post.err"; then
     echo "FAIL: be post committed after reset (staged b.txt leaked past boundary)" >&2
-    cat 4.post.err >&2
+    cat "$LOG_DIR/4.post.err" >&2
     exit 1
 fi
-grep -qE 'POSTNONE' 4.post.err || {
+grep -qE 'POSTNONE' "$LOG_DIR/4.post.err" || {
     echo "FAIL: expected POSTNONE (clean no-op) after reset; got:" >&2
-    cat 4.post.err >&2
+    cat "$LOG_DIR/4.post.err" >&2
     exit 1
 }
 
@@ -113,10 +126,10 @@ grep -qE 'POSTNONE' 4.post.err || {
 #    intact after the append — DIS-033: put/patch rows never touch
 #    refs/.refs.idx, so `be log:` keeps working).
 # ---------------------------------------------------------------------
-"$BE" log: > 5.log.out 2> 5.log.err || { cat 5.log.err >&2; echo "FAIL: be log: errored after reset" >&2; exit 1; }
-grep -q 'seed' 5.log.out || { echo "FAIL: log: lost the seed commit" >&2; cat 5.log.out >&2; exit 1; }
-if grep -q 'should be a no-op' 5.log.out; then
-    echo "FAIL: a spurious post landed in the log" >&2; cat 5.log.out >&2; exit 1
+"$BE" log: > "$LOG_DIR/5.log.out" 2> "$LOG_DIR/5.log.err" || { cat "$LOG_DIR/5.log.err" >&2; echo "FAIL: be log: errored after reset" >&2; exit 1; }
+grep -q 'seed' "$LOG_DIR/5.log.out" || { echo "FAIL: log: lost the seed commit" >&2; cat "$LOG_DIR/5.log.out" >&2; exit 1; }
+if grep -q 'should be a no-op' "$LOG_DIR/5.log.out"; then
+    echo "FAIL: a spurious post landed in the log" >&2; cat "$LOG_DIR/5.log.out" >&2; exit 1
 fi
 
 echo "OK: be get! '?' appended a get boundary (append-only); staged put voided; post clean no-op; log intact"
