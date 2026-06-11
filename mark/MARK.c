@@ -3,6 +3,7 @@
 #include "MARK.h"
 
 #include "abc/PRO.h"
+#include "abc/UTF8.h"
 #include "dog/tok/MKDT.h"
 
 #include <string.h>
@@ -31,15 +32,6 @@ typedef struct {
 ok64 MARKu8bLit(u8bp out, const char *s) {
     u8cs lit = {(u8c *)s, (u8c *)s + strlen(s)};
     return u8bFeed(out, lit);
-}
-
-//  UTF-8 codepoint count (budgets are char counts, not byte counts).
-static size_t mark_chars(u8csc s) {
-    size_t n = 0;
-    $for(u8c, p, s) {
-        if ((*p & 0xC0) != 0x80) ++n;
-    }
-    return n;
 }
 
 static b8 mark_blank(u8csc s) {
@@ -112,9 +104,7 @@ static void mark_collect_refs(u8csc src, markref *refs, int *nrefs) {
 
 static b8 mark_lookup(markctx *c, u8csc key, u8csp url) {
     for (int i = 0; i < c->nrefs; ++i) {
-        a_dup(u8c, k, c->refs[i].key);
-        if (u8csLen(k) == u8csLen(key) &&
-            memcmp(k[0], key[0], u8csLen(key)) == 0) {
+        if (u8csEq(c->refs[i].key, key)) {
             url[0] = c->refs[i].url[0];
             url[1] = c->refs[i].url[1];
             return YES;
@@ -126,14 +116,12 @@ static b8 mark_lookup(markctx *c, u8csc key, u8csp url) {
 //  Emit a URL (attribute-escaped), rewriting a trailing ".mkd" to ".html".
 static ok64 mark_emit_url(u8bp out, u8csc url) {
     sane($ok(url));
-    if (u8csLen(url) >= 4) {
-        a_tail(u8c, suf, url, 4);
-        if (memcmp(suf[0], ".mkd", 4) == 0) {
-            a_head(u8c, stem, url, u8csLen(url) - 4);
-            call(MARKu8bFeedEsc, out, stem);
-            call(MARKu8bLit, out, ".html");
-            done;
-        }
+    a_cstr(mkd, ".mkd");
+    if (u8csHasSuffix(url, mkd)) {
+        a_head(u8c, stem, url, u8csLen(url) - u8csLen(mkd));
+        call(MARKu8bFeedEsc, out, stem);
+        call(MARKu8bLit, out, ".html");
+        done;
     }
     call(MARKu8bFeedEsc, out, url);
     done;
@@ -163,6 +151,16 @@ static ok64 mark_emit_link(markctx *c, markg *g, b8 image) {
     done;
 }
 
+//  Wrap inline `text` in an open/close HTML tag pair, recursing through
+//  mark_inline (shared by the strong / em / del emphasis cases).
+static ok64 mark_inline_wrap(markctx *c, u8csc text, const char *open,
+                             const char *close) {
+    c->err = MARKu8bLit(c->out, open);
+    if (c->err == OK) c->err = mark_inline(c, text);
+    if (c->err == OK) c->err = MARKu8bLit(c->out, close);
+    return c->err;
+}
+
 static ok64 mark_inline_cb(u8 tag, u8cs tok, void *ctx) {
     markctx *c = (markctx *)ctx;
     if (c->err != OK) return c->err;
@@ -184,20 +182,11 @@ static ok64 mark_inline_cb(u8 tag, u8cs tok, void *ctx) {
         MARKDecomposeG(&g, tok);
         switch (g.kind) {
             case 'B':
-                c->err = MARKu8bLit(c->out, "<strong>");
-                if (c->err == OK) c->err = mark_inline(c, g.text);
-                if (c->err == OK) c->err = MARKu8bLit(c->out, "</strong>");
-                return c->err;
+                return mark_inline_wrap(c, g.text, "<strong>", "</strong>");
             case 'I':
-                c->err = MARKu8bLit(c->out, "<em>");
-                if (c->err == OK) c->err = mark_inline(c, g.text);
-                if (c->err == OK) c->err = MARKu8bLit(c->out, "</em>");
-                return c->err;
+                return mark_inline_wrap(c, g.text, "<em>", "</em>");
             case 'D':
-                c->err = MARKu8bLit(c->out, "<del>");
-                if (c->err == OK) c->err = mark_inline(c, g.text);
-                if (c->err == OK) c->err = MARKu8bLit(c->out, "</del>");
-                return c->err;
+                return mark_inline_wrap(c, g.text, "<del>", "</del>");
             case 'A':
                 c->err = mark_emit_link(c, &g, NO);
                 return c->err;
@@ -238,7 +227,7 @@ static ok64 mark_inline(markctx *c, u8csc text) {
 
 static ok64 mark_budget(markopts opts, const char *what, u8csc text,
                         size_t max) {
-    size_t n = mark_chars(text);
+    size_t n = utf8CPLen((utf8c *const *)text);
     if (n > max) {
         fprintf(stderr, "mark: %s is %zu chars, exceeds %zu\n", what, n, max);
         if (opts.strict) return MARKLIMIT;
@@ -253,27 +242,13 @@ static ok64 mark_violate(markopts opts, const char *msg) {
 
 //  -------- block rendering --------
 
-static ok64 mark_close_para(markctx *c, b8 *in_para) {
+//  Close one open leaf kind: if `flag` is set, emit its closing `tag` and
+//  clear the flag (shared by paragraph / list / blockquote).
+static ok64 mark_close(markctx *c, b8 *flag, const char *tag) {
     sane(c != NULL);
-    if (*in_para) {
-        call(MARKu8bLit, c->out, "</p>\n");
-        *in_para = NO;
-    }
-    done;
-}
-static ok64 mark_close_list(markctx *c, b8 *in_list) {
-    sane(c != NULL);
-    if (*in_list) {
-        call(MARKu8bLit, c->out, "</ul>\n");
-        *in_list = NO;
-    }
-    done;
-}
-static ok64 mark_close_quote(markctx *c, b8 *in_quote) {
-    sane(c != NULL);
-    if (*in_quote) {
-        call(MARKu8bLit, c->out, "</blockquote>\n");
-        *in_quote = NO;
+    if (*flag) {
+        call(MARKu8bLit, c->out, tag);
+        *flag = NO;
     }
     done;
 }
@@ -283,9 +258,9 @@ static ok64 mark_close_quote(markctx *c, b8 *in_quote) {
 static ok64 mark_close_leaf(markctx *c, b8 *in_para, b8 *in_list,
                             b8 *in_quote) {
     sane(c != NULL);
-    call(mark_close_para, c, in_para);
-    call(mark_close_list, c, in_list);
-    call(mark_close_quote, c, in_quote);
+    call(mark_close, c, in_para, "</p>\n");
+    call(mark_close, c, in_list, "</ul>\n");
+    call(mark_close, c, in_quote, "</blockquote>\n");
     done;
 }
 
@@ -399,8 +374,8 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
              &in_quote);
 
         if (mk == MKDT_MARK_ULIST) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_quote, c, &in_quote);
+            call(mark_close, c, &in_para, "</p>\n");
+            call(mark_close, c, &in_quote, "</blockquote>\n");
             if (!in_list) {
                 call(MARKu8bLit, c->out, "<ul>\n");
                 in_list = YES;
@@ -414,8 +389,8 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
             continue;
         }
         if (mk == MKDT_MARK_QUOTE) {
-            call(mark_close_para, c, &in_para);
-            call(mark_close_list, c, &in_list);
+            call(mark_close, c, &in_para, "</p>\n");
+            call(mark_close, c, &in_list, "</ul>\n");
             if (!in_quote) {
                 call(MARKu8bLit, c->out, "<blockquote>\n");
                 in_quote = YES;
@@ -430,8 +405,8 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         //  paragraph / summary.  Strip the indent gutter: the marker is NONE
         //  for a bare div, so `mend` points just past the depth*4 indents.
         u8cs pc = {mend, linec[1]};
-        call(mark_close_list, c, &in_list);
-        call(mark_close_quote, c, &in_quote);
+        call(mark_close, c, &in_list, "</ul>\n");
+        call(mark_close, c, &in_quote, "</blockquote>\n");
         if (!in_para) {
             call(MARKu8bLit, c->out, "<p>\n");
             in_para = YES;

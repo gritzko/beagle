@@ -23,9 +23,10 @@
 
 //  Strip a trailing ".mkd" from a slice (term retreats); else unchanged.
 static void mark_dropext(u8csp s) {
-    if (u8csLen(s) >= 4) {
-        a_tail(u8c, suf, s, 4);
-        if (memcmp(suf[0], ".mkd", 4) == 0) s[1] = suf[0];
+    a_cstr(mkd, ".mkd");
+    if (u8csHasSuffix(s, mkd)) {
+        a_tail(u8c, suf, s, u8csLen(mkd));
+        s[1] = suf[0];
     }
 }
 
@@ -98,9 +99,8 @@ static ok64 mark_dir_cb(void0p arg, path8bp path) {
     sane(arg != NULL && path != NULL);
     mark_dir_ctx *dc = (mark_dir_ctx *)arg;
     u8cs p = {u8bDataHead(path), u8bIdleHead(path)};
-    if (u8csLen(p) < 4) done;
-    a_tail(u8c, suf, p, 4);
-    if (memcmp(suf[0], ".mkd", 4) != 0) done;
+    a_cstr(mkd, ".mkd");
+    if (!u8csHasSuffix(p, mkd)) done;
     a_path(opath);
     try(mark_render_inner, p, opath, dc->opts);
     nedo {
@@ -147,14 +147,12 @@ ok64 markcli() {
     for (size_t i = 1; i < (size_t)$arglen; ++i) {
         a$rg(a, i);
         a_cstr(strict, "--strict");
-        if (u8csLen(a) == u8csLen(strict) &&
-            memcmp(a[0], strict[0], u8csLen(strict)) == 0) {
+        if (u8csEq(a, strict)) {
             opts.strict = YES;
             continue;
         }
         a_cstr(headpfx, "--head=");
-        if (u8csLen(a) > u8csLen(headpfx) &&
-            memcmp(a[0], headpfx[0], u8csLen(headpfx)) == 0) {
+        if (u8csLen(a) > u8csLen(headpfx) && u8csHasPrefix(a, headpfx)) {
             a_rest(u8c, val, a, u8csLen(headpfx));
             call(PATHu8bDup, headpath, val);
             want_head = YES;

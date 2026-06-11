@@ -24,7 +24,7 @@ self-contained.
 | File | Role |
 |------|------|
 | `MARK.h` | Public API + error codes + WikiWeb budgets (`MARK_*_MAX`). |
-| `MARK.c` | Block driver, inline callback, refdef collection, link rewrite, budget validation, document scaffold. |
+| `MARK.c` | Block driver, inline callback, refdef collection, link rewrite, budget validation, document scaffold. Char counts go through abc `utf8CPLen`; slice eq/prefix/suffix through `u8csEq` / `u8csHasPrefix` / `u8csHasSuffix`. Leaf closing is one `mark_close(flag,tag)`; emphasis B/I/D one `mark_inline_wrap(text,open,close)`. |
 | `MARKE.c.rl` / `MARKE.rl.c` | ragel HTML escaper (`MARKu8bFeedEsc`): `& < > "` → entities. |
 | `MARKG.c.rl` / `MARKG.rl.c` | ragel inline decomposer (`MARKDecomposeG`): emphasis / link / image. |
 | `MARK.cli.c` | `MAIN` entry: argv, `--strict`, file or whole-directory build. |
@@ -46,6 +46,14 @@ against `dog/test/TOK01.c`:
   total — prose bytes outside the original punct set (`?`, `%`, …) no longer
   yield `MKDTBAD`. Purely additive (only reclassifies bytes that matched
   nothing). Regenerate with `ragel -C MKDT.c.rl -o MKDT.rl.c -L`.
+
+## Follow-up: refdef cross-dir reconcile
+
+`mark_refdef` (MARK.c) still hand-rolls the `[key]: url` extraction that
+`dog/tok/MKDT.c`'s `MKDTRefDef` already implements. CODE-014 deferred the
+reconcile (reuse `MKDTRefDef`, drop the local copy) because `dog/` was
+under concurrent edit; track it as a separate cross-dir ticket so the two
+do not fork.
 
 ## Enforced structure & limits
 
