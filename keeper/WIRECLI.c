@@ -31,6 +31,7 @@
 #include "dog/DOG.h"
 #include "dog/git/SHA1.h"
 #include "dog/git/GIT.h"
+#include "dog/git/PACK.h"
 #include "dog/HOME.h"
 #include "keeper/KEEP.h"
 #include "keeper/WALK.h"
@@ -1223,14 +1224,9 @@ static ok64 wpush_walk_commit(keeper *k, sha1cp commit_sha,
         u8cs field = {}, value = {};
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if ($empty(field)) break;
-            if ($len(field) == 6 && memcmp(field[0], "parent", 6) == 0 &&
-                $len(value) >= 40) {
+            if ($len(field) == 6 && memcmp(field[0], "parent", 6) == 0) {
                 sha1 par = {};
-                u8s bin = {par.data, par.data + 20};
-                u8cs hx = {value[0], value[0] + 40};
-                a_dup(u8c, hx_dup, hx);
-                if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-                if (bin[0] != par.data + 20) continue;
+                if (sha1FromHex(&par, value) != OK) continue;
                 if (have && sha_set_has(have, &par)) continue;
                 if (add_to_have && sha_set_has(add_to_have, &par)) continue;
                 wpush_walk_commit(k, &par, out, n, cap, have, add_to_have);
@@ -1268,14 +1264,9 @@ static ok64 wpush_collect_commits(keeper *k, sha1cp tip,
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if ($empty(field)) break;
-        if ($len(field) == 6 && memcmp(field[0], "parent", 6) == 0 &&
-            $len(value) >= 40) {
+        if ($len(field) == 6 && memcmp(field[0], "parent", 6) == 0) {
             sha1 par = {};
-            u8s  bin = {par.data, par.data + 20};
-            u8cs hx  = {value[0], value[0] + 40};
-            a_dup(u8c, hx_dup, hx);
-            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-            if (bin[0] != par.data + 20) continue;
+            if (sha1FromHex(&par, value) != OK) continue;
             wpush_collect_commits(k, &par, have, seen, out, n, cap);
         }
     }
@@ -1283,20 +1274,8 @@ static ok64 wpush_collect_commits(keeper *k, sha1cp tip,
     done;
 }
 
-//  Append a pack object header (type + size varint, big-endian-ish) to
-//  `buf`.  Mirrors keep_feed_obj_hdr in KEEP.c.
-static void wpush_feed_obj_hdr(u8b buf, u8 type, u64 size) {
-    u8 first = (u8)((type << 4) | (size & 0x0f));
-    size >>= 4;
-    if (size > 0) first |= 0x80;
-    u8bFeed1(buf, first);
-    while (size > 0) {
-        u8 c = (u8)(size & 0x7f);
-        size >>= 7;
-        if (size > 0) c |= 0x80;
-        u8bFeed1(buf, c);
-    }
-}
+//  Pack object header (type + size varint) is `PACKu8sFeedObjHdr`
+//  (dog/git/PACK.h) — shared with KEEP.c's pack writer.
 
 //  Build a v2 packfile containing the listed objects, in order, into
 //  `pack_out` (caller pre-mapped).  Each object is fetched via
@@ -1338,7 +1317,7 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         u64 olen = u8bDataLen(obuf);
 
         a_pad(u8, ohdr, 16);
-        wpush_feed_obj_hdr(ohdr, otype, olen);
+        PACKu8sFeedObjHdr(ohdr, otype, olen);
         a_dup(u8c, oh, u8bData(ohdr));
         ok64 fho = u8bFeed(pack_out, oh);
         if (fho != OK) {

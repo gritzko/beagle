@@ -58,6 +58,14 @@ ok64 PACKDrainHdr(u8cs from, pack_hdr *hdr);
 //  Does NOT decompress — caller inflates `obj->size` bytes from `from`.
 ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj);
 
+//  Encode the counterpart of PACKDrainObjHdr's varint: the first byte
+//  carries `type` (PACK_OBJ_*) in bits 4-6 and the low 4 bits of
+//  `size`; the remaining size bits follow as 7-bit little-endian groups
+//  with a continuation MSB.  Appends to `buf`; round-trips through
+//  PACKDrainObjHdr.  Shared by every pack writer (keeper's pack log,
+//  the push pack builder) — no caller open-codes the header varint.
+void PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size);
+
 //  Inflate zlib-compressed data from `from` into `into`.
 //  `into` must have room for `size` bytes.
 //  Advances `from` past the consumed compressed data.

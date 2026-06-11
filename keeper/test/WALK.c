@@ -342,11 +342,118 @@ ok64 WALKtest4() {
     done;
 }
 
+// ---- Test 5: KEEPTreeDescend over the WALKtest2 tree (CODE-005) ----
+//
+//  Same tree shape (hello.txt, run.sh, sub/nested.txt).  Exercises the
+//  shared '/'-separated descent: empty → root DIR, leaf file, subtree
+//  dir, nested file, leading/trailing '/', and not-found paths (with
+//  the caller-chosen `notfound` code propagating).
+
+ok64 WALKtest5() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/walktest5-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    a_cstr(root, tmp);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    a_cstr(hi_content, "hi\n");
+    sha1 hi_sha = {};
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, hi_content, 0, &hi_sha);
+    a_cstr(run_content, "#!/bin/sh\n");
+    sha1 run_sha = {};
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, run_content, 0, &run_sha);
+    a_cstr(nested_mn, "100644 nested.txt");
+    a_cstr(nested_content, "deep\n");
+    sha1 sub_sha = {};
+    call(build_leaf_tree, &KEEP, &p, nested_mn, nested_content, &sub_sha);
+
+    a_pad(u8, rtb, 512);
+    a_cstr(e1, "100644 hello.txt"); call(u8bFeed, rtb, e1);
+    u8bFeed1(rtb, 0); a_rawc(hi_ss, hi_sha); call(u8bFeed, rtb, hi_ss);
+    a_cstr(e2, "100755 run.sh"); call(u8bFeed, rtb, e2);
+    u8bFeed1(rtb, 0); a_rawc(run_ss, run_sha); call(u8bFeed, rtb, run_ss);
+    a_cstr(e3, "40000 sub"); call(u8bFeed, rtb, e3);
+    u8bFeed1(rtb, 0); a_rawc(sub_ss, sub_sha); call(u8bFeed, rtb, sub_ss);
+    a_dup(u8c, rtc, u8bData(rtb));
+    sha1 root_sha = {};
+    call(KEEPPackFeed, &p, DOG_OBJ_TREE, rtc, 0, &root_sha);
+    call(KEEPPackClose, &p);
+
+    a_carve(u8, tbuf, 1UL << 20);
+
+    typedef struct {
+        char const *path;
+        ok64        want_rc;   // OK or the notfound code
+        u8          want_kind; // when OK
+        char const *want_prefix;
+    } row;
+    row cases[] = {
+        {"",               OK, WALK_KIND_DIR, ""},
+        {"hello.txt",      OK, WALK_KIND_REG, "hello.txt"},
+        {"run.sh",         OK, WALK_KIND_EXE, "run.sh"},
+        {"sub",            OK, WALK_KIND_DIR, "sub"},
+        {"sub/nested.txt", OK, WALK_KIND_REG, "sub/nested.txt"},
+        {"/sub/nested.txt",OK, WALK_KIND_REG, "sub/nested.txt"}, // leading /
+        {"sub/",           OK, WALK_KIND_DIR, "sub"},            // trailing /
+        {"nope",           WALKNONE, 0, ""},                     // missing entry
+        {"hello.txt/x",    WALKNONE, 0, ""},                     // descend into file
+        {"sub/missing",    WALKNONE, 0, ""},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        u8cs sp = {(u8cp)cases[i].path,
+                   (u8cp)cases[i].path + strlen(cases[i].path)};
+        a_pad(u8, pbuf, 1024);
+        sha1 osha = {};
+        u8 okind = 0;
+        ok64 rc = KEEPTreeDescend(&root_sha, sp, pbuf, &osha, &okind,
+                                  tbuf, WALKNONE);
+        if (rc != cases[i].want_rc) {
+            fprintf(stderr, "descend[%zu] '%s': rc %s want %s\n",
+                    i, cases[i].path, ok64str(rc), ok64str(cases[i].want_rc));
+            fail(TESTFAIL);
+        }
+        if (rc == OK) {
+            want(okind == cases[i].want_kind);
+            size_t pl = strlen(cases[i].want_prefix);
+            want((size_t)u8bDataLen(pbuf) == pl);
+            want(memcmp(u8bDataHead(pbuf), cases[i].want_prefix, pl) == 0);
+        }
+    }
+
+    //  NULL pathbuf: descent still resolves, just skips the accounting.
+    {
+        a_cstr(pp, "sub/nested.txt");
+        u8cs sp = {pp[0], pp[1]};
+        sha1 osha = {}; u8 okind = 0;
+        call(KEEPTreeDescend, &root_sha, sp, NULL, &osha, &okind,
+             tbuf, WALKNONE);
+        want(okind == WALK_KIND_REG);
+    }
+
+    call(KEEPClose);
+    HOMEClose(&h);
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
+        system(cmd);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(WALKtest1);
     call(WALKtest2);
     call(WALKtest4);
+    call(WALKtest5);
     done;
 }
 

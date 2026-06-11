@@ -940,16 +940,12 @@ static ok64 keeper_post(keeper *k, cli *c) {
     //  local_tip — keeper REFS may lag, and a stale REFADV would make
     //  WIREPush's peer==local short-circuit no-op a real push.
     sha1 at_tip = {};
-    {
-        u8s bin = {at_tip.data, at_tip.data + 20};
-        a_dup(u8c, hx, at_sha);
-        if (HEXu8sDrainSome(bin, hx) != OK || bin[0] != at_tip.data + 20) {
-            fprintf(stderr,
-                    "keeper: post: bad at_sha (%lld bytes)\n",
-                    (long long)$len(at_sha));
-            u8bUnMap(rarena);
-            return KEEPFAIL;
-        }
+    if (sha1FromHex(&at_tip, at_sha) != OK) {
+        fprintf(stderr,
+                "keeper: post: bad at_sha (%lld bytes)\n",
+                (long long)$len(at_sha));
+        u8bUnMap(rarena);
+        return KEEPFAIL;
     }
 
     //  4a. POST is FF-only.  Look up the peer's cached tip and

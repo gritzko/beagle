@@ -43,38 +43,33 @@ static b8 recv_starts_with(u8csc s, u8c const *pfx, size_t plen) {
     return u8csHasPrefix((u8c **)s, p);
 }
 
+//  Recognise one receive-pack capability token → cap bits.  Unknown
+//  tokens are dropped.
+static void recv_cap_token(u8csc tok, void0p ctx) {
+    u32 *caps = (u32 *)ctx;
+    if (recv_token_eq(tok, RECV_CAP_REPORT_STATUS_S,
+                      sizeof(RECV_CAP_REPORT_STATUS_S) - 1)) {
+        *caps |= RECV_CAP_REPORT_STATUS;
+    } else if (recv_token_eq(tok, RECV_CAP_SIDE_BAND_64K_S,
+                             sizeof(RECV_CAP_SIDE_BAND_64K_S) - 1)) {
+        *caps |= RECV_CAP_SIDE_BAND_64K;
+    } else if (recv_token_eq(tok, RECV_CAP_OFS_DELTA_S,
+                             sizeof(RECV_CAP_OFS_DELTA_S) - 1)) {
+        *caps |= RECV_CAP_OFS_DELTA;
+    } else if (recv_token_eq(tok, RECV_CAP_QUIET_S,
+                             sizeof(RECV_CAP_QUIET_S) - 1)) {
+        *caps |= RECV_CAP_QUIET;
+    } else if (recv_starts_with(tok, RECV_CAP_AGENT_PFX,
+                                sizeof(RECV_CAP_AGENT_PFX) - 1)) {
+        *caps |= RECV_CAP_AGENT;
+    }
+}
+
 //  Parse a space-separated capability list off the tail of the first
 //  ref-update line.  Sets bits in *caps; unknown tokens are dropped.
+//  receive-pack caps are SP/TAB/'\n'-separated.
 static void recv_parse_caps(u32 *caps, u8csc tail) {
-    u8cs scan = {tail[0], tail[1]};
-    while (!u8csEmpty(scan)) {
-        while (!u8csEmpty(scan) && (scan[0][0] == ' ' || scan[0][0] == '\t'))
-            scan[0]++;
-        if (u8csEmpty(scan)) break;
-        u8c *tok_start = scan[0];
-        while (!u8csEmpty(scan) &&
-               scan[0][0] != ' ' && scan[0][0] != '\t' && scan[0][0] != '\n')
-            scan[0]++;
-        u8csc tok = {tok_start, scan[0]};
-        if (u8csLen(tok) == 0) continue;
-        if (recv_token_eq(tok, RECV_CAP_REPORT_STATUS_S,
-                          sizeof(RECV_CAP_REPORT_STATUS_S) - 1)) {
-            *caps |= RECV_CAP_REPORT_STATUS;
-        } else if (recv_token_eq(tok, RECV_CAP_SIDE_BAND_64K_S,
-                                 sizeof(RECV_CAP_SIDE_BAND_64K_S) - 1)) {
-            *caps |= RECV_CAP_SIDE_BAND_64K;
-        } else if (recv_token_eq(tok, RECV_CAP_OFS_DELTA_S,
-                                 sizeof(RECV_CAP_OFS_DELTA_S) - 1)) {
-            *caps |= RECV_CAP_OFS_DELTA;
-        } else if (recv_token_eq(tok, RECV_CAP_QUIET_S,
-                                 sizeof(RECV_CAP_QUIET_S) - 1)) {
-            *caps |= RECV_CAP_QUIET;
-        } else if (recv_starts_with(tok, RECV_CAP_AGENT_PFX,
-                                    sizeof(RECV_CAP_AGENT_PFX) - 1)) {
-            *caps |= RECV_CAP_AGENT;
-        }
-        if (!u8csEmpty(scan) && scan[0][0] == '\n') scan[0]++;
-    }
+    KEEPForEachCapToken(tail, YES, recv_cap_token, caps);
 }
 
 //  Drain one pkt-line from buf, refilling via FILEDrain on NODATA.

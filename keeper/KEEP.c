@@ -994,6 +994,132 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
 
 #define KEEP_FF_MAX 65536u
 
+// --- shared commit-parent / BFS primitives (CODE-004) ----------------
+//
+//  These three pieces back every commit-ancestry walk in keeper.  The
+//  per-parent decode is dog/WHIFF.h `sha1FromHex` (no ptr-arith); the
+//  header iteration is `keep_commit_parents`; the bounded
+//  seen-deduped BFS over parent edges is `keep_commit_bfs`.
+
+//  Visit each `parent` (and, when `with_foster`, `foster`) header of a
+//  commit `body`, decoding its 40-hex value into a sha1 and passing it
+//  to `fn`.  `fn` returns YES to keep walking the headers, NO to stop
+//  early (mirrors the `break` in the inlined loops).  Undecodable /
+//  short values are skipped silently.
+typedef b8 (*keep_parent_fn)(sha1cp parent, void0p ctx);
+
+static void keep_commit_parents(u8cs body, b8 with_foster,
+                                keep_parent_fn fn, void0p ctx) {
+    u8cs field = {}, value = {};
+    while (GITu8sDrainCommit(body, field, value) == OK) {
+        if ($empty(field)) break;
+        //  Follow both `parent` and `foster`: a rebase records the
+        //  absorbed remote commit as a foster, not a parent.
+        b8 par = u8csEq(field, GIT_FIELD_PARENT);
+        b8 fos = with_foster && u8csEq(field, GIT_FIELD_FOSTER);
+        if (!par && !fos) continue;
+        sha1 p = {};
+        if (sha1FromHex(&p, value) != OK) continue;
+        if (!fn(&p, ctx)) break;
+    }
+}
+
+//  Bounded, seen-deduped BFS over a commit's parent/foster closure.
+//  `node` is called on each commit *as it is dequeued* (root first),
+//  before its parents are expanded; its return code drives the walk:
+//
+//    KEEP_BFS_GO    — keep going (expand this node's parents)
+//    KEEP_BFS_STOP  — terminate the whole walk now (success/answer found)
+//    KEEP_BFS_PRUNE — do not expand this node, continue with the rest
+//
+//  On a `KEEPGetExact` failure: if `miss_aborts`, the whole walk halts
+//  with `KEEP_BFS_MISS` (callers that need fail-open key on this); else
+//  the node is just pruned and the walk continues (a dead-end subtree,
+//  the old IsAncestor `continue`).  A non-commit object is always a
+//  silent prune.  Queue / seen are capped at KEEP_FF_MAX; on cap the
+//  edge is dropped.
+typedef enum {
+    KEEP_BFS_GO = 0,
+    KEEP_BFS_STOP,
+    KEEP_BFS_PRUNE,
+} keep_bfs_ctl;
+
+//  Return of the driver itself.
+typedef enum {
+    KEEP_BFS_DONE = 0,   //  queue drained without a STOP
+    KEEP_BFS_HALT,       //  a `node` asked to STOP
+    KEEP_BFS_MISS,       //  KEEPGetExact failed (and miss_aborts)
+    KEEP_BFS_CAP,        //  queue/seen hit KEEP_FF_MAX (and cap_aborts)
+} keep_bfs_end;
+
+typedef keep_bfs_ctl (*keep_node_fn)(sha1cp node, void0p ctx);
+
+//  Scratch the BFS needs; supplied by the caller so distinct walks
+//  keep distinct buffers (the SharesAncestor case runs two).
+typedef struct {
+    sha1 *queue;   //  ring of pending nodes (cap KEEP_FF_MAX)
+    sha1 *seen;    //  dedup set       (cap KEEP_FF_MAX)
+    u32   qhead, qtail, nseen;
+    b8    cap_hit; //  set by the enqueue adaptor when an edge is dropped
+} keep_bfs_state;
+
+//  parent_fn adaptor: enqueue+dedup each parent into the BFS state.
+static b8 keep_bfs_enqueue(sha1cp parent, void0p ctx) {
+    keep_bfs_state *st = (keep_bfs_state *)ctx;
+    for (u32 i = 0; i < st->nseen; i++)
+        if (sha1Eq(&st->seen[i], parent)) return YES;   //  dup: skip
+    if (st->qtail >= KEEP_FF_MAX || st->nseen >= KEEP_FF_MAX) {
+        st->cap_hit = YES;                               //  cap: drop edge
+        return NO;        //  stop draining headers; the driver reacts
+    }
+    st->queue[st->qtail++] = *parent;
+    st->seen[st->nseen++] = *parent;
+    return YES;
+}
+
+static keep_bfs_end keep_commit_bfs(keep_bfs_state *st, sha1cp root,
+                                    b8 with_foster, b8 miss_aborts,
+                                    b8 cap_aborts, u8bp cbuf,
+                                    keep_node_fn node, void0p node_ctx) {
+    st->qhead = st->qtail = st->nseen = 0;
+    st->cap_hit = NO;
+    st->queue[st->qtail++] = *root;
+    st->seen[st->nseen++] = *root;
+
+    while (st->qhead < st->qtail) {
+        sha1 cur = st->queue[st->qhead++];
+        keep_bfs_ctl c = node(&cur, node_ctx);
+        if (c == KEEP_BFS_STOP) return KEEP_BFS_HALT;
+        if (c == KEEP_BFS_PRUNE) continue;
+        u8bReset(cbuf);
+        u8 ctype = 0;
+        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) {
+            if (miss_aborts) return KEEP_BFS_MISS;
+            continue;        //  dead-end subtree; keep draining the queue
+        }
+        if (ctype != KEEP_OBJ_COMMIT) continue;
+        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
+        keep_commit_parents(body, with_foster, keep_bfs_enqueue, st);
+        if (st->cap_hit && cap_aborts) return KEEP_BFS_CAP;
+    }
+    return KEEP_BFS_DONE;
+}
+
+// --- KEEPIsAncestor: is `target` reachable from `from`? --------------
+//
+//  The root-first node visitor checks each dequeued commit against
+//  `target`.  (The old loop checked each *parent* as it was decoded;
+//  checking on dequeue is equivalent — every enqueued parent is
+//  eventually dequeued and tested, and `from`/`target` equality is
+//  short-circuited in the public wrapper.)
+typedef struct { sha1cp target; b8 found; } keep_anc_ctx;
+
+static keep_bfs_ctl keep_anc_node(sha1cp node, void0p ctx) {
+    keep_anc_ctx *a = (keep_anc_ctx *)ctx;
+    if (sha1Eq(node, a->target)) { a->found = YES; return KEEP_BFS_STOP; }
+    return KEEP_BFS_GO;
+}
+
 //  Worker for KEEPIsAncestor — all scratch buffers from BASS
 //  (auto-rewound at the wrapper's `try()` boundary).
 static ok64 keep_is_ancestor_inner(sha1cp from, sha1cp target,
@@ -1002,50 +1128,18 @@ static ok64 keep_is_ancestor_inner(sha1cp from, sha1cp target,
     *out_found = NO;
 
     a_carve(sha1, seen_b, KEEP_FF_MAX);
-    sha1 *seen = sha1bDataHead(seen_b);
     a_carve(sha1, queue_b, KEEP_FF_MAX);
-    sha1 *queue = sha1bDataHead(queue_b);
     a_carve(u8, cbuf, 1UL << 20);
 
-    u32 nseen = 0;
-    u32 qhead = 0, qtail = 0;
-    queue[qtail++] = *from;
-    seen[nseen++] = *from;
-
-    while (qhead < qtail && !*out_found) {
-        sha1 cur = queue[qhead++];
-        u8bReset(cbuf);
-        u8 ctype = 0;
-        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) continue;
-        if (ctype != KEEP_OBJ_COMMIT) continue;
-        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(body, field, value) == OK) {
-            if ($empty(field)) break;
-            //  Follow both `parent` and `foster`: a rebase records the
-            //  absorbed remote commit as a foster, not a parent.
-            if (!u8csEq(field, GIT_FIELD_PARENT) &&
-                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
-            if ($len(value) < 40) continue;
-            sha1 par = {};
-            u8s bin = {par.data, par.data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            a_dup(u8c, hx_dup, hx);
-            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-            if (bin[0] != par.data + 20) continue;
-            if (sha1Eq(&par, target)) { *out_found = YES; break; }
-            //  Dedup against `seen`.  Linear scan is fine — the
-            //  walk is bounded at KEEP_FF_MAX.
-            b8 dup = NO;
-            for (u32 i = 0; i < nseen; i++) {
-                if (sha1Eq(&seen[i], &par)) { dup = YES; break; }
-            }
-            if (dup) continue;
-            if (qtail >= KEEP_FF_MAX || nseen >= KEEP_FF_MAX) continue;
-            queue[qtail++] = par;
-            seen[nseen++] = par;
-        }
-    }
+    keep_bfs_state st = {.queue = sha1bDataHead(queue_b),
+                         .seen = sha1bDataHead(seen_b)};
+    keep_anc_ctx ac = {.target = target, .found = NO};
+    //  Follow parent AND foster (a rebase records the absorbed remote
+    //  commit as a foster).  miss_aborts=NO / cap_aborts=NO: a keeper
+    //  miss or a full queue is a dead end (the old `continue`), not a
+    //  stop — the walk returns whatever `found` state it reached.
+    (void)keep_commit_bfs(&st, from, YES, NO, NO, cbuf, keep_anc_node, &ac);
+    *out_found = ac.found;
     done;
 }
 
@@ -1068,96 +1162,55 @@ b8 KEEPIsAncestor(sha1cp from, sha1cp target) {
 //  KEEP_FF_MAX per side.  On cap-overflow or a keeper miss the worker
 //  sets `*out_shared = YES` (fail-open — never refuse a legitimate but
 //  oversized/partial history), so a returned NO is a confident clash.
+//  Phase-2 node visitor: STOP (shared) when a dequeued `b`-side commit
+//  is a member of `a`'s ancestor set.
+typedef struct { sha1 const *aset; u32 naset; b8 shared; } keep_shares_ctx;
+
+static keep_bfs_ctl keep_shares_node(sha1cp node, void0p ctx) {
+    keep_shares_ctx *s = (keep_shares_ctx *)ctx;
+    for (u32 i = 0; i < s->naset; i++)
+        if (sha1Eq(&s->aset[i], node)) { s->shared = YES; return KEEP_BFS_STOP; }
+    return KEEP_BFS_GO;
+}
+
+//  Phase-1 visitor: pure set-build, nothing to test per node.
+static keep_bfs_ctl keep_shares_collect(sha1cp node, void0p ctx) {
+    (void)node; (void)ctx;
+    return KEEP_BFS_GO;
+}
+
 static ok64 keep_shares_ancestor_inner(sha1cp a, sha1cp b,
                                         b8 *out_shared) {
     sane(a && b && out_shared);
     *out_shared = NO;
 
     a_carve(sha1, aset_b,  KEEP_FF_MAX);
-    sha1 *aset  = sha1bDataHead(aset_b);
     a_carve(sha1, aq_b,    KEEP_FF_MAX);
-    sha1 *aq    = sha1bDataHead(aq_b);
     a_carve(sha1, bseen_b, KEEP_FF_MAX);
-    sha1 *bseen = sha1bDataHead(bseen_b);
     a_carve(sha1, bq_b,    KEEP_FF_MAX);
-    sha1 *bq    = sha1bDataHead(bq_b);
     a_carve(u8, cbuf, 1UL << 20);
 
-    //  Helper: drain a commit's parent+foster shas, invoking `visit`
-    //  on each; visit returns whether to keep going (always YES here).
-    //  We inline two near-identical BFS loops to keep buffers distinct.
+    //  Both phases follow parent+foster, and BOTH fail open (out_shared
+    //  = YES) on a keeper miss or a cap overflow — never refuse a
+    //  legitimate but oversized / partial history.
 
-    //  Phase 1 — build `a`'s ancestor set (a included).
-    u32 naset = 0, ahead = 0, atail = 0;
-    aq[atail++] = *a;
-    aset[naset++] = *a;
-    while (ahead < atail) {
-        sha1 cur = aq[ahead++];
-        u8bReset(cbuf);
-        u8 ctype = 0;
-        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) { *out_shared = YES; done; }
-        if (ctype != KEEP_OBJ_COMMIT) continue;
-        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(body, field, value) == OK) {
-            if ($empty(field)) break;
-            if (!u8csEq(field, GIT_FIELD_PARENT) &&
-                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
-            if ($len(value) < 40) continue;
-            sha1 par = {};
-            u8s bin = {par.data, par.data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            a_dup(u8c, hx_dup, hx);
-            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-            if (bin[0] != par.data + 20) continue;
-            b8 dup = NO;
-            for (u32 i = 0; i < naset; i++)
-                if (sha1Eq(&aset[i], &par)) { dup = YES; break; }
-            if (dup) continue;
-            if (atail >= KEEP_FF_MAX || naset >= KEEP_FF_MAX) {
-                *out_shared = YES; done;       //  fail-open on overflow
-            }
-            aq[atail++] = par;
-            aset[naset++] = par;
-        }
-    }
+    //  Phase 1 — build `a`'s ancestor set (a included).  The set is the
+    //  BFS seen-array; its `nseen` is the member count afterwards.
+    keep_bfs_state ast = {.queue = sha1bDataHead(aq_b),
+                          .seen = sha1bDataHead(aset_b)};
+    keep_bfs_end ae = keep_commit_bfs(&ast, a, YES, YES, YES, cbuf,
+                                      keep_shares_collect, NULL);
+    if (ae == KEEP_BFS_MISS || ae == KEEP_BFS_CAP) { *out_shared = YES; done; }
 
-    //  Phase 2 — BFS `b`'s closure; any hit in `aset` is a shared root.
-    u32 nbseen = 0, bhead = 0, btail = 0;
-    bq[btail++] = *b;
-    bseen[nbseen++] = *b;
-    while (bhead < btail) {
-        sha1 cur = bq[bhead++];
-        for (u32 i = 0; i < naset; i++)
-            if (sha1Eq(&aset[i], &cur)) { *out_shared = YES; done; }
-        u8bReset(cbuf);
-        u8 ctype = 0;
-        if (KEEPGetExact(&cur, cbuf, &ctype) != OK) { *out_shared = YES; done; }
-        if (ctype != KEEP_OBJ_COMMIT) continue;
-        u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
-        u8cs field = {}, value = {};
-        while (GITu8sDrainCommit(body, field, value) == OK) {
-            if ($empty(field)) break;
-            if (!u8csEq(field, GIT_FIELD_PARENT) &&
-                !u8csEq(field, GIT_FIELD_FOSTER)) continue;
-            if ($len(value) < 40) continue;
-            sha1 par = {};
-            u8s bin = {par.data, par.data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            a_dup(u8c, hx_dup, hx);
-            if (HEXu8sDrainSome(bin, hx_dup) != OK) continue;
-            if (bin[0] != par.data + 20) continue;
-            b8 dup = NO;
-            for (u32 i = 0; i < nbseen; i++)
-                if (sha1Eq(&bseen[i], &par)) { dup = YES; break; }
-            if (dup) continue;
-            if (btail >= KEEP_FF_MAX || nbseen >= KEEP_FF_MAX) {
-                *out_shared = YES; done;       //  fail-open on overflow
-            }
-            bq[btail++] = par;
-            bseen[nbseen++] = par;
-        }
-    }
+    //  Phase 2 — BFS `b`'s closure; any hit in `a`'s set is a common root.
+    keep_shares_ctx sc = {.aset = sha1bDataHead(aset_b),
+                          .naset = ast.nseen, .shared = NO};
+    keep_bfs_state bst = {.queue = sha1bDataHead(bq_b),
+                          .seen = sha1bDataHead(bseen_b)};
+    keep_bfs_end be = keep_commit_bfs(&bst, b, YES, YES, YES, cbuf,
+                                      keep_shares_node, &sc);
+    if (sc.shared || be == KEEP_BFS_MISS || be == KEEP_BFS_CAP)
+        *out_shared = YES;
     done;
 }
 
@@ -1483,17 +1536,25 @@ void KEEPObjSha(sha1 *out, u8 type, u8csc content) {
     SHA1Close(&ctx, out);
 }
 
-// Encode pack object varint header into buffer
-static void keep_feed_obj_hdr(u8bp buf, u8 type, u64 size) {
-    u8 first = (u8)((type << 4) | (size & 0x0f));
-    size >>= 4;
-    if (size > 0) first |= 0x80;
-    u8bFeed1(buf, first);
-    while (size > 0) {
-        u8 c = (u8)(size & 0x7f);
-        size >>= 7;
-        if (size > 0) c |= 0x80;
-        u8bFeed1(buf, c);
+//  Whitespace-separated git capability tokenizer.  See KEEP.h.
+void KEEPForEachCapToken(u8csc tail, b8 tab_is_sep,
+                         keep_cap_tok_fn fn, void0p ctx) {
+    if (!fn) return;
+    u8cs scan = {tail[0], tail[1]};
+    while (!u8csEmpty(scan)) {
+        //  Skip leading separators (SP, plus TAB when requested).
+        while (!u8csEmpty(scan) &&
+               (scan[0][0] == ' ' || (tab_is_sep && scan[0][0] == '\t')))
+            scan[0]++;
+        if (u8csEmpty(scan)) break;
+        u8c *tok_start = scan[0];
+        //  Token runs until a separator: SP, '\n', or TAB (when requested).
+        while (!u8csEmpty(scan) && scan[0][0] != ' ' && scan[0][0] != '\n' &&
+               !(tab_is_sep && scan[0][0] == '\t'))
+            scan[0]++;
+        u8csc tok = {tok_start, scan[0]};
+        if (u8csLen(tok) != 0) fn(tok, ctx);
+        if (!u8csEmpty(scan) && scan[0][0] == '\n') scan[0]++;
     }
 }
 
@@ -1686,7 +1747,7 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
                          64 + delta_len + 256);
 
                     a_pad(u8, ohdr, 16);
-                    keep_feed_obj_hdr(ohdr, dtype, delta_len);
+                    PACKu8sFeedObjHdr(ohdr, dtype, delta_len);
                     a_dup(u8c, ohb, u8bData(ohdr));
                     u8bFeed(p->log, ohb);
 
@@ -1714,7 +1775,7 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
         //  Raw-object path (same as pre-delta).
         call(FILEBookEnsure, p->log, 16);
         a_pad(u8, ohdr, 16);
-        keep_feed_obj_hdr(ohdr, type, u8csLen(content));
+        PACKu8sFeedObjHdr(ohdr, type, u8csLen(content));
         a_dup(u8c, oh, u8bData(ohdr));
         u8bFeed(p->log, oh);
 
@@ -2863,7 +2924,7 @@ ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
             u64 olen = u8bDataLen(obuf);
 
             a_pad(u8, ohdr, 16);
-            keep_feed_obj_hdr(ohdr, otype, olen);
+            PACKu8sFeedObjHdr(ohdr, otype, olen);
             a_dup(u8c, oh, u8bData(ohdr));
             u8bFeed(pack_b, oh);
 

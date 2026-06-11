@@ -177,11 +177,10 @@ static ok64 lsf_prefix_visit(u8cs path, u8 kind, u8cp esha,
     return pc->inner(full, kind, esha, blob, pc->inner_ctx);
 }
 
-//  Worker for lsf_descend — uses caller-provided `tbuf` (reused per
-//  segment; KEEPGet internally resets).
-static ok64 lsf_descend_inner(sha1cp root_tree, u8cs subpath,
-                               u8bp pathbuf, sha1 *out_sha, u8 *out_kind,
-                               u8bp tbuf) {
+//  Shared '/'-separated tree-path descent (CODE-005).  See WALK.h.
+ok64 KEEPTreeDescend(sha1cp root_tree, u8cs subpath, u8bp pathbuf,
+                     sha1 *out_sha, u8 *out_kind, u8bp tbuf,
+                     ok64 notfound) {
     sane(root_tree && out_sha && out_kind && tbuf);
 
     sha1 cur_sha = *root_tree;
@@ -202,12 +201,12 @@ static ok64 lsf_descend_inner(sha1cp root_tree, u8cs subpath,
         if (seg[0] == seg[1]) break;
         scan[0] = seg[1];  // cursor past segment
 
-        if (cur_kind != WALK_KIND_DIR) return KEEPNONE;
+        if (cur_kind != WALK_KIND_DIR) return notfound;
 
         //  Fetch current tree, scan entries for `seg`.
         u8 otype = 0;
         ok64 o = KEEPGetExact(&cur_sha, tbuf, &otype);
-        if (o != OK || otype != DOG_OBJ_TREE) return o ? o : KEEPNONE;
+        if (o != OK || otype != DOG_OBJ_TREE) return o ? o : notfound;
 
         u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
         b8 found = NO;
@@ -224,11 +223,13 @@ static ok64 lsf_descend_inner(sha1cp root_tree, u8cs subpath,
             found = YES;
             break;
         }
-        if (!found || next_kind == 0) return KEEPNONE;
+        if (!found || next_kind == 0) return notfound;
 
-        //  Append to prefix pathbuf.
-        if (u8bDataLen(pathbuf) > 0) u8bFeed1(pathbuf, '/');
-        u8bFeed(pathbuf, seg);
+        //  Append to prefix pathbuf (caller may pass NULL to skip).
+        if (pathbuf) {
+            if (u8bDataLen(pathbuf) > 0) u8bFeed1(pathbuf, '/');
+            u8bFeed(pathbuf, seg);
+        }
 
         cur_sha = next_sha;
         cur_kind = next_kind;
@@ -248,7 +249,8 @@ static ok64 lsf_descend(keeper *k, sha1cp root_tree, u8cs subpath,
     sane(k && root_tree && out_sha && out_kind);
     (void)k;
     a_carve(u8, tbuf, 1UL << 20);
-    call(lsf_descend_inner, root_tree, subpath, pathbuf, out_sha, out_kind, tbuf);
+    call(KEEPTreeDescend, root_tree, subpath, pathbuf, out_sha, out_kind,
+         tbuf, KEEPNONE);
     done;
 }
 
@@ -629,14 +631,7 @@ static b8 keep_sha_in(sha1 const *set, u32 n, sha1cp q) {
     return NO;
 }
 
-//  Decode a 40-hex commit-header value into `out`; YES on success.
-static b8 keep_hex40_sha(u8cs value, sha1 *out) {
-    if ($len(value) < 40) return NO;
-    u8s  bin = {out->data, out->data + 20};
-    u8cs hx  = {value[0], value[0] + 40};
-    a_dup(u8c, hd, hx);
-    return (HEXu8sDrainSome(bin, hd) == OK && bin[0] == out->data + 20);
-}
+//  40-hex commit-header value → sha1 is dog/WHIFF.h `sha1FromHex`.
 
 //  Iterative reachable-commit closure of `root` over `parent` (and,
 //  when `with_foster`, `foster`) headers into `set` (deduped, capped).
@@ -667,7 +662,7 @@ static ok64 keep_commit_reach(sha1cp root, b8 with_foster,
             b8 fos = with_foster && u8csEq(field, GIT_FIELD_FOSTER);
             if (!par && !fos) continue;
             sha1 p = {};
-            if (keep_hex40_sha(value, &p) && wn < cap) wl[wn++] = p;
+            if (sha1FromHex(&p, value) == OK && wn < cap) wl[wn++] = p;
         }
     }
     done;
@@ -701,7 +696,7 @@ static ok64 keep_commit_collect_since(sha1cp tip, sha1 const *base, u32 nbase,
             if ($empty(field)) break;
             if (u8csEq(field, GIT_FIELD_PARENT)) {
                 sha1 p = {};
-                if (keep_hex40_sha(value, &p) && wn < cap) wl[wn++] = p;
+                if (sha1FromHex(&p, value) == OK && wn < cap) wl[wn++] = p;
             }
         }
     }

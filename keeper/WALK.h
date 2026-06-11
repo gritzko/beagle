@@ -67,6 +67,26 @@ ok64 WALKTreeLazy(u8cp tree_sha, walk_tree_fn visit, void0p ctx);
 //  single blob, the visitor is called exactly once for that blob.
 ok64 KEEPLsFiles(uricp target, walk_tree_fn visit, void0p ctx);
 
+//  Descend a '/'-separated `subpath` from `root_tree`, segment by
+//  segment, matching each segment against the current tree's entries.
+//  On success `*out_sha` / `*out_kind` describe the final resolved
+//  entry (the root tree itself, as a DIR, for an empty/"."/"./"
+//  subpath).  Shared core of PROJ's `tree:`/`blob:` descent and WALK's
+//  ls-files descent.
+//    pathbuf    — when non-NULL, each matched segment is appended
+//                 ('/'-joined) so the caller recovers the resolved
+//                 prefix.  Pass NULL to skip the accounting.
+//    tbuf       — caller-provided ≥1 MiB scratch (reused per segment;
+//                 KEEPGet resets it internally).
+//    notfound   — error code returned on a missing / non-tree segment
+//                 (PROJ passes PROJNONE; ls-files passes KEEPNONE).
+//  Behaviour-preserving extraction of the former proj_descend_inner /
+//  lsf_descend_inner (CODE-005).  Does NOT special-case "." / "./" —
+//  callers that need the "this-directory" shorthand collapse it to an
+//  empty subpath before calling (PROJ does so in proj_descend).
+ok64 KEEPTreeDescend(sha1cp root_tree, u8cs subpath, u8bp pathbuf,
+                     sha1 *out_sha, u8 *out_kind, u8bp tbuf, ok64 notfound);
+
 //  Materialise a tree's leaf entries as ULOG rows for the heap-merge
 //  pipeline: one row per leaf, `<ts>\t<verb><kind>\t<path>#<hex-sha>\n`,
 //  sorted by path (DFS == lex order on paths).

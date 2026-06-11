@@ -93,6 +93,19 @@ ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj) {
     done;
 }
 
+void PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size) {
+    u8 first = (u8)((type << 4) | (size & 0x0f));
+    size >>= 4;
+    if (size > 0) first |= 0x80;
+    u8bFeed1(buf, first);
+    while (size > 0) {
+        u8 c = (u8)(size & 0x7f);
+        size >>= 7;
+        if (size > 0) c |= 0x80;
+        u8bFeed1(buf, c);
+    }
+}
+
 ok64 PACKInflate(u8cs from, u8s into, u64 size) {
     sane(u8csOK(from) && u8sOK(into));
     if ((u64)u8sLen(into) < size) return NOROOM;

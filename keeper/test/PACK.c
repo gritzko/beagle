@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "abc/B.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 
@@ -218,6 +219,32 @@ ok64 PACKtest10() {
     done;
 }
 
+// ---- Test 11: PACKu8sFeedObjHdr ⇄ PACKDrainObjHdr round-trip.
+// The encode counterpart of the object-header varint must reproduce
+// exactly what the decoder reads back, across the 4-bit boundary, the
+// 7-bit continuation groups, and every raw object type (CODE-004/005:
+// relocated here from keeper's pack writers).
+ok64 PACKtest11() {
+    sane(1);
+    u64 sizes[] = {0, 1, 15, 16, 127, 128, 4095, 4096, 1234567,
+                   (1ULL << 34) + 7};
+    u8  types[] = {PACK_OBJ_COMMIT, PACK_OBJ_TREE, PACK_OBJ_BLOB,
+                   PACK_OBJ_TAG};
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+            a_pad(u8, buf, 32);
+            PACKu8sFeedObjHdr(buf, types[t], sizes[i]);
+            u8cs scan = {u8bDataHead(buf), u8bIdleHead(buf)};
+            pack_obj obj = {};
+            call(PACKDrainObjHdr, scan, &obj);
+            want(obj.type == types[t]);
+            want(obj.size == sizes[i]);
+            want($empty(scan));   //  header consumed exactly
+        }
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(PACKtest1);
@@ -230,6 +257,7 @@ ok64 maintest() {
     call(PACKtest8);
     call(PACKtest9);
     call(PACKtest10);
+    call(PACKtest11);
     done;
 }
 

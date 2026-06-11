@@ -356,6 +356,16 @@ ok64 KEEPHas(u64 hashlet60, size_t hexlen);
 //  <size>\0" + body).  `type` must be one of DOG_OBJ_*.
 void KEEPObjSha(sha1 *out, u8 type, u8csc content);
 
+//  Tokenize a whitespace-separated git capability list off the tail of
+//  a request line, invoking `fn(tok, ctx)` once per non-empty token.
+//  Separators are SP and '\n' always, plus TAB when `tab_is_sep`.  This
+//  is the bare SP/TAB token-loop scaffold shared by the upload-pack
+//  (WIRE) and receive-pack (RECV) capability parsers (CODE-005); each
+//  caller's `fn` maps a token to its own cap-bit set.
+typedef void (*keep_cap_tok_fn)(u8csc tok, void0p ctx);
+void KEEPForEachCapToken(u8csc tail, b8 tab_is_sep,
+                         keep_cap_tok_fn fn, void0p ctx);
+
 //  Raw index lookup: hashlet → val wh64 (flags|file|offset).
 //  hexlen: prefix length for partial matching (15 = full 60-bit).
 ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val);

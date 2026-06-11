@@ -30,39 +30,34 @@ static b8 wire_token_eq(u8csc s, u8c const *tok, size_t tlen) {
     return memcmp(s[0], tok, tlen) == 0;
 }
 
+//  Recognise one upload-pack capability token → cap bits.  Strips
+//  "agent=..." (and any other unknown) silently.
+static void wire_cap_token(u8csc tok, void0p ctx) {
+    u32 *caps = (u32 *)ctx;
+    if (wire_token_eq(tok, WIRE_CAP_OFS_DELTA_S,
+                      sizeof(WIRE_CAP_OFS_DELTA_S) - 1)) {
+        *caps |= WIRE_CAP_OFS_DELTA;
+    } else if (wire_token_eq(tok, WIRE_CAP_SIDE_BAND_64K_S,
+                             sizeof(WIRE_CAP_SIDE_BAND_64K_S) - 1)) {
+        *caps |= WIRE_CAP_SIDE_BAND_64K;
+    } else if (wire_token_eq(tok, WIRE_CAP_MULTI_ACK_DET_S,
+                             sizeof(WIRE_CAP_MULTI_ACK_DET_S) - 1)) {
+        *caps |= WIRE_CAP_MULTI_ACK_DET;
+    } else if (wire_token_eq(tok, WIRE_CAP_THIN_PACK_S,
+                             sizeof(WIRE_CAP_THIN_PACK_S) - 1)) {
+        *caps |= WIRE_CAP_THIN_PACK;
+    } else if (wire_token_eq(tok, WIRE_CAP_NO_PROGRESS_S,
+                             sizeof(WIRE_CAP_NO_PROGRESS_S) - 1)) {
+        *caps |= WIRE_CAP_NO_PROGRESS;
+    }
+}
+
 //  Parse a space-separated capability list off the tail of the first
 //  want line, OR from a pkt-line that consists of only capability
 //  tokens (rarely used, kept for tolerance).  Sets bits in *caps.
+//  upload-pack caps are SP/'\n'-separated (no TAB).
 static void wire_parse_caps(u32 *caps, u8csc tail) {
-    u8cs scan = {tail[0], tail[1]};
-    while (!u8csEmpty(scan)) {
-        //  skip leading SP
-        while (!u8csEmpty(scan) && scan[0][0] == ' ') scan[0]++;
-        if (u8csEmpty(scan)) break;
-        u8c *tok_start = scan[0];
-        while (!u8csEmpty(scan) && scan[0][0] != ' ' && scan[0][0] != '\n')
-            scan[0]++;
-        u8csc tok = {tok_start, scan[0]};
-        if (u8csLen(tok) == 0) continue;
-        //  Strip "agent=..." silently.
-        if (wire_token_eq(tok, WIRE_CAP_OFS_DELTA_S,
-                          sizeof(WIRE_CAP_OFS_DELTA_S) - 1)) {
-            *caps |= WIRE_CAP_OFS_DELTA;
-        } else if (wire_token_eq(tok, WIRE_CAP_SIDE_BAND_64K_S,
-                                 sizeof(WIRE_CAP_SIDE_BAND_64K_S) - 1)) {
-            *caps |= WIRE_CAP_SIDE_BAND_64K;
-        } else if (wire_token_eq(tok, WIRE_CAP_MULTI_ACK_DET_S,
-                                 sizeof(WIRE_CAP_MULTI_ACK_DET_S) - 1)) {
-            *caps |= WIRE_CAP_MULTI_ACK_DET;
-        } else if (wire_token_eq(tok, WIRE_CAP_THIN_PACK_S,
-                                 sizeof(WIRE_CAP_THIN_PACK_S) - 1)) {
-            *caps |= WIRE_CAP_THIN_PACK;
-        } else if (wire_token_eq(tok, WIRE_CAP_NO_PROGRESS_S,
-                                 sizeof(WIRE_CAP_NO_PROGRESS_S) - 1)) {
-            *caps |= WIRE_CAP_NO_PROGRESS;
-        }
-        if (!u8csEmpty(scan) && scan[0][0] == '\n') scan[0]++;
-    }
+    KEEPForEachCapToken(tail, NO, wire_cap_token, caps);
 }
 
 //  Drain one pkt-line from buf, refilling via FILEDrain on NODATA.

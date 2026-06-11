@@ -51,7 +51,12 @@ Types: `pack_hdr` (version, count), `pack_obj` (type, size, delta ref).
 Object types: COMMIT=1, TREE=2, BLOB=3, TAG=4, OFS_DELTA=6, REF_DELTA=7.
 
   - `PACKDrainHdr`     parse PACK magic + version + count
+  - `PACKu8sFeedHdr`   encode the 12-byte PACK header (magic+ver+count)
   - `PACKDrainObjHdr`  parse object type/size varint + delta base
+  - `PACKu8sFeedObjHdr` encode the object type/size varint header (the
+                       encode counterpart of `PACKDrainObjHdr`; shared by
+                       every pack writer — keeper's pack log + push
+                       builder).  Round-trip test: `test/PACK.c` case 11
   - `PACKInflate`      zlib-inflate compressed object data
 
 ### dog/git/IGNO.h — .gitignore parser/matcher
@@ -356,6 +361,28 @@ All objects for every local branch, tag and remote-tracking ref live
 here; writes append to this dir and reads consult only this dir (no
 dir-chain fan-out, no per-branch or remotes subdirectories).
 
+Shared low-level helpers exported from `KEEP.h` (CODE-004/005 dedup):
+  * The hex40→sha1 decode is dog/WHIFF.h `sha1FromHex(sha1 *out, u8csc
+    hex)` — decode the leading 40 hex chars of a commit-header value into
+    a sha1, returning `ok64` (BADRANGE on <40 bytes, else the
+    `HEXu8sDrainSome` code).  It backs the parent/foster walks in
+    `KEEP.c`, `WALK.c`, `WIRECLI.c` and the at-sha decode in
+    `KEEP.exe.c`; no keeper-local copy.
+  * The pack object-header varint encoder is `PACKu8sFeedObjHdr` in
+    `dog/git/PACK.h` (the encode counterpart of `PACKDrainObjHdr`) —
+    keeper's pack writer (`KEEP.c`) and the push pack builder
+    (`WIRECLI.c`) both call it; no keeper-local copy.
+  * `KEEPForEachCapToken(u8csc tail, b8 tab_is_sep, fn, ctx)` — the
+    SP/TAB/'\n' capability token-loop scaffold behind both
+    `wire_parse_caps` (upload-pack, no TAB) and `recv_parse_caps`
+    (receive-pack, TAB-separated); each caller's `fn` maps a token to
+    its own cap-bit set.
+The commit-ancestry walks (`KEEPIsAncestor`, `KEEPSharesAncestor`) are
+rebuilt on three internal primitives in `KEEP.c`: `keep_commit_parents`
+(iterate decoded parent/foster shas), `keep_commit_bfs` (bounded,
+seen-deduped BFS with caller-supplied scratch + per-node visitor and
+miss/cap policy flags), and `keep_bfs_enqueue` (dedup+enqueue adaptor).
+
 ### WALK.h — git object graph traversal
 
 Types: `walk` (walker state), `walk_fn` (visitor callback).
@@ -370,6 +397,13 @@ Types: `walk` (walker state), `walk_fn` (visitor callback).
   - `WALKTreeLazy`     DFS tree walk over KEEP — lazy (blobs empty, pulled on demand)
   - `WALKu8sModeKind`  classify git tree-entry mode → `WALK_KIND_*`
   - `KEEPLsFiles`      ls-files on a URI-resolved tree (lazy walk + path prefix)
+  - `KEEPTreeDescend`  shared '/'-separated tree-path descent (CODE-005):
+                       segment-by-segment match from a root tree, optional
+                       prefix `pathbuf` accounting, caller-chosen `notfound`
+                       code.  Backs both PROJ's `tree:`/`blob:` descent and
+                       ls-files (replaces proj_descend_inner /
+                       lsf_descend_inner).  "." / "./" collapse is the
+                       caller's job (done in `proj_descend`).
   - `KEEPTreeListLeaves`  materialise a tree's leaf entries as `(paths, meta)` —
                        newline-sep paths in lex order + parallel 21-byte
                        `{kind, sha[20]}` records.  Feeds `KEEPu8ssDrain` for

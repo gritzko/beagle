@@ -1,7 +1,9 @@
 #include "keeper/KEEP.h"
 #include "abc/FILE.h"
+#include "abc/HEX.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
+#include "dog/git/GIT.h"
 #include "dog/git/PACK.h"
 
 // --- wh64 hashlet tests ---
@@ -700,8 +702,229 @@ ok64 KEEPxfileRecursion() {
     done;
 }
 
+// --- CODE-004/005: shared sha40 decode + obj-hdr + cap tokens --------
+
+//  dog/WHIFF.h sha1FromHex: leading-40-hex → sha1, no ptr-arith, full
+//  decode, honest ok64.  Valid 40-hex → OK + correct sha1; <40 →
+//  BADRANGE; non-hex inside the first 40 → HEXBAD (from HEXu8sDrainSome).
+ok64 KEEPhex40Table() {
+    sane(1);
+
+    typedef struct { char const *in; ok64 want; } row;
+    //  40 valid hex; 40 valid + trailing junk (decode first 40 only);
+    //  short (<40 → BADRANGE); non-hex inside the first 40 (→ HEXBAD);
+    //  empty (→ BADRANGE).
+    row cases[] = {
+        {"3b18e512dba79e4c8300dd08aeb37f8e728b8dad",      OK},
+        {"3b18e512dba79e4c8300dd08aeb37f8e728b8dad more", OK},
+        {"3b18e512dba79e4c8300dd08aeb37f8e728b8da",       BADRANGE}, // 39
+        {"Zb18e512dba79e4c8300dd08aeb37f8e728b8dad",      HEXBAD},   // non-hex hi-nibble
+        {"",                                              BADRANGE},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        u8csc v = {(u8cp)cases[i].in, (u8cp)cases[i].in + strlen(cases[i].in)};
+        sha1 s = {};
+        ok64 got = sha1FromHex(&s, v);
+        if (got != cases[i].want) {
+            fprintf(stderr, "hex40[%zu] '%s': got %llx want %llx\n",
+                    i, cases[i].in, (unsigned long long)got,
+                    (unsigned long long)cases[i].want);
+            fail(TESTFAIL);
+        }
+        if (got == OK) {
+            //  First 40 chars must round-trip back to the same bytes.
+            sha1hex hx = {};
+            sha1hexFromSha1(&hx, &s);
+            want(memcmp(hx.data, cases[i].in, 40) == 0);
+        }
+    }
+    done;
+}
+
+//  KEEPForEachCapToken: SP / TAB / '\n' tokenizer scaffold.
+typedef struct { char joined[256]; u32 n; } captok_ctx;
+static void captok_collect(u8csc tok, void0p ctx) {
+    captok_ctx *c = (captok_ctx *)ctx;
+    if (c->n) strncat(c->joined, "|", sizeof(c->joined) - strlen(c->joined) - 1);
+    size_t l = u8csLen(tok);
+    char tmp[64] = {};
+    if (l >= sizeof(tmp)) l = sizeof(tmp) - 1;
+    memcpy(tmp, tok[0], l);
+    strncat(c->joined, tmp, sizeof(c->joined) - strlen(c->joined) - 1);
+    c->n++;
+}
+
+ok64 KEEPcapTokenTable() {
+    sane(1);
+
+    typedef struct {
+        char const *in;
+        b8          tab_sep;
+        char const *want;   // tokens joined with '|'
+        u32         n;
+    } row;
+    row cases[] = {
+        //  Plain SP list.
+        {" ofs-delta side-band-64k", NO, "ofs-delta|side-band-64k", 2},
+        //  Leading/trailing/multiple SP collapse to empty-token-free.
+        {"  a   b  ",                NO, "a|b", 2},
+        //  Newline terminates the line; trailing '\n' eaten.
+        {"report-status\n",          NO, "report-status", 1},
+        //  TAB NOT a separator (WIRE mode) → one token with embedded TAB.
+        {"a\tb",                     NO, "a\tb", 1},
+        //  TAB IS a separator (RECV mode) → two tokens.
+        {"a\tb",                     YES, "a|b", 2},
+        //  Empty input → no tokens.
+        {"",                         NO, "", 0},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        u8csc tail = {(u8cp)cases[i].in, (u8cp)cases[i].in + strlen(cases[i].in)};
+        captok_ctx c = {};
+        KEEPForEachCapToken(tail, cases[i].tab_sep, captok_collect, &c);
+        if (c.n != cases[i].n || strcmp(c.joined, cases[i].want) != 0) {
+            fprintf(stderr, "captok[%zu] '%s' tab=%d: got n=%u '%s' want n=%u '%s'\n",
+                    i, cases[i].in, cases[i].tab_sep, c.n, c.joined,
+                    cases[i].n, cases[i].want);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
+// --- CODE-004: ancestor / shares-ancestor over a fixture DAG ---------
+//
+//  Build commit objects bottom-up so each child can name its real
+//  parent sha.  A commit body only needs a `tree` line (value need not
+//  resolve — the walks follow parent/foster only) plus parent/foster
+//  headers; KEEPGetExact just confirms KEEP_OBJ_COMMIT and the header
+//  block is drained by GITu8sDrainCommit.
+
+//  Append "<field> <40-hex(sha)>\n" to a commit body buffer.
+static void commit_feed_ref(u8bp body, u8csc field, sha1cp sha) {
+    u8bFeed(body, field);
+    u8bFeed1(body, ' ');
+    sha1hex hx = {};
+    sha1hexFromSha1(&hx, sha);
+    u8cs hs = {hx.data, hx.data + 40};
+    u8bFeed(body, hs);
+    u8bFeed1(body, '\n');
+}
+
+//  Build a commit with the given parents[] (and foster, if non-NULL),
+//  feed it into the pack, return its sha.  `tag` differentiates bodies
+//  so distinct commits get distinct shas.
+static ok64 build_commit(keep_pack *p, char tag, sha1cp const *parents,
+                         u32 nparent, sha1cp foster, sha1 *out) {
+    sane(p && out);
+    a_pad(u8, body, 1024);
+    //  tree line: a fixed all-zero 40-hex (need not resolve).
+    a_cstr(zero40, "0000000000000000000000000000000000000000");
+    u8bFeed(body, GIT_FIELD_TREE);
+    u8bFeed1(body, ' ');
+    u8bFeed(body, zero40);
+    u8bFeed1(body, '\n');
+    for (u32 i = 0; i < nparent; i++)
+        commit_feed_ref(body, GIT_FIELD_PARENT, parents[i]);
+    if (foster) commit_feed_ref(body, GIT_FIELD_FOSTER, foster);
+    a_cstr(au, "author x <x> 0 +0000\ncommitter x <x> 0 +0000\n\n");
+    u8bFeed(body, au);
+    u8bFeed1(body, tag);
+    u8bFeed1(body, '\n');
+    a_dup(u8c, bc, u8bData(body));
+    call(KEEPPackFeed, p, DOG_OBJ_COMMIT, bc, 0, out);
+    done;
+}
+
+ok64 KEEPancestorTable() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/keeper-anc-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+    a_cstr(root, tmpdir);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    //  Fixture DAG (parent edges point to ancestors):
+    //
+    //      A ── B ── C          (linear)
+    //      A ── D               (fork off A)
+    //      C, D ── M            (merge: M has parents C and D)
+    //      X                    (disjoint root, no shared ancestor)
+    //      C ── F  via FOSTER   (F fosters C, no parent edge)
+    sha1 A={}, B={}, C={}, D={}, M={}, X={}, F={};
+    call(build_commit, &p, 'A', NULL, 0, NULL, &A);
+    { sha1cp pp[1] = {&A}; call(build_commit, &p, 'B', pp, 1, NULL, &B); }
+    { sha1cp pp[1] = {&B}; call(build_commit, &p, 'C', pp, 1, NULL, &C); }
+    { sha1cp pp[1] = {&A}; call(build_commit, &p, 'D', pp, 1, NULL, &D); }
+    { sha1cp pp[2] = {&C,&D}; call(build_commit, &p, 'M', pp, 2, NULL, &M); }
+    call(build_commit, &p, 'X', NULL, 0, NULL, &X);
+    call(build_commit, &p, 'F', NULL, 0, &C, &F);   // foster C only
+    call(KEEPPackClose, &p);
+
+    typedef struct { sha1 *from; sha1 *target; b8 want; } anc;
+    anc acases[] = {
+        {&C, &A, YES},   // A is ancestor of C
+        {&C, &B, YES},
+        {&A, &C, NO},    // C is not ancestor of A
+        {&M, &A, YES},   // merge reaches A via both legs
+        {&M, &D, YES},
+        {&M, &C, YES},
+        {&B, &D, NO},    // sibling fork, not ancestor
+        {&C, &X, NO},    // disjoint
+        {&F, &C, YES},   // foster edge counts for reachability
+        {&F, &A, YES},   // …and transitively through C's parents
+        {&F, &X, NO},
+    };
+    for (size_t i = 0; i < sizeof(acases)/sizeof(acases[0]); i++) {
+        b8 got = KEEPIsAncestor(acases[i].from, acases[i].target);
+        if (got != acases[i].want) {
+            fprintf(stderr, "IsAncestor[%zu]: got %d want %d\n",
+                    i, got, acases[i].want);
+            fail(TESTFAIL);
+        }
+    }
+
+    typedef struct { sha1 *a; sha1 *b; b8 want; } shr;
+    shr scases[] = {
+        {&C, &D, YES},   // common ancestor A
+        {&B, &D, YES},   // common ancestor A
+        {&M, &C, YES},   // M descends from C
+        {&C, &X, NO},    // fully disjoint roots → clash
+        {&A, &X, NO},
+        {&F, &A, YES},   // F fosters C whose closure includes A
+        {&F, &X, NO},
+    };
+    for (size_t i = 0; i < sizeof(scases)/sizeof(scases[0]); i++) {
+        b8 got = KEEPSharesAncestor(scases[i].a, scases[i].b);
+        if (got != scases[i].want) {
+            fprintf(stderr, "SharesAncestor[%zu]: got %d want %d\n",
+                    i, got, scases[i].want);
+            fail(TESTFAIL);
+        }
+    }
+
+    call(KEEPClose);
+    HOMEClose(&h);
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+    system(cmd);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
+    fprintf(stderr, "KEEPhex40Table...\n");
+    call(KEEPhex40Table);
+    fprintf(stderr, "KEEPcapTokenTable...\n");
+    call(KEEPcapTokenTable);
+    fprintf(stderr, "KEEPancestorTable...\n");
+    call(KEEPancestorTable);
     fprintf(stderr, "WH64hashlet...\n");
     call(WH64hashlet);
     fprintf(stderr, "WH64pack...\n");

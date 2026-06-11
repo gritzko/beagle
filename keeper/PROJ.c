@@ -78,74 +78,29 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
     fail(PROJNONE);
 }
 
-//  Descend a '/'-separated subpath inside a tree.  Caller owns `pathbuf`
-//  (used as scratch).  Returns the final entry's sha + kind in *out_*.
-//  Empty / "." subpath returns the input tree as a DIR.
-//  Worker — descends `subpath` segment by segment using a caller-
-//  provided `tbuf` (reused across all KEEPGetExact calls; KEEPGet
-//  internally resets, so no per-segment reset needed).  Each early
-//  return is caught by the wrapper which frees `tbuf` once.
-static ok64 proj_descend_inner(sha1cp root_tree, u8cs subpath,
-                               sha1 *out_sha, u8 *out_kind, u8bp tbuf) {
-    sane(root_tree && out_sha && out_kind && tbuf);
-    sha1 cur = *root_tree;
-    u8 cur_kind = WALK_KIND_DIR;
-
-    u8cs scan = {};
-    u8csMv(scan, subpath);
-    //  Tolerate "." / "./" for "this directory" — both shapes come
-    //  from the bareword promotion in dog/DOG.c (`be tree:./` vs
-    //  `be tree:.`) and should collapse to the empty-path root walk.
-    if (u8csLen(scan) == 1 && scan[0][0] == '.') scan[0] = scan[1];
-    else if (u8csLen(scan) == 2 && scan[0][0] == '.' && scan[0][1] == '/')
-        scan[0] = scan[1];
-
-    while (!$empty(scan)) {
-        while (!$empty(scan) && *scan[0] == '/') scan[0]++;
-        if ($empty(scan)) break;
-
-        u8cs seg = {scan[0], scan[0]};
-        while (seg[1] < scan[1] && *seg[1] != '/') seg[1]++;
-        if (seg[0] == seg[1]) break;
-        scan[0] = seg[1];
-
-        if (cur_kind != WALK_KIND_DIR) fail(PROJNONE);
-
-        u8 otype = 0;
-        ok64 go = KEEPGetExact(&cur, tbuf, &otype);
-        if (go != OK || otype != DOG_OBJ_TREE)
-            return go == OK ? PROJNONE : go;
-
-        u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
-        u8cs file = {}, esha = {};
-        b8 found = NO;
-        sha1 next_sha = {};
-        u8 next_kind = 0;
-        while (GITu8sDrainTree(tree_s, file, esha, NULL) == OK) {
-            u8cs mode_s = {}, name_s = {};
-            if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
-            if (u8csLen(name_s) != u8csLen(seg)) continue;
-            if (memcmp(name_s[0], seg[0], u8csLen(name_s)) != 0) continue;
-            next_kind = WALKu8sModeKind(mode_s);
-            (void)sha1Drain(esha, &next_sha);
-            found = YES;
-            break;
-        }
-        if (!found || next_kind == 0) fail(PROJNONE);
-        cur = next_sha;
-        cur_kind = next_kind;
-    }
-    *out_sha = cur;
-    *out_kind = cur_kind;
-    done;
-}
-
+//  Descend a '/'-separated subpath inside a tree.  Returns the final
+//  entry's sha + kind in *out_*.  Empty / "." / "./" subpath returns
+//  the input tree as a DIR.  The segment walk itself is the shared
+//  `KEEPTreeDescend` (WALK.h, CODE-005); here we only collapse the
+//  "this-directory" shorthand to an empty subpath first, then map a
+//  not-found segment to PROJNONE.
 static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
                           sha1 *out_sha, u8 *out_kind) {
     sane(k && root_tree && out_sha && out_kind);
     (void)k;
+
+    //  Tolerate "." / "./" for "this directory" — both shapes come
+    //  from the bareword promotion in dog/DOG.c (`be tree:./` vs
+    //  `be tree:.`) and collapse to the empty-path root walk.
+    u8cs sub = {};
+    u8csMv(sub, subpath);
+    if (u8csLen(sub) == 1 && sub[0][0] == '.') sub[0] = sub[1];
+    else if (u8csLen(sub) == 2 && sub[0][0] == '.' && sub[0][1] == '/')
+        sub[0] = sub[1];
+
     a_carve(u8, tbuf, 1UL << 20);
-    call(proj_descend_inner, root_tree, subpath, out_sha, out_kind, tbuf);
+    call(KEEPTreeDescend, root_tree, sub, NULL, out_sha, out_kind,
+         tbuf, PROJNONE);
     done;
 }
 
