@@ -52,6 +52,12 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
     u8cs file = {}, esha = {};
     ok64 result = OK;
 
+    //  POST-015: a `.be` entry (the store anchor name) is never a
+    //  tracked path — skip it SILENTLY below rather than flood one
+    //  `walk: bad path '.be'` line per scanned tree.
+    a_cstr(be_name_lit, DOG_BE_NAME);
+    a_dup(u8c, be_name, be_name_lit);
+
     u8 const *tsp = (u8 const *)tree_sha;
     while (GITu8sDrainTree(tree_s, file, esha, NULL) == OK) {
         u8cs mode_s = {}, name_s = {};
@@ -60,8 +66,11 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
         u8 kind = WALKu8sModeKind(mode_s);
         if (kind == 0) continue;
         if (DPATHVerify(name_s) != OK) {
-            fprintf(stderr, "walk: bad path '%.*s', skip\n",
-                    (int)$len(name_s), (char *)name_s[0]);
+            //  `.be` (store anchor) skips quietly; a genuinely invalid
+            //  name still warns — that line is a real diagnostic.
+            if (!u8csEq(name_s, be_name))
+                fprintf(stderr, "walk: bad path '%.*s', skip\n",
+                        (int)$len(name_s), (char *)name_s[0]);
             continue;
         }
 
