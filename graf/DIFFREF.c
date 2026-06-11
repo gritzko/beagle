@@ -401,8 +401,8 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
 static void diffref_emit_gitlink(u8cs path, sha1cp old_sha, sha1cp new_sha) {
     u8cs os = {}, ns = {};
     sha1hex oh = {}, nh = {};
-    if (old_sha) { sha1hexFromSha1(&oh, old_sha); sha1hexSlice(&os, &oh); }
-    if (new_sha) { sha1hexFromSha1(&nh, new_sha); sha1hexSlice(&ns, &nh); }
+    if (old_sha) { sha1hexFromSha1(&oh, old_sha); sha1hexSlice(os, &oh); }
+    if (new_sha) { sha1hexFromSha1(&nh, new_sha); sha1hexSlice(ns, &nh); }
     fprintf(stdout, "%.*s %.*s..%.*s\n",
             (int)$len(path), (char *)path[0],
             (int)$len(os), os[0] ? (char *)os[0] : "",

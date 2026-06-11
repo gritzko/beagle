@@ -455,6 +455,116 @@ static ok64 HUNKTestDrainBounds() {
 }
 
 // =====================================================================
+// LineBased (unified-diff) render — feed-failure propagation.
+//
+// A `diff:`-scheme hunk renders via the internal HUNKu8sFeedLineBased
+// path, which builds the unified-diff body in a fixed 64KB side buffer.
+// The two static emitters (hk_emit_line / hunk_flush_region) used to
+// swallow that buffer's BNOROOM into void, silently dropping or
+// truncating diff lines so the emitted `@@` body could no longer be
+// `git apply`-ed.  They now return ok64 and the caller propagates.
+//
+// (a) A small diff hunk renders OK and produces a `@@` header.
+// (b) A diff hunk whose body overflows the 64KB buffer must surface
+//     BNOROOM out of the public renderer — never a truncated body.
+//
+// The hunk is built by hand (as HUNKTestDrainBounds does) so the toks
+// carry IN/EQ sides directly without a wire round-trip.  Each block is
+// an inserted line followed by a context line, so the body grows across
+// many tiny regions (each region's 4KB dels/adds stays well under its
+// own limit — the only buffer that fills is the shared 64KB body).
+// =====================================================================
+
+//  Bytes per generated block: 60-byte '+' payload + '\n', then a 2-byte
+//  context line.  ~1200 blocks ≈ 78KB of body > 64KB.
+#define HK_LB_INS_LEN 60
+#define HK_LB_BLOCKS  1200
+#define HK_LB_TEXTCAP (HK_LB_BLOCKS * (HK_LB_INS_LEN + 1 + 2) + 4)
+
+static ok64 hk_lb_render(u8csc uri, u8csc text, tok32csc toks) {
+    sane(1);
+    hunk hk = {.uri  = {uri[0], uri[1]},
+               .text = {text[0], text[1]},
+               .toks = {toks[0], toks[1]}};
+    a_pad(u8, ob, 1UL << 18);   // 256KB sink — bigger than the 64KB body
+    return HUNKu8sFeedText(ob_idle, &hk);
+}
+
+static ok64 HUNKTestLineBasedNoRoom(void) {
+    sane(1);
+
+    //  (a) Small diff hunk: one inserted line + a context line.
+    //  Renders OK and the unified-diff header `@@` appears.
+    {
+        const char *src = "added line\ncontext\n";   // IN then EQ
+        u32 tlen = (u32)strlen(src);
+        u32 ins_end = (u32)strlen("added line\n");
+        tok32 toks_arr[] = {
+            tok32PackSide('S', TOK_SIDE_IN, ins_end),
+            tok32PackSide('S', TOK_SIDE_EQ, tlen),
+        };
+        tok32csc toks = {toks_arr, toks_arr + 2};
+        HUNK_SLICE(text, src);
+        u8csc txt = {text[0], text[1]};
+        a_cstr(uri, "diff:sample.c");
+        ok64 rc = hk_lb_render(uri, txt, toks);
+        if (rc != OK) {
+            fprintf(stderr, "FAIL lb(a): small diff render: %s\n", ok64str(rc));
+            fail(TESTFAIL);
+        }
+        //  Confirm it actually took the unified-diff path (`@@` header).
+        hunk hk = {.uri  = {uri[0], uri[1]},
+                   .text = {txt[0], txt[1]},
+                   .toks = {toks[0], toks[1]}};
+        a_pad(u8, chk, 1UL << 16);
+        call(HUNKu8sFeedText, chk_idle, &hk);
+        a_dup(u8c, got, u8bData(chk));
+        b8 has_hdr = NO;
+        for (u8c *p = got[0]; p + 1 < got[1]; p++) {
+            if (p[0] == '@' && p[1] == '@') { has_hdr = YES; break; }
+        }
+        if (!has_hdr) {
+            fprintf(stderr, "FAIL lb(a): no '@@' header in diff body\n");
+            fail(TESTFAIL);
+        }
+    }
+
+    //  (b) Oversized diff hunk: body exceeds the internal 64KB buffer.
+    //  Pre-fix the emitters dropped lines and returned OK (truncated,
+    //  un-appliable diff); post-fix the BNOROOM propagates.
+    {
+        static u8 big[HK_LB_TEXTCAP];
+        static tok32 toks_arr[HK_LB_BLOCKS * 2];
+        u32 off = 0;
+        u32 nt = 0;
+        for (u32 b = 0; b < HK_LB_BLOCKS; b++) {
+            for (u32 k = 0; k < HK_LB_INS_LEN; k++) big[off++] = 'x';
+            big[off++] = '\n';
+            toks_arr[nt++] = tok32PackSide('S', TOK_SIDE_IN, off);
+            big[off++] = 'c';
+            big[off++] = '\n';
+            toks_arr[nt++] = tok32PackSide('S', TOK_SIDE_EQ, off);
+        }
+        u8csc txt = {big, big + off};
+        tok32csc toks = {toks_arr, toks_arr + nt};
+        a_cstr(uri, "diff:big.c");
+        ok64 rc = hk_lb_render(uri, txt, toks);
+        //  The propagated emitter feed reports BNOROOM (u8bFeed on the
+        //  64KB body); accept the NOROOM family in case the overflow
+        //  lands on a 1-byte u8bFeed1 (SNOROOM) instead.  The defect is
+        //  the *silent OK* — any surfaced NOROOM is the correct contract.
+        if (rc != BNOROOM && rc != SNOROOM && rc != NOROOM) {
+            fprintf(stderr,
+                    "FAIL lb(b): oversized diff body did not surface NOROOM:"
+                    " got %s\n", ok64str(rc));
+            fail(TESTFAIL);
+        }
+    }
+
+    done;
+}
+
+// =====================================================================
 // HUNKu8sMakeURI — fragment percent-escaping (hunk_frag_esc).
 // Non-ident symbols get wrapped in '…' and URI-illegal bytes (control,
 // non-ASCII, '#', '%') percent-escaped as uppercase %XX; printable
@@ -511,6 +621,7 @@ ok64 HUNKtest() {
     call(HUNKTestRelayRoundtrip);
     call(HUNKTestRedReserved);
     call(HUNKTestDrainBounds);
+    call(HUNKTestLineBasedNoRoom);
     call(HUNKTestMakeURIEsc);
     done;
 }

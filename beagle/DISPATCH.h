@@ -125,8 +125,10 @@ ok64 BEReap (pid_t pid,  u8csc tool);
 //  `args` — the batched argv shape that preserves dog-side
 //  atomicity (sniff put / sniff post see every URI in one
 //  invocation).  Caller pre-allocates `args` with
-//  `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.
-void BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c);
+//  `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.  Returns SNOROOM
+//  (via call()) when `args` overflows, so the caller aborts the
+//  spawn rather than exec a truncated command line.
+ok64 BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c);
 
 //  Bareword-as-ref promotion: shift a path-shaped bareword from
 //  `u->path` into `u->query` for ref-expecting verbs (POST / PATCH /

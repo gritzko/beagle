@@ -78,7 +78,7 @@ static ok64 be_spawn_all(char const *dog_cstr, char const *verb_cstr,
     a_dup(u8c, dog_d,  dog_s);
     a_dup(u8c, verb_d, verb_s);
     a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-    BEBuildArgv(args, dog_d, verb_d, c);
+    call(BEBuildArgv, args, dog_d, verb_d, c);
     a_dup(u8cs, argv, u8csbData(args));
     return BERun(dog_d, argv, NO);
 }
@@ -294,12 +294,14 @@ ok64 BEActKeeperPushForce(cli *c) {
     a_dup(u8c, verb_d, verb_s);
     a_dup(u8c, force_d, force_s);
     a_pad(u8cs, args, 5 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-    BEBuildArgv(args, dog_d, verb_d, c);
+    call(BEBuildArgv, args, dog_d, verb_d, c);
     //  Append --force to the spawn argv (BEBuildArgv already wrote
     //  dog/verb/flags/uris in order; we add one more flag at the
     //  end — keeper's CLIParse handles flags positionally with the
-    //  URIs so the trailing position is fine).
-    u8csbFeed1(args, force_d);
+    //  URIs so the trailing position is fine).  Propagate overflow so a
+    //  full argv aborts the push rather than dropping the --force that
+    //  bypasses keeper's FF check.
+    call(u8csbFeed1, args, force_d);
     a_dup(u8cs, argv, u8csbData(args));
     return BERun(dog_d, argv, NO);
 }

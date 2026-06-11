@@ -875,12 +875,25 @@ static b8 hk_small_edit(hk_line a, hk_line b) {
 
 #define HK_REGION_MAX 4096
 
+// Release the five scratch buffers owned by HUNKu8sFeedLineBased.  Used
+// both at the normal exit and as the `callsafe` cleanup so an early
+// error return on a flush failure does not leak them.
+static void hk_free5(Bu8 body, Bu8 dels, Bu8 adds, Bu8 oldb, Bu8 newb) {
+    u8bFree(body);
+    u8bFree(dels);
+    u8bFree(adds);
+    u8bFree(oldb);
+    u8bFree(newb);
+}
+
 // Append `<prefix><content>\n` for a line slice.
-static void hk_emit_line(Bu8 body, u8 prefix, hk_line ln) {
-    u8bFeed1(body, prefix);
+static ok64 hk_emit_line(Bu8 body, u8 prefix, hk_line ln) {
+    sane(u8bOK(body));
+    call(u8bFeed1, body, prefix);
     u8csc s = {ln.lo, ln.hi};
-    u8bFeed(body, s);
-    u8bFeed1(body, '\n');
+    call(u8bFeed, body, s);
+    call(u8bFeed1, body, '\n');
+    done;
 }
 
 // Flush a diff region's accumulated `-` lines and `+` lines into `body`.
@@ -893,7 +906,8 @@ static void hk_emit_line(Bu8 body, u8 prefix, hk_line ln) {
 //      one-token edit shows up as a `-/+` pair instead of a big DEL run
 //      followed by a big INS run.
 // Counts are unchanged regardless of the rearrangement.
-static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
+static ok64 hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
+    sane(u8bOK(body) && u8bOK(dels) && u8bOK(adds));
     u8c *dp = u8bDataHead(dels);
     u8c *de = dp + u8bDataLen(dels);
     u8c *ap = u8bDataHead(adds);
@@ -907,9 +921,9 @@ static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
         size_t dlen = (size_t)(dnl - dp);
         size_t alen = (size_t)(anl - ap);
         if (dlen != alen || memcmp(dp + 1, ap + 1, dlen - 1) != 0) break;
-        u8bFeed1(body, ' ');
+        call(u8bFeed1, body, ' ');
         u8csc ctx = {dp + 1, dnl + 1};
-        u8bFeed(body, ctx);
+        call(u8bFeed, body, ctx);
         dp = dnl + 1;
         ap = anl + 1;
     }
@@ -979,12 +993,12 @@ static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
     // Emit in `adds` order.  A paired `+A[j]` is preceded by its
     // matched `-D[i]`; an unpaired `+A[j]` stands alone.
     for (u32 j = 0; j < na; j++) {
-        if (pair_a[j] >= 0) hk_emit_line(body, '-', dl[pair_a[j]]);
-        hk_emit_line(body, '+', al[j]);
+        if (pair_a[j] >= 0) call(hk_emit_line, body, '-', dl[pair_a[j]]);
+        call(hk_emit_line, body, '+', al[j]);
     }
     // Trailing unpaired `-D[i]`s, in their original order.
     for (u32 i = 0; i < nd; i++) {
-        if (pair_d[i] < 0) hk_emit_line(body, '-', dl[i]);
+        if (pair_d[i] < 0) call(hk_emit_line, body, '-', dl[i]);
     }
 
     // Emit suffix-matched lines (collected in step 2) in forward order.
@@ -992,13 +1006,14 @@ static void hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
     while (sp < de) {
         u8c *snl = (u8c*)memchr(sp, '\n', (size_t)(de - sp));
         if (!snl) break;
-        u8bFeed1(body, ' ');
+        call(u8bFeed1, body, ' ');
         u8csc ctx = {sp + 1, snl + 1};
-        u8bFeed(body, ctx);
+        call(u8bFeed, body, ctx);
         sp = snl + 1;
     }
     u8bReset(dels);
     u8bReset(adds);
+    done;
 }
 
 // Split a hunk URI into path slice + line number.  Path slice points
@@ -1134,7 +1149,8 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
                         // Region break — flush dels/adds (with prefix
                         // and suffix line-matching to cancel token-
                         // level misalignments), then emit the context.
-                        hunk_flush_region(body, dels, adds);
+                        callsafe(hunk_flush_region(body, dels, adds),
+                                 hk_free5(body, dels, adds, oldb, newb));
                         u8bFeed1(body, ' ');
                         a_dup(u8c, ob, u8bData(oldb));
                         u8bFeed(body, ob);
@@ -1167,7 +1183,8 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
                 old_count++;
             } else {
                 // Trailing context line (no terminating '\n').
-                hunk_flush_region(body, dels, adds);
+                callsafe(hunk_flush_region(body, dels, adds),
+                         hk_free5(body, dels, adds, oldb, newb));
                 u8bFeed1(body, ' ');
                 a_dup(u8c, ob, u8bData(oldb));
                 u8bFeed(body, ob);
@@ -1183,7 +1200,8 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
             u8bFeed1(adds, '\n');
             new_count++;
         }
-        hunk_flush_region(body, dels, adds);
+        callsafe(hunk_flush_region(body, dels, adds),
+                 hk_free5(body, dels, adds, oldb, newb));
     }
 
     //  Emit standard unified-diff headers.
@@ -1222,11 +1240,7 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
     a_dup(u8c, bb, u8bData(body));
     u8sFeed(into, bb);
 
-    u8bFree(body);
-    u8bFree(dels);
-    u8bFree(adds);
-    u8bFree(oldb);
-    u8bFree(newb);
+    hk_free5(body, dels, adds, oldb, newb);
     done;
 }
 

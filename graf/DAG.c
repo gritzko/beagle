@@ -783,8 +783,10 @@ static ok64 dag_flush_batch(dag_ingest *g) {
     done;
 }
 
-static void dag_batch_maybe_flush(dag_ingest *g) {
-    if (wh128bIdleLen(g->batch) < 64) dag_flush_batch(g);
+static ok64 dag_batch_maybe_flush(dag_ingest *g) {
+    sane(g);
+    if (wh128bIdleLen(g->batch) < 64) call(dag_flush_batch, g);
+    done;
 }
 
 // --- Finish: flush pending records, compact runs. ---
@@ -881,7 +883,7 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
                         DAG_T_PICKED, picked_h);
         }
 
-        dag_batch_maybe_flush(g);
+        call(dag_batch_maybe_flush, g);
         done;
     }
 

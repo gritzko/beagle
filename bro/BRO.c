@@ -2349,17 +2349,20 @@ static ok64 BROPlain(hunkcs hunks) {
 //  invariant lets us hand `(char *)u8bDataHead(...)` straight to execlp
 //  without a manual `buf[len] = 0` step.
 static path8b bro_spot_path;
-static void bro_resolve_spot(void) {
-    if (bro_spot_path[1] != NULL) return;
+static ok64 bro_resolve_spot(void) {
+    sane(1);
+    if (bro_spot_path[1] != NULL) done;
     a_path(p);
     a$rg(a0, 0);
     a_cstr(spot_name, "spot");
-    if (HOMEResolveSibling(NULL, p, spot_name, a0) != OK) return;
-    if (PATHu8bAlloc(bro_spot_path) != OK) return;
-    if (PATHu8bFeed(bro_spot_path, $path(p)) != OK) {
+    call(HOMEResolveSibling, NULL, p, spot_name, a0);
+    call(PATHu8bAlloc, bro_spot_path);
+    try(PATHu8bFeed, bro_spot_path, $path(p));
+    nedo {
         u8bFree(bro_spot_path);
-        return;
+        fail(__);
     }
+    done;
 }
 
 
@@ -2518,7 +2521,8 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
     sane(st != NULL && token != NULL && token[0] != 0);
     if (st->nsaves >= BRO_MAX_VIEWS) fail(NOROOM);
 
-    bro_resolve_spot();
+    try(bro_resolve_spot);
+    nedo { bro_flash(st, "spot: %s", ok64str(__)); fail(__); }
 
     int pfd[2];
     if (pipe(pfd) != 0) fail(FAILSANITY);

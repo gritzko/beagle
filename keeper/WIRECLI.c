@@ -1313,7 +1313,16 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
         u64 olen = u8bDataLen(obuf);
 
         a_pad(u8, ohdr, 16);
-        PACKu8sFeedObjHdr(ohdr, otype, olen);
+        ok64 eho = PACKu8sFeedObjHdr(ohdr, otype, olen);
+        if (eho != OK) {
+            trace(
+                    "wpush: build_pack obj#%u type=%u: hdr encode rc=%llx "
+                    "(olen=%llu)\n",
+                    i, (unsigned)otype, (unsigned long long)eho,
+                    (unsigned long long)olen);
+            u8bUnMap(obuf);
+            return eho;
+        }
         a_dup(u8c, oh, u8bData(ohdr));
         ok64 fho = u8bFeed(pack_out, oh);
         if (fho != OK) {

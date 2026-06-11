@@ -33,7 +33,10 @@ void LESSDefer(u8bp mapped, u32bp toks);
 
 // Serialize less_hunks[less_nhunks] via spot_emit, write to spot_out_fd,
 // rewind the staging arena.  Single-buffered: each emit reuses the slot.
-void LESSHunkEmit(void);
+// Propagates a serialize/write failure (e.g. EPIPE/EAGAIN on a broken
+// output stream) so the caller can stop emission; the arena is rewound
+// on both the success and the error path.
+ok64 LESSHunkEmit(void);
 
 // End-of-producer flush: cleans up deferred maps; the fd lifecycle
 // (close + waitpid) is handled by the CLI.

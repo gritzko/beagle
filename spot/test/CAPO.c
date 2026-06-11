@@ -368,6 +368,54 @@ ok64 CAPOtestHunkEmit() {
     done;
 }
 
+// --- Test A2: a broken output stream propagates out of HunkEmit ---
+//   Regression for the can-fail-but-returns-void defect: LESSHunkEmit
+//   (via CAPOBuildHunk) used to swallow a failed/short write to
+//   spot_out_fd and return void, so a dead pipe silently truncated the
+//   search output.  Point spot_out_fd at the write end of a pipe whose
+//   read end is closed; the write must fail (EPIPE → FILEFAIL) and
+//   propagate as a non-OK return.  The arena must still be rewound.
+ok64 CAPOtestHunkEmitBrokenPipe() {
+    sane(1);
+    //  Without this the EPIPE write would deliver SIGPIPE and kill the
+    //  test process instead of returning an error.
+    FILEIgnoreSIGPIPE();
+
+    int pfd[2] = {-1, -1};
+    test(pipe(pfd) == 0, FAILSANITY);
+    close(pfd[0]);  // close read end → writes fail with EPIPE
+
+    HUNKMode    = HUNKOutTLV;
+    spot_out_fd = pfd[1];
+    call(LESSArenaInit);
+
+    const char *src = "void foo() {\n    int x = 1;\n}\n";
+    u8csc source = {(u8cp)src, (u8cp)src + strlen(src)};
+    u8cs ext = $u8str(".c");
+    Bu32 toks = {};
+    call(u32bMap, toks, strlen(src) + 1);
+    call(SPOTTokenize, toks, source, ext);
+    u32cs htoks = {(u32cp)u32bDataHead(toks), (u32cp)u32bIdleHead(toks)};
+
+    range32 hls[1] = {{18, 22}};
+    b8 first = YES;
+    a_cstr(fp, "test.c");
+    ok64 o = CAPOBuildHunk(source, htoks, 0, (u32)strlen(src),
+                           hls, 1, ext, fp, YES, &first);
+    //  The write to the dead pipe must surface as a non-OK error rather
+    //  than being silently dropped.
+    want(o != OK);
+    //  Arena was rewound regardless of the write failure (DATA empty).
+    want($empty(u8bDataC(less_arena)));
+
+    close(pfd[1]);
+    spot_out_fd = -1;
+    HUNKMode    = HUNKOutPlain;
+    u32bUnMap(toks);
+    LESSArenaCleanup();
+    done;
+}
+
 // --- Test B: CAPOKnownExt recognizes standard extensions ---
 ok64 CAPOtestKnownExt() {
     sane(1);
@@ -452,6 +500,7 @@ ok64 CAPOtest() {
     call(CAPO8);
     call(CAPObasenameCollision);
     call(CAPOtestHunkEmit);
+    call(CAPOtestHunkEmitBrokenPipe);
     call(CAPOtestKnownExt);
     call(CAPOtestDeferFull);
     done;

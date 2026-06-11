@@ -1747,7 +1747,7 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
                          64 + delta_len + 256);
 
                     a_pad(u8, ohdr, 16);
-                    PACKu8sFeedObjHdr(ohdr, dtype, delta_len);
+                    call(PACKu8sFeedObjHdr, ohdr, dtype, delta_len);
                     a_dup(u8c, ohb, u8bData(ohdr));
                     u8bFeed(p->log, ohb);
 
@@ -1775,7 +1775,7 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
         //  Raw-object path (same as pre-delta).
         call(FILEBookEnsure, p->log, 16);
         a_pad(u8, ohdr, 16);
-        PACKu8sFeedObjHdr(ohdr, type, u8csLen(content));
+        call(PACKu8sFeedObjHdr, ohdr, type, u8csLen(content));
         a_dup(u8c, oh, u8bData(ohdr));
         u8bFeed(p->log, oh);
 
@@ -2912,7 +2912,11 @@ ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
             u64 olen = u8bDataLen(obuf);
 
             a_pad(u8, ohdr, 16);
-            PACKu8sFeedObjHdr(ohdr, otype, olen);
+            if (PACKu8sFeedObjHdr(ohdr, otype, olen) != OK) {
+                u8bUnMap(obuf);
+                sha1bFree(walk_shas_b);
+                goto push_fail;
+            }
             a_dup(u8c, oh, u8bData(ohdr));
             u8bFeed(pack_b, oh);
 

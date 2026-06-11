@@ -59,31 +59,37 @@ void LESSDefer(u8bp mapped, u32bp toks) {
 // slices (which live in the arena) are dead — the pipe owns the
 // bytes now.  Full rewind keeps the arena from filling up across
 // hundreds of streaming hunks.
-void LESSHunkEmit(void) {
+ok64 LESSHunkEmit(void) {
+    sane(YES);
     if (spot_out_fd < 0) {
         // No output set up yet — accumulate nhunks for LESSRun.
         less_nhunks++;
-        return;
+        done;
     }
     LESShunk *hk = &less_hunks[less_nhunks];
 
     // Serialization goes into arena idle space (past title/toks/hili).
     u8cp start = u8bIdleHead(less_arena);
-    if (HUNKu8sFeedOut(u8bIdle(less_arena), hk) != OK) {
-        // Reset arena: drop this hunk's title/toks/hili + failed TLV.
-        u8bShedAll(less_arena);
-        return;
+    //  Serialize, then drain the serialized bytes to the output fd.
+    //  Both steps are fallible (HUNKu8sFeedOut can run out of arena
+    //  idle space; FILEFeedAll fails on EPIPE/EAGAIN/short write).  Run
+    //  them under `try()` so a failure does not skip the arena rewind:
+    //  the hunk's title/toks/hili plus any partial TLV must be dropped
+    //  on both paths or the arena fills up across streaming hunks.
+    try(HUNKu8sFeedOut, u8bIdle(less_arena), hk);
+    then {
+        u8cs ser = {start, u8bIdleHead(less_arena)};
+        //  FILEFeedAll loops on EINTR and advances by the write count;
+        //  any other short/failed write (EAGAIN, EPIPE) returns
+        //  FILEFAIL so a broken output stream propagates.
+        try(FILEFeedAll, spot_out_fd, ser);
     }
 
-    u8cs ser = {start, u8bIdleHead(less_arena)};
-    //  FILEFeed loops on EINTR and advances ser by the write count;
-    //  any other short/failed write (EAGAIN, EPIPE) breaks — drop the rest.
-    while (!$empty(ser) && FILEFeed(spot_out_fd, ser) == OK) {}
-
     // Full arena rewind: title, toks, hili, and serialized bytes are
-    // all consumed.  The hunk struct in less_hunks[0] will be reused
-    // next time CAPOBuildHunk runs.
+    // all consumed (or dropped on failure).  The hunk struct in
+    // less_hunks[0] will be reused next time CAPOBuildHunk runs.
     u8bShedAll(less_arena);
+    done;
 }
 
 ok64 LESSRun(LESShunk const *hunks, u32 nhunks) {

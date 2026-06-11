@@ -673,7 +673,10 @@ ok64 CAPOBuildHunk(u8csc source, u32cs htoks, u32 ctx_lo, u32 ctx_hi,
         }
     }
 
-    LESSHunkEmit();
+    //  Propagate a broken output stream (EPIPE/EAGAIN) or a serialize
+    //  failure so capo_spot_file → CAPOGrep stops emitting hunks rather
+    //  than silently dropping the rest of the search output.
+    call(LESSHunkEmit);
     *first_hunk = NO;
     done;
 }

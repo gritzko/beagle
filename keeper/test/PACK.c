@@ -245,6 +245,28 @@ ok64 PACKtest11() {
     done;
 }
 
+// ---- Test 12: PACKu8sFeedObjHdr propagates SNOROOM on a full buffer.
+// A buffer too small for the whole type/size varint must refuse rather
+// than emit a truncated header into the pack stream (can-fail-but-was-
+// void regression: the encoder now returns the BUF overflow code).
+ok64 PACKtest12() {
+    sane(1);
+    //  size=16 needs the low-4 byte plus one 7-bit continuation byte:
+    //  a 1-byte buffer can hold the first byte but not the second, so
+    //  the second u8bFeed1 must surface SNOROOM.
+    a_pad(u8, tiny, 1);
+    want(PACKu8sFeedObjHdr(tiny, PACK_OBJ_BLOB, 16) == SNOROOM);
+
+    //  Zero-capacity buffer fails on the very first byte.
+    a_pad(u8, none, 0);
+    want(PACKu8sFeedObjHdr(none, PACK_OBJ_COMMIT, 0) == SNOROOM);
+
+    //  A right-sized buffer still succeeds (no false positive).
+    a_pad(u8, ok, 8);
+    want(PACKu8sFeedObjHdr(ok, PACK_OBJ_BLOB, 16) == OK);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(PACKtest1);
@@ -258,6 +280,7 @@ ok64 maintest() {
     call(PACKtest9);
     call(PACKtest10);
     call(PACKtest11);
+    call(PACKtest12);
     done;
 }
 

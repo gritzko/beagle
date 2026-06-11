@@ -278,29 +278,34 @@ static u8cs const be_at_flag = {
 
 //  Build a `<dog> <verb> [--at <uri>] [flags...] [URIs...]` argv
 //  slice into `args`.  Caller-owned: `args` must be a u8cs Bbuf with
-//  space for `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.
-void BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c) {
+//  space for `4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS` slots.  Every slot
+//  append can overflow (SNOROOM) when `args` is undersized; propagate
+//  it so the caller aborts the spawn instead of execing a dog with a
+//  silently-truncated command line.
+ok64 BEBuildArgv(u8csb args, u8csc dog, u8csc verb, cli *c) {
+    sane(args && c);
     a_dup(u8c, ldog,  dog);
     a_dup(u8c, lverb, verb);
-    u8csbFeed1(args, ldog);
-    u8csbFeed1(args, lverb);
+    call(u8csbFeed1, args, ldog);
+    call(u8csbFeed1, args, lverb);
     if (u8bDataLen(be_at_buf) > 0) {
         a_dup(u8c, at_flag, be_at_flag);
         a_dup(u8c, at_val,  u8bData(be_at_buf));
-        u8csbFeed1(args, at_flag);
-        u8csbFeed1(args, at_val);
+        call(u8csbFeed1, args, at_flag);
+        call(u8csbFeed1, args, at_val);
     }
     //  Flags come as {flag, val} pairs; val is the empty-string
     //  sentinel for booleans.  Forward the flag name always; only
     //  forward its value if it's genuinely non-empty, otherwise the
     //  callee's CLIParse would pick it up as a spurious URI.
     for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
-        u8csbFeed1(args, (*u8csbAtP(c->flags, j)));
+        call(u8csbFeed1, args, (*u8csbAtP(c->flags, j)));
         if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
-            u8csbFeed1(args, (*u8csbAtP(c->flags, j + 1)));
+            call(u8csbFeed1, args, (*u8csbAtP(c->flags, j + 1)));
     }
     for (u32 j = 0; j < CLIUriLen(c); j++)
-        u8csbFeed1(args, (*u8csbAtP(c->uris, j)));
+        call(u8csbFeed1, args, (*u8csbAtP(c->uris, j)));
+    done;
 }
 
 //  YES iff dir `path` looks like a git repo — a worktree
@@ -1218,7 +1223,7 @@ ok64 BEActSingleFileGet(cli *c) {
     a_dup(u8c, sniff_d, sniff_s);
     a_dup(u8c, get_d,   get_s);
     a_pad(u8cs, args, 4 + CLI_MAX_FLAGS * 2 + CLI_MAX_URIS);
-    BEBuildArgv(args, sniff_d, get_d, c);
+    call(BEBuildArgv, args, sniff_d, get_d, c);
     a_dup(u8cs, argv, u8csbData(args));
     call(BERun, sniff_d, argv, NO);
     return BESTOP;

@@ -64,7 +64,9 @@ ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj);
 //  with a continuation MSB.  Appends to `buf`; round-trips through
 //  PACKDrainObjHdr.  Shared by every pack writer (keeper's pack log,
 //  the push pack builder) — no caller open-codes the header varint.
-void PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size);
+//  Returns SNOROOM if `buf` lacks room for the whole varint, so a full
+//  buffer never emits a truncated header into the pack stream.
+ok64 PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size);
 
 //  Inflate zlib-compressed data from `from` into `into`.
 //  `into` must have room for `size` bytes.

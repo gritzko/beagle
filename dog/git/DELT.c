@@ -78,45 +78,51 @@ ok64 DELTApply(u8cs delta, u8cs base, u8g out) {
 // --- Delta encoder ---
 
 // Feed size varint into buffer
-static void delt_feed_size(u8bp buf, u64 size) {
+static ok64 delt_feed_size(u8bp buf, u64 size) {
+    sane(buf != NULL);
     for (;;) {
         u8 c = (u8)(size & 0x7f);
         size >>= 7;
         if (size > 0) c |= 0x80;
-        u8bFeed1(buf, c);
+        call(u8bFeed1, buf, c);
         if (size == 0) break;
     }
+    done;
 }
 
 // Feed a copy instruction: copy from base[off..off+sz)
-static void delt_feed_copy(u8bp buf, u64 off, u64 sz) {
+static ok64 delt_feed_copy(u8bp buf, u64 off, u64 sz) {
+    sane(buf != NULL);
     u8 cmd = 0x80;
     a_pad(u8, tmp, 8);
-    if (off & 0xff)       { cmd |= 0x01; u8bFeed1(tmp, (u8)(off)); }
-    if (off & 0xff00)     { cmd |= 0x02; u8bFeed1(tmp, (u8)(off >> 8)); }
-    if (off & 0xff0000)   { cmd |= 0x04; u8bFeed1(tmp, (u8)(off >> 16)); }
-    if (off & 0xff000000) { cmd |= 0x08; u8bFeed1(tmp, (u8)(off >> 24)); }
+    if (off & 0xff)       { cmd |= 0x01; call(u8bFeed1, tmp, (u8)(off)); }
+    if (off & 0xff00)     { cmd |= 0x02; call(u8bFeed1, tmp, (u8)(off >> 8)); }
+    if (off & 0xff0000)   { cmd |= 0x04; call(u8bFeed1, tmp, (u8)(off >> 16)); }
+    if (off & 0xff000000) { cmd |= 0x08; call(u8bFeed1, tmp, (u8)(off >> 24)); }
     if (sz != 0x10000) {
-        if (sz & 0xff)       { cmd |= 0x10; u8bFeed1(tmp, (u8)(sz)); }
-        if (sz & 0xff00)     { cmd |= 0x20; u8bFeed1(tmp, (u8)(sz >> 8)); }
-        if (sz & 0xff0000)   { cmd |= 0x40; u8bFeed1(tmp, (u8)(sz >> 16)); }
+        if (sz & 0xff)       { cmd |= 0x10; call(u8bFeed1, tmp, (u8)(sz)); }
+        if (sz & 0xff00)     { cmd |= 0x20; call(u8bFeed1, tmp, (u8)(sz >> 8)); }
+        if (sz & 0xff0000)   { cmd |= 0x40; call(u8bFeed1, tmp, (u8)(sz >> 16)); }
     }
-    u8bFeed1(buf, cmd);
+    call(u8bFeed1, buf, cmd);
     a_dup(u8c, td, u8bData(tmp));
-    u8bFeed(buf, td);
+    call(u8bFeed, buf, td);
+    done;
 }
 
 // Feed an insert instruction: literal bytes from target
-static void delt_feed_insert(u8bp buf, u8csc data) {
+static ok64 delt_feed_insert(u8bp buf, u8csc data) {
+    sane(buf != NULL);
     a_dup(u8c, rest, data);
     while (!u8csEmpty(rest)) {
         u64 rlen = u8csLen(rest);
         u8 chunk = (u8)(rlen > 127 ? 127 : rlen);
-        u8bFeed1(buf, chunk);
+        call(u8bFeed1, buf, chunk);
         u8cs part = {rest[0], rest[0] + chunk};
-        u8bFeed(buf, part);
+        call(u8bFeed, buf, part);
         u8csUsed(rest, chunk);
     }
+    done;
 }
 
 // Simple hash for 4-byte window
@@ -137,12 +143,12 @@ ok64 DELTEncode(u8csc base, u8csc target, u8bp out) {
     u64 target_sz = u8csLen(target);
 
     // Header: base size, result size
-    delt_feed_size(out, base_sz);
-    delt_feed_size(out, target_sz);
+    call(delt_feed_size, out, base_sz);
+    call(delt_feed_size, out, target_sz);
 
     if (base_sz < DELT_WINSZ || target_sz < DELT_WINSZ) {
         // Too small for matching, just insert everything
-        delt_feed_insert(out, target);
+        call(delt_feed_insert, out, target);
         // Check if delta is smaller than raw
         if (u8bDataLen(out) >= target_sz) return DELTFAIL;
         done;
@@ -204,17 +210,17 @@ ok64 DELTEncode(u8csc base, u8csc target, u8bp out) {
         u64 match_boff = (u64)boff - (u64)(tp - ms);
 
         // Flush pending inserts preceding the (possibly back-extended)
-        // match start.
+        // match start.  ht_b is heap-owned here, so free it on failure.
         if (ms > insert_start) {
             u8cs ins = {insert_start, ms};
-            delt_feed_insert(out, ins);
+            callsafe(delt_feed_insert(out, ins), u32bFree(ht_b));
         }
 
         // git copy size is 3 bytes max (0x10000 default if all zero);
         // split huge matches into 0xffffff-byte chunks.
         while (match_len > 0) {
             u64 chunk = match_len > 0xffffffULL ? 0xffffffULL : match_len;
-            delt_feed_copy(out, match_boff, chunk);
+            callsafe(delt_feed_copy(out, match_boff, chunk), u32bFree(ht_b));
             match_boff += chunk;
             match_len  -= chunk;
         }
@@ -225,7 +231,7 @@ ok64 DELTEncode(u8csc base, u8csc target, u8bp out) {
     // Flush remaining inserts (anything after the last copy).
     if (insert_start < tend) {
         u8cs ins = {insert_start, tend};
-        delt_feed_insert(out, ins);
+        callsafe(delt_feed_insert(out, ins), u32bFree(ht_b));
     }
 
     u32bFree(ht_b);
