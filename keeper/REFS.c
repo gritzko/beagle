@@ -558,24 +558,33 @@ ok64 REFSResolve(urip resolved, u8bp arena, u8csc dir, u8csc input) {
     if (rec.verb == REFSVerbDelete() || refs_is_tombstone(frag)) {
         ULOGClose(data, &idx, YES); fail(REFSNONE);
     }
-    if (!u8csEmpty(frag))
-        call(refs_capture_cs, arena, frag, resolved->query);
-    if (!u8csEmpty(u->scheme))
-        call(refs_capture_cs, arena, u->scheme, resolved->scheme);
-    u8cs r_host = {u->host[0], u->host[1]};
-    if (!u8csEmpty(r_host))
-        call(refs_capture_cs, arena, r_host, resolved->host);
-    if (!u8csEmpty(u->path))
-        call(refs_capture_cs, arena, u->path, resolved->path);
+    //  Capture the matched row's URI components into the caller arena.
+    //  `rec` points into the ULOG mmap (freed by ULOGClose below), so a
+    //  capture overflow must NOT early-return — that would leak the open
+    //  map.  Mirror REFSSourceScheme: collect a status, break out, then
+    //  close unconditionally (capture-result / close / check idiom).
     //  Matched row's `?query` (peer-side refname, e.g. `heads/main`)
     //  → resolved->fragment.  Lets remote-target callers recover the
     //  branch name when the input URI omits `?ref` (e.g.
     //  `be post //sniff` after a prior `be get //sniff?heads/feat`).
+    u8cs r_host  = {u->host[0],  u->host[1]};
     u8cs r_query = {u->query[0], u->query[1]};
-    if (!u8csEmpty(r_query))
-        call(refs_capture_cs, arena, r_query, resolved->fragment);
+    ok64 cap = OK;
+    do {
+        if (!u8csEmpty(frag) &&
+            (cap = refs_capture_cs(arena, frag, resolved->query)) != OK) break;
+        if (!u8csEmpty(u->scheme) &&
+            (cap = refs_capture_cs(arena, u->scheme, resolved->scheme)) != OK) break;
+        if (!u8csEmpty(r_host) &&
+            (cap = refs_capture_cs(arena, r_host, resolved->host)) != OK) break;
+        if (!u8csEmpty(u->path) &&
+            (cap = refs_capture_cs(arena, u->path, resolved->path)) != OK) break;
+        if (!u8csEmpty(r_query) &&
+            (cap = refs_capture_cs(arena, r_query, resolved->fragment)) != OK) break;
+    } while (0);
 
     ULOGClose(data, &idx, YES);
+    if (cap != OK) fail(cap);
     done;
 }
 

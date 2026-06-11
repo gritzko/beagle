@@ -556,19 +556,25 @@ ok64 KEEPGetRemote(uri *g) {
         //  Journal the failed fetch so recovery / audit tooling sees a
         //  `get_fail <peer-uri>?<branch>` row alongside the success
         //  rows already emitted by wcli_record_ref.  Best-effort write
-        //  — we still return the underlying fetch error.
+        //  — we still return the underlying fetch error.  The branch-dir
+        //  lookup is part of that best effort: on the double-error path
+        //  (fetch failed AND HOMEBranchDir fails) we must NOT early-
+        //  return — that would leak the still-mapped `rarena`.  Skip the
+        //  journal instead and fall through to the single unmap/return.
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
-        a_pad(u8, key_buf, 512);
-        u8bFeed(key_buf, remote_uri);
-        u8bFeed1(key_buf, '?');
-        if (!u8csEmpty(want_ref)) u8bFeed(key_buf, want_ref);
-        a_dup(u8c, key, u8bData(key_buf));
-        a_cstr(empty_to, "");
-        //  Best-effort journal — preserve the underlying fetch error; log
-        //  any append failure via try().
-        try(REFSAppendVerb, $path(keepdir), REFSVerbGetFail(),
-            key, empty_to);
+        ok64 ho = HOMEBranchDir(k->h, keepdir, NULL);
+        if (ho == OK) {
+            a_pad(u8, key_buf, 512);
+            u8bFeed(key_buf, remote_uri);
+            u8bFeed1(key_buf, '?');
+            if (!u8csEmpty(want_ref)) u8bFeed(key_buf, want_ref);
+            a_dup(u8c, key, u8bData(key_buf));
+            a_cstr(empty_to, "");
+            //  Best-effort journal — preserve the underlying fetch error;
+            //  log any append failure via try().
+            try(REFSAppendVerb, $path(keepdir), REFSVerbGetFail(),
+                key, empty_to);
+        }
     }
     u8bUnMap(rarena);
     return fo;
