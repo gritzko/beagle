@@ -28,7 +28,14 @@ ok64 BEExecute(cli *c, be_action const *plan) {
     for (u32 i = 0; i < CLIUriLen(c); i++) {
         uri u = {};
         (void)CLIUriAt(&u, c, i);
-        pat |= URIPattern(&u);
+        //  GET-012: URIPattern flags slot PRESENCE, so a local
+        //  `file://<path>` (empty host between `//` and the path) reads
+        //  as URI_HOST set.  A real remote (`be://host`) has a non-empty
+        //  host.  Clear the empty-host bit so the network gates below
+        //  fire on a genuine host, never on the bare `//` sigil.
+        u8 p = URIPattern(&u);
+        if ((p & URI_HOST) && u8csEmpty(u.host)) p &= ~URI_HOST;
+        pat |= p;
     }
 
     //  *NONE-class codes within a row mean "this action had nothing
@@ -254,6 +261,13 @@ ok64 BEActSniffPut    (cli *c) { return be_spawn_all("sniff", "put",    c); }
 ok64 BEActSniffDelete (cli *c) { return be_spawn_all("sniff", "delete", c); }
 
 ok64 BEActSniffGet    (cli *c) { return be_spawn_all("sniff", "get",   c); }
+
+//  GET-012: when BEActWorktreeAnchor already wired a store-backed
+//  worktree at cwd (c->wt_attached), the shared store holds every
+//  object — a remote fetch (keeper/spot/graf get) has nothing to do and
+//  would build a throwaway clone store.  No-op so the checkout pipeline
+//  (sniff get) materialises straight from the shared store.
+static b8 BEWtAttached(cli *c) { return c && c->wt_attached; }
 ok64 BEActSniffPost   (cli *c) { return be_spawn_all("sniff", "post",  c); }
 ok64 BEActSniffPatch  (cli *c) { return be_spawn_all("sniff", "patch", c); }
 
@@ -264,7 +278,8 @@ ok64 BEActSniffPatch  (cli *c) { return be_spawn_all("sniff", "patch", c); }
 
 //  --- Action library: keeper-side spawns ---------------------------
 
-ok64 BEActKeeperGet    (cli *c) { return be_spawn_all("keeper", "get",    c); }
+ok64 BEActKeeperGet    (cli *c) { if (BEWtAttached(c)) return OK;
+                                  return be_spawn_all("keeper", "get",    c); }
 ok64 BEActKeeperPush   (cli *c) { return be_spawn_all("keeper", "post",   c); }
 
 //  PUT-to-remote: same wire path as POST-push (BEActKeeperPush) but
@@ -292,8 +307,10 @@ ok64 BEActKeeperDelete (cli *c) { return be_spawn_all("keeper", "delete", c); }
 
 //  --- Action library: indexer spawns -------------------------------
 
-ok64 BEActSpotGet  (cli *c) { return be_spawn_all("spot", "get",  c); }
-ok64 BEActGrafGet  (cli *c) { return be_spawn_all("graf", "get",  c); }
+ok64 BEActSpotGet  (cli *c) { if (BEWtAttached(c)) return OK;
+                             return be_spawn_all("spot", "get",  c); }
+ok64 BEActGrafGet  (cli *c) { if (BEWtAttached(c)) return OK;
+                             return be_spawn_all("graf", "get",  c); }
 
 //  HEAD-002 (facet 2): the graf-head leg's exit byte (POSIX-truncated)
 //  can only carry the generic NONE low byte (0xCE), so `BERun` collapses
@@ -382,7 +399,11 @@ be_action const BE_PLAN_GET[] = {
     //  target for removed/renamed subs.
     { 0,                  0,             NO,  BEActPromoteRef     },
     { 0,                  0,             NO,  BEActGetBaseline    },
-    { URI_PATH,           URI_AUTHORITY, NO,  BEActWorktreeAnchor },
+    //  GET-012: gate the worktree-anchor on a real HOST, not the `//`
+    //  sigil — a local `file://<store>/.be?/proj` (empty host) must reach
+    //  BEGetWorktree to attach a store-backed worktree; only a genuine
+    //  remote (`be://host`) is excluded.
+    { URI_PATH,           URI_HOST,      NO,  BEActWorktreeAnchor },
     { URI_PATH|URI_QUERY, URI_AUTHORITY, NO,  BEActSingleFileGet  },
     //  GET's bootstrap is unconditional — `be get be://host?/proj`
     //  derives the project name from the query and creates the

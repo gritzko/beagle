@@ -345,9 +345,17 @@ static void be_file_get_route(cli *c) {
 //  `wt_uri_buf` is caller-owned scratch (≥ 64 B) backing the rewritten
 //  `?<hashlet>` URI bytes — must outlive this frame so downstream argv
 //  build can read `u->data` (CLAUDE.md §5).
-ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
+ok64 BEGetWorktree(uri *u, u8b wt_uri_buf, b8 *attached_out) {
     sane(1);
-    if (u == NULL || !u8csEmpty(u->authority)) done;
+    //  GET-012: report whether a store-backed worktree was actually
+    //  attached (anchor written / branch switched on an existing wt) so
+    //  the caller can suppress the remote-fetch rows.  Default NO — a
+    //  pre-existing `.be` at cwd that we did NOT touch is not an attach.
+    if (attached_out) *attached_out = NO;
+    //  GET-012: skip only a genuine remote (`be://host`, non-empty host).
+    //  A local `file://<store>?/proj` has an empty host (bare `//`) and
+    //  must proceed so the store-dir form attaches a worktree.
+    if (u == NULL || !u8csEmpty(u->host)) done;
     if (u8csEmpty(u->path)) done;
 
     // Source candidate: either an existing dir containing `.be/` (a
@@ -369,6 +377,14 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
             done;
     }
 
+    //  GET-012: a worktree-DIR source reached via `file://` (authority
+    //  present) — a beagle peer being cloned (be-post-38) — must become
+    //  an INDEPENDENT clone, not a secondary worktree of the peer.  Only
+    //  the store-dir form (path_is_store) attaches a worktree here; the
+    //  bare-path `file:<wt>` form (no authority) still makes a secondary
+    //  wt.  Defer to keeper get for the clone.
+    if (!path_is_store && !u8csEmpty(u->authority)) done;
+
     // Skip if cwd already has a .be (dir, symlink, or wtlog file).
     a_path(cwd);
     call(FILEGetCwd, cwd);
@@ -379,6 +395,12 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
     {
         filestat fs = {};
         if (FILELStat(&fs, $path(cwd_be)) == OK) {
+            //  GET-012: cwd already has a `.be`.  A regular FILE is an
+            //  existing worktree anchor → local switch below.  A
+            //  DIRECTORY is a clone-destination store (the `mkdir .be`
+            //  convention, be-post-37/head-20 B-side) → NOT a worktree;
+            //  defer to keeper get for an independent clone.
+            if (FILEisdir($path(cwd_be)) == OK) done;
             //  cwd is already a worktree.  For the store-direct form,
             //  rewrite the `file:<store>?<ref>` URI to its bare branch
             //  ref so a re-run is a clean local switch — otherwise the
@@ -391,6 +413,8 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
                 call(u8bFeed,  wt_uri_buf, u->query);
                 zerop(u);
                 u8csMv(u->data, u8bDataC(wt_uri_buf));
+                //  Local switch on the existing store-backed wt — no clone.
+                if (attached_out) *attached_out = YES;
             }
             done;
         }
@@ -494,6 +518,9 @@ ok64 BEGetWorktree(uri *u, u8b wt_uri_buf) {
         call(SNIFFWtRepoAnchor, u8bDataC(cwd_be), u8bDataC(repo_path),
              tt, bb, hash);
     }
+    //  The `.be` anchor is now written — a store-backed worktree is
+    //  attached from here on; the remote-fetch rows must be suppressed.
+    if (attached_out) *attached_out = YES;
 
     fprintf(stderr, "be: worktree from %.*s\n",
             (int)$len(u->path), (char *)u->path[0]);
@@ -1085,7 +1112,12 @@ ok64 BEActWorktreeAnchor(cli *c) {
     call(CLIUriAt, &u0v, c, 0);
     uri *u0 = &u0v;
     u8bReset(beget_wt_uri_buf);
-    call(BEGetWorktree, u0, beget_wt_uri_buf);
+    b8 attached = NO;
+    call(BEGetWorktree, u0, beget_wt_uri_buf, &attached);
+    //  GET-012: only a genuine attach (anchor written / branch switched)
+    //  suppresses the remote-fetch rows — NOT a pre-existing `.be` at cwd
+    //  that BEGetWorktree left untouched (e.g. a clone destination store).
+    if (attached) c->wt_attached = YES;
     //  BEGetWorktree may have rewritten the checkout target into
     //  beget_wt_uri_buf (`?<hashlet>` / `?/<title>` etc.).  Persist the
     //  rewritten bytes back as the raw arg text so downstream rows read

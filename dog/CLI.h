@@ -42,6 +42,9 @@ typedef struct {
     u8csb  uris;                     // raw (unparsed) URI arg text
     path8b repo;                     // repo root path; heap-allocated by entry frame
     u8     bang;                     // URI-002 bang bits (DOG_BANG_VERB set here)
+    b8     wt_attached;              // GET-012: WorktreeAnchor wired a store-backed
+                                     // worktree at cwd → keeper/spot/graf get skip
+                                     // the clone (the shared store already has it)
 } cli;
 
 // Number of URI args parsed onto `c->uris`.
