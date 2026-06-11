@@ -717,12 +717,12 @@ static b8 be_path_in_mount(u8csc path, u8csc sub, u8csp rel_out) {
     if (u8csEmpty(path) || u8csEmpty(sub)) return NO;
     u32 pl = (u32)$len(path), sl = (u32)$len(sub);
     if (pl < sl) return NO;
-    u8cs head = {path[0], path[0] + sl};
+    a_head(u8c, head, path, sl);
     if (!u8csEq(head, sub)) return NO;
     if (pl == sl) { rel_out[0] = rel_out[1] = NULL; return YES; }
     if (path[0][sl] != '/') return NO;     //  `vendorX` must not match `vendor`
-    rel_out[0] = path[0] + sl + 1;
-    rel_out[1] = path[1];
+    a_rest(u8c, rel, path, sl + 1);
+    u8csMv(rel_out, rel);
     return YES;
 }
 
@@ -2604,7 +2604,7 @@ static b8 be_post_target_is_keeper(uri const *u) {
     //  `.git` suffix marks a git repo regardless of scheme.
     a_cstr(git_dot, ".git");
     if (u8csLen(u->path) >= u8csLen(git_dot)) {
-        u8cs tail = {u->path[1] - u8csLen(git_dot), u->path[1]};
+        a_tail(u8c, tail, u->path, u8csLen(git_dot));
         if (u8csEq(tail, git_dot)) return NO;
     }
     if (u8csEq(u->scheme, file_s)) return YES;

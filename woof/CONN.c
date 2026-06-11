@@ -217,11 +217,11 @@ static void send_and_close(int fd, char const *p, size_t n) {
 //  into the HTTP header verbatim.  We only need text/css for the
 //  stylesheet today; broaden the table as more asset types arrive.
 static char const *mime_for(u8cs name) {
-    u8c *dot = NULL;
-    for (u8c *p = name[0]; p < name[1]; p++)
-        if (*p == '.') dot = p;
-    if (dot == NULL) return "application/octet-stream";
-    u8cs ext = { dot + 1, name[1] };
+    a_dup(u8c, scan, name);
+    if (u8csRevFind(scan, '.') != OK) return "application/octet-stream";
+    //  RevFind left scan[1] one past the matched dot — the bytes from
+    //  there to name's term are the extension.
+    u8cs ext = { scan[1], name[1] };
     a$str(css,  "css");
     a$str(html, "html");
     a$str(js,   "js");

@@ -7,19 +7,9 @@
 
 #include "SUBS.h"
 
-#include <string.h>
-
 #include "abc/PRO.h"
 #include "abc/S.h"
 #include "dog/git/CFG.h"
-
-// --- helpers ----------------------------------------------------------
-
-static b8 subs_eq(u8cs a, u8cs b) {
-    if (u8csLen(a) != u8csLen(b)) return NO;
-    if (u8csLen(a) == 0) return YES;
-    return memcmp(a[0], b[0], u8csLen(a)) == 0;
-}
 
 // --- SUBSu8sParse -----------------------------------------------------
 
@@ -54,15 +44,15 @@ ok64 SUBSu8sParse(u8cs blob, subs_cb cb, void *ctx) {
                 u8bReset(pathbuf);
                 u8bReset(urlbuf);
             }
-            in_submod = subs_eq(s.sec, submod_word);
+            in_submod = u8csEq(s.sec, submod_word);
             continue;
         }
 
         if (!in_submod) continue;
-        if (subs_eq(s.key, k_path)) {
+        if (u8csEq(s.key, k_path)) {
             u8bReset(pathbuf);
             call(u8bFeed, pathbuf, s.value);
-        } else if (subs_eq(s.key, k_url)) {
+        } else if (u8csEq(s.key, k_url)) {
             u8bReset(urlbuf);
             call(u8bFeed, urlbuf, s.value);
         }
@@ -95,7 +85,7 @@ typedef struct {
 static ok64 subs_find_cb(u8cs path, u8cs url, void *vctx) {
     subs_find_ctx *c = (subs_find_ctx *)vctx;
     if (c->hit) return OK;
-    if (!subs_eq(path, c->want_path)) return OK;
+    if (!u8csEq(path, c->want_path)) return OK;
     u8bReset(c->out_buf);
     ok64 w = u8bFeed(c->out_buf, url);
     if (w != OK) { c->err = w; return w; }

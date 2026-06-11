@@ -24,13 +24,6 @@
 
 // --- helpers ----------------------------------------------------------
 
-//  YES iff a == b (byte-exact).
-static b8 subs_eq(u8cs a, u8cs b) {
-    if (u8csLen(a) != u8csLen(b)) return NO;
-    if (u8csLen(a) == 0) return YES;
-    return memcmp(a[0], b[0], u8csLen(a)) == 0;
-}
-
 //  Find the last byte equal to `v` in `s`.  On hit, `out[0]=p, out[1]=s.term`.
 //  Returns NO on miss.
 static b8 subs_rfind(u8cs s, u8c v, u8csp out) {
@@ -617,7 +610,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         if (tr == OK) {
             u8bFed(hexpad, 40);
             a_dup(u8c, cur_tip, u8bDataC(hexpad));
-            if (subs_eq(cur_tip, hex_sha)) {
+            if (u8csEq(cur_tip, hex_sha)) {
                 fprintf(stderr,
                         "SUBS.dbg: SubMount path=" U8SFMT
                         " already at pin — skip fetch\n",

@@ -171,6 +171,9 @@ ok64 GRAFHunkEmit(hunk const *hk, void *ctx);
 // may be any length (10 for a 40-bit hashlet, 40 for a full sha).
 void GRAFEmitDiffUri(u32b toks, u8b out, u8cs hex);
 
+// Hex-encode `csha` and emit `diff:?<40-hex>` via GRAFEmitDiffUri.
+void GRAFPackUriDiffSha(u32b toks, u8b out, sha1cp csha);
+
 // 3-way merge entry.
 ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
                u8cs outpath);

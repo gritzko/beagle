@@ -1,9 +1,5 @@
 #include "LESS.h"
 
-#include <errno.h>
-#include <string.h>
-#include <unistd.h>
-
 #include "abc/FILE.h"
 #include "abc/PRO.h"
 #include "dog/HUNK.h"
@@ -80,12 +76,9 @@ void LESSHunkEmit(void) {
     }
 
     u8cs ser = {start, u8bIdleHead(less_arena)};
-    while (!$empty(ser)) {
-        ssize_t w = write(spot_out_fd, ser[0], $len(ser));
-        if (w > 0) { u8csFed(ser, (size_t)w); continue; }
-        if (w < 0 && errno == EINTR) continue;
-        break;  // EAGAIN with non-blocking, EPIPE, etc — drop the rest
-    }
+    //  FILEFeed loops on EINTR and advances ser by the write count;
+    //  any other short/failed write (EAGAIN, EPIPE) breaks — drop the rest.
+    while (!$empty(ser) && FILEFeed(spot_out_fd, ser) == OK) {}
 
     // Full arena rewind: title, toks, hili, and serialized bytes are
     // all consumed.  The hunk struct in less_hunks[0] will be reused

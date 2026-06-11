@@ -7,8 +7,6 @@
 
 #include "WOOF.h"
 
-#include <string.h>
-
 //  Every accepted scheme dispatches to `be` — it's the canonical
 //  entry point that already composes `--at <root>?<branch>#<sha>`
 //  from `<root>/.be/wtlog` and forwards `--tlv` to the right worker
@@ -64,9 +62,7 @@ woof_route const *WOOFRouteFind(u8cs scheme) {
     for (u32 i = 0; ; i++) {
         woof_route const *r = &WOOF_ROUTES[i];
         if ($empty(r->binary)) return NULL;
-        if ($size(r->scheme) == $size(scheme)
-            && ($size(scheme) == 0
-                || memcmp(*r->scheme, *scheme, $size(scheme)) == 0)) {
+        if (u8csEq(r->scheme, scheme)) {
             return r;
         }
     }

@@ -53,16 +53,6 @@ static char const MAP_GLYPH_TRUNK[] = "\xe2\x95\x91";   // ║
 static char const MAP_GLYPH_CHILD[] = "\xe2\x94\x83";   // ┃
 static char const MAP_GLYPH_THIN[]  = "\xe2\x94\x82";   // │
 
-//  Anchor → U-token: write `diff:?<40-hex>` after the just-emitted
-//  anchor span and pack a 'U' tok past those bytes.  Bytes are
-//  zero-width in the renderer; bro's click handler executes
-//  `be --tlv diff:?<sha>` on left-click of the preceding anchor.
-//  No-op when `toks` is the zero slice (plain-text mode).
-static void map_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
-    a_sha1hex(hex, csha);
-    GRAFEmitDiffUri(toks, out, hex);
-}
-
 static char const *map_glyph_for(u8 depth) {
     if (depth == 0) return MAP_GLYPH_TRUNK;
     if (depth == 1) return MAP_GLYPH_CHILD;
@@ -384,7 +374,7 @@ ok64 GRAFMap(uricp u) {
         (void)u8bFeed(text, u8bDataC(hashlet));
         if (want_toks) {
             (void)u32bFeed1(toks_buf, tok32Pack('L', (u32)u8bDataLen(text)));
-            map_pack_uri_diff_sha(toks_buf, text, &mc->csha);
+            GRAFPackUriDiffSha(toks_buf, text, &mc->csha);
         }
         (void)u8bFeed1(text, ' ');
         //  7-char date.

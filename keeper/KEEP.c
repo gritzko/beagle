@@ -2709,18 +2709,6 @@ static ok64 keep_push_drain_pkt(int in_fd, u8b buf, u8cs adv, u8csp line) {
     }
 }
 
-static ok64 keep_push_write_all(int fd, u8csc data) {
-    u8cp p = data[0];
-    size_t n = (size_t)(data[1] - data[0]);
-    while (n > 0) {
-        ssize_t w = write(fd, p, n);
-        if (w <= 0) return KEEPFAIL;
-        p += w;
-        n -= (size_t)w;
-    }
-    return OK;
-}
-
 // Recursively collect tree + blob SHAs reachable from `tree_sha`
 // into `out` (capacity `cap`).  Inflates each tree via KEEPGet and
 // walks its entries.  Returns count appended to *n.  Silent on fetch
@@ -2859,7 +2847,7 @@ ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
         if (PKTu8sFeed(ps, u8bDataC(payload)) != OK) goto push_fail;
         if (PKTu8sFeedFlush(ps) != OK) goto push_fail;
         u8csc written = {u8bDataHead(pktbuf), ps[0]};
-        if (keep_push_write_all(wfd, written) != OK) goto push_fail;
+        if (FILEFeedAll(wfd, written) != OK) goto push_fail;
     }
 
     // Walk the reachable set from new_hex (commit + all trees + blobs).
@@ -2947,7 +2935,7 @@ ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
         u8bFeed(pack_b, psha_s);
 
         a_dup(u8c, send, u8bData(pack_b));
-        if (keep_push_write_all(wfd, send) != OK) goto push_fail;
+        if (FILEFeedAll(wfd, send) != OK) goto push_fail;
     }
 
     close(wfd); wfd = -1;

@@ -273,8 +273,7 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
         ulogrec rec = {};
         a_dup(u8c, peek, g->noop_cursor);
         if (ULOGu8sDrain(peek, &rec) == OK
-            && $len(rec.uri.path) == $len(path)
-            && memcmp(rec.uri.path[0], path[0], (size_t)$len(path)) == 0) {
+            && u8csEq(rec.uri.path, path)) {
             ulogrec _consume = {};
             (void)ULOGu8sDrain(g->noop_cursor, &_consume);
             a_path(probe);
@@ -305,8 +304,7 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
         ulogrec rec = {};
         a_dup(u8c, peek, g->merges_cursor);
         if (ULOGu8sDrain(peek, &rec) == OK
-            && $len(rec.uri.path) == $len(path)
-            && memcmp(rec.uri.path[0], path[0], (size_t)$len(path)) == 0) {
+            && u8csEq(rec.uri.path, path)) {
             ulogrec _consume = {};
             (void)ULOGu8sDrain(g->merges_cursor, &_consume);
             return OK;
@@ -1201,11 +1199,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 b_branch[0] = NULL;
                 b_branch[1] = NULL;
             }
-            ssize_t bl = $len(b_branch), tl = $len(t_branch);
-            b8 same_branch =
-                (bl == tl) &&
-                (bl == 0 ||
-                 memcmp(b_branch[0], t_branch[0], (size_t)bl) == 0);
+            b8 same_branch = u8csEq(b_branch, t_branch);
 
             if (!same_branch && !SNIFF.force && get_wt_dirty(reporoot)) {
                 fprintf(stderr,

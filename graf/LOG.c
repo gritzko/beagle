@@ -194,15 +194,6 @@ static void graflog_pack(u32b toks, u8b out, u8 tag) {
     (void)u32bFeed1(toks, tok32Pack(tag, (u32)u8bDataLen(out)));
 }
 
-//  Anchor → U-token: write `diff:?<40-hex>` after the just-emitted
-//  anchor span and pack a 'U' tok past those bytes.  Bytes are
-//  zero-width in the renderer; bro's click handler executes
-//  `be --tlv diff:?<sha>` on left-click.
-static void graflog_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
-    a_sha1hex(hex, csha);
-    GRAFEmitDiffUri(toks, out, hex);
-}
-
 //  Emit "<sha7> <7-date> <summary> (<author>)\n" with matching tok32
 //  spans (toks may be the zero slice for plain-ASCII paths).  Tags
 //  borrow dog/TOK.h: 'L' literal-shaped columns (sha + date), 'S'
@@ -216,7 +207,7 @@ static ok64 graflog_render_commit(u8b out, u32b toks,
     (void)SHA1u8sFeedHashlet(hashlet_idle, csha);
     (void)u8bFeed(out, u8bDataC(hashlet));
     graflog_pack(toks, out, 'L');
-    graflog_pack_uri_diff_sha(toks, out, csha);
+    GRAFPackUriDiffSha(toks, out, csha);
     (void)u8bFeed1(out, ' ');
     graflog_pack(toks, out, 'W');
 
