@@ -26,9 +26,13 @@
 #  wtlog_get_rows FILE — count `get` rows in a wtlog (tab-delimited
 #  `<ts>\tget\t<uri>`).  Used to assert a fresh boundary was appended.
 wtlog_get_rows() {
-    #  `strings` then a tab-anchored grep keeps it robust to the ULOG
-    #  binary framing around the text columns.
-    strings "$1" 2>/dev/null | grep -cE "$(printf '\t')get$(printf '\t')" || true
+    #  Match the tab-anchored `get` column directly on the binary file:
+    #  `grep -ao` treats binary as text and emits one match per line so
+    #  `wc -l` counts occurrences.  Portable to BSD grep (macOS):
+    #  using `strings` first would drop the surrounding tabs on macOS's
+    #  BSD strings(1) and the count would always read 0.
+    _wgr_tab=$(printf '\t')
+    grep -aoE "${_wgr_tab}get${_wgr_tab}" "$1" 2>/dev/null | wc -l | tr -d ' '
 }
 
 # ---------------------------------------------------------------------

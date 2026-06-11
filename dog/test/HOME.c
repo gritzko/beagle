@@ -471,8 +471,16 @@ ok64 HOMETestWalkHomeBound() {
                                      "%s", home_saved);
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        char base[256];
-        want(TESTBEmkdtemp(base, sizeof base) == OK);
+        char base_raw[256];
+        want(TESTBEmkdtemp(base_raw, sizeof base_raw) == OK);
+        //  Canonicalize: on macOS `/tmp` is a symlink to `/private/tmp`,
+        //  so getcwd() inside the scratch returns `/private/tmp/...`
+        //  while `$HOME` we set below would carry the un-resolved
+        //  `/tmp/...` form — u8csEq would fail and the bounded walk
+        //  would escape past `$HOME`.
+        char base[512];
+        if (realpath(base_raw, base) == NULL)
+            snprintf(base, sizeof base, "%s", base_raw);
         fprintf(stderr, "  case: %s\n", cases[i].name);
 
         char p[512];

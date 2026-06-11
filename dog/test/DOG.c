@@ -1022,13 +1022,14 @@ static ok64 DOGTestPupOverflowLeak(void) {
 //  leaked DIR fd per iteration; the loop makes it unmistakable.
 static ok64 DOGTestPupIterErrLeak(void) {
     sane(1);
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__APPLE__)
     //  This repro needs OS PATH_MAX > FILE_PATH_MAX_LEN (1024) so the
     //  on-disk file can be created while the iterator's bounded push
-    //  still overflows.  FreeBSD's kernel MAXPATHLEN is 1024, so the
-    //  precondition cannot be reached — open(ENAMETOOLONG)s before the
-    //  scan ever observes an entry.  The leak fix itself is platform-
-    //  agnostic and PupOverflowLeak above still exercises the close path.
+    //  still overflows.  FreeBSD's and Darwin's kernel MAXPATHLEN is
+    //  1024, so the precondition cannot be reached — open(ENAMETOOLONG)s
+    //  before the scan ever observes an entry.  The leak fix itself is
+    //  platform-agnostic and PupOverflowLeak above still exercises the
+    //  close path.
     done;
 #endif
     call(FILEInit);
