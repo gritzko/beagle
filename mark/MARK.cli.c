@@ -1,13 +1,14 @@
 //  mark CLI — render StrictMark to standalone HTML.
 //
-//    mark [--strict] [--head=FILE] <file.mkd | dir>...
+//    mark [--strict] [--head=FILE] [--body=FILE] <file.mkd | dir>...
 //
 //  A file → file.html next to it.  A directory → every *.mkd in it,
 //  rewriting inter-page links from .mkd to .html.  --strict makes a
 //  WikiWeb structure/limit violation a hard failure.  --head=FILE inlines
 //  that file's contents verbatim into every page's <head> (stylesheet,
-//  favicon, meta...), so mark bakes in no site policy; the file is mapped
-//  once and shared across the whole render.
+//  favicon, meta...); --body=FILE inlines a snippet right after <body>
+//  (a banner, nav...).  So mark bakes in no site policy; each file is
+//  mapped once and shared across the whole render.
 //
 //  Memory is bounded by the input: the renderer keeps nothing across
 //  files, and the per-file output buffer is sized to that file (escaping
@@ -143,7 +144,8 @@ ok64 markcli() {
 
     markopts opts = {};
     a_path(headpath);
-    b8 want_head = NO;
+    a_path(bodypath);
+    b8 want_head = NO, want_body = NO;
     for (size_t i = 1; i < (size_t)$arglen; ++i) {
         a$rg(a, i);
         a_cstr(strict, "--strict");
@@ -157,10 +159,16 @@ ok64 markcli() {
             call(PATHu8bDup, headpath, val);
             want_head = YES;
         }
+        a_cstr(bodypfx, "--body=");
+        if (u8csLen(a) > u8csLen(bodypfx) && u8csHasPrefix(a, bodypfx)) {
+            a_rest(u8c, val, a, u8csLen(bodypfx));
+            call(PATHu8bDup, bodypath, val);
+            want_body = YES;
+        }
     }
 
-    //  Map the head snippet once (resource at the top of the chain); the
-    //  slice stays valid for the whole render and is unmapped after.
+    //  Map the head/body snippets once (resources at the top of the chain);
+    //  the slices stay valid for the whole render and are unmapped after.
     u8bp hm = NULL;
     if (want_head) {
         call(FILEMapRO, &hm, $path(headpath));
@@ -168,10 +176,21 @@ ok64 markcli() {
         opts.head[0] = u8bDataHead(hm);
         opts.head[1] = u8bIdleHead(hm);
     }
+    u8bp bm = NULL;
+    if (want_body) {
+        call(FILEMapRO, &bm, $path(bodypath));
+        if (bm == NULL) {
+            if (hm != NULL) FILEUnMap(hm);
+            return MARKARG;
+        }
+        opts.body[0] = u8bDataHead(bm);
+        opts.body[1] = u8bIdleHead(bm);
+    }
 
     try(markcli_inner, opts);
     ok64 ro = __;
     if (hm != NULL) FILEUnMap(hm);
+    if (bm != NULL) FILEUnMap(bm);
     return ro;
 }
 

@@ -474,6 +474,9 @@ ok64 MARKRenderDoc(u8bp out, u8csc src, u8csc title, markopts opts) {
     //  --head=FILE; mark itself bakes in no page policy.
     if (!$empty(opts.head)) call(u8bFeed, out, opts.head);
     call(MARKu8bLit, out, "</head>\n<body>\n");
+    //  Site-owned body lead-in (banner, nav...) carried in --body=FILE,
+    //  injected verbatim before the page content; mark bakes in no policy.
+    if (!$empty(opts.body)) call(u8bFeed, out, opts.body);
     call(mark_body, out, src, opts);
     call(MARKu8bLit, out, "</body>\n</html>\n");
     done;

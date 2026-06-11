@@ -28,6 +28,7 @@ con ok64 MARKARG = 0x1629b50a6d0;        // bad CLI argument
 typedef struct {
     b8   strict;  // YES: a structure/limit violation aborts with MARKLIMIT
     u8cs head;    // raw HTML injected before </head> (from --head=FILE); empty = none
+    u8cs body;    // raw HTML injected after <body> (from --body=FILE); empty = none
 } markopts;
 
 //  Render StrictMark `src` to a standalone HTML document in `out`.
