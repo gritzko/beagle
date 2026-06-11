@@ -15,13 +15,16 @@
 
 . "$(dirname "$0")/../../lib/case.sh"
 
-# T0: baseline with two tracked files.
+# T0: baseline with two root files and one in a subdir.
 sleep 0.02
 printf 'hello\n' > greet.txt
 printf 'doc\n'   > README
-"$BE" put greet.txt > /dev/null
-"$BE" put README    > /dev/null
-"$BE" post '#v1'    > /dev/null
+mkdir sub
+printf 'deep\n' > sub/deep.txt
+"$BE" put greet.txt    > /dev/null
+"$BE" put README       > /dev/null
+"$BE" put sub/deep.txt > /dev/null
+"$BE" post '#v1'       > /dev/null
 
 # --- B: tracked + present (edited) → restore baseline bytes ----------
 printf 'EDITED\n' > greet.txt
@@ -37,6 +40,19 @@ match_re "$CASE/a.err.txt" a.got.err
 [ -f greet.txt ] || { echo "A: greet.txt was not resurrected" >&2; exit 1; }
 printf 'hello\n' > a.want.txt
 match a.want.txt greet.txt
+
+# --- D: tracked + DELETED with its PARENT DIR gone → restore,
+#       recreating the directory (GET-013).  Pre-fix the checkout
+#       FILECreate failed FILENONE: it never mkdir -p'd the vanished
+#       parent before opening the target for write.
+rm -rf sub
+"$BE" get sub/deep.txt > d.got.out 2> d.got.err || {
+    echo "D: be get sub/deep.txt failed" >&2; cat d.got.err >&2; exit 1; }
+[ -f sub/deep.txt ] || {
+    echo "D: sub/deep.txt was not restored (parent dir not recreated)" >&2
+    exit 1; }
+printf 'deep\n' > d.want.txt
+match d.want.txt sub/deep.txt
 
 # --- C1: real branch name (not a tracked entry) → branch switch ------
 "$BE" put '?./feat' > /dev/null

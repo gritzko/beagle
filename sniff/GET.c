@@ -1651,6 +1651,14 @@ static ok64 sniff_get_blob_to_wt(u8cs reporoot, uri *u) {
     //  (segment-by-segment) — PATHu8bPush would reject the embedded
     //  '/' and fail PATHBAD.  Mirrors sniff_get_subtree_to_wt.
     call(PATHu8bAdd, fp, path_s);
+    //  mkdir -p the parent dir: a scoped get of a file whose directory
+    //  has been removed must recreate it (GET-013), else FILECreate
+    //  fails FILENONE on the absent parent.
+    a_path(parent);
+    a_dup(u8c, fp_s, u8bDataC(fp));
+    call(PATHu8bFeed, parent, fp_s);
+    call(PATHu8bPop, parent);
+    (void)FILEMakeDirP($path(parent));
     int fd = -1;
     ok64 co = FILECreate(&fd, $path(fp));
     if (co != OK) {
