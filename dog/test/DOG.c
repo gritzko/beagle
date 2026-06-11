@@ -1,11 +1,17 @@
 #include "dog/DOG.h"
 
+#include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
+#include "abc/FILE.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
+
+#include "dog/test/TESTBE.h"
 
 typedef struct {
     const char *input;
@@ -909,6 +915,183 @@ ok64 DOGTestDebang(void) {
     done;
 }
 
+// --- MEM-043: DOGPup error-path leaks --------------------------------
+//
+//  REPRO-FIRST (CLAUDE.md §17).  Two leaks live in the puppy-stack
+//  helpers, neither of which LSan catches (the leaked fd/mmap/DIR
+//  handle is reachable from no live pointer but its kernel resource
+//  outlives the call).  We make them observable by counting open file
+//  descriptors across many iterations: a leak grows the fd table
+//  monotonically, a fixed function keeps it flat.
+//
+//    (1) pups-overflow — DOGPupOpenAll FILEMapRO+books a puppy file,
+//        then pushes (key, fd) into the bounded `pups`.  When that push
+//        overflows, the early return drops the just-mapped fd+mmap on
+//        the floor (it was never recorded in `pups`, so DOGPupClose
+//        cannot reclaim it).
+//    (2) non-END FILENext — when the directory scan aborts with a real
+//        error (PATHu8bPush BNOROOM on a path that overflows the 1024-
+//        byte path buffer), `seen(END)` short-circuits the return and
+//        SKIPS the following FILEIterClose, leaking the DIR handle.
+
+//  Count entries under /proc/self/fd — the live open-fd count.
+static int dog_open_fd_count(void) {
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        n++;
+    }
+    closedir(d);
+    return n;  // includes the dir handle itself; constant across calls
+}
+
+//  (1) Force a pups-overflow and assert no fd/mmap leak.
+//
+//  Create N puppy files in a scratch dir, then repeatedly re-open them
+//  into a `pups` buffer too small to hold them all (cap < N): each
+//  DOGPupOpenAll maps every file in key order and pushes until the
+//  buffer fills — the (cap+1)-th FILEMapRO is the one whose fd+mmap
+//  leaks on the failed push.  Before the fix the fd table grows by
+//  (N-cap) per iteration; after the fix it is flat.
+static ok64 DOGTestPupOverflowLeak(void) {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
+
+    a_cstr(ext, ".test.idx");
+    enum { NPUP = 8, PUPCAP = 3, ITERS = 32 };
+
+    //  Materialize NPUP puppy files on disk via DOGPupCreate (roomy pups).
+    {
+        a_path(dir, ((u8cs){(u8 *)tmp, (u8 *)tmp + strlen(tmp)}));
+        Bkv64 mk = {};
+        call(kv64bAllocate, mk, NPUP + 2);
+        for (int i = 0; i < NPUP; i++) {
+            a_cstr(body, "puppy-bytes");
+            a_dup(u8c, b, body);
+            //  distinct explicit keys so all NPUP files coexist
+            try(DOGPupCreateAt, mk, $path(dir), ext, b, (u64)(1000 + i));
+            if (__ != OK) { DOGPupClose(mk); want(0); }
+        }
+        DOGPupClose(mk);  //  unmaps all, frees mk — disk files remain
+    }
+
+    int fd0 = dog_open_fd_count();
+    want(fd0 > 0);
+
+    for (int it = 0; it < ITERS; it++) {
+        a_path(dir, ((u8cs){(u8 *)tmp, (u8 *)tmp + strlen(tmp)}));
+        Bkv64 pups = {};
+        call(kv64bAllocate, pups, PUPCAP);  //  too small for NPUP
+        try(DOGPupOpenAll, pups, $path(dir), ext);
+        //  overflow → SNOROOM expected; the leak (if any) already happened
+        b8 overflowed = (__ == SNOROOM);
+        DOGPupClose(pups);
+        if (!overflowed) {        //  repro precondition not met
+            TESTBErmrf(tmp);
+            fprintf(stderr, "PupOverflowLeak: no overflow on iter %d\n", it);
+            fail(TESTFAIL);
+        }
+    }
+
+    int fd1 = dog_open_fd_count();
+    TESTBErmrf(tmp);
+    if (fd1 > fd0) {
+        fprintf(stderr,
+            "PupOverflowLeak: fd count grew %d -> %d across %d iters "
+            "(leaked ~%d fds/iter)\n",
+            fd0, fd1, ITERS, (fd1 - fd0) / ITERS);
+        fail(TESTFAIL);
+    }
+    __ = OK;  //  the expected overflow status must not leak out as failure
+    done;
+}
+
+//  (2) Force a non-END FILENext error and assert no DIR-handle leak.
+//
+//  DOGPupOpenAll's FILEIter shares a 1024-byte path buffer seeded with
+//  `dir`.  Make `dir` long enough that appending ANY entry name
+//  overflows the buffer: PATHu8bPush then returns BNOROOM (a non-END,
+//  non-PATHBAD error), the scan aborts, and the pre-fix `seen(END)`
+//  returns BEFORE FILEIterClose — leaking the opendir() handle.  One
+//  leaked DIR fd per iteration; the loop makes it unmistakable.
+static ok64 DOGTestPupIterErrLeak(void) {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[256];
+    want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
+
+    //  Build a deeply-nested dir whose path is within a few bytes of
+    //  FILE_PATH_MAX_LEN (1024), so any entry name push overflows.
+    char deep[1100];
+    int dlen = snprintf(deep, sizeof deep, "%s", tmp);
+    //  255-byte segments (NAME_MAX) until we are ~within an entry-name of cap.
+    char seg[256];
+    memset(seg, 'a', 200);
+    seg[200] = 0;
+    while (dlen + 1 + 200 < 1015) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s/%s", deep, seg);
+        if (mkdir(path, 0755) != 0) { TESTBErmrf(tmp); want(0); }
+        dlen = snprintf(deep, sizeof deep, "%s", path);
+    }
+    //  Put a regular file inside so the scan visits an entry and the
+    //  push (deep-path + filename) overflows the 1024 buffer.
+    {
+        char fpath[1200];
+        snprintf(fpath, sizeof fpath, "%s/%s", deep, seg);
+        int fd = open(fpath, O_CREAT | O_WRONLY, 0644);
+        if (fd >= 0) close(fd);
+    }
+
+    a_cstr(ext, ".test.idx");
+    enum { ITERS = 64 };
+
+    int fd0 = dog_open_fd_count();
+    want(fd0 > 0);
+
+    for (int it = 0; it < ITERS; it++) {
+        a_path(dir, ((u8cs){(u8 *)deep, (u8 *)deep + strlen(deep)}));
+        Bkv64 pups = {};
+        call(kv64bAllocate, pups, 16);
+        try(DOGPupOpenAll, pups, $path(dir), ext);
+        //  expect a non-END iterator error (PATHNOROOM) to have aborted
+        //  the scan; OK/END would mean the precondition wasn't met
+        b8 iter_erred = (__ != OK);
+        DOGPupClose(pups);
+        if (!iter_erred) {
+            TESTBErmrf(tmp);
+            fprintf(stderr, "PupIterErrLeak: no iter error on iter %d\n", it);
+            fail(TESTFAIL);
+        }
+    }
+
+    int fd1 = dog_open_fd_count();
+    TESTBErmrf(tmp);
+    if (fd1 > fd0) {
+        fprintf(stderr,
+            "PupIterErrLeak: fd count grew %d -> %d across %d iters "
+            "(leaked DIR handles)\n",
+            fd0, fd1, ITERS);
+        fail(TESTFAIL);
+    }
+    __ = OK;  //  the expected iterator error must not leak out as failure
+    done;
+}
+
+ok64 DOGTestPupLeaks(void) {
+    sane(1);
+    call(DOGTestPupOverflowLeak);
+    call(DOGTestPupIterErrLeak);
+    done;
+}
+
 ok64 DOGtest() {
     sane(1);
     call(DOGTestDOGParseURI);
@@ -923,6 +1106,7 @@ ok64 DOGtest() {
     call(DOGTestGitTransport);
     call(DOGTestProjector);
     call(DOGTestFromBe);
+    call(DOGTestPupLeaks);
     done;
 }
 

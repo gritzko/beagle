@@ -715,8 +715,13 @@ static ok64 home_be_subdirs(path8s p, u8b first, int *out_count) {
         }
         if (subdirs > 1) break;                //  >1 ⇒ multi-project, stop
     }
-    seen(END);
+    //  Close the iterator UNCONDITIONALLY: a non-END FILENext error
+    //  (e.g. PATHNOROOM on an over-long path) leaves `__ != END`, so a
+    //  bare `seen(END)` would `fail()` and skip the close — leaking the
+    //  opendir() DIR handle.  Close first, then propagate the error.
     FILEIterClose(&it);
+    if (__ != END) fail(__);
+    __ = OK;
     *out_count = subdirs;
     done;
 }

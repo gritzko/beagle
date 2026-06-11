@@ -506,8 +506,13 @@ ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
         kv64 kv = {.key = sq, .val = name_off};
         if (kv64bPush(seqnos, &kv) != OK) break;
     }
-    seen(END);
+    //  Close the iterator UNCONDITIONALLY: a non-END FILENext error
+    //  (e.g. PATHNOROOM on an over-long path) leaves `__ != END`, so a
+    //  bare `seen(END)` would `fail()` and skip the close — leaking the
+    //  opendir() DIR handle.  Close first, then propagate the error.
     FILEIterClose(&it);
+    if (__ != END) { kv64bFree(seqnos); fail(__); }
+    __ = OK;
 
     a_dup(kv64, ks, kv64bData(seqnos));
     kv64sSort(ks);
@@ -525,7 +530,11 @@ ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
         int fd = FILEBookedFD(buf);
         if (fd < 0) { FILEUnMap(buf); continue; }
         kv64 kv = {.key = kp->key, .val = (u64)fd};
-        call(kv64bPush, pups, &kv);
+        //  On a `pups` overflow the just-mapped file is NOT yet recorded
+        //  in `pups`, so DOGPupClose can never reclaim it — release the
+        //  fd+mmap here before propagating, and free `seqnos` too.
+        try(kv64bPush, pups, &kv);
+        if (__ != OK) { FILEUnMap(buf); kv64bFree(seqnos); fail(__); }
     }
 
     kv64bFree(seqnos);
@@ -578,7 +587,11 @@ ok64 DOGPupCreateAt(kv64b pups, path8s dir, u8cs ext, u8cs bytes,
     int fd = FILEBookedFD(buf);
     if (fd < 0) { FILEUnMap(buf); return DOGPUPFAIL; }
     kv64 kv = {.key = pup_key, .val = (u64)fd};
-    call(kv64bPush, pups, &kv);
+    //  On a `pups` overflow the file just mapped above is not yet
+    //  recorded, so DOGPupClose can never reclaim it — release the
+    //  fd+mmap before propagating the push error.
+    try(kv64bPush, pups, &kv);
+    if (__ != OK) { FILEUnMap(buf); fail(__); }
     done;
 }
 
