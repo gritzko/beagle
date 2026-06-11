@@ -23,6 +23,21 @@
   byte-identical want files prove a branch whose NAME is hex resolves
   BRANCH-FIRST in a diff ref (`GRAFRefIsName`), never misrouted into
   keeper's hashlet (`#<sha>`) path.  RED before Stage 4c, GREEN after.
+* `08-sub-pin-bump-gitlink/` — DIFF-001 part-a.  `be diff:?<sha>` on a
+  commit whose only change is a submodule PIN BUMP renders the gitlink
+  line `<sub> <old-pin>..<new-pin>` (`diffref_emit_gitlink`,
+  `WALK_KIND_SUB` collection in `graf/DIFFREF.c`).  Local-git submodule
+  fixture, no ssh.  (Part-b — recursing into the sub for its
+  commit-range CONTENT diff — is still open; see DIFF-001.)
+* `09-sub-dirty-pager/` — DIFF-002.  Working-tree `be diff` whose only
+  change lives in a mounted sub's worktree must route the sub diff
+  THROUGH the parent's pager (bro), not past it.  Forces the bro-pager
+  branch with `--color` and asserts the sub hunk is BRO-rendered
+  (`--- <sub>/<file>:<line> ---`), not relay-ANSI past bro
+  (`diff:<sub>/<file>#L<line>` = the bug).  Deterministic — bro's
+  one-shot non-interactive drain, no PTY.  Fix:
+  `BERunPipeSubs` in `beagle/BE.cli.c` folds the sub fan-out into bro's
+  single TLV stdin.  Local-git submodule fixture, no ssh.
 
 ## Label form note
 

@@ -89,6 +89,7 @@ static void BEUsage(void) {
 // resolved against this process's own argv[0] via HOMEResolveSibling.
 static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
+static ok64 BEProjectorSubs(cli *c, uri *u);
 
 //  Every `*NONE` ok64 (POSTNONE, KEEPNONE, GRAFNONE, SPOTNONE, …)
 //  shares the same low byte — `NONE & 0xFFu = 0xCE` — because they
@@ -153,59 +154,95 @@ ok64 BEReap(pid_t pid, u8csc tool) {
     return OK;
 }
 
-// --- Run two tools as a producer → pager pipeline ---
+// --- Producer → pager pipeline, with the sub fan-out folded in -------
 //
-//  Used to route view-projector output (e.g. `sniff ls --tlv`) into
-//  `bro` for paging and coloring.  Spawns both children, pumps bytes
-//  from producer's stdout into pager's stdin in the parent, then
-//  reaps both.  Returns the worse of the two exit codes.
-static ok64 BERunPipe(path8sc prod, u8css prod_argv,
-                      path8sc pager, u8css pager_argv) {
-    sane($ok(prod) && $ok(pager));
+//  DIFF-002: a whole-tree projector (`diff:` / `tree:` / `refs:`) whose
+//  only change lives inside a mounted submodule must show that sub diff
+//  IN THE PAGER, not dump it to the bare terminal after the pager quits.
+//
+//  A plain `producer | pager` pipeline would only carry the
+//  PARENT dog's hunks; the sub relays (BEProjectorSubs → BERelaySub →
+//  write(STDOUT_FILENO, …)) used to land on the inherited terminal and
+//  surface only after `bro` restored the screen on `q`.  Here the pager
+//  reads one pipe, and BOTH sides feed it: the parent producer's stdout
+//  is dup2'd onto the write end, then — after the producer is reaped —
+//  this parent process points its OWN STDOUT_FILENO at the same write
+//  end so the in-process sub fan-out's writes go to the pager too.  One
+//  sequential stream, parent-then-subs, paged together; when the parent
+//  diff is empty but a sub diff exists the pager shows the sub diff,
+//  never "nothing!".
+static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
+                          path8sc pager, u8css pager_argv,
+                          cli *c, uri *u) {
+    sane($ok(prod) && $ok(pager) && c && u);
 
-    //  Shell-style `producer | pager` pipeline: one pipe(2), dup2 it
-    //  to producer's stdout and pager's stdin in the respective
-    //  children, parent closes both ends and waitpids.  The kernel
-    //  buffer handles flow control — no parent-side pump.  POSIX
-    //  primitives only (Linux, BSD, macOS).
-    //
-    //  `FD_CLOEXEC` on the raw pipe fds covers the inherited-fd
-    //  problem: each child gets a dup of *both* pipe ends, but only
-    //  one of them is dup2'd onto stdin/stdout (which clears CLOEXEC
-    //  on the target).  The other inherited copy auto-closes at exec,
-    //  so pipe ref counts collapse correctly and EOF propagates the
-    //  moment the producer exits.  Without CLOEXEC the unused end
-    //  lingers in the sibling child and the reader hangs.
     int p[2] = {-1, -1};
     if (pipe(p) != 0) failc(BEFAIL);
+    //  CLOEXEC on both ends: each child gets a dup of both, but only the
+    //  one dup2'd onto stdin/stdout survives exec — the other inherited
+    //  copy auto-closes so pipe ref counts collapse and EOF propagates.
     (void)fcntl(p[0], F_SETFD, FD_CLOEXEC);
     (void)fcntl(p[1], F_SETFD, FD_CLOEXEC);
 
-    pid_t prod_pid = 0;
-    ok64 ps = FILESpawnFds(prod, prod_argv, -1, p[1], &prod_pid);
-    if (ps != OK) { close(p[0]); close(p[1]); return ps; }
-
+    //  Pager first: it reads the pipe read end; its stdout inherits the
+    //  terminal (bro opens /dev/tty for keystrokes).
     pid_t pager_pid = 0;
     ok64 gs = FILESpawnFds(pager, pager_argv, p[0], -1, &pager_pid);
-    if (gs != OK) {
-        //  Producer started but pager didn't.  Close the pipe ends
-        //  so producer sees EPIPE and exits; reap it.
+    if (gs != OK) { close(p[0]); close(p[1]); return gs; }
+
+    //  Parent producer writes its hunks into the pipe write end; reap it
+    //  so its whole report lands before the sub fan-out appends.
+    pid_t prod_pid = 0;
+    ok64 ps = FILESpawnFds(prod, prod_argv, -1, p[1], &prod_pid);
+    if (ps != OK) {
         close(p[0]); close(p[1]);
-        int rc = 0; (void)FILEReap(prod_pid, &rc);
-        return gs;
+        int rc = 0; (void)FILEReap(pager_pid, &rc);
+        return ps;
+    }
+    close(p[0]);                         //  parent never reads
+    int prod_rc = 0;
+    (void)FILEReap(prod_pid, &prod_rc);
+
+    //  Fold the sub fan-out into the SAME pipe: save the real stdout,
+    //  redirect STDOUT_FILENO → pipe write end, run the relays (they
+    //  write to STDOUT_FILENO), then restore.  Clear CLOEXEC on the
+    //  redirected fd first so the dup target survives any exec the relay
+    //  performs.
+    //
+    //  bro drains *TLV* from its stdin (BROPipeRun) — the parent dog was
+    //  spawned with `--tlv` for exactly that.  But BERelaySub re-emits
+    //  the captured sub report in the process-global `HUNKMode`, which
+    //  is `HUNKOutColor` on a TTY — that would feed bro pre-rendered
+    //  ANSI it can't index, leaving it on "nothing!".  Force `HUNKOutTLV`
+    //  for the folded relay so the sub hunks reach bro as TLV (paged and
+    //  rendered exactly like the parent's), then restore the mode.
+    ok64 sr = OK;
+    int saved = dup(STDOUT_FILENO);
+    if (saved >= 0) {
+        (void)fcntl(p[1], F_SETFD, 0);   //  the dup target must survive
+        fflush(stdout);
+        if (dup2(p[1], STDOUT_FILENO) >= 0) {
+            HUNKout saved_mode = HUNKMode;
+            HUNKMode = HUNKOutTLV;
+            sr = BEProjectorSubs(c, u);
+            HUNKMode = saved_mode;
+            fflush(stdout);
+            (void)dup2(saved, STDOUT_FILENO);
+        }
+        close(saved);
+    } else {
+        //  dup failed: fall back to the unfolded behaviour rather than
+        //  drop the sub diff entirely.
+        sr = BEProjectorSubs(c, u);
     }
 
-    //  Parent's copies must go so the kernel pipe ref count drops to
-    //  the children only (CLOEXEC handled the children's *unused*
-    //  inherited copies above).
-    close(p[0]);
-    close(p[1]);
-
-    int prod_rc = 0, pager_rc = 0;
-    (void)FILEReap(prod_pid,  &prod_rc);
+    close(p[1]);                         //  EOF → pager drains + exits
+    int pager_rc = 0;
     (void)FILEReap(pager_pid, &pager_rc);
-    if (prod_rc  != 0) return BEDOGEXIT;
-    if (pager_rc != 0) return BEDOGEXIT;
+
+    if (prod_rc  != 0 && prod_rc != BE_NONE_LOW_BYTE) return BEDOGEXIT;
+    if (sr != OK)                                     return sr;
+    if (pager_rc != 0)                                return BEDOGEXIT;
     done;
 }
 
@@ -870,15 +907,15 @@ static ok64 BEProjector(cli *c, uri *u) {
     u8csbFeed1(bargs, bro_name);
     u8csbFeed1(bargs, color_flag);
     a_dup(u8cs, bargv, u8csbData(bargs));
-    //  TTY fan-out: the parent's hunks page through bro; the sub
-    //  relays (BERelaySub re-emits in the parent's Color HUNKMode)
-    //  follow on the terminal once bro returns.  A merged single-bro
-    //  stream is a future refinement; correctness (hits are shown)
-    //  holds today.
-    ok64 pr = BERunPipe($path(dogpath), dargv, $path(bropath), bargv);
-    ok64 sr = BEProjectorSubs(c, u);
+    //  DIFF-002: TTY fan-out folded into one bro stream.  The parent's
+    //  hunks AND the sub relays (BERelaySub, re-emitted in the parent's
+    //  Color HUNKMode) feed bro's single stdin, so the sub diff pages
+    //  with the parent instead of dumping to the bare terminal after
+    //  bro quits.  An empty parent diff with a non-empty sub diff now
+    //  shows the sub diff in the pager, never "nothing!".
+    ok64 pr = BERunPipeSubs($path(dogpath), dargv,
+                            $path(bropath), bargv, c, u);
     if (pr != OK && !ok64is(pr, NONE)) return pr;
-    if (sr != OK) return sr;
     return pr;
 }
 
@@ -3455,7 +3492,7 @@ static ok64 becli_inner(cli *c) {
 
     //  Theme forwarding: `be --light <args>` propagates to every dog
     //  spawn via $BRO_THEME (THEMESelect setenv's).  All sub-tools we
-    //  pipe through bro (BERunPipe) inherit env unchanged, so the
+    //  pipe through bro (BERunPipeSubs) inherit env unchanged, so the
     //  pager picks up the same palette.  Unknown values → hard fail.
     char const *theme_name = NULL;
     if (CLIHas(c, "--16"))    theme_name = THEME_16;
