@@ -109,8 +109,13 @@ ok64 BEGetSubUnmount(u8cs wt_root, u8cs subpath);
 //  GET-011: `src_uri` is the in-flight `be get` source URI, forwarded
 //  to `sniff sub-mount --source` so each sub is fetched from the SAME
 //  remote we are talking to.  Empty for a git-source parent.
+//  SUBS-018: `scope_path` is the requested get path (empty = whole-tree
+//  get).  When non-empty, only subs the path actually reaches (the mount
+//  itself or a path under it) are recursed; a path outside every mount
+//  recurses into none.
 ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
-                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri);
+                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri,
+                    u8cs scope_path);
 
 //  Walk `baseline_ulog`; unmount any sub not present in `target_ulog`.
 //  Skips paths whose anchor is already gone.  Worst per-row code or OK.

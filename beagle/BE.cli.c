@@ -1229,10 +1229,18 @@ ok64 BEActSubsGet(cli *c) {
     //  PRIMARY sub-fetch candidate against the SAME store.  Local/no-URI
     //  forms leave it empty → git's own recursion / declared URL.
     u8cs src_uri = {};
+    //  SUBS-018: the requested path scope (empty = whole-tree get).  A
+    //  path-scoped get recurses only into the sub(s) the path reaches.
+    //  ONLY a LOCAL bareword path (`be get p.txt`) is a within-wt scope;
+    //  a transport URI's path is the clone SOURCE (`file:<src>`), never a
+    //  scope — so set it only when scheme AND authority are both absent.
+    u8cs scope_path = {};
     if (CLIUriLen(c) > 0) {
         uri su = {};
         (void)CLIUriAt(&su, c, 0);
         if (!u8csEmpty(su.scheme)) u8csMv(src_uri, su.data);
+        if (u8csEmpty(su.scheme) && u8csEmpty(su.authority))
+            u8csMv(scope_path, su.path);
     }
 
     //  Compose target_ref from the wtlog tail (post-checkout).
@@ -1323,7 +1331,8 @@ ok64 BEActSubsGet(cli *c) {
         a_dup(u8c, tgt_view, u8bData(target_subs));
         ok64 sub_worst = BEGetDrainSubs(wt_root, tgt_view,
                                           (u8cs *)flag_view[0],
-                                          (u8cs *)flag_view[1], src_uri);
+                                          (u8cs *)flag_view[1], src_uri,
+                                          scope_path);
         if (sub_worst != OK) worst = sub_worst;
     }
 
@@ -1421,9 +1430,12 @@ ok64 BEActSubsPatch(cli *c) {
         //  via a local tree-diff absorb, not a remote fetch.  Empty
         //  src_uri → sniff keeps the declared `.gitmodules` URL.
         u8cs no_src = {NULL, NULL};
+        //  PATCH only reaches here for a whole-tree patch (the path-scoped
+        //  form returned earlier), so no path scope — recurse every sub.
+        u8cs no_scope = {NULL, NULL};
         ok64 sr = BEGetDrainSubs(wt_root, tgt_view,
                                  (u8cs *)flag_view[0], (u8cs *)flag_view[1],
-                                 no_src);
+                                 no_src, no_scope);
         if (sr != OK) worst = sr;
     }
 

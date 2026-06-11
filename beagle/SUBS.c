@@ -549,8 +549,22 @@ static b8 begetsubs_has(u8cs ulog, u8cs subpath) {
     return NO;
 }
 
+//  SUBS-018: does a path-scoped get reach this sub mount?  Empty scope =
+//  whole-tree get (every sub).  Else the scope must BE the mount or lie
+//  under it (`<mount>/…`), so `be get graf/DAG.c` reaches no `abc/` sub.
+static b8 subs_scope_reaches(u8cs scope, u8cs mount) {
+    if (u8csEmpty(scope))     return YES;
+    if (u8csEq(scope, mount)) return YES;
+    a_pad(u8, ms, FILE_PATH_MAX_LEN);
+    (void)u8bFeed(ms, mount);
+    (void)u8bFeed1(ms, '/');
+    a_dup(u8c, ms_v, u8bDataC(ms));
+    return u8csHasPrefix(scope, ms_v);
+}
+
 ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
-                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri) {
+                    u8cs *flag_head, u8cs *flag_term, u8cs src_uri,
+                    u8cs scope_path) {
     sane($ok(wt_root));
     ok64 worst = OK;
     b8 outer_emitted = NO;
@@ -567,6 +581,8 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         u8cs pin  = {};
         u8csMv(pin,  row.uri.fragment);
         if (u8csEmpty(path) || u8csLen(pin) != 40) continue;
+        //  SUBS-018: skip subs the path scope does not reach.
+        if (!subs_scope_reaches(scope_path, path)) continue;
 
         if (!outer_emitted) {
             fprintf(stderr, "be: get .\n");
