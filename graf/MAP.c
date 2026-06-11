@@ -59,10 +59,8 @@ static char const MAP_GLYPH_THIN[]  = "\xe2\x94\x82";   // │
 //  `be --tlv diff:?<sha>` on left-click of the preceding anchor.
 //  No-op when `toks` is the zero slice (plain-text mode).
 static void map_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
-    a_pad(u8, hex, 40);
-    u8cs raw = {csha->data, csha->data + 20};
-    (void)HEXu8sFeedSome(hex_idle, raw);
-    GRAFEmitDiffUri(toks, out, u8bDataC(hex));
+    a_sha1hex(hex, csha);
+    GRAFEmitDiffUri(toks, out, hex);
 }
 
 static char const *map_glyph_for(u8 depth) {

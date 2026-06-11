@@ -116,11 +116,7 @@ static ok64 keep_subs_emit_row(keep_subs_emit_ctx *kc, u8cs path,
 
     //  Pin as 40-hex fragment, allocated on the stack of this frame
     //  so the slice in row.fragment stays valid through URIutf8Feed.
-    a_pad(u8, hex, 40);
-    u8cs bin = {pin->data, pin->data + 20};
-    call(HEXu8sFeedSome, u8bIdle(hex), bin);
-    u8bFed(hex, 40);
-    a_dup(u8c, hex_view, u8bData(hex));
+    a_sha1hex(hex_view, pin);
     u8csMv(row.fragment, hex_view);
 
     call(URIutf8Feed, u8bIdle(kc->out), &row);

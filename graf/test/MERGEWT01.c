@@ -83,18 +83,14 @@ static ok64 commit_one(keep_pack *p,
     call(u8bAllocate, cb, 1024);
 
     a_cstr(tl, "tree ");  u8bFeed(cb, tl);
-    a_pad(u8, thx, 40);
-    a_rawc(ts2, *tree_sha);
-    HEXu8sFeedSome(thx_idle, ts2);
-    u8bFeed(cb, u8bDataC(thx));
+    a_sha1hex(thx, tree_sha);
+    u8bFeed(cb, thx);
     u8bFeed1(cb, '\n');
 
     if (parent_sha != NULL) {
         a_cstr(pl, "parent ");  u8bFeed(cb, pl);
-        a_pad(u8, phx, 40);
-        a_rawc(ps, *parent_sha);
-        HEXu8sFeedSome(phx_idle, ps);
-        u8bFeed(cb, u8bDataC(phx));
+        a_sha1hex(phx, parent_sha);
+        u8bFeed(cb, phx);
         u8bFeed1(cb, '\n');
     }
 

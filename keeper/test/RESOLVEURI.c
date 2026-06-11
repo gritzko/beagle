@@ -27,10 +27,7 @@
 
 //  Render a sha1 as a NUL-terminated 40-char ASCII hex string.
 static void sha_hex40(char *out41, sha1cp s) {
-    sha1hex h = {};
-    sha1hexFromSha1(&h, s);
-    u8cs sl = {};
-    sha1hexSlice(sl, &h);
+    a_sha1hex(sl, s);
     memcpy(out41, sl[0], 40);
     out41[40] = 0;
 }

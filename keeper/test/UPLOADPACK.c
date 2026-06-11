@@ -71,8 +71,7 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
 
     //  Encode sha → 40 hex chars + NUL.
     u8s hexs = {(u8 *)out_hex_41, (u8 *)out_hex_41 + 40};
-    u8cs bs = {sha.data, sha.data + 20};
-    HEXu8sFeedSome(hexs, bs);
+    SHA1u8sFeedHex(hexs, &sha);
     out_hex_41[40] = 0;
 
     //  Append a REFS entry pointing heads/main → blob sha.  The blob

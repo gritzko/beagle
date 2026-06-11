@@ -867,10 +867,7 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?') u8csUsed(tip_hex, 1);
     if ($len(tip_hex) != 40) return NONE;
 
-    sha1hex hex = {};
-    a_dup(u8c, hx, tip_hex);
-    if (sha1hexFromHex(&hex, hx) != OK) return NONE;
-    if (sha1FromSha1hex(out, &hex) != OK) return NONE;
+    if (sha1FromHex(out, tip_hex) != OK) return NONE;
     done;
 }
 

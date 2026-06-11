@@ -73,6 +73,13 @@ Types: `igno_pat` (pattern + flags), `igno` (up to 256 patterns).
   - `SHA1Open` / `SHA1Feed` / `SHA1Close`  streaming hash; PSTR.c
                                            uses these to hash a
                                            stitched packfile inline
+  - `SHA1u8sFeedHex` / `a_sha1hex`         canonical sha1→40-hex
+                                           encode (CODE-016)
+  - `sha1FromBin` / `sha1Drain`            binary (20-byte) → sha1 decode
+  - `sha1FromHex`                          40-hex → sha1 decode; the one
+                                           hex→sha1 funnel (CODE-016),
+                                           `>=40` else BADRANGE, HEXBAD
+                                           on non-hex
 
 ### PSTR.h — pack-stream encoder (WIRE.md Phase 2)
 
@@ -362,12 +369,14 @@ here; writes append to this dir and reads consult only this dir (no
 dir-chain fan-out, no per-branch or remotes subdirectories).
 
 Shared low-level helpers exported from `KEEP.h` (CODE-004/005 dedup):
-  * The hex40→sha1 decode is dog/WHIFF.h `sha1FromHex(sha1 *out, u8csc
-    hex)` — decode the leading 40 hex chars of a commit-header value into
-    a sha1, returning `ok64` (BADRANGE on <40 bytes, else the
-    `HEXu8sDrainSome` code).  It backs the parent/foster walks in
-    `KEEP.c`, `WALK.c`, `WIRECLI.c` and the at-sha decode in
-    `KEEP.exe.c`; no keeper-local copy.
+  * The hex40→sha1 decode is dog/git/SHA1.h `sha1FromHex(sha1 *out,
+    u8csc hex)` (relocated here in CODE-016, next to `sha1FromBin`) —
+    decode the leading 40 hex chars of a commit-header value into a
+    sha1, returning `ok64` (BADRANGE on <40 bytes, else the
+    `HEXu8sDrainSome` code).  It is the single hex→sha1 funnel: backs
+    the parent/foster walks in `KEEP.c`, `WALK.c`, `WIRECLI.c`,
+    `RESOLVE.c`, `REFADV.c`, the at-sha decode in `KEEP.exe.c`, and
+    graf/spot REFS-val decodes; no keeper-local copy.
   * The pack object-header varint encoder is `PACKu8sFeedObjHdr` in
     `dog/git/PACK.h` (the encode counterpart of `PACKDrainObjHdr`) —
     keeper's pack writer (`KEEP.c`) and the push pack builder

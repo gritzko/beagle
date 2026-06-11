@@ -703,8 +703,7 @@ ok64 SPOTIndexFromTips(uricp u) {
             u8cs hex = {rec.uri.fragment[0], rec.uri.fragment[1]};
             if (u8csLen(hex) != 40) continue;
             sha1 sha = {};
-            u8s sb = {sha.data, sha.data + 20};
-            if (HEXu8sDrainSome(sb, hex) != OK) continue;
+            if (sha1FromHex(&sha, hex) != OK) continue;
 
             u64 blob_hl40 = WHIFFHashlet40(&sha);
             u32 path_h20  = CAPOFnRap20(path);

@@ -733,9 +733,8 @@ ok64 KEEPhex40Table() {
         }
         if (got == OK) {
             //  First 40 chars must round-trip back to the same bytes.
-            sha1hex hx = {};
-            sha1hexFromSha1(&hx, &s);
-            want(memcmp(hx.data, cases[i].in, 40) == 0);
+            a_sha1hex(hx, &s);
+            want(memcmp(hx[0], cases[i].in, 40) == 0);
         }
     }
     done;
@@ -803,9 +802,7 @@ ok64 KEEPcapTokenTable() {
 static void commit_feed_ref(u8bp body, u8csc field, sha1cp sha) {
     u8bFeed(body, field);
     u8bFeed1(body, ' ');
-    sha1hex hx = {};
-    sha1hexFromSha1(&hx, sha);
-    u8cs hs = {hx.data, hx.data + 40};
+    a_sha1hex(hs, sha);
     u8bFeed(body, hs);
     u8bFeed1(body, '\n');
 }

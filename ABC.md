@@ -88,9 +88,16 @@ Rules (PRO.h §"BASS-implicit arena macros"):
 
 ## Hashes / hashlets
 
-- Use **`sha1`** (20 raw bytes) and **`sha1hex`** (40 hex ASCII)
-  from `dog/WHIFF.h`. Conversions: `sha1hexFromSha1`,
-  `sha1FromSha1hex`, `sha1hexFromHex`, `sha1hexSlice`.
+- Use **`sha1`** (20 raw bytes, `dog/git/SHA1.h`). Raw sha1↔hex
+  conversions funnel through `dog/git/SHA1.h` (CODE-016): encode via
+  `a_sha1hex(name, sha)` / `SHA1u8sFeedHex(into, sha)`, decode via
+  `sha1FromHex(out, hex)` (≥40 hex → 20 bytes; BADRANGE if <40,
+  HEXBAD on non-hex) or `sha1FromBin(out, 20-bytes)`.
+- **`sha1hex`** (40 hex ASCII, `dog/WHIFF.h`) is a *value/key* type —
+  use it only when you need a stored hex field, an equality
+  (`sha1hexeq`) or a sort key (`sha1hexZ`/`sha1hexMv`). For a pure
+  one-shot conversion, reach for the SHA1.h helpers above, not
+  `sha1hexFromSha1` / `sha1FromSha1hex`.
 - **Hashlet — 6..40 hex chars.** URI fragments may carry any prefix
   in this range; `len != 40` is too strict.
 - Don't carry SHAs as raw `u8[20]` / `char[40]` plus manual length.

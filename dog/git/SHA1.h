@@ -110,6 +110,16 @@ fun ok64 sha1FromBin(sha1* out, u8cs bin) {
     return OK;
 }
 
+// Decode the leading 40 ASCII hex chars of a slice into a 20-byte sha1.
+// Returns BADRANGE if the slice has fewer than 40 bytes; otherwise the
+// ok64 from HEXu8sDrainSome (OK, or HEXBAD on any non-hex byte).
+fun ok64 sha1FromHex(sha1* out, u8csc hex) {
+    if (u8csLen(hex) < 40) return BADRANGE;
+    a_head(u8c, first40, hex, 40);
+    u8s dst = {out->data, out->data + 20};
+    return HEXu8sDrainSome(dst, first40);
+}
+
 // Drain a 20-byte sha1 from `from`, advancing its head.
 fun ok64 sha1Drain(u8cs from, sha1* into) {
     if (u8csLen(from) < 20) return NODATA;

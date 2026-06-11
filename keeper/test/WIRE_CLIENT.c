@@ -324,9 +324,8 @@ ok64 WIRECLIENTtest_push_smoke() {
         a_cstr(branch_s, "feat");
         u8csc branch_cs = {branch_s[0], branch_s[1]};
         sha1 tip = {};
-        u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
-        want(HEXu8sDrainSome(bin, hx) == OK);
+        want(sha1FromHex(&tip, hx) == OK);
         ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
         want(po == OK);
 
@@ -378,9 +377,8 @@ ok64 WIRECLIENTtest_round_trip() {
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
         sha1 tip = {};
-        u8s bin = {tip.data, tip.data + 20};
         u8cs hx = {(u8cp)hex, (u8cp)hex + 40};
-        want(HEXu8sDrainSome(bin, hx) == OK);
+        want(sha1FromHex(&tip, hx) == OK);
         ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
         want(po == OK);
 
@@ -599,9 +597,8 @@ ok64 WIRECLIENTtest_title_converge() {
 #define HEX2SHA(name, hex)                                       \
     sha1 name = {};                                              \
     do {                                                         \
-        u8s _b = {name.data, name.data + 20};                    \
         u8cs _h = {(u8cp)(hex), (u8cp)(hex) + 40};               \
-        want(HEXu8sDrainSome(_b, _h) == OK);                     \
+        want(sha1FromHex(&name, _h) == OK);                      \
     } while (0)
 
 // ---- Test 7: incremental push prunes the have-set (DIS-021) -----------

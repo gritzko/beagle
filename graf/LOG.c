@@ -117,9 +117,8 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
     //  silently rewriting "remote tip" as "local cur".
     if (u->query[0] == NULL && u8csEmpty(u->authority)) {
         if (DOGIsFullSha(u8bDataC(k->h->cur_sha))) {
-            u8s sb = {out->data, out->data + 20};
             a_dup(u8c, hx, u8bData(k->h->cur_sha));
-            return HEXu8sDrainSome(sb, hx);
+            return sha1FromHex(out, hx);
         }
     }
 
@@ -154,9 +153,7 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
 
     if (ro != OK) return ro;
     if (u8csLen(resolved.query) < 40) fail(GRAFFAIL);
-    u8s sb = {out->data, out->data + 20};
-    u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-    return HEXu8sDrainSome(sb, hx);
+    return sha1FromHex(out, resolved.query);
 }
 
 //  `#N` / `#LN` → cap; missing or non-numeric fragment → unlimited.
@@ -202,10 +199,8 @@ static void graflog_pack(u32b toks, u8b out, u8 tag) {
 //  zero-width in the renderer; bro's click handler executes
 //  `be --tlv diff:?<sha>` on left-click.
 static void graflog_pack_uri_diff_sha(u32b toks, u8b out, sha1cp csha) {
-    a_pad(u8, hex, 40);
-    u8cs raw = {csha->data, csha->data + 20};
-    (void)HEXu8sFeedSome(hex_idle, raw);
-    GRAFEmitDiffUri(toks, out, u8bDataC(hex));
+    a_sha1hex(hex, csha);
+    GRAFEmitDiffUri(toks, out, hex);
 }
 
 //  Emit "<sha7> <7-date> <summary> (<author>)\n" with matching tok32
@@ -336,9 +331,7 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
                 a_cstr(par_kw, "parent");
                 if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
                     sha1 par_sha = {};
-                    u8s  bin = {par_sha.data, par_sha.data + 20};
-                    u8cs hx  = {value[0], value[0] + 40};
-                    if (HEXu8sDrainSome(bin, hx) == OK) {
+                    if (sha1FromHex(&par_sha, value) == OK) {
                         cur_h40 = WHIFFHashlet60(&par_sha);
                         found = YES;
                     }
@@ -537,9 +530,8 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
 
     sha1 cur_tip = {};
     {
-        u8s sb = {cur_tip.data, cur_tip.data + 20};
         a_dup(u8c, hx, u8bData(k->h->cur_sha));
-        if (HEXu8sDrainSome(sb, hx) != OK) return GRAFFAIL;
+        if (sha1FromHex(&cur_tip, hx) != OK) return GRAFFAIL;
     }
 
     u8csc needle = {u->fragment[0], u->fragment[1]};
@@ -703,9 +695,7 @@ static ok64 graf_head_pick_remote_cb(refcp r, void *ctx) {
     u8csMv(val, r->val);
     if (u8csLen(val) > 0 && val[0][0] == '?') val[0]++;
     if (u8csLen(val) != 40) return OK;
-    u8s sb = {rt->sha.data, rt->sha.data + 20};
-    a_dup(u8c, hx, val);
-    if (HEXu8sDrainSome(sb, hx) != OK) return OK;
+    if (sha1FromHex(&rt->sha, val) != OK) return OK;
     rt->found = YES;
     return REFSSTOP;
 }
@@ -714,9 +704,7 @@ static ok64 graf_head_pick_remote_cb(refcp r, void *ctx) {
 static ok64 graf_head_decode_sha(sha1 *out, u8cs hex) {
     sane(out);
     if (u8csLen(hex) != 40) return GRAFFAIL;
-    u8s sb = {out->data, out->data + 20};
-    a_dup(u8c, hx, hex);
-    return HEXu8sDrainSome(sb, hx);
+    return sha1FromHex(out, hex);
 }
 
 //  Resolve target: explicit `?branch` via REFSResolve; else implicit —
@@ -950,9 +938,8 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     }
     sha1 cur_tip = {};
     {
-        u8s sb = {cur_tip.data, cur_tip.data + 20};
         a_dup(u8c, hx, u8bData(k->h->cur_sha));
-        if (HEXu8sDrainSome(sb, hx) != OK) return GRAFFAIL;
+        if (sha1FromHex(&cur_tip, hx) != OK) return GRAFFAIL;
     }
     u64 cur_h = WHIFFHashlet60(&cur_tip);
 

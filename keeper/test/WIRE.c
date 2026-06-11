@@ -44,8 +44,7 @@ static void tmp_rm(char const *path) {
 //  Encode a sha1 into 40 hex chars in `out` (size 40).
 static void sha_to_hex(u8 *out40, sha1cp s) {
     u8s hs = {out40, out40 + 40};
-    u8cs bs = {s->data, s->data + 20};
-    HEXu8sFeedSome(hs, bs);
+    SHA1u8sFeedHex(hs, s);
 }
 
 //  Build a request byte buffer holding wants, haves, done.  Each is

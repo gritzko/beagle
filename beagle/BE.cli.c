@@ -3278,10 +3278,8 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
     URILexer(&bt);
     u8cs frag = {bt.fragment[0], bt.fragment[1]};
     if (u8csLen(frag) != 40) return NO;
-    sha1hex chex = {};
-    if (sha1hexFromHex(&chex, frag) != OK) return NO;
     sha1 csha = {};
-    if (sha1FromSha1hex(&csha, &chex) != OK) return NO;
+    if (sha1FromHex(&csha, frag) != OK) return NO;
 
     b8 tracked = NO;
     home rh = {};

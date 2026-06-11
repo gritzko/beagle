@@ -317,11 +317,10 @@ ok64 WALKtest4() {
 
         //  Decode the 40-hex fragment back to 20 raw bytes and compare.
         want(u8csLen(g.uri.fragment) == 40);
-        u8 bin[20] = {};
-        u8s bin_s = {bin, bin + 20};
+        sha1 got = {};
         a_dup(u8c, frag, g.uri.fragment);
-        call(HEXu8sDrainSome, bin_s, frag);
-        want(memcmp(bin, expect_sha[i].data, 20) == 0);
+        call(sha1FromHex, &got, frag);
+        want(sha1Eq(&got, &expect_sha[i]));
     }
 
     //  Heap exhausted.

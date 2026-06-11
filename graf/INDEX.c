@@ -266,8 +266,7 @@ static u64 graf_walk_val_to_hashlet(u8csc val_in) {
     if (val[0][0] == '?') val[0]++;
     if (u8csLen(val) != 40) return 0;
     sha1 sh = {};
-    u8s sb = {sh.data, sh.data + 20};
-    if (HEXu8sDrainSome(sb, val) != OK) return 0;
+    if (sha1FromHex(&sh, val) != OK) return 0;
     return WHIFFHashlet60(&sh);
 }
 

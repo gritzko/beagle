@@ -90,19 +90,15 @@ static void make_commit_body(u8 *const *out,
                              char const *msg) {
     a_cstr(tl, "tree ");
     u8bFeed(out, tl);
-    a_pad(u8, thx, 40);
-    a_rawc(ts2, *tree_sha);
-    HEXu8sFeedSome(thx_idle, ts2);
-    u8bFeed(out, u8bDataC(thx));
+    a_sha1hex(thx, tree_sha);
+    u8bFeed(out, thx);
     u8bFeed1(out, '\n');
 
     if (parent_sha != NULL) {
         a_cstr(pl, "parent ");
         u8bFeed(out, pl);
-        a_pad(u8, phx, 40);
-        a_rawc(ps, *parent_sha);
-        HEXu8sFeedSome(phx_idle, ps);
-        u8bFeed(out, u8bDataC(phx));
+        a_sha1hex(phx, parent_sha);
+        u8bFeed(out, phx);
         u8bFeed1(out, '\n');
     }
 

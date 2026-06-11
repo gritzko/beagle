@@ -562,11 +562,7 @@ static b8 wcli_haves_decode_val(sha1 *out, u8csc val) {
     a_dup(u8c, hex, val);
     if (u8csLen(hex) == 41 && hex[0][0] == '?') u8csUsed(hex, 1);
     if (u8csLen(hex) != 40) return NO;
-    a_dup(u8c, hex_dup, hex);
-    u8s bin = {out->data, out->data + 20};
-    if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
-    if (bin[0] != out->data + 20) return NO;
-    if (!u8csEmpty(hex_dup)) return NO;
+    if (sha1FromHex(out, hex) != OK) return NO;
     return YES;
 }
 
@@ -1726,10 +1722,7 @@ static ok64 wpush_collect_hist_cb(uri const *u, ron60 ts, ron60 verb,
     if (frag[0][0] == '?') u8csUsed(frag, 1);
     if (u8csLen(frag) != 40) done;
     sha1 sh = {};
-    u8s bin = {sh.data, sh.data + 20};
-    a_dup(u8c, hx, frag);
-    if (HEXu8sDrainSome(bin, hx) != OK) done;
-    if (bin[0] != sh.data + 20) done;
+    if (sha1FromHex(&sh, frag) != OK) done;
     if (sha1empty(&sh)) done;
     if (sha_set_has(c->haveset, &sh)) done;
     //  Walk the closure into haveset.  haveset-build mode (out=NULL)

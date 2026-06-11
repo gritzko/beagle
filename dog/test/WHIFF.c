@@ -106,10 +106,71 @@ static ok64 WHIFFTestHexHashlet(void) {
     done;
 }
 
+//  sha1FromHex (CODE-016): the canonical hex→sha1 decoder lives in
+//  dog/git/SHA1.h next to sha1FromBin.  Contract:
+//   - >= 40 hex chars: decode the leading 40 → 20 bytes, return OK,
+//     and the bytes round-trip back through SHA1u8sFeedHex;
+//   - < 40 chars: BADRANGE, output untouched;
+//   - non-hex inside the leading 40: HEXBAD.
+static ok64 WHIFFTestSha1FromHex(void) {
+    sane(1);
+    struct {
+        char const *hex;
+        ok64        want;
+    } cases[] = {
+        //  valid 40-hex → OK (lower-case)
+        {"0123456789abcdef0123456789abcdef01234567", OK},
+        //  valid 40-hex → OK (upper-case accepted by BASE16rev)
+        {"0123456789ABCDEF0123456789ABCDEF01234567", OK},
+        //  all-zero sha → OK
+        {"0000000000000000000000000000000000000000", OK},
+        //  longer than 40 → OK, only the leading 40 decode
+        {"0123456789abcdef0123456789abcdef0123456789abcdef", OK},
+        //  exactly 39 chars → BADRANGE (too short)
+        {"0123456789abcdef0123456789abcdef0123456", BADRANGE},
+        //  empty → BADRANGE
+        {"", BADRANGE},
+        //  40 chars with a non-hex byte inside → HEXBAD
+        {"0123456789abcdef0123456789abcdefzz234567", HEXBAD},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].hex);
+        u8csc hx = {src[0], src[1]};
+        sha1  got = {};
+        ok64  o = sha1FromHex(&got, hx);
+        if (o != cases[i].want) {
+            fprintf(stderr,
+                    "sha1FromHex('%s'): got %llx want %llx\n",
+                    cases[i].hex, (unsigned long long)o,
+                    (unsigned long long)cases[i].want);
+            fail(TESTFAIL);
+        }
+        //  On OK, re-encode the decoded sha and confirm the first 40
+        //  hex chars match the input (round-trip, case-insensitive).
+        if (o == OK) {
+            a_sha1hex(re, &got);
+            for (int j = 0; j < 40; j++) {
+                u8 a = re[0][j];
+                u8 b = (u8)cases[i].hex[j];
+                if (b >= 'A' && b <= 'F') b = (u8)(b - 'A' + 'a');
+                if (a != b) {
+                    fprintf(stderr,
+                            "sha1FromHex('%s'): round-trip mismatch at "
+                            "%d: '%c' vs '%c'\n",
+                            cases[i].hex, j, a, b);
+                    fail(TESTFAIL);
+                }
+            }
+        }
+    }
+    done;
+}
+
 ok64 WHIFFtest() {
     sane(1);
     call(WHIFFTestHashlet);
     call(WHIFFTestHexHashlet);
+    call(WHIFFTestSha1FromHex);
     done;
 }
 

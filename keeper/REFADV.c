@@ -27,11 +27,7 @@ static b8 refadv_decode_terminal(sha1 *out, u8csc val) {
     u8cs hex = {val[0], val[1]};
     if (u8csLen(hex) == 41 && hex[0][0] == '?') u8csUsed(hex, 1);
     if (u8csLen(hex) != 40) return NO;
-    a_dup(u8c, hex_dup, hex);
-    u8s bin = {out->data, out->data + 20};
-    if (HEXu8sDrainSome(bin, hex_dup) != OK) return NO;
-    if (!u8sEmpty(bin)) return NO;
-    if (!u8csEmpty(hex_dup)) return NO;
+    if (sha1FromHex(out, hex) != OK) return NO;
     return YES;
 }
 

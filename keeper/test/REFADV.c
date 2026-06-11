@@ -69,9 +69,7 @@ static ok64 push_branch(u8csc keepdir, char const *branch,
 
 static void hex_to_sha(sha1 *out, char const *hex_40) {
     a_cstr(hex_s, hex_40);
-    a_dup(u8c, hex_dup, hex_s);
-    u8s bin = {out->data, out->data + 20};
-    HEXu8sDrainSome(bin, hex_dup);
+    sha1FromHex(out, hex_s);
 }
 
 //  Capture REFADVEmit output to a tempfile fd, mmap the result, hand
@@ -379,9 +377,7 @@ ok64 REFADVtest_round_trip() {
         //  decode sha
         sha1 got_sha = {};
         u8cs hex_in = {line[0], line[0] + 40};
-        a_dup(u8c, hex_dup, hex_in);
-        u8s bin = {got_sha.data, got_sha.data + 20};
-        want(HEXu8sDrainSome(bin, hex_dup) == OK);
+        want(sha1FromHex(&got_sha, hex_in) == OK);
 
         u8cs got_refname = {line[0] + 41, line[1]};
 

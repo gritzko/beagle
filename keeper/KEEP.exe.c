@@ -208,16 +208,12 @@ static ok64 keeper_subs(keeper *k, cli *c) {
     //  the input is a ref name to look up.
     sha1 commit_sha = {};
     if (DOGIsFullSha(u->fragment)) {
-        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
-        a_dup(u8c, hex40, u->fragment);
-        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
+        if (sha1FromHex(&commit_sha, u->fragment) != OK) {
             fprintf(stderr, "keeper: subs: bad sha\n");
             fail(KEEPFAIL);
         }
     } else if (DOGIsFullSha(u->query)) {
-        u8s commit_bin = {commit_sha.data, commit_sha.data + 20};
-        a_dup(u8c, hex40, u->query);
-        if (HEXu8sDrainSome(commit_bin, hex40) != OK) {
+        if (sha1FromHex(&commit_sha, u->query) != OK) {
             fprintf(stderr, "keeper: subs: bad sha\n");
             fail(KEEPFAIL);
         }
@@ -981,11 +977,8 @@ static ok64 keeper_post(keeper *k, cli *c) {
                 path_mismatch = YES;
             }
             sha1 peer_tip = {};
-            u8s pbin = {peer_tip.data, peer_tip.data + 20};
-            a_dup(u8c, phx, resolved.query);
             if (!path_mismatch &&
-                HEXu8sDrainSome(pbin, phx) == OK &&
-                pbin[0] == peer_tip.data + 20 &&
+                sha1FromHex(&peer_tip, resolved.query) == OK &&
                 !sha1Eq(&peer_tip, &at_tip) &&
                 !KEEPIsAncestor(&at_tip, &peer_tip)) {
                 fprintf(stderr,

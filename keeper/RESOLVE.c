@@ -30,8 +30,7 @@
 static ok64 resolve_sha40(keeper *k, sha1 *out, u8cs hex) {
     sane(k && out);
     (void)k;
-    u8s sb = {out->data, out->data + 20};
-    call(HEXu8sDrainSome, sb, hex);
+    call(sha1FromHex, out, hex);
     a_carve(u8, cbuf, RESOLVE_OBJ_BUF);
     u8 ct = 0;
     ok64 ko = KEEPGetExact(out, cbuf, &ct);
@@ -80,9 +79,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
         ok64 ro = REFSResolve(&resolved, arena,
                               $path(keepdir), trunk_uri);
         if (ro != OK || u8csLen(resolved.query) < 40) return RESLVNONE;
-        u8s sb = {out->data, out->data + 20};
-        u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-        call(HEXu8sDrainSome, sb, hx);
+        call(sha1FromHex, out, resolved.query);
         done;
     }
 
@@ -133,9 +130,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
                                      qkey);
                 }
                 if (ro == OK && u8csLen(resolved.query) >= 40) {
-                    u8s sb = {out->data, out->data + 20};
-                    u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-                    call(HEXu8sDrainSome, sb, hx);
+                    call(sha1FromHex, out, resolved.query);
                     return OK;
                 }
             }
@@ -405,10 +400,7 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
             kind = REFKIND_DETACHED;
         }
     }
-    sha1hex pinhex = {};
-    sha1hexFromSha1(&pinhex, &pin);
-    u8cs pinslice = {};
-    sha1hexSlice(pinslice, &pinhex);
+    a_sha1hex(pinslice, &pin);
 
     //  Compose the canonical resolved SCOPE (URI-001 §"Canonical form").
     //  This funnel canonicalises the QUERY only — it NEVER pins the tip

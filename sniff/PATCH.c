@@ -152,9 +152,7 @@ static ok64 fetch_tree(u8b into, u8cs dir, sha1cp sha) {
     }
     a_dup(u8c, path, u8bData(pbuf));
 
-    sha1hex hex;
-    sha1hexFromSha1(&hex, sha);
-    u8cs query = {hex.data, hex.data + 40};
+    a_sha1hex(query, sha);
 
     a_uri(u, 0, 0, path, query, 0);
     return GRAFGet(into, u);
@@ -164,9 +162,7 @@ static ok64 fetch_blob(u8b into, u8cs path, sha1cp sha) {
     sane(into && sha && !$empty(path));
     u8bReset(into);
 
-    sha1hex hex;
-    sha1hexFromSha1(&hex, sha);
-    u8cs query = {hex.data, hex.data + 40};
+    a_sha1hex(query, sha);
 
     a_uri(u, 0, 0, path, query, 0);
     return GRAFGet(into, u);

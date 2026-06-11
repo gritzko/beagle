@@ -81,9 +81,8 @@ static ok64 cat_resolve_baseline(uricp u, Bu8 out) {
     uri probe = {};
     probe.path[0]     = u->path[0];
     probe.path[1]     = u->path[1];
-    sha1hex hex = {};
-    sha1hexFromSha1(&hex, &root_tree);
-    sha1hexSlice(probe.fragment, &hex);
+    a_sha1hex(hex, &root_tree);
+    u8csMv(probe.fragment, hex);
     return KEEPGetByURI((uricp)&probe, out);
 }
 

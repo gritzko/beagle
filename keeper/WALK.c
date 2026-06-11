@@ -386,16 +386,14 @@ static ok64 treeulog_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
 
     //  Hex-encode the 20-byte leaf sha into a stack buffer used as the
     //  fragment slice.
-    a_pad(u8, hex_buf, 40);
-    {
-        u8cs bin = {esha, esha + 20};
-        a_dup(u8c, bin_dup, bin);
-        HEXu8sFeedSome(u8bIdle(hex_buf), bin_dup);
-    }
+    sha1 leaf = {};
+    u8cs leaf_bin = {esha, esha + 20};
+    sha1FromBin(&leaf, leaf_bin);
+    a_sha1hex(hex_view, &leaf);
 
     uri u = {};
     u8csMv(u.path, path);
-    u8csMv(u.fragment, u8bDataC(hex_buf));
+    u8csMv(u.fragment, hex_view);
 
     ulogrec rec = {.ts   = c->ts,
                    .verb = ok64sub(c->verb, kletter),
