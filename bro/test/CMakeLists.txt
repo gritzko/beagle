@@ -43,3 +43,13 @@ target_link_options(EXECtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(EXECtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(EXECtest brolib dog keeplib abc-core)
 add_test(NAME EXECtest COMMAND EXECtest)
+
+# OPENtest includes ../BRO.c directly to reach file-static BROOpenFile /
+# BROstate (MEM-045).  Like SEARCHtest it must NOT link brolib (that would
+# duplicate every BRO.c symbol); it links the same downstream libs and
+# pulls in ../MAUS.c for the symbols BRO.c references.
+add_executable(OPENtest OPEN.c ${CMAKE_CURRENT_SOURCE_DIR}/../MAUS.c)
+target_link_options(OPENtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(OPENtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(OPENtest keeplib dog abc-core)
+add_test(NAME OPENtest COMMAND OPENtest)

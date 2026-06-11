@@ -913,9 +913,18 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     fv->hunk.text[0] = src_head;
     fv->hunk.text[1] = src_idle;
 
-    // Copy URI (= path) into arena
+    // Copy URI (= path) into arena.  The slot is not committed
+    // (st->nsaves++) until the very end, and BROOpenFile records no
+    // BRODefer, so on any error before commit nobody would unmap the
+    // booked file map — free it here, on the error branch, before
+    // returning (MEM-045).
     a_dup(u8 const, rp, relpath);
-    call(u8bHost, bro_arena, fv->hunk.uri, rp);
+    try(u8bHost, bro_arena, fv->hunk.uri, rp);
+    nedo {
+        FILEUnMap(mapped);
+        *fv = (BROfileview){};
+        return __;
+    }
 
     BROTokenize(&fv->hunk, relpath);
 
@@ -928,7 +937,17 @@ static ok64 BROOpenFile(BROstate *st, u8csc relpath, char const *repo,
     // Switch to file view
     st->hunks[0] = &fv->hunk;
     st->hunks[1] = &fv->hunk + 1;
-    call(BROBuildIndex, st);
+    try(BROBuildIndex, st);
+    nedo {
+        //  Restore the view borders moved into sv above so st is left
+        //  unchanged for the caller, then free the booked map (MEM-045).
+        $mv(st->hunks, sv->hunks);
+        range32bHandOver(st->linesbuf, sv->linesbuf);
+        st->scroll = sv->scroll;
+        FILEUnMap(mapped);
+        *fv = (BROfileview){};
+        return __;
+    }
     // Scroll to target line (1-based file line number).
     // Count only source-line starts — wrap continuations share the
     // same source line number and must not bump the counter.
