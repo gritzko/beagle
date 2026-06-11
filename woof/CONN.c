@@ -46,6 +46,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -613,7 +614,16 @@ ok64 WOOFApiOpen(void) {
         call(PATHu8bFeed, woof_api_cli.repo, wt);
     }
 
+#if defined(__linux__)
     woof_api_memfd = memfd_create("woof-api", 0);
+#else
+    //  Portable anon-fd: mkstemp + immediate unlink.  No on-disk name
+    //  outlives the open fd; ftruncate(0) on every request keeps it
+    //  scratch-only.  macOS / FreeBSD lack memfd_create.
+    char tmpl[] = "/tmp/woof-api.XXXXXX";
+    woof_api_memfd = mkstemp(tmpl);
+    if (woof_api_memfd >= 0) (void)unlink(tmpl);
+#endif
     if (woof_api_memfd < 0) fail(WOOFFAIL);
 
     woof_api_ready = YES;

@@ -132,7 +132,10 @@ add_executable(WIREE2EREFETCHtest WIREE2EREFETCH.c)
 target_link_options(WIREE2EREFETCHtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WIREE2EREFETCHtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WIREE2EREFETCHtest keeplib dog abc-core)
+add_dependencies(WIREE2EREFETCHtest keeper-cli)
 add_test(NAME WIREE2EREFETCHtest COMMAND WIREE2EREFETCHtest)
+set_tests_properties(WIREE2EREFETCHtest PROPERTIES
+    ENVIRONMENT "KEEPER_BIN=${DOG_BIN_DIR}/keeper")
 
 add_executable(WIRERLtest WIRE_RL.c)
 target_link_options(WIRERLtest PRIVATE ${TEST_LDD_FLAGS})
