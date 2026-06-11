@@ -294,7 +294,7 @@ con ok64 DOGNOBR = 0xd6105d82db;
 // producing dog's internal dispatch branch; no further wiring.
 
 typedef struct {
-    char const *scheme;   // "ls", "tree", "sha1", ...
+    u8cs scheme;          // u8slit("ls"), u8slit("tree"), ... ($empty = sentinel)
     char const *dog;      // "sniff" | "keeper" | "graf"
 } DOGProjRoute;
 

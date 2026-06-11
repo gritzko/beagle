@@ -679,34 +679,52 @@ static ok64 home_anchor_resolve(home *h, u8cs anchor) {
 //  subdir, so it returns NO and the walk keeps ascending — bare
 //  `be`/`sniff` near such a store refuses instead of adopting it as a
 //  wt.  See home_walk_up.
-static b8 home_dir_shieldlike(path8s p) {
-    DIR *d = opendir((char const *)*p);
-    if (d == NULL) return NO;
-    a_dup(u8c, base, p);
+//  Shared subdir scanner for the two `.be`-store classifiers below.
+//  Counts the immediate subdirectories of `p` (capped at 2 — both
+//  callers only distinguish 0 / 1 / >1), skipping dotted entries
+//  (".", "..", and the store's own ".be" are never project shards).
+//  When `first` is non-NULL it is reset and filled with the FIRST
+//  subdir's basename — trustworthy only when the returned count is 1.
+//  FILEIter already resolves DT_UNKNOWN via fstatat and skips "."/".."
+//  so no manual stat fallback is needed.  Returns 0/1/2 on success;
+//  a buffer error from `first` propagates.
+static ok64 home_be_subdirs(path8s p, u8b first, int *out_count) {
+    sane(out_count != NULL);
+    *out_count = 0;
+    a_path(dir, p);
+    fileit it = {};
+    if (FILEIterOpen(&it, dir) != OK) done;   //  dir absent ⇒ zero subdirs
+
     int subdirs = 0;
-    struct dirent *e = NULL;
-    while ((e = readdir(d)) != NULL) {
-        //  Dotdirs (".", "..", and the store's own ".be") are never
-        //  project shards — never adopt one as `h->project`.
-        if (e->d_name[0] == '.') continue;
-        b8 is_dir = NO;
-        if (e->d_type == DT_DIR) {
-            is_dir = YES;
-        } else if (e->d_type == DT_UNKNOWN) {
-            a_path(child);
-            (void)PATHu8bFeed(child, base);
-            a_cstr(fn, e->d_name);
-            if (PATHu8bPush(child, fn) == OK) {
-                filestat fs = {};
-                if (FILEStat(&fs, $path(child)) == OK &&
-                    fs.kind == FILE_KIND_DIR)
-                    is_dir = YES;
+    scan(FILENext, &it) {
+        if (it.type != DT_DIR) continue;
+        //  FILEIter terminates dir paths with a trailing '/'; drop it
+        //  before taking the basename so it is the bare shard name.
+        a_dup(u8c, full, u8bDataC(it.path));
+        if (!$empty(full) && full[1][-1] == '/') u8csShed1(full);
+        u8cs base = {};
+        PATHu8sBase(base, full);
+        //  Dotted basenames (".be" etc.) are never shards.
+        if ($empty(base) || $at(base, 0) == '.') continue;
+        if (++subdirs == 1 && first != NULL) {
+            u8bReset(first);
+            if (u8bFeed(first, base) != OK) {  //  real buffer error
+                FILEIterClose(&it);
+                fail(BNOROOM);
             }
         }
-        if (is_dir && ++subdirs > 1) break;   // >1 subdir ⇒ multi-project
+        if (subdirs > 1) break;                //  >1 ⇒ multi-project, stop
     }
-    closedir(d);
-    return subdirs <= 1;
+    seen(END);
+    FILEIterClose(&it);
+    *out_count = subdirs;
+    done;
+}
+
+static b8 home_dir_shieldlike(path8s p) {
+    int n = 0;
+    if (home_be_subdirs(p, NULL, &n) != OK) return NO;
+    return n <= 1;
 }
 
 //  If the `.be` dir at `p` has EXACTLY ONE subdirectory (a single
@@ -715,41 +733,11 @@ static b8 home_dir_shieldlike(path8s p) {
 //  multi-project store).  This is the store-side project source for a
 //  primary wt whose row-0 anchor names no project (DIS-024).
 static ok64 home_single_shard(path8s p, u8b out) {
-    DIR *d = opendir((char const *)*p);
-    if (d == NULL) return NODATA;
-    a_dup(u8c, base, p);
-    int subdirs = 0;
-    ok64 ret = NODATA;                         //  zero subdirs ⇒ no shard
-    struct dirent *e = NULL;
-    while ((e = readdir(d)) != NULL) {
-        //  Dotdirs (".", "..", and the store's own ".be") are never
-        //  project shards — never adopt one as `h->project`.
-        if (e->d_name[0] == '.') continue;
-        b8 is_dir = NO;
-        if (e->d_type == DT_DIR) {
-            is_dir = YES;
-        } else if (e->d_type == DT_UNKNOWN) {
-            //  No d_type from this fs: stat to classify.  A stat failure
-            //  here just means "not a usable subdir" — skip the entry.
-            a_path(child);
-            (void)PATHu8bFeed(child, base);
-            a_cstr(fn, e->d_name);
-            if (PATHu8bPush(child, fn) == OK) {
-                filestat fs = {};
-                if (FILEStat(&fs, $path(child)) == OK &&
-                    fs.kind == FILE_KIND_DIR)
-                    is_dir = YES;
-            }
-        }
-        if (!is_dir) continue;
-        if (++subdirs > 1) { ret = NODATA; break; }   // ambiguous — give up
-        u8bReset(out);
-        a_cstr(nm, e->d_name);
-        ret = u8bFeed(out, nm);                //  OK, or a real buffer error
-        if (ret != OK) break;
-    }
-    closedir(d);                              //  owned resource: close on all paths
-    return ret;
+    sane(u8bOK(out));
+    int n = 0;
+    call(home_be_subdirs, p, out, &n);
+    if (n != 1) return NODATA;                 //  flat / ambiguous store
+    done;
 }
 
 static ok64 home_walk_up(home *h) {

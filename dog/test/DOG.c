@@ -459,6 +459,37 @@ static ok64 DOGTestIsFullSha(void) {
     done;
 }
 
+// --- DOGIsHashlet (6..40 hex prefix recognizer) ---------------------
+
+static ok64 DOGTestIsHashlet(void) {
+    sane(1);
+    struct { char const *in; b8 want; } cases[] = {
+        {"abc123",   YES},   // 6 hex  → min hashlet
+        {"d268baf01234567890123456789012345678abcd", YES},  // 40 hex
+        {"DEADBEEF", YES},   // uppercase ok
+        {"abc12",    NO},    // 5 hex  → one short of min
+        {"abcde",    NO},    // 5 hex
+        {"",         NO},    // empty
+        {"feat",     NO},    // 4 chars, branch name
+        // 40 chars but a non-hex byte ('g') → not a hashlet
+        {"g268baf01234567890123456789012345678abcd", NO},
+        // 41 hex → one over max width
+        {"d268baf01234567890123456789012345678abcd1", NO},
+        {"abc/12",   NO},    // path-ish, non-hex byte
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].in);
+        a_dup(u8c, in, src);
+        b8 got = DOGIsHashlet(in);
+        if (got != cases[i].want) {
+            fprintf(stderr, "IsHashlet '%s': want %d got %d\n",
+                    cases[i].in, cases[i].want, got);
+            fail(FAIL);
+        }
+    }
+    done;
+}
+
 // --- DOGCanonQueryParse ---------------------------------------------
 //
 //  The canonical resolved query splits into (project, branch, pin).  The
@@ -565,6 +596,55 @@ static ok64 DOGTestGitTransport(void) {
             fprintf(stderr, "DOGIsGitTransport('%s') YES but "
                     "DOGIsTransport NO — invariant broken\n",
                     cases[i].scheme);
+            fail(FAIL);
+        }
+    }
+    done;
+}
+
+//  DOGIsProjector / DOGProjectorDog lookup over the u8slit DOG_PROJECTORS
+//  table.  `dog` is NULL iff the scheme isn't a projector; this also pins
+//  the empty-scheme sentinel walk (empty/unknown -> not a projector).
+static ok64 DOGTestProjector(void) {
+    sane(1);
+    struct {
+        char const *scheme;
+        char const *dog;     // expected dog, or NULL if not a projector
+    } cases[] = {
+        {"sha1",   "keeper"},
+        {"tree",   "keeper"},
+        {"log",    "graf"},
+        {"diff",   "graf"},
+        {"ls",     "sniff"},
+        {"status", "sniff"},
+        {"spot",   "spot"},
+        {"regex",  "spot"},
+        {"file",   NULL},     // transport, not a projector
+        {"be",     NULL},
+        {"",       NULL},     // empty — sentinel walk
+        {"bogus",  NULL},
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(s, cases[i].scheme);
+        a_dup(u8c, sc, s);
+        b8 is = DOGIsProjector(sc);
+        a_dup(u8c, sc2, s);
+        char const *dog = DOGProjectorDog(sc2);
+        b8 want = cases[i].dog != NULL;
+        if (is != want) {
+            fprintf(stderr, "DOGIsProjector('%s') want %d got %d\n",
+                    cases[i].scheme, want, is);
+            fail(FAIL);
+        }
+        if (want) {
+            if (dog == NULL || strcmp(dog, cases[i].dog) != 0) {
+                fprintf(stderr, "DOGProjectorDog('%s') want '%s' got '%s'\n",
+                        cases[i].scheme, cases[i].dog, dog ? dog : "(null)");
+                fail(FAIL);
+            }
+        } else if (dog != NULL) {
+            fprintf(stderr, "DOGProjectorDog('%s') want (null) got '%s'\n",
+                    cases[i].scheme, dog);
             fail(FAIL);
         }
     }
@@ -838,8 +918,10 @@ ok64 DOGtest() {
     call(DOGTestPathHash);
     call(DOGTestFeedDate);
     call(DOGTestIsFullSha);
+    call(DOGTestIsHashlet);
     call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);
+    call(DOGTestProjector);
     call(DOGTestFromBe);
     done;
 }

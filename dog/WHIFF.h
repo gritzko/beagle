@@ -108,38 +108,42 @@ fun b8 wh128csZ(wh128cs const *a, wh128cs const *b) {
 #define WHIFF_HASHLET40_BITS  40
 #define WHIFF_HASHLET40_MASK  WHIFF_OFF_MASK
 
-fun u64 WHIFFHashlet40(sha1cp s) {
-    u64 h = 0;
-    memcpy(&h, s->data, 8);
-    return (flip64(h) >> 24) & WHIFF_HASHLET40_MASK;
-}
-
 // 60-bit hashlet: first 7.5 bytes of SHA (15 hex chars)
 #define WHIFF_HASHLET60_BITS  60
 #define WHIFF_HASHLET60_MASK  ((1ULL << 60) - 1)
 
-fun u64 WHIFFHashlet60(sha1cp s) {
+// Width-parameterized core for the 40/60 hashlet twins.  `chars` is the
+// hashlet width in hex digits (10 → 40-bit, 15 → 60-bit); bit width is
+// `chars*4`.  Big-endian: first SHA byte lands in the most significant
+// nibble, right-aligned within the `chars*4`-bit field.
+fun u64 whiff_hashlet(sha1cp s, int chars) {
     u64 h = 0;
     memcpy(&h, s->data, 8);
-    return (flip64(h) >> 4) & WHIFF_HASHLET60_MASK;
+    int bits = chars * 4;
+    u64 mask = (bits >= 64) ? ~0ULL : ((1ULL << bits) - 1);
+    return (flip64(h) >> (64 - bits)) & mask;
 }
+
+fun u64 WHIFFHashlet40(sha1cp s) { return whiff_hashlet(s, 10); }
+fun u64 WHIFFHashlet60(sha1cp s) { return whiff_hashlet(s, 15); }
 
 // --- Hashlet to hex ---
 
-fun ok64 WHIFFHexFeed40(u8s out, u64 hashlet) {
-    for (int i = 0; i < 10 && !$empty(out); i++) {
-        u8 nib = (u8)((hashlet >> (36 - i * 4)) & 0xf);
+// Emit `chars` hex digits of `hashlet`, most-significant nibble first.
+fun ok64 whiff_hex_feed(u8s out, u64 hashlet, int chars) {
+    for (int i = 0; i < chars && !$empty(out); i++) {
+        u8 nib = (u8)((hashlet >> ((chars - 1 - i) * 4)) & 0xf);
         u8sFeed1(out, $at(BASE16, nib));
     }
     return OK;
 }
 
+fun ok64 WHIFFHexFeed40(u8s out, u64 hashlet) {
+    return whiff_hex_feed(out, hashlet, 10);
+}
+
 fun ok64 WHIFFHexFeed60(u8s out, u64 hashlet) {
-    for (int i = 0; i < 15 && !$empty(out); i++) {
-        u8 nib = (u8)((hashlet >> (56 - i * 4)) & 0xf);
-        u8sFeed1(out, $at(BASE16, nib));
-    }
-    return OK;
+    return whiff_hex_feed(out, hashlet, 15);
 }
 
 // --- SHA-1 hex representation (40 ASCII hex chars) ---
@@ -194,9 +198,13 @@ fun ok64 sha1hexFromHex(sha1hex *out, u8csc hex) {
 
 // --- Hex to hashlet ---
 
-fun u64 WHIFFHexHashlet40(u8csc hex) {
+// Width-parameterized core for the 40/60 hex→hashlet twins.  `chars` is
+// the hashlet width in hex digits (10 → 40-bit, 15 → 60-bit).  Reads up
+// to `chars` leading hex digits of `hex` (stops at the first non-hex
+// byte) and left-aligns the value into the `chars*4`-bit field.
+fun u64 whiff_hex_hashlet(u8csc hex, int chars) {
     size_t nchars = u8csLen(hex);
-    if (nchars > 10) nchars = 10;
+    if (nchars > (size_t)chars) nchars = (size_t)chars;
     u64 h = 0;
     $for(u8c, p, hex) {
         if ((size_t)(p - hex[0]) >= nchars) break;
@@ -204,22 +212,11 @@ fun u64 WHIFFHexHashlet40(u8csc hex) {
         if (nib == 0xff) break;
         h = (h << 4) | nib;
     }
-    h <<= (10 - nchars) * 4;
+    h <<= ((size_t)chars - nchars) * 4;
     return h;
 }
 
-fun u64 WHIFFHexHashlet60(u8csc hex) {
-    size_t nchars = u8csLen(hex);
-    if (nchars > 15) nchars = 15;
-    u64 h = 0;
-    $for(u8c, p, hex) {
-        if ((size_t)(p - hex[0]) >= nchars) break;
-        u8 nib = BASE16rev[*p];
-        if (nib == 0xff) break;
-        h = (h << 4) | nib;
-    }
-    h <<= (15 - nchars) * 4;
-    return h;
-}
+fun u64 WHIFFHexHashlet40(u8csc hex) { return whiff_hex_hashlet(hex, 10); }
+fun u64 WHIFFHexHashlet60(u8csc hex) { return whiff_hex_hashlet(hex, 15); }
 
 #endif

@@ -454,12 +454,64 @@ static ok64 HUNKTestDrainBounds() {
     done;
 }
 
+// =====================================================================
+// HUNKu8sMakeURI — fragment percent-escaping (hunk_frag_esc).
+// Non-ident symbols get wrapped in '…' and URI-illegal bytes (control,
+// non-ASCII, '#', '%') percent-escaped as uppercase %XX; printable
+// ASCII passes through.
+// =====================================================================
+
+typedef struct {
+    const char *path;
+    const char *symbol;  // raw symbol bytes (NUL-terminated; no embedded NUL)
+    u32         lineno;
+    const char *expect;
+} MakeURICase;
+
+static const MakeURICase MAKEURI_CASES[] = {
+    // plain ident → verbatim, no quoting/escaping
+    {"src/a.c", "foo",        0, "src/a.c#foo"},
+    {"src/a.c", "foo_bar2",  42, "src/a.c#foo_bar2:L42"},
+    // non-ident → quoted.  Only #/%/control/high bytes escape as %XX
+    // uppercase; other printable ASCII (incl. space) passes through.
+    {"f.c",     "a b",        0, "f.c#'a b'"},
+    {"f.c",     "a#b",        0, "f.c#'a%23b'"},
+    {"f.c",     "a%b",        0, "f.c#'a%25b'"},
+    {"f.c",     "a\tb",       0, "f.c#'a%09b'"},   // tab = control → escaped
+    {"f.c",     "caf\xc3\xa9", 0, "f.c#'caf%C3%A9'"}, // UTF-8 high bytes
+    // operator-ish symbol body, printable ASCII passes through
+    {"f.c",     "operator()", 7, "f.c#'operator()':L7"},
+    // bare line, no symbol
+    {"f.c",     "",          12, "f.c#L12"},
+};
+
+static ok64 HUNKTestMakeURIEsc(void) {
+    sane(1);
+    for (size_t i = 0; i < sizeof(MAKEURI_CASES)/sizeof(MAKEURI_CASES[0]); i++) {
+        const MakeURICase *c = &MAKEURI_CASES[i];
+        a_pad(u8, out, 256);
+        HUNK_SLICE(path, c->path);
+        u8csc pathc = {path[0], path[1]};
+        HUNK_SLICE(sym, c->symbol);
+        u8csc symc = {sym[0], sym[1]};
+        call(HUNKu8sMakeURI, u8bIdle(out), pathc, symc, c->lineno);
+        a_dup(u8c, got, u8bData(out));
+        if (!hunk_slice_eq(got, c->expect)) {
+            fprintf(stderr, "FAIL MakeURI[%zu]: want '%s' got '%.*s'\n",
+                    i, c->expect, (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
 ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
     call(HUNKTestRelayRoundtrip);
     call(HUNKTestRedReserved);
     call(HUNKTestDrainBounds);
+    call(HUNKTestMakeURIEsc);
     done;
 }
 

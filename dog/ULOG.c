@@ -1216,22 +1216,25 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     {0, 0},
 };
 
-ansi64 ULOGVerbColor(ron60 verb) {
-    if (verb == 0) return ANSI_DEFAULT;
-    for (u32 i = 0; ULOG_VERB_TAGS[i][0] != 0; i++) {
+//  Shared ULOG_VERB_TAGS row scan: returns the tag (theme slot) char for
+//  `verb`, or 0 when the verb is unset (0) or absent from the table.
+//  Color/tag derive their own defaults from a 0 result.
+static u8 ulog_verb_tag(ron60 verb) {
+    if (verb == 0) return 0;
+    for (u32 i = 0; ULOG_VERB_TAGS[i][0] != 0; i++)
         if (ULOG_VERB_TAGS[i][0] == (u64)verb)
-            return THEMEAt((u8)ULOG_VERB_TAGS[i][1]);
-    }
-    return ANSI_DEFAULT;
+            return (u8)ULOG_VERB_TAGS[i][1];
+    return 0;
+}
+
+ansi64 ULOGVerbColor(ron60 verb) {
+    u8 tag = ulog_verb_tag(verb);
+    return tag ? THEMEAt(tag) : ANSI_DEFAULT;
 }
 
 u8 ULOGVerbTag(ron60 verb) {
-    if (verb == 0) return 'S';
-    for (u32 i = 0; ULOG_VERB_TAGS[i][0] != 0; i++) {
-        if (ULOG_VERB_TAGS[i][0] == (u64)verb)
-            return (u8)ULOG_VERB_TAGS[i][1];
-    }
-    return 'S';
+    u8 tag = ulog_verb_tag(verb);
+    return tag ? tag : 'S';
 }
 
 //  Lift a parsed row into a status hunk: render the URI bytes into

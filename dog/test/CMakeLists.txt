@@ -54,6 +54,12 @@ target_compile_options(DPATHtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(DPATHtest dog abc-core)
 add_test(NAME DPATHtest COMMAND DPATHtest)
 
+add_executable(WHIFFtest WHIFF.c)
+target_link_options(WHIFFtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(WHIFFtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(WHIFFtest dog abc-core)
+add_test(NAME WHIFFtest COMMAND WHIFFtest)
+
 add_executable(DOGtest DOG.c)
 target_link_options(DOGtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(DOGtest PRIVATE ${TEST_CXX_FLAGS})

@@ -32,6 +32,21 @@ static ron60 hunk_drain_ron60(u8cs val) {
     return (ron60)v;
 }
 
+// Resolve a ron60 wall-clock stamp `ts` to a unix `time_t` (as i64),
+// falling back to `now` when `ts` is unset or unparsable.  `isdst` is
+// passed straight to `tm.tm_isdst` before `mktime`: status rows pass
+// -1 so mktime resolves DST itself (a 0 would shift a summer stamp +1h
+// into the future — SUBS-003 / test/get/05,07).  The header path keeps
+// its historical 0 (see hunk_feed_header_color).
+static i64 hunk_ron60_to_time(ron60 ts, i64 now, int isdst) {
+    if (!ts) return now;
+    struct tm tm = {};
+    if (RONToTime(ts, &tm, NULL) != OK) return now;
+    tm.tm_isdst = isdst;
+    time_t t = mktime(&tm);
+    return (t != (time_t)-1) ? (i64)t : now;
+}
+
 // A status hunk is a ULOG-style event row lifted into hunk shape:
 // ts/verb populated, no source body.  Renders as one line.
 static b8 hunk_is_status(hunk const *hk) {
@@ -50,19 +65,8 @@ static ok64 hunk_feed_status_plain(u8s into, hunk const *hk) {
     if ($len(into) < 64) fail(BNOROOM);
 
     i64 now = (i64)time(NULL);
-    i64 ts  = now;
-    if (hk->ts) {
-        struct tm tm = {};
-        if (RONToTime(hk->ts, &tm, NULL) == OK) {
-            //  RON encodes the local wall-clock; let mktime resolve DST
-            //  itself (tm_isdst=0 would shift a summer stamp +1h, pushing
-            //  it into the future so DOGutf8sFeedDate renders DDMon, not
-            //  HH:MM — see SUBS-003 / test/get/05,07).
-            tm.tm_isdst = -1;
-            time_t t = mktime(&tm);
-            if (t != (time_t)-1) ts = (i64)t;
-        }
-    }
+    //  -1: let mktime resolve DST (see hunk_ron60_to_time / SUBS-003).
+    i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
     call(DOGutf8sFeedDate, into, ts, now);
     call(u8sFeed1, into, '\t');
     call(RONutf8sFeed, into, hk->verb);
@@ -83,15 +87,8 @@ static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
     ansi64 c_verb = ULOGVerbColor(hk->verb);
 
     i64 now = (i64)time(NULL);
-    i64 ts  = now;
-    if (hk->ts) {
-        struct tm tm = {};
-        if (RONToTime(hk->ts, &tm, NULL) == OK) {
-            tm.tm_isdst = -1;   // resolve DST (see hunk_feed_status_plain)
-            time_t t = mktime(&tm);
-            if (t != (time_t)-1) ts = (i64)t;
-        }
-    }
+    //  -1: resolve DST (see hunk_ron60_to_time / hunk_feed_status_plain).
+    i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
 
     call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
     call(DOGutf8sFeedDate, into, ts, now);
@@ -120,23 +117,25 @@ static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
 // `into`.  Everything else in printable ASCII passes through.  Used by
 // HUNKu8sMakeURI to wrap free-form symbol bodies safely.
 static ok64 hunk_frag_esc(u8s into, u8cs raw) {
-    if (into[0] == NULL || into[0] >= into[1]) return SNOROOM;
-    if (raw[0] == NULL || raw[0] >= raw[1]) return OK;
-    static const u8c HEX[16] = "0123456789ABCDEF";
-    for (u8cp p = raw[0]; p < raw[1]; p++) {
+    sane(u8sOK(into));
+    if ($empty(raw)) done;
+    //  Uppercase %XX per RFC 3986 §2.1.  abc/HEX only ships the
+    //  lowercase BASE16 table, so the percent-encode path keeps an
+    //  uppercase lookup; the byte emission rides u8sFeed1 (no pointer
+    //  arithmetic, SNOROOM propagated).
+    static const u8c HEXUP[16] = "0123456789ABCDEF";
+    $for(u8c, p, raw) {
         u8 c = *p;
         b8 legal = (c >= 0x20 && c <= 0x7E && c != '#' && c != '%');
         if (legal) {
-            if (into[0] >= into[1]) return SNOROOM;
-            *into[0]++ = c;
+            call(u8sFeed1, into, c);
         } else {
-            if (into[0] + 3 > into[1]) return SNOROOM;
-            *into[0]++ = '%';
-            *into[0]++ = HEX[(c >> 4) & 0xF];
-            *into[0]++ = HEX[c & 0xF];
+            call(u8sFeed1, into, (u8)'%');
+            call(u8sFeed1, into, (u8)HEXUP[(c >> 4) & 0xF]);
+            call(u8sFeed1, into, (u8)HEXUP[c & 0xF]);
         }
     }
-    return OK;
+    done;
 }
 
 u32 HUNKu8sFragSplit(u8csc frag, u8cs out_sym) {
@@ -390,14 +389,10 @@ static ok64 hunk_feed_header_color(u8s into, hunk const *hk) {
         ansi64 c_unk  = ULOGVerbColor(HUNK_VERB_UNK_RON60);
         ansi64 c_verb = ULOGVerbColor(hk->verb);
         i64 now = (i64)time(NULL);
-        i64 ts  = now;
-        if (hk->ts) {
-            struct tm tm = {};
-            if (RONToTime(hk->ts, &tm, NULL) == OK) {
-                time_t t = mktime(&tm);
-                if (t != (time_t)-1) ts = (i64)t;
-            }
-        }
+        //  isdst=0 here (NOT -1) preserves this header's historical
+        //  behavior; status rows above use -1.  This asymmetry is a
+        //  likely SUBS-003-class latent bug — flagged, not changed.
+        i64 ts  = hunk_ron60_to_time(hk->ts, now, 0);
         call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
         call(DOGutf8sFeedDate, into, ts, now);
         call(ANSIu8sFeedReset, into, c_unk);

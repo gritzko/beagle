@@ -30,40 +30,49 @@ a_cstr(DOG_CONFIG_S, DOG_CONFIG_NAME);
 //  `be <proj>:<URI>` to the right dog.  Projectors are *never*
 //  transports — the scheme selects what shape of bytes to emit.
 static DOGProjRoute const DOG_PROJECTORS[] = {
-    {"sha1",   "keeper"},
-    {"blob",   "keeper"},
-    {"tree",   "keeper"},
-    {"commit", "keeper"},
-    {"log",    "graf"},
-    {"refs",   "keeper"},
-    {"size",   "keeper"},
-    {"type",   "keeper"},
-    {"diff",   "graf"},
-    {"blame",  "graf"},
-    {"weave",  "graf"},
-    {"map",    "graf"},
-    {"ls",     "sniff"},   // one-level
-    {"lsr",    "sniff"},   // recursive
-    {"cat",    "sniff"},
-    {"status", "sniff"},   // worktree status — same hunk as bare `be`
+    {u8slit("sha1"),   "keeper"},
+    {u8slit("blob"),   "keeper"},
+    {u8slit("tree"),   "keeper"},
+    {u8slit("commit"), "keeper"},
+    {u8slit("log"),    "graf"},
+    {u8slit("refs"),   "keeper"},
+    {u8slit("size"),   "keeper"},
+    {u8slit("type"),   "keeper"},
+    {u8slit("diff"),   "graf"},
+    {u8slit("blame"),  "graf"},
+    {u8slit("weave"),  "graf"},
+    {u8slit("map"),    "graf"},
+    {u8slit("ls"),     "sniff"},   // one-level
+    {u8slit("lsr"),    "sniff"},   // recursive
+    {u8slit("cat"),    "sniff"},
+    {u8slit("status"), "sniff"},   // worktree status — same hunk as bare `be`
     //  Search projectors — read-only views (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
     //  Scheme picks the search backend; path-slot carries the body.
     //  Examples:
     //    be spot:'u8sFeed( a, b )'      structural
     //    be regex:'u\d+sFeed'           PCRE
     //    be grep:u8sFeed                literal
-    {"spot",   "spot"},
-    {"grep",   "spot"},
-    {"regex",  "spot"},
-    {NULL,     NULL}
+    {u8slit("spot"),   "spot"},
+    {u8slit("grep"),   "spot"},
+    {u8slit("regex"),  "spot"},
+    {{}, NULL}                      // empty-scheme sentinel
 };
+
+//  Walk an empty-`u8cs`-terminated scheme table; YES iff `scheme`
+//  matches a cell.  Empty scheme never matches.  Compile-time `u8slit`
+//  cells compare with a bare `u8csEq` — no per-call strlen.  Used by the
+//  transport classifiers.
+static b8 dog_scheme_in_table(u8cs const *table, u8cs scheme) {
+    if (u8csEmpty(scheme)) return NO;
+    for (u8cs const *t = table; !$empty(*t); t++)
+        if (u8csEq(*t, scheme)) return YES;
+    return NO;
+}
 
 static DOGProjRoute const *dog_proj_lookup(u8cs scheme) {
     if (u8csEmpty(scheme)) return NULL;
-    for (DOGProjRoute const *p = DOG_PROJECTORS; p->scheme; p++) {
-        a_cstr(p_s, p->scheme);
-        if (u8csEq(scheme, p_s)) return p;
-    }
+    for (DOGProjRoute const *p = DOG_PROJECTORS; !$empty(p->scheme); p++)
+        if (u8csEq(p->scheme, scheme)) return p;
     return NULL;
 }
 
@@ -80,34 +89,25 @@ char const *DOGProjectorDog(u8cs scheme) {
 //  table next to DOG_PROJECTORS so adding a transport is a one-row
 //  edit.  CLI.c uses this to disambiguate `word:` — known scheme = URI,
 //  unknown = prose (e.g. a `cli:` conventional-commit prefix).
-static char const *const DOG_TRANSPORTS[] = {
-    "ssh", "https", "http", "git", "file", "be", NULL
+static u8cs const DOG_TRANSPORTS[] = {
+    u8slit("ssh"), u8slit("https"), u8slit("http"),
+    u8slit("git"), u8slit("file"),  u8slit("be"), {}
 };
 
 b8 DOGIsTransport(u8cs scheme) {
-    if (u8csEmpty(scheme)) return NO;
-    for (char const *const *t = DOG_TRANSPORTS; *t; t++) {
-        a_cstr(t_s, *t);
-        if (u8csEq(scheme, t_s)) return YES;
-    }
-    return NO;
+    return dog_scheme_in_table(DOG_TRANSPORTS, scheme);
 }
 
 //  Git-protocol transport schemes — the wire edge runs
 //  `git-upload-pack` / `git-receive-pack`.  Subset of DOG_TRANSPORTS:
 //  excludes `be`/`keeper` (beagle protocol) and `file` (a local exec
 //  whose git-vs-keeper choice is path-driven, not scheme-driven).
-static char const *const DOG_GIT_TRANSPORTS[] = {
-    "ssh", "https", "http", "git", NULL
+static u8cs const DOG_GIT_TRANSPORTS[] = {
+    u8slit("ssh"), u8slit("https"), u8slit("http"), u8slit("git"), {}
 };
 
 b8 DOGIsGitTransport(u8cs scheme) {
-    if (u8csEmpty(scheme)) return NO;
-    for (char const *const *t = DOG_GIT_TRANSPORTS; *t; t++) {
-        a_cstr(t_s, *t);
-        if (u8csEq(scheme, t_s)) return YES;
-    }
-    return NO;
+    return dog_scheme_in_table(DOG_GIT_TRANSPORTS, scheme);
 }
 
 static b8 dog_is_projector(u8cs scheme) {
@@ -389,25 +389,13 @@ ok64 DOGCanonURI(urip u) {
 b8 DOGIsHashlet(u8cs s) {
     size_t n = u8csLen(s);
     if (n < 6 || n > 40) return NO;
-    for (size_t i = 0; i < n; i++) {
-        u8 c = s[0][i];
-        if (!((c >= '0' && c <= '9') ||
-              (c >= 'a' && c <= 'f') ||
-              (c >= 'A' && c <= 'F'))) return NO;
-    }
-    return YES;
+    return HEXu8sValid(s) ? YES : NO;
 }
 
 b8 DOGIsFullSha(u8cs s) {
     size_t n = u8csLen(s);
     if (n != 40 && n != 64) return NO;   // sha1 / sha256 hex widths
-    for (size_t i = 0; i < n; i++) {
-        u8 c = s[0][i];
-        if (!((c >= '0' && c <= '9') ||
-              (c >= 'a' && c <= 'f') ||
-              (c >= 'A' && c <= 'F'))) return NO;
-    }
-    return YES;
+    return HEXu8sValid(s) ? YES : NO;
 }
 
 b8 DOGRefIsBranch(u8cs ref) {
