@@ -227,8 +227,13 @@ static ok64 write_blob(u8cs reporoot, u8csc relpath_in,
     } else {
         int fd = -1;
         call(FILECreate, &fd, $path(fp));
-        call(FILEFeedAll, fd, data);
+        //  Capture the write result, release the fd unconditionally,
+        //  then propagate — a bare call() here would leak the open fd
+        //  on a write failure (MEM-041, the MEM-026 close-before-return
+        //  idiom).
+        ok64 wo = FILEFeedAll(fd, data);
         FILEClose(&fd);
+        if (wo != OK) return wo;
         if (is_exe) FILEChmod($path(fp), 0755);
     }
 

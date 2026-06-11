@@ -2652,7 +2652,15 @@ ok64 POSTCommit(u8cs target_branch,
     p.strict_order = NO;
 
     if (!have_root) {
-        call(post_feed_empty_tree, k, &p, &root_tree);
+        //  Capture the feed result and close the pack (fd + mmaps +
+        //  heap) unconditionally before propagating — a bare call()
+        //  here would leak the whole keeper pack on a feed failure
+        //  (MEM-041, the MEM-026 close-before-return idiom).
+        ok64 eo = post_feed_empty_tree(k, &p, &root_tree);
+        if (eo != OK) {
+            KEEPPackClose(&p);
+            return eo;
+        }
     }
 
     //  9. Verify each parent commit exists locally; refuse otherwise.
