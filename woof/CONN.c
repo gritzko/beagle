@@ -475,37 +475,48 @@ woof_disp WOOFConnRoute(conn *c, woof_route const **route, ok64 *err) {
 //  into c->out's idle range while ≥ WOOF_HUNK_HEADROOM idle bytes
 //  remain.  Advances both data heads; short trailing frames wait.
 //
-//  MEM-038: HUNKu8sDrain carves per-hunk BASS scratch for the TOK array
-//  (hunk_drain_toks, dog/HUNK.c) deliberately WITHOUT a call() wrapper so
-//  the toks outlive the drain and survive into HUNKu8sFeedHtml.  woof's
-//  callbacks (pipe_cb / serve_inproc) reach here with NO enclosing
-//  call()/try() frame — POL invokes them bare (abc/POL.c:248,314) — so
-//  that scratch was never rewound and ABC_BASS grew unbounded for the
-//  server's lifetime, one TOK array per HUNK_TLV_TOK response.  We snapshot
-//  the BASS data+idle heads on entry and rewind them on exit (the same two
-//  stores call()/try() do, PRO.h:82-83): each frame's toks are CONSUMED by
-//  HUNKu8sFeedHtml within this loop, so reclaiming them after the render is
-//  safe and keeps the arena flat across requests.  This is Option (B): a
-//  woof-local per-request rewind, no change to abc/POL's callback contract.
-void WOOFRenderHunks(conn *c) {
-    u8 *bass_data = ((u8 **)ABC_BASS)[1];
-    u8 *bass_idle = ((u8 **)ABC_BASS)[2];
+//  Render one drained HUNK frame into c->out.  HUNKu8sDrain carves the
+//  frame's TOK array as BASS scratch (hunk_drain_toks, dog/HUNK.c) that
+//  must outlive the drain and survive into HUNKu8sFeedHtml — so the
+//  drain+feed pair lives together in THIS helper, and WOOFRenderHunks
+//  invokes it through call(), whose frame snapshots+rewinds BASS once
+//  per hunk (the toks are consumed by HUNKu8sFeedHtml before that
+//  rewind).  `*more` reports whether a full frame rendered: NO means no
+//  complete frame remains — a normal stop, not an error.
+static ok64 woof_render_one_hunk(conn *c, b8 *more) {
+    sane(c && more);
+    *more = NO;
+    hunk hk = {};
+    u8cs frame = { c->pipe_in[1], c->pipe_in[2] };
+    if (HUNKu8sDrain(frame, &hk) != OK) done;   //  short frame: wait for more
+    c->pipe_in[1] = (u8 *)frame[0];
+    //  HUNKu8sFeedHtml writes a `u8s` (head/term) into c->out's idle
+    //  range — a persistent conn buffer, not BASS, so it survives the
+    //  call() rewind; commit the advanced head back.
+    u8s idle = { c->out[2], c->out[3] };
+    call(HUNKu8sFeedHtml, idle, &hk);
+    c->out[2] = idle[0];
+    *more = YES;
+    done;
+}
+
+//  MEM-038: drain HUNK frames into the output buffer until c->out runs
+//  low on headroom or the pipe holds no complete frame.  Each frame's
+//  TOK carve is BASS scratch with no natural enclosing frame — POL
+//  invokes woof's callbacks (pipe_cb / serve_inproc) bare — so we
+//  reclaim it the idiomatic way: render every hunk through a call() to
+//  woof_render_one_hunk, whose frame rewinds that scratch per hunk.  The
+//  arena stays flat across hunks AND requests with no manual arena
+//  poking, and a render error propagates instead of being swallowed.
+ok64 WOOFRenderHunks(conn *c) {
+    sane(c);
     while ((size_t)(c->out[3] - c->out[2]) >= WOOF_HUNK_HEADROOM
            && c->pipe_in[1] < c->pipe_in[2]) {
-        hunk hk = {};
-        u8cs frame = { c->pipe_in[1], c->pipe_in[2] };
-        if (HUNKu8sDrain(frame, &hk) != OK) break;
-        c->pipe_in[1] = (u8 *)frame[0];
-        //  HUNKu8sFeedHtml writes a `u8s` (head/term) — hand it the idle
-        //  range, commit the advanced head back into c->out's idle ptr.
-        u8s idle = { c->out[2], c->out[3] };
-        (void)HUNKu8sFeedHtml(idle, &hk);
-        c->out[2] = idle[0];
+        b8 more = NO;
+        call(woof_render_one_hunk, c, &more);
+        if (!more) break;
     }
-    //  Rewind: free every per-hunk TOK carve back to the entry snapshot.
-    //  All toks were consumed above; nothing below the snapshot moved.
-    ((u8 **)ABC_BASS)[1] = bass_data;
-    ((u8 **)ABC_BASS)[2] = bass_idle;
+    done;
 }
 
 // --- in-process projection dispatch (`--api` mode) ---
@@ -709,7 +720,7 @@ static ok64 serve_inproc(conn *c, uri *u, char const *dog) {
     call(u8bFeed, out, LIT(HTML_PRELUDE_TAIL));
     c->out[2] = out[2];
 
-    WOOFRenderHunks(c);
+    call(WOOFRenderHunks, c);
 
     {
         Bu8 tail = { c->out[0], c->out[1], c->out[2], c->out[3] };
@@ -881,7 +892,10 @@ static short pipe_cb(int fd, poller *p) {
     //  past the consumed bytes; we mirror that on pipe_in's data head.
     //  Short frames (HUNKu8sDrain != OK) wait for more bytes via the
     //  next POLLIN.
-    WOOFRenderHunks(c);
+    //  pipe_cb is a bare POL callback (returns short, no call() frame), so
+    //  render best-effort: WOOFRenderHunks reclaims its own per-hunk BASS
+    //  scratch internally, and there's no ok64 channel to propagate on.
+    (void)WOOFRenderHunks(c);
     //  Fully drained: reset pipe_in so the next read starts at base
     //  (cheap compaction; avoids fragmentation as records arrive).
     if (c->pipe_in[1] == c->pipe_in[2]) {

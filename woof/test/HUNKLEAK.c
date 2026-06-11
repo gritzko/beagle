@@ -95,8 +95,17 @@ static ok64 render_leak_probe(int hunks, int requests) {
         call(build_conn, &c, pool[2], PIPE, OUT, hunks);
 
         u8 *before = bass_data_head();
-        WOOFRenderHunks(&c);
+        //  BARE call (no call()/try() wrapper) — exactly how POL invokes
+        //  woof's callbacks.  WOOFRenderHunks must leave the arena flat on
+        //  its own (its internal per-hunk call() reclaims each TOK carve);
+        //  a wrapper here would rewind BASS and mask the very leak we test.
+        ok64 ro = WOOFRenderHunks(&c);
         u8 *after = bass_data_head();
+        if (ro != OK) {
+            fprintf(stderr, "MEM-038: WOOFRenderHunks returned non-OK "
+                            "(pass %d/%d)\n", r + 1, requests);
+            fail(ro);
+        }
 
         if (after != before) {
             fprintf(stderr,

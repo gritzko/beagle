@@ -229,6 +229,6 @@ ok64 WOOFServeStatic(conn *c, u8cs rel);
 //  Exposed so the test/fuzz harness can drive the leak path directly
 //  (HUNKu8sDrain carves per-hunk BASS scratch for the TOK array) and
 //  assert ABC_BASS returns to baseline after each request (MEM-038).
-void WOOFRenderHunks(conn *c);
+ok64 WOOFRenderHunks(conn *c);
 
 #endif

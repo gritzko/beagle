@@ -9,6 +9,30 @@ the canonical docs — read them for full coverage:
 - `abc/INDEX.md` — boundary-movers and module index
 - `dog/INDEX.md` — tokenizer + dog/ shared infra
 
+##  ok64 error codes
+
+All functions that can fail must return ok64. That applies to anything
+that is not a smallish and inlinable calculation. Those functions go
+to .c files where PRO.h macros are normally used for calls/checks.
+
+PRO.h flow macros (`.c` only — never in a header, CLAUDE.md §6; see
+also §"PRO.h flow" below):
+
+- **`sane(c)`** — opens the frame: declares the implicit `__` carrier
+  (ok64, starts `OK`) and asserts precondition `c`. Required before any
+  `call`/`try`/`done`; one per scope (combine conditions, don't repeat).
+- **`call(f, …)`** — invoke `f`; snapshots+rewinds `ABC_BASS` around it;
+  on non-`OK`, sets `__` and **returns early** (propagate).
+- **`try(f, …)`** — like `call` but does **not** return on failure:
+  records status in `__`, still rewinds BASS. Pair with `then`/`nedo`/`on`.
+- **`then`** — `if (__ == OK)`: the success branch after a `try`.
+- **`nedo`** — `if (__ != OK)`: the failure branch (cleanup / fallback).
+- **`on(code)`** — `if (__ == code)`: branch on one specific status.
+- **`done`** — `return __;`: the normal exit, returning the status.
+- **`fail(code)`** — set `__ = code` and return it, with a trace.
+- **`must(cond, msg)`** — hard assert (abort) for invariants, not for
+  recoverable errors — propagate those with `fail` / `call` instead.
+
 ## Slice / buffer primitives
 
 - **Default writes — `sFeed` / `sFeed1`** (all-or-nothing, returns
