@@ -30,6 +30,8 @@
 typedef struct {
     u8cs path;       //  borrowed: lives in set's arena
     sha1 sha;
+    b8   is_sub;     //  DIFF-001: gitlink/submodule entry (mode 160000) —
+                     //  the sha is a sub COMMIT pin, not a blob in this store
 } diffref_entry;
 
 typedef struct {
@@ -40,7 +42,8 @@ typedef struct {
     Bu8            arena;     //  path bytes; owns backing
 } diffref_set;
 
-static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
+static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha,
+                             b8 is_sub) {
     sane(s);
     if (s->n >= s->cap) { s->overflow++; done; }
     if (u8csEmpty(path) || u8csLen(path) >= DIFFREF_PATH_MAX) {
@@ -51,6 +54,7 @@ static ok64 diffref_set_push(diffref_set *s, u8cs path, u8cp esha) {
         s->n--; s->overflow++; done;
     }
     sha1Mv(&e->sha, (sha1cp)esha);
+    e->is_sub = is_sub;
     done;
 }
 
@@ -183,7 +187,11 @@ static ok64 diffref_collect_visit(u8cs path, u8 kind, u8cp esha,
     diffref_collect_ctx *c = (diffref_collect_ctx *)ctx;
     if (kind == WALK_KIND_REG || kind == WALK_KIND_EXE ||
         kind == WALK_KIND_LNK) {
-        diffref_set_push(c->set, path, esha);
+        diffref_set_push(c->set, path, esha, NO);
+    } else if (kind == WALK_KIND_SUB) {
+        //  DIFF-001: a submodule gitlink — capture it so a pin bump is
+        //  rendered as a change instead of vanishing from the diff.
+        diffref_set_push(c->set, path, esha, YES);
     }
     return OK;
 }
@@ -386,6 +394,21 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
 
 // --- Whole tree, ref vs ref ---------------------------------------
 
+//  DIFF-001: render a submodule gitlink change `<path> <old>..<new>`
+//  (empty side = added / removed sub).  The pins are sub COMMIT shas,
+//  not blobs in this store, so the pin move IS the change shown here;
+//  recursing into the sub for its content diff is a separate concern.
+static void diffref_emit_gitlink(u8cs path, sha1cp old_sha, sha1cp new_sha) {
+    u8cs os = {}, ns = {};
+    sha1hex oh = {}, nh = {};
+    if (old_sha) { sha1hexFromSha1(&oh, old_sha); sha1hexSlice(&os, &oh); }
+    if (new_sha) { sha1hexFromSha1(&nh, new_sha); sha1hexSlice(&ns, &nh); }
+    fprintf(stdout, "%.*s %.*s..%.*s\n",
+            (int)$len(path), (char *)path[0],
+            (int)$len(os), os[0] ? (char *)os[0] : "",
+            (int)$len(ns), ns[0] ? (char *)ns[0] : "");
+}
+
 //  Inner worker — every early `call()` returns through here, so the
 //  outer wrapper's cleanup runs on success and on every error path.
 //  Buffers/arenas are caller-owned: the wrapper allocs/maps before
@@ -428,6 +451,14 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         // Same sha on both sides → unchanged, skip cheaply.
         if (f && sha1Eq(&f->sha, &to_set->v[i].sha)) continue;
 
+        //  DIFF-001: a gitlink entry — render the pin move (old→new),
+        //  not a blob diff (the pins are sub commits, not blobs here).
+        if (to_set->v[i].is_sub) {
+            diffref_emit_gitlink(path, (f && f->is_sub) ? &f->sha : NULL,
+                                 &to_set->v[i].sha);
+            continue;
+        }
+
         u8cs old_data = {}, new_data = {};
         if (f) {
             u8bReset(old_buf);
@@ -454,6 +485,12 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         u8cs path = {};
         u8csMv(path, from_set->v[i].path);
         if (diffref_set_find(to_set, path) != NULL) continue;
+
+        //  DIFF-001: a removed submodule — render the pin removal.
+        if (from_set->v[i].is_sub) {
+            diffref_emit_gitlink(path, &from_set->v[i].sha, NULL);
+            continue;
+        }
 
         u8bReset(old_buf);
         u8 ot = 0;
