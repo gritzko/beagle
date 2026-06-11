@@ -23,6 +23,8 @@
 #include "abc/PRO.h"
 #include "dog/git/SHA1.h"
 #include "dog/git/GIT.h"
+#include "abc/HEX.h"
+#include "keeper/KEEP.h"   // DIS-038: commit-body fallback for the ancestor walk
 
 // Resolve a 40-bit object hashlet.  Prefer the caller-supplied SHA
 // (the UNPK hot path has it) — falls back to computing it from the
@@ -234,6 +236,10 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
     Bwh128 queue = {};
     call(wh128bMap, queue, cap);
 
+    //  DIS-038: scratch for the commit-body parent fallback below —
+    //  used only when a commit has no parent edges in the DAG index.
+    a_carve(u8, dis038_body, 1UL << 16);
+
     dag_anc_put(set, tip);
     wh128 q0 = { .key = DAGPack(0, tip), .val = 0 };
     wh128bFeed1(queue, q0);
@@ -269,8 +275,40 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
 
         if (edges & DAG_EDGE_PARENT) {
             u32 nn = 0;
-            if (DAGEdgesOf(runs, c, DAG_T_COMMIT, nbuf, 16, &nn) == OK) {
+            if (DAGEdgesOf(runs, c, DAG_T_COMMIT, nbuf, 16, &nn) == OK
+                && nn > 0) {
                 for (u32 i = 0; i < nn; i++) DAG_TUN_VISIT(nbuf[i], YES);
+            } else {
+                //  DIS-038: no parent edges indexed for this commit — a
+                //  freshly-fetched, not-yet-graf-indexed tip (or a true
+                //  root).  Fall back to the commit body in keeper and
+                //  parse its `parent <40hex>` lines, traversing each, so
+                //  reachability is self-sufficient on fetched history
+                //  (mirrors graf log's DAG-miss fallback, graf/LOG.c).  A
+                //  real root simply yields no `parent` line; a KEEPGet
+                //  miss (no keeper / absent object) leaves the node a
+                //  leaf — no worse than the pre-fix bottom-out.
+                u8bReset(dis038_body);
+                u8 ot = 0;
+                if (KEEPGet(c, DAG_H60_HEXLEN, dis038_body, &ot) == OK
+                    && ot == DOG_OBJ_COMMIT) {
+                    a_dup(u8c, scan, u8bData(dis038_body));
+                    u8cs field = {}, value = {};
+                    while (GITu8sDrainCommit(scan, field, value) == OK) {
+                        if ($empty(field)) break;
+                        a_cstr(par_kw, "parent");
+                        if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
+                            sha1 par_sha = {};
+                            u8s  bin = {par_sha.data, par_sha.data + 20};
+                            u8cs hx  = {value[0], value[0] + 40};
+                            if (HEXu8sDrainSome(bin, hx) == OK) {
+                                u64 ph = WHIFFHashlet60(&par_sha);
+                                DAG_TUN_VISIT(ph, YES);
+                                if (overflow) break;
+                            }
+                        }
+                    }
+                }
             }
         }
         if (edges & DAG_EDGE_FOSTER) {
