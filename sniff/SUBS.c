@@ -6,6 +6,10 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__FreeBSD__)
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#endif
 
 #include "abc/FILE.h"
 #include "abc/PATH.h"
@@ -947,13 +951,34 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  up to roll back this sub's anchor.
     //
     //  /proc/self/exe IS `sniff` here (sniff binary is the running
-    //  process), so use it directly.
+    //  process), so use it directly.  On FreeBSD-native builds procfs
+    //  is typically absent — fall back to sysctl(KERN_PROC_PATHNAME),
+    //  then to HOMEResolveSibling (argv0 + PATH).  The argv0-based
+    //  fallback can pick a stale sibling sniff from PATH when the
+    //  parent invoked us via execvp(<full_path>, ["sniff", ...]) —
+    //  child sees argv[0]="sniff" (bare) and PATH wins.
     a_path(sniff_exe);
     {
         char self[FILE_PATH_MAX_LEN];
+        b8 have_self = NO;
         ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
         if (n > 0) {
             self[n] = 0;
+            have_self = YES;
+        }
+#if defined(__FreeBSD__)
+        if (!have_self) {
+            int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+            size_t cb = sizeof self;
+            if (sysctl(mib, 4, self, &cb, NULL, 0) == 0 && cb > 0) {
+                //  sysctl returns NUL-terminated; trim trailing NULs.
+                while (cb > 0 && self[cb - 1] == 0) cb--;
+                self[cb] = 0;
+                have_self = YES;
+            }
+        }
+#endif
+        if (have_self) {
             a_cstr(self_s, self);
             call(PATHu8bFeed, sniff_exe, self_s);
         } else {

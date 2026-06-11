@@ -1,6 +1,7 @@
 #include "dog/DOG.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -934,18 +935,17 @@ ok64 DOGTestDebang(void) {
 //        byte path buffer), `seen(END)` short-circuits the return and
 //        SKIPS the following FILEIterClose, leaking the DIR handle.
 
-//  Count entries under /proc/self/fd — the live open-fd count.
+//  Portable live open-fd count: probe with fcntl(F_GETFD).  Works on
+//  Linux, FreeBSD (including linuxulator where /proc/self/fd is stubby)
+//  and macOS — no /proc dependency.
 static int dog_open_fd_count(void) {
-    DIR *d = opendir("/proc/self/fd");
-    if (!d) return -1;
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd <= 0 || max_fd > 4096) max_fd = 4096;
     int n = 0;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
-        n++;
+    for (int fd = 0; fd < (int)max_fd; fd++) {
+        if (fcntl(fd, F_GETFD) != -1) n++;
     }
-    closedir(d);
-    return n;  // includes the dir handle itself; constant across calls
+    return n;
 }
 
 //  (1) Force a pups-overflow and assert no fd/mmap leak.
@@ -1022,6 +1022,15 @@ static ok64 DOGTestPupOverflowLeak(void) {
 //  leaked DIR fd per iteration; the loop makes it unmistakable.
 static ok64 DOGTestPupIterErrLeak(void) {
     sane(1);
+#if defined(__FreeBSD__)
+    //  This repro needs OS PATH_MAX > FILE_PATH_MAX_LEN (1024) so the
+    //  on-disk file can be created while the iterator's bounded push
+    //  still overflows.  FreeBSD's kernel MAXPATHLEN is 1024, so the
+    //  precondition cannot be reached — open(ENAMETOOLONG)s before the
+    //  scan ever observes an entry.  The leak fix itself is platform-
+    //  agnostic and PupOverflowLeak above still exercises the close path.
+    done;
+#endif
     call(FILEInit);
 
     char tmp[256];

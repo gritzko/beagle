@@ -963,20 +963,18 @@ static ok64 T_scanwt_big_ignored(void) {
     done;
 }
 
-//  Count the process's currently-open file descriptors (entries in
-//  /proc/self/fd, minus the opendir's own handle).  Used to assert a
-//  failed open did not leak the booked log's fd.
+//  Count the process's currently-open file descriptors by probing with
+//  fcntl(F_GETFD).  Portable across Linux, FreeBSD (linuxulator's
+//  /proc/self/fd is stubby) and macOS.  Used to assert a failed open
+//  did not leak the booked log's fd.
 static int open_fd_count(void) {
-    DIR *d = opendir("/proc/self/fd");
-    if (!d) return -1;
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd <= 0 || max_fd > 4096) max_fd = 4096;
     int n = 0;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
-        n++;
+    for (int fd = 0; fd < (int)max_fd; fd++) {
+        if (fcntl(fd, F_GETFD) != -1) n++;
     }
-    closedir(d);
-    return n - 1;   // discount the opendir fd itself
+    return n;
 }
 
 //  Test hook (dog/ULOG.c): force the next ulog_idx_alloc_anon to fail.

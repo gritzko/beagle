@@ -40,16 +40,30 @@ static void tmp_rm(char const *path) {
     (void)_;
 }
 
-//  Recursive byte size of a directory tree (du-style), via popen on du.
+//  Recursive byte size of a directory tree.  Walks the tree in C so the
+//  helper does not depend on `du -sb` (a GNU-ism the BSD `du` rejects).
 static long long dir_bytes(char const *path) {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "du -sb %s 2>/dev/null | cut -f1", path);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
-    long long v = -1;
-    if (fscanf(fp, "%lld", &v) != 1) v = -1;
-    pclose(fp);
-    return v;
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    long long total = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        char const *nm = e->d_name;
+        if (nm[0] == '.' && (nm[1] == 0 || (nm[1] == '.' && nm[2] == 0)))
+            continue;
+        char child[1100];
+        snprintf(child, sizeof(child), "%s/%s", path, nm);
+        struct stat st;
+        if (lstat(child, &st) != 0) continue;
+        if (S_ISREG(st.st_mode)) {
+            total += (long long)st.st_size;
+        } else if (S_ISDIR(st.st_mode)) {
+            long long sub = dir_bytes(child);
+            if (sub > 0) total += sub;
+        }
+    }
+    closedir(d);
+    return total;
 }
 
 static ok64 stage_git_commit(char const *gitdir, char const *content,

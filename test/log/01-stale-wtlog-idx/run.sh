@@ -57,15 +57,20 @@ done
 #    entries, but with the CURRENT (3-commit) log's tail sentinel —
 #    so (size, mtime) match the live log while the rows stop short.
 #    Each ULOG index entry is 16 bytes; the LAST entry is the sentinel.
+#    Done in pure POSIX shell + dd so the test runs on hosts without
+#    python (e.g. minimal FreeBSD installs).
 # ---------------------------------------------------------------------
-python3 - <<'PY' || { echo "FAIL: could not forge false-fresh sidecar" >&2; exit 1; }
-pre  = open("prefix.idx", "rb").read()        # short prefix + its own sentinel
-cur  = open(".be/.wtlog.idx", "rb").read()    # full log + correct sentinel
-assert len(pre) >= 32 and len(cur) >= 16, (len(pre), len(cur))
-sent = cur[-16:]                              # full-log sentinel (size+mtime)
-rows = pre[:-16]                              # drop the prefix's own sentinel
-open(".be/.wtlog.idx", "wb").write(rows + sent)
-PY
+forge_false_fresh() {
+    pre_sz=$(wc -c < prefix.idx | tr -d ' ')
+    cur_sz=$(wc -c < .be/.wtlog.idx | tr -d ' ')
+    [ "$pre_sz" -ge 32 ] && [ "$cur_sz" -ge 16 ] || return 1
+    rows_sz=$((pre_sz - 16))
+    sent_off=$((cur_sz - 16))
+    dd if=prefix.idx of=new.idx bs=1 count="$rows_sz" 2>/dev/null || return 1
+    dd if=.be/.wtlog.idx bs=1 skip="$sent_off" count=16 2>/dev/null >> new.idx || return 1
+    mv new.idx .be/.wtlog.idx
+}
+forge_false_fresh || { echo "FAIL: could not forge false-fresh sidecar" >&2; exit 1; }
 
 # ---------------------------------------------------------------------
 # 3a. `be log:` MUST rebuild the stale sidecar and list all commits —
