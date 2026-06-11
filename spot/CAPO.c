@@ -451,8 +451,15 @@ ok64 CAPOMergeWorkers(u32 nw) {
     HITu64Merge(stack, &out);
     into[0] = out;
 
+    //  Past this point both `mbuf` (mmap) and `wp` (kv64 of per-worker
+    //  mmaps) are held; every error exit must release both (MEM-044).
     u8cs merged = {(u8cp)mbuf[0], (u8cp)out};
-    call(DOGPupCreate, s->puppies, $path(leafdir), ext, merged);
+    ok64 co = DOGPupCreate(s->puppies, $path(leafdir), ext, merged);
+    if (co != OK) {
+        u64bUnMap(mbuf);
+        DOGPupClose(wp);
+        return co;
+    }
 
     u64bUnMap(mbuf);
     DOGPupClose(wp);
@@ -689,8 +696,13 @@ static ok64 capo_spot_replace(u8csc source, u8bp mapped, u32cs htoks,
                         replace, file_ext, &file_matches);
         if (o == OK) {
             u8cs result = {u8bIdleHead(obufm), rout[0]};
+            //  Release the source mapping before rewriting the file.
+            //  `mapped` is the caller's booked descriptor (shared by
+            //  address); FILEUnMap zeros mapped[0..3] in place, so the
+            //  caller's `BNULL(mapped)` guard sees it released and won't
+            //  double-unmap (MEM-044).  No local `mapped = NULL` — that
+            //  only clears this copy and misleads.
             FILEUnMap(mapped);
-            mapped = NULL;
             int fd = -1;
             ok64 wo = FILECreate(&fd, $path(fpbuf));
             if (wo == OK) {
@@ -852,7 +864,12 @@ static ok64 capo_spot_file_cb(void *ctx, u8csc relpath, u8csc source,
             u32bUnMap(toks);
     } else {
         u32bUnMap(toks);
-        if (mapped) FILEUnMap(mapped);
+        //  capo_spot_replace already FILEUnMaps `mapped` on its success
+        //  path (zeroing the shared booked descriptor).  Guard on the
+        //  descriptor, not the pointer, so we don't double-unmap it; on
+        //  capo_spot_replace's error path `mapped` is still live and we
+        //  release it here (MEM-044).
+        if (!BNULL(mapped)) FILEUnMap(mapped);
     }
     return OK;
 }
@@ -1371,38 +1388,34 @@ static ok64 spot_open_dir_cb(spot *s, u8cs dir, void0p ctx) {
     return DOGPupOpenAll(s->puppies, dir, ext);
 }
 
-ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
-
-    if (spot_is_open()) {
-        if (rw && !spot_is_rw) return SPOTOPENRO;
-        return SPOTOPEN;
-    }
-
-    //  Normalize: trunk aliases → empty; non-trunk gains trailing '/'.
-    a_pad(u8, nb, SPOT_LEAF_BRANCH_MAX);
-    call(DPATHBranchNormFeed, nb, branch);
-    a_dup(u8c, norm, u8bDataC(nb));
-
-    //  Register on home (idempotent re-opens absorbed).
-    {
-        ok64 o = HOMEOpenBranch(h, branch, rw);
-        if (o != OK && o != HOMEOPEN && o != HOMEROBR)
-            return o;
-    }
-
-    spot *s = &SPOT;
+//  Uniform teardown for a partially-opened spot singleton (MEM-044).
+//  Releases every resource `spot_open_body` may have acquired — heap
+//  tables (puppies, leaf_branch), the leaf lock fd, and all rw mmaps —
+//  with BNULL/`>=0` guards so any prefix of the open sequence is safe to
+//  unwind.  Mirrors the resource-freeing tail of `SPOTClose`.  Zeros the
+//  singleton so `spot_is_open()` reads closed afterwards.  Returns `o`
+//  for tail-call propagation.
+static ok64 spot_open_fail(spot *s, ok64 o) {
+    if (s->rw && !BNULL(s->ext_arena))   u8bUnMap(s->ext_arena);
+    if (s->ingest_toks[0] != NULL)       u32bUnMap(s->ingest_toks);
+    if (!BNULL(s->flush_buf))            u8bUnMap(s->flush_buf);
+    if (!BNULL(s->entries_mem))          u8bUnMap(s->entries_mem);
+    if (s->arena[0] != NULL)             u8bUnMap(s->arena);
+    if (s->lock_fd >= 0)                 FILEClose(&s->lock_fd);
+    if (!BNULL(s->puppies))              DOGPupClose(s->puppies);
+    if (!BNULL(s->leaf_branch))          u8bFree(s->leaf_branch);
     zerop(s);
-    s->h = h;
-    s->lock_fd = -1;
-    s->out_fd = -1;
-    s->rw = rw;
-    spot_is_rw = rw;
-    s->color = isatty(STDOUT_FILENO) ? YES : NO;
-    s->term = (isatty(STDERR_FILENO) && isatty(STDOUT_FILENO)) ? YES : NO;
-    s->trace_query = getenv("SPOT_TRACE_QUERY") != NULL;
-    s->trace_rej   = getenv("SPOT_TRACE_REJ")   != NULL;
-    s->trace_order = getenv("SPOT_TRACE_ORDER") != NULL;
+    spot_is_rw = NO;
+    return o;
+}
+
+//  Worker body of SPOTOpenBranch: acquires the LSM resources via plain
+//  `call()`s (clean early-return on error) into the already-initialised
+//  singleton `s`.  Any non-OK return is funnelled through
+//  `spot_open_fail` by the wrapper, so this body never hand-frees.
+static ok64 spot_open_body(spot *s, u8cs norm, b8 rw) {
+    sane(s != NULL && s->h != NULL);
+    home *h = s->h;
 
     call(kv64bAllocate, s->puppies, FILE_MAX_OPEN);
 
@@ -1415,26 +1428,14 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     a_pad(u8, trunkdir, FILE_PATH_MAX_LEN);
     {
         u8cs empty = {};
-        ok64 to = spot_branch_dir(trunkdir, h, empty);
-        if (to != OK) {
-            DOGPupClose(s->puppies);
-            u8bFree(s->leaf_branch);
-            zerop(s); spot_is_rw = NO;
-            return to;
-        }
+        call(spot_branch_dir, trunkdir, h, empty);
     }
     call(FILEMakeDirP, $path(trunkdir));
 
     //  Walk trunk → leaf, scanning each dir for `<seqno>.spot.idx`.
     {
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-        ok64 wo = spot_walk_branch(s, leaf, spot_open_dir_cb, NULL);
-        if (wo != OK) {
-            DOGPupClose(s->puppies);
-            u8bFree(s->leaf_branch);
-            zerop(s); spot_is_rw = NO;
-            return wo;
-        }
+        call(spot_walk_branch, s, leaf, spot_open_dir_cb, NULL);
     }
     CAPORefreshView();
 
@@ -1495,6 +1496,46 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
         u8bFeed1(s->ext_arena, 0);
     }
 
+    done;
+}
+
+ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
+    sane(h != NULL && $ok(branch));
+
+    if (spot_is_open()) {
+        if (rw && !spot_is_rw) return SPOTOPENRO;
+        return SPOTOPEN;
+    }
+
+    //  Normalize: trunk aliases → empty; non-trunk gains trailing '/'.
+    a_pad(u8, nb, SPOT_LEAF_BRANCH_MAX);
+    call(DPATHBranchNormFeed, nb, branch);
+    a_dup(u8c, norm, u8bDataC(nb));
+
+    //  Register on home (idempotent re-opens absorbed).
+    {
+        ok64 o = HOMEOpenBranch(h, branch, rw);
+        if (o != OK && o != HOMEOPEN && o != HOMEROBR)
+            return o;
+    }
+
+    spot *s = &SPOT;
+    zerop(s);
+    s->h = h;
+    s->lock_fd = -1;
+    s->out_fd = -1;
+    s->rw = rw;
+    spot_is_rw = rw;
+    s->color = isatty(STDOUT_FILENO) ? YES : NO;
+    s->term = (isatty(STDERR_FILENO) && isatty(STDOUT_FILENO)) ? YES : NO;
+    s->trace_query = getenv("SPOT_TRACE_QUERY") != NULL;
+    s->trace_rej   = getenv("SPOT_TRACE_REJ")   != NULL;
+    s->trace_order = getenv("SPOT_TRACE_ORDER") != NULL;
+
+    //  Acquire every LSM resource in the worker; on ANY error funnel
+    //  through one cleanup that releases all of them (MEM-044).
+    try(spot_open_body, s, norm, rw);
+    nedo return spot_open_fail(s, __);
     done;
 }
 

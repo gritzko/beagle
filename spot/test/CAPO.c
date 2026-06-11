@@ -2,6 +2,7 @@
 #include "spot/SPOT.h"
 
 #include <string.h>
+#include <unistd.h>
 
 #include "abc/FILE.h"
 #include "abc/PRO.h"
