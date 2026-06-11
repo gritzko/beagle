@@ -620,6 +620,46 @@ static ok64 prune_cb(class_step const *step, void *vctx) {
     return OK;
 }
 
+// --- --force wt-only tracked-orphan sweep (GET-016 Part 2) ----------
+//
+//  Post-checkout sweep run under `--force`.  A `CLASS_WT_ONLY` path is
+//  on disk but absent from the (already-advanced) baseline tree.  When
+//  a drifted wt advances its ref past a deletion whose unlink was lost
+//  (e.g. a read-only parent dir swallowed the original drain), the
+//  orphaned path falls out of every later baseline↔target delta —
+//  neither side carries it — so plain GET never revisits it and the
+//  stale file lingers forever.  `--force` is the full-reset, so it
+//  must converge the wt to the target by dropping such orphans.
+//
+//  Unlike `--prune` (which removes EVERY wt-only path, sparing only
+//  gitignored), force preserves genuinely-untracked files: GET.mkd
+//  §Flags promises "untracked files survive unless pruned".  The
+//  discriminator is the wt scan row's mtime — a tracked file carries
+//  the stamp of the get/post that wrote it (still resident in the
+//  append-only wtlog), so `SNIFFAtKnown` recognises it; a never-tracked
+//  clutter file has an unstamped mtime and is left in place.
+static ok64 force_orphan_cb(class_step const *step, void *vctx) {
+    sane(step && vctx);
+    prune_ctx *c = (prune_ctx *)vctx;
+    if (step->kind != CLASS_WT_ONLY) return OK;
+    //  Tracked-only: the wt scan row's mtime must stamp a wtlog row,
+    //  marking the file as sniff-written (a prior get/post).  No row
+    //  (NULL) or an unstamped mtime → untracked clutter, preserve it.
+    if (step->wt_rec == NULL) return OK;
+    if (!SNIFFAtKnown(step->wt_rec->ts)) return OK;
+    u8cs path = {step->path[0], step->path[1]};
+    if ($empty(path)) return OK;
+    a_path(fp);
+    if (SNIFFFullpath(fp, c->reporoot, path) != OK) return OK;
+    if (FILEUnLink($path(fp)) == OK) {
+        c->dropped++;
+        ulogrec rep = {.verb = GET_V_DEL};
+        u8csMv(rep.uri.path, path);
+        (void)ULOGPrintStatusLine(&rep);
+    }
+    return OK;
+}
+
 //  Drain a ULOG-row buffer (GET_V_DEL rows) and unlink each entry.
 //  Paths came from get_overlap_check's classifier, which already
 //  verified presence + clean stamp; defensive lstat is omitted.
@@ -1474,6 +1514,23 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  get/12).  `--nosub` propagation now lives at the `be` layer.
     u8bFree(subs);
     b8 sub_fail = NO;
+
+    //  `--force` tracked-orphan sweep (GET-016 Part 2): drop every
+    //  wt-only path that sniff itself wrote (mtime ∈ stamp-set) but the
+    //  target tree no longer carries — the drifted-orphan the empty
+    //  baseline↔target delta would otherwise never reset.  Skipped when
+    //  `--prune` is also set: prune's broader sweep below removes these
+    //  paths too (plus untracked clutter), so running both is redundant.
+    //  Runs on the freshly-advanced baseline, same as the prune sweep.
+    if (SNIFF.force && !SNIFF.prune) {
+        prune_ctx fctx = {.dropped = 0};
+        u8csMv(fctx.reporoot, reporoot);
+        (void)SNIFFClassify(force_orphan_cb, &fctx);
+        if (fctx.dropped > 0)
+            fprintf(stderr,
+                    "sniff: reset %u orphaned tracked file(s)\n",
+                    fctx.dropped);
+    }
 
     //  `--prune` sweep (https://replicated.wiki/html/wiki/Verbs.html §"--force and --prune"): drop every
     //  wt-only path that isn't in the target tree.  Runs after the

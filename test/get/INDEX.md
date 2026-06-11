@@ -212,3 +212,13 @@
   path-basename).  Asserts `B2/ch/c.txt` materialises byte-exact, the
   in-flight `?/ch` candidate is the landing source, and the dead URL is
   never fetched.  Local-only, no ssh.
+* `49-force-full-reset/` — GET-016 Part 2: `be get --force` (`get!`) must
+  converge a DRIFTED wt to the target even when the baseline↔target delta
+  is empty.  Seeds trunk `{a, sub/b}`, deletes `sub/b` on `?feat`, then
+  drifts: advances the ref to `?feat` with `sub/` read-only so the unlink
+  of `sub/b.txt` is lost — the orphan now sits in NEITHER baseline nor
+  target tree, so plain GET never revisits it.  `be get --force '?feat'`
+  must unlink the wt-only TRACKED orphan (mtime stamps a prior get/post
+  row) while PRESERVING an untracked clutter file (only `--prune` removes
+  those — GET.mkd §Flags), leaving `be status` free of phantom mod/mis.
+  Hermetic.
