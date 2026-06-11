@@ -172,6 +172,8 @@ static void map_intern(u8bp arena, u8csp out, u8csc src) {
 
 // --- Main -----------------------------------------------------------
 
+static ok64 grafmap_render(u8b strs_arena, map_branch *kept, u32 nk);
+
 ok64 GRAFMap(uricp u) {
     sane(KEEP.h != NULL);
     (void)u;
@@ -216,10 +218,24 @@ ok64 GRAFMap(uricp u) {
     qsort(kept, nk, sizeof(*kept), map_branch_cmp_for_columns);
 
     //  GRAFOpen is idempotent — close only if we owned the open.
+    //  MEM-040: every post-open error path leaks the ~18 MB owned graf
+    //  open.  Funnel the post-open body through grafmap_render() so the
+    //  `if (own_graf) GRAFClose()` epilogue runs on EVERY exit (the
+    //  body's a_carve / call early-returns can't bypass it anymore).
     ok64 go = GRAFOpen(KEEP.h, NO);
     b8 own_graf = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
+    ok64 rr = grafmap_render(strs_arena, kept, nk);
+    if (own_graf) GRAFClose();
+    return rr;
+}
+
+//  Post-open render body for GRAFMap (MEM-040).  Split out so its
+//  fallible a_carve / call sites return through GRAFMap's owned-open
+//  GRAFClose epilogue instead of leaking the open.
+static ok64 grafmap_render(u8b strs_arena, map_branch *kept, u32 nk) {
+    sane(kept && strs_arena);
     //  Walk every kept branch's idx pups into graf's PAST/DATA so
     //  subsequent DAG queries span every branch.  Mirror on keeper
     //  so per-branch commit bodies (KEEPGet) resolve.  Map is
@@ -413,6 +429,5 @@ ok64 GRAFMap(uricp u) {
         hk.toks[1] = (tok32 const *)u32bIdleHead(toks_buf);
     }
     (void)GRAFHunkEmit(&hk, NULL);
-    if (own_graf) GRAFClose();
     done;
 }

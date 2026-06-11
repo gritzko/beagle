@@ -58,6 +58,16 @@ add_test(NAME MERGEWT01test COMMAND MERGEWT01test)
 set_tests_properties(MERGEWT01test PROPERTIES
     ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=MERGEWT01test")
 
+#  MMAP01 — MEM-040 repro: own-open verbs must GRAFClose on error.
+#  Counts /proc/self/maps VMAs across N starved error-returns.
+add_executable(MMAP01test MMAP01.c)
+target_link_options(MMAP01test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(MMAP01test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(MMAP01test graflib dog keeplib abc-core)
+add_test(NAME MMAP01test COMMAND MMAP01test)
+set_tests_properties(MMAP01test PROPERTIES
+    ENVIRONMENT "TMP=${DOG_TEST_TMP_ROOT};TEST_ID=MMAP01test")
+
 add_executable(MERGE3B01test MERGE3B01.c)
 target_link_options(MERGE3B01test PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(MERGE3B01test PRIVATE ${TEST_CXX_FLAGS})

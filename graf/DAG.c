@@ -238,7 +238,14 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
 
     //  DIS-038: scratch for the commit-body parent fallback below —
     //  used only when a commit has no parent edges in the DAG index.
-    a_carve(u8, dis038_body, 1UL << 16);
+    //  MEM-040: acquire via *bAcquire (not a_carve) so a BNOROOM here
+    //  unmaps `queue` before returning instead of leaking the mmap —
+    //  a_carve would `return __` straight past the wh128bUnMap below.
+    Bu8 dis038_body = {};
+    {
+        ok64 ba = u8bAcquire(ABC_BASS, dis038_body, 1UL << 16);
+        if (ba != OK) { wh128bUnMap(queue); return ba; }
+    }
 
     dag_anc_put(set, tip);
     wh128 q0 = { .key = DAGPack(0, tip), .val = 0 };

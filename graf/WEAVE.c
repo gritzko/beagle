@@ -653,14 +653,21 @@ ok64 WEAVEDiff(weave *dst, weave const *src, weave const *nu, u32 src_commit) {
 ok64 WEAVEDecInit(weavedec *d) {
     sane(d);
     zerop(d);
-    call(u8bMap,  d->text,  WEAVE_DEC_TEXT_MAX);
-    call(u32bMap, d->tok,   WEAVE_DEC_TOK_MAX);
-    call(u32bMap, d->seq,   WEAVE_DEC_TOK_MAX);
-    call(u32bMap, d->pos,   WEAVE_DEC_TOK_MAX);
-    call(u32bMap, d->rpool, WEAVE_DEC_TOK_MAX);
-    call(u32bMap, d->roff,  WEAVE_DEC_TOK_MAX);
-    call(u32bMap, d->rlen,  WEAVE_DEC_TOK_MAX);
+    //  MEM-040: a mid-init bMap failure must roll back the regions
+    //  already mapped — else 1..6 of the 7 mmaps leak.  try() lets the
+    //  error fall through to WEAVEDecFree, which unmaps only the
+    //  regions whose [0] is set (the ones that succeeded above).
+    try(u8bMap,  d->text,  WEAVE_DEC_TEXT_MAX);    nedo goto rollback;
+    try(u32bMap, d->tok,   WEAVE_DEC_TOK_MAX);     nedo goto rollback;
+    try(u32bMap, d->seq,   WEAVE_DEC_TOK_MAX);     nedo goto rollback;
+    try(u32bMap, d->pos,   WEAVE_DEC_TOK_MAX);     nedo goto rollback;
+    try(u32bMap, d->rpool, WEAVE_DEC_TOK_MAX);     nedo goto rollback;
+    try(u32bMap, d->roff,  WEAVE_DEC_TOK_MAX);     nedo goto rollback;
+    try(u32bMap, d->rlen,  WEAVE_DEC_TOK_MAX);     nedo goto rollback;
     done;
+rollback:
+    WEAVEDecFree(d);   // unmaps the regions that succeeded; zerops d
+    return __;
 }
 
 void WEAVEDecReset(weavedec *d) {

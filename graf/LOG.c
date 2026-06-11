@@ -919,6 +919,9 @@ static u32 graf_head_emit_path_side(log_ctx *lx, u8cs diff,
     return n;
 }
 
+static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
+                            u64 cur_h, u64 target_h);
+
 static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     sane(k && u);
 
@@ -966,10 +969,25 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     if (open_branch_h[0] == NULL) {
         open_branch_h[0] = &_h0; open_branch_h[1] = &_h0;
     }
+    //  MEM-040: every post-open error path below leaks the ~18 MB owned
+    //  graf open.  Funnel the post-open body through grafhead_render()
+    //  so the `if (own_open) GRAFClose()` epilogue runs on EVERY exit
+    //  (the body's try/nedo and a_carve early-returns can't bypass it).
     ok64 go = GRAFOpenBranch(k->h, open_branch_h, NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
+    ok64 rr = grafhead_render(&lx, k, u, cbuf, cur_h, target_h);
+    if (own_open) GRAFClose();
+    return rr;
+}
+
+//  Post-open render body for graf_head_ahead_behind (MEM-040).  Split
+//  out so its fallible try / a_carve sites return through the owned-open
+//  GRAFClose epilogue instead of leaking the open.
+static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
+                            u64 cur_h, u64 target_h) {
+    sane(lx && k && u && cbuf);
     //  Switch graf to the target branch from u->query so target's
     //  commits land in DATA while cur is preserved in PAST.  No-op
     //  when target is empty or already covered.  Resolves the
@@ -1018,9 +1036,9 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     DAGAncestors(anc_target, runs, target_h);
 
     //  5. Emit `+` commits (in cur, not in target) then `-` commits.
-    u32 nahead = graf_head_emit_diverged(&lx, k, anc_cur, anc_target,
+    u32 nahead = graf_head_emit_diverged(lx, k, anc_cur, anc_target,
                                           runs, '+', cbuf);
-    u32 nbehind = graf_head_emit_diverged(&lx, k, anc_target, anc_cur,
+    u32 nbehind = graf_head_emit_diverged(lx, k, anc_target, anc_cur,
                                           runs, '-', cbuf);
 
     //  6. Tree diff via keeper.
@@ -1045,10 +1063,10 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
             (void)RONutf8sDrain(&v_mod, dvmod);
 
             u8cs diff = {u8bDataHead(diff_buf), u8bIdleHead(diff_buf)};
-            nchanged += graf_head_emit_path_side(&lx, diff, v_add, '+');
-            nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '+');
-            nchanged += graf_head_emit_path_side(&lx, diff, v_del, '-');
-            nchanged += graf_head_emit_path_side(&lx, diff, v_mod, '-');
+            nchanged += graf_head_emit_path_side(lx, diff, v_add, '+');
+            nchanged += graf_head_emit_path_side(lx, diff, v_mod, '+');
+            nchanged += graf_head_emit_path_side(lx, diff, v_del, '-');
+            nchanged += graf_head_emit_path_side(lx, diff, v_mod, '-');
         }
     }
 
@@ -1060,11 +1078,11 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
         a_cstr(trunk_s, "trunk");
         u8cs br_label = {};
         u8csMv(br_label, u8csEmpty(cur_br) ? trunk_s : cur_br);
-        (void)u8bPrintf(lx.text,
+        (void)u8bPrintf(lx->text,
                         "head: ?" U8SFMT ": %u ahead, %u behind, %u changed\n",
                         u8sFmt(br_label),
                         (unsigned)nahead, (unsigned)nbehind, (unsigned)nchanged);
-        if (lx.tlv) graflog_pack(lx.toks, lx.text, 'L');
+        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'L');
     }
 
     //  8. Emit one hunk.
@@ -1079,11 +1097,10 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     }
     hunk hk = {};
     u8csMv(hk.uri,  u8bDataC(title));
-    u8csMv(hk.text, u8bDataC(lx.text));
-    if (lx.tlv) u32csMv(hk.toks, u32bDataC(lx.toks));
+    u8csMv(hk.text, u8bDataC(lx->text));
+    if (lx->tlv) u32csMv(hk.toks, u32bDataC(lx->toks));
     (void)GRAFHunkEmit(&hk, NULL);
 
-    if (own_open) GRAFClose();
     done;
 }
 
