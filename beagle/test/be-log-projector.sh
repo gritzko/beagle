@@ -42,6 +42,13 @@ want_grep() {
 R=$T/repo; rs_wt_at "$R"
 sniff init >/dev/null
 
+#  Distinct mtime: c1 has no explicit `be put`, so a.txt is auto-staged
+#  by POST.  On a fast FS `sniff init`'s repo-anchor row-0 stamp and this
+#  `echo` can land in the same ron60 millisecond — a.txt's mtime then
+#  aliases the get/post stamp-set and POST classifies it "untracked
+#  clean", silently dropping it (c1 commits empty; a.txt only enters
+#  history at c3).  Sleep so a.txt's mtime is off the anchor stamp.
+sleep 0.02
 echo a1 > a.txt
 be post -m c1 '?v1' >/dev/null
 
