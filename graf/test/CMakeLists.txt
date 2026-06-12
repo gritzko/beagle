@@ -97,6 +97,16 @@ add_test(NAME GRAFblameperf
 set_tests_properties(GRAFblameperf PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameperf")
 
+#  blame-identical.sh — BLAME-002 correctness: index-served path descent
+#  (DAGChildStep over materialised (tree,name)→child edges) is
+#  byte-identical to the keeper-inflate descent (GRAF_BLAME_NOINDEX), and
+#  index-served treeinfl is 0.
+add_test(NAME GRAFblameident
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/blame-identical.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(GRAFblameident PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameident")
+
 if (WITH_SSH)
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh

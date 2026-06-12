@@ -4,11 +4,13 @@
 //  DAG: graf's commit-graph index.
 //
 //  An LSM-style index of wh128 records (16 bytes each) covering
-//  commit parentage and commit→root-tree edges.  Tree-shape (per-
-//  entry) edges are NOT recorded — git's pack-side delta compression
-//  keeps tree storage cheap, while materialising every tree entry
-//  here would dominate the repo footprint.  Path resolution at query
-//  time goes through keeper directly (graf/BLOB.c::GRAFTreeStep).
+//  commit parentage, commit→root-tree edges, and (BLAME-002)
+//  (tree,name)→child edges.  The tree-entry edges are materialised
+//  once per DISTINCT tree at ingest (deduped by a per-run seen-tree
+//  set), so a path descends via in-memory index lookups
+//  (`DAGChildStep`) with zero keeper inflate; descent falls back to a
+//  keeper inflate (graf/BLOB.c::GRAFTreeStep) on any index miss or
+//  60-bit collision, so legacy/un-indexed stores stay correct.
 //
 //  Layout (mirrors keeper's branch-sharded shape):
 //      .be/<branch>/0000000001.graf.idx  sorted wh128 runs (LSM)
@@ -32,6 +34,10 @@
 //                        key.hl = commit_h60, val.hl = parent_h60
 //      (COMMIT, TREE)    commit → root tree
 //                        key.hl = commit_h60, val.hl = tree_h60
+//      (TREE, TREE|BLOB) tree-entry → child  (BLAME-002)
+//                        key.hl = DOGChildPathHash(name, parent_tree_h60)
+//                        val.hl = child_h60, val.type = TREE (subtree)
+//                                 or BLOB (file/symlink/gitlink leaf)
 //
 //  Hashlets are 60-bit (top 60 bits of SHA-1) — the same width keeper
 //  uses for its LSM keys, so a graf hashlet resolves directly in
@@ -44,6 +50,13 @@
 
 con ok64 DAGFAIL     = 0xd2903ca495;
 con ok64 DAGNOROOM   = 0xd2905d86d8616;
+//  BLAME-002 DAGChildStep outcomes (distinct from OK / DAGNOROOM):
+//   DAGNONE  — no (tree,name)→child edge indexed (legacy/un-indexed
+//              store, or a path not yet walked) → keeper fallback.
+//   DAGAMBIG — the equal-key span holds >1 distinct child (a 60-bit
+//              child-path-hash collision) → keeper fallback for safety.
+con ok64 DAGNONE     = 0xd2905d85ce;
+con ok64 DAGAMBIG    = 0xd2901a3492;
 
 // --- Per-half types (LSB of each wh64) ---
 
@@ -154,6 +167,16 @@ fun wh128cp DAGLookup(wh128css runs, u8 type, u64 hashlet) {
 //  (COMMIT, commit_h) keys cover both parent and root-tree edges;
 //  caller's view is filtered on val.type == TREE inside.
 u64 DAGCommitTree(wh128css runs, u64 commit_h);
+
+//  BLAME-002: resolve one path segment `name` within the tree whose
+//  60-bit hashlet is `parent_tree_h` via the index's (tree,name)→child
+//  edges — NO keeper inflate.  On OK, `*out_child_h` / `*out_child_type`
+//  (DAG_T_TREE for a subtree, DAG_T_BLOB for a leaf) hold the child.
+//  Returns DAGNONE (no such edge indexed) or DAGAMBIG (60-bit
+//  child-path-hash collision); both signal the caller to fall back to a
+//  keeper tree inflate (`GRAFTreeStep`) for this one step.
+ok64 DAGChildStep(wh128css runs, u64 parent_tree_h, u8csc name,
+                  u64 *out_child_h, u8 *out_child_type);
 
 //  Feed the parent edges from `commit_h` (a packed wh64 key, e.g.
 //  `DAGPack(DAG_T_COMMIT, h60)`) into `parents` as full val-wh64s.

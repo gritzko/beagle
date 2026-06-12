@@ -210,30 +210,31 @@ static b8 blame_base_pred(u32 seq, void *vctx) {
 //  Top-down path descent result.
 enum { BLAME_DESC_CHANGED = 0, BLAME_DESC_SAME, BLAME_DESC_ABSENT };
 
-//  Resolve `filepath`'s blob OID at the tree `root_h` by reading each
-//  path component's git OID out of its PARENT tree — no blob inflate.
-//  Each component hashlet is compared to `prev[]` (the last folded
-//  version's chain, used iff `have_prev`); the descent STOPS at the
-//  first component equal to prev — the subtree, hence the file, is
-//  unchanged ⇒ BLAME_DESC_SAME — unless `full` (an anchor, which must
-//  fold regardless and so descends to the leaf).  Fills `cur[]`
-//  (cur[0]=root_h, then one hashlet per consumed segment) and `*cur_n`;
-//  on CHANGED sets `*out_leaf` to the leaf blob sha.  `*infl` counts
-//  tree inflates for GRAF_BLAME_STATS.  The commit object is never
-//  inflated — the root tree comes from the index (`tree_hs`).
-static int blame_descend_leaf(sha1 *out_leaf, u64 root_h, u8cs filepath,
+//  Resolve `filepath`'s leaf blob hashlet at the tree `root_h` by
+//  reading each path component's child OID — index-first (BLAME-002:
+//  `DAGChildStep` over the materialised (tree,name)→child edges, zero
+//  inflate), falling back to a keeper tree inflate + entry parse only
+//  when the index lacks/contradicts the edge (legacy store or a 60-bit
+//  collision).  Each component hashlet is compared to `prev[]` (the
+//  last folded version's chain, used iff `have_prev`); the descent
+//  STOPS at the first component equal to prev — the subtree, hence the
+//  file, is unchanged ⇒ BLAME_DESC_SAME — unless `full` (an anchor,
+//  which must fold regardless and so descends to the leaf).  Fills
+//  `cur[]` (cur[0]=root_h, then one hashlet per consumed segment) and
+//  `*cur_n`; on CHANGED sets `*out_leaf_h` to the leaf blob's 60-bit
+//  hashlet.  `*infl` counts tree inflates for GRAF_BLAME_STATS (the
+//  number drops to ~0 once descent is fully index-served).  The commit
+//  object is never inflated — the root tree comes from the index
+//  (`tree_hs`).
+static int blame_descend_leaf(u64 *out_leaf_h, u64 root_h, u8cs filepath,
+                              wh128css runs, b8 use_index,
                               u64 const *prev, u32 prev_n, b8 have_prev,
                               u64 *cur, u32 *cur_n, b8 full, u32 *infl) {
     Bu8 *tb = &GRAF.tree_buf;
     cur[0] = root_h;
     u32 lvl = 0;
-
-    u8 otype = 0;
-    u8bReset(*tb);
-    (*infl)++;
-    if (KEEPGet(root_h, DAG_H60_HEXLEN, *tb, &otype) != OK ||
-        otype != DOG_OBJ_TREE)
-        return BLAME_DESC_ABSENT;
+    u64 parent_h = root_h;       // tree whose entries we're resolving
+    b8  tb_loaded = NO;          // is *tb the inflate of parent_h?
 
     a_dup(u8c, rest, filepath);
     while (!u8csEmpty(rest)) {
@@ -245,23 +246,53 @@ static int blame_descend_leaf(sha1 *out_leaf, u64 root_h, u8cs filepath,
         if (!u8csEmpty(rest)) u8csUsed1(rest);   // step past '/'
         if (u8csEmpty(name)) continue;
 
-        //  Find `name` in the current tree body → child sha.
-        sha1 child = {};
-        b8 found = NO;
-        a_dup(u8c, body, u8bDataC(*tb));
-        u8cs field = {}, esha = {};
-        while (GITu8sDrainTree(body, field, esha, NULL) == OK) {
-            u8cs ename = {};
-            if (GITu8sFileSplit(field, NULL, ename) != OK) continue;
-            if (!u8csEq(ename, name)) continue;
-            (void)sha1Drain(esha, &child);
+        //  Resolve `name`'s child within `parent_h`.
+        u64 child_h = 0;
+        u8  child_type = 0;
+        b8  found = NO;
+
+        //  Index-first (no inflate).  `use_index` is NO under the
+        //  GRAF_BLAME_NOINDEX test toggle, forcing the keeper-inflate
+        //  fallback so the two descents can be diff-compared.
+        u8csc namec = {name[0], name[1]};
+        ok64 di = use_index
+                      ? DAGChildStep(runs, parent_h, namec, &child_h, &child_type)
+                      : DAGNONE;
+        if (di == OK) {
             found = YES;
-            break;
+            tb_loaded = NO;       // *tb no longer matches parent_h
+        } else {
+            //  Fallback: inflate the parent tree (once) and scan it.
+            if (!tb_loaded) {
+                u8 otype = 0;
+                u8bReset(*tb);
+                (*infl)++;
+                if (KEEPGet(parent_h, DAG_H60_HEXLEN, *tb, &otype) != OK ||
+                    otype != DOG_OBJ_TREE)
+                    return BLAME_DESC_ABSENT;
+                tb_loaded = YES;
+            }
+            sha1 child = {};
+            u32 mode = 0;
+            a_dup(u8c, body, u8bDataC(*tb));
+            u8cs ent = {}, esha = {};
+            while (GITu8sDrainTree(body, ent, esha, &mode) == OK) {
+                u8cs ename = {};
+                if (GITu8sFileSplit(ent, NULL, ename) != OK) continue;
+                if (!u8csEq(ename, name)) continue;
+                (void)sha1Drain(esha, &child);
+                found = YES;
+                break;
+            }
+            if (found) {
+                child_h = WHIFFHashlet60(&child);
+                child_type = ((mode & 0170000) == 0040000)
+                                 ? DAG_T_TREE : DAG_T_BLOB;
+            }
         }
         if (!found) return BLAME_DESC_ABSENT;
 
         if (lvl + 1 >= BLAME_MAX_PATH_LEV) return BLAME_DESC_ABSENT;
-        u64 child_h = WHIFFHashlet60(&child);
         lvl++;
         cur[lvl] = child_h;
 
@@ -272,16 +303,18 @@ static int blame_descend_leaf(sha1 *out_leaf, u64 root_h, u8cs filepath,
         }
 
         if (u8csEmpty(rest)) {            // leaf reached, OID differs
-            *out_leaf = child;
+            //  A directory where a file was expected is absent for this
+            //  path (blame fetches the leaf as a blob).
+            if (child_type == DAG_T_TREE) return BLAME_DESC_ABSENT;
+            *out_leaf_h = child_h;
             *cur_n = lvl;
             return BLAME_DESC_CHANGED;
         }
 
-        //  Descend into the subtree.
-        u8bReset(*tb);
-        (*infl)++;
-        if (KEEPGetExact(&child, *tb, &otype) != OK || otype != DOG_OBJ_TREE)
-            return BLAME_DESC_ABSENT;
+        //  Descend into the subtree for the next segment.
+        if (child_type != DAG_T_TREE) return BLAME_DESC_ABSENT;
+        parent_h = child_h;
+        tb_loaded = NO;
     }
     return BLAME_DESC_ABSENT;             // empty path
 }
@@ -427,6 +460,12 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 
     blame_base_ctx bctx = {mapkey, mapval, mapcap, NULL};
 
+    //  BLAME-002: index-first path descent (DAGChildStep).  The
+    //  GRAF_BLAME_NOINDEX env var forces the keeper-inflate fallback —
+    //  used by graf/test/blame-identical.sh to prove the two descents
+    //  produce byte-identical blame.
+    b8 use_index = getenv("GRAF_BLAME_NOINDEX") == NULL;
+
     ok64 ret = OK;
     b8 have_prev = NO;
     u64 prev_root_h = 0;   // root-tree hashlet of the last folded layer
@@ -461,8 +500,9 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         u64 cur_oids[BLAME_MAX_PATH_LEV];
         u32 cur_n = 0;
         if (tree_hs && tree_hs[i] != 0) {
-            sha1 leaf = {};
-            int dr = blame_descend_leaf(&leaf, tree_hs[i], filepath,
+            u64 leaf_h = 0;
+            int dr = blame_descend_leaf(&leaf_h, tree_hs[i], filepath, runs,
+                                        use_index,
                                         prev_oids, prev_n, have_prev,
                                         cur_oids, &cur_n, is_anchor,
                                         &dbg_treeinfl);
@@ -470,7 +510,8 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
             if (dr == BLAME_DESC_SAME)   continue;   // unchanged (anchors never SAME)
             u8bReset(*cur_blob);
             u8 bt = 0;
-            if (KEEPGetExact(&leaf, *cur_blob, &bt) != OK || bt != DOG_OBJ_BLOB)
+            if (KEEPGet(leaf_h, DAG_H60_HEXLEN, *cur_blob, &bt) != OK ||
+                bt != DOG_OBJ_BLOB)
                 continue;
             dbg_blobfetch++;
         } else {

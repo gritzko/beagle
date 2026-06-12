@@ -74,8 +74,31 @@ static u64 dag_obj_hashlet(u8 obj_type, sha1cp sha, u8cs body) {
 
 struct dag_ingest {
     Bwh128  batch;          // emit buffer (typed); DataLen == queued, IdleLen == room
+    //  BLAME-002: (tree,name)->child edge materialisation.  `seen_trees`
+    //  is a wh128 hash set of tree hashlets already walked in THIS ingest
+    //  run, so each distinct tree's entries are emitted exactly once even
+    //  though many commits share a subtree (a C×E blowup otherwise).
+    //  `treebuf` is a long-lived inflate buffer for one tree body — it
+    //  must outlive the per-commit `call()` frame (BASS would rewind it),
+    //  so it rides the heap-owned ingest state, reset per use.
+    Bwh128  seen_trees;
+    Bu8     treebuf;
     u8      finished;
 };
+
+//  BLAME-002 sizing: hash-set capacity for the per-run seen-tree set
+//  (power of two; open-addressed via HASHwh128).  256K slots (4 MiB)
+//  covers the distinct trees of a very large history; if the set fills
+//  the walk degrades to re-emitting some trees (still correct — flush
+//  dedups identical records) rather than failing.
+#define DAG_SEEN_TREES_CAP  (1u << 18)
+//  One tree object body; trees are small (entries are 28..52 B each),
+//  but a giant directory could exceed this — the walk tolerates a short
+//  inflate by skipping that tree's edges (keeper descent still resolves
+//  it at query time).
+#define DAG_TREE_BUF_SZ     (1UL << 22)   // 4 MiB
+//  Path-depth cap for the iterative subtree walk stack.
+#define DAG_TREE_WALK_MAX   4096
 
 // --- LSM file I/O ---
 //
@@ -158,6 +181,38 @@ u64 DAGCommitTree(wh128css runs, u64 commit_h) {
         }
     }
     return 0;
+}
+
+ok64 DAGChildStep(wh128css runs, u64 parent_tree_h, u8csc name,
+                  u64 *out_child_h, u8 *out_child_type) {
+    sane(out_child_h && out_child_type);
+    *out_child_h = 0;
+    *out_child_type = 0;
+
+    //  BLAME-002: (TREE, childpathhash(name, parent_tree_h)) key; the
+    //  val carries the child's (type, hashlet).  Content-addressing
+    //  makes the edge deterministic, so every run holding the key must
+    //  hold the same val — two DISTINCT vals across the equal-key span
+    //  mean a 60-bit child-path-hash collision: refuse (DAGAMBIG) so the
+    //  caller falls back to a keeper inflate for that one step.
+    u64 key_h = DOGChildPathHash(name, parent_tree_h);
+    wh128cs slots[MSET_MAX_LEVELS] = {};
+    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
+    wh128cs *base = hits[0];
+    call(DAGRange, hits, runs, DAGPack(DAG_T_TREE, key_h));
+
+    b8 got = NO;
+    wh64 seen_val = 0;
+    for (wh128cs *r = base; r < hits[0]; r++) {
+        for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
+            if (!got) { seen_val = e->val; got = YES; }
+            else if (e->val != seen_val) return DAGAMBIG;
+        }
+    }
+    if (!got) return DAGNONE;
+    *out_child_h = DAGHashlet(seen_val);
+    *out_child_type = DAGType(seen_val);
+    done;
 }
 
 ok64 DAGParents(wh128css index, wh64s parents, wh64 commit_h) {
@@ -748,6 +803,14 @@ static ok64 dag_ingest_alloc(dag_ingest **out) {
     ok64 ao = wh128bAllocate(g->batch, DAG_BATCH);
     if (ao != OK) { free(g); return ao; }
 
+    //  BLAME-002 scratch: seen-tree hash set + a tree-body inflate buffer,
+    //  both long-lived (one per ingest run).  A failure to allocate either
+    //  is non-fatal — `dag_walk_tree` checks them and silently skips the
+    //  tree-edge materialisation (descent then falls back to keeper).
+    if (wh128bAllocate(g->seen_trees, DAG_SEEN_TREES_CAP) == OK)
+        zerob(g->seen_trees);   // hash set — must be zero-init
+    (void)u8bAllocate(g->treebuf, DAG_TREE_BUF_SZ);
+
     *out = g;
     done;
 }
@@ -755,6 +818,8 @@ static ok64 dag_ingest_alloc(dag_ingest **out) {
 static void dag_ingest_free(dag_ingest *g) {
     if (!g) return;
     if (g->batch[0]) wh128bFree(g->batch);
+    if (g->seen_trees[0]) wh128bFree(g->seen_trees);
+    if (g->treebuf[0]) u8bFree(g->treebuf);
     free(g);
 }
 
@@ -765,6 +830,88 @@ static void dag_emit(dag_ingest *g,
                      u8 vtype, u64 vhash) {
     if (!wh128bHasRoom(g->batch)) return;  // overflow; handled by flush
     (void)wh128bFeed1(g->batch, DAGEntry(ktype, khash, vtype, vhash));
+}
+
+static ok64 dag_batch_maybe_flush(dag_ingest *g);   // defined below
+
+//  BLAME-002: seen-tree set membership + insert (open-addressed wh128
+//  hash set keyed by the tree's 60-bit hashlet, val unused).  Mirrors
+//  `dag_anc_put` / `DAGAncestorsHas`.  A NULL/empty set (alloc failed)
+//  reports "not seen" so the walk still runs (just without dedup).
+static b8 dag_tree_seen(dag_ingest *g, u64 tree_h) {
+    if (!g->seen_trees[0]) return NO;
+    wh128 probe = {.key = DAGPack(0, tree_h), .val = 0};
+    wh128s tab = {wh128bHead(g->seen_trees), wh128bTerm(g->seen_trees)};
+    return HASHwh128Get(&probe, tab) == OK;
+}
+static void dag_tree_mark(dag_ingest *g, u64 tree_h) {
+    if (!g->seen_trees[0]) return;
+    wh128 rec = {.key = DAGPack(0, tree_h), .val = 0};
+    wh128s tab = {wh128bHead(g->seen_trees), wh128bTerm(g->seen_trees)};
+    (void)HASHwh128Put(tab, &rec);
+}
+
+//  BLAME-002: walk the tree rooted at `root_h`, emitting one
+//  (TREE, childpathhash(name, parent_h)) -> (child_type, child_h) edge
+//  per entry, and recursing into subtree children.  Each distinct tree
+//  is inflated and walked at most once per ingest run (the seen-tree
+//  set), so the cost is O(distinct trees x entries), not O(commits x
+//  entries).  Inflate failures / oversized trees are skipped silently —
+//  blame's keeper descent fallback resolves those paths at query time.
+//  The walk is iterative over a BASS-carved hashlet stack (no recursion,
+//  no pointer arithmetic).  Best-effort: a NULL/empty seen-set or a
+//  failed tree inflate just means fewer edges, never a wrong edge.
+static ok64 dag_walk_tree(dag_ingest *g, u64 root_h) {
+    sane(g);
+    if (!g->treebuf[0]) done;                 // no inflate buffer → skip
+    if (dag_tree_seen(g, root_h)) done;
+
+    a_carve(u64, stack, DAG_TREE_WALK_MAX);
+    (void)u64bFeed1(stack, root_h);
+    dag_tree_mark(g, root_h);
+
+    while (u64bHasData(stack)) {
+        u64 tree_h = u64bAt(stack, u64bDataLen(stack) - 1);  // peek tail
+        (void)u64bPop(stack);                                // LIFO pop
+
+        u8bReset(g->treebuf);
+        u8 ot = 0;
+        if (KEEPGet(tree_h, DAG_H60_HEXLEN, g->treebuf, &ot) != OK ||
+            ot != DOG_OBJ_TREE)
+            continue;                          // unresolved → keeper fallback
+
+        a_dup(u8c, body, u8bDataC(g->treebuf));
+        u8cs ent = {}, esha = {};
+        u32 mode = 0;
+        while (GITu8sDrainTree(body, ent, esha, &mode) == OK) {
+            u8cs name = {};
+            if (GITu8sFileSplit(ent, NULL, name) != OK) continue;
+            if (u8csEmpty(name)) continue;
+            sha1 child = {};
+            if (sha1Drain(esha, &child) != OK) continue;
+            u64 child_h = WHIFFHashlet60(&child);
+
+            //  Directory entries (octal mode 040000) are subtrees; all
+            //  else (regular/exe/symlink/gitlink) are leaves.  Only
+            //  subtrees carry a TREE-typed child and get descended.
+            b8 is_dir = (mode & 0170000) == 0040000;
+            u8 ctype = is_dir ? DAG_T_TREE : DAG_T_BLOB;
+
+            u8csc namec = {name[0], name[1]};
+            u64 key_h = DOGChildPathHash(namec, tree_h);
+            dag_emit(g, DAG_T_TREE, key_h, ctype, child_h);
+
+            if (is_dir && !dag_tree_seen(g, child_h)) {
+                dag_tree_mark(g, child_h);
+                if (u64bHasRoom(stack))
+                    (void)u64bFeed1(stack, child_h);
+                //  Stack full: drop this subtree's deeper edges (rare,
+                //  pathological depth); keeper descent still covers it.
+            }
+        }
+        call(dag_batch_maybe_flush, g);
+    }
+    done;
 }
 
 static ok64 dag_flush_batch(dag_ingest *g) {
@@ -867,6 +1014,12 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
         //  (COMMIT, commit_h) → (PICKED, picked_h)  one per picked header
         dag_emit(g, DAG_T_COMMIT, commit_h,
                     DAG_T_TREE,   tree_h);
+
+        //  BLAME-002: materialise (tree,name)->child edges for this
+        //  commit's root tree (deduped per ingest run), so blame /
+        //  GET can descend a path inflate-free at query time.
+        call(dag_walk_tree, g, tree_h);
+
         for (u32 i = 0; i < npar; i++) {
             u64 parent_h = WHIFFHashlet60(&parents[i]);
             dag_emit(g, DAG_T_COMMIT, commit_h,
