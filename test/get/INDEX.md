@@ -222,3 +222,14 @@
   row) while PRESERVING an untracked clutter file (only `--prune` removes
   those — GET.mkd §Flags), leaving `be status` free of phantom mod/mis.
   Hermetic.
+* `50-divergent-no-trunk-clobber/` — GET-014: a read/merge verb against
+  a DIVERGENT peer (shared 3-commit base B, peer tip C, local trunk T,
+  C↔T non-reachable) must NEVER silently move the local trunk `?` to C.
+  Two independent file:// stores; runs `be head`, `be get`, `be patch`
+  from a fresh wt at T against the divergent peer and asserts the parent
+  store's trunk `?` tip stays at T (the original bug dropped four landed
+  commits when `.refs.idx` regen mispicked C — root-caused to DIS-038's
+  ancestor-fallback gap, now landed).  Also asserts `be head` (the
+  read-only GET dry-run) appends no bare-`?` trunk `get` row (a peer-uri-
+  keyed remote-tracking observation is the allowed cache refresh).
+  Hermetic.
