@@ -2387,7 +2387,16 @@ static ok64 bepost_synth_child_uri(cli *c, u8cs wt_root, u8cs subpath,
             if (!u8csEmpty(qp)) u8bFeed(pproj_buf, qp);
             a_dup(u8c, lq2, lq);
             DOGQueryStripProject(lq2);           //  → <branch> (relative: unchanged)
-            if (!u8csEmpty(lq2)) u8bFeed(pbr_buf, lq2);
+            //  Trunk aliases (main/master/trunk) name the EMPTY branch:
+            //  a sub's per-branch pin lives on `?/<sub>/.<parent>` with
+            //  NO branch suffix.  Appending a literal `main` would target
+            //  a never-created `?/<sub>/.<parent>/main` shard → NOBRANCH
+            //  on the recursing POST.  Collapse via DPATHBranchNormFeed
+            //  (empty result == trunk alias); a real branch keeps its
+            //  existing un-canonicalised form.
+            a_pad(u8, lqn, 256);
+            if (DPATHBranchNormFeed(lqn, lq2) == OK && u8bDataLen(lqn) > 0)
+                u8bFeed(pbr_buf, lq2);
         } else {
             //  Bare top-level post: branch from the wt's tail.
             a_pad(u8, tail, FILE_PATH_MAX_LEN + 128);
@@ -2397,7 +2406,13 @@ static ok64 bepost_synth_child_uri(cli *c, u8cs wt_root, u8cs subpath,
                 if (URILexer(&tu) == OK) {
                     a_dup(u8c, tq, tu.query);
                     DOGQueryStripProject(tq);
-                    if (!u8csEmpty(tq)) u8bFeed(pbr_buf, tq);
+                    //  Same trunk-alias collapse as the explicit-query
+                    //  arm: a `main`/`master`/`trunk` tail must not append
+                    //  a literal branch segment to the synthetic sub URI.
+                    a_pad(u8, tqn, 256);
+                    if (DPATHBranchNormFeed(tqn, tq) == OK &&
+                        u8bDataLen(tqn) > 0)
+                        u8bFeed(pbr_buf, tq);
                 }
             }
         }

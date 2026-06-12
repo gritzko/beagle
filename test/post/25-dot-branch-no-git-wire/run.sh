@@ -61,6 +61,11 @@ mkdir -p wt/.be
 #  This is what a parent-driven POST does to a mounted beagle sub:
 #  it commits the sub onto `?/<subproj>/.<parentproj>[/<br>]`.  After
 #  this, cur sits on the be-only dot-branch `.parentproj`.
+#  Distinct mtime: the edit is auto-staged by POST (no explicit `be
+#  put`), so s.txt must read dirty.  On a fast FS this append can land
+#  in the same ron60 millisecond as `be get`'s checkout stamp, leaving
+#  s.txt's mtime in the stamp-set → POST sees it clean → POSTNONE.
+sleep 0.02
 printf 'subblob2\n' >> wt/s.txt
 ( cd wt && "$BE" post '#dot commit' "?/subA/.parentproj" \
         >../03.dotpost.out 2>../03.dotpost.err ) \
