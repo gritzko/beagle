@@ -306,23 +306,32 @@ static void emit_status(const char *status, u8cs path) {
     }
 }
 
+//  Does the wt's on-disk blob for `childpath` differ from `base_sha`
+//  (the file's committed `ours` blob)?  YES means the user / a prior
+//  PATCH left uncommitted bytes that the tree-sha classification
+//  cannot see.  Best-effort: any I/O error (missing file, map fail)
+//  returns NO so the caller falls back to the tree-sha verdict and
+//  behaviour is unchanged when we can't read the wt copy.
+static b8 wt_blob_differs(u8cs reporoot, u8cs childpath, sha1cp base_sha) {
+    if ($empty(childpath) || base_sha == NULL) return NO;
+    a_path(fp);
+    if (SNIFFFullpath(fp, reporoot, childpath) != OK) return NO;
+    u8bp mapped = NULL;
+    if (FILEMapRO(&mapped, $path(fp)) != OK || mapped == NULL) return NO;
+    sha1 disk_sha = {};
+    KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
+    FILEUnMap(mapped);
+    return sha1Eq(&disk_sha, base_sha) ? NO : YES;
+}
+
 //  Check whether the wt's on-disk bytes for `childpath` differ from
 //  `baseline_sha` (the file's blob sha at the merge baseline).  If
 //  they do, the file has user / prior-PATCH edits — emit a `dirty`
 //  status row.  Best-effort: any I/O error is silently ignored.
 static void emit_dirty_if_changed(u8cs reporoot, u8cs childpath,
                                   sha1cp baseline_sha) {
-    if ($empty(childpath) || baseline_sha == NULL) return;
-    a_path(fp);
-    if (SNIFFFullpath(fp, reporoot, childpath) != OK) return;
-    u8bp mapped = NULL;
-    if (FILEMapRO(&mapped, $path(fp)) != OK || mapped == NULL) return;
-    sha1 disk_sha = {};
-    KEEPObjSha(&disk_sha, DOG_OBJ_BLOB, u8bDataC(mapped));
-    FILEUnMap(mapped);
-    if (!sha1Eq(&disk_sha, baseline_sha)) {
+    if (wt_blob_differs(reporoot, childpath, baseline_sha))
         emit_status("mod", childpath);
-    }
 }
 
 //  Stamp the just-written file with the patch row's ts.  Silent on
@@ -556,6 +565,18 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         b8 t_eq_l = l && t && sha_eq(&l->sha, &t->sha);
         b8 o_eq_t = o && t && sha_eq(&o->sha, &t->sha);
 
+        //  PATCH-002: the tree-sha triple {l,o,t} only sees COMMITTED
+        //  bytes; the wt may carry uncommitted edits the next POST will
+        //  rewrite.  When theirs ALSO changed this path (`!t_eq_l`) and
+        //  the committed `ours` blob matches base (`o_eq_l`), the verdict
+        //  would otherwise be `take-theirs` / `noop` and silently discard
+        //  the wt edit or the incoming change.  Probe the wt copy once
+        //  (best-effort; I/O-error → NO) so the arms below can route a
+        //  dirty path into the 3-way weave instead.
+        b8 wt_dirty = (l && o && o_eq_l && !t_eq_l)
+                          ? wt_blob_differs(reporoot, childpath, &o->sha)
+                          : NO;
+
         if (l && o && t && o_eq_l && t_eq_l) {
             //  Unchanged on both sides — skip.  But the wt's
             //  on-disk bytes may carry user / prior-PATCH edits
@@ -566,14 +587,15 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             emit_dirty_if_changed(reporoot, childpath, &l->sha);
             continue;
         }
-        if (l && o && t && o_eq_l && !t_eq_l) {
-            //  Only theirs changed.  GRAFGet needs the COMMIT sha in
-            //  the URI query (graf's get_resolve_chunk rejects non-
-            //  commit objects with GETFAIL).  Use `thr_commit` — at
-            //  the root recursion `thr == thr_commit` so this is a
-            //  no-op; at deeper recursion `thr` is the subdir's
-            //  TREE sha and passing it produces an empty merge buf,
-            //  zeroing the file on disk.
+        if (l && o && t && o_eq_l && !t_eq_l && !wt_dirty) {
+            //  Only theirs changed AND the wt's on-disk bytes still
+            //  match the committed `ours` blob (clean baseline).  GRAFGet
+            //  needs the COMMIT sha in the URI query (graf's
+            //  get_resolve_chunk rejects non-commit objects with
+            //  GETFAIL).  Use `thr_commit` — at the root recursion
+            //  `thr == thr_commit` so this is a no-op; at deeper
+            //  recursion `thr` is the subdir's TREE sha and passing it
+            //  produces an empty merge buf, zeroing the file on disk.
             (void)fetch_blob(mbuf, childpath, thr_commit);
             a_dup(u8c, bytes, u8bData(mbuf));
             ok64 wo = write_blob(reporoot, childpath,
@@ -589,6 +611,12 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             u8bReset(mbuf);
             continue;
         }
+        //  `wt_dirty` (committed `ours` == base, theirs changed, wt has
+        //  uncommitted edits) falls through to the diverged-merge arm
+        //  below, which folds the wt's on-disk bytes in via the
+        //  GRAFMergeWtFileTunable path — disjoint regions merge clean
+        //  (`merged`), a true overlap reports `content-conflict`, never
+        //  a silent skip.
         if (l && o && t && !o_eq_l && t_eq_l) {
             //  Only ours changed — disk already has the right bytes.
             //  ours diverged from baseline; report as `dirty` (theirs
@@ -607,8 +635,12 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             emit_dirty_if_changed(reporoot, childpath, &l->sha);
             continue;
         }
-        if (l && o && t && !o_eq_l && !t_eq_l && !o_eq_t) {
-            //  Both changed differently → 3-way WEAVE merge.
+        if (l && o && t && !t_eq_l && !o_eq_t && (!o_eq_l || wt_dirty)) {
+            //  Both changed differently → 3-way WEAVE merge.  Or
+            //  (PATCH-002) the committed `ours` matches base but the wt
+            //  carries uncommitted edits (`wt_dirty`) and theirs changed
+            //  the path — same weave, with the wt bytes folded in as the
+            //  ours-side edit.
             //
             //  Two routes, picked by `use_fork_base`:
             //
@@ -638,7 +670,11 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
                     childext[1] = childpath[1];
                 }
             }
-            if (st->use_fork_base) {
+            if (st->use_fork_base && !wt_dirty) {
+                //  GRAFMerge3Bytes merges the three COMMITTED blobs only
+                //  — it does not fold the wt layer, so a `wt_dirty` path
+                //  (committed `ours` == base) would lose the on-disk
+                //  edit.  Such paths take the wt-folding branch below.
                 Bu8 bbuf = {}, obuf = {}, tbuf = {};
                 (void)u8bMap(bbuf, PATCH_BLOB_BUF);
                 (void)u8bMap(obuf, PATCH_BLOB_BUF);
