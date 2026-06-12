@@ -58,6 +58,13 @@ con ok64 WIREFAIL    = 0x8126ce3ca495;
 con ok64 WIREBADREQ  = 0x8126ce2ca35b39a;
 con ok64 WIRENOWANT  = 0x8126ce5d880a5dd;
 con ok64 WIRENOSHA   = 0x2049b39761c44a;
+//  GET-019: the PACK bookmarks covering the byte range a clone would
+//  ship do NOT form a clean contiguous non-overlapping tiling — a gap
+//  or a duplicate/overlapping bookmark in a corrupt source shard.  The
+//  server REFUSES rather than ship a pack whose declared object count
+//  exceeds the objects physically present in the byte range (which
+//  would make the client's UNPK scan run short: "scan incomplete").
+con ok64 WIRECRPT    = 0x8126ce31b65d;
 
 #define WIRE_MAX_WANTS  64
 #define WIRE_MAX_HAVES  256

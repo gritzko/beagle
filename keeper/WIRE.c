@@ -183,23 +183,68 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
     done;
 }
 
-//  Sum obj_count of every PACK bookmark in file_id whose
-//  offset is in [from, to).
-static u32 wire_count_in_range(keeper *k, u32 file_id, u64 from, u64 to) {
-    u64 total = 0;
+//  Locate the PACK bookmark for `file_id` that STARTS exactly at byte
+//  offset `at`, returning its (obj_count, byte_len).  Returns:
+//    OK         — exactly one bookmark starts at `at`.
+//    KEEPNONE   — no bookmark starts at `at` (a gap in the tiling).
+//    WIRECRPT   — TWO OR MORE bookmarks start at `at` with differing
+//                 extents (a duplicate / overlapping bookmark — corrupt
+//                 source shard, GET-019).  Byte-identical duplicates
+//                 cannot survive: the LSM sort+dedup collapses identical
+//                 rows, so two surviving rows at one offset must differ,
+//                 and a differing extent is the overlap that poisons the
+//                 count.
+static ok64 wire_bookmark_at(keeper *k, u32 file_id, u64 at,
+                             u32 *count, u32 *blen) {
+    sane(k && count && blen);
+    b8  found = NO;
+    u32 fc = 0, fl = 0;
     for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
         wh128cp base = (wh128cp)_raw_[0];
         wh128cp term = (wh128cp)_raw_[1];
         for (wh128cp e = base; e < term; e++) {
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
-            u64 bo = wh64Off(e->key);
-            if (bo < from || bo >= to) continue;
-            total += keepPackBmCount(e->val);
+            if (wh64Off(e->key)  != at)             continue;
+            u32 c = keepPackBmCount(e->val);
+            u32 l = keepPackBmLen(e->val);
+            if (found && l != fl) return WIRECRPT;  //  overlapping dup
+            found = YES;
+            fc = c;
+            fl = l;
         }
     }
-    if (total > 0xffffffffu) return 0xffffffffu;
-    return (u32)total;
+    if (!found) return KEEPNONE;
+    *count = fc;
+    *blen  = fl;
+    done;
+}
+
+//  Sum obj_count over the byte range [from, to) by walking the PACK
+//  bookmarks that TILE it — each one starting exactly where the prior
+//  ends.  This is the count the segment's pack header will declare, and
+//  it must equal the objects physically present in those bytes, or the
+//  client's UNPK scans short ("scan incomplete N/M").  A clean store
+//  always tiles cleanly; a corrupt one (gap / overlap / overshoot) is
+//  REFUSED here (WIRECRPT) so a poisoned pack never ships (GET-019).
+static ok64 wire_tile_count(keeper *k, u32 file_id, u64 from, u64 to,
+                            u32 *out_count) {
+    sane(k && out_count && from <= to);
+    u64 cursor = from;
+    u64 total  = 0;
+    while (cursor < to) {
+        u32 c = 0, l = 0;
+        call(wire_bookmark_at, k, file_id, cursor, &c, &l);
+        if (l == 0) return WIRECRPT;           //  zero-length bookmark loops
+        cursor += (u64)l;
+        if (cursor > to) return WIRECRPT;       //  overshoot — overlap
+        total  += (u64)c;
+        if (total > 0xffffffffu) return WIRECRPT;
+    }
+    //  cursor must land exactly on `to`; a short landing is a gap.
+    if (cursor != to) return WIRECRPT;
+    *out_count = (u32)total;
+    done;
 }
 
 //  Resolve a sha to the LATEST (largest log_off) object-type entry whose
@@ -315,11 +360,6 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
         watermark = 12;
     }
 
-    //  Compute object count for the segment by summing PACK bookmarks
-    //  in [watermark .. end_offset).
-    u32 seg_count = wire_count_in_range(k, watermark_fid,
-                                        watermark, end_offset);
-
     //  Open the trunk pack log file.
     a_path(kdir);
     call(HOMEBranchDir, k->h, kdir, NULL);
@@ -331,7 +371,9 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
     fd_pool[0] = fd;
 
     if (end_offset <= watermark) {
-        //  Client is already at or past the want's pack tail.
+        //  Client is already at or past the want's pack tail — nothing
+        //  to ship.  No tiling needed (the range is empty / degenerate),
+        //  so the corruption check below is skipped for a no-op segment.
         out_segs[0].fd     = fd;
         out_segs[0].offset = watermark;
         out_segs[0].length = 0;
@@ -339,6 +381,16 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
         *out_n = 1;
         done;
     }
+
+    //  Compute object count for the segment by tiling the PACK
+    //  bookmarks over [watermark .. end_offset).  A corrupt source
+    //  shard (gap / overlapping bookmark) is REFUSED (WIRECRPT) rather
+    //  than over-counted — shipping a header whose count exceeds the
+    //  objects in the bytes is exactly the GET-019 truncation
+    //  ("unpk: scan incomplete").
+    u32 seg_count = 0;
+    call(wire_tile_count, k, watermark_fid, watermark, end_offset,
+         &seg_count);
 
     out_segs[0].fd     = fd;
     out_segs[0].offset = watermark;

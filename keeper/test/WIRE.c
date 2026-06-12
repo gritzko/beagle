@@ -283,6 +283,96 @@ ok64 WIREtest_have_ff() {
     done;
 }
 
+// ---- Test 3b (GET-019): a corrupt source shard whose PACK bookmarks
+//      OVERLAP (a duplicate bookmark at the same offset with a different
+//      extent — the double-clone-into-one-file corruption seen in a
+//      wrecked store) must be REFUSED with WIRECRPT, not over-counted
+//      into a truncated pack.  Before the fix WIREBuildSegments summed
+//      every bookmark in the range, declaring a count far larger than
+//      the objects in the shipped bytes, so the client's UNPK scanned
+//      short ("unpk: scan incomplete N/M").  After the fix the tiling
+//      walk detects the two bookmarks starting at offset 12 and refuses.
+
+ok64 WIREtest_corrupt_overlap() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/wire-corrupt-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+    a_cstr(root, tmpdir);
+    home h = {};
+    call(HOMEOpenAt, &h, root, YES);
+    call(KEEPOpen, &h, YES);
+
+    //  Two clean packs in file_id 1: pack1 @ off 12, pack2 right after.
+    sha1 sha_a = {};
+    u32  fid_a = 0;
+    call(add_blob_pack, &sha_a, &fid_a, "alpha corrupt\n");
+    want(fid_a == 1);
+    sha1 sha_b = {};
+    u32  fid_b = 0;
+    call(add_blob_pack, &sha_b, &fid_b, "bravo corrupt\n");
+    want(fid_b == 1);
+
+    //  Sanity: a clean want over [12, want-end) tiles fine pre-injection.
+    {
+        a_refadv(adv0);
+        call(REFADVOpen, &adv0);
+        wire_req rq = {};
+        rq.nwants = 1;
+        rq.wants[0] = sha_b;
+        pstr_seg sg[4] = {};
+        int      fp[4] = {-1,-1,-1,-1};
+        u32      ng = 0;
+        ok64 cl = WIREBuildSegments(&adv0, &rq, sg, fp, 4, &ng);
+        want(cl == OK);
+        want(ng == 1);
+        want(sg[0].count == 2);   //  both blobs, clean tiling
+        for (int i = 0; i < 4; i++) if (fp[i] >= 0) close(fp[i]);
+        REFADVClose(&adv0);
+    }
+
+    //  Inject the corruption: publish an extra idx run carrying ONE PACK
+    //  bookmark that ALSO starts at offset 12 (file_id 1) but claims a
+    //  much larger extent + bogus object count — exactly the wrecked
+    //  store's two-bookmarks-at-off-12 shape.
+    {
+        a_path(kdir);
+        call(HOMEBranchDir, &h, kdir, NULL);
+        wh128 bm = {
+            .key = wh64Pack(KEEP_TYPE_PACK, 1, 12),
+            .val = keepPackBmVal(999999, 0x7fffffff),
+        };
+        wh128 one[1] = { bm };
+        u8cs raw = {(u8cp)one, (u8cp)(one + 1)};
+        a_cstr(ext, KEEP_IDX_EXT);
+        //  A pup_key strictly larger than any minted so far keeps the run
+        //  ordering valid (newest-wins); the wire scan visits every run.
+        call(DOGPupCreateAt, KEEP.puppies, $path(kdir), ext, raw,
+             0xffffffffffffull);
+    }
+
+    a_refadv(adv);
+    call(REFADVOpen, &adv);
+
+    wire_req req = {};
+    req.nwants = 1;
+    req.wants[0] = sha_b;
+
+    pstr_seg segs[4] = {};
+    int      fds [4] = {-1,-1,-1,-1};
+    u32      n = 0;
+    ok64 rc = WIREBuildSegments(&adv, &req, segs, fds, 4, &n);
+    want(rc == WIRECRPT);          //  REFUSE — never ship a short pack
+    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
+
+    REFADVClose(&adv);
+    call(KEEPClose);
+    HOMEClose(&h);
+    tmp_rm(tmpdir);
+    done;
+}
+
 // ---- Test 4: want sha unknown → WIRENOSHA ----
 
 ok64 WIREtest_nosha() {
@@ -477,6 +567,8 @@ ok64 maintest() {
     call(WIREtest_single_want);
     fprintf(stderr, "WIREtest_have_ff...\n");
     call(WIREtest_have_ff);
+    fprintf(stderr, "WIREtest_corrupt_overlap...\n");
+    call(WIREtest_corrupt_overlap);
     fprintf(stderr, "WIREtest_nosha...\n");
     call(WIREtest_nosha);
     fprintf(stderr, "WIREtest_caps...\n");
