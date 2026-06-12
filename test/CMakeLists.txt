@@ -135,6 +135,10 @@ set(_BE_NEEDS_SSH_CASES
     "be-delete-09-sub-nosub-suppress"
     "be-patch-28-sub-gitlink-bump-reget"
     "be-patch-29-sub-unchanged-gitlink-ok"
+    # PATCH-001: a behind source whose only forward change is a gitlink
+    # bump must stage the parent gitlink put-row (take-theirs), so a plain
+    # be post records the pin with no manual `be put <sub>`.
+    "be-patch-35-sub-gitlink-bump-staged"
     "be-post-26-sub-both-dirty-keeps-parent-edit"
     "be-post-27-sub-only-parent-dirty-commits"
     # SUBS-006 repro: clean nested sub must no-op a git-peer push, not

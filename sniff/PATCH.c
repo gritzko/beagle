@@ -266,6 +266,12 @@ typedef struct {
                              // content side wins, warning emitted, NOT a
                              // hard conflict (PATCH still returns OK)
     u32   failed;
+    //  PATCH-001: count of `put <sub>#<pin>` rows the walk staged for
+    //  forward-moved gitlinks.  Each is a ULOG append at `ts`, so when
+    //  >0 the final patch provenance row must move to a strictly-greater
+    //  ts (ULOG refuses ts <= tail).  Folded into `take_theirs` for the
+    //  absorbed/report counters.
+    u32   gitlink_put;
     //  The patch row's ts, picked up-front in PATCHApply and threaded
     //  through the walk.  Every file write_blob lays down gets stamped
     //  with this ts right after the write, so the ULOG row's ts and
@@ -536,11 +542,41 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         //  (reuses GET, post-order) — feeding the gitlink to fetch_blob /
         //  write_blob (or resolving its sha as a ref) fails and aborts the
         //  whole parent patch (PATCHCFLCT, `bad ref ''` / `failed <sub>`).
-        //  Skip it on every side and count it a no-op so BEExecute proceeds
-        //  to the sub re-get; the sub relays its own checkout report.
+        //  So we never feed it to the blob path.  But the parent gitlink
+        //  ROW still has to absorb a forward-moved pin:
+        //
+        //  PATCH-001: a behind source whose only forward change is a
+        //  gitlink bump (theirs pin advanced past ours) checks the sub out
+        //  on disk via the recursion arm, yet the parent tree still pins
+        //  the OLD commit — a half-applied state (`be status` clean, the
+        //  next `be post` records nothing).  When theirs' pin moved forward
+        //  relative to ours we stage a `put <childpath>#<theirs-pin>` row —
+        //  exactly the gitlink-bump row `be put <sub>` writes (sniff/PUT.c
+        //  sub-mount short-circuit) — so the next POST records the new pin,
+        //  in lock-step with the sub checkout the recursion performs.  An
+        //  unchanged gitlink, or one only ours moved, stays a no-op.
         if (entry_is_gitlink(l) || entry_is_gitlink(o) ||
             entry_is_gitlink(t)) {
-            st->noop++;
+            b8 thr_moved = (t != NULL) &&
+                           (o == NULL || !sha_eq(&t->sha, &o->sha));
+            if (thr_moved) {
+                a_sha1hex(pin_hex, &t->sha);
+                uri grow = {};
+                grow.path[0]     = childpath[0]; grow.path[1]     = childpath[1];
+                grow.fragment[0] = pin_hex[0];   grow.fragment[1] = pin_hex[1];
+                ron60 put_verb = SNIFFAtVerbPut();
+                ok64 ao = SNIFFAtAppendAt(st->ts, put_verb, &grow);
+                if (ao == OK) {
+                    st->take_theirs++;
+                    st->gitlink_put++;
+                    emit_status("applied", childpath);
+                } else {
+                    st->failed++;
+                    emit_status("failed", childpath);
+                }
+            } else {
+                st->noop++;
+            }
             continue;
         }
 
@@ -1753,7 +1789,16 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     }
 
     ron60 verb = SNIFFAtVerbPatch();
-    (void)SNIFFAtAppendAt(ts, verb, &urow);
+    //  PATCH-001: the walk may have already appended `put <sub>#<pin>`
+    //  rows at `ts` (forward-moved gitlinks).  ULOG refuses a row whose
+    //  ts <= the tail, so the provenance row needs a strictly-greater ts
+    //  when any gitlink put landed.  SNIFFAtNow yields tail+1.
+    ron60 row_ts = ts;
+    if (st.gitlink_put > 0) {
+        struct timespec rtv = {};
+        SNIFFAtNow(&row_ts, &rtv);
+    }
+    (void)SNIFFAtAppendAt(row_ts, verb, &urow);
 
     //  The absorbed-commit list was emitted up-front via
     //  SNIFFEmitCommitRange (before patch_walk); per-file rows came
