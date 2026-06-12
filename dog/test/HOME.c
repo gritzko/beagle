@@ -430,6 +430,82 @@ ok64 HOMETestProjectDerive() {
     done;
 }
 
+//  DIS-037: `?/<title>` resolves to the shard DIR whose recorded title
+//  matches, not the dir whose NAME matches.  A store may name a shard
+//  `dogs` on disk while its project title (refs line-1 `get` row URI,
+//  `?/<title>` override or URL basename) is `beagle`.  Addressing by
+//  TITLE (`be get …?/beagle`) must land on the `dogs/` shard; the
+//  on-disk dir name is an implementation detail.  Dir-name still wins
+//  as a fast path / migration fallback when no title matches.
+ok64 HOMETestTitleResolve() {
+    sane(1);
+    call(FILEInit);
+
+    struct {
+        char const *name;
+        char const *shard_dir;   // on-disk shard dir under .be/
+        char const *refs_row0;   // shard's refs line-1 get row (NULL = none)
+        char const *query;       // `?/<...>` typed by the user (no leading ?)
+        char const *want_proj;   // expected resolved h->project (the dir)
+    } const cases[] = {
+        //  Title override in refs: dir `dogs`, title `beagle` → resolve.
+        {"title override -> shard dir",
+         "dogs", "26612AcUE7\tget\tssh://localhost/src/dogs?/beagle#0\n",
+         "/beagle", "dogs"},
+        //  Title from URL basename: dir `dogs`, source basename `dogs`,
+        //  user types the dir name directly → direct dir match (fast path).
+        {"dir name direct match",
+         "dogs", "26612AcUE7\tget\tssh://localhost/src/dogs?#0\n",
+         "/dogs", "dogs"},
+        //  No title match anywhere: fall back to the typed name verbatim
+        //  (lets a fresh clone mkdir it).
+        {"no match -> verbatim fallback",
+         "dogs", "26612AcUE7\tget\tssh://localhost/src/dogs?#0\n",
+         "/nonesuch", "nonesuch"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tmp[256];
+        want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
+        fprintf(stderr, "  case: %s\n", cases[i].name);
+
+        char p[400];
+        snprintf(p, sizeof p, "%s/" DOG_BE_NAME, tmp);
+        want(mkdir(p, 0755) == 0);
+        //  empty wtlog: no row-0 project anchor.
+        snprintf(p, sizeof p, "%s/" DOG_BE_NAME "/" DOG_WTLOG_NAME, tmp);
+        { FILE *f = fopen(p, "w"); want(f != NULL); fclose(f); }
+        //  the shard dir + its refs line-1 get row.
+        snprintf(p, sizeof p, "%s/" DOG_BE_NAME "/%s", tmp, cases[i].shard_dir);
+        want(mkdir(p, 0755) == 0);
+        if (cases[i].refs_row0 != NULL) {
+            snprintf(p, sizeof p, "%s/" DOG_BE_NAME "/%s/" DOG_REFS_NAME,
+                     tmp, cases[i].shard_dir);
+            FILE *f = fopen(p, "w"); want(f != NULL);
+            fputs(cases[i].refs_row0, f);
+            fclose(f);
+        }
+
+        //  Open with the typed `?/<title>` query (and the store root in
+        //  the path slot) — exactly what `be get file:<store>?/<title>`
+        //  forwards.
+        a_cstr(root, tmp);
+        a_cstr(q, cases[i].query);
+        home h = {};
+        uri at = {};
+        at.path[0]  = root[0];  at.path[1]  = root[1];
+        at.query[0] = q[0];     at.query[1] = q[1];
+        call(HOMEOpen, &h, &at, NO);
+
+        a_dup(u8c, pj, u8bDataC(h.project));
+        want(slice_is(pj, cases[i].want_proj));
+
+        HOMEClose(&h);
+        TESTBErmrf(tmp);
+    }
+    done;
+}
+
 //  GET-010 Defect-2 — the HOME-escape.  `home_walk_up` is an unbounded
 //  cwd→`/` ascent.  When a process runs under `$HOME` with no local `.be`
 //  shield it used to keep climbing PAST `$HOME` and grab/create a store
@@ -552,6 +628,8 @@ ok64 maintest() {
     call(HOMETestRoEmptyAnchor);
     fprintf(stderr, "HOMETestProjectDerive...\n");
     call(HOMETestProjectDerive);
+    fprintf(stderr, "HOMETestTitleResolve...\n");
+    call(HOMETestTitleResolve);
     fprintf(stderr, "HOMETestWalkHomeBound...\n");
     call(HOMETestWalkHomeBound);
     fprintf(stderr, "all passed\n");

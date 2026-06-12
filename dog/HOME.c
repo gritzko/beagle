@@ -19,6 +19,7 @@
 
 static ok64 home_anchor_resolve(home *h, u8cs anchor);
 static ok64 home_single_shard(path8s p, u8b out);
+static ok64 home_resolve_project_dir(path8s be_dir, u8csc title, u8bp out);
 
 // Capture stdout of `git config --global --get <key>` into out.
 // Returns NODATA if git exits non-zero (key unset) or the subprocess
@@ -350,6 +351,30 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         a_dup(u8c, br, u8bDataC(h->cur_branch));
         ok64 bo = HOMEOpenBranch(h, br, rw);
         if (bo != OK && bo != HOMEOPEN) return bo;
+    }
+
+    //  DIS-037.  `h->project` now holds the requested project NAME — a
+    //  title (`beagle`) from the `?/<title>` query or a row-0 anchor, or
+    //  the dir name from a single-shard store.  Map it to the actual
+    //  on-disk shard DIR: a copied / renamed store names its shards
+    //  opaquely (`dogs`) while the canonical address is the title; the
+    //  store records each shard's title in its `refs` line-1 `get` row
+    //  (Store.mkd, Title.mkd).  Dir-name wins as a fast path / migration
+    //  fallback, so this is a no-op when name == dir.  Scans only the
+    //  existing store (no writes); a fresh clone with no `.be` yet falls
+    //  through to the verbatim name.
+    if (!u8bEmpty(h->project)) {
+        a_path(bedir);
+        a_dup(u8c, root_s, u8bDataC(h->root));
+        call(PATHu8bFeed, bedir, root_s);
+        call(PATHu8bPush, bedir, DOG_BE_S);
+        a_dup(u8c, want_proj, u8bDataC(h->project));
+        a_pad(u8, dirbuf, 256);
+        call(home_resolve_project_dir, $path(bedir), want_proj, dirbuf);
+        if (!u8bEmpty(dirbuf)) {
+            u8bReset(h->project);
+            call(u8bFeed, h->project, u8bDataC(dirbuf));
+        }
     }
     done;
 }
@@ -742,6 +767,110 @@ static ok64 home_single_shard(path8s p, u8b out) {
     int n = 0;
     call(home_be_subdirs, p, out, &n);
     if (n != 1) return NODATA;                 //  flat / ambiguous store
+    done;
+}
+
+//  DIS-037.  Derive a shard's project TITLE from its `refs` line-1
+//  `get` row.  A shard records its clone source as row 0 of
+//  `<be_dir>/<shard>/refs` (Title.mkd "Persisted in reflog line 1");
+//  the title is that URI's `?/<title>` override, else its path
+//  basename, both via `DOGTitleFromUri`.  Fills `title_out` (reset
+//  inside; DOGTitleFromUri copies the derived bytes into it before the
+//  unmap, so no slice into the mmap survives).  Returns NODATA when the
+//  shard has no readable / parsable row 0 (no recorded title).
+static ok64 home_shard_title(path8s be_dir, u8csc shard, u8bp title_out) {
+    sane($ok(shard) && title_out != NULL);
+    u8bReset(title_out);
+
+    a_path(refs);
+    a_dup(u8c, bed, be_dir);
+    call(PATHu8bFeed, refs, bed);
+    call(PATHu8bPush, refs, shard);
+    call(PATHu8bPush, refs, DOG_REFS_S);
+
+    u8bp map = NULL;
+    if (FILEMapRO(&map, $path(refs)) != OK) return NODATA;
+    u8cs scan = {u8bDataHead(map), u8bIdleHead(map)};
+    //  Bound the drain to row 0 (through the first '\n').
+    u8cp nl = scan[0];
+    while (nl < scan[1] && *nl != '\n') nl++;
+    if (nl == scan[1]) { FILEUnMap(map); return NODATA; }
+    u8cs row = {scan[0], nl + 1};
+    ulogrec rec = {};
+    ok64 dr = ULOGu8sDrain(row, &rec);
+    if (dr != OK) { FILEUnMap(map); return NODATA; }
+    DOGTitleFromUri(&rec.uri, title_out);
+    FILEUnMap(map);
+    if (u8bEmpty(title_out)) return NODATA;
+    done;
+}
+
+//  DIS-037.  Map a requested project TITLE to its on-disk shard DIR
+//  under `<be_dir>`.  A store names shards by an opaque dir (`dogs`,
+//  `abc`) while the canonical address is the project title (`beagle`,
+//  `libabc`); identity belongs to the title, the dir is an impl detail
+//  (Store.mkd, Title.mkd).  Resolution order, feeding the result into
+//  `out`:
+//    1. a dir literally named `title` exists → use it (fast path, and
+//       the migration fallback when title == dir);
+//    2. else the first shard whose recorded title (home_shard_title)
+//       equals `title` → use that shard's dir name;
+//    3. else `title` verbatim (a fresh clone mkdir's it).
+//  `be_dir` is the bare `.be` store dir.  No filesystem writes.
+static ok64 home_resolve_project_dir(path8s be_dir, u8csc title, u8bp out) {
+    sane($ok(title) && out != NULL);
+    u8bReset(out);
+    if (u8csEmpty(title)) done;                //  flat store: nothing to map
+
+    //  1. Direct dir-name hit.
+    {
+        a_path(direct);
+        a_dup(u8c, bed, be_dir);
+        call(PATHu8bFeed, direct, bed);
+        call(PATHu8bPush, direct, title);
+        filestat fs = {};
+        if (FILEStat(&fs, $path(direct)) == OK && fs.kind == FILE_KIND_DIR) {
+            call(u8bFeed, out, title);
+            done;
+        }
+    }
+
+    //  2. Title match across the shards.  Iterate every shard dir, derive
+    //     its recorded title, and stop at the first equal to `title`.
+    {
+        a_path(dir, be_dir);
+        fileit it = {};
+        if (FILEIterOpen(&it, dir) == OK) {
+            a_pad(u8, titlebuf, 256);
+            b8 hit = NO;
+            scan(FILENext, &it) {
+                if (it.type != DT_DIR) continue;
+                a_dup(u8c, full, u8bDataC(it.path));
+                if (!$empty(full) && full[1][-1] == '/') u8csShed1(full);
+                u8cs base = {};
+                PATHu8sBase(base, full);
+                if ($empty(base) || $at(base, 0) == '.') continue;
+                if (home_shard_title(be_dir, base, titlebuf) != OK) continue;
+                a_dup(u8c, t, u8bDataC(titlebuf));
+                if (u8csEq(t, (u8c **)title)) {
+                    u8bReset(out);
+                    if (u8bFeed(out, base) != OK) {
+                        FILEIterClose(&it);
+                        fail(BNOROOM);
+                    }
+                    hit = YES;
+                    break;
+                }
+            }
+            FILEIterClose(&it);
+            if (__ != END && __ != OK) fail(__);
+            __ = OK;
+            if (hit) done;
+        }
+    }
+
+    //  3. No match: keep the requested name verbatim.
+    call(u8bFeed, out, title);
     done;
 }
 
