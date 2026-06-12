@@ -311,9 +311,14 @@ ok64 KEEPGetByURI(uricp target, u8bp out) {
     //  demand.  Fail loudly until that's resolved.
     if (!$empty(target->host)) fail(KEEPFAIL);
 
-    //  Neither ?ref nor #sha: nothing to resolve against.  Caller is
-    //  expected to fall back to the filesystem.
-    if ($empty(target->query) && $empty(target->fragment)) fail(KEEPFAIL);
+    //  No path AND no ?ref/#sha: nothing to resolve against — there is
+    //  no tree to descend and no object to name.  Caller is expected to
+    //  fall back to the filesystem.  A PATH-bearing URI with no ref
+    //  (`blob:file.c` / `blob:file.c?`) is NOT this case: it resolves
+    //  against cur's tip — KEEPResolveTree below maps the empty
+    //  query+fragment to `h->cur_sha` (SUBS-015), matching `sha1:`.
+    if ($empty(target->path) &&
+        $empty(target->query) && $empty(target->fragment)) fail(KEEPFAIL);
 
     //  //?hash — raw blob by hash, no tree descent.  URI has empty
     //  authority and empty path; query is a hex SHA prefix.

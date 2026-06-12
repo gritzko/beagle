@@ -239,6 +239,7 @@ typedef struct {
     ron60  *ts_io;
     u32    *emitted_io;
     ron60   verb_put;
+    b8      saw_tracked;   // YES iff any baseline (tracked) entry under prefix
     ok64    err;
 } dir_collect_ctx;
 
@@ -247,6 +248,13 @@ static ok64 dir_collect_step(class_step const *step, void *vctx) {
     dir_collect_ctx *c = (dir_collect_ctx *)vctx;
     u8cs path = {step->path[0], step->path[1]};
     if (!u8csHasPrefix(path, c->prefix)) return OK;
+
+    //  A baseline entry under the prefix means this is a TRACKED dir; an
+    //  empty expansion then is genuinely "unchanged".  No baseline entry
+    //  → the dir is untracked, and an empty expansion is "no files to
+    //  stage" — distinct messages downstream (SUBS-014).
+    if (step->kind == CLASS_BOTH || step->kind == CLASS_BASE_ONLY)
+        c->saw_tracked = YES;
 
     //  https://replicated.wiki/html/wiki/PUT.html §PUT dir-form contract:
     //    BOTH    + mtime ∈ stamp-set   → settled, skip
@@ -831,6 +839,16 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         //  branch word, a typo) stays file-form and is handled below.
         b8 is_dir = u8csEmpty(raw) ||
                     ($len(raw) > 0 && *(raw[1] - 1) == '/');
+        //  Did the user type the dir WITHOUT a trailing slash?  We
+        //  reframe it to `<dir>/` below (DIS-034), but remember the
+        //  slashless intent so an empty/untracked expansion can suggest
+        //  the explicit `<dir>/` form (SUBS-014) instead of a bare,
+        //  misleading "unchanged".
+        b8 reframed_slashless = NO;
+        //  The slashless arg as the user typed it (before any reframe) —
+        //  kept for the SUBS-014 hint subject.  `raw`'s bytes live in the
+        //  URI text and outlive this reframe, so the slice stays valid.
+        u8cs orig_raw = {raw[0], raw[1]};
         a_pad(u8, dir_buf, FILE_PATH_MAX_LEN);
         if (!is_dir) {
             a_path(probe_fp);
@@ -846,6 +864,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                     raw[0] = slashed[0];
                     raw[1] = slashed[1];
                     is_dir = YES;
+                    reframed_slashless = YES;
                 }
             }
         }
@@ -877,11 +896,12 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             //  order is the merge's, which yields a deterministic
             //  row order under the prefix.
             dir_collect_ctx dctx = {
-                .prefix     = {raw[0], raw[1]},
-                .ts_io      = &ts,
-                .emitted_io = &emitted,
-                .verb_put   = verb_put,
-                .err        = OK,
+                .prefix      = {raw[0], raw[1]},
+                .ts_io       = &ts,
+                .emitted_io  = &emitted,
+                .verb_put    = verb_put,
+                .saw_tracked = NO,
+                .err         = OK,
             };
             u8csMv(dctx.reporoot, reporoot);
             u32 before = emitted;
@@ -890,12 +910,33 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             if (dctx.err != OK) return dctx.err;
 
             if (emitted == before) {
-                //  Nothing dirty under a tracked dir, or empty wt
-                //  subtree.  Per-arg "skipped — unchanged" message
-                //  mirrors the single-file form.
-                fprintf(stderr,
-                        "sniff: put: %.*s is unchanged — skipped\n",
-                        (int)$len(raw), (char *)raw[0]);
+                if (dctx.saw_tracked) {
+                    //  Tracked dir, nothing dirty under it — genuinely
+                    //  unchanged.  Mirrors the single-file form.
+                    fprintf(stderr,
+                            "sniff: put: %.*s is unchanged — skipped\n",
+                            (int)$len(raw), (char *)raw[0]);
+                } else if (reframed_slashless) {
+                    //  Untracked dir named WITHOUT a trailing slash that
+                    //  expands to no stageable file (empty, or only
+                    //  ignored/meta content).  Don't claim "unchanged" —
+                    //  nothing was ever tracked here.  Subject is the arg
+                    //  as typed (`orig_raw`); suggest the explicit
+                    //  `<dir>/` form (`raw`, the reframed slice) so the
+                    //  intent is unambiguous (SUBS-014).
+                    fprintf(stderr,
+                            "sniff: put: %.*s has no files to stage — "
+                            "skipped (did you mean `%.*s`?)\n",
+                            (int)$len(orig_raw), (char *)orig_raw[0],
+                            (int)$len(raw),      (char *)raw[0]);
+                } else {
+                    //  Untracked dir named WITH a trailing slash, empty
+                    //  expansion — no files to stage.
+                    fprintf(stderr,
+                            "sniff: put: %.*s has no files to stage — "
+                            "skipped\n",
+                            (int)$len(raw), (char *)raw[0]);
+                }
                 skipped++;
             }
             continue;

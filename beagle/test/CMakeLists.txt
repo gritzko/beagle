@@ -94,6 +94,16 @@ add_test(NAME be-diff-projector
 set_tests_properties(be-diff-projector PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-diff-projector")
 
+# be-blob-projector.sh — https://replicated.wiki/html/wiki/Projector.html `blob:` projector
+# (raw blob bytes).  SUBS-015: `blob:<path>` (no `?ref`) and
+# `blob:<path>?` (empty ref) resolve against cur's tip like `sha1:`,
+# instead of returning KEEPNONE/KEEPFAIL.
+add_test(NAME be-blob-projector
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-blob-projector.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-blob-projector PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-blob-projector")
+
 # be-log-projector.sh — https://replicated.wiki/html/wiki/Verbs.html `log:` projector (branch parent-chain
 # walk and per-file PATH_VER walk), one commit per line.
 add_test(NAME be-log-projector
