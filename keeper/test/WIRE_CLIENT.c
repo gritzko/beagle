@@ -775,6 +775,127 @@ ok64 WIRECLIENTtest_nonff_nopack() {
     done;
 }
 
+// ---- DIS-036: classify wire-open failures ------------------------------
+//
+//  An unreachable / non-beagle / non-git peer must NOT collapse to one
+//  opaque WIRECLFL — the user needs to know whether the TARGET is wrong
+//  or their WORK is.  We drive the local-exec transport (file://) with a
+//  stub `keeper` binary (via KEEPER_BIN) that models each failure mode,
+//  and assert WIREFetch / WIREPush return a DISTINCT classified code:
+//
+//    * peer cannot be reached / its transport refuses  → WIREUNRCH
+//    * peer is reachable but advertises no refs (not a
+//      beagle/git repository, or an absent project)    → WIRENOTRP
+//    * peer emits a malformed advertisement            → WIRECLFL (genuine
+//                                                         protocol error)
+
+//  Write an executable stub script to `path` and point KEEPER_BIN at it.
+static ok64 stub_keeper_bin(char const *path, char const *body) {
+    sane(path && body);
+    FILE *fp = fopen(path, "w");
+    if (!fp) return FAIL;
+    fputs("#!/bin/sh\n", fp);
+    fputs(body, fp);
+    fclose(fp);
+    if (chmod(path, 0755) != 0) return FAIL;
+    setenv("KEEPER_BIN", path, 1);
+    done;
+}
+
+//  Mode A — unreachable peer.  A transport that refuses to connect exits
+//  255 (ssh's connect-failure code) and produces no advertisement.  The
+//  fetch/push must report WIREUNRCH, not WIRECLFL.
+ok64 WIRECLIENTtest_diag_unreachable() {
+    sane(1);
+    call(FILEInit);
+
+    char dir[] = "/tmp/wcli-diag-unr-XXXXXX";
+    want(mkdtemp(dir) != NULL);
+    char stub[1024];
+    snprintf(stub, sizeof(stub), "%s/stub.sh", dir);
+    //  Mimic `ssh host …` against an unreachable host: stderr diagnostic,
+    //  exit 255, no advertisement bytes.
+    call(stub_keeper_bin, stub,
+         "echo 'ssh: connect to host x port 22: refused' >&2\nexit 255\n");
+
+    FILE_URI(uri, dir);
+    u8csc want_cs = {NULL, NULL};
+    ok64 fo = WIREFetch(uri, want_cs);
+    want(fo == WIREUNRCH);
+
+    HEX2SHA(tip, "0123456789012345678901234567890123456789");
+    u8csc branch_cs = {NULL, NULL};
+    ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
+    want(po == WIREUNRCH);
+
+    unsetenv("KEEPER_BIN");
+    tmp_rm(dir);
+    done;
+}
+
+//  Mode B — reachable peer, but no refs advertised.  Models a host that
+//  answers but is not a beagle/git repository, or whose project is
+//  absent: the peer command runs, emits a clean flush (zero refs) or
+//  exits without advertising, and the fetch/push must report WIRENOTRP.
+ok64 WIRECLIENTtest_diag_norepo() {
+    sane(1);
+    call(FILEInit);
+
+    char dir[] = "/tmp/wcli-diag-nrp-XXXXXX";
+    want(mkdtemp(dir) != NULL);
+    char stub[1024];
+    snprintf(stub, sizeof(stub), "%s/stub.sh", dir);
+    //  Reachable (exit non-zero like keeper's HOMENOPROJ) but advertises
+    //  nothing — drains to immediate EOF, no valid pkt-line.
+    call(stub_keeper_bin, stub,
+         "echo 'keeper: no such project' >&2\nexit 1\n");
+
+    FILE_URI(uri, dir);
+    u8csc want_cs = {NULL, NULL};
+    ok64 fo = WIREFetch(uri, want_cs);
+    want(fo == WIRENOTRP);
+
+    HEX2SHA(tip, "0123456789012345678901234567890123456789");
+    u8csc branch_cs = {NULL, NULL};
+    ok64 po = WIREPush(uri, branch_cs, &tip, NO, NO);
+    want(po == WIRENOTRP);
+
+    unsetenv("KEEPER_BIN");
+    tmp_rm(dir);
+    done;
+}
+
+//  Mode C — reachable peer that DOES advertise a well-framed refs line
+//  but then hangs up mid-conversation (no pack).  Because the peer spoke
+//  the git pkt-line protocol, this is a GENUINE protocol error and must
+//  stay WIRECLFL — distinct from "unreachable" / "not a repository".
+ok64 WIRECLIENTtest_diag_badadvert() {
+    sane(1);
+    call(FILEInit);
+
+    char dir[] = "/tmp/wcli-diag-bad-XXXXXX";
+    want(mkdtemp(dir) != NULL);
+    char stub[1024];
+    snprintf(stub, sizeof(stub), "%s/stub.sh", dir);
+    //  Emit one valid `<sha> refs/heads/main` pkt-line + a flush (a proper
+    //  advertisement) then exit 0 WITHOUT sending a pack.  The fetch
+    //  drains the advert (advert_seen=YES), sends its want, and the
+    //  truncated response fails ingest → WIRECLFL.  The 62-byte line is
+    //  0x003e: "<40-hex> refs/heads/main\n".
+    call(stub_keeper_bin, stub,
+         "printf '003e3333333333333333333333333333333333333333 "
+         "refs/heads/main\\n0000'\nexit 0\n");
+
+    FILE_URI(uri, dir);
+    u8csc want_cs = {NULL, NULL};
+    ok64 fo = WIREFetch(uri, want_cs);
+    want(fo == WIRECLFL);
+
+    unsetenv("KEEPER_BIN");
+    tmp_rm(dir);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     fprintf(stderr, "WIRECLIENTtest_fetch_smoke...\n");
@@ -795,6 +916,12 @@ ok64 maintest() {
     call(WIRECLIENTtest_uptodate_nopack);
     fprintf(stderr, "WIRECLIENTtest_nonff_nopack...\n");
     call(WIRECLIENTtest_nonff_nopack);
+    fprintf(stderr, "WIRECLIENTtest_diag_unreachable...\n");
+    call(WIRECLIENTtest_diag_unreachable);
+    fprintf(stderr, "WIRECLIENTtest_diag_norepo...\n");
+    call(WIRECLIENTtest_diag_norepo);
+    fprintf(stderr, "WIRECLIENTtest_diag_badadvert...\n");
+    call(WIRECLIENTtest_diag_badadvert);
     fprintf(stderr, "all passed\n");
     done;
 }

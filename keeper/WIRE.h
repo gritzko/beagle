@@ -132,6 +132,18 @@ ok64 WIREServeUpload(int in_fd, int out_fd, refadvcp adv);
 con ok64 WIRECLFL  = 0x8126ce3153d5;
 con ok64 WIRECLNRF = 0x2049b38c5576cf;
 con ok64 WIRECLNFF = 0x2049b38c5573cf;
+//  DIS-036: a wire-open failure is classified instead of collapsing to a
+//  bare WIRECLFL, so the user can tell whether the TARGET is wrong or
+//  their WORK is.  The peer's transport process is reaped and its exit
+//  combined with whether any valid refs advertisement was drained:
+//    * the peer could not be reached (transport refused / timed out —
+//      e.g. ssh exits 255) and advertised nothing               → WIREUNRCH
+//    * the peer is reachable but advertised NO refs (not a beagle/git
+//      repository, or the project is absent on the peer)        → WIRENOTRP
+//    * the peer answered with a MALFORMED advertisement (a genuine
+//      protocol error) — bytes drained but unparseable          → WIRECLFL
+con ok64 WIREUNRCH = 0x2049b39e5db311;   //  unreachable peer
+con ok64 WIRENOTRP = 0x2049b39761d6d9;   //  reachable, not a beagle/git repo
 //  DIS-012 / [Title] §"Same title, different history is an error":
 //  a fetch into a shard whose existing referenced tips share NO common
 //  ancestor with the incoming tip is a title clash — refuse instead of

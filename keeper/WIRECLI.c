@@ -55,10 +55,54 @@
 //  vanilla git's `~/src/git` advertises ~1000 refs (≈100 KiB), enough
 //  to fail mid-parse; the parent then closes pipes and the upstream
 //  ssh git-upload-pack dies with SIGPIPE.
+//  DIS-036: set once the peer emits at least one well-framed pkt-line.
+//  YES ⇒ the peer is reachable AND speaks the git pkt-line protocol, so a
+//  later failure is a genuine protocol/ingest error (WIRECLFL).  NO at the
+//  end of a failed conversation ⇒ the peer never advertised — combine with
+//  the reaped exit code to tell "unreachable" from "not a repository".
+//  Reset at the top of every outer WIRE* entry point via wcli_diag_reset.
+static b8 wcli_advert_seen = NO;
+
+static void wcli_diag_reset(void) { wcli_advert_seen = NO; }
+
+//  Classify a failed wire conversation into a specific diagnostic and
+//  print one actionable line.  `exit_code` is the reaped transport exit
+//  (FILEReap's WEXITSTATUS), `reaped` whether the reap succeeded.  A peer
+//  that never framed a single pkt-line (`!wcli_advert_seen`) is either
+//  unreachable (transport refused / timed out — ssh exits 255) or
+//  reachable-but-not-a-repository (any other exit, incl. a clean close
+//  with zero refs).  A peer that DID advertise but failed later kept the
+//  generic protocol code (WIRECLFL).
+static ok64 wcli_classify_fail(u8csc remote_uri, int exit_code, b8 reaped) {
+    if (wcli_advert_seen) return WIRECLFL;
+    int rlen = (int)u8csLen(remote_uri);
+    char const *rp = (char const *)remote_uri[0];
+    //  255 is ssh's connect-failure code; 124 is `timeout`'s; a transport
+    //  killed before exec also reaps non-zero with no advert.  Treat the
+    //  ssh refusal as "unreachable" — ssh has already printed its own
+    //  "connect to host …" reason to our stderr.
+    if (reaped && exit_code == 255) {
+        fprintf(stderr,
+                "be: remote %.*s is unreachable "
+                "(transport refused or timed out).\n", rlen, rp);
+        return WIREUNRCH;
+    }
+    fprintf(stderr,
+            "be: remote %.*s is not a beagle or git repository "
+            "(reachable, but advertised no refs).\n", rlen, rp);
+    return WIRENOTRP;
+}
+
 static ok64 wcli_read_pkt(int in_fd, u8b buf, u8cs adv, u8csp line) {
     for (;;) {
         ok64 o = PKTu8sDrain(adv, line);
-        if (o != NODATA) return o;
+        if (o != NODATA) {
+            //  Any well-framed pkt-line (a ref line, a flush, or a delim)
+            //  proves the peer reached us and speaks the protocol.
+            if (o == OK || o == PKTFLUSH || o == PKTDELIM)
+                wcli_advert_seen = YES;
+            return o;
+        }
         if (!u8bHasRoom(buf)) {
             size_t consumed = (size_t)(adv[0] - u8bDataC(buf)[0]);
             if (consumed == 0) return WIRECLFL;
@@ -900,6 +944,7 @@ static ok64 wire_fetch_all_inner(u8csc remote_uri, int *wfd, int *rfd) {
 ok64 WIREFetchAll(u8csc remote_uri) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
+    wcli_diag_reset();
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     int wfd = -1, rfd = -1;
@@ -912,11 +957,11 @@ ok64 WIREFetchAll(u8csc remote_uri) {
 
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
-    if (pid > 0) {
-        int rc = 0;
-        FILEReap(pid, &rc);
-    }
-    return rv == OK ? OK : WIRECLFL;
+    int rc = 0;
+    b8 reaped = NO;
+    if (pid > 0) reaped = (FILEReap(pid, &rc) == OK);
+    if (rv == OK) return OK;
+    return wcli_classify_fail(remote_uri, rc, reaped);
 }
 
 //  Worker for WIREFetch: drain advertisement, send request, ingest
@@ -1021,6 +1066,7 @@ static ok64 wire_fetch_inner(u8csc remote_uri, u8cs effective_ref,
 ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
+    wcli_diag_reset();
     keeper *k = &KEEP;
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
@@ -1045,15 +1091,16 @@ ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
 
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
-    if (pid > 0) {
-        int rc = 0;
-        FILEReap(pid, &rc);
-    }
+    int rc = 0;
+    b8 reaped = NO;
+    if (pid > 0) reaped = (FILEReap(pid, &rc) == OK);
     //  Preserve TITLECLSH so callers (and tests) see the clash refusal
-    //  distinctly; every other failure collapses to WIRECLFL.
+    //  distinctly; every other failure is classified (DIS-036): an
+    //  unreachable / non-repository peer gets a specific code + message,
+    //  a genuine protocol/ingest error stays WIRECLFL.
     if (rv == OK) return OK;
     if (rv == TITLECLSH) return TITLECLSH;
-    return WIRECLFL;
+    return wcli_classify_fail(remote_uri, rc, reaped);
 }
 
 // --- WIREPush ----------------------------------------------------------
@@ -1998,6 +2045,7 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
               sha1cp local_tip_in, b8 force, b8 to_default) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
+    wcli_diag_reset();
     WIREPushLastObjCount = 0;  //  no-pack-on-error: reset before any return
     keeper *k = &KEEP;
     //  `local_branch` is be-side; empty (NULL or zero-length) selects
@@ -2034,10 +2082,14 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
 
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
-    if (pid > 0) {
-        int rc = 0;
-        FILEReap(pid, &rc);
-    }
+    int rc = 0;
+    b8 reaped = NO;
+    if (pid > 0) reaped = (FILEReap(pid, &rc) == OK);
+    //  DIS-036: classify a bare transport failure (no advert drained) into
+    //  unreachable / not-a-repository.  Push-specific refusals (WIRECLNFF,
+    //  WIRECLNRF, a peer `ng` status) already carry their own meaning and
+    //  pass through unchanged.
+    if (rv == WIRECLFL) return wcli_classify_fail(remote_uri, rc, reaped);
     return rv;
 }
 
@@ -2094,6 +2146,7 @@ static ok64 wire_push_delete_inner(u8cs refname, int *wfd, int *rfd) {
 ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
     sane($ok(remote_uri));
     FILEIgnoreSIGPIPE();  //  peer dying mid-transfer must not kill us
+    wcli_diag_reset();
     if (u8csEmpty(remote_uri)) return WIRECLFL;
 
     a_pad(u8, refname_buf, 256);
@@ -2116,9 +2169,12 @@ ok64 WIREPushDelete(u8csc remote_uri, u8csc local_branch) {
 
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);
-    if (pid > 0) {
-        int rc = 0;
-        FILEReap(pid, &rc);
-    }
+    int rc = 0;
+    b8 reaped = NO;
+    if (pid > 0) reaped = (FILEReap(pid, &rc) == OK);
+    //  DIS-036: a bare transport failure (no advert) → unreachable /
+    //  not-a-repository; WIRECLNRF (peer didn't advertise the ref) and a
+    //  peer refusal pass through with their own meaning.
+    if (rv == WIRECLFL) return wcli_classify_fail(remote_uri, rc, reaped);
     return rv;
 }

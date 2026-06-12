@@ -162,6 +162,25 @@ ref-update line + pack, drains unpack/per-ref status.
                           drain status
   - `WIREFAIL` / `WIREBADREQ` / `WIRENOWANT` / `WIRENOSHA`
   - `WIRECLIFAIL` / `WIRECLINOREF`
+  - `WIREUNRCH` / `WIRENOTRP`  DIS-036 wire-open diagnosis: a failed
+                          conversation is classified instead of collapsing
+                          to a bare `WIRECLFL`.  `wcli_classify_fail`
+                          (WIRECLI.c) reaps the transport child and
+                          combines its exit code with `wcli_advert_seen`
+                          (set in `wcli_read_pkt` once the peer frames ANY
+                          pkt-line): no advert + ssh exit 255 → `WIREUNRCH`
+                          ("unreachable"); no advert + any other exit →
+                          `WIRENOTRP` ("not a beagle or git repository");
+                          advert drained then a later failure → `WIRECLFL`
+                          (genuine protocol/ingest error, unchanged).  All
+                          four outer entry points (`WIREFetch`,
+                          `WIREFetchAll`, `WIREPush`, `WIREPushDelete`)
+                          reset the flag on entry and route a `WIRECLFL`
+                          through the classifier; push-specific refusals
+                          (`WIRECLNFF`/`WIRECLNRF`) and `TITLECLSH` pass
+                          through unchanged
+                          (`test/WIRE_CLIENT.c` diag_unreachable /
+                          diag_norepo / diag_badadvert)
   - `TITLECLSH`          title clash: same-title clone with disjoint
                           history ([Title] §"Same title, different
                           history is an error"); resolve via
