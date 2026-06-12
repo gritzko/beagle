@@ -480,25 +480,41 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
 
     //  --- Decision ladder (mirrors the old post_decide) ---
 
-    //  Gitlink: carry through verbatim — no on-disk file expected.
-    //  Sub-mount bump (`put <sub>#<40-hex>`) overrides the keep with
-    //  an ADD at the new sha so the new tree records the bumped pin.
-    if (base_mode == 0160000) {
-        if (src_put) {
-            u8cs put_frag = {src_put->uri.fragment[0],
-                             src_put->uri.fragment[1]};
-            if (DOGIsFullSha(put_frag)) {
-                sha1 new_sha = {};
-                a_raw(bin_s, new_sha);
-                a_dup(u8c, frag_dup, put_frag);
-                if (HEXu8sDrainSome(bin_s, frag_dup) == OK &&
-                    !sha1Eq(&new_sha, &base_sha)) {
-                    return post_emit_decision(c, POST_V_ADD, path,
-                                              base_mode,
-                                              &base_sha, &new_sha);
+    //  Gitlink bump (`put <sub>#<40-hex>`): the put row's 40-hex
+    //  fragment is a submodule pin, never a blob.  This MUST win over
+    //  the on-disk wt entry — a `be patch`/`be get` sub re-mount can
+    //  leave the gitlink path looking like a (often empty) regular file
+    //  in the wt scan (`src_wt` set), and the regular-file fall-through
+    //  below would then hash that file and record the parent gitlink as
+    //  the empty-blob sha `e69de29b…` (mode 100644), poisoning the
+    //  commit (SUBS-019).  Emit a `0160000` ADD at the put sha
+    //  regardless of `src_base` / `src_wt`; this subsumes both the
+    //  bump-an-existing-gitlink and the fresh-submodule-add cases.
+    if (src_put) {
+        u8cs put_frag = {src_put->uri.fragment[0],
+                         src_put->uri.fragment[1]};
+        if (DOGIsFullSha(put_frag)) {
+            sha1 new_sha = {};
+            a_raw(bin_s, new_sha);
+            a_dup(u8c, frag_dup, put_frag);
+            if (HEXu8sDrainSome(bin_s, frag_dup) == OK) {
+                //  Unchanged pin (re-bump to the same sha as baseline)
+                //  is a no-op KEEP; a moved pin (or fresh add, no
+                //  baseline) records the new gitlink.
+                if (base_mode == 0160000 && sha1Eq(&new_sha, &base_sha)) {
+                    return post_emit_decision(c, POST_V_KEEP, path,
+                                              0160000, NULL, &base_sha);
                 }
+                sha1cp old = (base_mode == 0160000) ? &base_sha : NULL;
+                return post_emit_decision(c, POST_V_ADD, path,
+                                          0160000, old, &new_sha);
             }
         }
+    }
+
+    //  Gitlink with no bump row: carry through verbatim (KEEP) — no
+    //  on-disk file expected.
+    if (base_mode == 0160000) {
         return post_emit_decision(c, POST_V_KEEP, path, base_mode,
                                   NULL, &base_sha);
     }
@@ -513,26 +529,10 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
         return OK;
     }
 
-    //  Explicit put row.
+    //  Explicit put row.  (A 40-hex gitlink-bump put row is already
+    //  handled by the gitlink guard at the top of the decision ladder,
+    //  so any put reaching here stages a regular blob.)
     if (has_put) {
-        //  NEW gitlink (no baseline tree entry, no on-disk file) where
-        //  the put row carries a 40-hex sha → submodule-add.  Emit an
-        //  ADD with mode 0160000 so the new tree records the gitlink.
-        //  Plan §POST step 3: parent commits a fresh `vendor/sub`
-        //  entry alongside the synthesised `.gitmodules` blob.
-        if (!src_base && !src_wt && src_put) {
-            u8cs put_frag = {src_put->uri.fragment[0],
-                             src_put->uri.fragment[1]};
-            if (DOGIsFullSha(put_frag)) {
-                sha1 new_sha = {};
-                a_raw(bin_s, new_sha);
-                a_dup(u8c, frag_dup, put_frag);
-                if (HEXu8sDrainSome(bin_s, frag_dup) == OK) {
-                    return post_emit_decision(c, POST_V_ADD, path,
-                                              0160000, NULL, &new_sha);
-                }
-            }
-        }
         if (!src_wt) {
             //  Explicit put of a missing file: drop, unlink if tracked.
             if (src_base) {

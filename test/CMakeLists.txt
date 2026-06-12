@@ -141,6 +141,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-patch-35-sub-gitlink-bump-staged"
     "be-post-26-sub-both-dirty-keeps-parent-edit"
     "be-post-27-sub-only-parent-dirty-commits"
+    # SUBS-019: a gitlink-bump put-row after a sub re-mount must record
+    # the real sub tip, never the empty-blob sha (mode 160000 not 100644).
+    "be-post-39-sub-gitlink-bump-never-empty"
     # SUBS-006 repro: clean nested sub must no-op a git-peer push, not
     # abort it with NOBRANCH.
     "be-post-29-sub-clean-nested-remote-push"
