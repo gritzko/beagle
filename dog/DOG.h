@@ -305,6 +305,17 @@ b8 DOGIsProjector(u8cs scheme);
 // isn't a projector.  The returned cstr has static lifetime.
 char const *DOGProjectorDog(u8cs scheme);
 
+// BE-002 "did you mean" suggester.  Measures `word` (a mistyped
+// bareword) against the single-sourced projector vocabulary
+// (DOG_PROJECTORS) plus the caller's NUL-terminated `extra` list of
+// command names (beagle passes BE_VERB_NAMES).  Returns YES and points
+// `out` at the closest command name when it is within a small typo
+// threshold (edit distance <=2 AND < len(word)); NO otherwise.  `out`
+// slices into static literal storage (the table cells / the caller's
+// cstrs), so it outlives the call.  Bounded Levenshtein, no pointer
+// arithmetic.  `extra` may be NULL.
+b8 DOGSuggestCommand(u8cs word, char const *const *extra, u8csp out);
+
 // YES iff `scheme` names a known transport (`ssh`, `https`, `file`,
 // `be`, …).  Used by the CLI tokenizer to decide whether `<word>:`
 // at the start of an arg is a URI scheme or a prose colon.

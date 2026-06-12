@@ -85,6 +85,88 @@ char const *DOGProjectorDog(u8cs scheme) {
     return r ? r->dog : NULL;
 }
 
+// --- Command suggester (BE-002) ---------------------------------------
+//
+//  Longest command name across the projector + verb vocabularies is a
+//  handful of bytes (`status`, `delete`, …); cap the DP at a small
+//  fixed width.  A candidate or word longer than the cap simply can't
+//  be within the typo threshold (≤2 edits) of the other, so skipping it
+//  loses no real suggestion.
+#define DOG_CMD_MAX 16
+
+//  Bounded Levenshtein edit distance between `a` and `b`, capped at
+//  DOG_CMD_MAX+1.  Two-row dynamic program over fixed stack scratch —
+//  element access is array subscript on the row head, never pointer
+//  arithmetic.  Returns DOG_CMD_MAX+1 when either side overruns the cap
+//  (i.e. "too far to be a typo").
+static u32 dog_edit_dist(u8cs a, u8cs b) {
+    size_t la = u8csLen(a), lb = u8csLen(b);
+    if (la > DOG_CMD_MAX || lb > DOG_CMD_MAX) return DOG_CMD_MAX + 1;
+    a_pad(u32, prev, DOG_CMD_MAX + 1);
+    a_pad(u32, curr, DOG_CMD_MAX + 1);
+    u32 *pr = u32bDataHead(prev);
+    u32 *cu = u32bDataHead(curr);
+    for (size_t j = 0; j <= lb; j++) pr[j] = (u32)j;
+    for (size_t i = 1; i <= la; i++) {
+        cu[0] = (u32)i;
+        for (size_t j = 1; j <= lb; j++) {
+            u32 cost = (u8csAt(a, i - 1) == u8csAt(b, j - 1)) ? 0 : 1;
+            u32 del = pr[j] + 1;
+            u32 ins = cu[j - 1] + 1;
+            u32 sub = pr[j - 1] + cost;
+            u32 m = del < ins ? del : ins;
+            cu[j] = m < sub ? m : sub;
+        }
+        for (size_t j = 0; j <= lb; j++) pr[j] = cu[j];
+    }
+    return pr[lb];
+}
+
+//  Consider one candidate name against `word`: if it is a strictly
+//  closer typo than the running best (and within the threshold), adopt
+//  it.  `cand` must point into static / caller-stable storage so the
+//  winning slice survives the return.
+static void dog_suggest_consider(u8cs word, u8cs cand,
+                                 u8csp out, u32 *best) {
+    if (u8csEmpty(cand)) return;
+    u32 d = dog_edit_dist(word, cand);
+    //  Threshold: at most 2 edits, and fewer edits than the word's own
+    //  length (so a 2-char word can't "did-you-mean" into anything).
+    if (d > 2 || d >= (u32)u8csLen(word)) return;
+    if (d < *best) {
+        *best = d;
+        out[0] = cand[0];
+        out[1] = cand[1];
+    }
+}
+
+b8 DOGSuggestCommand(u8cs word, char const *const *extra, u8csp out) {
+    if (out == NULL) return NO;
+    out[0] = NULL;
+    out[1] = NULL;
+    if (u8csEmpty(word)) return NO;
+    u32 best = 3;   // one past the dist<=2 threshold
+    //  Scan the caller's extra list (the VERBS for `be`) FIRST so that,
+    //  on an equal-distance tie with a projector, the verb wins — a
+    //  mistyped action word (`psot`) should resolve to `post`, not the
+    //  equidistant projector `spot`.  `dog_suggest_consider` only adopts
+    //  on a STRICTLY closer match, so the first vocabulary scanned holds
+    //  ties.  The cstrs have static lifetime → a u8cs over them survives
+    //  the return.
+    if (extra != NULL) {
+        for (size_t i = 0; extra[i] != NULL; i++) {
+            u8cs cand = $u8str(extra[i]);
+            dog_suggest_consider(word, cand, out, &best);
+        }
+    }
+    //  Single-sourced projector vocabulary (DOG_PROJECTORS).
+    for (DOGProjRoute const *p = DOG_PROJECTORS; !$empty(p->scheme); p++) {
+        u8cs cand = {p->scheme[0], p->scheme[1]};
+        dog_suggest_consider(word, cand, out, &best);
+    }
+    return out[0] != NULL ? YES : NO;
+}
+
 //  Known transport schemes (https://replicated.wiki/html/wiki/URI.html §"Transport schemes").  Kept as a
 //  table next to DOG_PROJECTORS so adding a transport is a one-row
 //  edit.  CLI.c uses this to disambiguate `word:` — known scheme = URI,

@@ -658,6 +658,90 @@ static ok64 DOGTestProjector(void) {
     done;
 }
 
+//  DOGSuggestCommand (BE-002) — "did you mean" over the projector
+//  vocabulary plus the caller's extra verb list.  Threshold is edit
+//  distance <=2 AND < len(word); the closest in-threshold name wins,
+//  and the returned slice must point into the static table / cstr
+//  storage (we deref it after the call returns, which would crash on a
+//  dangling stack slice).
+static char const *const SUGGEST_VERBS[] = {
+    "head", "get", "post", "put", "delete", "patch", NULL
+};
+
+static ok64 DOGTestSuggestCommand(void) {
+    sane(1);
+    struct {
+        char const *word;
+        b8          want_hit;
+        char const *want_sugg;   // when want_hit
+    } cases[] = {
+        //  Mistyped projectors (within 1-2 edits).
+        {"difff",  YES, "diff"},    // BE-002 headline case (1 deletion)
+        {"dif",    YES, "diff"},    // 1 deletion
+        {"statu",  YES, "status"},  // 1 deletion
+        {"grepp",  YES, "grep"},    // 1 insertion
+        //  Mistyped verbs (extra list).
+        {"pos",    YES, "post"},    // 1 deletion
+        {"psot",   YES, "post"},    // 2-edit tie post(verb) vs spot(proj):
+                                    // verb wins (scanned first) — BE-002
+        {"delet",  YES, "delete"},  // one deletion
+        {"ptch",   YES, "patch"},   // one deletion
+        //  Exact names ARE within distance 0 — but d < len(word) holds,
+        //  so an exact verb/projector still "suggests" itself.  (The be
+        //  dispatcher never reaches the suggester for a real command;
+        //  this just pins the math.)
+        {"diff",   YES, "diff"},
+        {"post",   YES, "post"},
+        //  Far-off garbage — no suggestion.
+        {"totallynotacommand", NO, NULL},
+        {"xyzzy",  NO, NULL},
+        //  Too-short word: threshold `d < len(word)` rejects a 2-char
+        //  word that is 2 edits from everything; even `ge` (1 from
+        //  `get`) needs d < 2, so dist-1 passes but dist-2 fails.
+        {"ge",     YES, "get"},     // 1 edit, 1 < 2 → ok
+        {"zz",     NO, NULL},       // 2+ edits from all 2-char-window cmds
+        {"",       NO, NULL},       // empty word
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        a_cstr(src, cases[i].word);
+        a_dup(u8c, w, src);
+        u8cs out = {};
+        b8 hit = DOGSuggestCommand(w, SUGGEST_VERBS, out);
+        if (hit != cases[i].want_hit) {
+            fprintf(stderr, "Suggest '%s': hit want %d got %d (got '%.*s')\n",
+                    cases[i].word, cases[i].want_hit, hit,
+                    (int)$len(out), $empty(out) ? "" : (char *)out[0]);
+            fail(TESTFAIL);
+        }
+        if (hit && !s_eq(out, cases[i].want_sugg)) {
+            fprintf(stderr, "Suggest '%s': got '%.*s' want '%s'\n",
+                    cases[i].word, (int)$len(out),
+                    $empty(out) ? "" : (char *)out[0], cases[i].want_sugg);
+            fail(TESTFAIL);
+        }
+        //  When a hit fires, the returned slice must be non-NULL and
+        //  point at readable static storage (we already deref'd it above
+        //  for s_eq; ASan would have caught a dangling stack slice).
+        if (hit && out[0] == NULL) {
+            fprintf(stderr, "Suggest '%s': hit but NULL out\n", cases[i].word);
+            fail(TESTFAIL);
+        }
+    }
+    //  NULL extra list must still work (projector-only vocabulary).
+    {
+        a_cstr(src, "difff");
+        a_dup(u8c, w, src);
+        u8cs out = {};
+        b8 hit = DOGSuggestCommand(w, NULL, out);
+        if (!hit || !s_eq(out, "diff")) {
+            fprintf(stderr, "Suggest 'difff' (NULL extra): hit=%d '%.*s'\n",
+                    hit, (int)$len(out), $empty(out) ? "" : (char *)out[0]);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
 // --- DOGRepoFromBe / DOGProjectFromBe / DOGBranchFromBe -------------
 //
 //  The three `/.be/`-splitting anchor scanners.  MEM-017: the loop
@@ -1115,6 +1199,7 @@ ok64 DOGtest() {
     call(DOGTestCanonQueryParse);
     call(DOGTestGitTransport);
     call(DOGTestProjector);
+    call(DOGTestSuggestCommand);
     call(DOGTestFromBe);
     call(DOGTestPupLeaks);
     done;

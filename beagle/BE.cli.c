@@ -45,6 +45,12 @@ con ok64 BEDOGSIG  = 0x2ce35841c490;
 //  init would clobber the existing shard's seed files.  User must
 //  either drop the shard first or use a different project name.
 con ok64 BEPRJDUP  = 0x2ce65b4cd799;
+//  BE-002: the leading bareword is neither a known verb/projector nor an
+//  openable local path — a mistyped command (`be difff`).  `be` owns the
+//  diagnostic (a "did you mean" line + this non-zero exit) instead of
+//  letting bro print a contextless `cannot open <word>: FILENONE` and
+//  exit 0.
+con ok64 BENOCMD   = 0xb39760c58d;
 
 // --- Verb table ---
 
@@ -3493,6 +3499,60 @@ ok64 BEActResolveRef(cli *c) {
 
 // --- Main ---
 
+//  BE-002: a no-verb bareword (`be difff`) is ambiguous — it could be a
+//  real filename to page, or a mistyped verb/projector.  Before handing
+//  it to bro (which would print a contextless `cannot open …: FILENONE`
+//  and exit 0), classify it: a PURE LOCAL PATH (no scheme / host /
+//  query) that does NOT resolve on disk is treated as a command typo,
+//  not a file.  Returns YES iff `u` is that diagnosable shape — in which
+//  case it has already emitted the user-facing diagnostic and the caller
+//  must fail with BENOCMD instead of spawning bro.  An existing file /
+//  dir, a slashed path, or a `?ref` / `//host` / scheme URI returns NO
+//  (those still reach bro unchanged).
+static b8 be_diagnose_unknown(uri *u) {
+    if (u == NULL || $empty(u->path)) return NO;
+    //  Only a pure local path is a command-typo candidate.  A scheme,
+    //  host, or query means the user meant a real URI — leave it alone.
+    if (!u8csEmpty(u->scheme) || !u8csEmpty(u->authority) ||
+        !u8csEmpty(u->query))
+        return NO;
+    //  Mirror bro's filesystem resolution: PATHu8bFeed + FILEStat.  If
+    //  the path exists on disk (file or dir), it is a real target — page
+    //  it.  Anything that resolves (even a permission error → OK-stat)
+    //  is NOT a typo.
+    a_path(fpbuf);
+    if (PATHu8bFeed(fpbuf, u->path) != OK) return NO;
+    if (PATHu8bTerm(fpbuf) != OK) return NO;
+    filestat fs = {};
+    if (FILEStat(&fs, $path(fpbuf)) == OK) return NO;   // real file/dir
+    //  A slashed path that misses is a genuine missing-file (`be
+    //  src/missing.c`), not a command typo — keep bro's generic line,
+    //  no bogus suggestion.  Detect a path separator without pointer
+    //  arithmetic.
+    if (u8csFind((u8cs){u->path[0], u->path[1]}, '/') == OK) {
+        fprintf(stderr,
+                "be: '" U8SFMT "': no such file (see be --help)\n",
+                u8sFmt(u->path));
+        return YES;
+    }
+    //  Single bareword that names no file: a command typo.  Suggest the
+    //  nearest verb/projector if one is within the typo threshold.
+    u8cs sugg = {};
+    u8cs word = {u->path[0], u->path[1]};
+    if (DOGSuggestCommand(word, BE_VERB_NAMES, sugg)) {
+        fprintf(stderr,
+                "be: '" U8SFMT "' is not a beagle command — "
+                "did you mean '" U8SFMT "'?\n",
+                u8sFmt(word), u8sFmt(sugg));
+    } else {
+        fprintf(stderr,
+                "be: '" U8SFMT "': no such file or beagle command "
+                "(see be --help)\n",
+                u8sFmt(word));
+    }
+    return YES;
+}
+
 static ok64 becli_inner(cli *c) {
     sane(c);
     call(FILEInit);
@@ -3858,6 +3918,11 @@ static ok64 becli_inner(cli *c) {
     if ($empty(verb)) {
         u8cs bro  = u8slit("bro");
         if (u != NULL && !$empty(u->path)) {
+            //  BE-002: a mistyped verb/projector (`be difff`) reaches
+            //  here as a path-shaped URI.  Diagnose it (did-you-mean +
+            //  non-zero exit) before bro is ever spawned; a real file /
+            //  dir / slashed-miss / `?ref` URI returns NO and pages.
+            if (be_diagnose_unknown(u)) fail(BENOCMD);
             //  Mirror BEProjector: forward the resolved mode flag so
             //  bro picks the same shape `be` resolved (no env hack;
             //  --color / --plain / --tlv straight on bro's argv).

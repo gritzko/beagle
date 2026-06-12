@@ -125,6 +125,14 @@ ok64 BROExec(bro *b, cli *c) {
     if (CLIUriLen(c) > 0) {
         call(BROArenaInit);
         b8 keeper_open = NO;
+        //  BE-002: track whether ANY URI actually opened (file mapped,
+        //  dir listed, or keeper object staged).  When every URI misses,
+        //  bro must exit NON-ZERO — previously it printed `cannot
+        //  open …` per URI yet returned OK, so `be difff` and a direct
+        //  `bro nonexistent` reported success.  `last_err` carries the
+        //  most recent open failure so the exit code is honest.
+        b8   any_opened = NO;
+        ok64 last_err   = FILENONE;
         for (u32 i = 0; i < CLIUriLen(c); i++) {
             if (hunkbIdleLen(b->hunks) == 0) break;
             uri uv = {};
@@ -147,13 +155,18 @@ ok64 BROExec(bro *b, cli *c) {
                     if (ko != OK && ko != KEEPOPEN) {
                         fprintf(stderr, "bro: cannot open keeper: %s\n",
                                 ok64str(ko));
+                        last_err = ko;
                         continue;
                     }
                     keeper_open = YES;
                 }
                 try(bro_stage_keeper_uri, b, u, file_path);
-                nedo fprintf(stderr, "bro: cannot fetch " U8SFMT ": %s\n",
-                             u8sFmt(u->data), ok64str(__));
+                then any_opened = YES;
+                nedo {
+                    fprintf(stderr, "bro: cannot fetch " U8SFMT ": %s\n",
+                            u8sFmt(u->data), ok64str(__));
+                    last_err = __;
+                }
                 continue;
             }
 
@@ -167,6 +180,7 @@ ok64 BROExec(bro *b, cli *c) {
             if (FILEStat(&fs, $path(fpbuf)) == OK &&
                 fs.kind == FILE_KIND_DIR) {
                 BROListDir(file_path);
+                any_opened = YES;
                 continue;
             }
 
@@ -175,6 +189,7 @@ ok64 BROExec(bro *b, cli *c) {
             if (o != OK) {
                 fprintf(stderr, "bro: cannot open " U8SFMT ": %s\n",
                         u8sFmt(file_path), ok64str(o));
+                last_err = o;
                 continue;
             }
 
@@ -202,11 +217,17 @@ ok64 BROExec(bro *b, cli *c) {
 
             BROTokenize(hk, file_path);
             hunkbFed1(b->hunks);
+            any_opened = YES;
         }
         if (hunkbDataLen(b->hunks) > 0)
             BRORun(hunkbDataC(b->hunks));
         BROArenaCleanup();
         if (keeper_open) KEEPClose();
+        //  BE-002: at least one URI was given but NONE opened — exit
+        //  non-zero so callers (scripts, `be`) see the failure.  The
+        //  per-URI `cannot open …` lines above already told the user
+        //  what missed; this just makes the exit code honest.
+        if (!any_opened) fail(last_err);
     } else if (isatty(STDIN_FILENO)) {
         //  Bare `bro` typed at a terminal: no URIs and nothing piped in,
         //  so there are no hunks to page — print the key cheat sheet

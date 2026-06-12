@@ -67,6 +67,16 @@ add_test(NAME be-get-sub-unmount-clean
 set_tests_properties(be-get-sub-unmount-clean PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-get-sub-unmount-clean")
 
+# be-unknown-command.sh — BE-002.  A mistyped verb/projector (`be
+# difff`) gets a `be:`-owned "did you mean" diagnostic and a NON-ZERO
+# exit, not bro's contextless `cannot open …: FILENONE` + exit 0.  Real
+# files / projectors / slashed misses still behave as before.
+add_test(NAME be-unknown-command
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-unknown-command.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-unknown-command PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-unknown-command")
+
 # history.sh — put/post, delete/post, edit/post, then checkout an
 # older commit by SHA (version handle = at.log tail).  No ssh.
 add_test(NAME BEhistory
