@@ -10,8 +10,10 @@
 //
 //    2. Branch-form (`be put ?<branch>`, `be put ?<branch>#<sha>`,
 //       legacy explicit-sha label form) — write the branch's REFS
-//       row; the `#<sha>` shape additionally migrates the sha's
-//       reachable closure into the target shard via KEEPMoveCommits.
+//       row.  PUT is unconstrained: a `#<sha>` shape sets the ref
+//       OUTRIGHT to any sha (non-FF, no reachability walk); under the
+//       flat store every object already lives in the one project pool,
+//       so it is a pure REFS append (no migration).
 //
 //  None of these creates a commit — POST is the only commit-maker.
 
@@ -26,13 +28,15 @@ ok64 PUTStage(u32 nuris, uri const *uris);
 ok64 PUTCreateBranch(u8cs reporoot, u8cs target_branch);
 
 //  `be put ?<branch>#<sha>` — write `?<target_branch> → ?<sha-hex>`
-//  to keeper REFS.  Creates the branch when it doesn't yet exist and
-//  migrates `<sha>`'s FP-reachable closure into the target's shard
-//  via `KEEPMoveCommits` so a reader opening only that shard finds
-//  every commit / tree / blob the new ref covers.  Refuses with
-//  `SNIFFFAIL "no shared ancestry"` when the FP chain from `<sha>`
-//  doesn't reach the existing `?<target_branch>.tip`.  Caller must
-//  have validated `sha_hex` (40 hex chars, resolvable in keeper).
+//  to keeper REFS.  PUT is UNCONSTRAINED (wiki §PUT / §Invariants):
+//  this sets the ref OUTRIGHT to ANY sha — non-FF, NO reachability /
+//  shared-ancestry (POST_MIG) walk.  POST is the FF-advance verb; PUT
+//  is the reflog escape hatch (e.g. roll a contaminated `?main` back
+//  to a known-good commit).  Creates the branch when it doesn't yet
+//  exist.  Under the flat store every object already lives in the one
+//  project pool, so the set is a pure REFS append (no migration).
+//  Caller must have validated `sha_hex` (40 hex chars, resolvable in
+//  keeper) — the dispatcher does so via KEEPResolveHex.
 ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex);
 
 //  Append `<ref_uri> → ?<sha_hex>` to keeper REFS, canonicalising the

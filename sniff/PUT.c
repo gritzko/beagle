@@ -1005,19 +1005,12 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     sane($ok(reporoot) && $ok(target_branch) && $ok(sha_hex));
     if (u8csLen(sha_hex) != 40 || !HEXu8sValid(sha_hex)) fail(SNIFFFAIL);
 
-    //  Decode new tip into a sha1 for the FP walk.
-    sha1 new_tip = {};
-    {
-        u8s bn = {new_tip.data, new_tip.data + 20};
-        a_dup(u8c, hx, sha_hex);
-        call(HEXu8sDrainSome, bn, hx);
-    }
-
     keeper *k = &KEEP;
 
-    //  Resolve cur's branch — that's the source shard for KEEPMoveCommits
-    //  (where the new tip's objects currently live).  Empty cur_branch
-    //  means trunk.  Matches the lookup POSTPromote does at its head.
+    //  Resolve cur's branch — empty cur_branch means trunk.  Used only
+    //  by the same-shard short-circuit below (PUT permits re-pointing
+    //  cur's own ref directly).  Matches the lookup POSTPromote does at
+    //  its head.
     a_pad(u8, cur_buf, 256);
     {
         ron60 ts = 0, verb = 0;
@@ -1049,122 +1042,38 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     if (u8csEq(target_branch, cur_branch))
         return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
 
-    //  Shared-ancestry resolution.
+    //  PUT is UNCONSTRAINED (https://replicated.wiki/html/wiki/PUT.html
+    //  §PUT; https://replicated.wiki/html/wiki/Invariants.html §"POST is
+    //  fast-forward only, PUT unconstrained"): a `?branch#<sha>` tip-set
+    //  writes ANY ref to ANY sha — non-FF, no reachability check.  POST
+    //  is the FF-advance verb; PUT is the reflog escape hatch (roll a
+    //  contaminated `?main` back to a known-good commit).  So there is
+    //  NO shared-ancestry / FP-chain (POST_MIG) walk here.  That walk
+    //  used to refuse a non-descendant sha (`SNIFFFAIL "no shared
+    //  ancestry"`) and silently ignored `--force`/`!`, contradicting the
+    //  spec (PUT-002).
     //
-    //    Existing target  → stop = ?target.tip; chain must FP-reach it,
-    //                       else SNIFFFAIL ("no shared ancestry").
-    //    New target       → stop = NULL; walk to root or cap.  Cap hit
-    //                       on a still-extending chain is treated as
-    //                       "history too deep / disconnected"; SNIFFFAIL.
+    //  Under the flat store every object already lives in the one
+    //  project pool, so the set is a pure REFS append regardless of
+    //  whether the new tip FP-reaches the old tip — there is never a
+    //  cross-shard migration to validate.  The sha was already resolved
+    //  to a real object in the pool by the dispatcher (KEEPResolveHex /
+    //  KEEPResolveRef in sniff/SNIFF.exe.c), so a typo surfaces there,
+    //  not here.
     //
-    //  In both cases the chain we hand to KEEPMoveCommits is exactly
-    //  what the migration needs to materialise inside target's shard.
-    sha1 target_tip = {};
-    b8   has_target_tip = NO;
+    //  Materialise the target leaf's shard dir for a NOT-yet-existing
+    //  branch (idempotent on KEEPDUP / KEEPTRUNK) so the new ref is a
+    //  valid leaf; an existing target needs no dir work.
     {
+        sha1 target_tip = {};
         ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
-        if (tr == OK) has_target_tip = YES;
-        else if (tr != REFSNONE) return tr;
-    }
-
-    //  Descendant short-circuit (NEW refs only): when target_branch
-    //  lives UNDER cur_branch in the shard tree, keeper's child →
-    //  parent → root lookup walks through cur's pack naturally
-    //  (keeper/INDEX.md §"Storage layout").  KEEPMoveCommits would
-    //  re-emit every commit/tree/blob of the chain into the child
-    //  shard for no semantic gain, and hangs on long histories
-    //  (originating `be put ?recover/#<sha>` trace).  Verify new_tip
-    //  resolves from cur's shard (KEEPGetExact) before claiming the
-    //  label so a typo'd sha surfaces here instead of dangling in
-    //  the new shard.  EXISTING targets still go through the FF
-    //  check below — `be put ?<sibling>#<sha>` on a sibling branch
-    //  must refuse when the new tip doesn't FP-reach the sibling's
-    //  existing tip.
-    if (!has_target_tip) {
-        a_pad(u8, ccur_buf, 256);
-        a_pad(u8, ctgt_buf, 256);
-        (void)DPATHBranchNormFeed(ccur_buf, cur_branch);
-        (void)DPATHBranchNormFeed(ctgt_buf, target_branch);
-        a_dup(u8c, ccur, u8bData(ccur_buf));
-        a_dup(u8c, ctgt, u8bData(ctgt_buf));
-        if (DPATHBranchAncestor(ccur, ctgt)) {
-            a_carve(u8, tipbuf, 1UL << 16);
-            u8 otyp = 0;
-            if (KEEPGetExact(&new_tip, tipbuf, &otyp) != OK ||
-                otyp != DOG_OBJ_COMMIT) {
-                fprintf(stderr,
-                        "sniff: put: ?%.*s#%.*s: cannot read new tip\n",
-                        (int)u8csLen(target_branch),
-                        (char *)target_branch[0],
-                        (int)u8csLen(sha_hex), (char *)sha_hex[0]);
-                return SNIFFFAIL;
-            }
+        if (tr != OK && tr != REFSNONE) return tr;
+        if (tr == REFSNONE) {
             ok64 ko = KEEPCreateBranch(k->h, target_branch);
             if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
-            return REFSAppendVerb($path(keepdir), REFSVerbPost(),
-                                  refkey, val);
         }
     }
 
-    sha1 chain[POST_MIG_MAX];
-    u32 nchain = 0;
-    b8 reached_stop = NO;
-    call(POSTFpChainTo, &new_tip,
-         has_target_tip ? &target_tip : NULL,
-         chain, POST_MIG_MAX, &nchain, &reached_stop);
-
-    if (has_target_tip) {
-        //  FF check on the local namespace: chain from new_tip must
-        //  reach target.tip via first-parent.  Non-FP intersections
-        //  (e.g. via merge edges) intentionally don't satisfy this —
-        //  PUT is a label move, not a graf-LCA negotiation.
-        if (!reached_stop) {
-            fprintf(stderr,
-                    "sniff: put: ?%.*s#%.*s: no shared ancestry with "
-                    "target.tip (chain didn't reach existing tip "
-                    "within POST_MIG_MAX)\n",
-                    (int)u8csLen(target_branch), (char *)target_branch[0],
-                    (int)u8csLen(sha_hex), (char *)sha_hex[0]);
-            return SNIFFFAIL;
-        }
-    } else {
-        //  New ref: cap-hit on a chain whose final commit still has
-        //  a parent means we didn't reach a natural root.  Refuse —
-        //  better than leaving the new shard with a dangling history.
-        //  POSTFpChainTo leaves nchain==cap only on cap-hit (root /
-        //  KEEPGetExact-miss both break early with nchain<cap).
-        if (nchain == POST_MIG_MAX) {
-            fprintf(stderr,
-                    "sniff: put: ?%.*s#%.*s: history exceeds "
-                    "POST_MIG_MAX (%u) commits\n",
-                    (int)u8csLen(target_branch), (char *)target_branch[0],
-                    (int)u8csLen(sha_hex), (char *)sha_hex[0],
-                    POST_MIG_MAX);
-            return SNIFFFAIL;
-        }
-        if (nchain == 0) {
-            fprintf(stderr,
-                    "sniff: put: ?%.*s#%.*s: cannot read new tip\n",
-                    (int)u8csLen(target_branch), (char *)target_branch[0],
-                    (int)u8csLen(sha_hex), (char *)sha_hex[0]);
-            return SNIFFFAIL;
-        }
-    }
-
-    //  Ensure target's shard dir exists before switching into it.
-    //  Idempotent on KEEPDUP / KEEPTRUNK; KEEPNONE surfaces a missing
-    //  parent dir (caller hasn't built the branch tree above target).
-    {
-        ok64 ko = KEEPCreateBranch(k->h, target_branch);
-        if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
-    }
-
-    //  Flat store: new_tip's objects already live in the shared pool,
-    //  so there is no cross-shard switch or copy — the label move is a
-    //  pure REFS append.  The FP-chain walk above is retained only for
-    //  its FF / shared-ancestry validation (refuses non-descendant
-    //  label moves before the ref is written).
-    (void)nchain;
     return REFSAppendVerb($path(keepdir), REFSVerbPost(), refkey, val);
 }
 

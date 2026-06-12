@@ -3,7 +3,7 @@
 #  ?<branch>#<sha>` is a pure REF move: objects are SHARED in the one
 #  project pool, so pointing a branch at an existing commit/tree copies
 #  no pack bytes.  We keep the behavioural invariants: ?feat resolves to
-#  the target tree, and the negative cases still refuse.
+#  the target tree.
 #
 #  Topology:
 #
@@ -11,9 +11,12 @@
 #         └─ ?feat at T1 ── F1 (y.txt on ?feat)
 #
 #  From cur=trunk we run:
-#    * `be put ?feat#T2` (existing ?feat at F1).  FP chain from T2 is
-#      [T2, T1]; stop = F1 which is on a sibling — !reached_stop.
-#      Refuse with "no shared ancestry".
+#    * `be put ?feat#T2` (EXISTING ?feat at F1).  T2 does NOT FP-reach
+#      F1 (F1 is a sibling) — PUT-002 repro.  PUT is UNCONSTRAINED
+#      (wiki §PUT / §Invariants): this sets the ref OUTRIGHT to T2, no
+#      reachability / POST_MIG walk.  `--force` and the verb-bang `!`
+#      do the same (they never hit an ancestry gate).  Before the fix
+#      this refused with "no shared ancestry" and ignored --force/!.
 #    * `be delete ?feat` then `be put ?feat#T2` (new ref).  ?feat now
 #      resolves to T2's tree (pure ref move over the shared pool).
 #    * `be put ?feat#<bogus-40-hex>` → RESOLVE rejects.
@@ -73,21 +76,42 @@ T2=$(ref_tip '?')
     || { echo "trunk T2 didn't advance past T1 (got $T2)" >&2; exit 1; }
 
 # ------------------------------------------------------------------
-# 4. Negative: `be put ?feat#T2` from cur=trunk.  ?feat.tip is F1
-#    (sibling, not on T2's FP chain).  Refuse.  (Use explicit rc
-#    capture so we can also assert on stderr — `mustnt` discards it.)
+# 4. PUT-002: `be put ?feat#T2` from cur=trunk.  ?feat.tip is F1
+#    (sibling, NOT on T2's FP chain).  PUT is unconstrained — this
+#    must SET ?feat to T2 OUTRIGHT (no "no shared ancestry" refusal).
+#    Then reset to F1 and assert `--force` and the verb-bang `!` set
+#    it just the same — they must never hit an ancestry gate.
 # ------------------------------------------------------------------
-set +e
-"$BE" put "?feat#$T2" > "$LOGS/10.out" 2> "$LOGS/10.err"
-RC=$?
-set -e
-[ "$RC" -ne 0 ] \
-    || { echo "FAIL: expected non-zero exit for cross-shard non-FF PUT" >&2; exit 1; }
-grep -q 'no shared ancestry' "$LOGS/10.err" \
-    || { echo "FAIL: expected 'no shared ancestry' diagnostic" >&2
+must "$BE" put "?feat#$T2" > "$LOGS/10.out" 2> "$LOGS/10.err"
+[ "$(ref_tip '?feat')" = "$T2" ] \
+    || { echo "FAIL: ?feat didn't land at T2=$T2 (got $(ref_tip '?feat'))" >&2
          cat "$LOGS/10.err" >&2; exit 1; }
+! grep -q 'no shared ancestry' "$LOGS/10.err" \
+    || { echo "FAIL: PUT must not run the shared-ancestry gate" >&2
+         cat "$LOGS/10.err" >&2; exit 1; }
+
+#    --force form: reset to F1, then force-set to T2.
+must "$BE" put "?feat#$F1" > "$LOGS/10b.out" 2> "$LOGS/10b.err"
 [ "$(ref_tip '?feat')" = "$F1" ] \
-    || { echo "FAIL: ?feat moved despite refusal: $(ref_tip '?feat')" >&2; exit 1; }
+    || { echo "FAIL: ?feat didn't reset to F1=$F1 (got $(ref_tip '?feat'))" >&2
+         exit 1; }
+must "$BE" put --force "?feat#$T2" > "$LOGS/10c.out" 2> "$LOGS/10c.err"
+[ "$(ref_tip '?feat')" = "$T2" ] \
+    || { echo "FAIL: --force ?feat#T2 didn't land at T2 (got $(ref_tip '?feat'))" >&2
+         cat "$LOGS/10c.err" >&2; exit 1; }
+! grep -q 'no shared ancestry' "$LOGS/10c.err" \
+    || { echo "FAIL: --force must not hit the ancestry gate" >&2
+         cat "$LOGS/10c.err" >&2; exit 1; }
+
+#    verb-bang form: reset to F1, then `be put! ?feat#T2`.
+must "$BE" put "?feat#$F1" > "$LOGS/10d.out" 2> "$LOGS/10d.err"
+must "$BE" put! "?feat#$T2" > "$LOGS/10e.out" 2> "$LOGS/10e.err"
+[ "$(ref_tip '?feat')" = "$T2" ] \
+    || { echo "FAIL: be put! ?feat#T2 didn't land at T2 (got $(ref_tip '?feat'))" >&2
+         cat "$LOGS/10e.err" >&2; exit 1; }
+! grep -q 'no shared ancestry' "$LOGS/10e.err" \
+    || { echo "FAIL: verb-bang must not hit the ancestry gate" >&2
+         cat "$LOGS/10e.err" >&2; exit 1; }
 
 # ------------------------------------------------------------------
 # 5. Drop ?feat, then `be put ?feat#T2` (new ref).  Flat layout: this

@@ -53,10 +53,13 @@
   the sub-wt's pinned tip from its `.be` anchor and stages one
   `put <subpath>#<40-hex>` row.  No dir walk, no per-file hashing.
   Covers MODULES.plan.md §"Phase 4 — PUT" (explicit-arg form).
-* `05-cross-shard-set/` — `be put ?<branch>#<sha>` migrates the new
-  tip's reachable closure into the target's shard (KEEPMoveCommits)
-  with a shared-ancestry guard.  Covers: existing-target FP-mismatch
-  refusal, new-target migration (pack bytes grow, wt resolves), and
+* `05-cross-shard-set/` — `be put ?<branch>#<sha>` is a pure REFS move
+  under the flat store (objects already shared in the one pool).
+  PUT-002 repro: setting an EXISTING `?feat` to a sha that does NOT
+  FP-reach its current tip (a sibling) must SET the ref OUTRIGHT — PUT
+  is unconstrained, no shared-ancestry / POST_MIG walk; `--force` and
+  the verb-bang `!` set it the same way and never hit an ancestry gate.
+  Also covers: new-target ref move (no per-branch dir, wt resolves) and
   bogus-sha resolver refusal.
 * `07-newbranch-no-migrate/` — `be put ?<newbranch>/#<sha>` where
   the new branch will live as a child of cur's shard MUST NOT migrate
