@@ -112,3 +112,13 @@ add_test(NAME SNIFFnorepo
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(SNIFFnorepo PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFnorepo")
+
+#  contam.sh — POST-016 regression: a selective `sniff post` commits
+#  EXACTLY the staged set, never a file whose mtime resolves to an
+#  out-of-scope (leftover/aborted-patch) stamp, and never an unrelated
+#  dirty tracked file.
+add_test(NAME SNIFFcontam
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/contam.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFcontam PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFcontam")

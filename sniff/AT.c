@@ -651,6 +651,28 @@ ron60 SNIFFAtLastPostTs(void) {
     return 0;
 }
 
+//  Timestamp of the patch boundary's anchor row (most recent `get` or
+//  commit-all `post`).  `patch` rows whose ts is strictly greater are
+//  in scope for the next POST; any patch/put/mod file-stamp at or below
+//  this ts belongs to an already-committed (or reset-away) operation and
+//  must NOT be reclassified as a pending change (POST-016).  Returns 0
+//  when no anchor exists (whole log is in scope), mirroring the index-0
+//  return of `at_patch_boundary_start`.
+ron60 SNIFFAtPatchFloorTs(void) {
+    if (!SNIFF.h) return 0;
+    ron60 vg = SNIFFAtVerbGet();
+    ron60 vp = SNIFFAtVerbPost();
+    ron60 vu = SNIFFAtVerbPut();
+    ron60 vd = SNIFFAtVerbDelete();
+    u32 n = ULOGCount(SNIFF.log_idx);
+    if (n == 0) return 0;
+    u32 start = at_patch_boundary_start(n, vg, vp, vu, vd);
+    if (start == 0) return 0;            // no anchor → whole log in scope
+    ulogrec rec = {};
+    if (ULOGRow(SNIFF.log_data, SNIFF.log_idx, start - 1, &rec) != OK) return 0;
+    return rec.ts;
+}
+
 // --- Put/delete forward scan since floor ---
 
 // --- ron60 → timespec helper (used to restamp wt files via utimensat) ---

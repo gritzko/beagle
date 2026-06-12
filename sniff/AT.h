@@ -202,6 +202,13 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out);
 //  computation.
 ron60 SNIFFAtLastPostTs(void);
 
+//  Timestamp of the patch boundary's anchor row (most recent `get` or
+//  commit-all `post`), or 0 if none.  `patch` rows with a strictly
+//  greater ts are in scope for the next POST; a patch/put/mod file-stamp
+//  at or below this ts belongs to an already-committed or reset-away
+//  operation and must not be reclassified as a pending change (POST-016).
+ron60 SNIFFAtPatchFloorTs(void);
+
 //  Look up the ULOG row whose ts equals `mtime` (the canonical
 //  per-file classifier — `lstat → ron60 → row → verb`).  On OK,
 //  `*verb_out` carries the owning verb and `u_out` is URILexer-

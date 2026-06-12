@@ -91,7 +91,8 @@ typedef struct {
                                  // SNIFFAtNow's monotonicity guard).
     b8             any_pd;       // any put/delete rows since last post
     b8             has_base;     // baseline get/post row exists
-    ron60          last_post_ts;
+    ron60          last_post_ts;   // pd boundary: floor for put/delete scope
+    ron60          patch_floor_ts; // patch boundary: floor for patch scope
     ok64           error;
 } post_ctx;
 
@@ -610,35 +611,61 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
                 }
                 return OK;  // untracked clean — shouldn't happen
             }
-            //  patch / put / mod stamp owns this mtime → add.
+            //  patch / put / mod stamp owns this mtime → REWRITE, BUT only
+            //  if the owning row is still IN SCOPE for this commit.
             //
-            //  POST-005: SNIFFAtRowAtTs resolves the owning row by ts
-            //  ALONE — it never checks the row's path.  An UNTRACKED file
-            //  (no baseline) whose mtime merely *aliases* some other path's
-            //  put/patch stamp must not be swept into the commit.  The only
-            //  legitimate reason to commit an untracked file here is that an
-            //  absorbed patch genuinely introduced it — i.e. it is present
-            //  in a theirs (absorbed) tree, signalled by `has_thr`.  No
-            //  src_thr ⇒ alias ⇒ ignore.  (Explicit `be put` of a new file
-            //  sets src_put and is handled by the has_put branch above, so
-            //  it never reaches here.)
-            if (!src_base && !has_thr) return OK;
-            sha1 new_sha = {};
-            if (post_hash_path(post_reporoot(), path, wt_mode, &new_sha) != OK)
-                return OK;
-            sha1cp old = src_base ? &base_sha : NULL;
-            return post_emit_decision(c, POST_V_ADD, path, wt_mode,
-                                      old, &new_sha);
+            //  POST-016: a patch/put/mod row whose ts predates the current
+            //  boundary belongs to an already-committed (or reset-away by a
+            //  later `get`) operation; its file-stamp lingers because POST
+            //  re-stamps only `add` files and GET preserves dirty overlays.
+            //  Trusting such a stale stamp swept leftover files from a
+            //  prior/aborted `be patch` into an UNRELATED selective commit
+            //  (the wrecked-`?main` contamination).  The mtime equals the
+            //  owning row's ts (mtime_r) by construction, so the scope test
+            //  is a direct floor comparison: patch rows are in scope above
+            //  the patch boundary, put/mod rows above the pd boundary.
+            ron60 vx = SNIFFAtVerbPatch();
+            ron60 floor = (ow_verb == vx) ? c->patch_floor_ts
+                                          : c->last_post_ts;
+            b8 in_scope = (mtime_r > floor);
+            if (in_scope) {
+                //  POST-005: SNIFFAtRowAtTs resolves the owning row by ts
+                //  ALONE — it never checks the row's path.  An UNTRACKED
+                //  file (no baseline) whose mtime merely *aliases* some
+                //  other path's in-scope put/patch stamp must not be swept
+                //  in.  The only legitimate reason to commit an untracked
+                //  file here is that an absorbed patch genuinely introduced
+                //  it — present in a theirs (absorbed) tree, `has_thr`.
+                //  Explicit `be put` of a new file sets src_put and is
+                //  handled by the has_put branch above, never reaching here.
+                if (!src_base && !has_thr) return OK;
+                sha1 new_sha = {};
+                if (post_hash_path(post_reporoot(), path, wt_mode,
+                                   &new_sha) != OK)
+                    return OK;
+                sha1cp old = src_base ? &base_sha : NULL;
+                return post_emit_decision(c, POST_V_ADD, path, wt_mode,
+                                          old, &new_sha);
+            }
+            //  Out-of-scope stamp: the file's content was committed (or
+            //  reset) by a past boundary, so it is effectively baseline now.
+            //  Fall through to the content-based handling below (same as a
+            //  file whose mtime drifted off the stamp-set) — KEEP in
+            //  selective mode; in implicit mode compare disk bytes to the
+            //  baseline blob and REWRITE only on a genuine difference.
         }
-        //  ts known but row not found (corrupt log?) — fallback keep.
-        if (src_base) {
-            return post_emit_decision(c, POST_V_KEEP, path, base_mode,
-                                      NULL, &base_sha);
+        else {
+            //  ts known but row not found (corrupt log?) — fallback keep.
+            if (src_base) {
+                return post_emit_decision(c, POST_V_KEEP, path, base_mode,
+                                          NULL, &base_sha);
+            }
+            return OK;
         }
-        return OK;
     }
 
-    //  mtime unknown.
+    //  mtime unknown (or owned by an out-of-scope patch/put/mod stamp,
+    //  which is baseline-equivalent for this commit — POST-016).
     if (src_base) {
         //  Tracked + dirty.  In selective mode (any explicit put/delete
         //  in scope) we ignore — only files named by a put row land in
@@ -1074,7 +1101,8 @@ static ok64 post_scan_changeset(post_ctx *c, sha1 *base_tree_sha,
 static ok64 post_ctx_init(post_ctx *c, u8bp decisions) {
     sane(c && decisions);
     *c = (post_ctx){
-        .last_post_ts = SNIFFAtLastPostTs(),
+        .last_post_ts   = SNIFFAtLastPostTs(),
+        .patch_floor_ts = SNIFFAtPatchFloorTs(),
     };
 
     //  Decisions buffer holds the full per-commit ULOG-row stream.
