@@ -6,6 +6,7 @@
 con ok64 SPOTEND  = 0x1c65874e5cd;
 con ok64 SPOTBAD  = 0x1c65874b28d;
 con ok64 SPOTNONE = 0x71961d5d85ce;   // no-match-at-this-position
+con ok64 SPOTBIG  = 0x1c65874b490;    // source too large for 24-bit tok offsets
 
 #define SPOT_MAX_BINDS 52
 #define SPOT_MAX_SUBS 32

@@ -26,6 +26,10 @@ static ok64 spot_tok_cb(u8 tag, u8cs tok, void *ctx) {
 ok64 SPOTTokenize(u32bp toks, u8csc source, u8csc ext) {
     sane(toks != NULL && $ok(source));
     if ($empty(source)) done;
+    // tok/ packs end-offsets into TOK_OFF_BITS (24) bits; a source >= 16 MB
+    // wraps them, yielding token slices that point outside `source`. Reject
+    // oversized input here — the single funnel every mmap+tokenize site hits.
+    test($len(source) < (1u << TOK_OFF_BITS), SPOTBIG);
 
     SPOTTokCtx ctx = {.toks = toks, .off = 0};
 

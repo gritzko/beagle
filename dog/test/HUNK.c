@@ -302,7 +302,7 @@ static ok64 HUNKTestRedReserved() {
 // renderer used to treat it as a byte index into `hk->text` with no
 // cross-check against the (independently drained) TXT record length.  A
 // relayed/received hunk whose largest offset exceeds the text length
-// drove `a$part` / pointer-walk reads past `hk->text` (ASan heap OOB).
+// drove `a_part` / pointer-walk reads past `hk->text` (ASan heap OOB).
 // Separately the 'K' value bytes were aliased directly as `tok32c *`
 // (unaligned load + silent non-4-multiple-tail drop).  Both must be
 // caught once, at drain time, so every renderer inherits a safe hunk.

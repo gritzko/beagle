@@ -105,6 +105,9 @@ static ok64 join_emit(u8bp out, JOINfile const *jf, u64 ti) {
     sane(out != NULL && jf != NULL);
     u32 lo = (ti > 0) ? tok32Offset(jf->toks[1][ti - 1]) : 0;
     u32 hi = tok32Offset(jf->toks[1][ti]);
+    //  24-bit tok32 offsets wrap for blobs >= 16 MiB; hi < lo would
+    //  underflow hi-lo into an out-of-bounds slice fed to u8bFeed.
+    test(hi >= lo, TOKBAD);
     a_rest(u8c, r, jf->data, lo);
     a_head(u8c, tok, r, hi - lo);
     call(u8bFeed, out, tok);

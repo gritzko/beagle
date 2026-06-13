@@ -351,8 +351,8 @@ static ok64 wsink_put(wsink *k, u8csc text, u32 seq, u32 pos, u32cs rset) {
 static ok64 wd_emit(wsink *k, wdp const *p, u32 i) {
     sane(k);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
-    a$part(u8c, t, p->base, lo, hi - lo);
-    a$part(u32c, rs, p->rpool, p->roff[i], p->rlen[i]);
+    a_part(u8c, t, p->base, lo, hi - lo);
+    a_part(u32c, rs, p->rpool, p->roff[i], p->rlen[i]);
     return wsink_put(k, t, p->seq[i], p->pos[i], rs);
 }
 
@@ -360,10 +360,10 @@ static ok64 wd_emit(wsink *k, wdp const *p, u32 i) {
 static ok64 wd_emit_del(wsink *k, wdp const *p, u32 i, u32 add_rm) {
     sane(k);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
-    a$part(u8c, t, p->base, lo, hi - lo);
+    a_part(u8c, t, p->base, lo, hi - lo);
     u32 rbuf[WEAVE_SET_MAX], rn = 0;
     u32 one[1] = {add_rm};
-    a$part(u32c, cur, p->rpool, p->roff[i], p->rlen[i]);
+    a_part(u32c, cur, p->rpool, p->roff[i], p->rlen[i]);
     call(weave_set_union, cur, one, 1, rbuf, WEAVE_SET_MAX, &rn);
     u32cs rs = {rbuf, rbuf + rn};
     return wsink_put(k, t, p->seq[i], p->pos[i], rs);
@@ -498,7 +498,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
     BACQ(u32bAcquire(ABC_BASS, alive_toks, s->ntok + 1));
     for (u32 i = 0; i < nuv->ntok; i++) {
         u32 lo = wd_lo(nuv, i), hi = wd_hi(nuv, i);
-        a$part(u8c, tb, nuv->base, lo, hi - lo);
+        a_part(u8c, tb, nuv->base, lo, hi - lo);
         call(u64bFeed1, nu_h, RAPHash(tb));
     }
     {
@@ -506,7 +506,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
         for (u32 i = 0; i < s->ntok; i++) {
             if (!isbase(s, i, bctx)) continue;
             u32 lo = wd_lo(s, i), hi = wd_hi(s, i);
-            a$part(u8c, tb, s->base, lo, hi - lo);
+            a_part(u8c, tb, s->base, lo, hi - lo);
             call(u64bFeed1, alive_h, RAPHash(tb));
             call(u8bFeed, alive_text, tb);
             cum += (hi - lo);
@@ -524,7 +524,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
     if (olen == 0) {
         for (u32 i = 0; i < nuv->ntok; i++) {
             u32 lo = wd_lo(nuv, i), hi = wd_hi(nuv, i);
-            a$part(u8c, t, nuv->base, lo, hi - lo);
+            a_part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
             call(wsink_put, k, t, seq, ins_pos++, rs);
         }
@@ -565,7 +565,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
         u8cs  at_text = {u8bDataHead(alive_text),
                          u8bDataHead(alive_text) + u8bDataLen(alive_text)};
         size_t nu_text_len = (nuv->ntok > 0) ? wd_hi(nuv, nuv->ntok - 1) : 0;
-        a$part(u8c, nt_text, nuv->base, 0, nu_text_len);
+        a_part(u8c, nt_text, nuv->base, 0, nu_text_len);
         NEILCleanup(edlg, at_view, nt_view, at_text, nt_text);
         NEILShift  (edlg, at_view, nt_view, at_text, nt_text);
     }
@@ -600,7 +600,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
         while (wi < s->ntok && !isbase(s, wi, bctx)) { call(wd_emit, k, s, wi); wi++; }
         for (u32 j = 0; j < sum_ins; j++) {
             u32 lo = wd_lo(nuv, ni), hi = wd_hi(nuv, ni);
-            a$part(u8c, t, nuv->base, lo, hi - lo);
+            a_part(u8c, t, nuv->base, lo, hi - lo);
             u32cs rs = {NULL, NULL};
             call(wsink_put, k, t, seq, ins_pos++, rs);
             ni++;
@@ -796,7 +796,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     u8 *cmark = (u8 *)u8bDataHead(changed);
     u32 cur_line = 0;
     for (u32 i = 0; i < ntok; i++) {
-        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        a_part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
         u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
@@ -881,7 +881,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
     } while (0)
 
     for (u32 i = 0; i < ntok; i++) {
-        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        a_part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
         u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
@@ -904,7 +904,7 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                 FLUSH_HUNK();
                 win_lo = cur_line;   // continuation hunk starts here
             }
-            a$part(u8c, tb, p.base, lo, hi - lo);
+            a_part(u8c, tb, p.base, lo, hi - lo);
             ok64 fo = u8bFeed(outtext, tb);
             if (fo != OK) { ret = fo; goto cleanup; }
             u8 side = (tag == 'I') ? TOK_SIDE_IN
@@ -975,7 +975,7 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     } while (0)
 
     for (u32 i = 0; i < ntok; i++) {
-        a$part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
+        a_part(u32c, rs_i, p.rpool, p.roff[i], p.rlen[i]);
         u8 tag = weave_diff_classify(p.seq[i], rs_i,
                                      in_from, from_ctx, in_to, to_ctx);
         if (tag == 0) continue;
@@ -984,7 +984,7 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
         for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
         if (hunk_open && u8bDataLen(outtext) + (hi - lo) > WEAVE_FULL_HUNK_MAX)
             FLUSH_FULL_HUNK();
-        a$part(u8c, tb, p.base, lo, hi - lo);
+        a_part(u8c, tb, p.base, lo, hi - lo);
         ok64 fo = u8bFeed(outtext, tb);
         if (fo != OK) { ret = fo; goto cleanup; }
         u8 side = (tag == 'I') ? TOK_SIDE_IN
@@ -1029,7 +1029,7 @@ static ok64 weave_gather_group(u8b dst, wdp const *p, u32 run_lo, u32 run_hi,
             != gmask)
             continue;
         u32 lo = wd_lo(p, j), hi = wd_hi(p, j);
-        a$part(u8c, tb, p->base, lo, hi - lo);
+        a_part(u8c, tb, p->base, lo, hi - lo);
         call(u8bFeed, dst, tb);
     }
     done;
@@ -1055,7 +1055,7 @@ ok64 WEAVEEmitMerged(weave const *w,
     a_carve(u8, cgB, u8bDataLen(d.text) + 1);
 
     #define EMITTOK(i) do { u32 _lo = wd_lo(&p,(i)), _hi = wd_hi(&p,(i)); \
-        a$part(u8c, _tb, p.base, _lo, _hi - _lo); call(u8bFeed, out, _tb); } while (0)
+        a_part(u8c, _tb, p.base, _lo, _hi - _lo); call(u8bFeed, out, _tb); } while (0)
 
     u32 spine_mask =
         (npreds == 0) ? 0

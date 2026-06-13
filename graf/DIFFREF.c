@@ -34,6 +34,22 @@ typedef struct {
                      //  the sha is a sub COMMIT pin, not a blob in this store
 } diffref_entry;
 
+//  Order by path bytes; required by abc/Sx.h search primitives pulled in
+//  with the type family below. Entries are appended, never sorted here.
+fun b8 diffref_entryZ(diffref_entry const *a, diffref_entry const *b) {
+    size_t la = $len(a->path), lb = $len(b->path);
+    size_t ml = la < lb ? la : lb;
+    int c = (ml == 0) ? 0 : memcmp(a->path[0], b->path[0], ml);
+    if (c != 0) return c < 0;
+    return la < lb;
+}
+
+//  ABC type family so the per-tree entry arrays can be carved from BASS
+//  instead of sitting ~320 KB each on the stack (see GRAFDiffTreeRefs).
+#define X(M, n) M##diffref_entry##n
+#include "abc/Bx.h"
+#undef X
+
 typedef struct {
     diffref_entry *v;
     u32            n;
@@ -514,10 +530,12 @@ ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot) {
     //  inner returns through.  Each Bu8 stays zero until its alloc/map
     //  succeeds; the trailing free/unmap branch on each is gated on
     //  that — leaks on KEEPLsFiles ⇒ KEEPNONE etc are eliminated.
-    diffref_entry from_entries[DIFFREF_MAX_FILES];
-    diffref_set from_set = {.v = from_entries, .cap = DIFFREF_MAX_FILES};
-    diffref_entry to_entries[DIFFREF_MAX_FILES];
-    diffref_set to_set = {.v = to_entries, .cap = DIFFREF_MAX_FILES};
+    a_carve(diffref_entry, from_entries_b, DIFFREF_MAX_FILES);
+    a_carve(diffref_entry, to_entries_b,   DIFFREF_MAX_FILES);
+    diffref_set from_set = {.v = diffref_entrybDataHead(from_entries_b),
+                            .cap = DIFFREF_MAX_FILES};
+    diffref_set to_set   = {.v = diffref_entrybDataHead(to_entries_b),
+                            .cap = DIFFREF_MAX_FILES};
 
     a_carve(u8, from_set_arena, DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);
     a_carve(u8, to_set_arena,   DIFFREF_MAX_FILES * DIFFREF_PATH_MAX);

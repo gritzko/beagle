@@ -63,6 +63,10 @@ static b8 NEILTokEq(u32cs ta, u8cp ba, u32 ia,
     u8cs va = {}, vb = {};
     tok32Val(va,ta,ba,(int)ia);
     tok32Val(vb,tb,bb,(int)ib);
+    //  24-bit tok32 offsets wrap for token text >= 16 MiB, which can make
+    //  end < start; without this guard la/lb underflow to ~4 GiB and the
+    //  memcmp below reads gigabytes OOB.
+    if (va[1] < va[0] || vb[1] < vb[0]) return NO;
     u32 la = (u32)(va[1] - va[0]);
     u32 lb = (u32)(vb[1] - vb[0]);
     if (la != lb) return NO;
@@ -154,6 +158,15 @@ ok64 NEILCleanup(e32g edl, u32cs old_toks, u32cs new_toks,
         for (u32 k = 0; k < n; k++) {
             if (DIFF_OP(cur[k]) != DIFF_EQ) { next[w++] = cur[k]; continue; }
             u32 eq_len = DIFF_LEN(cur[k]);
+            //  Guard the new_toks[eq_from + j] reads below: a malformed or
+            //  over-run EDL (e.g. the Myers NOROOM fallback) must not index
+            //  past the token slice. Keep the EQ verbatim and skip heuristics.
+            {
+                u32 nt = (u32)$len(new_toks);
+                if (new_off[k] > nt || eq_len > nt - new_off[k]) {
+                    next[w++] = cur[k]; continue;
+                }
+            }
             u32 eq_bytes = NEILByteSpan(new_toks, new_src[0],
                                         new_off[k], eq_len);
 

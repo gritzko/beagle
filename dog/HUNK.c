@@ -453,13 +453,13 @@ static ok64 hunk_feed_visible(u8s into, hunk const *hk, u32 lo, u32 hi) {
         if (tlo < lo) tlo = lo;
         if (thi > hi) thi = hi;
         if (emit_lo < tlo) {
-            a$part(u8c, vis, hk->text, emit_lo, tlo - emit_lo);
+            a_part(u8c, vis, hk->text, emit_lo, tlo - emit_lo);
             call(u8sFeed, into, vis);
         }
         emit_lo = thi;
     }
     if (emit_lo < hi) {
-        a$part(u8c, vis, hk->text, emit_lo, hi - emit_lo);
+        a_part(u8c, vis, hk->text, emit_lo, hi - emit_lo);
         call(u8sFeed, into, vis);
     }
     done;
@@ -582,7 +582,7 @@ ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
                     prev = want;
                 }
                 if (hi > lo) {
-                    a$part(u8c, span, hk->text, lo, hi - lo);
+                    a_part(u8c, span, hk->text, lo, hi - lo);
                     call(u8sFeed, into, span);
                 }
                 lo = hi;
@@ -791,7 +791,7 @@ ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk) {
                 if (want_side) call(hunk_feed_side_open, into, side);
                 if (want_tag)  call(hunk_feed_tag_open,  into, tag);
 
-                a$part(u8c, span, hk->text, lo, hi - lo);
+                a_part(u8c, span, hk->text, lo, hi - lo);
                 call(hunk_html_escape, into, span);
 
                 if (want_tag)  call(hunk_feed_tag_close, into);
@@ -801,7 +801,7 @@ ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk) {
             }
             //  Tail bytes past the last token (rare but legal).
             if (lo < tlen) {
-                a$part(u8c, span, hk->text, lo, tlen - lo);
+                a_part(u8c, span, hk->text, lo, tlen - lo);
                 call(hunk_html_escape, into, span);
             }
         }

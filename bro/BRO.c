@@ -1425,7 +1425,7 @@ static b8 bro_search_at(BROstate *st, u8csc text, u32 pos) {
     $mv(ndl, u8bDataC(st->search));
     if ($empty(ndl)) return NO;
     if (pos + $len(ndl) > (size_t)$len(text)) return NO;
-    a$part(u8c, hay, text, pos, $len(ndl));
+    a_part(u8c, hay, text, pos, $len(ndl));
     return $eq(hay, ndl);
 }
 
@@ -1982,7 +1982,7 @@ static u32 BROSearchNext(BROstate *st, u32 from, int direction) {
             u32 max_start = src_end - slen;
             if (first_byte_limit > max_start + 1) first_byte_limit = max_start + 1;
             for (u32 j = 0; off + j < first_byte_limit; j++) {
-                a$part(u8c, hay, hk->text, off + j, slen);
+                a_part(u8c, hay, hk->text, off + j, slen);
                 if ($eq(hay, ndl)) return i;
             }
         }
@@ -2376,7 +2376,7 @@ static b8 bro_has_substr(u8csc word, u8csc ndl) {
     if ($len(ndl) > $len(word)) return NO;
     u64 limit = $len(word) - $len(ndl) + 1;
     for (u64 i = 0; i < limit; i++) {
-        a$part(u8c, hay, word, i, $len(ndl));
+        a_part(u8c, hay, word, i, $len(ndl));
         if ($eq(hay, ndl)) return YES;
     }
     return NO;
@@ -2395,7 +2395,7 @@ static int bro_scan_hunk(hunkc const *hk, u8csc ndl,
         u32 wlen = i - ws;
         if (wlen < 2 || wlen >= 64) continue;
         if ((u32)$len(ndl) > wlen) continue;
-        a$part(u8c, word_s, hk->text, ws, wlen);
+        a_part(u8c, word_s, hk->text, ws, wlen);
         if (!$empty(ndl)) {
             if (substr) {
                 if (!bro_has_substr(word_s, ndl)) continue;
