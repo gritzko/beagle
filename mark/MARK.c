@@ -25,6 +25,9 @@ typedef struct {
     int nrefs;
     int depth;
     ok64 err;
+    u8bp para;        // soft-wrapped paragraph text, joined into one line
+    b8 para_opener;   // YES if the buffered paragraph is the H1 opener summary
+    markopts opts;    // budget options, applied at paragraph flush time
 } markctx;
 
 //  -------- small helpers --------
@@ -243,7 +246,8 @@ static ok64 mark_violate(markopts opts, const char *msg) {
 //  -------- block rendering --------
 
 //  Close one open leaf kind: if `flag` is set, emit its closing `tag` and
-//  clear the flag (shared by paragraph / list / blockquote).
+//  clear the flag (used for the blockquote leaf; the paragraph leaf flushes
+//  buffered text via mark_para_flush, the list via mark_close_list).
 static ok64 mark_close(markctx *c, b8 *flag, const char *tag) {
     sane(c != NULL);
     if (*flag) {
@@ -264,12 +268,31 @@ static ok64 mark_close_list(markctx *c, b8 *in_list, b8 *list_ord) {
     done;
 }
 
+//  Flush the buffered paragraph: open <p>, budget-check the whole (possibly
+//  soft-wrapped) text, render its inline content, close </p>.  Soft line
+//  breaks were joined as single spaces while accumulating, so an inline span
+//  (link, image, emphasis) may cross a source line wrap.
+static ok64 mark_para_flush(markctx *c, b8 *in_para) {
+    sane(c != NULL);
+    if (!*in_para) done;
+    a_dup(u8c, pc, u8bDataC(c->para));
+    call(MARKu8bLit, c->out, "<p>\n");
+    call(mark_budget, c->opts, c->para_opener ? "opener summary" : "summary",
+         pc, c->para_opener ? MARK_OPEN_MAX : MARK_SUMM_MAX);
+    call(mark_inline, c, pc);
+    call(MARKu8bLit, c->out, "\n</p>\n");
+    u8bReset(c->para);
+    *in_para = NO;
+    c->para_opener = NO;
+    done;
+}
+
 //  Close the current leaf (paragraph/list/blockquote).  A leaf never spans
 //  a block-stack depth change, a blank line, or a structural line.
 static ok64 mark_close_leaf(markctx *c, b8 *in_para, b8 *in_list, b8 *list_ord,
                             b8 *in_quote) {
     sane(c != NULL);
-    call(mark_close, c, in_para, "</p>\n");
+    call(mark_para_flush, c, in_para);
     call(mark_close_list, c, in_list, list_ord);
     call(mark_close, c, in_quote, "</blockquote>\n");
     done;
@@ -298,6 +321,12 @@ static ok64 mark_reconcile_divs(markctx *c, int *div_depth, int target,
 
 static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
     sane(c != NULL && $ok(src));
+
+    //  Scratch for the running paragraph; a joined paragraph is never longer
+    //  than the source (newlines collapse to spaces, gutters are dropped).
+    a_carve(u8, para, u8csLen(src) + 8);
+    c->para = para;
+    c->opts = opts;
 
     a_dup(u8c, cur, src);
     u8cs linec = {}, linef = {};
@@ -387,7 +416,7 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
 
         if (mk == MKDT_MARK_ULIST || mk == MKDT_MARK_OLIST) {
             b8 want_ord = (mk == MKDT_MARK_OLIST);
-            call(mark_close, c, &in_para, "</p>\n");
+            call(mark_para_flush, c, &in_para);
             call(mark_close, c, &in_quote, "</blockquote>\n");
             //  Switching between bullets and numbers ends one list, starts
             //  the other; same kind just continues the open list.
@@ -407,7 +436,7 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
             continue;
         }
         if (mk == MKDT_MARK_QUOTE) {
-            call(mark_close, c, &in_para, "</p>\n");
+            call(mark_para_flush, c, &in_para);
             call(mark_close_list, c, &in_list, &list_ord);
             if (!in_quote) {
                 call(MARKu8bLit, c->out, "<blockquote>\n");
@@ -422,18 +451,20 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
 
         //  paragraph / summary.  Strip the indent gutter: the marker is NONE
         //  for a bare div, so `mend` points just past the depth*4 indents.
+        //  Accumulate soft-wrapped lines into one logical line (each newline
+        //  becomes a space) so an inline span may cross the wrap; the flush
+        //  at the next leaf boundary renders and budget-checks the whole.
         u8cs pc = {mend, linec[1]};
         call(mark_close_list, c, &in_list, &list_ord);
         call(mark_close, c, &in_quote, "</blockquote>\n");
         if (!in_para) {
-            call(MARKu8bLit, c->out, "<p>\n");
-            in_para = YES;
-            call(mark_budget, opts, opener ? "opener summary" : "summary",
-                 pc, opener ? MARK_OPEN_MAX : MARK_SUMM_MAX);
+            c->para_opener = opener;
             opener = NO;
+        } else {
+            call(u8bFeed1, c->para, ' ');
         }
-        call(mark_inline, c, pc);
-        call(MARKu8bLit, c->out, "\n");
+        call(u8bFeed, c->para, pc);
+        in_para = YES;
     }
 
     //  EOF: close the open leaf and unwind every remaining div.

@@ -12,7 +12,11 @@ A page is parsed by MKDT, never by mark. `mark_blocks` walks the source
 line by line, classifying each line with MKDT's exposed block helpers
 (`MKDTHeadingLevel`, `MKDTFenceOpen/Close`, `MKDTHRule`, `MKDTIndentDepth`,
 `MKDTLineMarker`), and feeds the inline content of each block to
-`MKDTInlineLexer`. The resulting token stream becomes HTML: structural
+`MKDTInlineLexer`. A paragraph's soft-wrapped lines are first accumulated
+into one logical line (each newline joined as a space) and flushed at the
+leaf boundary, so an inline span — link, image, emphasis — may cross a
+source line wrap instead of being split into raw-bracket leakage. The
+resulting token stream becomes HTML: structural
 tags via `MARKu8bLit`, literal text via the `MARKE` ragel escaper, and
 emphasis/link `G` tokens split by the `MARKG` ragel machine. A first pass
 collects `[key]: url` reference definitions; links resolve against them and
@@ -24,7 +28,7 @@ self-contained.
 | File | Role |
 |------|------|
 | `MARK.h` | Public API + error codes + WikiWeb budgets (`MARK_*_MAX`). |
-| `MARK.c` | Block driver, inline callback, refdef collection, link rewrite, budget validation, document scaffold. Char counts go through abc `utf8CPLen`; slice eq/prefix/suffix through `u8csEq` / `u8csHasPrefix` / `u8csHasSuffix`. Leaf closing is one `mark_close(flag,tag)`; emphasis B/I/D one `mark_inline_wrap(text,open,close)`. |
+| `MARK.c` | Block driver, inline callback, refdef collection, link rewrite, budget validation, document scaffold. Char counts go through abc `utf8CPLen`; slice eq/prefix/suffix through `u8csEq` / `u8csHasPrefix` / `u8csHasSuffix`. Paragraphs accumulate soft-wrapped lines into a BASS-carved `para` buffer and render once at `mark_para_flush` (where the whole-paragraph budget is also checked); blockquote leaf closes via `mark_close(flag,tag)`; emphasis B/I/D one `mark_inline_wrap(text,open,close)`. |
 | `MARKE.c.rl` / `MARKE.rl.c` | ragel HTML escaper (`MARKu8bFeedEsc`): `& < > "` → entities. |
 | `MARKG.c.rl` / `MARKG.rl.c` | ragel inline decomposer (`MARKDecomposeG`): emphasis / link / image. |
 | `MARK.cli.c` | `MAIN` entry: argv, `--strict`, file or whole-directory build. |
@@ -82,7 +86,9 @@ Pages verbatim.
 snippet and asserts an HTML substring. It covers headings, paragraphs,
 lists, emphasis, inline code, escaping, fenced code, shortcut + reference
 links with `.mkd`→`.html`, and regression repros for the `?` / `%` /
-em-dash inline bytes that previously tripped MKDT. A separate case asserts
+em-dash inline bytes that previously tripped MKDT plus the `wrap-*` cases
+where a link / image / emphasis / paragraph spans a soft line break. A
+separate case asserts
 that an over-budget header fails under `--strict` and only warns without it.
 
 ## Dependencies

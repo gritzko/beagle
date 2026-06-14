@@ -90,6 +90,24 @@ static ok64 MARKrender_cases() {
         //  closed before the <ul> opens.
         {"div-restore", "#   T\n\n    Inner\n\n -  item\n",
          "<div>\n<p>\nInner\n</p>\n</div>\n<ul>\n<li>item</li>"},
+        //  line-wrapped inline spans: a paragraph's soft line breaks are
+        //  joined into one logical line (newline -> space), so a link / image
+        //  / emphasis that crosses a wrap is recognized, not split into raw
+        //  bracket leakage.  These all used to emit broken HTML.
+        {"wrap-para", "#   T\n\nhello\nworld\n", "<p>\nhello world\n</p>"},
+        {"wrap-reflink", "#   T\n\nsee [two\nwords][1] x\n\n[1]: x.mkd\n",
+         "<a href=\"x.html\">two words</a>"},
+        {"wrap-reflink3", "#   T\n\nsee [a\nb\nc][1] x\n\n[1]: x.mkd\n",
+         "<a href=\"x.html\">a b c</a>"},
+        {"wrap-shortcut", "#   T\n\nsee [Long\nName] x\n\n[Long Name]: p.mkd\n",
+         "<a href=\"p.html\">Long Name</a>"},
+        {"wrap-image", "#   T\n\nsee ![big\nimage][1] x\n\n[1]: p.png\n",
+         "<img src=\"p.png\" alt=\"big image\">"},
+        {"wrap-emph", "#   T\n\nsay *bo\nld* x\n", "<strong>bo ld</strong>"},
+        //  a wrap between ]/[ is not a full reference link (CommonMark: the
+        //  label must immediately follow the text); both halves stay shortcuts.
+        {"wrap-bracket-gap", "#   T\n\nsee [text]\n[1] x\n\n[1]: x.mkd\n",
+         "<a href=\"\">text</a> <a href=\"x.html\">1</a>"},
     };
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
         call(render, out, T[i].src, NO);
