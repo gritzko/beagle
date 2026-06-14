@@ -2,6 +2,8 @@
 
 #include "MARK.h"
 
+#include "abc/FILE.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/UTF8.h"
 #include "dog/tok/MKDT.h"
@@ -9,6 +11,14 @@
 #include <string.h>
 
 #define MARK_MAX_REFS 512
+
+//  Slice literals reused across the renderer (one definition each, not
+//  re-declared per function).  u8slit is a compile-time slice initializer.
+static u8cs s_ext_mkd  = u8slit("mkd");
+static u8cs s_ext_md   = u8slit("md");
+static u8cs s_dot_mkd  = u8slit(".mkd");
+static u8cs s_dot_md   = u8slit(".md");
+static u8cs s_dot_html = u8slit(".html");
 
 //  A collected reference / shortcut definition: key -> url (into src).
 typedef struct {
@@ -119,9 +129,8 @@ static b8 mark_lookup(markctx *c, u8csc key, u8csp url) {
 //  Emit a URL (attribute-escaped), rewriting a trailing ".mkd" to ".html".
 static ok64 mark_emit_url(u8bp out, u8csc url) {
     sane($ok(url));
-    a_cstr(mkd, ".mkd");
-    if (u8csHasSuffix(url, mkd)) {
-        a_head(u8c, stem, url, u8csLen(url) - u8csLen(mkd));
+    if (u8csHasSuffix(url, s_dot_mkd)) {
+        a_head(u8c, stem, url, u8csLen(url) - u8csLen(s_dot_mkd));
         call(MARKu8bFeedEsc, out, stem);
         call(MARKu8bLit, out, ".html");
         done;
@@ -133,6 +142,94 @@ static ok64 mark_emit_url(u8bp out, u8csc url) {
 //  -------- inline rendering --------
 
 static ok64 mark_inline(markctx *c, u8csc text);
+
+//  YES if `ext` is the page source extension (.mkd / .md, sans dot).
+static b8 mark_is_pageext(u8csc ext) {
+    return !u8csEmpty(ext) && (u8csEq(ext, s_ext_mkd) || u8csEq(ext, s_ext_md));
+}
+
+//  Trim a trailing ".mkd" / ".md" from slice `s` (the page source extension);
+//  any other extension is left intact (it names a real asset, not a page).
+static void mark_trim_pageext(u8csp s) {
+    u8cs v = {s[0], s[1]};
+    u8cs ext = {};
+    PATHu8sExt(ext, v);
+    if (mark_is_pageext(ext)) {
+        a_tail(u8c, suf, v, u8csLen(ext) + 1);  // ".mkd" / ".md"
+        s[1] = suf[0];
+    }
+}
+
+//  YES if the file root/stem+dotext exists.
+static b8 mark_page_at(u8csc root, u8csc stem, u8csc dotext) {
+    a_path(p, root);
+    if (PATHu8bAdd(p, stem) != OK) return NO;
+    if (PATHu8bFeed(p, dotext) != OK) return NO;
+    return FILEExists($path(p)) == OK;
+}
+
+//  YES if a source page exists at root-relative `stem` under `root`
+//  (probed as stem.mkd, then stem.md).  Empty root => NO (no tree to probe).
+static b8 mark_page_exists(u8csc root, u8csc stem) {
+    if (u8csEmpty(root) || u8csEmpty(stem)) return NO;
+    return mark_page_at(root, stem, s_dot_mkd) ||
+           mark_page_at(root, stem, s_dot_md);
+}
+
+//  Emit the href for an unresolved bracket target (a path/wiki link).  The
+//  target is root-relative when it starts with '/', else relative to the
+//  current page's directory; it is normalized, then made relative to the
+//  page so the rendered site relocates.  Extension rule: an explicit
+//  .mkd/.md, or an extensionless target whose .mkd/.md source exists under
+//  opts.root, resolves to .html; anything else is emitted verbatim.
+static ok64 mark_emit_pathlink(markctx *c, u8csc bracket) {
+    sane(c != NULL);
+
+    //  base = the current page's directory as an absolute view ("/", "/wiki").
+    a_dup(u8c, page, c->opts.page);
+    u8cs pdir = {};
+    PATHu8sDir(pdir, page);
+    b8 has_dir = !u8csEmpty(pdir) && !(u8csLen(pdir) == 1 && *pdir[0] == '.');
+    a_abspath(base);
+    if (has_dir) call(PATHu8bAdd, base, pdir);
+    a_dup(u8c, basev, u8bDataC(base));
+
+    //  tgt = the target as an absolute, normalized path.  `bracket` is always
+    //  root-absolute here (callers gate on a leading '/').
+    a_dup(u8c, br, bracket);
+    a_path(tgt);
+    call(PATHu8bNorm, tgt, br);
+
+    //  Decide page (-> .html) vs verbatim, build the final absolute target.
+    a_dup(u8c, tv, u8bDataC(tgt));
+    u8cs ext = {};
+    PATHu8sExt(ext, tv);
+    b8 ext_page = mark_is_pageext(ext);
+    b8 topage = ext_page;
+    if (!topage && u8csEmpty(ext)) {
+        a_rest(u8c, stem, tv, 1);  // drop leading '/': root-relative stem
+        topage = mark_page_exists(c->opts.root, stem);
+    }
+    a_path(fin);
+    if (topage) {
+        a_dup(u8c, stem, tv);
+        if (ext_page) {
+            a_tail(u8c, suf, stem, u8csLen(ext) + 1);
+            stem[1] = suf[0];
+        }
+        call(PATHu8bDup, fin, stem);
+        call(PATHu8bFeed, fin, s_dot_html);
+    } else {
+        call(PATHu8bDup, fin, tv);
+    }
+
+    a_dup(u8c, finv, u8bDataC(fin));
+    a_path(rel);
+    call(PATHu8bRel, rel, basev, finv);
+    a_dup(u8c, relv, u8bDataC(rel));
+    call(MARKu8bFeedEsc, c->out, relv);
+    done;
+}
 
 static ok64 mark_emit_link(markctx *c, markg *g, b8 image) {
     sane(c != NULL);
@@ -146,10 +243,35 @@ static ok64 mark_emit_link(markctx *c, markg *g, b8 image) {
         call(MARKu8bLit, c->out, "\">");
         done;
     }
+
+    //  Only an undefined *absolute* shortcut `[/path]` is a path link.  A
+    //  shortcut [text] keys on its own bracket text (label == text); a
+    //  reference link [text][L] has a distinct one-symbol label.  Any other
+    //  undefined bracket keeps the prior behavior (empty href); a literal
+    //  bracket is written by escaping it (`\[42]`), not auto-detected here.
+    b8 shortcut = g->label[0] == g->text[0] && g->label[1] == g->text[1];
+    a_dup(u8c, t, g->text);
+    b8 pathlink = !found && shortcut && PATHu8sIsAbsolute(t);
+
     call(MARKu8bLit, c->out, "<a href=\"");
-    if (found) call(mark_emit_url, c->out, url);
+    if (found) {
+        call(mark_emit_url, c->out, url);
+    } else if (pathlink) {
+        call(mark_emit_pathlink, c, g->text);
+    }
     call(MARKu8bLit, c->out, "\">");
-    call(MARKu8bFeedEsc, c->out, g->text);
+    if (pathlink) {
+        //  Display the basename (page extension dropped), so
+        //  `[/wiki/StrictMark]` reads "StrictMark" and a trailing suffix
+        //  (`[/wiki/Submodule]s`) glues on outside the anchor.
+        a_dup(u8c, disp, g->text);
+        u8cs base = {};
+        PATHu8sBase(base, disp);
+        mark_trim_pageext(base);
+        call(MARKu8bFeedEsc, c->out, base);
+    } else {
+        call(MARKu8bFeedEsc, c->out, g->text);
+    }
     call(MARKu8bLit, c->out, "</a>");
     done;
 }

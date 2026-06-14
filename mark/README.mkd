@@ -24,6 +24,8 @@ Inter-page links are rewritten so the rendered site is self-contained. A link ta
 
  -  A reference definition `[key]: url` is collected in a first pass and never rendered.
  -  A shortcut `[Page]` resolves against those definitions, then `.mkd` becomes `.html`.
+ -  An abs path `[/wiki/Page]` (no refdef) anchors at `--root`, then resolves relative to the current page.
+ -  Extension: explicit `.mkd`/`.md`, or an extensionless target whose source exists, gives `.html`; else verbatim.
 
 ##  Enforced limits
 
@@ -41,6 +43,7 @@ mark takes files or a directory. A file renders to a sibling `.html`; a director
     mark page.mkd           # -> page.html beside it
     mark --strict wiki/     # build a dir, fail on any budget breach
     mark a.mkd b.mkd        # several files at once
+    mark --root=. wiki/p.mkd  # `/...` links anchor here (default: cwd)
 ````
 
 ##  Build and test

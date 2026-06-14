@@ -21,7 +21,8 @@ tags via `MARKu8bLit`, literal text via the `MARKE` ragel escaper, and
 emphasis/link `G` tokens split by the `MARKG` ragel machine. A first pass
 collects `[key]: url` reference definitions; links resolve against them and
 a trailing `.mkd` target is rewritten to `.html` so the site is
-self-contained.
+self-contained. A shortcut with no matching definition is treated as an
+abs/path link (see below).
 
 ## Files
 
@@ -31,7 +32,7 @@ self-contained.
 | `MARK.c` | Block driver, inline callback, refdef collection, link rewrite, budget validation, document scaffold. Char counts go through abc `utf8CPLen`; slice eq/prefix/suffix through `u8csEq` / `u8csHasPrefix` / `u8csHasSuffix`. Paragraphs accumulate soft-wrapped lines into a BASS-carved `para` buffer and render once at `mark_para_flush` (where the whole-paragraph budget is also checked); blockquote leaf closes via `mark_close(flag,tag)`; emphasis B/I/D one `mark_inline_wrap(text,open,close)`. |
 | `MARKE.c.rl` / `MARKE.rl.c` | ragel HTML escaper (`MARKu8bFeedEsc`): `& < > "` → entities. |
 | `MARKG.c.rl` / `MARKG.rl.c` | ragel inline decomposer (`MARKDecomposeG`): emphasis / link / image. |
-| `MARK.cli.c` | `MAIN` entry: argv, `--strict`, file or whole-directory build. |
+| `MARK.cli.c` | `MAIN` entry: argv, `--strict`, `--head`/`--body`, `--root` (default cwd, realpath'd), file or whole-directory build. Computes each page's root-relative path (input vs root) into `opts.page` for link resolution. |
 | `test/MARK.c` | Table-driven render + escape + link tests; budget-violation test; lexer-gap repros. |
 
 ## MKDT changes (shared dogenizer)
@@ -59,6 +60,25 @@ reconcile (reuse `MKDTRefDef`, drop the local copy) because `dog/` was
 under concurrent edit; track it as a separate cross-dir ticket so the two
 do not fork.
 
+## Abs/path links
+
+A shortcut `[/wiki/StrictMark]` with no reference definition is an
+**abs/path link** (`mark_emit_pathlink`). The target is taken root-relative
+when it starts with `/`, else relative to the current page's directory;
+it is normalized and then made relative to the page (via `PATHu8bRel`) so
+the rendered site relocates. The extension is decided by `markopts.root`:
+
+- an explicit `.mkd`/`.md`, or an extensionless target whose `<stem>.mkd`
+  or `<stem>.md` exists under `root` (`mark_page_exists` → `FILEExists`),
+  resolves to `.html`;
+- any other extension, or an extensionless target with no source, is
+  emitted verbatim (so `[/LICENSE]`, `[/img/x.png]` link to the real file).
+
+The displayed text is the target's basename with `.mkd`/`.md` stripped, so
+`[/wiki/StrictMark]` reads "StrictMark" and a trailing suffix
+(`[/wiki/Submodule]s`) glues on outside the anchor → "Submodules". With no
+`--root` (empty `opts.root`), an extensionless target stays verbatim.
+
 ## Enforced structure & limits
 
 `mark` doubles as the wiki linter. Budgets are counted in UTF-8
@@ -72,8 +92,12 @@ do not fork.
 ## CLI
 
 ```
-mark [--strict] <file.mkd | dir>...
+mark [--strict] [--head=FILE] [--body=FILE] [--root=DIR] <file.mkd | dir>...
 ```
+
+`--root` is the `/` anchor for abs/path links and the tree probed for page
+existence; it defaults to the cwd, so you only pass it when running from
+elsewhere (e.g. the wiki Makefile stages into `html/` and passes `--root=html`).
 
 A file → sibling `.html`; a directory → every `*.mkd` in it (one bad page
 warns and is skipped, the batch continues). Inter-page `.mkd` links are
@@ -90,6 +114,9 @@ em-dash inline bytes that previously tripped MKDT plus the `wrap-*` cases
 where a link / image / emphasis / paragraph spans a soft line break. A
 separate case asserts
 that an over-budget header fails under `--strict` and only warns without it.
+`MARKpathlinks` builds a hermetic fixture tree (`.markpathtest/`) and asserts
+abs/path link resolution: existence-driven `.html`, verbatim non-page files,
+the plural suffix, and depth-correct `../` from root vs subdir pages.
 
 ## Dependencies
 

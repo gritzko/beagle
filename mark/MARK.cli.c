@@ -65,6 +65,25 @@ static ok64 mark_render_inner(path8s inpath, path8b opath, markopts opts) {
     PATHu8sBase(title, inpath);
     mark_dropext(title);
 
+    //  The page's root-relative path anchors `[/...]` links and sets the base
+    //  for relative (../) resolution: realpath the input, take it relative to
+    //  the (already-real) root.  Lives on this frame for the render call only.
+    a_path(realin);
+    a_path(relp);
+    if (!u8csEmpty(opts.root)) {
+        try(PATHu8bReal, realin, inpath);
+        then try(PATHu8bRel, relp, opts.root, $path(realin));
+        then {
+            opts.page[0] = u8bDataHead(relp);
+            opts.page[1] = u8bIdleHead(relp);
+        }
+        if (__ != OK) {
+            FILEUnMap(m);
+            u8bFree(out);
+            return __;
+        }
+    }
+
     try(mark_outpath, opath, inpath);
     then try(MARKRenderDoc, out, src, title, opts);
     then {
@@ -145,7 +164,9 @@ ok64 markcli() {
     markopts opts = {};
     a_path(headpath);
     a_path(bodypath);
-    b8 want_head = NO, want_body = NO;
+    a_path(rootarg);
+    a_path(rootreal);
+    b8 want_head = NO, want_body = NO, want_root = NO;
     for (size_t i = 1; i < (size_t)$arglen; ++i) {
         a$rg(a, i);
         a_cstr(strict, "--strict");
@@ -165,7 +186,25 @@ ok64 markcli() {
             call(PATHu8bDup, bodypath, val);
             want_body = YES;
         }
+        a_cstr(rootpfx, "--root=");
+        if (u8csLen(a) > u8csLen(rootpfx) && u8csHasPrefix(a, rootpfx)) {
+            a_rest(u8c, val, a, u8csLen(rootpfx));
+            call(PATHu8bDup, rootarg, val);
+            want_root = YES;
+        }
     }
+
+    //  Site root: the `/` anchor for `[/...]` links and the tree probed for
+    //  page existence.  Defaults to cwd; resolved to an absolute realpath so
+    //  the renderer can take each page's path relative to it.
+    if (want_root) {
+        call(PATHu8bReal, rootreal, $path(rootarg));
+    } else {
+        a_cstr(dot, ".");
+        call(PATHu8bReal, rootreal, dot);
+    }
+    opts.root[0] = u8bDataHead(rootreal);
+    opts.root[1] = u8bIdleHead(rootreal);
 
     //  Map the head/body snippets once (resources at the top of the chain);
     //  the slices stay valid for the whole render and are unmapped after.

@@ -29,6 +29,10 @@ typedef struct {
     b8   strict;  // YES: a structure/limit violation aborts with MARKLIMIT
     u8cs head;    // raw HTML injected before </head> (from --head=FILE); empty = none
     u8cs body;    // raw HTML injected after <body> (from --body=FILE); empty = none
+    u8cs page;    // current page's root-relative path (e.g. "wiki/Foo.mkd"); empty = at root.
+                  // Anchors `[/...]` links and sets the base for relative (../) resolution.
+    u8cs root;    // filesystem path of the site root (the `/` anchor); empty = no tree probe.
+                  // An extensionless `[/x]` resolves to x.html iff root/x.mkd or root/x.md exists.
 } markopts;
 
 //  Render StrictMark `src` to a standalone HTML document in `out`.

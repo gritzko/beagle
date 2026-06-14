@@ -3,6 +3,8 @@
 
 #include "mark/MARK.h"
 
+#include "abc/FILE.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 
@@ -106,6 +108,7 @@ static ok64 MARKrender_cases() {
         {"wrap-emph", "#   T\n\nsay *bo\nld* x\n", "<strong>bo ld</strong>"},
         //  a wrap between ]/[ is not a full reference link (CommonMark: the
         //  label must immediately follow the text); both halves stay shortcuts.
+        //  An undefined non-absolute shortcut keeps the prior empty href.
         {"wrap-bracket-gap", "#   T\n\nsee [text]\n[1] x\n\n[1]: x.mkd\n",
          "<a href=\"\">text</a> <a href=\"x.html\">1</a>"},
     };
@@ -145,10 +148,122 @@ static ok64 MARKlimits() {
     done;
 }
 
+//  ---- abs/path links: existence-driven extension + relative resolution ----
+
+static ok64 render_at(u8bp out, const char *src, u8cs root, const char *page) {
+    sane(out != NULL);
+    u8bReset(out);
+    u8cs s = {(u8c *)src, (u8c *)src + strlen(src)};
+    u8cs title = {};
+    markopts opts = {};
+    opts.root[0] = root[0];
+    opts.root[1] = root[1];
+    a_cstr(pg, page ? page : "");
+    if (page != NULL) {
+        opts.page[0] = pg[0];
+        opts.page[1] = pg[1];
+    }
+    return MARKRenderDoc(out, s, title, opts);
+}
+
+static ok64 mk_dir(u8cs root, const char *rel) {
+    sane(1);
+    a_path(p, root);
+    a_cstr(r, rel);
+    call(PATHu8bAdd, p, r);
+    call(FILEMakeDirP, $path(p));
+    done;
+}
+
+static ok64 mk_file(u8cs root, const char *rel) {
+    sane(1);
+    a_path(p, root);
+    a_cstr(r, rel);
+    call(PATHu8bAdd, p, r);
+    int fd = -1;
+    call(FILECreate, &fd, $path(p));
+    a_cstr(c, "x\n");
+    callsafe(FILEFeedAll(fd, c), (void)FILEClose(&fd));
+    call(FILEClose, &fd);
+    done;
+}
+
+static ok64 MARKpathlinks() {
+    sane(1);
+    call(FILEInit);
+    u8b out = {};
+    call(u8bAllocate, out, 1UL << 20);
+
+    //  Hermetic fixture tree: only the *targets* probed for existence need to
+    //  exist (the page being rendered comes from the `src` string).
+    a_cstr(rootname, ".markpathtest");
+    a_path(root, rootname);
+    FILERmDir($path(root), 1);
+    ok64 setup = FILEMakeDirP($path(root));
+    a_dup(u8c, rootv, u8bDataC(root));
+    if (setup == OK) setup = mk_dir(rootv, "wiki");
+    if (setup == OK) setup = mk_file(rootv, "wiki/StrictMark.mkd");
+    if (setup == OK) setup = mk_file(rootv, "wiki/Dog.mkd");
+    if (setup == OK) setup = mk_file(rootv, "LICENSE");
+    if (setup != OK) {
+        FILERmDir($path(root), 1);
+        u8bFree(out);
+        return setup;
+    }
+
+    struct {
+        const char *name;
+        const char *page;
+        const char *src;
+        const char *needle;
+    } T[] = {
+        //  extensionless + .mkd source present -> .html, relative to the page
+        {"exist-abs", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
+         "<a href=\"StrictMark.html\">StrictMark</a>"},
+        {"exist-mkd", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/StrictMark.mkd] x\n",
+         "<a href=\"StrictMark.html\">StrictMark</a>"},
+        //  plural suffix glues on outside the anchor (link covers the page)
+        {"exist-plural", "wiki/Foo.mkd", "#   T\n\nmany [/wiki/Dog]s x\n",
+         "<a href=\"Dog.html\">Dog</a>s"},
+        //  a real file with no .mkd source -> verbatim (not .html)
+        {"nonpage-file", "wiki/Foo.mkd", "#   T\n\nthe [/LICENSE] x\n",
+         "<a href=\"../LICENSE\">LICENSE</a>"},
+        //  explicit non-page extension -> verbatim, basename kept
+        {"asset-ext", "wiki/Foo.mkd", "#   T\n\nsee [/img/logo.png] x\n",
+         "<a href=\"../img/logo.png\">logo.png</a>"},
+        //  extensionless with no .mkd/.md source -> verbatim
+        {"missing-page", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/Nope] x\n",
+         "<a href=\"Nope\">Nope</a>"},
+        //  depth: same link resolves differently per page location
+        {"from-root", "Home.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
+         "<a href=\"wiki/StrictMark.html\">StrictMark</a>"},
+        {"from-subdir", "blog/Post.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
+         "<a href=\"../wiki/StrictMark.html\">StrictMark</a>"},
+    };
+    ok64 ro = OK;
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
+        ro = render_at(out, T[i].src, rootv, T[i].page);
+        if (ro != OK) break;
+        u8cs body = {u8bDataHead(out), u8bIdleHead(out)};
+        a_cstr(n, T[i].needle);
+        a_dup(u8c, h, body);
+        if (u8csFindS(h, n) != OK) {
+            fprintf(stderr, "mark pathlink: case '%s' missing '%s'\n",
+                    T[i].name, T[i].needle);
+            ro = TESTFAIL;
+            break;
+        }
+    }
+    FILERmDir($path(root), true);
+    u8bFree(out);
+    return ro;
+}
+
 static ok64 maintest() {
     sane(1);
     call(MARKrender_cases);
     call(MARKlimits);
+    call(MARKpathlinks);
     done;
 }
 
