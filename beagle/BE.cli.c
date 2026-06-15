@@ -367,6 +367,8 @@ static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
 static ok64 BEProjectorSubs(cli *c, uri *u);
 static ok64 BEProjectorSubsPins(cli *c, uri *u, bediff_pinmap const *pins);
+static ok64 BEProjectorRouteToMount(cli *c, uri *u, b8 *handled);
+static b8   BEProjectorRoutesToMount(cli *c, uri *u);
 
 //  Every `*NONE` ok64 (POSTNONE, KEEPNONE, GRAFNONE, SPOTNONE, …)
 //  shares the same low byte — `NONE & 0xFFu = 0xCE` — because they
@@ -550,6 +552,89 @@ static ok64 BERunPipeSubs(path8sc pre, u8css pre_argv,
     if (sr != OK)                                     return sr;
     if (pager_rc != 0)                                return BEDOGEXIT;
     done;
+}
+
+// --- Mount-route producer → pager pipeline (BE-004) ------------------
+//
+//  BE-004: a path-scoped projector whose path lands inside a mounted
+//  sub (`blame:abc/Sx.h`, `diff:vendor/sub/x.c`) is run in the sub
+//  shard by BEProjectorRouteToMount → BERelaySub, which re-emits the
+//  captured sub TLV in this process's global `HUNKMode`.  On a TTY
+//  (`HUNKOutColor`) that wrote ANSI to bare stdout with NO pager —
+//  while the SAME projector on a PARENT file funnels through bro.  A
+//  projection is a projection regardless of which shard owns the path;
+//  the pager-vs-direct decision must be uniform.
+//
+//  Fix: on a TTY, fold the mount relay into the SAME bro pipe the
+//  parent-file path uses.  Spawn `bro --color` reading the pipe, point
+//  this process's STDOUT_FILENO at the write end, force `HUNKOutTLV`
+//  for the relay (so BERelaySub feeds bro TLV it can index, not
+//  pre-rendered ANSI — the exact hazard the BERunPipeSubs fold guards
+//  against), run the route, restore, close → bro drains and paints.
+//  Mirrors the sub fan-out fold in BERunPipeSubs (the relay IS the
+//  producer here; there is no separate parent dog to dup2).
+static ok64 BERouteMountPaged(cli *c, uri *u, b8 *handled) {
+    sane(c && u && handled);
+    *handled = NO;
+
+    //  Only fold into a bro pipe when the route will actually fire;
+    //  otherwise leave `*handled` NO so BEProjector falls through to the
+    //  normal parent-file projector (which forks its own bro) — a double
+    //  pager would result if we always spawned one here.
+    if (!BEProjectorRoutesToMount(c, u)) done;
+
+    a_path(bropath);
+    a_cstr(bro_name, "bro");
+    a$rg(a0, 0);
+    call(HOMEResolveSibling, bropath, bro_name, a0);
+    a_cstr(color_flag, "--color");
+    a_pad(u8cs, bargs, 2);
+    u8csbFeed1(bargs, bro_name);
+    u8csbFeed1(bargs, color_flag);
+    a_dup(u8cs, bargv, u8csbData(bargs));
+
+    int p[2] = {-1, -1};
+    if (pipe(p) != 0) failc(BEFAIL);
+    (void)fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(p[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t pager_pid = 0;
+    ok64 gs = FILESpawnFds($path(bropath), bargv, p[0], -1, &pager_pid);
+    if (gs != OK) { close(p[0]); close(p[1]); return gs; }
+    close(p[0]);                     //  this process never reads
+
+    //  Redirect STDOUT_FILENO → pipe write end and force HUNKOutTLV so
+    //  the relay (BERelaySub → HUNKu8sRelay → write(STDOUT_FILENO,…))
+    //  feeds bro a TLV stream, then restore.  Mirror BERunPipeSubs.
+    b8   routed = NO;
+    ok64 rr     = OK;
+    int  saved  = dup(STDOUT_FILENO);
+    if (saved >= 0) {
+        (void)fcntl(p[1], F_SETFD, 0);   //  the dup target must survive
+        fflush(stdout);
+        if (dup2(p[1], STDOUT_FILENO) >= 0) {
+            HUNKout saved_mode = HUNKMode;
+            HUNKMode = HUNKOutTLV;
+            rr = BEProjectorRouteToMount(c, u, &routed);
+            HUNKMode = saved_mode;
+            fflush(stdout);
+            (void)dup2(saved, STDOUT_FILENO);
+        }
+        close(saved);
+    } else {
+        //  dup failed: fall back to the unpaged relay rather than drop
+        //  the projection entirely.
+        rr = BEProjectorRouteToMount(c, u, &routed);
+    }
+
+    close(p[1]);                         //  EOF → bro drains + exits
+    int pager_rc = 0;
+    (void)FILEReap(pager_pid, &pager_rc);
+
+    *handled = routed;
+    if (rr != OK && !ok64is(rr, NONE)) return rr;
+    if (pager_rc != 0)                 return BEDOGEXIT;
+    return rr;
 }
 
 // --- Verb dispatch: forward URI to dogs in order ---
@@ -1152,6 +1237,35 @@ static ok64 BEProjectorRouteToMount(cli *c, uri *u, b8 *handled) {
     return rc.rc;
 }
 
+//  Detection-only twin of BEProjectorRouteToMount (BE-004): YES iff the
+//  projector's path WOULD route into a mounted sub, WITHOUT running the
+//  relay.  Same guards (--nosub / whole-tree / no-repo) and the same
+//  per-sub `be_path_in_mount` match, so the TTY pager wrapper can decide
+//  to spawn bro only when the route will actually fire (otherwise it
+//  falls through to the normal parent-file projector, which forks its
+//  own bro — a double-pager would result).
+static ok64 beproj_detect_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    beproj_route_ctx *rc = (beproj_route_ctx *)vctx;
+    if (rc->handled) return OK;            //  first matching mount wins
+    if (!s->mounted) return OK;
+    u8cs rel = {};
+    if (be_path_in_mount(rc->u->path, s->path, rel)) rc->handled = YES;
+    return OK;
+}
+
+static b8 BEProjectorRoutesToMount(cli *c, uri *u) {
+    if (!c || !u)               return NO;
+    if (CLIHas(c, "--nosub"))   return NO;
+    if (u8csEmpty(u->path))     return NO;
+    if (!u8bHasData(c->repo))   return NO;
+    a_dup(u8c, wt_root, $path(c->repo));
+    beproj_route_ctx rc = { .c = c, .u = u, .handled = NO, .rc = OK };
+    u8csMv(rc.wt_root, wt_root);
+    (void)BESubsHere(wt_root, beproj_detect_cb, &rc);
+    return rc.handled;
+}
+
 //  View-projector routing (https://replicated.wiki/html/wiki/Projector.html §"View projectors").
 //
 //  Invocation: `be <scheme>:<URI>` — no verb.  `be` is a scheme
@@ -1174,16 +1288,6 @@ static ok64 BEProjector(cli *c, uri *u) {
     }
     a_cstr(dog_s, dog_cstr);
 
-    //  SUBS-012: a path-bearing projector whose path lands inside a
-    //  mounted sub resolves in the SUB shard (the parent tree holds a
-    //  bare gitlink there).  Route + relay it; if handled, we're done —
-    //  the parent dog would only return KEEPNONE / PROJFAIL.
-    {
-        b8 routed = NO;
-        ok64 rr = BEProjectorRouteToMount(c, u, &routed);
-        if (routed) return rr;
-    }
-
     //  Universal three-mode rule: `HUNKMode` (set in main via
     //  `CLISetHUNKMode`) already encodes --tlv / --color / --plain /
     //  ANSIIsTTY().  Map it onto bro-pager spawn and the dog's
@@ -1195,6 +1299,22 @@ static ok64 BEProjector(cli *c, uri *u) {
     //    PLAIN → run dog with no `--tlv`, dog writes plain text.
     b8 tty      = (HUNKMode == HUNKOutColor);
     b8 emit_tlv = (HUNKMode != HUNKOutPlain);
+
+    //  SUBS-012 / BE-004: a path-bearing projector whose path lands
+    //  inside a mounted sub resolves in the SUB shard (the parent tree
+    //  holds a bare gitlink there).  Route + relay it; if handled, we're
+    //  done — the parent dog would only return KEEPNONE / PROJFAIL.  The
+    //  pager-vs-direct decision is made HERE, identically to a
+    //  parent-file projection (BE-004): on a TTY the relay is folded
+    //  into a bro pipe (BERouteMountPaged) instead of dumping ANSI to the
+    //  bare terminal; off a TTY (--tlv / --plain / piped stdout) the raw
+    //  relay re-emits in the resolved mode exactly as before.
+    {
+        b8 routed = NO;
+        ok64 rr = tty ? BERouteMountPaged(c, u, &routed)
+                      : BEProjectorRouteToMount(c, u, &routed);
+        if (routed) return rr;
+    }
 
     a_path(dogpath);
     a$rg(a0, 0);

@@ -13,6 +13,8 @@ are forbidden — case names + the per-verb `INDEX.md` carry the prose.
 * [diff/](diff/INDEX.md) — `be diff` (`diff:` projector) cases.
 * [tree/](tree/INDEX.md) — `tree:` / `blob:` object-projector cases
   (incl. SUBS-012 sub-path routing).
+* [blame/](blame/INDEX.md) — `blame:` projector cases (BE-004 sub-path
+  pager-route parity).
 
 ## Shared repo-setup lib (`lib/repo-setup.sh`)
 
