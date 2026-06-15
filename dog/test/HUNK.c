@@ -140,6 +140,109 @@ static ok64 HUNKTestRelayRoundtrip() {
 }
 
 // =====================================================================
+// BRO-003 — relaying a sub's row TABLE re-prefixes the per-row path
+// column AND the hidden nav URI, not just the banner URI.  A child sniff
+// emits one content hunk whose (text, toks) holds rows like
+//   `<7sp> put core.c\ncat:core.c`
+// with the path column tagged 'S' (ends in '\n') and the nav URI tagged
+// 'U'.  Mounted at `vendor/sub`, the relay must rewrite the row to
+//   `<7sp> put vendor/sub/core.c\ncat:vendor/sub/core.c`.
+// =====================================================================
+
+//  Append a tok32 (tag, eq side, end-offset) to a u32 buffer.
+static ok64 hunk_test_tok(Bu32 b, u8 tag, u32 off) {
+    sane(u32bOK(b));
+    call(u32bFeed1, b, tok32PackSide(tag, TOK_SIDE_EQ, off));
+    done;
+}
+
+static ok64 HUNKTestRelayBody() {
+    sane(1);
+
+    //  Build one ROWS-shaped row body (status layout): 7 date spaces,
+    //  ' ', "put", ' ', "core.c\n", then the hidden "cat:core.c" nav.
+    //  Tokens: L date, S sep, verb-slot, S sep, S path(ends '\n'), U nav.
+    static const char BODY[] = "        put core.c\ncat:core.c";
+    //                          ^0123456 (7sp) ^7 ' ' ^8 "put" ^11 ' '
+    //                          ^12 "core.c\n" → 19, ^19 "cat:core.c" → 29
+    a_pad(u8, tb, 256);
+    {
+        HUNK_SLICE(body, BODY);
+        call(u8bFeed, tb, body);
+    }
+    Bu32 toks = {};
+    call(u32bAllocate, toks, 16);
+    try(hunk_test_tok, toks, 'L', 7);    // date (7 spaces)
+    then try(hunk_test_tok, toks, 'S', 8);    // separator ' '
+    then try(hunk_test_tok, toks, 'Y', 11);   // verb "put" (palette slot)
+    then try(hunk_test_tok, toks, 'S', 12);   // separator ' '
+    then try(hunk_test_tok, toks, 'S', 19);   // path "core.c\n"
+    then try(hunk_test_tok, toks, 'U', 29);   // nav "cat:core.c"
+    if (__ != OK) { u32bFree(toks); fail(TESTFAIL); }
+
+    hunk child = {.verb = HUNK_TEST_VERB,
+                  .uri  = {(u8cp)"", (u8cp)""}};
+    u8csMv(child.text, u8bDataC(tb));
+    {
+        tok32cs kv = {(tok32c *)u32bDataHead(toks),
+                      (tok32c *)u32bDataHead(toks) + u32bDataLen(toks)};
+        u32csMv(child.toks, kv);
+    }
+    a_pad(u8, cb, 4096);
+    ok64 fe = HUNKu8sFeed(cb_idle, &child);
+    u32bFree(toks);
+    if (fe != OK) fail(TESTFAIL);
+
+    //  Relay in TLV so we can drain the rewritten body back out.
+    HUNKout saved = HUNKMode;
+    HUNKMode = HUNKOutTLV;
+    a_pad(u8, ob, 8192);
+    HUNK_SLICE(pfx, "vendor/sub");
+    a_dup(u8c, cin, u8bData(cb));
+    ok64 rr = HUNKu8sRelay(ob_idle, pfx, cin);
+    HUNKMode = saved;
+    if (rr != OK) { fprintf(stderr, "FAIL relay-body: %s\n", ok64str(rr));
+                    fail(TESTFAIL); }
+
+    hunk got = {};
+    a_dup(u8c, scan, u8bData(ob));
+    call(HUNKu8sDrain, scan, &got);
+
+    //  The rewritten body must contain BOTH the prefixed path column and
+    //  the prefixed nav URI.
+    static const char *WANT[] = {
+        "put vendor/sub/core.c\n",   // path column re-prefixed
+        "cat:vendor/sub/core.c",     // nav URI re-prefixed
+    };
+    for (size_t k = 0; k < sizeof(WANT) / sizeof(WANT[0]); k++) {
+        size_t wl = strlen(WANT[k]);
+        b8 found = NO;
+        if ((size_t)$len(got.text) >= wl)
+            for (u8c *p = got.text[0]; p + wl <= got.text[1]; p++)
+                if (memcmp(p, WANT[k], wl) == 0) { found = YES; break; }
+        if (!found) {
+            fprintf(stderr, "FAIL relay-body: missing '%s' in '%.*s'\n",
+                    WANT[k], (int)$len(got.text),
+                    $empty(got.text) ? "" : (char *)got.text[0]);
+            fail(TESTFAIL);
+        }
+    }
+    //  The bare unprefixed `cat:core.c` must be GONE (no stray original);
+    //  it can't be a substring of the prefixed `cat:vendor/sub/core.c`.
+    {
+        static const char STALE[] = "cat:core.c";
+        size_t sl = strlen(STALE);
+        if ((size_t)$len(got.text) >= sl)
+            for (u8c *p = got.text[0]; p + sl <= got.text[1]; p++)
+                if (memcmp(p, STALE, sl) == 0) {
+                    fprintf(stderr, "FAIL relay-body: stale bare nav URI\n");
+                    fail(TESTFAIL);
+                }
+    }
+    done;
+}
+
+// =====================================================================
 // BE-001 — red is reserved for CONFLICT statuses (conf/modl) only.
 //
 // Two render sites historically over-applied the bright-red palette
@@ -717,6 +820,7 @@ ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
     call(HUNKTestRelayRoundtrip);
+    call(HUNKTestRelayBody);
     call(HUNKTestRedReserved);
     call(HUNKTestDrainBounds);
     call(HUNKTestLineBasedNoRoom);

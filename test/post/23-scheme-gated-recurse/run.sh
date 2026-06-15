@@ -77,8 +77,10 @@ grep -q '	put	vsub#' wtA/.be/wtlog \
          cat wtA/.be/wtlog >&2; exit 1; }
 #  The sub's own change rode back as one relayed per-module table hunk
 #  (BRO-002): a `vsub` module header (the rebased hunk uri) followed by
-#  the sub's own `mod s.txt` row underneath it.
-grep -q 'vsub' A.post.out && grep -qE '[[:space:]]mod[[:space:]]+s\.txt' A.post.out \
+#  the sub's own change row underneath it.  BRO-003: the relay rebases
+#  the per-row path column under the mount point too, so the row reads
+#  `mod vsub/s.txt`, not a bare `mod s.txt`.
+grep -q 'vsub' A.post.out && grep -qE '[[:space:]]mod[[:space:]]+vsub/s\.txt' A.post.out \
     || { echo "FAIL(A): sub change not relayed into the parent's report" >&2
          cat A.post.out >&2; exit 1; }
 

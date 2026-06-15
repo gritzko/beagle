@@ -306,8 +306,14 @@ static void emit_status(const char *status, u8cs path) {
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, path);
     (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+    //  Loud divergence rows (conf / failed / modl) additionally echo a
+    //  tab-delimited `patch\t<verb>\t<path>` line to stderr so a user
+    //  watching the merge sees the divergence regardless of the stdout
+    //  hunk's column layout; modify/delete divergence (modl) is just as
+    //  loud as a content conflict (DIS-018).
     if (strcmp(status, "conf") == 0 ||
-        strcmp(status, "failed") == 0) {
+        strcmp(status, "failed") == 0 ||
+        strcmp(status, "modl") == 0) {
         fprintf(stderr, "patch\t%s\t%.*s\n",
                 status, (int)$len(path), (char *)path[0]);
     }

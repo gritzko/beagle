@@ -265,6 +265,88 @@ ok64 HUNKu8sRebaseURI(u8s into, u8csc prefix, u8csc child_uri) {
     return u8sFeed(into, lit);
 }
 
+//  Forward decl — token-offset clamp lives below (after the renderers).
+static u32 hunk_clamp(hunk const *hk, u32 off);
+
+//  Is `tag` a path-column tag?  ROWS tags the visible path column 'S'
+//  (status rows) or 'F' (ls: rows); the relay re-prefixes those so a
+//  child's bare `core.c` row becomes `vendor/sub/core.c` under its mount
+//  point.  Every other column tag ('L' date, the verb slot, the neutral
+//  'S' separators) is single-line and must NOT be touched — the path
+//  column is disambiguated from a separator 'S' by the trailing '\n' it
+//  alone carries (see ROWS.c::rows_emit).
+static b8 hunk_tag_is_path(u8 tag) { return tag == 'S' || tag == 'F'; }
+
+//  Rebase a relayed child hunk's (text, toks) table under `prefix`:
+//  every per-row path column and hidden nav URI gets the subpath prefix
+//  inserted, the same way HUNKu8sRebaseURI rewrites the banner URI.  The
+//  rewritten text + toks are carved into BASS scratch (caller's call()
+//  frame owns them, same lifetime as the drained zero-copy slices) and
+//  assigned back into `hk`.  Token end-offsets are recomputed against the
+//  grown text.  Empty `prefix` or empty body → no-op.
+static ok64 hunk_rebase_body(hunk *hk, u8csc prefix) {
+    sane(hk != NULL);
+    if ($empty(prefix) || $empty(hk->text) || $empty(hk->toks)) done;
+
+    //  The grown body never more than doubles the child's (a `<prefix>/`
+    //  per path column + a rebased nav URI per row); 8 MiB covers the
+    //  4 MiB ROWS_TEXT_CAP body with ample headroom.  Both the grown text
+    //  and the recomputed toks live in fixed carved buffers (NOT an
+    //  in-flight a_lign gauge) so the per-token `call(HUNKu8sRebaseURI)`
+    //  below — which snapshots+rewinds BASS — can't corrupt an open gauge
+    //  (ABC.md §BASS).
+    a_carve(u8, nt, 1UL << 23);            // grown text (8 MiB)
+    a_carve(tok32, nk, 1UL << 18);         // recomputed toks (256K, = ROWS_TOKS_CAP)
+
+    int n = (int)$len(hk->toks);
+    u32 prev = 0;
+    for (int i = 0; i < n; i++) {
+        tok32 t   = hk->toks[0][i];
+        u8    tag  = tok32Tag(t);
+        u8    side = tok32Side(t);
+        u32   off  = hunk_clamp(hk, tok32Offset(t));
+        if (off < prev) off = prev;             // monotonic guard
+        a_part(u8c, span, hk->text, prev, off - prev);
+        prev = off;
+
+        if (tag == 'U') {
+            //  Nav URI (cat:/diff:/ls:/commit:) — rebase its path the
+            //  same way the banner URI is rebased.  commit:?<sha> has no
+            //  path component, so HUNKu8sRebaseURI passes it through.
+            a_dup(u8c, navsrc, span);
+            call(HUNKu8sRebaseURI, u8bIdle(nt), prefix, navsrc);
+        } else if (hunk_tag_is_path(tag) && !$empty(span) &&
+                   *$last(span) == '\n') {
+            //  Path column `[<indent-spaces>]<path>[<mov>]\n`.  Keep the
+            //  indent, then splice `<prefix>/` ahead of the path bytes.
+            a_dup(u8c, body, span);
+            while (!$empty(body) && *body[0] == ' ') {
+                call(u8bFeed1, nt, ' ');
+                u8csUsed(body, 1);
+            }
+            call(u8bFeed, nt, prefix);
+            call(u8bFeed1, nt, '/');
+            call(u8bFeed, nt, body);
+        } else {
+            //  Date / verb / separator columns — copy verbatim.
+            call(u8bFeed, nt, span);
+        }
+        call(tok32bFeed1, nk, tok32PackSide(tag, side, (u32)u8bDataLen(nt)));
+    }
+    //  Any trailing bytes past the last token (defensive — ROWS always
+    //  closes a row on a token, so this is normally empty).
+    if (prev < (u32)$len(hk->text)) {
+        a_part(u8c, tail, hk->text, prev, (u32)$len(hk->text) - prev);
+        call(u8bFeed, nt, tail);
+    }
+
+    a_dup(u8c, newtext, u8bDataC(nt));
+    u8csMv(hk->text, newtext);
+    a_dup(tok32c, newtoks, tok32bDataC(nk));
+    tok32csMv(hk->toks, newtoks);
+    done;
+}
+
 ok64 HUNKu8sRelay(u8s into, u8csc prefix, u8csc child_tlv) {
     sane(u8sOK(into));
     a_dup(u8c, scan, child_tlv);
@@ -279,6 +361,11 @@ ok64 HUNKu8sRelay(u8s into, u8csc prefix, u8csc child_tlv) {
         call(HUNKu8sRebaseURI, u8bIdle(ubuf), prefix, orig);
         a_dup(u8c, newuri, u8bData(ubuf));
         $mv(hk.uri, newuri);
+
+        //  Rebase the per-row path columns + nav URIs inside the table
+        //  body too, so a relayed sub row reads `vendor/sub/core.c`, not
+        //  the bare `core.c` (BRO-003).
+        call(hunk_rebase_body, &hk, prefix);
 
         call(HUNKu8sFeedOut, into, &hk);
     }
