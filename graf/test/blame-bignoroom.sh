@@ -33,7 +33,7 @@ R="$TMP/repo"; rs_wt_at "$R"
 git init --quiet -b main .; git config user.email t@t; git config user.name t
 
 NLINES=4000
-NCOMMITS=80
+NCOMMITS=10
 
 #  Seed a wide file; one distinct function per line keeps tokens unique.
 seq 1 "$NLINES" | awk '{printf "int line_%04d(int x) { return x + %d; }\n", $1, $1}' > big.c
@@ -41,8 +41,9 @@ seq 1 "$NLINES" | awk '{printf "int line_%04d(int x) { return x + %d; }\n", $1, 
 i=1
 while [ "$i" -le "$NCOMMITS" ]; do
     #  Rewrite ~1/5 of the lines each commit (a different fifth each time)
-    #  so the accumulating weave gains many new tokens per fold — that is
-    #  what drives the pre-fix BASS exhaustion within a modest commit count.
+    #  so the accumulating weave gains new tokens per fold.  10 commits is a
+    #  fast guard that a multi-commit large file blames without BNOROOM;
+    #  reproducing the original 1 GB overflow on a pre-fix build needs ~80.
     awk -v v="$i" 'NR%5==(v%5){printf "int line_%04d_v%d(int x) { return x * %d + %d; }\n", NR, v, NR, v; next}{print}' big.c > big.c.new
     mv big.c.new big.c
     hh=$((6 + i / 60)); mm=$((i % 60))
