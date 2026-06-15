@@ -283,6 +283,10 @@ TLV mode goes through `dog/HUNK` so `bro` can render the output.
                        carries an `L` anchor on the sha + a `U` token
                        (`tree:#<sha>` / `commit:#<sha>`); other headers
                        and the message body render with default tags.
+                       After the body (COMMIT-001) a `diff` anchor + `U`
+                       token links to graf's `diff:?<sha>` (query form =
+                       commit-show) so Bro surfaces the diff; keeper holds
+                       no diff logic — just the URI string.
   - `KEEPProjBlob`     `blob:[<path>]?<ref|sha>` — blob bytes (TLV
                        mode tokenizes via `dog/TOK`)
   - `KEEPProjDispatch` scheme → projector dispatch entry point

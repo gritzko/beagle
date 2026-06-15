@@ -482,6 +482,21 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
         proj_push_tok(text, toks, 'W');
     }
 
+    //  COMMIT-001: surface the diff without re-rolling it in keeper.
+    //  Append a clickable "diff" anchor whose invisible U-tagged URI is
+    //  graf's `diff:?<sha40>` for the resolved commit.  Bro follows the
+    //  U-token (BRO.c) and graf's `diff:?<sha>` commit-show form renders
+    //  the commit-vs-first-parent diff.  Query form (not `#`) is what
+    //  triggers graf's commit-show path — keeper owns no diff logic.
+    (void)u8bFeed1(text, '\n');
+    proj_feed_lit(u8bIdle(text), "diff");
+    proj_push_tok(text, toks, 'R');
+    proj_feed_lit(u8bIdle(text), "diff:?");
+    proj_feed_sha_hex(u8bIdle(text), &csha);
+    proj_push_tok(text, toks, 'U');
+    (void)u8bFeed1(text, '\n');
+    proj_push_tok(text, toks, 'W');
+
     tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
                         (u32 const *)u32bIdleHead(toks)};
     return proj_emit_hunk(u, text, toks_view, tlv);
