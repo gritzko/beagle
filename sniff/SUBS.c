@@ -454,6 +454,90 @@ static ok64 subs_candidate_from_source(u8bp out, u8cs src_uri,
     done;
 }
 
+//  SUBS-020: YES iff the parent SOURCE URI's PATH ends in `.git` — the
+//  git-parent discriminator.  A `.git` parent (case 2) is assumed to
+//  carry a canonical remote in `.gitmodules`, so the official URL is
+//  used as-is (no path computation).  A non-`.git` parent (case 3)
+//  resolves the sub URL relative to the parent (subs_candidate_git_rel).
+static b8 subs_src_ends_git(u8cs src_uri) {
+    if (u8csEmpty(src_uri)) return NO;
+    a_dup(u8c, work, src_uri);
+    uri u = {};
+    u8csMv(u.data, work);
+    if (URILexer(&u) != OK) return NO;
+    a_dup(u8c, pth, u.path);
+    a_cstr(dotgit, ".git");
+    return u8csHasSuffix(pth, dotgit);
+}
+
+//  SUBS-020 case 3: parent is a GIT repo whose URI does NOT end in
+//  `.git`; compute the sub's fetch URI by resolving the declared
+//  `.gitmodules` `url` (which may be relative, e.g. `../sub`) against
+//  the parent SOURCE URI.  Git resolves a relative submodule URL with
+//  the SUPERPROJECT URL treated as a DIRECTORY (so `../sub` off
+//  `…/subs/par` is `…/subs/sub`, not RFC 3986's file-relative
+//  `…/sub`).  We therefore append a trailing '/' to the parent path
+//  before URIAbsolute (RFC 3986 §5.3 directory base).  Renders the
+//  resolved candidate into `out` (RESET on entry).  Returns NONE when
+//  no useful computation applies — the parent URI is empty / unlexable,
+//  or the resolved URI equals the official `url` verbatim (an already-
+//  absolute declared URL needs no separate candidate).  `url` is the
+//  raw `.gitmodules` value; the caller always retains it as the final
+//  fallback.
+static ok64 subs_candidate_git_rel(u8bp out, u8cs src_uri, u8cs url) {
+    sane(out);
+    if (u8csEmpty(src_uri) || u8csEmpty(url)) return NONE;
+
+    //  Lex the parent SOURCE URI.
+    a_dup(u8c, base_work, src_uri);
+    uri base = {};
+    u8csMv(base.data, base_work);
+    if (URILexer(&base) != OK) return NONE;
+    a_dup(u8c, bsch,  base.scheme);
+    a_dup(u8c, bauth, base.authority);
+    a_dup(u8c, bpath, base.path);
+    if (u8csEmpty(bpath)) return NONE;
+
+    //  Re-render the base with a DIRECTORY path (trailing '/') so the
+    //  relative ref resolves git-style (parent URL = directory), then
+    //  re-lex that as the resolution base.
+    a_pad(u8, dirbase, MAX_URI_LEN);
+    u8cs none = {};
+    a_pad(u8, dirpath, FILE_PATH_MAX_LEN);
+    call(u8bFeed,  dirpath, bpath);
+    a_cstr(slash, "/");
+    if (!u8csHasSuffix(bpath, slash)) call(u8bFeed1, dirpath, '/');
+    a_dup(u8c, dirpath_s, u8bDataC(dirpath));
+    call(URIMake, u8bIdle(dirbase), bsch, bauth, dirpath_s, none, none);
+    a_dup(u8c, dirbase_s, u8bData(dirbase));
+    uri dbase = {};
+    u8csMv(dbase.data, dirbase_s);
+    if (URILexer(&dbase) != OK) return NONE;
+
+    //  Lex the declared sub URL as the relative reference.  CLEAR its
+    //  `data` slot afterward: URIAbsolute treats a lexed-from-text
+    //  rootless ref as VERBATIM (round-trip identity) and would skip the
+    //  base-directory merge for `../sub`; a data-less rel merges per
+    //  RFC 3986 §5.3 (the same path URIRelative-produced refs take).
+    a_dup(u8c, rel_work, url);
+    uri rel = {};
+    u8csMv(rel.data, rel_work);
+    if (URILexer(&rel) != OK) return NONE;
+    $null(rel.data);
+
+    uri abs = {};
+    if (URIAbsolute(&abs, &dbase, &rel) != OK) return NONE;
+
+    u8bReset(out);
+    if (URIutf8Feed(u8bIdle(out), &abs) != OK) return NONE;
+
+    //  An already-absolute declared URL resolves to itself — no distinct
+    //  candidate, the caller's final `url` fallback covers it.
+    a_dup(u8c, made, u8bDataC(out));
+    if (u8csEq(made, url)) { u8bReset(out); return NONE; }
+    done;
+}
+
 //  GET-011: recover the locator of the remote the parent is actually
 //  being cloned from / talking to, so each submodule can be fetched
 //  from that SAME source (the sibling sub shard), with the declared
@@ -811,6 +895,20 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             (void)u8bFeed(cand1_buf, pathbase);
         }
 
+        //  SUBS-020 case 3: a GIT parent (no beagle source recovered —
+        //  in-flight, historical-REFS, OR local-store fallback) whose
+        //  SOURCE URI does NOT end in `.git`.  Resolve the declared `url`
+        //  relative to the parent URI and try that BEFORE the raw official
+        //  URL.  A `.git` parent (case 2) skips this — its declared URL is
+        //  taken as canonical, no path computation.
+        b8 git_parent = !src_inflight_ok && !src_beagle;
+        b8 use_git_rel = git_parent && !subs_src_ends_git(src_uri);
+        a_pad(u8, gitrel_buf, MAX_URI_LEN);    // URIAbsolute(src_uri, url)
+        if (use_git_rel) {
+            ok64 gr = subs_candidate_git_rel(gitrel_buf, src_uri, url);
+            if (gr != OK || u8bDataLen(gitrel_buf) == 0) use_git_rel = NO;
+        }
+
         KEEPClose();
 
         //  Sub IS its own project at the parent's `.be/<basename>/`
@@ -856,25 +954,29 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             //  as success only when the pin lands (else fall through);
             //  the final candidate succeeds on a clean fetch (git's
             //  semantics — preserves prior behavior for git subs).
-            //  Order: [in-flight SOURCE] [historical-REFS wire…] [URL].
-            u8cs cands[4];
+            //  Order: [in-flight SOURCE] [historical-REFS wire…]
+            //         [git-relative (SUBS-020 case 3)] [URL].
+            u8cs cands[5];
             int nc = 0;
             //  GET-011 PRIMARY — the in-flight `be get` source addressing
             //  the sub's path-basename shard in the same store.
             if (src_inflight_ok) {
-                cands[nc][0] = u8bDataHead(srccand_buf);
-                cands[nc][1] = u8bIdleHead(srccand_buf);
+                u8csMv(cands[nc], u8bDataC(srccand_buf));
                 nc++;
             }
             if (use_wire_candidates) {
-                cands[nc][0] = u8bDataHead(cand0_buf);
-                cands[nc][1] = u8bIdleHead(cand0_buf);
+                u8csMv(cands[nc], u8bDataC(cand0_buf));
                 nc++;
                 if (!u8csEq(pathbase, basename)) {
-                    cands[nc][0] = u8bDataHead(cand1_buf);
-                    cands[nc][1] = u8bIdleHead(cand1_buf);
+                    u8csMv(cands[nc], u8bDataC(cand1_buf));
                     nc++;
                 }
+            }
+            //  SUBS-020 case 3 — the parent-relative resolution of the
+            //  declared URL, tried before the raw official URL fallback.
+            if (use_git_rel) {
+                u8csMv(cands[nc], u8bDataC(gitrel_buf));
+                nc++;
             }
             u8csMv(cands[nc], url);
             nc++;
