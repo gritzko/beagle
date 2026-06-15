@@ -119,16 +119,21 @@ table.diff tr.del td:last-child { background: rgba(220, 50, 47, 0.12); }
 table.diff tr.ctx td:last-child { color: var(--fg-low); }
 table.diff tr.hdr td { color: var(--violet); background: var(--bg); }
 
-/* ULOG status rows (ts<TAB>verb<TAB>uri) */
+/* ULOG status rows (ts<TAB>verb<TAB>uri) — BRO-001 banner: a
+   full-width pale-yellow band with black text, matching the TTY
+   banner (THEME_BANNER: 256-color bg 230 ≈ #ffffd7, fg black). */
 .ulog {
     display: grid;
     grid-template-columns: 11ch 8ch auto;
     column-gap: 1ch;
     font-size: 0.95em;
+    background: #ffffd7;
+    color: #000;
+    padding: 0 0.5ch;
 }
-.ulog .ts   { color: var(--fg-low); }
-.ulog .verb { color: var(--yellow); }
-.ulog .uri a { color: var(--fg-em); }
+.ulog .ts   { color: #000; }
+.ulog .verb { color: #000; }
+.ulog .uri a { color: #000; }
 
 /* tree listing (tree: scheme) */
 ul.tree { list-style: none; padding-left: 1rem; margin: 0.5rem 0; }

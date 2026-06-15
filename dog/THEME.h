@@ -45,6 +45,20 @@ con ok64 THEMEBAD = 0x75139638b28d;       // unknown theme name
 //         Z mrg       (weave-merge write; also `merged`)
 typedef ansi64 theme[32];
 
+//  Status/header banner SGR (BRO-001): black text on a pale-yellow
+//  background.  Theme-independent (the spec asks for one fixed pale
+//  band across all palettes), so it is a constant rather than a theme
+//  slot — both the width-agnostic formatter (`dog/HUNK.c`
+//  `HUNKu8sFeedColor`) and the width-aware pager banner (`bro/BRO.c`
+//  `bro_render_ulog_title`) reference it so the two render paths stay
+//  byte-coherent.  256-color (fg 0 = black, bg 230 = pale yellow) so
+//  it reads the same on light and dark terminals.
+#define THEME_BANNER_FG  0u
+#define THEME_BANNER_BG  230u
+#define THEME_BANNER \
+    ANSI64_PACK(THEME_BANNER_FG, ANSI_MODE_256, \
+                THEME_BANNER_BG, ANSI_MODE_256, 0)
+
 #define THEME_16    "16"
 #define THEME_DARK  "dark"
 #define THEME_LIGHT "light"

@@ -1484,10 +1484,13 @@ static int bro_format_title(char *buf, size_t bufsz, hunkc const *hk) {
 // via `be --tlv <uri>` so projector URIs work too.
 fun b8 hunk_is_ulog(hunkc const *hk) { return hk->ts != 0 || hk->verb != 0; }
 
-// Render a ULOG-shape title row into bro_scr: underlined row that
-// spans the full terminal width (padded with spaces so the underline
-// reaches the edge), greyish 7-cell date column, verb in its
-// ULOGVerbColor, URI in terminal default colour, elided to fit.
+// Render a ULOG-shape title row into bro_scr (BRO-001): a banner that
+// spans the full terminal width — black text on a pale-yellow band
+// (THEME_BANNER) padded with spaces so the colour reaches the right
+// edge.  7-cell date column, verb, then URI (elided to fit).  bro is
+// the width-aware layer that knows `cols`, so it owns the full-width
+// fill; the shared formatter (`HUNKu8sFeedColor`) frames the same
+// content with the same THEME_BANNER SGR but width-agnostically.
 // Caller has already moved the cursor to column 1 and emitted
 // TTY_ERASE_LINE.
 static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
@@ -1495,12 +1498,10 @@ static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
     u32 cols = st->cols;
     u32 used = 0;
 
-    ansi64 ul       = ANSI64_FLAG(ANSI_UNDERLINE);
-    ansi64 ul_grey  = ul | THEMEAt('Q');
-    ansi64 ul_verb  = ul | ULOGVerbColor(hk->verb);
-    ansi64 cur      = ANSI_DEFAULT;
+    ansi64 band = THEME_BANNER;
+    ansi64 cur  = ANSI_DEFAULT;
 
-    (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
+    (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), band, cur); cur = band;
 
     u8sFeed1(u8bIdle(bro_scr), ' ');
     used++;
@@ -1515,10 +1516,8 @@ static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
                 if (t != (time_t)-1) ts = (i64)t;
             }
         }
-        (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul_grey, cur); cur = ul_grey;
         (void)DOGutf8sFeedDate(u8bIdle(bro_scr), ts, now);
         used = used + 7 < cols ? used + 7 : cols;
-        (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
     }
 
     if (used < cols) { u8sFeed1(u8bIdle(bro_scr), ' '); used++; }
@@ -1530,11 +1529,8 @@ static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
         size_t vlen  = u8csLen(vdata);
         size_t vshow = vlen < cols - used ? vlen : cols - used;
         if (vshow > 0) {
-            (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul_verb, cur);
-            cur = ul_verb;
             a_head(u8c, vshow_sl, vdata, vshow);
             u8sFeed(u8bIdle(bro_scr), vshow_sl);
-            (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), ul, cur); cur = ul;
             used += (u32)vshow;
         }
     }
@@ -1573,7 +1569,7 @@ static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
         }
     }
 
-    // Pad to full screen width so the underline reaches the edge.
+    // Pad to full screen width so the pale-yellow band reaches the edge.
     while (used < cols) {
         u8sFeed1(u8bIdle(bro_scr), ' ');
         used++;

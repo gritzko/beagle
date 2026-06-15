@@ -615,6 +615,104 @@ static ok64 HUNKTestMakeURIEsc(void) {
     done;
 }
 
+// =====================================================================
+// BRO-001 — the status/header line renders as a pale-yellow, black-text
+// banner in Color mode.
+//
+// A status hunk (ts||verb set, empty text/toks) used to render in Color
+// mode as a grey date + verb-coloured verb + plain URI.  BRO-001 makes
+// it a banner: abbreviated date + verb + URI painted black-on-pale-
+// yellow, opened with one SGR (256-color fg 0 / bg 230) and closed with
+// a reset.  The full-width fill (padding the band to the terminal edge)
+// is the width-aware bro layer's job — the formatter stays width-
+// agnostic and just frames the content, so we assert the framing + the
+// content here, not a column count.
+// =====================================================================
+
+//  Does `hay` contain the byte run `needle` (len bytes)?
+static b8 bytes_contain(u8cs hay, const char *needle) {
+    size_t nl = strlen(needle);
+    if (nl == 0) return YES;
+    if ((size_t)$len(hay) < nl) return NO;
+    for (u8c *p = hay[0]; p + nl <= hay[1]; p++)
+        if (memcmp(p, needle, nl) == 0) return YES;
+    return NO;
+}
+
+static ok64 HUNKTestStatusBanner(void) {
+    sane(1);
+    //  The banner SGR is theme-independent (THEME_BANNER), so any active
+    //  palette must produce the same framing bytes.
+    for (size_t t = 0; t < sizeof(THEMES) / sizeof(THEMES[0]); t++) {
+        if (THEMESelect(THEMES[t]) != OK) fail(TESTFAIL);
+
+        const char *uri = "abc/MSET.h#MSETOpen:42";
+        HUNK_SLICE(us, uri);
+        //  ts set, empty text/toks → status hunk.  A real (non-zero) ts
+        //  exercises the date column; the exact stamp text varies with
+        //  wall-clock age, so we assert the framing + uri, not the date
+        //  spelling (covered by dog/test/DOG.c).
+        hunk hk = {.ts = 0x6000000000000000ULL,
+                   .verb = HUNK_VERB_HUNK,
+                   .uri = {us[0], us[1]}};
+
+        a_pad(u8, ob, 4096);
+        call(HUNKu8sFeedColor, ob_idle, &hk);
+        a_dup(u8c, got, u8bData(ob));
+
+        //  (a) Pale-yellow bg + black fg SGR open: ANSIu8sFeedDelta from
+        //  ANSI_DEFAULT spells fg (38;5;0) then bg (48;5;230).
+        if (!bytes_contain(got, "38;5;0;48;5;230m")) {
+            fprintf(stderr,
+                    "FAIL banner[%s]: no black-on-pale-yellow SGR; got '%.*s'\n",
+                    THEMES[t], (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+        //  (b) The URI rides the banner.
+        if (!bytes_contain(got, uri)) {
+            fprintf(stderr, "FAIL banner[%s]: uri missing; got '%.*s'\n",
+                    THEMES[t], (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+        //  (c) The verb (free data) rides the banner too — "hunk".
+        if (!bytes_contain(got, "hunk")) {
+            fprintf(stderr, "FAIL banner[%s]: verb missing; got '%.*s'\n",
+                    THEMES[t], (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+        //  (d) The band is closed with a reset and ends with a newline.
+        if (!bytes_contain(got, "\033[0m")) {
+            fprintf(stderr, "FAIL banner[%s]: no SGR reset; got '%.*s'\n",
+                    THEMES[t], (int)$len(got), (char *)got[0]);
+            fail(TESTFAIL);
+        }
+        u32 glen = (u32)$len(got);
+        if (glen == 0 || got[0][glen - 1] != '\n') {
+            fprintf(stderr, "FAIL banner[%s]: line not newline-terminated\n",
+                    THEMES[t]);
+            fail(TESTFAIL);
+        }
+        //  (e) The reset must come AFTER the last visible content so the
+        //  whole row is inside the band (no bare bytes trailing the
+        //  reset except the newline).  Find the last reset, ensure only
+        //  '\n' follows.
+        u8c *last_reset = NULL;
+        for (u8c *p = got[0]; p + 4 <= got[1]; p++)
+            if (memcmp(p, "\033[0m", 4) == 0) last_reset = p;
+        if (!last_reset) fail(TESTFAIL);
+        for (u8c *p = last_reset + 4; p < got[1]; p++) {
+            if (*p != '\n') {
+                fprintf(stderr,
+                        "FAIL banner[%s]: visible byte 0x%02x after reset\n",
+                        THEMES[t], *p);
+                fail(TESTFAIL);
+            }
+        }
+    }
+    (void)THEMESelect(THEME_16);
+    done;
+}
+
 ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
@@ -623,6 +721,7 @@ ok64 HUNKtest() {
     call(HUNKTestDrainBounds);
     call(HUNKTestLineBasedNoRoom);
     call(HUNKTestMakeURIEsc);
+    call(HUNKTestStatusBanner);
     done;
 }
 

@@ -76,31 +76,45 @@ static ok64 hunk_feed_status_plain(u8s into, hunk const *hk) {
     done;
 }
 
-// ANSI variant of the status line: date column in `unk` grey, verb in
-// its palette colour.  Mirrors the old `ULOGFeedStatusLine` rendering.
+// ANSI variant of the status line (BRO-001): a banner — abbreviated
+// date + verb + URI painted black-on-pale-yellow (THEME_BANNER), opened
+// with one SGR and closed with a reset.  The pale band spans only the
+// emitted bytes here; padding it to the FULL terminal width is the
+// width-aware bro layer's job (`bro_render_ulog_title`), which knows
+// `cols` — this formatter stays width-agnostic (no 80 hardcode).  The
+// verb is kept (free data the hunk already carries) since date+verb+uri
+// reads fine on one line.  Mirrors the old status-line columns minus
+// the per-column colour, now subsumed by the single banner SGR.
 #define HUNK_VERB_UNK_RON60 0x39caf  // "unk" — same constant ULOG used.
 static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk);
     if ($len(into) < 64) fail(BNOROOM);
 
-    ansi64 c_unk  = ULOGVerbColor(HUNK_VERB_UNK_RON60);
-    ansi64 c_verb = ULOGVerbColor(hk->verb);
+    ansi64 band = THEME_BANNER;
 
     i64 now = (i64)time(NULL);
     //  -1: resolve DST (see hunk_ron60_to_time / hunk_feed_status_plain).
     i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
 
-    call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
+    //  Open the pale-yellow / black band, then lay out the columns
+    //  inside it: <space><date><space><verb><space><uri>.  The leading
+    //  and column-separating spaces inherit the band bg so the colour
+    //  reads as a continuous strip, not three coloured words.
+    call(ANSIu8sFeedDelta, into, band, ANSI_DEFAULT);
+    call(u8sFeed1, into, ' ');
     call(DOGutf8sFeedDate, into, ts, now);
-    call(ANSIu8sFeedReset, into, c_unk);
-    call(u8sFeed1, into, '\t');
-
-    call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
-    call(RONutf8sFeed, into, hk->verb);
-    call(ANSIu8sFeedReset, into, c_verb);
-    call(u8sFeed1, into, '\t');
-
-    if (!$empty(hk->uri)) call(u8sFeed, into, hk->uri);
+    if (hk->verb) {
+        call(u8sFeed1, into, ' ');
+        call(RONutf8sFeed, into, hk->verb);
+    }
+    if (!$empty(hk->uri)) {
+        call(u8sFeed1, into, ' ');
+        call(u8sFeed, into, hk->uri);
+    }
+    //  Close the band before the newline so the colour doesn't bleed
+    //  past the line; bro re-opens + space-fills to the edge for the
+    //  full-width effect.
+    call(ANSIu8sFeedReset, into, band);
     call(u8sFeed1, into, '\n');
     done;
 }
