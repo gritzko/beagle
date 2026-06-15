@@ -120,9 +120,47 @@ ok64 OPENtest_open_arena_overflow_no_map_leak(void) {
     done;
 }
 
+//  Title-nav routing (DIFF-003 click-through): a hunk whose title URI
+//  carries a scheme (`diff:`/`commit:`/`tree:`/…) must be opened
+//  literally via `be --tlv <uri>` (so a windowed diff snippet links
+//  back to the whole-file hili'd diff) — NOT plain-opened as a local
+//  path, which would drop the `?<range>` and leave nothing to
+//  highlight.  A scheme-less bare path stays a local open.  This is the
+//  exact decision `BROTryOpen` makes via `bro_uri_schemed`.
+ok64 OPENtest_uri_schemed_routing(void) {
+    sane(1);
+    struct { char const *uri; b8 schemed; } cases[] = {
+        //  Schemed projector views → fork `be --tlv`.
+        {"diff:keeper/PROJ.c?28d0b72d..ea70dbe7#L650", YES},
+        {"diff:foo.c?aaaaaaaa..bbbbbbbb#L5",           YES},
+        {"commit:?eaa75793#subject text",              YES},
+        {"tree:?9ad6262c",                             YES},
+        {"blame:keeper/PROJ.c?eaa75793",               YES},
+        {"cat:foo.c",                                  YES},
+        //  Scheme-less bare paths → local open (the `:` in a fragment
+        //  is NOT a scheme).
+        {"keeper/PROJ.c#MSETOpen:42",                  NO},
+        {"keeper/PROJ.c#L42",                          NO},
+        {"src/foo.c",                                  NO},
+        {"vendor/sub/",                                NO},
+        {"",                                           NO},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        u8cs uri = u8slit(cases[i].uri);
+        b8 got = bro_uri_schemed((u8csc){uri[0], uri[1]});
+        if (got != cases[i].schemed) {
+            fprintf(stderr, "FAIL [%zu] '%s': schemed got %d want %d\n",
+                    i, cases[i].uri, (int)got, (int)cases[i].schemed);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
 ok64 OPENtest(void) {
     sane(1);
     call(OPENtest_open_arena_overflow_no_map_leak);
+    call(OPENtest_uri_schemed_routing);
     done;
 }
 

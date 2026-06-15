@@ -104,19 +104,28 @@ static ok64 proj_descend(keeper *k, sha1cp root_tree, u8cs subpath,
     done;
 }
 
+static b8 proj_is_hex_prefix(u8cs s);
+
 //  Title for the hunk header bar: "<scheme>:<path>?<query>" or
 //  "<scheme>:#<frag>".  Display label only — not a protocol URI.
+//  A bare hex-sha fragment (the shape KEEPProjDispatch leaves behind
+//  after promoting a `?<sha>` query into the fragment for resolution)
+//  is rendered back in the query slot: the general rule is that a hash
+//  always lives in `?`, never `#` (the fragment is only ever a line or
+//  a message).
 static void proj_feed_title(u8s out, uricp u) {
     if (!u8csEmpty(u->scheme)) {
         (void)u8sFeed(out, u->scheme);
         (void)u8sFeed1(out, ':');
     }
     if (!u8csEmpty(u->path)) (void)u8sFeed(out, u->path);
-    if (!u8csEmpty(u->query)) {
+    u8cs frag = {u->fragment[0], u->fragment[1]};
+    b8 frag_is_sha = u8csEmpty(u->query) && proj_is_hex_prefix(frag);
+    if (!u8csEmpty(u->query) || frag_is_sha) {
         (void)u8sFeed1(out, '?');
-        (void)u8sFeed(out, u->query);
+        (void)u8sFeed(out, u8csEmpty(u->query) ? u->fragment : u->query);
     }
-    if (!u8csEmpty(u->fragment)) {
+    if (!u8csEmpty(u->fragment) && !frag_is_sha) {
         (void)u8sFeed1(out, '#');
         (void)u8sFeed(out, u->fragment);
     }
@@ -473,12 +482,16 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             (void)u8bFeed(text, sha_hex);
             proj_push_tok(text, toks, 'L');
 
-            //  Invisible URI bytes: <scheme>:#<sha40>.  Fragment form
-            //  is unambiguous for sha addressing and bypasses
-            //  KEEPProjDispatch's query→fragment hex-prefix promotion.
+            //  Invisible URI bytes: <scheme>:?<sha40>.  Hashes live in
+            //  the query slot (the general rule — the `#` fragment is
+            //  only ever a line or message, never a sha); full 40-hex
+            //  here since a commit-view header carries a single hash
+            //  (hashlets are reserved for diff's two-hash range).
+            //  KEEPProjDispatch promotes this hex query back to the
+            //  fragment internally before resolution.
             proj_feed_lit(u8bIdle(text), link_scheme);
             (void)u8bFeed1(text, ':');
-            (void)u8bFeed1(text, '#');
+            (void)u8bFeed1(text, '?');
             (void)u8bFeed(text, sha_hex);
             proj_push_tok(text, toks, 'U');
 

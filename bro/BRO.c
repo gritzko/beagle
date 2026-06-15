@@ -369,6 +369,7 @@ static ok64 BROForkSpot(BROstate *st, char const *flag,
                         char const *token, char const *filepath,
                         char const *repo);
 static ok64 BROForkBe(BROstate *st, char const *uri);
+static ok64 bro_fork_be_jump(BROstate *st, char const *uri);
 static u32 BROSearchNext(BROstate *st, u32 from, int direction);
 
 // --- Build line index ---
@@ -1075,6 +1076,19 @@ static u32 bro_word_around(hunk const *hk, u32 off, char *out, u32 cap) {
 // Try to open the file/dir referenced by the hunk at the given line.
 // For directory listings, the line text IS the filename; the hunk URI
 // is the directory. Constructs dir/filename and opens.
+//  YES when a hunk title URI carries a scheme (`diff:`, `commit:`,
+//  `tree:`, …) — such a URI is a projector view, not a literal file on
+//  disk, so it is opened by forking `be --tlv <uri>`.  A scheme-less
+//  bare path (`keeper/PROJ.c#sym:42`, `dir/`) returns NO and is opened
+//  locally.  A `:` inside the fragment (e.g. `foo.c#sym:42`) is not a
+//  scheme — DOGParseURI only reads the leading `scheme:` component.
+static b8 bro_uri_schemed(u8csc utext) {
+    if ($empty(utext)) return NO;
+    uri u = {};
+    if (DOGParseURI(&u, utext) != OK) return NO;
+    return !$empty(u.scheme) ? YES : NO;
+}
+
 static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
     if (line >= bro_nlines(st)) return NO;
     range32 *ln = &bro_lines(st)[line];
@@ -1136,6 +1150,20 @@ static b8 BROTryOpen(BROstate *st, u32 line, char const *repo) {
                 return YES;
             }
         }
+    }
+
+    //  Title-nav: a schemed URI (`diff:`, `commit:`, `tree:`, …) is not
+    //  a literal file on disk — open it literally by forking
+    //  `be --tlv <uri>` (carrying any `#L<n>` jump), so a windowed diff
+    //  snippet links back to its full form (the whole-file hili'd diff)
+    //  rather than a plain cat that drops the `?<range>`.  A scheme-less
+    //  bare path (code snippet, dir listing) keeps the local open below.
+    if (bro_uri_schemed((u8csc){hk->uri[0], hk->uri[1]})) {
+        a_pad(u8, ubuf, 1024);
+        (void)u8sFeed(ubuf_idle, (u8csc){hk->uri[0], hk->uri[1]});
+        (void)u8sFeed1(ubuf_idle, '\0');
+        return bro_fork_be_jump(st,
+                   (char const *)u8bDataHead(ubuf)) == OK ? YES : NO;
     }
 
     // Normal hunk: open path from URI
@@ -2538,6 +2566,34 @@ static ok64 BROForkBe(BROstate *st, char const *uri) {
     done;
 }
 
+//  Fork `be --tlv <uri>` as a new view, then honour the URI's
+//  `#L<line>` fragment by centring on that source line — BROForkBe
+//  drains TLV but doesn't itself jump-to-line (the producer emits the
+//  whole-file hunk at #L1, so the click's fragment must drive scroll).
+//  `#L<n>` source lines are counted by source-line starts (wrap
+//  continuations share a line), matching BROOpenFile's walk.
+static ok64 bro_fork_be_jump(BROstate *st, char const *uri) {
+    sane(st != NULL && uri != NULL);
+    call(BROForkBe, st, uri);
+    char const *hash = strchr(uri, '#');
+    unsigned ln = 0;
+    if (hash && (sscanf(hash + 1, "L%u", &ln) == 1
+              || sscanf(hash + 1, "%u",  &ln) == 1)
+        && ln > 0 && bro_nlines(st) > 1) {
+        u32 file_ln = 0, best = 1;
+        for (u32 i = 0; i < bro_nlines(st); i++) {
+            if (!bro_is_source_start(st->hunks,
+                                     range32bDataC(st->linesbuf), i))
+                continue;
+            file_ln++;
+            if (file_ln == ln) { best = i; break; }
+            best = i;
+        }
+        BROScrollCenter(st, best);
+    }
+    done;
+}
+
 // --- Unified key handler ---
 // Returns: -1 = quit, 0 = no change, 1 = changed (needs render).
 
@@ -2597,32 +2653,9 @@ static int BROHandleKey(BROstate *st, u8 ch, char const *repo) {
             return BRO_KEY_NONE;
         }
         if (st->nsaves > 0) (void)BROBack(st);
-        ok64 fo = BROForkBe(st, uri);
+        ok64 fo = bro_fork_be_jump(st, uri);
         if (fo != OK && u8bDataLen(st->flash) == 0)
             bro_flash(st, "reload: %s", ok64str(fo));
-        if (fo == OK) {
-            //  Match BROOpenFile's source-line walk: count only
-            //  source-line starts (wrap continuations share the same
-            //  source line and must not bump the counter), then
-            //  centre the view on the matching row.
-            char const *hash = strchr(uri, '#');
-            unsigned ln = 0;
-            if (hash && (sscanf(hash + 1, "L%u", &ln) == 1
-                      || sscanf(hash + 1, "%u",  &ln) == 1)
-                && ln > 0 && bro_nlines(st) > 1) {
-                u32 file_ln = 0, best = 1;
-                for (u32 i = 0; i < bro_nlines(st); i++) {
-                    if (!bro_is_source_start(st->hunks,
-                                             range32bDataC(st->linesbuf),
-                                             i))
-                        continue;
-                    file_ln++;
-                    if (file_ln == ln) { best = i; break; }
-                    best = i;
-                }
-                BROScrollCenter(st, best);
-            }
-        }
         return BRO_KEY_CHANGED;
     }
     if (ch == '/') {

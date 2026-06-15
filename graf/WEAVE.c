@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "abc/DIFF.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RAP.h"
 #include "abc/TLV.h"
@@ -771,6 +772,52 @@ static u8 weave_diff_classify(u32 seq, u32cs rset,
 
 #define WEAVE_CTX_LINES 3
 
+//  Overlay real syntax tags onto a diff hunk's side-only tok stream.
+//  `text` is the assembled hunk bytes; `sides` carries one tok32 per
+//  source segment (its tag is the neutral 'S' placeholder, ignored — its
+//  diff SIDE is kept), covering `text` end-to-end.  The weave stores no
+//  lexer tag (graf/WEAVE.h), so — like blame (graf/BLAME.c) — we
+//  re-tokenize `text` for syntax, then write into `out` (reset first)
+//  the union segmentation: each emitted tok32 takes the syntax tag of
+//  its covering syntax token and the diff side of its covering side
+//  segment.  Bytes the lexer doesn't reach (unknown ext, tail) keep the
+//  neutral 'S' tag.  Best-effort: on any hiccup `out` still ends up a
+//  well-formed side-only stream (the body always renders).
+static ok64 weave_overlay_syntax(u32b out, u8csc text, u8csc ext,
+                                 tok32cs sides) {
+    sane(out != NULL);
+    u32bReset(out);
+    u32 ns = (u32)$len(sides);
+    if (ns == 0 || $empty(text)) done;
+
+    //  Syntax pass into a scratch buffer (best-effort; nt stays 0 on an
+    //  unknown ext or a tokenizer hiccup, leaving the neutral tag).
+    a_carve(u32, syn, (size_t)($len(text) + 16));
+    u32 nt = 0;
+    if (!$empty(ext) && TOKKnownExt(ext) &&
+        HUNKu32bTokenize(syn, text, ext) == OK)
+        nt = (u32)u32bDataLen(syn);
+    tok32c *st = (tok32c *)u32bDataHead(syn);
+    tok32c *sd = sides[0];
+
+    //  Sweep both end-offset streams together; cut at every boundary.
+    u32 tlen = (u32)$len(text);
+    u32 pos = 0, i = 0, j = 0;
+    while (pos < tlen) {
+        u8  side = (i < ns) ? tok32Side(sd[i]) : TOK_SIDE_EQ;
+        u8  tag  = (j < nt) ? tok32Tag(st[j])  : 'S';
+        u32 a = (i < ns) ? tok32Offset(sd[i]) : tlen;
+        u32 b = (j < nt) ? tok32Offset(st[j]) : tlen;
+        u32 nb = a < b ? a : b;
+        if (nb <= pos) break;   //  defensive: strictly-increasing offsets
+        call(u32bFeed1, out, tok32PackSide(tag, side, nb));
+        if (a == nb && i < ns) i++;
+        if (b == nb && j < nt) j++;
+        pos = nb;
+    }
+    done;
+}
+
 ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
@@ -842,9 +889,12 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
     u32bFed(windows, nwin * 2);
     if (nwin == 0) done;
 
-    a_carve(u8,  outtext, 16UL << 20);
-    a_carve(u32, outtoks, 1UL << 16);
-    a_carve(u8,  outuri,  1UL << 12);
+    a_carve(u8,  outtext,  16UL << 20);
+    a_carve(u32, outtoks,  1UL << 16);
+    a_carve(u32, combined, 1UL << 18);   //  side ∪ syntax segmentation
+    a_carve(u8,  outuri,   1UL << 12);
+    u8cs ext = {};
+    PATHu8sExt(ext, name);
 
     ok64 ret = OK;
     u32 wi = 0;
@@ -866,14 +916,20 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
             u8csc _empty_sym  = {NULL, NULL};                          \
             (void)HUNKu8sMakeURI(u8bIdle(outuri), _empty_path,         \
                                  _empty_sym, win_lo + 1);              \
+            u8csc _htext = {u8bDataHead(outtext),                      \
+                            u8bDataHead(outtext) + u8bDataLen(outtext)};\
+            tok32cs _sides = {(tok32c *)u32bDataHead(outtoks),         \
+                              (tok32c *)u32bDataHead(outtoks)          \
+                              + u32bDataLen(outtoks)};                 \
+            (void)weave_overlay_syntax(combined, _htext, ext, _sides); \
             hunk hk = {};                                             \
             hk.uri[0] = (u8 *)u8bDataHead(outuri);                    \
             hk.uri[1] = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri);\
             hk.text[0] = u8bDataHead(outtext);                        \
             hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);  \
-            hk.toks[0] = (tok32c *)u32bDataHead(outtoks);             \
-            hk.toks[1] = (tok32c *)u32bDataHead(outtoks)              \
-                       + u32bDataLen(outtoks);                        \
+            hk.toks[0] = (tok32c *)u32bDataHead(combined);            \
+            hk.toks[1] = (tok32c *)u32bDataHead(combined)             \
+                       + u32bDataLen(combined);                       \
             ok64 _r = cb(&hk, cb_ctx);                                \
             if (_r != OK) ret = _r;                                   \
             u8bReset(outtext);                                        \
@@ -941,9 +997,12 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
     if (ntok == 0) done;
     u8cp text = p.base[0];
 
-    a_carve(u8,  outtext, 16UL << 20);
-    a_carve(u32, outtoks, 1UL << 16);
-    a_carve(u8,  outuri,  1UL << 12);
+    a_carve(u8,  outtext,  16UL << 20);
+    a_carve(u32, outtoks,  1UL << 16);
+    a_carve(u32, combined, 1UL << 18);   //  side ∪ syntax segmentation
+    a_carve(u8,  outuri,   1UL << 12);
+    u8cs ext = {};
+    PATHu8sExt(ext, name);
 
     ok64 ret = OK;
     b8   hunk_open = NO;
@@ -955,6 +1014,8 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
     //  routes the whole-file hunk through the unified-diff +/- formatter
     //  exactly like a windowed `diff:` hunk.  `cat:` passes empty scheme
     //  so its whole-file hunk renders as plain syntax-highlighted text.
+    //  Either way the body's tokens carry real syntax tags (overlaid
+    //  below) plus the diff side, so syntax AND change hili both paint.
     #define FLUSH_FULL_HUNK() do {                                       \
         if (hunk_open) {                                                 \
             u8bReset(outuri);                                            \
@@ -968,14 +1029,20 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
             u8csc _empty_sym  = {NULL, NULL};                            \
             (void)HUNKu8sMakeURI(u8bIdle(outuri), _empty_path,           \
                                  _empty_sym, hunk_start_line + 1);       \
+            u8csc _htext = {u8bDataHead(outtext),                        \
+                            u8bDataHead(outtext) + u8bDataLen(outtext)}; \
+            tok32cs _sides = {(tok32c *)u32bDataHead(outtoks),           \
+                              (tok32c *)u32bDataHead(outtoks)            \
+                              + u32bDataLen(outtoks)};                   \
+            (void)weave_overlay_syntax(combined, _htext, ext, _sides);   \
             hunk hk = {};                                               \
             hk.uri[0]  = (u8 *)u8bDataHead(outuri);                     \
             hk.uri[1]  = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri);\
             hk.text[0] = u8bDataHead(outtext);                          \
             hk.text[1] = u8bDataHead(outtext) + u8bDataLen(outtext);    \
-            hk.toks[0] = (tok32c *)u32bDataHead(outtoks);               \
-            hk.toks[1] = (tok32c *)u32bDataHead(outtoks)                \
-                       + u32bDataLen(outtoks);                          \
+            hk.toks[0] = (tok32c *)u32bDataHead(combined);              \
+            hk.toks[1] = (tok32c *)u32bDataHead(combined)               \
+                       + u32bDataLen(combined);                         \
             ok64 _r = cb(&hk, cb_ctx);                                  \
             if (_r != OK) ret = _r;                                     \
             u8bReset(outtext);                                          \

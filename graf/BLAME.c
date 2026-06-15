@@ -620,15 +620,12 @@ static ok64 blame_step_cb(u32 src_id, u64 commit_h, void *vctx) {
     done;
 }
 
-//  BLAME-005: the `blame` verb stamped on every run-hunk (ron60-coded
-//  name; see `abc/ok64 blame`).  Lets the shared renderer label the run
-//  the same way it labels any other hunk-verb event.
-con ron60 BLAME_VERB = 0x26c25c69;
 
 //  BLAME-005: emit one maximal commit-run as a content hunk.
 //    uri  = `commit:?<sha40>` (URIMake query form — the same shape
 //           COMMIT-001's link resolves; bro makes it a click target).
-//    ts   = the run commit's author time; verb = BLAME_VERB.
+//    ts   = the run commit's author time; verb = 0 (verbless — the
+//           banner navigates a `commit:` projection, not an action).
 //    text = the run's verbatim source bytes; toks = syntax tags from a
 //           fresh dog/TOK pass over that text (the weave stores none).
 //  Streamed via GRAFHunkEmit as produced — no whole-file accumulation.
@@ -665,7 +662,10 @@ static ok64 blame_flush_run(blame_author const *ba, u8cs run, u8cs ext) {
 
     hunk hk = {};
     hk.ts   = ba->ts;
-    hk.verb = BLAME_VERB;
+    //  Verbless banner: the hunk URI is a projection (`commit:?<sha>`)
+    //  we navigate to, not an action — so the title bar reads
+    //  `<date> commit:?<sha>#<subject>`, no `blame` verb.  ts stays for
+    //  the date column.
     u8csMv(hk.uri, u8bDataC(uri));
     u8csMv(hk.text, run);
     hk.toks[0] = toks_view[0];
@@ -711,7 +711,7 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     //  BLAME-005: emit one content hunk per maximal commit-run.  The
     //  per-line walk (inserter `seq` at each BOL) is unchanged — only the
     //  EMIT regroups: consecutive lines sharing a commit accumulate into
-    //  `runbuf`, flushed as a `{ts, verb=BLAME_VERB, uri=commit:?<sha40>}`
+    //  `runbuf`, flushed as a `{ts, uri=commit:?<sha40>}` (verbless)
     //  hunk the instant the attributing commit changes.  No fixed-width
     //  gutter, no per-line `L`-tok — the commit rides the hunk header, the
     //  shared renderer (HUNKu8sFeed*) draws/highlights/wraps the body.
