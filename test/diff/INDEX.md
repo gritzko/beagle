@@ -36,6 +36,18 @@
   `diff:?<old>#<new>` in the projector fan-out (`BEProjectorSubsPins` /
   `beproj_recurse_cb`, `beagle/BE.cli.c`).  Local-git submodule
   fixture, no ssh.
+* `11-file-scope-full/` — DIFF-003.  A file-scoped `diff:<file>#L<n>`
+  (the `U` hunk nav-URI target) renders the WHOLE file with the changed
+  lines highlighted in place, while a tree/dir-scoped `diff:` stays
+  changed-hunks-only.  A 30-line file with one change at line 20; the
+  far unchanged line (`line 01 original`, 19 lines from the change, well
+  past the 3-line context window) MUST appear in the file-scope view
+  (Plain/Color/TLV) and MUST NOT appear in the tree-scope view.  Fix:
+  graf keys the emit scope off file-vs-tree (`GRAFDiff2Layer(...,full)`),
+  routing file scope through `WEAVEEmitFull` (every line, change-tagged,
+  `diff:` scheme so the renderer keeps the +/- formatter) and tree scope
+  through `WEAVEEmitDiff` (windowed); bro owns the highlighting.  No
+  fixture, no ssh.
 * `09-sub-dirty-pager/` — DIFF-002.  Working-tree `be diff` whose only
   change lives in a mounted sub's worktree must route the sub diff
   THROUGH the parent's pager (bro), not past it.  Forces the bro-pager

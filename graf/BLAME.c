@@ -826,7 +826,7 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
 }
 
 ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
-                   u8cs from, u8cs to) {
+                   u8cs from, u8cs to, b8 full) {
     sane($ok(filepath));
     keeper *k = &KEEP;
     (void)reporoot;
@@ -853,5 +853,5 @@ ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
     u8cs ext = {};
     PATHu8sExt(ext, filepath);
 
-    return GRAFDiff2Layer(filepath, ext, from_data, to_data);
+    return GRAFDiff2Layer(filepath, ext, from_data, to_data, full);
 }

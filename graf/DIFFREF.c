@@ -102,9 +102,19 @@ static diffref_entry *diffref_set_find(diffref_set *s, u8cs path) {
 //  The single primitive every diff path uses (wt-vs-base, ref-vs-ref
 //  file, ref-vs-ref tree per-file).  Builds a 2-layer weave from
 //  `from_data` (older) + `to_data` (newer) — `WEAVEFromBlob` ×2 +
-//  `WEAVEDiff` (LCS + NEIL + canon) — then `WEAVEEmitDiff` walks the
-//  resulting `inrm` stream and emits hunks with context, syntax tags,
-//  and `I`/`D`/` ` hili.
+//  `WEAVEDiff` (LCS + NEIL + canon) — then walks the resulting `inrm`
+//  stream and emits hunks with syntax tags and `I`/`D`/` ` hili.
+//
+//  DIFF-003 emit scope (the producer half of the file-vs-tree split):
+//    `full == NO`  → WEAVEEmitDiff: changed-hunks-only (3-line context
+//                    windows).  Tree/dir scope (one call per file).
+//    `full == YES` → WEAVEEmitFull: every line, change-tagged (the same
+//                    no-windowing walk `cat:` uses).  A file-scoped
+//                    `diff:<file>` renders the WHOLE file in place so a
+//                    change reads in full surrounding context.  bro owns
+//                    the highlighting; the EQ-side context lines just
+//                    ride the existing `TOK_SIDE_EQ` tag the renderer
+//                    already paints as plain context.
 //
 //  Sentinel ids: `from` layer uses `WEAVE_BASE_SRC` (any value other
 //  than `WEAVE_WT_SRC` works); `to` layer uses `WEAVE_WT_SRC`.  The
@@ -123,11 +133,14 @@ static b8 wt_in_to(u32 c, void *ctx) {
     return YES;
 }
 
-ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
+ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
+                    b8 full) {
     sane($ok(name));
 
     //  Fast skip on byte-identical content.  Cheap u8csEq before any
-    //  tokenisation; the common case in tree walks.
+    //  tokenisation; the common case in tree walks.  A full-file view
+    //  of an unchanged file is just `cat:` — `diff:` has nothing to
+    //  show, so the skip holds in both scopes.
     if (u8csEq(from_data, to_data)) return OK;
 
     call(GRAFArenaInit);
@@ -147,10 +160,20 @@ ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
     if (ret == OK) ret = WEAVEDiff(wdst, wsrc, &wnu, WEAVE_WT_SRC);
     if (ret == OK) {
         wsrc = wdst;
-        ret = WEAVEEmitDiff(wsrc, name,
-                            wt_in_from, NULL,
-                            wt_in_to,   NULL,
-                            GRAFHunkEmit, NULL);
+        if (full) {
+            //  `diff:` scheme so the whole-file hunk renders as a
+            //  unified diff (same +/- formatter a windowed hunk uses).
+            a_cstr(diff_scheme, "diff:");
+            ret = WEAVEEmitFull(wsrc, name, diff_scheme,
+                                wt_in_from, NULL,
+                                wt_in_to,   NULL,
+                                GRAFHunkEmit, NULL);
+        } else {
+            ret = WEAVEEmitDiff(wsrc, name,
+                                wt_in_from, NULL,
+                                wt_in_to,   NULL,
+                                GRAFHunkEmit, NULL);
+        }
     }
 
     WEAVEFree(&wA);
@@ -162,7 +185,7 @@ ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data) {
 
 // --- wt-vs-base file: thin wrapper around GRAFDiff2Layer -----------
 
-ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot) {
+ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot, b8 full) {
     sane($ok(filepath) && $ok(reporoot));
     keeper *k = &KEEP;
 
@@ -185,7 +208,7 @@ ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot) {
 
     u8cs ext = {};
     PATHu8sExt(ext, filepath);
-    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data);
+    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data, full);
 
     if (wt_mapped) FILEUnMap(wt_mapped);
     return ret;
@@ -345,7 +368,9 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
 
     //  Real diff.  GRAFDiffWtFile handles the empty-base / empty-wt
     //  edge cases internally (deletion / addition both emit hunks).
-    (void)GRAFDiffWtFile(path, c->base_h40, c->reporoot);
+    //  Tree scope → changed-hunks-only (`full == NO`); the whole-file
+    //  view is reserved for an explicitly file-scoped `diff:<file>`.
+    (void)GRAFDiffWtFile(path, c->base_h40, c->reporoot, NO);
     u8aRewind(ABC_BASS, mark);
     return OK;
 }
@@ -493,7 +518,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
 
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data);
+        GRAFDiff2Layer(path, ext, old_data, new_data, NO);
     }
 
     // --- 4. from-only entries (deletions): diff blob vs empty ---
@@ -516,7 +541,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         u8cs new_data = {};
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data);
+        GRAFDiff2Layer(path, ext, old_data, new_data, NO);
     }
     done;
 }

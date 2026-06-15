@@ -182,7 +182,12 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);
 
-ok64 WEAVEEmitFull(weave const *w, u8cs name,
+//  Whole-file emit: every alive token, change-tagged (TOK_SIDE_EQ for
+//  context, IN/RM for the diff), no context-windowing.  `scheme` is
+//  prepended to each hunk's URI — pass `diff:` (DIFF-003 file-scope
+//  whole-file diff, so the renderer applies the unified-diff +/-
+//  formatter) or empty (`cat:` plain syntax-highlighted whole-file).
+ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);

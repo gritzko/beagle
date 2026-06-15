@@ -295,9 +295,11 @@ ok64 GRAFRefIsName(u8cs ref);
 //    GRAFFAIL   — data error (refs unreadable, no project context).
 ok64 GRAFResolveVersion(u8s canonic, u8csc given);
 
-// Weave diff between two commits (reads blobs from keeper).
+// Weave diff between two commits (reads blobs from keeper).  DIFF-003:
+// `full == YES` renders the WHOLE file (every line, change-tagged) for
+// a file-scoped `diff:<file>`; `full == NO` keeps changed-hunks-only.
 ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
-                   u8cs from, u8cs to);
+                   u8cs from, u8cs to, b8 full);
 
 // URI-driven diff primitives.  Each emits one hunk block per changed
 // file through `GRAFHunkEmit`.
@@ -307,25 +309,31 @@ ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
 //                      (40-bit commit hashlet from sniff's `--at`
 //                      anchor).  wt is folded into the file's weave
 //                      as the next version after the base, so
-//                      attribution is preserved.
+//                      attribution is preserved.  DIFF-003: `full ==
+//                      YES` renders the WHOLE file (file-scope
+//                      `diff:<file>`); the tree walk passes `NO`.
 //   GRAFDiffWtTree   — whole tree: walk the base tree, run a per-file
 //                      weave diff against wt for each file.  `base_hex`
 //                      is the 40-hex spelling of the same commit (used
 //                      to compose the URI for `KEEPLsFiles`).  wt-only
-//                      additions are not yet emitted.
+//                      additions are not yet emitted.  Always
+//                      changed-hunks-only (calls GRAFDiffWtFile NO).
 //   GRAFDiffTreeRefs — whole tree: walk both refs, pair by path,
 //                      orphans on either side become deletions or
-//                      insertions against empty.
-ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot);
+//                      insertions against empty.  Changed-hunks-only.
+ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot, b8 full);
 ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot);
 ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot);
 
 // 2-layer weave diff: WEAVEFromBlob ×2 + WEAVEDiff (LCS+NEIL+canon) +
-// WEAVEEmitDiff.  The single engine every diff path uses.  `name` is
-// the hunk title (file path); `ext` selects the tokenizer; either
-// blob slice may be empty (file added or deleted).  No-change pair →
-// no hunks emitted.
-ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data);
+// emit.  The single engine every diff path uses.  `name` is the hunk
+// title (file path); `ext` selects the tokenizer; either blob slice
+// may be empty (file added or deleted).  No-change pair → no hunks.
+// DIFF-003 `full`: YES → WEAVEEmitFull (whole file, change-tagged, for
+// a file-scoped `diff:`); NO → WEAVEEmitDiff (changed-hunks-only, the
+// tree/dir scope).
+ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
+                    b8 full);
 
 // Deterministic URI-driven blob/tree merge (see graf/GET.md).
 //

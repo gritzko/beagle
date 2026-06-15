@@ -925,7 +925,7 @@ cleanup:
 
 #define WEAVE_FULL_HUNK_MAX (1UL << 20)
 
-ok64 WEAVEEmitFull(weave const *w, u8cs name,
+ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx) {
@@ -948,13 +948,20 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name,
     u32  hunk_start_line = 0;
     u32  cur_line = 0;
 
+    //  DIFF-003: a non-empty `scheme` (e.g. `diff:`) is prepended to the
+    //  hunk URI so the renderer (HUNKu8sFeedText's `hunk_uri_is_diff`)
+    //  routes the whole-file hunk through the unified-diff +/- formatter
+    //  exactly like a windowed `diff:` hunk.  `cat:` passes empty scheme
+    //  so its whole-file hunk renders as plain syntax-highlighted text.
     #define FLUSH_FULL_HUNK() do {                                       \
         if (hunk_open) {                                                 \
             u8bReset(outuri);                                            \
+            (void)u8bFeed(outuri, scheme);                              \
             u8csc _empty_sym = {NULL, NULL};                             \
             if (HUNKu8sMakeURI(u8bIdle(outuri), name,                    \
                                _empty_sym, hunk_start_line + 1) != OK) { \
                 u8bReset(outuri);                                        \
+                (void)u8bFeed(outuri, scheme);                          \
                 (void)u8bFeed(outuri, name);                             \
             }                                                            \
             hunk hk = {};                                               \

@@ -139,7 +139,10 @@ ok64 SNIFFCat(u8cs reporoot, uri const *u) {
     if (ret == OK) ret = WEAVEFromBlob(&wnu, to_data, ext, WEAVE_WT_SRC);
     if (ret == OK) ret = WEAVEDiff(&wB, &wA, &wnu, WEAVE_WT_SRC);
     if (ret == OK) {
-        ret = WEAVEEmitFull(&wB, upath,
+        //  Empty scheme — `cat:` whole-file hunk renders as plain
+        //  syntax-highlighted text, not a unified diff (DIFF-003).
+        u8cs no_scheme = {};
+        ret = WEAVEEmitFull(&wB, upath, no_scheme,
                             cat_in_from, NULL,
                             cat_in_to,   NULL,
                             cat_hunk_emit, NULL);

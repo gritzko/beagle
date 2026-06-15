@@ -383,7 +383,8 @@ ok64 GRAFExec(cli *c) {
                 nedo { return __; }
             }
             if (!$empty(path)) {
-                ret = GRAFWeaveDiff(path, reporoot, wf, wt);
+                //  DIFF-003: file-scope → whole-file view.
+                ret = GRAFWeaveDiff(path, reporoot, wf, wt, YES);
             } else {
                 ret = GRAFDiffTreeRefs(wf, wt, reporoot);
             }
@@ -429,8 +430,9 @@ ok64 GRAFExec(cli *c) {
                 if (handled) {
                     /* nothing */
                 } else if (!$empty(path)) {
+                    //  DIFF-003: file-scope → whole-file view.
                     ret = GRAFWeaveDiff(path, reporoot,
-                                        branch, base_hex);
+                                        branch, base_hex, YES);
                 } else {
                     ret = GRAFDiffTreeRefs(branch, base_hex,
                                            reporoot);
@@ -438,7 +440,8 @@ ok64 GRAFExec(cli *c) {
             } else {
                 //  No query → wt vs base (weave-based).
                 if (!$empty(path)) {
-                    ret = GRAFDiffWtFile(path, base_h40, reporoot);
+                    //  DIFF-003: file-scope → whole-file view.
+                    ret = GRAFDiffWtFile(path, base_h40, reporoot, YES);
                 } else {
                     ret = GRAFDiffWtTree(base_h40, base_hex,
                                          reporoot);
@@ -491,7 +494,9 @@ ok64 GRAFExec(cli *c) {
         }
         u8cs path = {};
         graf_uri_path(path, u);
-        ret = GRAFWeaveDiff(path, reporoot, wf, wt);
+        //  `weave` verb keeps the changed-hunks-only view (DIFF-003's
+        //  whole-file scope is the `diff:<file>` projector's, not this).
+        ret = GRAFWeaveDiff(path, reporoot, wf, wt, NO);
 
     } else {
         fprintf(stderr, "graf: unknown verb '%.*s'\n",
