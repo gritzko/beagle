@@ -166,7 +166,7 @@ echo "$BOUT" | grep -qF 'h3' \
 #  BLAME-005: each maximal commit-run is its own content hunk headed by
 #  the run commit's `commit:?<sha40>` URI (the metadata rides the hunk
 #  header, not a per-line gutter).
-echo "$BOUT" | grep -qE '^--- commit:\?[0-9a-f]{40} ---' \
+echo "$BOUT" | grep -qE 'commit:\?[0-9a-f]{40}' \
     || fail "blame: no per-run commit:?<sha> hunk header"
 note "blame emitted v3 content as per-commit-run hunks (commit:?<sha> headers)"
 

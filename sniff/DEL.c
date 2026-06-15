@@ -31,6 +31,7 @@
 #include "abc/OK.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "dog/ROWS.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -266,7 +267,7 @@ static ok64 del_sweep_visit(u8cs path, u8 kind, u8cp esha,
     {
         ulogrec rep = {.ts = 0, .verb = c->verb};
         u8csMv(rep.uri.path, path);
-        (void)ULOGPrintStatusLine(&rep);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
     }
     return OK;
 }
@@ -294,15 +295,22 @@ ok64 DELStage(u32 nuris, uri const *uris) {
 
     if (nuris == 0) {
         //  Sweep: any tracked path missing from disk gets a delete row.
+        //  Open ONE per-module row table (BRO-002): swept-file rows
+        //  stream live on a tty, flush as ONE hunk in --tlv/relay.
         ron60 sweep_ts = 0;
         struct timespec sweep_tv = {};
         SNIFFAtNow(&sweep_ts, &sweep_tv);
         ron60 sweep_verb = SNIFFAtVerbDelete();
         a_dup(u8c, sweep_root, u8bData(HOME.wt));
         u32 sweep_n = 0;
-        ok64 so = del_sweep_missing(sweep_root, sweep_ts, sweep_verb,
-                                    &sweep_n);
+        rows table = {};
+        u8cs empty_uri = {};
+        call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+        try(del_sweep_missing, sweep_root, sweep_ts, sweep_verb, &sweep_n);
+        ok64 so = __;
+        ok64 cr = ROWSClose(&table);
         if (so != OK) return so;
+        if (cr != OK) return cr;
         if (sweep_n > 0 && !SNIFF.quiet)
             fprintf(stderr,
                     "sniff: delete: swept %u missing file(s)\n", sweep_n);

@@ -1237,34 +1237,8 @@ u8 ULOGVerbTag(ron60 verb) {
     return tag ? tag : 'S';
 }
 
-//  Lift a parsed row into a status hunk: render the URI bytes into
-//  `uri_buf`'s idle area, snapshot the resulting slice into `out->uri`,
-//  and copy ts/verb.  Text/toks stay empty — the row IS the hunk.
-//  The renderer (`HUNKu8sFeedOut`) reads `HUNKMode` and picks the
-//  TLV/color/plain shape.
-ok64 ULOGToHunk(ulogreccp rec, hunk *out, u8b uri_buf) {
-    sane(rec && out && u8bOK(uri_buf));
-
-    u8c *uri_lo = u8bIdleHead(uri_buf);
-    uri  u = rec->uri;
-    call(URIutf8Feed, u8bIdle(uri_buf), &u);
-    u8c *uri_hi = u8bIdleHead(uri_buf);
-
-    *out = (hunk){};
-    out->ts     = rec->ts;
-    out->verb   = rec->verb;
-    out->uri[0] = uri_lo;
-    out->uri[1] = uri_hi;
-    done;
-}
-
-ok64 ULOGPrintStatusLine(ulogreccp rec) {
-    sane(rec);
-    a_pad(u8, ub,   1024);
-    a_pad(u8, line, 4096);
-    hunk hk = {};
-    call(ULOGToHunk,     rec, &hk, ub);
-    call(HUNKu8sFeedOut, u8bIdle(line), &hk);
-    call(FILEout,        u8bDataC(line));
-    done;
-}
+//  BRO-002 retired ULOGToHunk (header-only lift) and ULOGPrintStatusLine
+//  (per-event hunk emit).  Every status/action row now flows through the
+//  shared row-table builder `dog/ROWS` (ROWSPrintRow / ROWSu8bFeedRec),
+//  which appends to the active per-(sub)module table and flushes ONE
+//  content hunk per module.

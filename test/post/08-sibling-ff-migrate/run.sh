@@ -173,12 +173,12 @@ match "$CASE/06.e.t2.c" e.c
 #  must reach T1 through C1 and C2.
 "$BE" 'spot:.c#sub' \
     > "$LOGS/14b.spot-sub.out" 2> "$LOGS/14b.spot-sub.err"
-grep -q '^--- b.c' "$LOGS/14b.spot-sub.out" \
+grep -q '^hunk b.c' "$LOGS/14b.spot-sub.out" \
     || { echo "?fix2: spot should find 'sub' in b.c (C1's edit)" >&2
          cat "$LOGS/14b.spot-sub.out" >&2; exit 1; }
 "$BE" 'spot:.c#mul' \
     > "$LOGS/14c.spot-mul.out" 2> "$LOGS/14c.spot-mul.err"
-grep -q '^--- c.c' "$LOGS/14c.spot-mul.out" \
+grep -q '^hunk c.c' "$LOGS/14c.spot-mul.out" \
     || { echo "?fix2: spot should find 'mul' in c.c (C2's edit)" >&2
          cat "$LOGS/14c.spot-mul.out" >&2; exit 1; }
 "$BE" 'log:#10' \
@@ -240,7 +240,7 @@ match "$CASE/09.f.c3.c" f.c
 #  (d.c was deleted at C2).  Graf index: log walks the full chain.
 "$BE" 'spot:.c#neg' \
     > "$LOGS/18b.spot-neg.out" 2> "$LOGS/18b.spot-neg.err"
-grep -q '^--- f.c' "$LOGS/18b.spot-neg.out" \
+grep -q '^hunk f.c' "$LOGS/18b.spot-neg.out" \
     || { echo "?fix1: spot should find 'neg' in f.c (migrated from ?fix2)" >&2
          cat "$LOGS/18b.spot-neg.out" >&2; exit 1; }
 "$BE" 'spot:.c#dbl' \

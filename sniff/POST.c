@@ -30,6 +30,7 @@
 #include "dog/CLI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
+#include "dog/ROWS.h"
 #include "dog/git/IGNO.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
@@ -1237,6 +1238,10 @@ typedef struct {
     u32 changed;
 } post_mad_ctx;
 
+//  Append one changed-path row to the active ROWS table (opened by the
+//  caller, sink fd already set per channel: stdout for --tlv/relay,
+//  stderr for direct-tty).  `mod` rows nav to `diff:`, everything else
+//  to `cat:`.
 static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     (void)c;
     post_mad_ctx *m = (post_mad_ctx *)vctx;
@@ -1250,14 +1255,8 @@ static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     if (verb == 0) return OK;
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, rec->uri.path);
-    a_pad(u8, ub,   1024);
-    a_pad(u8, line, 4096);
-    hunk hk = {};
-    if (ULOGToHunk(&rep, &hk, ub) == OK &&
-        HUNKu8sFeedOut(u8bIdle(line), &hk) == OK) {
-        a_dup(u8c, out, u8bDataC(line));
-        (void)FILEFeedAll(m->fd, out);
-    }
+    ROWSnav nav = (verb == POST_DISP_MOD) ? ROWS_NAV_DIFF : ROWS_NAV_CAT;
+    (void)ROWSPrintRow(&rep, nav);
     m->changed++;
     return OK;
 }
@@ -2279,13 +2278,19 @@ static ok64 post_print_status_inner(post_ctx *c) {
     b8   have_base = NO;
     call(post_scan_changeset, c, &base_tree_sha, &have_base);
 
-    //  Walk decisions, print one line per changed path.
+    //  Walk decisions, append one row per changed path to ONE module
+    //  table (dry-run status → stdout, as before).
+    rows table = {};
+    u8cs empty_uri = {};
+    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    table.fd = STDOUT_FILENO;
     post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
     post_walk_decisions(c, POST_VM_UNLINK | POST_VM_ADD,
                         post_drain_mad_cb, &mad);
+    ok64 cr = ROWSClose(&table);
     fflush(stdout);
     fprintf(stderr, "sniff: %u change(s)\n", mad.changed);
-    done;
+    return cr;
 }
 
 ok64 POSTPrintStatus(void) {
@@ -3160,11 +3165,20 @@ ok64 POSTCommit(u8cs target_branch,
     //      this submodule can capture the hunk stream and relay it with
     //      a path prefix (BERelaySub).
     {
+        //  RULED channel (BRO-002): --tlv/relay buffers ONE table hunk
+        //  on stdout so a parent `be post` can capture+relay it; direct
+        //  tty streams each row live to stderr (stdout stays clean for
+        //  the commit sha the wrapper reads).
         int report_fd = (HUNKMode == HUNKOutTLV) ? STDOUT_FILENO
                                                  : STDERR_FILENO;
+        rows table = {};
+        u8cs empty_uri = {};
+        (void)ROWSOpen(&table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+        table.fd = report_fd;
         post_mad_ctx mad = {.fd = report_fd, .changed = 0};
         post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
                             post_drain_mad_cb, &mad);
+        (void)ROWSClose(&table);
     }
 
     //  17. Per-commit scratch (decisions, tree_bodies, cascade arena)

@@ -1,5 +1,6 @@
 #include "HUNK.h"
 
+#include <stdio.h>
 #include <time.h>
 
 #include "abc/ANSI.h"
@@ -34,10 +35,9 @@ static ron60 hunk_drain_ron60(u8cs val) {
 
 // Resolve a ron60 wall-clock stamp `ts` to a unix `time_t` (as i64),
 // falling back to `now` when `ts` is unset or unparsable.  `isdst` is
-// passed straight to `tm.tm_isdst` before `mktime`: status rows pass
-// -1 so mktime resolves DST itself (a 0 would shift a summer stamp +1h
-// into the future — SUBS-003 / test/get/05,07).  The header path keeps
-// its historical 0 (see hunk_feed_header_color).
+// passed straight to `tm.tm_isdst` before `mktime`: callers pass -1 so
+// mktime resolves DST itself (a 0 would shift a summer stamp +1h into
+// the future — SUBS-003 / test/get/05,07).
 static i64 hunk_ron60_to_time(ron60 ts, i64 now, int isdst) {
     if (!ts) return now;
     struct tm tm = {};
@@ -47,77 +47,11 @@ static i64 hunk_ron60_to_time(ron60 ts, i64 now, int isdst) {
     return (t != (time_t)-1) ? (i64)t : now;
 }
 
-// A status hunk is a ULOG-style event row lifted into hunk shape:
-// ts/verb populated, no source body.  Renders as one line.
-static b8 hunk_is_status(hunk const *hk) {
-    return (hk->ts || hk->verb) && $empty(hk->text) && $empty(hk->toks);
-}
-
-// Render `<pretty-date>\t<verb-token>\t<uri>\n` — human-readable but
-// uncoloured.  `DOGutf8sFeedDate` produces HH:MM / weekday / date
-// depending on age; `RONutf8sFeed` on a status verb prints the
-// symbolic token ("put", "new", "mod", ...) since those verbs live
-// in low ron60 codes.  For machine-parsing of the ts/verb fields
-// the caller should pick TLV mode (which emits raw 8-byte LE ron60
-// records under tags 'T'/'V').
-static ok64 hunk_feed_status_plain(u8s into, hunk const *hk) {
-    sane(u8sOK(into) && hk);
-    if ($len(into) < 64) fail(BNOROOM);
-
-    i64 now = (i64)time(NULL);
-    //  -1: let mktime resolve DST (see hunk_ron60_to_time / SUBS-003).
-    i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
-    call(DOGutf8sFeedDate, into, ts, now);
-    call(u8sFeed1, into, '\t');
-    call(RONutf8sFeed, into, hk->verb);
-    call(u8sFeed1, into, '\t');
-    if (!$empty(hk->uri)) call(u8sFeed, into, hk->uri);
-    call(u8sFeed1, into, '\n');
-    done;
-}
-
-// ANSI variant of the status line (BRO-001): a banner — abbreviated
-// date + verb + URI painted black-on-pale-yellow (THEME_BANNER), opened
-// with one SGR and closed with a reset.  The pale band spans only the
-// emitted bytes here; padding it to the FULL terminal width is the
-// width-aware bro layer's job (`bro_render_ulog_title`), which knows
-// `cols` — this formatter stays width-agnostic (no 80 hardcode).  The
-// verb is kept (free data the hunk already carries) since date+verb+uri
-// reads fine on one line.  Mirrors the old status-line columns minus
-// the per-column colour, now subsumed by the single banner SGR.
-#define HUNK_VERB_UNK_RON60 0x39caf  // "unk" — same constant ULOG used.
-static ok64 hunk_feed_status_color(u8s into, hunk const *hk) {
-    sane(u8sOK(into) && hk);
-    if ($len(into) < 64) fail(BNOROOM);
-
-    ansi64 band = THEME_BANNER;
-
-    i64 now = (i64)time(NULL);
-    //  -1: resolve DST (see hunk_ron60_to_time / hunk_feed_status_plain).
-    i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
-
-    //  Open the pale-yellow / black band, then lay out the columns
-    //  inside it: <space><date><space><verb><space><uri>.  The leading
-    //  and column-separating spaces inherit the band bg so the colour
-    //  reads as a continuous strip, not three coloured words.
-    call(ANSIu8sFeedDelta, into, band, ANSI_DEFAULT);
-    call(u8sFeed1, into, ' ');
-    call(DOGutf8sFeedDate, into, ts, now);
-    if (hk->verb) {
-        call(u8sFeed1, into, ' ');
-        call(RONutf8sFeed, into, hk->verb);
-    }
-    if (!$empty(hk->uri)) {
-        call(u8sFeed1, into, ' ');
-        call(u8sFeed, into, hk->uri);
-    }
-    //  Close the band before the newline so the colour doesn't bleed
-    //  past the line; bro re-opens + space-fills to the edge for the
-    //  full-width effect.
-    call(ANSIu8sFeedReset, into, band);
-    call(u8sFeed1, into, '\n');
-    done;
-}
+// BRO-002 subsumed the separate status-hunk shape: every hunk now
+// carries its row table in (text, toks) and renders through the single
+// content + header path below.  The `hunk_is_status` heuristic and the
+// three `hunk_feed_status_{plain,color,html}` banner formatters are gone;
+// the ONE header drawer (HUNKu8sFeedBanner) IS the BRO-001 banner.
 
 // Fragments have no grammar — they carry whatever the producer wrote.
 // The conventions HUNKu8sMakeURI emits are:
@@ -371,57 +305,103 @@ static b8 hunk_has_diff(hunk const *hk) {
     return NO;
 }
 
-// Plain-mode content-hunk header: `--- <uri> ---\n`.  The dashes are
-// the only visual separator between adjacent hunks in non-color output
-// (color mode gets visual separation from the title-tag color band —
-// see hunk_feed_header_color below).  No-op on empty URI.
-static ok64 hunk_feed_header_plain(u8s into, hunk const *hk) {
+//  Forward decl — HTML escaper lives in the HTML renderer section below;
+//  the one banner drawer (HUNKu8sFeedBanner) uses it for Html mode.
+static ok64 hunk_html_escape(u8s into, u8cs src);
+
+// ==  The ONE hunk-header drawer (BRO-002)  =========================
+//
+// Every hunk header — content, status, action-table — renders through
+// this single function.  There is NO status-vs-content distinction:
+// the [BRO-001] banner IS the header.  It draws, in order:
+//   * abbreviated date  — ONLY when `hk->ts` is set (7-col DOGutf8sFeedDate)
+//   * verb              — ONLY when `hk->verb` is set (RONutf8sFeed)
+//   * uri               — the module / hunk address
+// No violet `THEMEAt('T')`, no underline, no `--- … ---` dashes, no
+// per-column colours.  The three output modes are handled INSIDE here,
+// branching on the `mode` argument (the caller's own render mode — each
+// of HUNKu8sFeedText/Color/Html passes its mode, so HUNKu8sFeedColor
+// always colours regardless of the process-global HUNKMode):
+//   * Plain — `[<date> ][<verb> ]<uri>\n`, machine-parseable (the
+//             producer column grammar that `ULOGu8sDrain` round-trips).
+//   * Color — the THEME_BANNER (black-on-pale-yellow) SGR band; when
+//             `cols > 0` the band is space-filled to the terminal edge
+//             (bro passes its width), else it frames just the content
+//             (piped color, width-agnostic).
+//   * Html  — the banner-coloured `<h3 class="banner">` row.
+//   * TLV   — handled by HUNKu8sFeed (wire), never reaches here.
+// No-op on an empty URI with no ts/verb (a header-less content hunk).
+ok64 HUNKu8sFeedBanner(u8s into, hunk const *hk, HUNKout mode, u32 cols) {
     sane(u8sOK(into) && hk);
-    if ($empty(hk->uri)) done;
-    a_cstr(pfx, "--- ");
-    a_cstr(sfx, " ---\n");
-    call(u8sFeed,  into, pfx);
-    call(u8sFeed,  into, hk->uri);
-    call(u8sFeed,  into, sfx);
-    done;
-}
+    if ($empty(hk->uri) && !hk->ts && !hk->verb) done;
 
-// Color-mode content-hunk header: `<date>\t<verb>\t<uri>\n`, the whole
-// line underlined (TTY_UNDERLINE / _OFF) so the bar visually separates
-// adjacent hunks without needing a trailing blank line below the body.
-// `ts` / `verb` are emitted only when set; otherwise the header is just
-// the underlined URI.  No-op on empty URI.
-static ok64 hunk_feed_header_color(u8s into, hunk const *hk) {
-    sane(u8sOK(into) && hk);
-    if ($empty(hk->uri)) done;
-
-    a_cstr(ul_on,  TTY_UNDERLINE);
-    a_cstr(ul_off, TTY_UNDERLINE_OFF);
-    call(u8sFeed, into, ul_on);
-
-    if (hk->ts || hk->verb) {
-        ansi64 c_unk  = ULOGVerbColor(HUNK_VERB_UNK_RON60);
-        ansi64 c_verb = ULOGVerbColor(hk->verb);
-        i64 now = (i64)time(NULL);
-        //  isdst=0 here (NOT -1) preserves this header's historical
-        //  behavior; status rows above use -1.  This asymmetry is a
-        //  likely SUBS-003-class latent bug — flagged, not changed.
-        i64 ts  = hunk_ron60_to_time(hk->ts, now, 0);
-        call(ANSIu8sFeedDelta, into, c_unk, ANSI_DEFAULT);
-        call(DOGutf8sFeedDate, into, ts, now);
-        call(ANSIu8sFeedReset, into, c_unk);
-        call(u8sFeed1, into, '\t');
-        call(ANSIu8sFeedDelta, into, c_verb, ANSI_DEFAULT);
-        call(RONutf8sFeed, into, hk->verb);
-        call(ANSIu8sFeedReset, into, c_verb);
-        call(u8sFeed1, into, '\t');
+    if (mode == HUNKOutPlain || mode == HUNKOutTLV) {
+        if (hk->ts) {
+            i64 now = (i64)time(NULL);
+            //  -1: let mktime resolve DST (BRO-002 / SUBS-003); aligns
+            //  with every other ron60→date conversion (ROWS).
+            i64 ts = hunk_ron60_to_time(hk->ts, now, -1);
+            call(DOGutf8sFeedDate, into, ts, now);
+            call(u8sFeed1, into, ' ');
+        }
+        if (hk->verb) {
+            call(RONutf8sFeed, into, hk->verb);
+            call(u8sFeed1, into, ' ');
+        }
+        call(u8sFeed, into, hk->uri);
+        call(u8sFeed1, into, '\n');
+        done;
     }
 
-    ansi64 c = THEMEAt('T');
-    call(ANSIu8sFeedDelta, into, c, ANSI_DEFAULT);
-    call(u8sFeed,          into, hk->uri);
-    call(ANSIu8sFeedReset, into, c);
-    call(u8sFeed, into, ul_off);
+    if (mode == HUNKOutHtml) {
+        a_cstr(s_h0, "<h3 class=\"banner\">");
+        a_cstr(s_h1, "</h3>");
+        call(u8sFeed, into, s_h0);
+        if (hk->ts) {
+            i64 now = (i64)time(NULL);
+            i64 ts = hunk_ron60_to_time(hk->ts, now, -1);
+            call(DOGutf8sFeedDate, into, ts, now);
+            call(u8sFeed1, into, ' ');
+        }
+        if (hk->verb) { call(RONutf8sFeed, into, hk->verb); call(u8sFeed1, into, ' '); }
+        if (!$empty(hk->uri)) {
+            a_dup(u8c, esc_uri, hk->uri);
+            call(hunk_html_escape, into, esc_uri);
+        }
+        call(u8sFeed, into, s_h1);
+        done;
+    }
+
+    //  Color: the THEME_BANNER band.  Count the visible width so a `cols`
+    //  request can space-fill the band to the terminal edge (bro's job;
+    //  piped color passes cols == 0 and stays width-agnostic).
+    ansi64 band = THEME_BANNER;
+    call(ANSIu8sFeedDelta, into, band, ANSI_DEFAULT);
+    u32 used = 0;
+    call(u8sFeed1, into, ' '); used++;
+    if (hk->ts) {
+        i64 now = (i64)time(NULL);
+        i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);
+        call(DOGutf8sFeedDate, into, ts, now);   // centre-pads to 7 cols
+        used += 7;
+        call(u8sFeed1, into, ' '); used++;
+    }
+    if (hk->verb) {
+        a_pad(u8, vbuf, 16);
+        call(RONutf8sFeed, vbuf_idle, hk->verb);
+        a_dup(u8c, vd, u8bDataC(vbuf));
+        call(u8sFeed, into, vd); used += (u32)u8csLen(vd);
+        call(u8sFeed1, into, ' '); used++;
+    }
+    if (!$empty(hk->uri)) {
+        call(u8sFeed, into, hk->uri); used += (u32)u8csLen(hk->uri);
+    }
+    //  Full-width fill (only when a width was supplied) so the band reaches
+    //  the right edge; otherwise the band frames just the content.
+    while (used < cols) { call(u8sFeed1, into, ' '); used++; }
+    //  Close the band before the newline so the colour doesn't bleed past
+    //  the line.
+    call(ANSIu8sFeedReset, into, band);
     call(u8sFeed1, into, '\n');
     done;
 }
@@ -501,16 +481,13 @@ static b8 hunk_uri_is_diff(hunk const *hk) {
 ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
 
-    //  Status hunk (ULOG-row shape) → single `<ts>\t<verb>\t<uri>\n` line.
-    if (hunk_is_status(hk)) return hunk_feed_status_plain(into, hk);
-
     //  Diff-marked hunks render as proper unified diff so the output
     //  is `git apply` / `patch` friendly.  Detected via URI scheme so
     //  producers explicitly opt in (a content hunk with stray rm/in
     //  tokens still renders as cat).
     if (hunk_uri_is_diff(hk)) return HUNKu8sFeedLineBased(into, hk);
 
-    call(hunk_feed_header_plain, into, hk);
+    call(HUNKu8sFeedBanner, into, hk, HUNKOutPlain, 0);
 
     if ($empty(hk->text)) {
         if ($empty(hk->uri)) u8sFeed1(into, '\n');
@@ -562,10 +539,7 @@ ok64 HUNKu8sFeedText(u8s into, hunk const *hk) {
 ok64 HUNKu8sFeedColor(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
 
-    //  Status hunk: ULOG-style coloured line and we're done.
-    if (hunk_is_status(hk)) return hunk_feed_status_color(into, hk);
-
-    call(hunk_feed_header_color, into, hk);
+    call(HUNKu8sFeedBanner, into, hk, HUNKOutColor, 0);
 
     if ($empty(hk->text)) {
         if ($empty(hk->uri)) u8sFeed1(into, '\n');
@@ -663,47 +637,6 @@ static ok64 hunk_html_escape(u8s into, u8cs src) {
     done;
 }
 
-//  Status-hunk row: one CSS-grid line with date / verb / uri columns.
-//  Mirrors `hunk_feed_status_plain` shape (ts → human-readable date,
-//  verb → symbolic token) but laid out as nested spans + an anchor on
-//  the URI.  `.ulog` / `.ts` / `.verb` / `.uri` come from the
-//  consumer's CSS (see woof/style.css for the reference palette).
-static ok64 hunk_feed_status_html(u8s into, hunk const *hk) {
-    sane(u8sOK(into) && hk);
-    if ($len(into) < 192) fail(BNOROOM);
-
-    i64 now = (i64)time(NULL);
-    i64 ts  = now;
-    if (hk->ts) {
-        struct tm tm = {};
-        if (RONToTime(hk->ts, &tm, NULL) == OK) {
-            time_t t = mktime(&tm);
-            if (t != (time_t)-1) ts = (i64)t;
-        }
-    }
-
-    { a_cstr(s, "<div class=\"ulog\"><span class=\"ts\">");
-      call(u8sFeed, into, s); }
-    call(DOGutf8sFeedDate, into, ts, now);
-    { a_cstr(s, "</span><span class=\"verb\">"); call(u8sFeed, into, s); }
-    call(RONutf8sFeed, into, hk->verb);
-    { a_cstr(s, "</span><span class=\"uri\">"); call(u8sFeed, into, s); }
-    if (!$empty(hk->uri)) {
-        { a_cstr(s, "<a href=\""); call(u8sFeed, into, s); }
-        //  href: same URI, escaped enough that `"` can't break the
-        //  attribute (the broader URI-escape rules are the producer's
-        //  job; our floor is "don't blow up the markup").
-        a_dup(u8c, esc_src, hk->uri);
-        call(hunk_html_escape, into, esc_src);
-        { a_cstr(s, "\">"); call(u8sFeed, into, s); }
-        a_dup(u8c, lbl_src, hk->uri);
-        call(hunk_html_escape, into, lbl_src);
-        { a_cstr(s, "</a>"); call(u8sFeed, into, s); }
-    }
-    { a_cstr(s, "</span></div>\n"); call(u8sFeed, into, s); }
-    done;
-}
-
 //  Map a syntax tag to its `<span class="t-X">` open / close pair.
 //  The plain-default `S` and unknown tags emit no wrapper — saves
 //  bytes on the heaviest token type.  `U`-tagged tokens never reach
@@ -759,21 +692,12 @@ static ok64 hunk_feed_side_open(u8s into, u8 side) {
 ok64 HUNKu8sFeedHtml(u8s into, hunk const *hk) {
     sane(u8sOK(into) && hk != NULL);
 
-    //  Status hunk → ULOG-row grid line, no header / pre wrap.
-    if (hunk_is_status(hk)) return hunk_feed_status_html(into, hk);
-
-    //  Header: `<div class="hunk"><h3>uri</h3><pre>`.  Empty URI →
-    //  skip the `<h3>` but keep the `<div>` so per-hunk margins still
-    //  apply.
+    //  Header: `<div class="hunk">` + the ONE banner drawer's
+    //  `<h3 class="banner">…</h3>` (date + verb + uri), then `<pre>`.
+    //  Empty URI with no ts/verb → the banner is a no-op, but the `<div>`
+    //  stays so per-hunk margins still apply.
     { a_cstr(s, "<div class=\"hunk\">"); call(u8sFeed, into, s); }
-    if (!$empty(hk->uri)) {
-        a_cstr(s_h0, "<h3>");
-        a_cstr(s_h1, "</h3>");
-        call(u8sFeed, into, s_h0);
-        a_dup(u8c, esc_uri, hk->uri);
-        call(hunk_html_escape, into, esc_uri);
-        call(u8sFeed, into, s_h1);
-    }
+    call(HUNKu8sFeedBanner, into, hk, HUNKOutHtml, 0);
     { a_cstr(s, "<pre>"); call(u8sFeed, into, s); }
 
     if (!$empty(hk->text)) {
@@ -1060,18 +984,18 @@ static ok64 HUNKu8sFeedLineBased(u8s into, hunk const *hk) {
     u32 line = 0;
     hunk_loc(hk->uri, path, &line);
 
-    // For grep/cat-style hunks (no diff sides), emit a plain-mode-shaped
-    // `--- URI ---` header and the verbatim text — not patchable, but
+    // For grep/cat-style hunks (no diff sides), emit the plain-mode
+    // banner header and the verbatim text — not patchable, but
     // informative.  LineBased mode targets `git apply` / `patch`, which
     // are non-color tools, so it tracks plain mode's separator rule.
     if ($empty(hk->text)) {
-        call(hunk_feed_header_plain, into, hk);
+        call(HUNKu8sFeedBanner, into, hk, HUNKOutPlain, 0);
         if ($empty(hk->uri)) u8sFeed1(into, '\n');
         done;
     }
 
     if (!hunk_has_diff(hk)) {
-        call(hunk_feed_header_plain, into, hk);
+        call(HUNKu8sFeedBanner, into, hk, HUNKOutPlain, 0);
         u32 tlen = (u32)$len(hk->text);
         call(hunk_feed_visible, into, hk, 0, tlen);
         if (tlen > 0 && hk->text[0][tlen - 1] != '\n')

@@ -13,6 +13,7 @@
 #include "abc/FILE.h"
 
 #include "dog/test/TESTBE.h"
+#include "dog/ROWS.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -1157,50 +1158,39 @@ ok64 DOGTitleTest() {
     done;
 }
 
-// --- Test: LS scratch-buffer acquisition unwinds on partial failure ---
-//  MEM-026 repro.  `SNIFFLsBufsAcquire` maps the 4 MiB `text` buffer,
-//  then heap-allocs `toks`, then (non-recurse only) heap-allocs
-//  `dir_seen`.  The old code was a bare `call()` chain: a failure on a
-//  later acquisition early-returned, leaking the buffers already
-//  acquired.  Force each later acquisition to fail by pre-occupying its
-//  target buffer (a non-NULL buffer makes Balloc return BNOTNULL) and
-//  assert every earlier-acquired buffer was released.
+// --- Test: ROWS / LS scratch-buffer acquisition + unwind ------------
+//  BRO-002 moved the row table's text/toks into `dog/ROWS` (ROWSOpen
+//  maps the 4 MiB text then heap-allocs toks; on a toks failure it
+//  unmaps text — the MEM-026 unwind now lives there).  `ls:`'s only
+//  local scratch is the one-level dedup buffer `dir_seen`.
 ok64 SNIFFLsBufsLeak() {
     sane(1);
 
-    //  Case 1 (toks fails after text mapped): pre-occupy `toks`.
+    //  Case 1 (ROWSOpen happy path + Close releases text/toks).  An
+    //  empty-uri ROWS_BATCH accumulator with no rows fed: Close is a
+    //  clean flush (nothing to emit) and frees both buffers.
     {
-        Bu8 text = {}, dir_seen = {};
-        Bu32 toks = {};
-        call(u32bAllocate, toks, 8);          // occupy → second acquire BNOTNULL
-        ok64 o = SNIFFLsBufsAcquire(text, toks, dir_seen, YES /*recurse*/);
-        want(o != OK);                        // acquisition failed
-        want(text[0] == NULL);                // text mmap was unwound (no leak)
-        u32bFree(toks);                        // free the deliberately-occupied buf
+        rows r = {};
+        u8cs empty = {};
+        call(ROWSOpen, &r, empty, 0, 0, ROWS_BATCH);
+        want(r.text[0] != NULL && r.toks[0] != NULL);
+        call(ROWSClose, &r);
+        want(r.text[0] == NULL && r.toks[0] == NULL);
     }
 
-    //  Case 2 (dir_seen fails after text+toks): non-recurse, pre-occupy
-    //  `dir_seen`.  Both the text mmap AND toks heap must be unwound.
+    //  Case 2 (`ls:` dir_seen acquire + release).
     {
-        Bu8 text = {}, dir_seen = {};
-        Bu32 toks = {};
-        call(u8bAllocate, dir_seen, 8);       // occupy → third acquire BNOTNULL
-        ok64 o = SNIFFLsBufsAcquire(text, toks, dir_seen, NO /*ls:*/);
-        want(o != OK);
-        want(text[0] == NULL);                // text mmap unwound
-        want(toks[0] == NULL);                // toks heap unwound
+        Bu8 dir_seen = {};
+        call(SNIFFLsBufsAcquire, dir_seen, NO /*ls:*/);
+        want(dir_seen[0] != NULL);
         u8bFree(dir_seen);
     }
 
-    //  Case 3 (happy path): all three acquire, caller releases them.
+    //  Case 3 (`lsr:` needs no dir_seen — acquire is a no-op).
     {
-        Bu8 text = {}, dir_seen = {};
-        Bu32 toks = {};
-        call(SNIFFLsBufsAcquire, text, toks, dir_seen, NO);
-        want(text[0] != NULL && toks[0] != NULL && dir_seen[0] != NULL);
-        u8bFree(dir_seen);
-        u32bFree(toks);
-        u8bUnMap(text);
+        Bu8 dir_seen = {};
+        call(SNIFFLsBufsAcquire, dir_seen, YES /*lsr:*/);
+        want(dir_seen[0] == NULL);
     }
     done;
 }

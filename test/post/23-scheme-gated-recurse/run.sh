@@ -75,8 +75,10 @@ grep -q '^be: post vsub' A.post.err \
 grep -q '	put	vsub#' wtA/.be/wtlog \
     || { echo "FAIL(A): sub recursion fired but the parent never bumped the gitlink" >&2
          cat wtA/.be/wtlog >&2; exit 1; }
-#  The sub's own change rode back as a path-prefixed relayed hunk.
-grep -q 'vsub/s.txt' A.post.out \
+#  The sub's own change rode back as one relayed per-module table hunk
+#  (BRO-002): a `vsub` module header (the rebased hunk uri) followed by
+#  the sub's own `mod s.txt` row underneath it.
+grep -q 'vsub' A.post.out && grep -qE '[[:space:]]mod[[:space:]]+s\.txt' A.post.out \
     || { echo "FAIL(A): sub change not relayed into the parent's report" >&2
          cat A.post.out >&2; exit 1; }
 

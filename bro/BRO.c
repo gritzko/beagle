@@ -1353,13 +1353,6 @@ static void scr_puts(char const *s) {
     u8sFeed(u8bIdle(bro_scr), cs);
 }
 
-// Emit the SGR for THEMEActive->fg_title.  Title color is a one-shot
-// escape outside the scr_emit_char SGR-delta machinery, so we render
-// the sequence inline here (caller follows with TTY_RESET).
-static void scr_emit_title_color(void) {
-    ANSIu8sFeedDelta(u8bIdle(bro_scr), THEMEAt('T'), ANSI_DEFAULT);
-}
-
 // Feed goto escape: \033[row;colH
 static void scr_goto(int row, int col) {
     a_pad(u8, tmp, 32);
@@ -1429,152 +1422,31 @@ static b8 bro_search_at(BROstate *st, u8csc text, u32 pos) {
 }
 
 static void BROStatusBar(BROstate *st);
-fun b8 hunk_is_ulog(hunkc const *hk);
 
-// Format display title "--- path :: func ---" into buf.
-// Returns the number of bytes written (excl NUL).
-//
-// ULOG-shape hunks (ts or verb set) render as `<verb> <uri>` instead
-// — same identity as the per-row ULOG header minus the date column.
-static int bro_format_title(char *buf, size_t bufsz, hunkc const *hk) {
-    if (hunk_is_ulog(hk)) {
-        a_pad(u8, vbuf, 16);
-        if (hk->verb) (void)RONutf8sFeed(vbuf_idle, hk->verb);
-        a_dup(u8 const, vd, vbuf_datac);
-        int n;
-        if (!$empty(vd) && !$empty(hk->uri))
-            n = snprintf(buf, bufsz, U8SFMT " " U8SFMT,
-                         u8sFmt(vd), u8sFmt(hk->uri));
-        else if (!$empty(hk->uri))
-            n = snprintf(buf, bufsz, U8SFMT, u8sFmt(hk->uri));
-        else if (!$empty(vd))
-            n = snprintf(buf, bufsz, U8SFMT, u8sFmt(vd));
-        else
-            n = 0;
-        if (n < 0) n = 0;
-        if ((size_t)n >= bufsz) n = (int)(bufsz - 1);
-        return n;
+// Render a hunk title row into bro_scr by calling the ONE shared header
+// drawer (`HUNKu8sFeedBanner`, dog/HUNK.c) — the [BRO-001] full-width
+// THEME_BANNER band (abbrev date if ts + verb if set + uri).  bro is the
+// width-aware layer, so it passes `cols` and the shared drawer space-fills
+// the band to the right edge.  The shared drawer ends each row with a
+// newline (for streamed/piped output); the TUI positions every row with
+// scr_goto, so we render into a scratch buffer and feed everything except
+// that trailing '\n'.  Caller has already moved the cursor to column 1
+// and emitted TTY_ERASE_LINE.
+static ok64 bro_render_title(BROstate *st, hunkc const *hk) {
+    sane(st && hk);
+    if (st->cols == 0) done;
+    //  Render straight into bro_scr (no extra BASS carve — this runs in
+    //  the redraw loop), then drop the drawer's trailing '\n': the TUI
+    //  row is cursor-positioned (scr_goto), so the band must not end in a
+    //  newline.  The drawer always terminates with exactly one '\n'.  The
+    //  interactive pager is always colour, so request the Color band.
+    call(HUNKu8sFeedBanner, u8bIdle(bro_scr), hk, HUNKOutColor, st->cols);
+    if (u8bDataLen(bro_scr) > 0) {
+        u8cs tail = {};
+        u8csTailS(u8bDataC(bro_scr), tail, 1);
+        if (tail[0][0] == '\n') (void)u8bPop(bro_scr);
     }
-    BROloc loc = {};
-    BROHunkLoc(&loc, hk);
-    b8 has_p = !$empty(loc.path);
-    b8 has_f = !$empty(loc.symbol);
-    int n = 0;
-    if (has_p && has_f && loc.line > 0)
-        n = snprintf(buf, bufsz, "--- " U8SFMT " :: " U8SFMT ":%u ---",
-                     u8sFmt(loc.path), u8sFmt(loc.symbol), loc.line);
-    else if (has_p && has_f)
-        n = snprintf(buf, bufsz, "--- " U8SFMT " :: " U8SFMT " ---",
-                     u8sFmt(loc.path), u8sFmt(loc.symbol));
-    else if (has_p && loc.line > 0)
-        n = snprintf(buf, bufsz, "--- " U8SFMT ":%u ---",
-                     u8sFmt(loc.path), loc.line);
-    else if (has_p)
-        n = snprintf(buf, bufsz, "--- " U8SFMT " ---", u8sFmt(loc.path));
-    else if (has_f)
-        n = snprintf(buf, bufsz, "--- " U8SFMT " ---", u8sFmt(loc.symbol));
-    if (n < 0) n = 0;
-    if ((size_t)n >= bufsz) n = (int)(bufsz - 1);
-    return n;
-}
-
-// A hunk carries ULOG-event shape when ts or verb is set.  Such titles
-// render as the footer-style row `<date> <verb> <uri>`; click navigates
-// via `be --tlv <uri>` so projector URIs work too.
-fun b8 hunk_is_ulog(hunkc const *hk) { return hk->ts != 0 || hk->verb != 0; }
-
-// Render a ULOG-shape title row into bro_scr (BRO-001): a banner that
-// spans the full terminal width — black text on a pale-yellow band
-// (THEME_BANNER) padded with spaces so the colour reaches the right
-// edge.  7-cell date column, verb, then URI (elided to fit).  bro is
-// the width-aware layer that knows `cols`, so it owns the full-width
-// fill; the shared formatter (`HUNKu8sFeedColor`) frames the same
-// content with the same THEME_BANNER SGR but width-agnostically.
-// Caller has already moved the cursor to column 1 and emitted
-// TTY_ERASE_LINE.
-static void bro_render_ulog_title(BROstate *st, hunkc const *hk) {
-    if (st->cols == 0) return;
-    u32 cols = st->cols;
-    u32 used = 0;
-
-    ansi64 band = THEME_BANNER;
-    ansi64 cur  = ANSI_DEFAULT;
-
-    (void)ANSIu8sFeedDelta(u8bIdle(bro_scr), band, cur); cur = band;
-
-    u8sFeed1(u8bIdle(bro_scr), ' ');
-    used++;
-
-    if (used < cols) {
-        i64 now = (i64)time(NULL);
-        i64 ts  = now;
-        if (hk->ts) {
-            struct tm tm = {};
-            if (RONToTime(hk->ts, &tm, NULL) == OK) {
-                time_t t = mktime(&tm);
-                if (t != (time_t)-1) ts = (i64)t;
-            }
-        }
-        (void)DOGutf8sFeedDate(u8bIdle(bro_scr), ts, now);
-        used = used + 7 < cols ? used + 7 : cols;
-    }
-
-    if (used < cols) { u8sFeed1(u8bIdle(bro_scr), ' '); used++; }
-
-    if (used < cols && hk->verb) {
-        a_pad(u8, vbuf, 16);
-        (void)RONutf8sFeed(vbuf_idle, hk->verb);
-        a_dup(u8 const, vdata, vbuf_datac);
-        size_t vlen  = u8csLen(vdata);
-        size_t vshow = vlen < cols - used ? vlen : cols - used;
-        if (vshow > 0) {
-            a_head(u8c, vshow_sl, vdata, vshow);
-            u8sFeed(u8bIdle(bro_scr), vshow_sl);
-            used += (u32)vshow;
-        }
-    }
-
-    if (used < cols) { u8sFeed1(u8bIdle(bro_scr), ' '); used++; }
-
-    if (used < cols && !$empty(hk->uri)) {
-        u32 avail = cols - used;
-        a_dup(u8 const, uri, hk->uri);
-        size_t ulen = u8csLen(uri);
-        if (ulen <= avail) {
-            u8sFeed(u8bIdle(bro_scr), uri);
-            used += (u32)ulen;
-        } else {
-            a_dup(u8 const, scan, hk->uri);
-            b8 has_slash = (u8csRevFind(scan, '/') == OK);
-            size_t suff_off = has_slash ? u8csLen(scan) - 1 : 0;
-            size_t suff_len = ulen - suff_off;
-            if (has_slash && suff_len + 3 <= avail) {
-                a_cstr(dots, "...");
-                u8sFeed(u8bIdle(bro_scr), dots);
-                a_rest(u8c, suffix, hk->uri, suff_off);
-                u8sFeed(u8bIdle(bro_scr), suffix);
-                used += 3 + (u32)suff_len;
-            } else if (avail > 3) {
-                a_head(u8c, head, uri, avail - 3);
-                u8sFeed(u8bIdle(bro_scr), head);
-                a_cstr(dots, "...");
-                u8sFeed(u8bIdle(bro_scr), dots);
-                used = cols;
-            } else {
-                a_head(u8c, head, uri, avail);
-                u8sFeed(u8bIdle(bro_scr), head);
-                used += avail;
-            }
-        }
-    }
-
-    // Pad to full screen width so the pale-yellow band reaches the edge.
-    while (used < cols) {
-        u8sFeed1(u8bIdle(bro_scr), ' ');
-        used++;
-    }
-
-    (void)ANSIu8sFeedReset(u8bIdle(bro_scr), cur);
+    done;
 }
 
 static void BRORender(BROstate *st) {
@@ -1599,17 +1471,9 @@ static void BRORender(BROstate *st) {
         hunk const *hk = &st->hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
-            if (hunk_is_ulog(hk)) {
-                bro_render_ulog_title(st, hk);
-                continue;
-            }
-            scr_emit_title_color();
-            char dtitle[HUNK_TITLE_MAX + 1];
-            int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
-            u32 w = (u32)dtlen < st->cols ? (u32)dtlen : st->cols;
-            u8cs ttl = {(u8cp)dtitle, (u8cp)dtitle + w};
-            u8sFeed(u8bIdle(bro_scr), ttl);
-            scr_puts(TTY_RESET);
+            //  ONE header drawer (BRO-002): every title line — status,
+            //  content, action table — renders as the THEME_BANNER band.
+            (void)bro_render_title(st, hk);
             continue;
         }
 
@@ -2234,17 +2098,14 @@ static ok64 BROPlain(hunkcs hunks) {
     }
 
     if (!BRO_COLOR) {
-        // No colours: emit hunk text verbatim with a `--- uri ---` title
-        // per hunk.  Same as before — plain --no-color dump.
+        // No colours: emit the ONE banner header (plain mode = the
+        // machine-parseable `[<date> ][<verb> ]<uri>\n`) then the hunk
+        // text verbatim.  --no-color dump.
         for (u32 h = 0; h < nhunks; h++) {
             u8bReset(bro_scr);
-            if (hunk_has_title(&hunks[0][h])) {
-                char dtitle[HUNK_TITLE_MAX + 1];
-                int dtlen = bro_format_title(dtitle, sizeof(dtitle), &hunks[0][h]);
-                u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
-                u8bFeed(bro_scr, dts);
-                u8sFeed1(u8bIdle(bro_scr), '\n');
-            }
+            if (hunk_has_title(&hunks[0][h]))
+                (void)HUNKu8sFeedBanner(u8bIdle(bro_scr), &hunks[0][h],
+                                        HUNKOutPlain, 0);
             if (!$empty(hunks[0][h].text)) {
                 u8bFeed(bro_scr, hunks[0][h].text);
                 u32 tlen = (u32)$len(hunks[0][h].text);
@@ -2276,20 +2137,10 @@ static ok64 BROPlain(hunkcs hunks) {
         hunk const *hk = &hunks[0][ln->lo];
 
         if (ln->hi == BRO_TITLE_LINE) {
-            if (hunk_is_ulog(hk)) {
-                // <date>\t<verb>\t<uri>\n  — same shape as the pipe ULOG
-                // line so plain/TUI stay byte-compatible aside from bg.
-                (void)HUNKu8sFeedColor(u8bIdle(bro_scr), hk);
-                BROScreenFlush();
-                continue;
-            }
-            char dtitle[HUNK_TITLE_MAX + 1];
-            int dtlen = bro_format_title(dtitle, sizeof(dtitle), hk);
-            scr_emit_title_color();
-            u8cs dts = {(u8cp)dtitle, (u8cp)dtitle + dtlen};
-            u8bFeed(bro_scr, dts);
-            scr_puts(TTY_RESET);
-            u8sFeed1(u8bIdle(bro_scr), '\n');
+            //  ONE header drawer (BRO-002): the THEME_BANNER band,
+            //  full-width-filled to the pipe-dump column count so it
+            //  reaches the edge (same shape as the TUI / pipe ULOG line).
+            (void)HUNKu8sFeedBanner(u8bIdle(bro_scr), hk, HUNKOutColor, cols);
             BROScreenFlush();
             continue;
         }

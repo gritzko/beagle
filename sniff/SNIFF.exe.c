@@ -23,6 +23,7 @@
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/git/IGNO.h"
+#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
@@ -274,16 +275,13 @@ static void status_pack(Bu32 toks, Bu8 text, u8 tag) {
     (void)u32bFeed1(toks, tok32Pack(tag, (u32)u8bDataLen(text)));
 }
 
-//  Render one row into `(text, toks)` in the same column layout as
-//  `sniff/LS.c::ls_emit_row`:
+//  Status rows feed the shared `dog/ROWS` builder in the same column
+//  layout `sniff/LS.c` produces, but with the bare-`be` flavour: path
+//  tag 'S' (neutral — reads better uncoloured beside the verb palette),
+//  moves joined `<src>#<dst>` (`arrow=NO`, the URI-fragment form put
+//  rows store, so `mov a.txt#a2.txt` greps keep matching), and a
+//  `cat:`/`diff:` nav per row.  ULOGVerbTag picks the verb palette slot.
 //
-//    <7-date> <3-verb> <path>[ -> <dst>]\n<cat:URI>
-//      tag 'L'  verb's tag  tag 'F'         tag 'U' (invisible)
-//
-//  ULOGVerbTag picks the palette slot per verb (Y for put, W for new,
-//  …); the colour comes from THEME via HUNKu8sFeedColor.  The `cat:`
-//  nav target is what `sniff/LS.c` uses for file rows — clicking the
-//  row in bro opens the file.
 //  YES iff a row of `verb` should click-nav to `diff:<path>` instead
 //  of `cat:<path>` — i.e. the file diverges from baseline and the
 //  user's likely first action is "show me what changed".  Only `mod`
@@ -294,81 +292,21 @@ static b8 status_verb_wants_diff_nav(ulogreccp rec, status_verbs const *v) {
     return rec->verb == v->v_mod;
 }
 
-static void status_emit_row_buf(Bu8 text, Bu32 toks,
-                                 ulogreccp rec, i64 now,
-                                 status_verbs const *v) {
-    u8cs path    = {rec->uri.path[0],     rec->uri.path[1]};
-    u8cs mov_dst = {rec->uri.fragment[0], rec->uri.fragment[1]};
-
-    //  Date column (7 cols).
-    if (rec->ts) {
-        a_pad(u8, date, 8);
-        i64 secs = status_ron60_to_secs(rec->ts);
-        if (secs > 0) (void)DOGutf8sFeedDate(date_idle, secs, now);
-        (void)u8bFeed(text, u8bDataC(date));
-    } else {
-        a_cstr(sp7, "       ");
-        (void)u8bFeed(text, sp7);
-    }
-    status_pack(toks, text, 'L');
-    (void)u8bFeed1(text, ' ');
-    status_pack(toks, text, 'S');
-
-    //  Verb column (3 cols, left-justified, space-padded).
-    {
-        a_pad(u8, vbuf, 16);
-        (void)RONutf8sFeed(vbuf_idle, rec->verb);
-        a_dup(u8c, vs, u8bDataC(vbuf));
-        (void)u8bFeed(text, vs);
-        size_t need = ($len(vs) < 3) ? 3 - $len(vs) : 0;
-        for (size_t i = 0; i < need; i++) (void)u8bFeed1(text, ' ');
-    }
-    status_pack(toks, text, ULOGVerbTag(rec->verb));
-    (void)u8bFeed1(text, ' ');
-    status_pack(toks, text, 'S');
-
-    //  Path column.  Moves render as `<src>#<dst>` — the URI-fragment
-    //  form `put` rows actually store, so tooling that greps for
-    //  `mov a.txt#a2.txt` (test/put/04-file-dir-mv) keeps matching.
-    //  Tagged 'S' (neutral) — paths in bare-be status read better
-    //  uncoloured against the verb-palette column to their left.
-    (void)u8bFeed(text, path);
-    if (!u8csEmpty(mov_dst)) {
-        (void)u8bFeed1(text, '#');
-        (void)u8bFeed(text, mov_dst);
-    }
-    (void)u8bFeed1(text, '\n');
-    status_pack(toks, text, 'S');
-
-    //  Invisible navigation URI.  `mod` rows go to the diff: projector
-    //  (bro click → unified diff); everything else opens the file in
-    //  cat: view.  Same `sniff/LS.c` convention for non-changed rows.
-    if (status_verb_wants_diff_nav(rec, v)) {
-        a_cstr(s, "diff:"); (void)u8bFeed(text, s);
-    } else {
-        a_cstr(s, "cat:");  (void)u8bFeed(text, s);
-    }
-    if (!u8csEmpty(mov_dst))
-        (void)u8bFeed(text, mov_dst);
-    else
-        (void)u8bFeed(text, path);
-    status_pack(toks, text, 'U');
-}
-
-//  Drain `rows`, emit every row matching `verb_filter` into the shared
-//  `(text, toks)` accumulator.  One ≤7-pass sweep across the bucket
-//  list per call from `sniff_status_work`.
-static void status_dump_verb(Bu8 rows, ron60 verb_filter,
-                              Bu8 text, Bu32 toks, i64 now,
-                              status_verbs const *v) {
-    a_dup(u8c, scan, u8bData(rows));
+//  Drain the bucket buffer `buf`, append every row matching
+//  `verb_filter` to the shared builder.  One ≤7-pass sweep across the
+//  bucket list per call from `sniff_status_work`.
+static void status_dump_verb(Bu8 buf, ron60 verb_filter,
+                             rows *table, status_verbs const *v) {
+    a_dup(u8c, scan, u8bData(buf));
     while (!u8csEmpty(scan)) {
         ulogrec rec = {};
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;                  // skip malformed
         if (rec.verb != verb_filter) continue;
-        status_emit_row_buf(text, toks, &rec, now, v);
+        ROWSnav nav = status_verb_wants_diff_nav(&rec, v)
+                        ? ROWS_NAV_DIFF : ROWS_NAV_CAT;
+        (void)ROWSu8bFeedRec(table, &rec, nav);
     }
 }
 
@@ -448,37 +386,29 @@ static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
     call(SNIFFClassify, status_step, b);
 
-    a_carve(u8,  text, 1UL << 20);
-    a_carve(u32, toks, 1UL << 16);
+    //  One module table headed by `status:` (whole-table consumer →
+    //  ROWS_BATCH always buffers a single hunk regardless of mode).
+    a_cstr(status_uri, "status:");
+    rows table = {};
+    call(ROWSOpen, &table, status_uri, 0, 0, ROWS_BATCH);
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
-    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, text, toks, b->now, &b->v);
-    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, text, toks, b->now, &b->v);
-    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, text, toks, b->now, &b->v);
-    if (b->pat_n > 0) status_dump_verb(b->rows, b->v.v_pat, text, toks, b->now, &b->v);
-    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, text, toks, b->now, &b->v);
-    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, text, toks, b->now, &b->v);
-    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, text, toks, b->now, &b->v);
-    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, text, toks, b->now, &b->v);
+    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, &table, &b->v);
+    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, &table, &b->v);
+    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, &table, &b->v);
+    if (b->pat_n > 0) status_dump_verb(b->rows, b->v.v_pat, &table, &b->v);
+    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, &table, &b->v);
+    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, &table, &b->v);
+    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, &table, &b->v);
+    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, &table, &b->v);
 
-    //  Summary line finalises the hunk.
-    status_emit_summary_buf(text, toks, b);
+    //  Summary line finalises the hunk — appended straight to the
+    //  table's text/toks (it's a status-only tail, not a row).
+    status_emit_summary_buf(table.text, table.toks, b);
 
-    a_cstr(status_uri, "status:");
-    hunk hk = {};
-    u8csMv(hk.uri,  status_uri);
-    u8csMv(hk.text, u8bDataC(text));
-    {
-        tok32cs kv = {};
-        kv[0] = (tok32c *)u32bDataHead(toks);
-        kv[1] = (tok32c *)u32bDataHead(toks) + u32bDataLen(toks);
-        u32csMv(hk.toks, kv);
-    }
-    a_carve(u8, big, u8bDataLen(text) + (1UL << 16));
-    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
-    if (fo == OK) (void)FILEout(u8bDataC(big));
-    done;
+    //  Flush the one `status:` module hunk.
+    return ROWSClose(&table);
 }
 
 //  Entry: maps the shared rows buffer, runs the worker, releases

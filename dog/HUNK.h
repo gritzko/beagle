@@ -81,6 +81,20 @@ extern HUNKout HUNKMode;
 
 ok64 HUNKu8sFeedOut(u8s into, hunk const *hk);
 
+// The ONE hunk-header drawer (BRO-002): renders the [BRO-001] banner —
+// abbreviated date (only if `hk->ts`) + verb (only if set) + uri — for
+// every hunk, status or content alike (there is no status-vs-content
+// distinction).  No violet, no underline, no `--- … ---` dashes.  The
+// output mode is the `mode` argument (the caller's own render mode, so
+// HUNKu8sFeedColor always colours regardless of the process-global
+// HUNKMode): Plain/TLV = `[<date> ][<verb> ]<uri>\n` (machine-parseable),
+// Color = the THEME_BANNER black-on-pale-yellow SGR band, Html = the
+// banner-coloured `<h3 class="banner">` row.  `cols > 0` space-fills the
+// color band to the terminal edge (the width-aware bro layer passes its
+// width); `cols == 0` frames just the content (piped color).  No-op on
+// an empty URI with no ts/verb.  Advances into[0].
+ok64 HUNKu8sFeedBanner(u8s into, hunk const *hk, HUNKout mode, u32 cols);
+
 // Serialize a hunk as a nested TLV record.  Advances into[0].
 // `ts` and `verb` are emitted as fixed 8-byte LE records only when
 // non-zero, before the URI/text/toks payload.

@@ -10,6 +10,7 @@
 #include "abc/RON.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
+#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "dog/git/GIT.h"
 
@@ -575,7 +576,10 @@ ok64 KEEPEmitCommitLine(sha1cp commit_sha, ron60 fallback_ts) {
     u8csMv(rep.uri.query, hashlet);
     rep.uri.fragment[0] = subj[0];
     rep.uri.fragment[1] = subj[1];
-    (void)ULOGPrintStatusLine(&rep);
+    //  Range row carries the sha in `.query`, subject in `.fragment`;
+    //  ROWS_NAV_COMMIT renders the subject as the clickable path with a
+    //  hidden `commit:?<sha>` nav (COMMIT-001).
+    (void)ROWSPrintRow(&rep, ROWS_NAV_COMMIT);
     done;
 }
 
@@ -616,7 +620,7 @@ ok64 KEEPEmitTreeDiffFiles(sha1cp base_commit, sha1cp tgt_commit,
         if (dr != OK) continue;
         ulogrec rep = {.ts = fallback_ts, .verb = ok64stem(rec.verb)};
         u8csMv(rep.uri.path, rec.uri.path);
-        (void)ULOGPrintStatusLine(&rep);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
     }
     done;
 }

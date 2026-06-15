@@ -1,4 +1,4 @@
---- spot/test/data/slice_init.c#L1 ---
+hunk spot/test/data/slice_init.c#L1
  void f() {
 +    u8cs a = {arr[0], arr[1]};
      u8cs b = {(*fp)[0], (*fp)[1]};

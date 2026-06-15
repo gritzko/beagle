@@ -29,6 +29,7 @@
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
+#include "dog/ROWS.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -152,7 +153,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     {
         ulogrec rep = {.ts = 0, .verb = c->verb_put};
         u8csMv(rep.uri.path, path);
-        (void)ULOGPrintStatusLine(&rep);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
     }
     return OK;
 }
@@ -634,6 +635,61 @@ static b8 put_is_sub_add_candidate(u8cs reporoot, u8cs subpath) {
 
 // --- Public API ---
 
+//  Bare `be put` worker: auto-pair renames, then walk the baseline tree
+//  staging tracked-dirty files.  Per-file `put` rows append to the
+//  active ROWS table (opened by the caller).  Extracted so the caller's
+//  ROWSOpen/Close brackets every exit path (one module hunk).
+static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
+    sane($ok(reporoot));
+
+    //  Walk the baseline tree — tracked-only; never picks up untracked
+    //  siblings.  Submodules are skipped (WALKSKIP).
+    sha1 tree_sha = {};
+    ok64 bo = put_baseline_tree(&tree_sha);
+    if (bo == ULOGNONE) {
+        if (!SNIFF.quiet)
+            fprintf(stderr,
+                    "sniff: put: no baseline (fresh repo); name "
+                    "files explicitly\n");
+        return PUTNONE;
+    }
+    if (bo != OK) return bo;
+
+    //  Pass 1: auto-pair system-`mv` renames.  Pairs are emitted as
+    //  `put <old>#<new>` rows.  Refuses PUTAMBIG without writing
+    //  anything when the sha pairing isn't 1:1.  Each emitted row bumps
+    //  `ts` so subsequent rows stay strictly increasing.
+    u32 mv_emitted = 0;
+    ok64 mo = put_detect_moves(reporoot, &ts, &mv_emitted, verb_put);
+    if (mo != OK) return mo;
+
+    //  Pass 2: tracked-dirty walk.  Re-stamp ts: the latest get/post
+    //  row's ts.  Files whose content matches the baseline get
+    //  re-stamped to this so the next bare put fast-paths them via
+    //  SNIFFAtKnown.  A path the move pass emitted a row for is still in
+    //  the baseline tree but its on-disk file is absent — the
+    //  put_visit_tracked NOENT branch returns OK silently, so no
+    //  spurious dirty rows.
+    ron60 base_ts = 0, base_verb = 0;
+    uri base_u = {};
+    (void)SNIFFAtBaseline(&base_ts, &base_verb, &base_u);
+
+    put_walk_ctx wc = {.ts = ts, .verb_put = verb_put,
+                       .baseline_ts = base_ts, .err = OK};
+    u8csMv(wc.reporoot, reporoot);
+    ok64 wo = WALKTreeLazy(tree_sha.data, put_visit_tracked, &wc);
+    if (wc.err != OK) return wc.err;
+    if (wo != OK) return wo;
+    u32 total = wc.emitted + mv_emitted;
+    if (total == 0) {
+        if (!SNIFF.quiet) fprintf(stderr, "sniff: put: no changes\n");
+        return PUTNONE;
+    }
+    if (!SNIFF.quiet)
+        fprintf(stderr, "sniff: staged %u put row(s)\n", total);
+    done;
+}
+
 ok64 PUTStage(u32 nuris, uri const *uris) {
     sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
 
@@ -648,54 +704,16 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
     a_dup(u8c, reporoot, u8bData(HOME.wt));
 
     if (nuris == 0) {
-        //  Walk the baseline tree — tracked-only; never picks up
-        //  untracked siblings.  Submodules are skipped (WALKSKIP).
-        sha1 tree_sha = {};
-        ok64 bo = put_baseline_tree(&tree_sha);
-        if (bo == ULOGNONE) {
-            if (!SNIFF.quiet)
-                fprintf(stderr,
-                        "sniff: put: no baseline (fresh repo); name "
-                        "files explicitly\n");
-            return PUTNONE;
-        }
-        if (bo != OK) return bo;
-
-        //  Pass 1: auto-pair system-`mv` renames.  Pairs are emitted
-        //  as `put <old>#<new>` rows.  Refuses PUTAMBIG without
-        //  writing anything when the sha pairing isn't 1:1.  Each
-        //  emitted row bumps `ts` so subsequent rows stay strictly
-        //  increasing.
-        u32 mv_emitted = 0;
-        ok64 mo = put_detect_moves(reporoot, &ts, &mv_emitted, verb_put);
-        if (mo != OK) return mo;
-
-        //  Pass 2: tracked-dirty walk.  Re-stamp ts: the latest
-        //  get/post row's ts.  Files whose content matches the
-        //  baseline get re-stamped to this so the next bare put
-        //  fast-paths them via SNIFFAtKnown.  A path the move pass
-        //  emitted a row for is still in the baseline tree but its
-        //  on-disk file is absent — the put_visit_tracked NOENT
-        //  branch returns OK silently, so no spurious dirty rows.
-        ron60 base_ts = 0, base_verb = 0;
-        uri base_u = {};
-        (void)SNIFFAtBaseline(&base_ts, &base_verb, &base_u);
-
-        put_walk_ctx wc = {.ts = ts, .verb_put = verb_put,
-                           .baseline_ts = base_ts, .err = OK};
-        u8csMv(wc.reporoot, reporoot);
-        ok64 wo = WALKTreeLazy(tree_sha.data,
-                               put_visit_tracked, &wc);
-        if (wc.err != OK) return wc.err;
-        if (wo != OK) return wo;
-        u32 total = wc.emitted + mv_emitted;
-        if (total == 0) {
-            if (!SNIFF.quiet) fprintf(stderr, "sniff: put: no changes\n");
-            return PUTNONE;
-        }
-        if (!SNIFF.quiet)
-            fprintf(stderr, "sniff: staged %u put row(s)\n", total);
-        done;
+        //  Bare `be put`: open ONE per-module row table (BRO-002) so the
+        //  move-pass + tracked-dirty walk rows land in one accumulator —
+        //  streamed live on a tty, flushed as ONE hunk in --tlv/relay.
+        rows table = {};
+        u8cs empty_uri = {};
+        call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+        try(put_stage_bare, reporoot, ts, verb_put);
+        ok64 wr = __;
+        ok64 cr = ROWSClose(&table);
+        return wr != OK ? wr : cr;
     }
 
     //  Per-path loop is driven by the unified ULOG-merge classifier

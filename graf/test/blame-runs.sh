@@ -59,13 +59,13 @@ S2=$("$BE" sha1:?v0.0.2 2>/dev/null) || fail "sha1:?v0.0.2 failed"
 PLAIN=$("$GRAF" --plain 'blame:f.c' 2>/dev/null) || fail "plain blame failed"
 
 #  Exactly two committed run-hunks, in topo order, with the right shas.
-NHUNK=$(printf '%s\n' "$PLAIN" | grep -c '^--- commit:?')
+NHUNK=$(printf '%s\n' "$PLAIN" | grep -cE 'commit:\?[0-9a-f]{40}')
 [ "$NHUNK" -eq 2 ] || fail "expected 2 commit run-hunks, got $NHUNK:
 $PLAIN"
-printf '%s\n' "$PLAIN" | grep -q "^--- commit:?$S1 ---" \
+printf '%s\n' "$PLAIN" | grep -q "commit:?$S1" \
     || fail "no run-hunk for c1 (commit:?$S1):
 $PLAIN"
-printf '%s\n' "$PLAIN" | grep -q "^--- commit:?$S2 ---" \
+printf '%s\n' "$PLAIN" | grep -q "commit:?$S2" \
     || fail "no run-hunk for c2 (commit:?$S2):
 $PLAIN"
 
@@ -73,7 +73,7 @@ $PLAIN"
 #  Assert the first hunk body is exactly the c1 run and contains no c2
 #  lines (proving the regroup is per-commit, not per-line).
 C1BODY=$(printf '%s\n' "$PLAIN" | awk '
-    /^--- commit:?/{h++; next} h==1 && NF{print}')
+    /commit:\?[0-9a-f]/{h++; next} h==1 && NF{print}')
 [ "$C1BODY" = "aaa1" ] || fail "c1 run body = '$C1BODY', want 'aaa1'"
 
 #  --- gutter is GONE: source lines start at column 0 -----------------
@@ -101,7 +101,7 @@ printf '%s\n' "$WTOUT" | grep -qx 'WTLINE' \
     || fail "worktree line not blamed:
 $WTOUT"
 #  Still only TWO commit:? hunks; the wt run carries no commit URI.
-NWT=$(printf '%s\n' "$WTOUT" | grep -c '^--- commit:?')
+NWT=$(printf '%s\n' "$WTOUT" | grep -cE 'commit:\?[0-9a-f]{40}')
 [ "$NWT" -eq 2 ] || fail "wt edit: expected 2 commit run-hunks, got $NWT:
 $WTOUT"
 

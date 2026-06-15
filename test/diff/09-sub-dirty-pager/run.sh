@@ -70,21 +70,22 @@ rc=$?
 [ "$rc" = 0 ] || { echo "DIFF-002(pager): be --color diff: exited $rc" >&2
     cat "$SCRATCH/03.err" >&2; exit 1; }
 
-#  The sub hunk must be PRESENT and rendered by BRO (`--- chsub/...`),
-#  proving it passed through the pager.
+#  The sub hunk must be PRESENT and rendered by BRO, proving it passed
+#  through the pager.  Two signals:
+#    (1) the dirtied sub content travelled the bro body renderer; and
+#    (2) the sub hunk header was drawn as the BRO-002 banner — the
+#        full-width THEME_BANNER band (black-on-pale-yellow, SGR
+#        `38;5;0;48;5;230m`) wrapping the `chsub/c.txt` uri.  A hunk that
+#        bypassed bro (the old bug) would instead be raw relay ANSI with
+#        no banner band on its own line — bro's output would be the empty
+#        parent "nothing".
 grep -aq 'DIRTYSUBLINE' "$SCRATCH/03.out" || {
     echo "DIFF-002(pager): sub content missing from pager stream" >&2
     cat -v "$SCRATCH/03.out" | head -40 >&2; exit 1; }
-grep -aq -- '--- chsub/c.txt' "$SCRATCH/03.out" || {
+#  The banner band + the chsub uri must appear on the same rendered line.
+grep -aq -- '48;5;230m.*chsub/c.txt' "$SCRATCH/03.out" || {
     echo "DIFF-002(pager): sub hunk not bro-rendered (bypassed the pager)" >&2
-    echo "  expected a '--- chsub/c.txt:<line> ---' header" >&2
+    echo "  expected a THEME_BANNER-wrapped 'chsub/c.txt' header" >&2
     cat -v "$SCRATCH/03.out" | head -40 >&2; exit 1; }
-
-#  The bug signature — a relay-ANSI `diff:chsub/...#L` header that
-#  bypassed bro — must NOT appear for the sub.
-if grep -aq 'diff:chsub/c.txt#L' "$SCRATCH/03.out"; then
-    echo "DIFF-002(pager): sub hunk relay-rendered past bro (the bug)" >&2
-    cat -v "$SCRATCH/03.out" | head -40 >&2; exit 1
-fi
 
 echo "diff/09-sub-dirty-pager: OK"

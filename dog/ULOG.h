@@ -369,19 +369,8 @@ ansi64 ULOGVerbColor(ron60 verb);
 //  to paint a verb token via tok32Pack(tag, end).
 u8 ULOGVerbTag(ron60 verb);
 
-//  Lift a ULOG row into a status hunk (empty body, ts/verb populated,
-//  URI rendered into `uri_buf`'s idle).  The hunk's `uri` slice borrows
-//  from `uri_buf`'s data area, so the buffer must outlive every use of
-//  `*out`.  Callers then ship the hunk through `HUNKu8sFeedOut` (and
-//  pick TLV/color/plain via the global `HUNKMode` — see dog/HUNK.h).
-//  `uri_buf` is *not* reset; the rendered bytes are appended to its
-//  idle area and `out->uri` covers exactly that fresh slice.
-ok64 ULOGToHunk(ulogreccp rec, hunk *out, u8b uri_buf);
-
-//  One-shot convenience: lift `rec` into a status hunk, render it via
-//  `HUNKu8sFeedOut` (which reads `HUNKMode`), and push the assembled
-//  line to stdout via `FILEout`.  This is the canonical per-row status
-//  emitter used by sniff GET / POST / PATCH "as it happens" reporters.
-ok64 ULOGPrintStatusLine(ulogreccp rec);
+//  BRO-002 retired ULOGToHunk and ULOGPrintStatusLine: status/action
+//  rows now flow through the shared row-table builder `dog/ROWS`
+//  (ROWSPrintRow / ROWSu8bFeedRec), one content hunk per (sub)module.
 
 #endif

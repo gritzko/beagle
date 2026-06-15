@@ -26,15 +26,13 @@
 
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
+#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
 
 #include "AT.h"
 #include "CLASS.h"
 #include "SNIFF.h"
-
-#define LS_TEXT_CAP   (1UL << 22)   // 4 MiB body, mmap-backed
-#define LS_TOKS_CAP   (1UL << 18)   // 256 K tok32 entries
 
 // --- Local verb cache --------------------------------------------------
 //
@@ -55,17 +53,8 @@ typedef struct {
     b8       recurse;      // YES = lsr:, NO = ls:
     Bu8      dir_seen;     // one-level dedup: last emitted subdir slice
     ls_verbs v;
-    Bu8      text;         // accumulating hunk body
-    Bu32     toks;         // accumulating column / 'U' tags
-    i64      now;          // for DOGutf8sFeedDate
+    rows    *rows;         // shared row-table accumulator (dog/ROWS)
 } ls_ctx;
-
-//  Pack a tok32 covering [last_end, current_end) with tag `tag`.
-//  Buffer-end offsets are u32; the LSM-style cap (LS_TEXT_CAP, 4 MiB)
-//  stays under the 2^28 tok32 offset budget.
-static void ls_pack(ls_ctx *c, u8 tag) {
-    (void)u32bFeed1(c->toks, tok32Pack(tag, (u32)u8bDataLen(c->text)));
-}
 
 //  Count '/' separators in `path` after stripping `prefix`.  Used by
 //  `lsr:` to indent descendants by depth, building a visible tree.
@@ -80,91 +69,31 @@ static u32 ls_depth(u8cs prefix, u8cs path) {
     return d;
 }
 
-//  Append one row's text + toks.  Caller has already classified the
-//  step (verb chosen, ts resolved); this just renders.  Columns are
-//  space-padded — bro counts each visible char as one cp for
-//  click→byte mapping, so tabs would drift visual vs byte (tabs
-//  expand on the terminal) and clicks on the path would miss the
-//  F-span entirely.  `lsr:` additionally indents the path column by
-//  depth*4 so the listing reads as a tree.
-//
-//  Layout (one row):
-//    <7-date> <3-verb> [<indent>]<path>[ -> <dst>]\n<nav-uri>
-//      └tag 'L'└tag verb's-slot └tag 'F'                 └tag 'U' (invisible)
+//  Append one row via the shared `dog/ROWS` builder.  Caller has
+//  already classified the step (verb chosen, ts resolved); this only
+//  describes how to render it.  The ls layout is: path tag 'F', moves
+//  joined with ` -> ` (`arrow=YES`), `lsr:` indents the path column by
+//  depth*4 cols (a visible tree; one-level `ls:` never indents), and
+//  the hidden nav URI is `ls:` for a collapsed subdir / `cat:` for a
+//  file or move-dst.  ROWS handles the date/verb columns, the 'L'/verb
+//  /'F'/'U' toks, and (mode-keyed) the live-stream-or-buffer decision.
 static void ls_emit_row(ls_ctx *c, u8cs path, u8cs mov_dst, ron60 ts,
                         ron60 verb) {
-    //  Static space slice — reused for column-pad and tree-indent.
-    //  32 cols covers 8 levels of tree indent (lsr: depth 0..8) plus
-    //  column-pad headroom.
-    a_cstr(LS_SP, "                                ");
-
-    //  Date column: 7 cols.  DOGutf8sFeedDate centre-pads to 7; empty
-    //  ts → 7 spaces.
-    if (ts) {
-        a_pad(u8, date, 8);
-        struct tm tm = {};
-        if (RONToTime(ts, &tm, NULL) == OK) {
-            time_t t = mktime(&tm);
-            (void)DOGutf8sFeedDate(date_idle, (i64)t, c->now);
-        }
-        (void)u8bFeed(c->text, u8bDataC(date));
-    } else {
-        u8cs sp7 = {LS_SP[0], LS_SP[0] + 7};
-        (void)u8bFeed(c->text, sp7);
-    }
-    ls_pack(c, 'L');
-    (void)u8bFeed1(c->text, ' ');
-    ls_pack(c, 'S');
-
-    //  Verb column: 3 cols, left-justified.  Every verb in our set is
-    //  2–3 chars; pad short ones ("eq") with trailing spaces so the
-    //  path column starts at a fixed byte offset.  Tag = palette slot.
-    {
-        a_pad(u8, vbuf, 16);
-        (void)RONutf8sFeed(vbuf_idle, verb);
-        a_dup(u8c, vs, u8bDataC(vbuf));
-        (void)u8bFeed(c->text, vs);
-        size_t need = ($len(vs) < 3) ? 3 - $len(vs) : 0;
-        u8cs pad = {LS_SP[0], LS_SP[0] + need};
-        (void)u8bFeed(c->text, pad);
-    }
-    ls_pack(c, ULOGVerbTag(verb));
-    (void)u8bFeed1(c->text, ' ');
-    ls_pack(c, 'S');
-
-    //  Path column.  In recursive (lsr:) mode, prepend `depth*4` spaces
-    //  so descendants form a visible tree.  The indent stays inside
-    //  the F span — clicks anywhere on the row's path column still
-    //  resolve to the U-tagged navigation URI immediately after.
-    //  `mov` rows render `<src> -> <dst>` inline.
-    if (c->recurse) {
-        u32 ind = ls_depth(c->prefix, path) * 4;
-        if (ind > 32) ind = 32;
-        u8cs ip = {LS_SP[0], LS_SP[0] + ind};
-        (void)u8bFeed(c->text, ip);
-    }
-    (void)u8bFeed(c->text, path);
-    if (!u8csEmpty(mov_dst)) {
-        a_cstr(arrow, " -> ");
-        (void)u8bFeed(c->text, arrow);
-        (void)u8bFeed(c->text, mov_dst);
-    }
-    (void)u8bFeed1(c->text, '\n');
-    ls_pack(c, 'F');
-
-    //  Invisible navigation URI — covered by a 'U' tok so plain/color
-    //  renderers skip the bytes and TLV consumers get a click target.
-    if (verb == c->v.v_dir) {
-        a_cstr(s, "ls:"); (void)u8bFeed(c->text, s);
-        (void)u8bFeed(c->text, path);
-    } else if (!u8csEmpty(mov_dst)) {
-        a_cstr(s, "cat:"); (void)u8bFeed(c->text, s);
-        (void)u8bFeed(c->text, mov_dst);
-    } else {
-        a_cstr(s, "cat:"); (void)u8bFeed(c->text, s);
-        (void)u8bFeed(c->text, path);
-    }
-    ls_pack(c, 'U');
+    b8 is_dir = (verb == c->v.v_dir);
+    rows_row row = {
+        .ts = ts, .verb = verb,
+        .path_tag = 'F', .arrow = YES,
+        .indent = c->recurse ? ls_depth(c->prefix, path) * 4 : 0,
+        .nav = is_dir ? ROWS_NAV_LS : ROWS_NAV_CAT,
+    };
+    u8csMv(row.path, path);
+    u8csMv(row.mov_dst, mov_dst);
+    //  dir rows nav into the subdir listing; move rows cat the dst;
+    //  plain file rows cat the path.
+    if (is_dir)                   u8csMv(row.nav_target, path);
+    else if (!u8csEmpty(mov_dst)) u8csMv(row.nav_target, mov_dst);
+    else                          u8csMv(row.nav_target, path);
+    (void)ROWSu8bFeedRow(c->rows, &row);
 }
 
 //  One-level mode: collapse anything below the prefix dir's immediate
@@ -246,22 +175,20 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
 //  Entry point
 // =====================================================================
 
-ok64 SNIFFLsBufsAcquire(Bu8 text, Bu32 toks, Bu8 dir_seen, b8 recurse) {
-    sane(text != NULL && toks != NULL);
-    call(u8bMap, text, LS_TEXT_CAP);
-    ok64 to = u32bAllocate(toks, LS_TOKS_CAP);
-    if (to != OK) { u8bUnMap(text); return to; }
-    if (!recurse) {
-        ok64 do_ = u8bAllocate(dir_seen, 4096);
-        if (do_ != OK) { u32bFree(toks); u8bUnMap(text); return do_; }
-    }
+//  Acquire the `ls:` one-level dedup buffer (`dir_seen`).  `lsr:`
+//  doesn't collapse subdirs, so it needs nothing here.  The row table's
+//  text/toks now live in `dog/ROWS` (ROWSOpen owns + unwinds them);
+//  this is the sole ls-local scratch.  Exposed for the leak-repro test.
+ok64 SNIFFLsBufsAcquire(Bu8 dir_seen, b8 recurse) {
+    sane(dir_seen != NULL);
+    if (!recurse) call(u8bAllocate, dir_seen, 4096);
     done;
 }
 
 static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     sane(u);
 
-    ls_ctx c = {.recurse = recurse, .now = (i64)time(NULL)};
+    ls_ctx c = {.recurse = recurse};
     u8csMv(c.reporoot, reporoot);
     #define LSV(field, lit) do {                       \
         a_cstr(_s, lit); a_dup(u8c, _d, _s);           \
@@ -280,47 +207,29 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
 
     u8csMv(c.prefix, u->path);
 
-    call(SNIFFLsBufsAcquire, c.text, c.toks, c.dir_seen, recurse);
+    //  The listing's own URI (`ls:<prefix>` / `lsr:<prefix>`) heads the
+    //  one module hunk; whole-table consumers always batch one hunk.
+    a_pad(u8, uri_buf, MAX_URI_LEN);
+    if (recurse) { a_cstr(s, "lsr:"); (void)u8bFeed(uri_buf, s); }
+    else         { a_cstr(s, "ls:");  (void)u8bFeed(uri_buf, s); }
+    if (!u8csEmpty(c.prefix)) (void)u8bFeed(uri_buf, c.prefix);
+
+    rows r = {};
+    call(ROWSOpen, &r, u8bDataC(uri_buf), 0, 0, ROWS_BATCH);
+    c.rows = &r;
+
+    ok64 ba = SNIFFLsBufsAcquire(c.dir_seen, recurse);
+    if (ba != OK) { (void)ROWSClose(&r); return ba; }
 
     //  TODO: `?ref` baseline override.  CLASS today resolves baseline
     //  via SNIFFAtCurTip; for `ls:?ref` we'd want SNIFFClassifyAt
     //  (sha1cp base_tree, class_cb, void *ctx).
     ok64 cr = SNIFFClassify(ls_step, &c);
 
-    //  Build the listing's own URI (`ls:<prefix>` / `lsr:<prefix>`)
-    //  and emit the one accumulated hunk.
-    a_pad(u8, uri_buf, MAX_URI_LEN);
-    if (recurse) { a_cstr(s, "lsr:"); (void)u8bFeed(uri_buf, s); }
-    else         { a_cstr(s, "ls:");  (void)u8bFeed(uri_buf, s); }
-    if (!u8csEmpty(c.prefix)) (void)u8bFeed(uri_buf, c.prefix);
-
-    hunk hk = {};
-    u8csMv (hk.uri,  u8bDataC(uri_buf));
-    u8csMv (hk.text, u8bDataC(c.text));
-    u32csMv(hk.toks, u32bDataC(c.toks));
-
-    a_carve(u8, big, LS_TEXT_CAP + (1UL << 16));
-    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
-    //  Trim trailing blank lines.  HUNK's plain/color content-hunk
-    //  renderer can emit 2–3 trailing newlines (the U-tagged invisible
-    //  nav URI is the last raw byte, so the "ensure final \n" guard
-    //  fires, then the unconditional inter-hunk separator adds
-    //  another).  `ls:` emits ONE hunk per call — peel back to a
-    //  single terminating \n.  TLV mode is binary, leave it alone.
-    if (fo == OK && HUNKMode != HUNKOutTLV) {
-        for (;;) {
-            if (u8bDataLen(big) < 2) break;
-            u8cs view = {};
-            u8csTailS(u8bDataC(big), view, 2);
-            if (view[0][0] != '\n' || view[0][1] != '\n') break;
-            u8bShed1(big);
-        }
-    }
-    if (fo == OK) (void)FILEout(u8bDataC(big));
+    //  Flush the one accumulated module hunk (ROWS_BATCH).
+    ok64 fo = ROWSClose(&r);
 
     if (!recurse) u8bFree(c.dir_seen);
-    u32bFree(c.toks);
-    u8bUnMap(c.text);
     return (cr == OK) ? fo : cr;
 }
 

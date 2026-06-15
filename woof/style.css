@@ -70,6 +70,12 @@ a:hover    { text-decoration: underline; }
     font-weight: normal;
     border-bottom: 1px solid var(--bg);
 }
+/* BRO-002: the one hunk-header drawer tags the banner row so HTML reads
+   like the terminal THEME_BANNER (black-on-pale-yellow band). */
+.hunk h3.banner {
+    background: #ffffd7; /* xterm 230, the THEME_BANNER bg */
+    color: #000000;
+}
 .hunk pre {
     margin: 0;
     padding: 0.6rem 0.8rem;

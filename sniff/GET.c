@@ -33,6 +33,7 @@
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
+#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "graf/DAG.h"
 #include "graf/GRAF.h"
@@ -160,7 +161,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             ulogrec rep = {.ts = g->ts,
                 .verb = pre_present ? GET_V_UPD : GET_V_NEW};
             u8csMv(rep.uri.path, path);
-            call(ULOGPrintStatusLine, &rep);
+            call(ROWSPrintRow, &rep, ROWS_NAV_CAT);
             done;
         }
         return o;
@@ -202,7 +203,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         ulogrec rep = {.ts = g->ts,
             .verb = pre_present ? GET_V_UPD : GET_V_NEW};
         u8csMv(rep.uri.path, path);
-        call(ULOGPrintStatusLine, &rep);
+        call(ROWSPrintRow, &rep, ROWS_NAV_CAT);
     }
     done;
 }
@@ -287,7 +288,7 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
                     if (rec.verb == GET_V_MOD) {
                         ulogrec rep = {.ts = g->ts, .verb = GET_V_MOD};
                         u8csMv(rep.uri.path, path);
-                        (void)ULOGPrintStatusLine(&rep);
+                        (void)ROWSPrintRow(&rep, ROWS_NAV_DIFF);
                     }
                     return OK;
                 }
@@ -655,7 +656,7 @@ static ok64 force_orphan_cb(class_step const *step, void *vctx) {
         c->dropped++;
         ulogrec rep = {.verb = GET_V_DEL};
         u8csMv(rep.uri.path, path);
-        (void)ULOGPrintStatusLine(&rep);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
     }
     return OK;
 }
@@ -687,7 +688,7 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, ron60 ts) {
             //  dedup, but user-facing status mustn't leak hashes.
             ulogrec rep = {.ts = ts, .verb = GET_V_DEL};
             u8csMv(rep.uri.path, path);
-            (void)ULOGPrintStatusLine(&rep);
+            (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
         }
         //  Walk up: rmdir any newly-empty parent until we hit a
         //  non-empty dir, the reporoot, or rmdir fails (ENOTEMPTY).
@@ -774,7 +775,7 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         //  Same path-only report shape as the unlink drain.
         ulogrec rep = {.ts = stamp_ts, .verb = GET_V_MRG};
         u8csMv(rep.uri.path, path);
-        (void)ULOGPrintStatusLine(&rep);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_DIFF);
     }
 
     if (merged > 0)
@@ -974,7 +975,7 @@ static void get_emit_one_commit(u64 h40, ron60 ts, Bu8 cbuf) {
     u8csMv(rep.uri.query, q);
     rep.uri.fragment[0] = ms;
     rep.uri.fragment[1] = me;
-    (void)ULOGPrintStatusLine(&rep);
+    (void)ROWSPrintRow(&rep, ROWS_NAV_COMMIT);
 }
 
 static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
@@ -1468,6 +1469,21 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     }
     //  --- end commit point --------------------------------------
 
+    //  Open the per-module row table (BRO-002): the commit-range banner
+    //  rows, the WALK's per-file rows, and the drain rows below all
+    //  append to this one accumulator.  Mode-keyed: tty streams each row
+    //  live; --tlv/relay buffers and flushes ONE hunk at Close.  Subs
+    //  recurse as separate `be` processes (the relay re-emits their one
+    //  hunk path-prefixed) so this module pass owns no sub rows — closing
+    //  before returning is the per-module flush boundary.  The header uri
+    //  stays EMPTY: a checkout's address is the wt itself, and the relay
+    //  rebases an empty uri to the mount subpath (the module address) —
+    //  carrying the target's detached `?<sha>` ref here instead would
+    //  give the relay a path-less uri it can only echo, not anchor.
+    rows table = {};
+    u8cs empty_uri = {};
+    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+
     //  Banner: list commits crossing into / out of the wt as ULOG
     //  rows before the per-file rows from WALKTreeLazy/drains land
     //  underneath.  Skipped on first checkout (no baseline commit)
@@ -1478,6 +1494,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     o = WALKTreeLazy(tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
+        (void)ROWSClose(&table);
         GET_BUFS_FREE();
         return o;
     }
@@ -1554,6 +1571,11 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             fprintf(stderr,
                     "sniff: pruned %u file(s)\n", pctx.dropped);
     }
+
+    //  Per-module flush: emit the one accumulated table hunk (--tlv) or
+    //  finalise the live stream (tty) BEFORE returning to the `be`
+    //  wrapper that recurses into subs.
+    (void)ROWSClose(&table);
 
     fprintf(stderr, "sniff: checkout done\n");
     if (sub_fail) fail(SNIFFFAIL);

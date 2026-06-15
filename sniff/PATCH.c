@@ -33,6 +33,7 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
+#include "dog/ROWS.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
@@ -304,7 +305,7 @@ static void emit_status(const char *status, u8cs path) {
     { a_cstr(s, status); a_dup(u8c, d, s); (void)RONutf8sDrain(&verb, d); }
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, path);
-    (void)ULOGPrintStatusLine(&rep);
+    (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
     if (strcmp(status, "conf") == 0 ||
         strcmp(status, "failed") == 0) {
         fprintf(stderr, "patch\t%s\t%.*s\n",
@@ -1468,7 +1469,7 @@ static b8 wt_is_secondary(u8cs reporoot) {
     return fs.kind == FILE_KIND_REG ? YES : NO;
 }
 
-ok64 PATCHApply(u8cs reporoot, uricp u) {
+static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
     sane($ok(reporoot) && u != NULL);
     //  POST-004: a submodule mount is detached at its pin by design;
     //  PATCH stages the absorbed sha into wtlog (no REFS tip), and the
@@ -1824,8 +1825,23 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     done;
 }
 
-ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
-                    u8cs target_query, u8cs frag) {
+//  Open ONE per-module row table (BRO-002) around the patch pass: the
+//  applied/merged/conf/mod rows `emit_status` produces append to it —
+//  streamed live on a tty, flushed as ONE hunk in --tlv/relay (before
+//  the parent recurses into subs).
+ok64 PATCHApply(u8cs reporoot, uricp u) {
+    sane($ok(reporoot) && u != NULL);
+    rows table = {};
+    u8cs empty_uri = {};
+    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    try(patch_apply_inner, reporoot, u);
+    ok64 ar = __;
+    ok64 cr = ROWSClose(&table);
+    return ar != OK ? ar : cr;
+}
+
+static ok64 patch_apply_file_inner(u8cs reporoot, u8cs filepath,
+                                   u8cs target_query, u8cs frag) {
     b8 cherry = $empty(target_query) && !$empty(frag);
     sane($ok(reporoot) && $ok(filepath) &&
          (cherry || $ok(target_query)));
@@ -1907,4 +1923,18 @@ ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
     }
     emit_status("applied", filepath);
     done;
+}
+
+//  Single-file PATCH entry: bracket the one status row in a per-module
+//  ROWS table (BRO-002), same discipline as PATCHApply.
+ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
+                    u8cs target_query, u8cs frag) {
+    sane($ok(reporoot) && $ok(filepath));
+    rows table = {};
+    u8cs empty_uri = {};
+    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    try(patch_apply_file_inner, reporoot, filepath, target_query, frag);
+    ok64 ar = __;
+    ok64 cr = ROWSClose(&table);
+    return ar != OK ? ar : cr;
 }

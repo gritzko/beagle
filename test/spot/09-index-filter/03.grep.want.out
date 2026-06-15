@@ -1,6 +1,6 @@
---- committed.c#L1 ---
+hunk committed.c#L1
 int needle_xyz(int x) { return x; }
 
---- uncommitted.c#L1 ---
+hunk uncommitted.c#L1
 int needle_xyz(int y) { return y; }
 
