@@ -107,6 +107,17 @@ add_test(NAME GRAFblameident
 set_tests_properties(GRAFblameident PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameident")
 
+#  blame-bignoroom.sh — BLAME-004 guard: a large, long-history file must
+#  blame OK, not BNOROOM.  Pre-fix the per-fold WEAVE BASS scratch was never
+#  rewound (bare calls in GRAFFileWeave) and piled up until ABC_BASS hit its
+#  1 GB cap mid-walk; the fix folds via try() so BASS rewinds per version.
+add_test(NAME GRAFblamebignoroom
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/blame-bignoroom.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(GRAFblamebignoroom PROPERTIES
+    TIMEOUT 150
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblamebignoroom")
+
 if (WITH_SSH)
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh

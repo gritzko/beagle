@@ -535,16 +535,25 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
 
         a_dup(u8c, new_data, u8bDataC(*cur_blob));
 
-        ret = WEAVEFromBlob(wnu, new_data, ext, sc);
+        //  BLAME-004: fold via try() (not a bare call) so the transient
+        //  BASS scratch each WEAVE step decodes (sd/nd columns + diff
+        //  work arrays, sized by the accumulating weave) is rewound per
+        //  iteration.  Called bare, those acquisitions pile up across
+        //  every folded version and exhaust ABC_BASS — a large/long-
+        //  history file then BNOROOMs mid-walk.  The woven result lives
+        //  in each weave's own mmap'd TLV, which survives the rewind.
+        try(WEAVEFromBlob, wnu, new_data, ext, sc);
+        ret = __;
         if (ret != OK) break;
         if (use_closures) {
             //  Diff against THIS commit's parent closure (precise — a
             //  concurrent branch already in the weave passes through).
             bctx.clo = &closures[(size_t)i * words];
-            ret = WEAVEApply(wdst, wsrc, wnu, sc, blame_base_pred, &bctx);
+            try(WEAVEApply, wdst, wsrc, wnu, sc, blame_base_pred, &bctx);
         } else {
-            ret = WEAVEDiff(wdst, wsrc, wnu, sc);
+            try(WEAVEDiff, wdst, wsrc, wnu, sc);
         }
+        ret = __;
         if (ret != OK) break;
         dbg_fold++;
         weave *wtmp = wsrc; wsrc = wdst; wdst = wtmp;
