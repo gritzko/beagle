@@ -211,7 +211,7 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
 //  so the only rule is that a fresh log opens with the anchor.  Returns
 //  OK if the append is allowed.
 static ok64 at_check_row0(ron60 verb) {
-    sane(SNIFF.h);
+    sane(SNIFF.log_data);
     u32 n = ULOGCount(SNIFF.log_idx);
     if (n == 0 && verb != SNIFFAtVerbGet() && verb != SNIFFAtVerbRepo())
         fail(SNIFFFAIL);
@@ -286,21 +286,21 @@ ok64 SNIFFWtRepoAnchor(u8cs anchor_path, u8cs repo_path, u8cs title,
 }
 
 ok64 SNIFFAtAppend(ron60 verb, uricp u) {
-    sane(SNIFF.h && u);
+    sane(SNIFF.log_data && u);
     call(at_check_row0, verb);
     ulogrec rec = {.verb = verb, .uri = *u};
     return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
 ok64 SNIFFAtAppendAt(ron60 ts, ron60 verb, uricp u) {
-    sane(SNIFF.h && u);
+    sane(SNIFF.log_data && u);
     call(at_check_row0, verb);
     ulogrec rec = {.ts = ts, .verb = verb, .uri = *u};
     return ULOGAppendAt(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
 b8 SNIFFAtKnown(ron60 mtime) {
-    if (!SNIFF.h) return NO;
+    if (!SNIFF.log_data) return NO;
     return ULOGHas(SNIFF.log_idx, mtime);
 }
 
@@ -354,7 +354,7 @@ ron60 SNIFFAtVerbMod(void) {
 // --- Row-0 anchor lookup ---
 
 ok64 SNIFFAtRepo(urip u_out) {
-    sane(SNIFF.h && u_out);
+    sane(SNIFF.log_data && u_out);
     if (ULOGCount(SNIFF.log_idx) == 0) return ULOGNONE;
     ulogrec rec = {};
     call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, 0, &rec);
@@ -369,7 +369,7 @@ ok64 SNIFFAtRepo(urip u_out) {
 // --- Baseline URI lookup ---
 
 ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(SNIFF.h && ts_out && verb_out && u_out);
+    sane(SNIFF.log_data && ts_out && verb_out && u_out);
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
@@ -402,7 +402,7 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
 }
 
 ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
-    sane(SNIFF.h && ts_out && verb_out && u_out);
+    sane(SNIFF.log_data && ts_out && verb_out && u_out);
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     u32 n = ULOGCount(SNIFF.log_idx);
@@ -564,7 +564,7 @@ static u32 at_patch_boundary_start(u32 n, ron60 vg, ron60 vp,
 }
 
 ok64 SNIFFAtPatchChain(sha1b out) {
-    sane(SNIFF.h && Bok(out));
+    sane(SNIFF.log_data && Bok(out));
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vx = SNIFFAtVerbPatch();
@@ -593,7 +593,7 @@ ok64 SNIFFAtPatchChain(sha1b out) {
 }
 
 ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
-    sane(SNIFF.h && entries && n_out);
+    sane(SNIFF.log_data && entries && n_out);
     *n_out = 0;
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
@@ -638,7 +638,7 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
 //  just like a `post` does, so a checkout between a stale `put` and a
 //  commit drops that `put` from scope rather than leaking it.
 ron60 SNIFFAtLastPostTs(void) {
-    if (!SNIFF.h) return 0;
+    if (!SNIFF.log_data) return 0;
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     u32 n = ULOGCount(SNIFF.log_idx);
@@ -659,7 +659,7 @@ ron60 SNIFFAtLastPostTs(void) {
 //  when no anchor exists (whole log is in scope), mirroring the index-0
 //  return of `at_patch_boundary_start`.
 ron60 SNIFFAtPatchFloorTs(void) {
-    if (!SNIFF.h) return 0;
+    if (!SNIFF.log_data) return 0;
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
     ron60 vu = SNIFFAtVerbPut();
@@ -697,7 +697,7 @@ static struct timespec at_ts_of_ron60(ron60 r) {
 void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
     ron60 now = RONNow();
     //  Guard monotonicity against the ULOG tail.
-    if (SNIFF.h) {
+    if (SNIFF.log_data) {
         ulogrec tail = {};
         if (ULOGTail(SNIFF.log_data, SNIFF.log_idx, &tail) == OK) {
             if (now <= tail.ts) now = tail.ts + 1;
@@ -708,7 +708,7 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
 }
 
 ok64 SNIFFAtRowAtTs(ron60 mtime, ron60 *verb_out, urip u_out) {
-    sane(SNIFF.h && verb_out && u_out);
+    sane(SNIFF.log_data && verb_out && u_out);
     u32 i = 0;
     ok64 fo = ULOGFind(SNIFF.log_idx, mtime, &i);
     if (fo != OK) return fo;
@@ -721,7 +721,7 @@ ok64 SNIFFAtRowAtTs(ron60 mtime, ron60 *verb_out, urip u_out) {
 
 ok64 SNIFFCheckClock(void) {
     sane(1);
-    if (!SNIFF.h) done;                       // no log yet, nothing to compare
+    if (!SNIFF.log_data) done;                       // no log yet, nothing to compare
     ulogrec tail = {};
     if (ULOGTail(SNIFF.log_data, SNIFF.log_idx, &tail) != OK) done;
     ron60 now = RONNow();
@@ -759,7 +759,7 @@ ok64 SNIFFAtStampPath(path8b path, ron60 ts) {
 }
 
 ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
-    sane(SNIFF.h && cb);
+    sane(SNIFF.log_data && cb);
     u32 start = 0;
     ok64 s = ULOGSeek(SNIFF.log_idx, floor, &start);
     if (s != OK && s != ULOGNONE) return s;

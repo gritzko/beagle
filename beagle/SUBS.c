@@ -90,7 +90,7 @@ ok64 BESubsHere(u8cs wt_root, besub_cb cb, void *ctx) {
 static void be_resolve_self(path8b out) {
     a$rg(a0, 0);
     a_cstr(self_name, "be");
-    (void)HOMEResolveSibling(NULL, out, self_name, a0);
+    (void)HOMEResolveSibling(out, self_name, a0);
 }
 
 //  Copy `s` into `pool` followed by a NUL byte; on success, write the
@@ -202,7 +202,7 @@ static ok64 be_index_mount_dog(u8cs wt_root, u8cs subpath, u8csc dog) {
 
     a_path(dogpath);
     a$rg(a0, 0);
-    HOMEResolveSibling(NULL, dogpath, dog, a0);
+    HOMEResolveSibling(dogpath, dog, a0);
     if (!u8bHasData(dogpath)) return BEDOGEXIT;
 
     a_path(mount);
@@ -416,7 +416,7 @@ static ok64 begetsubs_capture(u8csc tool, u8css argv, u8bp out) {
     u8bReset(out);
     a_path(path);
     a$rg(a0, 0);
-    HOMEResolveSibling(NULL, path, tool, a0);
+    HOMEResolveSibling(path, tool, a0);
 
     int stdout_r = -1;
     pid_t pid = 0;

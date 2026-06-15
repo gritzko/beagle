@@ -128,12 +128,11 @@ static u32 woof_timer_cb(u64 ns) {
 
 // --- Open / Close ---
 
-ok64 WOOFOpen(home *h) {
-    sane(h);
+ok64 WOOFOpen(void) {
+    sane(1);
     if (WOOF.pool != NULL) return WOOFFAIL;  //  already open
 
     zerop(&WOOF);
-    WOOF.h         = h;
     WOOF.listen_fd = -1;
     WOOF.max_conns = WOOF_MAX_CONNS_DEFAULT;
     WOOF.port      = WOOF_PORT_DEFAULT;

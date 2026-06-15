@@ -110,7 +110,7 @@ static ok64 sniffcli_inner(cli *c) {
     //  Prefer the explicit `--at <root>?<branch>#<sha>` flag forwarded
     //  by `be`; falls back to the legacy reporoot path (cwd-walk via
     //  HOMEOpen when reporoot is empty).
-    home h = {};
+    //  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8csOK(reporoot) && !u8csEmpty(reporoot))
@@ -131,13 +131,13 @@ static ok64 sniffcli_inner(cli *c) {
     //  HOMEOpen failure self-cleans via its own try/nedo wrapper, so
     //  we can `call(...)` it safely.  From here on we own `h` and
     //  every exit path must HOMEClose.
-    call(HOMEOpen, &h, &at, rw);
+    call(HOMEOpen, &at, rw);
 
     //  SNIFFOpen via try() so its failure routes through the cleanup
     //  below instead of skipping HOMEClose.
-    try(SNIFFOpen, &h, rw);   // opens keeper singleton too
+    try(SNIFFOpen, rw);   // opens keeper singleton too
     ok64 so = __;
-    if (so != OK) { HOMEClose(&h); return so; }
+    if (so != OK) { HOMEClose(); return so; }
 
     //  SNIFFOpen zerops the singleton — set verb-side flags AFTER.
     SNIFF.nosub = CLIHas(c, "--nosub") ? YES : NO;
@@ -172,7 +172,7 @@ static ok64 sniffcli_inner(cli *c) {
             u8bFeed(gbr_buf, bu.query);
     }
     a_dup(u8c, gbranch, u8bData(gbr_buf));
-    ok64 go = needs_graf ? GRAFOpenBranch(&h, gbranch, rw) : NONE;
+    ok64 go = needs_graf ? GRAFOpenBranch(gbranch, rw) : NONE;
 
     //  Body via try() so its non-OK exit routes through the cleanup
     //  below instead of skipping the closes.
@@ -181,7 +181,7 @@ static ok64 sniffcli_inner(cli *c) {
 
     if (go == OK) GRAFClose();
     SNIFFClose();
-    HOMEClose(&h);
+    HOMEClose();
     return ret;
 }
 

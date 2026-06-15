@@ -190,9 +190,9 @@ ok64 GRAFExec(cli *c) {
 
     u8cs reporoot = {};
     if (u8bHasData(c->repo)) u8csMv(reporoot, $path(c->repo));
-    // If CLI parsing didn't supply a repo, fall back to h->root.
-    if ($empty(reporoot) && g->h && g->h->root[0]) {
-        a_dup(u8c, hs, u8bDataC(g->h->root));
+    // If CLI parsing didn't supply a repo, fall back to HOME.root.
+    if ($empty(reporoot) && !BNULL(HOME.root)) {
+        a_dup(u8c, hs, u8bDataC(HOME.root));
         u8csMv(reporoot, hs);
     }
 
@@ -367,18 +367,18 @@ ok64 GRAFExec(cli *c) {
             //  (`GRAFRefIsName`), which `DOGIsHashlet` alone would
             //  wrongly skip.  A bare sha still skips the switch.
             if (!DOGIsHashlet(wf) || GRAFRefIsName(wf) == OK) {
-                try(KEEPSwitchBranch, KEEP.h, wf);
+                try(KEEPSwitchBranch, wf);
                 on(KEEPNONE) __ = OK;
                 nedo { return __; }
-                try(GRAFSwitchBranch, KEEP.h, wf);
+                try(GRAFSwitchBranch, wf);
                 on(GRAFNOPATH) __ = OK;
                 nedo { return __; }
             }
             if (!DOGIsHashlet(wt) || GRAFRefIsName(wt) == OK) {
-                try(KEEPSwitchBranch, KEEP.h, wt);
+                try(KEEPSwitchBranch, wt);
                 on(KEEPNONE) __ = OK;
                 nedo { return __; }
-                try(GRAFSwitchBranch, KEEP.h, wt);
+                try(GRAFSwitchBranch, wt);
                 on(GRAFNOPATH) __ = OK;
                 nedo { return __; }
             }

@@ -638,7 +638,7 @@ static ok64 wcli_haves_cb(refcp r, void *vctx) {
 static u32 wcli_collect_haves(keeper *k, sha1 *out, u32 cap) {
     if (!k) return 0;
     a_path(keepdir);
-    (void)HOMEBranchDir(k->h, keepdir, NULL);
+    (void)HOMEBranchDir(keepdir, NULL);
     wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
     (void)REFSEach($path(keepdir), wcli_haves_cb, &c);
     return c.n;
@@ -667,7 +667,7 @@ static ok64 wcli_local_tips_cb(refcp r, void *vctx) {
 static u32 wcli_collect_local_tips(keeper *k, sha1 *out, u32 cap) {
     if (!k) return 0;
     a_path(keepdir);
-    (void)HOMEBranchDir(k->h, keepdir, NULL);
+    (void)HOMEBranchDir(keepdir, NULL);
     wcli_haves_ctx c = {.out = out, .cap = cap, .n = 0};
     (void)REFSEach($path(keepdir), wcli_local_tips_cb, &c);
     return c.n;
@@ -754,7 +754,7 @@ static ok64 wcli_record_ref(keeper *k, u8csc remote_uri, u8csc be_branch,
     //  with a leaf→trunk fallback (REFSResolve at leaf first, then
     //  retry at trunk if not found).
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, k->h->cur_branch);
+    call(HOMEBranchDir, keepdir, HOME.cur_branch);
 
     uri pu = {};
     pu.data[0] = remote_uri[0];
@@ -1936,7 +1936,7 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
         a_dup(u8c, ruv, remote_uri);
         if (URIutf8Drain(ruv, &ru) == OK) {
             a_path(keepdir);
-            if (HOMEBranchDir(k->h, keepdir, NULL) == OK) {
+            if (HOMEBranchDir(keepdir, NULL) == OK) {
                 wpush_hist_ctx hc = {.k = k, .haveset = &haveset};
                 hc.r_scheme[0] = ru.scheme[0]; hc.r_scheme[1] = ru.scheme[1];
                 hc.r_host[0]   = ru.host[0];   hc.r_host[1]   = ru.host[1];

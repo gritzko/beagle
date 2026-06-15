@@ -21,12 +21,12 @@ static ok64 woofcli_inner(cli *c) {
     call(FILEInit);
     call(CLIParse, c, WOOF_VERBS, WOOF_VAL_FLAGS);
 
-    home h = {};
-    call(HOMEOpenAt, &h, $path(c->repo), NO);
+    //  BE-004: open the process-wide `&HOME` singleton.
+    call(HOMEOpenAt, $path(c->repo), NO);
 
-    try(WOOFOpen, &h);
+    try(WOOFOpen);
     ok64 wo = __;
-    if (wo != OK) { HOMEClose(&h); return wo; }
+    if (wo != OK) { HOMEClose(); return wo; }
 
     //  Tell CONN.c which argv[0] to feed HOMEResolveSibling.
     WOOF_ARGV0 = (char const *)$arg(0)[0];
@@ -35,7 +35,7 @@ static ok64 woofcli_inner(cli *c) {
     ok64 ret = __;
 
     WOOFClose();
-    HOMEClose(&h);
+    HOMEClose();
     return ret;
 }
 

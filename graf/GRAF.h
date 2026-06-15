@@ -22,7 +22,7 @@ typedef struct dag_ingest dag_ingest;
 //
 // Single-shard layout: one per-project dir `<root>/.be/<project>`
 // holds every `<seqno>.graf.idx` file, registered as a DOGPup* puppy
-// stack (`puppies`).  Branch is pure ref context (`h->cur_branch`),
+// stack (`puppies`).  Branch is pure ref context (`HOME.cur_branch`),
 // not a directory.  GRAFOpenBranch scans that one dir via
 // DOGPupOpenAll; all runs are always visible (PAST stays empty).  The
 // typed `wh128cs runs[]` view is rebuilt from the puppy stack on every
@@ -30,7 +30,7 @@ typedef struct dag_ingest dag_ingest;
 // et al) consume it via `GRAFRuns()`.
 
 typedef struct {
-    home        *h;          // borrowed
+    //  BE-004: home is the `&HOME` singleton — reached directly.
     int          lock_fd;    // flock on project shard dir's .lock; -1 = ro
     Bu8          arena;      // hunk staging buffer (renderer only)
     //  Per-call scratch for the (commit, path) → blob walk.  Reused
@@ -53,10 +53,10 @@ typedef struct {
     //  to the tail (DOGPupCreate) and drops the young suffix
     //  (DOGPupThinTail).
     Bkv64        puppies;
-    //  Active leaf-branch path lives in `h->cur_branch`.  Graf's
-    //  switch hook runs BEFORE keeper updates `h->cur_branch` (per
+    //  Active leaf-branch path lives in `HOME.cur_branch`.  Graf's
+    //  switch hook runs BEFORE keeper updates `HOME.cur_branch` (per
     //  the dog dep graph: graf depends on keeper, so callers invoke
-    //  graf first while h->cur_branch still reflects the old leaf).
+    //  graf first while HOME.cur_branch still reflects the old leaf).
     u64          last_pup_key; // monotonic high-water mark for fresh
                                // `.graf.idx` pup_keys; minted via
                                // `max(RONNow(), last_pup_key + 1)`.
@@ -100,26 +100,26 @@ con ok64 GRAFFULL    = 0x41b28f59d54d;
 //  Open graf state on the trunk.  Thin wrapper over `GRAFOpenBranch`
 //  with an empty branch.  Returns OK (I opened), GRAFOPEN (already
 //  open compatible), GRAFOPENRO (ro/rw conflict), or a real error.
-ok64 GRAFOpen(home *h, b8 rw);
+ok64 GRAFOpen(b8 rw);
 
 //  Branch-aware Open.  Normalizes `branch` via DPATHBranchNormFeed,
 //  registers it on the home singleton via HOMEOpenBranch, then scans
 //  the single project shard dir `<root>/.be/<project>`, calling
 //  `DOGPupOpenAll(GRAF.puppies, dir, ".graf.idx")` once.  Branch is
-//  pure ref context (`h->cur_branch`), not a directory.  Locks the
+//  pure ref context (`HOME.cur_branch`), not a directory.  Locks the
 //  shard dir's `.lock` when rw.  Refreshes the typed `runs[]` view.
 //  Mirrors `KEEPOpenBranch`.
-ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw);
+ok64 GRAFOpenBranch(u8cs branch, b8 rw);
 
 //  Re-target an open graf from current branch to `new_branch` WITHOUT
 //  closing.  Single-shard layout makes this label-only: every
 //  `.graf.idx` run already lives in the one project dir loaded at
-//  open, so the switch just re-points `h->cur_branch` (via
+//  open, so the switch just re-points `HOME.cur_branch` (via
 //  HOMESetCurBranch).  No dir walk, no PAST/DATA flip, no rescan, no
 //  lock swap.  Mirrors `KEEPSwitchBranch`.  Cross-branch DAG walks
 //  (POSTPromote-style rebases, located cherry-pick) already see every
 //  run.
-ok64 GRAFSwitchBranch(home *h, u8cs new_branch);
+ok64 GRAFSwitchBranch(u8cs new_branch);
 
 //  Fill `out` with a live `wh128css` view over the open puppy stack
 //  (oldest run at index 0, newest last).  Slice ends point into
@@ -280,7 +280,7 @@ ok64 GRAFRefIsName(u8cs ref);
 //  through verbatim — only the `?query` is rewritten.  Fragment
 //  is opaque verb payload; never reinterpreted here.
 //
-//  Open-once: requires GRAFOpen(home*) to have been called by the
+//  Open-once: requires GRAFOpen() to have been called by the
 //  caller's frame so refs / DAG lookups can hit disk.
 //
 //  Returns:

@@ -56,8 +56,8 @@ ok64 WIREREFETCHtest_unchanged() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Build a multi-pack trunk: 5 packs in file_id 1.
     sha1 shas[5] = {};
@@ -94,7 +94,7 @@ ok64 WIREREFETCHtest_unchanged() {
     for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -109,8 +109,8 @@ ok64 WIREREFETCHtest_incremental() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 shas[5] = {};
     char buf[64];
@@ -144,7 +144,7 @@ ok64 WIREREFETCHtest_incremental() {
     for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -162,8 +162,8 @@ ok64 WIREREFETCHtest_dup_reingest() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Pack the same 3 objects TWICE (re-fetch re-appended them).
     sha1 shas[3] = {};
@@ -202,7 +202,7 @@ ok64 WIREREFETCHtest_dup_reingest() {
     for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -223,8 +223,8 @@ ok64 WIREREFETCHtest_dup_then_incremental() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Round 0 + round 1: the same 3 objects, re-ingested (duplicates).
     sha1 shas[3] = {};
@@ -266,7 +266,7 @@ ok64 WIREREFETCHtest_dup_then_incremental() {
     for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -285,8 +285,8 @@ ok64 WIREREFETCHtest_cross_file() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Trunk file_id 1: two packs (A, B).  B is the want (trunk tip).
     sha1 a = {}, b = {};
@@ -299,10 +299,10 @@ ok64 WIREREFETCHtest_cross_file() {
     a_cstr(leaf_s, "feat");
     {
         u8s leaf = {(u8 *)leaf_s[0], (u8 *)leaf_s[1]};
-        ok64 cb = KEEPCreateBranch(&h, leaf);
+        ok64 cb = KEEPCreateBranch(leaf);
         want(cb == OK || cb == KEEPDUP);
         u8s leaf2 = {(u8 *)leaf_s[0], (u8 *)leaf_s[1]};
-        call(KEEPSwitchBranch, &h, leaf2);
+        call(KEEPSwitchBranch, leaf2);
     }
     sha1 c = {};
     call(add_blob_pack, &c, "xfile leaf C\n");
@@ -339,7 +339,7 @@ ok64 WIREREFETCHtest_cross_file() {
     for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }

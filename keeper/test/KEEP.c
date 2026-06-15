@@ -76,9 +76,9 @@ ok64 KEEPempty() {
 
     u8cs root = {(u8cp)tmpdir, (u8cp)tmpdir + strlen(tmpdir)};
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
     
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
     want(kv64bDataLen(KEEP.packs) == 0);
     want(DOGPupCount(KEEP.puppies) == 0);
 
@@ -89,7 +89,7 @@ ok64 KEEPempty() {
     want(KEEPHas(hashlet, 6) == KEEPNONE);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
@@ -107,9 +107,9 @@ ok64 KEEPput() {
 
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
     
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
     want(kv64bDataLen(KEEP.packs) == 0);
 
     // Store two blobs
@@ -156,7 +156,7 @@ ok64 KEEPput() {
 
     u8bUnMap(out);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     a_pad(u8, rmbuf, 256);
     a_cstr(rmcmd, "rm -rf ");
@@ -177,9 +177,9 @@ ok64 KEEPpackIncremental() {
 
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
     
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -243,7 +243,7 @@ ok64 KEEPpackIncremental() {
 
     u8bUnMap(out);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     a_pad(u8, rmbuf, 256);
     a_cstr(rmcmd, "rm -rf ");
@@ -271,8 +271,8 @@ ok64 KEEPBranchDropTable() {
 
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Trunk aliases must all refuse with KEEPTRUNK — none may be
     //  dropped because trunk carries the paths registry plus the
@@ -305,7 +305,7 @@ ok64 KEEPBranchDropTable() {
     }
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
@@ -326,11 +326,11 @@ ok64 KEEPbranchRoundTrip() {
 
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
 
     //  Phase 1: open trunk first (creates the .be dir + lock), then
     //  use KEEPCreateBranch to materialise nested feat/ → feat/fix.
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
     call(KEEPClose);
 
     //  Re-open from a fresh home for create.  Flat store: creating any
@@ -340,23 +340,23 @@ ok64 KEEPbranchRoundTrip() {
     a_cstr(featfix, "feat/fix");
 
     //  Any label is OK in the flat model (no KEEPNONE parent gate).
-    want(KEEPCreateBranch(&h, featfix) == OK);
+    want(KEEPCreateBranch(featfix) == OK);
 
     //  Create "feat".
-    want(KEEPCreateBranch(&h, feat) == OK);
+    want(KEEPCreateBranch(feat) == OK);
 
     //  Idempotent re-create → OK (no KEEPDUP in the flat model).
-    want(KEEPCreateBranch(&h, feat) == OK);
+    want(KEEPCreateBranch(feat) == OK);
 
     //  Nested label again → OK.
-    want(KEEPCreateBranch(&h, featfix) == OK);
+    want(KEEPCreateBranch(featfix) == OK);
 
     //  Open feat/fix.  Trunk + feat + feat/fix all exist on disk.
-    call(KEEPOpenBranch, &h, featfix, YES);
+    call(KEEPOpenBranch, featfix, YES);
     //  Canonical leaf_branch carries a trailing '/'.
     a_cstr(featfix_canon, "feat/fix/");
     {
-        a_dup(u8c, leaf, u8bDataC(KEEP.h->cur_branch));
+        a_dup(u8c, leaf, u8bDataC(HOME.cur_branch));
         want(u8csLen(leaf) == u8csLen(featfix_canon));
         want(memcmp(leaf[0], featfix_canon[0],
                     u8csLen(featfix_canon)) == 0);
@@ -394,7 +394,7 @@ ok64 KEEPbranchRoundTrip() {
     call(KEEPClose);
 
     //  Reopen on trunk to exercise the drops.
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
 
     //  Object still present after reopen (shared pool, not branch-owned).
     want(KEEPHas(obj_hashlet, 15) == OK);
@@ -408,7 +408,7 @@ ok64 KEEPbranchRoundTrip() {
     want(KEEPHas(obj_hashlet, 15) == OK);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
@@ -476,8 +476,8 @@ ok64 KEEPofsUnderflow() {
     a_cstr(root, tmpdir);
 
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Pack 1: v0 raw + v1 OFS_DELTA(v0).  Mirrors DELTA_ROUND pack 1.
     //  v0 is deliberately large and poorly-compressible (pseudo-random
@@ -546,13 +546,13 @@ ok64 KEEPofsUnderflow() {
     }
     FILEUnMap(logmap);
 
-    //  Reopen (re-scans the existing idx, whose v1 val still points at
-    //  the OFS_DELTA object at its correct offset) and resolve v1.
-    //  Before the fix: OOB read inside KEEPGetPacked (ASan abort).
-    //  After the fix: bounded KEEPFAIL, no OOB.
-    home h2 = {};
-    call(HOMEOpenAt, &h2, root, YES);
-    call(KEEPOpen, &h2, YES);
+    //  Reopen keeper (re-scans the existing idx, whose v1 val still
+    //  points at the OFS_DELTA object at its correct offset) and resolve
+    //  v1.  Before the fix: OOB read inside KEEPGetPacked (ASan abort);
+    //  after: bounded KEEPFAIL, no OOB.  BE-004: `&HOME` is the singleton
+    //  and is still open from the first HOMEOpenAt — only keeper needs a
+    //  fresh open here (it was KEEPClose'd above to drop its idx scan).
+    call(KEEPOpen, YES);
 
     Bu8 out = {};
     call(u8bMap, out, 1UL << 20);
@@ -568,8 +568,7 @@ ok64 KEEPofsUnderflow() {
 
     u8bUnMap(out);
     call(KEEPClose);
-    HOMEClose(&h2);
-    HOMEClose(&h);
+    HOMEClose();
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
@@ -636,8 +635,8 @@ ok64 KEEPxfileRecursion() {
 
     //  Open+close once so the .be/ trunk dir + refs skeleton exist.
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
     call(KEEPClose);
 
     //  Two distinct base shas X and Y (arbitrary — only used as lookup
@@ -681,10 +680,10 @@ ok64 KEEPxfileRecursion() {
     call(write_be_file, root, "0000000001.keeper.idx", idx1);
     call(write_be_file, root, "0000000002.keeper.idx", idx2);
 
-    //  Reopen: the scan registers both packs (file_ids 1, 2) + idx runs.
-    home h2 = {};
-    call(HOMEOpenAt, &h2, root, YES);
-    call(KEEPOpen, &h2, YES);
+    //  Reopen keeper: the scan registers both packs (file_ids 1, 2) +
+    //  idx runs.  BE-004: `&HOME` is still open from the first
+    //  HOMEOpenAt; only keeper needs the fresh open.
+    call(KEEPOpen, YES);
 
     Bu8 out = {};
     call(u8bMap, out, 1UL << 20);
@@ -700,8 +699,7 @@ ok64 KEEPxfileRecursion() {
 
     u8bUnMap(out);
     call(KEEPClose);
-    HOMEClose(&h2);
-    HOMEClose(&h);
+    HOMEClose();
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
@@ -847,8 +845,8 @@ ok64 KEEPancestorTable() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -914,7 +912,7 @@ ok64 KEEPancestorTable() {
     }
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
     system(cmd);

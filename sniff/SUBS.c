@@ -571,7 +571,7 @@ static ok64 subs_recover_locator(u8bp loc, b8 *is_beagle, u8cs store_root,
     if (via_parent_store) *via_parent_store = NO;
     u8bReset(loc);
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     subs_loc_ctx c = {.loc = loc, .vget = REFSVerbGet()};
     (void)REFSEachRecord($path(keepdir), subs_loc_cb, &c);
     if (c.beagle) { *is_beagle = YES; done; }
@@ -614,51 +614,49 @@ static b8 subs_pin_present(u8cs hex_sha) {
 //  caller frame sees the same KEEP it started with.  A missing or empty
 //  shard simply reports NO.  `shard` must be a non-empty, non-`.be`
 //  basename (the caller passes a path/url basename).
-static b8 subs_sibling_shard_has_pin(home *parent_home, u8cs shard,
-                                     u8cs hex_sha) {
-    if (parent_home == NULL || u8csEmpty(shard) ||
-        u8csLen(hex_sha) != 40)
+static b8 subs_sibling_shard_has_pin(u8cs shard, u8cs hex_sha) {
+    if (u8csEmpty(shard) || u8csLen(hex_sha) != 40)
         return NO;
     //  A populated project shard has a non-empty `refs` (HOMENOPROJ
     //  guards the empty/seeded case) — cheap existence gate before the
     //  keeper churn.
-    if (HOMEProjectExists(parent_home, shard) != OK) return NO;
+    if (HOMEProjectExists(shard) != OK) return NO;
 
     b8 parent_rw = (KEEP.lock_fd >= 0);
 
-    //  Preserve the parent project, then close + reopen on `shard`.
-    //  KEEPOpenBranch is a no-op when KEEP is already open (returns
-    //  KEEPOPEN, keeps the current shard), so the close is mandatory to
-    //  actually switch shards.
+    //  Preserve the parent project (on the `&HOME` singleton), then
+    //  close + reopen on `shard`.  KEEPOpenBranch is a no-op when KEEP is
+    //  already open (returns KEEPOPEN, keeps the current shard), so the
+    //  close is mandatory to actually switch shards.
     a_pad(u8, saved_proj, 256);
-    if (!BNULL(parent_home->project) && u8bDataLen(parent_home->project) > 0) {
-        a_dup(u8c, pp, u8bDataC(parent_home->project));
+    if (!BNULL(HOME.project) && u8bDataLen(HOME.project) > 0) {
+        a_dup(u8c, pp, u8bDataC(HOME.project));
         u8bFeed(saved_proj, pp);
     }
 
     KEEPClose();
-    u8bReset(parent_home->project);
+    u8bReset(HOME.project);
     {
         a_dup(u8c, sh, shard);
-        u8bFeed(parent_home->project, sh);
+        u8bFeed(HOME.project, sh);
     }
 
     static u8c const _zb = 0;
     u8cs trunk = {(u8cp)&_zb, (u8cp)&_zb};
     b8 has = NO;
-    if (KEEPOpenBranch(parent_home, trunk, NO) == OK) {
+    if (KEEPOpenBranch(trunk, NO) == OK) {
         has = subs_pin_present(hex_sha);
         KEEPClose();
     }
 
     //  Restore parent project + trunk open in its original mode.
-    u8bReset(parent_home->project);
+    u8bReset(HOME.project);
     if (u8bDataLen(saved_proj) > 0) {
         a_dup(u8c, sp, u8bDataC(saved_proj));
-        u8bFeed(parent_home->project, sp);
+        u8bFeed(HOME.project, sp);
     }
     u8cs trunk2 = {(u8cp)&_zb, (u8cp)&_zb};
-    (void)KEEPOpenBranch(parent_home, trunk2, parent_rw);
+    (void)KEEPOpenBranch(trunk2, parent_rw);
     return has;
 }
 
@@ -777,7 +775,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  covers the historical parent-store fallback (`src_via_parent_store`).
     if ((src_inflight_ok || src_via_parent_store) &&
         !u8csEmpty(pathbase) && !u8csEq(pathbase, basename) &&
-        subs_sibling_shard_has_pin(KEEP.h, pathbase, hex_sha)) {
+        subs_sibling_shard_has_pin(pathbase, hex_sha)) {
         u8csMv(basename, pathbase);
         fprintf(stderr,
                 "SUBS.dbg: SubMount prefer path-basename shard "
@@ -799,7 +797,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  *.be-is-store and drops a `.be` basename).  The mkdir stays
     //  explicit — this dir IS the sub's store and must always exist.
     a_path(store_dir);
-    call(HOMEBeDir, KEEP.h, basename, store_dir);
+    call(HOMEBeDir, basename, store_dir);
     call(FILEMakeDirP, $path(store_dir));
     //  Seed refs+wtlog.  Hardened (SUBS-016): the seed is non-truncating
     //  (subs_seed_log uses O_CREAT|O_WRONLY, never O_TRUNC), so a live
@@ -838,7 +836,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  directory-URI trailing slash.
     a_path(store_root);
     u8cs noseg = {};
-    call(HOMEBeDir, KEEP.h, noseg, store_root);
+    call(HOMEBeDir, noseg, store_root);
     call(u8bFeed1, store_root, '/');
     a_dup(u8c, shard_s,  u8bDataC(store_root));
     u8cs empty_br = {};
@@ -860,7 +858,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  would otherwise make SNIFFSubIsMount lie and bare `be` think
     //  the sub is mounted with no content.
     {
-        home *parent_home = KEEP.h;
         b8 parent_rw = (KEEP.lock_fd >= 0);
 
         //  GET-011 PRIMARY: the in-flight `be get` SOURCE candidate
@@ -914,7 +911,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         //  Sub IS its own project at the parent's `.be/<basename>/`
         //  (per the layout `.be/<project>/<branch>` where
         //  `.be/<project>/` is the project trunk).  Opening the sub
-        //  with `KEEPOpenBranch(parent_home, basename, ...)` while
+        //  with `KEEPOpenBranch(basename, ...)` while
         //  parent_home->project is set to the parent's project
         //  composes the leafdir as `.be/<parent-project>/<basename>/`
         //  (basename treated as a branch under parent) — wrong shard.
@@ -923,19 +920,19 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         //  comes out as `.be/<basename>/`.  Restored below.
         a_dup(u8c, basename_const, basename);
         a_pad(u8, saved_proj_buf, 256);
-        if (!BNULL(parent_home->project) &&
-            u8bDataLen(parent_home->project) > 0) {
-            a_dup(u8c, pp, u8bDataC(parent_home->project));
+        if (!BNULL(HOME.project) &&
+            u8bDataLen(HOME.project) > 0) {
+            a_dup(u8c, pp, u8bDataC(HOME.project));
             u8bFeed(saved_proj_buf, pp);
         }
-        u8bReset(parent_home->project);
-        u8bFeed(parent_home->project, basename_const);
+        u8bReset(HOME.project);
+        u8bFeed(HOME.project, basename_const);
 
         //  Empty-but-valid slice so KEEPOpenBranch's $ok(branch)
         //  sanity check passes (matches KEEPOpen's idiom).
         static u8c const _zero_byte = 0;
         u8cs sub_trunk = {(u8cp)&_zero_byte, (u8cp)&_zero_byte};
-        ok64 ko = KEEPOpenBranch(parent_home, sub_trunk, YES);
+        ok64 ko = KEEPOpenBranch(sub_trunk, YES);
         ok64 fo = NONE;
         if (ko == OK && subs_pin_present(hex_sha)) {
             //  Pin already in the sub-shard (fetched into the local
@@ -1018,13 +1015,13 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         //  Restore parent's project + trunk open regardless of fetch
         //  outcome so cleanup paths (FILEUnLink, FILERmDir) and the
         //  caller frame see a sane KEEP.
-        u8bReset(parent_home->project);
+        u8bReset(HOME.project);
         if (u8bDataLen(saved_proj_buf) > 0) {
             a_dup(u8c, sp, u8bDataC(saved_proj_buf));
-            u8bFeed(parent_home->project, sp);
+            u8bFeed(HOME.project, sp);
         }
         u8cs trunk = {(u8cp)&_zero_byte, (u8cp)&_zero_byte};
-        (void)KEEPOpenBranch(parent_home, trunk, parent_rw);
+        (void)KEEPOpenBranch(trunk, parent_rw);
 
         if (ko != OK || fo != OK) {
             fprintf(stderr,
@@ -1085,7 +1082,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             call(PATHu8bFeed, sniff_exe, self_s);
         } else {
             a_cstr(sniff_name, "sniff");
-            HOMEResolveSibling(NULL, sniff_exe, sniff_name, argv0);
+            HOMEResolveSibling(sniff_exe, sniff_name, argv0);
         }
     }
 

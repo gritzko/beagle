@@ -635,7 +635,7 @@ static b8 put_is_sub_add_candidate(u8cs reporoot, u8cs subpath) {
 // --- Public API ---
 
 ok64 PUTStage(u32 nuris, uri const *uris) {
-    sane(SNIFF.h && (nuris == 0 || uris != NULL));
+    sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
 
     ron60 ts = 0;
     struct timespec tv = {};
@@ -645,7 +645,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
     ron60 verb_get  = SNIFFAtVerbGet();
     ron60 verb_post = SNIFFAtVerbPost();
 
-    a_dup(u8c, reporoot, u8bData(SNIFF.h->wt));
+    a_dup(u8c, reporoot, u8bData(HOME.wt));
 
     if (nuris == 0) {
         //  Walk the baseline tree — tracked-only; never picks up
@@ -1065,7 +1065,7 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     a_dup(u8c, cur_branch, u8bData(cur_buf));
 
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
@@ -1110,7 +1110,7 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
         ok64 tr = POSTResolveBranchTip(&target_tip, target_branch);
         if (tr != OK && tr != REFSNONE) return tr;
         if (tr == REFSNONE) {
-            ok64 ko = KEEPCreateBranch(k->h, target_branch);
+            ok64 ko = KEEPCreateBranch(target_branch);
             if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
         }
     }
@@ -1123,7 +1123,7 @@ ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {
     if (u8csLen(sha_hex) != 40) fail(SNIFFFAIL);
 
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Canonicalise the caller-supplied ref URI (user input path:
     //  command line `be post ?<label>`).  Lex → canonicalise → feed.
@@ -1146,7 +1146,7 @@ ok64 PUTSetLabel(u8cs ref_uri, u8cs sha_hex) {
     //  always exists by construction).
     if (!$empty(u.query)) {
         a_dup(u8c, branch, u.query);
-        ok64 ko = KEEPCreateBranch(KEEP.h, branch);
+        ok64 ko = KEEPCreateBranch(branch);
         if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
     }
 

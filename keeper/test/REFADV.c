@@ -106,8 +106,8 @@ ok64 REFADVtest_empty() {
     want(tmp_make(tmpdir) == OK);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     a_refadv(adv);
     call(REFADVOpen, &adv);
@@ -124,7 +124,7 @@ ok64 REFADVtest_empty() {
 
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -139,13 +139,13 @@ ok64 REFADVtest_single_trunk() {
     want(tmp_make(tmpdir) == OK);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  REFS lives at <root>/.be/refs.  Local trunk row (`?`) advertises
     //  on the wire as `refs/heads/main` (the only wire-side alias).
     a_path(keepdir);
-    call(HOMEBranchDir, &h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     char const *hex = "0123456789abcdef0123456789abcdef01234567";
     call(push_branch, $path(keepdir), "", hex);
 
@@ -191,7 +191,7 @@ ok64 REFADVtest_single_trunk() {
     free(bytes);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -206,11 +206,11 @@ ok64 REFADVtest_multi() {
     want(tmp_make(tmpdir) == OK);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     a_path(keepdir);
-    call(HOMEBranchDir, &h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     char const *hex_trunk = "1111111111111111111111111111111111111111";
     char const *hex_feat  = "2222222222222222222222222222222222222222";
     call(push_branch, $path(keepdir), "",     hex_trunk);
@@ -265,7 +265,7 @@ ok64 REFADVtest_multi() {
     free(bytes);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -280,11 +280,11 @@ ok64 REFADVtest_tip_lookup() {
     want(tmp_make(tmpdir) == OK);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     a_path(keepdir);
-    call(HOMEBranchDir, &h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     char const *hex_trunk = "deadbeef00000000000000000000000000000000";
     char const *hex_feat  = "00000000000000000000000000000000beadeed0";
     call(push_branch, $path(keepdir), "",     hex_trunk);
@@ -318,7 +318,7 @@ ok64 REFADVtest_tip_lookup() {
 
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -333,11 +333,11 @@ ok64 REFADVtest_round_trip() {
     want(tmp_make(tmpdir) == OK);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     a_path(keepdir);
-    call(HOMEBranchDir, &h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     char const *hex_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     char const *hex_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     char const *hex_c = "cccccccccccccccccccccccccccccccccccccccc";
@@ -401,7 +401,7 @@ ok64 REFADVtest_round_trip() {
     free(bytes);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }

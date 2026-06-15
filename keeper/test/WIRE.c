@@ -128,8 +128,8 @@ ok64 WIREtest_empty() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     a_refadv(adv);
     call(REFADVOpen, &adv);
@@ -159,7 +159,7 @@ ok64 WIREtest_empty() {
     u8bFree(reqbuf);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -193,8 +193,8 @@ ok64 WIREtest_single_want() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 blob_sha = {};
     u32  fid = 0;
@@ -223,7 +223,7 @@ ok64 WIREtest_single_want() {
     close(fds[0]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -238,8 +238,8 @@ ok64 WIREtest_have_ff() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  First pack: blob A (the "have").
     sha1 sha_a = {};
@@ -278,7 +278,7 @@ ok64 WIREtest_have_ff() {
     close(fds[0]);
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -301,8 +301,8 @@ ok64 WIREtest_corrupt_overlap() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     //  Two clean packs in file_id 1: pack1 @ off 12, pack2 right after.
     sha1 sha_a = {};
@@ -338,7 +338,7 @@ ok64 WIREtest_corrupt_overlap() {
     //  store's two-bookmarks-at-off-12 shape.
     {
         a_path(kdir);
-        call(HOMEBranchDir, &h, kdir, NULL);
+        call(HOMEBranchDir, kdir, NULL);
         wh128 bm = {
             .key = wh64Pack(KEEP_TYPE_PACK, 1, 12),
             .val = keepPackBmVal(999999, 0x7fffffff),
@@ -368,7 +368,7 @@ ok64 WIREtest_corrupt_overlap() {
 
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -383,8 +383,8 @@ ok64 WIREtest_nosha() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 known = {};
     u32  fid   = 0;
@@ -407,7 +407,7 @@ ok64 WIREtest_nosha() {
 
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -422,8 +422,8 @@ ok64 WIREtest_caps() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 blob = {};
     u32  fid  = 0;
@@ -451,7 +451,7 @@ ok64 WIREtest_caps() {
 
     u8bFree(reqbuf);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -466,8 +466,8 @@ ok64 WIREtest_round_trip() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 sha_a = {};
     u32  fid_a = 0;
@@ -497,7 +497,7 @@ ok64 WIREtest_round_trip() {
 
     u8bFree(reqbuf);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }
@@ -512,8 +512,8 @@ ok64 WIREtest_end_to_end() {
     want(mkdtemp(tmpdir) != NULL);
     a_cstr(root, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     sha1 blob_sha = {};
     u32  fid      = 0;
@@ -554,7 +554,7 @@ ok64 WIREtest_end_to_end() {
 
     REFADVClose(&adv);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     tmp_rm(tmpdir);
     done;
 }

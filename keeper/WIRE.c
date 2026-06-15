@@ -362,7 +362,7 @@ ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
 
     //  Open the trunk pack log file.
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, NULL);
+    call(HOMEBranchDir, kdir, NULL);
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(wire_pack_path, packpath, $path(kdir), want_fid);
 

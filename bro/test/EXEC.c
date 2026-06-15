@@ -75,7 +75,7 @@ ok64 EXECtest_arena_overflow_no_map_leak(void) {
 
     home h = {};        // local-file path never touches the keeper / h
     bro b = {};
-    try(BROOpen, &b, &h, NO);
+    try(BROOpen, &b, NO);
 
     //  Swap the 128MB staging arena for a tiny one so the per-URI
     //  u8bHost copy of the URI (BRO.exe.c, run AFTER FILEMapRO) cannot

@@ -155,16 +155,14 @@ ok64 WOOFStaticLeakTest() {
     size_t const BODY = 8192;
     call(make_asset, $path(root), "big.bin", BODY);
 
-    //  Wire the WOOF singleton's home root so WOOFServeStatic resolves
-    //  <root>/.be/static/<rel>.  Only `h.root` is read by the static
+    //  Wire the process-wide `&HOME` root so WOOFServeStatic resolves
+    //  <root>/.be/static/<rel>.  Only `HOME.root` is read by the static
     //  path; nothing else of home/WOOF is touched.
-    home h = {};
-    call(PATHu8bAlloc, h.root);
+    call(PATHu8bAlloc, HOME.root);
     {
         a_dup(u8c, r, u8bData(root));
-        call(PATHu8bFeed, h.root, r);
+        call(PATHu8bFeed, HOME.root, r);
     }
-    WOOF.h = &h;
 
     a$str(rel, "big.bin");
 
@@ -176,8 +174,7 @@ ok64 WOOFStaticLeakTest() {
     call(leak_probe, rel, 1UL << 16, OK, 64);
 
     //  cleanup
-    PATHu8bFree(h.root);
-    WOOF.h = NULL;
+    PATHu8bFree(HOME.root);
     call(FILERmDir, $path(root), true);
     done;
 }

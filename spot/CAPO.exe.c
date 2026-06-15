@@ -84,7 +84,7 @@ ok64 SPOTExec(cli *c) {
     //  secondary wt where the user's files live under `h->wt` while
     //  refs/index/packs are stored under `h->root` (redirected via
     //  the secondary's `.be` anchor's row-0 `repo` URI).
-    a_dup(u8c, reporoot, u8bDataC(dog->h->wt));
+    a_dup(u8c, reporoot, u8bDataC(HOME.wt));
 
     u8cs v = {};
 
@@ -115,7 +115,7 @@ ok64 SPOTExec(cli *c) {
     if ($eq(c->verb, v_get)) {
         uri u0 = {};
         if (CLIUriLen(c) > 0) (void)CLIUriAt(&u0, c, 0);
-        call(KEEPOpen, dog->h, NO);
+        call(KEEPOpen, NO);
         ok64 igr = SPOTIndexFromTips(&u0);
         KEEPClose();
         return igr;
@@ -516,8 +516,8 @@ static b8 spot_probe_uri(keeper *k, uricp u, uri *out, u8b frag_buf) {
         (!u8csEmpty(out->query) && u8csLen(out->query) > 0) ||
         (!u8csEmpty(out->path)   && !u8csEmpty(out->query));
 
-    if (!has_resolvable && u8bDataLen(k->h->cur_sha) == 40) {
-        a_dup(u8c, cs, u8bData(k->h->cur_sha));
+    if (!has_resolvable && u8bDataLen(HOME.cur_sha) == 40) {
+        a_dup(u8c, cs, u8bData(HOME.cur_sha));
         u8bFeed(frag_buf, cs);
         out->fragment[0] = u8bDataHead(frag_buf);
         out->fragment[1] = u8bIdleHead(frag_buf);
@@ -528,7 +528,7 @@ static b8 spot_probe_uri(keeper *k, uricp u, uri *out, u8b frag_buf) {
 
     if (!has_resolvable) {
         a_path(keepdir);
-        (void)HOMEBranchDir(k->h, keepdir, NULL);
+        (void)HOMEBranchDir(keepdir, NULL);
         a_pad(u8, arena_buf, 1024);
         uri resolved = {};
         static u8c const q_lit[] = "?";
@@ -624,7 +624,7 @@ static void spot_index_worker_child(u32 w, spot_todo const *todos,
     a_pad(u8, wleafdir, FILE_PATH_MAX_LEN);
     {
         a_dup(u8c, wl, u8bDataC(s->leaf_branch));
-        if (spot_branch_dir(wleafdir, s->h, wl) != OK) _exit(1);
+        if (spot_branch_dir(wleafdir, wl) != OK) _exit(1);
     }
     if (FILEMakeDirP($path(wleafdir)) != OK) _exit(1);
 
@@ -789,7 +789,7 @@ ok64 SPOTIndexFromTips(uricp u) {
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     {
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-        if (spot_branch_dir(leafdir, s->h, leaf) != OK) {
+        if (spot_branch_dir(leafdir, leaf) != OK) {
             //  Can't compute leaf dir → fall back to serial.
             try(spot_index_slice_serial, todos, 0, ntodo, ulog_buf);
             u8bUnMap(todo_buf);

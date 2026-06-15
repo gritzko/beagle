@@ -17,9 +17,30 @@
 
 // --- HOMEOpen / HOMEClose ---
 
-static ok64 home_anchor_resolve(home *h, u8cs anchor);
+static ok64 home_anchor_resolve(u8cs anchor);
 static ok64 home_single_shard(path8s p, u8b out);
 static ok64 home_resolve_project_dir(path8s be_dir, u8csc title, u8bp out);
+
+// --- Singleton (mirrors keeper/KEEP.c §KEEP, graf/GRAF.c §GRAF) ---
+//
+//  `home` is per-invocation ambient state derived purely from cwd — a
+//  process property, exactly like `&KEEP` / `&GRAF`.  The process-wide
+//  `&HOME` is the single live home; `HOMEOpen(&HOME, …)` populates it
+//  and a compatible re-open returns `HOMEOPEN` ("already open, use the
+//  global, do NOT close"), never reopening.  Callers never own `&HOME`
+//  — only the top of the call chain (the dispatcher / a dog's cli)
+//  pairs the opening `HOMEOpen(&HOME, …)` with a single
+//  `HOMEClose(&HOME)`.
+home HOME = {};
+
+//  A populated root buffer marks the singleton as open (mirrors
+//  `keep_is_open()` testing `KEEP.h != NULL`); HOMEClose `u8bFree`s it
+//  back to NULL.
+static b8 home_is_open(void) { return HOME.root[0] != NULL; }
+
+//  Initial open mode of the live singleton, so a re-open can detect an
+//  rw-on-ro conflict the way KEEP/GRAF do.
+static b8 home_is_rw = NO;
 
 // Capture stdout of `git config --global --get <key>` into out.
 // Returns NODATA if git exits non-zero (key unset) or the subprocess
@@ -59,8 +80,8 @@ static ok64 home_git_config_get(char const *key, u8s out) {
 // and ref authorities get a sensible default identity without manual
 // setup.  Called from HOMEOpen when rw=YES and config is absent.
 // Best-effort — silent on any failure.
-static void home_bootstrap_config(home *h) {
-    if (!h->rw) return;
+static void home_bootstrap_config(void) {
+    if (!HOME.rw) return;
 
     a_pad(u8, emailbuf, 256);
     a_pad(u8, namebuf,  256);
@@ -73,10 +94,10 @@ static void home_bootstrap_config(home *h) {
     if (!got_email && !got_name) return;
 
     //  <root>/.be via the single store-dir composer (honors *.be-is-store,
-    //  drops a `.be` seg, rw-gated mkdir).  h->rw is YES here (guarded above).
+    //  drops a `.be` seg, rw-gated mkdir).  HOME.rw is YES here (guarded above).
     a_path(bedir);
     u8cs noseg = {};
-    if (HOMEMakeBeDir(h, noseg, bedir) != OK) return;
+    if (HOMEMakeBeDir(noseg, bedir) != OK) return;
 
     a_path(cfgp);
     a_dup(u8c, be_s, u8bDataC(bedir));
@@ -117,11 +138,11 @@ static void home_bootstrap_config(home *h) {
 // "Repo dir layout"; DIS-024 retires the top-level `.be/refs`).  An
 // empty wtlog is the well-defined "no rows yet" state.  Best-effort:
 // downstream code still fails loudly if it can't read what it needs.
-static ok64 home_ensure_markers(home *h) {
-    sane(h != NULL && u8bHasData(h->root));
+static ok64 home_ensure_markers(void) {
+    sane(u8bHasData(HOME.root));
     a_path(bedir);
     u8cs noseg = {};
-    call(HOMEMakeBeDir, h, noseg, bedir);   // <root>/.be (*.be-guarded), mkdir in rw
+    call(HOMEMakeBeDir, noseg, bedir);   // <root>/.be (*.be-guarded), mkdir in rw
     a_dup(u8c, bedir_s, u8bDataC(bedir));
 
     a_path(mp);
@@ -139,10 +160,10 @@ static ok64 home_ensure_markers(home *h) {
 //  Compose the store dir <h->root>/.be[/<seg>] into `out` — or
 //  <h->root>[/<seg>] when h->root already ends in `.be` (a *.be path IS
 //  the store).  Pure: no filesystem.  Empty `seg` → the bare `.be` dir.
-ok64 HOMEBeDir(home const *h, u8cs seg, path8b out) {
-    sane(h && out && u8bHasData(h->root));
+ok64 HOMEBeDir(u8cs seg, path8b out) {
+    sane(out && u8bHasData(HOME.root));
     u8bReset(out);
-    a_dup(u8c, root_s, u8bDataC(h->root));
+    a_dup(u8c, root_s, u8bDataC(HOME.root));
     //  Strip any trailing '/' so the *.be suffix test is robust
     //  (`~/.be/` must still count as the store, not become `~/.be/.be`).
     while (!u8csEmpty(root_s) && *$last(root_s) == '/') u8csShed1(root_s);
@@ -159,19 +180,19 @@ ok64 HOMEBeDir(home const *h, u8cs seg, path8b out) {
 
 //  Compose, then create the dir — but only in rw mode (never mkdir a shard
 //  read-only).  A read-only home just gets the composed path back.
-ok64 HOMEMakeBeDir(home const *h, u8cs seg, path8b out) {
-    sane(h && out);
-    call(HOMEBeDir, h, seg, out);
-    if (h->rw) call(FILEMakeDirP, $path(out));
+ok64 HOMEMakeBeDir(u8cs seg, path8b out) {
+    sane(out);
+    call(HOMEBeDir, seg, out);
+    if (HOME.rw) call(FILEMakeDirP, $path(out));
     done;
 }
 
 //  OK iff <h->root>/.be/<project> exists AND its `refs` is non-empty — a
 //  real populated store, not a missing/empty/stray shard.  Else HOMENOPROJ.
-ok64 HOMEProjectExists(home const *h, u8cs project) {
-    sane(h);
+ok64 HOMEProjectExists(u8cs project) {
+    sane(1);
     a_path(shard);
-    call(HOMEBeDir, h, project, shard);
+    call(HOMEBeDir, project, shard);
     filestat fs = {};
     if (FILEStat(&fs, $path(shard)) != OK || fs.kind != FILE_KIND_DIR)
         fail(HOMENOPROJ);
@@ -182,8 +203,9 @@ ok64 HOMEProjectExists(home const *h, u8cs project) {
 // resolves wt/root, mmaps config.  Any early-return on failure leaves
 // already-allocated resources for the wrapper to release via
 // `HOMEClose` (which is null-safe per field).
-static ok64 home_open_inner(home *h, uricp at, b8 rw) {
-    sane(h != NULL);
+static ok64 home_open_inner(uricp at, b8 rw) {
+    home *h = &HOME;
+    sane(1);
     zerop(h);
     h->rw = rw;
 
@@ -228,10 +250,10 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         //  redirects h->root through row-0 when `.be` is a sentinel
         //  file.  No cwd-override needed: a sub-dog invoked from a
         //  subdir gets the right h->wt from at_path directly.
-        call(home_anchor_resolve, h, at_path);
+        call(home_anchor_resolve, at_path);
         (void)at_query; (void)at_frag;
     } else {
-        ok64 fr = HOMEFindDogs(h);   // sets both h->wt and h->root
+        ok64 fr = HOMEFindDogs();   // sets both h->wt and h->root
         if (fr == NOHOME && rw) {
             //  Fresh-clone / `be put` in an empty dir: anchor at cwd
             //  instead of failing — the marker-creation step below will
@@ -280,7 +302,7 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
     //  and best-effort — failure here doesn't abort the open (a read-only
     //  filesystem still gets a chance to fail later with a more specific
     //  error from whichever sub-system actually needed to write).
-    if (rw) (void)home_ensure_markers(h);
+    if (rw) (void)home_ensure_markers();
 
     // 3. Scratch arena — 4 GB VA, pages on demand.
     call(u8bMap, h->arena, HOME_ARENA_SIZE);
@@ -295,7 +317,7 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         u8bp mapped = NULL;
         if (FILEMapRO(&mapped, $path(cfg)) != OK && rw) {
             // Fresh clone: seed from git's global config, then retry.
-            home_bootstrap_config(h);
+            home_bootstrap_config();
             FILEMapRO(&mapped, $path(cfg));
         }
         if (mapped != NULL) {
@@ -349,7 +371,7 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
         }
         if (!u8csEmpty(at_frag)) u8bFeed(h->cur_sha, at_frag);
         a_dup(u8c, br, u8bDataC(h->cur_branch));
-        ok64 bo = HOMEOpenBranch(h, br, rw);
+        ok64 bo = HOMEOpenBranch(br, rw);
         if (bo != OK && bo != HOMEOPEN) return bo;
     }
 
@@ -383,15 +405,32 @@ static ok64 home_open_inner(home *h, uricp at, b8 rw) {
 // failure path (e.g. `HOMEFindDogs` returning NOHOME) gets released
 // via HOMEClose.  Per ABC.md §"Resource lifecycle" — one entry fn
 // holds the cleanup, worker fn does the work.
-ok64 HOMEOpen(home *h, uricp at, b8 rw) {
-    sane(h != NULL);
-    try(home_open_inner, h, at, rw);
-    nedo HOMEClose(h);
+//
+//  Singleton-aware (mirrors KEEPOpenBranch / GRAFOpenBranch): when the
+//  caller opens the process-wide `&HOME` and it is already open with a
+//  compatible mode, return HOMEOPEN ("already open, use the global, do
+//  NOT close") instead of reopening — the live buffers / arena / config
+//  mmap stay valid and downstream pointers into them are not
+//  invalidated.  The only true conflict is an rw request against a
+//  ro-open home, which returns HOMEROBR for the caller to re-architect.
+//  Non-singleton homes (transitional local `home X = {}` sites) are
+//  always (re)opened verbatim.
+ok64 HOMEOpen(uricp at, b8 rw) {
+    sane(1);
+    if (home_is_open()) {
+        if (rw && !home_is_rw) return HOMEROBR;
+        return HOMEOPEN;
+    }
+    try(home_open_inner, at, rw);
+    nedo HOMEClose();
+    then home_is_rw = rw;
     done;
 }
 
-ok64 HOMEClose(home *h) {
-    sane(h != NULL);
+ok64 HOMEClose(void) {
+    sane(1);
+    home *h = &HOME;
+    home_is_rw = NO;
     if (h->config[0]        != NULL) FILEUnMap(h->config);
     if (h->arena[0]         != NULL) u8bUnMap(h->arena);
     if (h->root[0]          != NULL) u8bFree(h->root);
@@ -406,8 +445,9 @@ ok64 HOMEClose(home *h) {
 
 // --- Branch slots ---
 
-ok64 HOMEOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
+ok64 HOMEOpenBranch(u8cs branch, b8 rw) {
+    home *h = &HOME;
+    sane($ok(branch));
 
     // Normalize into a scratch buffer first so we don't disturb the
     // slot buffers on a HOMEOPEN / HOMEROBR return.
@@ -456,8 +496,9 @@ ok64 HOMEOpenBranch(home *h, u8cs branch, b8 rw) {
     return HOMEROBR;
 }
 
-ok64 HOMESetCurBranch(home *h, u8cs new_branch) {
-    sane(h != NULL && $ok(new_branch));
+ok64 HOMESetCurBranch(u8cs new_branch) {
+    home *h = &HOME;
+    sane($ok(new_branch));
     a_pad(u8, normbuf, HOME_BRANCH_MAX);
     call(DPATHBranchNormFeed, normbuf, new_branch);
     u8bReset(h->cur_branch);
@@ -466,8 +507,9 @@ ok64 HOMESetCurBranch(home *h, u8cs new_branch) {
     done;
 }
 
-ok64 HOMEWriteBranch(home const *h, u8cs out) {
-    sane(h != NULL);
+ok64 HOMEWriteBranch(u8cs out) {
+    home const *h = &HOME;
+    sane(1);
     if (!h->cur_rw) return HOMENOBR;
     a_dup(u8c, cur, u8bDataC(h->cur_branch));
     out[0] = cur[0];
@@ -475,7 +517,8 @@ ok64 HOMEWriteBranch(home const *h, u8cs out) {
     done;
 }
 
-b8 HOMEBranchVisible(home const *h, u8cs branch) {
+b8 HOMEBranchVisible(u8cs branch) {
+    home const *h = &HOME;
     if (h->cur_held) {
         a_dup(u8c, cur, u8bDataC(h->cur_branch));
         if (DPATHBranchAncestor(branch, cur)) return YES;
@@ -487,15 +530,16 @@ b8 HOMEBranchVisible(home const *h, u8cs branch) {
     return NO;
 }
 
-ok64 HOMEBranchDir(home *h, path8bp abs_dir, path8bp branch) {
-    sane(h != NULL && abs_dir != NULL);
+ok64 HOMEBranchDir(path8bp abs_dir, path8bp branch) {
+    home *h = &HOME;
+    sane(abs_dir != NULL);
     //  <root>/.be/<project> via the single dog/HOME composer (honors the
     //  *.be-is-store rule, DIS-024).  The branch is purely ref context
     //  (which `?<branch>` tip), never a dir component — every local
     //  consumer (keeper packs/idx, graf idx, refs) resolves to
     //  `<root>/.be/<project>/`.  See Store.mkd.
     a_dup(u8c, proj, u8bDataC(h->project));
-    call(HOMEBeDir, h, proj, abs_dir);
+    call(HOMEBeDir, proj, abs_dir);
     (void)branch;
     done;
 }
@@ -590,8 +634,9 @@ static void home_anchor_proj_branch(u8cs repo_path, u8cs repo_query,
 //    * `.be` is a DIR (primary)        → h->root = anchor
 //    * `.be` is a regular FILE (sec)   → h->root from row-0 anchor URI (get/repo)
 //    * absent / unparsable             → h->root = anchor (fallback)
-static ok64 home_anchor_resolve(home *h, u8cs anchor) {
-    sane(h && $ok(anchor));
+static ok64 home_anchor_resolve(u8cs anchor) {
+    home *h = &HOME;
+    sane($ok(anchor));
     u8bReset(h->wt);
     u8bReset(h->root);
     call(PATHu8bFeed, h->wt, anchor);
@@ -874,9 +919,8 @@ static ok64 home_resolve_project_dir(path8s be_dir, u8csc title, u8bp out) {
     done;
 }
 
-static ok64 home_walk_up(home *h) {
-    sane(h != NULL);
-
+static ok64 home_walk_up(void) {
+    sane(1);
     a_path(here);
     test(FILEGetCwd(here) == OK, NOHOME);
     //  GET-010: stop the walk at `$HOME` (taken raw from the env) so
@@ -920,7 +964,7 @@ static ok64 home_walk_up(home *h) {
             }
             if (is_wt) {
                 a_dup(u8c, anchor, u8bDataC(here));
-                return home_anchor_resolve(h, anchor);
+                return home_anchor_resolve(anchor);
             }
         }
 
@@ -938,14 +982,14 @@ static ok64 home_walk_up(home *h) {
     }
 }
 
-ok64 HOMEFind(home *h) {
-    sane(h != NULL);
-    return home_walk_up(h);
+ok64 HOMEFind(void) {
+    sane(1);
+    return home_walk_up();
 }
 
-ok64 HOMEFindDogs(home *h) {
-    sane(h != NULL);
-    return home_walk_up(h);
+ok64 HOMEFindDogs(void) {
+    sane(1);
+    return home_walk_up();
 }
 
 // --- Resolve sibling binary ---
@@ -970,9 +1014,9 @@ static ok64 home_try_sibling(path8b out, u8csc dir, u8csc name) {
     done;
 }
 
-ok64 HOMEResolveSibling(home *h, path8b out, u8csc name, u8csc argv0) {
+ok64 HOMEResolveSibling(path8b out, u8csc name, u8csc argv0) {
     sane(out != NULL && $ok(name));
-    (void)h;   // unused — sibling lookup is ambient (argv0 + PATH)
+    //  sibling lookup is ambient (argv0 + PATH) — no home needed
 
     if ($ok(argv0) && !u8csEmpty(argv0)) {
         // "Has a directory" means argv0 literally contains '/'.
@@ -1103,23 +1147,23 @@ static ok64 home_cfg_cb(u8 tag, u8cs tok, void *ctx) {
     return OK;
 }
 
-ok64 HOMEHost(home *h, u8s out) {
-    sane(h != NULL && $ok(out));
+ok64 HOMEHost(u8s out) {
+    sane($ok(out));
     a_cstr(user_s, "user");
     a_cstr(host_s, "host");
     a_cstr(mail_s, "email");
     a_path(needle, user_s, host_s);
-    ok64 o = HOMEGetConfig(h, out, $path(needle));
+    ok64 o = HOMEGetConfig(out, $path(needle));
     if (o == OK) done;
     if (o != NOCONF) return o;
     a_path(email, user_s, mail_s);
-    return HOMEGetConfig(h, out, $path(email));
+    return HOMEGetConfig(out, $path(email));
 }
 
-ok64 HOMEGetConfig(home *h, u8s value, path8s needle) {
-    sane(h != NULL && $ok(value) && $ok(needle));
+ok64 HOMEGetConfig(u8s value, path8s needle) {
+    sane($ok(value) && $ok(needle));
 
-    if (h->config[0] == NULL) return NOCONF;
+    if (HOME.config[0] == NULL) return NOCONF;
 
     a_path(current);
     home_cfg_ctx ctx = {
@@ -1128,7 +1172,7 @@ ok64 HOMEGetConfig(home *h, u8s value, path8s needle) {
         .out     = {value[0], value[1]},
     };
     TOMLTstate st = {
-        .data = {u8bDataHead(h->config), u8bIdleHead(h->config)},
+        .data = {u8bDataHead(HOME.config), u8bIdleHead(HOME.config)},
         .cb   = home_cfg_cb,
         .ctx  = &ctx,
     };

@@ -85,9 +85,9 @@ ok64 SNIFFAtHelpers() {
 
     a_cstr(root, g_tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
-    call(SNIFFOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(SNIFFOpen, YES);
 
     //  Verb constants — stable across calls, distinct from each other.
     ron60 vr = SNIFFAtVerbRepo();
@@ -219,7 +219,7 @@ ok64 SNIFFAtHelpers() {
 
     call(SNIFFClose);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     rm_tmpdir();
     done;
 }
@@ -251,9 +251,9 @@ ok64 SNIFFAtBoundaries() {
 
     a_cstr(root, g_tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
-    call(SNIFFOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(SNIFFOpen, YES);
 
     ron60 vg = SNIFFAtVerbGet();
     ron60 vp = SNIFFAtVerbPost();
@@ -312,7 +312,7 @@ ok64 SNIFFAtBoundaries() {
 
     call(SNIFFClose);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     rm_tmpdir();
     done;
 }
@@ -339,11 +339,11 @@ ok64 SNIFFCheckoutCommit() {
 
     a_cstr(root, g_tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
 
     // Open keeper, create a blob + tree + commit manually
 
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -392,7 +392,7 @@ ok64 SNIFFCheckoutCommit() {
 
     // Now checkout via sniff
     sniff s = {};
-    call(SNIFFOpen, &h, YES);
+    call(SNIFFOpen, YES);
     u8cs hex = {u8bDataHead(commit_hex), u8bIdleHead(commit_hex)};
     u8cs no_src_ = {}; call(GETCheckout, root, hex, no_src_);
 
@@ -425,7 +425,7 @@ ok64 SNIFFCheckoutCommit() {
 
     // Commit (HEAD is already set to the initial commit from GETCheckout).
     //  POSTCommit's ff check uses GRAFLca, which needs GRAF open.
-    call(GRAFOpen, &h, YES);
+    call(GRAFOpen, YES);
     a_cstr(msg, "second commit");
     a_cstr(author, "Test <t@t>");
     sha1 new_sha = {};
@@ -453,7 +453,7 @@ ok64 SNIFFCheckoutCommit() {
     call(SNIFFClose);
     GRAFClose();
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     rm_tmpdir();
     done;
 }
@@ -744,9 +744,9 @@ static ok64 SNIFFCascadeSkipNoAppend(void) {
     }
     a_cstr(root, g_tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
-    call(SNIFFOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(SNIFFOpen, YES);
 
     //  A branch with no REFS row at all resolves REFSNONE, forcing the
     //  skip-without-append path on the very first (n == 0) child.
@@ -767,7 +767,7 @@ static ok64 SNIFFCascadeSkipNoAppend(void) {
 
     call(SNIFFClose);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     rm_tmpdir();
     done;
 }
@@ -1059,9 +1059,9 @@ ok64 SNIFFAtProjectStrip() {
 
     a_cstr(root, g_tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
-    call(SNIFFOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(SNIFFOpen, YES);
 
     ron60 vg = SNIFFAtVerbGet();
     ron60 t0 = 0;
@@ -1120,7 +1120,7 @@ ok64 SNIFFAtProjectStrip() {
 
     call(SNIFFClose);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     rm_tmpdir();
     done;
 }

@@ -290,7 +290,7 @@ static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
 }
 
 ok64 DELStage(u32 nuris, uri const *uris) {
-    sane(SNIFF.h && (nuris == 0 || uris != NULL));
+    sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
 
     if (nuris == 0) {
         //  Sweep: any tracked path missing from disk gets a delete row.
@@ -298,7 +298,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         struct timespec sweep_tv = {};
         SNIFFAtNow(&sweep_ts, &sweep_tv);
         ron60 sweep_verb = SNIFFAtVerbDelete();
-        a_dup(u8c, sweep_root, u8bData(SNIFF.h->wt));
+        a_dup(u8c, sweep_root, u8bData(HOME.wt));
         u32 sweep_n = 0;
         ok64 so = del_sweep_missing(sweep_root, sweep_ts, sweep_verb,
                                     &sweep_n);
@@ -314,7 +314,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
     SNIFFAtNow(&ts, &tv);
 
     ron60 verb = SNIFFAtVerbDelete();
-    a_dup(u8c, reporoot, u8bData(SNIFF.h->wt));
+    a_dup(u8c, reporoot, u8bData(HOME.wt));
 
     u32 unlinked = 0;
     u32 emitted = 0;
@@ -531,11 +531,11 @@ static ok64 del_collect_descendants_cb(refcp r, void *ctx) {
     "0000000000000000000000000000000000000000"
 
 ok64 DELBranch(uri const *u, b8 recursive) {
-    sane(SNIFF.h && u);
+    sane(SNIFF.log_data && u);
 
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Target branch name (URI query bytes).  Trunk has an empty
     //  query — refuse early; can't drop trunk via this path.

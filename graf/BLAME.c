@@ -331,7 +331,7 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     //  GRAFOPENRO on a downgrade attempt), which is NOT an error.
     //  We only own the handle (and must close it ourselves) when the
     //  open actually succeeded here.
-    ok64 go = GRAFOpen(k->h, NO);
+    ok64 go = GRAFOpen(NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return go;
 

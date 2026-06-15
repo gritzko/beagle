@@ -156,16 +156,10 @@ ok64 BEActResolveRemote(cli *c) {
 
     a_path(keepdir);
     {
-        home h = {};
-        uri at = {};
-        CLIAtURI(&at, c);
-        if (u8csEmpty(at.path) && u8bHasData(c->repo))
-            u8csMv(at.path, $path(c->repo));
-        if (HOMEOpen(&h, &at, NO) != OK) { HOMEClose(&h); done; }
-        if (HOMEBranchDir(&h, keepdir, NULL) != OK) {
-            HOMEClose(&h); done;
-        }
-        HOMEClose(&h);
+        //  BE-004: `&HOME` is opened once at the top of the dispatch.
+        //  Compose the keeper dir off it — no per-pass home reopen.
+        if (!u8bHasData(HOME.root))            done;
+        if (HOMEBranchDir(keepdir, NULL) != OK) done;
     }
 
     for (u32 i = 0; i < CLIUriLen(c); i++) {

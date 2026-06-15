@@ -279,7 +279,7 @@ ok64 RECVApplyUpdates(refadvcp adv, recv_reqcp req,
     if (req->count > cap) return RECVFAIL;
 
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     for (u32 i = 0; i < req->count; i++) {
         recv_update const *u = &req->upds[i];
@@ -464,11 +464,10 @@ static b8 recv_wt_is_colocated(path8s wt, path8s store_be_parent) {
 
 void RECVCaptureWtPath(void) {
     recv_wt_path_set = NO;
-    keeper *k = &KEEP;
-    if (k->h == NULL || u8bEmpty(k->h->wt)) return;
+    if (BNULL(HOME.wt) || u8bEmpty(HOME.wt)) return;
 
     a_path(keepdir);
-    if (HOMEBranchDir(k->h, keepdir, NULL) != OK) return;
+    if (HOMEBranchDir(keepdir, NULL) != OK) return;
 
     //  keepdir = `<wt>/.be/<proj>/`.  Two pops → the derived wt root.
     if (PATHu8bPop(keepdir) != OK) return;   // → <wt>/.be
@@ -481,7 +480,7 @@ void RECVCaptureWtPath(void) {
     //  skip rather than escape to $HOME.  This is independent of any
     //  stray `<parent>/.be/wtlog`, which is what made the old probe lie.
     a_path(hwt);
-    a_dup(u8c, hwt_s, u8bDataC(k->h->wt));
+    a_dup(u8c, hwt_s, u8bDataC(HOME.wt));
     if (PATHu8bFeed(hwt, hwt_s) != OK) return;
     if (!recv_wt_is_colocated($path(hwt), $path(keepdir))) return;
 

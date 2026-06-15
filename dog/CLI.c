@@ -38,13 +38,17 @@ ok64 CLIParse(cli *c, char const *const *verb_names,
     // (h->root) — for secondary worktrees these differ.  sniff /
     // beagle layer `<reporoot>/<rel>` to compose absolute paths to
     // the user's files, which live in the wt.
+    //  BE-004: cwd-walk on the process-wide `&HOME`.  Open idempotently;
+    //  if WE opened it here (no cli above already did), pair with a close
+    //  so this transient probe leaves no live home behind — the caller
+    //  re-opens `&HOME` at the top of its own dispatch.
     {
-        home rh = {};
         uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
-            (void)PATHu8bFeed(c->repo, u8bDataC(rh.wt));
+        ok64 ho = HOMEOpen(&none, NO);
+        if (ho == OK || ho == HOMEOPEN) {
+            (void)PATHu8bFeed(c->repo, u8bDataC(HOME.wt));
+            if (ho == OK) HOMEClose();
         }
-        HOMEClose(&rh);
     }
 
     int argn = (int)$arglen;

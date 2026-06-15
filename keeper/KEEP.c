@@ -117,10 +117,10 @@ static ok64 keep_max_seqno_cb(void0p arg, path8p path) {
 //  across sibling branches that are NOT loaded into the registry
 //  (only trunk → leaf is loaded; siblings stay on disk).  Cheap:
 //  one recursive dir-listing pass at open time, no file mmaps.
-static u64 keep_global_max_seqno(home *h) {
+static u64 keep_global_max_seqno(void) {
     u64 max = 0;
     a_path(bedir);
-    (void)HOMEBranchDir(h, bedir, NULL);
+    (void)HOMEBranchDir(bedir, NULL);
     (void)FILEDeepScanFiles(bedir, keep_max_seqno_cb, &max);
     return max;
 }
@@ -132,7 +132,7 @@ static u64 keep_global_max_seqno(home *h) {
 // collide with a freshly-created leaf idx run.  The next pup_key
 // chosen by `keep_next_pup_key` will be > last_pup_key.
 static void keep_recompute_last_pup_key(keeper *k) {
-    u64 max = keep_global_max_seqno(k->h);
+    u64 max = keep_global_max_seqno();
     //  Defensive: in case PAST/DATA contains a pup_key that's no longer
     //  on disk (registry races, edge cases), take the larger.
     kv64s packs_all = {};
@@ -196,10 +196,10 @@ static ok64 keep_max_pack_file_id_cb(void0p arg, path8p path) {
     return OK;
 }
 
-static u32 keep_global_max_pack_file_id(home *h) {
+static u32 keep_global_max_pack_file_id(void) {
     u32 max = 0;
     a_path(bedir);
-    (void)HOMEBranchDir(h, bedir, NULL);
+    (void)HOMEBranchDir(bedir, NULL);
     (void)FILEDeepScanFiles(bedir, keep_max_pack_file_id_cb, &max);
     return max;
 }
@@ -303,9 +303,9 @@ static ok64 keep_pup_create_next(keeper *k, path8s dir, u8cs ext,
 
 keeper KEEP = {};
 
-//  `KEEP.h` being non-NULL indicates that KEEPOpen has populated the
-//  singleton and KEEPClose hasn't yet released it.
-static b8 keep_is_open(void) { return KEEP.h != NULL; }
+//  An allocated `packs` registry indicates KEEPOpen has populated the
+//  singleton and KEEPClose hasn't yet released it (zerop'd on close).
+static b8 keep_is_open(void) { return !BNULL(KEEP.packs); }
 
 //  Detect the ro/rw state of the currently-held flock.  If we Open'd
 //  with rw=YES we took LOCK_EX; rw=NO took LOCK_SH.  We save the bit
@@ -318,8 +318,8 @@ static b8 keep_is_rw = NO;
 //  the old trunk → leaf branch-dir walk (and its PAST/DATA boundary
 //  flip) is gone.  See keep_scan_branch_dir + KEEPOpenBranch.
 
-ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
+ok64 KEEPOpenBranch(u8cs branch, b8 rw) {
+    sane($ok(branch));
 
     // Normalize.  Empty canonical form = trunk.
     a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
@@ -345,14 +345,13 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     // process — the home keeps the trunk slot, but the keeper now
     // legitimately writes to a different leaf.
     {
-        ok64 o = HOMEOpenBranch(h, branch, rw);
+        ok64 o = HOMEOpenBranch(branch, rw);
         if (o != OK && o != HOMEOPEN && o != HOMEROBR)
             return o;
     }
 
     keeper *k = &KEEP;
     zerop(k);
-    k->h = h;
     k->lock_fd = -1;
     call(kv64bAllocate, k->puppies, FILE_MAX_OPEN);
     call(kv64bAllocate, k->packs,   KEEP_MAX_FILES);
@@ -360,7 +359,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     keep_is_rw = rw;
 
     //  Canonical leaf-branch bytes live in `h->cur_branch` (claimed by
-    //  HOMEOpenBranch above).  Readers consult `u8bDataC(k->h->cur_branch)`.
+    //  HOMEOpenBranch above).  Readers consult `u8bDataC(HOME.cur_branch)`.
     if (u8csLen(norm) >= HOME_BRANCH_MAX) return KEEPFAIL;
 
     //  Trunk dir: materialise it only on an rw open (a writer will land
@@ -373,7 +372,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     //  tolerates an absent dir (empty stack), so RO reads zero refs and
     //  the caller fails cleanly.
     a_path(trunkdir);
-    call(HOMEBranchDir, h, trunkdir, NULL);
+    call(HOMEBranchDir, trunkdir, NULL);
     if (rw) call(FILEMakeDirP, $path(trunkdir));
 
     //  Flat store: scan the single project shard dir for every pack +
@@ -402,7 +401,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     //  consistent without blocking on slow writers.
     if (rw) {
         a_path(leafdir);
-        call(HOMEBranchDir, h, leafdir, h->cur_branch);
+        call(HOMEBranchDir, leafdir, HOME.cur_branch);
         //  Lazy materialisation: branches "created" via REFS may not
         //  have a shard dir on disk yet.  mkdir -p before lock open.
         call(FILEMakeDirP, $path(leafdir));
@@ -424,12 +423,12 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw) {
     done;
 }
 
-ok64 KEEPOpen(home *h, b8 rw) {
+ok64 KEEPOpen(b8 rw) {
     //  Empty-but-valid slice: both ends point at the same byte so
     //  $ok(branch) holds in KEEPOpenBranch's sanity check.
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
-    return KEEPOpenBranch(h, trunk, rw);
+    return KEEPOpenBranch(trunk, rw);
 }
 
 // --- KEEPSwitchBranch ------------------------------------------------
@@ -447,13 +446,13 @@ ok64 KEEPOpen(home *h, b8 rw) {
 //   5. Recompute last_pup_key across PastData ∪ PastData.
 //   6. In rw mode, swap the flock: release the old leaf's `.lock`,
 //      take an exclusive lock on the new leaf's `.lock`.
-//   7. Update k->h->cur_branch.
+//   7. Update HOME.cur_branch.
 
 //  LCA helper moved to dog/DPATH.h as `DPATHBranchLcaLen` —
 //  shared with graf.
 
-ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
-    sane(h != NULL && $ok(new_branch));
+ok64 KEEPSwitchBranch(u8cs new_branch) {
+    sane($ok(new_branch));
     if (!keep_is_open()) return KEEPFAIL;
 
     //  Flat store: one object shard per project.  Switching branches
@@ -469,12 +468,12 @@ ok64 KEEPSwitchBranch(home *h, u8cs new_branch) {
         if (DOGCanonQueryParse(branch_in, c_proj, c_branch, c_pin))
             u8csMv(branch_in, c_branch);
     }
-    call(HOMESetCurBranch, h, branch_in);
+    call(HOMESetCurBranch, branch_in);
     done;
 }
 
-ok64 KEEPCreateBranch(home *h, u8cs branch) {
-    sane(h != NULL && $ok(branch));
+ok64 KEEPCreateBranch(u8cs branch) {
+    sane($ok(branch));
 
     a_pad(u8, nb, KEEP_LEAF_BRANCH_MAX);
     call(DPATHBranchNormFeed, nb, branch);
@@ -547,7 +546,7 @@ ok64 KEEPCompact(void) {
     //  DOGPupThinTail because the tail of the puppies stack is by
     //  seqno (== filename) — newer files always sit at the tail.
     a_path(leafdir);
-    call(HOMEBranchDir, k->h, leafdir, k->h->cur_branch);
+    call(HOMEBranchDir, leafdir, HOME.cur_branch);
     a_cstr(ext, KEEP_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};
     //  Order: thin first (drops the m sources), then create (writes
@@ -1589,7 +1588,7 @@ ok64 KEEPPackOpen(keep_pack *p) {
     //  with the new leaf's first pack.
     b8 appending = (kv64bDataLen(k->packs) > 0);
     p->file_id = appending ? keep_packs_max_seqno(k)
-                           : keep_global_max_pack_file_id(k->h) + 1;
+                           : keep_global_max_pack_file_id() + 1;
 
     call(wh128bAllocate, p->entries, KEEP_PACK_MAX_OBJS);
     call(u8bMap, p->delta_base,  KEEP_BUFSZ);
@@ -1598,7 +1597,7 @@ ok64 KEEPPackOpen(keep_pack *p) {
     // Pack lands in the active leaf-branch dir (writes only land at
     // the leaf; trunk leaf collapses to <root>/.be/).
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, k->h->cur_branch);
+    call(HOMEBranchDir, kdir, HOME.cur_branch);
 
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(keep_pack_path, packpath, $path(kdir), p->file_id);
@@ -1824,7 +1823,7 @@ ok64 KEEPPackClose(keep_pack *p) {
     //  Persist the log, unmap the RW view, re-map RO for readers.
     call(FILETrimBook, p->log);
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, k->h->cur_branch);
+    call(HOMEBranchDir, kdir, HOME.cur_branch);
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(keep_pack_path, packpath, $path(kdir), p->file_id);
 
@@ -1913,9 +1912,9 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
     //  the empty `?branch` slot as cur.  Forwarded by `be` through
     //  the `--at …#<sha>` flag and parked in h->cur_sha.
     if (u8csEmpty(target->fragment) && u8csEmpty(target->query) &&
-        k->h != NULL && DOGIsFullSha(u8bDataC(k->h->cur_sha))) {
+        !BNULL(HOME.cur_sha) && DOGIsFullSha(u8bDataC(HOME.cur_sha))) {
         uri synth = *target;
-        a_dup(u8c, cur_hex, u8bDataC(k->h->cur_sha));
+        a_dup(u8c, cur_hex, u8bDataC(HOME.cur_sha));
         synth.fragment[0] = cur_hex[0];
         synth.fragment[1] = cur_hex[1];
         return KEEPResolveTree((uricp)&synth, tree_sha);
@@ -1956,7 +1955,7 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
         // `tags/` normalisation users expect.  If the target URI has no
         // authority, we fall back to a bare `?<query>` match (legacy).
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         b8 found = NO;
 
         //  Always try REFSResolve first — it handles full URIs
@@ -2166,9 +2165,9 @@ ok64 KEEPImport(u8cs pack_path) {
     // pick the next available 20-bit file_id (max across the whole
     // `.be/` disk tree + 1, so siblings not currently loaded as
     // PAST still don't collide).
-    u32 file_id = keep_global_max_pack_file_id(k->h) + 1;
+    u32 file_id = keep_global_max_pack_file_id() + 1;
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, k->h->cur_branch);
+    call(HOMEBranchDir, kdir, HOME.cur_branch);
     {
         a_pad(u8, dst, 1024);
         call(keep_pack_path, dst, $path(kdir), file_id);
@@ -2288,7 +2287,7 @@ ok64 KEEPIngestFile(u8csc bytes) {
     u8csc stream = {bytes[0] + 12, bytes[0] + file_len};
 
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, k->h->cur_branch);
+    call(HOMEBranchDir, kdir, HOME.cur_branch);
     call(FILEMakeDirP, $path(kdir));
 
     //  Append to existing tail log, or create the very first one.
@@ -2297,7 +2296,7 @@ ok64 KEEPIngestFile(u8csc bytes) {
     //  collide.
     b8  appending = (kv64bDataLen(k->packs) > 0);
     u32 file_id = appending ? keep_packs_max_seqno(k)
-                            : keep_global_max_pack_file_id(k->h) + 1;
+                            : keep_global_max_pack_file_id() + 1;
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(keep_pack_path, packpath, $path(kdir), file_id);
 
@@ -2453,12 +2452,12 @@ ok64 KEEPIngestStream(int rfd) {
     keeper *k = &KEEP;
 
     a_path(kdir);
-    call(HOMEBranchDir, k->h, kdir, k->h->cur_branch);
+    call(HOMEBranchDir, kdir, HOME.cur_branch);
     call(FILEMakeDirP, $path(kdir));
 
     b8  appending = (kv64bDataLen(k->packs) > 0);
     u32 file_id = appending ? keep_packs_max_seqno(k)
-                            : keep_global_max_pack_file_id(k->h) + 1;
+                            : keep_global_max_pack_file_id() + 1;
     a_pad(u8, packpath, FILE_PATH_MAX_LEN);
     call(keep_pack_path, packpath, $path(kdir), file_id);
 
@@ -3025,7 +3024,7 @@ ok64 KEEPEachTip(KEEPTipCb cb, void *ctx) {
     sane(cb);
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     keep_tip_walk w = {.cb = cb, .ctx = ctx};
     return REFSEach($path(keepdir), keep_tip_filter, &w);
 }
@@ -3087,7 +3086,7 @@ ok64 KEEPEachRemote(KEEPRemoteCb cb, void *ctx) {
     sane(cb);
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     a_carve(u8, seen, 1UL << 14);   //  16K seen-URL set
     keep_remote_walk w = {.cb = cb, .ctx = ctx, .seen = &seen};
     return REFSEach($path(keepdir), keep_remote_filter, &w);

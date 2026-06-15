@@ -23,7 +23,7 @@
 // --- Internal: leaf branch dir composer (definition in CAPO.c) ---
 //  Compose `<root>/.be/<leaf>` into `out` (NUL-terminated).
 //  Used by CAPO.exe.c's parallel-worker dispatcher.
-ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
+ok64 spot_branch_dir(path8b out, u8cs leaf_branch);
 
 // --- Display helpers ---
 //  Empty `line` clears the progress row (the previous-API NULL).

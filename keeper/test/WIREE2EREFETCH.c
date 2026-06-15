@@ -140,13 +140,13 @@ static ok64 server_ingest(char const *root, char const *pack_path,
 
     a_cstr(root_s, root);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
     u8csc bytes = {pbuf, pbuf + plen};
     call(KEEPIngestFile, bytes);
 
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     a_pad(u8, kbuf, 8);
     u8bFeed1(kbuf, '?');
     a_dup(u8c, key, u8bData(kbuf));
@@ -154,7 +154,7 @@ static ok64 server_ingest(char const *root, char const *pack_path,
     call(REFSAppend, $path(keepdir), key, val);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 
@@ -169,13 +169,13 @@ static ok64 client_fetch(char const *root, char const *server) {
     sane(root && server);
     a_cstr(root_s, root);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
     FILE_URI(uri, server);
     u8csc want_cs = {NULL, NULL};   // empty want = trunk
     ok64 fo = WIREFetch(uri, want_cs);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     return fo;
 }
 

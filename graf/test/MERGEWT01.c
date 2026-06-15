@@ -29,7 +29,6 @@
 // --- Tiny test harness (mirrors REBASE01.c) ----------------------------
 
 static char g_tmp[256];
-static home g_home;
 
 static ok64 setup_repo(void) {
     sane(1);
@@ -37,16 +36,15 @@ static ok64 setup_repo(void) {
     snprintf(g_tmp, sizeof(g_tmp), "/tmp/grafmergewt-XXXXXX");
     want(mkdtemp(g_tmp) != NULL);
     a_cstr(root, g_tmp);
-    zero(g_home);
-    call(HOMEOpenAt, &g_home, root, YES);
-    call(KEEPOpen, &g_home, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
     done;
 }
 
 static void teardown_repo(void) {
     GRAFClose();
     KEEPClose();
-    HOMEClose(&g_home);
+    HOMEClose();
     char cmd[300];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmp);
     system(cmd);
@@ -162,7 +160,7 @@ ok64 test_clean_merge(void) {
     call(KEEPPackClose, &p);
 
     //  Build the DAG so build_tip_weave_tunable can walk history.
-    call(GRAFOpen, &g_home, YES);
+    call(GRAFOpen, YES);
     call(GRAFIndex);
 
     //  wt = base + edit on line 1 (alpha → ALPHA).
@@ -172,7 +170,7 @@ ok64 test_clean_merge(void) {
     call(u8bAllocate, out, 1024);
 
     a_cstr(path, "f.txt");
-    a_dup(u8c, root, u8bData(g_home.wt));
+    a_dup(u8c, root, u8bData(HOME.wt));
 
     call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);
 
@@ -201,7 +199,7 @@ ok64 test_wt_absent(void) {
          "one\nTWO\n", &c_base,         "tgt",  1700000100L, &c_tgt);
 
     call(KEEPPackClose, &p);
-    call(GRAFOpen, &g_home, YES);
+    call(GRAFOpen, YES);
     call(GRAFIndex);
 
     //  No write_wt — file is absent on disk.
@@ -209,7 +207,7 @@ ok64 test_wt_absent(void) {
     call(u8bAllocate, out, 1024);
 
     a_cstr(path, "f.txt");
-    a_dup(u8c, root, u8bData(g_home.wt));
+    a_dup(u8c, root, u8bData(HOME.wt));
 
     call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);
 
@@ -238,7 +236,7 @@ ok64 test_wt_clean_drift(void) {
          "x\nY\n", &c_base,         "tgt",  1700000100L, &c_tgt);
 
     call(KEEPPackClose, &p);
-    call(GRAFOpen, &g_home, YES);
+    call(GRAFOpen, YES);
     call(GRAFIndex);
 
     //  wt content matches base — graf_fold_wt_layer in BLAME's pattern
@@ -253,7 +251,7 @@ ok64 test_wt_clean_drift(void) {
     call(u8bAllocate, out, 1024);
 
     a_cstr(path, "f.txt");
-    a_dup(u8c, root, u8bData(g_home.wt));
+    a_dup(u8c, root, u8bData(HOME.wt));
 
     call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);
 
@@ -282,7 +280,7 @@ ok64 test_conflict(void) {
          "one\nBETA-tgt\nthree\n", &c_base, "tgt",  1700000100L, &c_tgt);
 
     call(KEEPPackClose, &p);
-    call(GRAFOpen, &g_home, YES);
+    call(GRAFOpen, YES);
     call(GRAFIndex);
 
     //  wt edits the same line, differently from tgt.
@@ -291,7 +289,7 @@ ok64 test_conflict(void) {
     Bu8 out = {};
     call(u8bAllocate, out, 1024);
     a_cstr(path, "f.txt");
-    a_dup(u8c, root, u8bData(g_home.wt));
+    a_dup(u8c, root, u8bData(HOME.wt));
 
     call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);
 
@@ -404,7 +402,7 @@ ok64 test_big_history(void) {
     c_tgt  = parent;   // last commit
 
     call(KEEPPackClose, &p);
-    call(GRAFOpen, &g_home, YES);
+    call(GRAFOpen, YES);
     call(GRAFIndex);
 
     //  wt edits a line that neither base nor tgt touch (tgt rotates a
@@ -434,7 +432,7 @@ ok64 test_big_history(void) {
     call(u8bAllocate, out, (BIG_NLINES + 8) * 64);
 
     a_cstr(path, "big.txt");
-    a_dup(u8c, root, u8bData(g_home.wt));
+    a_dup(u8c, root, u8bData(HOME.wt));
 
     //  Before the fix this returns BNOROOM (arena overflow); after, OK.
     call(GRAFMergeWtFile, path, root, &c_base, &c_tgt, out);

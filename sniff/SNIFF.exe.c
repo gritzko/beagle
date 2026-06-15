@@ -390,10 +390,10 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
     }
     a_path(cwd_path);
     u8cs rel = {};
-    if (FILEGetCwd(cwd_path) == OK && SNIFF.h != NULL &&
-        u8bDataLen(SNIFF.h->wt) > 0) {
+    if (FILEGetCwd(cwd_path) == OK && !BNULL(HOME.wt) &&
+        u8bDataLen(HOME.wt) > 0) {
         a_dup(u8c, cwd_s, u8bDataC(cwd_path));
-        a_dup(u8c, wt_s,  u8bDataC(SNIFF.h->wt));
+        a_dup(u8c, wt_s,  u8bDataC(HOME.wt));
         size_t wt_len = $len(wt_s);
         if ($len(cwd_s) > wt_len &&
             u8csHasPrefix(cwd_s, wt_s) &&
@@ -692,8 +692,8 @@ ok64 SNIFFExec(cli *c) {
             u8 *e_start = u8bIdleHead(email_buf);
             u8s ndst = {n_start, name_buf[3]};
             u8s edst = {e_start, email_buf[3]};
-            (void)HOMEGetConfig(SNIFF.h, ndst, $path(name_p));
-            (void)HOMEGetConfig(SNIFF.h, edst, $path(email_p));
+            (void)HOMEGetConfig(ndst, $path(name_p));
+            (void)HOMEGetConfig(edst, $path(email_p));
             //  HOMEGetConfig advances ndst[0] / edst[0] past the
             //  bytes it wrote; the value lives in [start, ndst[0]).
             u8cs name  = {n_start, ndst[0]};
@@ -1224,7 +1224,7 @@ ok64 SNIFFExec(cli *c) {
                 } else {
                     u8cs gm_blob = {u8bDataHead(gm_map),
                                     u8bIdleHead(gm_map)};
-                    a_dup(u8c, parent_root_s, u8bDataC(KEEP.h->root));
+                    a_dup(u8c, parent_root_s, u8bDataC(HOME.root));
                     u8cs path_s = {};
                     u8csMv(path_s, u->path);
                     //  Strip the `./` URI-form prefix that the caller

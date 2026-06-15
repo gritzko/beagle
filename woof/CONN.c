@@ -300,7 +300,7 @@ ok64 WOOFServeStatic(conn *c, u8cs rel) {
     //  Push-validates each subsequent segment.
     a_path(fpath);
     {
-        a_dup(u8c, root, u8bDataC(WOOF.h->root));
+        a_dup(u8c, root, u8bDataC(HOME.root));
         call(PATHu8bFeed, fpath, root);
     }
     a$str(dotbe,   ".be");
@@ -401,7 +401,7 @@ static ok64 spawn_worker(woof_route const *route, u8cs be_uri,
             av0[0] = (u8c *)WOOF_ARGV0;
             av0[1] = (u8c *)WOOF_ARGV0 + strlen(WOOF_ARGV0);
         }
-        call(HOMEResolveSibling, WOOF.h, bin_path, route->binary, av0);
+        call(HOMEResolveSibling, bin_path, route->binary, av0);
     }
     //  --tlv: workers emit nested TLV records (`dog/HUNK.h`).  woof
     //  drains them in pipe_cb and renders via HUNKu8sFeedHtml.  The
@@ -548,7 +548,7 @@ static char const *woof_api_dog = NULL;   //  selects the Exec in run_capture
 ok64 WOOFApiOpen(void) {
     sane(1);
     if (woof_api_ready) return OK;
-    if (WOOF.h == NULL) fail(WOOFFAIL);
+    if (BNULL(HOME.root)) fail(WOOFFAIL);
 
     //  Forward the worktree tip into the home, exactly as `be` resolves
     //  `--at <root>?<branch>#<sha>` for the fork path.  Without it,
@@ -558,14 +558,14 @@ ok64 WOOFApiOpen(void) {
     //  as before).
     {
         a_pad(u8, at_buf, FILE_PATH_MAX_LEN + 128);
-        a_dup(u8c, wt, u8bDataC(WOOF.h->wt));
+        a_dup(u8c, wt, u8bDataC(HOME.wt));
         if (SNIFFAtTailOf(wt, at_buf) == OK) {
             uri at = {};
             u8csMv(at.data, u8bDataC(at_buf));
             URILexer(&at);
             if (u8csLen(at.fragment) == 40) {
-                u8bReset(WOOF.h->cur_sha);
-                (void)u8bFeed(WOOF.h->cur_sha, at.fragment);
+                u8bReset(HOME.cur_sha);
+                (void)u8bFeed(HOME.cur_sha, at.fragment);
             }
             //  Tail query is `?/<project>/<branch>`; strip the project
             //  and set cur_branch (empty == trunk) so opens + ref
@@ -573,17 +573,17 @@ ok64 WOOFApiOpen(void) {
             if (!u8csEmpty(at.query)) {
                 a_dup(u8c, q, at.query);
                 DOGQueryStripProject(q);
-                (void)HOMESetCurBranch(WOOF.h, q);
+                (void)HOMESetCurBranch(q);
             }
         }
     }
 
-    a_dup(u8c, br, u8bDataC(WOOF.h->cur_branch));
+    a_dup(u8c, br, u8bDataC(HOME.cur_branch));
 
     //  Keeper first — the shared object store every projector reads
     //  through.  woof owns it; KEEPOPEN means someone else already did.
     {
-        ok64 ko = KEEPOpenBranch(WOOF.h, br, NO);
+        ok64 ko = KEEPOpenBranch(br, NO);
         if (ko != OK && ko != KEEPOPEN) return ko;
         woof_api_have_keep  = YES;
         woof_api_keep_owned = (ko == OK);
@@ -592,14 +592,14 @@ ok64 WOOFApiOpen(void) {
     //  sniff serves the worktree.  Flat store ⇒ one open serves every
     //  branch (per-request `?ref` resolves via REFS, no reopen).
     {
-        ok64 go = GRAFOpenBranch(WOOF.h, br, NO);
+        ok64 go = GRAFOpenBranch(br, NO);
         woof_api_have_graf = (go == OK || go == GRAFOPEN);
     }
     {
-        ok64 so = SPOTOpenBranch(WOOF.h, br, NO);
+        ok64 so = SPOTOpenBranch(br, NO);
         woof_api_have_spot = (so == OK || so == SPOTOPEN);
     }
-    woof_api_have_sniff = (SNIFFOpen(WOOF.h, NO) == OK);
+    woof_api_have_sniff = (SNIFFOpen(NO) == OK);
 
     call(PATHu8bAlloc, woof_api_cli.repo);
     call(u8csbAlloc,   woof_api_cli.flags, CLI_MAX_FLAGS * 2);
@@ -609,8 +609,8 @@ ok64 WOOFApiOpen(void) {
     //  read the wt file from here; objects still come from the store via
     //  the open keeper.  Differs from h->root for a secondary worktree.
     {
-        a_dup(u8c, wt, u8bDataC(WOOF.h->wt));
-        if (u8csEmpty(wt)) u8csMv(wt, u8bDataC(WOOF.h->root));
+        a_dup(u8c, wt, u8bDataC(HOME.wt));
+        if (u8csEmpty(wt)) u8csMv(wt, u8bDataC(HOME.root));
         call(PATHu8bFeed, woof_api_cli.repo, wt);
     }
 

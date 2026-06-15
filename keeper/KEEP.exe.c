@@ -160,7 +160,7 @@ static ok64 keeper_lsfiles(keeper *k, uricp target) {
 static ok64 keeper_refs(keeper *k) {
     sane(k);
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     int rcount = 0;
     ok64 o = REFSEach($path(keepdir), refs_print_cb, &rcount);
     if (o != OK && o != REFSNONE)
@@ -229,7 +229,7 @@ static ok64 keeper_subs(keeper *k, cli *c) {
         a_dup(u8c, branch, u->query);
         DOGQueryStripProject(branch);
         u8cs cur_b = {};
-        u8csMv(cur_b, u8bDataC(k->h->cur_branch));
+        u8csMv(cur_b, u8bDataC(HOME.cur_branch));
         ok64 ro = KEEPResolveRef(&commit_sha, branch, cur_b);
         if (ro != OK) {
             fprintf(stderr, "keeper: subs: ref %.*s not resolvable\n",
@@ -351,7 +351,7 @@ static ok64 keeper_scheme_match(uri const *u, ron60 ts, ron60 verb,
 static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
     sane(k && g && u8bOK(out) && u8bOK(rarena_out));
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     u8cs rscheme = {};
     u8cs rhost = {};
@@ -378,11 +378,11 @@ static ok64 keeper_remote_uri(keeper *k, uri *g, u8b out, u8b rarena_out) {
             //  per `wcli_record_ref`).  Trunk holds only sniff-POST rows
             //  in that case.  Try leaf first, fall back to trunk.
             rr = REFSNONE;
-            if (u8bDataLen(k->h->cur_branch) > 0) {
+            if (u8bDataLen(HOME.cur_branch) > 0) {
                 a_path(leafdir);
                 a_dup(u8c, trunk_s, u8bDataC(keepdir));
                 call(PATHu8bFeed, leafdir, trunk_s);
-                a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
+                a_dup(u8c, leaf_s, u8bDataC(HOME.cur_branch));
                 call(PATHu8bAdd, leafdir, leaf_s);
                 rr = REFSResolve(&resolved, rarena_out, $path(leafdir),
                                  in_uri);
@@ -562,7 +562,7 @@ ok64 KEEPGetRemote(uri *g) {
         //  return — that would leak the still-mapped `rarena`.  Skip the
         //  journal instead and fall through to the single unmap/return.
         a_path(keepdir);
-        ok64 ho = HOMEBranchDir(k->h, keepdir, NULL);
+        ok64 ho = HOMEBranchDir(keepdir, NULL);
         if (ho == OK) {
             a_pad(u8, key_buf, 512);
             u8bFeed(key_buf, remote_uri);
@@ -606,7 +606,7 @@ static ok64 keeper_get_object(keeper *k, u8cs prefix) {
 static ok64 keeper_get_ref(keeper *k, u8cs query) {
     sane(k && $ok(query));
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_pad(u8, qbuf, 256);
     u8bFeed1(qbuf, '?');
@@ -713,7 +713,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
     }
 
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Canonical key: build a query-only URI with the user's ref
     //  name and canonicalise — strips `refs/` and collapses the
@@ -835,7 +835,7 @@ static ok64 keeper_post(keeper *k, cli *c) {
         return KEEPFAIL;
     }
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  1. Worktree's current branch + tip (used both as the WIREPush
     //     local_branch default and to record the new peer-side ref).
@@ -843,12 +843,12 @@ static ok64 keeper_post(keeper *k, cli *c) {
     //     and parked in `h->cur_branch` / `h->cur_sha` by HOMEOpen.
     //     Empty when `--at` was not forwarded (direct `keeper post`
     //     without sniff in the loop).
-    if (u8bDataLen(k->h->cur_sha) != 40) {
+    if (u8bDataLen(HOME.cur_sha) != 40) {
         fprintf(stderr, "keeper: post: worktree commit not set\n");
         return KEEPFAIL;
     }
-    a_dup(u8c, at_branch, u8bDataC(k->h->cur_branch));
-    a_dup(u8c, at_sha,    u8bDataC(k->h->cur_sha));
+    a_dup(u8c, at_branch, u8bDataC(HOME.cur_branch));
+    a_dup(u8c, at_sha,    u8bDataC(HOME.cur_sha));
 
     //  2. Target branch.  Precedence:
     //       a. explicit URI `?query`           — user said which branch.
@@ -1101,7 +1101,7 @@ static ok64 keeper_delete_alias_collect(refcp r, void *vctx) {
 static ok64 keeper_delete_alias(keeper *k, u8cs host) {
     sane(k && !u8csEmpty(host));
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_carve(u8, keys, 1UL << 16);
 
@@ -1185,7 +1185,7 @@ static ok64 keeper_delete(keeper *k, cli *c) {
     //  cached reads stop returning the now-deleted tip.  Mirrors the
     //  REFS-write at the end of keeper_post (KEEP.exe.c:620+).
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     {
         a_pad(u8, kbuf, 1280);
         uri gk = {};

@@ -271,14 +271,15 @@ static ok64 bediff_build_pins(cli *c, uri *u, bediff_pinmap *map) {
     u8cs cur_branch = {};
     u8csMv(cur_branch, at.query);
 
-    home rh = {};
-    uri none = {};
-    if (HOMEOpen(&rh, &none, NO) != OK) done;
+    //  BE-004: `&HOME` is opened once at the top of the dispatch; this
+    //  pass keeps its own KEEP/GRAF open/close discipline but no longer
+    //  reopens HOME.
+    if (!u8bHasData(HOME.root)) done;
     static u8c const _zero = 0;
     u8cs trunk = {&_zero, &_zero};
-    ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+    ok64 ko = KEEPOpenBranch(trunk, NO);
     if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
-        ok64 go = GRAFOpen(&rh, NO);
+        ok64 go = GRAFOpen(NO);
         if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
             //  Resolve the (old=from, new=to) commit endpoints.
             sha1 old_c = {}, new_c = {};
@@ -317,7 +318,6 @@ static ok64 bediff_build_pins(cli *c, uri *u, bediff_pinmap *map) {
         }
         if (ko == OK) (void)KEEPClose();
     }
-    HOMEClose(&rh);
     done;
 }
 
@@ -345,7 +345,7 @@ ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
     a_path(path);
     a$rg(a0, 0);
-    call(HOMEResolveSibling, NULL, path, tool, a0);
+    call(HOMEResolveSibling, path, tool, a0);
     pid_t pid = 0;
     call(FILESpawn, $path(path), argv, NULL, NULL, &pid);
     if (bg) done;
@@ -370,7 +370,7 @@ ok64 BESpawn(u8csc tool, u8css argv, pid_t *out_pid) {
     sane($ok(tool) && !$empty(tool) && out_pid);
     a_path(path);
     a$rg(a0, 0);
-    call(HOMEResolveSibling, NULL, path, tool, a0);
+    call(HOMEResolveSibling, path, tool, a0);
     return FILESpawn($path(path), argv, NULL, NULL, out_pid);
 }
 
@@ -1133,7 +1133,7 @@ static ok64 BEProjector(cli *c, uri *u) {
 
     a_path(dogpath);
     a$rg(a0, 0);
-    call(HOMEResolveSibling, NULL, dogpath, dog_s, a0);
+    call(HOMEResolveSibling, dogpath, dog_s, a0);
 
 
     //  Verbless: dog argv is `<dog> [--at <uri>] [mode-flag] <URI>`.
@@ -1204,7 +1204,7 @@ static ok64 BEProjector(cli *c, uri *u) {
     //  is one less surprise across NO_COLOR / piped-stdout edge cases).
     a_path(bropath);
     a_cstr(bro_name, "bro");
-    call(HOMEResolveSibling, NULL, bropath, bro_name, a0);
+    call(HOMEResolveSibling, bropath, bro_name, a0);
     a_pad(u8cs, bargs, 2);
     u8csbFeed1(bargs, bro_name);
     u8csbFeed1(bargs, color_flag);
@@ -1557,17 +1557,20 @@ ok64 BEActSubsGet(cli *c) {
     //  `c->repo` only just now.
     a_pad(u8, post_get_branch, 256);
     {
-        home rh = {};
+        //  BE-004: a fresh-clone `sniff get` may have just materialised
+        //  the `.be/` AFTER the top-of-dispatch open walked up to NOHOME.
+        //  Re-open `&HOME` idempotently (no-op when already open) so the
+        //  newly-anchored root/branch is visible here.
         uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
+        (void)HOMEOpen(&none, NO);
+        if (u8bHasData(HOME.root)) {
             if (!u8bHasData(c->repo))
-                (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
-            if (u8bDataLen(rh.cur_branch) > 0) {
-                a_dup(u8c, rb, u8bDataC(rh.cur_branch));
+                (void)PATHu8bFeed(c->repo, u8bDataC(HOME.root));
+            if (u8bDataLen(HOME.cur_branch) > 0) {
+                a_dup(u8c, rb, u8bDataC(HOME.cur_branch));
                 u8bFeed(post_get_branch, rb);
             }
         }
-        HOMEClose(&rh);
     }
     if (!u8bHasData(c->repo)) done;
     a_dup(u8c, wt_root, $path(c->repo));
@@ -1810,15 +1813,16 @@ static ok64 be_reindex(cli *c) {
     if (u8bHasData(c->repo)) {
         u8csMv(repo, $path(c->repo));
     } else {
-        home rh = {};
+        //  BE-004: a `be post` that just bootstrapped `.be/` in an empty
+        //  dir left c->repo empty AND `&HOME` walked up to NOHOME at the
+        //  top of dispatch.  Re-open idempotently so the freshly-minted
+        //  store is now found, then re-export its root into c->repo.
         uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
-            //  HOMEOpen owns its `rh` storage; feed it into the cli's
-            //  path8b (NUL-terminated by construction) for re-export.
-            (void)PATHu8bFeed(c->repo, u8bDataC(rh.root));
+        (void)HOMEOpen(&none, NO);
+        if (u8bHasData(HOME.root)) {
+            (void)PATHu8bFeed(c->repo, u8bDataC(HOME.root));
             if (u8bHasData(c->repo)) u8csMv(repo, $path(c->repo));
         }
-        HOMEClose(&rh);
     }
     if (!u8csEmpty(repo)) {
         u8bReset(be_at_buf);
@@ -1903,11 +1907,12 @@ ok64 BEEnsureProjectRepo(uri *u) {
     //  (legacy uninitialised shape).  Either way fall through to
     //  fresh-init.
     {
-        home probe = {};
+        //  BE-004: probe the top-of-dispatch `&HOME`.  Re-open
+        //  idempotently in case a sibling action just laid down the
+        //  `.be/` (no-op when already open).
         uri none = {};
-        ok64 ho = HOMEOpen(&probe, &none, NO);
-        b8 anchored = (ho == OK && u8bDataLen(probe.project) > 0);
-        HOMEClose(&probe);
+        (void)HOMEOpen(&none, NO);
+        b8 anchored = (u8bHasData(HOME.root) && u8bDataLen(HOME.project) > 0);
         if (anchored) done;
     }
 
@@ -2049,9 +2054,9 @@ static ok64 be_known_cb(uri const *r, ron60 ts, ron60 verb, void *vc) {
     return OK;
 }
 
-static b8 be_remote_is_known(uri *u, home *rh) {
+static b8 be_remote_is_known(uri *u) {
     a_path(keepdir);
-    if (HOMEBranchDir(rh, keepdir, NULL) != OK) return NO;
+    if (HOMEBranchDir(keepdir, NULL) != OK) return NO;
     be_known_ctx ctx = {};
     ctx.host[0] = u->host[0]; ctx.host[1] = u->host[1];
     ctx.path[0] = u->path[0]; ctx.path[1] = u->path[1];
@@ -2114,12 +2119,12 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     //  WHOLE wt — `be get <known-remote>` from a subdir is a normal
     //  fetch, not a new submodule.  Only an UNKNOWN remote mounts here.
     {
-        home rh = {};
-        uri none = {};
+        //  BE-004: `&HOME` is the top-of-dispatch parent anchor (cwd is a
+        //  subdir of it, no new `.be` minted yet) — exactly the home a
+        //  fresh cwd-walk would resolve.  No reopen.
         b8 known = NO;
-        if (HOMEOpen(&rh, &none, NO) == OK)
-            known = be_remote_is_known(u, &rh);
-        HOMEClose(&rh);
+        if (u8bHasData(HOME.root))
+            known = be_remote_is_known(u);
         if (known) done;
     }
 
@@ -2150,23 +2155,23 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     a_path(sub_store);
     b8 sub_store_set = NO;
     {
-        home rh = {};
-        uri none = {};
-        b8 have_home = (HOMEOpen(&rh, &none, NO) == OK && u8bHasData(rh.root));
+        //  BE-004: resolve the parent store root off the top-of-dispatch
+        //  `&HOME` (still the parent anchor here) — the redirected
+        //  `h->root` follows the row-0 anchor for a secondary parent wt.
+        b8 have_home = u8bHasData(HOME.root);
         ok64 ro = OK;
         if (have_home) {
-            a_dup(u8c, rs, u8bDataC(rh.root));
+            a_dup(u8c, rs, u8bDataC(HOME.root));
             ro = PATHu8bFeed(store_root_buf, rs);
-            if (ro == OK) ro = HOMEBeDir(&rh, basename, shard_be);
+            if (ro == OK) ro = HOMEBeDir(basename, shard_be);
             if (ro == OK && !u8csEmpty(u->host)) {
                 u8cs noseg = {};
-                ro = HOMEBeDir(&rh, noseg, sub_store);
+                ro = HOMEBeDir(noseg, sub_store);
                 if (ro == OK) sub_store_set = YES;
             }
         } else {
             ro = PATHu8bFeed(store_root_buf, repo_s);
         }
-        HOMEClose(&rh);
         if (ro != OK) fail(ro);
     }
     a_dup(u8c, store_root_s, u8bDataC(store_root_buf));
@@ -2259,6 +2264,19 @@ static ok64 be_sub_shard_setup(cli *c, uri *u) {
     //  c->repo readers) see the sub, not the parent.
     u8bReset(c->repo);
     call(PATHu8bFeed, c->repo, cwd_s);
+
+    //  BE-004: we just minted a fresh anchor at cwd, changing the
+    //  process root/wt.  The top-of-dispatch `&HOME` is anchored to the
+    //  PARENT — re-anchor it on the new sub shard so the resolve passes
+    //  below resolve in the sub, not the parent (old code re-walked cwd
+    //  per pass).  Close then reopen so the idempotent guard doesn't
+    //  short-circuit the new anchor.
+    HOMEClose();
+    {
+        uri sat = {};
+        u8csMv(sat.path, cwd_s);
+        (void)HOMEOpen(&sat, NO);
+    }
 
     fprintf(stderr, "be: subdir clone — shard at %.*s/.be/%.*s\n",
             (int)$len(store_root_s), (char *)store_root_s[0],
@@ -2377,7 +2395,7 @@ static ok64 bepost_bump_sub(u8cs subpath) {
     {
         a$rg(a0, 0);
         a_cstr(self_name, "be");
-        (void)HOMEResolveSibling(NULL, self_path, self_name, a0);
+        (void)HOMEResolveSibling(self_path, self_name, a0);
         if (!u8bHasData(self_path)) {
             fprintf(stderr, "be: post: bump %.*s: cannot resolve self\n",
                     (int)$len(subpath), (char *)subpath[0]);
@@ -2438,7 +2456,7 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
     {
         a$rg(a0, 0);
         a_cstr(self_name, "be");
-        (void)HOMEResolveSibling(NULL, self_path, self_name, a0);
+        (void)HOMEResolveSibling(self_path, self_name, a0);
         if (!u8bHasData(self_path)) {
             fprintf(stderr, "be: post: %.*s: cannot resolve self\n",
                     (int)$len(subpath), (char *)subpath[0]);
@@ -3611,14 +3629,15 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
     if (sha1FromHex(&csha, frag) != OK) return NO;
 
     b8 tracked = NO;
-    home rh = {};
-    uri none = {};
-    if (HOMEOpen(&rh, &none, NO) != OK) return NO;
+    //  BE-004: `&HOME` is open from the top of dispatch (this runs in
+    //  the bareword-classification pass).  Walk keeper/graf over it; no
+    //  per-pass home reopen.
+    if (!u8bHasData(HOME.root)) return NO;
     static u8c const _zero = 0;
     u8cs trunk = {&_zero, &_zero};
-    ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+    ok64 ko = KEEPOpenBranch(trunk, NO);
     if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
-        ok64 go = GRAFOpen(&rh, NO);
+        ok64 go = GRAFOpen(NO);
         if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
             //  Commit object → root tree sha → descend the path.
             Bu8 *cbuf = &GRAF.obj_buf;
@@ -3635,7 +3654,6 @@ static b8 be_bareword_tracked_in_baseline(cli *c, u8cs rel) {
         }
         if (ko == OK) (void)KEEPClose();
     }
-    HOMEClose(&rh);
     return tracked;
 }
 
@@ -3679,20 +3697,30 @@ ok64 BEActResolveRef(cli *c) {
     }
     if (!any) done;
 
-    home rh = {};
-    uri hat = {};
-    if (u8bHasData(c->repo)) u8csMv(hat.path, $path(c->repo));
-    if (!u8csEmpty(cur_branch)) u8csMv(hat.query, cur_branch);  // project=parent
-    if (HOMEOpen(&rh, &hat, NO) != OK) done;
-    //  A colocated/default wt leaves h->project empty (HOME defers it to
-    //  the caller's get/post-row scan; https://replicated.wiki/html/wiki/Store.html: never the top-level
-    //  `.be/refs`, which is meaningless).  Take cur's project as default.
-    if (!u8bHasData(rh.project)) {
+    //  BE-004: `&HOME` is open from the top of dispatch.  This pass pins
+    //  the resolution context onto it (project + cur leaf), so SNAPSHOT
+    //  the perturbed selector state up front and RESTORE it before
+    //  returning — the singleton outlives this pass.  The old code's
+    //  `hat` query (`/<project>/<branch>`) set exactly these two fields
+    //  via HOMEOpen; we set them directly instead of reopening.
+    if (!u8bHasData(HOME.root)) done;
+    a_pad(u8, save_project, 256);
+    a_pad(u8, save_branch,  HOME_BRANCH_MAX);
+    (void)u8bFeed(save_project, u8bDataC(HOME.project));
+    (void)u8bFeed(save_branch,  u8bDataC(HOME.cur_branch));
+    b8 save_cur_held = HOME.cur_held;
+    b8 save_cur_rw   = HOME.cur_rw;
+    //  The `hat` query supplied the project absolutely (`/proj/branch`),
+    //  which HOMEOpen used to override `project`.  A colocated/default wt
+    //  otherwise leaves project empty (HOME defers it to the caller's
+    //  get/post-row scan; https://replicated.wiki/html/wiki/Store.html: never the top-level `.be/refs`).  Apply
+    //  cur's project here so the resolution sees it, mirroring HOMEOpen.
+    {
         u8cs proj = {};
         DOGQueryProject(cur_branch, proj);
         if (!u8csEmpty(proj)) {
-            u8bReset(rh.project);
-            (void)u8bFeed(rh.project, proj);
+            u8bReset(HOME.project);
+            (void)u8bFeed(HOME.project, proj);
         }
     }
     //  Open keeper at CUR's leaf (not trunk): KEEPOpenBranch walks
@@ -3705,9 +3733,12 @@ ok64 BEActResolveRef(cli *c) {
     static u8c const _zero = 0;
     u8cs open_branch = {&_zero, &_zero};
     if (!u8csEmpty(cur_leaf)) u8csMv(open_branch, cur_leaf);
-    ok64 ko = KEEPOpenBranch(&rh, open_branch, NO);
+    ok64 ko = KEEPOpenBranch(open_branch, NO);
     if (!(ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO)) {
-        HOMEClose(&rh);
+        u8bReset(HOME.project);    (void)u8bFeed(HOME.project, u8bDataC(save_project));
+        u8bReset(HOME.cur_branch); (void)u8bFeed(HOME.cur_branch, u8bDataC(save_branch));
+        HOME.cur_held = save_cur_held;
+        HOME.cur_rw   = save_cur_rw;
         done;
     }
 
@@ -3720,8 +3751,8 @@ ok64 BEActResolveRef(cli *c) {
     //  trunk-named segments literally (children live under `master/…`),
     //  so `?./fix` from cur=`master` must resolve to `master/fix`, not
     //  `fix` — matching the prior be_abs_branch behaviour.
-    u8bReset(rh.cur_branch);
-    (void)u8bFeed(rh.cur_branch, cur_leaf);
+    u8bReset(HOME.cur_branch);
+    (void)u8bFeed(HOME.cur_branch, cur_leaf);
 
     //  Resolved URIs must outlive this plan frame (BEBuildArgv forwards
     //  `u->data`), so compose into a process-scoped scratch buffer.
@@ -3767,7 +3798,7 @@ ok64 BEActResolveRef(cli *c) {
         {
             u8 _qpad[320];
             u8s qw = {_qpad, _qpad + sizeof _qpad};
-            if (REFSResolveURI(&rh, qw, qbare) != OK) continue;
+            if (REFSResolveURI(qw, qbare) != OK) continue;
             //  URI-001 Stage 3: the funnel canonicalises the SCOPE only
             //  (`?/proj/branch`, or `?/proj/<sha>` detached) — it never
             //  pins a tip into the fragment.  The original fragment is
@@ -3796,7 +3827,11 @@ ok64 BEActResolveRef(cli *c) {
     }
 
     if (ko == OK) (void)KEEPClose();
-    HOMEClose(&rh);
+    //  BE-004: restore the singleton's selector state perturbed above.
+    u8bReset(HOME.project);    (void)u8bFeed(HOME.project, u8bDataC(save_project));
+    u8bReset(HOME.cur_branch); (void)u8bFeed(HOME.cur_branch, u8bDataC(save_branch));
+    HOME.cur_held = save_cur_held;
+    HOME.cur_rw   = save_cur_rw;
     done;
 }
 
@@ -3869,6 +3904,21 @@ static ok64 becli_inner(cli *c) {
     if (CLIHas(c, "-h") || CLIHas(c, "--help")) {
         BEUsage();
         done;
+    }
+
+    //  BE-004: open the process-wide `&HOME` ONCE here, at the top of
+    //  the dispatch.  `home` is cwd-derived, so every one of `be`'s
+    //  in-process resolve passes wants the SAME root/wt — only the
+    //  project/branch selector varies.  Each pass below swaps that
+    //  selector on `&HOME` instead of reopening a local home.  A fresh
+    //  dir walks up to NOHOME and leaves `&HOME` closed; a later pass
+    //  (post-bootstrap reindex) re-opens it idempotently.  Read-only:
+    //  `be` itself only resolves; the dogs it spawns open their own rw.
+    //  `becli` pairs this with the single `HOMEClose()`.
+    {
+        uri hat = {};
+        if (u8bHasData(c->repo)) u8csMv(hat.path, $path(c->repo));
+        (void)HOMEOpen(&hat, NO);
     }
 
     //  Theme forwarding: `be --light <args>` propagates to every dog
@@ -4007,14 +4057,14 @@ static ok64 becli_inner(cli *c) {
     }
     if (verb_wants_resolve
         && u8bHasData(c->repo) && CLIUriLen(c) > 0) {
-        home rh = {};
-        uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
+        //  BE-004: `&HOME` is already open (top of dispatch); just walk
+        //  keeper/graf over it.  No per-pass home reopen/close.
+        if (u8bHasData(HOME.root)) {
             static u8c const _zero = 0;
             u8cs trunk = {&_zero, &_zero};
-            ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+            ok64 ko = KEEPOpenBranch(trunk, NO);
             if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
-                ok64 go = GRAFOpen(&rh, NO);
+                ok64 go = GRAFOpen(NO);
                 if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
                     for (u32 i = 0; i < CLIUriLen(c); i++) {
                         uri uv = {};
@@ -4052,7 +4102,6 @@ static ok64 becli_inner(cli *c) {
                 }
                 if (ko == OK) (void)KEEPClose();
             }
-            HOMEClose(&rh);
         }
     }
 
@@ -4278,6 +4327,10 @@ ok64 becli() {
     call(u8csbAlloc, c.uris,  CLI_MAX_URIS);
     try(becli_inner, &c);
     ok64 ret = __;
+    //  BE-004: pair the single top-of-dispatch `HOMEOpen(&HOME,…)`
+    //  with one close.  No-op when becli_inner walked up to NOHOME and
+    //  never opened it (HOMEClose is null-safe per field).
+    HOMEClose();
     //  `-q` / `--quiet` swallows any `*NONE` (POSTNONE / PUTNONE /
     //  DELNONE — all suffix-match NONE), a no-op signal rather than a
     //  real error, so the submodule recursion (bepost_spawn_sub,

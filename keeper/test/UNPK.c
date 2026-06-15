@@ -198,9 +198,9 @@ static ok64 run_toy(char const *recipe) {
     // Set up keeper against kdir.
     u8cs root = {(u8cp)kdir, (u8cp)kdir + strlen(kdir)};
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
     
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
 
     //  Emit callback: count objects per type.
     emit_collect ec = {};
@@ -257,7 +257,7 @@ static ok64 run_toy(char const *recipe) {
     free(shas);
     wh128bFree(entries);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     FILEUnMap(pack_map);
 
     SH("rm -rf %s", repo);

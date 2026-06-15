@@ -25,11 +25,10 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
     sane(1);
     if (!$ok(target_branch)) done;
 
-    keeper *k = &KEEP;
-    if (k->h == NULL) done;  // keeper not open — nothing to switch.
+    if (BNULL(HOME.root)) done;  // home not open — nothing to switch.
 
     //  Same as current leaf?  No-op.
-    a_dup(u8c, cur, u8bDataC(k->h->cur_branch));
+    a_dup(u8c, cur, u8bDataC(HOME.cur_branch));
     if (u8csLen(cur) == u8csLen(target_branch) &&
         (u8csLen(target_branch) == 0 ||
          memcmp(cur[0], target_branch[0],
@@ -41,38 +40,37 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
     //  cross-shard ops (cross-branch POST, KEEP migrate) re-target
     //  trunk-leaf without bypass.
     if (u8csEmpty(target_branch)) {
-        return KEEPSwitchBranch(k->h, target_branch);
+        return KEEPSwitchBranch(target_branch);
     }
 
     //  Probe `<root>/.be/<target_branch>/` — skip if it's not a real
     //  branch shard dir (tags, peer-prefixed refs, etc. all share the
     //  cur branch's view).
     a_path(probe);
-    call(HOMEBranchDir, k->h, probe, NULL);
+    call(HOMEBranchDir, probe, NULL);
     if (PATHu8bAdd(probe, target_branch) != OK) done;
     filestat fs = {};
     if (FILEStat(&fs, $path(probe)) != OK ||
         fs.kind != FILE_KIND_DIR) done;
 
-    return KEEPSwitchBranch(k->h, target_branch);
+    return KEEPSwitchBranch(target_branch);
 }
 
 ok64 SNIFFMaybeSwitchGraf(u8cs target_branch) {
     sane(1);
     if (!$ok(target_branch) || u8csEmpty(target_branch)) done;
 
-    graf *g = &GRAF;
-    if (g->h == NULL) done;  // graf not open.
+    if (BNULL(GRAF.arena)) done;  // graf not open.
 
     //  Probe the on-disk shard (same gating as keeper).
     a_path(probe);
-    call(HOMEBranchDir, g->h, probe, NULL);
+    call(HOMEBranchDir, probe, NULL);
     if (PATHu8bAdd(probe, target_branch) != OK) done;
     filestat fs = {};
     if (FILEStat(&fs, $path(probe)) != OK ||
         fs.kind != FILE_KIND_DIR) done;
 
-    return GRAFSwitchBranch(g->h, target_branch);
+    return GRAFSwitchBranch(target_branch);
 }
 
 ok64 SNIFFWtlogPath(path8b out, u8cs wt_root) {
@@ -98,7 +96,7 @@ ok64 SNIFFWtlogPath(path8b out, u8cs wt_root) {
 
 sniff SNIFF = {};
 
-static b8 sniff_is_open(void) { return SNIFF.h != NULL; }
+static b8 sniff_is_open(void) { return SNIFF.log_data != NULL; }
 static b8 sniff_is_rw = NO;
 static b8 sniff_opened_keep = NO;
 
@@ -110,8 +108,8 @@ static b8 sniff_opened_keep = NO;
 //  `<project>` is the store's Title.  `wt_root` is the wt path (where
 //  `.be/` lives).
 static ok64 sniff_write_repo_row(u8cs wt_root) {
-    sane(SNIFF.h);
-    home *h = SNIFF.h;
+    sane(1);
+    home *h = &HOME;
 
     //  Project (Title) for the anchor.  Honour an already-resolved
     //  project (the `be` path passes it down via --at); otherwise mint
@@ -136,7 +134,7 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
     //  on this colocated-bootstrap path, and HOMEMakeBeDir honors
     //  *.be-is-store + the rw mkdir gate.
     a_path(sharddir);
-    call(HOMEMakeBeDir, h, proj, sharddir);
+    call(HOMEMakeBeDir, proj, sharddir);
 
     //  Row-0 colocated anchor `file:<wt>/.be/<project>` (Store.mkd
     //  "Worktrees and the anchor").  Path via the store-dir composer,
@@ -145,7 +143,7 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
     //  readers split it off (DOGProjectFromBe / SNIFFAtTailOf), never read
     //  as a branch.
     a_path(pathbuf);
-    call(HOMEBeDir, h, proj, pathbuf);
+    call(HOMEBeDir, proj, pathbuf);
 
     a_pad(u8, uribuf, MAX_URI_LEN);
     a_cstr(file_scheme, "file");
@@ -163,8 +161,9 @@ static ok64 sniff_write_repo_row(u8cs wt_root) {
     return ULOGAppend(SNIFF.log_data, SNIFF.log_idx, &rec);
 }
 
-ok64 SNIFFOpen(home *h, b8 rw) {
-    sane(h);
+ok64 SNIFFOpen(b8 rw) {
+    sane(1);
+    home *h = &HOME;
 
     if (sniff_is_open()) {
         if (rw && !sniff_is_rw) return SNIFFOPRO;
@@ -173,7 +172,6 @@ ok64 SNIFFOpen(home *h, b8 rw) {
 
     sniff *s = &SNIFF;
     zerop(s);
-    s->h = h;
     sniff_is_rw = rw;
 
     //  The ULOG lives at either `<wt>/.be/wtlog` (primary / colocated
@@ -290,7 +288,7 @@ ok64 SNIFFOpen(home *h, b8 rw) {
             u8bFeed(br_buf, bu.query);
     }
     a_dup(u8c, branch, u8bData(br_buf));
-    ok64 kr = KEEPOpenBranch(h, branch, rw);
+    ok64 kr = KEEPOpenBranch(branch, rw);
     if (kr != OK && kr != KEEPOPEN) {
         ULOGClose(s->log_data, &s->log_idx, s->log_rw);
         zerop(s); return kr;

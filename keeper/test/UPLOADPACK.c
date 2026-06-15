@@ -58,8 +58,8 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
     sane(tmpdir && out_hex_41);
     a_cstr(root_s, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -80,7 +80,7 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
     //  this fixture would refuse (git wants a commit/tag), but the
     //  pack-stitching path is exercised with raw sha lookup.
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
     a_cstr(heads, "heads/main");
@@ -96,7 +96,7 @@ static ok64 stage_fixture(char const *tmpdir, char *out_hex_41) {
     call(REFSAppend, $path(keepdir), key, val);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 

@@ -1523,8 +1523,8 @@ ok64 PATCHApply(u8cs reporoot, uricp u) {
     //  absolutise + cherry-detector path below.
     u8 canon_pad[320];
     u8s canon_w = {canon_pad, canon_pad + sizeof canon_pad};
-    if (!u8csEmpty(target_query_raw) && KEEP.h != NULL &&
-        REFSResolveURI(KEEP.h, canon_w, target_query_raw) == OK) {
+    if (!u8csEmpty(target_query_raw) && !BNULL(HOME.root) &&
+        REFSResolveURI(canon_w, target_query_raw) == OK) {
         u8cs canon = {canon_pad, canon_w[0]};
         if (!u8csEmpty(canon) && *canon[0] == '?') u8csUsed1(canon);
         refkind k = REFSQueryKind(canon);

@@ -114,8 +114,8 @@ struct dag_ingest {
 //  it into `out` (NUL-terminated).  Flat store: one shard per project,
 //  so the leaf branch never gets its own subdir.  Mirrors
 //  `graf_branch_dir`, `keep_branch_dir` and `spot_branch_dir`.
-static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
-    sane(h && $ok(leaf_branch) && out);
+static ok64 graf_leaf_dir(path8b out, u8cs leaf_branch) {
+    sane($ok(leaf_branch) && out);
     //  `<root>/.be/<project>` via the single store-dir composer (GET-004;
     //  honors *.be-is-store, drops a `.be` project).  Empty `h->project`
     //  collapses to the legacy single-project shape (bare `.be`).  Without
@@ -123,8 +123,8 @@ static ok64 graf_leaf_dir(path8b out, home *h, u8cs leaf_branch) {
     //  while keeper wrote packs into `<root>/.be/<project>/` — out of sync.
     //  Flat store: one shard per project; the leaf branch never gets its
     //  own subdir — mirrors `graf_branch_dir` and `HOMEBranchDir`.
-    a_dup(u8c, proj, u8bDataC(h->project));
-    call(HOMEBeDir, h, proj, out);
+    a_dup(u8c, proj, u8bDataC(HOME.project));
+    call(HOMEBeDir, proj, out);
     (void)leaf_branch;
     done;
 }
@@ -135,8 +135,8 @@ static ok64 dag_index_write_leaf(graf *g, wh128cs run) {
     sane(g);
     if ($empty(run)) done;
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
-    a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
-    call(graf_leaf_dir, leafdir, g->h, leaf);
+    a_dup(u8c, leaf, u8bDataC(HOME.cur_branch));
+    call(graf_leaf_dir, leafdir, leaf);
     call(FILEMakeDirP, $path(leafdir));
     a_cstr(ext, GRAF_IDX_EXT);
     size_t bytes = $len(run) * sizeof(wh128);
@@ -775,8 +775,8 @@ static ok64 dag_compact(graf *g) {
     if (m < 2) done;
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
-    a_dup(u8c, leaf, u8bDataC(g->h->cur_branch));
-    call(graf_leaf_dir, leafdir, g->h, leaf);
+    a_dup(u8c, leaf, u8bDataC(HOME.cur_branch));
+    call(graf_leaf_dir, leafdir, leaf);
     a_cstr(ext, GRAF_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};
     call(DOGPupThinTail, g->puppies, $path(leafdir), ext, (u32)m);

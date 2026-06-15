@@ -67,10 +67,9 @@ static bro *bro_state = NULL;
 
 // --- DOG 4-fn: Open / Close / Update ---
 
-ok64 BROOpen(bro *b, home *h, b8 rw) {
-    sane(b && h);
+ok64 BROOpen(bro *b, b8 rw) {
+    sane(b);
     zerop(b);
-    b->h = h;
     b->rw = rw;
     b->color = YES;
     b->pipe_fd = -1;
@@ -2351,7 +2350,7 @@ static ok64 bro_resolve_spot(void) {
     a_path(p);
     a$rg(a0, 0);
     a_cstr(spot_name, "spot");
-    call(HOMEResolveSibling, NULL, p, spot_name, a0);
+    call(HOMEResolveSibling, p, spot_name, a0);
     call(PATHu8bAlloc, bro_spot_path);
     try(PATHu8bFeed, bro_spot_path, $path(p));
     nedo {
@@ -2613,7 +2612,7 @@ static ok64 BROForkBe(BROstate *st, char const *uri) {
     a_path(bepath);
     a$rg(a0, 0);
     a_cstr(be_name, "be");
-    (void)HOMEResolveSibling(NULL, bepath, be_name, a0);
+    (void)HOMEResolveSibling(bepath, be_name, a0);
     if (u8bDataLen(bepath) == 0) {
         bro_flash(st, "be: binary not resolved");
         fail(FAILSANITY);
@@ -3099,13 +3098,14 @@ ok64 BRORun(hunkcs hunks) {
     //  a valid C-string for the legacy `char const *repo` interfaces
     //  downstream (BROHandleKey, BROReadURI, …).
     a_path(repo);
-    home scratch_h = {};
-    home *rh = bro_state && bro_state->h ? bro_state->h : &scratch_h;
-    if (rh == &scratch_h) {
+    //  BE-004: the process-wide `&HOME` is the only home.  The cli opens
+    //  it before BROOpen; if it isn't open (a direct BROCollect entry),
+    //  open it idempotently here — it stays open for the rest of the run.
+    {
         uri none = {};
-        if (HOMEOpen(rh, &none, NO) != OK) rh = NULL;
+        (void)HOMEOpen(&none, NO);
     }
-    if (rh != NULL) PATHu8bFeed(repo, $path(rh->root));
+    if (!BNULL(HOME.root)) PATHu8bFeed(repo, $path(HOME.root));
     char const *repo_cstr = (char const *)u8bDataHead(repo);
 
     BROGetSize(&st);
@@ -3295,11 +3295,15 @@ ok64 BROPipeRun(int pipefd) {
     //  wt == root, so this only matters for colocated/sub-mount.
     a_path(repo);
     {
-        home rh = {};
+        //  BE-004: read the wt off the process-wide `&HOME`.  Open it
+        //  idempotently; if WE opened it here (it wasn't open from a
+        //  cli above), pair with a close so this transient probe leaves
+        //  no live home behind.
         uri none = {};
-        if (HOMEOpen(&rh, &none, NO) == OK) {
-            PATHu8bFeed(repo, $path(rh.wt));
-            HOMEClose(&rh);
+        ok64 ho = HOMEOpen(&none, NO);
+        if (ho == OK || ho == HOMEOPEN) {
+            PATHu8bFeed(repo, $path(HOME.wt));
+            if (ho == OK) HOMEClose();
         }
     }
     char const *repo_cstr = (char const *)u8bDataHead(repo);

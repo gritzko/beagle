@@ -89,7 +89,7 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
     sane(u && out);
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Fragment slot: any non-empty fragment resolves via the unified
     //  front-door resolver (40-hex / hashlet prefix / branch path).
@@ -116,8 +116,8 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
     //  authority-substring match finds the cached row instead of
     //  silently rewriting "remote tip" as "local cur".
     if (u->query[0] == NULL && u8csEmpty(u->authority)) {
-        if (DOGIsFullSha(u8bDataC(k->h->cur_sha))) {
-            a_dup(u8c, hx, u8bData(k->h->cur_sha));
+        if (DOGIsFullSha(u8bDataC(HOME.cur_sha))) {
+            a_dup(u8c, hx, u8bData(HOME.cur_sha));
             return sha1FromHex(out, hx);
         }
     }
@@ -514,14 +514,14 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
 
 static ok64 graf_head_msg_search(keeper *k, uricp u) {
     sane(k && u);
-    if (u8bDataLen(k->h->cur_sha) != 40) {
+    if (u8bDataLen(HOME.cur_sha) != 40) {
         fprintf(stderr, "graf: head: --at sha not set\n");
         return GRAFFAIL;
     }
 
     sha1 cur_tip = {};
     {
-        a_dup(u8c, hx, u8bData(k->h->cur_sha));
+        a_dup(u8c, hx, u8bData(HOME.cur_sha));
         if (sha1FromHex(&cur_tip, hx) != OK) return GRAFFAIL;
     }
 
@@ -541,7 +541,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
 
     a_carve(u8, cbuf, LOG_OBJ_BUF);
 
-    ok64 go = GRAFOpen(k->h, NO);
+    ok64 go = GRAFOpen(NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
@@ -705,12 +705,12 @@ static ok64 graf_head_decode_sha(sha1 *out, u8cs hex) {
 static ok64 graf_head_resolve_target(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_pad(u8, arena, 4096);
     uri resolved = {};
 
-    a_dup(u8c, cur_branch, u8bData(k->h->cur_branch));
+    a_dup(u8c, cur_branch, u8bData(HOME.cur_branch));
     b8 on_trunk = u8csEmpty(cur_branch);
 
     if (!u8csEmpty(u->query)) {
@@ -926,13 +926,13 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     sane(k && u);
 
     //  1. Resolve cur tip from --at.
-    if (u8bDataLen(k->h->cur_sha) != 40) {
+    if (u8bDataLen(HOME.cur_sha) != 40) {
         fprintf(stderr, "graf: head: --at sha not set\n");
         return GRAFFAIL;
     }
     sha1 cur_tip = {};
     {
-        a_dup(u8c, hx, u8bData(k->h->cur_sha));
+        a_dup(u8c, hx, u8bData(HOME.cur_sha));
         if (sha1FromHex(&cur_tip, hx) != OK) return GRAFFAIL;
     }
     u64 cur_h = WHIFFHashlet60(&cur_tip);
@@ -963,8 +963,8 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     //  visible in PAST+DATA for the ancestor walks.  Same-branch hint
     //  (target == cur or empty target) collapses to a single open.
     u8cs open_branch_h = {};
-    if (u8bHasData(k->h->cur_branch))
-        u8csMv(open_branch_h, u8bDataC(k->h->cur_branch));
+    if (u8bHasData(HOME.cur_branch))
+        u8csMv(open_branch_h, u8bDataC(HOME.cur_branch));
     static u8c const _h0 = 0;
     if (open_branch_h[0] == NULL) {
         open_branch_h[0] = &_h0; open_branch_h[1] = &_h0;
@@ -973,7 +973,7 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     //  graf open.  Funnel the post-open body through grafhead_render()
     //  so the `if (own_open) GRAFClose()` epilogue runs on EVERY exit
     //  (the body's try/nedo and a_carve early-returns can't bypass it).
-    ok64 go = GRAFOpenBranch(k->h, open_branch_h, NO);
+    ok64 go = GRAFOpenBranch(open_branch_h, NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
@@ -1002,7 +1002,7 @@ static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
         if (dotdot) {
             //  Trunk's parent of cur: dirname.  For a top-level
             //  branch (no `/`), parent is trunk (empty).
-            a_dup(u8c, cb, u8bDataC(k->h->cur_branch));
+            a_dup(u8c, cb, u8bDataC(HOME.cur_branch));
             u8cs cbv = {};
             u8csMv(cbv, cb);
             if (!u8csEmpty(cbv) && *u8csLast(cbv) == '/')
@@ -1021,7 +1021,7 @@ static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
         //  surface as GRAFNOPATH.  Treat them as "stay on cur": the
         //  ancestor walks below run over cur's runs, which carry the
         //  full reachable closure for these light-weight forms.
-        try(GRAFSwitchBranch, k->h, t);
+        try(GRAFSwitchBranch, t);
         on(GRAFNOPATH) __ = OK;
         nedo return __;
     }
@@ -1074,7 +1074,7 @@ static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
     //  so a quick `be` tells the user where they are, then the
     //  ahead/behind/changed counters against the diff target.
     {
-        a_dup(u8c, cur_br, u8bDataC(k->h->cur_branch));
+        a_dup(u8c, cur_br, u8bDataC(HOME.cur_branch));
         a_cstr(trunk_s, "trunk");
         u8cs br_label = {};
         u8csMv(br_label, u8csEmpty(cur_br) ? trunk_s : cur_br);
@@ -1170,21 +1170,21 @@ ok64 GRAFLog(uricp u) {
     //  SNIFFMaybeSwitchGraf — that's the canonical helper that
     //  flips DATA→PAST and scans the new leaf's idx files.
     u8cs cur_branch = {};
-    if (u8bDataLen(k->h->cur_branch) > 0) {
-        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+    if (u8bDataLen(HOME.cur_branch) > 0) {
+        u8csMv(cur_branch, u8bDataC(HOME.cur_branch));
     } else {
         static u8c const _zero = 0;
         cur_branch[0] = (u8cp)&_zero;
         cur_branch[1] = (u8cp)&_zero;
     }
-    ok64 go = GRAFOpenBranch(k->h, cur_branch, NO);
+    ok64 go = GRAFOpenBranch(cur_branch, NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
     //  Whether or not we opened, ensure the active leaf is cur.
     //  Restore-after pattern — warn loudly but don't unwind.
     {
-        ok64 gs = GRAFSwitchBranch(k->h, cur_branch);
+        ok64 gs = GRAFSwitchBranch(cur_branch);
         if (gs != OK)
             fprintf(stderr,
                     "graf: log: cur-branch restore failed: %s\n",

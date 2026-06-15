@@ -203,7 +203,7 @@ fun u64 CAPOOffPrefix(u64 off40) {
 #include "spot/LESS.h"
 
 struct spot_ {
-    home    *h;                     // borrowed
+    //  BE-004: home is the `&HOME` singleton — reached directly.
     int      lock_fd;               // flock on leaf dir's .lock; -1 = ro
 
     Bu8      arena;
@@ -291,14 +291,14 @@ extern spot SPOT;
 //    SPOTOPEN   already open compatible; use &SPOT, don't close.
 //    SPOTOPENRO already ro and caller asked for rw.
 //    (other)    real error — propagate.
-ok64 SPOTOpen(home *h, b8 rw);
+ok64 SPOTOpen(b8 rw);
 
 //  Branch-aware Open (Phase 3 surface).  Normalizes `branch` via
 //  DPATHBranchNormFeed and registers it on the home singleton via
 //  HOMEOpenBranch before delegating to SPOTOpen.  Phase 3 accepts
 //  only the trunk (canonical form = empty); other branches return
 //  SPOTNOBR.  Mirrors `KEEPOpenBranch` / `GRAFOpenBranch`.
-ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw);
+ok64 SPOTOpenBranch(u8cs branch, b8 rw);
 
 //  Run one CLI invocation.
 ok64 SPOTExec(cli *c);

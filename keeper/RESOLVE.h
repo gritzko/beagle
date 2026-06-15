@@ -62,7 +62,7 @@ ok64 KEEPResolveHex(sha1hex *out, u8cs token);
 //      ?/<project>//<pin>           DETACHED (bare sha / hashlet)
 //      ?/<project>/<branch>/<pin>   BRANCH   (named branch)
 //
-//  Context (project, cur_branch) comes from `h`; the pin sha is looked
+//  Context (project, cur_branch) comes from `&HOME`; the pin sha is looked
 //  up through KEEPResolveRef against the open keeper.  `rel_ref` is a
 //  query body (a leading `?` is tolerated); it is NOT consumed.  `out`
 //  is a caller pad slice — on success `out[0]` is advanced past the
@@ -73,7 +73,7 @@ ok64 KEEPResolveHex(sha1hex *out, u8cs token);
 //
 //  Returns RESLVFAIL when no project is available; propagates
 //  KEEPResolveRef's RESLVNONE / underlying errors on a pin miss.
-ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref);
+ok64 REFSResolveURI(u8s abs_ref, u8cs rel_ref);
 
 //  KEEPResolveURI is the full funnel: it lexes `rel_uri`, runs the REF
 //  arm (REFSResolveURI) on the query, and recomposes the absolute URI
@@ -81,6 +81,6 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref);
 //  arm (cwd-relative → project-root-relative) and auth arm (`//alias`
 //  → transport URL) are Stage-3 TODOs — today those components pass
 //  through verbatim.  Same `out` write convention as REFSResolveURI.
-ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri);
+ok64 KEEPResolveURI(u8s abs_uri, u8cs rel_uri);
 
 #endif

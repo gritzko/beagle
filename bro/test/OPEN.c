@@ -70,7 +70,7 @@ ok64 OPENtest_open_arena_overflow_no_map_leak(void) {
 
     home h = {};        // local-file path never touches the keeper / h
     bro b = {};
-    try(BROOpen, &b, &h, NO);
+    try(BROOpen, &b, NO);
 
     //  Swap the 128MB arena for a 1-byte one so the per-open u8bHost
     //  copy of the URI (BROOpenFile, run AFTER FILEMapRO) cannot fit and

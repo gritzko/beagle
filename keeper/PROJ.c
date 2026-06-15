@@ -40,7 +40,7 @@ static void proj_feed_lit(u8s out, char const *s) {
 static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
     sane(k && u && out);
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  #hex — convert prefix to a full SHA via KEEPGet (which scans
     //  hashlet matches and verifies).  We don't need the body here,
@@ -576,7 +576,7 @@ ok64 KEEPProjSha1(uricp u, b8 tlv) {
         //  for an empty branch name (= trunk per the recv_build_key
         //  convention).
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, arena_buf, 1024);
         uri resolved = {};
         a_cstr(trunk_uri, "?");

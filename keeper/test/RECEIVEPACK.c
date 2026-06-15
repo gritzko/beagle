@@ -192,10 +192,10 @@ static ok64 seed_ref(char const *tmpdir, char const *refname,
     sane(tmpdir && refname && hex_40);
     a_cstr(root_s, tmpdir);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     wire_to_be_key(kbuf, refname);
@@ -205,7 +205,7 @@ static ok64 seed_ref(char const *tmpdir, char const *refname,
     call(REFSAppend, $path(keepdir), key, val);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 
@@ -214,10 +214,10 @@ static ok64 seed_ref(char const *tmpdir, char const *refname,
 static b8 lookup_ref(char const *tmpdir, char const *refname, char *out_41) {
     a_cstr(root_s, tmpdir);
     home h = {};
-    if (HOMEOpenAt(&h, root_s, NO) != OK) return NO;
-    if (KEEPOpen(&h, NO) != OK) { HOMEClose(&h); return NO; }
+    if (HOMEOpenAt(root_s, NO) != OK) return NO;
+    if (KEEPOpen(NO) != OK) { HOMEClose(); return NO; }
     a_path(keepdir);
-    (void)HOMEBranchDir(KEEP.h, keepdir, NULL);
+    (void)HOMEBranchDir(keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     wire_to_be_key(kbuf, refname);
@@ -233,7 +233,7 @@ static b8 lookup_ref(char const *tmpdir, char const *refname, char *out_41) {
         found = YES;
     }
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     return found;
 }
 

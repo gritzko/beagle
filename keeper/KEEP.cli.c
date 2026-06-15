@@ -48,8 +48,8 @@ static void keeper_served_at(uri *at, uri *g) {
 //  KEEP/REFADV opens + wire serve.  Any `call` failure returns to the
 //  wrapper's `try`, which runs the (idempotent / null-safe) closers —
 //  so a half-open never leaks `h`'s buffers.
-static ok64 keeper_upload_pack_inner(home *h) {
-    sane(h);
+static ok64 keeper_upload_pack_inner(void) {
+    sane(1);
     //  Refuse a non-existent store up front (git-parity): a RO open
     //  tolerates an absent shard (KEEPOpenBranch reads zero refs), so
     //  without this gate `upload-pack <bad-repo>` would advertise an
@@ -58,9 +58,9 @@ static ok64 keeper_upload_pack_inner(home *h) {
     //  refs being non-empty): a shard that holds objects but advertises
     //  zero refs is still served (want-by-hash pin fetch — see
     //  WIRE_CLIENT fetch_by_pin).  Fail fast before any advertisement.
-    a_dup(u8c, proj, u8bDataC(h->project));
-    call(HOMEProjectExists, h, proj);
-    call(KEEPOpen, h, NO);
+    a_dup(u8c, proj, u8bDataC(HOME.project));
+    call(HOMEProjectExists, proj);
+    call(KEEPOpen, NO);
 
     a_refadv(adv);
     call(REFADVOpen, &adv);
@@ -84,13 +84,13 @@ static ok64 keeper_upload_pack(cli *c) {
     //  Serve the requested project: a `?/proj` selector forwarded to
     //  HOMEOpen routes through that shard (home_open_inner step 5).
     //  Absent ⇒ HOMEOpen falls back to the store's row-0 default.
-    home h = {};
+    //  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     keeper_served_at(&at, g);
-    call(HOMEOpen, &h, &at, NO);
-    try(keeper_upload_pack_inner, &h);
+    call(HOMEOpen, &at, NO);
+    try(keeper_upload_pack_inner);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 
@@ -99,9 +99,9 @@ static ok64 keeper_upload_pack(cli *c) {
 //  Stateless across requests (one process per ssh invocation).  Repo
 //  path comes from argv (the first raw URI arg's text); rw mode is
 //  required because push writes packs + REFS.
-static ok64 keeper_receive_pack_inner(home *h) {
-    sane(h);
-    call(KEEPOpen, h, YES);
+static ok64 keeper_receive_pack_inner(void) {
+    sane(1);
+    call(KEEPOpen, YES);
 
     a_refadv(adv);
     call(REFADVOpen, &adv);
@@ -123,14 +123,13 @@ static ok64 keeper_receive_pack(cli *c) {
     if (u8csEmpty(path)) return KEEPFAIL;
 
     //  Serve the requested project (see keeper_upload_pack); absent ⇒
-    //  row-0 default.
-    home h = {};
+    //  row-0 default.  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     keeper_served_at(&at, g);
-    call(HOMEOpen, &h, &at, YES);
-    try(keeper_receive_pack_inner, &h);
+    call(HOMEOpen, &at, YES);
+    try(keeper_receive_pack_inner);
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     //  Lock is released — safe to spawn `be get ?` in the colocated
     //  primary wt (if any).  See RECV.h §RECVAdvanceColocatedWt.
     RECVAdvanceColocatedWt();
@@ -175,12 +174,12 @@ static ok64 keepercli_inner(cli *c) {
     b8 rw = !ro;
 
     //  Prefer `--at` from be; fall back to cwd-walk via c->repo.
-    home h = {};
+    //  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8bHasData(c->repo))
         u8csMv(at.path, $path(c->repo));
-    call(HOMEOpen, &h, &at, rw);
+    call(HOMEOpen, &at, rw);
 
     //  Branch-aware open: pick the leaf shard the verb will operate on.
     //
@@ -215,8 +214,8 @@ static ok64 keepercli_inner(cli *c) {
     //  direct `keeper get` derives it here.  Local checkouts (no
     //  authority) keep the store's own project (HOMEOpen single-shard
     //  scan).
-    if (rw && has_authority && u8bEmpty(h.project))
-        DOGTitleFromUri(&u0, h.project);
+    if (rw && has_authority && u8bEmpty(HOME.project))
+        DOGTitleFromUri(&u0, HOME.project);
     //  Remote-vs-local branch resolution:
     //    Remote (`scheme://host…?ref`) — the query is the REMOTE ref
     //      to fetch.  The local branch (where fetched objects land)
@@ -233,14 +232,14 @@ static ok64 keepercli_inner(cli *c) {
     //      (switch op); falls back to cur_branch when query is
     //      empty or a sha (detached pin, not a branch).
     if (has_authority) {
-        if (u8bHasData(h.cur_branch))
-            u8csMv(branch, u8bDataC(h.cur_branch));
+        if (u8bHasData(HOME.cur_branch))
+            u8csMv(branch, u8bDataC(HOME.cur_branch));
         //  else: fresh clone — leave `branch` empty (trunk).
     } else {
         if (has_query && !query_is_sha)
             u8csMv(branch, u0.query);
-        else if (u8bHasData(h.cur_branch))
-            u8csMv(branch, u8bDataC(h.cur_branch));
+        else if (u8bHasData(HOME.cur_branch))
+            u8csMv(branch, u8bDataC(HOME.cur_branch));
     }
     //  Absolute query (`?/<project>/<branch>`) carries a project
     //  prefix that's local-side state (already consumed by
@@ -249,12 +248,12 @@ static ok64 keepercli_inner(cli *c) {
     //  `?/U` would mint a phantom local branch named `U` under
     //  project `U` (.be/U/U/).  Per https://replicated.wiki/html/wiki/URI.html §"Ref resolution".
     DOGQueryStripProject(branch);
-    call(KEEPOpenBranch, &h, branch, rw);
+    call(KEEPOpenBranch, branch, rw);
 
     ok64 ret = KEEPExec(c);
 
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     return ret;
 }
 

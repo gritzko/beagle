@@ -42,7 +42,6 @@
 #define MMAP01_ITERS 8
 
 static char g_tmp[256];
-static home g_home;
 
 static ok64 setup_repo(void) {
     sane(1);
@@ -50,9 +49,8 @@ static ok64 setup_repo(void) {
     snprintf(g_tmp, sizeof(g_tmp), "/tmp/grafmmap-XXXXXX");
     want(mkdtemp(g_tmp) != NULL);
     a_cstr(root, g_tmp);
-    zero(g_home);
-    call(HOMEOpenAt, &g_home, root, YES);
-    call(KEEPOpen, &g_home, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
     //  NB: do NOT GRAFOpen here — the verbs under test must own the
     //  open themselves (own_open == true) for the leak to be live.
     done;
@@ -61,7 +59,7 @@ static ok64 setup_repo(void) {
 static void teardown_repo(void) {
     GRAFClose();
     KEEPClose();
-    HOMEClose(&g_home);
+    HOMEClose();
     char cmd[300];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmp);
     (void)system(cmd);
@@ -73,8 +71,8 @@ static void teardown_repo(void) {
 //  a GRAFOPEN* result means "was already open" (i.e. leaked by the verb
 //  under test).  This is exact and immune to VMA reuse — the leaked
 //  arenas are the open graf singleton itself, not throwaway maps.
-static b8 graf_left_open(home *h) {
-    ok64 go = GRAFOpen(h, NO);
+static b8 graf_left_open(void) {
+    ok64 go = GRAFOpen(NO);
     if (go == OK) { GRAFClose(); return NO; }   // was closed → clean
     return YES;                                 // GRAFOPEN* → leaked open
 }
@@ -84,8 +82,8 @@ static b8 graf_left_open(home *h) {
 //  call errored (so we know the own-open region was reached) and that
 //  graf is NOT left open afterwards (the leak under test).  BASS is
 //  rewound by the surrounding call() frame; the hog dies with it.
-static ok64 starved_call(ok64 (*fn)(uricp), uricp u, home *h) {
-    sane(fn && u && h);
+static ok64 starved_call(ok64 (*fn)(uricp), uricp u) {
+    sane(fn && u);
     //  Leave ~1.5 MB of BASS idle.  GRAFMap's first PRE-open carve
     //  (strs_arena, 1 MB) then fits, but the first POST-open carve
     //  (union_set, 1 MB) cannot — landing the failure after own_open.
@@ -101,7 +99,7 @@ static ok64 starved_call(ok64 (*fn)(uricp), uricp u, home *h) {
     //  means the injection missed and the test would be meaningless.
     want(r != OK);
     //  THE PROPERTY: the owned open must have been closed on the way out.
-    if (graf_left_open(h)) {
+    if (graf_left_open()) {
         fprintf(stderr, "MMAP01: own-open LEAKED (graf left open after "
                         "error r=%s)\n", ok64str(r));
         fail(TESTFAIL);
@@ -112,30 +110,29 @@ static ok64 starved_call(ok64 (*fn)(uricp), uricp u, home *h) {
 //  Property: every starved error-return through an own-open verb closes
 //  the graf it opened.  Run N iterations so a sticky-but-reused leak is
 //  still caught on the first failing iteration.
-static ok64 assert_no_open_leak(ok64 (*fn)(uricp), char const *label,
-                                home *h) {
-    sane(fn && label && h);
+static ok64 assert_no_open_leak(ok64 (*fn)(uricp), char const *label) {
+    sane(fn && label);
     a_cstr(us, "map:");
     uri u = {};
     (void)URIutf8Drain(us, &u);
     for (u32 i = 0; i < MMAP01_ITERS; i++) {
-        call(starved_call, fn, &u, h);
+        call(starved_call, fn, &u);
     }
     fprintf(stderr, "MMAP01 %s: own-open closed on every error path\n",
             label);
     done;
 }
 
-ok64 MMAP01map(home *h) {
-    sane(h);
-    call(assert_no_open_leak, GRAFMap, "map", h);
+ok64 MMAP01map(void) {
+    sane(1);
+    call(assert_no_open_leak, GRAFMap, "map");
     done;
 }
 
 ok64 maintest(void) {
     sane(1);
     call(setup_repo);
-    ok64 r = MMAP01map(&g_home);
+    ok64 r = MMAP01map();
     teardown_repo();
     return r;
 }

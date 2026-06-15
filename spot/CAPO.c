@@ -17,7 +17,7 @@ static b8   spot_is_open(void);
 //  static) so the parallel-worker dispatcher in CAPO.exe.c can compute
 //  the leaf-branch dir without copy-pasting the PATHu8b dance.
 //  Internal: not part of CAPO.h.
-ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch);
+ok64 spot_branch_dir(path8b out, u8cs leaf_branch);
 
 #include "abc/ANSI.h"
 #include "abc/PRO.h"
@@ -87,12 +87,15 @@ ok64 CAPOResolveDir(path8b out, u8csc reporoot) {
         a_dup(u8c, r, reporoot);
         call(PATHu8bFeed, out, r);
     } else {
-        home rh = {};
+        //  BE-004: cwd-walk on the process-wide `&HOME`.  Open
+        //  idempotently; if WE opened it (no spot cli above), pair with a
+        //  close so this transient resolve leaves no live home behind.
         uri none = {};
-        call(HOMEOpen, &rh, &none, NO);
-        a_dup(u8c, r, u8bDataC(rh.root));
+        ok64 ho = HOMEOpen(&none, NO);
+        if (ho != OK && ho != HOMEOPEN) return ho;
+        a_dup(u8c, r, u8bDataC(HOME.root));
         ok64 fo = PATHu8bFeed(out, r);
-        HOMEClose(&rh);
+        if (ho == OK) HOMEClose();
         if (fo != OK) return fo;
     }
     call(PATHu8bPush, out, DOG_BE_S);
@@ -313,7 +316,7 @@ ok64 CAPOCompact(void) {
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-    call(spot_branch_dir, leafdir, s->h, leaf);
+    call(spot_branch_dir, leafdir, leaf);
     a_cstr(ext, CAPO_IDX_EXT);
     u8cs merged = {(u8cp)base, (u8cp)(into[0])};
     //  Thin first (unlinks the m sources), then create.
@@ -356,7 +359,7 @@ ok64 CAPOCompactAll(void) {
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-    call(spot_branch_dir, leafdir, s->h, leaf);
+    call(spot_branch_dir, leafdir, leaf);
     a_cstr(ext, CAPO_IDX_EXT);
     //  Drop ALL existing puppies, then create the merged single run.
     call(DOGPupThinTail, s->puppies, $path(leafdir), ext, nview);
@@ -398,7 +401,7 @@ ok64 CAPOMergeWorkers(u32 nw) {
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     {
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-        call(spot_branch_dir, leafdir, s->h, leaf);
+        call(spot_branch_dir, leafdir, leaf);
     }
 
     //  Open every worker's pups into a scratch puppy stack so we hold
@@ -1069,13 +1072,12 @@ ok64 CAPOScan(u8csc reporoot, CAPOScanOpts const *opts) {
     sane(!$empty(reporoot) && opts != NULL && opts->file_fn != NULL);
 
     //  SNIFFClassify needs both keeper + sniff singletons open.
-    home *h = SPOT.h;
-    ok64 ko = KEEPOpen(h, NO);
+    ok64 ko = KEEPOpen(NO);
     if (ko != OK && ko != KEEPOPEN) {
         fprintf(stderr, "spot: keeper open failed: %s\n", ok64str(ko));
         return ko;
     }
-    ok64 so = SNIFFOpen(h, NO);
+    ok64 so = SNIFFOpen(NO);
     if (so != OK && so != SNIFFOPEN) {
         fprintf(stderr, "spot: sniff open failed: %s\n", ok64str(so));
         if (ko == OK) KEEPClose();
@@ -1184,8 +1186,7 @@ ok64 CAPORunScan(uri const *ref, u8css files, u8csc reporoot,
                  CAPOScanOpts const *opts) {
     sane(opts && opts->file_fn);
     if (ref != NULL) {
-        home *h = SPOT.h;
-        ok64 ko = KEEPOpen(h, NO);
+        ok64 ko = KEEPOpen(NO);
         if (ko != OK && ko != KEEPOPEN) {
             fprintf(stderr, "spot: keeper open failed: %s\n",
                     ok64str(ko));
@@ -1317,7 +1318,7 @@ ok64 CAPOTrigramFilter(Bu64 hashbuf, b8 *has_trigrams,
 
 spot SPOT = {};
 
-static b8 spot_is_open(void) { return SPOT.h != NULL; }
+static b8 spot_is_open(void) { return !BNULL(SPOT.leaf_branch); }
 static b8 spot_is_rw = NO;
 
 // --- Branch-dir composition ---
@@ -1325,13 +1326,13 @@ static b8 spot_is_rw = NO;
 //  Compose `<root>/.be[/<leaf_branch>]` into `out`
 //  (NUL-terminated).  Mirrors `keep_branch_dir` /
 //  `graf_branch_dir`.
-ok64 spot_branch_dir(path8b out, home *h, u8cs leaf_branch) {
-    sane(h && out);
+ok64 spot_branch_dir(path8b out, u8cs leaf_branch) {
+    sane(out);
     //  `<root>/.be/<project>` via the single store-dir composer (GET-004;
-    //  honors *.be-is-store, drops a `.be` project).  Empty `h->project`
+    //  honors *.be-is-store, drops a `.be` project).  Empty `HOME.project`
     //  collapses to the legacy single-project shape (bare `.be`).
-    a_dup(u8c, proj, u8bDataC(h->project));
-    call(HOMEBeDir, h, proj, out);
+    a_dup(u8c, proj, u8bDataC(HOME.project));
+    call(HOMEBeDir, proj, out);
     if ($ok(leaf_branch) && !u8csEmpty(leaf_branch)) {
         a_dup(u8c, br, leaf_branch);
         if (!$empty(br) && *u8csLast(br) == '/') u8csShed1(br);
@@ -1359,8 +1360,8 @@ static ok64 spot_walk_branch(spot *s, u8cs leaf, spot_dir_cb cb,
     a_path(sdir);
     //  `<root>/.be/<project>` via the single composer (GET-004) — see
     //  spot_branch_dir.  Empty project collapses to bare `.be`.
-    a_dup(u8c, proj, u8bDataC(s->h->project));
-    call(HOMEBeDir, s->h, proj, sdir);
+    a_dup(u8c, proj, u8bDataC(HOME.project));
+    call(HOMEBeDir, proj, sdir);
     {
         a_pad(u8, d, FILE_PATH_MAX_LEN);
         a_dup(u8c, sd, u8bDataC(sdir));
@@ -1417,8 +1418,7 @@ static ok64 spot_open_fail(spot *s, ok64 o) {
 //  singleton `s`.  Any non-OK return is funnelled through
 //  `spot_open_fail` by the wrapper, so this body never hand-frees.
 static ok64 spot_open_body(spot *s, u8cs norm, b8 rw) {
-    sane(s != NULL && s->h != NULL);
-    home *h = s->h;
+    sane(s != NULL);
 
     call(kv64bAllocate, s->puppies, FILE_MAX_OPEN);
 
@@ -1431,7 +1431,7 @@ static ok64 spot_open_body(spot *s, u8cs norm, b8 rw) {
     a_pad(u8, trunkdir, FILE_PATH_MAX_LEN);
     {
         u8cs empty = {};
-        call(spot_branch_dir, trunkdir, h, empty);
+        call(spot_branch_dir, trunkdir, empty);
     }
     call(FILEMakeDirP, $path(trunkdir));
 
@@ -1447,7 +1447,7 @@ static ok64 spot_open_body(spot *s, u8cs norm, b8 rw) {
     if (rw) {
         a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
         a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-        call(spot_branch_dir, leafdir, h, leaf);
+        call(spot_branch_dir, leafdir, leaf);
         a_pad(u8, lockpath, FILE_PATH_MAX_LEN);
         a_dup(u8c, lds, u8bDataC(leafdir));
         call(PATHu8bFeed, lockpath, lds);
@@ -1502,8 +1502,8 @@ static ok64 spot_open_body(spot *s, u8cs norm, b8 rw) {
     done;
 }
 
-ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
+ok64 SPOTOpenBranch(u8cs branch, b8 rw) {
+    sane($ok(branch));
 
     if (spot_is_open()) {
         if (rw && !spot_is_rw) return SPOTOPENRO;
@@ -1517,14 +1517,13 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
 
     //  Register on home (idempotent re-opens absorbed).
     {
-        ok64 o = HOMEOpenBranch(h, branch, rw);
+        ok64 o = HOMEOpenBranch(branch, rw);
         if (o != OK && o != HOMEOPEN && o != HOMEROBR)
             return o;
     }
 
     spot *s = &SPOT;
     zerop(s);
-    s->h = h;
     s->lock_fd = -1;
     s->out_fd = -1;
     s->rw = rw;
@@ -1542,10 +1541,10 @@ ok64 SPOTOpenBranch(home *h, u8cs branch, b8 rw) {
     done;
 }
 
-ok64 SPOTOpen(home *h, b8 rw) {
+ok64 SPOTOpen(b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
-    return SPOTOpenBranch(h, trunk, rw);
+    return SPOTOpenBranch(trunk, rw);
 }
 
 //  Drain the BOX scratch into a sorted+dedup'd puppy.  BOXu64Flush
@@ -1568,7 +1567,7 @@ ok64 CAPOFlushRun(void) {
 
     a_pad(u8, leafdir, FILE_PATH_MAX_LEN);
     a_dup(u8c, leaf, u8bDataC(s->leaf_branch));
-    call(spot_branch_dir, leafdir, s->h, leaf);
+    call(spot_branch_dir, leafdir, leaf);
     call(FILEMakeDirP, $path(leafdir));
     a_cstr(ext, CAPO_IDX_EXT);
     u8cs raw = {(u8cp)save_base, (u8cp)(save_base + n)};
@@ -1624,6 +1623,5 @@ void SPOTClose(void) {
     s->nmaps  = 0;
     less_nhunks = 0;
     less_nmaps  = 0;
-    s->h = NULL;
     spot_is_rw = NO;
 }

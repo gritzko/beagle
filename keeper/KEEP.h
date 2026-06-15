@@ -114,7 +114,8 @@ fun u32 keepPackBmLen(u64 val)   { return (u32)val; }
 //  `keep_next_pup_key`; flat kv64b registries work uniformly for
 //  every branch.
 typedef struct {
-    home   *h;                    // borrowed; owns root/arena/config/rw
+    //  BE-004: home is the process-wide `&HOME` singleton — reach it
+    //  directly, no borrowed pointer here.
     //  Keeper-level pack registry.  Key = pack file_id (20-bit fit
     //  for wh64.id, currently a small ascending counter; key type is
     //  u64 only so the kv64 layout is shared with puppies).  Val =
@@ -147,10 +148,10 @@ typedef struct {
     //  no-ops on PAST entries but also clobbers fresh leaf runs —
     //  test/put/03-branch-shard pins the regression).
     Bkv64   puppies;
-    //  Active leaf-branch path lives in `h->cur_branch` (canonical
+    //  Active leaf-branch path lives in `HOME.cur_branch` (canonical
     //  form, empty = trunk).  Keeper is the only writer (via
     //  HOMESetCurBranch); upstream dogs (sniff/spot/graf) read it
-    //  before invoking keeper.  Readers use `u8bDataC(k->h->cur_branch)`.
+    //  before invoking keeper.  Readers use `u8bDataC(HOME.cur_branch)`.
     //
     //  NUL-separated list of dirs the keeper has scanned via
     //  `keep_scan_branch_dir`.  Used to no-op repeat scans (cross-
@@ -171,9 +172,9 @@ typedef struct {
 } keeper;
 
 // Relative ".be" slice.  Call sites compose the project-scoped store
-// dir via `HOMEBranchDir(k->h, dir, NULL)` for the project trunk or
-// `HOMEBranchDir(k->h, dir, k->h->cur_branch)` for the active leaf,
-// and use $path(dir) wherever a u8csc is needed.  Empty `h->project`
+// dir via `HOMEBranchDir(dir, NULL)` for the project trunk or
+// `HOMEBranchDir(dir, HOME.cur_branch)` for the active leaf,
+// and use $path(dir) wherever a u8csc is needed.  Empty `HOME.project`
 // collapses to the legacy single-project layout.
 extern u8c *const KEEP_DIR_S[2];
 
@@ -184,13 +185,13 @@ extern u8c *const KEEP_DIR_S[2];
 //  rather than threading a pointer through every call chain.
 extern keeper KEEP;
 
-//  Open keeper store at `h`.  Returns:
+//  Open keeper store on the process-wide `&HOME`.  Returns:
 //    OK         I opened it; caller must pair with KEEPClose.
 //    KEEPOPEN   already open, compatible mode; use &KEEP, do NOT close.
 //    KEEPOPENRO already open ro but caller asked for rw — real conflict;
 //               propagate.  Caller's outer scope must re-architect.
 //    (other)    real error — propagate, no KEEPClose.
-ok64 KEEPOpen(home *h, b8 rw);
+ok64 KEEPOpen(b8 rw);
 
 //  Branch-aware Open.  Walks trunk → … → leaf and registers every
 //  `.keeper` and `.keeper.idx` file along the path on the keeper-level
@@ -203,7 +204,7 @@ ok64 KEEPOpen(home *h, b8 rw);
 //    KEEPOPEN   already open, compatible mode; use &KEEP, do NOT close.
 //    KEEPOPENRO already open ro but caller asked for rw — real conflict.
 //    KEEPNONE   a dir in the branch path is missing.
-ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw);
+ok64 KEEPOpenBranch(u8cs branch, b8 rw);
 
 //  Create a new branch dir under an existing parent.  `branch` is
 //  normalized via DPATHBranchNormFeed.  Returns:
@@ -212,7 +213,7 @@ ok64 KEEPOpenBranch(home *h, u8cs branch, b8 rw);
 //    KEEPNONE  parent dir doesn't exist — create the parent first.
 //    KEEPDUP   leaf dir already exists.
 //    KEEPTRUNK trunk (empty branch) — already exists by definition.
-ok64 KEEPCreateBranch(home *h, u8cs branch);
+ok64 KEEPCreateBranch(u8cs branch);
 
 //  Re-target an already-open keeper from `k->leaf_branch` to
 //  `new_branch` WITHOUT closing and reopening.  Collapses current
@@ -237,7 +238,7 @@ ok64 KEEPCreateBranch(home *h, u8cs branch);
 //    OK         switched.
 //    KEEPNONE   a dir in the new branch's path is missing.
 //    KEEPFAIL   internal error (lock / registry).
-ok64 KEEPSwitchBranch(home *h, u8cs new_branch);
+ok64 KEEPSwitchBranch(u8cs new_branch);
 
 //  Drop a branch-dir and all its files.  `branch` is normalized via
 //  DPATHBranchNormFeed.  Preconditions:

@@ -28,9 +28,9 @@ static ok64 capocli_inner(cli *c) {
 
     //  Prefer `--at` from be (`<root>?<branch>#<sha>`); fall back to
     //  the cwd-walked `c->repo`.  HOMEOpen parks the URI's branch and
-    //  fragment in `h->cur_branch` / `h->cur_sha` so SPOTIndexFromTips
+    //  fragment in `HOME.cur_branch` / `HOME.cur_sha` so SPOTIndexFromTips
     //  has a baseline tip when the user URI is bare (`?`, no args).
-    home h = {};
+    //  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8bHasData(c->repo))
@@ -38,14 +38,14 @@ static ok64 capocli_inner(cli *c) {
     //  Direct call so we can run HOMEClose on failure: HOMEOpen may
     //  have allocated buffers before HOMEFindDogs returned NOHOME.
     {
-        ok64 ho = HOMEOpen(&h, &at, need_rw);
-        if (ho != OK) { HOMEClose(&h); return ho; }
+        ok64 ho = HOMEOpen(&at, need_rw);
+        if (ho != OK) { HOMEClose(); return ho; }
     }
 
-    call(SPOTOpen, &h, need_rw);
+    call(SPOTOpen, need_rw);
     ok64 ret = SPOTExec(c);
     SPOTClose();
-    HOMEClose(&h);
+    HOMEClose();
     return ret;
 }
 

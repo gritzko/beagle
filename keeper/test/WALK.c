@@ -129,10 +129,10 @@ ok64 WALKtest2() {
     want(mkdtemp(tmp) != NULL);
     a_cstr(root, tmp);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
 
     
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
     keep_pack p = {};
     call(KEEPPackOpen, &p);
     //  This test feeds blobs before trees to exercise WALK against a
@@ -212,7 +212,7 @@ ok64 WALKtest2() {
     }
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     {
         char cmd[512];
@@ -240,8 +240,8 @@ ok64 WALKtest4() {
     want(mkdtemp(tmp) != NULL);
     a_cstr(root, tmp);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -332,7 +332,7 @@ ok64 WALKtest4() {
     u8bFree(ulog_buf);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     {
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
@@ -356,8 +356,8 @@ ok64 WALKtest5() {
     want(mkdtemp(tmp) != NULL);
     a_cstr(root, tmp);
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     keep_pack p = {};
     call(KEEPPackOpen, &p);
@@ -438,7 +438,7 @@ ok64 WALKtest5() {
     }
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     {
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);

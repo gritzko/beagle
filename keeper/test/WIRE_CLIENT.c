@@ -153,14 +153,14 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
 
     a_cstr(root_s, keeper_root);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
 
     u8csc bytes = {pbuf, pbuf + plen};
     call(KEEPIngestFile, bytes);
 
     a_path(keepdir);
-    call(HOMEBranchDir, KEEP.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
     if (branch && *branch) {
@@ -174,7 +174,7 @@ static ok64 stage_local_keeper(char const *keeper_root, char const *pack_path,
     call(REFSAppend, $path(keepdir), key, val);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 
@@ -194,14 +194,14 @@ static ok64 stage_local_keeper_norefs(char const *keeper_root,
 
     a_cstr(root_s, keeper_root);
     home h = {};
-    call(HOMEOpenAt, &h, root_s, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root_s, YES);
+    call(KEEPOpen, YES);
 
     u8csc bytes = {pbuf, pbuf + plen};
     call(KEEPIngestFile, bytes);
 
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 
@@ -211,10 +211,10 @@ static b8 lookup_local_ref(char const *keeper_root, char const *branch,
                            char *out_41) {
     a_cstr(root_s, keeper_root);
     home h = {};
-    if (HOMEOpenAt(&h, root_s, NO) != OK) return NO;
-    if (KEEPOpen(&h, NO) != OK) { HOMEClose(&h); return NO; }
+    if (HOMEOpenAt(root_s, NO) != OK) return NO;
+    if (KEEPOpen(NO) != OK) { HOMEClose(); return NO; }
     a_path(keepdir);
-    (void)HOMEBranchDir(KEEP.h, keepdir, NULL);
+    (void)HOMEBranchDir(keepdir, NULL);
 
     a_pad(u8, kbuf, 256);
     u8bFeed1(kbuf, '?');
@@ -234,7 +234,7 @@ static b8 lookup_local_ref(char const *keeper_root, char const *branch,
         found = YES;
     }
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     return found;
 }
 
@@ -271,8 +271,8 @@ ok64 WIRECLIENTtest_fetch_smoke() {
     {
         a_cstr(client_root_s, clientdir);
         home h = {};
-        call(HOMEOpenAt, &h, client_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, client_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, serverdir);
         u8csc want_cs = {NULL, NULL};
@@ -280,7 +280,7 @@ ok64 WIRECLIENTtest_fetch_smoke() {
         want(fo == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Verify the client REFS now holds the same tip on its trunk.
@@ -317,8 +317,8 @@ ok64 WIRECLIENTtest_push_smoke() {
     {
         a_cstr(src_root_s, srcdir);
         home h = {};
-        call(HOMEOpenAt, &h, src_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, src_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, dstdir);
         a_cstr(branch_s, "feat");
@@ -330,7 +330,7 @@ ok64 WIRECLIENTtest_push_smoke() {
         want(po == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Destination should now have be-branch "feat" → hex.
@@ -371,8 +371,8 @@ ok64 WIRECLIENTtest_round_trip() {
     {
         a_cstr(A_root_s, Adir);
         home h = {};
-        call(HOMEOpenAt, &h, A_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, A_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
@@ -383,15 +383,15 @@ ok64 WIRECLIENTtest_round_trip() {
         want(po == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Fetch A → C (through fresh keeper C).
     {
         a_cstr(C_root_s, Cdir);
         home h = {};
-        call(HOMEOpenAt, &h, C_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, C_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, Adir);
         u8csc want_cs = {NULL, NULL};
@@ -399,7 +399,7 @@ ok64 WIRECLIENTtest_round_trip() {
         want(fo == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Both B and C agree with A on the trunk tip.
@@ -450,8 +450,8 @@ ok64 WIRECLIENTtest_fetch_by_pin() {
     {
         a_cstr(client_root_s, clientdir);
         home h = {};
-        call(HOMEOpenAt, &h, client_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, client_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, serverdir);
         u8csc pin_cs = {(u8cp)hex, (u8cp)hex + 40};
@@ -465,7 +465,7 @@ ok64 WIRECLIENTtest_fetch_by_pin() {
         want(KEEPVerify(pin_hx) == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Piece B tie-in: the by-pin fetch records the pin as the shard's
@@ -516,8 +516,8 @@ ok64 WIRECLIENTtest_title_clash() {
     {
         a_cstr(client_root_s, clientdir);
         home h = {};
-        call(HOMEOpenAt, &h, client_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, client_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, serverB);
         u8csc want_cs = {NULL, NULL};
@@ -525,7 +525,7 @@ ok64 WIRECLIENTtest_title_clash() {
         want(fo == TITLECLSH);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  The client trunk must still point at A — B never co-mingled.
@@ -571,8 +571,8 @@ ok64 WIRECLIENTtest_title_converge() {
     {
         a_cstr(client_root_s, clientdir);
         home h = {};
-        call(HOMEOpenAt, &h, client_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, client_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, serverdir);
         u8csc want_cs = {NULL, NULL};
@@ -580,7 +580,7 @@ ok64 WIRECLIENTtest_title_converge() {
         want(fo == OK);
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     char got[41];
@@ -636,8 +636,8 @@ ok64 WIRECLIENTtest_incremental_prune() {
     {
         a_cstr(A_root_s, Adir);
         home h = {};
-        call(HOMEOpenAt, &h, A_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, A_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
@@ -647,7 +647,7 @@ ok64 WIRECLIENTtest_incremental_prune() {
         nshas = WIREPushLastObjCount;
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  B's trunk advanced to c2.
@@ -693,8 +693,8 @@ ok64 WIRECLIENTtest_uptodate_nopack() {
     {
         a_cstr(A_root_s, Adir);
         home h = {};
-        call(HOMEOpenAt, &h, A_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, A_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
@@ -704,7 +704,7 @@ ok64 WIRECLIENTtest_uptodate_nopack() {
         nshas = WIREPushLastObjCount;
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Peer already at tip ⇒ no pack built.
@@ -747,8 +747,8 @@ ok64 WIRECLIENTtest_nonff_nopack() {
     {
         a_cstr(A_root_s, Adir);
         home h = {};
-        call(HOMEOpenAt, &h, A_root_s, YES);
-        call(KEEPOpen, &h, YES);
+        call(HOMEOpenAt, A_root_s, YES);
+        call(KEEPOpen, YES);
 
         FILE_URI(uri, Bdir);
         u8csc branch_cs = {NULL, NULL};
@@ -757,7 +757,7 @@ ok64 WIRECLIENTtest_nonff_nopack() {
         nshas = WIREPushLastObjCount;
 
         KEEPClose();
-        HOMEClose(&h);
+        HOMEClose();
     }
 
     //  Rejected up front: non-FF, no pack built.

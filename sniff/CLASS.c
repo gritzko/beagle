@@ -212,8 +212,8 @@ static ok64 class_merge_step(ulogreccp recs, u32 n, void *ctx_) {
 // --- Public entry ---
 
 ok64 SNIFFClassify(class_cb cb, void *ctx) {
-    sane(SNIFF.h && cb);
-    a_dup(u8c, reporoot, u8bData(SNIFF.h->wt));
+    sane(cb);
+    a_dup(u8c, reporoot, u8bData(HOME.wt));
 
     a_cstr(base_name, "base");
     a_cstr(wt_name,   "wt");

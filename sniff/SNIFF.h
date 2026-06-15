@@ -86,7 +86,7 @@ ok64 SNIFFWtlogPath(path8b out, u8cs wt_root);
 // --- State ---
 
 typedef struct {
-    home   *h;        // borrowed
+    //  BE-004: home is the `&HOME` singleton — reached directly.
     u8bp    log_data; // pointer to FILE_WANT_BUFS slot for <wt>/.be/wtlog
     wh128bp log_idx;  // ts → wh128 (off + verb-hash) index over log_data
     b8      log_rw;   // YES iff log was opened RW (Close must trim)
@@ -118,7 +118,7 @@ extern sniff SNIFF;
 
 // --- Public API ---
 
-ok64 SNIFFOpen(home *h, b8 rw);
+ok64 SNIFFOpen(b8 rw);
 ok64 SNIFFClose(void);
 
 ok64 SNIFFExec(cli *c);

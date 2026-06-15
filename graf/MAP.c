@@ -175,7 +175,7 @@ static void map_intern(u8bp arena, u8csp out, u8csc src) {
 static ok64 grafmap_render(u8b strs_arena, map_branch *kept, u32 nk);
 
 ok64 GRAFMap(uricp u) {
-    sane(KEEP.h != NULL);
+    sane(!BNULL(HOME.root));
     (void)u;
 
     //  Per-call string arena: path / summary / author bytes interned
@@ -183,12 +183,12 @@ ok64 GRAFMap(uricp u) {
     a_carve(u8, strs_arena, 1UL << 20);
 
     //  Resolve current branch — sourced from `--at <root>?<branch>#<sha>`
-    //  forwarded by `be` and parked in KEEP.h->cur_branch by HOMEOpen.
+    //  forwarded by `be` and parked in HOME.cur_branch by HOMEOpen.
     //  Empty branch == trunk; strip the canonical leading '?' and
     //  trailing '/' for prefix-matching against KEEPEachTip's paths.
     u8cs cur_path = {};
     {
-        a_dup(u8c, cb, u8bData(KEEP.h->cur_branch));
+        a_dup(u8c, cb, u8bData(HOME.cur_branch));
         if (!u8csEmpty(cb) && *cb[0] == '?') u8csUsed1(cb);
         if (!u8csEmpty(cb) && *u8csLast(cb) == '/') u8csShed1(cb);
         if (u8csLen(cb) > 0) {
@@ -222,7 +222,7 @@ ok64 GRAFMap(uricp u) {
     //  open.  Funnel the post-open body through grafmap_render() so the
     //  `if (own_graf) GRAFClose()` epilogue runs on EVERY exit (the
     //  body's a_carve / call early-returns can't bypass it anymore).
-    ok64 go = GRAFOpen(KEEP.h, NO);
+    ok64 go = GRAFOpen(NO);
     b8 own_graf = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO)
         return go;
@@ -242,8 +242,8 @@ static ok64 grafmap_render(u8b strs_arena, map_branch *kept, u32 nk) {
     //  read-only — the keeper switch is safe (no in-flight pack).
     for (u32 i = 0; i < nk; i++) {
         a_dup(u8c, br, kept[i].path);
-        call(GRAFSwitchBranch, KEEP.h, br);
-        call(KEEPSwitchBranch, KEEP.h, br);
+        call(GRAFSwitchBranch, br);
+        call(KEEPSwitchBranch, br);
     }
     for (u32 i = 0; i < nk; i++) {
         __ = wh128bAcquire(ABC_BASS, kept[i].ancestors, MAP_ANC_SIZE);

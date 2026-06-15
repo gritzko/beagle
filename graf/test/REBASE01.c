@@ -38,7 +38,6 @@
 // --- Tiny test harness ----------------------------------------------------
 
 static char g_tmp[256];
-static home g_home;
 
 static ok64 setup_repo(void) {
     sane(1);
@@ -46,17 +45,16 @@ static ok64 setup_repo(void) {
     snprintf(g_tmp, sizeof(g_tmp), "/tmp/grafrebase-XXXXXX");
     want(mkdtemp(g_tmp) != NULL);
     a_cstr(root, g_tmp);
-    zero(g_home);
-    call(HOMEOpenAt, &g_home, root, YES);
-    call(KEEPOpen, &g_home, YES);
-    call(GRAFOpen, &g_home, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(GRAFOpen, YES);
     done;
 }
 
 static void teardown_repo(void) {
     GRAFClose();
     KEEPClose();
-    HOMEClose(&g_home);
+    HOMEClose();
     char cmd[300];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmp);
     system(cmd);

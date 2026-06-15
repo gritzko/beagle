@@ -60,12 +60,12 @@ static ok64 resolve_hashlet(keeper *k, sha1 *out, u8cs hex) {
 //  REFSResolve `?<path>` and decode the resolved 40-hex into `out`.
 //  Retries the usual prefix strips (`refs/heads/`, `refs/`, `heads/`)
 //  so the caller can pass any of the legal absolute spellings.
-static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
-    sane(k && out);
-    if (k->h == NULL || u8bDataLen(k->h->root) == 0) return RESLVFAIL;
+static ok64 resolve_branch_path(sha1 *out, u8cs path) {
+    sane(out);
+    if (BNULL(HOME.root) || u8bDataLen(HOME.root) == 0) return RESLVFAIL;
 
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Empty path is the canonical trunk lookup.  REFSResolve treats
     //  a URI with `?` and no body as "match trunk only" (presence test,
@@ -105,7 +105,7 @@ static ok64 resolve_branch_path(keeper *k, sha1 *out, u8cs path) {
         if (loc == 0) {
             call(PATHu8bFeed, lookup_dir, $path(keepdir));
         } else {
-            call(HOMEBranchDir, k->h, lookup_dir, NULL);
+            call(HOMEBranchDir, lookup_dir, NULL);
             call(PATHu8bAdd, lookup_dir, path);
         }
         for (u32 pass = 0; pass < 2; pass++) {
@@ -228,7 +228,7 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     //  Empty token is a legitimate "trunk" lookup — used by PATCH /
     //  POST when `?..` from a top-level branch absolutises to "".
     //  Down to resolve_branch_path which handles the empty-path arm.
-    if ($empty(token)) return resolve_branch_path(k, out, token);
+    if ($empty(token)) return resolve_branch_path(out, token);
 
     //  Strip a leading `?` so the caller can pass either `?feat` or
     //  `feat` interchangeably.  Bare `?` (length 1) means trunk.
@@ -238,7 +238,7 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     //  Empty after strip → trunk.  REFS key for trunk is bare `?` —
     //  resolve_branch_path handles it via the empty-path arm.
     if ($empty(t)) {
-        return resolve_branch_path(k, out, t);
+        return resolve_branch_path(out, t);
     }
 
     //  Branch path, possibly relative.  Queries are path-shaped:
@@ -270,7 +270,7 @@ ok64 KEEPResolveRef(sha1 *out, u8cs token, u8cs cur_branch) {
     //  URI-001 §"The one rule": disambiguation is BRANCH-FIRST and
     //  hash-length-agnostic.
     //   1. Does the ref name a branch (REFS lookup)?  → branch / trunk.
-    ok64 bo = resolve_branch_path(k, out, $path(abs_path));
+    ok64 bo = resolve_branch_path(out, $path(abs_path));
     if (bo == OK) return OK;
 
     //   2. Else, is the ref all-hex AND does that hash exist (pack
@@ -328,8 +328,8 @@ static ok64 resolve_abs_branch(u8b out, u8cs cur_leaf, u8cs query) {
     done;
 }
 
-ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
-    sane(h && $ok(abs_ref) && $ok(rel_ref));
+ok64 REFSResolveURI(u8s abs_ref, u8cs rel_ref) {
+    sane($ok(abs_ref) && $ok(rel_ref));
 
     //  Idempotent: an already-canonical input is re-emitted verbatim
     //  (with a single leading `?`).  This makes the funnel a no-op on
@@ -352,7 +352,7 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
     //  the wtlog-derived callers feed it — a trailing slash makes `..`
     //  pop the empty tail segment instead of the branch.  Trim it.
     u8cs cur_leaf = {};
-    u8csMv(cur_leaf, u8bDataC(h->cur_branch));
+    u8csMv(cur_leaf, u8bDataC(HOME.cur_branch));
     while (!u8csEmpty(cur_leaf) && *u8csLast(cur_leaf) == '/')
         u8csShed1(cur_leaf);
 
@@ -361,7 +361,7 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
     //  compose a canonical form.
     u8cs project = {};
     if (!u8csEmpty(in) && *in[0] == '/') DOGQueryProject(in, project);
-    if (u8csEmpty(project)) u8csMv(project, u8bDataC(h->project));
+    if (u8csEmpty(project)) u8csMv(project, u8bDataC(HOME.project));
     if (u8csEmpty(project)) fail(RESLVFAIL);
 
     //  URI-001 §"The one rule": classify by RESOLUTION, branch-first —
@@ -385,7 +385,7 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
         call(resolve_abs_branch, branchb, cur_leaf, in);
         ok64 bo;
         if (u8bHasData(branchb)) {
-            bo = resolve_branch_path(k, &pin, u8bDataC(branchb));
+            bo = resolve_branch_path(&pin, u8bDataC(branchb));
             kind = REFKIND_BRANCH;
         } else {
             a_cstr(trunk, "");
@@ -426,8 +426,8 @@ ok64 REFSResolveURI(home *h, u8s abs_ref, u8cs rel_ref) {
     done;
 }
 
-ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri) {
-    sane(h && $ok(abs_uri) && $ok(rel_uri));
+ok64 KEEPResolveURI(u8s abs_uri, u8cs rel_uri) {
+    sane($ok(abs_uri) && $ok(rel_uri));
 
     uri u = {};
     u.data[0] = rel_uri[0];
@@ -453,7 +453,7 @@ ok64 KEEPResolveURI(home *h, u8s abs_uri, u8cs rel_uri) {
     u8 _qpad[320];
     u8s qw = {_qpad, _qpad + sizeof(_qpad)};
     u8cs qin = {u.query[0], u.query[1]};
-    call(REFSResolveURI, h, qw, qin);
+    call(REFSResolveURI, qw, qin);
     u8cs qbody = {_qpad, qw[0]};
     if (!u8csEmpty(qbody) && *qbody[0] == '?') u8csUsed1(qbody);
 

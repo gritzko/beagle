@@ -79,8 +79,8 @@ ok64 DELTARoundTrip() {
 
     u8cs root = {(u8cp)tmp, (u8cp)tmp + strlen(tmp)};
     home h = {};
-    call(HOMEOpenAt, &h, root, YES);
-    call(KEEPOpen, &h, YES);
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
 
     enum { N = 4 };
     char const *versions[N] = {
@@ -279,7 +279,7 @@ ok64 DELTARoundTrip() {
     u8bUnMap(gitpack);
     FILEUnMap(logmap);
     call(KEEPClose);
-    HOMEClose(&h);
+    HOMEClose();
 
     //  rm -rf the tmpdir.
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", tmp);

@@ -60,14 +60,14 @@ ok64 gitdl() {
         mkdir(outbuf, 0755);
     }
 
-    home h = {};
-    call(HOMEOpenAt, &h, out_arg, YES);
-    call(KEEPOpen, &h, YES);
+    //  BE-004: open the process-wide `&HOME` singleton.
+    call(HOMEOpenAt, out_arg, YES);
+    call(KEEPOpen, YES);
 
     ok64 fo = WIREFetch(remote_arg, ref_cs);
 
     KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
 
     if (fo != OK) {
         fprintf(stderr, "git-dl: fetch failed: 0x%llx\n",

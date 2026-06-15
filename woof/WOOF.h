@@ -141,7 +141,7 @@ woof_route const *WOOFRouteFind(u8cs scheme);
 // --- Singleton state ---
 
 typedef struct {
-    home *h;             // borrowed
+    //  BE-004: home is the `&HOME` singleton — reached directly.
     int   listen_fd;     // bound TCP socket; -1 until WOOFOpen
     u8   *pool;          // mmap(MAX_CONNS * WOOF_SLOT_BYTES); NULL pre-Open
     u32   max_conns;     // slot capacity; default WOOF_MAX_CONNS_DEFAULT
@@ -161,7 +161,7 @@ extern woof WOOF;
 
 // --- Public API ---
 
-ok64 WOOFOpen(home *h);
+ok64 WOOFOpen(void);
 ok64 WOOFClose(void);
 
 ok64 WOOFExec(cli *c);

@@ -151,7 +151,7 @@ ok64 BROExec(bro *b, cli *c) {
             u8 pat = URIPattern(u);
             if (pat & (URI_HOST | URI_QUERY)) {
                 if (!keeper_open) {
-                    ok64 ko = KEEPOpen(b->h, NO);
+                    ok64 ko = KEEPOpen(NO);
                     if (ko != OK && ko != KEEPOPEN) {
                         fprintf(stderr, "bro: cannot open keeper: %s\n",
                                 ok64str(ko));

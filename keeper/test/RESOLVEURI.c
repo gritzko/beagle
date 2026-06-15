@@ -34,10 +34,10 @@ static void sha_hex40(char *out41, sha1cp s) {
 
 //  Append one REFS row (`from_uri` key, 40-hex `to_uri` value) into the
 //  project shard's reflog.
-static ok64 add_ref(home *h, char const *key, char const *sha40) {
-    sane(h && key && sha40);
+static ok64 add_ref(char const *key, char const *sha40) {
+    sane(key && sha40);
     a_path(refsdir);
-    call(HOMEBranchDir, h, refsdir, NULL);
+    call(HOMEBranchDir, refsdir, NULL);
     a_cstr(ks, key);
     a_cstr(vs, sha40);
     call(REFSAppend, u8bDataC(refsdir), ks, vs);
@@ -45,12 +45,12 @@ static ok64 add_ref(home *h, char const *key, char const *sha40) {
 }
 
 //  Run one REFSResolveURI case: input query → expected canonical text.
-static ok64 check_ref(home *h, char const *in, char const *expect) {
-    sane(h && in && expect);
+static ok64 check_ref(char const *in, char const *expect) {
+    sane(in && expect);
     a_cstr(in_s, in);
     u8 pad[320];
     u8s out = {pad, pad + sizeof(pad)};
-    call(REFSResolveURI, h, out, in_s);
+    call(REFSResolveURI, out, in_s);
     u8cs got = {pad, out[0]};
     size_t el = strlen(expect);
     if ((size_t)u8csLen(got) != el || memcmp(got[0], expect, el) != 0) {
@@ -62,12 +62,12 @@ static ok64 check_ref(home *h, char const *in, char const *expect) {
 }
 
 //  Run one KEEPResolveURI case (full URI in / out).
-static ok64 check_uri(home *h, char const *in, char const *expect) {
-    sane(h && in && expect);
+static ok64 check_uri(char const *in, char const *expect) {
+    sane(in && expect);
     a_cstr(in_s, in);
     u8 pad[384];
     u8s out = {pad, pad + sizeof(pad)};
-    call(KEEPResolveURI, h, out, in_s);
+    call(KEEPResolveURI, out, in_s);
     u8cs got = {pad, out[0]};
     size_t el = strlen(expect);
     if ((size_t)u8csLen(got) != el || memcmp(got[0], expect, el) != 0) {
@@ -86,20 +86,19 @@ ok64 RESOLVEURItest() {
     want(TESTBEmkdtemp(dir, sizeof dir) == OK);
     a_cstr(root, dir);
 
-    home h = {};
-    call(HOMEOpenAt, &h, root, YES);
+    call(HOMEOpenAt, root, YES);
 
     //  Project shard "proj"; cur branch "feat/" (drives relative refs).
     a_cstr(projn, "proj");
-    u8bReset(h.project);
-    call(u8bFeed, h.project, projn);
+    u8bReset(HOME.project);
+    call(u8bFeed, HOME.project, projn);
 
-    call(KEEPOpen, &h, YES);
+    call(KEEPOpen, YES);
 
     a_cstr(curn, "feat/");
-    u8bReset(h.cur_branch);
-    call(u8bFeed, h.cur_branch, curn);
-    h.cur_held = YES;
+    u8bReset(HOME.cur_branch);
+    call(u8bFeed, HOME.cur_branch, curn);
+    HOME.cur_held = YES;
 
     //  Two commit objects: S0 (trunk tip), S1 (feat / feat/sub tip).
     keep_pack p = {};
@@ -117,15 +116,15 @@ ok64 RESOLVEURItest() {
     sha_hex40(S1, &s1);
 
     //  REFS: trunk → S0, feat → S1, feat/sub → S1.
-    call(add_ref, &h, "?",         S0);
-    call(add_ref, &h, "?feat",     S1);
-    call(add_ref, &h, "?feat/sub", S1);
+    call(add_ref, "?",         S0);
+    call(add_ref, "?feat",     S1);
+    call(add_ref, "?feat/sub", S1);
     //  URI-001 Stage 1: branches whose NAMES are all-hex.  Branch-first
     //  resolution must pick the branch over a same-spelled hashlet.
     //  `dead` (4 hex) and `c0ffee` (6 hex) never collide with a real
     //  object prefix, so the only way they resolve is as branches.
-    call(add_ref, &h, "?dead",     S0);
-    call(add_ref, &h, "?c0ffee",   S1);
+    call(add_ref, "?dead",     S0);
+    call(add_ref, "?c0ffee",   S1);
 
     //  Expected canonical strings.
     char e_trunk[64], e_feat[96], e_featsub[96], e_detach[64];
@@ -142,39 +141,39 @@ ok64 RESOLVEURItest() {
 
     //  --- REF arm ---
     //  trunk (empty / bare ?)
-    call(check_ref, &h, "",   e_trunk);
-    call(check_ref, &h, "?",  e_trunk);
+    call(check_ref, "",   e_trunk);
+    call(check_ref, "?",  e_trunk);
     //  named branch (with / without leading ?)
-    call(check_ref, &h, "?feat", e_feat);
-    call(check_ref, &h, "feat",  e_feat);
+    call(check_ref, "?feat", e_feat);
+    call(check_ref, "feat",  e_feat);
     //  nested branch + relative forms (cur = feat/)
-    call(check_ref, &h, "?feat/sub", e_featsub);
-    call(check_ref, &h, "?./sub",    e_featsub);   // ./sub from feat/
-    call(check_ref, &h, "?..",       e_trunk);     // parent of feat = trunk
+    call(check_ref, "?feat/sub", e_featsub);
+    call(check_ref, "?./sub",    e_featsub);   // ./sub from feat/
+    call(check_ref, "?..",       e_trunk);     // parent of feat = trunk
 
     //  URI-001 Stage 1: hex-spelled branch names resolve branch-first.
     //  `dead` (4 hex) used to mis-emit as detached `?/proj//<sha>`;
     //  `c0ffee` (6 hex) used to be unreachable (shadowed by a failing
     //  hashlet lookup).  Bareword (no `?`) must promote identically.
-    call(check_ref, &h, "?dead",   e_dead);
-    call(check_ref, &h, "dead",    e_dead);
-    call(check_ref, &h, "?c0ffee", e_coffee);
-    call(check_ref, &h, "c0ffee",  e_coffee);
+    call(check_ref, "?dead",   e_dead);
+    call(check_ref, "dead",    e_dead);
+    call(check_ref, "?c0ffee", e_coffee);
+    call(check_ref, "c0ffee",  e_coffee);
 
     //  detached: full sha + hashlet, both → ?/proj//<sha>
     {
         char in_full[64];
         snprintf(in_full, sizeof in_full, "?%s", S0);
-        call(check_ref, &h, in_full, e_detach);
+        call(check_ref, in_full, e_detach);
         char in_hl[16];
         snprintf(in_hl, sizeof in_hl, "?%.8s", S0);
-        call(check_ref, &h, in_hl, e_detach);
+        call(check_ref, in_hl, e_detach);
     }
 
     //  idempotent: already-canonical input re-emits verbatim
-    call(check_ref, &h, e_trunk,   e_trunk);
-    call(check_ref, &h, e_feat,    e_feat);
-    call(check_ref, &h, e_detach,  e_detach);
+    call(check_ref, e_trunk,   e_trunk);
+    call(check_ref, e_feat,    e_feat);
+    call(check_ref, e_detach,  e_detach);
 
     //  --- KEEPResolveURI: path / authority preserved verbatim
     //      (Stage-3 arms), query canonicalised by the REF arm ---
@@ -182,16 +181,16 @@ ok64 RESOLVEURItest() {
         char in_path[96], ex_path[128];
         snprintf(in_path, sizeof in_path, "./file.c?feat");
         snprintf(ex_path, sizeof ex_path, "./file.c?/proj/feat");
-        call(check_uri, &h, in_path, ex_path);
+        call(check_uri, in_path, ex_path);
 
         char in_auth[96], ex_auth[128];
         snprintf(in_auth, sizeof in_auth, "//host?feat");
         snprintf(ex_auth, sizeof ex_auth, "//host?/proj/feat");
-        call(check_uri, &h, in_auth, ex_auth);
+        call(check_uri, in_auth, ex_auth);
     }
 
     (void)KEEPClose();
-    HOMEClose(&h);
+    HOMEClose();
     TESTBErmrf(dir);
     done;
 }

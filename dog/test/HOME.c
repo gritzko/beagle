@@ -43,8 +43,7 @@ ok64 HOMETestGet() {
         "c = \"nested\"\n");
 
     a_cstr(root, tmp);
-    home h = {};
-    call(HOMEOpenAt, &h, root, NO);
+    call(HOMEOpenAt, root, NO);
 
     u8 vbuf[128];
 
@@ -55,7 +54,7 @@ ok64 HOMETestGet() {
         a_cstr(u, "user");
         a_cstr(n, "name");
         a_path(needle, u, n);
-        call(HOMEGetConfig, &h, val, $path(needle));
+        call(HOMEGetConfig, val, $path(needle));
         u8cs got = {val_start, val[0]};
         a_cstr(wantn, "Ada Lovelace");
         want($eq(got, wantn));
@@ -68,7 +67,7 @@ ok64 HOMETestGet() {
         a_cstr(r, "remote");
         a_cstr(o, "origin");
         a_path(needle, r, o);
-        call(HOMEGetConfig, &h, val, $path(needle));
+        call(HOMEGetConfig, val, $path(needle));
         u8cs got = {val_start, val[0]};
         a_cstr(wanto, "ssh://host/repo");
         want($eq(got, wanto));
@@ -82,7 +81,7 @@ ok64 HOMETestGet() {
         a_cstr(b, "b");
         a_cstr(k, "c");
         a_path(needle, a, b, k);
-        call(HOMEGetConfig, &h, val, $path(needle));
+        call(HOMEGetConfig, val, $path(needle));
         u8cs got = {val_start, val[0]};
         a_cstr(wantn, "nested");
         want($eq(got, wantn));
@@ -94,7 +93,7 @@ ok64 HOMETestGet() {
         a_cstr(u, "user");
         a_cstr(n, "nope");
         a_path(needle, u, n);
-        want(HOMEGetConfig(&h, val, $path(needle)) == NOCONF);
+        want(HOMEGetConfig(val, $path(needle)) == NOCONF);
     }
 
     // --- miss: wrong section ---
@@ -103,10 +102,10 @@ ok64 HOMETestGet() {
         a_cstr(s, "nope");
         a_cstr(n, "name");
         a_path(needle, s, n);
-        want(HOMEGetConfig(&h, val, $path(needle)) == NOCONF);
+        want(HOMEGetConfig(val, $path(needle)) == NOCONF);
     }
 
-    HOMEClose(&h);
+    HOMEClose();
     TESTBErmrf(tmp);
     done;
 }
@@ -119,17 +118,16 @@ ok64 HOMETestMissingFile() {
     want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
 
     a_cstr(root, tmp);
-    home h = {};
-    call(HOMEOpenAt, &h, root, NO);
+    call(HOMEOpenAt, root, NO);
 
     u8 vbuf[64];
     u8s val = {vbuf, vbuf + sizeof(vbuf)};
     a_cstr(u, "user");
     a_cstr(n, "name");
     a_path(needle, u, n);
-    want(HOMEGetConfig(&h, val, $path(needle)) == NOCONF);
+    want(HOMEGetConfig(val, $path(needle)) == NOCONF);
 
-    HOMEClose(&h);
+    HOMEClose();
     TESTBErmrf(tmp);
     done;
 }
@@ -149,22 +147,21 @@ ok64 HOMETestBranches() {
     want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
 
     a_cstr(root, tmp);
-    home h = {};
-    call(HOMEOpenAt, &h, root, NO);
+    call(HOMEOpenAt, root, NO);
 
     // 1. No branches yet → WriteBranch returns HOMENOBR.
     {
         u8cs w = {};
-        want(HOMEWriteBranch(&h, w) == HOMENOBR);
+        want(HOMEWriteBranch(w) == HOMENOBR);
     }
 
     // 2. Open trunk ro first.  WriteBranch HOMENOBR because the
     //    first open was ro (cur_rw=NO).
     {
         a_cstr(trunk, "main");
-        want(HOMEOpenBranch(&h, trunk, NO) == OK);
+        want(HOMEOpenBranch(trunk, NO) == OK);
         u8cs w = {};
-        want(HOMEWriteBranch(&h, w) == HOMENOBR);
+        want(HOMEWriteBranch(w) == HOMENOBR);
     }
 
     // 3. A later rw open re-targets cur (test/CLI pattern: open
@@ -173,27 +170,27 @@ ok64 HOMETestBranches() {
     //    matches (idempotent promote).
     {
         a_cstr(feat, "heads/feature");
-        want(HOMEOpenBranch(&h, feat, YES) == OK);
+        want(HOMEOpenBranch(feat, YES) == OK);
         u8cs w = {};
-        want(HOMEWriteBranch(&h, w) == OK);
+        want(HOMEWriteBranch(w) == OK);
         want(slice_is(w, "heads/feature/"));
     }
 
     // 5. Dedup: reopening the same branch returns HOMEOPEN.
     {
         a_cstr(feat2, "heads/feature/");
-        want(HOMEOpenBranch(&h, feat2, YES) == HOMEOPEN);
+        want(HOMEOpenBranch(feat2, YES) == HOMEOPEN);
     }
 
     // 6. Second ro branch claims aux.  A third ro branch hits the
     //    aux pin and is refused with HOMEROBR.
     {
         a_cstr(other, "other/fix");
-        want(HOMEOpenBranch(&h, other, NO) == OK);   // claims aux
+        want(HOMEOpenBranch(other, NO) == OK);   // claims aux
         a_cstr(other2, "other/fix");
-        want(HOMEOpenBranch(&h, other2, NO) == HOMEOPEN);  // idempotent
+        want(HOMEOpenBranch(other2, NO) == HOMEOPEN);  // idempotent
         a_cstr(third, "third/branch");
-        want(HOMEOpenBranch(&h, third, NO) == HOMEROBR);   // aux pinned
+        want(HOMEOpenBranch(third, NO) == HOMEROBR);   // aux pinned
     }
 
     // 7. HOMEBranchVisible — cur OR aux.  cur = "heads/feature/",
@@ -201,35 +198,35 @@ ok64 HOMETestBranches() {
     {
         a_cstr(trunk_s, "");
         u8cs trunk_b = {trunk_s[0], trunk_s[1]};
-        want(HOMEBranchVisible(&h, trunk_b) == YES);       // ancestor of all
+        want(HOMEBranchVisible(trunk_b) == YES);       // ancestor of all
 
         a_cstr(feat_s, "heads/feature/");
         u8cs feat_b = {feat_s[0], feat_s[1]};
-        want(HOMEBranchVisible(&h, feat_b) == YES);        // exact match (cur)
+        want(HOMEBranchVisible(feat_b) == YES);        // exact match (cur)
 
         a_cstr(heads_s, "heads/");
         u8cs heads_b = {heads_s[0], heads_s[1]};
-        want(HOMEBranchVisible(&h, heads_b) == YES);       // ancestor of cur
+        want(HOMEBranchVisible(heads_b) == YES);       // ancestor of cur
 
         a_cstr(other_s, "other/fix/");
         u8cs other_b = {other_s[0], other_s[1]};
-        want(HOMEBranchVisible(&h, other_b) == YES);       // exact match (aux)
+        want(HOMEBranchVisible(other_b) == YES);       // exact match (aux)
 
         a_cstr(stray_s, "nope/");
         u8cs stray_b = {stray_s[0], stray_s[1]};
-        want(HOMEBranchVisible(&h, stray_b) == NO);
+        want(HOMEBranchVisible(stray_b) == NO);
     }
 
     // 8. HOMESetCurBranch re-targets cur without touching aux.
     {
         a_cstr(other_root, "other");
-        want(HOMESetCurBranch(&h, other_root) == OK);
+        want(HOMESetCurBranch(other_root) == OK);
         u8cs w = {};
-        want(HOMEWriteBranch(&h, w) == OK);
+        want(HOMEWriteBranch(w) == OK);
         want(slice_is(w, "other/"));
     }
 
-    HOMEClose(&h);
+    HOMEClose();
     TESTBErmrf(tmp);
     done;
 }
@@ -264,14 +261,13 @@ ok64 HOMETestRwBootstrap() {
             want(mkdir(bedir, 0755) == 0);
         }
 
-        home h = {};
         if (cases[i].via_at) {
             a_cstr(root, tmp);
-            call(HOMEOpenAt, &h, root, YES);
+            call(HOMEOpenAt, root, YES);
         } else {
             want(chdir(tmp) == 0);
             uri none = {};
-            call(HOMEOpen, &h, &none, YES);
+            call(HOMEOpen, &none, YES);
         }
 
         //  rw bootstrap lays down `.be/wtlog` (top-level, per-wt).  It no
@@ -285,7 +281,7 @@ ok64 HOMETestRwBootstrap() {
         snprintf(p, sizeof(p), "%s/" DOG_BE_NAME "/" DOG_REFS_NAME, tmp);
         want(stat(p, &st) != 0);   //  no top-level refs
 
-        HOMEClose(&h);
+        HOMEClose();
         TESTBErmrf(tmp);
     }
     done;
@@ -302,10 +298,9 @@ ok64 HOMETestRoNoBootstrap() {
     want(TESTBEmkdtemp(tmp, sizeof tmp) == OK);
     want(chdir(tmp) == 0);
 
-    home h = {};
     uri none = {};
-    want(HOMEOpen(&h, &none, NO) == NOHOME);
-    HOMEClose(&h);
+    want(HOMEOpen(&none, NO) == NOHOME);
+    HOMEClose();
 
     char p[512];
     snprintf(p, sizeof(p), "%s/" DOG_BE_NAME, tmp);
@@ -363,11 +358,10 @@ ok64 HOMETestRoEmptyAnchor() {
         }
 
         want(chdir(tmp) == 0);
-        home h = {};
         uri none = {};
-        ok64 got = HOMEOpen(&h, &none, cases[i].rw);
+        ok64 got = HOMEOpen(&none, cases[i].rw);
         want(got == cases[i].want_ret);
-        HOMEClose(&h);
+        HOMEClose();
 
         TESTBErmrf(tmp);
     }
@@ -414,17 +408,16 @@ ok64 HOMETestProjectDerive() {
         }
 
         a_cstr(root, tmp);
-        home h = {};
-        call(HOMEOpenAt, &h, root, NO);
+        call(HOMEOpenAt, root, NO);
 
         if (cases[i].want[0] != 0) {
-            a_dup(u8c, pj, u8bDataC(h.project));
+            a_dup(u8c, pj, u8bDataC(HOME.project));
             want(slice_is(pj, cases[i].want));
         } else {
-            want(u8bEmpty(h.project));
+            want(u8bEmpty(HOME.project));
         }
 
-        HOMEClose(&h);
+        HOMEClose();
         TESTBErmrf(tmp);
     }
     done;
@@ -491,16 +484,15 @@ ok64 HOMETestTitleResolve() {
         //  forwards.
         a_cstr(root, tmp);
         a_cstr(q, cases[i].query);
-        home h = {};
         uri at = {};
         at.path[0]  = root[0];  at.path[1]  = root[1];
         at.query[0] = q[0];     at.query[1] = q[1];
-        call(HOMEOpen, &h, &at, NO);
+        call(HOMEOpen, &at, NO);
 
-        a_dup(u8c, pj, u8bDataC(h.project));
+        a_dup(u8c, pj, u8bDataC(HOME.project));
         want(slice_is(pj, cases[i].want_proj));
 
-        HOMEClose(&h);
+        HOMEClose();
         TESTBErmrf(tmp);
     }
     done;
@@ -587,19 +579,18 @@ ok64 HOMETestWalkHomeBound() {
         //  Drive the walk through HOMEOpen (rw=NO) — it allocates the
         //  h->wt / h->root buffers the walk's anchor-resolve writes into.
         //  A bare HOMEFind(&h={}) would hit those buffers unallocated.
-        home h = {};
         uri none = {};
-        ok64 got = HOMEOpen(&h, &none, NO);
+        ok64 got = HOMEOpen(&none, NO);
         want(got == cases[i].want_ret);
         if (got == OK) {
             //  unbounded path discovered the store ABOVE cwd, not the
             //  shield-less home dir — confirm root lands on .../store.
             char wantroot[512];
             snprintf(wantroot, sizeof wantroot, "%s/store", base);
-            a_dup(u8c, rt, u8bDataC(h.root));
+            a_dup(u8c, rt, u8bDataC(HOME.root));
             want(slice_is(rt, wantroot));
         }
-        HOMEClose(&h);
+        HOMEClose();
 
         //  Step out of the scratch before removing it.
         want(chdir("/tmp") == 0);

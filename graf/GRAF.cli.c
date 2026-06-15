@@ -31,7 +31,7 @@ static ok64 grafcli_inner(cli *c) {
     b8 rw = graf_verb_is_rw(c->verb);
 
     //  Prefer `--at` from be; fall back to cwd-walk via c.repo.
-    home h = {};
+    //  BE-004: open the process-wide `&HOME` singleton.
     uri at = {};
     CLIAtURI(&at, c);
     if (u8csEmpty(at.path) && u8bHasData(c->repo))
@@ -40,18 +40,18 @@ static ok64 grafcli_inner(cli *c) {
     //  have allocated buffers (root/wt/cur_branch/cur_sha/branches_data)
     //  before the HOMEFindDogs walk-up returned NOHOME.
     {
-        ok64 ho = HOMEOpen(&h, &at, rw);
-        if (ho != OK) { HOMEClose(&h); return ho; }
+        ok64 ho = HOMEOpen(&at, rw);
+        if (ho != OK) { HOMEClose(); return ho; }
     }
 
     //  Match sniff's branch-aware open: derive cur branch from
-    //  `h.cur_branch` (populated by HOMEOpen from `--at <root>?<br>`)
+    //  `HOME.cur_branch` (populated by HOMEOpen from `--at <root>?<br>`)
     //  so reindex / lookup walks land at the right shard.
-    a_dup(u8c, gbr, u8bDataC(h.cur_branch));
-    call(GRAFOpenBranch, &h, gbr, rw);
+    a_dup(u8c, gbr, u8bDataC(HOME.cur_branch));
+    call(GRAFOpenBranch, gbr, rw);
     ok64 ret = GRAFExec(c);
     GRAFClose();
-    HOMEClose(&h);
+    HOMEClose();
     return ret;
 }
 

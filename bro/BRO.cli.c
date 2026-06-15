@@ -12,14 +12,14 @@ static ok64 brocli_inner(cli *c) {
     call(CLIParse, c, NULL, NULL);  // no verbs, no val-flags
     CLISetHUNKMode(c);
 
-    home h = {};
-    call(HOMEOpenAt, &h, $path(c->repo), NO);
+    //  BE-004: open the process-wide `&HOME` singleton.
+    call(HOMEOpenAt, $path(c->repo), NO);
 
     bro b = {};
-    try(BROOpen, &b, &h, NO);
+    try(BROOpen, &b, NO);
     then try(BROExec, &b, c);
     BROClose(&b);
-    HOMEClose(&h);
+    HOMEClose();
     done;
 }
 

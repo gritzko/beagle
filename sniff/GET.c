@@ -859,7 +859,7 @@ static ok64 get_ff_check(sha1cp local_tip, sha1cp target_tip) {
     sane(local_tip && target_tip);
     if (sha1Eq(local_tip, target_tip)) done;
 
-    ok64 go = GRAFOpen(SNIFF.h, NO);
+    ok64 go = GRAFOpen(NO);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return go;
     b8 own_open = (go == OK);
 
@@ -890,7 +890,7 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     //  the parent's trunk).  Trunk REFS holds the primary wt's own
     //  rows when leaf is empty.
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, k->h->cur_branch);
+    call(HOMEBranchDir, keepdir, HOME.cur_branch);
     a_pad(u8, refkey_buf, 256);
     u8bFeed1(refkey_buf, '?');
     u8bFeed(refkey_buf, branch);
@@ -982,7 +982,7 @@ static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
     if (!base_commit || !tgt_commit) return;
     if (sha1Eq(base_commit, tgt_commit)) return;
 
-    ok64 go = GRAFOpen(SNIFF.h, NO);
+    ok64 go = GRAFOpen(NO);
     b8 own_open = (go == OK);
     if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return;
 
@@ -1098,10 +1098,10 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             //  Bare `?` (trunk) — switch back to trunk-leaf view.
             //  Pass an "empty but valid" slice so KEEPSwitchBranch's
             //  `$ok(branch)` holds.
-            if (!u8csEmpty(u8bDataC(k->h->cur_branch))) {
+            if (!u8csEmpty(u8bDataC(HOME.cur_branch))) {
                 static u8c const _zero = 0;
                 u8cs empty = {(u8cp)&_zero, (u8cp)&_zero};
-                ok64 so = KEEPSwitchBranch(SNIFF.h, empty);
+                ok64 so = KEEPSwitchBranch(empty);
                 if (so != OK && so != KEEPOPEN) {
                     fprintf(stderr,
                             "sniff: cannot switch keeper to trunk: %s\n",
@@ -1117,7 +1117,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     ok64 o = KEEPGet(hashlet, hexlen, buf, &otype);
     if (o != OK) {
         a_path(leafdir);
-        (void)HOMEBranchDir(KEEP.h, leafdir, KEEP.h->cur_branch);
+        (void)HOMEBranchDir(leafdir, HOME.cur_branch);
         fprintf(stderr,
                 "sniff: object not found: hex=" U8SFMT
                 " hexlen=%zu hashlet=%016llx source=" U8SFMT
@@ -1127,9 +1127,9 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 u8sFmt(hex), (size_t)hexlen,
                 (unsigned long long)hashlet,
                 u8sFmt(source),
-                u8sFmt(u8bDataC(KEEP.h->root)),
-                u8sFmt(u8bDataC(KEEP.h->project)),
-                u8sFmt(u8bDataC(KEEP.h->cur_branch)),
+                u8sFmt(u8bDataC(HOME.root)),
+                u8sFmt(u8bDataC(HOME.project)),
+                u8sFmt(u8bDataC(HOME.cur_branch)),
                 u8sFmt(u8bDataC(leafdir)),
                 (size_t)$len(kv64bData(KEEP.packs)),
                 ok64str(o));
@@ -1447,7 +1447,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         //  failure skip the keeper-tip advance entirely (keepdir is
         //  unusable) and fall through with `__ = OK`.
         a_path(keepdir);
-        try(HOMEBranchDir, KEEP.h, keepdir, NULL);
+        try(HOMEBranchDir, keepdir, NULL);
         then {
             a_pad(u8, key_buf, 128);
             u8bFeed1(key_buf, '?');
@@ -1486,7 +1486,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  paths, leaving wt edits live for graf to read.  Open graf
     //  read-only — already-open is fine (idempotent).
     if (has_base_commit && u8bDataLen(merges) > 0) {
-        ok64 go = GRAFOpen(SNIFF.h, NO);
+        ok64 go = GRAFOpen(NO);
         b8 own_open = (go == OK);
         if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
             a_dup(u8c, mlist, u8bData(merges));
@@ -1544,7 +1544,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     if (SNIFF.prune) {
         IGNOFree(&SNIFF.ignores);
         zerop(&SNIFF.ignores);
-        a_dup(u8c, wt_for_ig, u8bDataC(SNIFF.h->wt));
+        a_dup(u8c, wt_for_ig, u8bDataC(HOME.wt));
         (void)IGNOLoad(&SNIFF.ignores, wt_for_ig);
 
         prune_ctx pctx = {.dropped = 0};
@@ -1739,7 +1739,7 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
     sane(u && tree_out);
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     a_pad(u8, arena, 1024);
     uri resolved = {};
@@ -1882,7 +1882,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     sane(u);
     keeper *k = &KEEP;
     a_path(keepdir);
-    call(HOMEBranchDir, k->h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
 
     //  Absolute-form query (`?/<project>/<branch>...`) carries a
     //  project prefix that's local-side state (already consumed by
@@ -2080,12 +2080,12 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
         //  just fetched into `<query>` leaf but sniff has no anchor /
         //  cur_branch to derive it from.
         a_path(leaf_keepdir);
-        b8 has_leaf = (!BNULL(k->h->cur_branch) &&
-                       u8bDataLen(k->h->cur_branch) > 0);
+        b8 has_leaf = (!BNULL(HOME.cur_branch) &&
+                       u8bDataLen(HOME.cur_branch) > 0);
         if (has_leaf) {
             a_dup(u8c, trunk_s, u8bDataC(keepdir));
             call(PATHu8bFeed, leaf_keepdir, trunk_s);
-            a_dup(u8c, leaf_s, u8bDataC(k->h->cur_branch));
+            a_dup(u8c, leaf_s, u8bDataC(HOME.cur_branch));
             call(PATHu8bAdd, leaf_keepdir, leaf_s);
         }
         ok64 o = REFSNONE;
@@ -2206,10 +2206,10 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  `KEEP.h->cur_branch` by HOMEOpen) against the local trunk row
     //  `?#<sha>`.  Empty branch == trunk → falls through to the bare
     //  `?` lookup below.
-    if (u8bDataLen(KEEP.h->cur_branch) > 0) {
+    if (u8bDataLen(HOME.cur_branch) > 0) {
         a_pad(u8, qbuf, 256);
         u8bFeed1(qbuf, '?');
-        u8bFeed(qbuf, u8bDataC(KEEP.h->cur_branch));
+        u8bFeed(qbuf, u8bDataC(HOME.cur_branch));
         a_dup(u8c, qkey, u8bData(qbuf));
         ok64 o = sniff_get_by_refkey(reporoot, $path(keepdir), qkey);
         if (o == OK) return OK;

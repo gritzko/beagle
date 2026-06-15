@@ -74,7 +74,7 @@ con ron60 POST_V_ADD    = 0x25a28;
 
 //  Per-commit context.  `keeper *` and `reporoot` are intentionally
 //  absent: keeper is a process singleton (`KEEP`) and the repo root is
-//  reachable as `u8bDataC(SNIFF.h->root)` (see dog/HOME.h §home).
+//  reachable as `u8bDataC(HOME.root)` (see dog/HOME.h §home).
 typedef struct {
     Bu8            decisions;    // ULOG-shaped: <ts>\t<verb>\t<path>?<query>#<frag>
     ron60          stamp_ts;     // single per-commit stamp (post ts).
@@ -102,13 +102,13 @@ typedef struct {
 //  `h->root` points at the primary store — keep the two channels
 //  distinct.  Macro rather than `fun` because `u8cs` is an array
 //  typedef (can't be returned by value).
-#define post_reporoot()  u8bDataC(SNIFF.h->wt)
+#define post_reporoot()  u8bDataC(HOME.wt)
 
 //  Store root — where `.be/<project>/<branch>/` shards live.
 //  Used for REFS lookups and the cascade walk.  Equals
 //  `post_reporoot()` for a colocated worktree; differs for a
 //  secondary worktree where the store lives on the primary.
-#define post_storeroot() u8bDataC(SNIFF.h->root)
+#define post_storeroot() u8bDataC(HOME.root)
 
 // --- git mode helpers ---
 
@@ -1339,7 +1339,7 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
 ok64 POSTResolveBranchTip(sha1 *out, u8cs branch) {
     sane(out);
     a_path(keepdir);
-    call(HOMEBranchDir, SNIFF.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     a_pad(u8, keybuf, 256);
     u8bFeed1(keybuf, '?');
     if (!u8csEmpty(branch)) u8bFeed(keybuf, branch);
@@ -1523,7 +1523,7 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
                               sha1cp branch_new_tip) {
     sane(cc);
     a_path(rdir);
-    call(HOMEBranchDir, SNIFF.h, rdir, NULL);
+    call(HOMEBranchDir, rdir, NULL);
 
     //  Snapshot direct-child branch paths via REFSEach; each `names[i]`
     //  is a slice into `names_arena`.  No children → cascade ends here.
@@ -1606,7 +1606,7 @@ ok64 POSTCascadeOneReproForTest(u8cs branch, u32 *n_after,
 static ok64 post_cascade_persist(cascade_ctx *cc) {
     sane(cc);
     a_path(keepdir);
-    call(HOMEBranchDir, SNIFF.h, keepdir, NULL);
+    call(HOMEBranchDir, keepdir, NULL);
     for (u32 i = 0; i < cc->n; i++) {
         cascade_rec *r = &cc->recs[i];
         a_pad(u8, keybuf, 256);
@@ -1928,7 +1928,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
     }
     if (!target_exists) {
         //  Materialise the per-branch shard (idempotent on KEEPDUP).
-        ok64 ko = KEEPCreateBranch(k->h, target_branch);
+        ok64 ko = KEEPCreateBranch(target_branch);
         if (ko != OK && ko != KEEPDUP && ko != KEEPTRUNK) return ko;
 
         //  Compute the new leaf's tip.  Default = cur_tip (arm `?./X`).
@@ -1974,7 +1974,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
 
         //  REFS row at leaf_tip with empty `expected_old`.
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         u8bFeed(refkey_buf, target_branch);
@@ -2077,7 +2077,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
             //  already with cur's commits — sync cur to parent.tip).
             if (auto_sync_cur) {
                 a_path(keepdir);
-                call(HOMEBranchDir, k->h, keepdir, NULL);
+                call(HOMEBranchDir, keepdir, NULL);
                 a_pad(u8, ckbuf, 260);
                 u8bFeed1(ckbuf, '?');
                 if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2181,7 +2181,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
     //  --- 9. Advance target's REFS row via CAS on target_tip. ---
     {
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, refkey_buf, 260);
         u8bFeed1(refkey_buf, '?');
         if (!u8csEmpty(target_branch)) u8bFeed(refkey_buf, target_branch);
@@ -2218,7 +2218,7 @@ ok64 POSTPromote(u8cs target_branch, b8 allow_create, u8cs verb_tag) {
     //  Documented MWP best-effort behaviour. ---
     if (auto_sync_cur) {
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, ckbuf, 260);
         u8bFeed1(ckbuf, '?');
         if (!u8csEmpty(cur_branch)) u8bFeed(ckbuf, cur_branch);
@@ -2568,7 +2568,7 @@ ok64 POSTCommit(u8cs target_branch,
                                   //  onto REFS tip after the pack feed.
     if (had_baseline && has_parent) {
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, refkey_buf, 128);
         u8bFeed1(refkey_buf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -3068,7 +3068,7 @@ ok64 POSTCommit(u8cs target_branch,
     }
     {
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, keybuf, 128);
         u8bFeed1(keybuf, '?');
         a_dup(u8c, branch, u8bData(brbuf));
@@ -3114,7 +3114,7 @@ ok64 POSTCommit(u8cs target_branch,
     if ($ok(target_branch) && !u8csEmpty(target_branch) &&
         !target_is_branch) {
         a_path(keepdir);
-        call(HOMEBranchDir, k->h, keepdir, NULL);
+        call(HOMEBranchDir, keepdir, NULL);
         a_pad(u8, tagkey, 128);
         u8bFeed1(tagkey, '?');
         u8bFeed(tagkey, target_branch);

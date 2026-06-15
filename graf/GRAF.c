@@ -28,7 +28,7 @@ int          graf_out_fd  = -1;
 
 graf GRAF = {};
 
-static b8 graf_is_open(void) { return GRAF.h != NULL; }
+static b8 graf_is_open(void) { return !BNULL(GRAF.arena); }
 static b8 graf_is_rw = NO;
 
 // --- GRAFOpenBranch / GRAFOpen / GRAFClose ---
@@ -44,13 +44,13 @@ static b8 graf_is_rw = NO;
 //  (`h->cur_branch`).  Mirrors dog/HOME.c `HOMEBranchDir`'s flattened
 //  shape.  `branch` is ignored; kept for call-site compatibility.
 //  `out` is NUL-terminated.
-static ok64 graf_branch_dir(path8b out, home *h, u8cs branch) {
-    sane(h && out);
+static ok64 graf_branch_dir(path8b out, u8cs branch) {
+    sane(out);
     (void)branch;
     //  <root>/.be/<project> via the single dog/HOME composer (honors the
-    //  *.be-is-store rule).  Empty `h->project` collapses to `<root>/.be`.
-    a_dup(u8c, proj, u8bDataC(h->project));
-    call(HOMEBeDir, h, proj, out);
+    //  *.be-is-store rule).  Empty `HOME.project` collapses to `<root>/.be`.
+    a_dup(u8c, proj, u8bDataC(HOME.project));
+    call(HOMEBeDir, proj, out);
     call(PATHu8bTerm, out);
     done;
 }
@@ -83,10 +83,10 @@ static ok64 graf_max_seqno_cb(void0p arg, path8p path) {
 //  returns the global max pup_key (default 0 when none found).  Used
 //  by `graf_recompute_last_pup_key` to keep fresh pup_keys unique
 //  across sibling branch dirs that aren't loaded into the registry.
-static u64 graf_global_max_seqno(home *h) {
+static u64 graf_global_max_seqno(void) {
     u64 max = 0;
     a_path(bedir);
-    (void)HOMEBranchDir(h, bedir, NULL);
+    (void)HOMEBranchDir(bedir, NULL);
     (void)FILEDeepScanFiles(bedir, graf_max_seqno_cb, &max);
     return max;
 }
@@ -95,7 +95,7 @@ static u64 graf_global_max_seqno(home *h) {
 //  Called by GRAFOpenBranch and GRAFSwitchBranch.  The next mint
 //  picks `max(RONNow, last_pup_key + 1)`.
 static void graf_recompute_last_pup_key(graf *g) {
-    u64 max = graf_global_max_seqno(g->h);
+    u64 max = graf_global_max_seqno();
     kv64s pups_all = {};
     kv64PastDataS(g->puppies, pups_all);
     for (kv64 const *p = pups_all[0]; p < pups_all[1]; p++)
@@ -154,12 +154,12 @@ void GRAFRuns(wh128cssp out) {
 //  recoverable: the wrapper runs GRAFClose() on any non-OK return, which
 //  idempotently releases whatever was acquired so far (DOGPupClose on a
 //  zero/partial kv, lock_fd<0 skip, u8bUnMap no-op on never-mapped bufs).
-static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
-    sane(g != NULL && h != NULL);
+static ok64 graf_open_branch_w(graf *g, u8cs norm, b8 rw) {
+    sane(g != NULL);
 
     call(kv64bAllocate, g->puppies, FILE_MAX_OPEN);
 
-    //  Canonical leaf-branch bytes live in `h->cur_branch` (claimed by
+    //  Canonical leaf-branch bytes live in `HOME.cur_branch` (claimed by
     //  HOMEOpenBranch in the wrapper).
     if (u8csLen(norm) >= HOME_BRANCH_MAX) return GRAFFAIL;
 
@@ -170,8 +170,8 @@ static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
     a_pad(u8, projdir, FILE_PATH_MAX_LEN);
     //  Compose + create the project shard via dog/HOME (mkdir only in rw).
     {
-        a_dup(u8c, proj, u8bDataC(h->project));
-        call(HOMEMakeBeDir, h, proj, projdir);
+        a_dup(u8c, proj, u8bDataC(HOME.project));
+        call(HOMEMakeBeDir, proj, projdir);
         call(PATHu8bTerm, projdir);
     }
 
@@ -212,7 +212,7 @@ static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
     //  If keeper is already open (a caller or sibling dog opened it),
     //  KEEPOPEN says so and we leave the close to whoever owns it.
     {
-        ok64 ko = KEEPOpenBranch(h, norm, NO);
+        ok64 ko = KEEPOpenBranch(norm, NO);
         if (ko == OK)            g->keep_owned = YES;
         else if (ko == KEEPOPEN) g->keep_owned = NO;
         else                     return ko;
@@ -221,8 +221,8 @@ static ok64 graf_open_branch_w(graf *g, home *h, u8cs norm, b8 rw) {
     done;
 }
 
-ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
-    sane(h != NULL && $ok(branch));
+ok64 GRAFOpenBranch(u8cs branch, b8 rw) {
+    sane($ok(branch));
 
     //  Already open?  Compatible if the existing mode is at least as
     //  strong as the request.  Same conflict rule as KEEPOpenBranch.
@@ -240,14 +240,13 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
 
     //  Register on the home singleton (idempotent re-opens absorbed).
     {
-        ok64 o = HOMEOpenBranch(h, branch, rw);
+        ok64 o = HOMEOpenBranch(branch, rw);
         if (o != OK && o != HOMEOPEN && o != HOMEROBR)
             return o;
     }
 
     graf *g = &GRAF;
     zerop(g);
-    g->h = h;               //  arms graf_is_open() so GRAFClose cleans up
     g->lock_fd = -1;
     g->out_fd = -1;
     graf_is_rw = rw;
@@ -256,7 +255,7 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     //  GRAFClose() releases whatever was acquired so far (idempotent on a
     //  partially-initialised singleton).  Avoids the per-failure cleanup
     //  duplication that previously leaked the mapped bufs / lock fd.
-    ok64 r = graf_open_branch_w(g, h, norm, rw);
+    ok64 r = graf_open_branch_w(g, norm, rw);
     if (r != OK) {
         GRAFClose();
         graf_is_rw = NO;
@@ -264,10 +263,10 @@ ok64 GRAFOpenBranch(home *h, u8cs branch, b8 rw) {
     return r;
 }
 
-ok64 GRAFOpen(home *h, b8 rw) {
+ok64 GRAFOpen(b8 rw) {
     static u8c const _zero = 0;
     u8cs trunk = {(u8cp)&_zero, (u8cp)&_zero};
-    return GRAFOpenBranch(h, trunk, rw);
+    return GRAFOpenBranch(trunk, rw);
 }
 
 //  --- GRAFRefIsName (branch-first disambiguation probe) -----------
@@ -285,11 +284,10 @@ ok64 GRAFOpen(home *h, b8 rw) {
 ok64 GRAFRefIsName(u8cs ref) {
     sane(1);
     if (u8csEmpty(ref)) return GRAFNONE;
-    keeper *k = &KEEP;
-    if (k->h == NULL || u8bDataLen(k->h->root) == 0) return GRAFNONE;
+    if (BNULL(HOME.root) || u8bDataLen(HOME.root) == 0) return GRAFNONE;
 
     a_path(keepdir);
-    if (HOMEBranchDir(k->h, keepdir, NULL) != OK) return GRAFNONE;
+    if (HOMEBranchDir(keepdir, NULL) != OK) return GRAFNONE;
 
     //  Try the raw name plus the wire-prefix peels REFS may have
     //  canonicalised away (`refs/heads/X` → `X`) — mirrors
@@ -380,15 +378,14 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
     //  absolute branch path under cur's project.  `was_rel == NO`
     //  for non-relative shapes leaves `branch_abs` empty and we
     //  fall through to the project-relative path below.
-    keeper *k = &KEEP;
-    if (k->h == NULL)                return u8sFeed(canonic, given);
-    if (!u8bHasData(k->h->project))  return u8sFeed(canonic, given);
+    if (BNULL(HOME.root))            return u8sFeed(canonic, given);
+    if (!u8bHasData(HOME.project))  return u8sFeed(canonic, given);
 
     a_path(branch_abs);
     b8 was_rel = NO;
     {
         u8cs cur_branch = {};
-        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+        u8csMv(cur_branch, u8bDataC(HOME.cur_branch));
         call(DPATHBranchResolveRel, branch_abs, cur_branch, q, &was_rel);
     }
     //  Relative resolved to trunk (`?..` from a top-level branch
@@ -422,7 +419,7 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
     sha1 sha = {};
     {
         u8cs cur_branch = {};
-        u8csMv(cur_branch, u8bDataC(k->h->cur_branch));
+        u8csMv(cur_branch, u8bDataC(HOME.cur_branch));
         ok64 rr = KEEPResolveRef(&sha, branch, cur_branch);
         if (rr != OK) return u8sFeed(canonic, given);
     }
@@ -438,7 +435,7 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
     //  above already validated the branch (passed through on miss).
     //  Leading '/' is mandatory (URI.mkd "Ref shapes").
     a_abspath(canon_q);
-    call(PATHu8bPush, canon_q, u8bDataC(k->h->project));
+    call(PATHu8bPush, canon_q, u8bDataC(HOME.project));
     call(PATHu8bPush, canon_q, branch);
 
     //  Splice the new query back into the URI shape via URIutf8Feed
@@ -460,9 +457,8 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given) {
 // (POST promote-to-sibling, located-cherry PATCH from another branch)
 // — `SNIFFMaybeSwitchGraf` pairs this with `KEEPSwitchBranch`.
 
-ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
-    sane(h != NULL && $ok(new_branch));
-    graf *g = &GRAF;
+ok64 GRAFSwitchBranch(u8cs new_branch) {
+    sane($ok(new_branch));
     if (!graf_is_open()) return GRAFFAIL;
 
     //  Inner APIs receive canonic URIs from beagle (https://replicated.wiki/html/wiki/Store.html
@@ -480,13 +476,16 @@ ok64 GRAFSwitchBranch(home *h, u8cs new_branch) {
     //  Re-target the worktree current branch.  No-op handling and
     //  normalisation live in HOMESetCurBranch.  All runs already
     //  visible from the single project shard, so nothing to rescan.
-    call(HOMESetCurBranch, h, branch_in);
+    call(HOMESetCurBranch, branch_in);
     done;
 }
 
 ok64 GRAFClose(void) {
     sane(1);
-    if (!graf_is_open()) return OK;
+    //  Field-by-field, idempotent: a partially-opened singleton (worker
+    //  failed before the arena map) still gets puppies / lock_fd / keeper
+    //  released.  Do NOT gate on graf_is_open() (which keys on the arena
+    //  map) — that would skip cleanup of pre-arena resources.
     graf *g = &GRAF;
     // Flush any pending ingest (runs the finish walk + compaction).
     if (g->ing) GRAFDagFinish();
@@ -500,7 +499,6 @@ ok64 GRAFClose(void) {
     if (g->keep_owned) { KEEPClose(); g->keep_owned = NO; }
     g->runs_n = 0;
     g->out_fd = -1;
-    g->h = NULL;
     graf_is_rw = NO;
     done;
 }
