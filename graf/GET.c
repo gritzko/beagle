@@ -209,7 +209,7 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
                                     u64 const *tip_hs, u32 ntips,
                                     u32 edges,
                                     u64 const *skip_hl, u32 nskip,
-                                    Bu32 out_ids);
+                                    Bu32 out_ids, b8 *out_no_history);
 static ok64 emit_alive_bytes(u8b into, weave const *w);
 
 //  Per-side membership predicate for `WEAVEEmitMerged`.  Backed by a
@@ -276,6 +276,28 @@ static ok64 graf_fold_wt_layer(weave *next, b8 *used_next,
 //
 //  Returns OK on success.  GRAFFAIL on history-empty-on-both-sides.
 //  Caller writes `out` to disk and stamps the new mtime.
+//  Index a commit tip's ancestry into graf's DAG (idempotent on
+//  already-known tips).  When commits land in keeper packs via a path
+//  that does NOT reindex graf (a wire push, `be patch`, a sub fetch,
+//  or a fresh worktree clone), graf's DAG holds an INCOHERENT view:
+//  the per-commit tree-witness edges may exist (so the ancestor walk
+//  still finds the commits) while the COMMIT→COMMIT parent edges are
+//  absent.  DAGTopoSortTunable then sees every commit as a parent-less
+//  root, hashlet-sorts them, and the FF replay runs out of causal
+//  order — dropping intermediate commits' edits NON-deterministically
+//  (the order depends on the commit shas).  Indexing both merge
+//  endpoints up front guarantees a coherent parent-edge DAG so the
+//  topo sort and replay are correct and reproducible.  See DIS-041.
+static ok64 graf_index_tip(sha1cp tip) {
+    sane(tip);
+    a_sha1hex(hex_bytes, tip);
+    uri tip_uri = {};
+    $mv(tip_uri.fragment, hex_bytes);
+    $mv(tip_uri.data,     hex_bytes);
+    call(GRAFIndexFromTips, &tip_uri);
+    done;
+}
+
 ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
                             sha1cp base, sha1cp tgt,
                             u32 edges,
@@ -306,13 +328,29 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
     if ((ret = u32bMap(tgt_ids,  4096)) != OK) goto cleanup;
     if ((ret = u8bMap(tgt_blob, 64UL << 20)) != OK) goto cleanup;
 
-    //  Base side: ancestor closure of base commit, plus wt layer.
-    ret = build_tip_weave_tunable(&wbase, path, ext, &base_h40, 1,
-                                  edges, skip_hl, nskip, base_ids);
-    if (ret != OK) goto cleanup;
-
     weave const *wcur = &wbase;
     b8 wt_layered = NO;
+
+    //  DIS-041: index both merge endpoints' ancestry into graf's DAG
+    //  BEFORE building the weaves.  This is the single place GET (via
+    //  GRAFMergeWtFile) and PATCH (direct) both funnel through, so both
+    //  get a coherent parent-edge DAG and a correct, reproducible FF
+    //  replay.  A genuine index failure PROPAGATES — never swallowed,
+    //  never a half-merge.
+    ret = graf_index_tip(base);
+    if (ret == OK) ret = graf_index_tip(tgt);
+    if (ret != OK) goto cleanup;
+
+    //  Base side: ancestor closure of base commit, plus wt layer.  A
+    //  no-history result here, AFTER a guaranteed index, means the
+    //  commit object is genuinely unreachable — a hard error, not the
+    //  lossy single-version fallback.
+    b8 base_no_hist = NO, tgt_no_hist = NO;
+    ret = build_tip_weave_tunable(&wbase, path, ext, &base_h40, 1,
+                                  edges, skip_hl, nskip, base_ids,
+                                  &base_no_hist);
+    if (ret != OK) goto cleanup;
+
     ret = graf_fold_wt_layer(&wbase_wt, &wt_layered, &wbase, &wnu,
                              path, ext, reporoot);
     if (ret != OK) goto cleanup;
@@ -323,8 +361,11 @@ ok64 GRAFMergeWtFileTunable(u8cs path, u8cs reporoot,
 
     //  Target side: ancestor closure of tgt commit (same edges + skip).
     ret = build_tip_weave_tunable(&wtgt, path, ext, &tgt_h40, 1,
-                                  edges, skip_hl, nskip, tgt_ids);
+                                  edges, skip_hl, nskip, tgt_ids,
+                                  &tgt_no_hist);
     if (ret != OK) goto cleanup;
+
+    if (base_no_hist || tgt_no_hist) { ret = GRAFFAIL; goto cleanup; }
 
     //  Empty-side degeneracy.
     b8 base_empty = WEAVEEmpty(wcur);
@@ -500,8 +541,9 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
                                     u64 const *tip_hs, u32 ntips,
                                     u32 edges,
                                     u64 const *skip_hl, u32 nskip,
-                                    Bu32 out_ids) {
+                                    Bu32 out_ids, b8 *out_no_history) {
     sane(out && ntips > 0);
+    if (out_no_history) *out_no_history = NO;
 
     //  Ancestor union across the supplied tips with the caller's
     //  edge-kind selector + skip set.  edges = DAG_EDGE_PARENT
@@ -534,10 +576,17 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
         nvers = nord;
     }
 
-    //  No DAG entries (fresh import without GRAFIndex, isolated blob
-    //  URI): fall back to the tip's own blob bytes as a single-version
-    //  weave so callers still get something sensible.
+    //  No DAG entries: the tip's ancestry is not indexed in graf yet
+    //  (commits landed in keeper packs via a wire push / `be patch` /
+    //  sub fetch that didn't reindex graf, or a fresh import without
+    //  GRAFIndex).  A FF-weave run here would lose every intermediate
+    //  commit's edit — the multi-version replay below never happens —
+    //  and silently emit only the tip's net bytes.  Signal the caller
+    //  so it can INDEX the commits and RETRY (DIS-041); fall back to
+    //  the tip's own blob bytes as a single-version weave only so an
+    //  isolated-blob caller that can't index still gets something.
     if (nvers == 0) {
+        if (out_no_history) *out_no_history = YES;
         a_carve(u8, fallback, GET_BLOB_MAX);
         ok64 fo = get_append_blob_at(fallback, tip_hs[0], path);
         if (fo == OK) {
@@ -604,6 +653,10 @@ static ok64 build_tip_weave_tunable(weave *out, u8cs path, u8cs ext,
     //  Move wsrc's contents into out (caller's buffer).  Cheapest
     //  route: copy the buffer header; wsrc's mappings now belong to
     //  out, and we zero wsrc before freeing so we don't double-free.
+    //  Release any mapping `out` already holds first — the
+    //  index-and-retry path (DIS-041) calls us twice on the same
+    //  weave, and an unmapped-over header would leak the prior tlv.
+    if (out->tlv[0]) u8bUnMap(out->tlv);
     if (wsrc == &wA) {
         memcpy(out, &wA, sizeof(weave));
         zero(wA);

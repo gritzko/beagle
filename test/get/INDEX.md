@@ -233,3 +233,17 @@
   read-only GET dry-run) appends no bare-`?` trunk `get` row (a peer-uri-
   keyed remote-tracking observation is the allowed cache refresh).
   Hermetic.
+* `51-ff-weave-unindexed-merge/` — DIS-041: a behind-worktree FF
+  (`be get '?'`) on a file BOTH sides edited (disjoint regions) must
+  weave the union of both edits even when the trunk commits live in
+  keeper packs but NOT in graf's persisted DAG index (the state a wire
+  push / `be patch` / fresh clone leaves).  Bare central store, 5 trunk
+  commits each editing a distinct top line, behind-wt dirty-edits a
+  bottom line; the store's `*.graf.idx` is wiped before the FF.  Without
+  the fix DAGTopoSortTunable saw every commit as a parent-less root,
+  hashlet-sorted them, and the replay dropped intermediate edits
+  (non-deterministically) — never `graf err`, just silent loss.  The fix
+  (graf/GET.c::GRAFMergeWtFileTunable) indexes both merge endpoints into
+  graf BEFORE the weave so the topo replay is coherent; asserts all five
+  trunk edits AND the wt edit survive, no `graf err` / `untouched`.
+  Hermetic.
