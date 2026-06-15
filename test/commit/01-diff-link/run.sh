@@ -50,4 +50,21 @@ $(cat 03.diff.got.err)"
 grep -q "extra" 03.diff.got.out || fail "diff: link target did not render the commit's change; stdout:
 $(cat 03.diff.got.out)"
 
-note "commit/01: commit:?<ref> keeps metadata and links diff:?<sha> (same sha), which renders"
+#  --- BLAME link form: commit:?<8hex>#<message> resolves -------------
+#  Blame run-hunks address a commit as `commit:?<8-char-hashlet>#<subject>`
+#  — an 8-char hashlet QUERY plus the message subject as a human LABEL in
+#  the fragment.  The hex query is the authoritative address; the
+#  fragment must NOT be parsed as an object id.  So this MUST resolve to
+#  the very same commit as the bare hashlet, the message (and its spaces)
+#  notwithstanding.
+H8=$(printf '%.8s' "$SHA")
+"$BE" "commit:?$H8#CSS-like AST selectors" >04.blamelink.got.out 2>04.blamelink.got.err
+rc=$?
+[ "$rc" = 0 ] || fail "be commit:?$H8#<msg> (blame link) exited $rc; stderr:
+$(cat 04.blamelink.got.err)"
+grep -q "^commit $SHA" 04.blamelink.got.out || fail "commit: blame-link hashlet+message did not resolve to $SHA; stdout:
+$(cat 04.blamelink.got.out)"
+empty 04.blamelink.got.err
+
+note "commit/01: commit:?<ref> keeps metadata and links diff:?<sha> (same sha), which renders;" \
+     "commit:?<8hex>#<message> blame-link resolves to the same commit"

@@ -651,10 +651,15 @@ ok64 KEEPProjDispatch(uricp u, b8 tlv) {
     //  HASH_MIN_HEX through 40 chars routes through KEEPGet's hashlet
     //  index.  `blob:?<hex>` (bare blob, empty path) stays untouched —
     //  KEEPGetByURI has its own hashlet branch for that shape.
+    //
+    //  When the query carries the hex prefix it is the authoritative
+    //  address; any fragment present is a human message LABEL (e.g.
+    //  blame's `commit:?<8hex>#<subject>`), not an object id, so the
+    //  promotion overwrites it — resolution must follow the hex, never
+    //  try to parse the message as a sha.
     uri local = *u;
     b8 bare_blob = $eq(local.scheme, s_blob) && u8csEmpty(local.path);
-    if (!bare_blob && u8csEmpty(local.fragment) &&
-        proj_is_hex_prefix(local.query)) {
+    if (!bare_blob && proj_is_hex_prefix(local.query)) {
         u8csMv(local.fragment, local.query);
         local.query[0] = NULL;
         local.query[1] = NULL;
