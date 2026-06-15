@@ -177,7 +177,12 @@ ok64 WEAVEApply(weave *dst, weave const *src, weave const *nu,
 
 // --- Diff emission ---
 
-ok64 WEAVEEmitDiff(weave const *w, u8cs name,
+//  DIFF-004: `navver` is the `<from>..<to>` range string spliced into
+//  each hunk's nav URI as `diff:<name>?<navver>#L<line>`, so clicking a
+//  hunk re-opens the file-scoped RANGE diff (DIFF-003) instead of the
+//  empty-query wt-vs-base form.  Pass an EMPTY navver for the wt-vs-base
+//  scope (the file is dirty → no version → `diff:<name>#L<line>`).
+ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);
@@ -187,7 +192,8 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
 //  prepended to each hunk's URI — pass `diff:` (DIFF-003 file-scope
 //  whole-file diff, so the renderer applies the unified-diff +/-
 //  formatter) or empty (`cat:` plain syntax-highlighted whole-file).
-ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme,
+//  DIFF-004: `navver` — see WEAVEEmitDiff.
+ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx);

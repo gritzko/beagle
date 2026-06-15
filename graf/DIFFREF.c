@@ -134,7 +134,7 @@ static b8 wt_in_to(u32 c, void *ctx) {
 }
 
 ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
-                    b8 full) {
+                    b8 full, u8cs navver) {
     sane($ok(name));
 
     //  Fast skip on byte-identical content.  Cheap u8csEq before any
@@ -164,12 +164,12 @@ ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
             //  `diff:` scheme so the whole-file hunk renders as a
             //  unified diff (same +/- formatter a windowed hunk uses).
             a_cstr(diff_scheme, "diff:");
-            ret = WEAVEEmitFull(wsrc, name, diff_scheme,
+            ret = WEAVEEmitFull(wsrc, name, diff_scheme, navver,
                                 wt_in_from, NULL,
                                 wt_in_to,   NULL,
                                 GRAFHunkEmit, NULL);
         } else {
-            ret = WEAVEEmitDiff(wsrc, name,
+            ret = WEAVEEmitDiff(wsrc, name, navver,
                                 wt_in_from, NULL,
                                 wt_in_to,   NULL,
                                 GRAFHunkEmit, NULL);
@@ -208,7 +208,12 @@ ok64 GRAFDiffWtFile(u8cs filepath, u64 base_h40, u8cs reporoot, b8 full) {
 
     u8cs ext = {};
     PATHu8sExt(ext, filepath);
-    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data, full);
+    //  wt-vs-base: the file is dirty, there is no version range — emit
+    //  an EMPTY navver so each hunk's nav URI stays `diff:<path>#L<n>`
+    //  (clicking re-runs wt-vs-base, which is correct here).
+    u8cs navver = {};
+    ok64 ret = GRAFDiff2Layer(filepath, ext, from_data, to_data, full,
+                              navver);
 
     if (wt_mapped) FILEUnMap(wt_mapped);
     return ret;
@@ -460,6 +465,17 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
                                       Bu8 old_buf, Bu8 new_buf) {
     sane(k && from_set && to_set);
 
+    //  DIFF-004: the per-file hunk nav URI carries this range in the
+    //  query — `diff:<path>?<from>..<to>#L<n>` — so clicking a tree/
+    //  commit diff's file hunk re-opens that file's RANGE diff at the
+    //  line, not the empty-query wt-vs-base form.
+    a_lign(u8, nav_g);
+    (void)u8gFeed(nav_g, from);
+    a_cstr(dots, "..");
+    (void)u8gFeed(nav_g, dots);
+    (void)u8gFeed(nav_g, to);
+    a_cquire(u8, navver);
+
     // --- 1. Walk `from`, collect ---
     a_pad(u8, fbuf, 256);
     call(diffref_compose_ref_uri, fbuf, from);
@@ -518,7 +534,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
 
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data, NO);
+        GRAFDiff2Layer(path, ext, old_data, new_data, NO, navver);
     }
 
     // --- 4. from-only entries (deletions): diff blob vs empty ---
@@ -541,7 +557,7 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         u8cs new_data = {};
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data, NO);
+        GRAFDiff2Layer(path, ext, old_data, new_data, NO, navver);
     }
     done;
 }

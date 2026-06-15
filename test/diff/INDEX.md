@@ -48,6 +48,22 @@
   `diff:` scheme so the renderer keeps the +/- formatter) and tree scope
   through `WEAVEEmitDiff` (windowed); bro owns the highlighting.  No
   fixture, no ssh.
+* `12-difflet-click/` — DIFF-004.  A diff hunk's per-hunk `U` click
+  target must carry the range in the QUERY as `diff:<path>?<from>..<to>`
+  with the fragment kept as the `#L<n>` line anchor, so clicking re-opens
+  the file-scoped whole-file RANGE diff (DIFF-003) — NOT the empty-query
+  `diff:<path>#L` form (which runs wt-vs-base, empty for a committed
+  file → "no results").  Two-commit 30-line file: (a)
+  `diff:<path>?<from>..<to>#L<n>` resolves to the whole-file range diff
+  (far unchanged line + change) in Plain/TLV; (b) a commit-show diff's
+  per-file hunk nav URI is the `?from..to#L` form, not empty-query; (c) a
+  bare `?..` parent-branch ref is NOT mis-split — its nav URI stays the
+  bare `#L` form.  Fix: graf parses `?from..to` (reusing the `weave`
+  verb's `..` split via `graf_query_range`, guarded on non-empty halves)
+  and threads a `navver` (`<from>..<to>`) through
+  `GRAFDiffTreeRefs`/`GRAFWeaveDiff` → `GRAFDiff2Layer` →
+  `WEAVEEmitDiff`/`Full`, spliced into each hunk URI's query.  No
+  fixture, no ssh.
 * `09-sub-dirty-pager/` — DIFF-002.  Working-tree `be diff` whose only
   change lives in a mounted sub's worktree must route the sub diff
   THROUGH the parent's pager (bro), not past it.  Forces the bro-pager

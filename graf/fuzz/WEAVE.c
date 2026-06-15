@@ -279,7 +279,8 @@ static ok64 weave_check_one(u8cs o_data, u8cs x_data, u32 x_src,
         hunk_check_ctx hctx = {};
         u8csMv(hctx.o, o_data);
         u8csMv(hctx.x, x_data);
-        (void)WEAVEEmitDiff(&wox, name,
+        u8cs navver = {};
+        (void)WEAVEEmitDiff(&wox, name, navver,
                             weave_in_from, &to_src,
                             weave_in_to,   &to_src,
                             weave_hunk_check_cb, &hctx);

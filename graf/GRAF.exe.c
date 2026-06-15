@@ -40,7 +40,7 @@ static void graf_usage(void) {
         "\n"
         "  Verbs:\n"
         "    get path?sha1&sha2[&...]     deterministic blob/tree merge\n"
-        "    diff:[path][?from][#to]      token-level colored diff (URI)\n"
+        "    diff:[path][?from..to][#Ln]  token-level colored diff (URI)\n"
         "    merge base ours theirs       3-way merge\n"
         "    blame file                   token-level blame\n"
         "    weave file?from..to          weave diff between refs\n"
@@ -122,6 +122,30 @@ static void graf_uri_path(u8cs out, uri *u) {
         u8csMv(out, u->path);
     else
         u8csMv(out, u->data);
+}
+
+// --- Query range split (`?<from>..<to>`) ---
+//
+//  Shared by the `weave` and `diff:` projectors: split a `..`-bearing
+//  query into `from` (before `..`) and `to` (after).  Returns YES only
+//  when BOTH halves are non-empty — so a bare relative `?..` (parent
+//  branch, URI.mkd:42) or `?./fix` (child) is NOT mis-split into an
+//  empty from..to range (DIFF-004).  `wf`/`wt` slice into `u->query`'s
+//  backing bytes; the caller must keep `u` alive.
+static b8 graf_query_range(uri *u, u8cs wf, u8cs wt) {
+    if (u8csEmpty(u->query)) return NO;
+    a_dup(u8c, q, u->query);
+    a_cstr(dots, "..");
+    if (u8csFindS(q, dots) != OK) return NO;
+    //  Compute into locals; commit to wf/wt only on a real range so a
+    //  bare relative `?..` (empty halves) leaves the caller's slices
+    //  untouched and signals NO.
+    u8cs from = {u->query[0], q[0]};
+    u8cs to   = {q[0] + 2, u->query[1]};
+    if (u8csEmpty(from) || u8csEmpty(to)) return NO;
+    u8csMv(wf, from);
+    u8csMv(wt, to);
+    return YES;
 }
 
 // --- Entry ---
@@ -324,16 +348,24 @@ ok64 GRAFExec(cli *c) {
         //  right-hand side of every diff is *ours* (the changed state).
         //  URI shape table:
         //
-        //    diff:                  → wt vs base    (whole tree)
-        //    diff:file.c            → wt vs base    (single file)
-        //    diff:?branch           → branch vs base (whole tree, ref-to-ref)
-        //    diff:file.c?branch     → branch vs base (single file, ref-to-ref)
-        //    diff:?from#to          → from vs to    (whole tree, explicit)
-        //    diff:file.c?from#to    → from vs to    (single file, explicit)
+        //    diff:                    → wt vs base    (whole tree)
+        //    diff:file.c              → wt vs base    (single file)
+        //    diff:?branch             → branch vs base (whole tree, ref-to-ref)
+        //    diff:file.c?branch       → branch vs base (single file, ref-to-ref)
+        //    diff:?from..to           → from vs to    (whole tree, range)
+        //    diff:file.c?from..to#Ln  → from vs to    (single file, range; #L = jump)
+        //    diff:?from#to            → from vs to    (legacy fallback, no #L)
+        //
+        //  DIFF-004: `?from..to` (both refs in the query) is the canonical
+        //  range form, freeing the fragment for the `#L<n>` line anchor —
+        //  the shape diff hunks emit as click targets.  Legacy `?from#to`
+        //  (fragment = range `to`) is kept as a fallback when the query
+        //  has no `..`.  A relative `?..` / `?./x` ref is NOT a range
+        //  (`graf_query_range` guards on non-empty halves).
         //
         //  The base sha comes from `--at`'s fragment (the worktree's
-        //  current baseline, forwarded by `be`).  Every form except the
-        //  explicit `?from#to` range needs it; missing → `GRAFNOAT`.
+        //  current baseline, forwarded by `be`).  Every form except an
+        //  explicit range needs it; missing → `GRAFNOAT`.
         uri uv = {};
         (void)CLIUriAt(&uv, c, 0);
         uri *u = &uv;
@@ -346,13 +378,27 @@ ok64 GRAFExec(cli *c) {
         u8cs path = {};
         u8csMv(path, u->path);
 
-        u8cs wf = {}, wt = {};
-        b8 has_range = !$empty(u->query) && !$empty(u->fragment);
-
-        if (has_range) {
-            //  Explicit `?from#to` — no baseline needed.
+        //  DIFF-004: the canonical range form is `?<from>..<to>` (both
+        //  refs in the query), leaving the fragment free as the `#L<n>`
+        //  line anchor — this is the shape diff hunks emit as click
+        //  targets.  `navver` is the verbatim `<from>..<to>` query text
+        //  spliced into each per-hunk nav URI.  Legacy `?<from>#<to>`
+        //  (fragment = range `to`) stays a fallback ONLY when the query
+        //  has no `..` (no line anchor possible in that form).
+        u8cs wf = {}, wt = {}, navver = {};
+        b8 has_dotrange = graf_query_range(u, wf, wt);
+        b8 has_range = has_dotrange;
+        if (has_dotrange) {
+            u8csMv(navver, u->query);
+        } else if (!$empty(u->query) && !$empty(u->fragment)) {
+            has_range = YES;
             u8csMv(wf, u->query);
             u8csMv(wt, u->fragment);
+        }
+
+        if (has_range) {
+            //  `?from..to` (canonical) or legacy `?from#to` — no
+            //  baseline needed.
             //  Load both side branches' packs into keeper/graf
             //  so the per-ref tree+blob fetches downstream resolve.
             //  When from/to look like branch names (non-hex), switch
@@ -383,8 +429,12 @@ ok64 GRAFExec(cli *c) {
                 nedo { return __; }
             }
             if (!$empty(path)) {
-                //  DIFF-003: file-scope → whole-file view.
-                ret = GRAFWeaveDiff(path, reporoot, wf, wt, YES);
+                //  DIFF-003: file-scope → whole-file view.  DIFF-004:
+                //  for the canonical `..` form, `navver` re-encodes the
+                //  range so the hunk click target points back at this
+                //  same file-scope range diff; the legacy `#to` form has
+                //  no navver (its fragment was the range `to`, not `#L`).
+                ret = GRAFWeaveDiff(path, reporoot, wf, wt, YES, navver);
             } else {
                 ret = GRAFDiffTreeRefs(wf, wt, reporoot);
             }
@@ -431,8 +481,26 @@ ok64 GRAFExec(cli *c) {
                     /* nothing */
                 } else if (!$empty(path)) {
                     //  DIFF-003: file-scope → whole-file view.
+                    //  DIFF-004: nav URI carries the `<branch>..<base>`
+                    //  range so the hunk click target re-opens this
+                    //  same file-scope range diff — but ONLY for a
+                    //  concrete ref.  A relative ref (`..` parent branch,
+                    //  `./x` child, URI.mkd:42-43) is left with an empty
+                    //  navver so the click target stays the bare `#L`
+                    //  form instead of a nonsensical `?....<base>` range.
+                    u8cs bnav = {};
+                    b8 rel = !$empty(branch) && branch[0][0] == '.';
+                    if (!rel) {
+                        a_lign(u8, bnav_g);
+                        (void)u8gFeed(bnav_g, branch);
+                        a_cstr(bdots, "..");
+                        (void)u8gFeed(bnav_g, bdots);
+                        (void)u8gFeed(bnav_g, base_hex);
+                        a_cquire(u8, bnav2);
+                        u8csMv(bnav, bnav2);
+                    }
                     ret = GRAFWeaveDiff(path, reporoot,
-                                        branch, base_hex, YES);
+                                        branch, base_hex, YES, bnav);
                 } else {
                     ret = GRAFDiffTreeRefs(branch, base_hex,
                                            reporoot);
@@ -480,23 +548,23 @@ ok64 GRAFExec(cli *c) {
         (void)CLIUriAt(&uv, c, 0);
         uri *u = &uv;
         u8cs wf = {}, wt = {};
-        if (!u8csEmpty(u->query)) {
-            a_dup(u8c, q, u->query);
-            a_cstr(dots, "..");
-            if (u8csFindS(q, dots) == OK) {
-                wf[0] = u->query[0];
-                wf[1] = q[0];
-                wt[0] = q[0] + 2;
-                wt[1] = u->query[1];
-            } else {
-                u8csMv(wt, u->query);
-            }
+        //  Shared `..` split (DIFF-004 `graf_query_range`).  When the
+        //  query carries no `..` at all, a single ref is the `to` side
+        //  (legacy weave shape — behaviour unchanged); a `..` query with
+        //  empty halves (bare `?..`) yields empty wf/wt as before.
+        if (!graf_query_range(u, wf, wt) && !u8csEmpty(u->query)) {
+            a_dup(u8c, wq, u->query);
+            a_cstr(wdots, "..");
+            if (u8csFindS(wq, wdots) != OK) u8csMv(wt, u->query);
         }
         u8cs path = {};
         graf_uri_path(path, u);
         //  `weave` verb keeps the changed-hunks-only view (DIFF-003's
         //  whole-file scope is the `diff:<file>` projector's, not this).
-        ret = GRAFWeaveDiff(path, reporoot, wf, wt, NO);
+        //  DIFF-004: empty navver → hunks keep the bare `#L` nav form,
+        //  so the `weave` verb's output is unchanged.
+        u8cs wnav = {};
+        ret = GRAFWeaveDiff(path, reporoot, wf, wt, NO, wnav);
 
     } else {
         fprintf(stderr, "graf: unknown verb '%.*s'\n",

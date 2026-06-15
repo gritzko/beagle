@@ -771,7 +771,7 @@ static u8 weave_diff_classify(u32 seq, u32cs rset,
 
 #define WEAVE_CTX_LINES 3
 
-ok64 WEAVEEmitDiff(weave const *w, u8cs name,
+ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx) {
@@ -857,13 +857,15 @@ ok64 WEAVEEmitDiff(weave const *w, u8cs name,
             u8bReset(outuri);                                          \
             a_cstr(_diff_scheme, "diff:");                             \
             (void)u8bFeed(outuri, _diff_scheme);                       \
-            u8csc _empty_sym = {NULL, NULL};                           \
-            if (HUNKu8sMakeURI(u8bIdle(outuri), name,                  \
-                               _empty_sym, win_lo + 1) != OK) {        \
-                u8bReset(outuri);                                      \
-                (void)u8bFeed(outuri, _diff_scheme);                   \
-                (void)u8bFeed(outuri, name);                           \
+            (void)u8bFeed(outuri, name);                               \
+            if (!u8csEmpty(navver)) {                                  \
+                (void)u8bFeed1(outuri, '?');                           \
+                (void)u8bFeed(outuri, navver);                         \
             }                                                          \
+            u8csc _empty_path = {NULL, NULL};                          \
+            u8csc _empty_sym  = {NULL, NULL};                          \
+            (void)HUNKu8sMakeURI(u8bIdle(outuri), _empty_path,         \
+                                 _empty_sym, win_lo + 1);              \
             hunk hk = {};                                             \
             hk.uri[0] = (u8 *)u8bDataHead(outuri);                    \
             hk.uri[1] = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri);\
@@ -925,7 +927,7 @@ cleanup:
 
 #define WEAVE_FULL_HUNK_MAX (1UL << 20)
 
-ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme,
+ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
                    WEAVEsetfn in_from, void *from_ctx,
                    WEAVEsetfn in_to,   void *to_ctx,
                    HUNKcb cb, void *cb_ctx) {
@@ -957,13 +959,15 @@ ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme,
         if (hunk_open) {                                                 \
             u8bReset(outuri);                                            \
             (void)u8bFeed(outuri, scheme);                              \
-            u8csc _empty_sym = {NULL, NULL};                             \
-            if (HUNKu8sMakeURI(u8bIdle(outuri), name,                    \
-                               _empty_sym, hunk_start_line + 1) != OK) { \
-                u8bReset(outuri);                                        \
-                (void)u8bFeed(outuri, scheme);                          \
-                (void)u8bFeed(outuri, name);                             \
+            (void)u8bFeed(outuri, name);                                 \
+            if (!u8csEmpty(navver)) {                                     \
+                (void)u8bFeed1(outuri, '?');                              \
+                (void)u8bFeed(outuri, navver);                           \
             }                                                            \
+            u8csc _empty_path = {NULL, NULL};                            \
+            u8csc _empty_sym  = {NULL, NULL};                            \
+            (void)HUNKu8sMakeURI(u8bIdle(outuri), _empty_path,           \
+                                 _empty_sym, hunk_start_line + 1);       \
             hunk hk = {};                                               \
             hk.uri[0]  = (u8 *)u8bDataHead(outuri);                     \
             hk.uri[1]  = (u8 *)u8bDataHead(outuri) + u8bDataLen(outuri);\

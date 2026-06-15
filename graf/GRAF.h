@@ -298,8 +298,11 @@ ok64 GRAFResolveVersion(u8s canonic, u8csc given);
 // Weave diff between two commits (reads blobs from keeper).  DIFF-003:
 // `full == YES` renders the WHOLE file (every line, change-tagged) for
 // a file-scoped `diff:<file>`; `full == NO` keeps changed-hunks-only.
+// DIFF-004 `navver`: the `<from>..<to>` range string for the per-hunk
+// nav URI query (`diff:<file>?<navver>#L<n>`); EMPTY keeps the bare
+// `diff:<file>#L<n>` form (the `weave` verb passes empty — unchanged).
 ok64 GRAFWeaveDiff(u8cs filepath, u8cs reporoot,
-                   u8cs from, u8cs to, b8 full);
+                   u8cs from, u8cs to, b8 full, u8cs navver);
 
 // URI-driven diff primitives.  Each emits one hunk block per changed
 // file through `GRAFHunkEmit`.
@@ -332,8 +335,11 @@ ok64 GRAFDiffTreeRefs(u8cs from, u8cs to, u8cs reporoot);
 // DIFF-003 `full`: YES → WEAVEEmitFull (whole file, change-tagged, for
 // a file-scoped `diff:`); NO → WEAVEEmitDiff (changed-hunks-only, the
 // tree/dir scope).
+// DIFF-004 `navver`: the `<from>..<to>` range string spliced into each
+// hunk's nav URI query (`diff:<name>?<navver>#L<line>`); EMPTY for the
+// wt-vs-base scope (→ `diff:<name>#L<line>`, clicks re-run wt-vs-base).
 ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
-                    b8 full);
+                    b8 full, u8cs navver);
 
 // Deterministic URI-driven blob/tree merge (see graf/GET.md).
 //
