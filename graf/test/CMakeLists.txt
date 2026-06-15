@@ -118,6 +118,16 @@ set_tests_properties(GRAFblamebignoroom PROPERTIES
     TIMEOUT 150
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblamebignoroom")
 
+#  blame-runs.sh — BLAME-005: `blame:` emits one content hunk per maximal
+#  commit-run (uri = commit:?<sha40>, ts = commit time, body = the run's
+#  verbatim source + syntax toks), replacing the pre-fix per-line gutter.
+add_test(NAME GRAFblameruns
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/blame-runs.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(GRAFblameruns PROPERTIES
+    TIMEOUT 60
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameruns")
+
 if (WITH_SSH)
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh

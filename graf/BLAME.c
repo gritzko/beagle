@@ -33,75 +33,24 @@
 #define BLAME_MAX_VERS 256
 #define BLAME_MAX_AUTHORS 256
 
-//  Anchor → U-token: write `diff:?<10-hex-hashlet>` after the just-
-//  emitted anchor span and pack a 'U' tok past those bytes.  Bytes
-//  are zero-width in the renderer; bro's click handler executes
-//  `be --tlv diff:?<hex>` and KEEPResolveRef widens the hashlet
-//  prefix to a full commit sha.  No-op when `toks` is the zero
-//  slice (plain mode).
-static void blame_pack_uri_diff_sha(Bu32 toks, u8b out, u64 hashlet) {
-    a_pad(u8, hex, 10);
-    (void)WHIFFHexFeed40(hex_idle, hashlet);
-    GRAFEmitDiffUri(toks, out, u8bDataC(hex));
-}
-
 //  Sentinel `src` for the worktree shadow version (uncommitted edits) —
 //  shared with the DIFF projector via `WEAVE_WT_SRC` in WEAVE.h.
 #define BLAME_WT_SRC WEAVE_WT_SRC
 
-// --- Author table: gen → author + date ---
+// --- Author table: gen → commit identity (sha + author time) ---
+//
+//  BLAME-005: a run-hunk needs the commit's full SHA-1 (for its
+//  `commit:?<sha40>` URI) and author time (the hunk `ts`).  `author`/
+//  `date` are kept human-readable strings for diagnostics; the rendered
+//  output derives its labels from the URI + ts via the shared renderer.
 
 typedef struct {
-    u64  commit_hashlet;
-    char author[48];
-    char date[12];   // YYYY-MM-DD
+    u64   commit_hashlet;
+    sha1  sha;        // full commit SHA-1 (for the commit:?<sha40> hunk URI)
+    ron60 ts;         // author time, ron60-packed (hunk `ts` field)
+    char  author[48];
+    char  date[12];   // YYYY-MM-DD
 } blame_author;
-
-// --- UTF-8 aware fixed-width feed: truncate to N codepoints, pad right ---
-
-static void blame_fixfeed(u8bp out, u8cs src, u32 maxcols, u8cs after) {
-    u32 cols = 0;
-    u8c *p = src[0];
-    while (p < src[1] && cols < maxcols) {
-        u8 len = UTF8_LEN[((u8)*p) >> 4];
-        if (p + len > src[1]) break;
-        u8cs cp = {p, p + len};
-        (void)u8bFeed(out, cp);
-        p += len;
-        cols++;
-    }
-    while (cols < maxcols) { (void)u8bFeed1(out, ' '); cols++; }
-    (void)u8bFeed(out, after);
-}
-
-// --- Compact date feed: "3Jun" if same year, "2023" if different ---
-
-static char const *MONTH_ABBR[] = {
-    "Jan","Feb","Mar","Apr","May","Jun",
-    "Jul","Aug","Sep","Oct","Nov","Dec"
-};
-
-//  ISO date is "YYYY-MM-DD" (fixed format produced by
-//  blame_fetch_author); parse digit-by-digit, no sscanf.
-static void blame_compact_feed(u8bp out, u8cs iso_date, int cur_year) {
-    if (u8csLen(iso_date) < 10) return;
-    u8cp p = iso_date[0];
-    if (p[4] != '-' || p[7] != '-') return;
-    int y = (p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0');
-    int m = (p[5]-'0')*10 + (p[6]-'0');
-    int d = (p[8]-'0')*10 + (p[9]-'0');
-    a_pad(u8, buf, 8);
-    if (y == cur_year && m >= 1 && m <= 12) {
-        i64 dd = d;
-        (void)utf8sFeedInt(buf_idle, &dd);
-        a_cstr(mon, MONTH_ABBR[m - 1]);
-        (void)u8bFeed(buf, mon);
-    } else {
-        i64 yy = y;
-        (void)utf8sFeedInt(buf_idle, &yy);
-    }
-    (void)u8bFeed(out, u8bDataC(buf));
-}
 
 // --- Fetch author + date from commit via keeper ---
 
@@ -109,6 +58,8 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
                                 u64 commit_hashlet) {
     ba->author[0] = 0;
     ba->date[0] = 0;
+    ba->ts = 0;
+    ba->sha = (sha1){};
 
     //  MEM-018: this helper is invoked once per folded commit by the
     //  weave step callback, which GRAFFileWeave fires via a raw fn-ptr
@@ -128,6 +79,10 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
         return;
     }
 
+    //  Full commit SHA-1 from the canonical body — feeds the
+    //  `commit:?<sha40>` hunk URI (matches COMMIT-001's resolved sha).
+    KEEPObjSha(&ba->sha, DOG_OBJ_COMMIT, u8bDataC(*cbuf));
+
     //  Walk via the shared commit-body parser; pick name + ts from
     //  the author header.
     a_dup(u8c, scan, u8bDataC(*cbuf));
@@ -143,6 +98,7 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
         if (nl >= sizeof(ba->author)) nl = sizeof(ba->author) - 1;
         if (nl > 0) memcpy(ba->author, name[0], nl);
         ba->author[nl] = 0;
+        ba->ts = ts_r;
         if (ts_r != 0) {
             struct tm tm = {};
             if (RONToTime(ts_r, &tm, NULL) == OK) {
@@ -647,6 +603,56 @@ static ok64 blame_step_cb(u32 src_id, u64 commit_h, void *vctx) {
     done;
 }
 
+//  BLAME-005: the `blame` verb stamped on every run-hunk (ron60-coded
+//  name; see `abc/ok64 blame`).  Lets the shared renderer label the run
+//  the same way it labels any other hunk-verb event.
+con ron60 BLAME_VERB = 0x26c25c69;
+
+//  BLAME-005: emit one maximal commit-run as a content hunk.
+//    uri  = `commit:?<sha40>` (URIMake query form — the same shape
+//           COMMIT-001's link resolves; bro makes it a click target).
+//    ts   = the run commit's author time; verb = BLAME_VERB.
+//    text = the run's verbatim source bytes; toks = syntax tags from a
+//           fresh dog/TOK pass over that text (the weave stores none).
+//  Streamed via GRAFHunkEmit as produced — no whole-file accumulation.
+//  Empty runs and the synthetic worktree layer (no sha) emit a bare
+//  uri-less content hunk so unattributed lines still render.
+static ok64 blame_flush_run(blame_author const *ba, u8cs run, u8cs ext) {
+    sane(ba);
+    if ($empty(run)) done;
+
+    a_pad(u8, uri, 96);
+    if (ba->commit_hashlet && ba->commit_hashlet != (u64)BLAME_WT_SRC) {
+        a_sha1hex(sha_hex, &ba->sha);
+        a_cstr(scheme, "commit");
+        u8cs none = {};
+        call(URIMake, u8bIdle(uri), scheme, none, none, sha_hex, none);
+    }
+
+    //  Re-tokenize the run for syntax highlighting (the weave keeps no
+    //  lexer tags — see graf/WEAVE.h).  Best-effort: an unknown ext or a
+    //  tokenizer hiccup just yields an untagged body, still well-formed.
+    a_carve(u32, toks, (size_t)($len(run) + 16));
+    tok32cs toks_view = {NULL, NULL};
+    if (!$empty(ext) && TOKKnownExt(ext)) {
+        u32 *begin = u32bIdleHead(toks);
+        if (HUNKu32bTokenize(toks, run, ext) == OK) {
+            toks_view[0] = (tok32 const *)begin;
+            toks_view[1] = (tok32 const *)u32bIdleHead(toks);
+        }
+    }
+
+    hunk hk = {};
+    hk.ts   = ba->ts;
+    hk.verb = BLAME_VERB;
+    u8csMv(hk.uri, u8bDataC(uri));
+    u8csMv(hk.text, run);
+    hk.toks[0] = toks_view[0];
+    hk.toks[1] = toks_view[1];
+    call(GRAFHunkEmit, &hk, NULL);
+    done;
+}
+
 ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     sane($ok(filepath) && $ok(reporoot));
     keeper *k = &KEEP;
@@ -681,54 +687,27 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
     }
     if (wsrc == NULL) wsrc = &wA;
 
-    // Render blame: "hashlet name date code"
-    #define BLAME_HW 7   // hashlet width
-    #define BLAME_NW 12  // name width
-    #define BLAME_DW 5   // date width
-    #define BLAME_PW (BLAME_HW + 1 + BLAME_NW + 1 + BLAME_DW + 1)
-    #define CLR_HASH "\033[38;5;108m"
-    #define CLR_NAME "\033[38;5;103m"
-    #define CLR_DATE "\033[38;5;245m"
-    #define CLR_OFF  "\033[0m"
-
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    int cur_year = tm ? tm->tm_year + 1900 : 2026;
-    //  ANSI in the body when the output is anything other than plain
-    //  (TLV → bro passes it through to the terminal; Color → rendered
-    //  directly; Plain → strip).
-    b8 tty = graf_out_fd >= 0 && HUNKMode != HUNKOutPlain;
+    //  BLAME-005: emit one content hunk per maximal commit-run.  The
+    //  per-line walk (inserter `seq` at each BOL) is unchanged — only the
+    //  EMIT regroups: consecutive lines sharing a commit accumulate into
+    //  `runbuf`, flushed as a `{ts, verb=BLAME_VERB, uri=commit:?<sha40>}`
+    //  hunk the instant the attributing commit changes.  No fixed-width
+    //  gutter, no per-line `L`-tok — the commit rides the hunk header, the
+    //  shared renderer (HUNKu8sFeed*) draws/highlights/wraps the body.
+    u8cs ext = {};
+    PATHu8sExt(ext, filepath);
 
     weavecur wcur;
     WEAVECurInit(&wcur, wsrc);
 
-    a_carve(u8, outbuf, 16UL << 20);
+    //  Per-run scratch: one run's verbatim source.  Reset (not re-carved)
+    //  per flush so a long file streams within a bounded buffer.
+    a_carve(u8, runbuf, 16UL << 20);
 
-    //  TLV mode: emit a toks stream so each row's hashlet column is a
-    //  clickable anchor — `diff:?<hashlet>` rides in a 'U' token right
-    //  after the anchor.  Plain mode keeps toks empty; the renderers
-    //  drop the URI bytes either way.
-    Bu32 toks_buf = {};
-    if (tty) {
-        __ = u32bAcquire(ABC_BASS, toks_buf, BLAME_MAX_AUTHORS * 4);
-        if (__ != OK) {
-            WEAVEFree(&wA); WEAVEFree(&wB); WEAVEFree(&wnu);
-            GRAFArenaCleanup();
-            return __;
-        }
-    }
-
-    u32 prev_in = 0;        // 0 means "no previous row yet"
-    b8  have_prev_in = NO;
+    blame_author const *run_ba = NULL;   // commit owning the open run
     b8  at_bol = YES;
 
-    a_cstr(sp1, " ");
-    a_cstr(empty, "");
-
-    #define EMIT_BLANK do {                                           \
-        for (u32 _j = 0; _j < BLAME_PW; _j++) u8bFeed1(outbuf, ' ');  \
-    } while(0)
-
+    ok64 ret = OK;
     while (WEAVECurNext(&wcur)) {
         if (wcur.nr != 0) continue;
         //  Inserter for blame attribution: the token's birth-id seq.
@@ -740,100 +719,50 @@ ok64 GRAFBlame(u8cs filepath, u64 tip_h, u8cs reporoot) {
         if (at_bol) {
             blame_author const *ba = blame_lookup_in(authors, nauthors, in_rep);
             if (!ba) ba = &blame_unknown;
-            b8 diff_commit = !have_prev_in || prev_in != in_rep;
-
-            if (diff_commit) {
-                //  Hash column: "wt" for worktree, first 7 hex of the
-                //  hashlet otherwise, blank when no source.
-                a_pad(u8, hex, 10);
-                u8cs hash_field = {};
-                if (ba->commit_hashlet == (u64)BLAME_WT_SRC) {
-                    a_cstr(wt, "wt");
-                    (void)u8bFeed(hex, wt);
-                    hash_field[0] = u8bDataHead(hex);
-                    hash_field[1] = u8bIdleHead(hex);
-                } else if (ba->commit_hashlet) {
-                    (void)WHIFFHexFeed40(hex_idle, ba->commit_hashlet);
-                    a_dup(u8c, full, u8bDataC(hex));
-                    hash_field[0] = full[0];
-                    hash_field[1] = full[0] + BLAME_HW;
-                }
-                a_cstr(name_field, ba->author);
-                a_cstr(date_field, ba->date);
-                a_pad(u8, cd, 8);
-                blame_compact_feed(cd, date_field, cur_year);
-                if (tty) { a_cstr(c, CLR_HASH); (void)u8bFeed(outbuf, c); }
-                //  Anchor pass: emit BLAME_HW chars + L-tok, then the
-                //  U-token URI, then the column-trailing space.  In
-                //  plain mode the URI bytes never reach text (helper
-                //  no-ops on the null toks slice).
-                blame_fixfeed(outbuf, hash_field, BLAME_HW, empty);
-                if (tty)
-                    (void)u32bFeed1(toks_buf,
-                                    tok32Pack('L', (u32)u8bDataLen(outbuf)));
-                if (tty && ba->commit_hashlet
-                        && ba->commit_hashlet != (u64)BLAME_WT_SRC)
-                    blame_pack_uri_diff_sha(toks_buf, outbuf,
-                                            ba->commit_hashlet);
-                (void)u8bFeed(outbuf, sp1);
-                if (tty) { a_cstr(c, CLR_NAME); (void)u8bFeed(outbuf, c); }
-                blame_fixfeed(outbuf, name_field, BLAME_NW, sp1);
-                if (tty) { a_cstr(c, CLR_DATE); (void)u8bFeed(outbuf, c); }
-                blame_fixfeed(outbuf, u8bDataC(cd), BLAME_DW, sp1);
-                if (tty) { a_cstr(c, CLR_OFF);  (void)u8bFeed(outbuf, c); }
-                prev_in = in_rep;
-                have_prev_in = YES;
-            } else {
-                EMIT_BLANK;
+            //  Commit boundary at a line start ⇒ close the open run.
+            if (run_ba &&
+                ba->commit_hashlet != run_ba->commit_hashlet) {
+                try(blame_flush_run, run_ba, u8bDataC(runbuf), ext);
+                ret = __;
+                if (ret != OK) break;
+                u8bReset(runbuf);
             }
+            run_ba = ba;
             at_bol = NO;
         }
 
+        //  Append the token's bytes verbatim, tracking line starts so the
+        //  next BOL re-checks the commit.
         while (tp < te) {
             u8cp nl = tp;
             while (nl < te && *nl != '\n') nl++;
             if (nl < te) {
                 u8cs chunk = {tp, nl + 1};
-                u8bFeed(outbuf, chunk);
+                u8bFeed(runbuf, chunk);
                 tp = nl + 1;
                 at_bol = YES;
-                if (tp < te) { EMIT_BLANK; at_bol = NO; }
+                if (tp < te) at_bol = NO;   // more bytes ⇒ same commit
             } else {
                 u8cs chunk = {tp, te};
-                u8bFeed(outbuf, chunk);
+                u8bFeed(runbuf, chunk);
                 tp = te;
             }
         }
     }
 
-    if (!at_bol) {
-        u8bFeed1(outbuf, '\n');
-    }
-
-    #undef EMIT_BLANK
-
-    {
-        a_pad(u8, title, 128);
-        (void)u8bFeed(title, filepath);
-        a_cstr(suffix, " (blame)");
-        (void)u8bFeed(title, suffix);
-        hunk hk = {};
-        hk.uri[0]  = u8bDataHead(title);
-        hk.uri[1]  = u8bIdleHead(title);
-        hk.text[0] = u8bDataHead(outbuf);
-        hk.text[1] = u8bIdleHead(outbuf);
-        if (tty) {
-            hk.toks[0] = (tok32 const *)u32bDataHead(toks_buf);
-            hk.toks[1] = (tok32 const *)u32bIdleHead(toks_buf);
-        }
-        call(GRAFHunkEmit, &hk, NULL);
+    //  Flush the trailing run (terminating its body with a newline so the
+    //  renderer frames it cleanly).
+    a_dup(u8c, tail, u8bDataC(runbuf));
+    if (ret == OK && run_ba && !$empty(tail)) {
+        if (*(tail[1] - 1) != '\n') (void)u8bFeed1(runbuf, '\n');
+        ret = blame_flush_run(run_ba, u8bDataC(runbuf), ext);
     }
 
     WEAVEFree(&wA);
     WEAVEFree(&wB);
     WEAVEFree(&wnu);
     GRAFArenaCleanup();
-    done;
+    return ret;
 }
 
 // --- Weave diff: resolve (ref, filepath) → blob via path descent ---

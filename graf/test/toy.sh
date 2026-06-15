@@ -163,10 +163,12 @@ echo "$BOUT" | grep -qF 'x + 3' \
     || fail "blame: tip content missing — did not see 'x + 3'"
 echo "$BOUT" | grep -qF 'h3' \
     || fail "blame: tip helper missing — did not see 'h3'"
-#  The header row carries a commit hashlet + author + date prefix.
-echo "$BOUT" | grep -qE '^[0-9a-f]{7}' \
-    || fail "blame: no commit-hashlet prefix on annotated line"
-note "blame emitted v3 content with commit/author/date prefix"
+#  BLAME-005: each maximal commit-run is its own content hunk headed by
+#  the run commit's `commit:?<sha40>` URI (the metadata rides the hunk
+#  header, not a per-line gutter).
+echo "$BOUT" | grep -qE '^--- commit:\?[0-9a-f]{40} ---' \
+    || fail "blame: no per-run commit:?<sha> hunk header"
+note "blame emitted v3 content as per-commit-run hunks (commit:?<sha> headers)"
 
 # ------------------------------------------------------------------
 #  Done.
