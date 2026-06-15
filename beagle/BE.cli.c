@@ -321,6 +321,44 @@ static ok64 bediff_build_pins(cli *c, uri *u, bediff_pinmap *map) {
     done;
 }
 
+//  COMMIT-002: resolve a `commit:?<ref>` query to a 40-hex sha so the
+//  SAME address is threaded to both keeper (`commit:?<sha>` metadata)
+//  and graf (`diff:?<sha>` inline diff).  `be` resolves once, in-process
+//  — no double-resolve, no scraping a dog's output.  Mirrors
+//  bediff_build_pins's open scope (keeper read-only, cur branch from the
+//  composed `--at` URI).  Fills `out` (reset on entry) with the 40-hex
+//  on success and returns OK; on any miss `out` is left empty and the
+//  caller falls back to the keeper-only metadata path (no inline diff).
+static ok64 becommit_resolve_sha(uri *u, u8bp out) {
+    sane(u && out);
+    u8bReset(out);
+    if (u8csEmpty(u->query)) done;
+    if (!u8bHasData(HOME.root)) done;
+
+    //  cur branch from the `--at` URI `be` already composed.
+    uri at = {};
+    if (u8bDataLen(be_at_buf) > 0) {
+        u8csMv(at.data, u8bDataC(be_at_buf));
+        URILexer(&at);
+    }
+    u8cs cur_branch = {};
+    u8csMv(cur_branch, at.query);
+
+    static u8c const _zero = 0;
+    u8cs trunk = {&_zero, &_zero};
+    ok64 ko = KEEPOpenBranch(trunk, NO);
+    if (!(ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO)) done;
+
+    sha1 csha = {};
+    u8cs q = {};
+    u8csMv(q, u->query);
+    if (KEEPResolveRef(&csha, q, cur_branch) == OK)
+        (void)SHA1u8sFeedHex(u8bIdle(out), &csha);
+
+    if (ko == OK) (void)KEEPClose();
+    done;
+}
+
 // --- Run a sibling tool ---
 
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
@@ -410,7 +448,15 @@ ok64 BEReap(pid_t pid, u8csc tool) {
 //  sequential stream, parent-then-subs, paged together; when the parent
 //  diff is empty but a sub diff exists the pager shows the sub diff,
 //  never "nothing!".
-static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
+//  COMMIT-002: an optional PRE-producer runs into the same pipe before
+//  the main producer.  `commit:` uses it to land the keeper
+//  commit-metadata hunk first, then the graf diff producer (and its sub
+//  fan-out) append after — one paged stream, metadata-then-diff.  A NULL
+//  `pre` (or an empty path) skips this leg.  The pre-producer is spawned
+//  and FULLY reaped before the main producer, so its hunks never
+//  interleave with the diff (BRO-002 relay-timing hazard).
+static ok64 BERunPipeSubs(path8sc pre, u8css pre_argv,
+                          path8sc prod, u8css prod_argv,
                           path8sc pager, u8css pager_argv,
                           cli *c, uri *u, bediff_pinmap const *pins) {
     sane($ok(prod) && $ok(pager) && c && u);
@@ -428,6 +474,25 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
     pid_t pager_pid = 0;
     ok64 gs = FILESpawnFds(pager, pager_argv, p[0], -1, &pager_pid);
     if (gs != OK) { close(p[0]); close(p[1]); return gs; }
+
+    //  PRE-producer (commit metadata): spawn into the pipe write end and
+    //  reap it BEFORE the main producer so its hunk lands first.
+    if (pre != NULL && $ok(pre) && !$empty(pre)) {
+        pid_t pre_pid = 0;
+        ok64 prs = FILESpawnFds(pre, pre_argv, -1, p[1], &pre_pid);
+        if (prs != OK) {
+            close(p[0]); close(p[1]);
+            int rc = 0; (void)FILEReap(pager_pid, &rc);
+            return prs;
+        }
+        int pre_rc = 0;
+        (void)FILEReap(pre_pid, &pre_rc);
+        if (pre_rc != 0 && pre_rc != BE_NONE_LOW_BYTE) {
+            close(p[0]); close(p[1]);
+            int rc = 0; (void)FILEReap(pager_pid, &rc);
+            return BEDOGEXIT;
+        }
+    }
 
     //  Parent producer writes its hunks into the pipe write end directly;
     //  reap it so its whole report lands before the sub fan-out.  The
@@ -1164,6 +1229,102 @@ static ok64 BEProjector(cli *c, uri *u) {
     a_cstr(s_diff, "diff");
     b8 is_diff = $eq(u->scheme, s_diff);
 
+    //  COMMIT-002: `commit:?<ref>` reads like `git show` — commit
+    //  metadata followed INLINE by the full diff.  Keeper owns
+    //  `commit:`, graf owns `diff:` (separate dogs), so keeper must NOT
+    //  re-roll the diff.  Instead `be` resolves `?<ref>` to a sha ONCE,
+    //  then RELAYS graf's `diff:?<sha>` hunk stream after the keeper
+    //  commit-metadata hunk (the same run-it-relay-hunks the sub
+    //  recursion uses).  The keeper metadata is the PRE-producer, the
+    //  graf diff is the main producer, and the diff's own sub fan-out
+    //  (commit-show pins, route #3) composes exactly like a bare
+    //  `diff:?<sha>`.  When the ref can't be resolved (no store / unknown
+    //  ref) we fall back to the plain keeper-only metadata path below.
+    a_cstr(s_commit, "commit");
+    b8 is_commit = $eq(u->scheme, s_commit);
+    a_path(commit_pre_path);          //  keeper metadata pre-producer
+    a_pad(u8cs, commit_pre_args, 6);
+    u8css pre_argv = {};
+    uri diff_uv = {};                 //  synthetic `diff:?<sha40>` view
+    a_pad(u8, commit_sha_buf, 64);
+    a_pad(u8, commit_meta_uri, 64);   //  "commit:?<sha40>" storage
+    a_pad(u8, commit_diff_uri, 64);   //  "diff:?<sha40>" storage
+    a_pad(u8cs, commit_dargs, 6);
+    u8cs commit_pre_dog = {};          //  keeper dog name for the pre-run
+    if (is_commit) {
+        try(becommit_resolve_sha, u, commit_sha_buf);
+        if (__ == OK && u8bHasData(commit_sha_buf)) {
+            a_dup(u8c, sha40, u8bDataC(commit_sha_buf));
+
+            //  PRE-producer: keeper `commit:?<sha40>` for the metadata
+            //  hunk.  Keep keeper as the pre-producer dog (dogpath still
+            //  points at keeper here), forward the same mode flag, but pin
+            //  the URI to the resolved sha so keeper and graf address the
+            //  IDENTICAL commit.
+            call(PATHu8bFeed, commit_pre_path, $path(dogpath));
+
+            a_cstr(commit_pfx, "commit:?");
+            (void)u8bFeed(commit_meta_uri, commit_pfx);
+            (void)u8bFeed(commit_meta_uri, sha40);
+            a_dup(u8c, meta_uri_v, u8bDataC(commit_meta_uri));
+
+            u8csbFeed1(commit_pre_args, dog_s);   //  argv[0] = "keeper"
+            if (have_at) {
+                a_dup(u8c, at_flag, be_at_flag);
+                a_dup(u8c, at_val,  u8bData(be_at_buf));
+                u8csbFeed1(commit_pre_args, at_flag);
+                u8csbFeed1(commit_pre_args, at_val);
+            }
+            if      (emit_tlv)                 u8csbFeed1(commit_pre_args, tlv_flag);
+            else if (HUNKMode == HUNKOutColor) u8csbFeed1(commit_pre_args, color_flag);
+            else if (HUNKMode == HUNKOutPlain) u8csbFeed1(commit_pre_args, plain_flag);
+            u8csbFeed1(commit_pre_args, meta_uri_v);
+            a_dup(u8cs, pre_arr, u8csbData(commit_pre_args));
+            pre_argv[0] = (u8cs *)pre_arr[0];
+            pre_argv[1] = (u8cs *)pre_arr[1];
+            u8csMv(commit_pre_dog, dog_s);   //  keeper (pre-run tool name)
+
+            //  Main producer becomes graf `diff:?<sha40>` (commit-show);
+            //  rebuild dog_s / dogpath / dargv and the `u` view so the sub
+            //  fan-out (pins) and the bro pipe all see the diff.  `dog_s`
+            //  is the DOG name ("graf") — BERun / HOMEResolveSibling and
+            //  the dargv argv[0] all use it; the `diff:` scheme rides in
+            //  the URI, which graf's verbless dispatch reads.
+            a_cstr(graf_name, "graf");
+            u8csMv(dog_s, graf_name);
+            u8bReset(dogpath);   //  HOMEResolveSibling APPENDS — clear the
+                                 //  keeper path (already copied into the
+                                 //  pre-producer) before resolving graf.
+            call(HOMEResolveSibling, dogpath, graf_name, a0);
+            a_cstr(diff_pfx, "diff:?");
+            (void)u8bFeed(commit_diff_uri, diff_pfx);
+            (void)u8bFeed(commit_diff_uri, sha40);
+            a_dup(u8c, diff_uri_v, u8bDataC(commit_diff_uri));
+
+            a_cstr(graf_d, "graf");
+            u8csbFeed1(commit_dargs, graf_d);
+            if (have_at) {
+                a_dup(u8c, at_flag, be_at_flag);
+                a_dup(u8c, at_val,  u8bData(be_at_buf));
+                u8csbFeed1(commit_dargs, at_flag);
+                u8csbFeed1(commit_dargs, at_val);
+            }
+            if      (emit_tlv)                 u8csbFeed1(commit_dargs, tlv_flag);
+            else if (HUNKMode == HUNKOutColor) u8csbFeed1(commit_dargs, color_flag);
+            else if (HUNKMode == HUNKOutPlain) u8csbFeed1(commit_dargs, plain_flag);
+            u8csbFeed1(commit_dargs, diff_uri_v);
+            a_dup(u8cs, darg_arr, u8csbData(commit_dargs));
+            dargv[0] = (u8cs *)darg_arr[0];
+            dargv[1] = (u8cs *)darg_arr[1];
+
+            //  `u` → synthetic `diff:?<sha40>` for pins + sub fan-out.
+            u8csMv(diff_uv.data, u8bDataC(commit_diff_uri));
+            URILexer(&diff_uv);
+            u = &diff_uv;
+            is_diff = YES;
+        }
+    }
+
     if (!tty) {
         //  Run the parent projector (writes its own hunks straight to
         //  stdout in the resolved mode), then fan out into mounted subs
@@ -1178,6 +1339,15 @@ static ok64 BEProjector(cli *c, uri *u) {
         //  bumped sub's child URI to `diff:?<old>#<new>`.  The producer
         //  itself runs unchanged (no capture).  Every other projector
         //  keeps the verbatim fan-out (empty pin map degrades to it).
+        //  COMMIT-002: land the keeper commit-metadata hunk FIRST (fully
+        //  reaped before the diff producer), then the graf `diff:?<sha>`
+        //  producer + its sub fan-out append after — metadata-then-diff,
+        //  one stream.  Each writes straight to stdout in the resolved
+        //  mode, so the ordering is the spawn/reap order.
+        if (is_commit && !$empty(pre_argv)) {
+            ok64 mr = BERun(commit_pre_dog, pre_argv, NO);
+            if (mr != OK && !ok64is(mr, NONE)) return mr;
+        }
         ok64 pr, sr;
         if (is_diff && !CLIHas(c, "--nosub")) {
             bediff_pinmap pins = {};
@@ -1226,7 +1396,16 @@ static ok64 BEProjector(cli *c, uri *u) {
         (void)bediff_build_pins(c, u, &pins);
         pins_arg = &pins;
     }
-    ok64 pr = BERunPipeSubs($path(dogpath), dargv,
+    //  COMMIT-002: for `commit:` the keeper commit-metadata producer is
+    //  folded into the SAME bro pipe as the PRE-producer — it runs and is
+    //  reaped before the graf diff producer, so the one paged stream is
+    //  metadata-then-diff(-then-subs).  Other projectors pass no pre
+    //  (empty path → skipped in BERunPipeSubs).
+    a_path(no_pre);
+    b8 has_pre = is_commit && !$empty(pre_argv);
+    ok64 pr = BERunPipeSubs(has_pre ? $path(commit_pre_path) : $path(no_pre),
+                            pre_argv,
+                            $path(dogpath), dargv,
                             $path(bropath), bargv, c, u, pins_arg);
     bediff_pins_free(&pins);
     if (pr != OK && !ok64is(pr, NONE)) return pr;

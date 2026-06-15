@@ -496,20 +496,13 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
         proj_push_tok(text, toks, 'W');
     }
 
-    //  COMMIT-001: surface the diff without re-rolling it in keeper.
-    //  Append a clickable "diff" anchor whose invisible U-tagged URI is
-    //  graf's `diff:?<sha40>` for the resolved commit.  Bro follows the
-    //  U-token (BRO.c) and graf's `diff:?<sha>` commit-show form renders
-    //  the commit-vs-first-parent diff.  Query form (not `#`) is what
-    //  triggers graf's commit-show path — keeper owns no diff logic.
-    (void)u8bFeed1(text, '\n');
-    proj_feed_lit(u8bIdle(text), "diff");
-    proj_push_tok(text, toks, 'R');
-    proj_feed_lit(u8bIdle(text), "diff:?");
-    proj_feed_sha_hex(u8bIdle(text), &csha);
-    proj_push_tok(text, toks, 'U');
-    (void)u8bFeed1(text, '\n');
-    proj_push_tok(text, toks, 'W');
+    //  COMMIT-002: keeper emits ONLY the commit-metadata hunk (headers +
+    //  message).  The full diff is no longer a navigable link here — the
+    //  `be` dispatcher (BEProjector) runs graf's `diff:?<sha>` for the
+    //  SAME resolved sha and RELAYS its hunk stream right after this one,
+    //  so `commit:?<sha>` reads like `git show` in every render mode.  The
+    //  dog boundary stays intact: keeper owns no diff logic (COMMIT-001's
+    //  link is superseded; the inline diff is navigable on its own).
 
     tok32cs toks_view = {(u32 const *)u32bDataHead(toks),
                         (u32 const *)u32bIdleHead(toks)};

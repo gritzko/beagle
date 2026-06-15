@@ -1,11 +1,12 @@
 #!/bin/sh
-#  commit/01-diff-link — COMMIT-001.  `commit:?<ref>` surfaces the
-#  commit's diff after its metadata.  Per the dog boundary (keeper owns
-#  `commit:`, graf owns `diff:`) it does NOT inline the diff — it emits a
-#  navigable U-token link to graf's `diff:?<sha>` for the SAME sha the
-#  URI resolved to.  Bro follows that link (BRO.c U-token click) and
-#  graf renders the commit-vs-first-parent diff (GRAF.exe.c `diff:?<sha>`
-#  commit-show form, which is why the link is the QUERY form, not `#`).
+#  commit/01-diff-link — COMMIT-002 supersedes COMMIT-001.  `commit:?<ref>`
+#  no longer emits a navigable `diff:?<sha>` LINK after the metadata; it
+#  now inlines the FULL diff (relayed from graf — see commit/02 for the
+#  Plain/Color/TLV + sub coverage).  This case keeps the two assertions
+#  that survive the change: (1) commit metadata is intact, and (2) the
+#  blame-link form `commit:?<8hex>#<message>` resolves to the same commit
+#  (the hex query is authoritative; the fragment is a human label, never
+#  an object id).
 
 . "$(dirname "$0")/../../lib/branches.sh"
 
@@ -22,7 +23,7 @@ printf 'int main(){return 1;}\nint extra(){return 2;}\n' >foo.c
 SHA=$("$BE" sha1:?v2 2>/dev/null)
 [ -n "$SHA" ] || fail "sha1:?v2 resolved empty"
 
-#  --- metadata still present (CLI mode elides U-token link bytes) ---
+#  --- metadata present, full diff inlined (no separate link) --------
 "$BE" commit:?v2 >01.commit.got.out 2>01.commit.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "be commit:?v2 exited $rc; stderr:
@@ -31,24 +32,11 @@ grep -q "^commit $SHA"  01.commit.got.out || fail "commit: missing commit header
 $(cat 01.commit.got.out)"
 grep -q "^author "      01.commit.got.out || fail "commit: missing author header"
 grep -q "^v2"           01.commit.got.out || fail "commit: missing message body"
+#  The diff is inlined (COMMIT-002): the changed token rides in the same
+#  stream as the metadata — no navigable link, no separate fetch.
+grep -q "extra"         01.commit.got.out || fail "commit: diff not inlined (no 'extra'); stdout:
+$(cat 01.commit.got.out)"
 empty 01.commit.got.err
-
-#  --- diff link present in the hunk stream (TLV exposes U-bytes) ----
-#  The link must target graf's `diff:?<sha>` for the SAME resolved sha.
-"$BE" --tlv commit:?v2 >02.tlv.got.out 2>02.tlv.got.err
-rc=$?
-[ "$rc" = 0 ] || fail "be --tlv commit:?v2 exited $rc; stderr:
-$(cat 02.tlv.got.err)"
-grep -aq "diff:?$SHA" 02.tlv.got.out || fail "commit: no diff:?<sha> link to the resolved sha; link URIs found:
-$(grep -ao 'diff:?[0-9a-f]*\|tree:#[0-9a-f]*\|commit:#[0-9a-f]*' 02.tlv.got.out)"
-
-#  --- the link target actually resolves to a non-empty diff ---------
-"$BE" "diff:?$SHA" >03.diff.got.out 2>03.diff.got.err
-rc=$?
-[ "$rc" = 0 ] || fail "be diff:?$SHA (link target) exited $rc; stderr:
-$(cat 03.diff.got.err)"
-grep -q "extra" 03.diff.got.out || fail "diff: link target did not render the commit's change; stdout:
-$(cat 03.diff.got.out)"
 
 #  --- BLAME link form: commit:?<8hex>#<message> resolves -------------
 #  Blame run-hunks address a commit as `commit:?<8-char-hashlet>#<subject>`
@@ -66,5 +54,5 @@ grep -q "^commit $SHA" 04.blamelink.got.out || fail "commit: blame-link hashlet+
 $(cat 04.blamelink.got.out)"
 empty 04.blamelink.got.err
 
-note "commit/01: commit:?<ref> keeps metadata and links diff:?<sha> (same sha), which renders;" \
+note "commit/01: commit:?<ref> keeps metadata + inlines the diff (COMMIT-002);" \
      "commit:?<8hex>#<message> blame-link resolves to the same commit"
