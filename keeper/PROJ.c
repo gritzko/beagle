@@ -435,9 +435,23 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if (u8csEmpty(field)) {
-            //  Blank-line separator — `value` is the message body.
+            //  Blank-line separator — `value` is the message body.  The
+            //  first line (subject) renders BOLD ('N'); the rest plain
+            //  ('W'), so the subject stands apart from the diff below.
             (void)u8bFeed1(text, '\n');
-            (void)u8bFeed(text, value);
+            proj_push_tok(text, toks, 'W');
+            if (!u8csEmpty(value)) {
+                a_dup(u8c, msc, value);
+                u8cp send = (u8csFind(msc, '\n') == OK) ? msc[0] : value[1];
+                u8cs subj = {value[0], send};
+                (void)u8bFeed(text, subj);
+                proj_push_tok(text, toks, 'N');
+                if (send < value[1]) {
+                    u8cs rest = {send, value[1]};
+                    (void)u8bFeed(text, rest);
+                    proj_push_tok(text, toks, 'W');
+                }
+            }
             //  Ensure a trailing newline so the message terminates
             //  cleanly even when the commit body lacks one.
             if (!u8csEmpty(value) && *(value[1] - 1) != '\n')

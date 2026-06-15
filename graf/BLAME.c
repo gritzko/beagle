@@ -46,10 +46,11 @@
 
 typedef struct {
     u64   commit_hashlet;
-    sha1  sha;        // full commit SHA-1 (for the commit:?<sha40> hunk URI)
+    sha1  sha;        // full commit SHA-1 (8-char hashlet → commit:? URI)
     ron60 ts;         // author time, ron60-packed (hunk `ts` field)
     char  author[48];
     char  date[12];   // YYYY-MM-DD
+    char  subject[80];// first line of the commit message (URI fragment)
 } blame_author;
 
 // --- Fetch author + date from commit via keeper ---
@@ -60,6 +61,7 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     ba->date[0] = 0;
     ba->ts = 0;
     ba->sha = (sha1){};
+    ba->subject[0] = 0;
 
     //  MEM-018: this helper is invoked once per folded commit by the
     //  weave step callback, which GRAFFileWeave fires via a raw fn-ptr
@@ -80,7 +82,8 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     }
 
     //  Full commit SHA-1 from the canonical body — feeds the
-    //  `commit:?<sha40>` hunk URI (matches COMMIT-001's resolved sha).
+    //  `commit:?<8hex>#<subject>` hunk URI (8-char hashlet; matches the
+    //  sha COMMIT-001 resolves).
     KEEPObjSha(&ba->sha, DOG_OBJ_COMMIT, u8bDataC(*cbuf));
 
     //  Walk via the shared commit-body parser; pick name + ts from
@@ -88,7 +91,20 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
     a_dup(u8c, scan, u8bDataC(*cbuf));
     u8cs field = {}, value = {};
     while (GITu8sDrainCommit(scan, field, value) == OK) {
-        if (u8csEmpty(field)) break;
+        if (u8csEmpty(field)) {
+            //  Blank line → `value` is the message body; its first line
+            //  is the subject (rides the hunk URI fragment).
+            if (!u8csEmpty(value)) {
+                a_dup(u8c, msc, value);
+                u8cp end = (u8csFind(msc, '\n') == OK) ? msc[0] : value[1];
+                u8cs subj = {value[0], end};
+                size_t sl = u8csLen(subj);
+                if (sl >= sizeof(ba->subject)) sl = sizeof(ba->subject) - 1;
+                if (sl > 0) memcpy(ba->subject, value[0], sl);
+                ba->subject[sl] = 0;
+            }
+            break;
+        }
         if (!u8csEq(field, GIT_FIELD_AUTHOR)) continue;
         u8csc value_c = {value[0], value[1]};
         u8cs name = {}, email = {};
@@ -106,7 +122,8 @@ static void blame_fetch_author(blame_author *ba, keeper *k,
                          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
             }
         }
-        break;
+        //  No break: keep draining to the blank line so the subject
+        //  capture above runs.
     }
 }
 
@@ -621,12 +638,16 @@ static ok64 blame_flush_run(blame_author const *ba, u8cs run, u8cs ext) {
     sane(ba);
     if ($empty(run)) done;
 
-    a_pad(u8, uri, 96);
+    a_pad(u8, uri, 160);
     if (ba->commit_hashlet && ba->commit_hashlet != (u64)BLAME_WT_SRC) {
+        //  `commit:?<8-hashlet>#<subject>` — short hashlet in the query,
+        //  the commit message subject in the fragment (per the URI model).
         a_sha1hex(sha_hex, &ba->sha);
+        a_head(u8c, h8, sha_hex, 8);
         a_cstr(scheme, "commit");
         u8cs none = {};
-        call(URIMake, u8bIdle(uri), scheme, none, none, sha_hex, none);
+        a_cstr(subj, ba->subject);
+        call(URIMake, u8bIdle(uri), scheme, none, none, h8, subj);
     }
 
     //  Re-tokenize the run for syntax highlighting (the weave keeps no
