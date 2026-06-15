@@ -46,4 +46,35 @@ grep -Eq 'chsub +[0-9a-f]{40}\.\.[0-9a-f]{40}' "$SCRATCH/02.out" || {
     echo "--- stdout ---"; cat "$SCRATCH/02.out" >&2
     echo "--- stderr ---"; cat "$SCRATCH/02.err" >&2
     exit 1; }
+
+#  --- DIFF-001 part-b: the gitlink line must be FOLLOWED by the sub's
+#  actual content diff for the pin range (c.txt: v1 -> v2), path-prefixed
+#  under the mount.  Pre-fix the projector fan-out replayed the parent URI
+#  verbatim (`diff:?<parent-sha>`) into the sub — no such commit there →
+#  KEEPNONE — so the sub content vanished.  Option B rewrites each sub's
+#  child URI to `diff:?<old-pin>#<new-pin>` from graf's gitlink pin pair.
+grep -q '+v2' "$SCRATCH/02.out" || {
+    echo "DIFF-001 part-b: pin-bump did not render the sub content diff" >&2
+    echo "  expected the chsub content change (c.txt: v1 -> v2)" >&2
+    echo "--- stdout ---"; cat "$SCRATCH/02.out" >&2
+    echo "--- stderr ---"; cat "$SCRATCH/02.err" >&2
+    exit 1; }
+grep -q 'chsub/c.txt' "$SCRATCH/02.out" || {
+    echo "DIFF-001 part-b: sub content diff not path-prefixed under chsub/" >&2
+    echo "--- stdout ---"; cat "$SCRATCH/02.out" >&2
+    exit 1; }
+
+#  --- DIFF-001 part-b: --nosub keeps the gitlink line but drops the sub
+#  content diff (the documented opt-out).
+( cd B1 && "$BE" diff:"?$TIP" --nosub >"$SCRATCH/03.out" 2>"$SCRATCH/03.err" )
+grep -Eq 'chsub +[0-9a-f]{40}\.\.[0-9a-f]{40}' "$SCRATCH/03.out" || {
+    echo "DIFF-001 part-b: --nosub dropped the gitlink line too" >&2
+    echo "--- stdout ---"; cat "$SCRATCH/03.out" >&2
+    exit 1; }
+if grep -q '+v2' "$SCRATCH/03.out"; then
+    echo "DIFF-001 part-b: --nosub still rendered the sub content diff" >&2
+    echo "--- stdout ---"; cat "$SCRATCH/03.out" >&2
+    exit 1
+fi
+
 echo "diff/08-sub-pin-bump-gitlink: OK"

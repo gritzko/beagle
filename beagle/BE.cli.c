@@ -24,6 +24,7 @@
 #include "keeper/KEEP.h"           // KEEPOpenBranch (resolver needs refs)
 #include "keeper/RESOLVE.h"        // KEEPResolveRef (entry-point resolver)
 #include "keeper/REFS.h"
+#include "keeper/SUBS.h"           // KEEPSubsAt (structural pin source, route #3)
 #include "sniff/AT.h"
 #include "sniff/SNIFF.h"          // POSTNONE  (low-byte exit signal)
 #include "sniff/SUBS.h"
@@ -89,6 +90,237 @@ static void BEUsage(void) {
     );
 }
 
+//  Process-wide buffer for the `--at <root>?<branch>#<sha>` URI text
+//  forwarded to every sub-dog argv.  Populated once at the top of
+//  `becli` from `<cwd>/.be/wtlog` via `SNIFFAtTailOf`; empty when no
+//  `.be/wtlog` is present (fresh dir / pre-clone bootstrap), in which
+//  case sub-dogs fall back to their own cwd-walk.
+static u8 be_at_buf_storage[FILE_PATH_MAX_LEN + 128];
+static Bu8 be_at_buf = {
+    be_at_buf_storage, be_at_buf_storage,
+    be_at_buf_storage,
+    be_at_buf_storage + sizeof(be_at_buf_storage)
+};
+static u8c const be_at_flag_lit[] = "--at";
+static u8cs const be_at_flag = {
+    be_at_flag_lit, be_at_flag_lit + sizeof(be_at_flag_lit) - 1
+};
+
+// --- DIFF-001 part-b: diff: sub pin-range rewrite --------------------
+//
+//  For `diff:?<commit>` the generic projector fan-out would replay the
+//  parent URI verbatim into each sub — but `<commit>` is a PARENT sha,
+//  unknown in the sub shard (KEEPNONE), so the sub's content change
+//  vanished.  The fix is diff-specific: rewrite each bumped sub's child
+//  URI to `diff:?<old>#<new>` (its real pin range) so the sub renders
+//  its own content diff for the range.
+//
+//  Pin source: route #3 — STRUCTURAL via keeper, not graf's rendered
+//  text.  `be` resolves the SAME two commit endpoints graf diffs, takes
+//  each one's tree, and enumerates its submodules with `KEEPSubsAt`
+//  (`.gitmodules` × the 160000 gitlinks).  `new` = subs at the target
+//  tree, `old` = subs at the base tree, joined by mount path: in both ⇒
+//  bump, new-only ⇒ added (null old), old-only ⇒ deleted (null new).
+//  Capped per level; overflow just leaves the extras on the verbatim
+//  path (degrades to the pre-fix no-op).
+#define BEDIFF_PIN_MAX 64
+
+typedef struct {
+    path8b  path;     //  Alloc'd mount path; released by bediff_pins_free
+    sha1hex oldpin;   //  null-oid (0×40) on this side = sub added
+    sha1hex newpin;   //  null-oid (0×40) on this side = sub deleted
+} bediff_pin;
+
+typedef struct {
+    bediff_pin v[BEDIFF_PIN_MAX];
+    u32        n;
+} bediff_pinmap;
+
+//  Release every Alloc'd path (sha pins are inline values).
+static void bediff_pins_free(bediff_pinmap *map) {
+    for (u32 i = 0; i < map->n; i++) PATHu8bFree(map->v[i].path);
+    map->n = 0;
+}
+
+//  The git null object id (0×40 hex, == `sha1{}` rendered) marks the
+//  absent side of a gitlink range: an added sub has a null old pin, a
+//  deleted sub a null new pin — neither has a two-endpoint in-sub range.
+static b8 bediff_is_null(sha1hexcp h) {
+    sha1 z = {};
+    sha1hex zh;
+    sha1hexFromSha1(&zh, &z);
+    return sha1hexeq(h, &zh);
+}
+
+//  Find or create a pin entry for mount `path`.  A fresh entry is
+//  initialised with BOTH sides null-oid (so an unjoined side reads as
+//  added/deleted until the other tree fills it).  Returns NULL on
+//  overflow or an over-long path.
+static bediff_pin *bediff_pin_at(bediff_pinmap *map, u8cs path) {
+    for (u32 i = 0; i < map->n; i++)
+        if (u8csEq($path(map->v[i].path), path)) return &map->v[i];
+    if (map->n >= BEDIFF_PIN_MAX) return NULL;
+    if (u8csEmpty(path))          return NULL;
+    bediff_pin *e = &map->v[map->n];
+    if (PATHu8bAlloc(e->path) != OK)        return NULL;
+    if (PATHu8bFeed(e->path, path) != OK) { PATHu8bFree(e->path); return NULL; }
+    sha1 z = {};
+    sha1hexFromSha1(&e->oldpin, &z);
+    sha1hexFromSha1(&e->newpin, &z);
+    map->n++;
+    return e;
+}
+
+//  Find the pin entry for mount `subpath`; NULL if the sub had no pin
+//  bump in this diff (then it stays on the verbatim/no-op path).
+static bediff_pin const *bediff_pin_find(bediff_pinmap const *map,
+                                         u8cs subpath) {
+    for (u32 i = 0; i < map->n; i++)
+        if (u8csEq($path(map->v[i].path), subpath)) return &map->v[i];
+    return NULL;
+}
+
+//  Fold one endpoint's `KEEPSubsAt` ULOG (one row per mounted sub:
+//  `<url>?<mount-path>#<pin-hex>`) into `map`.  `is_new` selects which
+//  side of each pin the row's gitlink lands on.  Row query = mount
+//  path, fragment = 40-hex pin (BEGetDrainSubs uses the identical
+//  shape).  Drains via the ULOG/URI parser — no hand-splitting.
+static void bediff_fold_side(bediff_pinmap *map, u8cs subs_ulog, b8 is_new) {
+    u8cs scan = {subs_ulog[0], subs_ulog[1]};
+    for (;;) {
+        ulogrec row = {};
+        ok64 dr = ULOGu8sDrain(scan, &row);
+        if (dr == NODATA) break;
+        if (dr != OK)     continue;
+        u8cs path = {};
+        u8csMv(path, row.uri.query);
+        u8cs pin  = {};
+        u8csMv(pin,  row.uri.fragment);
+        if (u8csEmpty(path) || !DOGIsFullSha(pin)) continue;
+        bediff_pin *e = bediff_pin_at(map, path);
+        if (e == NULL) continue;
+        sha1hex *side = is_new ? &e->newpin : &e->oldpin;
+        if (sha1hexFromHex(side, pin) != OK) {
+            sha1 z = {};
+            sha1hexFromSha1(side, &z);
+        }
+    }
+}
+
+//  Enumerate the submodules at commit `csha`'s tree into the ULOG
+//  buffer `out` and fold them onto the `is_new` side of `map`.  A
+//  missing commit / tree leaves that side untouched (so the other
+//  tree's subs read as added/deleted).  Requires keeper open.
+static void bediff_fold_commit(bediff_pinmap *map, sha1cp csha, b8 is_new,
+                               u8bp out) {
+    sha1 tree = {};
+    if (KEEPCommitTreeSha(csha, &tree) != OK) return;
+    if (KEEPSubsAt(&tree, 0, 0, out) != OK)   return;
+    a_dup(u8c, body, u8bData(out));
+    bediff_fold_side(map, body, is_new);
+}
+
+//  First parent of commit `csha` → `*out`.  GRAFNONE on a root commit
+//  (no parent) or a non-commit object; underlying errors propagated.
+//  Requires keeper open.
+static ok64 bediff_first_parent(sha1cp csha, sha1 *out) {
+    sane(out);
+    a_carve(u8, cbuf, 1UL << 20);
+    u8 ot = 0;
+    call(KEEPGetExact, csha, cbuf, &ot);
+    if (ot != DOG_OBJ_COMMIT) fail(GRAFNONE);
+    a_dup(u8c, scan, u8bDataC(cbuf));
+    u8cs field = {}, value = {};
+    while (GITu8sDrainCommit(scan, field, value) == OK) {
+        if (u8csEmpty(field)) break;
+        if (!u8csEq(field, GIT_FIELD_PARENT)) continue;
+        if (sha1FromHex(out, value) == OK) done;
+        fail(GRAFNONE);
+    }
+    fail(GRAFNONE);
+}
+
+//  Build the per-sub pin map for a whole-tree `diff:` URI by resolving
+//  the SAME two commit endpoints graf diffs and enumerating each
+//  endpoint's submodules structurally (route #3).  Mirrors graf's URI
+//  shape table (GRAF.exe.c):
+//
+//    diff:?from#to   → from vs to              (explicit range)
+//    diff:?<sha>     → first-parent vs <sha>   (commit-show, hashlet)
+//    diff:?<branch>  → branch vs base          (ref-vs-base, --at frag)
+//    diff:           → wt vs base              (NO commit range → empty)
+//
+//  Endpoint resolution is the correctness pivot: a mismatch with graf's
+//  base yields pins that don't line up with the parent gitlink lines.
+//  Keeper is opened read-only just for the lifetime of this build.
+//  `map` is zeroed by the caller; left empty on any miss (the fan-out
+//  then degrades to the verbatim relay / no-op).
+static ok64 bediff_build_pins(cli *c, uri *u, bediff_pinmap *map) {
+    sane(c && u && map);
+    if (!u8csEmpty(u->path))  done;   //  path forms route to a mount
+    if (u8csEmpty(u->query))  done;   //  wt-vs-base: no commit range
+
+    //  Base sha + cur branch from the `--at` URI `be` already composed
+    //  (`<root>?/<title>/<branch>#<sha>`).  Graf reads the SAME fragment
+    //  as its baseline.
+    uri at = {};
+    if (u8bDataLen(be_at_buf) > 0) {
+        u8csMv(at.data, u8bDataC(be_at_buf));
+        URILexer(&at);
+    }
+    u8cs cur_branch = {};
+    u8csMv(cur_branch, at.query);
+
+    home rh = {};
+    uri none = {};
+    if (HOMEOpen(&rh, &none, NO) != OK) done;
+    static u8c const _zero = 0;
+    u8cs trunk = {&_zero, &_zero};
+    ok64 ko = KEEPOpenBranch(&rh, trunk, NO);
+    if (ko == OK || ko == KEEPOPEN || ko == KEEPOPENRO) {
+        ok64 go = GRAFOpen(&rh, NO);
+        if (go == OK || go == GRAFOPEN || go == GRAFOPENRO) {
+            //  Resolve the (old=from, new=to) commit endpoints.
+            sha1 old_c = {}, new_c = {};
+            b8 have_old = NO, have_new = NO;
+            b8 has_range = !u8csEmpty(u->fragment);
+            if (has_range) {
+                u8cs from = {}, to = {};
+                u8csMv(from, u->query);
+                u8csMv(to,   u->fragment);
+                have_old = (KEEPResolveRef(&old_c, from, cur_branch) == OK);
+                have_new = (KEEPResolveRef(&new_c, to,   cur_branch) == OK);
+            } else {
+                //  Commit-show (`diff:?<sha>`): hashlet that is NOT a REFS
+                //  name → first-parent vs sha (graf's branch-FIRST gate).
+                u8cs q = {};
+                u8csMv(q, u->query);
+                b8 commit_show = DOGIsHashlet(q) && GRAFRefIsName(q) != OK;
+                if (commit_show &&
+                    KEEPResolveRef(&new_c, q, cur_branch) == OK &&
+                    bediff_first_parent(&new_c, &old_c) == OK) {
+                    have_new = YES;
+                    have_old = YES;
+                } else {
+                    //  Branch-vs-base: from=branch, to=base (--at frag).
+                    have_old = (KEEPResolveRef(&old_c, q, cur_branch) == OK);
+                    have_new = (KEEPResolveRef(&new_c, at.fragment,
+                                               cur_branch) == OK);
+                }
+            }
+
+            a_carve(u8, sbuf, 64UL << 10);
+            if (have_old) bediff_fold_commit(map, &old_c, NO,  sbuf);
+            if (have_new) bediff_fold_commit(map, &new_c, YES, sbuf);
+
+            if (go == OK) (void)GRAFClose();
+        }
+        if (ko == OK) (void)KEEPClose();
+    }
+    HOMEClose(&rh);
+    done;
+}
+
 // --- Run a sibling tool ---
 
 // Run a sibling tool.  `tool` is the dog name (also argv[0] in argv);
@@ -96,6 +328,7 @@ static void BEUsage(void) {
 static ok64 be_url_project(uricp u, u8csp out);
 static ok64 be_sub_shard_setup(cli *c, uri *u);
 static ok64 BEProjectorSubs(cli *c, uri *u);
+static ok64 BEProjectorSubsPins(cli *c, uri *u, bediff_pinmap const *pins);
 
 //  Every `*NONE` ok64 (POSTNONE, KEEPNONE, GRAFNONE, SPOTNONE, …)
 //  shares the same low byte — `NONE & 0xFFu = 0xCE` — because they
@@ -112,7 +345,7 @@ ok64 BERun(u8csc tool, u8css argv, b8 bg) {
     sane($ok(tool) && !$empty(tool));
     a_path(path);
     a$rg(a0, 0);
-    HOMEResolveSibling(NULL, path, tool, a0);
+    call(HOMEResolveSibling, NULL, path, tool, a0);
     pid_t pid = 0;
     call(FILESpawn, $path(path), argv, NULL, NULL, &pid);
     if (bg) done;
@@ -137,7 +370,7 @@ ok64 BESpawn(u8csc tool, u8css argv, pid_t *out_pid) {
     sane($ok(tool) && !$empty(tool) && out_pid);
     a_path(path);
     a$rg(a0, 0);
-    HOMEResolveSibling(NULL, path, tool, a0);
+    call(HOMEResolveSibling, NULL, path, tool, a0);
     return FILESpawn($path(path), argv, NULL, NULL, out_pid);
 }
 
@@ -179,7 +412,7 @@ ok64 BEReap(pid_t pid, u8csc tool) {
 //  never "nothing!".
 static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
                           path8sc pager, u8css pager_argv,
-                          cli *c, uri *u) {
+                          cli *c, uri *u, bediff_pinmap const *pins) {
     sane($ok(prod) && $ok(pager) && c && u);
 
     int p[2] = {-1, -1};
@@ -196,8 +429,11 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
     ok64 gs = FILESpawnFds(pager, pager_argv, p[0], -1, &pager_pid);
     if (gs != OK) { close(p[0]); close(p[1]); return gs; }
 
-    //  Parent producer writes its hunks into the pipe write end; reap it
-    //  so its whole report lands before the sub fan-out appends.
+    //  Parent producer writes its hunks into the pipe write end directly;
+    //  reap it so its whole report lands before the sub fan-out.  The
+    //  per-sub pin map (DIFF-001 part-b, route #3) is built by the caller
+    //  from the endpoint trees — no producer capture here.
+    int prod_rc = 0;
     pid_t prod_pid = 0;
     ok64 ps = FILESpawnFds(prod, prod_argv, -1, p[1], &prod_pid);
     if (ps != OK) {
@@ -205,8 +441,7 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
         int rc = 0; (void)FILEReap(pager_pid, &rc);
         return ps;
     }
-    close(p[0]);                         //  parent never reads
-    int prod_rc = 0;
+    close(p[0]);                     //  parent never reads
     (void)FILEReap(prod_pid, &prod_rc);
 
     //  Fold the sub fan-out into the SAME pipe: save the real stdout,
@@ -230,7 +465,7 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
         if (dup2(p[1], STDOUT_FILENO) >= 0) {
             HUNKout saved_mode = HUNKMode;
             HUNKMode = HUNKOutTLV;
-            sr = BEProjectorSubs(c, u);
+            sr = BEProjectorSubsPins(c, u, pins);
             HUNKMode = saved_mode;
             fflush(stdout);
             (void)dup2(saved, STDOUT_FILENO);
@@ -239,7 +474,7 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
     } else {
         //  dup failed: fall back to the unfolded behaviour rather than
         //  drop the sub diff entirely.
-        sr = BEProjectorSubs(c, u);
+        sr = BEProjectorSubsPins(c, u, pins);
     }
 
     close(p[1]);                         //  EOF → pager drains + exits
@@ -266,21 +501,6 @@ static ok64 BERunPipeSubs(path8sc prod, u8css prod_argv,
 // shape for now; the get-style fork-keeper-then-parallel pattern is
 // expected to generalise but is committed only for `get`.
 
-//  Process-wide buffer for the `--at <root>?<branch>#<sha>` URI text
-//  forwarded to every sub-dog argv.  Populated once at the top of
-//  `becli` from `<cwd>/.be/wtlog` via `SNIFFAtTailOf`; empty when no
-//  `.be/wtlog` is present (fresh dir / pre-clone bootstrap), in which
-//  case sub-dogs fall back to their own cwd-walk.
-static u8 be_at_buf_storage[FILE_PATH_MAX_LEN + 128];
-static Bu8 be_at_buf = {
-    be_at_buf_storage, be_at_buf_storage,
-    be_at_buf_storage,
-    be_at_buf_storage + sizeof(be_at_buf_storage)
-};
-static u8c const be_at_flag_lit[] = "--at";
-static u8cs const be_at_flag = {
-    be_at_flag_lit, be_at_flag_lit + sizeof(be_at_flag_lit) - 1
-};
 
 //  Build a `<dog> <verb> [--at <uri>] [flags...] [URIs...]` argv
 //  slice into `args`.  Caller-owned: `args` must be a u8cs Bbuf with
@@ -656,8 +876,11 @@ static b8 be_projector_recurses(u8cs scheme) {
 //  BERelaySub path-prefixing the sub's hunk URIs under the mount.
 typedef struct {
     u8cs  wt_root;
-    u8cs *argv_head;
-    u8cs *argv_term;
+    u8cs *flag_head;          //  forwarded flags (drop --at), shared prefix
+    u8cs *flag_term;
+    u8cs  proj_uri;           //  verbatim parent projector URI (non-diff)
+    b8    is_diff;            //  DIFF-001 part-b: rewrite per-sub pin range
+    bediff_pinmap const *pins;
     ok64  worst;
 } beproj_recurse_ctx;
 
@@ -667,7 +890,42 @@ static ok64 beproj_recurse_cb(besub const *s, void *vctx) {
     if (!s->mounted) return OK;   //  declared-not-mounted: nothing to query
     u8cs subpath = {};
     u8csMv(subpath, s->path);
-    u8css argv = {rc->argv_head, rc->argv_term};
+
+    //  Build this sub's projector URI.  Default = the parent URI verbatim
+    //  (search / tree / refs / wt-vs-base diff).  DIFF-001 part-b: for a
+    //  `diff:?<parent-sha>` whose sub had a pin bump, rewrite to
+    //  `diff:?<old>#<new>` — the sub's REAL pin range — so its content
+    //  diff renders instead of KEEPNONE on the unknown parent sha.  A sub
+    //  with no pin bump (not in the map) or an added sub (no old pin) has
+    //  no range to diff, so skip it rather than replay a no-op.
+    a_pad(u8, uri_buf, MAX_URI_LEN);
+    u8cs sub_uri = {};
+    if (rc->is_diff) {
+        bediff_pin const *p = bediff_pin_find(rc->pins, subpath);
+        //  Added (null old) or deleted (null new) sub has no two-endpoint
+        //  in-sub range to diff — skip rather than replay a no-op.
+        if (p == NULL || bediff_is_null(&p->oldpin) || bediff_is_null(&p->newpin))
+            return OK;
+        u8cs old_s = {};
+        u8cs new_s = {};
+        sha1hexSlice(old_s, &p->oldpin);
+        sha1hexSlice(new_s, &p->newpin);
+        a_cstr(diff_scheme, "diff");
+        u8cs none = {};
+        call(URIMake, u8bIdle(uri_buf), diff_scheme, none, none, old_s, new_s);
+        u8csMv(sub_uri, u8bDataC(uri_buf));
+    } else {
+        u8csMv(sub_uri, rc->proj_uri);
+    }
+
+    //  argv = forwarded flags + this sub's projector URI.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    for (u8cs *fp = rc->flag_head; fp < rc->flag_term; fp++)
+        u8csbFeed1(child_args, *fp);
+    u8csbFeed1(child_args, sub_uri);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    u8css argv = {(u8cs *)child_argv[0], (u8cs *)child_argv[1]};
     ok64 r = BERelaySub(rc->wt_root, subpath, argv);
     //  A clean sub (no hits / empty report) returns *NONE — a no-op,
     //  not a failure of the aggregation.  Only real errors stick.
@@ -678,37 +936,51 @@ static ok64 beproj_recurse_cb(besub const *s, void *vctx) {
 //  Fan the projector `u` (its full `u->data` URI) out into every
 //  mounted sub, path-prefixed.  Runs AFTER the parent projector has
 //  emitted its own hunks, so the merged stream is parent-then-subs in
-//  one sequential HUNK stream.  Honours `--nosub`.  Returns the worst
-//  sub exit (OK when every sub was clean / a no-op).
-static ok64 BEProjectorSubs(cli *c, uri *u) {
+//  one sequential HUNK stream.  Honours `--nosub`.  `pins` carries the
+//  per-sub gitlink pin pairs parsed from the parent `diff:` report
+//  (DIFF-001 part-b); NULL / empty for every non-diff projector.
+//  Returns the worst sub exit (OK when every sub was clean / a no-op).
+static ok64 BEProjectorSubsPins(cli *c, uri *u, bediff_pinmap const *pins) {
     sane(c && u);
     if (CLIHas(c, "--nosub"))        done;
     if (!be_projector_recurses(u->scheme)) done;
     if (!u8bHasData(c->repo))        done;
     a_dup(u8c, wt_root, $path(c->repo));
 
-    //  Child argv = the projector URI plus the forwarded flags (drop
-    //  `--at`: each sub resolves its own tip from its mount wtlog, and
-    //  BERelaySub appends `--tlv` itself).  Mirror BEHeadSubs.
-    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    a_cstr(s_diff, "diff");
+    b8 is_diff = $eq(u->scheme, s_diff) && pins != NULL && pins->n > 0;
+
+    //  Forwarded flags (drop `--at`: each sub resolves its own tip from
+    //  its mount wtlog, and BERelaySub appends `--tlv` itself).  The
+    //  per-sub URI is appended in the callback.  Mirror BEHeadSubs.
+    a_pad(u8cs, flag_args, CLI_MAX_FLAGS * 2);
     for (u32 j = 0; j + 1 < u8csbDataLen(c->flags); j += 2) {
         if ($eq((*u8csbAtP(c->flags, j)), be_at_flag)) continue;
-        u8csbFeed1(child_args, (*u8csbAtP(c->flags, j)));
+        u8csbFeed1(flag_args, (*u8csbAtP(c->flags, j)));
         if (!u8csEmpty((*u8csbAtP(c->flags, j + 1))))
-            u8csbFeed1(child_args, (*u8csbAtP(c->flags, j + 1)));
+            u8csbFeed1(flag_args, (*u8csbAtP(c->flags, j + 1)));
     }
-    a_dup(u8c, proj_uri, u->data);
-    u8csbFeed1(child_args, proj_uri);
-    a_dup(u8cs, child_argv, u8csbData(child_args));
+    a_dup(u8cs, flag_argv, u8csbData(flag_args));
 
     beproj_recurse_ctx rc = {
-        .argv_head = (u8cs *)child_argv[0],
-        .argv_term = (u8cs *)child_argv[1],
+        .flag_head = (u8cs *)flag_argv[0],
+        .flag_term = (u8cs *)flag_argv[1],
+        .is_diff   = is_diff,
+        .pins      = pins,
         .worst     = OK,
     };
     u8csMv(rc.wt_root, wt_root);
+    a_dup(u8c, proj_uri, u->data);
+    u8csMv(rc.proj_uri, proj_uri);
     (void)BESubsHere(wt_root, beproj_recurse_cb, &rc);
     return rc.worst;
+}
+
+//  Verbatim fan-out (no diff pin map) — every caller that does not
+//  capture a `diff:` report uses this.  `BEProjectorSubsPins` with a
+//  NULL map degrades to the historical verbatim replay.
+static ok64 BEProjectorSubs(cli *c, uri *u) {
+    return BEProjectorSubsPins(c, u, NULL);
 }
 
 //  --- Projector path-in-mount routing (SUBS-012) -------------------
@@ -861,7 +1133,7 @@ static ok64 BEProjector(cli *c, uri *u) {
 
     a_path(dogpath);
     a$rg(a0, 0);
-    HOMEResolveSibling(NULL, dogpath, dog_s, a0);
+    call(HOMEResolveSibling, NULL, dogpath, dog_s, a0);
 
 
     //  Verbless: dog argv is `<dog> [--at <uri>] [mode-flag] <URI>`.
@@ -889,6 +1161,9 @@ static ok64 BEProjector(cli *c, uri *u) {
     u8csbFeed1(dargs, u->data);
     a_dup(u8cs, dargv, u8csbData(dargs));
 
+    a_cstr(s_diff, "diff");
+    b8 is_diff = $eq(u->scheme, s_diff);
+
     if (!tty) {
         //  Run the parent projector (writes its own hunks straight to
         //  stdout in the resolved mode), then fan out into mounted subs
@@ -896,11 +1171,27 @@ static ok64 BEProjector(cli *c, uri *u) {
         //  re-emitted path-prefixed in the same stream.  A sub-only or
         //  whole-tree projector that recurses appends after the
         //  parent's output; a non-recursing one is a no-op fan-out.
-        ok64 pr = BERun(dog_s, dargv, NO);
+        //
+        //  DIFF-001 part-b (route #3): for `diff:` build the per-sub pin
+        //  map STRUCTURALLY from the two endpoint trees (KEEPSubsAt)
+        //  BEFORE running the producer, so the sub fan-out rewrites each
+        //  bumped sub's child URI to `diff:?<old>#<new>`.  The producer
+        //  itself runs unchanged (no capture).  Every other projector
+        //  keeps the verbatim fan-out (empty pin map degrades to it).
+        ok64 pr, sr;
+        if (is_diff && !CLIHas(c, "--nosub")) {
+            bediff_pinmap pins = {};
+            (void)bediff_build_pins(c, u, &pins);
+            pr = BERun(dog_s, dargv, NO);
+            sr = BEProjectorSubsPins(c, u, &pins);
+            bediff_pins_free(&pins);
+        } else {
+            pr = BERun(dog_s, dargv, NO);
+            sr = BEProjectorSubs(c, u);
+        }
         //  Parent *NONE (no hits) must not suppress the sub descent —
         //  the sub may still have hits.  Keep the parent code as the
         //  floor but let a successful sub relay surface OK.
-        ok64 sr = BEProjectorSubs(c, u);
         if (pr != OK && !ok64is(pr, NONE)) return pr;
         if (sr != OK) return sr;
         return pr;
@@ -913,7 +1204,7 @@ static ok64 BEProjector(cli *c, uri *u) {
     //  is one less surprise across NO_COLOR / piped-stdout edge cases).
     a_path(bropath);
     a_cstr(bro_name, "bro");
-    HOMEResolveSibling(NULL, bropath, bro_name, a0);
+    call(HOMEResolveSibling, NULL, bropath, bro_name, a0);
     a_pad(u8cs, bargs, 2);
     u8csbFeed1(bargs, bro_name);
     u8csbFeed1(bargs, color_flag);
@@ -924,8 +1215,20 @@ static ok64 BEProjector(cli *c, uri *u) {
     //  with the parent instead of dumping to the bare terminal after
     //  bro quits.  An empty parent diff with a non-empty sub diff now
     //  shows the sub diff in the pager, never "nothing!".
+    //  DIFF-001 part-b (route #3): for `diff:` build the per-sub pin map
+    //  structurally (KEEPSubsAt over both endpoint trees) and pass it so
+    //  the folded fan-out rewrites each bumped sub's child URI to
+    //  `diff:?<old>#<new>`.  NULL for every other projector (and for
+    //  `--nosub`) keeps the verbatim pass-through pipe.
+    bediff_pinmap pins = {};
+    bediff_pinmap *pins_arg = NULL;
+    if (is_diff && !CLIHas(c, "--nosub")) {
+        (void)bediff_build_pins(c, u, &pins);
+        pins_arg = &pins;
+    }
     ok64 pr = BERunPipeSubs($path(dogpath), dargv,
-                            $path(bropath), bargv, c, u);
+                            $path(bropath), bargv, c, u, pins_arg);
+    bediff_pins_free(&pins);
     if (pr != OK && !ok64is(pr, NONE)) return pr;
     return pr;
 }

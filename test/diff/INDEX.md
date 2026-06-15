@@ -23,12 +23,19 @@
   byte-identical want files prove a branch whose NAME is hex resolves
   BRANCH-FIRST in a diff ref (`GRAFRefIsName`), never misrouted into
   keeper's hashlet (`#<sha>`) path.  RED before Stage 4c, GREEN after.
-* `08-sub-pin-bump-gitlink/` — DIFF-001 part-a.  `be diff:?<sha>` on a
-  commit whose only change is a submodule PIN BUMP renders the gitlink
-  line `<sub> <old-pin>..<new-pin>` (`diffref_emit_gitlink`,
-  `WALK_KIND_SUB` collection in `graf/DIFFREF.c`).  Local-git submodule
-  fixture, no ssh.  (Part-b — recursing into the sub for its
-  commit-range CONTENT diff — is still open; see DIFF-001.)
+* `08-sub-pin-bump-gitlink/` — DIFF-001 parts a + b.  Part-a: `be
+  diff:?<sha>` on a commit whose only change is a submodule PIN BUMP
+  renders the gitlink line `<sub> <old-pin>..<new-pin>`
+  (`diffref_emit_gitlink`, `WALK_KIND_SUB` collection in
+  `graf/DIFFREF.c`).  Part-b (option B, be-driven relay): the gitlink
+  line is FOLLOWED by the sub's actual content diff for the pin range
+  (`chsub/c.txt: v1 -> v2`), path-prefixed under the mount; `--nosub`
+  keeps the gitlink line but drops the sub content.  `be` parses the
+  gitlink pin pair out of graf's diff report (`bediff_parse_gitlinks`,
+  route #1) and rewrites each bumped sub's child URI to
+  `diff:?<old>#<new>` in the projector fan-out (`BEProjectorSubsPins` /
+  `beproj_recurse_cb`, `beagle/BE.cli.c`).  Local-git submodule
+  fixture, no ssh.
 * `09-sub-dirty-pager/` — DIFF-002.  Working-tree `be diff` whose only
   change lives in a mounted sub's worktree must route the sub diff
   THROUGH the parent's pager (bro), not past it.  Forces the bro-pager
