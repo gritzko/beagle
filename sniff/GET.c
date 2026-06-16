@@ -873,14 +873,11 @@ static ok64 get_ff_check(sha1cp local_tip, sha1cp target_tip) {
 //  Resolve the local-only tip of `?<branch>` by querying REFS with a
 //  no-authority URI.  Returns OK + fills `*out` on hit; NONE on miss.
 //  Branch slice excludes the leading `?` (callers pass the body).
-static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
+//  Resolve the local REFS tip of `?<branch>` — empty `branch` is the
+//  trunk row (refkey `?`).  No FF-specific guards: a 40-hex `branch`
+//  (a detached sha that has no `?<branch>` REFS row) simply misses.
+static ok64 branch_tip_resolve(sha1 *out, u8cs branch) {
     sane(out && $ok(branch));
-    keeper *k = &KEEP;
-    if (u8csEmpty(branch)) return NONE;
-    //  40-hex `branch` means caller really passed a detached sha; nothing
-    //  to advance, no FF check applies.
-    if (DOGIsFullSha(branch)) return NONE;
-
     //  Look up the local-only tip via bare `?<branch>` (the shape
     //  sniff POST writes — peer-keyed rows from wire fetches use
     //  `<peer-uri>?<branch>` and aren't a "local tip" for FF purposes).
@@ -892,7 +889,7 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
     call(HOMEBranchDir, keepdir, HOME.cur_branch);
     a_pad(u8, refkey_buf, 256);
     u8bFeed1(refkey_buf, '?');
-    u8bFeed(refkey_buf, branch);
+    if (!u8csEmpty(branch)) u8bFeed(refkey_buf, branch);
     a_dup(u8c, refkey, u8bData(refkey_buf));
 
     a_pad(u8, arena, 1024);
@@ -906,6 +903,15 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
 
     if (sha1FromHex(out, tip_hex) != OK) return NONE;
     done;
+}
+
+static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
+    sane(out && $ok(branch));
+    if (u8csEmpty(branch)) return NONE;
+    //  40-hex `branch` means caller really passed a detached sha; nothing
+    //  to advance, no FF check applies.
+    if (DOGIsFullSha(branch)) return NONE;
+    return branch_tip_resolve(out, branch);
 }
 
 // --- Commit-range banner ------------------------------------------------
@@ -927,7 +933,8 @@ static ok64 get_local_branch_tip(sha1 *out, u8cs branch) {
 #define GET_CRANGE_OBJ_BUF   (1UL << 20)
 #define GET_CRANGE_SUBJ_MAX  120
 
-static void get_emit_one_commit(u64 h40, ron60 ts, Bu8 cbuf) {
+static void get_emit_one_commit_verb(u64 h40, ron60 ts, ron60 verb,
+                                     Bu8 cbuf) {
     u8bReset(cbuf);
     u8 ot = 0;
     if (KEEPGet(h40, DAG_H60_HEXLEN, cbuf, &ot) != OK ||
@@ -967,13 +974,17 @@ static void get_emit_one_commit(u64 h40, ron60 ts, Bu8 cbuf) {
     a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
     if (SHA1u8sFeedHashlet(qbuf_idle, &csha) != OK) return;
 
-    ulogrec rep = {.ts = ctime_ts ? ctime_ts : ts,
-                   .verb = SNIFFAtVerbPost()};
+    ulogrec rep = {.ts = ctime_ts ? ctime_ts : ts, .verb = verb};
     a_dup(u8c, q, u8bData(qbuf));
     u8csMv(rep.uri.query, q);
     rep.uri.fragment[0] = ms;
     rep.uri.fragment[1] = me;
     (void)ROWSPrintRow(&rep, ROWS_NAV_COMMIT);
+}
+
+//  Checkout-banner flavour: every commit-range row uses verb `post`.
+static void get_emit_one_commit(u64 h40, ron60 ts, Bu8 cbuf) {
+    get_emit_one_commit_verb(h40, ts, SNIFFAtVerbPost(), cbuf);
 }
 
 static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
@@ -1032,6 +1043,89 @@ static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
     if (wh128bHead(anc_tgt)  != wh128bTerm(anc_tgt))  wh128bFree(anc_tgt);
     if (wh128bHead(anc_base) != wh128bTerm(anc_base)) wh128bFree(anc_base);
     if (own_open) GRAFClose();
+}
+
+//  GET-021: `be status` ahead/behind commit block.  Same DAG-walk as the
+//  checkout banner, but the two directions wear DISTINCT verbs so the wt
+//  reads as a divergence warning, not a roll-back narrative:
+//      ahead  (cur \ tip)  → `post` rows  — local commits the branch tip
+//                                            does not have (would be posted)
+//      behind (tip \ cur)  → `miss` rows  — branch-tip commits not here
+//                                            (would arrive via `be get`)
+//  Each row is a clickable `commit:?<sha>` (ROWS_NAV_COMMIT), newest-first.
+//  Counts land in *out_ahead / *out_behind for the summary line.  Pure
+//  read: no checkout, no ULOG/REFS write.  Best-effort — a missing graf
+//  open / DAG run / commit body skips the block and leaves counts at 0.
+void GETStatusCommitDiff(sha1cp cur, sha1cp tip, ron60 ts,
+                         u32 *out_ahead, u32 *out_behind) {
+    if (out_ahead)  *out_ahead  = 0;
+    if (out_behind) *out_behind = 0;
+    if (!cur || !tip || sha1Eq(cur, tip)) return;
+
+    ok64 go = GRAFOpen(NO);
+    b8 own_open = (go == OK);
+    if (go != OK && go != GRAFOPEN && go != GRAFOPENRO) return;
+
+    wh128css runs = {NULL, NULL};
+    GRAFRuns(runs);
+
+    ron60 v_post = SNIFFAtVerbPost();
+    a_cstr(s_miss, "miss");
+    ron60 v_miss = SNIFFAtVerbOf(s_miss);
+
+    Bwh128 anc_cur = {}, anc_tip = {};
+    Bu8    ord_cur = {}, ord_tip = {}, cbuf = {};
+    do {
+        if (wh128bAllocate(anc_cur, GET_CRANGE_ANC_CAP) != OK) break;
+        if (wh128bAllocate(anc_tip, GET_CRANGE_ANC_CAP) != OK) break;
+        if (u8bMap(ord_cur, GET_CRANGE_ANC_CAP * sizeof(u64)) != OK) break;
+        if (u8bMap(ord_tip, GET_CRANGE_ANC_CAP * sizeof(u64)) != OK) break;
+        if (u8bMap(cbuf,    GET_CRANGE_OBJ_BUF) != OK) break;
+
+        u64 cur_h = WHIFFHashlet60(cur);
+        u64 tip_h = WHIFFHashlet60(tip);
+        DAGAncestors(anc_cur, runs, cur_h);
+        DAGAncestors(anc_tip, runs, tip_h);
+
+        u64 *oc = (u64 *)u8bDataHead(ord_cur);
+        u64 *ot = (u64 *)u8bDataHead(ord_tip);
+        u32  nc = DAGTopoSort(oc, GET_CRANGE_ANC_CAP, anc_cur, runs);
+        u32  nt = DAGTopoSort(ot, GET_CRANGE_ANC_CAP, anc_tip, runs);
+
+        //  Ahead (cur \ tip), newest-first → `post`.
+        for (u32 i = nc; i > 0; i--) {
+            u64 h = oc[i - 1];
+            if (h == 0) continue;
+            if (DAGAncestorsHas(anc_tip, h)) continue;
+            get_emit_one_commit_verb(h, ts, v_post, cbuf);
+            if (out_ahead) (*out_ahead)++;
+        }
+        //  Behind (tip \ cur), newest-first → `miss`.
+        for (u32 i = nt; i > 0; i--) {
+            u64 h = ot[i - 1];
+            if (h == 0) continue;
+            if (DAGAncestorsHas(anc_cur, h)) continue;
+            get_emit_one_commit_verb(h, ts, v_miss, cbuf);
+            if (out_behind) (*out_behind)++;
+        }
+    } while (0);
+
+    u8bUnMap(cbuf);
+    u8bUnMap(ord_tip);
+    u8bUnMap(ord_cur);
+    if (wh128bHead(anc_tip) != wh128bTerm(anc_tip)) wh128bFree(anc_tip);
+    if (wh128bHead(anc_cur) != wh128bTerm(anc_cur)) wh128bFree(anc_cur);
+    if (own_open) GRAFClose();
+}
+
+//  Resolve the local REFS tip of `?<branch>` from keeper REFS.  Public
+//  wrapper over the file-static `branch_tip_resolve` so the status
+//  producer (SNIFF.exe.c) can pin the branch tip to compare cur against.
+//  Empty `branch` resolves the trunk row (refkey `?`) — the common case,
+//  since a trunk-anchored wt's cur carries an empty query slot.  Returns
+//  OK + fills `*out` on hit; NONE on miss / detached / no REFS.
+ok64 GETLocalBranchTip(sha1 *out, u8cs branch) {
+    return branch_tip_resolve(out, branch);
 }
 
 // --- Public API ---

@@ -89,6 +89,18 @@ add_test(NAME be-unknown-command
 set_tests_properties(be-unknown-command PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-unknown-command")
 
+# be-status-ahead-behind.sh — GET-021.  A worktree whose cur ≠ the
+# branch tip must be WARNED: `be status` PREPENDS a cur-vs-tip commit
+# block (one clickable `commit:?<sha>` row per differing commit — `post`
+# for AHEAD/local-unposted, `miss` for BEHIND/in-tip-not-here) above the
+# per-file rows, and notes `(behind N, ahead M)` in the summary.  Two
+# worktrees share one store; wt-B advances the tip, wt-A is left behind.
+add_test(NAME be-status-ahead-behind
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-status-ahead-behind.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-status-ahead-behind PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-status-ahead-behind")
+
 # history.sh — put/post, delete/post, edit/post, then checkout an
 # older commit by SHA (version handle = at.log tail).  No ssh.
 add_test(NAME BEhistory

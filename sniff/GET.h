@@ -42,4 +42,21 @@ ok64 SNIFFGetSummary(u8cs reporoot);
 //  the source URI as `?<hex>`.
 ok64 SNIFFCheckout(u8cs reporoot, u8cs hex);
 
+//  GET-021: emit the cur-vs-branch-tip commit-difference block for
+//  `be status`.  `cur` = the wt's wtlog cur tip, `tip` = the local
+//  branch REFS tip.  Walks both ancestor closures through graf's DAG
+//  and emits one clickable `commit:?<sha>` row per differing commit:
+//  `post` for AHEAD (cur \ tip — local, unposted), `miss` for BEHIND
+//  (tip \ cur — in the tip, not here).  Counts → *out_ahead/*out_behind.
+//  Pure read; best-effort (a bad graf open / DAG run skips silently).
+void GETStatusCommitDiff(sha1cp cur, sha1cp tip, ron60 ts,
+                         u32 *out_ahead, u32 *out_behind);
+
+//  Resolve the local REFS tip of `?<branch>` (no leading `?`).  Empty
+//  `branch` resolves the trunk row (refkey `?`).  OK + fills *out on
+//  hit; NONE on miss / no REFS.  Public wrapper over the file-static
+//  resolver so the status producer can pin the branch tip to diff cur
+//  against.
+ok64 GETLocalBranchTip(sha1 *out, u8cs branch);
+
 #endif

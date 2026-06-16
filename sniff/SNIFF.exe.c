@@ -104,6 +104,10 @@ typedef struct {
     //  flood the output — so it's a counter only.
     Bu8 rows;
     u32 ok_n, put_n, new_n, mov_n, mod_n, pat_n, del_n, mis_n, unk_n;
+    //  GET-021: cur-vs-branch-tip commit divergence.  ahead = local
+    //  commits the branch tip lacks (`post` rows); behind = branch-tip
+    //  commits not materialized here (`miss` rows).
+    u32 ahead_n, behind_n;
     status_verbs v;
     i64 now;          // unix epoch seconds, for relative-date format
     u8cs reporoot;    // for resolving full paths in the wt-eq-base check
@@ -372,17 +376,78 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
     STATUS_BUCKET(b->mis_n, "mis", 'M');
     STATUS_BUCKET(b->unk_n, "unk", 'Q');
     #undef STATUS_BUCKET
+
+    //  GET-021: trailing `(behind N, ahead M)` note when the wt's cur
+    //  diverges from the branch tip — mirrors the per-commit block above.
+    //  Behind wears red ('M', like `mis`/`miss`), ahead cyan ('V', like
+    //  `post`).  Omitted entirely for an up-to-date wt (byte-identical
+    //  output preserved).
+    if (b->behind_n > 0 || b->ahead_n > 0) {
+        a_cstr(open_p, "  (");
+        (void)u8bFeed(text, open_p);
+        status_pack(toks, text, 'S');
+        b8 first = YES;
+        #define STATUS_DIVERGE(count, word_lit, tag) do {                  \
+            if (count > 0) {                                               \
+                if (!first) { a_cstr(sep, ", "); (void)u8bFeed(text, sep); \
+                              status_pack(toks, text, 'S'); }              \
+                a_cstr(ws, word_lit); (void)u8bFeed(text, ws);            \
+                (void)u8bFeed1(text, ' ');                                 \
+                a_pad(u8, nbuf, 16);                                       \
+                (void)utf8sFeed10(nbuf_idle, (u64)count);                  \
+                (void)u8bFeed(text, u8bDataC(nbuf));                       \
+                status_pack(toks, text, (tag));                            \
+                first = NO;                                                \
+            }                                                              \
+        } while (0)
+        STATUS_DIVERGE(b->behind_n, "behind", 'M');
+        STATUS_DIVERGE(b->ahead_n,  "ahead",  'V');
+        #undef STATUS_DIVERGE
+        (void)u8bFeed1(text, ')');
+        status_pack(toks, text, 'S');
+    }
+
     (void)u8bFeed1(text, '\n');
     status_pack(toks, text, 'S');
+}
+
+//  GET-021: PREPEND the cur-vs-branch-tip commit-difference block to the
+//  open `status:` table.  Resolves the wt's cur tip (the wtlog baseline
+//  sha) and the local branch REFS tip, then hands both to
+//  GETStatusCommitDiff — which emits one clickable `commit:?<sha>` row
+//  per differing commit straight into the active table (`ROWS_ACTIVE`,
+//  just opened here) BEFORE any file rows.  `post` rows = AHEAD (local,
+//  unposted), `miss` rows = BEHIND (in the tip, not here).  Counts land
+//  in b->ahead_n / b->behind_n for the summary line.  Silent no-op when
+//  cur == tip, on a detached/no-branch baseline, or when REFS has no tip
+//  — an up-to-date wt is byte-identical to before this feature.
+static void status_emit_commit_diff(status_buckets *b) {
+    ron60 cts = 0, cverb = 0;
+    uri   cu  = {};
+    if (SNIFFAtCurTip(&cts, &cverb, &cu) != OK) return;
+
+    u8cs cfrag = {cu.fragment[0], cu.fragment[1]};
+    if ($len(cfrag) != 40) return;
+    sha1 cur = {};
+    if (sha1FromHex(&cur, cfrag) != OK) return;
+
+    //  Branch the cur lives on (query slot, leading `?` already stripped
+    //  by the URI lexer).  Empty (trunk) resolves via REFS too.
+    u8cs branch = {cu.query[0], cu.query[1]};
+    sha1 tip = {};
+    if (GETLocalBranchTip(&tip, branch) != OK) return;
+
+    GETStatusCommitDiff(&cur, &tip, cts, &b->ahead_n, &b->behind_n);
 }
 
 //  Worker: assumes b's rows buffer is already mapped.  Returns the
 //  classification result; never frees.
 //
 //  Output shape: one hunk per invocation (URI = `status:`), text is
-//  the concatenation of per-file rows + a trailing summary line.
-//  Per-file rows carry a 'U'-tagged `cat:<path>` nav target after the
-//  `\n`, mirroring `sniff/LS.c`; bro turns those into click-anchors.
+//  an optional cur-vs-tip commit block (GET-021), then the per-file
+//  rows, then a trailing summary line.  Per-file rows carry a 'U'-tagged
+//  `cat:<path>` nav target after the `\n`, mirroring `sniff/LS.c`; bro
+//  turns those into click-anchors.
 static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
     call(SNIFFClassify, status_step, b);
@@ -392,6 +457,10 @@ static ok64 sniff_status_work(status_buckets *b) {
     a_cstr(status_uri, "status:");
     rows table = {};
     call(ROWSOpen, &table, status_uri, 0, 0, ROWS_BATCH);
+
+    //  GET-021: cur-vs-branch-tip commit rows go FIRST (above the file
+    //  rows) so a stale/diverged wt warns before the per-file noise.
+    status_emit_commit_diff(b);
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.

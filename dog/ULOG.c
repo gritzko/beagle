@@ -1193,6 +1193,8 @@ static u64 const ULOG_VERB_TAGS[][2] = {
     {0x39d28,        'Y'},  // upd       — slot Y  (blue, GET-overwritten)
     {0x28a70,        'X'},  // del       — slot X  (orange/brown)
     {0x31b77,        'M'},  // mis       — slot M  (red)
+    {0xc6ddf7,       'M'},  // miss      — slot M  (red; GET-021 behind-commit
+                           //              rows in the be status block)
     {0x39caf,        'Q'},  // unk       — slot Q  (grey)
     {0x31dab,        'Z'},  // mrg       — slot Z  (magenta)
     {0xa75,          'D'},  // eq        — slot D  (comment gray; baseline noise)
