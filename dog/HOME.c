@@ -1025,9 +1025,30 @@ ok64 HOMEResolveSibling(path8b out, u8csc name, u8csc argv0) {
         a_dup(u8c, a0_scan, argv0);
         b8 has_slash = u8csFind(a0_scan, '/') == OK;
         if (has_slash) {
-            a_dup(u8c, a0, argv0);
+            //  SUBS-022: a RELATIVE argv0 (`/` present, not leading) has
+            //  a dirname that is meaningless once the caller chdir's into
+            //  a submodule mount before exec'ing the resolved sibling.
+            //  realpath(3) against the LAUNCH cwd (still current here)
+            //  turns it absolute up front so the dirname survives the
+            //  later chdir.  realpath reads argv0[0] as a C string, so
+            //  feed the ORIGINAL NUL-terminated argv0 slice (an a_dup
+            //  copy has no trailing NUL).  An absolute argv0 keeps its
+            //  own dirname; on realpath failure we fall back to the
+            //  verbatim argv0 (prior behaviour).
+            b8 leading = $len(argv0) >= 1 && argv0[0][0] == '/';
+            a_path(a0_abs);
             u8cs dir = {};
-            PATHu8sDir(dir, a0);
+            if (!leading) {
+                u8cs a0_orig = {(u8cp)argv0[0], (u8cp)argv0[1]};
+                if (PATHu8bReal(a0_abs, a0_orig) == OK && u8bHasData(a0_abs)) {
+                    a_dup(u8c, a0_abs_v, u8bData(a0_abs));
+                    PATHu8sDir(dir, a0_abs_v);
+                }
+            }
+            if (u8csEmpty(dir)) {
+                a_dup(u8c, a0, argv0);
+                PATHu8sDir(dir, a0);
+            }
             u8csc dir_c = {dir[0], dir[1]};
             if (home_try_sibling(out, dir_c, name) == OK) done;
         } else {

@@ -87,6 +87,9 @@ ok64 BESubsHere(u8cs wt_root, besub_cb cb, void *ctx) {
 //  and absent on this build host's native procfs.  HOMEResolveSibling
 //  walks PATH for a bare argv[0] and uses dirname for an absolute one,
 //  falling back to the bare name (which execvp still resolves via PATH).
+//  SUBS-022: HOMEResolveSibling itself absolutizes a RELATIVE argv0
+//  against the launch cwd, so the derived bin dir survives the recursion
+//  `chdir(<wt>/<subpath>)` below.
 static void be_resolve_self(path8b out) {
     a$rg(a0, 0);
     a_cstr(self_name, "be");

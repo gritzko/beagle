@@ -56,6 +56,18 @@ add_test(NAME be-post-nosub
 set_tests_properties(be-post-nosub PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-post-nosub")
 
+# be-post-relpath.sh — SUBS-022.  Sub-recursion must work regardless of
+# the invocation form of argv[0]: relative (`../path/be`), absolute, or
+# a bare name on $PATH.  A relative argv[0] used to break post-chdir
+# execvp in the recursion fork (BEDOGEXIT); HOMEResolveSibling now
+# realpath's a relative argv[0] up front.  Table-driven over the three
+# forms.
+add_test(NAME be-post-relpath
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/be-post-relpath.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(be-post-relpath PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=be-post-relpath")
+
 # be-get-sub-unmount-clean.sh — SUBS-008.  `be get ?<branch>` switching
 # to a tree where a gitlink was removed must FULLY clean the mount:
 # unmount the `.be` anchor AND remove the sub's orphaned worktree files
