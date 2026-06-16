@@ -146,56 +146,6 @@ fun ok64 WHIFFHexFeed60(u8s out, u64 hashlet) {
     return whiff_hex_feed(out, hashlet, 15);
 }
 
-// --- SHA-1 hex representation (40 ASCII hex chars) ---
-
-typedef struct {
-    u8 data[40];
-} sha1hex;
-
-typedef sha1hex const *sha1hexcp;
-
-fun b8 sha1hexZ(sha1hex const *a, sha1hex const *b) {
-    return memcmp(a->data, b->data, 40) < 0;
-}
-
-fun void sha1hexFromSha1(sha1hex *out, sha1cp s) {
-    u8s hs = {out->data, out->data + 40};
-    u8cs bs = {s->data, s->data + 20};
-    HEXu8sFeedSome(hs, bs);
-}
-
-fun ok64 sha1FromSha1hex(sha1 *out, sha1hex const *h) {
-    u8s sb = {out->data, out->data + 20};
-    u8cs hx = {h->data, h->data + 40};
-    return HEXu8sDrainSome(sb, hx);
-}
-
-fun b8 sha1hexeq(sha1hexcp a, sha1hexcp b) {
-    return memcmp(a->data, b->data, 40) == 0;
-}
-
-fun void sha1hexSlice(u8csp out, sha1hexcp s) {
-    out[0] = s->data;
-    out[1] = s->data + 40;
-}
-
-// Copy 40 ASCII hex chars from a slice into a sha1hex.  Returns
-// BADRANGE if the slice is not exactly 40 bytes; otherwise OK.
-// Caller is responsible for verifying hex-ness if it matters.
-fun ok64 sha1hexFromHex(sha1hex *out, u8csc hex) {
-    if (u8csLen(hex) != 40) return BADRANGE;
-    u8s dst = {out->data, out->data + 40};
-    a_dup(u8c, src, hex);
-    u8sCopy(dst, src);
-    return OK;
-}
-
-// --- ABC type system ---
-
-#define X(M, n) M##sha1hex##n
-#include "abc/Bx.h"
-#undef X
-
 // --- Hex to hashlet ---
 
 // Width-parameterized core for the 40/60 hex→hashlet twins.  `chars` is
