@@ -77,4 +77,37 @@ if grep -q '+v2' "$SCRATCH/03.out"; then
     exit 1
 fi
 
+#  --- DIFF-002: the pin-bump diff must travel THROUGH the pager (bro),
+#  not bypass it.  Pre-fix the gitlink line `<sub> <old>..<new>` was
+#  written as a RAW `fprintf(stdout)` text line that, in `--tlv` mode,
+#  led the stream UN-ENVELOPED before the hunk `H` records.  A TLV
+#  consumer (`bro_drain_tlv` → `HUNKu8sDrain`) mis-parses those leading
+#  bytes, fails the `HUNK_TLV` type gate, and STOPS at offset 0 — so the
+#  whole stream (gitlink line + sub content) folded to ZERO renderable
+#  hunks ("be: no results").  This is THE channel bug: a pin-bump commit
+#  whose only parent-level change is the gitlink line rendered EMPTY in
+#  the pager though the diff itself is correct.
+#
+#  Two deterministic, no-PTY signals (mirrors diff/09):
+#    (1) `be --color diff:?<sha>` forces the bro-pager branch; with bro's
+#        stdout a plain file it does its one-shot non-interactive drain
+#        (BROPipeRun → bro_drain_tlv → BROPlain).  The dirtied sub content
+#        (`v2`) must appear in bro's OWN output, proving the stream
+#        survived the TLV drain.
+#    (2) the sub hunk header must be the BRO-002 banner band
+#        (`38;5;0;48;5;230m … chsub/c.txt`), proving it was bro-rendered
+#        (passed through the pager), not raw relay ANSI written past bro.
+( cd B1 && "$BE" --color diff:"?$TIP" >"$SCRATCH/04.out" 2>"$SCRATCH/04.err" )
+rc=$?
+[ "$rc" = 0 ] || { echo "DIFF-002: be --color diff:?$TIP exited $rc" >&2
+    cat "$SCRATCH/04.err" >&2; exit 1; }
+grep -aq 'v2' "$SCRATCH/04.out" || {
+    echo "DIFF-002: pin-bump sub content missing from pager stream" >&2
+    echo "  (raw gitlink fprintf broke bro_drain_tlv at offset 0 → 0 hunks)" >&2
+    cat -v "$SCRATCH/04.out" | head -40 >&2; exit 1; }
+grep -aq -- '48;5;230m.*chsub/c.txt' "$SCRATCH/04.out" || {
+    echo "DIFF-002: pin-bump sub hunk not bro-rendered (bypassed the pager)" >&2
+    echo "  expected a THEME_BANNER-wrapped 'chsub/c.txt' header" >&2
+    cat -v "$SCRATCH/04.out" | head -40 >&2; exit 1; }
+
 echo "diff/08-sub-pin-bump-gitlink: OK"

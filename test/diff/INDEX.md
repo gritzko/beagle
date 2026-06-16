@@ -35,7 +35,16 @@
   route #1) and rewrites each bumped sub's child URI to
   `diff:?<old>#<new>` in the projector fan-out (`BEProjectorSubsPins` /
   `beproj_recurse_cb`, `beagle/BE.cli.c`).  Local-git submodule
-  fixture, no ssh.
+  fixture, no ssh.  Also DIFF-002 (the channel fix): the pin-bump diff
+  must travel THROUGH the pager (bro), proven via the same `--color`
+  one-shot bro drain diff/09 uses (`v2` content + the BRO-002
+  `48;5;230m … chsub/c.txt` banner in bro's own output).  Pre-fix the
+  gitlink line was a raw `fprintf(stdout)` that, in `--tlv` mode, led
+  the stream UN-enveloped, so `bro_drain_tlv`→`HUNKu8sDrain` failed the
+  `HUNK_TLV` gate at offset 0 and folded the WHOLE stream to zero hunks
+  ("be: no results").  Fix: `diffref_emit_gitlink` (`graf/DIFFREF.c`)
+  emits the line through `GRAFHunkEmit` (a text-only hunk) so every mode
+  shares the one `HUNKu8sFeedOut` channel.
 * `11-file-scope-full/` — DIFF-003.  A file-scoped `diff:<file>#L<n>`
   (the `U` hunk nav-URI target) renders the WHOLE file with the changed
   lines highlighted in place, while a tree/dir-scoped `diff:` stays

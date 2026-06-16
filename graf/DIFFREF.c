@@ -443,15 +443,42 @@ ok64 GRAFDiffWtTree(u64 base_h40, u8cs base_hex, u8cs reporoot) {
 //  (empty side = added / removed sub).  The pins are sub COMMIT shas,
 //  not blobs in this store, so the pin move IS the change shown here;
 //  recursing into the sub for its content diff is a separate concern.
+//
+//  DIFF-002: the line MUST travel the SAME channel as every other diff
+//  hunk — `GRAFHunkEmit` → `HUNKu8sFeedOut`, dispatched off `HUNKMode`.
+//  Writing it as raw `fprintf(stdout)` text was correct for plain/color
+//  (it just reads as a leading line), but in `--tlv` mode it landed in
+//  the stream as un-enveloped bytes BEFORE the hunk `H` records.  A
+//  consumer draining TLV (`bro_drain_tlv` → `HUNKu8sDrain`) mis-parses
+//  those leading bytes as a TLV record, fails the `HUNK_TLV` type gate,
+//  and stops at offset 0 — so a sub-pin-bump `diff:?<sha>` (whose ONLY
+//  parent-level change is this gitlink line) yielded ZERO renderable
+//  hunks in bro ("be: no results").  Routing through `GRAFHunkEmit`
+//  wraps the line in a proper `H` record under TLV while rendering the
+//  identical text under plain/color.
 static void diffref_emit_gitlink(u8cs path, sha1cp old_sha, sha1cp new_sha) {
     u8cs os = {}, ns = {};
     sha1hex oh = {}, nh = {};
     if (old_sha) { sha1hexFromSha1(&oh, old_sha); sha1hexSlice(os, &oh); }
     if (new_sha) { sha1hexFromSha1(&nh, new_sha); sha1hexSlice(ns, &nh); }
-    fprintf(stdout, "%.*s %.*s..%.*s\n",
-            (int)$len(path), (char *)path[0],
-            (int)$len(os), os[0] ? (char *)os[0] : "",
-            (int)$len(ns), ns[0] ? (char *)ns[0] : "");
+
+    //  Build `<path> <old>..<new>` (empty side → empty hex run) plus the
+    //  terminating newline, then emit it as a text-only hunk (no URI, no
+    //  toks) so the banner is a no-op and the body renders verbatim.
+    a_pad(u8, line, DIFFREF_PATH_MAX + 96);
+    a_cstr(dots, "..");
+    (void)u8bFeed(line, path);
+    (void)u8bFeed1(line, ' ');
+    if (!$empty(os)) (void)u8bFeed(line, os);
+    (void)u8bFeed(line, dots);
+    if (!$empty(ns)) (void)u8bFeed(line, ns);
+    (void)u8bFeed1(line, '\n');
+
+    if (GRAFArenaInit() != OK) return;
+    hunk hk = {};
+    hk.text[0] = u8bDataHead(line);
+    hk.text[1] = u8bIdleHead(line);
+    (void)GRAFHunkEmit(&hk, NULL);
 }
 
 //  Inner worker — every early `call()` returns through here, so the
