@@ -172,9 +172,11 @@ mkdtmark MKDTLineMarker(u8csc line, int depth, u8c **markend) {
         }
     }
     // TODO: [ ] [x] [X]
-    if (content[0] == '[' &&
-        (content[1] == ' ' || content[1] == 'x' || content[1] == 'X') &&
-        content[2] == ']' && content[3] == ' ') {
+    a_cstr(todo_sp, "[ ] ");
+    a_cstr(todo_x, "[x] ");
+    a_cstr(todo_X, "[X] ");
+    if (u8csHasPrefix(c, todo_sp) || u8csHasPrefix(c, todo_x) ||
+        u8csHasPrefix(c, todo_X)) {
         *markend = group_end;
         return MKDT_MARK_TODO;
     }

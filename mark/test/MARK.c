@@ -78,6 +78,24 @@ static ok64 MARKrender_cases() {
         //  DIS-014: a 3-dash --- line is a ruler, like ----.
         {"hr3", "#   T\n\nbefore\n\n---\n\nafter\n", "<hr"},
         {"hr4", "#   T\n\nbefore\n\n----\n\nafter\n", "<hr"},
+        //  PTR-008: checkbox markers [ ]/[x]/[X] are stripped div markup;
+        //  the residual content renders as a plain <p>.  Recognized via
+        //  u8csHasPrefix (bounds-safe), not raw cell indexing.
+        {"checkbox-sp", "#   T\n\n[ ] task one\n", "<p>\ntask one\n</p>"},
+        {"checkbox-x", "#   T\n\n[x] done two\n", "<p>\ndone two\n</p>"},
+        {"checkbox-X", "#   T\n\n[X] done three\n", "<p>\ndone three\n</p>"},
+        //  a non-checkbox bracket ([z]) is NOT a marker: the bytes survive
+        //  and render as a shortcut link, not stripped markup.
+        {"checkbox-nope", "#   T\n\nsee [z] thing\n",
+         "<a href=\"\">z</a> thing"},
+        //  short lines under 4 bytes must not OOB-read the marker slot
+        //  (ASAN): they render as plain paragraphs.
+        {"checkbox-oob1", "#   T\n\n[\n", "<p>\n[\n</p>"},
+        {"checkbox-oob2", "#   T\n\n[x\n", "<p>\n[x\n</p>"},
+        //  4-space indent groups open nesting <div>s (one per group).
+        {"indent4", "#   T\n    Indented\n", "<div>\n<p>\nIndented\n</p>\n</div>"},
+        {"indent8", "#   T\n        Deeper\n",
+         "<div>\n<div>\n<p>\nDeeper\n</p>\n</div>\n</div>"},
         //  DIS-029: a bare 4-space indent opens a <div> with an implied <p>,
         //  the gutter is stripped, and a depth drop closes the div (the
         //  depth-0 line lands in its own <p>).  Whitespace matches the
