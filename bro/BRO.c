@@ -617,12 +617,21 @@ static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
         }
         // Block end: when we hit the next eq-context line OR an
         // inline-classifiable line (handled by the branch above on the
-        // next iteration).
+        // next iteration) — but ONLY across a *shared* (EQ-side) `\n`.
+        // If the boundary `\n` into that eq line is itself in/rm-side
+        // (the prior in- or rm-line's `\n` LCS-matched onto the other
+        // side), the inserted/deleted line CONTINUES into the eq line:
+        // it is one logical row, not a block boundary.  Stopping there
+        // would both clip that side's row at the hidden `\n` and emit
+        // the shared eq tail a second time as a standalone NORMAL row
+        // (BRO-004 first-hunk incoherence).  Extend the block so the eq
+        // tail renders once per surviving side instead.
         u32 j = i;
         while (j < nl) {
             bro_linekind kj = bro_classify(&info[j]);
             if (info[j].bnd_side == TOK_SIDE_EQ &&
-                (kj == BRO_LINE_EQ || kj == BRO_LINE_MOD_INLINE))
+                (kj == BRO_LINE_EQ || kj == BRO_LINE_MOD_INLINE) &&
+                (j == i || info[j - 1].bnd_side == TOK_SIDE_EQ))
                 break;
             j++;
         }

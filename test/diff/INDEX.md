@@ -83,6 +83,17 @@
   row at block end for any pending bytes.  Also asserts a small in-place
   word edit stays INLINE (one row, per-token tinting), preserving the
   line-OR-token-by-volume design.  Local, no ssh.
+* `15-color-emdash-coherent/` — BRO-004 Part 2.  `be --color diff:` of a
+  large multi-line→one-line replace sharing an em-dash tail must render
+  the FIRST hunk COHERENTLY.  Token-LCS makes the shared tail EQ and
+  lands the inserted line's `\n` on the RM side; `bro_walk_hunk` ended
+  the modified block at that non-eq boundary, so the eq tail rendered
+  TWICE (swallowed into the in-pass row via a hidden-`\n` overrun AND as
+  a standalone NORMAL row, interleaved old/new, rm side missing its
+  tail).  Fix: extend the block across a non-eq boundary `\n` so the eq
+  tail renders once per surviving side, matching `--plain`.  Asserts on
+  per-row structure (inserted line contiguous; standalone tail precedes
+  it), not ANSI-stripped-vs-plain.  Local, no ssh.
 
 ## Label form note
 
