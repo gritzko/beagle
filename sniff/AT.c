@@ -381,8 +381,7 @@ ok64 SNIFFAtBaseline(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     //  row 0) is itself a valid baseline (the get-unification).
     for (u32 i = n; i > 0; i--) {
         ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
-        if (o != OK) return o;
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
         if (rec.verb == vg || rec.verb == vp || rec.verb == vx) {
             //  Skip a bare/tip-less store-anchor row (no branch and no
             //  sha — query AND fragment both empty); a sha-bearing row
@@ -411,8 +410,7 @@ ok64 SNIFFAtCurTip(ron60 *ts_out, ron60 *verb_out, urip u_out) {
     //  position (see SNIFFAtBaseline).
     for (u32 i = n; i > 0; i--) {
         ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
-        if (o != OK) return o;
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i - 1, &rec);
         if (rec.verb == vg || rec.verb == vp) {
             //  Skip a bare/tip-less store anchor (query AND fragment
             //  both empty); see SNIFFAtBaseline.
@@ -577,8 +575,7 @@ ok64 SNIFFAtPatchChain(sha1b out) {
 
     for (u32 i = start; i < n && sha1bHasRoom(out); i++) {
         ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
-        if (o != OK) return o;
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &rec);
         if (rec.verb != vx) continue;
         u8cs sha_hex = {};
         at_patch_row_sha_hex(sha_hex, &rec.uri);
@@ -607,8 +604,7 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
 
     for (u32 i = start; i < n && *n_out < cap; i++) {
         ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
-        if (o != OK) return o;
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &rec);
         if (rec.verb != vx) continue;
         u8 sh = at_patch_row_shape(&rec.uri);
         if (sh == 0) continue;
@@ -710,8 +706,7 @@ void SNIFFAtNow(ron60 *ts_out, struct timespec *tv_out) {
 ok64 SNIFFAtRowAtTs(ron60 mtime, ron60 *verb_out, urip u_out) {
     sane(SNIFF.log_data && verb_out && u_out);
     u32 i = 0;
-    ok64 fo = ULOGFind(SNIFF.log_idx, mtime, &i);
-    if (fo != OK) return fo;
+    call(ULOGFind, SNIFF.log_idx, mtime, &i);
     ulogrec rec = {};
     call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &rec);
     *verb_out = rec.verb;
@@ -768,8 +763,7 @@ ok64 SNIFFAtScanPutDelete(ron60 floor, sniff_at_pd_cb cb, void *ctx) {
     ron60 vdel = SNIFFAtVerbDelete();
     for (u32 i = start; i < n; i++) {
         ulogrec rec = {};
-        ok64 o = ULOGRow(SNIFF.log_data, SNIFF.log_idx, i, &rec);
-        if (o != OK) return o;
+        call(ULOGRow, SNIFF.log_data, SNIFF.log_idx, i, &rec);
         if (rec.ts <= floor) continue;
         if (rec.verb != vput && rec.verb != vdel) continue;
         ok64 cr = cb(&rec, ctx);
@@ -864,8 +858,7 @@ static ok64 at_hash_wt_blob(sha1 *out, path8bp full,
     a_dup(u8c, full_s, u8bData(full));   // path8s view for FILE APIs
     if (fs->kind == FILE_KIND_LNK) {
         a_pad(u8, tgt, 4096);
-        ok64 ro = FILEReadLink(tgt, full_s);
-        if (ro != OK) return ro;
+        call(FILEReadLink, tgt, full_s);
         KEEPObjSha(out, DOG_OBJ_BLOB, u8bDataC(tgt));
         done;
     }
@@ -876,8 +869,7 @@ static ok64 at_hash_wt_blob(sha1 *out, path8bp full,
         done;
     }
     u8bp m = NULL;
-    ok64 mo = FILEMapRO(&m, full_s);
-    if (mo != OK) return mo;
+    call(FILEMapRO, &m, full_s);
     u8cs body = {u8bDataHead(m), u8bIdleHead(m)};
     KEEPObjSha(out, DOG_OBJ_BLOB, body);
     FILEUnMap(m);

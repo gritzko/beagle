@@ -77,12 +77,10 @@ ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj) {
     sane(u8csOK(from) && obj);
     zerop(obj);
 
-    ok64 rv = PACKDrainVarint(from, &obj->type, &obj->size);
-    if (rv != OK) return rv;
+    call(PACKDrainVarint, from, &obj->type, &obj->size);
 
     if (obj->type == PACK_OBJ_OFS_DELTA) {
-        ok64 ro = PACKDrainOfs(from, &obj->ofs_delta);
-        if (ro != OK) return ro;
+        call(PACKDrainOfs, from, &obj->ofs_delta);
     } else if (obj->type == PACK_OBJ_REF_DELTA) {
         if ($size(from) < GIT_SHA1_LEN) return PACKBADFMT;
         a_head(u8c, ref, from, GIT_SHA1_LEN);

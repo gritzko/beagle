@@ -882,8 +882,7 @@ static ok64 keep_get_rec(u64 hashlet, size_t hexlen, u8bp out,
     keeper *k = &KEEP;
 
     u64 val = 0;
-    ok64 lo = KEEPLookup(hashlet, hexlen, &val);
-    if (lo != OK) return lo;
+    call(KEEPLookup, hashlet, hexlen, &val);
 
     return keep_get_packed_rec(k, val, out, out_type, rdepth);
 }
@@ -902,11 +901,10 @@ ok64 KEEPGetSize(u64 hashlet, size_t hexlen, u64 *out_size, u8 *out_type) {
     sane(out_size);
     keeper *k = &KEEP;
     u8 type = 0;
-    ok64 r = KEEPGet(hashlet, hexlen, k->buf3, &type);
-    if (r != OK) return r;
+    call(KEEPGet, hashlet, hexlen, k->buf3, &type);
     *out_size = u8bDataLen(k->buf3);
     if (out_type) *out_type = type;
-    return OK;
+    done;
 }
 
 // --- GetSha: inflate object, verify full SHA-1 ---

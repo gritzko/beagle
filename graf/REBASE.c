@@ -763,17 +763,17 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
     a_carve(u8, chain_buf, REBASE_PATH_MAX * sizeof(sha1));
     sha1 *chain = (sha1 *)u8bDataHead(chain_buf);
     u32 nchain = 0;
-    ok64 ret = rebase_walk_chain(child_tip, base_old,
-                                 chain, &nchain, REBASE_PATH_MAX);
-    if (ret != OK) return ret;
+    call(rebase_walk_chain, child_tip, base_old,
+         chain, &nchain, REBASE_PATH_MAX);
 
     //  2. Patch-id set of base_new ancestors.  REBASE_PIDS_MAX=8192
     //  u64s = 64KB.
     a_carve(u8, pids_buf, REBASE_PIDS_MAX * sizeof(u64));
     u64 *pids = (u64 *)u8bDataHead(pids_buf);
     u32 npids = 0;
-    ret = rebase_collect_pids(base_new, pids, &npids, REBASE_PIDS_MAX);
-    if (ret != OK) return ret;
+    call(rebase_collect_pids, base_new, pids, &npids, REBASE_PIDS_MAX);
+
+    ok64 ret = OK;
 
     //  3. Replay loop.  Hoist per-iteration scratch out of the loop —
     //  one BASS allocation each, reset between iterations via
@@ -934,9 +934,8 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
     sha1 tree_sha = {}, parent_unused = {};
     b8 had_parent = NO;
     a_dup(u8c, cbody, u8bDataC(cbuf));
-    ok64 p = pid_parse_commit(cbody, &tree_sha,
-                              &parent_unused, &had_parent);
-    if (p != OK) return p;
+    call(pid_parse_commit, cbody, &tree_sha,
+         &parent_unused, &had_parent);
 
     sha1 cur = tree_sha;
     call(GRAFPathDescend, &cur, filepath);

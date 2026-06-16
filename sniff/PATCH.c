@@ -1180,8 +1180,7 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
     a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(thr_out, cbuf, &ct);
-    if (ko != OK) return ko;
+    call(KEEPGetExact, thr_out, cbuf, &ct);
     if (ct != DOG_OBJ_COMMIT) fail(PATCHFAIL);
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
@@ -1215,8 +1214,7 @@ static ok64 patch_first_parent(sha1 *parent_out, sha1cp commit_sha) {
     sane(parent_out && commit_sha);
     a_carve(u8, cbuf, 1UL << 16);
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(commit_sha, cbuf, &ct);
-    if (ko != OK) return ko;
+    call(KEEPGetExact, commit_sha, cbuf, &ct);
     if (ct != DOG_OBJ_COMMIT) return PATCHFAIL;
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
@@ -1892,16 +1890,14 @@ static ok64 patch_apply_file_inner(u8cs reporoot, u8cs filepath,
     }
 
     a_carve(u8, mbuf, PATCH_BLOB_BUF);
-    ok64 mo = fetch_merge(mbuf, reporoot, filepath, &our_sha, &thr_sha);
-    if (mo != OK) return mo;
+    call(fetch_merge, mbuf, reporoot, filepath, &our_sha, &thr_sha);
     a_dup(u8c, bytes, u8bData(mbuf));
     b8 conflict = SNIFFHasConflictMarker(bytes);
 
     //  Mode fallback: reuse whatever's on disk.  Not perfect (a
     //  newly-added file has no on-disk mode yet) — fine for MVP.
     a_cstr(default_mode, "100644");
-    ok64 wo = write_blob(reporoot, filepath, default_mode, bytes);
-    if (wo != OK) return wo;
+    call(write_blob, reporoot, filepath, default_mode, bytes);
 
     //  Stamp the file so it counts as patch-written for POST's
     //  classification (not "dirty/untracked").  ts is fresh — path-

@@ -84,8 +84,8 @@ static void unpk_drain_waiters(wh128cs waiters, unpk_node *nodes,
 //  290616 entries → fixed `count+16` cap overflowed → SNOROOM).  Grow
 //  one slot at a time; Breserve rounds up so this isn't quadratic.
 static ok64 unpk_push(Bwh128 out, wh128 const *e) {
-    ok64 r = wh128bReserve(out, 1);
-    if (r != OK) return r;
+    sane(out);
+    call(wh128bReserve, out, 1);
     return wh128bPush(out, e);
 }
 

@@ -164,8 +164,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
 static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     sane(tree_sha_out);
     b8 have = NO;
-    ok64 br = SNIFFAtBaselineTreeSha(YES, tree_sha_out, &have);
-    if (br != OK) return br;
+    call(SNIFFAtBaselineTreeSha, YES, tree_sha_out, &have);
     return have ? OK : ULOGNONE;
 }
 
@@ -456,16 +455,14 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
     ((u8 **)s.pathbuf)[1] = pathbuf[1];
     ((u8 **)s.pathbuf)[2] = pathbuf[2];
     ((u8 **)s.pathbuf)[3] = pathbuf[3];
-    ok64 cr = SNIFFClassify(mv_collect_cb, &s);
-    if (cr != OK)        return cr;
+    call(SNIFFClassify, mv_collect_cb, &s);
     if (s.nb == 0 || s.nw == 0) return OK;
 
     mv_hash_wt(&s, reporoot);
 
     mv_pair pairs[PUT_MV_MAX];
     u32 npairs = 0;
-    ok64 po = mv_pair_unique(&s, pairs, &npairs);
-    if (po != OK) return po;
+    call(mv_pair_unique, &s, pairs, &npairs);
 
     for (u32 i = 0; i < npairs; i++) {
         mv_entry const *bb = &s.base[pairs[i].b_idx];
@@ -473,8 +470,7 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
         uri urow = {};
         urow.path[0]     = bb->path[0]; urow.path[1]     = bb->path[1];
         urow.fragment[0] = ww->path[0]; urow.fragment[1] = ww->path[1];
-        ok64 ao = SNIFFAtAppendAt(*ts_io, verb_put, &urow);
-        if (ao != OK) return ao;
+        call(SNIFFAtAppendAt, *ts_io, verb_put, &urow);
         a_dup(u8c, dst_rel, ww->path);
         a_path(dstfp);
         if (SNIFFFullpath(dstfp, reporoot, dst_rel) == OK)
@@ -660,8 +656,7 @@ static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
     //  anything when the sha pairing isn't 1:1.  Each emitted row bumps
     //  `ts` so subsequent rows stay strictly increasing.
     u32 mv_emitted = 0;
-    ok64 mo = put_detect_moves(reporoot, &ts, &mv_emitted, verb_put);
-    if (mo != OK) return mo;
+    call(put_detect_moves, reporoot, &ts, &mv_emitted, verb_put);
 
     //  Pass 2: tracked-dirty walk.  Re-stamp ts: the latest get/post
     //  row's ts.  Files whose content matches the baseline get
@@ -753,9 +748,8 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 mvsrc[0] += 2;
             if ($len(mvdst) >= 2 && mvdst[0][0] == '.' && mvdst[0][1] == '/')
                 mvdst[0] += 2;
-            ok64 mo = put_move(mvsrc, mvdst, reporoot,
-                               &ts, &emitted, verb_put);
-            if (mo != OK) return mo;
+            call(put_move, mvsrc, mvdst, reporoot,
+                 &ts, &emitted, verb_put);
             continue;
         }
 
@@ -923,8 +917,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             };
             u8csMv(dctx.reporoot, reporoot);
             u32 before = emitted;
-            ok64 cr = SNIFFClassify(dir_collect_step, &dctx);
-            if (cr != OK) return cr;
+            call(SNIFFClassify, dir_collect_step, &dctx);
             if (dctx.err != OK) return dctx.err;
 
             if (emitted == before) {

@@ -45,8 +45,7 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
 
     a_carve(u8, tbuf, 1UL << 20);
     u8 otype = 0;
-    ok64 o = KEEPGetExact(tree_sha, tbuf, &otype);
-    if (o != OK) return o;
+    call(KEEPGetExact, tree_sha, tbuf, &otype);
     if (otype != DOG_OBJ_TREE) return WALKBADFMT;
 
     u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
@@ -428,8 +427,7 @@ ok64 KEEPTreeULog(u8cp tree_sha,
     sane(tree_sha && out);
     u8bReset(out);
     treeulog_ctx c = {.out = out, .ts = ts, .verb = verb, .err = OK};
-    ok64 o = WALKTreeLazy(tree_sha, treeulog_visit, &c);
-    if (o != OK) return o;
+    call(WALKTreeLazy, tree_sha, treeulog_visit, &c);
     return c.err;
 }
 

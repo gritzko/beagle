@@ -412,8 +412,7 @@ static ok64 wcli_wire_to_be(u8csc wire_refname, gitref_kind *kind_out,
     name_out[0] = name_out[1] = NULL;
     *kind_out = GITREF_NONE;
     u8cs bare = {};
-    ok64 po = GITParseRef(wire_refname, kind_out, bare);
-    if (po != OK) return po;
+    call(GITParseRef, wire_refname, kind_out, bare);
     if (*kind_out != GITREF_BRANCH) {
         u8csMv(name_out, bare);
         done;
@@ -1172,8 +1171,7 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
     if (add_to_have) sha_set_add(add_to_have, tree_sha);
 
     Bu8 tbuf = {};
-    ok64 mo = u8bMap(tbuf, 1UL << 20);
-    if (mo != OK) return mo;
+    call(u8bMap, tbuf, 1UL << 20);
     u8 ttype = 0;
     if (KEEPGetExact(tree_sha, tbuf, &ttype) != OK ||
         ttype != KEEP_OBJ_TREE) {
@@ -1239,8 +1237,7 @@ static ok64 wpush_walk_commit(keeper *k, sha1cp commit_sha,
     if (add_to_have) sha_set_add(add_to_have, commit_sha);
 
     Bu8 cbuf = {};
-    ok64 mo = u8bMap(cbuf, 1UL << 20);
-    if (mo != OK) return mo;
+    call(u8bMap, cbuf, 1UL << 20);
     u8 ctype = 0;
     ok64 go = KEEPGetExact(commit_sha, cbuf, &ctype);
     if (go != OK || ctype != KEEP_OBJ_COMMIT) {

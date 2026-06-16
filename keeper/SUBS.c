@@ -26,8 +26,7 @@ static ok64 keep_subs_tree_step(sha1cp tree_sha, u8cs name,
     sane(tree_sha && out_sha && tbuf);
 
     u8 otype = 0;
-    ok64 o = KEEPGetExact(tree_sha, tbuf, &otype);
-    if (o != OK)               return o;
+    call(KEEPGetExact, tree_sha, tbuf, &otype);
     if (otype != DOG_OBJ_TREE) fail(KEEPFAIL);
 
     a_dup(u8c, body, u8bDataC(tbuf));
@@ -67,14 +66,13 @@ static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
         }
         sha1 step = {};
         u32  mode = 0;
-        ok64 so = keep_subs_tree_step(&cur, seg, &step, &mode, tbuf);
-        if (so != OK) return so;
+        call(keep_subs_tree_step, &cur, seg, &step, &mode, tbuf);
         cur = step;
         if (out_mode) *out_mode = mode;
         rest[0] = (slash < rest[1]) ? slash + 1 : slash;
     }
     *out_sha = cur;
-    return OK;
+    done;
 }
 
 // --- ULOG row emission via SUBSu8sParse callback ----------------

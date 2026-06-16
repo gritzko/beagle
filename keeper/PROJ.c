@@ -369,9 +369,8 @@ ok64 KEEPProjTree(uricp u, b8 tlv) {
 
         //  Anchor name + U-URI + '\n'.
         b8 is_dir = (kind == WALK_KIND_DIR);
-        ok64 ee = proj_tree_emit_entry(text, toks, base_path,
-                                       name_s, is_dir, u);
-        if (ee != OK) return ee;
+        call(proj_tree_emit_entry, text, toks, base_path,
+             name_s, is_dir, u);
     }
 
     tok32cs toks_view = {(u32 const *)u32bDataHead(toks),

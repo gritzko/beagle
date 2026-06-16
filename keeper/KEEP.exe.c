@@ -732,8 +732,7 @@ static ok64 keeper_put(keeper *k, cli *c) {
     a_dup(u8c, to, sha);
 
     //  `keeper put` is a local-move verb (user setting a ref).
-    ok64 o = REFSAppendVerb($path(keepdir), REFSVerbPost(), from, to);
-    if (o != OK) return o;
+    call(REFSAppendVerb, $path(keepdir), REFSVerbPost(), from, to);
 
     fprintf(stdout, "keeper: %.*s → %.*s\n",
             (int)u8csLen(from), (char *)from[0],

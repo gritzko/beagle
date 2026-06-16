@@ -429,8 +429,7 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
     //  partially-built weave.  A lexer that doesn't cover `ext` still
     //  returns OK (covered stays short) and the tail loop handles the
     //  uncovered remainder — that fallback is preserved.
-    ok64 lo_err = TOKLexer(&st, ext);
-    if (lo_err != OK) return lo_err;
+    call(TOKLexer, &st, ext);
 
     u32 total = (u32)$len(data);
     u32 lo = ctx.covered;

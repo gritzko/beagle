@@ -322,9 +322,9 @@ ok64 REFSEach(u8csc dir, refs_cb cb, void *ctx) {
     ref *arr = (ref *)u8bDataHead(arr_b);
 
     u32 n = 0;
-    ok64 o = REFSLoad(arr, &n, REFS_MAX_REFS, scratch, dir);
-    if (o != OK) return o;
+    call(REFSLoad, arr, &n, REFS_MAX_REFS, scratch, dir);
 
+    ok64 o = OK;
     for (u32 i = 0; i < n; i++) {
         o = cb(&arr[i], ctx);
         if (o != OK) break;

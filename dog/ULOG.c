@@ -698,8 +698,7 @@ ok64 ULOGFindLatest(u8b data, wh128bp idx, ulog_pred pred, void *ctx,
     for (u32 i = n; i > 0; ) {
         i--;
         ulogrec r = {};
-        ok64 o = ULOGRow(data, idx, i, &r);
-        if (o != OK) return o;
+        call(ULOGRow, data, idx, i, &r);
         if (pred(&r, ctx)) {
             *out = r;
             done;
@@ -717,8 +716,7 @@ ok64 ULOGFindVerb(u8b data, wh128bp idx, ron60 verb, ulogrecp out) {
         wh128 ent = ulog_idx_at(idx, i);
         if (ulogIdxVerbH(ent) != want_h) continue;     // 20-bit prefilter
         ulogrec r = {};
-        ok64 o = ULOGRow(data, idx, i, &r);
-        if (o != OK) return o;
+        call(ULOGRow, data, idx, i, &r);
         if (r.verb == verb) {
             *out = r;
             done;

@@ -201,21 +201,18 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
     u8csMv(ctx.reporoot, reporoot);
 
     //  Preflight: any descendant with ∉ stamp-set mtime aborts.
-    ok64 pf = FILEScan(dir_full,
-                       (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                                   FILE_SCAN_DEEP),
-                       del_dir_cb, &ctx);
+    try(FILEScan, dir_full,
+        (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
+        del_dir_cb, &ctx);
     if (ctx.dirty > 0) return DELDIRTY;
-    if (pf != OK) return pf;
+    nedo return __;
 
     //  Apply: unlink every descendant.  Empty dirs are not removed —
     //  POST won't emit them either (an empty dir has no tree entry).
     ctx.mode = DEL_DIR_APPLY;
-    ok64 ar = FILEScan(dir_full,
-                       (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS |
-                                   FILE_SCAN_DEEP),
-                       del_dir_cb, &ctx);
-    if (ar != OK) return ar;
+    call(FILEScan, dir_full,
+         (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
+         del_dir_cb, &ctx);
 
     fprintf(stderr, "sniff: delete: %.*s — %u file(s) unlinked\n",
             (int)$len(dir_rel), (char *)dir_rel[0], ctx.unlinked);
@@ -394,8 +391,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         //  `delete <dir>/` row.  POST drops the whole subtree from
         //  the new commit's tree.
         if (*u8csLast(raw) == '/') {
-            ok64 dr = del_dir(reporoot, raw);
-            if (dr != OK) return dr;
+            call(del_dir, reporoot, raw);
             uri urow = {};
             urow.path[0] = raw[0];
             urow.path[1] = raw[1];

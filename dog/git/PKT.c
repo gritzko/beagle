@@ -23,8 +23,7 @@ ok64 PKTu8sDrain(u8cs from, u8csp line) {
     if ($size(from) < 4) return NODATA;
 
     u16 len = 0;
-    ok64 rl = PKTDecLen(from, &len);
-    if (rl != OK) return rl;
+    call(PKTDecLen, from, &len);
 
     // special packets
     if (len <= 2) {

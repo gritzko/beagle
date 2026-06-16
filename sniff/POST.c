@@ -199,8 +199,7 @@ static ok64 post_expand_under(u8b src, ron60 emit_verb, u8cs prefix,
         u.path[0] = path[0];
         u.path[1] = path[1];
         ulogrec out_rec = {.ts = rec.ts, .verb = emit_verb, .uri = u};
-        ok64 fo = ULOGu8sFeed(u8bIdle(out), &out_rec);
-        if (fo != OK) return fo;
+        call(ULOGu8sFeed, u8bIdle(out), &out_rec);
         if (any_out) *any_out = YES;
     }
     done;
@@ -272,9 +271,8 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
         }
         if (verb == w->v_put_filter) {
             b8 any_base = NO;
-            ok64 br = post_expand_under(w->bu, w->v_put_emit, path,
-                                        NULL, w->put_unsorted, &any_base);
-            if (br != OK) return br;
+            call(post_expand_under, w->bu, w->v_put_emit, path,
+                 NULL, w->put_unsorted, &any_base);
             if (any_base) return OK;
             return post_expand_under(w->wu, w->v_put_emit, path,
                                      w->ig, w->put_unsorted, NULL);
@@ -294,8 +292,7 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
         uri u_src = {};
         u_src.path[0] = path[0]; u_src.path[1] = path[1];
         ulogrec d_rec = {.ts = ts, .verb = w->v_del_emit, .uri = u_src};
-        ok64 ro = ULOGu8sFeed(u8bIdle(w->del_unsorted), &d_rec);
-        if (ro != OK) return ro;
+        call(ULOGu8sFeed, u8bIdle(w->del_unsorted), &d_rec);
         uri u_dst = {};
         u_dst.path[0] = dst[0]; u_dst.path[1] = dst[1];
         ulogrec p_rec = {.ts = ts, .verb = w->v_put_emit, .uri = u_dst};
@@ -1290,8 +1287,7 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
     sane(vctx && sha);
     post_rebase_ctx *rc = (post_rebase_ctx *)vctx;
     sha1 fed = {};
-    ok64 fo = KEEPPackFeed(rc->p, obj_type, body, 0, &fed);
-    if (fo != OK) return fo;
+    call(KEEPPackFeed, rc->p, obj_type, body, 0, &fed);
     if (obj_type == DOG_OBJ_COMMIT) {
         //  Record the last commit sha — that's our rebased tip.
         rc->last_commit_sha = *sha;
@@ -1301,14 +1297,12 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
         //  GRAFRebase's loop fetches the previous-emit's commit/tree/
         //  blob bodies on the next pass; without this checkpoint they
         //  sit in a booked-but-unindexed pack and aren't resolvable.
-        ok64 cl = KEEPPackClose(rc->p);
-        if (cl != OK) return cl;
+        call(KEEPPackClose, rc->p);
         zerop(rc->p);
-        ok64 op = KEEPPackOpen(rc->p);
-        if (op != OK) return op;
+        call(KEEPPackOpen, rc->p);
         rc->p->strict_order = NO;
     }
-    return OK;
+    done;
 }
 
 // --- Cascade rebase (Stage 2c) ---
@@ -1346,8 +1340,7 @@ ok64 POSTResolveBranchTip(sha1 *out, u8cs branch) {
 
     a_pad(u8, arena, 1024);
     uri resolved = {};
-    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), refkey);
-    if (ro != OK) return ro;
+    call(REFSResolve, &resolved, arena, $path(keepdir), refkey);
     if ($empty(resolved.query)) return REFSNONE;
     a_dup(u8c, tip_hex, resolved.query);
     if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?') u8csUsed(tip_hex, 1);
@@ -1439,9 +1432,8 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     }
 
     post_rebase_ctx rctx = {.p = cc->p};
-    ok64 rb = GRAFRebase(&fork_old, parent_new_tip, &child_tip,
-                         post_rebase_emit_cb, &rctx);
-    if (rb != OK) return rb;
+    call(GRAFRebase, &fork_old, parent_new_tip, &child_tip,
+         post_rebase_emit_cb, &rctx);
 
     cascade_rec *r = &cc->recs[cc->n++];
     if (PATHu8bAren(cc->arena, r->branch, branch) != OK) {
@@ -1549,10 +1541,8 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 
         //  Stage rebase + record.
         b8 appended = NO;
-        ok64 ro = post_cascade_one(cc, child_branch,
-                                   branch_old_tip, branch_new_tip,
-                                   &appended);
-        if (ro != OK) return ro;
+        call(post_cascade_one, cc, child_branch,
+             branch_old_tip, branch_new_tip, &appended);
 
         //  post_cascade_one may skip without appending (REFSNONE on a
         //  re-resolve race).  Only index recs[cc->n - 1] when a record
@@ -1562,11 +1552,10 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 
         //  Recurse: this child's old/new tips drive the next level.
         sha1 child_new = cc->recs[cc->n - 1].new_tip;
-        ok64 rr = post_cascade_walk(cc, child_branch, &child_old,
-                                    &child_new);
-        if (rr != OK) return rr;
+        call(post_cascade_walk, cc, child_branch, &child_old,
+             &child_new);
     }
-    return OK;
+    done;
 }
 
 //  Test-only accessor (MEM-028): replicate the walker's per-child step
@@ -2410,9 +2399,7 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    ok64 ko = KEEPGetExact(&pick, cbuf, &ct);
-
-    if (ko != OK) return ko;
+    call(KEEPGetExact, &pick, cbuf, &ct);
     if (ct != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
 
     git_commit gc = {};
@@ -2502,9 +2489,8 @@ ok64 POSTCommit(u8cs target_branch,
     sha1  parent     = {};
     b8    has_parent = NO;
     b8    had_baseline = NO;
-    ok64  br = post_collect_parents(brbuf, &parent, &has_parent,
-                                    &had_baseline);
-    if (br != OK) return br;
+    call(post_collect_parents, brbuf, &parent, &has_parent,
+         &had_baseline);
     if (had_baseline && !has_parent) {
         fprintf(stderr,
                 "sniff: post: baseline at-log row has no parent SHA — "
