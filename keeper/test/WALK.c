@@ -447,12 +447,120 @@ ok64 WALKtest5() {
     done;
 }
 
+// ---- Test 6: wide-tree walk must not leak BASS (GET-020) ----
+//
+//  walk_tree_dive recurses once per directory, each level carving a
+//  1 MiB `tbuf` off ABC_BASS.  Pre-fix the recursion was a bare C call,
+//  so a parent's child carves were never rewound: every sibling
+//  subtree's `tbuf` piled up across the whole walk.  A tree wider than
+//  ~1024 directories therefore exhausted the 1 GiB arena and the next
+//  `a_carve(tbuf)` returned BNOROOM MID-WALK — a clean tree-order
+//  truncation (`be get file:<wt>` checked out only the first ~474 of
+//  the tree's files and exited SNIFFFAIL).  The fix wraps each subtree
+//  recursion in `try()` (PRO.h), which rewinds BASS per sibling so only
+//  the current root-to-leaf chain stays live.
+//
+//  This builds a root tree with WIDE_N single-file sibling subdirs
+//  (depth 2, so the live chain is tiny) and asserts the walk visits
+//  EVERY directory + file and returns OK.  Pre-fix: BNOROOM after ~1000
+//  dirs, a truncated visit count.  WIDE_N is set well past the 1 GiB /
+//  1 MiB ≈ 1024-dir cliff.
+
+#define WALK6_WIDE_N 1300
+
+typedef struct {
+    u32 n_dirs;
+    u32 n_files;
+} w6_ctx;
+
+static ok64 w6_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
+                     void0p vctx) {
+    (void)path; (void)esha; (void)blob;
+    w6_ctx *c = (w6_ctx *)vctx;
+    if (kind == WALK_KIND_DIR) c->n_dirs++;
+    else if (kind == WALK_KIND_REG || kind == WALK_KIND_EXE ||
+             kind == WALK_KIND_LNK) c->n_files++;
+    return OK;
+}
+
+ok64 WALKtest6() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/walktest6-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    a_cstr(root, tmp);
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    //  One shared leaf blob, reused by every sibling's file entry.
+    a_cstr(leaf_content, "leaf\n");
+    sha1 leaf_sha = {};
+    call(KEEPPackFeed, &p, DOG_OBJ_BLOB, leaf_content, 0, &leaf_sha);
+
+    //  Build WIDE_N sibling subtrees, each `dXXXX/leaf.txt`, and feed
+    //  their (mode-name, sha) entries into the root tree buffer.  Names
+    //  are zero-padded so they stay in git's lex sort order.  4 MiB root
+    //  tree buffer is plenty for ~1300 28-byte entries.
+    Bu8 rtb = {};
+    call(u8bMap, rtb, 1UL << 22);
+    sha1 *subs = (sha1 *)malloc(sizeof(sha1) * WALK6_WIDE_N);
+    want(subs != NULL);
+    for (u32 i = 0; i < WALK6_WIDE_N; i++) {
+        char mn[64];
+        snprintf(mn, sizeof(mn), "100644 leaf.txt");
+        u8cs mn_s = {(u8cp)mn, (u8cp)mn + strlen(mn)};
+        try(build_leaf_tree, &KEEP, &p, mn_s, leaf_content, &subs[i]);
+        nedo { free(subs); fail(__); }
+
+        char dn[64];
+        snprintf(dn, sizeof(dn), "40000 d%04u", i);
+        u8cs dn_s = {(u8cp)dn, (u8cp)dn + strlen(dn)};
+        try(u8bFeed, rtb, dn_s);          nedo { free(subs); fail(__); }
+        u8bFeed1(rtb, 0);
+        a_rawc(ss, subs[i]);
+        try(u8bFeed, rtb, ss);            nedo { free(subs); fail(__); }
+    }
+    free(subs);
+
+    a_dup(u8c, rtc, u8bData(rtb));
+    sha1 root_sha = {};
+    call(KEEPPackFeed, &p, DOG_OBJ_TREE, rtc, 0, &root_sha);
+    call(KEEPPackClose, &p);
+    u8bUnMap(rtb);
+
+    //  Lazy walk (the `be get` checkout path).  Must visit every dir +
+    //  file and finish OK — pre-fix it returned BNOROOM partway.
+    {
+        w6_ctx c = {};
+        call(WALKTreeLazy, root_sha.data, w6_visit, &c);
+        //  Root DIR + WIDE_N child dirs.
+        want(c.n_dirs == 1 + WALK6_WIDE_N);
+        want(c.n_files == WALK6_WIDE_N);
+    }
+
+    call(KEEPClose);
+    HOMEClose();
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
+        system(cmd);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(WALKtest1);
     call(WALKtest2);
     call(WALKtest4);
     call(WALKtest5);
+    call(WALKtest6);
     done;
 }
 

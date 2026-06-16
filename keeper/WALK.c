@@ -103,7 +103,18 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
         if (vo == OK && kind == WALK_KIND_DIR) {
             sha1 sub = {};
             sha1Mv(&sub, (sha1cp)esha[0]);
-            vo = walk_tree_dive(k, &sub, pathbuf, eager, bbuf, visit, ctx);
+            //  Recurse through `try` so this subtree's BASS scratch
+            //  (each level's 1 MiB `tbuf`, plus everything the visitor
+            //  carves under it) is rewound when the child returns.  A
+            //  plain C recursion never frees those carves until the
+            //  whole walk unwinds, so a wide tree (~1 dir per MiB)
+            //  exhausts the 1 GiB arena and the next `a_carve(tbuf)`
+            //  returns BNOROOM mid-walk — a clean tree-order truncation
+            //  (GET-020).  `sub`/`pathbuf`/`bbuf` live below the
+            //  snapshot (the parent's `tbuf` and its tree-entry slices
+            //  too), so they survive the rewind.
+            try(walk_tree_dive, k, &sub, pathbuf, eager, bbuf, visit, ctx);
+            vo = __;
         }
 
         // Rewind pathbuf to pre-entry length.
