@@ -408,14 +408,12 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
     if (tree_hs && npar_arr && child_count) {
         for (u32 i = 0; i < nord; i++) {
             tree_hs[i] = DAGCommitTree(runs, ordered[i]);
-            wh64 par_buf[16] = {};
-            wh64s parents = {par_buf, par_buf + 16};
-            wh64 *pbase = parents[0];
-            DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, ordered[i]));
-            npar_arr[i] = (u32)(parents[0] - pbase);
+            a_pad0(wh64, par_buf, 16);
+            DAGParents(runs, par_buf_idle, DAGPack(DAG_T_COMMIT, ordered[i]));
+            npar_arr[i] = (u32)wh64sLen(par_buf_idle);
             u64 *clo_i = use_closures ? &closures[(size_t)i * words] : NULL;
             if (clo_i) clo_i[i >> 6] |= (u64)1 << (i & 63);   // self
-            for (wh64 *p = pbase; p < parents[0]; p++) {
+            $for(wh64, p, par_buf_idle) {
                 u64 ph = DAGHashlet(*p);
                 for (u32 j = i; j > 0; j--) {
                     if (ordered[j - 1] == ph) {
@@ -668,8 +666,7 @@ static ok64 blame_flush_run(blame_author const *ba, u8cs run, u8cs ext) {
     //  the date column.
     u8csMv(hk.uri, u8bDataC(uri));
     u8csMv(hk.text, run);
-    hk.toks[0] = toks_view[0];
-    hk.toks[1] = toks_view[1];
+    tok32csMv(hk.toks, toks_view);
     call(GRAFHunkEmit, &hk, NULL);
     done;
 }
@@ -805,15 +802,10 @@ static ok64 blame_read_blob(u8bp buf, keeper *k, u8cs ref, u8cs filepath) {
     u8bFeed1(ubuf, hex_only ? '#' : '?');
     call(u8bFeed, ubuf, ref);
     a_dup(u8c, udata, u8bData(ubuf));
-    target.data[0] = udata[0];
-    target.data[1] = udata[1];
-    if (hex_only) {
-        target.fragment[0] = udata[0] + 1;
-        target.fragment[1] = udata[1];
-    } else {
-        target.query[0] = udata[0] + 1;
-        target.query[1] = udata[1];
-    }
+    u8csMv(target.data, udata);
+    a_rest(u8c, rest, udata, 1);   //  past the leading sigil
+    if (hex_only) u8csMv(target.fragment, rest);
+    else          u8csMv(target.query, rest);
 
     sha1 cur = {};
     call(KEEPResolveTree, &target, &cur);

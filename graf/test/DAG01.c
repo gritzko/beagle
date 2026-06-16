@@ -75,11 +75,11 @@ ok64 DAG01test2() {
 
     wh64 par_buf[4] = {};
     wh64s parents = {par_buf, par_buf + 4};
-    wh64 *pbase = parents[0];
     want(DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, 0xC1C1)) == OK);
-    want(parents[0] - pbase == 1);
-    want(DAGType(pbase[0]) == DAG_T_COMMIT);
-    want(DAGHashlet(pbase[0]) == 0xFEED);
+    //  New contract: `parents` is the populated slice [storage, filled).
+    want(wh64sLen(parents) == 1);
+    want(DAGType(*wh64sHead(parents)) == DAG_T_COMMIT);
+    want(DAGHashlet(*wh64sHead(parents)) == 0xFEED);
 
     want(DAGCommitTree(runs, 0xC1C1) == 0);
     done;
@@ -101,12 +101,13 @@ ok64 DAG01test3() {
 
     wh64 par_buf[4] = {};
     wh64s parents = {par_buf, par_buf + 4};
-    wh64 *pbase = parents[0];
     want(DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, 0xC1C1)) == OK);
-    want(parents[0] - pbase == 2);
-    want(DAGType(pbase[0]) == DAG_T_COMMIT);
-    want(DAGType(pbase[1]) == DAG_T_COMMIT);
-    u64 h0 = DAGHashlet(pbase[0]), h1 = DAGHashlet(pbase[1]);
+    //  New contract: `parents` is the populated slice [storage, filled).
+    want(wh64sLen(parents) == 2);
+    want(DAGType(*wh64sAtP(parents, 0)) == DAG_T_COMMIT);
+    want(DAGType(*wh64sAtP(parents, 1)) == DAG_T_COMMIT);
+    u64 h0 = DAGHashlet(*wh64sAtP(parents, 0));
+    u64 h1 = DAGHashlet(*wh64sAtP(parents, 1));
     want((h0 == 0x111 && h1 == 0x222) || (h0 == 0x222 && h1 == 0x111));
     done;
 }

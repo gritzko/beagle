@@ -139,12 +139,13 @@ static b8 graf_query_range(uri *u, u8cs wf, u8cs wt) {
     if (u8csFindS(q, dots) != OK) return NO;
     //  Compute into locals; commit to wf/wt only on a real range so a
     //  bare relative `?..` (empty halves) leaves the caller's slices
-    //  untouched and signals NO.
-    u8cs from = {u->query[0], q[0]};
-    u8cs to   = {q[0] + 2, u->query[1]};
-    if (u8csEmpty(from) || u8csEmpty(to)) return NO;
+    //  untouched and signals NO.  `from` is the prefix the find
+    //  consumed; `to` is what's left after eating the `..`.
+    a_past(u8c, from, u->query, q);
+    u8csUsed(q, 2);
+    if (u8csEmpty(from) || u8csEmpty(q)) return NO;
     u8csMv(wf, from);
-    u8csMv(wt, to);
+    u8csMv(wt, q);
     return YES;
 }
 
@@ -447,8 +448,7 @@ ok64 GRAFExec(cli *c) {
             }
             sha1 base_sha = {};
             a_dup(u8c, base_dup, base_hex);
-            u8s sb = {(u8p)base_sha.data, (u8p)base_sha.data + 20};
-            ok64 ho = HEXu8sDrainSome(sb, base_dup);
+            ok64 ho = sha1FromHex(&base_sha, base_dup);
             u64 base_h40 = (ho == OK) ? WHIFFHashlet60(&base_sha) : 0;
 
             if (!u8csEmpty(u->query)) {

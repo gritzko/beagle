@@ -103,14 +103,12 @@ static ok64 pid_parse_commit(u8cs commit_body,
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;
         if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40 && !got_tree) {
-            if (DAGsha1FromHex(tree_out,
-                               (char const *)value[0]) != OK)
+            if (sha1FromHex(tree_out, value) != OK)
                 return GITBADFMT;
             got_tree = YES;
         } else if (u8csEq(field, GIT_FIELD_PARENT) && u8csLen(value) >= 40 &&
                    !*got_parent) {
-            if (DAGsha1FromHex(parent_out,
-                               (char const *)value[0]) != OK)
+            if (sha1FromHex(parent_out, value) != OK)
                 return GITBADFMT;
             *got_parent = YES;
         }
@@ -318,7 +316,8 @@ static ok64 tm_emit_entry(u8 *const *out, u8cs mode, u8cs name,
     call(u8bFeed1, out, ' ');
     call(u8bFeed, out, name);
     call(u8bFeed1, out, 0);
-    u8cs sb = {sha->data, sha->data + 20};
+    u8cs sb = {};
+    sha1slice(sb, sha);
     call(u8bFeed, out, sb);
     done;
 }
@@ -471,8 +470,7 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
                 }
             }
             if (!dup) {
-                names[nnames][0] = s->e[i].name[0];
-                names[nnames][1] = s->e[i].name[1];
+                u8csMv(names[nnames], s->e[i].name);
                 nnames++;
             }
         }
@@ -482,11 +480,10 @@ static ok64 tm_merge_trees(sha1 *tree_out_sha,
         u8cs v = {names[i][0], names[i][1]};
         u32 j = i;
         while (j > 0 && tm_name_cmp(names[j - 1], v) > 0) {
-            names[j][0] = names[j - 1][0];
-            names[j][1] = names[j - 1][1];
+            u8csMv(names[j], names[j - 1]);
             j--;
         }
-        names[j][0] = v[0]; names[j][1] = v[1];
+        u8csMv(names[j], v);
     }
 
     //  Build new tree body.
@@ -763,17 +760,17 @@ ok64 GRAFRebase(sha1cp base_old, sha1cp base_new,
     a_carve(u8, chain_buf, REBASE_PATH_MAX * sizeof(sha1));
     sha1 *chain = (sha1 *)u8bDataHead(chain_buf);
     u32 nchain = 0;
-    call(rebase_walk_chain, child_tip, base_old,
-         chain, &nchain, REBASE_PATH_MAX);
+    ok64 ret = rebase_walk_chain(child_tip, base_old,
+                                 chain, &nchain, REBASE_PATH_MAX);
+    if (ret != OK) return ret;
 
     //  2. Patch-id set of base_new ancestors.  REBASE_PIDS_MAX=8192
     //  u64s = 64KB.
     a_carve(u8, pids_buf, REBASE_PIDS_MAX * sizeof(u64));
     u64 *pids = (u64 *)u8bDataHead(pids_buf);
     u32 npids = 0;
-    call(rebase_collect_pids, base_new, pids, &npids, REBASE_PIDS_MAX);
-
-    ok64 ret = OK;
+    ret = rebase_collect_pids(base_new, pids, &npids, REBASE_PIDS_MAX);
+    if (ret != OK) return ret;
 
     //  3. Replay loop.  Hoist per-iteration scratch out of the loop —
     //  one BASS allocation each, reset between iterations via
@@ -934,8 +931,9 @@ static ok64 rebase_blob_at_sha(u8 *const *buf, keeper *k,
     sha1 tree_sha = {}, parent_unused = {};
     b8 had_parent = NO;
     a_dup(u8c, cbody, u8bDataC(cbuf));
-    call(pid_parse_commit, cbody, &tree_sha,
-         &parent_unused, &had_parent);
+    ok64 p = pid_parse_commit(cbody, &tree_sha,
+                              &parent_unused, &had_parent);
+    if (p != OK) return p;
 
     sha1 cur = tree_sha;
     call(GRAFPathDescend, &cur, filepath);

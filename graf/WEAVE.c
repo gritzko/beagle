@@ -78,32 +78,37 @@ static ok64 weave_rec_T(u8b tlv, u32 seq, u32 pos, u8csc text) {
 }
 
 //  Append an `R` record: the sorted remover seqs as blocked varints.
-static ok64 weave_rec_R(u8b tlv, u32 const *set, u32 n) {
+static ok64 weave_rec_R(u8b tlv, u32cs set) {
     sane(tlv);
     a_pad(u8, sb, 16 + 8 * WEAVE_SET_MAX);
-    u64 tmp[WEAVE_SET_MAX];
-    for (u32 i = 0; i < n; i++) tmp[i] = set[i];
-    u64cs tc = {tmp, tmp + n};
-    call(ZINTu8sFeedBlocked, u8bIdle(sb), tc);
+    a_pad(u64, tmp, WEAVE_SET_MAX);
+    $for(u32c, v, set) call(u64bFeed1, tmp, (u64)*v);
+    call(ZINTu8sFeedBlocked, u8bIdle(sb), u64bDataC(tmp));
     call(weave_rec, tlv, WEAVE_REC_R, u8bDataC(sb));
     done;
 }
 
-static b8 weave_set_eq(u32 const *a, u32 na, u32 const *b, u32 nb) {
-    if (na != nb) return NO;
-    for (u32 i = 0; i < na; i++) if (a[i] != b[i]) return NO;
+static b8 weave_set_eq(u32csc a, u32csc b) {
+    if (u32csLen(a) != u32csLen(b)) return NO;
+    u32 const *bp = b[0];
+    $for(u32c, ap, a) { if (*ap != *bp) return NO; bp++; }
     return YES;
 }
 
-//  Sorted merge-union of two sorted/deduped sets.
-static ok64 weave_set_union(u32cs aset, u32 const *b, u32 nb,
-                            u32 *out, u32 cap, u32 *n) {
-    u32 const *a = aset[0];
-    u32 na = (u32)u32csLen(aset);
-    u32 i = 0, j = 0, c = 0;
+//  Sorted merge-union of two sorted/deduped sets into `out`.  On
+//  return `out` is the populated slice [head, filled).  Returns
+//  WEAVEFAIL when `out` fills.
+static ok64 weave_set_union(u32cs aset, u32cs bset, u32sp out) {
+    sane(out);
+    u32 const *a = aset[0], *b = bset[0];
+    u32 na = (u32)u32csLen(aset), nb = (u32)u32csLen(bset);
+    u32s w;
+    u32sFork(out, w);
+    u32 i = 0, j = 0, last = 0; b8 have = NO;
     #define PUSH(V) do { u32 _v = (V); \
-        if (!(c > 0 && out[c - 1] == _v)) { \
-            if (c >= cap) return WEAVEFAIL; out[c++] = _v; } } while (0)
+        if (!have || last != _v) { \
+            if (u32sFeed1(w, _v) != OK) return WEAVEFAIL; \
+            last = _v; have = YES; } } while (0)
     while (i < na && j < nb) {
         if (a[i] < b[j])       { PUSH(a[i]); i++; }
         else if (b[j] < a[i])  { PUSH(b[j]); j++; }
@@ -112,8 +117,8 @@ static ok64 weave_set_union(u32cs aset, u32 const *b, u32 nb,
     while (i < na) { PUSH(a[i]); i++; }
     while (j < nb) { PUSH(b[j]); j++; }
     #undef PUSH
-    *n = c;
-    return OK;
+    out[1] = w[0];   //  populated range is [head, filled)
+    done;
 }
 
 // ============================================================
@@ -128,12 +133,19 @@ void WEAVEBldInit(weavebld *b, weave *w) {
 
 ok64 WEAVEBldPut(weavebld *b, u8csc text, u32 seq, u32 pos, u32cs rset) {
     sane(b && b->w);
-    u32 const *rp = (u32 const *)rset[0];
-    u32        nr = (u32)u32csLen(rset);
+    u32 nr = (u32)u32csLen(rset);
     if (nr > WEAVE_SET_MAX) return WEAVEFAIL;
-    if (!b->started || !weave_set_eq(b->prevr, b->npr, rp, nr)) {
-        call(weave_rec_R, b->w->tlv, rp, nr);
-        for (u32 i = 0; i < nr; i++) b->prevr[i] = rp[i];
+    //  a$ over the `weavebld.prevr` fixed field (NOT a throwaway local):
+    //  `prevr[WEAVE_SET_MAX]` is documented inline storage that persists
+    //  across WEAVEBldPut calls.  It can't become a u32b without external
+    //  backing, and the alternative raw-array→slice form `{prevr, prevr+n}`
+    //  is exactly the pointer arithmetic a$ exists to avoid.  prevbuf is the
+    //  writable view u32sCopy fills; `prev` is its valid [0..npr) prefix.
+    a$(u32, prevbuf, b->prevr);
+    a_head(u32c, prev, prevbuf, b->npr);
+    if (!b->started || !weave_set_eq(prev, rset)) {
+        call(weave_rec_R, b->w->tlv, rset);
+        u32sCopy(prevbuf, rset);
         b->npr = nr;
     }
     b->started = YES;
@@ -156,19 +168,25 @@ b8 WEAVECurNext(weavecur *c) {
         u8cs val = {};
         if (TLVu8sDrain(c->rest, &type, val) != OK) { c->bad = YES; return NO; }
         if (type == WEAVE_REC_R) {
-            u64 tmp[WEAVE_SET_MAX];
-            u64s ts = {tmp, tmp + WEAVE_SET_MAX};
+            a_pad(u64, tmp, WEAVE_SET_MAX);
+            a_dup(u64, idle, tmp_idle);
+            u64s ts;
+            u64sFork(idle, ts);
             u8cs v = {};
             u8csMv(v, val);
             if (ZINTu8sDrainBlocked(v, ts) != OK) { c->bad = YES; return NO; }
-            c->nr = (u32)(ts[0] - tmp);
-            for (u32 i = 0; i < c->nr; i++) c->rset[i] = (u32)tmp[i];
+            a_past(u64c, got, idle, ts);
+            c->nr = (u32)u64csLen(got);
+            u32 i = 0;
+            $for(u64c, t, got) c->rset[i++] = (u32)*t;
         } else if (type == WEAVE_REC_T) {
-            u8cp p = (u8cp)val[0], e = (u8cp)val[1];
-            if (p >= e) { c->bad = YES; return NO; }
-            u8 idl = p[0];                  // birth-id length
-            if (p + 1 + idl > e) { c->bad = YES; return NO; }
-            u8cs bid = {p + 1, p + 1 + idl};
+            //  body = <1-byte idl> <ZINT128 birth-id> <text>
+            if (u8csLen(val) < 1) { c->bad = YES; return NO; }
+            u8 idl = *u8csHead(val);        // birth-id length
+            (void)u8csUsed1(val);
+            if (u8csLen(val) < idl) { c->bad = YES; return NO; }
+            a_head(u8c, bid, val, idl);
+            (void)u8csUsed(val, idl);
             u64 seq = 0, pos = 0;
             if (ZINTu8sDrain128(bid, &seq, &pos) != OK) { c->bad = YES; return NO; }
             //  Guard the u32 narrowing: a corrupt ZINT could carry a
@@ -178,8 +196,7 @@ b8 WEAVECurNext(weavecur *c) {
             if (seq > 0xFFFFFFFFu || pos > 0xFFFFFFFFu) { c->bad = YES; return NO; }
             c->seq = (u32)seq;
             c->pos = (u32)pos;
-            u8cs txt = {p + 1 + idl, e};
-            u8csMv(c->text, txt);
+            u8csMv(c->text, val);           // remaining body is the text
             return YES;
         } else {
             c->bad = YES; return NO;
@@ -277,14 +294,24 @@ static ok64 weave_decode_fill(wdec *d, weave const *w) {
     WEAVECurInit(&c, w);
     u32 cur_roff = 0, cur_rlen = 0;
     b8 dirty_r = YES;
-    u32 prev_r[WEAVE_SET_MAX], prev_nr = 0;
+    a_pad(u32, prev_r, WEAVE_SET_MAX);
+    u32 prev_nr = 0;
     u32 n = 0;
     while (WEAVECurNext(&c)) {
-        if (dirty_r || !weave_set_eq(prev_r, prev_nr, c.rset, c.nr)) {
+        //  a$ over the `weavecur.rset` fixed field (NOT a throwaway local):
+        //  `rset[WEAVE_SET_MAX]`/`nr` are the cursor's PUBLIC output contract
+        //  (read as c.rset[k] in BLAME.c + graf/test/WEAVE0{1,2}); turning it
+        //  into a u32b would break every reader and needs external backing.
+        //  The non-a$ form `{rset, rset+nr}` is the pointer arithmetic a$
+        //  avoids.  crset is the valid [0..nr) prefix view.
+        a$(u32, crsetbuf, c.rset);
+        a_head(u32c, crset, crsetbuf, c.nr);
+        a_head(u32c, prev,  prev_r_idle, prev_nr);
+        if (dirty_r || !weave_set_eq(prev, crset)) {
             cur_roff = (u32)u32bDataLen(d->rpool);
             cur_rlen = c.nr;
-            for (u32 i = 0; i < c.nr; i++) call(u32bFeed1, d->rpool, c.rset[i]);
-            memcpy(prev_r, c.rset, c.nr * sizeof(u32));
+            call(u32bFeed, d->rpool, crset);
+            u32sCopy(prev_r_idle, crset);
             prev_nr = c.nr; dirty_r = NO;
         }
         call(u8bFeed, d->text, c.text);
@@ -362,12 +389,14 @@ static ok64 wd_emit_del(wsink *k, wdp const *p, u32 i, u32 add_rm) {
     sane(k);
     u32 lo = wd_lo(p, i), hi = wd_hi(p, i);
     a_part(u8c, t, p->base, lo, hi - lo);
-    u32 rbuf[WEAVE_SET_MAX], rn = 0;
-    u32 one[1] = {add_rm};
+    a_pad(u32, rbuf, WEAVE_SET_MAX);
+    a_pad(u32, one, 1);
+    call(u32bFeed1, one, add_rm);
+    a_dup(u32c, oneset, u32bDataC(one));
     a_part(u32c, cur, p->rpool, p->roff[i], p->rlen[i]);
-    call(weave_set_union, cur, one, 1, rbuf, WEAVE_SET_MAX, &rn);
-    u32cs rs = {rbuf, rbuf + rn};
-    return wsink_put(k, t, p->seq[i], p->pos[i], rs);
+    call(weave_set_union, cur, oneset, rbuf_idle);
+    a_dup(u32c, rsc, rbuf_idle);
+    return wsink_put(k, t, p->seq[i], p->pos[i], rsc);
 }
 
 
@@ -409,7 +438,7 @@ static ok64 weave_blob_cb(u8 tag, u8cs tok, void *vctx) {
         ctx->covered = (u32)(e - ctx->base);
         done;
     }
-    u8csc seg = {tok[0], tok[1]};
+    a_dup(u8c, seg, tok);
     call(weave_blob_emit, ctx, seg);
     ctx->covered = (u32)(tok[1] - ctx->base);
     done;
@@ -429,7 +458,8 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
     //  partially-built weave.  A lexer that doesn't cover `ext` still
     //  returns OK (covered stays short) and the tail loop handles the
     //  uncovered remainder — that fallback is preserved.
-    call(TOKLexer, &st, ext);
+    ok64 lo_err = TOKLexer(&st, ext);
+    if (lo_err != OK) return lo_err;
 
     u32 total = (u32)$len(data);
     u32 lo = ctx.covered;
@@ -437,7 +467,7 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
         u32 hi = lo;
         while (hi < total && data[0][hi] != '\n') hi++;
         if (hi < total) hi++;
-        u8csc piece = {data[0] + lo, data[0] + hi};
+        a_part(u8c, piece, data, lo, hi - lo);
         call(weave_blob_emit, &ctx, piece);
         lo = hi;
     }
@@ -544,8 +574,8 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
     if (work_sz > 0) BACQ(i32bAcquire(ABC_BASS, work,   work_sz));
     if (edl_sz  > 0) BACQ(u32bAcquire(ABC_BASS, edlbuf, edl_sz));
 
-    u64cs oh = {u64bDataHead(alive_h), u64bDataHead(alive_h) + olen};
-    u64cs nh = {u64bDataHead(nu_h), u64bDataHead(nu_h) + nlen};
+    a_dup(u64c, oh, u64bDataC(alive_h));   // [head, head+olen)
+    a_dup(u64c, nh, u64bDataC(nu_h));       // [head, head+nlen)
     e32g edlg = {edlbuf[0], edlbuf[3], edlbuf[0]};
     i32s ws = {i32bHead(work), i32bTerm(work)};
     ok64 diff_o = BRAMu64s(edlg, ws, oh, nh);
@@ -559,11 +589,11 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
         call(WEAVEFallbackEdl, edlg, (u32)olen, (u32)nlen);
         call(NEILCanon, edlg);
     } else {
-        u32cs at_view = {(u32cp)u32bDataHead(alive_toks),
-                         (u32cp)u32bDataHead(alive_toks) + u32bDataLen(alive_toks)};
+        a_dup(u32c, at_view, u32bDataC(alive_toks));
+        //  nuv->tok is a bare ptr+count column of the wdp view (index-
+        //  accessed by wd_lo/wd_hi); desliceing it would redesign wdp.
         u32cs nt_view = {nuv->tok, nuv->tok + nuv->ntok};
-        u8cs  at_text = {u8bDataHead(alive_text),
-                         u8bDataHead(alive_text) + u8bDataLen(alive_text)};
+        a_dup(u8c, at_text, u8bDataC(alive_text));
         size_t nu_text_len = (nuv->ntok > 0) ? wd_hi(nuv, nuv->ntok - 1) : 0;
         a_part(u8c, nt_text, nuv->base, 0, nu_text_len);
         NEILCleanup(edlg, at_view, nt_view, at_text, nt_text);

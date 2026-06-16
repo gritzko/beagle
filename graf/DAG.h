@@ -108,14 +108,6 @@ fun wh128 DAGEntry(u8 ktype, u64 khash,
     };
 }
 
-// --- sha1 helpers ---
-
-fun ok64 DAGsha1FromHex(sha1 *out, char const *hex40) {
-    u8s sb = {out->data, out->data + 20};
-    u8cs hx = {(u8cp)hex40, (u8cp)hex40 + 40};
-    return HEXu8sDrainSome(sb, hx);
-}
-
 // --- LSM stack for index lookups ---
 //
 //  Public DAG queries take `wh128css runs` — a slice over the live
@@ -178,17 +170,20 @@ u64 DAGCommitTree(wh128css runs, u64 commit_h);
 ok64 DAGChildStep(wh128css runs, u64 parent_tree_h, u8csc name,
                   u64 *out_child_h, u8 *out_child_type);
 
-//  Feed the parent edges from `commit_h` (a packed wh64 key, e.g.
-//  `DAGPack(DAG_T_COMMIT, h60)`) into `parents` as full val-wh64s.
-//  Each fed value carries (type, hashlet); decode with DAGType /
-//  DAGHashlet.  Filters on val.type == DAG_T_COMMIT so the
-//  same-key root-tree edge isn't yielded.  Returns DAGNOROOM when
-//  `parents` fills.  Caller pattern:
+//  Collect the parent edges from `commit_h` (a packed wh64 key, e.g.
+//  `DAGPack(DAG_T_COMMIT, h60)`) into `parents`.  On entry `parents`
+//  bounds the writable storage; on return it is the populated slice
+//  `[storage, filled)` — iterate it directly with `$for(wh64, p,
+//  parents)` / `wh64sLen(parents)`.  Each value carries (type,
+//  hashlet); decode with DAGType / DAGHashlet.  Filters on
+//  val.type == DAG_T_COMMIT so the same-key root-tree edge isn't
+//  yielded.  Returns DAGNOROOM when the storage fills.  Caller
+//  pattern:
 //      wh64 storage[16];
 //      wh64s parents = {storage, storage + 16};
 //      DAGParents(idx, parents, DAGPack(DAG_T_COMMIT, h60));
-//      // populated: [storage, parents[0])
-ok64 DAGParents(wh128css index, wh64s parents, wh64 commit_h);
+//      $for(wh64, p, parents) { ... }
+ok64 DAGParents(wh128css index, wh64sp parents, wh64 commit_h);
 
 //  BFS from `tip` over COMMIT_PARENT edges; populate `set` with all
 //  reachable commit hashlets (tip included).  `set` must be a

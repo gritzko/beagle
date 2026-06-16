@@ -27,8 +27,7 @@ static u64 bram_nl_hash_cache = 0;
 
 static u64 bram_nl_hash(void) {
     if (bram_nl_hash_cache == 0) {
-        u8 nl = '\n';
-        u8cs s = {&nl, &nl + 1};
+        a_u8cs(s, '\n');
         bram_nl_hash_cache = RAPHash(s);
     }
     return bram_nl_hash_cache;

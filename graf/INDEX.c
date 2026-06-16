@@ -65,10 +65,9 @@ static ok64 graf_collect(keeper *k, u8 want_type,
     for (u32 r = 0; r < nruns; r++) {
         u8cs raw = {NULL, NULL};
         DOGPupDataAll(raw, k->puppies, r);
-        wh128cp base = (wh128cp)raw[0];
-        size_t len = (size_t)((wh128cp)raw[1] - base);
-        for (size_t i = 0; i < len; i++) {
-            u8 t = keepKeyType(base[i].key);
+        wh128cs view = {(wh128cp)raw[0], (wh128cp)raw[1]};   //  byte view → wh128
+        for (wh128cp e = view[0]; e < view[1]; e++) {
+            u8 t = keepKeyType(e->key);
             if (t != want_type) continue;
             if (n == cap) {
                 cap *= 2;
@@ -76,8 +75,8 @@ static ok64 graf_collect(keeper *k, u8 want_type,
                 if (!nb) { free(buf); return NOROOM; }
                 buf = nb;
             }
-            buf[n].hashlet60 = keepKeyHashlet(base[i].key);
-            buf[n].val = base[i].val;
+            buf[n].hashlet60 = keepKeyHashlet(e->key);
+            buf[n].val = e->val;
             n++;
         }
     }
@@ -141,7 +140,7 @@ static ok64 graf_walk_from_tip(keeper *k, u64 tip_h,
     ok64 rc = OK;
     size_t head = q_start;
     while (head < wh128bDataLen(queue)) {
-        wh128cp cur = wh128bDataHead(queue) + head++;
+        wh128cp cur = wh128bDataAtP(queue, head++);
         u64 h60 = DAGHashlet(cur->key);
 
         //  Already in graf's persisted runs → stop walking this
@@ -168,7 +167,7 @@ static ok64 graf_walk_from_tip(keeper *k, u64 tip_h,
             if (u8csLen(value) < 40) continue;
 
             sha1 psha = {};
-            DAGsha1FromHex(&psha, (char const *)value[0]);
+            sha1FromHex(&psha, value);
             u64 ph = WHIFFHashlet60(&psha);
 
             if (DAGAncestorsHas(seen, ph)) continue;
@@ -199,10 +198,9 @@ ok64 GRAFIndexFromTips(uricp u) {
         $mv(hex_src, probe.path);
     }
     if (!u8csEmpty(hex_src) && DOGIsFullSha(hex_src)) {
-        probe.fragment[0] = hex_src[0];
-        probe.fragment[1] = hex_src[1];
-        probe.query[0] = probe.query[1] = NULL;
-        probe.path[0]  = probe.path[1]  = NULL;
+        u8csMv(probe.fragment, hex_src);
+        u8csMv0(probe.query);
+        u8csMv0(probe.path);
     }
 
     //  TODO: this swallows GRAFResolveTip errors silently, which
@@ -263,7 +261,7 @@ typedef struct {
 static u64 graf_walk_val_to_hashlet(u8csc val_in) {
     a_dup(u8c, val, val_in);
     if (u8csEmpty(val)) return 0;
-    if (val[0][0] == '?') val[0]++;
+    if (val[0][0] == '?') u8csUsed1(val);
     if (u8csLen(val) != 40) return 0;
     sha1 sh = {};
     if (sha1FromHex(&sh, val) != OK) return 0;

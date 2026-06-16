@@ -64,7 +64,7 @@ static u64 graf_filename_seqno(u8cs name) {
     if (n != SEQ_W + sizeof(EXT) - 1) return 0;
     char const *tail = (char const *)name[0] + SEQ_W;
     if (memcmp(tail, EXT, sizeof(EXT) - 1) != 0) return 0;
-    u8cs seq_s = {name[0], name[0] + SEQ_W};
+    a_head(u8c, seq_s, name, SEQ_W);
     ok64 v = 0;
     if (RONutf8sDrain(&v, seq_s) != OK) return 0;
     return (u64)v;
@@ -135,10 +135,8 @@ void GRAFRefreshView(void) {
         u8cs raw = {};
         DOGPupDataAll(raw, g->puppies, i);
         if (raw[0] == NULL) continue;
-        wh128cp base = (wh128cp)raw[0];
-        size_t bytes = (size_t)(raw[1] - raw[0]);
-        g->runs[g->runs_n][0] = base;
-        g->runs[g->runs_n][1] = base + bytes / sizeof(wh128);
+        wh128cs view = {(wh128cp)raw[0], (wh128cp)raw[1]};
+        wh128csMv(g->runs[g->runs_n], view);
         g->runs_n++;
     }
 }

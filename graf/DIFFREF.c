@@ -362,9 +362,8 @@ static ok64 diffref_wt_step(ulogreccp recs, u32 n, void *ctx_) {
             sha1 wt_sha = {};
             KEEPObjSha(&wt_sha, DOG_OBJ_BLOB, wd);
             sha1 base_sha = {};
-            u8s sb = {base_sha.data, base_sha.data + 20};
             a_dup(u8c, hx, base->uri.fragment);
-            b8 same = (HEXu8sDrainSome(sb, hx) == OK &&
+            b8 same = (sha1FromHex(&base_sha, hx) == OK &&
                        sha1Eq(&wt_sha, &base_sha));
             FILEUnMap(wt_mapped);
             if (same) { u8aRewind(ABC_BASS, mark); return OK; }

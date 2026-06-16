@@ -166,7 +166,7 @@ static u32 graflog_count_from_frag(uricp u) {
 
 //  Parse "Name <email> ts tz" into (name, ts).  Best-effort.
 static void graflog_parse_author(u8cs value, u8cs name_out, i64 *ts_out) {
-    name_out[0] = name_out[1] = NULL;
+    u8csMv0(name_out);
     *ts_out = 0;
     if ($empty(value)) return;
 
@@ -268,7 +268,7 @@ static ok64 graflog_emit_one(log_ctx *lx, sha1cp csha, u8cs body) {
 
 static void graflog_strip_dotslash(u8cs path) {
     if ($len(path) >= 2 && path[0][0] == '.' && path[0][1] == '/') {
-        path[0] += 2;
+        u8csUsed(path, 2);
     }
 }
 
@@ -302,14 +302,12 @@ static ok64 graflog_branch(log_ctx *lx, keeper *k, sha1cp tip,
         //  trigger `graf get`) — fall back to parsing the commit
         //  body we already fetched.  Keeps the log self-sufficient
         //  on freshly-fetched history.
-        wh64 par_buf[2] = {};
-        wh64s parents = {par_buf, par_buf + 2};
-        wh64 *pbase = parents[0];
+        a_pad0(wh64, par_buf, 2);
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
-        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, cur_h40));
-        if (parents[0] != pbase) {
-            cur_h40 = DAGHashlet(*pbase);
+        DAGParents(runs, par_buf_idle, DAGPack(DAG_T_COMMIT, cur_h40));
+        if (!wh64sEmpty(par_buf_idle)) {
+            cur_h40 = DAGHashlet(*wh64sHead(par_buf_idle));
             continue;
         }
         //  DAG miss → parse commit body for first `parent <40hex>`.
@@ -440,22 +438,19 @@ static ok64 graflog_file(log_ctx *lx, keeper *k, sha1cp tip,
         slot[0] = c_present ? 1 : 0;
         if (c_present) memcpy(slot + 1, csha.data, 20);
 
-        wh64  par_buf[16] = {};
-        wh64s parents = {par_buf, par_buf + 16};
-        wh64 *pbase = parents[0];
-        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, h40));
-        u32 npar = (u32)(parents[0] - pbase);
+        a_pad0(wh64, par_buf, 16);
+        DAGParents(runs, par_buf_idle, DAGPack(DAG_T_COMMIT, h40));
 
         b8 keep_it;
-        if (npar == 0) {
+        if (wh64sEmpty(par_buf_idle)) {
             keep_it = c_present;
         } else {
             //  Differs from every parent → real change.  Bail to NO
             //  the moment a parent is TREESAME for `path`.  Parents
             //  always sit at a lower topo idx; back-scan ordered[].
             keep_it = YES;
-            for (u32 pi = 0; pi < npar; pi++) {
-                u64 ph40 = DAGHashlet(pbase[pi]);
+            $for(wh64, p, par_buf_idle) {
+                u64 ph40 = DAGHashlet(*p);
                 b8 found_idx = NO;
                 u8 *p_slot = NULL;
                 for (u32 j = i; j > 0; j--) {
@@ -579,14 +574,12 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
         }
 
         //  First-parent walk — branches are linear (https://replicated.wiki/html/wiki/Verbs.html Inv. 2).
-        wh64 par_buf[2] = {};
-        wh64s parents = {par_buf, par_buf + 2};
-        wh64 *pbase = parents[0];
+        a_pad0(wh64, par_buf, 2);
         wh128css runs = {NULL, NULL};
         GRAFRuns(runs);
-        DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, cur_h40));
-        if (parents[0] == pbase) break;
-        cur_h40 = DAGHashlet(*pbase);
+        DAGParents(runs, par_buf_idle, DAGPack(DAG_T_COMMIT, cur_h40));
+        if (wh64sEmpty(par_buf_idle)) break;
+        cur_h40 = DAGHashlet(*wh64sHead(par_buf_idle));
     }
 
     ok64 ret = OK;
@@ -684,7 +677,7 @@ static ok64 graf_head_pick_remote_cb(refcp r, void *ctx) {
     //  val = `?<40-hex>` (REFS layout); strip the leading `?`.
     u8cs val = {};
     u8csMv(val, r->val);
-    if (u8csLen(val) > 0 && val[0][0] == '?') val[0]++;
+    if (u8csLen(val) > 0 && val[0][0] == '?') u8csUsed1(val);
     if (u8csLen(val) != 40) return OK;
     if (sha1FromHex(&rt->sha, val) != OK) return OK;
     rt->found = YES;

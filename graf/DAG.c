@@ -139,8 +139,7 @@ static ok64 dag_index_write_leaf(graf *g, wh128cs run) {
     call(graf_leaf_dir, leafdir, leaf);
     call(FILEMakeDirP, $path(leafdir));
     a_cstr(ext, GRAF_IDX_EXT);
-    size_t bytes = $len(run) * sizeof(wh128);
-    u8cs data = {(u8cp)run[0], (u8cp)run[0] + bytes};
+    u8cs data = {(u8cp)run[0], (u8cp)run[1]};   //  byte view over run
     call(GRAFPupCreateNext, $path(leafdir), ext, data);
     GRAFRefreshView();
     done;
@@ -171,11 +170,9 @@ ok64 DAGRange(wh128css hits, wh128css runs, wh64 key) {
 }
 
 u64 DAGCommitTree(wh128css runs, u64 commit_h) {
-    wh128cs slots[MSET_MAX_LEVELS] = {};
-    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
-    wh128cs *base = hits[0];
-    if (DAGRange(hits, runs, DAGPack(DAG_T_COMMIT, commit_h)) != OK) return 0;
-    for (wh128cs *r = base; r < hits[0]; r++) {
+    a_pad(wh128cs, hits, MSET_MAX_LEVELS);
+    if (DAGRange(hits_idle, runs, DAGPack(DAG_T_COMMIT, commit_h)) != OK) return 0;
+    $for(wh128cs, r, hits_data) {
         for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
             if (DAGType(e->val) == DAG_T_TREE) return DAGHashlet(e->val);
         }
@@ -196,14 +193,12 @@ ok64 DAGChildStep(wh128css runs, u64 parent_tree_h, u8csc name,
     //  mean a 60-bit child-path-hash collision: refuse (DAGAMBIG) so the
     //  caller falls back to a keeper inflate for that one step.
     u64 key_h = DOGChildPathHash(name, parent_tree_h);
-    wh128cs slots[MSET_MAX_LEVELS] = {};
-    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
-    wh128cs *base = hits[0];
-    call(DAGRange, hits, runs, DAGPack(DAG_T_TREE, key_h));
+    a_pad(wh128cs, hits, MSET_MAX_LEVELS);
+    call(DAGRange, hits_idle, runs, DAGPack(DAG_T_TREE, key_h));
 
     b8 got = NO;
     wh64 seen_val = 0;
-    for (wh128cs *r = base; r < hits[0]; r++) {
+    $for(wh128cs, r, hits_data) {
         for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
             if (!got) { seen_val = e->val; got = YES; }
             else if (e->val != seen_val) return DAGAMBIG;
@@ -215,18 +210,19 @@ ok64 DAGChildStep(wh128css runs, u64 parent_tree_h, u8csc name,
     done;
 }
 
-ok64 DAGParents(wh128css index, wh64s parents, wh64 commit_h) {
+ok64 DAGParents(wh128css index, wh64sp parents, wh64 commit_h) {
     sane(parents);
-    wh128cs slots[MSET_MAX_LEVELS] = {};
-    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
-    wh128cs *base = hits[0];
-    call(DAGRange, hits, index, commit_h);
-    for (wh128cs *r = base; r < hits[0]; r++) {
+    wh64s writer;
+    wh64sFork(parents, writer);
+    a_pad(wh128cs, hits, MSET_MAX_LEVELS);
+    call(DAGRange, hits_idle, index, commit_h);
+    $for(wh128cs, r, hits_data) {
         for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
             if (DAGType(e->val) != DAG_T_COMMIT) continue;
-            if (wh64sFeed1(parents, e->val) != OK) return DAGNOROOM;
+            if (wh64sFeed1(writer, e->val) != OK) return DAGNOROOM;
         }
     }
+    parents[1] = writer[0];   //  populated range is [head, filled)
     done;
 }
 
@@ -251,11 +247,9 @@ ok64 DAGEdgesOf(wh128css runs, u64 commit_h, u8 kind,
     sane(out && nout);
     *nout = 0;
     if (commit_h == 0) done;
-    wh128cs slots[MSET_MAX_LEVELS] = {};
-    wh128css hits = {slots, slots + MSET_MAX_LEVELS};
-    wh128cs *base = hits[0];
-    call(DAGRange, hits, runs, DAGPack(DAG_T_COMMIT, commit_h));
-    for (wh128cs *r = base; r < hits[0]; r++) {
+    a_pad(wh128cs, hits, MSET_MAX_LEVELS);
+    call(DAGRange, hits_idle, runs, DAGPack(DAG_T_COMMIT, commit_h));
+    $for(wh128cs, r, hits_data) {
         for (wh128cp e = (*r)[0]; e < (*r)[1]; e++) {
             if (DAGType(e->val) != kind) continue;
             if (*nout >= cap) return DAGNOROOM;
@@ -314,9 +308,8 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
     //  instead of swallowing the overflow.  No stdio here (see file head).
     b8 overflow = NO;
     while (head < wh128bDataLen(queue)) {
-        wh128cp cur = wh128bDataHead(queue) + head;
+        wh128cp cur = wh128bDataAtP(queue, head++);
         u64 c = DAGHashlet(cur->key);
-        head++;
 
         //  Helper closure: try to add `nh` to the set.  When `traverse`
         //  is YES, also enqueue for further BFS expansion.  Skip-set
@@ -361,9 +354,7 @@ ok64 DAGAncestorsTunable(Bwh128 set, wh128css runs, u64 tip,
                         a_cstr(par_kw, "parent");
                         if (u8csEq(field, par_kw) && u8csLen(value) >= 40) {
                             sha1 par_sha = {};
-                            u8s  bin = {par_sha.data, par_sha.data + 20};
-                            u8cs hx  = {value[0], value[0] + 40};
-                            if (HEXu8sDrainSome(bin, hx) == OK) {
+                            if (sha1FromHex(&par_sha, value) == OK) {
                                 u64 ph = WHIFFHashlet60(&par_sha);
                                 DAG_TUN_VISIT(ph, YES);
                                 if (overflow) break;
@@ -463,13 +454,13 @@ typedef struct {
 //  shape topo_frame stores.  Capped at `cap` slots.
 static u32 topo_parents_of(wh128css runs, u64 commit_h,
                            u64 *out, u32 cap) {
-    wh64 buf[DAG_TOPO_MAX_PARENTS];
-    wh64s parents = {buf, buf + DAG_TOPO_MAX_PARENTS};
-    wh64 *base = parents[0];
-    DAGParents(runs, parents, DAGPack(DAG_T_COMMIT, commit_h));
-    u32 n = (u32)(parents[0] - base);
-    if (n > cap) n = cap;
-    for (u32 i = 0; i < n; i++) out[i] = DAGHashlet(base[i]);
+    a_pad(wh64, buf, DAG_TOPO_MAX_PARENTS);
+    DAGParents(runs, buf_idle, DAGPack(DAG_T_COMMIT, commit_h));
+    u32 n = 0;
+    $for(wh64, p, buf_idle) {
+        if (n >= cap) break;
+        out[n++] = DAGHashlet(*p);
+    }
     return n;
 }
 
@@ -748,23 +739,22 @@ static ok64 dag_compact(graf *g) {
     if (nfiles < 2) done;
 
     //  Build typed view from puppy data slices.
-    wh128cs runs[MSET_MAX_LEVELS] = {};
-    u32 nview = 0;
-    for (u32 i = 0; i < nfiles && nview < MSET_MAX_LEVELS; i++) {
+    a_pad(wh128cs, runs, MSET_MAX_LEVELS);
+    for (u32 i = 0; i < nfiles; i++) {
         u8cs raw = {};
         DOGPupData(raw, g->puppies, i);
         if (raw[0] == NULL) continue;
-        runs[nview][0] = (wh128cp)raw[0];
-        runs[nview][1] = (wh128cp)raw[1];
-        nview++;
+        wh128cs view = {(wh128cp)raw[0], (wh128cp)raw[1]};
+        if (wh128cssFeed1(runs_idle, view) != OK) break;
     }
-    wh128css stack = {runs, runs + nview};
+    //  Writable view over the filled rows; HITwh128Compact shrinks it
+    //  in place (moves stack[1], rewrites the merged row's cells).
+    a_dup(wh128cs, stack, runs_data);
 
     if (HITwh128IsCompact(stack)) done;
 
     size_t total = 0;
-    for (u32 i = 0; i < nview; i++)
-        total += (size_t)(runs[i][1] - runs[i][0]);
+    $for(wh128cs, r, runs_data) total += wh128csLen(*r);
 
     a_carve(wh128, cbuf, total);
     wh128 *base = cbuf[0];
@@ -986,19 +976,19 @@ ok64 GRAFDagUpdate(u8 obj_type, sha1cp sha, u8cs blob) {
         while (GITu8sDrainCommit(scan, field, value) == OK) {
             if (u8csEmpty(field)) break;
             if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                DAGsha1FromHex(&tree_sha, (char const *)value[0]);
+                sha1FromHex(&tree_sha, value);
                 got_tree = YES;
             } else if (u8csEq(field, GIT_FIELD_PARENT) && u8csLen(value) >= 40
                        && npar < 16) {
-                DAGsha1FromHex(&parents[npar], (char const *)value[0]);
+                sha1FromHex(&parents[npar], value);
                 npar++;
             } else if (u8csEq(field, GIT_FIELD_FOSTER) && u8csLen(value) >= 40
                        && nfost < 16) {
-                DAGsha1FromHex(&fosters[nfost], (char const *)value[0]);
+                sha1FromHex(&fosters[nfost], value);
                 nfost++;
             } else if (u8csEq(field, GIT_FIELD_PICKED) && u8csLen(value) >= 40
                        && npick < 16) {
-                DAGsha1FromHex(&pickeds[npick], (char const *)value[0]);
+                sha1FromHex(&pickeds[npick], value);
                 npick++;
             }
         }
