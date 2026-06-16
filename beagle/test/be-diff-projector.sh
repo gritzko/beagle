@@ -150,10 +150,33 @@ want_all "$T/H.out" '^--- a/a\.txt$' '\+hello universe' \
                     '^--- a/b\.txt$' '\+one two three'
 rm -f scratch.txt
 
+# --- Case I: a binary blob neither breaks nor truncates the tree diff ---
+#  BLAME-006b.  A committed binary file (NUL byte in its first 8000 bytes)
+#  must NOT be token-diffed: the old path tokenised it (O(filesize), 3.2 s
+#  on a 9.5 MB blob) and then dropped every hunk (the side-token stream
+#  overran a fixed carve → NOROOM), silently TRUNCATING all later files in
+#  the same whole-tree diff.  The fix short-circuits binary to the same
+#  empty result, so (1) the binary itself contributes nothing and (2) the
+#  text file committed AFTER it (alphabetically `z_after.txt`) still
+#  appears.  This is the regression guard for the root commit-show.
+CASE=I
+# v2 → v3: add a binary blob, plus a text file sorted AFTER it so a
+# truncation at the binary would drop the text file from the diff.
+printf 'PNG\0\0\0bin\0bytes\0here\0\0\0' > pic.bin
+echo 'tail text added at v3' > z_after.txt
+be put pic.bin z_after.txt >/dev/null
+be post -m v3 '?v3' >/dev/null
+be get 'diff:?v2#v3' > "$T/I.out" 2>&1 || true
+#  The binary file is silently skipped (no token diff for binary).
+grep -q 'pic\.bin' "$T/I.out" && fail "I.out should NOT token-diff binary pic.bin"
+#  The text file committed AFTER the binary must NOT be truncated away.
+want_all "$T/I.out" '^--- a/z_after\.txt$' '\+tail text added at v3'
+rm -f pic.bin z_after.txt
+
 # --- Summary -----------------------------------------------------
 echo ""
 if [ "$FAIL" = "0" ]; then
-    echo "=== be-diff-projector OK (8 cases) ==="
+    echo "=== be-diff-projector OK (9 cases) ==="
 else
     echo "=== be-diff-projector FAIL ($FAIL case(s)) ==="
     exit 1

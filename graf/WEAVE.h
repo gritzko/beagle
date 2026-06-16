@@ -125,6 +125,14 @@ fun b8 WEAVESetHas(u32 const *set, u32 n, u32 v) {
 //  token (seq=src, pos=token-index), R={}.  src=0 marks the spine.
 ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src);
 
+//  BLAME-006b: as WEAVEFromBlob, but stamps every token with a single
+//  remover `rm` (rm==0 ⇒ none, i.e. WEAVEFromBlob).  Lets a one-sided
+//  (vs-empty) diff build the RESULT weave directly: all-INS folds the
+//  newer blob with rm=0 (alive); all-DEL folds the older blob with
+//  src=base, rm=wt (born-then-removed) — skipping the second
+//  WEAVEFromBlob + WEAVEDiff decode/re-put for an O(repo) tree diff.
+ok64 WEAVEFromBlobRm(weave *w, u8cs data, u8cs ext, u32 src, u32 rm);
+
 //  dst = src diffed against nu.  INS tokens are copied from nu with a
 //  fresh birth-id (seq=src_commit, pos=insert-ordinal); DEL tokens gain
 //  src_commit in their R-set; surviving tokens keep their birth-id.

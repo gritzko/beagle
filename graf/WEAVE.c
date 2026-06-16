@@ -408,13 +408,22 @@ typedef struct {
     weavebld *b;
     u8cp      base;
     u32       src;
+    u32       rm;        // single remover seq folded per token (0 = none)
     u32       pos;       // running token ordinal
     u32       covered;
 } weave_blob_ctx;
 
 static ok64 weave_blob_emit(weave_blob_ctx *ctx, u8csc seg) {
     sane(ctx);
-    u32cs rs = {NULL, NULL};
+    //  BLAME-006b: a one-sided diff (vs-empty) builds the result weave
+    //  straight from the lone blob, folding the remover here instead of
+    //  routing through a second WEAVEFromBlob + WEAVEDiff decode/re-put.
+    //  rm==0 ⇒ alive token (all-INS side); rm!=0 ⇒ token born at `src`,
+    //  removed at `rm` (all-DEL side) — same birth-id/R-set wd_emit_del
+    //  would stamp, so the emit is byte-identical.
+    a_pad(u32, one, 1);
+    if (ctx->rm) call(u32bFeed1, one, ctx->rm);
+    a_dup(u32c, rs, u32bDataC(one));
     call(WEAVEBldPut, ctx->b, seg, ctx->src, ctx->pos, rs);
     ctx->pos++;
     done;
@@ -444,13 +453,13 @@ static ok64 weave_blob_cb(u8 tag, u8cs tok, void *vctx) {
     done;
 }
 
-ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
+ok64 WEAVEFromBlobRm(weave *w, u8cs data, u8cs ext, u32 src, u32 rm) {
     sane(w);
     weavebld b;
     WEAVEBldInit(&b, w);
     if ($empty(data)) done;
 
-    weave_blob_ctx ctx = {.b = &b, .base = data[0], .src = src, .pos = 0, .covered = 0};
+    weave_blob_ctx ctx = {.b = &b, .base = data[0], .src = src, .rm = rm, .pos = 0, .covered = 0};
     TOKstate st = {.data = {data[0], data[1]}, .cb = weave_blob_cb, .ctx = &ctx};
     //  TOKLexer returns the callback's ok64.  weave_blob_cb fails only
     //  when WEAVEBldPut overflows (NOROOM) — a real error we must not
@@ -472,6 +481,10 @@ ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
         lo = hi;
     }
     done;
+}
+
+ok64 WEAVEFromBlob(weave *w, u8cs data, u8cs ext, u32 src) {
+    return WEAVEFromBlobRm(w, data, ext, src, 0);
 }
 
 // ============================================================

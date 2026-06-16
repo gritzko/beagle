@@ -133,6 +133,25 @@ static b8 wt_in_to(u32 c, void *ctx) {
     return YES;
 }
 
+//  BLAME-006b: git's binary heuristic — a blob is binary iff a NUL byte
+//  appears in its first 8000 bytes.  The token lexer (`TXTTLexer`) shreds
+//  a binary blob into millions of tiny tokens (a 9.5 MB PNG = 3.2 s of
+//  pure tokenisation), and the unified-diff emitter then drops every hunk
+//  (the side-token stream overruns its fixed carve → NOROOM), so the diff
+//  output is EMPTY anyway.  Detecting binary up front lets us skip both
+//  the tokenise and the doomed emit while leaving the output byte-for-byte
+//  unchanged (still empty for the binary file).
+#define DIFFREF_BIN_PROBE 8000
+static b8 diffref_is_binary(u8csc data) {
+    if (u8csEmpty(data)) return NO;
+    size_t n = u8csLen(data);
+    if (n > DIFFREF_BIN_PROBE) n = DIFFREF_BIN_PROBE;
+    u8cs probe;
+    u8csHeadS(data, probe, n);
+    $for (u8c, b, probe) if (*b == 0) return YES;
+    return NO;
+}
+
 ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
                     b8 full, u8cs navver) {
     sane($ok(name));
@@ -142,6 +161,12 @@ ok64 GRAFDiff2Layer(u8cs name, u8cs ext, u8cs from_data, u8cs to_data,
     //  of an unchanged file is just `cat:` — `diff:` has nothing to
     //  show, so the skip holds in both scopes.
     if (u8csEq(from_data, to_data)) return OK;
+
+    //  BLAME-006b: binary blob on either side → no meaningful token diff;
+    //  skip the tokenise (slow) and the doomed emit (empty) and report
+    //  nothing, exactly as the unified-diff path would have.
+    if (diffref_is_binary(from_data) || diffref_is_binary(to_data))
+        return OK;
 
     call(GRAFArenaInit);
 
