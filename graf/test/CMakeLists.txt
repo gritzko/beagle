@@ -128,6 +128,19 @@ set_tests_properties(GRAFblameruns PROPERTIES
     TIMEOUT 60
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblameruns")
 
+#  blame-readd.sh — BLAME-006a: a file DELETED then RE-ADDED with
+#  structurally-similar content (title + blank lines) must blame to the
+#  re-add commit, never leak the title/blanks back to the ROOT commit.
+#  Pre-fix GRAFFileWeave skipped the delete (BLAME.c:480/492 continue)
+#  instead of folding an empty all-delete layer, so old tokens stayed
+#  alive and the readd inherited their root seq via the WEAVE EQ branch.
+add_test(NAME GRAFblamereadd
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/blame-readd.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(GRAFblamereadd PROPERTIES
+    TIMEOUT 60
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=GRAFblamereadd")
+
 if (WITH_SSH)
     #  mill-merges.sh — 3-way merge treadmill against curated merges in
     #  ~/src/git.  Each case fetches the two parents via keeper (ssh

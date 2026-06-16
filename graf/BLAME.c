@@ -470,6 +470,17 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         //  tree_hs[i] != 0 here; the fallback covers a missing array.
         u64 cur_oids[BLAME_MAX_PATH_LEV];
         u32 cur_n = 0;
+        //  BLAME-006a: a delete fold.  When the path is ABSENT at this
+        //  commit but the file was ALIVE in the last folded layer, we do
+        //  NOT skip — we fold an EXPLICIT EMPTY (all-delete) layer so every
+        //  live token DIES at this commit (seq = sc).  Otherwise the old
+        //  tokens stay alive and a later RE-ADD with structurally-similar
+        //  content (a title + blank lines) inherits their seq via the
+        //  WEAVE EQ keep-seq branch — root mis-attribution.  An empty
+        //  `new_data` drives WEAVEFromBlob → empty wnu → the nlen==0
+        //  all-delete path in weave_diff_core.  When the file was never
+        //  present yet (!have_prev), there is nothing to delete — skip.
+        b8 is_delete = NO;
         if (tree_hs && tree_hs[i] != 0) {
             u64 leaf_h = 0;
             int dr = blame_descend_leaf(&leaf_h, tree_hs[i], filepath, runs,
@@ -477,26 +488,44 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
                                         prev_oids, prev_n, have_prev,
                                         cur_oids, &cur_n, is_anchor,
                                         &dbg_treeinfl);
-            if (dr == BLAME_DESC_ABSENT) continue;
-            if (dr == BLAME_DESC_SAME)   continue;   // unchanged (anchors never SAME)
-            u8bReset(*cur_blob);
-            u8 bt = 0;
-            if (KEEPGet(leaf_h, DAG_H60_HEXLEN, *cur_blob, &bt) != OK ||
-                bt != DOG_OBJ_BLOB)
-                continue;
-            dbg_blobfetch++;
+            if (dr == BLAME_DESC_ABSENT) {
+                if (!have_prev) continue;   // never present — nothing to kill
+                is_delete = YES;
+                u8bReset(*cur_blob);        // empty layer = all-delete
+                cur_n = 0;
+            } else if (dr == BLAME_DESC_SAME) {
+                continue;   // unchanged (anchors never SAME)
+            } else {
+                u8bReset(*cur_blob);
+                u8 bt = 0;
+                if (KEEPGet(leaf_h, DAG_H60_HEXLEN, *cur_blob, &bt) != OK ||
+                    bt != DOG_OBJ_BLOB)
+                    continue;
+                dbg_blobfetch++;
+            }
         } else {
             //  Fallback: no index tree info — old commit-based fetch +
             //  byte-dedup (correct, just not faster).
             u8bReset(*cur_blob);
-            if (GRAFBlobAtCommit(*cur_blob, commit_h, filepath) != OK) continue;
-            dbg_blobfetch++;
-            if (have_prev && !is_anchor) {
-                a_dup(u8c, cur_data,  u8bDataC(*cur_blob));
-                a_dup(u8c, prev_data, u8bDataC(*prev_blobp));
-                if (u8csEq(cur_data, prev_data)) continue;
+            if (GRAFBlobAtCommit(*cur_blob, commit_h, filepath) != OK) {
+                //  Absent at this commit.  Fold a delete iff the file was
+                //  alive in the last folded layer (else nothing to kill).
+                if (!have_prev) continue;
+                is_delete = YES;
+                u8bReset(*cur_blob);
+                cur_n = 0;
+            } else {
+                dbg_blobfetch++;
+                if (have_prev && !is_anchor) {
+                    a_dup(u8c, cur_data,  u8bDataC(*cur_blob));
+                    a_dup(u8c, prev_data, u8bDataC(*prev_blobp));
+                    if (u8csEq(cur_data, prev_data)) continue;
+                }
             }
         }
+        //  A delete on top of an already-empty layer is a no-op (the file
+        //  is gone in both); skip to avoid an empty fold that bumps seq.
+        if (is_delete && u8bDataLen(*prev_blobp) == 0) continue;
 
         u32 sc = (u32)commit_h;
         if (cb) {
@@ -534,8 +563,12 @@ ok64 GRAFFileWeave(weave *wsrc, weave *wdst, weave *wnu,
         have_prev = YES;
         if (tree_hs) prev_root_h = tree_hs[i];
         //  Remember this folded version's path-OID chain for the next
-        //  commit's early-stop comparison.
-        if (cur_n > 0 && cur_n < BLAME_MAX_PATH_LEV) {
+        //  commit's early-stop comparison.  A delete fold leaves no path
+        //  (cur_n == 0) — clear prev_n so the next descent can't false-
+        //  match a stale chain and must descend to the leaf (BLAME-006a).
+        if (is_delete) {
+            prev_n = 0;
+        } else if (cur_n > 0 && cur_n < BLAME_MAX_PATH_LEV) {
             for (u32 q = 0; q <= cur_n; q++) prev_oids[q] = cur_oids[q];
             prev_n = cur_n;
         }
