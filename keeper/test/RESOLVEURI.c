@@ -61,6 +61,24 @@ static ok64 check_ref(char const *in, char const *expect) {
     done;
 }
 
+//  Run one REFSResolveURI case that must be REFUSED (GET-023): a
+//  malformed ref token (trailing-dots `<sha>...`, non-hex non-branch
+//  word) must NOT silently resolve to a parent / trunk / nearest prefix.
+static ok64 check_ref_refuse(char const *in) {
+    sane(in);
+    a_cstr(in_s, in);
+    u8 pad[320];
+    u8s out = {pad, pad + sizeof(pad)};
+    ok64 o = REFSResolveURI(out, in_s);
+    if (o == OK) {
+        u8cs got = {pad, out[0]};
+        fprintf(stderr, "REFSResolveURI('%s'): expected refuse, got '%.*s'\n",
+                in, (int)u8csLen(got), (char const *)got[0]);
+        fail(FAIL);
+    }
+    done;
+}
+
 //  Run one KEEPResolveURI case (full URI in / out).
 static ok64 check_uri(char const *in, char const *expect) {
     sane(in && expect);
@@ -168,6 +186,24 @@ ok64 RESOLVEURItest() {
         char in_hl[16];
         snprintf(in_hl, sizeof in_hl, "?%.8s", S0);
         call(check_ref, in_hl, e_detach);
+    }
+
+    //  GET-023: classify-or-reject.  A full sha / hashlet with a trailing
+    //  non-hex tail (`<sha>.`, `<sha>..`, `<sha>...`) is neither a valid
+    //  object id nor a branch — it must be REFUSED, never silently
+    //  resolved to a parent / trunk / nearest-prefix.  A random non-hex
+    //  non-branch word is likewise refused.
+    {
+        char dot1[64], dot2[64], dot3[64], hl_dot[24];
+        snprintf(dot1, sizeof dot1, "?%s.",   S0);
+        snprintf(dot2, sizeof dot2, "?%s..",  S0);
+        snprintf(dot3, sizeof dot3, "?%s...", S0);
+        snprintf(hl_dot, sizeof hl_dot, "?%.8s...", S0);
+        call(check_ref_refuse, dot1);
+        call(check_ref_refuse, dot2);
+        call(check_ref_refuse, dot3);
+        call(check_ref_refuse, hl_dot);
+        call(check_ref_refuse, "?zzzzzzzz");   // non-hex, no such branch
     }
 
     //  idempotent: already-canonical input re-emits verbatim

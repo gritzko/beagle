@@ -1903,7 +1903,13 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
 
     // Try fragment (#hash) or query (?ref)
     if (!u8csEmpty(target->fragment)) {
-        // Fragment = hex SHA prefix
+        // Fragment = hex SHA prefix.  GET-023: classify-or-reject — a
+        // fragment with trailing junk (`#<sha>...`) is neither a full sha
+        // nor a hashlet; `whiff_hex_hashlet` would silently ignore the
+        // non-hex tail and mis-decode, prefix-matching the WRONG object.
+        // Refuse loudly instead of guessing.
+        u8cs fragv = {target->fragment[0], target->fragment[1]};
+        if (!DOGIsFullSha(fragv) && !DOGIsHashlet(fragv)) fail(KEEPFAIL);
         u64 hashlet = WHIFFHexHashlet60(target->fragment);
         u8 type = 0;
         u8bReset(k->buf1);

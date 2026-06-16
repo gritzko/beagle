@@ -29,7 +29,6 @@
 #include <unistd.h>
 
 #include "abc/B.h"
-#include "abc/HEX.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/URI.h"
@@ -99,10 +98,26 @@ ok64 GRAFResolveTip(uricp u, sha1 *out) {
         u8cs no_cur = {};
         ok64 fr = KEEPResolveRef(out, frag, no_cur);
         if (fr == OK) return OK;
-        //  Fall through to query/cur-fallback handling on miss — a
-        //  fragment that doesn't resolve as hex / ref (e.g. `#msg-
-        //  search`, future msg-substring) isn't a "tip" question and
-        //  is handled elsewhere.
+        //  GET-023: a fragment is either a valid hex object-id
+        //  (full sha / hashlet — resolved above) or it is NOT one;
+        //  there is no "partial/spoilt hex" middle state.  When the
+        //  fragment is the SOLE selector (empty query — no `?ref` to
+        //  scope by) and KEEPResolveRef did not resolve it, the only
+        //  legitimate non-object form is a `#<N>` / `#Ln` COUNT, which
+        //  caps the walk and leaves the tip to the cur/trunk fallback.
+        //  Anything else (`#<sha>...` trailing dots, `#zzzz`, a stray
+        //  phrase) is an UNRECOGNISED tip selector: falling through to
+        //  REFSResolve would silently match the trunk row and hide the
+        //  typo, so refuse instead.  A `#<N>` count carried alongside a
+        //  real NON-EMPTY `?ref` query scopes the count there; its tip
+        //  comes from the query, handled by the fallthrough below.
+        if (u8csEmpty(u->query)) {
+            u8csc fr_c = {frag[0], frag[1]};
+            if (HUNKu8sFragSplit(fr_c, NULL) == 0) return fr;
+        }
+        //  Fall through to query/cur-fallback handling: a `#<N>` count
+        //  (tip from cur/trunk) or a `#<N>` count alongside a real
+        //  `?ref` query (tip from the query) is resolved below.
     }
 
     //  Bare `log:` with no query — fall back to the wt's current tip

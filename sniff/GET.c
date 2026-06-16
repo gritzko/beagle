@@ -2066,6 +2066,40 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     //  to the at-log branch resume below).
     b8 has_q = (u->query[0] != NULL);
 
+    //  GET-023: a present-but-EMPTY query (`?`) with a `#fragment` is the
+    //  detached form `?#<sha>` — the fragment IS the checkout target.
+    //  REFSResolve below only ever reads the QUERY (it matches the trunk
+    //  row on an empty `?` and returns trunk's tip), so without this arm
+    //  the fragment is silently dropped and the get lands on TRUNK no
+    //  matter what `<sha>` was asked for.  Worse, a malformed fragment
+    //  (`?#<sha>...` trailing dots — `whiff_hex_hashlet` ignores the
+    //  non-hex tail and GETCheckout's own prefix lookup mis-aligns) used
+    //  to resolve to the WRONG commit with exit 0.  Classify the fragment
+    //  as a valid full sha or hashlet; resolve to it, else REFUSE — never
+    //  fall through to the trunk lookup.  A NON-empty query keeps its
+    //  fragment as a baseline-blob hint (3-way merge), handled below.
+    if (has_q && $empty(u->query) && !$empty(u->fragment)) {
+        u8cs frag = {u->fragment[0], u->fragment[1]};
+        if (!DOGIsFullSha(frag) && !DOGIsHashlet(frag)) {
+            fprintf(stderr,
+                "sniff: get: '#%.*s' is not a valid commit ref "
+                "(full sha, hashlet, or branch)\n",
+                (int)u8csLen(frag), (char const *)frag[0]);
+            fail(SNIFFFAIL);
+        }
+        //  Source URI is the detached-sha form `?<frag>`: compose it
+        //  through the URI machinery (query = frag, no other component)
+        //  rather than hand-concatenating the `?` sigil.  URIutf8Feed
+        //  emits `?<frag>` for a query-only uri (URI.c:85), error-checked
+        //  via PRO.h call(), matching the composer pattern below (:2181).
+        uri fsrc_u = {};
+        u8csMv(fsrc_u.query, frag);
+        a_pad(u8, fsrc, 64);
+        call(URIutf8Feed, u8bIdle(fsrc), &fsrc_u);
+        a_dup(u8c, fsource, u8bDataC(fsrc));
+        return GETCheckout(reporoot, frag, fsource);
+    }
+
     //  Pre-resolve relative refs (`?./X`, `?../X`, `?..`).  Storage
     //  must outlive the call (REFSResolve and GETCheckout both
     //  consume slices into u->query / u->data); _reluri rebases

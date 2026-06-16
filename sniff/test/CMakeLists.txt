@@ -56,6 +56,15 @@ add_test(NAME SNIFFrelref
 set_tests_properties(SNIFFrelref PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFrelref")
 
+#  fragref.sh — GET-023: `be get '?#<sha>'` honours the fragment and a
+#  malformed fragment (`?#<sha>...` trailing dots, non-hex word) is
+#  REFUSED instead of silently landing on the wrong commit / trunk.
+add_test(NAME SNIFFfragref
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/fragref.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFfragref PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFfragref")
+
 #  branchdel.sh — `sniff delete ?branch` writes a tombstone +
 #  safety checks (current-wt, descendants, resurrection).
 add_test(NAME SNIFFbranchdel
