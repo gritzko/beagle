@@ -585,7 +585,19 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
 
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data, NO, navver);
+        //  DIFF-008: each per-file diff runs in its OWN BASS frame.
+        //  `call()` snapshots ABC_BASS on entry and rewinds it on return,
+        //  so GRAFDiff2Layer's internal weave scratch (the 16 MB outtext
+        //  carve, WEAVE_DECODE acquires, ...) dies before the next file —
+        //  bounding scratch to one file's worth, not the cumulative tree.
+        //  A bare unwrapped call accumulated until `a_carve` NOROOM'd and
+        //  every later file's diff was silently dropped (tail truncation,
+        //  exit 0).  The slices that must outlive the call — `path`/`ext`
+        //  (set arena), `old_data`/`new_data` (caller-owned old/new_buf),
+        //  `navver` (acquired before the loop, below the per-file mark) —
+        //  all sit below the snapshot and survive.  Propagate a genuine
+        //  per-file failure instead of swallowing it into a truncation.
+        call(GRAFDiff2Layer, path, ext, old_data, new_data, NO, navver);
     }
 
     // --- 4. from-only entries (deletions): diff blob vs empty ---
@@ -608,7 +620,10 @@ static ok64 graf_diff_tree_refs_inner(keeper *k, u8cs from, u8cs to,
         u8cs new_data = {};
         u8cs ext = {};
         PATHu8sExt(ext, path);
-        GRAFDiff2Layer(path, ext, old_data, new_data, NO, navver);
+        //  DIFF-008: per-file BASS frame (see the changed-file loop) so
+        //  the deletion diff's scratch is rewound before the next file;
+        //  propagate a genuine per-file failure rather than truncating.
+        call(GRAFDiff2Layer, path, ext, old_data, new_data, NO, navver);
     }
     done;
 }
