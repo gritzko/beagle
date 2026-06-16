@@ -167,3 +167,13 @@
   legacy `-m`); the underlying verbatim-fragment routing landed with
   POST-002 (`dog/DOG.c::DOGNormalizeArg`), this case is the e2e lock-in.
   No ssh; runs in the default suite.
+* `42-refuse-atomic-store/` — POST-017: a REFUSED `be post` (POSTCFLCT
+  conflict-marker scan) must be ATOMIC — the store reflog (`refs`),
+  keeper pack + idx segments, and wtlog stay BYTE-IDENTICAL to before
+  the attempt (no orphan objects, no fresh idx run, no stray `post`
+  row).  Table-driven (inline / line-block triples refuse atomically;
+  plain file commits; `--force` re-commits a marker file).  The fix
+  hoists the conflict scan to a pre-flight (sniff/POST.c step 5a) before
+  any pack open / object write / index.  `.refs.idx` / `.wtlog.idx` are
+  LSM read-caches excluded from the byte check (a plain read churns
+  them).  No ssh; runs in the default suite.

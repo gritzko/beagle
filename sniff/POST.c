@@ -1221,6 +1221,56 @@ static ok64 post_drain_stamp_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     return OK;
 }
 
+//  POST-017 pre-flight: scan one `add` row's wt body for a complete
+//  WEAVE conflict-marker triple BEFORE any store mutation (pack open,
+//  object write, index, reflog).  Returning POSTCFLCT here aborts the
+//  whole commit while refs + staging + index are still byte-identical
+//  to before the attempt — the post is all-or-nothing.  Mirrors the
+//  body-read in the pack-feed loop (mmap regular/exec, readlink
+//  symlink); `SNIFFHasConflictMarker` is the same predicate that used
+//  to fire mid-feed (after trees + earlier blobs had already been
+//  written and indexed).  Carries the refused path back so the caller
+//  prints the same message — the slice borrows the decisions ULOG
+//  arena, which outlives the walk (printed immediately after).
+//  Skipped entirely when `--force` is set.
+typedef struct {
+    u8cs path;   // refused path (out) — borrows the decisions arena
+} post_cflct_ctx;
+
+static ok64 post_cflct_scan_cb(post_ctx *c, ulogreccp rec, void *vctx) {
+    (void)c;
+    post_cflct_ctx *cc = (post_cflct_ctx *)vctx;
+    u8cs path = {rec->uri.path[0], rec->uri.path[1]};
+    u16  mode = post_kind_to_mode(ok64Lit(rec->verb, 0));
+
+    a_path(fp);
+    if (SNIFFFullpath(fp, post_reporoot(), path) != OK) return OK;
+
+    a_pad(u8, target, 1024);
+    u8bp mapped = NULL;
+    u8cs body = {};
+    if (mode == 0120000) {
+        if (FILEReadLink(target, $path(fp)) != OK) return OK;
+        a_dup(u8c, tgt_data, u8bData(target));
+        body[0] = tgt_data[0];
+        body[1] = tgt_data[1];
+    } else {
+        ok64 mo = FILEMapRO(&mapped, $path(fp));
+        if (mo != OK) return OK;
+        body[0] = u8bDataHead(mapped);
+        body[1] = u8bIdleHead(mapped);
+    }
+
+    b8 hit = SNIFFHasConflictMarker(body);
+    if (mapped) FILEUnMap(mapped);
+    if (hit) {
+        cc->path[0] = path[0];
+        cc->path[1] = path[1];
+        return POSTCFLCT;
+    }
+    return OK;
+}
+
 //  Per-file change printer.  Emits the same ULOG status line as
 //  GET/PATCH/push (`<date>\t<verb>\t<path>`, palette-coloured via
 //  HUNKMode) rather than the old single-letter `M/A/D` shape — verbs
@@ -2622,6 +2672,31 @@ ok64 POSTCommit(u8cs target_branch,
     b8   have_base = NO;
     call(post_scan_changeset, &ctx, &base_tree_sha, &have_base);
 
+    //  5a. POST-017 pre-flight conflict scan.  ALL refuse-capable
+    //      validation runs HERE, before any store mutation — the unlink
+    //      below, the pack open/feed, the index publish, the reflog
+    //      append.  A tracked `add` file carrying a full WEAVE conflict
+    //      triple aborts the commit with POSTCFLCT while refs + staging
+    //      + index are still byte-identical to before the attempt (the
+    //      post is all-or-nothing).  Previously this scan ran mid-feed
+    //      (after trees + earlier blobs were already written and
+    //      indexed), leaving orphan objects + a fresh idx run on a
+    //      refusal.  `--force` skips the scan (the documented escape for
+    //      marker-string false positives — see POST.h).
+    if (!force) {
+        post_cflct_ctx cflct = {};
+        ok64 cf = post_walk_decisions(&ctx, POST_VM_ADD,
+                                      post_cflct_scan_cb, &cflct);
+        if (cf == POSTCFLCT) {
+            fprintf(stderr,
+                "sniff: post: refusing — conflict marker in tracked "
+                "file " U8SFMT " (re-run with --force to override)\n",
+                u8sFmt(cflct.path));
+            return POSTCFLCT;
+        }
+        if (cf != OK) return cf;
+    }
+
     //  5b. Unlink files marked for delete on disk.  Done BEFORE the
     //      pack feed so a follow-up `be post` doesn't pick them up via
     //      auto-stage; mtime-attribution fix for the BEhistory
@@ -2920,34 +2995,13 @@ ok64 POSTCommit(u8cs target_branch,
                 body[1] = u8bIdleHead(mapped);
             }
 
-            //  Refuse to commit any file containing PATCH's
-            //  conflict-marker triple (open + mid + close, each
-            //  four chars; see PATCH.c for the exact byte
-            //  pattern).  An unattended `patch && post` chain
-            //  stops here with POSTCFLCT before recording a
-            //  half-merged commit (https://replicated.wiki/html/wiki/PATCH.html §PATCH "Reporting"
-            //  — conflict-loud rule).  Lone open or close (prose
-            //  mentions) doesn't trigger — see
-            //  `SNIFFHasConflictMarker` for the exact predicate.
-            //  `--force` skips the scan as an escape hatch for
-            //  false positives (string literals describing the
-            //  marker shape, etc.).  This comment deliberately
-            //  avoids writing the triple inline because the
-            //  predicate doesn't know it's reading a comment and
-            //  would refuse to commit this file (POST.c) on its
-            //  own self-description.
-            if (!force) {
-                if (SNIFFHasConflictMarker(body)) {
-                    fprintf(stderr,
-                        "sniff: post: refusing — conflict "
-                        "marker in tracked file " U8SFMT " "
-                        "(re-run with --force to override)\n",
-                        u8sFmt(path));
-                    if (mapped) FILEUnMap(mapped);
-                    KEEPPackClose(&p);
-                    return POSTCFLCT;
-                }
-            }
+            //  POST-017: the conflict-marker triple refusal (PATCH's
+            //  `<<<<`/`||||`/`>>>>` shape — see `SNIFFHasConflictMarker`)
+            //  now runs as a pre-flight at step 5a, BEFORE the pack is
+            //  opened, so a refusal leaves refs + staging + index
+            //  byte-identical.  By the time we reach this feed loop the
+            //  scan has already passed (or `--force` skipped it), so no
+            //  per-blob check is needed here.
             u64 base_hl = has_old ? WHIFFHashlet60(&old_sha) : 0;
             sha1 bsha = {};
             ok64 bo = KEEPPackFeed(&p, DOG_OBJ_BLOB, body,
