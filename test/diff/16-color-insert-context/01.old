@@ -1,0 +1,2 @@
+- **C-string-literal slice — `a_cstr(name, "lit")`**.
+- **Iteration — `$for` / `$rof` / `$eat`**, `sUsed1` / `sUsed`,

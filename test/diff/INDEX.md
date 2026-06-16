@@ -103,6 +103,25 @@
   tail renders once per surviving side, matching `--plain`.  Asserts on
   per-row structure (inserted line contiguous; standalone tail precedes
   it), not ANSI-stripped-vs-plain.  Local, no ssh.
+* `16-color-insert-context/` — BRO-004 Part 3.  `be --color diff:` of a
+  single-line INSERT adjacent to a structurally-similar context line
+  must NOT duplicate that context line.  A new `- **Raw bytes** …` bullet
+  inserted between `- **C-string-literal slice — …` and `- **Iteration —
+  …` (all sharing the `- **X — `…` shape): token-LCS marks the whole
+  inserted line INCLUDING its terminating `\n` as IN and keeps the
+  `**Iteration**` line EQ.  The Part-2 fix treated ANY non-EQ boundary
+  `\n` as a row continuation and pulled the eq `**Iteration**` line into
+  the change block, emitting it TWICE — on the rm side (spurious removed
+  copy, bg 48;5;224) and the in side (the dup, bg 48;5;194) — around the
+  added line.  Fix (`bro_line_continues`): a non-EQ boundary `\n`
+  continues the row only when its side is HIDDEN from the pass rendering
+  the prior line's content (IN `\n` continues a line with RM bytes, RM
+  `\n` continues a line with IN bytes); a self-terminating pure insert
+  (IN line + IN `\n`) does NOT continue, so the eq line is a genuine
+  context boundary and renders ONCE.  Asserts on RAW colour bytes
+  (`Iteration` exactly once, no removed bg 48;5;224/217), never
+  ANSI-stripped.  Preserves Part 1 (added-side flush) and Part 2 (block
+  extension across a true continuation).  Local, no ssh.
 
 ## Label form note
 

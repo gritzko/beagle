@@ -496,6 +496,25 @@ static b8 bro_pass_sees_nl(u8 pass, u8 bnd_side) {
     return (bnd_side != TOK_SIDE_RM) ? YES : NO;  // BRO_PASS_IN
 }
 
+// True if line `li`'s logical content continues PAST its boundary `\n`
+// into the following line (so the two share a render row in one pass).
+//
+// A non-EQ boundary `\n` is "hidden" in exactly one split pass: an IN
+// `\n` is invisible to the rm-pass, an RM `\n` is invisible to the
+// in-pass.  The content row continues across that hidden `\n` ONLY when
+// the line carries bytes for the side whose pass cannot see it — i.e. an
+// IN `\n` continues a line that has RM bytes (rm-pass overruns it), an RM
+// `\n` continues a line that has IN bytes (in-pass overruns it).  A
+// self-terminating pure insert/delete (an IN line ending in an IN `\n`,
+// or an RM line ending in an RM `\n`) does NOT continue: its boundary
+// `\n` is visible in the very pass that renders its content, so the
+// following eq line is a genuine context boundary, not a continuation.
+static b8 bro_line_continues(bro_lineinfo const *li) {
+    if (li->bnd_side == TOK_SIDE_IN) return (li->rm_b > 0) ? YES : NO;
+    if (li->bnd_side == TOK_SIDE_RM) return (li->in_b > 0) ? YES : NO;
+    return NO;  // EQ boundary: a shared `\n`, never a hidden continuation
+}
+
 // Line type derived from byte counts.
 //   EQ        : no in/rm bytes — context line.
 //   PURE_IN   : no eq bytes; in only — classic INS line, only `+` shown.
@@ -617,21 +636,25 @@ static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
         }
         // Block end: when we hit the next eq-context line OR an
         // inline-classifiable line (handled by the branch above on the
-        // next iteration) — but ONLY across a *shared* (EQ-side) `\n`.
-        // If the boundary `\n` into that eq line is itself in/rm-side
-        // (the prior in- or rm-line's `\n` LCS-matched onto the other
-        // side), the inserted/deleted line CONTINUES into the eq line:
-        // it is one logical row, not a block boundary.  Stopping there
-        // would both clip that side's row at the hidden `\n` and emit
-        // the shared eq tail a second time as a standalone NORMAL row
-        // (BRO-004 first-hunk incoherence).  Extend the block so the eq
-        // tail renders once per surviving side instead.
+        // next iteration) — but ONLY when the prior in/rm line does not
+        // CONTINUE into that eq line.  A non-EQ boundary `\n` continues
+        // the row when its side is hidden from the pass that renders the
+        // prior line's content (BRO-004 Part 2: an inserted line whose
+        // `\n` LCS-matched a deleted line's `\n` lands on the RM side, so
+        // the in-pass overruns it into the shared eq tail — one logical
+        // row).  Extending there renders the eq tail once per surviving
+        // side.  But a SELF-TERMINATING pure insert/delete (BRO-004 Part
+        // 3: an IN line ending in an IN `\n`) does NOT continue — its
+        // `\n` is visible in its own render pass — so the following eq
+        // line is a genuine context boundary.  Breaking there keeps it as
+        // ONE context row; extending would emit it on both the rm side
+        // (spurious removed copy) and the in side (the context-line dup).
         u32 j = i;
         while (j < nl) {
             bro_linekind kj = bro_classify(&info[j]);
             if (info[j].bnd_side == TOK_SIDE_EQ &&
                 (kj == BRO_LINE_EQ || kj == BRO_LINE_MOD_INLINE) &&
-                (j == i || info[j - 1].bnd_side == TOK_SIDE_EQ))
+                (j == i || !bro_line_continues(&info[j - 1])))
                 break;
             j++;
         }

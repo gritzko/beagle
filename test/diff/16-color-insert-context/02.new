@@ -1,0 +1,3 @@
+- **C-string-literal slice — `a_cstr(name, "lit")`**.
+- **Raw bytes** -- `a_raw(alias, val)`, `a_rawc(alias, val)`
+- **Iteration — `$for` / `$rof` / `$eat`**, `sUsed1` / `sUsed`,
