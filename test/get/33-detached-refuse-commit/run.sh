@@ -17,6 +17,9 @@
 #    2. POST on a detached wt refuses (POSTDET) and writes no commit row.
 #    3. PATCH on a detached wt refuses (PATCHDET).
 #    4. A trunk-state wt (`be get ?` → `?#<sha>`) still COMMITS on POST.
+#    5. GET-024: `be get ?#<sha>` (pin trunk to a STATE sha) writes a
+#       trunk-state `?#<sha>` row — NOT the detached `?<sha>` form — so a
+#       follow-up POST commits (the regression `be-put-06-triangle` R4 hit).
 
 . "$(dirname "$0")/../../lib/case.sh"
 
@@ -100,5 +103,25 @@ sleep 0.02; echo "v1-trunk" > x.txt
 grep -qE '^sniff: commit [0-9a-f]{40}$' 04.post.err || {
     echo "FAIL: trunk-state POST should have committed" >&2
     cat 04.post.err >&2
+    exit 1
+}
+
+# --- 5. GET-024: `be get ?#<sha>` is TRUNK-STATE, not detached -------
+#  Pin trunk to an earlier STATE sha (the original t0 commit, an
+#  ancestor of the current tip).  Pre-fix, the GET-023 arm recorded the
+#  detached `?<sha>` row → POST refused POSTDET.  It must record the
+#  trunk-state `?#<sha>` row and let the next POST commit on top.
+"$BE" get "?#$SHA" > /dev/null 2>&1
+ROW=$(tail -1 .be/wtlog | cut -f3)
+[ "$ROW" = "?#$SHA" ] || {
+    echo "FAIL: GET-024 ?#sha row should be '?#$SHA' (trunk-state), got '$ROW'" >&2
+    exit 1
+}
+sleep 0.02; echo "v2-pinned" > x.txt
+"$BE" put x.txt > /dev/null 2>&1
+"$BE" post '#t2' > 05.post.out 2> 05.post.err
+grep -qE '^sniff: commit [0-9a-f]{40}$' 05.post.err || {
+    echo "FAIL: GET-024 trunk-state ?#sha POST should have committed (not POSTDET)" >&2
+    cat 05.post.err >&2
     exit 1
 }

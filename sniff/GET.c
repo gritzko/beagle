@@ -2181,13 +2181,21 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
                 (int)u8csLen(frag), (char const *)frag[0]);
             fail(SNIFFFAIL);
         }
-        //  Source URI is the detached-sha form `?<frag>`: compose it
-        //  through the URI machinery (query = frag, no other component)
-        //  rather than hand-concatenating the `?` sigil.  URIutf8Feed
-        //  emits `?<frag>` for a query-only uri (URI.c:85), error-checked
-        //  via PRO.h call(), matching the composer pattern below (:2181).
+        //  GET-024: `?#<frag>` is the TRUNK-STATE form — current/trunk
+        //  branch, pinned to state <frag> — NOT the detached query-sha
+        //  `?<frag>`.  The checkout TARGET stays <frag>, but the recorded
+        //  cur-tip row must be trunk-state (empty query + fragment=sha,
+        //  `?#<sha>`) so a follow-up `be post` can commit on top.  A
+        //  detached `?<frag>` source (len 41) made GETCheckout stamp the
+        //  row in its detached shape (`?<sha>`), which `post_is_detached_wt`
+        //  (POST.c, DIS-009) then refuses POSTDET.  Carry `u`'s own
+        //  present-but-empty query through the URI composer: URIutf8Feed
+        //  emits the bare `?` trunk sigil (URI.c:85), the trunk source
+        //  GETCheckout turns into the `?#<sha>` row (GET.c:1493) while it
+        //  checks out <frag>.  The genuine detached `?<sha>` (query-sha)
+        //  form stays detached — only this fragment form is trunk-state.
         uri fsrc_u = {};
-        u8csMv(fsrc_u.query, frag);
+        u8csMv(fsrc_u.query, u->query);
         a_pad(u8, fsrc, 64);
         call(URIutf8Feed, u8bIdle(fsrc), &fsrc_u);
         a_dup(u8c, fsource, u8bDataC(fsrc));
