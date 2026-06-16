@@ -527,6 +527,19 @@ void GRAFPackUriDiffSha(u32b toks, u8b out, sha1cp csha) {
     GRAFEmitDiffUri(toks, out, hex);
 }
 
+void GRAFEmitCommitUri(u32b toks, u8b out, u8cs hex) {
+    if (!$ok(toks)) return;
+    a_cstr(prefix, "commit:?");
+    (void)u8bFeed(out, prefix);
+    (void)u8bFeed(out, hex);
+    (void)u32bFeed1(toks, tok32Pack('U', (u32)u8bDataLen(out)));
+}
+
+void GRAFPackUriCommitSha(u32b toks, u8b out, sha1cp csha) {
+    a_sha1hex(hex, csha);
+    GRAFEmitCommitUri(toks, out, hex);
+}
+
 ok64 GRAFHunkEmit(hunk const *hk, void *ctx) {
     sane(hk != NULL);
     (void)ctx;

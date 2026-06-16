@@ -174,6 +174,13 @@ void GRAFEmitDiffUri(u32b toks, u8b out, u8cs hex);
 // Hex-encode `csha` and emit `diff:?<40-hex>` via GRAFEmitDiffUri.
 void GRAFPackUriDiffSha(u32b toks, u8b out, sha1cp csha);
 
+// As GRAFEmitDiffUri / GRAFPackUriDiffSha but emit `commit:?<hex>` — the
+// clickable commit-show link used by `be log:` rows.  Commit-show always
+// renders the commit (header + recursed diff), so it stays clickable even
+// for a submodule pin-only commit, where the diff: view has no parent hunk.
+void GRAFEmitCommitUri(u32b toks, u8b out, u8cs hex);
+void GRAFPackUriCommitSha(u32b toks, u8b out, sha1cp csha);
+
 // 3-way merge entry.
 ok64 GRAFMerge(u8cs base_path, u8cs ours_path, u8cs theirs_path,
                u8cs outpath);

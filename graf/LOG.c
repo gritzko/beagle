@@ -207,7 +207,11 @@ static ok64 graflog_render_commit(u8b out, u32b toks,
     (void)SHA1u8sFeedHashlet(hashlet_idle, csha);
     (void)u8bFeed(out, u8bDataC(hashlet));
     graflog_pack(toks, out, 'L');
-    GRAFPackUriDiffSha(toks, out, csha);
+    //  Per-row click target: commit-show by hash (`commit:?<sha>`), not
+    //  `diff:?<sha>` — a submodule pin-only commit has no parent-level diff
+    //  hunk, so its diff: view drains to zero hunks in bro ("no results");
+    //  commit-show always renders the commit (header + recursed diff).
+    GRAFPackUriCommitSha(toks, out, csha);
     (void)u8bFeed1(out, ' ');
     graflog_pack(toks, out, 'W');
 
