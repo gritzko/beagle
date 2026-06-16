@@ -175,15 +175,15 @@ ok64 SNIFFAtTailOf(u8cs wt, u8bp out) {
             //  primary wt's anchor names the project's trunk but
             //  the latest local row is authoritative for the
             //  current branch.
-            u8cs proj_s = {ab[0], ab[1]};
+            a_dup(u8c, scan, ab);
             u8cs anc_br = {};
-            for (u8cp p = ab[0]; p < ab[1]; p++) {
-                if (*p == '/') {
-                    proj_s[1] = p;
-                    u8cs r = {p + 1, ab[1]};
-                    u8csMv(anc_br, r);
-                    break;
-                }
+            u8csFind(scan, '/');          // scan head → `/` (or term)
+            //  project = prefix before `/`; anchor-branch = the rest
+            //  after it (only on secondary-wt sub-shard anchors).
+            a_past(u8c, proj_s, ab, scan);
+            if (!u8csEmpty(scan)) {
+                u8csUsed1(scan);          // step past `/`
+                u8csMv(anc_br, scan);
             }
             u8bFeed1(out, '/');
             u8bFeed(out, proj_s);
@@ -581,9 +581,7 @@ ok64 SNIFFAtPatchChain(sha1b out) {
         at_patch_row_sha_hex(sha_hex, &rec.uri);
         if (u8csLen(sha_hex) < 40) continue;
         sha1 s = {};
-        a_raw(sb, s);
-        a_dup(u8c, hx, sha_hex);
-        if (HEXu8sDrainSome(sb, hx) != OK) continue;
+        if (sha1FromHex(&s, sha_hex) != OK) continue;
         sha1bFeed1(out, s);
     }
     done;
@@ -614,9 +612,7 @@ ok64 SNIFFAtPatchEntries(sniff_pe *entries, u32 cap, u32 *n_out) {
         sniff_pe *e = &entries[*n_out];
         e->shape = sh;
         e->named = (sh == PATCH_SCOPE_NAMED) ? YES : NO;
-        a_raw(sb, e->sha);
-        a_dup(u8c, hx, sha_hex);
-        if (HEXu8sDrainSome(sb, hx) != OK) continue;
+        if (sha1FromHex(&e->sha, sha_hex) != OK) continue;
         //  No user merge-msg at PATCH any more (DIS-031); msg reserved.
         e->msg[0] = NULL;
         e->msg[1] = NULL;
@@ -839,9 +835,7 @@ static b8 at_baseline_blob_sha(u8cs base_rows, u8cs rel, sha1 *out) {
         if (dr != OK) continue;
         if (!u8csEq(rec.uri.path, rel)) continue;
         if (u8csLen(rec.uri.fragment) != 40) return NO;
-        u8s bin = {out->data, out->data + 20};
-        a_dup(u8c, hex, rec.uri.fragment);
-        if (HEXu8sDrainSome(bin, hex) != OK) return NO;
+        if (sha1FromHex(out, rec.uri.fragment) != OK) return NO;
         return YES;
     }
     return NO;

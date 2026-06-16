@@ -49,11 +49,12 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
     //  Strip scheme `<word>://` if present.
     {
         a_dup(u8c, scan, work);
-        u8c const *colon = NULL;
-        $for(u8c, p, scan) if (*p == ':') { colon = p; break; }
-        if (colon && colon + 2 < scan[1] &&
-            colon[1] == '/' && colon[2] == '/') {
-            work[0] = colon + 3;
+        if (u8csFind(scan, ':') == OK) {     // scan head → `:`
+            a_cstr(sep, "://");
+            if (u8csHasPrefix(scan, sep)) {
+                u8csUsed(scan, 3);           // past `://`
+                u8csMv(work, scan);
+            }
         }
     }
 
@@ -83,15 +84,16 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
 
     //  Strip trailing '/' so the last segment is non-empty when the
     //  URL ended on a slash (e.g. `…/widgets/`).
-    while (!u8csEmpty(work) && *(work[1] - 1) == '/')
+    while (!u8csEmpty(work) && *u8csLast(work) == '/')
         u8csShed1(work);
 
     //  Last '/' segment is the basename candidate.
     u8cs base = {};
     u8cs tail = {};
     if (subs_rfind(work, '/', tail)) {
-        base[0] = tail[0] + 1;
-        base[1] = work[1];
+        //  tail starts on the last '/'; basename is the rest after it.
+        u8csMv(base, tail);
+        u8csUsed1(base);
     } else {
         u8csMv(base, work);
     }
@@ -99,8 +101,9 @@ ok64 SNIFFSubBasename(u8cs url, u8csp out) {
     //  Strip trailing ".git".  Strip even if the result becomes empty
     //  (`.git` URL); the empty check below rejects that case.
     if (u8csLen(base) >= 4) {
-        u8c const *suf = base[1] - 4;
-        if (suf[0] == '.' && suf[1] == 'g' && suf[2] == 'i' && suf[3] == 't')
+        a_cstr(dotgit, ".git");
+        a_tail(u8c, suf, base, 4);
+        if (u8csEq(suf, dotgit))
             for (int i = 0; i < 4; i++) u8csShed1(base);
     }
 

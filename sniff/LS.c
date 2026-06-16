@@ -63,9 +63,9 @@ typedef struct {
 static u32 ls_depth(u8cs prefix, u8cs path) {
     size_t plen = (size_t)$len(prefix);
     if ((size_t)$len(path) < plen) return 0;
+    a_rest(u8c, rel, path, plen);
     u32 d = 0;
-    for (u8c *p = path[0] + plen; p < path[1]; p++)
-        if (*p == '/') d++;
+    $for(u8c, p, rel) if (*p == '/') d++;
     return d;
 }
 
@@ -101,12 +101,13 @@ static void ls_emit_row(ls_ctx *c, u8cs path, u8cs mov_dst, ron60 ts,
 //  step was absorbed.
 static b8 ls_one_level_dir(ls_ctx *c, u8cs path) {
     size_t plen = (size_t)$len(c->prefix);
-    u8c *rel_lo = path[0] + plen;
-    u8c *rel_hi = path[1];
-    if (rel_lo >= rel_hi) return NO;
-    u8c *slash = (u8c *)memchr(rel_lo, '/', (size_t)(rel_hi - rel_lo));
-    if (slash == NULL) return NO;
-    u8cs dir_full = {path[0], slash + 1};
+    if ((size_t)$len(path) <= plen) return NO;
+    a_rest(u8c, rel, path, plen);
+    if (u8csFind(rel, '/') != OK) return NO;
+    //  rel[0] now sits on the '/'; step past it so dir_full spans the
+    //  whole path through (and including) the separator.
+    u8csUsed1(rel);
+    u8cs dir_full = {path[0], rel[0]};
     a_dup(u8c, last, u8bData(c->dir_seen));
     if (u8csEq(last, dir_full)) return YES;
     u8bReset(c->dir_seen);

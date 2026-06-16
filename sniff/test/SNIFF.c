@@ -626,17 +626,18 @@ typedef struct {
     u32   base[16], ours[16], theirs[16];
 } merge_ctx;
 
-static ok64 merge_step(ulogreccp recs, u32 n, void *vctx) {
+static ok64 merge_step(ulogreccs recs, void *vctx) {
     merge_ctx *c = (merge_ctx *)vctx;
     if (c->n >= 16) fail(FAIL);
-    size_t L = u8csLen(recs[0].uri.path);
+    ulogreccp head = ulogreccsHead(recs);
+    size_t L = u8csLen(head->uri.path);
     if (L >= sizeof(c->paths[0])) L = sizeof(c->paths[0]) - 1;
-    memcpy(c->paths[c->n], recs[0].uri.path[0], L);
+    memcpy(c->paths[c->n], head->uri.path[0], L);
     c->paths[c->n][L] = 0;
-    c->sizes[c->n] = n;
+    c->sizes[c->n] = (u32)$len(recs);
     u32 nb = 0, no = 0, nt = 0;
-    for (u32 i = 0; i < n; i++) {
-        ron60 v = recs[i].verb;
+    $for(ulogrec const, rec, recs) {
+        ron60 v = rec->verb;
         if      (v == c->v_base)   nb++;
         else if (v == c->v_ours)   no++;
         else if (v == c->v_theirs) nt++;

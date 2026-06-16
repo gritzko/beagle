@@ -56,7 +56,6 @@ static ok64 sniffcli_inner(cli *c) {
     call(CLIParse, c, SNIFF_VERBS, SNIFF_VAL_FLAGS);
     CLISetHUNKMode(c);
 
-    char cwd[1024];
     u8cs reporoot = {};
     //  `anchored` == CLIParse's walk-up found a `.be/` in cwd or some
     //  ancestor.  When it didn't, we fall back to cwd so write verbs
@@ -68,9 +67,7 @@ static ok64 sniffcli_inner(cli *c) {
     if (anchored) {
         u8csMv(reporoot, $path(c->repo));
     } else {
-        if (!getcwd(cwd, sizeof(cwd))) fail(SNIFFFAIL);
-        a_cstr(cwds, cwd);
-        (void)PATHu8bFeed(c->repo, cwds);
+        if (FILEGetCwd(c->repo) != OK) fail(SNIFFFAIL);
         u8csMv(reporoot, $path(c->repo));
     }
 

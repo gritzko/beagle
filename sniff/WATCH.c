@@ -85,13 +85,11 @@ static void watch_dir_remember(Bu8 *seen, u8cs dir) {
 //  `out`.  Files at the wt root use "/".
 static void watch_parent_dir(u8csc rel, u8b out) {
     u8bReset(out);
-    u8c const *slash_last = NULL;
-    for (u8c const *p = rel[0]; p < rel[1]; p++) {
-        if (*p == '/') slash_last = p;
-    }
-    if (slash_last) {
-        u8cs parent = {rel[0], slash_last + 1};   // include trailing '/'
-        u8bFeed(out, parent);
+    //  Reverse-find the last '/': revfind leaves term one past the
+    //  match, so `parent` spans `rel` up to and including that slash.
+    a_dup(u8c, parent, rel);
+    if (u8csRevFind(parent, '/') == OK) {
+        u8bFeed(out, parent);                     // include trailing '/'
     } else {
         u8bFeed1(out, '/');                       // root marker
     }

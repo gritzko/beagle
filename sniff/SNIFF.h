@@ -160,12 +160,13 @@ b8   SNIFFRelFromFull(u8csp rel_out, u8cs reporoot, u8cs full);
 //  Capacity: $len(cursors) ≤ LSM_MAX_INPUTS (64).  Tie groups are
 //  bounded by the same — one row per cursor per step.
 
-//  Step callback.  `recs[0..n)` are all the records whose paths are
-//  equal under `ULOGu8csZbyUri` for this step.  Order within the
+//  Step callback.  `recs` holds all the records whose paths are equal
+//  under `ULOGu8csZbyUri` for this step (a const `ulogreccs` slice so
+//  the callee can't desync a count from the data).  Order within the
 //  group is heap-pop order (not the input-array order).  Caller
-//  dispatches on `recs[i].verb` to identify each contributor.
-//  A non-OK return aborts the walk.
-typedef ok64 (*sniff_step_fn)(ulogreccp recs, u32 n, void *ctx);
+//  dispatches on each record's verb to identify the contributor.  A
+//  non-OK return aborts the walk.
+typedef ok64 (*sniff_step_fn)(ulogreccs recs, void *ctx);
 
 //  Drain `cursors` to exhaustion, calling `cb` once per distinct
 //  path-key.  `cursors` must have capacity for in-place heap ops

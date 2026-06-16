@@ -608,30 +608,29 @@ ok64 DELBranch(uri const *u, b8 recursive) {
                                    del_collect_descendants_cb, &cctx);
                 if (co != OK || cctx.err != OK) fail(SNIFFFAIL);
                 if ($empty(u8bData(names))) break;
-                //  Pick the longest (deepest) name from the buffer.
-                u8cp p = u8bDataHead(names);
-                u8cp end = u8bIdleHead(names);
-                u8cp best_b = NULL;
-                size_t best_len = 0;
-                while (p < end) {
-                    u8cp q = p;
-                    while (q < end && *q != '\0') q++;
-                    size_t l = (size_t)(q - p);
-                    if (l > best_len) { best_b = p; best_len = l; }
-                    p = (q < end) ? q + 1 : end;
+                //  Pick the longest (deepest) NUL-separated name.
+                a_dup(u8c, scan, u8bDataC(names));
+                u8cs best = {NULL, NULL};
+                while (!$empty(scan)) {
+                    u8cs seg = {};
+                    u8csMv(seg, scan);
+                    //  csFind advances scan's head to the NUL (or to the
+                    //  end when none remains); trim seg's tail there so it
+                    //  holds just the prefix name.
+                    b8 hit = (u8csFind(scan, 0) == OK);
+                    seg[1] = scan[0];
+                    if (hit) u8csUsed1(scan);  // step past the NUL
+                    if ($len(seg) > $len(best)) u8csMv(best, seg);
                 }
-                if (best_b == NULL) break;
+                if ($empty(best)) break;
 
                 //  Build a synthetic uri for DELBranch(non-recursive).
                 uri sub = {};
-                sub.query[0]    = best_b;
-                sub.query[1]    = best_b + best_len;
+                u8csMv(sub.query, best);
                 a_pad(u8, dbuf, 260);
                 u8bFeed1(dbuf, '?');
-                u8cs nm = {best_b, best_b + best_len};
-                u8bFeed(dbuf, nm);
-                sub.data[0] = u8bDataHead(dbuf);
-                sub.data[1] = u8bIdleHead(dbuf);
+                u8bFeed(dbuf, best);
+                u8csMv(sub.data, u8bDataC(dbuf));
                 call(DELBranch, &sub, NO);
             }
         }

@@ -137,6 +137,15 @@ typedef struct {
 typedef ulogrec       *ulogrecp;
 typedef ulogrec const *ulogreccp;
 
+//  Order by timestamp (the log's natural monotonic order).  Required
+//  by abc/Sx.h's search primitives for the ulogrec slice family below;
+//  callers that just iterate a tie-group slice never sort.
+fun b8 ulogrecZ(ulogrec const *a, ulogrec const *b) { return a->ts < b->ts; }
+
+#define X(M, n) M##ulogrec##n
+#include "abc/Bx.h"
+#undef X
+
 // --- streaming primitives (stateless) -------------------------------
 
 //  Encode one row into `into`'s idle.  URI bytes are produced via

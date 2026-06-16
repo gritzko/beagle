@@ -29,10 +29,7 @@ ok64 SNIFFMaybeSwitchKeeper(u8cs target_branch) {
 
     //  Same as current leaf?  No-op.
     a_dup(u8c, cur, u8bDataC(HOME.cur_branch));
-    if (u8csLen(cur) == u8csLen(target_branch) &&
-        (u8csLen(target_branch) == 0 ||
-         memcmp(cur[0], target_branch[0],
-                u8csLen(target_branch)) == 0)) done;
+    if (u8csEq(cur, target_branch)) done;
 
     //  Empty target == trunk-leaf.  Trunk's shard dir is always the
     //  store root (`<root>/.be/`), so the on-disk probe below is
@@ -362,8 +359,9 @@ ok64 SNIFFMergeWalk(u8css cursors, sniff_step_fn cb, void *ctx) {
     //  Heapify in place — cursors[0] becomes the root (smallest URI key).
     u8cssHeapZ(cursors, ULOGu8csZbyUri);
 
-    ulogrec group[LSM_MAX_INPUTS];
-    u32     n = 0;
+    //  One tie-group at a time, held as a typed slice (ulogrecsc) so the
+    //  step callback can't desync a count from the data.
+    a_pad(ulogrec, group, LSM_MAX_INPUTS);
 
     for (;;) {
         ulogrec next = {};
@@ -371,26 +369,25 @@ ok64 SNIFFMergeWalk(u8css cursors, sniff_step_fn cb, void *ctx) {
         if (d == ULOGNONE) break;
         if (d != OK) return d;
 
-        if (n == 0) {
-            group[0] = next;
-            n = 1;
+        if ($empty(ulogrecbData(group))) {
+            (void)ulogrecbFeed1(group, next);
             continue;
         }
-        if (merge_path_eq(&group[0], &next)) {
-            if (n < LSM_MAX_INPUTS) group[n++] = next;
+        if (merge_path_eq(ulogrecbDataHead(group), &next)) {
+            (void)ulogrecbFeed1(group, next);   // no-op when group is full
             continue;
         }
         //  Mismatch: fire current group, then seed the next group with
         //  `next` as its first member.
-        ok64 cr = cb(group, n, ctx);
+        ok64 cr = cb(ulogrecbDataC(group), ctx);
         if (cr != OK) return cr;
-        group[0] = next;
-        n = 1;
+        ulogrecbReset(group);
+        (void)ulogrecbFeed1(group, next);
     }
 
     //  Flush trailing group, if any.
-    if (n > 0) {
-        ok64 cr = cb(group, n, ctx);
+    if (!$empty(ulogrecbData(group))) {
+        ok64 cr = cb(ulogrecbDataC(group), ctx);
         if (cr != OK) return cr;
     }
     done;

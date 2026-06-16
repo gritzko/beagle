@@ -62,17 +62,16 @@ typedef struct {
 } entry;
 
 //  Order by name bytes (git tree sort).  Required by abc/Sx.h's search
-//  primitives; entries are sorted in place by `sort_entries` below.
+//  primitives; entries are sorted in place via `entrybSort`.
 fun b8 entryZ(entry const *a, entry const *b) {
-    size_t la = $len(a->name), lb = $len(b->name);
-    size_t ml = la < lb ? la : lb;
-    int c = (ml == 0) ? 0 : memcmp(a->name[0], b->name[0], ml);
-    if (c != 0) return c < 0;
-    return la < lb;
+    return u8csZ(&a->name, &b->name);
 }
 
 #define X(M, n) M##entry##n
 #include "abc/Bx.h"
+#define ABC_QSORT_X
+#include "abc/QSORTx.h"
+#undef ABC_QSORT_X
 #undef X
 
 //  SUBS-002: is this side a 160000 gitlink (submodule pin)?  A gitlink is
@@ -85,50 +84,33 @@ static b8 entry_is_gitlink(entry const *e) {
     return u8csEq(e->mode, gl) ? YES : NO;
 }
 
-static ok64 parse_tree(entry *out, u32 *nout, u32 cap, u8cs body) {
-    sane(out && nout);
-    u32 n = 0;
+//  Parse a git-format tree body into `out`'s DATA, one entry per leaf
+//  (sorted on return via `entrybSort` + `entryZ`).  Drops malformed
+//  leaves; stops on a full buffer.
+static ok64 parse_tree(entryb out, u8cs body) {
+    sane(out);
     u8cs obj = {body[0], body[1]};
     u8cs file = {}, esha = {};
-    while (n < cap && GITu8sDrainTree(obj, file, esha, NULL) == OK) {
+    while (entrybHasRoom(out) && GITu8sDrainTree(obj, file, esha, NULL) == OK) {
         u8cs mode_s = {}, name_s = {};
         if (GITu8sFileSplit(file, mode_s, name_s) != OK) continue;
         if ($empty(name_s) || u8csLen(esha) != 20) continue;
-        entry *e = &out[n++];
-        e->name[0] = name_s[0]; e->name[1] = name_s[1];
-        e->mode[0] = mode_s[0]; e->mode[1] = mode_s[1];
-        e->is_dir = ($len(mode_s) > 0 && *mode_s[0] == '4');
-        e->present = YES;
-        sha1Mv(&e->sha, (sha1cp)esha[0]);
+        entry e = {};
+        u8csMv(e.name, name_s);
+        u8csMv(e.mode, mode_s);
+        e.is_dir = ($len(mode_s) > 0 && *mode_s[0] == '4');
+        e.present = YES;
+        sha1Mv(&e.sha, (sha1cp)esha[0]);
+        call(entrybFeed1, out, e);
     }
-    *nout = n;
+    entrybSort(out);
     done;
 }
 
-static int entry_name_cmp(u8cs a, u8cs b) {
-    size_t la = $len(a), lb = $len(b);
-    size_t ml = la < lb ? la : lb;
-    int c = (ml == 0) ? 0 : memcmp(a[0], b[0], ml);
-    if (c != 0) return c;
-    if (la < lb) return -1;
-    if (la > lb) return 1;
-    return 0;
-}
-
-static void sort_entries(entry *arr, u32 n) {
-    for (u32 i = 1; i < n; i++) {
-        entry v = arr[i];
-        u32 j = i;
-        while (j > 0 && entry_name_cmp(arr[j - 1].name, v.name) > 0) {
-            arr[j] = arr[j - 1];
-            j--;
-        }
-        arr[j] = v;
-    }
-}
-
-fun b8 sha_eq(sha1cp a, sha1cp b) {
-    return memcmp(a->data, b->data, 20) == 0;
+//  Copy the head-entry name of a sorted entry slice into `out`.  No-op
+//  when the cursor is exhausted (caller pre-zeros `out`).
+static void entrys_name(u8cs out, entrys s) {
+    if (!entrysEmpty(s)) u8csMv(out, entrysHead(s)->name);
 }
 
 // --- graf fetch wrappers -------------------------------------------
@@ -220,7 +202,7 @@ static ok64 write_blob(u8cs reporoot, u8csc relpath_in,
         a_pad(u8, target, PATH_MAX);
         size_t dl = $len(data);
         if (dl >= u8bIdleLen(target)) dl = u8bIdleLen(target) - 1;
-        u8cs trim = {data[0], data[0] + dl};
+        a_head(u8c, trim, data, dl);
         u8bFeed(target, trim);
         u8bFeed1(target, 0);
         if (FILESymLink($path(target), $path(fp)) != OK)
@@ -447,45 +429,46 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
     ok64 to = fetch_tree(tbuf, dir_path, thr_commit);
     (void)lo; (void)oo; (void)to;
 
-    entry *le = entrybDataHead(leb);
-    entry *oe = entrybDataHead(oeb);
-    entry *te = entrybDataHead(teb);
-    u32 ln = 0, on = 0, tn = 0;
     {
         a_dup(u8c, lb, u8bData(lbuf));
         a_dup(u8c, ob, u8bData(obuf));
         a_dup(u8c, tb, u8bData(tbuf));
-        parse_tree(le, &ln, PATCH_MAX_ENTRIES, lb);
-        parse_tree(oe, &on, PATCH_MAX_ENTRIES, ob);
-        parse_tree(te, &tn, PATCH_MAX_ENTRIES, tb);
+        call(parse_tree, leb, lb);
+        call(parse_tree, oeb, ob);
+        call(parse_tree, teb, tb);
     }
-    sort_entries(le, ln);
-    sort_entries(oe, on);
-    sort_entries(te, tn);
 
-    //  Lockstep walk over three sorted arrays.  At each iteration
-    //  we pick the smallest head-of-arrays name, collect the
-    //  triple, and advance matching heads.
-    u32 li = 0, oi = 0, ti = 0;
+    //  Lockstep walk over three sorted entry slices.  At each iteration
+    //  we pick the smallest head name, collect the triple, and advance
+    //  every cursor whose head shares that name.
+    entrys ls = {}, os = {}, ts = {};
+    entrysMv(ls, entrybData(leb));
+    entrysMv(os, entrybData(oeb));
+    entrysMv(ts, entrybData(teb));
     ok64 ret = OK;
-    while (ret == OK && (li < ln || oi < on || ti < tn)) {
-        u8cs *cand[3] = {
-            li < ln ? &le[li].name : NULL,
-            oi < on ? &oe[oi].name : NULL,
-            ti < tn ? &te[ti].name : NULL,
-        };
+    while (ret == OK &&
+           (!entrysEmpty(ls) || !entrysEmpty(os) || !entrysEmpty(ts))) {
         u8cs name = {NULL, NULL};
+        entrys cand[3] = {};
+        entrysMv(cand[0], ls);
+        entrysMv(cand[1], os);
+        entrysMv(cand[2], ts);
         for (int k = 0; k < 3; k++) {
-            if (!cand[k]) continue;
-            if ($empty(name) || entry_name_cmp(*cand[k], name) < 0) {
-                name[0] = (*cand[k])[0];
-                name[1] = (*cand[k])[1];
-            }
+            u8cs cn = {};
+            entrys_name(cn, cand[k]);
+            if ($empty(cn)) continue;
+            if ($empty(name) || u8csZ(&cn, &name)) u8csMv(name, cn);
         }
         entry const *l = NULL, *o = NULL, *t = NULL;
-        if (li < ln && entry_name_cmp(le[li].name, name) == 0) l = &le[li++];
-        if (oi < on && entry_name_cmp(oe[oi].name, name) == 0) o = &oe[oi++];
-        if (ti < tn && entry_name_cmp(te[ti].name, name) == 0) t = &te[ti++];
+        if (!entrysEmpty(ls) && u8csEq(entrysHead(ls)->name, name)) {
+            l = entrysHead(ls); entrysUsed1(ls);
+        }
+        if (!entrysEmpty(os) && u8csEq(entrysHead(os)->name, name)) {
+            o = entrysHead(os); entrysUsed1(os);
+        }
+        if (!entrysEmpty(ts) && u8csEq(entrysHead(ts)->name, name)) {
+            t = entrysHead(ts); entrysUsed1(ts);
+        }
 
         //  Compose the child's full relative path into a local buffer.
         a_path(childp);
@@ -527,7 +510,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             //  Requires all three sides present (a missing side has
             //  a zero sha that would never match a real tree sha).
             if (l && o && t &&
-                sha_eq(&lsub, &osub) && sha_eq(&osub, &tsub)) {
+                sha1Eq(&lsub, &osub) && sha1Eq(&osub, &tsub)) {
                 continue;
             }
             //  If either subtree is missing AND absent on LCA, the
@@ -565,7 +548,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         if (entry_is_gitlink(l) || entry_is_gitlink(o) ||
             entry_is_gitlink(t)) {
             b8 thr_moved = (t != NULL) &&
-                           (o == NULL || !sha_eq(&t->sha, &o->sha));
+                           (o == NULL || !sha1Eq(&t->sha, &o->sha));
             if (thr_moved) {
                 a_sha1hex(pin_hex, &t->sha);
                 uri grow = {};
@@ -604,9 +587,9 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         //  X    X  --    → theirs deleted (defer)
         //  X    Y  --    → modify/delete conflict (defer)
 
-        b8 o_eq_l = l && o && sha_eq(&l->sha, &o->sha);
-        b8 t_eq_l = l && t && sha_eq(&l->sha, &t->sha);
-        b8 o_eq_t = o && t && sha_eq(&o->sha, &t->sha);
+        b8 o_eq_l = l && o && sha1Eq(&l->sha, &o->sha);
+        b8 t_eq_l = l && t && sha1Eq(&l->sha, &t->sha);
+        b8 o_eq_t = o && t && sha1Eq(&o->sha, &t->sha);
 
         //  PATCH-002: the tree-sha triple {l,o,t} only sees COMMITTED
         //  bytes; the wt may carry uncommitted edits the next POST will
@@ -706,11 +689,14 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             //      WEAVE rather than JOIN.
             u8cs childext = {};
             {
-                u8cp dot = NULL;
-                $for(u8c, p, childpath) { if (*p == '.') dot = (u8cp)p; }
-                if (dot != NULL && dot + 1 < childpath[1]) {
-                    childext[0] = dot + 1;
-                    childext[1] = childpath[1];
+                //  Extension = tail after the last '.'.  revfind leaves
+                //  term one past the dot; advance a fresh copy of
+                //  childpath by that prefix length to land on the ext.
+                a_dup(u8c, upto_dot, childpath);
+                if (u8csRevFind(upto_dot, '.') == OK) {
+                    a_dup(u8c, ext, childpath);
+                    u8csUsed(ext, u8csLen(upto_dot));
+                    if (!u8csEmpty(ext)) u8csMv(childext, ext);
                 }
             }
             if (st->use_fork_base && !wt_dirty) {
@@ -833,7 +819,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
         //  meant to delete — the user can re-delete in one keystroke,
         //  and a non-zero exit broke parent recursion on submodules.
         if (l && o && !t) {
-            if (sha_eq(&l->sha, &o->sha)) {
+            if (sha1Eq(&l->sha, &o->sha)) {
                 //  Theirs deleted; ours unchanged → delete from wt.
                 ok64 d = delete_blob(reporoot, childpath);
                 if (d == OK) {
@@ -857,7 +843,7 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             continue;
         }
         if (l && !o && t) {
-            if (sha_eq(&l->sha, &t->sha)) {
+            if (sha1Eq(&l->sha, &t->sha)) {
                 //  Ours deleted; theirs unchanged → leave deleted.
                 st->noop++;
             } else {
@@ -988,9 +974,7 @@ resolved_ok:;
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
             if (u8csEq(field, obj_kw) && u8csLen(value) >= 40) {
-                u8s sb2 = {out->data, out->data + 20};
-                u8cs hx2 = {value[0], value[0] + 40};
-                HEXu8sDrainSome(sb2, hx2);
+                sha1FromHex(out, value);
                 break;
             }
         }
@@ -1180,20 +1164,18 @@ static ok64 resolve_cherry(sha1 *thr_out, sha1 *fork_out, u8cs frag) {
     a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    call(KEEPGetExact, thr_out, cbuf, &ct);
+    ok64 ko = KEEPGetExact(thr_out, cbuf, &ct);
+    if (ko != OK) return ko;
     if (ct != DOG_OBJ_COMMIT) fail(PATCHFAIL);
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
     u8cs field = {}, value = {};
     b8 found_parent = NO;
+    a_cstr(parent_kw, "parent");
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if ($empty(field)) break;
-        if ($len(field) == 6 &&
-            memcmp(field[0], "parent", 6) == 0 &&
-            $len(value) >= 40) {
-            u8s sb = {fork_out->data, fork_out->data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            HEXu8sDrainSome(sb, hx);
+        if (u8csEq(field, parent_kw) && $len(value) >= 40) {
+            sha1FromHex(fork_out, value);
             found_parent = YES;
             break;
         }
@@ -1214,20 +1196,18 @@ static ok64 patch_first_parent(sha1 *parent_out, sha1cp commit_sha) {
     sane(parent_out && commit_sha);
     a_carve(u8, cbuf, 1UL << 16);
     u8 ct = 0;
-    call(KEEPGetExact, commit_sha, cbuf, &ct);
+    ok64 ko = KEEPGetExact(commit_sha, cbuf, &ct);
+    if (ko != OK) return ko;
     if (ct != DOG_OBJ_COMMIT) return PATCHFAIL;
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
     u8cs field = {}, value = {};
     b8 found = NO;
+    a_cstr(parent_kw, "parent");
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if ($empty(field)) break;
-        if ($len(field) == 6 &&
-            memcmp(field[0], "parent", 6) == 0 &&
-            $len(value) >= 40) {
-            u8s sb = {parent_out->data, parent_out->data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            HEXu8sDrainSome(sb, hx);
+        if (u8csEq(field, parent_kw) && $len(value) >= 40) {
+            sha1FromHex(parent_out, value);
             found = YES;
             break;
         }
@@ -1252,18 +1232,15 @@ static ok64 patch_links_of(sha1 *out, u32 cap, u32 *nout,
 
     u8cs body = {u8bDataHead(cbuf), u8bIdleHead(cbuf)};
     u8cs field = {}, value = {};
+    a_cstr(parent_kw, "parent");
+    a_cstr(foster_kw, "foster");
     while (GITu8sDrainCommit(body, field, value) == OK) {
         if ($empty(field)) break;
         if (*nout >= cap) break;
-        b8 is_parent = ($len(field) == 6 &&
-                        memcmp(field[0], "parent", 6) == 0);
-        b8 is_foster = ($len(field) == 6 &&
-                        memcmp(field[0], "foster", 6) == 0);
+        b8 is_parent = u8csEq(field, parent_kw);
+        b8 is_foster = u8csEq(field, foster_kw);
         if ((is_parent || is_foster) && $len(value) >= 40) {
-            sha1 *slot = &out[*nout];
-            u8s sb = {slot->data, slot->data + 20};
-            u8cs hx = {value[0], value[0] + 40};
-            HEXu8sDrainSome(sb, hx);
+            sha1FromHex(&out[*nout], value);
             (*nout)++;
         }
     }
@@ -1526,23 +1503,19 @@ static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
     //  A ref the funnel can't resolve (a `?<br>/<hashlet>` located
     //  cherry, an empty cherry-only query, …) is left untouched for the
     //  absolutise + cherry-detector path below.
-    u8 canon_pad[320];
-    u8s canon_w = {canon_pad, canon_pad + sizeof canon_pad};
+    a_pad(u8, canon_buf, 320);
     if (!u8csEmpty(target_query_raw) && !BNULL(HOME.root) &&
-        REFSResolveURI(canon_w, target_query_raw) == OK) {
-        u8cs canon = {canon_pad, canon_w[0]};
+        REFSResolveURI(u8bIdle(canon_buf), target_query_raw) == OK) {
+        a_dup(u8c, canon, u8bData(canon_buf));
         if (!u8csEmpty(canon) && *canon[0] == '?') u8csUsed1(canon);
         refkind k = REFSQueryKind(canon);
         //  URI-001 Stage 3 forms: scope in the query, sha in the
         //  fragment (`/proj/br#<sha>`, `/proj#<sha>`), except DETACHED
         //  which is a bare query pin (`/proj/<sha>`).  Split off the
         //  `#<sha>` to recover the scope; peel to the downstream shape.
-        u8cs scope = {};
-        u8csMv(scope, canon);
-        {
-            a_dup(u8c, s, scope);
-            if (u8csFind(s, '#') == OK) scope[1] = s[0];  // drop `#<sha>`
-        }
+        a_dup(u8c, s, canon);
+        u8csFind(s, '#');                  // s head → `#` (or term if none)
+        a_past(u8c, scope, canon, s);      // canon up to `#`: drop `#<sha>`
         u8cs c_proj = {}, c_branch = {}, c_pin = {};
         if (k == REFKIND_DETACHED &&
             DOGCanonQueryParse(scope, c_proj, c_branch, c_pin)) {
@@ -1553,8 +1526,8 @@ static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
             DOGQueryStripProject(br);
             u8csMv(target_query_raw, br);
         } else if (k == REFKIND_TRUNK) {
-            target_query_raw[0] = canon_pad;     // empty = trunk
-            target_query_raw[1] = canon_pad;
+            a_head(u8c, empty, u8bData(canon_buf), 0);  // empty = trunk
+            u8csMv(target_query_raw, empty);
         }
     }
 
@@ -1890,14 +1863,16 @@ static ok64 patch_apply_file_inner(u8cs reporoot, u8cs filepath,
     }
 
     a_carve(u8, mbuf, PATCH_BLOB_BUF);
-    call(fetch_merge, mbuf, reporoot, filepath, &our_sha, &thr_sha);
+    ok64 mo = fetch_merge(mbuf, reporoot, filepath, &our_sha, &thr_sha);
+    if (mo != OK) return mo;
     a_dup(u8c, bytes, u8bData(mbuf));
     b8 conflict = SNIFFHasConflictMarker(bytes);
 
     //  Mode fallback: reuse whatever's on disk.  Not perfect (a
     //  newly-added file has no on-disk mode yet) — fine for MVP.
     a_cstr(default_mode, "100644");
-    call(write_blob, reporoot, filepath, default_mode, bytes);
+    ok64 wo = write_blob(reporoot, filepath, default_mode, bytes);
+    if (wo != OK) return wo;
 
     //  Stamp the file so it counts as patch-written for POST's
     //  classification (not "dirty/untracked").  ts is fresh — path-

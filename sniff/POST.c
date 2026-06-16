@@ -199,7 +199,8 @@ static ok64 post_expand_under(u8b src, ron60 emit_verb, u8cs prefix,
         u.path[0] = path[0];
         u.path[1] = path[1];
         ulogrec out_rec = {.ts = rec.ts, .verb = emit_verb, .uri = u};
-        call(ULOGu8sFeed, u8bIdle(out), &out_rec);
+        ok64 fo = ULOGu8sFeed(u8bIdle(out), &out_rec);
+        if (fo != OK) return fo;
         if (any_out) *any_out = YES;
     }
     done;
@@ -271,8 +272,9 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
         }
         if (verb == w->v_put_filter) {
             b8 any_base = NO;
-            call(post_expand_under, w->bu, w->v_put_emit, path,
-                 NULL, w->put_unsorted, &any_base);
+            ok64 br = post_expand_under(w->bu, w->v_put_emit, path,
+                                        NULL, w->put_unsorted, &any_base);
+            if (br != OK) return br;
             if (any_base) return OK;
             return post_expand_under(w->wu, w->v_put_emit, path,
                                      w->ig, w->put_unsorted, NULL);
@@ -292,7 +294,8 @@ static ok64 post_pd_cb(ulogreccp src, void *vctx) {
         uri u_src = {};
         u_src.path[0] = path[0]; u_src.path[1] = path[1];
         ulogrec d_rec = {.ts = ts, .verb = w->v_del_emit, .uri = u_src};
-        call(ULOGu8sFeed, u8bIdle(w->del_unsorted), &d_rec);
+        ok64 ro = ULOGu8sFeed(u8bIdle(w->del_unsorted), &d_rec);
+        if (ro != OK) return ro;
         uri u_dst = {};
         u_dst.path[0] = dst[0]; u_dst.path[1] = dst[1];
         ulogrec p_rec = {.ts = ts, .verb = w->v_put_emit, .uri = u_dst};
@@ -434,11 +437,13 @@ typedef struct {
 //  into c->decisions.
 //
 //  Verbs in the output stream: keep / unlink / add (see post_emit_*).
-static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
+static ok64 post_classify_step(ulogreccs recs, void *vctx) {
     post_classify_step_ctx *cctx = (post_classify_step_ctx *)vctx;
     post_ctx *c = cctx->c;
+    if (ulogreccsEmpty(recs)) return OK;
 
-    u8cs path = {recs[0].uri.path[0], recs[0].uri.path[1]};
+    ulogreccp head = ulogreccsHead(recs);
+    u8cs path = {head->uri.path[0], head->uri.path[1]};
     if ($empty(path)) return OK;
 
     //  Sniff-meta paths (.be/wtlog / .be/* / .git*): never carry into
@@ -454,8 +459,7 @@ static ok64 post_classify_step(ulogreccp recs, u32 n, void *vctx) {
     //  stem.  Put/delete intent rows carry no suffix — equality match.
     ulogreccp src_base = NULL, src_wt = NULL, src_put = NULL;
     b8 has_put = NO, has_del = NO, has_thr = NO;
-    for (u32 i = 0; i < n; i++) {
-        ulogreccp m = &recs[i];
+    $for(ulogrec const, m, recs) {
         if      (ok64stem(m->verb) == cctx->v_base) src_base = m;
         else if (ok64stem(m->verb) == cctx->v_wt)   src_wt   = m;
         else if (ok64stem(m->verb) == cctx->v_thr)  has_thr  = YES;
@@ -887,7 +891,7 @@ static ok64 post_build_tree(u8cs subslice, u8cs prefix,
     //  Record (len u32, body bytes) in tree_body_list; POSTCommit
     //  replays them later to feed keeper in commit→trees→blobs order.
     u32 tlen = (u32)u8bDataLen(tree);
-    u8cs tl = {(u8cp)&tlen, (u8cp)&tlen + sizeof(u32)};
+    a_rawc(tl, tlen);
     u8bFeed(tree_body_list, tl);
     u8bFeed(tree_body_list, u8bDataC(tree));
     (*emit_count)++;
@@ -1337,7 +1341,8 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
     sane(vctx && sha);
     post_rebase_ctx *rc = (post_rebase_ctx *)vctx;
     sha1 fed = {};
-    call(KEEPPackFeed, rc->p, obj_type, body, 0, &fed);
+    ok64 fo = KEEPPackFeed(rc->p, obj_type, body, 0, &fed);
+    if (fo != OK) return fo;
     if (obj_type == DOG_OBJ_COMMIT) {
         //  Record the last commit sha — that's our rebased tip.
         rc->last_commit_sha = *sha;
@@ -1347,12 +1352,14 @@ static ok64 post_rebase_emit_cb(void *vctx, u8 obj_type,
         //  GRAFRebase's loop fetches the previous-emit's commit/tree/
         //  blob bodies on the next pass; without this checkpoint they
         //  sit in a booked-but-unindexed pack and aren't resolvable.
-        call(KEEPPackClose, rc->p);
+        ok64 cl = KEEPPackClose(rc->p);
+        if (cl != OK) return cl;
         zerop(rc->p);
-        call(KEEPPackOpen, rc->p);
+        ok64 op = KEEPPackOpen(rc->p);
+        if (op != OK) return op;
         rc->p->strict_order = NO;
     }
-    done;
+    return OK;
 }
 
 // --- Cascade rebase (Stage 2c) ---
@@ -1390,7 +1397,8 @@ ok64 POSTResolveBranchTip(sha1 *out, u8cs branch) {
 
     a_pad(u8, arena, 1024);
     uri resolved = {};
-    call(REFSResolve, &resolved, arena, $path(keepdir), refkey);
+    ok64 ro = REFSResolve(&resolved, arena, $path(keepdir), refkey);
+    if (ro != OK) return ro;
     if ($empty(resolved.query)) return REFSNONE;
     a_dup(u8c, tip_hex, resolved.query);
     if (!u8csEmpty(tip_hex) && *tip_hex[0] == '?') u8csUsed(tip_hex, 1);
@@ -1482,8 +1490,9 @@ static ok64 post_cascade_one(cascade_ctx *cc, u8cs branch,
     }
 
     post_rebase_ctx rctx = {.p = cc->p};
-    call(GRAFRebase, &fork_old, parent_new_tip, &child_tip,
-         post_rebase_emit_cb, &rctx);
+    ok64 rb = GRAFRebase(&fork_old, parent_new_tip, &child_tip,
+                         post_rebase_emit_cb, &rctx);
+    if (rb != OK) return rb;
 
     cascade_rec *r = &cc->recs[cc->n++];
     if (PATHu8bAren(cc->arena, r->branch, branch) != OK) {
@@ -1591,8 +1600,10 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 
         //  Stage rebase + record.
         b8 appended = NO;
-        call(post_cascade_one, cc, child_branch,
-             branch_old_tip, branch_new_tip, &appended);
+        ok64 ro = post_cascade_one(cc, child_branch,
+                                   branch_old_tip, branch_new_tip,
+                                   &appended);
+        if (ro != OK) return ro;
 
         //  post_cascade_one may skip without appending (REFSNONE on a
         //  re-resolve race).  Only index recs[cc->n - 1] when a record
@@ -1602,10 +1613,11 @@ static ok64 post_cascade_walk(cascade_ctx *cc, u8cs branch,
 
         //  Recurse: this child's old/new tips drive the next level.
         sha1 child_new = cc->recs[cc->n - 1].new_tip;
-        call(post_cascade_walk, cc, child_branch, &child_old,
-             &child_new);
+        ok64 rr = post_cascade_walk(cc, child_branch, &child_old,
+                                    &child_new);
+        if (rr != OK) return rr;
     }
-    done;
+    return OK;
 }
 
 //  Test-only accessor (MEM-028): replicate the walker's per-child step
@@ -1708,14 +1720,16 @@ static b8 post_starts_with(u8cs s, u8cs prefix) {
 //  dirname of an absolute branch path: drop trailing `/segment`.
 //  Empty input (= trunk) yields empty.  Output is a slice into input.
 static void post_dirname(u8cs out, u8cs abs_branch) {
-    out[0] = abs_branch[0];
-    out[1] = abs_branch[0];
+    a_head(u8c, empty, abs_branch, 0);
+    u8csMv(out, empty);
     if (u8csEmpty(abs_branch)) return;
-    u8cp last_slash = NULL;
-    $for(u8c, p, abs_branch) {
-        if (*p == '/') last_slash = p;
+    //  revfind leaves term one past the last '/'; shed that '/' to get
+    //  the dirname (everything before the final segment).
+    a_dup(u8c, dir, abs_branch);
+    if (u8csRevFind(dir, '/') == OK) {
+        u8csShed1(dir);
+        u8csMv(out, dir);
     }
-    if (last_slash != NULL) out[1] = last_slash;
 }
 
 //  basename of an absolute branch path: bytes after the last '/'.
@@ -1724,11 +1738,11 @@ static void post_dirname(u8cs out, u8cs abs_branch) {
 static void post_basename(u8cs out, u8cs abs_branch) {
     u8csMv(out, abs_branch);
     if (u8csEmpty(abs_branch)) return;
-    u8cp last_slash = NULL;
-    $for(u8c, p, abs_branch) {
-        if (*p == '/') last_slash = p;
-    }
-    if (last_slash != NULL) out[0] = last_slash + 1;
+    //  revfind leaves term one past the last '/'; the tail beyond that
+    //  prefix is the basename (bytes after the final '/').
+    a_dup(u8c, upto_slash, abs_branch);
+    if (u8csRevFind(upto_slash, '/') == OK)
+        u8csUsed(out, u8csLen(upto_slash));
 }
 
 ok64 POSTFpChainTo(sha1cp from, sha1cp stop,
@@ -2449,7 +2463,9 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
     a_carve(u8, cbuf, 1UL << 16);
 
     u8 ct = 0;
-    call(KEEPGetExact, &pick, cbuf, &ct);
+    ok64 ko = KEEPGetExact(&pick, cbuf, &ct);
+
+    if (ko != OK) return ko;
     if (ct != DOG_OBJ_COMMIT) fail(SNIFFFAIL);
 
     git_commit gc = {};
@@ -2539,8 +2555,9 @@ ok64 POSTCommit(u8cs target_branch,
     sha1  parent     = {};
     b8    has_parent = NO;
     b8    had_baseline = NO;
-    call(post_collect_parents, brbuf, &parent, &has_parent,
-         &had_baseline);
+    ok64  br = post_collect_parents(brbuf, &parent, &has_parent,
+                                    &had_baseline);
+    if (br != OK) return br;
     if (had_baseline && !has_parent) {
         fprintf(stderr,
                 "sniff: post: baseline at-log row has no parent SHA — "

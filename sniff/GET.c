@@ -135,12 +135,15 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         //  so a fresh-clone wt walk must materialise empty files
         //  without going through KEEPGet.  Symmetric with POST's
         //  zero-size handler (sniff/POST.c:128).
-        static u8 const EMPTY_BLOB_SHA[20] = {
+        static u8c EMPTY_BLOB_SHA[20] = {
             0xe6, 0x9d, 0xe2, 0x9b, 0xb2, 0xd1, 0xd6, 0x43,
             0x4b, 0x8b, 0x29, 0xae, 0x77, 0x5a, 0xd8, 0xc2,
             0xe4, 0x8c, 0x53, 0x91
         };
-        if (memcmp(entry_sha.data, EMPTY_BLOB_SHA, 20) == 0) {
+        a$(u8c, eb, EMPTY_BLOB_SHA);
+        sha1 empty_blob = {};
+        call(sha1FromBin, &empty_blob, eb);
+        if (sha1Eq(&entry_sha, &empty_blob)) {
             //  Unlink first so a stale symlink at this path is replaced
             //  outright; FILECreate's O_CREAT|O_TRUNC otherwise follows
             //  the symlink and clobbers its target instead of the path.
@@ -225,11 +228,8 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
             (void)u8bFeed(g->subs_out, path);
             (void)u8bFeed1(g->subs_out, '\t');
             //  20-byte sha → 40-byte hex.
-            u8 hex[40];
-            u8s hex_s = {hex, hex + 40};
-            u8cs bin = {(u8c *)esha, (u8c *)esha + 20};
-            (void)HEXu8sFeedSome(hex_s, bin);
-            (void)u8bFeed(g->subs_out, ((u8cs){hex, hex + 40}));
+            a_sha1hex(hex, (sha1cp)esha);
+            (void)u8bFeed(g->subs_out, hex);
             (void)u8bFeed1(g->subs_out, '\n');
         }
         return WALKSKIP;
@@ -359,22 +359,22 @@ typedef struct {
 //  match.
 static b8 get_leaf_eq(ulogreccp a, ulogreccp b) {
     if (ok64Lit(a->verb, 0) != ok64Lit(b->verb, 0)) return NO;
-    if (u8csLen(a->uri.fragment) != u8csLen(b->uri.fragment)) return NO;
-    return memcmp(a->uri.fragment[0], b->uri.fragment[0],
-                  u8csLen(a->uri.fragment)) == 0;
+    a_dup(u8c, af, a->uri.fragment);
+    a_dup(u8c, bf, b->uri.fragment);
+    return u8csEq(af, bf);
 }
 
 static b8 get_is_sub(ulogreccp r) {
     return ok64Lit(r->verb, 0) == RON_s;
 }
 
-static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
+static ok64 get_overlap_step(ulogreccs recs, void *vctx) {
     get_overlap_ctx *c = (get_overlap_ctx *)vctx;
     ulogreccp base = NULL;
     ulogreccp tgt  = NULL;
-    for (u32 i = 0; i < n; i++) {
-        if (ok64stem(recs[i].verb) == c->v_base) base = &recs[i];
-        if (ok64stem(recs[i].verb) == c->v_tgt)  tgt  = &recs[i];
+    $for(ulogrec const, rec, recs) {
+        if (ok64stem(rec->verb) == c->v_base) base = rec;
+        if (ok64stem(rec->verb) == c->v_tgt)  tgt  = rec;
     }
     if (!base && !tgt) return OK;
 
@@ -497,11 +497,9 @@ static ok64 get_overlap_step(ulogreccp recs, u32 n, void *vctx) {
 
         sha1 base_sha = {};
         if (u8csLen(base->uri.fragment) == 40) {
-            u8s bin_s = {base_sha.data, base_sha.data + 20};
-            a_dup(u8c, hex_dup, base->uri.fragment);
-            HEXu8sDrainSome(bin_s, hex_dup);
+            sha1FromHex(&base_sha, base->uri.fragment);
         }
-        if (hashed && memcmp(wt_sha.data, base_sha.data, 20) == 0) {
+        if (hashed && sha1Eq(&wt_sha, &base_sha)) {
             //  Clean drift.  If tgt also has the path, the WRITE pass
             //  will overwrite + restamp — silent fall-through.  If tgt
             //  is absent (deletion), fall through to the unlink branch
@@ -1142,14 +1140,12 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         u8cs body = {u8bDataHead(buf), u8bIdleHead(buf)};
         u8cs field = {}, value = {};
         sha1 tag_sha = {};
-        a_raw(tag_bin, tag_sha);
         b8 found = NO;
+        a_cstr(obj_kw, "object");
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if ($empty(field)) break;
-            if ($len(field) == 6 && memcmp(field[0], "object", 6) == 0 &&
-                $len(value) >= 40) {
-                u8cs hex40 = {value[0], $atp(value, 40)};
-                HEXu8sDrainSome(tag_bin, hex40);
+            if (u8csEq(field, obj_kw) && $len(value) >= 40) {
+                if (sha1FromHex(&tag_sha, value) != OK) break;
                 found = YES;
                 break;
             }
@@ -1287,15 +1283,12 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                             u8cs tf = {}, tv = {};
                             sha1 tag_target = {};
                             b8 got = NO;
+                            a_cstr(obj_kw, "object");
                             while (GITu8sDrainCommit(tbody, tf, tv) == OK) {
                                 if (u8csEmpty(tf)) break;
-                                if (u8csLen(tf) == 6 &&
-                                    memcmp(tf[0], "object", 6) == 0 &&
+                                if (u8csEq(tf, obj_kw) &&
                                     u8csLen(tv) >= 40) {
-                                    u8s sb = {tag_target.data,
-                                              tag_target.data + 20};
-                                    u8cs hx = {tv[0], tv[0] + 40};
-                                    if (HEXu8sDrainSome(sb, hx) == OK)
+                                    if (sha1FromHex(&tag_target, tv) == OK)
                                         got = YES;
                                     break;
                                 }
@@ -1457,8 +1450,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 a_dup(u8c, ref_q, source);
                 u8csUsed1(ref_q);
                 a_cstr(refs_pfx, "refs/");
-                if ($len(ref_q) > 5 &&
-                    memcmp(ref_q[0], refs_pfx[0], 5) == 0)
+                if (u8csHasPrefix(ref_q, refs_pfx))
                     u8csUsed(ref_q, 5);
                 u8bFeed(key_buf, ref_q);
             }
@@ -1770,11 +1762,7 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
     if (ro != OK || u8csLen(resolved.query) != 40) return SNIFFNONE;
 
     sha1 commit_sha = {};
-    {
-        u8s sb = {commit_sha.data, commit_sha.data + 20};
-        a_dup(u8c, hx, resolved.query);
-        if (HEXu8sDrainSome(sb, hx) != OK) return SNIFFFAIL;
-    }
+    if (sha1FromHex(&commit_sha, resolved.query) != OK) return SNIFFFAIL;
     a_carve(u8, cbuf, 1UL << 20);
     u8 ot = 0;
     ok64 go = KEEPGetExact(&commit_sha, cbuf, &ot);
@@ -1784,13 +1772,11 @@ static ok64 sniff_get_subtree_resolve_tree(uri *u, sha1 *tree_out) {
     a_dup(u8c, scan, u8bDataC(cbuf));
     u8cs field = {}, value = {};
     b8 got = NO;
+    a_cstr(ft, "tree");
     while (GITu8sDrainCommit(scan, field, value) == OK) {
         if (u8csEmpty(field)) break;
-        a_cstr(ft, "tree");
-        if ($eq(field, ft) && u8csLen(value) >= 40) {
-            u8s sb = {tree_out->data, tree_out->data + 20};
-            a_dup(u8c, hx2, value);
-            if (HEXu8sDrainSome(sb, hx2) == OK) got = YES;
+        if (u8csEq(field, ft) && u8csLen(value) >= 40) {
+            if (sha1FromHex(tree_out, value) == OK) got = YES;
             break;
         }
     }
@@ -1847,17 +1833,13 @@ static ok64 sniff_get_subtree_to_wt(u8cs reporoot, uri *u) {
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;
-        u8cs rp = {rec.uri.path[0], rec.uri.path[1]};
+        a_dup(u8c, rp, rec.uri.path);
         if ($len(rp) <= $len(prefix)) continue;
         if (!u8csHasPrefix(rp, prefix)) continue;
         if (u8csLen(rec.uri.fragment) != 40) continue;
 
         sha1 leaf_sha = {};
-        {
-            u8s sb = {leaf_sha.data, leaf_sha.data + 20};
-            a_dup(u8c, hx, rec.uri.fragment);
-            if (HEXu8sDrainSome(sb, hx) != OK) continue;
-        }
+        if (sha1FromHex(&leaf_sha, rec.uri.fragment) != OK) continue;
         u8bReset(blob);
         u8 ot = 0;
         if (KEEPGetExact(&leaf_sha, blob, &ot) != OK) continue;
@@ -1906,6 +1888,11 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
     a_path(keepdir);
     call(HOMEBranchDir, keepdir, NULL);
 
+    //  Recompose scratch for the absolute-query strip below.  Declared
+    //  at function scope so the slice it backs (assigned into u->data)
+    //  outlives the inner block and survives until REFSResolve reads it.
+    a_pad(u8, recompose, 1024);
+
     //  Absolute-form query (`?/<project>/<branch>...`) carries a
     //  project prefix that's local-side state (already consumed by
     //  home_open_inner / be_ensure_project_repo).  Strip it so the
@@ -1942,16 +1929,12 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             u->query[0] = NULL;
             u->query[1] = NULL;
         }
-        //  Recompose u->data from the stripped components.  Stack
-        //  buffer outlives the function since we never store the
-        //  slice past this scope's REFSResolve uses (resolved.*
-        //  slices index into `arena`).
-        static u8 _recompose_buf[1024];
-        u8s into = {_recompose_buf, _recompose_buf + sizeof(_recompose_buf)};
-        u8s save = {into[0], into[1]};
-        if (URIutf8Feed(into, u) == OK) {
-            u->data[0] = save[0];
-            u->data[1] = into[0];
+        //  Recompose u->data from the stripped components into the
+        //  function-scope `recompose` buffer (see its declaration).
+        u8bReset(recompose);
+        if (URIutf8Feed(u8bIdle(recompose), u) == OK) {
+            a_dup(u8c, rview, u8bData(recompose));
+            u8csMv(u->data, rview);
         }
     }
 
@@ -2151,7 +2134,7 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             b8 bare = $empty(u->authority);
             for (u32 si = 0; strips[si] != NULL && (o != OK ||
                                 $empty(resolved.query)); si++) {
-                u8cs q = {u->query[0], u->query[1]};
+                a_dup(u8c, q, u->query);
                 size_t plen = strlen(strips[si]);
                 if (plen > 0) {
                     if ($len(q) <= plen) continue;

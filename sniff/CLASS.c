@@ -89,15 +89,16 @@ static ok64 class_sort_pd(u8b src, u8b dst) {
     Bu8cs slices = {};
     size_t cap = u8bDataLen(src) / 16 + 16;
     call(u8csbAllocate, slices, cap);
-    u8c *base = u8bDataHead(src);
-    u8c *term = base + u8bDataLen(src);
-    for (u8c *p = base; p < term; ) {
-        u8c *line_start = p;
-        while (p < term && *p != '\n') p++;
-        if (p < term) p++;
-        u8cs slice = {line_start, p};
+    a_dup(u8c, scan, u8bDataC(src));
+    while (!u8csEmpty(scan)) {
+        a_dup(u8c, find, scan);
+        //  Line includes its '\n' (if any): advance `find` past the
+        //  newline, then take the prefix of `scan` up to that point.
+        if (u8csFind(find, '\n') == OK) u8csUsed1(find);
+        a_past(u8c, slice, scan, find);
         ok64 fo = u8csbFeedP(slices, &slice);
         if (fo != OK) { u8csbFree(slices); return fo; }
+        u8csMv(scan, find);
     }
     u8cssHeapZ(u8csbData(slices), ULOGu8csZbyUri);
     while (u8csbDataLen(slices) > 0) {
@@ -157,15 +158,15 @@ static ok64 class_remember_submodule(class_walk_ctx *w, u8cs path) {
     return OK;
 }
 
-static ok64 class_merge_step(ulogreccp recs, u32 n, void *ctx_) {
+static ok64 class_merge_step(ulogreccs recs, void *ctx_) {
     class_walk_ctx *w = (class_walk_ctx *)ctx_;
 
     ulogreccp base = NULL, wt = NULL, put = NULL, del = NULL;
-    for (u32 i = 0; i < n; i++) {
-        if      (ok64stem(recs[i].verb) == w->v_base) base = &recs[i];
-        else if (ok64stem(recs[i].verb) == w->v_wt)   wt   = &recs[i];
-        else if (recs[i].verb == w->v_put)            put  = &recs[i];
-        else if (recs[i].verb == w->v_del)            del  = &recs[i];
+    $for(ulogrec const, rec, recs) {
+        if      (ok64stem(rec->verb) == w->v_base) base = rec;
+        else if (ok64stem(rec->verb) == w->v_wt)   wt   = rec;
+        else if (rec->verb == w->v_put)            put  = rec;
+        else if (rec->verb == w->v_del)            del  = rec;
     }
 
     u8cs path = {};
@@ -310,9 +311,7 @@ b8 CLASSWtEqBase(u8cs reporoot, ulogreccp base_rec, u8cs rel) {
     }
 
     sha1 base_sha = {};
-    u8s bin = {base_sha.data, base_sha.data + 20};
-    a_dup(u8c, hex, base_rec->uri.fragment);
-    if (HEXu8sDrainSome(bin, hex) != OK) return NO;
+    if (sha1FromHex(&base_sha, base_rec->uri.fragment) != OK) return NO;
     return sha1Eq(&wt_sha, &base_sha);
 }
 

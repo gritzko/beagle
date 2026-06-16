@@ -164,7 +164,8 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
 static ok64 put_baseline_tree(sha1 *tree_sha_out) {
     sane(tree_sha_out);
     b8 have = NO;
-    call(SNIFFAtBaselineTreeSha, YES, tree_sha_out, &have);
+    ok64 br = SNIFFAtBaselineTreeSha(YES, tree_sha_out, &have);
+    if (br != OK) return br;
     return have ? OK : ULOGNONE;
 }
 
@@ -455,14 +456,16 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
     ((u8 **)s.pathbuf)[1] = pathbuf[1];
     ((u8 **)s.pathbuf)[2] = pathbuf[2];
     ((u8 **)s.pathbuf)[3] = pathbuf[3];
-    call(SNIFFClassify, mv_collect_cb, &s);
+    ok64 cr = SNIFFClassify(mv_collect_cb, &s);
+    if (cr != OK)        return cr;
     if (s.nb == 0 || s.nw == 0) return OK;
 
     mv_hash_wt(&s, reporoot);
 
     mv_pair pairs[PUT_MV_MAX];
     u32 npairs = 0;
-    call(mv_pair_unique, &s, pairs, &npairs);
+    ok64 po = mv_pair_unique(&s, pairs, &npairs);
+    if (po != OK) return po;
 
     for (u32 i = 0; i < npairs; i++) {
         mv_entry const *bb = &s.base[pairs[i].b_idx];
@@ -470,7 +473,8 @@ static ok64 put_detect_moves(u8cs reporoot, ron60 *ts_io,
         uri urow = {};
         urow.path[0]     = bb->path[0]; urow.path[1]     = bb->path[1];
         urow.fragment[0] = ww->path[0]; urow.fragment[1] = ww->path[1];
-        call(SNIFFAtAppendAt, *ts_io, verb_put, &urow);
+        ok64 ao = SNIFFAtAppendAt(*ts_io, verb_put, &urow);
+        if (ao != OK) return ao;
         a_dup(u8c, dst_rel, ww->path);
         a_path(dstfp);
         if (SNIFFFullpath(dstfp, reporoot, dst_rel) == OK)
@@ -656,7 +660,8 @@ static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
     //  anything when the sha pairing isn't 1:1.  Each emitted row bumps
     //  `ts` so subsequent rows stay strictly increasing.
     u32 mv_emitted = 0;
-    call(put_detect_moves, reporoot, &ts, &mv_emitted, verb_put);
+    ok64 mo = put_detect_moves(reporoot, &ts, &mv_emitted, verb_put);
+    if (mo != OK) return mo;
 
     //  Pass 2: tracked-dirty walk.  Re-stamp ts: the latest get/post
     //  row's ts.  Files whose content matches the baseline get
@@ -745,11 +750,12 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             //  Strip leading "./" on both sides — mirrors the bareword
             //  normalisation a few lines down.
             if ($len(mvsrc) >= 2 && mvsrc[0][0] == '.' && mvsrc[0][1] == '/')
-                mvsrc[0] += 2;
+                u8csUsed(mvsrc, 2);
             if ($len(mvdst) >= 2 && mvdst[0][0] == '.' && mvdst[0][1] == '/')
-                mvdst[0] += 2;
-            call(put_move, mvsrc, mvdst, reporoot,
-                 &ts, &emitted, verb_put);
+                u8csUsed(mvdst, 2);
+            ok64 mo = put_move(mvsrc, mvdst, reporoot,
+                               &ts, &emitted, verb_put);
+            if (mo != OK) return mo;
             continue;
         }
 
@@ -764,7 +770,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         if ($len(raw) == 1 && raw[0][0] == '.') {
             raw[0] = raw[1];  // → empty = reporoot
         } else if ($len(raw) >= 2 && raw[0][0] == '.' && raw[0][1] == '/') {
-            raw[0] += 2;
+            u8csUsed(raw, 2);
         }
         //  Refuse to stage sniff-meta paths (.be/wtlog / .be/* / .git*)
         //  even when explicitly named — they leak into legacy trees
@@ -785,7 +791,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         //  below; SubIsMount returns NO on empty subpath.
         {
             u8cs probe = {raw[0], raw[1]};
-            if ($len(probe) > 0 && *(probe[1] - 1) == '/') probe[1]--;
+            if (!u8csEmpty(probe) && *u8csLast(probe) == '/') u8csShed1(probe);
             if (SNIFFSubIsMount(reporoot, probe)) {
                 a_pad(u8, hexpad, 40);
                 ok64 tr = SNIFFSubReadTip(reporoot, probe,
@@ -802,8 +808,8 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
                 u8bFed(hexpad, 40);
                 a_dup(u8c, hex_view, u8bDataC(hexpad));
                 uri urow = {};
-                urow.path[0]     = probe[0];   urow.path[1]     = probe[1];
-                urow.fragment[0] = hex_view[0]; urow.fragment[1] = hex_view[1];
+                u8csMv(urow.path,     probe);
+                u8csMv(urow.fragment, hex_view);
                 call(SNIFFAtAppendAt, ts, verb_put, &urow);
                 ts++;
                 emitted++;
@@ -821,7 +827,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         //  rather than the misleading "does not exist".  A trailing
         //  slash (`<sub>/`) is an explicit "stage the dir's contents"
         //  intent and falls through to the dir-form below unchanged.
-        if (!u8csEmpty(raw) && !($len(raw) > 0 && *(raw[1] - 1) == '/')) {
+        if (!u8csEmpty(raw) && *u8csLast(raw) != '/') {
             u8cs probe2 = {raw[0], raw[1]};
             if (put_is_sub_add_candidate(reporoot, probe2)) {
                 fprintf(stderr,
@@ -850,7 +856,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
         //  A slashless arg that is NOT a directory (a file, a bareword
         //  branch word, a typo) stays file-form and is handled below.
         b8 is_dir = u8csEmpty(raw) ||
-                    ($len(raw) > 0 && *(raw[1] - 1) == '/');
+                    *u8csLast(raw) == '/';
         //  Did the user type the dir WITHOUT a trailing slash?  We
         //  reframe it to `<dir>/` below (DIS-034), but remember the
         //  slashless intent so an empty/untracked expansion can suggest
@@ -917,7 +923,8 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             };
             u8csMv(dctx.reporoot, reporoot);
             u32 before = emitted;
-            call(SNIFFClassify, dir_collect_step, &dctx);
+            ok64 cr = SNIFFClassify(dir_collect_step, &dctx);
+            if (cr != OK) return cr;
             if (dctx.err != OK) return dctx.err;
 
             if (emitted == before) {

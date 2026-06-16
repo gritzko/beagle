@@ -335,9 +335,10 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
         size_t wt_len = $len(wt_s);
         if ($len(cwd_s) > wt_len &&
             u8csHasPrefix(cwd_s, wt_s) &&
-            cwd_s[0][wt_len] == '/') {
-            rel[0] = cwd_s[0] + wt_len + 1;
-            rel[1] = cwd_s[1];
+            *u8csAtP(cwd_s, wt_len) == '/') {
+            //  cwd path relative to wt root: drop the prefix + its `/`.
+            a_rest(u8c, r, cwd_s, wt_len + 1);
+            u8csMv(rel, r);
         }
     }
     if (!u8csEmpty(rel)) (void)u8bFeed(text, rel);
@@ -1152,16 +1153,15 @@ ok64 SNIFFExec(cli *c) {
                         "sniff: sub-mount: cannot map .gitmodules\n");
                     ret = SNIFFFAIL;
                 } else {
-                    u8cs gm_blob = {u8bDataHead(gm_map),
-                                    u8bIdleHead(gm_map)};
+                    a_dup(u8c, gm_blob, u8bDataC(gm_map));
                     a_dup(u8c, parent_root_s, u8bDataC(HOME.root));
                     u8cs path_s = {};
                     u8csMv(path_s, u->path);
                     //  Strip the `./` URI-form prefix that the caller
                     //  uses to keep the path in the URI's path slot.
-                    if (u8csLen(path_s) >= 2 &&
-                        path_s[0][0] == '.' && path_s[0][1] == '/')
-                        path_s[0] += 2;
+                    a_cstr(dotslash, "./");
+                    if (u8csHasPrefix(path_s, dotslash))
+                        u8csUsed(path_s, 2);
                     u8cs hex_s = {};
                     u8csMv(hex_s, u->fragment);
                     a$rg(argv0, 0);
