@@ -2,6 +2,7 @@
 
 #include "abc/PRO.h"
 #include "dog/tok/FREE.h"
+#include "dog/tok/MDBLK.h"
 
 // Inline ragel lexer (MDT.rl.c, generated from MDT.c.rl)
 ok64 MDTInlineLexer(MDTstate *state);
@@ -67,74 +68,54 @@ ok64 MDTonSpace(u8cs tok, MDTstate *state) {
 // Check if line opens a fenced code block.
 // Returns fence length (>=3) or 0. Sets *fc to fence char.
 static int MDTFenceOpen(u8csc line, u8 *fc) {
-    u8c *p = (u8c *)line[0];
-    u8c *e = (u8c *)line[1];
-    int spaces = 0;
-    while (p < e && *p == ' ' && spaces < 3) { p++; spaces++; }
-    if (p >= e) return 0;
-    u8 ch = *p;
+    a_dup(u8c, c, line);
+    MDBLKu8csSkipSpaces(c, 3);
+    if (u8csEmpty(c)) return 0;
+    u8 ch = *u8csHead(c);
     if (ch != '`' && ch != '~') return 0;
-    int count = 0;
-    while (p < e && *p == ch) { p++; count++; }
+    int count = MDBLKu8csRun(c, ch);
     if (count < 3) return 0;
-    if (ch == '`') {
-        u8c *q = p;
-        while (q < e) {
-            if (*q == '`') return 0;
-            q++;
-        }
-    }
+    if (ch == '`' && u8csFind(c, '`') == OK) return 0;  // no ` in info string
     *fc = ch;
     return count;
 }
 
 // Check if line closes a fenced code block.
 static b8 MDTFenceClose(u8csc line, u8 fc, int flen) {
-    u8c *p = (u8c *)line[0];
-    u8c *e = (u8c *)line[1];
-    int spaces = 0;
-    while (p < e && *p == ' ' && spaces < 3) { p++; spaces++; }
-    if (p >= e || *p != fc) return NO;
-    int count = 0;
-    while (p < e && *p == fc) { p++; count++; }
+    a_dup(u8c, c, line);
+    MDBLKu8csSkipSpaces(c, 3);
+    if (u8csEmpty(c) || *u8csHead(c) != fc) return NO;
+    int count = MDBLKu8csRun(c, fc);
     if (count < flen) return NO;
-    while (p < e) {
-        if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') return NO;
-        p++;
-    }
-    return YES;
+    return MDBLKu8csAllBlank(c);
 }
 
 // Check ATX heading level (1-6), or 0.
 static int MDTHeadingLevel(u8csc line) {
-    u8c *p = (u8c *)line[0];
-    u8c *e = (u8c *)line[1];
-    int spaces = 0;
-    while (p < e && *p == ' ' && spaces < 3) { p++; spaces++; }
-    if (p >= e || *p != '#') return 0;
-    int level = 0;
-    while (p < e && *p == '#') { p++; level++; }
+    a_dup(u8c, c, line);
+    MDBLKu8csSkipSpaces(c, 3);
+    if (u8csEmpty(c) || *u8csHead(c) != '#') return 0;
+    int level = MDBLKu8csRun(c, '#');
     if (level > 6) return 0;
-    if (p < e && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-        return 0;
+    if (!u8csEmpty(c)) {
+        u8 ch = *u8csHead(c);
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') return 0;
+    }
     return level;
 }
 
 // Check thematic break (---, ***, ___).
 static b8 MDTThematicBreak(u8csc line) {
-    u8c *p = (u8c *)line[0];
-    u8c *e = (u8c *)line[1];
-    int spaces = 0;
-    while (p < e && *p == ' ' && spaces < 3) { p++; spaces++; }
-    if (p >= e) return NO;
-    u8 ch = *p;
+    a_dup(u8c, c, line);
+    MDBLKu8csSkipSpaces(c, 3);
+    if (u8csEmpty(c)) return NO;
+    u8 ch = *u8csHead(c);
     if (ch != '-' && ch != '*' && ch != '_') return NO;
     int count = 0;
-    while (p < e) {
+    $for(u8c, p, c) {
         if (*p == ch) count++;
         else if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
             return NO;
-        p++;
     }
     return count >= 3;
 }
@@ -148,18 +129,15 @@ static ok64 MDTHeadingCb(u8 tag, u8cs tok, void *ctx) {
 
 // Emit heading: prefix (#+ space) as R, content through inline.
 static ok64 MDTEmitHeading(MDTstate *state, u8csc line) {
-    u8c *p = (u8c *)line[0];
     u8c *e = (u8c *)line[1];
+    a_dup(u8c, c, line);
 
-    // Skip leading spaces
-    int spaces = 0;
-    while (p < e && *p == ' ' && spaces < 3) { p++; spaces++; }
-
-    // Consume # markers
-    while (p < e && *p == '#') p++;
-
-    // Consume space after #
-    if (p < e && (*p == ' ' || *p == '\t')) p++;
+    // Skip leading spaces, consume # markers, then one space after #
+    MDBLKu8csSkipSpaces(c, 3);
+    MDBLKu8csRun(c, '#');
+    if (!u8csEmpty(c) && (*u8csHead(c) == ' ' || *u8csHead(c) == '\t'))
+        u8csUsed1(c);
+    u8c *p = (u8c *)c[0];   // first content byte
 
     // Emit prefix as R via TOKSplitText
     u8cs prefix = {line[0], p};
@@ -171,7 +149,8 @@ static ok64 MDTEmitHeading(MDTstate *state, u8csc line) {
     // Strip trailing newline for content
     u8c *ce = e;
     b8 has_nl = NO;
-    if (ce > p && ce[-1] == '\n') { ce--; has_nl = YES; }
+    u8cs body = {p, e};
+    if (!u8csEmpty(body) && *u8csLast(body) == '\n') { ce--; has_nl = YES; }
 
     // Run inline on heading content, remapping S → N
     if (p < ce) {
@@ -196,25 +175,19 @@ static ok64 MDTEmitHeading(MDTstate *state, u8csc line) {
 ok64 MDTLexer(MDTstate *state) {
     sane($ok(state->data) && state != NULL);
 
-    u8c *cur = (u8c *)state->data[0];
-    u8c *end = (u8c *)state->data[1];
+    a_dup(u8c, scan, state->data);
     b8 in_fence = NO;
     int fence_len = 0;
     u8 fence_char = 0;
 
-    while (cur < end) {
-        // Find line boundary
-        u8c *sol = cur;
-        while (cur < end && *cur != '\n') cur++;
-        if (cur < end) cur++;  // include newline
-        u8cs line = {sol, cur};
-
+    u8cs line = {};
+    while (MDBLKu8csDrainLine(scan, line) == OK) {
         if (in_fence) {
             if (MDTFenceClose(line, fence_char, fence_len))
                 in_fence = NO;
             if (state->cb) {
                 ok64 o = state->cb('H', line, state->ctx);
-                if (o != OK) { state->data[0] = cur; return o; }
+                if (o != OK) { state->data[0] = scan[0]; return o; }
             }
             continue;
         }
@@ -227,16 +200,16 @@ ok64 MDTLexer(MDTstate *state) {
             fence_char = fc;
             if (state->cb) {
                 ok64 o = state->cb('H', line, state->ctx);
-                if (o != OK) { state->data[0] = cur; return o; }
+                if (o != OK) { state->data[0] = scan[0]; return o; }
             }
         } else if (MDTThematicBreak(line)) {
             if (state->cb) {
                 ok64 o = TOKSplitText('R', line, state->cb, state->ctx);
-                if (o != OK) { state->data[0] = cur; return o; }
+                if (o != OK) { state->data[0] = scan[0]; return o; }
             }
         } else if (MDTHeadingLevel(line) > 0) {
             ok64 o = MDTEmitHeading(state, line);
-            if (o != OK) { state->data[0] = cur; return o; }
+            if (o != OK) { state->data[0] = scan[0]; return o; }
         } else {
             // Paragraph / list / blockquote — inline machine
             MDTstate ist = {
@@ -245,10 +218,10 @@ ok64 MDTLexer(MDTstate *state) {
                 .ctx = state->ctx,
             };
             ok64 o = MDTInlineLexer(&ist);
-            if (o != OK) { state->data[0] = cur; return o; }
+            if (o != OK) { state->data[0] = scan[0]; return o; }
         }
     }
 
-    state->data[0] = cur;
+    state->data[0] = scan[0];
     return OK;
 }

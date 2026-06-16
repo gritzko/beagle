@@ -168,10 +168,11 @@ static u32 ulog_lower_bound(wh128bp idx, ron60 ts) {
 //  Compute the end pointer of the row whose start sits at `row_start`
 //  in the log map.  Returns NULL if no '\n' is found before idle.
 static u8 const *ulog_row_end(u8b data, u8 const *row_start) {
-    u8 const *end = (u8 const *)data[2];   // idle head = first byte past data
-    u8 const *p = row_start;
-    while (p < end && *p != '\n') p++;
-    return (p < end) ? p + 1 : NULL;
+    u8 const *idle_head = *u8bIdleC(data);     // idle head = first past data
+    u8cs row = {(u8 *)row_start, (u8 *)idle_head};
+    if (u8csFind(row, '\n') != OK) return NULL;
+    u8csUsed1(row);                            // step past the '\n'
+    return row[0];                             // first byte of next row
 }
 
 //  Scan the log mmap, fill the index (without sentinel), enforce strict
@@ -187,8 +188,8 @@ static u8 const *ulog_row_end(u8b data, u8 const *row_start) {
 //  history that the caller must NOT mistake for an empty log.  Returns
 //  YES iff [from, content_end) is all-NUL (safe to stop).
 static b8 ulog_tail_all_zero(u8 const *from, u8 const *content_end) {
-    for (u8 const *p = from; p < content_end; p++)
-        if (*p != 0) return NO;
+    u8cs tail = {(u8 *)from, (u8 *)content_end};
+    $for(u8c, p, tail) if (*p != 0) return NO;
     return YES;
 }
 
@@ -196,32 +197,35 @@ static ok64 ulog_scan_log(u8bp data, wh128bp idx) {
     sane(data && idx);
     wh128bReset(idx);
 
-    u8 *base = (u8 *)data[0];
-    u8 *end  = (u8 *)data[3];
-    //  data[2] is the file's real on-disk content end as set by
-    //  FILEBookFD (original size); trailing [content_end, end) is the
-    //  page-aligned zero pad and is legitimately all-NUL.  Capture it
-    //  before the scan overwrites data[2] with the parsed tail.
-    u8 *content_end = (u8 *)data[2];
-    u8cs scan = {base, end};
-    u8 *last_nl_plus_one = base;
+    //  The log map is one contiguous range [past, term); DATA's current
+    //  idle head (data[2]) is the file's real on-disk content end as set
+    //  by FILEBookFD (original size).  Trailing [content_end, term) is the
+    //  page-aligned zero pad and is legitimately all-NUL.  Read both
+    //  boundaries through typed accessors and scan a const slice cursor.
+    a_dup(u8c, dat, u8bDataC(data));                  // [past, content_end)
+    a_dup(u8c, idle, u8bIdleC(data));                 // [content_end, term)
+    u8 const *base        = dat[0];                   // past == data head
+    u8 const *content_end = idle[0];                  // file content end
+    u8cs scan             = {(u8 *)base, (u8 *)idle[1]};  // [base, term)
+    u8 const *tail        = base;                     // tail of last full row
     ron60 prev = 0;
-    while (scan[0] < scan[1]) {
-        if (*scan[0] == 0) {
+    while (!u8csEmpty(scan)) {
+        u8 c = *u8csHead(scan);
+        if (c == 0) {
             //  Torn-log guard (ULOG-001): a NUL inside the real content
             //  region with non-NUL bytes still ahead is corruption, not
             //  a clean tail.  Refuse rather than present an empty log
             //  that ULOGClose would then ftruncate to 0.
             if (scan[0] < content_end &&
-                !ulog_tail_all_zero((u8 *)scan[0], content_end))
+                !ulog_tail_all_zero(scan[0], content_end))
                 fail(ULOGTORN);
             break;                                           // zero-pad tail
         }
-        if (*scan[0] == '\n') {
-            scan[0]++; last_nl_plus_one = (u8 *)scan[0]; continue;  // blank line
+        if (c == '\n') {
+            u8csUsed1(scan); tail = scan[0]; continue;       // blank line
         }
 
-        u64 off = (u64)(scan[0] - base);
+        u64 off = (u64)u8csLen((u8cs){(u8 *)base, scan[0]});  // row byte offset
         ulogrec rec = {};
         ok64 o = ULOGu8sDrain(scan, &rec);
         if (o == NODATA) break;
@@ -230,13 +234,13 @@ static ok64 ulog_scan_log(u8bp data, wh128bp idx) {
         if (ULOGCount(idx) > 0 && rec.ts <= prev) fail(ULOGCLOCK);
         call(ulog_idx_push, idx, ulogIdxEntry(rec.ts, rec.verb, off));
         prev = rec.ts;
-        last_nl_plus_one = (u8 *)scan[0];
+        tail = scan[0];
     }
 
-    u8 **data_head = (u8 **)&data[1];
-    u8 **idle_head = (u8 **)&data[2];
-    *data_head = base;
-    *idle_head = last_nl_plus_one;
+    //  Reposition the buffer's DATA/IDLE division: DATA = [base, tail),
+    //  IDLE starts at the tail of the last complete row.
+    u8bReset(data);
+    u8bFed(data, (size_t)u8csLen((u8cs){(u8 *)base, (u8 *)tail}));
     done;
 }
 
@@ -286,19 +290,18 @@ static ok64 ulog_idx_alloc_anon(wh128bp *idx_out, size_t entry_cap) {
         ULOG_FAULT_ALLOC_ANON--;
         fail(ULOGFAIL);
     }
-    size_t bytes = entry_cap * sizeof(wh128);
-    void *mem = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (mem == MAP_FAILED) fail(ULOGFAIL);
+    //  The descriptor itself must outlive this call (the booked path
+    //  returns a heap descriptor too), so it lives on the heap; the
+    //  backing store is an anonymous mmap set up by wh128bMap, which
+    //  installs the four boundary pointers (past=data=idle=base,
+    //  term=base+cap) — no hand-poking of slot[0..3].
     wh128 **slot = (wh128 **)calloc(4, sizeof(wh128 *));
-    if (!slot) {
-        munmap(mem, bytes);
+    if (!slot) fail(ULOGFAIL);
+    ok64 mo = wh128bMap(slot, entry_cap);
+    if (mo != OK) {
+        free((void *)slot);
         fail(ULOGFAIL);
     }
-    slot[0] = (wh128 *)mem;
-    slot[1] = slot[0];                          // past = base (no past)
-    slot[2] = slot[0];                          // idle = base (no data yet)
-    slot[3] = slot[0] + entry_cap;              // term
     *idx_out = (wh128bp)slot;
     done;
 }
@@ -306,9 +309,7 @@ static ok64 ulog_idx_alloc_anon(wh128bp *idx_out, size_t entry_cap) {
 //  Free an anonymous-mmap idx (counterpart of ulog_idx_alloc_anon).
 static void ulog_idx_free_anon(wh128bp idx) {
     if (!idx || !idx[0]) return;
-    size_t bytes = (size_t)((wh128 const *)idx[3] - (wh128 const *)idx[0])
-                 * sizeof(wh128);
-    munmap((void *)idx[0], bytes);
+    wh128bUnMap((wh128 **)idx);
     free((void *)idx);
 }
 
@@ -343,11 +344,12 @@ static b8 ulog_idx_spans_log(wh128bp idx, u8b data, u64 actual_size) {
     wh128 last = ulog_idx_at(idx, rows - 1);
     u64 off = ulogIdxOff(last);
     if (off >= actual_size) return NO;    // row start past content end
-    u8 const *base      = (u8 const *)data[0];
-    u8 const *row_start = base + off;     // ulogIdxOff is the row's byte offset
+    a_dup(u8c, dat, u8bData((u8 *const *)data));
+    u8 const *base      = dat[0];
+    u8 const *row_start = u8csAtP(dat, off);  // ulogIdxOff is the row's offset
     u8 const *row_end   = ulog_row_end(data, row_start);
     if (row_end == NULL) return NO;       // no terminating '\n' before idle
-    return (u64)(row_end - base) == actual_size;
+    return (u64)u8csLen((u8cs){(u8 *)base, (u8 *)row_end}) == actual_size;
 }
 
 //  Validate the sidecar's tail sentinel against the log's actual size
@@ -698,7 +700,8 @@ ok64 ULOGFindLatest(u8b data, wh128bp idx, ulog_pred pred, void *ctx,
     for (u32 i = n; i > 0; ) {
         i--;
         ulogrec r = {};
-        call(ULOGRow, data, idx, i, &r);
+        ok64 o = ULOGRow(data, idx, i, &r);
+        if (o != OK) return o;
         if (pred(&r, ctx)) {
             *out = r;
             done;
@@ -716,7 +719,8 @@ ok64 ULOGFindVerb(u8b data, wh128bp idx, ron60 verb, ulogrecp out) {
         wh128 ent = ulog_idx_at(idx, i);
         if (ulogIdxVerbH(ent) != want_h) continue;     // 20-bit prefilter
         ulogrec r = {};
-        call(ULOGRow, data, idx, i, &r);
+        ok64 o = ULOGRow(data, idx, i, &r);
+        if (o != OK) return o;
         if (r.verb == verb) {
             *out = r;
             done;

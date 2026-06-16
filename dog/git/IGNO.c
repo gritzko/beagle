@@ -11,43 +11,50 @@
 
 static a_cstr(GITIGNORE_NAME, ".gitignore");
 
-// Gitignore-style glob: * matches non-/, ** matches everything, ? matches one
-static b8 IGNOGlob(u8cs pat, u8cs str) {
-    u8cp pp = pat[0], pe = pat[1];
-    u8cp sp = str[0], se = str[1];
-    while (pp < pe && sp < se) {
-        if (*pp == '*') {
-            if (pp + 1 < pe && pp[1] == '*') {
-                pp += 2;
-                if (pp < pe && *pp == '/') pp++;
-                // ** matches everything including /
-                for (u8cp try = sp; try <= se; try++) {
-                    u8cs rp = {pp, pe}, rs = {try, se};
-                    if (IGNOGlob(rp, rs)) return YES;
+// Gitignore-style glob: * matches non-/, ** matches everything, ? matches one.
+// Both arguments are consumed locally via a_dup; recursion runs on sub-slices.
+static b8 IGNOGlob(u8csc pat_in, u8csc str_in) {
+    a_dup(u8c, pat, pat_in);
+    a_dup(u8c, str, str_in);
+    while (!u8csEmpty(pat) && !u8csEmpty(str)) {
+        u8 pc = *u8csHead(pat);
+        if (pc == '*') {
+            b8 dbl = u8csLen(pat) >= 2 && *u8csAtP(pat, 1) == '*';
+            if (dbl) {
+                u8csUsed(pat, 2);
+                if (!u8csEmpty(pat) && *u8csHead(pat) == '/') u8csUsed1(pat);
+                // ** matches everything including '/': try every suffix.
+                a_dup(u8c, tail, str);
+                for (;;) {
+                    if (IGNOGlob(pat, tail)) return YES;
+                    if (u8csEmpty(tail)) break;
+                    u8csUsed1(tail);
                 }
                 return NO;
             }
-            pp++;
-            // * matches anything except /
-            for (u8cp try = sp; try <= se; try++) {
-                u8cs rp = {pp, pe}, rs = {try, se};
-                if (IGNOGlob(rp, rs)) return YES;
-                if (try < se && *try == '/') break;
+            u8csUsed1(pat);
+            // * matches anything except '/': try suffixes, stop past a '/'.
+            a_dup(u8c, tail, str);
+            for (;;) {
+                if (IGNOGlob(pat, tail)) return YES;
+                if (u8csEmpty(tail)) break;
+                if (*u8csHead(tail) == '/') break;
+                u8csUsed1(tail);
             }
             return NO;
         }
-        if (*pp == '?') {
-            if (*sp == '/') return NO;
-            pp++;
-            sp++;
+        if (pc == '?') {
+            if (*u8csHead(str) == '/') return NO;
+            u8csUsed1(pat);
+            u8csUsed1(str);
             continue;
         }
-        if (*pp != *sp) return NO;
-        pp++;
-        sp++;
+        if (pc != *u8csHead(str)) return NO;
+        u8csUsed1(pat);
+        u8csUsed1(str);
     }
-    while (pp < pe && *pp == '*') pp++;
-    return pp == pe && sp == se;
+    while (!u8csEmpty(pat) && *u8csHead(pat) == '*') u8csUsed1(pat);
+    return u8csEmpty(pat) && u8csEmpty(str);
 }
 
 // Try to match pattern against path
@@ -62,8 +69,8 @@ static b8 TryMatch(igno_pat const *pat, u8cs path, b8 is_dir) {
     // Strip leading / from pattern for matching (we handle anchoring separately)
     u8cs match_pattern;
     u8csDup(match_pattern, pattern);
-    if (!$empty(match_pattern) && *match_pattern[0] == '/') {
-        match_pattern[0]++;
+    if (!u8csEmpty(match_pattern) && *u8csHead(match_pattern) == '/') {
+        u8csUsed1(match_pattern);
     }
 
     // If pattern has no slash and is not anchored, match against basename only
@@ -82,8 +89,8 @@ static b8 TryMatch(igno_pat const *pat, u8cs path, b8 is_dir) {
     u8csDup(match_path, path);
 
     // Skip leading / in path for comparison
-    if (!$empty(match_path) && *match_path[0] == '/') {
-        match_path[0]++;
+    if (!u8csEmpty(match_path) && *u8csHead(match_path) == '/') {
+        u8csUsed1(match_path);
     }
 
     if (pat->anchored) {
@@ -96,16 +103,14 @@ static b8 TryMatch(igno_pat const *pat, u8cs path, b8 is_dir) {
     u8cs try_path;
     u8csDup(try_path, match_path);
 
-    while (!$empty(try_path)) {
+    while (!u8csEmpty(try_path)) {
         if (IGNOGlob(match_pattern, try_path)) {
             return YES;
         }
-        // Move to next component
-        while (!$empty(try_path) && *try_path[0] != '/') {
-            try_path[0]++;
-        }
-        if (!$empty(try_path) && *try_path[0] == '/') {
-            try_path[0]++;
+        // Move to next component: skip to the next '/' then past it.
+        (void)u8csFind(try_path, '/');   // try_path[0] = '/' or term
+        if (!u8csEmpty(try_path) && *u8csHead(try_path) == '/') {
+            u8csUsed1(try_path);
         }
     }
 
@@ -136,69 +141,74 @@ ok64 IGNOLoad(ignop out, u8cs dir_path) {
     u8cs data;
     u8csDup(data, u8bDataC(out->buf));
 
-    while (!$empty(data) && out->count < IGNO_MAX_PATTERNS) {
+    while (!u8csEmpty(data) && out->count < IGNO_MAX_PATTERNS) {
         // Skip leading whitespace (but not newlines)
-        while (!$empty(data) && (**data == ' ' || **data == '\t')) {
-            data[0]++;
+        while (!u8csEmpty(data) &&
+               (*u8csHead(data) == ' ' || *u8csHead(data) == '\t')) {
+            u8csUsed1(data);
         }
 
-        // Find end of line
-        u8cp line_start = *data;
-        while (!$empty(data) && **data != '\n' && **data != '\r') {
-            data[0]++;
+        // Carve out the line [line_start, line end): up to the first
+        // '\n' / '\r'.  `line` is the working slice; `data` advances
+        // past the terminating newline run afterwards.
+        u8cs line = {};
+        line[0] = data[0];
+        while (!u8csEmpty(data) &&
+               *u8csHead(data) != '\n' && *u8csHead(data) != '\r') {
+            u8csUsed1(data);
         }
-        u8cp line_end = *data;
+        line[1] = data[0];
 
-        // Skip newline
-        while (!$empty(data) && (**data == '\n' || **data == '\r')) {
-            data[0]++;
+        // Skip the newline run
+        while (!u8csEmpty(data) &&
+               (*u8csHead(data) == '\n' || *u8csHead(data) == '\r')) {
+            u8csUsed1(data);
         }
 
         // Skip blank lines
-        if (line_start == line_end) continue;
+        if (u8csEmpty(line)) continue;
 
         // Trim trailing whitespace
-        while (line_end > line_start && (line_end[-1] == ' ' || line_end[-1] == '\t')) {
-            line_end--;
+        while (!u8csEmpty(line) &&
+               (*u8csLast(line) == ' ' || *u8csLast(line) == '\t')) {
+            u8csShed1(line);
         }
 
         // Skip comment lines
-        if (*line_start == '#') continue;
+        if (*u8csHead(line) == '#') continue;
 
         // Parse pattern
         igno_pat *pat = &out->patterns[out->count];
         zerop(pat);
 
-        u8cp p = line_start;
-
-        // Check for negation
-        if (*p == '!') {
+        // Negation marker — consume the '!' from the matchable pattern.
+        if (*u8csHead(line) == '!') {
             pat->negated = YES;
-            p++;
+            u8csUsed1(line);
         }
+        if (u8csEmpty(line)) continue;
 
-        // Check for anchor
-        if (*p == '/') {
+        // Anchor: a leading '/' pins the pattern to the root.
+        if (*u8csHead(line) == '/') {
             pat->anchored = YES;
         }
 
-        // Check for trailing / (directory only)
-        if (line_end > p && line_end[-1] == '/') {
+        // Trailing '/' → directory-only; trim it from the pattern.
+        if (*u8csLast(line) == '/') {
             pat->dir_only = YES;
-            line_end--;  // Trim from pattern
+            u8csShed1(line);
         }
 
-        // Check if pattern contains / (besides leading/trailing)
-        for (u8cp c = p; c < line_end; c++) {
-            if (*c == '/' && c != p) {
-                pat->has_slash = YES;
-                break;
-            }
+        // Pattern carries a '/' other than a leading-anchor slash → it
+        // matches a full path, not just a basename.  Scan the tail past
+        // the first byte for any '/'.
+        if (u8csLen(line) > 1) {
+            a_rest(u8c, tail, line, 1);
+            if (u8csFind(tail, '/') == OK) pat->has_slash = YES;
         }
 
         // Store pattern
-        pat->pattern[0] = p;
-        pat->pattern[1] = line_end;
+        u8csDup(pat->pattern, line);
 
         out->count++;
     }

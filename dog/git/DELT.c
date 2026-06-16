@@ -130,9 +130,13 @@ static ok64 delt_feed_insert(u8bp buf, u8csc data) {
 #define DELT_HTBITS 16
 #define DELT_HTSZ (1u << DELT_HTBITS)
 
-static u32 delt_hash4(u8cp p) {
-    u32 h = (u32)p[0] | ((u32)p[1] << 8) |
-            ((u32)p[2] << 16) | ((u32)p[3] << 24);
+//  Hash a 4-byte window (a hashing primitive — the little-endian word
+//  load stays raw, like the WHIFF/SHA1 byte reads; PTR-002 only removes
+//  the bare-pointer call sites by handing it a bounds-known slice).
+//  `win` must span at least DELT_WINSZ bytes.
+static u32 delt_hash4(u8csc win) {
+    u32 h = (u32)win[0][0] | ((u32)win[0][1] << 8) |
+            ((u32)win[0][2] << 16) | ((u32)win[0][3] << 24);
     return (h * 2654435761u) >> (32 - DELT_HTBITS);
 }
 
@@ -161,34 +165,46 @@ ok64 DELTEncode(u8csc base, u8csc target, u8bp out) {
     Bu32 ht_b = {};
     if (u32bAllocate(ht_b, DELT_HTSZ) != OK) fail(DELTFAIL);
     u32 *ht = u32bDataHead(ht_b);
-    // 0 = empty, store offset+1
+    // 0 = empty, store offset+1.  Index every 4-byte window of base; the
+    // window is a sub-slice [i, i+WINSZ) of base, no bare-pointer read.
     for (u64 i = 0; i + DELT_WINSZ <= base_sz; i++) {
-        u32 h = delt_hash4(base[0] + i);
+        a_rest(u8c, win, base, i);
+        u32 h = delt_hash4(win);
         ht[h] = (u32)i + 1;
     }
 
-    // Scan target, find matches
-    u8cp tp = target[0];
+    // Scan target as a consumable slice cursor.  `scan` advances byte by
+    // byte (or jumps past a copied match); `insert_start` marks the head
+    // of the pending literal run not yet flushed.  Offsets into the flat
+    // `base`/`target` buffers stay explicit — they are hash-table keys
+    // and copy offsets, the algorithm's positional core (cf. the varint
+    // bit-shifts), all bounds-checked against base[0]/base[1].
+    a_dup(u8c, scan, target);
     u8cp tend = target[1];
-    u8cp insert_start = tp;  // pending insert region
+    u8cp insert_start = target[0];   // pending insert region
 
-    while (tp + DELT_WINSZ <= tend) {
-        u32 h = delt_hash4(tp);
+    while (u8csLen(scan) >= DELT_WINSZ) {
+        u32 h = delt_hash4(scan);
         u32 boff_1 = ht[h];
 
         if (boff_1 == 0) {
-            tp++;
+            u8csUsed1(scan);
             continue;
         }
 
         u32 boff = boff_1 - 1;
-        // Verify match at boff
-        if (memcmp(base[0] + boff, tp, DELT_WINSZ) != 0) {
-            tp++;
+        // Verify match at boff: compare the two 4-byte windows directly.
+        a_rest(u8c, brest, base, boff);
+        a_head(u8c, bwin, brest, DELT_WINSZ);
+        a_head(u8c, twin, scan, DELT_WINSZ);
+        if (!u8csEq(bwin, twin)) {
+            u8csUsed1(scan);
             continue;
         }
 
-        // Extend match forward
+        u8cp tp = scan[0];   // confirmed match position in target
+
+        // Extend match forward over equal bytes.
         u8cp bp = base[0] + boff + DELT_WINSZ;
         u8cp mp = tp + DELT_WINSZ;
         while (mp < tend && bp < base[1] && *mp == *bp) {
@@ -224,8 +240,9 @@ ok64 DELTEncode(u8csc base, u8csc target, u8bp out) {
             match_boff += chunk;
             match_len  -= chunk;
         }
-        tp = mp;
-        insert_start = tp;
+        // Jump the cursor to the end of the copied match.
+        scan[0] = mp;
+        insert_start = mp;
     }
 
     // Flush remaining inserts (anything after the last copy).

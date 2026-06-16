@@ -354,11 +354,11 @@ static ok64 home_open_inner(uricp at, b8 rw) {
                 //  Absolute: split on first `/` after the leading one.
                 a_dup(u8c, body, at_query);
                 u8csUsed1(body);  // strip leading '/'
-                u8c const *p = body[0];
-                while (p < body[1] && *p != '/') p++;
-                u8cs proj = {body[0], (u8c *)p};
-                u8cs br   = {(u8c *)p, body[1]};
-                if (!u8csEmpty(br) && *br[0] == '/') u8csUsed1(br);
+                a_dup(u8c, scan, body);
+                (void)u8csFind(scan, '/');   // scan[0] = '/' or term
+                u8cs proj = {body[0], scan[0]};
+                u8cs br   = {scan[0], body[1]};
+                if (!u8csEmpty(br)) u8csUsed1(br);   // strip the separating '/'
                 u8bReset(h->project);
                 if (!u8csEmpty(proj)) u8bFeed(h->project, proj);
                 u8bReset(h->cur_branch);

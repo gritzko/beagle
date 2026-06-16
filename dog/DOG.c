@@ -625,13 +625,12 @@ ok64 DOGPupOpenAll(kv64b pups, path8sc dir, u8csc ext) {
 
 ok64 DOGPupOpenAside(kv64b pups, path8sc dir, u8csc ext) {
     sane(pups != NULL && u8csOK(dir) && u8csOK(ext));
-    //  Collapse the current DATA into PAST: the previously-active
-    //  leaf becomes part of the read-only context.  pups[1] is the
-    //  PAST/DATA boundary; advancing it to pups[2] (the DATA/IDLE
-    //  boundary) leaves DATA empty and ready for the next branch's
-    //  entries.
+    //  Collapse the current DATA into PAST: the previously-active leaf
+    //  becomes part of the read-only context, leaving DATA empty and
+    //  ready for the next branch's entries.  kv64bUsedAll advances the
+    //  PAST/DATA boundary to the DATA/IDLE boundary (no buffer-poke).
     if (kv64bDataLen(pups) > 0)
-        ((kv64 **)pups)[1] = (kv64 *)pups[2];
+        kv64bUsedAll(pups);
     return DOGPupOpenAll(pups, dir, ext);
 }
 
@@ -712,8 +711,9 @@ ok64 DOGPupThinTail(kv64b pups, path8s dir, u8cs ext, u32 m) {
         dog_pup_path(ulpath, dir, sq, ext);
         unlink((char *)u8bDataHead(ulpath));
     }
-    //  Trim data end back by m records.  pups[2] is data end.
-    ((kv64 **)pups)[2] = base + (n - m);
+    //  Trim DATA end back by m records (kv64bShed rolls the DATA/IDLE
+    //  boundary back into DATA — no buffer-poke).
+    kv64bShed(pups, m);
     done;
 }
 

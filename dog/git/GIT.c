@@ -287,10 +287,9 @@ ok64 GITu8sCommitTree(u8cs commit, u8 tree_sha[20]) {
 
 //  Try to consume `pfx` from the head of `s`.  Returns YES on match
 //  (and advances `s` past the prefix); NO leaves `s` untouched.
-static b8 git_eat_prefix(u8cs s, char const *pfx, size_t plen) {
-    u8cs pfx_s = {(u8 const *)pfx, (u8 const *)pfx + plen};
-    if (!u8csHasPrefix(s, pfx_s)) return NO;
-    u8csUsed(s, plen);
+static b8 git_eat_prefix(u8cs s, u8csc pfx) {
+    if (!u8csHasPrefix(s, pfx)) return NO;
+    u8csUsed(s, u8csLen(pfx));
     return YES;
 }
 
@@ -313,16 +312,16 @@ ok64 GITParseRef(u8csc in, gitref_kind *kind, u8csp name) {
     //  Optional `refs/` prefix.  Once stripped, a `<sub>/...` head whose
     //  `<sub>` is none of {heads, tags, remotes} routes to OTHER (the
     //  whole remainder, including `<sub>/`, becomes the name).
-    b8 had_refs = git_eat_prefix(s, "refs/", 5);
+    b8 had_refs = git_eat_prefix(s, (u8cs)u8slit("refs/"));
     if (had_refs && u8csEmpty(s)) return GITBADFMT;
 
-    if (git_eat_prefix(s, "heads/", 6)) {
+    if (git_eat_prefix(s, (u8cs)u8slit("heads/"))) {
         if (u8csEmpty(s)) return GITBADFMT;
         *kind = GITREF_BRANCH;
-    } else if (git_eat_prefix(s, "tags/", 5)) {
+    } else if (git_eat_prefix(s, (u8cs)u8slit("tags/"))) {
         if (u8csEmpty(s)) return GITBADFMT;
         *kind = GITREF_TAG;
-    } else if (git_eat_prefix(s, "remotes/", 8)) {
+    } else if (git_eat_prefix(s, (u8cs)u8slit("remotes/"))) {
         if (u8csEmpty(s)) return GITBADFMT;
         *kind = GITREF_REMOTE;
     } else if (had_refs) {

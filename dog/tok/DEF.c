@@ -541,7 +541,7 @@ static ok64 DEFMarkRules(u32 **toks, DEFenr *e, const DEFrule *rules, u8 tag) {
     //  Per-blob NFA simulation scratch.  NFAu8MatchPrefix needs
     //  3 × nstates u32 slots; 12 KB covers any rule we have.
     u32 wbuf[3 * 1024];
-    u32 *ws[2] = {wbuf, wbuf + sizeof(wbuf) / sizeof(wbuf[0])};
+    a$(u32, ws, wbuf);
 
     b8 fresh = YES;
     for (u32 i = 0; i < e->len; i++) {
@@ -654,36 +654,37 @@ static const DEFlang *DEFLookup(u8csc ext) {
     return NULL;
 }
 
+//  Inner worker: carves the enrich/map scratch and runs the passes.
+//  Carved from BASS (a_carve) — one byte + one u32 per token; no fixed
+//  8 KiB cap (overflowed to NFANOROOM on big files) and no malloc/free.
+//  Invoked through DEFMark via try() so BASS is rewound on every return
+//  path, freeing the scratch even when DEFMark is itself called
+//  directly (not via call()) in a per-file loop (spot/GREP, bro/BRO).
+static ok64 def_mark_inner(u32 *toks[2], u8csc data, const DEFlang *lang) {
+    sane($ok(toks) && $ok(data) && lang != NULL);
+    u32 cap = (u32)$len(toks);
+    a_carve(u8,  enr_buf, cap ? cap : 1);
+    a_carve(u32, map_buf, cap ? cap : 1);
+
+    DEFenr e = {.enr = u8bDataHead(enr_buf), .map = u32bDataHead(map_buf),
+                .len = 0, .cap = cap};
+
+    u32 const *ctoks[2] = {toks[0], toks[1]};
+    call(DEFEnrich, &e, ctoks, data, lang->defkw, lang->ndefkw);
+
+    if (lang->rules) {
+        call(DEFMarkRules, toks, &e, lang->rules, DEF_TAG);
+    }
+    if (lang->calls) {
+        call(DEFMarkRules, toks, &e, CALL_RULES, CALL_TAG);
+    }
+    done;
+}
+
 ok64 DEFMark(u32 *toks[2], u8csc data, u8csc ext) {
     sane($ok(toks) && $ok(data));
     const DEFlang *lang = DEFLookup(ext);
     if (!lang) return OK;
-
-    u32 ntoks = (u32)$len(toks);
-    u32 cap = ntoks;
-
-    u8 enr_stack[8192];
-    u32 map_stack[8192];
-    u8 *enr_buf = (cap <= 8192) ? enr_stack : (u8 *)malloc(cap);
-    u32 *map_buf = (cap <= 8192) ? map_stack : (u32 *)malloc(cap * sizeof(u32));
-    if (!enr_buf || !map_buf) return NFANOROOM;
-
-    DEFenr e = {.enr = enr_buf, .map = map_buf, .len = 0, .cap = cap};
-
-    u32 const *ctoks[2] = {toks[0], toks[1]};
-    ok64 o = DEFEnrich(&e, ctoks, data, lang->defkw, lang->ndefkw);
-    if (o != OK) goto cleanup;
-
-    if (lang->rules) {
-        o = DEFMarkRules(toks, &e, lang->rules, DEF_TAG);
-        if (o != OK) goto cleanup;
-    }
-    if (lang->calls) {
-        o = DEFMarkRules(toks, &e, CALL_RULES, CALL_TAG);
-    }
-
-cleanup:
-    if (enr_buf != enr_stack) free(enr_buf);
-    if (map_buf != map_stack) free(map_buf);
-    return o;
+    try(def_mark_inner, toks, data, lang);
+    done;
 }

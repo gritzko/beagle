@@ -853,19 +853,20 @@ ok64 HUNKu8sFeedOut(u8s into, hunk const *hk) {
     fail(FAILSANITY);
 }
 
-// One line slice — content between leading `-`/`+` prefix and trailing '\n'.
-typedef struct { u8c *lo; u8c *hi; } hk_line;
-
-// Slurp one prefixed line (`-X\n` or `+X\n`) starting at *cur.
-// Skips the prefix char, returns content bounds, advances *cur past '\n'.
-// Returns YES on success, NO on no '\n' found.
-static b8 hk_take_line(u8c **cur, u8c *end, hk_line *out) {
-    if (*cur >= end) return NO;
-    u8c *nl = (u8c*)memchr(*cur, '\n', (size_t)(end - *cur));
-    if (!nl) return NO;
-    out->lo = *cur + 1;   // skip prefix char
-    out->hi = nl;
-    *cur = nl + 1;
+// Slurp one prefixed line (`-X\n` or `+X\n`) off the head of `scan`.
+// Skips the prefix char, returns content bounds (excluding the '\n')
+// in `line_out`, advances `scan` past the '\n'.  Returns YES on
+// success, NO when `scan` is empty or has no trailing '\n'.
+static b8 hk_take_line(u8cs scan, u8csp line_out) {
+    if (u8csEmpty(scan)) return NO;
+    a_dup(u8c, body, scan);
+    u8csUsed1(body);                          // skip the `-`/`+` prefix char
+    a_dup(u8c, nl, body);
+    if (u8csFind(nl, '\n') != OK) return NO;  // no terminating '\n' → NO
+    line_out[0] = body[0];                    // content start (past prefix)
+    line_out[1] = nl[0];                      // up to (not incl.) the '\n'
+    scan[0] = nl[0];
+    u8csUsed1(scan);                          // step past the '\n'
     return YES;
 }
 
@@ -874,24 +875,29 @@ static b8 hk_take_line(u8c **cur, u8c *end, hk_line *out) {
 // "small" the edit between two lines is — token-level diff routinely
 // fails to pair small-edit lines (one token changed) into a single
 // merged-text line, so the renderer pairs them at line level.
-static u32 hk_shared(hk_line a, hk_line b) {
-    u32 alen = (u32)(a.hi - a.lo);
-    u32 blen = (u32)(b.hi - b.lo);
+static u32 hk_shared(u8cs a, u8cs b) {
+    u32 alen = (u32)u8csLen(a);
+    u32 blen = (u32)u8csLen(b);
     u32 lim  = alen < blen ? alen : blen;
     u32 lcp = 0;
-    while (lcp < lim && a.lo[lcp] == b.lo[lcp]) lcp++;
+    while (lcp < lim && a[0][lcp] == b[0][lcp]) lcp++;
     u32 lcs = 0;
-    while (lcs < lim - lcp && a.hi[-1 - (i32)lcs] == b.hi[-1 - (i32)lcs])
+    a_dup(u8c, ar, a);
+    a_dup(u8c, br, b);
+    while (lcs < lim - lcp && *u8csLast(ar) == *u8csLast(br)) {
+        u8csShed1(ar);
+        u8csShed1(br);
         lcs++;
+    }
     return lcp + lcs;
 }
 
 // Two lines are a "small edit" if shared bytes (LCP+LCS) cover at
 // least 3/4 of the longer line — i.e. less than 1/4 of the line was
 // touched.
-static b8 hk_small_edit(hk_line a, hk_line b) {
-    u32 alen = (u32)(a.hi - a.lo);
-    u32 blen = (u32)(b.hi - b.lo);
+static b8 hk_small_edit(u8cs a, u8cs b) {
+    u32 alen = (u32)u8csLen(a);
+    u32 blen = (u32)u8csLen(b);
     u32 mx   = alen > blen ? alen : blen;
     if (mx == 0) return YES;
     u32 sh = hk_shared(a, b);
@@ -912,11 +918,10 @@ static void hk_free5(Bu8 body, Bu8 dels, Bu8 adds, Bu8 oldb, Bu8 newb) {
 }
 
 // Append `<prefix><content>\n` for a line slice.
-static ok64 hk_emit_line(Bu8 body, u8 prefix, hk_line ln) {
+static ok64 hk_emit_line(Bu8 body, u8 prefix, u8cs ln) {
     sane(u8bOK(body));
     call(u8bFeed1, body, prefix);
-    u8csc s = {ln.lo, ln.hi};
-    call(u8bFeed, body, s);
+    call(u8bFeed, body, ln);
     call(u8bFeed1, body, '\n');
     done;
 }
@@ -939,18 +944,22 @@ static ok64 hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
     u8c *ae = ap + u8bDataLen(adds);
 
     // 1. Exact-match prefix → context.
-    while (dp < de && ap < ae) {
-        u8c *dnl = (u8c*)memchr(dp, '\n', (size_t)(de - dp));
-        u8c *anl = (u8c*)memchr(ap, '\n', (size_t)(ae - ap));
-        if (!dnl || !anl) break;
-        size_t dlen = (size_t)(dnl - dp);
-        size_t alen = (size_t)(anl - ap);
-        if (dlen != alen || memcmp(dp + 1, ap + 1, dlen - 1) != 0) break;
-        call(u8bFeed1, body, ' ');
-        u8csc ctx = {dp + 1, dnl + 1};
-        call(u8bFeed, body, ctx);
-        dp = dnl + 1;
-        ap = anl + 1;
+    {
+        u8cs ds = {dp, de}, as = {ap, ae};
+        while (!u8csEmpty(ds) && !u8csEmpty(as)) {
+            u8cs dl0 = {}, al0 = {};
+            a_dup(u8c, dpeek, ds);
+            a_dup(u8c, apeek, as);
+            if (!hk_take_line(dpeek, dl0) || !hk_take_line(apeek, al0)) break;
+            if (!u8csEq(dl0, al0)) break;     // contents differ → stop
+            call(u8bFeed1, body, ' ');
+            u8csc ctx = {dl0[0], dpeek[0]};   // content + its '\n'
+            call(u8bFeed, body, ctx);
+            u8csMv(ds, dpeek);                // commit the consumed lines
+            u8csMv(as, apeek);
+        }
+        dp = (u8c *)ds[0];
+        ap = (u8c *)as[0];
     }
 
     // 2. Exact-match suffix → context.
@@ -975,15 +984,15 @@ static ok64 hunk_flush_region(Bu8 body, Bu8 dels, Bu8 adds) {
     }
 
     // 3. Similarity-based pairing on the middle.
-    static hk_line dl[HK_REGION_MAX], al[HK_REGION_MAX];
+    static u8cs dl[HK_REGION_MAX], al[HK_REGION_MAX];
     u32 nd = 0, na = 0;
     {
-        u8c *cur = dp;
-        while (nd < HK_REGION_MAX && hk_take_line(&cur, de_end, &dl[nd])) nd++;
+        u8cs cur = {dp, de_end};
+        while (nd < HK_REGION_MAX && hk_take_line(cur, dl[nd])) nd++;
     }
     {
-        u8c *cur = ap;
-        while (na < HK_REGION_MAX && hk_take_line(&cur, ae_end, &al[na])) na++;
+        u8cs cur = {ap, ae_end};
+        while (na < HK_REGION_MAX && hk_take_line(cur, al[na])) na++;
     }
 
     static i32 pair_a[HK_REGION_MAX];   // pair_a[j] = i if A[j]↔D[i], else -1
