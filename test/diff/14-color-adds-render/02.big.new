@@ -1,0 +1,5 @@
+# Title
+
+Any use of void* with no typed wrappers is suspicious. This doc is a one-pager for converting raw C into ABC idioms. References the canonical docs read them for full coverage:
+
+- item one

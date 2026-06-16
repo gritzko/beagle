@@ -73,6 +73,16 @@
   one-shot non-interactive drain, no PTY.  Fix:
   `BERunPipeSubs` in `beagle/BE.cli.c` folds the sub fan-out into bro's
   single TLV stdin.  Local-git submodule fixture, no ssh.
+* `14-color-adds-render/` — BRO-004.  `be --color diff:` must render the
+  ADDED (`+`/IN) side.  A long inserted line replacing several deleted
+  lines (shared trailing token suffix) makes the IN line's `\n`
+  token-LCS-match onto the RM side; `bro_walk_hunk` accumulated the IN
+  bytes past the block's last in-pass-visible `\n` and never flushed a
+  row for them, so the addition vanished from the colour render (plain
+  unaffected).  Fix: flush a trailing in-pass (and symmetric rm-pass)
+  row at block end for any pending bytes.  Also asserts a small in-place
+  word edit stays INLINE (one row, per-token tinting), preserving the
+  line-OR-token-by-volume design.  Local, no ssh.
 
 ## Label form note
 

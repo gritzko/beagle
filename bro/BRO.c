@@ -635,6 +635,7 @@ static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
         //  Without this, an EQ `\n` matched onto a pure-RM segment
         //  fails the `info[m].in_b||eq_b` check and the IN bytes from
         //  earlier segments in the group never get a row.
+        u32 block_hi = info[j - 1].hi;
         u32 row_start = info[i].lo;
         u32 pend_in = 0, pend_rm = 0, pend_eq = 0;
         for (u32 m = i; m < j; m++) {
@@ -649,7 +650,13 @@ static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
                 pend_in = pend_rm = pend_eq = 0;
             }
         }
-        //  (Trailing range with no visible RM/EQ `\n` ⇒ no rm-row.)
+        //  A block whose last segment's boundary `\n` is hidden in this
+        //  pass (e.g. an IN-content line whose `\n` LCS-matched onto the
+        //  RM side) leaves RM/EQ bytes accumulated past the final visible
+        //  `\n` — flush them as one trailing row so the deletion is not
+        //  dropped (the symmetric case of the in-pass bug below).
+        if (pend_rm > 0 || pend_eq > 0)
+            *total += emit(ctx, row_start, block_hi, BRO_PASS_RM);
 
         //  Walk block segments for in-pass — symmetric.
         row_start = info[i].lo;
@@ -666,6 +673,13 @@ static ok64 bro_walk_hunk(hunkc const *hk, bro_emit_fn emit, void *ctx,
                 pend_in = pend_rm = pend_eq = 0;
             }
         }
+        //  Trailing IN bytes whose only `\n` was hidden in this pass —
+        //  the added (`+`) side of a change where the inserted line's
+        //  `\n` LCS-matched onto a deleted (RM) line, so no in-pass `\n`
+        //  ever flushed them.  Without this row the whole addition is
+        //  dropped from the colour render (BRO-004).
+        if (pend_in > 0 || pend_eq > 0)
+            *total += emit(ctx, row_start, block_hi, BRO_PASS_IN);
 
         i = j;
     }
