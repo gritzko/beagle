@@ -166,26 +166,21 @@ static ok64 keep_msg_search(keeper *k, u8cs needle, sha1 *out) {
     Bu8 cbuf = {};
     call(u8bAllocate, cbuf, RESOLVE_OBJ_BUF);
 
-    u32 nruns   = (u32)(0);
-    nruns       = (u32)(0);  //  silence-pedantic in -Werror builds
     u32 scanned = 0;
 
     //  Walk pack runs newest-first (highest seqno first) so the most
     //  recent commit matching the needle wins.  Inside each run, walk
     //  COMMIT-typed entries.
-    extern u32 keep_run_count_all(keeper const *k);
-    extern void keep_run_at_all(wh128csp out, keeper const *k, u32 i);
-    nruns = keep_run_count_all(k);
+    u32 nruns = keep_run_count_all(k);
 
     for (u32 ri = nruns; ri > 0; ri--) {
         wh128cs run = {NULL, NULL};
         keep_run_at_all(run, k, ri - 1);
         if (run[0] == NULL) continue;
-        wh128cp base = run[0];
-        size_t  rlen = (size_t)(run[1] - run[0]);
+        size_t rlen = wh128csLen(run);
 
         for (size_t ei = rlen; ei > 0; ei--) {
-            wh128 const *e = &base[ei - 1];
+            wh128 const *e = wh128csAtP(run, ei - 1);
             u8 type = wh64Type(e->key);
             if (type != KEEP_OBJ_COMMIT) continue;
             if (scanned++ >= RESOLVE_MSG_MAX_WALK) {

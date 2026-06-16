@@ -56,20 +56,17 @@ static ok64 keep_subs_walk_path(sha1cp root_tree, u8cs path,
     sha1 cur = *root_tree;
     u8cs rest = {path[0], path[1]};
     while (!u8csEmpty(rest)) {
-        u8cp slash = rest[0];
-        while (slash < rest[1] && *slash != '/') slash++;
-        u8cs seg = {rest[0], slash};
-        if (u8csEmpty(seg)) {
-            if (slash < rest[1]) rest[0] = slash + 1;
-            else                 rest[0] = slash;
-            continue;
-        }
+        a_dup(u8c, scan, rest);
+        b8 had_slash = (u8csFind(scan, '/') == OK);  // scan[0] = '/' if found
+        u8cs seg = {rest[0], scan[0]};
+        rest[0] = scan[0];
+        if (had_slash) u8csUsed1(rest);              // step past the '/'
+        if (u8csEmpty(seg)) continue;
         sha1 step = {};
         u32  mode = 0;
         call(keep_subs_tree_step, &cur, seg, &step, &mode, tbuf);
         cur = step;
         if (out_mode) *out_mode = mode;
-        rest[0] = (slash < rest[1]) ? slash + 1 : slash;
     }
     *out_sha = cur;
     done;

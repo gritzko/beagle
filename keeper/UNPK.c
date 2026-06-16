@@ -167,7 +167,7 @@ static void unpk_worker_main(unpk_worker *w) {
     b8  *resolved = w->resolved;
     wh128cs waiters = {w->waiters[0], w->waiters[1]};
 
-    struct { u8p d_start; u8p d_end; u32 node; u8 base_type; }
+    struct { u8p d_start; u8p d_end; size_t d_len; u32 node; u8 base_type; }
         stk[UNPK_MAX_CHAIN];
 
     for (u32 root_idx = 1 + w->worker_id;
@@ -191,6 +191,7 @@ static void unpk_worker_main(unpk_worker *w) {
         int top = 0;
         stk[0].d_start = rs;
         stk[0].d_end = rs + robj.size;
+        stk[0].d_len = u8bDataLen(w->buf_a);
         stk[0].node = root_idx;
         stk[0].base_type = root_type;
 
@@ -198,7 +199,11 @@ static void unpk_worker_main(unpk_worker *w) {
             u32 cur = stk[top].node;
             u32 child = nodes[cur].child;
             if (!child) {
-                if (top > 0) ((u8**)w->buf_a)[2] = stk[top].d_start;
+                //  Pop: rewind buf_a's DATA end back to where this
+                //  frame's reconstructed object began (free its scratch
+                //  for the next sibling).
+                if (top > 0)
+                    u8bShed(w->buf_a, u8bDataLen(w->buf_a) - stk[top].d_len);
                 top--;
                 continue;
             }
@@ -221,6 +226,7 @@ static void unpk_worker_main(unpk_worker *w) {
             u8cs delta_sl = {u8bIdleHead(w->buf_b), u8bIdleHead(w->buf_b) + dobj.size};
             u8cs base_sl  = {base_s, base_s + base_sz};
             u8p rstart = u8bIdleHead(w->buf_a);
+            size_t rstart_len = u8bDataLen(w->buf_a);
             u8g aout = {rstart, rstart, u8bTerm(w->buf_a)};
             if (DELTApply(delta_sl, base_sl, aout) != OK) continue;
             u64 rsz = u8gLeftLen(aout);
@@ -243,6 +249,7 @@ static void unpk_worker_main(unpk_worker *w) {
             top++;
             stk[top].d_start = rstart;
             stk[top].d_end = rstart + rsz;
+            stk[top].d_len = rstart_len;
             stk[top].node = child;
             stk[top].base_type = stk[0].base_type;
         }

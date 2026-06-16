@@ -78,23 +78,15 @@ ok64 keep_scan_branch_dir(keeper *k, u8csc keepdir) {
 //  Filename → pup_key.  Returns 0 on parse failure or non-keeper file.
 //  Accepts `<10-RON64>.keeper` and `<10-RON64>.keeper.idx`.
 static u64 keep_filename_seqno(u8cs name) {
-    static char const KEXT[]  = ".keeper";
-    static char const IEXT[]  = ".keeper.idx";
     static const size_t SEQ_W = 10;
+    a_cstr(kext, ".keeper");
+    a_cstr(iext, ".keeper.idx");
     size_t n = u8csLen(name);
-    if (n != SEQ_W + sizeof(KEXT) - 1 &&
-        n != SEQ_W + sizeof(IEXT) - 1) return 0;
-    char const *tail = (char const *)name[0] + SEQ_W;
-    if (memcmp(tail, KEXT, sizeof(KEXT) - 1) == 0 &&
-        n == SEQ_W + sizeof(KEXT) - 1) {
-        /* OK */
-    } else if (memcmp(tail, IEXT, sizeof(IEXT) - 1) == 0 &&
-               n == SEQ_W + sizeof(IEXT) - 1) {
-        /* OK */
-    } else {
-        return 0;
-    }
-    u8cs seq_s = {name[0], name[0] + SEQ_W};
+    if (n != SEQ_W + u8csLen(kext) &&
+        n != SEQ_W + u8csLen(iext)) return 0;
+    a_rest(u8c, ext, name, SEQ_W);
+    if (!u8csEq(ext, kext) && !u8csEq(ext, iext)) return 0;
+    a_head(u8c, seq_s, name, SEQ_W);
     ok64 v = 0;
     if (RONutf8sDrain(&v, seq_s) != OK) return 0;
     return (u64)v;
@@ -184,12 +176,13 @@ static ok64 keep_max_pack_file_id_cb(void0p arg, path8p path) {
     u8cs base = {};
     PATHu8sBase(base, u8bDataC(path));
     //  Only `.keeper` files (not `.keeper.idx`) carry pack file_ids.
-    static char const KEXT[] = ".keeper";
+    a_cstr(kext, ".keeper");
     size_t SEQ_W = DOG_PUP_SEQNO_W;
     size_t n = u8csLen(base);
-    if (n != SEQ_W + sizeof(KEXT) - 1) return OK;
-    if (memcmp(base[0] + SEQ_W, KEXT, sizeof(KEXT) - 1) != 0) return OK;
-    u8cs seq_s = {base[0], base[0] + SEQ_W};
+    if (n != SEQ_W + u8csLen(kext)) return OK;
+    a_rest(u8c, ext, base, SEQ_W);
+    if (!u8csEq(ext, kext)) return OK;
+    a_head(u8c, seq_s, base, SEQ_W);
     ok64 v = 0;
     if (RONutf8sDrain(&v, seq_s) != OK) return OK;
     if ((u32)v > *max) *max = (u32)v;
@@ -244,13 +237,14 @@ static ok64 keep_pack_install(keeper *k, u32 file_id, u8bp ro) {
 //  for unmapping the slot (via FILEUnMap) before or after as needed.
 static void keep_pack_drop(keeper *k, u64 file_id) {
     if (file_id == 0) return;
-    kv64 *db = (kv64 *)kv64bDataHead(k->packs);
-    kv64 *de = (kv64 *)kv64bIdleHead(k->packs);
-    for (kv64 *p = db; p < de; p++) {
-        if (p->key != file_id) continue;
-        //  Compact: shift tail down by one, retract data end.
-        for (kv64 *q = p; q + 1 < de; q++) *q = *(q + 1);
-        ((kv64 **)k->packs)[2] = de - 1;
+    a_dup(kv64, data, kv64bData(k->packs));
+    size_t n = kv64sLen(data);
+    for (size_t i = 0; i < n; i++) {
+        if (kv64sAtP(data, i)->key != file_id) continue;
+        //  Compact: shift tail down by one, retract DATA end.
+        for (size_t j = i; j + 1 < n; j++)
+            kv64mv(kv64sAtP(data, j), kv64sAtP(data, j + 1));
+        kv64bShed(k->packs, 1);
         return;
     }
 }
@@ -268,9 +262,10 @@ fun void keep_run_at(wh128csp out, keeper const *k, u32 i) {
 
 //  Like `keep_run_at` but indexes into PastData — every loaded idx
 //  run including the inherited parent-dir runs.  Used by every
-//  cross-branch read path (KEEPLookup, KEEPGetExact).  Returns an
+//  cross-branch read path (KEEPLookup, KEEPGetExact, RESOLVE, WIRE);
+//  exported via KEEP.h (the single typed run accessor).  Returns an
 //  empty slice when `i` is out-of-range or the slot was released.
-fun void keep_run_at_all(wh128csp out, keeper const *k, u32 i) {
+void keep_run_at_all(wh128csp out, keeper const *k, u32 i) {
     out[0] = NULL; out[1] = NULL;
     kv64s pups_all = {};
     kv64PastDataS(k->puppies, pups_all);
@@ -283,7 +278,7 @@ fun void keep_run_at_all(wh128csp out, keeper const *k, u32 i) {
     out[1] = (wh128cp)slot[2];
 }
 
-fun u32 keep_run_count_all(keeper const *k) {
+u32 keep_run_count_all(keeper const *k) {
     return (u32)kv64bPastDataLen(k->puppies);
 }
 
@@ -665,18 +660,16 @@ ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val) {
     for (u32 r = 0; r < nruns; r++) {
         wh128cs run = {NULL, NULL};
         keep_run_at_all(run, k, r);
-        wh128cp base = run[0];
-        size_t len = (size_t)(run[1] - run[0]);
+        size_t len = wh128csLen(run);
         if (len == 0) continue;
-        size_t lo = 0, hi = len;
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (base[mid].key < key_lo) lo = mid + 1;
-            else hi = mid;
-        }
-        if (lo < len && base[lo].key >= key_lo && base[lo].key <= key_hi) {
-            *val = base[lo].val;
-            done;
+        wh128 needle = {.key = key_lo, .val = 0};
+        size_t lo = (size_t)(wh128sFindGE(run, &needle) - run[0]);
+        if (lo < len) {
+            wh128 const *e = wh128csAtP(run, lo);
+            if (e->key >= key_lo && e->key <= key_hi) {
+                *val = e->val;
+                done;
+            }
         }
     }
     return KEEPNONE;
@@ -931,23 +924,18 @@ ok64 KEEPGetExact(sha1cp sha, u8bp out, u8p out_type) {
     for (u32 r = 0; r < nruns; r++) {
         wh128cs run = {NULL, NULL};
         keep_run_at_all(run, k, r);
-        wh128cp base = run[0];
-        size_t len = (size_t)(run[1] - run[0]);
+        size_t len = wh128csLen(run);
         if (len == 0) continue;
 
         // Binary search for first entry >= key_lo
-        size_t lo = 0, hi = len;
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (base[mid].key < key_lo) lo = mid + 1;
-            else hi = mid;
-        }
+        wh128 needle = {.key = key_lo, .val = 0};
+        size_t lo = (size_t)(wh128sFindGE(run, &needle) - run[0]);
 
         // Scan all entries with matching hashlet
-        for (size_t i = lo; i < len && base[i].key <= key_hi; i++) {
+        for (size_t i = lo; i < len && wh128csAtP(run, i)->key <= key_hi; i++) {
             u8bReset(out);
             u8 otype = 0;
-            ok64 rc = KEEPGetPacked(k, base[i].val, out, &otype);
+            ok64 rc = KEEPGetPacked(k, wh128csAtP(run, i)->val, out, &otype);
             if (rc != OK) { last_fail = rc; continue; }
 
             // Verify full SHA-1
@@ -1311,10 +1299,8 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
             if ($empty(field)) break;
             if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
                 sha1 tree_sha = {};
-                u8s sb = {tree_sha.data, tree_sha.data + 20};
-                u8cs hx = {value[0], value[0] + 40};
-                ok64 ho = HEXu8sDrainSome(sb, hx);
-                if (ho != OK) break;
+                a_dup(u8c, vc, value);
+                if (sha1FromHex(&tree_sha, vc) != OK) break;
                 try(keep_verify_sha, k, tree_sha, checked, failed);
                 if (__ != OK) {
                     a_pad(u8, hex, 16);
@@ -1368,10 +1354,8 @@ static ok64 keep_verify_sha(keeper *k, sha1 expected_sha,
             if (u8csEmpty(field)) break;
             if (u8csEq(field, GIT_FIELD_OBJECT) && u8csLen(value) >= 40) {
                 sha1 target_sha = {};
-                u8s sb = {target_sha.data, target_sha.data + 20};
-                u8cs hx = {value[0], value[0] + 40};
-                ok64 ho = HEXu8sDrainSome(sb, hx);
-                if (ho != OK) break;
+                a_dup(u8c, vc, value);
+                if (sha1FromHex(&target_sha, vc) != OK) break;
                 try(keep_verify_sha, k, target_sha, checked, failed);
                 break;
             }
@@ -1392,9 +1376,8 @@ ok64 KEEPVerify(u8cs hex_sha) {
     }
 
     sha1 sha = {};
-    u8s sb = {sha.data, sha.data + 20};
-    u8cs hx = {hex_sha[0], hex_sha[0] + 40};
-    call(HEXu8sDrainSome, sb, hx);
+    a_dup(u8c, hxc, hex_sha);
+    call(sha1FromHex, &sha, hxc);
 
     u32 checked = 0, failed = 0;
     try(keep_verify_sha, k, sha, &checked, &failed);
@@ -1477,7 +1460,7 @@ static ok64 keep_hex_pad(u8b out, u32 val, u32 width) {
     sane(u8bOK(out));
     test(width <= 10, KEEPFAIL);  // 60-bit RON64 caps at 10 chars
     call(RONu8sFeedPad, u8bIdle(out), (ok64)val, (u8)width);
-    ((u8 **)out)[2] += width;
+    call(u8bFed, out, width);
     done;
 }
 
@@ -1938,9 +1921,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
             if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                u8s sb = {tree_sha->data, tree_sha->data + 20};
-                u8cs hx = {value[0], value[0] + 40};
-                call(HEXu8sDrainSome, sb, hx);
+                a_dup(u8c, vc, value);
+                call(sha1FromHex, tree_sha, vc);
                 done;
             }
         }
@@ -1968,9 +1950,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
             a_dup(u8c, in_uri, target->data);
             ok64 ro = REFSResolve(&resolved, arena_buf, $path(keepdir), in_uri);
             if (ro == OK && u8csLen(resolved.query) >= 40) {
-                u8s sb = {commit_sha.data, commit_sha.data + 20};
-                u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-                if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
+                a_dup(u8c, q, resolved.query);
+                if (sha1FromHex(&commit_sha, q) == OK) found = YES;
             }
             //  When the URI has a query but no authority, probe with
             //  `.` so peer-observed tracking rows (`<peer>?<query>`)
@@ -1999,10 +1980,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
                     if (REFSResolve(&resolved, arena_buf,
                                     $path(keepdir), dot_uri) == OK &&
                         u8csLen(resolved.query) >= 40) {
-                        u8s sb = {commit_sha.data, commit_sha.data + 20};
-                        u8cs hx = {resolved.query[0],
-                                   resolved.query[0] + 40};
-                        if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
+                        a_dup(u8c, q2, resolved.query);
+                        if (sha1FromHex(&commit_sha, q2) == OK) found = YES;
                     }
                 }
             }
@@ -2025,11 +2004,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
                     a_dup(u8c, val, rarr[i].val);
                     if (!u8csEmpty(val) && *val[0] == '?')
                         u8csUsed(val, 1);
-                    if (u8csLen(val) >= 40) {
-                        u8s sb = {commit_sha.data, commit_sha.data + 20};
-                        u8cs hx = {val[0], val[0] + 40};
-                        if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
-                    }
+                    if (u8csLen(val) >= 40 &&
+                        sha1FromHex(&commit_sha, val) == OK) found = YES;
                     break;
                 }
             }
@@ -2051,9 +2027,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
             while (GITu8sDrainCommit(tbody, tf, tv) == OK) {
                 if (u8csEmpty(tf)) break;
                 if (u8csEq(tf, GIT_FIELD_OBJECT) && u8csLen(tv) >= 40) {
-                    u8s sb2 = {commit_sha.data, commit_sha.data + 20};
-                    u8cs hx2 = {tv[0], tv[0] + 40};
-                    call(HEXu8sDrainSome, sb2, hx2);
+                    a_dup(u8c, tvc, tv);
+                    call(sha1FromHex, &commit_sha, tvc);
                     break;
                 }
             }
@@ -2067,9 +2042,8 @@ ok64 KEEPResolveTree(uricp target, sha1 *tree_sha) {
         while (GITu8sDrainCommit(body, field, value) == OK) {
             if (u8csEmpty(field)) break;
             if (u8csEq(field, GIT_FIELD_TREE) && u8csLen(value) >= 40) {
-                u8s sb = {tree_sha->data, tree_sha->data + 20};
-                u8cs hx = {value[0], value[0] + 40};
-                call(HEXu8sDrainSome, sb, hx);
+                a_dup(u8c, vc, value);
+                call(sha1FromHex, tree_sha, vc);
                 done;
             }
         }
@@ -2431,18 +2405,21 @@ static u32 keep_hex4(u8 const *h) {
     return v;
 }
 
-static ssize_t keep_read_full(int fd, void *buf, size_t n) {
-    size_t got = 0;
-    while (got < n) {
-        ssize_t r = read(fd, (char *)buf + got, n - got);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (r == 0) return (ssize_t)got;
-        got += (size_t)r;
+//  Drain `into` completely from `fd`, looping over short reads via the
+//  FILE.h wrapper (no raw void*+offset).  Returns OK when the slice is
+//  filled, FILEEND when the stream ends cleanly before ANY byte arrives
+//  (the caller's loop-exit), KEEPFAIL on a short read (EOF mid-slice) or
+//  a read error.
+static ok64 keep_read_full(int fd, u8s into) {
+    sane(fd >= 0);
+    b8 any = NO;
+    while (!u8sEmpty(into)) {
+        try(FILEDrain, fd, into);
+        on(FILEEND) return any ? KEEPFAIL : FILEEND;
+        nedo fail(KEEPFAIL);
+        any = YES;
     }
-    return (ssize_t)got;
+    done;
 }
 
 ok64 KEEPIngestStream(int rfd) {
@@ -2523,9 +2500,10 @@ ok64 KEEPIngestStream(int rfd) {
         }
 
         u8 hdr[4];
-        ssize_t n = keep_read_full(rfd, hdr, 4);
-        if (n == 0) break;
-        if (n != 4) fail(KEEPFAIL);
+        a$(u8, hdr_idle, hdr);
+        try(keep_read_full, rfd, hdr_idle);
+        on(FILEEND) break;
+        nedo fail(KEEPFAIL);
         u32 plen = keep_hex4(hdr);
         if (plen == 0xFFFFFFFFu) {
             //  Header isn't valid hex — server (e.g. keeper's own
@@ -2540,9 +2518,10 @@ ok64 KEEPIngestStream(int rfd) {
         if (plen <= 4) continue;         // delim / response-end
         u32 blen = plen - 4;
         if (blen > sizeof(body)) fail(KEEPFAIL);
-        n = keep_read_full(rfd, body, blen);
-        if ((u32)n != blen) fail(KEEPFAIL);
         if (blen == 0) continue;
+        u8s body_idle = {body, body + blen};
+        try(keep_read_full, rfd, body_idle);
+        nedo fail(KEEPFAIL);  // short read / mid-stream EOF / error
 
         //  Bare NAK/ACK status — absorb.
         if (blen >= 3 &&
@@ -2760,11 +2739,7 @@ static ok64 keep_walk_commit(keeper *k, u8csc new_hex,
     sane(k && out && n && $len(new_hex) == 40);
     *n = 0;
     sha1 commit_sha = {};
-    {
-        a_raw(bin, commit_sha);
-        u8cs hex40 = {new_hex[0], new_hex[0] + 40};
-        if (HEXu8sDrainSome(bin, hex40) != OK) return KEEPFAIL;
-    }
+    if (sha1FromHex(&commit_sha, new_hex) != OK) return KEEPFAIL;
     if (*n >= cap) return KEEPFAIL;
     out[(*n)++] = commit_sha;
 
@@ -2932,7 +2907,7 @@ ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
         sha1 psha = {};
         a_dup(u8c, pack_data, u8bData(pack_b));
         SHA1Sum(&psha, pack_data);
-        u8csc psha_s = {psha.data, psha.data + 20};
+        a_rawc(psha_s, psha);
         u8bFeed(pack_b, psha_s);
 
         a_dup(u8c, send, u8bData(pack_b));

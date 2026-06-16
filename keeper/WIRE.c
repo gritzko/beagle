@@ -143,7 +143,7 @@ static ok64 wire_pack_path(path8b out, u8csc kdir, u32 file_id) {
     sane(u8bOK(out) && !u8csEmpty(kdir));
     a_pad(u8, fname, KEEP_SEQNO_W + sizeof(KEEP_PACK_EXT));
     call(RONu8sFeedPad, u8bIdle(fname), (ok64)file_id, KEEP_SEQNO_W);
-    ((u8 **)fname)[2] += KEEP_SEQNO_W;
+    call(u8bFed, fname, KEEP_SEQNO_W);
     a_cstr(ext, KEEP_PACK_EXT);
     u8bFeed(fname, ext);
     call(PATHu8bDup, out, kdir);
@@ -161,10 +161,13 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
     u32  best_count = 0;
     u32  best_len  = 0;
     b8   any = NO;
-    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
-        wh128cp base = (wh128cp)_raw_[0];
-        wh128cp term = (wh128cp)_raw_[1];
-        for (wh128cp e = base; e < term; e++) {
+    u32 nruns = keep_run_count_all(k);
+    for (u32 r = 0; r < nruns; r++) {
+        wh128cs run = {NULL, NULL};
+        keep_run_at_all(run, k, r);
+        size_t len = wh128csLen(run);
+        for (size_t i = 0; i < len; i++) {
+            wh128 const *e = wh128csAtP(run, i);
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
             u64 bo = wh64Off(e->key);
@@ -199,10 +202,13 @@ static ok64 wire_bookmark_at(keeper *k, u32 file_id, u64 at,
     sane(k && count && blen);
     b8  found = NO;
     u32 fc = 0, fl = 0;
-    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
-        wh128cp base = (wh128cp)_raw_[0];
-        wh128cp term = (wh128cp)_raw_[1];
-        for (wh128cp e = base; e < term; e++) {
+    u32 nruns = keep_run_count_all(k);
+    for (u32 r = 0; r < nruns; r++) {
+        wh128cs run = {NULL, NULL};
+        keep_run_at_all(run, k, r);
+        size_t len = wh128csLen(run);
+        for (size_t i = 0; i < len; i++) {
+            wh128 const *e = wh128csAtP(run, i);
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
             if (wh64Off(e->key)  != at)             continue;
@@ -269,23 +275,22 @@ static ok64 wire_locate_sha(keeper *k, sha1cp sha,
     b8  found    = NO;
     u32 best_fid = 0;
     u64 best_off = 0;
-    for (u32 r = 0, _nr_ = DOGPupCountAll(k->puppies); r < _nr_; r++) { u8cs _raw_ = {NULL,NULL}; DOGPupDataAll(_raw_, k->puppies, r);
-        wh128cp base = (wh128cp)_raw_[0];
-        size_t  len  = (size_t)((wh128cp)_raw_[1] - base);
+    u32 nruns = keep_run_count_all(k);
+    for (u32 r = 0; r < nruns; r++) {
+        wh128cs run = {NULL, NULL};
+        keep_run_at_all(run, k, r);
+        size_t len = wh128csLen(run);
         if (len == 0) continue;
-        size_t lo = 0, hi = len;
-        while (lo < hi) {
-            size_t mid = lo + (hi - lo) / 2;
-            if (base[mid].key < key_lo) lo = mid + 1;
-            else hi = mid;
-        }
+        wh128 needle = {.key = key_lo, .val = 0};
+        size_t lo = (size_t)(wh128sFindGE(run, &needle) - run[0]);
         //  A run may hold several same-hashlet entries (COMMIT..TAG, and
         //  duplicate offsets from re-ingest).  Walk the whole matching
         //  span and keep the largest offset seen across all runs.
-        for (size_t i = lo; i < len && base[i].key <= key_hi; i++) {
-            if (base[i].key < key_lo) continue;
-            u32 fid = wh64Id(base[i].val);
-            u64 off = wh64Off(base[i].val);
+        for (size_t i = lo; i < len && wh128csAtP(run, i)->key <= key_hi; i++) {
+            wh128 const *e = wh128csAtP(run, i);
+            if (e->key < key_lo) continue;
+            u32 fid = wh64Id(e->val);
+            u64 off = wh64Off(e->val);
             if (!found || off > best_off) {
                 best_fid = fid;
                 best_off = off;

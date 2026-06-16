@@ -371,6 +371,15 @@ void KEEPForEachCapToken(u8csc tail, b8 tab_is_sep,
 //  hexlen: prefix length for partial matching (15 = full 60-bit).
 ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val);
 
+//  Typed LSM-run enumeration over PastData — every loaded idx run,
+//  including inherited parent-dir runs.  The single typed accessor for
+//  every cross-branch run scan (KEEPLookup, KEEPGetExact, RESOLVE's
+//  commit-msg walk, WIRE's bookmark / sha locators): no raw element
+//  pointers, no `DOGPupDataAll`+cast at the call site.  `keep_run_at_all`
+//  writes an empty slice when `i` is out of range or the slot is released.
+u32  keep_run_count_all(keeper const *k);
+void keep_run_at_all(wh128csp out, keeper const *k, u32 i);
+
 //  Verify object by full SHA-1: get from store, recompute hash,
 //  compare.  For commits: also verifies tree.  For trees: verifies
 //  all children recursively.  Reports errors to stderr.

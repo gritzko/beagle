@@ -2,6 +2,7 @@
 //
 #include "PROJ.h"
 #include "dog/git/GIT.h"
+#include "dog/git/SHA1.h"
 #include "REFS.h"
 #include "WALK.h"
 
@@ -47,9 +48,8 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
     //  so use a scratch buffer and discard.
     if (!u8csEmpty(u->fragment)) {
         if (u8csLen(u->fragment) >= 40) {
-            u8s sb = {out->data, out->data + 20};
-            u8cs hx = {u->fragment[0], u->fragment[0] + 40};
-            return HEXu8sDrainSome(sb, hx);
+            a_dup(u8c, frag, u->fragment);
+            return sha1FromHex(out, frag);
         }
         //  Short prefix: fetch object to confirm and recompute its sha.
         a_carve(u8, tmp, 1UL << 20);
@@ -71,9 +71,8 @@ static ok64 proj_resolve_object_sha(keeper *k, uricp u, sha1 *out) {
     a_dup(u8c, in_uri, u->data);
     ok64 ro = REFSResolve(&resolved, arena_buf, $path(keepdir), in_uri);
     if (ro == OK && u8csLen(resolved.query) >= 40) {
-        u8s sb = {out->data, out->data + 20};
-        u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-        return HEXu8sDrainSome(sb, hx);
+        a_dup(u8c, q, resolved.query);
+        return sha1FromHex(out, q);
     }
     fail(PROJNONE);
 }
@@ -403,9 +402,8 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             if (u8csEmpty(tf)) break;
             if (u8csLen(tf) == 6 && memcmp(tf[0], "object", 6) == 0 &&
                 u8csLen(tv) >= 40) {
-                u8s sb = {tgt.data, tgt.data + 20};
-                u8cs hx = {tv[0], tv[0] + 40};
-                if (HEXu8sDrainSome(sb, hx) == OK) found = YES;
+                a_dup(u8c, tvc, tv);
+                if (sha1FromHex(&tgt, tvc) == OK) found = YES;
                 break;
             }
         }
@@ -462,7 +460,7 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             }
             //  Ensure a trailing newline so the message terminates
             //  cleanly even when the commit body lacks one.
-            if (!u8csEmpty(value) && *(value[1] - 1) != '\n')
+            if (!u8csEmpty(value) && *u8csLast(value) != '\n')
                 (void)u8bFeed1(text, '\n');
             break;
         }
@@ -477,7 +475,7 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
 
         if (link_scheme != NULL) {
             //  Anchor: just the sha40 (the clickable bit).
-            u8cs sha_hex = {value[0], value[0] + 40};
+            a_head(u8c, sha_hex, value, 40);
             (void)u8bFeed(text, sha_hex);
             proj_push_tok(text, toks, 'L');
 
@@ -498,7 +496,7 @@ ok64 KEEPProjCommit(uricp u, b8 tlv) {
             //  parent headers, but be tolerant) ride along as default-
             //  tagged.
             if (u8csLen(value) > 40) {
-                u8cs rest = {value[0] + 40, value[1]};
+                a_rest(u8c, rest, value, 40);
                 (void)u8bFeed(text, rest);
             }
         } else {
@@ -602,9 +600,8 @@ ok64 KEEPProjSha1(uricp u, b8 tlv) {
         ok64 ro = REFSResolve(&resolved, arena_buf,
                               $path(keepdir), trunk_uri);
         if (ro != OK || u8csLen(resolved.query) < 40) fail(PROJNONE);
-        u8s sb = {target.data, target.data + 20};
-        u8cs hx = {resolved.query[0], resolved.query[0] + 40};
-        call(HEXu8sDrainSome, sb, hx);
+        a_dup(u8c, q, resolved.query);
+        call(sha1FromHex, &target, q);
     }
 
     //  Emit 40 hex + newline.  41 bytes total — small enough to skip

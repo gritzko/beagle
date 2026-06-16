@@ -87,10 +87,10 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     }
 
     //  Find the `?` separator and take everything after as branch.
-    u8c *qmark = key[0];
-    while (qmark < key[1] && *qmark != '?') qmark++;
-    if (qmark == key[1]) done;          //  malformed: no `?`
-    u8cs branch = {qmark + 1, key[1]};
+    a_dup(u8c, scan, key);
+    if (u8csFind(scan, '?') != OK) done;  //  malformed: no `?`
+    u8csUsed1(scan);                      //  step past the `?`
+    a_dup(u8c, branch, scan);             //  everything after `?`
 
     //  Pass 2: skip if a local row already covered this branch.
     if (ctx->peer_pass && refadv_branch_seen(adv, branch)) done;
@@ -109,7 +109,7 @@ static ok64 refadv_each_cb(refcp r, void *vctx) {
     } else if (u8csLen(branch) > u8csLen(GIT_TAGS_PFX) &&
                u8csHasPrefix(branch, GIT_TAGS_PFX)) {
         kind = GITREF_TAG;
-        u8cs nm = {branch[0] + u8csLen(GIT_TAGS_PFX), branch[1]};
+        a_rest(u8c, nm, branch, u8csLen(GIT_TAGS_PFX));  //  strip "tags/"
         u8csMv(name, nm);
     } else {
         u8csMv(name, branch);
