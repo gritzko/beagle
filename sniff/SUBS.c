@@ -458,11 +458,9 @@ static ok64 subs_candidate_from_source(u8bp out, u8cs src_uri,
 }
 
 //  SUBS-020: YES iff the parent SOURCE URI's PATH ends in `.git` — the
-//  git-parent discriminator.  A `.git` parent (case 2) is assumed to
-//  carry a canonical remote in `.gitmodules`, so the official URL is
-//  used as-is (no path computation).  A non-`.git` parent (case 3)
-//  resolves the sub URL relative to the parent (subs_candidate_git_rel).
-static b8 subs_src_ends_git(u8cs src_uri) {
+//  git-parent discriminator.  See SUBS.h; exported for the POST mirror
+//  (beagle/BE.cli.c) so push routing reuses the same kind test as GET.
+b8 SNIFFSubSrcEndsGit(u8cs src_uri) {
     if (u8csEmpty(src_uri)) return NO;
     a_dup(u8c, work, src_uri);
     uri u = {};
@@ -474,20 +472,16 @@ static b8 subs_src_ends_git(u8cs src_uri) {
 }
 
 //  SUBS-020 case 3: parent is a GIT repo whose URI does NOT end in
-//  `.git`; compute the sub's fetch URI by resolving the declared
-//  `.gitmodules` `url` (which may be relative, e.g. `../sub`) against
-//  the parent SOURCE URI.  Git resolves a relative submodule URL with
-//  the SUPERPROJECT URL treated as a DIRECTORY (so `../sub` off
-//  `…/subs/par` is `…/subs/sub`, not RFC 3986's file-relative
-//  `…/sub`).  We therefore append a trailing '/' to the parent path
-//  before URIAbsolute (RFC 3986 §5.3 directory base).  Renders the
-//  resolved candidate into `out` (RESET on entry).  Returns NONE when
-//  no useful computation applies — the parent URI is empty / unlexable,
-//  or the resolved URI equals the official `url` verbatim (an already-
-//  absolute declared URL needs no separate candidate).  `url` is the
-//  raw `.gitmodules` value; the caller always retains it as the final
-//  fallback.
-static ok64 subs_candidate_git_rel(u8bp out, u8cs src_uri, u8cs url) {
+//  `.git`; compute the sub's URI by resolving the declared `.gitmodules`
+//  `url` (which may be relative, e.g. `../sub`) against the parent
+//  SOURCE URI.  See SUBS.h; exported for the POST mirror
+//  (beagle/BE.cli.c) so push routing reuses the same parent-relative
+//  resolution as GET.  Git resolves a relative submodule URL with the
+//  SUPERPROJECT URL treated as a DIRECTORY (so `../sub` off `…/subs/par`
+//  is `…/subs/sub`, not RFC 3986's file-relative `…/sub`); we append a
+//  trailing '/' to the parent path before URIAbsolute (RFC 3986 §5.3
+//  directory base).
+ok64 SNIFFSubCandidateGitRel(u8bp out, u8cs src_uri, u8cs url) {
     sane(out);
     if (u8csEmpty(src_uri) || u8csEmpty(url)) return NONE;
 
@@ -902,10 +896,10 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         //  URL.  A `.git` parent (case 2) skips this — its declared URL is
         //  taken as canonical, no path computation.
         b8 git_parent = !src_inflight_ok && !src_beagle;
-        b8 use_git_rel = git_parent && !subs_src_ends_git(src_uri);
+        b8 use_git_rel = git_parent && !SNIFFSubSrcEndsGit(src_uri);
         a_pad(u8, gitrel_buf, MAX_URI_LEN);    // URIAbsolute(src_uri, url)
         if (use_git_rel) {
-            ok64 gr = subs_candidate_git_rel(gitrel_buf, src_uri, url);
+            ok64 gr = SNIFFSubCandidateGitRel(gitrel_buf, src_uri, url);
             if (gr != OK || u8bDataLen(gitrel_buf) == 0) use_git_rel = NO;
         }
 

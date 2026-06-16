@@ -876,19 +876,25 @@ static ok64 keeper_post(keeper *k, cli *c) {
         } else if (u8csEmpty(g->query)) {
             u8csMv(src, at_branch);
         } else {
-            //  An absolute `?/<project>[/<branch>]` selector names a
-            //  PROJECT, not a branch — the leading `/proj` segment is a
-            //  shard selector consumed peer-side, not a wire ref.  Strip
-            //  it (DOGQueryStripProject) so what's left is just the
-            //  branch (empty = trunk); pushing the raw `/proj` would
-            //  drive the peer's receive-pack to land objects on a bogus
-            //  `refs/heads//proj` ref, so trunk never advances (POST-009).
-            //  The relative `?<branch>` form has no leading `/` and is
-            //  left intact.
-            a_dup(u8c, q, g->query);
-            DOGQueryStripProject(q);
-            u8csMv(src, q);
+            u8csMv(src, g->query);
         }
+        //  An absolute `?/<project>[/<branch>]` selector (leading `/`)
+        //  names a PROJECT, not a branch — strip the leading `/proj`
+        //  shard selector (consumed peer-side) so what's left is the bare
+        //  branch.  This applies uniformly to all three sources:
+        //    * explicit `?/proj[/br]` query — pushing the raw `/proj`
+        //      would land objects on a bogus `refs/heads//proj`, so trunk
+        //      never advances (POST-009);
+        //    * a refs-log-recovered `peer_refname` AND the worktree cur
+        //      `at_branch`, which for a mounted submodule are the
+        //      synthetic dot-coordinate `/<subproj>/.<parent>[/<br>]` —
+        //      stripping `/proj` leaves the bare `.<parent>` so the
+        //      synthetic-`.`-prefix check (git_wire_default) routes a
+        //      git-wire push to the remote's default branch instead of a
+        //      "funny ref" `refs/heads//sub/.par` (SUBS-020).
+        //  A relative `?<branch>` / plain cur branch has no leading `/`,
+        //  so DOGQueryStripProject is a no-op there.
+        DOGQueryStripProject(src);
         if (!u8csEmpty(src)) u8bFeed(branch_buf, src);
     }
     a_dup(u8c, branch, u8bDataC(branch_buf));

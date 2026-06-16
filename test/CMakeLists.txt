@@ -153,6 +153,10 @@ set(_BE_NEEDS_SSH_CASES
     # SUBS-012: projector sub-recursion (diff fan-out + object routing).
     "be-diff-06-sub-change"
     "be-tree-01-sub-object-routing"
+    # SUBS-020 POST mirror CASE 3: non-`.git` git parent push routes each
+    # sub to the parent-relative url (needs ssh for a non-`.git` git
+    # remote; the `.git` CASE 2 sibling test post/43 is local file://).
+    "be-post-44-sub-push-git-parent-relative"
 )
 
 foreach(_run ${_be_case_runs})

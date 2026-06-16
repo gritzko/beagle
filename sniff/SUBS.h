@@ -121,6 +121,29 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                    u8cs path, u8cs hex_sha,
                    u8cs gitmodules, u8cs argv0, u8cs src_uri);
 
+//  SUBS-020: YES iff the parent SOURCE URI's PATH ends in `.git` — the
+//  git-parent discriminator shared by GET (fetch source) and POST (push
+//  destination).  A `.git` parent (case 2) carries a canonical remote in
+//  `.gitmodules`, so the official URL is used as-is (no path
+//  computation).  A non-`.git` parent (case 3) resolves the sub URL
+//  relative to the parent (SNIFFSubCandidateGitRel).  Empty / unlexable
+//  `src_uri` → NO.
+b8 SNIFFSubSrcEndsGit(u8cs src_uri);
+
+//  SUBS-020 case 3: parent is a GIT repo whose URI does NOT end in
+//  `.git`; compute the sub's URI (fetch source for GET, push
+//  destination for POST) by resolving the declared `.gitmodules` `url`
+//  (which may be relative, e.g. `../sub`) against the parent SOURCE
+//  URI.  Git resolves a relative submodule URL with the SUPERPROJECT
+//  URL treated as a DIRECTORY (so `../sub` off `…/subs/par` is
+//  `…/subs/sub`).  Renders the resolved candidate into `out` (RESET on
+//  entry).  Returns NONE when no useful computation applies — the
+//  parent URI is empty / unlexable, or the resolved URI equals the
+//  official `url` verbatim (an already-absolute declared URL needs no
+//  separate candidate).  `url` is the raw `.gitmodules` value; the
+//  caller always retains it as the final fallback.
+ok64 SNIFFSubCandidateGitRel(u8bp out, u8cs src_uri, u8cs url);
+
 //  YES iff `<wt_root>/<subpath>/.be` exists as a regular file (the
 //  secondary-wt anchor that GET writes when materialising a sub).
 //  Per MODULES.plan.md §"Storage layout" — the file is the

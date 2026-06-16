@@ -3373,6 +3373,102 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
     return OK;
 }
 
+//  SUBS-020 POST mirror — GIT-parent push recursion state.  The parent
+//  push targets a GIT remote (not a beagle store); each sub is pushed to
+//  the SAME destination GET would FETCH it from, so the sub is tracked
+//  on the other end (symmetric with the landed GET resolution in
+//  sniff/SUBS.c).  Two cases, keyed on the parent SOURCE URI:
+//    Case 2 — parent URI ENDS in `.git` (SNIFFSubSrcEndsGit YES): push
+//             the sub to its OFFICIAL `.gitmodules` URL (the sub lives in
+//             its own independently-hosted git remote; no path calc).
+//    Case 3 — parent URI does NOT end in `.git`: push the sub to the
+//             PARENT-RELATIVE URI (SNIFFSubCandidateGitRel — same host,
+//             path resolved off the parent), falling back to the official
+//             URL when no distinct relative candidate computes.
+//  Reuses the GET-side resolver verbatim — no re-rolled kind / relative
+//  logic.  Runs in post-order (sub lands before the parent tree that
+//  references it), BEFORE the parent's own BEActKeeperPush.
+typedef struct {
+    cli  *c;
+    u8cs  wt_root;
+    u8cs  src_uri;          //  parent push-target URI (the git remote)
+    b8    src_ends_git;     //  SNIFFSubSrcEndsGit(src_uri) — case 2 vs 3
+    b8    outer_emitted;
+    ok64  worst;
+} bepushgit_recurse_ctx;
+
+static ok64 bepushgit_recurse_cb(besub const *s, void *vctx) {
+    sane(s && vctx);
+    bepushgit_recurse_ctx *rc = (bepushgit_recurse_ctx *)vctx;
+
+    if (!s->mounted) {
+        if (!rc->outer_emitted) {
+            fprintf(stderr, "be: post .\n");
+            rc->outer_emitted = YES;
+        }
+        fprintf(stderr, "be: post %.*s: declared, not mounted\n",
+                (int)$len(s->path), (char *)s->path[0]);
+        return OK;
+    }
+    if (!rc->outer_emitted) {
+        fprintf(stderr, "be: post .\n");
+        rc->outer_emitted = YES;
+    }
+    fprintf(stderr, "be: post %.*s\n",
+            (int)$len(s->path), (char *)s->path[0]);
+
+    u8cs subpath = {};
+    u8csMv(subpath, s->path);
+    u8cs suburl = {};
+    u8csMv(suburl, s->url);   //  official `.gitmodules` URL (mutable view)
+
+    //  Per-sub push DESTINATION via the shared GET resolver.  Default to
+    //  the official `.gitmodules` URL (case 2, and the case-3 fallback);
+    //  for a non-`.git` parent, prefer the parent-relative resolution
+    //  when it yields a distinct candidate (case 3).
+    a_pad(u8, dest_buf, FILE_PATH_MAX_LEN + 128);
+    u8cs dest = {};
+    u8csMv(dest, suburl);
+    if (!rc->src_ends_git) {
+        ok64 gr = SNIFFSubCandidateGitRel(dest_buf, rc->src_uri, suburl);
+        if (gr == OK && u8bDataLen(dest_buf) > 0) {
+            a_dup(u8c, dv, u8bDataC(dest_buf));
+            u8csMv(dest, dv);
+        }
+    }
+    if (u8csEmpty(dest)) {
+        //  No declared URL and no computed candidate — nothing to push
+        //  the sub to; leave it to the user (git-sub semantics).
+        fprintf(stderr,
+                "be: post %.*s: no push destination resolved — skipped\n",
+                (int)$len(subpath), (char *)subpath[0]);
+        return OK;
+    }
+
+    //  child argv: `post` + flags(sans --at) + the per-sub destination.
+    //  The sub runs its own `be post <dest>` (recursing into its own
+    //  subs first), pushing its tip to that git remote.  Runs BEFORE the
+    //  parent's BEActKeeperPush so a recursive clone never sees a parent
+    //  tree pointing at a sub sha the sub remote lacks.
+    a_pad(u8cs, child_args, 4 + CLI_MAX_FLAGS * 2);
+    a_cstr(post_lit, "post");
+    a_dup(u8c, post_d, post_lit);
+    u8csbFeed1(child_args, post_d);
+    for (size_t j = 0; j + 1 < u8csbDataLen(rc->c->flags); j += 2) {
+        u8cs *flag = u8csbAtP(rc->c->flags, j);
+        u8cs *val  = u8csbAtP(rc->c->flags, j + 1);
+        if ($eq(*flag, be_at_flag)) continue;
+        u8csbFeed1(child_args, *flag);
+        if (!u8csEmpty(*val)) u8csbFeed1(child_args, *val);
+    }
+    u8csbFeed1(child_args, dest);
+    a_dup(u8cs, child_argv, u8csbData(child_args));
+
+    ok64 r = BERelaySub(rc->wt_root, subpath, child_argv);
+    if (r != OK && !ok64is(r, NONE)) rc->worst = r;   //  NONE = no-op
+    return OK;
+}
+
 //  Pre-order submodule recursion: each sub commits before the
 //  parent.  Self-gates on bare-status / transport / no-wt-root so
 //  the recursion only fires when it makes sense.  Returns BESTOP
@@ -3456,13 +3552,30 @@ ok64 BEActSubsPost(cli *c) {
             (void)BESubsHere(push_root, bepush_recurse_cb, &prc);
             return prc.worst;   //  OK → plan proceeds to parent push
         }
-        //  Git peer: the REMOTE push can't recurse into a git submodule,
-        //  but the LOCAL commits still MUST happen — fall through to the
-        //  local commit recursion below.  It forwards a local `be post`
-        //  (transport URI stripped) into each mounted sub, so a dirty
-        //  sub commits + bumps its gitlink BEFORE the parent's own git
-        //  push (BEActKeeperPush) runs.  No `done` here — local sub work
-        //  is unconditional; only the sub PUSH is suppressed for git.
+        //  Git peer (SUBS-020 POST mirror).  The parent push targets a
+        //  GIT remote, not a beagle store, so each sub is pushed to the
+        //  SAME destination GET would FETCH it from — symmetric with the
+        //  landed GET resolution (sniff/SUBS.c).  A `.git` parent (case
+        //  2) pushes the sub to its OFFICIAL `.gitmodules` URL; a
+        //  non-`.git` parent (case 3) pushes it to the PARENT-RELATIVE
+        //  URI (official-URL fallback).  Each sub runs its own
+        //  `be post <dest>`, recursing into its own subs and committing
+        //  any dirty work BEFORE pushing — post-order, BEFORE the
+        //  parent's own BEActKeeperPush.  Mirrors the beagle-peer arm
+        //  above (which likewise returns after the per-sub push, the
+        //  sub's recursive `be post <uri>` doing its own local commit).
+        if (tu && u8bHasData(c->repo)) {
+            a_dup(u8c, push_root, $path(c->repo));
+            a_dup(u8c, src_view, ((u8cs){tu->data[0], tu->data[1]}));
+            bepushgit_recurse_ctx grc = {
+                .c = c, .outer_emitted = NO, .worst = OK,
+                .src_ends_git = SNIFFSubSrcEndsGit(src_view),
+            };
+            u8csMv(grc.wt_root, push_root);
+            u8csMv(grc.src_uri, src_view);
+            (void)BESubsHere(push_root, bepushgit_recurse_cb, &grc);
+            return grc.worst;   //  OK → plan proceeds to parent push
+        }
     }
 
     //  Local commit path: ALWAYS recurse.  Every mounted sub is a beagle
