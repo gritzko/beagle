@@ -2208,9 +2208,21 @@ ok64 SNIFFGetURI(u8cs reporoot, uri *u) {
             a_dup(u8c, source, u8bData(src));
             return GETCheckout(reporoot, resolved.query, source);
         }
-        //  Raw hex fallback when the query is already a 40-hex sha
-        //  that keeper has in its local store.
-        if (!$empty(u->query)) {
+        //  Raw hex fallback when the query is a hashlet (a 6..40-hex
+        //  sha prefix, e.g. `be get '?abc1234'`) that keeper resolves
+        //  via prefix lookup.  SUBS-021: gate on DOGIsHashlet — a
+        //  non-hashlet query (e.g. a malformed `<sha>/.<parent>`
+        //  synthetic-branch ref that survived REFSResolve; the `/.par`
+        //  tail makes it non-hex / over-length) must NOT be checked
+        //  out verbatim.  Doing so fed the whole string into BOTH the
+        //  query AND fragment of the recorded `get` row
+        //  (`?<sha>/.<parent>#<sha>/.<parent>`), leaking a sha into the
+        //  project slot.  The checkout itself "succeeded" only because
+        //  the leading 40-hex prefix happened to match the pin via a
+        //  prefix lookup.  Gating on DOGIsFullSha was too strict — it
+        //  rejected legitimate sha-prefix gets (README §"sha prefix").
+        //  An unresolvable ref must fall through to the clean SNIFFFAIL.
+        if (!$empty(u->query) && DOGIsHashlet(u->query)) {
             a_pad(u8, qbuf, 256);
             u8bFeed1(qbuf, '?');
             u8bFeed(qbuf, u->query);
