@@ -373,6 +373,77 @@ ok64 WIREtest_corrupt_overlap() {
     done;
 }
 
+// ---- Test 3c (GET-027): a degenerate ZERO-LENGTH PACK bookmark at the
+//      same offset as a real one (a re-index of an empty append, seen in
+//      a live store) must be SKIPPED, not mistaken for an overlapping dup.
+//      Before the fix WIREBuildSegments refused the whole clone WIRECRPT
+//      (`wire_bookmark_at` saw two bookmarks at off 12 with differing
+//      extents), so a healthy 38 MB shard shipped a 12-byte empty pack →
+//      the client's checkout failed object-not-found / WIRECRPT.  After
+//      the fix the empty bookmark is ignored and the real one tiles clean.
+
+ok64 WIREtest_zerolen_bookmark() {
+    sane(1);
+    call(FILEInit);
+
+    char tmpdir[] = "/tmp/wire-zerolen-XXXXXX";
+    want(mkdtemp(tmpdir) != NULL);
+    a_cstr(root, tmpdir);
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+
+    //  Two clean packs in file_id 1: pack1 @ off 12, pack2 right after.
+    sha1 sha_a = {};
+    u32  fid_a = 0;
+    call(add_blob_pack, &sha_a, &fid_a, "alpha zerolen\n");
+    want(fid_a == 1);
+    sha1 sha_b = {};
+    u32  fid_b = 0;
+    call(add_blob_pack, &sha_b, &fid_b, "bravo zerolen\n");
+    want(fid_b == 1);
+
+    //  Inject a degenerate bookmark: ONE PACK bookmark at offset 12
+    //  (file_id 1) with byte_len 0 (and a stray count) — the empty
+    //  re-index shape.  It shares the real pack's offset but covers no
+    //  bytes; the wire builder must skip it, not refuse.
+    {
+        a_path(kdir);
+        call(HOMEBranchDir, kdir, NULL);
+        wh128 bm = {
+            .key = wh64Pack(KEEP_TYPE_PACK, 1, 12),
+            .val = keepPackBmVal(0, 0),
+        };
+        wh128 one[1] = { bm };
+        u8cs raw = {(u8cp)one, (u8cp)(one + 1)};
+        a_cstr(ext, KEEP_IDX_EXT);
+        call(DOGPupCreateAt, KEEP.puppies, $path(kdir), ext, raw,
+             0xffffffffffffull);
+    }
+
+    a_refadv(adv);
+    call(REFADVOpen, &adv);
+
+    wire_req req = {};
+    req.nwants = 1;
+    req.wants[0] = sha_b;
+
+    pstr_seg segs[4] = {};
+    int      fds [4] = {-1,-1,-1,-1};
+    u32      n = 0;
+    ok64 rc = WIREBuildSegments(&adv, &req, segs, fds, 4, &n);
+    want(rc == OK);                //  ship the real pack, not WIRECRPT
+    want(n == 1);
+    want(segs[0].count == 2);      //  both blobs tile clean
+    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
+
+    REFADVClose(&adv);
+    call(KEEPClose);
+    HOMEClose();
+    tmp_rm(tmpdir);
+    done;
+}
+
 // ---- Test 4: want sha unknown → WIRENOSHA ----
 
 ok64 WIREtest_nosha() {
@@ -569,6 +640,8 @@ ok64 maintest() {
     call(WIREtest_have_ff);
     fprintf(stderr, "WIREtest_corrupt_overlap...\n");
     call(WIREtest_corrupt_overlap);
+    fprintf(stderr, "WIREtest_zerolen_bookmark...\n");
+    call(WIREtest_zerolen_bookmark);
     fprintf(stderr, "WIREtest_nosha...\n");
     call(WIREtest_nosha);
     fprintf(stderr, "WIREtest_caps...\n");

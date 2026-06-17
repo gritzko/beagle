@@ -1090,10 +1090,11 @@ ok64 PUTSetBranch(u8cs reporoot, u8cs target_branch, u8cs sha_hex) {
     u8bFeed(keybuf, target_branch);
     a_dup(u8c, refkey, u8bData(keybuf));
 
-    a_pad(u8, valbuf, 64);
-    u8bFeed1(valbuf, '?');
-    u8bFeed(valbuf, sha_hex);
-    a_dup(u8c, val, u8bData(valbuf));
+    //  GET-027: the REFS value is a BARE 40-hex sha (canonical), same as
+    //  POST's CompareAndAppend writer and PUTSetLabel.  A stray leading
+    //  `?` here produced the `?#?<sha>` double-sigil row (the value got a
+    //  second sigil on top of URIutf8Feed's `#`), corrupting the tip text.
+    a_dup(u8c, val, sha_hex);
 
     //  Same-shard short-circuit: target == cur means the new tip's
     //  objects already live in the active leaf — no migration, no

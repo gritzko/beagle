@@ -170,6 +170,11 @@ static ok64 wire_find_pack(keeper *k, u32 file_id, u64 log_off,
             wh128 const *e = wh128csAtP(run, i);
             if (wh64Type(e->key) != KEEP_TYPE_PACK) continue;
             if (wh64Id(e->key)   != file_id)        continue;
+            //  GET-027: skip degenerate zero-length bookmarks so a stray
+            //  empty re-index never anchors the want's pack (which would
+            //  set end_offset = bo, shipping nothing) and never masks the
+            //  real bookmark sharing its offset.
+            if (keepPackBmLen(e->val) == 0)         continue;
             u64 bo = wh64Off(e->key);
             if (bo > log_off) continue;
             if (any && bo <= best_off) continue;
@@ -214,6 +219,13 @@ static ok64 wire_bookmark_at(keeper *k, u32 file_id, u64 at,
             if (wh64Off(e->key)  != at)             continue;
             u32 c = keepPackBmCount(e->val);
             u32 l = keepPackBmLen(e->val);
+            //  GET-027: a zero-length bookmark covers no bytes and no
+            //  objects (a degenerate re-index of an empty append).  It
+            //  is NOT an overlapping dup of a real bookmark at the same
+            //  offset — skip it so the authoritative non-empty bookmark
+            //  wins and the tiling proceeds (else a healthy pack with a
+            //  stray empty bookmark refuses the whole clone, WIRECRPT).
+            if (l == 0) continue;
             if (found && l != fl) return WIRECRPT;  //  overlapping dup
             found = YES;
             fc = c;

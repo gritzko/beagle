@@ -56,6 +56,14 @@ add_test(NAME SNIFFrelref
 set_tests_properties(SNIFFrelref PROPERTIES
     ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFrelref")
 
+#  shareset.sh — GET-027: `put '?#<sha>'` records a single-sigil
+#  `?#<sha>` row, never the corrupt double-sigil `?#?<sha>`.
+add_test(NAME SNIFFshareset
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/shareset.sh
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(SNIFFshareset PROPERTIES
+    ENVIRONMENT "BIN=${DOG_BIN_DIR};TMP=${DOG_TEST_TMP_ROOT};TEST_ID=SNIFFshareset")
+
 #  fragref.sh — GET-023: `be get '?#<sha>'` honours the fragment and a
 #  malformed fragment (`?#<sha>...` trailing dots, non-hex word) is
 #  REFUSED instead of silently landing on the wrong commit / trunk.
