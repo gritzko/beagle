@@ -1,89 +1,93 @@
-# graf/ — token-level diff, merge, blame, history indexing
+#   graf — module index
 
-`graf` is a dog: it owns `.be/` under a repo root and speaks
-the three-function contract from [dog/DOG.md](../dog/DOG.md) §8
-(`DOGOpen` / `DOGExec` / `DOGClose`).
+graf is beagle's commit-DAG / weave / projection layer over the keeper object store. It owns no bytes: it INDEXES keeper's commit, tree and blob objects into an LSM of 60-bit-hashlet edges, and PROJECTS that graph as diff / blame / log / merge / rebase views. It is a dog (`DOGOpen`/`Exec`/`Close`) and never shells to git; the only source is keeper. `MODVerbStuff` functions; the `wh128` is dog's. Prose in [GET.md].
 
-Indexing is **pull-based** (DOG.md §10a): under the new arrangement
-`be get URI` spawns `graf get URI` in parallel with keeper, and
-graf walks the URI's tip(s) back through keeper's read APIs over
-COMMIT_PARENT edges, stopping per-branch at any commit already in
-its own DAG (mention ≡ known).  `graf index` (no URI) remains as a
-forced full reindex.  No git CLI; no `.git/`; the only source of
-object data is keeper's pack store.
+##  Module core
 
-## Verbs
+###  GRAF.h — singleton state, lifecycle, projection API
 
-```
-graf get    path?<sha>             single-tip blob/tree read (`dir/?<sha>` = tree)
-graf get    URI (any other shape)  tip-walk indexer (incremental)
-graf merge  base ours theirs       3-way merge; -o <file> to write out
-graf blame  path                   token-level blame (reads keeper + DAG)
-graf weave  path?from..to          weave diff across a ref range
-graf log    [path]?ref[#N]         commit history, one per line
-graf head   '#<msg-substring>'     find cur-reachable commit by msg
-graf index                         full reindex (force, ignore stop-set)
-graf status                        index run/entry counts
-```
+The `graf` control struct (one `GRAF` global) holds the project-shard lock, the hunk-staging arena, reused object buffers, and the puppy stack of `.graf.idx` runs; every verb dispatches here. Rendering flows through `dog/HUNK.h` off the global `HUNKMode`.
 
-## Files
+ -  `GRAFOpen`/`OpenBranch`/`SwitchBranch`/`Close`/`GRAFExec` — the DOG lifecycle: open (rw) on trunk/branch, relabel, run.
+ -  `GRAFRuns`/`GRAFRefreshView`/`GRAFPupCreateNext` — expose + rebuild the `wh128css` view over `.graf.idx`, mint a run.
+ -  `GRAFIndex`/`GRAFIndexFromTips` — full reindex over every keeper commit vs the incremental `COMMIT_PARENT` tip-walk.
+ -  `GRAFResolveTip`/`ResolveVersion`/`RefIsName`/`GRAFLca` — URI resolution: tip SHA, `?query` rewrite, name probe, LCA.
+ -  `GRAFGet`/`GRAFMerge`/`MergeWtFile`/`MergeWtFileTunable`/`Merge3Bytes` — single-tip fetch + the 3-way merge fronts.
+ -  `GRAFLog`/`GRAFHead`/`GRAFMap`/`GRAFBlame` — the history projectors: log, message search, subway-map, blame.
+ -  `GRAFWeaveDiff`/`Diff2Layer`/`DiffWtFile`/`DiffWtTree`/`DiffTreeRefs` — the `diff:` engine: 2-layer diff, wrappers.
+ -  `GRAFFileWeave`/`RebaseFileWeave`/`RebaseBlobMerge` — build a file's token weave from blob history + the rebase merge.
+ -  `GRAFEmitDiffUri`/`PackUriDiffSha`/`EmitCommitUri`/`PackUriCommitSha`/`GRAFHunkEmit` — pack a link + emit.
+ -  `GRAFFAIL`/`NONE`/`NOAT`/`FULL`/`NOPATH` — error codes: fail, no-resolution, no `--at`, buffer small, no branch-dir.
 
-| File          | Purpose |
-|---------------|---------|
-| `GRAF.h`      | Singleton state, arena, output fd (`graf_out_fd`), public API. Byte rendering goes through `HUNKu8sFeedOut` dispatched off the module-global `HUNKMode` (TLV / Color / Plain) — no per-call formatter pointer. `GRAFOpenBranch(h, branch, rw)` opens the single project shard; `branch` selects the ref context only (no per-branch dirs, no trunk → leaf walk) |
-| `GRAF.c`      | `GRAFOpen` / `GRAFOpenBranch` / `GRAFClose`, arena init, `GRAFHunkEmit` |
-| `GRAF.exe.c`  | `GRAFExec` — verb dispatch (get / diff / merge / blame / weave / index / status) |
-| `GRAF.cli.c`  | `main()` — parse argv, open singleton, call `GRAFExec` |
-| `BLOB.{h,c}`  | `GRAFTreeStep` / `GRAFBlobAtCommit` — shared (commit, path)→blob resolution via keeper, used by BLAME and GET |
-| `DAG.{h,c}`   | LSM of `wh128` records under `.be/` driven by `GRAFDagUpdate`.  Each `wh128` half (`key`, `val`) carries a 60-bit hashlet plus a 4-bit per-half type (`COMMIT=1`, `TREE=2`, `BLOB=3`).  Entry kinds = `(key.type, val.type)` pairs: `(COMMIT,COMMIT)` parent edge, `(COMMIT,TREE)` root-tree edge, and (BLAME-002) `(TREE, TREE|BLOB)` tree-entry edge — `key.hl = DOGChildPathHash(name, parent_tree_h60)`, `val = (child_type, child_h60)`.  The tree-entry edges are materialised once per DISTINCT tree at COMMIT ingest (`dag_walk_tree`, deduped by the per-ingest-run `seen_trees` wh128 hash set on `dag_ingest`, inflating each tree via keeper into the long-lived `treebuf`), so a path descends inflate-free via `DAGChildStep` (one in-memory equal-key lookup per segment; `DAGNONE`/`DAGAMBIG` on miss / 60-bit collision drives a keeper-inflate fallback).  Hashlets are 60-bit (top of SHA-1) — same width keeper uses, so there's no prefix-lift step.  `DAGCommitTree` / `DAGChildStep` / `DAGParents` / `DAGAncestors` / `DAGAncestorsOfMany` / `DAGAllCommits` / `DAGTopoSort` are the public navigation surface |
-| `GET.c`       | `GRAFGet(u8b into, u8csc uri)` — single-tip blob fetch (`file?sha1`) via `GRAFBlobAtCommit`. `GRAFMergeWtFileTunable` folds the on-disk worktree bytes as a final `WEAVE_WT_SRC` layer onto a target tip's ancestor-closure weave, runs `WEAVEMerge` and emits alive-token bytes with `<<<<` / `||||` / `>>>>` framing for divergent inserts |
-| `JOIN.{h,c}`  | `JOINTokenize` / `JOINMerge` — 3-way merge primitive over u64-hash token streams via abc/DIFFx LCS |
-| `REBASE.{h,c}` | Linear-history replay primitives for the upcoming POST rewrite (Stage 2): `GRAFPatchId(commit_body)` (stable u64 diff-id vs first parent, RAPHashSeed-folded over sorted (path, parent_sha, child_sha) tuples; 0 for root/empty/error so dedup never matches), `GRAFRebase(base_old, base_new, child_tip, cb, ctx)` (replay child_tip → base_old onto base_new, oldest-first, patch-id dedup against base_new ancestors, conflict aborts with `GRAFCNFL`, all object emission goes through caller-supplied `graf_rebase_emit_cb`). Keeper-read-only — no DAG dependency, no keeper mutation. Tests: `graf/test/REBASE01` (patch-id + rebase shape), `graf/test/REBASE02` (revert→reapply: an identical reapply must replay; dedup only against base_new ancestor pids, never self-extended in-chain) |
-| `NEIL.{h,c}`  | Edit-list semantic cleanup (called from `WEAVE.c`): removes false short equalities, lossless boundary shifts |
-| `BRAM.{h,c}`  | Patience diff over u64 token-hash arrays (Cohen 2003).  Drop-in for `DIFFu64s` when callers want line-coherent alignment (anchor lines = hash unique on both sides) so token-level Myers can't mis-align across repeated `}` / boilerplate |
-| `MERGE.c`     | `GRAFMerge` — 3-way merge using `JOIN`, writes resolved bytes to file or stdout |
-| `DIFFREF.c`   | URI-driven diff (`diff:`/`be diff` projector): file or whole tree, ref-vs-wt or ref-vs-ref.  Builds 2-layer weave per file (via `WEAVE.c`) and emits unified-diff hunks |
-| `INDEX.c`     | DAG-ingest drivers: `GRAFIndex(k)` full reindex over keeper's commit objects + `GRAFIndexFromTips(k, u)` incremental walk back along `COMMIT_PARENT` edges, stopping per-branch when the parent is already in graf's DAG |
-| `MAP.c`       | `GRAFMap` — subway-map view (`be map:`).  Multi-column commit-history render: filters to cur's ancestors-to-trunk + descendants, time-sorts, draws per-branch spine glyphs (`║` trunk / `┃` child / `│` grandchild+) |
-| `BLAME.c`     | `GRAFFileWeave` (shared file-history weave builder: ancestor-closure walk with top-down OID pruning — `blame_descend_leaf` resolves each path component's child OID index-first (BLAME-002: `DAGChildStep` over the materialised `(tree,name)→child` edges, ZERO keeper inflate; falls back to a keeper tree inflate + entry parse on `DAGNONE`/`DAGAMBIG`, legacy/un-indexed store), stops at the first subtree OID equal to the last folded version's, fetches+folds a blob only on a real leaf-OID change (BLAME-001; the leaf is now fetched by hashlet via `KEEPGet`); keeper `GRAFBlobAtCommit`+byte-dedup fallback when the commit has no index tree info; `GRAF_BLAME_STATS` dumps nord/folds/blobfetch/treeinfl (treeinfl → 0 once descent is fully index-served); `GRAF_BLAME_NOINDEX=1` forces the keeper-inflate descent for the byte-identical correctness test), optional wt-as-final-layer with `WEAVE_WT_SRC`, per-layer step callback) + `GRAFBlame` (renders attribution rows over the built weave) + `GRAFWeaveDiff`.  Bench: `bench/blame.sh` (single-binary BLAMESTATS dump), `bench/blame-ab.sh` (A/B keeper-inflate vs index-served wall-time + treeinfl).  Test: `test/blame-perf.sh` (BLAME-001 blobfetch guard), `test/blame-identical.sh` (BLAME-002: index-served ≡ keeper-inflate, treeinfl=0) |
-| `WEAVE.{h,c}` | Token-level file history as ONE interleaved-delta TLV stream (`u8b tlv`): `T <1-byte idl> ZINT128(seq,pos) <bytes>` token records carrying a stable BIRTH-ID `(seq,pos)` (`seq` = inserting commit, `pos` = ordinal within the insert), interleaved with run-length `R` records (ZINT-blocked sorted u32 remover seqs).  A token is alive iff its R-set is empty; birth-id is exact identity.  `weavebld` (`WEAVEBldPut`) / `weavecur` (`WEAVECurNext`) are the write/read primitives; `WEAVEAliveBytes` emits the alive stream; heavy ops decode to transient BASS arrays (`WEAVE_DECODE` macro — acquire in the op's own `sane()` frame, NOT via `call()`, which rewinds BASS; `rpool` is sized `_tl+2` since a delete-heavy weave is mostly R records).  **`weave_diff_core`** is the shared diff/apply engine (`BRAMu64s` + `NEIL` on baseline-hashlets vs nu, then a walk that passes every existing token through in src order — never reordering — folds DELs into R-sets, and anchors INS tokens before the next baseline token).  For a long LINEAR replay (`build_tip_weave_tunable`'s history walk), **`WEAVEDiffCarry`** + the persistent **`weavedec`** (`WEAVEDecInit/Reset/Free`, mmap-backed) carry the accumulator's DECODE across steps so it is never re-parsed from its growing TLV each version (the per-step `WEAVE_DECODE(src)` cost — GET-001); the dst decode is captured token-by-token via the `wsink` as the core emits, and the caller double-buffers two `weavedec`s alongside the dst/src TLVs.  Two front-ends differ only in what forms the baseline: **`WEAVEDiff`** (baseline = all alive tokens — linear chain step) and **`WEAVEApply`** (baseline = a commit's PARENT-CLOSURE view via a `WEAVEsetfn` predicate — the SINGLE-WEAVE model: the whole DAG is replayed in topo order into one weave, a merge is just an Apply whose predicate covers the union of its parents' closures, so concurrent inserts get a fixed position from replay order and never re-derive → no cyclic-concurrent transposition).  In a non-EQ run the walk flushes the side's existing non-baseline tokens up to the anchor BEFORE inserting, so a concurrent side already in the weave (base/ours in a merge) renders ahead of these inserts.  There is NO separate merge op — `WEAVEMerge`/`WEAVEReplay` were deleted; GET (`GRAFMerge3Bytes`, `GRAFMergeWtFileTunable`) and REBASE (`GRAFRebaseBlobMerge`) build one weave (base → ours → theirs / tgt-as-one-edit) and render via `WEAVEEmitMerged`.  `WEAVEEmitDiff`/`EmitFull` emit unified-diff/`cat:` hunks; `WEAVEEmitMerged` frames divergent regions with `<<<<`/`||||`/`>>>>` (render-time only, never stored).  When `BRAMu64s` returns NOROOM, the core falls back to a wholesale DEL+INS via **`WEAVEFallbackEdl`** (rewinds the EDL cursor to base, appends through the bounds-checked `DIFFu64AddEntry` so NOROOM propagates instead of a raw-pointer OOB write, and advances `edl[0]` so `NEILCanon`/the walk see the entries — MEM-036).  Property + fuzz oracle: `graf/{test,fuzz}/WEAVE2` (single-weave recovery), `graf/test/WEAVE01` (3-way merge shape), `graf/test/BRAM01` (BRAM-NOROOM fallback repro).  NOTE: `BLAME.c::GRAFFileWeave` is still the O(nord) topo accumulate (`WEAVEDiff` vs previous applied layer) — correct & scalable for linear file history; a per-commit parent-closure Apply would be O(nord²) over the whole ancestor set, so it stays. |
-| `LOG.c`       | `GRAFLog` + `GRAFHead`.  `GRAFHead` is `be head '#<msg>'` (https://replicated.wiki/html/wiki/HEAD.html §HEAD): walks cur's first-parent chain via the DAG COMMIT_PARENT index, fetches each commit body via keeper, emits the first commit whose message body contains the fragment as a substring.  Bounded by `GRAFHEAD_MAX_WALK` (65536); no-match returns `GRAFNONE`. `GRAFLog` — `be log:[path]?ref[#N]` projector. Branch history walks `(COMMIT,COMMIT)` parent edges via the DAG index; file history (`./path/file?ref`) topo-sorts the tip's ancestor closure and emits a row whenever the blob bytes at `path` differ from the prior commit's. Commit body fetched from keeper for the `<sha7> <date> <author> <summary>` render |
+##  Commit-DAG index
 
-## Memory
+###  DAG.h — the wh128 edge LSM and graph navigation
 
-Per-call scratch (commit/tree object buffers, topo-sort stacks, ancestor sets,
-weave-diff workspaces, hunk-render text/toks/uri buffers, rebase replay
-scratch) rides on `ABC_BASS` via `a_carve` / `a_lign` / `u8bAcquire` etc.
-— acquired inside the function and auto-rewound at the caller's `call()`
-boundary; no per-buffer `u8bFree` / `u8bUnMap`.
+graf's index is an LSM of `wh128` records (two `wh64` halves, a 60-bit hashlet + 4-bit type) covering commit→parent, commit→root-tree, and `(tree,name)`→child edges. Materialising tree edges once per distinct tree lets a path descend in-memory.
 
-Long-lived singleton state stays on heap/mmap:
-- `GRAF.arena` / `GRAF.obj_buf` / `GRAF.tree_buf` — populated in `GRAFOpen`,
-  released in `GRAFClose`; survive across every `GRAFExec` invocation.
-- `dag_ingest::batch` (graf/DAG.c) — owned by the long-running ingest state,
-  outlives the `call()` frame that allocates it.
-- `weave *w` member buffers (`w->text`, `w->toks`, `w->hashlets`, `w->inrm`) —
-  caller-owned via `WEAVEInit` / `WEAVEFree`; the weave instance outlives any
-  single graf operation that fills it.
+ -  `DAGPack`/`DAGType`/`DAGHashlet`/`DAGEntry` — pack a `(type, hashlet)` into a `wh64`, decode it, assemble a `wh128` edge.
+ -  `DAG_T_COMMIT`/`TREE`/`BLOB`/`FOSTER`/`PICKED` — per-half type nibbles; the type pair names the edge kind.
+ -  `DAG_EDGE_PARENT`/`FOSTER`/`PICKED` — the reachability bitmask for the tunable walkers; picked targets one-step.
+ -  `DAGRange`/`DAGLookup` — per-run binary-search over the newest-first stack: the equal-key span, or first match.
+ -  `DAGCommitTree`/`DAGChildStep`/`DAGParents` — per-edge navigators: root-tree, one child, parents.
+ -  `DAGAncestors`/`OfMany`/`Tunable`/`OfManyTunable`/`EdgesOf`/`AllCommits` — BFS the commit graph into a `Bwh128` set.
+ -  `DAGAncestorsHas`/`dag_anc_put` — membership test and insert on a set from the ancestor walks (a `wh128` hash set).
+ -  `DAGTopoSort`/`DAGTopoSortTunable` — order a commit set parents-first; the tunable form waits for masked targets.
+ -  `DAGFAIL`/`NOROOM`/`NONE`/`AMBIG` — index/out-of-room error, and the no-edge / collision outcomes (keeper fallback).
 
-In the GRAFRebase replay loop (`graf/REBASE.c`), per-iteration commit/parent/
-head/cnew buffers are hoisted to function scope as a single `a_carve` each and
-reused via `u8bReset` between iterations — without this, `nchain × N × 1 MiB`
-would pile up on BASS for long rebases.
+###  BLOB.h — (commit, path) → object bytes via keeper
 
-**`wh128` hash-set acquires must `zerob`** — `HASHwh128Put`/`Get` rely on
-`is0(slot)` to detect empty entries.  `wh128bMap` (mmap) gave zeroed pages
-implicitly; `wh128bAcquire` (BASS) reuses arena memory that may carry leftover
-content from previously-rewound carves.  Heap allocations from a fresh process
-happened to get zero pages from the OS, which masked the bug for years.  Every
-`a_carve(wh128, …)` / `wh128bAcquire(...)` site that feeds `DAGAncestors` /
-`DAGAncestorsHas` / `dag_anc_put` (i.e. uses the buffer as a hash set, not as
-a plain feed-array like the BFS `queue`) must follow the acquire with
-`zerob(name)`.
+The shared resolution helpers BLAME and GET both need: pull a file's bytes at a commit using graf's 60-bit hashlets, descending the tree through keeper without an index.
 
-## Pager
+ -  `GRAFTreeStep`/`GRAFPathDescend` — descend one tree entry by `name`, or a whole path, replacing `*cur` (`KEEPNONE` miss).
+ -  `GRAFBlobAtCommit` — resolve `(commit_hashlet60, filepath)` to the blob: fetch commit, parse tree, walk the path.
 
-When diff/weave/blame runs with a tty stdout, graf forks `bro`
-(resolved via `HOMEResolveSibling`) and writes TLV hunks to the
-pipe.  With non-tty stdout, graf writes plain ASCII via
-`HUNKu8sFeedText` directly.  `merge` does not page.
+##  Token weave
+
+###  WEAVE.h — single-weave file history (SCCS-weave)
+
+A file's whole history is ONE interleaved-delta TLV stream: `T` records carry token bytes + a `(seq, pos)` birth-id; `R` records carry the remover-seq set. A token is alive iff its R-set is empty. The whole DAG replays into one weave — no separate merge.
+
+ -  `weave`/`WEAVEInit`/`Reset`/`Free`/`Empty` — the weave instance (a single `u8b tlv`), its lifecycle / empty test.
+ -  `weavebld`/`BldInit`/`BldPut`, `weavecur`/`CurInit`/`CurNext`/`SetHas` — write + read.
+ -  `WEAVEFromBlob`/`WEAVEFromBlobRm` — build a one-version weave from blob bytes (`ext`); `Rm` adds a remover.
+ -  `WEAVEDiff`/`WEAVEApply` — the two replay front-ends: `Diff` on alive tokens (linear); `Apply` on a parent-closure (DAG).
+ -  `weavedec`/`DecInit`/`DecReset`/`DecFree`/`DiffCarry` — a persistent decode carried across a long replay (GET-001).
+ -  `WEAVEAliveBytes`/`EmitDiff`/`EmitFull`/`EmitMerged` — render: alive bytes, diff, change-tagged, conflict merge.
+ -  `WEAVEFallbackEdl` — wholesale DEL+INS fallback when `BRAMu64s` can't fit a refined list (`DIFFNOROOM`).
+ -  `WEAVE_WT_SRC`/`CFLCT_SRC`/`REC_T`/`REC_R`/`SET_MAX`/`WEAVEFAIL` — `seq` sentinels, `T`/`R` letters, cap, error.
+
+##  Diff refinement
+
+###  BRAM.h, NEIL.h — patience alignment and cleanup
+
+The two passes that sharpen a raw token-level Myers edit list (`e32g` EDL) before the weave folds it: line-coherent anchoring, then whitespace/boundary cleanup. Both work on packed `u32` tokens, driven by `WEAVE.c` (and legacy `JOIN.c`).
+
+ -  `BRAMu64s` (BRAM.h) — Bram Cohen patience diff over u64 token-hash arrays: anchor on unique lines, recurse between.
+ -  `NEILCleanup`/`NEILShift`/`NEILCanon` (NEIL.h) — semantic EDL cleanup: drop false EQs, slide, collapse to INS+DEL.
+ -  `NEILIsWS`/`NEIL_MAX_KILL`/`NEILBAD` (NEIL.h) — the whitespace-token test, the killable-EQ knob, the error code.
+
+##  Merge & rebase
+
+###  JOIN.h — legacy 3-way token merge (DEPRECATED)
+
+The historic standalone 3-way merge: tokenize base/ours/theirs, RAP-hash, Myers-diff, walk lockstep. Superseded by WEAVE; retained only so `graf/test/JOIN01` characterises the old behaviour.
+
+ -  `JOINfile`/`JOINTokenize`/`JOINFree` — the per-side tokenized file (data, `tok32`, `RAPHash`); used by JOIN01.
+ -  `JOINMerge` — the `deprecated` merge itself; use `GRAFMerge3Bytes` / `GRAFMergeWtFileTunable` instead.
+ -  `JOIN_RM_O`/`RM_T`/`IN`/`MARK`/`HASH` — the top-bit hash markers (rm-ours/theirs, inserted) + mask/strip macros.
+
+###  REBASE.h — linear-history replay primitives
+
+Two keeper-read-only pieces feeding the POST rewrite: a stable per-commit patch-id for cherry-pick dedup, and the replay loop. No DAG dependency, no keeper mutation; persistence via a callback.
+
+ -  `GRAFPatchId` — a stable u64 hash of a commit's per-file delta vs its first parent; 0 for root/empty (dedup skips).
+ -  `graf_rebase_emit_cb`/`GRAFRebase` — replay every commit between `base_old` and `child_tip` onto `base_new`, deduped.
+ -  `GRAFCNFL` — the rebase-abort 3-way-merge-conflict code.
+
+##  Projectors (`.c` only)
+
+The verb implementations have no public header — each is reached through `GRAFExec` (`graf/GRAF.exe.c`) and writes hunks via `GRAFHunkEmit`: `GET.c`, `BLAME.c`, `LOG.c`, `DIFFREF.c`, `MAP.c`, `MERGE.c`, and `INDEX.c`; `DAG.c` holds the ingest state.
+
+[GET.md]: ./GET.md
+[DOG.md]: ../dog/DOG.md

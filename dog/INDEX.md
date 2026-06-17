@@ -1,107 +1,192 @@
-# tok/ — Lightweight ragel-based tokenizers
+#   dog — module index
 
-Produces the same tag classification as ast/ tree-sitter parsers
-(D=comment, G=string, L=number, R=keyword, P=punct, H=preproc, S=default)
-but without the tree-sitter dependency.
+dog is the beagle shared layer between abc and the verb dogs (sniff/keeper/graf/spot/bro): the `.be/` store conventions, the URI/branch vocabulary, the ULOG event log, the hunk wire format, and the ragel tokenizers that paint syntax. Naming follows abc; a `u8s` arg is consumed, a `u8sp` assigned. `DOG*FromBe` split a `.be`-anchor, `*Pup*` manage file stacks, `tok32` packs a tag + side. Prose in [DOG.md], [ULOG.md], [DEF.md], [BRCT.md].
 
-## Core headers
+##  Core conventions
 
-| Header  | Purpose |
-|---------|---------|
-| DOG.h   | Shared dog primitives: URI parse/normalize/canonicalize (`DOGParseURI`, `DOGNormalizeArg`, `DOGCanonURI`/`DOGCanonURIFeed`), `/.be/`-anchor splitters (`DOGRepoFromBe`/`DOGProjectFromBe`/`DOGBranchFromBe`), path-hash, puppy-stack, and the **URI-002 bang factor**: bit byte `DOG_BANG_VERB`/`_PATH`/`_QUERY`/`_FRAG` (one per URI component, dog-side only — abc's `uri` stays pristine), plus the single uniform debanger every parser funnels through. `DOGDebangSlice(u8cs)` tail-sheds at most ONE trailing `!` (idempotent, present-but-empty preserved); `DOGDebang(uri*, u8*)` debangs all components and ORs the bits; `DOGDebangFeed(u8b*, bang, bit)` re-emits `!` for a set bit (used by `be`, the sole canonicalizer, so a bang survives path/branch resolution). Transport rule: URIs forward as full `u8cs` text (`!` rides along); every parser debangs locally. Also the **BE-002 command suggester** `DOGSuggestCommand(word, extra, out)`: bounded two-row Levenshtein (≤2 edits AND < len(word)) over the single-sourced `DOG_PROJECTORS` table plus the caller's NUL-terminated `extra` list (beagle passes `BE_VERB_NAMES`); `extra` is scanned first so a verb wins an equal-distance tie over a projector. `out` slices into static literal storage (return-safe); no pointer arithmetic. |
-| TOK.h   | Common callback typedef `TOKcb`, dispatch API `TOKLexer()`, `TOKSplitText()` |
-| BRCT.h  | Bracket matching and region detection on tokenized files |
-| DEF.h   | Mark symbol definitions (S→N) via enrichment + NFA patterns, see [DEF.md](DEF.md) |
-| HUNK.h  | Three-mode hunk renderer: `HUNKu8sFeed` (TLV wire), `HUNKu8sFeedText` (plain ASCII), `HUNKu8sFeedColor` (ANSI). Dispatch via module-global `HUNKMode` + `HUNKu8sFeedOut`. `diff:`-scheme hunks render as unified diff (LineBased) internally from FeedText. **BRO-002: ONE header drawer** `HUNKu8sFeedBanner(into, hk, mode, cols)` — the [BRO-001] banner (abbrev date if `ts` + verb if set + uri) for *every* hunk (no status-vs-content split; the old `hunk_is_status` + `hunk_feed_status_*` + `hunk_feed_header_*` are gone). Mode arg picks Plain (`[<date> ][<verb> ]<uri>\n`, machine-parseable) / Color (THEME_BANNER black-on-pale-yellow band, `cols>0` space-fills to edge) / Html (`<h3 class="banner">`); bro calls it too (no more violet `THEMEAt('T')` title). Plus `HUNKu8sDrain`, `HUNKu32sClip`, `HUNKu32bTokenize`, `HUNKu8sMakeURI`, `HUNKcb` |
-| ROWS.h  | **BRO-002 shared status/action row-table builder** (extracted from `sniff/LS.c`). `ROWSOpen`/`ROWSu8bFeedRow`/`ROWSu8bFeedRec`/`ROWSClose` accumulate one `(text, toks)` table per (sub)module — row = `<7-date> <3-verb> <path>[<mov><dst>]` with `L`/verb-slot/path-tag toks + a hidden `U`-tok nav uri (`cat:`/`diff:`/`ls:`/`commit:?<sha>` per COMMIT-001) — and flush ONE content hunk per module via `HUNKu8sFeedOut`. Flush is mode-keyed: `ROWS_MODE_KEYED` streams each row live on a tty / buffers one hunk for `--tlv` relay; `ROWS_BATCH` always buffers (status/ls:). `ROWSPrintRow(rec, nav)` appends to the module-global active table (set between Open/Close) or runs a transient one-row accumulator (replaces the retired `ULOGToHunk`/`ULOGPrintStatusLine`). 4 MiB mmap text + 256K toks (BASS). |
-| MDBLK.h | Shared slice-cursor block-helper primitives for the Markdown-family block lexers (MDT/MKDT). `MDBLKu8csSkipSpaces`/`MDBLKu8csSkipIndents` eat leading CommonMark spaces / StrictMark 4-char div blocks; `MDBLKu8csRun` counts a char run; `MDBLKu8csAllBlank` tests a trailing whitespace tail; `MDBLKu8csDrainLine` pulls one source line INCLUDING its `\n` (unlike abc's `u8csDrainLine`, which strips it). All slice-API, no pointer arithmetic (PTR-002). The two grammars (CommonMark vs StrictMark) keep their own block policy in each `.c`; only the cursor-walking idiom is shared here. |
-| FREE.h  | Reusable "free text" scanner for natural-language slices (comment bodies, docstrings, markdown paragraphs).  Splits into UTF-8 words / numbers / punctuation / whitespace; fuses issue keys like `ABC-123` into one word token; emits `\n` as a standalone W token (never fused).  No strict UTF-8 validation — any `0x80..0xff` byte runs as a word char.  `FREELexer` emits native tags (`S`/`L`/`P`/`W`); `FREEu8sFeed(overlay, slice, cb, ctx)` wraps it with an overlay tag (e.g. pass `'D'` from a comment callback to retag every chunk).  Drop-in replacement for `TOKSplitText('D', …)` used by `CTonComment`, `MDTonComment`. |
-| HOME.h  | Workspace finder + branch-sharding scaffolding: `HOMEFind` walks up to the nearest `.be` directory, `HOMEResolveSibling` finds tools next to the running binary, `HOMEOpenBranch`/`HOMEWriteBranch`/`HOMEBranchVisible` track the process-wide open-branch stack (slot 0 = writable, frozen at first rw open). **BE-004 singleton (in progress):** `home` is cwd-derived ambient process state, so `dog/HOME.c` exports the process-wide `&HOME` global (mirroring `&KEEP`/`&GRAF`); `HOMEOpen(&HOME, …)` populates it and a compatible re-open returns `HOMEOPEN` ("use the global, do NOT close"), an rw-on-ro re-open `HOMEROBR`. The top of each process's call chain (every dog's `*cli`) opens `&HOME` once and pairs it with one `HOMEClose(&HOME)`; the `home *`-taking APIs (`HOMEOpen`/`KEEPOpen`/`GRAFOpen`/`SNIFFOpen`/…) remain transitionally, fed `&HOME`. Sequential project/root swaps (`subs_sibling_shard_has_pin`, multi-store tests) work via the mutable `&HOME->project` + close-between-roots; no two live homes ever coexist in one process (submodule recursion forks a child per cwd). Branch paths canonicalised via `dog/DPATH` helpers `DPATHBranchNormFeed`/`DPATHBranchAncestor`. Project derive (DIS-024): when the row-0 anchor names no project, `HOMEOpen` adopts the store's single `.be/<project>/` shard (`home_single_shard`, copy-safe); the walk's `home_dir_shieldlike` anchors a `.be/` with ≤1 subdir (single-project store) and only keeps ascending past a multi-project (>1 shard) store. Both classifiers share one `FILEIter`-based subdir scanner (`home_be_subdirs`, caps the count at 2, captures the first shard name). |
-| ULOG.h  | Append-only `<ts>\t<verb>\t<uri>\n` event log + persistent `wh128` sidecar index (`<dir>/.<base>.idx`). Index entries pack ts (60b key) and offset (40b) + verb-hash (20b prefilter) (val); tail sentinel records `(log_mtime, log_size)` — on Open, sidecar is trusted as-is only when both match `fstat` AND the last indexed row spans to the log's content end (`ulog_idx_spans_log`, DIS-033 false-fresh guard), rebuilt otherwise. RO+missing sidecar quietly falls back to anonymous mmap. Torn-log guard (ULOG-001): a NUL before real content (interrupted/ENOSPC/SIGKILL/page-cache-lost write) returns `ULOGTORN` on open instead of being trusted as empty and `FILETrimBook`-zeroed; original on-disk size is restored, live bytes left for recovery. Exposes the `ulogrec` slice family (`ulogrecZ`+`abc/Bx.h`) so tie-groups pass as typed `ulogreccs` slices (PTR-005). |
-| WHIFF.h | `wh64` packed words (off40 \| id20 \| type4) and `wh128` (key, val) pairs. Used by ULOG idx, keeper LSM index, graf entries. SHA-1 hashlet helpers (40-bit / 60-bit) — the 40/60 twins (`WHIFFHashlet*`, `WHIFFHexFeed*`, `WHIFFHexHashlet*`) are thin wrappers over width-parameterized cores (`whiff_hashlet`/`whiff_hex_feed`/`whiff_hex_hashlet`, chars=10/15). Also carries the `sha1hex` value/key struct (`sha1hexeq`/`sha1hexZ`/`sha1hexMv`) and its struct conversions (`sha1hexFromSha1`/`sha1FromSha1hex`/`sha1hexFromHex`/`sha1hexSlice`); the raw hex↔sha1 conversions now funnel through `git/SHA1.h` (`a_sha1hex`/`SHA1u8sFeedHex` encode, `sha1FromHex`/`sha1FromBin` decode — CODE-016). Covered by `test/WHIFF.c` (incl. the `sha1FromHex` table). |
-| git/CFG.h | gitconfig-family lexer + iterative key/value drain (`~/.gitconfig`, `.git/config`, `.gitmodules`). `CFGLexer` ragel scanner emits low-level tokens (D comment, G quoted string, S bareword, P punct, W ws) for syntax-highlighting. `CFGu8sDrain(ini, key_buf, val)` consumes one kv at a time: the full dotted key (`submodule.abc.path`) lands in `key_buf`'s DATA — read it via `u8bDataC` — and `val` slices into `ini` (quotes stripped, trailing ws + inline `#`/`;` comments trimmed). Section prefix stays sticky in `key_buf` across calls; the next call strips back to the last `.` automatically. Returns NODATA at EOF, CFGBAD on parse error. |
+###  DOG.h — URI grammar, `.be` layout, path hashes, puppies
 
-## Tag mapping
+The shared vocabulary every dog speaks: parse/canonicalise a CLI URI, split a `.be`-anchor path into repo/project/branch, hash a tree path, and drive the puppy file stacks. Full prose in [DOG.md].
 
-| Tag | Meaning | Color |
-|-----|---------|-------|
-| D   | Comment | gray  |
-| G   | String  | green |
-| L   | Number  | cyan  |
-| H   | Preproc/annotation/pragma | pink |
-| R   | Keyword | red   |
-| P   | Punctuation | gray |
-| S   | Default (identifier, whitespace) | default |
-| N   | Defined name (from DEF pass) | — |
-| C   | Function call (from DEF pass) | — |
-| F   | Filename or path | #490d49 |
-| U   | URI (invisible click target; preceding token navigates here) | — |
+ -  `DOGParseURI`/`DOGNormalizeArg`/`DOGPromoteBareword` — parse a CLI arg with dog rules (bare `word:path` → remote alias).
+ -  `DOGCanonURI`/`DOGCanonURIFeed` — the chokepoint every ULOG/REFS writer uses to canonicalise + serialise a URI.
+ -  `DOGIsProjector`/`ProjectorDog`/`IsTransport`/`IsGitTransport` — classify a URI scheme against the tables.
+ -  `DOGDebangSlice`/`DOGDebang`/`DOGDebangFeed` — the `!` reader: tail-shed + OR the per-component force bits.
+ -  `DOGRepoFromBe`/`DOGProjectFromBe`/`DOGBranchFromBe` — split a row-0 anchor path on `/.be/` into the wt root.
+ -  `DOGRefDrain`/`QueryBranchOnly`/`StripProject`/`QueryProject`/`CanonQueryParse` — split a ref query.
+ -  `DOGIsHashlet`/`DOGIsFullSha`/`DOGRefIsBranch` — syntactic tests: a 6..40-hex sha prefix, a full 40/64-hex object id.
+ -  `DOGPathHash`/`DOGChildPathHash` (`ROOT`) — positional tree-node id: root is ron60("ROOT").
+ -  `DOGPupOpenAll`/`OpenAside`/`Create`/`CreateAt`/`ThinTail`/`DOGPupClose` — open/load/append/trim/close a puppy stack.
+ -  `DOGPupCount`/`DOGPupCountAll`/`DOGPupData`/`DOGPupDataAll`/`DOGPupAllData`/`DOGPupSeqno` — read views over the stack.
+ -  `DOGutf8sFeedDate` — render a unix ts as a 7-column relative date (`12:34` / `Tue05` / `01Jan`) for status columns.
+ -  `DOG_BE_NAME`/`DOG_REFS_NAME`/`DOG_WTLOG_NAME`/`DOG_CONFIG_NAME` — the source of truth for `.be` filenames.
 
-## Language tokenizers
+###  DPATH.h — tree-entry names & branch-path normalization
 
-| Header  | Language | Extensions |
-|---------|----------|------------|
-| CT.h    | C | c h |
-| CPPT.h  | C++ | cpp cc cxx hpp hh hxx |
-| GOT.h   | Go | go |
-| PYT.h   | Python | py |
-| JST.h   | JavaScript | js jsx mjs |
-| TST.h   | TypeScript | ts tsx |
-| RST.h   | Rust | rs |
-| JAT.h   | Java | java |
-| KTT.h   | Kotlin | kt kts |
-| SCLT.h  | Scala | scala sc |
-| CST.h   | C# | cs |
-| FSHT.h  | F# | fs fsi fsx |
-| SWFT.h  | Swift | swift |
-| DARTT.h | Dart | dart |
-| DT.h    | D | d |
-| ZIGT.h  | Zig | zig |
-| HTMT.h  | HTML | html htm |
-| CSST.h  | CSS | css |
-| SCSST.h | SCSS | scss |
-| JSONT.h | JSON | json |
-| YMLT.h  | YAML | yml yaml |
-| TOMLT.h | TOML | toml |
-| SHT.h   | Bash | sh bash |
-| RBT.h   | Ruby | rb |
-| LUAT.h  | Lua | lua |
-| PRLT.h  | Perl | pl pm |
-| RT.h    | R | r R |
-| ELXT.h  | Elixir | ex exs |
-| ERLT.h  | Erlang | erl hrl |
-| HST.h   | Haskell | hs |
-| MLT.h   | OCaml | ml mli |
-| JLT.h   | Julia | jl |
-| NIMT.h  | Nim | nim nims |
-| PHPT.h  | PHP | php |
-| CLJT.h  | Clojure | clj cljs cljc edn |
-| NIXT.h  | Nix | nix |
-| SQLT.h  | SQL | sql |
-| GQLT.h  | GraphQL | graphql gql |
-| PRTT.h  | Protobuf | proto |
-| HCLT.h  | HCL/Terraform | hcl tf |
-| LAXT.h  | LaTeX | tex sty cls |
-| VIMT.h  | VimL | vim |
-| CMKT.h  | CMake | cmake |
-| DKFT.h  | Dockerfile | dockerfile |
-| MAKT.h  | Makefile | mk |
-| FORT.h  | Fortran | f90 f95 f03 f08 |
-| GLST.h  | GLSL | glsl vert frag geom comp |
-| GLMT.h  | Gleam | gleam |
-| ODNT.h  | Odin | odin |
-| PWST.h  | PowerShell | ps1 psm1 psd1 |
-| SOLT.h  | Solidity | sol |
-| TYST.h  | Typst | typ |
-| MDT.h   | Markdown (block+inline two-pass) | md markdown |
-| AGDT.h  | Agda | agda |
-| VERT.h  | Verilog | v sv |
+Validate a single tree-entry segment and put branch paths into the one canonical form (`.be/` sharding) so they compare by byte equality.
 
-## Regenerating
+ -  `DPATHu8sDrainSeg`/`DPATHVerify` — drain/verify one filename segment (no slashes, valid UTF-8, rejects).
+ -  `DPATHBranchNormFeed` — feed the canonical branch form: trunk aliases → empty, else the body + a trailing `/`.
+ -  `DPATHBranchAncestor`/`DPATHBranchLcaLen`/`DPATHBranchResolveRel` — ancestor (prefix) test.
 
-```sh
-cd tok/
-ragel -C XX.c.rl -o XX.rl.c -L
-```
+###  HOME.h — per-process ambient workspace (`&HOME`)
 
-where XX is the module prefix (CT, GOT, PYT, JST, RST, etc).
+`home` is cwd-derived ambient state, so the process holds exactly one live home — the `&HOME` singleton. The top of each dog's call chain opens it once and pairs it with one close; everything downstream reads `&HOME`.
+
+ -  `HOMEOpen`/`HOMEOpenAt`/`HOMEClose` — populate / release `&HOME` from an anchor URI (path=root, query=branch).
+ -  `HOMEFind`/`HOMEFindDogs`/`HOMEResolveSibling` — walk cwd up to the nearest `.be` anchor.
+ -  `HOMEOpenBranch`/`SetCurBranch`/`WriteBranch`/`BranchVisible` — claim/retarget/read a branch + test scope.
+ -  `HOMEBeDir`/`HOMEMakeBeDir`/`HOMEBranchDir`/`HOMEProjectExists` — compose `.be`/branch/shard dirs.
+ -  `HOMEGetConfig`/`HOMEHost` — read a dotted key from `.be/config` (TOML).
+
+###  CLI.h — argv → `cli`, flag access, output mode
+
+Parse `dog [verb] [--flags] [URI...]` into a `cli` whose slices borrow argv; URIs are stored raw and parsed on demand.
+
+ -  `CLIParse` (`cli`) — fill verb / interleaved `flags` / raw `uris` from argv against a verb-name and value-flag list.
+ -  `CLIUriLen`/`CLIUriRawAt`/`CLIUriSetRaw`/`CLIUriParse`/`CLIUriAt` — count, read, rewrite.
+ -  `CLIFlag`/`CLIHas`/`CLIAtURI` — read a flag's value, test a boolean flag.
+ -  `CLISetHUNKMode` — resolve the process-global `HUNKMode` from `--tlv`/ `--color`/`--plain` (default keys off).
+
+##  Event log & reporting
+
+###  ULOG.h — append-only URI event log + sidecar index
+
+Each row is `<ron60-ms>\t<verb>\t<uri>\n`, strictly monotonic; a `wh128` sidecar (`<dir>/.<base>.idx`) indexes ts→offset with a 20-bit verb prefilter and a tail sentinel for stale detection. Format in [ULOG.md].
+
+ -  `ULOGOpen`/`ULOGOpenRO`/`ULOGOpenBooked`/`ULOGClose` (`ULOGTORN`) — open rw / read-only / sized.
+ -  `ULOGu8sFeed`/`ULOGu8sDrain` (`ulogrec`) — the stateless row codec; one parsed row carries ts, verb.
+ -  `ULOGAppend`/`ULOGAppendAt` — append with a clock-clamped or explicit ts (`ULOGCLOCK` on a non-monotonic stamp).
+ -  `ULOGRow`/`ULOGSeek`/`ULOGFind`/`ULOGHead`/`ULOGTail`/`ULOGCount`/ `ULOGHas` — random access by index.
+ -  `ULOGFindLatest`/`FindVerb`/`eachLatest`/`eachLatestKey` — reverse scans: latest row per predicate/verb/key.
+ -  `ULOGCompactLatest`/`ULOGTruncate` — rewrite keeping the latest row per key (atomic tmp+rename), or keep a prefix.
+ -  `ULOGu8ssDrainHeap`/`ULOGMergeWalk` (`ULOGu8csZbyTs`/`ZbyUri`) — K-way heap merge + fan-out.
+ -  `ULOGu8bScanWt`/`ULOGu8sRelFromFull` — walk a worktree emitting one `<mtime>\t<verb>\t<rel>?<mode>` row per leaf.
+ -  `ULOGVerbColor`/`ULOGVerbTag` (`ULOG_VERB_COLORS`) — the shared verb→`ansi64` / verb→theme-tag palette every status.
+
+###  ROWS.h — shared status/action row-table builder
+
+One output model (BRO-002): every (sub)module emits ONE content hunk whose text is a `<date> <verb> <path>` table with per-column toks and a hidden nav URI per row, flushed through `HUNKu8sFeedOut`.
+
+ -  `ROWSOpen`/`ROWSClose` (`rows`, `ROWSdiscipline`) — arm / flush an mmap-backed accumulator.
+ -  `ROWSu8bFeedRow`/`ROWSu8bFeedRec` (`rows_row`, `ROWSnav`) — append a row from a descriptor or a `ulogrec`.
+ -  `ROWSPrintRow` — the canonical single-row emitter (replaced `ULOGPrintStatusLine`) for sites with no module accumulator.
+
+###  HUNK.h — the code-hunk wire format and renderers
+
+A `hunk` is `{ts, verb, uri, text, toks}` DATA; the renderers own all presentation. Three output modes are chosen once into the global `HUNKMode`; emit sites call `HUNKu8sFeedOut`.
+
+ -  `hunk`/`hunkZ`/`HUNKcb` — the record (location is one `uri`; `toks` are `tok32` with tag + side), ordering, callback.
+ -  `HUNKu8sFeed`/`HUNKu8sDrain` (`HUNKTOKLEN`/`HUNKTOKOOB`) — the nested-TLV codec.
+ -  `HUNKu8sFeedOut`/`FeedText`/`FeedColor`/`FeedHtml` (`HUNKMode`) — render via the global mode, or forced.
+ -  `HUNKu8sFeedBanner` — the ONE header drawer (BRO-002): the abbreviated date + verb + uri banner for every hunk (Plain).
+ -  `HUNKu8sRebaseURI`/`HUNKu8sRelay` — prefix a hunk URI's path with a submodule mount.
+ -  `HUNKu32bTokenize`/`u32sClip`/`u8sMakeURI`/`u8sFragSplit` — tokenize, clip toks, compose/split a `path#symbol:line` URI.
+
+###  THEME.h — tag-letter colour palette
+
+A 32-slot `ansi64` table indexed by tag letter (`tag - 'A'`); the renderer ORs an fg-tag and a bg-tag lookup into each cell's SGR.
+
+ -  `theme`/`THEMEActive`/`THEMEAt` — the palette type, the always-non-NULL active pointer.
+ -  `THEMESelect` (`THEME_16`/`THEME_DARK`/`THEME_LIGHT`) — pick a palette by name (falling back to `$BRO_THEME` then "16").
+ -  `THEME_BANNER` (`THEME_BANNER_FG`/`_BG`) — the fixed black-on-pale-yellow SGR the one hunk-banner drawer uses.
+
+###  WHIFF.h — packed tagged words & SHA-1 hashlets
+
+`wh64` packs `off40 | id20 | type4` (hashlet in the top bits so entries sort by hashlet first); `wh128` is a `(key,val)` pair. Backs the ULOG index, keeper LSM index, and graf entries.
+
+ -  `wh64`/`wh64Pack`/`wh64Type`/`wh64Id`/`wh64Off` (`wh64Z`) — pack / unpack the three fields and the value comparator.
+ -  `wh128`/`wh128Z`/`wh128hash`/`wh128hashEq` (+ `wh128cs*`) — the pair, its full-field ordering.
+ -  `WHIFFHashlet40`/`Hashlet60`/`HexFeed40`/`HexFeed60`/`HexHashlet40`/`HexHashlet60` — the 40/60-bit hashlet twins.
+
+##  git interoperability (`dog/git/`)
+
+###  SHA1.h — git SHA-1 type, hashing (sha1dc), and `sha1hex`
+
+The git `sha1` (20 bytes) plus collision-detecting hashing and the 40-hex text form. CODE-019 folded the hex-text struct in here beside `sha1`.
+
+ -  `sha1`/`sha1Z`/`sha1empty` — the 20-byte record, its memcmp ordering, and the all-zero test.
+ -  `SHA1Sum`/`SHA1Open`/`SHA1Feed`/`SHA1Close` (`SHA1state`) — one-shot/streaming hashing over `dog/sha1dc`.
+ -  `sha1FromBin`/`FromHex`/`Drain`/`slice`/`SHA1u8sFeedHex`/`FeedHashlet`/`a_sha1hex` — decode + render sha1 hex.
+ -  `sha1hex`/`hexZ`/`hexeq`/`hexFromSha1`/`sha1FromSha1hex`/`hexFromHex`/`hexSlice` — the 40-hex key struct.
+
+###  GIT.h — git object & refname parsers
+
+Pull-mode drains for tree / commit / ident bytes, and the single translation point between be-style refs and git's `refs/heads/…` wire form.
+
+ -  `GITParseRef`/`GITFeedRef`/`GITTypeName` (`gitref_kind`) — parse a refname into (kind, name) + emit its wire form.
+ -  `GITu8sDrainTree`/`GITu8sFileSplit` — drain one tree entry (mode+name, raw SHA-1) and split the `<mode> <name>` field.
+ -  `GITu8sDrainCommit`/`ParseCommit`/`CommitTree`/`GITu8sIdent` (`git_commit`) — drain/parse commit headers + tree + ident.
+ -  `GIT_FIELD_*`/`GIT_REFS_*`/`GIT_PKT_*`/`GIT_TYPE_*` — the wire fixed strings (incl. beagle-only `foster`/`picked`).
+
+###  PACK.h, DELT.h, ZINF.h — packfile, delta, zlib
+
+The packfile codec, the git delta instruction parser/applier, and the zlib inflate/deflate wrappers under them.
+
+ -  `PACKu8sFeedHdr`/`DrainHdr`/`DrainObjHdr`/`FeedObjHdr`/`PACKInflate` — write/parse the header + object entry.
+ -  `DELTApply`/`DELTEncode` — apply a delta stream to a base.
+ -  `ZINFInflate`/`ZINFDeflate` — the slice-consuming zlib wrappers (`into` advances by produced, source by consumed).
+
+###  PKT.h, CFG.h, SUBS.h, IGNO.h — protocol & config
+
+git pkt-line framing, the gitconfig-family parser, the `.gitmodules` submodule parser, and the `.gitignore` matcher.
+
+ -  `PKTu8sDrain`/`PKTu8sFeed`/`PKTu8sFeedFlush` (`PKTFLUSH`/`PKTDELIM`) — drain/emit one pkt-line.
+ -  `CFGu8sFeed`/`CFGu8sDrain` (`CFGstate`) — the gitconfig pull parser: `Feed` advances to the next section/assignment.
+ -  `SUBSu8sParse`/`SUBSu8sFind`/`SUBSu8bSynth` (`subs_cb`) — drain `.gitmodules` sections firing `cb(path,url)`.
+ -  `IGNOLoad`/`IGNOMatch`/`IGNOFree` (`igno`/`igno_pat`) — load a `.gitignore` into patterns (negate / anchor / dir-only /).
+
+###  sha1dc/ — vendored SHA-1 collision detection
+
+`dog/sha1dc/sha1.h` and `ubc_check.h` are the upstream sha1collisiondetection library, vendored. `SHA1.h` builds `SHA1Sum`/`SHA1Open…` on its `SHA1DCInit`/`SHA1DCUpdate`/`SHA1DCFinal`/`SHA1DCSetSafeHash` C API; do not edit, external dependency.
+
+##  Tokenizers (`dog/tok/`)
+
+###  TOK.h — the tokenizer framework & `tok32`
+
+The shared dispatch and the packed token every tokenizer emits. A `tok32` packs a 5-bit syntax tag (`tag - 'A'`), a 1-bit display-scratch custom bit, a 2-bit diff side, and a 24-bit end offset.
+
+ -  `tok32`/`tok32Pack`/`Offset`/`Side`/`Tag`/`SetSide`/`SetCustom`/`tok32Val` (`tok32Z`) — build/decode a token.
+ -  `TOKLexer`/`SplitText`/`KnownExt`/`SameLexer`/`TOKExtAt` (`TOKstate`/`TOKcb`) — dispatch by ext, split a blob.
+
+###  KEYW.h, DEF.h, FREE.h, BRCT.h, MDBLK.h — tokenizer infra
+
+The per-language `.c` lexers share these: a keyword-set probe, a definition-marking second pass, a free-text scanner, bracket matching, and the Markdown block-cursor helpers.
+
+ -  `KEYWOpen`/`KEYWHas` (`keyw`) — the 256-slot open-addressing keyword set each language builds once.
+ -  `DEFMark` (`DEF_TAG`='N', `CALL_TAG`='C') — second pass over a tok array: enrich tags, run per-language NFA patterns.
+ -  `FREELexer`/`FREEu8sFeed` (`FREEstate`) — the natural-language scanner (comment bodies, docstrings).
+ -  `BRCTMatch`/`BRCTInner`/`BRCTOuter`/`BRCTCheck`/`BRCTDepth` — bracket matching: partner, region, balance, depth.
+ -  `MDBLKu8csSkipSpaces`/`SkipIndents`/`Run`/`AllBlank`/`DrainLine` — the slice-cursor Markdown block idioms.
+
+###  Tag alphabet
+
+Tags a `tok32` carries (painted by `dog/THEME.h`): `D` comment, `G` string, `L` number, `H` preproc, `R` keyword, `P` punctuation, `S` default, `W` whitespace, `U` URI. The `DEF` pass adds `N` defined name and `C` call; `F` is a filename/path column.
+
+###  Per-language tokenizers — roster
+
+Each `*T.h` is one ragel-generated `<LANG>Lexer` registered in `dog/tok/TOK.c`'s `TOK_TABLE` by extension. Languages (from that table):
+
+ -  Systems: `CT`→C, `CPPT`→C++, `GOT`→Go, `RST`→Rust, `DT`→D, `ZIGT`, `ODNT`, `SOLT`, `VERT`→Verilog, `GLST`→GLSL.
+ -  JVM / .NET: `JAT`→Java, `KTT`→Kotlin, `SCLT`→Scala, `CST`→C#, `FSHT`→F#, `CLJT`→Clojure.
+ -  Scripting: `PYT`, `JST`, `TST`, `RBT`→Ruby, `PRLT`→Perl, `LUAT`, `PHPT`, `SHT`→Bash, `PWST`, `RT`→R, `JLT`→Julia.
+ -  Functional / ML: `HST`→Haskell, `MLT`→OCaml, `ELXT`→Elixir, `ERLT`→Erlang, `NIMT`→Nim, `GLMT`→Gleam, `AGDT`→Agda.
+ -  Mobile / app: `SWFT`→Swift, `DARTT`→Dart.
+ -  Markup / web: `HTMT`→HTML, `CSST`→CSS, `SCSST`→SCSS, `TYST`→Typst, `LAXT`→LaTeX.
+ -  Data / config: `JSONT`→JSON, `YMLT`→YAML, `TOMLT`→TOML, `SQLT`→SQL, `GQLT`→GraphQL, `PRTT`→Protobuf, `HCLT`, `NIXT`.
+ -  Build / ops: `CMKT`→CMake, `MAKT`→Makefile, `DKFT`→Docker, `VIMT`→VimL, `FORT`→Fortran, `LLT`→LLVM IR.
+ -  Prose: `MDT`→Markdown (two-pass), `MKDT`→StrictMark, `TXTT`→plain text / reStructuredText (the fallback).
+
+To regenerate a lexer: `ragel -C XXT.c.rl -o XXT.rl.c -L`.
+
+##  Test harness
+
+###  test/TESTBE.h — hermetic-store test setup
+
+`TESTBEmkdtemp`/`TESTBErmrf` create and tear down a `.be`-free scratch dir under `/tmp` so a C test's `HOMEOpen` cwd-walk can never escape into a real `$HOME/.be`; `TESTBEShieldTmp` loudly removes a stray leaked `/tmp/.be`.
+
+[DOG.md]: ./DOG.md
+[ULOG.md]: ./ULOG.md
+[README.md]: ./README.md
+[DEF.md]: ./tok/DEF.md
+[BRCT.md]: ./tok/BRCT.md

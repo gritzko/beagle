@@ -1,127 +1,110 @@
-# sniff — worktree management
+#   sniff — module index
 
-Checkout, status, stage, commit.  State is a single append-only
-ULOG file at `<wt>/.be/wtlog`; no pack files, no caches, no path
-registry (keeper owns paths).  The worktree's files-on-disk plus the
-ULOG plus keeper's object store are the ground truth.
+sniff is the working-tree verb layer: it implements the `be` verbs `get`/`post`/`put`/`delete`/`patch`/`cat`/`ls`/`watch` over a keeper store and a `.be` worktree (prose: [AT.md], [STAGE.md]). State is ONE append-only ULOG at `<wt>/.be/wtlog`; files-on-disk + the ULOG are ground truth. Each written file is futimens-stamped, so `mtime ∈ stamp-set` means "clean". `SNIFFAt…` is the facade.
 
-Worktrees may share a store: each wt has its own `.be/wtlog` but the
-`repo` row (row 0) points them all at the same `.be/`.  Colocated
-wts set it to their own sibling `.be/`; secondary wts set it to
-the primary's store.
+##  Core & context
 
-## The one-paragraph model
+###  SNIFF.h — singleton state, the ULOG-row merge engine
 
-Every row sniff writes (`get`, `post`, `patch`, `put`) stamps
-its files with the row's ts via `utimensat`.  A file's mtime is
-therefore a pointer back into the ULOG: lookup-by-ts identifies
-the row that owns the file's content.  ∉ stamp-set means the
-user edited it since.  POST walks the wt, classifies each file
-via stamp lookup, emits one keeper pack `commit → trees → blobs`,
-stamps every surviving wt file with the new post row's ts, and
-appends a `post` row.  Per https://replicated.wiki/html/wiki/Invariants.html Invariant 2, the new commit's
-**first** parent is always cur's prior tip; additional `parent` /
-`foster` headers and `picked` trailers come from in-scope `patch`
-rows (see https://replicated.wiki/html/wiki/POST.html §POST "Parent / foster / picked assembly").
+The `sniff` singleton holds the open `.be/wtlog` (mmapped + a ts→offset index) and the per-invocation CLI flags; `SNIFFOpen`/`Close` bracket it. The N-way merge walker is the shared primitive every classify/commit path heap-feeds into.
 
-## Wall-clock guard
+ -  `sniff`/`SNIFF`/`SNIFFOpen`/`SNIFFClose` — the singleton (log, ts index, flags, `.gitignore`); RW/RO open + close.
+ -  `SNIFFExec`/`SNIFF_VERBS`/`SNIFF_VAL_FLAGS` — the verb dispatcher + the verb/value-flag tables for `CLIParse`.
+ -  `SNIFFMergeWalk`/`sniff_step_fn` — heap-walk up to `LSM_MAX_INPUTS` ULOG cursors, one callback per path-key.
+ -  `SNIFFMaybeSwitchKeeper`/`SNIFFMaybeSwitchGraf` — switch the open keeper/graf to a named branch shard if it exists.
+ -  `SNIFFWtlogPath`/`SNIFFFullpath` — resolve the wtlog path by `.be` shape (dir/file), join reporoot + a relative path.
+ -  `SNIFFSkipMeta`/`SNIFFRelFromFull` — YES iff a path is `.be` metadata, and turn a scan abs path into a relative slice.
+ -  `SNIFFFAIL`/`SNIFFDRTY`/`SNIFFOVRL`/`SNIFFNOFF`/`CLOCKBAD` — failure, dirty, overlay-refusal, non-FF, clock-bad.
 
-Every sniff command checks `now ≥ last_log_ts` on entry and
-refuses with `CLOCKBAD` if the system clock has moved backwards.
-One ts is reserved per command, shared by every row + file
-stamp it writes.
+###  AT.h — the `.be/wtlog` ULOG facade
 
-## Change-set at commit time
+Every read/write of the worktree log goes through `SNIFFAt…`: append a row, classify a file by its mtime stamp, find the baseline / cur-tip row, and materialise the wt as a sortable ULOG stream. The stamp-set is the attribution mechanism.
 
-For each candidate path, look up the on-disk mtime in the ULOG:
+ -  `SNIFFAtAppend`/`SNIFFAtAppendAt` — append one row at `RONNow()` or an explicit ts (fresh stampers need it).
+ -  `SNIFFAtVerbGet`/`Post`/`Patch`/`Put`/`Delete`/`Mod`/`Repo` (`VerbOf`) — cached ron60 verbs; `VerbOf` drains a name.
+ -  `SNIFFAtBaseline`/`AtCurTip`/`AtBaselineTreeSha` — pick the latest `get`/`post`/`patch` row, resolve to a tree sha.
+ -  `SNIFFAtRepo`/`AtTailOf`/`AtAnchorRef`/`WtRepoAnchor` — read row 0, compose the `--at` tail, write a one-row anchor.
+ -  `SNIFFAtKnown`/`AtRowAtTs`/`AtQueryFirstSha` — per-file: mtime in stamp-set, the owning row, sha from a baseline URI.
+ -  `SNIFFAtPatchChain`/`AtPatchEntries`/`sniff_pe` — collect the in-scope `patch` rows' `theirs` shas, with scope + flag.
+ -  `SNIFFAtLastPostTs`/`AtPatchFloorTs`/`AtScanPutDelete` — the commit-scope floors + the scan of staged rows since post.
+ -  `SNIFFAtScanDirty`/`CheckClock`/`AtNow`/`AtStampPath` — walk unattributed files, the clock guard, sampler + stamp writer.
+ -  `SNIFFWtULog`/`AtResolveRelativeURI`/`AtPathBytes` — materialise the wt stream, pre-resolve `?./X`, pick path.
 
-| `mtime` lookup       | Selective (any put/delete in scope) | Implicit |
-|----------------------|------------------------------|----------|
-| `< last_get_ts`      | KEEP (untouched since reset) | KEEP |
-| `get` / `post` row   | KEEP (baseline content)      | KEEP |
-| `patch` row          | REWRITE (merged bytes)       | REWRITE (merged bytes) |
-| `put` row            | REWRITE (current bytes)      | REWRITE (current bytes) |
-| ∉ stamp-set          | ignore unless explicit `put` named it (warn if so; current bytes win) | REWRITE (auto-stage) |
-| `delete <path>` row  | DROP (file already unlinked at `be delete` time) | DROP |
+###  CLASS.h — baseline ⊕ worktree path classifier
 
-First parent = `ours` (cur's prior tip), per https://replicated.wiki/html/wiki/Invariants.html Invariant 2.
-Additional parents and foster headers come from in-scope `patch`
-rows whose URIs name absorbed sha(s) via `&<theirs>`; `picked`
-trailers come from cherry-pick rows.  Path-scoped `patch` rows
-contribute their merged bytes but no header.  Cross-branch
-deduplication uses foster/parent reachability plus patch-id
-matching as a safety net (`graf/REBASE.c:GRAFPatchId`).
+The read-only chokepoint for "is this path tracked / untracked / on disk / both?". It heap-merges the baseline-tree and wt streams through `SNIFFMergeWalk`, one step per distinct path — the same merge POST commits through. `be`, `be ls:`, spot read it.
 
-### Boundaries in `.be/wtlog`
+ -  `SNIFFClassify`/`class_cb`/`class_step` — drive the merge and fan each path with its baseline / wt / staged records.
+ -  `class_kind` (`BASE_ONLY`/`WT_ONLY`/`BOTH`) — base vs wt presence for the step.
+ -  `CLASSWtEqBase` — YES iff the on-disk bytes hash to the baseline blob sha; the touched-unchanged test.
+ -  `CLASSWtState`/`class_wt_state` (`CLEAN`/`PATCHED`/`MODIFIED`) — truth for `BOTH` (DIS-023).
 
-  * **pd boundary** = most recent `get` *or* `post` row.  `put` /
-    `delete` rows after this are in scope.
-  * **patch boundary** = most recent `get` *or* commit-all `post`.
-    `patch` rows after this are in scope.
+##  Mutating verbs
 
-A `post` row is commit-all iff no put/delete rows lie between its
-own pd boundary and itself.  Detected on the fly during a forward
-scan; no new ULOG verb required.
+###  GET.h — checkout
 
-## Headers
+`be get` resolves a baseline tree, two-input-merges it against the target to classify each path, refuses on dirty ∩ change, materialises, prunes, appends one `get` row. Trunk-state `?#<sha>` (committable) vs DETACHED `?<sha>` was fixed in GET-023/024.
 
-| Header | Role |
-|--------|------|
-| SNIFF.h | Singleton state (open/close, ULOG handle), `SNIFFFullpath` path joiner. |
-| AT.h | ULOG façade: verb constants (`SNIFFAtVerbGet/Post/Patch/Put/Delete`), append (`SNIFFAtAppend`, `SNIFFAtAppendAt`), baseline/post-ts/scan lookups (`SNIFFAtBaseline`, `SNIFFAtLastPostTs`, `SNIFFAtScanPutDelete`), stamp I/O (`SNIFFAtNow`, `SNIFFAtStampPath`, `SNIFFAtOfTimespec`, `SNIFFAtKnown`).  Wt path enumeration: `SNIFFWtListPaths` (sorted via `FILEScanSorted` + `FILEentryZ`, mirrors `KEEPTreeListLeaves` shape — `(paths, kinds)` ready to feed `KEEPu8ssDrain`). |
-| GET.h | Checkout: resolve baseline tree from latest get/post/patch row, run a 2-input merge (`KEEPTreeListLeaves` + `KEEPu8ssDrain`) against the target tree to classify each path as no-op overlay / real change / add / delete; refuse on dirty ∩ real-change.  Then walk target via keeper → materialise files (skipping no-op overlays so dirty wt content is preserved), futimens every write to a shared ts.  Prune: drain the merge's clean-baseline-only list, unlinking each entry — no wt scan, no path-bitmap.  Finally append one `get` row.  Flags (parked in the SNIFF singleton by `sniff/SNIFF.cli.c` after `SNIFFOpen`): `--force` overwrites dirty tracked bytes without weave-merge and bypasses the no-baseline overlay refusal; `--prune` runs an extra wt-vs-target merge-walk (`get_prune_untracked`) and unlinks every wt-only path (gitignored survive — `.gitignore` is re-loaded post-checkout so freshly added rules apply). |
-| PUT.h | `put <path>` — one row per URI, no pack I/O, no tree work.  Move form `put <old>#<new>` performs `rename(2)` and writes one `put <old>#<new>` row; bare `be put` also auto-pairs `mis` + `unk` files by blob sha and emits the same row shape (refuses `PUTAMBIG` on >1 candidate either way).  See https://replicated.wiki/html/wiki/PUT.html §PUT "Move form" and `sniff/AT.md` §"Move-form put rows". |
-| DEL.h | `delete <path>` — mirror of PUT. |
-| POST.h | Commit: resolve baseline URI to a tree sha; classify per-path via a 2-input merge (`KEEPTreeListLeaves` baseline ↔ `SNIFFWtListPaths` wt) through `KEEPu8ssDrain`; ULOG put/delete rows layered on top.  Compute change-set per the rules above, pre-hash blobs, build dirty-spine trees, emit one pack `commit → trees → blobs`, advance keeper REFS, unlink explicit-deletes, append `post` row, stamp surviving files.  `POSTPromote` (no-msg `be post ?<X>`) routes per https://replicated.wiki/html/wiki/POST.html §POST: `?..` upstream auto-sync, `?./fix` promote-into-child, `?./newleaf` create-on-miss, `?<absolute>` peer/upstream promote, `?<absolute>/<newleaf>` create-leaf-under-existing (rebase cur's stack onto absolute parent), `?<absolute>/` trailing-slash basename reuse (rewrite to `?<absolute>/<basename(cur)>`) — operates on REFS via `REFSCompareAndAppend` + cascade walker.  All branches share one flat object pool, so promote moves no objects (no cross-shard pack copy): it is purely a REFS append.  Branch drop is likewise REFS-only (a tombstone); the dropped objects linger for epoch-based GC.  DIS-031: provenance/message are decided HERE, not at PATCH — a NAMED patch row → `picked`; a branch-sourced row → `parent` (default) or `foster` when the post fragment carries a trailing `!` (the forget modifier, surfaced as `--forget`).  An empty fragment reuses the absorbed commit's subject, text supplies a new one; `be post!` (verb-token bang, aliased to `--force` in CLIParse) commits through conflict markers; a commit message may not end in `!` (POSTBANG). |
-| PATCH.h | 3-way wt merge via graf with `base = tree(arg.fork_commit) = LCA(arg_parent_tip, arg_tip)`, `ours = cur.tip`, `theirs = arg.tip`; `refuse_if_dirty` is a wt-scan against the stamp-set.  DIS-030: `PATCHShape` is now a SCOPE-only classifier — `?br` = NEXT (one next commit), `?br!` = WHOLE (whole branch; trailing `!` lexed by URILexer as a query sub-delim), `#sha` = NAMED (one named commit).  The default flipped: bare `?br` was a whole-stack squash, now it absorbs ONE commit.  On success appends a `patch` row recording scope + the named-slot: `?<sha>` (next), `?<sha>!` (whole), `#<sha>` (named).  Provenance + message moved entirely to POST (DIS-031): a query-slot sha → `parent`/`foster`; a fragment-slot sha → `picked` (see https://replicated.wiki/html/wiki/PATCH.html §PATCH). |
-| SUBS.h | Submodule plumbing.  Pure helpers: `SubBasename` (URL → project basename for default `.be/<basename>/` keying); `SubsParse`/`SubsParseFind` (`.gitmodules` INI drain); `SubsSynth` (POST-side emitter); `SubIsMount`/`SubReadTip` (read-only probes against a sub mount's secondary-wt `.be` file).  Driver: `SubMount` fetches a sub via `WIREFetchAll`, writes the secondary-wt anchor, and spawns `sniff get <hex>` with cwd in the mount.  SUBS-020: `SubMount` picks the sub fetch SOURCE by parent kind — a beagle parent (in-flight/REFS/local-store, `subs_recover_locator` + `is_beagle`) sources from the same peer; a git parent ending in `.git` uses the declared `.gitmodules` URL as-is; a git parent NOT ending in `.git` resolves the declared URL relative to the parent URI (git-style directory base, `subs_candidate_git_rel`) and tries that first — every candidate validated by gitlink-pin presence (`subs_pin_present`), the raw `.gitmodules` URL always the final fallback.  See MODULES.plan.md §Storage layout. |
+ -  `GETCheckout` — the core checkout: walk a commit's tree by sha prefix into the wt, stamping each write.
+ -  `SNIFFGetURI`/`SNIFFGetSummary`/`SNIFFCheckout` — dispatch a `be get` shape; bare `be get` prints tips; `checkout <hex>`.
+ -  `GETStatusCommitDiff`/`GETLocalBranchTip` — `be status` ahead/behind: emit one `commit:?<sha>` per differing commit.
 
-## CLI (`sniff`)
+###  POST.h — commit & promote
 
-| Command | Effect |
-|---------|--------|
-| `sniff get <hex>` | Checkout commit (alias `checkout`) |
-| `sniff put [files]` | Append `put <path>` rows (no-op without args) |
-| `sniff delete [files]` | Append `delete <path>` rows (no-op without args) |
-| `sniff post -m <msg>` | Commit (alias `commit`).  Auto-selects change-set per the rules above. |
-| `sniff patch ?<ref>` | 3-way merge into wt |
-| `sniff status` | List mtime-dirty files (M) |
-| `sniff list` | List keeper-interned paths |
-| `sniff watch` | Start the inotify daemon (fork, pidfile at `.be/sniff.pid`).  Appends one `mod <relpath>` row to `.be/wtlog` for every file whose mtime leaves the stamp-set.  Dedup'd per-path so repeated edits to the same file share one row until a commit stamps it clean. |
-| `sniff stop` | Stop the watch daemon |
+Two phases: commit staged/dirty content as one single-parent commit on cur (selective vs commit-all, DIS-010), then optionally ff-or-rebase-promote onto a named branch. Detached wts refuse (DIS-009); provenance is decided HERE, not at PATCH (DIS-031).
 
-Flags: `-m <msg>` commit message, `--author <who>` author string.
+ -  `POSTCommit` — the commit path: classify, pre-hash, build trees, emit one pack, advance REFS, stamp, append `post`.
+ -  `POSTPromote`/`POSTResolveBranchTip` — no-msg `be post ?<X>`: route shapes to a REFS-only promote; resolve a tip.
+ -  `POSTPatchDefaults`/`POSTPrintStatus` — compose the default message/author from `patch` rows, and the dry-run print.
+ -  `POSTFpChainTo`/`POST_MIG_MAX` — first-parent chain walker used by cross-shard FF migration and PUT's ref reset.
+ -  `POSTDET`/`NONE`/`CFLCT`/`NOFF`/`BANG`/`NOMSG`/`NOBRANCH` — detached, none, conflict, non-FF, `!`, no-msg, no-branch.
 
-## On-disk layout
+###  PUT.h, DEL.h — stage & ref-write
 
-Per worktree (at the wt root):
+PUT and DELETE are append-only intent: one `put`/`delete` row per URI, no pack/tree work — POST resolves the tree at commit time. The branch-form of each also writes a REFS row directly.
 
-| Path | Format |
-|------|--------|
-| `.be/wtlog` | `<ron60-ts>\t<verb>\t<uri>\n` — see `dog/ULOG.md`.  Row 0 is a `repo` anchor whose `file://` URI names the store.  Subsequent rows are `get`/`post`/`patch`/`put`/`delete`. |
-| `.be/sniff.pid` | Watch daemon PID (if `sniff watch` is running; dead weight in the ULOG-only model and may be retired). |
+ -  `PUTStage`/`DELStage` — append one `put` / `delete` row per URI (path-form, incl. move `put <old>#<new>`, auto-pair).
+ -  `PUTCreateBranch`/`PUTSetBranch`/`PUTSetLabel` — branch-form: label at tip, set a ref OUTRIGHT, append a row.
+ -  `DELBranch` — drop a label via a tombstone REFS row; refuses on active descendants (unless `recursive`) or the wt's own.
+ -  `PUTAMBIG`/`PUTDUP`/`PUTNOSRC`/`PUTDSTBAD`/`PUTNODIR`/`PUTMVMETA`/`PUTNONE`/`DELDIRTY` — auto-pair / move errors.
 
-Nothing else.  The store (`.be/`) is the keeper's; sniff never
-writes there directly — it hands objects to keeper via `KEEPPackFeed`.
+###  PATCH.h — 3-way worktree merge
 
-## Tests
+`be patch ?<target>` runs a graf 3-way merge (`base=LCA`, `ours=cur.tip`, `theirs=target`) and writes merged bytes to disk as staged content — no commit; a later `be post` picks it up. The URI now selects only SCOPE (DIS-030); provenance moved to POST.
 
-C (`test/SNIFF.c`):
+ -  `PATCHApply`/`PATCHApplyFile` — apply a whole-wt or single-file 3-way merge, writing a `patch` row + scope.
+ -  `PATCHShape`/`SCOPE_NEXT`/`SCOPE_WHOLE`/`SCOPE_NAMED` — classify: `?br` one commit, `?br!` whole, `#sha` named.
+ -  `SNIFFHasConflictMarker` — YES on a complete ours/base/theirs conflict-marker triple (POST + PATCH classifier).
+ -  `PATCHCFLCT`/`DIRTY`/`URELT`/`PATCHBUSY`/`PATCHDET`/`PATCHFAIL` — conflict, dirty, no-ancestor, busy, detached.
 
-| Test | What |
-|------|------|
-| `SNIFFAtHelpers` | Verb constants are distinct; empty-log invariants; seeded-log baseline pick (most recent get/post/patch with multi-hash fragment recognised); stamp-set membership; last-post-ts lookup; `SNIFFAtScanPutDelete` forward-scan across different floors. |
-| `SNIFFCheckoutCommit` | Hand-built initial commit → `GETCheckout` → modify file → `POSTCommit` produces a new commit object keeper can retrieve (verifies the full GET + POST integration on the ULOG-only path). |
+##  Read verbs
 
-Scripts:
+###  CAT.h, LS.h — projectors
 
-| Script | Scope |
-|--------|-------|
-| `test/workflow.sh` (`SNIFFworkflow`) | The 6 canonical scenarios against the `sniff` CLI: initial post, get, accumulating put+post, implicit all-dirty via bare post, explicit delete, implicit-delete via vanished file. |
-| `../beagle/test/workflow.sh` (`BEworkflow`) | Same scenarios through the `be` dispatcher — covers keeper + spot + graf pipeline wiring. |
-| `../beagle/test/history.sh` (`BEhistory`) | Three tagged commits with a delete and an add, then round-trip every tag through `be get` and verify files appear and disappear.  This is the regression that motivated the rewrite — the old per-path cache incorrectly re-added deleted files across processes; mtime attribution fixes it architecturally. |
+Read-only producers that emit `HUNK_TLV` records (presentation is dog/HUNK's job). `cat:` shows one file with token-diff hili vs a baseline; `ls:`/`lsr:` list the wt with one status hunk per entry.
 
-## Dependencies
+ -  `SNIFFCat` — emit the wt file as one hunk, token-diffed (`I`/`D`/` `) against the baseline (or an explicit `?ref`).
+ -  `SNIFFLs`/`SNIFFLsr` — one-level (subdirs → `dir`) and recursive worktree status listings via `SNIFFClassify`.
+ -  `SNIFFLsBufsAcquire` — acquire the `ls:` one-level dedup buffer; exposed only for the leak-repro test.
 
-Links `keeplib`, `gitcompat`, `dog`, `abc-core`.  Uses `abc/FSW` for
-inotify in the `watch` daemon.
+##  Submodules
+
+###  SUBS.h — gitlink / `.gitmodules` plumbing
+
+Pure slice helpers plus the one driver GET calls per `160000` gitlink: parse/synthesise `.gitmodules`, derive a sub store dir, probe a mount, fetch+anchor+`be get` a sub. SUBS-020 picks the fetch source by parent kind.
+
+ -  `SNIFFSubBasename`/`SubsParse`/`SubsParseFind`/`SubsSynth` — URL → basename, `.gitmodules` drain, the POST-side emitter.
+ -  `SNIFFSubMount` — the driver: resolve the sub URL, write the `.be` anchor, fork `be get <url>#<hex>` in the mount.
+ -  `SNIFFSubSrcEndsGit`/`SubCandidateGitRel` — the `.git`-parent discriminator + the relative-URL resolver.
+ -  `SNIFFSubIsMount`/`SubReadTip` — read-only probes: is a sub mounted here, read its commit-tip sha for POST's gitlink.
+
+##  Watcher
+
+###  WATCH.h — inotify daemon
+
+A coarse advisory daemon: one `mod <dir/>` ULOG row per directory holding dirty files since the latest baseline (POST still scans authoritatively). Per-baseline dedup folds repeated edits.
+
+ -  `SNIFFWatch`/`SNIFFWatchStop` — fork the daemon (pidfile `.be/sniff.pid`, runs to SIGTERM), stop it (no-op absent).
+
+[AT.md]: ./AT.md
+[STAGE.md]: ./STAGE.md
