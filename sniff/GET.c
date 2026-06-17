@@ -1482,6 +1482,11 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     {
         uri urow = {};
         a_pad(u8, qbuf, 128);
+        //  GET-025: record the RESOLVED full 40-char sha, never the raw
+        //  input `hex`.  A short hashlet (`?#<short>`) recorded verbatim
+        //  left the baseline resolver (40-char only) reading EMPTY (whole
+        //  tree `new`) and the keeper-tip append silently rejected.
+        a_sha1hex(tgt_hex, &tgt_commit_sha);
         //  Row-shape decision (AT.md §"Row vocabulary"):
         //    * detached `?<40hex>` (source len 41) → keep the sha in the
         //      QUERY, leave the fragment EMPTY: `?<sha>`.  Turning this
@@ -1502,20 +1507,16 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         }
         if (detached) {
             //  sha → query slot, fragment stays empty.
-            a_dup(u8c, h, hex);
-            urow.query[0] = h[0];
-            urow.query[1] = h[1];
+            urow.query[0] = tgt_hex[0];
+            urow.query[1] = tgt_hex[1];
         } else {
             {
                 a_dup(u8c, q, u8bData(qbuf));
                 urow.query[0] = q[0];
                 urow.query[1] = q[1];
             }
-            {
-                a_dup(u8c, h, hex);
-                urow.fragment[0] = h[0];
-                urow.fragment[1] = h[1];
-            }
+            urow.fragment[0] = tgt_hex[0];
+            urow.fragment[1] = tgt_hex[1];
         }
         ron60 verb = SNIFFAtVerbGet();
         ok64 ar = SNIFFAtAppendAt(ctx.ts, verb, &urow);
@@ -1549,7 +1550,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
                 u8bFeed(key_buf, ref_q);
             }
             a_dup(u8c, key_s, u8bData(key_buf));
-            try(REFSAppendVerb, $path(keepdir), REFSVerbPost(), key_s, hex);
+            try(REFSAppendVerb, $path(keepdir), REFSVerbPost(), key_s, tgt_hex);
         }
         __ = OK;  //  explicit non-fatal — see comment above
     }

@@ -125,3 +125,24 @@ grep -qE '^sniff: commit [0-9a-f]{40}$' 05.post.err || {
     cat 05.post.err >&2
     exit 1
 }
+
+# --- 6. GET-025: `be get ?#<SHORT sha>` records the FULL 40-char tip --
+#  A short hashlet must be EXPANDED to the resolved 40-char sha when the
+#  cur-tip row is recorded.  Pre-fix the raw input went into the row
+#  (`?#<short>`), so the baseline resolver (40-char only) read EMPTY —
+#  whole tree `new`, keeper-tip append silently rejected, `be head` stuck.
+SHORT=$(printf '%s' "$SHA" | cut -c1-8)
+"$BE" get "?#$SHORT" > 06.get.err 2>&1
+ROW=$(tail -1 .be/wtlog | cut -f3)
+[ "$ROW" = "?#$SHA" ] || {
+    echo "FAIL: GET-025 ?#<short> must expand to full '?#$SHA', got '$ROW'" >&2
+    exit 1
+}
+sleep 0.02; echo "v3-short" > x.txt
+"$BE" put x.txt > /dev/null 2>&1
+"$BE" post '#t3' > 06.post.err 2>&1
+grep -qE '^sniff: commit [0-9a-f]{40}$' 06.post.err || {
+    echo "FAIL: GET-025 short-sha trunk-state POST should have committed" >&2
+    cat 06.post.err >&2
+    exit 1
+}

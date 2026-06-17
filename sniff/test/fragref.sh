@@ -93,14 +93,15 @@ be get "?#$C1" >/dev/null 2>&1 || fail "?#<full-sha> should resolve"
 note "?#<full C1> correctly pinned C1"
 
 # --- VALID: 8-char hashlet fragment pins the same commit --------------
-#  (GETCheckout records the hashlet verbatim in the wtlog, so compare
-#  against the hashlet prefix — it must be C1's prefix, not C3's.)
-echo "=== 2. ?#<hashlet C1>  -> pins C1's hashlet ==="
+#  GET-025: GETCheckout records the RESOLVED full 40-char sha in the
+#  wtlog (a short hashlet verbatim left the baseline resolver reading
+#  EMPTY), so the hashlet get must land on C1's FULL sha, not C3.
+echo "=== 2. ?#<hashlet C1>  -> pins C1 (full sha) ==="
 be get "?#$C3" >/dev/null 2>&1 || fail "reset to C3 failed"
 be get "?#$H1" >/dev/null 2>&1 || fail "?#<hashlet> should resolve"
-[ "$(cur_pin)" = "$H1" ] \
-    || fail "?#<hashlet C1> landed on $(cur_pin), want $H1"
-note "?#<hashlet C1> correctly pinned C1 ($H1)"
+[ "$(cur_pin)" = "$C1" ] \
+    || fail "?#<hashlet C1> landed on $(cur_pin), want full $C1"
+note "?#<hashlet C1> correctly pinned C1 (full $C1)"
 
 # --- VALID: full-sha in the QUERY (canonical detached form) -----------
 echo "=== 3. ?<full C2>  (sha in query) -> pins C2 ==="
