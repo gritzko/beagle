@@ -710,8 +710,8 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, ron60 ts) {
             end_p = slash;
         }
     }
-    if (dropped > 0)
-        fprintf(stderr, "sniff: pruned %u file(s)\n", dropped);
+    //if (dropped > 0)
+    //    fprintf(stderr, "sniff: pruned %u file(s)\n", dropped);
     done;
 }
 
@@ -734,7 +734,8 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
     u32 merged = 0, failed = 0;
     a_dup(u8c, scan, merges);
     for (;;) {
-        ulogrec rec = {};
+        
+	ulogrec rec = {};
         ok64 dr = ULOGu8sDrain(scan, &rec);
         if (dr == NODATA) break;
         if (dr != OK) continue;                  // malformed — skip
@@ -1678,9 +1679,9 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         prune_ctx pctx = {.dropped = 0};
         u8csMv(pctx.reporoot, reporoot);
         (void)SNIFFClassify(prune_cb, &pctx);
-        if (pctx.dropped > 0)
-            fprintf(stderr,
-                    "sniff: pruned %u file(s)\n", pctx.dropped);
+        //if (pctx.dropped > 0)
+        //    fprintf(stderr,
+        //            "sniff: pruned %u file(s)\n", pctx.dropped);
     }
 
     //  Per-module flush: emit the one accumulated table hunk (--tlv) or

@@ -1,7 +1,6 @@
 # ABC refactoring policies
 
-Bullet-form one-pager for converting raw C into ABC idioms. References
-the canonical docs — read them for full coverage:
+Any use of void* with no typed wrappers is suspicious. Any use of pointers to ranges (no slice) is risky. Any offset calculation that does not go into bounds-checked typed wrapper is suspicious. This doc is a bullet-form one-pager for converting raw C into ABC idioms. References the canonical docs — read them for full coverage:
 
 - `CLAUDE.md` — coding guidelines (esp. §1, §5, §10, §16)
 - `abc/S.md` — slice types and typed-function table
@@ -11,12 +10,9 @@ the canonical docs — read them for full coverage:
 
 ##  ok64 error codes
 
-All functions that can fail must return ok64. That applies to anything
-that is not a smallish and inlinable calculation. Those functions go
-to .c files where PRO.h macros are normally used for calls/checks.
-
-PRO.h flow macros (`.c` only — never in a header, CLAUDE.md §6; see
-also §"PRO.h flow" below):
+All functions that can fail must return ok64. Smallish and inlinable 
+calculations can go to .h file, return any value. Anything failable
+returns ok64, uses PRO.h macros, lives in .c files for calls/checks.
 
 - **`sane(c)`** — opens the frame: declares the implicit `__` carrier
   (ok64, starts `OK`) and asserts precondition `c`. Required before any
@@ -35,6 +31,10 @@ also §"PRO.h flow" below):
 
 ## Slice / buffer primitives
 
+Slices replace pointer-arithmetic with typed, explicit, bounds-checked
+logic. Prefer typed slices and typed template functions for anything
+non-typed (void\*, T\*, untyped slice macros).
+
 - **Default writes — `sFeed` / `sFeed1`** (all-or-nothing, returns
   `SNOROOM` if input doesn't fit). Examples: `u64sFeed1(slice, val)`,
   `u8sFeed(into, from)`.
@@ -46,6 +46,7 @@ also §"PRO.h flow" below):
   ptr + len;`.
 - **Stack buffer — `a_pad(T, name, len)`**, not raw `T name[len]`.
 - **C-string-literal slice — `a_cstr(name, "lit")`**.
+- **Raw bytes** -- `a_raw(alias, val)`, `a_rawc(alias, val)`
 - **Iteration — `$for` / `$rof` / `$eat`**, `sUsed1` / `sUsed`,
   `sShed` (S.md). No raw `*p++`, `ptr + N`, `end - start`.
 - **Typed > generic** (CLAUDE.md §1, S.md): `u8csLen` over `$len`,

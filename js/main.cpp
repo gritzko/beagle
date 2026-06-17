@@ -92,6 +92,8 @@ static void JABCInstallModules() {
   JABCUriInstall();   //  URI class over abc/URI
   JABCCodecInstall(); //  hex + sha1/sha256 + ron
   JABCAnsiInstall();  //  ansi colour helper (pure JS)
+  JABCPolInstall();   //  poll() event loop over abc/POL (handlers do io.* I/O)
+  JABCNetInstall();   //  net/dgram + Node timers over pol (sockets do io.* I/O)
   JABCRequireInstall(); //  sync CommonJS require() over io.mmap/utf8 (last)
 }
 
@@ -154,6 +156,14 @@ int main(int argc, char** argv) {
     free(script);
   }
 
+  //  Node-like: once the top-level script returns, drive the event loop until
+  //  no fds/timers remain.  pol.run on an already-drained queue is an instant
+  //  no-op, so scripts that never touch net/timers are unaffected.
+  if (rc == 0 && !JABCRun("pol.run(pol.NEVER)")) rc = 1;
+
+  //  Drop the protected pol router refs + free the poll heap while the context
+  //  is still alive (they are JS values).
+  JABCPolUninstall();
   //  Release the context first so GC runs the no-copy deallocators
   //  (FILEUnMap/munmap) while the FILE subsystem is still alive; then tear it
   //  down (FILECloseAll frees FILE_RW).

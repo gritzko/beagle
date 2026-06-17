@@ -27,7 +27,10 @@ include_directories(
 
 # The JS Buf class is embedded in buf.cpp as a raw string literal; no js2c /
 # node codegen step (node is not a build dependency).
-set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp cont.cpp uri.cpp codec.cpp ansi.cpp require.cpp)
+# abc/POL.c (pol) and NET/TCP/UDP.c (net/dgram) are stripped from abc-core
+# (grouped with CURL); compile them straight into jabc for the socket/loop leaves.
+set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp cont.cpp uri.cpp codec.cpp ansi.cpp require.cpp
+    pol.cpp ../abc/POL.c net.cpp ../abc/NET.c ../abc/TCP.c ../abc/UDP.c)
 
 add_executable(jabc ${JABC_SRC})
 target_link_libraries(jabc ${JSC_LIB} dog abc-core ${sodium})
@@ -58,8 +61,10 @@ add_test(NAME JABCrequire COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/require.
 add_test(NAME JABCpack COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/pack.js)
 add_test(NAME JABCulog COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/ulog.js)
 add_test(NAME JABCansi COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/ansi.js)
+add_test(NAME JABCpol COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/pol.js)
+add_test(NAME JABCnet COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/net.js)
 
 # JavaScriptCore leaks lazily-initialised global singletons that LSan flags
 # but are not our leaks; suppress JSC-internal allocations by library name.
-set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit JABChunk JABCuri JABCcodec JABCrequire JABCpack JABCulog JABCansi PROPERTIES
+set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit JABChunk JABCuri JABCcodec JABCrequire JABCpack JABCulog JABCansi JABCpol JABCnet PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
