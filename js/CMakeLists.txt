@@ -50,8 +50,9 @@ add_test(NAME JABCheap COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/heap.js)
 add_test(NAME JABChash COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hash.js)
 add_test(NAME JABCmmap COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/mmap.js)
 add_test(NAME JABCsha COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/sha.js)
+add_test(NAME JABChit COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hit.js)
 
 # JavaScriptCore leaks lazily-initialised global singletons that LSan flags
 # but are not our leaks; suppress JSC-internal allocations by library name.
-set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha PROPERTIES
+set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")

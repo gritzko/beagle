@@ -4,6 +4,7 @@ extern "C" {
 }
 #include "hash.hpp"
 #include "heap.hpp"
+#include "hit.hpp"
 
 //  The container framework: per-(family,lane) prototypes whose verbs are bound
 //  once to the native _heap_*/_hash_* leaves, plus the all-mmap constructors
@@ -53,6 +54,9 @@ static const char* JABC_CONT_JS = R"JS(
         ? function () { return this.buffer.watermark ? [this[0], this[1]] : undefined; }
         : function () { return this.buffer.watermark ? this[0] : undefined; };
       Object.defineProperty(p, "size", { get() { return this.buffer.watermark; } });
+      p.lane = lane;                                   // type tag for sort/merge
+      const sort = abc["_sort_" + lane];               // QSORTx leaf, by lane Z
+      p.sort = function () { sort(this, this.buffer.watermark); return this; };
       PROTO["HEAP" + lane] = p;
     }
     //  HASH: open-addressed table over the whole (zeroed, pow2) region
@@ -111,7 +115,48 @@ static const char* JABC_CONT_JS = R"JS(
   };
   abc.over = (family, ta) => build(family,
     (ta instanceof Uint8Array) ? ta : new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength));
-  abc.close = (c) => { try { io._msync(c); } catch (e) {} c.buffer._map = null; };
+
+  //  book: a file-backed output sized to an upper bound (cheap — sparse), to
+  //  be filled (e.g. by merge) and trimmed to the live size on close.
+  abc.book = (family, path, slots) => {
+    const c = build(family, io._mmap(path, "c", bytes(family, slots)));
+    c.buffer._path = path;
+    return c;
+  };
+  abc.close = (c) => {
+    try { io._msync(c); } catch (e) {}
+    const b = c.buffer;
+    if (b._path) {                                  // booked: trim file to live size
+      const M = LANE[c.lane];
+      io._truncate(b._path, (c.size | 0) * M.w * M.A.BYTES_PER_ELEMENT);
+    }
+    b._map = null;
+  };
+
+  //  HIT bulk ops over SORTED runs.  Inputs are containers (each carries its
+  //  .lane and .size); the lane is read off the operands (no type arg), all
+  //  must agree.  Without `out` a fresh lane-typed run is returned; with `out`
+  //  (a container sized to >= Sum of inputs) the result is written in place and
+  //  out.size is set, so it can be trimmed on close (abc.book) and re-merged.
+  const kway = (pfx, op, inputs, out) => {
+    if (!inputs.length) throw "abc." + op + ": no inputs";
+    const lane = inputs[0].lane;
+    if (!lane) throw "abc." + op + ": inputs need a lane (use abc.ram/over)";
+    const M = LANE[lane];
+    const runs = inputs.map((c) => {
+      if (c.lane !== lane) throw "abc." + op + ": lane mismatch";
+      return c.subarray(0, (c.size | 0) * M.w);     // live region only
+    });
+    if (out) {
+      if (out.lane !== lane) throw "abc." + op + ": out lane mismatch";
+      out.buffer.watermark = abc[pfx + lane](runs, out);
+      return out;
+    }
+    const u8 = abc[pfx + lane](runs);
+    return new M.A(u8.buffer, u8.byteOffset, (u8.byteLength / M.A.BYTES_PER_ELEMENT) | 0);
+  };
+  abc.merge = (inputs, out) => kway("_merge_", "merge", inputs, out);
+  abc.intersect = (inputs, out) => kway("_isect_", "intersect", inputs, out);
 })(this);
 )JS";
 
@@ -119,6 +164,7 @@ ok64 JABCContInstall() {
   JABC_API_OBJECT(abc);
   JABCHeapInstall(abc);
   JABCHashInstall(abc);
+  JABCHitInstall(abc);
   JABCExecute(JABC_CONT_JS);
   return OK;
 }

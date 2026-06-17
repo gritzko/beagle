@@ -261,6 +261,28 @@ static JABC_FN(JABCioMsync) {
   JABC_UNDEF;
 }
 
+//  io._truncate(path, bytes) -> resize a file on disk (trim a booked/over-
+//  allocated output to its live size).  Reopens by path + ftruncate so no
+//  persistent fd/descriptor is held — reconstructed per call.
+static JABC_FN(JABCioTruncate) {
+  if (argc < 2) JABC_THROW("io._truncate(path, bytes)");
+  a_pad(u8, path, FILE_PATH_MAX_LEN);
+  if (JABCPath(path, ctx, args[0], exception) != OK) {
+    if (*exception) return JSValueMakeUndefined(ctx);
+    JABC_THROW("io._truncate(): bad path");
+  }
+  double db = JSValueToNumber(ctx, args[1], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  if (db < 0) JABC_THROW("io._truncate(): negative size");
+  int fd = -1;
+  if (FILEOpen(&fd, $path(path), O_RDWR) != OK || fd < 0)
+    JABC_THROW(strerror(errno));
+  ok64 o = FILEResize(&fd, (size_t)db);
+  FILEClose(&fd);
+  if (o != OK) JABC_THROW(strerror(errno));
+  JABC_UNDEF;
+}
+
 //  io.log(...args) -> write strings / typed arrays to stderr + newline.
 static JABC_FN(JABCioLog) {
   for (size_t i = 0; i < argc; i++) {
@@ -308,6 +330,7 @@ ok64 JABCioInstall() {
   JABC_API_FN(io, "_mmap", JABCioMmap);
   JABC_API_FN(io, "_ram", JABCioRam);
   JABC_API_FN(io, "_msync", JABCioMsync);
+  JABC_API_FN(io, "_truncate", JABCioTruncate);
   JABC_API_FN(io, "log", JABCioLog);
   return OK;
 }
