@@ -73,6 +73,7 @@ void JABCReport(JSValueRef exception);
 ok64 JABCutf8Install();
 ok64 JABCioInstall();
 ok64 JABCbufInstall();
+ok64 JABCContInstall();
 ok64 JABCioUninstall();
 
 #endif

@@ -207,8 +207,12 @@ static JABC_FN(JABCioMmap) {
     o = FILEMapRO(&buf, $path(path));
   }
   if (o != OK || buf == NULL) JABC_THROW(strerror(errno));
+  //  Expose the WHOLE mapping (DATA + IDLE): a created file has DATA empty and
+  //  everything in IDLE, a mapped existing file has it all in DATA — either
+  //  way the container owns the full region.
+  size_t mlen = u8bDataLen(buf) + u8bIdleLen(buf);
   JSValueRef ta = JSObjectMakeTypedArrayWithBytesNoCopy(
-      ctx, kJSTypedArrayTypeUint8Array, u8bData(buf)[0], u8bDataLen(buf),
+      ctx, kJSTypedArrayTypeUint8Array, u8bData(buf)[0], mlen,
       JABCMapFree, (void*)buf, exception);
   if (*exception || ta == NULL) {
     FILEUnMap(buf);

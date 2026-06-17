@@ -87,7 +87,8 @@ static b8 JABCRun(const char* script) {
 static void JABCInstallModules() {
   JABCutf8Install();
   JABCioInstall();
-  JABCbufInstall();  //  Buf class + constructors layer over utf8/io leaves
+  JABCbufInstall();   //  Buf class + constructors layer over utf8/io leaves
+  JABCContInstall();  //  abc.* containers (HEAP/HASH) layer over io mmap leaves
 }
 
 #define VERSION_BOILERPLATE "jabc v0.1.0\n"

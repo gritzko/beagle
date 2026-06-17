@@ -27,7 +27,7 @@ include_directories(
 
 # The JS Buf class is embedded in buf.cpp as a raw string literal; no js2c /
 # node codegen step (node is not a build dependency).
-set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp)
+set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp cont.cpp)
 
 add_executable(jabc ${JABC_SRC})
 target_link_libraries(jabc ${JSC_LIB} abc)
@@ -44,7 +44,14 @@ add_test(NAME JABCtestCpp COMMAND jabc_test)
 add_test(NAME JABCe2e COMMAND jabc --eval
     "let b=io.buf(16);b.feedStr('hié');if(b.size!==4)throw 'size';if(utf8.Decode(b.data())!=='hié')throw 'roundtrip';if(b.take(1)[0]!==104)throw 'take';if(b.size!==3)throw 'consume'")
 
+# Container bindings (abc.* HEAP/HASH over all lanes) — each .js throws on a
+# failed assertion, which JABCRun turns into a non-zero exit (CTest fails).
+add_test(NAME JABCheap COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/heap.js)
+add_test(NAME JABChash COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hash.js)
+add_test(NAME JABCmmap COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/mmap.js)
+add_test(NAME JABCsha COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/sha.js)
+
 # JavaScriptCore leaks lazily-initialised global singletons that LSan flags
 # but are not our leaks; suppress JSC-internal allocations by library name.
-set_tests_properties(JABCtestCpp JABCe2e PROPERTIES
+set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
