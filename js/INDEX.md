@@ -1,95 +1,38 @@
-#   js — module index
+#   js — JABC (JavaScriptCore bindings) module index
 
-js is JABC, the JavaScriptCore bindings: a thin C++ glue layer running stock `libjavascriptcore` over the abc/POSIX stack (see [README.md]). Rule: *no shared custody* — C holds no JS refs beyond bootstrap roots, JS no C pointers; bulk data crosses as JS-owned `ArrayBuffer` bytes. The unit is [JABC.hpp] plus `.cpp` units registering one JS global each (`io`/`utf8`/`test`); a *binding* is reachable from JS, a *helper* internal C++.
+JABC is a thin, anti-bloat JavaScriptCore binding: stock `libjavascriptcore`, the binding holds no memory and no long-lived JS references. Two entities cross the boundary — buffers (JS-owned `Uint8Array`s wrapped in a `Buf` cursor) and file descriptors (plain `number`s). The native layer is leaf-only (syscalls + typed-array fills + mmap); the cursor logic lives in JS. Rationale in [README.md], the JS-facing surface and the ABC→JS mapping in [API.md].
 
-##  Core & lifecycle
+##  Native modules
 
-###  JABC.hpp — the binding header (macros + prototypes)
+###  JABC.hpp — binding macros + shared decls
 
-The one header every `.cpp` includes: abc C headers in `extern "C"`, then JavaScriptCore and `abc/ABC.hpp` under `using namespace abc`. No classes — macros plus four helper prototypes. `PRO.h` is deliberately NOT included (namespace hygiene).
+`JABC_FN` defines a native callback; `JABC_THROW`/`JABC_UNDEF` are the error/return forms; `JABC_API_OBJECT`/`JABC_API_FN` register a global object / its methods. `JABCBytesOf` is the one boundary touch — a typed array's offset-adjusted backing range as a `u8s` (adds `byteOffset`, NULL-checks a detached buffer).
 
- -  `JABC_CONTEXT`/`JABC_GLOBAL_OBJECT` — the `thread_local` JS global context and its object; the two roots C keeps.
- -  `JABC_FN_DEFINE(fn)` — the fixed JS-callback signature (`ctx,function,self,argc,args[],exception`).
- -  `JABC_FN_THROW(msg)`/`...RETURN_UNDEFINED`/`...CALL(f,…)` — raise a JS `Error`, bail `undefined`, invoke an `ok64` fn.
- -  `JABC_FN_ARG_STRING`/`...ARG_ALLOC_STRING` — pull arg `ndx` into a `u8cs` from a stack or `malloc`'d buffer (checked).
- -  `JABC_API_OBJECT(o)`/`JABC_API_FN(o,n,f)` — create a module object on the global and hang a named native `f` off it.
- -  `JS_MAKE_CLASS`/`JS_ADD_METHOD`/`JS_SET_PROPERTY_RO`/`JS_GET_PROPERTY` — JSC sugar for classes, methods, props.
- -  `JABCutf8bFeedValueRef`/`CopyStringValue`/`JSOfCString` — the live cross-boundary helpers (in `utf8.cpp`).
- -  `JABCExecute`/`JABCReport` — evaluate a script source and pretty-print a JS exception (in `main.cpp`).
- -  `JABCutf8cpMakeValueRef`/`JABCutf8bFeedStringRef` — prototyped here, defined nowhere; dead (Stage-2).
+###  utf8.cpp — text + the bytes helper
 
-###  main.cpp — context lifecycle, module wiring, CLI entry
+ -  `utf8.encodeInto(str, dst)` — encode UTF-8 into a caller-owned `Uint8Array`, return `n`; stops on a code-point boundary (no half multibyte), lone surrogates → U+FFFD.
+ -  `utf8.Decode(u8)` — validate (abc `utf8sValid`/`utf8sDrain32`) then build a JS string via `JSStringCreateWithCharacters` (explicit length, embedded NULs survive).
+ -  `JSOfCString` / `JABCBytesOf` — small JS string from a C string; typed-array range (defined here, shared).
 
-Owns the JS context's birth/death and `main`. `JSInit` creates the context and protects `message`/`stack` roots; install/uninstall bring modules up/down; `JABCExecute`/`Report` run scripts.
+###  io.cpp — fds + read/write + mmap (no `File` object, no custody table)
 
- -  `JSInit`/`JABCClose` — create the global context (+ protect the `message`/`stack` roots) and release on shutdown.
- -  `JABCInstallModules`/`JABCUninstallModules` — install `utf8`/`io`/`test` in order, tear down in reverse.
- -  `JABCExecute(script)` — `JSEvaluateScript` a C-string source, routing any exception to `JABCReport`.
- -  `JABCReport`/`JABCDump`/`JSObjectPropertiesDump` — format a JS exception, dump an object's enumerable props to stderr.
- -  `main` — parse `--version`/`--help`/`--eval`/`<file>`, init, install, run, then `POLLoop(POLNever)` until exit.
+ -  `io.open`/`close`/`sync`/`size`/`resize`/`lock`/`unlock`/`stat` — fd lifecycle over abc `FILE*` (`"r"|"rw"|"c"`).
+ -  `io._read`/`io._write` — one `read`/`write` of a typed array's bytes, return `n` (0 = EOF); the cursor advance is the JS `Buf`'s job.
+ -  `io._mmap` — `FILEMapRO/RW/Create` → `Uint8Array` no-copy, `munmap` on GC (`JABCMapFree`).
+ -  `io._ram` — anonymous `MAP_NORESERVE` mmap → `Uint8Array`, `munmap` on GC (`JABCRamFree`).
+ -  `io._msync` — flush a mapped typed array's pages (raw `msync`, no descriptor lookup).
+ -  `io.log` — write strings / typed arrays to stderr.
 
-##  Modules (JS-visible bindings)
+###  buf.cpp — the `Buf` cursor class + constructors (embedded JS)
 
-###  io.cpp — the `io` global: files, sockets, timers, mmap
+The `Buf` class and the public API are a raw-string-literal JS bundle (no js2c/node). `Buf` wraps a `Uint8Array` + the `PAST|DATA|IDLE` boundaries: `feed`/`feed1`/`feedStr`/`fed` (append), `take`/`skip` (consume), `data`/`idle`/`past` (no-copy views), `shed`/`pop`/`reset`/`shift`/`splice`/`grow`/`msync`. Constructors `io.buf` (heap), `io.ram` (anon mmap), `io.mmap` (file); `io.read`/`write`/`readAll`/`writeAll`/`readv`/`writev` dispatch over `Buf` or a bare `Uint8Array`. `io.book` and native vectored I/O are not wired yet (see Outcome in API/tickets).
 
-The biggest binding surface: the `io` module plus a `File` JSC class. A `File`'s private data points into the static `JS_FILES` array and the slot index IS the fd — so no raw C pointer escapes into JS. Driven by abc's `POL` loop and `FILE`/`TCP`.
+###  main.cpp — context, module install, script runner
 
- -  `JABCioInstall`/`JABCioUninstall` — `POLInit`, allocate `JS_FILES`, define the `File` class, register, eval `io_js`.
- -  `JABCioMakeFileObject`/`FileGetDescriptor`/`CloseFile` — bind fd ↔ `File` via the `JS_FILES` slot; close on teardown.
- -  `JABCioFileWrite`/`JABCioFileRead` — `File.write`/`read` over TypedArray bytes in place, re-arming on `EAGAIN`.
- -  `JABCioStdIn`/`JABCioStdOut`/`JABCioStdErr` — `io.stdIn/Out/Err()`: the cached `File` for fd 0/1/2.
- -  `JABCioNetConnect`/`JABCioNetClose` — `io.connect(url,fn)` opens a non-blocking `TCPConnect`; `close` unprotects.
- -  `JABCioNetOnConnect`/`JABCioNetOnEvent` — poller callbacks that fire the stored callback with `"r"`/`"w"`/`"error"`.
- -  `JABCioTimer`/`JABCioWakeIn`/`JABCioNow` — `io.timer(fn)` via `POLTrackTime`, `io.wakeIn(ms)`, `io.now()` (ms).
- -  `JABCioLog`/`JABCioExit` — `io.log(…)` writes args + newline to stderr; `io.exit()` calls `exit(0)`.
- -  `JABCioFileMap`/`mmap_free` — `io.mmap(path)`: `FILEMapRO`, expose bytes as a no-copy `Uint8Array`; GC `FILEUnMap`s.
- -  `JABCioNetListen`/`JABCioNetAccept`/`JABCioNothing` — registered but stubbed (`listen`/`accept` → `undefined`).
+`main()` maps `ABC_BASS`, builds the context, installs utf8→io→buf, runs `--eval`/script (propagating an uncaught exception to the exit code via `JABCRun`), then releases the context BEFORE `FILECloseAll` so GC deallocators run while the FILE subsystem is alive.
 
-###  utf8.cpp — the `utf8` global + UTF-8 boundary helpers
+##  Tests
 
-Registers `utf8.Encode`/`Decode` (with `en`/`de` aliases) and defines the cross-boundary string helpers the whole layer leans on. Home of the "UTF8/UTF16 mismatch" pain the README flags.
-
- -  `JABCutf8Install`/`JABCutf8Uninstall` — register the `utf8` module (`en`/`Encode`, `de`/`Decode`), cache `UTF8Object`.
- -  `JABCutf8Encode` — `utf8.Encode(string) -> Uint8Array`: copy UTF-8 into a `malloc`'d no-copy TypedArray (incl. NUL).
- -  `JABCutf8Decode` — registered but a stub (returns `undefined`).
- -  `JABCutf8bFeedValueRef`/`JSu8bString` — render a JS value/string into a `u8b` as UTF-8 (NUL trimmed).
- -  `JABCutf8CopyStringValue` — allocate and fill a `u8sp` with a JS string's UTF-8 bytes (used by `File.write`).
- -  `JSOfCString`/`JStringRefToCString`/`JAButf8CreateValue` — C string ↔ JS string; `JSOfCString` makes error messages.
-
-###  test.cpp — the `test` global
-
-A two-line module: create the empty `test` object and eval `test_js`, which hangs `test.is`/`test.run` off it.
-
- -  `JABCtestInstall`/`JABCtestUninstall` — make the `test` global object and run the embedded `test_js` glue.
-
-##  RDX bridge (compiled, not yet wired)
-
-###  convert.cpp — JS value ↔ RDX/TLV (currently unreachable)
-
-Translates JS values into RDX-typed TLV and back. It compiles and links but has NO `Install` and is called from nowhere — the rdx module is commented out in `main.cpp`. Source-only machinery.
-
- -  `JABCu8bImport`/`...ImportString`/`...ImportObject` — recursively serialize a JS value into a `u8b` as RDX TLV.
- -  `JABCrdxExport` — the inverse: read an `rdx` record's last node and emit a JS number, else `fail(NOTIMPLYET)`.
- -  Uses abc's `call`/`done`/`fail` (it includes `PRO.h`) and `TLVu8bInto`/`TLVu8bOuto` over the builder buffer.
-
-##  JS glue & generated blobs
-
-###  io.js, test.js — eval'd glue (the real JS surface)
-
-Hand-written JavaScript eval'd at install time, layering ergonomic JS over the native functions. Most of the JS-visible API lives here.
-
- -  `io.js` — sets `io.stdin/stdout/stderr`, builds a min-heap timer queue on `io.timer`, exposes `io.setTimeout`.
- -  `test.js` — defines `test.is(a,b)` (deep equality, path-tagged) and `test.run()` (the ctest harness).
-
-###  js2c.js — the source-to-blob generator
-
-A Node script (the one build-time node use). Reads a `.js`, escapes it, prints `const char* <name>_js = "…";` — i.e. the `.js.c` blobs.
-
- -  invoked as `node js2c.js <file.js>`; the var name is basename with `.` → `_` (`io.js` → `io_js`).
-
-###  io.js.c, test.js.c — GENERATED string blobs
-
-Build artifacts from `js2c.js`; each is a single `const char*` (`io_js`/`test_js`) consumed by the installers via `JABCExecute`. Do not hand-edit — regenerate from the `.js` source.
-
-[README.md]: ./README.md
-[JABC.hpp]: ./JABC.hpp
+ -  `test/jabc_test.cpp` — table-driven C++ harness over utf8/Buf/io (in-memory rows + pipe + mmap round-trips); exits non-zero on any failed row. Build target `jabc_test`, ctest `JABCtestCpp`.
+ -  ctest `JABCe2e` — the `jabc` binary runs an inline Buf+utf8 round-trip; a failed assertion throws → non-zero exit.
+ -  `lsan.supp` — suppresses JSC-internal singleton leaks by library name.

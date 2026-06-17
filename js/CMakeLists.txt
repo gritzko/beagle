@@ -2,7 +2,6 @@ enable_language(CXX)
 
 if(APPLE)
     find_library(JSC_LIB JavaScriptCore)
-    # macOS: headers are in the framework, no extra include path needed
     set(JSC_INCLUDE_DIR "")
 else()
     find_library(JSC_LIB
@@ -20,22 +19,32 @@ if(NOT JSC_LIB)
     return()
 endif()
 
-
 include_directories(
     ${JSC_INCLUDE_DIR}
     ..
     .
 )
 
-add_executable(jabc
-    main.cpp
-    io.cpp
-    utf8.cpp
-    convert.cpp
-    test.cpp
-    io.js.c
-    test.js.c
-)
-target_link_libraries(jabc ${JSC_LIB} rdx abc)
+# The JS Buf class is embedded in buf.cpp as a raw string literal; no js2c /
+# node codegen step (node is not a build dependency).
+set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp)
 
-add_test(NAME JABCtest COMMAND jabc --eval "test.run()")
+add_executable(jabc ${JABC_SRC})
+target_link_libraries(jabc ${JSC_LIB} abc)
+
+# Table-driven C++ harness over the buf/utf8/io boundary; returns non-zero on
+# any failed row, so CTest fails on a real bug (CLAUDE.md §3).
+add_executable(jabc_test test/jabc_test.cpp io.cpp utf8.cpp buf.cpp)
+target_link_libraries(jabc_test ${JSC_LIB} abc)
+
+add_test(NAME JABCtestCpp COMMAND jabc_test)
+
+# End-to-end: the jabc binary runs an inline Buf+utf8 round-trip; any failed
+# assertion throws, which JABCRun turns into a non-zero exit (CTest fails).
+add_test(NAME JABCe2e COMMAND jabc --eval
+    "let b=io.buf(16);b.feedStr('hié');if(b.size!==4)throw 'size';if(utf8.Decode(b.data())!=='hié')throw 'roundtrip';if(b.take(1)[0]!==104)throw 'take';if(b.size!==3)throw 'consume'")
+
+# JavaScriptCore leaks lazily-initialised global singletons that LSan flags
+# but are not our leaks; suppress JSC-internal allocations by library name.
+set_tests_properties(JABCtestCpp JABCe2e PROPERTIES
+    ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")

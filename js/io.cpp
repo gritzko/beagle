@@ -1,542 +1,314 @@
-#include <math.h>
-#include <poll.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
+#include <errno.h>
 #include <string.h>
-#include <threads.h>
-#include <time.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "JABC.hpp"
-#include "JavaScriptCore/JSBase.h"
-#include "JavaScriptCore/JSObjectRef.h"
-#include "JavaScriptCore/JSStringRef.h"
-#include "JavaScriptCore/JSTypedArray.h"
-#include "JavaScriptCore/JSValueRef.h"
 #include "abc/FILE.h"
+#include "abc/PATH.h"
 
-short io_callback(int fd, poller* p) { return 0; }
-void io_file_finalize(JSObjectRef object) {}
-void io_map_finalize(JSObjectRef object) {}
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
 
-static JSClassRef JABC_IO_FILE_CLASS = NULL;
-static JSClassRef JABC_IO_MAP_CLASS = NULL;
+//  fds are plain numbers; buffers are JS-owned typed arrays.  These are the
+//  leaf syscalls — one native call == one tight C operation over a fd and/or
+//  a typed array's backing memory.  The cursor logic lives in the JS `Buf`
+//  class (buf.js); nothing here holds memory or a JS reference.
 
-static JSStringRef JS_KEY_IO = NULL;
-
-static JSStringRef JS_STATUS_READ = NULL;
-static JSStringRef JS_STATUS_WRITE = NULL;
-static JSStringRef JS_STATUS_READWRITE = NULL;
-static JSStringRef JS_STATUS_ERROR = NULL;
-
-thread_local JSObjectRef* JS_FILES;
-
-JSObjectRef JABCio_STD[3];
-
-JSObjectRef JABCioMakeFileObject(int fd, JSValueRef* exception) {
-    if (fd >= POLMaxFiles()) {
-        *exception = JSOfCString("file descriptor out of bound");
-        return NULL;
-    }
-    JSObjectRef fileObject =
-        JSObjectMake(JABC_CONTEXT, JABC_IO_FILE_CLASS, NULL);
-    // The point of JABC is to hold no C pointers in JS, no JS references in C.
-    // This is a pointer into a static array, so we can do that :)
-    JSObjectSetPrivate(fileObject, JS_FILES + fd);
-    // Again, a file object gets filed into a static array.
-    JS_FILES[fd] = fileObject;
-    JSValueProtect(JABC_CONTEXT, fileObject);
-    return fileObject;
+static int JABCInt(JSContextRef ctx, JSValueRef v, JSValueRef* exception) {
+  return (int)JSValueToNumber(ctx, v, exception);
 }
 
-int JABCioFileGetDescriptor(JSContextRef ctx, JSObjectRef self,
-                            JSValueRef* exception) {
-    JSObjectRef* ptr = (JSObjectRef*)JSObjectGetPrivate(self);
-    if (ptr == NULL || ptr < JS_FILES || ptr >= JS_FILES + POLMaxFiles()) {
-        *exception = JSOfCString("read(): not a file");
-        return -1;
-    } else {
-        ptrdiff_t d = ptr - JS_FILES;
-        return (int)d;
-    }
-}
-
-void JABCioCloseFile(int fd) {
-    JSObjectRef self = JS_FILES[fd];
-    if (self != NULL) {
-        JSValueUnprotect(JABC_CONTEXT, self);
-        JS_FILES[fd] = NULL;
-    }
-    POLIgnoreEvents(fd);  // only sockets, but who cares
-    close(fd);
-}
-
-#define JABCCall(n)                                                        \
-    JSValueRef n(JSContextRef ctx, JSObjectRef function, JSObjectRef self, \
-                 size_t argc, const JSValueRef args[], JSValueRef* exception)
-#define JABCArgGetNumber(a, n, err)
-#define JABCArgGetString(a, n, err)
-#define JABCArgGetTypedArray(a, n, err)
-
-// fd.Write(ta) -> int
-JABCCall(JABCioFileWrite) {
-    if (argc == 0) {
-        *exception = JSOfCString("file.write(string|typedarray)");
-        return JSValueMakeUndefined(ctx);
-    }
-
-    char page[4096];
-
-    int fd = JABCioFileGetDescriptor(ctx, self, exception);
-    if (fd == -1) return JSValueMakeUndefined(ctx);
-
-    u8s ta = {};
-    b8 tofree = NO;
-
-    if (JSValueIsString(ctx, args[0])) {  // TODO io.utf8()
-        JABCutf8CopyStringValue(ctx, ta, args[0], exception);
-        tofree = YES;
-    } else if (JSValueGetTypedArrayType(ctx, args[0], NULL) !=
-               kJSTypedArrayTypeNone) {
-        ta[0] = (u8*)JSObjectGetTypedArrayBytesPtr(ctx, (JSObjectRef)args[0],
-                                                   exception);
-        ta[1] = ta[0] + JSObjectGetTypedArrayByteLength(
-                            ctx, (JSObjectRef)args[0], exception);
-    } else {
-        *exception = JSOfCString("file.write(string|typedarray)");
-        return JSValueMakeUndefined(ctx);
-    }
-
-    int wn = write(fd, ta[0], $len(ta));
-    // fprintf(stderr, "fd %i len %lu ret %i\n", fd->poll.fd, len, wn);
-
-    if (wn < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            POLAddEvents(fd, POLLOUT);
-        } else {
-            JSStringRef errMsg = JSStringCreateWithUTF8CString(strerror(errno));
-            *exception = JSValueMakeString(ctx, errMsg);
-            JSStringRelease(errMsg);
-        }
-    }
-
-    if (tofree) $u8free((u8csp)ta);
-    JS_MAKE_NUMBER(ret, wn);
-    return ret;
-}
-
-JSValueRef JABCioFileRead(JSContextRef ctx, JSObjectRef function,
-                          JSObjectRef self, size_t argc,
-                          const JSValueRef args[], JSValueRef* exception) {
-    if (argc == 0 ||
-        JSValueGetTypedArrayType(ctx, args[0], NULL) == kJSTypedArrayTypeNone) {
-        *exception = JSOfCString("Use: file.read(typedarray)");
-        return JSValueMakeUndefined(ctx);
-    }
-    JSObjectRef arg = JSValueToObject(ctx, args[0], exception);
-
-    u8s ta = {};
-    ta[0] = (u8*)JSObjectGetTypedArrayBytesPtr(ctx, arg, exception);
-    ta[1] = ta[0] + JSObjectGetTypedArrayByteLength(ctx, arg, exception);
-
-    int fd = JABCioFileGetDescriptor(ctx, self, exception);
-    if (fd == -1) return JSValueMakeUndefined(ctx);
-
-    int rn = read(fd, *ta, $len(ta));
-
-    if (rn < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            POLAddEvents(fd, POLLIN);
-        } else {
-            JSStringRef errMsg = JSStringCreateWithUTF8CString(strerror(errno));
-            *exception = JSValueMakeString(ctx, errMsg);
-            JSStringRelease(errMsg);
-        }
-    }
-
-    JS_MAKE_NUMBER(num, rn);
-    return num;
-}
-
-JSValueRef JABCioNetClose(JSContextRef ctx, JSObjectRef function,
-                          JSObjectRef self, size_t argc,
-                          const JSValueRef args[], JSValueRef* exception) {
-    int fd = JABCioFileGetDescriptor(ctx, self, exception);
-    if (fd == -1) {
-        *exception = JSOfCString("file.close()");
-    } else {
-        JABCioCloseFile(fd);
-    }
-    return JSValueMakeUndefined(ctx);
-}
-
-JSObjectRef JABC_TIMER = NULL;
-
-u32 timeout_cb(u64 ns) {
-    if (JABC_TIMER == NULL) return INT32_MAX;
-    JSValueRef exception = NULL;  // todo
-    JSValueRef ms =
-        JSValueMakeNumber(JABC_CONTEXT, (double)(1.0 * ns) / POLNanosPerMSec);
-    JSValueRef ret = JSObjectCallAsFunction(
-        JABC_CONTEXT, JABC_TIMER, JABC_GLOBAL_OBJECT, 1, &ms, &exception);
-    if (exception != NULL) JABCReport(exception);
-    u64 next = 1000;
-    if (JSValueIsNumber(JABC_CONTEXT, ret)) {
-        next = JSValueToNumber(JABC_CONTEXT, ret, NULL);
-    }
-    return next;
-}
-
-// io.timer(fn)
-JSValueRef JABCioTimer(JSContextRef ctx, JSObjectRef function, JSObjectRef self,
-                       size_t argc, const JSValueRef args[],
-                       JSValueRef* exception) {
-    if (argc < 1 || !JSValueIsObject(ctx, args[0]) ||
-        !JSObjectIsFunction(ctx, (JSObjectRef)args[0])) {
-        *exception = JSOfCString("io.timer(function)");
-        return JSValueMakeUndefined(ctx);
-    }
-    if (JABC_TIMER != NULL) JSValueUnprotect(JABC_CONTEXT, JABC_TIMER);
-    JABC_TIMER = (JSObjectRef)args[0];
-    POLTrackTime(timeout_cb);
-    JSValueProtect(ctx, JABC_TIMER);
-    return JSValueMakeUndefined(ctx);
-}
-
-// io.wake(ms)
-JSValueRef JABCioWakeIn(JSContextRef ctx, JSObjectRef function,
-                        JSObjectRef self, size_t argc, const JSValueRef args[],
-                        JSValueRef* exception) {
-    if (argc != 1 || !JSValueIsNumber(ctx, args[0])) {
-        *exception = JSOfCString("io.wake(ms)");
-        return JSValueMakeUndefined(ctx);
-    }
-    if (JABC_TIMER == NULL) {
-        *exception = JSOfCString("no timer set");
-        return JSValueMakeUndefined(ctx);
-    }
-    double ms = JSValueToNumber(ctx, args[0], exception);
-    // get function
-    JSObjectRef fn = (JSObjectRef)args[0];
-    POLAddTime((int)ms);
-    return JSValueMakeUndefined(ctx);
-}
-
-JSValueRef JABCioNow(JSContextRef ctx, JSObjectRef function, JSObjectRef self,
-                     size_t argc, const JSValueRef args[],
+//  Copy a JS-string path argument into a NUL-terminated path buffer.
+static ok64 JABCPath(path8b path, JSContextRef ctx, JSValueRef arg,
                      JSValueRef* exception) {
-    u64 now = POLNow();
-    return JSValueMakeNumber(ctx, u64(now / POLNanosPerMSec));
+  if (!JSValueIsString(ctx, arg)) return BADARG;
+  JSStringRef s = JSValueToStringCopy(ctx, arg, exception);
+  if (*exception || s == NULL) return BADARG;
+  u8 page[PAGESIZE];
+  size_t len = JSStringGetUTF8CString(s, (char*)page, PAGESIZE);
+  JSStringRelease(s);
+  if (len < 1 || len >= PAGESIZE) return NOROOM;  //  len counts the NUL
+  u8cs src = {page, page + (len - 1)};
+  ok64 o = u8bFeed(path, src);
+  if (o != OK) return o;
+  PATHu8bTerm(path);
+  return OK;
 }
 
-JSValueRef JABCioExit(JSContextRef ctx, JSObjectRef function, JSObjectRef self,
-                     size_t argc, const JSValueRef args[],
-                     JSValueRef* exception) {
-    exit(0); //todo
-    JABC_FN_RETURN_UNDEFINED;
+//  io.open(path, "r"|"rw"|"c") -> fd
+static JABC_FN(JABCioOpen) {
+  if (argc < 1) JABC_THROW("io.open(path, mode) -> fd");
+  a_pad(u8, path, FILE_PATH_MAX_LEN);
+  if (JABCPath(path, ctx, args[0], exception) != OK) {
+    if (*exception) return JSValueMakeUndefined(ctx);
+    JABC_THROW("io.open(): bad path");
+  }
+  char mode[8] = "r";
+  if (argc > 1 && JSValueIsString(ctx, args[1])) {
+    JSStringRef s = JSValueToStringCopy(ctx, args[1], NULL);
+    JSStringGetUTF8CString(s, mode, sizeof(mode));
+    JSStringRelease(s);
+  }
+  int flags = O_RDONLY;
+  if (strcmp(mode, "rw") == 0) flags = O_RDWR;
+  else if (strcmp(mode, "c") == 0) flags = O_RDWR | O_CREAT | O_TRUNC;
+  int fd = -1;
+  ok64 o = FILEOpen(&fd, $path(path), flags);
+  if (o != OK || fd < 0) JABC_THROW(strerror(errno));
+  return JSValueMakeNumber(ctx, (double)fd);
 }
 
-JSValueRef JABCioLog(JSContextRef ctx, JSObjectRef function, JSObjectRef self,
-                     size_t argc, const JSValueRef args[],
-                     JSValueRef* exception) {
-    for (int i = 0; i < argc; i++) {
-        if (JSValueIsString(ctx, args[i])) {
-            JSStringRef str = JSValueToStringCopy(ctx, args[0], exception);
-            size_t maxSize = JSStringGetMaximumUTF8CStringSize(str);
-            char* bytes = (char*)malloc(maxSize);
-            size_t factlen = JSStringGetUTF8CString(str, bytes, maxSize);
-            int n = write(STDERR_FILENO, bytes, factlen);
-            free(bytes);
-            JSStringRelease(str);
-        } else if (kJSTypedArrayTypeNone !=
-                   JSValueGetTypedArrayType(ctx, args[i], exception)) {
-            JSObjectRef obj = JSValueToObject(ctx, args[i], NULL);
-            void* bytes = JSObjectGetTypedArrayBytesPtr(ctx, obj, exception);
-            size_t len = JSObjectGetTypedArrayByteLength(ctx, obj, exception);
-            int n = write(STDERR_FILENO, bytes, len);
-        } else {
-            *exception = JSOfCString("io.log( (string|typedarray)* )");
-            return JSValueMakeUndefined(ctx);
-        }
-    }
-    write(STDERR_FILENO, "\n", 1);
-    fsync(STDERR_FILENO);
-    return JSValueMakeUndefined(ctx);
+//  io.close(fd)
+static JABC_FN(JABCioClose) {
+  if (argc < 1) JABC_THROW("io.close(fd)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  FILEClose(&fd);
+  JABC_UNDEF;
 }
 
-JSValueRef JABCioNetListen(JSContextRef ctx, JSObjectRef function,
-                           JSObjectRef self, size_t argc,
-                           const JSValueRef args[], JSValueRef* exception) {
-    return JSValueMakeUndefined(ctx);
+//  io.sync(fd)
+static JABC_FN(JABCioSync) {
+  if (argc < 1) JABC_THROW("io.sync(fd)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  if (FILESync(&fd) != OK) JABC_THROW(strerror(errno));
+  JABC_UNDEF;
 }
 
-JSValueRef JABCioNetAccept(JSContextRef ctx, JSObjectRef function,
-                           JSObjectRef self, size_t argc,
-                           const JSValueRef args[], JSValueRef* exception) {
-    return JSValueMakeUndefined(ctx);
+//  io.size(fd) -> bytes
+static JABC_FN(JABCioSize) {
+  if (argc < 1) JABC_THROW("io.size(fd)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  size_t sz = 0;
+  if (FILESize(&sz, &fd) != OK) JABC_THROW(strerror(errno));
+  return JSValueMakeNumber(ctx, (double)sz);
 }
 
-// -> file.io("r"|"w"|"error")
-short JABCioNetOnEvent(int fd, struct poller* p) {
-    fprintf(stderr, "got event %i %i\n", fd, p->revents);
-    JSObjectRef file = JS_FILES[fd];
-    if (file == NULL) return 0;  //?
-    JSValueRef fnv = JSObjectGetPropertyForKey(
-        JABC_CONTEXT, file, JSValueMakeString(JABC_CONTEXT, JS_KEY_IO), NULL);
-    if (fnv == NULL || !JSValueIsObject(JABC_CONTEXT, fnv) ||
-        !JSObjectIsFunction(JABC_CONTEXT, (JSObjectRef)fnv)) {
-        p->events = 0;
-        return 0;
-    }
-    JSObjectRef fn = (JSObjectRef)fnv;
-    JSValueRef exception = NULL;
-
-    if (!(p->revents & (POLLIN | POLLOUT))) {
-        JSValueRef arg = JSValueMakeString(JABC_CONTEXT, JS_STATUS_ERROR);
-        int err = 0;
-        socklen_t errlen = sizeof(err);
-        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
-        if (err != 0) {
-            arg = JSOfCString(strerror(err));
-        }
-        p->events = 0;
-        JSObjectCallAsFunction(JABC_CONTEXT, fn, file, 1, &arg, NULL);
-        JABCioNetClose(JABC_CONTEXT, NULL, file, 0, NULL, &exception);
-        if (exception) JABCReport(exception), exception = NULL;
-    }
-    if (p->revents & POLLIN) {
-        JSValueRef arg = JSValueMakeString(JABC_CONTEXT, JS_STATUS_READ);
-        p->events &= ~POLLIN;
-        JSObjectCallAsFunction(JABC_CONTEXT, fn, file, 1, &arg, &exception);
-        if (exception) JABCReport(exception), exception = NULL;
-    }
-    if (p->revents & POLLOUT) {
-        JSValueRef arg = JSValueMakeString(JABC_CONTEXT, JS_STATUS_WRITE);
-        p->events &= ~POLLOUT;
-        JSObjectCallAsFunction(JABC_CONTEXT, fn, file, 1, &arg, &exception);
-        if (exception) JABCReport(exception), exception = NULL;
-    }
-
-    return p->events;  //?
+//  io.resize(fd, n)
+static JABC_FN(JABCioResize) {
+  if (argc < 2) JABC_THROW("io.resize(fd, n)");
+  int fd = JABCInt(ctx, args[0], exception);
+  double n = JSValueToNumber(ctx, args[1], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  if (n < 0) JABC_THROW("io.resize(): negative size");
+  if (FILEResize(&fd, (size_t)n) != OK) JABC_THROW(strerror(errno));
+  JABC_UNDEF;
 }
 
-short JABCioNetOnConnect(int fd, struct poller* p) {
-    fprintf(stderr, "connected!\n");
-    int err = 0;
-    socklen_t errlen = sizeof(err);
-    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
-    if (err != 0) {
-        const char* msg = strerror(err);
-    } else {
-        p->callback = JABCioNetOnEvent;
-    }
-    JABCioNetOnEvent(fd, p);
-    return p->events | POLLIN;
+//  io.lock(fd, exclusive?) / io.unlock(fd)
+static JABC_FN(JABCioLock) {
+  if (argc < 1) JABC_THROW("io.lock(fd, exclusive)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  b8 excl = argc > 1 ? JSValueToBoolean(ctx, args[1]) : YES;
+  if (FILELock(&fd, excl) != OK) JABC_THROW(strerror(errno));
+  JABC_UNDEF;
+}
+static JABC_FN(JABCioUnlock) {
+  if (argc < 1) JABC_THROW("io.unlock(fd)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  if (FILEUnlock(&fd) != OK) JABC_THROW(strerror(errno));
+  JABC_UNDEF;
 }
 
-JSValueRef JABCioNothing(JSContextRef ctx, JSObjectRef function,
-                         JSObjectRef self, size_t argc, const JSValueRef args[],
-                         JSValueRef* exception) {
-    fprintf(stderr, "nothing\n");
-    return JSValueMakeUndefined(ctx);
+//  io.stat(path) -> {size, mode, kind}
+static JABC_FN(JABCioStat) {
+  if (argc < 1) JABC_THROW("io.stat(path)");
+  a_pad(u8, path, FILE_PATH_MAX_LEN);
+  if (JABCPath(path, ctx, args[0], exception) != OK) {
+    if (*exception) return JSValueMakeUndefined(ctx);
+    JABC_THROW("io.stat(): bad path");
+  }
+  filestat fs = {};
+  ok64 o = FILEStat(&fs, $path(path));
+  if (o != OK) JABC_THROW(strerror(errno));
+  JSObjectRef obj = JSObjectMake(ctx, NULL, NULL);
+  JSStringRef k;
+  k = JSStringCreateWithUTF8CString("size");
+  JSObjectSetProperty(ctx, obj, k, JSValueMakeNumber(ctx, (double)fs.size),
+                      kJSPropertyAttributeNone, NULL);
+  JSStringRelease(k);
+  k = JSStringCreateWithUTF8CString("mode");
+  JSObjectSetProperty(ctx, obj, k, JSValueMakeNumber(ctx, (double)fs.mode),
+                      kJSPropertyAttributeNone, NULL);
+  JSStringRelease(k);
+  const char* kind = "other";
+  if (fs.kind == FILE_KIND_REG) kind = "reg";
+  else if (fs.kind == FILE_KIND_DIR) kind = "dir";
+  else if (fs.kind == FILE_KIND_LNK) kind = "lnk";
+  k = JSStringCreateWithUTF8CString("kind");
+  JSObjectSetProperty(ctx, obj, k, JSOfCString(kind), kJSPropertyAttributeNone,
+                      NULL);
+  JSStringRelease(k);
+  return obj;
 }
 
-JSValueRef JABCioNetConnect(JSContextRef ctx, JSObjectRef function,
-                            JSObjectRef self, size_t argc,
-                            const JSValueRef args[], JSValueRef* exception) {
-    if (argc < 2 || !JSValueIsString(ctx, args[0]) ||
-        !JSValueIsObject(ctx, args[1]) ||
-        !JSObjectIsFunction(ctx, (JSObjectRef)args[1])) {
-        *exception = JSOfCString("io.connect('tcp://google.com:80', function)");
-        return JSValueMakeUndefined(ctx);
-    }
-    a_pad(u8, uri, 1024);
-    ok64 o = JABCutf8bFeedValueRef(uri, ctx, args[0]);
-
-    JSObjectRef callback = (JSObjectRef)args[1];
-
-    int cfd;
-    o = TCPConnect(&cfd, uri_datac, NO);
-    if (o != OK) {
-        *exception = JSOfCString(strerror(errno));  //"connect() error"));
-        return JSValueMakeUndefined(ctx);
-    }
-    poller p = {
-        .callback = JABCioNetOnConnect,
-        .payload = JS_FILES + cfd,
-        .deadline = POLNow() + 3000UL * POLNanosPerMSec,
-        .tofd = 0,
-        .events = POLLOUT,
-    };
-    POLTrackEvents(cfd, p);
-
-    JSObjectRef file = JABCioMakeFileObject(cfd, exception);
-    JSObjectSetProperty(JABC_CONTEXT, file, JS_KEY_IO, callback,
-                        kJSPropertyAttributeNone, NULL);
-
-    return file;
+//  io._read(fd, u8) -> n  (0 = EOF).  Single read into the typed array.
+static JABC_FN(JABCioRead) {
+  if (argc < 2) JABC_THROW("io._read(fd, Uint8Array)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  u8s ta = {};
+  if (!JABCBytesOf(ta, ctx, args[1], exception)) return JSValueMakeUndefined(ctx);
+  ssize_t n;
+  do { n = read(fd, ta[0], $len(ta)); } while (n < 0 && errno == EINTR);
+  if (n < 0) JABC_THROW(strerror(errno));
+  return JSValueMakeNumber(ctx, (double)n);
 }
 
-// io.StdErr() -> fd
-JSValueRef JABCioStdio(JSContextRef ctx, JSObjectRef function, JSObjectRef self,
-                       size_t argc, const JSValueRef args[],
-                       JSValueRef* exception, int which) {
-    if (JABCio_STD[which] == NULL) {
-        JSObjectRef fileObject = JABCioMakeFileObject(which, exception);
-        poller p = {
-            .callback = io_callback, .payload = fileObject, .deadline = POLNow() + 1000UL * POLNanosPerMSec};
-        ok64 o = POLTrackEvents(which, p);
-        JABCio_STD[which] = fileObject;
-    }
-    return JABCio_STD[which];
+//  io._write(fd, u8) -> n.  Single write of the typed array's bytes.
+static JABC_FN(JABCioWrite) {
+  if (argc < 2) JABC_THROW("io._write(fd, Uint8Array)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  u8s ta = {};
+  if (!JABCBytesOf(ta, ctx, args[1], exception)) return JSValueMakeUndefined(ctx);
+  ssize_t n;
+  do { n = write(fd, ta[0], $len(ta)); } while (n < 0 && errno == EINTR);
+  if (n < 0) JABC_THROW(strerror(errno));
+  return JSValueMakeNumber(ctx, (double)n);
 }
 
-JABC_FN_DEFINE(JABCioStdIn) {
-    return JABCioStdio(ctx, function, self, argc, args, exception,
-                       STDIN_FILENO);
+//  Mapped-file deallocator: JS GC drives the munmap (buf is the FILE_WANT_BUFS
+//  slot handed to FILEUnMap).
+static void JABCMapFree(void* bytes, void* ctx) {
+  (void)bytes;
+  FILEUnMap((u8bp)ctx);
 }
 
-JABC_FN_DEFINE(JABCioStdOut) {
-    return JABCioStdio(ctx, function, self, argc, args, exception,
-                       STDOUT_FILENO);
-}
-
-JABC_FN_DEFINE(JABCioStdErr) {
-    return JABCioStdio(ctx, function, self, argc, args, exception,
-                       STDERR_FILENO);
-}
-
-void mmap_free(void* bytes, void* deallocatorContext) {
-    // deallocatorContext holds the u8bp pointer into FILE_WANT_BUFS
-    u8bp buf = (u8bp)deallocatorContext;
+//  io._mmap(path, "r"|"rw"|"c", size) -> Uint8Array  (munmap on GC)
+static JABC_FN(JABCioMmap) {
+  if (argc < 1) JABC_THROW("io._mmap(path, mode, size)");
+  a_pad(u8, path, FILE_PATH_MAX_LEN);
+  if (JABCPath(path, ctx, args[0], exception) != OK) {
+    if (*exception) return JSValueMakeUndefined(ctx);
+    JABC_THROW("io._mmap(): bad path");
+  }
+  char mode[8] = "r";
+  if (argc > 1 && JSValueIsString(ctx, args[1])) {
+    JSStringRef s = JSValueToStringCopy(ctx, args[1], NULL);
+    JSStringGetUTF8CString(s, mode, sizeof(mode));
+    JSStringRelease(s);
+  }
+  u8bp buf = NULL;
+  ok64 o;
+  if (strcmp(mode, "c") == 0) {
+    double sz = argc > 2 ? JSValueToNumber(ctx, args[2], NULL) : 0;
+    if (sz < 0) JABC_THROW("io._mmap(): negative size");
+    o = FILEMapCreate(&buf, $path(path), (size_t)sz);
+  } else if (strcmp(mode, "rw") == 0) {
+    o = FILEMapRW(&buf, $path(path));
+  } else {
+    o = FILEMapRO(&buf, $path(path));
+  }
+  if (o != OK || buf == NULL) JABC_THROW(strerror(errno));
+  JSValueRef ta = JSObjectMakeTypedArrayWithBytesNoCopy(
+      ctx, kJSTypedArrayTypeUint8Array, u8bData(buf)[0], u8bDataLen(buf),
+      JABCMapFree, (void*)buf, exception);
+  if (*exception || ta == NULL) {
     FILEUnMap(buf);
+    return JSValueMakeUndefined(ctx);
+  }
+  return ta;
 }
 
-JSValueRef JABCioFileMap(JSContextRef ctx, JSObjectRef function,
-                         JSObjectRef self, size_t argc, const JSValueRef args[],
-                         JSValueRef* exception) {
-    if (!JSValueIsString(ctx, args[0])) {
-        *exception = JSOfCString("io.mmap(path)");
-        return JSValueMakeUndefined(ctx);
-    }
-
-    u8 page[PAGESIZE];
-    size_t len =
-        JSStringGetUTF8CString((JSStringRef)args[0], (char*)page, PAGESIZE);
-
-    u8bp buf = NULL;
-    a_pad(u8, path, FILE_PATH_MAX_LEN);
-    u8sFeedn(u8bIdle(path), page, len - 1);
-    PATHu8bTerm(path);
-    ok64 o = FILEMapRO(&buf, $path(path));
-    if (o != OK || buf == NULL) {
-        *exception = JSOfCString("mmap failed");
-        return JSValueMakeUndefined(ctx);
-    }
-    JSObjectRef fileObject =
-        JSObjectMake(JABC_CONTEXT, JABC_IO_MAP_CLASS, NULL);
-    JSValueRef ta = JSObjectMakeTypedArrayWithBytesNoCopy(
-        ctx, kJSTypedArrayTypeUint8Array, u8bData(buf)[0], u8bDataLen(buf), mmap_free, (void*)buf,
-        exception);
-    if (*exception != NULL) return JSValueMakeUndefined(ctx);
-    JSObjectSetPropertyForKey(ctx, fileObject, JSOfCString("buf"), ta,
-                              kJSPropertyAttributeReadOnly, exception);
-    return fileObject;
+//  Anonymous-mapping deallocator: munmap the whole region, free the length box.
+static void JABCRamFree(void* bytes, void* ctx) {
+  size_t* len = (size_t*)ctx;
+  munmap(bytes, *len);
+  free(len);
 }
 
-extern const char* io_js;
+//  io._ram(n) -> Uint8Array  (anonymous mmap, faults in lazily, munmap on GC)
+static JABC_FN(JABCioRam) {
+  if (argc < 1) JABC_THROW("io._ram(n)");
+  double dn = JSValueToNumber(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  if (dn <= 0) JABC_THROW("io._ram(): size must be > 0");
+  size_t n = (size_t)dn;
+  void* map = mmap(NULL, n, PROT_READ | PROT_WRITE,
+                   MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+  if (map == MAP_FAILED) JABC_THROW(strerror(errno));
+  size_t* len = (size_t*)malloc(sizeof(size_t));
+  *len = n;
+  JSValueRef ta = JSObjectMakeTypedArrayWithBytesNoCopy(
+      ctx, kJSTypedArrayTypeUint8Array, map, n, JABCRamFree, len, exception);
+  if (*exception || ta == NULL) {
+    munmap(map, n);
+    free(len);
+    return JSValueMakeUndefined(ctx);
+  }
+  return ta;
+}
+
+//  io._msync(u8) -> flush the typed array's pages (works on the raw range,
+//  no buffer-descriptor lookup needed).
+static JABC_FN(JABCioMsync) {
+  if (argc < 1) JABC_THROW("io._msync(Uint8Array)");
+  u8s ta = {};
+  if (!JABCBytesOf(ta, ctx, args[0], exception)) return JSValueMakeUndefined(ctx);
+  if ($len(ta) && msync(ta[0], $len(ta), MS_SYNC) != 0)
+    JABC_THROW(strerror(errno));
+  JABC_UNDEF;
+}
+
+//  io.log(...args) -> write strings / typed arrays to stderr + newline.
+static JABC_FN(JABCioLog) {
+  for (size_t i = 0; i < argc; i++) {
+    if (JSValueIsString(ctx, args[i])) {
+      JSStringRef s = JSValueToStringCopy(ctx, args[i], exception);
+      if (*exception) return JSValueMakeUndefined(ctx);
+      size_t max = JSStringGetMaximumUTF8CStringSize(s);
+      char* b = (char*)malloc(max);
+      size_t got = JSStringGetUTF8CString(s, b, max);
+      u8s span = {(u8*)b, (u8*)b + (got ? got - 1 : 0)};
+      while ($len(span) > 0) {
+        ssize_t w = write(STDERR_FILENO, span[0], $len(span));
+        if (w <= 0) break;
+        span[0] += w;
+      }
+      free(b);
+      JSStringRelease(s);
+    } else if (JSValueGetTypedArrayType(ctx, args[i], NULL) !=
+               kJSTypedArrayTypeNone) {
+      u8s ta = {};
+      if (!JABCBytesOf(ta, ctx, args[i], exception))
+        return JSValueMakeUndefined(ctx);
+      ssize_t w = write(STDERR_FILENO, ta[0], $len(ta));
+      (void)w;
+    }
+  }
+  ssize_t w = write(STDERR_FILENO, "\n", 1);
+  (void)w;
+  JABC_UNDEF;
+}
 
 ok64 JABCioInstall() {
-    POLInit(1024);
-
-    JS_FILES = (JSObjectRef*)malloc(sizeof(JSObjectRef) * POLMaxFiles());
-
-    static JSStaticFunction file_statics[] = {
-        {"io", JABCioNothing, 0},
-        {"write", JABCioFileWrite,
-         kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontDelete},
-        {"read", JABCioFileRead,
-         kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontDelete},
-        {"close", JABCioNetClose,
-         kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontDelete},
-        {NULL, NULL, 0}};
-    static JSClassDefinition fc_definition = {
-        0,                      // version
-        kJSClassAttributeNone,  // attributes
-        "File",                 // class name
-        NULL,                   // parentClass
-        NULL,                   // staticValues
-        file_statics,           // method table
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-    JABC_IO_FILE_CLASS = JSClassCreate(&fc_definition);
-
-    JS_MAKE_CLASS(FileMMap, io_map_finalize);
-    JABC_IO_MAP_CLASS = FileMMap;
-
-    JABC_API_OBJECT(io);
-    JABC_API_FN(io, "stdIn", JABCioStdIn);
-    JABC_API_FN(io, "stdErr", JABCioStdErr);
-    JABC_API_FN(io, "stdOut", JABCioStdOut);
-    JABC_API_FN(io, "mmap", JABCioFileMap);
-    JABC_API_FN(io, "timer", JABCioTimer);
-    JABC_API_FN(io, "wakeIn", JABCioWakeIn);
-    JABC_API_FN(io, "now", JABCioNow);
-    JABC_API_FN(io, "log", JABCioLog);
-    JABC_API_FN(io, "exit", JABCioExit);
-    JABC_API_FN(io, "listen", JABCioNetListen);
-    JABC_API_FN(io, "accept", JABCioNetAccept);
-    JABC_API_FN(io, "connect", JABCioNetConnect);
-
-    JS_KEY_IO = JSStringCreateWithUTF8CString("io");
-    JS_STATUS_READ = JSStringCreateWithUTF8CString("r");
-    JS_STATUS_WRITE = JSStringCreateWithUTF8CString("w");
-    JS_STATUS_READWRITE = JSStringCreateWithUTF8CString("rw");
-    JS_STATUS_ERROR = JSStringCreateWithUTF8CString("error");
-    // io.stderr.WriteLine("Hello world!")
-    // response = io.stdin.ReadLine()
-    // io.stdout.WriteLine("You said: '"+response+"'");
-
-    JABCExecute(io_js);
-
-    return OK;
+  FILEInit();
+  JABC_API_OBJECT(io);
+  JABC_API_FN(io, "open", JABCioOpen);
+  JABC_API_FN(io, "close", JABCioClose);
+  JABC_API_FN(io, "sync", JABCioSync);
+  JABC_API_FN(io, "size", JABCioSize);
+  JABC_API_FN(io, "resize", JABCioResize);
+  JABC_API_FN(io, "lock", JABCioLock);
+  JABC_API_FN(io, "unlock", JABCioUnlock);
+  JABC_API_FN(io, "stat", JABCioStat);
+  JABC_API_FN(io, "_read", JABCioRead);
+  JABC_API_FN(io, "_write", JABCioWrite);
+  JABC_API_FN(io, "_mmap", JABCioMmap);
+  JABC_API_FN(io, "_ram", JABCioRam);
+  JABC_API_FN(io, "_msync", JABCioMsync);
+  JABC_API_FN(io, "log", JABCioLog);
+  return OK;
 }
 
 ok64 JABCioUninstall() {
-    JSClassRelease(JABC_IO_FILE_CLASS);
-    JSClassRelease(JABC_IO_MAP_CLASS);
-    JSStringRelease(JS_KEY_IO);
-    JSStringRelease(JS_STATUS_ERROR);
-    JSStringRelease(JS_STATUS_READ);
-    JSStringRelease(JS_STATUS_WRITE);
-    JSStringRelease(JS_STATUS_READWRITE);
-    JSValueUnprotect(JABC_CONTEXT, JABCio_STD[0]);
-    JSValueUnprotect(JABC_CONTEXT, JABCio_STD[1]);
-    JSValueUnprotect(JABC_CONTEXT, JABCio_STD[2]);
-    JABCio_STD[0] = NULL;
-    JABCio_STD[1] = NULL;
-    JABCio_STD[2] = NULL;
-    JS_KEY_IO = NULL;
-    JS_STATUS_ERROR = NULL;
-    JS_STATUS_READ = NULL;
-    JS_STATUS_WRITE = NULL;
-    JS_STATUS_READWRITE = NULL;
-    JABC_IO_FILE_CLASS = NULL;
-    JABC_IO_MAP_CLASS = NULL;
-
-    for (int i = 0; i < POLMaxFiles(); i++)
-        if (JS_FILES[i] != NULL) {
-            JABCioCloseFile(i);
-        }
-    POLFree();
-    return OK;
+  FILECloseAll();
+  return OK;
 }

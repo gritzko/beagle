@@ -1,0 +1,5 @@
+# JavaScriptCore allocates lazily-initialised global singletons (bmalloc
+# arenas, JS VM globals) it never frees before exit; LeakSanitizer flags them
+# although they are not leaks in our bindings.  Suppress by library name so
+# only JSC-internal allocations are ignored.
+leak:libjavascriptcoregtk
