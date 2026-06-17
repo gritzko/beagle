@@ -89,6 +89,7 @@ static void JABCInstallModules() {
   JABCioInstall();
   JABCbufInstall();   //  Buf class + constructors layer over utf8/io leaves
   JABCContInstall();  //  abc.* containers (HEAP/HASH) layer over io mmap leaves
+  JABCUriInstall();   //  URI class over abc/URI
 }
 
 #define VERSION_BOILERPLATE "jabc v0.1.0\n"
