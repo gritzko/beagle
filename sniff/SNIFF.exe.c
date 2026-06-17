@@ -111,6 +111,7 @@ typedef struct {
     status_verbs v;
     i64 now;          // unix epoch seconds, for relative-date format
     u8cs reporoot;    // for resolving full paths in the wt-eq-base check
+    b8  force;        // STATUS-001: `status!` → append branch+remote rows
 } status_buckets;
 
 //  Touched-unchanged content check lives in CLASS.c so `ls:` and the
@@ -440,6 +441,53 @@ static void status_emit_commit_diff(status_buckets *b) {
     GETStatusCommitDiff(&cur, &tip, cts, &b->ahead_n, &b->behind_n);
 }
 
+//  STATUS-001: extended-status row helpers (`be status!`).  Rehomes the
+//  old SNIFFGetSummary body — every tracked branch tip + remote-tracking
+//  ref as a `get`-verb uri->hash row appended to the SAME `status:`
+//  table.  Branch tips render `?<branch>#<sha>` (trunk → `?#<sha>`);
+//  remotes render `<full-uri>#<sha>`.  No nav (these address refs, not
+//  worktree files).  `t->sha` / `r->sha` are 40-hex; slices borrow
+//  REFSLoad's arena (valid only during the callback).
+static void status_tip_row(rows *table, ron60 verb, u8csc uri, u8csc sha) {
+    rows_row row = {
+        .ts = 0, .verb = verb, .path_tag = 'S', .arrow = NO,
+        .nav = ROWS_NAV_NONE,
+    };
+    u8csMv(row.path, uri);
+    u8csMv(row.mov_dst, sha);
+    (void)ROWSu8bFeedRow(table, &row);
+}
+
+static ok64 status_branch_row_cb(keep_tipcp t, void *ctx) {
+    rows *table = (rows *)ctx;
+    a_pad(u8, ubuf, MAX_URI_LEN);
+    (void)u8bFeed1(ubuf, '?');
+    (void)u8bFeed(ubuf, t->path);                 // empty → trunk (`?`)
+    a_dup(u8c, uri, u8bDataC(ubuf));
+    status_tip_row(table, SNIFFAtVerbGet(), uri, t->sha);
+    return OK;
+}
+
+static ok64 status_remote_row_cb(keep_remotecp r, void *ctx) {
+    rows *table = (rows *)ctx;
+    a_dup(u8c, key, r->key);
+    status_tip_row(table, SNIFFAtVerbGet(), key, r->sha);
+    return OK;
+}
+
+//  Append the tracked branch + remote tip rows to the open `status:`
+//  table.  REFSNONE (no refs yet) is fine — a fresh wt simply adds no
+//  extra rows.  Called only for `be status!` (b->force).
+static void status_emit_tips(status_buckets *b, rows *table) {
+    if (!b->force) return;
+    ok64 to = KEEPEachTip(status_branch_row_cb, table);
+    if (to != OK && to != REFSNONE)
+        fprintf(stderr, "sniff: status: branches: %s\n", ok64str(to));
+    ok64 ro = KEEPEachRemote(status_remote_row_cb, table);
+    if (ro != OK && ro != REFSNONE)
+        fprintf(stderr, "sniff: status: remotes: %s\n", ok64str(ro));
+}
+
 //  Worker: assumes b's rows buffer is already mapped.  Returns the
 //  classification result; never frees.
 //
@@ -447,7 +495,8 @@ static void status_emit_commit_diff(status_buckets *b) {
 //  an optional cur-vs-tip commit block (GET-021), then the per-file
 //  rows, then a trailing summary line.  Per-file rows carry a 'U'-tagged
 //  `cat:<path>` nav target after the `\n`, mirroring `sniff/LS.c`; bro
-//  turns those into click-anchors.
+//  turns those into click-anchors.  `be status!` (b->force) also folds
+//  the branch + remote tip rows in (STATUS-001).
 static ok64 sniff_status_work(status_buckets *b) {
     sane(b);
     call(SNIFFClassify, status_step, b);
@@ -473,6 +522,10 @@ static ok64 sniff_status_work(status_buckets *b) {
     if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, &table, &b->v);
     if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, &table, &b->v);
 
+    //  STATUS-001: `be status!` appends every tracked branch + remote
+    //  tip (uri->hash) after the file rows, into the SAME table.
+    status_emit_tips(b, &table);
+
     //  Summary line finalises the hunk — appended straight to the
     //  table's text/toks (it's a status-only tail, not a row).
     status_emit_summary_buf(table.text, table.toks, b);
@@ -485,10 +538,10 @@ static ok64 sniff_status_work(status_buckets *b) {
 //  regardless.  16 MB — mmap-backed so VA cost is paid lazily.
 //  One buffer instead of six (~4× headroom): real-world wts
 //  (~/dogs etc.) routinely produce tens of thousands of `unk` rows.
-static ok64 sniff_status(u8cs reporoot) {
+static ok64 sniff_status(u8cs reporoot, b8 force) {
     sane(1);
 
-    status_buckets b = {.now = (i64)time(NULL)};
+    status_buckets b = {.now = (i64)time(NULL), .force = force};
     status_verbs_init(&b.v);
     u8csMv(b.reporoot, reporoot);
     //  16 MB row scratch from BASS (lazy); rewinds at return.  Carved
@@ -1258,7 +1311,10 @@ ok64 SNIFFExec(cli *c) {
     } else if (is_watch) {
         ret = SNIFFWatch(reporoot);
     } else if (is_status) {
-        ret = sniff_status(reporoot);
+        //  STATUS-001: `--force` (from `be status!` / `sniff status!`)
+        //  toggles EXTENDED status — file rows plus every tracked branch
+        //  and remote tip (uri->hash).
+        ret = sniff_status(reporoot, CLIHas(c, "--force"));
     } else if (is_projector) {
         //  URI scheme picks the projector.  Output mode (TLV / plain /
         //  color) is set once at process start via the universal
@@ -1276,8 +1332,9 @@ ok64 SNIFFExec(cli *c) {
             ret = SNIFFCat(reporoot, proj_u);
         } else if ($eq(proj_u->scheme, status_s)) {
             //  `status:` projector → same one-hunk worktree status
-            //  bare `sniff` produces.  Body slot ignored.
-            ret = sniff_status(reporoot);
+            //  bare `sniff` produces.  Body slot ignored.  STATUS-001:
+            //  `--force` (relayed from `be status!`) → extended status.
+            ret = sniff_status(reporoot, CLIHas(c, "--force"));
         } else {
             //  Table says sniff owns this scheme but we don't have a
             //  handler wired — should not happen once DOG_PROJECTORS

@@ -33,11 +33,6 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex,
 //                                  (use `be post ?./X` to create).
 ok64 SNIFFGetURI(u8cs reporoot, uri *u);
 
-//  Bare `be get` (no URI args): print every local branch tip from
-//  keeper REFS (current branch starred) plus every remote-tracking
-//  ref.  No wt mutation.
-ok64 SNIFFGetSummary(u8cs reporoot);
-
 //  `be checkout <hex>` — thin wrapper over GETCheckout that builds
 //  the source URI as `?<hex>`.
 ok64 SNIFFCheckout(u8cs reporoot, u8cs hex);

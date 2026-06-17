@@ -1332,7 +1332,7 @@ static ok64 BEProjector(cli *c, uri *u) {
     a_cstr(plain_flag, "--plain");
     a_cstr(color_flag, "--color");
     b8 have_at = u8bDataLen(be_at_buf) > 0;
-    a_pad(u8cs, dargs, 6);
+    a_pad(u8cs, dargs, 7);
     u8csbFeed1(dargs, dog_s);
     if (have_at) {
         a_dup(u8c, at_flag, be_at_flag);
@@ -1343,6 +1343,10 @@ static ok64 BEProjector(cli *c, uri *u) {
     if      (emit_tlv)                   u8csbFeed1(dargs, tlv_flag);
     else if (HUNKMode == HUNKOutColor)   u8csbFeed1(dargs, color_flag);
     else if (HUNKMode == HUNKOutPlain)   u8csbFeed1(dargs, plain_flag);
+    //  STATUS-001: forward the verb-bang `--force` so the projector dog
+    //  sees the extended toggle (`be status!` → `sniff … status:`).
+    if (CLIHas(c, "--force")) { a_cstr(force_flag, "--force");
+        u8csbFeed1(dargs, force_flag); }
     u8csbFeed1(dargs, u->data);
     a_dup(u8cs, dargv, u8csbData(dargs));
 
@@ -4646,10 +4650,31 @@ static ok64 becli_inner(cli *c) {
     //      be log               → log:
     //      be diff foo.c?main   → diff:foo.c?main   (foo.c?main is the
     //                              second raw URI arg and rides along)
+    //  STATUS-001: a projector bareword may carry the verb-bang `!`
+    //  (`be status!` = `--force` = the extended toggle).  Projections
+    //  aren't in BE_VERB_NAMES, so CLIParse's verb-bang debanger (the
+    //  `post!` path) never sees them — debang the bareword HERE with the
+    //  same uniform tail-shed and inject `--force` so it reaches the dog
+    //  (BEProjector forwards it).  The synthesised URI uses the debanged
+    //  projector name (`status`, not `status!`).  Guard `u != NULL`
+    //  before touching `u->path` (non-projector verbs reach here too).
+    u8cs proj_word = {};
+    b8   proj_bang = NO;
+    if ($empty(verb) && u != NULL) {
+        $mv(proj_word, u->path);              // alias (own end ptr); shed-safe
+        proj_bang = DOGDebangSlice(proj_word);
+    }
     if ($empty(verb) && u != NULL && u8csEmpty(u->scheme) &&
-        !u8csEmpty(u->path) && DOGIsProjector(u->path)) {
+        !u8csEmpty(proj_word) && DOGIsProjector(proj_word)) {
+        if (proj_bang) {
+            c->bang |= DOG_BANG_VERB;
+            a_cstr(force_flag, "--force");
+            a_cstr(empty_force, "");
+            (void)u8csbFeed1(c->flags, force_flag);
+            (void)u8csbFeed1(c->flags, empty_force);
+        }
         a_pad(u8, syn_buf, 4096);
-        a_dup(u8c, ps, u->path);
+        a_dup(u8c, ps, proj_word);
         (void)u8bFeed(syn_buf, ps);
         (void)u8bFeed1(syn_buf, ':');
         //  Trailing argv tokens after the projector name (`be log

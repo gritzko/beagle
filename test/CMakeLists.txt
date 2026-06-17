@@ -150,6 +150,9 @@ set(_BE_NEEDS_SSH_CASES
     "be-head-21-sub-dirty-reported"
     "be-all-01-subs-all-verbs"
     "be-spot-10-sub-recurse-search"
+    # STATUS-001: `be status!` extended (branch+remote rows) and
+    # `be status:<sub>/` sub-scope.  Uses the submodules.sh ssh fixture.
+    "be-status-01-extended-and-subscope"
     # SUBS-012: projector sub-recursion (diff fan-out + object routing).
     "be-diff-06-sub-change"
     "be-tree-01-sub-object-routing"

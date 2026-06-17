@@ -1691,60 +1691,9 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     if (sub_fail) fail(SNIFFFAIL);
     done;
 }
-// --- Mode: Get summary (bare `be get`) ---
-//
-//  Bare `be get` (no URI) prints a worktree-anchored snapshot of
-//  what's reachable: every local branch tip from keeper REFS, with
-//  the current branch starred; then every remote-tracking ref so
-//  the user can see which `//host?ref` rows are on file.
-
-static ok64 sniff_get_branch_cb(keep_tipcp t, void *ctx) {
-    u8cs *cp = (u8cs *)ctx;
-    u8cs cur = {(*cp)[0], (*cp)[1]};
-    char marker = u8csEq(t->path, cur) ? '*' : ' ';
-    fprintf(stdout, "%c ?%.*s\t%.*s\n",
-            marker,
-            (int)$len(t->path), (char *)t->path[0],
-            (int)$len(t->sha),  (char *)t->sha[0]);
-    return OK;
-}
-
-static ok64 sniff_get_remote_cb(keep_remotecp r, void *ctx) {
-    (void)ctx;
-    fprintf(stdout, "  %.*s\t%.*s\n",
-            (int)$len(r->key), (char *)r->key[0],
-            (int)$len(r->sha), (char *)r->sha[0]);
-    return OK;
-}
-
-ok64 SNIFFGetSummary(u8cs reporoot) {
-    sane($ok(reporoot));
-    (void)reporoot;
-    keeper *k = &KEEP;
-
-    //  Current branch from sniff baseline (empty == trunk).
-    ron60 bts = 0, bverb = 0;
-    uri bu = {};
-    u8cs cur = {};
-    if (SNIFFAtBaseline(&bts, &bverb, &bu) == OK) {
-        u8csMv(cur, bu.query);
-    }
-
-    fprintf(stdout, "branches:\n");
-    ok64 to = KEEPEachTip(sniff_get_branch_cb, &cur);
-    if (to != OK && to != REFSNONE) {
-        fprintf(stderr, "sniff: get: branches: %s\n", ok64str(to));
-        fail(to);
-    }
-
-    fprintf(stdout, "remotes:\n");
-    ok64 ro = KEEPEachRemote(sniff_get_remote_cb, NULL);
-    if (ro != OK && ro != REFSNONE) {
-        fprintf(stderr, "sniff: get: remotes: %s\n", ok64str(ro));
-        fail(ro);
-    }
-    done;
-}
+//  GET-026 removed the bare-`be get` summary; STATUS-001 rehomed its
+//  branch/remote uri->hash overview into `be status!` (sniff_status_work
+//  + KEEPEachTip / KEEPEachRemote).  The old SNIFFGetSummary is deleted.
 
 // --- Mode: Checkout ---
 
