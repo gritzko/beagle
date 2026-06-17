@@ -17,7 +17,10 @@ sleep 0.02; cp "$CASE/04.new.txt"      new.txt
 # `be put` now warn-and-skips unchanged paths in a multi-arg list,
 # staging the modified + new entries on the same invocation.  Exit
 # is success because at least one file was staged.
+# POST-018/BE-005: staged rows + the count ride the `put:` banner hunk
+# on STDOUT; the genuine "unchanged — skipped" diagnostic stays on
+# stderr.
 "$BE" put *.txt >05.put.got.out 2>05.put.got.err
 
-empty    05.put.got.out
+match_re "$CASE/05.put.out.txt" 05.put.got.out
 match_re "$CASE/05.put.err.txt" 05.put.got.err

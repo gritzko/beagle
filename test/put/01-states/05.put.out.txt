@@ -1,0 +1,4 @@
+.*put put:$
+.*put new[.]txt$
+.*put to-modify[.]txt$
+staged 2 put row[(]s[)]$

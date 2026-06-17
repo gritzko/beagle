@@ -649,6 +649,21 @@ static b8 put_is_sub_add_candidate(u8cs reporoot, u8cs subpath) {
 
 // --- Public API ---
 
+//  POST-018: render the staged-count summary (`staged N put row(s)`)
+//  into the active `put:` table — the data count rides the banner/hunk,
+//  not a bare stderr line (BE-005).  Suppressed under SNIFF.quiet (sub
+//  relay capture), mirroring the old stderr guard.
+static void put_feed_summary_tail(u32 n) {
+    if (SNIFF.quiet) return;
+    a_pad(u8, line, 64);
+    a_cstr(pre, "staged ");
+    (void)u8bFeed(line, pre);
+    (void)utf8sFeed10(u8bIdle(line), (u64)n);
+    a_cstr(suf, " put row(s)");
+    (void)u8bFeed(line, suf);
+    (void)ROWSu8bFeedSummary(u8bDataC(line));
+}
+
 //  Bare `be put` worker: auto-pair renames, then walk the baseline tree
 //  staging tracked-dirty files.  Per-file `put` rows append to the
 //  active ROWS table (opened by the caller).  Extracted so the caller's
@@ -699,8 +714,9 @@ static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
         if (!SNIFF.quiet) fprintf(stderr, "sniff: put: no changes\n");
         return PUTNONE;
     }
-    if (!SNIFF.quiet)
-        fprintf(stderr, "sniff: staged %u put row(s)\n", total);
+    //  POST-018: the staged count rides the `put:` banner/summary tail
+    //  (the caller's active ROWS table), not a bare stderr line.
+    put_feed_summary_tail(total);
     done;
 }
 
@@ -1029,6 +1045,9 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
             fprintf(stderr, "sniff: put: no eligible paths\n");
         return PUTNONE;
     }
+    //  POST-018: the staged count rides the `put:` banner/summary tail
+    //  (the caller's active ROWS table), not a bare stderr line.
+    put_feed_summary_tail(emitted);
     done;
 }
 
@@ -1045,16 +1064,17 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
 
     a_dup(u8c, reporoot, u8bData(HOME.wt));
 
-    //  Open ONE per-module row table (BRO-002): every staged path lands
-    //  in one accumulator — streamed live on a tty, flushed as ONE hunk
-    //  in --tlv/relay.  ROWSOpen/Close bracket every worker exit path.
-    //  RULED channel (BRO-002, mirrors POSTCommit): --tlv/relay buffers
-    //  the hunk on stdout so a parent `be put` can capture+relay it;
-    //  direct-tty streams rows to stderr (stdout stays clean).
+    //  POST-018: open ONE banner-headed `put:` table around either form
+    //  so the per-file rows + the staged-count summary ride one hunk
+    //  (streamed on a tty, one `H` hunk in --tlv/relay) — the shared
+    //  BE-005 banner model, matching status/get.  Both color and --tlv
+    //  go to STDOUT now (the commit sha rides POST's commit row, so
+    //  stdout no longer has to stay "clean" for the wrapper).  ROWSOpen/
+    //  Close bracket every worker exit path.
+    a_cstr(put_uri, "put:");
     rows table = {};
-    u8cs empty_uri = {};
-    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
-    table.fd = (HUNKMode == HUNKOutTLV) ? STDOUT_FILENO : STDERR_FILENO;
+    call(ROWSOpen, &table, put_uri, verb_put, ts, ROWS_MODE_KEYED);
+    table.fd = STDOUT_FILENO;
     if (nuris == 0) {
         try(put_stage_bare, reporoot, ts, verb_put);
     } else {

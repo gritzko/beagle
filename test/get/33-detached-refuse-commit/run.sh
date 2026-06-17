@@ -102,10 +102,12 @@ case "$ROW" in
 esac
 sleep 0.02; echo "v1-trunk" > x.txt
 "$BE" put x.txt > /dev/null 2>&1
+#  POST-018: the commit row rides STDOUT now (the `post:` banner hunk),
+#  not stderr.
 "$BE" post '#t1' > 04.post.out 2> 04.post.err
-grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t1' 04.post.err || {
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t1' 04.post.out || {
     echo "FAIL: trunk-state POST should have committed" >&2
-    cat 04.post.err >&2
+    cat 04.post.out 04.post.err >&2
     exit 1
 }
 
@@ -123,9 +125,9 @@ ROW=$(tail -1 .be/wtlog | cut -f3)
 sleep 0.02; echo "v2-pinned" > x.txt
 "$BE" put x.txt > /dev/null 2>&1
 "$BE" post '#t2' > 05.post.out 2> 05.post.err
-grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t2' 05.post.err || {
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t2' 05.post.out || {
     echo "FAIL: GET-024 trunk-state ?#sha POST should have committed (not POSTDET)" >&2
-    cat 05.post.err >&2
+    cat 05.post.out 05.post.err >&2
     exit 1
 }
 

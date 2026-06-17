@@ -128,4 +128,12 @@ ok64 ROWSClose(rows *r);
 //  selects the click target.
 ok64 ROWSPrintRow(ulogreccp rec, ROWSnav nav);
 
+//  POST-018: append a trailing summary line (e.g. `staged N put
+//  row(s)`) to the active table so the count rides the module hunk
+//  rather than a bare stderr line (BE-005).  No date/verb/nav columns;
+//  the line wears the neutral 'S' tag like `be status`'s summary tail.
+//  Streaming emits it live (after the banner); buffering folds it into
+//  the one module hunk at Close.  No-op with no active table.
+ok64 ROWSu8bFeedSummary(u8cs text);
+
 #endif

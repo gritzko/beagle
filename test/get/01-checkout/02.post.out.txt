@@ -1,0 +1,3 @@
+.*post post:$
+.*post [?][0-9a-f]{8}#v1 msg$
+.*add greet[.]txt$

@@ -283,6 +283,43 @@ ok64 ROWSClose(rows *r) {
     return fo;
 }
 
+//  POST-018: append a trailing summary line (`staged N put row(s)`,
+//  `N change(s)`, …) to the active table — the data-bearing count rides
+//  the module hunk instead of a bare stderr line (BE-005).  No date /
+//  verb / nav columns; the whole line wears the neutral 'S' tag like
+//  the `be status` summary tail.  Streaming tables emit the banner once
+//  (if still owed) then this single line as a one-line hunk; buffering
+//  tables fold it into the one module hunk at Close.  No-op with no
+//  active table.
+ok64 ROWSu8bFeedSummary(u8cs text) {
+    sane(1);
+    rows *r = ROWS_ACTIVE;
+    if (r == NULL || !r->open) done;
+    if (r->stream) {
+        //  Live: emit the banner once (if still owed), then this single
+        //  summary line as its own content hunk on the sink.
+        call(rows_stream_banner, r);
+        u8bReset(r->text);
+        u32bReset(r->toks);
+    }
+    (void)u8bFeed(r->text, text);
+    (void)u8bFeed1(r->text, '\n');
+    rows_pack(r, 'S');
+    if (!r->stream) done;
+    hunk hk = {};
+    u8csMv(hk.text, u8bDataC(r->text));
+    {
+        tok32cs kv = {};
+        kv[0] = (tok32c *)u32bDataHead(r->toks);
+        kv[1] = (tok32c *)u32bDataHead(r->toks) + u32bDataLen(r->toks);
+        u32csMv(hk.toks, kv);
+    }
+    a_carve(u8, big, (1UL << 16));
+    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
+    if (fo == OK) { rows_trim(big); (void)FILEFeedAll(r->fd, u8bDataC(big)); }
+    return fo;
+}
+
 ok64 ROWSPrintRow(ulogreccp rec, ROWSnav nav) {
     sane(rec);
     //  A module accumulator is already open → append to it (the common

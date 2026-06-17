@@ -3228,31 +3228,30 @@ ok64 POSTCommit(u8cs target_branch,
     //  their previous get/post stamp — re-stamping them is redundant.
     post_walk_decisions(&ctx, POST_VM_ADD, post_drain_stamp_cb, NULL);
 
-    //  16. Per-file change report (ULOG status lines; colour via
-    //      HUNKMode — see post_drain_mad_cb).  Interactive (plain /
-    //      color) routes to stderr so stdout stays clean; TLV (capture)
-    //      mode routes to stdout so a parent `be post` recursing into
-    //      this submodule can capture the hunk stream and relay it with
-    //      a path prefix (BERelaySub).
+    //  16. Commit report — ONE banner-headed `post:` hunk on STDOUT
+    //      (POST-018 / BE-005): a clickable `commit:?<sha>` confirmation
+    //      row, then the per-file change rows (add/del/mod).  Replaces
+    //      the old split (change rows to stderr + a raw `sniff: commit`
+    //      line) so post speaks the same banner + `--tlv` model as
+    //      get/status.  --tlv buffers the one hunk for the relay; a tty
+    //      streams the banner once, then each row live.  The commit sha
+    //      now rides the commit row, so stdout no longer has to stay
+    //      "clean" for the wrapper.
     {
-        //  RULED channel (BRO-002): --tlv/relay buffers ONE table hunk
-        //  on stdout so a parent `be post` can capture+relay it; direct
-        //  tty streams each row live to stderr (stdout stays clean for
-        //  the commit sha the wrapper reads).
-        int report_fd = (HUNKMode == HUNKOutTLV) ? STDOUT_FILENO
-                                                 : STDERR_FILENO;
+        a_cstr(post_uri, "post:");
+        ron60 vpost = SNIFFAtVerbPost();
         rows table = {};
-        u8cs empty_uri = {};
-        (void)ROWSOpen(&table, empty_uri, 0, 0, ROWS_MODE_KEYED);
-        table.fd = report_fd;
-        post_mad_ctx mad = {.fd = report_fd, .changed = 0};
-        post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
-                            post_drain_mad_cb, &mad);
+        (void)ROWSOpen(&table, post_uri, vpost, ctx.stamp_ts,
+                       ROWS_MODE_KEYED);
+        table.fd = STDOUT_FILENO;
         //  POST-018: the commit confirmation is a ROWS commit row (verb
         //  post, the tested `?<hashlet>#<subject>` cell + clickable
-        //  `commit:?<sha>` nav), under the same module hunk — not a raw
-        //  `sniff: commit <hex>` stderr line bypassing the banner.
+        //  `commit:?<sha>` nav) under the banner, emitted first so it
+        //  reads as the headline; the per-file change rows follow.
         post_emit_commit_row(&table, sha_out, message, ctx.stamp_ts);
+        post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
+        post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
+                            post_drain_mad_cb, &mad);
         (void)ROWSClose(&table);
     }
 

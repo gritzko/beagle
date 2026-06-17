@@ -1,3 +1,1 @@
-^[[:space:]]*put[[:space:]]new\.txt$
-^[[:space:]]*put[[:space:]]to-modify\.txt$
-^sniff: put: unchanged\.txt is unchanged — skipped$
+^sniff: put: unchanged\.txt is unchanged .* skipped$

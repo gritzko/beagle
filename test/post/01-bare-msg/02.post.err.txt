@@ -1,2 +1,0 @@
-^.*add[[:space:]]greet\.txt$
-^.*post[[:space:]]+\??[0-9a-f]{6,}#initial$

@@ -71,6 +71,7 @@ One output model (BRO-002): every (sub)module emits ONE content hunk whose text 
  -  `ROWSOpen`/`ROWSClose` (`rows`, `ROWSdiscipline`) — arm / flush an mmap-backed accumulator.
  -  `ROWSu8bFeedRow`/`ROWSu8bFeedRec` (`rows_row`, `ROWSnav`) — append a row from a descriptor or a `ulogrec`.
  -  `ROWSPrintRow` — the canonical single-row emitter (replaced `ULOGPrintStatusLine`) for sites with no module accumulator.
+ -  `ROWSu8bFeedSummary` — append a trailing summary line to the active table so the count rides the hunk, not stderr (POST-018).
 
 ###  HUNK.h — the code-hunk wire format and renderers
 
