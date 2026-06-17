@@ -465,7 +465,6 @@ ok64 HUNKu8sFeedBanner(u8s into, hunk const *hk, HUNKout mode, u32 cols) {
     ansi64 band = THEME_BANNER;
     call(ANSIu8sFeedDelta, into, band, ANSI_DEFAULT);
     u32 used = 0;
-    call(u8sFeed1, into, ' '); used++;
     if (hk->ts) {
         i64 now = (i64)time(NULL);
         i64 ts  = hunk_ron60_to_time(hk->ts, now, -1);

@@ -12,8 +12,10 @@
 #      2. Assert parent files materialised (main.c, util.c, .gitmodules).
 #      3. Assert sub mount: vendor/sub/.be is a regular-file anchor
 #         and vendor/sub/core.c materialised at SUB_C2's content.
-#      4. Assert pre-order recursion markers (`be: get .` outer +
-#         `be: get vendor/sub`) on stderr.
+#      4. Assert pre-order recursion via the --tlv relay (GET-026): the
+#         parent's own H-hunk + file rows precede the relayed sub hunk
+#         (`vendor/sub?<hashlet>`).  The old `be: get` stderr markers are
+#         now trace-only (ABC_TRACE), so default output carries no debug.
 #      5. Assert sub's recorded tip matches $PARENT_PINNED (= $SUB_C2).
 
 . "$(dirname "$0")/../../lib/submodules.sh"
@@ -43,18 +45,36 @@ grep -q 'sub_inc' vendor/sub/core.c \
     || fail "sub/core.c missing sub_inc (expected at SUB_C2):
 $(cat vendor/sub/core.c)"
 
-# --- recursion markers, pre-order ------------------------------------
-grep -q '^be: get [.]'        01.get.got.err \
-    || fail "outer get marker missing; stderr:
-$(cat 01.get.got.err)"
-grep -q '^be: get vendor/sub' 01.get.got.err \
-    || fail "sub get marker missing; stderr:
-$(cat 01.get.got.err)"
+# --- pre-order recursion via the --tlv relay (GET-026) ---------------
+#  A fresh sibling wt B re-runs the same get in --tlv: the parent emits
+#  its own report (the `?master#<hashlet>` H-hunk + parent file rows like
+#  `main.c`), THEN relays the sub with each row rebased under the mount
+#  (`vendor/sub?<hashlet>`).  Pre-order ⇒ the parent's own rows sit
+#  BEFORE the first `vendor/sub` row in the byte stream.  No reliance on
+#  debug stderr markers (now ABC_TRACE-gated); the relay IS the proof.
+cd "$SCRATCH"
+mkdir B B/.be && cd B
+"$BE" get "$PARENT_URL?master" --tlv >01.tlv.out 2>01.tlv.err
+rc=$?
+[ "$rc" = 0 ] || fail "be get --tlv exited $rc; stderr:
+$(cat 01.tlv.err)"
 
-outer_line=$(grep -n '^be: get [.]' 01.get.got.err | head -1 | cut -d: -f1)
-sub_line=$(grep -n '^be: get vendor/sub' 01.get.got.err | head -1 | cut -d: -f1)
-[ -n "$outer_line" ] && [ -n "$sub_line" ] && [ "$outer_line" -lt "$sub_line" ] \
-    || fail "expected outer marker (line=$outer_line) before sub marker (line=$sub_line)"
+#  The TLV stream is NUL-laden binary; split records on NUL into lines
+#  so plain `grep -n` (portable, no `-b`) yields stream order.
+LC_ALL=C tr '\0' '\n' < 01.tlv.out > 01.tlv.lines
+LC_ALL=C grep -aq 'main\.c'    01.tlv.lines \
+    || fail "no parent 'main.c' row in --tlv relay:
+$(cat -v 01.tlv.lines | head -c 400)"
+LC_ALL=C grep -aq 'vendor/sub' 01.tlv.lines \
+    || fail "no relayed 'vendor/sub' sub hunk in --tlv stream:
+$(cat -v 01.tlv.lines | head -c 400)"
+
+#  The parent's own row must precede the sub's mount hunk in the stream.
+parent_ln=$(LC_ALL=C grep -anE 'main\.c'    01.tlv.lines | head -1 | cut -d: -f1)
+sub_ln=$(   LC_ALL=C grep -anE 'vendor/sub' 01.tlv.lines | head -1 | cut -d: -f1)
+[ -n "$parent_ln" ] && [ -n "$sub_ln" ] && [ "$parent_ln" -lt "$sub_ln" ] \
+    || fail "expected parent row (ln=$parent_ln) before sub hunk (ln=$sub_ln) in --tlv relay"
+cd "$SCRATCH/wt"
 
 # --- sub's recorded pin matches what .gitmodules pinned (SUB_C2) -----
 sub_tip=$(awk -F'\t' '$2=="get"||$2=="post"||$2=="patch" { last=$3 }

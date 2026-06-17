@@ -247,3 +247,13 @@
   graf BEFORE the weave so the topo replay is coherent; asserts all five
   trunk edits AND the wt edit survive, no `graf err` / `untouched`.
   Hermetic.
+* `52-default-state-banner/` — GET-026 / BE-005.  Bare `be get` and
+  `be get '?'` are the DEFAULT GET: they run the normal checkout/update
+  path and report the resulting state through the shared ROWS state
+  banner — a pale-yellow `get ?#<hashlet>` hunk header — instead of the
+  old raw `branches:`/`remotes:` summary (rehomed to STATUS-001) or
+  silence on an up-to-date wt.  Table-driven over (mode, lag): up-to-date
+  wt prints the banner with no file rows; a second worktree lagging
+  behind the branch tip fast-forwards and streams the crossed-commit +
+  per-file rows under the banner; both `--color` (band) and `--tlv`
+  (H-hunk `?#<hashlet>` uri) checked.  Hermetic (store-shared wts).

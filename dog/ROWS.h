@@ -93,6 +93,7 @@ typedef struct {
                             // mutators set STDERR_FILENO for tty streaming)
     b8            stream;   // YES → tty live-stream each row
     b8            open;     // YES between Open and Close
+    b8            banner_done; // streaming: module banner already emitted
 } rows;
 
 //  Acquire the mmap'd text/toks and arm the accumulator.  `uri` is the

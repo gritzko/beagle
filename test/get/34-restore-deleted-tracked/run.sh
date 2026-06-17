@@ -55,11 +55,19 @@ printf 'deep\n' > d.want.txt
 match d.want.txt sub/deep.txt
 
 # --- C1: real branch name (not a tracked entry) → branch switch ------
+#  GET-026: the switch reports its resulting state as a `get ?feat#<hex>`
+#  banner on stdout (the `?feat` branch rides the state URI); a file
+#  restore would instead route to a path and never name the branch.  And
+#  no `feat` file is created (the bareword routed to a branch, not a path).
 "$BE" put '?./feat' > /dev/null
 "$BE" get feat > c1.got.out 2> c1.got.err
-grep -E '^sniff: checkout done$' c1.got.err > /dev/null || {
+grep -qE 'get [?]feat#[0-9a-f]{8}' c1.got.out || {
     echo "C1: bareword 'feat' did not route to a branch switch" >&2
-    cat c1.got.err >&2
+    cat c1.got.out c1.got.err >&2
+    exit 1
+}
+[ -e feat ] && {
+    echo "C1: bareword 'feat' created a file (treated as path)" >&2
     exit 1
 }
 

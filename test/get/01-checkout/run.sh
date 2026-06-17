@@ -15,13 +15,12 @@ empty    02.post.got.out
 match_re "$CASE/02.post.err.txt" 02.post.got.err
 
 # 03: switch the wt to the branch tip (no-op on a clean wt — exercises
-# the GET checkout path).  GET prints "sniff: checkout done" to stderr;
-# we match that trailing summary line.  stdout must be empty.
+# the GET checkout path).  Per GET-026 the DEFAULT GET reports its
+# resulting state through the shared ROWS banner, so stdout carries one
+# `get ?#<hashlet>` state-banner line (no file rows on a clean no-op).
 "$BE" get '?' > 03.tree.got.out 2> 03.tree.got.err.raw
-grep -E '^sniff: checkout done$' 03.tree.got.err.raw > 03.tree.got.err || true
-empty 03.tree.got.out
-[ -s 03.tree.got.err ] || {
-    echo "step 03: did not see 'sniff: checkout done' in stderr" >&2
-    cat 03.tree.got.err.raw >&2
+grep -qE 'get \?#[0-9a-f]{8}' 03.tree.got.out || {
+    echo "step 03: stdout missing the 'get ?#<hashlet>' state banner" >&2
+    cat 03.tree.got.out >&2
     exit 1
 }

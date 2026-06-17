@@ -159,12 +159,34 @@ static ok64 rows_flush_hunk(rows *r) {
     return fo;
 }
 
+//  Emit the module banner ONCE for a streaming table that carries a
+//  state uri/verb/ts (BE-005 / GET-026).  The banner IS the hunk header,
+//  single-sourced through HUNKu8sFeedBanner keyed on uri/verb/ts and the
+//  global HUNKMode — so a streaming `be get` prints the same pale-yellow
+//  state band a batching `be status` always does, before the file rows.
+//  A table with no state (empty uri, no ts/verb) stays a flat progress
+//  log (long-clone shape).  No-op once `banner_done`.
+static ok64 rows_stream_banner(rows *r) {
+    sane(r);
+    if (r->banner_done) done;
+    r->banner_done = YES;
+    if (u8csEmpty(r->uri) && !r->ts && !r->verb) done;
+    hunk hk = {.ts = r->ts, .verb = r->verb};
+    u8csMv(hk.uri, r->uri);
+    a_carve(u8, big, (1UL << 16));
+    call(HUNKu8sFeedBanner, u8bIdle(big), &hk, HUNKMode, 0);
+    (void)FILEFeedAll(r->fd, u8bDataC(big));
+    done;
+}
+
 //  Emit a single row LIVE as a one-row content hunk (tty streaming).
-//  No banner header (ts/verb 0, uri empty) so a long clone reads as a
-//  flat line-by-line progress log — the same shape the old
-//  `ULOGPrintStatusLine` produced per event.
+//  The module banner (if any) is emitted once before the first row;
+//  the row itself carries no header (ts/verb 0, uri empty) so a long
+//  clone reads as a flat line-by-line progress log — the same shape the
+//  old `ULOGPrintStatusLine` produced per event.
 static ok64 rows_stream_one(rows *r, rows_row const *row) {
     sane(r);
+    call(rows_stream_banner, r);
     u8bReset(r->text);
     u32bReset(r->toks);
     rows_emit(r, row);
@@ -249,8 +271,11 @@ ok64 ROWSClose(rows *r) {
     if (!r->open) done;
     ok64 fo = OK;
     //  Buffering accumulator → emit the one module hunk now.  Streaming
-    //  accumulator already pushed each row; nothing left to flush.
+    //  accumulator already pushed each row; an EMPTY streaming result
+    //  still owes its state banner (an up-to-date `be get` prints the
+    //  band like `be status` always does — BE-005 / GET-026).
     if (!r->stream) fo = rows_flush_hunk(r);
+    else            fo = rows_stream_banner(r);
     if (ROWS_ACTIVE == r) ROWS_ACTIVE = NULL;
     u32bFree(r->toks);
     u8bUnMap(r->text);

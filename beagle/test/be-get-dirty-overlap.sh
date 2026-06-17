@@ -18,7 +18,6 @@ vc_run merge "$BE" get "$T1"
 
 vc_assert_exit 0
 vc_assert_stderr merge "weave-merged"
-vc_assert_stderr merge "checkout done"
 #  x.txt remains on disk (not unlinked / not refused-and-rolled-back).
 [ -f x.txt ] || { echo "FAIL: x.txt missing after merge GET" >&2; exit 1; }
 

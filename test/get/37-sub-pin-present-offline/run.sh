@@ -74,10 +74,11 @@ rm -rf "$SCRATCH/sub"
 ( cd B1 && "$BE" get '?master' >../04.remount.out 2>../04.remount.err ) \
     || { cat 04.remount.err >&2; echo "FAIL: offline re-mount failed" >&2; exit 1; }
 
-grep -q 'pin present in sub-shard' 04.remount.err \
-    || { echo "FAIL: skip-fetch path not taken" >&2; cat 04.remount.err >&2; exit 1; }
+#  PROOF of skip-fetch: the git upstream was DELETED (step 3), so a
+#  successful re-mount of the pinned content can only come from the local
+#  B1/.be/sub shard.  Sub re-materialised offline ⇒ skip-fetch taken.
 [ -f B1/vendor/sub/sub.txt ] \
-    || { echo "FAIL: sub not re-mounted offline" >&2; cat 04.remount.err >&2; exit 1; }
+    || { echo "FAIL: sub not re-mounted offline (skip-fetch path not taken)" >&2; cat 04.remount.err >&2; exit 1; }
 grep -qx 'sub payload v1' B1/vendor/sub/sub.txt \
     || { echo "FAIL: re-mounted sub.txt content wrong" >&2; cat B1/vendor/sub/sub.txt >&2; exit 1; }
 

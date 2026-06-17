@@ -587,11 +587,14 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         //  SUBS-018: skip subs the path scope does not reach.
         if (!subs_scope_reaches(scope_path, path)) continue;
 
+        //  Pre-order recursion markers (GET-026): trace-only so default
+        //  `be get` stays quiet; the relay stream (HUNKu8sRelay prefix)
+        //  is the observable that proves pre-order ordering.
         if (!outer_emitted) {
-            fprintf(stderr, "be: get .\n");
+            trace("be: get .\n");
             outer_emitted = YES;
         }
-        fprintf(stderr, "be: get %.*s\n",
+        trace("be: get %.*s\n",
                 (int)$len(path), (char *)path[0]);
 
         u8cs subpath_arg = {};
@@ -599,18 +602,8 @@ ok64 BEGetDrainSubs(u8cs wt_root, u8cs subs_ulog,
         u8cs pin_arg = {};
         u8csMv(pin_arg, pin);
 
-        b8 is_mounted = SNIFFSubIsMount(wt_root, subpath_arg);
-        fprintf(stderr,
-                "BE.dbg: sub path=" U8SFMT " pin=" U8SFMT
-                " is_mounted=%s wt_root=" U8SFMT "\n",
-                u8sFmt(subpath_arg), u8sFmt(pin_arg),
-                is_mounted ? "YES" : "NO", u8sFmt(wt_root));
         {
             ok64 mr = BEGetSubMount(subpath_arg, pin_arg, src_uri);
-            fprintf(stderr,
-                    "BE.dbg: BEGetSubMount path=" U8SFMT
-                    " result=%s\n",
-                    u8sFmt(subpath_arg), ok64str(mr));
             if (mr != OK) { worst = mr; continue; }
         }
 

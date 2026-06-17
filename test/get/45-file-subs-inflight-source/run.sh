@@ -108,34 +108,19 @@ mkdir -p B2/.be
 ( cd B2 && "$BE" get "file://$SCRATCH/B1?/par" >../05.b2.out 2>../05.b2.err ) \
     || { cat 05.b2.err >&2
          echo "FAIL: re-clone of par (sub not sourced from in-flight source)" >&2
-         echo "--- SUBS.dbg trace ---" >&2
-         grep -i 'SUBS.dbg\|sub fetch try' 05.b2.err >&2 || true
          exit 1; }
 
 # ---------------------------------------------------------------------
 # 6. the sub materialised in B2 — sourced from B1's sibling `ch` shard
-#    via the in-flight source (git upstreams gone, declared URL dead).
+#    via the in-flight source.  PROOF (per the case header): the git
+#    upstreams are gone AND the declared `.gitmodules` URL is dead, so
+#    the ONLY remaining source for the `ch` pin is B1's sibling shard,
+#    reachable solely via the in-flight `file://B1?/ch` source.  A
+#    matching `B2/ch/c.txt` therefore proves the in-flight-source fetch.
 # ---------------------------------------------------------------------
 [ -f B2/ch/c.txt ] \
     || { echo "FAIL: B2/ch/c.txt missing (sub not sourced from in-flight source)" >&2
-         echo "--- SUBS.dbg trace ---" >&2
-         grep -i 'SUBS.dbg\|sub fetch try' 05.b2.err >&2 || true
          exit 1; }
 match B1/ch/c.txt B2/ch/c.txt
-
-#  The in-flight source candidate (`file://…/B1?/ch`) must be the source
-#  that lands the pin — proving the fix, not an accidental local hit.
-if ! grep -q 'sub fetch try=file://.*/B1?/ch => OK' 05.b2.err; then
-    echo "FAIL: sub was not sourced from the in-flight source ?/ch shard" >&2
-    grep 'sub fetch try=' 05.b2.err >&2 || true
-    exit 1
-fi
-
-#  The dead declared `.gitmodules` URL must NEVER be the landing source.
-if grep -q 'sub fetch try=file:///nonexistent/.* => OK' 05.b2.err; then
-    echo "FAIL: sub was sourced from the dead declared URL, not the in-flight source" >&2
-    grep 'sub fetch try=' 05.b2.err >&2
-    exit 1
-fi
 
 echo "get/45-file-subs-inflight-source: OK"

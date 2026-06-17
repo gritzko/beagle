@@ -1562,14 +1562,38 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  live; --tlv/relay buffers and flushes ONE hunk at Close.  Subs
     //  recurse as separate `be` processes (the relay re-emits their one
     //  hunk path-prefixed) so this module pass owns no sub rows — closing
-    //  before returning is the per-module flush boundary.  The header uri
-    //  stays EMPTY: a checkout's address is the wt itself, and the relay
-    //  rebases an empty uri to the mount subpath (the module address) —
-    //  carrying the target's detached `?<sha>` ref here instead would
-    //  give the relay a path-less uri it can only echo, not anchor.
+    //  before returning is the per-module flush boundary.
+    //
+    //  GET-026: the header uri is the RESULTING STATE (path-less here;
+    //  the parent relay rebases it under the mount subpath, so a sub
+    //  banner reads `<path>#<hashlet>` / `<path>?<branch>#<hashlet>`).
+    //  Shape mirrors the recorded `get` row (see the commit block above):
+    //    detached `?<40hex>` source → `?<hashlet>`,
+    //    attached `?<branch>`       → `?<branch>#<hashlet>`,
+    //    empty source (trunk)       → `?#<hashlet>`.
+    //  `bannerbuf` is function-scope (must outlive ROWSClose below).
+    a_pad(u8, bannerbuf, 128);
+    {
+        u8bFeed1(bannerbuf, '?');
+        b8 bdetached = $ok(source) && !u8csEmpty(source) &&
+                       *source[0] == '?' && $len(source) == 41;
+        if (bdetached) {
+            (void)SHA1u8sFeedHashlet(u8bIdle(bannerbuf), &tgt_commit_sha);
+        } else {
+            if ($ok(source) && !u8csEmpty(source) && *source[0] == '?' &&
+                $len(source) > 1) {
+                a_dup(u8c, br, source);
+                u8csUsed1(br);                       // drop the `?` sigil
+                u8bFeed(bannerbuf, br);
+            }
+            u8bFeed1(bannerbuf, '#');
+            (void)SHA1u8sFeedHashlet(u8bIdle(bannerbuf), &tgt_commit_sha);
+        }
+    }
+    a_dup(u8c, banner_uri, u8bData(bannerbuf));
     rows table = {};
-    u8cs empty_uri = {};
-    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    call(ROWSOpen, &table, banner_uri, SNIFFAtVerbGet(), ctx.ts,
+         ROWS_MODE_KEYED);
 
     //  Banner: list commits crossing into / out of the wt as ULOG
     //  rows before the per-file rows from WALKTreeLazy/drains land
@@ -1664,7 +1688,6 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  wrapper that recurses into subs.
     (void)ROWSClose(&table);
 
-    fprintf(stderr, "sniff: checkout done\n");
     if (sub_fail) fail(SNIFFFAIL);
     done;
 }

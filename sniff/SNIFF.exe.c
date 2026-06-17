@@ -1124,7 +1124,15 @@ ok64 SNIFFExec(cli *c) {
     } else if (is_checkout) {
         if (CLIUriLen(c) < 1) {
             if ($eq(c->verb, v_get)) {
-                ret = SNIFFGetSummary(reporoot);
+                //  GET-026: bare `be get` is the DEFAULT GET — resume the
+                //  worktree's current branch (trunk if empty) through the
+                //  normal checkout/update path so the wt fast-forwards when
+                //  it lags.  An empty URI falls through SNIFFGetURI to the
+                //  cur-branch resume; the report is the resulting state
+                //  banner, not the old branches/remotes summary
+                //  (rehomed to STATUS-001).
+                uri empty_u = {};
+                ret = SNIFFGetURI(reporoot, &empty_u);
             } else {
                 fprintf(stderr,
                     "sniff: checkout requires a URI or hex\n");

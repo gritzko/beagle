@@ -76,9 +76,12 @@ GETS_BEFORE=$(wtlog_get_rows .be/wtlog)
 #    target == baseline.  No rows are ever deleted (append-only).
 # ---------------------------------------------------------------------
 "$BE" get! '?' > "$LOG_DIR/3.get.out" 2> "$LOG_DIR/3.get.err" || { cat "$LOG_DIR/3.get.err" >&2; echo "FAIL: be get! '?'" >&2; exit 1; }
-grep -qE '^sniff: checkout done$' "$LOG_DIR/3.get.err" || {
-    echo "FAIL: be get! '?' did not report 'sniff: checkout done'" >&2
-    cat "$LOG_DIR/3.get.err" >&2; exit 1
+#  GET-026: the force re-checkout reports its resulting state as a
+#  `get ?#<hashlet>` banner on stdout (the boundary-append proof is the
+#  wtlog grow check below).
+grep -qE 'get [?]#[0-9a-f]{8}' "$LOG_DIR/3.get.out" || {
+    echo "FAIL: be get! '?' did not report the state banner" >&2
+    cat "$LOG_DIR/3.get.out" "$LOG_DIR/3.get.err" >&2; exit 1
 }
 
 GETS_AFTER=$(wtlog_get_rows .be/wtlog)

@@ -3,6 +3,7 @@
 #include "SUBS.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -225,6 +226,15 @@ static ok64 subs_spawn_be_get(u8cs exe_path, u8cs wt_path, u8cs arg) {
         if (chdir((char const *)u8bDataHead(wt_buf)) != 0) {
             fprintf(stderr, "sniff: sub chdir failed: %s\n", strerror(errno));
             _exit(127);
+        }
+        //  GET-026: silence the IMMEDIATE-checkout child's stdout.  This
+        //  is an internal checkout — beagle re-runs a recursive `be get`
+        //  and relays THAT as the user-facing report; this child's stdout
+        //  is inherited (the relay pipe in the recursive case), so its
+        //  state banner would corrupt the parent's TLV drain (TLVBADTYPE).
+        {
+            int dn = open("/dev/null", O_WRONLY);
+            if (dn >= 0) { (void)dup2(dn, STDOUT_FILENO); if (dn != STDOUT_FILENO) close(dn); }
         }
         //  argv[0] = full path to the exe so sibling-dog lookup (if
         //  any) finds the right bin dir without relying on $PATH.
@@ -674,14 +684,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //      (keep the existing working state).
     b8 already_mounted = SNIFFSubIsMount(reporoot, path);
 
-    fprintf(stderr,
-            "SUBS.dbg: SubMount path=" U8SFMT " hex=" U8SFMT
-            " reporoot=" U8SFMT " parent_root=" U8SFMT
-            " already_mounted=%s\n",
-            u8sFmt(path), u8sFmt(hex_sha),
-            u8sFmt(reporoot), u8sFmt(parent_root),
-            already_mounted ? "YES" : "NO");
-
     //  Fast path: sub already mounted AND at the requested pin.
     //  Skip WIREFetchAll + child checkout — both are no-ops on the
     //  happy path and the fetch round-trips github/ssh for nothing.
@@ -694,10 +696,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             u8bFed(hexpad, 40);
             a_dup(u8c, cur_tip, u8bDataC(hexpad));
             if (u8csEq(cur_tip, hex_sha)) {
-                fprintf(stderr,
-                        "SUBS.dbg: SubMount path=" U8SFMT
-                        " already at pin — skip fetch\n",
-                        u8sFmt(path));
                 done;
             }
         }
@@ -774,14 +772,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         !u8csEmpty(pathbase) && !u8csEq(pathbase, basename) &&
         subs_sibling_shard_has_pin(pathbase, hex_sha)) {
         u8csMv(basename, pathbase);
-        fprintf(stderr,
-                "SUBS.dbg: SubMount prefer path-basename shard "
-                U8SFMT " (holds pin)\n", u8sFmt(pathbase));
     }
-
-    fprintf(stderr,
-            "SUBS.dbg: SubMount url=" U8SFMT " basename=" U8SFMT "\n",
-            u8sFmt(url), u8sFmt(basename));
 
     //  3. Sub-store dir: `<parent_root>/.be/<basename>/`.  Top-level
     //  subdir of the parent's `.be/`, identical shape to the parent's
@@ -938,8 +929,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             //  offline / local-only store satisfy the gitlink without
             //  round-tripping the (possibly unreachable) declared
             //  remote.
-            fprintf(stderr,
-                    "SUBS.dbg: pin present in sub-shard — skip fetch\n");
             fo = OK;
             KEEPClose();
         } else if (ko == OK) {
@@ -991,9 +980,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                 a_dup(u8c, pin_ref, hex_sha);
                 if (f == OK && !subs_pin_present(hex_sha))
                     (void)WIREFetch(cu, pin_ref);
-                fprintf(stderr,
-                        "SUBS.dbg: sub fetch try=" U8SFMT " => %s\n",
-                        u8sFmt(cu), ok64str(f));
                 b8 last = (ci == nc - 1);
                 if (f == OK && (last || subs_pin_present(hex_sha))) {
                     fo = OK;
@@ -1002,11 +988,6 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
                 fo = (f != OK) ? f : NONE;
             }
             KEEPClose();
-        } else {
-            fprintf(stderr,
-                    "SUBS.dbg: KEEPOpenBranch basename=" U8SFMT
-                    " failed: %s\n",
-                    u8sFmt(basename_const), ok64str(ko));
         }
 
         //  Restore parent's project + trunk open regardless of fetch
@@ -1094,14 +1075,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     //  LOCK_EX otherwise.  Restore on the way out.
     b8 had_lock = (KEEP.lock_fd >= 0);
     if (had_lock) (void)FILEUnlock(&KEEP.lock_fd);
-    fprintf(stderr,
-            "SUBS.dbg: spawning sniff get hex=" U8SFMT
-            " mount=" U8SFMT " exe=" U8SFMT "\n",
-            u8sFmt(arg_s), u8sFmt(mount_s), u8sFmt(exe_s));
     ok64 sr = subs_spawn_be_get(exe_s, mount_s, arg_s);
-    fprintf(stderr,
-            "SUBS.dbg: spawned sniff get path=" U8SFMT " result=%s\n",
-            u8sFmt(path), ok64str(sr));
     if (had_lock) (void)FILELock(&KEEP.lock_fd, YES);
     if (sr != OK && !already_mounted) {
         (void)FILEUnLink($path(anchor));

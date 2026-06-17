@@ -28,7 +28,6 @@ vc_run merge "$BE" get "$T1"
 
 vc_assert_exit 0
 vc_assert_stderr merge "weave-merged"
-vc_assert_stderr merge "checkout done"
 [ -f a.txt ] || { echo "FAIL: a.txt missing after merge GET" >&2; exit 1; }
 
 echo "=== be-get-overlay-real: OK ==="
