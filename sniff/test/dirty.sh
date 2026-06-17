@@ -117,12 +117,14 @@ note "two trunk tips: T1=$T1 T2=$T2"
 sleep 0.1
 echo "a uncommitted" > a.txt
 
-if ! sniff get "$T1" 2>$TMP/dirty.err; then
+if ! sniff get "$T1" >$TMP/dirty.out 2>$TMP/dirty.err; then
     cat $TMP/dirty.err
     fail "same-branch overlap GET should have weave-merged, not refused"
 fi
-grep -q "weave-merged" $TMP/dirty.err \
-    || fail "expected 'weave-merged' notice; got: $(cat $TMP/dirty.err)"
+#  BE-005 verb-output sweep: the weave-merge count now rides the ULOG
+#  status hunk on stdout, not stderr.
+grep -q "weave-merged" $TMP/dirty.out \
+    || fail "expected 'weave-merged' notice; got: $(cat $TMP/dirty.out)"
 [ -f a.txt ] || fail "a.txt vanished across merge GET"
 note "same-branch overlap GET weave-merged as expected"
 

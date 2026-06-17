@@ -92,12 +92,12 @@ grep -q "$sub_after" 03.tree.got.out \
 $(cat 03.tree.got.out)"
 
 # --- 7.  post-order trace markers ------------------------------------
-#   bepost_recurse_cb emits `be: post .` (outer) lazily on the first
-#   sub line, then `be: post <sub>`.  Because the wrapper recurses
-#   BEFORE running BEPostLocal, both lines land on stderr before
-#   sniff's commit lines.  We check that the sub marker appears.
-grep -q '^be: post vendor/sub' 02.post.got.err \
-    || fail "sub post marker missing; stderr:
-$(cat 02.post.got.err)"
+#   POST-019: the sub commit is reported via the real relayed ROWS hunk
+#   on STDOUT (`post vendor/sub/?<sha>#round1 [vendor/sub]`), emitted in
+#   post-order (sub before the parent's own `post ?<sha>`) — no stderr
+#   echo.  Assert the sub's relayed post banner appears.
+grep -q 'post vendor/sub/' 02.post.got.out \
+    || fail "sub post marker missing; stdout:
+$(cat 02.post.got.out)"
 
 note "post/09-sub-flat-both-dirty: sub advanced $baseline_sub -> $sub_after; outer advanced"

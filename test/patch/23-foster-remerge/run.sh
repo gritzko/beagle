@@ -58,6 +58,6 @@ if grep -q '<<<<' f.c; then
     cat f.c >&2; echo "--- stderr ---" >&2; cat "$ETMP/m.err" >&2
     exit 1
 fi
-grep -q 'content-conflict=0' "$ETMP/m.err" \
+grep -q 'content-conflict=0' "$ETMP/m.out" \
     || { echo "FAIL: merge reported a content-conflict:" >&2; cat "$ETMP/m.err" >&2; exit 1; }
 match "$CASE/03.f.c2.c" f.c        # clean result == C2 (return 100 + 7)

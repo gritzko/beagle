@@ -301,6 +301,46 @@ static void emit_status(const char *status, u8cs path) {
     }
 }
 
+//  Verb-output sweep (BE-005): report a patch skip / diagnostic as a
+//  ULOG summary line in the active table (stdout) — `<path> <reason> —
+//  skipped` — instead of an ad-hoc stderr printf.  No-op with no active
+//  table.  Mirrors PUT.c's `put_skip`.
+static void patch_skip(u8cs path, char const *reason) {
+    a_pad(u8, sl, 512);
+    u8cs rs = u8scstr(reason);
+    (void)u8bFeed(sl, path);
+    { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
+    (void)u8bFeed(sl, rs);
+    { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
+    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+}
+
+//  Verb-output sweep (BE-005): render the merge stat-counter line
+//  (`noop=N take-theirs=N merged=N …`) into the active patch table as a
+//  summary tail, so the data-bearing counts ride the module hunk on
+//  stdout instead of a bare stderr line.  `tail` is appended verbatim
+//  after the counters (e.g. the noop-bail's clarifier).
+static void patch_stats_summary(patch_stats const *st, char const *tail) {
+    a_pad(u8, line, 256);
+    struct { char const *k; u32 v; } cols[] = {
+        {"noop=",             st->noop},
+        {" take-theirs=",     st->take_theirs},
+        {" merged=",          st->merged},
+        {" added=",           st->added},
+        {" deleted=",         st->deleted},
+        {" content-conflict=",st->merged_conflict},
+        {" mod-del-kept=",    st->mod_del_kept},
+        {" failed=",          st->failed},
+    };
+    for (u32 i = 0; i < 8; i++) {
+        u8cs k = u8scstr(cols[i].k);
+        (void)u8bFeed(line, k);
+        (void)utf8sFeed10(u8bIdle(line), (u64)cols[i].v);
+    }
+    if (tail != NULL) { u8cs t = u8scstr(tail); (void)u8bFeed(line, t); }
+    (void)ROWSu8bFeedSummary(u8bDataC(line));
+}
+
 //  Does the wt's on-disk blob for `childpath` differ from `base_sha`
 //  (the file's committed `ours` blob)?  YES means the user / a prior
 //  PATCH left uncommitted bytes that the tree-sha classification
@@ -494,9 +534,8 @@ static ok64 patch_walk_inner(u8cs reporoot, u8cs dir_path,
             //  type conflict; deferred.
             if ((l && !l->is_dir) || (o && !o->is_dir) ||
                 (t && !t->is_dir)) {
-                fprintf(stderr,
-                    "sniff: patch: type conflict at %.*s — skipped\n",
-                    (int)$len(childpath), (char *)childpath[0]);
+                //  Verb-output sweep (BE-005): ULOG summary in the table.
+                patch_skip(childpath, "type conflict");
                 st->failed++;
                 emit_status("failed", childpath);
                 continue;
@@ -1717,13 +1756,9 @@ static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
     u32 absorbed = st.take_theirs + st.merged + st.merged_conflict +
                    st.added + st.deleted + st.mod_del_kept + st.failed;
     if (absorbed == 0) {
-        fprintf(stderr,
-                "sniff: patch: noop=%u take-theirs=%u merged=%u "
-                "added=%u deleted=%u content-conflict=%u mod-del-kept=%u "
-                "failed=%u (nothing absorbed — no patch row staged)\n",
-                st.noop, st.take_theirs, st.merged,
-                st.added, st.deleted, st.merged_conflict,
-                st.mod_del_kept, st.failed);
+        //  Verb-output sweep (BE-005): the stat counters ride the active
+        //  patch table as a summary tail (stdout), not a bare stderr line.
+        patch_stats_summary(&st, " (nothing absorbed — no patch row staged)");
         done;
     }
 
@@ -1782,13 +1817,10 @@ static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
     //  SNIFFEmitCommitRange (before patch_walk); per-file rows came
     //  from the walk.  No single-tip placeholder line here anymore.
 
-    fprintf(stderr,
-            "sniff: patch: noop=%u take-theirs=%u merged=%u "
-            "added=%u deleted=%u content-conflict=%u mod-del-kept=%u "
-            "failed=%u\n",
-            st.noop, st.take_theirs, st.merged,
-            st.added, st.deleted, st.merged_conflict,
-            st.mod_del_kept, st.failed);
+    //  Verb-output sweep (BE-005): the final stat counters ride the
+    //  active patch table as a summary tail (stdout), not a bare stderr
+    //  line.
+    patch_stats_summary(&st, NULL);
 
     //  DIS-018: a content conflict (merged_conflict) no longer flips
     //  the exit code — a non-zero exit broke parent recursion when a

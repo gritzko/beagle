@@ -147,10 +147,11 @@ run_form() {
     rc=0
     timeout 30 "$inv" post -m "#$label-change" >"$POSTLOG" 2>&1 || rc=$?
 
-    #  The recursion descends into the mounted sub: this marker MUST fire
-    #  for all forms (recursion is default-on; the sub is clean so it
-    #  no-ops, but the descent still happens).
-    grep -q '^be: post vendor/sub' "$POSTLOG" \
+    #  POST-019: the recursion descends into the mounted (clean) sub; it
+    #  no-ops, so there is no relayed commit banner — the descent surfaces
+    #  as a ULOG `post vendor/sub` marker row on stdout (replacing the old
+    #  stderr echo).  MUST fire for all argv0 forms (recursion default-on).
+    grep -qE 'post vendor/sub$' "$POSTLOG" \
         || { cat "$POSTLOG" >&2; fail "[$label] post did NOT recurse into vendor/sub"; }
     #  SUBS-022 symptom: a relative argv[0] makes the child execvp fail.
     if grep -qiE 'execvp .*No such file or directory' "$POSTLOG"; then

@@ -31,6 +31,7 @@
 #include "abc/OK.h"
 #include "abc/PATH.h"
 #include "abc/PRO.h"
+#include "abc/RON.h"
 #include "dog/ROWS.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
@@ -40,6 +41,31 @@
 #include "AT.h"
 #include "CLASS.h"
 #include "SUBS.h"
+
+//  Verb-output sweep (BE-005): report a delete skip / diagnostic as a
+//  ULOG summary line in the active `delete:` table (stdout) —
+//  `<path> <reason> — skipped` — instead of an ad-hoc stderr printf.
+//  No-op with no active table.  Mirrors PUT.c's `put_skip`.
+static void del_skip(u8cs path, char const *reason) {
+    a_pad(u8, sl, 512);
+    u8cs rs = u8scstr(reason);
+    (void)u8bFeed(sl, path);
+    { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
+    (void)u8bFeed(sl, rs);
+    { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
+    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+}
+
+//  Verb-output sweep (BE-005): feed a `<lead> N <tail>` count line into
+//  the active table as a summary (e.g. `deleted N file(s)`).  No-op with
+//  no active table.
+static void del_count_summary(char const *lead, u32 n, char const *tail) {
+    a_pad(u8, line, 128);
+    { u8cs s = u8scstr(lead); (void)u8bFeed(line, s); }
+    (void)utf8sFeed10(u8bIdle(line), (u64)n);
+    { u8cs s = u8scstr(tail); (void)u8bFeed(line, s); }
+    (void)ROWSu8bFeedSummary(u8bDataC(line));
+}
 
 // --- Per-URI baseline-membership classifier -------------------------
 //
@@ -214,8 +240,17 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
          (FILE_SCAN)(FILE_SCAN_FILES | FILE_SCAN_LINKS | FILE_SCAN_DEEP),
          del_dir_cb, &ctx);
 
-    fprintf(stderr, "sniff: delete: %.*s — %u file(s) unlinked\n",
-            (int)$len(dir_rel), (char *)dir_rel[0], ctx.unlinked);
+    //  Verb-output sweep (BE-005): the unlinked count rides the active
+    //  `delete:` table as a summary (`<dir>/ — N file(s) unlinked`); the
+    //  named-delete path always has one open around this call.
+    {
+        a_pad(u8, line, 256);
+        (void)u8bFeed(line, dir_rel);
+        { a_cstr(s, " — "); (void)u8bFeed(line, s); }
+        (void)utf8sFeed10(u8bIdle(line), (u64)ctx.unlinked);
+        { a_cstr(s, " file(s) unlinked"); (void)u8bFeed(line, s); }
+        (void)ROWSu8bFeedSummary(u8bDataC(line));
+    }
     done;
 }
 
@@ -287,6 +322,10 @@ static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
     done;
 }
 
+//  Named-delete worker — defined below; runs under DELStage's open
+//  `delete:` ROWS table (BE-005 verb-output sweep).
+static ok64 del_stage_named(u32 nuris, uri const *uris);
+
 ok64 DELStage(u32 nuris, uri const *uris) {
     sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
 
@@ -305,14 +344,39 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
         try(del_sweep_missing, sweep_root, sweep_ts, sweep_verb, &sweep_n);
         ok64 so = __;
+        //  Verb-output sweep (BE-005): the swept count rides the table as
+        //  a summary tail (replacing the bare stderr line), folded into
+        //  the one module hunk before Close.  Suppressed under quiet (sub
+        //  relay capture), mirroring the old stderr guard.
+        if (so == OK && sweep_n > 0 && !SNIFF.quiet)
+            del_count_summary("swept ", sweep_n, " missing file(s)");
         ok64 cr = ROWSClose(&table);
         if (so != OK) return so;
         if (cr != OK) return cr;
-        if (sweep_n > 0 && !SNIFF.quiet)
-            fprintf(stderr,
-                    "sniff: delete: swept %u missing file(s)\n", sweep_n);
         done;
     }
+
+    //  Named-delete worker (BE-005 verb-output sweep).  Open ONE
+    //  banner-headed `delete:` table so the per-file `delete` rows + the
+    //  skip diagnostics + final count ride one hunk (streamed on a tty,
+    //  one `H` hunk in --tlv/relay).  ROWSOpen/Close bracket every worker
+    //  exit path; per-file rows append via the worker's ROWSPrintRow.
+    a_cstr(del_uri, "delete:");
+    ron60 named_verb = SNIFFAtVerbDelete();
+    ron60 named_ts = 0;
+    struct timespec named_tv = {};
+    SNIFFAtNow(&named_ts, &named_tv);
+    rows table = {};
+    call(ROWSOpen, &table, del_uri, named_verb, named_ts, ROWS_MODE_KEYED);
+    table.fd = STDOUT_FILENO;
+    try(del_stage_named, nuris, uris);
+    ok64 wr = __;
+    ok64 cr = ROWSClose(&table);
+    return wr != OK ? wr : cr;
+}
+
+static ok64 del_stage_named(u32 nuris, uri const *uris) {
+    sane(SNIFF.log_data && nuris > 0 && uris != NULL);
 
     ron60 ts = 0;
     struct timespec tv = {};
@@ -367,19 +431,23 @@ ok64 DELStage(u32 nuris, uri const *uris) {
             u8cs mount = {};
             del_sub_kind sk = del_sub_classify(reporoot, probe, mount);
             if (sk == DEL_SUB_SELF) {
-                fprintf(stderr,
-                        "sniff: delete: %.*s is a submodule mount — "
-                        "removal not supported yet (SUBS-008); skipped\n",
-                        (int)$len(mount), (char *)mount[0]);
+                //  Verb-output sweep (BE-005): ULOG summary in the table.
+                del_skip(mount, "is a submodule mount — removal not "
+                                "supported yet (SUBS-008)");
                 skipped++;
                 continue;
             }
             if (sk == DEL_SUB_INTERIOR) {
-                fprintf(stderr,
-                        "sniff: delete: %.*s lives inside submodule %.*s "
-                        "— delete it from within the sub; skipped\n",
-                        (int)$len(raw), (char *)raw[0],
-                        (int)$len(mount), (char *)mount[0]);
+                //  Verb-output sweep (BE-005): include the mount path in
+                //  the reason; ULOG summary in the table.
+                a_pad(u8, sl, 512);
+                (void)u8bFeed(sl, raw);
+                { a_cstr(s, " lives inside submodule ");
+                  (void)u8bFeed(sl, s); }
+                (void)u8bFeed(sl, mount);
+                { a_cstr(s, " — delete it from within the sub; skipped");
+                  (void)u8bFeed(sl, s); }
+                (void)ROWSu8bFeedSummary(u8bDataC(sl));
                 skipped++;
                 continue;
             }
@@ -398,6 +466,13 @@ ok64 DELStage(u32 nuris, uri const *uris) {
             call(SNIFFAtAppendAt, ts, verb, &urow);
             ts++;
             emitted++;
+            //  Verb-output sweep (BE-005): report the staged dir delete
+            //  as a ULOG `delete` row in the active table.
+            {
+                ulogrec rep = {.ts = 0, .verb = verb};
+                u8csMv(rep.uri.path, raw);
+                (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+            }
             continue;
         }
 
@@ -449,16 +524,33 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         call(SNIFFAtAppendAt, ts, verb, &urow);
         ts++;
         emitted++;
+        //  Verb-output sweep (BE-005): report the staged file delete as
+        //  a ULOG `delete` row in the active table.
+        {
+            ulogrec rep = {.ts = 0, .verb = verb};
+            u8csMv(rep.uri.path, raw);
+            (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        }
     }
 
-    if (skipped > 0)
-        fprintf(stderr,
-                "sniff: deleted %u file(s) (%u row(s), %u skipped)\n",
-                unlinked, emitted, skipped);
-    else
-        fprintf(stderr,
-                "sniff: deleted %u file(s) (%u row(s))\n",
-                unlinked, emitted);
+    //  Verb-output sweep (BE-005): the final `deleted N file(s) …` count
+    //  rides the `delete:` table as a summary tail instead of a bare
+    //  stderr line.  Suppressed under quiet (sub relay capture).
+    if (!SNIFF.quiet) {
+        a_pad(u8, line, 128);
+        { a_cstr(s, "deleted ");   (void)u8bFeed(line, s); }
+        (void)utf8sFeed10(u8bIdle(line), (u64)unlinked);
+        { a_cstr(s, " file(s) ("); (void)u8bFeed(line, s); }
+        (void)utf8sFeed10(u8bIdle(line), (u64)emitted);
+        { a_cstr(s, " row(s)");    (void)u8bFeed(line, s); }
+        if (skipped > 0) {
+            { a_cstr(s, ", ");        (void)u8bFeed(line, s); }
+            (void)utf8sFeed10(u8bIdle(line), (u64)skipped);
+            { a_cstr(s, " skipped"); (void)u8bFeed(line, s); }
+        }
+        { a_cstr(s, ")"); (void)u8bFeed(line, s); }
+        (void)ROWSu8bFeedSummary(u8bDataC(line));
+    }
     done;
 }
 

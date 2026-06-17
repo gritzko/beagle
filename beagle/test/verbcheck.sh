@@ -209,6 +209,16 @@ vc_assert_stderr() {
 $(sed 's/^/    /' "$TMP/stderr.$name")"
 }
 
+#  BE-005 verb-output sweep: routine confirmations/progress now ride the
+#  ULOG status hunk on stdout (not stderr).  Same shape as
+#  vc_assert_stderr but matches the stdout capture.
+vc_assert_stdout() {
+    name=$1; pat=$2
+    grep -qF "$pat" "$TMP/stdout.$name" \
+        || vc_fail "stdout [$name]: missing '$pat'; got:
+$(sed 's/^/    /' "$TMP/stdout.$name")"
+}
+
 #  Extract a section's body (between [SECTION] and the next [) from a
 #  snapshot.  Trims off the section headers themselves.  Use literal
 #  string compare instead of regex — `awk -v` strips backslashes

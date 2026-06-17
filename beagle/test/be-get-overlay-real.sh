@@ -27,7 +27,7 @@ vc_step "be get $T1 — a.txt dirty AND in the diff set → weave-merged"
 vc_run merge "$BE" get "$T1"
 
 vc_assert_exit 0
-vc_assert_stderr merge "weave-merged"
+vc_assert_stdout merge "weave-merged"
 [ -f a.txt ] || { echo "FAIL: a.txt missing after merge GET" >&2; exit 1; }
 
 echo "=== be-get-overlay-real: OK ==="

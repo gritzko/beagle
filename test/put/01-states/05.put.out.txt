@@ -1,4 +1,5 @@
 .*put put:$
 .*put new[.]txt$
 .*put to-modify[.]txt$
+unchanged[.]txt is unchanged .* skipped$
 staged 2 put row[(]s[)]$

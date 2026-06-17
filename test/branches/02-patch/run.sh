@@ -48,11 +48,14 @@ note "trunk tip T_pre=$T_pre; wt has only x.txt"
 
 # 12. be patch ?./fix1! (whole-branch scope)
 echo "=== 12. be patch ?./fix1! — absorb stack into wt ==="
-PATCH_OUT="$ETMP/patch.err"
-"$BE" patch "?./fix1!" 2>"$PATCH_OUT" >/dev/null \
-    || fail "be patch '?./fix1!' failed (stderr: $(cat "$PATCH_OUT"))"
-grep -q '^sniff: patch:' "$PATCH_OUT" \
-    || fail "no 'sniff: patch:' summary in stderr"
+PATCH_OUT="$ETMP/patch.out"
+"$BE" patch "?./fix1!" 2>"$ETMP/patch.err" >"$PATCH_OUT" \
+    || fail "be patch '?./fix1!' failed (stderr: $(cat "$ETMP/patch.err"))"
+#  BE-005 verb-output sweep: the patch stat summary rides the ULOG status
+#  hunk on stdout now (counters like `noop=…`), not a `sniff: patch:`
+#  stderr line.
+grep -q 'noop=' "$PATCH_OUT" \
+    || fail "no patch stat summary in stdout"
 [ -f a.txt ] || fail "a.txt missing in trunk wt after patch"
 [ -f b.txt ] || fail "b.txt missing in trunk wt after patch"
 TRUNK_REFS=$(ref_tip "?")

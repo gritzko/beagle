@@ -31,7 +31,7 @@ vc_step "be get $T2 — dirty d.txt → weave-merged (tgt-empty side preserves w
 vc_run delete_dirty "$BE" get "$T2"
 
 vc_assert_exit 0
-vc_assert_stderr delete_dirty "weave-merged"
+vc_assert_stdout delete_dirty "weave-merged"
 [ -f d.txt ] || { echo "FAIL: d.txt removed despite dirty edit" >&2; exit 1; }
 
 echo "=== be-get-overlay-delete-dirty: OK ==="

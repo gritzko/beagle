@@ -64,13 +64,15 @@ F2_TIP_PRE=$(ref_tip "?fix2")
 F1_TIP_PRE=$(ref_tip "?fix1")
 [ "$F2_TIP_PRE" = "$F29_C1P" ] || fail "§29: ?fix2 unexpectedly moved"
 
-"$BE" patch "?fix2" 2>"$ETMP/p29.err" >/dev/null \
+"$BE" patch "?fix2" 2>"$ETMP/p29.err" >"$ETMP/p29.out" \
     || { cat "$ETMP/p29.err"; fail "§29: be patch ?fix2 failed"; }
 
 #  C1''s diff matches C1's diff, both already on disk in cur's wt → all
 #  files noop; `be post` should refuse for lack of content changes.
-grep -q "noop=" "$ETMP/p29.err" \
-    || fail "§29: expected 'noop' from patch; got: $(cat $ETMP/p29.err)"
+#  BE-005 verb-output sweep: the stat counters ride the ULOG status hunk
+#  on stdout now (not stderr).
+grep -q "noop=" "$ETMP/p29.out" \
+    || fail "§29: expected 'noop' from patch; got: $(cat $ETMP/p29.out)"
 
 if "$BE" post 'should not commit' 2>"$ETMP/p29.post.err" >/dev/null; then
     fail "§29: be post should refuse (same patch-id absorbed = noop)"

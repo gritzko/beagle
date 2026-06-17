@@ -87,11 +87,12 @@ grep -q "$after_leaf" 04.sub.tree.out \
     || fail "sub vendor/ tree does not reference new leaf $after_leaf:
 $(cat 04.sub.tree.out)"
 
-#  Post-order recursion trace: at least the leaf marker should appear
-#  in the captured stderr — it surfaces from inside the sub's own
-#  BEPost wrapper.
-grep -q '^be: post vendor/leaf' 02.post.got.err \
-    || fail "leaf post marker missing:
-$(cat 02.post.got.err)"
+#  POST-019: the leaf commit surfaces in the relayed ROWS hunk on STDOUT
+#  (the banner carries the full relay-tag chain `... [vendor/sub]
+#  [vendor/leaf]`); the deepest tag proves the cascade reached the leaf.
+#  No stderr echo.
+grep -q '\[vendor/leaf\]' 02.post.got.out \
+    || fail "leaf post marker missing; stdout:
+$(cat 02.post.got.out)"
 
 note "post/10-sub-depth3-cascading: all 3 levels advanced; gitlinks chained"

@@ -324,9 +324,17 @@ static ok64 hunk_rebase_body(hunk *hk, u8csc prefix) {
                 call(u8bFeed1, nt, ' ');
                 u8csUsed(body, 1);
             }
-            call(u8bFeed, nt, prefix);
-            call(u8bFeed1, nt, '/');
-            call(u8bFeed, nt, body);
+            //  An EMPTY path column (body is just the `\n` — a uri-only
+            //  summary / branch-tip status row) must NOT get a prefix:
+            //  splicing `<prefix>/` into it glues onto the prior column
+            //  (the `okabc/` garbage).  Copy verbatim instead.
+            if ($len(body) <= 1) {
+                call(u8bFeed, nt, body);
+            } else {
+                call(u8bFeed, nt, prefix);
+                call(u8bFeed1, nt, '/');
+                call(u8bFeed, nt, body);
+            }
         } else {
             //  Date / verb / separator columns — copy verbatim.
             call(u8bFeed, nt, span);

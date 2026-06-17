@@ -17,6 +17,7 @@
 #include "dog/HOME.h"
 #include "dog/THEME.h"
 #include "dog/ULOG.h"
+#include "dog/ROWS.h"             // ROWSPrintRow (POST-019 recursion marker)
 #include "graf/BLOB.h"            // GRAFPathDescend (bareword tracked probe)
 #include "graf/GRAF.h"            // GRAFResolveVersion (top-of-chain pass)
 #include "dog/git/GIT.h"          // GITu8sCommitTree (baseline-tree probe)
@@ -2748,9 +2749,10 @@ static ok64 bepost_bump_sub(u8cs subpath) {
 //  otherwise.
 
 static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
-                              u8css argv, b8 *postnone_out) {
-    sane($ok(wt_root) && $ok(subpath) && postnone_out);
+                              u8css argv, b8 *postnone_out, b8 *silent_out) {
+    sane($ok(wt_root) && $ok(subpath) && postnone_out && silent_out);
     *postnone_out = NO;
+    *silent_out   = NO;
 
     //  Resolve self (absolute path); use as argv[0] so the child's
     //  HOMEResolveSibling finds the right bin dir.  argv[0] + PATH is
@@ -2864,6 +2866,7 @@ static ok64 bepost_spawn_sub(u8cs wt_root, u8cs subpath,
     ok64 wo = FILEReap(pid, &rc);
 
     a_dup(u8c, captured, u8bData(capbuf));
+    *silent_out = $empty(captured) ? YES : NO;
     if (!$empty(captured)) {
         a_carve(u8, obuf, 1UL << 20);
         (void)HUNKu8sRelay(u8bIdle(obuf), subpath, captured);
@@ -2928,8 +2931,9 @@ static b8 bepost_find_sub_msg(cli const *c, u8cs subpath, u8csp out_msg) {
 }
 
 static void bepost_emit_outer(bepost_recurse_ctx *rc) {
+    //  POST-019: the per-sub post-order trace is reported via the real
+    //  relayed `post <sub>/…` ROWS hunk on stdout, not a stderr echo.
     if (rc->outer_emitted) return;
-    fprintf(stderr, "be: post .\n");
     rc->outer_emitted = YES;
 }
 
@@ -3099,8 +3103,6 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     }
 
     bepost_emit_outer(rc);
-    fprintf(stderr, "be: post %.*s\n",
-            (int)$len(s->path), (char *)s->path[0]);
 
     u8cs subpath = {};
     u8csMv(subpath, s->path);
@@ -3211,7 +3213,21 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
     //  when the sub had nothing to commit; we skip the bump in that
     //  case so the parent doesn't move that gitlink (plan §POST).
     b8 postnone = NO;
-    ok64 r = bepost_spawn_sub(rc->wt_root, subpath, child_argv, &postnone);
+    b8 silent   = NO;
+    ok64 r = bepost_spawn_sub(rc->wt_root, subpath, child_argv,
+                              &postnone, &silent);
+    if (silent) {
+        //  POST-019: the child relay was empty (clean / no-op / dry-run
+        //  sub, or a sub that errored before reporting), so the descent
+        //  left no `post:<sub>` banner.  Emit a ULOG `post <sub>` row so
+        //  the recursion stays visible — a dirty sub already shows its
+        //  relayed banner, so skip it there.  This replaces the old
+        //  `be: post <sub>` stderr echo, and fires regardless of the
+        //  sub's own exit status (the error still propagates below).
+        ulogrec rep = {.ts = 0, .verb = SNIFFAtVerbPost()};
+        u8csMv(rep.uri.path, subpath);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_NONE);
+    }
     if (r != OK) { rc->worst = r; return OK; }
     if (rc->dry_only) return OK;       //  status-only walk; no bump.
     if (postnone) return OK;
@@ -3316,8 +3332,7 @@ static ok64 bepush_sub_uri(u8cs wt_root, u8cs subpath, u8cs locator,
 }
 
 static void bepush_emit_outer(bepush_recurse_ctx *rc) {
-    if (rc->outer_emitted) return;
-    fprintf(stderr, "be: post .\n");
+    if (rc->outer_emitted) return;   // POST-019: no stderr echo (see bepost)
     rc->outer_emitted = YES;
 }
 
@@ -3332,8 +3347,6 @@ static ok64 bepush_recurse_cb(besub const *s, void *vctx) {
         return OK;
     }
     bepush_emit_outer(rc);
-    fprintf(stderr, "be: post %.*s\n",
-            (int)$len(s->path), (char *)s->path[0]);
 
     u8cs subpath = {};
     u8csMv(subpath, s->path);
@@ -3406,20 +3419,12 @@ static ok64 bepushgit_recurse_cb(besub const *s, void *vctx) {
     bepushgit_recurse_ctx *rc = (bepushgit_recurse_ctx *)vctx;
 
     if (!s->mounted) {
-        if (!rc->outer_emitted) {
-            fprintf(stderr, "be: post .\n");
-            rc->outer_emitted = YES;
-        }
+        rc->outer_emitted = YES;        // POST-019: no stderr echo
         fprintf(stderr, "be: post %.*s: declared, not mounted\n",
                 (int)$len(s->path), (char *)s->path[0]);
         return OK;
     }
-    if (!rc->outer_emitted) {
-        fprintf(stderr, "be: post .\n");
-        rc->outer_emitted = YES;
-    }
-    fprintf(stderr, "be: post %.*s\n",
-            (int)$len(s->path), (char *)s->path[0]);
+    rc->outer_emitted = YES;
 
     u8cs subpath = {};
     u8csMv(subpath, s->path);

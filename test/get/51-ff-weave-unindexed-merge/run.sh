@@ -79,8 +79,11 @@ if grep -q 'leaving wt content untouched' "$OUT/ff.err"; then
     echo "FAIL: FF left the file UNMERGED" >&2
     cat "$OUT/ff.err" >&2; exit 1
 fi
-grep -q 'weave-merged [1-9]' "$OUT/ff.err" || {
-    echo "FAIL: F was not weave-merged" >&2; cat "$OUT/ff.err" >&2; exit 1; }
+#  BE-005 verb-output sweep: the weave-merge count rides the ULOG status
+#  hunk on stdout now (not stderr).
+grep -q 'weave-merged [1-9]' "$OUT/ff.out" || {
+    echo "FAIL: F was not weave-merged" >&2
+    cat "$OUT/ff.out" "$OUT/ff.err" >&2; exit 1; }
 
 #  The merged file MUST carry ALL FIVE trunk edits AND the wt's edit.
 F="$SCRATCH/behind/F.txt"

@@ -85,7 +85,7 @@ if grep -E '^(<<<<|>>>>|\|\|\|\|)' lib.c >/dev/null 2>&1; then
 fi
 
 # Patch stats must show at least one merged path.
-grep -q 'merged=[1-9]' "$OUT/patch.err" || {
+grep -q 'merged=[1-9]' "$OUT/patch.out" || {
     echo "FAIL: patch did not invoke a merge (merged=0) — patch_walk"  \
          "never reached the !o_eq_l && !t_eq_l && !o_eq_t arm" >&2
     cat "$OUT/patch.err" >&2

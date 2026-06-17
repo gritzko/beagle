@@ -62,9 +62,11 @@ printf 'subdirty\n' >> wtA/vsub/s.txt
 ( cd wtA && "$BE" post '#sub local commit' >../A.post.out 2>../A.post.err )
 rcA=$?
 [ "$rcA" = 0 ] || { echo "FAIL(A): post exited $rcA" >&2; cat A.post.err >&2; exit 1; }
-grep -q '^be: post vsub' A.post.err \
+#  POST-019: the dirty sub commits, so its descent shows as the relayed
+#  `post vsub/?<sha>#… [vsub]` ROWS banner on STDOUT — no stderr echo.
+grep -q 'post vsub/' A.post.out \
     || { echo "FAIL(A): post did NOT recurse into the sub on a git source" >&2
-         cat A.post.err >&2; exit 1; }
+         cat A.post.out >&2; exit 1; }
 ! grep -q 'skipped (git source' A.post.err \
     || { echo "FAIL(A): obsolete git-source skip marker on post" >&2
          cat A.post.err >&2; exit 1; }
@@ -108,8 +110,11 @@ printf 'subdirty\n' >> wtB/sub/s.txt
 ! grep -q 'skipped (git source' B.post.err \
     || { echo "FAIL(B): obsolete git-source skip marker on keeper post" >&2
          cat B.post.err >&2; exit 1; }
-grep -q '^be: post sub' B.post.err \
+#  POST-019: the descent into the sub surfaces on STDOUT — as the
+#  relayed `post:sub` banner (if it commits) or the ULOG `post sub`
+#  marker row (clean / no-op) — replacing the old stderr echo.
+grep -q 'post sub' B.post.out \
     || { echo "FAIL(B): keeper-source post did NOT recurse into the dirty sub" >&2
-         cat B.post.err >&2; exit 1; }
+         cat B.post.out >&2; cat B.post.err >&2; exit 1; }
 
 echo "post/23-scheme-gated-recurse: OK"

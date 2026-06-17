@@ -63,7 +63,7 @@ rc=$?
 $(cat "$ETMP/02.patch.err")"
 
 #  (1) the gitlink was absorbed as take-theirs, NOT silently dropped to noop.
-grep -Eq 'take-theirs=[1-9]' "$ETMP/02.patch.err" \
+grep -Eq 'take-theirs=[1-9]' "$ETMP/02.patch.out" \
     || fail "PATCH-001: gitlink bump not absorbed (take-theirs=0); patch said:
 $(grep 'sniff: patch:' "$ETMP/02.patch.err")"
 

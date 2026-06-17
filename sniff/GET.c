@@ -777,10 +777,23 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         (void)ROWSPrintRow(&rep, ROWS_NAV_DIFF);
     }
 
-    if (merged > 0)
-        fprintf(stderr, "sniff: weave-merged %u file(s)\n", merged);
-    if (failed > 0)
-        fprintf(stderr, "sniff: merge failures: %u file(s)\n", failed);
+    //  Verb-output sweep (BE-005): the weave-merge progress counts ride
+    //  the active `get:` table as summary tails (this drain runs inside
+    //  GETCheckout's open table) instead of bare stderr lines.
+    if (merged > 0) {
+        a_pad(u8, line, 64);
+        { a_cstr(s, "weave-merged ");  (void)u8bFeed(line, s); }
+        (void)utf8sFeed10(u8bIdle(line), (u64)merged);
+        { a_cstr(s, " file(s)");       (void)u8bFeed(line, s); }
+        (void)ROWSu8bFeedSummary(u8bDataC(line));
+    }
+    if (failed > 0) {
+        a_pad(u8, line, 64);
+        { a_cstr(s, "merge failures: "); (void)u8bFeed(line, s); }
+        (void)utf8sFeed10(u8bIdle(line), (u64)failed);
+        { a_cstr(s, " file(s)");         (void)u8bFeed(line, s); }
+        (void)ROWSu8bFeedSummary(u8bDataC(line));
+    }
     done;
 }
 
@@ -1655,10 +1668,17 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         prune_ctx fctx = {.dropped = 0};
         u8csMv(fctx.reporoot, reporoot);
         (void)SNIFFClassify(force_orphan_cb, &fctx);
-        if (fctx.dropped > 0)
-            fprintf(stderr,
-                    "sniff: reset %u orphaned tracked file(s)\n",
-                    fctx.dropped);
+        //  Verb-output sweep (BE-005): the reset count rides the open
+        //  `get:` table as a summary tail (the per-file drops already
+        //  rowed via force_orphan_cb) instead of a bare stderr line.
+        if (fctx.dropped > 0) {
+            a_pad(u8, line, 64);
+            { a_cstr(s, "reset ");          (void)u8bFeed(line, s); }
+            (void)utf8sFeed10(u8bIdle(line), (u64)fctx.dropped);
+            { a_cstr(s, " orphaned tracked file(s)");
+              (void)u8bFeed(line, s); }
+            (void)ROWSu8bFeedSummary(u8bDataC(line));
+        }
     }
 
     //  `--prune` sweep (https://replicated.wiki/html/wiki/Verbs.html §"--force and --prune"): drop every

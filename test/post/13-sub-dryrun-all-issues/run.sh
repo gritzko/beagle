@@ -67,12 +67,9 @@ sub_log_post=$(wc -c < vendor/sub/.be)
 [ "$sub_log_pre" = "$sub_log_post" ] \
     || fail "sub wtlog grew during --dry-run ($sub_log_pre -> $sub_log_post)"
 
-# Stderr aggregates both levels.  Each level's bare-status output
-# carries a `sniff: <N> change(s)` line; with both levels dirty we
-# expect at least 2 such lines (one per project).
-grep -q '^be: post vendor/sub' 02.post.got.err \
-    || fail "sub post marker missing; stderr:
-$(cat 02.post.got.err)"
+# POST-019: no stderr echo.  --dry-run commits nothing, so there is no
+# relayed sub banner to grep; recursion into BOTH levels is proven by
+# the per-level `sniff: <N> change(s)` lines (one per project, ≥2).
 nchg=$(grep -c 'sniff:.*change(s)' 02.post.got.err 2>/dev/null || echo 0)
 [ "$nchg" -ge 2 ] \
     || fail "expected ≥2 'sniff: N change(s)' lines (per-level); got $nchg; stderr:

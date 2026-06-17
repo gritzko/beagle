@@ -75,7 +75,7 @@ if grep -q '<<<<' f.c; then
     exit 1
 fi
 # (2) the patch must not report a content-conflict.
-grep -q 'content-conflict=0' "$ETMP/m.err" \
+grep -q 'content-conflict=0' "$ETMP/m.out" \
     || { echo "FAIL: merge reported a (false) content-conflict:" >&2
          cat "$ETMP/m.err" >&2; exit 1; }
 # (3) clean result == C2 (alpha=111 from both, beta=222 from theirs).

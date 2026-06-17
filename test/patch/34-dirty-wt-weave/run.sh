@@ -58,14 +58,14 @@ sleep 0.02; cp "$CASE/07.k.wt.txt"  k.txt
 match "$CASE/04.lib.want.c" lib.c
 
 # It must be counted `merged` (≥1), NOT silently skipped as noop.
-grep -q 'merged=[1-9]' "$OUT/patch.err" || {
+grep -q 'merged=[1-9]' "$OUT/patch.out" || {
     echo "FAIL: dirty-wt file not woven (merged=0) — PATCH-002 regression" >&2
     cat "$OUT/patch.err" >&2
     exit 1
 }
 
 # k.txt (true overlap) must report a content-conflict with markers.
-grep -q 'content-conflict=[1-9]' "$OUT/patch.err" || {
+grep -q 'content-conflict=[1-9]' "$OUT/patch.out" || {
     echo "FAIL: overlapping dirty-wt edit did not report content-conflict" >&2
     cat "$OUT/patch.err" >&2
     exit 1
@@ -78,7 +78,7 @@ grep -q '<<<<' k.txt || {
 
 # The dirty lib.c file must NOT have been counted take-theirs (the bug's
 # signature: incoming change overwrites / drops the wt edit wholesale).
-if grep -q 'take-theirs=[1-9]' "$OUT/patch.err"; then
+if grep -q 'take-theirs=[1-9]' "$OUT/patch.out"; then
     echo "FAIL: a dirty-wt path was take-theirs'd instead of woven" >&2
     cat "$OUT/patch.err" >&2
     exit 1

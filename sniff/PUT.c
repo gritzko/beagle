@@ -664,6 +664,19 @@ static void put_feed_summary_tail(u32 n) {
     (void)ROWSu8bFeedSummary(u8bDataC(line));
 }
 
+//  Verb-output sweep: report a put skip as a ULOG summary line in the
+//  open `put:` table (stdout) — `<path> <reason> — skipped` — replacing
+//  the old bare `sniff: put: … skipped` stderr printfs (BE-005).
+static void put_skip(u8cs path, char const *reason) {
+    a_pad(u8, sl, 512);
+    u8cs rs = u8scstr(reason);
+    (void)u8bFeed(sl, path);
+    { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
+    (void)u8bFeed(sl, rs);
+    { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
+    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+}
+
 //  Bare `be put` worker: auto-pair renames, then walk the baseline tree
 //  staging tracked-dirty files.  Per-file `put` rows append to the
 //  active ROWS table (opened by the caller).  Extracted so the caller's
@@ -827,6 +840,16 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 call(SNIFFAtAppendAt, ts, verb_put, &urow);
                 ts++;
                 emitted++;
+                //  POST-019: report the staged sub gitlink as a ULOG row
+                //  (`put <sub>#<hashlet>`), like the regular-file path
+                //  below — else the bump shows only an anonymous count.
+                {
+                    a_part(u8c, hex_short, hex_view, 0, 8);
+                    ulogrec rep = {.ts = 0, .verb = verb_put};
+                    u8csMv(rep.uri.path,     probe);
+                    u8csMv(rep.uri.fragment, hex_short);
+                    (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+                }
                 continue;
             }
         }
@@ -877,7 +900,7 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
         //  the explicit `<dir>/` form (SUBS-014) instead of a bare,
         //  misleading "unchanged".
         b8 reframed_slashless = NO;
-        // u8cs orig_raw = {raw[0], raw[1]};
+        u8cs orig_raw = {raw[0], raw[1]};   //  as typed, before reframe
         a_pad(u8, dir_buf, FILE_PATH_MAX_LEN);
         if (!is_dir) {
             a_path(probe_fp);
@@ -942,29 +965,24 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 if (dctx.saw_tracked) {
                     //  Tracked dir, nothing dirty under it — genuinely
                     //  unchanged.  Mirrors the single-file form.
-                    // fprintf(stderr,
-                    //         "sniff: put: %.*s is unchanged — skipped\n",
-                    //         (int)$len(raw), (char *)raw[0]);
+                    put_skip(raw, "is unchanged");
                 } else if (reframed_slashless) {
                     //  Untracked dir named WITHOUT a trailing slash that
-                    //  expands to no stageable file (empty, or only
-                    //  ignored/meta content).  Don't claim "unchanged" —
-                    //  nothing was ever tracked here.  Subject is the arg
-                    //  as typed (`orig_raw`); suggest the explicit
-                    //  `<dir>/` form (`raw`, the reframed slice) so the
-                    //  intent is unambiguous (SUBS-014).
-                    // fprintf(stderr,
-                    //         "sniff: put: %.*s has no files to stage — "
-                    //         "skipped (did you mean `%.*s`?)\n",
-                    //         (int)$len(orig_raw), (char *)orig_raw[0],
-                    //         (int)$len(raw),      (char *)raw[0]);
+                    //  expands to no stageable file.  Subject is the arg
+                    //  as typed (`orig_raw`); suggest the explicit `<dir>/`
+                    //  form (`raw`, the reframed slice) (SUBS-014).
+                    a_pad(u8, sl, 512);
+                    (void)u8bFeed(sl, orig_raw);
+                    { a_cstr(s, " has no files to stage — skipped (did you "
+                                "mean `");
+                      (void)u8bFeed(sl, s); }
+                    (void)u8bFeed(sl, raw);
+                    { a_cstr(s, "`?)"); (void)u8bFeed(sl, s); }
+                    (void)ROWSu8bFeedSummary(u8bDataC(sl));
                 } else {
                     //  Untracked dir named WITH a trailing slash, empty
                     //  expansion — no files to stage.
-                    // fprintf(stderr,
-                    //         "sniff: put: %.*s has no files to stage — "
-                    //         "skipped\n",
-                    //         (int)$len(raw), (char *)raw[0]);
+                    put_skip(raw, "has no files to stage");
                 }
                 skipped++;
             }
@@ -994,21 +1012,23 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 //  skipped) gets an accurate "exists but is not
                 //  stageable" rather than the misleading "does not
                 //  exist" (DIS-034).
-                // char const *reason;
-                // if (r->seen) {
-                //     reason = r->skip_reason;
-                // } else {
-                //     a_path(pfp);
-                //     filestat pfs = {};
-                //     if (SNIFFFullpath(pfp, reporoot, r->raw) == OK &&
-                //         FILELStat(&pfs, $path(pfp)) == OK) {
-                //         reason = "exists but is not stageable";
-                //     } else {
-                //         reason = "does not exist";
-                //     }
-                // }
-                // fprintf(stderr, "sniff: put: %.*s %s — skipped\n",
-                //         (int)$len(r->raw), (char *)r->raw[0], reason);
+                char const *reason;
+                if (r->seen) {
+                    reason = r->skip_reason;
+                } else {
+                    a_path(pfp);
+                    filestat pfs = {};
+                    if (SNIFFFullpath(pfp, reporoot, r->raw) == OK &&
+                        FILELStat(&pfs, $path(pfp)) == OK) {
+                        reason = "exists but is not stageable";
+                    } else {
+                        reason = "does not exist";
+                    }
+                }
+                {
+                    u8cs rraw = {r->raw[0], r->raw[1]};
+                    put_skip(rraw, reason);
+                }
                 skipped++;
                 continue;
             }
