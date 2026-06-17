@@ -51,11 +51,16 @@ static JABC_FN(JABCioOpen) {
     JSStringGetUTF8CString(s, mode, sizeof(mode));
     JSStringRelease(s);
   }
-  int flags = O_RDONLY;
-  if (strcmp(mode, "rw") == 0) flags = O_RDWR;
-  else if (strcmp(mode, "c") == 0) flags = O_RDWR | O_CREAT | O_TRUNC;
   int fd = -1;
-  ok64 o = FILEOpen(&fd, $path(path), flags);
+  ok64 o;
+  if (strcmp(mode, "c") == 0) {
+    //  FILECreate sets a sane 0600 mode; FILEOpen passes no mode to open(2),
+    //  so an O_CREAT through it would get garbage perms.
+    o = FILECreate(&fd, $path(path));
+  } else {
+    int flags = (strcmp(mode, "rw") == 0) ? O_RDWR : O_RDONLY;
+    o = FILEOpen(&fd, $path(path), flags);
+  }
   if (o != OK || fd < 0) JABC_THROW(strerror(errno));
   return JSValueMakeNumber(ctx, (double)fd);
 }
