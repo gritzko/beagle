@@ -6,6 +6,7 @@ extern "C" {
 #include "heap.hpp"
 #include "hit.hpp"
 #include "hunk.hpp"
+#include "pack.hpp"
 
 //  The container framework: per-(family,lane) prototypes whose verbs are bound
 //  once to the native _heap_*/_hash_* leaves, plus the all-mmap constructors
@@ -134,14 +135,74 @@ static const char* JABC_CONT_JS = R"JS(
     PROTO["HUNK"] = P;
   }
 
+  //  PACK: an offset-addressed git pack log (u8).  feed returns the object's
+  //  byte offset; seek/next address by offset only (a sha throws); delta
+  //  records are surfaced (baseOffset/ref), not resolved.
+  {
+    const T2N = { commit: 1, tree: 2, blob: 3, tag: 4, "ofs-delta": 6, "ref-delta": 7 };
+    const N2T = { 1: "commit", 2: "tree", 3: "blob", 4: "tag", 6: "ofs-delta", 7: "ref-delta" };
+    const P = Object.create(Uint8Array.prototype);
+    P.header = function () {
+      this.buffer.watermark = abc._pack_header(this, 0, 0);
+      this._count = 0; this._read = 12; this._rec = -1;
+      return this;
+    };
+    P.feed = function (type, content, prevOff) {
+      const off = this.buffer.watermark;
+      const t = (typeof type === "number") ? type : T2N[type];
+      this.buffer.watermark = abc._pack_feed(this, off, t, content,
+        prevOff == null ? -1 : prevOff);
+      this._count = (this._count | 0) + 1;
+      return off;
+    };
+    P.finish = function () { abc._pack_header(this, 0, this._count | 0); return this; };
+    P.rewind = function () { this._read = 12; this._rec = -1; return this; };
+    P.next = function () {
+      const e = abc._pack_next(this, this._read | 0, this.buffer.watermark | 0);
+      if (e < 0) return false;
+      this._rec = this._read | 0; this._read = e; return true;
+    };
+    P.seek = function (off) {
+      if (typeof off !== "number") throw "PACK addresses by offset, not sha";
+      const e = abc._pack_next(this, off, this.buffer.watermark | 0);
+      if (e < 0) return false;
+      this._rec = off; this._read = e; return true;
+    };
+    Object.defineProperty(P, "count", { get() { return abc._pack_count(this); } });
+    Object.defineProperty(P, "offset", { get() { return this._rec; } });
+    Object.defineProperty(P, "type", { get() { return N2T[abc._pack_type(this, this._rec)]; } });
+    Object.defineProperty(P, "size", { get() { return abc._pack_size(this, this._rec); } });
+    Object.defineProperty(P, "baseOffset", {
+      get() { const b = abc._pack_baseoff(this, this._rec); return b < 0 ? undefined : b; }
+    });
+    Object.defineProperty(P, "ref", { get() { return abc._pack_ref(this, this._rec); } });
+    P.inflate = function (out) {
+      out.fed(abc._pack_inflate(this, this._rec, out.idle(), 0));
+      return out;
+    };
+    PROTO["PACK"] = P;
+  }
+
+  //  delt.apply(base, delta, out): reconstruct a delta target into out (a Buf)
+  g.delt = {
+    apply: (base, delta, out) => {
+      const n = abc._delt_apply(base, delta, out.idle(), 0);
+      out.fed(n);
+      return n;
+    },
+  };
+
+  const isLog = (f) => f === "HUNK" || f === "PACK";   // u8-backed cursor logs
+
   function build(family, u8) {
     const proto = PROTO[family];
     if (!proto) throw "abc: unknown family " + family;
     let v;
-    if (family === "HUNK") {            // u8-backed log: use the byte view directly
+    if (isLog(family)) {                // u8-backed log: use the byte view directly
       v = u8;
       Object.setPrototypeOf(v, proto);
-      v._read = 0; v._rec = -1;
+      v._read = (family === "PACK") ? 12 : 0;   // PACK skips the 12-byte header
+      v._rec = -1;
     } else {
       const M = LANE[laneOf(family)];
       if (!M) throw "abc: unknown family " + family;
@@ -153,7 +214,7 @@ static const char* JABC_CONT_JS = R"JS(
     return v;
   }
   const bytes = (family, slots) => {
-    if (family === "HUNK") return slots;          // u8 bytes
+    if (isLog(family)) return slots;              // u8 bytes
     const M = LANE[laneOf(family)];
     return slots * M.w * M.A.BYTES_PER_ELEMENT;
   };
@@ -216,6 +277,7 @@ ok64 JABCContInstall() {
   JABCHashInstall(abc);
   JABCHitInstall(abc);
   JABCHunkInstall(abc);
+  JABCPackInstall(abc);
   JABCExecute(JABC_CONT_JS);
   return OK;
 }
