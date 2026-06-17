@@ -43,7 +43,9 @@ mkdir wt wt/.be && cd wt   # shield from $HOME home repo (CLAUDE.md)
 [ ! -e libs/sub ]        || fail "step-1: libs/sub unexpectedly present"
 
 # --- Step 2: switch to rename — vendor/sub unmounts, libs/sub mounts.
-"$BE" get "$PARENT_URL?rename" >02.get.got.out 2>02.get.got.err
+#  --tlv so the relay (stdout) carries the new mount's rebased hunk; the
+#  unmount log still goes to stderr unconditionally (beagle/SUBS.c:537).
+"$BE" get "$PARENT_URL?rename" --tlv >02.get.got.out 2>02.get.got.err
 rc=$?
 [ "$rc" = 0 ] || fail "step-2 be get exited $rc; stderr:
 $(cat 02.get.got.err)"
@@ -60,8 +62,19 @@ $(cat 02.get.got.err)"
 [ ! -d libs/sub/.be ]    || fail "libs/sub anchor should be a file"
 [ -f libs/sub/core.c ]   || fail "libs/sub content missing — fresh mount failed"
 
-# Marker for the new mount.
-grep -q '^be: get libs/sub' 02.get.got.err \
-    || fail "mount marker for libs/sub missing"
+#  New mount proven via the --tlv relay (GET-026): the parent emits its
+#  own rows (e.g. the `.gitmodules` change), THEN relays the renamed sub
+#  with its rows rebased under the new mount path (`libs/sub?<hashlet>`);
+#  pre-order ⇒ the parent's own row precedes the relayed sub hunk.  The
+#  old `be: get libs/sub` stderr marker is now trace-only (ABC_TRACE).
+#  TLV is NUL-laden binary; split on NUL into lines for stream order.
+LC_ALL=C tr '\0' '\n' < 02.get.got.out > 02.tlv.lines
+LC_ALL=C grep -aqE 'libs/sub\?[0-9a-f]' 02.tlv.lines \
+    || fail "no relayed 'libs/sub' mount hunk in --tlv stream:
+$(cat -v 02.tlv.lines | head -c 400)"
+parent_ln=$(LC_ALL=C grep -anE 'cat:.gitmodules|commit:' 02.tlv.lines | head -1 | cut -d: -f1)
+libs_ln=$(  LC_ALL=C grep -anE 'libs/sub\?[0-9a-f]'      02.tlv.lines | head -1 | cut -d: -f1)
+[ -n "$parent_ln" ] && [ -n "$libs_ln" ] && [ "$parent_ln" -lt "$libs_ln" ] \
+    || fail "expected parent row (ln=$parent_ln) before libs/sub hunk (ln=$libs_ln) in --tlv relay"
 
 note "get/17-sub-rename: vendor/sub → libs/sub at same pin"

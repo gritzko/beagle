@@ -15,8 +15,10 @@
 #      2. Move $SUB_BARE aside so any subsequent sub fetch fails fast.
 #      3. Second `be get $PARENT_URL?master` — must succeed AND
 #         leave vendor/sub intact.
-#      4. Assert SNIFFSubMount's debug trace shows the "already at
-#         pin — skip fetch" line for vendor/sub.
+#      4. Skip-fetch is proven structurally (broken upstream + rc=0 +
+#         no 'submodule fetch failed' diagnostic), not by a debug
+#         marker — the old "already at pin" trace is ABC_TRACE-gated
+#         since GET-026.
 
 . "$(dirname "$0")/../../lib/submodules.sh"
 
@@ -47,10 +49,11 @@ grep -q 'sub_inc' vendor/sub/core.c \
     || fail "vendor/sub/core.c diverged from SUB_C2 after second get:
 $(cat vendor/sub/core.c)"
 
-# --- assert SubMount short-circuited the fetch -----------------------
-grep -q 'already at pin' 02.get.got.err \
-    || fail "expected 'already at pin' marker for sub; stderr:
-$(cat 02.get.got.err)"
+# --- skip-fetch is proven structurally, not by a debug marker --------
+#  GET-026: the old 'already at pin' trace line is now ABC_TRACE-gated
+#  (no default output).  Skip-fetch is already proven here by the
+#  broken upstream (mv above) + the second get's rc=0 + the absence of
+#  the 'submodule fetch failed' diagnostic asserted just below.
 
 # --- assert no submodule-fetch-failure diagnostic --------------------
 #  Without the fix, WIREFetchAll runs against the moved-aside upstream
