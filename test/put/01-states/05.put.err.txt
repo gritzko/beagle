@@ -1,2 +1,3 @@
+^[[:space:]]*put[[:space:]]new\.txt$
+^[[:space:]]*put[[:space:]]to-modify\.txt$
 ^sniff: put: unchanged\.txt is unchanged — skipped$
-^sniff: staged 2 put row\(s\)$

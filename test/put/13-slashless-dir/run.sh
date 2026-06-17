@@ -48,8 +48,11 @@ sleep 0.02; printf 'aaaX\n' > sub/a.txt
 sleep 0.02; printf 'bbbY\n' > sub/b.txt
 sleep 0.02; printf 'sideX\n' > sub.txt
 
+#  POST-018: dir put now reports one ROWS `put <path>` row per staged
+#  file (no count summary); assert both per-file rows.
 "$BE" put sub >"$OUT/a.out" 2>&1
-if ! grep -qE 'staged 2 put row' "$OUT/a.out"; then
+if ! grep -qE '^[[:space:]]*put[[:space:]]+sub/a\.txt' "$OUT/a.out" \
+   || ! grep -qE '^[[:space:]]*put[[:space:]]+sub/b\.txt' "$OUT/a.out"; then
     echo "FAIL (a): 'be put sub' (no slash) did not stage 2 tracked-dirty files" >&2
     cat "$OUT/a.out" >&2
     exit 1
@@ -77,7 +80,8 @@ fi
 sleep 0.02; printf 'aaaZ\n' > sub/a.txt
 sleep 0.02; printf 'bbbZ\n' > sub/b.txt
 "$BE" put sub/ >"$OUT/a_slash.out" 2>&1
-if ! grep -qE 'staged 2 put row' "$OUT/a_slash.out"; then
+if ! grep -qE '^[[:space:]]*put[[:space:]]+sub/a\.txt' "$OUT/a_slash.out" \
+   || ! grep -qE '^[[:space:]]*put[[:space:]]+sub/b\.txt' "$OUT/a_slash.out"; then
     echo "FAIL (a): 'be put sub/' (control) did not stage 2 files" >&2
     cat "$OUT/a_slash.out" >&2
     exit 1
@@ -89,7 +93,8 @@ mkdir -p fresh
 sleep 0.02; printf '1\n' > fresh/x.txt
 sleep 0.02; printf '2\n' > fresh/y.txt
 "$BE" put fresh >"$OUT/b.out" 2>&1
-if ! grep -qE 'staged 2 put row' "$OUT/b.out"; then
+if ! grep -qE '^[[:space:]]*put[[:space:]]+fresh/x\.txt' "$OUT/b.out" \
+   || ! grep -qE '^[[:space:]]*put[[:space:]]+fresh/y\.txt' "$OUT/b.out"; then
     echo "FAIL (b): 'be put fresh' (untracked dir, no slash) did not stage 2 files" >&2
     cat "$OUT/b.out" >&2
     exit 1

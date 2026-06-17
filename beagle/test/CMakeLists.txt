@@ -167,6 +167,7 @@ foreach(vc
         be-post-rebase
         be-post-cross-create
         be-post-path-reject
+        be-post-put-banner
         be-put-path
         be-delete-path
         be-delete-branch

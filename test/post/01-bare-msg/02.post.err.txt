@@ -1,2 +1,2 @@
 ^.*add[[:space:]]greet\.txt$
-^sniff: commit [0-9a-f]{40}$
+^.*post[[:space:]]+\??[0-9a-f]{6,}#initial$

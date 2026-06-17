@@ -859,15 +859,10 @@ ok64 SNIFFExec(cli *c) {
             if (dr == OK && def_n > 0) {
                 u8cs no_target = {};
                 sha1 sha = {};
+                //  POST-018: POSTCommit emits the commit ROWS row itself
+                //  (banner-headed `?<sha>#<subject>`); no raw stderr echo.
                 ret = POSTCommit(no_target,
                                  def_msg, def_auth, c, &sha);
-                if (ret == OK) {
-                    a_pad(u8, hex, 40);
-                    a_rawc(rs, sha);
-                    HEXu8sFeedSome(hex_idle, rs);
-                    fprintf(stderr, "sniff: commit " U8SFMT "\n",
-                            u8sFmt(u8bDataC(hex)));
-                }
             } else if (def_n > 0) {
                 //  Patch rows in scope but msg can't be auto-resolved
                 //  (zero or >1 usable msgs).  Refuse per https://replicated.wiki/html/wiki/POST.html §POST
@@ -943,14 +938,9 @@ ok64 SNIFFExec(cli *c) {
                     target[0] = label_uri->query[0];
                     target[1] = label_uri->query[1];
                     sha1 sha = {};
+                    //  POST-018: POSTCommit emits the commit ROWS row;
+                    //  no raw stderr echo here.
                     ret = POSTCommit(target, sm_msg, sa_auth, c, &sha);
-                    if (ret == OK) {
-                        a_pad(u8, hex, 40);
-                        a_rawc(rs, sha);
-                        HEXu8sFeedSome(hex_idle, rs);
-                        fprintf(stderr, "sniff: commit " U8SFMT "\n",
-                                u8sFmt(u8bDataC(hex)));
-                    }
                 } else {
                 //  No commit_msg + label_uri (`be post ?<br>`).  Per
                 //  https://replicated.wiki/html/wiki/POST.html §POST `?branch` row: "FF-advance ?branch

@@ -1312,6 +1312,36 @@ static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     return OK;
 }
 
+//  POST-018: feed the commit confirmation as a ROWS commit row into the
+//  open per-file table (`?<hashlet>#<subject>` cell, verb post, clickable
+//  `commit:?<sha>` nav) — the tested COMMIT-001 banner grammar (see
+//  GET.c::get_emit_one_commit_verb).  `message`'s first line is the
+//  subject.  Best-effort: a sha that won't hashlet-feed just skips.
+#define POST_COMMIT_SUBJ_MAX 120
+static void post_emit_commit_row(rows *table, sha1 *sha,
+                                 u8cs message, ron60 ts) {
+    a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
+    if (SHA1u8sFeedHashlet(qbuf_idle, sha) != OK) return;
+
+    //  Subject = first line of message (skip leading blanks, trim CR,
+    //  cap to a terminal-friendly width).
+    a_dup(u8c, msg, message);
+    while (!u8csEmpty(msg) && (*msg[0] == '\n' || *msg[0] == '\r'))
+        u8csUsed1(msg);
+    a_dup(u8c, sub, msg);
+    (void)u8csFind(sub, '\n');
+    u8cs subject = {msg[0], sub[0]};
+    while (!u8csEmpty(subject) && *u8csLast(subject) == '\r')
+        u8csShed1(subject);
+    if ($len(subject) > POST_COMMIT_SUBJ_MAX)
+        subject[1] = subject[0] + POST_COMMIT_SUBJ_MAX;
+
+    ulogrec rep = {.ts = ts, .verb = SNIFFAtVerbPost()};
+    u8csMv(rep.uri.query, u8bDataC(qbuf));
+    u8csMv(rep.uri.fragment, subject);
+    (void)ROWSu8bFeedRec(table, &rep, ROWS_NAV_COMMIT);
+}
+
 // --- Rebase emit pipeline (Stage 2 phase-2 promote) ---
 //
 //  When POSTCommit detects a non-ff against the same branch (REFS tip
@@ -2397,14 +2427,17 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         //  picked branch (or cur, for non-located rows) before
         //  KEEPGetExact so subject reads succeed even when the
         //  picked sha lives in a sibling shard.
+        //  The instruction line stays on stderr (a diagnostic); the
+        //  candidate list is REPORT data → one ROWS hunk of `pat`
+        //  commit rows (POST-018), each clickable `commit:?<sha>`.
         fprintf(stderr,
                 "sniff: post: multiple eligible messages — re-run "
                 "with explicit `#<subject>` to pick one:\n");
-        i64 now = 0;
-        {
-            struct timespec tv = {};
-            if (clock_gettime(CLOCK_REALTIME, &tv) == 0) now = tv.tv_sec;
-        }
+        ron60 vpat = SNIFFAtVerbPatch();
+        rows table = {};
+        u8cs empty_uri = {};
+        (void)ROWSOpen(&table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+        table.fd = STDERR_FILENO;
         a_carve(u8, cbuf, 1UL << 16);
         for (u32 i = 0; i < n_pent; i++) {
             if (pent[i].shape == PATCH_SCOPE_WHOLE) continue;  // multi-commit
@@ -2414,44 +2447,24 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
             u8bReset(cbuf);
             u8 ct = 0;
             ok64 ko = KEEPGetExact(&pent[i].sha, cbuf, &ct);
-            //  Fallback: emit a minimal "sha" hint when the body isn't
-            //  reachable.  User can still match by sha.
-            a_pad(u8, date, 8);
+            //  Fallback: a body-unreachable candidate still rows by sha
+            //  (empty subject → just the clickable `?<hashlet>`).
+            ron60 cts = 0;
             u8cs subject = {};
             if (ko == OK && ct == DOG_OBJ_COMMIT) {
                 git_commit gc = {};
                 GITu8sParseCommit(u8bDataC(cbuf), &gc);
                 u8csMv(subject, gc.subject);
-                i64 secs = 0;
-                struct tm t = {};
-                if (RONToTime(gc.author_ts, &t, NULL) == OK) {
-                    t.tm_isdst = -1;
-                    time_t s = mktime(&t);
-                    if (s != (time_t)-1) secs = (i64)s;
-                }
-                if (secs > 0) (void)DOGutf8sFeedDate(date_idle, secs, now);
+                cts = gc.author_ts;
             }
-            if (u8bDataLen(date) == 0) {
-                a_cstr(sp7, "       ");
-                (void)u8bFeed(date, sp7);
-            }
-            if (!u8csEmpty(subject)) {
-                fprintf(stderr, "  %.*s\tpat\t#%.*s\n",
-                        (int)u8bDataLen(date),
-                        (char *)u8bDataHead(date),
-                        (int)$len(subject), (char *)subject[0]);
-            } else {
-                //  Body unreachable — show sha (8 hex).
-                sha1hex hx = {};
-                sha1hexFromSha1(&hx, &pent[i].sha);
-                fprintf(stderr,
-                        "  %.*s\tpat\t#%.8s (body not in cur's "
-                        "shard)\n",
-                        (int)u8bDataLen(date),
-                        (char *)u8bDataHead(date),
-                        hx.data);
-            }
+            a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
+            if (SHA1u8sFeedHashlet(qbuf_idle, &pent[i].sha) != OK) continue;
+            ulogrec rep = {.ts = cts, .verb = vpat};
+            u8csMv(rep.uri.query, u8bDataC(qbuf));
+            u8csMv(rep.uri.fragment, subject);
+            (void)ROWSu8bFeedRec(&table, &rep, ROWS_NAV_COMMIT);
         }
+        (void)ROWSClose(&table);
         return ULOGNONE;
     }
 
@@ -3235,12 +3248,15 @@ ok64 POSTCommit(u8cs target_branch,
         post_mad_ctx mad = {.fd = report_fd, .changed = 0};
         post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
                             post_drain_mad_cb, &mad);
+        //  POST-018: the commit confirmation is a ROWS commit row (verb
+        //  post, the tested `?<hashlet>#<subject>` cell + clickable
+        //  `commit:?<sha>` nav), under the same module hunk — not a raw
+        //  `sniff: commit <hex>` stderr line bypassing the banner.
+        post_emit_commit_row(&table, sha_out, message, ctx.stamp_ts);
         (void)ROWSClose(&table);
     }
 
     //  17. Per-commit scratch (decisions, tree_bodies, cascade arena)
     //      is BASS-carved and rewinds when POSTCommit returns.
-    fprintf(stderr, "sniff: commit " U8SFMT "\n",
-            u8sFmt(u8bDataC(out_hex)));
     done;
 }

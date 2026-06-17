@@ -27,8 +27,11 @@
 sleep 0.02; echo "v0" > x.txt
 "$BE" put x.txt  > /dev/null
 "$BE" post '#t0' > 01.post.err 2>&1
-SHA=$(grep -oE '[0-9a-f]{40}' 01.post.err | head -1)
-[ -n "$SHA" ] || { echo "FAIL: no commit sha from post"; cat 01.post.err; exit 1; }
+#  POST-018: the commit confirmation is a ROWS `post ?<hashlet>#<subj>`
+#  row (8-hex hashlet), not a raw `sniff: commit <40hex>` line.  Read the
+#  canonical full 40-char sha from the wtlog post row's `?#<sha>` tail.
+SHA=$(awk -F'\t' '$2=="post"{l=$3} END{h=l;sub(/^[^#]*#/,"",h);print h}' .be/wtlog)
+[ "${#SHA}" = 40 ] || { echo "FAIL: no commit sha from post"; cat 01.post.err; tail -2 .be/wtlog; exit 1; }
 
 # --- 1. `be get <sha>` writes a detached `?<sha>` row ----------------
 "$BE" get "$SHA" > /dev/null 2>&1
@@ -100,7 +103,7 @@ esac
 sleep 0.02; echo "v1-trunk" > x.txt
 "$BE" put x.txt > /dev/null 2>&1
 "$BE" post '#t1' > 04.post.out 2> 04.post.err
-grep -qE '^sniff: commit [0-9a-f]{40}$' 04.post.err || {
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t1' 04.post.err || {
     echo "FAIL: trunk-state POST should have committed" >&2
     cat 04.post.err >&2
     exit 1
@@ -120,7 +123,7 @@ ROW=$(tail -1 .be/wtlog | cut -f3)
 sleep 0.02; echo "v2-pinned" > x.txt
 "$BE" put x.txt > /dev/null 2>&1
 "$BE" post '#t2' > 05.post.out 2> 05.post.err
-grep -qE '^sniff: commit [0-9a-f]{40}$' 05.post.err || {
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t2' 05.post.err || {
     echo "FAIL: GET-024 trunk-state ?#sha POST should have committed (not POSTDET)" >&2
     cat 05.post.err >&2
     exit 1
@@ -141,7 +144,7 @@ ROW=$(tail -1 .be/wtlog | cut -f3)
 sleep 0.02; echo "v3-short" > x.txt
 "$BE" put x.txt > /dev/null 2>&1
 "$BE" post '#t3' > 06.post.err 2>&1
-grep -qE '^sniff: commit [0-9a-f]{40}$' 06.post.err || {
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#t3' 06.post.err || {
     echo "FAIL: GET-025 short-sha trunk-state POST should have committed" >&2
     cat 06.post.err >&2
     exit 1

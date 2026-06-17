@@ -291,6 +291,13 @@ static ok64 dir_collect_step(class_step const *step, void *vctx) {
     (void)SNIFFAtStampPath(fp, *c->ts_io);
     (*c->ts_io)++;
     (*c->emitted_io)++;
+    //  POST-018: report the staged path through ROWS (the active
+    //  module table) so `be put <dir>/` rides the banner like get/post.
+    {
+        ulogrec rep = {.ts = 0, .verb = c->verb_put};
+        u8csMv(rep.uri.path, path);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+    }
     return OK;
 }
 
@@ -569,6 +576,13 @@ static ok64 put_move(u8cs src_raw, u8cs dst_in_raw, u8cs reporoot,
     (void)SNIFFAtStampPath(dst_fp, *ts_io);
     (*ts_io)++;
     (*emitted_io)++;
+    //  POST-018: report the staged move (`put src#dst`) through ROWS.
+    {
+        ulogrec rep = {.ts = 0, .verb = verb_put};
+        u8csMv(rep.uri.path, urow.path);
+        u8csMv(rep.uri.fragment, urow.fragment);
+        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+    }
     done;
 }
 
@@ -690,31 +704,15 @@ static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
     done;
 }
 
-ok64 PUTStage(u32 nuris, uri const *uris) {
-    sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
-
-    ron60 ts = 0;
-    struct timespec tv = {};
-    SNIFFAtNow(&ts, &tv);
-
-    ron60 verb_put  = SNIFFAtVerbPut();
-    ron60 verb_get  = SNIFFAtVerbGet();
-    ron60 verb_post = SNIFFAtVerbPost();
-
-    a_dup(u8c, reporoot, u8bData(HOME.wt));
-
-    if (nuris == 0) {
-        //  Bare `be put`: open ONE per-module row table (BRO-002) so the
-        //  move-pass + tracked-dirty walk rows land in one accumulator —
-        //  streamed live on a tty, flushed as ONE hunk in --tlv/relay.
-        rows table = {};
-        u8cs empty_uri = {};
-        call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
-        try(put_stage_bare, reporoot, ts, verb_put);
-        ok64 wr = __;
-        ok64 cr = ROWSClose(&table);
-        return wr != OK ? wr : cr;
-    }
+//  Named-path staging worker (POST-018).  Runs under the caller's open
+//  ROWS module table (`ROWS_ACTIVE`) so every staged path — file, dir,
+//  move — reports as a `put` row riding the banner, instead of a bare
+//  `sniff: staged N` stderr summary.  The caller's ROWSOpen/Close
+//  brackets every exit path (one module hunk in --tlv/relay).
+static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
+                            ron60 verb_put, ron60 verb_get,
+                            ron60 verb_post, u8cs reporoot) {
+    sane(nuris > 0 && uris != NULL);
 
     //  Per-path loop is driven by the unified ULOG-merge classifier
     //  (`SNIFFClassify`) — same primitive POST uses for its commit-
@@ -1016,6 +1014,13 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             (void)SNIFFAtStampPath(fp, ts);
             ts++;
             emitted++;
+            //  POST-018: report the staged path through ROWS (active
+            //  module table) — `be put <file>` rides the banner.
+            {
+                ulogrec rep = {.ts = 0, .verb = verb_put};
+                u8csMv(rep.uri.path, urow.path);
+                (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+            }
         }
     }
 
@@ -1024,8 +1029,41 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             fprintf(stderr, "sniff: put: no eligible paths\n");
         return PUTNONE;
     }
-    fprintf(stderr, "sniff: staged %u put row(s)\n", emitted);
     done;
+}
+
+ok64 PUTStage(u32 nuris, uri const *uris) {
+    sane(SNIFF.log_data && (nuris == 0 || uris != NULL));
+
+    ron60 ts = 0;
+    struct timespec tv = {};
+    SNIFFAtNow(&ts, &tv);
+
+    ron60 verb_put  = SNIFFAtVerbPut();
+    ron60 verb_get  = SNIFFAtVerbGet();
+    ron60 verb_post = SNIFFAtVerbPost();
+
+    a_dup(u8c, reporoot, u8bData(HOME.wt));
+
+    //  Open ONE per-module row table (BRO-002): every staged path lands
+    //  in one accumulator — streamed live on a tty, flushed as ONE hunk
+    //  in --tlv/relay.  ROWSOpen/Close bracket every worker exit path.
+    //  RULED channel (BRO-002, mirrors POSTCommit): --tlv/relay buffers
+    //  the hunk on stdout so a parent `be put` can capture+relay it;
+    //  direct-tty streams rows to stderr (stdout stays clean).
+    rows table = {};
+    u8cs empty_uri = {};
+    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    table.fd = (HUNKMode == HUNKOutTLV) ? STDOUT_FILENO : STDERR_FILENO;
+    if (nuris == 0) {
+        try(put_stage_bare, reporoot, ts, verb_put);
+    } else {
+        try(put_stage_named, nuris, uris, ts, verb_put, verb_get,
+            verb_post, reporoot);
+    }
+    ok64 wr = __;
+    ok64 cr = ROWSClose(&table);
+    return wr != OK ? wr : cr;
 }
 
 // --- Branch-form PUT helpers ----------------------------------------

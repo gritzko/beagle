@@ -30,7 +30,8 @@
 sleep 0.02; echo "hello" > a.txt
 "$BE" put a.txt > 01.put.got.out 2> 01.put.got.err
 "$BE" post '#first' > 02.post.got.out 2> 02.post.got.err
-grep -q '^sniff: commit [0-9a-f]\{40\}$' 02.post.got.err || {
+#  POST-018: commit confirmation is a ROWS `post ?<hashlet>#<subj>` row.
+grep -qE 'post[[:space:]]+\??[0-9a-f]{6,}#first' 02.post.got.err || {
     echo "post/24: seed commit did not land:" >&2
     cat 02.post.got.err >&2
     exit 1

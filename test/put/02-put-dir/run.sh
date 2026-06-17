@@ -55,10 +55,12 @@ if ! grep -qE '\? .*2 mod|^.*\?[^[:space:]]*[[:space:]]+.*2 mod' "$OUT/before.ou
     exit 1
 fi
 
-# --- 4. dir-prefix put — expand to per-file put rows --------------
+# --- 4. dir-prefix put — expand to per-file put rows (POST-018:
+#       one ROWS `put <path>` row per staged file, no count summary).
 "$BE" put dir/ >"$OUT/put1.out" 2>&1
-if ! grep -qE 'staged 2 put row' "$OUT/put1.out"; then
-    echo "FAIL (b): expected 'staged 2 put row(s)' from dir-prefix put" >&2
+if ! grep -qE '^[[:space:]]*put[[:space:]]+dir/a\.txt' "$OUT/put1.out" \
+   || ! grep -qE '^[[:space:]]*put[[:space:]]+dir/b\.txt' "$OUT/put1.out"; then
+    echo "FAIL (b): expected per-file 'put dir/a.txt' + 'put dir/b.txt' rows" >&2
     cat "$OUT/put1.out" >&2
     exit 1
 fi
