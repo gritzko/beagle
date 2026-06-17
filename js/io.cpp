@@ -288,6 +288,14 @@ static JABC_FN(JABCioTruncate) {
   JABC_UNDEF;
 }
 
+//  io.isatty(fd) -> bool  (is the fd a terminal? — the color-vs-plain gate)
+static JABC_FN(JABCioIsatty) {
+  if (argc < 1) JABC_THROW("io.isatty(fd)");
+  int fd = JABCInt(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  return JSValueMakeBoolean(ctx, isatty(fd) == 1);
+}
+
 //  io.log(...args) -> write strings / typed arrays to stderr + newline.
 static JABC_FN(JABCioLog) {
   for (size_t i = 0; i < argc; i++) {
@@ -336,6 +344,7 @@ ok64 JABCioInstall() {
   JABC_API_FN(io, "_ram", JABCioRam);
   JABC_API_FN(io, "_msync", JABCioMsync);
   JABC_API_FN(io, "_truncate", JABCioTruncate);
+  JABC_API_FN(io, "isatty", JABCioIsatty);
   JABC_API_FN(io, "log", JABCioLog);
   return OK;
 }

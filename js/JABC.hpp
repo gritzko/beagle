@@ -76,6 +76,7 @@ ok64 JABCbufInstall();
 ok64 JABCContInstall();
 ok64 JABCUriInstall();
 ok64 JABCCodecInstall();
+ok64 JABCAnsiInstall();
 ok64 JABCRequireInstall();
 ok64 JABCioUninstall();
 

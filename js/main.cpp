@@ -90,7 +90,8 @@ static void JABCInstallModules() {
   JABCbufInstall();   //  Buf class + constructors layer over utf8/io leaves
   JABCContInstall();  //  abc.* containers (HEAP/HASH) layer over io mmap leaves
   JABCUriInstall();   //  URI class over abc/URI
-  JABCCodecInstall(); //  hex + sha1/sha256
+  JABCCodecInstall(); //  hex + sha1/sha256 + ron
+  JABCAnsiInstall();  //  ansi colour helper (pure JS)
   JABCRequireInstall(); //  sync CommonJS require() over io.mmap/utf8 (last)
 }
 
