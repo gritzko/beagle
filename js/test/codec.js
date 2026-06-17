@@ -44,4 +44,10 @@ function eq(a, b, m) { if (a !== b) fail(m + ": " + a + " !== " + b); }
      "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1(empty)");
 }
 
+// ron60 codec round-trips (verbs, and a timestamp-width string)
+{
+  for (const s of ["get", "post", "delete", "26617GKE4b"])
+    eq(ron.encode(ron.decode(s)), s, "ron roundtrip " + s);
+}
+
 io.log("codec.js OK");

@@ -56,8 +56,9 @@ add_test(NAME JABCuri COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/uri.js)
 add_test(NAME JABCcodec COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/codec.js)
 add_test(NAME JABCrequire COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/require.js)
 add_test(NAME JABCpack COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/pack.js)
+add_test(NAME JABCulog COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/ulog.js)
 
 # JavaScriptCore leaks lazily-initialised global singletons that LSan flags
 # but are not our leaks; suppress JSC-internal allocations by library name.
-set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit JABChunk JABCuri JABCcodec JABCrequire JABCpack PROPERTIES
+set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit JABChunk JABCuri JABCcodec JABCrequire JABCpack JABCulog PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")

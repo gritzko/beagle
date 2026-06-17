@@ -2,6 +2,7 @@
 #include "cont.hpp"  //  JABCBlob (engine Uint8Array copy)
 extern "C" {
 #include "abc/HEX.h"
+#include "abc/RON.h"
 #include "abc/SHA.h"
 #include "dog/git/SHA1.h"
 }
@@ -89,7 +90,44 @@ static JABC_FN(JABCsha256) {
   return JABCBlob(ctx, h.data, sizeof(h.data));
 }
 
+//  ron.encode(BigInt) -> RON base64 string  (timestamps, verbs, ok64 codes)
+static JABC_FN(JABCronEncode) {
+  if (argc < 1) JABC_THROW("ron.encode(BigInt)");
+  uint64_t v = JSValueToUInt64(ctx, args[0], exception);
+  if (*exception) return JSValueMakeUndefined(ctx);
+  u8 b[16];
+  u8s into = {b, b + sizeof(b)};
+  RONutf8sFeed(into, (ok64)v);
+  size_t n = (size_t)(into[0] - b);
+  char tmp[17];
+  if (n > 16) n = 16;
+  memcpy(tmp, b, n);
+  tmp[n] = 0;
+  JSStringRef js = JSStringCreateWithUTF8CString(tmp);
+  JSValueRef r = JSValueMakeString(ctx, js);
+  JSStringRelease(js);
+  return r;
+}
+
+//  ron.decode(string) -> BigInt
+static JABC_FN(JABCronDecode) {
+  if (argc < 1 || !JSValueIsString(ctx, args[0])) JABC_THROW("ron.decode(string)");
+  JSStringRef s = JSValueToStringCopy(ctx, args[0], exception);
+  if (*exception || s == NULL) return JSValueMakeUndefined(ctx);
+  u8 b[32];
+  size_t got = JSStringGetUTF8CString(s, (char*)b, sizeof(b));
+  JSStringRelease(s);
+  size_t n = got ? got - 1 : 0;
+  u8cs from = {b, b + n};
+  ok64 v = 0;
+  RONutf8sDrain(&v, from);
+  return JSBigIntCreateWithUInt64(ctx, (uint64_t)v, exception);
+}
+
 ok64 JABCCodecInstall() {
+  JABC_API_OBJECT(ron);
+  JABC_API_FN(ron, "encode", JABCronEncode);
+  JABC_API_FN(ron, "decode", JABCronDecode);
   JABC_API_OBJECT(hex);
   JABC_API_FN(hex, "encode", JABChexEncode);
   JABC_API_FN(hex, "encodeInto", JABChexEncodeInto);

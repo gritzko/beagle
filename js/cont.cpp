@@ -7,6 +7,7 @@ extern "C" {
 #include "hit.hpp"
 #include "hunk.hpp"
 #include "pack.hpp"
+#include "ulog.hpp"
 
 //  The container framework: per-(family,lane) prototypes whose verbs are bound
 //  once to the native _heap_*/_hash_* leaves, plus the all-mmap constructors
@@ -183,6 +184,50 @@ static const char* JABC_CONT_JS = R"JS(
     PROTO["PACK"] = P;
   }
 
+  //  ULOG: append-only (ts,verb,uri) text log, no index.  feed moves the
+  //  watermark; seek* are pure offset->offset scans (fwd, or rev from .end).
+  {
+    const P = Object.create(Uint8Array.prototype);
+    P.feed = function (verb, uri, ts) {
+      let t = (ts == null) ? abc._ulog_now() : BigInt(ts);
+      if (this._lastTs != null && t <= this._lastTs) t = this._lastTs + 1n;  // monotonic
+      this._lastTs = t;
+      const off = this.buffer.watermark;
+      this.buffer.watermark = abc._ulog_feed(this, off, verb, uri, t);
+      return off;
+    };
+    P.rewind = function () { this._read = 0; this._rec = -1; return this; };
+    P.next = function () {
+      const e = abc._ulog_next(this, this._read | 0, this.buffer.watermark | 0);
+      if (e < 0) return false;
+      this._rec = this._read | 0; this._read = e; return true;
+    };
+    P.seek = function (off) {
+      if (typeof off !== "number") throw "ULOG addresses by offset";
+      const e = abc._ulog_next(this, off, this.buffer.watermark | 0);
+      if (e < 0) return false;
+      this._rec = off; this._read = e; return true;
+    };
+    Object.defineProperty(P, "end", { get() { return this.buffer.watermark; } });
+    Object.defineProperty(P, "after", { get() { return this._read; } });
+    Object.defineProperty(P, "offset", { get() { return this._rec; } });
+    Object.defineProperty(P, "time", { get() { return abc._ulog_time(this, this._rec); } });
+    Object.defineProperty(P, "verb", { get() { return abc._ulog_verb(this, this._rec); } });
+    Object.defineProperty(P, "uri", { get() { return abc._ulog_uri(this, this._rec); } });
+    const mkseek = (leaf, rev) => function (off, arg) {
+      const o = abc[leaf](this, off, this.buffer.watermark | 0, arg, rev);
+      if (o >= 0) this.seek(o);            // position cursor on a hit
+      return o;
+    };
+    P.seekVerb = mkseek("_ulog_seekVerb", false);
+    P.seekVerbRev = mkseek("_ulog_seekVerb", true);
+    P.seekTime = mkseek("_ulog_seekTime", false);
+    P.seekTimeRev = mkseek("_ulog_seekTime", true);
+    P.seekURI = mkseek("_ulog_seekURI", false);
+    P.seekURIRev = mkseek("_ulog_seekURI", true);
+    PROTO["ULOG"] = P;
+  }
+
   //  delt.apply(base, delta, out): reconstruct a delta target into out (a Buf)
   g.delt = {
     apply: (base, delta, out) => {
@@ -192,7 +237,7 @@ static const char* JABC_CONT_JS = R"JS(
     },
   };
 
-  const isLog = (f) => f === "HUNK" || f === "PACK";   // u8-backed cursor logs
+  const isLog = (f) => f === "HUNK" || f === "PACK" || f === "ULOG";   // u8-backed cursor logs
 
   function build(family, u8) {
     const proto = PROTO[family];
@@ -278,6 +323,7 @@ ok64 JABCContInstall() {
   JABCHitInstall(abc);
   JABCHunkInstall(abc);
   JABCPackInstall(abc);
+  JABCUlogInstall(abc);
   JABCExecute(JABC_CONT_JS);
   return OK;
 }
