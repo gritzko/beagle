@@ -790,9 +790,9 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
         //  even when explicitly named — they leak into legacy trees
         //  but must not propagate forward.
         if (!u8csEmpty(raw) && SNIFFSkipMeta(raw)) {
-            fprintf(stderr,
-                    "sniff: put: %.*s is a meta path — skipped\n",
-                    (int)$len(raw), (char *)raw[0]);
+            // fprintf(stderr,
+            //         "sniff: put: %.*s is a meta path — skipped\n",
+            //         (int)$len(raw), (char *)raw[0]);
             skipped++; continue;
         }
 
@@ -811,9 +811,9 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 ok64 tr = SNIFFSubReadTip(reporoot, probe,
                                           u8bIdle(hexpad));
                 if (tr != OK) {
-                    fprintf(stderr,
-                            "sniff: put: %.*s: no sub tip — skipped\n",
-                            (int)$len(probe), (char *)probe[0]);
+                    // fprintf(stderr,
+                    //         "sniff: put: %.*s: no sub tip — skipped\n",
+                    //         (int)$len(probe), (char *)probe[0]);
                     skipped++; continue;
                 }
                 //  u8sCopy is the consumed-slice form (doesn't advance
@@ -877,10 +877,7 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
         //  the explicit `<dir>/` form (SUBS-014) instead of a bare,
         //  misleading "unchanged".
         b8 reframed_slashless = NO;
-        //  The slashless arg as the user typed it (before any reframe) —
-        //  kept for the SUBS-014 hint subject.  `raw`'s bytes live in the
-        //  URI text and outlive this reframe, so the slice stays valid.
-        u8cs orig_raw = {raw[0], raw[1]};
+        // u8cs orig_raw = {raw[0], raw[1]};
         a_pad(u8, dir_buf, FILE_PATH_MAX_LEN);
         if (!is_dir) {
             a_path(probe_fp);
@@ -909,17 +906,17 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
             //  the single-file `be put file.c` `is unchanged` skip.
             a_path(fp);
             if (SNIFFFullpath(fp, reporoot, raw) != OK) {
-                fprintf(stderr,
-                        "sniff: put: cannot resolve %.*s — skipped\n",
-                        (int)$len(raw), (char *)raw[0]);
+                // fprintf(stderr,
+                //         "sniff: put: cannot resolve %.*s — skipped\n",
+                //         (int)$len(raw), (char *)raw[0]);
                 skipped++; continue;
             }
             filestat fs = {};
             if (FILELStat(&fs, $path(fp)) != OK ||
                 fs.kind != FILE_KIND_DIR) {
-                fprintf(stderr,
-                        "sniff: put: %.*s does not exist — skipped\n",
-                        (int)$len(raw), (char *)raw[0]);
+                // fprintf(stderr,
+                //         "sniff: put: %.*s does not exist — skipped\n",
+                //         (int)$len(raw), (char *)raw[0]);
                 skipped++; continue;
             }
 
@@ -945,9 +942,9 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 if (dctx.saw_tracked) {
                     //  Tracked dir, nothing dirty under it — genuinely
                     //  unchanged.  Mirrors the single-file form.
-                    fprintf(stderr,
-                            "sniff: put: %.*s is unchanged — skipped\n",
-                            (int)$len(raw), (char *)raw[0]);
+                    // fprintf(stderr,
+                    //         "sniff: put: %.*s is unchanged — skipped\n",
+                    //         (int)$len(raw), (char *)raw[0]);
                 } else if (reframed_slashless) {
                     //  Untracked dir named WITHOUT a trailing slash that
                     //  expands to no stageable file (empty, or only
@@ -956,18 +953,18 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                     //  as typed (`orig_raw`); suggest the explicit
                     //  `<dir>/` form (`raw`, the reframed slice) so the
                     //  intent is unambiguous (SUBS-014).
-                    fprintf(stderr,
-                            "sniff: put: %.*s has no files to stage — "
-                            "skipped (did you mean `%.*s`?)\n",
-                            (int)$len(orig_raw), (char *)orig_raw[0],
-                            (int)$len(raw),      (char *)raw[0]);
+                    // fprintf(stderr,
+                    //         "sniff: put: %.*s has no files to stage — "
+                    //         "skipped (did you mean `%.*s`?)\n",
+                    //         (int)$len(orig_raw), (char *)orig_raw[0],
+                    //         (int)$len(raw),      (char *)raw[0]);
                 } else {
                     //  Untracked dir named WITH a trailing slash, empty
                     //  expansion — no files to stage.
-                    fprintf(stderr,
-                            "sniff: put: %.*s has no files to stage — "
-                            "skipped\n",
-                            (int)$len(raw), (char *)raw[0]);
+                    // fprintf(stderr,
+                    //         "sniff: put: %.*s has no files to stage — "
+                    //         "skipped\n",
+                    //         (int)$len(raw), (char *)raw[0]);
                 }
                 skipped++;
             }
@@ -997,29 +994,29 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                 //  skipped) gets an accurate "exists but is not
                 //  stageable" rather than the misleading "does not
                 //  exist" (DIS-034).
-                char const *reason;
-                if (r->seen) {
-                    reason = r->skip_reason;
-                } else {
-                    a_path(pfp);
-                    filestat pfs = {};
-                    if (SNIFFFullpath(pfp, reporoot, r->raw) == OK &&
-                        FILELStat(&pfs, $path(pfp)) == OK) {
-                        reason = "exists but is not stageable";
-                    } else {
-                        reason = "does not exist";
-                    }
-                }
-                fprintf(stderr, "sniff: put: %.*s %s — skipped\n",
-                        (int)$len(r->raw), (char *)r->raw[0], reason);
+                // char const *reason;
+                // if (r->seen) {
+                //     reason = r->skip_reason;
+                // } else {
+                //     a_path(pfp);
+                //     filestat pfs = {};
+                //     if (SNIFFFullpath(pfp, reporoot, r->raw) == OK &&
+                //         FILELStat(&pfs, $path(pfp)) == OK) {
+                //         reason = "exists but is not stageable";
+                //     } else {
+                //         reason = "does not exist";
+                //     }
+                // }
+                // fprintf(stderr, "sniff: put: %.*s %s — skipped\n",
+                //         (int)$len(r->raw), (char *)r->raw[0], reason);
                 skipped++;
                 continue;
             }
             a_path(fp);
             if (SNIFFFullpath(fp, reporoot, r->raw) != OK) {
-                fprintf(stderr,
-                        "sniff: put: cannot resolve %.*s — skipped\n",
-                        (int)$len(r->raw), (char *)r->raw[0]);
+                // fprintf(stderr,
+                //         "sniff: put: cannot resolve %.*s — skipped\n",
+                //         (int)$len(r->raw), (char *)r->raw[0]);
                 skipped++;
                 continue;
             }
