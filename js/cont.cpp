@@ -5,6 +5,7 @@ extern "C" {
 #include "hash.hpp"
 #include "heap.hpp"
 #include "hit.hpp"
+#include "hunk.hpp"
 
 //  The container framework: per-(family,lane) prototypes whose verbs are bound
 //  once to the native _heap_*/_hash_* leaves, plus the all-mmap constructors
@@ -94,16 +95,65 @@ static const char* JABC_CONT_JS = R"JS(
     }
   }
 
+  //  HUNK: a u8-backed log of TLV 'H' records (not a lane).  The object IS the
+  //  cursor — `next()` advances the read pos and the field getters reflect the
+  //  current record (zero-copy views into the one buffer).
+  {
+    const EMPTY8 = new Uint8Array(0), EMPTY32 = new Uint32Array(0);
+    const P = Object.create(Uint8Array.prototype);
+    P.feed = function (uri, text, toks) {
+      this.buffer.watermark = abc._hunk_feed(this, this.buffer.watermark,
+        uri, text || EMPTY8, toks || EMPTY32);
+      return this;
+    };
+    P.dogenize = function (src, ext, uri) {     // tokenize source -> append a hunk
+      this.buffer.watermark = abc._hunk_dogenize(this, this.buffer.watermark,
+        src, ext, uri || "");
+      return this;
+    };
+    P.rewind = function () { this._read = 0; this._rec = -1; return this; };
+    P.next = function () {
+      const e = abc._hunk_next(this, this._read | 0, this.buffer.watermark | 0);
+      if (e < 0) return false;
+      this._rec = this._read | 0; this._read = e; return true;
+    };
+    Object.defineProperty(P, "uri",  { get() { return abc._hunk_uri(this, this._rec); } });
+    Object.defineProperty(P, "text", { get() { return abc._hunk_text(this, this._rec); } });
+    Object.defineProperty(P, "toks", { get() { return abc._hunk_toks(this, this._rec); } });
+    Object.defineProperty(P, "verb", { get() { return abc._hunk_verb(this, this._rec); } });
+    Object.defineProperty(P, "time", { get() { return abc._hunk_time(this, this._rec); } });
+    //  `out` is an io.buf Buf (the buf.cpp cursor): render into its IDLE, then
+    //  commit with fed().
+    const render = (mode) => function (out) {
+      out.fed(abc._hunk_render(this, this._rec, out.idle(), 0, mode));
+      return out;
+    };
+    P.color = render(1);
+    P.plain = render(2);
+    P.html = render(3);
+    PROTO["HUNK"] = P;
+  }
+
   function build(family, u8) {
-    const M = LANE[laneOf(family)], proto = PROTO[family];
-    if (!M || !proto) throw "abc: unknown family " + family;
-    const v = new M.A(u8.buffer, u8.byteOffset, (u8.byteLength / M.A.BYTES_PER_ELEMENT) | 0);
-    Object.setPrototypeOf(v, proto);   // real typed array + the family's verbs
+    const proto = PROTO[family];
+    if (!proto) throw "abc: unknown family " + family;
+    let v;
+    if (family === "HUNK") {            // u8-backed log: use the byte view directly
+      v = u8;
+      Object.setPrototypeOf(v, proto);
+      v._read = 0; v._rec = -1;
+    } else {
+      const M = LANE[laneOf(family)];
+      if (!M) throw "abc: unknown family " + family;
+      v = new M.A(u8.buffer, u8.byteOffset, (u8.byteLength / M.A.BYTES_PER_ELEMENT) | 0);
+      Object.setPrototypeOf(v, proto);   // real typed array + the family's verbs
+    }
     v.buffer._map = u8;                // pin the mapping (munmap on GC)
     v.buffer.watermark = 0;
     return v;
   }
   const bytes = (family, slots) => {
+    if (family === "HUNK") return slots;          // u8 bytes
     const M = LANE[laneOf(family)];
     return slots * M.w * M.A.BYTES_PER_ELEMENT;
   };
@@ -165,6 +215,7 @@ ok64 JABCContInstall() {
   JABCHeapInstall(abc);
   JABCHashInstall(abc);
   JABCHitInstall(abc);
+  JABCHunkInstall(abc);
   JABCExecute(JABC_CONT_JS);
   return OK;
 }

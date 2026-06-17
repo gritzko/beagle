@@ -30,7 +30,7 @@ include_directories(
 set(JABC_SRC main.cpp io.cpp utf8.cpp buf.cpp cont.cpp)
 
 add_executable(jabc ${JABC_SRC})
-target_link_libraries(jabc ${JSC_LIB} abc)
+target_link_libraries(jabc ${JSC_LIB} dog abc-core)
 
 # Table-driven C++ harness over the buf/utf8/io boundary; returns non-zero on
 # any failed row, so CTest fails on a real bug (CLAUDE.md §3).
@@ -51,8 +51,9 @@ add_test(NAME JABChash COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hash.js)
 add_test(NAME JABCmmap COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/mmap.js)
 add_test(NAME JABCsha COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/sha.js)
 add_test(NAME JABChit COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hit.js)
+add_test(NAME JABChunk COMMAND jabc ${CMAKE_CURRENT_SOURCE_DIR}/test/hunk.js)
 
 # JavaScriptCore leaks lazily-initialised global singletons that LSan flags
 # but are not our leaks; suppress JSC-internal allocations by library name.
-set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit PROPERTIES
+set_tests_properties(JABCtestCpp JABCe2e JABCheap JABChash JABCmmap JABCsha JABChit JABChunk PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
