@@ -655,6 +655,7 @@ static b8 put_is_sub_add_candidate(u8cs reporoot, u8cs subpath) {
 //  relay capture), mirroring the old stderr guard.
 static void put_feed_summary_tail(u32 n) {
     if (SNIFF.quiet) return;
+    /*
     a_pad(u8, line, 64);
     a_cstr(pre, "staged ");
     (void)u8bFeed(line, pre);
@@ -662,6 +663,7 @@ static void put_feed_summary_tail(u32 n) {
     a_cstr(suf, " put row(s)");
     (void)u8bFeed(line, suf);
     (void)ROWSu8bFeedSummary(u8bDataC(line));
+    */
 }
 
 //  Verb-output sweep: report a put skip as a ULOG summary line in the

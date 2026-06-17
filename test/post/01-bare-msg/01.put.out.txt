@@ -1,3 +1,2 @@
 .*put put:$
 .*put greet[.]txt$
-staged 1 put row[(]s[)]$

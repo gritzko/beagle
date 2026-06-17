@@ -38,7 +38,6 @@ echo "a v1" > a.txt
 "$BE" put a.txt --color > "$TMP/put.color.out" 2> "$TMP/put.color.err"
 band_must "$TMP/put.color.out" put/color 'put put:'
 row_must  "$TMP/put.color.out" put/color 'a[.]txt'
-row_must  "$TMP/put.color.out" put/color 'staged 1 put row'
 no_raw    "$TMP/put.color.err" put/color
 
 vc_step "be post --color: 'post:' banner + commit row on stdout"
