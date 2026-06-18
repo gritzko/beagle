@@ -5,7 +5,7 @@ include_directories(.. .)
 
 find_package(ZLIB REQUIRED)
 
-add_library(keeplib STATIC KEEP.c KEEP.exe.c REFS.c REFADV.c RESOLVE.c WALK.c UNPK.c PSTR.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c SUBS.c)
+add_library(keeplib STATIC KEEP.c KEEP.exe.c REFS.c REFADV.c RESOLVE.c WALK.c UNPK.c PSTR.c CLOSE.c WIRE.c WIRE.rl.c WIRECLI.c RECV.c PROJ.c SUBS.c)
 target_link_libraries(keeplib dog abc-core ZLIB::ZLIB)
 
 #  keeper-cli no longer pushes to graf/spot — under the new

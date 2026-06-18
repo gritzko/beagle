@@ -122,6 +122,14 @@ target_compile_options(WIREtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WIREtest keeplib dog abc-core)
 add_test(NAME WIREtest COMMAND WIREtest)
 
+#  GIT-005: verbatim full-clone + thin-pack builder end-to-end (real
+#  git repo → ingest → serve arm → `git index-pack`).  Needs `git`.
+add_executable(THINtest THIN.c)
+target_link_options(THINtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(THINtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(THINtest keeplib dog abc-core)
+add_test(NAME THINtest COMMAND THINtest)
+
 add_executable(WIREREFETCHtest WIREREFETCH.c)
 target_link_options(WIREREFETCHtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(WIREREFETCHtest PRIVATE ${TEST_CXX_FLAGS})

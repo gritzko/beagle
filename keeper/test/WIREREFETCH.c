@@ -1,15 +1,19 @@
-//  WIREREFETCH — repro/trace for GET-007: server-side have-pruning that
-//  re-ships the whole log on a re-fetch of an unchanged repo.
+//  WIREREFETCH — re-fetch have-pruning, now on the GIT-005 thin builder.
 //
-//  Builds a multi-pack trunk store (each "commit" ingested as its own
-//  pack into the same trunk file_id, mirroring incremental be post/get),
-//  then drives WIREBuildSegments for the re-fetch case where the client
-//  already has the tip (want == latest have).  Asserts the shipped
-//  segment is ~empty (count == 0).  Before the fix this ships the whole
-//  log (count == N).  Set WIRE_TRACE=1 to dump the watermark trace.
+//  Historically this drove WIREBuildSegments' bookmark-tiling watermark
+//  (the GET-007 "re-ship the whole log" bug class).  GIT-005 removed
+//  that arm: the incremental fetch goes through WIREBuildThinPack, which
+//  ships the want's reachable CLOSURE minus the haves' closure — a
+//  byte-range watermark no longer exists, so the GET-007 whole-log
+//  re-ship is structurally impossible.  These cases now drive the thin
+//  builder and assert the reachability-correct shipped object count
+//  (read off the emitted pack header).  The fixtures are isolated blobs
+//  (no commit graph), so a blob want resolves to itself and a blob have
+//  prunes only itself — exactly the want/have set algebra under test.
 
 #include "keeper/WIRE.h"
 #include "keeper/KEEP.h"
+#include "dog/git/PACK.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +49,29 @@ static ok64 add_blob_pack(sha1 *out_sha, char const *content) {
     done;
 }
 
+//  Build the thin pack for (want, have) and return its header object
+//  count.  Drives the GIT-005 incremental serve arm directly.
+static ok64 thin_count(refadvcp adv, sha1cp want, sha1cp have,
+                       u32 *out_count) {
+    sane(adv && want && out_count);
+    wire_req req = {};
+    req.nwants = 1; req.wants[0] = *want;
+    req.caps   = WIRE_CAP_OFS_DELTA;
+    if (have) { req.nhaves = 1; req.haves[0] = *have; }
+
+    Bu8 packbuf = {};
+    call(u8bAllocate, packbuf, 1ULL << 20);
+    try(WIREBuildThinPack, adv, &req, packbuf);
+    ok64 rv = __;
+    if (rv != OK) { u8bFree(packbuf); return rv; }
+    a_dup(u8c, scan, u8bData(packbuf));
+    pack_hdr hh = {};
+    ok64 po = PACKDrainHdr(scan, &hh);
+    *out_count = hh.count;
+    u8bFree(packbuf);
+    return po;
+}
+
 //  Re-fetch of an unchanged repo: the client already holds the tip, so
 //  it advertises the tip as a have AND wants the tip.  The server must
 //  ship ~0 objects.
@@ -72,26 +99,13 @@ ok64 WIREREFETCHtest_unchanged() {
     call(REFADVOpen, &adv);
 
     //  Re-fetch: want == tip, have == tip (client already has it).
-    wire_req req = {};
-    req.nwants  = 1;
-    req.wants[0] = tip;
-    req.nhaves  = 1;
-    req.haves[0] = tip;
+    u32 count = 99;
+    call(thin_count, &adv, &tip, &tip, &count);
+    fprintf(stderr, "[REFETCH] unchanged re-fetch ships count=%u\n", count);
+    //  An unchanged re-fetch ships 0 objects — the tip is in the have
+    //  closure, so nothing remains in the ship-set.
+    want(count == 0);
 
-    pstr_seg segs[4] = {};
-    int      fds [4] = {-1,-1,-1,-1};
-    u32      n = 0;
-    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
-    want(n == 1);
-
-    fprintf(stderr, "[REFETCH] unchanged re-fetch ships count=%u bytes=%llu\n",
-            segs[0].count, (unsigned long long)segs[0].length);
-
-    //  THE BUG: an unchanged re-fetch must ship ~0 objects.  The tip is
-    //  already present on the client; nothing new exists.
-    want(segs[0].count == 0);
-
-    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
     HOMEClose();
@@ -122,26 +136,16 @@ ok64 WIREREFETCHtest_incremental() {
     a_refadv(adv);
     call(REFADVOpen, &adv);
 
-    //  Client has up to pack index 2 (shas[2]); wants shas[4].
-    wire_req req = {};
-    req.nwants  = 1;
-    req.wants[0] = shas[4];
-    req.nhaves  = 1;
-    req.haves[0] = shas[2];
+    //  Client has shas[2]; wants shas[4].  These blobs are mutually
+    //  unreachable (no commit graph), so the reachability ship-set of
+    //  want=shas[4] minus have-closure {shas[2]} is just {shas[4]}.  The
+    //  old bookmark-tiling counted 2 (every object byte-after the have's
+    //  watermark); reachability ships exactly the 1 wanted object.
+    u32 count = 99;
+    call(thin_count, &adv, &shas[4], &shas[2], &count);
+    fprintf(stderr, "[REFETCH] incremental fetch ships count=%u\n", count);
+    want(count == 1);
 
-    pstr_seg segs[4] = {};
-    int      fds [4] = {-1,-1,-1,-1};
-    u32      n = 0;
-    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
-    want(n == 1);
-
-    fprintf(stderr, "[REFETCH] incremental fetch ships count=%u bytes=%llu\n",
-            segs[0].count, (unsigned long long)segs[0].length);
-
-    //  Only packs 3 and 4 (2 objects) are new.
-    want(segs[0].count == 2);
-
-    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
     HOMEClose();
@@ -180,26 +184,14 @@ ok64 WIREREFETCHtest_dup_reingest() {
     call(REFADVOpen, &adv);
 
     //  Re-fetch unchanged: want == have == tip.  Nothing new exists; the
-    //  client has every object.  The server MUST ship ~0.
-    wire_req req = {};
-    req.nwants  = 1;
-    req.wants[0] = tip;
-    req.nhaves  = 1;
-    req.haves[0] = tip;
+    //  client has every object.  Reachability ships 0 — and since the
+    //  ship-set is closure-based, the duplicate later copies are
+    //  irrelevant (the GET-007 byte-range re-ship cannot occur).
+    u32 count = 99;
+    call(thin_count, &adv, &tip, &tip, &count);
+    fprintf(stderr, "[REFETCH] dup-reingest re-fetch ships count=%u\n", count);
+    want(count == 0);
 
-    pstr_seg segs[4] = {};
-    int      fds [4] = {-1,-1,-1,-1};
-    u32      n = 0;
-    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
-    want(n == 1);
-
-    fprintf(stderr, "[REFETCH] dup-reingest re-fetch ships count=%u bytes=%llu\n",
-            segs[0].count, (unsigned long long)segs[0].length);
-
-    //  THE BUG: the duplicate copies in the later packs get re-shipped.
-    want(segs[0].count == 0);
-
-    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
     HOMEClose();
@@ -245,25 +237,15 @@ ok64 WIREREFETCHtest_dup_then_incremental() {
     a_refadv(adv);
     call(REFADVOpen, &adv);
 
-    wire_req req = {};
-    req.nwants  = 1;
-    req.wants[0] = new_tip;
-    req.nhaves  = 1;
-    req.haves[0] = old_tip;
+    //  Want the genuinely-new object; have the old tip.  Reachability
+    //  ships exactly the 1 new object — the duplicate-laden tail between
+    //  the have's earliest copy and the log end is never re-shipped
+    //  (closure, not byte range).
+    u32 count = 99;
+    call(thin_count, &adv, &new_tip, &old_tip, &count);
+    fprintf(stderr, "[REFETCH] dup-then-incremental ships count=%u\n", count);
+    want(count == 1);
 
-    pstr_seg segs[4] = {};
-    int      fds [4] = {-1,-1,-1,-1};
-    u32      n = 0;
-    call(WIREBuildSegments, &adv, &req, segs, fds, 4, &n);
-    want(n == 1);
-
-    fprintf(stderr, "[REFETCH] dup-then-incremental ships count=%u bytes=%llu\n",
-            segs[0].count, (unsigned long long)segs[0].length);
-
-    //  THE FIX: only the 1 new object ships, not the duplicate tail.
-    want(segs[0].count == 1);
-
-    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
     HOMEClose();
@@ -298,10 +280,10 @@ ok64 WIREREFETCHtest_cross_file() {
     //  the leaf branch already).
     a_cstr(leaf_s, "feat");
     {
-        u8s leaf = {(u8 *)leaf_s[0], (u8 *)leaf_s[1]};
+        u8cs leaf = {(u8c *)leaf_s[0], (u8c *)leaf_s[1]};
         ok64 cb = KEEPCreateBranch(leaf);
         want(cb == OK || cb == KEEPDUP);
-        u8s leaf2 = {(u8 *)leaf_s[0], (u8 *)leaf_s[1]};
+        u8cs leaf2 = {(u8c *)leaf_s[0], (u8c *)leaf_s[1]};
         call(KEEPSwitchBranch, leaf2);
     }
     sha1 c = {};
@@ -310,33 +292,16 @@ ok64 WIREREFETCHtest_cross_file() {
     a_refadv(adv);
     call(REFADVOpen, &adv);
 
-    //  Want trunk tip B; advertise leaf C as a have.  (A real re-fetch
-    //  also advertises B, but to isolate cause a we send only the
-    //  cross-file have.)  The server must NOT default to the whole log.
-    wire_req req = {};
-    req.nwants  = 1;
-    req.wants[0] = b;
-    req.nhaves  = 1;
-    req.haves[0] = c;
+    //  Want trunk tip B; advertise leaf C (a different file_id) as a
+    //  have.  The thin builder walks closures by SHA, not by file_id, so
+    //  the cross-file have is handled uniformly: C is unreachable from B,
+    //  so it prunes nothing and the ship-set is {B} (count 1).  The old
+    //  `hfid != want_fid` whole-log re-ship is gone.
+    u32 count = 99;
+    call(thin_count, &adv, &b, &c, &count);
+    fprintf(stderr, "[REFETCH] cross-file ships count=%u\n", count);
+    want(count == 1);
 
-    pstr_seg segs[4] = {};
-    int      fds [4] = {-1,-1,-1,-1};
-    u32      n = 0;
-    ok64 bo = WIREBuildSegments(&adv, &req, segs, fds, 4, &n);
-
-    fprintf(stderr, "[REFETCH] cross-file rc=%s n=%u count=%u\n",
-            bo == OK ? "OK" : "ERR", n,
-            n > 0 ? segs[0].count : 0);
-
-    //  Document the current cross-file behaviour: the leaf have is in a
-    //  different file_id, so it is dropped and the trunk want resolves
-    //  normally.  This case exercises the `hfid != want_fid` branch;
-    //  a full multi-file watermark fix would let a cross-file have that
-    //  is actually an ancestor anchor the segment.  Kept as a trace
-    //  probe — no hard assert beyond a clean return.
-    want(bo == OK);
-
-    for (int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
     REFADVClose(&adv);
     call(KEEPClose);
     HOMEClose();

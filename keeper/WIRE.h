@@ -65,9 +65,15 @@ con ok64 WIRENOSHA   = 0x2049b39761c44a;
 //  exceeds the objects physically present in the byte range (which
 //  would make the client's UNPK scan run short: "scan incomplete").
 con ok64 WIRECRPT    = 0x8126ce31b65d;
+//  GIT-005: more `.keeper` files in the shard than the caller's segment
+//  pool can hold, or the thin builder's ship-set exceeds its cap.  A
+//  hard refusal — never silently ship a truncated subset (GET-019).
+con ok64 WIRENOROOM  = 0x8126ce5d86d8616;
 
 #define WIRE_MAX_WANTS  64
 #define WIRE_MAX_HAVES  256
+//  GIT-005 thin builder caps (serve-time scratch; no storage impact).
+#define WIRE_THIN_MAX_OBJS 65536
 
 //  Capability bits parsed off the first want line.
 #define WIRE_CAP_OFS_DELTA       (1u << 0)
@@ -116,6 +122,31 @@ ok64 WIREReadRequest(int in_fd, wire_reqp req);
 ok64 WIREBuildSegments(refadvcp adv, wire_reqcp req,
                        pstr_seg *out_segs, int *fd_pool,
                        u32 cap, u32 *out_n);
+
+//  GIT-005 incremental fetch: build a wire-correct THIN packfile that
+//  carries exactly the wants' reachable closure MINUS the haves'
+//  reachable closure, into the caller-owned growable buffer `out`
+//  (reset on entry).  Replaces the bookmark-tiling arm of
+//  WIREBuildSegments for the have-present case.
+//
+//  Each shipped object is re-framed from its OFS-only stored record:
+//    * a delta whose stored base is ALSO in the ship-set stays
+//      OFS_DELTA, with the back-offset RECOMPUTED for the output pack
+//      (output-relative, not storage-relative);
+//    * a delta whose base the client already has (in the haves'
+//      closure, not shipped) flips to REF_DELTA (base named by sha);
+//    * a base not in either set is shipped RAW — never silently
+//      dropped — and reported via `log()`/stderr (over-ship guard, the
+//      GET-019 lesson).
+//  The `ofs-delta` capability is negotiated as today (req->caps &
+//  WIRE_CAP_OFS_DELTA): without it every delta flips to REF_DELTA.
+//
+//  `out` carries the full packfile (12-byte PACK header + object
+//  records + 20-byte SHA-1 trailer) — a vanilla `git index-pack`
+//  unpacks it.  Returns WIRENOSHA (a want is absent), WIRENOROOM (the
+//  ship-set exceeds WIRE_THIN_MAX_OBJS), or a propagated read/encode
+//  error.  Storage is never touched.
+ok64 WIREBuildThinPack(refadvcp adv, wire_reqcp req, u8bp out);
 
 //  Convenience: do the whole upload-pack response in one call.
 //  Reads request from in_fd, builds segments, writes packfile to

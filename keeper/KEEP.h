@@ -371,6 +371,17 @@ void KEEPForEachCapToken(u8csc tail, b8 tab_is_sep,
 //  hexlen: prefix length for partial matching (15 = full 60-bit).
 ok64 KEEPLookup(u64 hashlet60, size_t hexlen, u64p val);
 
+//  Expose the read-only mmap of one pack log file by `file_id` as a
+//  byte slice (`out[0]..out[1]`), spanning the 12-byte file-level PACK
+//  header through the last appended object record (no SHA-1 trailer —
+//  native logs are stored stripped).  Zero-copy view into the keeper's
+//  loaded packs registry (PAST ∪ DATA), so it sees every branch's
+//  packs.  Writes an empty slice and returns KEEPNONE when no such
+//  file_id is loaded.  The serve-side thin-pack builder (WIRE) reads
+//  stored object records — and their OFS_DELTA base offsets — through
+//  this; it is the public form of the internal `keep_pack_buf`.
+ok64 KEEPPackBytes(u32 file_id, u8csp out);
+
 //  Typed LSM-run enumeration over PastData — every loaded idx run,
 //  including inherited parent-dir runs.  The single typed accessor for
 //  every cross-branch run scan (KEEPLookup, KEEPGetExact, RESOLVE's

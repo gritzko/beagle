@@ -282,6 +282,16 @@ u32 keep_run_count_all(keeper const *k) {
     return (u32)kv64bPastDataLen(k->puppies);
 }
 
+ok64 KEEPPackBytes(u32 file_id, u8csp out) {
+    sane(out);
+    out[0] = out[1] = NULL;
+    u8bp pack_map = keep_pack_buf(&KEEP, file_id);
+    if (!pack_map) return KEEPNONE;
+    out[0] = u8bDataHead(pack_map);
+    out[1] = u8bIdleHead(pack_map);
+    done;
+}
+
 //  Create a fresh idx run in the leaf dir using a globally-unique
 //  ron60 pup_key from `keep_next_pup_key`.  Centralises the
 //  "DOGPupCreate, but globally unique" pattern that every keeper-side

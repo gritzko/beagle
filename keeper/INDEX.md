@@ -14,7 +14,7 @@ The whole keeper surface: branch-aware open, object get/put/has, the incremental
  -  `KEEPInitShard`/`KEEPInitRemoteShard` — lay down a fresh project shard or per-host remote skeleton, idempotently.
  -  `KEEPGet`/`GetExact`/`GetSize`/`KEEPHas`/`Lookup` — retrieve a body by hashlet (delta resolved) or SHA-1, peek, raw val.
  -  `keepKeyPack`/`KeyType`/`KeyHashlet`/`PackBmVal`/`BmCount`/`BmLen` — inline (un)pack of the wh64 key + bookmark val.
- -  `keep_run_count_all`/`run_at_all`/`scan_branch_dir` — the PastData LSM-run enumerator and the registry-extend op.
+ -  `keep_run_count_all`/`run_at_all`/`scan_branch_dir`/`KEEPPackBytes` — LSM-run enumerator, registry op, by-file_id pack bytes.
  -  `KEEPUpdate`/`KEEPPut`/`Import`/`IngestFile`/`IngestStream` — feed one object, a batch, a `.pack`, a pack, a side-band.
  -  `keep_pack`/`KEEPPackOpen`/`PackFeed`/`PackClose` — the incremental pack writer; `PackFeed` deltas a base.
  -  `KEEPIsAncestor`/`SharesAncestor`/`CommitTreeSha`/`ObjSha` — bounded-BFS FF/shared-history predicates, commit→tree, sha.
@@ -53,6 +53,13 @@ Depth-first traversal of one tree rooted at a SHA-1 (commit walks live in graf/)
  -  `KEEPTreeULog`/`KEEPTreeDiff` — materialise a tree's leaves as sorted ULOG rows, and the tree-vs-tree diff.
  -  `KEEPEmitCommitLine`/`EmitTreeDiffFiles`/`EmitCommitsSince` — the "what moved" banner (commit rows, file diffs, range).
 
+###  CLOSE.h — object-closure walk + sorted sha set
+
+A commit's reachable closure (commit + parents + trees + blobs) — the unit every pack builder ships. Shared by the push client (WIRECLI) and the thin builder (WIRE), with have-pruning (GIT-005).
+
+ -  `close_set`/`CLOSESetHas`/`CLOSESetAdd` — caller-backed sorted sha1 array, binary-search membership; insert sorts + dedups.
+ -  `CLOSEWalkCommit`/`CLOSEWalkTree` — append a commit's / tree's closure into `out`, pruning a `have` set; gitlinks skipped.
+
 ###  SUBS.h — submodule enumeration
 
 One-level submodule listing off a tree: cross-references `.gitmodules` declarations against live `160000` gitlinks.
@@ -70,10 +77,11 @@ Builds the refs advertisement: one resolved `(tip, refname, dir)` per local-tip 
 
 ###  WIRE.h, PSTR.h — upload-pack server + client + stitcher
 
-`WIRE` negotiates wants/haves and builds the ordered segment list; `PSTR` re-frames stripped on-disk pack bodies into one wire-shaped packfile. The header also drives the client (fetch / push). See [WIRE.md].
+`WIRE` negotiates wants/haves: no haves ships each OFS-only `.keeper` verbatim (full clone), haves builds a thin pack (GIT-005). `PSTR` re-frames stripped pack bodies into one wire packfile. The header also drives the client. See [WIRE.md].
 
  -  `wire_req`/`WIRE_CAP_*`/`WIRE_MAX_WANTS`/`MAX_HAVES` — the parsed request (want/have shas + caps bitmask) and limits.
- -  `WIREReadRequest`/`BuildSegments`/`ServeUpload` — drain wants/haves, resolve to an ordered `pstr_seg` list, serve.
+ -  `WIREReadRequest`/`BuildSegments`/`ServeUpload` — drain wants/haves; verbatim full-clone segments or thin pack; serve.
+ -  `WIREBuildThinPack` — incremental fetch: wants' closure minus haves', deltas re-framed OFS (recomputed) / REF (have base).
  -  `pstr_seg`/`PSTRWrite` — a `{fd, offset, length, count}` segment and the stitcher (PACK header + bytes + trailer).
  -  `WIREFetch`/`FetchAll`/`WIREPush`/`PushDelete`/`ServePath` — client convos: fetch one/all, push (FF/`force`), delete.
  -  `WIREClassify`/`wire_evt`/`wire_role`/`wire_evt_kind` — pure pkt-line classifier → a typed want/have/done/ref event.
