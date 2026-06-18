@@ -267,6 +267,55 @@ ok64 PACKtest12() {
     done;
 }
 
+// ---- Test 13: PACKu8sFeedOfs ⇄ OFS decode round-trip.
+// The OFS_DELTA negative-offset varint encoder must be the exact
+// inverse of the decoder inside PACKDrainObjHdr, across every 7-bit
+// continuation-group boundary and into large u64 offsets (GIT-002:
+// the two hand-rolled copies in keeper/KEEP.c + js/pack.hpp are
+// replaced by this one shared encoder; this pins the wire encoding).
+ok64 PACKtest13() {
+    sane(1);
+    u64 vals[] = {0, 1, 0x7f, 0x80, 0x81, 0x3fff, 0x4000, 0x4001,
+                  0x1fffff, 0x200000, 1234567, (1ULL << 35) + 13,
+                  UINT32_MAX, ((u64)1 << 50) + 1};
+    for (size_t i = 0; i < sizeof(vals) / sizeof(vals[0]); i++) {
+        //  Encode the offset behind an OFS_DELTA object header (size=1)
+        //  so PACKDrainObjHdr's OFS branch decodes it back: the header
+        //  byte is (PACK_OBJ_OFS_DELTA<<4)|1.
+        a_pad(u8, buf, 32);
+        call(PACKu8sFeedObjHdr, buf, PACK_OBJ_OFS_DELTA, 1);
+        call(PACKu8sFeedOfs, buf, vals[i]);
+        u8cs scan = {u8bDataHead(buf), u8bIdleHead(buf)};
+        pack_obj obj = {};
+        call(PACKDrainObjHdr, scan, &obj);
+        want(obj.type == PACK_OBJ_OFS_DELTA);
+        want(obj.ofs_delta == vals[i]);
+        want($empty(scan));   //  offset varint consumed exactly
+    }
+    done;
+}
+
+// ---- Test 14: PACKu8sFeedOfs propagates SNOROOM on a full buffer.
+// A buffer too small for the whole offset varint must refuse rather
+// than emit a truncated offset into the pack stream.
+ok64 PACKtest14() {
+    sane(1);
+    //  0x80 needs two bytes (one continuation group): a 1-byte buffer
+    //  holds the first emitted byte but not the second, so the encoder
+    //  must surface SNOROOM rather than truncate.
+    a_pad(u8, tiny, 1);
+    want(PACKu8sFeedOfs(tiny, 0x80) == SNOROOM);
+
+    //  Zero-capacity buffer fails on the very first byte.
+    a_pad(u8, none, 0);
+    want(PACKu8sFeedOfs(none, 0) == SNOROOM);
+
+    //  A right-sized buffer still succeeds (no false positive).
+    a_pad(u8, ok, 8);
+    want(PACKu8sFeedOfs(ok, 0x80) == OK);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(PACKtest1);
@@ -281,6 +330,8 @@ ok64 maintest() {
     call(PACKtest10);
     call(PACKtest11);
     call(PACKtest12);
+    call(PACKtest13);
+    call(PACKtest14);
     done;
 }
 

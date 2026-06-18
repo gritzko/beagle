@@ -2,6 +2,7 @@
 //
 #include "PACK.h"
 
+#include "DELT.h"
 #include "GIT.h"
 #include "ZINF.h"
 #include "abc/PRO.h"
@@ -91,6 +92,24 @@ ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj) {
     done;
 }
 
+ok64 PACKu8sFeedOfs(u8bp buf, u64 val) {
+    sane(u8bOK(buf));
+    //  Inverse of PACKDrainOfs: the decoder reads MSB-first 7-bit
+    //  groups as `ofs = ((ofs+1) << 7) | (c & 0x7f)`, so the encoder
+    //  builds the groups low-to-high (decrementing each higher group
+    //  to match the decoder's +1), then emits them high-to-low with
+    //  a continuation MSB on every byte but the last.
+    a_pad(u8, tmp, 16);
+    call(u8bFeed1, tmp, (u8)(val & 0x7f));
+    while ((val >>= 7) != 0) {
+        val--;
+        call(u8bFeed1, tmp, (u8)(0x80 | (val & 0x7f)));
+    }
+    a_dup(u8c, groups, u8bData(tmp));
+    $rof(u8c, g, groups) call(u8bFeed1, buf, *g);
+    done;
+}
+
 ok64 PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size) {
     sane(u8bOK(buf));
     u8 first = (u8)((type << 4) | (size & 0x0f));
@@ -103,6 +122,49 @@ ok64 PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size) {
         if (size > 0) c |= 0x80;
         call(u8bFeed1, buf, c);
     }
+    done;
+}
+
+ok64 PACKu8sFeedObj(u8bp log, u8 type, u8csc content,
+                    u8csc base, u64 cur_off, u64 base_off,
+                    u8bp delta, b8 *out_delta) {
+    sane(u8bOK(log) && type >= 1 && type <= 4);
+    if (out_delta) *out_delta = NO;
+
+    //  Try OFS_DELTA only when a base is supplied and sits earlier in
+    //  the log.  REF_DELTA is never emitted into a stored log.
+    if (!$empty(base) && base_off < cur_off && u8bOK(delta)) {
+        u8bReset(delta);
+        ok64 deo = DELTEncode(base, content, delta);
+        if (deo == OK && (u64)u8bDataLen(delta) < (u64)u8csLen(content)) {
+            u64 delta_len = u8bDataLen(delta);
+            //  Header carries the delta-instruction length; the OFS
+            //  varint is the negative distance back to the base record.
+            a_pad(u8, ohdr, 16);
+            call(PACKu8sFeedObjHdr, ohdr, PACK_OBJ_OFS_DELTA, delta_len);
+            a_dup(u8c, ohb, u8bData(ohdr));
+            call(u8bFeed, log, ohb);
+
+            a_pad(u8, ofs, 16);
+            call(PACKu8sFeedOfs, ofs, cur_off - base_off);
+            a_dup(u8c, ofsb, u8bData(ofs));
+            call(u8bFeed, log, ofsb);
+
+            a_dup(u8c, zsrc, u8bDataC(delta));
+            call(ZINFDeflate, u8bIdle(log), zsrc);
+            if (out_delta) *out_delta = YES;
+            done;
+        }
+    }
+
+    //  Raw object record: header(type,size) + deflated content.
+    a_pad(u8, ohdr, 16);
+    call(PACKu8sFeedObjHdr, ohdr, type, u8csLen(content));
+    a_dup(u8c, oh, u8bData(ohdr));
+    call(u8bFeed, log, oh);
+
+    a_dup(u8c, czsrc, content);
+    call(ZINFDeflate, u8bIdle(log), czsrc);
     done;
 }
 

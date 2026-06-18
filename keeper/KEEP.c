@@ -1538,20 +1538,6 @@ void KEEPForEachCapToken(u8csc tail, b8 tab_is_sep,
     }
 }
 
-//  OFS_DELTA negative-offset varint.  Matches PACKDrainOfs's decoding:
-//    ofs = c & 0x7f;                    (first byte, MSB bits)
-//    while (cont): ofs = ((ofs+1)<<7) | (c & 0x7f);
-static void pack_feed_ofs(u8bp buf, u64 val) {
-    u8 tmp[16];
-    int pos = 0;
-    tmp[pos] = (u8)(val & 0x7f);
-    while ((val >>= 7) != 0) {
-        val--;
-        tmp[++pos] = (u8)(0x80 | (val & 0x7f));
-    }
-    for (int i = pos; i >= 0; i--) u8bFeed1(buf, tmp[i]);
-}
-
 ok64 KEEPPackOpen(keep_pack *p) {
     sane(p);
     keeper *k = &KEEP;
@@ -1622,12 +1608,15 @@ ok64 KEEPPackOpen(keep_pack *p) {
     done;
 }
 
-//  Scan the in-progress pack's entries for a hashlet hit that points
-//  at a RAW object (types 1..4).  Opportunistic OFS_DELTA candidate —
-//  avoids the 20-byte REF header for same-pack bases.  Skips entries
-//  whose on-disk record is itself a delta: we don't resolve in-pack
-//  chains here; caller falls through to the REF path (KEEPGet) where
-//  the LSM resolver handles chains.
+//  Scan the WHOLE open shard log's index for a hashlet hit that points
+//  at a RAW object (types 1..4) earlier in this same log file — an
+//  OFS_DELTA base candidate addressed purely by offset.  GIT-002: not
+//  pack-batch-scoped any more (no `off >= p->pack_offset` filter), so a
+//  cross-batch near-identical object in the one growing log is now a
+//  usable base.  Skips entries whose on-disk record is itself a delta:
+//  the writer only deltas against an already-appended RAW object, so a
+//  contiguous byte range stays self-resolvable; a delta base would
+//  force chain resolution the OFS-only stored log avoids.
 static b8 keep_find_raw_in_pack(keep_pack *p, u64 base_hashlet60,
                                 u64 *offset_out, u8 *type_out) {
     a_dup(wh128, es, wh128bData(p->entries));
@@ -1635,7 +1624,6 @@ static b8 keep_find_raw_in_pack(keep_pack *p, u64 base_hashlet60,
         if (keepKeyHashlet(e->key) != base_hashlet60) continue;
         if (wh64Id(e->val) != p->file_id) continue;
         u64 off = wh64Off(e->val);
-        if (off < p->pack_offset) continue;
 
         u8cs from = {u8bDataHead(p->log) + off,
                      u8bDataHead(p->log) + u8bDataLen(p->log)};
@@ -1663,16 +1651,21 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
 
     KEEPObjSha(sha_out, type, content);
 
-    u64 obj_offset    = u8bDataLen(p->log);
-    b8  emitted_delta = NO;
+    u64 obj_offset = u8bDataLen(p->log);
+
+    //  GIT-002 OFS-ALWAYS: the only delta the writer ever emits is
+    //  OFS_DELTA against a RAW object earlier in THIS open shard log.
+    //  Resolve such a base into p->delta_base (a byte range that stays
+    //  valid until the emit); if none, store raw.  No REF_DELTA, no
+    //  KEEPGet cross-file fallback — a base in an older committed
+    //  .keeper cannot be OFS-addressed across files, so it stays raw
+    //  here and is recovered at GIT-006 recompaction.
+    u8cs base = {};
+    u64  base_off = 0;
 
     if (base_hashlet60 != 0) {
-        //  Resolve the base into p->delta_base.  Prefer an OFS
-        //  candidate in this pack (raw only); fall through to KEEPGet
-        //  which walks k->puppies and resolves delta chains internally.
-        b8  in_pack = NO;
         u64 in_pack_off = 0;
-        u8  base_type = 0;
+        u8  base_type   = 0;
         u8bReset(p->delta_base);
 
         if (keep_find_raw_in_pack(p, base_hashlet60, &in_pack_off,
@@ -1686,84 +1679,28 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
                             u8bTerm(p->delta_base)};
                 if (PACKInflate(from, into, bo.size) == OK) {
                     u8bFed(p->delta_base, bo.size);
-                    in_pack = YES;
-                }
-            }
-        }
-
-        if (!in_pack) {
-            //  Committed-run lookup: KEEPGet chases any internal
-            //  OFS/REF chain and hands us the fully-resolved body.
-            //  DAG invariant: REF_DELTA bases must live in this leaf
-            //  branch or one of its ancestor dirs along the open
-            //  branch path.  Since KEEPOpenBranch only ever loads
-            //  packs from trunk → … → leaf, every hit in `k->packs`
-            //  is by construction visible to a delta encoded into
-            //  the leaf — no extra check needed.
-            if (KEEPGet(base_hashlet60, 15, p->delta_base,
-                        &base_type) != OK) {
-                u8bReset(p->delta_base);
-            }
-        }
-
-        if (u8bDataLen(p->delta_base) > 0) {
-            //  Hash the resolved base — REF_DELTA needs the 20-byte
-            //  SHA; also serves as a collision guard (hashlet60 uses
-            //  only 15 hex chars of the SHA prefix).
-            sha1 base_sha = {};
-            u8csc bc = {u8bDataHead(p->delta_base),
-                        u8bIdleHead(p->delta_base)};
-            KEEPObjSha(&base_sha, base_type, bc);
-
-            if (WHIFFHashlet60(&base_sha) == base_hashlet60) {
-                u8bReset(p->delta_instr);
-                ok64 deo = DELTEncode(bc, content, p->delta_instr);
-                if (deo == OK &&
-                    u8bDataLen(p->delta_instr) < u8csLen(content)) {
-                    u64 delta_len = u8bDataLen(p->delta_instr);
-                    u8  dtype = in_pack ? PACK_OBJ_OFS_DELTA
-                                        : PACK_OBJ_REF_DELTA;
-                    call(FILEBookEnsure, p->log,
-                         64 + delta_len + 256);
-
-                    a_pad(u8, ohdr, 16);
-                    call(PACKu8sFeedObjHdr, ohdr, dtype, delta_len);
-                    a_dup(u8c, ohb, u8bData(ohdr));
-                    u8bFeed(p->log, ohb);
-
-                    if (in_pack) {
-                        u64 neg = obj_offset - in_pack_off;
-                        a_pad(u8, ofs, 16);
-                        pack_feed_ofs(ofs, neg);
-                        a_dup(u8c, ofsb, u8bData(ofs));
-                        u8bFeed(p->log, ofsb);
-                    } else {
-                        u8cs sha_sl = {};
-                        sha1slice(sha_sl, &base_sha);
-                        u8bFeed(p->log, sha_sl);
+                    //  Collision guard: hashlet60 is only a 15-hex
+                    //  prefix; confirm the full base sha matches before
+                    //  deltifying against it.
+                    sha1 base_sha = {};
+                    u8csc bc = {u8bDataHead(p->delta_base),
+                                u8bIdleHead(p->delta_base)};
+                    KEEPObjSha(&base_sha, base_type, bc);
+                    if (WHIFFHashlet60(&base_sha) == base_hashlet60) {
+                        u8csMv(base, bc);
+                        base_off = in_pack_off;
                     }
-
-                    a_dup(u8c, zsrc, u8bDataC(p->delta_instr));
-                    call(ZINFDeflate, u8bIdle(p->log), zsrc);
-                    emitted_delta = YES;
                 }
             }
         }
     }
 
-    if (!emitted_delta) {
-        //  Raw-object path (same as pre-delta).
-        call(FILEBookEnsure, p->log, 16);
-        a_pad(u8, ohdr, 16);
-        call(PACKu8sFeedObjHdr, ohdr, type, u8csLen(content));
-        a_dup(u8c, oh, u8bData(ohdr));
-        u8bFeed(p->log, oh);
-
-        u64 clen = u8csLen(content);
-        call(FILEBookEnsure, p->log, clen + 256);
-        a_dup(u8c, zsrc, content);
-        call(ZINFDeflate, u8bIdle(p->log), zsrc);
-    }
+    //  Reserve log room for the worst case (raw header + content +
+    //  zlib slack), then delegate the byte-level emit to dog/git's
+    //  one writer (raw | OFS_DELTA, never REF_DELTA).
+    call(FILEBookEnsure, p->log, 64 + u8csLen(content) + 256);
+    call(PACKu8sFeedObj, p->log, type, content, base, obj_offset,
+         base_off, p->delta_instr, NULL);
 
     //  Index entry records the resolved object type, not the pack type
     //  (delta vs raw is an on-wire concern; lookups are type-aware).

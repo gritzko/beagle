@@ -24,12 +24,12 @@ shard that wrote it.
 
 ## Append-only pack logs
 
-One log file holds **many packs** appended back-to-back.  Small
-packs (e.g. a single local commit) MUST be appended to the shard's
-current tail log file — never open a new file just to store one
-pack.  A new log file is only started when the current one crosses
-a size threshold.  A file has the git packfile header but no
-trailing checksum.
+One log file is the shard's **single growing append-only stream**
+(GIT-002): every pack — including a single local commit's — is
+appended to the shard's current tail log; there is no new-log
+rollover.  Object byte offsets are writer-assigned and stable, so
+OFS_DELTA may reference any earlier object in the one log.  A file
+has the git packfile header but no trailing checksum.
 
 Pack boundaries inside a log file are discoverable only via the
 index (see pack bookmarks below).  The raw bytes carry no
@@ -100,17 +100,21 @@ Per-object 60-bit hashlets in the LSM are untouched.
 
 ## Delta dependencies
 
-OFS_DELTA is **pack-local**: the base sits earlier in the same
-pack at a known offset.  A pack file can therefore be copied
-verbatim between stores (dog-to-dog sync) without rewriting
-deltas.
+The native writer (`KEEPPackFeed`, via `PACKu8sFeedObj`) emits
+**OFS_DELTA exclusively** (GIT-002): the base is any earlier RAW
+object in the one growing shard log, addressed purely by its byte
+offset (`cur_off - base_off`).  A contiguous byte range is always
+self-resolvable, so a log can be copied verbatim between stores
+(dog-to-dog sync) without rewriting deltas, and a shard is
+droppable with no cross-file delta dependencies.
 
-REF_DELTA resolves by hashlet lookup **within the single project
-pool**: a base may be any earlier object in the shard.  There is
-no dir-chain walk-up.  The only constraint is cross-project: a
-REF_DELTA base MUST live in the same project shard, never in
-another project, which keeps every shard self-contained and
-movable / recompactable in isolation.
+A base that lives only in an older committed log cannot be
+OFS-addressed across files, so the object stores raw; that
+compression is recovered globally at GIT-006 epoch recompaction.
+REF_DELTA never lands in a stored log — sha-addressed deltas in
+foreign packs are normalized away at the ingest boundary (the
+read path still resolves pre-migration on-disk REF_DELTA until
+GIT-004/GIT-006).
 
 ## Pack bookmarks
 

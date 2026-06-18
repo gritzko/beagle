@@ -68,6 +68,51 @@ ok64 PACKDrainObjHdr(u8cs from, pack_obj *obj);
 //  buffer never emits a truncated header into the pack stream.
 ok64 PACKu8sFeedObjHdr(u8bp buf, u8 type, u64 size);
 
+//  Encode an OFS_DELTA negative-offset varint: the exact inverse of
+//  the decoder inside PACKDrainObjHdr.  7-bit groups are emitted
+//  MSB-first with a continuation bit on all but the last byte, the
+//  higher groups carrying the decoder's `+1` bias.  Appends to `buf`;
+//  round-trips through PACKDrainObjHdr's OFS branch.  Shared by every
+//  pack writer that emits OFS_DELTA (keeper's pack log, the JABC
+//  binding) — no caller open-codes the offset varint.  Returns
+//  SNOROOM if `buf` lacks room for the whole varint, so a full buffer
+//  never emits a truncated offset into the pack stream.
+ok64 PACKu8sFeedOfs(u8bp buf, u64 val);
+
+//  Append ONE object record into the pack-log buffer `log`, advancing
+//  its DATA boundary, then return so the caller can index the record
+//  at the offset it captured before the call.  The record is OFS_DELTA
+//  when a usable in-log base is supplied, else raw:
+//
+//    `type`     — PACK_OBJ_* of the object (1..4); recorded in the raw
+//                 header and used by the caller's index.
+//    `content`  — the object's full uncompressed bytes.
+//    `base`     — the resolved base object's full uncompressed bytes,
+//                 or an empty slice for "store raw" (no delta attempt).
+//    `cur_off`  — byte offset of THIS record's start in `log`
+//                 (= u8bDataLen(log) at the call site, captured before
+//                 any FILEBook growth so it is the stable record offset).
+//    `base_off` — byte offset of the base record's start in `log`.
+//    `delta`    — caller-provided scratch buffer for the encoded delta
+//                 instructions; reset internally, never grown here.
+//
+//  When `base` is non-empty the record is OFS_DELTA only if DELTEncode
+//  succeeds AND the delta is smaller than `content`; otherwise it falls
+//  back to a raw record (DELTFAIL or not-smaller → raw, same as a missing
+//  base).  OFS_DELTA emits PACKu8sFeedObjHdr + PACKu8sFeedOfs(cur_off -
+//  base_off) + the deflated delta; raw emits PACKu8sFeedObjHdr + the
+//  deflated content.  NEVER emits REF_DELTA — sha-addressed bases are an
+//  ingest-boundary concern, not a stored-log one.  The byte output is
+//  identical to keeper's prior inline writer for both the raw and OFS
+//  cases.  `log` must already have IDLE room for the record (caller
+//  reserves via its growable-log machinery); no malloc, no refs/index.
+//  Checks every emit return so a full buffer never leaves a truncated
+//  record in the stream.  `out_delta` (optional) is set YES when an
+//  OFS_DELTA was emitted, NO for raw — lets the caller assert/trace.
+ok64 PACKu8sFeedObj(u8bp log, u8 type, u8csc content,
+                    u8csc base, u64 cur_off, u64 base_off,
+                    u8bp delta, b8 *out_delta);
+
 //  Inflate zlib-compressed data from `from` into `into`.
 //  `into` must have room for `size` bytes.
 //  Advances `from` past the consumed compressed data.

@@ -1,17 +1,24 @@
 //  DELTA_ROUND: end-to-end delta round-trip through real git.
 //
-//  1. Open a fresh keeper, open a pack.
-//  2. Feed N versions of a blob with `base_hint` chained to the
-//     previous version so the writer tries OFS_DELTA.
-//  3. Close the pack; the log file on disk is a git-compatible pack
-//     minus the trailing SHA-1.
+//  GIT-002 (OFS-ALWAYS): the writer emits raw objects + OFS_DELTA
+//  EXCLUSIVELY — never REF_DELTA.  This test feeds N versions of a
+//  blob across what were pack-batch boundaries into the ONE growing
+//  shard log, base-hinting each version at its predecessor, then:
+//
+//  1. Open a fresh keeper, open the (single, growing) shard log.
+//  2. Feed N versions of a blob, each hinted at the previous version
+//     so the writer tries OFS_DELTA against an earlier object in the
+//     same log.  The hops cross what used to be separate packs.
+//  3. Close the log; on disk it is a git-compatible pack minus the
+//     trailing SHA-1.
 //  4. Append SHA1(logbytes) as the 20-byte trailer and hand the
 //     resulting .pack to `git index-pack`.  Put pack+idx into a bare
 //     git repo.
 //  5. Ask git to print every version via `git cat-file blob <sha>`
-//     and verify the bytes match what we fed.
-//  6. Sanity-check that at least one OFS_DELTA record exists in the
-//     on-disk log (i.e. delta compression actually kicked in).
+//     and verify the bytes match what we fed (round-trip).
+//  6. Assert the OFS-only spec: every delta record is OFS_DELTA and
+//     ZERO REF_DELTA records exist in the on-disk log, and that
+//     cross-batch deltas actually formed (more than one OFS_DELTA).
 
 #include "keeper/KEEP.h"
 #include "dog/git/PACK.h"
@@ -104,36 +111,29 @@ ok64 DELTARoundTrip() {
 
     sha1 shas[N] = {};
 
-    //  Two phases so we exercise both delta modes:
-    //    - Pack 1 holds v0 (raw) + v1 (OFS_DELTA against v0 — same
-    //      in-progress pack, raw base).
-    //    - Packs 2 + 3 each hold one delta (v2, v3) against the
-    //      previously-committed base — the realistic case: "append
-    //      one change, one version of one file", base lives in an
-    //      earlier (already-closed) pack.  These emit REF_DELTA;
-    //      the v3 base is itself a REF_DELTA — KEEPGet chases it.
+    //  ONE growing shard log (GIT-002): feed every version into a
+    //  single open session, each hinted at its predecessor.  This is
+    //  the cross-batch case — under the old pack-batch-scoped writer
+    //  the later versions could only REF_DELTA a committed base; now
+    //  the base is an earlier object in the same open log addressed by
+    //  offset, so the writer emits OFS_DELTA against any RAW base.
+    //
+    //  Expected layout (base hint = previous version's sha):
+    //    v0  raw blob       (first object, no base)
+    //    v1  OFS_DELTA      (base v0 — raw, earlier in the log)
+    //    v2  raw blob       (base v1 is itself a delta; raw bases only)
+    //    v3  OFS_DELTA      (base v2 — raw, earlier in the log)
+    //  → 2 raw blobs, 2 OFS_DELTA, ZERO REF_DELTA.
     {
         keep_pack p = {};
         call(KEEPPackOpen, &p);
         p.strict_order = NO;
-        u8csc c0 = {(u8cp)versions[0],
-                    (u8cp)versions[0] + strlen(versions[0])};
-        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c0, 0,
-             &shas[0]);
-        u8csc c1 = {(u8cp)versions[1],
-                    (u8cp)versions[1] + strlen(versions[1])};
-        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c1,
-             WHIFFHashlet60(&shas[0]), &shas[1]);
-        call(KEEPPackClose, &p);
-    }
-    for (int i = 2; i < N; i++) {
-        keep_pack p = {};
-        call(KEEPPackOpen, &p);
-        p.strict_order = NO;
-        u8csc c = {(u8cp)versions[i],
-                   (u8cp)versions[i] + strlen(versions[i])};
-        call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c,
-             WHIFFHashlet60(&shas[i-1]), &shas[i]);
+        for (int i = 0; i < N; i++) {
+            u8csc c = {(u8cp)versions[i],
+                       (u8cp)versions[i] + strlen(versions[i])};
+            u64 hint = i == 0 ? 0 : WHIFFHashlet60(&shas[i-1]);
+            call(KEEPPackFeed, &p, DOG_OBJ_BLOB, c, hint, &shas[i]);
+        }
         call(KEEPPackClose, &p);
     }
 
@@ -151,8 +151,11 @@ ok64 DELTARoundTrip() {
         call(FILEMapRO, &logmap, lpt);
     }
 
-    //  Sanity: at least one OFS_DELTA record was written (i.e. delta
-    //  compression actually kicked in).
+    //  OFS-only spec assertions (GIT-002):
+    //    (a) ZERO REF_DELTA records in the log,
+    //    (b) cross-batch deltas formed (>1 OFS_DELTA, hinting at an
+    //        earlier object in the same growing log),
+    //    (c) the exact expected layout: 2 raw blobs + 2 OFS_DELTA.
     u32 counts[8] = {};
     a_dup(u8c, logbytes, u8bData(logmap));
     call(count_types, logbytes, counts);
@@ -162,21 +165,29 @@ ok64 DELTARoundTrip() {
             counts[PACK_OBJ_BLOB],
             counts[PACK_OBJ_OFS_DELTA],
             counts[PACK_OBJ_REF_DELTA]);
-    //  Expected layout: v0 raw (pack 1), v1 OFS_DELTA (pack 1, same-
-    //  pack raw base), v2 + v3 REF_DELTA (packs 2+3, cross-pack base).
-    if (counts[PACK_OBJ_BLOB] != 1) {
-        fprintf(stderr, "delta_round: expected 1 raw blob, got %u\n",
-                counts[PACK_OBJ_BLOB]);
+    //  (a) The native writer must NEVER emit REF_DELTA.
+    if (counts[PACK_OBJ_REF_DELTA] != 0) {
+        fprintf(stderr,
+                "delta_round: OFS-only violated — %u REF_DELTA in log\n",
+                counts[PACK_OBJ_REF_DELTA]);
         fail(TESTFAIL);
     }
-    if (counts[PACK_OBJ_OFS_DELTA] != 1) {
-        fprintf(stderr, "delta_round: expected 1 OFS_DELTA, got %u\n",
+    //  (b) Cross-batch OFS deltas actually formed.
+    if (counts[PACK_OBJ_OFS_DELTA] < 2) {
+        fprintf(stderr,
+                "delta_round: expected >=2 OFS_DELTA, got %u\n",
                 counts[PACK_OBJ_OFS_DELTA]);
         fail(TESTFAIL);
     }
-    if (counts[PACK_OBJ_REF_DELTA] != N - 2) {
-        fprintf(stderr, "delta_round: expected %d REF_DELTA, got %u\n",
-                N - 2, counts[PACK_OBJ_REF_DELTA]);
+    //  (c) Exact expected layout: v0,v2 raw; v1,v3 OFS_DELTA.
+    if (counts[PACK_OBJ_BLOB] != 2) {
+        fprintf(stderr, "delta_round: expected 2 raw blobs, got %u\n",
+                counts[PACK_OBJ_BLOB]);
+        fail(TESTFAIL);
+    }
+    if (counts[PACK_OBJ_OFS_DELTA] != 2) {
+        fprintf(stderr, "delta_round: expected 2 OFS_DELTA, got %u\n",
+                counts[PACK_OBJ_OFS_DELTA]);
         fail(TESTFAIL);
     }
 

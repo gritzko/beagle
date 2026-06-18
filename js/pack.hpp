@@ -18,19 +18,6 @@ extern "C" {
 #include "dog/git/ZINF.h"
 }
 
-//  OFS_DELTA negative-offset varint (replica of keeper's pack_feed_ofs;
-//  round-trips through dog/git PACKDrainObjHdr's PACKDrainOfs).
-static void JABCPackFeedOfs(u8* const* buf, u64 val) {
-  u8 tmp[16];
-  int pos = 0;
-  tmp[pos] = (u8)(val & 0x7f);
-  while ((val >>= 7) != 0) {
-    val--;
-    tmp[++pos] = (u8)(0x80 | (val & 0x7f));
-  }
-  for (int i = pos; i >= 0; i--) u8bFeed1((u8bp)buf, tmp[i]);
-}
-
 //  _pack_header(buf, off, count) -> off+12
 static JABC_FN(JABCpackHeader) {
   if (argc < 3) JABC_THROW("pack._header(buf, off, count)");
@@ -88,7 +75,7 @@ static JABC_FN(JABCpackFeed) {
           size_t dlen = (size_t)(dbuf[2] - dbuf[1]);
           if (dlen < clen) {
             PACKu8sFeedObjHdr((u8bp)b, PACK_OBJ_OFS_DELTA, dlen);
-            JABCPackFeedOfs(b, (u64)(off - prevOff));
+            PACKu8sFeedOfs((u8bp)b, (u64)(off - prevOff));
             u8cs dz = {dbuf[1], dbuf[2]};
             if (ZINFDeflate(u8bIdle(b), dz) == OK) emitted = YES;
           }
