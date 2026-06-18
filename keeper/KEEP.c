@@ -54,6 +54,14 @@
 //  unbounded frames (stack-overflow DoS, MEM-022).  Bound it.
 #define KEEP_XFILE_RECUR_MAX 64
 
+//  Writer-side OFS delta-chain cap (GIT-008).  When the writer deltas
+//  against a base that is itself an OFS_DELTA it grows the chain; cap
+//  the depth a NEW object may add itself to so reads stay cheap and the
+//  MEM-022-class resolver bound (KEEP_DELTA_CHAIN_MAX) is never neared.
+//  git uses ~50; we match it.  A base already at this depth is treated
+//  as un-deltifiable: the new object stores raw, starting a fresh chain.
+#define KEEP_WRITE_CHAIN_MAX 50
+
 u8c *const KEEP_DIR_S[2] = {
     (u8c *)KEEP_DIR,
     (u8c *)KEEP_DIR + sizeof(KEEP_DIR) - 1,
@@ -1613,20 +1621,59 @@ ok64 KEEPPackOpen(keep_pack *p) {
              1ULL << 30, 4096);
         call(PACKu8sFeedHdr, u8bIdle(p->log), 0);
         p->pack_offset = 12;
+        //  Expose the in-progress RW view to readers under this file_id
+        //  (symmetric with the appending branch above).  GIT-008's
+        //  delta-of-delta resolution chases a base's OFS chain through
+        //  keep_get_packed_rec, which reads the log via keep_pack_buf;
+        //  without an install that lookup returns NULL on a fresh pack.
+        //  KEEPPackClose's keep_pack_install just updates this entry's
+        //  fd to the RO map.
+        test(kv64bDataLen(k->packs) < KEEP_MAX_FILES, KEEPNOROOM);
+        call(keep_pack_install, k, p->file_id, p->log);
     }
 
     done;
 }
 
-//  Scan the WHOLE open shard log's index for a hashlet hit that points
-//  at a RAW object (types 1..4) earlier in this same log file — an
-//  OFS_DELTA base candidate addressed purely by offset.  GIT-002: not
-//  pack-batch-scoped any more (no `off >= p->pack_offset` filter), so a
-//  cross-batch near-identical object in the one growing log is now a
-//  usable base.  Skips entries whose on-disk record is itself a delta:
-//  the writer only deltas against an already-appended RAW object, so a
-//  contiguous byte range stays self-resolvable; a delta base would
-//  force chain resolution the OFS-only stored log avoids.
+//  Walk the OFS delta chain rooted at `off` in the open log, counting
+//  the delta hops (chain depth of the object stored there).  A RAW
+//  record is depth 0.  Reuses the resolver's MEM-022 OFS guards
+//  (ofs_delta != 0 && <= cur) so a corrupt/cyclic chain can't underflow
+//  or spin; bounded by KEEP_WRITE_CHAIN_MAX hops.  REF_DELTA / unknown
+//  records terminate the walk (OFS-only stored logs never carry them,
+//  and they can't be OFS-extended anyway).  Returns the depth, or
+//  KEEP_WRITE_CHAIN_MAX+1 if the cap is reached (treat as too deep).
+static u32 keep_chain_depth_at(keep_pack *p, u64 off) {
+    u8cp base = u8bDataHead(p->log);
+    u64  loglen = u8bDataLen(p->log);
+    u64  cur = off;
+    u32  depth = 0;
+    for (;;) {
+        if (cur >= loglen) break;
+        u8cs from = {base + cur, base + loglen};
+        pack_obj bo = {};
+        if (PACKDrainObjHdr(from, &bo) != OK) break;
+        if (bo.type != PACK_OBJ_OFS_DELTA) break;  // RAW (or non-OFS) root
+        if (depth >= KEEP_WRITE_CHAIN_MAX) return KEEP_WRITE_CHAIN_MAX + 1;
+        if (bo.ofs_delta == 0 || bo.ofs_delta > cur) break;
+        cur -= bo.ofs_delta;
+        depth++;
+    }
+    return depth;
+}
+
+//  Scan the WHOLE open shard log's index for a hashlet hit earlier in
+//  this same log file — an OFS_DELTA base candidate addressed purely by
+//  offset.  GIT-002: not pack-batch-scoped any more (no `off >=
+//  p->pack_offset` filter), so a cross-batch near-identical object in
+//  the one growing log is a usable base.  GIT-008: a base that is
+//  ITSELF an OFS_DELTA is now accepted (forming a chain) provided it
+//  sits below KEEP_WRITE_CHAIN_MAX — its bytes are resolved through the
+//  existing chain resolver, and the new object OFS-points at its
+//  offset.  `type_out` is the base record's on-disk type so the caller
+//  can pick the cheap single-inflate (RAW) or chain-resolve (delta)
+//  path.  REF_DELTA bases are skipped (un-OFS-addressable, never in an
+//  OFS-only log).
 static b8 keep_find_raw_in_pack(keep_pack *p, u64 base_hashlet60,
                                 u64 *offset_out, u8 *type_out) {
     a_dup(wh128, es, wh128bData(p->entries));
@@ -1639,7 +1686,15 @@ static b8 keep_find_raw_in_pack(keep_pack *p, u64 base_hashlet60,
                      u8bDataHead(p->log) + u8bDataLen(p->log)};
         pack_obj bo = {};
         if (PACKDrainObjHdr(from, &bo) != OK) continue;
-        if (bo.type < 1 || bo.type > 4) continue;
+        //  Accept RAW (1..4) or OFS_DELTA (6) bases; reject REF_DELTA (7)
+        //  and anything unknown.  OFS_DELTA bases must stay under the
+        //  write-chain cap so a new dependent doesn't push the chain
+        //  past KEEP_WRITE_CHAIN_MAX.
+        b8 is_raw = (bo.type >= 1 && bo.type <= 4);
+        b8 is_ofs = (bo.type == PACK_OBJ_OFS_DELTA);
+        if (!is_raw && !is_ofs) continue;
+        if (is_ofs && keep_chain_depth_at(p, off) >= KEEP_WRITE_CHAIN_MAX)
+            continue;
         *offset_out = off;
         *type_out   = bo.type;
         return YES;
@@ -1663,13 +1718,14 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
 
     u64 obj_offset = u8bDataLen(p->log);
 
-    //  GIT-002 OFS-ALWAYS: the only delta the writer ever emits is
-    //  OFS_DELTA against a RAW object earlier in THIS open shard log.
-    //  Resolve such a base into p->delta_base (a byte range that stays
-    //  valid until the emit); if none, store raw.  No REF_DELTA, no
-    //  KEEPGet cross-file fallback — a base in an older committed
-    //  .keeper cannot be OFS-addressed across files, so it stays raw
-    //  here and is recovered at GIT-006 recompaction.
+    //  GIT-002/008 OFS-ALWAYS: the only delta the writer ever emits is
+    //  OFS_DELTA against an earlier object in THIS open shard log.  The
+    //  base may itself be an OFS_DELTA (GIT-008) — chains form.  Resolve
+    //  the base's FULL bytes into p->delta_base (a byte range valid till
+    //  the emit) and OFS-point at its offset; if none, store raw.  No
+    //  REF_DELTA, no cross-file fallback — a base in an older committed
+    //  .keeper cannot be OFS-addressed across files (recovered at GIT-006
+    //  recompaction).
     u8cs base = {};
     u64  base_off = 0;
 
@@ -1680,26 +1736,45 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
 
         if (keep_find_raw_in_pack(p, base_hashlet60, &in_pack_off,
                                   &base_type)) {
-            u8cs from = {u8bDataHead(p->log) + in_pack_off,
-                         u8bDataHead(p->log) + u8bDataLen(p->log)};
-            pack_obj bo = {};
-            if (PACKDrainObjHdr(from, &bo) == OK &&
-                bo.size <= (u64)u8bIdleLen(p->delta_base)) {
-                u8s into = {u8bIdleHead(p->delta_base),
-                            u8bTerm(p->delta_base)};
-                if (PACKInflate(from, into, bo.size) == OK) {
-                    u8bFed(p->delta_base, bo.size);
-                    //  Collision guard: hashlet60 is only a 15-hex
-                    //  prefix; confirm the full base sha matches before
-                    //  deltifying against it.
-                    sha1 base_sha = {};
-                    u8csc bc = {u8bDataHead(p->delta_base),
-                                u8bIdleHead(p->delta_base)};
-                    KEEPObjSha(&base_sha, base_type, bc);
-                    if (WHIFFHashlet60(&base_sha) == base_hashlet60) {
-                        u8csMv(base, bc);
-                        base_off = in_pack_off;
-                    }
+            //  Resolve the base bytes into p->delta_base.  RAW bases are
+            //  a single inflate; OFS_DELTA bases go through the shared
+            //  chain resolver (keep_get_packed_rec follows OFS hops,
+            //  same MEM-022 guards as a read).  In both cases the open
+            //  log is visible to the resolver because KEEPPackOpen
+            //  installs p->log under p->file_id.
+            ok64 rc = KEEPFAIL;
+            u8  resolved_type = base_type;
+            if (base_type >= 1 && base_type <= 4) {
+                u8cs from = {u8bDataHead(p->log) + in_pack_off,
+                             u8bDataHead(p->log) + u8bDataLen(p->log)};
+                pack_obj bo = {};
+                if (PACKDrainObjHdr(from, &bo) == OK &&
+                    bo.size <= (u64)u8bIdleLen(p->delta_base)) {
+                    u8s into = {u8bIdleHead(p->delta_base),
+                                u8bTerm(p->delta_base)};
+                    rc = PACKInflate(from, into, bo.size);
+                    if (rc == OK) u8bFed(p->delta_base, bo.size);
+                }
+            } else {
+                //  Base is itself a delta: chase its chain to full bytes.
+                u64 base_val = wh64Pack(KEEP_VAL_FLAGS, p->file_id,
+                                        in_pack_off);
+                rc = keep_get_packed_rec(k, base_val, p->delta_base,
+                                         &resolved_type, 0);
+            }
+
+            if (rc == OK) {
+                //  Collision guard: hashlet60 is only a 15-hex prefix;
+                //  confirm the full base sha matches the RESOLVED bytes
+                //  (typed by the resolved object type, not the record
+                //  type) before deltifying against it.
+                sha1 base_sha = {};
+                u8csc bc = {u8bDataHead(p->delta_base),
+                            u8bIdleHead(p->delta_base)};
+                KEEPObjSha(&base_sha, resolved_type, bc);
+                if (WHIFFHashlet60(&base_sha) == base_hashlet60) {
+                    u8csMv(base, bc);
+                    base_off = in_pack_off;
                 }
             }
         }
