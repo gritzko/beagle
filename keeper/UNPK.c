@@ -90,8 +90,12 @@ static ok64 unpk_push(Bwh128 out, wh128 const *e) {
 }
 
 //  Emit one wh128 entry for a resolved object at `obj_off` in the log.
-static ok64 unpk_emit(Bwh128 out, u32 file_id,
+//  GIT-003: a no-op in re-emit (ingest) mode — the foreign-pack offset
+//  is throwaway and the re-emit sink owns the LOG-relative index, so
+//  emitting here would poison `out` with foreign offsets.
+static ok64 unpk_emit(unpk_in const *in, Bwh128 out, u32 file_id,
                        u8 type, sha1cp sha, u64 obj_off) {
+    if (in && in->reemit) return OK;
     wh128 e = {
         .key = keepKeyPack(type, WHIFFHashlet60(sha)),
         .val = wh64Pack(KEEP_VAL_FLAGS, file_id, obj_off),
@@ -106,6 +110,18 @@ static void unpk_dispatch(unpk_in const *in,
                            u8 type, sha1cp sha, u8cs content) {
     if (!in->emit) return;
     in->emit(in->emit_ctx, type, sha, content);
+}
+
+//  GIT-003: fire the ingest re-emit sink for one resolved object in
+//  dependency order.  `base_sha` is NULL for a raw object, else the
+//  SHA-1 of its delta base (already re-emitted earlier in the walk, so
+//  the sink can re-point it as OFS_DELTA).  Returns the sink's status
+//  (OK when no sink installed) so the caller can abort the walk.
+static ok64 unpk_reemit(unpk_in const *in, u8 type, u8cs content,
+                        sha1cp base_sha) {
+    if (!in->reemit) return OK;
+    u8cs c = {content[0], content[1]};
+    return in->reemit(in->reemit_ctx, type, c, base_sha);
 }
 
 //  Per-worker shared region (MAP_SHARED|MAP_ANONYMOUS).  The child's
@@ -136,6 +152,7 @@ typedef struct {
     unpk_shared *shared;  // shared mmap (parent reads post-wait)
     size_t   shared_bytes;
     u32      entries_cap;
+    ok64     reemit_err;  // GIT-003: first re-emit sink failure (else OK)
 } unpk_worker;
 
 //  Append one resolved entry to the worker's shared slab.  No
@@ -145,6 +162,11 @@ typedef struct {
 //  the prior `wh128bPush != OK ⇒ skipped++` behaviour).
 static b8 unpk_worker_emit(unpk_worker *w, u32 file_id,
                             u8 type, sha1cp sha, u64 obj_off) {
+    //  GIT-003: in re-emit (ingest) mode the foreign-pack offsets are
+    //  throwaway — the re-emit sink + KEEPPackFeed own the LOG-relative
+    //  index, so suppress UNPK's own (foreign-offset) entries that would
+    //  otherwise poison `out` with garbage offsets.
+    if (w->in && w->in->reemit) return 1;
     if (w->shared->nemit >= w->entries_cap) return 0;
     wh128 *slot = &w->shared->entries[w->shared->nemit++];
     slot->key = keepKeyPack(type, WHIFFHashlet60(sha));
@@ -167,12 +189,14 @@ static void unpk_worker_main(unpk_worker *w) {
     b8  *resolved = w->resolved;
     wh128cs waiters = {w->waiters[0], w->waiters[1]};
 
-    struct { u8p d_start; u8p d_end; size_t d_len; u32 node; u8 base_type; }
+    struct { u8p d_start; u8p d_end; size_t d_len; u32 node; u8 base_type;
+             sha1 sha; }
         stk[UNPK_MAX_CHAIN];
 
     for (u32 root_idx = 1 + w->worker_id;
          root_idx <= w->count;
          root_idx += w->nworkers) {
+        if (w->reemit_err != OK) return;
         if (!nodes[root_idx].child) continue;
         if (!resolved[root_idx]) continue;
         if (types[root_idx - 1] < 1 || types[root_idx - 1] > 4) continue;
@@ -194,6 +218,12 @@ static void unpk_worker_main(unpk_worker *w) {
         stk[0].d_len = u8bDataLen(w->buf_a);
         stk[0].node = root_idx;
         stk[0].base_type = root_type;
+        //  GIT-003: the root's sha is the base sha for its direct
+        //  OFS/REF children's re-emit.  Bases are re-emitted in Phase A
+        //  (the serial resolve loop) so the sink already holds the
+        //  root's local offset by the time a child fires here.
+        KEEPObjSha(&stk[0].sha, root_type,
+                   (u8csc){rs, rs + robj.size});
 
         while (top >= 0) {
             u32 cur = stk[top].node;
@@ -244,6 +274,16 @@ static void unpk_worker_main(unpk_worker *w) {
                 unpk_dispatch(w->in, stk[0].base_type, &sha, dct);
             }
 
+            //  GIT-003: re-emit this delta object into the OFS-only
+            //  log, deltifying against its base — the current stack
+            //  frame's object (`stk[top].sha`), already re-emitted.
+            {
+                u8cs dct = {rstart, rstart + rsz};
+                ok64 re = unpk_reemit(w->in, stk[0].base_type, dct,
+                                      &stk[top].sha);
+                if (re != OK) { w->reemit_err = re; return; }
+            }
+
             unpk_drain_waiters(waiters, nodes, resolved, &sha, child);
 
             top++;
@@ -252,6 +292,7 @@ static void unpk_worker_main(unpk_worker *w) {
             stk[top].d_len = rstart_len;
             stk[top].node = child;
             stk[top].base_type = stk[0].base_type;
+            stk[top].sha = sha;
         }
     }
 }
@@ -366,7 +407,7 @@ ok64 UNPKIndex(unpk_in const *in, Bwh128 out, unpk_stats *stats) {
         sha1 sha = {};
         u8csc content = {cs, cs + obj.size};
         KEEPObjSha(&sha, obj.type, content);
-        if (unpk_emit(out, file_id, types[i], &sha, offsets[i]) != OK) {
+        if (unpk_emit(in, out, file_id, types[i], &sha, offsets[i]) != OK) {
             st.skipped++; continue;
         }
         st.indexed++;
@@ -376,6 +417,19 @@ ok64 UNPKIndex(unpk_in const *in, Bwh128 out, unpk_stats *stats) {
         {
             u8cs dct = {cs, cs + obj.size};
             unpk_dispatch(in, types[i], &sha, dct);
+        }
+
+        //  GIT-003: re-emit this RAW base into the OFS-only log first
+        //  (no delta base) so its dependents can re-point against it.
+        if (in->reemit) {
+            u8cs dct = {cs, cs + obj.size};
+            ok64 re = unpk_reemit(in, types[i], dct, NULL);
+            if (re != OK) {
+                wh128bFree(waiters_buf);
+                u8bFree(resolved_b); unpk_nodebFree(nodes_b);
+                u64bFree(offsets_b); u8bFree(types_b);
+                return re;
+            }
         }
 
         unpk_drain_waiters(waiters, nodes, resolved, &sha, i + 1);
@@ -423,6 +477,12 @@ ok64 UNPKIndex(unpk_in const *in, Bwh128 out, unpk_stats *stats) {
     }
     if (nw_l > UNPK_MAX_WORKERS) nw_l = UNPK_MAX_WORKERS;
     if (nw_l < 1) nw_l = 1;
+    //  GIT-003: the ingest re-emit sink writes into ONE growing log
+    //  that forked children could not extend (their writes would not
+    //  reach the parent), and it must observe each base before its
+    //  dependents.  Force a single in-parent worker (no fork) so the
+    //  whole resolve runs serially in dependency order.
+    if (in->reemit) nw_l = 1;
     u32 nw = (u32)nw_l;
 
     unpk_worker workers[UNPK_MAX_WORKERS] = {};
@@ -508,6 +568,11 @@ worker_alloc_ok:;
         }
     }
 
+    //  GIT-003: the serial re-emit worker (nw forced to 1 when a sink
+    //  is installed) records its first sink failure here.  Abort with
+    //  that error so a partially-ingested log never publishes.
+    ok64 reemit_err = workers[0].reemit_err;
+
     //  Merge per-worker output into the caller's `out` buffer.
     //  Phase B's `indexed` count = sum of per-worker `nemit`s.
     for (u32 w = 0; w < nw; w++) {
@@ -520,6 +585,14 @@ worker_alloc_ok:;
         u8bUnMap(workers[w].buf_a);
         u8bUnMap(workers[w].buf_b);
         munmap(workers[w].shared, workers[w].shared_bytes);
+    }
+    if (reemit_err != OK) {
+        wh128bFree(waiters_buf);
+        u8bFree(resolved_b);
+        unpk_nodebFree(nodes_b);
+        u64bFree(offsets_b);
+        u8bFree(types_b);
+        return reemit_err;
     }
 
     //  Thin-pack fallback: REF_DELTAs whose base lives in an earlier
@@ -570,7 +643,7 @@ worker_alloc_ok:;
         sha1 sha = {};
         u8csc content = {rstart, rstart + rsz};
         KEEPObjSha(&sha, base_type, content);
-        if (unpk_emit(out, file_id, base_type, &sha, offsets[i]) != OK) {
+        if (unpk_emit(in, out, file_id, base_type, &sha, offsets[i]) != OK) {
             st.skipped++; continue;
         }
         st.indexed++;
@@ -580,6 +653,25 @@ worker_alloc_ok:;
         {
             u8cs dct = {rstart, rstart + rsz};
             unpk_dispatch(in, base_type, &sha, dct);
+        }
+
+        //  GIT-003: re-emit this thin delta object.  Its base lives in
+        //  an already-committed pack; re-point against it by sha.  When
+        //  the base was ALSO re-emitted RAW into this open log earlier
+        //  in the walk the sink forms an OFS_DELTA, else it stores the
+        //  dependent RAW (cross-file caveat, recovered at GIT-006).
+        if (in->reemit) {
+            u8cs dct = {rstart, rstart + rsz};
+            ok64 re = unpk_reemit(in, base_type, dct,
+                                  (sha1cp)obj.ref_delta[0]);
+            if (re != OK) {
+                wh128bFree(waiters_buf);
+                u8bFree(resolved_b);
+                unpk_nodebFree(nodes_b);
+                u64bFree(offsets_b);
+                u8bFree(types_b);
+                return re;
+            }
         }
     }
 

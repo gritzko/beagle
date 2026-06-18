@@ -93,8 +93,9 @@ The push-direction mirror of WIRE's serve: drains ref-update commands + the pack
 
 Resolves every object's SHA-1 in a mapped pack — building the OFS/REF delta forest, DFS-applying deltas, falling back to `KEEPGet` for thin bases — appending one `wh128` per object for the caller to sort/dedup into a run.
 
- -  `unpk_in`/`unpk_stats`/`unpk_emit_fn` — the input descriptor (mapped pack, range, file_id, cb), counters, typedef.
+ -  `unpk_in`/`unpk_stats`/`unpk_emit_fn`/`unpk_reemit_fn` — input descriptor (pack, range, file_id, cb, reemit sink) + counters.
  -  `UNPKIndex` — index one pack into `out` (unsorted, undeduped; may emit > `count` pre-dedup entries).
+ -  reemit sink (GIT-003): `UNPKIndex` runs serial, firing per object in dep order so ingest re-encodes packs OFS-only.
 
 ##  View projectors
 

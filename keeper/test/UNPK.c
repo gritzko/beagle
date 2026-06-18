@@ -315,11 +315,303 @@ ok64 UNPKtest_mixed() {
     );
 }
 
+// === GIT-003: ingest re-encoder — foreign pack → OFS-only log ========
+//
+// KEEPIngestFile must normalize ANY foreign pack (OFS, REF_DELTA, thin)
+// into the shard's single OFS-only stream: zero REF_DELTA records,
+// dedup'd objects, every object byte-for-byte recoverable via KEEPGet.
+// These tests drive a real git pack (built in a chosen delta scheme)
+// through KEEPIngestFile, then (1) scan every `.keeper` log file and
+// count records by pack type, and (2) round-trip each git object.
+
+//  Walk one keeper log file's record stream from offset 12 (after the
+//  single file-level PACK header) for `count` objects, tallying how
+//  many are REF_DELTA / OFS_DELTA / raw.  Mirrors UNPK's pre-scan: each
+//  record is a header varint then deflated bytes; inflate into scratch
+//  purely to advance the cursor.
+static ok64 scan_log_types(u8cs log, u32 count, u32 *n_ref,
+                           u32 *n_ofs, u32 *n_raw) {
+    sane(u8csOK(log));
+    u8cs scan = {log[0], log[1]};
+    if (u8csLen(scan) < 12) return UNPKFAIL;
+    u8csUsed(scan, 12);                  // skip file-level PACK header
+    static u8 inflate_scratch[1 << 22];
+    for (u32 i = 0; i < count; i++) {
+        pack_obj obj = {};
+        call(PACKDrainObjHdr, scan, &obj);
+        if (obj.type == PACK_OBJ_REF_DELTA) (*n_ref)++;
+        else if (obj.type == PACK_OBJ_OFS_DELTA) (*n_ofs)++;
+        else (*n_raw)++;
+        u8s into = {inflate_scratch, inflate_scratch + sizeof(inflate_scratch)};
+        call(PACKInflate, scan, into, obj.size);
+    }
+    done;
+}
+
+//  Read the file-level object count (big-endian u32 at byte 8) from a
+//  keeper log's PACK header.
+static u32 log_header_count(u8cs log) {
+    u8cp h = log[0];
+    return ((u32)h[8] << 24) | ((u32)h[9] << 16) |
+           ((u32)h[10] << 8) | (u32)h[11];
+}
+
+//  Tally REF/OFS/raw records across every `.keeper` file in the shard
+//  dir `<kdir>/.be/<project>/`.  Returns the project shard dir's path
+//  via popen-glob (one shard per project, GIT-001).
+static ok64 shard_log_tally(char const *kdir, u32 *n_ref, u32 *n_ofs,
+                            u32 *n_raw, u32 *n_files) {
+    sane(kdir);
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+             "find %s/.be -name '*.keeper' -type f 2>/dev/null", kdir);
+    FILE *p = popen(cmd, "r");
+    if (!p) return UNPKFAIL;
+    char line[1024];
+    while (fgets(line, sizeof(line), p)) {
+        size_t ln = strlen(line);
+        while (ln && (line[ln - 1] == '\n' || line[ln - 1] == ' ')) line[--ln] = 0;
+        if (ln == 0) continue;
+        u8bp map = NULL;
+        u8cs pth = {(u8cp)line, (u8cp)line + ln};
+        a_path(p8, pth);
+        if (FILEMapRO(&map, $path(p8)) != OK) { pclose(p); return UNPKFAIL; }
+        u8cs log = {u8bDataHead(map), u8bIdleHead(map)};
+        u32 cnt = log_header_count(log);
+        ok64 so = scan_log_types(log, cnt, n_ref, n_ofs, n_raw);
+        FILEUnMap(map);
+        if (so != OK) { pclose(p); return so; }
+        (*n_files)++;
+    }
+    pclose(p);
+    done;
+}
+
+//  Slurp a pack file at `path`, ingest it into the OPEN keeper via
+//  KEEPIngestFile.  Caller has HOME + KEEP open.
+static ok64 ingest_pack_file(char const *path) {
+    sane(path);
+    static u8 pbuf[1 << 22];
+    size_t plen = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return UNPKFAIL;
+    plen = fread(pbuf, 1, sizeof(pbuf), f);
+    fclose(f);
+    if (plen == 0 || plen >= sizeof(pbuf)) return UNPKFAIL;
+    u8csc bytes = {pbuf, pbuf + plen};
+    return KEEPIngestFile(bytes);
+}
+
+//  Assert the OFS-only invariant + per-object round-trip for a keeper
+//  at `kdir` that should hold exactly `repo`'s objects: (1) zero
+//  REF_DELTA records across every `.keeper`; (2) every git object
+//  recovers via KEEPGetExact (own SHA-1 re-verify).
+static ok64 check_ofs_only_and_roundtrip(char const *repo,
+                                         char const *kdir) {
+    sane(repo && kdir);
+
+    u32 expected_n = 0;
+    call(count_objects, repo, &expected_n);
+    u8 *shas = malloc((size_t)expected_n * 40);
+    want(shas != NULL);
+    u32 listed_n = 0;
+    call(list_shas, repo, shas, (size_t)expected_n * 40, &listed_n);
+    want(listed_n == expected_n);
+
+    u32 n_ref = 0, n_ofs = 0, n_raw = 0, n_files = 0;
+    call(shard_log_tally, kdir, &n_ref, &n_ofs, &n_raw, &n_files);
+    want(n_ref == 0);                         // OFS-only invariant
+    want(n_ofs + n_raw == expected_n);        // every object stored once
+
+    for (u32 i = 0; i < expected_n; i++) {
+        sha1 s = {};
+        for (int j = 0; j < 20; j++) {
+            u8 hi = shas[(size_t)i * 40 + j * 2];
+            u8 lo = shas[(size_t)i * 40 + j * 2 + 1];
+            #define NIB(c) ((c) >= '0' && (c) <= '9' ? (c) - '0' :     \
+                             (c) >= 'a' && (c) <= 'f' ? (c) - 'a' + 10 : \
+                             (c) >= 'A' && (c) <= 'F' ? (c) - 'A' + 10 : 0)
+            s.data[j] = (u8)((NIB(hi) << 4) | NIB(lo));
+            #undef NIB
+        }
+        Bu8 ob = {};
+        call(u8bMap, ob, 1UL << 24);
+        u8 ty = 0;
+        ok64 go = KEEPGetExact(&s, ob, &ty);
+        want(go == OK);
+        want(ty >= 1 && ty <= 4);
+        u8bUnMap(ob);
+    }
+    free(shas);
+    done;
+}
+
+//  A larger, slowly-mutating file forces git to form real deltas
+//  (blob + tree + commit chains) so the foreign packs actually carry
+//  OFS/REF deltas to re-encode — tiny toy repos pack to all-raw.
+#define INGEST_RECIPE \
+    "cd %s && git init -q && " \
+    "git config user.email t@t && git config user.name t && " \
+    "base=$(seq 1 300) && " \
+    "for i in $(seq 1 12); do " \
+    "  { echo \"$base\"; printf 'rev %%d\\n' $i; } > big.txt && " \
+    "  printf 'side %%d\\n' $(seq 1 $i) > side.txt && " \
+    "  git add . && git commit -q -m \"c$i\"; " \
+    "done"
+
+//  Build the recipe repo at a fresh tmp dir; return paths via out bufs.
+static ok64 build_ingest_repo(char *repo, char *kdir) {
+    sane(repo);
+    char rcmd[4096];
+    int n = snprintf(rcmd, sizeof(rcmd), GIT_UNSET);
+    n += snprintf(rcmd + n, sizeof(rcmd) - n, INGEST_RECIPE, repo);
+    want(n > 0 && n < (int)sizeof(rcmd));
+    want(system(rcmd) == 0);
+    (void)kdir;
+    done;
+}
+
+//  (a) Non-thin OFS pack → OFS-only log, dedup on re-ingest.  Repack
+//  into ONE pack (git's default OFS deltas), ingest, assert OFS-only +
+//  round-trip, then re-ingest and assert zero log growth (dedup).
+ok64 UNPKtest_ingest_ofs() {
+    sane(1);
+    call(FILEInit);
+    char repo[] = "/tmp/unpk-ofs-repo-XXXXXX";
+    want(mkdtemp(repo) != NULL);
+    char kdir[] = "/tmp/unpk-ofs-keep-XXXXXX";
+    want(mkdtemp(kdir) != NULL);
+    call(build_ingest_repo, repo, kdir);
+    SH(GIT_UNSET "cd %s && git repack -q -Ad", repo);
+
+    char pack_path[1024];
+    call(find_pack, repo, pack_path, sizeof(pack_path));
+
+    u8cs root = {(u8cp)kdir, (u8cp)kdir + strlen(kdir)};
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(ingest_pack_file, pack_path);
+    call(check_ofs_only_and_roundtrip, repo, kdir);
+
+    //  Dedup: re-ingest the same pack — no new records.
+    u32 a_ref = 0, a_ofs = 0, a_raw = 0, a_f = 0;
+    call(shard_log_tally, kdir, &a_ref, &a_ofs, &a_raw, &a_f);
+    call(ingest_pack_file, pack_path);
+    u32 b_ref = 0, b_ofs = 0, b_raw = 0, b_f = 0;
+    call(shard_log_tally, kdir, &b_ref, &b_ofs, &b_raw, &b_f);
+    want(b_ref == 0);
+    want(b_ofs + b_raw == a_ofs + a_raw);     // zero growth on re-ingest
+    KEEPClose();
+    HOMEClose();
+
+    SH("rm -rf %s", repo);
+    SH("rm -rf %s", kdir);
+    done;
+}
+
+//  (b) Thin REF_DELTA pack whose base is already stored.  Stage 1
+//  ingests a base pack of the lower history (objects below a boundary
+//  commit).  Stage 2 ingests a `git pack-objects --thin` pack of the
+//  top range whose REF_DELTA bases sit BELOW the boundary — not in the
+//  thin pack, resolved via the keeper (UNPK Phase C).  Both packs carry
+//  REF_DELTA (no --delta-base-offset); the stored log must end OFS-only
+//  with every object round-tripping.
+ok64 UNPKtest_ingest_thin() {
+    sane(1);
+    call(FILEInit);
+    char repo[] = "/tmp/unpk-thin-repo-XXXXXX";
+    want(mkdtemp(repo) != NULL);
+    char kdir[] = "/tmp/unpk-thin-keep-XXXXXX";
+    want(mkdtemp(kdir) != NULL);
+    char base_pack[] = "/tmp/unpk-thin-base-XXXXXX";
+    char thin_pack[] = "/tmp/unpk-thin-thin-XXXXXX";
+    { int fd = mkstemp(base_pack); want(fd >= 0); close(fd); }
+    { int fd = mkstemp(thin_pack); want(fd >= 0); close(fd); }
+
+    call(build_ingest_repo, repo, kdir);
+
+    //  Boundary = HEAD~1.  Base pack = the whole history EXCEPT the tip
+    //  commit (REF deltas form within it).  Thin pack = the tip commit
+    //  alone with the boundary closure excluded, so its REF_DELTA bases
+    //  (the prior blob/tree) live ONLY in the base pack — single-level
+    //  thin deltas resolved via the keeper (UNPK Phase C), no in-pack
+    //  delta-of-a-delta chains.
+    SH(GIT_UNSET "cd %s && B=$(git rev-parse HEAD~1) && "
+       "git pack-objects --stdout --revs <<EOF > %s\n$B\nEOF",
+       repo, base_pack);
+    SH(GIT_UNSET "cd %s && B=$(git rev-parse HEAD~1) && "
+       "H=$(git rev-parse HEAD) && "
+       "git pack-objects --thin --stdout --revs <<EOF > %s\n^$B\n$H\nEOF",
+       repo, thin_pack);
+
+    u8cs root = {(u8cp)kdir, (u8cp)kdir + strlen(kdir)};
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(ingest_pack_file, base_pack);      // stage 1: bases land
+    call(ingest_pack_file, thin_pack);      // stage 2: thin → Phase C
+    call(check_ofs_only_and_roundtrip, repo, kdir);
+    KEEPClose();
+    HOMEClose();
+
+    SH("rm -f %s %s", base_pack, thin_pack);
+    SH("rm -rf %s", repo);
+    SH("rm -rf %s", kdir);
+    done;
+}
+
+//  (c) Overlapping incremental fetch: two packs that share objects.
+//  Pack-1 = lower history, pack-2 = full history (overlaps pack-1).
+//  After both ingests the store holds each object exactly once
+//  (dedup), OFS-only, round-tripping.
+ok64 UNPKtest_ingest_dedup() {
+    sane(1);
+    call(FILEInit);
+    char repo[] = "/tmp/unpk-dup-repo-XXXXXX";
+    want(mkdtemp(repo) != NULL);
+    char kdir[] = "/tmp/unpk-dup-keep-XXXXXX";
+    want(mkdtemp(kdir) != NULL);
+    char p1[] = "/tmp/unpk-dup-p1-XXXXXX";
+    char p2[] = "/tmp/unpk-dup-p2-XXXXXX";
+    { int fd = mkstemp(p1); want(fd >= 0); close(fd); }
+    { int fd = mkstemp(p2); want(fd >= 0); close(fd); }
+
+    call(build_ingest_repo, repo, kdir);
+
+    SH(GIT_UNSET "cd %s && B=$(git rev-parse HEAD~6) && "
+       "git pack-objects --stdout --revs <<EOF > %s\n$B\nEOF",
+       repo, p1);
+    SH(GIT_UNSET "cd %s && H=$(git rev-parse HEAD) && "
+       "git pack-objects --stdout --revs <<EOF > %s\n$H\nEOF",
+       repo, p2);
+
+    u8cs root = {(u8cp)kdir, (u8cp)kdir + strlen(kdir)};
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+    call(ingest_pack_file, p1);             // lower history
+    call(ingest_pack_file, p2);             // full history (overlaps)
+    //  Total stored records must equal the full repo object count —
+    //  the overlap from p1 is deduped, not double-stored.
+    call(check_ofs_only_and_roundtrip, repo, kdir);
+    KEEPClose();
+    HOMEClose();
+
+    SH("rm -f %s %s", p1, p2);
+    SH("rm -rf %s", repo);
+    SH("rm -rf %s", kdir);
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(UNPKtest_single);
     call(UNPKtest_delta_chain);
     call(UNPKtest_mixed);
+    call(UNPKtest_ingest_ofs);
+    call(UNPKtest_ingest_thin);
+    call(UNPKtest_ingest_dedup);
     done;
 }
 

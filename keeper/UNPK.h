@@ -43,6 +43,25 @@ con ok64 UNPKNOROOM  = 0x7976545d86d8616;
 typedef void (*unpk_emit_fn)(void *ctx, u8 type, sha1cp sha,
                               u8cs content);
 
+//  GIT-003 ingest re-emit sink.  When `reemit` is non-NULL, UNPKIndex
+//  runs SERIALLY (no fork — the sink writes into one growing log that
+//  forked children could not extend) and, instead of emitting wh128
+//  index entries, fires `reemit` once per resolved object in
+//  dependency order (bases before their dependents).  The sink owns
+//  the OFS-only re-encode: it appends `content` to the keeper log via
+//  the GIT-002 writer, deltifying against the object's resolved base.
+//    `type`     — PACK_OBJ_* (1..4) of the resolved object.
+//    `content`  — the object's full uncompressed bytes (scratch-backed,
+//                 valid only for the callback duration).
+//    `base_sha` — the 20-byte SHA-1 of the object's delta base when it
+//                 arrived as a delta (OFS / REF / thin), or NULL for a
+//                 raw object.  The sink maps base-sha → its local log
+//                 offset to re-point the delta as OFS_DELTA; a base it
+//                 cannot locate in the open log falls back to raw.
+//  A non-OK return aborts the walk and surfaces from UNPKIndex.
+typedef ok64 (*unpk_reemit_fn)(void *ctx, u8 type, u8cs content,
+                               sha1cp base_sha);
+
 typedef struct {
     u8cs pack;        // log-mapped pack bytes ([pack[0]..pack[1]))
     u64  scan_start;  // byte offset in pack where first object starts
@@ -53,6 +72,8 @@ typedef struct {
     u32  file_id;     // keeper log file id for wh128.val
     unpk_emit_fn emit;    // optional: called once per resolved object
     void        *emit_ctx;
+    unpk_reemit_fn reemit;     // optional: GIT-003 ingest re-encode sink
+    void          *reemit_ctx; // (forces serial resolve when non-NULL)
 } unpk_in;
 
 typedef struct {
