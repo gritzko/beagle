@@ -31,6 +31,26 @@ static int runcmd(char const *cmd) {
     return system(cmd);
 }
 
+//  Forkless file read / byte-compare for the verify steps.  popen() and
+//  system() fork, and under heavy parallel ctest load a fork transiently
+//  fails (EAGAIN) — the clone is fine but the cat/diff child dies, so the
+//  verify falsely fails (ROUNDtest flap).  Reading directly removes the fork.
+static long slurp(char const *path, char *buf, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return (long)n;
+}
+
+static b8 files_eq(char const *a, char const *b) {
+    char ba[1 << 16], bb[1 << 16];
+    long na = slurp(a, ba, sizeof(ba));
+    long nb = slurp(b, bb, sizeof(bb));
+    return na >= 0 && na == nb && memcmp(ba, bb, (size_t)na) == 0;
+}
+
 static char const *type_str[] = {
     [PACK_OBJ_COMMIT] = "commit",
     [PACK_OBJ_TREE] = "tree",
@@ -304,15 +324,14 @@ ok64 maintest() {
         want(runcmd(cmd) == 0);
     }
 
-    // verify clone
+    // verify clone — read the file directly (no popen fork)
     {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "cat %s/file.txt", worktree);
-        FILE *p = popen(cmd, "r");
+        char path[512];
+        snprintf(path, sizeof(path), "%s/file.txt", worktree);
         char buf[256];
-        want(fgets(buf, sizeof(buf), p) != NULL);
+        long n = slurp(path, buf, sizeof(buf));
+        want(n > 0);
         want(strcmp(buf, "line one\n") == 0);
-        want(pclose(p) == 0);
         fprintf(stderr, "  clone verified\n");
     }
 
@@ -357,19 +376,18 @@ ok64 maintest() {
     {
         char cmd[1024];
 
-        // compare file.txt
-        snprintf(cmd, sizeof(cmd),
-            "diff %s/file.txt %s/file.txt",
-            worktree, checkout);
-        want(runcmd(cmd) == 0);
-        fprintf(stderr, "  file.txt OK\n");
-
-        // compare prog.c
-        snprintf(cmd, sizeof(cmd),
-            "diff %s/prog.c %s/prog.c",
-            worktree, checkout);
-        want(runcmd(cmd) == 0);
-        fprintf(stderr, "  prog.c OK\n");
+        // compare file.txt / prog.c — forkless byte equality
+        {
+            char a[512], b[512];
+            snprintf(a, sizeof(a), "%s/file.txt", worktree);
+            snprintf(b, sizeof(b), "%s/file.txt", checkout);
+            want(files_eq(a, b));
+            fprintf(stderr, "  file.txt OK\n");
+            snprintf(a, sizeof(a), "%s/prog.c", worktree);
+            snprintf(b, sizeof(b), "%s/prog.c", checkout);
+            want(files_eq(a, b));
+            fprintf(stderr, "  prog.c OK\n");
+        }
 
         // compare git log
         //  Stage via temp files — `<()` isn't POSIX; on FreeBSD-style
@@ -384,8 +402,7 @@ ok64 maintest() {
             snprintf(cmd, sizeof(cmd),
                 "git -C %s log --oneline > %s", checkout, t2);
             want(runcmd(cmd) == 0);
-            snprintf(cmd, sizeof(cmd), "diff %s %s 2>&1", t1, t2);
-            want(runcmd(cmd) == 0);
+            want(files_eq(t1, t2));
             unlink(t1); unlink(t2);
         }
         fprintf(stderr, "  history OK\n");
