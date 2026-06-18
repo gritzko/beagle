@@ -3439,7 +3439,14 @@ static ok64 bepushgit_recurse_cb(besub const *s, void *vctx) {
     u8cs dest = {};
     u8csMv(dest, suburl);
     if (!rc->src_ends_git) {
+        //  SUBS-024: split by `.gitmodules` url FORM via the same
+        //  resolver.  RELATIVE url (`../sub`) → ref = url (case 3).  An
+        //  ABSOLUTE url resolves-to-self → NONE; case 4 then routes the
+        //  push to `<remote>/<subpath>` (ref = the sub's wt path),
+        //  bypassing the unreachable declared upstream.
         ok64 gr = SNIFFSubCandidateGitRel(dest_buf, rc->src_uri, suburl);
+        if (gr != OK || u8bDataLen(dest_buf) == 0)
+            gr = SNIFFSubCandidateGitRel(dest_buf, rc->src_uri, subpath);
         if (gr == OK && u8bDataLen(dest_buf) > 0) {
             a_dup(u8c, dv, u8bDataC(dest_buf));
             u8csMv(dest, dv);

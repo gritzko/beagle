@@ -886,12 +886,27 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
         //  relative to the parent URI and try that BEFORE the raw official
         //  URL.  A `.git` parent (case 2) skips this — its declared URL is
         //  taken as canonical, no path computation.
-        b8 git_parent = !src_inflight_ok && !src_beagle;
-        b8 use_git_rel = git_parent && !SNIFFSubSrcEndsGit(src_uri);
+        //  A non-`.git` parent SOURCE URI gets the parent-relative
+        //  candidates tried before the raw official URL (after any beagle
+        //  wire candidates above, which take priority and are pin-
+        //  validated).  Keyed purely on the URI FORM — symmetric with
+        //  POST's bepushgit_recurse_cb, which keys on the dest URI only.
+        b8 src_git_form = !SNIFFSubSrcEndsGit(src_uri);
+        b8 use_git_rel = src_git_form;
         a_pad(u8, gitrel_buf, MAX_URI_LEN);    // URIAbsolute(src_uri, url)
+        //  SUBS-024 case 4: an ABSOLUTE declared url resolves-to-self
+        //  (case 3 → NONE), so fall back to `<src>/<subpath>` — the sub's
+        //  wt path resolved against the parent SOURCE URI.  Bypasses an
+        //  unreachable declared upstream (the fetch mirror of POST case 4).
+        a_pad(u8, gitnest_buf, MAX_URI_LEN);   // URIAbsolute(src_uri, path)
+        b8 use_git_nest = NO;
         if (use_git_rel) {
             ok64 gr = SNIFFSubCandidateGitRel(gitrel_buf, src_uri, url);
-            if (gr != OK || u8bDataLen(gitrel_buf) == 0) use_git_rel = NO;
+            if (gr != OK || u8bDataLen(gitrel_buf) == 0) {
+                use_git_rel = NO;
+                ok64 gn = SNIFFSubCandidateGitRel(gitnest_buf, src_uri, path);
+                if (gn == OK && u8bDataLen(gitnest_buf) > 0) use_git_nest = YES;
+            }
         }
 
         KEEPClose();
@@ -959,6 +974,12 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
             //  declared URL, tried before the raw official URL fallback.
             if (use_git_rel) {
                 u8csMv(cands[nc], u8bDataC(gitrel_buf));
+                nc++;
+            }
+            //  SUBS-024 case 4 — `<src>/<subpath>` (absolute-url fallback),
+            //  tried before the raw official URL.
+            if (use_git_nest) {
+                u8csMv(cands[nc], u8bDataC(gitnest_buf));
                 nc++;
             }
             u8csMv(cands[nc], url);

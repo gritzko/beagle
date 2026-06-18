@@ -160,6 +160,11 @@ set(_BE_NEEDS_SSH_CASES
     # sub to the parent-relative url (needs ssh for a non-`.git` git
     # remote; the `.git` CASE 2 sibling test post/43 is local file://).
     "be-post-44-sub-push-git-parent-relative"
+    # SUBS-024 POST/GET CASE 4: non-`.git` git parent + ABSOLUTE sub url
+    # routes the sub to `<remote>/<subpath>` (nested), bypassing the
+    # unreachable declared official url.
+    "be-post-45-sub-push-git-parent-absolute"
+    "be-get-53-file-subs-git-absolute"
 )
 
 foreach(_run ${_be_case_runs})
