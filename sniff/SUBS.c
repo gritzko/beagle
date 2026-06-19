@@ -532,8 +532,13 @@ ok64 SNIFFSubCandidateGitRel(u8bp out, u8cs src_uri, u8cs url) {
     if (URILexer(&rel) != OK) return NONE;
     $null(rel.data);
 
+    //  PTR-009: URIAbsolute writes the merged path into caller-owned
+    //  `abs_scr`; `abs.path` views its written prefix, so the region must
+    //  outlive the URIutf8Feed below (it lives in this frame, freed on
+    //  return).  Pass the pad's full idle range as the writable `u8s`.
     uri abs = {};
-    if (URIAbsolute(&abs, &dbase, &rel) != OK) return NONE;
+    a_pad(u8, abs_scr, MAX_URI_LEN);
+    if (URIAbsolute(&abs, &dbase, &rel, u8bIdle(abs_scr)) != OK) return NONE;
 
     u8bReset(out);
     if (URIutf8Feed(u8bIdle(out), &abs) != OK) return NONE;
