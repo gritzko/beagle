@@ -5,7 +5,7 @@
 #include "JOIN.h"
 
 #include "abc/PRO.h"
-#include "graf/NEIL.h"
+#include "dog/NEIL.h"
 
 // Instantiate Myers diff for u64 hash sequences
 #define X(M, name) M##u64##name

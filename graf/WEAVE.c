@@ -15,8 +15,8 @@
 #include "abc/RAP.h"
 #include "abc/TLV.h"
 #include "abc/ZINT.h"
-#include "graf/BRAM.h"
-#include "graf/NEIL.h"
+#include "dog/BRAM.h"
+#include "dog/NEIL.h"
 
 // u64 diff specialization (token hashlets AND birth-id keys).
 #define X(M, name) M##u64##name
@@ -27,19 +27,6 @@
 
 //  BASS acquire must NOT go through call() (it snapshots+rewinds BASS).
 #define BACQ(expr) do { __ = (expr); if (__ != OK) return __; } while (0)
-
-//  Wholesale DEL+INS fallback for the diff-core EDL.  See WEAVE.h.
-//  Rewinds the gauge cursor to its base (dropping any partial BRAM
-//  output), then appends DEL(olen)+INS(nlen) through the bounds-checked
-//  DIFFu64AddEntry — no raw pointer writes, NOROOM propagates, edl[0]
-//  advances so downstream n=edl[0]-edl[2] readers see the entries.
-ok64 WEAVEFallbackEdl(e32g edl, u32 olen, u32 nlen) {
-    sane(edl != NULL);
-    edl[0] = edl[2];                       // rewind cursor to base
-    call(DIFFu64AddEntry, edl, DIFF_DEL, olen);
-    call(DIFFu64AddEntry, edl, DIFF_INS, nlen);
-    done;
-}
 
 // ============================================================
 //  TLV record writers
@@ -599,7 +586,7 @@ static ok64 weave_diff_core(wsink *k, wdp const *s, wdp const *nuv,
         //  non-empty per the degenerate guards above), so this always
         //  fits; the checked path propagates NOROOM instead of an OOB
         //  raw write if it ever doesn't.
-        call(WEAVEFallbackEdl, edlg, (u32)olen, (u32)nlen);
+        call(BRAMFallbackEdl, edlg, (u32)olen, (u32)nlen);
         call(NEILCanon, edlg);
     } else {
         a_dup(u32c, at_view, u32bDataC(alive_toks));

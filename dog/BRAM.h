@@ -33,12 +33,19 @@
 //  (every line repeats, or no `\n` tokens present) — token-level
 //  Myers does as well as anything in that case.
 //
-#ifndef GRAF_BRAM_H
-#define GRAF_BRAM_H
+#ifndef DOG_BRAM_H
+#define DOG_BRAM_H
 
 #include "abc/DIFF.h"
 #include "abc/INT.h"
 
 ok64 BRAMu64s(e32g edl, i32s work, u64cs old_hashes, u64cs new_hashes);
+
+//  Wholesale DEL(olen)+INS(nlen) fallback EDL: rewind the gauge to its
+//  base (edl[2]), then append DEL+INS via the bounds-checked
+//  DIFFu64AddEntry (NOROOM propagates, edl[0] advances).  Used by the
+//  weave diff core when BRAM can't fit a refined edit list (was graf
+//  WEAVEFallbackEdl; relocated in DOG-002).
+ok64 BRAMFallbackEdl(e32g edl, u32 olen, u32 nlen);
 
 #endif

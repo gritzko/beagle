@@ -25,8 +25,7 @@
 //  weave_fallback_edl must (a) never write OOB and (b) leave the two
 //  entries visible to a edl[0]-based reader.
 //
-#include "graf/WEAVE.h"
-#include "graf/BRAM.h"
+#include "dog/BRAM.h"
 
 #include <stdio.h>
 
@@ -34,7 +33,7 @@
 #include "abc/PRO.h"
 #include "abc/TEST.h"
 #include "abc/RAP.h"
-#include "graf/NEIL.h"
+#include "dog/NEIL.h"
 
 static u64 hh(u8 b) { u8cs s = {&b, &b + 1}; return RAPHash(s); }
 
@@ -71,7 +70,7 @@ static ok64 bram_fallback_case(u32 na, u32 nb) {
     //  write OOB and MUST advance edl[0].  (The old code did
     //  edlg[1]=edlg[0] + two raw *edlg[1]++ writes here -> OOB at buf
     //  end + dropped entries.)
-    ok64 fo = WEAVEFallbackEdl(edl, (u32)na, (u32)nb);
+    ok64 fo = BRAMFallbackEdl(edl, (u32)na, (u32)nb);
     //  With a cap-1 buffer the wholesale DEL+INS can't fit either, so the
     //  fixed path returns NOROOM rather than overflowing.
     must(fo != OK, "cap-1 fallback must propagate NOROOM, not overflow");
@@ -85,7 +84,7 @@ static ok64 bram_fallback_visible(u32 olen, u32 nlen) {
     sane(1);
     a_carve(u32, edlbuf, 4);
     e32g edl = {edlbuf[0], edlbuf[3], edlbuf[0]};
-    ok64 fo = WEAVEFallbackEdl(edl, olen, nlen);
+    ok64 fo = BRAMFallbackEdl(edl, olen, nlen);
     must(fo == OK, "fallback should fit in a 4-slot buffer");
     u32 n = (u32)(edl[0] - edl[2]);   // NEILCanon's view
     must(n == 2, "DEL+INS must be visible via edl[0] advance");

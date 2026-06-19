@@ -1,5 +1,5 @@
-#ifndef GRAF_NEIL_H
-#define GRAF_NEIL_H
+#ifndef DOG_NEIL_H
+#define DOG_NEIL_H
 
 #include "abc/DIFF.h"
 #include "dog/tok/TOK.h"

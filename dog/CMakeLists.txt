@@ -232,6 +232,10 @@ list(APPEND TOK_SOURCES
 list(APPEND TOK_HEADERS HUNK.h)
 list(APPEND TOK_SOURCES HUNK.c)
 
+# DOG-002: diff core relocated from graf/ (abc-only edit-list machinery)
+list(APPEND TOK_HEADERS BRAM.h NEIL.h)
+list(APPEND TOK_SOURCES BRAM.c NEIL.c)
+
 list(APPEND TOK_HEADERS HOME.h)
 list(APPEND TOK_SOURCES HOME.c)
 

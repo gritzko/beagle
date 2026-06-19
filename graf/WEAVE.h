@@ -35,15 +35,6 @@
 
 con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 
-//  Wholesale DEL(olen)+INS(nlen) fallback for the EDL gauge, used by the
-//  diff core when BRAM (or Myers) can't fit a refined edit list.  Rewinds
-//  the gauge cursor (edl[0]) back to its base (edl[2]), discarding any
-//  partial entries BRAM left, then appends the two entries through the
-//  bounds-checked DIFFu64AddEntry so an out-of-room buffer propagates
-//  DIFFNOROOM instead of overflowing.  Advances edl[0] so readers that
-//  measure n = edl[0]-edl[2] (e.g. NEILCanon) see the entries.
-ok64 WEAVEFallbackEdl(e32g edl, u32 olen, u32 nlen);
-
 //  Sentinel `seq` for the worktree shadow version (uncommitted edits) and
 //  for synthetic conflict-marker tokens.  Real topo seqs are small; the
 //  top of the u32 range is reserved.

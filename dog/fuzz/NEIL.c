@@ -38,7 +38,7 @@
 //      EDL byte-for-byte.
 //
 
-#include "NEIL.h"
+#include "dog/NEIL.h"
 #include "JOIN.h"
 
 #include <string.h>

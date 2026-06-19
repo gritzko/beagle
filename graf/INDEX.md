@@ -59,13 +59,7 @@ A file's whole history is ONE interleaved-delta TLV stream: `T` records carry to
 
 ##  Diff refinement
 
-###  BRAM.h, NEIL.h — patience alignment and cleanup
-
-The two passes that sharpen a raw token-level Myers edit list (`e32g` EDL) before the weave folds it: line-coherent anchoring, then whitespace/boundary cleanup. Both work on packed `u32` tokens, driven by `WEAVE.c` (and legacy `JOIN.c`).
-
- -  `BRAMu64s` (BRAM.h) — Bram Cohen patience diff over u64 token-hash arrays: anchor on unique lines, recurse between.
- -  `NEILCleanup`/`NEILShift`/`NEILCanon` (NEIL.h) — semantic EDL cleanup: drop false EQs, slide, collapse to INS+DEL.
- -  `NEILIsWS`/`NEIL_MAX_KILL`/`NEILBAD` (NEIL.h) — the whitespace-token test, the killable-EQ knob, the error code.
+The token-level diff core (patience alignment + EDL cleanup) relocated to `dog/BRAM.h` + `dog/NEIL.h` per [DOG-002] so the dog layer has no upward dependency on graf. `graf/WEAVE.c` and `graf/JOIN.c` consume them via `dog/BRAM.h` / `dog/NEIL.h`.
 
 ##  Merge & rebase
 

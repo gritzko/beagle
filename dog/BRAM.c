@@ -16,6 +16,17 @@
 #include "abc/DIFFx.h"
 #undef X
 
+//  Wholesale DEL+INS fallback EDL (was graf WEAVEFallbackEdl; DOG-002).
+//  Rewinds the gauge to its base, then appends via checked DIFFu64AddEntry
+//  so NOROOM propagates instead of overflowing; advances edl[0].
+ok64 BRAMFallbackEdl(e32g edl, u32 olen, u32 nlen) {
+    sane(edl != NULL);
+    edl[0] = edl[2];                       // rewind cursor to base
+    call(DIFFu64AddEntry, edl, DIFF_DEL, olen);
+    call(DIFFu64AddEntry, edl, DIFF_INS, nlen);
+    done;
+}
+
 // --- FNV-1a 64 line-hash fold ---------------------------------------
 
 #define BRAM_FNV_INIT  0xcbf29ce484222325ULL

@@ -84,6 +84,14 @@ A `hunk` is `{ts, verb, uri, text, toks}` DATA; the renderers own all presentati
  -  `HUNKu8sRebaseURI`/`HUNKu8sRelay` — prefix a hunk URI's path with a submodule mount.
  -  `HUNKu32bTokenize`/`u32sClip`/`u8sMakeURI`/`u8sFragSplit` — tokenize, clip toks, compose/split a `path#symbol:line` URI.
 
+###  BRAM.h, NEIL.h — token-level diff core (patience + EDL cleanup)
+
+The two passes that sharpen a raw token-level Myers edit list (`e32g` EDL): line-coherent anchoring, then whitespace/boundary cleanup. Both work on packed `u32`/`u64` tokens over `abc/DIFF` gauges with no graf/keeper dependency; relocated from graf/ per DOG-002 so `dog/WEAVE` and other dogs can weave. Consumed by `graf/WEAVE.c` and legacy `graf/JOIN.c`.
+
+ -  `BRAMu64s` (BRAM.h) — Bram Cohen patience diff over u64 token-hash arrays: anchor on unique lines, recurse between.
+ -  `NEILCleanup`/`NEILShift`/`NEILCanon` (NEIL.h) — semantic EDL cleanup: drop false EQs, slide, collapse to INS+DEL.
+ -  `NEILIsWS`/`NEIL_MAX_KILL`/`NEILBAD` (NEIL.h) — the whitespace-token test, the killable-EQ knob, the error code.
+
 ###  THEME.h — tag-letter colour palette
 
 A 32-slot `ansi64` table indexed by tag letter (`tag - 'A'`); the renderer ORs an fg-tag and a bg-tag lookup into each cell's SGR.

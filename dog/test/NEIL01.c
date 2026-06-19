@@ -5,14 +5,14 @@
 // repros land in `cases[]` so the fix can't regress.
 //
 
-#include "NEIL.h"
-#include "JOIN.h"
+#include "dog/NEIL.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "abc/DIFF.h"
 #include "abc/PRO.h"
+#include "abc/RAP.h"
 #include "abc/TEST.h"
 #include "dog/tok/TOK.h"
 
@@ -20,6 +20,47 @@
 #define X(M, name) M##u64##name
 #include "abc/DIFFx.h"
 #undef X
+
+// --- Local tokenizer (replaces graf/JOIN: dog/tok/TOK + RAPHash) ---
+//  Mirrors the old njf_tokenize exactly — lex via TOKLexer, pack tok32
+//  end-offsets, RAPHash each token — so NEIL01 stands on dog+abc with no
+//  graflib dependency (NEIL is tokenizer-agnostic; properties hold).
+
+typedef struct {
+    u8cs data;
+    u32 *toks[4];
+    u64 *hashes[4];
+} njf;
+
+typedef struct { u32 **toks; u64 **hashes; u8cp base; } njf_ctx;
+
+static ok64 njf_cb(u8 tag, u8cs tok, void *vctx) {
+    sane(vctx != NULL);
+    njf_ctx *ctx = vctx;
+    u32 end = (u32)(tok[1] - ctx->base);
+    call(u32bFeed1, ctx->toks, tok32Pack(tag, end));
+    call(u64bFeed1, ctx->hashes, RAPHash(tok));
+    done;
+}
+
+static ok64 njf_tokenize(njf *jf, u8csc data, u8csc ext) {
+    sane(jf != NULL);
+    $set(jf->data, data);
+    u64 est = $len(data);
+    if (est < 256) est = 256;
+    call(u32bAlloc, jf->toks, est);
+    call(u64bAlloc, jf->hashes, est);
+    njf_ctx ctx = {.toks = jf->toks, .hashes = jf->hashes, .base = data[0]};
+    TOKstate st = {.data = {data[0], data[1]}, .cb = njf_cb, .ctx = &ctx};
+    call(TOKLexer, &st, ext);
+    done;
+}
+
+static void njf_free(njf *jf) {
+    if (jf == NULL) return;
+    u32bFree(jf->toks);
+    u64bFree(jf->hashes);
+}
 
 // --- Helpers (mirror the fuzz harness) ---
 
@@ -41,7 +82,7 @@ static b8 hash_in(u64 h, u64 const *arr, u32 n) {
 }
 
 static ok64 neil_check_basic(e32 const *edl, u32 n,
-                             JOINfile const *of, JOINfile const *nf) {
+                             njf const *of, njf const *nf) {
     sane(1);
     u32 oi = 0, ni = 0;
     u32 prev_op = 0xff;
@@ -100,7 +141,7 @@ static ok64 neil_check_basic(e32 const *edl, u32 n,
 
 static ok64 neil_check_idents(e32 const *pre, u32 pre_n,
                               e32 const *post, u32 post_n,
-                              JOINfile const *of) {
+                              njf const *of) {
     sane(1);
     u64 pre_h[1024];
     u32 pn = 0;
@@ -187,7 +228,7 @@ static ok64 neil_check_canon(e32 const *edl, u32 n) {
 }
 
 static ok64 neil_run_diff(e32 *out_edl, u32 cap, u32 *out_n,
-                          JOINfile const *of, JOINfile const *nf) {
+                          njf const *of, njf const *nf) {
     sane(out_edl && out_n);
     u64 olen = u64bDataLen(of->hashes);
     u64 nlen = u64bDataLen(nf->hashes);
@@ -217,14 +258,14 @@ static ok64 neil_run_case(char const *name, u8csc old_data, u8csc new_data) {
 
     u8csc c_ext = {(u8cp)"c", (u8cp)"c" + 1};
 
-    JOINfile of = {}, nf = {};
-    call(JOINTokenize, &of, old_data, c_ext);
-    call(JOINTokenize, &nf, new_data, c_ext);
+    njf of = {}, nf = {};
+    call(njf_tokenize, &of, old_data, c_ext);
+    call(njf_tokenize, &nf, new_data, c_ext);
 
     u64 olen = u64bDataLen(of.hashes);
     u64 nlen = u64bDataLen(nf.hashes);
     if (olen == 0 || nlen == 0) {
-        JOINFree(&of); JOINFree(&nf);
+        njf_free(&of); njf_free(&nf);
         fprintf(stderr, " skip-empty\n");
         done;
     }
@@ -264,8 +305,8 @@ static ok64 neil_run_case(char const *name, u8csc old_data, u8csc new_data) {
     }
 
     u8bFree(mem);
-    JOINFree(&of);
-    JOINFree(&nf);
+    njf_free(&of);
+    njf_free(&nf);
     fprintf(stderr, " ok\n");
     done;
 }
