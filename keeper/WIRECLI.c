@@ -1195,7 +1195,13 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
     //  visitor; a body we don't hold just adds no sub-objects — the
     //  haveset-build pass relies on this).  Overflow is the only hard
     //  error, surfaced via `c.err`.
-    ok64 wo = KEEPWalkTree((u8cp)tree_sha, NO, wpush_tree_visit, &c);
+    //
+    //  POST-021: via try() so KEEPWalkTree's BASS scratch rewinds per
+    //  call — wpush_walk_commit recurses the parent chain in plain C, so
+    //  otherwise each commit's walk scratch piled up until the arena hit
+    //  BNOROOM.  out/n are caller-owned (below the snapshot), so they live.
+    try(KEEPWalkTree, (u8cp)tree_sha, NO, wpush_tree_visit, &c);
+    ok64 wo = __;
     if (c.err != OK) return c.err;
     if (wo == KEEPNONE || wo == WALKBADFMT) done;
     return wo;
@@ -1327,7 +1333,10 @@ static ok64 wpush_build_pack(keeper *k, sha1cp shas, u32 nshas,
 
     for (u32 i = 0; i < nshas; i++) {
         Bu8 obuf = {};
-        ok64 mo = u8bMap(obuf, 1UL << 24);
+        //  POST-021: 64 MiB per-object buffer (was 16 MiB), matching the
+        //  serve side (WIRE.c body_b); the old cap raised BNOROOM on any
+        //  blob >16 MiB.  mmap pages on demand, so it costs only the touch.
+        ok64 mo = u8bMap(obuf, 1ULL << 26);
         if (mo != OK) {
             trace(
                     "wpush: build_pack obj#%u: u8bMap rc=%llx\n",
@@ -1790,8 +1799,10 @@ u32 WIREPushLastObjCount = 0;
 
 static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
                              keeper *k, sha1cp local_tip_in,
-                             int *wfd, int *rfd, b8 force, b8 to_default) {
-    sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0);
+                             int *wfd, int *rfd, b8 force, b8 to_default,
+                             u8bp packbuf) {
+    sane(k && local_tip_in && wfd && rfd && *wfd >= 0 && *rfd >= 0 &&
+         u8bOK(packbuf));
     sha1 local_tip = *local_tip_in;
     WIREPushLastObjCount = 0;
 
@@ -1966,8 +1977,11 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
     trace("wpush: walked %u objects\n", nshas);
     WIREPushLastObjCount = nshas;  //  pack size after have-set pruning
 
-    //  Build the pack.
-    a_carve(u8, packbuf, 1ULL << 26);
+    //  Build the pack.  POST-021: `packbuf` is a 1 GiB mmap owned by the
+    //  WIREPush wrapper — a 64 MiB BASS carve here overflowed (ZINFFAIL)
+    //  once a long history's pack crossed 64 MiB, and a 1 GiB BASS carve
+    //  would swallow the arena.  Reset: reused per call.
+    u8bReset(packbuf);
     ok64 bp = wpush_build_pack(k, shas, nshas, packbuf);
     if (bp != OK) {
         trace("wpush: build_pack failed\n");
@@ -2064,9 +2078,15 @@ ok64 WIREPush(u8csc remote_uri, u8csc local_branch,
     }
     trace("wpush: spawned ok, pid=%d\n", (int)pid);
 
+    //  POST-021: own the pack-build buffer here (top of the call chain,
+    //  CLAUDE.md §5) so one unmap covers every worker exit.  1 GiB mmap
+    //  (pages on demand), mirroring the serve side (WIRE.c packbuf).
+    Bu8 packbuf = {};
+    call(u8bMap, packbuf, 1ULL << 30);
     try(wire_push_inner, remote_uri, refname, k, local_tip_in,
-                          &wfd, &rfd, force, to_default);
+                          &wfd, &rfd, force, to_default, packbuf);
     ok64 rv = __;
+    u8bUnMap(packbuf);
 
     if (wfd >= 0) close(wfd);
     if (rfd >= 0) close(rfd);

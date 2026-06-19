@@ -177,3 +177,15 @@
   any pack open / object write / index.  `.refs.idx` / `.wtlog.idx` are
   LSM read-caches excluded from the byte check (a plain read churns
   them).  No ssh; runs in the default suite.
+* `46-git-push-long-history-no-bnoroom/` — POST-021: `be post
+  //git-remote` of a LONG history (1000 commits, built via fast-import)
+  must complete without BNOROOM.  The push-side closure walk leaked
+  ~1 MiB BASS per commit (KEEPWalkTree carved a blob buffer on the
+  !eager path; `wpush_walk_commit` recursed the parent chain in plain C
+  with no per-commit call()/try() frame), draining the 1 GiB arena
+  mid-pack-build → `git-receive-pack` hung up, remote never advanced.
+  Fix: skip the !eager carve (WALK.c), route the per-commit walk through
+  try() and own the 1 GiB pack buffer in the WIREPush wrapper, and
+  right-size the per-object buffer to 64 MiB (WIRECLI.c).  Asserts exit
+  0, no BNOROOM, remote `main` FF-advances to cur, and `git fsck` finds
+  no missing objects (complete pack).  Offline `file://`; no ssh.

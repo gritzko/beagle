@@ -167,12 +167,17 @@ ok64 KEEPWalkTree(u8cp tree_sha, b8 eager,
     if (vo == WALKSKIP) return OK;
     if (vo != OK) return vo;
 
-    //  One blob buffer shared across every file fetched during the
-    //  walk.  Always carved — the address-space reservation is free
-    //  via mmap+NORESERVE; pages only commit if eager actually fetches.
+    //  POST-021: carve the shared blob buffer ONLY when eager — !eager
+    //  (push/closure) never fetches a blob, so the 1 MiB carve was pure
+    //  waste that callers recursing the parent chain in plain C never
+    //  rewound, draining BASS to BNOROOM on a long history.
+    if (!eager) {
+        ok64 o = walk_tree_dive(k, &root, pathbuf, NO, NULL, visit, ctx, 0);
+        if (o == WALKSTOP) return OK;
+        return o;
+    }
     a_carve(u8, bbuf, 1UL << 20);
-    ok64 o = walk_tree_dive(k, &root, pathbuf, eager,
-                             eager ? bbuf : NULL, visit, ctx, 0);
+    ok64 o = walk_tree_dive(k, &root, pathbuf, eager, bbuf, visit, ctx, 0);
     if (o == WALKSTOP) return OK;
     return o;
 }
