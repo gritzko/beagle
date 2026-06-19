@@ -102,4 +102,33 @@ $(cat 40.sub.out)"
 fi
 note "be status:vendor/sub/ reports only the sub"
 
+# --- 5. STATUS-002: hierarchical .gitignore crosses the sub boundary --
+#  The sub (vendor/sub) has NO .gitignore of its own.  A PARENT-only
+#  .gitignore at the wt root must still govern the sub's paths when
+#  `be status:vendor/sub/` relays into it — otherwise build artifacts
+#  flood the report with `unk`.  Also locks `!`-negation precedence.
+echo "=== 5. STATUS-002: parent .gitignore governs sub paths ==="
+#  Parent-only ignore: build-*/ and *.o, but un-ignore keep.o.
+printf 'build-*/\n*.o\n!keep.o\n' >.gitignore
+#  Build artifacts + a negated file inside the SUB (no .gitignore there).
+mkdir -p vendor/sub/build-debug
+: >vendor/sub/build-debug/CMakeCache.txt
+: >vendor/sub/build-debug/obj.o
+: >vendor/sub/keep.o
+: >vendor/sub/scratch.o
+"$BE" status:vendor/sub/ --plain >50.sub.out 2>50.sub.err \
+    || fail "be status:vendor/sub/ exited nonzero: $(cat 50.sub.err)"
+sed 's/^/  | /' 50.sub.out
+#  The parent rule must hide build-debug/* and *.o crossing the sub
+#  boundary — no `unk` rows for them.
+if grep -Eq 'build-debug|obj\.o|scratch\.o' 50.sub.out; then
+    fail "STATUS-002: parent .gitignore not applied to sub paths (flood):
+$(cat 50.sub.out)"
+fi
+#  `!keep.o` un-ignores keep.o → it MUST surface as unk (precedence).
+grep -q 'keep\.o' 50.sub.out \
+    || fail "STATUS-002: !keep.o negation lost — keep.o should be unk:
+$(cat 50.sub.out)"
+note "STATUS-002: parent .gitignore governs sub paths; !keep.o negation honored"
+
 note "status/01: extended status! + sub-scoped status: OK"

@@ -146,7 +146,7 @@ git pkt-line framing, the gitconfig-family parser, the `.gitmodules` submodule p
  -  `PKTu8sDrain`/`PKTu8sFeed`/`PKTu8sFeedFlush` (`PKTFLUSH`/`PKTDELIM`) — drain/emit one pkt-line.
  -  `CFGu8sFeed`/`CFGu8sDrain` (`CFGstate`) — the gitconfig pull parser: `Feed` advances to the next section/assignment.
  -  `SUBSu8sParse`/`SUBSu8sFind`/`SUBSu8bSynth` (`subs_cb`) — drain `.gitmodules` sections firing `cb(path,url)`.
- -  `IGNOLoad`/`IGNOMatch`/`IGNOFree` (`igno`/`igno_pat`) — load a `.gitignore` into patterns (negate / anchor / dir-only /).
+ -  `IGNOLoad`/`IGNOMatch`/`IGNOFree` (`igno`/`igno_set`/`igno_pat`) — load the hierarchical `.gitignore` chain (anchor dir up to `$HOME`/`/`, crossing sub boundaries), match with git precedence (negate / anchor / dir-only).
 
 ###  sha1dc/ — vendored SHA-1 collision detection
 

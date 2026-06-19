@@ -1,4 +1,12 @@
-//  IGNO: .gitignore parser and matcher using cc/PATH
+//  IGNO: hierarchical .gitignore parser and matcher using cc/PATH
+//
+//  STATUS-002: IGNOLoad anchors at a worktree dir and walks UP to
+//  $HOME (or `/`), stacking every `.gitignore` found.  IGNOMatch
+//  consults the whole stack with git precedence (a nearer/deeper file
+//  overrides a shallower one; `!` negation honored), crossing
+//  submodule boundaries.  This is why `be status:<sub>/` (relayed into
+//  a sub whose own `.gitignore` is absent) still honors the parent
+//  repo's ignores — fixing the `abc/build-debug/...` flood.
 //
 #include "IGNO.h"
 
@@ -117,31 +125,16 @@ static b8 TryMatch(igno_pat const *pat, u8cs path, b8 is_dir) {
     return NO;
 }
 
-ok64 IGNOLoad(ignop out, u8cs dir_path) {
-    sane(out && u8csOK(dir_path));
-    zerop(out);
+//  Parse the mmap'd `.gitignore` bytes in `set->buf` into `set->patterns`.
+//  Extracted from the old inline IGNOLoad body; one set per file.
+static void igno_parse_set(igno_set *set) {
+    set->count = 0;
+    if (!set->buf || !set->buf[0]) return;
 
-    // Build path to .gitignore
-    a_path(gi_path);
-    call(u8sFeed, u8bIdle(gi_path), dir_path);
-    call(PATHu8bTerm, gi_path);
-    call(PATHu8bPush, gi_path, GITIGNORE_NAME);
-
-    // Try to load file
-    ok64 o = FILEMapRO(&out->buf, $path(gi_path));
-    if (o != OK) {
-        // No .gitignore - not an error
-        return NONE;
-    }
-
-    // Save root directory
-    u8csDup(out->root, dir_path);
-
-    // Parse patterns
     u8cs data;
-    u8csDup(data, u8bDataC(out->buf));
+    u8csDup(data, u8bDataC(set->buf));
 
-    while (!u8csEmpty(data) && out->count < IGNO_MAX_PATTERNS) {
+    while (!u8csEmpty(data) && set->count < IGNO_MAX_PATTERNS) {
         // Skip leading whitespace (but not newlines)
         while (!u8csEmpty(data) &&
                (*u8csHead(data) == ' ' || *u8csHead(data) == '\t')) {
@@ -178,7 +171,7 @@ ok64 IGNOLoad(ignop out, u8cs dir_path) {
         if (*u8csHead(line) == '#') continue;
 
         // Parse pattern
-        igno_pat *pat = &out->patterns[out->count];
+        igno_pat *pat = &set->patterns[set->count];
         zerop(pat);
 
         // Negation marker — consume the '!' from the matchable pattern.
@@ -210,7 +203,88 @@ ok64 IGNOLoad(ignop out, u8cs dir_path) {
         // Store pattern
         u8csDup(pat->pattern, line);
 
+        set->count++;
+    }
+}
+
+//  Load one `.gitignore` from `dir` into `set->buf` (or leave NULL when
+//  absent / unreadable), then parse it.  `dir` is the directory path
+//  slice.  Absent file is not an error.
+static ok64 igno_load_set(igno_set *set, u8cs dir) {
+    sane(set && u8csOK(dir));
+    a_path(gi_path);
+    call(u8sFeed, u8bIdle(gi_path), dir);
+    call(PATHu8bTerm, gi_path);
+    call(PATHu8bPush, gi_path, GITIGNORE_NAME);
+
+    ok64 o = FILEMapRO(&set->buf, $path(gi_path));
+    if (o != OK) { set->buf = NULL; done; }   // no .gitignore here
+    igno_parse_set(set);
+    done;
+}
+
+ok64 IGNOLoad(ignop out, u8cs dir_path) {
+    sane(out && u8csOK(dir_path));
+    zerop(out);
+
+    //  Normalize the anchor dir into a heap copy: per-set prefix slices
+    //  point into this, so it must outlive the load.  Capacity is the
+    //  path length + room for a NUL.
+    u64 dlen = u8csLen(dir_path);
+    call(u8bAllocate, out->prefixbuf, dlen + 2);
+    ok64 no = PATHu8bNorm(out->prefixbuf, dir_path);
+    if (no != OK) { u8bFree(out->prefixbuf); return no; }
+    a_dup(u8c, anchor, u8bDataC(out->prefixbuf));
+
+    //  $HOME terminates the upward walk (or `/` when the anchor is not
+    //  under $HOME).  Compare as a normalized prefix.
+    a_pad(u8, homebuf, 256);
+    u8cs home_env = {};
+    FILEGetEnv("HOME", home_env);
+    u8cs home = {};
+    if (!u8csEmpty(home_env)) {
+        if (PATHu8bNorm(homebuf, home_env) == OK)
+            u8csMv(home, u8bDataC(homebuf));
+    }
+
+    //  Walk the anchor dir up to (and including) $HOME / `/`.  cur is a
+    //  consumable path buffer seeded with the anchor; each step loads
+    //  the set then pops one segment.  set[0] is the deepest.
+    a_path(cur);
+    call(PATHu8bFeed, cur, anchor);
+
+    for (out->count = 0; out->count < IGNO_MAX_CHAIN; ) {
+        igno_set *set = &out->set[out->count];
+        a_dup(u8c, curdir, u8bDataC(cur));
+
+        //  Prefix = anchor path relative to curdir (empty for the
+        //  deepest set).  Both are normalized; curdir is a prefix of
+        //  anchor by construction, so slice the anchor tail.
+        u8cs pfx = {};
+        if (u8csLen(anchor) > u8csLen(curdir) &&
+            u8csHasPrefix(anchor, curdir)) {
+            u8cs tail = {$atp(anchor, u8csLen(curdir)), anchor[1]};
+            while (!u8csEmpty(tail) && *u8csHead(tail) == '/') u8csUsed1(tail);
+            u8csMv(pfx, tail);
+        }
+        u8csMv(set->prefix, pfx);
+
+        ok64 lo = igno_load_set(set, curdir);
+        if (lo != OK) { IGNOFree(out); return lo; }
         out->count++;
+
+        //  Stop once we just processed $HOME (or the filesystem root).
+        if (!u8csEmpty(home) && u8csEq(curdir, home)) break;
+        if (u8csLen(curdir) <= 1) break;          // "/" — root reached
+
+        //  Pop one segment; stop if nothing was removed.
+        u64 before = u8bDataLen(cur);
+        (void)PATHu8bPop(cur);
+        if (u8bDataLen(cur) >= before) break;     // no progress
+        if (u8bDataLen(cur) == 0) {
+            //  Popped to empty: synthesize root "/" for one last set.
+            call(PATHu8bFeed, cur, ((u8cs)u8slit("/")));
+        }
     }
 
     done;
@@ -218,9 +292,11 @@ ok64 IGNOLoad(ignop out, u8cs dir_path) {
 
 void IGNOFree(ignop ig) {
     if (!ig) return;
-    if (ig->buf && ig->buf[0]) {
-        u8bUnMap(ig->buf);
+    for (u64 i = 0; i < ig->count; i++) {
+        igno_set *set = &ig->set[i];
+        if (set->buf && set->buf[0]) u8bUnMap(set->buf);
     }
+    if (!BNULL(ig->prefixbuf)) u8bFree(ig->prefixbuf);
     zerop(ig);
 }
 
@@ -250,17 +326,33 @@ static b8 igno_is_meta(u8cs rel) {
     return NO;
 }
 
-//  Apply every pattern (last-match-wins) to a single path/is_dir pair.
-//  Caller controls iteration over the path's parent prefixes — see
-//  IGNOMatch.  Splitting this out avoids re-checking already-tested
-//  prefixes when we walk up the tree.
-static b8 igno_match_one(ignocp ig, u8cs path, b8 is_dir) {
-    b8 ignored = NO;
-    for (u64 i = 0; i < ig->count; i++) {
-        igno_pat const *pat = &ig->patterns[i];
-        if (TryMatch(pat, path, is_dir)) ignored = !pat->negated;
+//  Apply every pattern (last-match-wins) of one set to a single
+//  path/is_dir pair.  Returns -1 (no pattern matched), 0 (last match
+//  was a negation → un-ignored), or 1 (last match ignores).  Caller
+//  walks the chain shallow→deep and lets a definite (>=0) result from
+//  a deeper set override.
+static int igno_set_decide(igno_set const *set, u8cs path, b8 is_dir) {
+    int decision = -1;
+    for (u64 i = 0; i < set->count; i++) {
+        igno_pat const *pat = &set->patterns[i];
+        if (TryMatch(pat, path, is_dir)) decision = pat->negated ? 0 : 1;
     }
-    return ignored;
+    return decision;
+}
+
+//  Decide one set for `path` including git's dir-prefix rule: a `dir/`
+//  pattern matching any parent of `path` ignores everything beneath.
+//  The path itself is tested first; then each prefix `a`, `a/b`, … with
+//  is_dir=YES.  A parent-dir ignore is definitive (1); we don't let a
+//  parent negation un-ignore a descendant (the shortcut git takes).
+static int igno_set_decide_deep(igno_set const *set, u8cs path, b8 is_dir) {
+    int d = igno_set_decide(set, path, is_dir);
+    for (u8cp p = path[0]; p < path[1]; p++) {
+        if (*p != '/') continue;
+        u8cs prefix = {path[0], p};
+        if (igno_set_decide(set, prefix, YES) == 1) return 1;
+    }
+    return d;
 }
 
 b8 IGNOMatch(ignocp ig, u8cs rel_path, b8 is_dir) {
@@ -268,20 +360,29 @@ b8 IGNOMatch(ignocp ig, u8cs rel_path, b8 is_dir) {
     if (igno_is_meta(rel_path)) return YES;
     if (!ig || ig->count == 0) return NO;
 
-    //  First, the path itself — covers file patterns and dir patterns
-    //  applied to the dir entry.
-    if (igno_match_one(ig, rel_path, is_dir)) return YES;
+    //  Walk the chain SHALLOW→DEEP (set[count-1] is $HOME, set[0] is
+    //  the anchor) so a deeper file's decision overrides a shallower
+    //  one — git precedence.  Each set's patterns are relative to its
+    //  own dir, so prepend the set's prefix (anchor path relative to
+    //  that dir) to the anchor-relative `rel_path`.
+    a_pad(u8, full, 4096);
+    b8 ignored = NO;
+    for (u64 k = ig->count; k-- > 0; ) {
+        igno_set const *set = &ig->set[k];
+        if (set->count == 0) continue;
 
-    //  Git semantics: a `dir/` pattern that matches any parent of this
-    //  path also ignores everything beneath, including files.  Walk
-    //  every prefix `a`, `a/b`, … with is_dir=YES so directory-only
-    //  patterns can fire.  Stops short of the full path (already
-    //  tested above).  Negations on parents intentionally don't
-    //  un-ignore descendants here — that's the same shortcut git takes.
-    for (u8cp p = rel_path[0]; p < rel_path[1]; p++) {
-        if (*p != '/') continue;
-        u8cs prefix = {rel_path[0], p};
-        if (igno_match_one(ig, prefix, YES)) return YES;
+        u8bReset(full);
+        u8cs effective = {};
+        if (u8csEmpty(set->prefix)) {
+            u8csMv(effective, rel_path);
+        } else {
+            if (PATHu8bFeed(full, set->prefix) != OK) continue;
+            if (PATHu8bAdd(full, rel_path) != OK) continue;
+            u8csMv(effective, u8bDataC(full));
+        }
+
+        int d = igno_set_decide_deep(set, effective, is_dir);
+        if (d >= 0) ignored = (d == 1);
     }
-    return NO;
+    return ignored;
 }

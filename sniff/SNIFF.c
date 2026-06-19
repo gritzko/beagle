@@ -292,9 +292,12 @@ ok64 SNIFFOpen(b8 rw) {
     }
     sniff_opened_keep = (kr == OK);
 
-    //  Load wt-root .gitignore (single file, no nested cascade) into
-    //  `s->ignores`.  Absent file is not an error — IGNOMatch still
-    //  rejects .git/.be unconditionally.
+    //  STATUS-002: load the HIERARCHICAL .gitignore chain anchored at
+    //  the wt root, walking up to $HOME (or /), into `s->ignores`.  A
+    //  relayed sub (`be status:<sub>/`) anchors at the sub's own wt, so
+    //  the parent repo's ignores still govern the sub's paths (the
+    //  chain crosses submodule boundaries).  Absent files are not an
+    //  error — IGNOMatch still rejects .git/.be unconditionally.
     {
         a_dup(u8c, wt_for_ig, u8bDataC(h->wt));
         (void)IGNOLoad(&s->ignores, wt_for_ig);
