@@ -46,13 +46,10 @@
 
 #define KEEP_BUFSZ (1ULL << 30)  // 1 GB working buffer (mmap'd, pages on demand)
 
-//  In-pack delta-chain cap (OFS/REF deltas resolved inside one pack).
-#define KEEP_DELTA_CHAIN_MAX 256
-//  Cross-file REF_DELTA recursion cap.  Each cross-file hop spends one
-//  C stack frame via KEEPGet -> KEEPGetPacked; a corrupt index that
-//  ping-pongs a REF_DELTA base over two file_ids would otherwise stack
-//  unbounded frames (stack-overflow DoS, MEM-022).  Bound it.
-#define KEEP_XFILE_RECUR_MAX 64
+//  GIT-004: the in-pack OFS chain cap (PACK_DELTA_CHAIN_MAX) and the
+//  whole REF_DELTA cross-file recursion machinery (rdepth /
+//  KEEP_XFILE_RECUR_MAX) moved into the shared dog/git OFS resolver;
+//  the keeper's native get is now a thin call into it.
 
 //  Writer-side OFS delta-chain cap (GIT-008).  When the writer deltas
 //  against a base that is itself an OFS_DELTA it grows the chain; cap
@@ -701,205 +698,66 @@ ok64 KEEPHas(u64 hashlet60, size_t hexlen) {
 }
 
 // --- Resolve: inflate object at pack val (file_id + offset) ---
+//
+//  GIT-004: the native store is OFS-only, so object resolution is a
+//  pure byte+offset chase delegated to dog/git's PACKResolveOfs (shared
+//  with the js/JABC binding).  This entry boundary owns only the
+//  sha→(file,offset) lookup (via `val`) and the keeper-side scratch +
+//  output copy.  No REF_DELTA arm, no cross-file recursion, no rdepth
+//  / KEEP_XFILE_RECUR_MAX / buf3 aliasing dance: a stray native REF
+//  surfaces as a bounded KEEPFAIL (PACKREF), never a silent KEEPNONE.
 
-//  Cross-file REF_DELTA recursion threads `rdepth` so a corrupt index
-//  cannot stack frames without bound; bumped once per cross-file hop.
-static ok64 keep_get_rec(u64 hashlet, size_t hexlen, u8bp out,
-                         u8p out_type, int rdepth);
-
-static ok64 keep_get_packed_rec(keeper *k, u64 val, u8bp out, u8p out_type,
-                                int rdepth) {
+static ok64 keep_get_packed_rec(keeper *k, u64 val, u8bp out, u8p out_type) {
+    sane(k && out);
     u32 file_id = wh64Id(val);
     u64 offset  = wh64Off(val);
 
     u8bp pack_map = keep_pack_buf(k, file_id);
     if (!pack_map) return KEEPNONE;
-    u8cp pack = u8bDataHead(pack_map);
-    u64 packlen = (u64)(u8bIdleHead(pack_map) - pack);
+    u8cs pack = {u8bDataHead(pack_map), u8bIdleHead(pack_map)};
 
-    if (offset >= packlen) return KEEPFAIL;
-
-    // Chase delta chain, resolve to base object
-    u64 chain[KEEP_DELTA_CHAIN_MAX];
-    int depth = 0;
-    u64 cur = offset;
-    u8 obj_type = 0;
-
-    // Use pre-allocated working buffers, reset each call
+    //  Reset the two keeper scratch buffers; PACKResolveOfs uses buf1
+    //  for the base object and buf2 (split) for delta inflate + apply.
     u8bReset(k->buf1);
     u8bReset(k->buf2);
-    u8p buf1 = u8bHead(k->buf1);
-    u8p buf2 = u8bHead(k->buf2);
+    u8s bscratch = {u8bHead(k->buf1), u8bTerm(k->buf1)};
+    u8s dscratch = {u8bHead(k->buf2), u8bTerm(k->buf2)};
 
-    u64 outsz = 0;
-    u8p result = NULL;
-    ok64 rc = OK;
+    u8cs body = {};
+    u8 obj_type = 0;
+    ok64 rc = PACKResolveOfs(pack, offset, bscratch, dscratch,
+                             body, &obj_type);
+    //  GIT-004 backstop: PACKREF means a native log carried a REF_DELTA
+    //  — corruption under OFS-only.  Map it (and every chase error) to
+    //  a bounded KEEPFAIL, NEVER KEEPNONE (silent absence).
+    if (rc != OK) return KEEPFAIL;
 
-    for (;;) {
-        //  Re-validate the chased offset every iteration: `cur` is
-        //  re-derived from on-disk delta bases (OFS subtraction below,
-        //  REF_DELTA base_val), so the entry-time `offset < packlen`
-        //  guard does NOT carry over.  A corrupt base could land `cur`
-        //  past the pack tail (or, after an underflow, at a wild huge
-        //  value) — bound it here before building the read slice.
-        if (cur >= packlen) { rc = KEEPFAIL; goto cleanup; }
-
-        pack_obj obj = {};
-        u8cs from = {pack + cur, pack + packlen};
-        rc = PACKDrainObjHdr(from, &obj);
-        if (rc != OK) goto cleanup;
-
-        if (obj.type >= 1 && obj.type <= 4) {
-            // Base object: inflate directly
-            obj_type = obj.type;
-            if (obj.size > KEEP_BUFSZ) { rc = KEEPNOROOM; goto cleanup; }
-            u8s into = {buf1, buf1 + KEEP_BUFSZ};
-            rc = PACKInflate(from, into, obj.size);
-            if (rc != OK) goto cleanup;
-            result = buf1;
-            outsz = obj.size;
-            break;
-        }
-
-        if (depth >= KEEP_DELTA_CHAIN_MAX) { rc = KEEPFAIL; goto cleanup; }
-        chain[depth++] = cur;
-
-        if (obj.type == PACK_OBJ_OFS_DELTA) {
-            //  OFS_DELTA base sits `ofs_delta` bytes BEFORE `cur`.  A
-            //  corrupt pack may carry `ofs_delta == 0` (self-reference)
-            //  or `ofs_delta > cur` (underflow → wild base pointer).
-            //  PACKDrainOfs caps only at UINT64_MAX>>7, so reject both
-            //  here (MEM-022).  The loop-top `cur < packlen` recheck
-            //  alone is not enough: an unsigned underflow yields a huge
-            //  `cur` that the recheck catches, but `cur == 0` (exact
-            //  underflow to pack base) would slip through — so bound
-            //  the subtraction at its source.
-            if (obj.ofs_delta == 0 || obj.ofs_delta > cur) {
-                rc = KEEPFAIL; goto cleanup;
-            }
-            cur = cur - obj.ofs_delta;
-        } else if (obj.type == PACK_OBJ_REF_DELTA) {
-            // Look up base by SHA-1 prefix
-            u64 base_hashlet = WHIFFHashlet60((sha1cp)obj.ref_delta[0]);
-            u64 base_val = 0;
-            rc = KEEPLookup(base_hashlet, 10, &base_val);
-            if (rc != OK) goto cleanup;
-            // Base might be in a different pack file
-            u32 bfile = wh64Id(base_val);
-            if (bfile != file_id) {
-                // Cross-file: get base recursively, apply delta chain.
-                // Caveats:
-                //   * The recursive KEEPGet call uses buf1/buf2 as
-                //     scratch, clobbering ours.  Reset buf1 before
-                //     copying from buf3 so we don't carry residue.
-                //   * `out` may alias k->buf3 (when a deeper recursive
-                //     KEEPGetPacked got `out=k->buf3` from its caller).
-                //     The post-loop `u8bFeed(out, content)` would then
-                //     append onto our just-loaded base.  Reset buf3
-                //     after the copy so the final feed lands in an
-                //     empty buffer regardless of aliasing.
-                //   * Bound the cross-file recursion: each hop spends a
-                //     C stack frame, and a corrupt index ping-ponging a
-                //     REF_DELTA base over two file_ids would otherwise
-                //     stack frames without bound (stack-overflow DoS,
-                //     MEM-022).  The in-pack `depth` cap does not see
-                //     cross-file hops (each recursion starts fresh).
-                if (rdepth >= KEEP_XFILE_RECUR_MAX) {
-                    rc = KEEPFAIL; goto cleanup;
-                }
-                u8bReset(k->buf3);
-                u8 btype = 0;
-                rc = keep_get_rec(base_hashlet, 15, k->buf3, &btype,
-                                  rdepth + 1);
-                if (rc != OK) goto cleanup;
-                obj_type = btype;
-                u8bReset(k->buf1);
-                a_dup(u8c, b3view, u8bData(k->buf3));
-                (void)u8bFeed(k->buf1, b3view);
-                u8bReset(k->buf3);
-                buf1 = u8bHead(k->buf1);
-                outsz = u8bDataLen(k->buf1);
-                result = buf1;
-                break;  // apply delta chain from here
-            }
-            cur = wh64Off(base_val);
-        } else {
-            rc = KEEPFAIL;
-            goto cleanup;
-        }
-    }
-
-    // Apply delta chain bottom-up
-    u8p src = buf1;
-    u8p dst = buf2;
-
-    for (int i = depth - 1; i >= 0; i--) {
-        pack_obj dobj = {};
-        u8cs from = {pack + chain[i], pack + packlen};
-        rc = PACKDrainObjHdr(from, &dobj);
-        if (rc != OK) goto cleanup;
-
-        u8p dinst = dst + KEEP_BUFSZ / 2;
-        if (dobj.size > KEEP_BUFSZ / 2) { rc = KEEPNOROOM; goto cleanup; }
-        u8s dinto = {dinst, dinst + KEEP_BUFSZ / 2};
-        rc = PACKInflate(from, dinto, dobj.size);
-        if (rc != OK) goto cleanup;
-
-        u8cs delta = {dinst, dinst + dobj.size};
-        u8cs base = {src, src + outsz};
-        u8g apply_out = {dst, dst, dst + KEEP_BUFSZ / 2};
-        rc = DELTApply(delta, base, apply_out);
-        if (rc != OK) goto cleanup;
-        outsz = u8gLeftLen(apply_out);
-
-        u8p tmp = src; src = dst; dst = tmp;
-    }
-
-    result = src;
     if (out_type) *out_type = obj_type;
 
-    // Copy result into caller's output buffer.  `out` may alias one
-    // of our scratch buffers (k->buf1/buf2/buf3) — callers pass these
-    // in to avoid an extra allocation.  In the cross-file REF_DELTA
-    // arm above we stage the base into k->buf1 (the u8bFeed at line
-    // 1042); when out == k->buf1 the final `result` lives at
-    // k->buf1[0..outsz) but out's idle slot starts past the staged
-    // base bytes, so u8bFeed's memcpy aliases.  Reset out first so
-    // idle resumes at buf[0], then memmove handles the now-degenerate
-    // src==dst overlap (or any other aliased combination).
+    //  Copy the resolved bytes into the caller's output buffer.  `out`
+    //  may alias k->buf1/buf2 (callers pass these as scratch), so reset
+    //  first and memmove to handle a degenerate self-overlap.
+    u64 outsz = (u64)u8csLen(body);
     u8bReset(out);
-    if (u8bIdleLen(out) < outsz) {
-        rc = BNOROOM; goto cleanup;
-    }
-    memmove(u8bIdleHead(out), result, outsz);
+    if (u8bIdleLen(out) < outsz) return BNOROOM;
+    memmove(u8bIdleHead(out), body[0], outsz);
     u8bFed(out, outsz);
-
-cleanup:
-    return rc;
+    done;
 }
 
-//  Top-of-chain resolver: starts a fresh cross-file recursion budget.
+//  Top-of-chain resolver.
 static ok64 KEEPGetPacked(keeper *k, u64 val, u8bp out, u8p out_type) {
-    return keep_get_packed_rec(k, val, out, out_type, 0);
+    return keep_get_packed_rec(k, val, out, out_type);
 }
 
 // --- Get: inflate object from pack by hashlet ---
 
-//  Recursive variant: `rdepth` carries the cross-file REF_DELTA
-//  recursion budget so a corrupt index can't stack frames unbounded.
-static ok64 keep_get_rec(u64 hashlet, size_t hexlen, u8bp out,
-                         u8p out_type, int rdepth) {
+ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
     sane(out);
     keeper *k = &KEEP;
-
     u64 val = 0;
     call(KEEPLookup, hashlet, hexlen, &val);
-
-    return keep_get_packed_rec(k, val, out, out_type, rdepth);
-}
-
-ok64 KEEPGet(u64 hashlet, size_t hexlen, u8bp out, u8p out_type) {
-    return keep_get_rec(hashlet, hexlen, out, out_type, 0);
+    return keep_get_packed_rec(k, val, out, out_type);
 }
 
 //  Peek the inflated size + type of an object without committing the
@@ -1760,7 +1618,7 @@ ok64 KEEPPackFeed(keep_pack *p, u8 type, u8csc content,
                 u64 base_val = wh64Pack(KEEP_VAL_FLAGS, p->file_id,
                                         in_pack_off);
                 rc = keep_get_packed_rec(k, base_val, p->delta_base,
-                                         &resolved_type, 0);
+                                         &resolved_type);
             }
 
             if (rc == OK) {

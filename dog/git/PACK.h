@@ -14,12 +14,21 @@
 //
 //  Delta types (OFS_DELTA, REF_DELTA) reference a base object.
 
+#include "abc/B.h"
 #include "abc/INT.h"
+#include "abc/S.h"
 
 con ok64 PACKFAIL   = 0x64a3143ca495;
 con ok64 PACKBADFMT = 0x64a3142ca34f59d;
 con ok64 PACKBADOBJ = 0x64a3142ca3582d3;
 con ok64 PACKBADCHK = 0x64a3142ca34c454;
+//  PACKResolveOfs hit a REF_DELTA record (GIT-004): the OFS-only native
+//  resolver never chases sha-addressed bases; a stray REF in a native
+//  log is corruption, surfaced as a bounded fail, never silent absence.
+con ok64 PACKREF    = 0x64a3142ca35a4;
+
+//  In-pack OFS delta-chain cap shared by every OFS resolver (GIT-004).
+#define PACK_DELTA_CHAIN_MAX 256
 
 // Git object types (3-bit field in packfile varint)
 #define PACK_OBJ_COMMIT    1
@@ -117,5 +126,29 @@ ok64 PACKu8sFeedObj(u8bp log, u8 type, u8csc content,
 //  `into` must have room for `size` bytes.
 //  Advances `from` past the consumed compressed data.
 ok64 PACKInflate(u8cs from, u8s into, u64 size);
+
+//  GIT-004: OFS-only delta-chase resolver, shared by keeper's native
+//  store resolver AND the js/JABC binding.  Resolve the object at byte
+//  `offset` in the OFS-only pack `pack` to its full inflated bytes:
+//    - read the object header at `offset`;
+//    - if a base type (1..4), inflate it directly;
+//    - if OFS_DELTA, subtract `ofs_delta` and loop, recording the hop;
+//    - apply the recorded delta chain bottom-up onto the base.
+//  `pack` is the whole pack-byte slice (header through the last record);
+//  `offset` is the start of the target object's record.  `base` and
+//  `delta` are caller-owned scratch slices (no allocation here, per
+//  CLAUDE.md §5): `base` must hold the largest inflated object, `delta`
+//  the largest single inflated delta-instruction stream PLUS one apply
+//  result (so it is split internally).  On OK, `out` aliases bytes in
+//  `base` or `delta` (valid until the scratch is reused) and `*out_type`
+//  carries the resolved git object type (1..4).
+//  Corruption bounds (GIT-004 preserved): every chased `offset` is
+//  re-checked against the pack length before use; OFS deltas with
+//  `ofs_delta == 0` (self-ref) or `ofs_delta > cur` (underflow) are
+//  rejected; the chain length is capped at PACK_DELTA_CHAIN_MAX.
+//  A REF_DELTA record returns PACKREF (assert-guarded backstop in the
+//  OFS-only native store — never a silent absence).
+ok64 PACKResolveOfs(u8cs pack, u64 offset, u8s base, u8s delta,
+                    u8csp out, u8p out_type);
 
 #endif

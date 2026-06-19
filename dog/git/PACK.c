@@ -180,3 +180,93 @@ ok64 PACKInflate(u8cs from, u8s into, u64 size) {
 
     done;
 }
+
+ok64 PACKResolveOfs(u8cs pack, u64 offset, u8s base, u8s delta,
+                    u8csp out, u8p out_type) {
+    sane(u8csOK(pack) && u8sOK(base) && u8sOK(delta) && out);
+    u8cp p0 = pack[0];
+    u64 packlen = (u64)u8csLen(pack);
+    u64 baselen = (u64)u8sLen(base);
+    u64 deltalen = (u64)u8sLen(delta);
+    //  delta scratch is split: lower half holds inflated delta
+    //  instructions, upper half is one apply-result ping-pong target.
+    u64 half = deltalen / 2;
+    if (offset >= packlen) return PACKFAIL;
+
+    //  Chase the OFS chain down to a base object, recording each hop.
+    u64 chain[PACK_DELTA_CHAIN_MAX];
+    int depth = 0;
+    u64 cur = offset;
+    u8 obj_type = 0;
+    u64 outsz = 0;
+
+    for (;;) {
+        //  Re-validate every chased offset: `cur` is re-derived from
+        //  on-disk delta bases (OFS subtraction below), so the entry
+        //  guard does NOT carry over (GIT-004 corruption bound).
+        if (cur >= packlen) return PACKFAIL;
+
+        pack_obj obj = {};
+        u8cs from = {p0 + cur, p0 + packlen};
+        call(PACKDrainObjHdr, from, &obj);
+
+        if (obj.type >= 1 && obj.type <= 4) {
+            obj_type = obj.type;
+            if (obj.size > baselen) return NOROOM;
+            u8s into = {base[0], base[0] + baselen};
+            call(PACKInflate, from, into, obj.size);
+            outsz = obj.size;
+            break;
+        }
+
+        if (depth >= PACK_DELTA_CHAIN_MAX) return PACKFAIL;
+        chain[depth++] = cur;
+
+        if (obj.type == PACK_OBJ_OFS_DELTA) {
+            //  OFS base sits `ofs_delta` bytes BEFORE `cur`.  Reject
+            //  `ofs_delta == 0` (self-ref) and `ofs_delta > cur`
+            //  (underflow) at the source: the loop-top recheck alone
+            //  misses an exact underflow to offset 0 (GIT-004/MEM-022).
+            if (obj.ofs_delta == 0 || obj.ofs_delta > cur) return PACKFAIL;
+            cur = cur - obj.ofs_delta;
+        } else if (obj.type == PACK_OBJ_REF_DELTA) {
+            //  GIT-004 assert-guarded backstop: the OFS-only native
+            //  resolver never chases sha-addressed bases.  A stray REF
+            //  in a native log is corruption — fail loudly, never a
+            //  silent absence.  Foreign REF packs go through UNPK.
+            return PACKREF;
+        } else {
+            return PACKFAIL;
+        }
+    }
+
+    //  Apply the delta chain bottom-up, ping-ponging src/dst between
+    //  `base` and the delta scratch's upper half.
+    u8p src = base[0];
+    u8p dst = delta[0] + half;
+    for (int i = depth - 1; i >= 0; i--) {
+        pack_obj dobj = {};
+        u8cs from = {p0 + chain[i], p0 + packlen};
+        call(PACKDrainObjHdr, from, &dobj);
+
+        if (dobj.size > half) return NOROOM;
+        u8s dinto = {delta[0], delta[0] + half};
+        call(PACKInflate, from, dinto, dobj.size);
+
+        u8cs dins = {delta[0], delta[0] + dobj.size};
+        u8cs bsl = {src, src + outsz};
+        u8g apply_out = {dst, dst, dst + half};
+        call(DELTApply, dins, bsl, apply_out);
+        outsz = (u64)u8gLeftLen(apply_out);
+
+        //  Next hop's base is this result; flip dst between base and
+        //  the upper delta half so the result always has room.
+        src = dst;
+        dst = (dst == base[0]) ? delta[0] + half : base[0];
+    }
+
+    out[0] = src;
+    out[1] = src + outsz;
+    if (out_type) *out_type = obj_type;
+    done;
+}

@@ -44,9 +44,10 @@ con ok64 KEEPOPENRO  = 0x50e3996193976d8;
 con ok64 ORDERBAD    = 0x61b34e6cb28d;
 //  KEEPBranchDrop: refuses to drop the trunk shard.
 con ok64 KEEPTRUNK = 0x1438e65d6de5d4;
-//  KEEPBranchDrop: refuses a branch that still has descendants
-//  referencing it via REF_DELTA, or is currently the open leaf.
-//  Also returned for live staging packs.
+//  KEEPBranchDrop: refuses a branch that is currently the open leaf, or
+//  has a live staging pack.  GIT-004: the old REF_DELTA-descendant
+//  refusal is gone — OFS-only deltas are file-local, so no cross-file
+//  delta dependency can pin a droppable branch.
 con ok64 KEEPDIRTY = 0x1438e64d49b762;
 //  KEEPCreateBranch: leaf dir already exists.
 con ok64 KEEPDUP   = 0x1438e64d799;
@@ -248,8 +249,8 @@ ok64 KEEPSwitchBranch(u8cs new_branch);
 //    * `branch` must exist on disk (else KEEPNONE).
 //  Closes + unlinks every `.keeper` / `.keeper.idx` file in the leaf
 //  dir, evicts each from the keeper-level registries, then rmdir's
-//  the leaf dir.  REF_DELTA descendant ancestry is a follow-up
-//  (Phase 2+).
+//  the leaf dir.  GIT-004: OFS-only deltas are file-local, so there is
+//  no cross-file REF_DELTA descendant ancestry to guard against.
 ok64 KEEPBranchDrop(u8cs branch);
 
 //  Lay down a fresh project shard at `<store_root>/<project>/`:

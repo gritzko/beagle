@@ -125,6 +125,7 @@ Pull-mode drains for tree / commit / ident bytes, and the single translation poi
 The packfile codec, the git delta instruction parser/applier, and the zlib inflate/deflate wrappers under them.
 
  -  `PACKu8sFeedHdr`/`DrainHdr`/`DrainObjHdr`/`FeedObjHdr`/`PACKInflate` — write/parse the header + object entry.
+ -  `PACKResolveOfs` — GIT-004 OFS-only delta-chase (offset → inflated object); shared by keeper get + JABC; `PACKREF` on a stray REF.
  -  `DELTApply`/`DELTEncode` — apply a delta stream to a base.
  -  `ZINFInflate`/`ZINFDeflate` — the slice-consuming zlib wrappers (`into` advances by produced, source by consumed).
 

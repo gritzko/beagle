@@ -576,19 +576,16 @@ ok64 KEEPofsUnderflow() {
     done;
 }
 
-// --- MEM-022: deep cross-file REF_DELTA recursion (stack-overflow DoS) ---
+// --- GIT-004: a native REF_DELTA trips the assert-guarded backstop ---
 //
-//  Lay down two raw `.keeper` packs that form a REF_DELTA cycle across
-//  two file_ids: pack 1's object X is REF_DELTA(base=Y), pack 2's
-//  object Y is REF_DELTA(base=X).  The index maps hashlet(X_sha)→pack1
-//  and hashlet(Y_sha)→pack2.  KEEPGet(X) then ping-pongs
-//  KEEPGetPacked -> keep_get_rec -> KEEPGetPacked over the two
-//  file_ids; without a recursion cap each cross-file hop spends a C
-//  stack frame → unbounded recursion → stack-overflow DoS.  With the
-//  KEEP_XFILE_RECUR_MAX bound the call returns KEEPFAIL after a finite
-//  number of hops.  (UNPK's same-pair cycle guard sits on the ingest
-//  path; this hand-built corrupt index bypasses it, exercising the
-//  resolver's own bound.)
+//  The native store is OFS-only; the resolver no longer chases
+//  sha-addressed bases.  Lay down a `.keeper` pack whose only object X
+//  is a REF_DELTA (the old MEM-022 cross-file cycle, now moot), index
+//  hashlet(X_sha)→(file 1, off 12), and KEEPGet(X).  The resolver hits
+//  the REF record at the first hop and returns the bounded backstop
+//  (PACKResolveOfs PACKREF → KEEPFAIL), NEVER a silent KEEPNONE — so a
+//  stray native REF is loud corruption, not lost data.  This keeps the
+//  REF arm as asserted dead code (GIT-004 one-release overlap).
 
 //  Write `bytes` to `<root>/.be/<name>`.
 static ok64 write_be_file(u8cs root, char const *name, u8cs bytes) {
@@ -688,12 +685,13 @@ ok64 KEEPxfileRecursion() {
     Bu8 out = {};
     call(u8bMap, out, 1UL << 20);
     u8 ot = 0;
-    //  Without the cap this recurses until the C stack overflows; with
-    //  it the resolver returns a bounded failure.
+    //  GIT-004: a native REF_DELTA must surface as a bounded KEEPFAIL
+    //  (the assert-guarded backstop), NEVER a silent KEEPNONE.
     ok64 got = KEEPGet(X_h, 15, out, &ot);
-    if (got == OK) {
+    if (got != KEEPFAIL) {
         fprintf(stderr,
-                "KEEPxfileRecursion: expected bounded failure, got OK\n");
+                "KEEPxfileRecursion: expected KEEPFAIL, got %s\n",
+                ok64str(got));
         fail(TESTFAIL);
     }
 

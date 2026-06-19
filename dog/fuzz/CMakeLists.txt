@@ -18,3 +18,6 @@ target_link_libraries(TOKfuzz dog abc-core)
 
 add_executable(TOK2fuzz TOK2.c)
 target_link_libraries(TOK2fuzz dog abc-core)
+
+add_executable(PACKRESOLVEfuzz PACKRESOLVE.c)
+target_link_libraries(PACKRESOLVEfuzz dog abc-core)

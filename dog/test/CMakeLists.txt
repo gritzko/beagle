@@ -96,3 +96,9 @@ target_compile_options(HUNKtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(HUNKtest dog abc-core)
 add_test(NAME HUNKtest COMMAND HUNKtest)
 
+add_executable(PACKRESOLVEtest PACKRESOLVE.c)
+target_link_options(PACKRESOLVEtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(PACKRESOLVEtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(PACKRESOLVEtest dog abc-core)
+add_test(NAME PACKRESOLVEtest COMMAND PACKRESOLVEtest)
+

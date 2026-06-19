@@ -1,6 +1,6 @@
 #   keeper — module index
 
-keeper is beagle's local git object store and git-wire endpoint. A *keeper* owns the pack logs + LSM index runs of one project shard, resolves objects (chasing OFS/REF_DELTA chains), walks their trees, and speaks upload-pack / receive-pack on both ends. The store is a singleton: helpers reach `KEEP` and `HOME` directly. Branches are real dirs; writes land in the leaf, reads see the inherited chain. Prose in [KEEP.h], [LOG.md], [WIRE.md].
+keeper is beagle's local git object store and git-wire endpoint. A *keeper* owns the pack logs + LSM index runs of one project shard, resolves objects (OFS-only chase via dog/git `PACKResolveOfs`; foreign REF/thin only at UNPK ingest), walks their trees, and speaks upload-pack / receive-pack on both ends. The store is a singleton: helpers reach `KEEP` and `HOME` directly. Branches are real dirs; writes land in the leaf, reads see the inherited chain. Prose in [KEEP.h], [LOG.md], [WIRE.md].
 
 ##  Store core
 
@@ -12,7 +12,7 @@ The whole keeper surface: branch-aware open, object get/put/has, the incremental
  -  `KEEPOpen`/`OpenBranch`/`Close`/`KEEPCompact` — open (walk trunk → leaf), close+unmap, merge runs to the 1/8 cap.
  -  `KEEPCreateBranch`/`SwitchBranch`/`BranchDrop` — materialise a leaf, re-target an open keeper (DATA→PAST past LCA), drop.
  -  `KEEPInitShard`/`KEEPInitRemoteShard` — lay down a fresh project shard or per-host remote skeleton, idempotently.
- -  `KEEPGet`/`GetExact`/`GetSize`/`KEEPHas`/`Lookup` — retrieve a body by hashlet (delta resolved) or SHA-1, peek, raw val.
+ -  `KEEPGet`/`GetExact`/`GetSize`/`KEEPHas`/`Lookup` — body by hashlet or SHA-1, peek, raw val; get via `PACKResolveOfs` (GIT-004).
  -  `keepKeyPack`/`KeyType`/`KeyHashlet`/`PackBmVal`/`BmCount`/`BmLen` — inline (un)pack of the wh64 key + bookmark val.
  -  `keep_run_count_all`/`run_at_all`/`scan_branch_dir`/`KEEPPackBytes` — LSM-run enumerator, registry op, by-file_id pack bytes.
  -  `KEEPUpdate`/`KEEPPut`/`Import`/`IngestFile`/`IngestStream` — feed one object, a batch, a `.pack`, a pack, a side-band.
