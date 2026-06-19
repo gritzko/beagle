@@ -1200,7 +1200,12 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
     //  call — wpush_walk_commit recurses the parent chain in plain C, so
     //  otherwise each commit's walk scratch piled up until the arena hit
     //  BNOROOM.  out/n are caller-owned (below the snapshot), so they live.
-    try(KEEPWalkTree, (u8cp)tree_sha, NO, wpush_tree_visit, &c);
+    //  GIT-009: WALK_INCL_ANCHOR so a `.be` tree entry (foreign git
+    //  history committed the store anchor as a blob) is collected into
+    //  the pack — the tree we ship verbatim references it, so omitting
+    //  its blob dangles and a fresh remote's fsck rejects the push.
+    try(KEEPWalkTree, (u8cp)tree_sha, NO, WALK_INCL_ANCHOR,
+        wpush_tree_visit, &c);
     ok64 wo = __;
     if (c.err != OK) return c.err;
     if (wo == KEEPNONE || wo == WALKBADFMT) done;

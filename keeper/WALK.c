@@ -39,8 +39,9 @@ u8 WALKu8sModeKind(u8cs mode) {
 //  !eager (no blobs are fetched).  `tbuf` is per-level (parent's
 //  tree data must outlive child recursion's tree fetch).
 static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
-                            u8bp pathbuf, b8 eager, u8bp bbuf,
-                            walk_tree_fn visit, void0p ctx, u32 depth) {
+                            u8bp pathbuf, b8 eager, b8 incl_anchor,
+                            u8bp bbuf, walk_tree_fn visit, void0p ctx,
+                            u32 depth) {
     sane(k && tree_sha && visit);
 
     //  KEEP-001: hard depth cap so a (mal)formed deeply-nested tree
@@ -87,12 +88,18 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
         u8 kind = WALKu8sModeKind(mode_s);
         if (kind == 0) continue;
         if (DPATHVerify(name_s) != OK) {
-            //  `.be` (store anchor) skips quietly; a genuinely invalid
-            //  name still warns — that line is a real diagnostic.
-            if (!u8csEq(name_s, be_name))
-                fprintf(stderr, "walk: bad path '%.*s', skip\n",
-                        (int)$len(name_s), (char *)name_s[0]);
-            continue;
+            //  GIT-009: an object-closure walk (incl_anchor) keeps the
+            //  `.be` store-anchor entry so its blob lands in the pack —
+            //  the shipped tree references it, so dropping it dangles.
+            //  Working-tree walks still skip `.be` (untracked anchor);
+            //  a genuinely invalid name always warns and skips.
+            b8 is_anchor = u8csEq(name_s, be_name);
+            if (!(is_anchor && incl_anchor)) {
+                if (!is_anchor)
+                    fprintf(stderr, "walk: bad path '%.*s', skip\n",
+                            (int)$len(name_s), (char *)name_s[0]);
+                continue;
+            }
         }
 
         // Push "/name" (or just "name" at root) onto pathbuf.
@@ -133,8 +140,8 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
             //  (GET-020).  `sub`/`pathbuf`/`bbuf` live below the
             //  snapshot (the parent's `tbuf` and its tree-entry slices
             //  too), so they survive the rewind.
-            try(walk_tree_dive, k, &sub, pathbuf, eager, bbuf, visit, ctx,
-                depth + 1);
+            try(walk_tree_dive, k, &sub, pathbuf, eager, incl_anchor, bbuf,
+                visit, ctx, depth + 1);
             vo = __;
         }
 
@@ -153,7 +160,7 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
 //  KEEP-001: the one keeper tree walker.  WALK / WIRECLI-push / CLOSE
 //  all route their tree descent here, passing per-site behaviour as the
 //  visitor (dedup short-circuits via WALKSKIP).  See WALK.h.
-ok64 KEEPWalkTree(u8cp tree_sha, b8 eager,
+ok64 KEEPWalkTree(u8cp tree_sha, b8 eager, b8 incl_anchor,
                   walk_tree_fn visit, void0p ctx) {
     sane(tree_sha && visit);
     keeper *k = &KEEP;
@@ -172,22 +179,24 @@ ok64 KEEPWalkTree(u8cp tree_sha, b8 eager,
     //  waste that callers recursing the parent chain in plain C never
     //  rewound, draining BASS to BNOROOM on a long history.
     if (!eager) {
-        ok64 o = walk_tree_dive(k, &root, pathbuf, NO, NULL, visit, ctx, 0);
+        ok64 o = walk_tree_dive(k, &root, pathbuf, NO, incl_anchor, NULL,
+                                visit, ctx, 0);
         if (o == WALKSTOP) return OK;
         return o;
     }
     a_carve(u8, bbuf, 1UL << 20);
-    ok64 o = walk_tree_dive(k, &root, pathbuf, eager, bbuf, visit, ctx, 0);
+    ok64 o = walk_tree_dive(k, &root, pathbuf, eager, incl_anchor, bbuf,
+                            visit, ctx, 0);
     if (o == WALKSTOP) return OK;
     return o;
 }
 
 ok64 WALKTree(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return KEEPWalkTree(tree_sha, YES, visit, ctx);
+    return KEEPWalkTree(tree_sha, YES, WALK_SKIP_ANCHOR, visit, ctx);
 }
 
 ok64 WALKTreeLazy(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return KEEPWalkTree(tree_sha, NO, visit, ctx);
+    return KEEPWalkTree(tree_sha, NO, WALK_SKIP_ANCHOR, visit, ctx);
 }
 
 //  ls-files: descend an optional /subpath relative to a URI-resolved
@@ -337,7 +346,8 @@ ok64 KEEPLsFiles(uricp target, walk_tree_fn visit, void0p ctx) {
     //  `prefix_s` + '/' so paths remain absolute from the repo root.
     lsf_prefix_ctx pc = { .inner = visit, .inner_ctx = ctx, .prefix = {}};
     u8csMv(pc.prefix, prefix_s);
-    return KEEPWalkTree(target_sha.data, NO, lsf_prefix_visit, &pc);
+    return KEEPWalkTree(target_sha.data, NO, WALK_SKIP_ANCHOR,
+                        lsf_prefix_visit, &pc);
 }
 
 //  URI → single blob.  Shares the resolve + descend machinery with

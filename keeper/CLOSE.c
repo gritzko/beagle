@@ -82,7 +82,11 @@ ok64 CLOSEWalkTree(sha1cp tree_sha, sha1 *out, u32 *n, u32 cap,
     //  collected by the visitor; a body we don't hold just doesn't add
     //  sub-objects (haveset-build mode relies on this).  Overflow is the
     //  only hard error, surfaced via `c.err`.
-    ok64 wo = KEEPWalkTree((u8cp)tree_sha, NO, close_visit, &c);
+    //  GIT-009: WALK_INCL_ANCHOR so a `.be` store-anchor blob (a foreign
+    //  git history may have committed it) is part of the served closure
+    //  — the shipped tree references it, so dropping it dangles the pack.
+    ok64 wo = KEEPWalkTree((u8cp)tree_sha, NO, WALK_INCL_ANCHOR,
+                           close_visit, &c);
     if (c.err != OK) return c.err;
     if (wo == KEEPNONE || wo == WALKBADFMT) done;
     return wo;

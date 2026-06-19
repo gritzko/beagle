@@ -63,7 +63,17 @@ typedef ok64 (*walk_tree_fn)(u8cs path, u8 kind, u8cp esha,
 //  capped at WALK_MAX_DEPTH.  `eager` resolves REG/EXE/LNK blobs before
 //  the visitor sees them; `!eager` leaves `blob` empty.  All of WALK /
 //  WIRECLI-push / CLOSE route their tree descent through this.
-ok64 KEEPWalkTree(u8cp root, b8 eager, walk_tree_fn visit, void0p ctx);
+//
+//  GIT-009: working-tree walks drop the `.be` store-anchor entry (a
+//  foreign git history may have committed it as a blob); object-closure
+//  walks (push/serve pack-build) MUST still visit it so its blob lands
+//  in the pack — the shipped tree bytes reference it, so omitting it
+//  yields a dangling ref that a fresh remote's fsck rejects.  Pass
+//  `WALK_INCL_ANCHOR` to keep `.be`; `WALK_SKIP_ANCHOR` to drop it.
+#define WALK_SKIP_ANCHOR  ((b8)0)
+#define WALK_INCL_ANCHOR  ((b8)1)
+ok64 KEEPWalkTree(u8cp root, b8 eager, b8 incl_anchor,
+                  walk_tree_fn visit, void0p ctx);
 
 //  Walk the tree at `tree_sha` (20-byte) depth-first, eager mode:
 //  resolves every REG/EXE/LNK blob through `k` before invoking the

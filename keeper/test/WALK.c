@@ -625,7 +625,8 @@ ok64 WALKtest7() {
 
     {
         w7_ctx c = {};
-        ok64 rc = KEEPWalkTree(deep_top.data, NO, w7_visit, &c);
+        ok64 rc = KEEPWalkTree(deep_top.data, NO, WALK_SKIP_ANCHOR,
+                               w7_visit, &c);
         //  Clean truncation (WALKNOROOM/WALKBADFMT), never OK, no crash.
         want(rc != OK);
         want(rc == WALKNOROOM || rc == WALKBADFMT);
@@ -634,7 +635,8 @@ ok64 WALKtest7() {
     }
     {
         w7_ctx c = {};
-        call(KEEPWalkTree, shallow_top.data, NO, w7_visit, &c);
+        call(KEEPWalkTree, shallow_top.data, NO, WALK_SKIP_ANCHOR,
+             w7_visit, &c);
         //  Root DIR + 100 nested DIRs all visited.
         want(c.n_dirs == 1 + 100);
     }
