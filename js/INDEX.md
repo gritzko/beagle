@@ -27,6 +27,12 @@ JABC is a thin, anti-bloat JavaScriptCore binding: stock `libjavascriptcore`, th
 
 The `Buf` class and the public API are a raw-string-literal JS bundle (no js2c/node). `Buf` wraps a `Uint8Array` + the `PAST|DATA|IDLE` boundaries: `feed`/`feed1`/`feedStr`/`fed` (append), `take`/`skip` (consume), `data`/`idle`/`past` (no-copy views), `shed`/`pop`/`reset`/`shift`/`splice`/`grow`/`msync`. Constructors `io.buf` (heap), `io.ram` (anon mmap), `io.mmap` (file); `io.read`/`write`/`readAll`/`writeAll`/`readv`/`writev` dispatch over `Buf` or a bare `Uint8Array`. `io.book` and native vectored I/O are not wired yet (see Outcome in API/tickets).
 
+###  cont.cpp — container framework over abc logs
+
+Per-(family,lane) JS prototypes bound once to native leaves, plus the mmap constructors (`abc.ram`/`mmap`/`over`/`book`). Families: HEAP/HASH lanes, HUNK, ULOG, PACK. Each native leaf is pure marshalling — resolve a typed array to a `u8s` and call one abc/dog function; no format logic in the binding.
+
+ -  `pack.hpp` — PACK binding (GIT-007), pure marshalling over the dog/git pack core: `_feed`→`PACKu8sFeedObj` (raw|OFS_DELTA decided there), `_resolve`→`PACKResolveOfs`, `_next`→`PACKRecordEnd`; sha→offset index + base resolution stay in JS.
+
 ###  pol.cpp — `pol` event loop over abc/POL (one trampoline, JS owns the table)
 
 The `poll(2)` loop binds `abc/POL` keeping JABC rule #4: C holds NO per-fd JS closures. The `fd→handler` table + wrappers live in an embedded JS bundle (like `Buf`); C holds only two protected router refs (`pol._fd`/`pol._timer`) and routes every ready fd / timer tick through them. `pol` carries readiness; handlers do their own `io.*` I/O. v1 = one timer (POL keys timers by C callback pointer). API + contract in [POL.md].
@@ -55,4 +61,5 @@ Node-style async API on top of `pol`: native socket leaves return bare fds (EAGA
  -  ctest `JABCe2e` — the `jabc` binary runs an inline Buf+utf8 round-trip; a failed assertion throws → non-zero exit.
  -  ctest `JABCpol` — `test/pol.js`: periodic/one-shot timers, fd readiness (regular-file POLLIN, read-to-EOF drop), `pol.default`, handler-throw propagation, `pol.stop`.
  -  ctest `JABCnet` — `test/net.js`: TCP echo round-trip, a 200 KB multi-chunk transfer, UDP ping/pong, and setTimeout/clearTimeout/setInterval — all in the one implicit loop.
+ -  ctest `JABCpack` — `test/pack.js`: offset-addressed pack write/seek/walk + the GIT-007 cross-impl vector (a JABC-written log resolves byte-identically through the dog/git multi-hop OFS_DELTA chase).
  -  `lsan.supp` — suppresses JSC-internal singleton leaks by library name.

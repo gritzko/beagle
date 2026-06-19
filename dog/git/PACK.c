@@ -181,6 +181,26 @@ ok64 PACKInflate(u8cs from, u8s into, u64 size) {
     done;
 }
 
+ok64 PACKRecordEnd(u8cs pack, u64 offset, u64 *end_out) {
+    sane(u8csOK(pack) && end_out);
+    u64 packlen = (u64)u8csLen(pack);
+    if (offset >= packlen) return PACKFAIL;
+    u8cp p0 = pack[0];
+
+    //  Drain the header, then inflate the zlib stream into BASS scratch to
+    //  learn how many compressed bytes the record consumes (zlib streams
+    //  aren't self-delimiting by length).  GIT-007: this scan lives here,
+    //  not in the js binding.
+    u8cs from = {p0 + offset, p0 + packlen};
+    pack_obj obj = {};
+    call(PACKDrainObjHdr, from, &obj);
+    a_carve(u8, sc, obj.size ? obj.size : 1);
+    u8s into = {u8bHead(sc), u8bTerm(sc)};
+    call(PACKInflate, from, into, obj.size);
+    *end_out = (u64)((u8cp)from[0] - p0);
+    done;
+}
+
 ok64 PACKResolveOfs(u8cs pack, u64 offset, u8s base, u8s delta,
                     u8csp out, u8p out_type) {
     sane(u8csOK(pack) && u8sOK(base) && u8sOK(delta) && out);

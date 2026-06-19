@@ -127,6 +127,14 @@ ok64 PACKu8sFeedObj(u8bp log, u8 type, u8csc content,
 //  Advances `from` past the consumed compressed data.
 ok64 PACKInflate(u8cs from, u8s into, u64 size);
 
+//  GIT-007: byte offset just past the record that starts at `offset` in
+//  `pack` (header + the whole zlib stream).  A zlib stream is not
+//  length-delimited, so the extent is learned by draining the header and
+//  inflating into BASS scratch to measure the consumed compressed bytes —
+//  the same scan keeper/js need to walk records sequentially, owned here
+//  (not open-coded in the binding).  *end_out is the next record's start.
+ok64 PACKRecordEnd(u8cs pack, u64 offset, u64 *end_out);
+
 //  GIT-004: OFS-only delta-chase resolver, shared by keeper's native
 //  store resolver AND the js/JABC binding.  Resolve the object at byte
 //  `offset` in the OFS-only pack `pack` to its full inflated bytes:

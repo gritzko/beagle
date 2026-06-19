@@ -3,19 +3,24 @@
 //  PACK — an OFFSET-ADDRESSED git pack log (header + [obj-hdr][zlib] records)
 //  in a u8 buffer.  Reads/writes are byte offsets only; sha addressing is the
 //  index's job (a wh128 layer above), so this binding never takes a sha.
-//  Records are surfaced raw — delta resolution composes from seek + DELT.apply.
+//
+//  GIT-007: PURE marshalling over the dog/git pack-log core.  Every entry
+//  resolves a typed array to a u8s (JABCBytesOf) and calls ONE dog/git PACK
+//  function — zero delta/encode/inflate decisions live here.  The writer is
+//  PACKu8sFeedObj (GIT-002), the reader PACKResolveOfs (GIT-004); both take
+//  caller-provided scratch, so this binding never malloc()s.
 //
 //  write: _pack_header(buf,off,count)->end ; _pack_feed(buf,off,type,content,
-//         prevOff)->end  (prevOff>=0 tries in-pack OFS_DELTA, else raw)
+//         base,baseOff,delta)->end  (base non-empty + baseOff>=0 → OFS_DELTA,
+//         else raw — the dog/git writer decides)
 //  read:  _pack_next(buf,off,dataLen)->objEnd|-1 ;
+//         _pack_resolve(buf,recOff,base,delta) -> resolved bytes (Uint8Array) ;
 //         _pack_type/_size/_baseoff/_ref/_inflate(buf,recOff,...)
-//  delt:  _delt_apply(base, delta, out, outOff) -> bytes written
 #include "cont.hpp"
 
 extern "C" {
 #include "dog/git/DELT.h"
 #include "dog/git/PACK.h"
-#include "dog/git/ZINF.h"
 }
 
 //  _pack_header(buf, off, count) -> off+12
@@ -41,57 +46,30 @@ static JABC_FN(JABCpackCount) {
   return JSValueMakeNumber(ctx, (double)hdr.count);
 }
 
-//  _pack_feed(buf, off, type, content, prevOff) -> new write head
+//  _pack_feed(buf, off, type, content, base, baseOff, delta) -> new write head
+//  GIT-007: pure marshalling — resolve the typed arrays and hand the
+//  raw|OFS_DELTA decision + emit to the dog/git writer PACKu8sFeedObj, which
+//  checks every header/varint/deflate return (no ignored-return double-header).
 static JABC_FN(JABCpackFeed) {
-  if (argc < 4) JABC_THROW("pack._feed(buf, off, type, content, prevOff)");
-  u8s c = {}, content = {};
+  if (argc < 4) JABC_THROW("pack._feed(buf, off, type, content, base, baseOff, delta)");
+  u8s c = {}, content = {}, base = {}, delta = {};
   if (!JABCBytesOf(c, ctx, args[0], exception)) return JSValueMakeUndefined(ctx);
   size_t off = (size_t)JSValueToNumber(ctx, args[1], exception);
   u8 type = (u8)JSValueToNumber(ctx, args[2], exception);
   if (!JABCBytesOf(content, ctx, args[3], exception)) return JSValueMakeUndefined(ctx);
-  double prevd = argc > 4 ? JSValueToNumber(ctx, args[4], exception) : -1;
-  u8* base = c[0];
-  u8* term = c[1];
-  u8* b[4] = {base, base + off, base + off, term};  //  idle starts at off
-  b8 emitted = NO;
+  //  base (resolved bytes) + baseOff are optional: absent/empty → raw record.
+  if (argc > 4) JABCBytesOf(base, ctx, args[4], exception);
+  double bod = argc > 5 ? JSValueToNumber(ctx, args[5], exception) : -1;
+  if (argc > 6) JABCBytesOf(delta, ctx, args[6], exception);
 
-  if (prevd >= 0) {  //  try an in-pack OFS_DELTA against the object at prevOff
-    size_t prevOff = (size_t)prevd;
-    u8cs bf = {base + prevOff, term};
-    pack_obj bo = {};
-    if (PACKDrainObjHdr(bf, &bo) == OK && bo.type >= 1 && bo.type <= 4) {
-      u8* bb = (u8*)malloc(bo.size ? bo.size : 1);
-      u8s binto = {bb, bb + bo.size};
-      u8cs bz = {bf[0], term};
-      if (ZINFInflate(binto, bz) == OK) {
-        size_t clen = (size_t)$len(content);
-        u8* db = (u8*)malloc(clen + 64);
-        u8* dbuf[4] = {db, db, db, db + clen + 64};
-        u8csc basec = {bb, bb + bo.size};
-        u8csc tgt = {content[0], content[1]};
-        //  DELTEncode returns DELTFAIL when the delta isn't smaller than the
-        //  target — fall back to a raw record in that case.
-        if (DELTEncode(basec, tgt, (u8bp)dbuf) == OK) {
-          size_t dlen = (size_t)(dbuf[2] - dbuf[1]);
-          if (dlen < clen) {
-            PACKu8sFeedObjHdr((u8bp)b, PACK_OBJ_OFS_DELTA, dlen);
-            PACKu8sFeedOfs((u8bp)b, (u64)(off - prevOff));
-            u8cs dz = {dbuf[1], dbuf[2]};
-            if (ZINFDeflate(u8bIdle(b), dz) == OK) emitted = YES;
-          }
-        }
-        free(db);
-      }
-      free(bb);
-    }
-  }
-  if (!emitted) {
-    if (PACKu8sFeedObjHdr((u8bp)b, type, (u64)$len(content)) != OK)
-      JABC_THROW("pack: header (full?)");
-    u8cs cz = {content[0], content[1]};
-    if (ZINFDeflate(u8bIdle(b), cz) != OK) JABC_THROW("pack: deflate (full?)");
-  }
-  return JSValueMakeNumber(ctx, (double)(size_t)(b[2] - base));
+  u8* b[4] = {c[0], c[0] + off, c[0] + off, c[1]};  //  log: DATA ends at off
+  u8csc bc = {base[0], base[1]};
+  u8csc cc = {content[0], content[1]};
+  u8* d[4] = {delta[0], delta[0], delta[0], delta[1]};  //  delta encode scratch
+  u64 base_off = bod >= 0 ? (u64)bod : (u64)off;  //  off when no base (no delta)
+  if (PACKu8sFeedObj((u8bp)b, type, cc, bc, (u64)off, base_off, (u8bp)d, NULL) != OK)
+    JABC_THROW("pack: feed (full?)");
+  return JSValueMakeNumber(ctx, (double)(size_t)(b[2] - c[0]));
 }
 
 //  Drain the object header at recOff (advancing nothing the caller sees).
@@ -104,6 +82,8 @@ static b8 JABCpackAt(pack_obj* obj, u8s c, JSContextRef ctx, JSValueRef bufv,
 }
 
 //  _pack_next(buf, off, dataLen) -> end of the object at off | -1
+//  GIT-007: a zlib stream isn't length-delimited, so ask the dog/git
+//  resolver where the record ends — no JS-side re-inflate-to-measure.
 static JABC_FN(JABCpackNext) {
   if (argc < 3) JABC_THROW("pack._next(buf, off, dataLen)");
   u8s c = {};
@@ -111,19 +91,10 @@ static JABC_FN(JABCpackNext) {
   size_t off = (size_t)JSValueToNumber(ctx, args[1], exception);
   size_t dl = (size_t)JSValueToNumber(ctx, args[2], exception);
   if (off >= dl) return JSValueMakeNumber(ctx, -1);
-  u8cs from = {c[0] + off, c[0] + dl};
-  pack_obj obj = {};
-  if (PACKDrainObjHdr(from, &obj) != OK) return JSValueMakeNumber(ctx, -1);
-  //  zlib streams aren't self-delimiting by length: inflate (into scratch)
-  //  to learn how many compressed bytes the object consumes.
-  u8* sc = (u8*)malloc(obj.size ? obj.size : 1);
-  u8s sin = {sc, sc + obj.size};
-  u8cs z = {from[0], c[0] + dl};
-  ok64 o = ZINFInflate(sin, z);
-  size_t end = (size_t)((u8c*)z[0] - c[0]);
-  free(sc);
-  if (o != OK) return JSValueMakeNumber(ctx, -1);
-  return JSValueMakeNumber(ctx, (double)end);
+  u8cs pack = {c[0], c[0] + dl};
+  u64 end = 0;
+  if (PACKRecordEnd(pack, (u64)off, &end) != OK) return JSValueMakeNumber(ctx, -1);
+  return JSValueMakeNumber(ctx, (double)(size_t)end);
 }
 
 static JABC_FN(JABCpackType) {
@@ -159,6 +130,7 @@ static JABC_FN(JABCpackRef) {
 }
 
 //  _pack_inflate(buf, recOff, out, outOff) -> bytes inflated (= obj.size)
+//  Raw single-record read: drain the header, inflate the one zlib stream.
 static JABC_FN(JABCpackInflate) {
   if (argc < 4) JABC_THROW("pack._inflate(buf, recOff, out, outOff)");
   u8s c = {};
@@ -169,15 +141,31 @@ static JABC_FN(JABCpackInflate) {
   u8s out = {};
   if (!JABCBytesOf(out, ctx, args[2], exception)) return JSValueMakeUndefined(ctx);
   size_t oo = (size_t)JSValueToNumber(ctx, args[3], exception);
-  //  re-drain to reach the zlib start
   u8cs from = {c[0] + rec, c[1]};
   pack_obj tmp = {};
   PACKDrainObjHdr(from, &tmp);
   u8s into = {out[0] + oo, out[1]};
-  u8* obase = into[0];
-  u8cs z = {from[0], c[1]};
-  if (ZINFInflate(into, z) != OK) JABC_THROW("pack: inflate (out full?)");
-  return JSValueMakeNumber(ctx, (double)(size_t)(into[0] - obase));
+  if (PACKInflate(from, into, tmp.size) != OK) JABC_THROW("pack: inflate (out full?)");
+  return JSValueMakeNumber(ctx, (double)(size_t)tmp.size);
+}
+
+//  _pack_resolve(buf, recOff, base, delta) -> resolved object bytes
+//  GIT-007: the WHOLE delta chase is the dog/git resolver PACKResolveOfs;
+//  base/delta are caller-owned scratch, the result is copied out to a fresh
+//  Uint8Array (the chase aliasing stays inside the scratch, never leaks).
+static JABC_FN(JABCpackResolve) {
+  if (argc < 4) JABC_THROW("pack._resolve(buf, recOff, base, delta)");
+  u8s c = {}, base = {}, delta = {};
+  if (!JABCBytesOf(c, ctx, args[0], exception)) return JSValueMakeUndefined(ctx);
+  size_t rec = (size_t)JSValueToNumber(ctx, args[1], exception);
+  if (!JABCBytesOf(base, ctx, args[2], exception)) return JSValueMakeUndefined(ctx);
+  if (!JABCBytesOf(delta, ctx, args[3], exception)) return JSValueMakeUndefined(ctx);
+  u8cs pack = {c[0], c[1]};
+  u8cs out = {};
+  u8 type = 0;
+  if (PACKResolveOfs(pack, (u64)rec, base, delta, out, &type) != OK)
+    JABC_THROW("pack: resolve");
+  return JABCBlob(ctx, out[0], (size_t)u8csLen(out));
 }
 
 //  _delt_apply(base, delta, out, outOff) -> reconstructed bytes
@@ -206,6 +194,7 @@ static inline void JABCPackInstall(JSObjectRef o) {
   JABC_API_FN(o, "_pack_baseoff", JABCpackBaseOff);
   JABC_API_FN(o, "_pack_ref", JABCpackRef);
   JABC_API_FN(o, "_pack_inflate", JABCpackInflate);
+  JABC_API_FN(o, "_pack_resolve", JABCpackResolve);
   JABC_API_FN(o, "_delt_apply", JABCdeltApply);
 }
 

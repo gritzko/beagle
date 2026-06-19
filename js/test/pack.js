@@ -47,6 +47,31 @@ const recon = io.buf(v2.length + 16);
 delt.apply(base.data(), instr.data(), recon);
 eq(dec(recon.data()), dec(v2), "delta resolved == v2");
 
+// GIT-007 cross-impl vector: a log WRITTEN by the JABC binding (via the
+// dog/git writer PACKu8sFeedObj) reads back byte-identically when RESOLVED
+// through the dog/git resolver PACKResolveOfs (the SAME chase keeper's
+// native get runs) — proving keeper + binding share one pack format.  This
+// is the analog of keeper writing and the binding reading: both ends are
+// the one dog/git core, exercised here over a multi-hop OFS_DELTA chain.
+lines[100] = "this line was modified";
+lines[50] = "and another one here, third version";
+const s3 = lines.join("\n");
+const v3 = utf8.Encode(s3);
+
+const q = abc.ram("PACK", 1 << 16);
+q.header();
+const qa = q.feed("blob", v1);          // raw
+const qb = q.feed("blob", v2, qa);      // OFS_DELTA against qa
+const qc = q.feed("blob", v3, qb);      // OFS_DELTA against qb (delta-of-delta)
+q.finish();
+
+q.seek(qa); const r1 = io.buf(v1.length + 16);
+eq(dec(q.resolve(r1).data()), dec(v1), "resolve raw == v1");
+q.seek(qb); const r2 = io.buf(v2.length + 16);
+eq(dec(q.resolve(r2).data()), dec(v2), "resolve ofs == v2");
+q.seek(qc); const r3 = io.buf(v3.length + 16);
+eq(dec(q.resolve(r3).data()), dec(v3), "resolve ofs-of-ofs == v3");
+
 // sequential walk
 p.rewind();
 eq(p.next(), true, "next a"); eq(p.offset, a, "walk a");

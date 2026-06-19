@@ -142,7 +142,18 @@ static const char* JABC_CONT_JS = R"JS(
   {
     const T2N = { commit: 1, tree: 2, blob: 3, tag: 4, "ofs-delta": 6, "ref-delta": 7 };
     const N2T = { 1: "commit", 2: "tree", 3: "blob", 4: "tag", 6: "ofs-delta", 7: "ref-delta" };
+    const EMPTY8 = new Uint8Array(0);
     const P = Object.create(Uint8Array.prototype);
+    //  Lazily size caller-owned scratch (base + delta) off the log's own
+    //  byte length — an upper bound for any single object/delta in it.  The
+    //  dog/git feed/resolve own all format logic; the binding only marshals.
+    P._scratch = function () {
+      if (!this._bsc) {
+        const n = this.byteLength;
+        this._bsc = new Uint8Array(n);   // base scratch (resolved bytes)
+        this._dsc = new Uint8Array(2 * n); // delta scratch (split internally)
+      }
+    };
     P.header = function () {
       this.buffer.watermark = abc._pack_header(this, 0, 0);
       this._count = 0; this._read = 12; this._rec = -1;
@@ -151,10 +162,26 @@ static const char* JABC_CONT_JS = R"JS(
     P.feed = function (type, content, prevOff) {
       const off = this.buffer.watermark;
       const t = (typeof type === "number") ? type : T2N[type];
-      this.buffer.watermark = abc._pack_feed(this, off, t, content,
-        prevOff == null ? -1 : prevOff);
+      //  Resolve the base to its full bytes by offset (the read path); the
+      //  dog/git writer decides OFS_DELTA vs raw from base+content.
+      let base = EMPTY8, bo = -1;
+      if (prevOff != null && prevOff >= 0) {
+        this._scratch();
+        base = abc._pack_resolve(this, prevOff, this._bsc, this._dsc);
+        bo = prevOff;
+      }
+      this._scratch();
+      this.buffer.watermark = abc._pack_feed(this, off, t, content, base, bo, this._dsc);
       this._count = (this._count | 0) + 1;
       return off;
+    };
+    //  resolve(out): chase this record's delta chain to full bytes via the
+    //  dog/git resolver, append them to the `out` Buf.
+    P.resolve = function (out) {
+      this._scratch();
+      const b = abc._pack_resolve(this, this._rec, this._bsc, this._dsc);
+      out.feed(b);
+      return out;
     };
     P.finish = function () { abc._pack_header(this, 0, this._count | 0); return this; };
     P.rewind = function () { this._read = 12; this._rec = -1; return this; };
