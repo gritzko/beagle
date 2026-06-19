@@ -186,6 +186,188 @@ static ok64 merge_fold_scenario(void) {
     done;
 }
 
+// =====================================================================
+//  DIS-043 criss-cross: a stable RGA order makes recovery path-independent.
+//  A compact DAG-driven harness mirroring dog/fuzz/WEAVE (the real oracle):
+//  commit-id = node index; each content byte b -> the line "b\n" (so repeated
+//  bytes are IDENTICAL tokens, the positional stress); a node with >=2 parents
+//  fold-merges them pairwise then folds its own content; then EVERY ancestor a
+//  of node i must recover lineform(content[a]) from w[i] byte-for-byte.  These
+//  rows DUPLICATED tokens (e.g. root `888888` -> `8888888888`) before the fix.
+// =====================================================================
+#define DAG_MAX 32
+
+typedef struct { char const *par; char const *content; } dagnode;
+typedef struct { char const *name; dagnode const *nodes; u32 n; } dagcase;
+
+//  ancestor closure of `start` over [0..n): parents always precede.
+static void dag_closure(dagnode const *nd, u32 n, u32 start, u8 *anc) {
+    (void)n; anc[start] = 1;
+    for (u32 i = start + 1; i-- > 0;) {
+        if (!anc[i]) continue;
+        for (char const *r = nd[i].par; *r; r++) anc[(u8)(*r - '0')] = 1;
+    }
+}
+
+static ok64 dag_lineform(u8b dst, char const *s) {
+    sane(1); u8bReset(dst);
+    for (char const *p = s; *p; p++) { call(u8bFeed1, dst, (u8)*p); call(u8bFeed1, dst, (u8)'\n'); }
+    done;
+}
+
+//  Recover every ancestor of node i from W[i]; FAIL on the first mismatch.
+static ok64 dag_verify(weave const *W, dagnode const *nd, u32 n, u32 i) {
+    sane(1);
+    u8 anc_i[DAG_MAX]; memset(anc_i, 0, n);
+    dag_closure(nd, n, i, anc_i);
+    u1b sc = {}; ok64 ar = u1bAcquire(ABC_BASS, &sc, (size_t)n + 1); if (ar != OK) return ar;
+    a_carve(u8, out, 1UL << 16);
+    a_carve(u8, exp, 1UL << 16);
+    a_carve(u64, active, (size_t)n + 1);
+    for (u32 a = 0; a < n; a++) {
+        if (!anc_i[a]) continue;
+        u8 anc_a[DAG_MAX]; memset(anc_a, 0, n);
+        dag_closure(nd, n, a, anc_a);
+        u64bReset(active);
+        for (u32 j = 0; j < n; j++) if (anc_a[j]) call(u64bFeed1, active, (u64)j);
+        call(WEAVEScope, &sc, &W[i], u64bDataC(active));
+        call(WEAVEProduce, &W[i], u1bDataC(&sc), out);
+        call(dag_lineform, exp, nd[a].content);
+        size_t gl = u8bDataLen(out), wl = u8bDataLen(exp);
+        if (gl != wl || (wl && memcmp(u8bDataHead(out), u8bDataHead(exp), wl))) {
+            fprintf(stderr, " w[%u] rev=%u want(%zu) got(%zu)\n", i, a, wl, gl);
+            fail(TESTFAIL);
+        }
+    }
+    done;
+}
+
+//  Build every node's weave inline (BASS acquires must survive — call() would
+//  rewind them), then verify recovery for all nodes.
+static ok64 dag_run(dagcase const *dc) {
+    sane(1);
+    fprintf(stderr, "  %s ...", dc->name);
+    a_cstr(cext, "c");
+    must(dc->n <= DAG_MAX, "dag too big");
+    u8 *wbuf[DAG_MAX][4] = {};
+    weave W[DAG_MAX] = {};
+    a_carve(u8, lf, 1UL << 16);
+    u8 *mtmp[2][4] = {};
+    ok64 ar;
+    if ((ar = u8bAcquire(ABC_BASS, mtmp[0], 1UL << 18)) != OK) return ar;
+    if ((ar = u8bAcquire(ABC_BASS, mtmp[1], 1UL << 18)) != OK) return ar;
+    u8cs v = {};
+    for (u32 i = 0; i < dc->n; i++) {
+        if ((ar = u8bAcquire(ABC_BASS, wbuf[i], 1UL << 18)) != OK) return ar;
+        call(dag_lineform, lf, dc->nodes[i].content);
+        v[0] = u8bDataHead(lf); v[1] = u8bDataHead(lf) + u8bDataLen(lf);
+        char const *par = dc->nodes[i].par;
+        u32 np = (u32)strlen(par);
+        if (np == 0) {                                  // root: from-blob
+            call(WEAVENext, u8bIdle(wbuf[i]), NULL, v, cext, (u64)i);
+        } else if (np == 1) {                           // linear fold
+            u32 p = (u8)(par[0] - '0');
+            call(WEAVENext, u8bIdle(wbuf[i]), &W[p], v, cext, (u64)i);
+        } else {                                        // merge fold + content
+            u32 p0 = (u8)(par[0] - '0'), p1 = (u8)(par[1] - '0');
+            u8bReset(mtmp[0]);
+            call(WEAVEMerge, u8bIdle(mtmp[0]), &W[p0], &W[p1], 0);
+            weave wm = {}; call(WEAVEParse, &wm, u8bDataC(mtmp[0]));
+            u32 d = 1;
+            for (u32 k = 2; k < np; k++) {
+                u32 pk = (u8)(par[k] - '0');
+                u8bReset(mtmp[d]);
+                call(WEAVEMerge, u8bIdle(mtmp[d]), &wm, &W[pk], 0);
+                call(WEAVEParse, &wm, u8bDataC(mtmp[d]));
+                d ^= 1;
+            }
+            call(WEAVENext, u8bIdle(wbuf[i]), &wm, v, cext, (u64)i);
+        }
+        call(WEAVEParse, &W[i], u8bDataC(wbuf[i]));
+    }
+    for (u32 i = 0; i < dc->n; i++) call(dag_verify, W, dc->nodes, dc->n, i);
+    fprintf(stderr, " ok\n");
+    done;
+}
+
+//  crisscross_recovery: the minimal merge(merge,merge) shape — a node reaching
+//  the final merge via two paths used to be emitted twice (root `88` recovered
+//  as `888`).  Node 5=merge(2,3) and node 6=merge(2,4) share commit 2's tokens;
+//  node 7 fold-merges 5 and 6, where the OLD two-pointer laid commit 2's tokens
+//  in opposite relative order on the two paths and desynced the join.
+static dagnode const cc_nodes[] = {
+    {"",   "88"},    // 0 root: two identical tokens
+    {"0",  "ae"},    // 1
+    {"0",  "ar"},    // 2
+    {"1",  "bd"},    // 3
+    {"1",  "ad"},    // 4
+    {"23", "ec"},    // 5 merge(2,3)
+    {"24", "ab"},    // 6 merge(2,4)
+    {"56", "ab"},    // 7 merge(5,6)  -- doubled root `88` -> `888` pre-fix
+};
+
+//  crash_597: the minimised crash-597 corpus DAG (12-line prefix of $HOME/
+//  Corpus/DWEAVE/crash-597…, normalized parents from the fuzzer).  Recovering
+//  w[11]'s ancestors doubled the root's trailing 8s pre-fix (`a_aa888888` ->
+//  `a_aa8888888888`).  Node 11 fold-merges five parents (5..9), the multi-path
+//  reach that desynced the old two-pointer join.
+static dagnode const c597_nodes[] = {
+    {"",      "a_aa888888"},  // 0 root
+    {"0",     "aae"},         // 1
+    {"0",     "aar"},         // 2
+    {"1",     "bcde"},        // 3
+    {"1",     "abcdd"},       // 4
+    {"1",     "de"},          // 5
+    {"23",    "ecbcde"},      // 6 merge(2,3)
+    {"1",     "e"},           // 7
+    {"24",    "abcde"},       // 8 merge(2,4)
+    {"23",    "ecbcde"},      // 9 merge(2,3)
+    {"1",     "e"},           // 10
+    {"56789", "abcde"},       // 11 fold-merge(5..9) -- doubled root pre-fix
+};
+
+static dagcase const dagcases[] = {
+    {"crisscross_recovery", cc_nodes,    8},
+    {"crash_597",           c597_nodes, 12},
+};
+
+//  Associativity: merge(merge(a,b),c) and merge(a,merge(b,c)) must SERIALISE
+//  byte-identically — the RGA order depends only on immutable anchors, not the
+//  merge path.  Three concurrent single-edit branches off one base.
+static ok64 assoc_scenario(void) {
+    sane(1);
+    fprintf(stderr, "  merge_associativity ...");
+    a_cstr(cext, "c");
+    u8csc v0 = {(u8c *)"x\ny\nz\n", (u8c *)"x\ny\nz\n" + 6};
+    u8csc va = {(u8c *)"A\ny\nz\n", (u8c *)"A\ny\nz\n" + 6};
+    u8csc vb = {(u8c *)"x\nB\nz\n", (u8c *)"x\nB\nz\n" + 6};
+    u8csc vc = {(u8c *)"x\ny\nC\n", (u8c *)"x\ny\nC\n" + 6};
+    a_carve(u8, w0b, 1UL << 16); call(WEAVENext, u8bIdle(w0b), NULL, v0, cext, 1);
+    weave w0 = {}; call(WEAVEParse, &w0, u8bDataC(w0b));
+    a_carve(u8, wab, 1UL << 16); call(WEAVENext, u8bIdle(wab), &w0, va, cext, 2);
+    weave wa = {}; call(WEAVEParse, &wa, u8bDataC(wab));
+    a_carve(u8, wbb, 1UL << 16); call(WEAVENext, u8bIdle(wbb), &w0, vb, cext, 3);
+    weave wb = {}; call(WEAVEParse, &wb, u8bDataC(wbb));
+    a_carve(u8, wcb, 1UL << 16); call(WEAVENext, u8bIdle(wcb), &w0, vc, cext, 4);
+    weave wc = {}; call(WEAVEParse, &wc, u8bDataC(wcb));
+    //  left:  merge(merge(a,b),c)
+    a_carve(u8, lab, 1UL << 16); call(WEAVEMerge, u8bIdle(lab), &wa, &wb, 0);
+    weave wab2 = {}; call(WEAVEParse, &wab2, u8bDataC(lab));
+    a_carve(u8, lf, 1UL << 16);  call(WEAVEMerge, u8bIdle(lf), &wab2, &wc, 0);
+    //  right: merge(a,merge(b,c))
+    a_carve(u8, rbc, 1UL << 16); call(WEAVEMerge, u8bIdle(rbc), &wb, &wc, 0);
+    weave wbc = {}; call(WEAVEParse, &wbc, u8bDataC(rbc));
+    a_carve(u8, rf, 1UL << 16);  call(WEAVEMerge, u8bIdle(rf), &wa, &wbc, 0);
+    if (u8bDataLen(lf) != u8bDataLen(rf) ||
+        memcmp(u8bDataHead(lf), u8bDataHead(rf), u8bDataLen(lf))) {
+        fprintf(stderr, " not associative (%zu vs %zu)\n",
+                u8bDataLen(lf), u8bDataLen(rf));
+        fail(TESTFAIL);
+    }
+    fprintf(stderr, " ok\n");
+    done;
+}
+
 ok64 WEAVErttest() {
     sane(1);
     a_cstr(cext, "c");
@@ -198,6 +380,9 @@ ok64 WEAVErttest() {
     call(diff_scenario);
     call(merge_scenario);
     call(merge_fold_scenario);
+    u32 nd = (u32)(sizeof(dagcases) / sizeof(dagcases[0]));
+    for (u32 i = 0; i < nd; i++) call(dag_run, &dagcases[i]);
+    call(assoc_scenario);
     done;
 }
 

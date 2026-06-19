@@ -14,12 +14,24 @@
 //    rms      blocked-ZINT: remover index(es) per RM-bit token     ('M')
 //    commits  index -> commit id (hi64 of the commit sha1);        ('C')
 //             commits[0] is the SPINE/root (the in-bit-off inserter)
+//    anc      one u64 anchor-hash per token (weave order), parallel    ('A')
+//             to `toks`: the RAPHash identity of the token this one was
+//             inserted immediately to the RIGHT of (its causal
+//             left-neighbour), or WEAVE_ROOT_ANCHOR for file-start.
 //
 //  A token's IDENTITY is (commits[inserter], per-commit ordinal): the
 //  ordinal is its position among that commit's tokens in weave order, so
 //  it is recomputed during merge and NOT stored (no `pos` column).  Real
 //  commit ids (not a positional topo seq) make WEAVEMerge a deterministic
 //  shared-sequence interleave — the DIS-003 fix.
+//
+//  ORDER is RGA (DIS-043): a token sorts after its anchor; concurrent
+//  siblings sharing an anchor sort by tie-break (commit-id DESC, then
+//  ordinal ASC within a commit); recurse depth-first.  Order depends only
+//  on each token's IMMUTABLE anchor+identity, so every merge path agrees —
+//  no criss-cross duplication.  The anchor hash lives in the SAME hash
+//  space as the identity hash `idh` (RAPHash of <commit-id, ordinal>), so
+//  the RGA walk matches an anchor directly against a token's idh.
 //
 //  A token is ALIVE iff no remover is reachable in the scope of interest.
 //  The whole DAG folds in: WEAVENext extends a linear chain by one commit;
@@ -42,6 +54,12 @@ con ok64 WEAVEFAIL = 0x2038a7ce3ca495;
 #define WEAVE_TLV_INS  'I'            // blocked-ZINT inserter indices
 #define WEAVE_TLV_RMS  'M'            // blocked-ZINT remover indices (+counts)
 #define WEAVE_TLV_CMT  'C'            // blocked-ZINT commit-id table
+#define WEAVE_TLV_ANC  'A'            // u64 anchor-hash per token (RGA order)
+
+//  Anchor sentinel for a file-start token (no causal left-neighbour); 0,
+//  mirroring idset's zero special-case.  A genuine idh hash of 0 is treated
+//  as ROOT (negligible 64-bit collision over tiny token counts).
+#define WEAVE_ROOT_ANCHOR  ((u64)0)
 
 //  commits[0] = spine/root (ancestor of every rev; the IN-bit-off
 //  inserter).  Reserved commit ids for non-commit token sources:
@@ -55,7 +73,13 @@ typedef struct {
     u8cs    ins;      // 'I'
     u8cs    rms;      // 'M'
     u64cs   commits;  // 'C'  commits[0] = spine
+    u8cs    anc;      // 'A'  u64 anchor-hash per token (viewed as u64s)
 } weave;
+
+//  Shared identity/anchor hash: RAPHash(commit_id ++ ordinal), host-endian.
+//  Same hash space for a token's idh and another token's stored anchor, so
+//  the RGA walk matches an anchor against an idh directly (DIS-043).
+u64 WEAVEIdHash(u64 commit_id, u32 ordinal);
 
 //  tok32 side bits in a STORED weave (rewritten to display eq/in/rm only
 //  at emit time, per scope).  `in`/`rm` are independent; `custom` with
@@ -88,11 +112,13 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit);
 //  WEAVEStep returns OK per token or WEAVEFAIL on a malformed stream, so it
 //  composes with call()/try().  Re-scan: re-copy `*w` into `c`.
 typedef struct {
-    u8cs  text;      // this token's bytes
-    u8    tag;       // syntax tag (for render + faithful carry-through)
-    b8    has_in;    // IN bit: inserter is explicit (else the spine)
-    u32   inserter;  // inserter commit index (WEAVE_SPINE if in-off)
-    u32cs rms;       // remover commit indices, a view (empty => alive at tip)
+    u8cs  text;       // this token's bytes
+    u8    tag;        // syntax tag (for render + faithful carry-through)
+    b8    has_in;     // IN bit: inserter is explicit (else the spine)
+    u32   inserter;   // inserter commit index (WEAVE_SPINE if in-off)
+    u32cs rms;        // remover commit indices, a view (empty => alive at tip)
+    u64   anchor;     // RGA left-anchor hash ('A'), WEAVE_ROOT_ANCHOR at start
+    b8    has_anchor; // an 'A' value was present (else legacy: caller falls back)
 } weavetok;
 
 ok64 WEAVEStep(weave *c, u32 *off, weavetok *out);

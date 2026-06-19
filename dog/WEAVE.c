@@ -13,6 +13,21 @@
 #include "dog/NEIL.h"
 
 // ============================================================
+//  Shared identity / anchor hash (DIS-043)
+// ============================================================
+
+//  RAPHash(commit_id ++ ordinal), host-endian bytes (12 = u64 + u32).  Used
+//  for both a token's identity hash and a stored anchor, so the RGA walk can
+//  match an anchor directly against an idh.  Extracted from wmerge_decode.
+u64 WEAVEIdHash(u64 commit_id, u32 ordinal) {
+    a_pad(u8, key, 12);
+    u8bReset(key);
+    (void)u8sFeed64(u8bIdle(key), &commit_id);   // fixed 12 B: never short
+    (void)u8sFeed32(u8bIdle(key), &ordinal);
+    return RAPHash(u8bDataC(key));
+}
+
+// ============================================================
 //  Codec: 'W' container <-> columnar view
 // ============================================================
 
@@ -40,6 +55,7 @@ ok64 WEAVEParse(weave *w, u8csc blob) {
             w->toks[0] = (tok32c *)v[0]; w->toks[1] = (tok32c *)v[1]; break;
         case WEAVE_TLV_CMT:
             w->commits[0] = (u64c *)v[0]; w->commits[1] = (u64c *)v[1]; break;
+        case WEAVE_TLV_ANC: u8csMv(w->anc, v); break;   // DIS-043 RGA anchors
         default: break;   // unknown sub-record: ignore (forward-compat)
         }
     }
@@ -52,7 +68,9 @@ ok64 WEAVESerialize(u8s into, weave const *w) {
     sane(w);
     size_t cap = u8csLen(w->text) + (size_t)$len(w->toks) * sizeof(tok32)
                + u8csLen(w->ins) + u8csLen(w->rms)
-               + (size_t)$len(w->commits) * sizeof(u64) + 64;
+               + (size_t)$len(w->commits) * sizeof(u64)
+               + (size_t)$len(w->toks) * sizeof(u64)   // 'A': one u64 per token
+               + 80;
     a_carve(u8, inner, cap);
     u8csc kbytes = {(u8c *)w->toks[0], (u8c *)w->toks[1]};
     u8csc cbytes = {(u8c *)w->commits[0], (u8c *)w->commits[1]};
@@ -61,6 +79,7 @@ ok64 WEAVESerialize(u8s into, weave const *w) {
     call(TLVu8sFeed, u8bIdle(inner), WEAVE_TLV_INS, w->ins);
     call(TLVu8sFeed, u8bIdle(inner), WEAVE_TLV_RMS, w->rms);
     call(TLVu8sFeed, u8bIdle(inner), WEAVE_TLV_CMT, cbytes);
+    call(TLVu8sFeed, u8bIdle(inner), WEAVE_TLV_ANC, w->anc);   // DIS-043
     call(TLVu8sFeed, into, WEAVE_TLV, u8bDataC(inner));
     done;
 }
@@ -155,6 +174,19 @@ ok64 WEAVEStep(weave *c, u32 *off, weavetok *out) {
         $mv(out->rms, rs);
         (void)u8csUsed(c->rms, (size_t)n * 4);
     }
+    //  DIS-043: one u64 anchor per token, lockstep with toks.  WEAVEFAIL on a
+    //  short 'A'; tolerate absent 'A' (legacy blob) — caller falls back to the
+    //  weave-order predecessor's idh.
+    out->anchor = WEAVE_ROOT_ANCHOR;
+    out->has_anchor = NO;
+    if (u8csLen(c->anc) >= 8) {
+        u64 ah = 0;
+        u8sDrain64(c->anc, &ah);
+        out->anchor = ah;
+        out->has_anchor = YES;
+    } else if (u8csLen(c->anc) != 0) {
+        fail(WEAVEFAIL);   // partial 'A': malformed
+    }
     done;
 }
 
@@ -240,11 +272,11 @@ static ok64 wnext_tokenize(wnext_ctx *c, u8csc blob, u8csc ext) {
     done;
 }
 
-//  --- output column emit (text/toks/ins/rms; cum = running end offset) ---
-typedef struct { u8b *text; u32b *toks; u8b *ins; u8b *rms; u32 cum; } wnext_out;
+//  --- output column emit (text/toks/ins/rms/anc; cum = running end) ---
+typedef struct { u8b *text; u32b *toks; u8b *ins; u8b *rms; u8b *anc; u32 cum; } wnext_out;
 
 static ok64 wnext_emit(wnext_out *o, u8csc bytes, u8 tag,
-                       b8 has_in, u32 in_idx, u32cs rms) {
+                       b8 has_in, u32 in_idx, u32cs rms, u64 anchor) {
     sane(o);
     u32 nrms = (u32)$len(rms);
     u8 side = (u8)((has_in ? WEAVE_IN : 0) | (nrms ? WEAVE_RM : 0));
@@ -256,6 +288,7 @@ static ok64 wnext_emit(wnext_out *o, u8csc bytes, u8 tag,
     if (has_in) call(u8sFeed32, u8bIdle(*o->ins), &in_idx);
     if (nrms > 1) { u32 n = nrms; call(u8sFeed32, u8bIdle(*o->rms), &n); }
     $for(u32c, r, rms) { u32 v = *r; call(u8sFeed32, u8bIdle(*o->rms), &v); }
+    call(u8sFeed64, u8bIdle(*o->anc), &anchor);   // DIS-043 RGA anchor
     done;
 }
 
@@ -274,12 +307,21 @@ static ok64 wnext_from_blob(u8s into, u8csc new_blob, u8csc ext, u64 commit) {
     call(wnext_tokenize, &c, new_blob, ext);
     a_carve(u64, cmts, 1);
     call(u64bFeed1, cmts, commit);
+    //  DIS-043 anchors: token 0 -> ROOT, token k -> idh of token k-1.  Every
+    //  token here belongs to `commit` (the spine), so its ordinal is its index.
+    u32 ntok = (u32)u32bDataLen(toks);
+    a_carve(u8, anc, (size_t)ntok * sizeof(u64) + 8);
+    for (u32 k = 0; k < ntok; k++) {
+        u64 ah = (k == 0) ? WEAVE_ROOT_ANCHOR : WEAVEIdHash(commit, k - 1);
+        call(u8sFeed64, u8bIdle(anc), &ah);
+    }
     weave nw = {};
     u8csMv(nw.text, new_blob);
     nw.toks[0] = (tok32c *)u32bDataHead(toks);
     nw.toks[1] = (tok32c *)u32bDataHead(toks) + u32bDataLen(toks);
     nw.commits[0] = (u64c *)u64bDataHead(cmts);
     nw.commits[1] = (u64c *)u64bDataHead(cmts) + u64bDataLen(cmts);
+    u8csMv(nw.anc, u8bDataC(anc));
     call(WEAVESerialize, into, &nw);
     done;
 }
@@ -342,21 +384,41 @@ static ok64 wnext_diff(u8s into, weave const *w, u8csc new_blob, u8csc ext,
     //  fresh remover (4 bytes) per output token from a DELMARK.
     a_carve(u8,  o_rms,  u8csLen(w->rms)
                          + 4 * ((size_t)$len(w->toks) + (size_t)nlen + 1));
-    wnext_out o = {.text = &o_text, .toks = &o_toks, .ins = &o_ins, .rms = &o_rms};
+    a_carve(u8,  o_anc,  sizeof(u64) * ((size_t)$len(w->toks) + (size_t)nlen + 1));
+    wnext_out o = {.text = &o_text, .toks = &o_toks, .ins = &o_ins,
+                   .rms = &o_rms, .anc = &o_anc};
 
     u32 *nend = (u32 *)u32bDataHead(new_end);
     u8  *ntag = (u8 *)u8bDataHead(new_tag);
 
+    //  DIS-043: per-commit ordinal counters (in the OUTPUT commit table) and
+    //  the running prev_idh (idh of the last emitted token, ROOT to start).
+    //  A new token anchors on prev_idh; a carried token keeps its STORED
+    //  anchor (cur.anchor), or falls back to prev_idh on a legacy blob.  Every
+    //  emitted token then advances prev_idh to ITS OWN idh.
+    u64 *ocd = (u64 *)u64bDataHead(out_cmts);
+    a_carve(u32, ord_cnt, (size_t)u64bDataLen(out_cmts) + 1);
+    for (u32 i = 0; i < (u32)u64bDataLen(out_cmts); i++) call(u32bFeed1, ord_cnt, 0);
+    u32 *ordp = (u32 *)u32bDataHead(ord_cnt);
+    u64 prev_idh = WEAVE_ROOT_ANCHOR;
+
     weave oc = *w; u32 ooff = 0; weavetok cur; b8 have = NO;
     call(old_step, &oc, &ooff, &cur, &have);
 
+    #define ADV_IDH(INS) do { u32 _ins = (INS); u32 _ord = ordp[_ins]++;        \
+        prev_idh = WEAVEIdHash(ocd[_ins], _ord); } while (0)
     #define EMIT_NEW(J) do { u32 _lo = (J) ? nend[(J) - 1] : 0, _hi = nend[(J)]; \
         a_part(u8c, _nb, new_blob, _lo, _hi - _lo); u32cs _none = {NULL, NULL};  \
-        call(wnext_emit, &o, _nb, ntag[(J)], YES, new_idx, _none); } while (0)
-    #define CARRY() do { call(wnext_emit, &o, cur.text, cur.tag, cur.has_in,    \
-        cur.inserter, cur.rms); call(old_step, &oc, &ooff, &cur, &have); } while (0)
+        call(wnext_emit, &o, _nb, ntag[(J)], YES, new_idx, _none, prev_idh);     \
+        ADV_IDH(new_idx); } while (0)
+    #define CARRY() do { u64 _anc = cur.has_anchor ? cur.anchor : prev_idh;     \
+        call(wnext_emit, &o, cur.text, cur.tag, cur.has_in, cur.inserter,       \
+             cur.rms, _anc); ADV_IDH(cur.inserter);                             \
+        call(old_step, &oc, &ooff, &cur, &have); } while (0)
     #define DELMARK() do { u32 _one = new_idx; u32cs _rs = {&_one, &_one + 1};  \
-        call(wnext_emit, &o, cur.text, cur.tag, cur.has_in, cur.inserter, _rs); \
+        u64 _anc = cur.has_anchor ? cur.anchor : prev_idh;                      \
+        call(wnext_emit, &o, cur.text, cur.tag, cur.has_in, cur.inserter, _rs,  \
+             _anc); ADV_IDH(cur.inserter);                                      \
         call(old_step, &oc, &ooff, &cur, &have); } while (0)
 
     if (olen == 0) {                       // no baseline: insert all, pass old
@@ -416,6 +478,7 @@ static ok64 wnext_diff(u8s into, weave const *w, u8csc new_blob, u8csc ext,
     #undef EMIT_NEW
     #undef CARRY
     #undef DELMARK
+    #undef ADV_IDH
 
     weave nw = {};
     u8csMv(nw.text, u8bDataC(o_text));
@@ -425,6 +488,7 @@ static ok64 wnext_diff(u8s into, weave const *w, u8csc new_blob, u8csc ext,
     u8csMv(nw.rms, u8bDataC(o_rms));
     nw.commits[0] = (u64c *)u64bDataHead(out_cmts);
     nw.commits[1] = (u64c *)u64bDataHead(out_cmts) + u64bDataLen(out_cmts);
+    u8csMv(nw.anc, u8bDataC(o_anc));
     call(WEAVESerialize, into, &nw);
     done;
 }
@@ -449,7 +513,10 @@ typedef struct {
     u8cs text;
     u32 *end, *ins, *roff, *rlen, *rid;
     u8  *tag, *hasin;
-    u64 *idh;
+    u64 *idh;     // identity hash RAPHash(commit-id ++ ordinal)
+    u64 *anc;     // RGA left-anchor hash (in idh space)
+    u64 *cid;     // tie-break: inserter commit id (NOT the merged index)
+    u32 *ord;     // tie-break: per-commit ordinal
 } wmdec;
 
 //  Decode `X` into `d` (carves persist in the CALLER's frame — call this
@@ -468,21 +535,27 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
     a_carve(u8,  tag,  nx + 1);
     a_carve(u8,  hin,  nx + 1);
     a_carve(u64, idh,  nx + 1);
+    a_carve(u64, anc,  nx + 1);
+    a_carve(u64, cid,  nx + 1);
+    a_carve(u32, ord,  nx + 1);
     a_carve(u32, cnt,  nc + 1);
     for (u32 i = 0; i < nc; i++) call(u32bFeed1, cnt, 0);
     u32 *cntp = (u32 *)u32bDataHead(cnt);
     u32 *rmap = (u32 *)remap[0];
-    a_pad(u8, key, 12);
+    //  DIS-043: a legacy blob without 'A' falls back to the weave-order
+    //  predecessor's idh (prev_idh), seeded ROOT.
+    u64 prev_idh = WEAVE_ROOT_ANCHOR;
     weave c = *X; u32 off = 0; weavetok tk;
     while ((size_t)$len(c.toks) > 0) {
         call(WEAVEStep, &c, &off, &tk);
         u32 li = tk.inserter;
         u64 iid = X->commits[0][li];
-        u32 ord = cntp[li]++;
-        u8bReset(key);
-        call(u8sFeed64, u8bIdle(key), &iid);
-        call(u8sFeed32, u8bIdle(key), &ord);
-        call(u64bFeed1, idh, RAPHash(u8bDataC(key)));
+        u32 o = cntp[li]++;
+        u64 this_idh = WEAVEIdHash(iid, o);
+        call(u64bFeed1, idh, this_idh);
+        call(u64bFeed1, anc, tk.has_anchor ? tk.anchor : prev_idh);
+        call(u64bFeed1, cid, iid);
+        call(u32bFeed1, ord, o);
         call(u32bFeed1, end, off);
         call(u8bFeed1, tag, tk.tag);
         call(u8bFeed1, hin, (u8)tk.has_in);
@@ -491,6 +564,7 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
         u32 rl = 0;
         $for(u32c, r, tk.rms) { call(u32bFeed1, rid, rmap[*r]); rl++; }
         call(u32bFeed1, rlen, rl);
+        prev_idh = this_idh;
     }
     d->n = nx;
     u8csMv(d->text, X->text);
@@ -502,61 +576,77 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
     d->tag  = (u8 *)u8bDataHead(tag);
     d->hasin = (u8 *)u8bDataHead(hin);
     d->idh  = (u64 *)u64bDataHead(idh);
+    d->anc  = (u64 *)u64bDataHead(anc);
+    d->cid  = (u64 *)u64bDataHead(cid);
+    d->ord  = (u32 *)u32bDataHead(ord);
     done;
 }
 
-//  Emit token `i` of `d`, unioning its removers with `other` (the matching
-//  token's removers from the far side; empty for a one-sided token).
-//  Add `v` to `un` if not already present (sorted/dedup not needed —
-//  remover sets are tiny).
-static ok64 wmerge_addrm(u32b un, u32 v) {
-    sane(1);
-    u32 *d = (u32 *)u32bDataHead(un);
-    for (u32 m = 0; m < (u32)u32bDataLen(un); m++) if (d[m] == v) done;
-    call(u32bFeed1, un, v);
-    done;
+//  --- DIS-043 RGA merge ---------------------------------------------------
+//  rgakey: the RGA sort record per union token.  Sorted by anchor (ASC, to
+//  make siblings contiguous) then the tie-break — commit-id DESCending,
+//  ordinal ASCending — over the REAL (cid, ord), never the hash, so a hash
+//  collision can at worst mis-order, never duplicate.
+typedef struct { u64 anchor, cid; u32 ord, ui; } rgakey;
+
+fun b8 rgakeyZ(rgakey const *a, rgakey const *b) {
+    if (a->anchor != b->anchor) return a->anchor < b->anchor;
+    if (a->cid != b->cid) return a->cid > b->cid;   // cid DESC
+    return a->ord < b->ord;                          // ord ASC
+}
+#define X(M, n) M##rgakey##n
+#include "abc/Bx.h"
+#undef X
+
+static int rga_cmp(void const *pa, void const *pb) {
+    rgakey const *x = pa, *y = pb;
+    if (x->anchor != y->anchor) return x->anchor < y->anchor ? -1 : 1;
+    if (x->cid != y->cid) return x->cid > y->cid ? -1 : 1;   // cid DESC
+    if (x->ord != y->ord) return x->ord < y->ord ? -1 : 1;   // ord ASC
+    return 0;
 }
 
-static ok64 wmerge_emit(wnext_out *o, wmdec const *d, u32 i, u32cs other) {
-    sane(o && d);
-    u32 lo = i ? d->end[i - 1] : 0, hi = d->end[i];
-    a_part(u8c, bytes, d->text, lo, hi - lo);
-    a_pad(u32, un, 256);
-    for (u32 k = 0; k < d->rlen[i]; k++) call(wmerge_addrm, un, d->rid[d->roff[i] + k]);
-    for (u32 k = 0; k < (u32)$len(other); k++) call(wmerge_addrm, un, other[0][k]);
-    u32cs uns = {(u32c *)u32bDataHead(un),
-                 (u32c *)u32bDataHead(un) + u32bDataLen(un)};
-    call(wnext_emit, o, bytes, d->tag[i], d->hasin[i], d->ins[i], uns);
-    done;
-}
+//  Open-addressing u64 -> u32 map (linear probe).  Key 0 (ROOT/idh-zero) is
+//  tracked separately.  `key[i]==0` means empty.  Carve must be zerob'd by
+//  the caller (BASS reuses memory across rewound carves).
+typedef struct { u64 *key; u32 *val; u32 mask; b8 has0; u32 v0; } u64map;
 
-//  Open-addressing membership set over identity hashes (linear probe).  Used
-//  only to answer "is this token shared with the other parent?".  0 is a
-//  valid hash, tracked separately; `mask` = cap-1, cap a power of two.
-typedef struct { u64 *slot; u32 mask; b8 zero; } idset;
-
-static void idset_add(idset *s, u64 h) {
-    if (h == 0) { s->zero = YES; return; }
-    u32 i = (u32)h & s->mask;
-    while (s->slot[i] != 0) { if (s->slot[i] == h) return; i = (i + 1) & s->mask; }
-    s->slot[i] = h;
+static void u64map_put(u64map *m, u64 k, u32 v) {
+    if (k == 0) { m->has0 = YES; m->v0 = v; return; }
+    u32 i = (u32)k & m->mask;
+    while (m->key[i] != 0) { if (m->key[i] == k) { m->val[i] = v; return; } i = (i + 1) & m->mask; }
+    m->key[i] = k; m->val[i] = v;
 }
-static b8 idset_has(idset const *s, u64 h) {
-    if (h == 0) return s->zero;
-    u32 i = (u32)h & s->mask;
-    while (s->slot[i] != 0) { if (s->slot[i] == h) return YES; i = (i + 1) & s->mask; }
+static b8 u64map_get(u64map const *m, u64 k, u32 *out) {
+    if (k == 0) { if (m->has0) *out = m->v0; return m->has0; }
+    u32 i = (u32)k & m->mask;
+    while (m->key[i] != 0) { if (m->key[i] == k) { *out = m->val[i]; return YES; } i = (i + 1) & m->mask; }
     return NO;
 }
-static u32 idset_cap(u64 n) {   // smallest power of two > 2n, min 8
+static u32 u64map_cap(u64 n) {   // smallest power of two > 2n, min 8
     u32 c = 8;
     while ((u64)c <= 2 * n + 1) c <<= 1;
     return c;
 }
 
-//  Merge two parents' weaves into one (DIS-003: shared tokens align by
-//  identity, removers union, side-only tokens splice in via the EDL).
-//  `merge_commit` is reserved for an evil-merge's own content (fold it with
-//  a following WEAVENext); a pure merge references no new commit.
+//  Emit one union token (its bytes from `utxt`, its remover slice from `urid`)
+//  with its STORED anchor.  Removers are already a deduped union.
+static ok64 wmerge_emit1(wnext_out *o, u8b utxt, u32b urid, u8 tag, b8 hasin,
+                         u32 ins, u32 tlo, u32 thi, u32 roff, u32 rlen, u64 anchor) {
+    sane(o);
+    a_part(u8c, bytes, u8bDataC(utxt), tlo, thi - tlo);
+    u32c *rb = (u32c *)u32bDataHead(urid) + roff;
+    u32cs rms = {rb, rb + rlen};
+    call(wnext_emit, o, bytes, tag, hasin, ins, rms, anchor);
+    done;
+}
+
+//  Merge two parents' weaves into one (DIS-003 JOIN + DIS-043 RGA order).
+//  The union of identities is laid out by a path-independent RGA total order
+//  (each token after its immutable anchor; concurrent siblings by cid DESC,
+//  ord ASC), so every merge path agrees and the JOIN matches each shared
+//  identity exactly once.  `merge_commit` is reserved for an evil-merge's own
+//  content (fold it with a following WEAVENext); a pure merge adds no commit.
 ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     sane(into != NULL);
     (void)merge_commit;
@@ -581,80 +671,147 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     { ok64 r = wmerge_decode(a, u32bDataC(ra), &da); if (r != OK) return r; }
     { ok64 r = wmerge_decode(b, u32bDataC(rb), &db); if (r != OK) return r; }
 
-    u64 olen = da.n, nlen = db.n;
-    a_carve(u8,  o_text, u8csLen(a->text) + u8csLen(b->text) + 1);
-    a_carve(u32, o_toks, (size_t)olen + (size_t)nlen + 1);
-    a_carve(u8,  o_ins,  4 * ((size_t)olen + (size_t)nlen + 1));
-    //  rms: a merged token's removers are the UNION of both sides, so the
-    //  worst case is every remover byte from a and b, plus a count word per
-    //  output token (4 bytes) when the union has >1 entry.
-    a_carve(u8,  o_rms,  u8csLen(a->rms) + u8csLen(b->rms)
-                         + 4 * ((size_t)olen + (size_t)nlen + 1));
-    wnext_out o = {.text = &o_text, .toks = &o_toks, .ins = &o_ins, .rms = &o_rms};
-    u32cs none = {NULL, NULL};
+    u64 nab = (u64)da.n + db.n;                // upper bound on distinct tokens
 
-    //  Identity-keyed merge-JOIN, not an LCS diff (DIS-003 fix).  A token
-    //  shared by both parents has identical (commit-id, ordinal) identity AND
-    //  — because every descendant weave keeps a commit's whole token set in
-    //  insertion order, and insertion-only edits never reorder — appears in
-    //  the SAME relative order in both.  So a two-pointer scan pairs EVERY
-    //  shared token (an LCS only pairs a subsequence, dropping matches whose
-    //  context diverges -> the criss-cross duplication).  Membership sets say
-    //  whether a head is shared; a-only then b-only runs splice between shared
-    //  anchors (deterministic order); shared tokens emit once, removers union.
-    u32 capA = idset_cap(olen), capB = idset_cap(nlen);
-    a_carve(u64, sa, capA);
-    a_carve(u64, sb, capB);
-    u64 *sad = (u64 *)u64bIdleHead(sa);
-    u64 *sbd = (u64 *)u64bIdleHead(sb);
-    memset(sad, 0, (size_t)capA * sizeof(u64));
-    memset(sbd, 0, (size_t)capB * sizeof(u64));
-    idset setA = {sad, capA - 1, NO}, setB = {sbd, capB - 1, NO};
-    for (u32 k = 0; k < (u32)olen; k++) idset_add(&setA, da.idh[k]);
-    for (u32 k = 0; k < (u32)nlen; k++) idset_add(&setB, db.idh[k]);
+    //  (1) Build the union token set keyed by idh.  First occurrence sets the
+    //  immutable fields + copies the bytes; every occurrence unions removers.
+    //  Columnar parallel arrays (ABC §1): one slot per distinct identity.
+    a_carve(u64, u_idh,   nab + 1);
+    a_carve(u64, u_anc,   nab + 1);
+    a_carve(u64, u_cid,   nab + 1);
+    a_carve(u32, u_ord,   nab + 1);
+    a_carve(u32, u_tlo,   nab + 1);
+    a_carve(u32, u_thi,   nab + 1);
+    a_carve(u8,  u_tag,   nab + 1);
+    a_carve(u8,  u_hin,   nab + 1);
+    a_carve(u32, u_ins,   nab + 1);
+    a_carve(u32, u_roff,  nab + 1);
+    a_carve(u32, u_rlen,  nab + 1);
+    a_carve(u8,  utxt, u8csLen(a->text) + u8csLen(b->text) + 1);
+    a_carve(u32, urid, u8csLen(a->rms) / 4 + u8csLen(b->rms) / 4 + 1);
+    u32 ucap = u64map_cap(nab);
+    a_carve(u64, ukey, ucap);
+    a_carve(u32, uval, ucap);
+    zerob(ukey);
+    u64map umap = {(u64 *)u64bDataHead(ukey), (u32 *)u32bDataHead(uval), ucap - 1, NO, 0};
+    u64 *uidh = (u64 *)u64bDataHead(u_idh), *uanc = (u64 *)u64bDataHead(u_anc);
+    u64 *ucid = (u64 *)u64bDataHead(u_cid);
+    u32 *uord = (u32 *)u32bDataHead(u_ord), *utlo = (u32 *)u32bDataHead(u_tlo);
+    u32 *uthi = (u32 *)u32bDataHead(u_thi), *uins = (u32 *)u32bDataHead(u_ins);
+    u32 *uroff = (u32 *)u32bDataHead(u_roff), *urlen = (u32 *)u32bDataHead(u_rlen);
+    u8  *utag = (u8 *)u8bDataHead(u_tag), *uhin = (u8 *)u8bDataHead(u_hin);
+    u32 nu = 0;
 
-    //  Concurrent (one-sided) tokens MUST be interleaved by a path-independent
-    //  key, never by parent role: "a-only before b-only" makes the order of two
-    //  sibling inserts depend on which parent is left/right, so re-merging two
-    //  weaves that ordered the same pair oppositely desyncs the join and
-    //  duplicates.  Order by commit-id (then intra-commit order, preserved) —
-    //  a total order every merge along every path agrees on.  a-only and
-    //  b-only commit sets are disjoint (a commit present in a parent brings ALL
-    //  its tokens), so the keys never tie.
-    u64 *mcd = (u64 *)u64bDataHead(mc);
-    u32 ia = 0, ib = 0;
-    while (ia < olen || ib < nlen) {
-        b8 amatch = ia < olen && idset_has(&setB, da.idh[ia]);
-        b8 bmatch = ib < nlen && idset_has(&setA, db.idh[ib]);
-        if (ia < olen && ib < nlen && da.idh[ia] == db.idh[ib]) {
-            u32cs orh = {db.rid + db.roff[ib], db.rid + db.roff[ib] + db.rlen[ib]};
-            call(wmerge_emit, &o, &da, ia, orh);   // shared anchor: union removers
-            ia++; ib++;
-        } else if (ib >= nlen) {
-            call(wmerge_emit, &o, &da, ia, none); ia++;
-        } else if (ia >= olen) {
-            call(wmerge_emit, &o, &db, ib, none); ib++;
-        } else if (!amatch && !bmatch) {           // both concurrent: cid order
-            if (mcd[da.ins[ia]] <= mcd[db.ins[ib]]) {
-                call(wmerge_emit, &o, &da, ia, none); ia++;
-            } else {
-                call(wmerge_emit, &o, &db, ib, none); ib++;
-            }
-        } else if (!amatch) {                      // a-only precedes b's anchor
-            call(wmerge_emit, &o, &da, ia, none); ia++;
-        } else if (!bmatch) {                      // b-only precedes a's anchor
-            call(wmerge_emit, &o, &db, ib, none); ib++;
-        } else {
-            //  Both heads are anchors but differ — a consistent commit-id
-            //  order should preclude this; break by commit-id to progress
-            //  (the DWEAVE fuzzer guards correctness).
-            if (mcd[da.ins[ia]] <= mcd[db.ins[ib]]) {
-                call(wmerge_emit, &o, &da, ia, none); ia++;
-            } else {
-                call(wmerge_emit, &o, &db, ib, none); ib++;
+    //  Pass 1: distinct identities + immutable fields (no removers yet).
+    for (u32 side = 0; side < 2; side++) {
+        wmdec const *d = side ? &db : &da;
+        for (u32 i = 0; i < d->n; i++) {
+            u32 ui = 0;
+            if (u64map_get(&umap, d->idh[i], &ui)) continue;
+            u32 lo = i ? d->end[i - 1] : 0, hi = d->end[i];
+            ui = nu++;
+            a_part(u8c, bytes, d->text, lo, hi - lo);
+            u32 tlo = (u32)u8bDataLen(utxt);
+            call(u8bFeed, utxt, bytes);
+            uidh[ui] = d->idh[i]; uanc[ui] = d->anc[i];
+            ucid[ui] = d->cid[i]; uord[ui] = d->ord[i];
+            utlo[ui] = tlo; uthi[ui] = (u32)u8bDataLen(utxt);
+            utag[ui] = d->tag[i]; uhin[ui] = d->hasin[i]; uins[ui] = d->ins[i];
+            u64map_put(&umap, d->idh[i], ui);
+        }
+    }
+    //  Pass 2: per entry (in creation order) gather the UNION of removers from
+    //  every matching token on both sides, appending one contiguous run to
+    //  urid.  Processing entries in order keeps each run at urid's tail.
+    for (u32 ui = 0; ui < nu; ui++) {
+        uroff[ui] = (u32)u32bDataLen(urid); urlen[ui] = 0;
+        for (u32 side = 0; side < 2; side++) {
+            wmdec const *d = side ? &db : &da;
+            for (u32 i = 0; i < d->n; i++) {
+                if (d->idh[i] != uidh[ui]) continue;
+                for (u32 k = 0; k < d->rlen[i]; k++) {
+                    u32 rv = d->rid[d->roff[i] + k];
+                    u32 *ridd = (u32 *)u32bDataHead(urid);
+                    b8 dup = NO;
+                    for (u32 m = 0; m < urlen[ui]; m++) if (ridd[uroff[ui] + m] == rv) { dup = YES; break; }
+                    if (dup) continue;
+                    call(u32bFeed1, urid, rv); urlen[ui]++;
+                }
             }
         }
     }
+
+    //  (2) RGA-linearise: sort by (anchor, cid DESC, ord ASC) so siblings are
+    //  contiguous, then map each anchor hash to its child group's [start,cnt).
+    a_carve(rgakey, sk, (size_t)nu + 1);
+    for (u32 i = 0; i < nu; i++) {
+        rgakey kk = {uanc[i], ucid[i], uord[i], i};
+        call(rgakeybFeed1, sk, kk);
+    }
+    rgakey *skd = (rgakey *)rgakeybDataHead(sk);
+    rgakey *sks[2] = {skd, skd + nu};
+    $sort(sks, rga_cmp);
+    //  Map anchor-hash -> first sorted index of its child group; count derives
+    //  from the contiguous run sharing that anchor.
+    u32 gcap = u64map_cap(nu);
+    a_carve(u64, gkey, gcap);
+    a_carve(u32, gval, gcap);
+    zerob(gkey);
+    u64map gmap = {(u64 *)u64bDataHead(gkey), (u32 *)u32bDataHead(gval), gcap - 1, NO, 0};
+    for (u32 i = 0; i < nu; i++) {
+        u64 an = skd[i].anchor;
+        u32 prev = 0;
+        if (!u64map_get(&gmap, an, &prev)) u64map_put(&gmap, an, i);
+    }
+
+    //  Output columns (RGA depth-first order from ROOT).
+    a_carve(u8,  o_text, u8csLen(a->text) + u8csLen(b->text) + 1);
+    a_carve(u32, o_toks, (size_t)nu + 1);
+    a_carve(u8,  o_ins,  4 * ((size_t)nu + 1));
+    a_carve(u8,  o_rms,  u8csLen(a->rms) + u8csLen(b->rms)
+                         + 4 * ((size_t)nu + 1));
+    a_carve(u8,  o_anc,  sizeof(u64) * ((size_t)nu + 1));
+    wnext_out o = {.text = &o_text, .toks = &o_toks, .ins = &o_ins,
+                   .rms = &o_rms, .anc = &o_anc};
+
+    //  (3) Emit depth-first from ROOT via an EXPLICIT stack (slice + a top
+    //  index; LIFO, so a node's children pop after the node).  Push a group's
+    //  siblings in REVERSE sorted order so popping yields (cid DESC, ord ASC).
+    //  Capacity nu+1 — every union token is pushed exactly once (each has one
+    //  anchor and appears in exactly one child group).
+    //  Stack capacity 2*nu+1: an idh hash collision (anchor accidentally ==
+    //  another token's idh) could push a node more than once; the `seen` guard
+    //  then emits each token at most ONCE (a collision mis-orders, never
+    //  duplicates — the ticket's invariant), so the extra pushes are bounded.
+    a_carve(u32, stack, 2 * (size_t)nu + 1);
+    a_carve(u8,  seen,  (size_t)nu + 1);
+    for (u32 i = 0; i < nu; i++) call(u8bFeed1, seen, 0);
+    u8 *seenp = (u8 *)u8bDataHead(seen);
+    u32 *stk = (u32 *)u32bIdleHead(stack);
+    u32 top = 0;
+    #define PUSH_CHILDREN(ANCHOR) do {                                  \
+        u32 _gs = 0;                                                    \
+        if (u64map_get(&gmap, (ANCHOR), &_gs)) {                        \
+            u32 _e = _gs;                                              \
+            while (_e < nu && skd[_e].anchor == (ANCHOR)) _e++;         \
+            for (u32 _j = _e; _j-- > _gs;)                              \
+                if (top < 2 * nu) stk[top++] = skd[_j].ui;              \
+        } } while (0)
+    PUSH_CHILDREN(WEAVE_ROOT_ANCHOR);
+    u32 emitted = 0;
+    while (top > 0) {
+        u32 ui = stk[--top];                       // pop
+        if (seenp[ui]) continue;                   // collision: emit once
+        seenp[ui] = 1;
+        call(wmerge_emit1, &o, utxt, urid, utag[ui], uhin[ui], uins[ui],
+             utlo[ui], uthi[ui], uroff[ui], urlen[ui], uanc[ui]);
+        emitted++;
+        PUSH_CHILDREN(uidh[ui]);
+    }
+    #undef PUSH_CHILDREN
+    //  Every union token must reach the output (no orphan anchor).  An anchor
+    //  pointing outside the union would strand a subtree; treat as malformed.
+    if (emitted != nu) fail(WEAVEFAIL);
 
     weave nw = {};
     u8csMv(nw.text, u8bDataC(o_text));
@@ -664,6 +821,7 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     u8csMv(nw.rms, u8bDataC(o_rms));
     nw.commits[0] = (u64c *)u64bDataHead(mc);
     nw.commits[1] = (u64c *)u64bDataHead(mc) + u64bDataLen(mc);
+    u8csMv(nw.anc, u8bDataC(o_anc));
     call(WEAVESerialize, into, &nw);
     done;
 }

@@ -84,6 +84,16 @@ A `hunk` is `{ts, verb, uri, text, toks}` DATA; the renderers own all presentati
  -  `HUNKu8sRebaseURI`/`HUNKu8sRelay` — prefix a hunk URI's path with a submodule mount.
  -  `HUNKu32bTokenize`/`u32sClip`/`u8sMakeURI`/`u8sFragSplit` — tokenize, clip toks, compose/split a `path#symbol:line` URI.
 
+###  WEAVE.h — one file's whole DAG history (columnar, HUNK-compatible)
+
+A `weave` is a zero-copy view over a `'W'` blob: columns `text`('X')/`toks`('K')/`ins`('I')/`rms`('M')/`commits`('C') plus `anc`('A', DIS-043). A token's IDENTITY is `(commits[inserter], per-commit ordinal)`, hashed by `WEAVEIdHash`. ORDER is RGA (DIS-043): each token sorts after its immutable left-anchor (the `'A'` hash, in the same hash space as the identity hash); concurrent siblings sharing an anchor sort by commit-id DESC then ordinal ASC. That order is path-independent, so every merge path agrees and the identity JOIN matches each shared token exactly once — no criss-cross duplication.
+
+ -  `WEAVEParse`/`WEAVESerialize` (`WEAVE_TLV*`, `WEAVE_ROOT_ANCHOR`) — `'W'` codec; old readers ignore `'A'`, absent `'A'` ⇒ anchor = prev weave-order token.
+ -  `WEAVENext`/`WEAVEMerge` — fold a blob (linear diff step) / RGA-union two parents keyed on identity, removers union; both write the `'A'` chain.
+ -  `WEAVEIdHash` — `RAPHash(commit-id ++ ordinal)`, host-endian; shared so a stored anchor matches a token's idh directly.
+ -  `WEAVEStep`/`weavetok` (`anchor`/`has_anchor`) — consume one token + its `'A'` anchor in lockstep.
+ -  `WEAVEScope`/`WEAVEProduce`/`WEAVEAlive` — active-commit bitmap, bytes at any rev, tip alive bytes.
+
 ###  BRAM.h, NEIL.h — token-level diff core (patience + EDL cleanup)
 
 The two passes that sharpen a raw token-level Myers edit list (`e32g` EDL): line-coherent anchoring, then whitespace/boundary cleanup. Both work on packed `u32`/`u64` tokens over `abc/DIFF` gauges with no graf/keeper dependency; relocated from graf/ per DOG-002 so `dog/WEAVE` and other dogs can weave. Consumed by `graf/WEAVE.c` and legacy `graf/JOIN.c`.
