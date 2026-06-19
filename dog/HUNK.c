@@ -2,9 +2,11 @@
 
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "abc/ANSI.h"
 #include "abc/TTY.h"
+#include "abc/FILE.h"
 #include "abc/PRO.h"
 #include "abc/RON.h"
 #include "abc/URI.h"
@@ -234,6 +236,13 @@ ok64 HUNKu8sRebaseURI(u8s into, u8csc prefix, u8csc child_uri) {
         done;
     }
 
+    //  BE-007 / POST-022: an EMPTY child URI is a bannerless flat
+    //  progress / summary hunk — it has no module identity to mount, so
+    //  it rebases to EMPTY (stays bannerless).  Prefixing it would synth
+    //  a bare `<prefix>` banner line per relayed hunk (Fault A: the
+    //  standalone `vendor/sub` label before each sub-push row).
+    if ($empty(child_uri)) done;
+
     //  Parse the child URI (RFC, no dog promotion) so only the path is
     //  prefixed and scheme/authority/query/fragment survive intact.
     //  URIutf8Drain consumes its input, so lex a stable copy.
@@ -268,13 +277,13 @@ ok64 HUNKu8sRebaseURI(u8s into, u8csc prefix, u8csc child_uri) {
 //  Forward decl — token-offset clamp lives below (after the renderers).
 static u32 hunk_clamp(hunk const *hk, u32 off);
 
-//  Is `tag` a path-column tag?  ROWS tags the visible path column 'S'
-//  (status rows) or 'F' (ls: rows); the relay re-prefixes those so a
-//  child's bare `core.c` row becomes `vendor/sub/core.c` under its mount
-//  point.  Every other column tag ('L' date, the verb slot, the neutral
-//  'S' separators) is single-line and must NOT be touched — the path
-//  column is disambiguated from a separator 'S' by the trailing '\n' it
-//  alone carries (see ROWS.c::rows_emit).
+//  Is `tag` a path-column tag?  The HUNK table tags the visible path
+//  column 'S' (status rows) or 'F' (ls: rows); the relay re-prefixes
+//  those so a child's bare `core.c` row becomes `vendor/sub/core.c`
+//  under its mount point.  Every other column tag ('L' date, the verb
+//  slot, the neutral 'S' separators) is single-line and must NOT be
+//  touched — the path column is disambiguated from a separator 'S' by
+//  the trailing '\n' it alone carries (see htbl_emit below).
 static b8 hunk_tag_is_path(u8 tag) { return tag == 'S' || tag == 'F'; }
 
 //  Rebase a relayed child hunk's (text, toks) table under `prefix`:
@@ -290,13 +299,13 @@ static ok64 hunk_rebase_body(hunk *hk, u8csc prefix) {
 
     //  The grown body never more than doubles the child's (a `<prefix>/`
     //  per path column + a rebased nav URI per row); 8 MiB covers the
-    //  4 MiB ROWS_TEXT_CAP body with ample headroom.  Both the grown text
+    //  4 MiB table text body with ample headroom.  Both the grown text
     //  and the recomputed toks live in fixed carved buffers (NOT an
     //  in-flight a_lign gauge) so the per-token `call(HUNKu8sRebaseURI)`
     //  below — which snapshots+rewinds BASS — can't corrupt an open gauge
     //  (ABC.md §BASS).
     a_carve(u8, nt, 1UL << 23);            // grown text (8 MiB)
-    a_carve(tok32, nk, 1UL << 18);         // recomputed toks (256K, = ROWS_TOKS_CAP)
+    a_carve(tok32, nk, 1UL << 18);         // recomputed toks (256K, = table toks cap)
 
     int n = (int)$len(hk->toks);
     u32 prev = 0;
@@ -341,8 +350,8 @@ static ok64 hunk_rebase_body(hunk *hk, u8csc prefix) {
         }
         call(tok32bFeed1, nk, tok32PackSide(tag, side, (u32)u8bDataLen(nt)));
     }
-    //  Any trailing bytes past the last token (defensive — ROWS always
-    //  closes a row on a token, so this is normally empty).
+    //  Any trailing bytes past the last token (defensive — the table
+    //  always closes a row on a token, so this is normally empty).
     if (prev < (u32)$len(hk->text)) {
         a_part(u8c, tail, hk->text, prev, (u32)$len(hk->text) - prev);
         call(u8bFeed, nt, tail);
@@ -434,7 +443,7 @@ ok64 HUNKu8sFeedBanner(u8s into, hunk const *hk, HUNKout mode, u32 cols) {
         if (hk->ts) {
             i64 now = (i64)time(NULL);
             //  -1: let mktime resolve DST (BRO-002 / SUBS-003); aligns
-            //  with every other ron60→date conversion (ROWS).
+            //  with every other ron60→date conversion (the HUNK table).
             i64 ts = hunk_ron60_to_time(hk->ts, now, -1);
             call(DOGutf8sFeedDate, into, ts, now);
             call(u8sFeed1, into, ' ');
@@ -1398,5 +1407,310 @@ ok64 HUNKu8sMakeURI(u8s into, u8csc path, u8csc symbol, u32 lineno) {
         utf8sFeed10(into, (u64)lineno);
     }
     done;
+}
+
+// =====================================================================
+//  Status/action row table (BE-007, ex dog/ROWS).  Serialize a ULOG
+//  event sequence into ONE content hunk as a token stream — no row /
+//  table data types.  The active table is a process-global accumulator
+//  (sniff/keeper are single-threaded per process); its state is held as
+//  module-globals built from EXISTING types (Bu8 text, Bu32 toks, a
+//  `hunk`-shaped uri/verb/ts header, a few flags), armed by
+//  HUNKTableOpen and flushed by HUNKTableClose.
+// =====================================================================
+
+#define HUNK_TABLE_TEXT_CAP   (1UL << 22)   // 4 MiB body, mmap-backed
+#define HUNK_TABLE_TOKS_CAP   (1UL << 18)   // 256 K tok32 entries
+
+static Bu8   HTBL_text;            // accumulating table body
+static Bu32  HTBL_toks;            // accumulating column / 'U' tags
+static i64   HTBL_now;             // for DOGutf8sFeedDate (relative form)
+static u8cs  HTBL_uri;             // module address (borrowed; outlives Close)
+static ron60 HTBL_verb;            // module action verb (0 = absent)
+static ron60 HTBL_ts;              // module banner ts (0 = absent)
+static int   HTBL_fd       = -1;   // output sink (-1 = stdout)
+static b8    HTBL_open      = NO;   // YES between Open and Close
+static b8    HTBL_stream    = NO;   // YES → tty live-stream each row
+static b8    HTBL_banner    = NO;   // streaming: module banner emitted
+
+//  Pack a tok32 covering [last_end, current_end) with tag `tag`.  The
+//  4 MiB cap stays under the 2^28 tok32 offset budget.
+static void htbl_pack(u8 tag) {
+    (void)u32bFeed1(HTBL_toks, tok32Pack(tag, (u32)u8bDataLen(HTBL_text)));
+}
+
+//  Resolve a ron60 wall-clock stamp to unix-epoch seconds for
+//  DOGutf8sFeedDate.  isdst=-1 lets mktime resolve DST (SUBS-003).
+//  0 ts → 0 (the "?" placeholder).
+static i64 htbl_ron60_to_secs(ron60 ts) {
+    if (ts == 0) return 0;
+    struct tm t = {};
+    if (RONToTime(ts, &t, NULL) != OK) return 0;
+    t.tm_isdst = -1;
+    time_t s = mktime(&t);
+    return s == (time_t)-1 ? 0 : (i64)s;
+}
+
+//  Append one row's text + toks to the accumulator.  Layout (one row):
+//    <7-date> <3-verb> [<indent>]<path>[<mov><dst>]\n<nav-uri>
+//      └tag 'L'└verb-slot └path_tag                  └tag 'U' (invisible)
+//  Column spaces inherit 'S' so click→byte mapping counts one cp each.
+static void htbl_emit(ron60 ts, ron60 verb, u8csc path, u8csc mov_dst,
+                      u8 path_tag, b8 arrow, u32 indent,
+                      ron60 nav, u8csc nav_target) {
+    a_cstr(SP, "                                ");   // 32 spaces
+
+    //  Date column: 7 cols (DOGutf8sFeedDate centre-pads to 7); empty
+    //  ts → 7 spaces.
+    if (ts) {
+        a_pad(u8, date, 8);
+        i64 secs = htbl_ron60_to_secs(ts);
+        if (secs > 0) (void)DOGutf8sFeedDate(date_idle, secs, HTBL_now);
+        (void)u8bFeed(HTBL_text, u8bDataC(date));
+    } else {
+        u8cs sp7 = {SP[0], SP[0] + 7};
+        (void)u8bFeed(HTBL_text, sp7);
+    }
+    htbl_pack('L');
+    (void)u8bFeed1(HTBL_text, ' ');
+    htbl_pack('S');
+
+    //  Verb column: 3 cols, left-justified, space-padded.  Tag = the
+    //  verb's palette slot (ULOGVerbTag).
+    {
+        a_pad(u8, vbuf, 16);
+        (void)RONutf8sFeed(vbuf_idle, verb);
+        a_dup(u8c, vs, u8bDataC(vbuf));
+        (void)u8bFeed(HTBL_text, vs);
+        size_t need = ($len(vs) < 3) ? 3 - $len(vs) : 0;
+        u8cs pad = {SP[0], SP[0] + need};
+        (void)u8bFeed(HTBL_text, pad);
+    }
+    htbl_pack(ULOGVerbTag(verb));
+    (void)u8bFeed1(HTBL_text, ' ');
+    htbl_pack('S');
+
+    //  Path column.  `lsr:` prepends depth*4 spaces (a visible tree);
+    //  the indent stays inside the path span.  Moves render inline as
+    //  `<src> -> <dst>` (ls:) or `<src>#<dst>` (status).
+    {
+        u32 ind = indent;
+        if (ind > 32) ind = 32;
+        u8cs ip = {SP[0], SP[0] + ind};
+        (void)u8bFeed(HTBL_text, ip);
+    }
+    (void)u8bFeed(HTBL_text, path);
+    if (!u8csEmpty(mov_dst)) {
+        if (arrow) { a_cstr(arr, " -> "); (void)u8bFeed(HTBL_text, arr); }
+        else       (void)u8bFeed1(HTBL_text, '#');
+        (void)u8bFeed(HTBL_text, mov_dst);
+    }
+    (void)u8bFeed1(HTBL_text, '\n');
+    htbl_pack(path_tag);
+
+    //  Invisible navigation URI — covered by a 'U' tok so plain/color
+    //  renderers skip the bytes and TLV consumers get a click target.
+    if (nav != HUNK_NAV_NONE) {
+        if      (nav == HUNK_NAV_CAT)    { a_cstr(s, "cat:");     (void)u8bFeed(HTBL_text, s); }
+        else if (nav == HUNK_NAV_DIFF)   { a_cstr(s, "diff:");    (void)u8bFeed(HTBL_text, s); }
+        else if (nav == HUNK_NAV_LS)     { a_cstr(s, "ls:");      (void)u8bFeed(HTBL_text, s); }
+        else if (nav == HUNK_NAV_COMMIT) { a_cstr(s, "commit:?"); (void)u8bFeed(HTBL_text, s); }
+        if (!u8csEmpty(nav_target)) (void)u8bFeed(HTBL_text, nav_target);
+        htbl_pack('U');
+    }
+}
+
+//  Trim trailing blank lines from a rendered hunk (plain/color).  The
+//  content-hunk renderer can emit 2-3 trailing newlines (the U-tagged
+//  invisible nav URI is the last raw byte, so the "ensure final \n"
+//  guard fires, then the inter-hunk separator adds another).  Each
+//  module emits ONE hunk — peel back to a single terminating \n.  TLV
+//  mode is binary, leave it alone.
+static void htbl_trim(Bu8 big) {
+    if (HUNKMode == HUNKOutTLV) return;
+    for (;;) {
+        if (u8bDataLen(big) < 2) break;
+        u8cs view = {};
+        u8csTailS(u8bDataC(big), view, 2);
+        if (view[0][0] != '\n' || view[0][1] != '\n') break;
+        u8bShed1(big);
+    }
+}
+
+//  Point a `hunk`'s text/toks at the current accumulator contents.
+static void htbl_hunk(hunk *hk) {
+    u8csMv(hk->text, u8bDataC(HTBL_text));
+    tok32cs kv = {};
+    kv[0] = (tok32c *)u32bDataHead(HTBL_toks);
+    kv[1] = (tok32c *)u32bDataHead(HTBL_toks) + u32bDataLen(HTBL_toks);
+    u32csMv(hk->toks, kv);
+}
+
+//  Write a fully-rendered buffer to the table's sink (stdout default).
+static void htbl_sink(u8cs out) {
+    int fd = HTBL_fd < 0 ? STDOUT_FILENO : HTBL_fd;
+    (void)FILEFeedAll(fd, out);
+}
+
+//  Render the accumulator's (text, toks) as ONE content hunk headed by
+//  the module banner (uri / verb / ts) and push it to the sink.
+static ok64 htbl_flush_hunk(void) {
+    sane(1);
+    if (u8bDataLen(HTBL_text) == 0 && u8csEmpty(HTBL_uri)) done;
+    hunk hk = {.ts = HTBL_ts, .verb = HTBL_verb};
+    u8csMv(hk.uri, HTBL_uri);
+    htbl_hunk(&hk);
+    a_carve(u8, big, HUNK_TABLE_TEXT_CAP + (1UL << 16));
+    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
+    if (fo == OK) { htbl_trim(big); htbl_sink(u8bDataC(big)); }
+    return fo;
+}
+
+//  Emit the module banner ONCE for a streaming table carrying a state
+//  uri/verb/ts (BE-005 / GET-026).  A table with no state stays a flat
+//  progress log (long-clone shape).  No-op once banner already emitted.
+static ok64 htbl_stream_banner(void) {
+    sane(1);
+    if (HTBL_banner) done;
+    HTBL_banner = YES;
+    if (u8csEmpty(HTBL_uri) && !HTBL_ts && !HTBL_verb) done;
+    hunk hk = {.ts = HTBL_ts, .verb = HTBL_verb};
+    u8csMv(hk.uri, HTBL_uri);
+    a_carve(u8, big, (1UL << 16));
+    call(HUNKu8sFeedBanner, u8bIdle(big), &hk, HUNKMode, 0);
+    htbl_sink(u8bDataC(big));
+    done;
+}
+
+//  Emit the current single-row accumulator LIVE as a one-row content
+//  hunk (tty streaming).  The module banner (if any) goes out once
+//  before the first row; the row itself carries no header so a long
+//  clone reads as flat line-by-line progress.
+static ok64 htbl_stream_one(void) {
+    sane(1);
+    hunk hk = {};
+    htbl_hunk(&hk);
+    a_carve(u8, big, (1UL << 16));
+    ok64 fo = HUNKu8sFeedOut(u8bIdle(big), &hk);
+    if (fo == OK) { htbl_trim(big); htbl_sink(u8bDataC(big)); }
+    return fo;
+}
+
+ok64 HUNKTableOpen(u8csc uri, ron60 verb, ron60 ts, b8 batch) {
+    sane(1);
+    HTBL_now    = (i64)time(NULL);
+    HTBL_verb   = verb;
+    HTBL_ts     = ts;
+    HTBL_fd     = -1;
+    HTBL_banner = NO;
+    u8csMv(HTBL_uri, uri);
+    call(u8bMap, HTBL_text, HUNK_TABLE_TEXT_CAP);
+    ok64 to = u32bAllocate(HTBL_toks, HUNK_TABLE_TOKS_CAP);
+    if (to != OK) { u8bUnMap(HTBL_text); return to; }
+    //  Mode-keyed: stream live on a tty (any non-TLV human mode); batch
+    //  for the relay.  `batch` always buffers (status / ls:).
+    HTBL_stream = !batch && (HUNKMode != HUNKOutTLV);
+    HTBL_open   = YES;
+    done;
+}
+
+void HUNKTableFd(int fd) {
+    if (HTBL_open) HTBL_fd = fd;
+}
+
+u8bp HUNKTableText(void) {
+    return HTBL_open ? (u8bp)HTBL_text : NULL;
+}
+
+u32bp HUNKTableToks(void) {
+    return HTBL_open ? (u32bp)HTBL_toks : NULL;
+}
+
+ok64 HUNKu8sFeedRow(ron60 ts, ron60 verb, u8csc path, u8csc mov_dst,
+                    u8 path_tag, b8 arrow, u32 indent,
+                    ron60 nav, u8csc nav_target) {
+    sane(1);
+    if (!HTBL_open) done;
+    if (HTBL_stream) {
+        call(htbl_stream_banner);
+        u8bReset(HTBL_text);
+        u32bReset(HTBL_toks);
+        htbl_emit(ts, verb, path, mov_dst, path_tag, arrow, indent,
+                  nav, nav_target);
+        return htbl_stream_one();
+    }
+    htbl_emit(ts, verb, path, mov_dst, path_tag, arrow, indent,
+              nav, nav_target);
+    done;
+}
+
+ok64 HUNKu8sFeedRec(ulogreccp rec, ron60 nav) {
+    sane(rec);
+    if (!HTBL_open) done;
+    u8cs path    = {rec->uri.path[0],     rec->uri.path[1]};
+    u8cs mov_dst = {rec->uri.fragment[0], rec->uri.fragment[1]};
+    u8cs query   = {rec->uri.query[0],    rec->uri.query[1]};
+    if (nav == HUNK_NAV_COMMIT) {
+        //  Commit-range row (COMMIT-001): the producer carries the sha
+        //  in `uri.query` and the subject in `uri.fragment`.  Render the
+        //  visible `?<sha>#<subject>` column (`post  ?<hashlet>#<subj>`)
+        //  by putting `?<sha>` in the path and the subject in mov_dst
+        //  joined with `#` (arrow=NO), and add a hidden `commit:?<sha>`.
+        a_carve(u8, qbuf, 256);
+        (void)u8bFeed1(qbuf, '?');
+        (void)u8bFeed(qbuf, query);
+        return HUNKu8sFeedRow(rec->ts, rec->verb, u8bDataC(qbuf), mov_dst,
+                              'S', NO, 0, HUNK_NAV_COMMIT, query);
+    }
+    //  Nav target: moves cat: the dst; everything else cat:/diff: path.
+    u8cs nt = {};
+    if (u8csEmpty(mov_dst)) u8csMv(nt, path);
+    else                    u8csMv(nt, mov_dst);
+    return HUNKu8sFeedRow(rec->ts, rec->verb, path, mov_dst,
+                          'S', NO, 0, nav, nt);
+}
+
+ok64 HUNKTableSummary(u8csc text) {
+    sane(1);
+    if (!HTBL_open) done;
+    if (HTBL_stream) {
+        //  Live: emit the banner once (if owed), then this single line.
+        call(htbl_stream_banner);
+        u8bReset(HTBL_text);
+        u32bReset(HTBL_toks);
+    }
+    (void)u8bFeed(HTBL_text, text);
+    (void)u8bFeed1(HTBL_text, '\n');
+    htbl_pack('S');
+    if (!HTBL_stream) done;
+    return htbl_stream_one();
+}
+
+ok64 HUNKTableClose(void) {
+    sane(1);
+    if (!HTBL_open) done;
+    //  Buffering accumulator → emit the one module hunk now.  Streaming
+    //  accumulator already pushed each row; an EMPTY streaming result
+    //  still owes its state banner (BE-005 / GET-026).
+    ok64 fo = HTBL_stream ? htbl_stream_banner() : htbl_flush_hunk();
+    u32bFree(HTBL_toks);
+    u8bUnMap(HTBL_text);
+    HTBL_open = NO;
+    HTBL_fd   = -1;
+    return fo;
+}
+
+ok64 HUNKTablePrintRow(ulogreccp rec, ron60 nav) {
+    sane(rec);
+    //  A module accumulator is already open → append to it (the common
+    //  case once producers arm a per-module table).
+    if (HTBL_open) return HUNKu8sFeedRec(rec, nav);
+    //  No active table — run a transient one-row mode-keyed accumulator
+    //  headed by the row's own uri (the old ULOGPrintStatusLine).
+    u8cs empty = {};
+    call(HUNKTableOpen, empty, 0, 0, NO);
+    ok64 fr = HUNKu8sFeedRec(rec, nav);
+    ok64 cr = HUNKTableClose();
+    return fr != OK ? fr : cr;
 }
  

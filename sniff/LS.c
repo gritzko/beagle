@@ -26,7 +26,6 @@
 
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
-#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "dog/tok/TOK.h"
 
@@ -53,7 +52,7 @@ typedef struct {
     b8       recurse;      // YES = lsr:, NO = ls:
     Bu8      dir_seen;     // one-level dedup: last emitted subdir slice
     ls_verbs v;
-    rows    *rows;         // shared row-table accumulator (dog/ROWS)
+    // rows feed the process-global HUNK table (BE-007); no ctx handle.
 } ls_ctx;
 
 //  Count '/' separators in `path` after stripping `prefix`.  Used by
@@ -69,31 +68,27 @@ static u32 ls_depth(u8cs prefix, u8cs path) {
     return d;
 }
 
-//  Append one row via the shared `dog/ROWS` builder.  Caller has
+//  Append one row via the shared HUNK table builder.  Caller has
 //  already classified the step (verb chosen, ts resolved); this only
 //  describes how to render it.  The ls layout is: path tag 'F', moves
 //  joined with ` -> ` (`arrow=YES`), `lsr:` indents the path column by
 //  depth*4 cols (a visible tree; one-level `ls:` never indents), and
 //  the hidden nav URI is `ls:` for a collapsed subdir / `cat:` for a
-//  file or move-dst.  ROWS handles the date/verb columns, the 'L'/verb
-//  /'F'/'U' toks, and (mode-keyed) the live-stream-or-buffer decision.
+//  file or move-dst.  HUNKu8sFeedRow handles the date/verb columns, the
+//  'L'/verb/'F'/'U' toks, and (mode-keyed) the stream-or-buffer choice.
 static void ls_emit_row(ls_ctx *c, u8cs path, u8cs mov_dst, ron60 ts,
                         ron60 verb) {
     b8 is_dir = (verb == c->v.v_dir);
-    rows_row row = {
-        .ts = ts, .verb = verb,
-        .path_tag = 'F', .arrow = YES,
-        .indent = c->recurse ? ls_depth(c->prefix, path) * 4 : 0,
-        .nav = is_dir ? ROWS_NAV_LS : ROWS_NAV_CAT,
-    };
-    u8csMv(row.path, path);
-    u8csMv(row.mov_dst, mov_dst);
+    u32 indent = c->recurse ? ls_depth(c->prefix, path) * 4 : 0;
+    ron60 nav  = is_dir ? HUNK_NAV_LS : HUNK_NAV_CAT;
     //  dir rows nav into the subdir listing; move rows cat the dst;
     //  plain file rows cat the path.
-    if (is_dir)                   u8csMv(row.nav_target, path);
-    else if (!u8csEmpty(mov_dst)) u8csMv(row.nav_target, mov_dst);
-    else                          u8csMv(row.nav_target, path);
-    (void)ROWSu8bFeedRow(c->rows, &row);
+    u8cs nav_target = {};
+    if (is_dir)                   u8csMv(nav_target, path);
+    else if (!u8csEmpty(mov_dst)) u8csMv(nav_target, mov_dst);
+    else                          u8csMv(nav_target, path);
+    (void)HUNKu8sFeedRow(ts, verb, path, mov_dst, 'F', YES, indent,
+                         nav, nav_target);
 }
 
 //  One-level mode: collapse anything below the prefix dir's immediate
@@ -178,7 +173,7 @@ static ok64 ls_step(class_step const *step, void *ctx_) {
 
 //  Acquire the `ls:` one-level dedup buffer (`dir_seen`).  `lsr:`
 //  doesn't collapse subdirs, so it needs nothing here.  The row table's
-//  text/toks now live in `dog/ROWS` (ROWSOpen owns + unwinds them);
+//  text/toks live in the HUNK table (HUNKTableOpen owns + unwinds them);
 //  this is the sole ls-local scratch.  Exposed for the leak-repro test.
 ok64 SNIFFLsBufsAcquire(Bu8 dir_seen, b8 recurse) {
     sane(dir_seen != NULL);
@@ -215,20 +210,18 @@ static ok64 ls_run(u8cs reporoot, uri const *u, b8 recurse) {
     else         { a_cstr(s, "ls:");  (void)u8bFeed(uri_buf, s); }
     if (!u8csEmpty(c.prefix)) (void)u8bFeed(uri_buf, c.prefix);
 
-    rows r = {};
-    call(ROWSOpen, &r, u8bDataC(uri_buf), 0, 0, ROWS_BATCH);
-    c.rows = &r;
+    call(HUNKTableOpen, u8bDataC(uri_buf), 0, 0, YES);
 
     ok64 ba = SNIFFLsBufsAcquire(c.dir_seen, recurse);
-    if (ba != OK) { (void)ROWSClose(&r); return ba; }
+    if (ba != OK) { (void)HUNKTableClose(); return ba; }
 
     //  TODO: `?ref` baseline override.  CLASS today resolves baseline
     //  via SNIFFAtCurTip; for `ls:?ref` we'd want SNIFFClassifyAt
     //  (sha1cp base_tree, class_cb, void *ctx).
     ok64 cr = SNIFFClassify(ls_step, &c);
 
-    //  Flush the one accumulated module hunk (ROWS_BATCH).
-    ok64 fo = ROWSClose(&r);
+    //  Flush the one accumulated module hunk (batch).
+    ok64 fo = HUNKTableClose();
 
     if (!recurse) u8bFree(c.dir_seen);
     return (cr == OK) ? fo : cr;

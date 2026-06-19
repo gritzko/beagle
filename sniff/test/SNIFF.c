@@ -13,7 +13,7 @@
 #include "abc/FILE.h"
 
 #include "dog/test/TESTBE.h"
-#include "dog/ROWS.h"
+#include "dog/HUNK.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -1159,24 +1159,24 @@ ok64 DOGTitleTest() {
     done;
 }
 
-// --- Test: ROWS / LS scratch-buffer acquisition + unwind ------------
-//  BRO-002 moved the row table's text/toks into `dog/ROWS` (ROWSOpen
-//  maps the 4 MiB text then heap-allocs toks; on a toks failure it
-//  unmaps text — the MEM-026 unwind now lives there).  `ls:`'s only
-//  local scratch is the one-level dedup buffer `dir_seen`.
+// --- Test: HUNK table / LS scratch-buffer acquisition + unwind ------
+//  BRO-002 moved the row table's text/toks into the HUNK table
+//  (HUNKTableOpen maps the 4 MiB text then heap-allocs toks; on a toks
+//  failure it unmaps text — the MEM-026 unwind now lives there, BE-007).
+//  `ls:`'s only local scratch is the one-level dedup buffer `dir_seen`.
 ok64 SNIFFLsBufsLeak() {
     sane(1);
 
-    //  Case 1 (ROWSOpen happy path + Close releases text/toks).  An
-    //  empty-uri ROWS_BATCH accumulator with no rows fed: Close is a
-    //  clean flush (nothing to emit) and frees both buffers.
+    //  Case 1 (HUNKTableOpen happy path + Close releases text/toks).  An
+    //  empty-uri batch accumulator with no rows fed: Close is a clean
+    //  flush (nothing to emit) and frees both buffers.  The accessors
+    //  expose the live buffers (non-NULL open) / return NULL once closed.
     {
-        rows r = {};
         u8cs empty = {};
-        call(ROWSOpen, &r, empty, 0, 0, ROWS_BATCH);
-        want(r.text[0] != NULL && r.toks[0] != NULL);
-        call(ROWSClose, &r);
-        want(r.text[0] == NULL && r.toks[0] == NULL);
+        call(HUNKTableOpen, empty, 0, 0, YES);
+        want(HUNKTableText() != NULL && HUNKTableToks() != NULL);
+        call(HUNKTableClose);
+        want(HUNKTableText() == NULL && HUNKTableToks() == NULL);
     }
 
     //  Case 2 (`ls:` dir_seen acquire + release).

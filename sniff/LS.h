@@ -45,9 +45,9 @@ ok64 SNIFFLs (u8cs reporoot, uri const *u);   // one-level
 ok64 SNIFFLsr(u8cs reporoot, uri const *u);   // recursive
 
 //  Acquire the `ls:` one-level dedup buffer (`dir_seen`); `lsr:` needs
-//  none.  The row table's text/toks now live in `dog/ROWS` (ROWSOpen
-//  owns + unwinds them, BRO-002).  Exposed for the leak-repro test
-//  (sniff/test/SNIFF.c); not part of the projector's public contract.
+//  none.  The row table's text/toks live in the HUNK table
+//  (HUNKTableOpen owns + unwinds them, BRO-002).  Exposed for the
+//  leak-repro test (sniff/test/SNIFF.c); not the projector's contract.
 ok64 SNIFFLsBufsAcquire(Bu8 dir_seen, b8 recurse);
 
 #endif

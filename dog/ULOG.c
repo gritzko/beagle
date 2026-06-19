@@ -1243,6 +1243,6 @@ u8 ULOGVerbTag(ron60 verb) {
 
 //  BRO-002 retired ULOGToHunk (header-only lift) and ULOGPrintStatusLine
 //  (per-event hunk emit).  Every status/action row now flows through the
-//  shared row-table builder `dog/ROWS` (ROWSPrintRow / ROWSu8bFeedRec),
+//  shared HUNK row table (HUNKTablePrintRow / HUNKu8sFeedRec, BE-007),
 //  which appends to the active per-(sub)module table and flushes ONE
 //  content hunk per module.

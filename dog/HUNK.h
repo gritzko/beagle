@@ -1,6 +1,7 @@
 #ifndef DOG_HUNK_H
 #define DOG_HUNK_H
 
+#include "abc/BUF.h"
 #include "abc/RON.h"
 #include "abc/TLV.h"
 #include "dog/tok/TOK.h"
@@ -188,5 +189,84 @@ ok64 HUNKu8sMakeURI(u8s into, u8csc path, u8csc symbol, u32 lineno);
 // stripped.  Fragments are otherwise free-form — anything not matching
 // these conventions stays in `out_sym` as the symbol body.
 u32 HUNKu8sFragSplit(u8csc frag, u8cs out_sym);
+
+// --- status/action row table (BE-007, ex dog/ROWS) ------------------
+//
+//  Beagle's verb reporters (`be status`, `ls:`, GET/PUT/DELETE/PATCH/
+//  POST, keeper banners) all emit ONE output model (BRO-002): every
+//  (sub)module emits ONE content hunk whose
+//      uri  = the module address (`status:`, `ls:<prefix>`, wt root, …)
+//      text = a per-row `<7-date> <3-verb> [<indent>]<path>[<mov><dst>]`
+//             table plus an invisible per-row navigation URI
+//      toks = per-column tok32 tags ('L' date, the verb's palette slot,
+//             the path tag) + a trailing 'U' tok over the hidden nav URI
+//  rendered through `HUNKu8sFeedOut` (Text/Color/Html/TLV per `HUNKMode`).
+//  The module hunk header IS the BRO-001 banner (date + verb + uri).
+//
+//  This is plain serialization — NO row/table data types.  The active
+//  table is a process-global accumulator (single-threaded per process),
+//  armed by HUNKTableOpen and flushed by HUNKTableClose; the producer's
+//  scattered emit sites just call HUNKTablePrintRow / HUNKTableSummary.
+//
+//  Flush is mode-keyed: TLV/relay BUFFERS every row → one table hunk at
+//  Close (clean per-module grouping for the relay); direct-tty STREAMS
+//  each row LIVE (line-by-line clone progress).  `batch=YES` always
+//  buffers (whole-table consumers: `be status`, `ls:`).
+
+//  Nav scheme for a row's hidden click-URI.  Plain `ron60` (the scheme
+//  word, RON-encoded — `abc/ok64`), 0 = no nav URI emitted.
+con ron60 HUNK_NAV_NONE   = 0;
+con ron60 HUNK_NAV_CAT    = 0x27978;     // `cat:<target>`    open the file
+con ron60 HUNK_NAV_DIFF   = 0xa2daaa;    // `diff:<target>`   what changed
+con ron60 HUNK_NAV_LS     = 0xc37;       // `ls:<target>`     descend
+con ron60 HUNK_NAV_COMMIT = 0x9f3c71b78; // `commit:?<query>` open commit
+
+//  Arm the process-global active table.  `uri` is the module address
+//  (borrowed — must outlive Close); `verb`/`ts` head the flushed hunk's
+//  banner (0 = omit).  `batch=YES` always buffers one hunk (status/ls:);
+//  `batch=NO` is mode-keyed (stream on a tty, buffer for the relay).
+//  Pair every Open with exactly one Close.  The output sink defaults to
+//  stdout; set `HUNKTableFd(fd)` after Open to retarget (stderr for
+//  mutator streaming).
+ok64 HUNKTableOpen(u8csc uri, ron60 verb, ron60 ts, b8 batch);
+
+//  Retarget the active table's output sink (e.g. STDERR_FILENO).  No-op
+//  with no active table.
+void HUNKTableFd(int fd);
+
+//  Append one event row to the active table (the ONE serializer).  Full
+//  column control: `path` body, optional `mov_dst` (empty = no move),
+//  `ts`/`verb` columns (0 ts → 7 blank date cols), `path_tag` tok over
+//  the path column ('S' status / 'F' ls), `arrow` (YES → `<src> -> <dst>`
+//  / NO → `<src>#<dst>`), `indent` left-pad cols, `nav` scheme +
+//  `nav_target` bytes for the hidden click-URI.  Streams live or buffers
+//  per the table's mode.  No-op with no active table.
+ok64 HUNKu8sFeedRow(ron60 ts, ron60 verb, u8csc path, u8csc mov_dst,
+                    u8 path_tag, b8 arrow, u32 indent,
+                    ron60 nav, u8csc nav_target);
+
+//  The ulogrec-taking conveniences (HUNKu8sFeedRec, HUNKTablePrintRow)
+//  live in dog/ULOG.h — that header already includes this one, and
+//  `ulogrec` cannot be referenced here without a circular include.
+
+//  Append a trailing summary line (`staged N put row(s)`, `N change(s)`,
+//  …) to the active table so the count rides the module hunk instead of
+//  a bare stderr line (POST-018).  No date/verb/nav columns; the line
+//  wears the neutral 'S' tag.  No-op with no active table.
+ok64 HUNKTableSummary(u8csc text);
+
+//  The active table's accumulating text / toks buffers — for a producer
+//  rendering a rich multi-tok summary tail straight into the hunk (e.g.
+//  `be status`'s per-bucket coloured count line).  NULL with no active
+//  table.  Only valid for a BUFFERING (batch) table.
+u8bp  HUNKTableText(void);
+u32bp HUNKTableToks(void);
+
+//  Flush + release the active table.  Buffering tables emit ONE table
+//  hunk (banner header = uri/verb/ts) via HUNKu8sFeedOut + the sink;
+//  streaming tables already pushed each row (an empty streaming result
+//  still owes its state banner).  Resets the global; no-op when none is
+//  open.
+ok64 HUNKTableClose(void);
 
 #endif

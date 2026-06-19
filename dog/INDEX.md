@@ -63,25 +63,20 @@ Each row is `<ron60-ms>\t<verb>\t<uri>\n`, strictly monotonic; a `wh128` sidecar
  -  `ULOGu8ssDrainHeap`/`ULOGMergeWalk` (`ULOGu8csZbyTs`/`ZbyUri`) — K-way heap merge + fan-out.
  -  `ULOGu8bScanWt`/`ULOGu8sRelFromFull` — walk a worktree emitting one `<mtime>\t<verb>\t<rel>?<mode>` row per leaf.
  -  `ULOGVerbColor`/`ULOGVerbTag` (`ULOG_VERB_COLORS`) — the shared verb→`ansi64` / verb→theme-tag palette every status.
+ -  `HUNKu8sFeedRec`/`HUNKTablePrintRow` — the two `ulogrec` conveniences over HUNK's status/action table (live here as HUNK.h can't take a `ulogrec`, circular).
 
-###  ROWS.h — shared status/action row-table builder
+###  HUNK.h — the code-hunk wire format, renderers, and status table
 
-One output model (BRO-002): every (sub)module emits ONE content hunk whose text is a `<date> <verb> <path>` table with per-column toks and a hidden nav URI per row, flushed through `HUNKu8sFeedOut`.
-
- -  `ROWSOpen`/`ROWSClose` (`rows`, `ROWSdiscipline`) — arm / flush an mmap-backed accumulator.
- -  `ROWSu8bFeedRow`/`ROWSu8bFeedRec` (`rows_row`, `ROWSnav`) — append a row from a descriptor or a `ulogrec`.
- -  `ROWSPrintRow` — the canonical single-row emitter (replaced `ULOGPrintStatusLine`) for sites with no module accumulator.
- -  `ROWSu8bFeedSummary` — append a trailing summary line to the active table so the count rides the hunk, not stderr (POST-018).
-
-###  HUNK.h — the code-hunk wire format and renderers
-
-A `hunk` is `{ts, verb, uri, text, toks}` DATA; the renderers own all presentation. Three output modes are chosen once into the global `HUNKMode`; emit sites call `HUNKu8sFeedOut`.
+A `hunk` is `{ts, verb, uri, text, toks}` DATA; the renderers own all presentation. Three output modes are chosen once into the global `HUNKMode`; emit sites call `HUNKu8sFeedOut`.  BE-007 folded the old `dog/ROWS` builder in here as a plain status/action TABLE — NO row/table types, just a process-global accumulator (existing `Bu8`/`Bu32`/`hunk`) armed by `HUNKTableOpen` and serialized one row at a time.
 
  -  `hunk`/`hunkZ`/`HUNKcb` — the record (location is one `uri`; `toks` are `tok32` with tag + side), ordering, callback.
  -  `HUNKu8sFeed`/`HUNKu8sDrain` (`HUNKTOKLEN`/`HUNKTOKOOB`) — the nested-TLV codec.
  -  `HUNKu8sFeedOut`/`FeedText`/`FeedColor`/`FeedHtml` (`HUNKMode`) — render via the global mode, or forced.
  -  `HUNKu8sFeedBanner` — the ONE header drawer (BRO-002): the abbreviated date + verb + uri banner for every hunk (Plain).
- -  `HUNKu8sRebaseURI`/`HUNKu8sRelay` — prefix a hunk URI's path with a submodule mount.
+ -  `HUNKu8sRebaseURI`/`HUNKu8sRelay` — prefix a hunk URI's path with a submodule mount (empty child uri stays bannerless, POST-022).
+ -  `HUNKTableOpen`/`HUNKTableClose`/`HUNKTableFd` — arm / flush an mmap-backed module table; mode-keyed stream-or-buffer (`batch`).
+ -  `HUNKu8sFeedRow`/`HUNKTableSummary` (`HUNK_NAV_*`) — serialize ONE event row / a summary tail; nav is a plain `ron60` scheme.
+ -  `HUNKTableText`/`HUNKTableToks` — the active table's buffers for a rich multi-tok summary tail (`be status`).
  -  `HUNKu32bTokenize`/`u32sClip`/`u8sMakeURI`/`u8sFragSplit` — tokenize, clip toks, compose/split a `path#symbol:line` URI.
 
 ###  WEAVE.h — one file's whole DAG history (columnar, HUNK-compatible)

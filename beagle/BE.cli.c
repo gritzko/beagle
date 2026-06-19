@@ -16,8 +16,7 @@
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/THEME.h"
-#include "dog/ULOG.h"
-#include "dog/ROWS.h"             // ROWSPrintRow (POST-019 recursion marker)
+#include "dog/ULOG.h"             // HUNKTablePrintRow (POST-019 recursion marker)
 #include "graf/BLOB.h"            // GRAFPathDescend (bareword tracked probe)
 #include "graf/GRAF.h"            // GRAFResolveVersion (top-of-chain pass)
 #include "dog/git/GIT.h"          // GITu8sCommitTree (baseline-tree probe)
@@ -2932,7 +2931,7 @@ static b8 bepost_find_sub_msg(cli const *c, u8cs subpath, u8csp out_msg) {
 
 static void bepost_emit_outer(bepost_recurse_ctx *rc) {
     //  POST-019: the per-sub post-order trace is reported via the real
-    //  relayed `post <sub>/…` ROWS hunk on stdout, not a stderr echo.
+    //  relayed `post <sub>/…` hunk on stdout, not a stderr echo.
     if (rc->outer_emitted) return;
     rc->outer_emitted = YES;
 }
@@ -3226,7 +3225,7 @@ static ok64 bepost_recurse_cb(besub const *s, void *vctx) {
         //  sub's own exit status (the error still propagates below).
         ulogrec rep = {.ts = 0, .verb = SNIFFAtVerbPost()};
         u8csMv(rep.uri.path, subpath);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_NONE);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_NONE);
     }
     if (r != OK) { rc->worst = r; return OK; }
     if (rc->dry_only) return OK;       //  status-only walk; no bump.

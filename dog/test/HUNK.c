@@ -42,7 +42,10 @@ static const RebaseCase REBASE_CASES[] = {
     {"vendor/sub", "foo.c#L42",   "vendor/sub/foo.c#L42"},
     {"a",          "b.c",         "a/b.c"},
     {"",           "x.c",         "x.c"},          // empty prefix → passthrough
-    {"sub",        "",            "sub"},          // empty URI → just the prefix
+    //  BE-007 / POST-022: an empty child URI is a bannerless flat hunk
+    //  (no module identity to mount), so it rebases to EMPTY — NOT a bare
+    //  `<prefix>` banner line (the standalone sub-mount label wreckage).
+    {"sub",        "",            ""},             // empty URI → stays empty
     {"outer/inner","deep.c",      "outer/inner/deep.c"},
     {"x",          "a/b/c.c#L7",  "x/a/b/c.c#L7"},
 };
@@ -159,7 +162,7 @@ static ok64 hunk_test_tok(Bu32 b, u8 tag, u32 off) {
 static ok64 HUNKTestRelayBody() {
     sane(1);
 
-    //  Build one ROWS-shaped row body (status layout): 7 date spaces,
+    //  Build one table-shaped row body (status layout): 7 date spaces,
     //  ' ', "put", ' ', "core.c\n", then the hidden "cat:core.c" nav.
     //  Tokens: L date, S sep, verb-slot, S sep, S path(ends '\n'), U nav.
     static const char BODY[] = "        put core.c\ncat:core.c";

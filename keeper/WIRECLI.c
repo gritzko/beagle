@@ -29,6 +29,7 @@
 #include "abc/PRO.h"
 #include "abc/URI.h"
 #include "dog/DOG.h"
+#include "dog/HUNK.h"
 #include "dog/git/SHA1.h"
 #include "dog/git/GIT.h"
 #include "dog/git/PACK.h"
@@ -2040,10 +2041,18 @@ static ok64 wire_push_inner(u8csc remote_uri, u8cs refname,
         cseen.cap   = WPUSH_MAX_OBJS;
         (void)wpush_collect_commits(k, &local_tip, have, &cseen,
                                     pcommits, &npc, WPUSH_PEER_TIPS_MAX);
+        //  BE-007 / POST-022: gather ALL pushed commit + file rows into
+        //  ONE `post:` module hunk (non-empty uri) instead of per-row
+        //  transient empty-uri hunks.  When the parent relays this sub
+        //  push, HUNKu8sRelay rebases the ONE hunk uri under the mount
+        //  once — no bare `vendor/sub` label line per row (Fault A).
+        a_cstr(post_uri, "post:");
+        (void)HUNKTableOpen(post_uri, (ron60)0, (ron60)0, NO);
         for (u32 i = 0; i < npc; i++)
             try(KEEPEmitCommitLine, &pcommits[i], (ron60)0);
         try(KEEPEmitTreeDiffFiles,
             have_peer ? &peer_tip : NULL, &local_tip, (ron60)0);
+        (void)HUNKTableClose();
     }
     return rv;
 }

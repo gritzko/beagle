@@ -33,7 +33,6 @@
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
-#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "graf/DAG.h"
 #include "graf/GRAF.h"
@@ -164,7 +163,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
             ulogrec rep = {.ts = g->ts,
                 .verb = pre_present ? GET_V_UPD : GET_V_NEW};
             u8csMv(rep.uri.path, path);
-            call(ROWSPrintRow, &rep, ROWS_NAV_CAT);
+            call(HUNKTablePrintRow, &rep, HUNK_NAV_CAT);
             done;
         }
         return o;
@@ -206,7 +205,7 @@ static ok64 get_write_one(get_ctx *g, u8cs path, u8 kind, u8cp esha) {
         ulogrec rep = {.ts = g->ts,
             .verb = pre_present ? GET_V_UPD : GET_V_NEW};
         u8csMv(rep.uri.path, path);
-        call(ROWSPrintRow, &rep, ROWS_NAV_CAT);
+        call(HUNKTablePrintRow, &rep, HUNK_NAV_CAT);
     }
     done;
 }
@@ -288,7 +287,7 @@ static ok64 get_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
                     if (rec.verb == GET_V_MOD) {
                         ulogrec rep = {.ts = g->ts, .verb = GET_V_MOD};
                         u8csMv(rep.uri.path, path);
-                        (void)ROWSPrintRow(&rep, ROWS_NAV_DIFF);
+                        (void)HUNKTablePrintRow(&rep, HUNK_NAV_DIFF);
                     }
                     return OK;
                 }
@@ -654,7 +653,7 @@ static ok64 force_orphan_cb(class_step const *step, void *vctx) {
         c->dropped++;
         ulogrec rep = {.verb = GET_V_DEL};
         u8csMv(rep.uri.path, path);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     }
     return OK;
 }
@@ -686,7 +685,7 @@ static ok64 get_drain_unlinks(u8cs reporoot, u8cs unlinks, ron60 ts) {
             //  dedup, but user-facing status mustn't leak hashes.
             ulogrec rep = {.ts = ts, .verb = GET_V_DEL};
             u8csMv(rep.uri.path, path);
-            (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+            (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
         }
         //  Walk up: rmdir any newly-empty parent until we hit a
         //  non-empty dir, the reporoot, or rmdir fails (ENOTEMPTY).
@@ -774,7 +773,7 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         //  Same path-only report shape as the unlink drain.
         ulogrec rep = {.ts = stamp_ts, .verb = GET_V_MRG};
         u8csMv(rep.uri.path, path);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_DIFF);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_DIFF);
     }
 
     //  Verb-output sweep (BE-005): the weave-merge progress counts ride
@@ -785,14 +784,14 @@ static ok64 get_drain_merges(u8cs reporoot, u8cs merges,
         { a_cstr(s, "weave-merged ");  (void)u8bFeed(line, s); }
         (void)utf8sFeed10(u8bIdle(line), (u64)merged);
         { a_cstr(s, " file(s)");       (void)u8bFeed(line, s); }
-        (void)ROWSu8bFeedSummary(u8bDataC(line));
+        (void)HUNKTableSummary(u8bDataC(line));
     }
     if (failed > 0) {
         a_pad(u8, line, 64);
         { a_cstr(s, "merge failures: "); (void)u8bFeed(line, s); }
         (void)utf8sFeed10(u8bIdle(line), (u64)failed);
         { a_cstr(s, " file(s)");         (void)u8bFeed(line, s); }
-        (void)ROWSu8bFeedSummary(u8bDataC(line));
+        (void)HUNKTableSummary(u8bDataC(line));
     }
     done;
 }
@@ -993,7 +992,7 @@ static void get_emit_one_commit_verb(u64 h40, ron60 ts, ron60 verb,
     u8csMv(rep.uri.query, q);
     rep.uri.fragment[0] = ms;
     rep.uri.fragment[1] = me;
-    (void)ROWSPrintRow(&rep, ROWS_NAV_COMMIT);
+    (void)HUNKTablePrintRow(&rep, HUNK_NAV_COMMIT);
 }
 
 //  Checkout-banner flavour: every commit-range row uses verb `post`.
@@ -1066,7 +1065,7 @@ static void get_emit_commit_list(sha1cp base_commit, sha1cp tgt_commit,
 //                                            does not have (would be posted)
 //      behind (tip \ cur)  → `miss` rows  — branch-tip commits not here
 //                                            (would arrive via `be get`)
-//  Each row is a clickable `commit:?<sha>` (ROWS_NAV_COMMIT), newest-first.
+//  Each row is a clickable `commit:?<sha>` (HUNK_NAV_COMMIT), newest-first.
 //  Counts land in *out_ahead / *out_behind for the summary line.  Pure
 //  read: no checkout, no ULOG/REFS write.  Best-effort — a missing graf
 //  open / DAG run / commit body skips the block and leaves counts at 0.
@@ -1585,7 +1584,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //    detached `?<40hex>` source → `?<hashlet>`,
     //    attached `?<branch>`       → `?<branch>#<hashlet>`,
     //    empty source (trunk)       → `?#<hashlet>`.
-    //  `bannerbuf` is function-scope (must outlive ROWSClose below).
+    //  `bannerbuf` is function-scope (must outlive HUNKTableClose below).
     a_pad(u8, bannerbuf, 128);
     {
         u8bFeed1(bannerbuf, '?');
@@ -1605,9 +1604,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
         }
     }
     a_dup(u8c, banner_uri, u8bData(bannerbuf));
-    rows table = {};
-    call(ROWSOpen, &table, banner_uri, SNIFFAtVerbGet(), ctx.ts,
-         ROWS_MODE_KEYED);
+    call(HUNKTableOpen, banner_uri, SNIFFAtVerbGet(), ctx.ts, NO);
 
     //  Banner: list commits crossing into / out of the wt as ULOG
     //  rows before the per-file rows from WALKTreeLazy/drains land
@@ -1619,7 +1616,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     o = WALKTreeLazy(tree_sha.data, get_visit, &ctx);
     if (o == OK && ctx.error != OK) o = ctx.error;
     if (o != OK) {
-        (void)ROWSClose(&table);
+        (void)HUNKTableClose();
         GET_BUFS_FREE();
         return o;
     }
@@ -1677,7 +1674,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
             (void)utf8sFeed10(u8bIdle(line), (u64)fctx.dropped);
             { a_cstr(s, " orphaned tracked file(s)");
               (void)u8bFeed(line, s); }
-            (void)ROWSu8bFeedSummary(u8bDataC(line));
+            (void)HUNKTableSummary(u8bDataC(line));
         }
     }
 
@@ -1707,7 +1704,7 @@ ok64 GETCheckout(u8cs reporoot, u8csc hex, u8csc source) {
     //  Per-module flush: emit the one accumulated table hunk (--tlv) or
     //  finalise the live stream (tty) BEFORE returning to the `be`
     //  wrapper that recurses into subs.
-    (void)ROWSClose(&table);
+    (void)HUNKTableClose();
 
     if (sub_fail) fail(SNIFFFAIL);
     done;

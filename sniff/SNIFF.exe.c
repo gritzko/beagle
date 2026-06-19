@@ -23,7 +23,6 @@
 #include "dog/DPATH.h"
 #include "dog/HOME.h"
 #include "dog/git/IGNO.h"
-#include "dog/ROWS.h"
 #include "dog/ULOG.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
@@ -280,7 +279,7 @@ static void status_pack(Bu32 toks, Bu8 text, u8 tag) {
     (void)u32bFeed1(toks, tok32Pack(tag, (u32)u8bDataLen(text)));
 }
 
-//  Status rows feed the shared `dog/ROWS` builder in the same column
+//  Status rows feed the shared HUNK table builder in the same column
 //  layout `sniff/LS.c` produces, but with the bare-`be` flavour: path
 //  tag 'S' (neutral — reads better uncoloured beside the verb palette),
 //  moves joined `<src>#<dst>` (`arrow=NO`, the URI-fragment form put
@@ -301,7 +300,7 @@ static b8 status_verb_wants_diff_nav(ulogreccp rec, status_verbs const *v) {
 //  `verb_filter` to the shared builder.  One ≤7-pass sweep across the
 //  bucket list per call from `sniff_status_work`.
 static void status_dump_verb(Bu8 buf, ron60 verb_filter,
-                             rows *table, status_verbs const *v) {
+                             status_verbs const *v) {
     a_dup(u8c, scan, u8bData(buf));
     while (!u8csEmpty(scan)) {
         ulogrec rec = {};
@@ -309,9 +308,9 @@ static void status_dump_verb(Bu8 buf, ron60 verb_filter,
         if (dr == NODATA) break;
         if (dr != OK) continue;                  // skip malformed
         if (rec.verb != verb_filter) continue;
-        ROWSnav nav = status_verb_wants_diff_nav(&rec, v)
-                        ? ROWS_NAV_DIFF : ROWS_NAV_CAT;
-        (void)ROWSu8bFeedRec(table, &rec, nav);
+        ron60 nav = status_verb_wants_diff_nav(&rec, v)
+                        ? HUNK_NAV_DIFF : HUNK_NAV_CAT;
+        (void)HUNKu8sFeedRec(&rec, nav);
     }
 }
 
@@ -416,8 +415,8 @@ static void status_emit_summary_buf(Bu8 text, Bu32 toks,
 //  open `status:` table.  Resolves the wt's cur tip (the wtlog baseline
 //  sha) and the local branch REFS tip, then hands both to
 //  GETStatusCommitDiff — which emits one clickable `commit:?<sha>` row
-//  per differing commit straight into the active table (`ROWS_ACTIVE`,
-//  just opened here) BEFORE any file rows.  `post` rows = AHEAD (local,
+//  per differing commit straight into the active HUNK table (just
+//  opened here) BEFORE any file rows.  `post` rows = AHEAD (local,
 //  unposted), `miss` rows = BEHIND (in the tip, not here).  Counts land
 //  in b->ahead_n / b->behind_n for the summary line.  Silent no-op when
 //  cur == tip, on a detached/no-branch baseline, or when REFS has no tip
@@ -448,42 +447,37 @@ static void status_emit_commit_diff(status_buckets *b) {
 //  remotes render `<full-uri>#<sha>`.  No nav (these address refs, not
 //  worktree files).  `t->sha` / `r->sha` are 40-hex; slices borrow
 //  REFSLoad's arena (valid only during the callback).
-static void status_tip_row(rows *table, ron60 verb, u8csc uri, u8csc sha) {
-    rows_row row = {
-        .ts = 0, .verb = verb, .path_tag = 'S', .arrow = NO,
-        .nav = ROWS_NAV_NONE,
-    };
-    u8csMv(row.path, uri);
-    u8csMv(row.mov_dst, sha);
-    (void)ROWSu8bFeedRow(table, &row);
+static void status_tip_row(ron60 verb, u8csc uri, u8csc sha) {
+    (void)HUNKu8sFeedRow(0, verb, uri, sha, 'S', NO, 0,
+                         HUNK_NAV_NONE, (u8cs){});
 }
 
 static ok64 status_branch_row_cb(keep_tipcp t, void *ctx) {
-    rows *table = (rows *)ctx;
+    (void)ctx;
     a_pad(u8, ubuf, MAX_URI_LEN);
     (void)u8bFeed1(ubuf, '?');
     (void)u8bFeed(ubuf, t->path);                 // empty → trunk (`?`)
     a_dup(u8c, uri, u8bDataC(ubuf));
-    status_tip_row(table, SNIFFAtVerbGet(), uri, t->sha);
+    status_tip_row(SNIFFAtVerbGet(), uri, t->sha);
     return OK;
 }
 
 static ok64 status_remote_row_cb(keep_remotecp r, void *ctx) {
-    rows *table = (rows *)ctx;
+    (void)ctx;
     a_dup(u8c, key, r->key);
-    status_tip_row(table, SNIFFAtVerbGet(), key, r->sha);
+    status_tip_row(SNIFFAtVerbGet(), key, r->sha);
     return OK;
 }
 
 //  Append the tracked branch + remote tip rows to the open `status:`
 //  table.  REFSNONE (no refs yet) is fine — a fresh wt simply adds no
 //  extra rows.  Called only for `be status!` (b->force).
-static void status_emit_tips(status_buckets *b, rows *table) {
+static void status_emit_tips(status_buckets *b) {
     if (!b->force) return;
-    ok64 to = KEEPEachTip(status_branch_row_cb, table);
+    ok64 to = KEEPEachTip(status_branch_row_cb, NULL);
     if (to != OK && to != REFSNONE)
         fprintf(stderr, "sniff: status: branches: %s\n", ok64str(to));
-    ok64 ro = KEEPEachRemote(status_remote_row_cb, table);
+    ok64 ro = KEEPEachRemote(status_remote_row_cb, NULL);
     if (ro != OK && ro != REFSNONE)
         fprintf(stderr, "sniff: status: remotes: %s\n", ok64str(ro));
 }
@@ -502,10 +496,9 @@ static ok64 sniff_status_work(status_buckets *b) {
     call(SNIFFClassify, status_step, b);
 
     //  One module table headed by `status:` (whole-table consumer →
-    //  ROWS_BATCH always buffers a single hunk regardless of mode).
+    //  batch always buffers a single hunk regardless of mode).
     a_cstr(status_uri, "status:");
-    rows table = {};
-    call(ROWSOpen, &table, status_uri, 0, 0, ROWS_BATCH);
+    call(HUNKTableOpen, status_uri, 0, 0, YES);
 
     //  GET-021: cur-vs-branch-tip commit rows go FIRST (above the file
     //  rows) so a stale/diverged wt warns before the per-file noise.
@@ -513,25 +506,25 @@ static ok64 sniff_status_work(status_buckets *b) {
 
     //  `ok` rows are noise — every tracked file at baseline content
     //  prints there.  Surface only the count in the trailing summary.
-    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, &table, &b->v);
-    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, &table, &b->v);
-    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, &table, &b->v);
-    if (b->pat_n > 0) status_dump_verb(b->rows, b->v.v_pat, &table, &b->v);
-    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, &table, &b->v);
-    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, &table, &b->v);
-    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, &table, &b->v);
-    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, &table, &b->v);
+    if (b->put_n > 0) status_dump_verb(b->rows, b->v.v_put, &b->v);
+    if (b->new_n > 0) status_dump_verb(b->rows, b->v.v_new, &b->v);
+    if (b->mov_n > 0) status_dump_verb(b->rows, b->v.v_mov, &b->v);
+    if (b->pat_n > 0) status_dump_verb(b->rows, b->v.v_pat, &b->v);
+    if (b->mod_n > 0) status_dump_verb(b->rows, b->v.v_mod, &b->v);
+    if (b->del_n > 0) status_dump_verb(b->rows, b->v.v_del, &b->v);
+    if (b->mis_n > 0) status_dump_verb(b->rows, b->v.v_mis, &b->v);
+    if (b->unk_n > 0) status_dump_verb(b->rows, b->v.v_unk, &b->v);
 
     //  STATUS-001: `be status!` appends every tracked branch + remote
     //  tip (uri->hash) after the file rows, into the SAME table.
-    status_emit_tips(b, &table);
+    status_emit_tips(b);
 
     //  Summary line finalises the hunk — appended straight to the
     //  table's text/toks (it's a status-only tail, not a row).
-    status_emit_summary_buf(table.text, table.toks, b);
+    status_emit_summary_buf(HUNKTableText(), HUNKTableToks(), b);
 
     //  Flush the one `status:` module hunk.
-    return ROWSClose(&table);
+    return HUNKTableClose();
 }
 
 //  Entry: maps the shared rows buffer, runs the worker, releases
@@ -859,7 +852,7 @@ ok64 SNIFFExec(cli *c) {
             if (dr == OK && def_n > 0) {
                 u8cs no_target = {};
                 sha1 sha = {};
-                //  POST-018: POSTCommit emits the commit ROWS row itself
+                //  POST-018: POSTCommit emits the commit row itself
                 //  (banner-headed `?<sha>#<subject>`); no raw stderr echo.
                 ret = POSTCommit(no_target,
                                  def_msg, def_auth, c, &sha);
@@ -938,7 +931,7 @@ ok64 SNIFFExec(cli *c) {
                     target[0] = label_uri->query[0];
                     target[1] = label_uri->query[1];
                     sha1 sha = {};
-                    //  POST-018: POSTCommit emits the commit ROWS row;
+                    //  POST-018: POSTCommit emits the commit row;
                     //  no raw stderr echo here.
                     ret = POSTCommit(target, sm_msg, sa_auth, c, &sha);
                 } else {

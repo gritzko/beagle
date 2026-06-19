@@ -30,7 +30,7 @@
 #include "dog/CLI.h"
 #include "dog/DOG.h"
 #include "dog/HUNK.h"
-#include "dog/ROWS.h"
+#include "dog/ULOG.h"
 #include "dog/git/IGNO.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
@@ -1289,7 +1289,7 @@ typedef struct {
     u32 changed;
 } post_mad_ctx;
 
-//  Append one changed-path row to the active ROWS table (opened by the
+//  Append one changed-path row to the active HUNK table (opened by the
 //  caller, sink fd already set per channel: stdout for --tlv/relay,
 //  stderr for direct-tty).  `mod` rows nav to `diff:`, everything else
 //  to `cat:`.
@@ -1306,20 +1306,19 @@ static ok64 post_drain_mad_cb(post_ctx *c, ulogreccp rec, void *vctx) {
     if (verb == 0) return OK;
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, rec->uri.path);
-    ROWSnav nav = (verb == POST_DISP_MOD) ? ROWS_NAV_DIFF : ROWS_NAV_CAT;
-    (void)ROWSPrintRow(&rep, nav);
+    ron60 nav = (verb == POST_DISP_MOD) ? HUNK_NAV_DIFF : HUNK_NAV_CAT;
+    (void)HUNKTablePrintRow(&rep, nav);
     m->changed++;
     return OK;
 }
 
-//  POST-018: feed the commit confirmation as a ROWS commit row into the
-//  open per-file table (`?<hashlet>#<subject>` cell, verb post, clickable
+//  POST-018: feed the commit confirmation as a commit row into the open
+//  per-file HUNK table (`?<hashlet>#<subject>` cell, verb post, clickable
 //  `commit:?<sha>` nav) — the tested COMMIT-001 banner grammar (see
 //  GET.c::get_emit_one_commit_verb).  `message`'s first line is the
 //  subject.  Best-effort: a sha that won't hashlet-feed just skips.
 #define POST_COMMIT_SUBJ_MAX 120
-static void post_emit_commit_row(rows *table, sha1 *sha,
-                                 u8cs message, ron60 ts) {
+static void post_emit_commit_row(sha1 *sha, u8cs message, ron60 ts) {
     a_pad(u8, qbuf, SHA1_HASHLEN_LEN);
     if (SHA1u8sFeedHashlet(qbuf_idle, sha) != OK) return;
 
@@ -1339,7 +1338,7 @@ static void post_emit_commit_row(rows *table, sha1 *sha,
     ulogrec rep = {.ts = ts, .verb = SNIFFAtVerbPost()};
     u8csMv(rep.uri.query, u8bDataC(qbuf));
     u8csMv(rep.uri.fragment, subject);
-    (void)ROWSu8bFeedRec(table, &rep, ROWS_NAV_COMMIT);
+    (void)HUNKu8sFeedRec(&rep, HUNK_NAV_COMMIT);
 }
 
 // --- Rebase emit pipeline (Stage 2 phase-2 promote) ---
@@ -2363,10 +2362,9 @@ static ok64 post_print_status_inner(post_ctx *c) {
 
     //  Walk decisions, append one row per changed path to ONE module
     //  table (dry-run status → stdout, as before).
-    rows table = {};
     u8cs empty_uri = {};
-    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
-    table.fd = STDOUT_FILENO;
+    call(HUNKTableOpen, empty_uri, 0, 0, NO);
+    HUNKTableFd(STDOUT_FILENO);
     post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
     post_walk_decisions(c, POST_VM_UNLINK | POST_VM_ADD,
                         post_drain_mad_cb, &mad);
@@ -2377,8 +2375,8 @@ static ok64 post_print_status_inner(post_ctx *c) {
     { a_cstr(pre, "post: "); (void)u8bFeed(sum, pre); }
     (void)utf8sFeed10(u8bIdle(sum), (u64)mad.changed);
     { a_cstr(suf, " change(s)"); (void)u8bFeed(sum, suf); }
-    (void)ROWSu8bFeedSummary(u8bDataC(sum));
-    ok64 cr = ROWSClose(&table);
+    (void)HUNKTableSummary(u8bDataC(sum));
+    ok64 cr = HUNKTableClose();
     fflush(stdout);
     return cr;
 }
@@ -2435,16 +2433,15 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
         //  KEEPGetExact so subject reads succeed even when the
         //  picked sha lives in a sibling shard.
         //  The instruction line stays on stderr (a diagnostic); the
-        //  candidate list is REPORT data → one ROWS hunk of `pat`
+        //  candidate list is REPORT data → one HUNK-table hunk of `pat`
         //  commit rows (POST-018), each clickable `commit:?<sha>`.
         fprintf(stderr,
                 "sniff: post: multiple eligible messages — re-run "
                 "with explicit `#<subject>` to pick one:\n");
         ron60 vpat = SNIFFAtVerbPatch();
-        rows table = {};
         u8cs empty_uri = {};
-        (void)ROWSOpen(&table, empty_uri, 0, 0, ROWS_MODE_KEYED);
-        table.fd = STDERR_FILENO;
+        (void)HUNKTableOpen(empty_uri, 0, 0, NO);
+        HUNKTableFd(STDERR_FILENO);
         a_carve(u8, cbuf, 1UL << 16);
         for (u32 i = 0; i < n_pent; i++) {
             if (pent[i].shape == PATCH_SCOPE_WHOLE) continue;  // multi-commit
@@ -2469,9 +2466,9 @@ ok64 POSTPatchDefaults(u8b msg_buf,  u8cs *msg_out,
             ulogrec rep = {.ts = cts, .verb = vpat};
             u8csMv(rep.uri.query, u8bDataC(qbuf));
             u8csMv(rep.uri.fragment, subject);
-            (void)ROWSu8bFeedRec(&table, &rep, ROWS_NAV_COMMIT);
+            (void)HUNKu8sFeedRec(&rep, HUNK_NAV_COMMIT);
         }
-        (void)ROWSClose(&table);
+        (void)HUNKTableClose();
         return ULOGNONE;
     }
 
@@ -3247,19 +3244,17 @@ ok64 POSTCommit(u8cs target_branch,
     {
         a_cstr(post_uri, "post:");
         ron60 vpost = SNIFFAtVerbPost();
-        rows table = {};
-        (void)ROWSOpen(&table, post_uri, vpost, ctx.stamp_ts,
-                       ROWS_MODE_KEYED);
-        table.fd = STDOUT_FILENO;
-        //  POST-018: the commit confirmation is a ROWS commit row (verb
-        //  post, the tested `?<hashlet>#<subject>` cell + clickable
+        (void)HUNKTableOpen(post_uri, vpost, ctx.stamp_ts, NO);
+        HUNKTableFd(STDOUT_FILENO);
+        //  POST-018: the commit confirmation is a commit row (verb post,
+        //  the tested `?<hashlet>#<subject>` cell + clickable
         //  `commit:?<sha>` nav) under the banner, emitted first so it
         //  reads as the headline; the per-file change rows follow.
-        post_emit_commit_row(&table, sha_out, message, ctx.stamp_ts);
+        post_emit_commit_row(sha_out, message, ctx.stamp_ts);
         post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
         post_walk_decisions(&ctx, POST_VM_UNLINK | POST_VM_ADD,
                             post_drain_mad_cb, &mad);
-        (void)ROWSClose(&table);
+        (void)HUNKTableClose();
     }
 
     //  17. Per-commit scratch (decisions, tree_bodies, cascade arena)

@@ -378,8 +378,21 @@ ansi64 ULOGVerbColor(ron60 verb);
 //  to paint a verb token via tok32Pack(tag, end).
 u8 ULOGVerbTag(ron60 verb);
 
-//  BRO-002 retired ULOGToHunk and ULOGPrintStatusLine: status/action
-//  rows now flow through the shared row-table builder `dog/ROWS`
-//  (ROWSPrintRow / ROWSu8bFeedRec), one content hunk per (sub)module.
+//  Status/action rows flow through the shared HUNK row table (BE-007,
+//  ex dog/ROWS), one content hunk per (sub)module.  These two ulogrec
+//  conveniences sit beside HUNK's table builder (dog/HUNK.h) but live
+//  here because they take a `ulogrec` (HUNK.h can't, circular include).
+
+//  Append a row straight from a ULOG record (path in `rec->uri.path`,
+//  optional move-dst in `rec->uri.fragment`) to the active HUNK table,
+//  status layout (path tag 'S', `#`-joined moves).  `nav` is a
+//  HUNK_NAV_* scheme.  A HUNK_NAV_COMMIT record carries the sha in
+//  `uri.query` and subject in `uri.fragment`, rendered `?<sha>#<subject>`.
+ok64 HUNKu8sFeedRec(ulogreccp rec, ron60 nav);
+
+//  Single-row emitter (replaces the old ULOGPrintStatusLine): append to
+//  the active HUNK table if one is open, else run a transient one-row
+//  mode-keyed table headed by the row's own uri.  `nav` is HUNK_NAV_*.
+ok64 HUNKTablePrintRow(ulogreccp rec, ron60 nav);
 
 #endif

@@ -29,7 +29,7 @@
 #include "abc/PRO.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
-#include "dog/ROWS.h"
+#include "dog/ULOG.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -153,7 +153,7 @@ static ok64 put_visit_tracked(u8cs path, u8 kind, u8cp esha, u8cs blob,
     {
         ulogrec rep = {.ts = 0, .verb = c->verb_put};
         u8csMv(rep.uri.path, path);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     }
     return OK;
 }
@@ -291,12 +291,12 @@ static ok64 dir_collect_step(class_step const *step, void *vctx) {
     (void)SNIFFAtStampPath(fp, *c->ts_io);
     (*c->ts_io)++;
     (*c->emitted_io)++;
-    //  POST-018: report the staged path through ROWS (the active
+    //  POST-018: report the staged path through the HUNK table (the active
     //  module table) so `be put <dir>/` rides the banner like get/post.
     {
         ulogrec rep = {.ts = 0, .verb = c->verb_put};
         u8csMv(rep.uri.path, path);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     }
     return OK;
 }
@@ -576,12 +576,12 @@ static ok64 put_move(u8cs src_raw, u8cs dst_in_raw, u8cs reporoot,
     (void)SNIFFAtStampPath(dst_fp, *ts_io);
     (*ts_io)++;
     (*emitted_io)++;
-    //  POST-018: report the staged move (`put src#dst`) through ROWS.
+    //  POST-018: report the staged move (`put src#dst`) through the HUNK table.
     {
         ulogrec rep = {.ts = 0, .verb = verb_put};
         u8csMv(rep.uri.path, urow.path);
         u8csMv(rep.uri.fragment, urow.fragment);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     }
     done;
 }
@@ -662,7 +662,7 @@ static void put_feed_summary_tail(u32 n) {
     (void)utf8sFeed10(u8bIdle(line), (u64)n);
     a_cstr(suf, " put row(s)");
     (void)u8bFeed(line, suf);
-    (void)ROWSu8bFeedSummary(u8bDataC(line));
+    (void)HUNKTableSummary(u8bDataC(line));
     */
 }
 
@@ -676,13 +676,13 @@ static void put_skip(u8cs path, char const *reason) {
     { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
     (void)u8bFeed(sl, rs);
     { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
-    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+    (void)HUNKTableSummary(u8bDataC(sl));
 }
 
 //  Bare `be put` worker: auto-pair renames, then walk the baseline tree
 //  staging tracked-dirty files.  Per-file `put` rows append to the
-//  active ROWS table (opened by the caller).  Extracted so the caller's
-//  ROWSOpen/Close brackets every exit path (one module hunk).
+//  active HUNK table (opened by the caller).  Extracted so the caller's
+//  HUNKTableOpen/Close brackets every exit path (one module hunk).
 static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
     sane($ok(reporoot));
 
@@ -730,15 +730,15 @@ static ok64 put_stage_bare(u8cs reporoot, ron60 ts, ron60 verb_put) {
         return PUTNONE;
     }
     //  POST-018: the staged count rides the `put:` banner/summary tail
-    //  (the caller's active ROWS table), not a bare stderr line.
+    //  (the caller's active HUNK table), not a bare stderr line.
     put_feed_summary_tail(total);
     done;
 }
 
 //  Named-path staging worker (POST-018).  Runs under the caller's open
-//  ROWS module table (`ROWS_ACTIVE`) so every staged path — file, dir,
+//  HUNK module table (the active table) so every staged path — file, dir,
 //  move — reports as a `put` row riding the banner, instead of a bare
-//  `sniff: staged N` stderr summary.  The caller's ROWSOpen/Close
+//  `sniff: staged N` stderr summary.  The caller's HUNKTableOpen/Close
 //  brackets every exit path (one module hunk in --tlv/relay).
 static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                             ron60 verb_put, ron60 verb_get,
@@ -850,7 +850,7 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                     ulogrec rep = {.ts = 0, .verb = verb_put};
                     u8csMv(rep.uri.path,     probe);
                     u8csMv(rep.uri.fragment, hex_short);
-                    (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+                    (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
                 }
                 continue;
             }
@@ -980,7 +980,7 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
                       (void)u8bFeed(sl, s); }
                     (void)u8bFeed(sl, raw);
                     { a_cstr(s, "`?)"); (void)u8bFeed(sl, s); }
-                    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+                    (void)HUNKTableSummary(u8bDataC(sl));
                 } else {
                     //  Untracked dir named WITH a trailing slash, empty
                     //  expansion — no files to stage.
@@ -1049,12 +1049,12 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
             (void)SNIFFAtStampPath(fp, ts);
             ts++;
             emitted++;
-            //  POST-018: report the staged path through ROWS (active
+            //  POST-018: report the staged path through the HUNK table (active
             //  module table) — `be put <file>` rides the banner.
             {
                 ulogrec rep = {.ts = 0, .verb = verb_put};
                 u8csMv(rep.uri.path, urow.path);
-                (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+                (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
             }
         }
     }
@@ -1065,7 +1065,7 @@ static ok64 put_stage_named(u32 nuris, uri const *uris, ron60 ts,
         return PUTNONE;
     }
     //  POST-018: the staged count rides the `put:` banner/summary tail
-    //  (the caller's active ROWS table), not a bare stderr line.
+    //  (the caller's active HUNK table), not a bare stderr line.
     put_feed_summary_tail(emitted);
     done;
 }
@@ -1088,12 +1088,11 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
     //  (streamed on a tty, one `H` hunk in --tlv/relay) — the shared
     //  BE-005 banner model, matching status/get.  Both color and --tlv
     //  go to STDOUT now (the commit sha rides POST's commit row, so
-    //  stdout no longer has to stay "clean" for the wrapper).  ROWSOpen/
-    //  Close bracket every worker exit path.
+    //  stdout no longer has to stay "clean" for the wrapper).
+    //  HUNKTableOpen/Close bracket every worker exit path.
     a_cstr(put_uri, "put:");
-    rows table = {};
-    call(ROWSOpen, &table, put_uri, verb_put, ts, ROWS_MODE_KEYED);
-    table.fd = STDOUT_FILENO;
+    call(HUNKTableOpen, put_uri, verb_put, ts, NO);
+    HUNKTableFd(STDOUT_FILENO);
     if (nuris == 0) {
         try(put_stage_bare, reporoot, ts, verb_put);
     } else {
@@ -1101,7 +1100,7 @@ ok64 PUTStage(u32 nuris, uri const *uris) {
             verb_post, reporoot);
     }
     ok64 wr = __;
-    ok64 cr = ROWSClose(&table);
+    ok64 cr = HUNKTableClose();
     return wr != OK ? wr : cr;
 }
 

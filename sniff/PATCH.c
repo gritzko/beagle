@@ -33,7 +33,7 @@
 #include "abc/URI.h"
 #include "dog/DOG.h"
 #include "dog/DPATH.h"
-#include "dog/ROWS.h"
+#include "dog/ULOG.h"
 #include "dog/WHIFF.h"
 #include "graf/GRAF.h"
 #include "graf/JOIN.h"
@@ -287,7 +287,7 @@ static void emit_status(const char *status, u8cs path) {
     { a_cstr(s, status); a_dup(u8c, d, s); (void)RONutf8sDrain(&verb, d); }
     ulogrec rep = {.ts = 0, .verb = verb};
     u8csMv(rep.uri.path, path);
-    (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+    (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     //  Loud divergence rows (conf / failed / modl) additionally echo a
     //  tab-delimited `patch\t<verb>\t<path>` line to stderr so a user
     //  watching the merge sees the divergence regardless of the stdout
@@ -312,7 +312,7 @@ static void patch_skip(u8cs path, char const *reason) {
     { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
     (void)u8bFeed(sl, rs);
     { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
-    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+    (void)HUNKTableSummary(u8bDataC(sl));
 }
 
 //  Verb-output sweep (BE-005): render the merge stat-counter line
@@ -338,7 +338,7 @@ static void patch_stats_summary(patch_stats const *st, char const *tail) {
         (void)utf8sFeed10(u8bIdle(line), (u64)cols[i].v);
     }
     if (tail != NULL) { u8cs t = u8scstr(tail); (void)u8bFeed(line, t); }
-    (void)ROWSu8bFeedSummary(u8bDataC(line));
+    (void)HUNKTableSummary(u8bDataC(line));
 }
 
 //  Does the wt's on-disk blob for `childpath` differ from `base_sha`
@@ -1840,12 +1840,11 @@ static ok64 patch_apply_inner(u8cs reporoot, uricp u) {
 //  the parent recurses into subs).
 ok64 PATCHApply(u8cs reporoot, uricp u) {
     sane($ok(reporoot) && u != NULL);
-    rows table = {};
     u8cs empty_uri = {};
-    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    call(HUNKTableOpen, empty_uri, 0, 0, NO);
     try(patch_apply_inner, reporoot, u);
     ok64 ar = __;
-    ok64 cr = ROWSClose(&table);
+    ok64 cr = HUNKTableClose();
     return ar != OK ? ar : cr;
 }
 
@@ -1935,15 +1934,14 @@ static ok64 patch_apply_file_inner(u8cs reporoot, u8cs filepath,
 }
 
 //  Single-file PATCH entry: bracket the one status row in a per-module
-//  ROWS table (BRO-002), same discipline as PATCHApply.
+//  HUNK table (BRO-002), same discipline as PATCHApply.
 ok64 PATCHApplyFile(u8cs reporoot, u8cs filepath,
                     u8cs target_query, u8cs frag) {
     sane($ok(reporoot) && $ok(filepath));
-    rows table = {};
     u8cs empty_uri = {};
-    call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+    call(HUNKTableOpen, empty_uri, 0, 0, NO);
     try(patch_apply_file_inner, reporoot, filepath, target_query, frag);
     ok64 ar = __;
-    ok64 cr = ROWSClose(&table);
+    ok64 cr = HUNKTableClose();
     return ar != OK ? ar : cr;
 }

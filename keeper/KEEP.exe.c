@@ -18,7 +18,7 @@
 #include "abc/PRO.h"
 #include "dog/CLI.h"
 #include "dog/DOG.h"
-#include "dog/ROWS.h"
+#include "dog/HUNK.h"
 #include "dog/WHIFF.h"
 #include "dog/git/GIT.h"
 
@@ -790,15 +790,14 @@ static b8 keep_post_is_git_wire(u8csc remote_uri) {
 }
 
 //  POST-020: surface the synthetic-coordinate → git-default-branch
-//  notice as a ROWS progress row on the post stream (BE-005), not a bare
+//  notice as a progress row on the post stream (BE-005), not a bare
 //  `keeper: post: …` stderr line.  A transient one-row table streams the
 //  line as a text hunk (TLV folds it into the relayed module hunk).
 static void keeper_post_notice(u8cs line) {
-    rows r = {};
     u8cs empty = {};
-    if (ROWSOpen(&r, empty, 0, 0, ROWS_MODE_KEYED) != OK) return;
-    (void)ROWSu8bFeedSummary(line);
-    (void)ROWSClose(&r);
+    if (HUNKTableOpen(empty, 0, 0, NO) != OK) return;
+    (void)HUNKTableSummary(line);
+    (void)HUNKTableClose();
 }
 
 //  Push the current worktree commit to a remote.  Nothing is staged

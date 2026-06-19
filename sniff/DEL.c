@@ -32,7 +32,7 @@
 #include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RON.h"
-#include "dog/ROWS.h"
+#include "dog/ULOG.h"
 #include "dog/git/GIT.h"
 #include "keeper/KEEP.h"
 #include "keeper/REFS.h"
@@ -53,7 +53,7 @@ static void del_skip(u8cs path, char const *reason) {
     { a_cstr(s, " ");          (void)u8bFeed(sl, s); }
     (void)u8bFeed(sl, rs);
     { a_cstr(s, " — skipped"); (void)u8bFeed(sl, s); }
-    (void)ROWSu8bFeedSummary(u8bDataC(sl));
+    (void)HUNKTableSummary(u8bDataC(sl));
 }
 
 //  Verb-output sweep (BE-005): feed a `<lead> N <tail>` count line into
@@ -64,7 +64,7 @@ static void del_count_summary(char const *lead, u32 n, char const *tail) {
     { u8cs s = u8scstr(lead); (void)u8bFeed(line, s); }
     (void)utf8sFeed10(u8bIdle(line), (u64)n);
     { u8cs s = u8scstr(tail); (void)u8bFeed(line, s); }
-    (void)ROWSu8bFeedSummary(u8bDataC(line));
+    (void)HUNKTableSummary(u8bDataC(line));
 }
 
 // --- Per-URI baseline-membership classifier -------------------------
@@ -249,7 +249,7 @@ static ok64 del_dir(u8cs reporoot, u8cs dir_rel) {
         { a_cstr(s, " — "); (void)u8bFeed(line, s); }
         (void)utf8sFeed10(u8bIdle(line), (u64)ctx.unlinked);
         { a_cstr(s, " file(s) unlinked"); (void)u8bFeed(line, s); }
-        (void)ROWSu8bFeedSummary(u8bDataC(line));
+        (void)HUNKTableSummary(u8bDataC(line));
     }
     done;
 }
@@ -299,7 +299,7 @@ static ok64 del_sweep_visit(u8cs path, u8 kind, u8cp esha,
     {
         ulogrec rep = {.ts = 0, .verb = c->verb};
         u8csMv(rep.uri.path, path);
-        (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+        (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
     }
     return OK;
 }
@@ -323,7 +323,7 @@ static ok64 del_sweep_missing(u8cs reporoot, ron60 ts, ron60 verb,
 }
 
 //  Named-delete worker — defined below; runs under DELStage's open
-//  `delete:` ROWS table (BE-005 verb-output sweep).
+//  `delete:` HUNK table (BE-005 verb-output sweep).
 static ok64 del_stage_named(u32 nuris, uri const *uris);
 
 ok64 DELStage(u32 nuris, uri const *uris) {
@@ -339,9 +339,8 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         ron60 sweep_verb = SNIFFAtVerbDelete();
         a_dup(u8c, sweep_root, u8bData(HOME.wt));
         u32 sweep_n = 0;
-        rows table = {};
         u8cs empty_uri = {};
-        call(ROWSOpen, &table, empty_uri, 0, 0, ROWS_MODE_KEYED);
+        call(HUNKTableOpen, empty_uri, 0, 0, NO);
         try(del_sweep_missing, sweep_root, sweep_ts, sweep_verb, &sweep_n);
         ok64 so = __;
         //  Verb-output sweep (BE-005): the swept count rides the table as
@@ -350,7 +349,7 @@ ok64 DELStage(u32 nuris, uri const *uris) {
         //  relay capture), mirroring the old stderr guard.
         if (so == OK && sweep_n > 0 && !SNIFF.quiet)
             del_count_summary("swept ", sweep_n, " missing file(s)");
-        ok64 cr = ROWSClose(&table);
+        ok64 cr = HUNKTableClose();
         if (so != OK) return so;
         if (cr != OK) return cr;
         done;
@@ -359,19 +358,18 @@ ok64 DELStage(u32 nuris, uri const *uris) {
     //  Named-delete worker (BE-005 verb-output sweep).  Open ONE
     //  banner-headed `delete:` table so the per-file `delete` rows + the
     //  skip diagnostics + final count ride one hunk (streamed on a tty,
-    //  one `H` hunk in --tlv/relay).  ROWSOpen/Close bracket every worker
-    //  exit path; per-file rows append via the worker's ROWSPrintRow.
+    //  one `H` hunk in --tlv/relay).  HUNKTableOpen/Close bracket every
+    //  worker exit path; per-file rows append via HUNKTablePrintRow.
     a_cstr(del_uri, "delete:");
     ron60 named_verb = SNIFFAtVerbDelete();
     ron60 named_ts = 0;
     struct timespec named_tv = {};
     SNIFFAtNow(&named_ts, &named_tv);
-    rows table = {};
-    call(ROWSOpen, &table, del_uri, named_verb, named_ts, ROWS_MODE_KEYED);
-    table.fd = STDOUT_FILENO;
+    call(HUNKTableOpen, del_uri, named_verb, named_ts, NO);
+    HUNKTableFd(STDOUT_FILENO);
     try(del_stage_named, nuris, uris);
     ok64 wr = __;
-    ok64 cr = ROWSClose(&table);
+    ok64 cr = HUNKTableClose();
     return wr != OK ? wr : cr;
 }
 
@@ -447,7 +445,7 @@ static ok64 del_stage_named(u32 nuris, uri const *uris) {
                 (void)u8bFeed(sl, mount);
                 { a_cstr(s, " — delete it from within the sub; skipped");
                   (void)u8bFeed(sl, s); }
-                (void)ROWSu8bFeedSummary(u8bDataC(sl));
+                (void)HUNKTableSummary(u8bDataC(sl));
                 skipped++;
                 continue;
             }
@@ -471,7 +469,7 @@ static ok64 del_stage_named(u32 nuris, uri const *uris) {
             {
                 ulogrec rep = {.ts = 0, .verb = verb};
                 u8csMv(rep.uri.path, raw);
-                (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+                (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
             }
             continue;
         }
@@ -529,7 +527,7 @@ static ok64 del_stage_named(u32 nuris, uri const *uris) {
         {
             ulogrec rep = {.ts = 0, .verb = verb};
             u8csMv(rep.uri.path, raw);
-            (void)ROWSPrintRow(&rep, ROWS_NAV_CAT);
+            (void)HUNKTablePrintRow(&rep, HUNK_NAV_CAT);
         }
     }
 
@@ -549,7 +547,7 @@ static ok64 del_stage_named(u32 nuris, uri const *uris) {
             { a_cstr(s, " skipped"); (void)u8bFeed(line, s); }
         }
         { a_cstr(s, ")"); (void)u8bFeed(line, s); }
-        (void)ROWSu8bFeedSummary(u8bDataC(line));
+        (void)HUNKTableSummary(u8bDataC(line));
     }
     done;
 }

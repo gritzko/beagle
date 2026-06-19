@@ -249,7 +249,7 @@
   Hermetic.
 * `52-default-state-banner/` — GET-026 / BE-005.  Bare `be get` and
   `be get '?'` are the DEFAULT GET: they run the normal checkout/update
-  path and report the resulting state through the shared ROWS state
+  path and report the resulting state through the shared HUNK table
   banner — a pale-yellow `get ?#<hashlet>` hunk header — instead of the
   old raw `branches:`/`remotes:` summary (rehomed to STATUS-001) or
   silence on an up-to-date wt.  Table-driven over (mode, lag): up-to-date
