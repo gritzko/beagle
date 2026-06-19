@@ -21,3 +21,7 @@ target_link_libraries(TOK2fuzz dog abc-core)
 
 add_executable(PACKRESOLVEfuzz PACKRESOLVE.c)
 target_link_libraries(PACKRESOLVEfuzz dog abc-core)
+
+# DOG-003: columnar weave DAG content-recovery (ported from graf/WEAVE2)
+add_executable(DWEAVEfuzz WEAVE.c)
+target_link_libraries(DWEAVEfuzz dog abc-core)

@@ -121,3 +121,10 @@ target_compile_options(BRAM02test PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(BRAM02test dog abc-core)
 add_test(NAME BRAM02test COMMAND BRAM02test)
 
+# DOG-003: columnar weave engine — codec + from-blob round-trip
+add_executable(DWEAVE01test WEAVE01.c)
+target_link_options(DWEAVE01test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(DWEAVE01test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(DWEAVE01test dog abc-core)
+add_test(NAME DWEAVE01test COMMAND DWEAVE01test)
+
