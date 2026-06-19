@@ -62,6 +62,12 @@ target_compile_options(WALKtest PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(WALKtest keeplib dog abc-core)
 add_test(NAME WALKtest COMMAND WALKtest)
 
+add_executable(CLOSEtest CLOSE.c)
+target_link_options(CLOSEtest PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(CLOSEtest PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(CLOSEtest keeplib dog abc-core)
+add_test(NAME CLOSEtest COMMAND CLOSEtest)
+
 add_executable(ZINFtest ZINF.c)
 target_link_options(ZINFtest PRIVATE ${TEST_LDD_FLAGS})
 target_compile_options(ZINFtest PRIVATE ${TEST_CXX_FLAGS})

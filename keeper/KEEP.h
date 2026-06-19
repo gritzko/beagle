@@ -411,16 +411,6 @@ ok64 KEEPImport(u8cs pack_path);
 //  Caller holds no resources beyond the `bytes` slice.
 ok64 KEEPIngestFile(u8csc bytes);
 
-//  Push one new commit object to `host:path` via git-receive-pack.
-//  Spawns `ssh <host> git-receive-pack <path>` (no shell).
-//  `ref` is the full remote ref name, e.g. "refs/heads/master".
-//  `old_hex`/`new_hex` are 40-char SHA-1 hex slices.  old_hex may be
-//  "000...0" (40 zeros) to create a new ref.
-//  `commit_body` is the raw commit object bytes that correspond to
-//  new_hex; KEEPPush packs and sends exactly this one object.
-ok64 KEEPPush(u8csc host, u8csc path, char const *ref,
-              u8csc old_hex, u8csc new_hex, u8csc commit_body);
-
 //  Store a batch of objects (convenience wrapper over Open/Feed/Close).
 ok64 KEEPPut(u8csc *objects, wh64 *whiffs, u32 nobjs);
 

@@ -40,15 +40,36 @@ u8 WALKu8sModeKind(u8cs mode) {
 //  tree data must outlive child recursion's tree fetch).
 static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
                             u8bp pathbuf, b8 eager, u8bp bbuf,
-                            walk_tree_fn visit, void0p ctx) {
+                            walk_tree_fn visit, void0p ctx, u32 depth) {
     sane(k && tree_sha && visit);
 
-    a_carve(u8, tbuf, 1UL << 20);
+    //  KEEP-001: hard depth cap so a (mal)formed deeply-nested tree
+    //  cannot overflow the C stack.  try()-per-subtree bounds live
+    //  scratch to the root-to-leaf chain, so the cap is what bounds a
+    //  pathological linear tree (the depth, not the width, is held).
+    if (depth >= WALK_MAX_DEPTH) return WALKBADFMT;
+
+    //  KEEP-001: right-size the per-tree carve.  A modest default fits
+    //  virtually every real tree in one inflate; the live carve is what
+    //  every root-to-leaf chain level holds, so keeping it small lets a
+    //  legitimately deep tree reach WALK_MAX_DEPTH inside the BASS
+    //  arena.  An oversized tree (>64 KiB) is the only case that
+    //  re-inflates, into a 1 MiB carve — not a per-node double-inflate.
     u8 otype = 0;
-    call(KEEPGetExact, tree_sha, tbuf, &otype);
+    u8cs tree_s = {};
+    a_carve(u8, tbuf, 1UL << 16);
+    ok64 go = KEEPGetExact(tree_sha, tbuf, &otype);
+    if (go == BNOROOM) {
+        a_carve(u8, big, 1UL << 20);
+        call(KEEPGetExact, tree_sha, big, &otype);
+        u8csMv(tree_s, u8bDataC(big));
+    } else if (go != OK) {
+        return go;
+    } else {
+        u8csMv(tree_s, u8bDataC(tbuf));
+    }
     if (otype != DOG_OBJ_TREE) return WALKBADFMT;
 
-    u8cs tree_s = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
     u8cs file = {}, esha = {};
     ok64 result = OK;
 
@@ -112,7 +133,8 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
             //  (GET-020).  `sub`/`pathbuf`/`bbuf` live below the
             //  snapshot (the parent's `tbuf` and its tree-entry slices
             //  too), so they survive the rewind.
-            try(walk_tree_dive, k, &sub, pathbuf, eager, bbuf, visit, ctx);
+            try(walk_tree_dive, k, &sub, pathbuf, eager, bbuf, visit, ctx,
+                depth + 1);
             vo = __;
         }
 
@@ -128,9 +150,13 @@ static ok64 walk_tree_dive(keeper *k, sha1cp tree_sha,
     return result;
 }
 
-static ok64 walk_tree_entry(keeper *k, u8cp tree_sha, b8 eager,
-                             walk_tree_fn visit, void0p ctx) {
-    sane(k && tree_sha && visit);
+//  KEEP-001: the one keeper tree walker.  WALK / WIRECLI-push / CLOSE
+//  all route their tree descent here, passing per-site behaviour as the
+//  visitor (dedup short-circuits via WALKSKIP).  See WALK.h.
+ok64 KEEPWalkTree(u8cp tree_sha, b8 eager,
+                  walk_tree_fn visit, void0p ctx) {
+    sane(tree_sha && visit);
+    keeper *k = &KEEP;
     a_pad(u8, pathbuf, 2048);
     sha1 root = {};
     sha1Mv(&root, (sha1cp)tree_sha);
@@ -146,17 +172,17 @@ static ok64 walk_tree_entry(keeper *k, u8cp tree_sha, b8 eager,
     //  via mmap+NORESERVE; pages only commit if eager actually fetches.
     a_carve(u8, bbuf, 1UL << 20);
     ok64 o = walk_tree_dive(k, &root, pathbuf, eager,
-                             eager ? bbuf : NULL, visit, ctx);
+                             eager ? bbuf : NULL, visit, ctx, 0);
     if (o == WALKSTOP) return OK;
     return o;
 }
 
 ok64 WALKTree(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return walk_tree_entry(&KEEP, tree_sha, YES, visit, ctx);
+    return KEEPWalkTree(tree_sha, YES, visit, ctx);
 }
 
 ok64 WALKTreeLazy(u8cp tree_sha, walk_tree_fn visit, void0p ctx) {
-    return walk_tree_entry(&KEEP, tree_sha, NO, visit, ctx);
+    return KEEPWalkTree(tree_sha, NO, visit, ctx);
 }
 
 //  ls-files: descend an optional /subpath relative to a URI-resolved
@@ -306,8 +332,7 @@ ok64 KEEPLsFiles(uricp target, walk_tree_fn visit, void0p ctx) {
     //  `prefix_s` + '/' so paths remain absolute from the repo root.
     lsf_prefix_ctx pc = { .inner = visit, .inner_ctx = ctx, .prefix = {}};
     u8csMv(pc.prefix, prefix_s);
-    return walk_tree_entry(k, target_sha.data, NO,
-                            lsf_prefix_visit, &pc);
+    return KEEPWalkTree(target_sha.data, NO, lsf_prefix_visit, &pc);
 }
 
 //  URI → single blob.  Shares the resolve + descend machinery with
@@ -317,9 +342,9 @@ ok64 KEEPGetByURI(uricp target, u8bp out) {
     sane(target && out);
     keeper *k = &KEEP;
 
-    //  Host-bearing URI: remote materialization.  Not wired yet —
-    //  keeper has KEEPPush but no policy for deciding what to pull on
-    //  demand.  Fail loudly until that's resolved.
+    //  Host-bearing URI: remote materialization.  Not wired yet — no
+    //  policy for deciding what to pull on demand.  Fail loudly until
+    //  that's resolved.
     if (!$empty(target->host)) fail(KEEPFAIL);
 
     //  No path AND no ?ref/#sha: nothing to resolve against — there is

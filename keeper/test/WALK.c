@@ -554,6 +554,101 @@ ok64 WALKtest6() {
     done;
 }
 
+// ---- Test 7: deep tree terminates cleanly, cap holds (KEEP-001) ----
+//
+//  Build a linear chain of nested single-subdir trees and assert
+//  KEEPWalkTree terminates with a CLEAN error (no crash / C-stack
+//  overflow) and a bounded visit count.  WALK_MAX_DEPTH (4096) is the
+//  hard C-stack backstop; in practice the per-walk pathbuf (every level
+//  appends "<name>/") binds first, so a genuinely deep tree returns
+//  WALKNOROOM well before the cap.  Either is a clean truncation — the
+//  point is no undefined behaviour.  A shallow chain walks fully OK.
+
+typedef struct { u32 n_dirs; } w7_ctx;
+
+static ok64 w7_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
+                     void0p vctx) {
+    (void)path; (void)esha; (void)blob;
+    w7_ctx *c = (w7_ctx *)vctx;
+    if (kind == WALK_KIND_DIR) c->n_dirs++;
+    return OK;
+}
+
+//  Build `depth` nested trees: each holds one subdir `d` pointing at the
+//  next level down; the deepest holds a single leaf file.  Returns the
+//  top tree's sha.
+static ok64 build_deep_chain(keeper *k, keep_pack *p, u32 depth,
+                             sha1 *top_out) {
+    sane(k && p && top_out);
+    a_cstr(leaf_mn, "100644 leaf.txt");
+    a_cstr(leaf_content, "x\n");
+    sha1 cur = {};
+    call(build_leaf_tree, k, p, leaf_mn, leaf_content, &cur);
+    for (u32 i = 0; i < depth; i++) {
+        a_pad(u8, tb, 64);
+        a_cstr(dn, "40000 d");
+        call(u8bFeed, tb, dn);
+        u8bFeed1(tb, 0);
+        a_rawc(ss, cur);
+        call(u8bFeed, tb, ss);
+        a_dup(u8c, tc, u8bData(tb));
+        sha1 nx = {};
+        call(KEEPPackFeed, p, DOG_OBJ_TREE, tc, 0, &nx);
+        cur = nx;
+    }
+    *top_out = cur;
+    done;
+}
+
+ok64 WALKtest7() {
+    sane(1);
+    call(FILEInit);
+
+    char tmp[] = "/tmp/walktest7-XXXXXX";
+    want(mkdtemp(tmp) != NULL);
+    a_cstr(root, tmp);
+    home h = {};
+    call(HOMEOpenAt, root, YES);
+    call(KEEPOpen, YES);
+
+    keep_pack p = {};
+    call(KEEPPackOpen, &p);
+    p.strict_order = NO;
+
+    //  Over the cap: WALK_MAX_DEPTH+50 nested dirs → WALKBADFMT, no crash.
+    sha1 deep_top = {};
+    call(build_deep_chain, &KEEP, &p, WALK_MAX_DEPTH + 50, &deep_top);
+    //  Under the cap: 100 nested dirs walk to the bottom cleanly.
+    sha1 shallow_top = {};
+    call(build_deep_chain, &KEEP, &p, 100, &shallow_top);
+    call(KEEPPackClose, &p);
+
+    {
+        w7_ctx c = {};
+        ok64 rc = KEEPWalkTree(deep_top.data, NO, w7_visit, &c);
+        //  Clean truncation (WALKNOROOM/WALKBADFMT), never OK, no crash.
+        want(rc != OK);
+        want(rc == WALKNOROOM || rc == WALKBADFMT);
+        //  Bounded: did not recurse unbounded into the C stack.
+        want(c.n_dirs <= WALK_MAX_DEPTH + 1);
+    }
+    {
+        w7_ctx c = {};
+        call(KEEPWalkTree, shallow_top.data, NO, w7_visit, &c);
+        //  Root DIR + 100 nested DIRs all visited.
+        want(c.n_dirs == 1 + 100);
+    }
+
+    call(KEEPClose);
+    HOMEClose();
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp);
+        system(cmd);
+    }
+    done;
+}
+
 ok64 maintest() {
     sane(1);
     call(WALKtest1);
@@ -561,6 +656,7 @@ ok64 maintest() {
     call(WALKtest4);
     call(WALKtest5);
     call(WALKtest6);
+    call(WALKtest7);
     done;
 }
 

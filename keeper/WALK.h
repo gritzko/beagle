@@ -49,6 +49,22 @@ u8 WALKu8sModeKind(u8cs mode);
 typedef ok64 (*walk_tree_fn)(u8cs path, u8 kind, u8cp esha,
                              u8cs blob, void0p ctx);
 
+//  Hard recursion-depth cap for the shared tree walker (KEEP-001).
+//  A git tree nested deeper than this is treated as the end of the
+//  walk for that branch (WALKBADFMT) rather than overflowing the C
+//  stack.  4096 is far past any real source tree's nesting.
+#define WALK_MAX_DEPTH 4096
+
+//  The one keeper tree walker (KEEP-001): depth-first, pre-order over
+//  the tree rooted at `root` (20-byte SHA-1), invoking `visit` for the
+//  root tree itself (empty path, WALK_KIND_DIR) and then every entry.
+//  Bounded recursion — each subtree is walked under its own `try()`
+//  frame so per-sibling BASS scratch is rewound, and the descent is
+//  capped at WALK_MAX_DEPTH.  `eager` resolves REG/EXE/LNK blobs before
+//  the visitor sees them; `!eager` leaves `blob` empty.  All of WALK /
+//  WIRECLI-push / CLOSE route their tree descent through this.
+ok64 KEEPWalkTree(u8cp root, b8 eager, walk_tree_fn visit, void0p ctx);
+
 //  Walk the tree at `tree_sha` (20-byte) depth-first, eager mode:
 //  resolves every REG/EXE/LNK blob through `k` before invoking the
 //  visitor, so `blob` is always filled for file entries.

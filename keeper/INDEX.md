@@ -19,7 +19,7 @@ The whole keeper surface: branch-aware open, object get/put/has, the incremental
  -  `keep_pack`/`KEEPPackOpen`/`PackFeed`/`PackClose` — the incremental pack writer; `PackFeed` deltas a base.
  -  `KEEPIsAncestor`/`SharesAncestor`/`CommitTreeSha`/`ObjSha` — bounded-BFS FF/shared-history predicates, commit→tree, sha.
  -  `KEEPEachTip`/`KEEPEachRemote`/`keep_tip`/`keep_remote` — iterate local tips and remote-tracking rows; may `REFSSTOP`.
- -  `KEEPMoveCommits`/`KEEPPush`/`GetRemote`/`ForEachCapToken` — cross-branch promote, push, wire fetch, cap token-loop.
+ -  `KEEPMoveCommits`/`GetRemote`/`ForEachCapToken` — cross-branch promote, wire fetch, cap token-loop.
 
 ##  Refs & resolution
 
@@ -48,7 +48,8 @@ The single interpretation boundary: everything downstream sees only full 40-hex 
 Depth-first traversal of one tree rooted at a SHA-1 (commit walks live in graf/). The visitor `walk_tree_fn` gets `(path, kind, esha, blob, ctx)` and steers via `WALKSKIP`/`WALKSTOP` (KEEP-001).
 
  -  `walk_tree_fn`/`WALKu8sModeKind`/`WALK_KIND_*` — the DFS visitor typedef + mode classifier (REG/EXE/LNK/SUB/DIR).
- -  `WALKTree`/`WALKTreeLazy` — eager (blobs up front) vs lazy (pulls via `KEEPGetExact`); sniff/graf drive the lazy form.
+ -  `KEEPWalkTree`/`WALK_MAX_DEPTH` — the one keeper tree walker (KEEP-001): bounded try-per-subtree recursion, depth-capped, sized.
+ -  `WALKTree`/`WALKTreeLazy` — eager vs lazy (`KEEPGetExact`) wrappers over `KEEPWalkTree`; sniff/graf drive the lazy form.
  -  `KEEPLsFiles`/`KEEPTreeDescend` — ls-files over a URI tree, and the segment-by-segment descent behind `tree:`/`blob:`.
  -  `KEEPTreeULog`/`KEEPTreeDiff` — materialise a tree's leaves as sorted ULOG rows, and the tree-vs-tree diff.
  -  `KEEPEmitCommitLine`/`EmitTreeDiffFiles`/`EmitCommitsSince` — the "what moved" banner (commit rows, file diffs, range).
@@ -58,7 +59,7 @@ Depth-first traversal of one tree rooted at a SHA-1 (commit walks live in graf/)
 A commit's reachable closure (commit + parents + trees + blobs) — the unit every pack builder ships. Shared by the push client (WIRECLI) and the thin builder (WIRE), with have-pruning (GIT-005).
 
  -  `close_set`/`CLOSESetHas`/`CLOSESetAdd` — caller-backed sorted sha1 array, binary-search membership; insert sorts + dedups.
- -  `CLOSEWalkCommit`/`CLOSEWalkTree` — append a commit's / tree's closure into `out`, pruning a `have` set; gitlinks skipped.
+ -  `CLOSEWalkCommit`/`CLOSEWalkTree` — append a commit's / tree's closure into `out` via `KEEPWalkTree`, pruning a `have` set.
 
 ###  SUBS.h — submodule enumeration
 

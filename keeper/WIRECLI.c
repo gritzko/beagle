@@ -1111,9 +1111,6 @@ ok64 WIREFetch(u8csc remote_uri, u8csc want_ref) {
 
 #define WPUSH_MAX_OBJS 65536
 
-//  Recursively collect tree + blob SHAs reachable from `tree_sha` into
-//  `out` (capacity `cap`).  Mirrors keep_walk_tree (KEEP.c) but lives
-//  here so WIRECLI doesn't depend on KEEP.c's static helpers.
 // --- have-set (sorted sha array; binary-search membership) ---
 
 typedef struct {
@@ -1147,6 +1144,41 @@ static void sha_set_add(sha_set *s, sha1cp v) {
     s->n++;
 }
 
+//  KEEP-001: the push-side tree closure is a visitor over the one
+//  keeper walker (KEEPWalkTree).  It collects each entry's sha (tree or
+//  blob) into `out`, prunes against the peer-have set and the within-
+//  closure dedup set (returning WALKSKIP so a closed subtree is not
+//  descended), and skips submodule gitlinks.
+typedef struct {
+    sha1          *out;
+    u32           *n;
+    u32            cap;
+    sha_set const *have;
+    sha_set       *add;
+    ok64           err;       //  WIRECLFL on overflow
+} wpush_visit_ctx;
+
+static ok64 wpush_tree_visit(u8cs path, u8 kind, u8cp esha, u8cs blob,
+                             void0p vctx) {
+    (void)path; (void)blob;
+    wpush_visit_ctx *c = (wpush_visit_ctx *)vctx;
+    if (kind == WALK_KIND_SUB) return WALKSKIP;     // gitlink: other shard
+    sha1 entry = {};
+    u8cs es = {esha, esha + 20};
+    (void)sha1Drain(es, &entry);
+    if (c->have && sha_set_has(c->have, &entry)) return WALKSKIP;
+    if (c->add  && sha_set_has(c->add,  &entry)) return WALKSKIP;
+    if (c->out) {
+        if (*c->n >= c->cap) { c->err = WIRECLFL; return WALKSTOP; }
+        c->out[(*c->n)++] = entry;
+        sha1hex _h = {}; sha1hexFromSha1(&_h, &entry);
+        trace("wpush_dump: %s %.40s\n",
+              kind == WALK_KIND_DIR ? "tree" : "blob", _h.data);
+    }
+    if (c->add) sha_set_add(c->add, &entry);
+    return OK;
+}
+
 //  Walk a tree's closure into `out` (skip-list-aware: a sha already
 //  present in `have` is not added and its sub-objects are not
 //  enumerated).  When `add_to_have` is non-NULL, also record visited
@@ -1156,58 +1188,17 @@ static ok64 wpush_walk_tree(keeper *k, sha1cp tree_sha,
                             sha1 *out, u32 *n, u32 cap,
                             sha_set const *have, sha_set *add_to_have) {
     sane(k && tree_sha && n);
-    if (have && sha_set_has(have, tree_sha)) done;
-    //  Dedup against `add_to_have` too — without this check, a merge
-    //  history (a commit reachable through two parent paths) re-walks
-    //  the same trees / blobs through every alternative path,
-    //  exploding O(N) into O(2^depth).
-    if (add_to_have && sha_set_has(add_to_have, tree_sha)) done;
-    if (out) {
-        if (*n >= cap) return WIRECLFL;
-        out[(*n)++] = *tree_sha;
-        sha1hex _h = {}; sha1hexFromSha1(&_h, tree_sha);
-        trace("wpush_dump: tree %.40s\n", _h.data);
-    }
-    if (add_to_have) sha_set_add(add_to_have, tree_sha);
-
-    Bu8 tbuf = {};
-    call(u8bMap, tbuf, 1UL << 20);
-    u8 ttype = 0;
-    if (KEEPGetExact(tree_sha, tbuf, &ttype) != OK ||
-        ttype != KEEP_OBJ_TREE) {
-        u8bUnMap(tbuf);
-        done;
-    }
-    u8cs walk = {u8bDataHead(tbuf), u8bIdleHead(tbuf)};
-    u8cs file = {}, sha = {};
-    while (GITu8sDrainTree(walk, file, sha, NULL) == OK) {
-        if ($len(sha) != 20) continue;
-        b8 is_tree = NO;
-        b8 is_submodule = NO;
-        if ($len(file) >= 5 && file[0][0] == '4' && file[0][1] == '0')
-            is_tree = YES;
-        if ($len(file) >= 6 && file[0][0] == '1' && file[0][1] == '6' &&
-            file[0][2] == '0')
-            is_submodule = YES;
-        if (is_submodule) continue;
-        sha1 entry_sha = {};
-        (void)sha1Drain(sha, &entry_sha);
-        if (have && sha_set_has(have, &entry_sha)) continue;
-        if (add_to_have && sha_set_has(add_to_have, &entry_sha)) continue;
-        if (is_tree) {
-            wpush_walk_tree(k, &entry_sha, out, n, cap, have, add_to_have);
-        } else {
-            if (out) {
-                if (*n >= cap) break;
-                out[(*n)++] = entry_sha;
-                sha1hex _h = {}; sha1hexFromSha1(&_h, &entry_sha);
-                trace("wpush_dump: blob %.40s\n", _h.data);
-            }
-            if (add_to_have) sha_set_add(add_to_have, &entry_sha);
-        }
-    }
-    u8bUnMap(tbuf);
-    done;
+    wpush_visit_ctx c = {.out = out, .n = n, .cap = cap,
+                         .have = have, .add = add_to_have, .err = OK};
+    //  KEEP-001: tolerate a missing / non-tree root the same way the
+    //  former hand-rolled walk did (the root sha is collected by the
+    //  visitor; a body we don't hold just adds no sub-objects — the
+    //  haveset-build pass relies on this).  Overflow is the only hard
+    //  error, surfaced via `c.err`.
+    ok64 wo = KEEPWalkTree((u8cp)tree_sha, NO, wpush_tree_visit, &c);
+    if (c.err != OK) return c.err;
+    if (wo == KEEPNONE || wo == WALKBADFMT) done;
+    return wo;
 }
 
 //  Collect commit + tree + blob SHAs reachable from `commit_sha`,
