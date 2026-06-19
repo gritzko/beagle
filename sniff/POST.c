@@ -2370,9 +2370,16 @@ static ok64 post_print_status_inner(post_ctx *c) {
     post_mad_ctx mad = {.fd = STDOUT_FILENO, .changed = 0};
     post_walk_decisions(c, POST_VM_UNLINK | POST_VM_ADD,
                         post_drain_mad_cb, &mad);
+    //  POST-020: the change-count rides the `post:` table as a summary
+    //  tail (BE-005), not a bare `sniff: N change(s)` stderr line — like
+    //  put's staged-count.  Fed BEFORE Close so it joins the module hunk.
+    a_pad(u8, sum, 64);
+    { a_cstr(pre, "post: "); (void)u8bFeed(sum, pre); }
+    (void)utf8sFeed10(u8bIdle(sum), (u64)mad.changed);
+    { a_cstr(suf, " change(s)"); (void)u8bFeed(sum, suf); }
+    (void)ROWSu8bFeedSummary(u8bDataC(sum));
     ok64 cr = ROWSClose(&table);
     fflush(stdout);
-    fprintf(stderr, "sniff: %u change(s)\n", mad.changed);
     return cr;
 }
 

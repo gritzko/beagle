@@ -94,6 +94,17 @@ rc=$?
     || { echo "FAIL: forged a funny ref refs/heads/.<…> on the git wire" >&2
          cat 04.gitpush.err >&2; exit 1; }
 
+#  (b2) POST-020: the synthetic-coordinate → git-default-branch notice
+#  and the change-count are ROWS rows on the post STREAM (stdout), not
+#  bare `keeper:`/`sniff:` stderr lines (BE-005).  STDERR stays clean;
+#  the notice rides stdout instead.
+! grep -qE 'keeper: post:|sniff:.*change\(s\)' 04.gitpush.err \
+    || { echo "FAIL: bare keeper:/sniff: stderr echo leaked (POST-020)" >&2
+         cat 04.gitpush.err >&2; exit 1; }
+grep -q 'synthetic coordinate' 04.gitpush.out \
+    || { echo "FAIL: synthetic-coordinate notice missing from post stream" >&2
+         cat 04.gitpush.out >&2; exit 1; }
+
 #  (c) MUST NOT have created a `refs/heads/.parentproj` on the remote.
 git -C subA.git show-ref | grep -q 'refs/heads/\.' \
     && { echo "FAIL: forged a dot-coordinate ref on the git remote" >&2

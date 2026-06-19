@@ -67,12 +67,19 @@ sub_log_post=$(wc -c < vendor/sub/.be)
 [ "$sub_log_pre" = "$sub_log_post" ] \
     || fail "sub wtlog grew during --dry-run ($sub_log_pre -> $sub_log_post)"
 
-# POST-019: no stderr echo.  --dry-run commits nothing, so there is no
-# relayed sub banner to grep; recursion into BOTH levels is proven by
-# the per-level `sniff: <N> change(s)` lines (one per project, ≥2).
-nchg=$(grep -c 'sniff:.*change(s)' 02.post.got.err 2>/dev/null || echo 0)
+# POST-020: the per-level change-count is now a `post: <N> change(s)`
+# ROWS summary on STDOUT (was a bare `sniff: N change(s)` stderr line —
+# BE-005), the sub's riding its relayed module hunk.  Recursion into BOTH
+# levels is proven by ≥2 such lines (one per project); STDERR stays clean.
+nchg=$(grep -c 'post:.*change(s)' 02.post.got.out 2>/dev/null || echo 0)
 [ "$nchg" -ge 2 ] \
-    || fail "expected ≥2 'sniff: N change(s)' lines (per-level); got $nchg; stderr:
+    || fail "expected ≥2 'post: N change(s)' lines (per-level); got $nchg; stdout:
+$(cat 02.post.got.out)
+stderr:
+$(cat 02.post.got.err)"
+# STDERR must carry no bare sniff:/keeper: change-count or notice echo.
+! grep -qE 'sniff:.*change\(s\)|keeper: post:' 02.post.got.err \
+    || fail "bare sniff:/keeper: stderr echo leaked (POST-020):
 $(cat 02.post.got.err)"
 
 note "post/13-sub-dryrun-all-issues: both levels surfaced; no tips moved"

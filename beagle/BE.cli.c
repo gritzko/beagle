@@ -3646,7 +3646,7 @@ ok64 BEActSubsPost(cli *c) {
         //  msg, no URIs) so the dirty-paths / "0 changes" line
         //  prints uniformly.  Then short-circuit the rest of the
         //  plan — actual commits never fire in dry-only mode.
-        a_pad(u8cs, args, 4);
+        a_pad(u8cs, args, 5);
         a_cstr(sniff_s, "sniff");
         a_cstr(post_s,  "post");
         a_dup(u8c, sniff_d, sniff_s);
@@ -3658,6 +3658,15 @@ ok64 BEActSubsPost(cli *c) {
             a_dup(u8c, at_val,  u8bData(be_at_buf));
             u8csbFeed1(args, at_flag);
             u8csbFeed1(args, at_val);
+        }
+        //  POST-020: forward THIS process's HUNK mode so a captured
+        //  child (`be post --dry-run --tlv`, spawned by bepost_spawn_sub)
+        //  makes its status `sniff post` emit a TLV hunk the parent can
+        //  relay — the per-level `post: N change(s)` summary now rides
+        //  that hunk (was a bare stderr line the relay never touched).
+        if (HUNKMode == HUNKOutTLV) {
+            a_cstr(tlv_s, "--tlv"); a_dup(u8c, tlv_d, tlv_s);
+            u8csbFeed1(args, tlv_d);
         }
         a_dup(u8cs, argv, u8csbData(args));
         (void)BERun(sniff_d, argv, NO);
