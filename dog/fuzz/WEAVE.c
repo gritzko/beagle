@@ -38,6 +38,13 @@
 // IDENTICAL tokens — the positional ambiguity that exposed the DIS-003
 // holdout.  Recovery is compared against the same line form.
 //
+// DIS-045 TEETH: the content byte '_' lineforms to a BLANK line "\n"
+// (see w2_lineform), so a blank line's bytes are IDENTICAL to every code
+// line's trailing EOL.  Strings mixing '_' with other bytes place a
+// re-stampable blank line next to a code-line EOL at insert/merge
+// boundaries, making the insert-vs-blank mis-anchor class (DIS-003/045)
+// reachable by the fuzzer.
+//
 // PROPERTY (content recovery): for every line i and every ancestor a in
 // anc*(i), WEAVEProduce(w[i], scope(anc*(a))) must reproduce lineform(Ca)
 // byte-for-byte.  The provided input content IS the oracle — a mismatch
@@ -170,11 +177,19 @@ static ok64 w2_parse(u8cs input, w2_line *lines, u32 *nlines) {
 }
 
 // --- lineform: each content byte b -> the line "b\n" ----------------
+//  DIS-045 TEETH: the RON64 char '_' emits a BLANK line "\n" (no content
+//  char) instead of "_\n".  Blank lines are then first-class content tokens
+//  whose bytes ("\n") are IDENTICAL to every code line's trailing EOL, so a
+//  string like "a_b" -> "a\n" "\n" "b\n" places a re-stampable blank next to
+//  a code-line EOL at insert/merge boundaries — exactly the insert-vs-blank
+//  ambiguity (DIS-003/DIS-045).  The oracle still holds: the SAME content
+//  lineforms to the SAME bytes, so recovery is well-defined.
+#define W2_BLANK '_'
 static ok64 w2_lineform(u8b dst, u8csc content) {
     sane(1);
     u8bReset(dst);
     for (u8cp p = content[0]; p < content[1]; p++) {
-        call(u8bFeed1, dst, *p);
+        if (*p != (u8)W2_BLANK) call(u8bFeed1, dst, *p);
         call(u8bFeed1, dst, (u8)'\n');
     }
     done;

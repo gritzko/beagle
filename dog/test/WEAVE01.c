@@ -316,9 +316,17 @@ static void dag_closure(dagnode const *nd, u32 n, u32 start, u8 *anc) {
     }
 }
 
+//  DIS-045: the char '_' lineforms to a BLANK line "\n" (no content char),
+//  mirroring dog/fuzz/WEAVE's W2_BLANK, so blank-line tokens (bytes == every
+//  code line's trailing EOL) appear next to code EOLs at merge boundaries —
+//  the insert-vs-blank ambiguity.  Same content lineforms identically, so the
+//  recovery oracle stays well-defined.
 static ok64 dag_lineform(u8b dst, char const *s) {
     sane(1); u8bReset(dst);
-    for (char const *p = s; *p; p++) { call(u8bFeed1, dst, (u8)*p); call(u8bFeed1, dst, (u8)'\n'); }
+    for (char const *p = s; *p; p++) {
+        if (*p != '_') call(u8bFeed1, dst, (u8)*p);
+        call(u8bFeed1, dst, (u8)'\n');
+    }
     done;
 }
 
@@ -445,10 +453,38 @@ static dagnode const d044_nodes[] = {
     {"12", "X"},   // 3 merge(1,2)
 };
 
+//  DIS-045 insert-vs-blank: a blank line (`_`) sits between code lines; one
+//  branch INSERTS a code line right before the blank while a concurrent
+//  branch edits an adjacent line — the inserted line's trailing EOL and the
+//  blank line are IDENTICAL-CONTENT tokens.  Recovery of every ancestor (incl.
+//  the blank-bearing base) from the criss-cross merge must hold byte-for-byte,
+//  i.e. the insert never anchors on the wrong side of the blank.  Content uses
+//  `_` for the blank line (dag_lineform), `a/b/...` for code lines.
+static dagnode const d045_nodes[] = {
+    {"",   "a_b"},    // 0 root: code a, BLANK, code b
+    {"0",  "aX_b"},   // 1 insert X before the blank
+    {"0",  "A_b"},    // 2 edit a -> A (concurrent, adjacent)
+    {"0",  "a_B"},    // 3 edit b -> B (concurrent, after the blank)
+    {"12", "AX_b"},   // 4 merge(1,2): both edits coexist
+    {"13", "aX_B"},   // 5 merge(1,3)
+    {"45", "AX_B"},   // 6 merge(4,5): criss-cross over the blank boundary
+};
+
+//  DIS-045 double-blank: two adjacent blank lines with an insert between them,
+//  the maximal blank/EOL identical-token stress (every `\n` token collides).
+static dagnode const d045b_nodes[] = {
+    {"",   "a__b"},   // 0 root: a, BLANK, BLANK, b
+    {"0",  "a_X_b"},  // 1 insert X between the two blanks
+    {"0",  "A__b"},   // 2 edit a
+    {"12", "A_X_b"},  // 3 merge(1,2)
+};
+
 static dagcase const dagcases[] = {
     {"crisscross_recovery", cc_nodes,    8},
     {"crash_597",           c597_nodes, 12},
     {"dis044_spine_above",  d044_nodes,  4},
+    {"dis045_insert_blank", d045_nodes,  7},
+    {"dis045_double_blank", d045b_nodes, 4},
 };
 
 //  Associativity: merge(merge(a,b),c) and merge(a,merge(b,c)) must SERIALISE
