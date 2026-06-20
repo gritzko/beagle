@@ -62,17 +62,31 @@
 // --- Accumulator context ----------------------------------------------
 //
 //  Append-only render buffers shared across the whole walk.  Each
-//  commit's row appends to `text` (and tok32 spans to `toks` in TLV
-//  mode); GRAFHunkEmit is called once at the end with the merged
+//  commit's row appends to `text` (and tok32 spans to `toks` when
+//  `want_toks`); GRAFHunkEmit is called once at the end with the merged
 //  hunk, so HUNKu8sFeedText emits a single trailing blank line for
 //  the whole log rather than one per commit.
+//
+//  HEAD-003: `want_toks` is set for BOTH TLV and direct-Color output —
+//  tok32 spans are DATA the renderer turns into color (HUNKu8sFeedColor)
+//  or wire (HUNKu8sFeed), so a TTY `be head`/`be log` colors its rows
+//  instead of falling back to the verbatim no-toks path.  Plain output
+//  skips them (lean, byte-identical).
 
 typedef struct {
     Bu8   text;
     Bu32  toks;
-    b8    tlv;
+    b8    want_toks;
     i64   now;
 } log_ctx;
+
+//  HEAD-003: tok32 spans are produced for any mode that consumes them —
+//  TLV (wire, bro renders) AND direct Color (HUNKu8sFeedColor paints
+//  rows).  Plain mode skips them.  One predicate so every log/head
+//  producer entry agrees.
+static b8 graflog_want_toks(void) {
+    return HUNKMode == HUNKOutTLV || HUNKMode == HUNKOutColor;
+}
 
 // --- Helpers -----------------------------------------------------------
 
@@ -281,7 +295,7 @@ static ok64 graflog_render_commit(u8b out, u32b toks,
 static ok64 graflog_emit_one(log_ctx *lx, sha1cp csha, u8cs body) {
     sane(lx);
     return graflog_render_commit(lx->text,
-                                 lx->tlv ? lx->toks : NULL,
+                                 lx->want_toks ? lx->toks : NULL,
                                  csha, body, lx->now);
 }
 
@@ -544,11 +558,11 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
     call(GRAFArenaInit);
 
     log_ctx lx = {};
-    lx.tlv = (HUNKMode == HUNKOutTLV);
+    lx.want_toks = graflog_want_toks();
     lx.now = (i64)time(NULL);
     __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
     if (__ != OK) return __;
-    if (lx.tlv) {
+    if (lx.want_toks) {
         __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
         if (__ != OK) return __;
     }
@@ -586,7 +600,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
         if (!u8csEmpty(message) &&
             u8csFindS(message, needle) == OK) {
             (void)graflog_render_commit(lx.text,
-                                        lx.tlv ? lx.toks : NULL,
+                                        lx.want_toks ? lx.toks : NULL,
                                         &csha, body, lx.now);
             found = YES;
             break;
@@ -610,7 +624,7 @@ static ok64 graf_head_msg_search(keeper *k, uricp u) {
         hunk hk = {};
         u8csMv(hk.uri,  u8bDataC(title));
         u8csMv(hk.text, u8bDataC(lx.text));
-        if (lx.tlv) u32csMv(hk.toks, u32bDataC(lx.toks));
+        if (lx.want_toks) u32csMv(hk.toks, u32bDataC(lx.toks));
         (void)GRAFHunkEmit(&hk, NULL);
     } else {
         fprintf(stderr,
@@ -865,9 +879,9 @@ static ok64 graf_head_render_prefixed(log_ctx *lx, u8 prefix,
                                       sha1cp csha, u8cs body) {
     (void)u8bFeed1(lx->text, prefix);
     (void)u8bFeed1(lx->text, ' ');
-    if (lx->tlv) graflog_pack(lx->toks, lx->text, 'P');
+    if (lx->want_toks) graflog_pack(lx->toks, lx->text, 'P');
     return graflog_render_commit(lx->text,
-                                 lx->tlv ? lx->toks : NULL,
+                                 lx->want_toks ? lx->toks : NULL,
                                  csha, body, lx->now);
 }
 
@@ -920,12 +934,12 @@ static u32 graf_head_emit_path_side(log_ctx *lx, u8cs diff,
         if (ok64stem(rec.verb) != verb_stem) continue;
         (void)u8bFeed1(lx->text, prefix);
         (void)u8bFeed1(lx->text, ' ');
-        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'P');
+        if (lx->want_toks) graflog_pack(lx->toks, lx->text, 'P');
         u8cs path = {rec.uri.path[0], rec.uri.path[1]};
         (void)u8bFeed(lx->text, path);
-        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'F');
+        if (lx->want_toks) graflog_pack(lx->toks, lx->text, 'F');
         (void)u8bFeed1(lx->text, '\n');
-        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'W');
+        if (lx->want_toks) graflog_pack(lx->toks, lx->text, 'W');
         n++;
     }
     return n;
@@ -961,11 +975,11 @@ static ok64 graf_head_ahead_behind(keeper *k, uricp u) {
     //  3. Open graf, allocate render context.
     call(GRAFArenaInit);
     log_ctx lx = {};
-    lx.tlv = (HUNKMode == HUNKOutTLV);
+    lx.want_toks = graflog_want_toks();
     lx.now = (i64)time(NULL);
     __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
     if (__ != OK) return __;
-    if (lx.tlv) {
+    if (lx.want_toks) {
         __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
         if (__ != OK) return __;
     }
@@ -1094,7 +1108,7 @@ static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
                         "head: ?" U8SFMT ": %u ahead, %u behind, %u changed\n",
                         u8sFmt(br_label),
                         (unsigned)nahead, (unsigned)nbehind, (unsigned)nchanged);
-        if (lx->tlv) graflog_pack(lx->toks, lx->text, 'L');
+        if (lx->want_toks) graflog_pack(lx->toks, lx->text, 'L');
     }
 
     //  8. Emit one hunk.
@@ -1110,7 +1124,7 @@ static ok64 grafhead_render(log_ctx *lx, keeper *k, uricp u, Bu8 cbuf,
     hunk hk = {};
     u8csMv(hk.uri,  u8bDataC(title));
     u8csMv(hk.text, u8bDataC(lx->text));
-    if (lx->tlv) u32csMv(hk.toks, u32bDataC(lx->toks));
+    if (lx->want_toks) u32csMv(hk.toks, u32bDataC(lx->toks));
     (void)GRAFHunkEmit(&hk, NULL);
 
     done;
@@ -1145,12 +1159,12 @@ ok64 GRAFLog(uricp u) {
     u32 count = graflog_count_from_frag(u);
 
     log_ctx lx = {};
-    lx.tlv = (HUNKMode == HUNKOutTLV);
+    lx.want_toks = graflog_want_toks();
     lx.now = (i64)time(NULL);
 
     __ = u8bAcquire(ABC_BASS, lx.text, LOG_TEXT_BUF);
     if (__ != OK) return __;
-    if (lx.tlv) {
+    if (lx.want_toks) {
         __ = u32bAcquire(ABC_BASS, lx.toks, LOG_TOKS_CAP);
         if (__ != OK) return __;
     }
@@ -1215,7 +1229,7 @@ ok64 GRAFLog(uricp u) {
         hk.uri[1]  = u8bIdleHead(title);
         hk.text[0] = u8bDataHead(lx.text);
         hk.text[1] = u8bIdleHead(lx.text);
-        if (lx.tlv) {
+        if (lx.want_toks) {
             hk.toks[0] = (u32 const *)u32bDataHead(lx.toks);
             hk.toks[1] = (u32 const *)u32bIdleHead(lx.toks);
         }

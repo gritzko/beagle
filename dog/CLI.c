@@ -1,6 +1,7 @@
 #include "CLI.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -201,4 +202,11 @@ void CLISetHUNKMode(cli const *c) {
                                         HUNKMode = HUNKOutColor;
     else if (c && CLIHas(c, "--plain")) HUNKMode = HUNKOutPlain;
     else HUNKMode = ANSIIsTTY() ? HUNKOutColor : HUNKOutPlain;
+    //  HEAD-003: NO_COLOR (https://no-color.org) wins outright over any
+    //  Color resolution — TTY default OR explicit --color — so a direct-
+    //  render verb (`be head`/`be log`, which self-render without bro)
+    //  honors it like bro's BROExec does.  TLV is a wire format, not
+    //  color; leave it intact so a piped consumer still gets tokens.
+    if (HUNKMode == HUNKOutColor && getenv("NO_COLOR"))
+        HUNKMode = HUNKOutPlain;
 }

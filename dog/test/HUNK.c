@@ -819,6 +819,82 @@ static ok64 HUNKTestStatusBanner(void) {
     done;
 }
 
+// =====================================================================
+// HEAD-003 — `be head`/`be log` rows colored on a TTY.
+//
+// The graf head/log producer ships each row as a CONTENT hunk: visible
+// columns tagged 'L' (sha + date) / 'S' (subject) / 'P' (parens), plus a
+// hidden `commit:?<sha>` click target tagged 'U'.  On a TTY (HUNKOutColor)
+// these toks must drive per-column color via HUNKu8sFeedColor — the bug
+// was that the producer only attached toks in TLV mode, so the direct
+// color render fell back to the verbatim no-toks path (plain rows).
+//
+// Mirror that row shape and assert (a) color render paints the 'L'
+// column (cyan), (b) BOTH color and plain render hide the 'U'-tagged URI
+// (so attaching toks in plain stays byte-safe — no leaked URI).
+// =====================================================================
+static ok64 HUNKTestHeadRowColor(void) {
+    sane(1);
+    if (THEMESelect(THEME_16) != OK) fail(TESTFAIL);
+
+    //  "abc1234" (sha, 'L') + " " + "commit:?<hex>" (hidden, 'U') +
+    //  " 12:00 " (date, 'L') + "subject" ('S') + "\n".
+    const char *vis_sha  = "abc1234";
+    const char *uri      = "commit:?abc1234";
+    const char *vis_rest = " 12:00 subject\n";
+    a_pad(u8, tb, 256);
+    a_pad(u32, kb, 32);
+    HUNK_SLICE(s_sha,  vis_sha);
+    HUNK_SLICE(s_uri,  uri);
+    HUNK_SLICE(s_rest, vis_rest);
+    (void)u8bFeed(tb, s_sha);
+    (void)u32bFeed1(kb, tok32Pack('L', (u32)u8bDataLen(tb)));   // sha = L
+    (void)u8bFeed(tb, s_uri);
+    (void)u32bFeed1(kb, tok32Pack('U', (u32)u8bDataLen(tb)));   // URI hidden
+    (void)u8bFeed(tb, s_rest);
+    (void)u32bFeed1(kb, tok32Pack('L', (u32)u8bDataLen(tb)));   // date/rest = L
+
+    HUNK_SLICE(huri, "head:?trunk");
+    hunk hk = {.uri  = {huri[0], huri[1]},
+               .text = {u8bDataHead(tb), u8bIdleHead(tb)},
+               .toks = {(u32 const *)u32bDataHead(kb),
+                        (u32 const *)u32bIdleHead(kb)}};
+
+    //  (a) Color render colors the 'L' column (THEME_16 'L' = ESC[96m)
+    //  and never leaks the hidden URI.
+    HUNKout saved = HUNKMode;
+    HUNKMode = HUNKOutColor;
+    a_pad(u8, oc, 1024);
+    ok64 cr = HUNKu8sFeedColor(oc_idle, &hk);
+    HUNKMode = saved;
+    if (cr != OK) fail(cr);
+    a_dup(u8c, cgot, u8bData(oc));
+    if (!bytes_contain(cgot, "\033[96m")) {
+        fprintf(stderr, "FAIL head-row: no 'L' column color; got '%.*s'\n",
+                (int)$len(cgot), (char *)cgot[0]);
+        fail(TESTFAIL);
+    }
+    if (bytes_contain(cgot, uri)) {
+        fprintf(stderr, "FAIL head-row: 'U' URI leaked into color render\n");
+        fail(TESTFAIL);
+    }
+
+    //  (b) Plain render hides the same 'U'-tagged URI — attaching toks in
+    //  plain mode must not change the visible bytes.
+    a_pad(u8, op, 1024);
+    call(HUNKu8sFeedText, op_idle, &hk);
+    a_dup(u8c, pgot, u8bData(op));
+    if (bytes_contain(pgot, uri)) {
+        fprintf(stderr, "FAIL head-row: 'U' URI leaked into plain render\n");
+        fail(TESTFAIL);
+    }
+    if (!bytes_contain(pgot, vis_sha) || !bytes_contain(pgot, "subject")) {
+        fprintf(stderr, "FAIL head-row: visible columns dropped in plain\n");
+        fail(TESTFAIL);
+    }
+    done;
+}
+
 ok64 HUNKtest() {
     sane(1);
     call(HUNKTestRebase);
@@ -829,6 +905,7 @@ ok64 HUNKtest() {
     call(HUNKTestLineBasedNoRoom);
     call(HUNKTestMakeURIEsc);
     call(HUNKTestStatusBanner);
+    call(HUNKTestHeadRowColor);
     done;
 }
 

@@ -76,3 +76,26 @@ TIP_AFTER=$(awk -F'\t' '$2=="post"{last=$3} END{
     echo "head: cur tip changed after read-only HEAD" >&2
     exit 1
 }
+
+# --- HEAD-003: rows render in COLOR. `--color` forces ANSI even on a
+#     piped stdout (no pty in CI).  Assert the ANSI lands on a `+ <sha>`
+#     COMMIT ROW — not just the header banner, which was already colored
+#     while the rows stayed plain (the actual bug).  Plain (default piped)
+#     must stay ANSI-free; NO_COLOR wins over --color (no-color.org).
+ESC=$(printf '\033')
+"$BE" head --color '?..' >03.head_color.got.out 2>/dev/null
+grep -q "^${ESC}\[.*+ " 03.head_color.got.out || {
+    echo "head: --color produced no ANSI on the '+ <sha>' commit rows" >&2
+    cat 03.head_color.got.out >&2
+    exit 1
+}
+"$BE" head '?..' >03.head_plain.got.out 2>/dev/null
+if grep -q "$ESC\[" 03.head_plain.got.out; then
+    echo "head: plain (piped) leaked ANSI" >&2
+    exit 1
+fi
+NO_COLOR=1 "$BE" head --color '?..' >03.head_nocolor.got.out 2>/dev/null
+if grep -q "$ESC\[" 03.head_nocolor.got.out; then
+    echo "head: NO_COLOR did not win over --color" >&2
+    exit 1
+fi
