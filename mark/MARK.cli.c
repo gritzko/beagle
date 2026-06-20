@@ -1,10 +1,13 @@
 //  mark CLI — render StrictMark to standalone HTML.
 //
-//    mark [--strict] [--head=FILE] [--body=FILE] <file.mkd | dir>...
+//    mark [--strict] [--root=DIR] [--head=FILE] [--body=FILE]
+//         <file.mkd | dir>...
 //
 //  A file → file.html next to it.  A directory → every *.mkd in it,
-//  rewriting inter-page links from .mkd to .html.  --strict makes a
-//  WikiWeb structure/limit violation a hard failure.  --head=FILE inlines
+//  rewriting inter-page links from .mkd to .html.  --root=DIR (default cwd)
+//  is the `/` anchor for `[/...]` links and the source tree probed for page
+//  existence.  --strict makes a WikiWeb structure/limit violation a hard
+//  failure.  --head=FILE inlines
 //  that file's contents verbatim into every page's <head> (stylesheet,
 //  favicon, meta...); --body=FILE inlines a snippet right after <body>
 //  (a banner, nav...).  So mark bakes in no site policy; each file is
@@ -64,25 +67,6 @@ static ok64 mark_render_inner(path8s inpath, path8b opath, markopts opts) {
     u8cs title = {};
     PATHu8sBase(title, inpath);
     mark_dropext(title);
-
-    //  The page's root-relative path anchors `[/...]` links and sets the base
-    //  for relative (../) resolution: realpath the input, take it relative to
-    //  the (already-real) root.  Lives on this frame for the render call only.
-    a_path(realin);
-    a_path(relp);
-    if (!u8csEmpty(opts.root)) {
-        try(PATHu8bReal, realin, inpath);
-        then try(PATHu8bRel, relp, opts.root, $path(realin));
-        then {
-            opts.page[0] = u8bDataHead(relp);
-            opts.page[1] = u8bIdleHead(relp);
-        }
-        if (__ != OK) {
-            FILEUnMap(m);
-            u8bFree(out);
-            return __;
-        }
-    }
 
     try(mark_outpath, opath, inpath);
     then try(MARKRenderDoc, out, src, title, opts);
@@ -151,7 +135,8 @@ static ok64 markcli_inner(markopts opts) {
         }
     }
     if (!any) {
-        fprintf(stderr, "usage: mark [--strict] <file.mkd | dir>...\n");
+        fprintf(stderr, "usage: mark [--strict] [--root=DIR] "
+                        "[--head=FILE] [--body=FILE] <file.mkd | dir>...\n");
         return MARKARG;
     }
     done;

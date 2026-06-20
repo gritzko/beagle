@@ -50,6 +50,13 @@ static ok64 MARKrender_cases() {
         {"strong", "#   T\n\nsay *bold* now\n", "<strong>bold</strong>"},
         {"emph", "#   T\n\nsay _it_ now\n", "<em>it</em>"},
         {"code", "#   T\n\nuse `x` here\n", "<code>x</code>"},
+        //  inline code at the very start of a paragraph line: the leading
+        //  backtick must survive block classification (a lone backtick is not
+        //  a fence), else the span desyncs and all later backticks mispair.
+        {"code-at-start", "#   T\n\n`make` works fine\n",
+         "<code>make</code> works fine"},
+        {"code-start-wrap", "#   T\n\nrun this\n`make` then `go` now\n",
+         "<code>make</code> then <code>go</code> now"},
         {"escape", "#   T\n\na < b & c\n", "a &lt; b &amp; c"},
         {"shortcut", "#   T\n\nsee [Home]\n\n[Home]: Home.mkd\n",
          "<a href=\"Home.html\">Home</a>"},
@@ -78,20 +85,39 @@ static ok64 MARKrender_cases() {
         //  DIS-014: a 3-dash --- line is a ruler, like ----.
         {"hr3", "#   T\n\nbefore\n\n---\n\nafter\n", "<hr"},
         {"hr4", "#   T\n\nbefore\n\n----\n\nafter\n", "<hr"},
-        //  PTR-008: checkbox markers [ ]/[x]/[X] are stripped div markup;
-        //  the residual content renders as a plain <p>.  Recognized via
-        //  u8csHasPrefix (bounds-safe), not raw cell indexing.
-        {"checkbox-sp", "#   T\n\n[ ] task one\n", "<p>\ntask one\n</p>"},
-        {"checkbox-x", "#   T\n\n[x] done two\n", "<p>\ndone two\n</p>"},
-        {"checkbox-X", "#   T\n\n[X] done three\n", "<p>\ndone three\n</p>"},
-        //  a non-checkbox bracket ([z]) is NOT a marker: the bytes survive
-        //  and render as a shortcut link, not stripped markup.
-        {"checkbox-nope", "#   T\n\nsee [z] thing\n",
+        //  TODO markers are a dash + bracketed one-char state, a 4-char block:
+        //  -[ ] not started, -[v]/-[V] done, -[-] blocked, -[x]/-[X] wontfix.
+        //  Each renders as a <li> in <ul class="todo"> with a disabled checkbox
+        //  (checked iff done) and the state on the class; wontfix is <del>'d.
+        {"todo-list", "#   T\n\n-[ ] a\n-[v] b\n", "<ul class=\"todo\">\n<li "},
+        {"todo-open", "#   T\n\n-[ ] task one\n",
+         "<li class=\"open\"><input type=\"checkbox\" disabled> task one</li>"},
+        {"todo-done", "#   T\n\n-[v] done two\n",
+         "<li class=\"done\"><input type=\"checkbox\" checked disabled> done two</li>"},
+        {"todo-done-U", "#   T\n\n-[V] done two\n",
+         "<li class=\"done\"><input type=\"checkbox\" checked disabled> done two</li>"},
+        {"todo-blocked", "#   T\n\n-[-] stuck three\n",
+         "<li class=\"blocked\"><input type=\"checkbox\" disabled> stuck three</li>"},
+        {"todo-wontfix", "#   T\n\n-[x] moot four\n",
+         "<li class=\"wontfix\"><input type=\"checkbox\" disabled> <del>moot four</del></li>"},
+        {"todo-wontfix-U", "#   T\n\n-[X] moot four\n",
+         "<li class=\"wontfix\"><input type=\"checkbox\" disabled> <del>moot four</del></li>"},
+        //  a bracket-first [ ] (no dash) is NOT a TODO marker any more, and an
+        //  undefined bracket like [z] is a shortcut link, not stripped markup.
+        {"todo-nope", "#   T\n\nsee [z] thing\n",
          "<a href=\"\">z</a> thing"},
         //  short lines under 4 bytes must not OOB-read the marker slot
         //  (ASAN): they render as plain paragraphs.
         {"checkbox-oob1", "#   T\n\n[\n", "<p>\n[\n</p>"},
         {"checkbox-oob2", "#   T\n\n[x\n", "<p>\n[x\n</p>"},
+        //  a two-dash "-- " is NOT a 4-char bullet (the marker is one dash
+        //  padded with spaces), so an indented author line stays a paragraph
+        //  inside its div — it is not a <li>.
+        {"not-a-bullet", "#   T\n\n    -- Victor Grishchenko\n",
+         "<div>\n<p>\n-- Victor Grishchenko\n</p>\n</div>"},
+        //  a single dash padded to four chars IS a bullet, in any column.
+        {"bullet-col0", "#   T\n\n-   item\n", "<ul>\n<li>item</li>"},
+        {"bullet-col2", "#   T\n\n  - item\n", "<ul>\n<li>item</li>"},
         //  4-space indent groups open nesting <div>s (one per group).
         {"indent4", "#   T\n    Indented\n", "<div>\n<p>\nIndented\n</p>\n</div>"},
         {"indent8", "#   T\n        Deeper\n",
@@ -110,6 +136,20 @@ static ok64 MARKrender_cases() {
         //  closed before the <ul> opens.
         {"div-restore", "#   T\n\n    Inner\n\n -  item\n",
          "<div>\n<p>\nInner\n</p>\n</div>\n<ul>\n<li>item</li>"},
+        //  list nesting: a deeper-indented list nests inside the enclosing
+        //  item (its </li> stays open), and the parent list resumes after —
+        //  not a sibling <div><ul> with the parent list split in two.
+        {"nest-ol-ul", "#   T\n\n 1. a\n     -  b\n 2. c\n",
+         "<ol>\n<li>a<ul>\n<li>b</li>\n</ul>\n</li>\n<li>c</li>\n</ol>"},
+        {"nest-ul-ol", "#   T\n\n -  a\n     1. b\n -  c\n",
+         "<ul>\n<li>a<ol>\n<li>b</li>\n</ol>\n</li>\n<li>c</li>\n</ul>"},
+        //  three levels deep, each closing back in order.
+        {"nest-deep", "#   T\n\n -  a\n     -  b\n         -  c\n",
+         "<li>a<ul>\n<li>b<ul>\n<li>c</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>"},
+        //  an indented paragraph under an item is the item's content (inside
+        //  the open <li>), then the next marker resumes the list.
+        {"nest-item-para", "#   T\n\n -  item\n     more text\n -  next\n",
+         "<li>item<p>\n more text\n</p>\n</li>\n<li>next</li>"},
         //  line-wrapped inline spans: a paragraph's soft line breaks are
         //  joined into one logical line (newline -> space), so a link / image
         //  / emphasis that crosses a wrap is recognized, not split into raw
@@ -166,9 +206,9 @@ static ok64 MARKlimits() {
     done;
 }
 
-//  ---- abs/path links: existence-driven extension + relative resolution ----
+//  ---- abs/path links: existence-driven extension, root-absolute href ----
 
-static ok64 render_at(u8bp out, const char *src, u8cs root, const char *page) {
+static ok64 render_at(u8bp out, const char *src, u8cs root) {
     sane(out != NULL);
     u8bReset(out);
     u8cs s = {(u8c *)src, (u8c *)src + strlen(src)};
@@ -176,11 +216,6 @@ static ok64 render_at(u8bp out, const char *src, u8cs root, const char *page) {
     markopts opts = {};
     opts.root[0] = root[0];
     opts.root[1] = root[1];
-    a_cstr(pg, page ? page : "");
-    if (page != NULL) {
-        opts.page[0] = pg[0];
-        opts.page[1] = pg[1];
-    }
     return MARKRenderDoc(out, s, title, opts);
 }
 
@@ -231,36 +266,33 @@ static ok64 MARKpathlinks() {
 
     struct {
         const char *name;
-        const char *page;
         const char *src;
         const char *needle;
     } T[] = {
-        //  extensionless + .mkd source present -> .html, relative to the page
-        {"exist-abs", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
-         "<a href=\"StrictMark.html\">StrictMark</a>"},
-        {"exist-mkd", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/StrictMark.mkd] x\n",
-         "<a href=\"StrictMark.html\">StrictMark</a>"},
+        //  extensionless + .mkd source present -> .html, root-absolute href
+        {"exist-abs", "#   T\n\nsee [/wiki/StrictMark] x\n",
+         "<a href=\"/wiki/StrictMark.html\">StrictMark</a>"},
+        {"exist-mkd", "#   T\n\nsee [/wiki/StrictMark.mkd] x\n",
+         "<a href=\"/wiki/StrictMark.html\">StrictMark</a>"},
         //  plural suffix glues on outside the anchor (link covers the page)
-        {"exist-plural", "wiki/Foo.mkd", "#   T\n\nmany [/wiki/Dog]s x\n",
-         "<a href=\"Dog.html\">Dog</a>s"},
+        {"exist-plural", "#   T\n\nmany [/wiki/Dog]s x\n",
+         "<a href=\"/wiki/Dog.html\">Dog</a>s"},
         //  a real file with no .mkd source -> verbatim (not .html)
-        {"nonpage-file", "wiki/Foo.mkd", "#   T\n\nthe [/LICENSE] x\n",
-         "<a href=\"../LICENSE\">LICENSE</a>"},
+        {"nonpage-file", "#   T\n\nthe [/LICENSE] x\n",
+         "<a href=\"/LICENSE\">LICENSE</a>"},
         //  explicit non-page extension -> verbatim, basename kept
-        {"asset-ext", "wiki/Foo.mkd", "#   T\n\nsee [/img/logo.png] x\n",
-         "<a href=\"../img/logo.png\">logo.png</a>"},
+        {"asset-ext", "#   T\n\nsee [/img/logo.png] x\n",
+         "<a href=\"/img/logo.png\">logo.png</a>"},
         //  extensionless with no .mkd/.md source -> verbatim
-        {"missing-page", "wiki/Foo.mkd", "#   T\n\nsee [/wiki/Nope] x\n",
-         "<a href=\"Nope\">Nope</a>"},
-        //  depth: same link resolves differently per page location
-        {"from-root", "Home.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
-         "<a href=\"wiki/StrictMark.html\">StrictMark</a>"},
-        {"from-subdir", "blog/Post.mkd", "#   T\n\nsee [/wiki/StrictMark] x\n",
-         "<a href=\"../wiki/StrictMark.html\">StrictMark</a>"},
+        {"missing-page", "#   T\n\nsee [/wiki/Nope] x\n",
+         "<a href=\"/wiki/Nope\">Nope</a>"},
+        //  a directory target (no source page) -> verbatim, leading slash kept
+        {"dir-target", "#   T\n\nthe [/meta] page x\n",
+         "<a href=\"/meta\">meta</a>"},
     };
     ok64 ro = OK;
     for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); ++i) {
-        ro = render_at(out, T[i].src, rootv, T[i].page);
+        ro = render_at(out, T[i].src, rootv);
         if (ro != OK) break;
         u8cs body = {u8bDataHead(out), u8bIdleHead(out)};
         a_cstr(n, T[i].needle);

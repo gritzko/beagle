@@ -3,10 +3,10 @@
 
 //  mark — StrictMark → HTML renderer (the wiki dog).
 //
-//  Drives MKDT for block structure (the exposed MKDT* line classifiers)
-//  and inline tokens (MKDTInlineLexer), generates HTML through u8b feed
-//  helpers, sanitizes literal text through ragel (MARKE machine), and
-//  decomposes inline emphasis/link tokens through ragel (MARKG machine).
+//  Drives MKDT for block structure (the MKDTB grammar via the MKDT* line
+//  classifiers), inline tokens (MKDTInlineLexer), and span decomposition
+//  (MKDTDecomposeSpan), generates HTML through u8b feed helpers, and
+//  sanitizes literal text through ragel (the MARKE machine — mark's only one).
 //  Enforces the WikiWeb page structure and size budgets — see README.mkd.
 
 #include "abc/INT.h"
@@ -29,8 +29,6 @@ typedef struct {
     b8   strict;  // YES: a structure/limit violation aborts with MARKLIMIT
     u8cs head;    // raw HTML injected before </head> (from --head=FILE); empty = none
     u8cs body;    // raw HTML injected after <body> (from --body=FILE); empty = none
-    u8cs page;    // current page's root-relative path (e.g. "wiki/Foo.mkd"); empty = at root.
-                  // Anchors `[/...]` links and sets the base for relative (../) resolution.
     u8cs root;    // filesystem path of the site root (the `/` anchor); empty = no tree probe.
                   // An extensionless `[/x]` resolves to x.html iff root/x.mkd or root/x.md exists.
 } markopts;
@@ -48,16 +46,8 @@ ok64 MARKRenderDoc(u8bp out, u8csc src, u8csc title, markopts opts);
 ok64 MARKu8bLit(u8bp out, const char *s);
 
 //  HTML-escape `text` into `out` (& < > " -> entities).  ragel: MARKE.
+//  Inline span decomposition lives in the StrictMark inline grammar now:
+//  see mkdtspan / MKDTDecomposeSpan in dog/tok/MKDT.h.
 ok64 MARKu8bFeedEsc(u8bp out, u8csc text);
-
-//  Decomposed inline G token.
-typedef struct {
-    u8 kind;     // 'B' strong, 'I' emph, 'D' del, 'A' link, 'M' image, 0 none
-    u8cs text;   // inner text / link text / alt text
-    u8cs label;  // explicit label; for a shortcut it equals the bracket text
-} markg;
-
-//  Classify a G inline token (emphasis / link / image).  ragel: MARKG.
-ok64 MARKDecomposeG(markg *g, u8csc tok);
 
 #endif

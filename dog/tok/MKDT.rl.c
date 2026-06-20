@@ -605,3 +605,249 @@ _again:
 
     return o;
 }
+
+//  ---- inline span decomposer (folded in from the former mark/MARKG) ----
+//
+//  MKDTInlineLexer isolates an emphasis/link/image span as one 'G' token; this
+//  second machine splits that span into (kind, text, label) so a renderer emits
+//  <strong>/<em>/<del>/<a>/<img> without re-scanning.  The explicit label l is
+//  one symbol; a shortcut [page] carries none, so it keys on the bracket text.
+
+
+/* #line 197 "MKDT.c.rl" */
+
+
+
+/* #line 566 "MKDT.rl.c" */
+static const char _mkdtg_actions[] = {
+	0, 1, 0, 1, 1, 1, 2, 1, 
+	6, 2, 0, 1, 2, 1, 4, 2, 
+	1, 5, 2, 1, 7, 2, 3, 7, 
+	2, 3, 8, 3, 0, 1, 4, 3, 
+	0, 1, 5, 3, 0, 1, 7
+};
+
+static const char _mkdtg_key_offsets[] = {
+	0, 0, 5, 6, 8, 10, 11, 17, 
+	18, 20, 22, 24, 26, 32, 33, 35, 
+	37, 38, 40, 42, 44, 44
+};
+
+static const unsigned char _mkdtg_trans_keys[] = {
+	33u, 42u, 91u, 95u, 126u, 91u, 10u, 93u, 
+	10u, 93u, 91u, 48u, 57u, 65u, 90u, 97u, 
+	122u, 93u, 10u, 42u, 10u, 42u, 10u, 93u, 
+	10u, 93u, 48u, 57u, 65u, 90u, 97u, 122u, 
+	93u, 10u, 95u, 10u, 95u, 126u, 10u, 126u, 
+	10u, 126u, 10u, 126u, 91u, 0
+};
+
+static const char _mkdtg_single_lengths[] = {
+	0, 5, 1, 2, 2, 1, 0, 1, 
+	2, 2, 2, 2, 0, 1, 2, 2, 
+	1, 2, 2, 2, 0, 1
+};
+
+static const char _mkdtg_range_lengths[] = {
+	0, 0, 0, 0, 0, 0, 3, 0, 
+	0, 0, 0, 0, 3, 0, 0, 0, 
+	0, 0, 0, 0, 0, 0
+};
+
+static const char _mkdtg_index_offsets[] = {
+	0, 0, 6, 8, 11, 14, 16, 20, 
+	22, 25, 28, 31, 34, 38, 40, 43, 
+	46, 48, 51, 54, 57, 58
+};
+
+static const char _mkdtg_trans_targs[] = {
+	2, 8, 10, 14, 16, 0, 3, 0, 
+	0, 5, 4, 0, 5, 4, 6, 0, 
+	7, 7, 7, 0, 20, 0, 0, 20, 
+	9, 0, 20, 9, 0, 21, 11, 0, 
+	21, 11, 13, 13, 13, 0, 20, 0, 
+	0, 20, 15, 0, 20, 15, 17, 0, 
+	0, 19, 18, 0, 19, 18, 0, 20, 
+	18, 0, 12, 0, 0
+};
+
+static const char _mkdtg_trans_actions[] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 
+	0, 9, 1, 0, 3, 0, 0, 0, 
+	5, 5, 5, 0, 24, 0, 0, 27, 
+	1, 0, 12, 0, 0, 35, 1, 0, 
+	18, 0, 5, 5, 5, 0, 21, 0, 
+	0, 31, 1, 0, 15, 0, 0, 0, 
+	0, 9, 1, 0, 3, 0, 0, 7, 
+	0, 0, 0, 0, 0
+};
+
+static const int mkdtg_start = 1;
+static const int mkdtg_first_final = 20;
+static const int mkdtg_error = 0;
+
+static const int mkdtg_en_main = 1;
+
+
+/* #line 200 "MKDT.c.rl" */
+
+ok64 MKDTDecomposeSpan(mkdtspan *g, u8csc tok) {
+    a_dup(u8c, data, tok);
+
+    int cs;
+    u8c *p = (u8c *)data[0];
+    u8c *pe = (u8c *)data[1];
+    u8c *eof = pe;
+    u8c *txt0 = NULL, *txt1 = NULL, *lbl0 = NULL, *lbl1 = NULL;
+    u8 kind = 0;
+
+    
+/* #line 646 "MKDT.rl.c" */
+	{
+	cs = mkdtg_start;
+	}
+
+/* #line 212 "MKDT.c.rl" */
+    
+/* #line 649 "MKDT.rl.c" */
+	{
+	int _klen;
+	unsigned int _trans;
+	const char *_acts;
+	unsigned int _nacts;
+	const unsigned char *_keys;
+
+	if ( p == pe )
+		goto _test_eof;
+	if ( cs == 0 )
+		goto _out;
+_resume:
+	_keys = _mkdtg_trans_keys + _mkdtg_key_offsets[cs];
+	_trans = _mkdtg_index_offsets[cs];
+
+	_klen = _mkdtg_single_lengths[cs];
+	if ( _klen > 0 ) {
+		const unsigned char *_lower = _keys;
+		const unsigned char *_mid;
+		const unsigned char *_upper = _keys + _klen - 1;
+		while (1) {
+			if ( _upper < _lower )
+				break;
+
+			_mid = _lower + ((_upper-_lower) >> 1);
+			if ( (*p) < *_mid )
+				_upper = _mid - 1;
+			else if ( (*p) > *_mid )
+				_lower = _mid + 1;
+			else {
+				_trans += (unsigned int)(_mid - _keys);
+				goto _match;
+			}
+		}
+		_keys += _klen;
+		_trans += _klen;
+	}
+
+	_klen = _mkdtg_range_lengths[cs];
+	if ( _klen > 0 ) {
+		const unsigned char *_lower = _keys;
+		const unsigned char *_mid;
+		const unsigned char *_upper = _keys + (_klen<<1) - 2;
+		while (1) {
+			if ( _upper < _lower )
+				break;
+
+			_mid = _lower + (((_upper-_lower) >> 1) & ~1);
+			if ( (*p) < _mid[0] )
+				_upper = _mid - 2;
+			else if ( (*p) > _mid[1] )
+				_lower = _mid + 2;
+			else {
+				_trans += (unsigned int)((_mid - _keys)>>1);
+				goto _match;
+			}
+		}
+		_trans += _klen;
+	}
+
+_match:
+	cs = _mkdtg_trans_targs[_trans];
+
+	if ( _mkdtg_trans_actions[_trans] == 0 )
+		goto _again;
+
+	_acts = _mkdtg_actions + _mkdtg_trans_actions[_trans];
+	_nacts = (unsigned int) *_acts++;
+	while ( _nacts-- > 0 )
+	{
+		switch ( *_acts++ )
+		{
+	case 0:
+/* #line 179 "MKDT.c.rl" */
+	{ txt0 = (u8c *)p; }
+	break;
+	case 1:
+/* #line 180 "MKDT.c.rl" */
+	{ txt1 = (u8c *)p; }
+	break;
+	case 2:
+/* #line 181 "MKDT.c.rl" */
+	{ lbl0 = (u8c *)p; }
+	break;
+	case 3:
+/* #line 182 "MKDT.c.rl" */
+	{ lbl1 = (u8c *)p; }
+	break;
+	case 4:
+/* #line 183 "MKDT.c.rl" */
+	{ kind = 'B'; }
+	break;
+	case 5:
+/* #line 184 "MKDT.c.rl" */
+	{ kind = 'I'; }
+	break;
+	case 6:
+/* #line 185 "MKDT.c.rl" */
+	{ kind = 'D'; }
+	break;
+	case 7:
+/* #line 186 "MKDT.c.rl" */
+	{ kind = 'A'; }
+	break;
+	case 8:
+/* #line 187 "MKDT.c.rl" */
+	{ kind = 'M'; }
+	break;
+/* #line 748 "MKDT.rl.c" */
+		}
+	}
+
+_again:
+	if ( cs == 0 )
+		goto _out;
+	if ( ++p != pe )
+		goto _resume;
+	_test_eof: {}
+	_out: {}
+	}
+
+/* #line 213 "MKDT.c.rl" */
+
+    if (cs < mkdtg_first_final) {
+        g->kind = 0;
+        return OK;
+    }
+    g->kind = kind;
+    g->text[0] = txt0 ? txt0 : (u8c *)data[1];
+    g->text[1] = txt1 ? txt1 : (u8c *)data[1];
+    if (lbl0 != NULL) {
+        g->label[0] = lbl0;
+        g->label[1] = lbl1;
+    } else {
+        //  shortcut: key the link on its bracket text
+        g->label[0] = g->text[0];
+        g->label[1] = g->text[1];
+    }
+    (void)eof;
+    return OK;
+}

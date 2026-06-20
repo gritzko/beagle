@@ -12,10 +12,10 @@ Each page is parsed by MKDT, not by mark: MKDT's line classifiers give block str
 
 ##  Sanitizing
 
-All text reaches HTML through ragel, never a hand-rolled byte scan. The MARKE machine maps the four HTML-special bytes to entities; MARKG splits a `G` token into kind, text, and label.
+All text reaches HTML through ragel, never a hand-rolled byte scan. The MARKE machine maps the four HTML-special bytes to entities; inline spans are split by the StrictMark inline grammar (`dog/tok/MKDT`: the `mkdtg` machine / `MKDTDecomposeSpan`) into kind, text, and label.
 
  -  MARKE escapes `&` `<` `>` `"` to entities and copies every other run verbatim.
- -  MARKG decomposes `*strong*`, `_emph_`, `~~del~~`, the two link cases `[text][l]` / `[page]`, and `![alt][l]`.
+ -  `MKDTDecomposeSpan` decomposes `*strong*`, `_emph_`, `~~del~~`, the two link cases `[text][l]` / `[page]`, and `![alt][l]`.
  -  A shortcut `[page]` keys on its bracket text; an explicit `[text][l]` uses a one-symbol label `l`.
 
 ##  Links
@@ -24,7 +24,7 @@ Inter-page links are rewritten so the rendered site is self-contained. A link ta
 
  -  A reference definition `[key]: url` is collected in a first pass and never rendered.
  -  A shortcut `[Page]` resolves against those definitions, then `.mkd` becomes `.html`.
- -  An abs path `[/wiki/Page]` (no refdef) anchors at `--root`, then resolves relative to the current page.
+ -  An abs path `[/wiki/Page]` (no refdef) is emitted root-absolute (the leading slash is kept), anchored at `--root` only to probe existence; the same href resolves on every page regardless of depth.
  -  Extension: explicit `.mkd`/`.md`, or an extensionless target whose source exists, gives `.html`; else verbatim.
 
 ##  Enforced limits
@@ -48,8 +48,8 @@ mark takes files or a directory. A file renders to a sibling `.html`; a director
 
 ##  Build and test
 
-mark is a standard dog: a static library plus a CLI, with table-driven tests. The two ragel units are pre-generated and committed alongside their sources.
+mark is a standard dog: a static library plus a CLI, with table-driven tests. Its one ragel unit (the escaper) is pre-generated and committed alongside its source; block and inline grammars live in `dog/tok` (MKDTB, MKDT).
 
- -  Sources: `MARK.c` driver, `MARKE.c.rl` escaper, `MARKG.c.rl` decomposer, `MARK.cli.c` entry.
- -  Regenerate ragel with `ragel -C MARKE.c.rl -o MARKE.rl.c -L` (likewise MARKG).
+ -  Sources: `MARK.c` driver, `MARKE.c.rl` escaper, `MARK.cli.c` entry.
+ -  Regenerate ragel with `ragel -C MARKE.c.rl -o MARKE.rl.c -L`.
  -  Tests in `test/MARK.c` render snippets and assert HTML; repros for past lexer gaps live there.

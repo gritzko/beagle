@@ -176,23 +176,15 @@ static b8 mark_page_exists(u8csc root, u8csc stem) {
            mark_page_at(root, stem, s_dot_md);
 }
 
-//  Emit the href for an unresolved bracket target (a path/wiki link).  The
-//  target is root-relative when it starts with '/', else relative to the
-//  current page's directory; it is normalized, then made relative to the
-//  page so the rendered site relocates.  Extension rule: an explicit
-//  .mkd/.md, or an extensionless target whose .mkd/.md source exists under
-//  opts.root, resolves to .html; anything else is emitted verbatim.
+//  Emit the href for an unresolved absolute bracket target (a path/wiki link).
+//  The leading slash is meaningful: the href stays root-absolute, so the same
+//  link resolves identically on every page regardless of its depth (the site
+//  is served from the domain root).  The target is normalized, then the
+//  extension is decided: an explicit .mkd/.md, or an extensionless target
+//  whose .mkd/.md source exists under opts.root, resolves to .html; anything
+//  else (a directory, /LICENSE, /img/x.png) is emitted verbatim.
 static ok64 mark_emit_pathlink(markctx *c, u8csc bracket) {
     sane(c != NULL);
-
-    //  base = the current page's directory as an absolute view ("/", "/wiki").
-    a_dup(u8c, page, c->opts.page);
-    u8cs pdir = {};
-    PATHu8sDir(pdir, page);
-    b8 has_dir = !u8csEmpty(pdir) && !(u8csLen(pdir) == 1 && *pdir[0] == '.');
-    a_abspath(base);
-    if (has_dir) call(PATHu8bAdd, base, pdir);
-    a_dup(u8c, basev, u8bDataC(base));
 
     //  tgt = the target as an absolute, normalized path.  `bracket` is always
     //  root-absolute here (callers gate on a leading '/').
@@ -200,7 +192,7 @@ static ok64 mark_emit_pathlink(markctx *c, u8csc bracket) {
     a_path(tgt);
     call(PATHu8bNorm, tgt, br);
 
-    //  Decide page (-> .html) vs verbatim, build the final absolute target.
+    //  Decide page (-> .html) vs verbatim, build the final root-absolute href.
     a_dup(u8c, tv, u8bDataC(tgt));
     u8cs ext = {};
     PATHu8sExt(ext, tv);
@@ -224,14 +216,11 @@ static ok64 mark_emit_pathlink(markctx *c, u8csc bracket) {
     }
 
     a_dup(u8c, finv, u8bDataC(fin));
-    a_path(rel);
-    call(PATHu8bRel, rel, basev, finv);
-    a_dup(u8c, relv, u8bDataC(rel));
-    call(MARKu8bFeedEsc, c->out, relv);
+    call(MARKu8bFeedEsc, c->out, finv);
     done;
 }
 
-static ok64 mark_emit_link(markctx *c, markg *g, b8 image) {
+static ok64 mark_emit_link(markctx *c, mkdtspan *g, b8 image) {
     sane(c != NULL);
     u8cs url = {};
     b8 found = mark_lookup(c, g->label, url);
@@ -303,8 +292,8 @@ static ok64 mark_inline_cb(u8 tag, u8cs tok, void *ctx) {
     }
 
     if (tag == 'G') {  // emphasis / link / image
-        markg g = {};
-        MARKDecomposeG(&g, tok);
+        mkdtspan g = {};
+        MKDTDecomposeSpan(&g, tok);
         switch (g.kind) {
             case 'B':
                 return mark_inline_wrap(c, g.text, "<strong>", "</strong>");
@@ -367,28 +356,19 @@ static ok64 mark_violate(markopts opts, const char *msg) {
 
 //  -------- block rendering --------
 
-//  Close one open leaf kind: if `flag` is set, emit its closing `tag` and
-//  clear the flag (used for the blockquote leaf; the paragraph leaf flushes
-//  buffered text via mark_para_flush, the list via mark_close_list).
-static ok64 mark_close(markctx *c, b8 *flag, const char *tag) {
-    sane(c != NULL);
-    if (*flag) {
-        call(MARKu8bLit, c->out, tag);
-        *flag = NO;
-    }
-    done;
-}
+//  The block container stack mirrors StrictMark's `(INDENT|QUOTE)* LIST?`: one
+//  frame per 4-char indent group, frame i holding depth-(i+1) content.  A bare
+//  indent is a <div>; a list marker is a <ul>/<ol> whose <li> stays open (its
+//  `</li>` deferred) so a deeper-indented list or paragraph nests *inside* the
+//  item rather than closing the list and becoming a sibling.
+#define MARK_MAX_STACK 64
+#define MARK_STACK_CAP (MARK_MAX_STACK - 2)  // leave room for a marker frame
 
-//  Close an open list, choosing </ol> or </ul> by the ordered flag.
-static ok64 mark_close_list(markctx *c, b8 *in_list, b8 *list_ord) {
-    sane(c != NULL);
-    if (*in_list) {
-        call(MARKu8bLit, c->out, *list_ord ? "</ol>\n" : "</ul>\n");
-        *in_list = NO;
-        *list_ord = NO;
-    }
-    done;
-}
+typedef enum { MARK_DIV, MARK_UL, MARK_OL, MARK_QUOTE, MARK_TODOL } markckind;
+typedef struct {
+    markckind kind;
+    b8        li_open;  // list only: an <li> is open, its </li> not yet emitted
+} markframe;
 
 //  Flush the buffered paragraph: open <p>, budget-check the whole (possibly
 //  soft-wrapped) text, render its inline content, close </p>.  Soft line
@@ -409,35 +389,145 @@ static ok64 mark_para_flush(markctx *c, b8 *in_para) {
     done;
 }
 
-//  Close the current leaf (paragraph/list/blockquote).  A leaf never spans
-//  a block-stack depth change, a blank line, or a structural line.
-static ok64 mark_close_leaf(markctx *c, b8 *in_para, b8 *in_list, b8 *list_ord,
-                            b8 *in_quote) {
-    sane(c != NULL);
-    call(mark_para_flush, c, in_para);
-    call(mark_close_list, c, in_list, list_ord);
-    call(mark_close, c, in_quote, "</blockquote>\n");
+//  Close the innermost container, emitting its end tag(s); a list first closes
+//  its open <li>.  The caller has already flushed any buffered paragraph.
+static ok64 mark_pop(markctx *c, markframe *stk, int *nstk) {
+    sane(c != NULL && *nstk > 0);
+    markframe f = stk[--*nstk];
+    if (f.kind == MARK_DIV) {
+        call(MARKu8bLit, c->out, "</div>\n");
+    } else if (f.kind == MARK_QUOTE) {
+        call(MARKu8bLit, c->out, "</blockquote>\n");
+    } else {  // MARK_UL / MARK_OL / MARK_TODOL (a todo list is a <ul>)
+        if (f.li_open) call(MARKu8bLit, c->out, "</li>\n");
+        call(MARKu8bLit, c->out, f.kind == MARK_OL ? "</ol>\n" : "</ul>\n");
+    }
     done;
 }
 
-//  Reconcile the open <div> nesting to `target`: a bare 4-space indent opens
-//  a generic container, so each depth level is one <div>.  A depth change is
-//  a hard leaf boundary, so the open leaf is closed first either way; then
-//  surplus divs are closed (depth fell) or new divs opened (depth rose).
-static ok64 mark_reconcile_divs(markctx *c, int *div_depth, int target,
-                                b8 *in_para, b8 *in_list, b8 *list_ord,
-                                b8 *in_quote) {
+//  Close containers until the stack holds at most `n` frames, flushing the
+//  buffered paragraph first (it lives in the innermost frame being closed).
+static ok64 mark_unwind(markctx *c, markframe *stk, int *nstk, int n,
+                        b8 *in_para) {
     sane(c != NULL);
-    if (target == *div_depth) done;
-    call(mark_close_leaf, c, in_para, in_list, list_ord, in_quote);
-    while (*div_depth > target) {
-        call(MARKu8bLit, c->out, "</div>\n");
-        --*div_depth;
-    }
-    while (*div_depth < target) {
+    if (*nstk > n) call(mark_para_flush, c, in_para);
+    while (*nstk > n) call(mark_pop, c, stk, nstk);
+    done;
+}
+
+//  Grow the stack to `depth` frames with generic <div> containers (the bare
+//  4-space indent), so an ancestor level a marker/leaf needs but that no list
+//  or quote occupies still nests.
+static ok64 mark_grow_divs(markctx *c, markframe *stk, int *nstk, int depth) {
+    sane(c != NULL);
+    while (*nstk < depth) {
         call(MARKu8bLit, c->out, "<div>\n");
-        ++*div_depth;
+        stk[*nstk].kind = MARK_DIV;
+        stk[*nstk].li_open = NO;
+        ++*nstk;
     }
+    done;
+}
+
+//  Reconcile the stack for a leaf (paragraph/header/hr/fence) at indent `depth`:
+//  a leaf has no child container, so close everything at index >= depth, then
+//  open <div> ancestors up to `depth`.  The leaf then renders inside frame
+//  depth-1 (a list's open <li>, a div, or the document at depth 0).
+static ok64 mark_enter_leaf(markctx *c, markframe *stk, int *nstk, int depth,
+                            b8 *in_para) {
+    sane(c != NULL);
+    call(mark_unwind, c, stk, nstk, depth, in_para);
+    call(mark_grow_divs, c, stk, nstk, depth);
+    done;
+}
+
+//  Open or continue a list at indent `depth` and emit one <li> with `item`
+//  (its </li> deferred).  A same-kind list already at that level continues with
+//  a new sibling item; otherwise the level is (re)opened, nesting inside the
+//  enclosing item when `depth` is deeper than the current stack.
+static ok64 mark_enter_list(markctx *c, markframe *stk, int *nstk, int depth,
+                            b8 ord, u8csc item, b8 *in_para) {
+    sane(c != NULL);
+    markckind want = ord ? MARK_OL : MARK_UL;
+    call(mark_para_flush, c, in_para);  // emit any item-trailing paragraph first
+    call(mark_unwind, c, stk, nstk, depth + 1, in_para);  // close deeper levels
+    b8 reuse = (*nstk == depth + 1) && stk[depth].kind == want;
+    if (*nstk == depth + 1 && !reuse)  // a different container holds this level
+        call(mark_unwind, c, stk, nstk, depth, in_para);
+    if (reuse) {  // sibling item: close the current item, open the next
+        if (stk[depth].li_open) call(MARKu8bLit, c->out, "</li>\n");
+    } else {
+        call(mark_grow_divs, c, stk, nstk, depth);
+        call(MARKu8bLit, c->out, want == MARK_OL ? "<ol>\n" : "<ul>\n");
+        stk[*nstk].kind = want;
+        stk[*nstk].li_open = NO;
+        ++*nstk;
+    }
+    call(mark_budget, c->opts, "bullet", item, MARK_BULLET_MAX);
+    call(MARKu8bLit, c->out, "<li>");
+    call(mark_inline, c, item);
+    stk[depth].li_open = YES;
+    done;
+}
+
+//  Open or continue a blockquote at indent `depth` and emit one quoted line.
+static ok64 mark_enter_quote(markctx *c, markframe *stk, int *nstk, int depth,
+                             u8csc content, b8 *in_para) {
+    sane(c != NULL);
+    call(mark_para_flush, c, in_para);
+    call(mark_unwind, c, stk, nstk, depth + 1, in_para);
+    b8 reuse = (*nstk == depth + 1) && stk[depth].kind == MARK_QUOTE;
+    if (*nstk == depth + 1 && !reuse)
+        call(mark_unwind, c, stk, nstk, depth, in_para);
+    if (!reuse) {
+        call(mark_grow_divs, c, stk, nstk, depth);
+        call(MARKu8bLit, c->out, "<blockquote>\n");
+        stk[*nstk].kind = MARK_QUOTE;
+        stk[*nstk].li_open = NO;
+        ++*nstk;
+    }
+    call(mark_inline, c, content);
+    call(MARKu8bLit, c->out, "\n");
+    done;
+}
+
+//  Open or continue a TODO list (`<ul class="todo">`) at indent `depth` and emit
+//  one item with a disabled checkbox reflecting `state` (the char inside the
+//  `-[·]` marker).  A checkbox is binary, so the four states ride on the <li>
+//  class: ' ' open, 'v'/'V' done (checked), '-' blocked, 'x'/'X' wontfix (the
+//  content also struck through with <del>).  The </li> is deferred like a list.
+static ok64 mark_enter_todo(markctx *c, markframe *stk, int *nstk, int depth,
+                            u8 state, u8csc item, b8 *in_para) {
+    sane(c != NULL);
+    call(mark_para_flush, c, in_para);
+    call(mark_unwind, c, stk, nstk, depth + 1, in_para);
+    b8 reuse = (*nstk == depth + 1) && stk[depth].kind == MARK_TODOL;
+    if (*nstk == depth + 1 && !reuse)
+        call(mark_unwind, c, stk, nstk, depth, in_para);
+    if (reuse) {
+        if (stk[depth].li_open) call(MARKu8bLit, c->out, "</li>\n");
+    } else {
+        call(mark_grow_divs, c, stk, nstk, depth);
+        call(MARKu8bLit, c->out, "<ul class=\"todo\">\n");
+        stk[*nstk].kind = MARK_TODOL;
+        stk[*nstk].li_open = NO;
+        ++*nstk;
+    }
+    const char *cls = "open";
+    b8 checked = NO, del = NO;
+    if (state == 'v' || state == 'V') { cls = "done"; checked = YES; }
+    else if (state == '-') { cls = "blocked"; }
+    else if (state == 'x' || state == 'X') { cls = "wontfix"; del = YES; }
+    call(mark_budget, c->opts, "bullet", item, MARK_BULLET_MAX);
+    call(MARKu8bLit, c->out, "<li class=\"");
+    call(MARKu8bLit, c->out, cls);
+    call(MARKu8bLit, c->out, "\"><input type=\"checkbox\"");
+    if (checked) call(MARKu8bLit, c->out, " checked");
+    call(MARKu8bLit, c->out, " disabled> ");
+    if (del) call(MARKu8bLit, c->out, "<del>");
+    call(mark_inline, c, item);
+    if (del) call(MARKu8bLit, c->out, "</del>");
+    stk[depth].li_open = YES;
     done;
 }
 
@@ -452,10 +542,11 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
 
     a_dup(u8c, cur, src);
     u8cs linec = {}, linef = {};
-    b8 in_fence = NO, in_para = NO, in_list = NO, list_ord = NO, in_quote = NO;
+    markframe stk[MARK_MAX_STACK];
+    int nstk = 0;  // open container frames (divs / lists / quotes)
+    b8 in_fence = NO, in_para = NO;
     b8 h1_seen = NO, opener = NO;
     int fence_len = 0;
-    int div_depth = 0;  // open <div> nesting (one per 4-space indent level)
 
     while (mark_nextline(cur, linec, linef) == YES) {
         //  fenced code: copy raw, escaped, until the closing fence.
@@ -472,24 +563,28 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         int fl = MKDTFenceOpen(linef);
         if (fl > 0) {
             int fdepth = MKDTIndentDepth(linef);
-            call(mark_reconcile_divs, c, &div_depth, fdepth, &in_para,
-                 &in_list, &list_ord, &in_quote);
+            if (fdepth > MARK_STACK_CAP) fdepth = MARK_STACK_CAP;
+            call(mark_para_flush, c, &in_para);
+            call(mark_enter_leaf, c, stk, &nstk, fdepth, &in_para);
             in_fence = YES;
             fence_len = fl;
             call(MARKu8bLit, c->out, "<pre><code>");
             continue;
         }
         if (mark_blank(linec)) {
-            //  A blank closes the open leaf; the surrounding div(s) persist so
-            //  a blank-separated multi-paragraph div stays one container.  The
-            //  next non-blank line reconciles div_depth to its own indent.
-            call(mark_close_leaf, c, &in_para, &in_list, &list_ord, &in_quote);
+            //  A blank flushes the paragraph and closes any open list/quote
+            //  leaves; enclosing <div>s persist so a blank-separated
+            //  multi-paragraph div stays one container.
+            call(mark_para_flush, c, &in_para);
+            while (nstk > 0 && stk[nstk - 1].kind != MARK_DIV)
+                call(mark_pop, c, stk, &nstk);
             continue;
         }
         if (MKDTHRule(linef)) {
             int rdepth = MKDTIndentDepth(linef);
-            call(mark_reconcile_divs, c, &div_depth, rdepth, &in_para,
-                 &in_list, &list_ord, &in_quote);
+            if (rdepth > MARK_STACK_CAP) rdepth = MARK_STACK_CAP;
+            call(mark_para_flush, c, &in_para);
+            call(mark_enter_leaf, c, stk, &nstk, rdepth, &in_para);
             call(MARKu8bLit, c->out, "<hr>\n");
             continue;
         }
@@ -501,8 +596,9 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         int hl = MKDTHeadingLevel(linef);
         if (hl > 0) {
             int depth = MKDTIndentDepth(linef);
-            call(mark_reconcile_divs, c, &div_depth, depth, &in_para,
-                 &in_list, &list_ord, &in_quote);
+            if (depth > MARK_STACK_CAP) depth = MARK_STACK_CAP;
+            call(mark_para_flush, c, &in_para);
+            call(mark_enter_leaf, c, stk, &nstk, depth, &in_para);
             a_dup(u8c, hc, linec);
             u8csUsed(hc, (size_t)depth * 4);
             for (int i = 0; i < hl && !u8csEmpty(hc) && u8csAt(hc, 0) == '#'; ++i)
@@ -528,58 +624,43 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         }
 
         int depth = MKDTIndentDepth(linef);
+        if (depth > MARK_STACK_CAP) depth = MARK_STACK_CAP;
         u8c *mend = NULL;
         mkdtmark mk = MKDTLineMarker(linef, depth, &mend);
 
-        //  A depth change is a hard nesting boundary: open/close the div(s)
-        //  (which also closes the open leaf) before rendering this line.
-        call(mark_reconcile_divs, c, &div_depth, depth, &in_para, &in_list,
-             &list_ord, &in_quote);
-
         if (mk == MKDT_MARK_ULIST || mk == MKDT_MARK_OLIST) {
-            b8 want_ord = (mk == MKDT_MARK_OLIST);
-            call(mark_para_flush, c, &in_para);
-            call(mark_close, c, &in_quote, "</blockquote>\n");
-            //  Switching between bullets and numbers ends one list, starts
-            //  the other; same kind just continues the open list.
-            if (in_list && list_ord != want_ord)
-                call(mark_close_list, c, &in_list, &list_ord);
-            if (!in_list) {
-                call(MARKu8bLit, c->out, want_ord ? "<ol>\n" : "<ul>\n");
-                in_list = YES;
-                list_ord = want_ord;
-            }
             u8cs bc = {mend, linec[1]};
-            call(mark_budget, opts, "bullet", bc, MARK_BULLET_MAX);
-            call(MARKu8bLit, c->out, "<li>");
-            call(mark_inline, c, bc);
-            call(MARKu8bLit, c->out, "</li>\n");
+            call(mark_enter_list, c, stk, &nstk, depth,
+                 mk == MKDT_MARK_OLIST, bc, &in_para);
             opener = NO;
             continue;
         }
         if (mk == MKDT_MARK_QUOTE) {
-            call(mark_para_flush, c, &in_para);
-            call(mark_close_list, c, &in_list, &list_ord);
-            if (!in_quote) {
-                call(MARKu8bLit, c->out, "<blockquote>\n");
-                in_quote = YES;
-            }
             u8cs qc = {mend, linec[1]};
-            call(mark_inline, c, qc);
-            call(MARKu8bLit, c->out, "\n");
+            call(mark_enter_quote, c, stk, &nstk, depth, qc, &in_para);
+            opener = NO;
+            continue;
+        }
+        if (mk == MKDT_MARK_TODO) {
+            //  state char sits inside the `-[·]` block, at indent+2.
+            u8 state = linef[0][(size_t)depth * 4 + 2];
+            u8cs tc = {mend, linec[1]};
+            call(mark_enter_todo, c, stk, &nstk, depth, state, tc, &in_para);
             opener = NO;
             continue;
         }
 
         //  paragraph / summary.  Strip the indent gutter: the marker is NONE
         //  for a bare div, so `mend` points just past the depth*4 indents.
-        //  Accumulate soft-wrapped lines into one logical line (each newline
-        //  becomes a space) so an inline span may cross the wrap; the flush
-        //  at the next leaf boundary renders and budget-checks the whole.
+        //  Soft-wrapped lines join into one logical line (each newline a space)
+        //  so an inline span may cross the wrap; the flush at the next leaf
+        //  boundary renders and budget-checks the whole.  A continuation line
+        //  (already mid-paragraph at the same depth) just appends.
         u8cs pc = {mend, linec[1]};
-        call(mark_close_list, c, &in_list, &list_ord);
-        call(mark_close, c, &in_quote, "</blockquote>\n");
-        if (!in_para) {
+        b8 cont = in_para && nstk == depth;
+        if (!cont) {
+            call(mark_para_flush, c, &in_para);
+            call(mark_enter_leaf, c, stk, &nstk, depth, &in_para);
             c->para_opener = opener;
             opener = NO;
         } else {
@@ -589,10 +670,9 @@ static ok64 mark_blocks(markctx *c, u8csc src, markopts opts) {
         in_para = YES;
     }
 
-    //  EOF: close the open leaf and unwind every remaining div.
-    call(mark_close_leaf, c, &in_para, &in_list, &list_ord, &in_quote);
-    call(mark_reconcile_divs, c, &div_depth, 0, &in_para, &in_list, &list_ord,
-         &in_quote);
+    //  EOF: flush the open paragraph and unwind every remaining container.
+    call(mark_para_flush, c, &in_para);
+    call(mark_unwind, c, stk, &nstk, 0, &in_para);
     if (in_fence) call(MARKu8bLit, c->out, "</code></pre>\n");
     if (!h1_seen) call(mark_violate, opts, "no H1 opener (one concept per page)");
     done;

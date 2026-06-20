@@ -6,13 +6,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 include_directories(.. .)
 
-#  Ragel sources are pre-generated and committed (MARKE.rl.c / MARKG.rl.c).
-#  Regenerate with: ragel -C MARKE.c.rl -o MARKE.rl.c -L  (likewise MARKG)
+#  Ragel source is pre-generated and committed (MARKE.rl.c, the HTML escaper).
+#  Regenerate with: ragel -C MARKE.c.rl -o MARKE.rl.c -L
+#  Inline span decomposition moved into the StrictMark inline grammar
+#  (dog/tok/MKDT.c.rl: the mkdtg machine / MKDTDecomposeSpan).
 add_library(marklib STATIC
     MARK.h
     MARK.c
     MARKE.rl.c
-    MARKG.rl.c
 )
 target_link_libraries(marklib dog abc-core)
 

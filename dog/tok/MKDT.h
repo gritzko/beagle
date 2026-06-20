@@ -39,6 +39,39 @@ typedef enum {
     MKDT_MARK_TODO,   // [ ] [x] [X]
 } mkdtmark;
 
+// One line's full structural classification, per the StrictMark block grammar:
+// a run of 4-space indent (div) blocks, then at most one marker, OR a whole-
+// line leaf shape (heading / code fence / ruler / reference definition).
+typedef struct {
+    int        depth;        // count of leading 4-space indent blocks
+    mkdtmark   marker;       // the marker block after the indents, else NONE
+    int        heading;      // ATX header level 1..4, else 0
+    int        fence;        // backtick-run width (wrapper accepts only 3/4)
+    b8         fence_blank;  // the backtick run has a blank rest (a close fence)
+    b8         hrule;        // 3-4 dash ruler with a blank rest
+    b8         refdef;       // [x]: reference definition
+    const u8c *content;      // first content byte after indents + marker/header
+} mkdtblock;
+
+// A decomposed inline span (ragel: the mkdtg machine, MKDTDecomposeSpan): the
+// StrictMark inline grammar's emphasis/link/image forms split into their parts,
+// so a renderer needs no second parse.  For a shortcut [page], label == text.
+typedef struct {
+    u8   kind;   // 'B' strong, 'I' emph, 'D' del, 'A' link, 'M' image, 0 none
+    u8cs text;   // inner text / link text / alt text
+    u8cs label;  // explicit label; for a shortcut it equals the bracket text
+} mkdtspan;
+
+// Decompose one inline span token (the 'G' token from MKDTInlineLexer); always
+// OK, with kind 0 when the token is not a recognised span.
+ok64 MKDTDecomposeSpan(mkdtspan *g, u8csc tok);
+
+// The StrictMark block grammar (ragel: MKDTB): classify one line.  Only exact
+// shapes match — markers are 4-char-wide (a single '>'/'-' padded with spaces
+// in any column, 1-3 digits then '.', or a [ ]/[x]/[X] todo); headers need the
+// gap space; anything off-grammar (e.g. "-- ") leaves marker NONE (a paragraph).
+void MKDTBlock(u8csc line, mkdtblock *b);
+
 // Classify the block marker in the 4-char group after `depth` indents.
 // *markend := end of the 4-char marker slot on a hit, else line[0]+depth*4.
 mkdtmark MKDTLineMarker(u8csc line, int depth, u8c **markend);

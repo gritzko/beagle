@@ -192,6 +192,7 @@ list(APPEND TOK_SOURCES
     tok/MDT.rl.c
     tok/MKDT.c
     tok/MKDT.rl.c
+    tok/MKDTB.rl.c
     tok/LLT.c
     tok/LLT.rl.c
 )
