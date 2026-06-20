@@ -88,6 +88,7 @@ A `weave` is a zero-copy view over a `'W'` blob: columns `text`('X')/`toks`('K')
  -  `WEAVEIdHash` — `RAPHash(commit-id ++ ordinal)`, host-endian; shared so a stored anchor matches a token's idh directly.
  -  `WEAVEStep`/`weavetok` (`anchor`/`has_anchor`) — consume one token + its `'A'` anchor in lockstep.
  -  `WEAVEScope`/`WEAVEProduce`/`WEAVEAlive` — active-commit bitmap, bytes at any rev, tip alive bytes.
+ -  `WEAVEEmitDiff`/`EmitFull`/`EmitMerged` (DOG-004) — windowed / whole-file diff (HUNK records, DIFF-003/004 `scheme`/`navver` URIs) and conflict framing, all classifying off scope BITMAPs (a token in/out by `u1At` on its inserter/removers); 16 MiB text cap folds DIFF-007 to a coarse `text`-column hunk + a `capped:` status row (never silently empty).
 
 ###  BRAM.h, NEIL.h — token-level diff core (patience + EDL cleanup)
 

@@ -128,3 +128,9 @@ target_compile_options(DWEAVE01test PRIVATE ${TEST_CXX_FLAGS})
 target_link_libraries(DWEAVE01test dog abc-core)
 add_test(NAME DWEAVE01test COMMAND DWEAVE01test)
 
+# DOG-004: WEAVEEmit{Diff,Full,Merged} over scope bitmaps + 16 MiB cap
+add_executable(DWEAVE02test WEAVE02.c)
+target_link_options(DWEAVE02test PRIVATE ${TEST_LDD_FLAGS})
+target_compile_options(DWEAVE02test PRIVATE ${TEST_CXX_FLAGS})
+target_link_libraries(DWEAVE02test dog abc-core)
+add_test(NAME DWEAVE02test COMMAND DWEAVE02test)

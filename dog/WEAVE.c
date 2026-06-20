@@ -6,6 +6,7 @@
 #include "WEAVE.h"
 
 #include "abc/DIFF.h"
+#include "abc/PATH.h"
 #include "abc/PRO.h"
 #include "abc/RAP.h"
 #include "abc/TLV.h"
@@ -823,5 +824,517 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     nw.commits[1] = (u64c *)u64bDataHead(mc) + u64bDataLen(mc);
     u8csMv(nw.anc, u8bDataC(o_anc));
     call(WEAVESerialize, into, &nw);
+    done;
+}
+
+// ============================================================
+//  Emit (DOG-004): port graf's WEAVEEmit* onto the columnar weave.
+//  Classification drives off the scope BITMAP (WEAVEScope/WEAVEStep)
+//  instead of graf's WEAVEsetfn callbacks; output stays HUNK records.
+// ============================================================
+
+//  16 MiB weave-text cap (DIFF-007): past this the token re-tokenise and
+//  the side-overlay blow up, so fall back to a coarse blob-level emit and
+//  REPORT a `capped` status row — never a silently-empty result.
+#define WEAVE_TEXT_CAP   (16UL << 20)
+//  Whole-file (Full) hunk-body cap: keep individual hunks bounded so the
+//  renderer never holds an unbounded body (graf carried the same knob).
+#define WEAVE_FULL_HUNK_MAX (1UL << 20)
+#define WEAVE_CTX_LINES  3
+
+//  Flat per-token decode of a whole weave, materialised once by a
+//  WEAVEStep walk so the emit logic indexes tokens like graf's `wdp`
+//  (random access by i).  Carves persist in the CALLER's frame — call
+//  weave_emit_decode DIRECTLY, never via call().
+typedef struct {
+    u32  n;
+    u8cs text;     // concatenated token bytes, weave order (== w->text)
+    u32 *end;      // cumulative end offset per token
+    u8  *tag;      // stored syntax tag per token
+    u32 *ins;      // inserter commit index per token
+    u32 *roff;     // remover-pool offset per token
+    u32 *rlen;     // remover count per token
+    u32 *rid;      // remover commit-index pool
+} wedec;
+
+static ok64 weave_emit_decode(weave const *w, wedec *d) {
+    sane(w && d);
+    zerop(d);
+    u32 nx = (u32)$len(w->toks);
+    a_carve(u32, end,  nx + 1);
+    a_carve(u8,  tag,  nx + 1);
+    a_carve(u32, ins,  nx + 1);
+    a_carve(u32, roff, nx + 1);
+    a_carve(u32, rlen, nx + 1);
+    a_carve(u32, rid,  u8csLen(w->rms) / 4 + 1);
+    weave c = *w; u32 off = 0; weavetok tk;
+    while ((size_t)$len(c.toks) > 0) {
+        call(WEAVEStep, &c, &off, &tk);
+        call(u32bFeed1, end, off);
+        call(u8bFeed1, tag, tk.tag);
+        call(u32bFeed1, ins, tk.inserter);
+        call(u32bFeed1, roff, (u32)u32bDataLen(rid));
+        u32 rl = 0;
+        $for(u32c, r, tk.rms) { call(u32bFeed1, rid, *r); rl++; }
+        call(u32bFeed1, rlen, rl);
+    }
+    d->n = nx;
+    u8csMv(d->text, w->text);
+    d->end  = (u32 *)u32bDataHead(end);
+    d->tag  = (u8 *)u8bDataHead(tag);
+    d->ins  = (u32 *)u32bDataHead(ins);
+    d->roff = (u32 *)u32bDataHead(roff);
+    d->rlen = (u32 *)u32bDataHead(rlen);
+    d->rid  = (u32 *)u32bDataHead(rid);
+    done;
+}
+
+fun u32 we_lo(wedec const *d, u32 i) { return i ? d->end[i - 1] : 0; }
+fun u32 we_hi(wedec const *d, u32 i) { return d->end[i]; }
+
+//  A token is alive in `scope` iff its inserter bit is set AND no remover
+//  bit is set.  WEAVEScope always sets bit 0 (the spine), so a spine
+//  token (inserter == WEAVE_SPINE) passes unless a reachable remover kills
+//  it — exactly graf's weave_scope_alive predicate, bitmap-driven.
+static b8 weave_scope_alive(wedec const *d, u32 i, weavescope scope) {
+    if (!u1At(scope, d->ins[i])) return NO;
+    for (u32 z = 0; z < d->rlen[i]; z++)
+        if (u1At(scope, d->rid[d->roff[i] + z])) return NO;
+    return YES;
+}
+
+//  Diff classify: 'I' inserted (alive in `to`, not `from`), 'D' deleted
+//  (alive in `from`, not `to`), ' ' context (both), 0 invisible (neither).
+static u8 weave_diff_classify(wedec const *d, u32 i,
+                              weavescope from, weavescope to) {
+    b8 af = weave_scope_alive(d, i, from);
+    b8 at = weave_scope_alive(d, i, to);
+    if (at && !af) return 'I';
+    if (af && !at) return 'D';
+    if (af && at)  return ' ';
+    return 0;
+}
+
+//  Overlay real syntax tags onto a diff hunk's side-only tok stream.
+//  `text` is the assembled hunk bytes; `sides` carries one tok32 per
+//  source segment (its diff SIDE kept, tag ignored).  The weave stores
+//  the per-token stored tag, but a hunk re-slices arbitrary token runs,
+//  so — like graf — we re-tokenise `text` for syntax and write into
+//  `out` (reset first) the union segmentation: each emitted tok32 takes
+//  the syntax tag of its covering syntax token and the diff side of its
+//  covering side segment.  Best-effort; on a hiccup the neutral 'S' tag
+//  stands so the body always renders.
+static ok64 weave_overlay_syntax(u32b out, u8csc text, u8csc ext,
+                                 tok32cs sides) {
+    sane(out != NULL);
+    u32bReset(out);
+    u32 ns = (u32)$len(sides);
+    if (ns == 0 || $empty(text)) done;
+
+    a_carve(u32, syn, (size_t)($len(text) + 16));
+    u32 nt = 0;
+    if (!$empty(ext) && TOKKnownExt(ext) &&
+        HUNKu32bTokenize(syn, text, ext) == OK)
+        nt = (u32)u32bDataLen(syn);
+    tok32c *st = (tok32c *)u32bDataHead(syn);
+    tok32c *sd = sides[0];
+
+    u32 tlen = (u32)$len(text);
+    u32 pos = 0, i = 0, j = 0;
+    while (pos < tlen) {
+        u8  side = (i < ns) ? tok32Side(sd[i]) : TOK_SIDE_EQ;
+        u8  tag  = (j < nt) ? tok32Tag(st[j])  : 'S';
+        u32 a = (i < ns) ? tok32Offset(sd[i]) : tlen;
+        u32 b = (j < nt) ? tok32Offset(st[j]) : tlen;
+        u32 nb = a < b ? a : b;
+        if (nb <= pos) break;   // defensive: strictly-increasing offsets
+        call(u32bFeed1, out, tok32PackSide(tag, side, nb));
+        if (a == nb && i < ns) i++;
+        if (b == nb && j < nt) j++;
+        pos = nb;
+    }
+    done;
+}
+
+//  Compose a hunk URI `<scheme><name>?<navver>#L<lineno>` into `uri`
+//  (reset first), preserving DIFF-003/004 behaviour: a non-empty scheme
+//  is prepended; `navver` rides as a query; the start line is 1-based.
+static ok64 weave_emit_uri(u8b uri, u8cs scheme, u8cs name, u8cs navver,
+                           u32 lineno) {
+    sane(uri != NULL);
+    u8bReset(uri);
+    if (!u8csEmpty(scheme)) call(u8bFeed, uri, scheme);
+    call(u8bFeed, uri, name);
+    if (!u8csEmpty(navver)) {
+        call(u8bFeed1, uri, '?');
+        call(u8bFeed, uri, navver);
+    }
+    u8csc empty = {NULL, NULL};
+    call(HUNKu8sMakeURI, u8bIdle(uri), empty, empty, lineno + 1);
+    done;
+}
+
+//  Emit one hunk (uri/text/sides) through `cb`: overlay syntax onto the
+//  side-only stream, then hand a borrowed `hunk` to the callback.
+static ok64 weave_emit_flush(HUNKcb cb, void *ctx, u8b uri,
+                             u8b text, u32b sides, u32b combined, u8cs ext) {
+    sane(cb != NULL);
+    a_dup(u8c, htext, u8bDataC(text));
+    tok32cs sd = {(tok32c *)u32bDataHead(sides),
+                  (tok32c *)u32bDataHead(sides) + u32bDataLen(sides)};
+    call(weave_overlay_syntax, combined, htext, ext, sd);
+    hunk hk = {};
+    hk.uri[0]  = u8bDataHead(uri);
+    hk.uri[1]  = u8bDataHead(uri) + u8bDataLen(uri);
+    hk.text[0] = u8bDataHead(text);
+    hk.text[1] = u8bDataHead(text) + u8bDataLen(text);
+    hk.toks[0] = (tok32c *)u32bDataHead(combined);
+    hk.toks[1] = (tok32c *)u32bDataHead(combined) + u32bDataLen(combined);
+    call(cb, &hk, ctx);
+    done;
+}
+
+//  Coarse large-file fallback (DIFF-007): a weave whose text exceeds the
+//  16 MiB cap can't carry valid tok32 offsets (24-bit end offsets wrap
+//  past 16 MiB), so per-token decode/classify/overlay is impossible —
+//  emit ONE whole-file hunk of the raw `text` column (weave order, no
+//  per-token diff sides) plus a `capped` status row, never a silently
+//  empty result.  `to` is unused: a coarse blob-level view has no scope.
+static ok64 weave_emit_capped(weave const *w, u8cs scheme, u8cs name,
+                              u8cs navver, HUNKcb cb, void *ctx) {
+    sane(w && cb != NULL);
+    a_carve(u8, uri, u8csLen(name) + u8csLen(navver) + 64);
+    call(weave_emit_uri, uri, scheme, name, navver, 0);
+    {
+        hunk hk = {};
+        hk.uri[0]  = u8bDataHead(uri);
+        hk.uri[1]  = u8bDataHead(uri) + u8bDataLen(uri);
+        hk.text[0] = (u8 *)w->text[0];
+        hk.text[1] = (u8 *)w->text[1];
+        call(cb, &hk, ctx);
+    }
+    //  `capped` status row: a hunk with verb=hunk + a status URI, empty
+    //  body, so the renderer prints one machine-parseable report line.
+    a_carve(u8, srow, u8csLen(name) + 16);
+    a_cstr(cap, "capped:");
+    call(u8bFeed, srow, cap);
+    call(u8bFeed, srow, name);
+    {
+        hunk hk = {};
+        hk.verb = HUNK_VERB_HUNK;
+        hk.uri[0] = u8bDataHead(srow);
+        hk.uri[1] = u8bDataHead(srow) + u8bDataLen(srow);
+        call(cb, &hk, ctx);
+    }
+    done;
+}
+
+//  Windowed diff: emit only changed-line windows (WEAVE_CTX_LINES of
+//  context) as `diff:<name>?<navver>#L<line>` hunks.  Byte-parity with
+//  graf's WEAVEEmitDiff where uncapped.
+ok64 WEAVEEmitDiff(weave const *w, u8cs name, u8cs navver,
+                   weavescope from, weavescope to, HUNKcb cb, void *ctx) {
+    sane(w && cb != NULL);
+    if (WEAVEEmpty(w)) done;
+    if (u8csLen(w->text) > WEAVE_TEXT_CAP) {
+        a_cstr(dscheme, "diff:");
+        return weave_emit_capped(w, dscheme, name, navver, cb, ctx);
+    }
+
+    wedec d = {};
+    { ok64 r = weave_emit_decode(w, &d); if (r != OK) return r; }
+    u32 ntok = d.n;
+    if (ntok == 0) done;
+    u8c *text = d.text[0];
+
+    //  Mark changed lines: a line carrying an 'I'/'D' token (and its
+    //  immediate predecessor line) is changed.  total_lines_est bounds it.
+    u32 total_lines_est = 1;
+    { u32 tlen = (u32)u8csLen(d.text);
+      for (u32 b = 0; b < tlen; b++) if (text[b] == '\n') total_lines_est++; }
+    a_carve(u8, changed, total_lines_est + 4);
+    u8bReset(changed);
+    for (u32 z = 0; z < total_lines_est; z++) call(u8bFeed1, changed, 0);
+    u8 *cmark = (u8 *)u8bDataHead(changed);
+    u32 cur_line = 0;
+    for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(&d, i, from, to);
+        if (tag == 0) continue;
+        u32 lo = we_lo(&d, i), hi = we_hi(&d, i);
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
+        if (tag == 'I' || tag == 'D') {
+            if (cur_line > 0) cmark[cur_line - 1] = 1;
+            for (u32 l = cur_line; l <= cur_line + nl && l < total_lines_est; l++)
+                cmark[l] = 1;
+        }
+        cur_line += nl;
+    }
+    u32 total_lines = cur_line + 1;
+    if (total_lines > total_lines_est) total_lines = total_lines_est;
+
+    //  Coalesce changed lines into [lo,hi] windows with context.
+    a_carve(u32, windows, (total_lines + 4) * 2);
+    u32 *wbuf = (u32 *)u32bIdleHead(windows);
+    u32 nwin = 0;
+    { u32 i = 0;
+      while (i < total_lines) {
+        if (!cmark[i]) { i++; continue; }
+        u32 cluster_first = i, cluster_last = i;
+        i++;
+        while (i < total_lines) {
+            if (cmark[i]) { cluster_last = i; i++; continue; }
+            u32 j = i;
+            while (j < total_lines && !cmark[j] &&
+                   j - cluster_last <= 2 * WEAVE_CTX_LINES) j++;
+            if (j < total_lines && cmark[j]) { cluster_last = j; i = j + 1; }
+            else break;
+        }
+        u32 lo = (cluster_first > WEAVE_CTX_LINES)
+                 ? cluster_first - WEAVE_CTX_LINES : 0;
+        u32 hi = cluster_last + WEAVE_CTX_LINES;
+        if (hi >= total_lines) hi = total_lines - 1;
+        wbuf[nwin * 2] = lo; wbuf[nwin * 2 + 1] = hi; nwin++;
+      } }
+    if (nwin == 0) done;
+
+    a_carve(u8,  outtext,  u8csLen(d.text) + 1);
+    a_carve(u32, outtoks,  (size_t)ntok + 1);
+    a_carve(u32, combined, 2 * (size_t)ntok + (size_t)u8csLen(d.text) + 16);
+    a_carve(u8,  outuri,   u8csLen(name) + u8csLen(navver) + 64);
+    u8cs ext = {};
+    PATHu8sExt(ext, name);
+    a_cstr(dscheme, "diff:");
+
+    u32 wi = 0, win_lo = wbuf[0], win_hi = wbuf[1];
+    cur_line = 0;
+    b8 hunk_open = NO;
+
+    #define FLUSH() do { if (hunk_open) {                                 \
+        call(weave_emit_uri, outuri, dscheme, name, navver, win_lo);      \
+        call(weave_emit_flush, cb, ctx, outuri, outtext, outtoks,         \
+             combined, ext);                                              \
+        u8bReset(outtext); u32bReset(outtoks); hunk_open = NO; } } while (0)
+
+    for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(&d, i, from, to);
+        if (tag == 0) continue;
+        u32 lo = we_lo(&d, i), hi = we_hi(&d, i);
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (text[b] == '\n') nl++;
+        while (wi < nwin && cur_line > win_hi) {
+            FLUSH();
+            wi++;
+            if (wi < nwin) { win_lo = wbuf[wi * 2]; win_hi = wbuf[wi * 2 + 1]; }
+        }
+        if (wi >= nwin) break;
+        if (cur_line >= win_lo && cur_line <= win_hi) {
+            a_part(u8c, tb, d.text, lo, hi - lo);
+            call(u8bFeed, outtext, tb);
+            u8 side = (tag == 'I') ? TOK_SIDE_IN
+                    : (tag == 'D') ? TOK_SIDE_RM : TOK_SIDE_EQ;
+            call(u32bFeed1, outtoks,
+                 tok32PackSide('S', side, (u32)u8bDataLen(outtext)));
+            hunk_open = YES;
+        }
+        cur_line += nl;
+    }
+    FLUSH();
+    #undef FLUSH
+    done;
+}
+
+//  Whole-file diff: every visible token, change-tagged.  `scheme` (e.g.
+//  `diff:` or empty for `cat:`) selects the renderer path (DIFF-003).
+ok64 WEAVEEmitFull(weave const *w, u8cs name, u8cs scheme, u8cs navver,
+                   weavescope from, weavescope to, HUNKcb cb, void *ctx) {
+    sane(w && cb != NULL);
+    if (WEAVEEmpty(w)) done;
+    if (u8csLen(w->text) > WEAVE_TEXT_CAP)
+        return weave_emit_capped(w, scheme, name, navver, cb, ctx);
+
+    wedec d = {};
+    { ok64 r = weave_emit_decode(w, &d); if (r != OK) return r; }
+    u32 ntok = d.n;
+    if (ntok == 0) done;
+
+    a_carve(u8,  outtext,  u8csLen(d.text) + 1);
+    a_carve(u32, outtoks,  (size_t)ntok + 1);
+    a_carve(u32, combined, 2 * (size_t)ntok + (size_t)u8csLen(d.text) + 16);
+    a_carve(u8,  outuri,   u8csLen(name) + u8csLen(navver) + 64);
+    u8cs ext = {};
+    PATHu8sExt(ext, name);
+
+    b8 hunk_open = NO;
+    u32 hunk_start_line = 0, cur_line = 0;
+
+    #define FLUSH() do { if (hunk_open) {                                    \
+        call(weave_emit_uri, outuri, scheme, name, navver, hunk_start_line); \
+        call(weave_emit_flush, cb, ctx, outuri, outtext, outtoks,            \
+             combined, ext);                                                 \
+        u8bReset(outtext); u32bReset(outtoks); hunk_open = NO;               \
+        hunk_start_line = cur_line; } } while (0)
+
+    for (u32 i = 0; i < ntok; i++) {
+        u8 tag = weave_diff_classify(&d, i, from, to);
+        if (tag == 0) continue;
+        u32 lo = we_lo(&d, i), hi = we_hi(&d, i);
+        u32 nl = 0;
+        for (u32 b = lo; b < hi; b++) if (d.text[0][b] == '\n') nl++;
+        if (hunk_open && u8bDataLen(outtext) + (hi - lo) > WEAVE_FULL_HUNK_MAX)
+            FLUSH();
+        a_part(u8c, tb, d.text, lo, hi - lo);
+        call(u8bFeed, outtext, tb);
+        u8 side = (tag == 'I') ? TOK_SIDE_IN
+                : (tag == 'D') ? TOK_SIDE_RM : TOK_SIDE_EQ;
+        call(u32bFeed1, outtoks,
+             tok32PackSide('S', side, (u32)u8bDataLen(outtext)));
+        hunk_open = YES;
+        cur_line += nl;
+    }
+    FLUSH();
+    #undef FLUSH
+    done;
+}
+
+//  Per-token membership mask: bit g set iff the token's inserter is
+//  reachable in groups[g].  The spine (bit 0 of every scope) sets every
+//  group, so a base token reads as shared (== all-groups), never framed.
+static u32 weave_emit_membership(wedec const *d, u32 i,
+                                 weavescope const *groups, u32 ngroups) {
+    u32 m = 0;
+    for (u32 g = 0; g < ngroups; g++)
+        if (u1At(groups[g], d->ins[i])) m |= (1u << g);
+    return m;
+}
+
+//  Gather (into reset `dst`) the bytes of every alive token in
+//  [run_lo,run_hi) whose membership equals `gmask` — the byte-equality
+//  collapse oracle for re-absorbed (foster/cherry) content.
+static ok64 weave_gather_group(u8b dst, wedec const *d, u32 run_lo, u32 run_hi,
+                               u32 gmask, weavescope const *groups, u32 ngroups) {
+    sane(dst != NULL);
+    u8bReset(dst);
+    for (u32 j = run_lo; j < run_hi; j++) {
+        if (d->rlen[j] != 0) continue;     // not alive at the merged tip
+        if (weave_emit_membership(d, j, groups, ngroups) != gmask) continue;
+        a_part(u8c, tb, d->text, we_lo(d, j), we_hi(d, j) - we_lo(d, j));
+        call(u8bFeed, dst, tb);
+    }
+    done;
+}
+
+//  Conflict-aware render: walk the merged weave's alive tokens; a run
+//  whose membership masks disagree across groups is framed with render-
+//  time `<<<<`/`||||`/`>>>>` markers (never stored).  Byte-equal groups
+//  (foster/cherry re-absorption) collapse to one un-framed copy.  `out`
+//  is reset on entry.
+ok64 WEAVEEmitMerged(weave const *w, weavescope const *groups, u32 ngroups,
+                     u8b out) {
+    sane(w && out);
+    if (ngroups > 32) return WEAVEFAIL;
+    u8bReset(out);
+    if (WEAVEEmpty(w)) done;
+
+    wedec d = {};
+    { ok64 r = weave_emit_decode(w, &d); if (r != OK) return r; }
+    u32 ntok = d.n;
+    if (ntok == 0) done;
+
+    //  spine_mask = all group bits (a token reachable in every group is
+    //  shared, not a conflict).  The spine bit (commits[0]) is always set
+    //  in every scope, so base tokens reach it.
+    u32 spine_mask = (ngroups == 0) ? 0
+                   : (ngroups == 32 ? 0xFFFFFFFFu : ((1u << ngroups) - 1u));
+
+    a_carve(u8, cgA, u8csLen(d.text) + 1);
+    a_carve(u8, cgB, u8csLen(d.text) + 1);
+    a_cstr(mk_open,  "<<<<");
+    a_cstr(mk_mid,   "||||");
+    a_cstr(mk_close, ">>>>");
+
+    #define EMITTOK(i) do { a_part(u8c, _tb, d.text, we_lo(&d,(i)),       \
+        we_hi(&d,(i)) - we_lo(&d,(i))); call(u8bFeed, out, _tb); } while (0)
+
+    u32 i = 0;
+    while (i < ntok) {
+        if (d.rlen[i] != 0) { i++; continue; }   // dead at merged tip
+        u32 m = weave_emit_membership(&d, i, groups, ngroups);
+        if (m == spine_mask) { EMITTOK(i); i++; continue; }
+
+        //  Divergent run: spans until the next shared (spine_mask) token.
+        u32 run_lo = i, run_hi = i;
+        while (run_hi < ntok) {
+            if (d.rlen[run_hi] != 0) { run_hi++; continue; }
+            u32 mm = weave_emit_membership(&d, run_hi, groups, ngroups);
+            if (mm == spine_mask) break;
+            run_hi++;
+        }
+
+        //  Conflict iff two distinct masks share no group (disjoint sides).
+        b8 conflict = NO;
+        u32 groups_seen[32]; u32 ngseen = 0;
+        for (u32 j = run_lo; j < run_hi && !conflict; j++) {
+            if (d.rlen[j] != 0) continue;
+            u32 mj = weave_emit_membership(&d, j, groups, ngroups);
+            for (u32 k = 0; k < ngseen; k++)
+                if ((groups_seen[k] & mj) == 0) { conflict = YES; break; }
+            if (conflict) break;
+            b8 dup = NO;
+            for (u32 k = 0; k < ngseen; k++) if (groups_seen[k] == mj) { dup = YES; break; }
+            if (!dup && ngseen < 32) groups_seen[ngseen++] = mj;
+        }
+
+        if (!conflict) {
+            for (u32 j = run_lo; j < run_hi; j++)
+                if (d.rlen[j] == 0) EMITTOK(j);
+            i = run_hi;
+            continue;
+        }
+
+        //  Re-collect every distinct mask in order for the framed render.
+        ngseen = 0;
+        for (u32 j = run_lo; j < run_hi; j++) {
+            if (d.rlen[j] != 0) continue;
+            u32 mj = weave_emit_membership(&d, j, groups, ngroups);
+            b8 dup = NO;
+            for (u32 k = 0; k < ngseen; k++) if (groups_seen[k] == mj) { dup = YES; break; }
+            if (!dup && ngseen < 32) groups_seen[ngseen++] = mj;
+        }
+
+        //  Byte-equality collapse: if every divergent group emits the same
+        //  bytes (content re-absorbed under a different birth-id), emit it
+        //  once with no markers — not a real conflict.
+        if (ngseen >= 2) {
+            call(weave_gather_group, cgA, &d, run_lo, run_hi, groups_seen[0],
+                 groups, ngroups);
+            a_dup(u8c, ga, u8bDataC(cgA));
+            b8 all_eq = YES;
+            for (u32 g = 1; g < ngseen && all_eq; g++) {
+                call(weave_gather_group, cgB, &d, run_lo, run_hi, groups_seen[g],
+                     groups, ngroups);
+                a_dup(u8c, gb, u8bDataC(cgB));
+                if (!u8csEq(ga, gb)) all_eq = NO;
+            }
+            if (all_eq) {
+                call(u8bFeed, out, u8bDataC(cgA));
+                i = run_hi;
+                continue;
+            }
+        }
+        call(u8bFeed, out, mk_open);
+        for (u32 g = 0; g < ngseen; g++) {
+            if (g > 0) call(u8bFeed, out, mk_mid);
+            for (u32 j = run_lo; j < run_hi; j++) {
+                if (d.rlen[j] != 0) continue;
+                if (weave_emit_membership(&d, j, groups, ngroups) != groups_seen[g])
+                    continue;
+                EMITTOK(j);
+            }
+        }
+        call(u8bFeed, out, mk_close);
+        i = run_hi;
+    }
+    #undef EMITTOK
     done;
 }
