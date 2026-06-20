@@ -516,8 +516,7 @@ typedef struct {
     u8  *tag, *hasin;
     u64 *idh;     // identity hash RAPHash(commit-id ++ ordinal)
     u64 *anc;     // RGA left-anchor hash (in idh space)
-    u64 *cid;     // tie-break: inserter commit id (NOT the merged index)
-    u32 *ord;     // tie-break: per-commit ordinal
+    u32 *ord;     // tie-break: per-commit ordinal (DIS-044: index is in `ins`)
 } wmdec;
 
 //  Decode `X` into `d` (carves persist in the CALLER's frame — call this
@@ -537,7 +536,6 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
     a_carve(u8,  hin,  nx + 1);
     a_carve(u64, idh,  nx + 1);
     a_carve(u64, anc,  nx + 1);
-    a_carve(u64, cid,  nx + 1);
     a_carve(u32, ord,  nx + 1);
     a_carve(u32, cnt,  nc + 1);
     for (u32 i = 0; i < nc; i++) call(u32bFeed1, cnt, 0);
@@ -555,7 +553,6 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
         u64 this_idh = WEAVEIdHash(iid, o);
         call(u64bFeed1, idh, this_idh);
         call(u64bFeed1, anc, tk.has_anchor ? tk.anchor : prev_idh);
-        call(u64bFeed1, cid, iid);
         call(u32bFeed1, ord, o);
         call(u32bFeed1, end, off);
         call(u8bFeed1, tag, tk.tag);
@@ -578,22 +575,24 @@ static ok64 wmerge_decode(weave const *X, u32cs remap, wmdec *d) {
     d->hasin = (u8 *)u8bDataHead(hin);
     d->idh  = (u64 *)u64bDataHead(idh);
     d->anc  = (u64 *)u64bDataHead(anc);
-    d->cid  = (u64 *)u64bDataHead(cid);
     d->ord  = (u32 *)u32bDataHead(ord);
     done;
 }
 
-//  --- DIS-043 RGA merge ---------------------------------------------------
+//  --- DIS-043 RGA merge + DIS-044 causal tie-break ------------------------
 //  rgakey: the RGA sort record per union token.  Sorted by anchor (ASC, to
-//  make siblings contiguous) then the tie-break — commit-id DESCending,
-//  ordinal ASCending — over the REAL (cid, ord), never the hash, so a hash
-//  collision can at worst mis-order, never duplicate.
-typedef struct { u64 anchor, cid; u32 ord, ui; } rgakey;
+//  make siblings contiguous) then the tie-break — DIS-044: the merged commit
+//  INDEX (a path-independent CAUSAL topo rank, ancestor < descendant), not the
+//  raw 60-bit hashlet (arbitrary, so a base could outrank its edits and strand
+//  a replace-edit's token).  Among purely-concurrent commits the topo merge
+//  orders by hashlet, so cidx DESC == the old cid DESC sibling order.  ordinal
+//  ASC within a commit.  cidx is a real index, so no hash collision to dodge.
+typedef struct { u64 anchor; u32 cidx, ord, ui; } rgakey;
 
 fun b8 rgakeyZ(rgakey const *a, rgakey const *b) {
     if (a->anchor != b->anchor) return a->anchor < b->anchor;
-    if (a->cid != b->cid) return a->cid > b->cid;   // cid DESC
-    return a->ord < b->ord;                          // ord ASC
+    if (a->cidx != b->cidx) return a->cidx > b->cidx;   // commit index DESC
+    return a->ord < b->ord;                              // ord ASC
 }
 #define X(M, n) M##rgakey##n
 #include "abc/Bx.h"
@@ -602,8 +601,8 @@ fun b8 rgakeyZ(rgakey const *a, rgakey const *b) {
 static int rga_cmp(void const *pa, void const *pb) {
     rgakey const *x = pa, *y = pb;
     if (x->anchor != y->anchor) return x->anchor < y->anchor ? -1 : 1;
-    if (x->cid != y->cid) return x->cid > y->cid ? -1 : 1;   // cid DESC
-    if (x->ord != y->ord) return x->ord < y->ord ? -1 : 1;   // ord ASC
+    if (x->cidx != y->cidx) return x->cidx > y->cidx ? -1 : 1;   // index DESC
+    if (x->ord != y->ord) return x->ord < y->ord ? -1 : 1;       // ord ASC
     return 0;
 }
 
@@ -642,31 +641,72 @@ static ok64 wmerge_emit1(wnext_out *o, u8b utxt, u32b urid, u8 tag, b8 hasin,
     done;
 }
 
-//  Merge two parents' weaves into one (DIS-003 JOIN + DIS-043 RGA order).
-//  The union of identities is laid out by a path-independent RGA total order
-//  (each token after its immutable anchor; concurrent siblings by cid DESC,
-//  ord ASC), so every merge path agrees and the JOIN matches each shared
-//  identity exactly once.  `merge_commit` is reserved for an evil-merge's own
-//  content (fold it with a following WEAVENext); a pure merge adds no commit.
+//  DIS-044: build the merged commit table in a DETERMINISTIC CAUSAL order so a
+//  token's commit INDEX is a real topo rank — causal (ancestor < descendant)
+//  AND path-independent (same whichever parent is `a`).  Each parent's
+//  commits[] is already ancestors-first, so this is a stable two-way merge of
+//  two causally-ordered lists: a head is READY when every commit before it in
+//  EITHER list is already emitted (i.e. it is not buried in the other list's
+//  unconsumed tail); among ready heads pick the SMALLER hashlet (a symmetric
+//  tie-break for concurrent commits).  Shared commits advance both cursors.
+//  Fills `mc` (merged ids), `ra`/`rb` (parent-local idx -> merged idx).  Counts
+//  are per-file (small): the O(n^2) tail scan matches the rest of this file.
+static ok64 wmerge_commits(u64b mc, u32b ra, u32b rb,
+                           u64csc ca, u64csc cb) {
+    sane(1);
+    u32 na = (u32)$len(ca), nb = (u32)$len(cb);
+    u32 pa = 0, pb = 0;
+    while (pa < na || pb < nb) {
+        b8 hasa = (pa < na), hasb = (pb < nb);
+        u64 ha = hasa ? ca[0][pa] : 0, hb = hasb ? cb[0][pb] : 0;
+        //  A head is ready iff it is NOT still pending later in the other list.
+        b8 ra_rdy = NO, rb_rdy = NO;
+        if (hasa) {
+            ra_rdy = YES;
+            for (u32 k = pb; k < nb; k++) if (cb[0][k] == ha) { ra_rdy = (k == pb); break; }
+        }
+        if (hasb) {
+            rb_rdy = YES;
+            for (u32 k = pa; k < na; k++) if (ca[0][k] == hb) { rb_rdy = (k == pa); break; }
+        }
+        //  Choose the ready head with the smaller hashlet; if (malformed)
+        //  neither is ready, force progress on the smaller head to avoid a
+        //  deadlock (a real ordering conflict between the two lists).
+        b8 pick_a;
+        if (ra_rdy && rb_rdy) pick_a = (ha <= hb);
+        else if (ra_rdy)      pick_a = YES;
+        else if (rb_rdy)      pick_a = NO;
+        else                  pick_a = hasa && (!hasb || ha <= hb);
+        u64 chosen = pick_a ? ha : hb;
+        u32 idx = (u32)u64bDataLen(mc);
+        call(u64bFeed1, mc, chosen);
+        if (pa < na && ca[0][pa] == chosen) { call(u32bFeed1, ra, idx); pa++; }
+        if (pb < nb && cb[0][pb] == chosen) { call(u32bFeed1, rb, idx); pb++; }
+    }
+    done;
+}
+
+//  Merge two parents' weaves into one (DIS-003 JOIN + DIS-043 RGA order +
+//  DIS-044 causal tie-break).  The union of identities is laid out by a
+//  path-independent RGA total order (each token after its immutable anchor;
+//  concurrent siblings by merged commit INDEX DESC, ord ASC — the index is a
+//  causal topo rank from wmerge_commits, so a base never outranks its edits),
+//  so every merge path agrees and the JOIN matches each shared identity exactly
+//  once.  `merge_commit` is reserved for an evil-merge's own content (fold it
+//  with a following WEAVENext); a pure merge adds no commit.
 ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     sane(into != NULL);
     (void)merge_commit;
     if (a == NULL || WEAVEEmpty(a)) { if (b) { weave nb = *b; return WEAVESerialize(into, &nb); } fail(WEAVEFAIL); }
     if (b == NULL || WEAVEEmpty(b)) { weave na = *a; return WEAVESerialize(into, &na); }
 
-    //  Merged commit table = a.commits ++ (b.commits not already present);
-    //  remap_a/remap_b map each parent's local index to the merged index.
+    //  Merged commit table in DETERMINISTIC CAUSAL (topo) order (DIS-044), so a
+    //  token's commit INDEX is a path-independent causal rank; remap_a/remap_b
+    //  map each parent's local index to the merged index.
     a_carve(u64, mc, (size_t)$len(a->commits) + (size_t)$len(b->commits) + 1);
     a_carve(u32, ra, (size_t)$len(a->commits) + 1);
     a_carve(u32, rb, (size_t)$len(b->commits) + 1);
-    { u32 i = 0; $for(u64c, c, a->commits) { call(u64bFeed1, mc, *c); call(u32bFeed1, ra, i); i++; } }
-    $for(u64c, c, b->commits) {
-        u32 idx = (u32)u64bDataLen(mc), k = 0; b8 f = NO;
-        u64 *mcd = (u64 *)u64bDataHead(mc);
-        for (k = 0; k < (u32)u64bDataLen(mc); k++) if (mcd[k] == *c) { idx = k; f = YES; break; }
-        if (!f) call(u64bFeed1, mc, *c);
-        call(u32bFeed1, rb, idx);
-    }
+    call(wmerge_commits, mc, ra, rb, a->commits, b->commits);
 
     wmdec da = {}, db = {};
     { ok64 r = wmerge_decode(a, u32bDataC(ra), &da); if (r != OK) return r; }
@@ -679,7 +719,6 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     //  Columnar parallel arrays (ABC §1): one slot per distinct identity.
     a_carve(u64, u_idh,   nab + 1);
     a_carve(u64, u_anc,   nab + 1);
-    a_carve(u64, u_cid,   nab + 1);
     a_carve(u32, u_ord,   nab + 1);
     a_carve(u32, u_tlo,   nab + 1);
     a_carve(u32, u_thi,   nab + 1);
@@ -696,7 +735,6 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
     zerob(ukey);
     u64map umap = {(u64 *)u64bDataHead(ukey), (u32 *)u32bDataHead(uval), ucap - 1, NO, 0};
     u64 *uidh = (u64 *)u64bDataHead(u_idh), *uanc = (u64 *)u64bDataHead(u_anc);
-    u64 *ucid = (u64 *)u64bDataHead(u_cid);
     u32 *uord = (u32 *)u32bDataHead(u_ord), *utlo = (u32 *)u32bDataHead(u_tlo);
     u32 *uthi = (u32 *)u32bDataHead(u_thi), *uins = (u32 *)u32bDataHead(u_ins);
     u32 *uroff = (u32 *)u32bDataHead(u_roff), *urlen = (u32 *)u32bDataHead(u_rlen);
@@ -715,7 +753,7 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
             u32 tlo = (u32)u8bDataLen(utxt);
             call(u8bFeed, utxt, bytes);
             uidh[ui] = d->idh[i]; uanc[ui] = d->anc[i];
-            ucid[ui] = d->cid[i]; uord[ui] = d->ord[i];
+            uord[ui] = d->ord[i];
             utlo[ui] = tlo; uthi[ui] = (u32)u8bDataLen(utxt);
             utag[ui] = d->tag[i]; uhin[ui] = d->hasin[i]; uins[ui] = d->ins[i];
             u64map_put(&umap, d->idh[i], ui);
@@ -742,11 +780,13 @@ ok64 WEAVEMerge(u8s into, weave const *a, weave const *b, u64 merge_commit) {
         }
     }
 
-    //  (2) RGA-linearise: sort by (anchor, cid DESC, ord ASC) so siblings are
-    //  contiguous, then map each anchor hash to its child group's [start,cnt).
+    //  (2) RGA-linearise: sort by (anchor, commit-index DESC, ord ASC) so
+    //  siblings are contiguous (DIS-044: the merged INDEX `uins` is the causal,
+    //  path-independent tie-break — not the raw `ucid` hashlet), then map each
+    //  anchor hash to its child group's [start,cnt).
     a_carve(rgakey, sk, (size_t)nu + 1);
     for (u32 i = 0; i < nu; i++) {
-        rgakey kk = {uanc[i], ucid[i], uord[i], i};
+        rgakey kk = {uanc[i], uins[i], uord[i], i};
         call(rgakeybFeed1, sk, kk);
     }
     rgakey *skd = (rgakey *)rgakeybDataHead(sk);

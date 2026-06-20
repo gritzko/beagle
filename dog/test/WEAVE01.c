@@ -186,6 +186,99 @@ static ok64 merge_fold_scenario(void) {
     done;
 }
 
+//  DIS-044: the RGA tie-break must be a CAUSAL rank, not the raw commit-id.
+//  Real 60-bit commit hashlets are arbitrary, so a descendant edit may have a
+//  SMALLER id than its base (spine).  When it does, the old commit-id-DESC
+//  tie-break stranded a replace-edit's inserted token behind the dead
+//  original (`int x = 10` -> `int x = ;` ... `10` at EOF) and let a same-line
+//  divergence splice clean instead of conflicting.  These cases assign ids so
+//  the spine is ABOVE the edits (base > ours/theirs) — the exact toggle that
+//  hides the bug under the monotonic line-index oracle.  Same content, same
+//  topology as merge_scenario; only the ids differ, so a RED here is purely
+//  the order-key bug, GREEN once the tie-break is the causal commit index.
+static ok64 spine_above_replace(void) {
+    sane(1);
+    fprintf(stderr, "  spine_above_replace ...");
+    a_cstr(cext, "c");
+    //  spine id 9000 > edit ids 2/3.  Ours replaces line 2 (X->O); theirs
+    //  replaces line 3 (c->C) — DISJOINT, so the merge is a clean splice.  The
+    //  replace-edit on line 2 is the stranding trigger: pre-fix its inserted
+    //  'O' lands behind the dead 'X' subtree at EOF.
+    u8csc v0 = {(u8c *)"a\nX\nc\n", (u8c *)"a\nX\nc\n" + 6};
+    u8csc vA = {(u8c *)"a\nO\nc\n", (u8c *)"a\nO\nc\n" + 6};   // ours   X->O
+    u8csc vB = {(u8c *)"a\nX\nC\n", (u8c *)"a\nX\nC\n" + 6};   // theirs c->C (disjoint)
+    a_carve(u8, w0b, 1UL << 16);  call(WEAVENext, u8bIdle(w0b), NULL, v0, cext, 9000);
+    weave w0 = {}; call(WEAVEParse, &w0, u8bDataC(w0b));
+    a_carve(u8, wAb, 1UL << 16);  call(WEAVENext, u8bIdle(wAb), &w0, vA, cext, 2);
+    weave wA = {}; call(WEAVEParse, &wA, u8bDataC(wAb));
+    a_carve(u8, wBb, 1UL << 16);  call(WEAVENext, u8bIdle(wBb), &w0, vB, cext, 3);
+    weave wB = {}; call(WEAVEParse, &wB, u8bDataC(wBb));
+    a_carve(u8, wMb, 1UL << 16);  call(WEAVEMerge, u8bIdle(wMb), &wA, &wB, 0);
+    weave wM = {}; call(WEAVEParse, &wM, u8bDataC(wMb));
+    //  ours O (line 2) + theirs C (line 3): a clean disjoint merge "a\nO\nC\n".
+    u8csc vMrep = {(u8c *)"a\nO\nC\n", (u8c *)"a\nO\nC\n" + 6};
+    a_carve(u8, al, 1UL << 16);   call(WEAVEAlive, &wM, al);
+    if (u8bDataLen(al) != 6 || memcmp(u8bDataHead(al), vMrep[0], 6)) {
+        fprintf(stderr, " replace tip mismatch (%zu) got=", u8bDataLen(al));
+        { u8c *g = u8bDataHead(al);
+          for (size_t k = 0; k < u8bDataLen(al); k++)
+              fputc(g[k] == '\n' ? '.' : g[k], stderr); }
+        fprintf(stderr, "\n"); fail(TESTFAIL);
+    }
+    //  Every scope must still recover its own content (the stranded-token bug
+    //  desyncs base recovery: "a\nX\nc\n" -> "a\n\nc\nX\n" pre-fix).
+    a_carve(u64, sc0, 1); call(u64bFeed1, sc0, 9000);
+    call(prod_check, "rep-base", &wM, u64bDataC(sc0), v0);
+    a_carve(u64, scA, 2); call(u64bFeed1, scA, 9000); call(u64bFeed1, scA, 2);
+    call(prod_check, "rep-ours", &wM, u64bDataC(scA), vA);
+    a_carve(u64, scB, 2); call(u64bFeed1, scB, 9000); call(u64bFeed1, scB, 3);
+    call(prod_check, "rep-theirs", &wM, u64bDataC(scB), vB);
+    fprintf(stderr, " ok\n");
+    done;
+}
+
+//  DIS-044: a same-line divergence with the spine ABOVE both edits must keep
+//  BOTH concurrent tokens (a conflict the renderer frames), never splice one
+//  away.  Verified structurally: producing each branch's scope recovers its
+//  OWN edit, and the merged tip carries both inserted bytes.
+static ok64 spine_above_diverge(void) {
+    sane(1);
+    fprintf(stderr, "  spine_above_diverge ...");
+    a_cstr(cext, "c");
+    u8csc v0 = {(u8c *)"a\nX\nc\n", (u8c *)"a\nX\nc\n" + 6};
+    u8csc vA = {(u8c *)"a\nO\nc\n", (u8c *)"a\nO\nc\n" + 6};   // ours  X->O
+    u8csc vB = {(u8c *)"a\nT\nc\n", (u8c *)"a\nT\nc\n" + 6};   // theirs X->T (same line!)
+    a_carve(u8, w0b, 1UL << 16);  call(WEAVENext, u8bIdle(w0b), NULL, v0, cext, 9000);
+    weave w0 = {}; call(WEAVEParse, &w0, u8bDataC(w0b));
+    a_carve(u8, wAb, 1UL << 16);  call(WEAVENext, u8bIdle(wAb), &w0, vA, cext, 2);
+    weave wA = {}; call(WEAVEParse, &wA, u8bDataC(wAb));
+    a_carve(u8, wBb, 1UL << 16);  call(WEAVENext, u8bIdle(wBb), &w0, vB, cext, 3);
+    weave wB = {}; call(WEAVEParse, &wB, u8bDataC(wBb));
+    a_carve(u8, wMb, 1UL << 16);  call(WEAVEMerge, u8bIdle(wMb), &wA, &wB, 0);
+    weave wM = {}; call(WEAVEParse, &wM, u8bDataC(wMb));
+    //  Both edits survive as concurrent siblings: ours-scope -> O, theirs -> T,
+    //  base -> X.  A splice would drop one branch's byte from recovery.
+    a_carve(u64, sc0, 1); call(u64bFeed1, sc0, 9000);
+    call(prod_check, "div-base", &wM, u64bDataC(sc0), v0);
+    a_carve(u64, scA, 2); call(u64bFeed1, scA, 9000); call(u64bFeed1, scA, 2);
+    call(prod_check, "div-ours", &wM, u64bDataC(scA), vA);
+    a_carve(u64, scB, 2); call(u64bFeed1, scB, 9000); call(u64bFeed1, scB, 3);
+    call(prod_check, "div-theirs", &wM, u64bDataC(scB), vB);
+    //  The merged tip must still hold BOTH 'O' and 'T' bytes (both alive, both
+    //  concurrent) — a splice would leave only one.
+    a_carve(u8, al, 1UL << 16);   call(WEAVEAlive, &wM, al);
+    b8 haveO = NO, haveT = NO;
+    { u8c *g = u8bDataHead(al);
+      for (size_t k = 0; k < u8bDataLen(al); k++) {
+          if (g[k] == 'O') haveO = YES; if (g[k] == 'T') haveT = YES; } }
+    if (!haveO || !haveT) {
+        fprintf(stderr, " diverge spliced: O=%d T=%d\n", haveO, haveT);
+        fail(TESTFAIL);
+    }
+    fprintf(stderr, " ok\n");
+    done;
+}
+
 // =====================================================================
 //  DIS-043 criss-cross: a stable RGA order makes recovery path-independent.
 //  A compact DAG-driven harness mirroring dog/fuzz/WEAVE (the real oracle):
@@ -199,6 +292,20 @@ static ok64 merge_fold_scenario(void) {
 
 typedef struct { char const *par; char const *content; } dagnode;
 typedef struct { char const *name; dagnode const *nodes; u32 n; } dagcase;
+
+//  DIS-044: per-node commit-id is ARBITRARY / NON-monotonic (SplitMix64 of the
+//  node index, == dog/fuzz/WEAVE's w2_cid), so a base/spine routinely outranks
+//  its edits — the real-hashlet order the old line-index ids hid.  Both the
+//  build and verify/scope sides call this, so commits[]-table membership still
+//  matches by value.  A SplitMix64 finalizer is a u64 bijection: distinct
+//  nodes get distinct ids, never a false identity collision.
+static u64 dag_cid(u32 i) {
+    u64 x = (u64)i + 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27; x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return x;
+}
 
 //  ancestor closure of `start` over [0..n): parents always precede.
 static void dag_closure(dagnode const *nd, u32 n, u32 start, u8 *anc) {
@@ -229,7 +336,7 @@ static ok64 dag_verify(weave const *W, dagnode const *nd, u32 n, u32 i) {
         u8 anc_a[DAG_MAX]; memset(anc_a, 0, n);
         dag_closure(nd, n, a, anc_a);
         u64bReset(active);
-        for (u32 j = 0; j < n; j++) if (anc_a[j]) call(u64bFeed1, active, (u64)j);
+        for (u32 j = 0; j < n; j++) if (anc_a[j]) call(u64bFeed1, active, dag_cid(j));
         call(WEAVEScope, &sc, &W[i], u64bDataC(active));
         call(WEAVEProduce, &W[i], u1bDataC(&sc), out);
         call(dag_lineform, exp, nd[a].content);
@@ -264,10 +371,10 @@ static ok64 dag_run(dagcase const *dc) {
         char const *par = dc->nodes[i].par;
         u32 np = (u32)strlen(par);
         if (np == 0) {                                  // root: from-blob
-            call(WEAVENext, u8bIdle(wbuf[i]), NULL, v, cext, (u64)i);
+            call(WEAVENext, u8bIdle(wbuf[i]), NULL, v, cext, dag_cid(i));
         } else if (np == 1) {                           // linear fold
             u32 p = (u8)(par[0] - '0');
-            call(WEAVENext, u8bIdle(wbuf[i]), &W[p], v, cext, (u64)i);
+            call(WEAVENext, u8bIdle(wbuf[i]), &W[p], v, cext, dag_cid(i));
         } else {                                        // merge fold + content
             u32 p0 = (u8)(par[0] - '0'), p1 = (u8)(par[1] - '0');
             u8bReset(mtmp[0]);
@@ -281,7 +388,7 @@ static ok64 dag_run(dagcase const *dc) {
                 call(WEAVEParse, &wm, u8bDataC(mtmp[d]));
                 d ^= 1;
             }
-            call(WEAVENext, u8bIdle(wbuf[i]), &wm, v, cext, (u64)i);
+            call(WEAVENext, u8bIdle(wbuf[i]), &wm, v, cext, dag_cid(i));
         }
         call(WEAVEParse, &W[i], u8bDataC(wbuf[i]));
     }
@@ -326,9 +433,22 @@ static dagnode const c597_nodes[] = {
     {"56789", "abcde"},       // 11 fold-merge(5..9) -- doubled root pre-fix
 };
 
+//  dis044_spine: minimised DWEAVEfuzz crash under arbitrary commit-ids
+//  (15-byte ` a\n0 g\n0 A\n12 X`).  Node 0's SplitMix id outranks nodes 1/2's,
+//  so the spine sits ABOVE its edits; the old commit-id-DESC tie-break
+//  reordered node 1's content on recovery (`g` -> `.g`).  GREEN once the
+//  tie-break is the causal commit INDEX.
+static dagnode const d044_nodes[] = {
+    {"",   "a"},   // 0 root  (largest SplitMix id == spine above edits)
+    {"0",  "g"},   // 1
+    {"0",  "A"},   // 2
+    {"12", "X"},   // 3 merge(1,2)
+};
+
 static dagcase const dagcases[] = {
     {"crisscross_recovery", cc_nodes,    8},
     {"crash_597",           c597_nodes, 12},
+    {"dis044_spine_above",  d044_nodes,  4},
 };
 
 //  Associativity: merge(merge(a,b),c) and merge(a,merge(b,c)) must SERIALISE
@@ -380,6 +500,8 @@ ok64 WEAVErttest() {
     call(diff_scenario);
     call(merge_scenario);
     call(merge_fold_scenario);
+    call(spine_above_replace);
+    call(spine_above_diverge);
     u32 nd = (u32)(sizeof(dagcases) / sizeof(dagcases[0]));
     for (u32 i = 0; i < nd; i++) call(dag_run, &dagcases[i]);
     call(assoc_scenario);

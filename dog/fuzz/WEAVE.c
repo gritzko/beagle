@@ -28,7 +28,10 @@
 //   * >=2 parents:   fold-merge the (normalized) parents pairwise via
 //                    WEAVEMerge, then WEAVENext(merged, lineform(Ci), c, i)
 //                    so the explicit content is authoritative.
-// commit-id = line index (root = 0 = the spine slot commits[0]).
+// commit-id = w2_cid(line index): an ARBITRARY, NON-monotonic 64-bit id
+//   (SplitMix64 of the index) so a descendant may carry a SMALLER id than its
+//   base — the real-hashlet order DIS-043's line-index ids accidentally hid
+//   (DIS-044).  Line 0 still owns commits[0] (the spine slot) whatever its id.
 //
 // Each content byte b becomes the LINE "b\n" so the line-coherent
 // tokenizer yields one token per byte and repeated bytes produce
@@ -61,6 +64,26 @@ typedef struct {
     u32  par[W2_MAX_LINES];  // parent line indices
     u32  npar;               // number of parents
 } w2_line;
+
+// --- commit-id per line: ARBITRARY, NON-monotonic (DIS-044) ---------
+//  DIS-043's order key was the raw commit-id; the line-index id used here
+//  was accidentally a valid causal order (parents precede, so id(parent) <
+//  id(child)) and HID the bug.  Real 60-bit hashlets are arbitrary: a
+//  descendant may carry a SMALLER id than its base (and the base/spine a
+//  LARGER one than its edits — the exact stranding toggle).  Map the line
+//  index through the SplitMix64 finalizer (a bijection on u64, so distinct
+//  indices give distinct ids — no false identity collision) to get an
+//  arbitrary order where the spine routinely outranks its descendants.  Line
+//  0 (the single root) still owns commits[0]/WEAVE_SPINE whatever its id, so
+//  no special id-0 case is needed; both the build and the verify/scope sides
+//  call this, so commits[]-table membership still matches by value.
+static u64 w2_cid(u32 i) {
+    u64 x = (u64)i + 0x9E3779B97F4A7C15ULL;   // avoid the i==0 fixed point
+    x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27; x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return x;                                 // 64-bit bijection: ids distinct
+}
 
 // --- ancestor closure: mark anc*(start) over [0..n) -----------------
 //  Parents always precede, so one descending sweep closes the set.
@@ -181,7 +204,7 @@ static ok64 w2_verify(weave const *w, w2_line const *lines, u32 n, u32 i) {
         w2_closure(lines, n, a, anc_a);
         u64bReset(active);
         for (u32 j = 0; j < n; j++)
-            if (anc_a[j]) call(u64bFeed1, active, (u64)j);
+            if (anc_a[j]) call(u64bFeed1, active, w2_cid(j));
         call(WEAVEScope, &sc, w, u64bDataC(active));
         call(WEAVEProduce, w, u1bDataC(&sc), out);
         call(w2_lineform, exp, lines[a].content);
@@ -224,13 +247,13 @@ static ok64 w2_run(w2_line *lines, u32 n) {
         u8csc lf = {u8bDataHead(line), u8bDataHead(line) + u8bDataLen(line)};
 
         if (lines[i].npar == 0) {                       // root: from-blob
-            call(WEAVENext, u8bIdle(wbuf[i]), NULL, lf, ext, (u64)i);
+            call(WEAVENext, u8bIdle(wbuf[i]), NULL, lf, ext, w2_cid(i));
         } else {
             u32 mpar[W2_MAX_LINES];
             u32 nm = w2_norm_parents(lines, n, lines[i].par, lines[i].npar, mpar);
             must(nm >= 1, "normalized parent set empty");
             if (nm == 1) {                              // linear fold
-                call(WEAVENext, u8bIdle(wbuf[i]), &W[mpar[0]], lf, ext, (u64)i);
+                call(WEAVENext, u8bIdle(wbuf[i]), &W[mpar[0]], lf, ext, w2_cid(i));
             } else {                                    // merge fold + content
                 if (dbg) fprintf(stderr, "  merge %u + %u\n", mpar[0], mpar[1]);
                 u8bReset(mtmp[0]);
@@ -247,7 +270,7 @@ static ok64 w2_run(w2_line *lines, u32 n) {
                     d ^= 1;
                 }
                 if (dbg) fprintf(stderr, "  fold content into merge\n");
-                call(WEAVENext, u8bIdle(wbuf[i]), &wm, lf, ext, (u64)i);
+                call(WEAVENext, u8bIdle(wbuf[i]), &wm, lf, ext, w2_cid(i));
             }
         }
         call(WEAVEParse, &W[i], u8bDataC(wbuf[i]));
