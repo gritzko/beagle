@@ -144,6 +144,18 @@ b8 SNIFFSubSrcEndsGit(u8cs src_uri);
 //  caller always retains it as the final fallback.
 ok64 SNIFFSubCandidateGitRel(u8bp out, u8cs src_uri, u8cs url);
 
+//  GET-011 / HEAD-004: build the PRIMARY sub candidate from the in-flight
+//  beagle SOURCE URI by replacing its `?/<project>` shard query with
+//  `/<sub_proj>` (the sub's PATH-basename): `file://<store>?/dogs` + sub
+//  `abc` → `file://<store>?/abc`.  Renders into `out` (RESET on entry).
+//  Returns NONE unless `src_uri` is a beagle multi-project transport
+//  (scheme `be`/`keeper`, or authority-bearing `file://…`) carrying a
+//  `?/<project>` query — a git source / bare path keeps its own
+//  resolution.  GET threads this into `sniff sub-mount --source`; HEAD's
+//  transport recursion uses it to peek the sub via the parent, not the
+//  declared `.gitmodules` URL.
+ok64 SNIFFSubCandidateFromSource(u8bp out, u8cs src_uri, u8cs sub_proj);
+
 //  YES iff `<wt_root>/<subpath>/.be` exists as a regular file (the
 //  secondary-wt anchor that GET writes when materialising a sub).
 //  Per MODULES.plan.md §"Storage layout" — the file is the

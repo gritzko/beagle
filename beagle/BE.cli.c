@@ -1571,6 +1571,12 @@ typedef struct {
     //  the full child argv unchanged.
     b8    transport_mode;
     u8cs  forwarded_query;   //  parent's query slot, e.g. `master` or `*`
+    //  HEAD-004: the in-flight `be head` SOURCE URI (`c->uris[0]->data`).
+    //  When it names a beagle multi-project remote, the transport cb
+    //  peeks each sub from the SAME source (`<src>?/<path-basename>`) —
+    //  the PRIMARY candidate, mirroring GET-011 — instead of the dead
+    //  declared `.gitmodules` URL.  Empty for a git-source parent.
+    u8cs  src_uri;
     b8    outer_emitted;
     ok64  worst;
 } behead_recurse_ctx;
@@ -1625,16 +1631,28 @@ static ok64 behead_recurse_cb(besub const *s, void *vctx) {
         return OK;
     }
 
-    //  Transport mode: append `<sub-url>?<query>` per-sub so the
-    //  child fetches the sub's own remote (not the parent's URL).
-    //  Build a fresh argv = (caller's prefix: `head` + flags) +
-    //  this sub's URI.
+    //  Transport mode: build this sub's peek URI.  HEAD-004: when the
+    //  parent source is a beagle multi-project remote, the sub is a
+    //  sibling shard of that SAME store — peek it via the parent
+    //  (`<src>?/<path-basename>`, the GET-011 PRIMARY candidate), NOT the
+    //  declared `.gitmodules` URL (which may be offline, e.g. github).
+    //  Only on a non-beagle source (git parent) do we fall back to the
+    //  declared `<sub-url>?<query>` — git's own per-sub remote.
     a_pad(u8, uri_buf, MAX_URI_LEN);
-    a_dup(u8c, sub_url, s->url);
-    call(u8bFeed, uri_buf, sub_url);
-    if (!u8csEmpty(rc->forwarded_query)) {
-        call(u8bFeed1, uri_buf, '?');
-        call(u8bFeed,  uri_buf, rc->forwarded_query);
+    u8cs pathbase = {};
+    (void)SNIFFSubBasename(subpath, pathbase);   //  subpath = mutable s->path
+    ok64 sc = NONE;
+    if (!u8csEmpty(pathbase))
+        sc = SNIFFSubCandidateFromSource(uri_buf, rc->src_uri, pathbase);
+    if (sc != OK || u8bDataLen(uri_buf) == 0) {
+        //  Fallback: declared URL + the parent's forwarded query slot.
+        u8bReset(uri_buf);
+        a_dup(u8c, sub_url, s->url);
+        call(u8bFeed, uri_buf, sub_url);
+        if (!u8csEmpty(rc->forwarded_query)) {
+            call(u8bFeed1, uri_buf, '?');
+            call(u8bFeed,  uri_buf, rc->forwarded_query);
+        }
     }
     a_dup(u8c, uri_view, u8bData(uri_buf));
 
@@ -1678,7 +1696,13 @@ ok64 BEHeadSubs(cli *c) {
     if (CLIUriLen(c) > 0) (void)CLIUriAt(&u0, c, 0);
     b8 transport = (CLIUriLen(c) > 0 && !u8csEmpty(u0.scheme));
     u8cs forwarded_query = {};
-    if (transport) u8csMv(forwarded_query, u0.query);
+    u8cs src_uri = {};
+    if (transport) {
+        u8csMv(forwarded_query, u0.query);
+        //  HEAD-004: the in-flight source URI text (mirrors GET-011's
+        //  `su.data` capture); the cb peeks each beagle sub from it.
+        u8csMv(src_uri, u0.data);
+    }
 
     //  Build the child argv prefix.  Local mode: include the parent's
     //  URIs (child runs against `?<same-ref>` in its own scope).
@@ -1709,6 +1733,7 @@ ok64 BEHeadSubs(cli *c) {
     };
     u8csMv(rc.wt_root, wt_root);
     u8csMv(rc.forwarded_query, forwarded_query);
+    u8csMv(rc.src_uri, src_uri);
 
     (void)BESubsHere(wt_root, behead_recurse_cb, &rc);
     return rc.worst;

@@ -420,8 +420,12 @@ static ok64 subs_locator_from_root(u8bp loc, u8cs store_root) {
 //  so the caller keeps the `.gitmodules` URL / git resolution.
 //  `sub_proj` is the sub's path-basename (e.g. `abc`), never the
 //  `.gitmodules` url-basename.
-static ok64 subs_candidate_from_source(u8bp out, u8cs src_uri,
-                                       u8cs sub_proj) {
+//
+//  HEAD-004: exported (was static) so beagle's HEAD transport-mode sub
+//  recursion can build the same parent-source primary candidate the GET
+//  path uses, instead of peeking the dead declared `.gitmodules` URL.
+ok64 SNIFFSubCandidateFromSource(u8bp out, u8cs src_uri,
+                                 u8cs sub_proj) {
     sane(out);
     if (u8csEmpty(src_uri) || u8csEmpty(sub_proj)) return NONE;
 
@@ -763,7 +767,7 @@ ok64 SNIFFSubMount(u8cs reporoot, u8cs parent_root,
     a_pad(u8, srccand_buf, MAX_URI_LEN);
     b8 src_inflight_ok = NO;
     if (!u8csEmpty(pathbase)) {
-        ok64 sc = subs_candidate_from_source(srccand_buf, src_uri, pathbase);
+        ok64 sc = SNIFFSubCandidateFromSource(srccand_buf, src_uri, pathbase);
         if (sc == OK && u8bDataLen(srccand_buf) > 0) src_inflight_ok = YES;
     }
 
