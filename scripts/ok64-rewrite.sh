@@ -64,8 +64,11 @@ while IFS=$(printf '\t') read -r NAME HEX FILE LINE; do
     # happens to share the bytes.
     PATTERN="\\(con[[:space:]]\\{1,\\}ok64[[:space:]]\\{1,\\}${NAME}[[:space:]]*=[[:space:]]*\\)0x${DECL_NORM}"
     REPLACE="\\10x${EXPECT_NORM}"
-    if sed -i "${LINE}s/${PATTERN}/${REPLACE}/" "$FILE" 2>/dev/null; then
-        # Verify the substitution actually happened (sed -i never errors on no-match)
+    # Portable in-place edit (BSD/macOS sed has no GNU `-i` without a suffix):
+    # write to a temp file, then move it back.
+    if sed "${LINE}s/${PATTERN}/${REPLACE}/" "$FILE" > "$FILE.tmp" 2>/dev/null \
+       && mv "$FILE.tmp" "$FILE"; then
+        # Verify the substitution actually happened (sed never errors on no-match)
         if grep -q "0x${EXPECT_NORM}" "$FILE"; then
             echo "  $NAME: 0x$DECL_NORM -> 0x$EXPECT_NORM    $FILE:$LINE"
             CHANGED=$((CHANGED+1))

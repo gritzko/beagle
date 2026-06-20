@@ -113,7 +113,8 @@ static ok64 stage_repo(char const *repo, char *b_hex, char *h_hex) {
        "git config user.email t@t && git config user.name t && "
        "seq 1 %d > big.txt && "
        "git add big.txt && git commit -q -m base && "
-       "sed -i '2000s/.*/CHANGED LINE/' big.txt && "
+       "sed '2000s/.*/CHANGED LINE/' big.txt > big.txt.tmp && "
+       "mv big.txt.tmp big.txt && "
        "git add big.txt && git commit -q -m tip && "
        "git repack -q -Ad", repo, BIGN);
 

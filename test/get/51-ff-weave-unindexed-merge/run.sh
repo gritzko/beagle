@@ -57,7 +57,7 @@ mkdir -p "$SCRATCH/trunk"
 ( cd "$SCRATCH/trunk"
   "$BE" get "file://$STORE?/seed/" > /dev/null 2>&1
   n=1; while [ $n -le 5 ]; do
-    sleep 0.02; sed -i "s/^L$n\$/L$n-C$n/" F.txt; "$BE" post "c$n" > /dev/null 2>&1
+    sleep 0.02; sed "s/^L$n\$/L$n-C$n/" F.txt > F.tmp && mv F.tmp F.txt; "$BE" post "c$n" > /dev/null 2>&1
     n=$((n+1))
   done )
 
