@@ -15,22 +15,20 @@
 //  centred date, a 3-col left-justified verb, then the path; the summary
 //  packs `<rel>?<branch>` + a `\t` + per-bucket `<n> <verb>` segments.
 //
-//  Usage:  be status        (be forks jabc on this script)
-//          jabc bin/status.js
+//  Usage:  be status                       (be forks jabc on this script)
+//          jab be/loop.js status [args]     (JSQUE-008 resident-loop handler)
 
 "use strict";
 
-//  Derive this script's dir from argv[1] so the sibling libs resolve by
-//  absolute path from any cwd (be forks jabc with the caller's cwd).
-const self = process.argv[1];
-const here = self.slice(0, self.lastIndexOf("/"));
-const be       = require(here + "/lib/be.js");
-const wtlog    = require(here + "/lib/wtlog.js");
-const store    = require(here + "/lib/store.js");
-const classify = require(here + "/lib/classify.js");
-const dag      = require(here + "/lib/dag.js");
-const subs     = require(here + "/lib/subs.js");
-const render   = require(here + "/lib/render.js");
+//  JSQUE-008: sibling libs via relative require ("./lib/X.js"), resolved against
+//  this module's own dir — robust under the resident loop (not argv[1]/__dirname).
+const be       = require("./lib/be.js");
+const wtlog    = require("./lib/wtlog.js");
+const store    = require("./lib/store.js");
+const classify = require("./lib/classify.js");
+const dag      = require("./lib/dag.js");
+const subs     = require("./lib/subs.js");
+const render   = require("./lib/render.js");
 const dateCol = render.dateCol, verbCol = render.verbCol,
       writeStdout = render.writeStdout, shQuote = render.shQuote;
 
@@ -42,7 +40,12 @@ const dateCol = render.dateCol, verbCol = render.verbCol,
 const ROW_ORDER = ["put", "new", "mov", "mod", "adv", "del", "mis", "unk"];
 const SUMMARY_ORDER = ["ok", "put", "new", "mov", "pat", "mod", "adv", "del", "mis", "unk"];
 
-function main() {
+//  JSQUE-008: `be status` as a loop HANDLER.  Converted from a `main();`
+//  one-shot to `module.exports = handle(row, ctx)` — the wt path rides the ROW
+//  (row.uri), seed-pinned flags ride ctx.flags, output goes through `ctx.out`
+//  (one flush at the loop edge), sibling libs via relative ./.  No process.argv
+//  read, no self-run tail.  Read-only leaf: no fan-out, no store write/barrier.
+module.exports = function handle(row, ctx) {
   //  Recursion (relaying each mounted sub's status as a path-prefixed
   //  `status:<subpath>` hunk) is OPT-IN via `--sub`, OFF by default —
   //  matching the dispatch: native `be status` routes to THIS extension
@@ -51,10 +54,13 @@ function main() {
   //  byte-for-byte; `--sub` reproduces bare `be --plain`'s recursing form.
   //  `--nosub` is accepted (and forces recursion off) for symmetry with
   //  native's flag + the deep-recursion child call below.
-  const argv = process.argv.slice(2);
-  const recurse = argv.indexOf("--sub") >= 0 && argv.indexOf("--nosub") < 0;
+  //  Flags are seed-pinned (resolution-at-entry, JSQUE-004) — read from ctx,
+  //  not the row (the queue round-trip carries only ts/verb/uri).
+  const flags = (ctx && ctx.flags) || [];
+  const recurse = flags.indexOf("--sub") >= 0 && flags.indexOf("--nosub") < 0;
+  const out = ctx && ctx.out;
 
-  const repo = be.find();
+  const repo = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
   const log  = wtlog.open(repo);
   const k    = store.open(repo.storePath, repo.project);
 
@@ -99,17 +105,19 @@ function main() {
   //  file rows.  Counts feed the trailing `(behind N, ahead M)` note.
   const diverge = computeDivergence(k, log, cur);
 
-  //  Build the plain text body.
-  let body = "status:\n";
+  //  JSQUE-008: push every line through the emit sink (ctx.out) in final
+  //  render order — the loop does ONE flush at the edge.  The columnar rows
+  //  (divergence + buckets) go via out.row(text, verb, ts); the `status:`
+  //  banner + the `?<branch>\t<counts>` summary + relayed sub hunks are
+  //  pre-formatted framing, pushed verbatim via out.raw.
+  out.raw("status:");
 
   //  Commit divergence block FIRST (ahead `post` rows, then behind `miss`
   //  rows), each `<date7> <verb3> ?<hashlet>#<subject>`.
   for (const c of diverge.ahead)
-    body += dateCol(c.ts) + " " + verbCol("post") + " ?" + c.hashlet +
-            (c.subject ? "#" + c.subject : "") + "\n";
+    out.row("?" + c.hashlet + (c.subject ? "#" + c.subject : ""), "post", c.ts);
   for (const c of diverge.behind)
-    body += dateCol(c.ts) + " " + verbCol("miss") + " ?" + c.hashlet +
-            (c.subject ? "#" + c.subject : "") + "\n";
+    out.row("?" + c.hashlet + (c.subject ? "#" + c.subject : ""), "miss", c.ts);
 
   //  Rows in render order; within a bucket, sort lex-by-path so a gitlink
   //  `mod` row (appended above) interleaves with file `mod` rows at its
@@ -125,7 +133,7 @@ function main() {
     for (const r of inBucket) {
       let path = r.path;
       if (r.bucket === "mov" && r.dst) path = path + "#" + r.dst;
-      body += dateCol(r.ts) + " " + verbCol(bucket) + " " + path + "\n";
+      out.row(path, bucket, r.ts);
     }
   }
 
@@ -147,7 +155,7 @@ function main() {
     if (aN > 0) parts.push("ahead " + aN);
     summary += "  (" + parts.join(", ") + ")";
   }
-  body += summary + "\n";
+  out.raw(summary);
 
   //  --- JS-033 recursion (--sub): relay each MOUNTED sub's status as a
   //  SEPARATE `status:<subpath>` hunk AFTER the parent summary,
@@ -155,17 +163,22 @@ function main() {
   //  `be --plain`'s BEDefault relay (be_relay_subs → HUNKu8sRelay).  The
   //  recursing child is run WITH --sub too (deep trees relay fully);
   //  relaySub rebases every returned hunk under this level's subpath.
+  //  JSQUE-008: still spawn-based (the in-process sub-row fan-out is a
+  //  follow-up); each relayed line is pushed verbatim via out.raw.
   if (recurse) {
     for (const s of subList) {
       if (!s.mounted) continue;
-      body += relaySub(repo, s.path);
+      const block = relaySub(repo, s.path);
+      if (!block) continue;
+      const lines = block.split("\n");
+      //  relaySub returns a trailing-newline-terminated block; the final
+      //  split element is "" — push every line incl. the blank separator
+      //  EXCEPT that trailing empty (raw re-adds one "\n" per push).
+      for (let i = 0; i < lines.length - 1; i++) out.raw(lines[i]);
     }
   }
-
-  //  Native prints status to STDOUT in --plain mode; io.log is STDERR.
-  //  Emit on stdout (fd 1) so a parity diff captures the same stream.
-  writeStdout(body);
-}
+  //  Read-only leaf: no fan-out, nothing to enqueue.
+};
 
 //  Resolve cur tip + the local ref tip of cur's branch, compute the
 //  ahead/behind commit divergence via dag.js.  Mirrors
@@ -242,32 +255,32 @@ function relaySub(repo, subpath) {
   return res;
 }
 
-//  Run THIS status.js inside `dir` via the same jabc and capture stdout.
-//  Mirrors BERelaySub's fork+chdir+exec, but invokes the JS extension so
-//  the whole recursion stays pure-JS (no native be).  Uses io.spawnFds
-//  with a temp-file sink (no pipe drain), then reads it back.  The child
-//  recurses on its own (no --nosub) so deep trees relay fully; relaySub
-//  rebases every returned hunk under this level's subpath.
+//  Run the loop's STATUS handler inside `dir` via the same jab and capture
+//  stdout.  Mirrors BERelaySub's fork+chdir+exec; JSQUE-008: spawns the
+//  INTEGRATED loop entry (`jab be/loop.js status --sub`), not the now-exported
+//  status.js (which no longer self-runs).  Temp-file sink, read back.  The
+//  child recurses on its own (--sub) so deep trees relay fully; relaySub
+//  rebases every returned hunk under this level's subpath.  In-process sub-row
+//  fan-out (no spawn) is a JSQUE-008 follow-up.
 function runStatusIn(dir) {
-  const self = process.argv[1];   // this script (absolute when be-dispatched)
+  const loop = __dirname + "/loop.js";   // the sibling integrated entry
   const tmp = "/tmp/.bestatus.sub." + Date.now() + "." +
               Math.floor(Math.random() * 1e6);
   let fd;
   try { fd = io.open(tmp, "c"); } catch (e) { return ""; }
   //  io.spawnFds has no cwd knob, so set the child's cwd via a POSIX
-  //  `sh -c 'cd <dir> && <jabc> <self> --plain'`.  process.argv[0] is the
-  //  bare `jabc` name (be dispatches `argv[0]="jabc"`), so resolve the
-  //  RUNNING jabc binary's absolute path inside the shell via
-  //  `readlink /proc/$PPID/exe` — $PPID is the jabc that spawned this sh.
-  //  --plain keeps the child output text-stable for the line-based rebase.
+  //  `sh -c 'cd <dir> && <jab> <loop> status --plain --sub'`.  process.argv[0]
+  //  is the bare `jab` name, so resolve the RUNNING jab binary's absolute path
+  //  inside the shell via `readlink /proc/$PPID/exe` — $PPID is the jab that
+  //  spawned this sh.  --plain keeps the child output text-stable for rebase.
   let pid;
   try {
     const sh = shBin();
     if (!sh) { io.close(fd); try { io.unlink(tmp); } catch (e) {} return ""; }
     const cmd = "cd " + shQuote(dir) +
-                " && JABC=$(readlink /proc/$PPID/exe 2>/dev/null)" +
-                ' && [ -n "$JABC" ] || JABC=jabc; "$JABC" ' +
-                shQuote(self) + " --plain --sub";
+                " && JAB=$(readlink /proc/$PPID/exe 2>/dev/null)" +
+                ' && [ -n "$JAB" ] || JAB=jab; "$JAB" ' +
+                shQuote(loop) + " status --plain --sub";
     pid = io.spawnFds(sh, [sh, "-c", cmd], -1, fd);
     io.close(fd);
     io.reap(pid);
@@ -301,5 +314,3 @@ function cwdRel(wtRoot) {
   if (cwd.indexOf(pfx) === 0) return cwd.slice(pfx.length);
   return "";
 }
-
-main();

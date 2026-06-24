@@ -31,6 +31,12 @@ function create() {
     rows.push(r);
   }
 
+  //  JSQUE-008: push a PRE-FORMATTED line verbatim into the row stream — for
+  //  framing the columnar `row()`s can't model (status's `status:` banner,
+  //  its `?<branch>\t<counts>` summary, relayed sub hunks).  `raw` carries the
+  //  exact bytes (sans trailing "\n"); render emits it as-is, never columnised.
+  function raw(text) { rows.push({ raw: text }); }
+
   //  Render ONE line the way every native banner does: dateCol + " " +
   //  verbCol + " " + text.  `text` is the uri/path column.
   function line(verb, text, ts) {
@@ -43,14 +49,16 @@ function create() {
     let body = "";
     if (header) body += line(header.verb, header.uri, header.ts);
     const ordered = sort ? sort(rows.slice()) : rows;
-    for (const r of ordered) body += line(r.verb, r.uri, r.ts);
+    //  JSQUE-008: a `raw` row is verbatim (its own framing); else columnise.
+    for (const r of ordered)
+      body += r.raw != null ? r.raw + "\n" : line(r.verb, r.uri, r.ts);
     return utf8.Encode(body);
   }
 
   //  Edge flush: render then write to stdout (fd 1) via render.writeStdout.
   function flush(sort) { render.writeStdout(utf8.Decode(render_(sort))); }
 
-  return { banner: banner, row: row, render: render_, flush: flush };
+  return { banner: banner, row: row, raw: raw, render: render_, flush: flush };
 }
 
 module.exports = { create: create };
