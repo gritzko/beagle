@@ -66,6 +66,9 @@ function run(opts) {
     triple: opts.triple || null,
     //  JSQUE-010: real-path-arg seed count (0 ⇒ the "." row is a placeholder).
     seededRowCount: opts.seededRowCount != null ? opts.seededRowCount : null,
+    //  JSQUE-012: the raw positional args (POST's commit message rides here,
+    //  seed-pinned — a non-path arg the queue uri can't carry).
+    args: opts.args || [],
   };
 
   const order = [];
@@ -134,11 +137,14 @@ function cli(argv) {
   //  A ULog row needs a non-empty uri (an empty one is not materialised), so a
   //  no-arg seed carries "." (cwd) — the handler prefers ctx.repo regardless.
   const seeded = resolve.seed(verb, args, sctx, repo);
-  const seedRows = seeded.rows.length
-        ? seeded.rows.map(function (r) {
+  //  JSQUE-012: a `#msg` arg seeds an EMPTY-path row (the message rides ctx.args);
+  //  filter those so a fold verb (post) fires once over its change-set, not per word.
+  const realRows = seeded.rows.filter(function (r) { return r.path; });
+  const seedRows = realRows.length
+        ? realRows.map(function (r) {
             //  JSQUE-010: a move-form pin carries a dst (fragment) — emit the
             //  full `path#dst` uri so the handler re-parses both slots.
-            return { verb: verb, uri: r.dst ? (r.path + "#" + r.dst) : (r.path || ".") };
+            return { verb: verb, uri: r.dst ? (r.path + "#" + r.dst) : r.path };
           })
         : [{ verb: verb, uri: "." }];
 
@@ -154,6 +160,7 @@ function cli(argv) {
     //  JSQUE-010: count of REAL path-arg rows (vs the "." placeholder); a
     //  ref-only run has 0, so the handler applies ctx.refs without staging ".".
     seededRowCount: seeded.rows.length,
+    args: args,   // JSQUE-012: raw positional args (POST commit message)
   });
   //  ONE flush at the edge.  status pre-orders its rows (divergence then
   //  buckets), so no global sort comparator — render in push order.

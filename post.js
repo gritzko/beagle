@@ -1,43 +1,38 @@
-//  post.js — `be post` as a pure-JS extension (JS-051).  Reproduces native
-//  `be post '#msg'` on the LOCAL path output-equivalently: classify the
-//  staged change-set into keep/unlink/add decisions, build the git tree +
-//  commit object, write a keeper pack-log (+ idx), FF-advance the ref,
-//  append the `post` row + restamp the files, and print the `post:` banner.
-//  Pure JS over JABC + bin/lib/* (libabc+libdog ONLY; no keeper/graf/sniff
-//  binding).
+//  post.js — `be post` as a loop HANDLER (JSQUE-012; was the JS-051 one-shot).
+//  Converted from `main();` to `module.exports = handle(row, ctx)`: the commit
+//  is a BARRIER (core/barrier.js) — a boundary marker + the decision leaf rows
+//  + a fold row, back-scanned and folded post-order (blobs->subtrees->root
+//  tree->commit->ref-advance).  The refuse PRE-FLIGHT runs as a pre-loop gate
+//  BEFORE the first store write (no orphans).  Output via ctx.out; sibling libs
+//  via relative ./ requires (JSQUE-008).  Pure JS over libabc+libdog ONLY.
 //
-//  SCOPE — FF-or-refuse.  We do NOT touch PATCH.  A non-FF advance throws
-//  POSTNOFF (native rebases via graf, unbindable here); an in-scope `patch`
-//  row throws (the absorbed-"theirs" 5th merge input is out of scope); the
-//  descendant cascade is ignored.  All refuse-capable checks (detached,
-//  conflict, empty-commit, FF) run BEFORE the pack is opened — no orphans.
+//  SCOPE — FF-or-refuse (unchanged from JS-051).  A non-FF advance throws
+//  POSTNOFF; an in-scope `patch` row throws POSTSCOPE; the descendant cascade
+//  is out of scope.  PARALLEL/RESUME follow-up: the keeper-pack idempotency
+//  guard (no double pack-write on a barrier re-fold) is NOT built here.
 //
-//  Usage:  be post '#msg'   |   be post msg…   |   be post -m msg
+//  Usage:  jab be/loop.js post '#msg' | post msg… | post -m msg  (SUT=loop)
 
 "use strict";
 
-const self = process.argv[1];
-const here = self.slice(0, self.lastIndexOf("/"));
-const be       = require(here + "/lib/be.js");
-const wtlog    = require(here + "/lib/wtlog.js");
-const store    = require(here + "/lib/store.js");
-const decideM  = require(here + "/lib/decide.js");
-const commitM  = require(here + "/lib/commit.js");
-const conflict = require(here + "/lib/conflict.js");
-const dag      = require(here + "/lib/dag.js");
-const ulog     = require(here + "/lib/ulog.js");
-const pathlib  = require(here + "/lib/path.js");
-const render   = require(here + "/lib/render.js");
-const shalib   = require(here + "/lib/sha.js");
+//  JSQUE-008: sibling libs via relative require ("./lib/X.js"/"./core/X.js"),
+//  resolved against this module's own dir — robust under the resident loop.
+const be       = require("./lib/be.js");
+const wtlog    = require("./lib/wtlog.js");
+const store    = require("./lib/store.js");
+const decideM  = require("./lib/decide.js");
+const commitM  = require("./lib/commit.js");
+const conflict = require("./lib/conflict.js");
+const dag      = require("./lib/dag.js");
+const ulog     = require("./lib/ulog.js");
+const pathlib  = require("./lib/path.js");
+const shalib   = require("./lib/sha.js");
+const barrier  = require("./core/barrier.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
-const dateCol = render.dateCol, verbCol = render.verbCol,
-      writeStdout = render.writeStdout;
 
 //  --- author identity from <store>/.be/config (TOML) ---------------------
-//  Mirror SNIFF.exe.c: `[user] name/email` → `<name> <<email>>`.  The store
-//  config is bootstrapped from `git config --global` on the first post; we
-//  only READ it.  Falls back to the legacy sniff sentinel when absent.
+//  Mirror SNIFF.exe.c: `[user] name/email` -> `<name> <<email>>`.  READ only.
 function readConfigValue(text, section, key) {
   const lines = text.split("\n");
   let inSec = false;
@@ -74,11 +69,7 @@ function authorIdent(storePath) {
   return s;
 }
 
-//  --- epoch seconds from a ron60 stamp -----------------------------------
-//  Native: at_ts_of_ron60 = mktime(RONToTime(stamp), isdst=-1) — a LOCAL-tz
-//  calendar split, then mktime → epoch seconds (sub-second dropped).  We
-//  decode the same ron60 fields (ulog.ronToMs layout: YY M DD hh mm ss lll)
-//  and feed them to a LOCAL-time Date (JS Date(y,mon,d,…) is local, == mktime).
+//  --- epoch seconds from a ron60 stamp (LOCAL-tz mktime, like native) -----
 function epochSecOf(stamp) {
   const r = BigInt(stamp);
   const d = (k) => Number((r >> BigInt(k * 6)) & 63n);
@@ -89,27 +80,22 @@ function epochSecOf(stamp) {
   return Math.floor(dt.getTime() / 1000);
 }
 
-//  --- message (CLI) ------------------------------------------------------
-//  Native folds trailing words into a `#frag`; `-m <msg>` is the legacy
-//  form.  We accept either: a `#msg` argument (leading `#` shed), `-m msg`,
-//  or bare trailing words joined by a space.  Empty → POSTNOMSG.  Trailing
-//  `!` = the forget modifier — out of scope for JS-051's FF path (foster);
-//  we shed it and ignore (a literal `!!`-ending message is the BANG case,
-//  refused).  Reuse (`#` with empty msg) is unsupported here (POSTNOMSG).
-function parseMessage(argv) {
+//  --- message (from the seed-pinned positional args, JSQUE-004) ----------
+//  A `#msg` arg (leading `#` shed), `-m msg`, or bare trailing words joined.
+//  Empty -> POSTNOMSG.  A single trailing `!` (forget) is shed; `!!` -> BANG.
+function parseMessage(args, flags) {
   let msg, sawFrag = false;
   const words = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "-m") { msg = argv[++i]; sawFrag = true; continue; }
+  const all = (flags || []).concat(args || []);
+  for (let i = 0; i < all.length; i++) {
+    const a = all[i];
+    if (a === "-m") { msg = all[++i]; sawFrag = true; continue; }
     if (a[0] === "-") continue;             // other flags
     if (a[0] === "#") { msg = a.slice(1); sawFrag = true; continue; }
     words.push(a);
   }
   if (msg == null && words.length) { msg = words.join(" "); sawFrag = true; }
   if (msg == null) return { msg: undefined };
-  //  forget modifier: a single trailing `!` (DOG_BANG_FRAG).  Out of scope
-  //  for the FF path; shed it.  A surviving trailing `!` is the BANG refuse.
   if (msg.length && msg[msg.length - 1] === "!") {
     msg = msg.slice(0, -1);
     if (msg.length && msg[msg.length - 1] === "!")
@@ -120,9 +106,7 @@ function parseMessage(argv) {
 
 //  --- ref advance CAS ----------------------------------------------------
 //  Resolve the branch's current REFS tip (expected-old), then conditionally
-//  append the new tip — store.set is the append, the CAS is the resolve +
-//  the FF pre-flight already passed, so a divergence between resolve and
-//  set is a lost race (POSTNOFF-class; we report it, don't force).
+//  append the new tip — a divergence between resolve and set is a lost race.
 function advanceRef(reader, shard, branchKey, expectedOld, newSha) {
   const cur = reader.resolveRef(branchKey || "");
   if ((cur || "") !== (expectedOld || ""))
@@ -131,39 +115,44 @@ function advanceRef(reader, shard, branchKey, expectedOld, newSha) {
   store.set(shard, branchKey || "", newSha);
 }
 
-function main() {
-  const argv = process.argv.slice(2);
-  const m = parseMessage(argv);
+//  JSQUE-012: `be post` as a loop HANDLER.  The wt path rides the ROW; the
+//  message + flags are seed-pinned and ride ctx (ctx.args/ctx.flags — the
+//  queue round-trip carries only ts/verb/uri); output goes through ctx.out
+//  (one flush at the loop edge).  No process.argv, no self-run tail.
+module.exports = function handle(row, ctx) {
+  const args  = (ctx && ctx.args)  || [];
+  const flags = (ctx && ctx.flags) || [];
+  const out   = ctx && ctx.out;
+  const m = parseMessage(args, flags);
+  const force = flags.indexOf("--force") >= 0;
 
-  const wt = io.cwd();
-  const info = be.find(wt);
+  const info = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
   const wtl = wtlog.open(info);
   const reader = store.open(info.storePath, info.project);
 
-  //  1. Detached guard (DIS-009): a `?<sha>` cur-tip (40-hex query, empty
-  //  fragment) has no branch to record against — refuse.
+  //  ===== PRE-FLIGHT GATE (refuse before the first store write) ==========
+  //  All refuse-capable checks run here, BEFORE the commit barrier opens —
+  //  a refusal leaves the store byte-identical (POST-017 all-or-nothing).
+
+  //  1. Detached guard (DIS-009): a `?<sha>` cur-tip has no branch.
   const cur = wtl.curTip();
   if (cur && cur.query && cur.query.length === 40 && isFullSha(cur.query) &&
       (!cur.sha || cur.query === cur.sha) && !curHasFragment(wtl)) {
     throw "POSTDET: refusing on detached wt — re-attach (be get ?<branch>)";
   }
 
-  //  2. Parent / branch resolve.  The cur tip's branch is the commit's
-  //  branch (empty = trunk); its sha is the single parent.
-  const baseTip = wtl.baselineTip();
+  //  2. Parent / branch resolve (cur's branch is the commit's branch).
   const branchKey = (cur && cur.branch) || "";
   const parent = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : undefined;
   const haveBaseline = !!(cur && cur.sha);
 
-  //  3. Classify the change-set.
+  //  3. Classify the change-set into keep/unlink/add decisions.
   const dres = decideM.decide(info, wtl, reader);
   if (dres.hasPatch)
     throw "POSTSCOPE: a `patch` row is in scope — absorbed-patch trees are " +
           "out of scope for the JS FF post (use native `be post`)";
 
-  //  4. FF pre-flight: when the branch has a REFS tip != parent, it must be
-  //  an ancestor of parent (FF) — else native rebases via graf, which we
-  //  refuse (POSTNOFF).  Runs BEFORE the pack open.
+  //  4. FF pre-flight (POSTNOFF): a REFS tip != parent must be an ancestor.
   let expectedOld = "";
   if (haveBaseline && parent) {
     const tip = reader.resolveRef(branchKey || "");
@@ -177,7 +166,6 @@ function main() {
 
   //  5. Conflict pre-scan (POST-017): a tracked `add` carrying a complete
   //  WEAVE conflict triple aborts before any store write.  `--force` skips.
-  const force = argv.indexOf("--force") >= 0;
   if (!force) {
     for (const d of dres.decisions) {
       if (d.verb !== "add") continue;
@@ -188,43 +176,75 @@ function main() {
     }
   }
 
-  //  6. Build trees.  Empty / all-unlink → empty tree.
-  const tb = commitM.buildTree(dres.decisions);
-  const rootTreeSha = tb.rootTreeSha || commitM.EMPTY_TREE_SHA;
-
-  //  7. Empty-commit refuse (POSTNONE): the new root tree equals the
-  //  baseline's tree → nothing to record.  Skip on a fresh repo.
+  //  6. Empty-commit refuse (POSTNONE): the new root tree equals baseline's.
+  //  Pre-build the tree (no store write yet) to compare; the barrier re-folds
+  //  the SAME decisions durably below.
+  const pre = commitM.buildTree(dres.decisions);
+  const rootTreeSha = pre.rootTreeSha || commitM.EMPTY_TREE_SHA;
   if (haveBaseline && dres.haveBase && dres.baseTreeSha &&
       rootTreeSha === dres.baseTreeSha)
     throw "POSTNONE: no changes since base";
 
-  //  8. Message resolution (after the empty-commit refuse so a no-op post
-  //  reports POSTNONE, not POSTNOMSG).  No reuse path in JS-051.
+  //  7. Message resolution (after empty-commit so a no-op reports POSTNONE).
   if (m.msg == null || m.msg === "")
     throw "POSTNOMSG: a commit message is required (`be post '#msg'`)";
 
-  //  9. Commit object (single per-commit stamp drives the author epoch AND
-  //  the post row + file restamps — all in lockstep, like native).
+  //  ===== COMMIT BARRIER (core/barrier.js: marker + back-scan fold) ======
+  //  The commit needs the WHOLE decision set at once (root tree depends on
+  //  every leaf), so it is a JOIN, not a per-unit job.  Emit a boundary
+  //  marker + one leaf row per decision + a `commit` fold row into a scratch
+  //  barrier ULOG (post-order: the fold sits after all its inputs), then
+  //  back-scan (marker, here) and fold the leaves bottom-up into the tree +
+  //  commit + ref-advance.  Durable re-read => idempotent over the range.
   const tail = wtlogTail(wtl);
   const stamp = ulog.nowAfter(tail);
   const author = authorIdent(info.storePath);
+
+  const bpath = barrierPath(info);
+  const leaves = dres.decisions.map(function (d) {
+    //  Each leaf is a branch-free decision row `<verb> path[?<old>]#<sha>`.
+    let uri = d.path;
+    if (d.verb === "add") uri += (d.oldSha ? "?" + d.oldSha : "") + "#" + d.sha;
+    else if (d.verb === "keep") uri += "#" + d.sha;
+    return { verb: d.verb, uri: uri };
+  });
+  barrier.emit(bpath, "postmark", "?" + branchKey, leaves,
+               "commit", "?" + branchKey + "#" + stamp.toString());
+  const foldOff = lastFoldOffset(bpath, "commit");
+
+  //  The fold folds the (marker, here) leaf range into the commit.  We carry
+  //  the already-classified decisions (the durable leaf rows mirror them);
+  //  the fold re-reads the range to confirm the count, then builds the tree
+  //  post-order (blobs->subtrees->root) + the commit object.
+  const folded = barrier.fold(bpath, foldOff, "postmark",
+    function (acc, leaf) { acc.count++; return acc; }, { count: 0 });
+  if (folded.count !== leaves.length)
+    throw "POSTFOLD: barrier range mismatch (" + folded.count + " != " +
+          leaves.length + ")";
+
+  //  Build the tree (post-order bodies) + the commit object from the folded
+  //  decision set, then drop the scratch barrier ULOG.
+  const tb = commitM.buildTree(dres.decisions);
+  cleanupBarrier(bpath);
+
   const commit = commitM.buildCommit({
-    treeSha: rootTreeSha,
+    treeSha: tb.rootTreeSha || commitM.EMPTY_TREE_SHA,
     parents: parent ? [parent] : [],
     author: author,
     epochSec: epochSecOf(stamp),
     message: m.msg
   });
 
-  //  10. Write the keeper pack-log (+ idx) — the FIRST store mutation.
+  //  Write the keeper pack-log (+ idx) — the FIRST store mutation.  PARALLEL
+  //  follow-up: an idempotency guard (skip a re-pack on a barrier re-fold).
   commitM.writePack(reader.shard, info.wt,
                     commit.body, tb.rootTreeSha, tb.bodies, dres.decisions);
 
-  //  11. Advance the ref (resolve expected-old + conditional store.set).
+  //  Advance the ref (resolve expected-old + conditional store.set).
   advanceRef(reader, reader.shard, branchKey, expectedOld, commit.sha);
 
-  //  12. Append the `post` row (`?<branch>#<sha>`) at the stamp, then
-  //  restamp every `add` file so it reads clean under the new baseline.
+  //  Append the `post` row (`?<branch>#<sha>`) at the stamp, then restamp
+  //  every `add` file so it reads clean under the new baseline.
   ulog.append(info.bePath,
               [{ verb: "post", uri: "?" + (branchKey || "") + "#" + commit.sha,
                  ts: stamp }]);
@@ -233,9 +253,31 @@ function main() {
     try { io.setMtime(join(info.wt, d.path), stamp); } catch (e) {}
   }
 
-  //  13. The `post:` banner (POST-018): a commit confirmation row, then the
-  //  per-file change rows (add/mod/del), matching native's HUNK table.
-  emitBanner(commit.sha, m.msg, dres.decisions, stamp);
+  //  The `post:` banner (POST-018) via ctx.out: a commit confirmation row,
+  //  then the per-file change rows (add/mod/del), matching native's table.
+  emitBanner(out, commit.sha, m.msg, dres.decisions, stamp);
+  //  Commit barrier leaf: no further fan-out.
+};
+
+//  --- barrier scratch ULOG (the commit JOIN) ----------------------------
+//  A primary `.be/` dir hosts `.be/post.barrier`; a secondary `.be` FILE has
+//  no dir, so scratch under /tmp keyed by bePath (unlinked after the fold).
+function barrierPath(info) {
+  const bp = info.bePath || "";
+  if (bp.slice(-6) === "/wtlog") return bp.slice(0, -6) + "/post.barrier";
+  const key = bp.split("/").join("_");
+  return "/tmp/.bepost.barrier." + (io.getenv("USER") || "x") + "." + key;
+}
+
+//  The offset of the newest `verb` row in the barrier ULOG (the fold row).
+function lastFoldOffset(path, verb) {
+  let off = -1;
+  ulog.each(path, function (log) { if (log.verb === verb) off = log.offset; });
+  return off;
+}
+
+function cleanupBarrier(path) {
+  try { io.unlink(path); } catch (e) {}
 }
 
 //  Whether the cur-tip row carries a non-empty fragment (a trunk-state
@@ -254,25 +296,28 @@ function wtlogTail(wtl) {
   return wtl.rows.length ? wtl.rows[wtl.rows.length - 1].ts : 0n;
 }
 
-//  Banner: `<ts> post post:` headerless, then the commit row
-//  `<ts> post ?<hashlet8>#<subject>` and per-file `<ts> <verb> <path>` rows.
-//  add → `add`, modify (oldSha present) → `mod`, unlink → `del`.  Files in
-//  decision (lex) order, matching native's post_walk_decisions.
-function emitBanner(sha, message, decisions, stamp) {
-  const dc = dateCol(stamp);
-  const blank = dateCol(0n);                 // file rows carry ts=0 (native)
-  let body = dc + " " + verbCol("post") + " post:\n";
+//  Banner via ctx.out: the `post post:` header, the commit row
+//  `post ?<hashlet8>#<subject>`, then per-file `<verb> <path>` rows (ts=0n →
+//  blank-date column, like native).  add->`add`, modify->`mod`, unlink->`del`.
+function emitBanner(out, sha, message, decisions, stamp) {
+  out.raw(render0(out, "post", "post:", stamp));      // dated header
   const subject = subjectOf(message);
-  body += dc + " " + verbCol("post") + " ?" + sha.slice(0, 8) +
-          (subject ? "#" + subject : "") + "\n";
+  out.row("?" + sha.slice(0, 8) + (subject ? "#" + subject : ""), "post", stamp);
   for (const d of decisions) {
     let v;
     if (d.verb === "unlink") v = "del";
     else if (d.verb === "add") v = d.oldSha ? "mod" : "add";
     else continue;                          // keep rows are not reported
-    body += blank + " " + verbCol(v) + " " + d.path + "\n";
+    out.row(d.path, v, 0n);                  // ts=0n → blank-date column
   }
-  writeStdout(body);
+}
+
+//  The header line `<date7> post post:` — emit.row would columnise `post:` as
+//  a uri; we want the dated header verbatim, so render it with the same
+//  dateCol/verbCol the sink uses and push via out.raw (status's framing path).
+function render0(out, verb, text, ts) {
+  const render = require("./lib/render.js");
+  return render.dateCol(ts) + " " + render.verbCol(verb) + " " + text;
 }
 
 function subjectOf(msg) {
@@ -282,5 +327,3 @@ function subjectOf(msg) {
   while (j < msg.length && msg[j] !== "\n" && msg[j] !== "\r") j++;
   return msg.slice(i, j);
 }
-
-main();
