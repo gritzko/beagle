@@ -56,6 +56,11 @@ function run(opts) {
     flags: opts.flags || [],
     refs: opts.refs || [],
     resolved: opts.resolved || null,   // seedCtx's pinned coordinates
+    //  JSQUE-011: the whole seed-row batch (one entry per path arg) so a
+    //  batch verb (delete) can fold all its path forms in one handler pass —
+    //  the queue round-trip carries rows singly, but DELETE's `delete:` table,
+    //  dir-preflight barrier, and batch dirty-abort span the full arg list.
+    seedRows: seedRows,
   };
 
   const order = [];

@@ -1,39 +1,44 @@
-//  delete.js — `be delete` as a pure-JS extension (JS-050).  Reproduces
-//  native `be delete` byte-equivalently: stage a tracked file's removal
-//  (dirty-gate → unlink → `delete <path>` row), bare-sweep tracked files
-//  gone from disk, dir-form recursive unlink, and the `?br` branch
-//  tombstone.  Pure JS over JABC + bin/lib/* (libabc+libdog ONLY; the
-//  staging engine is bin/lib/stage.js (reused, not reimplemented), the row
-//  writer ulog.append, the ref-tombstone writer store.tombstone).
+//  delete.js — `be delete` as a loop HANDLER (JSQUE-011).  Reproduces native
+//  `be delete` byte-equivalently: the per-file UNLINK leaf (dirty-gate →
+//  io.unlink → `delete <path>` row), the bare-sweep of tracked files gone from
+//  disk, the dir-form recursive unlink with its PREFLIGHT barrier, and the
+//  `?br` branch tombstone.  Pure JS over JABC + ./lib/* (libabc+libdog ONLY;
+//  the staging engine is lib/stage.js (reused), the row writer ulog.append,
+//  the ref-tombstone writer store.tombstone).  See JSQUE-001/008 + DELETE.md.
+//
+//  LOOP SHAPE (JSQUE-011): converted from a `main();` one-shot to
+//  `module.exports = handle(row, ctx)`.  The seed (resolve.seed) scatters args:
+//  each PATH form is a seed row, each `?br` form a ctx.refs op.  DELETE's batch
+//  spans the full arg list (one shared `delete:` table, the dir preflight that
+//  must run before ANY unlink, the batch dirty-abort), so the handler folds the
+//  WHOLE batch (ctx.refs branches + ctx.seedRows paths) on its FIRST row and
+//  no-ops on the rest (ctx._delDone guard).  Output via ctx.out; no main() tail.
 //
 //  Slot dispatch (mirrors sniff/SNIFF.exe.c is_delete + sniff/DEL.c):
-//    ?br            → branch tombstone via store.tombstone (DELBranch) with
-//                     the trunk / wt-on-branch / active-descendant / `-r`
-//                     (deepest-first) guards
+//    ?br            → branch tombstone (DELBranch) — a PRE-LOOP BARRIER guarded
+//                     by trunk / wt-on-branch / active-descendant / `-r`
+//                     (deepest-first); refs run before any unlink leaf
 //    (bare)         → sweep: a `delete <path>` row per tracked file gone
 //                     from disk (del_sweep_missing)
-//    <dir>/ | <dir> → dir-form: preflight dirty-check, unlink all, one row
-//    <file>         → file-form: dirty-gate → io.unlink → `delete <path>`
+//    <dir>/ | <dir> → dir-form: PREFLIGHT barrier (dirty-check the subtree)
+//                     before unlinking all, then one `delete <dir>/` row
+//    <file>         → file-form leaf: dirty-gate → io.unlink → `delete <path>`
 //
-//  DIRTY-GATE is mtime-only (`wtlog.has(mtime)`) to match native DEL.c:492
-//  for byte-parity with the `be delete` oracle (DIS-004 tracks adding a
-//  content double-check to NATIVE; matching it here would diverge).  DELETE
-//  does NOT restamp — the file is gone.
-//
-//  Usage:  be delete [-r] [<path>... | <dir>/ | ?<branch>]
+//  DIRTY-GATE mirrors native DEL.c (DIS-004, 9718a03a): refuse only when
+//  `!force && mtime ∉ stamp-set && content ≠ baseline` — the mtime miss is a
+//  HINT, a file whose bytes still equal the baseline blob is clean, and
+//  `--force`/`-r` skips the gate.  DELETE does NOT restamp — the file is gone.
 
 "use strict";
 
-const self = process.argv[1];
-const here = self.slice(0, self.lastIndexOf("/"));
-const be      = require(here + "/lib/be.js");
-const wtlog   = require(here + "/lib/wtlog.js");
-const store   = require(here + "/lib/store.js");
-const stage   = require(here + "/lib/stage.js");
-const ulog    = require(here + "/lib/ulog.js");
-const render  = require(here + "/lib/render.js");
-const dateCol = render.dateCol, verbCol = render.verbCol,
-      writeStdout = render.writeStdout;
+//  JSQUE-008/011: sibling libs via relative require ("./lib/X.js"), resolved
+//  against this module's own dir — robust under the resident loop (NOT
+//  argv[1]/__dirname; the handler is require'd, never the entry script).
+const be      = require("./lib/be.js");
+const wtlog   = require("./lib/wtlog.js");
+const store   = require("./lib/store.js");
+const stage   = require("./lib/stage.js");
+const ulog    = require("./lib/ulog.js");
 
 const DELDIRTY = "DELDIRTY";
 const SNIFFFAIL = "SNIFFFAIL";
@@ -55,7 +60,7 @@ function normRel(raw) {
 //  Returns { banner, dirty } where `banner` is the ordered stdout line list
 //  (the `delete:` table: a header for the named form, rows + skips + the
 //  count/sweep summary) and `dirty` is true on a DELDIRTY refusal.
-function delStage(repo, k, pathRaws) {
+function delStage(repo, k, pathRaws, force) {
   const eng = stage.prep(repo, wtlog.open(repo), k);
   const wtl = wtlog.open(repo);
   const rows = [];            // { uri } delete rows in emit order
@@ -95,9 +100,14 @@ function delStage(repo, k, pathRaws) {
     if (!isDir && statKind(join(repo.wt, raw)) === "dir") isDir = true;
     if (isDir) {
       const dirRaw = raw === "" ? "" : (raw[raw.length - 1] === "/" ? raw : raw + "/");
-      const r = delDir(repo, eng, wtl, dirRaw);
+      const r = delDir(repo, eng, wtl, dirRaw, force);
       if (r.dirty) { dirtyRaw = r.dirtyPath; break; }
-      unlinked += r.unlinked;
+      //  Per-dir summary (`<dir>/ — N file(s) unlinked`, DEL.c del_dir's
+      //  HUNKTableSummary) when the dir existed; the dir unlinks do NOT feed
+      //  the final `deleted N file(s)` count (that tallies file-form only).
+      if (r.existed)
+        items.push({ type: "summary",
+                     text: dirRaw + " — " + r.unlinked + " file(s) unlinked" });
       //  One `delete <dir>/` row even when the dir was already absent
       //  (native appends it idempotently after del_dir's done).
       rows.push({ uri: dirRaw });
@@ -111,11 +121,14 @@ function delStage(repo, k, pathRaws) {
   if (!dirtyRaw) for (const raw of files) {
     const full = join(repo.wt, raw);
     if (statExists(full)) {
-      //  Dirty-gate (mtime-only): the file's mtime must be in the stamp-set
-      //  (last written by a tracked op).  ∉ stamp-set ⇒ user-edited; refuse.
+      //  Dirty-gate (DIS-004): mtime ∈ stamp-set ⇒ tracked-clean; a mtime
+      //  miss is only a HINT — bytes still == baseline blob ⇒ clean; `force`
+      //  skips the gate.  ∉ stamp-set AND content drift ⇒ refuse.
       const w = eng.wt[raw];
       const known = w && w.ts != null && wtl.has(w.ts);
-      if (!known) { dirtyRaw = raw; break; }
+      const clean = known || force ||
+        (eng.base[raw] && stage.wtEqBase(repo.wt, raw, eng.base[raw].sha));
+      if (!clean) { dirtyRaw = raw; break; }
       io.unlink(full);
       unlinked++;
     } else {
@@ -140,14 +153,15 @@ function delStage(repo, k, pathRaws) {
 }
 
 //  --- dir-form recursive delete (del_dir) -------------------------------
-//  Two passes: preflight (refuse DELDIRTY on the first descendant whose
-//  mtime ∉ stamp-set) then apply (unlink every descendant).  An already-
-//  absent dir is an OK no-op (caller still appends the dir row).  Empty
-//  dirs are not removed (POST won't emit them either).
-function delDir(repo, eng, wtl, dirRaw) {
+//  Two passes: PREFLIGHT barrier (refuse DELDIRTY on the first dirty
+//  descendant — mtime ∉ stamp-set AND content ≠ baseline, per DIS-004; `force`
+//  skips it) then apply (unlink every descendant).  The whole subtree must
+//  pass the gate before ANY unlink — atomic dir delete.  An already-absent dir
+//  is an OK no-op (caller still appends the dir row).  Empty dirs are not removed.
+function delDir(repo, eng, wtl, dirRaw, force) {
   const prefix = dirRaw;     // ends in "/" (or "" = reporoot)
   if (prefix !== "" && statKind(join(repo.wt, prefix.replace(/\/$/, ""))) !== "dir")
-    return { dirty: false, unlinked: 0 };           // already absent
+    return { dirty: false, unlinked: 0, existed: false };   // already absent
 
   //  Descendants on disk = wt-scan entries under the prefix (meta skipped
   //  by the scan/ignore already; double-guard with isMeta).
@@ -156,19 +170,24 @@ function delDir(repo, eng, wtl, dirRaw) {
     if (stage.isMeta(rel)) continue;
     if (prefix === "" ? true : rel.indexOf(prefix) === 0) desc.push(rel);
   }
-  //  Preflight: any descendant with ∉ stamp-set mtime aborts.
+  //  PREFLIGHT barrier: the first dirty descendant aborts (mtime ∉ stamp-set
+  //  AND content ≠ baseline; `force` skips — DIS-004).  Runs before any unlink.
   for (const rel of desc) {
     const w = eng.wt[rel];
-    if (!(w && w.ts != null && wtl.has(w.ts))) return { dirty: true, dirtyPath: rel };
+    const known = w && w.ts != null && wtl.has(w.ts);
+    if (!known && !force &&
+        !(eng.base[rel] && stage.wtEqBase(repo.wt, rel, eng.base[rel].sha)))
+      return { dirty: true, dirtyPath: rel };
   }
   //  Apply: unlink every descendant.
   let n = 0;
   for (const rel of desc) { try { io.unlink(join(repo.wt, rel)); n++; } catch (e) {} }
-  return { dirty: false, unlinked: n };
+  return { dirty: false, unlinked: n, existed: true };
 }
 
 //  --- branch tombstone (DELBranch) --------------------------------------
-//  `?br` → a REFS `delete ?br#0…0` tombstone via store.tombstone.  Refuses:
+//  `?br` → a REFS `delete ?br#0…0` tombstone via store.tombstone.  A PRE-LOOP
+//  BARRIER (runs before any unlink leaf).  Refuses:
 //    * trunk (empty query)
 //    * the wt's own current branch (would orphan the wt pointer)
 //    * an active descendant `<target>/<sub>` exists, unless `recursive`
@@ -229,60 +248,71 @@ function eachDescendant(k, target, cb) {
   });
 }
 
-//  --- render the `delete:` banner ---------------------------------------
-//  Named form: a `delete:` header (real ts) + one `delete <path>` row line
-//  (blank ts) per emitted row + the summary line(s).  Bare form: no header,
-//  just the row lines + the `swept N` summary.  Mirrors the active HUNK
-//  `delete:` table native opens for every DELStage run (del_skip / count).
-function emitBanner(banner) {
-  const ts = ron.now();
-  let body = "";
-  if (!banner.bare)
-    body += dateCol(ts) + " " + verbCol("delete") + " delete:\n";
+//  --- emit the `delete:` banner via ctx.out (JSQUE-011) -----------------
+//  Header + per-row lines columnise via out.row (dated header, blank-ts rows);
+//  a summary line is plain text (no date/verb column) via out.raw.  Mirrors
+//  the active HUNK `delete:` table native opens for every DELStage run.
+function emitBanner(out, banner) {
+  if (!banner.bare) out.row("delete:", "delete", ron.now());
   for (const it of banner.items) {
-    if (it.type === "row")
-      body += dateCol(0n) + " " + verbCol("delete") + " " + it.path + "\n";
-    else if (it.type === "summary")
-      body += it.text + "\n";
+    if (it.type === "row") out.row(it.path, "delete", 0n);
+    else if (it.type === "summary") out.raw(it.text);
   }
-  writeStdout(body);
 }
 
-function main() {
-  const argv = process.argv.slice(2);
-  const recursive = argv.indexOf("-r") >= 0 || argv.indexOf("--force") >= 0;
-  const args = argv.filter(function (a) { return a[0] !== "-"; });
+//  JSQUE-011: `be delete` as a loop HANDLER.  Folds the WHOLE batch on its
+//  FIRST row (ctx._delDone guard) — branch tombstones (ctx.refs) are the
+//  pre-loop barrier, then DELStage runs the bare/path/dir forms; output via
+//  ctx.out (ONE flush at the loop edge).  A DELDIRTY refusal throws past the
+//  loop (process exit code) AFTER emitting the partial banner, matching native.
+module.exports = function handle(row, ctx) {
+  //  Batch-fold guard: the seed lowers each path arg to its own row, but
+  //  DELETE's `delete:` table / dir-preflight / dirty-abort span the full arg
+  //  list — process once, no-op on every later row.
+  if (ctx._delDone) return;
+  ctx._delDone = true;
 
-  const repo = be.find();
+  const flags = (ctx && ctx.flags) || [];
+  const recursive = flags.indexOf("-r") >= 0 || flags.indexOf("--force") >= 0;
+  const out = ctx && ctx.out;
+  const repo = (ctx && ctx.repo) || be.find();
   const k = store.open(repo.storePath, repo.project);
 
-  //  Split branch-forms (literal leading `?`) from path-forms.  Branch-forms
-  //  each go through delBranch; path/bare-forms batch into ONE delStage.
+  //  Branch tombstones FIRST (the pre-loop barrier): each `?br` form pinned by
+  //  the seed into ctx.refs (op create/set) — a tombstone drops the label.
+  for (const ref of (ctx.refs || [])) {
+    if (ref.branch == null) continue;
+    delBranch(repo, ref.branch || "", recursive);
+  }
+
+  //  Path/bare forms: the seed scatters path args one-per-row.  Reassemble the
+  //  batch from ctx.seedRows, dropping the synthetic "." a no-path seed carries
+  //  (loop.js collapses an EMPTY seed to ONE "." row — true for both a bare
+  //  `be delete` AND a branch-only `be delete ?br`; ctx.refs disambiguates).
   const pathRaws = [];
-  for (const a of args) {
-    if (a[0] === "?") {
-      const u = new URI(a);
-      delBranch(repo, u.query || "", recursive);
-    } else {
-      pathRaws.push(a);
-    }
+  for (const sr of (ctx.seedRows || [])) {
+    const u = sr.uri;
+    if (u == null || u === ".") continue;
+    pathRaws.push(u);
   }
+  //  A pure branch-form invocation (only `?br` args, no path) prints nothing
+  //  extra — DELStage does NOT run.  Only a bare `be delete` (no args at all,
+  //  hence no ctx.refs) runs the sweep; with refs present + no paths, the synth
+  //  "." is the branch op's residue, not a sweep request.
+  if (pathRaws.length === 0 && (ctx.refs || []).length > 0) return;
 
-  //  DELStage runs for the bare form (no args at all) or any path-form arg;
-  //  a pure branch-form invocation prints nothing extra.
-  if (pathRaws.length > 0 || args.length === 0) {
-    const res = delStage(repo, k, pathRaws);
-    if (res.rows.length > 0) {
-      const uris = res.rows.map(function (r) { return { verb: "delete", uri: r.uri }; });
-      ulog.append(repo.bePath, uris);
-    }
-    emitBanner(res.banner);             // always (the open `delete:` table)
-    if (res.dirty) {
-      io.log("be delete: " + res.dirtyPath + " has unstamped changes — "
-             + "stage with `be put` or revert before deleting\n");
-      throw DELDIRTY;                    // non-zero exit (native DELDIRTY)
-    }
+  const res = delStage(repo, k, pathRaws, recursive);
+  if (res.rows.length > 0) {
+    const uris = res.rows.map(function (r) { return { verb: "delete", uri: r.uri }; });
+    ulog.append(repo.bePath, uris);
   }
-}
-
-main();
+  emitBanner(out, res.banner);          // always (the open `delete:` table)
+  if (res.dirty) {
+    //  Flush the PARTIAL banner now: the throw below skips the loop's edge
+    //  flush, but native emits the staged rows before the non-zero exit.
+    out.flush(null);
+    io.log("be delete: " + res.dirtyPath + " has unstamped changes — "
+           + "stage with `be put` or revert before deleting\n");
+    throw DELDIRTY;                      // non-zero exit (native DELDIRTY)
+  }
+};
