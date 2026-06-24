@@ -1,41 +1,37 @@
-//  refs.js — smoke extension (JS-029).  Prints the repo's current branch
-//  + baseline sha for the worktree at cwd, using bin/lib/be.js (repo
-//  discovery) + bin/lib/wtlog.js (wtlog reader).  Pure JS over JABC; an
-//  oracle for `bin/refs.js` vs native `be status` / `be log:` headers.
-//
-//  Usage:  be refs            (run from inside a worktree)
-//          jabc bin/refs.js   (same, the cwd-walk finds the .be)
-
+//  refs.js — smoke extension (JS-029), JSQUE-002 handler form.  Reports the
+//  repo's current branch + baseline sha.  Converted from a file-scope `main();`
+//  one-shot to `module.exports = handle(row, ctx)`: args come from the ROW (the
+//  worktree path in row.uri), not process.argv/io.cwd; output goes via ctx.out
+//  (a no-op stub today; JSQUE-005's emit sink drops in).  No process.exit.
 "use strict";
 
-//  The top-level script's `require` resolves vs cwd (require.cpp binds
-//  `require` to "."), and a top-level script gets no `__dirname`.  So
-//  derive this script's own dir from process.argv[1] and require the
-//  sibling libs by ABSOLUTE path — works from any cwd (be forks jabc
-//  with the caller's cwd; the .be-walk needs the real cwd).
-const self = process.argv[1];
-const here = self.slice(0, self.lastIndexOf("/"));
-const be = require(here + "/lib/be.js");
-const wtlog = require(here + "/lib/wtlog.js");
+//  Sibling libs resolve via __dirname (require.cpp passes the module's own dir),
+//  NOT process.argv[1] — under the resident loop argv[1] is loop.js, so the old
+//  `here = process.argv[1]` idiom would scan the wrong dir (JSQUE-002).
+const be = require(__dirname + "/lib/be.js");
+const wtlog = require(__dirname + "/lib/wtlog.js");
 
-const repo = be.find();              // walk up from cwd to the .be anchor
-const log = wtlog.open(repo);
+//  handle(row, ctx): row.uri is the worktree path to inspect (empty -> the
+//  loop's cwd via be.find()).  A trivial leaf verb: no fan-out, returns nothing.
+module.exports = function handle(row, ctx) {
+  const wt = (row && row.uri) ? row.uri : undefined;
+  const repo = (ctx && ctx.repo) ? ctx.repo : be.find(wt);
+  const log = wtlog.open(repo);
 
-const cur = log.curTip();
-const base = log.baselineTip();
-const bnd = log.boundaries();
+  const cur = log.curTip();
+  const base = log.baselineTip();
+  const bnd = log.boundaries();
+  const branch = cur.branch || "trunk";   // trunk when no `?branch` row
 
-//  Default branch label when the wtlog rows carry no `?branch` (trunk).
-const branch = cur.branch || "trunk";
-
-io.log("project:  " + (repo.project || "(unnamed)") + "\n");
-io.log("wt:       " + repo.wt + "\n");
-io.log("store:    " + repo.storePath + "\n");
-io.log("be:       " + repo.bePath + "\n");
-io.log("branch:   ?" + branch + "\n");
-io.log("cur:      " + (cur.sha || "(none)") + "\n");
-io.log("baseline: " + (base.sha || "(none)") + "\n");
-io.log("rows:     " + log.rows.length + "\n");
-io.log("boundary: pd="    + (bnd.pd    == null ? "-" : ron.encode(bnd.pd))
-                + " patch=" + (bnd.patch == null ? "-" : ron.encode(bnd.patch))
-                + "\n");
+  io.log("project:  " + (repo.project || "(unnamed)") + "\n");
+  io.log("wt:       " + repo.wt + "\n");
+  io.log("store:    " + repo.storePath + "\n");
+  io.log("be:       " + repo.bePath + "\n");
+  io.log("branch:   ?" + branch + "\n");
+  io.log("cur:      " + (cur.sha || "(none)") + "\n");
+  io.log("baseline: " + (base.sha || "(none)") + "\n");
+  io.log("rows:     " + log.rows.length + "\n");
+  io.log("boundary: pd="    + (bnd.pd    == null ? "-" : ron.encode(bnd.pd))
+                  + " patch=" + (bnd.patch == null ? "-" : ron.encode(bnd.patch))
+                  + "\n");
+};
