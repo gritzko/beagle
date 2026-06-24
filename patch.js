@@ -1,11 +1,12 @@
-//  patch.js — `be patch` as a pure-JS extension (JS-052).  Resolve the
-//  ours/theirs/fork commit triple + scope (patchscope.js), walk the three
-//  trees in tandem, merge each diverged file into the worktree (conflict
-//  fences), restamp every touched file, append ONE `patch` ULOG row, and
-//  print the per-file status banner.  No commit, no reachability — the next
-//  `be post` squashes the absorbed work.
+//  patch.js — `be patch` as a loop HANDLER (JSQUE-013, was JS-052 one-shot).
+//  The (ours, theirs, fork) commit triple + scope are pinned ONCE at seed
+//  (resolve.seed -> ctx.triple); this handler walks the three trees in tandem,
+//  merges each diverged file into the worktree (conflict fences), restamps
+//  every touched file, appends ONE `patch` provenance ULOG row (a BARRIER — one
+//  row for the WHOLE absorbed set, never per-file), and pushes the per-file
+//  status rows via ctx.out.  No commit — the next `be post` squashes the work.
 //
-//  Pure JS over JABC + bin/lib/* (libabc+libdog ONLY; NO keeper/graf/sniff
+//  Pure JS over JABC + lib/* (libabc+libdog ONLY; NO keeper/graf/sniff
 //  binding).  The per-file merge is FULL-HISTORY WEAVE RECONSTRUCTION, the
 //  way native `be patch`'s mainline GRAFMergeWtFileTunable works: build each
 //  tip's weave from its commit-history closure (`weave.fold`=WEAVENext linear,
@@ -17,23 +18,22 @@
 //  (post.js POSTSCOPE refuses an in-scope patch row).
 //
 //  Usage:  be patch '#<sha>'  |  be patch '?<branch>'  |  be patch '?<branch>!'
+//          jab be/loop.js patch '?<branch>'   (JSQUE-013 resident-loop handler)
 
 "use strict";
 
-const self = process.argv[1];
-const here = self.slice(0, self.lastIndexOf("/"));
-const be        = require(here + "/lib/be.js");
-const wtlog     = require(here + "/lib/wtlog.js");
-const store     = require(here + "/lib/store.js");
-const patchscope = require(here + "/lib/patchscope.js");
-const checkout  = require(here + "/lib/checkout.js");
-const conflict  = require(here + "/lib/conflict.js");
-const ulog      = require(here + "/lib/ulog.js");
-const pathlib   = require(here + "/lib/path.js");
-const render    = require(here + "/lib/render.js");
+//  JSQUE-013: sibling libs via relative require ("./lib/X.js") — robust under
+//  the resident loop (NOT argv[1]/__dirname; JSQUE-008 idiom).
+//  JSQUE-013: scope/triple is seed-resolved (resolve.seed -> patchscope), so
+//  this handler no longer requires patchscope/render — output rides ctx.out.
+const be        = require("./lib/be.js");
+const wtlog     = require("./lib/wtlog.js");
+const store     = require("./lib/store.js");
+const checkout  = require("./lib/checkout.js");
+const conflict  = require("./lib/conflict.js");
+const ulog      = require("./lib/ulog.js");
+const pathlib   = require("./lib/path.js");
 const join = pathlib.join;
-const dateCol = render.dateCol, verbCol = render.verbCol,
-      writeStdout = render.writeStdout;
 
 //  A commit id for the weave is the hi64 of its sha1, a 16-char hex hashlet
 //  (weave.hpp::JABCweaveHi64 reads the first 16 hex chars).  The SAME physical
@@ -331,19 +331,22 @@ function patchRowUri(scope, theirs) {
   return "?" + theirs;                                   // NEXT
 }
 
-function main() {
-  const argv = process.argv.slice(2).filter(function (a) { return a[0] !== "-"; });
-  const arg = argv[0];
-  if (!arg)
-    throw "PATCHFAIL: a patch URI is required (`?<br>` | `?<br>!` | `#<sha>`)";
+//  JSQUE-013: `be patch` as a loop HANDLER.  Converted from a `main();`
+//  one-shot to `module.exports = handle(row, ctx)` — the (ours,theirs,fork)
+//  triple + scope ride ctx.triple (seed-pinned, resolution-at-entry), the repo
+//  rides ctx.repo, output goes through ctx.out (ONE flush at the loop edge),
+//  sibling libs via relative ./.  No process.argv read, no self-run tail.
+module.exports = function handle(row, ctx) {
+  const out = ctx && ctx.out;
+  const info = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
+  const wtl = (ctx && ctx.resolved && ctx.resolved._wtl) || wtlog.open(info);
+  const reader = (ctx && ctx.resolved && ctx.resolved._reader)
+                 || store.open(info.storePath, info.project);
 
-  const wt = io.cwd();
-  const info = be.find(wt);
-  const wtl = wtlog.open(info);
-  const reader = store.open(info.storePath, info.project);
-
-  //  Resolve scope + the ours/theirs/fork commit triple.
-  const sc = patchscope.resolve(arg, wtl, reader);
+  //  Scope + the ours/theirs/fork commit triple are pinned ONCE at seed
+  //  (resolve.seed -> ctx.triple; JSQUE-004).  Never re-resolved live here.
+  const sc = (ctx && ctx.triple);
+  if (!sc) throw "PATCHFAIL: a patch URI is required (`?<br>` | `?<br>!` | `#<sha>`)";
 
   //  Build the three tree maps; the union of their paths is the walk set.
   const treeCache = Object.create(null);
@@ -367,18 +370,21 @@ function main() {
                outBuf: io.buf(1 << 20), aliveBuf: io.buf(1 << 20),
                wrote: [], rows: [] };
 
+  //  FAN-OUT: each path is an independent per-file weave LEAF (classifyAndApply)
+  //  given the pinned triple; the verdicts fold into the shared counters below.
   for (const p of all)
     classifyAndApply(rc, p, fMap[p] || null, oMap[p] || null, tMap[p] || null);
 
   //  POST-011 noop gate: nothing absorbed → no row, no restamp.
   const absorbed = st.takeTheirs + st.merged + st.mergedConflict +
                    st.added + st.deleted + st.modDelKept + st.failed;
-  if (absorbed === 0) {
-    emitBanner(sc, st, rc.rows, 0n);
-    return;
-  }
+  if (absorbed === 0) { emitBanner(out, sc, rc.rows, 0n); return; }
 
-  //  One ts for the row + every touched file (the stamp-set invariant).
+  //  THE PROVENANCE-FOLD BARRIER: cohort-T0 — ONE ts for the single `patch`
+  //  row AND every file restamp (the stamp-set invariant).  Exactly ONE row
+  //  for the WHOLE absorbed set (never per-file) — fanning out would break
+  //  postIsCommitAll/baseline resolution (PATCH.md).  Strictly-after the tail
+  //  (ULOG refuses ts<=tail); the seed cohort ctx.T0 is the intended stamp.
   const tail = wtl.rows.length ? wtl.rows[wtl.rows.length - 1].ts : 0n;
   const ts = ulog.nowAfter(tail);
   ulog.append(info.bePath,
@@ -387,18 +393,13 @@ function main() {
     try { io.setMtime(join(info.wt, p), ts); } catch (e) {}
   }
 
-  emitBanner(sc, st, rc.rows, ts);
-}
+  emitBanner(out, sc, rc.rows, ts);
+};
 
-//  Banner: a `patch:` header, then the per-file status rows (applied / merged
-//  / conf / del / modl), matching native's patch table.  File rows carry ts=0.
-function emitBanner(sc, st, rows, ts) {
-  const dc = dateCol(ts);
-  const blank = dateCol(0n);
-  let body = dc + " " + verbCol("patch") + " patch:\n";
-  for (const r of rows)
-    body += blank + " " + verbCol(r.status) + " " + r.path + "\n";
-  writeStdout(body);
+//  Banner via ctx.out: a `patch:` header (raw framing) then the per-file status
+//  rows (applied / merged / conf / del / modl) at ts=0n (blank-date column),
+//  matching native's patch table.  ONE flush at the loop edge renders them.
+function emitBanner(out, sc, rows, ts) {
+  out.row("patch:", "patch", ts);
+  for (const r of rows) out.row(r.path, r.status, 0n);
 }
-
-main();

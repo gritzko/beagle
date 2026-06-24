@@ -61,6 +61,9 @@ function run(opts) {
     //  the queue round-trip carries rows singly, but DELETE's `delete:` table,
     //  dir-preflight barrier, and batch dirty-abort span the full arg list.
     seedRows: seedRows,
+    //  JSQUE-013: PATCH's (ours, theirs, fork) commit-triple, pinned ONCE at
+    //  seed (resolve.seed); the per-file weave leaves read it off ctx.
+    triple: opts.triple || null,
   };
 
   const order = [];
@@ -141,6 +144,7 @@ function cli(argv) {
   const res = run({
     seedRows: seedRows, queuePath: queuePath, repo: repo, require: require,
     out: out, flags: flags, refs: seeded.refs, resolved: sctx,
+    triple: seeded.triple,   // JSQUE-013: forward the seed-pinned PATCH triple
   });
   //  ONE flush at the edge.  status pre-orders its rows (divergence then
   //  buckets), so no global sort comparator — render in push order.
