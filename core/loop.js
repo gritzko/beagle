@@ -135,6 +135,15 @@ function cli(argv) {
   const flags = [], args = [];
   for (const a of argv.slice(3)) (a[0] === "-" ? flags : args).push(a);
 
+  //  JAB-025: the colour gate for the emit sink.  `--color` forces SGR,
+  //  `--plain` forces the plain bytes; otherwise default to whether stdout
+  //  (fd 1) is a terminal.  The piped/`--plain` path is byte-parity plain (the
+  //  SUT=loop harnesses redirect stdout, so they land here OFF); a tty (or
+  //  `--color`) renders the columnar rows through the C THEME.
+  const color = flags.indexOf("--color") >= 0 ? true
+              : flags.indexOf("--plain") >= 0 ? false
+              : io.isatty(1);
+
   //  Pin the repo + ambient coordinates ONCE at entry (JSQUE-004).  A fresh
   //  GET clone targets an EMPTY dir (no `.be` yet) — be.find throws there, so
   //  GET runs repo-less: the seed is the raw remote URI; the handler creates
@@ -175,7 +184,7 @@ function cli(argv) {
         : "/tmp/.bequeue." + (io.getenv("USER") || "x") + "." +
           io.cwd().split("/").join("_");
 
-  const out = emit.create();
+  const out = emit.create({ color: color });   // JAB-025: tty/--color gate
   const res = run({
     seedRows: seedRows, queuePath: queuePath, repo: repo, require: require,
     out: out, flags: flags, refs: seeded.refs, resolved: sctx,
