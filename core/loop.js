@@ -23,7 +23,9 @@ const store = require(_here + "/shared/store.js");
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
 //                    delivers the real resolution-at-entry seed — here a stub
 //                    just forwards the rows).
-//    opts.queuePath: where the .be/queue ULOG lives (default ".be/queue").
+//    opts.queuePath: where the queue ULOG lives.  cli() ALWAYS passes a
+//                    per-process /tmp path (see _tmpQueue); the bare ".be/queue"
+//                    default here only bites a direct run() call with no path.
 //    opts.repo     : the opened repo handle (forwarded in ctx; loop is agnostic).
 //    opts.out      : the emit sink (JSQUE-005); a no-op stub is used if absent.
 //    opts.require  : the be-relative require of the caller (so the registry's
@@ -177,12 +179,13 @@ function cli(argv) {
           })
         : [{ verb: verb, uri: "." }];
 
-  //  Queue lives beside the wtlog: a primary `.be/` dir hosts `.be/queue`; a
-  //  secondary `.be` file has no dir, so scratch under /tmp (unlinked on exit).
-  //  A repo-less GET (fresh clone) has no wtlog yet → keyed /tmp scratch.
+  //  JOBQ: the queue ALWAYS lives in /tmp keyed by PID — never in-repo.  A
+  //  PID-keyed name means a fresh run (new PID) can never RESUME a DEAD
+  //  process's leftover queue (the stale-dispatch / `verb '0'` bug); the path
+  //  is per-process, so two concurrent runs get distinct files (no collision).
+  //  A repo-less GET (fresh clone) keys off cwd; a repo run keys off its bePath.
   const queuePath = repo ? _queuePath(repo)
-        : "/tmp/.bequeue." + (io.getenv("USER") || "x") + "." +
-          io.cwd().split("/").join("_");
+        : _tmpQueue(io.cwd());
 
   const out = emit.create({ color: color });   // JAB-025: tty/--color gate
   const res = run({
@@ -200,14 +203,27 @@ function cli(argv) {
   return res;
 }
 
-//  The queue path beside the repo's wtlog (primary `.be/queue`), else a
-//  /tmp scratch for a secondary-wt `.be` FILE — keyed deterministically by the
-//  bePath so an interrupted run RESUMES (JSQUE-003), unlinked on clean exit.
+//  JOBQ: this process's PID, for the per-process queue name (the portable POSIX
+//  `io.getpid()` leaf — no /proc, no platform-specifics).  The PID makes the
+//  queue path unique per run, so a dead process's queue is NEVER resumed and
+//  two concurrent (forked-worker) runs never collide.
+function _pid() {
+  return String(io.getpid());
+}
+
+//  JOBQ: the queue ALWAYS lives in /tmp, keyed by USER + PID + a path key.  No
+//  in-repo `.be/queue` (that file leaked into the working tree and, PID-less,
+//  was resumed across runs).  PID-keyed ⇒ no stale resume, no fork collision.
+function _tmpQueue(key) {
+  return "/tmp/.bequeue." + (io.getenv("USER") || "x") + "." + _pid() +
+         "." + String(key).split("/").join("_");
+}
+
+//  The per-process /tmp queue path keyed by the repo's bePath — replaces the
+//  old in-repo `.be/queue` (primary) / un-PID'd /tmp scratch (secondary): both
+//  now route through _tmpQueue so EVERY case is PID-keyed and unlinked on exit.
 function _queuePath(repo) {
-  const bp = repo.bePath || "";
-  if (bp.slice(-6) === "/wtlog") return bp.slice(0, -6) + "/queue";
-  const key = bp.split("/").join("_");
-  return "/tmp/.bequeue." + (io.getenv("USER") || "x") + "." + key;
+  return _tmpQueue(repo.bePath || "");
 }
 
 //  JSQUE-016: always required (via the be/loop.js entry shim), so export
