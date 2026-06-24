@@ -20,8 +20,8 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const ulog = require("./ulog.js");
+const pathlib = require("../shared/util/path.js");   // JSQUE-016: be.js -> core/discover.js
+const ulog = require("../shared/ulog.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 
 const BE = ".be";

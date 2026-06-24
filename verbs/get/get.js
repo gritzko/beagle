@@ -24,15 +24,16 @@
 
 //  JSQUE-009: sibling libs via relative require ("./lib/X.js"), resolved against
 //  this module's own dir — robust under the resident loop (not argv[1]).
-const store    = require("./lib/store.js");
-const wire     = require("./lib/wire.js");
-const checkout = require("./lib/checkout.js");
-const dag      = require("./lib/dag.js");
-const ingest   = require("./lib/ingest.js");
-const pathlib  = require("./lib/path.js");
-const ulog     = require("./lib/ulog.js");
-const sha      = require("./lib/sha.js");
-const barrier  = require("./core/barrier.js");
+//  JSQUE-016: by-verb reorg — shared/ kernel, core/, view/ via ../../ .
+const store    = require("../../shared/store.js");
+const wire     = require("../../shared/wire.js");
+const checkout = require("../../shared/checkout.js");
+const dag      = require("../../shared/dag.js");
+const ingest   = require("../../shared/ingest.js");
+const pathlib  = require("../../shared/util/path.js");
+const ulog     = require("../../shared/ulog.js");
+const sha      = require("../../shared/util/sha.js");
+const barrier  = require("../../core/barrier.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 const isFullSha = sha.isFullSha;
 

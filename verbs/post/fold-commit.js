@@ -26,9 +26,11 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const shalib = require("./sha.js");
-const ingest = require("./ingest.js");
+//  JSQUE-016: commit.js -> verbs/post/fold-commit.js (post's OWN fold helper);
+//  shared/ kernel via ../../ .
+const pathlib = require("../../shared/util/path.js");
+const shalib = require("../../shared/util/sha.js");
+const ingest = require("../../shared/ingest.js");
 const join = pathlib.join;
 const frameSha = shalib.frameSha;
 

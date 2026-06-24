@@ -23,10 +23,10 @@
 
 "use strict";
 
-const wtlog       = require("lib/wtlog.js");
-const patchscope  = require("lib/patchscope.js");
-const ignore      = require("lib/ignore.js");
-const shalib      = require("lib/sha.js");
+const wtlog       = require("shared/wtlog.js");        // JSQUE-016: lib/ -> shared/
+const patchscope  = require("shared/patchscope.js");
+const ignore      = require("shared/util/ignore.js");
+const shalib      = require("shared/util/sha.js");
 const isFullSha   = shalib.isFullSha;
 
 //  A 6..40 hex hashlet (short sha) — the `?br#<hashlet>` / `?<hashlet>` form.

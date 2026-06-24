@@ -27,10 +27,10 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const shalib = require("./sha.js");
+const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/util/
+const shalib = require("./util/sha.js");
 const classify = require("./classify.js");
-const ignorelib = require("./ignore.js");
+const ignorelib = require("./util/ignore.js");
 const join = pathlib.join;
 const basename = pathlib.basename;
 const isFullSha = shalib.isFullSha;

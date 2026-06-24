@@ -19,7 +19,7 @@
 //  (no keeper/graf/sniff binding).
 "use strict";
 
-const shalib = require(__dirname + "/sha.js");
+const shalib = require(__dirname + "/util/sha.js");   // JSQUE-016: -> shared/util/
 const isFullSha = shalib.isFullSha;
 
 //  Parse the patch URI into { scope, branch, frag }.  scope ∈

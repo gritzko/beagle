@@ -23,7 +23,7 @@
 
 "use strict";
 
-const shalib = require("./sha.js");
+const shalib = require("./util/sha.js");   // JSQUE-016: sha.js -> shared/util/
 const ulog = require("./ulog.js");
 const isFullSha = shalib.isFullSha;
 

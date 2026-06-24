@@ -18,7 +18,7 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
+const pathlib = require("./util/path.js");   // JSQUE-016: path.js -> shared/util/
 const join = pathlib.join, dirname = pathlib.dirname;
 
 function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }

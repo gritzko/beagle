@@ -35,8 +35,8 @@
 
 "use strict";
 
-const join = require("./path.js").join;
-const isFullSha = require("./sha.js").isFullSha;
+const join = require("./util/path.js").join;   // JSQUE-016: util libs -> shared/util/
+const isFullSha = require("./util/sha.js").isFullSha;
 
 function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 function isFile(p) { return statKind(p) === "reg"; }
@@ -50,7 +50,7 @@ function libDir() {
 //  SUBSDirty: open the sibling sub shard (be.find on the sub wt resolves
 //  store+title), read R4 (sub-wt cur tip), then compare by ancestry.
 function classifyMount(parentRepo, subPath, pin) {
-  const be    = require(libDir() + "/be.js");
+  const be    = require(libDir() + "/../core/discover.js");   // JSQUE-016: be.js -> core/
   const wtlog = require(libDir() + "/wtlog.js");
   const store = require(libDir() + "/store.js");
   const dag   = require(libDir() + "/dag.js");

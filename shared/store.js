@@ -40,8 +40,8 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const shalib = require("./sha.js");
+const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/util/
+const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;

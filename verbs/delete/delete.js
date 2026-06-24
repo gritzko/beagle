@@ -34,11 +34,12 @@
 //  JSQUE-008/011: sibling libs via relative require ("./lib/X.js"), resolved
 //  against this module's own dir — robust under the resident loop (NOT
 //  argv[1]/__dirname; the handler is require'd, never the entry script).
-const be      = require("./lib/be.js");
-const wtlog   = require("./lib/wtlog.js");
-const store   = require("./lib/store.js");
-const stage   = require("./lib/stage.js");
-const ulog    = require("./lib/ulog.js");
+//  JSQUE-016: by-verb reorg — core/discover + shared/ kernel via ../../ .
+const be      = require("../../core/discover.js");
+const wtlog   = require("../../shared/wtlog.js");
+const store   = require("../../shared/store.js");
+const stage   = require("../../shared/stage.js");
+const ulog    = require("../../shared/ulog.js");
 
 const DELDIRTY = "DELDIRTY";
 const SNIFFFAIL = "SNIFFFAIL";

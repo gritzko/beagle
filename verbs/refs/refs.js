@@ -8,8 +8,8 @@
 //  Sibling libs resolve via __dirname (require.cpp passes the module's own dir),
 //  NOT process.argv[1] — under the resident loop argv[1] is loop.js, so the old
 //  `here = process.argv[1]` idiom would scan the wrong dir (JSQUE-002).
-const be = require(__dirname + "/lib/be.js");
-const wtlog = require(__dirname + "/lib/wtlog.js");
+const be = require(__dirname + "/../../core/discover.js");   // JSQUE-016: be.js -> core/
+const wtlog = require(__dirname + "/../../shared/wtlog.js");
 
 //  handle(row, ctx): row.uri is the worktree path to inspect (empty -> the
 //  loop's cwd via be.find()).  A trivial leaf verb: no fan-out, returns nothing.

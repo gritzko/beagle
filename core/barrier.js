@@ -11,7 +11,7 @@
 //  boundaries() + eachPutDelete's strictly-after-the-floor fold).
 "use strict";
 
-const ulog = require("lib/ulog.js");
+const ulog = require("shared/ulog.js");   // JSQUE-016: lib/ -> shared/
 
 //  emit(path, markerVerb, markerUri, leafRows, foldVerb, foldUri): append a
 //  boundary marker, then the leaf rows, then the fold-verb row — POST-ORDER,

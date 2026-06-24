@@ -5,7 +5,7 @@
 //  an interrupted run to RESUME (re-seed only when fresh).  See JSQUE-001/006.
 "use strict";
 
-const ulog = require("lib/ulog.js");
+const ulog = require("shared/ulog.js");   // JSQUE-016: lib/ -> shared/
 
 //  Generous headroom so the held container never re-books mid-run; rows fed
 //  during a run land in the booked IDLE (no SIGBUS — booked, not "rw").

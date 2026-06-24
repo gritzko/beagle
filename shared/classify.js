@@ -30,8 +30,8 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const shalib = require("./sha.js");
+const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/util/
+const shalib = require("./util/sha.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
@@ -135,7 +135,7 @@ function wtEqBase(wtRoot, rel, baseSha) {
 //  --- the merge --------------------------------------------------------
 function classify(be, wtlogReader, keeperReader) {
   const wtRoot = be.wt;
-  const ignore = require(libDir() + "/ignore.js").load(wtRoot);
+  const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);  // JSQUE-016
 
   //  1. baseline tree leaves: rel → { sha, kind }  (kind f/x/l/s).
   const base = {};

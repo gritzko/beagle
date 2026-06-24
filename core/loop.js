@@ -9,15 +9,15 @@ const job = require("core/job.js");
 const registry = require("core/registry.js");
 //  JSQUE-008: the integration seam — the real seed (resolution-at-entry) and
 //  emit sink (output-as-ULog) replace the JSQUE-002 stubs in the CLI entry.
-//  The ENTRY module gets NO __dirname (jab injects it only into require'd
-//  modules), so derive this script's dir from argv[1] for the be-relative libs.
+//  JSQUE-016: the entry shim (be/loop.js) requires this, so argv[1] is the
+//  shim path; _here is the be/ ROOT (where core/ + shared/ live).
 const _self = process.argv[1];
 const _here = _self.slice(0, _self.lastIndexOf("/"));
 const resolve = require("core/resolve.js");
 const emit = require("core/emit.js");
-const be = require(_here + "/lib/be.js");
-const wtlog = require(_here + "/lib/wtlog.js");
-const store = require(_here + "/lib/store.js");
+const be = require(_here + "/core/discover.js");
+const wtlog = require(_here + "/shared/wtlog.js");
+const store = require(_here + "/shared/store.js");
 
 //  run(opts): seed -> build registry -> consume-while-append dispatch loop.
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
@@ -200,7 +200,7 @@ function _queuePath(repo) {
   return "/tmp/.bequeue." + (io.getenv("USER") || "x") + "." + key;
 }
 
-//  jab injects `module`/`__filename` ONLY into require'd modules, never the
-//  top-level entry; export when required, self-run when the invoked script.
+//  JSQUE-016: always required (via the be/loop.js entry shim), so export
+//  run/cli; the shim self-runs cli() when invoked directly.
 if (typeof module !== "undefined") module.exports = { run: run, cli: cli };
 else cli(process.argv);

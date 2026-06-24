@@ -18,7 +18,7 @@
 
 const self = process.argv[1];
 const here = self.slice(0, self.lastIndexOf("/"));
-const bro = require(here + "/lib/bro.js");
+const bro = require(here + "/view/bro.js");   // JSQUE-016: bro lib -> view/
 
 //  Width for soft-wrap / status bar: the tty cols, or 80 when not a tty
 //  (the BROPlain default — the plain sink itself never wraps, so this only

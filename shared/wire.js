@@ -18,8 +18,8 @@
 //  Sibling lib: this is a required module, so `require` is bound to this
 //  file's dir (require.cpp) — resolve siblings relative, not via argv[1].
 const pkt = require("./pkt.js");
-const isFullSha = require("./sha.js").isFullSha;
-const shq = require("./render.js").shQuote;
+const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/util/
+const shq = require("../view/render.js").shQuote;       // JSQUE-016: render -> view/
 
 //  --- transport classify -------------------------------------------------
 //  Decide the peer spawn from the remote URI, mirroring WIRECLI wcli_spawn:

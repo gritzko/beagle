@@ -26,13 +26,14 @@
 //  the resident loop (NOT argv[1]/__dirname; JSQUE-008 idiom).
 //  JSQUE-013: scope/triple is seed-resolved (resolve.seed -> patchscope), so
 //  this handler no longer requires patchscope/render — output rides ctx.out.
-const be        = require("./lib/be.js");
-const wtlog     = require("./lib/wtlog.js");
-const store     = require("./lib/store.js");
-const checkout  = require("./lib/checkout.js");
-const conflict  = require("./lib/conflict.js");
-const ulog      = require("./lib/ulog.js");
-const pathlib   = require("./lib/path.js");
+//  JSQUE-016: by-verb reorg — core/discover + shared/ kernel via ../../ .
+const be        = require("../../core/discover.js");
+const wtlog     = require("../../shared/wtlog.js");
+const store     = require("../../shared/store.js");
+const checkout  = require("../../shared/checkout.js");
+const conflict  = require("../../shared/conflict.js");
+const ulog      = require("../../shared/ulog.js");
+const pathlib   = require("../../shared/util/path.js");
 const join = pathlib.join;
 
 //  A commit id for the weave is the hi64 of its sha1, a 16-char hex hashlet

@@ -22,13 +22,14 @@
 
 //  JSQUE-008: sibling libs via relative require ("./lib/X.js"), resolved against
 //  this module's own dir — robust under the resident loop (not argv[1]/__dirname).
-const be       = require("./lib/be.js");
-const wtlog    = require("./lib/wtlog.js");
-const store    = require("./lib/store.js");
-const classify = require("./lib/classify.js");
-const dag      = require("./lib/dag.js");
-const subs     = require("./lib/subs.js");
-const render   = require("./lib/render.js");
+//  JSQUE-016: by-verb reorg — core/discover + shared/ kernel + view/ via ../../ .
+const be       = require("../../core/discover.js");
+const wtlog    = require("../../shared/wtlog.js");
+const store    = require("../../shared/store.js");
+const classify = require("../../shared/classify.js");
+const dag      = require("../../shared/dag.js");
+const subs     = require("../../shared/subs.js");
+const render   = require("../../view/render.js");
 const dateCol = render.dateCol, verbCol = render.verbCol,
       writeStdout = render.writeStdout, shQuote = render.shQuote;
 
@@ -263,7 +264,7 @@ function relaySub(repo, subpath) {
 //  rebases every returned hunk under this level's subpath.  In-process sub-row
 //  fan-out (no spawn) is a JSQUE-008 follow-up.
 function runStatusIn(dir) {
-  const loop = __dirname + "/loop.js";   // the sibling integrated entry
+  const loop = __dirname + "/../../loop.js";   // JSQUE-016: be/ root loop entry
   const tmp = "/tmp/.bestatus.sub." + Date.now() + "." +
               Math.floor(Math.random() * 1e6);
   let fd;

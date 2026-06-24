@@ -11,7 +11,7 @@
 //  that column).  Sorting is collect-and-sort AT THE FLUSH, never live.
 "use strict";
 
-const render = require("lib/render.js");   // be-relative: nearest be/ shard
+const render = require("view/render.js");   // JSQUE-016: lib/ -> view/
 
 //  A row sink.  `banner` is the ONE header line (`put put:`, `get ?#sha`);
 //  `rows` is the collected `{uri, verb, ts, ...tag}` effect stream rendered

@@ -17,17 +17,19 @@
 
 //  JSQUE-008: sibling libs via relative require ("./lib/X.js"/"./core/X.js"),
 //  resolved against this module's own dir — robust under the resident loop.
-const be       = require("./lib/be.js");
-const wtlog    = require("./lib/wtlog.js");
-const store    = require("./lib/store.js");
-const decideM  = require("./lib/decide.js");
-const commitM  = require("./lib/commit.js");
-const conflict = require("./lib/conflict.js");
-const dag      = require("./lib/dag.js");
-const ulog     = require("./lib/ulog.js");
-const pathlib  = require("./lib/path.js");
-const shalib   = require("./lib/sha.js");
-const barrier  = require("./core/barrier.js");
+//  JSQUE-016: by-verb reorg — shared/ kernel + core/ via ../../ ; post's OWN
+//  fold helpers (decide/commit) are siblings renamed fold-* (leaf-vs-fold).
+const be       = require("../../core/discover.js");
+const wtlog    = require("../../shared/wtlog.js");
+const store    = require("../../shared/store.js");
+const decideM  = require("./fold-decide.js");
+const commitM  = require("./fold-commit.js");
+const conflict = require("../../shared/conflict.js");
+const dag      = require("../../shared/dag.js");
+const ulog     = require("../../shared/ulog.js");
+const pathlib  = require("../../shared/util/path.js");
+const shalib   = require("../../shared/util/sha.js");
+const barrier  = require("../../core/barrier.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
@@ -316,7 +318,7 @@ function emitBanner(out, sha, message, decisions, stamp) {
 //  a uri; we want the dated header verbatim, so render it with the same
 //  dateCol/verbCol the sink uses and push via out.raw (status's framing path).
 function render0(out, verb, text, ts) {
-  const render = require("./lib/render.js");
+  const render = require("../../view/render.js");   // JSQUE-016: render -> view/
   return render.dateCol(ts) + " " + render.verbCol(verb) + " " + text;
 }
 

@@ -18,7 +18,7 @@
 
 "use strict";
 
-const join = require("./path.js").join;
+const join = require("./util/path.js").join;   // JSQUE-016: path.js -> shared/util/
 const ulog = require("./ulog.js");
 
 function writeBytes(path, u8) {

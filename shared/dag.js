@@ -25,7 +25,7 @@
 
 "use strict";
 
-const isFullSha = require("./sha.js").isFullSha;
+const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/util/
 
 const WALK_CAP = 1 << 16;   // ~65k commits/side — matches the C anc cap order
 

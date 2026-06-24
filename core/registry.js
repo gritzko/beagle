@@ -27,7 +27,10 @@ function build(verbs, requireFn) {
   for (const verb of verbs) {
     if (table[verb] !== undefined) continue;   // distinct verbs only
     let mod;
-    try { mod = req(verb); } catch (e) { table[verb] = null; continue; }
+    //  JSQUE-016: handlers live at verbs/<verb>/<verb>.js (by-verb reorg); the
+    //  be-relative scan (require.cpp) finds the shard nearest the requirer.
+    try { mod = req("verbs/" + verb + "/" + verb + ".js"); }
+    catch (e) { table[verb] = null; continue; }
     table[verb] = (typeof mod === "function") ? mod : null;
   }
   return table;

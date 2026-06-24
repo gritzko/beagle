@@ -28,9 +28,11 @@
 
 "use strict";
 
-const pathlib = require("./path.js");
-const shalib = require("./sha.js");
-const classify = require("./classify.js");
+//  JSQUE-016: decide.js -> verbs/post/fold-decide.js (post's OWN fold helper);
+//  shared/ kernel via ../../ .
+const pathlib = require("../../shared/util/path.js");
+const shalib = require("../../shared/util/sha.js");
+const classify = require("../../shared/classify.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 const frameSha = shalib.frameSha;
@@ -76,7 +78,7 @@ function hashWtPath(wtRoot, rel, kind) {
 
 function decide(be, wtlogReader, storeReader) {
   const wtRoot = be.wt;
-  const ignore = require(libDir() + "/ignore.js").load(wtRoot);
+  const ignore = require(libDir() + "/../../shared/util/ignore.js").load(wtRoot);  // JSQUE-016
 
   //  1. baseline tree leaves: rel → { sha, mode } (git modes, not kinds).
   const base = {};
