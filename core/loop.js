@@ -147,7 +147,8 @@ function cli(argv) {
     sctx = resolve.seedCtx(repo, wtl, k, { skipIgnore: true });
     seeded = resolve.seed(verb, args, sctx, repo);
   } catch (e) {
-    if (verb !== "get") throw e;               // only GET may run repo-less
+    //  bro is a file viewer — runs with no/empty .be, like get.
+    if (verb !== "get" && verb !== "bro") throw e;   // GET/bro run repo-less
     seeded = { rows: args.map(function (a) { return { path: a }; }), refs: [] };
   }
 
