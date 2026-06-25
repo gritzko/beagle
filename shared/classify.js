@@ -142,6 +142,9 @@ function wtEqBase(wtRoot, rel, baseSha) {
 }
 
 //  --- the merge --------------------------------------------------------
+//  STATUS classify: a clean file is count-only `ok`, a move's dst is suppressed
+//  (its row rides the src `mov`).  The `ls:`/`lsr:` LISTING view does NOT use
+//  this whole-tree pass — it calls classifyDir (below), O(dir) not O(repo).
 function classify(be, wtlogReader, keeperReader, opts) {
   opts = opts || {};
   const wtRoot = be.wt;
@@ -247,9 +250,10 @@ function classify(be, wtlogReader, keeperReader, opts) {
     //  No staged intent — classify by presence + content.
     const inBase = !!b, onDisk = !!w;
     if (onDisk && !inBase) {
-      //  wt-only.  status SUPPRESSES a move destination (its row rides the
-      //  src `mov` row); a LISTING view (opts.listing) instead SHOWS it as a
-      //  `new` row — the staged-add side of the rename (JAB-018).
+      //  wt-only.  status SUPPRESSES a move destination (its row rides the src
+      //  `mov` row); a LISTING view (opts.listing) instead SHOWS it as a `new`
+      //  row — the staged-add side of the rename (JAB-018).  The ls:/lsr: views
+      //  no longer use this path (they call classifyDir below), but status may.
       if (movDsts[path]) { if (opts.listing) push("new", path, w.ts); continue; }
       push("unk", path, w.ts);
       continue;
@@ -265,7 +269,7 @@ function classify(be, wtlogReader, keeperReader, opts) {
       //  its readlink target, so a re-pointed link reads `mod` and an
       //  unchanged one `ok` (no more assume-clean hack).
       if (wtEqBase(wtRoot, path, b.sha)) {
-        counts.ok++;
+        counts.ok++;   // clean → count-only
         //  opts.listing: a listing view emits the clean file as an `eq` row
         //  (with its wt mtime); status keeps `ok` count-only (JAB-018).
         if (opts.listing) rows.push({ bucket: "eq", path: path, ts: w.ts });
@@ -279,6 +283,133 @@ function classify(be, wtlogReader, keeperReader, opts) {
            gitlinks: gitlinks, baseTreeSha: baseTreeSha };
 }
 
+//  --- scoped one-level listing (JAB-018 ls:/lsr:) ----------------------
+//  classifyDir(be, wtlogReader, keeperReader, scopePfx) → the IMMEDIATE
+//  entries of ONE directory, O(dir) not O(repo).  It descends the baseline
+//  tree to the scope node and reads ONE level, readdirs the scope dir
+//  NON-recursively, and content-hashes ONLY the scope's immediate files —
+//  it NEVER walks underneath.  A subdir / mount is a NAME only (native
+//  `be ls:` dates no dir row), so nothing below it is read or hashed; THAT
+//  is what makes `ls:<dir>` scale with the dir, not the whole repo.  Replaces
+//  the old whole-tree classify({listing}) + post-filter (which paid O(repo) —
+//  every file hashed — to list one directory, just to date dir rows with a
+//  newest-mtime-under-dir value native never asked for).
+//  `scopePfx` is the dir RELATIVE to be.wt in DIR form ("" root, "sub/").
+//
+//  → { files: [{ bucket, name, ts, dst? }], dirs: [name, ...] }  names are
+//    RELATIVE to the scope (a mov `dst` too); buckets are the listing set
+//    eq/mod/unk/new/mov/mis/del/put; `dirs` = immediate subdir + mount names.
+function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
+  const wtRoot = be.wt;
+  const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);
+  const scopeAbs = scopePfx ? join(wtRoot, scopePfx.slice(0, -1)) : wtRoot;
+  const dirSet = {};            // immediate REAL-wt-dir name → 1 (recursable)
+  const baseDir = {};           // names the BASELINE records as a dir/mount
+
+  //  1. baseline IMMEDIATE children: descend the tree to the scope node by one
+  //  readTree per path segment, then read ONE level.  A missing / non-dir
+  //  segment leaves the scope baseline-less (e.g. an untracked or absent dir).
+  const baseFile = {};          // name → { sha, kind }
+  const baseTip = wtlogReader.baselineTip();
+  if (baseTip && baseTip.sha && isFullSha(baseTip.sha)) {
+    let treeSha = keeperReader.commitTree(baseTip.sha);
+    if (treeSha && scopePfx) {
+      for (const seg of scopePfx.slice(0, -1).split("/")) {
+        const ents = treeSha ? keeperReader.readTree(treeSha) : undefined;
+        treeSha = undefined;
+        if (ents) for (const e of ents)
+          if (e.name === seg && e.mode === 0o40000) { treeSha = e.sha; break; }
+        if (!treeSha) break;
+      }
+    }
+    const ents = treeSha ? keeperReader.readTree(treeSha) : undefined;
+    if (ents) for (const e of ents) {
+      //  A baseline dir/mount does NOT make a `dir` row — only a REAL wt dir does
+      //  (step 2).  When the baseline records a dir but the wt has a symlink/file
+      //  there (a `be -> .` self-symlink committed as a recursive tree), it is a
+      //  FILE row (`mod`), NEVER recursed — else lsr loops be/be/be/… (JAB-018).
+      if (e.mode === 0o40000 || e.mode === 0o160000) baseDir[e.name] = 1;
+      else baseFile[e.name] = { sha: e.sha,
+        kind: e.mode === 0o120000 ? "l" : e.mode === 0o100755 ? "x" : "f" };
+    }
+  }
+
+  //  2. wt IMMEDIATE children (NON-recursive readdir).  lstat (NO-follow) is the
+  //  ONLY dir test — NEVER readdir's trailing-slash mark, which FOLLOWS symlinks:
+  //  a self-symlink (`be -> .`) would read back as a dir and lsr would recurse
+  //  be/be/be/… forever.  A symlink is kind "lnk" → a FILE row (its link target,
+  //  like native ls:), never a dir, so a filesystem cycle can never drive the
+  //  recursion (JAB-018).  Skip ignored + meta (.git/.be) entries.
+  const wtFile = {};            // name → { ts, kind }
+  let names;
+  try { names = io.readdir(scopeAbs, { hidden: true }); } catch (e) { names = []; }
+  for (let nm of names) {
+    if (nm[nm.length - 1] === "/") nm = nm.slice(0, -1);   // drop readdir's mark
+    let st;
+    try { st = io.lstat(join(scopeAbs, nm)); } catch (e) { continue; }
+    const isDir = st.kind === "dir";
+    if (ignore.match(scopePfx + nm, isDir)) continue;
+    if (isDir)                  dirSet[nm] = 1;
+    else if (st.kind === "lnk") wtFile[nm] = { ts: st.mtime || 0n, kind: "l" };
+    else if (st.kind === "reg") wtFile[nm] = { ts: st.mtime || 0n, kind: (st.mode && (st.mode & 0o111)) ? "x" : "f" };
+  }
+
+  //  3. staged put/del since the last post.  movDsts collects EVERY move's dst
+  //  (a dst may be immediate even when its src is not), so an immediate wt-only
+  //  file that is a move dst lists as `new`, not `unk`.  put/del FILE rows are
+  //  kept only for paths IMMEDIATELY under the scope.
+  function imm(p) {
+    if (scopePfx && p.indexOf(scopePfx) !== 0) return false;
+    const rel = p.slice(scopePfx.length);
+    return rel.length > 0 && rel.indexOf("/") < 0;
+  }
+  const puts = {}, dels = {}, movDsts = {};
+  wtlogReader.eachPutDelete(wtlogReader.boundaries().pd, function (r) {
+    const path = r.uri.path || "";
+    if (path === "" || path[path.length - 1] === "/") return;
+    if (r.verb === "put") {
+      const frag = r.uri.fragment || "";
+      if (frag && !isFullSha(frag)) movDsts[frag] = 1;
+      if (imm(path)) puts[path.slice(scopePfx.length)] = { ts: r.ts, dst: frag };
+    } else if (r.verb === "delete") {
+      if (imm(path)) dels[path.slice(scopePfx.length)] = { ts: r.ts };
+    }
+  });
+
+  //  4. merge per immediate FILE name (mirrors classify's status_step, plus the
+  //  listing divergences: a clean file is an `eq` row, a move dst is `new`).
+  const files = [];
+  const nameSet = {};
+  for (const n in baseFile) nameSet[n] = 1;
+  for (const n in wtFile)   nameSet[n] = 1;
+  for (const n in puts)     nameSet[n] = 1;
+  for (const n in dels)     nameSet[n] = 1;
+  for (const n in nameSet) {
+    if (dirSet[n]) continue;                       // a dir/mount, not a file row
+    const b = baseFile[n], w = wtFile[n], p = puts[n], d = dels[n];
+    const full = scopePfx + n;
+    if (d) { files.push({ bucket: "del", name: n, ts: d.ts }); continue; }
+    if (p) {
+      const frag = p.dst || "";
+      if (frag && !isFullSha(frag)) {
+        const dst = frag.indexOf(scopePfx) === 0 ? frag.slice(scopePfx.length) : frag;
+        files.push({ bucket: "mov", name: n, ts: p.ts, dst: dst });
+      } else files.push({ bucket: b ? "put" : "new", name: n, ts: p.ts });
+      continue;
+    }
+    if (w && !b) {
+      //  baseline dir/mount now a wt file or symlink → `mod` (type change,
+      //  matches native `mod be`); else a move dst is `new`, otherwise `unk`.
+      const bucket = baseDir[n] ? "mod" : (movDsts[full] ? "new" : "unk");
+      files.push({ bucket: bucket, name: n, ts: w.ts }); continue;
+    }
+    if (b && !w) { files.push({ bucket: "mis", name: n, ts: 0n }); continue; }
+    if (b && w)  { files.push({ bucket: wtEqBase(wtRoot, full, b.sha) ? "eq" : "mod", name: n, ts: w.ts }); continue; }
+  }
+
+  return { files: files, dirs: Object.keys(dirSet) };
+}
+
 //  Resolve this module's own dir so it can require ignore.js by absolute
 //  path regardless of the top-level script's cwd-bound `require`.  The
 //  JABC require loader injects __dirname (require.cpp).
@@ -286,4 +417,5 @@ function libDir() {
   return (typeof __dirname !== "undefined" && __dirname) ? __dirname : ".";
 }
 
-module.exports = { classify: classify, wtScan: wtScan, wtEqBase: wtEqBase };
+module.exports = { classify: classify, classifyDir: classifyDir,
+                   wtScan: wtScan, wtEqBase: wtEqBase };
