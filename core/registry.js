@@ -27,10 +27,17 @@ function build(verbs, requireFn) {
   for (const verb of verbs) {
     if (table[verb] !== undefined) continue;   // distinct verbs only
     let mod;
-    //  JSQUE-016: handlers live at verbs/<verb>/<verb>.js (by-verb reorg); the
-    //  be-relative scan (require.cpp) finds the shard nearest the requirer.
-    try { mod = req("verbs/" + verb + "/" + verb + ".js"); }
-    catch (e) { table[verb] = null; continue; }
+    //  A name resolves from one of TWO trees: the mutating VERBS
+    //  (verbs/<verb>/) — get/put/post/delete/patch — and the verbless VIEWS
+    //  (views/<view>/) — the read-only projectors (ls/cat/diff/spot/…), which
+    //  the loop dispatches by URI scheme exactly like a verb.  Try views/ then
+    //  verbs/ (the names are disjoint); the be-relative scan (require.cpp)
+    //  finds the shard nearest the requirer.
+    try { mod = req("views/" + verb + "/" + verb + ".js"); }
+    catch (e) {
+      try { mod = req("verbs/" + verb + "/" + verb + ".js"); }
+      catch (e2) { table[verb] = null; continue; }
+    }
     table[verb] = (typeof mod === "function") ? mod : null;
   }
   return table;

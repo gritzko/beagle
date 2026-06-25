@@ -245,6 +245,12 @@ module.exports = function handle(row, ctx) {
 
   //  no-body hint (CAPO.exe.c:377-414): a search URI with no fragment body.
   if (!q.body) {
+    //  Body in the WRONG slot — the path, not the `#fragment` (`regex:beta`):
+    //  the specific native hint, distinct from the empty-URI case.
+    if (q.path) {
+      io.log("spot: search body goes in the URI fragment, not the path\n  try: " + q.mode + ":#" + q.path + "\n");
+      throw "SPOTNOBODY";
+    }
     io.log("spot: " + q.mode + ": needs a search body\n  try: " + q.mode + ":#<body>\n");
     throw "SPOTNOBODY";
   }
