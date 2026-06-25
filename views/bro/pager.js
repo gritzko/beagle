@@ -16,6 +16,11 @@ const bro = require("view/bro.js");
 const ESC = "\x1b";
 const CLEAR = ESC + "[2J" + ESC + "[H";       // clear + home
 const HIDE_CUR = ESC + "[?25l", SHOW_CUR = ESC + "[?25h";
+//  JAB-030: SGR mouse reporting (1000 = button events, 1006 = SGR extended
+//  encoding `ESC[<b;col;rowM/m`).  Pure terminal protocol over the existing tty
+//  fd — enable on enter, disable on exit; NO new binding (parsed in _feed).
+const MOUSE_ON = ESC + "[?1000h" + ESC + "[?1006h";
+const MOUSE_OFF = ESC + "[?1000l" + ESC + "[?1006l";
 
 //  Write a string to a tty fd (raw mode: explicit CRLF, no cooked translation).
 function ttyWrite(fd, str) {
@@ -77,6 +82,7 @@ function Pager(fd, opts) {
   this.color = opts && opts.color !== undefined ? opts.color : true;
   this.driveSpell = opts && opts.driveSpell;     // (spell) -> hunks | null
   this.view = null;                              // { hunks, rows, scroll, cols }
+  this.stack = [];                               // JAB-030: the view BACK-stack
   this.mode = "scroll";                          // "scroll" | "command"
   this.cmd = "";                                 // the address-bar edit buffer
   this.message = "";                             // a transient status note
@@ -86,6 +92,53 @@ function Pager(fd, opts) {
 //  Set the current view from a hunk array; (re)index against the current width.
 Pager.prototype.setHunks = function (hunks) {
   this.view = { hunks: hunks, rows: null, scroll: 0, cols: 0 };
+};
+
+//  JAB-030: PUSH a fresh hunk view, stacking the current one (a spell / a
+//  follow descends).  popView restores the previous view (the back key).
+Pager.prototype.pushView = function (hunks) {
+  if (this.view) this.stack.push(this.view);
+  this.setHunks(hunks);
+};
+Pager.prototype.popView = function () {
+  if (!this.stack.length) { this.message = "(no prev view)"; return; }
+  this.view = this.stack.pop();
+  this.view.rows = null;                         // re-index for the live width
+};
+
+//  JAB-030: the CURRENT view's base path — the first hunk's URI path — so a
+//  bare/relative typed URI (a `#frag`, a `?ref`, or a sibling path) resolves
+//  against what is on screen.  Empty when the view has no path-bearing hunk.
+Pager.prototype._viewPath = function () {
+  const v = this.view;
+  if (!v || !v.hunks.length) return "";
+  for (const h of v.hunks) {
+    const u = uri._parse(h.uri || "");
+    if (u.path) return u.path;
+  }
+  return "";
+};
+
+//  JAB-030: resolve a typed spell RELATIVE to the current view.  A schemed
+//  spell (`grep:x`, `ls:`) or an absolute path is absolute → returned as-is.
+//  A fragment-only `#frag` / ref-only `?ref` re-anchors on the view's path; a
+//  relative `./x`, `../x` or bare `name` resolves against the view's directory.
+Pager.prototype._resolveSpell = function (spell) {
+  const s = spell.trim();
+  if (!s) return s;
+  const u = uri._parse(s);
+  if (u.scheme) return s;                         // schemed → absolute spell
+  const base = this._viewPath();
+  if (!base) return s;
+  if (s[0] === "#" || s[0] === "?") return base + s;   // re-anchor on the view
+  if (s[0] === "/") return s;                     // absolute path
+  if (s[0] === ".") {                             // relative to the view's dir
+    const dir = base.indexOf("/") >= 0 ? base.slice(0, base.lastIndexOf("/")) : "";
+    if (s === "." || s === "./") return dir || ".";
+    if (s.slice(0, 2) === "./") return (dir ? dir + "/" : "") + s.slice(2);
+    return (dir ? dir + "/" : "") + s;            // ../x etc. kept verbatim tail
+  }
+  return s;                                       // a bare name: a fresh spell
 };
 
 //  (Re)index the current view's rows for `cols`; cache by width so a resize
@@ -195,7 +248,17 @@ Pager.prototype._keyScroll = function (b) {
     case 0x62: v.scroll -= this._page(); break;         // b      page up
     case 0x67: v.scroll = 0; break;                     // g  top
     case 0x47: v.scroll = 1 << 30; break;               // G  bottom (clamped)
-    case 0x3a: this.mode = "command"; this.cmd = ""; break;   // :  address bar
+    //  JAB-030: the address bar opens on `:` (vim, EMPTY) AND on a URI-special
+    //  `. # ? /` — the typed char is PRE-INSERTED so the line reads `:<char>`
+    //  with the cursor after it (the URI is then relative to the current view).
+    case 0x3a: this.mode = "command"; this.cmd = ""; break;          // :  empty
+    case 0x2e: case 0x23: case 0x3f: case 0x2f:                       // . # ? /
+      this.mode = "command"; this.cmd = String.fromCharCode(b); break;
+    //  JAB-030: Enter FOLLOWS the URI of the hunk at the cursor row (its banner
+    //  URI is itself a spell) — a mouse click follows the same path (_followRow).
+    case 0x0d: case 0x0a: this._followRow(v.scroll); break;          // Enter
+    //  JAB-030: the BACK key POPS the view stack (a spell/follow pushed it).
+    case 0x2d: case 0x7f: case 0x08: this.popView(); break;          // - / BS
     default: break;
   }
 };
@@ -218,40 +281,96 @@ Pager.prototype._keyCommand = function (b) {
 };
 
 //  Drive a typed spell in-process: hand it to driveSpell (the bro handler wires
-//  the --tlv capture + reparse); on success swap the view, else show the error.
+//  the --tlv capture + reparse); on success PUSH the view (back-stack), else
+//  show the error.  The typed spell is first resolved relative to the view.
 Pager.prototype._runSpell = function (spell) {
-  const s = spell.trim();
+  const s = this._resolveSpell(spell);
   if (!s) return;
   let hunks = null, err = null;
   try { hunks = this.driveSpell ? this.driveSpell(s) : null; }
   catch (e) { err = String(e); }
   if (err) { this.message = "err: " + err; return; }
   if (!hunks || hunks.length === 0) { this.message = "no hunks: " + s; return; }
-  this.setHunks(hunks);
+  this.pushView(hunks);
+};
+
+//  JAB-030: FOLLOW the URI of the hunk at display-row `ri` — its banner URI is
+//  itself a spell, so a key (Enter) or a mouse click on a URI row runs it via
+//  driveSpell and PUSHES the result.  Reuses _runSpell (resolve + drive + push).
+Pager.prototype._followRow = function (ri) {
+  const rows = this.view.rows || this.rows(80);
+  if (!rows.length) return;
+  const r = rows[Math.max(0, Math.min(ri, rows.length - 1))];
+  const target = r && r.hunk ? r.hunk.uri : "";
+  if (!target) { this.message = "(no URI here)"; return; }
+  this._runSpell(target);
+};
+
+//  JAB-030: feed a whole input buffer, splitting SGR mouse escapes (`ESC[<…M/m`)
+//  from ordinary keys.  A click (button 0 PRESS = `M`, the low 2 btn bits 0,
+//  no drag bit 32) follows the URI at the clicked screen row; every other byte
+//  routes to key().  Returns the count consumed; an UNFINISHED tail escape is
+//  left for the next read (one mouse seq can straddle two io.read chunks).
+Pager.prototype._feed = function (data) {
+  let i = 0;
+  while (i < data.length && !this.quit) {
+    //  A mouse report opens with ESC '[' '<' ; scan to its M|m terminator.
+    if (data[i] === 0x1b && i + 2 < data.length &&
+        data[i + 1] === 0x5b && data[i + 2] === 0x3c) {
+      let j = i + 3;
+      while (j < data.length && data[j] !== 0x4d && data[j] !== 0x6d) j++;
+      if (j >= data.length) return i;            // incomplete: wait for more
+      let seq = "";
+      for (let k = i + 3; k < j; k++) seq += String.fromCharCode(data[k]);
+      this._mouse(seq, data[j] === 0x4d);
+      i = j + 1;
+      continue;
+    }
+    this.key(data[i]);
+    i++;
+  }
+  return i;
+};
+
+//  JAB-030: handle one decoded SGR mouse report `<b;col;row>` (press iff the
+//  terminator was 'M').  Only a plain left-button PRESS (b low bits 0, no drag
+//  bit 32, no wheel bit 64) navigates: map the screen row to the viewport row
+//  and FOLLOW that hunk's URI (the same path as Enter / a U-target click).
+Pager.prototype._mouse = function (seq, press) {
+  if (!press) return;
+  const f = seq.split(";");
+  const b = f[0] | 0, row = f[2] | 0;
+  if ((b & 0x43) !== 0) return;                  // not a plain left press
+  this._followRow(this.view.scroll + (row - 1));   // 1-based screen row → index
 };
 
 //  ---- the run loop ----------------------------------------------------------
 //  Enter raw mode, paint, block-poll a key, repaint — until q.  cook + restore
-//  the cursor on EVERY exit path (try/finally) so a throw never wedges the tty.
+//  the cursor (and disable mouse) on EVERY exit path (try/finally) so a throw
+//  never wedges the tty.
 Pager.prototype.run = function () {
   const saved = tty.raw(this.fd);
-  ttyWrite(this.fd, HIDE_CUR);
+  ttyWrite(this.fd, HIDE_CUR + MOUSE_ON);
   try {
-    const rb = io.buf(16);
+    const rb = io.buf(64);
+    let pend = null;                             // a straddling mouse-seq tail
     while (!this.quit) {
       this.render();
       //  Block on a key: VMIN=0 VTIME=1 means io.read returns 0 on a 100ms
       //  timeout, so spin until a byte arrives (portable, no platform poll).
       let n = 0;
       while (n === 0 && !this.quit) n = io.read(this.fd, rb);
-      const data = rb.data();
-      //  Consume EVERY buffered byte (a paste / an escape seq arrives at once);
-      //  unknown escape sequences fall through harmlessly as their final byte.
-      for (let i = 0; i < data.length && !this.quit; i++) this.key(data[i]);
+      //  Prepend any unfinished tail from the previous read, then feed; carry a
+      //  still-unfinished mouse escape forward (a click can straddle reads).
+      let data = rb.data();
+      if (pend) { const m = new Uint8Array(pend.length + data.length);
+        m.set(pend, 0); m.set(data, pend.length); data = m; pend = null; }
+      const used = this._feed(data);
+      if (used < data.length) pend = data.slice(used);
       rb.reset();
     }
   } finally {
-    ttyWrite(this.fd, ESC + "[0m" + SHOW_CUR + CLEAR);
+    ttyWrite(this.fd, MOUSE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
     tty.cook(this.fd, saved);
   }
 };
