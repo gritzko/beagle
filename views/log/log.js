@@ -42,6 +42,7 @@ function parseArg(raw) {
   const u = new URI("log:" + s);   // re-scheme so URI splits path/query/frag
   let path = u.path || "";
   if (path.indexOf("./") === 0) path = path.slice(2);   // strip the ./ lead
+  if (path === ".") path = "";   // the loop's no-arg "." scope = whole-repo log
   //  A `?` (even with an EMPTY query) means an explicit ref resolution
   //  (`log:?` = REFSResolve trunk), distinct from bare `log:` (= cur tip).
   //  URI collapses both to query "" — recover the distinction from the raw.

@@ -9,7 +9,7 @@ const job = require("core/job.js");
 const registry = require("core/registry.js");
 //  JSQUE-008: the integration seam — the real seed (resolution-at-entry) and
 //  emit sink (output-as-ULog) replace the JSQUE-002 stubs in the CLI entry.
-//  JSQUE-016: the entry shim (be/loop.js) requires this, so argv[1] is the
+//  JSQUE-016: the entry shim (be/main.js) requires this, so argv[1] is the
 //  shim path; _here is the be/ ROOT (where core/ + shared/ live).
 const _self = process.argv[1];
 const _here = _self.slice(0, _self.lastIndexOf("/"));
@@ -396,7 +396,7 @@ function subQueuePath(key) {
   return _tmpQueue((key || "") + ".sub" + _subSeq);
 }
 
-//  JSQUE-016: always required (via the be/loop.js entry shim), so export
+//  JSQUE-016: always required (via the be/main.js entry shim), so export
 //  run/cli; the shim self-runs cli() when invoked directly.
 if (typeof module !== "undefined")
   module.exports = { run: run, cli: cli, subQueuePath: subQueuePath };
