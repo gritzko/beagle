@@ -30,8 +30,7 @@ const classify = require("../../shared/classify.js");
 const join     = require("../../shared/util/path.js").join;
 const match    = require("./match.js");
 const ext2lang = require("./ext.js");
-const bro      = require("../../view/bro.js");   // shared binding-backed hunk render
-const EMPTY32  = new Uint32Array(0);
+const EMPTY32  = new Uint32Array(0);   // JAB-029: hunks feed ctx.sink; cli renders
 
 //  --- URI parse: scheme->mode, #body (strip '…'), .ext, ./path, ?ref -------
 //  Mirrors CAPO.exe.c:174-272.  The seed lowers `<scheme>:<rest>` into the
@@ -151,23 +150,19 @@ function searchFile(em, ctxState, source, htoks, relpath, m, ext) {
   }
 }
 
-//  Emit ONE hunk through the SHARED binding render (NO hand-rolled framing):
-//  feed {uri, body, toks, verb="hunk"} into a HUNK log and let view/bro.js's
-//  renderHunkLog drive the C sink in the selected mode — plain == native
-//  HUNKu8sFeedText (banner + body + trailing '\n' + blank separator), colour ==
-//  dog/THEME SGR, tlv == the raw 'H' records.  toks are lexed only for the
-//  PAINTED modes; plain ignores them, so the --plain bytes stay byte-identical.
-//  Bytes accumulate in `em.chunks`; the handler writes them once at the edge.
+//  Emit ONE hunk into the caller-owned in-memory HUNK sink (JAB-029): feed
+//  {uri, body, toks, verb} into ctx.sink — NO per-hunk render, NO fd 1.  The
+//  loop edge (cli) renders the collected sink in the mode (plain == native
+//  HUNKu8sFeedText, colour == dog/THEME SGR, tlv == the raw 'H' records).  toks
+//  are lexed only for the PAINTED modes; plain ignores them, so --plain stays
+//  byte-identical.  An in-process caller (bro) reads the same sink directly.
 function emitHunk(em, uri, source, lo, hi, ext) {
   const body = source.slice(lo, hi);
   let toks = EMPTY32;
   if (em.mode !== "plain" && ext) {
     try { toks = tok.parse(body, ext.replace(/^\./, "")); } catch (e) { toks = EMPTY32; }
   }
-  //  Size for text + the packed tok32 (4 B/tok, painted modes) + uri + framing.
-  const hlog = abc.ram("HUNK", body.length + toks.length * 4 + uri.length + 1024);
-  hlog.feed(uri, body, toks, em.verb, 0n);
-  em.chunks.push(bro.renderHunkLog(hlog, em.mode));
+  em.sink.feed(uri, body, toks, em.verb, 0n);
 }
 
 //  --- file walk: live tip via classify; ?ref historic via store + git.tree -
@@ -267,7 +262,10 @@ module.exports = function handle(row, ctx) {
   const ctxState = { nctx: 3 };
   //  verb = the search mode (grep/spot/regex) — the hunk banner names it
   //  (`grep <uri>` / `spot <uri>` / `regex <uri>`), not the generic `hunk`.
-  const em  = { chunks: [], mode: mode, verb: q.mode };
+  //  JAB-029: hunks feed the caller-owned ctx.sink (no fd 1); cli renders it.
+  const sink = ctx && ctx.sink;
+  if (!sink) return;
+  const em  = { sink: sink, mode: mode, verb: q.mode };
   const log = wtlog.open(repo);
   const k   = store.open(repo.storePath, repo.project);
 
@@ -294,18 +292,8 @@ module.exports = function handle(row, ctx) {
   if (refSha)      walkRef(repo, k, refSha, q.ext, visit);
   else if (q.ref)  walkRef(repo, k, q.ref, q.ext, visit);
   else             walkLive(repo, log, k, q.ext, visit);
-
-  //  ONE edge write of the whole hunk stream, rendered in `mode`.  Binary TLV
-  //  must NOT round-trip through the string sink, so write fd 1 directly here
-  //  (the columnar emit sink stays empty — this view emits only hunks).
-  let total = 0;
-  for (const c of em.chunks) total += c.length;
-  if (total) {
-    const all = new Uint8Array(total);
-    let off = 0;
-    for (const c of em.chunks) { all.set(c, off); off += c.length; }
-    const b = io.buf(total + 8); b.feed(all); io.writeAll(1, b);
-  }
+  //  JAB-029: no fd-1 write here — searchFile/emitHunk fed every hunk into
+  //  ctx.sink; the loop edge (cli) renders the collected sink to fd 1 in `mode`.
 };
 
 //  exported for the parity harness / sibling verb modules

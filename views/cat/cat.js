@@ -71,7 +71,10 @@ module.exports = function handle(row, ctx) {
   if (bytes == null || bytes.length === 0) return;
 
   const ext = bro.pathExt(path);            // "js" / "" — drives tok.parse
-  const chunks = [];
+  //  JAB-029: feed each hunk into the caller-owned in-memory HUNK sink (ctx.sink)
+  //  — NO fd 1 here; the loop edge (cli) renders sink.log to fd 1 in the mode.
+  const sink = ctx && ctx.sink;
+  if (!sink) return;
   let off = 0, line = 1;
   while (off < bytes.length) {
     //  1 MiB hunk, backed up to the last line boundary so a line never splits.
@@ -84,17 +87,8 @@ module.exports = function handle(row, ctx) {
     let toks = EMPTY32;
     if (mode !== "plain" && ext) { try { toks = tok.parse(body, ext); } catch (e) { toks = EMPTY32; } }
     const uri = path + "#L" + line;
-    const hlog = abc.ram("HUNK", body.length + toks.length * 4 + uri.length + 1024);
-    hlog.feed(uri, body, toks, "cat", 0n);   // banner: `cat <path>#L<n>`
-    chunks.push(bro.renderHunkLog(hlog, mode));
+    sink.feed(uri, body, toks, "cat", 0n);   // banner: `cat <path>#L<n>`
     for (let i = off; i < end; i++) if (bytes[i] === 10) line++;
     off = end;
-  }
-
-  let total = 0; for (const c of chunks) total += c.length;
-  if (total) {
-    const all = new Uint8Array(total);
-    let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
-    const b = io.buf(total + 8); b.feed(all); io.writeAll(1, b);
   }
 };

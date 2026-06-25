@@ -18,6 +18,9 @@ const emit = require("core/emit.js");
 const be = require(_here + "/core/discover.js");
 const wtlog = require(_here + "/shared/wtlog.js");
 const store = require(_here + "/shared/store.js");
+//  JAB-029: the edge render — cli() turns the collected HUNK sink into fd-1
+//  bytes via bro.renderHunkLog (the ONE place mode plain/color/tlv is applied).
+const bro = require(_here + "/view/bro.js");
 
 //  run(opts): seed -> build registry -> consume-while-append dispatch loop.
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
@@ -74,6 +77,10 @@ function run(opts) {
     //  the shared output mode (color|tlv|plain) — a view renders its hunk
     //  stream through view/bro.js renderHunkLog in this mode.
     mode: opts.mode || "plain",
+    //  JAB-029: the in-memory HUNK sink every content view feeds (no fd 1).
+    //  cli() owns ONE renderHunkLog(sink.log, mode) -> fd 1 at the edge; an
+    //  in-process caller (bro) passes its OWN sink and reads sink.log direct.
+    sink: opts.sink || _hunkSink(),
   };
 
   const order = [];
@@ -111,6 +118,35 @@ function run(opts) {
   //  A handler may set ctx.outSort (a flush comparator) to own its render
   //  order at the edge — GET: new+upd lex, then del lex (JSQUE-009).
   return { dispatched: dispatched, order: order, outSort: ctx.outSort };
+}
+
+//  JAB-029: the in-memory HUNK sink — a grow-on-full HUNK ram log a content
+//  view feeds (feed(uri, body, toks, verb, ts)).  abc.ram is fixed-size, so on
+//  the binding's `out full` throw we double the cap and replay the held records
+//  into a fresh log (atomic feed: a failed record is not half-written).  `.log`
+//  is the HUNK log renderHunkLog reads at the edge; `.empty` gates the flush.
+function _hunkSink(initial) {
+  let cap = initial || (1 << 16);
+  let log = abc.ram("HUNK", cap);
+  const recs = [];
+  function replay() { log = abc.ram("HUNK", cap); for (const r of recs) log.feed(r.uri, r.body, r.toks, r.verb, r.ts); }
+  return {
+    feed: function (uri, body, toks, verb, ts) {
+      const r = { uri: uri, body: body, toks: toks, verb: verb, ts: ts };
+      for (let t = 0; t < 40; t++) {
+        try { log.feed(uri, body, toks, verb, ts); recs.push(r); return; }
+        catch (e) {
+          if (!("" + e).includes("full")) throw e;   // only grow on `out full`
+          cap = cap * 2 + uri.length + (body ? body.length : 0) +
+                (toks ? toks.length * 4 : 0) + 256;
+          replay();
+        }
+      }
+      throw "loop: HUNK sink grow exhausted";
+    },
+    get log() { return log; },
+    get empty() { return recs.length === 0; },
+  };
 }
 
 //  A no-op emit sink so the loop is provable without JSQUE-005 wired in.  Same
@@ -208,9 +244,12 @@ function cli(argv) {
         : _tmpQueue(io.cwd());
 
   const out = emit.create({ color: color });   // JAB-025: tty/--color gate
+  //  JAB-029: the content-view HUNK sink (cat/grep/spot/regex feed it, no fd 1);
+  //  cli OWNS the one renderHunkLog(sink.log, mode) -> fd 1 edge write below.
+  const sink = _hunkSink();
   const res = run({
     seedRows: seedRows, queuePath: queuePath, repo: repo, require: require,
-    out: out, flags: flags, refs: seeded.refs, resolved: sctx,
+    out: out, sink: sink, flags: flags, refs: seeded.refs, resolved: sctx,
     mode: mode,              // the shared color/tlv/plain output mode (ctx.mode)
     triple: seeded.triple,   // JSQUE-013: forward the seed-pinned PATCH triple
     //  JSQUE-010: count of REAL path-arg rows (vs the "." placeholder); a
@@ -221,6 +260,12 @@ function cli(argv) {
   //  ONE flush at the edge.  status pre-orders its rows (divergence then
   //  buckets), so no global sort comparator — render in push order.
   out.flush(res.outSort || null);   // JSQUE-009: GET owns its edge sort order
+  //  JAB-029: the content-view edge — render the collected HUNK sink to fd 1 in
+  //  the mode (plain/color/tlv), ONE write, in the one place the mode is known.
+  if (!sink.empty) {
+    const bytes = bro.renderHunkLog(sink.log, mode);
+    if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
+  }
   return res;
 }
 
