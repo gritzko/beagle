@@ -54,6 +54,56 @@ function ancestors(keeper, root) {
   return seen;
 }
 
+//  topoSort(keeper, set) → an Array of the shas in `set`, PARENTS-BEFORE-
+//  CHILDREN (a topological order over the parent edges, oldest-first).  The
+//  JS twin of dog DAG.c::DAGTopoSort: an iterative post-order DFS over
+//  commitParents restricted to commits inside `set` (the DAGAncestors
+//  closure), with a bounded visited Set so a pathological / cyclic history
+//  can't run unbounded.  A commit appears AFTER all of its in-set parents, so
+//  a caller emitting newest-first reverses the result.  Additive — existing
+//  dag.js APIs are untouched (JAB-013).
+function topoSort(keeper, set) {
+  const out = [];
+  const done = new Set();          // emitted (post-order complete)
+  if (!set || !set.size) return out;
+  //  Iterative DFS: a frame is { sha, i } over its in-set parent list; when
+  //  every parent is emitted, the node itself is appended (post-order).
+  for (const root of set) {
+    if (done.has(root)) continue;
+    const stack = [{ sha: root, parents: null, i: 0 }];
+    while (stack.length) {
+      if (done.size > WALK_CAP) break;
+      const top = stack[stack.length - 1];
+      if (top.parents === null) {
+        if (done.has(top.sha)) { stack.pop(); continue; }
+        let ps;
+        try { ps = keeper.commitParents(top.sha); } catch (e) { ps = undefined; }
+        //  Only follow parents that lie inside the closure `set`.
+        top.parents = (ps || []).filter(function (p) {
+          return isFullSha(p) && set.has(p);
+        });
+      }
+      if (top.i < top.parents.length) {
+        const p = top.parents[top.i++];
+        if (!done.has(p) && !onStack(stack, p)) {   // skip a back-edge (cycle)
+          stack.push({ sha: p, parents: null, i: 0 });
+        }
+        continue;
+      }
+      //  All parents emitted → emit this node (post-order = parents-first).
+      if (!done.has(top.sha)) { done.add(top.sha); out.push(top.sha); }
+      stack.pop();
+    }
+  }
+  return out;
+}
+
+//  Is `sha` already an open frame on the DFS stack (a cycle back-edge)?
+function onStack(stack, sha) {
+  for (let i = 0; i < stack.length; i++) if (stack[i].sha === sha) return true;
+  return false;
+}
+
 //  Parse a git ident string `Name <email> <epoch> <tz>` → epoch seconds
 //  (the author/committer time).  Returns 0 when no trailing epoch.
 function identEpoch(ident) {
@@ -172,6 +222,7 @@ module.exports = {
   aheadBehind: aheadBehind,
   isAncestor: isAncestor,
   ancestors: ancestors,
+  topoSort: topoSort,
   identEpoch: identEpoch,
   subjectOf: subjectOf,
   commitTs: commitTs
