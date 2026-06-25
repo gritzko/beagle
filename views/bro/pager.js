@@ -266,6 +266,17 @@ function hunksFromTlv(tlv) {
   log.set(tlv, 0);
   log.buffer.watermark = tlv.length;
   log.rewind();
+  return hunksFromLog(log);
+}
+
+//  JAB-030: walk a LIVE HUNK ram log (ctx.sink.log) into hunk objects — the
+//  universal-pager edge hands the loop's collected sink straight here (no tlv
+//  serialize round-trip).  Same {uri,verb,text,toks} shape buildFileHunk yields,
+//  so the viewport treats every source alike.  verb stays "hunk" (the banner
+//  shows the URI): log.verb is a RON60 bigint, not the view's text name.
+function hunksFromLog(log) {
+  if (!log) return [];
+  log.rewind();
   const hunks = [];
   while (log.next()) {
     hunks.push({
@@ -284,4 +295,5 @@ module.exports = {
   indexAll: indexAll,
   paintRow: paintRow,
   hunksFromTlv: hunksFromTlv,
+  hunksFromLog: hunksFromLog,
 };

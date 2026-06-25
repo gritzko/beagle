@@ -202,3 +202,8 @@ module.exports = function handle(row, ctx) {
   //  THROW (not process.exit) — the loop edge maps it to the process exit code.
   if (!anyOpened) throw "BRONONE";
 };
+
+//  JAB-030: expose driveSpell on the exported handler (a fn IS an object) so the
+//  universal-pager edge (core/loop.js _openPager) wires the SAME address-bar
+//  spell drive bro's own pager uses — ONE spell path, no duplication.
+module.exports.driveSpell = driveSpell;

@@ -21,6 +21,9 @@ const store = require(_here + "/shared/store.js");
 //  JAB-029: the edge render — cli() turns the collected HUNK sink into fd-1
 //  bytes via bro.renderHunkLog (the ONE place mode plain/color/tlv is applied).
 const bro = require(_here + "/view/bro.js");
+//  JAB-030: the universal-pager edge — on a tty the run's hunk stream opens the
+//  bro Pager (hunksFromLog), instead of the plain renderHunkLog dump.
+const pager = require(_here + "/views/bro/pager.js");
 
 //  run(opts): seed -> build registry -> consume-while-append dispatch loop.
 //    opts.seedRows : [{verb, uri}]   the seed job list (argv lowered; JSQUE-004
@@ -161,6 +164,30 @@ function _nullSink() {
   };
 }
 
+//  JAB-030: the verb-vs-URI gate (Design decision b).  A word is a VERB iff a
+//  handler file exists at verbs/<w>/<w>.js OR views/<w>/<w>.js under the be/ root
+//  (_here).  The [a-zA-Z0-9]+ shape test is the caller's; this is the file probe.
+function _isVerb(w, here) {
+  for (const d of ["verbs", "views"]) {
+    try { if (io.stat(here + "/" + d + "/" + w + "/" + w + ".js")) return true; }
+    catch (e) {}                            // ENOENT — not that kind of handler
+  }
+  return false;
+}
+
+//  JAB-030: the bare-URI view default (Design decision: dir -> ls:, file ->
+//  blob:/cat:).  `blob:` has no landed handler; a file falls back to the landed
+//  `cat:` syntax-hili view (gritzko: "blob: or cat: whatever"); a dir (or an
+//  unstattable path) defaults to `ls`.  Returns the VERB; args[0] holds the URI.
+function _viewDefault(token, here) {
+  const sc = token.indexOf(":");
+  const path = sc > 0 ? token.slice(sc + 1) : token;
+  let st = null;
+  try { st = io.stat(path); } catch (e) {}
+  if (st && st.kind !== "dir") return _isVerb("blob", here) ? "blob" : "cat";
+  return "ls";                              // a dir, or an unresolvable path
+}
+
 //  --- JSQUE-008: the canonical CLI entry (argv -> seed -> run -> flush) ---
 //  The SHARED integrated entry every later verb reuses: argv lowers to a verb +
 //  positional args + flags; the repo + its ambient coordinates are pinned ONCE
@@ -175,22 +202,39 @@ function _nullSink() {
 //  crash).  Absent (the normal CLI entry), the per-process queue stands.
 function cli(argv, opts2) {
   opts2 = opts2 || {};
-  let verb = argv[2];
-  if (!verb) throw "loop: no verb (usage: loop.js <verb> [args])";
   //  Split flags (a leading '-') from the positional args — flags are seed
-  //  globals (pinned in ctx), positionals become seed rows.
+  //  globals (pinned in ctx), positionals become seed rows.  The first
+  //  positional is the parse SUBJECT (verb-or-URI); the rest are its args.
   const flags = [], args = [];
-  for (const a of argv.slice(3)) (a[0] === "-" ? flags : args).push(a);
+  for (const a of argv.slice(2)) (a[0] === "-" ? flags : args).push(a);
 
-  //  One-shot projector form `jab <scheme>:<uri>` (mirrors native `be
-  //  scheme:uri`, e.g. `grep:#body`, `cat:path`): the VERB token itself carries
-  //  the whole URI.  A legal verb is a bare word, so a ':' in the verb position
-  //  marks a scheme:uri one-shot — lower it to verb=<scheme> and thread the FULL
-  //  token as the leading positional arg, so a view handler reads body/path off
-  //  ctx.args (a fragment-only URI can't survive a queue row, and the unsplit
-  //  `grep:#body` is not a legal queue verb token — it round-trips to '0').
-  const _sc = verb.indexOf(":");
-  if (verb[0] !== "-" && _sc > 0) { args.unshift(verb); verb = verb.slice(0, _sc); }
+  //  JAB-030: the THREE-shape arg parse + the verb-vs-URI gate, replacing the
+  //  bare-verb/':'-split patchwork.  The first positional decides the shape:
+  //   (1) verb URI+  — first word is a VERB (matches [a-zA-Z0-9]+ AND a handler
+  //       file verbs/<w>/<w>.js | views/<w>/<w>.js exists) → run those records.
+  //   (2) URI        — a <scheme>:<uri> token, OR a bare path → a VIEW: a dir
+  //       defaults to ls:, a file to blob: (BLOCKED — no blob handler; see the
+  //       FLAG below, the practical fall-back is the landed `bro` viewer).
+  //   (3) bare jab   — no positionals → ls:. (the cwd listing).
+  //  NB the C `require.cpp __main` only routes a BAREWORD or a `scheme:` token to
+  //  the loop; a bare FILE/DIR path (with '.'/'/' and no scheme) and the no-arg
+  //  case never reach cli() — they need the deferred C routing change (FLAG).
+  let verb = args.length ? args[0] : null;
+  if (verb == null) {                       // shape (3): bare jab -> ls:.
+    verb = "ls"; args.push(".");
+  } else if (/^[a-zA-Z0-9]+$/.test(verb) && _isVerb(verb, _here)) {
+    args.shift();                           // shape (1): verb URI+
+  } else {                                  // shape (2): a URI view
+    const sc = verb.indexOf(":");
+    const scheme = sc > 0 ? verb.slice(0, sc) : "";
+    if (scheme && /^[a-zA-Z0-9]+$/.test(scheme) && _isVerb(scheme, _here)) {
+      verb = scheme;                        //  scheme:uri — keep the whole token
+    } else {                                //  a bare path — default the view
+      verb = _viewDefault(verb, _here);     //  dir -> ls, file -> blob/bro
+    }
+    //  A view's whole URI rides ctx.args (a fragment-only URI can't survive a
+    //  queue row); leave args[0] = the full token for the handler to re-parse.
+  }
 
   //  JAB-025: the colour gate for the emit sink.  `--color` forces SGR,
   //  `--plain` forces the plain bytes; otherwise default to whether stdout
@@ -266,16 +310,57 @@ function cli(argv, opts2) {
     seededRowCount: seeded.rows.length,
     args: args,   // JSQUE-012: raw positional args (POST commit message)
   });
-  //  ONE flush at the edge.  status pre-orders its rows (divergence then
-  //  buckets), so no global sort comparator — render in push order.
+  //  JAB-030: the UNIVERSAL pager edge.  ONE output gate picks the render by the
+  //  tty: on a TTY the interactive bro Pager over the run's hunk stream; on a
+  //  PIPE/redirect (or --plain/--tlv, or an in-process re-entry) the plain dump.
+  //  An in-process re-entry (opts2.queuePath — bro's driveSpell capturing --tlv)
+  //  must NEVER open a nested pager: it stays the plain/tlv dump it captures.
+  const wantPager = io.isatty(1) && mode !== "tlv" && !opts2.queuePath &&
+                    flags.indexOf("--plain") < 0;
+  if (wantPager) {
+    //  Gather the run's hunks for the viewport: the content-view sink (cat/grep/
+    //  spot/regex feed it) PLUS, if a columnar view (ls/status/refs) emitted
+    //  rows, that rendered text wrapped as ONE plain hunk (DEFER: ls/status
+    //  feeding the sink directly — JAB-030 TODOs).  A self-paging verb (bro on a
+    //  tty) leaves both empty, so the edge opens NO second pager.
+    let hunks = sink.empty ? [] : pager.hunksFromLog(sink.log);
+    //  Colour the columnar (ls/status/refs) hunk too: on a tty the emit sink's
+    //  COLOUR render (THEME date/verb SGR) — not the plain columniser — so the
+    //  pager shows it coloured like the content views (gritzko: pager colored).
+    const colBytes = out.renderColor ? out.renderColor(res.outSort || null)
+                                     : out.render(res.outSort || null);
+    if (colBytes && colBytes.length)
+      hunks = hunks.concat([{ uri: verb + ":", verb: "hunk", text: colBytes,
+                              toks: new Uint32Array(0), kind: "file" }]);
+    if (hunks.length) { _openPager(hunks); return res; }
+    //  Nothing to page (a self-paging verb already ran, or no output): done.
+    return res;
+  }
+  //  Non-tty (pipe / --plain / --tlv / re-entry): the byte-parity plain dump.
+  //  ONE columnar flush (ls/status/refs) + ONE hunk-sink render to fd 1.
   out.flush(res.outSort || null);   // JSQUE-009: GET owns its edge sort order
-  //  JAB-029: the content-view edge — render the collected HUNK sink to fd 1 in
-  //  the mode (plain/color/tlv), ONE write, in the one place the mode is known.
   if (!sink.empty) {
     const bytes = bro.renderHunkLog(sink.log, mode);
     if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
   }
   return res;
+}
+
+//  JAB-030: open the interactive bro Pager over a hunk array (the universal-tty
+//  edge).  Keystrokes come from the controlling terminal (/dev/tty so input
+//  still works when stdin is a data pipe — the bro.js pattern); a typed `:`
+//  spell re-runs the loop via bro's driveSpell (its OWN capture sink + queue).
+function _openPager(hunks) {
+  let fd = null, own = false;
+  try { fd = io.open("/dev/tty", "rw"); own = true; } catch (e) { fd = null; }
+  if (fd === null && io.isatty(0)) fd = 0;
+  if (fd === null) fd = 1;
+  try {
+    const broh = require(_here + "/views/bro/bro.js");
+    const p = new pager.Pager(fd, { color: true, driveSpell: broh.driveSpell });
+    p.setHunks(hunks);
+    p.run();
+  } finally { if (own) { try { io.close(fd); } catch (e) {} } }
 }
 
 //  JOBQ: this process's PID, for the per-process queue name (the portable POSIX

@@ -146,7 +146,8 @@ function create(opts) {
     render.writeStdout(utf8.Decode(bytes));
   }
 
-  return { banner: banner, row: row, raw: raw, render: render_, flush: flush };
+  return { banner: banner, row: row, raw: raw, render: render_,
+           renderColor: renderColor_, flush: flush };
 }
 
 module.exports = { create: create };
