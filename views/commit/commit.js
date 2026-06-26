@@ -33,6 +33,10 @@
 const store   = require("../../shared/store.js");
 const wtlog   = require("../../shared/wtlog.js");
 const shalib  = require("../../shared/util/sha.js");
+//  COMMIT-006: reuse the diff GENERATOR (graf weave + tree-vs-ref) directly —
+//  call its handler with a pinned `views` spec; the inert diff VIEW routing
+//  (ctx.views unset, JS-071) is bypassed.  See inlineDiff() below.
+const diffView = require("../diff/diff.js");
 const isFullSha = shalib.isFullSha;
 const frameSha  = shalib.frameSha;
 
@@ -52,6 +56,10 @@ const frameSha  = shalib.frameSha;
 //  log.js pattern — the C keeper's own per-line ESC[0m reset is a separate
 //  proj_emit_hunk renderer, a documented binding-level delta vs the HUNK sink).
 const TAG_R = 17, TAG_L = 11, TAG_G = 6, TAG_N = 13, TAG_S = 18, TAG_W = 22;
+//  BRO-006: TAG_U (20) is the invisible click-target — after a linky sha span we
+//  splice its URI bytes + a `U` tok so the pager's `_uriAt` left-click navigates
+//  (mirrors C KEEPProjCommit PROJ.c:489-493: `<scheme>:?<sha40>` + tok 'U').
+const TAG_U = 20;
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 
 //  --- a 1..40 hex hashlet test (the `#<hex>` / `?<hex>` slot). ---
@@ -170,10 +178,15 @@ function resolveSlot(k, repo, parsed) {
 //  trailing space) = R/blue; a `tree`/`parent`/`commit` sha value = L/cyan; any
 //  other value = G/green; the subject (1st body line) = N/bold; the rest plain.
 function buildHunk(sha, headers, body) {
-  const parts = [];   // [{ text, tag }]  — concatenated; tag drives the span
-  function emit(text, tag) { if (text.length) parts.push({ text: text, tag: tag }); }
+  const parts = [];   // [{ text, tag, uri? }] — concatenated; tag drives the span,
+                      // uri (if set) splices an invisible `U` click-target after.
+  function emit(text, tag, uri) {
+    if (text.length) parts.push({ text: text, tag: tag, uri: uri || "" });
+  }
 
-  //  `commit <sha>\n` — "commit " R, the sha (the page, no link) L, "\n" S.
+  //  `commit <sha>\n` — "commit " R, the sha (the page, no link) L, "\n" S.  No
+  //  `U` here: the synthetic commit header IS the page (mirrors PROJ.c:431-436;
+  //  COMMIT-001's `diff:?<sha>` link was superseded by COMMIT-002's relay).
   emit("commit ", TAG_R);
   emit(sha, TAG_L);
   emit("\n", TAG_S);
@@ -181,10 +194,16 @@ function buildHunk(sha, headers, body) {
   //  Each header verbatim, in object order.
   for (const h of headers) {
     emit(h.name + " ", TAG_R);
-    //  tree/parent (and the synthetic `commit`, already emitted) link the sha;
-    //  every other field (author/committer/gpgsig/encoding/mergetag/…) plain.
-    const linky = (h.name === "tree" || h.name === "parent");
-    emit(h.value, linky ? TAG_L : TAG_G);
+    //  BRO-006: tree/parent sha values are clickable — tree → `tree:?<sha40>`,
+    //  parent → `commit:?<sha40>` (open the parent), mirroring PROJ.c:468-493.
+    //  Every other field (author/committer/gpgsig/encoding/mergetag/…) is plain.
+    const linkScheme = (h.name === "tree") ? "tree"
+                     : (h.name === "parent") ? "commit" : null;
+    const linky = linkScheme !== null && isFullSha(h.value.slice(0, 40));
+    //  The sha40 is the anchor; the URI is `<scheme>:?<sha40>` (hashes live in
+    //  the `?` query slot — the general URI rule; the dispatcher promotes it).
+    const uri = linky ? linkScheme + ":?" + h.value.slice(0, 40) : "";
+    emit(h.value, linky ? TAG_L : TAG_G, uri);
     emit("\n", TAG_S);
   }
 
@@ -212,7 +231,11 @@ function buildHunk(sha, headers, body) {
     }
   }
 
-  //  Concatenate to bytes + pack the cumulative-offset tok32 spans.
+  //  Concatenate to bytes + pack the cumulative-offset tok32 spans.  The PLAIN
+  //  variant (no `U`) is the COMMIT-003 bytes verbatim; the color/tlv variant
+  //  splices each linky part's URI bytes + a `U` tok right after its span, so a
+  //  pager left-click on the sha navigates (the `_uriAt` contract).  Plain feeds
+  //  EMPTY toks (COMMIT-003), so its bytes must stay U-free — two bodies.
   let text = "";
   for (const p of parts) text += p.text;
   const bytes = utf8.Encode(text);
@@ -222,7 +245,70 @@ function buildHunk(sha, headers, body) {
     off += utf8.Encode(parts[i].text).length;
     spans[i] = tok(parts[i].tag, off);
   }
-  return { bytes: bytes, toks: spans };
+
+  //  The U-bearing body/toks for color/tlv.  Walk parts in order; after a part
+  //  carrying a `uri`, append the URI bytes and a `U` tok (end = new length).
+  let textU = "";
+  const tagsU = [];
+  let offU = 0;
+  for (const p of parts) {
+    textU += p.text;
+    offU += utf8.Encode(p.text).length;
+    tagsU.push(tok(p.tag, offU));
+    if (p.uri) {
+      textU += p.uri;
+      offU += utf8.Encode(p.uri).length;
+      tagsU.push(tok(TAG_U, offU));
+    }
+  }
+  return {
+    bytes: bytes, toks: spans,
+    bytesU: utf8.Encode(textU), toksU: Uint32Array.from(tagsU),
+  };
+}
+
+//  --- COMMIT-006: inline the commit's full diff (tree vs parent) ------------
+//  Mirror C `be commit:?<sha>` ([COMMIT-002], df596d0f): after the metadata,
+//  relay graf's `diff:?<sha>` hunk stream (first-parent.tree → commit.tree).
+//  Driven by calling the diff VIEW handler with a pinned `views` spec — NOT the
+//  dead ctx.views routing (JS-071).  ALWAYS vs the FIRST parent (merges too,
+//  user RULING; LOG-001 spine); only ROOT (0 parents) skips.  The handler folds
+//  it into the ONE metadata record (plain) or feeds it after (color/tlv).
+//
+//  Two render shapes match native byte-for-byte (the HUNK plain feed adds ONE
+//  trailing separator PER record, color/tlv add none):
+//    plain → fold the diff's rendered TEXT into the metadata record so there is
+//            no mid-stream separator (native has none between metadata + diff).
+//    color/tlv → feed the diff's own HUNK records after the metadata record
+//            (the diff machinery feeds them via out.feed; no separator added).
+function diffSpecRow(sha, parentSha) {
+  const row = { uri: "diff:?" + sha, verb: "diff" };
+  const spec = { mode: "range", fromSha: parentSha, toSha: sha,
+                 navver: parentSha + ".." + sha, path: "" };
+  return { row: row, spec: spec };
+}
+
+//  Capture the diff's PLAIN rendered text (out.chunk) for the metadata-fold.
+function diffPlainText(repo, sha, parentSha) {
+  const ds = diffSpecRow(sha, parentSha);
+  const chunks = [];
+  const dctx = { repo: repo, flags: ["--plain"], mode: "plain", views: {},
+                 out: { chunk: function (t) { chunks.push(t); } },
+                 sink: { feed: function () {} } };
+  dctx.views[ds.row.uri] = ds.spec;
+  diffView(ds.row, dctx);
+  return chunks.join("");
+}
+
+//  Feed the diff's own HUNK records (color/tlv) into the commit sink, so they
+//  follow the metadata record exactly like the C graf relay.
+function diffFeedRecords(repo, sha, parentSha, mode, sink) {
+  const ds = diffSpecRow(sha, parentSha);
+  const dctx = { repo: repo, flags: mode === "color" ? ["--color"] : [],
+                 mode: mode, views: {},
+                 out: { chunk: function () {} }, sink: sink };
+  dctx.views[ds.row.uri] = ds.spec;
+  diffView(ds.row, dctx);
 }
 
 //  --- the handler -----------------------------------------------------------
@@ -286,12 +372,37 @@ module.exports = function handle(row, ctx) {
 
   //  COMMIT-003: colour spans ONLY for --color; plain feeds EMPTY toks (the
   //  cat/blob gate) — a hand-built toks table failed the HUNK drain → 0 bytes.
+  //  BRO-006: color/tlv feed the U-bearing body+toks (tree/parent sha links);
+  //  plain feeds the U-free body so the hidden URI bytes never leak (no toks to
+  //  elide them in the empty-toks plain path).
   const mode = (ctx && ctx.mode) || "plain";
-  const toks = mode === "plain" ? new Uint32Array(0) : hunk.toks;
+  const bytes = mode === "plain" ? hunk.bytes : hunk.bytesU;
+  const toks  = mode === "plain" ? new Uint32Array(0) : hunk.toksU;
+
+  //  COMMIT-006: inline the diff vs the FIRST parent for EVERY commit with a
+  //  parent — merges included (user RULING 2026-06-26: git `--first-parent`,
+  //  uniform with the non-merge path, LOG-001 spine).  ROOT (0 parents) SKIPS
+  //  (no base; native's root diff is wt-driven — skip is simpler).
+  const parents = k.commitParents(sha) || [];
+  const inline = parents.length >= 1 ? parents[0] : null;
+
+  //  PLAIN: fold the diff text INTO the metadata record (no mid separator, like
+  //  the C keeper-then-graf relay) — the HUNK plain feed then appends the single
+  //  trailing separator after the WHOLE record (the existing binding-level delta).
+  if (mode === "plain" && inline) {
+    const diffText = diffPlainText(repo, sha, inline);
+    const all = utf8.Decode(bytes) + diffText;
+    sink.feed("", utf8.Encode(all), new Uint32Array(0), "", 0n);
+    return;
+  }
 
   //  ONE feed: EMPTY uri (no banner line) so --plain matches the C keeper which
   //  elides the `commit:?<sha>` URI as a U-span.  The HUNK content render adds
   //  the single trailing blank-line separator (a binding-level constant shared
   //  by every content view).  verb "" → no verb word.
-  sink.feed("", hunk.bytes, toks, "", 0n);
+  sink.feed("", bytes, toks, "", 0n);
+
+  //  COMMIT-006: color/tlv relay the diff's own HUNK records after the metadata
+  //  (no separator added in those modes) — the C `diff:?<sha>` graf relay twin.
+  if (inline) diffFeedRecords(repo, sha, inline, mode, sink);
 };
