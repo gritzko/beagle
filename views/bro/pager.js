@@ -405,17 +405,47 @@ Pager.prototype._screenToByte = function (row, col) {
 //  BRO-005: the `U` click-target URI for a byte offset, or null.  Mirrors C
 //  bro: find the token covering `off`, and if the NEXT token is tag `U`, its
 //  hidden text bytes (prev-end .. its-end) ARE the nav URI (TOK.h tok32Val).
+//  BRO-005 follow-up: that token-precise check only lights the ONE token before
+//  the U (the sha8/filename), so a click on the row's date/summary/author —
+//  the bulk of a log:/ls: row, AND its soft-wrap tail rows — missed and the row
+//  read as dead.  Fall back to the U-target of the whole LOGICAL line iff that
+//  line carries EXACTLY ONE U (log/ls/commit/diff: one per line); cat/diff WORD-
+//  links keep ≥1 U per line, so the unique-U guard leaves them token-precise.
 Pager.prototype._uriAt = function (hunk, off) {
   const toks = hunk.toks;
   let ti = 0;
   while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
   const nxt = ti + 1;
-  if (nxt >= toks.length) return null;
-  if (String.fromCharCode(65 + ((toks[nxt] >>> 27) & 0x1f)) !== "U") return null;
-  const lo = nxt > 0 ? (toks[nxt - 1] & 0xffffff) : 0;
-  const hi = toks[nxt] & 0xffffff;
-  if (hi <= lo) return null;
-  return utf8.Decode(hunk.text.slice(lo, hi));
+  if (nxt < toks.length &&
+      String.fromCharCode(65 + ((toks[nxt] >>> 27) & 0x1f)) === "U") {
+    const lo = toks[nxt - 1] & 0xffffff;       // nxt>0 always (ti>=0)
+    const hi = toks[nxt] & 0xffffff;
+    if (hi > lo) return utf8.Decode(hunk.text.slice(lo, hi));
+  }
+  return this._lineUri(hunk, off);
+};
+
+//  The single U-target of the LOGICAL line (`\n`-delimited) containing byte
+//  `off`, or null.  Scans the tokens whose span starts inside the line; returns
+//  the lone U's hidden bytes ONLY when the line has exactly one U (so cat's
+//  many-per-line word links never resolve to a wrong target).
+Pager.prototype._lineUri = function (hunk, off) {
+  const text = hunk.text, toks = hunk.toks;
+  let lo = off; while (lo > 0 && text[lo - 1] !== 0x0a) lo--;       // line start
+  let hi = off; while (hi < text.length && text[hi] !== 0x0a) hi++; // line end
+  let uTok = -1, uCount = 0, prev = 0;
+  for (let i = 0; i < toks.length; i++) {
+    const end = toks[i] & 0xffffff;
+    if (prev >= lo && prev < hi &&
+        String.fromCharCode(65 + ((toks[i] >>> 27) & 0x1f)) === "U") {
+      uTok = i; uCount++;
+    }
+    prev = end;
+  }
+  if (uCount !== 1) return null;
+  const a = uTok > 0 ? (toks[uTok - 1] & 0xffffff) : 0;
+  const b = toks[uTok] & 0xffffff;
+  return b > a ? utf8.Decode(text.slice(a, b)) : null;
 };
 
 //  BRO-005: flip mouse tracking, writing the SGR enable/disable bracket to the
