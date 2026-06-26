@@ -30,7 +30,10 @@ const LOG_MAX_WALK = 1 << 20;   // GRAF LOG_MAX_WALK cyclic-DAG bound
 //  paints: L (hashlet) = bright cyan, G (string/sep) = green, S (default) =
 //  none, D (comment) = gray.  Verified against `be log: --color` (each row:
 //  sha8=L sep=G date7=L sep=G summary=S " (author)"=D).
-const TAG_L = 11, TAG_G = 6, TAG_S = 18, TAG_D = 3;
+//  LOG-001: TAG_Q (unk/dir, grey in dog/THEME) tags the WHOLE non-spine
+//  (merge 2nd+ parent) row so it reads as secondary; the binding's .color
+//  paints it from dog/THEME — JS never re-rolls an SGR.
+const TAG_L = 11, TAG_G = 6, TAG_S = 18, TAG_D = 3, TAG_Q = 16;
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 
 //  --- URI parse: pull the path / ?ref / #frag off the raw `log:<uri>` arg ---
@@ -154,28 +157,76 @@ function authorName(author) {
 }
 
 //  --- branch history: graflog_branch ------------------------------------
-//  First-parent walk from the tip, newest-first, bounded by the walk cap +
-//  the `#N` count.  commitParents (DAG) gives the parent list; on a DAG-miss
-//  (commitParents empty — a non-commit / unreadable object) parse the body's
-//  `parent <40hex>` lines (LOG.c:346-363).
+//  LOG-001: walk the first-parent spine newest-first AND follow every
+//  non-spine (merge 2nd+) parent and its ancestor chain, so commits merged
+//  in off the spine appear too — reachable history, not only the first-parent
+//  line.  Spine commits keep their normal columns; non-spine commits are
+//  tagged GREY (TAG_Q).  Bounded by LOG_MAX_WALK and the `#N` cap, and the
+//  combined listing is time-ordered (newest-first) to match the C side.
+//
+//  Returns [{ sha, nonspine }] newest-first.  commitParents (DAG) gives the
+//  parent list; on a DAG-miss (empty — non-commit / unreadable) parse the
+//  body's `parent <40hex>` lines (LOG.c:346-363).
 function branchHistory(k, tip, cap) {
-  const shas = [];
-  const seen = new Set();
+  const seen = new Set();          // every collected sha (spine ∪ non-spine)
+  const rows = [];                 // { sha, nonspine } in discovery order
+  //  BFS frontier of non-spine roots to expand (a merge's 2nd+ parents).
+  const sideRoots = [];
+
+  //  The walk ceiling: LOG_MAX_WALK always, tightened to `cap` when a `#N`
+  //  count was given so `log:#5` on a long history never walks the whole
+  //  spine.  The combined listing is sliced to `cap` again after sorting.
+  const ceil = cap ? Math.min(cap, LOG_MAX_WALK) : LOG_MAX_WALK;
+
+  //  1) The first-parent spine from the tip.
   let sha = tip;
-  for (let n = 0; n < LOG_MAX_WALK; n++) {
+  for (let n = 0; rows.length < ceil; n++) {
     if (!isFullSha(sha) || seen.has(sha)) break;
     const pc = k.parseCommit(sha);
     if (!pc) break;                       // missing/non-commit → walk breaks clean
     seen.add(sha);
-    shas.push(sha);
-    if (cap && shas.length >= cap) break;
+    rows.push({ sha: sha, nonspine: false });
     let parents = k.commitParents(sha);
     if (!parents || !parents.length) parents = parentsFromBody(pc.body);
     const first = mainlineParent(k, parents);
+    //  Every parent that is NOT the mainline first parent seeds a non-spine
+    //  chain (a merge's 2nd+ parents).  Collected after the spine is walked
+    //  so a side commit later reachable from the spine stays on the spine.
+    for (const p of parents) {
+      if (isFullSha(p) && p !== first) sideRoots.push(p);
+    }
     if (!first) break;                    // root commit → stop
     sha = first;
   }
-  return shas;
+
+  //  2) BFS the non-spine roots and their ancestor chains, skipping anything
+  //  already on the spine (or already collected non-spine).  Bounded by the
+  //  same ceiling so a merge-heavy/deep DAG can't explode.
+  let head = 0;
+  while (head < sideRoots.length) {
+    if (rows.length >= ceil) break;
+    const s = sideRoots[head++];
+    if (!isFullSha(s) || seen.has(s)) continue;
+    const pc = k.parseCommit(s);
+    if (!pc) continue;                    // missing/non-commit → skip cleanly
+    seen.add(s);
+    rows.push({ sha: s, nonspine: true });
+    let parents = k.commitParents(s);
+    if (!parents || !parents.length) parents = parentsFromBody(pc.body);
+    for (const p of parents) {
+      if (isFullSha(p) && !seen.has(p)) sideRoots.push(p);
+    }
+  }
+
+  //  3) Time-order the combined listing newest-first (the same commit-ts key
+  //  fileHistory / dag.aheadBehind use); ties keep the spine's discovery
+  //  order so a linear no-merge history is byte-identical to before.  Then
+  //  apply the `#N` cap across the whole listing.
+  rows.sort(function (a, b) {
+    const ta = dag.commitTs(k, a.sha), tb = dag.commitTs(k, b.sha);
+    return ta === tb ? 0 : (ta > tb ? -1 : 1);
+  });
+  return cap ? rows.slice(0, cap) : rows;
 }
 
 //  The mainline "first parent" graf follows at a merge: the parent with the
@@ -283,7 +334,10 @@ function leafSha(k, treeSha, path) {
 //  a default-fg reset at a default-tag span; the C resets fully to ESC[0m at
 //  each line — a residual binding-level colour delta on the line terminator,
 //  shared by every content view, see the report).
-function appendRow(sha, k, textParts, spans, baseOff) {
+//  LOG-001: a NON-SPINE (merge 2nd+ parent) row is tagged ENTIRELY grey
+//  (TAG_Q) instead of the per-column palette, so the binding's .color paints
+//  the whole secondary row grey; the plain sink is unaffected.
+function appendRow(sha, k, textParts, spans, baseOff, nonspine) {
   const sha8 = sha.slice(0, 8);
   const date7 = ron.date(dag.commitTs(k, sha));        // 7-col; ts<=0 → "   ?   "
   const pc = k.parseCommit(sha);
@@ -304,18 +358,25 @@ function appendRow(sha, k, textParts, spans, baseOff) {
   const eSumm = eSep2 + utf8.Encode(summary).length;    // summary
   const eAuth = eSumm + utf8.Encode(authTail).length;   // " (author)"
   const eNL   = bytes.length;                           // incl the "\n"
-  spans.push([TAG_L, baseOff + eSha8]);                 // sha8
-  spans.push([TAG_G, baseOff + eSep1]);                 // sep
-  spans.push([TAG_L, baseOff + eDate]);                 // date7
-  spans.push([TAG_G, baseOff + eSep2]);                 // sep
-  spans.push([TAG_S, baseOff + eSumm]);                 // summary
-  spans.push([TAG_D, baseOff + eAuth]);                 // " (author)"
-  spans.push([TAG_S, baseOff + eNL]);                   // "\n" → no colour bleed
+  if (nonspine) {
+    //  Whole-row grey: ONE TAG_Q span over the visible row, then TAG_S over
+    //  the "\n" so the grey doesn't bleed onto the next row's terminator.
+    spans.push([TAG_Q, baseOff + eAuth]);               // sha8…author = grey
+    spans.push([TAG_S, baseOff + eNL]);                 // "\n" → no colour bleed
+  } else {
+    spans.push([TAG_L, baseOff + eSha8]);               // sha8
+    spans.push([TAG_G, baseOff + eSep1]);               // sep
+    spans.push([TAG_L, baseOff + eDate]);               // date7
+    spans.push([TAG_G, baseOff + eSep2]);               // sep
+    spans.push([TAG_S, baseOff + eSumm]);               // summary
+    spans.push([TAG_D, baseOff + eAuth]);               // " (author)"
+    spans.push([TAG_S, baseOff + eNL]);                 // "\n" → no colour bleed
+  }
   return bytes.length;
 }
 
 //  --- the handler -------------------------------------------------------
-module.exports = function handle(row, ctx) {
+function handle(row, ctx) {
   const sink = ctx && ctx.sink;
   if (!sink) return;
   const repo = (ctx && ctx.repo) || null;
@@ -344,15 +405,21 @@ module.exports = function handle(row, ctx) {
   let bannerUri = "log:" + parsed.path;
   if (parsed.query) bannerUri += "?" + parsed.query;
 
-  //  The history walk (newest-first, bounded by `#N`).
-  const shas = parsed.path ? fileHistory(k, tip, parsed.path, cap)
-                           : branchHistory(k, tip, cap);
+  //  The history walk (newest-first, bounded by `#N`).  branchHistory now
+  //  returns [{ sha, nonspine }] (the spine + greyed merge-2nd+ chains);
+  //  fileHistory returns bare shas (all on-spine) — normalise to rows.
+  const rows = parsed.path
+    ? fileHistory(k, tip, parsed.path, cap).map(function (s) {
+        return { sha: s, nonspine: false };
+      })
+    : branchHistory(k, tip, cap);
 
   //  Accumulate every row into ONE hunk body + its tok32 spans.
   const textParts = [];
   const spans = [];
   let off = 0;
-  for (const sha of shas) off += appendRow(sha, k, textParts, spans, off);
+  for (const r of rows)
+    off += appendRow(r.sha, k, textParts, spans, off, r.nonspine);
 
   //  Concatenate the row bytes.
   const body = concat(textParts, off);
@@ -372,3 +439,11 @@ function concat(parts, total) {
   for (const p of parts) { all.set(p, off); off += p.length; }
   return all;
 }
+
+//  The loop dispatches the module AS the handler (registry.js); test code
+//  reaches the internal walk via the attached named exports (LOG-001 repro).
+module.exports = handle;
+module.exports.branchHistory = branchHistory;
+module.exports.appendRow = appendRow;
+module.exports.tok = tok;
+module.exports.TAG_Q = TAG_Q;
