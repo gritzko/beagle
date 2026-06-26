@@ -59,7 +59,7 @@ function indexAll(hunks, cols) {
   for (const h of hunks) {
     rows.push({ hunk: h, banner: true });      // the hunk header line
     const sub = bro.indexRows(h, cols);
-    for (const r of sub) rows.push({ hunk: h, off: r.off, end: r.end });
+    for (const r of sub) rows.push({ hunk: h, off: r.off, end: r.end, pass: r.pass });
   }
   return rows;
 }
@@ -68,7 +68,12 @@ function indexAll(hunks, cols) {
 //  tag via cellSGR (color) or leaving it plain.  'U'-tagged bytes are hidden
 //  (click-targets), matching rowEnd's column accounting.  Mirrors the C
 //  bro_cell_ansi loop: walk bytes, look up the covering tok, emit the cell.
-function paintRow(hunk, off, end, color) {
+function paintRow(hunk, off, end, color, pass) {
+  //  A diff hunk row carries a render pass (rm/in/normal): paint via the shared
+  //  two-pass side→bg renderer so the pager shows the same word-diff wash as the
+  //  --color dump (and `be` via the C bro).  'U' bytes stay hidden there too.
+  if (color && hunk.toks && bro.hasDiffSides(hunk.toks))
+    return bro.paintDiffRowStr(hunk.text, hunk.toks, off, end, pass | 0);
   const text = hunk.text, toks = hunk.toks;
   let ti = 0;
   while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
@@ -190,7 +195,7 @@ Pager.prototype.render = function () {
     if (ri < rows.length) {
       const r = rows[ri];
       if (r.banner) frame += this._banner(r.hunk, cols);
-      else frame += paintRow(r.hunk, r.off, r.end, this.color);
+      else frame += paintRow(r.hunk, r.off, r.end, this.color, r.pass);
     }
     frame += "\r\n";
   }
