@@ -40,6 +40,16 @@ const store = require("../../shared/store.js");
 const wtlog = require("../../shared/wtlog.js");
 const bro   = require("../../view/bro.js");
 const resolve = require("../../core/resolve.js");
+const isFullSha = require("../../shared/util/sha.js").isFullSha;
+
+//  JS-082: a FULL 40-hex sha passes through verbatim iff the object exists (its
+//  presence is the resolution); resolveHexAny's {1,39} prefix scanner rejects
+//  40, so short-circuit it.  Returns the sha, or undefined when absent — keeping
+//  resolveHexAny's undefined-on-miss contract so callers branch identically.
+function resolveHexOrFull(k, hex) {
+  if (isFullSha(hex)) return k.getObject(hex) ? hex : undefined;
+  return k.resolveHexAny(hex);
+}
 
 const EMPTY32 = new Uint32Array(0);
 const CAP = 1 << 20;   // 1 MiB/hunk cap; a bigger blob splits with a #L<n> rebanner
@@ -58,7 +68,7 @@ function isHexPrefix(s) { return !!s && s.length <= 40 && /^[0-9a-f]+$/.test(s);
 function resolveRootTree(k, wtl, query, frag) {
   const hex = isHexPrefix(frag) ? frag : isHexPrefix(query) ? query : null;
   if (hex) {
-    const sha = k.resolveHexAny(hex);
+    const sha = resolveHexOrFull(k, hex);       // JS-082: full-sha verbatim
     if (!sha) return null;                      // none, or ambiguous prefix (null)
     const obj = k.getObject(sha);
     return obj ? commitOrTree(k, { sha: sha, type: obj.type }) : null;
@@ -118,7 +128,7 @@ module.exports = function handle(row, ctx) {
     //  the empty-path error (no full blob to name).  The object MUST be a blob.
     const hex = isHexPrefix(query) ? query : isHexPrefix(frag) ? frag : null;
     if (!hex) throw "BLOBNONE";                 // empty/`#label`-only → nothing
-    sha = k.resolveHexAny(hex);
+    sha = resolveHexOrFull(k, hex);             // JS-082: full-sha verbatim
     if (sha === null) throw "BLOBFAIL";         // ambiguous prefix
     if (!sha) throw "BLOBNONE";                 // no object with that prefix
     bannerKey = sha;                            // banner the FULL object sha

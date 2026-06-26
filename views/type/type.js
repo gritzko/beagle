@@ -39,6 +39,7 @@ const be     = require("../../core/discover.js");
 const store  = require("../../shared/store.js");
 const wtlog  = require("../../shared/wtlog.js");
 const resolve = require("../../core/resolve.js");
+const isFullSha = require("../../shared/util/sha.js").isFullSha;
 
 //  Resolve the URI to a full object sha (KEEPResolveTree's sibling, minus the
 //  commit→tree deref).  A hex (full sha or 6..40 short prefix) in EITHER slot
@@ -54,7 +55,10 @@ function resolveObjectSha(k, wtl, query, frag) {
   const hex = resolve.isHexish(frag) ? frag
             : resolve.isHexish(query) ? query
             : null;
-  if (hex) return k.resolveHexAny(hex) || null;
+  //  JS-082: a FULL 40-hex sha passes through verbatim iff present; resolveHexAny's
+  //  {1,39} prefix scanner rejects 40, so short-circuit it for the full sha.
+  if (hex) return isFullSha(hex) ? (k.getObject(hex) ? hex : null)
+                                 : (k.resolveHexAny(hex) || null);
   //  A non-empty, non-hex FRAGMENT (`#d6`, `#xyz` — a too-short / non-hex id)
   //  is an explicit-but-unresolvable object request: fail, do NOT fall through
   //  to the cur tip (matches the C `tree:#d6` → KEEPFAIL, not the HEAD tree).

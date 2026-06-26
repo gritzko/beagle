@@ -42,6 +42,14 @@ const be      = require("../../core/discover.js");
 const store   = require("../../shared/store.js");
 const wtlog   = require("../../shared/wtlog.js");
 const resolve = require("../../core/resolve.js");
+const isFullSha = require("../../shared/util/sha.js").isFullSha;
+
+//  JS-082: a FULL 40-hex sha passes through verbatim iff the object exists; a
+//  short prefix goes through resolveHexAny ({1,39} prefix scanner rejects 40).
+function resolveHexOrFull(k, hex) {
+  if (isFullSha(hex)) return k.getObject(hex) ? hex : null;
+  return k.resolveHexAny(hex) || null;
+}
 
 //  Resolve the URI to a single OBJECT sha (the object whose size we report).
 //  Returns the 40-hex sha, or null when unresolvable (→ SIZENONE at the caller).
@@ -58,7 +66,8 @@ function resolveObject(k, wtl, path, query, frag) {
     //  Store-wide prefix resolve (ANY object, not just tips) — C resolves a
     //  `#<hex>` against any stored object (proj_resolve_object_sha), so a short
     //  blob/tree sha must resolve too (resolve.resolveHex scans tips only).
-    const full = k.resolveHexAny(hex);
+    //  JS-082: a full 40-hex sha short-circuits resolveHexAny's {1,39} gate.
+    const full = resolveHexOrFull(k, hex);
     if (!full) return null;
     //  A `#<hex>./path` descends FROM the named object's tree (commit→tree, or
     //  a tree used directly); bare → the object itself.
