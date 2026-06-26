@@ -147,9 +147,16 @@ function indexRows(hunk, cols) {
 //  ---- status bar (BROStatusURI / BROStatusBar) ----------------------------
 //  The live re-typeable URI of the current view position: `<path>#L<line>`.
 //  A pathless hunk shows its URI verbatim.  Position: TOP / BOT / NN% / ALL.
+//  Listing/query views keep the scheme (`ls:be/#L1`); file-content views
+//  (cat/diff/blob) keep the bare `<path>#L<n>`.  KEEP IN LOCKSTEP with C
+//  bro/BRO.c BRO_KEEP_SCHEME (BRO-008 parity).
+const BRO_KEEP_SCHEME = new Set(
+  ["ls", "lsr", "tree", "status", "grep", "regex", "spot", "log", "refs"]);
 function statusURI(hunk, line) {
   const u = uri._parse(hunk.uri);
   if (!u.path) return hunk.uri;
+  if (u.scheme && BRO_KEEP_SCHEME.has(u.scheme))
+    return u.scheme + ":" + u.path + "#L" + line;
   return u.path + "#L" + line;
 }
 
