@@ -86,6 +86,7 @@ function Pager(fd, opts) {
   this.mode = "scroll";                          // "scroll" | "command"
   this.cmd = "";                                 // the address-bar edit buffer
   this.message = "";                             // a transient status note
+  this.mouse = true;                             // BRO-005: mouse on (`m` toggles)
   this.quit = false;
 }
 
@@ -248,6 +249,9 @@ Pager.prototype._keyScroll = function (b) {
     case 0x62: v.scroll -= this._page(); break;         // b      page up
     case 0x67: v.scroll = 0; break;                     // g  top
     case 0x47: v.scroll = 1 << 30; break;               // G  bottom (clamped)
+    //  BRO-005: `m` toggles SGR mouse tracking (wheel/click) on/off, writing
+    //  the enable/disable bracket to the tty so the terminal stops reporting.
+    case 0x6d: this._toggleMouse(); break;              // m  mouse on/off
     //  JAB-030: the address bar opens on `:` (vim, EMPTY) AND on a URI-special
     //  `. # ? /` — the typed char is PRE-INSERTED so the line reads `:<char>`
     //  with the cursor after it (the URI is then relative to the current view).
@@ -332,16 +336,86 @@ Pager.prototype._feed = function (data) {
   return i;
 };
 
-//  JAB-030: handle one decoded SGR mouse report `<b;col;row>` (press iff the
-//  terminator was 'M').  Only a plain left-button PRESS (b low bits 0, no drag
-//  bit 32, no wheel bit 64) navigates: map the screen row to the viewport row
-//  and FOLLOW that hunk's URI (the same path as Enter / a U-target click).
+//  BRO-005: handle one decoded SGR mouse report `<b;col;row>` (press iff the
+//  terminator was 'M').  Mirrors C bro's MAUS handler (BRO.c):
+//    - WHEEL (button bit 64) scrolls 3 rows up (64) / down (65);
+//    - a plain LEFT PRESS (low 2 btn bits 0, no drag bit 32) maps (col,row) to
+//      the byte under the cursor; if that token is followed by a `U` click-
+//      target, navigate to its hidden URI, else FOLLOW the row's hunk URI.
+//  No-op when mouse tracking is toggled off (`m`).
 Pager.prototype._mouse = function (seq, press) {
-  if (!press) return;
+  if (!this.mouse) return;
   const f = seq.split(";");
-  const b = f[0] | 0, row = f[2] | 0;
-  if ((b & 0x43) !== 0) return;                  // not a plain left press
+  const b = f[0] | 0, col = f[1] | 0, row = f[2] | 0;
+  if ((b & 64) !== 0) {                           // wheel: button 64 up / 65 dn
+    if (!press) return;
+    this.view.scroll += (b & 1) ? 3 : -3;         // 65 down, 64 up (C step = 3)
+    return;
+  }
+  if (!press) return;
+  if ((b & 0x23) !== 0) return;                  // not a plain left press (drag/btn)
+  //  A click on a visible token followed by a `U` token opens that URI; else
+  //  fall back to the clicked row's hunk URI (titles, dir entries, status rows).
+  const hit = this._screenToByte(row, col);
+  if (hit) {
+    const target = this._uriAt(hit.hunk, hit.off);
+    if (target) { this._runSpell(target); return; }
+  }
   this._followRow(this.view.scroll + (row - 1));   // 1-based screen row → index
+};
+
+//  BRO-005: map a 1-based screen (row, col) to the {hunk, off} of the visible
+//  character under that cell — the JS twin of C bro's `bro_screen_to_byte`.
+//  Walks the display row the SAME way paintRow does, skipping `U`-hidden bytes
+//  so `col` counts EMITTED codepoints.  Returns null for the banner row, a
+//  blank tail row, or a click past end-of-line.
+Pager.prototype._screenToByte = function (row, col) {
+  if (row < 1 || col < 1) return null;
+  const rows = this.view.rows || this.rows(80);
+  const ri = this.view.scroll + (row - 1);
+  if (ri < 0 || ri >= rows.length) return null;
+  const r = rows[ri];
+  if (r.banner) return null;                     // titles don't carry a U-target
+  const hunk = r.hunk, text = hunk.text, toks = hunk.toks;
+  let ti = 0;
+  while (ti < toks.length && (toks[ti] & 0xffffff) <= r.off) ti++;
+  let cp = 1, pos = r.off;
+  while (pos < r.end) {
+    while (ti < toks.length && (toks[ti] & 0xffffff) <= pos) ti++;
+    const tag = ti < toks.length ? String.fromCharCode(65 + ((toks[ti] >>> 27) & 0x1f)) : "S";
+    let clen = [1,1,1,1,1,1,1,1,0,0,0,0,2,2,3,4][text[pos] >> 4];
+    if (clen === 0 || pos + clen > r.end) clen = 1;
+    if (tag !== "U") {                            // hidden cells take no column
+      if (cp === col) return { hunk: hunk, off: pos };
+      cp++;
+    }
+    pos += clen;
+  }
+  return null;
+};
+
+//  BRO-005: the `U` click-target URI for a byte offset, or null.  Mirrors C
+//  bro: find the token covering `off`, and if the NEXT token is tag `U`, its
+//  hidden text bytes (prev-end .. its-end) ARE the nav URI (TOK.h tok32Val).
+Pager.prototype._uriAt = function (hunk, off) {
+  const toks = hunk.toks;
+  let ti = 0;
+  while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
+  const nxt = ti + 1;
+  if (nxt >= toks.length) return null;
+  if (String.fromCharCode(65 + ((toks[nxt] >>> 27) & 0x1f)) !== "U") return null;
+  const lo = nxt > 0 ? (toks[nxt - 1] & 0xffffff) : 0;
+  const hi = toks[nxt] & 0xffffff;
+  if (hi <= lo) return null;
+  return utf8.Decode(hunk.text.slice(lo, hi));
+};
+
+//  BRO-005: flip mouse tracking, writing the SGR enable/disable bracket to the
+//  tty so the terminal stops/starts reporting (the C `m` key path).
+Pager.prototype._toggleMouse = function () {
+  this.mouse = !this.mouse;
+  if (this.fd >= 0) ttyWrite(this.fd, this.mouse ? MOUSE_ON : MOUSE_OFF);
+  this.message = "mouse: " + (this.mouse ? "on" : "off");
 };
 
 //  ---- the run loop ----------------------------------------------------------
