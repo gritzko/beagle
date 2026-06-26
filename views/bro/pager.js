@@ -11,6 +11,9 @@
 "use strict";
 
 const bro = require("view/bro.js");
+//  BRO-005: the hunk-header band SGR (pale-yellow bg) — single-sourced from the
+//  theme (view/theme.js BANNER_SGR), the SAME band core/emit.js / C bro draw.
+const theme = require("view/theme.js");
 
 //  ---- terminal write helpers (raw escapes; no OPOST, so we emit CRLF) -------
 const ESC = "\x1b";
@@ -179,12 +182,17 @@ Pager.prototype.render = function () {
   ttyWrite(this.fd, frame);
 };
 
-//  A hunk's header line: `<verb> <uri>` (the C HUNK banner), bolded on a tty.
+//  A hunk's header line: `<verb> <uri>` (the C HUNK banner).  On a tty render it
+//  as the pale-yellow BAND (theme.bannerOpen → BANNER_SGR bg, space-FILL to the
+//  terminal width so the band spans the row like core/emit.js / C bro's
+//  HUNKu8sFeedBanner, theme.bannerClose → ESC[0m).  Plain (non-tty) stays text.
 Pager.prototype._banner = function (hunk, cols) {
   const verb = hunk.verb && hunk.verb !== "hunk" ? hunk.verb + " " : "";
   let line = verb + hunk.uri;
   if (line.length > cols) line = line.slice(0, cols);
-  return this.color ? ESC + "[1m" + line + ESC + "[0m" : line;
+  if (!this.color) return line;
+  const thm = theme.DEFAULT;
+  return thm.bannerOpen() + this._fit(line, cols) + thm.bannerClose();
 };
 
 //  The bottom line: in scroll mode the live status (statusURI#L + TOP/%/BOT);
