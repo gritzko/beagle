@@ -26,5 +26,18 @@ foreach(_tool be jab keeper)
     endif()
 endforeach()
 
+# Each case is PID-isolated ($TMP/$$/…) and spends its wall-clock spawning many
+# short-lived processes (jab pays ~65ms engine init per one-shot store read/op;
+# be/sniff/keeper shell out to each other), so the suite is process-spawn-bound,
+# NOT CPU-bound.  Run cases in PARALLEL by default — `make test` / `ctest` then
+# use the box (≈8× here: 83s→10s).  Tune with -DBE_TEST_JOBS=N (1 = serial).
+cmake_host_system_information(RESULT _be_ncpu QUERY NUMBER_OF_LOGICAL_CORES)
+if (NOT _be_ncpu OR _be_ncpu LESS 1)
+    set(_be_ncpu 4)
+endif()
+set(BE_TEST_JOBS "${_be_ncpu}" CACHE STRING
+    "Parallel test jobs for ctest / make test (1 = serial)")
+set(CMAKE_CTEST_ARGUMENTS "--parallel;${BE_TEST_JOBS};--output-on-failure")
+
 enable_testing()
 add_subdirectory(test)

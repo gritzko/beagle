@@ -34,6 +34,9 @@ const pathlib  = require("../../shared/util/path.js");
 const ulog     = require("../../shared/ulog.js");
 const sha      = require("../../shared/util/sha.js");
 const barrier  = require("../../core/barrier.js");
+const be       = require("../../core/discover.js");
+const wtlog    = require("../../shared/wtlog.js");
+const conflict = require("../../shared/conflict.js");
 const join = pathlib.join, dirname = pathlib.dirname;
 const isFullSha = sha.isFullSha;
 
@@ -44,15 +47,31 @@ const appendWtlog = ulog.append;
 //  a leading colon mis-frames the NEXT queue ULOG row (a URI-scheme parse
 //  hazard — JSQUE-009 own-ticket), so the marker must be scheme-free.
 const DELSWEEP = "del-sweep";
+//  D5: a conflicting weave-merge leaf enqueues this sentinel; it dispatches
+//  AFTER every leaf (tail-appended), so all files are materialised, then throws
+//  → the loop maps it to the non-zero exit (markers already in the wt).
+const CONFMARK = "merge-conflict";
 
-//  --- remote URI → { local, srcRoot, srcBe, proj, branch } ---------------
+//  --- remote URI → { local, cached, srcRoot, srcBe, proj, branch, pin } ---
 //  No hand-rolled parsing: the URI binding splits scheme/host/path/query.
+//  GET.mkd 5-slot map: Scheme=transport, Host=remote, Query=branch/sha,
+//  Fragment=exact-commit PIN (D1).  A `//host` with NO scheme is a CACHED read
+//  (D7) — the local store's remote-tracking tip, NO wire; only ssh:/be: open it.
 function parseRemote(uri) {
   const u = new URI(uri);
+  //  URI-009: route on slot PRESENCE (undefined = absent), not string-emptiness.
+  //  A `//host` (authority present, NO scheme) is a CACHED read; a `file:`/scheme-
+  //  less `.be` path is a LOCAL store; any scheme is a wire transport.  u.host is
+  //  now the bare authority ("origin"), so the old `|| u.authority` (which leaked
+  //  the `//` into the cached-host match) is gone.
+  const hasScheme = u.scheme !== undefined;
+  const hasAuth   = u.authority !== undefined;
   const scheme = u.scheme || "";
-  const host = u.host || u.authority || "";
+  const host = u.host || "";
+  const authority = u.authority || "";
   const path = u.path || "";
   const query = u.query || "";
+  const frag = u.fragment || "";           // D1: the exact-commit pin (no `?`)
   let proj = "", branch = "";
   if (query && query[0] === "/") {
     const segs = query.slice(1).split("/");
@@ -61,17 +80,25 @@ function parseRemote(uri) {
   } else if (query) {
     branch = query;
   }
-  const localish = scheme === "file" || scheme === "" ||
+  //  A `file:`/scheme-less LOCAL store path (ends in `.be` or holds one).  A
+  //  scheme-less `//host` (authority, no store path) is the cached read below.
+  const hasStorePath = path.replace(/\/+$/, "").slice(-3) === ".be" ||
+                       (path !== "" && !hasAuth);
+  const localish = (scheme === "file" && hasStorePath) ||
+                   (!hasScheme && !hasAuth && hasStorePath) ||
                    (scheme === "keeper" && (host === "" || host === "local" ||
                                             host === "localhost"));
+  //  D7 cached read: a Host with NO scheme (`//host?branch`) — read the local
+  //  store's remote-tracking tip, never the wire.
+  const cached = !localish && !hasScheme && hasAuth;
   let srcBe = path, srcRoot = path;
   if (localish) {
     srcBe = path.replace(/\/+$/, "");
     srcRoot = srcBe.replace(/\/\.be$/, "");
     if (srcRoot === srcBe) srcRoot = dirname(srcBe);
   }
-  return { local: localish, scheme, host, srcRoot, srcBe, proj, branch,
-           raw: uri };
+  return { local: localish, cached, scheme, host, authority, srcRoot, srcBe,
+           proj, branch, pin: frag, raw: uri };
 }
 
 function exists(p) { try { io.stat(p); return true; } catch (e) { return false; } }
@@ -81,19 +108,21 @@ function oldTipOf(bePath) {
   let tip = "";
   ulog.each(bePath, function (log) {
     const u = new URI(log.uri);
-    let f = u.fragment || "";
-    if (f[0] === "?") f = f.slice(1);
+    const f = u.fragment || "";          // URI-009: a clean sha, never `?`-prefixed
     if (isFullSha(f)) tip = f;
   });
   return tip;
 }
 
 //  --- the GET SEED: resolve the remote ONCE, anchor, return pinned coords --
+//  D1: a Fragment pin (`?branch#<sha>`) resolves the EXACT commit, not the
+//  branch tip — `rem.pin` (full or short hex) wins over resolveRef.
 function seedLocal(rem, wt) {
   const k = store.open(rem.srcRoot, rem.proj);
-  const tip = k.resolveRef(rem.branch || "");
+  const tip = resolvePin(k, rem.pin) || k.resolveRef(rem.branch || "");
   if (!tip || !isFullSha(tip))
-    throw "be get: cannot resolve " + (rem.branch || "trunk") +
+    throw "be get: cannot resolve " +
+          (rem.pin ? "#" + rem.pin : (rem.branch || "trunk")) +
           " in " + rem.srcBe;
   const bePath = join(wt, ".be");
   const fresh = !exists(bePath);
@@ -103,6 +132,14 @@ function seedLocal(rem, wt) {
   if (fresh) writeWtlog(bePath, [{ verb: "get", uri: redirect }, tipRow]);
   else appendWtlog(bePath, [tipRow]);
   return { k, tip, oldTip, fresh, branch: rem.branch || "" };
+}
+
+//  D1/D2 short- or full-hex commit pin → 40-hex sha, or "" when none/unfound.
+//  Reuses store.resolveHexAny (the any-object short-hex resolver, JAB-006).
+function resolvePin(k, hex) {
+  if (!hex) return "";
+  if (isFullSha(hex)) return k.getObject(hex) ? hex : "";
+  return k.resolveHexAny(hex) || "";
 }
 
 function seedRemote(rem, wt) {
@@ -130,6 +167,41 @@ function seedRemote(rem, wt) {
   return { k, tip, oldTip, fresh, branch };
 }
 
+//  D7: a CACHED host read — `//host?branch` resets from the local store's
+//  remote-tracking tip with NO network (GET.mkd pt 4: "uses the cached tip if
+//  no scheme set").  Resolve the matching `eachRemote` row for host+branch off
+//  the EXISTING repo's shard; append the wtlog tip row.  Only ssh:/be: (seedRemote)
+//  ever opens the wire — a bare `//host` never does.
+function seedCached(rem, wt) {
+  const info = be.find(wt);
+  const k = store.open(info.storePath, info.project);
+  let tip = "";
+  k.eachRemote(function (rt) {
+    if (tip) return;
+    const h = rt.host || "";
+    if (h !== rem.host && h !== rem.authority) return;
+    //  branch match: empty rem.branch = trunk (empty remote query).
+    const rq = stripLeadRef(rt.query || "");
+    if ((rem.branch || "") === rq) tip = rt.sha;
+  });
+  if (!tip || !isFullSha(tip))
+    throw "be get: GETCACHE no cached tip for //" + rem.host +
+          (rem.branch ? "?" + rem.branch : "") + " — fetch with ssh:/be: first";
+  const bePath = info.bePath;
+  const oldTip = oldTipOf(bePath);
+  appendWtlog(bePath, [{ verb: "get",
+                         uri: "?" + (rem.branch || "") + "#" + tip }]);
+  return { k, tip, oldTip, fresh: false, branch: rem.branch || "" };
+}
+
+//  Strip a leading `?` / `/proj/` decoration off a remote-tracking ref query so
+//  it compares as a bare branch (trunk = "").
+function stripLeadRef(q) {
+  if (q && q[0] === "?") q = q.slice(1);
+  if (q && q[0] === "/") { const j = q.indexOf("/", 1); q = j < 0 ? "" : q.slice(j + 1); }
+  return q;
+}
+
 //  --- per-level tree map: name → { sha, mode, isDir } --------------------
 function treeMap(k, treeSha) {
   const m = {};
@@ -150,23 +222,33 @@ function kindOf(mode) {
 }
 
 //  --- URI shape classifiers for the fan-out rows -------------------------
-//  A SEED carries a transport remote (scheme/authority) or a local store path
+//  A REMOTE seed carries a transport (scheme/authority) or a local store path
 //  (a `file:`/scheme-less path ending `.be`).  A reconcile/leaf/fold row never
 //  carries a remote — only pinned blob/tree shas (or the ::del-sweep marker).
-function isSeedUri(uri) {
+//  A scheme-less `//host` (D7 cached) or `file:` store path is a remote seed
+//  too; a bare `?ref`/`?<sha>`/`#~N`/`<path>` is an IN-REPO seed (D1-D4).
+function isRemoteSeed(uri) {
   if (uri === DELSWEEP) return false;
   const u = new URI(uri);
-  if (u.scheme || u.authority) return true;        // transport / file://
+  if (u.scheme || u.authority) return true;        // transport / file:// / //host
   const path = u.path || "";
   return path.replace(/\/+$/, "").slice(-3) === ".be";
 }
 
 //  --- the handler --------------------------------------------------------
+//  Dispatch by row provenance: a FAN-OUT child (reconcile/leaf/fold) only
+//  appears AFTER a seed pinned ctx._get, so `ctx._get` set ⇒ fan-out; unset ⇒
+//  a top-level seed (remote clone/switch, cached host, or an in-repo form).
 module.exports = function handle(row, ctx) {
   const uri = (row && row.uri) || "";
   if (uri === DELSWEEP) return delSweep(row, ctx);   // BARRIER fold row
-  if (isSeedUri(uri)) return handleSeed(uri, ctx);
-  return handleReconcileOrLeaf(uri, ctx);
+  if (uri === CONFMARK) {                              // D5: post-leaf conflict gate
+    throw "be get: GETCONF " + (ctx._get && ctx._get.conf || 1) +
+          " file(s) merged with conflicts — resolve the markers";
+  }
+  if (ctx._get) return handleReconcileOrLeaf(uri, ctx);   // a fan-out child
+  if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone/cached
+  return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
 };
 
 //  SEED: resolve the remote once (resolution-at-entry), anchor the wtlog, emit
@@ -175,36 +257,57 @@ module.exports = function handle(row, ctx) {
 //  { k, wt, tip, oldTip, kinds } on ctx so each fan-out child reuses the SAME
 //  reader/wt without re-resolving (JSQUE-004).
 function handleSeed(uri, ctx) {
-  const out = ctx && ctx.out;
   const wt = io.cwd();
   const rem = parseRemote(uri);
-  const r = rem.local ? seedLocal(rem, wt) : seedRemote(rem, wt);
+  const r = rem.cached ? seedCached(rem, wt)
+          : rem.local  ? seedLocal(rem, wt)
+          :              seedRemote(rem, wt);
+  return fanoutWholeTree(ctx, r, wt, ctx.flags && ctx.flags.indexOf("--force") >= 0);
+}
+
+//  Pin ctx._get, run the dirty-overlap pre-pass, emit the banner + pulled-commit
+//  rows, and ENQUEUE the root dir-reconcile + del-sweep fold.  Shared by the
+//  remote/clone seed (handleSeed) AND the in-repo forms (inRepoSeed: pin /
+//  detach / rewind / switch).  `force` (D6) makes the leaf clean-reset dirty
+//  baselined paths instead of weave-merging them.
+function fanoutWholeTree(ctx, r, wt, force) {
+  const out = ctx && ctx.out;
+
+  //  A re-get of the CURRENT commit (oldTip==tip), non-force: the wt may have
+  //  drifted (a deleted tracked file, a dirty edit), so VISIT every path (no
+  //  merkle-prune) with the REAL baseline = the new tree — the leaf then restores
+  //  a missing file, weave-merges a dirty edit, and skips a clean one.  --force
+  //  always re-materialises (discarding dirty bytes), so it prunes nothing too.
+  const sameTip = !!(r.oldTip && r.oldTip === r.tip);
+  const noPrune = !!force || (sameTip && !r.fresh);
 
   //  Pin the checkout coordinates on ctx; ctx.T0 is the cohort ts (one date
   //  column for the whole get).  `kinds` carries each leaf's tree-entry kind
   //  (the reconcile reads the mode; the queue round-trip drops it, so it rides
   //  ctx — set before the leaf is dispatched).  `dels` tallies the del-sweep.
   ctx._get = { k: r.k, wt: wt, tip: r.tip, oldTip: r.oldTip, fresh: r.fresh,
-               branch: r.branch, ts: ctx.T0, kinds: {}, dels: 0 };
+               branch: r.branch, ts: ctx.T0, kinds: {}, dels: 0,
+               force: !!force, noPrune: noPrune };
 
   //  Edge flush order (native get): pulled-commit `post` rows first (newest
   //  first, kept in push order), then file rows — new+upd interleaved lex,
   //  THEN del lex.  The fan-out arrives in queue order, so SORT at the flush.
   ctx.outSort = function (rows) { return sortGetRows(rows); };
 
-  //  Resolution-at-entry: pin the root NEW + OLD tree shas (old empty on a
-  //  fresh wt) — the reconcile fan-out walks from these, branch-free.
+  //  Resolution-at-entry: pin the root NEW + OLD tree shas.  Old empty on a fresh
+  //  clone OR a --force reset (re-write everything, discard dirty); else the real
+  //  baseline tree (so the leaf has the blob to weave-merge a dirty edit).
   const newTree = r.k.commitTree(r.tip);
   if (!newTree) throw "be get: tip " + r.tip + " has no tree";
-  const oldTree = (r.oldTip && r.oldTip !== r.tip)
-        ? r.k.commitTree(r.oldTip) : "";
+  const oldTree = (r.fresh || force) ? "" : r.k.commitTree(r.oldTip || "") || "";
 
   //  JSQUE-014: the dirty-overlap PRE-PASS barrier (SNIFFOVRL, GET.c:585-591)
   //  refuses BEFORE HUNKTableOpen — native emits NO banner on GETOVRL, so run
   //  the check ahead of any out.* push (the loop edge then flushes nothing).
   //  Refuse if a dirty wt file overlays a NEW target path with NO baseline to
   //  merge; a fresh clone has no baseline so it is a no-op (guards no-base only).
-  dirtyOverlapCheck(r.k, newTree, oldTree, wt, r.fresh);
+  //  D6 --force skips the refuse (it will clean-reset everything).
+  if (!force) dirtyOverlapCheck(r.k, newTree, oldTree, wt, r.fresh);
 
   out.banner("get", "?" + (r.branch || "") + "#" + r.tip.slice(0, 8), ctx.T0);
 
@@ -221,6 +324,178 @@ function handleSeed(uri, ctx) {
   return { enqueue: [{ verb: "get", uri: "?" + newTree + "#" + oldTree },
                      { verb: "get", uri: DELSWEEP }] };
 }
+
+//  --- IN-REPO seed (D1-D4): a top-level GET form over the EXISTING repo ----
+//  Forms (each the whole arg as `uri`):
+//    ?<sha>           D2 detach at a commit (full/short hex)  → wtlog `?<sha>`
+//    ?#<sha> ?br#<sha> D1 pin: checkout the EXACT commit       → wtlog `?br#<sha>`
+//    ?br ?./c ?       D3' branch/trunk switch                  → wtlog `?br#<tip>`
+//    #~N              D3 rewind cur N first-parents            → wtlog `?br#<anc>`
+//    <path>[?br]      D4 restore one file/subtree (scoped)
+//    ! (empty)        D6 force-reset / FF current branch to tip
+//  `be.find()` discovers the repo; cur is read from the wtlog; the reader is the
+//  shared store.  A path form is path-scoped (restorePath); the rest reset the
+//  whole wt via fanoutWholeTree.
+function inRepoSeed(uri, ctx) {
+  const info = (ctx && ctx.repo) || be.find(io.cwd());
+  const wt = info.wt;
+  const k = store.open(info.storePath, info.project);
+  const wtl = wtlog.open(info);
+  const cur = wtl.curTip();
+  const curBranch = (cur && cur.branch) || "";
+  const curSha = (cur && cur.sha) || "";
+
+  //  D6 force (GET.mkd "be get!"): the `--force` flag (set by the cli `get!`
+  //  shed) OR a trailing/lone `!` on the arg.  Force discards local edits — a
+  //  CLEAN tree reset (the leaf clean-overwrites; the dirty-overlap pre-pass and
+  //  the weave-merge are bypassed).
+  let force = !!(ctx.flags && ctx.flags.indexOf("--force") >= 0);
+  if (uri === "!") { uri = ""; force = true; }
+  else if (uri.length > 1 && uri[uri.length - 1] === "!") {
+    uri = uri.slice(0, -1); force = true;
+  }
+
+  //  URI-009: an ABSENT slot reads `undefined`, a present-but-empty one "".  So a
+  //  bare `?` is query==="" (trunk switch) while a path arg is query===undefined —
+  //  the leading-`?` forms tell apart by slot presence, NO raw-href inspection.
+  //  Fragments never carry a leading `?`, so the old strip is gone too.
+  const u = new URI(uri);
+  let path = u.path || "";
+  const query = u.query || "";
+  const frag = u.fragment || "";
+  //  Bare `be get` seeds a "." placeholder (loop.cli) — a whole-tree FF of the
+  //  current branch, NOT a path restore of ".".  Shed it.
+  if (path === "." && !query && !frag) path = "";
+
+  //  D4: a PATH arg (a wt file/subtree) — scoped restore, NOT a whole-wt reset.
+  //  `<path>` from cur's baseline; `<path>?br` from another branch's tip.
+  if (path) return restorePath(ctx, k, wt, path, query, curSha, curBranch);
+
+  //  D3 rewind: `#~N` — walk cur N first-parents; stay attached to cur's branch.
+  if (frag && frag[0] === "~") {
+    const n = parseInt(frag.slice(1), 10) || 1;
+    const anc = firstParentBack(k, curSha, n);
+    if (!isFullSha(anc))
+      throw "be get: cannot rewind " + n + " from " + (curSha || "(none)");
+    appendWtlog(info.bePath, [{ verb: "get",
+                               uri: "?" + curBranch + "#" + anc }]);
+    return fanoutWholeTree(ctx, { k, tip: anc, oldTip: curSha, fresh: false,
+                                  branch: curBranch }, wt, force);
+  }
+
+  //  D2 detach: `?<sha>` (bare hex query, no fragment) — checkout detached, write
+  //  the detached row (`?<40hex>`: sha in the QUERY, empty fragment).  A seed with
+  //  a scheme/host already routed to handleSeed and a path arg returned above, so
+  //  a non-empty fragment-less query here is unambiguously the leading-`?` form.
+  if (query && !frag && (isFullSha(query) || isShortHex(query))) {
+    const tip = resolvePin(k, query);
+    if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query;
+    appendWtlog(info.bePath, [{ verb: "get", uri: "?" + tip }]);
+    return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
+                                  branch: "" }, wt, force);
+  }
+
+  //  D1 pin: `?#<sha>` / `?br#<sha>` — checkout the EXACT commit, attached to
+  //  `?br` (empty br = trunk).  The fragment pin wins over the branch tip.
+  if (frag && isShortOrFullHex(frag)) {
+    const tip = resolvePin(k, frag);
+    if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query + "#" + frag;
+    appendWtlog(info.bePath, [{ verb: "get", uri: "?" + query + "#" + tip }]);
+    return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
+                                  branch: query }, wt, force);
+  }
+
+  //  D3' branch/trunk switch (`?br`, `?`, `?./child`) OR a bare `!`/empty FF
+  //  (reset the wt to the current/target branch tip).
+  //  A non-empty query is the target branch; an empty/absent query (`?`, bare
+  //  `be get`, `!`) folds to the current branch.  URI-009 makes the bare-`?` case
+  //  query==="", so no `href === "?"` string match is needed any more.
+  const branch = query;                          // "" = trunk / current branch
+  const wantBranch = branch || curBranch;
+  const tip = k.resolveRef(branch || "") ||
+              (wantBranch === curBranch ? curSha : "");
+  if (!isFullSha(tip))
+    throw "be get: cannot resolve " + (branch ? "?" + branch : "current branch");
+  appendWtlog(info.bePath, [{ verb: "get", uri: "?" + wantBranch + "#" + tip }]);
+  return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
+                                branch: wantBranch }, wt, force);
+}
+
+//  D4 single-file / subtree restore (GET.mkd pt 1, CLI `file.c` / `file.c?feat`).
+//  `<path>` restores from cur's BASELINE tree; `<path>?br` from `?br`'s tip.  Only
+//  the named path is touched — siblings are left as-is (path-scoped reconcile).
+//  A FILE leaf restores that one blob (dirty → weave-merge / refuse, like the
+//  whole-tree leaf); a DIR scopes the reconcile to that subtree (new vs the wt's
+//  current on-disk state — which the reconcile reads as the OLD side via the
+//  baseline tree's subtree, so a removed sibling under it is deleted).
+function restorePath(ctx, k, wt, path, query, curSha, curBranch) {
+  //  A named `be get <path>` is an explicit RESTORE — it OVERWRITES the file
+  //  from the source (GET.mkd "restore one file from cur's baseline"), like git
+  //  restore.  So the scoped leaves clean-reset (force) rather than weave-merge:
+  //  the user named the path, they want the source bytes, not a 3-way merge.
+  const force = true;
+  //  Source commit: another branch's tip (`?br`) or cur's baseline.
+  let srcSha = curSha;
+  if (query) {
+    srcSha = k.resolveRef(query) || resolvePin(k, query) || "";
+    if (!isFullSha(srcSha)) throw "be get: cannot resolve ?" + query;
+  }
+  if (!isFullSha(srcSha)) throw "be get: no baseline to restore " + path + " from";
+  const newTree = k.commitTree(srcSha);
+  if (!newTree) throw "be get: tip " + srcSha + " has no tree";
+  //  The OLD side (for the delete decision) is cur's baseline subtree — so a
+  //  file present in the wt's baseline but absent in the source is removed.
+  const oldTree = (curSha && curSha !== srcSha) ? k.commitTree(curSha) : newTree;
+
+  const segs = path.replace(/\/+$/, "").split("/");
+  const newEnt = k.descendPath(newTree, segs);
+  const oldEnt = k.descendPath(oldTree, segs);
+  if (!newEnt && !oldEnt) throw "be get: no such path " + path + " in source";
+
+  //  Pin ctx like a seed so the reconcile/leaf fan-out reuses the reader/wt.
+  //  noPrune: a named restore descends even an unchanged subtree (so a dirty/
+  //  deleted file under it is reset), and force makes the leaf clean-overwrite.
+  ctx._get = { k: k, wt: wt, tip: srcSha, oldTip: curSha, fresh: false,
+               branch: curBranch, ts: ctx.T0, kinds: {}, dels: 0,
+               force: force, noPrune: true };
+  ctx.outSort = function (rows) { return sortGetRows(rows); };
+  ctx.out.banner("get", "?" + (curBranch || "") + "#" + srcSha.slice(0, 8), ctx.T0);
+
+  const enqueue = [];
+  const newIsDir = newEnt && newEnt.kind === "tree";
+  const oldIsDir = oldEnt && oldEnt.kind === "tree";
+  if (newIsDir || oldIsDir) {
+    //  Subtree: recurse a scoped dir-reconcile rooted at `path/`.
+    enqueue.push({ verb: "get", uri: path.replace(/\/+$/, "") + "/?" +
+                   (newIsDir ? newEnt.sha : "") + "#" + (oldIsDir ? oldEnt.sha : "") });
+  } else {
+    //  Single file/exe/symlink/gitlink leaf.
+    const ent = newEnt || oldEnt;
+    ctx._get.kinds[path] = kindOf(ent.mode);
+    enqueue.push({ verb: "get", uri: path + "?" + (newEnt ? newEnt.sha : "") +
+                   "#" + (oldEnt ? oldEnt.sha : "") });
+  }
+  enqueue.push({ verb: "get", uri: DELSWEEP });
+  return { enqueue: enqueue };
+}
+
+//  D3: walk `n` FIRST-PARENT edges back from `sha` (the first listed parent at
+//  each commit).  Returns "" if the chain runs out.
+function firstParentBack(k, sha, n) {
+  let cur = sha;
+  for (let i = 0; i < n; i++) {
+    if (!isFullSha(cur)) return "";
+    let ps; try { ps = k.commitParents(cur); } catch (e) { ps = undefined; }
+    if (!ps || !ps.length) return "";
+    cur = ps[0];
+  }
+  return cur;
+}
+
+//  short hex (6..39) — a `?<short>` detach prefix.
+function isShortHex(s) { return /^[0-9a-f]{6,39}$/.test(s); }
+//  any 6..40 hex — the pin / detach acceptance.
+function isShortOrFullHex(s) { return /^[0-9a-f]{6,40}$/.test(s); }
 
 //  Dirty-overlap PRE-PASS (SNIFFOVRL): on an UPDATE, a wt file present on disk
 //  that the NEW tree introduces but the OLD baseline never carried, AND whose
@@ -268,8 +543,8 @@ function reconcileDir(uri, ctx) {
   const g = ctx._get;
   const u = new URI(uri);
   const prefix = u.path || "";                 // "" (root) or "<dir>/"
-  const newTree = u.query || "";
-  const oldTree = (u.fragment || "").replace(/^\?/, "");
+  const newTree = u.query || "";               // URI-009: "" = empty side (no tree)
+  const oldTree = u.fragment || "";            // URI-009: clean sha, never `?`-prefixed
 
   const nm = treeMap(g.k, newTree);
   const om = treeMap(g.k, oldTree);
@@ -284,7 +559,9 @@ function reconcileDir(uri, ctx) {
     const ne = nm[name], oe = om[name];
     const rel = prefix + name;
     //  MERKLE-PRUNE: identical sha + dir-ness on both sides → unchanged; skip.
-    if (ne && oe && ne.sha === oe.sha && ne.isDir === oe.isDir) continue;
+    //  D6 force / scoped RESTORE / same-tip re-get descend even unchanged
+    //  subtrees (so a deleted or dirty wt file is reconciled, not skipped).
+    if (!g.noPrune && ne && oe && ne.sha === oe.sha && ne.isDir === oe.isDir) continue;
 
     if (ne && ne.isDir) {                       // changed/new subdir → recurse
       enqueue.push({ verb: "get",
@@ -318,9 +595,8 @@ function leaf(uri, ctx) {
   const g = ctx._get, out = ctx.out;
   const u = new URI(uri);
   const rel = u.path || "";
-  const newSha = u.query || "";
-  let oldSha = u.fragment || "";
-  if (oldSha[0] === "?") oldSha = oldSha.slice(1);
+  const newSha = u.query || "";          // URI-009: "" = present-empty = delete leaf
+  const oldSha = u.fragment || "";       // URI-009: clean sha, never `?`-prefixed
   const full = join(g.wt, rel);
   const kind = g.kinds[rel] || "f";
 
@@ -337,10 +613,97 @@ function leaf(uri, ctx) {
   //  Skip if the on-disk path already matches the target (preserves dirty bytes
   //  equal to the target; emits no row — native get only reports what moved).
   if (existed && checkout.leafUnchanged(full, { kind: kind }, bytes)) return;
-  //  v1 clean-overwrites (the dirty 3-way weave is the follow-up); the leaf is
-  //  where that decision belongs (it reads its own bytes).
+
+  //  D5 (DATA SAFETY): a DIRTY baselined file (on-disk differs from BOTH the old
+  //  baseline blob AND the target) must be 3-WAY MERGED — re-apply the user's
+  //  uncommitted edit onto the new tree — NOT clean-overwritten.  Only regular
+  //  files merge (symlink/exec/gitlink stay clean-reset).  --force (D6) and the
+  //  clean (un-edited) case clean-overwrite.  An un-baselined dirty overlay with
+  //  no base to merge refuses loudly (the whole-tree pre-pass also catches it).
+  if (existed && !g.force && kind === "f") {
+    const onDisk = readWt(full);
+    const baseBytes = oldSha ? blobOf(g.k, oldSha) : null;
+    const dirty = onDisk != null && (baseBytes == null || !bytesEq(onDisk, baseBytes));
+    if (dirty && baseBytes == null)
+      throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;
+    if (dirty) {                                 // real local edit → weave-merge
+      const merged = weave3(baseBytes, onDisk, bytes, extOf(rel));
+      checkout.materialise(g.wt, rel, { kind: kind }, merged);
+      if (conflict.hasConflictMarker(merged)) {
+        g.conf = (g.conf || 0) + 1;
+        out.row(rel, "conf", g.ts);
+        //  D5: defer a loud non-zero exit until every file is materialised — the
+        //  CONFMARK sentinel dispatches after all tail-appended leaves.
+        return { enqueue: [{ verb: "get", uri: CONFMARK }] };
+      }
+      out.row(rel, "mrg", g.ts);
+      return;
+    }
+  }
+  //  Clean (un-edited), forced, or non-mergeable kind → clean-overwrite.
   checkout.materialise(g.wt, rel, { kind: kind }, bytes);
   out.row(rel, existed ? "upd" : "new", g.ts);
+}
+
+//  D5 3-blob weave merge (GRAFMerge3Bytes twin): build the OURS and THEIRS
+//  weaves INDEPENDENTLY off a shared base (each base→side), then WEAVEMerge them
+//  — the shared base tokens carry the SAME base commit-id so they coincide and
+//  dedup, and each side's edit diffs against the base (NOT sequentially).  Render
+//  the ours/theirs scopes with conflict fences: disjoint edits coexist cleanly,
+//  a divergent region gets the standard `<<<<`/`||||`/`>>>>` markers.
+const _W3_BASE = "0000000000000001", _W3_OURS = "0000000000000002",
+      _W3_THRS = "0000000000000003", _W3_MRG = "0000000000000004";
+function weave3(base, ours, theirs, ext) {
+  base = base || new Uint8Array(0);
+  if (bytesEq(ours, theirs)) return ours;        // same edit both sides
+  if (bytesEq(ours, base)) return theirs;        // only theirs changed
+  if (bytesEq(theirs, base)) return ours;        // only ours changed
+  const wo0 = abc.ram("WEAVE", 1 << 18), wo1 = abc.ram("WEAVE", 1 << 18);
+  const wt0 = abc.ram("WEAVE", 1 << 18), wt1 = abc.ram("WEAVE", 1 << 18);
+  wo0.fold(null, base, ext, _W3_BASE);  wo1.fold(wo0, ours,   ext, _W3_OURS);
+  wt0.fold(null, base, ext, _W3_BASE);  wt1.fold(wt0, theirs, ext, _W3_THRS);
+  const wm = abc.ram("WEAVE", 1 << 19);
+  wm.merge(wo1, wt1, _W3_MRG);
+  const oScope = wm.scope([_W3_BASE, _W3_OURS]);
+  const tScope = wm.scope([_W3_BASE, _W3_THRS]);
+  const out = io.buf(1 << 20);
+  wm.merged([oScope, tScope], out);
+  return out.data().slice();
+}
+
+//  Read a wt file's bytes (null on error); the dirty-vs-clean compare input.
+function readWt(full) {
+  let ls; try { ls = io.lstat(full); } catch (e) { return null; }
+  if (ls.kind !== "reg") return null;
+  let fd; try { fd = io.open(full, "r"); } catch (e) { return null; }
+  try {
+    const b = io.buf((ls.size || 0) + 16);
+    io.readAll(fd, b, ls.size);
+    const d = b.data().slice();
+    io.close(fd);
+    return d;
+  } catch (e) { try { io.close(fd); } catch (e2) {} return null; }
+}
+
+//  Blob bytes for a sha (empty Uint8Array when missing), for the merge base/theirs.
+function blobOf(k, sha) {
+  if (!sha) return new Uint8Array(0);
+  const obj = k.getObject(sha);
+  return obj ? obj.bytes : new Uint8Array(0);
+}
+
+function bytesEq(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+//  File extension (the weave tokenizer's language key); no dot → "" (generic).
+function extOf(path) {
+  const slash = path.lastIndexOf("/");
+  const base = slash < 0 ? path : path.slice(slash + 1);
+  const dot = base.lastIndexOf(".");
+  return dot <= 0 ? "" : base.slice(dot + 1);
 }
 
 //  del-sweep BARRIER (get_drain_unlinks, GET.c:668): the trailing fold over the
@@ -351,18 +714,19 @@ function leaf(uri, ctx) {
 //  no-op; the per-path `del` rows ARE the durable effect (already emitted).
 function delSweep(row, ctx) {
   const q = ctx && ctx.queue;
-  if (!q || !q.path || row.offset == null) return;
-  //  Fold ALL rows before this fold row, counting the delete leaves
-  //  (`get <p>?#<old>`: empty query + a fragment).  A sentinel markerVerb that
-  //  never appears makes seekBack miss, so the fold spans the whole queue head
-  //  → here (core/barrier.js).  Report-only: JS has no rmdir leaf, so the
-  //  empty-dir collapse is a no-op; the per-path `del` rows are the effect.
-  const res = barrier.fold(q.path, row.offset, "::root", function (acc, r) {
-    const u = new URI(r.uri);
-    if ((u.query || "") === "" && (u.fragment || "") !== "") acc++;   // a delete
-    return acc;
-  }, 0);
-  ctx._get.delSwept = res.acc;
+  if (q && q.path && row.offset != null) {
+    //  Fold ALL rows before this fold row, counting the delete leaves
+    //  (`get <p>?#<old>`: empty query + a fragment).  A sentinel markerVerb that
+    //  never appears makes seekBack miss, so the fold spans the whole queue head
+    //  → here (core/barrier.js).  Report-only: JS has no rmdir leaf, so the
+    //  empty-dir collapse is a no-op; the per-path `del` rows are the effect.
+    const res = barrier.fold(q.path, row.offset, "::root", function (acc, r) {
+      const u = new URI(r.uri);
+      if ((u.query || "") === "" && (u.fragment || "") !== "") acc++;   // a delete
+      return acc;
+    }, 0);
+    ctx._get.delSwept = res.acc;
+  }
 }
 
 //  Edge flush comparator (native get layout): pulled-commit `post` rows first

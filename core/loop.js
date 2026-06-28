@@ -220,6 +220,14 @@ function cli(argv, opts2) {
   //  the loop; a bare FILE/DIR path (with '.'/'/' and no scheme) and the no-arg
   //  case never reach cli() — they need the deferred C routing change (FLAG).
   let verb = args.length ? args[0] : null;
+  //  GET.mkd "Forceful execution": a trailing `!` on the VERB token (`get!`)
+  //  is the force modifier — shed it and raise --force so the handler discards
+  //  local changes (DIS-055 D6).  Only a bareword+`!` (not a `scheme:`/path).
+  if (verb && verb.length > 1 && verb[verb.length - 1] === "!" &&
+      /^[a-zA-Z0-9]+$/.test(verb.slice(0, -1)) && _isVerb(verb.slice(0, -1), _here)) {
+    verb = verb.slice(0, -1); args[0] = verb;
+    if (flags.indexOf("--force") < 0) flags.push("--force");
+  }
   if (verb == null) {                       // shape (3): bare jab -> ls:.
     verb = "ls"; args.push(".");
   } else if (/^[a-zA-Z0-9]+$/.test(verb) && _isVerb(verb, _here)) {
