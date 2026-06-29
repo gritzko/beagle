@@ -435,7 +435,14 @@ module.exports = function handle(row, ctx) {
     const fromTree = spec.fromSha ? k.commitTree(spec.fromSha) : null;
     const toTree   = spec.toSha   ? k.commitTree(spec.toSha)   : null;
     if (spec.path) {
-      //  File scope → whole-file view (emitFull), full=YES.
+      //  File scope → whole-file view (emitFull), full=YES.  DIFF-011: a
+      //  scoped path is read straight from the parent commit trees — native
+      //  `be diff:<sub>/<file>?<from>..<to>` does NOT recurse a gitlink for a
+      //  range (GRAFPathDescend dead-ends at the 160000 and GRAFWeaveDiff
+      //  emits nothing), so the JS stays parent-tree-only here for byte-parity
+      //  (mount awareness lives in the wt+path branch, where native recurses
+      //  the live mount).  blobAtTree returns undefined at the gitlink → from
+      //  and to both empty → diffFile skips → empty output, matching native.
       const fB = blobAtTree(k, fromTree, spec.path);
       const tB = blobAtTree(k, toTree, spec.path);
       diffFile(spec.path, fB, tB, true, navver, color, out);
@@ -447,8 +454,18 @@ module.exports = function handle(row, ctx) {
     const baseSha = spec.baselineSha || "";
     const baseTree = baseSha ? k.commitTree(baseSha) : null;
     if (spec.path) {
-      //  File scope full: base blob vs wt file.
-      const fB = blobAtTree(k, baseTree, spec.path);
+      //  File scope full: base blob vs wt file.  DIFF-011: a file UNDER a
+      //  mounted sub takes its FROM side from the SUB's OWN baseline tree (the
+      //  parent tree has only the gitlink) — the to side stays the wt file.
+      const m = subMountSplit(k, baseTree, repo, spec.path, ctx);
+      let fB;
+      if (m) {
+        const subBase = (wtlog.open(m.subRepo).baselineTip() || {}).sha || "";
+        const subTree = subBase ? m.subK.commitTree(subBase) : null;
+        fB = blobAtTree(m.subK, subTree, m.rest);
+      } else {
+        fB = blobAtTree(k, baseTree, spec.path);
+      }
       const tB = readWtFile(join(repo.wt, spec.path));
       diffFile(spec.path, fB, tB, true, "", color, out);
     } else {
@@ -456,6 +473,47 @@ module.exports = function handle(row, ctx) {
     }
   }
 };
+
+//  --- DIFF-011: mount-aware scoped-path resolution ---------------------
+//  `diff:<sub>/<file>` (a file UNDER a mounted submodule) must read its
+//  from/baseline side from the SUB's OWN shard, not the parent tree — the
+//  parent tree has only a `160000` gitlink at `<sub>`, which blobAtTree can't
+//  descend (→ undefined → a false WHOLLY-ADDED).  This mirrors recurseSubPins
+//  (the recursive whole-tree path): enumerate the parent tree's gitlinks, gate
+//  each on recurse.isMount, open the sub via be.find/store.open.
+//
+//  subMountSplit(k, parentTreeSha, repo, path, ctx) → null when `path` is NOT
+//  under a live mount (caller keeps the plain parent-tree read).  Else
+//      { subK, subRepo, subPath, rest, oldPin }
+//  where subPath is the deepest matching gitlink prefix, rest the in-sub
+//  remainder, oldPin the parent gitlink sha (the sub's pin in THIS tree), and
+//  subK/subRepo the opened sub shard + handle (for the from-side tree read).
+function subMountSplit(k, parentTreeSha, repo, path, ctx) {
+  if (!parentTreeSha || !path) return null;
+  const flags = (ctx && ctx.flags) || [];
+  if (flags.indexOf("--nosub") >= 0) return null;     // sub content suppressed
+  const subs = treeMap(k, parentTreeSha).subs;        // { subpath -> pin sha }
+  //  Deepest gitlink prefix that `path` lies under (`<sub>/…`).
+  let best = "";
+  for (const sp of Object.keys(subs)) {
+    if (path === sp || path.indexOf(sp + "/") === 0) {
+      if (sp.length > best.length) best = sp;
+    }
+  }
+  if (!best) return null;
+  //  A declared-but-unmounted sub degrades sanely: no false wholly-added — we
+  //  just don't have the sub's baseline, so leave the from-side as the parent
+  //  read (undefined at the gitlink) → diffFile's empty-from path, same as a
+  //  genuinely added file.  Only a LIVE mount resolves to the sub shard.
+  if (!recurse.isMount(repo.wt, best)) return null;
+  let subRepo;
+  try { subRepo = be.find(join(repo.wt, best)); } catch (e) { return null; }
+  let subK;
+  try { subK = store.open(subRepo.storePath, subRepo.project); }
+  catch (e) { return null; }
+  return { subK: subK, subRepo: subRepo, subPath: best,
+           rest: path.slice(best.length + 1), oldPin: subs[best] };
+}
 
 //  Blob bytes for `path` inside a tree (descend by path segments) — the
 //  store.js readTree walk to the leaf, then the blob.  undefined when absent.
