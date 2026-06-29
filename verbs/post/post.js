@@ -32,6 +32,7 @@ const ulog     = require("../../shared/ulog.js");
 const pathlib  = require("../../shared/util/path.js");
 const shalib   = require("../../shared/util/sha.js");
 const barrier  = require("../../core/barrier.js");
+const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
@@ -263,13 +264,86 @@ function advanceBranch(reader, wtl, info, out, target, curBranch, parent,
 //  message + flags are seed-pinned and ride ctx (ctx.args/ctx.flags — the
 //  queue round-trip carries only ts/verb/uri); output goes through ctx.out
 //  (one flush at the loop edge).  No process.argv, no self-run tail.
+//
+//  DIS-058 D6/D7/D9 (POST-ORDER sub recursion): the handler is `postTree` — it
+//  first commits any dirty/advanced MOUNTED sub (post-order: child hash known
+//  before the parent commits), records the child's new commit into the parent's
+//  gitlink (a synthesised `put <sub>#<newsha>` bump → the existing fold-decide
+//  gitlink-add path), then runs the single-repo body `postOne` on the parent.
+//  A `--nosub` flag (out of D-scope but cheap) suppresses the descent.
 module.exports = function handle(row, ctx) {
+  const info = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
+  return postTree(info, ctx, row);
+};
+
+//  postTree(info, ctx, row): recurse mounted subs (post-order), then postOne.
+function postTree(info, ctx, row) {
+  const flags = (ctx && ctx.flags) || [];
+  if (flags.indexOf("--nosub") < 0) postSubs(info, ctx);
+  return postOne(info, ctx, row);
+}
+
+//  postSubs: walk the parent's MOUNTED gitlink subs in `.gitmodules` order and,
+//  for each one that is dirty/advanced, RECURSE a post into it FIRST (so its new
+//  commit hash exists), then synthesise a `put <subpath>#<newtip>` gitlink bump
+//  in the PARENT wtlog so the parent's commit records the advance (D7 auto).
+function postSubs(info, ctx) {
+  const reader = store.open(info.storePath, info.project);
+  const wtl = wtlog.open(info);
+  const baseTip = wtl.curTip();
+  const baseTree = (baseTip && baseTip.sha && isFullSha(baseTip.sha))
+        ? reader.commitTree(baseTip.sha) : "";
+  if (!baseTree) return;
+  //  Enumerate the baseline gitlinks + classify each mount (pin vs sub cur tip).
+  const subList = subs.enumerate(info, reader, baseTree);
+  for (const s of subList) {
+    if (!s.mounted) continue;                       // unmounted gitlink → skip
+    const subWt = join(info.wt, s.path);
+    let subInfo;
+    try { subInfo = be.find(subWt); } catch (e) { continue; }
+
+    //  The sub's cur tip BEFORE the recursive post.
+    const subWtl0 = wtlog.open(subInfo);
+    const cur0 = subWtl0.curTip();
+    const tip0 = (cur0 && cur0.sha && isFullSha(cur0.sha)) ? cur0.sha : "";
+
+    //  Recurse a post into the sub (it descends into ITS subs first).  A
+    //  POSTNONE (no changes in this sub) is swallowed — a clean sub needs no
+    //  child commit; its pin stays put.  Any other refusal propagates (a real
+    //  conflict in a child must not be silently dropped).
+    try { postTree(subInfo, ctx, { uri: subWt }); }
+    catch (e) {
+      const msg = "" + e;
+      if (msg.indexOf("POSTNONE") < 0) throw e;     // a real refusal bubbles up
+    }
+
+    //  The sub's NEW cur tip AFTER the post.  If it advanced (a child commit
+    //  landed), record the bump into the PARENT gitlink (D7) so postOne commits
+    //  the new pin.  Also bump an already-ADVANCED sub (pin ⊏ sub tip) even when
+    //  this run made no new commit (the sub was committed out-of-band).
+    const subWtl1 = wtlog.open(subInfo);
+    const cur1 = subWtl1.curTip();
+    const tip1 = (cur1 && cur1.sha && isFullSha(cur1.sha)) ? cur1.sha : "";
+    const newTip = tip1 || tip0;
+    if (newTip && isFullSha(newTip) && newTip !== s.pin) {
+      //  Synthesise the manual `put <subpath>#<newtip>` bump (SUBS-019 / D7):
+      //  a wtlog put row whose fragment is the new sub commit — fold-decide's
+      //  gitlink-bump branch turns it into a `160000` add on the parent tree.
+      //  `ulog.append` reads the live tail + stamps strictly past it, so a
+      //  second sub's bump never collides with the first's stamp.  postOne
+      //  re-opens the wtlog, so it sees this just-appended bump row.
+      ulog.append(info.bePath, [{ verb: "put", uri: s.path + "#" + newTip }]);
+    }
+  }
+}
+
+//  postOne(info, ctx, row): the single-repo commit body (the former handler).
+function postOne(info, ctx, row) {
   const args  = (ctx && ctx.args)  || [];
   const flags = (ctx && ctx.flags) || [];
   const out   = ctx && ctx.out;
   const force = flags.indexOf("--force") >= 0;
 
-  const info = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
   const wtl = wtlog.open(info);
   const reader = store.open(info.storePath, info.project);
 
@@ -446,7 +520,7 @@ module.exports = function handle(row, ctx) {
   //  then the per-file change rows (add/mod/del), matching native's table.
   emitBanner(out, commit.sha, m.msg, dres.decisions, stamp);
   //  Commit barrier leaf: no further fan-out.
-};
+}
 
 //  --- barrier scratch ULOG (the commit JOIN) ----------------------------
 //  A primary `.be/` dir hosts `.be/post.barrier`; a secondary `.be` FILE has

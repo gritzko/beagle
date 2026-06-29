@@ -42,9 +42,17 @@ function classify(remoteUri, verb) {
     return (query && query[0] === "/") ? (p + "?" + query) : p;
   }
 
+  //  DIS-058: a host-less `be:`/`keeper:` (an ABSOLUTE local store path, NO
+  //  authority) is a LOCAL keeper exec, NOT ssh — matching native `be get
+  //  be:/abs/store?/proj` and the spec ("be: runs beagle's keeper wire").  A
+  //  `be://host` (authority PRESENT, incl. `localhost`) still routes to ssh
+  //  below (parity with native + the be-js-get-be ssh case).  `keeper` keeps
+  //  its historical local/localhost local-exec alias.
+  const noAuth = (u.authority == null || u.authority === "");
   const localish = scheme === "file" || scheme === "" ||
                    (scheme === "keeper" && (host === "" || host === "local" ||
-                                            host === "localhost"));
+                                            host === "localhost")) ||
+                   (scheme === "be" && noAuth);
   if (localish) {
     return { bin: keeperBin, argv: [keeperBin, verb, servePath(path)],
              ssh: false };

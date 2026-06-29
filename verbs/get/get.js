@@ -37,6 +37,7 @@ const barrier  = require("../../core/barrier.js");
 const be       = require("../../core/discover.js");
 const wtlog    = require("../../shared/wtlog.js");
 const conflict = require("../../shared/conflict.js");
+const submount = require("../../shared/submount.js");   // DIS-058 D2-D5 sub mount
 const join = pathlib.join, dirname = pathlib.dirname;
 const isFullSha = sha.isFullSha;
 
@@ -262,6 +263,9 @@ function handleSeed(uri, ctx) {
   const r = rem.cached ? seedCached(rem, wt)
           : rem.local  ? seedLocal(rem, wt)
           :              seedRemote(rem, wt);
+  //  DIS-058 D4: the parent's SOURCE (this remote) so a gitlink leaf can fetch
+  //  its child shard from the SAME source (project swapped to the sub title).
+  r.source = rem;
   return fanoutWholeTree(ctx, r, wt, ctx.flags && ctx.flags.indexOf("--force") >= 0);
 }
 
@@ -287,7 +291,13 @@ function fanoutWholeTree(ctx, r, wt, force) {
   //  ctx — set before the leaf is dispatched).  `dels` tallies the del-sweep.
   ctx._get = { k: r.k, wt: wt, tip: r.tip, oldTip: r.oldTip, fresh: r.fresh,
                branch: r.branch, ts: ctx.T0, kinds: {}, dels: 0,
-               force: !!force, noPrune: noPrune };
+               force: !!force, noPrune: noPrune,
+               //  DIS-058 D2-D5: the parent's source (for the same-source child
+               //  fetch) + its `.be` dir (where sibling sub shards land) + the
+               //  parent shard title (the synthetic-branch parent token).
+               source: r.source || null,
+               beDir: join(wt, ".be"),
+               parentTitle: (r.k && r.k.project) || "" };
 
   //  Edge flush order (native get): pulled-commit `post` rows first (newest
   //  first, kept in push order), then file rows — new+upd interleaved lex,
@@ -604,7 +614,11 @@ function leaf(uri, ctx) {
     try { io.unlink(full); out.row(rel, "del", g.ts); g.dels++; } catch (e) {}
     return;
   }
-  if (kind === "s") return;                     // gitlink: recorded, not written
+  //  DIS-058 D2-D5: a gitlink leaf is MOUNTED + recursed (pre-order): fetch the
+  //  child shard from the same source, clone it as a sibling shard, write the
+  //  sub wtlog anchor, check out the pinned commit, then descend into the sub's
+  //  OWN gitlinks.  `newSha` IS the parent gitlink pin (the 160000 entry sha).
+  if (kind === "s") return mountGitlink(g, rel, newSha, out);
 
   const obj = g.k.getObject(newSha);
   if (!obj) return;                             // unresolved → skip
@@ -646,12 +660,51 @@ function leaf(uri, ctx) {
   out.row(rel, existed ? "upd" : "new", g.ts);
 }
 
+//  DIS-058 D2-D5 (pre-order sub mount): mount the gitlink at `rel` pinned at
+//  `pin`, emit a `get <sub>?<hashlet>` row, then DESCEND into the freshly-
+//  mounted sub's OWN gitlinks (a sub of a sub) — depth-first, pre-order (the
+//  parent's files + this sub's files are already on disk before the grandchild
+//  mounts).  Reuses the same parent SOURCE for the same-source child fetch, so
+//  a grandchild fetches `<store>?/<gtitle>` off the same store too.  A loud
+//  SUBFETCH/SUBPIN throw on a truly-unreachable child (never a silent mis-record).
+function mountGitlink(g, rel, pin, out) {
+  const m = submount.mount({
+    wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin,
+    source: g.source, parentTitle: g.parentTitle, parentBranch: g.branch,
+  });
+  out.row(rel, "new", g.ts);                    // the mounted sub leaf row
+  //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
+  recurseSubMounts(g, rel, m, out);
+}
+
+//  Walk a just-mounted sub's pin tree for `160000` gitlinks and mount each
+//  (grandchildren).  The grandchild's subpath is parent-relative (`<rel>/<sp>`);
+//  its source is the SAME parent source (the same store serves every shard),
+//  its synthetic-branch parent token is this sub's title.  In-process (not the
+//  queue) so the parent's source coords stay in scope.
+function recurseSubMounts(g, rel, m, out) {
+  const tree = m.k.commitTree(m.tip);
+  if (!tree) return;
+  const links = [];
+  m.k.readTreeRecursive(tree, function (l) {
+    if (l.kind === "s") links.push({ path: l.path, pin: l.sha });
+  });
+  for (const l of links) {
+    const cm = submount.mount({
+      wt: g.wt, beDir: g.beDir, subpath: rel + "/" + l.path, pin: l.pin,
+      source: g.source, parentTitle: m.project, parentBranch: m.branch,
+    });
+    out.row(rel + "/" + l.path, "new", g.ts);
+    recurseSubMounts(g, rel + "/" + l.path, cm, out);
+  }
+}
+
 //  D5 3-blob weave merge (GRAFMerge3Bytes twin): build the OURS and THEIRS
 //  weaves INDEPENDENTLY off a shared base (each base→side), then WEAVEMerge them
 //  — the shared base tokens carry the SAME base commit-id so they coincide and
 //  dedup, and each side's edit diffs against the base (NOT sequentially).  Render
 //  the ours/theirs scopes with conflict fences: disjoint edits coexist cleanly,
-//  a divergent region gets the standard `<<<<`/`||||`/`>>>>` markers.
+//  a divergent region gets the standard conflict markers.
 const _W3_BASE = "0000000000000001", _W3_OURS = "0000000000000002",
       _W3_THRS = "0000000000000003", _W3_MRG = "0000000000000004";
 function weave3(base, ours, theirs, ext) {
@@ -670,6 +723,7 @@ function weave3(base, ours, theirs, ext) {
   const out = io.buf(1 << 20);
   wm.merged([oScope, tScope], out);
   return out.data().slice();
+
 }
 
 //  Read a wt file's bytes (null on error); the dirty-vs-clean compare input.

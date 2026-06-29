@@ -164,6 +164,10 @@ function writePack(shard, wtRoot, commitBody, rootTreeSha, treeBodies, decisions
   const addBytes = [];
   for (const d of decisions) {
     if (d.verb !== "add") continue;
+    //  DIS-058 D7: a gitlink (`160000`) add records a sub-shard COMMIT sha, not
+    //  a wt blob — there is no blob to feed (the object lives in the sub shard).
+    //  Skip the blob read/feed for it; the tree entry already carries the sha.
+    if (d.mode === MODE.s) continue;
     const bytes = readAddBytes(wtRoot, d);
     if (bytes == null) throw "commit: cannot read add path " + d.path;
     addBytes.push(bytes);
