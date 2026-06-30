@@ -734,10 +734,11 @@ function leaf(uri, ctx) {
 //  a grandchild fetches `<store>?/<gtitle>` off the same store too.  A loud
 //  SUBFETCH/SUBPIN throw on a truly-unreachable child (never a silent mis-record).
 function mountGitlink(g, rel, pin, out) {
-  //  GET-039: a symlink (incl. the `be -> .` self-locator) is a `120000` BLOB,
-  //  NEVER a `160000` gitlink — it checks out via the generic symlink leaf
-  //  (kind "l", io.symlink), is never followed and never a submodule.  So this
-  //  handler only ever sees a REAL gitlink; the `be`-name special-case is gone.
+  //  GET-037: an undeclared (.gitmodules) 160000 gitlink is not a real sub — never
+  //  fetch/mount/recurse it (e.g. the `be` gitlink pins our own commit; mounting it crashes).
+  if (!isDeclaredSub(g.wt, rel)) {
+    return;                                       // undeclared gitlink → skip
+  }
   const m = submount.mount({
     wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin,
     source: g.source, parentTitle: g.parentTitle, parentBranch: g.branch,
@@ -746,6 +747,15 @@ function mountGitlink(g, rel, pin, out) {
   //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
   //  SUBS-041: this top-level mount is depth 0; each descent increments.
   recurseSubMounts(g, rel, m, out, 0);
+}
+
+//  GET-037: YES iff `<subpath>` is declared in `<wt>/.gitmodules` (the SUBS-043 gate);
+//  an undeclared 160000 gitlink (e.g. the `be` entry) is never mounted/recursed.
+function isDeclaredSub(wt, subpath) {
+  if (submount.gitmodulesUrl(wt, subpath)) return true;
+  const decl = require("../../core/recurse.js").gitmodulesOrder(wt);
+  for (const p of decl) if (p === subpath) return true;
+  return false;
 }
 
 //  Walk a just-mounted sub's pin tree for `160000` gitlinks and mount each
@@ -767,10 +777,14 @@ function recurseSubMounts(g, rel, m, out, depth) {
   m.k.readTreeRecursive(tree, function (l) {
     if (l.kind === "s") links.push({ path: l.path, pin: l.sha });
   });
+  const subWt = join(g.wt, rel);                 // the mounted sub's wt on disk
   for (const l of links) {
     const sp = rel + "/" + l.path;
-    //  GET-039: only `160000` gitlinks reach here (readTreeRecursive collects
-    //  kind "s"); a symlink is a `120000` blob leaf, never recursed.
+    //  GET-037: gate the grandchild on the sub's own `.gitmodules` (SUBS-043); an
+    //  undeclared gitlink is skipped, never recursed.
+    if (!isDeclaredSub(subWt, l.path)) {
+      continue;
+    }
     const cm = submount.mount({
       wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin,
       source: g.source, parentTitle: m.project, parentBranch: m.branch,
