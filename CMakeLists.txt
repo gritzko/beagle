@@ -37,7 +37,20 @@ if (NOT _be_ncpu OR _be_ncpu LESS 1)
 endif()
 set(BE_TEST_JOBS "${_be_ncpu}" CACHE STRING
     "Parallel test jobs for ctest / make test (1 = serial)")
-set(CMAKE_CTEST_ARGUMENTS "--parallel;${BE_TEST_JOBS};--output-on-failure")
+# Default `make test` / `ctest` EXCLUDES the `big`-labelled treadmill cases (the
+# two heavy wire clones of the real git tree) — they run on demand via `mill`
+# below (or `ctest -L big`).  Everything else stays in the default green set.
+set(CMAKE_CTEST_ARGUMENTS
+    "--parallel;${BE_TEST_JOBS};--output-on-failure;--label-exclude;big")
 
 enable_testing()
 add_subdirectory(test)
+
+# `mill` — run ONLY the `big` treadmill (kept out of `make test`).  `-L big`
+# selects the two labelled wire cases; `ninja mill` / `make mill` runs them.
+add_custom_target(mill
+    COMMAND ${CMAKE_CTEST_COMMAND} -L big --output-on-failure
+            --parallel ${BE_TEST_JOBS}
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    USES_TERMINAL
+    COMMENT "Running the big treadmill wire cases (ctest -L big)")

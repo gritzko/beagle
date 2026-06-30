@@ -33,6 +33,7 @@ const pathlib  = require("../../shared/util/path.js");
 const shalib   = require("../../shared/util/sha.js");
 const barrier  = require("../../core/barrier.js");
 const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
+const wire     = require("../../shared/wire.js");      // GIT-013: wire push
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
@@ -103,15 +104,19 @@ function epochSecOf(stamp) {
 //  The bare `?` (trunk target) is special: its URI has an EMPTY query AND an
 //  empty fragment, so it is detected by the raw `?`-prefixed form, not u.query.
 function parseSlots(args) {
-  const slots = { host: false, hasQuery: false, query: "", narrow: "",
-                  fragment: undefined };
+  const slots = { host: false, hostUri: "", hasQuery: false, query: "",
+                  narrow: "", fragment: undefined };
   for (const a of args || []) {
     if (!a || a[0] === "#" || a[0] === "-") continue;   // #msg / -flag
     const u = new URI(a);
     if (u.host) {
+      //  GIT-013: a Host slot is a wire PUSH target (`//host?br`,
+      //  `ssh://host?br`, `https://host?br`).  Capture the raw URI + its
+      //  branch query; the push runs in postOne after cur's tip resolves.
       slots.host = true;
-      throw "POSTPUSH: remote push not yet in JS post — use native " +
-            "`be post //host` (a JS wire push is its own ticket)";
+      slots.hostUri = a;
+      if (u.query) { slots.hasQuery = true; slots.query = u.query; }
+      continue;
     }
     //  Query slot: a non-empty query (`?branch`/`?..`/`?other`) OR the bare
     //  `?` trunk form (data is `?`, every slot empty — POST.mkd `?` row).
@@ -257,6 +262,49 @@ function advanceBranch(reader, wtl, info, out, target, curBranch, parent,
     const stamp = ulog.nowAfter(wtlogTail(wtl));
     out.raw(render0(out, "post", "post:", stamp));
     out.row("?" + target + "#" + parent.slice(0, 8), "post", stamp);
+  }
+}
+
+//  --- GIT-013 wire PUSH (Host slot) --------------------------------------
+//  FF-push cur's tip to a remote branch over the JS wire (shared/wire.js).
+//  `remoteUri` is the raw Host-slot arg; `branch` the be-side target (empty =
+//  trunk → refs/heads/main); `tip` cur's 40-hex tip.  Flow: open receive-pack
+//  advert (read the remote's old sha), enforce FF (remote tip must be an
+//  ancestor of `tip` in the LOCAL DAG) BEFORE any wire write, build the thin
+//  pack of objects the remote lacks via `keeper upload-pack`, then push.
+function pushRemote(info, reader, out, remoteUri, branch, tip) {
+  if (!tip || !isFullSha(tip))
+    throw "POSTNONE: no cur tip to push (commit first, then `be post //host`)";
+  const wireRef = "refs/heads/" + ((branch && branch !== "main") ? branch
+                                                                  : "main");
+  //  Drain the remote receive-pack advert to learn its current tip (old sha).
+  //  classify() picks ssh/local/http from the URI; push() returns its refs.
+  const adv = wire.advertRefs(remoteUri, "receive-pack");
+  const cur = adv.refs.find(r => r.name === wireRef);
+  const old = cur ? cur.sha : "";
+
+  //  FF gate (POST stays FF-only): a present remote tip must be an ancestor
+  //  of cur in the local DAG.  Refuse BEFORE building/sending anything.
+  if (old) {
+    if (old === tip)
+      throw "POSTNONE: remote `" + wireRef + "` already at cur's tip";
+    if (!dag.isAncestor(reader, old, tip))
+      throw "POSTNOFF: remote `" + wireRef + "` is not an ancestor of cur — " +
+            "non-FF push refused (use native `be put` to force)";
+  }
+
+  //  Build the thin pack (objects the remote lacks) from the local store via
+  //  keeper's pack serve: want=tip, have=the remote's advertised tips.
+  const serve = info.storePath + "?/" + (info.project || "");
+  const haves = adv.refs.map(r => r.sha).filter(isFullSha);
+  const pack = wire.buildPushPack(serve, tip, haves);
+  wire.push(remoteUri, [{ ref: wireRef, neu: tip, old: old }], pack);
+
+  if (out) {
+    const stamp = ulog.nowAfter(0n);
+    out.raw(render0(out, "post", "post:", stamp));
+    out.row(remoteUri + "?" + (branch || "") + "#" + tip.slice(0, 8),
+            "post", stamp);
   }
 }
 
@@ -425,6 +473,15 @@ function postOne(info, ctx, row) {
   //  `` (trunk, `?`), the parent (`?..`), cur's own (`?.`), or a named branch.
   const target = slots.hasQuery
         ? resolveTarget(slots.query, curBranch) : curBranch;
+
+  //  GIT-013 Host slot (`//host?br` / `ssh://host?br` / `https://host?br`):
+  //  FF-push cur's existing tip to the remote branch.  No local commit — this
+  //  ships what cur already points at (the descendant cascade / commit-then-
+  //  push is out of scope).  The FF gate + pack build live in pushRemote.
+  if (slots.host) {
+    pushRemote(info, reader, out, slots.hostUri, target, parent);
+    return;                                  // no commit, no fan-out
+  }
 
   //  DIS-054 Query bare-advance (`?branch`/`?..`/`?` with NO commit content):
   //  FF-advance the target branch's REFS tip to cur's tip — no new commit, cur

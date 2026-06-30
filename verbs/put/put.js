@@ -35,6 +35,7 @@ const stage   = require("../../shared/stage.js");
 const classify = require("../../shared/classify.js");
 const recurse = require("../../core/recurse.js");
 const ulog    = require("../../shared/ulog.js");
+const wire    = require("../../shared/wire.js");      // GIT-014: wire push
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 
 //  JSQUE-010: the `put:` banner + per-row lines now render through the emit sink
@@ -213,6 +214,105 @@ function applyRefs(repo, k, ctx) {
   }
 }
 
+//  --- GIT-014: wire PUT (the UNCONSTRAINED remote ref-write) --------------
+//  Scan the raw positional args for a Host-slot push form and run it ONCE.
+//  Forms (PUT.mkd § Design invariant 9 — any ref to any sha, force allowed):
+//    //host[?br[#sha]]     force-write origin's counterpart (branch from the
+//                          reflog, default cur's branch) to a sha (default cur.tip)
+//    ssh://host?br[#sha]   set a remote ref to a sha (default cur.tip)
+//    https://host?br[#sha] set a remote ref to a sha (default cur.tip)
+//    ssh://host/path  (NO ?ref) → LOG-ONLY ([DIS-011]); record the URL, NO push.
+//  Gated by ctx._putWireDone so the per-arg fan-out runs it once.
+function applyWire(repo, k, ctx) {
+  if (!ctx) return;
+  if (!ctx._putWirePaths) ctx._putWirePaths = {};      // wire-form row paths
+  if (ctx._putWireDone) return;
+  for (const a of (ctx && ctx.args) || []) {
+    if (!a || a[0] === "#" || a[0] === "-") continue;
+    const u = new URI(a);
+    if (!u.host && !u.authority) continue;            // not a wire target
+    //  The seed strips scheme/host: this arg's seedRow path is u.path, or — when
+    //  the URI has no path — the query token (`http://h?br` → row path "br").
+    //  Remember every candidate so the handler skips staging it (a wire target,
+    //  not a file).
+    if (u.path) ctx._putWirePaths[u.path] = 1;
+    else if (u.query) ctx._putWirePaths[u.query] = 1;
+    ctx._putWireRan = true;
+    pushWire(repo, k, ctx, a, u);
+  }
+  ctx._putWireDone = true;
+}
+
+//  Force-push (PUT, NO FF gate) a sha to a remote ref over the JS wire.  `arg`
+//  is the raw Host-slot URI; `u` its parse.  No `?ref` ⇒ LOG-ONLY ([DIS-011]).
+//  old = the remote's advertised value (advertRefs), neu = the target sha;
+//  call wire.push DIRECTLY — no ancestor/FF check (that omission IS the force).
+function pushWire(repo, k, ctx, arg, u) {
+  const out = ctx && ctx.out;
+  const hasQuery = (u.query || "") !== "";
+  //  DIS-011: a bare `ssh://host/path` with NO ?ref is recorded, never pushed.
+  if (!hasQuery && (u.path || "")) {
+    if (out) {
+      if (!ctx._putBannerOpen) { ctx._putBannerOpen = true; out.banner("put", "put:", ron.now()); }
+      out.row(arg, "put", 0n);
+    }
+    return;
+  }
+  //  Branch: explicit ?br wins; else origin's counterpart from the reflog
+  //  (eachRemote reverse-grep by authority), else cur's branch.
+  let branch = u.query || "";
+  if (!branch && !u.scheme) branch = reflogCounterpart(k, u) || "";
+  const cur = wtlog.open(repo).curTip();
+  const curSha = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";
+  //  Target sha: explicit #sha (resolve a hashlet via the seed) or cur.tip.
+  let target = u.fragment || "";
+  if (target) { const f = resolveHex(k, target); if (f) target = f; }
+  else target = curSha;
+  if (!target || !isFullSha(target)) throw "PUTNONE: no sha to push (commit first)";
+  const wireRef = "refs/heads/" + ((branch && branch !== "main") ? branch : "main");
+  //  old = the remote's advertised value (force write: no ancestor check).
+  const adv = wire.advertRefs(arg, "receive-pack");
+  const cr = adv.refs.find(r => r.name === wireRef);
+  const old = cr ? cr.sha : "";
+  //  Pack: objects the remote lacks (want=target, have=remote tips).  A reset
+  //  to an already-present sha yields keeper's valid 0-object PACK (32 bytes).
+  const serve = repo.storePath + "?/" + (repo.project || "");
+  const haves = adv.refs.map(r => r.sha).filter(isFullSha);
+  const pack = wire.buildPushPack(serve, target, haves);
+  wire.push(arg, [{ ref: wireRef, neu: target, old: old }], pack);
+  if (out) {
+    if (!ctx._putBannerOpen) { ctx._putBannerOpen = true; out.banner("put", "put:", ron.now()); }
+    //  Banner: the remote base (any user #sha stripped) + `?branch#hashlet`.
+    const hash = arg.indexOf("#");
+    const base = hash >= 0 ? arg.slice(0, hash) : arg;
+    out.row(base + (u.query ? "" : "?" + (branch || "")) + "#" + target.slice(0, 8), "put", 0n);
+  }
+}
+
+//  Resolve origin's counterpart branch for a `//host` push: the recentmost
+//  remote-tracking tip whose authority matches `u` (the reflog reverse-grep,
+//  [Store]) gives the be-side branch label; "" (trunk) if none.
+function reflogCounterpart(k, u) {
+  const want = (u.authority || u.host || "");
+  let hit = "";
+  k.eachRemote(function (rt) {
+    if (hit) return;
+    if ((rt.host || "") === want || (rt.key || "").indexOf(want) === 0)
+      hit = stripQ(rt.query || "");
+  });
+  return hit;
+}
+function stripQ(q) { return (q && q[0] === "?") ? q.slice(1) : q; }
+
+//  GIT-014: resolve a #sha hashlet to a full sha via the local tips/objects
+//  (the seed's resolveHex twin) — a full sha passes iff present; else scan tips.
+function resolveHex(k, hexish) {
+  if (isFullSha(hexish)) return k.getObject(hexish) ? hexish : hexish;
+  let hit;
+  k.eachTip(function (t) { if (!hit && t.sha.indexOf(hexish) === 0) hit = t.sha; });
+  return hit;
+}
+
 //  --- bare `be put` (no path args) — PUT-004 ------------------------------
 //  PUT-004: stage the whole wt vs baseline from the classifier's buckets —
 //  mod→put, mis↔unk→silent move, ok→restamp (no row), unk→skip; returns { ops }.
@@ -358,6 +458,17 @@ module.exports = function handle(row, ctx) {
 
   //  Ref-write forms first (no banner), once per run.
   applyRefs(repo, k, ctx);
+
+  //  GIT-014: wire PUSH forms (`//host` / `ssh://host?br` / `https://host?br`)
+  //  ride ctx.args (a host URI the queue uri can't carry whole); run them ONCE.
+  //  A wire-form ROW (this arg's seedRow) must NOT be staged — return early.
+  applyWire(repo, k, ctx);
+  const ruRaw = (row && row.uri) || "";
+  const ru = new URI(ruRaw);
+  //  This row IS the wire target (the seed stripped its scheme/host to a bare
+  //  path) — the push already ran in applyWire; never stage it as a file.
+  if (ru.host || ru.authority || (ctx && ctx._putWirePaths &&
+      ctx._putWirePaths[ru.path || ruRaw])) return;
 
   //  A 0-count seed means `row.uri` is the synthetic "." placeholder (a ref-only
   //  or no-arg run), NOT a real path arg — never stage it.  A ref-only run is

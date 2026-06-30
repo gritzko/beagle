@@ -340,4 +340,220 @@ function fetch(remoteUri, wantRef, haves) {
   return result;
 }
 
-module.exports = { fetch, classify, parseAdvLine, pickWant, isFullSha };
+//  --- GIT-013: PUSH (receive-pack) ---------------------------------------
+//  send-pack write direction: advertise git-receive-pack, send
+//  `<old> <new> <ref>` update commands + a packfile of objects the remote
+//  lacks, parse report-status.  ssh/local spawn `git-receive-pack`; http
+//  rides curl POST (reusing the GIT-012 curlRun/memReader/pol path).  POST
+//  stays FF-only; the gate runs in the caller (post.js) BEFORE any write.
+//
+//  The pack is built by SHELLING to `keeper upload-pack <store>?/<proj>`
+//  (the GIT-005 thin-pack serve builder) with want=local-tip, have=remote
+//  tips — the same closure walk that serves fetches.  The JS never writes a
+//  pack itself (per the ticket crux).
+
+//  Drain a receive-pack advertisement (pkt.Reader over a spawned fd, or a
+//  memReader over curl bytes for http).  Returns { refs:[{sha,name}] }.
+//  `skipPreamble` drops the smart-HTTP `# service=…\n`+flush head.
+function drainRecvAdvert(rd, skipPreamble) {
+  if (skipPreamble) {
+    let skipped = false;
+    for (let i = 0; i < 2; i++) {
+      const ev = rd.next();
+      if (ev.kind === pkt.LINE) {
+        const s = utf8.Decode(ev.payload);
+        if (s.indexOf("# service=") === 0) { skipped = true; continue; }
+      }
+      if (ev.kind === pkt.FLUSH && skipped) break;
+      throw "wire.push: malformed smart-HTTP advert preamble";
+    }
+  }
+  const refs = [];
+  for (;;) {
+    const ev = rd.next();
+    if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
+    if (ev.kind !== pkt.LINE) continue;
+    const a = parseAdvLine(ev.payload);
+    if (!a) continue;
+    if (a.name === "HEAD") continue;
+    if (/\^\{\}$/.test(a.name)) continue;                   // peeled tag
+    if (a.name.indexOf("refs/remotes/") === 0) continue;
+    refs.push({ sha: a.sha, name: a.name });
+  }
+  return { refs };
+}
+
+//  Build the thin pack of objects the remote lacks by shelling to the
+//  local keeper's pack serve (the GIT-005 thin builder): drive
+//  `keeper upload-pack <localServe>` with want=tip + have=remote tips, and
+//  parse out the packfile after NAK — reusing the GIT-012 fetch wire shape.
+//  `localServe` is the `<storeroot>?/<project>` selector keeper_served_at
+//  expects.  Returns the raw packfile bytes (PACK hdr … sha trailer).
+function buildPushPack(localServe, wantSha, haves) {
+  const keeperBin = io.getenv("KEEPER_BIN") || "keeper";
+  const child = io.spawn(keeperBin, [keeperBin, "upload-pack", localServe]);
+  const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
+  let pack;
+  try {
+    const reader = pkt.Reader(rfd);
+    //  Drain keeper's own advert (we don't need it; we already know want).
+    for (;;) {
+      const ev = reader.next();
+      if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
+    }
+    const reqs = [];
+    reqs.push(pkt.frame("want " + wantSha + " ofs-delta\n"));
+    reqs.push(pkt.flushPkt());
+    if (haves) for (const h of haves) if (isFullSha(h))
+      reqs.push(pkt.frame("have " + h + "\n"));
+    reqs.push(pkt.frame("done\n"));
+    for (const r of reqs) io.writeAll(wfd, r);
+    io.close(wfd);
+    //  Skip NAK/ACK, then the raw pack to EOF.
+    for (;;) {
+      const ev = reader.next();
+      if (ev.kind === pkt.EOF) throw "wire.push: keeper closed before pack";
+      if (ev.kind === pkt.LINE) {
+        const s = utf8.Decode(ev.payload).replace(/\n$/, "");
+        if (s === "NAK" || s.indexOf("ACK") === 0) break;
+        continue;
+      }
+      if (ev.kind === pkt.FLUSH) continue;
+    }
+    pack = readToEof(rfd, reader.rest());
+  } finally {
+    try { io.close(rfd); } catch (e) {}
+    try { io.reap(pid); } catch (e) {}
+  }
+  if (!pack || pack.length < 32) throw "wire.push: keeper produced no pack";
+  return pack;
+}
+
+//  Frame one update command: `<old> <new> <ref>\0<caps>\n` (caps on the
+//  first only — caller passes caps for index 0, "" otherwise).
+function updateLine(old, neu, ref, caps) {
+  let s = old + " " + neu + " " + ref;
+  if (caps) s += "\0" + caps;
+  return pkt.frame(s + "\n");
+}
+
+//  Parse report-status pkt-lines (no side-band; minimal caps): expect
+//  `unpack ok` then `ok <ref>` / `ng <ref> <reason>`.  Throws on failure
+//  surfacing the remote's reason.  `rd` is a pkt cursor (spawn or mem).
+function parseReportStatus(rd) {
+  let unpackOk = false; const ng = [];
+  for (;;) {
+    const ev = rd.next();
+    if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
+    if (ev.kind !== pkt.LINE) continue;
+    const s = utf8.Decode(ev.payload).replace(/\n$/, "");
+    if (s === "unpack ok") { unpackOk = true; continue; }
+    if (s.indexOf("unpack ") === 0)
+      throw "wire.push: remote rejected pack — " + s.slice(7);
+    if (s.indexOf("ng ") === 0) ng.push(s.slice(3));
+  }
+  if (!unpackOk) throw "wire.push: remote did not report 'unpack ok'";
+  if (ng.length) throw "wire.push: ref update rejected — " + ng.join("; ");
+}
+
+//  http push: GET info/refs?service=git-receive-pack (skip preamble) →
+//  POST git-receive-pack with the update cmds + flush + pack body, via the
+//  GIT-012 curlRun.  `updates` already carry resolved old/new shas.
+function pushHttp(url, updates, packBytes) {
+  const advert = curlRun(["-sSf", "-A", "git/2.0",
+                          url + "/info/refs?service=git-receive-pack"]);
+  const { refs } = drainRecvAdvert(memReader(advert), true);
+  const body = buildPushBody(updates, refs, packBytes);
+  const tmp = (io.getenv("TMPDIR") || "/tmp") + "/wire-push-" + io.getpid() +
+              "-" + (Date.now() & 0xffffff) + ".req";
+  const fd = io.open(tmp, "c");
+  io.writeAll(fd, body); io.close(fd);
+  try {
+    const res = curlRun(["-sSf", "-A", "git/2.0", "-H",
+      "Content-Type: application/x-git-receive-pack-request",
+      "--data-binary", "@" + tmp, url + "/git-receive-pack"]);
+    parseReportStatus(memReader(res));
+  } finally { try { io.unlink(tmp); } catch (e) {} }
+  return { refs };
+}
+
+//  Assemble the receive-pack request body: update cmd lines (caps on the
+//  first) + flush + pack.  `refs` is the drained advert; each update's
+//  `old` defaults to the remote's advertised tip (zero-sha for a new ref).
+function buildPushBody(updates, refs, packBytes) {
+  const parts = [];
+  let first = true;
+  for (const u of updates) {
+    const adv = refs.find(r => r.name === u.ref);
+    const old = u.old || (adv ? adv.sha : ZERO_SHA);
+    parts.push(updateLine(old, u.neu, u.ref,
+                          first ? "report-status ofs-delta" : ""));
+    first = false;
+  }
+  parts.push(pkt.flushPkt());
+  let blen = 0; for (const p of parts) blen += p.length;
+  blen += packBytes.length;
+  const body = new Uint8Array(blen); let off = 0;
+  for (const p of parts) { body.set(p, off); off += p.length; }
+  body.set(packBytes, off);
+  return body;
+}
+
+const ZERO_SHA = "0000000000000000000000000000000000000000";
+
+//  advertRefs(remoteUri, verb): open the peer's advertisement for `verb`
+//  (default "receive-pack") and return { refs:[{sha,name}] } WITHOUT sending
+//  anything else.  Lets the caller read the remote's old tip for the FF gate
+//  before building a pack.  ssh/local spawn + drain; http GET info/refs.
+function advertRefs(remoteUri, verb) {
+  const v = verb || "receive-pack";
+  const sp = classify(remoteUri, v);
+  if (sp.http) {
+    const advert = curlRun(["-sSf", "-A", "git/2.0",
+                            sp.url + "/info/refs?service=git-" + v]);
+    return drainRecvAdvert(memReader(advert), true);
+  }
+  const child = io.spawn(sp.bin, sp.argv);
+  const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
+  try {
+    const reader = pkt.Reader(rfd);
+    return drainRecvAdvert(reader, false);
+  } finally {
+    //  We only wanted the advert; closing both ends + reaping aborts the peer
+    //  cleanly (a flush would also do, but the peer tolerates a hangup here).
+    try { io.close(wfd); } catch (e) {}
+    try { io.close(rfd); } catch (e) {}
+    try { io.reap(pid); } catch (e) {}
+  }
+}
+
+//  push(remoteUri, updates, packBytes): FF-advance a remote branch.
+//    updates  [{ ref:"refs/heads/X", neu:"<40hex>", old?:"<40hex>" }]
+//             `old` omitted ⇒ taken from the remote's advert (new ref ⇒
+//             zero-sha).  The FF gate is the CALLER's job (post.js): it
+//             must verify each `old` is an ancestor of `neu` before calling.
+//    packBytes the packfile (build via buildPushPack) of objects the remote
+//             lacks.  Returns { refs } (the remote's advertised refs).
+function push(remoteUri, updates, packBytes) {
+  const sp = classify(remoteUri, "receive-pack");
+  if (sp.http) return pushHttp(sp.url, updates, packBytes);
+  const child = io.spawn(sp.bin, sp.argv);
+  const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
+  let result;
+  try {
+    const reader = pkt.Reader(rfd);
+    const { refs } = drainRecvAdvert(reader, false);
+    const body = buildPushBody(updates, refs, packBytes);
+    io.writeAll(wfd, body);
+    io.close(wfd);
+    parseReportStatus(reader);
+    result = { refs };
+  } finally {
+    try { io.close(rfd); } catch (e) {}
+    try { io.reap(pid); } catch (e) {}
+  }
+  return result;
+}
+
+module.exports = { fetch, push, advertRefs, buildPushPack, classify,
+                   parseAdvLine, pickWant, isFullSha };
