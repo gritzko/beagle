@@ -92,35 +92,35 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
   const t = toBytes || new Uint8Array(0);
   if (f.length === t.length && bytesEq(f, t)) return;          // from==to skip
   if (isBinary(f) || isBinary(t)) return;                      // binary skip
+  //  Over the source cap → a BLOB: not tokenised, not diffed (weave.js policy).
+  if (f.length > weave.MAX_SOURCE_SIZE || t.length > weave.MAX_SOURCE_SIZE) return;
 
   const ext = extOf(name);
-  //  DIFF-010: each fold grows its own WEAVE buffer on "out full" (weave.fold),
-  //  so a large blob no longer throws.
-  let wA, wB, from, to;
-  if (f.length === 0) {
-    //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
-    //  (ID_TO); invert the scope roles so `from` is the empty side.
-    wA = weave.fold(null, t, ext, ID_FROM);
-    wB = weave.fold(wA, f, ext, ID_TO);
-    from = wB.scope([ID_FROM, ID_TO]); to = wB.scope([ID_FROM]);
-  } else {
-    //  Normal / deletion: base layer = from-content, diff layer = to.
-    wA = weave.fold(null, f, ext, ID_FROM);
-    wB = weave.fold(wA, t, ext, ID_TO);
-    from = wB.scope([ID_FROM]); to = wB.scope([ID_FROM, ID_TO]);
+  //  The fold/emit/render buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap,
+  //  no dynamic growth).  If a (sub-cap but token-dense) source overflows even
+  //  that, there is no point diffing it — err out and treat it as a BLOB (skip).
+  try {
+    let wA, wB, from, to;
+    if (f.length === 0) {
+      //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
+      //  (ID_TO); invert the scope roles so `from` is the empty side.
+      wA = weave.fold(null, t, ext, ID_FROM);
+      wB = weave.fold(wA, f, ext, ID_TO);
+      from = wB.scope([ID_FROM, ID_TO]); to = wB.scope([ID_FROM]);
+    } else {
+      //  Normal / deletion: base layer = from-content, diff layer = to.
+      wA = weave.fold(null, f, ext, ID_FROM);
+      wB = weave.fold(wA, t, ext, ID_TO);
+      from = wB.scope([ID_FROM]); to = wB.scope([ID_FROM, ID_TO]);
+    }
+    const hd = abc.ram("HUNK", weave.MAX_SOURCE_MARKED_UP);
+    if (full) wB.emitFull(from, to, name, "diff:", navver, hd);
+    else      wB.emitDiff(from, to, name, navver, hd);
+    emitHunks(hd, color, out);
+  } catch (e) {
+    if (("" + e).includes("full")) return;                     // over cap → blob
+    throw e;
   }
-
-  //  DIFF-010: the HUNK emit buffer also grows on "out full" (a large windowed
-  //  or whole-file diff overflows a fixed HUNK cap, like the fold above).
-  const hint = (f.length + t.length) * 2 + 1024;
-  const hd = weave.growOnFull(function (cap) { return abc.ram("HUNK", cap); },
-    function (h) {
-      if (full) wB.emitFull(from, to, name, "diff:", navver, h);
-      else      wB.emitDiff(from, to, name, navver, h);
-      return h;
-    }, 1 << 18, hint);
-
-  emitHunks(hd, color, out);
 }
 
 //  Render every record in a HUNK container through the diff:-scheme cursor.
@@ -138,12 +138,10 @@ function emitHunks(hd, color, out) {
     //  BRO-006: feed the raw record to the toks sink (it appends the U target);
     //  the rendered text still goes to out.chunk for the plain/color channel.
     if (out.feed) out.feed(utf8.Decode(hd.uri), hd.text.slice(), hd.toks.slice());
-    //  DIFF-010: the per-record render buffer grows on "out full" — one large
-    //  hunk's plain/color bytes can exceed a fixed io.buf cap.
-    const hint = hd.text.length * 4 + 1024;
-    const o = weave.growOnFull(function (cap) { return io.buf(cap); },
-      function (b) { if (color) hd.color(b); else hd.plain(b); return b; },
-      1 << 18, hint);
+    //  The per-record render buffer is the fixed markup size (lazy mmap) — one
+    //  hunk's plain/color bytes can't exceed it, so no dynamic growth.
+    const o = io.ram(weave.MAX_SOURCE_MARKED_UP);
+    if (color) hd.color(o); else hd.plain(o);
     out.chunk(utf8.Decode(o.data()));
   }
 }

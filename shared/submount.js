@@ -38,16 +38,6 @@ const isFullSha = sha.isFullSha;
 
 function exists(p) { try { io.stat(p); return true; } catch (e) { return false; } }
 
-//  GET-037: YES iff the gitlink at `subpath` is the `be` SELF-LOCATOR — a leaf
-//  named `be` ([GET-036]'s fixed shard/locator name) with NO `.gitmodules`
-//  entry.  It pins the project's OWN commit so `jab`'s upward `be`-scan resolves
-//  the extension; it is NOT a submodule (no child shard to fetch), so it must be
-//  materialised as `be -> .`, never sub-mounted.  A REAL sub named `be` would
-//  carry a `.gitmodules` url; the url-absence + fixed name pin it unambiguously.
-function isSelfLocator(wt, subpath) {
-  return basename(subpath) === "be" && !gitmodulesUrl(wt, subpath);
-}
-
 //  Parse `<wt>/.gitmodules` for the [submodule] block whose `path` == subpath;
 //  return its `url` (or "" when absent).  A minimal git-config reader (the
 //  same shape core/recurse.js::gitmodulesOrder uses), keyed on path→url.
@@ -142,14 +132,9 @@ function tryFetch(uri, wantSha) {
 function mount(opts) {
   const wt = opts.wt, beDir = opts.beDir, subpath = opts.subpath, pin = opts.pin;
 
-  //  GET-037: NEVER sub-mount the `be` self-locator (no child shard exists).
-  //  The get.js caller materialises `be -> .` ([GET-036]) before reaching here;
-  //  this is a defensive refusal for any other entry (e.g. grandchild recursion
-  //  over a sub that itself carries a `be` self-locator) — a friendly throw, no
-  //  half-written wt (nothing has been touched yet at this point).
-  if (isSelfLocator(wt, subpath))
-    throw "be get: refusing to sub-mount the `be` self-locator " + subpath +
-          " (materialise `be -> .`, do not sub-mount — see GET-036)";
+  //  GET-039: a symlink (incl. the `be -> .` self-locator) is a `120000` BLOB,
+  //  never a `160000` gitlink — it never reaches this mount path (it checks out
+  //  via the generic symlink leaf), so the old `be`-name refusal is gone.
 
   if (!isFullSha(pin))
     throw "be get: sub " + subpath + " has no resolvable gitlink pin";

@@ -39,7 +39,6 @@ const wtlog    = require("../../shared/wtlog.js");
 const conflict = require("../../shared/conflict.js");
 const submount = require("../../shared/submount.js");   // DIS-058 D2-D5 sub mount
 const join = pathlib.join, dirname = pathlib.dirname;
-const basename = pathlib.basename;
 const isFullSha = sha.isFullSha;
 
 const writeWtlog = ulog.write;
@@ -562,7 +561,15 @@ function isShortOrFullHex(s) { return /^[0-9a-f]{6,40}$/.test(s); }
 function dirtyOverlapCheck(k, newTree, oldTree, wt, fresh) {
   if (fresh || !oldTree) return;
   const oldPaths = {};
-  k.readTreeRecursive(oldTree, function (l) { oldPaths[l.path] = l.sha; });
+  k.readTreeRecursive(oldTree, function (l) {
+    oldPaths[l.path] = l.sha;
+    //  GET-039: a dir->leaf type-change (old `a/b` -> new `a`) IS baselined —
+    //  mark every ancestor dir so the new leaf at `a` is treated as tracked
+    //  content (reconcile + checkout drop the dir), not a dirty user overlay.
+    for (let i = l.path.indexOf("/"); i >= 0; i = l.path.indexOf("/", i + 1))
+      if (oldPaths[l.path.slice(0, i)] === undefined)
+        oldPaths[l.path.slice(0, i)] = "";          // dir-prefix sentinel
+  });
   const conflicts = [];
   k.readTreeRecursive(newTree, function (l) {
     if (oldPaths[l.path] !== undefined) return;     // had a baseline → mergeable
@@ -715,19 +722,10 @@ function leaf(uri, ctx) {
 //  a grandchild fetches `<store>?/<gtitle>` off the same store too.  A loud
 //  SUBFETCH/SUBPIN throw on a truly-unreachable child (never a silent mis-record).
 function mountGitlink(g, rel, pin, out) {
-  //  GET-037: the `be` SELF-LOCATOR gitlink (a `160000` leaf named `be`, NOT
-  //  declared in `.gitmodules`) pins the project's OWN commit so `jab`'s upward
-  //  `be`-scan can resolve the extension as the `be` shard ([GET-036]).  It is
-  //  NOT a submodule: there is no child shard to fetch, so sub-mounting it
-  //  (titleFromUrl("")→basename "be"→fetch `?/be`) ABORTS mid-checkout.  Match
-  //  the C get ([GET-036]): materialise the relative `be -> .` self-symlink and
-  //  SKIP the sub-mount + recursion.  A REAL sub (basename `be` WITH a
-  //  `.gitmodules` url) still mounts via the normal path below.
-  if (isSelfLocator(g.wt, rel)) {
-    checkout.writeSymlink(g.wt, rel, ".");       // be -> . (relative, GET-036)
-    out.row(rel, "new", g.ts);
-    return;
-  }
+  //  GET-039: a symlink (incl. the `be -> .` self-locator) is a `120000` BLOB,
+  //  NEVER a `160000` gitlink — it checks out via the generic symlink leaf
+  //  (kind "l", io.symlink), is never followed and never a submodule.  So this
+  //  handler only ever sees a REAL gitlink; the `be`-name special-case is gone.
   const m = submount.mount({
     wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin,
     source: g.source, parentTitle: g.parentTitle, parentBranch: g.branch,
@@ -735,15 +733,6 @@ function mountGitlink(g, rel, pin, out) {
   out.row(rel, "new", g.ts);                    // the mounted sub leaf row
   //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
   recurseSubMounts(g, rel, m, out);
-}
-
-//  GET-037: YES iff the gitlink at `rel` is the `be` self-locator — a leaf named
-//  `be` (the fixed shard/locator name, [GET-036]) with NO `.gitmodules` entry.
-//  A real submodule that happens to be named `be` would carry a `.gitmodules`
-//  url; the self-locator never does (only sibling subs are declared), so the
-//  url-absence + the fixed `be` name together pin it unambiguously.
-function isSelfLocator(wt, rel) {
-  return basename(rel) === "be" && !submount.gitmodulesUrl(wt, rel);
 }
 
 //  Walk a just-mounted sub's pin tree for `160000` gitlinks and mount each
@@ -760,13 +749,8 @@ function recurseSubMounts(g, rel, m, out) {
   });
   for (const l of links) {
     const sp = rel + "/" + l.path;
-    //  GET-037: a mounted sub may itself carry a `be` self-locator — materialise
-    //  `<sub>/be -> .` and skip, same as the top-level case (never sub-mount it).
-    if (isSelfLocator(g.wt, sp)) {
-      checkout.writeSymlink(g.wt, sp, ".");
-      out.row(sp, "new", g.ts);
-      continue;
-    }
+    //  GET-039: only `160000` gitlinks reach here (readTreeRecursive collects
+    //  kind "s"); a symlink is a `120000` blob leaf, never recursed.
     const cm = submount.mount({
       wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin,
       source: g.source, parentTitle: m.project, parentBranch: m.branch,

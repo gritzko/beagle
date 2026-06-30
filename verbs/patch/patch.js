@@ -190,20 +190,22 @@ function foldCommit(ctx, sha) {
 
   const bytes = blobBytes(reader, blobSha);
   if (bytes === undefined) return base;                // unreadable → carry parent
+  //  Over the source cap → a BLOB we don't tokenise (weave.js policy); carry the
+  //  parent weave unchanged.  NB: an oversized revision's change is not woven.
+  if (bytes.length > weave.MAX_SOURCE_SIZE) return base;
 
   //  Optimisation mirroring native's adjacent-equal skip: when the blob is
   //  byte-identical to the single-parent baseline's alive view, this commit
   //  did not touch the file — carry the parent weave unchanged (no spurious
   //  commit id in the scope).
   if (base !== null && parents.length === 1) {
-    //  DIFF-010: the alive view grows on "out full" — the tip can exceed the
-    //  fixed scratch buffer for a large file.
-    const prev = weave.growOnFull(function (cap) { return io.buf(cap); },
-      function (b) { base.alive(b); return b; }, 1 << 20, bytes.length + 256);
+    //  The alive view fits the fixed markup buffer (lazy mmap) — no growth.
+    const prev = io.ram(weave.MAX_SOURCE_MARKED_UP);
+    base.alive(prev);
     if (bytesEq(prev.data(), bytes)) return base;
   }
 
-  return weave.fold(base, bytes, ext, weaveId(sha));  // DIFF-010 grow-on-full
+  return weave.fold(base, bytes, ext, weaveId(sha));
 }
 
 //  Byte-equality of two Uint8Arrays.
@@ -275,25 +277,32 @@ function mergeApply(rc, path, oLeaf) {
                 treeCache: rc.treeCache, weaveCache: Object.create(null),
                 weaveCap: rc.weaveCap, aliveBuf: rc.aliveBuf };
 
-  const ours = buildSideWeave(ctx, rc.ours);
-  const theirs = buildSideWeave(ctx, rc.theirs);
-
-  //  Empty-side degeneracy (native's emit_alive_bytes short-circuits): if one
-  //  side has no weave, emit the other's tip bytes.
+  //  Reconstruct + union + render through the fixed markup buffers (lazy mmap,
+  //  no growth).  If a token-dense file overflows the cap, it is not a text file
+  //  we can weave-merge — err out, treat it as a BLOB (failed), don't crash.
   let merged;
-  if (!ours.weave && !theirs.weave) { rc.st.failed++; emit(rc, "failed", path); return; }
-  if (!ours.weave)   merged = aliveOf(rc, theirs.weave);
-  else if (!theirs.weave) merged = aliveOf(rc, ours.weave);
-  else {
-    //  Union ours⊕theirs (shared tokens dedup by identity), then render the
-    //  two sides' scopes with fences.  DIFF-010: both the WEAVE union and the
-    //  merged-render buffer grow on "out full".
-    const wm = weave.merge(ours.weave, theirs.weave, "0000000000000000");
-    const oScope = wm.scope(setArr(ours.ids));
-    const tScope = wm.scope(setArr(theirs.ids));
-    const out = weave.growOnFull(function (cap) { return io.buf(cap); },
-      function (b) { wm.merged([oScope, tScope], b); return b; }, 1 << 20, 0);
-    merged = out.data();
+  try {
+    const ours = buildSideWeave(ctx, rc.ours);
+    const theirs = buildSideWeave(ctx, rc.theirs);
+
+    //  Empty-side degeneracy (native's emit_alive_bytes short-circuits): if one
+    //  side has no weave, emit the other's tip bytes.
+    if (!ours.weave && !theirs.weave) { rc.st.failed++; emit(rc, "failed", path); return; }
+    if (!ours.weave)   merged = aliveOf(rc, theirs.weave);
+    else if (!theirs.weave) merged = aliveOf(rc, ours.weave);
+    else {
+      //  Union ours⊕theirs (shared tokens dedup by identity), then render the
+      //  two sides' scopes with fences into the fixed markup buffer (lazy mmap).
+      const wm = weave.merge(ours.weave, theirs.weave, "0000000000000000");
+      const oScope = wm.scope(setArr(ours.ids));
+      const tScope = wm.scope(setArr(theirs.ids));
+      const out = io.ram(weave.MAX_SOURCE_MARKED_UP);
+      wm.merged([oScope, tScope], out);
+      merged = out.data();
+    }
+  } catch (e) {
+    if (("" + e).includes("full")) { rc.st.failed++; emit(rc, "failed", path); return; }
+    throw e;
   }
 
   const leaf = oLeaf || { kind: "f" };
@@ -306,10 +315,9 @@ function mergeApply(rc, path, oLeaf) {
 //  alive (tip) bytes of a weave, as a fresh Uint8Array (copied off the shared
 //  scratch buffer so the caller can hold it past the next merge).
 function aliveOf(rc, w) {
-  //  DIFF-010: the alive (tip) render grows on "out full" — a large file tip
-  //  can exceed the fixed scratch buffer.
-  const b = weave.growOnFull(function (cap) { return io.buf(cap); },
-    function (buf) { w.alive(buf); return buf; }, 1 << 20, 0);
+  //  The alive (tip) render fits the fixed markup buffer (lazy mmap) — no growth.
+  const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
+  w.alive(b);
   return b.data().slice();
 }
 

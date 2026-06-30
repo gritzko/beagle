@@ -62,11 +62,22 @@ function bytesEq(a, b) {
   return true;
 }
 
+//  GET-039: clear whatever occupies `full` so a leaf can be written in its
+//  place across a TYPE-CHANGE.  A stale DIR (dir->file / dir->link) is rm -rf'd
+//  via io.rmdir (io.unlink throws EISDIR on any directory); a stale file/symlink
+//  is unlinked so io.open won't FOLLOW a pre-existing link to a dangling target.
+function clearPath(full) {
+  let ls; try { ls = io.lstat(full); } catch (e) { return; }   // nothing there
+  if (ls.kind === "dir") { try { io.rmdir(full, true); } catch (e) {} }
+  else { try { io.unlink(full); } catch (e) {} }
+}
+
 //  Write `bytes` to `full`, creating parent dirs.  Overwrites in place.
 function writeFile(wtRoot, rel, bytes) {
   const full = join(wtRoot, rel);
   const d = dirname(rel);            // "." for a top-level rel → no parent
   if (d && d !== ".") { try { io.mkdir(join(wtRoot, d)); } catch (e) {} }
+  clearPath(full);                                  // drop a stale dir/file/link
   let fd;
   fd = io.open(full, "c");                          // create/truncate
   try {
@@ -85,7 +96,7 @@ function writeSymlink(wtRoot, rel, target) {
   const full = join(wtRoot, rel);
   const d = dirname(rel);
   if (d && d !== ".") { try { io.mkdir(join(wtRoot, d)); } catch (e) {} }
-  try { io.unlink(full); } catch (e) {}
+  clearPath(full);                                  // drop a stale dir/file/link
   io.symlink(target, full);
 }
 

@@ -181,12 +181,38 @@ function decide(be, wtlogReader, storeReader, narrow) {
     }
   }
 
+  //  ENTRY-TYPE-CHANGE (GET-039): a baseline DIR becoming a wt FILE/LINK (or the
+  //  reverse) leaves a stale `keep` on the OTHER node type at the SAME name — a
+  //  selective commit keeps the gone subtree's children as `mis`, and the live
+  //  wt leaf is `add`ed, so the tree carries BOTH a blob `X` and a tree `X` and
+  //  a fresh get re-materialises the old type.  A path is exactly ONE git node:
+  //  the LIVE wt node (the `add` / move-`add`) wins, so drop any `keep` that
+  //  COLLIDES with it as the opposite node type — a kept LEAF whose name an
+  //  added subtree now occupies (file->dir), or a kept subtree CHILD that lives
+  //  under a now-added leaf (dir->file/link).  Generic (no `be` special-case).
+  const live = {};                 // added leaf path -> 1 (the wt node)
+  for (const d of decisions) if (d.verb === "add") live[d.path] = 1;
+  const liveLeaves = Object.keys(live);
+  function shadowed(path) {
+    if (live[path]) return false;  // the live node itself never drops
+    //  kept LEAF under a live subtree: some added leaf sits at `path + "/"`.
+    const pfx = path + "/";
+    for (const a of liveLeaves) if (a.indexOf(pfx) === 0) return true;
+    //  kept subtree CHILD under a live leaf: an ancestor `A` of `path` is added.
+    for (let i = path.indexOf("/"); i >= 0; i = path.indexOf("/", i + 1))
+      if (live[path.slice(0, i)]) return true;
+    return false;
+  }
+  const kept = decisions.filter(function (d) {
+    return !(d.verb === "keep" && shadowed(d.path));
+  });
+
   //  commit.js needs the decision list LEX-sorted by path (contiguous subtree
   //  slices); the merge emits in lex order but the move pair + gitlink/narrow
   //  re-emits interleave, so sort the final set.
-  decisions.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+  kept.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
 
-  return { decisions, baseTreeSha, haveBase, hasPatch: false };
+  return { decisions: kept, baseTreeSha, haveBase, hasPatch: false };
 }
 
 //  The wt kind (f/x/l) at `rel` for a move-dst add (the dst is a wt-only file

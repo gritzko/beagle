@@ -1,48 +1,34 @@
-//  weave.js — grow-on-"out full" retry around the WEAVE/HUNK fold bindings
-//  (DIFF-010).  The C WEAVE builders (fold/merge/emit*) write into a fixed-size
-//  JS buffer and throw "...failed (out full?)" / "out full" when it overflows.
-//  A direct caller (diff.js, patch.js) used a fixed cap, so a large fold threw.
-//  This mirrors core/loop.js:128-142 (the HUNK sink's grow-on-full replay) and
-//  the [JS-055] grow-on-NOROOM pattern: alloc a buffer, run the op, and on a
-//  "full" throw DOUBLE the cap (plus a content lower-bound) and retry.
+//  weave.js — WEAVE/HUNK fold/merge bindings + the ONE source-size policy.
+//  (DIFF-010).  The C WEAVE builders (fold/merge/emit*) tokenise a source into a
+//  marked-up buffer.  We cap the SOURCE we tokenise at MAX_SOURCE_SIZE; anything
+//  bigger is a BLOB (callers skip tokenising/diffing it).  Because the source is
+//  capped, its markup is too — so every WEAVE/HUNK/render buffer is allocated
+//  ONCE at the fixed MAX_SOURCE_MARKED_UP (a lazy anonymous mmap, abc.ram/io.ram
+//  — only touched pages fault in), never grown dynamically.
 
 "use strict";
 
-const MAX_TRIES = 40;   // 1<<18 doubled 40x ⇒ way past any real blob; a guard
+//  A source larger than this is a BLOB: not tokenised, not diffed (callers gate
+//  on it like the binary check).  One place sets it; everyone imports it.
+const MAX_SOURCE_SIZE = 4 << 20;                  // 4 MB
+//  A tokenised source runs larger than its raw bytes; 4x covers the worst real
+//  case (a fully-changed 2-layer diff measures ~3.3x).  Buffers are this size.
+const MAX_SOURCE_MARKED_UP = MAX_SOURCE_SIZE * 4; // 16 MB
 
-//  growOnFull(make, op, hint): allocate a buffer via make(cap), run op(buf), and
-//  on a "full" throw double cap (≥ hint) and retry.  `make` is e.g.
-//  (cap) => abc.ram("WEAVE", cap); `op` does the build and returns its result
-//  (often the buffer).  Only a "full" error grows — anything else re-throws.
-function growOnFull(make, op, cap, hint) {
-  let c = cap || (1 << 18);
-  for (let t = 0; t < MAX_TRIES; t++) {
-    const buf = make(c);
-    try { return op(buf); }
-    catch (e) {
-      if (!("" + e).includes("full")) throw e;   // only grow on `out full`
-      c = c * 2;
-      if (hint && c < hint) c = hint;
-    }
-  }
-  throw "weave: grow-on-full retry exhausted";
-}
-
-//  fold(base, blob, ext, hash): a WEAVENext fold that grows its target WEAVE
-//  buffer on overflow.  Returns the fresh WEAVE container (already rewound).
-//  The cap lower-bound is the blob length (a fold blob can't shrink below it).
+//  fold(base, blob, ext, hash): a WEAVENext fold into a fresh fixed WEAVE buffer.
+//  `blob` is a source ≤ MAX_SOURCE_SIZE (the caller gates blobs out first).
 function fold(base, blob, ext, hash) {
-  const n = blob ? blob.length : 0;
-  return growOnFull(function (cap) { return abc.ram("WEAVE", cap); },
-    function (w) { w.fold(base, blob, ext, hash); return w; }, 1 << 18, n + 256);
+  const w = abc.ram("WEAVE", MAX_SOURCE_MARKED_UP);
+  w.fold(base, blob, ext, hash);
+  return w;
 }
 
-//  merge(a, b, hash): a WEAVEMerge that grows its target WEAVE buffer.  The cap
-//  lower-bound is the sum of the two inputs' live byte sizes.
+//  merge(a, b, hash): a WEAVEMerge into a fresh fixed WEAVE buffer.
 function merge(a, b, hash) {
-  const n = (a.buffer.watermark | 0) + (b.buffer.watermark | 0);
-  return growOnFull(function (cap) { return abc.ram("WEAVE", cap); },
-    function (w) { w.merge(a, b, hash); return w; }, 1 << 18, n + 256);
+  const w = abc.ram("WEAVE", MAX_SOURCE_MARKED_UP);
+  w.merge(a, b, hash);
+  return w;
 }
 
-module.exports = { growOnFull: growOnFull, fold: fold, merge: merge };
+module.exports = { fold: fold, merge: merge,
+  MAX_SOURCE_SIZE: MAX_SOURCE_SIZE, MAX_SOURCE_MARKED_UP: MAX_SOURCE_MARKED_UP };
