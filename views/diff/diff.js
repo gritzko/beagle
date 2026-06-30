@@ -22,6 +22,9 @@ const store   = require("../../shared/store.js");
 const wtlog   = require("../../shared/wtlog.js");
 const shalib  = require("../../shared/util/sha.js");
 const recurse = require("../../core/recurse.js");
+//  DIFF-012: the no-arg / dir-scoped wt diff sources its dirty list from the
+//  classifier (as `status`/bare `put` do), not a bespoke wt walk.
+const classify = require("../../shared/classify.js");
 //  DIFF-010: the shared grow-on-"out full" WEAVE/HUNK fold retry (mirrors
 //  loop.js:128-142) — a large diff fold no longer throws "out full".
 const weave   = require("../../shared/weave.js");
@@ -227,37 +230,60 @@ function uniqSorted(a, b) {
 }
 
 //  --- wt-vs-base whole-tree diff (GRAFDiffWtTree) -----------------------
-//  Base tree leaves heap-merged with a wt walk: BOTH (sha-skip on the wt's
-//  freshly-computed blob sha) | BASE_ONLY (deletion) | WT_ONLY (untracked,
-//  SKIPPED — diff: is wt-vs-base, not wt-vs-empty).  Gitlinks prune their
-//  descendants and render a pin bump only on a wt-side change (rare — usually
-//  a clean mount has no wt pin move here, matching native's wt path).
+//  DIFF-012: enumerate the classifier's dirty paths (optionally under `prefix`)
+//  and render each base-present one through the per-file wt-vs-base diff (lex order).
 function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
-  //  Base-tree-driven (tracked files only): an UNTRACKED wt file has no base
-  //  side, so diff: skips it (wt-vs-base, not wt-vs-empty) — no .gitignore
-  //  wt-walk needed here.  A gitlink prunes its descendants from the walk.
-  const F = treeMap(k, baseTreeSha);
+  const F = treeMap(k, baseTreeSha);          // base tree: from-side blob shas
   const subPrefixes = Object.keys(F.subs).map(function (p) { return p + "/"; });
   function underSub(p) {
     for (const sp of subPrefixes) if (p.indexOf(sp) === 0) return true;
     return false;
   }
 
-  const basePaths = Object.keys(F.files).sort();
-  for (const p of basePaths) {
-    if (underSub(p)) continue;
-    const fsha = F.files[p];
-    const wtPath = join(repo.wt, p);
-    const wt = readWtFile(wtPath);
+  //  Dirty set from the classifier — one source of truth for "what changed".
+  const log = wtlog.open(repo);
+  const res = classify.classify(repo, log, k);
+  const paths = [];
+  for (const r of res.rows) {
+    if (r.bucket === "eq" || r.bucket === "ok") continue;   // clean → no diff
+    if (prefix && r.path.indexOf(prefix) !== 0) continue;   // DIFF-012: dir scope
+    if (underSub(r.path)) continue;           // under a mount → its own recurse
+    if (paths.indexOf(r.path) < 0) paths.push(r.path);
+  }
+  paths.sort();
+
+  for (const p of paths) {
+    const fsha = F.files[p];                   // base entry sha, or undefined
+    if (fsha === undefined) continue;          // no base side → wholly-new, skip
+    const wt = readWtFile(join(repo.wt, p));
     if (wt === undefined) {
-      //  BASE_ONLY: deleted in wt → blob vs empty.
+      //  BASE_ONLY: deleted/missing in wt → base blob vs empty.
       diffFile(p, blobBytes(k, fsha), undefined, false, "", color, out);
       continue;
     }
-    //  BOTH: sha-skip on the wt blob sha vs the base entry sha.
-    const wtSha = frameSha("blob", wt);
-    if (wtSha === fsha) continue;
+    //  BOTH: sha-skip on the wt blob sha vs the base entry sha (a no-op edit
+    //  that the classifier still bucketed leaves no diff).
+    if (frameSha("blob", wt) === fsha) continue;
     diffFile(p, blobBytes(k, fsha), wt, false, "", color, out);
+  }
+
+  //  DIFF-012/[Submodules]: recurse mounted subs — each sub's own wt-vs-base
+  //  diff, names prefixed under the sub path (suppressed by --nosub).
+  const flags = (ctx && ctx.flags) || [];
+  if (flags.indexOf("--nosub") >= 0) return;
+  for (const sp of Object.keys(F.subs).sort()) {
+    let subScope = "";
+    if (prefix) {
+      if (prefix === sp + "/") subScope = "";
+      else if (prefix.indexOf(sp + "/") === 0) subScope = prefix.slice(sp.length + 1);
+      else if ((sp + "/").indexOf(prefix) !== 0) continue;   // out of dir scope
+    }
+    if (!recurse.isMount(repo.wt, sp)) continue;
+    let subRepo; try { subRepo = be.find(join(repo.wt, sp)); } catch (e) { continue; }
+    const subK = store.open(subRepo.storePath, subRepo.project);
+    const subBase = (wtlog.open(subRepo).baselineTip() || {}).sha || "";
+    const subTree = subBase ? subK.commitTree(subBase) : null;
+    diffWtTree(subK, subTree, subRepo, color, ctx, subScope, prefixingSink(out, sp));
   }
 }
 
@@ -419,10 +445,12 @@ module.exports = function handle(row, ctx) {
 
   //  JS-071: a pinned ctx.views spec (commit.js / COMMIT-006) wins; else
   //  re-parse the one-shot `diff:<uri>` off ctx.args[0] (never row.uri).
+  //  DIFF-012: a no-arg `jab diff` has empty ctx.args — default to the whole-wt
+  //  `diff:` spec (path "") so it reaches diffWtTree, not a single-file `diff:.`.
   let spec = (ctx && ctx.views && ctx.views[row.uri]) || null;
   if (!spec) {
-    const rawArgs = (ctx && ctx.args && ctx.args.length) ? ctx.args : [row.uri];
-    spec = parseDiffArg(k, repo, rawArgs[0]);
+    const raw = (ctx && ctx.args && ctx.args.length) ? ctx.args[0] : "diff:";
+    spec = parseDiffArg(k, repo, raw);
   }
   if (!spec) return;                                  // unresolvable / no spec
 
@@ -451,10 +479,16 @@ module.exports = function handle(row, ctx) {
     //  wt-vs-base: baseline tree from the seed-pinned baseline sha.
     const baseSha = spec.baselineSha || "";
     const baseTree = baseSha ? k.commitTree(baseSha) : null;
-    if (spec.path) {
-      //  File scope full: base blob vs wt file.  DIFF-011: a file UNDER a
-      //  mounted sub takes its FROM side from the SUB's OWN baseline tree (the
-      //  parent tree has only the gitlink) — the to side stays the wt file.
+    const rel = spec.path.replace(/\/+$/, "");
+    let dir = spec.path !== "" && spec.path !== rel;        // trailing slash
+    if (spec.path && !dir) { try { dir = io.lstat(join(repo.wt, rel)).kind === "dir"; } catch (e) {} }
+    if (spec.path && dir) {
+      //  DIFF-012: a DIR path scopes the wt diff to that subtree (the classifier
+      //  dirty set under `<dir>/`), not a single-file read.
+      diffWtTree(k, baseTree, repo, color, ctx, rel + "/", out);
+    } else if (spec.path) {
+      //  DIFF-011: a file UNDER a mounted sub reads its FROM side from the sub's
+      //  own baseline tree (the parent tree has only the gitlink).
       const m = subMountSplit(k, baseTree, repo, spec.path, ctx);
       let fB;
       if (m) {

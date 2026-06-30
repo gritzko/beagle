@@ -38,8 +38,10 @@ function isHexish(s) {
 //  whole `<scheme>:<uri>` (with its OWN `?`/`#` slots) off ctx.args[0], so their
 //  token must ride through as a path — NEVER be consumed as a branch ref-write by
 //  classifyArg (columnar ls/status/diff/refs keep classifyArg; they read row.uri).
+//  DIFF-012: `diff` joins the re-parse views — its `?from..to`/`?branch` slots are
+//  the view's own range/ref, not a branch ref-write, so the token rides through.
 const VIEW_REPARSE = { commit:1, size:1, type:1, blob:1, sha1:1,
-                       cat:1, tree:1, log:1 };
+                       cat:1, tree:1, log:1, diff:1 };
 function isReparseView(verb) { return VIEW_REPARSE[verb] === 1; }
 
 //  KEEPResolveHex twin: a full sha passes through iff the object exists; a
