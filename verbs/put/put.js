@@ -12,7 +12,8 @@
 //    <dir>/ | <dir> → dir-form: stage each tracked-dirty / untracked file
 //    <old>#<new>    → move: rename on disk + a `put <old>#<new>` row (leaf)
 //    ?br[#sha] etc. → ref-write, applied once from ctx.refs (no banner)
-//    (bare, no arg) → auto-pair moves + tracked walk — a BARRIER, DEFERRED.
+//    (bare, no arg) → auto-pair moves + tracked walk (PUT-004: bareStage,
+//                     classifier+wtlog-sourced whole-tree fold).
 //
 //  Each staged file: one `put` row + an io.setMtime restamp to that row's ts
 //  (so a later `be put` / POST fast-paths it via the stamp-set).  The `put:`
@@ -31,6 +32,7 @@ const be      = require("../../core/discover.js");
 const wtlog   = require("../../shared/wtlog.js");
 const store   = require("../../shared/store.js");
 const stage   = require("../../shared/stage.js");
+const classify = require("../../shared/classify.js");
 const ulog    = require("../../shared/ulog.js");
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 
@@ -86,8 +88,8 @@ function refSet(repo, k, branch, sha) {
 //  Classify ONE path arg (file / dir / move) into staging ops + banner items
 //  via the staging engine.  This is the per-file STAGE LEAF the loop fans to
 //  (one seed row per arg, resolution-at-entry).  The bare-walk + move
-//  auto-pair (no path arg) is a BARRIER (needs the whole BASE_ONLY+WT_ONLY
-//  set; PUTAMBIG) and is DEFERRED — bareWalk() throws PUT_BARE_DEFER here.
+//  auto-pair (no path arg) is the whole-tree fold handled by bareStage
+//  (PUT-004), not this per-arg leaf.
 //  Returns { ops, items } where an op is a stage.js op and an item is a
 //  banner line (`{type:"row", opIdx}` or `{type:"skip", …}`), native order.
 function stageArg(eng, repo, uri) {
@@ -210,12 +212,119 @@ function applyRefs(repo, k, ctx) {
   }
 }
 
+//  --- bare `be put` (no path args) — PUT-004 ------------------------------
+//  Stage the WHOLE working tree against the baseline, byte-for-byte as native
+//  (sniff/PUT.c put_detect_moves + put_visit_tracked).  The dirty list is
+//  SOURCED from the non-recursive classifier (shared/classify.js::classifyMerge,
+//  which merges base-tree ⊕ wt-scan ⊕ wtlog put/del into per-path buckets) PLUS
+//  the wtlog — NOT a hand-rolled second tree walk: a path already staged since
+//  the last get/post shows as `put`/`new`/`mov` and is naturally skipped.  The
+//  per-path DECISION (mod / mis / unk / ok) comes from the classifier; the
+//  baseline-tree WALK order and the get/post stamp fast-path (native's clean
+//  short-circuit) are layered from the same baseline tree the engine loaded, so
+//  the emitted rows are identical to stage.js::bareWalk (the semantics oracle):
+//    - mod (bytes != baseline)              → one `put <path>` row, WALK order
+//    - mis↔unk content-sha 1:1 auto-pair    → SILENT `put <old>#<new>` move row
+//                                             (BEFORE the dirty rows; PUTAMBIG
+//                                              when a sha matches >1 candidate)
+//    - ok  (bytes == baseline)              → restamp mtime to baselineTs, NO row
+//    - unk that is NOT a move dest          → NEVER staged (needs `be put <f>`)
+//  Returns { ops } shaped for commitOps (moves first, then dirty/restamp ops).
+function bareStage(repo, wtl, k) {
+  const eng = stage.prep(repo, wtl, k);
+  const wtRoot = repo.wt;
+  if (!eng.haveBase || !eng.baseTreeSha) return { ops: [] };
+
+  //  Dirty list from the classifier (base ⊕ wt ⊕ wtlog put/del → buckets).
+  //  wantClean yields the `ok` rows we need for the restamp.  A staged path
+  //  already shows as put/new/mov, so it is absent from mod/mis/unk → skipped.
+  const cls = classify.classifyMerge(repo, wtl, k, { wantClean: true, skipMeta: true });
+  const mod = {}, mis = {}, unk = {}, ok = {};
+  for (const r of cls.rows) {
+    if (r.bucket === "mod") mod[r.path] = 1;
+    else if (r.bucket === "mis") mis[r.path] = r.oldSha;
+    else if (r.bucket === "unk") unk[r.path] = 1;
+    else if (r.bucket === "ok") ok[r.path] = 1;
+  }
+
+  //  get/post stamp gate (native clean fast-path): a tracked file whose mtime
+  //  is a get/post stamp is taken clean WITHOUT a content re-hash — left as-is
+  //  (no row, no restamp), exactly like stage.js::bareWalk.
+  const gpStamp = {};
+  for (const r of wtl.rows)
+    if (r.verb === "get" || r.verb === "post") gpStamp[r.ron] = true;
+  function isGpStamp(rel) {
+    const w = eng.wt[rel];
+    return !!(w && w.ts != null && gpStamp[ron.encode(w.ts)]);
+  }
+
+  const ops = [];
+
+  //  --- auto-pair mis↔unk system-`mv` renames (put_detect_moves) ----------
+  //  A tracked path gone from disk (`mis`, baseline blob sha) + an untracked
+  //  on-disk file (`unk`, hashed via diskSha) of identical content → one SILENT
+  //  `put <old>#<new>` move op (written + dest restamped, NOT in the banner).
+  //  Strictly 1:1; a sha matching >1 candidate either side throws PUTAMBIG.
+  const baseCand = [];                      // { path, sha } in baseline WALK order
+  const baseSeen = {};
+  k.readTreeRecursive(eng.baseTreeSha, function (leaf) {
+    if (leaf.kind === "s") return;
+    if (stage.isMeta(leaf.path)) return;
+    if (mis[leaf.path] && isFullSha(mis[leaf.path]) && !baseSeen[leaf.path]) {
+      baseSeen[leaf.path] = 1;
+      baseCand.push({ path: leaf.path, sha: mis[leaf.path] });
+    }
+  });
+  const wtCand = [];                        // { path, sha }
+  for (const rel in unk) {
+    const s = stage.diskSha(wtRoot, rel);
+    if (s) wtCand.push({ path: rel, sha: s });
+  }
+  const paired = {};                        // unk path → consumed (suppress later)
+  if (baseCand.length && wtCand.length) {
+    for (const bc of baseCand) {
+      let match = -1, nmatch = 0;
+      for (let j = 0; j < wtCand.length; j++)
+        if (wtCand[j].sha === bc.sha) { match = j; nmatch++; }
+      if (nmatch === 0) continue;
+      if (nmatch > 1) throw stage.PUTAMBIG;
+      let baseMatches = 0;
+      for (const bc2 of baseCand) if (bc2.sha === wtCand[match].sha) baseMatches++;
+      if (baseMatches > 1) throw stage.PUTAMBIG;
+      const dst = wtCand[match].path;
+      paired[dst] = 1;
+      ops.push({ path: bc.path, dst: dst, kind: "mov", restamp: dst, silent: true });
+    }
+  }
+
+  //  --- tracked-dirty walk over the baseline tree, native WALK order ------
+  //  mod → `put` row; ok → restamp to baselineTs (no row); a get/post-stamped
+  //  file is clean and left untouched (no row, no restamp).
+  k.readTreeRecursive(eng.baseTreeSha, function (leaf) {
+    const rel = leaf.path;
+    if (leaf.kind === "s") return;          // gitlink: nothing to put
+    if (stage.isMeta(rel)) return;
+    if (!eng.wt[rel]) return;               // vanished on disk → move/skip
+    if (isGpStamp(rel)) return;             // clean fast-path
+    if (ok[rel]) {
+      if (eng.baselineTs != null)
+        ops.push({ path: null, kind: "restamp", restamp: rel,
+                   stampTs: eng.baselineTs });
+      return;
+    }
+    if (mod[rel]) ops.push({ path: rel, kind: "put", restamp: rel });
+  });
+
+  return { ops: ops };
+}
+
 //  JSQUE-010: `be put` as a loop HANDLER (converted from the `main();` one-shot).
 //  Each call handles ONE seed row (one path arg, resolution-at-entry fan-out);
 //  the `put:` banner header opens ONCE per run (ctx._putBannerOpen) and every
 //  staged op pushes a blank-date row via ctx.out — the loop does ONE flush.  The
-//  per-file STAGE is the LEAF; the bare-walk + move auto-pair is a BARRIER and is
-//  DEFERRED (PUT_BARE_DEFER).  Ref-write forms are applied once from ctx.refs.
+//  per-file STAGE is the LEAF; the bare-walk + move auto-pair (no path arg) is
+//  the PUT-004 whole-tree fold (bareStage).  Ref-write forms are applied once
+//  from ctx.refs.
 module.exports = function handle(row, ctx) {
   const out = ctx && ctx.out;
   const repo = (ctx && ctx.repo) || be.find((row && row.uri) || undefined);
@@ -226,12 +335,25 @@ module.exports = function handle(row, ctx) {
 
   //  A 0-count seed means `row.uri` is the synthetic "." placeholder (a ref-only
   //  or no-arg run), NOT a real path arg — never stage it.  A ref-only run is
-  //  done; a true no-arg `be put` (bare-walk) is the DEFERRED barrier.
+  //  done; a true no-arg `be put` is the bare whole-tree walk (PUT-004).
   const placeholder = ctx && ctx.seededRowCount === 0;
   if (placeholder) {
     if ((ctx.refs || []).length) return;       // ref-only run: nothing to stage
-    throw "PUT_BARE_DEFER: bare `be put` (auto-pair move + tracked walk) is a " +
-          "barrier — DEFERRED past JSQUE-010 (name files explicitly)";
+    //  PUT-004: bare `be put` — auto-pair moves + tracked-dirty walk, sourced
+    //  from the classifier + wtlog (bareStage).  Single in-process whole-tree
+    //  fold (one handler invocation, like delete.js's batch sweep), reusing
+    //  commitOps for the row-write + restamp and ctx.out for the `put:` banner.
+    //  Open the `put:` header BEFORE the walk (native PUTStage opens its table
+    //  before move detection) so a PUTAMBIG refusal carries the same partial
+    //  banner native does (the loop edge-catch flushes it on the throw).
+    if (out && !ctx._putBannerOpen) { ctx._putBannerOpen = true; out.banner("put", "put:", ron.now()); }
+    const r = bareStage(repo, wtlog.open(repo), k);  // may throw PUTAMBIG
+    commitOps(repo, r.ops, ctx && ctx.T0);
+    if (out)
+      for (const op of r.ops)
+        if (op.path !== null && !op.silent)
+          out.row(op.dst ? (op.path + "#" + op.dst) : op.path, "put", 0n);
+    return;
   }
 
   //  Open the shared `put:` table header ONCE (native opens it for every

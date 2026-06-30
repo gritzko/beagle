@@ -352,32 +352,9 @@ function emitRepo(repo, prefix, out, recurse) {
 //  Parse `<wt>/.gitmodules` and return the declared submodule `path` values in
 //  FILE (declaration) order — the order native recurses subs (KEEPSubsAt drives
 //  SUBSu8sParse over the `.gitmodules` blob top-to-bottom).  A minimal git-
-//  config reader: `[submodule "<name>"]` opens a section, `path = <p>` records
-//  it; only sections with a path are kept, deduped first-wins.  Absent/unreadable
-//  `.gitmodules` → [] (no declared subs).  Native reads the committed blob from
-//  the baseline tree; for a checked-out mount the wt copy is the same bytes — and
-//  the per-path gitlink/mount gate above filters any stale declaration.
+//  PUT-004: delegates to the shared reader (was a copy-pasted git-config parser).
 function gitmodulesOrder(wtRoot) {
-  const p = (wtRoot.endsWith("/") ? wtRoot : wtRoot + "/") + ".gitmodules";
-  let text;
-  try { text = utf8.Decode(io.mmap(p, "r").data()); } catch (e) { return []; }
-  const order = [], seen = {};
-  let inSubmod = false;
-  for (let line of text.split("\n")) {
-    line = line.replace(/[#;].*$/, "").trim();      // strip comments + ws
-    if (!line) continue;
-    if (line[0] === "[") {                          // section header
-      inSubmod = /^\[\s*submodule\b/i.test(line);
-      continue;
-    }
-    if (!inSubmod) continue;
-    const eq = line.indexOf("=");
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim().toLowerCase();
-    const val = line.slice(eq + 1).trim();
-    if (key === "path" && val && !seen[val]) { seen[val] = true; order.push(val); }
-  }
-  return order;
+  return require("../../shared/gitmodules.js").paths(wtRoot);
 }
 
 //  URI-aware join of a path column under a sub prefix (JAB-004) — replaces

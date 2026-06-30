@@ -38,30 +38,11 @@ const isFullSha = sha.isFullSha;
 
 function exists(p) { try { io.stat(p); return true; } catch (e) { return false; } }
 
-//  Parse `<wt>/.gitmodules` for the [submodule] block whose `path` == subpath;
-//  return its `url` (or "" when absent).  A minimal git-config reader (the
-//  same shape core/recurse.js::gitmodulesOrder uses), keyed on path→url.
+//  Return the `.gitmodules` `url` for the [submodule] block whose `path` ==
+//  subpath (or "" when absent).
+//  PUT-004: delegates to the shared reader (was a copy-pasted git-config parser).
 function gitmodulesUrl(wt, subpath) {
-  const p = join(wt, ".gitmodules");
-  let text;
-  try { text = utf8.Decode(io.mmap(p, "r").data()); } catch (e) { return ""; }
-  let curPath = "", curUrl = "", inSub = false, hit = "";
-  function flush() { if (inSub && curPath === subpath && curUrl) hit = curUrl; }
-  for (let line of text.split("\n")) {
-    line = line.replace(/[#;].*$/, "").trim();
-    if (!line) continue;
-    if (line[0] === "[") { flush(); inSub = /^\[\s*submodule\b/i.test(line);
-                           curPath = ""; curUrl = ""; continue; }
-    if (!inSub) continue;
-    const eq = line.indexOf("=");
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim().toLowerCase();
-    const val = line.slice(eq + 1).trim();
-    if (key === "path") curPath = val;
-    else if (key === "url") curUrl = val;
-  }
-  flush();
-  return hit;
+  return require("./gitmodules.js").urlOf(wt, subpath);
 }
 
 //  [Title] from a `.gitmodules` URL basename — `.git` + trailing `/` stripped
