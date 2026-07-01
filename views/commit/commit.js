@@ -37,6 +37,7 @@ const shalib  = require("../../shared/util/sha.js");
 //  call its handler with a pinned `views` spec; the inert diff VIEW routing
 //  (ctx.views unset, JS-071) is bypassed.  See inlineDiff() below.
 const diffView = require("../diff/diff.js");
+const recurse = require("../../core/recurse.js");
 const isFullSha = shalib.isFullSha;
 const frameSha  = shalib.frameSha;
 
@@ -315,7 +316,8 @@ function diffFeedRecords(repo, sha, parentSha, mode, sink) {
 module.exports = function handle(row, ctx) {
   const sink = ctx && ctx.sink;
   if (!sink) return;
-  const repo = (ctx && ctx.repo) || null;
+  //  SUBS-045: `let` so a `commit:<sub>?<sha>` link can swap to the sub repo.
+  let repo = (ctx && ctx.repo) || null;
   if (!repo) return;
 
   //  The whole `commit:<uri>` rides ctx.args[0] (the seed lowered it to a "."
@@ -343,6 +345,15 @@ module.exports = function handle(row, ctx) {
   };
   //  `?#<hex>` is a FRAGMENT slot (the `?` is empty), not an empty-query fail.
   if (parsed.fragment) parsed.hasQuery = false;
+
+  //  SUBS-045: a `commit:<sub>?<sha>` link from a descended log re-enters the
+  //  sub — DESCEND the mount prefix (shared splitter) so the sha resolves in
+  //  the SUB store, not the sub-blind base.  `rest` is "" for a pure mount
+  //  prefix (query/frag then names the target); a non-sub path is unchanged.
+  if (parsed.path && parsed.path !== ".") {
+    const d = recurse.resolveRepoForPath(repo, parsed.path);
+    if (d.prefix) { repo = d.repo; parsed.path = d.rest; }
+  }
 
   const k = store.open(repo.storePath, repo.project);
   const slot = resolveSlot(k, repo, parsed);

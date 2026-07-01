@@ -22,8 +22,7 @@ const dag    = require("../../shared/dag.js");
 const wtlog  = require("../../shared/wtlog.js");
 const resolve = require("../../core/resolve.js");
 const shalib = require("../../shared/util/sha.js");
-const subs   = require("../../shared/subs.js");
-const be     = require("../../core/discover.js");
+const recurse = require("../../core/recurse.js");
 const isFullSha = shalib.isFullSha;
 
 const LOG_MAX_WALK = 1 << 20;   // GRAF LOG_MAX_WALK cyclic-DAG bound
@@ -348,7 +347,7 @@ function leafSha(k, treeSha, path) {
 //  the `U` token follows the sha8 span, the bytes stay hidden in plain/colour
 //  (the pager `_uriAt` reads them).  `commit:?` not `diff:?` (a pin-only commit
 //  has no parent-level diff hunk — see the C note).
-function appendRow(sha, k, textParts, spans, baseOff, nonspine) {
+function appendRow(sha, k, textParts, spans, baseOff, nonspine, subPrefix) {
   const sha8 = sha.slice(0, 8);
   const date7 = ron.date(dag.commitTs(k, sha));        // 7-col; ts<=0 → "   ?   "
   const pc = k.parseCommit(sha);
@@ -356,7 +355,9 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine) {
   const author = authorName(pc ? pc.author : "");
   const authTail = " (" + author + ")";
   //  The hidden U-target bytes, spliced in right after sha8 (C row order).
-  const uri = "commit:?" + sha;
+  //  SUBS-045: prepend the descent prefix so a DESCENDED row's link is
+  //  base-relative (`commit:<sub>?<sha>` from root); "" keeps `commit:?<sha>`.
+  const uri = "commit:" + (subPrefix || "") + "?" + sha;
   const uriBytes = utf8.Encode(uri);
   //  Row bytes WITH the hidden URI inline: sha8 + <uri> + " " + date7 + " " +
   //  summary + " (author)" + "\n".  The pager hides the U-tagged span, so the
@@ -396,33 +397,9 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine) {
   return bytes.length;
 }
 
-//  --- sub-mount descent (LOG-002) ---------------------------------------
-//  If `path` IS, or descends into, a submodule MOUNT, swap the working repo to
-//  the sub's own store and strip the consumed sub prefix.  Mirrors EXACTLY how
-//  tree.js/status.js descend: a mount is `<wt>/<prefix>/.be` as a regular file
-//  (subs.mountWtDir + the SNIFFSubIsMount gate), re-discovered via be.find — NO
-//  hand-rolled gitlink/.be probe.  Loops so a nested mount (`<sub>/<subsub>`)
-//  descends fully; returns { repo, path } (the deepest sub + remaining path).
-function descendSub(repo, path) {
-  const segs = path ? path.split("/") : [];
-  let i = 0;
-  for (;;) {
-    let hit = -1, hitWt = null;
-    //  Longest mounted prefix wins: probe prefixes left-to-right and take the
-    //  last that mounts (so `a/b` descends a, then b under a's repo next loop).
-    for (let n = i + 1; n <= segs.length; n++) {
-      const sub = segs.slice(i, n).join("/");
-      const wt = subs.mountWtDir(repo, sub);
-      try { if (io.stat(wt + "/.be").kind === "reg") { hit = n; hitWt = wt; } }
-      catch (e) { /* not a mount */ }
-    }
-    if (hit < 0) break;                          // no further sub mount
-    let subRepo;
-    try { subRepo = be.find(hitWt); } catch (e) { break; }
-    repo = subRepo; i = hit;
-  }
-  return { repo: repo, path: segs.slice(i).join("/") };
-}
+//  SUBS-045: LOG-002's private descendSub is now core/recurse.js's shared
+//  resolveRepoForPath (read twin of SUBS-039), which ALSO returns the descent
+//  prefix commit: links need; log + commit share it.
 
 //  --- the handler -------------------------------------------------------
 function handle(row, ctx) {
@@ -443,9 +420,12 @@ function handle(row, ctx) {
   //  precedent) and continue with the sub's repo + the stripped path.  The
   //  banner keeps the FULL original path (C `be log:<sub>` shows `log:<sub>`).
   const bannerPath = parsed.path;
+  //  SUBS-045: the descent DELTA (mount chain consumed) prefixes every emitted
+  //  nav URI so a clicked link re-enters the same sub from the same base.
+  let subPrefix = "";
   if (parsed.path) {
-    const d = descendSub(repo, parsed.path);
-    repo = d.repo; parsed.path = d.path;
+    const d = recurse.resolveRepoForPath(repo, parsed.path);
+    repo = d.repo; parsed.path = d.rest; subPrefix = d.prefix;
   }
 
   const k = store.open(repo.storePath, repo.project);
@@ -479,7 +459,7 @@ function handle(row, ctx) {
   const spans = [];
   let off = 0;
   for (const r of rows)
-    off += appendRow(r.sha, k, textParts, spans, off, r.nonspine);
+    off += appendRow(r.sha, k, textParts, spans, off, r.nonspine, subPrefix);
 
   //  Concatenate the row bytes.
   const body = concat(textParts, off);

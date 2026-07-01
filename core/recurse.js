@@ -77,9 +77,32 @@ function walk(repo, prefix, visit, opts) {
   }
 }
 
+//  SUBS-045: shared read-side path->repo splitter (read twin of SUBS-039).
+//  Descends the deepest mounted-sub prefix → { repo, rest, prefix }: the descent
+//  DELTA `prefix` (LOG-002's discarded joinPrefix) that log re-prefixes onto nav
+//  URIs and commit descends before resolving; "" when nothing mounted.
+function resolveRepoForPath(repo, path) {
+  const segs = path ? path.split("/") : [];
+  let i = 0, prefix = "";
+  for (;;) {
+    let hit = -1;
+    //  Longest mounted prefix wins (so `a/b` descends a, then b next loop).
+    for (let n = i + 1; n <= segs.length; n++) {
+      if (isMount(repo.wt, segs.slice(i, n).join("/"))) hit = n;
+    }
+    if (hit < 0) break;
+    const sub = segs.slice(i, hit).join("/");
+    let subRepo;
+    try { subRepo = be.find(subs.mountWtDir(repo, sub)); } catch (e) { break; }
+    repo = subRepo; prefix = joinPrefix(prefix, sub); i = hit;
+  }
+  return { repo: repo, rest: segs.slice(i).join("/"), prefix: prefix };
+}
+
 module.exports = {
   walk: walk,
   isMount: isMount,
   gitmodulesOrder: gitmodulesOrder,
   joinPrefix: joinPrefix,
+  resolveRepoForPath: resolveRepoForPath,
 };

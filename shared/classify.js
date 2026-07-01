@@ -191,6 +191,9 @@ function patchStamps(wtlogReader) {
 function classifyMerge(be, wtlogReader, reader, opts) {
   opts = opts || {};
   const wtRoot = be.wt;
+  //  SUBS-045: a real submodule is DECLARED in `.gitmodules`; an undeclared
+  //  base-gitlink (the `be -> .` self-locator) must NOT be sub-classified.
+  const declaredSubs = new Set(require(libDir() + "/gitmodules.js").paths(wtRoot));
   const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);  // JSQUE-016
   const dropMeta = !!opts.skipMeta;
   const underNarrow = opts.underNarrow || null;
@@ -308,7 +311,9 @@ function classifyMerge(be, wtlogReader, reader, opts) {
     }
 
     //  Gitlink (submodule) baseline row: record prefix, drop internals.
-    if (b && (b.kind === "s" || b.mode === 0o160000)) {
+    //  SUBS-045: only when DECLARED in `.gitmodules`; an undeclared base-gitlink
+    //  (the `be` self-locator) falls through, never a sub row / `adv`.
+    if (b && (b.kind === "s" || b.mode === 0o160000) && declaredSubs.has(path)) {
       subPrefixes.push(path + "/");
       if (d) { push({ bucket: "del", path: path, ts: d.ts, inBase: true }); continue; }
       //  base-only/both gitlink, no intent → defer to JS-033 (status); post
