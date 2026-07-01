@@ -62,6 +62,36 @@ function buildHunks(args) {
   return hunks;
 }
 
+//  JAB-003: an address-bar line is a JS-ish CALL.  `verb param…` → ONE string
+//  param (the rest verbatim); `verb(a,b)` → eval'd scalar/string params; a bare
+//  word / path / `scheme:uri` → null (the caller's legacy single-token drive).
+function spellCall(spell) {
+  const s = spell.trim();
+  const m = /^([a-zA-Z][a-zA-Z0-9]*!?)(\s+|\()/.exec(s);
+  if (!m) return null;
+  const verb = m[1];
+  if (m[2][0] === "(") {                          // verb(a, b) — a real JS call
+    const open = s.indexOf("("), close = s.lastIndexOf(")");
+    if (close <= open) return null;
+    const params = eval("[" + s.slice(open + 1, close) + "]");  // user input: eval OK
+    const argv = [verb];
+    for (const p of params) {
+      const t = typeof p;
+      if (p === null || t === "string" || t === "number" || t === "boolean")
+        argv.push(String(p));
+      else throw "PARAMOBJ";                      // object/array need the `be` global
+    }
+    return argv;
+  }
+  //  verb param — the rest is ONE string; strip a single layer of matching
+  //  surrounding quotes so `post 'msg'` commits `msg`, not `'msg'`.
+  let rest = s.slice(m[0].length);
+  const q = rest[0];
+  if (rest.length >= 2 && (q === "'" || q === '"') && rest[rest.length - 1] === q)
+    rest = rest.slice(1, -1);
+  return rest.length ? [verb, rest] : [verb];
+}
+
 //  driveSpell(spell) -> hunks: the in-process address-bar drive (JAB-028 TODO#5).
 //  Re-enter the resident loop for the typed spell in --tlv mode, capturing its
 //  fd-1 'H'-record stream via a reversible io.writeAll hook (no dup2, no spawn,
@@ -70,11 +100,16 @@ function buildHunks(args) {
 //  The outer loop owns argv[1]=loop.js, so the re-entrant cli's require-scan and
 //  queue path resolve correctly (sequential re-entry, JAB-004 recursion).
 function driveSpell(spell) {
-  const u = uri._parse(spell);
-  //  No scheme + a plain path → bro's OWN file/dir hunk (no loop re-entry).
-  if (!u.scheme) {
-    const h = buildHunks([spell]);
-    if (h.length) return h;
+  //  JAB-003: a `verb param` / `verb(a,b)` CALL splits to a proper argv; null →
+  //  a bare path / scheme:uri → the legacy single-token file/loop drive below.
+  const call = spellCall(spell);
+  if (!call) {
+    const u = uri._parse(spell);
+    //  No scheme + a plain path → bro's OWN file/dir hunk (no loop re-entry).
+    if (!u.scheme) {
+      const h = buildHunks([spell]);
+      if (h.length) return h;
+    }
   }
   //  Require core/loop.js DIRECTLY, never the be/loop.js ENTRY shim: the shim's
   //  self-run guard (`argv[1] ends /loop.js → cli(process.argv)`) re-fires on a
@@ -91,8 +126,9 @@ function driveSpell(spell) {
   //  PID+bePath queue (its clean-exit close unlinks it → outer ENOENT).  Hand
   //  it a DISTINCT per-call /tmp queue (subQueuePath) so only its own file is
   //  unlinked.  (fd-1 capture stays interim; JAB-029 retires the monkey-patch.)
-  try { loop.cli(["jab", "loop.js", spell, "--tlv"],
-                 { queuePath: loop.subQueuePath(spell) }); }
+  const argv = call ? ["jab", "loop.js"].concat(call, ["--tlv"])
+                    : ["jab", "loop.js", spell, "--tlv"];
+  try { loop.cli(argv, { queuePath: loop.subQueuePath(spell) }); }
   finally { io.writeAll = orig; }
   let total = 0; for (const c of chunks) total += c.length;
   const tlv = new Uint8Array(total);

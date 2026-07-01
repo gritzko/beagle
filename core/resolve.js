@@ -169,6 +169,10 @@ function seed(verb, argv, ctx, repo) {
     return { rows: rows, refs: refs, triple: triple };
   }
 
+  //  JAB-003: POST's message rides ctx.args as a STRING — classifyArg would
+  //  URI-split a `T: log: msg` message into a malformed path row (silent drop).
+  if (verb === "post") return { rows: rows, refs: refs, triple: triple };
+
   //  JSQUE-009: GET's arg is a whole REMOTE URI (scheme/authority/store path),
   //  not a wt path — classifyArg would mangle it.  Ride it verbatim as the
   //  seed row; the get handler resolves the remote at entry (its own pin).

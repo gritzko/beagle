@@ -14,6 +14,8 @@ const bro = require("view/bro.js");
 //  BRO-005: the hunk-header band SGR (pale-yellow bg) — single-sourced from the
 //  theme (view/theme.js BANNER_SGR), the SAME band core/emit.js / C bro draw.
 const theme = require("view/theme.js");
+//  JAB-003: repo/worktree discovery (io.cwd walk-up) for the session context.
+const discover = require("core/discover.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -103,6 +105,15 @@ function paintRow(hunk, off, end, color, pass) {
   return out;
 }
 
+//  JAB-003: the session context — cwd + worktree root + repo, from discover.js
+//  (io.cwd walk-up).  Repo-less (bro file viewer, no .be) → wt_root undefined.
+function sessionBe() {
+  const cwd = io.cwd();
+  let repo = null;
+  try { repo = discover.find(cwd); } catch (e) { repo = null; }
+  return { cwd: cwd, wt_root: repo ? repo.wt : undefined, repo: repo };
+}
+
 //  ---- the pager state machine ----------------------------------------------
 //  A View = { hunks, rows(cached per width), scroll }.  The pager holds the
 //  CURRENT view; a spell from the address bar REPLACES it (the back-stack is
@@ -111,6 +122,7 @@ function Pager(fd, opts) {
   this.fd = fd;
   this.color = opts && opts.color !== undefined ? opts.color : true;
   this.driveSpell = opts && opts.driveSpell;     // (spell) -> hunks | null
+  this.be = (opts && opts.be) || sessionBe();    // JAB-003: {cwd, wt_root, repo}
   this.view = null;                              // { hunks, rows, scroll, cols }
   this.stack = [];                               // JAB-030: the view BACK-stack
   this.mode = "scroll";                          // "scroll" | "command"
@@ -150,6 +162,27 @@ Pager.prototype._viewPath = function () {
   return "";
 };
 
+//  JAB-003: join a relative spell (`.` / `./x` / `..` / `../y`) onto a URI dir
+//  path as a DIRECTORY — `..` pops a segment, a name pushes one.
+function joinPath(base, rel) {
+  const segs = base ? base.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { if (segs.length) segs.pop(); }
+    else segs.push(seg);
+  }
+  return segs.join("/");
+}
+
+//  JAB-003: the CURRENT view's anchor URI — the tracked navigated spell, else
+//  its first hunk's banner URI (a scheme verb self-labels its own hunk).
+Pager.prototype._viewUri = function () {
+  const v = this.view;
+  if (!v) return "";
+  if (v.uri) return v.uri;
+  return v.hunks.length ? (v.hunks[0].uri || "") : "";
+};
+
 //  JAB-030: resolve a typed spell RELATIVE to the current view.  A schemed
 //  spell (`grep:x`, `ls:`) or an absolute path is absolute → returned as-is.
 //  A fragment-only `#frag` / ref-only `?ref` re-anchors on the view's path; a
@@ -157,8 +190,20 @@ Pager.prototype._viewPath = function () {
 Pager.prototype._resolveSpell = function (spell) {
   const s = spell.trim();
   if (!s) return s;
-  const u = uri._parse(s);
+  //  A malformed parse (a `verb param` call — spaces/quotes) is not a URI:
+  //  ride it through to the dispatcher (spellCall), never throw here.
+  let u; try { u = uri._parse(s); } catch (e) { return s; }
   if (u.scheme) return s;                         // schemed → absolute spell
+  //  JAB-003: at a SCHEME view the URI is persistent state — mutate only the
+  //  slot named (scheme/path/?query stay, #frag resets); re-serialize via uri._feed.
+  const cur = new URI(this._viewUri());
+  if (cur.scheme) {
+    cur.fragment = undefined;                     // a fresh command drops #frag
+    if (/^[a-zA-Z][a-zA-Z0-9]*$/.test(s)) { cur.scheme = s; return cur.toString(); }
+    if (s[0] === ".") { cur.path = joinPath(cur.path || "", s); return cur.toString(); }
+    if (s[0] === "?") { cur.query = s.slice(1); return cur.toString(); }
+    if (s[0] === "#") { cur.fragment = s.slice(1); return cur.toString(); }
+  }
   const base = this._viewPath();
   if (!base) return s;
   if (s[0] === "#" || s[0] === "?") return base + s;   // re-anchor on the view
@@ -230,18 +275,26 @@ Pager.prototype._statusLine = function (rows, scroll, viewRows, cols) {
     return (this.color ? ESC + "[7m" : "") + this._fit(line, cols) +
            (this.color ? ESC + "[0m" : "");
   }
-  //  Map the top visible row to its hunk + source line for statusURI.
+  //  JAB-003: the LEFT label is the CURRENT URI — the view's navigated spell (a
+  //  scheme verb self-labels its hunk, so trust the spell), else the hunk URI.
   const r = rows.length ? rows[Math.min(scroll, rows.length - 1)] : null;
   let left = "";
-  if (r) {
-    const line = this._srcLine(r.hunk, r.banner ? 0 : r.off);
-    left = bro.statusURI(r.hunk, line);
+  if (this.view && this.view.uri) left = this.view.uri;
+  else if (r) {
+    const srcl = this._srcLine(r.hunk, r.banner ? 0 : r.off);
+    left = bro.statusURI(r.hunk, srcl);
   }
-  const pos = bro.statusPos(scroll, rows.length, viewRows);
-  //  BRO-007: the per-key hint blob collapsed to a single `h: help` pointer —
-  //  `h` pushes the help: view listing every shortcut + URI scheme.
-  let line = (this.message ? this.message + "  " : "") + left + "  " + pos +
-             "   h: help";
+  if (this.message) left = this.message + "  " + left;
+  //  BRO-007: `<pos>  h: help` (help pointer + scroll position) is RIGHT-aligned;
+  //  the URI stays left, the gap between them padded to the terminal width.
+  const right = bro.statusPos(scroll, rows.length, viewRows) + "  h: help";
+  const space = cols - right.length;
+  let line;
+  if (space < 1) line = right.slice(0, cols);
+  else {
+    if (left.length > space - 1) left = left.slice(0, space - 1);
+    line = left + " ".repeat(space - left.length) + right;
+  }
   return (this.color ? ESC + "[7m" : "") + this._fit(line, cols) +
          (this.color ? ESC + "[0m" : "");
 };
@@ -329,14 +382,16 @@ Pager.prototype._keyCommand = function (b) {
 //  the --tlv capture + reparse); on success PUSH the view (back-stack), else
 //  show the error.  The typed spell is first resolved relative to the view.
 Pager.prototype._runSpell = function (spell) {
-  const s = this._resolveSpell(spell);
-  if (!s) return;
-  let hunks = null, err = null;
-  try { hunks = this.driveSpell ? this.driveSpell(s) : null; }
-  catch (e) { err = String(e); }
-  if (err) { this.message = "err: " + err; return; }
-  if (!hunks || hunks.length === 0) { this.message = "no hunks: " + s; return; }
-  this.pushView(hunks);
+  //  JAB-003: ANY failure (resolve, drive, dispatch) shows in the addr bar —
+  //  never let it escape the key loop and exit the pager.
+  try {
+    const s = this._resolveSpell(spell);
+    if (!s) return;
+    const hunks = this.driveSpell ? this.driveSpell(s) : null;
+    if (!hunks || hunks.length === 0) { this.message = "no hunks: " + s; return; }
+    this.pushView(hunks);
+    this.view.uri = s;                            // track the current URI
+  } catch (e) { this.message = "err: " + String(e); }
 };
 
 //  JAB-030: FOLLOW the URI of the hunk at display-row `ri` — its banner URI is
