@@ -35,6 +35,7 @@ const stage   = require("../../shared/stage.js");
 const classify = require("../../shared/classify.js");
 const recurse = require("../../core/recurse.js");
 const ulog    = require("../../shared/ulog.js");
+const render  = require("../../view/render.js");      // SUBS-044: sub-banner line
 const wire    = require("../../shared/wire.js");      // GIT-014: wire push
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 
@@ -400,6 +401,37 @@ function bareStage(repo, wtl, k) {
   return { ops: ops };
 }
 
+//  SUBS-044: bare `be put` descends each MOUNTED sub PRE-ORDER ([Submodules]:
+//  stage the sub's interior first), running the sub's OWN bareStage over its
+//  baseline⊕wt and writing those rows to the SUB's wtlog; rows emit under a
+//  `put:<sub>` banner, prefixed `<sub>/…` — exactly as native relays them.  The
+//  parent gitlink bump is POST's job (like stageInSub), so the parent records
+//  nothing here.  Reuses core/recurse.walk (mount gate, `.gitmodules` order).
+function bareStageSubs(repo, prefix, ctx) {
+  const out = ctx && ctx.out;
+  recurse.walk(repo, prefix, function (subRepo, subPrefix) {
+    //  SUBS-044: this sub FIRST (banner + own rows + relay-frame blanks), THEN
+    //  its grandchildren — native's pre-order, banner-on-entry, then descend.
+    const subK = store.open(subRepo.storePath, subRepo.project);
+    const r = bareStage(subRepo, wtlog.open(subRepo), subK);  // may throw PUTAMBIG
+    commitOps(subRepo, r.ops, ctx && ctx.T0);
+    if (out) {
+      out.raw(render.dateCol(ron.now()) + " " + render.verbCol("put") +
+              " put:" + subPrefix);                                // sub banner
+      let staged = 0;
+      for (const op of r.ops)
+        if (op.path !== null && !op.silent) {
+          out.row(subPrefix + "/" + (op.dst ? (op.path + "#" + op.dst) : op.path), "put", 0n);
+          staged++;
+        }
+      //  SUBS-044: two-blank `put:` close ONLY when this sub staged a row
+      //  (native skips them for an empty banner that exists only to descend).
+      if (staged) { out.raw(""); out.raw(""); }
+    }
+    bareStageSubs(subRepo, subPrefix, ctx);          // then descend grandchildren
+  });
+}
+
 //  JSQUE-010: `be put` as a loop HANDLER (converted from the `main();` one-shot).
 //  Each call handles ONE seed row (one path arg, resolution-at-entry fan-out);
 //  the `put:` banner header opens ONCE per run (ctx._putBannerOpen) and every
@@ -490,6 +522,8 @@ module.exports = function handle(row, ctx) {
       for (const op of r.ops)
         if (op.path !== null && !op.silent)
           out.row(op.dst ? (op.path + "#" + op.dst) : op.path, "put", 0n);
+    //  SUBS-044: then recurse mounted subs (pre-order), staging their interior.
+    bareStageSubs(repo, "", ctx);
     return;
   }
 

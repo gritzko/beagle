@@ -40,6 +40,7 @@ const wtlog   = require("../../shared/wtlog.js");
 const store   = require("../../shared/store.js");
 const stage   = require("../../shared/stage.js");
 const ulog    = require("../../shared/ulog.js");
+const recurse = require("../../core/recurse.js");     // SUBS-044: mounted-sub walk
 
 const DELDIRTY = "DELDIRTY";
 const SNIFFFAIL = "SNIFFFAIL";
@@ -54,6 +55,37 @@ function normRel(raw) {
   if (raw === "." || raw === "./") return "";
   if (raw.indexOf("./") === 0) return raw.slice(2);
   return raw;
+}
+
+//  SUBS-044: bare `be delete` descends each MOUNTED sub PRE-ORDER, sweeping the
+//  sub's interior `mis` (tracked, gone from disk) into the SUB's OWN wtlog and
+//  relaying prefixed `delete <sub>/<path>` rows + a `<sub>/swept N` summary +
+//  one trailing blank (native's sub-relay frame).  The parent gitlink bump is
+//  POST's job.  Reuses core/recurse.walk (mount gate, `.gitmodules` order).
+function bareSweepSubs(repo, prefix, items) {
+  recurse.walk(repo, prefix, function (subRepo, subPrefix) {
+    //  SUBS-044: this sub FIRST (rows + summary + relay-frame blank), THEN its
+    //  grandchildren — native's pre-order relay.
+    const subK = store.open(subRepo.storePath, subRepo.project);
+    const eng = stage.prep(subRepo, wtlog.open(subRepo), subK);
+    const rows = [];
+    if (eng.haveBase && eng.baseTreeSha)
+      subK.readTreeRecursive(eng.baseTreeSha, function (leaf) {
+        if (leaf.kind === "s") return;
+        if (stage.isMeta(leaf.path)) return;
+        if (statExists(join(subRepo.wt, leaf.path))) return;
+        rows.push({ uri: leaf.path });
+        items.push({ type: "row", path: subPrefix + "/" + leaf.path });
+      });
+    if (rows.length > 0) {
+      const uris = rows.map(function (r) { return { verb: "delete", uri: r.uri }; });
+      ulog.append(subRepo.bePath, uris);                // write to the SUB wtlog
+      items.push({ type: "summary",
+                   text: subPrefix + "/swept " + rows.length + " missing file(s)" });
+      items.push({ type: "blank" });                    // native sub-relay frame
+    }
+    bareSweepSubs(subRepo, subPrefix, items);           // then descend grandchildren
+  });
 }
 
 //  --- DELStage (path / bare forms): build the row list, then write -------
@@ -85,6 +117,9 @@ function delStage(repo, k, pathRaws, force) {
     if (rows.length > 0)
       items.push({ type: "summary",
                    text: "swept " + rows.length + " missing file(s)" });
+    //  SUBS-044: recurse mounted subs (pre-order) — sub `mis` rows write to the
+    //  sub wtlogs and ride `items` prefixed; the parent `rows` stay parent-only.
+    bareSweepSubs(repo, "", items);
     return { banner: { bare: true, items: items }, dirty: false,
              rows: rows };
   }
@@ -258,6 +293,7 @@ function emitBanner(out, banner) {
   for (const it of banner.items) {
     if (it.type === "row") out.row(it.path, "delete", 0n);
     else if (it.type === "summary") out.raw(it.text);
+    else if (it.type === "blank") out.raw("");          // SUBS-044 sub-relay frame
   }
 }
 
