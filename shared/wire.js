@@ -20,6 +20,7 @@
 const pkt = require("./pkt.js");
 const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/util/
 const shq = require("../view/render.js").shQuote;       // JSQUE-016: render -> view/
+const store = require("./store.js");   // GIT-018: JS store reader for the push-pack closure walk
 
 //  --- transport classify -------------------------------------------------
 //  Decide the peer spawn from the remote URI, mirroring WIRECLI wcli_spawn:
@@ -347,10 +348,9 @@ function fetch(remoteUri, wantRef, haves) {
 //  rides curl POST (reusing the GIT-012 curlRun/memReader/pol path).  POST
 //  stays FF-only; the gate runs in the caller (post.js) BEFORE any write.
 //
-//  The pack is built by SHELLING to `keeper upload-pack <store>?/<proj>`
-//  (the GIT-005 thin-pack serve builder) with want=local-tip, have=remote
-//  tips — the same closure walk that serves fetches.  The JS never writes a
-//  pack itself (per the ticket crux).
+//  GIT-018: the pack is built in PURE JS (buildPushPack below): a closure
+//  walk over the store reader (want-minus-haves) + a git.pack emit — NO
+//  keeper spawn, no subprocess.
 
 //  Drain a receive-pack advertisement (pkt.Reader over a spawned fd, or a
 //  memReader over curl bytes for http).  Returns { refs:[{sha,name}] }.
@@ -383,49 +383,108 @@ function drainRecvAdvert(rd, skipPreamble) {
   return { refs };
 }
 
-//  Build the thin pack of objects the remote lacks by shelling to the
-//  local keeper's pack serve (the GIT-005 thin builder): drive
-//  `keeper upload-pack <localServe>` with want=tip + have=remote tips, and
-//  parse out the packfile after NAK — reusing the GIT-012 fetch wire shape.
-//  `localServe` is the `<storeroot>?/<project>` selector keeper_served_at
-//  expects.  Returns the raw packfile bytes (PACK hdr … sha trailer).
-function buildPushPack(localServe, wantSha, haves) {
-  const keeperBin = io.getenv("KEEPER_BIN") || "keeper";
-  const child = io.spawn(keeperBin, [keeperBin, "upload-pack", localServe]);
-  const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
-  let pack;
-  try {
-    const reader = pkt.Reader(rfd);
-    //  Drain keeper's own advert (we don't need it; we already know want).
-    for (;;) {
-      const ev = reader.next();
-      if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
+//  GIT-018: build the push pack in PURE JS — no keeper spawn.  Walk the object
+//  closure reachable from `wantSha` but NOT from any `have` over the JS store
+//  reader, then emit a self-contained (non-thin) git wire pack via git.pack.
+//  `localServe` is `<storeroot>?/<project>` (the keeper serve selector); we
+//  split it with URI (never a regex) and open the store reader.  Returns the
+//  raw packfile bytes (PACK hdr … 20-byte sha1 trailer).
+
+//  serveReader(localServe): open the JS store reader for a `<store>?/<proj>`
+//  selector.  URI splits path=storePath, query=`/<proj>` (empty → auto-detect).
+function serveReader(localServe) {
+  const u = new URI(localServe);
+  const storePath = u.path || "";
+  let proj = u.query || "";
+  if (proj && proj[0] === "/") proj = proj.slice(1);
+  return store.open(storePath, proj);
+}
+
+//  markReachable(reader, roots, seen): flood the object closure reachable from
+//  each commit in `roots` (commit→tree→subtrees→blobs, + parents) into the
+//  `seen` Set.  A gitlink (submodule) commit is recorded but NEVER descended
+//  into (its objects live in the sub shard).  Missing objects terminate that
+//  branch quietly (a shallow shard or a remote-only `have`), matching dag.js.
+function markReachable(reader, roots, seen) {
+  const treeStack = [];
+  function pushTree(sha) { if (sha && !seen.has(sha)) { seen.add(sha); treeStack.push(sha); } }
+  const commits = [];
+  const cseen = new Set();
+  for (const r of roots) if (isFullSha(r) && !cseen.has(r)) { cseen.add(r); commits.push(r); }
+  let h = 0;
+  while (h < commits.length) {
+    const csha = commits[h++];
+    let pc;
+    try { pc = reader.parseCommit(csha); } catch (e) { pc = undefined; }
+    if (!pc) continue;                          // missing/remote-only commit
+    seen.add(csha);
+    pushTree(pc.tree);
+    for (const p of (pc.parents || [])) if (isFullSha(p) && !cseen.has(p)) {
+      cseen.add(p); commits.push(p);
     }
-    const reqs = [];
-    reqs.push(pkt.frame("want " + wantSha + " ofs-delta\n"));
-    reqs.push(pkt.flushPkt());
-    if (haves) for (const h of haves) if (isFullSha(h))
-      reqs.push(pkt.frame("have " + h + "\n"));
-    reqs.push(pkt.frame("done\n"));
-    for (const r of reqs) io.writeAll(wfd, r);
-    io.close(wfd);
-    //  Skip NAK/ACK, then the raw pack to EOF.
-    for (;;) {
-      const ev = reader.next();
-      if (ev.kind === pkt.EOF) throw "wire.push: keeper closed before pack";
-      if (ev.kind === pkt.LINE) {
-        const s = utf8.Decode(ev.payload).replace(/\n$/, "");
-        if (s === "NAK" || s.indexOf("ACK") === 0) break;
-        continue;
-      }
-      if (ev.kind === pkt.FLUSH) continue;
-    }
-    pack = readToEof(rfd, reader.rest());
-  } finally {
-    try { io.close(rfd); } catch (e) {}
-    try { io.reap(pid); } catch (e) {}
   }
-  if (!pack || pack.length < 32) throw "wire.push: keeper produced no pack";
+  //  Drain the tree stack: enqueue subtrees, mark blob leaves, skip gitlinks.
+  while (treeStack.length) {
+    const tsha = treeStack.pop();
+    let ents;
+    try { ents = reader.readTree(tsha); } catch (e) { ents = undefined; }
+    if (!ents) continue;
+    for (const e of ents) {
+      if (e.mode === 0o40000) { pushTree(e.sha); continue; }          // subtree
+      if (e.mode === 0o160000) continue;        // GIT-018: gitlink — never descend
+      seen.add(e.sha);                          // blob / exe / symlink leaf
+    }
+  }
+}
+
+//  emitPack(reader, order): write a RAW (non-delta) self-contained git wire
+//  pack of the objects in `order` (feed-order shas) via git.pack.over into a
+//  JS-owned buffer, append the 20-byte sha1 trailer, and return the bytes.
+//  GIT-018: RAW per this pass (correctness first; OFS_DELTA is [PACK-002]).
+function emitPack(reader, order) {
+  const objs = [];
+  let cap = 1024;
+  for (const sha of order) {
+    const o = reader.getObject(sha);
+    if (!o) throw "wire.push: closure object missing from store — " + sha;
+    objs.push(o);
+    cap += o.bytes.length + 256;                // per-record header+zlib slack
+  }
+  const ta = new Uint8Array(cap);
+  const pk = git.pack.over(ta);
+  pk.header();
+  for (const o of objs) pk.feed(o.type, o.bytes, -1, null);   // raw record
+  pk.finish();
+  const wm = Number(pk.buffer.watermark);
+  const full = new Uint8Array(wm + 20);
+  full.set(ta.subarray(0, wm), 0);
+  full.set(sha1(ta.subarray(0, wm)), wm);       // git pack trailer = sha1(body)
+  return full;
+}
+
+function buildPushPack(localServe, wantSha, haves) {
+  if (!isFullSha(wantSha)) throw "wire.push: bad want sha " + wantSha;
+  const reader = serveReader(localServe);
+  //  Exclude everything reachable from the remote's haves, then walk want.
+  const excl = new Set();
+  const haveRoots = (haves || []).filter(isFullSha);
+  if (haveRoots.length) markReachable(reader, haveRoots, excl);
+  const want = new Set();
+  markReachable(reader, [wantSha], want);
+  //  Feed order: commits first, then trees, then blobs (git-friendly; RAW so
+  //  order is not load-bearing).  Classify each want-object by its store type.
+  const commits = [], trees = [], blobs = [];
+  for (const sha of want) {
+    if (excl.has(sha)) continue;                // already on the remote
+    const o = reader.getObject(sha);
+    if (!o) continue;                           // unreadable → drop (thin base)
+    if (o.type === "commit") commits.push(sha);
+    else if (o.type === "tree") trees.push(sha);
+    else blobs.push(sha);
+  }
+  const order = commits.concat(trees, blobs);
+  const pack = emitPack(reader, order);
+  if (!pack || pack.length < 32) throw "wire.push: empty push pack";
   return pack;
 }
 
