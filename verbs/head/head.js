@@ -6,14 +6,20 @@
 //  overlay), NEVER a `.keeper` pack-log file (that no-persist is the whole point
 //  of T4; the pack log is GET/T5's job).  Pure JS over the shared spine.
 //
-//  FORMS (GIT-016 T4 primary):
+//  FORMS:
+//    be head                       BARE (≡ bare `be`): the STATUS check — cur vs
+//                                  its parent/trunk (or cached remote) — no net,
+//                                  no writes.  REUSES views/status/status.js.
+//    be head ?branch               LOCAL: cur vs a LOCAL branch tip — ahead/behind
+//                                  + changed FILE paths, all objects local (no net).
 //    be head ssh://origin?branch   FETCH: advert -> resolve -> fetch the pack in
 //                                  memory -> in-memory remote DAG -> verdict ->
-//                                  report ahead/behind -> update remote-track ref.
+//                                  report ahead/behind + changed paths -> update
+//                                  remote-track ref.  No pack-log write.
 //    be head //origin?branch       CACHED: no network — read the remote-tracking
 //                                  tip (store.eachRemote) and report vs cur.
-//  DEFERRED (say so): bare `be head` (cur vs trunk) and local `?br` diffs — the
-//  network peek is T4's contract; the in-repo status peek is a follow-up.
+//  GIT-016: the changed-PATHS diff (T4-deferred) now lands via the shared
+//  shared/changedpaths.js helper — cur's tree vs the tip's tree, listed per form.
 
 "use strict";
 
@@ -24,6 +30,8 @@ const wire     = require("../../shared/wire.js");
 const relate   = require("../../shared/relate.js");
 const ingest   = require("../../shared/ingest.js");
 const dag      = require("../../shared/dag.js");
+const changed  = require("../../shared/changedpaths.js");   // GIT-016: paths diff
+const status   = require("../../views/status/status.js");   // GIT-016: bare = status
 const shalib   = require("../../shared/util/sha.js");
 const hunkrows = require("../../shared/hunkrows.js");
 const isFullSha = shalib.isFullSha;
@@ -41,7 +49,22 @@ function h60(sha) { return hashlet60FromBytes(hexDecode(sha)); }
 //  handler resolves the remote at entry.  A repo MUST exist (cur is the compare
 //  baseline); a fresh clone-target has no cur, so head refuses cleanly there.
 module.exports = function handle(row, ctx) {
-  const uri = (row && row.uri) || "";
+  //  The seed carries "." for a NO-ARG `be head` (a ULOG row needs a non-empty
+  //  uri; loop.cli plants "." then the handler prefers ctx.repo) — treat it as
+  //  bare.  A real arg (`?br`, `//origin`, `ssh://origin?br`) rides row.uri.
+  const raw = (row && row.uri) || "";
+  const uri = (raw === ".") ? "" : raw;
+  const u = new URI(uri);
+  const hasScheme = u.scheme !== undefined;
+  const hasAuth   = u.authority !== undefined;
+  const branch    = u.query || "";
+
+  //  GIT-016: bare `be head` ≡ bare `be` — the local STATUS check (cur vs its
+  //  parent/trunk, or its cached remote when cur IS the trunk).  No net, no
+  //  writes: DELEGATE to the status view (do NOT reinvent status), passing the
+  //  same row/ctx so it emits the same `status:` hunk this run's sink renders.
+  if (!hasScheme && !hasAuth && !branch) return status(row, ctx);
+
   const info = (ctx && ctx.repo) || be.find(io.cwd());
   const k = store.open(info.storePath, info.project);
   const cur = wtlog.open(info).curTip();
@@ -49,21 +72,28 @@ module.exports = function handle(row, ctx) {
   if (!curSha)
     throw "HEADNONE: no cur tip to compare (commit first, then `be head //origin`)";
 
-  const u = new URI(uri);
-  const hasScheme = u.scheme !== undefined;
-  const hasAuth   = u.authority !== undefined;
-  //  A `//host` (authority, NO scheme) is the CACHED read; any scheme is a wire
-  //  fetch.  A bare in-repo `?br` (no host/scheme) is DEFERRED (see header).
-  if (!hasScheme && !hasAuth)
-    throw "HEADLOCAL: local `be head` / `?br` peek is deferred — use a transport " +
-          "scheme (`//origin` cached, `ssh://origin` fetch)";
-  const cached = !hasScheme && hasAuth;
-  const branch = u.query || "";
-
-  const res = cached ? peekCached(k, u, branch, curSha)
-                     : peekFetch(k, uri, branch, curSha);
-  report(ctx, uri, branch, res.rel, res.ahead, res.behind, res.tip);
+  //  Dispatch by transport: a `//host` authority (no scheme) is the CACHED read;
+  //  any scheme is a wire fetch; a bare in-repo `?branch` (no host/scheme) is the
+  //  LOCAL peek — cur vs a local branch tip, all objects local (no net).
+  const res = hasScheme       ? peekFetch(k, uri, branch, curSha)
+            : hasAuth         ? peekCached(k, u, branch, curSha)
+            : /* local ?br */   peekLocal(k, branch, curSha);
+  report(ctx, uri || "?" + branch, branch, res.rel, res.ahead, res.behind,
+         res.tip, res.paths);
 };
+
+//  GIT-016 LOCAL `?branch`: cur vs a LOCAL branch tip — resolve `?branch` to its
+//  local ref sha (store.resolveRef), a pull-side verdict with NO remote index
+//  (every connecting commit + tree is already local), and the changed FILE paths
+//  (cur's tree vs the branch tip's tree, both read from the keeper).  No net.
+function peekLocal(k, branch, curSha) {
+  const tip = k.resolveRef(branch || "");
+  if (!tip || !isFullSha(tip))
+    throw "HEADREF: no local branch `?" + (branch || "") + "` to diff against";
+  const v = relate.verdict(k, curSha, tip);
+  const paths = changed.changedCommits(k, curSha, k, tip);
+  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip, paths: paths };
+}
 
 //  CACHED `//origin?branch`: the remote-tracking tip from store.eachRemote (no
 //  wire).  cur vs that tip is a LOCAL-object verdict — the connecting commits
@@ -82,7 +112,9 @@ function peekCached(k, u, branch, curSha) {
     throw "HEADCACHE: no cached tip for //" + (u.host || u.authority) +
           (branch ? "?" + branch : "") + " — fetch with ssh:/be: first";
   const v = relate.verdict(k, curSha, tip);
-  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip };
+  //  Cached connecting commits + trees are already in the store → diff locally.
+  const paths = changed.changedCommits(k, curSha, k, tip);
+  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip, paths: paths };
 }
 
 //  FETCH `ssh://origin?branch`: advert -> resolve the target ref -> fetch the
@@ -107,10 +139,15 @@ function peekFetch(k, uri, branch, curSha) {
   //  Build the in-memory remote DAG from the fetched pack (no file, no packlog).
   const remoteIx = commitEdges(f.pack);
   const v = relate.verdict(k, curSha, tip, remoteIx);
+  //  GIT-016: changed paths — cur's tree from the keeper, the tip's tree from a
+  //  TRANSIENT in-memory pack reader over the fetched bytes (never persisted).
+  let paths = [];
+  try { paths = changed.changedCommits(k, curSha, changed.packReader(f.pack), tip); }
+  catch (e) { paths = []; }        // a truncated/thin fetch → skip paths, keep verdict
   //  Update the remote-tracking ref ONLY (reflog), never the pack log — this is
   //  the canonical cache refresh HEAD.mkd promises.
   ingest.saveRemoteRef(k.shard, uri, tip);
-  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip };
+  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip, paths: paths };
 }
 
 //  GIT-016: parse the fetched pack's COMMIT records into an in-memory wh128
@@ -156,9 +193,9 @@ function stripLeadRef(q) {
 //  ahead / behind commit (newest-first, the aheadBehind order).  ahead rows are
 //  local (`post`, they'd be sent); behind rows are remote (`miss`, they'd be
 //  pulled).  An `eq` peek reports just the banner (nothing to sync).
-//  GIT-016: the changed-PATHS diff (fetch remote trees/blobs transiently, diff
-//  vs cur's tree) is DEFERRED — the ahead/behind graph core ships solid first.
-function report(ctx, uri, branch, rel, ahead, behind, tip) {
+//  GIT-016: the changed-PATHS diff (shared/changedpaths.js — cur's tree vs the
+//  tip's tree) follows, one `chg` row per differing FILE path (lex order).
+function report(ctx, uri, branch, rel, ahead, behind, tip, paths) {
   if (!(ctx && ctx.sink)) return;
   //  Header row: the target ref (any `?ref`/`#pin` slot the uri already carries
   //  is shed) + the relation verb; the ahead/behind commit rows follow.
@@ -172,6 +209,8 @@ function report(ctx, uri, branch, rel, ahead, behind, tip) {
   for (const c of behind)
     out.row("?" + (c.hashlet || "") + (c.subject ? "#" + c.subject : ""),
             "miss", c.ts);
+  //  Changed FILE paths (cur's tree vs the tip's tree) — a `chg` row each.
+  for (const p of (paths || [])) out.row(p, "chg", 0n);
   out.done();
 }
 
