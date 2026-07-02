@@ -127,5 +127,18 @@ function add(packBytes, shard, remoteUri, tip) {
   ]));
 }
 
+//  GIT-016: after a successful push, record the pushed ref at its new tip as a
+//  remote-tracking refs row (the SAME `{verb:"get", uri: <authority>?#tip}`
+//  shape clone/add write, so store.eachRemote picks it up).  `shard` = the
+//  project shard dir; `remoteUri` the raw push target; `tip` the new 40-hex sha.
+function saveRemoteRef(shard, remoteUri, tip) {
+  const origin = remoteUri.replace(/\?.*/, "?");
+  const old = [];
+  ulog.each(join(shard, "refs"),
+            function (log) { old.push({ verb: log.verb, uri: log.uri }); });
+  writeUlog(join(shard, "refs"),
+            old.concat([{ verb: "get", uri: origin + "#" + tip }]));
+}
+
 module.exports = { clone, add, buildIndex, writeUlog, writeBytes,
-                   packLogBytes, logName, fileIdOf };
+                   packLogBytes, logName, fileIdOf, saveRemoteRef };

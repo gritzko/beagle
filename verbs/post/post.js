@@ -34,6 +34,8 @@ const shalib   = require("../../shared/util/sha.js");
 const barrier  = require("../../core/barrier.js");
 const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
 const wire     = require("../../shared/wire.js");      // GIT-013: wire push
+const relate   = require("../../shared/relate.js");    // GIT-016: verdict spine
+const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track saver
 //  JAB-003: TRUE-hunk output via the shared columnar->hunk adapter (ctx.sink),
 //  retiring the ctx.out columnar path for post.
 const hunkrows = require("../../shared/hunkrows.js");
@@ -282,32 +284,23 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
 function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   if (!tip || !isFullSha(tip))
     throw "POSTNONE: no cur tip to push (commit first, then `be post //host`)";
-  //  GIT-015 defect B: no `?` slot = no branch selected — never silently push
-  //  cur onto the umbrella `main`; refuse (use `?/PROJ` to pick a trunk).
-  if (!hasQuery)
-    throw "POSTNOREF: no branch selected — use `?/PROJ` to pick a trunk";
-  //  GIT-015 defect A: `?/project` is the absolute trunk; strip the leading
-  //  absolute-marker `/` so it resolves to refs/heads/project, not //project.
-  const bare = (branch && branch[0] === "/") ? branch.slice(1) : branch;
-  const wireRef = "refs/heads/" + ((bare && bare !== "main") ? bare : "main");
-  //  GIT-015 defect A guard: an empty path segment (`refs/heads//…`, trailing
-  //  `/`) is a funny ref — refuse in jab BEFORE the wire write, never send it.
-  if (/\/\//.test(wireRef) || wireRef[wireRef.length - 1] === "/")
-    throw "POSTREF: empty ref segment in `" + wireRef + "` — bad branch target";
-  //  Drain the remote receive-pack advert to learn its current tip (old sha).
-  //  classify() picks ssh/local/http from the URI; push() returns its refs.
-  const adv = wire.advertRefs(remoteUri, "receive-pack");
-  const cur = adv.refs.find(r => r.name === wireRef);
-  const old = cur ? cur.sha : "";
+  //  GIT-016: the advertise->resolve->verdict spine (shared/relate.js) does the
+  //  POSTNOREF gate + GIT-015 ref resolution + the LOCAL-DAG FF verdict.  A
+  //  {code,msg} throw is re-raised as the SAME string message post always used.
+  let rel;
+  try { rel = relate.relate(reader, remoteUri, branch, tip, hasQuery); }
+  catch (e) { throw (e && e.msg) ? e.msg : e; }
+  const wireRef = rel.wireRef, old = rel.old, adv = rel.adv;
 
-  //  FF gate (POST stays FF-only): a present remote tip must be an ancestor
-  //  of cur in the local DAG.  Refuse BEFORE building/sending anything.
+  //  FF gate (POST stays FF-only), behaviour-preserving over the spine verdict.
   if (old) {
-    if (old === tip)
+    if (rel.verdict.eq)
       throw "POSTNONE: remote `" + wireRef + "` already at cur's tip";
-    if (!dag.isAncestor(reader, old, tip))
+    //  GIT-016: honest non-FF refusal — post is FF-only, so no force hint; the
+    //  remote ancestry is unknown here (no fetch) so no diverged/unrelated guess.
+    if (!rel.verdict.ff)
       throw "POSTNOFF: remote `" + wireRef + "` is not an ancestor of cur — " +
-            "non-FF push refused (use native `be put` to force)";
+            "non-FF push refused";
   }
 
   //  Build the thin pack (objects the remote lacks) from the local store via
@@ -316,6 +309,9 @@ function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   const haves = adv.refs.map(r => r.sha).filter(isFullSha);
   const pack = wire.buildPushPack(serve, tip, haves);
   wire.push(remoteUri, [{ ref: wireRef, neu: tip, old: old }], pack);
+  //  GIT-016: SAVE the just-advanced remote tip as a remote-tracking refs row
+  //  (ingest.saveRemoteRef, the get/clone row shape) so `be head //origin` reads it.
+  ingest.saveRemoteRef(reader.shard, remoteUri, tip);
 
   //  JAB-003: TRUE-hunk via the adapter (canonical uri `post:<remote>?<br>#<tip>`).
   if (ctx && ctx.sink) {

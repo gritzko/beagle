@@ -179,7 +179,9 @@ function seed(verb, argv, ctx, repo) {
   //  COMMIT-004 (Defect A): a re-parse projector is the same — its `?`/`#` are the
   //  view's OWN slots, never a branch ref-write, so ride the token through as a
   //  path for the view to re-parse (see isReparseView).
-  if (verb === "get" || isReparseView(verb)) {
+  //  GIT-016: HEAD is GET's non-persisting twin — its arg is likewise a whole
+  //  remote URI the handler resolves at entry, so ride it verbatim (not mangled).
+  if (verb === "get" || verb === "head" || isReparseView(verb)) {
     for (const arg of argv) rows.push({ path: arg });
     return { rows: rows, refs: refs, triple: triple };
   }

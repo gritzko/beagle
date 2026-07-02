@@ -25,33 +25,79 @@
 
 "use strict";
 
-const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/util/
+const shalib = require("./util/sha.js");                // JSQUE-016: -> shared/util/
+const isFullSha = shalib.isFullSha;
+const hashlet60FromBytes = shalib.hashlet60FromBytes;
+const hexDecode = hex.decode;                           // JABC hex.decode (codec)
 
 const WALK_CAP = 1 << 16;   // ~65k commits/side — matches the C anc cap order
+
+//  GIT-016: git commit pack type (WHIFFKeyPack low nibble), matches store.js.
+const T_COMMIT = 1;
+
+//  GIT-016: WHIFFKeyPack(type, hashlet60) — type in the low 4 bits (store.js
+//  keyFor twin); the remote wh128 index keys commit edges by the commit hashlet.
+function keyFor(type, hashlet60) { return (hashlet60 << 4n) | (BigInt(type) & 0xfn); }
+function hashletOf(sha) { return hashlet60FromBytes(hexDecode(sha)); }
+
+//  GIT-016: node identity for a walk — the full sha when there is NO remote
+//  index (unchanged 2-arg behaviour), else the 60-bit hashlet so a local sha
+//  and a remote hashlet-keyed edge share one identity space (graf DAGAncestors).
+function idOf(remoteIx, sha) { return remoteIx ? hashletOf(sha) : sha; }
+
+//  GIT-016: parents of a node (id=identity, sha=full sha if known) as
+//  [{id, sha}] — keeper.commitParents FIRST (full shas, when sha is known),
+//  then the remote wh128 index by hashlet (parent hashlets, sha unknown).  A
+//  parent that is itself local re-enters keeper because it carries its sha.
+function parentsVia(keeper, remoteIx, node) {
+  let parents;
+  if (node.sha) { try { parents = keeper.commitParents(node.sha); } catch (e) { parents = undefined; } }
+  if (parents && parents.length) {
+    const out = [];
+    for (const p of parents)
+      if (isFullSha(p)) out.push({ id: remoteIx ? hashletOf(p) : p, sha: p });
+    return out;
+  }
+  if (!remoteIx || node.id == null) return [];
+  //  Remote fallback: range the commit's hashlet key span; each hit's val is a
+  //  parent hashlet (sha unknown here, so keeper is not re-consulted for it).
+  const lo = keyFor(T_COMMIT, node.id), out = [];
+  remoteIx.range(lo, lo + 1n, function (kv) { out.push({ id: kv[1], sha: undefined }); });
+  return out;
+}
 
 //  Collect the ancestor SET of `root` (INCLUDING root itself) by a
 //  bounded BFS over keeper.commitParents.  Returns a Set of 40-hex shas.
 //  Unreadable / missing commits terminate that branch quietly (a shallow
 //  shard may lack deep ancestors — the C walk is equally tolerant).
-function ancestors(keeper, root) {
-  const seen = new Set();
+//  GIT-016: an optional remote wh128 index (commit->parent hashlet edges) is
+//  consulted after keeper for a commit's parents; identities are then hashlets.
+//  Returns a Map id->node ({id, sha?}); node.sha is set whenever it is known.
+function ancestorNodes(keeper, root, remoteIx) {
+  const seen = new Map();
   if (!isFullSha(root)) return seen;
-  const queue = [root];
-  seen.add(root);
+  const rootId = idOf(remoteIx, root);
+  const rootNode = { id: rootId, sha: root };
+  const queue = [rootNode];
+  seen.set(rootId, rootNode);
   let head = 0;
   while (head < queue.length) {
     if (seen.size > WALK_CAP) break;
-    const sha = queue[head++];
-    let parents;
-    try { parents = keeper.commitParents(sha); } catch (e) { parents = undefined; }
-    if (!parents) continue;
-    for (const p of parents) {
-      if (!isFullSha(p) || seen.has(p)) continue;
-      seen.add(p);
+    const node = queue[head++];
+    for (const p of parentsVia(keeper, remoteIx, node)) {
+      if (p.id == null) continue;
+      const have = seen.get(p.id);
+      if (have) { if (!have.sha && p.sha) have.sha = p.sha; continue; }
+      seen.set(p.id, p);
       queue.push(p);
     }
   }
   return seen;
+}
+
+//  ancestors(keeper, root, remoteIx?) → Set of node identities (see header).
+function ancestors(keeper, root, remoteIx) {
+  return new Set(ancestorNodes(keeper, root, remoteIx).keys());
 }
 
 //  topoSort(keeper, set) → an Array of the shas in `set`, PARENTS-BEFORE-
@@ -147,22 +193,33 @@ function rowFor(keeper, sha) {
   return { sha: sha, hashlet: sha.slice(0, 8), ts: ts, subject: subject };
 }
 
+//  GIT-016: a divergence row for a walk node — the full sha row when known
+//  (local / keeper-resolved), else a hashlet-only row for a remote-only node
+//  (its sha is not on hand until the pull side fetches it, T4/T5).
+function rowForNode(keeper, node) {
+  if (node.sha) return rowFor(keeper, node.sha);
+  return { sha: undefined, hashlet: node.id, ts: 0n, subject: "" };
+}
+
 //  aheadBehind(keeper, curSha, tipSha) → { ahead, behind } (see header).
 //  An equal cur/tip, a missing sha, or a no-divergence pair → both empty.
 //  Lists are ordered newest-first by commit AUTHOR time (the C topo-sorts
 //  then walks newest→oldest; commit time is the stable proxy with no
 //  graf run index available in pure JS).
-function aheadBehind(keeper, curSha, tipSha) {
+//  GIT-016: an optional remote wh128 index resolves the tip side's parents that
+//  keeper lacks (pull side); identities become hashlets, so rows carry the sha
+//  only for keeper-resolved nodes (a remote-only node gets a hashlet-keyed row).
+function aheadBehind(keeper, curSha, tipSha, remoteIx) {
   const out = { ahead: [], behind: [] };
   if (!isFullSha(curSha) || !isFullSha(tipSha)) return out;
   if (curSha === tipSha) return out;
 
-  const ancCur = ancestors(keeper, curSha);
-  const ancTip = ancestors(keeper, tipSha);
+  const ancCur = ancestorNodes(keeper, curSha, remoteIx);
+  const ancTip = ancestorNodes(keeper, tipSha, remoteIx);
 
   const ahead = [], behind = [];
-  for (const sha of ancCur) if (!ancTip.has(sha)) ahead.push(rowFor(keeper, sha));
-  for (const sha of ancTip) if (!ancCur.has(sha)) behind.push(rowFor(keeper, sha));
+  for (const [id, n] of ancCur) if (!ancTip.has(id)) ahead.push(rowForNode(keeper, n));
+  for (const [id, n] of ancTip) if (!ancCur.has(id)) behind.push(rowForNode(keeper, n));
 
   //  Newest-first by author ts (BigInt desc); ties keep insertion order.
   const byTsDesc = function (a, b) {
@@ -181,24 +238,23 @@ function aheadBehind(keeper, curSha, tipSha) {
 //  descSha DESCENDS ancSha).  Mirrors keeper KEEPIsAncestor(from=desc,
 //  target=anc).  Used by subs.js for the R1-pin / R4-tip relationship.
 //  A bounded parent-walk from descSha; stops as soon as ancSha is hit.
-function isAncestor(keeper, ancSha, descSha) {
+//  GIT-016: an optional remote wh128 index supplies parents keeper lacks; the
+//  walk then compares node identities as hashlets (idOf), 2-arg calls unchanged.
+function isAncestor(keeper, ancSha, descSha, remoteIx) {
   if (!isFullSha(ancSha) || !isFullSha(descSha)) return false;
   if (ancSha === descSha) return true;
+  const ancId = idOf(remoteIx, ancSha);
   const seen = new Set();
-  const queue = [descSha];
-  seen.add(descSha);
+  const queue = [{ id: idOf(remoteIx, descSha), sha: descSha }];
+  seen.add(queue[0].id);
   let head = 0;
   while (head < queue.length) {
     if (seen.size > WALK_CAP) break;
-    const sha = queue[head++];
-    let parents;
-    try { parents = keeper.commitParents(sha); } catch (e) { parents = undefined; }
-    if (!parents) continue;
-    for (const p of parents) {
-      if (!isFullSha(p)) continue;
-      if (p === ancSha) return true;
-      if (seen.has(p)) continue;
-      seen.add(p);
+    for (const p of parentsVia(keeper, remoteIx, queue[head++])) {
+      if (p.id == null) continue;
+      if (p.id === ancId) return true;
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
       queue.push(p);
     }
   }

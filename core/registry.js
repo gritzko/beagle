@@ -15,6 +15,8 @@
 //    A handler module must NOT also run `main();` — the cache evals the body
 //    ONCE at require time, so a tail call would fire at load, not per row.
 
+//  GIT-016: verbs register by FILE — a bareword resolves to verbs/<verb>/<verb>.js
+//  here (no explicit list); `head` (verbs/head/head.js) is picked up automatically.
 //  build(verbs, requireFn): map each distinct verb name to its handler.
 //  `requireFn` is the be-relative require of the CALLING module (so the
 //  upward be/-scan finds the shard nearest loop.js, not cwd); default the

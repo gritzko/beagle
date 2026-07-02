@@ -28,7 +28,7 @@
 const store    = require("../../shared/store.js");
 const wire     = require("../../shared/wire.js");
 const checkout = require("../../shared/checkout.js");
-const dag      = require("../../shared/dag.js");
+const relate   = require("../../shared/relate.js");
 const ingest   = require("../../shared/ingest.js");
 const pathlib  = require("../../shared/util/path.js");
 const ulog     = require("../../shared/ulog.js");
@@ -384,9 +384,12 @@ function fanoutWholeTree(ctx, r, wt, force) {
   out.banner("get", "?" + (r.branch || "") + "#" + r.tip.slice(0, 8), ctx.T0);
 
   //  Pulled-commit rows (UPDATE only), newest-first; rendered above file rows.
+  //  GIT-016: via the shared spine — from cur=oldTip the fetched tip is AHEAD, so
+  //  the pulled commits are verdict.behind (pack persisted first → NO remote index).
   if (!r.fresh && r.oldTip && r.oldTip !== r.tip) {
-    const ahead = dag.aheadBehind(r.k, r.tip, r.oldTip).ahead;
-    for (const c of ahead)
+    const v = relate.verdict(r.k, r.oldTip, r.tip);
+    const pulled = v.behind;                        // rel exposed for a future FF gate (JGET-002)
+    for (const c of pulled)
       out.row("?" + c.hashlet + (c.subject ? "#" + c.subject : ""), "post",
               c.ts, { _post: true });
   }

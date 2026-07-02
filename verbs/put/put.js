@@ -37,6 +37,8 @@ const recurse = require("../../core/recurse.js");
 const ulog    = require("../../shared/ulog.js");
 const render  = require("../../view/render.js");      // SUBS-044: sub-banner line
 const wire    = require("../../shared/wire.js");      // GIT-014: wire push
+const relate  = require("../../shared/relate.js");    // GIT-016: shared ref spine
+const ingest  = require("../../shared/ingest.js");    // GIT-016: remote-track saver
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 //  JAB-003: TRUE-hunk output via the shared columnar→HUNK adapter (ctx.sink),
 //  retiring ctx.out for this verb (scheme "put:" opens the banner/sub hunks).
@@ -287,7 +289,11 @@ function pushWire(repo, k, ctx, arg, u) {
   if (target) { const f = resolveHex(k, target); if (f) target = f; }
   else target = curSha;
   if (!target || !isFullSha(target)) throw "PUTNONE: no sha to push (commit first)";
-  const wireRef = "refs/heads/" + ((branch && branch !== "main") ? branch : "main");
+  //  GIT-016: share relate.resolveRef (GIT-015 absolute-strip + empty-segment
+  //  guard); re-raise its {code,msg} with the POST->PUT code prefix mapped.
+  let wireRef;
+  try { wireRef = relate.resolveRef(branch); }
+  catch (e) { throw (e && e.msg) ? e.msg.replace(/^POST/, "PUT") : e; }
   //  old = the remote's advertised value (force write: no ancestor check).
   const adv = wire.advertRefs(arg, "receive-pack");
   const cr = adv.refs.find(r => r.name === wireRef);
@@ -298,6 +304,9 @@ function pushWire(repo, k, ctx, arg, u) {
   const haves = adv.refs.map(r => r.sha).filter(isFullSha);
   const pack = wire.buildPushPack(serve, target, haves);
   wire.push(arg, [{ ref: wireRef, neu: target, old: old }], pack);
+  //  GIT-016: SAVE the force-written remote tip as a remote-tracking refs row
+  //  (ingest.saveRemoteRef, the get/clone row shape) so `be head //origin` reads it.
+  ingest.saveRemoteRef(k.shard, arg, target);
   if (out) {
     if (!ctx._putBannerOpen) { ctx._putBannerOpen = true; out.raw("put:"); }
     //  Banner: the remote base (any user #sha stripped) + `?branch#hashlet`.
