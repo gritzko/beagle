@@ -74,34 +74,48 @@ function indexAll(hunks, cols) {
 //  pager used had no status-verb slots, so the verb token rendered PLAIN).
 //  'U'-tagged bytes are hidden (click-targets), matching rowEnd's column
 //  accounting.  A non-diff (syntax/columnar) row is PASS_NORMAL / side EQ.
-function paintRow(hunk, off, end, color, pass) {
-  //  A diff hunk row carries a render pass (rm/in/normal): paint via the shared
-  //  two-pass side→bg renderer so the pager shows the same word-diff wash as the
-  //  --color dump (and `be` via the C bro).  'U' bytes stay hidden there too.
+//  Emit one row's visible cells to a BYTE sink: `enc(str)` appends ASCII/SGR,
+//  `raw(lo,hi)` appends the VERBATIM text byte slice — text is NEVER re-encoded,
+//  so multibyte UTF-8 survives (BRO-011: the old string frame + a whole-frame
+//  utf8.Encode double-encoded it, — → â…).  A diff row rides the shared two-pass
+//  view/bro.js paintDiffRow; a non-diff row is one PASS_NORMAL/side-EQ THEME-fg
+//  pass, batching same-SGR cells into one raw run (the C speller).  'U' hidden.
+function emitBody(hunk, off, end, color, pass, enc, raw) {
   if (color && hunk.toks && bro.hasDiffSides(hunk.toks))
-    return bro.paintDiffRowStr(hunk.text, hunk.toks, off, end, pass | 0);
+    return bro.paintDiffRow(hunk.text, hunk.toks, off, end, pass | 0, enc, raw);
   const text = hunk.text, toks = hunk.toks;
   let ti = 0;
   while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
-  //  Non-diff (syntax/columnar) row → PASS_NORMAL, side EQ: a single THEME-fg
-  //  pass.  `cur` carries the ansi64 state so a run of same-colour cells shares
-  //  one open SGR and the row closes with the matching reset (the C speller).
-  let out = "", cur = bro.A0, pos = off;
+  let cur = bro.A0, pos = off, runLo = -1;
   while (pos < end) {
     while (ti < toks.length && (toks[ti] & 0xffffff) <= pos) ti++;
     const w = ti < toks.length ? toks[ti] : 0;
     const tag = ti < toks.length ? String.fromCharCode(65 + ((w >>> 27) & 0x1f)) : "S";
     let clen = [1,1,1,1,1,1,1,1,0,0,0,0,2,2,3,4][text[pos] >> 4];
     if (clen === 0 || pos + clen > end) clen = 1;
-    if (tag === "U") { pos += clen; continue; }   // hidden cell, no column
+    if (tag === "U") { if (runLo >= 0) { raw(runLo, pos); runLo = -1; } pos += clen; continue; }
     if (color) {
       const want = bro.cellAnsi(tag, 0, 0);       // PASS_NORMAL, SIDE_EQ
-      if (!bro.aEq(want, cur)) { out += bro.deltaSGR(want, cur); cur = want; }
+      if (!bro.aEq(want, cur)) {
+        if (runLo >= 0) { raw(runLo, pos); runLo = -1; }
+        enc(bro.deltaSGR(want, cur)); cur = want;
+      }
     }
-    for (let i = 0; i < clen; i++) out += String.fromCharCode(text[pos + i]);
+    if (runLo < 0) runLo = pos;
     pos += clen;
   }
-  if (color) out += bro.resetSGR(cur);
+  if (runLo >= 0) raw(runLo, pos);
+  if (color) enc(bro.resetSGR(cur));
+}
+
+//  STRING form of a painted row (driver/pty tests + any string consumer): the
+//  SAME cell walk as the byte render, text DECODED to real codepoints so it is
+//  mojibake-free even if a caller re-encodes it (BRO-011).
+function paintRow(hunk, off, end, color, pass) {
+  let out = "";
+  emitBody(hunk, off, end, color, pass,
+           function (s) { out += s; },
+           function (lo, hi) { if (hi > lo) out += utf8.Decode(hunk.text.subarray(lo, hi)); });
   return out;
 }
 
@@ -246,18 +260,30 @@ Pager.prototype.render = function () {
   if (v.scroll > rows.length - 1) v.scroll = Math.max(0, rows.length - 1);
   if (v.scroll < 0) v.scroll = 0;
 
-  let frame = CLEAR;
+  //  BRO-011: build the frame as UTF-8 BYTES in a buf — SGR/ASCII via `enc`
+  //  (utf8.Encode), text bytes fed VERBATIM via `raw` — then ONE write.  A JS
+  //  string + a whole-frame utf8.Encode double-encoded multibyte (— → â…).
+  const chunks = [];
+  const enc = function (s) { if (s.length) chunks.push(utf8.Encode(s)); };
+  enc(CLEAR);
   for (let i = 0; i < viewRows; i++) {
     const ri = v.scroll + i;
     if (ri < rows.length) {
       const r = rows[ri];
-      if (r.banner) frame += this._banner(r.hunk, cols);
-      else frame += paintRow(r.hunk, r.off, r.end, this.color, r.pass);
+      if (r.banner) enc(this._banner(r.hunk, cols));
+      else {
+        const text = r.hunk.text;
+        emitBody(r.hunk, r.off, r.end, this.color, r.pass, enc,
+                 function (lo, hi) { if (hi > lo) chunks.push(text.subarray(lo, hi)); });
+      }
     }
-    frame += "\r\n";
+    enc("\r\n");
   }
-  frame += this._statusLine(rows, v.scroll, viewRows, cols);
-  ttyWrite(this.fd, frame);
+  enc(this._statusLine(rows, v.scroll, viewRows, cols));
+  let total = 0; for (const c of chunks) total += c.length;
+  const b = io.buf(total + 8);
+  for (const c of chunks) b.feed(c);
+  io.writeAll(this.fd, b);
 };
 
 //  A hunk's header line: `<verb> <uri>` (the C HUNK banner).  On a tty render it
