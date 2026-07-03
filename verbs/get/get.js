@@ -832,18 +832,13 @@ function weave3(base, ours, theirs, ext) {
 
 }
 
+//  CODE-020: shared reg-file wt read (open/readAll/close-safe).
+const { readFileBytes } = require("../../shared/wtread.js");
 //  Read a wt file's bytes (null on error); the dirty-vs-clean compare input.
 function readWt(full) {
   let ls; try { ls = io.lstat(full); } catch (e) { return null; }
   if (ls.kind !== "reg") return null;
-  let fd; try { fd = io.open(full, "r"); } catch (e) { return null; }
-  try {
-    const b = io.buf((ls.size || 0) + 16);
-    io.readAll(fd, b, ls.size);
-    const d = b.data().slice();
-    io.close(fd);
-    return d;
-  } catch (e) { try { io.close(fd); } catch (e2) {} return null; }
+  return readFileBytes(full, ls.size);
 }
 
 //  Blob bytes for a sha (empty Uint8Array when missing), for the merge base/theirs.

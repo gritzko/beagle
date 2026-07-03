@@ -44,17 +44,8 @@ function scanWt(wtRoot) {
 //  Read a wt file's bytes (for the mod-vs-unchanged content compare); null
 //  on any error.  open/readAll/close — NOT io.mmap (mmap leaks, classify.js
 //  JS-031 finding).
-function readFile(full, size) {
-  let fd;
-  try { fd = io.open(full, "r"); } catch (e) { return null; }
-  try {
-    const b = io.buf((size || 0) + 16);
-    io.readAll(fd, b, size);
-    const d = b.data().slice();
-    io.close(fd);
-    return d;
-  } catch (e) { try { io.close(fd); } catch (e2) {} return null; }
-}
+const { readFileBytes } = require("./wtread.js");
+function readFile(full, size) { return readFileBytes(full, size); }  // CODE-020: shared wt read
 
 function bytesEq(a, b) {
   if (!a || !b || a.length !== b.length) return false;

@@ -51,6 +51,7 @@ function skipMeta(rel) {
 
 //  Git-blob sha of the wt file at `rel` for the given kind (mirrors
 //  post_hash_path / CLASS.c::CLASSWtEqBase).  Symlink → hash of the link
+const { readFileBytes } = require("../../shared/wtread.js");   // CODE-020
 //  target; regular/exec → hash of the bytes.  undefined on read failure.
 function hashWtPath(wtRoot, rel, kind) {
   const full = join(wtRoot, rel);
@@ -64,14 +65,8 @@ function hashWtPath(wtRoot, rel, kind) {
   } else if (st.kind === "reg") {
     if (st.size === 0) content = new Uint8Array(0);
     else {
-      let fd;
-      try { fd = io.open(full, "r"); } catch (e) { return undefined; }
-      try {
-        const b = io.buf(st.size + 16);
-        io.readAll(fd, b, st.size);
-        content = b.data();
-      } catch (e) { try { io.close(fd); } catch (e2) {} return undefined; }
-      try { io.close(fd); } catch (e) {}
+      content = readFileBytes(full, st.size);   // CODE-020: shared wt read
+      if (content === null) return undefined;
     }
   } else return undefined;
   return frameSha("blob", content);

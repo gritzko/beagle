@@ -127,6 +127,7 @@ function nextLogName(shard) {
   return ingest.logName(max + 1);
 }
 
+const { readFileBytes } = require("../../shared/wtread.js");   // CODE-020
 //  Read the wt blob bytes for an `add` decision (symlink → target, else
 //  the file bytes).  undefined on failure.
 function readAddBytes(wtRoot, d) {
@@ -139,14 +140,8 @@ function readAddBytes(wtRoot, d) {
   let st;
   try { st = io.lstat(full); } catch (e) { return undefined; }
   if (st.size === 0) return new Uint8Array(0);
-  let fd;
-  try { fd = io.open(full, "r"); } catch (e) { return undefined; }
-  try {
-    const b = io.buf(st.size + 16);
-    io.readAll(fd, b, st.size);
-    return b.data().slice();
-  } catch (e) { return undefined; }
-  finally { try { io.close(fd); } catch (e) {} }
+  const b = readFileBytes(full, st.size);   // CODE-020: shared wt read
+  return b === null ? undefined : b;
 }
 
 //  writePack(shard, wtRoot, commitBody, rootTreeSha, treeBodies, decisions)

@@ -56,6 +56,7 @@ function isMeta(rel) {
   return false;
 }
 
+const { readFileBytes } = require("./wtread.js");   // CODE-020: shared wt read
 //  Git-blob sha of the on-disk path at `rel` (symlink → hash of its target,
 //  CLASS.c::CLASSWtEqBase).  undefined when unreadable / not a leaf kind.
 function diskSha(wtRoot, rel) {
@@ -70,14 +71,8 @@ function diskSha(wtRoot, rel) {
   } else if (st.kind === "reg") {
     if (st.size === 0) content = new Uint8Array(0);
     else {
-      let fd;
-      try { fd = io.open(full, "r"); } catch (e) { return undefined; }
-      try {
-        const b = io.buf(st.size + 16);
-        io.readAll(fd, b, st.size);
-        content = b.data();
-      } catch (e) { try { io.close(fd); } catch (e2) {} return undefined; }
-      try { io.close(fd); } catch (e) {}
+      content = readFileBytes(full, st.size);   // CODE-020: shared wt read
+      if (content === null) return undefined;
     }
   } else return undefined;
   return frameSha("blob", content);
