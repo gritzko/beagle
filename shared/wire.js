@@ -184,27 +184,72 @@ function curlRun(argv) {
   return out;
 }
 
+//  CODE-020: POST `body` to `url` as `ctype` via a spawned curl, staging the
+//  body in a TMPDIR .req tmpfile (avoids a request-body pipe deadlock) that is
+//  unlinked in finally.  Returns curl's raw response bytes.  Collapses the
+//  identical tmpfile+curl dance in fetchHttp and pushHttp.
+function curlPost(url, ctype, body) {
+  const tmp = (io.getenv("TMPDIR") || "/tmp") + "/wire-" + io.getpid() + "-" +
+              (Date.now() & 0xffffff) + ".req";
+  const fd = io.open(tmp, "c");
+  io.writeAll(fd, body); io.close(fd);
+  try {
+    return curlRun(["-sSf", "-A", "git/2.0", "-H", "Content-Type: " + ctype,
+      "--data-binary", "@" + tmp, url]);
+  } finally { try { io.unlink(tmp); } catch (e) {} }
+}
+
 //  A pull cursor (like pkt.Reader) over an in-memory buffer — feeds the same
 //  parse loop with already-fetched curl bytes (the stateless body).
 function memReader(buf) {
   let pos = 0;
   return {
+    //  CODE-020: reuse pkt.decodeAt (shared len 0/1/2/short/line dispatch).
     next() {
-      if (buf.length - pos < 4) return { kind: pkt.EOF };
-      const total = pkt.readLen(buf, pos);
-      if (total < 0) throw "pkt: bad length hex at " + pos;
-      if (total === 0) { pos += 4; return { kind: pkt.FLUSH }; }
-      if (total === 1) { pos += 4; return { kind: pkt.DELIM }; }
-      if (total === 2) { pos += 4; return { kind: "respend" }; }
-      if (total < 4) throw "pkt: short length " + total;
-      if (buf.length - pos < total)
-        throw "pkt: truncated pkt-line (want " + total + ")";
-      const payload = buf.slice(pos + 4, pos + total);
-      pos += total;
-      return { kind: pkt.LINE, payload };
+      const { ev, next } = pkt.decodeAt(buf, pos, buf.length - pos);
+      pos = next;
+      return ev;
     },
     rest() { return buf.slice(pos); }
   };
+}
+
+//  CODE-020: drain a refs advertisement into { refs, headSha }, collapsing the
+//  three copies of the HEAD/peeled/remotes/head-or-tag filter.  `skipPreamble`
+//  drops the smart-HTTP `# service=…\n`+flush head; `keepTags` = fetch mode
+//  (capture HEAD sha, keep ONLY heads+tags) vs receive-pack mode (drop HEAD,
+//  keep every non-remote non-peeled ref).  `who` tags the preamble error.
+function drainAdvert(reader, opts) {
+  const keepTags = !!(opts && opts.keepTags);
+  const skipPreamble = !!(opts && opts.skipPreamble);
+  const who = (opts && opts.who) || "wire.fetch";
+  if (skipPreamble) {
+    let skipped = false;
+    for (let i = 0; i < 2; i++) {
+      const ev = reader.next();
+      if (ev.kind === pkt.LINE) {
+        const s = utf8.Decode(ev.payload);
+        if (s.indexOf("# service=") === 0) { skipped = true; continue; }
+      }
+      if (ev.kind === pkt.FLUSH && skipped) break;
+      throw who + ": malformed smart-HTTP advert preamble";
+    }
+  }
+  const refs = []; let headSha = "";
+  for (;;) {
+    const ev = reader.next();
+    if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
+    if (ev.kind !== pkt.LINE) continue;
+    const a = parseAdvLine(ev.payload);
+    if (!a) continue;
+    if (a.name === "HEAD") { if (keepTags) headSha = a.sha; continue; }
+    if (/\^\{\}$/.test(a.name)) continue;                   // peeled tag
+    if (a.name.indexOf("refs/remotes/") === 0) continue;
+    if (keepTags && !isHead(a.name) && a.name.indexOf("refs/tags/") !== 0)
+      continue;
+    refs.push({ sha: a.sha, name: a.name });
+  }
+  return { refs, headSha };
 }
 
 //  Smart-HTTP fetch: GET info/refs (skip the `# service…`+flush preamble),
@@ -213,31 +258,9 @@ function memReader(buf) {
 function fetchHttp(url, wantRef, haves) {
   const advert = curlRun(["-sSf", "-A", "git/2.0",
                           url + "/info/refs?service=git-upload-pack"]);
-  const ar = memReader(advert);
-  //  Skip the HTTP-only preamble: `# service=…\n` line + its flush.
-  let skipped = false;
-  for (let i = 0; i < 2; i++) {
-    const ev = ar.next();
-    if (ev.kind === pkt.LINE) {
-      const s = utf8.Decode(ev.payload);
-      if (s.indexOf("# service=") === 0) { skipped = true; continue; }
-    }
-    if (ev.kind === pkt.FLUSH && skipped) break;
-    throw "wire.fetch: malformed smart-HTTP advert preamble";
-  }
-  const refs = []; let headSha = "";
-  for (;;) {
-    const ev = ar.next();
-    if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
-    if (ev.kind !== pkt.LINE) continue;
-    const a = parseAdvLine(ev.payload);
-    if (!a) continue;
-    if (a.name === "HEAD") { headSha = a.sha; continue; }
-    if (/\^\{\}$/.test(a.name)) continue;
-    if (a.name.indexOf("refs/remotes/") === 0) continue;
-    if (!isHead(a.name) && a.name.indexOf("refs/tags/") !== 0) continue;
-    refs.push({ sha: a.sha, name: a.name });
-  }
+  //  CODE-020: shared advert drain (skip HTTP preamble, keep heads+tags).
+  const { refs, headSha } = drainAdvert(memReader(advert),
+    { keepTags: true, skipPreamble: true });
   const want = pickWant(refs, headSha, wantRef || "");
   if (!want) throw "wire.fetch: peer advertised no usable ref";
 
@@ -251,31 +274,23 @@ function fetchHttp(url, wantRef, haves) {
   let blen = 0; for (const r of reqs) blen += r.length;
   const body = new Uint8Array(blen); { let o = 0;
     for (const r of reqs) { body.set(r, o); o += r.length; } }
-  const tmp = (io.getenv("TMPDIR") || "/tmp") + "/wire-" + io.getpid() + "-" +
-              (Date.now() & 0xffffff) + ".req";
-  const fd = io.open(tmp, "c");
-  io.writeAll(fd, body); io.close(fd);
-  let result;
-  try {
-    const res = curlRun(["-sSf", "-A", "git/2.0", "-H",
-      "Content-Type: application/x-git-upload-pack-request",
-      "--data-binary", "@" + tmp, url + "/git-upload-pack"]);
-    const rr = memReader(res);
-    for (;;) {
-      const ev = rr.next();
-      if (ev.kind === pkt.EOF) throw "wire.fetch: peer closed before pack";
-      if (ev.kind === pkt.LINE) {
-        const s = utf8.Decode(ev.payload).replace(/\n$/, "");
-        if (s === "NAK" || s.indexOf("ACK") === 0) break;
-        continue;
-      }
-      if (ev.kind === pkt.FLUSH) continue;
+  //  CODE-020: shared TMPDIR-staged curl POST.
+  const res = curlPost(url + "/git-upload-pack",
+    "application/x-git-upload-pack-request", body);
+  const rr = memReader(res);
+  for (;;) {
+    const ev = rr.next();
+    if (ev.kind === pkt.EOF) throw "wire.fetch: peer closed before pack";
+    if (ev.kind === pkt.LINE) {
+      const s = utf8.Decode(ev.payload).replace(/\n$/, "");
+      if (s === "NAK" || s.indexOf("ACK") === 0) break;
+      continue;
     }
-    const pack = rr.rest();
-    result = { pack, refs, want: want.sha, refname: want.name,
-               branch: want.branch };
-  } finally { try { io.unlink(tmp); } catch (e) {} }
-  return result;
+    if (ev.kind === pkt.FLUSH) continue;
+  }
+  const pack = rr.rest();
+  return { pack, refs, want: want.sha, refname: want.name,
+           branch: want.branch };
 }
 
 //  --- the fetch ----------------------------------------------------------
@@ -289,21 +304,8 @@ function fetch(remoteUri, wantRef, haves) {
   try {
     //  1. drain the refs advertisement up to the first flush.
     const reader = pkt.Reader(rfd);
-    const refs = [];
-    let headSha = "";
-    for (;;) {
-      const ev = reader.next();
-      if (ev.kind === pkt.FLUSH) break;
-      if (ev.kind === pkt.EOF) break;
-      if (ev.kind !== pkt.LINE) continue;
-      const a = parseAdvLine(ev.payload);
-      if (!a) continue;
-      if (a.name === "HEAD") { headSha = a.sha; continue; }
-      if (/\^\{\}$/.test(a.name)) continue;                 // peeled tag
-      if (a.name.indexOf("refs/remotes/") === 0) continue;
-      if (!isHead(a.name) && a.name.indexOf("refs/tags/") !== 0) continue;
-      refs.push({ sha: a.sha, name: a.name });
-    }
+    //  CODE-020: shared advert drain (spawn: no preamble, keep heads+tags).
+    const { refs, headSha } = drainAdvert(reader, { keepTags: true });
 
     const want = pickWant(refs, headSha, wantRef || "");
     if (!want) throw "wire.fetch: peer advertised no usable ref";
@@ -356,30 +358,9 @@ function fetch(remoteUri, wantRef, haves) {
 //  memReader over curl bytes for http).  Returns { refs:[{sha,name}] }.
 //  `skipPreamble` drops the smart-HTTP `# service=…\n`+flush head.
 function drainRecvAdvert(rd, skipPreamble) {
-  if (skipPreamble) {
-    let skipped = false;
-    for (let i = 0; i < 2; i++) {
-      const ev = rd.next();
-      if (ev.kind === pkt.LINE) {
-        const s = utf8.Decode(ev.payload);
-        if (s.indexOf("# service=") === 0) { skipped = true; continue; }
-      }
-      if (ev.kind === pkt.FLUSH && skipped) break;
-      throw "wire.push: malformed smart-HTTP advert preamble";
-    }
-  }
-  const refs = [];
-  for (;;) {
-    const ev = rd.next();
-    if (ev.kind === pkt.FLUSH || ev.kind === pkt.EOF) break;
-    if (ev.kind !== pkt.LINE) continue;
-    const a = parseAdvLine(ev.payload);
-    if (!a) continue;
-    if (a.name === "HEAD") continue;
-    if (/\^\{\}$/.test(a.name)) continue;                   // peeled tag
-    if (a.name.indexOf("refs/remotes/") === 0) continue;
-    refs.push({ sha: a.sha, name: a.name });
-  }
+  //  CODE-020: receive-pack mode of the shared drain (drop HEAD, keep all).
+  const { refs } = drainAdvert(rd,
+    { keepTags: false, skipPreamble: skipPreamble, who: "wire.push" });
   return { refs };
 }
 
@@ -523,16 +504,10 @@ function pushHttp(url, updates, packBytes) {
                           url + "/info/refs?service=git-receive-pack"]);
   const { refs } = drainRecvAdvert(memReader(advert), true);
   const body = buildPushBody(updates, refs, packBytes);
-  const tmp = (io.getenv("TMPDIR") || "/tmp") + "/wire-push-" + io.getpid() +
-              "-" + (Date.now() & 0xffffff) + ".req";
-  const fd = io.open(tmp, "c");
-  io.writeAll(fd, body); io.close(fd);
-  try {
-    const res = curlRun(["-sSf", "-A", "git/2.0", "-H",
-      "Content-Type: application/x-git-receive-pack-request",
-      "--data-binary", "@" + tmp, url + "/git-receive-pack"]);
-    parseReportStatus(memReader(res));
-  } finally { try { io.unlink(tmp); } catch (e) {} }
+  //  CODE-020: shared TMPDIR-staged curl POST.
+  const res = curlPost(url + "/git-receive-pack",
+    "application/x-git-receive-pack-request", body);
+  parseReportStatus(memReader(res));
   return { refs };
 }
 

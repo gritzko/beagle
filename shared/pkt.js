@@ -52,6 +52,23 @@ function readLen(u8, off) {
   return v;
 }
 
+//  CODE-020: decode one pkt-line at buf[pos..], bytes already available.
+//  Returns { ev:{kind,payload?}, next } (next = pos past this pkt).  `avail`
+//  is how many bytes are live from pos; short data throws exactly as before.
+function decodeAt(buf, pos, avail) {
+  if (avail < 4) return { ev: { kind: EOF }, next: pos };
+  const total = readLen(buf, pos);
+  if (total < 0) throw "pkt: bad length hex at " + pos;
+  if (total === 0) return { ev: { kind: FLUSH }, next: pos + 4 };
+  if (total === 1) return { ev: { kind: DELIM }, next: pos + 4 };
+  if (total === 2) return { ev: { kind: "respend" }, next: pos + 4 };
+  if (total < 4) throw "pkt: short length " + total;
+  if (avail < total)
+    throw "pkt: truncated pkt-line (want " + total + ", have " + avail + ")";
+  const payload = buf.slice(pos + 4, pos + total);
+  return { ev: { kind: LINE, payload }, next: pos + total };
+}
+
 //  Reader(fd): a pull cursor draining pkt-lines from a blocking fd.  Owns a
 //  growable byte buffer with a [pos,len) window; refills via io._read on
 //  demand.  `next()` yields one event; at real EOF returns {kind:"eof"}.
@@ -82,17 +99,12 @@ function Reader(fd) {
   return {
     next() {
       if (!ensure(4)) return { kind: EOF };
+      //  CODE-020: peek len to refill for a full line, then shared decodeAt.
       const total = readLen(buf, pos);
-      if (total < 0) throw "pkt: bad length hex at " + pos;
-      if (total === 0) { pos += 4; return { kind: FLUSH }; }
-      if (total === 1) { pos += 4; return { kind: DELIM }; }
-      if (total === 2) { pos += 4; return { kind: "respend" }; }
-      if (total < 4) throw "pkt: short length " + total;
-      if (!ensure(total)) throw "pkt: truncated pkt-line (want " + total +
-                                ", have " + (len - pos) + ")";
-      const payload = buf.slice(pos + 4, pos + total);
-      pos += total;
-      return { kind: LINE, payload };
+      if (total >= 4) ensure(total);
+      const { ev, next } = decodeAt(buf, pos, len - pos);
+      pos = next;
+      return ev;
     },
     //  Bytes already buffered past the last consumed pkt-line — the start
     //  of any raw (non-pkt) stream that follows (e.g. the packfile).
@@ -101,5 +113,5 @@ function Reader(fd) {
   };
 }
 
-module.exports = { frame, flushPkt, Reader, hex4, readLen,
+module.exports = { frame, flushPkt, Reader, hex4, readLen, decodeAt,
                    FLUSH, DELIM, LINE, EOF };
