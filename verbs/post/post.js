@@ -351,8 +351,32 @@ function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
     const target = remoteUri + "#" + tip.slice(0, 8);
     const out = hunkrows(ctx.sink, target);
     out.row(target, "post", stamp);
+    //  DIS-060: the change set across the pushed range (old..tip) — add/mod/del
+    //  rows like the local post (was blank: only the confirmation row shown).
+    for (const c of rangeChanges(reader, old, tip)) out.row(c.path, c.verb, 0n);
     out.done();
   }
+}
+
+//  DIS-060: the files changed across a pushed range (old..tip) — a NET tree diff
+//  (add/mod/del), so the remote-post hunk shows the change set like the local
+//  post + git-on-push.  old "" (fresh remote) → tip's first-parent as the base.
+function rangeChanges(k, oldSha, tipSha) {
+  const base = (oldSha && isFullSha(oldSha)) ? oldSha
+             : (k.commitParents(tipSha) || [])[0];
+  const oldMap = {};
+  const ot = base && isFullSha(base) ? k.commitTree(base) : null;
+  if (ot) k.readTreeRecursive(ot, function (l) { oldMap[l.path] = l.sha; });
+  const rows = [], seen = {};
+  const tt = k.commitTree(tipSha);
+  if (tt) k.readTreeRecursive(tt, function (l) {
+    seen[l.path] = 1;
+    if (!(l.path in oldMap)) rows.push({ path: l.path, verb: "add" });
+    else if (oldMap[l.path] !== l.sha) rows.push({ path: l.path, verb: "mod" });
+  });
+  for (const p in oldMap) if (!(p in seen)) rows.push({ path: p, verb: "del" });
+  rows.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+  return rows;
 }
 
 //  JSQUE-012: `be post` as a loop HANDLER.  The wt path rides the ROW; the
