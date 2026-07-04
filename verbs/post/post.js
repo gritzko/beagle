@@ -331,12 +331,16 @@ function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   //  keeper's pack serve: want=tip, have=the remote's advertised tips.
   const serve = info.storePath + "?/" + (info.project || "");
   const haves = adv.refs.map(r => r.sha).filter(isFullSha);
-  const pack = wire.buildPushPack(serve, tip, haves);
-  const updates = [{ ref: wireRef, neu: tip, old: old }];
-  //  GIT-019: send on the SAME session (ssh/local); http stays the stateless
-  //  GET-advert-then-POST-pack shape.
-  if (session) session.send(updates, pack);
-  else wire.push(remoteUri, updates, pack);
+  //  JS-100: a buildPushPack/send throw past the FF gate must not leak the
+  //  receive-pack child — session.close() is the idempotent done-guarded reaper.
+  try {
+    const pack = wire.buildPushPack(serve, tip, haves);
+    const updates = [{ ref: wireRef, neu: tip, old: old }];
+    //  GIT-019: send on the SAME session (ssh/local); http stays the stateless
+    //  GET-advert-then-POST-pack shape.
+    if (session) session.send(updates, pack);
+    else wire.push(remoteUri, updates, pack);
+  } catch (e) { if (session) session.close(); throw e; }
   //  GIT-016: SAVE the just-advanced remote tip as a remote-tracking refs row
   //  (ingest.saveRemoteRef, the get/clone row shape) so `be head //origin` reads it.
   ingest.saveRemoteRef(reader.shard, remoteUri, tip);
@@ -406,6 +410,7 @@ function post() {
   return postTree(repo, ctx, { uri: argv.length ? argv[0] : "" });
 }
 post.jab = "args";
+post._pushRemote = pushRemote;   // JS-100: test hook (child-leak repro)
 module.exports = post;
 
 //  postTree(info, ctx, row): recurse mounted subs (post-order), then postOne.

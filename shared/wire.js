@@ -573,12 +573,23 @@ function pushSession(remoteUri) {
   if (sp.http) throw "wire.pushSession: http push is stateless — use push()";
   const child = io.spawn(sp.bin, sp.argv);
   const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
-  const reader = pkt.Reader(rfd);
-  const adv = drainRecvAdvert(reader, false);
   let done = false;
   function reap() {
     try { io.close(rfd); } catch (e) {}
     try { io.reap(pid); } catch (e) {}
+  }
+  //  JS-100: an advert-drain throw here would leak wfd/rfd/pid — flush-close +
+  //  reap before rethrow (mirror advertRefs); done-guarded so it is one-shot.
+  let reader, adv;
+  try {
+    reader = pkt.Reader(rfd);
+    adv = drainRecvAdvert(reader, false);
+  } catch (e) {
+    done = true;
+    try { io.writeAll(wfd, pkt.flushPkt()); } catch (e2) {}
+    try { io.close(wfd); } catch (e2) {}
+    reap();
+    throw e;
   }
   return {
     adv: adv,
