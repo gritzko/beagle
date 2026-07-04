@@ -305,7 +305,11 @@ function dispatchRow(row, ctx) {
     throw "be get: GETCONF " + (ctx._get && ctx._get.conf || 1) +
           " file(s) merged with conflicts — resolve the markers";
   }
-  if (ctx._get) return handleReconcileOrLeaf(uri, ctx);   // a fan-out child
+  //  JS-075: a fan-out child carrying STRUCTURED path/sha fields (rel/dir) skips
+  //  the URI round-trip — a `#`/`?` in a tracked name no longer mis-frames it.
+  if (ctx._get && row && row._leaf) return leaf(row, ctx);
+  if (ctx._get && row && row._dir !== undefined) return reconcileDir(row, ctx);
+  if (ctx._get) return handleReconcileOrLeaf(uri, ctx);   // a fan-out child (root)
   if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone/cached
   return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
 }
@@ -401,7 +405,8 @@ function fanoutWholeTree(ctx, r, wt, force) {
 
   //  ENQUEUE the root reconcile then the del-sweep fold row LAST (post-order:
   //  the fold sits after every delete leaf the reconcile fans out).
-  return { enqueue: [{ verb: "get", uri: "?" + newTree + "#" + oldTree },
+  //  JS-075: the reconcile carries STRUCTURED tree shas (`_dir`=""=root).
+  return { enqueue: [{ verb: "get", _dir: "", newTree: newTree, oldTree: oldTree },
                      { verb: "get", uri: DELSWEEP }] };
 }
 
@@ -545,16 +550,20 @@ function restorePath(ctx, k, wt, path, query, curSha, curBranch) {
   const enqueue = [];
   const newIsDir = newEnt && newEnt.kind === "tree";
   const oldIsDir = oldEnt && oldEnt.kind === "tree";
+  //  JS-075: emit STRUCTURED rows (dir prefix / rel + shas) — a `#`/`?` in the
+  //  restored path no longer truncates on the queue round-trip.
   if (newIsDir || oldIsDir) {
     //  Subtree: recurse a scoped dir-reconcile rooted at `path/`.
-    enqueue.push({ verb: "get", uri: path.replace(/\/+$/, "") + "/?" +
-                   (newIsDir ? newEnt.sha : "") + "#" + (oldIsDir ? oldEnt.sha : "") });
+    enqueue.push({ verb: "get", _dir: path.replace(/\/+$/, "") + "/",
+                   newTree: newIsDir ? newEnt.sha : "",
+                   oldTree: oldIsDir ? oldEnt.sha : "" });
   } else {
     //  Single file/exe/symlink/gitlink leaf.
     const ent = newEnt || oldEnt;
     ctx._get.kinds[path] = kindOf(ent.mode);
-    enqueue.push({ verb: "get", uri: path + "?" + (newEnt ? newEnt.sha : "") +
-                   "#" + (oldEnt ? oldEnt.sha : "") });
+    enqueue.push({ verb: "get", _leaf: true, rel: path,
+                   newSha: newEnt ? newEnt.sha : "",
+                   oldSha: oldEnt ? oldEnt.sha : "" });
   }
   enqueue.push({ verb: "get", uri: DELSWEEP });
   return { enqueue: enqueue };
@@ -610,14 +619,17 @@ function dirtyOverlapCheck(k, newTree, oldTree, wt, fresh) {
           conflicts.slice(0, 5).join(", ");
 }
 
-//  RECONCILE or LEAF: route on the URI shape.  A dir-reconcile row has an empty
-//  path or a path ending `/`; a write/merge/delete leaf names a single file.
+//  RECONCILE or LEAF fallback (legacy URI-form child).  JS-075: fan-out now
+//  enqueues STRUCTURED rows, so this only fires for a bare `uri`-only child;
+//  translate it to the structured shape (safe for `/`-terminated dir prefixes).
 function handleReconcileOrLeaf(uri, ctx) {
   const u = new URI(uri);
   const path = u.path || "";
   const isDir = path === "" || path[path.length - 1] === "/";
-  if (isDir) return reconcileDir(uri, ctx);
-  return leaf(uri, ctx);
+  if (isDir)
+    return reconcileDir({ _dir: path, newTree: u.query || "",
+                          oldTree: u.fragment || "" }, ctx);
+  return leaf({ rel: path, newSha: u.query || "", oldSha: u.fragment || "" }, ctx);
 }
 
 //  dir-reconcile: read the old + new trees ONE level, MERKLE-PRUNE unchanged
@@ -628,12 +640,13 @@ function handleReconcileOrLeaf(uri, ctx) {
 //  Each leaf's kind (the tree-entry mode) is stashed on ctx._get.kinds[path]
 //  (the queue round-trip carries only the sha).  The new-vs-mod label is the
 //  LEAF's call; the del-sweep collapse is the trailing BARRIER fold.
-function reconcileDir(uri, ctx) {
+function reconcileDir(row, ctx) {
   const g = ctx._get;
-  const u = new URI(uri);
-  const prefix = u.path || "";                 // "" (root) or "<dir>/"
-  const newTree = u.query || "";               // URI-009: "" = empty side (no tree)
-  const oldTree = u.fragment || "";            // URI-009: clean sha, never `?`-prefixed
+  //  JS-075: STRUCTURED row (`_dir` prefix + tree shas) — no URI re-parse, so a
+  //  dir name with `#`/`?` no longer truncates the prefix.
+  const prefix = row._dir || "";               // "" (root) or "<dir>/"
+  const newTree = row.newTree || "";           // "" = empty side (no tree)
+  const oldTree = row.oldTree || "";
 
   const nm = treeMap(g.k, newTree);
   const om = treeMap(g.k, oldTree);
@@ -653,25 +666,25 @@ function reconcileDir(uri, ctx) {
     if (!g.noPrune && ne && oe && ne.sha === oe.sha && ne.isDir === oe.isDir) continue;
 
     if (ne && ne.isDir) {                       // changed/new subdir → recurse
-      enqueue.push({ verb: "get",
-                     uri: rel + "/?" + ne.sha + "#" + (oe && oe.isDir ? oe.sha : "") });
+      enqueue.push({ verb: "get", _dir: rel + "/", newTree: ne.sha,
+                     oldTree: (oe && oe.isDir ? oe.sha : "") });
       if (oe && !oe.isDir) { g.kinds[rel] = kindOf(oe.mode);   // stale file → del
-        enqueue.push({ verb: "get", uri: rel + "?#" + oe.sha }); }
+        enqueue.push({ verb: "get", _leaf: true, rel: rel, newSha: "", oldSha: oe.sha }); }
       continue;
     }
     if (ne) {                                   // a (changed) file/exe/lnk/sub
       g.kinds[rel] = kindOf(ne.mode);
-      enqueue.push({ verb: "get",
-                     uri: rel + "?" + ne.sha + "#" + (oe && !oe.isDir ? oe.sha : "") });
+      enqueue.push({ verb: "get", _leaf: true, rel: rel, newSha: ne.sha,
+                     oldSha: (oe && !oe.isDir ? oe.sha : "") });
       if (oe && oe.isDir)                        // old dir → recurse to delete
-        enqueue.push({ verb: "get", uri: rel + "/?#" + oe.sha });
+        enqueue.push({ verb: "get", _dir: rel + "/", newTree: "", oldTree: oe.sha });
       continue;
     }
     //  removed entry (old, not new).
     if (oe && oe.isDir)
-      enqueue.push({ verb: "get", uri: rel + "/?#" + oe.sha });
+      enqueue.push({ verb: "get", _dir: rel + "/", newTree: "", oldTree: oe.sha });
     else { g.kinds[rel] = kindOf(oe.mode);
-      enqueue.push({ verb: "get", uri: rel + "?#" + oe.sha }); }
+      enqueue.push({ verb: "get", _leaf: true, rel: rel, newSha: "", oldSha: oe.sha }); }
   }
   return { enqueue: enqueue };
 }
@@ -680,16 +693,20 @@ function reconcileDir(uri, ctx) {
 //  blob (the leaf reads its OWN on-disk bytes to label new-vs-mod and to decide
 //  clean-overwrite vs 3-way weave); `get <path>?#<old>` deletes a removed path.
 //  Gitlink (submodule) leaves are recorded-only (mount recursion is a follow-up).
-function leaf(uri, ctx) {
+function leaf(row, ctx) {
   const g = ctx._get, out = getOut(ctx);
-  const u = new URI(uri);
-  const rel = u.path || "";
-  const newSha = u.query || "";          // URI-009: "" = present-empty = delete leaf
-  const oldSha = u.fragment || "";       // URI-009: clean sha, never `?`-prefixed
+  //  JS-075: STRUCTURED row fields (rel/newSha/oldSha) — no `new URI` re-parse,
+  //  so a tracked name with `#`/`?` reaches the leaf byte-intact (no truncation).
+  const rel = row.rel || "";
+  const newSha = row.newSha || "";       // "" = delete leaf (removed path)
+  const oldSha = row.oldSha || "";
   const full = join(g.wt, rel);
   const kind = g.kinds[rel] || "f";
 
   if (!newSha) {                                // delete LEAF (removed path)
+    //  JS-075: fire the unlink only for a GENUINE removal — the entry had an
+    //  old sha (was tracked) — never from a `#`/`?` string-parse artifact.
+    if (!oldSha) return;
     try { io.unlink(full); out.row(rel, "del", g.ts); g.dels++; } catch (e) {}
     return;
   }
@@ -935,12 +952,14 @@ function get() {
   //  JAB-004: OWN the fan-out — an in-fn FIFO replaces the loop queue.  Seed one
   //  row per arg, drain consume-while-append, honouring each {enqueue} the seed/
   //  reconcile/leaf helpers return (their staging engine stays byte-identical).
-  const q = argv.slice();
+  //  JS-075: the FIFO carries whole ROW OBJECTS (not bare uris) so a fan-out
+  //  child's structured rel/sha fields survive the round-trip.  Seed args are
+  //  plain uri strings; children are `{verb, uri|_dir|_leaf, …}` objects.
+  const q = argv.map(function (a) { return { verb: "get", uri: a }; });
   while (q.length) {
-    const uri = q.shift();
-    const res = dispatchRow({ verb: "get", uri: uri }, ctx);
+    const res = dispatchRow(q.shift(), ctx);
     if (res && res.enqueue && res.enqueue.length)
-      for (const r of res.enqueue) q.push(r.uri);
+      for (const r of res.enqueue) q.push(r);
   }
   //  JAB-004: flush the ONE accumulated get hunk after the queue drains (the
   //  plain branch's ctx._finalize is the loop ctx, not this synthetic one).
