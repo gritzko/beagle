@@ -244,11 +244,17 @@ Pager.prototype._resolveSpell = function (spell) {
   let t; try { t = new URI(s); } catch (e) { return s; }
   const cur = new URI(this._viewUri());
   //  Explicit URI form is RELATIVE to the current URI: a schemed spell INHERITS
-  //  the path/?query it OMITS (`ls:` → `ls:test`); #fragment always resets.
+  //  the //authority + path/?query it OMITS (`ls:` → `ls:test`); #fragment resets.
+  //  URI-012: fill the OMITTED authority from the context so a relative click-
+  //  target (`diff:<path>`) in a `//WT`-scoped view follows `diff://WT/<path>`,
+  //  not the scope-less target that resolves against cwd → `no hunks`.  Idempotent
+  //  (a present `//auth` passes through); composed via URI.make (setters are inert).
   if (t.scheme) {
-    if (!t.path) t.path = cur.path;
-    if (t.query === undefined) t.query = cur.query;
-    return t.toString();
+    const auth = t.authority !== undefined ? t.authority : cur.authority;
+    let path = t.path || cur.path;
+    if (auth !== undefined && path && path[0] !== "/") path = "/" + path;
+    const query = t.query !== undefined ? t.query : cur.query;
+    return URI.make(t.scheme, auth, path, query, t.fragment) || t.toString();
   }
   //  A scheme-less `./x` / `?x` / `#x` mutates one slot of the current URI.
   if (cur.scheme) {
