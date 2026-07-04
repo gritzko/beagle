@@ -16,6 +16,9 @@ const bro = require("view/bro.js");
 const theme = require("view/theme.js");
 //  JAB-003: repo/worktree discovery (io.cwd walk-up) for the session context.
 const discover = require("core/discover.js");
+//  URI-011: the shared `word(context_uri, …rest)` spell composer — one classifier
+//  for BOTH the address bar and the CLI (core/loop.js), so they compose alike.
+const SPELL = require("shared/spell.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -43,6 +46,22 @@ const HIDE_CUR = ESC + "[?25l", SHOW_CUR = ESC + "[?25h";
 //  fd — enable on enter, disable on exit; NO new binding (parsed in _feed).
 const MOUSE_ON = ESC + "[?1000h" + ESC + "[?1006h";
 const MOUSE_OFF = ESC + "[?1000l" + ESC + "[?1006l";
+//  Bracketed paste (DEC ?2004): ask the terminal to WRAP a paste in ESC[200~ …
+//  ESC[201~ so _feed can capture the payload verbatim instead of a pasted ESC
+//  cancelling / a pasted newline submitting the address bar (paste was dropped).
+const PASTE_ON = ESC + "[?2004h", PASTE_OFF = ESC + "[?2004l";
+const PASTE_BEG = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e];   // ESC [ 2 0 0 ~
+const PASTE_END = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e];   // ESC [ 2 0 1 ~
+//  Match `seq` (bytes) against `data` at i: >0 = matched length, 0 = a definite
+//  mismatch, -1 = a prefix match that ran off the buffer end (caller carries the
+//  tail to the next read, exactly like the straddling mouse escape).
+function _matchSeq(data, i, seq) {
+  for (let k = 0; k < seq.length; k++) {
+    if (i + k >= data.length) return -1;
+    if (data[i + k] !== seq[k]) return 0;
+  }
+  return seq.length;
+}
 
 //  Write a string to a tty fd (raw mode: explicit CRLF, no cooked translation).
 function ttyWrite(fd, str) {
@@ -142,6 +161,7 @@ function Pager(fd, opts) {
   this.stack = [];                               // JAB-030: the view BACK-stack
   this.mode = "scroll";                          // "scroll" | "command"
   this.cmd = "";                                 // the address-bar edit buffer
+  this.pasting = false;                          // inside a bracketed paste burst
   this.message = "";                             // a transient status note
   this.mouse = true;                             // BRO-005: mouse on (`m` toggles)
   this.quit = false;
@@ -197,6 +217,7 @@ const TRANSPORT = { ssh:1, https:1, http:1, git:1, be:1, file:1 };
 
 //  The directory of a URI path (drop the last segment); "" when path-less.
 function dirOf(p) { p = p || ""; const i = p.lastIndexOf("/"); return i >= 0 ? p.slice(0, i) : ""; }
+
 
 //  JAB-003: the CURRENT view's anchor URI — the tracked navigated spell, else
 //  its first hunk's banner URI (a scheme verb self-labels its own hunk).
@@ -459,39 +480,30 @@ Pager.prototype._verbUri = function () {
   return { verb: verb, uri: spell };
 };
 
-//  DIS-060/[Nav]: apply a typed address-bar spell.  A LEADING bareword is the
-//  verb (`:verb`/`:verb uri`); else URI-only.  Parse the URI, INHERIT-merge onto
-//  the current (present overrides, undefined inherits), compose via URI.make,
-//  drive.  A relative path joins the view dir; a path change drops the frag.
+//  URI-011: the `word(context_uri, …rest)` spell composer.  Split the address-
+//  bar spell, peel a leading bareword VERB, then shape arg 0 from the FIRST
+//  URI-shaping token (`./x` path, `//WT` auth, `?x` ref, `#x` frag, `scheme:…`);
+//  every OTHER token is REST — the verb's natural slot — handed through RAW.  A
+//  non-URI first token keeps the context as arg 0.  Returns { verb, arg0, rest }.
+//  URI-011: compose the address-bar spell into { verb, arg0, rest } via the
+//  SHARED composer (shared/spell.js).  Context = the tracked view URI, else the
+//  cwd (`//WT/path`).  Kept as a method so the driver test drives it directly.
+Pager.prototype._composeCall = function (s) {
+  const cur = this._verbUri();
+  const ctxUri = cur.uri || (typeof be !== "undefined" && be.navCwd ? be.navCwd() : "");
+  return SPELL.compose(ctxUri, cur.verb, s);
+};
+Pager.prototype._buildSpell = function (c) { return SPELL.buildSpell(c); };
+
+//  DIS-060/[Nav]/URI-011: apply a typed address-bar spell through the composer —
+//  build the `verb(context_uri, …rest)` call, drive it, and TRACK arg 0 as the
+//  view URI so the next spell inherits it.  Replaces the per-slot inherit + the
+//  message-shortcut that DROPPED the authority ([URI-011] `:post 'msg'` leak).
 Pager.prototype._applySpell = function (cmd) {
   const s = (cmd || "").trim();
   if (!s) return;
-  const cur = this._verbUri();
-  let verb = cur.verb, uristr = s;
-  const m = /^([a-zA-Z][a-zA-Z0-9]*)(?:\s+([\s\S]*))?$/.exec(s);
-  if (m) { verb = m[1]; uristr = m[2] || ""; }
-  //  DIS-060: a NON-URI arg — whitespace or quotes ⇒ a #fragment/message
-  //  (`post 'small fixes'`), NOT a slot edit — DRIVE the raw `verb args` spell so
-  //  the loop tokenizer + the verb classify the message (recomposing it as a URI
-  //  DROPPED it → POSTNOMSG).  See [URI]: a whitespace token is a fragment.
-  if (m && /[\s'"]/.test(uristr)) return this._driveApply(s, verb, "");
-  const cu = this._parse(cur.uri), tu = this._parse(uristr);
-  let path = tu.path;                            // relative path joins the view dir
-  if (path !== undefined && path[0] !== "/") path = joinPath(dirOf(cu.path), path);
-  const inh = function (a, b) { return a !== undefined ? a : b; };
-  const scheme = inh(tu.scheme, cu.scheme);
-  const auth   = inh(tu.authority, cu.authority);
-  const npath  = inh(path, cu.path);
-  const query  = inh(tu.query, cu.query);
-  let   frag   = inh(tu.fragment, cu.fragment);
-  if (tu.path !== undefined && npath !== cu.path && tu.fragment === undefined)
-    frag = undefined;                            // [Nav]: a path change drops #pos
-  //  with an authority present the path is store-absolute (leading `/`).
-  let cpath = npath;
-  if (auth !== undefined && cpath !== undefined && cpath[0] !== "/") cpath = "/" + cpath;
-  const newUri = URI.make(scheme, auth, cpath, query, frag);
-  const spell  = (verb ? verb + " " : "") + newUri;
-  this._driveApply(spell, verb, newUri);
+  const c = this._composeCall(s);
+  this._driveApply(this._buildSpell(c), c.verb, c.arg0);
 };
 
 //  DIS-060: drive a resolved spell + track the view's (verb, uri).  Shared by the
@@ -545,6 +557,21 @@ Pager.prototype._followRow = function (ri) {
 Pager.prototype._feed = function (data) {
   let i = 0;
   while (i < data.length && !this.quit) {
+    //  Inside a bracketed paste: swallow the payload into the address bar (in
+    //  command mode) until the ESC[201~ end marker, so a pasted newline/ESC no
+    //  longer submits/cancels the bar and non-ASCII is not silently dropped.
+    if (this.pasting) {
+      if (data[i] === 0x1b) {
+        const e = _matchSeq(data, i, PASTE_END);
+        if (e < 0) return i;                     // end marker straddles the read
+        if (e > 0) { this.pasting = false; i += e; continue; }
+        i++; continue;                           // a stray ESC in content: drop it
+      }
+      if (data[i] >= 0x20 && data[i] !== 0x7f && this.mode === "command")
+        this.cmd += String.fromCharCode(data[i]);   // a printable/UTF-8 paste byte
+      i++;
+      continue;
+    }
     //  A mouse report opens with ESC '[' '<' ; scan to its M|m terminator.
     if (data[i] === 0x1b && i + 2 < data.length &&
         data[i + 1] === 0x5b && data[i + 2] === 0x3c) {
@@ -556,6 +583,16 @@ Pager.prototype._feed = function (data) {
       this._mouse(seq, data[j] === 0x4d);
       i = j + 1;
       continue;
+    }
+    //  Bracketed-paste BEGIN (ESC[200~).  Probe only once ESC '[' '2' are all
+    //  present (the mouse gate's discipline) so a lone Esc keypress still falls
+    //  through to key() and cancels the bar — real markers arrive whole.
+    if (data[i] === 0x1b && i + 2 < data.length &&
+        data[i + 1] === 0x5b && data[i + 2] === 0x32) {
+      const b = _matchSeq(data, i, PASTE_BEG);
+      if (b < 0) return i;                       // begin marker straddles the read
+      if (b > 0) { this.pasting = true; i += b; continue; }
+      //  ESC[2 but not ESC[200~ (e.g. Insert = ESC[2~): fall through to key().
     }
     this.key(data[i]);
     i++;
@@ -681,7 +718,7 @@ Pager.prototype._toggleMouse = function () {
 //  never wedges the tty.
 Pager.prototype.run = function () {
   const saved = tty.raw(this.fd);
-  ttyWrite(this.fd, HIDE_CUR + MOUSE_ON);
+  ttyWrite(this.fd, HIDE_CUR + MOUSE_ON + PASTE_ON);
   try {
     const rb = io.buf(64);
     let pend = null;                             // a straddling mouse-seq tail
@@ -701,7 +738,7 @@ Pager.prototype.run = function () {
       rb.reset();
     }
   } finally {
-    ttyWrite(this.fd, MOUSE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
+    ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
     tty.cook(this.fd, saved);
   }
 };

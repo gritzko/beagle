@@ -44,6 +44,8 @@ const recurse = require("../../core/recurse.js");     // SUBS-044: mounted-sub w
 //  retiring ctx.out for the `delete:` table.
 const hunkrows = require("../../shared/hunkrows.js");
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
+//  URI-011: the shared composer — bindRest binds rest paths under arg 0's context.
+const SPELL = require("../../shared/spell.js");
 //  JAB-004: plain-args DELETE owns its fan-out INLINE via classifyArgLocal — a
 //  `?br` tombstone vs a path/dir row, no resolve.*/hex (delBranch drops by name).
 
@@ -325,8 +327,18 @@ function deleteVerb() {
   //  JAB-004: synthetic run ctx mirroring the loop ctx the helpers read.
   const ctx = { repo: _be && _be.repo, sink: _be && _be.sink,
                 T0: ron.now(), flags: flags };
-  const argv = [];
+  let argv = [];
   for (let i = 0; i < arguments.length; i++) argv.push(String(arguments[i]));
+  //  URI-011: inside a nav context (be.authority set), arg 0 is the context dir
+  //  and the rest bind UNDER it; delete decides file-vs-dir by statting the wt.
+  //  Bare CLI deletes (no authority) are untouched — each arg an independent target.
+  const repo = _be && _be.repo;
+  if (_be && _be.authority && repo && repo.wt)
+    argv = SPELL.bindRest(argv, function (p) {
+      if (!p) return true;
+      const k = statKind(join(repo.wt, p));
+      return k === undefined || k === "dir";
+    });
   return delRun(ctx, argv);
 }
 

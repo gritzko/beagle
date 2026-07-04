@@ -12,6 +12,7 @@ const store = require("../../shared/store.js");
 const join  = require("../../shared/util/path.js").join;
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const bro   = require("../../view/bro.js");
+const navlib = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 const EMPTY32 = new Uint32Array(0);
 
 const CAP = 1 << 20;   // 1 MiB/hunk cap; a bigger file splits with a #L<n> rebanner
@@ -48,17 +49,19 @@ function grepable(body, lo, hi) {
 }
 function withLinks(body, toks) {
   if (toks.length === 0) return { body: body, toks: toks };
+  //  URI-011: grep click-target `<grep-uri>#<token>` — navUri carries the //name
+  //  authority; when unscoped navUri("grep","")="grep:" so PFX="grep:#" (parity).
+  const PFX = utf8.Encode(navlib.navUri("grep", "") + "#");
   let extra = 0, nlinks = 0, prev = 0;
   for (let i = 0; i < toks.length; i++) {
     const end = tokEnd(toks[i]);
     if (end > prev && tokTag(toks[i]) !== "U" && grepable(body, prev, end))
-      { extra += 6 + (end - prev); nlinks++; }   // "grep:#" + token bytes
+      { extra += PFX.length + (end - prev); nlinks++; }   // grep-uri + '#' + token
     prev = end;
   }
   if (nlinks === 0) return { body: body, toks: toks };
   const out = new Uint8Array(body.length + extra);
   const ntoks = new Uint32Array(toks.length + nlinks);
-  const PFX = utf8.Encode("grep:#");
   let op = 0, oi = 0;
   prev = 0;
   for (let i = 0; i < toks.length; i++) {
@@ -153,8 +156,10 @@ function catOne(arg) {
       //  BRO-006: append `U` click-targets on name/symbol (N/C) tokens.
       const wl = withLinks(body, toks); body = wl.body; toks = wl.toks;
     }
-    const uri = path + "#L" + line;
-    sink.feed(uri, body, toks, "cat", 0n);   // banner: `cat <path>#L<n>`
+    //  URI-011: banner carries the full nav address `cat://name/<path>#L<n>`;
+    //  navUri prefixes the authority, the #L<n> fragment stays AFTER it (parity).
+    const uri = navlib.navUri("cat", path) + "#L" + line;
+    sink.feed(uri, body, toks, "", 0n);   // banner: `cat:<path>#L<n>`
     for (let i = off; i < end; i++) if (bytes[i] === 10) line++;
     off = end;
   }

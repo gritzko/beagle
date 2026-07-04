@@ -316,6 +316,8 @@ function dispatchRow(row, ctx) {
 //  { k, wt, tip, oldTip, kinds } on ctx so each fan-out child reuses the SAME
 //  reader/wt without re-resolving (JSQUE-004).
 function handleSeed(uri, ctx) {
+  //  URI-011: the CLONE destination stays raw io.cwd() — a fresh clone lands where
+  //  jab runs, and `//peer`-as-a-SOURCE (context wt) is a separate ticket.
   const wt = io.cwd();
   const rem = parseRemote(uri);
   const r = rem.cached ? seedCached(rem, wt)
@@ -415,7 +417,7 @@ function fanoutWholeTree(ctx, r, wt, force) {
 //  shared store.  A path form is path-scoped (restorePath); the rest reset the
 //  whole wt via fanoutWholeTree.
 function inRepoSeed(uri, ctx) {
-  const info = (ctx && ctx.repo) || be.find(io.cwd());
+  const info = (ctx && ctx.repo) || be.find(be.cwd());   // URI-011: context wt, not cwd
   const wt = info.wt;
   const k = store.open(info.storePath, info.project);
   const wtl = wtlog.open(info);

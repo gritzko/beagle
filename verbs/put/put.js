@@ -45,6 +45,8 @@ const hunkrows = require("../../shared/hunkrows.js");
 //  JAB-004: plain-args PUT owns its arg parse (classifyArg/seedCtx retired) —
 //  keeps resolve only for isHexish + resolveHex; ambient bridges be↔ctx.
 const resolve = require("../../core/resolve.js");
+//  URI-011: the shared composer — bindRest binds rest paths under arg 0's context.
+const SPELL = require("../../shared/spell.js");
 const ambient = require("../../shared/ambient.js");
 
 //  JSQUE-010: the `put:` banner + per-row lines now render through the emit sink
@@ -552,8 +554,17 @@ function put() {
     T0: ron.now(), force: ambient.force(),
     args: [], refs: [], seededRowCount: null,
   };
-  const argv = [];
+  let argv = [];
   for (let i = 0; i < arguments.length; i++) argv.push(String(arguments[i]));
+  //  URI-011: inside a nav context (be.authority set, e.g. `:put a.txt` in a
+  //  `//WT/dir` view), arg 0 is the context dir and the rest bind UNDER it; put
+  //  decides file-vs-dir by lstat'ing the wt.  Bare CLI puts (no authority) are
+  //  untouched — each arg stays an independent target.
+  if (_be && _be.authority && repo && repo.wt)
+    argv = SPELL.bindRest(argv, function (p) {
+      if (!p) return true;
+      try { return io.lstat(join(repo.wt, p)).kind === "dir"; } catch (e) { return true; }
+    });
   ctx.args = argv;
   return putRun(ctx, argv, argv.length ? argv[0] : "");
 }

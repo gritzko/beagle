@@ -36,6 +36,7 @@ const wtlog  = require("../../shared/wtlog.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const resolve = require("../../core/resolve.js");
 const recurse = require("../../core/recurse.js");   // DIS-060: gitlink → sub store
+const navlib  = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 
 //  BRO-006: a content-HUNK row carries a hidden `U`-tagged nav URI so a bro
 //  pager left-click on the entry NAME opens it — mirroring native `be tree:
@@ -219,7 +220,9 @@ function treeOne(arg, ctx) {
   //  `?<hex>` query form in the banner and keeps the VERBATIM (un-expanded)
   //  value (`?054a0d44`, `?heads/feat`).  No suffix for a pure-path/empty URI.
   const rev = query || frag;                    // frag (#hex) shows as ?<hex>
-  const banner = "tree:" + segs.join("/") + (rev ? "?" + rev : "");
+  //  URI-011: authority-prefixed banner; the ?rev suffix stays AFTER navUri
+  //  (the //name authority goes before the '?').
+  const banner = navlib.navUri("tree", segs.join("/")) + (rev ? "?" + rev : "");
   const pathPfx = segs.length ? segs.join("/") + "/" : "";   // full-path nav prefix
 
   //  BRO-006 pager/--tlv path: ONE content HUNK, a hidden `U` per entry name.
@@ -238,9 +241,10 @@ function treeOne(arg, ctx) {
       const prefix = MODE_PREFIX[kind] || MODE_PREFIX.blob;
       const name = kind === "tree" ? (e.name + "/") : e.name;
       const meta = prefix + e.sha + "\t";
+      //  URI-011: entry click-target carries the //name nav authority.
       const nav = kind === "tree"
-                ? "tree:" + pathPfx + e.name + "/"
-                : "blob:" + pathPfx + e.name;
+                ? navlib.navUri("tree", pathPfx + e.name + "/")
+                : navlib.navUri("blob", pathPfx + e.name);
       off += appendRow(textParts, spans, off, meta, name, nav);
     }
     const body = new Uint8Array(off);

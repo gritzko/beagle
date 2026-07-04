@@ -27,6 +27,7 @@ const classify = require("../../shared/classify.js");
 //  loop.js:128-142) — a large diff fold no longer throws "out full".
 const weave   = require("../../shared/weave.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
+const navlib  = require("../../shared/nav.js");        // URI-011: authorize baked diff: URIs
 
 const isFullSha = shalib.isFullSha;
 const frameSha  = shalib.frameSha;
@@ -389,6 +390,10 @@ function diffOut(ctxOut, sink, mode) {
   return {
     chunk: function (text) { if (ctxOut && ctxOut.chunk) ctxOut.chunk(text); },
     feed: sink ? function (uri, text, toks) {
+      //  URI-011: authorize the C-baked `diff:` U-target with the nav authority —
+      //  HERE (the innermost sink, after any submodule prefixingSink) so it lands
+      //  OUTERMOST (`diff://ULOG/sub/path`).  No authority → unchanged (byte-parity).
+      uri = navlib.navAuthorize(uri);
       const aug = wantU ? withUTarget(uri, text, toks) : { text: text, toks: toks };
       sink.feed(uri, aug.text, aug.toks, "", 0n);
     } : undefined,

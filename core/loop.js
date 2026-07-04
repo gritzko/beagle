@@ -135,40 +135,64 @@ function mintBe(ambient) {
   return Object.assign(globalThis.be || (globalThis.be = {}), discover, ambient);
 }
 
-//  DIS-060/[Nav]: resolve a scheme-less `//NAME` nav authority in the spell's
-//  args to a repo:
-//    `//DIS-060` / `//jab-4`  ([a-zA-Z]+-[0-9]+) → worktree at `<todoRoot>/NAME`
-//    `//` / `//.`   (empty/`.` host)             → the MAIN tree (launch-cwd repo)
-//  Any OTHER `//host…` (`//github.com/x?main`) is a CACHED REMOTE — left to the
-//  wire verbs, NEVER a nav authority: the ticket SHAPE is the only local overload
-//  (a real host carries dots/paths, never `[a-zA-Z]+-[0-9]+`).  The `//authority`
-//  is STRIPPED in place so the verb sees a repo-relative path/ref (verb·path·ref
-//  inherited).  A schemed URI (`file://`, `ssh://…`) is a transport.  Returns the
-//  scoped repo, or null when no arg carries a nav authority.
-function authorityRepo(args, todoRoot) {
+//  URI-011/[Nav]: resolve a scheme-less `//NAME` nav authority in the spell's
+//  args to a repo, via `be.wtdir` (SRC_ROOT=$HOME): `//name[/sub]` → the tree at
+//  `$SRC_ROOT/name/sub`, `//`/`//.` → the LAUNCH tree.  A `//host…` cached remote
+//  (`be.wtdir`→null) and a schemed transport are left to the wire.  The
+//  `//authority` is STRIPPED to the repo-relative sub-path so an UNCONVERTED verb
+//  sees a clean arg; the authority itself rides `be.authority` for CONVERTED verbs
+//  (full-URI hunks — the launch tree is "here", so its authority is "").  Returns
+//  { repo, authority } or null when no arg carries a nav authority.
+//  URI-011: is `host` a KNOWN cached remote in the cwd store (`//origin`,
+//  `//localhost`)?  Then a wtdir miss is a legit cached read (get/head), not a
+//  local typo — leave it to the wire.  Best-effort: no cwd store → not cached.
+function _isCachedRemote(host) {
+  let repo; try { repo = be.find(); } catch (e) { return false; }
+  if (!repo) return false;
+  const store = require(_here + "/shared/store.js");
+  let hit = false;
+  try {
+    const k = store.open(repo.storePath, repo.project);
+    k.eachRemote(function (rt) { if (rt.host === host) hit = true; });
+  } catch (e) { return false; }
+  return hit;
+}
+
+//  URI-011: TRANSPORT schemes go to the wire and are NOT nav-scoped; a PROJECTOR
+//  scheme (`commit:`/`status:`/`diff:`/`log:`/…) with a `//authority` IS a local
+//  nav target that must scope (the DIS-060 leak: a clicked `commit://ULOG?sha`).
+const TRANSPORT = { ssh: 1, https: 1, http: 1, git: 1, be: 1, file: 1, keeper: 1 };
+
+function authorityRepo(args) {
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i] || "");
     if (a.indexOf("//") < 0) continue;
     let u; try { u = uri._parse(a); } catch (e) { continue; }
-    if (u.scheme) continue;                          // file:/ssh:/be: — a transport, not nav
-    if (u.authority === undefined) continue;         // no `//` slot in this arg
+    if (u.authority === undefined) continue;               // no `//` slot
+    if (u.scheme && TRANSPORT[u.scheme]) continue;         // ssh:/be:/… → the wire
     const host = u.host || "";
-    let repo;
-    if (host === "" || host === ".") {               // `//` / `//.` → main tree (cwd)
-      try { repo = be.find(); } catch (e) { repo = null; }
-    } else if (/^[a-zA-Z]+-[0-9]+$/.test(host)) {    // a ticket worktree name
-      //  Probe `<todoRoot>/NAME/.be` DIRECTLY — be.find alone walks UP to an
-      //  ancestor store when absent, scoping the whole home dir; fail fast.
-      const dir = todoRoot + "/" + host;
-      let anchored = false;
-      try { anchored = !!io.stat(dir + "/.be"); } catch (e) { anchored = false; }
-      if (!anchored) throw "NAVNONE: no worktree //" + host;
-      repo = be.find(dir);
-    } else continue;                                 // `//host…` cached remote → the wire
-    let path = u.path || "";
-    if (path[0] === "/") path = path.slice(1);        // authority path is repo-rel
-    args[i] = uri._make(undefined, undefined, path || undefined, u.query, u.fragment) || "";
-    return repo;
+    //  A projector-schemed nav (`commit://ULOG?sha`) scopes its authority too —
+    //  resolve via the SCHEME-LESS form, since be.wtdir rejects a scheme.
+    const navStr = uri._make(undefined, u.authority, u.path, undefined, undefined) || ("//" + host);
+    const dir = be.wtdir(navStr);
+    //  URI-011: a DOTLESS host that is neither a local tree (wtdir miss) NOR a
+    //  known cached remote (`//origin`/`//localhost` in the store) is a mistyped
+    //  LOCAL name → NAVNONE.  A dotted `//host…` or a cached remote stays null →
+    //  the wire (`continue`) — local-vs-remote is decided by EXISTENCE, not shape.
+    if (!dir) {
+      if (host !== "" && host !== "." && host.indexOf(".") < 0 &&
+          !_isCachedRemote(host))
+        throw "NAVNONE: no worktree //" + host;
+      continue;
+    }
+    let repo; try { repo = be.find(dir); } catch (e) { continue; }
+    if (!repo) continue;
+    //  strip the `//authority` → the repo-relative sub-path (+ ?ref#frag), but
+    //  KEEP a projector scheme so the verb still dispatches (`commit://ULOG?sha`
+    //  → `commit:?sha`, resolved against the now-scoped be.repo).
+    const rel = dir.length > repo.wt.length ? dir.slice(repo.wt.length + 1) : "";
+    args[i] = uri._make(u.scheme, undefined, rel || undefined, u.query, u.fragment) || "";
+    return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host };
   }
   return null;
 }
@@ -283,16 +307,16 @@ function _cli(argv, opts2) {
   //  token via scalar(), and run() calls fn(...args) ONCE reading `be`.
   if (!(conv && conv.jab === "args"))
     throw "loop: verb '" + verb + "' has no plain-args handler";
-  //  DIS-060/[Nav]: a `//TICKET` worktree authority (or `//`/`//.` → main tree) in
-  //  an arg scopes the WHOLE spell to that tree; a `//host…` cached remote and any
-  //  other arg keep the cwd repo.  NAVNONE (unknown worktree) propagates; a repo-
-  //  less cwd is swallowed (be.repo=null).  TODO_ROOT env, default $HOME/todo.
-  const todoRoot = io.getenv("TODO_ROOT") || ((io.getenv("HOME") || ".") + "/todo");
-  const navRepo = authorityRepo(args, todoRoot);
-  if (navRepo) repo = navRepo;
+  //  URI-011/[Nav]: a `//name` nav authority (via `be.wtdir`, SRC_ROOT=$HOME)
+  //  scopes the WHOLE spell to that tree + exposes `be.authority` (the `//name`)
+  //  so converted verbs emit full-URI hunks; a `//host…` cached remote and any
+  //  other arg keep the cwd repo.  A repo-less cwd is swallowed (be.repo=null).
+  const nav = authorityRepo(args);
+  let authority = "";
+  if (nav) { repo = nav.repo; authority = nav.authority; }
   else try { repo = be.find(); } catch (e) { /* repo-less verb reads be.repo=null */ }
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
-           verb: verb, todo_root: todoRoot });
+           verb: verb, authority: authority });
   const pargs = args.map(function (t) { return argline.scalar(t); });
   res = run({
     repo: repo, require: require, out: out, sink: sink, flags: flags,
@@ -359,4 +383,4 @@ function _openPager(hunks) {
 //  run/cli; the shim self-runs cli() when invoked directly.
 if (typeof module !== "undefined")
   module.exports = { run: run, cli: cli };
-else cli(process.argv);
+else cli(process.argv); 

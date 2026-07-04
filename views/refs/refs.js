@@ -12,6 +12,7 @@ const wtlog = require(__dirname + "/../../shared/wtlog.js");
 //  JAB-003: TRUE-hunk output via the shared columnar→hunk adapter (be.sink),
 //  retiring the io.log fd-1 bypass for this view.
 const hunkrows = require("../../shared/hunkrows.js");
+const navlib   = require("../../shared/nav.js");   // URI-011: full-URI banner
 
 //  JAB-004: emit ONE `refs:` report hunk for `repo` to `sink` (plain path).
 function refsOne(repo, sink) {
@@ -25,7 +26,7 @@ function refsOne(repo, sink) {
   const branch = cur.branch || "";
 
   //  JAB-003: each raw() line appends its own "\n"; done() flushes the hunk.
-  const out = hunkrows(sink, "refs:");
+  const out = hunkrows(sink, navlib.navUri("refs", ""));   // URI-011: refs://name
   out.raw("project:  " + (repo.project || "(unnamed)"));
   out.raw("wt:       " + repo.wt);
   out.raw("store:    " + repo.storePath);

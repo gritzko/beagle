@@ -24,6 +24,7 @@ const join     = require("../../shared/util/path.js").join;
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const render   = require("../../view/render.js");
 const theme    = require("../../view/theme.js");
+const navlib   = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 
 //  BRO-006: emit a content HUNK (text + tok32) per dir, mirroring sniff/LS.c
 //  htbl_emit — each row carries a hidden `U`-tagged nav URI (`cat:<path>` for a
@@ -76,13 +77,14 @@ function emitHunk(sink, banner, navPfx, entries) {
   let off = 0;
   for (const e of entries) {
     if (e.dir) {
-      const nav = "ls:" + navPfx + e.name + "/";
+      //  URI-011: nav uri via navlib so it carries the `//name` authority.
+      const nav = navlib.navUri("ls", navPfx + e.name + "/");
       off += appendRow(textParts, spans, off, "dir", e.name + "/", nav, 0n);
     } else {
       //  DIS-057 RULING 2026-06-29: a move is the `rmv`(src)+`mov`(dst) pair (no
       //  `-> dst` arrow), so the entry text is the bare name — the nav click
-      //  target is just `cat:<path>`.
-      const nav = "cat:" + navPfx + e.key;
+      //  target is just `cat:<path>`.  URI-011: composed via navlib (authority).
+      const nav = navlib.navUri("cat", navPfx + e.key);
       off += appendRow(textParts, spans, off, e.verb, e.text, nav, e.ts);
     }
   }
@@ -143,7 +145,7 @@ function lsOne(uri, verb, ctx, queue, rdCache) {
 
   const scopePfx = relDir(repo.wt, absScope);               // rel to OWNING wt
   const navPfx   = relDir(topWt, absScope);                 // rel to TOP wt
-  const banner   = verb + ":" + navPfx;                     // the hunk URI
+  const banner   = navlib.navUri(verb, navPfx);             // URI-011: hunk URI + authority
   const rd        = repoReaders(rdCache, repo);
   const res       = classify.classifyDir(repo, rd.log, rd.k, scopePfx);
 

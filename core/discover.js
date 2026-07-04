@@ -161,7 +161,91 @@ function shieldLike(beDir) {
   return subdirs <= 1;
 }
 
-module.exports = { find: find,
+//  URI-011: topWt(wt) → the OUTERMOST worktree root, climbing PAST submodules (a
+//  sub is a wt nested inside a parent wt; find(parent) hits the super's `.be`).
+//  Keep climbing until nothing anchors above → that IS the top.  The `$HOME/.be`
+//  STORE is not a worktree (find refuses it), so the climb stops at the real top.
+function topWt(wt) {
+  const home = io.getenv("HOME");
+  for (;;) {
+    const up = dirname(wt);
+    if (!up || up === wt || up === "/") break;
+    if (home && up === home) break;              // the SRC_ROOT/$HOME store level —
+    let outer; try { outer = find(up); } catch (e) { break; }   // a STORE, not a super
+    if (!outer || !outer.wt || outer.wt === wt || outer.wt === home) break;
+    wt = outer.wt;                               // wt was nested (submodule) → climb
+  }
+  return wt;
+}
+
+//  URI-011: srcRoot() → where the worktrees live.  `SRC_ROOT` env wins; else it is
+//  IMPLIED as ONE LEVEL UP from the discovered TOP wt root (probe `.be` from cwd,
+//  climb past submodules) — so `//name` addresses a SIBLING of the tree you
+//  launched in, with no $HOME assumption.  Falls back to $HOME when repo-less.
+function srcRoot() {
+  const env = io.getenv("SRC_ROOT");
+  if (env) return env;
+  let wt; try { wt = topWt(find(io.cwd()).wt); } catch (e) { return io.getenv("HOME") || "."; }
+  return dirname(wt) || io.getenv("HOME") || ".";
+}
+
+//  URI-011: wtdir(uriStr) → the ABSOLUTE dir a nav URI addresses, or null.
+//    //name[/sub]  → $SRC_ROOT/name/sub  (a tree under SRC_ROOT, confined below)
+//    // , //.       → the LAUNCH tree     (find(cwd).wt — "where jab started")
+//    //host…, file:/ssh:/be:, no `//`     → null (a cached remote / transport → wire)
+//  SRC_ROOT env, default $HOME.  Confinement: the resolved tree must sit AT/BELOW
+//  $SRC_ROOT/name — else find() walked UP to an ancestor store (the $HOME/.be
+//  hazard) and this is NOT the named tree → null.  The abs path; the caller
+//  find()s it for the repo and derives the in-tree scope.
+function wtdir(uriStr) {
+  let u; try { u = uri._parse(uriStr || ""); } catch (e) { return null; }
+  if (u.scheme) return null;                          // a transport, not nav
+  if (u.authority === undefined) return null;         // no `//` slot
+  const host = u.host || "";
+  if (host === "" || host === ".") {                  // `//` / `//.` → launch tree
+    try { return find(io.cwd()).wt; } catch (e) { return null; }
+  }
+  const root = srcRoot();
+  const top = root + "/" + host;                      // the named top-level tree
+  const dir = top + (u.path || "");                   // + the nested path
+  let repo; try { repo = find(dir); } catch (e) { return null; }
+  if (!repo || (repo.wt !== top && repo.wt.indexOf(top + "/") !== 0)) return null;
+  return dir;
+}
+
+//  URI-011: navCwd(dir?) → the `//name/path` context URI for a directory
+//  (default cwd) — the INVERSE of wtdir, and the context a session STARTS with
+//  ("where I am").  name = the worktree `wt` under SRC_ROOT (may nest, `src/dogs`);
+//  path = `dir` under `wt`.  "" when the dir is in no known tree (repo-less cwd).
+function navCwd(dir) {
+  const d = dir || io.cwd();
+  let repo; try { repo = find(d); } catch (e) { return ""; }
+  if (!repo || !repo.wt) return "";
+  //  Name off the TOP wt (climb past submodules); the sub-path crosses into the
+  //  submodule (`//name/sub/inner`) — see [SUBS-045] joinPrefix.
+  const top = topWt(repo.wt);
+  const root = srcRoot();
+  const name = top === root ? ""
+             : top.indexOf(root + "/") === 0 ? top.slice(root.length + 1)
+             : top.slice(top.lastIndexOf("/") + 1);      // fallback: basename
+  const sub = d.length > top.length ? d.slice(top.length + 1) : "";
+  return "//" + name + (sub ? "/" + sub : "");
+}
+
+//  URI-011: cwd() → the CONTEXT worktree ROOT a verb runs from — the ONE place a
+//  verb asks "where am I operating," replacing raw io.cwd() so a nav'd verb acts
+//  in the scoped tree, NOT the launch tree.  = the resolved repo's wt (be.repo.wt,
+//  which authorityRepo may anchor on a SUBMODULE wt for a `//name/sub/…` path),
+//  else the launch cwd's wt; repo-less falls back to io.cwd().  Verbs need only
+//  this dir — never SRC_ROOT.  The context URI (be.authority / navCwd) is the "dir
+//  to cd to"; no io.chdir binding needed.
+function contextCwd() {
+  if (typeof be !== "undefined" && be.repo && be.repo.wt) return be.repo.wt;
+  try { return find(io.cwd()).wt; } catch (e) { return io.cwd(); }
+}
+
+module.exports = { find: find, wtdir: wtdir, navCwd: navCwd, cwd: contextCwd,
+                   srcRoot: srcRoot, topWt: topWt,
                    //  exported for wtlog.js / tests
                    repoFromBe: repoFromBe,
                    projectFromQuery: projectFromQuery,

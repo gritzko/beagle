@@ -171,6 +171,10 @@ function parseMessage(args, flags, slotFrag) {
   const all = (flags || []).concat(args || []);
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
+    //  URI-011: the context URI (arg 0) rides every call; authorityRepo scopes
+    //  it and BLANKS a bare `//WT` authority to "" — that emptied slot is NOT a
+    //  message word (else `:post 'msg'` in a `//WT` view → " msg", a leading space).
+    if (a === "") continue;
     if (a === "-m") { msg = all[++i]; sawFrag = true; continue; }
     if (a[0] === "-") continue;             // other flags
     if (a[0] === "#") { msg = a.slice(1); sawFrag = true; continue; }

@@ -79,7 +79,7 @@ function headOne(arg, ctx) {
 
   //  JAB-004: repo-less guard — head may run with be.repo=null (a fresh clone
   //  dir has no cur to compare); refuse cleanly instead of dereferencing null.
-  const info = repo || be.find(io.cwd());
+  const info = repo || be.find(be.cwd());   // URI-011: context wt root, not raw cwd
   const k = store.open(info.storePath, info.project);
   const cur = wtlog.open(info).curTip();
   const curSha = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";

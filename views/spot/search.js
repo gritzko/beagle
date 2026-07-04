@@ -30,6 +30,7 @@ const join     = require("../../shared/util/path.js").join;
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const match    = require("./match.js");
 const ext2lang = require("./ext.js");
+const navlib   = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 const EMPTY32  = new Uint32Array(0);   // JAB-029: hunks feed ctx.sink; cli renders
 
 //  --- URI parse: scheme->mode, #body (strip '…'), .ext, ./path, ?ref -------
@@ -105,10 +106,12 @@ function grepCtx(src, pos, nctx) {
 //  --- HUNKu8sMakeURI (dog/HUNK.c:1383), func-less form ---------------------
 //  `path` + (`#L<lineno>` when lineno>0).  The 1-based line of byte ctx_lo.
 //  (Func segment omitted — DEF has no JS binding; see header.)
-function makeURI(path, src, ctxLo) {
+//  URI-011: the hunk uri carries the scheme+authority (`grep://name/path#L<n>`);
+//  off-nav authority is "" → byte-identical `<mode>:path#L<n>`.
+function makeURI(mode, path, src, ctxLo) {
   let ln = 1;
   for (let i = 0; i < ctxLo && i < src.length; i++) if (src[i] === 10) ln++;
-  return path + "#L" + ln;
+  return navlib.navUri(mode, path) + "#L" + ln;
 }
 
 //  --- per-file search + hunk emit (capo_spot_file / capo_grep_file_cb) -----
@@ -142,7 +145,7 @@ function searchFile(em, ctxState, source, htoks, relpath, m, ext) {
     //  glued (no re-emitted overlap, no banner).  capo_spot_file:801.
     if (ctxLo < prevHi) ctxLo = prevHi;
     if (ctxLo < ctxHi) {
-      const uri = makeURI(relpath, source, win.lo < ctxLo ? ctxLo : win.lo);
+      const uri = makeURI(em.verb, relpath, source, win.lo < ctxLo ? ctxLo : win.lo);
       emitHunk(em, uri, source, ctxLo, ctxHi, ext);
     }
     prevHi = ctxHi;
@@ -162,7 +165,7 @@ function emitHunk(em, uri, source, lo, hi, ext) {
   if (em.mode !== "plain" && ext) {
     try { toks = tok.parse(body, ext.replace(/^\./, "")); } catch (e) { toks = EMPTY32; }
   }
-  em.sink.feed(uri, body, toks, em.verb, 0n);
+  em.sink.feed(uri, body, toks, "", 0n);   // URI-011: scheme now rides the uri
 }
 
 //  --- file walk: live tip via classify; ?ref historic via store + git.tree -

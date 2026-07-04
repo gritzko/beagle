@@ -33,6 +33,7 @@ const store   = require("../../shared/store.js");
 const wtlog   = require("../../shared/wtlog.js");
 const shalib  = require("../../shared/util/sha.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
+const navlib  = require("../../shared/nav.js");        // URI-011: full-URI hunk helper
 //  COMMIT-006: reuse the diff GENERATOR (graf weave + tree-vs-ref) directly —
 //  call its handler with a pinned `views` spec; the inert diff VIEW routing
 //  (ctx.views unset, JS-071) is bypassed.  See inlineDiff() below.
@@ -217,9 +218,9 @@ function buildHunk(sha, headers, body) {
     const linkScheme = (h.name === "tree") ? "tree"
                      : (h.name === "parent") ? "commit" : null;
     const linky = linkScheme !== null && isFullSha(h.value.slice(0, 40));
-    //  The sha40 is the anchor; the URI is `<scheme>:?<sha40>` (hashes live in
-    //  the `?` query slot — the general URI rule; the dispatcher promotes it).
-    const uri = linky ? linkScheme + ":?" + h.value.slice(0, 40) : "";
+    //  URI-011: full nav-authority URI — authority BEFORE the `?` so the hunk
+    //  carries the FULL address (`<scheme>://name?<sha40>`; "" auth = byte-parity).
+    const uri = linky ? navlib.navUri(linkScheme, "") + "?" + h.value.slice(0, 40) : "";
     emit(h.value, linky ? TAG_L : TAG_G, uri);
     emit("\n", TAG_S);
   }
