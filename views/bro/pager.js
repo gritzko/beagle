@@ -19,6 +19,9 @@ const discover = require("core/discover.js");
 //  URI-011: the shared `word(context_uri, …rest)` spell composer — one classifier
 //  for BOTH the address bar and the CLI (core/loop.js), so they compose alike.
 const SPELL = require("shared/spell.js");
+//  BRO-012: the shared ticket-code resolver — an `F` issue-key token with no
+//  adjacent `U` derives its target (todo/<TOPIC>/<KEY>.{md,txt,mkd}) from here.
+const TICKET = require("shared/ticket.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -261,7 +264,12 @@ Pager.prototype._resolveSpell = function (spell) {
     const auth = t.authority !== undefined ? t.authority : cur.authority;
     let path = t.path || cur.path;
     if (auth !== undefined && path && path[0] !== "/") path = "/" + path;
-    const query = t.query !== undefined ? t.query : cur.query;
+    //  URI-012/BRO-012: inherit the context ?ref ONLY for a relative click (the
+    //  target OMITS its authority).  A target with its OWN //authority is
+    //  absolute, maybe cross-repo (a ticket `cat://journal/…`) — the context hash
+    //  is meaningless there → "no hunks"; keep its own (usually absent) ref.
+    const query = t.query !== undefined ? t.query
+                : (t.authority !== undefined ? undefined : cur.query);
     return URI.make(t.scheme, auth, path, query, t.fragment) || t.toString();
   }
   //  A scheme-less `./x` / `?x` / `#x` mutates one slot of the current URI.
@@ -711,6 +719,17 @@ Pager.prototype._uriAt = function (hunk, off) {
     const lo = toks[nxt - 1] & 0xffffff;       // nxt>0 always (ti>=0)
     const hi = toks[nxt] & 0xffffff;
     if (hi > lo) return utf8.Decode(hunk.text.slice(lo, hi));
+  }
+  //  BRO-012: an `F` issue-key token has NO producer `U`; derive its ticket
+  //  file URI from the token TEXT (todo/<TOPIC>/<KEY>.{md,txt,mkd}).  The
+  //  resolver owns root order ($TODO_ROOT, current wt, open/launch wt).
+  if (ti < toks.length &&
+      String.fromCharCode(65 + ((toks[ti] >>> 27) & 0x1f)) === "F") {
+    const lo = ti > 0 ? (toks[ti - 1] & 0xffffff) : 0;
+    const hi = toks[ti] & 0xffffff;
+    const key = hi > lo ? utf8.Decode(hunk.text.slice(lo, hi)) : "";
+    const t = key ? TICKET.ticketUri(key) : null;
+    if (t) return t;
   }
   return this._lineUri(hunk, off);
 };

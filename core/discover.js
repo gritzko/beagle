@@ -189,6 +189,25 @@ function srcRoot() {
   return dirname(wt) || io.getenv("HOME") || ".";
 }
 
+//  BRO-012: todoRoot() → the ordered ticket-tree roots, a MIRROR of srcRoot():
+//  (1) explicit $TODO_ROOT env; (2) the CURRENT wt root (the nav'd view's
+//  authority, be.repo climbed past submodules); (3) the OPEN/launch wt root
+//  (topWt(find(cwd)) — where jab started).  Returns the roots in order,
+//  skipping unset/duplicate ones — the resolver probes each `<root>/todo/…`.
+function todoRoot() {
+  const out = [];
+  const push = (d) => { if (d && out.indexOf(d) < 0) out.push(d); };
+  push(io.getenv("TODO_ROOT"));
+  //  current wt: the nav-scoped repo (be.repo), else cwd's repo, topWt'd.
+  try {
+    const cur = (typeof be !== "undefined" && be.repo && be.repo.wt) || find(io.cwd()).wt;
+    push(topWt(cur));
+  } catch (e) { /* repo-less current → skip */ }
+  //  open/launch wt: cwd's own repo (jab's launch tree), topWt'd.
+  try { push(topWt(find(io.cwd()).wt)); } catch (e) { /* repo-less launch → skip */ }
+  return out;
+}
+
 //  URI-011: wtdir(uriStr) → the ABSOLUTE dir a nav URI addresses, or null.
 //    //name[/sub]  → $SRC_ROOT/name/sub  (a tree under SRC_ROOT, confined below)
 //    // , //.       → the LAUNCH tree     (find(cwd).wt — "where jab started")
@@ -248,7 +267,7 @@ function contextCwd() {
 }
 
 module.exports = { find: find, wtdir: wtdir, navCwd: navCwd, cwd: contextCwd,
-                   srcRoot: srcRoot, topWt: topWt,
+                   srcRoot: srcRoot, todoRoot: todoRoot, topWt: topWt,
                    //  exported for wtlog.js / tests
                    repoFromBe: repoFromBe,
                    projectFromQuery: projectFromQuery,

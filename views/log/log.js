@@ -25,6 +25,7 @@ const shalib = require("../../shared/util/sha.js");
 const recurse = require("../../core/recurse.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const navlib = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
+const ticket = require("../../shared/ticket.js"); // BRO-012: ticket-code resolver
 const isFullSha = shalib.isFullSha;
 
 const LOG_MAX_WALK = 1 << 20;   // GRAF LOG_MAX_WALK cyclic-DAG bound
@@ -38,7 +39,10 @@ const LOG_MAX_WALK = 1 << 20;   // GRAF LOG_MAX_WALK cyclic-DAG bound
 //  paints it from dog/THEME — JS never re-rolls an SGR.
 //  BRO-006: TAG_U ('U'-65 = 20) is the invisible click-target tag — its bytes
 //  are hidden in plain/colour; the pager `_uriAt` reads them as the nav URI.
-const TAG_L = 11, TAG_G = 6, TAG_S = 18, TAG_D = 3, TAG_Q = 16, TAG_U = 20;
+//  BRO-012: TAG_F ('F'-65 = 5) is the filename/issue-key tag the tokenizers mint
+//  for `ABC-123`; the log splits a summary code into S/F/S + a hidden U so it is
+//  clickable via the SAME `_uriAt` path a body `F` token uses.
+const TAG_L = 11, TAG_G = 6, TAG_S = 18, TAG_D = 3, TAG_Q = 16, TAG_U = 20, TAG_F = 5;
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 
 //  --- URI parse: pull the path / ?ref / #frag off the raw `log:<uri>` arg ---
@@ -367,11 +371,18 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine, subPrefix) {
   //  URI-014: word-URI spell — verb OUT of the scheme (`commit //name[/sub]?<sha>`).
   const uri = navlib.navLink("commit", subPrefix || "", sha);
   const uriBytes = utf8.Encode(uri);
-  //  Row bytes WITH the hidden URI inline: sha8 + <uri> + " " + date7 + " " +
-  //  summary + " (author)" + "\n".  The pager hides the U-tagged span, so the
-  //  visible columns are unchanged from the LOG-001 layout.
-  const line = sha8 + uri + " " + date7 + " " + summary + authTail + "\n";
-  const bytes = utf8.Encode(line);
+  //  BRO-012: build the SUMMARY region with any ticket code fused into an `F`
+  //  token and a hidden `U` ticket-file URI spliced right after it (the sha8+U
+  //  pattern above) — so a click on `ABC-123` in a commit message opens its
+  //  ticket with NO pager change.  { bytes, spans } — spans are S/F/U, offsets
+  //  local to the summary region; a code with no ticket stays plain `S`.
+  const summReg = summarySpans(summary, nonspine ? TAG_Q : TAG_S);
+  //  Row bytes WITH the hidden URIs inline: sha8 + <commit-uri> + " " + date7 +
+  //  " " + <summary+ticket-U> + " (author)" + "\n".  The pager hides U spans, so
+  //  the visible columns are unchanged from the LOG-001 layout.
+  const pre = utf8.Encode(sha8 + uri + " " + date7 + " ");
+  const post = utf8.Encode(authTail + "\n");
+  const bytes = concat3(pre, summReg.bytes, post);
   textParts.push(bytes);
 
   //  Byte ends of each column (ASCII sha8/date7/sep; summary/author may be
@@ -382,7 +393,7 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine, subPrefix) {
   const eSep1 = eUri + 1;                               // sep " "
   const eDate = eSep1 + utf8.Encode(date7).length;      // date7 (7 cols)
   const eSep2 = eDate + 1;                              // sep " "
-  const eSumm = eSep2 + utf8.Encode(summary).length;    // summary
+  const eSumm = eSep2 + summReg.bytes.length;           // summary (+ ticket U's)
   const eAuth = eSumm + utf8.Encode(authTail).length;   // " (author)"
   const eNL   = bytes.length;                           // incl the "\n"
   if (nonspine) {
@@ -390,7 +401,10 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine, subPrefix) {
     //  of the visible row, then TAG_S over the "\n" (no colour bleed).
     spans.push([TAG_Q, baseOff + eSha8]);               // sha8 = grey
     spans.push([TAG_U, baseOff + eUri]);                // hidden commit:?<sha>
-    spans.push([TAG_Q, baseOff + eAuth]);               // sep…author = grey
+    spans.push([TAG_Q, baseOff + eSep2]);               // sep…date…sep = grey
+    for (const s of summReg.spans)                      // BRO-012: S/F/U summary
+      spans.push([s[0], baseOff + eSep2 + s[1]]);
+    spans.push([TAG_Q, baseOff + eAuth]);               // " (author)" = grey
     spans.push([TAG_S, baseOff + eNL]);                 // "\n" → no colour bleed
   } else {
     spans.push([TAG_L, baseOff + eSha8]);               // sha8
@@ -398,11 +412,58 @@ function appendRow(sha, k, textParts, spans, baseOff, nonspine, subPrefix) {
     spans.push([TAG_G, baseOff + eSep1]);               // sep
     spans.push([TAG_L, baseOff + eDate]);               // date7
     spans.push([TAG_G, baseOff + eSep2]);               // sep
-    spans.push([TAG_S, baseOff + eSumm]);               // summary
+    for (const s of summReg.spans)                      // BRO-012: S/F/U summary
+      spans.push([s[0], baseOff + eSep2 + s[1]]);
     spans.push([TAG_D, baseOff + eAuth]);               // " (author)"
     spans.push([TAG_S, baseOff + eNL]);                 // "\n" → no colour bleed
   }
   return bytes.length;
+}
+
+//  BRO-012: split a commit summary into an S/F/U span sequence — scan it with
+//  the SHARED tokenizer (ticket.scanKeys → the same `uc ucnum* "-" dgt+` `F`
+//  rule the body uses), and for each ticket code that RESOLVES to a file splice
+//  its hidden `cat:` URI bytes after the `F` token.  Returns { bytes, spans };
+//  spans are [tag, endOffset] local to the returned bytes.  A code with no
+//  ticket (or when unresolvable) stays part of the plain `summTag` run.
+function summarySpans(summary, summTag) {
+  const src = utf8.Encode(summary);
+  const keys = ticket.scanKeys(summary);
+  const out = [];                                      // Uint8Array byte chunks
+  const spans = [];                                    // [tag, localEnd]
+  let cursor = 0, end = 0;
+  for (const kt of keys) {
+    const uri = ticket.ticketUri(kt.key);              // resolver owns root order
+    if (!uri) continue;                                // no ticket file → plain S
+    if (kt.lo > cursor) {                              // S: text before the key
+      const chunk = src.slice(cursor, kt.lo);
+      out.push(chunk); end += chunk.length; spans.push([summTag, end]);
+    }
+    const keyBytes = src.slice(kt.lo, kt.hi);          // F: the ticket code
+    out.push(keyBytes); end += keyBytes.length; spans.push([TAG_F, end]);
+    const uriBytes = utf8.Encode(uri);                 // U: hidden ticket URI
+    out.push(uriBytes); end += uriBytes.length; spans.push([TAG_U, end]);
+    cursor = kt.hi;
+  }
+  if (cursor < src.length) {                           // S: the summary tail
+    const chunk = src.slice(cursor);
+    out.push(chunk); end += chunk.length; spans.push([summTag, end]);
+  } else if (out.length === 0) {                       // no keys: the whole line
+    out.push(src); end = src.length; spans.push([summTag, end]);
+  }
+  return { bytes: concatAll(out, end), spans: spans };
+}
+
+//  Concatenate three byte chunks (pre + summary + post) into one line buffer.
+function concat3(a, b, c) {
+  const all = new Uint8Array(a.length + b.length + c.length);
+  all.set(a, 0); all.set(b, a.length); all.set(c, a.length + b.length);
+  return all;
+}
+function concatAll(parts, total) {
+  const all = new Uint8Array(total);
+  let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
+  return all;
 }
 
 //  SUBS-045: LOG-002's private descendSub is now core/recurse.js's shared

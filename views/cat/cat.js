@@ -13,6 +13,7 @@ const join  = require("../../shared/util/path.js").join;
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const bro   = require("../../view/bro.js");
 const navlib = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
+const ticket = require("../../shared/ticket.js");   // BRO-012: F key → ticket URI
 const EMPTY32 = new Uint32Array(0);
 
 const CAP = 1 << 20;   // 1 MiB/hunk cap; a bigger file splits with a #L<n> rebanner
@@ -47,17 +48,37 @@ function grepable(body, lo, hi) {
   }
   return false;
 }
+//  BRO-012: the `U` bytes a token links to, or null.  An `F` issue-key links to
+//  its TICKET file (ticketUri), NOT a grep of the word; every other grepable
+//  token keeps the URI-014 `grep [//name]#<token>` spell (unresolved F falls to
+//  grep too — it is grepable).  Returned bytes ARE the hidden U target verbatim.
+function uBytes(body, toks, i, prev, end, PFX) {
+  if (end <= prev || tokTag(toks[i]) === "U") return null;
+  if (tokTag(toks[i]) === "F") {
+    const t = ticket.ticketUri(utf8.Decode(body.slice(prev, end)));
+    if (t) return utf8.Encode(t);
+  }
+  if (!grepable(body, prev, end)) return null;
+  const u = new Uint8Array(PFX.length + (end - prev));
+  u.set(PFX, 0);
+  for (let p = prev, o = PFX.length; p < end; p++, o++) u[o] = body[p];
+  return u;
+}
 function withLinks(body, toks) {
   if (toks.length === 0) return { body: body, toks: toks };
   //  URI-014: grep click-target as the `word URI` spell `grep [//name]#<token>`
   //  — navLink puts the verb OUT of the scheme; unscoped PFX="grep #", scoped
   //  "grep //name#", the per-token `<token>` append completing the spell.
   const PFX = utf8.Encode(navlib.navLink("grep", "", undefined, ""));
+  //  BRO-012: precompute each token's U bytes (ticket for F, grep otherwise) so
+  //  the size + fill passes agree on the variable-length ticket URIs.
+  const us = new Array(toks.length);
   let extra = 0, nlinks = 0, prev = 0;
   for (let i = 0; i < toks.length; i++) {
     const end = tokEnd(toks[i]);
-    if (end > prev && tokTag(toks[i]) !== "U" && grepable(body, prev, end))
-      { extra += PFX.length + (end - prev); nlinks++; }   // grep-uri + '#' + token
+    const u = uBytes(body, toks, i, prev, end, PFX);
+    us[i] = u;
+    if (u) { extra += u.length; nlinks++; }
     prev = end;
   }
   if (nlinks === 0) return { body: body, toks: toks };
@@ -67,15 +88,11 @@ function withLinks(body, toks) {
   prev = 0;
   for (let i = 0; i < toks.length; i++) {
     const end = tokEnd(toks[i]);
-    const link = end > prev && tokTag(toks[i]) !== "U" && grepable(body, prev, end);
     //  Copy this token's body slice, re-offset its end into `out`.
     for (let p = prev; p < end; p++) out[op++] = body[p];
     ntoks[oi++] = tokPack((toks[i] >>> 27) & 0x1f, op);
-    if (link) {
-      //  URI-014: append the `grep [//name]#<token>` spell (PFX + the token =
-      //  its just-copied bytes), then a `U` token ending at the new body length.
-      out.set(PFX, op); op += PFX.length;
-      for (let p = prev; p < end; p++) out[op++] = body[p];
+    if (us[i]) {                                  // append the hidden U target
+      out.set(us[i], op); op += us[i].length;
       ntoks[oi++] = tokPack(TAG_U, op);
     }
     prev = end;
