@@ -68,6 +68,10 @@ const A0 = { fm: 0, fg: 0, bm: 0, bg: 0, fl: 0 };
 function aFgB(n)   { return { fm: 1, fg: n, bm: 0, bg: 0, fl: 0 }; }  // basic 30-37/90-97
 function aFg256(n) { return { fm: 2, fg: n, bm: 0, bg: 0, fl: 0 }; }
 function aBg256(n) { return { fm: 0, fg: 0, bm: 2, bg: n, fl: 0 }; }
+//  WHY-001: a 24-bit truecolor bg (mode 3, `48;2;r;g;b`) — the `why:` wash the
+//  VIEW bakes as a `#rrggbb` O prefix; bg packs r/g/b, feedColor mode 3 spells it.
+function aBgRGB(r, g, b) { return { fm: 0, fg: 0, bm: 3,
+  bg: ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff), fl: 0 }; }
 function aFlag(f)  { return { fm: 0, fg: 0, bm: 0, bg: 0, fl: f }; }
 function aOr(a, b) {
   return { fm: a.fm | b.fm, fg: a.fg | b.fg, bm: a.bm | b.bm,
@@ -139,42 +143,26 @@ function hasDiffSides(toks) {
 }
 
 //  WHY-001: a `why:` hunk marks each washed token with a hidden `O` (origin) token
-//  right after it, bytes = `commit ?<hashlet>#<shade>` (hue from the hashlet, paleness
-//  from the shade).  hasWhyRuns → route to the why renderer; `O`/`U` bytes are hidden.
+//  right after it, bytes = `#rrggbb commit ?<hashlet>` — a LEADING baked bg the VIEW
+//  resolved (hue f(sha) + age paleness).  hasWhyRuns → route to the why renderer;
+//  `O`/`U` bytes are hidden.  The renderer is colour-AGNOSTIC: it just applies #rgb.
 function hasWhyRuns(toks) {
   for (let i = 0; i < toks.length; i++)
     if (TOK_TAG(toks[i]) === "O") return true;
   return false;
 }
 
-//  WHY-001: per-commit HUE = a saturated xterm-cube direction from the sha (12 vivid
-//  hues); the wash blends it toward white by the commit's log-age `shade` (0 newest
-//  .. 255 oldest) so older = paler.  Even the newest keeps a light tint (fg stays readable).
-const WHY_HUES = [[5,0,0],[5,3,0],[5,5,0],[3,5,0],[0,5,0],[0,5,3],
-                  [0,5,5],[0,3,5],[0,0,5],[3,0,5],[5,0,5],[5,0,3]];
-function paleHue(sha, shade) {
-  let h = 0;
-  for (let i = 0; i < 12 && i < sha.length; i++) h = (h * 31 + sha.charCodeAt(i)) >>> 0;
-  const b = WHY_HUES[h % WHY_HUES.length];
-  //  readable band: newest ~0.3 (saturated pastel) .. oldest ~0.8 (faint tint, never
-  //  pure white 231) — so even the oldest commit keeps a visible wash.
-  const p = 0.3 + 0.5 * (Math.max(0, Math.min(255, shade | 0)) / 255);
-  const R = Math.round(b[0] + p * (5 - b[0])), G = Math.round(b[1] + p * (5 - b[1])),
-        B = Math.round(b[2] + p * (5 - b[2]));
-  return aBg256(16 + 36 * R + 6 * G + B);
-}
-
-//  WHY-001: the bg for a visible token — PEEK the next token; if it's `O`, read its
-//  `commit ?<hashlet>#<shade>` (hue from hashlet, paleness from shade).  Else A0 (white).
+//  WHY-001: the bg for a visible token — PEEK the next token; if it's `O`, read the
+//  LEADING `#rrggbb` the view baked and apply it as a truecolor wash.  Else A0 (white);
+//  a wash with no leading `#rrggbb` (an unattributed token) also renders white.
 function whyBgAt(text, toks, ti) {
   const nx = ti + 1;
   if (nx >= toks.length || TOK_TAG(toks[nx]) !== "O") return A0;
   const s = utf8.Decode(text.slice(toks[nx - 1] & 0xffffff, toks[nx] & 0xffffff));
-  const q = s.lastIndexOf("?"), h = s.indexOf("#", q + 1);
-  if (q < 0) return A0;
-  const hl = h > q ? s.slice(q + 1, h) : s.slice(q + 1);
-  const shade = h >= 0 ? parseInt(s.slice(h + 1), 10) || 0 : 0;
-  return /^[0-9a-f]{6,40}$/.test(hl) ? paleHue(hl, shade) : A0;
+  const m = /^#([0-9a-fA-F]{6})/.exec(s);
+  if (!m) return A0;
+  const v = parseInt(m[1], 16);
+  return aBgRGB((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
 }
 
 //  WHY-001: paint ONE display row [off, end) of a `why:` blame hunk (the twin of
@@ -791,12 +779,11 @@ module.exports = {
   //  exported for the pager (indexRows/paintRow pass-awareness) and tests.
   colorDiffHunk: colorDiffHunk,
   hasDiffSides: hasDiffSides,
-  //  WHY-001: the blame-colour renderer + its hue helper (shared with why.js /
-  //  the golden, so the view and the renderer agree on the pastel).
+  //  WHY-001: the blame-colour renderer.  The palette lives in the VIEW (why.js
+  //  bakes each O token's `#rrggbb`); the renderer just applies whatever it reads.
   colorWhyHunk: colorWhyHunk,
   whyPlain: whyPlain,
   hasWhyRuns: hasWhyRuns,
-  paleHue: paleHue,
   whyBgAt: whyBgAt,
   //  WHY-001: the per-ROW blame painter (twin of paintDiffRow) + its string form,
   //  so the pager routes a why hunk through the SAME wash the pipe --color uses.

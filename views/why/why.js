@@ -28,12 +28,34 @@ function readWtFile(path) {
 //  WHY-001 tok32 here is JUST tag(5)|end(24) — the origin COLOUR+CLICK ride a
 //  HIDDEN `O` (origin) token (a `U` sibling), never tok bits, so a `why` hunk
 //  can't trip the diff-side wash.  Each washed token is `[visible][O]`; O bytes =
-//  `commit ?<hashlet>#<shade>` (hashlet→hue, shade→paleness, click strips at `#`).
+//  `#rrggbb commit ?<hashlet>` — a LEADING baked bg (the VIEW owns the colour: hue
+//  f(sha) + age paleness) then the click spell.  The renderer just applies the
+//  `#rrggbb`; the pager strips it at the first space → `commit ?<hashlet>`.
 //  TAG_O = 'O'-'A' = 14 (hidden like TAG_U=20); TAG_S=18 the default.
 const TAG_S = 18, TAG_U = 20, TAG_O = 14;
 //  12-hex hashlet click target (commit: resolves any 6..40, abc.mkd).
 const HASHLET = 12;
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
+
+//  WHY-001: per-commit HUE — 12 vivid xterm-cube directions picked by the sha —
+//  blended toward white by the age shade (0 newest .. 255 oldest) so older=paler,
+//  baked to an explicit `rrggbb` the renderer applies verbatim (Design (b): the
+//  VIEW resolves the bg).  cube8: xterm cube level 0..5 → its exact 8-bit value.
+const WHY_HUES = [[5,0,0],[5,3,0],[5,5,0],[3,5,0],[0,5,0],[0,5,3],
+                  [0,5,5],[0,3,5],[0,0,5],[3,0,5],[5,0,5],[5,0,3]];
+function cube8(l) { return l <= 0 ? 0 : 55 + 40 * l; }
+function hex2(n) { return (n < 16 ? "0" : "") + (n & 0xff).toString(16); }
+function whyRgb(sha, shade) {
+  let h = 0;
+  for (let i = 0; i < 12 && i < sha.length; i++) h = (h * 31 + sha.charCodeAt(i)) >>> 0;
+  const c = WHY_HUES[h % WHY_HUES.length];
+  //  readable band: newest ~0.3 (saturated pastel) .. oldest ~0.8 (faint tint,
+  //  never pure white) so even the oldest keeps a visible wash under the fg.
+  const p = 0.3 + 0.5 * (Math.max(0, Math.min(255, shade | 0)) / 255);
+  const R = Math.round(c[0] + p * (5 - c[0])), G = Math.round(c[1] + p * (5 - c[1])),
+        B = Math.round(c[2] + p * (5 - c[2]));
+  return hex2(cube8(R)) + hex2(cube8(G)) + hex2(cube8(B));
+}
 
 //  WHY-001: resolve a ref (branch FIRST, then full-sha / hashlet) to a commit
 //  sha (diff.js:resolveCommit twin — reuse the convention, never hand-parse).
@@ -116,22 +138,25 @@ function ageShade(k, idToSha) {
   return shade;
 }
 
-//  WHY-001: the hidden `O` spell per commit id — `commit ?<hashlet>#<shade>`
-//  (hashlet→hue, shade→paleness; the O-click strips at `#` → `commit ?<hashlet>`).
+//  WHY-001: the hidden `O` spell per commit id — `#rrggbb commit ?<hashlet>`: a
+//  LEADING baked bg (hue f(sha) + age paleness), then the click spell.  The pager
+//  strips the `#rrggbb ` prefix at the first space → `commit ?<hashlet>`.
 function originTargets(idToSha, shade) {
   const o = Object.create(null);
   for (const id in idToSha) {
     const sha = idToSha[id];
     if (!sha) continue;
-    o[id] = navlib.navLink("commit", "", sha.slice(0, HASHLET), undefined) + "#" + (shade[id] | 0);
+    const hashlet = sha.slice(0, HASHLET);
+    o[id] = "#" + whyRgb(hashlet, shade[id] | 0) + " " +
+            navlib.navLink("commit", "", hashlet, undefined);
   }
   return o;
 }
 
 //  WHY-001: STREAM the body straight into a HUNK buffer (io.ram, lazy mmap — NO
 //  per-token JS objects/slices).  Each ORIGIN-attributed token is emitted as its
-//  visible bytes + a hidden `O` token holding oTarget[id] (`commit ?<hashlet>#<shade>`);
-//  the pager peeks the O for bg (hue+shade) + click.  A token with NO in-scope
+//  visible bytes + a hidden `O` token holding oTarget[id] (`#rrggbb commit ?<hashlet>`);
+//  the renderer applies the leading #rgb, the pager strips it for the click.  A token with NO in-scope
 //  origin — working-tree/uncommitted, or out-of-range base in a `?a..b` hunk —
 //  gets NO O → renders white.  Returns { body, toks, commits } (buffer views).
 function buildBody(w, idToSha, rangeIds, oTarget) {
@@ -239,3 +264,4 @@ module.exports = why;
 module.exports.buildBody = buildBody;
 module.exports.tok = tok;
 module.exports.parseArg = parseArg;
+module.exports.whyRgb = whyRgb;   // WHY-001: baked-colour hook (hue f(sha)+age paleness)

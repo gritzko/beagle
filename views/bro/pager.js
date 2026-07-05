@@ -511,11 +511,14 @@ Pager.prototype._tabComplete = function () {
   this._tab = { stem: lw.word, cands: cands, idx: 0, head: lw.head, atCmd: this.cmd };
 };
 
-//  BRO-013: gather `stem` completions from the view's hunk U/F tokens — a U nav
-//  spell → its wt-relative path, an F → its name; a dir (F+P / U ls|tree) gets `/`.
+//  BRO-013: complete `stem` from the view's hunk U nav targets (full wt-relative
+//  paths); match on the last SEGMENT so `u`/`./u` both find `shared/util`.  A `./`
+//  stem inserts the path relative to the VIEW dir, else the full wt-relative path.
 Pager.prototype._completions = function (stem) {
-  const v = this.view;
-  const seen = {};
+  const rel = stem.slice(0, 2) === "./" || stem.slice(0, 3) === "../";
+  const key = stem.slice(stem.lastIndexOf("/") + 1);       // match on the last seg
+  const viewPath = (this._parse(this._verbUri().uri).path || "").replace(/^\/+|\/+$/g, "");
+  const v = this.view, seen = {}, names = {};
   if (v) for (const h of v.hunks) {
     const toks = h.toks, text = h.text;
     if (!toks) continue;
@@ -525,28 +528,37 @@ Pager.prototype._completions = function (stem) {
       const lo = i > 0 ? (toks[i - 1] & 0xffffff) : 0, hi = toks[i] & 0xffffff;
       if (hi <= lo) continue;
       const raw = utf8.Decode(text.slice(lo, hi));
-      let cand = null, isDir = false;
-      if (tag === "U") {                                 // nav spell → wt-rel path
-        const sp = this._splitSpell(raw);
-        const u = this._parse(sp.uri);
-        if (!u.path) continue;
-        cand = u.path.replace(/\/+$/, "");
-        isDir = sp.verb === "ls" || sp.verb === "tree" || sp.verb === "lsr";
-      } else {                                           // F: visible name; F+P = dir
-        cand = raw.replace(/\/+$/, "");
+      if (tag === "F") {                                   // bare name — U-less fallback
         const nt = i + 1 < toks.length ? String.fromCharCode(65 + ((toks[i + 1] >>> 27) & 0x1f)) : "";
-        isDir = raw.slice(-1) === "/" || nt === "P";
+        const nm = raw.replace(/\/+$/, "");
+        if (nm) names[nm] = (raw.slice(-1) === "/" || nt === "P") ? "/" : "";
+        continue;
       }
-      //  BRO-013: complete on the last path SEGMENT so a bare `re` stem matches a
-      //  `dir/readme.md` entry by its visible name, not its full nav path.
-      const seg = cand.slice(cand.lastIndexOf("/") + 1);
-      if (seg && seg.indexOf(stem) === 0) seen[seg + (isDir ? "/" : "")] = 1;
+      const sp = this._splitSpell(raw);                    // U nav spell → wt-rel path
+      const u = this._parse(sp.uri);
+      if (!u.path) continue;
+      const full = u.path.replace(/^\/+|\/+$/g, "");
+      const seg = full.slice(full.lastIndexOf("/") + 1);
+      if (!seg || seg.indexOf(key) !== 0) continue;
+      const slash = (sp.verb === "ls" || sp.verb === "tree" || sp.verb === "lsr") ? "/" : "";
+      seen[this._compTok(full, viewPath, rel) + slash] = 1;
     }
   }
   let cands = Object.keys(seen);
-  if (!cands.length) cands = this._fsCompletions(stem);   // BRO-013: FS fallback
+  if (!cands.length) for (const nm in names)               // no U tokens → the F names
+    if (nm.indexOf(key) === 0) cands.push((rel ? "./" : "") + nm + names[nm]);
+  if (!cands.length) cands = this._fsCompletions(stem);
   cands.sort();
   return cands;
+};
+
+//  BRO-013: the token inserted for a candidate — its full wt-relative path, or (a
+//  `./` stem) `./` + the path made relative to the current view dir.
+Pager.prototype._compTok = function (full, viewPath, rel) {
+  if (!rel) return full;
+  const r = viewPath && full.slice(0, viewPath.length + 1) === viewPath + "/"
+          ? full.slice(viewPath.length + 1) : full;
+  return "./" + r;
 };
 
 //  BRO-013 TODO: FS fallback — readdir the view's context dir (via discover + the
@@ -805,14 +817,15 @@ Pager.prototype._uriAt = function (hunk, off) {
   while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
   const nxt = ti + 1;
   //  WHY-001: the click target is the token right AFTER the one under the cursor —
-  //  `U` (verbatim) or `O` (origin: `commit ?<hashlet>#<shade>`, strip `#<shade>`).
+  //  `U` (verbatim) or `O` (origin: `#rrggbb commit ?<hashlet>`, strip the leading
+  //  `#rrggbb ` bg at the first space → the click spell).
   if (nxt < toks.length) {
     const ntag = String.fromCharCode(65 + ((toks[nxt] >>> 27) & 0x1f));
     if (ntag === "U" || ntag === "O") {
       const lo = toks[nxt - 1] & 0xffffff, hi = toks[nxt] & 0xffffff;
       if (hi > lo) {
         let s = utf8.Decode(hunk.text.slice(lo, hi));
-        if (ntag === "O") { const h = s.lastIndexOf("#"); if (h > 0) s = s.slice(0, h); }
+        if (ntag === "O" && s[0] === "#") { const sp = s.indexOf(" "); if (sp > 0) s = s.slice(sp + 1); }
         return s;
       }
     }
