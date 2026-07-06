@@ -102,9 +102,10 @@ function resolveAnchor(wt) {
     const u = isFile(bePath) ? row0Uri(bePath) : undefined;
     if (u) {
       const p = new URI(u);
-      const sp = repoFromBe(p.path);
-      if (sp) storePath = sp;
-      project = projectFromQuery(p.query) || projectFromPath(p.path);
+      //  A store-anchor row-0 (repo/get) carries a /.be/ path; a fresh jab-posted
+      //  colocated primary opens with a post row-0 (no path) — stays store==wt.
+      if (p.path) { const sp = repoFromBe(p.path); if (sp) storePath = sp; }
+      project = projectFromQuery(p.query) || projectFromPath(p.path || "");
     }
   }
   return { root: storePath, wt: wt, bePath: bePath, storePath: storePath,

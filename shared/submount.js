@@ -130,6 +130,49 @@ function tryFetch(uri, wantSha) {
   } catch (e) { return null; }
 }
 
+//  SUBS-046: `uri` a LOCAL (`file:`/scheme-less) store source (get.js `localish`)?
+//  Such a child reuses the on-disk store, never the keeper wire.  Returns the URI or null.
+function localSourceUri(uri) {
+  if (!uri) return null;
+  let u; try { u = new URI(uri); } catch (e) { return null; }   // unparseable → not local
+  const scheme = u.scheme || "";
+  if (scheme !== "" && scheme !== "file") return null;          // be:/git/ssh → wire
+  if (scheme === "" && u.authority != null && u.authority !== "" && !u.path)
+    return null;                                                 // `//host` cached read → wire
+  return u;
+}
+
+//  SUBS-046: resolve a LOCAL source URI to the store that RESOLVES `pin`, following
+//  GET-038's store/worktree redirect; jab is project-less so try declared proj THEN "".
+function resolveLocalStore(u, pin) {
+  let path = u.path || "";
+  path = path.replace(/\/+$/, "");
+  const storeRoot0 = be.repoFromBe(path);                        // strip trailing `.be`
+  let declProj = be.projectFromQuery(u.query || "") ||
+                 be.projectFromPath(path) || "";
+  //  GET-038: a WORKTREE source (`.be` is a FILE) redirects to its real store.
+  const beFile = (path.slice(-3) === ".be") ? path : join(path, ".be");
+  let storeRoot = storeRoot0;
+  let kind; try { kind = io.stat(beFile).kind; } catch (e) { kind = undefined; }
+  if (kind === "reg") {
+    let u0; ulog.each(beFile, function (log) { if (u0 === undefined) u0 = log.uri; });
+    if (!u0) return null;
+    const p = new URI(u0);
+    storeRoot = be.repoFromBe(p.path || "");
+    declProj = declProj || be.projectFromQuery(p.query || "") ||
+               be.projectFromPath(p.path || "");
+    if (!storeRoot) return null;
+  }
+  //  Keep the project whose shard actually resolves the pin (declared, then "").
+  for (const proj of (declProj ? [declProj, ""] : [""])) {
+    try {
+      if (store.open(storeRoot, proj).getObject(pin))
+        return { storeBe: join(storeRoot, ".be"), storeRoot: storeRoot, proj: proj };
+    } catch (e) {}
+  }
+  return null;
+}
+
 //  mount(opts): fetch + clone + anchor + checkout one gitlink leaf.  Returns
 //  the mounted sub's coords so the caller can recurse into IT (a sub of a sub).
 function mount(opts) {
@@ -175,7 +218,32 @@ function mount(opts) {
     //  canonical store).  `store.open(beDir, title)` resolves `<beDir>/<title>`.
     let havePin = false;
     if (exists(join(shard, "0000000001.keeper"))) {
+      //  SUBS-046: `store.open(beDir, title)` names the sibling shard; but a
+      //  project-less/unnamed source (jab refs at `.be/refs`) resolves under the
+      //  empty project too — try both so an already-local pin reuses w/o fetch.
       try { havePin = !!store.open(beDir, title).getObject(pin); } catch (e) {}
+      if (!havePin) try { havePin = !!store.open(shard, "").getObject(pin); } catch (e) {}
+    }
+
+    //  SUBS-046: LOCAL-SOURCE reuse (get.js localish path, NO wire): a `file:`/
+    //  scheme-less child whose pin already lives on-disk is mounted by REDIRECTING
+    //  the sub `.be` at that store + checkout; else fall through to the wire fetch.
+    if (!havePin) {
+      const sameUri = sameSourceUri(opts.source, title);
+      let ls = null;
+      const su = localSourceUri(sameUri); if (su) ls = resolveLocalStore(su, pin);
+      if (!ls) { const uu = localSourceUri(url); if (uu) ls = resolveLocalStore(uu, pin); }
+      if (ls) {
+        const oldPin = currentSubPin(anchorPath);
+        try { io.mkdir(subWt); } catch (e) {}
+        const redirect = URI.make("file", undefined, ls.storeBe + "/", "/" + ls.proj);
+        ulog.write(anchorPath, [{ verb: "get", uri: redirect },
+                                { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, pin) }]);
+        const k = store.open(ls.storeRoot, ls.proj);
+        checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
+        return { storePath: ls.storeRoot, project: ls.proj, shard: k.shard,
+                 tip: pin, branch: branch, k: k };
+      }
     }
 
     if (!havePin) {

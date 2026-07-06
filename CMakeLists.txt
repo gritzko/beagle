@@ -17,15 +17,6 @@ get_filename_component(_be_default_bin
 set(BEAGLE_BIN_DIR "${_be_default_bin}" CACHE PATH
     "Directory holding the prebuilt beagle binaries (be, jab, keeper)")
 
-foreach(_tool be jab keeper)
-    if (NOT EXISTS "${BEAGLE_BIN_DIR}/${_tool}")
-        message(WARNING
-            "be/: '${_tool}' not found in ${BEAGLE_BIN_DIR}.\n"
-            "  Build the beagle toolchain first (e.g. cmake --build ../beagle/build),\n"
-            "  or pass -DBEAGLE_BIN_DIR=<dir with be/jab/keeper>.  Tests error until then.")
-    endif()
-endforeach()
-
 # Each case is PID-isolated ($TMP/$$/…) and spends its wall-clock spawning many
 # short-lived processes (jab pays ~65ms engine init per one-shot store read/op;
 # be/sniff/keeper shell out to each other), so the suite is process-spawn-bound,
