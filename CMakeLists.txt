@@ -17,6 +17,20 @@ get_filename_component(_be_default_bin
 set(BEAGLE_BIN_DIR "${_be_default_bin}" CACHE PATH
     "Directory holding the prebuilt beagle binaries (be, jab, keeper)")
 
+# GIT-020: `jab` is resolved INDEPENDENTLY of BEAGLE_BIN_DIR — from -DJAB_BIN=,
+# then $JAB_BIN, then PATH — so the jab-only (native-free) suite runs with no
+# native be/keeper present.  find_program respects an already-set cache value.
+if (NOT JAB_BIN AND DEFINED ENV{JAB_BIN})
+    set(JAB_BIN "$ENV{JAB_BIN}" CACHE FILEPATH "path to the jab binary")
+endif()
+find_program(JAB_BIN NAMES jab
+    DOC "path to the jab binary (-DJAB_BIN=, else \$JAB_BIN, else PATH)")
+if (NOT JAB_BIN)
+    message(WARNING
+        "be/: 'jab' not found — set -DJAB_BIN=<path> or add jab to PATH;\n"
+        "  jab-run test cases skip until then.")
+endif()
+
 # Each case is PID-isolated ($TMP/$$/…) and spends its wall-clock spawning many
 # short-lived processes (jab pays ~65ms engine init per one-shot store read/op;
 # be/sniff/keeper shell out to each other), so the suite is process-spawn-bound,

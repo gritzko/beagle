@@ -378,7 +378,12 @@ function serveReader(localServe) {
   const storePath = u.path || "";
   let proj = u.query || "";
   if (proj && proj[0] === "/") proj = proj.slice(1);
-  return store.open(storePath, proj);
+  let reader = store.open(storePath, proj);
+  //  GIT-020: a colocated FLAT store (in-place `jab post` `.be`, NO `<proj>`
+  //  subdir) has no named shard — retry with auto-detect when it is empty.
+  if (proj && reader.resolveRef("") === undefined && !reader.refs().length)
+    reader = store.open(storePath, "");
+  return reader;
 }
 
 //  markReachable(reader, roots, seen): flood the object closure reachable from
@@ -638,4 +643,4 @@ function push(remoteUri, updates, packBytes) {
 }
 
 module.exports = { fetch, push, pushSession, advertRefs, buildPushPack,
-                   classify, parseAdvLine, pickWant, isFullSha };
+                   serveReader, classify, parseAdvLine, pickWant, isFullSha };

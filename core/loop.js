@@ -226,6 +226,13 @@ function authorityRepo(args) {
 //  opts2.reentry only gates the pager (a re-entry must NEVER open a nested one).
 function cli(argv, opts2) {
   opts2 = opts2 || {};
+  //  GIT-020: `jab upload-pack <sel>` is a RAW-WIRE serve entry (what be:/ssh
+  //  local-exec spawns) — intercept BEFORE the verb/banner/pager machinery and
+  //  emit ONLY wire bytes on fd 1 (the hyphen also fails the verb gate anyway).
+  if (argv[2] === "upload-pack") {
+    require(_here + "/shared/serve.js").uploadPack(argv[3] || "", 0, 1);
+    return;
+  }
   //  JAB-004: a driveSpell re-entry overlays its ambient onto the shared `be`;
   //  snapshot the outer run's fields so the finally restores them (verbs read be.*).
   const beSaved = opts2.reentry ? _snapBe() : null;
