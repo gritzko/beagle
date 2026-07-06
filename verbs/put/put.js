@@ -514,23 +514,25 @@ function stageInSub(repo, pfx, uri, ctx) {
 //  Stage ONE path-arg uri: sub-crossing delegate, else the file/dir/move leaf.
 //  `ctx` is the synthetic run state.  Tallies ride ctx._putStaged/_putSkipped;
 //  the caller decides PUTNONE after the whole arg batch.
-function putOne(repo, k, ctx, uri) {
+//  PUT-007: `eng` is the staging engine prep'd ONCE in putRun (was re-prep'd per
+//  arg — a whole-wt rescan each) and the file/dir/move rows are RETURNED, not
+//  committed here, so putRun writes the wtlog ONCE for the batch (kills O(N^2)).
+//  Sub-crossing args commit to the sub's own wtlog and return no parent ops.
+function putOne(repo, k, ctx, uri, eng) {
   const out = putOut(ctx);
   //  SUBS-039/PUT: a path arg crossing a mounted submodule stages INSIDE the sub
   //  ([Submodules] §3) — delegate, don't refuse "exists but is not stageable".
   const argPath = normRel(new URI(uri || "").path || "");
   const subPfx = argPath ? subMountPrefix(repo, argPath) : "";
-  if (subPfx) { stageInSub(repo, subPfx, uri || "", ctx); return; }
+  if (subPfx) { stageInSub(repo, subPfx, uri || "", ctx); return null; }
 
   //  Open the shared `put:` table header ONCE (native opens it for every
   //  PUTStage run; the row lines below carry a BLANK date, native HUNK `.ts=0`).
   openPutBanner(out, ctx);
 
-  //  Stage this one arg (file / dir / move leaf), write its rows under the
-  //  cohort T0, restamp, and push the banner lines (rows + skips) via ctx.out.
-  const eng = stage.prep(repo, wtlog.open(repo), k);
+  //  Classify this one arg (file / dir / move leaf) against the shared engine;
+  //  the rows are batched by putRun for a SINGLE wtlog commit (PUT-007).
   const r = stageArg(eng, repo, uri || "");
-  commitOps(repo, r.ops, ctx && ctx.T0);
   if (out) {
     for (const it of r.items) {
       if (it.type === "skip") out.raw(skipText(it));
@@ -543,6 +545,7 @@ function putOne(repo, k, ctx, uri) {
   }
   ctx._putStaged = (ctx._putStaged || 0) + r.ops.filter(function (o) { return o.path !== null; }).length;
   ctx._putSkipped = (ctx._putSkipped || 0) + r.items.filter(function (it) { return it.type === "skip"; }).length;
+  return r.ops;                        // PUT-007: batched by putRun (deferred commit)
 }
 
 //  JAB-004: plain-args PUT — `put(...args)` off global `be`, called ONCE so the
@@ -662,7 +665,16 @@ function putRun(ctx, argv, firstUri) {
   }
 
   //  Stage each path arg (file / dir / move leaf); tallies accumulate on ctx.
-  for (const uri of pathUris) putOne(repo, k, ctx, uri);
+  //  PUT-007: prep the staging engine ONCE and batch every arg's rows into a
+  //  SINGLE commitOps — a per-arg prep+commit re-scanned the whole wt AND
+  //  rewrote the whole wtlog for every file, making `put a/*` O(N^2).
+  const eng = stage.prep(repo, wtlog.open(repo), k);
+  const batchOps = [];
+  for (const uri of pathUris) {
+    const ops = putOne(repo, k, ctx, uri, eng);
+    if (ops) for (const op of ops) batchOps.push(op);
+  }
+  commitOps(repo, batchOps, ctx.T0);
 
   //  All-skip run is PUTNONE: emit the diag + throw so the loop edge flushes the
   //  partial banner + skips before the non-zero exit (native put_stage_named).
