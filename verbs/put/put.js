@@ -39,6 +39,7 @@ const wire    = require("../../shared/wire.js");      // GIT-014: wire push
 const relate  = require("../../shared/relate.js");    // GIT-016: shared ref spine
 const ingest  = require("../../shared/ingest.js");    // GIT-016: remote-track saver
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
+const uriarg  = require("../../shared/uri.js");       // URI-015: scp → ssh://
 //  JAB-003: TRUE-hunk output via the shared columnar→HUNK adapter (ctx.sink),
 //  retiring ctx.out for this verb (scheme "put:" opens the banner/sub hunks).
 const hunkrows = require("../../shared/hunkrows.js");
@@ -612,6 +613,9 @@ function classifyPutArg(arg, k, curQuery) {
 //  JAB-004: the run driver — classify argv into ctx.refs + path rows, apply
 //  refs+wire ONCE, then fold (bare-walk or per-arg stage loop).
 function putRun(ctx, argv, firstUri) {
+  //  URI-015: scp remotes → ssh:// (classifyPutArg/applyWire throw on the raw form).
+  argv = argv.map(uriarg.fromGit);
+  ctx.args = argv;
   const repo = ctx.repo || be.find(firstUri || undefined);
   ctx.repo = repo;
   const k = store.open(repo.storePath, repo.project);

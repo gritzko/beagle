@@ -21,6 +21,7 @@ const pkt = require("./pkt.js");
 const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/util/
 const shq = require("../view/render.js").shQuote;       // JSQUE-016: render -> view/
 const store = require("./store.js");   // GIT-018: JS store reader for the push-pack closure walk
+const uriarg = require("./uri.js");    // URI-015: scp-form remote → ssh://
 
 //  --- transport classify -------------------------------------------------
 //  Decide the peer spawn from the remote URI, mirroring WIRECLI wcli_spawn:
@@ -30,7 +31,8 @@ const store = require("./store.js");   // GIT-018: JS store reader for the push-
 //    http(s)://host/owner/repo.git                  → curl smart-HTTP (GIT-012)
 //  Returns { bin, argv } (spawn), or { http, url } for the curl adapter.
 function classify(remoteUri, verb) {
-  const u = new URI(remoteUri);
+  //  URI-015: a git scp-form remote (`git@host:path`) recomposes to ssh:// here.
+  const u = new URI(uriarg.fromGit(remoteUri));
   const scheme = u.scheme || "";
   const host = u.host || u.authority || "";
   let path = u.path || "";

@@ -39,6 +39,7 @@ const wtlog    = require("../../shared/wtlog.js");
 const conflict = require("../../shared/conflict.js");
 const submount = require("../../shared/submount.js");   // DIS-058 D2-D5 sub mount
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
+const uriarg   = require("../../shared/uri.js");       // URI-015: scp remote → ssh://
 const join = pathlib.join, dirname = pathlib.dirname;
 const isFullSha = sha.isFullSha;
 
@@ -66,6 +67,9 @@ const CONFMARK = "merge-conflict";
 //  Fragment=exact-commit PIN (D1).  A `//host` with NO scheme is a CACHED read
 //  (D7) — the local store's remote-tracking tip, NO wire; only ssh:/be: open it.
 function parseRemote(uri) {
+  //  URI-015: scp-form remote → ssh:// before the lex; rem.raw records the
+  //  recomposed URI (wtlog anchor / wire.fetch arg), never the scp string.
+  uri = uriarg.fromGit(uri);
   const u = new URI(uri);
   //  URI-009: route on slot PRESENCE (undefined = absent), not string-emptiness.
   //  A `//host` (authority present, NO scheme) is a CACHED read; a `file:`/scheme-

@@ -31,6 +31,7 @@ const ingest   = require("../../shared/ingest.js");
 const dag      = require("../../shared/dag.js");
 const changed  = require("../../shared/changedpaths.js");   // GIT-016: paths diff
 const status   = require("../../views/status/status.js");   // GIT-016: bare = status
+const uriarg   = require("../../shared/uri.js");             // URI-015: scp → ssh://
 const shalib   = require("../../shared/util/sha.js");
 const hunkrows = require("../../shared/hunkrows.js");
 const isFullSha = shalib.isFullSha;
@@ -64,7 +65,8 @@ function headOne(arg, ctx) {
 
   let raw = String(arg || "");
   if (raw.indexOf("head:") === 0) raw = raw.slice(5);   // JAB-004: shed own scheme
-  const uri = (raw === ".") ? "" : raw;                 // loop's "." placeholder → bare
+  //  URI-015: git scp-form remote (`git@host:path`) recomposes to ssh:// here.
+  const uri = (raw === ".") ? "" : uriarg.fromGit(raw); // loop's "." placeholder → bare
   const u = new URI(uri);
   const hasScheme = u.scheme !== undefined;
   const hasAuth   = u.authority !== undefined;

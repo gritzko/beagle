@@ -111,8 +111,11 @@ function epochSecOf(stamp) {
 function parseSlots(args) {
   const slots = { host: false, hostUri: "", hasQuery: false, query: "",
                   narrow: "", fragment: undefined };
-  for (const a of args || []) {
+  for (let a of args || []) {
     if (!a || a[0] === "#" || a[0] === "-") continue;   // #msg / -flag
+    //  URI-015: a git scp-form remote recomposes to ssh:// (a Host slot below),
+    //  else the total parse would degrade it to message prose.
+    a = uri.fromGit(a);
     //  JAB-005: total parse — a non-URI arg (spaces) is free-form message
     //  text, not a slot; post's message picks it up.
     const u = uri.parse(a);
@@ -195,6 +198,7 @@ function parseMessage(args, flags, slotFrag) {
 //  Is `a` a URI-slot arg (Query / Host / Path) rather than a message word?
 function isSlotArg(a) {
   if (!a || a[0] === "#" || a[0] === "-") return false;
+  a = uri.fromGit(a);          // URI-015: a scp remote is a Host slot, not a word
   const u = uri.parse(a);                   // JAB-005: total — non-URI => not a slot
   if (typeof u === "string") return false;
   if (u.host || u.query) return true;
