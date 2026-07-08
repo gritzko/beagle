@@ -37,7 +37,7 @@ const ulog     = require("./ulog.js");
 const ambient  = require("./ambient.js");   // GET-040: the global force flag
 const pathlib  = require("./util/path.js");
 const sha      = require("./util/sha.js");
-const join = pathlib.join, basename = pathlib.basename;
+const join = pathlib.join, basename = pathlib.basename, safeRel = pathlib.safeRel;
 const isFullSha = sha.isFullSha;
 
 function exists(p) { try { io.stat(p); return true; } catch (e) { return false; } }
@@ -198,6 +198,10 @@ function resolveLocalStore(u, pin) {
 //  the mounted sub's coords so the caller can recurse into IT (a sub of a sub).
 function mount(opts) {
   const wt = opts.wt, beDir = opts.beDir, subpath = opts.subpath, pin = opts.pin;
+
+  //  BE-011: leaf-local worktree confinement — refuse a `..`/reserved subpath
+  //  BEFORE composing subWt (defense-in-depth; recurse.js already store-guards it).
+  if (!safeRel(subpath)) throw "NAVESCAPE: sub " + subpath + " escapes the worktree";
 
   //  GET-039: a symlink (incl. the `be -> .` self-locator) is a `120000` BLOB,
   //  never a `160000` gitlink — it never reaches this mount path (it checks out

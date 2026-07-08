@@ -16,6 +16,9 @@ const bro = require("view/bro.js");
 const theme = require("view/theme.js");
 //  JAB-003: repo/worktree discovery (io.cwd walk-up) for the session context.
 const discover = require("core/discover.js");
+//  BE-027: the ONE in-tree path calculator — resolveInTree collapses `.`/`..` and
+//  THROWS "NAVESCAPE" on a climb above the tree root (no hand-rolled `..` math).
+const path = require("shared/util/path.js");
 //  URI-011: the shared `word(context_uri, …rest)` spell composer — one classifier
 //  for BOTH the address bar and the CLI (core/loop.js), so they compose alike.
 const SPELL = require("shared/spell.js");
@@ -223,16 +226,13 @@ Pager.prototype._viewPath = function () {
   return "";
 };
 
-//  JAB-003: join a relative spell (`.` / `./x` / `..` / `../y`) onto a URI dir
-//  path as a DIRECTORY — `..` pops a segment, a name pushes one.
+//  JAB-003/BE-027: join a relative spell (`.` / `./x` / `..` / `../y`) onto a URI
+//  dir path via resolveInTree (ONE `..` semantics) — collapses, keeps a leading
+//  "/", and THROWS "NAVESCAPE" on a climb above root (like discover.resolve()).
 function joinPath(base, rel) {
-  const segs = base ? base.split("/") : [];
-  for (const seg of rel.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") { if (segs.length) segs.pop(); }
-    else segs.push(seg);
-  }
-  return segs.join("/");
+  const abs = base && base[0] === "/";
+  const out = path.resolveInTree(abs ? base.slice(1) : (base || ""), rel);
+  return abs ? "/" + out : out;
 }
 
 //  DIS-060/[Nav]: the TRANSPORT schemes (network/file) — addressing, NOT verbs.
@@ -315,10 +315,10 @@ Pager.prototype._resolveSpell = function (spell) {
   if (s[0] === "#" || s[0] === "?") return base + s;   // re-anchor on the view
   if (s[0] === "/") return s;                     // absolute path
   if (s[0] === ".") {                             // relative to the view's dir
+    //  BE-027: resolve `.`/`./x`/`../x` via the ONE calculator (joinPath →
+    //  resolveInTree) — `..` COLLAPSES (was kept verbatim), throws on escape.
     const dir = base.indexOf("/") >= 0 ? base.slice(0, base.lastIndexOf("/")) : "";
-    if (s === "." || s === "./") return dir || ".";
-    if (s.slice(0, 2) === "./") return (dir ? dir + "/" : "") + s.slice(2);
-    return (dir ? dir + "/" : "") + s;            // ../x etc. kept verbatim tail
+    return joinPath(dir, s) || ".";
   }
   return s;                                       // a bare name: a fresh spell
 };
@@ -604,19 +604,22 @@ Pager.prototype._fsCompletions = function (stem) {
   const slash = stem.lastIndexOf("/");
   const dirPart = slash >= 0 ? stem.slice(0, slash + 1) : "";   // kept prefix, incl "/"
   const name = slash >= 0 ? stem.slice(slash + 1) : stem;
-  let base = (this.be && (this.be.wt_root || this.be.cwd)) || io.cwd();
+  const root = (this.be && (this.be.wt_root || this.be.cwd)) || io.cwd();
   //  A ./-relative stem resolves against the VIEW's dir; a bare one against the wt.
-  if (rel) { const vp = (this._parse(this._verbUri().uri).path || "").replace(/^\/+|\/+$/g, "");
-             if (vp) base = base + "/" + vp; }
+  const vp = rel ? (this._parse(this._verbUri().uri).path || "").replace(/^\/+|\/+$/g, "") : "";
   const sub = dirPart.replace(/^\.\//, "").replace(/\/+$/, "");
-  const dir = sub ? base + "/" + sub : base;
+  //  BE-027: CONFINE the readdir dir to the wt root — resolveInTree collapses the
+  //  stem's `..` under the view path and THROWS on a climb above the wt, so a
+  //  traversal stem opens NOTHING outside the tree (NAVESCAPE → no completions).
+  let dir; try { dir = path.wtJoin(root, path.resolveInTree(vp, sub)); }
+  catch (e) { return []; }
   let ents; try { ents = io.readdir(dir); } catch (e) { return []; }
   const out = [];
   for (const raw of ents) {
     const nm = raw.replace(/\/+$/, "");                // readdir may mark dirs with "/"
     if (nm === "." || nm === ".." || (name && nm.indexOf(name) !== 0)) continue;
     let d = raw !== nm;                                // dir per readdir's own marker
-    if (!d) { try { d = io.lstat(dir + "/" + nm).kind === "dir"; } catch (e) {} }
+    if (!d) { try { d = io.lstat(path.join(dir, nm)).kind === "dir"; } catch (e) {} }
     out.push(dirPart + nm + (d ? "/" : ""));
   }
   return out;

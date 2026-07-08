@@ -20,7 +20,8 @@
 const wtlog    = require("../../shared/wtlog.js");
 const store    = require("../../shared/store.js");
 const classify = require("../../shared/classify.js");
-const join     = require("../../shared/util/path.js").join;
+const pathlib  = require("../../shared/util/path.js");
+const join     = pathlib.join;
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const render   = require("../../view/render.js");
 const theme    = require("../../view/theme.js");
@@ -130,10 +131,11 @@ function lsOne(uri, verb, ctx, queue, rdCache) {
 
   //  Resolve the scope to an ABSOLUTE dir: "." (cwd → top wt), a wt-relative
   //  path (`sub/`), or an absolute path (a self-driven recursion child).
+  //  BE-028: confine a wt-relative scope via wtJoin (THROWS NAVESCAPE on any `..`
+  //  climb above the wt); an absolute path is a trusted lsr recursion child.
   let absScope;
-  if (!uri || uri === ".") absScope = topWt;
-  else if (uri[0] === "/")  absScope = uri;
-  else                      absScope = join(topWt, uri);
+  if (uri && uri[0] === "/") absScope = uri;
+  else                       absScope = pathlib.wtJoin(topWt, uri || "");
   absScope = noSlash(absScope);
 
   //  The OWNING repo of the scope — be.find re-discovers a submodule's shard

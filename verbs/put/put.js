@@ -49,6 +49,10 @@ const resolve = require("../../core/resolve.js");
 //  URI-011: the shared composer — bindRest binds rest paths under arg 0's context.
 const SPELL = require("../../shared/spell.js");
 const ambient = require("../../shared/ambient.js");
+//  BE-011: worktree-open confinement — wtJoin THROWS NAVESCAPE on a `..` climb;
+//  the local join dup (was defined below) is retired for pathlib.join.
+const pathlib = require("../../shared/util/path.js");
+const join = pathlib.join, wtJoin = pathlib.wtJoin;
 
 //  JSQUE-010: the `put:` banner + per-row lines now render through the emit sink
 //  (ctx.out, JSQUE-005), not a local render.js call — the loop does ONE flush.
@@ -130,19 +134,21 @@ function stageArg(eng, repo, uri) {
     return { ops: ops, items: items };
   }
   let raw = normRel(u.query || u.path || "");
+  //  BE-011: stage.isMeta already refuses a `..` arg above ("is a meta path"),
+  //  so wtJoin below is a defensive twin of that gate — it never fires for `..`.
   if (raw && stage.isMeta(raw)) { pushSkip(raw, "is a meta path"); return { ops: ops, items: items }; }
   //  Dir-form: empty (reporoot), trailing slash, or an on-disk dir.
   let isDir = raw === "" || raw[raw.length - 1] === "/";
   let reframed = false, origRaw = raw;
   if (!isDir) {
     let kind;
-    try { kind = io.lstat(join(repo.wt, raw)).kind; } catch (e) {}
+    try { kind = io.lstat(wtJoin(repo.wt, raw)).kind; } catch (e) {}
     if (kind === "dir") { raw = raw + "/"; isDir = true; reframed = true; }
   }
   if (isDir) {
     if (raw !== "") {
       let kind;
-      try { kind = io.lstat(join(repo.wt, raw.replace(/\/$/, ""))).kind; } catch (e) {}
+      try { kind = io.lstat(wtJoin(repo.wt, raw.replace(/\/$/, ""))).kind; } catch (e) {}  // BE-011
       if (kind !== "dir") { pushSkip(raw, "does not exist"); return { ops: ops, items: items }; }
     }
     const ex = eng.expandDir(raw);
@@ -171,7 +177,7 @@ function commitOps(repo, ops, floorTs) {
   if (stageOps.length === 0) {
     for (const op of ops)
       if (op.path === null && op.stampTs != null)
-        trySetMtime(join(repo.wt, op.restamp), op.stampTs);
+        trySetMtime(wtJoin(repo.wt, op.restamp), op.stampTs);   // BE-011
     return 0;
   }
   const rows = [];
@@ -181,11 +187,11 @@ function commitOps(repo, ops, floorTs) {
   let ri = 0;
   for (const op of ops) {
     if (op.path === null) {
-      if (op.stampTs != null) trySetMtime(join(repo.wt, op.restamp), op.stampTs);
+      if (op.stampTs != null) trySetMtime(wtJoin(repo.wt, op.restamp), op.stampTs);  // BE-011
       continue;
     }
     const ts = assigned[ri++];
-    if (op.restamp) trySetMtime(join(repo.wt, op.restamp), ts);
+    if (op.restamp) trySetMtime(wtJoin(repo.wt, op.restamp), ts);   // BE-011
   }
   return stageOps.length;
 }
@@ -215,7 +221,6 @@ function appendAndAssign(bePath, rows, floorTs) {
 }
 
 function trySetMtime(full, ts) { try { io.setMtime(full, BigInt(ts)); } catch (e) {} }
-function join(d, n) { return d === "/" ? "/" + n : d + "/" + n; }
 
 //  A skip summary line as native put_skip / the dir hint render it (stdout,
 //  no date/verb column).  `whole` items already carry the full message.
@@ -569,7 +574,7 @@ function put() {
   if (_be && _be.authority && repo && repo.wt)
     argv = SPELL.bindRest(argv, function (p) {
       if (!p) return true;
-      try { return io.lstat(join(repo.wt, p)).kind === "dir"; } catch (e) { return true; }
+      try { return io.lstat(wtJoin(repo.wt, p)).kind === "dir"; } catch (e) { return true; }  // BE-011
     });
   ctx.args = argv;
   return putRun(ctx, argv, argv.length ? argv[0] : "");

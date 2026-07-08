@@ -7,6 +7,8 @@
 
 "use strict";
 
+const safeRel = require("./util/path.js").safeRel;   // BE-026: source gate
+
 //  parse(wtRoot) → [{ name, path, url }] in DECLARATION order, one entry per
 //  `[submodule "<name>"]` block that declared a `path`; deduped by `path`
 //  keeping the FIRST.  Absent/unreadable `<wtRoot>/.gitmodules` → [].
@@ -17,8 +19,11 @@ function parse(wtRoot) {
   const out = [], seen = {};
   let inSub = false, name = "", curPath = "", curUrl = "";
   //  Close the open block: emit it iff it declared a path not yet seen.
+  //  BE-026: DROP-and-continue any block whose `path` is not a safe in-tree
+  //  relative (absolute/`..`/reserved) — a path-traversal escape refused at
+  //  the source, so a poisoned `.gitmodules` entry never reaches stat/be.find.
   function flush() {
-    if (inSub && curPath && !seen[curPath]) {
+    if (inSub && curPath && safeRel(curPath) && !seen[curPath]) {
       seen[curPath] = true;
       out.push({ name: name, path: curPath, url: curUrl });
     }

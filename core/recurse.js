@@ -24,7 +24,7 @@
 
 "use strict";
 
-const subs = require("../shared/subs.js");
+const path = require("../shared/util/path.js");   // BE-026: wtJoin confinement
 
 //  YES iff `<wt>/<subpath>/.be` is a regular file (a live mount).
 //  Mirrors SNIFFSubIsMount: only a mounted sub is recursed.
@@ -32,7 +32,10 @@ const subs = require("../shared/subs.js");
 //  self-locator `be -> .` follows to the wt's OWN `.be` anchor and would
 //  otherwise read as a phantom mount.  A real mount point is a real dir.
 function isMount(wtRoot, subpath) {
-  const base = (wtRoot.endsWith("/") ? wtRoot : wtRoot + "/") + subpath;
+  //  BE-026: confine the (untrusted `.gitmodules`) subpath — a `..`/abs escape
+  //  throws NAVESCAPE, refused as no-mount (never lstat/stat OUTSIDE the wt).
+  let base;
+  try { base = path.wtJoin(wtRoot, subpath); } catch (e) { return false; }
   try { if (io.lstat(base).kind === "lnk") return false; } catch (e) {}
   const p = base + "/.be";
   try { return io.stat(p).kind === "reg"; } catch (e) { return false; }
@@ -68,7 +71,9 @@ function walk(repo, prefix, visit, opts) {
     //  mount file alone gates (status's clean-recursion path).
     if (gitlinks && !gitlinks[subPath]) continue;
     if (!isMount(repo.wt, subPath)) continue;
-    const subWt = subs.mountWtDir(repo, subPath);
+    //  BE-026: confine before be.find (belt-and-suspenders past the isMount gate).
+    let subWt;
+    try { subWt = path.wtJoin(repo.wt, subPath); } catch (e) { continue; }
     let subRepo;
     try { subRepo = be.find(subWt); } catch (e) { continue; }
     const sub = gitlinks ? gitlinks[subPath] : { path: subPath };
@@ -80,8 +85,8 @@ function walk(repo, prefix, visit, opts) {
 //  Descends the deepest mounted-sub prefix → { repo, rest, prefix }: the descent
 //  DELTA `prefix` (LOG-002's discarded joinPrefix) that log re-prefixes onto nav
 //  URIs and commit descends before resolving; "" when nothing mounted.
-function resolveRepoForPath(repo, path) {
-  const segs = path ? path.split("/") : [];
+function resolveRepoForPath(repo, relPath) {
+  const segs = relPath ? relPath.split("/") : [];
   let i = 0, prefix = "";
   for (;;) {
     let hit = -1;
@@ -91,8 +96,11 @@ function resolveRepoForPath(repo, path) {
     }
     if (hit < 0) break;
     const sub = segs.slice(i, hit).join("/");
+    //  BE-026: confine the descended segment before be.find (NAVESCAPE → stop).
+    let subWt;
+    try { subWt = path.wtJoin(repo.wt, sub); } catch (e) { break; }
     let subRepo;
-    try { subRepo = be.find(subs.mountWtDir(repo, sub)); } catch (e) { break; }
+    try { subRepo = be.find(subWt); } catch (e) { break; }
     repo = subRepo; prefix = joinPrefix(prefix, sub); i = hit;
   }
   return { repo: repo, rest: segs.slice(i).join("/"), prefix: prefix };

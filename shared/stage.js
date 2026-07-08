@@ -215,6 +215,9 @@ function prep(be, wtlogReader, storeReader) {
     //    BOTH      + otherwise                → stage
     //  Returns { stage, reason }.  `reason` set only when stage === false.
     classifyNamed: function (raw) {
+      //  BE-011: local self-defense — a `..`/reserved raw is meta, refused before
+      //  the join(wtRoot,raw) lstat (mirrors explicitMove's isMeta gate + put.js).
+      if (isMeta(raw)) return { stage: false, reason: "is a meta path" };
       const b = base[raw], w = wt[raw];
       if (!w && b) return { stage: false, reason: "does not exist" };
       if (!w && !b) {

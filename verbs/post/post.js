@@ -39,7 +39,7 @@ const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track 
 //  retiring the ctx.out columnar path for post.
 const hunkrows = require("../../shared/hunkrows.js");
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
-const join = pathlib.join;
+const join = pathlib.join, wtJoin = pathlib.wtJoin;   // BE-011: wtJoin confines wt-opens
 const isFullSha = shalib.isFullSha;
 
 //  --- author identity from <store>/.be/config (TOML) ---------------------
@@ -698,7 +698,7 @@ function postOne(info, ctx, row) {
                  ts: stamp }]);
   for (const d of dres.decisions) {
     if (d.verb !== "add") continue;
-    try { io.setMtime(join(info.wt, d.path), stamp); } catch (e) {}
+    try { io.setMtime(wtJoin(info.wt, d.path), stamp); } catch (e) {}   // BE-011
   }
 
   //  The `post:` banner (POST-018): a commit confirmation row, then the

@@ -18,7 +18,8 @@ const shalib     = require("../../shared/util/sha.js");
 const render     = require("../../view/render.js");
 const theme      = require("../../view/theme.js");
 const navlib     = require("../../shared/nav.js");
-const join       = require("../../shared/util/path.js").join;
+const pathlib    = require("../../shared/util/path.js");
+const join       = pathlib.join;
 const isFullSha  = shalib.isFullSha;
 
 //  BRO-006/log.js tok32: [31..27] tag, [23..0] end byte offset.  V = the ls verb
@@ -133,11 +134,12 @@ function listOne(arg) {
   const query = u.query || "";
 
   //  Resolve the scope to an ABSOLUTE dir (top wt, a wt-relative path, or absolute).
+  //  BE-028: confine a wt-relative scope via wtJoin — a `..` climbing above the
+  //  wt THROWS NAVESCAPE (never a lexical escape); an absolute path is left as-is.
   const topWt = repo.wt;
   let absScope;
-  if (!path || path === ".") absScope = topWt;
-  else if (path[0] === "/")  absScope = path;
-  else                       absScope = join(topWt, path);
+  if (path && path[0] === "/") absScope = path;
+  else                         absScope = pathlib.wtJoin(topWt, path || "");
   absScope = noSlash(absScope);
 
   const scopePfx = relDir(repo.wt, absScope);            // rel to the owning wt

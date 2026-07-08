@@ -230,7 +230,12 @@ function whyOne(arg) {
   //  edited (incl. a wholly-new file) tokens render plain.  Twin of diff:'s wt-vs-base.
   let w = built.weave;
   if (spec.wt && repo.wt) {
-    const wtBytes = readWtFile(pathlib.join(repo.wt, spec.path));
+    //  BE-011: wtJoin confines spec.path to the wt root; an untrusted `..` climb
+    //  throws NAVESCAPE — refuse (never fold a silent outside read into blame).
+    let full;
+    try { full = pathlib.wtJoin(repo.wt, spec.path); }
+    catch (e) { io.log("why: " + e + "\n"); return; }
+    const wtBytes = readWtFile(full);
     if (wtBytes !== undefined && wtBytes.length <= weave.MAX_SOURCE_SIZE)
       w = weave.fold(w || null, wtBytes, weave.extOf(spec.path), WT_ID);
   }

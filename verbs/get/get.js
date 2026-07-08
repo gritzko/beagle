@@ -41,6 +41,9 @@ const submount = require("../../shared/submount.js");   // DIS-058 D2-D5 sub mou
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const uriarg   = require("../../shared/uri.js");       // URI-015: scp remote → ssh://
 const join = pathlib.join, dirname = pathlib.dirname;
+//  BE-011: wtJoin confines a wt-open to the tree (NAVESCAPE on a `..` climb);
+//  merge/split compose in-tree paths over segments (no raw `a + "/" + b`).
+const wtJoin = pathlib.wtJoin, merge = pathlib.merge, split = pathlib.split;
 const isFullSha = sha.isFullSha;
 
 const writeWtlog = ulog.write;
@@ -619,6 +622,8 @@ function dirtyOverlapCheck(k, newTree, oldTree, wt, fresh) {
   const conflicts = [];
   k.readTreeRecursive(newTree, function (l) {
     if (oldPaths[l.path] !== undefined) return;     // had a baseline → mergeable
+    //  BE-011: an UNTRUSTED remote-tree leaf; leave the checkout.materialise
+    //  safeRel guard ("unsafe path", JS-065) to refuse a `..` climb, not wtJoin.
     const full = join(wt, l.path);
     if (!exists(full)) return;                       // no on-disk overlay
     const obj = k.getObject(l.sha);
@@ -717,6 +722,8 @@ function leaf(row, ctx) {
   const rel = row.rel || "";
   const newSha = row.newSha || "";       // "" = delete leaf (removed path)
   const oldSha = row.oldSha || "";
+  //  BE-011: `rel` may be an UNTRUSTED remote-tree leaf; the checkout.materialise
+  //  safeRel guard ("unsafe path", JS-065) is the confinement — keep plain join.
   const full = join(g.wt, rel);
   const kind = g.kinds[rel] || "f";
 
@@ -797,14 +804,16 @@ function leaf(row, ctx) {
 function sweepOldTree(g, rel, treeSha, out) {
   const dirs = {};
   g.k.readTreeRecursive(treeSha, function (l) {
-    const p = rel + "/" + l.path;
-    try { io.unlink(join(g.wt, p)); out.row(p, "del", g.ts); g.dels++; } catch (e) {}
+    //  BE-011: compose the sub-leaf rel over SEGMENTS (merge), open via wtJoin
+    //  (NAVESCAPE on a climb) — no raw `rel + "/" + l.path` string math.
+    const p = merge(split(rel).concat(split(l.path)));
+    try { io.unlink(wtJoin(g.wt, p)); out.row(p, "del", g.ts); g.dels++; } catch (e) {}
     for (let i = p.indexOf("/"); i >= 0; i = p.indexOf("/", i + 1))
       dirs[p.slice(0, i)] = 1;
   });
   const down = Object.keys(dirs).sort().reverse();     // children before parents
   for (const d of down)
-    try { io.rmdir(join(g.wt, d)); } catch (e) {}      // non-empty → keep
+    try { io.rmdir(wtJoin(g.wt, d)); } catch (e) {}     // BE-011; non-empty → keep
 }
 
 //  SUBS-047: remember a deleted path's parent dir so the del-sweep terminal can
@@ -865,7 +874,7 @@ function recurseSubMounts(g, rel, m, out, depth) {
   m.k.readTreeRecursive(tree, function (l) {
     if (l.kind === "s") links.push({ path: l.path, pin: l.sha });
   });
-  const subWt = join(g.wt, rel);                 // the mounted sub's wt on disk
+  const subWt = wtJoin(g.wt, rel);               // BE-011; the mounted sub's wt on disk
   for (const l of links) {
     const sp = rel + "/" + l.path;
     //  GET-037: gate the grandchild on the sub's own `.gitmodules` (SUBS-043); an
@@ -958,7 +967,7 @@ function sweepDelDirs(ctx) {
   g.delDirs = null;
   for (let d of dirs) {
     for (;;) {
-      try { io.rmdir(join(g.wt, d)); } catch (e) { break; }   // non-empty → stop
+      try { io.rmdir(wtJoin(g.wt, d)); } catch (e) { break; }   // BE-011; non-empty → stop
       const cut = d.lastIndexOf("/");
       if (cut <= 0) break;
       d = d.slice(0, cut);

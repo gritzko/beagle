@@ -459,7 +459,10 @@ function isMeta(rel) {
 function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
   const wtRoot = be.wt;
   const ignore = require(libDir() + "/util/ignore.js").load(wtRoot);
-  const scopeAbs = scopePfx ? join(wtRoot, scopePfx.slice(0, -1)) : wtRoot;
+  //  BE-028: defensive floor — resolveInTree THROWS NAVESCAPE on any `..` climb
+  //  above the wt root, so a lexical scopePfx can never readdir outside the wt.
+  const scopeRel = pathlib.resolveInTree("", scopePfx || "");
+  const scopeAbs = scopeRel ? join(wtRoot, scopeRel) : wtRoot;
   const dirSet = {};            // immediate REAL-wt-dir name → 1 (recursable)
   const baseDir = {};           // names the BASELINE records as a dir/mount
 

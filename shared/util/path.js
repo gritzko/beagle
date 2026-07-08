@@ -52,5 +52,56 @@ function safeRel(rel) {
   return true;
 }
 
+//  --- BE-011: segment-based path calculator (split · resolveInTree · merge) ---
+//  In-tree paths are computed over SEGMENT ARRAYS, never by hand-rolled
+//  `a + "/" + b` string math.  Paths here are worktree-RELATIVE (no leading
+//  "/"); the absolute root ($SRC_ROOT/name) is prepended by the caller.
+
+//  split(p) — a "/"-path to its non-empty segments; leading/trailing/doubled
+//  slashes collapse away ("a//b/" → ["a","b"], "/a" → ["a"], "" → []).
+function split(p) {
+  if (typeof p !== "string") return [];
+  const out = [];
+  for (const seg of p.split("/")) if (seg !== "") out.push(seg);
+  return out;
+}
+
+//  merge(segs) — segments back to a "/"-joined relative path ("" for none).
+//  The inverse of split(); the ONE place in-tree path text is (re)composed.
+function merge(segs) {
+  return segs.join("/");
+}
+
+//  resolveInTree(base, rel) — resolve the relative path `rel` against the
+//  worktree-relative `base`, applying "." (skip) and ".." (pop one segment)
+//  over segment arrays.  THROWS "NAVESCAPE" when a ".." would pop above the
+//  worktree root (segs empty) — the path leads OUT of the tree, a refusal not
+//  a silent clamp.  Returns the normalized in-tree path (no "."/".."/"" segs).
+function resolveInTree(base, rel) {
+  const segs = split(base);
+  for (const seg of split(rel)) {
+    if (seg === ".") continue;
+    if (seg === "..") {
+      if (segs.length === 0) throw "NAVESCAPE: path escapes the worktree";
+      segs.pop();
+      continue;
+    }
+    segs.push(seg);
+  }
+  return merge(segs);
+}
+
+//  BE-011: wtJoin(wtRoot, rel) — the ONE way to compose an ABSOLUTE worktree file
+//  path from a wt root + an (untrusted) in-tree `rel`.  resolveInTree normalises
+//  `.`/`..` and THROWS "NAVESCAPE" on any climb above the tree root; "" → the root
+//  itself.  Every site that OPENS a wt file routes through this, not join(wt, rel).
+//  (Write leaves additionally keep safeRel's .git/.be reserved-name policy on top.)
+function wtJoin(wtRoot, rel) {
+  const sub = resolveInTree("", rel || "");
+  return sub ? join(wtRoot, sub) : wtRoot;
+}
+
 module.exports = { join: join, dirname: dirname, basename: basename,
-                   safeRel: safeRel };
+                   safeRel: safeRel,
+                   split: split, merge: merge, resolveInTree: resolveInTree,
+                   wtJoin: wtJoin };

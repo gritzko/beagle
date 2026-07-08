@@ -184,10 +184,17 @@ function topWt(wt) {
 //  climb past submodules) — so `//name` addresses a SIBLING of the tree you
 //  launched in, with no $HOME assumption.  Falls back to $HOME when repo-less.
 function srcRoot() {
-  const env = io.getenv("SRC_ROOT");
-  if (env) return env;
-  let wt; try { wt = topWt(find(io.cwd()).wt); } catch (e) { return io.getenv("HOME") || "."; }
-  return dirname(wt) || io.getenv("HOME") || ".";
+  //  BE-011: memoize the resolved root on the `be` global — SRC_ROOT is fixed for
+  //  a process run, so every resolve()/wtdir()/navCwd() reads ONE stable value
+  //  (mintBe's Object.assign never carries a srcRootDir key, so it is never wiped).
+  if (typeof be !== "undefined" && be.srcRootDir) return be.srcRootDir;
+  let dir = io.getenv("SRC_ROOT");
+  if (!dir) {
+    try { dir = dirname(topWt(find(io.cwd()).wt)) || io.getenv("HOME") || "."; }
+    catch (e) { dir = io.getenv("HOME") || "."; }
+  }
+  if (typeof be !== "undefined") be.srcRootDir = dir;
+  return dir;
 }
 
 //  BRO-012: todoRoot() → the ordered ticket-tree roots, a MIRROR of srcRoot():
@@ -217,6 +224,43 @@ function todoRoot() {
 //  $SRC_ROOT/name — else find() walked UP to an ancestor store (the $HOME/.be
 //  hazard) and this is NOT the named tree → null.  The abs path; the caller
 //  find()s it for the repo and derives the in-tree scope.
+//  URI-011/BE-011: resolve(base, ref) → the ABSOLUTE fs path a nav arg addresses,
+//  CONFINED to $SRC_ROOT — the unified `context_uri + path -> filesystem_path`.
+//  `base` is the clean context URI ("where I am": //name/dir); `ref` is the arg —
+//  a relative `../x`, a rooted `/x`, an authority-swap `//other/x`, or a bare name.
+//  The tree name comes from `ref` when it carries a `//authority`, else inherited
+//  from `base`.  The in-tree path is computed over SEGMENTS via resolveInTree, which
+//  THROWS "NAVESCAPE" on any `..` that climbs above the tree root — so the composed
+//  path can NEVER leave $SRC_ROOT/<name>.  ""/"." authority → the LAUNCH tree
+//  (find(cwd)).  Returns the abs dir; throws on escape / bad authority name.
+function resolve(base, ref) {
+  let bU; try { bU = uri._parse(base || ""); } catch (e) { bU = {}; }
+  let rU; try { rU = uri._parse(ref || ""); } catch (e) { rU = {}; }
+  const swap = rU.authority !== undefined;            // ref carries its own //name
+  const host = swap ? (rU.host || "") : (bU.host || "");
+  const refPath = rU.path || "";
+  //  base path is dropped on a //swap or a rooted `/path` (both address the tree
+  //  root); else the context path the relative ref resolves against.  resolveInTree
+  //  treats `base` as already-clean and NORMALISES `ref` (the untrusted input).
+  const basePath = (swap || refPath[0] === "/") ? "" : (bU.path || "");
+  if (host === "" || host === ".") {                  // `//` / `//.` → launch tree
+    const wt = find(io.cwd()).wt;                     // throws when repo-less
+    const sub = pathlib.resolveInTree(basePath, refPath);
+    return sub ? join(wt, sub) : wt;
+  }
+  if (!pathlib.safeRel(host)) throw "NAVESCAPE: bad nav authority //" + host;
+  const sub = pathlib.resolveInTree(basePath, refPath);   // throws on climb-out
+  const dir = join(srcRoot(), host);
+  return sub ? join(dir, sub) : dir;
+}
+
+//  URI-011: wtdir(uriStr) → the ABSOLUTE dir a nav URI addresses, or null.
+//    //name[/sub]  → $SRC_ROOT/name/sub  (a tree under SRC_ROOT, confined below)
+//    // , //.       → the LAUNCH tree     (find(cwd).wt — "where jab started")
+//    //host…, file:/ssh:/be:, no `//`     → null (a cached remote / transport → wire)
+//  A `//name` miss (find has no anchor at/below $SRC_ROOT/name) is left to the
+//  caller as a cached-remote-or-typo decision.  BE-011: confinement is now a
+//  PROPERTY of resolve() (NAVESCAPE on any `..` climb), not a lexical prefix check.
 function wtdir(uriStr) {
   let u; try { u = uri._parse(uriStr || ""); } catch (e) { return null; }
   if (u.scheme) return null;                          // a transport, not nav
@@ -225,9 +269,15 @@ function wtdir(uriStr) {
   if (host === "" || host === ".") {                  // `//` / `//.` → launch tree
     try { return find(io.cwd()).wt; } catch (e) { return null; }
   }
-  const root = srcRoot();
-  const top = root + "/" + host;                      // the named top-level tree
-  const dir = top + (u.path || "");                   // + the nested path
+  //  BE-011: compose + CONFINE via resolve().  A `..` climb / bad authority throws
+  //  NAVESCAPE and PROPAGATES — the CLI REFUSES loudly, never adopting an outside
+  //  tree (resolve throws ONLY on escape, never on a plain not-found → safe to let
+  //  fly).  Replaces the lexical `indexOf(top+"/")` prefix check that `..` defeated.
+  const dir = resolve("", uriStr);
+  //  Confirm `//name` is a REAL anchored worktree AT/BELOW $SRC_ROOT/host (not an
+  //  ancestor store find() walked up to).  `dir` is `..`-free now, so this prefix
+  //  compare is a sound EXISTENCE check, no longer a (broken) security boundary.
+  const top = join(srcRoot(), host);
   let repo; try { repo = find(dir); } catch (e) { return null; }
   if (!repo || (repo.wt !== top && repo.wt.indexOf(top + "/") !== 0)) return null;
   return dir;
@@ -267,7 +317,7 @@ function contextCwd() {
   try { return find(io.cwd()).wt; } catch (e) { return io.cwd(); }
 }
 
-module.exports = { find: find, wtdir: wtdir, navCwd: navCwd, cwd: contextCwd,
+module.exports = { find: find, wtdir: wtdir, resolve: resolve, navCwd: navCwd, cwd: contextCwd,
                    srcRoot: srcRoot, todoRoot: todoRoot, topWt: topWt,
                    //  exported for wtlog.js / tests
                    repoFromBe: repoFromBe,

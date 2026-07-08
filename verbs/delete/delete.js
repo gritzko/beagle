@@ -52,7 +52,10 @@ const SPELL = require("../../shared/spell.js");
 const DELDIRTY = "DELDIRTY";
 const SNIFFFAIL = "SNIFFFAIL";
 
-function join(d, n) { return d === "/" ? "/" + n : d + "/" + n; }
+//  BE-011: worktree-open confinement — wtJoin THROWS NAVESCAPE on any `..`
+//  climb above the wt root; the local join dup is retired for pathlib.join.
+const pathlib = require("../../shared/util/path.js");
+const join = pathlib.join, wtJoin = pathlib.wtJoin;
 function statExists(p) { try { io.lstat(p); return true; } catch (e) { return false; } }
 function statKind(p) { try { return io.lstat(p).kind; } catch (e) { return undefined; } }
 
@@ -80,7 +83,7 @@ function bareSweepSubs(repo, prefix, items) {
       subK.readTreeRecursive(eng.baseTreeSha, function (leaf) {
         if (leaf.kind === "s") return;
         if (stage.isMeta(leaf.path)) return;
-        if (statExists(join(subRepo.wt, leaf.path))) return;
+        if (statExists(wtJoin(subRepo.wt, leaf.path))) return;   // BE-011
         rows.push({ uri: leaf.path });
         items.push({ type: "row", path: subPrefix + "/" + leaf.path });
       });
@@ -116,7 +119,7 @@ function delStage(repo, k, pathRaws, force) {
       k.readTreeRecursive(eng.baseTreeSha, function (leaf) {
         if (leaf.kind === "s") return;             // gitlink subtree, skip
         if (stage.isMeta(leaf.path)) return;
-        if (statExists(join(repo.wt, leaf.path))) return;
+        if (statExists(wtJoin(repo.wt, leaf.path))) return;   // BE-011
         rows.push({ uri: leaf.path });
         items.push({ type: "row", path: leaf.path });
       });
@@ -139,8 +142,10 @@ function delStage(repo, k, pathRaws, force) {
   for (const raw0 of pathRaws) {
     const raw = normRel(raw0);
     //  Dir-form: empty (reporoot), trailing slash, or an on-disk dir.
+    //  BE-011: wtJoin confines the UNTRUSTED CLI arg — a `..` climb throws
+    //  NAVESCAPE here (before any stat/unlink), refusing the out-of-tree open.
     let isDir = raw === "" || raw[raw.length - 1] === "/";
-    if (!isDir && statKind(join(repo.wt, raw)) === "dir") isDir = true;
+    if (!isDir && statKind(wtJoin(repo.wt, raw)) === "dir") isDir = true;
     if (isDir) {
       const dirRaw = raw === "" ? "" : (raw[raw.length - 1] === "/" ? raw : raw + "/");
       const r = delDir(repo, eng, wtl, dirRaw, force);
@@ -162,7 +167,7 @@ function delStage(repo, k, pathRaws, force) {
 
   //  File-form pass (after every dir arg), in arg order.
   if (!dirtyRaw) for (const raw of files) {
-    const full = join(repo.wt, raw);
+    const full = wtJoin(repo.wt, raw);       // BE-011: NAVESCAPE on `..` climb
     if (statExists(full)) {
       //  Dirty-gate (DIS-004): mtime ∈ stamp-set ⇒ tracked-clean; a mtime
       //  miss is only a HINT — bytes still == baseline blob ⇒ clean; `force`
@@ -203,7 +208,8 @@ function delStage(repo, k, pathRaws, force) {
 //  is an OK no-op (caller still appends the dir row).  Empty dirs are not removed.
 function delDir(repo, eng, wtl, dirRaw, force) {
   const prefix = dirRaw;     // ends in "/" (or "" = reporoot)
-  if (prefix !== "" && statKind(join(repo.wt, prefix.replace(/\/$/, ""))) !== "dir")
+  //  BE-011: wtJoin confines the UNTRUSTED dir arg (NAVESCAPE on a `..` climb).
+  if (prefix !== "" && statKind(wtJoin(repo.wt, prefix.replace(/\/$/, ""))) !== "dir")
     return { dirty: false, unlinked: 0, existed: false };   // already absent
 
   //  Descendants on disk = wt-scan entries under the prefix (meta skipped
@@ -224,7 +230,7 @@ function delDir(repo, eng, wtl, dirRaw, force) {
   }
   //  Apply: unlink every descendant.
   let n = 0;
-  for (const rel of desc) { try { io.unlink(join(repo.wt, rel)); n++; } catch (e) {} }
+  for (const rel of desc) { try { io.unlink(wtJoin(repo.wt, rel)); n++; } catch (e) {} }  // BE-011
   return { dirty: false, unlinked: n, existed: true };
 }
 
@@ -336,7 +342,7 @@ function deleteVerb() {
   if (_be && _be.authority && repo && repo.wt)
     argv = SPELL.bindRest(argv, function (p) {
       if (!p) return true;
-      const k = statKind(join(repo.wt, p));
+      const k = statKind(wtJoin(repo.wt, p));    // BE-011: NAVESCAPE on `..`
       return k === undefined || k === "dir";
     });
   return delRun(ctx, argv);

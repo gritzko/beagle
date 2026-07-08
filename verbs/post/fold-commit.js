@@ -31,7 +31,7 @@
 const pathlib = require("../../shared/util/path.js");
 const shalib = require("../../shared/util/sha.js");
 const ingest = require("../../shared/ingest.js");
-const join = pathlib.join;
+const join = pathlib.join, wtJoin = pathlib.wtJoin;   // BE-011: wtJoin confines wt-opens
 const frameSha = shalib.frameSha;
 
 const MODE = { f: 0o100644, x: 0o100755, l: 0o120000, s: 0o160000, dir: 0o40000 };
@@ -131,7 +131,7 @@ const { readFileBytes } = require("../../shared/wtread.js");   // CODE-020
 //  Read the wt blob bytes for an `add` decision (symlink → target, else
 //  the file bytes).  undefined on failure.
 function readAddBytes(wtRoot, d) {
-  const full = join(wtRoot, d.path);
+  const full = wtJoin(wtRoot, d.path);             // BE-011
   if (d.mode === MODE.l) {
     let tgt;
     try { tgt = io.readlink(full); } catch (e) { return undefined; }

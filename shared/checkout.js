@@ -65,6 +65,9 @@ function clearPath(full) {
 
 //  Write `bytes` to `full`, creating parent dirs.  Overwrites in place.
 function writeFile(wtRoot, rel, bytes) {
+  //  BE-011: leaf-local worktree confinement (defense-in-depth) — a `..`/reserved
+  //  rel from a direct caller must refuse here, not just in materialise.
+  if (!safeRel(rel)) throw "checkout: unsafe path " + rel;
   const full = join(wtRoot, rel);
   const d = dirname(rel);            // "." for a top-level rel → no parent
   if (d && d !== ".") { try { io.mkdir(join(wtRoot, d)); } catch (e) {} }
@@ -84,6 +87,8 @@ function writeFile(wtRoot, rel, bytes) {
 //  throws if linkpath exists (FILESymLink) and a pre-existing target would
 //  otherwise be clobbered.  Mirrors sniff/GET.c get_write_one's LNK branch.
 function writeSymlink(wtRoot, rel, target) {
+  //  BE-011: leaf-local worktree confinement (defense-in-depth), as writeFile.
+  if (!safeRel(rel)) throw "checkout: unsafe path " + rel;
   const full = join(wtRoot, rel);
   const d = dirname(rel);
   if (d && d !== ".") { try { io.mkdir(join(wtRoot, d)); } catch (e) {} }

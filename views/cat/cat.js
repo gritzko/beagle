@@ -9,7 +9,7 @@
 "use strict";
 
 const store = require("../../shared/store.js");
-const join  = require("../../shared/util/path.js").join;
+const pathlib = require("../../shared/util/path.js");   // BE-011: wtJoin confinement
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const bro   = require("../../view/bro.js");
 const navlib = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
@@ -154,7 +154,14 @@ function catOne(arg) {
   //  Bytes: a `?ref` blob (historic) else the live wt file.  Absent/empty → no
   //  output (no banner), matching the empty-file case.
   const k = store.open(repo.storePath, repo.project);
-  let bytes = ref ? readRefBytes(k, ref, path) : readFileBytes(join(repo.wt, path));
+  //  BE-011: compose the wt path via wtJoin — an untrusted `..` climb above the
+  //  wt root throws NAVESCAPE; refuse cleanly (never a silent outside read).
+  let full = null;
+  if (!ref) {
+    try { full = pathlib.wtJoin(repo.wt, path); }
+    catch (e) { io.log("cat: " + e + "\n"); return; }
+  }
+  let bytes = ref ? readRefBytes(k, ref, path) : readFileBytes(full);
   if (bytes == null || bytes.length === 0) return;
 
   const ext = bro.pathExt(path);            // "js" / "" — drives tok.parse
