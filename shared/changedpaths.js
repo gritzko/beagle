@@ -40,7 +40,7 @@ function changedTrees(fromReader, fromTreeSha, toReader, toTreeSha) {
 
 //  GIT-016: the convenience twin over COMMIT shas — resolve each side's tree
 //  (commitTree) on its own reader, then diff.  Used by head for cur (keeper)
-//  vs a tip (keeper for local `?branch`/cached, a packReader for a fetch).
+//  vs a tip (keeper for a local `?branch`, a packReader for a fetch).
 function changedCommits(fromReader, fromCommit, toReader, toCommit) {
   const ft = (fromReader && isFullSha(fromCommit)) ? fromReader.commitTree(fromCommit) : "";
   const tt = (toReader   && isFullSha(toCommit))   ? toReader.commitTree(toCommit)     : "";

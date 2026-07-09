@@ -161,7 +161,7 @@ function localSourceUri(uri) {
   const scheme = u.scheme || "";
   if (scheme !== "" && scheme !== "file") return null;          // be:/git/ssh → wire
   if (scheme === "" && u.authority != null && u.authority !== "" && !u.path)
-    return null;                                                 // `//host` cached read → wire
+    return null;                                                 // BE-033: bare `//host` is no store
   return u;
 }
 

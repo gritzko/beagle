@@ -439,7 +439,12 @@ function parseDiffArg(k, repo, raw) {
   let u = new URI(String(raw || ""));
   if (u.scheme !== "diff")
     u = new URI(URI.make("diff", u.authority, u.path, u.query, u.fragment) || "diff:");
-  const path = u.path || "";
+  //  BE-037: canonicalize the path slot (`./` collapse, `..` resolve — NAVESCAPE
+  //  on climb-out) so tree/classifier compares see canonical repo-relative paths.
+  let path = u.path || "";
+  const dirMark = path.length > 1 && path[path.length - 1] === "/";
+  path = pathlib.resolveInTree("", path);
+  if (dirMark && path) path += "/";
   const query = u.query || "";
   const frag = u.fragment || "";
 

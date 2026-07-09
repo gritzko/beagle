@@ -151,27 +151,14 @@ function mintBe(ambient) {
 }
 
 //  URI-011/[Nav]: resolve a scheme-less `//NAME` nav authority in the spell's
-//  args to a repo, via `be.wtdir` (SRC_ROOT=$HOME): `//name[/sub]` → the tree at
-//  `$SRC_ROOT/name/sub`, `//`/`//.` → the LAUNCH tree.  A `//host…` cached remote
-//  (`be.wtdir`→null) and a schemed transport are left to the wire.  The
+//  args to a repo, via `be.wtdir`: `//name[/sub]` → the hive cell at
+//  `<srcRoot>/name/sub`, `//`/`//.` → the LAUNCH tree.  A schemed transport is
+//  left to the wire; BE-033: a scheme-less `//X` is ALWAYS a worktree (remotes
+//  always carry a scheme), so a wtdir miss is NAVNONE, never the wire.  The
 //  `//authority` is STRIPPED to the repo-relative sub-path so an UNCONVERTED verb
 //  sees a clean arg; the authority itself rides `be.authority` for CONVERTED verbs
 //  (full-URI hunks — the launch tree is "here", so its authority is "").  Returns
 //  { repo, authority } or null when no arg carries a nav authority.
-//  URI-011: is `host` a KNOWN cached remote in the cwd store (`//origin`,
-//  `//localhost`)?  Then a wtdir miss is a legit cached read (get/head), not a
-//  local typo — leave it to the wire.  Best-effort: no cwd store → not cached.
-function _isCachedRemote(host) {
-  let repo; try { repo = be.find(); } catch (e) { return false; }
-  if (!repo) return false;
-  const store = require(_here + "/shared/store.js");
-  let hit = false;
-  try {
-    const k = store.open(repo.storePath, repo.project);
-    k.eachRemote(function (rt) { if (rt.host === host) hit = true; });
-  } catch (e) { return false; }
-  return hit;
-}
 
 //  URI-011: TRANSPORT schemes go to the wire and are NOT nav-scoped; a PROJECTOR
 //  scheme (`commit:`/`status:`/`diff:`/`log:`/…) with a `//authority` IS a local
@@ -190,16 +177,11 @@ function authorityRepo(args) {
     //  resolve via the SCHEME-LESS form, since be.wtdir rejects a scheme.
     const navStr = uri._make(undefined, u.authority, u.path, undefined, undefined) || ("//" + host);
     const dir = be.wtdir(navStr);
-    //  URI-011: a DOTLESS host that is neither a local tree (wtdir miss) NOR a
-    //  known cached remote (`//origin`/`//localhost` in the store) is a mistyped
-    //  LOCAL name → NAVNONE.  A dotted `//host…` or a cached remote stays null →
-    //  the wire (`continue`) — local-vs-remote is decided by EXISTENCE, not shape.
-    if (!dir) {
-      if (host !== "" && host !== "." && host.indexOf(".") < 0 &&
-          !_isCachedRemote(host))
-        throw "NAVNONE: no worktree //" + host;
-      continue;
-    }
+    //  BE-033: a scheme-less //authority is ALWAYS a worktree — a wtdir miss is
+    //  NAVNONE (any host shape).
+    //  BE-037: an empty-host miss (repo-less cwd) is as LOUD as any other — the
+    //  raw `///path` must never reach the verb verbatim (silent whole-wt degrade).
+    if (!dir) throw "NAVNONE: no worktree //" + host;
     let repo; try { repo = be.find(dir); } catch (e) { continue; }
     if (!repo) continue;
     //  strip the `//authority` → the repo-relative sub-path (+ ?ref#frag), but
@@ -330,10 +312,10 @@ function _cli(argv, opts2) {
   //  token via scalar(), and run() calls fn(...args) ONCE reading `be`.
   if (!(conv && conv.jab === "args"))
     throw "loop: verb '" + verb + "' has no plain-args handler";
-  //  URI-011/[Nav]: a `//name` nav authority (via `be.wtdir`, SRC_ROOT=$HOME)
+  //  URI-011/[Nav]: a `//name` nav authority (via `be.wtdir`, a hive cell)
   //  scopes the WHOLE spell to that tree + exposes `be.authority` (the `//name`)
-  //  so converted verbs emit full-URI hunks; a `//host…` cached remote and any
-  //  other arg keep the cwd repo.  A repo-less cwd is swallowed (be.repo=null).
+  //  so converted verbs emit full-URI hunks; any other arg keeps the cwd repo.
+  //  A repo-less cwd is swallowed (be.repo=null).
   const nav = authorityRepo(args);
   let authority = "";
   if (nav) { repo = nav.repo; authority = nav.authority; }

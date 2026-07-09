@@ -78,7 +78,9 @@ function parseArg(k, repo, raw) {
   let u = new URI(String(raw || ""));
   if (u.scheme !== "why")
     u = new URI(URI.make("why", u.authority, u.path, u.query, u.fragment) || "why:");
-  const path = u.path || "";
+  //  BE-037: canonical path slot (`./` collapse) — the store weave build must
+  //  see the same repo-relative path as the bare form; NAVESCAPE on climb-out.
+  const path = pathlib.resolveInTree("", u.path || "");
   const query = u.query || "";
   const dots = query.indexOf("..");
   if (dots > 0 && dots < query.length - 2) {

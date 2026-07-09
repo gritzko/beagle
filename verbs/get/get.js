@@ -67,21 +67,19 @@ const DELSWEEP = "del-sweep";
 //  → the loop maps it to the non-zero exit (markers already in the wt).
 const CONFMARK = "merge-conflict";
 
-//  --- remote URI → { local, cached, srcRoot, srcBe, proj, branch, pin } ---
+//  --- remote URI → { local, srcRoot, srcBe, proj, branch, pin } -----------
 //  No hand-rolled parsing: the URI binding splits scheme/host/path/query.
 //  GET.mkd 5-slot map: Scheme=transport, Host=remote, Query=branch/sha,
-//  Fragment=exact-commit PIN (D1).  A `//host` with NO scheme is a CACHED read
-//  (D7) — the local store's remote-tracking tip, NO wire; only ssh:/be: open it.
+//  Fragment=exact-commit PIN (D1).  BE-033: a scheme-less `//host` is NEVER a
+//  remote (a `//X` is always a worktree, nav-resolved); remotes carry a scheme.
 function parseRemote(uri) {
   //  URI-015: scp-form remote → ssh:// before the lex; rem.raw records the
   //  recomposed URI (wtlog anchor / wire.fetch arg), never the scp string.
   uri = uriarg.fromGit(uri);
   const u = new URI(uri);
   //  URI-009: route on slot PRESENCE (undefined = absent), not string-emptiness.
-  //  A `//host` (authority present, NO scheme) is a CACHED read; a `file:`/scheme-
-  //  less `.be` path is a LOCAL store; any scheme is a wire transport.  u.host is
-  //  now the bare authority ("origin"), so the old `|| u.authority` (which leaked
-  //  the `//` into the cached-host match) is gone.
+  //  A `file:`/scheme-less `.be` path is a LOCAL store; any scheme is a wire
+  //  transport.  u.host is the bare authority ("origin"), no leading `//`.
   const hasScheme = u.scheme !== undefined;
   const hasAuth   = u.authority !== undefined;
   const scheme = u.scheme || "";
@@ -98,24 +96,20 @@ function parseRemote(uri) {
   } else if (query) {
     branch = query;
   }
-  //  A `file:`/scheme-less LOCAL store path (ends in `.be` or holds one).  A
-  //  scheme-less `//host` (authority, no store path) is the cached read below.
+  //  A `file:`/scheme-less LOCAL store path (ends in `.be` or holds one).
   const hasStorePath = path.replace(/\/+$/, "").slice(-3) === ".be" ||
                        (path !== "" && !hasAuth);
   const localish = (scheme === "file" && hasStorePath) ||
                    (!hasScheme && !hasAuth && hasStorePath) ||
                    (scheme === "keeper" && (host === "" || host === "local" ||
                                             host === "localhost"));
-  //  D7 cached read: a Host with NO scheme (`//host?branch`) — read the local
-  //  store's remote-tracking tip, never the wire.
-  const cached = !localish && !hasScheme && hasAuth;
   let srcBe = path, srcRoot = path;
   if (localish) {
     srcBe = path.replace(/\/+$/, "");
     srcRoot = srcBe.replace(/\/\.be$/, "");
     if (srcRoot === srcBe) srcRoot = dirname(srcBe);
   }
-  return { local: localish, cached, scheme, host, authority, srcRoot, srcBe,
+  return { local: localish, scheme, host, authority, srcRoot, srcBe,
            proj, branch, pin: frag, raw: uri };
 }
 
@@ -240,41 +234,6 @@ function seedRemote(rem, wt) {
   return { k, tip, oldTip, fresh: false, branch };
 }
 
-//  D7: a CACHED host read — `//host?branch` resets from the local store's
-//  remote-tracking tip with NO network (GET.mkd pt 4: "uses the cached tip if
-//  no scheme set").  Resolve the matching `eachRemote` row for host+branch off
-//  the EXISTING repo's shard; append the wtlog tip row.  Only ssh:/be: (seedRemote)
-//  ever opens the wire — a bare `//host` never does.
-function seedCached(rem, wt) {
-  const info = be.find(wt);
-  const k = store.open(info.storePath, info.project);
-  let tip = "";
-  k.eachRemote(function (rt) {
-    if (tip) return;
-    const h = rt.host || "";
-    if (h !== rem.host && h !== rem.authority) return;
-    //  branch match: empty rem.branch = trunk (empty remote query).
-    const rq = stripLeadRef(rt.query || "");
-    if ((rem.branch || "") === rq) tip = rt.sha;
-  });
-  if (!tip || !isFullSha(tip))
-    throw "be get: GETCACHE no cached tip for //" + rem.host +
-          (rem.branch ? "?" + rem.branch : "") + " — fetch with ssh:/be: first";
-  const bePath = info.bePath;
-  const oldTip = oldTipOf(bePath);
-  appendWtlog(bePath, [{ verb: "get",
-                         uri: URI.make(undefined, undefined, undefined, rem.branch || "", tip) }]);
-  return { k, tip, oldTip, fresh: false, branch: rem.branch || "" };
-}
-
-//  Strip a leading `?` / `/proj/` decoration off a remote-tracking ref query so
-//  it compares as a bare branch (trunk = "").
-function stripLeadRef(q) {
-  if (q && q[0] === "?") q = q.slice(1);
-  if (q && q[0] === "/") { const j = q.indexOf("/", 1); q = j < 0 ? "" : q.slice(j + 1); }
-  return q;
-}
-
 //  --- per-level tree map: name → { sha, mode, isDir } --------------------
 function treeMap(k, treeSha) {
   const m = {};
@@ -298,12 +257,12 @@ function kindOf(mode) {
 //  A REMOTE seed carries a transport (scheme/authority) or a local store path
 //  (a `file:`/scheme-less path ending `.be`).  A reconcile/leaf/fold row never
 //  carries a remote — only pinned blob/tree shas (or the ::del-sweep marker).
-//  A scheme-less `//host` (D7 cached) or `file:` store path is a remote seed
-//  too; a bare `?ref`/`?<sha>`/`#~N`/`<path>` is an IN-REPO seed (D1-D4).
+//  BE-033: a scheme-less `//host` never gets here (nav resolves or NAVNONEs
+//  it); a bare `?ref`/`?<sha>`/`#~N`/`<path>` is an IN-REPO seed (D1-D4).
 function isRemoteSeed(uri) {
   if (uri === DELSWEEP) return false;
   const u = new URI(uri);
-  if (u.scheme || u.authority) return true;        // transport / file:// / //host
+  if (u.scheme || u.authority) return true;        // transport / file://
   const path = u.path || "";
   return path.replace(/\/+$/, "").slice(-3) === ".be";
 }
@@ -311,7 +270,7 @@ function isRemoteSeed(uri) {
 //  --- the per-row dispatcher (was the top-level handle) ------------------
 //  Dispatch by row provenance: a FAN-OUT child (reconcile/leaf/fold) only
 //  appears AFTER a seed pinned ctx._get, so `ctx._get` set ⇒ fan-out; unset ⇒
-//  a top-level seed (remote clone/switch, cached host, or an in-repo form).
+//  a top-level seed (remote clone/switch or an in-repo form).
 //  JAB-004: plain dispatch has no loop queue — the get() driver below owns an
 //  in-fn FIFO and calls this once per (seed + fan-out) row; it returns
 //  { enqueue } exactly as the legacy queue path did.
@@ -336,8 +295,33 @@ function dispatchRow(row, ctx) {
   //  handleSeed (io.cwd destination).  Retiring the pager pre-merge so a verb sees
   //  `(context, RAW args)` — distinguishing an EXPLICIT `//other` clone-source from
   //  the INJECTED context — is a SEPARATE follow-up.
-  if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone/cached
+  if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone
   return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
+}
+
+//  BE-031: the clone DESTINATION.  A user-made cell cwd (`mkdir work/X && cd X`)
+//  stays the target; AT the hive dir or the meta root, mint `<hive>/<NAME>`.
+function seedDest(rem) {
+  const cwd = io.cwd();
+  const hive = be.srcRoot();
+  if (cwd !== hive && cwd !== dirname(hive)) return cwd;
+  //  BE-031: cell NAME = the `?/title` slot, a local source's resolved project,
+  //  else the source URL basename (trailing `/.be` / `.git` shed).
+  let name = rem.proj || "";
+  if (!name && rem.local) {
+    try { name = resolveLocalSource(rem).proj || ""; } catch (e) {}
+  }
+  if (!name)
+    name = pathlib.basename(rem.srcRoot.replace(/\/+$/, "")
+                                       .replace(/\/?\.be$/, "")
+                                       .replace(/\.git$/, ""));
+  if (!name || !pathlib.safeRel(name))
+    throw "be get: cannot derive a hive cell name from " + rem.raw;
+  if (!exists(hive)) io.mkdir(hive);
+  const dest = join(hive, name);
+  if (!exists(dest)) io.mkdir(dest);
+  warn("be get: seeding hive cell " + dest);
+  return dest;
 }
 
 //  SEED: resolve the remote once (resolution-at-entry), anchor the wtlog, emit
@@ -346,13 +330,11 @@ function dispatchRow(row, ctx) {
 //  { k, wt, tip, oldTip, kinds } on ctx so each fan-out child reuses the SAME
 //  reader/wt without re-resolving (JSQUE-004).
 function handleSeed(uri, ctx) {
-  //  URI-011: the CLONE destination stays raw io.cwd() — a fresh clone lands where
-  //  jab runs, and `//peer`-as-a-SOURCE (context wt) is a separate ticket.
-  const wt = io.cwd();
   const rem = parseRemote(uri);
-  const r = rem.cached ? seedCached(rem, wt)
-          : rem.local  ? seedLocal(rem, wt)
-          :              seedRemote(rem, wt);
+  //  BE-031: a fresh clone lands where jab runs — EXCEPT at the hive dir / meta
+  //  root, where seedDest mints a new hive cell `<meta>/work/<NAME>` instead.
+  const wt = seedDest(rem);
+  const r = rem.local ? seedLocal(rem, wt) : seedRemote(rem, wt);
   //  DIS-058 D4: the parent's SOURCE (this remote) so a gitlink leaf can fetch
   //  its child shard from the SAME source (project swapped to the sub title).
   r.source = rem;

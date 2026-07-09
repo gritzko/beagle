@@ -247,8 +247,8 @@ function applyRefs(repo, k, ctx) {
 //  --- GIT-014: wire PUT (the UNCONSTRAINED remote ref-write) --------------
 //  Scan the raw positional args for a Host-slot push form and run it ONCE.
 //  Forms (PUT.mkd § Design invariant 9 — any ref to any sha, force allowed):
-//    //host[?br[#sha]]     force-write origin's counterpart (branch from the
-//                          reflog, default cur's branch) to a sha (default cur.tip)
+//  BE-033: the scheme-less `//host` push form is DROPPED (a `//X` is always a
+//  worktree; the loop NAVNONEs a miss) — a push target carries its scheme.
 //    ssh://host?br[#sha]   set a remote ref to a sha (default cur.tip)
 //    https://host?br[#sha] set a remote ref to a sha (default cur.tip)
 //    ssh://host/path  (NO ?ref) → LOG-ONLY ([DIS-011]); record the URL, NO push.
@@ -288,10 +288,8 @@ function pushWire(repo, k, ctx, arg, u) {
     }
     return;
   }
-  //  Branch: explicit ?br wins; else origin's counterpart from the reflog
-  //  (eachRemote reverse-grep by authority), else cur's branch.
-  let branch = u.query || "";
-  if (!branch && !u.scheme) branch = reflogCounterpart(k, u) || "";
+  //  Branch: explicit ?br wins, else cur's branch (the resolveRef default).
+  const branch = u.query || "";
   const cur = wtlog.open(repo).curTip();
   const curSha = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";
   //  Target sha: explicit #sha (resolve a hashlet via the seed) or cur.tip.
@@ -315,7 +313,7 @@ function pushWire(repo, k, ctx, arg, u) {
   const pack = wire.buildPushPack(serve, target, haves);
   wire.push(arg, [{ ref: wireRef, neu: target, old: old }], pack);
   //  GIT-016: SAVE the force-written remote tip as a remote-tracking refs row
-  //  (ingest.saveRemoteRef, the get/clone row shape) so `be head //origin` reads it.
+  //  (ingest.saveRemoteRef, the get/clone row shape) — the reflog bookkeeping.
   ingest.saveRemoteRef(k.shard, arg, target);
   if (out) {
     openPutBanner(out, ctx);
@@ -327,21 +325,6 @@ function pushWire(repo, k, ctx, arg, u) {
     out.row(base + (u.query ? "" : "?" + (branch || "")) + "#" + target.slice(0, 8), "put", 0n);
   }
 }
-
-//  Resolve origin's counterpart branch for a `//host` push: the recentmost
-//  remote-tracking tip whose authority matches `u` (the reflog reverse-grep,
-//  [Store]) gives the be-side branch label; "" (trunk) if none.
-function reflogCounterpart(k, u) {
-  const want = (u.authority || u.host || "");
-  let hit = "";
-  k.eachRemote(function (rt) {
-    if (hit) return;
-    if ((rt.host || "") === want || (rt.key || "").indexOf(want) === 0)
-      hit = stripQ(rt.query || "");
-  });
-  return hit;
-}
-function stripQ(q) { return (q && q[0] === "?") ? q.slice(1) : q; }
 
 //  GIT-014: resolve a #sha hashlet to a full sha via the local tips/objects
 //  (the seed's resolveHex twin) — a full sha passes iff present; else scan tips.

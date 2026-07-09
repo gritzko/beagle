@@ -169,9 +169,12 @@ function shieldLike(beDir) {
 function topWt(wt) {
   const home = io.getenv("HOME");
   for (;;) {
+    //  BE-031: hive boundary — a cell (<meta>/work/<name>) is its OWN top; never
+    //  climb across `work/` into the meta (whose `.be` FILE would claim the cell).
+    if (pathlib.basename(dirname(wt)) === "work") break;
     const up = dirname(wt);
     if (!up || up === wt || up === "/") break;
-    if (home && up === home) break;              // the SRC_ROOT/$HOME store level —
+    if (home && up === home) break;              // the $HOME store level —
     let outer; try { outer = find(up); } catch (e) { break; }   // a STORE, not a super
     if (!outer || !outer.wt || outer.wt === wt || outer.wt === home) break;
     wt = outer.wt;                               // wt was nested (submodule) → climb
@@ -179,10 +182,10 @@ function topWt(wt) {
   return wt;
 }
 
-//  URI-011: srcRoot() → where the worktrees live.  `SRC_ROOT` env wins; else it is
-//  IMPLIED as ONE LEVEL UP from the discovered TOP wt root (probe `.be` from cwd,
-//  climb past submodules) — so `//name` addresses a SIBLING of the tree you
-//  launched in, with no $HOME assumption.  Falls back to $HOME when repo-less.
+//  BE-031: srcRoot() → the HIVE dir `<meta>/work/` where the worktree cells live.
+//  `SRC_ROOT` env wins (the flat-legacy escape hatch); else inferred from the TOP
+//  wt: launched inside a cell → the cell's `work/` parent, launched in the meta
+//  (or any plain wt) → `<top>/work`.  Falls back to $HOME when repo-less.
 function srcRoot() {
   //  BE-011: memoize the resolved root on the `be` global — SRC_ROOT is fixed for
   //  a process run, so every resolve()/wtdir()/navCwd() reads ONE stable value
@@ -190,7 +193,12 @@ function srcRoot() {
   if (typeof be !== "undefined" && be.srcRootDir) return be.srcRootDir;
   let dir = io.getenv("SRC_ROOT");
   if (!dir) {
-    try { dir = dirname(topWt(find(io.cwd()).wt)) || io.getenv("HOME") || "."; }
+    //  BE-031: a cell's parent IS the hive; any other top wt (the meta, a plain
+    //  standalone wt) hosts its hive at <top>/work.
+    try {
+      const t = topWt(find(io.cwd()).wt);
+      dir = pathlib.basename(dirname(t)) === "work" ? dirname(t) : join(t, "work");
+    }
     catch (e) { dir = io.getenv("HOME") || "."; }
   }
   if (typeof be !== "undefined") be.srcRootDir = dir;
@@ -213,6 +221,9 @@ function todoRoot() {
   } catch (e) { /* repo-less current → skip */ }
   //  open/launch wt: cwd's own repo (jab's launch tree), topWt'd.
   try { push(topWt(find(io.cwd()).wt)); } catch (e) { /* repo-less launch → skip */ }
+  //  BE-031: the meta root (the hive's parent) holds the shared todo/ tree —
+  //  probe it so tickets resolve from inside a cell.
+  push(dirname(srcRoot()));
   return out;
 }
 
@@ -254,6 +265,15 @@ function _relPath(rel) {
   return u.path || "";
 }
 
+//  BE-037: the LAUNCH tree's TOP wt — the tree the empty `//` host names.  Memoized
+//  on `be` (cwd is fixed per run): wtpath resolves through it on EVERY fs access.
+function launchTop() {
+  if (typeof be !== "undefined" && be.launchTopWt) return be.launchTopWt;
+  const t = topWt(find(io.cwd()).wt);                 // throws when repo-less
+  if (typeof be !== "undefined") be.launchTopWt = t;
+  return t;
+}
+
 //  BE-030: resolve(context, rel) → the ABSOLUTE fs path, CONFINED to the CONTEXT's
 //  tree.  `context` (a URI object) carries BOTH the tree NAME (its authority) and
 //  the TRUSTED in-repo dir the relative arg resolves against (its PATH); `rel` is
@@ -262,7 +282,7 @@ function _relPath(rel) {
 //  whose context path is UNTRUSTED (wtdir) strips it into `rel`.  `rel` is
 //  AUTHORITY-BLIND (no `//other`, no `scheme:` — a tree swap can no longer ride the
 //  arg slot), and resolveInTree THROWS "NAVESCAPE" on any `..` that climbs above the
-//  tree root, so the result can NEVER leave $SRC_ROOT/<name>.  A rooted `/x` rel
+//  tree root, so the result can NEVER leave the `<srcRoot>/name` cell.  A rooted `/x` rel
 //  addresses the tree root (drops the context path); ""/"." context host → the
 //  LAUNCH tree (find(cwd)).  Throws on escape / bad name.
 function resolve(context, rel) {
@@ -272,8 +292,10 @@ function resolve(context, rel) {
   //  resolves against the context's trusted in-repo path.  resolveInTree NORMALISES.
   const basePath = relPath[0] === "/" ? "" : _ctxPath(context);
   const sub = pathlib.resolveInTree(basePath, relPath);   // throws on climb-out
-  if (host === "" || host === ".") {                  // `//` / `//.` → launch tree
-    const wt = find(io.cwd()).wt;                     // throws when repo-less
+  if (host === "" || host === ".") {
+    //  BE-037: `//` = the TOP tree (what navCwd names `//`), not the nearest
+    //  anchor — a submodule launch must agree with the pager-composed `//`.
+    const wt = launchTop();                           // throws when repo-less
     return sub ? join(wt, sub) : wt;
   }
   if (!pathlib.safeRel(host)) throw "NAVESCAPE: bad nav authority //" + host;
@@ -282,10 +304,10 @@ function resolve(context, rel) {
 }
 
 //  URI-011: wtdir(uriStr) → the ABSOLUTE dir a nav URI addresses, or null.
-//    //name[/sub]  → $SRC_ROOT/name/sub  (a tree under SRC_ROOT, confined below)
+//    //name[/sub]  → <srcRoot>/name/sub  (a hive cell, confined below)
 //    // , //.       → the LAUNCH tree     (find(cwd).wt — "where jab started")
 //    //host…, file:/ssh:/be:, no `//`     → null (a cached remote / transport → wire)
-//  A `//name` miss (find has no anchor at/below $SRC_ROOT/name) is left to the
+//  A `//name` miss (find has no anchor at/below <srcRoot>/name) is left to the
 //  caller as a cached-remote-or-typo decision.  BE-011: confinement is now a
 //  PROPERTY of resolve() (NAVESCAPE on any `..` climb), not a lexical prefix check.
 function wtdir(uriStr) {
@@ -293,8 +315,11 @@ function wtdir(uriStr) {
   if (u.scheme) return null;                          // a transport, not nav
   if (u.authority === undefined) return null;         // no `//` slot
   const host = u.host || "";
-  if (host === "" || host === ".") {                  // `//` / `//.` → launch tree
-    try { return find(io.cwd()).wt; } catch (e) { return null; }
+  if (host === "" || host === ".") {
+    //  BE-037: `//[/path]` rides resolve like `//name` — the TOP tree, path
+    //  honoured; a repo-less cwd is the miss (null), NAVESCAPE still propagates.
+    try { launchTop(); } catch (e) { return null; }
+    return resolve("//" + host, u.path || "");
   }
   //  BE-030: compose + CONFINE via resolve(context, rel).  The nav URI's path is
   //  UNTRUSTED, so the context is host-ONLY (`//host`, empty trusted path) and the
@@ -302,7 +327,7 @@ function wtdir(uriStr) {
   //  (the CLI REFUSES loudly, never adopting an outside tree).  resolve throws ONLY
   //  on escape, never on a plain not-found → safe to let fly.
   const dir = resolve("//" + host, u.path || "");
-  //  Confirm `//name` is a REAL anchored worktree AT/BELOW $SRC_ROOT/host (not an
+  //  Confirm `//name` is a REAL anchored worktree AT/BELOW <srcRoot>/host (not an
   //  ancestor store find() walked up to).  `dir` is `..`-free now, so this prefix
   //  compare is a sound EXISTENCE check, no longer a (broken) security boundary.
   const top = join(srcRoot(), host);
@@ -313,7 +338,7 @@ function wtdir(uriStr) {
 
 //  URI-011: navCwd(dir?) → the `//name/path` context URI for a directory
 //  (default cwd) — the INVERSE of wtdir, and the context a session STARTS with
-//  ("where I am").  name = the worktree `wt` under SRC_ROOT (may nest, `src/dogs`);
+//  ("where I am").  name = the worktree `wt` under srcRoot() (may nest, `src/dogs`);
 //  path = `dir` under `wt`.  "" when the dir is in no known tree (repo-less cwd).
 function navCwd(dir) {
   const d = dir || io.cwd();
@@ -323,7 +348,9 @@ function navCwd(dir) {
   //  submodule (`//name/sub/inner`) — see [SUBS-045] joinPrefix.
   const top = topWt(repo.wt);
   const root = srcRoot();
-  const name = top === root ? ""
+  //  BE-031: the meta (the hive's parent wt) has no `//name` address — its own
+  //  context is the bare `//`; a hive cell slices its name off srcRoot().
+  const name = top === root || top === dirname(root) ? ""
              : top.indexOf(root + "/") === 0 ? top.slice(root.length + 1)
              : top.slice(top.lastIndexOf("/") + 1);      // fallback: basename
   const sub = d.length > top.length ? d.slice(top.length + 1) : "";
@@ -338,7 +365,7 @@ function navCwd(dir) {
 //  in the scoped tree, NOT the launch tree.  = the resolved repo's wt (be.repo.wt,
 //  which authorityRepo may anchor on a SUBMODULE wt for a `//name/sub/…` path),
 //  else the launch cwd's wt; repo-less falls back to io.cwd().  Verbs need only
-//  this dir — never SRC_ROOT.  The context URI (be.authority / navCwd) is the "dir
+//  this dir — never srcRoot().  The context URI (be.authority / navCwd) is the "dir
 //  to cd to"; no io.chdir binding needed.
 function contextCwd() {
   if (typeof be !== "undefined" && be.repo && be.repo.wt) return be.repo.wt;
@@ -347,7 +374,7 @@ function contextCwd() {
 
 //  BE-030: per-process cache of a wt root → its validated nav context URI, so the
 //  per-fs-access wtpath() below never re-walks the tree (navCwd/find) twice for the
-//  same wt.  "" marks a wt that is repo-less / OUTSIDE $SRC_ROOT (the fallback).
+//  same wt.  "" marks a wt that is repo-less / OUTSIDE the hive (the fallback).
 const _wtCtx = {};
 
 //  BE-030: wtpath(wt, rel) → the ABSOLUTE fs path of the wt-relative `rel` in the
@@ -359,7 +386,7 @@ const _wtCtx = {};
 //  at every fs site.  Confinement is preserved EXACTLY: resolve() throws NAVESCAPE
 //  on a `..` climb above the tree root, and the trailing guard refuses any path
 //  that climbs OUT of `wt` (matching wtJoin's wt-level boundary).  A wt outside
-//  $SRC_ROOT (a $HOME-store edge / scratch dir) has no `//name` address → the
+//  the hive (a store edge / scratch dir) has no `//name` address → the
 //  plain wtJoin confine is used (byte-identical to the pre-BE-030 behavior).
 function wtpath(wt, rel) {
   let ctx = _wtCtx[wt];
@@ -371,7 +398,7 @@ function wtpath(wt, rel) {
     }
     _wtCtx[wt] = ctx;
   }
-  if (!ctx) return pathlib.wtJoin(wt, rel);           // outside $SRC_ROOT → plain confine
+  if (!ctx) return pathlib.wtJoin(wt, rel);           // outside the hive → plain confine
   const c = uri._parse(ctx);
   const abs = resolve(c, rel || "");                  // resolve-backed, context-honoured
   //  keep wtJoin's WT-level boundary: resolve() confines to the TREE (for a

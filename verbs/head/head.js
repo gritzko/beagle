@@ -16,8 +16,8 @@
 //                                  memory -> in-memory remote DAG -> verdict ->
 //                                  report ahead/behind + changed paths -> update
 //                                  remote-track ref.  No pack-log write.
-//    be head //origin?branch       CACHED: no network — read the remote-tracking
-//                                  tip (store.eachRemote) and report vs cur.
+//  BE-033: the scheme-less `//origin?branch` CACHED form is DROPPED — a `//X`
+//  is ALWAYS a worktree (nav scopes or NAVNONEs it); remotes carry a scheme.
 //  GIT-016: the changed-PATHS diff (T4-deferred) now lands via the shared
 //  shared/changedpaths.js helper — cur's tree vs the tip's tree, listed per form.
 
@@ -86,13 +86,15 @@ function headOne(arg, ctx) {
   const cur = wtlog.open(info).curTip();
   const curSha = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";
   if (!curSha)
-    throw "HEADNONE: no cur tip to compare (commit first, then `be head //origin`)";
+    throw "HEADNONE: no cur tip to compare (commit first, then `be head ssh://origin`)";
 
-  //  Dispatch by transport: a `//host` authority (no scheme) is the CACHED read;
-  //  any scheme is a wire fetch; a bare in-repo `?branch` (no host/scheme) is the
-  //  LOCAL peek — cur vs a local branch tip, all objects local (no net).
+  //  BE-033: a scheme-less //authority is ALWAYS a worktree — nav scopes it or
+  //  NAVNONEs upstream; head never reads it as a cached remote.
+  if (!hasScheme && hasAuth)
+    throw "NAVNONE: no worktree //" + (u.host || "");
+  //  Dispatch by transport: any scheme is a wire fetch; a bare in-repo `?branch`
+  //  is the LOCAL peek — cur vs a local branch tip, all objects local (no net).
   const res = hasScheme       ? peekFetch(k, uri, branch, curSha)
-            : hasAuth         ? peekCached(k, u, branch, curSha)
             : /* local ?br */   peekLocal(k, branch, curSha);
   report(ctx, uri || URI.make(undefined, undefined, undefined, branch, undefined),
          branch, res.rel, res.ahead, res.behind, res.tip, res.paths);
@@ -109,28 +111,6 @@ function peekLocal(k, branch, curSha) {
   if (!tip || !isFullSha(tip))
     throw "HEADREF: no local branch `?" + (branch || "") + "` to diff against";
   const v = relate.verdict(k, curSha, tip);
-  const paths = changed.changedCommits(k, curSha, k, tip);
-  return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip, paths: paths };
-}
-
-//  CACHED `//origin?branch`: the remote-tracking tip from store.eachRemote (no
-//  wire).  cur vs that tip is a LOCAL-object verdict — the connecting commits
-//  are already in the store (a prior get/head/push fetched them), so NO remote
-//  index is needed.  Missing cache -> HEADCACHE (fetch with ssh:/be: first).
-function peekCached(k, u, branch, curSha) {
-  let tip = "";
-  k.eachRemote(function (rt) {
-    if (tip) return;
-    const h = rt.host || "";
-    if (h !== (u.host || "") && h !== (u.authority || "")) return;
-    const rq = stripLeadRef(rt.query || "");
-    if ((branch || "") === rq) tip = rt.sha;
-  });
-  if (!tip || !isFullSha(tip))
-    throw "HEADCACHE: no cached tip for //" + (u.host || u.authority) +
-          (branch ? "?" + branch : "") + " — fetch with ssh:/be: first";
-  const v = relate.verdict(k, curSha, tip);
-  //  Cached connecting commits + trees are already in the store → diff locally.
   const paths = changed.changedCommits(k, curSha, k, tip);
   return { rel: v.rel, ahead: v.ahead, behind: v.behind, tip: tip, paths: paths };
 }
@@ -197,13 +177,6 @@ function commitEdges(packBytes) {
   }
   ix.flush();
   return ix;
-}
-
-//  Strip a leading `?`/`/proj/` off a remote-tracking ref query (bare branch).
-function stripLeadRef(q) {
-  if (q && q[0] === "?") q = q.slice(1);
-  if (q && q[0] === "/") { const j = q.indexOf("/", 1); q = j < 0 ? "" : q.slice(j + 1); }
-  return q;
 }
 
 //  --- report ------------------------------------------------------------

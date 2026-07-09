@@ -149,7 +149,9 @@ function catOne(arg) {
   //  binding reads `.path`/`.query` off the scheme'd form (no strip-then-reparse).
   const first = String(arg || "");
   const u = uri._parse(first);
-  const path = u.path || "";
+  //  BE-037: canonical path slot (`./` collapse) — a `?ref` tree descend must
+  //  see the same repo-relative path as the bare form; NAVESCAPE on climb-out.
+  const path = pathlib.resolveInTree("", u.path || "");
   const ref  = (u.query && u.query.length) ? u.query : "";
   if (!path) { io.log("cat: needs a path\n  try: cat:<path>\n"); throw "CATNOPATH"; }
 

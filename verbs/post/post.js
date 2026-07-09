@@ -124,9 +124,9 @@ function parseSlots(args) {
     const u = uri.parse(a);
     if (typeof u === "string") continue;
     if (u.host) {
-      //  GIT-013: a Host slot is a wire PUSH target (`//host?br`,
-      //  `ssh://host?br`, `https://host?br`).  Capture the raw URI + its
-      //  branch query; the push runs in postOne after cur's tip resolves.
+      //  GIT-013: a Host slot is a wire PUSH target (`ssh://host?br`,
+      //  `https://host?br`; BE-033: a scheme-less `//X` is a worktree, nav-
+      //  handled).  Capture the raw URI + its branch query for postOne.
       slots.host = true;
       slots.hostUri = a;
       //  GIT-015 defect B: a `?` marker (even empty `?` = trunk) means a branch
@@ -300,7 +300,7 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
 //  pack of objects the remote lacks via `keeper upload-pack`, then push.
 function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   if (!tip || !isFullSha(tip))
-    throw "POSTNONE: no cur tip to push (commit first, then `be post //host`)";
+    throw "POSTNONE: no cur tip to push (commit first, then `be post ssh://host`)";
   //  GIT-019: ssh/local push runs on ONE receive-pack session — advertise once,
   //  verdict off that advert, send on the SAME fds.  http is stateless (no
   //  session): fall back to the classic advertRefs-inside-relate + wire.push.
@@ -353,7 +353,7 @@ function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
     else wire.push(remoteUri, updates, pack);
   } catch (e) { if (session) session.close(); throw e; }
   //  GIT-016: SAVE the just-advanced remote tip as a remote-tracking refs row
-  //  (ingest.saveRemoteRef, the get/clone row shape) so `be head //origin` reads it.
+  //  (ingest.saveRemoteRef, the get/clone row shape) — the reflog bookkeeping.
   ingest.saveRemoteRef(reader.shard, remoteUri, tip);
 
   //  DIS-060: the banner carries the remote ADDRESSING uri (`<remote>?<br>#<tip>`)
@@ -429,7 +429,7 @@ module.exports = post;
 //  postTree(info, ctx, row): recurse mounted subs (post-order), then postOne.
 function postTree(info, ctx, row) {
   const flags = (ctx && ctx.flags) || [];
-  //  GIT-015: a Host-slot wire push (`post //host?ref`) is a single-repo wire
+  //  GIT-015: a Host-slot wire push (`post ssh://host?ref`) is a single-repo wire
   //  op — it must NOT fan out over submodules (a sub's cur is not the super's
   //  tip; pushing it to the super's remote is a spurious non-FF → POSTNOFF).
   const isPush = parseSlots((ctx && ctx.args) || []).host;
@@ -579,7 +579,7 @@ function postOne(info, ctx, row) {
   const target = slots.hasQuery
         ? resolveTarget(slots.query, curBranch) : curBranch;
 
-  //  GIT-013 Host slot (`//host?br` / `ssh://host?br` / `https://host?br`):
+  //  GIT-013 Host slot (`ssh://host?br` / `https://host?br`):
   //  FF-push cur's existing tip to the remote branch.  No local commit — this
   //  ships what cur already points at (the descendant cascade / commit-then-
   //  push is out of scope).  The FF gate + pack build live in pushRemote.

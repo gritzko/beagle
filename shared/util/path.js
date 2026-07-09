@@ -55,7 +55,7 @@ function safeRel(rel) {
 //  --- BE-011: segment-based path calculator (split · resolveInTree · merge) ---
 //  In-tree paths are computed over SEGMENT ARRAYS, never by hand-rolled
 //  `a + "/" + b` string math.  Paths here are worktree-RELATIVE (no leading
-//  "/"); the absolute root ($SRC_ROOT/name) is prepended by the caller.
+//  "/"); the absolute root (the hive cell, `<srcRoot>/name`) is prepended by the caller.
 
 //  split(p) — a "/"-path to its non-empty segments; leading/trailing/doubled
 //  slashes collapse away ("a//b/" → ["a","b"], "/a" → ["a"], "" → []).
