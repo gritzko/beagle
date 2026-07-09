@@ -108,12 +108,11 @@ function _nullSink() {
 //  JAB-030: the verb-vs-URI gate (Design decision b).  A word is a VERB iff a
 //  handler file exists at verbs/<w>/<w>.js OR views/<w>/<w>.js under the be/ root
 //  (_here).  The [a-zA-Z0-9]+ shape test is the caller's; this is the file probe.
+//  BE-029: the probe now BE-CLIMBS from cwd (registry.verbFile), so a nested
+//  be/ shard's verbs are seen while core/shared still load from `_here` (the
+//  launched be/ up-tree).  `here` is ignored (kept for call-site compat).
 function _isVerb(w, here) {
-  for (const d of ["verbs", "views"]) {
-    try { if (io.stat(here + "/" + d + "/" + w + "/" + w + ".js")) return true; }
-    catch (e) {}                            // ENOENT — not that kind of handler
-  }
-  return false;
+  return registry.verbFile(w) !== null;
 }
 
 //  JAB-030: the bare-URI view default (Design decision: dir -> ls:, file ->
@@ -316,7 +315,9 @@ function _cli(argv, opts2) {
 
   //  JAB-004: the DUAL-CONVENTION fork — a CONVERTED verb (`{jab:"args"}`) runs
   //  the PLAIN path; a LEGACY verb keeps resolve.seed→queue; BOTH share the edge.
-  const conv = registry.build([verb], require)[verb];
+  //  BE-029: resolve via the cwd-climb (a nested be/ shard wins), not a single
+  //  `_here` root; require the resolved abs path with loop.js's own require.
+  const conv = registry.resolveVerb(verb, undefined, require);
   const out = emit.create({ color: color });   // JAB-025: tty/--color gate
   //  JAB-029: the content-view HUNK sink (cat/grep/spot/regex feed it, no fd 1);
   //  cli OWNS the one renderHunkLog(sink.log, mode) -> fd 1 edge write below.

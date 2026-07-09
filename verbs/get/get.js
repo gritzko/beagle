@@ -325,6 +325,14 @@ function dispatchRow(row, ctx) {
   if (ctx._get && row && row._leaf) return leaf(row, ctx);
   if (ctx._get && row && row._dir !== undefined) return reconcileDir(row, ctx);
   if (ctx._get) return handleReconcileOrLeaf(uri, ctx);   // a fan-out child (root)
+  //  URI-011/GET-041: a `//name` nav authority names a LOCAL worktree SOURCE.
+  //  authorityRepo scopes it in place (right for read verbs), but get must CLONE
+  //  FROM it into io.cwd() — so `jab get //journal/be` checks the tree out into
+  //  cwd exactly like `jab get file:<wt>`.  Only when the target dir differs from
+  //  the source wt (else cwd IS the source: an in-place re-get of its tree).
+  const B = globalThis.be;
+  if (B && B.authority && B.repo && B.repo.wt && io.cwd() !== B.repo.wt)
+    return handleSeed("file:" + B.repo.wt, ctx);
   if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone/cached
   return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
 }

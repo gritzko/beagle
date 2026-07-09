@@ -54,4 +54,43 @@ function build(verbs, requireFn) {
   return table;
 }
 
-module.exports = { build: build, convention: convention };
+//  BE-029: locate a verb's handler file by BE-CLIMBING from `startDir` (default
+//  cwd) — at each ancestor try `<dir>/be/verbs/<w>/<w>.js` then `.../views/…`,
+//  ceiling at $HOME, first hit wins.  This mirrors jab's own upward be/-scan
+//  (require.cpp resolveBe) but anchors on CWD, so a nested be/ shard (e.g.
+//  `html/be` for publication) supplies its OWN verbs while core/shared still
+//  load from the parent be/ the loop launched from.  Returns the abs path or
+//  null.  Distinct from JAB-030's `_here` probe, which sees one root only.
+function verbFile(w, startDir) {
+  let dir = startDir || io.cwd();
+  const home = io.getenv("HOME");
+  for (;;) {
+    for (const d of ["verbs", "views"]) {
+      const p = dir + "/be/" + d + "/" + w + "/" + w + ".js";
+      try { if (io.stat(p)) return p; }
+      catch (e) {}                            // ENOENT — keep climbing
+    }
+    if (dir === home || dir === "/" || dir === "") break;
+    const i = dir.lastIndexOf("/");
+    dir = i > 0 ? dir.slice(0, i) : "/";
+  }
+  return null;
+}
+
+//  BE-029: resolve a verb to its handler via the cwd-climb (verbFile), then apply
+//  the verb contract (convention).  `requireFn` requires the resolved ABS path
+//  (default global require, which handles absolute paths).  Returns the same
+//  `{jab:"args",fn}` / legacy-fn shape as build(), or null when absent / unloadable.
+function resolveVerb(w, startDir, requireFn) {
+  const f = verbFile(w, startDir);
+  if (f === null) return null;
+  const req = requireFn || require;
+  let mod;
+  try { mod = req(f); } catch (e) { return null; }   // JS-074: a load error → absent
+  const c = convention(mod);
+  if (c == null) return null;
+  return c.how === "args" ? { jab: "args", fn: c.fn } : c.fn;
+}
+
+module.exports = { build: build, convention: convention,
+                   verbFile: verbFile, resolveVerb: resolveVerb };

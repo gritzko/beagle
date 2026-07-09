@@ -16,8 +16,8 @@
 //  line, "" = dropped separator), matching status.js's sinkOut byte-for-byte.
 "use strict";
 
-const render = require("../../view/render.js");
-const theme  = require("../../view/theme.js");
+const render = require("../view/render.js");
+const theme  = require("../view/theme.js");
 
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 function tagCode(letter) { return letter.charCodeAt(0) - 65; }
