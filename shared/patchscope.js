@@ -27,6 +27,17 @@ const isFullSha = shalib.isFullSha;
 //  (or bare `#`) → NAMED.  A bare `<sha>`/ref with no `?`/`#` is NAMED.
 function parseShape(arg) {
   const u = new URI(arg || "");
+  //  PATCH-010: a scheme'd/authority-carrying arg is NEVER a cherry ref — it is
+  //  a TREE source (`file:<path>` no-query | a `//WT` nav address) or refused.
+  if (u.scheme !== undefined || u.authority !== undefined) {
+    if (u.scheme === "file" && !u.query && !u.fragment && u.path &&
+        (u.authority === undefined || u.authority === ""))
+      return { scope: "TREE", branch: "", frag: "", tree: u.path, nav: false };
+    if (u.scheme === undefined)
+      return { scope: "TREE", branch: "", frag: "", tree: arg, nav: true };
+    throw "PATCHFAIL: cannot patch from '" + arg +
+          "' — supported: ?<br> | ?<br>! | #<sha> | a worktree address";
+  }
   let query = u.query || "";
   let frag = u.fragment || "";
   //  A trailing `!` on the query is the WHOLE modifier (URI-002 debanger).
@@ -118,11 +129,23 @@ function lca(reader, a, b) {
   return undefined;
 }
 
+//  PATCH-010: triple for a TREE source — theirs = the addressed wt's cur tip
+//  (the VERB resolves the address + wtlog); fork = LCA, a WHOLE-style absorb.
+function resolveTree(theirs, branch, wtl, reader) {
+  const ours = resolveOurs(wtl, reader);
+  const fork = lca(reader, ours.sha, theirs);
+  return { scope: "WHOLE", branch: branch || "", ours: ours.sha,
+           theirs: theirs, fork: fork };
+}
+
 //  Resolve the full ours/theirs/fork triple + scope for a patch arg.
 //  Returns { scope, branch, ours, theirs, fork } (40-hex shas; fork may be
 //  undefined when the branches share no history → empty merge base).
 function resolve(arg, wtl, reader) {
   const shape = parseShape(arg);
+  //  PATCH-010: a TREE address needs the verb's fs/wtlog resolution — see patch.js.
+  if (shape.scope === "TREE")
+    throw "PATCHFAIL: tree source '" + arg + "' must be resolved by the verb";
   const ours = resolveOurs(wtl, reader);
 
   if (shape.scope === "NAMED") {
@@ -143,6 +166,7 @@ function resolve(arg, wtl, reader) {
 
 module.exports = {
   parseShape: parseShape,
+  resolveTree: resolveTree,
   resolveOurs: resolveOurs,
   resolveCherry: resolveCherry,
   lca: lca,

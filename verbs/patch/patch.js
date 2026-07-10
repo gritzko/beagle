@@ -36,7 +36,9 @@ const ulog      = require("../../shared/ulog.js");
 const pathlib   = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-const wtpath = require("../../core/discover.js").wtpath;
+//  PATCH-010: + wtdir/find for the TREE-source address (never raw path math).
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 //  DIFF-010: the shared grow-on-"out full" WEAVE fold/merge retry (mirrors
 //  loop.js:128-142) — a large per-file weave no longer throws "out full".
 const weave     = require("../../shared/weave.js");
@@ -265,6 +267,29 @@ function patch() {
 patch.jab = "args";
 module.exports = patch;
 
+//  PATCH-010: scope resolution — a TREE-shaped arg (`file:<path>` | `//WT`) is
+//  resolved HERE (the verb owns address resolution); the rest ride patchscope.
+function resolveScope(arg, wtl, reader) {
+  const shape = patchscope.parseShape(arg);      // throws the loud refusal
+  if (shape.scope !== "TREE") return patchscope.resolve(arg, wtl, reader);
+  //  PATCH-010: `//WT` via discover.wtdir (nav-confined); `file:<path>` anchors
+  //  via discover.find (abs or cwd-relative — the GET-038 local-source idiom).
+  const dir = shape.nav ? discover.wtdir(shape.tree) : shape.tree;
+  if (!dir) throw "PATCHFAIL: no worktree " + shape.tree;
+  let src; try { src = discover.find(dir); } catch (e) { src = null; }
+  if (!src) throw "PATCHFAIL: no worktree at '" + shape.tree + "'";
+  //  theirs = the addressed wt's CUR TIP, read via the ONE wtlog reader.
+  const cur = wtlog.open(src).curTip();
+  if (!cur || !cur.sha)
+    throw "PATCHFAIL: source tree '" + shape.tree + "' has no cur tip";
+  //  PATCH-010: LOCAL-store gate — a tip our shard lacks is the cross-store
+  //  case; the download-first leg is PATCH-011, refuse loudly until it lands.
+  if (!reader.getObject(cur.sha))
+    throw "PATCHFAIL: source tip " + cur.sha +
+          " is not in the local store (fetch leg: PATCH-011)";
+  return patchscope.resolveTree(cur.sha, cur.branch, wtl, reader);
+}
+
 //  JAB-004: the run core (plain entry + the sub re-entry share it).  Resolves
 //  its OWN (ours,theirs,fork) triple: the central seed no longer pins it, so
 //  here we open the store reader + wtlog and call patchscope.resolve ourselves
@@ -279,7 +304,7 @@ function patchRun(ctx) {
   //  seed (resolve.seed no longer pins ctx.triple), so PATCH pins its OWN triple
   //  from its commit arg via patchscope.resolve over the same wtl + reader.  A
   //  sub re-entry supplies ctx.triple directly (the advanced sub pins).
-  const sc = ctx.triple || patchscope.resolve(ctx.arg || "", wtl, reader);
+  const sc = ctx.triple || resolveScope(ctx.arg || "", wtl, reader);
   if (!sc) throw "PATCHFAIL: a patch URI is required (`?<br>` | `?<br>!` | `#<sha>`)";
 
   //  Build the three tree maps; the union of their paths is the walk set.
