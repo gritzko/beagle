@@ -148,6 +148,8 @@ function isMeta(rel) {
   return false;
 }
 
+function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
+
 function readFileText(path) {
   try {
     //  io.mmap RO maps the whole file as DATA (FILEMapRO); .data() is
@@ -176,6 +178,10 @@ function load(wtRoot) {
     const text = readFileText(join(cur, ".gitignore"));
     sets.push({ pats: text == null ? [] : parseSet(text), prefix: prefix });
 
+    //  a .gitignore has effect only INSIDE its own repo: stop at the first
+    //  `.git`/`.be` boundary, or an enclosing repo swallows the wt (hive cells).
+    if (statKind(join(cur, ".be")) !== undefined ||
+        statKind(join(cur, ".git")) !== undefined) break;
     if (home && cur === home) break;
     if (cur.length <= 1) break;     // "/" reached
     const up = dirname(cur);
