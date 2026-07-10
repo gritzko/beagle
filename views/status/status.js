@@ -453,7 +453,12 @@ function computeDivergence(k, log, cur) {
 //  Mirrors SNIFFSubIsMount: only a mounted sub is classified/recursed.
 function isMount(wtRoot, subpath) {
   const p = wtpath(wtRoot, subpath + "/.be");
-  try { return io.stat(p).kind === "reg"; } catch (e) { return false; }
+  //  SUBS-049: the `.be` FILE form OR a PRIMARY nested wt (`.be` DIR + wtlog),
+  //  mirroring be.find's anchor — parity with the FILE-anchored sub in status.
+  let k; try { k = io.stat(p).kind; } catch (e) { return false; }
+  if (k === "reg") return true;
+  if (k !== "dir") return false;
+  try { return io.stat(p + "/wtlog").kind === "reg"; } catch (e) { return false; }
 }
 
 //  `childWt` relative to `topWt` — the sub's display-path prefix (JAB-004),

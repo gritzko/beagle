@@ -40,7 +40,13 @@ function isMount(wtRoot, subpath) {
   try { base = wtpath(wtRoot, subpath); } catch (e) { return false; }
   try { if (io.lstat(base).kind === "lnk") return false; } catch (e) {}
   const p = base + "/.be";
-  try { return io.stat(p).kind === "reg"; } catch (e) { return false; }
+  //  SUBS-049: mount = the `.be` FILE form OR a PRIMARY nested wt (a `.be` DIR
+  //  holding a wtlog reg file, what a green-field remote-get plants) — mirror
+  //  be.find's primary-anchor rule so a DIR-anchored declared sub delegates.
+  let k; try { k = io.stat(p).kind; } catch (e) { return false; }
+  if (k === "reg") return true;
+  if (k !== "dir") return false;
+  try { return io.stat(p + "/wtlog").kind === "reg"; } catch (e) { return false; }
 }
 
 //  Parse `<wt>/.gitmodules` → declared submodule `path` values in FILE order

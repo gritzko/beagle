@@ -469,6 +469,10 @@ function subMountPrefix(repo, rel) {
     pfx = pfx ? pfx + "/" + segs[i] : segs[i];
     if (recurse.isMount(repo.wt, pfx)) return pfx;
   }
+  //  SUBS-049: also probe the FULL path so `put <sub>` (no trailing slash, dir
+  //  arg) delegates into the sub; isMount is false for a file arg (no `<f>/.be`),
+  //  so file-args keep the leaf-stage path.
+  if (recurse.isMount(repo.wt, rel)) return rel;
   return "";
 }
 

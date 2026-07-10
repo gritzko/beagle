@@ -48,7 +48,10 @@ function lstatKind(p) { try { return io.lstat(p).kind; } catch (e) { return unde
 //  is never a mount.  Mirror SNIFFSubIsMount's NOFOLLOW guard.
 function isMountAt(subWt) {
   if (lstatKind(subWt) === "lnk") return false;
-  return isFile(wtpath(subWt, ".be"));
+  const p = wtpath(subWt, ".be");
+  //  SUBS-049: `.be` FILE OR a PRIMARY nested wt (`.be` DIR + wtlog), mirroring
+  //  be.find's anchor — parity with the FILE-anchored sub.
+  return isFile(p) || (statKind(p) === "dir" && isFile(wtpath(subWt, ".be/wtlog")));
 }
 
 function libDir() {

@@ -89,7 +89,10 @@ function wtScan(wtRoot, ignore) {
     const full = wtpath(wtRoot, dirRel);
     if (statKind(join(full, ".git")) !== undefined) { nestedPrefixes.push(dirRel + "/"); continue; }
     const beKind = statKind(join(full, ".be"));
-    if (beKind === "reg") nestedPrefixes.push(dirRel + "/");
+    //  SUBS-049: a PRIMARY nested wt (`.be` DIR holding wtlog, a green-field
+    //  remote-get clone) is a repo boundary too — not only the `.be` FILE form.
+    if (beKind === "reg" || (beKind === "dir" &&
+        statKind(join(full, ".be/wtlog")) === "reg")) nestedPrefixes.push(dirRel + "/");
   }
   function underNested(rel) {
     for (const p of nestedPrefixes) if (rel === p.slice(0, -1) || rel.indexOf(p) === 0) return true;
