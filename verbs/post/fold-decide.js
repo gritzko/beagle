@@ -152,7 +152,7 @@ function decide(be, wtlogReader, storeReader, narrow) {
       case "rmv":          // move source: drop the old path from the tree
         unlink(r.path);
         break;
-      case "mod": case "pat": case "mrg": case "cnf":
+      case "mod": case "pat": case "mrg": case "con":
         //  Tracked + content-modified (incl. a patch-derived merge): selective
         //  keeps baseline, implicit (commit-all) rewrites the wt content.
         if (anyPd) keep(r.path, r.mode || baseMode(base, r.path), r.oldSha);

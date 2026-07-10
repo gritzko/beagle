@@ -44,8 +44,21 @@ const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/u
 const wtpath = require("../core/discover.js").wtpath;
 const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");           // DIS-057: ronStepMs (ms-correct band)
+const conflict = require("./conflict.js");   // STATUS-005: hasConflictMarker (POST-017 scan)
+const wtread = require("./wtread.js");        // STATUS-005: the ONE reg-file wt read
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
+
+//  STATUS-005: live marker-triple scan; a con row + this = the `con` bucket,
+//  markers gone → plain mod (resolution is detected, never recorded).
+function wtHasMarker(wtRoot, rel) {
+  const full = wtpath(wtRoot, rel);
+  let st;
+  try { st = io.lstat(full); } catch (e) { return false; }
+  if (st.kind !== "reg" || !st.size) return false;
+  const bytes = wtread.readFileBytes(full, st.size);
+  return bytes != null && conflict.hasConflictMarker(bytes);
+}
 
 //  --- wt scan ----------------------------------------------------------
 //  Walk the worktree depth-first via io.readdir({recursive}), lstat each
@@ -246,6 +259,10 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   //  theirs tree (later rows win on a path collision — newest absorb).  Empty
   //  when no patch row is in scope, so the whole axis is a no-op otherwise.
   const pstamps = patchStamps(wtlogReader);
+  //  STATUS-005: durable con rows; a named path with LIVE markers is `con` —
+  //  verb-agnostic, mtime-proof, unlike the DIS-057 band a get never earns.
+  const conSet = (wtlogReader && typeof wtlogReader.conPaths === "function")
+        ? wtlogReader.conPaths() : new Set();
   const theirs = {};
   if (typeof wtlogReader.patchTheirs === "function") {
     for (const tsha of wtlogReader.patchTheirs()) {
@@ -283,8 +300,10 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   const subPrefixes = [];
   function underSub(p) { for (const s of subPrefixes) if (p.indexOf(s) === 0) return true; return false; }
 
+  //  STATUS-005: ONE visible conflict name — the DIS-057 `cnf` band outcome
+  //  is translated to `con` at the push sites (patchStamps keeps `cnf`).
   const counts = { ok: 0, put: 0, new: 0, mov: 0, rmv: 0, pat: 0, mrg: 0,
-                   cnf: 0, mod: 0, del: 0, mis: 0, unk: 0 };
+                   con: 0, mod: 0, del: 0, mis: 0, unk: 0 };
   const rows = [];
   const gitlinks = [];   // base-only gitlinks → JS-033 SUBSDirty (status only)
   //  `ok` is count-only for STATUS (a clean file would flood the output), but
@@ -356,6 +375,16 @@ function classifyMerge(be, wtlogReader, reader, opts) {
     const inBase = !!b, onDisk = !!w;
     const t = theirs[path];
     const pStamp = w ? pstamps[(w.ts || 0n).toString()] : undefined;
+    //  STATUS-005: con row + live markers → `con`, winning over mod/pat/mrg;
+    //  markers gone → fall through, resolution degrades to mod.
+    if (onDisk && conSet.has(path) && wtHasMarker(wtRoot, path)) {
+      push({ bucket: "con", path: path, ts: w.ts, kind: w.kind,
+             oldSha: b ? b.sha : undefined, onDisk: true, inBase: inBase });
+      continue;
+    }
+    //  DIS-057's stamp band spells a conflict `cnf`; STATUS-005 folds it into the
+    //  single visible `con` name (patchStamps still returns `cnf` internally).
+    const pStampCon = pStamp === "cnf" ? "con" : pStamp;
     if (onDisk && !inBase) {
       //  wt-only.  A move destination already has its `mov` row (emitted from
       //  the source's put), so SUPPRESS its standalone wt-only row here.
@@ -364,7 +393,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       //  pat/mrg/cnf from the stamp band, carrying theirs' sha/mode as the
       //  resolved content (post commits it; ours-base has no oldSha here).
       if (pStamp && t) {
-        push({ bucket: pStamp, path: path, ts: w.ts, kind: w.kind,
+        push({ bucket: pStampCon, path: path, ts: w.ts, kind: w.kind,
                onDisk: true, inBase: false });
         continue;
       }
@@ -381,7 +410,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       //  its stamp-offset bucket (pat/mrg/cnf).  The "modified?" test is against
       //  OURS (b.sha) now — so a clean take-theirs (wt == theirs != ours) is
       //  modified-vs-ours and surfaces `pat`, no longer collapsing to `ok`.
-      const pb = pStamp;
+      const pb = pStampCon;
       const eqBase = wtEqBase(wtRoot, path, b.sha);
       if (pb && !eqBase) {
         push({ bucket: pb, path: path, ts: w.ts, kind: w.kind,

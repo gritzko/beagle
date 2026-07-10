@@ -50,8 +50,10 @@ const wtpath = discover.wtpath;
 //  PAIR — `rmv` (the absent-in-wt source) renders just BEFORE `mov` (the
 //  present-in-wt dest) so the pair reads `rmv src` then `mov dst`, two plain
 //  `<bucket> <path>` rows; the old collapse to one `mov src#dst` row is gone.
-const ROW_ORDER = ["put", "new", "rmv", "mov", "mod", "pat", "mrg", "cnf", "adv", "del", "mis", "unk"];
-const SUMMARY_ORDER = ["ok", "put", "new", "rmv", "mov", "mod", "pat", "mrg", "cnf", "adv", "del", "mis", "unk"];
+//  STATUS-005: visible conflict bucket is `con` (durable row + live marker
+//  scan); classify translates the DIS-057 `cnf` band outcome to `con` too.
+const ROW_ORDER = ["put", "new", "rmv", "mov", "mod", "pat", "mrg", "con", "adv", "del", "mis", "unk"];
+const SUMMARY_ORDER = ["ok", "put", "new", "rmv", "mov", "mod", "pat", "mrg", "con", "adv", "del", "mis", "unk"];
 
 //  BRO-006 / DIS-057: per-bucket `U`-tag nav target — `diff:<path>` (a wt-vs-
 //  base diff) when a baseline EXISTS for the path, else `cat:<path>` (no base to
@@ -67,7 +69,7 @@ const SUMMARY_ORDER = ["ok", "put", "new", "rmv", "mov", "mod", "pat", "mrg", "c
 //    cat:  — no base / new content           (new, unk, mov, adv)
 //  `adv` (a submodule gitlink-bump row) keeps its prior `cat:` nav.
 const NAV_DIFF = {
-  mod: 1, put: 1, pat: 1, mrg: 1, cnf: 1,   // base present, content differs
+  mod: 1, put: 1, pat: 1, mrg: 1, con: 1,   // base present, content differs
   rmv: 1, del: 1, mis: 1,                    // base present, gone/removed → deletion diff
 };
 

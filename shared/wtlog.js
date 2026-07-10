@@ -29,7 +29,7 @@ const ulog = require("./ulog.js");
 const isFullSha = shalib.isFullSha;
 
 const GET = "get", POST = "post", PATCH = "patch",
-      PUT = "put", DEL = "delete", REPO = "repo";
+      PUT = "put", DEL = "delete", REPO = "repo", CON = "con";   // STATUS-005: con
 
 //  DOGQueryStripProject: `?/<project>/<branch>` → `<branch>`;
 //  `?/<project>` → ""; `?<branch>` (no leading /) → unchanged.
@@ -226,6 +226,18 @@ function open(be) {
         if (ref.sha && isFullSha(ref.sha)) out.push(ref.sha);
       }
       return out;
+    },
+
+    //  STATUS-005: paths named by durable `con <path>` rows (a merge left
+    //  markers there); append-only — status re-scans wt bytes for liveness.
+    conPaths: function () {
+      const s = new Set();
+      for (const r of rows) {
+        if (r.verb !== CON) continue;
+        const p = (r.uri && r.uri.path) || "";
+        if (p) s.add(p);
+      }
+      return s;
     },
 
     //  eachPutDelete(floorTs, cb): every put/delete row with ts strictly

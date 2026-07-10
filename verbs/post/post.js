@@ -628,11 +628,15 @@ function postOne(info, ctx, row) {
   //  5. Conflict pre-scan (POST-017): a tracked `add` carrying a complete
   //  WEAVE conflict triple aborts before any store write.  `--force` skips.
   if (!force) {
+    //  STATUS-005: name the durable `con` row when the marker'd file was recorded
+    //  by a get/patch merge (the refusal is otherwise unchanged — POST-017).
+    const conRows = (typeof wtl.conPaths === "function") ? wtl.conPaths() : new Set();
     for (const d of dres.decisions) {
       if (d.verb !== "add") continue;
       const bytes = commitM.readAddBytes(info.wt, d);
       if (bytes && conflict.hasConflictMarker(bytes))
         throw "POSTCFLCT: conflict marker in tracked file " + d.path +
+              (conRows.has(d.path) ? " (recorded `con` row)" : "") +
               " (re-run with --force to override)";
     }
   }

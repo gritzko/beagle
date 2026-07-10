@@ -88,7 +88,7 @@ const VERB_SLOT = {
   pat: "C",                                              // DIS-057: native summary tag (SNIFF.exe.c:421) — bold
   mod: "E",                                              // C ULOG.c:1201 — yellow
   del: "X",                                              // C ULOG.c:1206 — brown
-  mis: "M", miss: "M", cnf: "M", modl: "M", conflict: "M",  // C ULOG.c:1207-1231 — bright red (cnf≡conf)
+  mis: "M", miss: "M", cnf: "M", con: "M", modl: "M", conflict: "M",  // C ULOG.c:1207-1231 — bright red (STATUS-005 con / DIS-057 cnf ≡ conf)
   unk: "Q", dir: "Q", dirty: "Q",                        // C ULOG.c:1210/1214/1220 — grey
   mrg: "Z", merged: "Z",                                 // C ULOG.c:1211/1218 — magenta
   hunk: "B", eq: "D",                                    // C ULOG.c:1213/1212

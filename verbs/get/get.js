@@ -190,7 +190,7 @@ function seedLocal(rem, wt) {
   const tipRow = { verb: "get", uri: URI.make(undefined, undefined, undefined, rem.branch || "", tip) };
   if (fresh) writeWtlog(bePath, [{ verb: "get", uri: redirect }, tipRow]);
   else appendWtlog(bePath, [tipRow]);
-  return { k, tip, oldTip, fresh, branch: rem.branch || "" };
+  return { k, tip, oldTip, fresh, branch: rem.branch || "", bePath };   // STATUS-005: con-row target
 }
 
 //  D1/D2 short- or full-hex commit pin → 40-hex sha, or "" when none/unfound.
@@ -225,7 +225,8 @@ function seedRemote(rem, wt) {
     writeWtlog(join(beDir, "wtlog"),
                [{ verb: "get", uri: anchor },
                 { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip) }]);
-    return { k: store.open(wt, proj), tip, oldTip: "", fresh: true, branch };
+    return { k: store.open(wt, proj), tip, oldTip: "", fresh: true, branch,
+             bePath: join(beDir, "wtlog") };   // STATUS-005: con-row target
   }
   //  UPDATE: the anchor's own store/shard (the project is the wt's identity,
   //  never the `?/proj` guess); reader opened AFTER the pack lands.
@@ -234,7 +235,7 @@ function seedRemote(rem, wt) {
   ingest.add(f.pack, shard, rem.raw, tip);
   appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip) }]);
   const k = store.open(info.storePath, info.project);
-  return { k, tip, oldTip, fresh: false, branch };
+  return { k, tip, oldTip, fresh: false, branch, bePath: info.bePath };   // STATUS-005
 }
 
 //  --- per-level tree map: name → { sha, mode, isDir } --------------------
@@ -367,6 +368,9 @@ function fanoutWholeTree(ctx, r, wt, force) {
   ctx._get = { k: r.k, wt: wt, tip: r.tip, oldTip: r.oldTip, fresh: r.fresh,
                branch: r.branch, ts: ctx.T0, kinds: {}, dels: 0, rows: [], head: null,
                force: !!force, noPrune: noPrune,
+               //  STATUS-005: the wtlog to append durable `con <path>` rows to when
+               //  a weave leaf writes conflict markers (append-only, verb-agnostic).
+               bePath: r.bePath || join(wt, ".be"),
                //  DIS-058 D2-D5: the parent's source (for the same-source child
                //  fetch) + the store dir where sibling sub shards land + the
                //  parent shard title (the synthetic-branch parent token).
@@ -476,7 +480,7 @@ function inRepoSeed(uri, ctx) {
     appendWtlog(info.bePath, [{ verb: "get",
                                uri: URI.make(undefined, undefined, undefined, curBranch, anc) }]);
     return fanoutWholeTree(ctx, { k, tip: anc, oldTip: curSha, fresh: false,
-                                  branch: curBranch }, wt, force);
+                                  branch: curBranch, bePath: info.bePath }, wt, force);
   }
 
   //  D2 detach: `?<sha>` (bare hex query, no fragment) — checkout detached, write
@@ -488,7 +492,7 @@ function inRepoSeed(uri, ctx) {
     if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query;
     appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, tip, undefined) }]);
     return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
-                                  branch: "" }, wt, force);
+                                  branch: "", bePath: info.bePath }, wt, force);
   }
 
   //  D1 pin: `?#<sha>` / `?br#<sha>` — checkout the EXACT commit, attached to
@@ -498,7 +502,7 @@ function inRepoSeed(uri, ctx) {
     if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query + "#" + frag;
     appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, query, tip) }]);
     return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
-                                  branch: query }, wt, force);
+                                  branch: query, bePath: info.bePath }, wt, force);
   }
 
   //  D3' branch/trunk switch (`?br`, `?`, `?./child`) OR a bare `!`/empty FF
@@ -514,7 +518,7 @@ function inRepoSeed(uri, ctx) {
     throw "be get: cannot resolve " + (branch ? "?" + branch : "current branch");
   appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, wantBranch, tip) }]);
   return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
-                                branch: wantBranch }, wt, force);
+                                branch: wantBranch, bePath: info.bePath }, wt, force);
 }
 
 //  D4 single-file / subtree restore (GET.mkd pt 1, CLI `file.c` / `file.c?feat`).
@@ -781,7 +785,10 @@ function leaf(row, ctx) {
       checkout.materialise(g.wt, rel, { kind: kind }, merged);
       if (conflict.hasConflictMarker(merged)) {
         g.conf = (g.conf || 0) + 1;
-        out.row(rel, "cnf", g.ts);   // DIS-057: conf→cnf
+        out.row(rel, "con", g.ts);   // STATUS-005: con (was DIS-057 cnf)
+        //  STATUS-005: durable `con <path>` row (append-only, like `put`) so
+        //  the conflict survives the get's exit + mtime churn for status.
+        try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
 
         //  D5: defer a loud non-zero exit until every file is materialised — the
         //  CONFMARK sentinel dispatches after all tail-appended leaves.

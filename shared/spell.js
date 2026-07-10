@@ -96,8 +96,8 @@ function compose(ctxUri, verbFallback, spell, isVerb) {
   let verb = verbFallback || "", verbCall = false;
   //  Peel a leading bareword verb — but with an isVerb probe, only a REAL verb
   //  (else `verbs` in an `ls` view shadows the path retarget → a stray 2nd hunk).
-  if (items.length && !items[0].q && /^[a-zA-Z][a-zA-Z0-9]*$/.test(items[0].tok) &&
-      (!isVerb || isVerb(items[0].tok)))
+  if (items.length && !items[0].q && /^[a-zA-Z][a-zA-Z0-9]*!?$/.test(items[0].tok) &&
+      (!isVerb || isVerb(items[0].tok.replace(/!$/, ""))))
     { verb = items.shift().tok; verbCall = true; }
   //  BE-039: a VERB word-call keeps args RAW (no arg0 ctx-merge) — the context travels
   //  as CONTEXT (threaded via driveSpell); a slot-edit (no verb) keeps the merge (nav).

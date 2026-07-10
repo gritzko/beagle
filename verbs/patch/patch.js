@@ -205,7 +205,8 @@ function mergeApply(rc, path, oLeaf) {
   const leaf = oLeaf || { kind: "f" };
   writeBytes(rc, path, leaf, merged);
   if (conflict.hasConflictMarker(merged)) {
-    rc.st.mergedConflict++; emit(rc, "cnf", path);   // DIS-057: conf→cnf
+    rc.st.mergedConflict++; emit(rc, "con", path);   // STATUS-005: con (was DIS-057 cnf)
+    rc.conflicts.push(path);                         // STATUS-005: durable con row target
   } else { rc.st.merged++; emit(rc, "merged", path); }
 }
 
@@ -354,7 +355,7 @@ function patchRun(ctx) {
                ours: sc.ours, theirs: sc.theirs,
                treeCache: treeCache, weaveCap: 1 << 16,
                outBuf: io.buf(1 << 20), aliveBuf: io.buf(1 << 20),
-               wrote: [], rows: [], subJobs: [] };
+               wrote: [], rows: [], subJobs: [], conflicts: [] };  // STATUS-005: con paths
 
   //  FAN-OUT: each path is an independent per-file weave LEAF (classifyAndApply)
   //  given the pinned triple; the verdicts fold into the shared counters below.
@@ -403,9 +404,17 @@ function patchRun(ctx) {
   for (const p of rc.wrote) {
     let stamp = ulog.ronStepMs(ts, -2);              // pat (clean apply) = base
     if (statusOf[p] === "merged") stamp = ulog.ronStepMs(ts, -1);  // mrg
-    else if (statusOf[p] === "cnf") stamp = ts;       // cnf
+    else if (statusOf[p] === "con") stamp = ts;       // con (was DIS-057 cnf)
     try { io.setMtime(wtpath(info.wt, p), stamp); } catch (e) {}   // BE-011
   }
+
+  //  STATUS-005: durable `con <path>` row per conflicted file (append-only,
+  //  like `put`) — survives mtime churn, unlike the fragile stamp band above.
+  if (rc.conflicts.length)
+    ulog.append(info.bePath,
+                rc.conflicts.map(function (p) {
+                  return { verb: "con", uri: URI.make(undefined, undefined, p) };
+                }));
 
   emitBanner(ctx, sc, rc.rows, ts);
 }
