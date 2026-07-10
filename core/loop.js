@@ -115,6 +115,14 @@ function _isVerb(w, here) {
   return registry.verbFile(w) !== null;
 }
 
+//  BE-041: a word is a MUTATION verb iff its handler lives in the verbs/ tree
+//  (put/post/delete/get/patch/done…), never views/.  The pager's act-button
+//  gate: an O-spell click on a mutation runs it and REFRESHES the current view
+//  in place (no result screen); a view spell keeps the push-nav behaviour.
+function _isMutation(w) {
+  return registry.verbFile(w, undefined, ["verbs"]) !== null;
+}
+
 //  JAB-030: the bare-URI view default (Design decision: dir -> ls:, file ->
 //  blob:/cat:).  `blob:` has no landed handler; a file falls back to the landed
 //  `cat:` syntax-hili view (gritzko: "blob: or cat: whatever"); a dir (or an
@@ -401,7 +409,8 @@ function _openPager(hunks) {
   try {
     const broh = require(_here + "/views/bro/bro.js");
     const p = new pager.Pager(fd, { color: true, driveSpell: broh.driveSpell,
-                                    isVerb: function (w) { return _isVerb(w, _here); } });
+                                    isVerb: function (w) { return _isVerb(w, _here); },
+                                    isMutation: _isMutation });
     p.setHunks(hunks);
     p.run();
   } finally { if (own) { try { io.close(fd); } catch (e) {} } }
@@ -413,5 +422,6 @@ if (typeof module !== "undefined")
   //  isVerb: the pager's composer peels a leading token as a verb ONLY if it is a
   //  real handler (else it's a wt-relative path) — the SAME probe cli() dispatches on.
   module.exports = { run: run, cli: cli,
-                     isVerb: function (w) { return _isVerb(w, _here); } };
+                     isVerb: function (w) { return _isVerb(w, _here); },
+                     isMutation: _isMutation };
 else cli(process.argv);

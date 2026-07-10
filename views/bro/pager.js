@@ -183,6 +183,7 @@ function Pager(fd, opts) {
   this.color = opts && opts.color !== undefined ? opts.color : true;
   this.driveSpell = opts && opts.driveSpell;     // (spell) -> hunks | null
   this.isVerb = opts && opts.isVerb;             // (w) -> is w a real verb handler?
+  this.isMutation = opts && opts.isMutation;     // (w) -> a verbs/-tree mutation?
   this.be = (opts && opts.be) || sessionBe();    // JAB-003: {cwd, wt_root, repo}
   this.view = null;                              // { hunks, rows, scroll, cols }
   this.stack = [];                               // JAB-030: the view BACK-stack
@@ -855,6 +856,21 @@ Pager.prototype._refresh = function () {
   } catch (e) { this.message = "err: " + String(e); }
 };
 
+//  BE-041: run a MUTATION button spell (`put <path>`, `delete <path>` — an O
+//  click-target on a status row): drive it, DROP its result hunks (no push, no
+//  back-stack entry), then _refresh re-renders the current view in place so
+//  the clicked row re-buckets where the user is looking.
+Pager.prototype._actSpell = function (spell) {
+  try {
+    const s = this._resolveSpell(spell);
+    if (!s) return;
+    if (this.driveSpell) this.driveSpell(s);
+    this._refresh();
+    //  show WHAT ran instead of _refresh's "refreshed"; keep its error if any
+    if (this.message === "refreshed") this.message = s;
+  } catch (e) { this.message = "err: " + String(e); }
+};
+
 //  JAB-030: FOLLOW the URI of the hunk at display-row `ri` — its banner URI is
 //  itself a spell, so a key (Enter) or a mouse click on a URI row runs it via
 //  driveSpell and PUSHES the result.  Reuses _runSpell (resolve + drive + push).
@@ -941,7 +957,15 @@ Pager.prototype._mouse = function (seq, press) {
   const hit = this._screenToByte(row, col);
   if (hit) {
     const target = this._uriAt(hit.hunk, hit.off);
-    if (target) { this._runSpell(target); return; }
+    //  BE-041: a click spell whose verb MUTATES (verbs/-tree: put/delete/…)
+    //  shows no result screen — run it, then re-render the current view in
+    //  place; a view spell (diff:/cat:/commit …) keeps the push-nav.
+    if (target) {
+      if (this.isMutation && this.isMutation(this._splitSpell(target).verb))
+        this._actSpell(target);
+      else this._runSpell(target);
+      return;
+    }
   }
   this._followRow(this.view.scroll + (row - 1));   // 1-based screen row → index
 };

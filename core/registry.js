@@ -61,11 +61,13 @@ function build(verbs, requireFn) {
 //  `html/be` for publication) supplies its OWN verbs while core/shared still
 //  load from the parent be/ the loop launched from.  Returns the abs path or
 //  null.  Distinct from JAB-030's `_here` probe, which sees one root only.
-function verbFile(w, startDir) {
+//  BE-041: an optional `dirs` narrows the scan to one tree — ["verbs"] probes
+//  the MUTATING verbs only (the pager's act-button gate), default both.
+function verbFile(w, startDir, dirs) {
   let dir = startDir || io.cwd();
   const home = io.getenv("HOME");
   for (;;) {
-    for (const d of ["verbs", "views"]) {
+    for (const d of dirs || ["verbs", "views"]) {
       const p = dir + "/be/" + d + "/" + w + "/" + w + ".js";
       try { if (io.stat(p)) return p; }
       catch (e) {}                            // ENOENT — keep climbing

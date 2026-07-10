@@ -70,6 +70,14 @@ const NAV_DIFF = {
   rmv: 1, del: 1, mis: 1,                    // base present, gone/removed → deletion diff
 };
 
+//  BE-041: the buckets whose rows carry a pager-only action button (a visible
+//  label + a hidden `O` click spell).  `mod`/`unk` want staging → `[put]`;
+//  `mis` (gone from disk) wants unstaging → `[del]` (the delete verb).
+//  Already-staged rows (`put`, `new`) need no button — clicking [put] on them
+//  would be a no-op re-stage.
+const ACT_PUT = { unk: 1, mod: 1 };
+const ACT_DEL = { mis: 1 };
+
 //  JSQUE-008: `be status` as a loop HANDLER.  Converted from a `main();`
 //  one-shot to `module.exports = handle(row, ctx)` — the wt path rides the ROW
 //  (row.uri), seed-pinned flags ride ctx.flags, output goes through `ctx.out`
@@ -197,17 +205,21 @@ function sinkOut(sink) {
     },
     //  One columnar row `<date7> <verb3> <path>\n`; per-file rows append a
     //  hidden `U`-tag nav target (`nav`) after the "\n".
-    row: function (text, verb, ts, _tag, nav) {
+    //  BE-041: an actionable row (`act` = {label, tag, spell}) grows a pager-
+    //  only trailing button — path, U nav (ADJACENT: the token-precise path
+    //  click), sep, the visible label (verb palette slot), the hidden `O`
+    //  click spell, then the "\n".
+    row: function (text, verb, ts, _tag, nav, act) {
       const date = render.dateCol(ts == null ? 0n : ts);
       const vcol = render.verbCol(verb);
-      const line = date + " " + vcol + " " + text + "\n";
+      const line = date + " " + vcol + " " + text + (act ? "" : "\n");
       const lineB = utf8.Encode(line);
       feedText(lineB);
       const eDate = off - lineB.length + utf8.Encode(date).length;
       const eSep1 = eDate + 1;
       const eVerb = eSep1 + utf8.Encode(vcol).length;
       const eSep2 = eVerb + 1;
-      const eNL   = off;          // path incl "\n" ends the visible row
+      const eNL   = off;          // path (+ "\n" on a button-less row) ends here
       const vtag  = theme.VERB_SLOT[verb] || "S";
       spans.push(["L", eDate]);   // date column
       spans.push(["S", eSep1]);   // sep
@@ -215,6 +227,12 @@ function sinkOut(sink) {
       spans.push(["S", eSep2]);   // sep
       spans.push(["S", eNL]);     // path incl "\n" (status path tag = 'S')
       if (nav) { feedText(utf8.Encode(nav)); spans.push(["U", off]); }  // hidden nav
+      if (act) {
+        feedText(utf8.Encode(" "));         spans.push(["S", off]);       // sep
+        feedText(utf8.Encode(act.label));   spans.push([act.tag, off]);   // visible label
+        feedText(utf8.Encode(act.spell));   spans.push(["O", off]);       // hidden click spell
+        feedText(utf8.Encode("\n"));        spans.push(["S", off]);
+      }
     },
     done: flush,
   };
@@ -324,7 +342,15 @@ function emitRepo(repo, prefix, out, recurse) {
       //  rows), each nav targeting its OWN path — the move-row nav restored.
       const navPath = joinPrefix(prefix, r.path);
       const nav = navlib.navLink(NAV_DIFF[r.bucket] ? "diff" : "cat", navPath);
-      out.row(navPath, bucket, r.ts, null, nav);
+      //  BE-041: actionable buckets carry a button (hidden O spell): mod/unk →
+      //  [put] (stage it), mis → [del] (the delete verb, unstage the gone file);
+      //  already-staged put/new rows carry none.  The label paints in the
+      //  matching verb palette slot (Y = put blue, X = del brown).  The arg
+      //  stays RAW wt-relative — no navLink/authority (BE-039 ruling).
+      const act = ACT_PUT[bucket] ? { label: "[put]", tag: "Y", spell: "put " + navPath }
+                : ACT_DEL[bucket] ? { label: "[del]", tag: "X", spell: "delete " + navPath }
+                : null;
+      out.row(navPath, bucket, r.ts, null, nav, act);
     }
   }
 
