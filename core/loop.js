@@ -194,6 +194,24 @@ function authorityRepo(args) {
   return null;
 }
 
+//  BE-039: resolve a threaded NAV CONTEXT (`//name[/sub]`, opts2.context from the pager
+//  reentry) to its anchored repo + authority — the SAME wtdir→find scope authorityRepo
+//  does for an explicit operand, but read from the CONTEXT (never an arg) and NON-FATAL
+//  on a miss (an ambient scope → fall back to cwd).  The context has NO arg path baked
+//  in, so find lands on the tree TOP (or nav'd sub); each RAW arg descends a mount ITSELF.
+function contextRepo(ctxUri) {
+  let u; try { u = uri._parse(ctxUri || ""); } catch (e) { return null; }
+  if (u.authority === undefined) return null;            // not a `//` nav scope
+  if (u.scheme && TRANSPORT[u.scheme]) return null;      // a transport, not nav
+  const host = u.host || "";
+  const navStr = uri._make(undefined, u.authority, u.path, undefined, undefined) || ("//" + host);
+  let dir; try { dir = be.wtdir(navStr); } catch (e) { return null; }   // NAVESCAPE → miss
+  if (!dir) return null;
+  let repo; try { repo = be.find(dir); } catch (e) { return null; }
+  if (!repo) return null;
+  return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host };
+}
+
 //  --- JSQUE-008: the canonical CLI entry (argv -> seed -> run -> flush) ---
 //  The SHARED integrated entry every later verb reuses: argv lowers to a verb +
 //  positional args + flags; the repo + its ambient coordinates are pinned ONCE
@@ -316,9 +334,13 @@ function _cli(argv, opts2) {
   //  scopes the WHOLE spell to that tree + exposes `be.authority` (the `//name`)
   //  so converted verbs emit full-URI hunks; any other arg keeps the cwd repo.
   //  A repo-less cwd is swallowed (be.repo=null).
-  const nav = authorityRepo(args);
+  let nav = authorityRepo(args);
   let authority = "";
   if (nav) { repo = nav.repo; authority = nav.authority; }
+  //  BE-039: no explicit `//authority` operand — scope the run to the NAV CONTEXT
+  //  threaded from the pager (opts2.context) so RAW args resolve wt-relative to it
+  //  (put/delete descend a mount per-arg); a miss / plain CLI falls to cwd — unchanged.
+  else if (opts2.context && (nav = contextRepo(opts2.context))) { repo = nav.repo; authority = nav.authority; }
   else try { repo = be.find(); } catch (e) { /* repo-less verb reads be.repo=null */ }
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
            verb: verb, authority: authority });

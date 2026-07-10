@@ -86,7 +86,10 @@ function spellCall(spell) {
 //  scheme) lowers to bro's own file hunk; a `<verb>:<uri>` re-enters loop.cli.
 //  The outer loop owns argv[1]=loop.js, so the re-entrant cli's require-scan and
 //  queue path resolve correctly (sequential re-entry, JAB-004 recursion).
-function driveSpell(spell) {
+//  BE-039: `context` (optional, `//name`) is the nav scope for a VERB word-call — it
+//  rides the reentry opts (loop.cli opts2.context), NOT an arg, so the verb resolves
+//  each RAW arg against it; a slot-edit / bare-path drive passes none (cwd repo).
+function driveSpell(spell, context) {
   //  JAB-003: a `verb param` / `verb(a,b)` CALL splits to a proper argv; null →
   //  a bare path / scheme:uri → the legacy single-token file/loop drive below.
   const call = spellCall(spell);
@@ -114,7 +117,9 @@ function driveSpell(spell) {
   //  unlink crash is gone); opts2.reentry only marks it so no nested pager opens.
   const argv = call ? ["jab", "loop.js"].concat(call, ["--tlv"])
                     : ["jab", "loop.js", spell, "--tlv"];
-  try { loop.cli(argv, { reentry: true }); }
+  //  BE-039: thread the nav context as CONTEXT (opts2.context) so the verb scopes
+  //  its RAW args to that tree — the pager never bakes it into an arg's spelling.
+  try { loop.cli(argv, { reentry: true, context: context || undefined }); }
   finally { io.writeAll = orig; }
   let total = 0; for (const c of chunks) total += c.length;
   const tlv = new Uint8Array(total);

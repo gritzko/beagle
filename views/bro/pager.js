@@ -715,14 +715,18 @@ Pager.prototype._applySpell = function (cmd) {
   const s = (cmd || "").trim();
   if (!s) return;
   const c = this._composeCall(s);
-  this._driveApply(this._buildSpell(c), c.verb, c.arg0);
+  //  BE-039: hand the verb the context AS CONTEXT (c.context, via driveSpell) + args
+  //  RAW; a verb-call does not navigate, so TRACK the nav context (not arg0's path) as
+  //  the view URI.  A slot-edit has context "" → track the merged arg0 (unchanged).
+  this._driveApply(this._buildSpell(c), c.verb, c.context || c.arg0, c.context);
 };
 
 //  DIS-060: drive a resolved spell + track the view's (verb, uri).  Shared by the
 //  slot-edit path (a recomposed URI) and the message-call path (a raw spell).
-Pager.prototype._driveApply = function (spell, verb, uri) {
+//  BE-039: `context` (the nav scope) rides through to the verb; "" for a slot-edit.
+Pager.prototype._driveApply = function (spell, verb, uri, context) {
   try {
-    const hunks = this.driveSpell ? this.driveSpell(spell) : null;
+    const hunks = this.driveSpell ? this.driveSpell(spell, context) : null;
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + spell; return; }
     this.pushView(hunks);
     this.view.verb = verb;

@@ -93,14 +93,20 @@ function shapeArg0(ctxUri, items, bareIsUri) {
 function compose(ctxUri, verbFallback, spell, isVerb) {
   const sp = argline.shellSplit(spell || "");
   const items = sp.toks.map(function (t, i) { return { tok: t, q: !!sp.split[i] }; });
-  let verb = verbFallback || "";
+  let verb = verbFallback || "", verbCall = false;
   //  Peel a leading bareword verb — but with an isVerb probe, only a REAL verb
   //  (else `verbs` in an `ls` view shadows the path retarget → a stray 2nd hunk).
   if (items.length && !items[0].q && /^[a-zA-Z][a-zA-Z0-9]*$/.test(items[0].tok) &&
       (!isVerb || isVerb(items[0].tok)))
-    verb = items.shift().tok;
+    { verb = items.shift().tok; verbCall = true; }
+  //  BE-039: a VERB word-call keeps args RAW (no arg0 ctx-merge) — the context travels
+  //  as CONTEXT (threaded via driveSpell); a slot-edit (no verb) keeps the merge (nav).
+  if (verbCall) {
+    const rest = items.map(function (it) { return it.tok; });
+    return { verb: verb, arg0: rest.length ? rest.shift() : "", rest: rest, context: ctxUri };
+  }
   const s = shapeArg0(ctxUri, items, true);   // pager: a bareword IS a URI part
-  return { verb: verb, arg0: s.arg0, rest: s.rest };
+  return { verb: verb, arg0: s.arg0, rest: s.rest, context: "" };
 }
 
 //  compose from pre-split CLI tokens with the verb ALREADY known (loop.cli split
@@ -138,7 +144,14 @@ function bindRest(argv, isDir) {
 //  With rest: the shape-3 eval form `verb(arg0,"r1",…)` so a spaced message stays
 //  ONE argument (argline evals it back to real values).
 function buildSpell(c) {
-  if (!c.rest.length) return c.verb ? c.verb + " " + c.arg0 : c.arg0;
+  //  BE-039: arg0 "" (context now rides `context`) → the lone verb; a SPACED arg0
+  //  (a quoted message) rides the eval form so `verb arg0` is not re-split on it.
+  if (!c.rest.length) {
+    if (!c.verb) return c.arg0;
+    if (!c.arg0) return c.verb;
+    return /\s/.test(c.arg0) ? c.verb + "(" + JSON.stringify(String(c.arg0)) + ")"
+                             : c.verb + " " + c.arg0;
+  }
   const a = [c.arg0].concat(c.rest).map(function (x) { return JSON.stringify(String(x)); });
   return (c.verb || "") + "(" + a.join(",") + ")";
 }
