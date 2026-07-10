@@ -821,14 +821,18 @@ Pager.prototype._applySpell = function (cmd) {
   const g = this._globSpell(s);
   if (g === null) return;
   const c = this._composeCall(g);
-  this._driveApply(this._buildSpell(c), c.verb, c.arg0);
+  //  BE-039: hand the verb the context AS CONTEXT (c.context, via driveSpell) + args
+  //  RAW; a verb-call does not navigate, so TRACK the nav context (not arg0's path) as
+  //  the view URI.  A slot-edit has context "" → track the merged arg0 (unchanged).
+  this._driveApply(this._buildSpell(c), c.verb, c.context || c.arg0, c.context);
 };
 
 //  DIS-060: drive a resolved spell + track the view's (verb, uri).  Shared by the
 //  slot-edit path (a recomposed URI) and the message-call path (a raw spell).
-Pager.prototype._driveApply = function (spell, verb, uri) {
+//  BE-039: `context` (the nav scope) rides through to the verb; "" for a slot-edit.
+Pager.prototype._driveApply = function (spell, verb, uri, context) {
   try {
-    const hunks = this.driveSpell ? this.driveSpell(spell) : null;
+    const hunks = this.driveSpell ? this.driveSpell(spell, context) : null;
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + spell; return; }
     this.pushView(hunks);
     this.view.verb = verb;
@@ -864,7 +868,11 @@ Pager.prototype._actSpell = function (spell) {
   try {
     const s = this._resolveSpell(spell);
     if (!s) return;
-    if (this.driveSpell) this.driveSpell(s);
+    //  BE-039/BE-041: an O-spell's row paths are TOP-relative in the VIEW's tree —
+    //  thread its `//authority` (path-less) so the mutation hits the nav'd tree.
+    const vu = this._parse(this._verbUri().uri);
+    const ctx = vu.authority !== undefined ? "//" + (vu.host || "") : "";
+    if (this.driveSpell) this.driveSpell(s, ctx || undefined);
     this._refresh();
     //  show WHAT ran instead of _refresh's "refreshed"; keep its error if any
     if (this.message === "refreshed") this.message = s;

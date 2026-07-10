@@ -10,7 +10,8 @@
 
 const store = require("../../shared/store.js");
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 const pathlib = require("../../shared/util/path.js");   // BE-011: wtJoin confinement
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const bro   = require("../../view/bro.js");
@@ -149,9 +150,9 @@ function catOne(arg) {
   //  binding reads `.path`/`.query` off the scheme'd form (no strip-then-reparse).
   const first = String(arg || "");
   const u = uri._parse(first);
-  //  BE-037: canonical path slot (`./` collapse) — a `?ref` tree descend must
-  //  see the same repo-relative path as the bare form; NAVESCAPE on climb-out.
-  const path = pathlib.resolveInTree("", u.path || "");
+  //  BE-037/BE-032: canonical path slot, resolved against the CONTEXT dir (cwd /
+  //  nav sub-dir), re-anchored at the wt root; NAVESCAPE on climb-out.
+  const path = discover.argRel(repo, u.path || "");
   const ref  = (u.query && u.query.length) ? u.query : "";
   if (!path) { io.log("cat: needs a path\n  try: cat:<path>\n"); throw "CATNOPATH"; }
 

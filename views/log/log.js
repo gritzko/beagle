@@ -23,6 +23,7 @@ const wtlog  = require("../../shared/wtlog.js");
 const resolve = require("../../core/resolve.js");
 const shalib = require("../../shared/util/sha.js");
 const recurse = require("../../core/recurse.js");
+const discover = require("../../core/discover.js");   // BE-032: ctx-dir arg rebase
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const navlib = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 const ticket = require("../../shared/ticket.js"); // BRO-012: ticket-code resolver
@@ -488,6 +489,9 @@ function logOne(arg, ctx) {
   let first = String(arg || "");
   if (first.indexOf("log:") !== 0) first = "log:" + first;
   const parsed = parseArg(first);
+  //  BE-032: rebase the relative path slot against the run's CONTEXT dir (cwd /
+  //  nav'd sub-dir), re-anchored wt-root-relative; ?ref/#frag slots untouched.
+  parsed.path = discover.argRel(repo, parsed.path);
 
   //  LOG-002: `log:<sub>` / `log:<sub>/<path>` logs the SUB's own history, not
   //  the super-repo's gitlink-bump line — descend into the mount (tree/status

@@ -18,7 +18,8 @@
 
 const store   = require("../../shared/store.js");
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 const wtlog   = require("../../shared/wtlog.js");
 const shalib  = require("../../shared/util/sha.js");
 const recurse = require("../../core/recurse.js");
@@ -439,12 +440,10 @@ function parseDiffArg(k, repo, raw) {
   let u = new URI(String(raw || ""));
   if (u.scheme !== "diff")
     u = new URI(URI.make("diff", u.authority, u.path, u.query, u.fragment) || "diff:");
-  //  BE-037: canonicalize the path slot (`./` collapse, `..` resolve — NAVESCAPE
-  //  on climb-out) so tree/classifier compares see canonical repo-relative paths.
-  let path = u.path || "";
-  const dirMark = path.length > 1 && path[path.length - 1] === "/";
-  path = pathlib.resolveInTree("", path);
-  if (dirMark && path) path += "/";
+  //  BE-032: the path slot resolves against the run's CONTEXT DIR (argRel keeps
+  //  BE-037's canonical form + NAVESCAPE); the root dir-form `./` is the whole wt.
+  let path = discover.argRel(repo, u.path || "");
+  if (path === "./") path = "";
   const query = u.query || "";
   const frag = u.fragment || "";
 

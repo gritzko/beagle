@@ -13,8 +13,9 @@
 //
 //  OPEN filter (ruling 2026-07-10, header-grep): the ticket's OWN header line
 //  is the truth — `#   KEY [MARK]: title` (or `KEY: [MARK] title`).  A state
-//  mark `[DONE]`/`[WONTFIX]` closes the ticket (hidden from board + topic
-//  lists); priority marks `[CRIT]`/`[HIGH]`/`[MED]`/`[LOW]` sort a topic CRIT
+//  mark `[DONE]`/`[DONT]`/`[STALE]` closes the ticket (hidden from board +
+//  topic lists, [/meta/todo] vocabulary); priority marks
+//  `[CRIT]`/`[HIGH]`/`[MED]`/`[LOW]` sort a topic CRIT
 //  → HIGH → MED/unmarked → LOW (then numeric); an unknown mark shows and reads
 //  open/normal so the vocabulary can grow ([JS], [UMBRELLA] live already).
 //  Topic READMEs are landing pages, NEVER an index (they go stale);
@@ -138,7 +139,7 @@ function headerMark(key, title) {
   }
   return (j > i + 1 && title[j] === "]") ? title.slice(i + 1, j) : "";
 }
-const CLOSED = { DONE: true, WONTFIX: true };
+const CLOSED = { DONE: true, DONT: true, STALE: true };   // [/meta/todo] states
 const PRIO = { CRIT: 0, HIGH: 1, MED: 2, LOW: 3 };   // unmarked / unknown = 2
 
 //  List one topic dir's tickets: `KEY.<ext>` files + fat `KEY/` dirs whose key
@@ -179,7 +180,7 @@ function listTopic(dir, topic) {
 }
 
 //  RULING 2026-07-10 (header-grep): one topic's LISTING = its ticket files
-//  whose OWN header lacks a closed mark ([DONE]/[WONTFIX]).  No README index.
+//  whose OWN header lacks a closed mark ([DONE]/[DONT]/[STALE]).  No README index.
 function openTickets(dir, topic) {
   const files = listTopic(dir, topic).filter(function (t) { return !CLOSED[t.mark]; });
   return { topic: topic, tickets: files };

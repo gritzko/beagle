@@ -52,7 +52,8 @@ const ambient = require("../../shared/ambient.js");
 const pathlib = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 const join = pathlib.join;
 
 //  JSQUE-010: the `put:` banner + per-row lines now render through the emit sink
@@ -561,12 +562,17 @@ function put() {
 
 //  JAB-004: put's OWN terse 3-way (not classifyArg) — URI-arg ref-writes
 //  `?#<hex>`/`?<40hex>`/`?br`/`?br#<hex>`, `path#dst` move, else plain path.
-function classifyPutArg(arg, k, curQuery) {
+function classifyPutArg(arg, k, curQuery, repo) {
   const u = new URI(arg);
   const q = u.query || "", path = u.path || "", frag = u.fragment || "",
         auth = u.authority || "", data = u.href || "";
   const hasQ = q !== "", hasPath = path !== "", hasFrag = frag !== "",
         hasAuth = auth !== "";
+  //  BE-032: a scheme-less `//authority` rides ARG 0 only (the loop strips it) —
+  //  on a rest arg refuse loudly, never a silent wrong-tree stage (BE-033: it is
+  //  never a wire target either).
+  if (u.authority !== undefined && !u.scheme)
+    throw "NAVESCAPE: //authority on a rest arg: " + arg;
   //  Trunk reset: `?#<sha>` — empty query, hex fragment, no path/auth.
   if (!hasQ && !hasPath && !hasAuth && hasFrag && data[0] === "?" && resolve.isHexish(frag)) {
     const full = resolve.resolveHex(k, frag);
@@ -588,10 +594,15 @@ function classifyPutArg(arg, k, curQuery) {
     }
     return { kind: "ref", op: "create", branch: q };
   }
-  //  Move-form: non-empty path AND fragment (frag is the DEST path slot).
-  if (hasPath && hasFrag) return { kind: "path", path: path, dst: frag };
-  //  Plain path / dir / bareword.
-  return { kind: "path", path: path || q };
+  //  A schemed wire target (ssh://…) stays RAW — applyWire's _putWirePaths filter
+  //  matches the verbatim slots; only plain wt paths are context-resolved below.
+  if (u.scheme) return { kind: "path", path: path || q };
+  //  Move-form: non-empty path AND fragment (frag is the DEST path slot); both
+  //  slots resolve against the context dir (BE-032).
+  if (hasPath && hasFrag)
+    return { kind: "path", path: discover.argRel(repo, path), dst: discover.argRel(repo, frag) };
+  //  Plain path / dir / bareword — context-dir resolved (BE-032).
+  return { kind: "path", path: discover.argRel(repo, path || q) };
 }
 
 //  JAB-004: the run driver — classify argv into ctx.refs + path rows, apply
@@ -600,7 +611,9 @@ function putRun(ctx, argv, firstUri) {
   //  URI-015: scp remotes → ssh:// (classifyPutArg/applyWire throw on the raw form).
   argv = argv.map(uriarg.fromGit);
   ctx.args = argv;
-  const repo = ctx.repo || be.find(firstUri || undefined);
+  //  BE-032: a repo-less mint falls back to the cwd walk-up — never find(<arg>),
+  //  a file URI is not a directory.
+  const repo = ctx.repo || be.find();
   ctx.repo = repo;
   const k = store.open(repo.storePath, repo.project);
   const out = putOut(ctx);
@@ -613,7 +626,7 @@ function putRun(ctx, argv, firstUri) {
   ctx.refs = [];
   let pathUris = [];
   for (const arg of argv) {
-    const c = classifyPutArg(arg, k, curQuery);
+    const c = classifyPutArg(arg, k, curQuery, repo);
     if (c.kind === "ref") ctx.refs.push({ op: c.op, branch: c.branch, sha: c.sha });
     else if (c.path || c.dst) pathUris.push(c.dst ? URI.make(undefined, undefined, c.path, undefined, c.dst) : c.path);
   }

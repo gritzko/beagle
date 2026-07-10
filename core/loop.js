@@ -9,6 +9,8 @@ const registry = require("core/registry.js");
 //  JAB-004: the shared tokenizer — cli() coerces each already-split CLI argv
 //  token via argline.scalar() (the shape-2 rule) before PLAIN dispatch.
 const argline = require("core/../shared/argline.js");
+//  BE-032: dirname for the context-dir climb (a FILE context → its dir).
+const pathlib = require("core/../shared/util/path.js");
 //  JSQUE-008: the integration seam — the real seed (resolution-at-entry) and
 //  emit sink (output-as-ULog) replace the JSQUE-002 stubs in the CLI entry.
 //  JSQUE-016: the entry shim (be/main.js) requires this, so argv[1] is the
@@ -149,6 +151,7 @@ function mintBe(ambient) {
   const g = globalThis.be || (globalThis.be = {});
   if (!g.wrap) g.wrap = { 
 	  log: false, 
+	  todo: false,
 	  cat: true, 
 	  diff: true, 
 	  status: true, 
@@ -173,8 +176,12 @@ function mintBe(ambient) {
 //  nav target that must scope (the DIS-060 leak: a clicked `commit://ULOG?sha`).
 const TRANSPORT = { ssh: 1, https: 1, http: 1, git: 1, be: 1, file: 1, keeper: 1 };
 
-function authorityRepo(args) {
-  for (let i = 0; i < args.length; i++) {
+//  BE-032: `limit` caps the scan — a MUTATION verb takes the authority on arg 0
+//  ONLY (rest args are context-relative paths; the verb refuses a `//` rest arg),
+//  so a later `//X` operand can no longer silently rescope the whole run.
+function authorityRepo(args, limit) {
+  const n = limit == null ? args.length : Math.min(limit, args.length);
+  for (let i = 0; i < n; i++) {
     const a = String(args[i] || "");
     if (a.indexOf("//") < 0) continue;
     let u; try { u = uri._parse(a); } catch (e) { continue; }
@@ -217,8 +224,16 @@ function contextRepo(ctxUri) {
   if (!dir) return null;
   let repo; try { repo = be.find(dir); } catch (e) { return null; }
   if (!repo) return null;
-  return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host };
+  //  BE-032: find() climbed to the anchor, but the context's PLAIN sub-dir must
+  //  survive as the arg-resolution base (be.ctxDir) — a FILE context (a cat view)
+  //  falls back to its dir, never above the anchored wt root.
+  let d = dir;
+  while (d.length > repo.wt.length && _statKind(d) !== "dir") d = pathlib.dirname(d);
+  return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host,
+           dir: d };
 }
+
+function _statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 
 //  --- JSQUE-008: the canonical CLI entry (argv -> seed -> run -> flush) ---
 //  The SHARED integrated entry every later verb reuses: argv lowers to a verb +
@@ -252,7 +267,8 @@ function cli(argv, opts2) {
 //  the fields the re-entrant driveSpell run overwrites on the shared global.
 function _snapBe() {
   const b = globalThis.be || {};
-  return { repo: b.repo, sink: b.sink, format: b.format, force: b.force, flags: b.flags };
+  return { repo: b.repo, sink: b.sink, format: b.format, force: b.force, flags: b.flags,
+           ctxDir: b.ctxDir };
 }
 function _restoreBe(s) { Object.assign(globalThis.be || (globalThis.be = {}), s); }
 
@@ -342,16 +358,23 @@ function _cli(argv, opts2) {
   //  scopes the WHOLE spell to that tree + exposes `be.authority` (the `//name`)
   //  so converted verbs emit full-URI hunks; any other arg keeps the cwd repo.
   //  A repo-less cwd is swallowed (be.repo=null).
-  let nav = authorityRepo(args);
-  let authority = "";
-  if (nav) { repo = nav.repo; authority = nav.authority; }
+  //  BE-032: a MUTATION verb takes the authority on arg 0 only (rest args are
+  //  context-relative paths); views keep the whole-spell scan.
+  let nav = authorityRepo(args, _isMutation(verb) ? 1 : args.length);
+  let authority = "", ctxDir = null;
+  //  BE-032: `be.ctxDir` is the CONTEXT DIR relative args resolve against
+  //  (discover.argRel): an explicit `//X` operand pins the tree ROOT; a pager
+  //  context pins its nav'd sub-dir; a plain CLI run pins the invocation cwd; a
+  //  context-less reentry (slot-edit/click, args pre-merged root-relative) the root.
+  if (nav) { repo = nav.repo; authority = nav.authority; ctxDir = repo.wt; }
   //  BE-039: no explicit `//authority` operand — scope the run to the NAV CONTEXT
-  //  threaded from the pager (opts2.context) so RAW args resolve wt-relative to it
+  //  threaded from the pager (opts2.context) so RAW args resolve relative to it
   //  (put/delete descend a mount per-arg); a miss / plain CLI falls to cwd — unchanged.
-  else if (opts2.context && (nav = contextRepo(opts2.context))) { repo = nav.repo; authority = nav.authority; }
-  else try { repo = be.find(); } catch (e) { /* repo-less verb reads be.repo=null */ }
+  else if (opts2.context && (nav = contextRepo(opts2.context))) { repo = nav.repo; authority = nav.authority; ctxDir = nav.dir; }
+  else try { repo = be.find(); ctxDir = opts2.reentry ? repo.wt : io.cwd(); }
+       catch (e) { /* repo-less verb reads be.repo=null */ }
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
-           verb: verb, authority: authority });
+           verb: verb, authority: authority, ctxDir: ctxDir });
   const pargs = args.map(function (t) { return argline.scalar(t); });
   res = run({
     repo: repo, require: require, out: out, sink: sink, flags: flags,

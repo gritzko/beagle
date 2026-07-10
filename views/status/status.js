@@ -34,7 +34,8 @@ const theme    = require("../../view/theme.js");
 const navlib   = require("../../shared/nav.js");        // URI-011: full-URI nav helper
 const join     = require("../../shared/util/path.js").join;   // DIS-060: scope path
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 //  JAB-004: render.js's dateCol/verbCol/writeStdout/shQuote are no longer
 //  used here — the emit sink (core/emit.js) owns all column formatting at the
 //  flush edge, and the fork machinery (shQuote) is gone.
@@ -111,10 +112,10 @@ function status() {
     if (p.path && p.path !== ".") { scope = p.path.replace(/^\.\//, ""); break; }
   }
   if (scope && topWt) {
-    //  WHY-001: a status path is wt-root-relative — a leading `/` is the wt ROOT
-    //  (be.find('/') finds no .be anchor), not the FS root; `/` alone → whole wt.
-    const rel = scope.replace(/^\/+/, "");
-    if (rel) return statusOne({ uri: wtpath(topWt, rel) }, null);
+    //  WHY-001/BE-032: a leading `/` is the wt ROOT (`/` alone → whole wt); a
+    //  relative path resolves against the CONTEXT dir (cwd/nav sub-dir).
+    const rel = discover.argRel(_be && _be.repo, scope);
+    if (rel && rel !== "./") return statusOne({ uri: wtpath(topWt, rel) }, null);
   }
   return statusOne(null, null);
 }

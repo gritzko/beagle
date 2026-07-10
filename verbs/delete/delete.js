@@ -55,7 +55,8 @@ const SNIFFFAIL = "SNIFFFAIL";
 const pathlib = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 const join = pathlib.join;
 function statExists(p) { try { io.lstat(p); return true; } catch (e) { return false; } }
 function statKind(p) { try { return io.lstat(p).kind; } catch (e) { return undefined; } }
@@ -319,11 +320,16 @@ function emitBanner(out, banner) {
 //  label by NAME (its tombstone is `?br#0…0`), so tests use only the bare `?feat`
 //  form — the trunk-reset / `?<40hex>` / `?br#sha` / move forms are put/get's, not
 //  delete's.  Returns { branch } for a tombstone or { path } for a file/dir.
-function classifyArgLocal(arg) {
+function classifyArgLocal(arg, repo) {
   const u = new URI(arg);
   const q = u.query || "", path = u.path || "";
+  //  BE-032: an authority/scheme never fills delete's slots — `//X` rides arg 0
+  //  (loop-stripped); refuse the rest loudly, never a silent wrong-tree unlink.
+  if (u.authority !== undefined || u.scheme)
+    throw "NAVESCAPE: not a wt path: " + arg;
   if (q !== "" && path === "") return { branch: q };   // `?br` tombstone
-  return { path: path || q };                           // path / dir / bareword
+  //  BE-032: path / dir / bareword — context-dir resolved.
+  return { path: discover.argRel(repo, path || q) };
 }
 
 //  JAB-004: plain-args DELETE — `delete(...args)` off global `be`, called ONCE
@@ -358,7 +364,7 @@ function delRun(ctx, argv) {
   //  `?br` tombstone vs a path/dir row.
   const refs = [], pathRaws = [];
   for (const arg of argv) {
-    const c = classifyArgLocal(arg);
+    const c = classifyArgLocal(arg, repo);
     if (c.branch != null) refs.push({ branch: c.branch });
     else if (c.path) pathRaws.push(c.path);
   }

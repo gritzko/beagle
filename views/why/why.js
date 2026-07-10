@@ -13,9 +13,9 @@ const shalib    = require("../../shared/util/sha.js");
 const weave     = require("../../shared/weave.js");
 const dag       = require("../../shared/dag.js");
 const navlib    = require("../../shared/nav.js");
-const pathlib   = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
 const ambient   = require("../../shared/ambient.js");
 const isFullSha = shalib.isFullSha;
 
@@ -78,9 +78,9 @@ function parseArg(k, repo, raw) {
   let u = new URI(String(raw || ""));
   if (u.scheme !== "why")
     u = new URI(URI.make("why", u.authority, u.path, u.query, u.fragment) || "why:");
-  //  BE-037: canonical path slot (`./` collapse) — the store weave build must
-  //  see the same repo-relative path as the bare form; NAVESCAPE on climb-out.
-  const path = pathlib.resolveInTree("", u.path || "");
+  //  BE-032: the path slot resolves against the run's CONTEXT dir (rooted `/x`
+  //  = wt root), re-anchored wt-root-relative; NAVESCAPE on climb-out.
+  const path = discover.argRel(repo, u.path || "");
   const query = u.query || "";
   const dots = query.indexOf("..");
   if (dots > 0 && dots < query.length - 2) {

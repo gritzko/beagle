@@ -372,6 +372,30 @@ function contextCwd() {
   try { return find(io.cwd()).wt; } catch (e) { return io.cwd(); }
 }
 
+//  BE-032: the run's context dir (be.ctxDir — cwd for a CLI run, the nav'd
+//  sub-dir for a pager reentry) as a wt-relative prefix; "" at/outside the root.
+function _ctxSub(repo) {
+  const d = (typeof be !== "undefined" && be.ctxDir) || "";
+  if (!repo || !repo.wt || !d || d === repo.wt) return "";
+  return d.indexOf(repo.wt + "/") === 0 ? d.slice(repo.wt.length + 1) : "";
+}
+
+//  BE-032: argRel(repo, raw) — ONE relative verb arg → its wt-root-relative path,
+//  resolved against the run's context dir (`cd wiki && jab put Sniff.mkd` →
+//  `wiki/Sniff.mkd`).  A rooted `/x` addresses the wt root (context bypassed);
+//  `..` climbing above the root throws NAVESCAPE; ""/dir-form `/` are preserved.
+function argRel(repo, raw) {
+  const s = String(raw == null ? "" : raw);
+  if (s === "") return s;
+  if (s[0] === "/") return s.replace(/^\/+/, "");
+  //  A trailing `/`, `.` or `..` segment is inherently a DIR reference — keep the
+  //  dir-form (`sub/`; the wt root round-trips as `./`, the verbs' reporoot form).
+  const last = s.slice(s.lastIndexOf("/") + 1);
+  const dir = s[s.length - 1] === "/" || last === "." || last === "..";
+  const sub = pathlib.resolveInTree(_ctxSub(repo), s);   // throws on climb-out
+  return dir ? (sub ? sub + "/" : "./") : sub;
+}
+
 //  BE-030: per-process cache of a wt root → its validated nav context URI, so the
 //  per-fs-access wtpath() below never re-walks the tree (navCwd/find) twice for the
 //  same wt.  "" marks a wt that is repo-less / OUTSIDE the hive (the fallback).
@@ -409,6 +433,7 @@ function wtpath(wt, rel) {
 }
 
 module.exports = { find: find, wtdir: wtdir, resolve: resolve, wtpath: wtpath,
+                   argRel: argRel,
                    navCwd: navCwd, cwd: contextCwd,
                    srcRoot: srcRoot, todoRoot: todoRoot, topWt: topWt,
                    //  exported for wtlog.js / tests
