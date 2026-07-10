@@ -44,6 +44,7 @@ const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/u
 const safeRel = pathlib.safeRel;             // JS-065: worktree-confinement guard
 const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");
+const idxmaint = require("./idxmaint.js");   // JS-116: keeper.idx run lifecycle
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 const isZeroSha = shalib.isZeroSha;
@@ -205,14 +206,15 @@ function open(storePath, project) {
   let diskIx = undefined;
   function diskIndex() {
     if (diskIx !== undefined) return diskIx || null;
-    let has = false;
-    try {
-      io.readdir(shard, function (name) {
-        if (name.endsWith("keeper.idx")) { has = true; return false; }  // stop
-        return "more";
-      });
-    } catch (e) { has = false; }
-    diskIx = has ? abc.index("wh128", { dir: shard, ext: "keeper.idx" }) : false;
+    //  JS-116: run-lifecycle maintenance before the open — batch an overfull
+    //  stack, persist stale tail runs, compact >32; RO stores degrade as-is.
+    let n;
+    try { n = idxmaint.maintain(shard); }
+    catch (e) { n = idxmaint.listRuns(shard).length; }
+    //  JS-116: still past the native 64-run query cap (RO + overfull) — the
+    //  in-RAM fallback keeps the read verb alive where range() would throw.
+    diskIx = (n > 0 && n <= idxmaint.RUN_CAP)
+           ? abc.index("wh128", { dir: shard, ext: "keeper.idx" }) : false;
     return diskIx || null;
   }
 

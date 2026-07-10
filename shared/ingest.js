@@ -20,6 +20,7 @@
 
 const join = require("./util/path.js").join;   // JSQUE-016: path.js -> shared/util/
 const ulog = require("./ulog.js");
+const idxmaint = require("./idxmaint.js");     // JS-116: run-lifecycle upkeep
 
 function writeBytes(path, u8) {
   const fd = io.open(path, "c");
@@ -63,7 +64,9 @@ function buildIndex(shard, logName, fileId) {
     mem.push(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
   }
   mem.sort();
-  const path = join(shard, ron.encode(ron.now()) + ".keeper.idx");
+  //  JS-116: collision-safe ron60 name — a pinned clock repeats ron.now(),
+  //  and overwriting an existing run silently drops its coverage.
+  const path = join(shard, idxmaint.freshRunName(shard));
   const out = abc.book("HEAPwh128", path, mem.size);
   abc.merge([mem], out);
   abc.close(out);
@@ -108,7 +111,7 @@ function reindexShard(shard) {
     }
   }
   mem.sort();
-  const path = join(shard, ron.encode(ron.now()) + ".keeper.idx");
+  const path = join(shard, idxmaint.freshRunName(shard));   // JS-116: no clobber
   const out = abc.book("HEAPwh128", path, mem.size);
   abc.merge([mem], out);
   abc.close(out);
@@ -155,6 +158,7 @@ function land(packBytes, shard) {
   const nm = logName(max + 1);
   writeBytes(join(shard, nm), packLogBytes(packBytes));
   buildIndex(shard, nm, fileIdOf(nm));
+  idxmaint.compactAfterAdd(shard);   // JS-116: restore the 1/8 run ladder
 }
 
 //  add(): land another full pack into an EXISTING shard as the next-numbered

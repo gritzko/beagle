@@ -34,6 +34,7 @@ const pathlib = require("../../shared/util/path.js");
 const wtpath = require("../../core/discover.js").wtpath;
 const shalib = require("../../shared/util/sha.js");
 const ingest = require("../../shared/ingest.js");
+const idxmaint = require("../../shared/idxmaint.js");   // JS-116
 const join = pathlib.join;   // BE-011: wtJoin confines wt-opens
 const frameSha = shalib.frameSha;
 
@@ -193,6 +194,7 @@ function writePack(shard, wtRoot, commitBody, rootTreeSha, treeBodies, decisions
   //  Build the native `.keeper.idx` so `be` (and store.js's prebuilt-idx
   //  read path) see the new objects (ingest.js recipe, the same fileId).
   ingest.buildIndex(shard, logName, ingest.fileIdOf(logName));
+  idxmaint.compactAfterAdd(shard);   // JS-116: restore the 1/8 run ladder
   return logName;
 }
 

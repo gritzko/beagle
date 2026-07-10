@@ -54,8 +54,9 @@ function landTip(info, srcStorePath, srcProj, tip) {
                          srcProj ? "/" + srcProj : undefined);
   const haves = [];
   mine.eachTip(function (t) { haves.push(t.sha); });
+  //  JS-116: reindexShard retired — land() covers the new log, and the open
+  //  path (store.js diskIndex maintenance) persists any missing tail run.
   ingest.land(wire.buildPushPack(serve, tip, haves), shard);
-  ingest.reindexShard(shard);
 }
 
 //  PATCH-011: the wt-address cross-store arm — the addressed worktree anchors
@@ -93,8 +94,7 @@ function fetchSource(info, arg) {
       if (!tip || !isFullSha(tip)) throw "peer gave no tip";
       if (!mine.getObject(tip)) {
         const shard = store.shardDir(info.storePath, info.project);
-        ingest.land(f.pack, shard);
-        ingest.reindexShard(shard);
+        ingest.land(f.pack, shard);   // JS-116: reindexShard retired (see above)
       }
     }
   } catch (e) {
