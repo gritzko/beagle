@@ -41,6 +41,10 @@ const TAG_U = tagCode("U");
 const TAG_F = tagCode("F");
 const TAG_S = tagCode("S");
 const TAG_N = tagCode("N");
+//  BE-040 r3: the BE-041 house button pair — a visible 'Y' label + a hidden
+//  'O' click spell (`_uriAt` follows the O verbatim; plain never emits them).
+const TAG_Y = tagCode("Y");
+const TAG_O = tagCode("O");
 
 //  --- arg SHAPE routing (BRO-023: a pure shape test, no fs probe) -----------
 function ucnumRun(w, i) {
@@ -207,12 +211,18 @@ function span(parts, spans, off, text, tag) {
 }
 //  One list row: `<indent><KEY><rest>\n` with the KEY an `F` token followed by
 //  the hidden `U` spell `todo <KEY>` (pager _uriAt: visible tok → next-U → go).
-function titleRow(parts, spans, off, indent, key, title) {
+//  BE-040 r3: `btn` grows the BE-041 button tail — ` ` sep, visible Y `[done]`,
+//  hidden O `done KEY` — AFTER the U nav so the title click still navigates.
+function titleRow(parts, spans, off, indent, key, title, btn) {
   const rest = title.indexOf(key) === 0 ? title.slice(key.length) : " " + title;
   if (indent) off = span(parts, spans, off, indent, TAG_S);
   off = span(parts, spans, off, key, TAG_F);
   off = span(parts, spans, off, "todo " + key, TAG_U);
-  off = span(parts, spans, off, rest + "\n", TAG_S);
+  if (!btn) return span(parts, spans, off, rest + "\n", TAG_S);
+  off = span(parts, spans, off, rest + " ", TAG_S);
+  off = span(parts, spans, off, "[done]", TAG_Y);
+  off = span(parts, spans, off, "done " + key, TAG_O);
+  off = span(parts, spans, off, "\n", TAG_S);
   return off;
 }
 function feed(sink, banner, parts, spans, off) {
@@ -224,8 +234,9 @@ function feed(sink, banner, parts, spans, off) {
   sink.feed(banner, body, toks, "", 0n);
 }
 
-//  The board / one topic, as ONE hunk of title rows.
-function emitList(sink, banner, groups, headers) {
+//  The board / one topic, as ONE hunk of title rows.  BE-040 r3: `btns` puts a
+//  `[done]` button on every OPEN list row (pager-only; plain passes false).
+function emitList(sink, banner, groups, headers, btns) {
   const parts = [], spans = [];
   let off = 0;
   for (const g of groups) {
@@ -235,7 +246,7 @@ function emitList(sink, banner, groups, headers) {
       off = span(parts, spans, off, "\n", TAG_S);
     }
     for (const t of g.tickets)
-      off = titleRow(parts, spans, off, headers ? "  " : "", t.key, t.title);
+      off = titleRow(parts, spans, off, headers ? "  " : "", t.key, t.title, btns);
     if (!g.tickets.length)               // an explicit `todo TOPIC`, all closed
       off = span(parts, spans, off, (headers ? "  " : "") +
         "(no open tickets in todo/" + g.topic + "/)\n", TAG_S);
@@ -360,13 +371,13 @@ function todoOne(arg, board, mode, sink) {
     try { const p = uri._parse(w); if (p.scheme === "todo") w = p.path || ""; } catch (e) {}
   }
   if (w === "" || w === ".") {
-    emitList(sink, "todo", listTopics(board.dir), true);
+    emitList(sink, "todo", listTopics(board.dir), true, mode !== "plain");
     return;
   }
   const s = shape(w);
   if (s === "topic") {
     if (!isDir(join(board.dir, w))) miss(w, "TODONONE");
-    emitList(sink, "todo " + w, [openTickets(board.dir, w)], false);
+    emitList(sink, "todo " + w, [openTickets(board.dir, w)], false, mode !== "plain");
     return;
   }
   if (s === "key") {
