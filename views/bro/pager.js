@@ -185,6 +185,9 @@ function Pager(fd, opts) {
   this.isVerb = opts && opts.isVerb;             // (w) -> is w a real verb handler?
   this.isMutation = opts && opts.isMutation;     // (w) -> a verbs/-tree mutation?
   this.be = (opts && opts.be) || sessionBe();    // JAB-003: {cwd, wt_root, repo}
+  //  BE-046: the LAUNCH nav context (cwd AND the CLI `//X` arg) — the composer's
+  //  fallback for the initial view, which tracks no uri of its own.
+  this.context = (opts && opts.context) || "";
   this.view = null;                              // { hunks, rows, scroll, cols }
   this.stack = [];                               // JAB-030: the view BACK-stack
   this.mode = "scroll";                          // "scroll" | "command"
@@ -763,7 +766,10 @@ Pager.prototype._verbUri = function () {
 //  falls back off the view (a diff view keeps `diff` for a slot-edit).
 Pager.prototype._composeCall = function (s) {
   const v = this.view;
-  const ctxUri = (v && v.uri) || (typeof be !== "undefined" && be.navCwd ? be.navCwd() : "");
+  //  BE-046: view.uri (a nav'd view) → the LAUNCH context (the initial view) →
+  //  the cwd context; the worktree only ever switches by an explicit `//X`.
+  const ctxUri = (v && v.uri) || this.context ||
+                 (typeof be !== "undefined" && be.navCwd ? be.navCwd() : "");
   return SPELL.compose(ctxUri, this._verbUri().verb, s, this.isVerb);
 };
 Pager.prototype._buildSpell = function (c) { return SPELL.buildSpell(c); };

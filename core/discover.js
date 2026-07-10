@@ -265,12 +265,24 @@ function _relPath(rel) {
   return u.path || "";
 }
 
-//  BE-037: the LAUNCH tree's TOP wt — the tree the empty `//` host names.  Memoized
-//  on `be` (cwd is fixed per run): wtpath resolves through it on EVERY fs access.
+//  BE-037: the LAUNCH tree's TOP wt.  Memoized on `be` (cwd is fixed per run):
+//  wtpath resolves through it on EVERY fs access.
 function launchTop() {
   if (typeof be !== "undefined" && be.launchTopWt) return be.launchTopWt;
   const t = topWt(find(io.cwd()).wt);                 // throws when repo-less
   if (typeof be !== "undefined") be.launchTopWt = t;
+  return t;
+}
+
+//  BE-045: the tree the bare `//` NAMES — navCwd's inverse: the hive's meta
+//  (srcRoot()'s parent wt) when it anchors EXACTLY there, else the launch top.
+function rootTop() {
+  if (typeof be !== "undefined" && be.rootTopWt) return be.rootTopWt;
+  let t;
+  const meta = dirname(srcRoot());
+  try { t = find(meta).wt === meta ? meta : launchTop(); }
+  catch (e) { t = launchTop(); }                      // throws when repo-less
+  if (typeof be !== "undefined") be.rootTopWt = t;
   return t;
 }
 
@@ -293,9 +305,9 @@ function resolve(context, rel) {
   const basePath = relPath[0] === "/" ? "" : _ctxPath(context);
   const sub = pathlib.resolveInTree(basePath, relPath);   // throws on climb-out
   if (host === "" || host === ".") {
-    //  BE-037: `//` = the TOP tree (what navCwd names `//`), not the nearest
-    //  anchor — a submodule launch must agree with the pager-composed `//`.
-    const wt = launchTop();                           // throws when repo-less
+    //  BE-045: `//` = the tree navCwd names `//` (the meta above a hive cell,
+    //  else the launch top) — a cell launch must agree with the composed `//`.
+    const wt = rootTop();                             // throws when repo-less
     return sub ? join(wt, sub) : wt;
   }
   if (!pathlib.safeRel(host)) throw "NAVESCAPE: bad nav authority //" + host;
@@ -318,7 +330,7 @@ function wtdir(uriStr) {
   if (host === "" || host === ".") {
     //  BE-037: `//[/path]` rides resolve like `//name` — the TOP tree, path
     //  honoured; a repo-less cwd is the miss (null), NAVESCAPE still propagates.
-    try { launchTop(); } catch (e) { return null; }
+    try { rootTop(); } catch (e) { return null; }
     return resolve("//" + host, u.path || "");
   }
   //  BE-030: compose + CONFINE via resolve(context, rel).  The nav URI's path is

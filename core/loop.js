@@ -420,7 +420,9 @@ function _cli(argv, opts2) {
       hunks = hunks.concat([{ uri: SCHEME_ALLOW.has(verb) ? (URI.make(verb) || verb + ":") : verb,
                               verb: "hunk", text: colBytes,
                               toks: new Uint32Array(0), kind: "file" }]);
-    if (hunks.length) { _openPager(hunks); return res; }
+    //  BE-046: the launch NAV CONTEXT (cwd AND the `//X` arg — ctxDir encodes
+    //  both) rides into the pager, so a typed `:diff` inherits the worktree.
+    if (hunks.length) { _openPager(hunks, be.navCwd ? be.navCwd(ctxDir || undefined) : ""); return res; }
     //  Nothing to page (a self-paging verb already ran, or no output): done.
     return res;
   }
@@ -438,7 +440,7 @@ function _cli(argv, opts2) {
 //  edge).  Keystrokes come from the controlling terminal (/dev/tty so input
 //  still works when stdin is a data pipe — the bro.js pattern); a typed `:`
 //  spell re-runs the loop via bro's driveSpell (its OWN capture sink + queue).
-function _openPager(hunks) {
+function _openPager(hunks, context) {
   let fd = null, own = false;
   try { fd = io.open("/dev/tty", "rw"); own = true; } catch (e) { fd = null; }
   if (fd === null && io.isatty(0)) fd = 0;
@@ -446,6 +448,7 @@ function _openPager(hunks) {
   try {
     const broh = require(_here + "/views/bro/bro.js");
     const p = new pager.Pager(fd, { color: true, driveSpell: broh.driveSpell,
+                                    context: context,
                                     isVerb: function (w) { return _isVerb(w, _here); },
                                     isMutation: _isMutation });
     p.setHunks(hunks);
