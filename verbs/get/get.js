@@ -63,10 +63,6 @@ const MAX_SUBMODULE_DEPTH = 8;
 //  a leading colon mis-frames the NEXT queue ULOG row (a URI-scheme parse
 //  hazard — JSQUE-009 own-ticket), so the marker must be scheme-free.
 const DELSWEEP = "del-sweep";
-//  D5: a conflicting weave-merge leaf enqueues this sentinel; it dispatches
-//  AFTER every leaf (tail-appended), so all files are materialised, then throws
-//  → the loop maps it to the non-zero exit (markers already in the wt).
-const CONFMARK = "merge-conflict";
 
 //  --- remote URI → { local, srcRoot, srcBe, proj, branch, pin } -----------
 //  No hand-rolled parsing: the URI binding splits scheme/host/path/query.
@@ -280,11 +276,6 @@ function isRemoteSeed(uri) {
 function dispatchRow(row, ctx) {
   const uri = (row && row.uri) || "";
   if (uri === DELSWEEP) return delSweep(row, ctx);   // BARRIER fold row
-  if (uri === CONFMARK) {                              // D5: post-leaf conflict gate
-    flushGet(ctx);                                     // JAB-003: emit partial hunk before the loud exit
-    throw "be get: GETCONF " + (ctx._get && ctx._get.conf || 1) +
-          " file(s) merged with conflicts — resolve the markers";
-  }
   //  JS-075: a fan-out child carrying STRUCTURED path/sha fields (rel/dir) skips
   //  the URI round-trip — a `#`/`?` in a tracked name no longer mis-frames it.
   if (ctx._get && row && row._leaf) return leaf(row, ctx);
@@ -788,10 +779,7 @@ function leaf(row, ctx) {
         //  STATUS-005: durable `con <path>` row (append-only, like `put`) so
         //  the conflict survives the get's exit + mtime churn for status.
         try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
-
-        //  D5: defer a loud non-zero exit until every file is materialised — the
-        //  CONFMARK sentinel dispatches after all tail-appended leaves.
-        return { enqueue: [{ verb: "get", uri: CONFMARK }] };
+        return;
       }
       out.row(rel, "mrg", g.ts);
       return;
@@ -986,6 +974,12 @@ function sweepDelDirs(ctx) {
 function finalizeGet(ctx) {
   sweepDelDirs(ctx);
   flushGet(ctx);
+  //  GET-043: the loud conflict exit fires AFTER the drain — a queue-row
+  //  sentinel threw before later reconciles' leaves, dropping them (data loss).
+  const g = ctx && ctx._get;
+  if (g && g.conf)
+    throw "be get: GETCONF " + g.conf +
+          " file(s) merged with conflicts — resolve the markers";
 }
 
 //  Edge flush comparator (native get layout): pulled-commit `post` rows first
