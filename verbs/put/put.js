@@ -481,13 +481,24 @@ function subMountPrefix(repo, rel) {
 //  full top-relative path under the `put:` banner; tallies feed PUTNONE.
 function stageInSub(repo, pfx, uri, ctx) {
   const out = putOut(ctx);
-  const subRepo = be.find(wtpath(repo.wt, pfx));
-  const subK = store.open(subRepo.storePath, subRepo.project);
   const u = new URI(uri);
-  let subUri = normRel(u.path).slice(pfx.length + 1);
+  //  SUBS-051: descend mount by mount — re-probe the remainder for a nested
+  //  mount against each descended sub, accumulating the top-relative prefix.
+  let subRepo = repo, rest = normRel(u.path), disp = "", seg = pfx;
+  for (;;) {
+    subRepo = be.find(wtpath(subRepo.wt, seg));
+    rest = rest.slice(seg.length + 1);
+    disp = disp ? disp + "/" + seg : seg;
+    const deeper = rest ? subMountPrefix(subRepo, rest) : "";
+    if (!deeper) break;
+    seg = deeper;
+  }
+  const subK = store.open(subRepo.storePath, subRepo.project);
+  let subUri = rest;
   if (u.fragment) {
+    //  SUBS-051: slice the move dst by the FINAL accumulated prefix (`disp`).
     let dst = normRel(u.fragment);
-    if (dst.indexOf(pfx + "/") === 0) dst = dst.slice(pfx.length + 1);
+    if (dst.indexOf(disp + "/") === 0) dst = dst.slice(disp.length + 1);
     subUri = URI.make(undefined, undefined, subUri, undefined, dst);
   }
   openPutBanner(out, ctx);
@@ -496,8 +507,8 @@ function stageInSub(repo, pfx, uri, ctx) {
   commitOps(subRepo, r.ops, ctx && ctx.T0);
   if (out)
     for (const it of r.items) {
-      if (it.type === "skip") out.raw(skipText({ path: pfx + "/" + it.path, reason: it.reason, whole: it.whole }));
-      else { const op = r.ops[it.opIdx]; out.row(pfx + "/" + (op.dst ? URI.make(undefined, undefined, op.path, undefined, op.dst) : op.path), "put", 0n); }
+      if (it.type === "skip") out.raw(skipText({ path: disp + "/" + it.path, reason: it.reason, whole: it.whole }));
+      else { const op = r.ops[it.opIdx]; out.row(disp + "/" + (op.dst ? URI.make(undefined, undefined, op.path, undefined, op.dst) : op.path), "put", 0n); }
     }
   //  JAB-004: tallies accumulate on ctx; the driver (putRun) owns the final
   //  all-skip PUTNONE decision after the whole arg batch (no per-arg throw).
