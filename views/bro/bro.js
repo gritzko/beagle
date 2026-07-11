@@ -176,7 +176,8 @@ function broRun(args, flags, ctx) {
       const loop = require("core/loop.js");
       const p = new pager.Pager(fd, { color: true, driveSpell: driveSpell,
                                       isVerb: loop.isVerb,
-                                      isMutation: loop.isMutation });
+                                      isMutation: loop.isMutation,
+                                      isTty: loop.isTty });   // BE-047: editors
       p.setHunks(hunks);
       p.run();
     } finally { if (own) { try { io.close(fd); } catch (e) {} } }

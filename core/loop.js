@@ -125,6 +125,13 @@ function _isMutation(w) {
   return registry.verbFile(w, undefined, ["verbs"]) !== null;
 }
 
+//  BE-047: a verb WANTS THE TERMINAL iff its handler exports `fn.tty` (verbs/
+//  vim) — the pager suspends raw mode around it and re-drives the view after.
+function _isTty(w) {
+  const c = registry.resolveVerb(w, undefined, require);
+  return !!(c && c.jab === "args" && c.fn && c.fn.tty === true);
+}
+
 //  JAB-030: the bare-URI view default (Design decision: dir -> ls:, file ->
 //  blob:/cat:).  `blob:` has no landed handler; a file falls back to the landed
 //  `cat:` syntax-hili view (gritzko: "blob: or cat: whatever"); a dir (or an
@@ -229,8 +236,10 @@ function contextRepo(ctxUri) {
   //  falls back to its dir, never above the anchored wt root.
   let d = dir;
   while (d.length > repo.wt.length && _statKind(d) !== "dir") d = pathlib.dirname(d);
+  //  BE-048: `path` keeps the PRE-climb addressed fs path (the context's own
+  //  file when the context names one) — the no-arg view default subject below.
   return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host,
-           dir: d };
+           dir: d, path: dir };
 }
 
 function _statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
@@ -274,7 +283,7 @@ function cli(argv, opts2) {
 function _snapBe() {
   const b = globalThis.be || {};
   return { repo: b.repo, sink: b.sink, format: b.format, force: b.force, flags: b.flags,
-           ctxDir: b.ctxDir };
+           ctxDir: b.ctxDir, context: b.context };
 }
 function _restoreBe(s) { Object.assign(globalThis.be || (globalThis.be = {}), s); }
 
@@ -376,7 +385,16 @@ function _cli(argv, opts2) {
   //  BE-039: no explicit `//authority` operand — scope the run to the NAV CONTEXT
   //  threaded from the pager (opts2.context) so RAW args resolve relative to it
   //  (put/delete descend a mount per-arg); a miss / plain CLI falls to cwd — unchanged.
-  else if (opts2.context && (nav = contextRepo(opts2.context))) { repo = nav.repo; authority = nav.authority; ctxDir = nav.dir; }
+  else if (opts2.context && (nav = contextRepo(opts2.context))) {
+    repo = nav.repo; authority = nav.authority; ctxDir = nav.dir;
+    //  BE-048: a NO-ARG VIEW verb defaults its subject to the context's own
+    //  FILE (`jab cat f` + a bare `:diff`/`:why` applies to f), in the ROOTED
+    //  `/sub/f` form argRel root-anchors; a dir/authority-only context and
+    //  every mutation verb (vim reads be.context itself) stay whole-scope.
+    if (args.length === 0 && !_isMutation(verb) && nav.path !== nav.dir &&
+        _statKind(nav.path) === "reg" && nav.path.indexOf(repo.wt + "/") === 0)
+      args.push(nav.path.slice(repo.wt.length));
+  }
   else {
     //  BE-032: a mutation's RELATIVE context (no `//` authority slot — a stale
     //  tracked path like `sub/`) must refuse LOUDLY: the silent cwd fallback
@@ -387,8 +405,11 @@ function _cli(argv, opts2) {
     try { repo = be.find(); ctxDir = opts2.reentry ? repo.wt : io.cwd(); }
     catch (e) { /* repo-less verb reads be.repo=null */ }
   }
+  //  BE-047: the nav CONTEXT URI itself rides `be.context` — a bare editor verb
+  //  (`:vim`) resolves the context's own PATH (the open file), not just its dir.
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
-           verb: verb, authority: authority, ctxDir: ctxDir });
+           verb: verb, authority: authority, ctxDir: ctxDir,
+           context: opts2.context || "" });
   const pargs = args.map(function (t) { return argline.scalar(t); });
   res = run({
     repo: repo, require: require, out: out, sink: sink, flags: flags,
@@ -422,7 +443,8 @@ function _cli(argv, opts2) {
                               toks: new Uint32Array(0), kind: "file" }]);
     //  BE-046: the launch NAV CONTEXT (cwd AND the `//X` arg — ctxDir encodes
     //  both) rides into the pager, so a typed `:diff` inherits the worktree.
-    if (hunks.length) { _openPager(hunks, be.navCwd ? be.navCwd(ctxDir || undefined) : ""); return res; }
+    //  BE-048: the launch arg's PATH folds in too — `jab cat f` + `:vim` edits f.
+    if (hunks.length) { _openPager(hunks, _launchContext(args, repo, ctxDir)); return res; }
     //  Nothing to page (a self-paging verb already ran, or no output): done.
     return res;
   }
@@ -434,6 +456,29 @@ function _cli(argv, opts2) {
     if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
   }
   return res;
+}
+
+//  BE-048: the INITIAL pager context = navCwd(ctxDir) PLUS the first path-
+//  bearing launch arg: the arg resolves through the standard machinery (argRel
+//  → wtpath, context-confined) and navCwd of that fs path IS the `//name/path`
+//  context a NAVIGATION to it would set — so `jab cat f` + a bare `:vim`/
+//  `:diff` targets f.  An authority-only `//WT` arg was stripped PATH-LESS by
+//  authorityRepo (no fold — BE-046 exactly); a transport-schemed arg is a wire
+//  address, never nav; an arg whose path does not stat (a grep pattern word)
+//  keeps the dir context.  NAVESCAPE / repo-less → the dir context, unchanged.
+function _launchContext(args, repo, ctxDir) {
+  if (!be.navCwd) return "";
+  const dirCtx = be.navCwd(ctxDir || undefined);
+  if (repo) for (const a of args) {
+    let u; try { u = uri._parse(String(a == null ? "" : a)); } catch (e) { continue; }
+    if (!u.path || (u.scheme && TRANSPORT[u.scheme])) continue;
+    try {
+      const fs = be.wtpath(repo.wt, be.argRel(repo, u.path));
+      io.stat(fs);                               // path-bearing = a REAL path
+      return be.navCwd(fs) || dirCtx;
+    } catch (e) { break; }                       // NAVESCAPE/miss → dir context
+  }
+  return dirCtx;
 }
 
 //  JAB-030: open the interactive bro Pager over a hunk array (the universal-tty
@@ -450,7 +495,8 @@ function _openPager(hunks, context) {
     const p = new pager.Pager(fd, { color: true, driveSpell: broh.driveSpell,
                                     context: context,
                                     isVerb: function (w) { return _isVerb(w, _here); },
-                                    isMutation: _isMutation });
+                                    isMutation: _isMutation,
+                                    isTty: _isTty });   // BE-047: editor verbs
     p.setHunks(hunks);
     p.run();
   } finally { if (own) { try { io.close(fd); } catch (e) {} } }
@@ -463,5 +509,6 @@ if (typeof module !== "undefined")
   //  real handler (else it's a wt-relative path) — the SAME probe cli() dispatches on.
   module.exports = { run: run, cli: cli,
                      isVerb: function (w) { return _isVerb(w, _here); },
-                     isMutation: _isMutation };
+                     isMutation: _isMutation,
+                     isTty: _isTty };          // BE-047: editor verbs (fn.tty)
 else cli(process.argv);

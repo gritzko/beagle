@@ -184,6 +184,7 @@ function Pager(fd, opts) {
   this.driveSpell = opts && opts.driveSpell;     // (spell) -> hunks | null
   this.isVerb = opts && opts.isVerb;             // (w) -> is w a real verb handler?
   this.isMutation = opts && opts.isMutation;     // (w) -> a verbs/-tree mutation?
+  this.isTty = opts && opts.isTty;               // BE-047: (w) -> an editor verb?
   this.be = (opts && opts.be) || sessionBe();    // JAB-003: {cwd, wt_root, repo}
   //  BE-046: the LAUNCH nav context (cwd AND the CLI `//X` arg) — the composer's
   //  fallback for the initial view, which tracks no uri of its own.
@@ -846,6 +847,9 @@ Pager.prototype._applySpell = function (cmd) {
   const g = this._globSpell(s);
   if (g === null) return;
   const c = this._composeCall(g);
+  //  BE-047: an EDITOR verb (vim/nvim, fn.tty) takes the terminal — suspend raw
+  //  mode, drive it (the verb waits on the editor), resume, re-drive the view.
+  if (c.verb && this.isTty && this.isTty(c.verb)) { this._editSpell(c); return; }
   //  BE-039: hand the verb the context AS CONTEXT (c.context, via driveSpell) + args
   //  RAW; a verb-call does not navigate, so TRACK the nav context (not arg0's path) as
   //  the view URI.  A slot-edit has context "" → track the merged arg0 (unchanged).
@@ -864,6 +868,37 @@ Pager.prototype._driveApply = function (spell, verb, uri, context) {
     this.view.uri  = uri;
     this.view.wrap = wrapFor(verb);              // BRO-014: type default (W override)
   } catch (e) { this.message = "err: " + String(e); }
+};
+
+//  BE-047: run an EDITOR spell — cook the tty + release the screen, drive the
+//  verb (it spawns the editor on /dev/tty and REAPS it — driveSpell blocks till
+//  exit), re-enter raw mode, then _refresh re-drives the view so the edit
+//  shows.  Result hunks are dropped (the _actSpell shape: no push, no stack).
+Pager.prototype._editSpell = function (c) {
+  this._suspend();
+  let err = "";
+  try { if (this.driveSpell) this.driveSpell(this._buildSpell(c), c.context); }
+  catch (e) { err = "err: " + String(e); }
+  this._resume();
+  this._refresh();
+  if (err) this.message = err;   // the editor's failure outranks "refreshed"
+};
+
+//  BE-047: leave raw mode for a foreground child — mouse/paste reporting off,
+//  SGR reset, cursor shown, screen cleared, termios cooked back.  A no-op when
+//  run() does not own the tty (this._saved unset — the headless drivers).
+Pager.prototype._suspend = function () {
+  if (this._saved == null) return;
+  ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
+  tty.cook(this.fd, this._saved);
+};
+
+//  BE-047: re-enter raw mode after the child exits (a FRESH saved termios — the
+//  child may have re-shaped the tty) and re-arm the cursor/mouse/paste state.
+Pager.prototype._resume = function () {
+  if (this._saved == null) return;
+  this._saved = tty.raw(this.fd);
+  ttyWrite(this.fd, HIDE_CUR + (this.mouse ? MOUSE_ON : "") + PASTE_ON);
 };
 
 //  DIS-060: REFRESH the current view — re-run its (verb, uri) spell and swap the
@@ -1111,7 +1146,9 @@ Pager.prototype._toggleMouse = function () {
 //  the cursor (and disable mouse) on EVERY exit path (try/finally) so a throw
 //  never wedges the tty.
 Pager.prototype.run = function () {
-  const saved = tty.raw(this.fd);
+  //  BE-047: the saved termios rides `this` so _suspend/_resume (the editor
+  //  terminal handover) can cook + re-raw mid-run; the finally still restores.
+  this._saved = tty.raw(this.fd);
   ttyWrite(this.fd, HIDE_CUR + MOUSE_ON + PASTE_ON);
   try {
     const rb = io.buf(64);
@@ -1133,7 +1170,8 @@ Pager.prototype.run = function () {
     }
   } finally {
     ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
-    tty.cook(this.fd, saved);
+    tty.cook(this.fd, this._saved);
+    this._saved = null;
   }
 };
 
