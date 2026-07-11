@@ -26,6 +26,11 @@ const isFullSha = shalib.isFullSha;
 //  GIT-016 (was pushRemote): branch -> refs/heads/X.  GIT-015 defect A strips a
 //  leading absolute-marker `/` (`?/project` -> project); an empty path segment
 //  (`refs/heads//…`, trailing `/`) is a bad target -> POSTREF (never sent).
+//  SUBS-050: NOT routed through branch.wireRef — test/put/wire-refguard pins the
+//  RAW-string semantics (`/project` -> project; `dev/`/`a//b` -> POSTREF), which
+//  the codec's segment split/merge collapses away; preserved per the no-test-edit
+//  rule (see the ticket's wire-ref note; serve.js/wire.js DO use the codec, over
+//  already-clean title-stripped keys).
 function resolveRef(branch) {
   const bare = (branch && branch[0] === "/") ? branch.slice(1) : branch;
   const wireRef = "refs/heads/" + ((bare && bare !== "main") ? bare : "main");

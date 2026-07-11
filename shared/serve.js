@@ -8,6 +8,7 @@
 
 const pkt = require("./pkt.js");
 const wire = require("./wire.js");
+const branchlib = require("./branch.js");   // SUBS-050: the ONE branch codec
 const isFullSha = require("./util/sha.js").isFullSha;
 
 const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -41,8 +42,8 @@ function uploadPack(selector, rfd, wfd) {
     first = false;
   }
   if (trunk && isFullSha(trunk)) emitRef(trunk, "HEAD");
-  for (const t of tips)          // trunk (branch "") advertises as refs/heads/main
-    emitRef(t.sha, t.branch ? ("refs/heads/" + t.branch) : "refs/heads/main");
+  for (const t of tips)          // SUBS-050: trunk (branch "") advertises as refs/heads/main
+    emitRef(t.sha, branchlib.wireRef(branchlib.parse(t.branch || "", "")));
   //  A store with no tips at all still needs a valid (empty) advert.
   if (first) w(wfd, advLine(ZERO_SHA, "capabilities^{}", caps));
   w(wfd, pkt.flushPkt());

@@ -36,6 +36,7 @@ const checkout = require("./checkout.js");
 const ulog     = require("./ulog.js");
 const ambient  = require("./ambient.js");   // GET-040: the global force flag
 const pathlib  = require("./util/path.js");
+const branchlib = require("./branch.js");   // SUBS-050: the ONE branch codec
 const sha      = require("./util/sha.js");
 const join = pathlib.join, basename = pathlib.basename, safeRel = pathlib.safeRel;
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
@@ -105,20 +106,14 @@ function titleFromUrl(url) {
   return b;
 }
 
-//  SUBS-048: the synthetic branch the child wt tracks ([Submodules] bullet 1):
-//  `/<title>/.<parent>/.<grandparent>[/<gp_branch>]`.  A SYNTHETIC parent branch
-//  (leading `/` — the parent is itself a sub) folds INTO the dotted chain: its
-//  own `/<parent>` head is already emitted as `.<parent>`, so only the tail
-//  rides (`/libabc` + `.libdog` + tail-of(`/libdog/.jab`) → `/libabc/.libdog/.jab`);
-//  a PLAIN parent branch stays the last undotted segment.
+//  SUBS-050: the synthetic branch the child wt tracks ([Submodules] bullet 1) —
+//  `/<title>/.<parent>/.<grandparent>[/<gp_branch>]`.  Composed through the ONE
+//  branch codec: parse the parent's branch (a plain / relative / absolute
+//  string), fold it into the child chain via branch.sub, then format the
+//  canonical absolute record shape.
 function syntheticBranch(title, parentTitle, parentBranch) {
-  let b = "/" + title + "/." + (parentTitle || "parent");
-  if (parentBranch && parentBranch[0] === "/") {
-    const tail = parentBranch.slice(1);
-    const cut = tail.indexOf("/");
-    if (cut >= 0) b += tail.slice(cut);
-  } else if (parentBranch) b += "/" + parentBranch;
-  return b;
+  const parentBr = branchlib.parse(parentBranch || "", parentTitle || "parent");
+  return branchlib.format(branchlib.sub(parentBr, title));
 }
 
 //  SUBS-047: the SAME-SOURCE child URIs, tried IN ORDER before the official

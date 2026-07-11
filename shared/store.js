@@ -44,6 +44,7 @@ const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/u
 const safeRel = pathlib.safeRel;             // JS-065: worktree-confinement guard
 const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");
+const branchlib = require("./branch.js");    // SUBS-050: the ONE branch codec
 const idxmaint = require("./idxmaint.js");   // JS-116: keeper.idx run lifecycle
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
@@ -584,11 +585,11 @@ function modeKind(mode) {
   return "blob";   // 0o100644 and any other regular-file mode
 }
 
-//  strip a leading `/<project>/` from a ref query → branch path.
+//  SUBS-050: strip a leading `/<project>/` from a ref query → the branch KEY,
+//  routed through the ONE branch codec (was a byte-identical hand-rolled twin
+//  of wtlog.stripProject).
 function stripProj(q) {
-  if (!q || q[0] !== "/") return q || "";
-  const j = q.indexOf("/", 1);
-  return j < 0 ? "" : q.slice(j + 1);
+  return branchlib.key(branchlib.parse(q || "", ""));
 }
 
 //  Extract the sha from a refs row URI: fragment (`#<sha>` or `#?<sha>`),

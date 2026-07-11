@@ -28,6 +28,7 @@ const store    = require("../../shared/store.js");
 const classify = require("../../shared/classify.js");
 const dag      = require("../../shared/dag.js");
 const subs     = require("../../shared/subs.js");
+const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const render   = require("../../view/render.js");
 const theme    = require("../../view/theme.js");
@@ -264,14 +265,17 @@ function emitRepo(repo, prefix, out, recurse) {
 
   //  Cur tip (for the ahead/behind divergence: SNIFFAtCurTip, no patch).
   const cur = log.curTip();
-  //  Summary branch label = the recentmost attach's VERBATIM query (DIS-057:
-  //  the GET record via wtlog.attachedBranch — status and post agree on the
-  //  branch): a named branch (`master`), a mounted sub's `/<project>[/<branch>]`
-  //  anchor (kept RAW, JAB-004), or empty (trunk → `?`).  A DETACHED checkout
-  //  (attach query is a bare commit sha) is labelled by the CURRENT tip, not the
-  //  stale detach point, so the summary tracks HEAD as posts advance it.
-  const attached = log.attachedBranch().rawQuery;
-  const branch = (cur && cur.sha && subs.isFullSha(attached)) ? cur.sha : attached;
+  //  SUBS-050: Summary branch label = the recentmost attach's parsed Branch
+  //  (DIS-057: the GET record via wtlog.attachedBranch — status and post agree
+  //  on the branch), formatted to the ONE canonical shape by the branch codec:
+  //  a named branch (`master`) or a mounted sub's `/<title>/.<parent>…/<branch>`
+  //  (absolute, at EVERY depth — no more three-shape leak), or empty (trunk →
+  //  `?`).  A DETACHED checkout (attach query is a bare commit sha) is labelled
+  //  by the CURRENT tip, not the stale detach point, so the summary tracks HEAD
+  //  as posts advance it.
+  const att = log.attachedBranch();
+  const branch = (cur && cur.sha && subs.isFullSha(att.rawQuery))
+        ? cur.sha : branchlib.format(att.br);
 
   //  --- JS-033: classify base-only gitlinks (SUBSDirty 3-axis) ---------
   //  Each deferred gitlink (classify.gitlinks) is pin-vs-tip compared on

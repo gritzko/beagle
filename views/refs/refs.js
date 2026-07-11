@@ -13,6 +13,7 @@ const wtlog = require(__dirname + "/../../shared/wtlog.js");
 //  retiring the io.log fd-1 bypass for this view.
 const hunkrows = require("../../shared/hunkrows.js");
 const navlib   = require("../../shared/nav.js");   // URI-011: full-URI banner
+const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
 
 //  JAB-004: emit ONE `refs:` report hunk for `repo` to `sink` (plain path).
 function refsOne(repo, sink) {
@@ -23,7 +24,8 @@ function refsOne(repo, sink) {
   const bnd = log.boundaries();
   //  DIS-053: trunk/no-branch is the bare `?` sigil, never a literal `?trunk`
   //  — byte-match C `be head` (graf/LOG.c trunk label is `?`).
-  const branch = cur.branch || "";
+  //  SUBS-050: format the parsed Branch to the ONE canonical label shape.
+  const branch = branchlib.format(cur.br);
 
   //  JAB-003: each raw() line appends its own "\n"; done() flushes the hunk.
   const out = hunkrows(sink, navlib.navLink("refs", ""));   // URI-014: `refs //name` word-uri

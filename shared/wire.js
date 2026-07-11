@@ -22,6 +22,7 @@ const isFullSha = require("./util/sha.js").isFullSha;   // JSQUE-016: -> shared/
 const shq = require("../view/render.js").shQuote;       // JSQUE-016: render -> view/
 const store = require("./store.js");   // GIT-018: JS store reader for the push-pack closure walk
 const uriarg = require("./uri.js");    // URI-015: scp-form remote → ssh://
+const branchlib = require("./branch.js");   // SUBS-050: the ONE branch codec
 
 //  --- transport classify -------------------------------------------------
 //  Decide the peer spawn from the remote URI, mirroring WIRECLI wcli_spawn:
@@ -131,9 +132,12 @@ function pickWant(refs, headSha, wantRef) {
   return null;
 }
 function isHead(name) { return name.indexOf("refs/heads/") === 0; }
+//  SUBS-050: a `refs/heads/X` name → the title-stripped branch KEY via the ONE
+//  branch codec (main → trunk ""); a non-heads ref (tag/…) carries no branch.
 function refReturn(r) {
-  const branch = isHead(r.name) ? r.name.slice("refs/heads/".length) : "";
-  return { sha: r.sha, name: r.name, branch: branch === "main" ? "" : branch };
+  const br = isHead(r.name) ? branchlib.fromWireRef(r.name, "")
+                            : branchlib.parse("", "");
+  return { sha: r.sha, name: r.name, branch: branchlib.key(br) };
 }
 
 //  --- read the raw pack to EOF ------------------------------------------

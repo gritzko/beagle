@@ -26,17 +26,18 @@
 
 const shalib = require("./util/sha.js");   // JSQUE-016: sha.js -> shared/util/
 const ulog = require("./ulog.js");
+const branchlib = require("./branch.js");  // SUBS-050: the ONE branch codec
 const isFullSha = shalib.isFullSha;
 
 const GET = "get", POST = "post", PATCH = "patch",
       PUT = "put", DEL = "delete", REPO = "repo", CON = "con";   // STATUS-005: con
 
-//  DOGQueryStripProject: `?/<project>/<branch>` → `<branch>`;
-//  `?/<project>` → ""; `?<branch>` (no leading /) → unchanged.
+//  SUBS-050: title-strip a recorded branch query to the refs/divergence KEY —
+//  the DOGQueryStripProject twin, now routed through the ONE branch codec (no
+//  hand-rolled indexOf/slice).  `?/<project>/<branch>` → `<branch>`,
+//  `?/<project>` → "", `?<branch>` (no leading /) → unchanged.
 function stripProject(query) {
-  if (!query || query[0] !== "/") return query || "";
-  const j = query.indexOf("/", 1);
-  return j < 0 ? "" : query.slice(j + 1);
+  return branchlib.key(branchlib.parse(query || "", ""));
 }
 
 //  DOGRefDrain over the `&`-chain: return { branch, sha } for one row's
@@ -56,6 +57,9 @@ function refOf(u, local) {
 }
 
 function open(be) {
+  //  SUBS-050: the shard [Title] the caller knows (repo.project) — re-heads a
+  //  title-stripped relative-dotted row when parsing it back to a Branch.
+  const title = (be && be.project) || "";
   //  Drain once into a plain JS row list (rule #4: no held native cursor).
   //  ts is kept as a BigInt; ron is the base64 stamp string.  `local` marks
   //  a host-less (authority-empty) row.
@@ -65,6 +69,16 @@ function open(be) {
     rows.push({ ts: log.time, ron: ron.encode(log.time), verb: log.verb,
                 uri: u, local: (u.authority === "" || u.authority == null) });
   });
+
+  //  SUBS-050: a recorded branch query → its parsed Branch.  An ABSOLUTE row
+  //  (`/<title>/…`) carries its own title head; any other shape re-heads with
+  //  the shard title, using the already sha-stripped `strippedBranch` (drops a
+  //  legacy `&<sha>` tail / a detached bare sha → trunk).
+  function parseBranch(rawQuery, strippedBranch) {
+    const raw = rawQuery || "";
+    const brStr = (raw[0] === "/") ? raw : (strippedBranch || "");
+    return branchlib.parse(brStr, title);
+  }
 
   //  Tip resolution: newest→oldest, only get/post (+patch for baseline)
   //  rows with a sha or a branch matter.  Returns { branch, sha, ts,
@@ -111,8 +125,10 @@ function open(be) {
         if (branch) break;
       }
     }
+    //  SUBS-050: the parsed Branch (title comes from the shard) alongside the
+    //  raw fields existing callers still read during the conversion.
     return { branch: branch, sha: sha, ts: ts, query: query,
-             rawQuery: rawQuery };
+             rawQuery: rawQuery, br: parseBranch(rawQuery, branch) };
   }
 
   //  attachedBranch — the SINGLE source of truth for "what branch is this wt
@@ -132,9 +148,11 @@ function open(be) {
       const detached = !ref.branch &&
             q.split("&").some(function (c) { return isFullSha(c); });
       return { branch: ref.branch || "", detached: detached,
-               rawQuery: r.uri.query || "", sha: ref.sha || "" };
+               rawQuery: r.uri.query || "", sha: ref.sha || "",
+               br: parseBranch(r.uri.query, ref.branch) };
     }
-    return { branch: "", detached: false, rawQuery: "", sha: "" };
+    return { branch: "", detached: false, rawQuery: "", sha: "",
+             br: branchlib.parse("", title) };
   }
 
   //  A `post` at index idx is commit-all iff no put/delete lies between

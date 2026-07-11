@@ -31,6 +31,7 @@ const checkout = require("../../shared/checkout.js");
 const relate   = require("../../shared/relate.js");
 const ingest   = require("../../shared/ingest.js");
 const pathlib  = require("../../shared/util/path.js");
+const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
 const wtpath = require("../../core/discover.js").wtpath;
@@ -88,14 +89,12 @@ function parseRemote(uri) {
   const path = u.path || "";
   const query = u.query || "";
   const frag = u.fragment || "";           // D1: the exact-commit pin (no `?`)
-  let proj = "", branch = "";
-  if (query && query[0] === "/") {
-    const segs = query.slice(1).split("/");
-    proj = segs[0] || "";
-    branch = segs.slice(1).join("/");
-  } else if (query) {
-    branch = query;
-  }
+  //  SUBS-050: split a `?/<proj>/<branch>` selector via the ONE branch codec —
+  //  the absolute head names the project, the tail (title-stripped) is the
+  //  branch key; a plain `?<branch>` re-heads to no project.
+  const br = branchlib.parse(query, "");
+  const proj = (query && query[0] === "/") ? br.title : "";
+  const branch = branchlib.key(br);
   //  A `file:`/scheme-less LOCAL store path (ends in `.be` or holds one).
   const hasStorePath = path.replace(/\/+$/, "").slice(-3) === ".be" ||
                        (path !== "" && !hasAuth);
