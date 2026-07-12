@@ -339,16 +339,22 @@ function resolveHex(k, hexish) {
 //  --- bare `be put` (no path args) — PUT-004 ------------------------------
 //  PUT-004: stage the whole wt vs baseline from the classifier's buckets —
 //  mod→put, mis↔unk→silent move, ok→restamp (no row), unk→skip; returns { ops }.
-function bareStage(repo, wtl, k) {
+function bareStage(repo, wtl, k, scope) {
   const eng = stage.prep(repo, wtl, k);
   const wtRoot = repo.wt;
   if (!eng.haveBase || !eng.baseTreeSha) return { ops: [] };
+
+  //  PUT-008: a bare put from a subdir cwd/nav scopes to that dir (be.ctxDir via
+  //  discover.ctxSub); "" (wt root) is the whole-wt fold, unchanged.  Filtering
+  //  the buckets scopes BOTH the move auto-pair (mis/unk) and the tracked walk.
+  const inScope = scope ? function (p) { return p === scope || p.indexOf(scope + "/") === 0; } : null;
 
   //  PUT-004: dirty list from the classifier (base⊕wt⊕wtlog put/del → buckets);
   //  wantClean adds the `ok` rows for restamp; already-staged paths are absent.
   const cls = classify.classifyMerge(repo, wtl, k, { wantClean: true, skipMeta: true });
   const mod = {}, mis = {}, unk = {}, ok = {};
   for (const r of cls.rows) {
+    if (inScope && !inScope(r.path)) continue;
     if (r.bucket === "mod") mod[r.path] = 1;
     else if (r.bucket === "mis") mis[r.path] = r.oldSha;
     else if (r.bucket === "unk") unk[r.path] = 1;
@@ -429,13 +435,27 @@ function bareStage(repo, wtl, k) {
 //  `put:<sub>` banner, prefixed `<sub>/…` — exactly as native relays them.  The
 //  parent gitlink bump is POST's job (like stageInSub), so the parent records
 //  nothing here.  Reuses core/recurse.walk (mount gate, `.gitmodules` order).
-function bareStageSubs(repo, prefix, ctx) {
+//  PUT-008: a sub at top-relative `subPrefix` vs the top-relative `scope` dir →
+//  the sub's OWN residual scope, or null to SKIP.  "" = whole sub (root fold, or
+//  the sub sits AT/BELOW scope); a scope INSIDE the sub descends as the residue.
+function subScope(subPrefix, scope) {
+  if (!scope) return "";
+  if (subPrefix === scope || subPrefix.indexOf(scope + "/") === 0) return "";
+  if (scope.indexOf(subPrefix + "/") === 0) return scope.slice(subPrefix.length + 1);
+  return null;
+}
+
+function bareStageSubs(repo, prefix, ctx, scope) {
   const out = putOut(ctx);
   recurse.walk(repo, prefix, function (subRepo, subPrefix) {
+    //  PUT-008: skip a sub disjoint from the scope dir; else pass its residual
+    //  scope ("" = whole sub) so a scoped bare put recurses only subs at/below it.
+    const ss = subScope(subPrefix, scope);
+    if (ss === null) return;
     //  SUBS-044: this sub FIRST (banner + own rows + relay-frame blanks), THEN
     //  its grandchildren — native's pre-order, banner-on-entry, then descend.
     const subK = store.open(subRepo.storePath, subRepo.project);
-    const r = bareStage(subRepo, wtlog.open(subRepo), subK);  // may throw PUTAMBIG
+    const r = bareStage(subRepo, wtlog.open(subRepo), subK, ss);  // may throw PUTAMBIG
     commitOps(subRepo, r.ops, ctx && ctx.T0);
     if (out) {
       out.open(subPrefix);                                          // DIS-060: sub banner = sub path (no put: scheme)
@@ -449,7 +469,7 @@ function bareStageSubs(repo, prefix, ctx) {
       //  (native skips them for an empty banner that exists only to descend).
       if (staged) { out.raw(""); out.raw(""); }
     }
-    bareStageSubs(subRepo, subPrefix, ctx);          // then descend grandchildren
+    bareStageSubs(subRepo, subPrefix, ctx, scope);   // then descend grandchildren
   });
 }
 
@@ -668,14 +688,18 @@ function putRun(ctx, argv, firstUri) {
     //  PUTStage opens its table before move detection) so a PUTAMBIG refusal
     //  carries the same partial banner (the edge-catch flushes it on the throw).
     openPutBanner(out, ctx);
-    const r = bareStage(repo, wtlog.open(repo), k);  // may throw PUTAMBIG
+    //  PUT-008: scope a bare put to the run's CONTEXT DIR (be.ctxDir via
+    //  discover.ctxSub, wt-relative; "" at the wt root = whole-wt, unchanged) so a
+    //  subdir cwd / pager nav stages only that subtree, never the whole tree.
+    const ctxSub = discover.ctxSub(repo);
+    const r = bareStage(repo, wtlog.open(repo), k, ctxSub);  // may throw PUTAMBIG
     commitOps(repo, r.ops, ctx.T0);
     if (out)
       for (const op of r.ops)
         if (op.path !== null && !op.silent)
           out.row(op.dst ? URI.make(undefined, undefined, op.path, undefined, op.dst) : op.path, "put", 0n);
     //  SUBS-044: then recurse mounted subs (pre-order), staging their interior.
-    bareStageSubs(repo, "", ctx);
+    bareStageSubs(repo, "", ctx, ctxSub);
     if (out) out.done();
     return;
   }
