@@ -79,7 +79,9 @@ const NAV_DIFF = {
 //  `mis` (gone from disk) wants unstaging → `[del]` (the delete verb).
 //  Already-staged rows (`put`, `new`) need no button — clicking [put] on them
 //  would be a no-op re-stage.
-const ACT_PUT = { unk: 1, mod: 1 };
+//  BE-049: `adv` (advanced sub) wants the gitlink bump staged → `[put]`
+//  (put stages the parent `put <sub>#<tip>` row; the row re-buckets `put`).
+const ACT_PUT = { unk: 1, mod: 1, adv: 1 };
 const ACT_DEL = { mis: 1 };
 
 //  JSQUE-008: `be status` as a loop HANDLER.  Converted from a `main();`

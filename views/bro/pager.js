@@ -1092,10 +1092,9 @@ Pager.prototype._actSpell = function (spell) {
   try {
     const s = this._resolveSpell(spell);
     if (!s) return;
-    //  BE-039/BE-041: an O-spell's row paths are TOP-relative in the VIEW's tree —
-    //  thread its `//authority` (path-less) so the mutation hits the nav'd tree.
-    const vu = this._parse(this._verbUri().uri);
-    const ctx = vu.authority !== undefined ? "//" + (vu.host || "") : "";
+    //  BE-049: thread the FULL nav context (`//WT/dir`, like the typed _applySpell
+    //  path) so a row path relative to a nav'd SUB resolves IN the sub, not the parent.
+    const ctx = this._context();
     if (this.driveSpell) this.driveSpell(s, ctx || undefined);
     this._refresh();
     //  show WHAT ran instead of _refresh's "refreshed"; keep its error if any

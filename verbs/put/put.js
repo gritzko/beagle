@@ -497,15 +497,17 @@ function subMountPrefix(repo, rel) {
 }
 
 //  SUBS-039/PUT: stage a sub-crossing path INSIDE the sub (its own wtlog); the
-//  parent records nothing (the gitlink bump is POST's job).  The row shows its
-//  full top-relative path under the `put:` banner; tallies feed PUTNONE.
+//  parent records nothing for an interior path (BE-049: naming the sub ITSELF
+//  also stages its gitlink bump).  Rows show the full top-relative path.
 function stageInSub(repo, pfx, uri, ctx) {
   const out = putOut(ctx);
   const u = new URI(uri);
   //  SUBS-051: descend mount by mount — re-probe the remainder for a nested
   //  mount against each descended sub, accumulating the top-relative prefix.
-  let subRepo = repo, rest = normRel(u.path), disp = "", seg = pfx;
+  //  BE-049: parRepo tracks the final sub's IMMEDIATE parent (the bump target).
+  let subRepo = repo, parRepo = repo, rest = normRel(u.path), disp = "", seg = pfx;
   for (;;) {
+    parRepo = subRepo;
     subRepo = be.find(wtpath(subRepo.wt, seg));
     rest = rest.slice(seg.length + 1);
     disp = disp ? disp + "/" + seg : seg;
@@ -534,6 +536,42 @@ function stageInSub(repo, pfx, uri, ctx) {
   //  all-skip PUTNONE decision after the whole arg batch (no per-arg throw).
   ctx._putStaged = (ctx._putStaged || 0) + r.ops.filter(function (o) { return o.path !== null; }).length;
   ctx._putSkipped = (ctx._putSkipped || 0) + r.items.filter(function (it) { return it.type === "skip"; }).length;
+  //  BE-049: the arg names the MOUNTED sub ITSELF — also stage the parent
+  //  gitlink bump (postSubs' `put <sub>#<tip>` row) when the tip left the pin.
+  if (rest === "" && !u.fragment && stageSubBump(parRepo, seg, subRepo, out, disp))
+    ctx._putStaged = (ctx._putStaged || 0) + 1;
+}
+
+//  BE-049: stage `put <sub>#<tip>` into the PARENT wtlog for an ADVANCED sub
+//  (an `adv` status row / [put] button) — the SAME row postSubs synthesises, so
+//  the next post's fold-decide commits the new 160000 pin.  A no-pin (fresh
+//  gitlink-add) or an unchanged/already-staged pin is a silent no-op (false).
+function stageSubBump(parRepo, seg, subRepo, out, disp) {
+  const cur = wtlog.open(subRepo).curTip();
+  const tip = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";
+  if (!tip) return false;
+  //  effective pin: the last staged bump row wins over the baseline gitlink.
+  let pin = "";
+  const wtl = wtlog.open(parRepo);
+  try {
+    const t = wtl.curTip();
+    if (t && t.sha && isFullSha(t.sha)) {
+      const parK = store.open(parRepo.storePath, parRepo.project);
+      const tree = parK.commitTree(t.sha);
+      if (tree) parK.readTreeRecursive(tree, function (l) {
+        if (l.path === seg && (l.kind === "s" || l.mode === 0o160000)) pin = l.sha;
+      });
+    }
+  } catch (e) { /* unreadable baseline → no bump */ }
+  wtl.eachPutDelete(wtl.boundaries().pd, function (r) {
+    if (r.verb !== "put" || (r.uri.path || "") !== seg) return;
+    if (isFullSha(r.uri.fragment || "")) pin = r.uri.fragment;
+  });
+  if (!isFullSha(pin) || pin === tip) return false;
+  ulog.append(parRepo.bePath, [{ verb: "put",
+    uri: URI.make(undefined, undefined, seg, undefined, tip) }]);
+  if (out) out.row(disp + "#" + tip.slice(0, 8), "put", 0n);
+  return true;
 }
 
 //  --- per-row STAGE (was the legacy handle body) -------------------------
