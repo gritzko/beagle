@@ -11,8 +11,8 @@
 //
 //  open(storePath, project) → reader where
 //    storePath = the store root (`<wt>` for a colocated primary, or the
-//                redirected store dir for a secondary wt; be.find().storePath)
-//    project   = the shard name (`be.find().project`); when empty the
+//                redirected store dir for a secondary wt; be.treeAt().storePath)
+//    project   = the shard name (`be.treeAt().project`); when empty the
 //                single shard dir under <store>/.be is auto-detected.
 //  The reader exposes:
 //    getObject(sha)        → { type, bytes } | undefined   (inflate + delta chase)
@@ -127,6 +127,11 @@ function indexPackByWalk(pk, fhi, ix, afterOff) {
 //  empty, auto-detect the single non-dotted subdir under `<store>/.be`.
 //  A colocated primary store IS `<wt>/.be`; the project shard sits inside.
 function shardDir(storePath, project) {
+  //  URI-016: a trailing slash is legitimate — [/wiki/URI]'s record spells `store`
+  //  as `/home/gritzko/.be/` — but io.readdir(dir + "/") returns every name with
+  //  its FIRST CHARACTER EATEN (array form, L165), so a pack lists as
+  //  `000000001.keeper` and mmap ENOENTs.  Normalise here, the one choke point.
+  storePath = String(storePath).replace(/\/+$/, "") || "/";
   let beDir = join(storePath, BE);
   if (!isDir(beDir)) {
     //  storePath might already point at the .be dir (or be the shard).

@@ -173,7 +173,7 @@ function sha1One(arg, ctx) {
 
   //  Emit the 41-byte line as ONE raw row into a TRUE hunk banner (plain==colour).
   //  URI-014: the word-URI spell `sha1 <uri>` from the ORIGINAL parsed slots
-  //  (pre-promotion) — verb OUT of the scheme; navLink injects be.authority +
+  //  (pre-promotion) — verb OUT of the scheme; navLink injects the derived nav authority +
   //  roots the path (strip a leading '/').
   if (sink) {
     const bannerUri = navlib.navLink("sha1", (u.path || "").replace(/^\//, ""), u.query, u.fragment);

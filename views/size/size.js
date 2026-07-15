@@ -124,7 +124,7 @@ function treeOf(k, sha) {
 function sizeOne(arg) {
   const _be = (typeof be !== "undefined") ? be : null;
   ambient.format();                              // JAB-004: mode read (plain==color here)
-  const repo = (_be && _be.repo) || ((_be && _be.find) ? _be.find() : null);
+  const repo = (_be && _be.repo) || ((_be && _be.treeAt) ? _be.treeAt() : null);
   const sink = (_be && _be.sink) || null;
   if (!repo || !sink) return;
 
@@ -150,7 +150,7 @@ function sizeOne(arg) {
 
   //  3) emit ONE row: the decimal size, as a TRUE hunk banner.
   //     URI-014: the word-URI spell `size <uri>` — verb OUT of the scheme,
-  //     navLink injects be.authority + roots the path (strip a leading '/').
+  //     navLink injects the nav authority (derived off be.context) + roots the path (strip a leading '/').
   const out = hunkrows(sink, navlib.navLink("size", path.replace(/^\//, ""), query, frag));
   out.raw(String(obj.bytes.length));
   out.done();

@@ -2,10 +2,10 @@
 //  twin of the landed `cat:` view: where cat: reads a wt FILE by path, blob:
 //  reads a tracked BLOB by the sha a URI resolves to, then emits its content as a
 //  HUNK exactly the way cat: does.  Pure JS over the libabc/libdog bindings:
-//  shared/store.js (object read + `descendPath` path descender + the canonical
-//  `resolveHexAny` sha/prefix→full-sha resolver), shared/wtlog.js (the empty-`?`
-//  cur-tip default), the URI binding (the structured scheme/path/query/frag
-//  split).  NO dog binary, NO /proc.
+//  shared/store.js (object read + the canonical `resolveHexAny` sha/prefix→
+//  full-sha resolver), core/resolve_hash.js (URI-016: THE URI->hash resolver —
+//  the path-bearing form's ref/hashlet/cur-tip resolution + the path descent),
+//  the URI binding (the structured scheme/path/query/frag split).  NO dog.
 //
 //  RULING (gritzko): blob: produces a HUNK like the other views (cat:/tree:/log:),
 //  NOT a raw byte dump.  So this view is modelled CLOSELY on views/cat/cat.js:
@@ -36,10 +36,10 @@
 "use strict";
 
 const store = require("../../shared/store.js");
-const wtlog = require("../../shared/wtlog.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const bro   = require("../../view/bro.js");
-const resolve = require("../../core/resolve.js");
+const discover = require("../../core/discover.js");   // URI-016: the nav context
+const resolve_hash = require("../../core/resolve_hash.js").resolve_hash;
 const isFullSha = require("../../shared/util/sha.js").isFullSha;
 const navlib = require("../../shared/nav.js");        // URI-014: word-URI banner
 
@@ -52,6 +52,19 @@ function resolveHexOrFull(k, hex) {
   return k.resolveHexAny(hex);
 }
 
+//  URI-016: THE resolver's record -> the blob sha, in blob:'s error dialect.
+//  resolve_hash's refusals map onto this view's contract (see the header): a
+//  missing segment / bad ref / unresolvable sha is BLOBNONE; a leaf that is a
+//  dir (tree) or a gitlink (commit) is BLOBFAIL, never a readable blob.
+function blobShaOf(bare) {
+  const ctx = discover.navCwd(discover.ctxDir());   // URI-016: derived off be.context
+  let r;
+  try { r = resolve_hash(ctx, bare); }
+  catch (e) { throw "BLOBNONE"; }
+  if (r.otype !== "blob") throw "BLOBFAIL";
+  return r.ohash;
+}
+
 const EMPTY32 = new Uint32Array(0);
 const CAP = 1 << 20;   // 1 MiB/hunk cap; a bigger blob splits with a #L<n> rebanner
 
@@ -60,40 +73,9 @@ const CAP = 1 << 20;   // 1 MiB/hunk cap; a bigger blob splits with a #L<n> reba
 //  ARBITRARY-length prefix (C WHIFFHexHashlet60 zero-pads any width).
 function isHexPrefix(s) { return !!s && s.length <= 40 && /^[0-9a-f]+$/.test(s); }
 
-//  Resolve the URI's root TREE sha for a path-bearing form (KEEPResolveTree):
-//  `?ref` is a branch name, a sha-prefix (commit→tree, or a tree sha used
-//  directly), or empty (→ the cur tip, HOME.cur_sha).  Returns the tree sha, or
-//  null when unresolvable (→ BLOBNONE at the caller).  Mirrors tree.js's
-//  resolveRootTree; a sha-prefix resolves via store.resolveHexAny (the canonical
-//  prefix resolver — scans the OBJECT index, so a non-tip short commit sha works).
-function resolveRootTree(k, wtl, query, frag) {
-  const hex = isHexPrefix(frag) ? frag : isHexPrefix(query) ? query : null;
-  if (hex) {
-    const sha = resolveHexOrFull(k, hex);       // JS-082: full-sha verbatim
-    if (!sha) return null;                      // none, or ambiguous prefix (null)
-    const obj = k.getObject(sha);
-    return obj ? commitOrTree(k, { sha: sha, type: obj.type }) : null;
-  }
-  if (query) {
-    let sha = k.resolveRef(query);
-    if (!sha) { try { sha = resolve.resolveHex(k, query); } catch (e) {} }
-    if (!sha) return null;
-    const obj = k.getObject(sha);
-    return obj ? commitOrTree(k, { sha: sha, type: obj.type }) : null;
-  }
-  const cur = wtl.curTip();
-  if (!cur || !cur.sha) return null;
-  const obj = k.getObject(cur.sha);
-  return obj ? commitOrTree(k, { sha: cur.sha, type: obj.type }) : null;
-}
-
-//  A located object {sha,type} → its TREE sha: a commit deref's to its tree, a
-//  tree is used directly.  A blob/tag → null (no tree to descend → BLOBNONE).
-function commitOrTree(k, o) {
-  if (o.type === "tree") return o.sha;
-  if (o.type === "commit") return k.commitTree(o.sha) || null;
-  return null;
-}
+//  URI-016: resolveRootTree/commitOrTree are GONE — the path-bearing form goes
+//  through resolve_hash (blobShaOf).  They accepted a TREE sha as the root,
+//  which [/wiki/URI] step 5 forbids: `chash` is a COMMIT in every case.
 
 //  JAB-004: blob ONE arg — self-parse blob:<uri>, read be.repo/be.sink +
 //  ambient.format(); `ctx` = direct-handler fallback (no global be).
@@ -117,7 +99,6 @@ function blobOne(arg, ctx) {
   if (auth) throw "BLOBFAIL";
 
   const k   = store.open(repo.storePath, repo.project);
-  const wtl = wtlog.open(repo);
 
   //  Resolve the URI to a BLOB sha (the by-object-sha resolution — the only part
   //  that differs from cat:'s by-path read).  `sha` names the blob; `bannerKey`
@@ -135,18 +116,14 @@ function blobOne(arg, ctx) {
     if (!sha) throw "BLOBNONE";                 // no object with that prefix
     bannerKey = sha;                            // banner the FULL object sha
   } else {
-    //  Path-bearing: resolve the root tree (`?ref`/sha/cur-tip), descend the
-    //  `./path` segments, require a BLOB (non-dir) leaf.  A non-hex fragment
-    //  (`#L42`) is ignored — resolveRootTree only reads query/frag for a sha.
-    const rootTree = resolveRootTree(k, wtl, query, frag);
-    if (!rootTree) throw "BLOBNONE";            // bad ref / unresolvable sha
-    const segs = path.split("/").filter(function (s) { return s !== "" && s !== "."; });
-    const leaf = k.descendPath(rootTree, segs);
-    if (!leaf) throw "BLOBNONE";                // missing segment / can't descend
-    //  The leaf must be a file-like blob (100644/100755/120000), NOT a dir
-    //  (040000) or a gitlink (160000 — a submodule commit, not a readable blob).
-    if (leaf.kind === "tree" || leaf.kind === "commit") throw "BLOBFAIL";
-    sha = leaf.sha;
+    //  URI-016: the path-bearing form IS [/wiki/URI] §URI->hash steps 5+6 — it
+    //  resolves through THE resolver, never a local twin.  `blob:` is this
+    //  view's OWN scheme, so it is shed; the `[path][?ref][#frag]` left over is
+    //  what the spec resolves.  A non-hex `#L42` is a bro line-anchor, not a
+    //  hashlet — it is dropped so it cannot reach step 5.
+    const rev = isHexPrefix(frag) ? frag : undefined;
+    const bare = URI.make(undefined, undefined, path, u.query, rev) || path;
+    sha = blobShaOf(bare);
     bannerKey = path;                           // banner the path (like cat:)
   }
 

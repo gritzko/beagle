@@ -344,7 +344,7 @@ function bareStage(repo, wtl, k, scope) {
   const wtRoot = repo.wt;
   if (!eng.haveBase || !eng.baseTreeSha) return { ops: [] };
 
-  //  PUT-008: a bare put from a subdir cwd/nav scopes to that dir (be.ctxDir via
+  //  PUT-008: a bare put from a subdir cwd/nav scopes to that dir (be.ctxDir() via
   //  discover.ctxSub); "" (wt root) is the whole-wt fold, unchanged.  Filtering
   //  the buckets scopes BOTH the move auto-pair (mis/unk) and the tracked walk.
   const inScope = scope ? function (p) { return p === scope || p.indexOf(scope + "/") === 0; } : null;
@@ -508,7 +508,7 @@ function stageInSub(repo, pfx, uri, ctx) {
   let subRepo = repo, parRepo = repo, rest = normRel(u.path), disp = "", seg = pfx;
   for (;;) {
     parRepo = subRepo;
-    subRepo = be.find(wtpath(subRepo.wt, seg));
+    subRepo = be.treeAt(wtpath(subRepo.wt, seg));
     rest = rest.slice(seg.length + 1);
     disp = disp ? disp + "/" + seg : seg;
     const deeper = rest ? subMountPrefix(subRepo, rest) : "";
@@ -684,9 +684,9 @@ function putRun(ctx, argv, firstUri) {
   //  URI-015: scp remotes → ssh:// (classifyPutArg/applyWire throw on the raw form).
   argv = argv.map(uriarg.fromGit);
   ctx.args = argv;
-  //  BE-032: a repo-less mint falls back to the cwd walk-up — never find(<arg>),
+  //  BE-032: a repo-less mint falls back to the cwd walk-up — never treeAt(<arg>),
   //  a file URI is not a directory.
-  const repo = ctx.repo || be.find();
+  const repo = ctx.repo || be.treeAt();
   ctx.repo = repo;
   const k = store.open(repo.storePath, repo.project);
   const out = putOut(ctx);
@@ -726,7 +726,7 @@ function putRun(ctx, argv, firstUri) {
     //  PUTStage opens its table before move detection) so a PUTAMBIG refusal
     //  carries the same partial banner (the edge-catch flushes it on the throw).
     openPutBanner(out, ctx);
-    //  PUT-008: scope a bare put to the run's CONTEXT DIR (be.ctxDir via
+    //  PUT-008: scope a bare put to the run's CONTEXT DIR (be.ctxDir() via
     //  discover.ctxSub, wt-relative; "" at the wt root = whole-wt, unchanged) so a
     //  subdir cwd / pager nav stages only that subtree, never the whole tree.
     const ctxSub = discover.ctxSub(repo);

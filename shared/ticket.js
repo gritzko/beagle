@@ -1,17 +1,18 @@
 //  shared/ticket.js — BRO-012: the ONE ticket-code resolver both click paths
 //  converge on.  An issue key `ABC-123` (the tokenizers' `F` token) names a
 //  ticket file at `todo/<TOPIC>/<KEY>.{md,txt,mkd}` (thin) or
-//  `todo/<TOPIC>/<KEY>/README.<ext>` (fat) under a worktree root; this
-//  maps a key → a `cat://<name>/todo/<TOPIC>/<KEY>.<ext>` nav URI.  The RESOLVER
-//  owns root order (be.todoRoot()): explicit $TODO_ROOT, then the CURRENT wt
-//  root, then the OPEN/launch wt root; the first whose file exists wins.
+//  `todo/<TOPIC>/<KEY>/README.<ext>` (fat) under the PROJECT root; this
+//  maps a key → a `cat://<name>/todo/<TOPIC>/<KEY>.<ext>` nav URI.  URI-016:
+//  the ticket tree is be.todoRoot() — `projectRoot()+"/todo"`, ONE dir, no env
+//  var and no candidate list; a key that is not there simply has no ticket.
 //  Key detection uses the SHARED tokenizer (`tok.parse` with the mkd grammar,
 //  the same `uc ucnum* "-" dgt+` rule that mints the body `F`), so the log
 //  view's `F` can never drift from the pager's.  Resolves ONLY through
 //  be.todoRoot/be.navCwd + the URI class — no hand-composed path, no URI regex.
 "use strict";
 
-const join = require("./util/path.js").join;
+const pathlib = require("./util/path.js");
+const join = pathlib.join, dirname = pathlib.dirname;
 
 //  BRO-012: `todo/<TOPIC>/<KEY>.<ext>` layout + the extension probe order.
 const TODO = "todo";
@@ -64,27 +65,28 @@ function findFile(dir, rel) {
 }
 
 //  BRO-012: resolve an issue key → a `cat://<name>/todo/<TOPIC>/<KEY>.<ext>` nav
-//  URI, or null (a missing ticket = a quiet no-op).  The RESOLVER owns root
-//  order via be.todoRoot() — $TODO_ROOT env, current wt root, open/launch wt
-//  root — probing `<root>/todo/<TOPIC>/<KEY>.<ext>` under each; first hit wins.
-//  The open URI is composed via be.navCwd(root) (the root's `//name` context)
-//  + the URI class (scheme=cat, authority=`//name`, rooted path).
+//  URI, or null (a missing ticket = a quiet no-op).  URI-016: there is no root
+//  ORDER any more — be.todoRoot() is the ONE ticket tree, `projectRoot()+"/todo"`,
+//  so this probes `<todoRoot>/<TOPIC>/<KEY>.<ext>` and that is the whole search.
+//  The paths stay PROJECT-ROOT-relative (`todo/TOPIC/KEY.ext`, as the nav URI
+//  wants them), so the probe root is todoRoot()'s parent — the project root, by
+//  the rule.  The open URI is composed via be.navCwd(root) (the root's `//name`
+//  context) + the URI class (scheme=cat, authority=`//name`, rooted path).
 function ticketUri(key) {
   if (typeof be === "undefined" || !be.todoRoot || !be.navCwd) return null;
   const rel = ticketDir(key);
   if (!rel) return null;
-  const base = rel + "/" + key;                       // todo/TOPIC/KEY (no ext)
-  for (const root of be.todoRoot()) {
-    const hit = findFile(root, base);
-    if (!hit) continue;
-    //  navCwd(root) → the root's `//name` context (authority carries its own
-    //  `//`); a present authority roots the path, else a plain `cat:<path>`.
-    const ctx = be.navCwd(root);
-    let a; try { a = ctx ? uri._parse(ctx).authority : undefined; } catch (e) { a = undefined; }
-    const p = a !== undefined ? "/" + hit : hit;
-    return URI.make("cat", a, p) || ("cat:" + hit);
-  }
-  return null;
+  const dir = be.todoRoot();                          // <projectRoot>/todo
+  if (!dir) return null;                              // repo-less → no tickets
+  const root = dirname(dir);                          // == projectRoot()
+  const hit = findFile(root, rel + "/" + key);        // todo/TOPIC/KEY (no ext)
+  if (!hit) return null;
+  //  navCwd(root) → the root's `//name` context (authority carries its own
+  //  `//`); a present authority roots the path, else a plain `cat:<path>`.
+  const ctx = be.navCwd(root);
+  let a; try { a = ctx ? uri._parse(ctx).authority : undefined; } catch (e) { a = undefined; }
+  const p = a !== undefined ? "/" + hit : hit;
+  return URI.make("cat", a, p) || ("cat:" + hit);
 }
 
 module.exports = { scanKeys: scanKeys, ticketUri: ticketUri, ticketDir: ticketDir };

@@ -79,8 +79,8 @@ const NAV_DIFF = {
 //  `mis` (gone from disk) wants unstaging → `[del]` (the delete verb).
 //  Already-staged rows (`put`, `new`) need no button — clicking [put] on them
 //  would be a no-op re-stage.
-//  BE-049: `adv` (advanced sub) wants the gitlink bump staged → `[put]`
-//  (put stages the parent `put <sub>#<tip>` row; the row re-buckets `put`).
+//  BE-049: `adv` (a mounted sub whose tip DESCENDS the parent's gitlink pin)
+//  stages too — `put <sub>` records the parent's gitlink bump to the new tip.
 const ACT_PUT = { unk: 1, mod: 1, adv: 1 };
 const ACT_DEL = { mis: 1 };
 
@@ -104,7 +104,7 @@ const ACT_DEL = { mis: 1 };
 //  JAB-004/DIS-060: PLAIN verb (`.jab="args"`) — reads ambient off global `be`.
 //  A PATH arg SCOPES status to that subtree: parse the URI (never string-slice),
 //  take the PATH slot, IGNORE a `?ref`/`#frag` (status describes the LIVE wt, cf.
-//  ls) — be.find on the abs path re-discovers a mounted sub's shard, so `status
+//  ls) — be.treeAt on the abs path re-discovers a mounted sub's shard, so `status
 //  test` shows the sub's own status.  No path arg → the top wt (columnar view).
 function status() {
   const _be = (typeof be !== "undefined") ? be : null;
@@ -160,8 +160,8 @@ function statusOne(row, ctx) {
   //  the pinned repo. A legacy row.uri may pin a sub wt root (re-discover it).
   const pinned = (_be && _be.repo) || (ctx && ctx.repo) || null;
   const reqAbs = (row && row.uri && row.uri !== ".") ? row.uri : null;
-  const repo = reqAbs ? be.find(reqAbs)
-        : (pinned || be.find((row && row.uri) || undefined));
+  const repo = reqAbs ? be.treeAt(reqAbs)
+        : (pinned || be.treeAt((row && row.uri) || undefined));
 
   //  The display-path prefix for this hunk: "" at the top, else this sub's
   //  path RELATIVE to the top wt. Taken EXPLICITLY from the wt roots (JAB-004) —
@@ -432,7 +432,7 @@ function emitRepo(repo, prefix, out, recurse, filter) {
       if (!s || !s.mounted) continue;        // declared but not a live mount
       const subWt = subs.mountWtDir(repo, s.path);
       let subRepo;
-      try { subRepo = be.find(subWt); } catch (e) { continue; }
+      try { subRepo = be.treeAt(subWt); } catch (e) { continue; }
       emitRepo(subRepo, joinPrefix(prefix, s.path), out, recurse);
     }
   }
@@ -480,7 +480,7 @@ function computeDivergence(k, log, cur) {
 function isMount(wtRoot, subpath) {
   const p = wtpath(wtRoot, subpath + "/.be");
   //  SUBS-049: the `.be` FILE form OR a PRIMARY nested wt (`.be` DIR + wtlog),
-  //  mirroring be.find's anchor — parity with the FILE-anchored sub in status.
+  //  mirroring be.treeAt's anchor — parity with the FILE-anchored sub in status.
   let k; try { k = io.stat(p).kind; } catch (e) { return false; }
   if (k === "reg") return true;
   if (k !== "dir") return false;

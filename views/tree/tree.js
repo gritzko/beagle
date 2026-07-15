@@ -2,10 +2,10 @@
 //  a git tree and emit ONE row per entry in raw git-tree order:
 //    `<mode6> <type6> <sha40>\t<name>[/]`
 //  with a leading BARE `..` row first iff the URI path descends below the tree
-//  root.  Pure JS over the libabc/libdog bindings: shared/store.js (object/ref
-//  read + the descendPath path descender), core/resolve.js (the hex/short-sha
-//  classifier), shared/wtlog.js (the empty-`?` cur-tip default), the URI binding
-//  (the structured scheme/path/query/frag split).  NO dog binary, NO /proc.
+//  root.  Pure JS over the libabc/libdog bindings: shared/store.js (object read),
+//  core/resolve_hash.js (URI-016: THE URI->hash resolver — the `?branch`/`?<hex>`/
+//  `#<hex>`/empty resolution + the `./path` descent), the URI binding (the
+//  structured scheme/path/query/frag split).  NO dog binary, NO /proc.
 //  Mirrors keeper/PROJ.c::KEEPProjTree (resolve → descend → drain → emit) +
 //  KEEP.c::KEEPResolveTree (the `?branch`/`?<hex>`/`#<hex>`/empty resolution) +
 //  WALK.c::KEEPTreeDescend (the `./path` segment walk).
@@ -32,9 +32,9 @@
 "use strict";
 
 const store  = require("../../shared/store.js");
-const wtlog  = require("../../shared/wtlog.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
-const resolve = require("../../core/resolve.js");
+const discover = require("../../core/discover.js");   // URI-016: the nav context
+const resolve_hash = require("../../core/resolve_hash.js").resolve_hash;
 const recurse = require("../../core/recurse.js");   // DIS-060: gitlink → sub store
 const navlib  = require("../../shared/nav.js");   // URI-011: full-URI hunk helper
 
@@ -113,32 +113,39 @@ function dotdotRow(color) {
   return color ? (NAME_OPEN + ".." + RESET) : "..";
 }
 
-//  Resolve the URI's root TREE sha (KEEPResolveTree).  `frag`/`query` may pin a
-//  sha (commit→tree deref, or a tree sha used directly) or a branch ref; an
-//  empty query+frag defaults to the cur tip (HOME.cur_sha).  Returns the tree
-//  sha, or null when the ref/sha is unresolvable (→ TREENONE at the caller).
-function resolveRootTree(k, wtl, query, frag) {
-  //  A hex (full sha or 6..40 short prefix) in EITHER slot is a sha: native
-  //  promotes `?<hex>`→fragment (KEEPProjDispatch :664) and resolves it as a
-  //  tree, or a commit deref'd to its tree.  Fragment wins when both are set.
-  const hex = resolve.isHexish(frag) ? frag
-            : resolve.isHexish(query) ? query
-            : null;
-  if (hex) {
-    const full = resolve.resolveHex(k, hex);
-    if (!full) return null;
-    return commitOrTree(k, full);
+//  URI-016: resolveRootTree is GONE — the ref/sha/cur-tip resolution AND the
+//  `./path` descent are [/wiki/URI] §URI->hash steps 5+6, so they go through THE
+//  resolver (treeAt).  It also took a TREE sha as the root, which step 5 forbids:
+//  `chash` is a COMMIT in every case.
+
+//  URI-016: resolve `tree:<path>[?rev]` to the tree to LIST, via resolve_hash.
+//  `tree:` is this view's OWN scheme, so it is shed; the `[path][?ref][#frag]`
+//  left over is what the spec resolves.  Returns { k, sha }: the reader for the
+//  shard the object lives in, and the tree sha.  Refusals map to this view's
+//  contract — unresolvable → TREENONE, a non-tree leaf → TREEFAIL.
+function treeAt(repo, path, u, segs) {
+  const ctx = discover.navCwd(discover.ctxDir());   // URI-016: derived off be.context
+  const bare = URI.make(undefined, undefined, path, u.query, u.fragment) || path;
+  let r;
+  try { r = resolve_hash(ctx, bare); } catch (e) { throw "TREENONE"; }
+  //  The record names the shard the object lives in; `store` IS the `.be` dir,
+  //  which store.open takes directly.
+  let k = store.open(r.store, r.shard);
+  //  DIS-060: a gitlink leaf (bare `tree <sub>`) reads otype "commit" — the PIN
+  //  the parent recorded.  That commit lives in the MOUNTED sub's shard, not in
+  //  the parent's, so cross into it and list the pin's tree.  `tree <sub>/`
+  //  instead reads otype "tree" off the sub's own checkout (URI-016's
+  //  trailing-slash convention: named vs entered).
+  if (r.otype === "commit") {
+    const d = recurse.resolveRepoForPath(repo, segs.join("/"));
+    if (!d.prefix) throw "TREEFAIL";            // gitlink not mounted → can't cross
+    k = store.open(d.repo.storePath, d.repo.project);
+    const st = commitOrTree(k, r.ohash);
+    if (!st) throw "TREENONE";                  // pin absent from the sub store
+    return { k: k, sha: st };
   }
-  //  A non-hex query is a branch/ref name: resolve → commit → its tree.
-  if (query) {
-    const sha = k.resolveRef(query);
-    if (!sha) return null;
-    return commitOrTree(k, sha);
-  }
-  //  Empty `?` (+ empty `#`): the cur tip (HOME.cur_sha).
-  const cur = wtl.curTip();
-  if (!cur || !cur.sha) return null;
-  return commitOrTree(k, cur.sha);
+  if (r.otype !== "tree") throw "TREEFAIL";     // file-as-tree / non-tree leaf
+  return { k: k, sha: r.ohash };
 }
 
 //  A resolved object id → its TREE sha: a commit deref's to its tree, a tree is
@@ -164,7 +171,7 @@ function treeOne(arg, ctx) {
   //  plain keeps the byte-identical hand-painted `out.raw` rows (the content
   //  hunk's HUNKu8sFeedText render lacks tree's bespoke plain shape).
   const wantU = sink && mode !== "plain";
-  const repo = (_be && _be.repo) || (ctx && ctx.repo) || (_be ? _be.find() : null);
+  const repo = (_be && _be.repo) || (ctx && ctx.repo) || (_be ? _be.treeAt() : null);
   if (!repo) return;
 
   //  URI-013: ONE structured parse of the whole `tree:<path>[?rev]` — the URI
@@ -175,42 +182,15 @@ function treeOne(arg, ctx) {
   const query = u.query || "";
   const frag  = u.fragment || "";
 
-  const k   = store.open(repo.storePath, repo.project);
-  const wtl = wtlog.open(repo);
-
-  //  1) resolve the root tree (ref/sha/cur-tip).
-  const rootTree = resolveRootTree(k, wtl, query, frag);
-  if (!rootTree) throw "TREENONE";              // bad ref / unresolvable sha
-
-  //  2) descend the `./path` segments (the descendPath anchor).  "."/"./"/empty
-  //  collapse to the root; below-root ⇒ a leading `..` row.  A missing segment
-  //  → TREENONE; a non-tree LEAF (file-as-tree) → TREEFAIL.
+  //  URI-016: steps 5+6 — the ref/sha/cur-tip resolution AND the `./path`
+  //  descent — are THE resolver's, not this view's.  "."/"./"/empty collapse to
+  //  the root; below-root ⇒ a leading `..` row.
   const segs = path.split("/").filter(function (s) { return s !== "" && s !== "."; });
-  let leaf = k.descendPath(rootTree, segs);
-  if (!leaf) {
-    //  descendPath returns undefined for BOTH a missing segment (PROJNONE) and a
-    //  can't-descend-through-non-tree mid-path (PROJFAIL).  Native distinguishes
-    //  them, but both yield 0 stdout rows + nonzero — TREENONE covers the stdout
-    //  parity (the dog exit code split is not reproduced; see header).
-    throw "TREENONE";
-  }
-
-  //  DIS-060: a gitlink leaf (`tree <sub>?<ref>`) CROSSES into the mounted
-  //  submodule — list the tree of its PINNED commit (leaf.sha), mirroring the
-  //  commit: pin descent.  `treeK` is the sub store below a gitlink, else base.
-  let treeK = k;
-  if (leaf.kind === "commit") {
-    const d = recurse.resolveRepoForPath(repo, segs.join("/"));
-    if (!d.prefix) throw "TREEFAIL";            // gitlink not mounted → can't cross
-    treeK = store.open(d.repo.storePath, d.repo.project);
-    const st = commitOrTree(treeK, leaf.sha);
-    if (!st) throw "TREENONE";                  // pin absent from the sub store
-    leaf = { sha: st, mode: 0o40000, kind: "tree" };
-  }
-  if (leaf.kind !== "tree") throw "TREEFAIL";   // file-as-tree / non-tree leaf
+  const at = treeAt(repo, path, u, segs);
+  const treeK = at.k;
 
   const belowRoot = segs.length > 0;
-  const entries = treeK.readTree(leaf.sha);
+  const entries = treeK.readTree(at.sha);
   if (!entries) throw "TREEFAIL";               // leaf sha not a readable tree
 
   //  3) emit.  COLOUR leads with the banner band; PLAIN has no banner.  The

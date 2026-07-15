@@ -179,7 +179,7 @@ function load(wtRoot) {
     sets.push({ pats: text == null ? [] : parseSet(text), prefix: prefix });
 
     //  a .gitignore has effect only INSIDE its own repo: stop at the first
-    //  `.git`/`.be` boundary, or an enclosing repo swallows the wt (hive cells).
+    //  `.git`/`.be` boundary, or an enclosing repo swallows the wt (worktrees).
     if (statKind(join(cur, ".be")) !== undefined ||
         statKind(join(cur, ".git")) !== undefined) break;
     if (home && cur === home) break;

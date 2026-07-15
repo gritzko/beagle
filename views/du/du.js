@@ -5,7 +5,7 @@
 //  ONE store; it accretes packs + indexes with zero visibility.  One row per
 //  shard (packs, indexes, other, total) + a store TOTAL row.
 //
-//  STORE RESOLUTION (never `$HOME/.be`): be.find() → { storePath, project };
+//  STORE RESOLUTION (never `$HOME/.be`): be.treeAt() → { storePath, project };
 //  store.shardDir(storePath, project) is THIS repo's shard, and its PARENT is
 //  the store ROOT that hosts every shard (a colocated primary store's `<wt>/
 //  .be`, or the redirect target of a secondary wt's `.be` file — the GET-038
@@ -185,8 +185,8 @@ function du() {
     if (w !== "" && w !== ".") miss(w, "DUNONE");
   }
 
-  //  Resolve THIS repo's store (be.find throws when repo-less → nonzero exit).
-  const repo = (_be && _be.repo) || ((_be && _be.find) ? _be.find() : null);
+  //  Resolve THIS repo's store (be.treeAt throws when repo-less → nonzero exit).
+  const repo = (_be && _be.repo) || ((_be && _be.treeAt) ? _be.treeAt() : null);
   if (!repo) miss(".", "DUNONE");
   const shard   = store.shardDir(repo.storePath, repo.project);
   const root    = pathlib.dirname(shard);        // the store root = shard's parent

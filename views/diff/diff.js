@@ -302,7 +302,7 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
       else if ((sp + "/").indexOf(prefix) !== 0) continue;   // out of dir scope
     }
     if (!recurse.isMount(repo.wt, sp)) continue;
-    let subRepo; try { subRepo = be.find(wtpath(repo.wt, sp)); } catch (e) { continue; }
+    let subRepo; try { subRepo = be.treeAt(wtpath(repo.wt, sp)); } catch (e) { continue; }
     const subK = store.open(subRepo.storePath, subRepo.project);
     const subBase = (wtlog.open(subRepo).baselineTip() || {}).sha || "";
     const subTree = subBase ? subK.commitTree(subBase) : null;
@@ -339,7 +339,7 @@ function recurseSubPins(subPath, oldPin, newPin, color, ctx, parentRepo,
   if (!isFullSha(oldPin) || !isFullSha(newPin) || oldPin === newPin) return;
   if (!recurse.isMount(parentRepo.wt, subPath)) return;
   let subRepo;
-  try { subRepo = be.find(pathlib.join(parentRepo.wt, subPath)); } catch (e) { return; }
+  try { subRepo = be.treeAt(pathlib.join(parentRepo.wt, subPath)); } catch (e) { return; }
   const subK = store.open(subRepo.storePath, subRepo.project);
   const fromTree = subK.commitTree(oldPin), toTree = subK.commitTree(newPin);
   if (!fromTree || !toTree) return;
@@ -500,7 +500,7 @@ function diffOne(arg) {
   const fctx = { flags: flags };
   const color = dmode === "color";
 
-  const repo = (_be && _be.repo) || be.find();
+  const repo = (_be && _be.repo) || be.treeAt();
   const k = store.open(repo.storePath, repo.project);
 
   //  JS-071: a pinned be.views spec (commit.js / COMMIT-006, keyed by be.uri =
@@ -579,7 +579,7 @@ function diffOne(arg) {
 //  JAB-004: PURE plain-args verb (`.jab="args"`) — loops args reading `be` only;
 //  diff recurses in-process (direct calls, NOT {enqueue}) so run() once suffices.
 function diff() {
-  //  DIFF-013: no-positional `jab diff` scopes to the run's CONTEXT DIR (be.ctxDir
+  //  DIFF-013: no-positional `jab diff` scopes to the run's CONTEXT DIR (be.ctxDir()
   //  via discover.ctxSub, ROOTED + dir-form so parseDiffArg's argRel skips the ctx
   //  re-resolve); a subdir cwd/nav diffs that subtree, the wt root (ctxSub "") the
   //  whole wt (the DIFF-012 "" spec).
@@ -600,7 +600,7 @@ module.exports = diff;
 //  parent tree has only a `160000` gitlink at `<sub>`, which blobAtTree can't
 //  descend (→ undefined → a false WHOLLY-ADDED).  This mirrors recurseSubPins
 //  (the recursive whole-tree path): enumerate the parent tree's gitlinks, gate
-//  each on recurse.isMount, open the sub via be.find/store.open.
+//  each on recurse.isMount, open the sub via be.treeAt/store.open.
 //
 //  subMountSplit(k, parentTreeSha, repo, path, ctx) → null when `path` is NOT
 //  under a live mount (caller keeps the plain parent-tree read).  Else
@@ -627,7 +627,7 @@ function subMountSplit(k, parentTreeSha, repo, path, ctx) {
   //  genuinely added file.  Only a LIVE mount resolves to the sub shard.
   if (!recurse.isMount(repo.wt, best)) return null;
   let subRepo;
-  try { subRepo = be.find(wtpath(repo.wt, best)); } catch (e) { return null; }
+  try { subRepo = be.treeAt(wtpath(repo.wt, best)); } catch (e) { return null; }
   let subK;
   try { subK = store.open(subRepo.storePath, subRepo.project); }
   catch (e) { return null; }

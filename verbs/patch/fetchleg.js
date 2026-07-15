@@ -26,7 +26,7 @@ function isFetchable(arg) {
 }
 
 //  PATCH-011: YES iff the arg carries a SCHEME — a source URI never rides
-//  be.find (it is not a context path; the repo stays the ambient/cwd context).
+//  be.treeAt (it is not a context path; the repo stays the ambient/cwd context).
 function isSchemed(arg) {
   if (!arg) return false;
   let u; try { u = new URI(String(arg)); } catch (e) { return false; }

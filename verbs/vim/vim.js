@@ -31,7 +31,12 @@ function target(name, args) {
     if (repo) return discover.wtpath(repo.wt, discover.argRel(repo, raw));
     return pathlib.wtJoin(io.cwd(), raw);      // repo-less CLI: cwd-confined
   }
-  const ctx = (typeof be !== "undefined" && be.context) || "";
+  //  DIS-061: no file operand → the pager's stashed CURRENT file (be.prev_uri,
+  //  normalized to a typed-arg-shaped URI for a single-hunk FILE view); an empty
+  //  stash falls back to today's behaviour — the nav CONTEXT's own path.  The
+  //  file-focus lives HERE (the pager welds nothing); both resolve identically.
+  const prev = (typeof be !== "undefined" && be && be.prev_uri) || "";
+  const ctx = prev || ((typeof be !== "undefined" && be.context) || "");
   let u = null; try { u = uri._parse(ctx); } catch (e) { u = null; }
   if (!u || (u.authority === undefined && !u.path))
     miss(name, "no file (no arg, no context path)", "VIMNONE");

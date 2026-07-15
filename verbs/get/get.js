@@ -135,7 +135,7 @@ function oldTipOf(bePath) {
 //  objects there) — every file then reads `unk`.  So resolve the source down to
 //  the REAL store: when `<srcRoot>/.be` (or `<srcBe>` itself) is a FILE, follow
 //  its row-0 `repo` redirect (be.repoFromBe / be.projectFromQuery, the same
-//  DOGRepoFromBe split be.find uses) to the store dir + project, and record THAT
+//  DOGRepoFromBe split be.treeAt uses) to the store dir + project, and record THAT
 //  — never the worktree path.  A plain store source resolves to itself unchanged.
 //  Returns { storeRoot, storeBe, proj } where storeBe is the real `<store>/.be`.
 function resolveLocalSource(rem) {
@@ -148,7 +148,7 @@ function resolveLocalSource(rem) {
     return { storeRoot: rem.srcRoot, storeBe: rem.srcBe, proj: rem.proj };
 
   //  Worktree source: read row 0 (the `repo|<storepath>` redirect) and split it
-  //  to the real store dir + project — the same resolution be.find performs on a
+  //  to the real store dir + project — the same resolution be.treeAt performs on a
   //  secondary wt anchor.
   let u0;
   ulog.each(beFile, function (log) { if (u0 === undefined) u0 = log.uri; });
@@ -203,7 +203,7 @@ function seedRemote(rem, wt) {
   //  Resolve the anchor AT wt and land the pack in THAT shard; green-field
   //  (no own anchor — an ANCESTOR anchor is the test-firewall `.be`, not this
   //  wt) fresh-clones into `<wt>/.be` as before.
-  let info; try { info = be.find(wt); } catch (e) { info = undefined; }
+  let info; try { info = be.treeAt(wt); } catch (e) { info = undefined; }
   if (info && info.wt !== wt) info = undefined;
   //  GET-044: resolve the DESTINATION shard dir BEFORE the fetch so wire.fetch
   //  can STREAM the pack into a `tmp_pack_*` there (same FS → atomic land),
@@ -292,7 +292,7 @@ function dispatchRow(row, ctx) {
   if (ctx._get && row && row._leaf) return leaf(row, ctx);
   if (ctx._get && row && row._dir !== undefined) return reconcileDir(row, ctx);
   if (ctx._get) return handleReconcileOrLeaf(uri, ctx);   // a fan-out child (root)
-  //  BE-030: a `//name` nav authority is the CONTEXT (be.authority), NOT a clone
+  //  BE-030: a `//name` nav authority is the CONTEXT (be.context), NOT a clone
   //  SOURCE.  A bare `:get` under it refreshes the CONTEXT tree — inRepoSeed on
   //  be.repo (info.bePath) — never handleSeed into raw io.cwd(): with cwd in a
   //  SUBMODULE, that wrote the parent's tip into the SUB's `.be` and checked the
@@ -304,31 +304,6 @@ function dispatchRow(row, ctx) {
   return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
 }
 
-//  BE-031: the clone DESTINATION.  A user-made cell cwd (`mkdir work/X && cd X`)
-//  stays the target; AT the hive dir or the meta root, mint `<hive>/<NAME>`.
-function seedDest(rem) {
-  const cwd = io.cwd();
-  const hive = be.srcRoot();
-  if (cwd !== hive && cwd !== dirname(hive)) return cwd;
-  //  BE-031: cell NAME = the `?/title` slot, a local source's resolved project,
-  //  else the source URL basename (trailing `/.be` / `.git` shed).
-  let name = rem.proj || "";
-  if (!name && rem.local) {
-    try { name = resolveLocalSource(rem).proj || ""; } catch (e) {}
-  }
-  if (!name)
-    name = pathlib.basename(rem.srcRoot.replace(/\/+$/, "")
-                                       .replace(/\/?\.be$/, "")
-                                       .replace(/\.git$/, ""));
-  if (!name || !pathlib.safeRel(name))
-    throw "be get: cannot derive a hive cell name from " + rem.raw;
-  if (!exists(hive)) io.mkdir(hive);
-  const dest = join(hive, name);
-  if (!exists(dest)) io.mkdir(dest);
-  warn("be get: seeding hive cell " + dest);
-  return dest;
-}
-
 //  SEED: resolve the remote once (resolution-at-entry), anchor the wtlog, emit
 //  the `get ?<branch>#<hashlet>` banner + any pulled-commit rows, then run the
 //  dirty-overlap PRE-PASS and ENQUEUE the root dir-reconcile.  Pins
@@ -336,9 +311,11 @@ function seedDest(rem) {
 //  reader/wt without re-resolving (JSQUE-004).
 function handleSeed(uri, ctx) {
   const rem = parseRemote(uri);
-  //  BE-031: a fresh clone lands where jab runs — EXCEPT at the hive dir / meta
-  //  root, where seedDest mints a new hive cell `<meta>/work/<NAME>` instead.
-  const wt = seedDest(rem);
+  //  URI-016: a clone lands where jab runs, period.  The old seedDest MINTED
+  //  `<project root>/work/<NAME>` whenever cwd was the project root or work/ —
+  //  auto-placement nobody asked for, which silently cloned BESIDE the worktree
+  //  you were standing in instead of updating it.  Deleted, not fixed.
+  const wt = io.cwd();
   const r = rem.local ? seedLocal(rem, wt) : seedRemote(rem, wt);
   //  DIS-058 D4: the parent's SOURCE (this remote) so a gitlink leaf can fetch
   //  its child shard from the SAME source (project swapped to the sub title).
@@ -434,11 +411,11 @@ function fanoutWholeTree(ctx, r, wt, force) {
 //    #~N              D3 rewind cur N first-parents            → wtlog `?br#<anc>`
 //    <path>[?br]      D4 restore one file/subtree (scoped)
 //    ! (empty)        D6 force-reset / FF current branch to tip
-//  `be.find()` discovers the repo; cur is read from the wtlog; the reader is the
+//  `be.treeAt()` discovers the repo; cur is read from the wtlog; the reader is the
 //  shared store.  A path form is path-scoped (restorePath); the rest reset the
 //  whole wt via fanoutWholeTree.
 function inRepoSeed(uri, ctx) {
-  const info = (ctx && ctx.repo) || be.find(be.cwd());   // URI-011: context wt, not cwd
+  const info = (ctx && ctx.repo) || be.treeAt(be.cwd());   // URI-011: context wt, not cwd
   const wt = info.wt;
   const k = store.open(info.storePath, info.project);
   const wtl = wtlog.open(info);
@@ -1042,7 +1019,7 @@ function sortGetRows(rows) {
 function get() {
   const _be = (typeof be !== "undefined") ? be : null;
   //  JAB-004: synthetic run ctx mirroring the loop ctx the helpers read — repo
-  //  may be null (a fresh clone targets an empty dir; inRepoSeed be.find-falls
+  //  may be null (a fresh clone targets an empty dir; inRepoSeed be.treeAt-falls
   //  back).  T0 is this cohort's ts (the plain branch never sets ctx.T0).
   const ctx = {
     repo: _be && _be.repo, sink: _be && _be.sink, out: _be && _be.out,

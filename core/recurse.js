@@ -7,7 +7,7 @@
 //  in-process walk (the JAB-004 mechanism the other 17 views inherit).
 //
 //  walk(repo, prefix, visit, opts):
-//    repo    : the parent repo handle (be.find result).
+//    repo    : the parent repo handle (be.treeAt result).
 //    prefix  : this repo's display path relative to the TOP wt ("" at top).
 //    visit   : function(subRepo, subPrefix, sub) — called per MOUNTED sub in
 //              `.gitmodules` order; `subPrefix` = joinPrefix(prefix, sub.path);
@@ -42,7 +42,7 @@ function isMount(wtRoot, subpath) {
   const p = base + "/.be";
   //  SUBS-049: mount = the `.be` FILE form OR a PRIMARY nested wt (a `.be` DIR
   //  holding a wtlog reg file, what a green-field remote-get plants) — mirror
-  //  be.find's primary-anchor rule so a DIR-anchored declared sub delegates.
+  //  be.treeAt's primary-anchor rule so a DIR-anchored declared sub delegates.
   let k; try { k = io.stat(p).kind; } catch (e) { return false; }
   if (k === "reg") return true;
   if (k !== "dir") return false;
@@ -79,11 +79,11 @@ function walk(repo, prefix, visit, opts) {
     //  mount file alone gates (status's clean-recursion path).
     if (gitlinks && !gitlinks[subPath]) continue;
     if (!isMount(repo.wt, subPath)) continue;
-    //  BE-026: confine before be.find (belt-and-suspenders past the isMount gate).
+    //  BE-026: confine before be.treeAt (belt-and-suspenders past the isMount gate).
     let subWt;
     try { subWt = wtpath(repo.wt, subPath); } catch (e) { continue; }
     let subRepo;
-    try { subRepo = be.find(subWt); } catch (e) { continue; }
+    try { subRepo = be.treeAt(subWt); } catch (e) { continue; }
     const sub = gitlinks ? gitlinks[subPath] : { path: subPath };
     visit(subRepo, joinPrefix(prefix, subPath), sub || { path: subPath });
   }
@@ -104,11 +104,11 @@ function resolveRepoForPath(repo, relPath) {
     }
     if (hit < 0) break;
     const sub = segs.slice(i, hit).join("/");
-    //  BE-026: confine the descended segment before be.find (NAVESCAPE → stop).
+    //  BE-026: confine the descended segment before be.treeAt (NAVESCAPE → stop).
     let subWt;
     try { subWt = wtpath(repo.wt, sub); } catch (e) { break; }
     let subRepo;
-    try { subRepo = be.find(subWt); } catch (e) { break; }
+    try { subRepo = be.treeAt(subWt); } catch (e) { break; }
     repo = subRepo; prefix = joinPrefix(prefix, sub); i = hit;
   }
   return { repo: repo, rest: segs.slice(i).join("/"), prefix: prefix };

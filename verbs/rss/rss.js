@@ -111,7 +111,7 @@ function upsert(feed, item, guid) {
 
 function syndicate(arg) {
   //  Fixed layout: the arg counts from the project root — `//name/…` reads the
-  //  work/<name> cell, a bare path the main tree; p.tree anchors link probing.
+  //  work/<name> worktree, a bare path the main tree; p.tree anchors link probing.
   const p = project.resolve(String(arg));
   const rel = p.rel;
   if (!rel || !/\.(mkd|md)$/.test(rel)) {

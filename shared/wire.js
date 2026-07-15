@@ -167,9 +167,14 @@ function readToEof(fd, head) {
 //  and throws (store untouched).  Returns { packFile, packLen, verified:true }
 //  (packLen includes the 20-byte trailer); ingest renames + strips it.
 const sha1s = require("./util/sha1s.js");
+//  URI-016: the tmp pack path in `destDir` (same FS as the final log → an
+//  atomic rename lands it).  Shared by the stream and the http spill.
+function tmpPackPath(destDir) {
+  return join(destDir, "tmp_pack_" + io.getpid() + "_" +
+              (Date.now() & 0xffffff));
+}
 function drainToFile(fd, head, destDir) {
-  const tmp = join(destDir, "tmp_pack_" + io.getpid() + "_" +
-                    (Date.now() & 0xffffff));
+  const tmp = tmpPackPath(destDir);
   const out = io.open(tmp, "c");
   let total = 0;
   const h = sha1s.open();
@@ -366,15 +371,37 @@ function fetchHttp(url, wantRef, haves) {
            branch: want.branch };
 }
 
+//  URI-016: curl handed us the pack in MEMORY — write it to a tmp pack file in
+//  `packDir` so `opts.packDir` yields the ONE { packFile, packLen } shape on
+//  EVERY transport (http used to return { pack } regardless, and ingest then
+//  packLogBytes'd the wrapper object → `f.subarray is not a function`).
+//  verified:false — ingest map-verifies the trailer before it places the file.
+function spillToFile(r, destDir) {
+  const tmp = tmpPackPath(destDir);
+  const out = io.open(tmp, "c");
+  try { io.writeAll(out, r.pack); io.close(out); }
+  catch (e) {
+    try { io.close(out); } catch (e2) {}
+    try { io.unlink(tmp); } catch (e2) {}
+    throw e;
+  }
+  return { packFile: tmp, packLen: r.pack.length, verified: false,
+           refs: r.refs, want: r.want, refname: r.refname, branch: r.branch };
+}
+
 //  --- the fetch ----------------------------------------------------------
 //  GET-044: `opts.packDir` (the destination shard/`.be` dir, same FS as the
-//  final log) makes the spawn path STREAM the pack to a tmp file — result then
-//  carries { packFile, packLen } instead of { pack }.  No packDir → the legacy
-//  in-memory { pack } (small local/test callers).  http stays in-memory.
+//  final log) makes the fetch land the pack in a tmp file there — the result
+//  then carries { packFile, packLen } instead of { pack }, on EVERY transport
+//  (spawn STREAMS it; URI-016: http spills curl's bytes).  No packDir → the
+//  legacy in-memory { pack } (small local/test callers).
 function fetch(remoteUri, wantRef, haves, opts) {
   const packDir = opts && opts.packDir;
   const sp = classify(remoteUri, "upload-pack");
-  if (sp.http) return fetchHttp(sp.url, wantRef, haves);   // GIT-012
+  if (sp.http) {                                           // GIT-012
+    const r = fetchHttp(sp.url, wantRef, haves);
+    return packDir ? spillToFile(r, packDir) : r;
+  }
   const child = io.spawn(sp.bin, sp.argv);
   const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
 

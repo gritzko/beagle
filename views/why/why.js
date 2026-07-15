@@ -215,7 +215,7 @@ function buildBody(w, idToSha, rangeIds, oTarget) {
 function whyOne(arg) {
   const _be = (typeof be !== "undefined") ? be : null;
   const sink = _be && _be.sink;
-  const repo = (_be && _be.repo) || be.find();
+  const repo = (_be && _be.repo) || be.treeAt();
   if (!sink || !repo) return;
 
   let first = String(arg || "");
@@ -261,9 +261,20 @@ function whyOne(arg) {
   sink.feed(banner || ("why:" + spec.path), body.body, body.toks, "", 0n);
 }
 
+//  DIS-061: a bare `why` (no file operand) blames the pager's CURRENT file — the
+//  ambient `be.prev_uri` the pager stashes for a single-hunk FILE view (already
+//  normalized to a typed-arg-shaped URI).  An empty stash keeps today's no-arg
+//  no-op.  The file-vs-dir distinction lives HERE, not in the pager.
+function whyArgs(args) {
+  if (args.length) return args;
+  const prev = (typeof be !== "undefined" && be && be.prev_uri) || "";
+  return prev ? [prev] : [];
+}
+
 //  WHY-001: PLAIN-args verb (registry contract) — loop args off `be`.
 function why() {
-  for (let i = 0; i < arguments.length; i++) whyOne(arguments[i]);
+  const args = whyArgs(Array.prototype.slice.call(arguments));
+  for (let i = 0; i < args.length; i++) whyOne(args[i]);
 }
 why.jab = "args";
 module.exports = why;
@@ -274,3 +285,4 @@ module.exports.buildBody = buildBody;
 module.exports.tok = tok;
 module.exports.parseArg = parseArg;
 module.exports.whyRgb = whyRgb;   // WHY-001: baked-colour hook (hue f(sha)+age paleness)
+module.exports.whyArgs = whyArgs; // DIS-061: no-arg → be.prev_uri fallback (test hook)

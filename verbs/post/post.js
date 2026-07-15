@@ -23,6 +23,7 @@
 //  fold helpers (decide/commit) are siblings renamed fold-* (leaf-vs-fold).
 const wtlog    = require("../../shared/wtlog.js");
 const store    = require("../../shared/store.js");
+const branchlib = require("../../shared/branch.js"); // DIS-061: the ONE branch codec
 const decideM  = require("./fold-decide.js");
 const commitM  = require("./fold-commit.js");
 const conflict = require("../../shared/conflict.js");
@@ -236,7 +237,7 @@ function advanceRef(reader, shard, branchKey, expectedOld, newSha) {
 //  branch); `.` is cur's own branch; anything else is the named branch.  A
 //  relative `..` on trunk has no parent → POSTQRY (the spec's `?..` needs a
 //  child to climb from).
-function resolveTarget(query, curBranch) {
+function resolveTarget(query, curBranch, title) {
   if (query === "" || query === "/") return "";        // trunk
   if (query === ".") return curBranch;                 // cur's own branch
   if (query === "..") {
@@ -245,7 +246,9 @@ function resolveTarget(query, curBranch) {
     const i = curBranch.lastIndexOf("/");
     return i < 0 ? "" : curBranch.slice(0, i);         // parent (trunk if top)
   }
-  return query;                                        // a named branch
+  //  DIS-061: normalize a named/absolute query (`?/jab/.beagle`) to the stored
+  //  refs KEY via the ONE branch codec — no bogus literal-keyed ref row.
+  return branchlib.key(branchlib.parse(query, title || ""));
 }
 
 //  --- DIS-054 Query bare-advance (`?branch`/`?..`/`?`, no commit) ---------
@@ -260,8 +263,8 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
                        haveBaseline) {
   if (!haveBaseline || !parent)
     throw "POSTNONE: no cur tip to advance `?" + target + "` to";
-  if (target === curBranch)
-    throw "POSTNONE: `?" + target + "` is cur's own branch — nothing to advance";
+  //  DIS-061: `post ?<cur's own branch>` is THE standard way to advance your
+  //  branch to the wt base (uniform ruling) — FF below, no own-branch refusal.
 
   const tip = reader.resolveRef(target);
   const expectedOld = (tip && isFullSha(tip)) ? tip : "";
@@ -411,7 +414,7 @@ function rangeChanges(k, oldSha, tipSha) {
 //  no classifyArg to URI-split a `T: log: msg`).
 function post() {
   const _be = (typeof be !== "undefined") ? be : null;
-  const repo = (_be && _be.repo) || be.find();
+  const repo = (_be && _be.repo) || be.treeAt();
   //  Message + slots ride ctx.args as PLAIN args (put's synthetic-ctx pattern);
   //  `-m` and the like ride ctx.flags off be (loop split them out of args).
   const argv = [];
@@ -459,7 +462,7 @@ function subScopedDeep(info) {
     if (!s.mounted) continue;
     if (s.bucket === "adv") return true;      // a descendant adv pulls it in
     let subInfo;
-    try { subInfo = be.find(wtpath(info.wt, s.path)); } catch (e) { continue; }
+    try { subInfo = be.treeAt(wtpath(info.wt, s.path)); } catch (e) { continue; }
     if (subScopedDeep(subInfo)) return true;
   }
   return false;
@@ -497,7 +500,7 @@ function postSubs(info, ctx) {
     if (!s.mounted) continue;                       // unmounted gitlink → skip
     const subWt = wtpath(info.wt, s.path);
     let subInfo;
-    try { subInfo = be.find(subWt); } catch (e) { continue; }
+    try { subInfo = be.treeAt(subWt); } catch (e) { continue; }
 
     //  SUBS-042 selective gate: skip a sub not in scope (no parent bump / sub-internal
     //  stage, no own anyPd, not already adv); commit-all falls through.
@@ -540,6 +543,11 @@ function postSubs(info, ctx) {
       //  second sub's bump never collides with the first's stamp.  postOne
       //  re-opens the wtlog, so it sees this just-appended bump row.
       ulog.append(info.bePath, [{ verb: "put", uri: URI.make(undefined, undefined, s.path, undefined, newTip) }]);
+      //  DIS-061: the PARENT owns the child's pin REF — the pin tip IS the gitlink
+      //  in the parent's new base, so refresh the child's synthetic-branch ref to
+      //  newTip (the child's own commit never moves it; uniform ruling).
+      const subReader = store.open(subInfo.storePath, subInfo.project);
+      store.set(subReader.shard, branchlib.key(subWtl1.attachedBranch().br), newTip);
     }
   }
 }
@@ -599,7 +607,8 @@ function postOne(info, ctx, row) {
   //  Query → cur's branch (the unchanged local-FF path).  A Query target is
   //  `` (trunk, `?`), the parent (`?..`), cur's own (`?.`), or a named branch.
   const target = slots.hasQuery
-        ? resolveTarget(slots.query, curBranch) : curBranch;
+        ? resolveTarget(slots.query, curBranch, (att.br && att.br.title) || "")
+        : curBranch;
 
   //  GIT-013 Host slot (`ssh://host?br` / `https://host?br`):
   //  FF-push cur's existing tip to the remote branch.  No local commit — this
@@ -633,7 +642,8 @@ function postOne(info, ctx, row) {
   const dres = decideM.decide(info, wtl, reader, slots.narrow || undefined);
 
   //  4. FF pre-flight (POSTNOFF): a REFS tip != parent must be an ancestor.
-  //  Skipped when detached — there is no branch to fast-forward (Bug #2).
+  //  Every commit that advances a ref is FF-gated, so the gate is Query-blind.
+  //  Skipped when detached.
   let expectedOld = "";
   if (!att.detached && haveBaseline && parent) {
     const tip = reader.resolveRef(branchKey || "");
@@ -714,10 +724,18 @@ function postOne(info, ctx, row) {
   commitM.writePack(reader.shard, info.wt,
                     commit.body, tb.rootTreeSha, tb.bodies, dres.decisions);
 
-  //  Advance the branch ref (resolve expected-old + conditional store.set).
-  //  Skipped when detached — a detached post advances cur (the wtlog row below)
-  //  but moves NO branch ref ("hop to the next hash", git detached-HEAD).
-  if (!att.detached)
+  //  URI-016: a commit advances the WORKTREE *and* its tracked branch.  DIS-061's
+  //  "uniform ruling" (a plain commit moves no ref) rode in on `jab patch
+  //  #4597076c` and is BACKED OUT here: it is unlanded WIP — DIS-061's own tests
+  //  still assert the ref advances — and it reddened 40 cases in this tree.
+  //  A pin-branch (synthetic sub) stays PARENT-owned, so the child's own commit
+  //  never touches it (postSubs refreshes it from the parent's new gitlink); a
+  //  ref that does not exist yet is BORN.  Detached posts move no ref.
+  const isPin = !!(att.br && att.br.branch && att.br.branch.length &&
+                   att.br.branch[0][0] === ".");
+  const born = !slots.hasQuery && !isPin &&
+               reader.resolveRef(branchKey || "") == null;
+  if ((slots.hasQuery || born || !isPin) && !att.detached)
     advanceRef(reader, reader.shard, branchKey, expectedOld, commit.sha);
 
   //  Append the `post` row (`?<branch>#<sha>`) at the stamp, then restamp

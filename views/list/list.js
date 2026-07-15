@@ -125,7 +125,7 @@ function listOne(arg) {
   const _be  = (typeof be !== "undefined") ? be : null;
   const sink = (_be && _be.sink) || null;
   if (!sink) return;
-  const repo = (_be && _be.repo) || (_be ? _be.find() : null);
+  const repo = (_be && _be.repo) || (_be ? _be.treeAt() : null);
   if (!repo) return;
 
   //  URI-013: ONE structured parse of `list:<path>?<rev>` (no hand-slice).

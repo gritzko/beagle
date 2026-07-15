@@ -6,7 +6,7 @@
 //  crossing store boundaries into submodules.  verbs/lsr/lsr.js is a one-line
 //  re-export of this module — same code, `row.verb` selects recurse.
 //
-//  libabc+libdog ONLY (be.find / wtlog / store / classify): NO dog spawned, NO
+//  libabc+libdog ONLY (be.treeAt / wtlog / store / classify): NO dog spawned, NO
 //  sniff, NO /proc.  Each per-directory hunk is built from classify.classifyDir
 //  — the O(dir) listing of the scope's IMMEDIATE entries: each immediate file
 //  is its status row, each immediate subdir / mount is ONE BLANK-DATED `dir
@@ -14,7 +14,7 @@
 //  the whole reason ls: now costs O(dir), not O(repo)).  Entry names render
 //  RELATIVE to the scope dir; the banner names the scope RELATIVE to the top wt
 //  (`ls:`, `ls:sub/`, `lsr:chsub/lib/`).  A scope INSIDE a submodule
-//  re-discovers that shard via be.find, so `jab ls <path-in-sub>/` lists it.
+//  re-discovers that shard via be.treeAt, so `jab ls <path-in-sub>/` lists it.
 "use strict";
 
 const wtlog    = require("../../shared/wtlog.js");
@@ -142,10 +142,10 @@ function lsOne(uri, verb, ctx, queue, rdCache) {
   else absScope = wtpath(topWt, discover.argRel(_be && _be.repo, uri || ""));
   absScope = noSlash(absScope);
 
-  //  The OWNING repo of the scope — be.find re-discovers a submodule's shard
+  //  The OWNING repo of the scope — be.treeAt re-discovers a submodule's shard
   //  when the scope is inside a mount (cross-store seam), else the top repo.
   let repo;
-  try { repo = _be ? _be.find(absScope) : be.find(absScope); }
+  try { repo = _be ? _be.treeAt(absScope) : be.treeAt(absScope); }
   catch (e) { repo = (_be && _be.repo) || (ctx && ctx.repo) || null; }
   if (!repo) return;
 

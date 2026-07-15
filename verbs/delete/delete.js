@@ -356,7 +356,7 @@ function deleteVerb() {
 function delRun(ctx, argv) {
   const force = ambient.force();              // JAB-004: force off be (or ctx)
   const recursive = (ctx.flags || []).indexOf("-r") >= 0 || force;  // -r reads flags
-  const repo = ctx.repo || be.find();
+  const repo = ctx.repo || be.treeAt();
   ctx.repo = repo;
   const k = store.open(repo.storePath, repo.project);
 

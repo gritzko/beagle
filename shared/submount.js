@@ -40,7 +40,9 @@ const branchlib = require("./branch.js");   // SUBS-050: the ONE branch codec
 const sha      = require("./util/sha.js");
 const join = pathlib.join, basename = pathlib.basename, safeRel = pathlib.safeRel;
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
-const wtpath = require("../core/discover.js").wtpath;
+//  URI-016: also the ONE `.be` pivot (repoFromBe/projectFromPath) for titles.
+const discover = require("../core/discover.js");
+const wtpath = discover.wtpath;
 const isFullSha = sha.isFullSha;
 
 function exists(p) { try { io.stat(p); return true; } catch (e) { return false; } }
@@ -81,9 +83,14 @@ function declaredUrl(wt, subpath) {
   }
 }
 
-//  [Title] from a `.gitmodules` URL basename — `.git` + trailing `/` stripped
-//  (`…/libabc.git` → `libabc`, `be:/s/.be?/sub` → `sub`).  A `?/<proj>`
-//  selector wins (its last segment IS the title); else the path basename.
+//  [Title] from a `.gitmodules` URL — a `?/<proj>` selector wins, else the
+//  `.be` pivot names the shard, else the path basename (`.git` stripped).
+//  URI-016: `.be` is the STORE, never a [Title] — the shard is the segment
+//  AFTER it (`be:/h/s/.be/libabc` → `libabc`; `be:/h/s/.be` ends AT the store
+//  and carries NO title → "", the caller's other sources must supply one).
+//  The `.be` pivot is NOT re-parsed here: discover's repoFromBe (everything
+//  before `.be`) and projectFromPath (the segment after `/.be/`) already
+//  answer it — repoFromBe(p) !== p IS "this path names a store".
 //  GET-037: a scp-style git url (`git@host:owner/repo.git`) is NOT a parseable
 //  URI (`new URI` throws `uri.parse: malformed`) — fall back to the raw-string
 //  basename so a github-style `.gitmodules` url yields a title instead of an
@@ -93,14 +100,12 @@ function titleFromUrl(url) {
   let path = url;
   try {
     const u = new URI(url);
-    const q = u.query || "";
-    if (q && q[0] === "/") {
-      const segs = q.slice(1).split("/");
-      if (segs[0]) return segs[0];
-    }
+    const q = discover.projectFromQuery(u.query || "");
+    if (q) return q;
     path = u.path || url;
   } catch (e) { path = url; }       // unparseable (scp git url) → raw basename
   let p = path.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  if (discover.repoFromBe(p) !== p) return discover.projectFromPath(p);
   let b = basename(p);
   if (b.slice(-4) === ".git") b = b.slice(0, -4);
   return b;
@@ -241,7 +246,7 @@ function mount(opts) {
   //  LIVE-but-broken sub wt.  The pre-fetch/clone steps touch nothing under the
   //  sub wt; only the anchor + checked-out files (written last, in order) do.  On
   //  any failure, drop the anchor (so a stale `<wt>/<path>/.be` never makes
-  //  be.find resolve a half-mounted sub) and surface a FRIENDLY string — our own
+  //  be.treeAt resolve a half-mounted sub) and surface a FRIENDLY string — our own
   //  throws pass through, a raw io error is wrapped — never a raw uncaught
   //  exception to the user (cf. [GET-018] atomicity).  (io has no rmdir, so an
   //  emptied sub dir may remain; it is inert without the anchor.)
@@ -324,7 +329,7 @@ function mount(opts) {
     const oldPin = currentSubPin(anchorPath);
 
     //  D13: write the sub wtlog anchor `<wt>/<path>/.be` — row-0 redirect names
-    //  the sibling shard + project (so be.find resolves the mount), then the
+    //  the sibling shard + project (so be.treeAt resolves the mount), then the
     //  `?<synthetic-branch>#<pin>` tip the child wt tracks ([Submodules] §1).
     try { io.mkdir(subWt); } catch (e) {}
     const redirect = URI.make("file", undefined, beDir + "/", "/" + title);

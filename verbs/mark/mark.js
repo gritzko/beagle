@@ -5,7 +5,7 @@
 //
 //  The PROJECT root (shared/project.js: the ancestor with .be/.git + meta/)
 //  fixes the layout ([/wiki/Project]): sources count from that root (an
-//  authority names a `work/` cell), the render mirrors the tree-relative path
+//  authority names a `work/` worktree), the render mirrors the tree-relative path
 //  into `<root>/html/`, rewriting .mkd->.html.  The <head>/<body>/footer
 //  injects are html/'s `head.html` / `banner.html` / `footer.html` — the
 //  published site's chrome, read from where we write.  Asset links
@@ -48,7 +48,7 @@ function checkAssets(html, base) {
 
 function renderOne(arg) {
   //  Fixed layout: the arg counts from the project root — `//name/…` reads the
-  //  work/<name> cell, a bare path the main tree; p.tree anchors link probing.
+  //  work/<name> worktree, a bare path the main tree; p.tree anchors link probing.
   const p = project.resolve(String(arg));
   const rel = p.rel;                            // wiki/StrictMark.mkd
   if (!rel || !/\.(mkd|md)$/.test(rel)) {

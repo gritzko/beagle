@@ -77,7 +77,7 @@ function resolveObjectSha(k, wtl, query, frag) {
 //  same sink; `ctx` = direct-handler fallback (no global be).
 function typeOne(arg, ctx) {
   const _be = (typeof be !== "undefined") ? be : null;
-  const repo = (_be && _be.repo) || (ctx && ctx.repo) || (_be && _be.find && _be.find()) || null;
+  const repo = (_be && _be.repo) || (ctx && ctx.repo) || (_be && _be.treeAt && _be.treeAt()) || null;
   const sink = (_be && _be.sink) || (ctx && ctx.sink) || null;
   if (!repo) return;
 
@@ -101,7 +101,7 @@ function typeOne(arg, ctx) {
 
   //  3) emit the type word as ONE raw row into a TRUE hunk banner.
   //  URI-014: the word-URI spell `type <uri>` — verb OUT of the scheme;
-  //  navLink injects be.authority + roots the path (strip a leading '/').
+  //  navLink injects the nav authority (derived off be.context) + roots the path (strip a leading '/').
   if (sink) {
     const out = hunkrows(sink, navlib.navLink("type", (u.path || "").replace(/^\//, ""), u.query, u.fragment));
     out.raw(obj.type);

@@ -3,7 +3,7 @@
 //  ron60 time codec + an abc.index for the ts stamp-set.  No C, no dog.
 //  Mirrors sniff/AT.c (SNIFFAt* tip/baseline/boundary/scan helpers).
 //
-//  open(be) → reader where `be` is the object be.find() returns (only
+//  open(be) → reader where `be` is the object be.treeAt() returns (only
 //  `.bePath` is used).  The reader drains every row ONCE into a JS array
 //  (rows[]) — the ULOG family has no index and drains sequentially — and
 //  exposes:

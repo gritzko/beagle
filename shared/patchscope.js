@@ -15,12 +15,26 @@
 //  like resolve_cherry; for branch scopes we take LCA(ours, theirs) — the
 //  most-recent shared ancestor (a forgiving base, per PATCH.c's note).
 //
-//  libabc+libdog ONLY: store.resolveRef + commit-graph walks over the reader
-//  (no keeper/graf/sniff binding).
+//  URI-016: the URI->commit step is NOT patchscope's — it is resolve_hash's
+//  ([/wiki/URI] §URI->hash step 5).  Only parents/fork/LCA/scope live here.
 "use strict";
 
 const shalib = require(__dirname + "/util/sha.js");   // JSQUE-016: -> shared/util/
 const isFullSha = shalib.isFullSha;
+
+//  URI-016: THE URI->commit step.  resolve_hash checks the object IS a commit on
+//  every rung of step 5, so `#hashlet` (5.2) and `?hashlet` (5.4) resolve here
+//  exactly as `type:` already sees them.  LAZY require: resolve_hash pulls
+//  shared/*, and a top-level require from shared/ would close that cycle.
+//  Returns the 40-hex `chash`, or undefined — the caller owns the refusal, so
+//  resolve_hash's ok64 codes never leak into the view's PATCHFAIL dialect.
+function chashOf(pin) {
+  const rh = require(__dirname + "/../core/resolve_hash.js");
+  const discover = require(__dirname + "/../core/discover.js");
+  const ctx = discover.navCwd(discover.ctxDir());   // URI-016: derived off be.context
+  let r; try { r = rh.resolve_hash(ctx, pin); } catch (e) { return undefined; }
+  return r && isFullSha(r.chash) ? r.chash : undefined;
+}
 
 //  Parse the patch URI into { scope, branch, frag }.  scope ∈
 //  NAMED|NEXT|WHOLE.  `?br!` → WHOLE (shed the `!`); `?br` → NEXT; `#sha`
@@ -46,7 +60,11 @@ function parseShape(arg) {
     whole = true;
     query = query.slice(0, -1);
   }
-  if (frag && frag.length) return { scope: "NAMED", branch: "", frag: frag };
+  //  URI-016: `pin` is the URI resolve_hash resolves — the SLOT the token was
+  //  typed in decides the rung: `#x` is hashlet-only (5.1/5.2).
+  if (frag && frag.length)
+    return { scope: "NAMED", branch: "", frag: frag,
+             pin: URI.make(undefined, undefined, undefined, undefined, frag) };
   if (query.length) {
     //  strip a leading `/proj/` selector → branch path.
     let branch = query;
@@ -56,8 +74,12 @@ function parseShape(arg) {
     }
     return { scope: whole ? "WHOLE" : "NEXT", branch: branch, frag: "" };
   }
-  //  No query, no fragment: a bare token is a named-commit pin (cherry).
-  if (u.path && u.path.length) return { scope: "NAMED", branch: "", frag: u.path };
+  //  No query, no fragment: a bare token is a named-commit pin (cherry).  It may
+  //  be a branch ref OR a hex token, so it pins through the `?ref` slot — step
+  //  5.3/5.4 resolves BOTH, which is exactly the old ladder's contract.
+  if (u.path && u.path.length)
+    return { scope: "NAMED", branch: "", frag: u.path,
+             pin: URI.make(undefined, undefined, undefined, u.path, undefined) };
   return { scope: "NEXT", branch: "", frag: "" };
 }
 
@@ -74,14 +96,12 @@ function resolveOurs(wtl, reader) {
 }
 
 //  theirs/fork for a NAMED cherry: theirs = the named commit, fork = its
-//  first parent.  Mirrors resolve_cherry.
-function resolveCherry(reader, frag) {
-  let thr = frag;
-  if (!isFullSha(thr)) {
-    const r = reader.resolveRef(frag);
-    if (r && isFullSha(r)) thr = r;
-  }
-  if (!isFullSha(thr))
+//  first parent.  Mirrors resolve_cherry.  URI-016: the ref->commit half is
+//  resolve_hash's; the full-sha-or-branch ladder that lived here was a twin of
+//  step 5 that refused every HASHLET the shard holds.
+function resolveCherry(reader, frag, pin) {
+  const thr = chashOf(pin || URI.make(undefined, undefined, undefined, undefined, frag));
+  if (!thr)
     throw "PATCHFAIL: cannot resolve cherry ref '" + frag + "'";
   const parents = reader.commitParents(thr);
   if (!parents || !parents.length)
@@ -149,15 +169,16 @@ function resolve(arg, wtl, reader) {
   const ours = resolveOurs(wtl, reader);
 
   if (shape.scope === "NAMED") {
-    const c = resolveCherry(reader, shape.frag);
+    const c = resolveCherry(reader, shape.frag, shape.pin);
     return { scope: "NAMED", branch: ours.branch, ours: ours.sha,
              theirs: c.thr, fork: c.fork };
   }
 
-  //  Branch scope (NEXT / WHOLE): theirs = the branch tip.
-  let thr = reader.resolveRef(shape.branch);
-  if (!thr && isFullSha(shape.branch)) thr = shape.branch;
-  if (!thr || !isFullSha(thr))
+  //  Branch scope (NEXT / WHOLE): theirs = the branch tip.  URI-016: the SECOND
+  //  twin — `?branch` is step 5.3 and `?hashlet` 5.4; the resolveRef+isFullSha
+  //  pair here resolved neither a hashlet nor checked the tip IS a commit.
+  const thr = chashOf(URI.make(undefined, undefined, undefined, shape.branch, undefined));
+  if (!thr)
     throw "PATCHFAIL: cannot resolve target branch '?" + shape.branch + "'";
   const fork = lca(reader, ours.sha, thr);
   return { scope: shape.scope, branch: shape.branch, ours: ours.sha,

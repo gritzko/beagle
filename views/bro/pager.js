@@ -170,7 +170,7 @@ function paintRow(hunk, off, end, color, pass) {
 function sessionBe() {
   const cwd = io.cwd();
   let repo = null;
-  try { repo = discover.find(cwd); } catch (e) { repo = null; }
+  try { repo = discover.treeAt(cwd); } catch (e) { repo = null; }
   return { cwd: cwd, wt_root: repo ? repo.wt : undefined, repo: repo };
 }
 
@@ -211,6 +211,7 @@ function Pager(fd, opts) {
 Pager.prototype.setHunks = function (hunks) {
   this.view = { hunks: hunks, rows: null, scroll: 0, cols: 0, wrap: true };
   this.view.wrap = wrapFor(this._verbUri().verb);
+  this._updatePrevUri();                         // DIS-061: mirror the new view
 };
 
 //  JAB-030: PUSH a fresh hunk view, stacking the current one (a spell / a
@@ -228,6 +229,7 @@ Pager.prototype.popView = function () {
   const rc = this.view.call && this.view.call.context;
   this.ctx = rc ? this._ctxFrom(rc)
            : this.view.uri !== undefined ? this._ctxFrom(this.view.uri) : "";
+  this._updatePrevUri();                         // DIS-061: back IS a view change
   return true;                                   // DIS-060: back caller refreshes
 };
 
@@ -725,6 +727,7 @@ Pager.prototype._runSpell = function (spell) {
     this.view.call = { verb: sp.verb, spell: s, context: "" };
     //  BRO-024: a follow/click IS navigation — REDUCE the target to the context.
     this.ctx = this._ctxFrom(this.view.uri);
+    this._updatePrevUri();                       // DIS-061: mirror the followed view
   } catch (e) { this.message = "err: " + String(e); }
 };
 
@@ -846,7 +849,7 @@ Pager.prototype._relToCtx = function (uriStr) {
 
 //  BRO-024: is the context dir GONE from disk?  Paint the invite red then —
 //  never crash; the user cd's out.  An UNRESOLVABLE context (repo-less /
-//  outside the hive) is not "missing" — no red in scope-less sessions.
+//  outside `work/`) is not "missing" — no red in scope-less sessions.
 Pager.prototype._ctxMissing = function () {
   const c = this._context();
   if (!c) return false;
@@ -855,27 +858,30 @@ Pager.prototype._ctxMissing = function () {
   try { return io.stat(d).kind !== "dir"; } catch (e) { return true; }
 };
 
-//  BRO-024: the view's SOLE subject — the one distinct FILE address across the
-//  open hunks (a bare verb call's implied arg); "" when zero/many/a dir view.
-Pager.prototype._viewSubject = function () {
+//  DIS-061: the current view's FILE URI, normalized like a typed arg — the
+//  default a bare FILE-focused verb (why/vim) resolves from the environment.
+//  ONLY a single-hunk view whose one hunk opens a FILE has one; a multi-hunk /
+//  dir / empty view has none ("").  Normalization: fill the context authority,
+//  root the path at the wt, DROP `?rev` + `#L` (those are line/rev positions,
+//  not the file's identity — a verb wants the plain path).  The pager DECLARES
+//  nothing about the verb here; the file-vs-dir choice lives in the verb.
+Pager.prototype._prevUri = function () {
   const v = this.view;
-  if (!v || !v.hunks) return "";
-  let auth, path, query;
-  for (const h of v.hunks) {
-    const u = this._parse(this._splitSpell(h.uri || "").uri);
-    if (!u.path) continue;
-    if (path === undefined) { auth = u.authority; path = u.path; query = u.query; }
-    else if (u.path !== path) return "";           // ≥2 file subjects: ambiguous
-  }
-  if (path === undefined) return "";
-  if (this._ctxKind(URI.make(undefined, auth, path) || path) === "dir")
-    return "";                                     // an ls-shaped view: a DIR, no subject
-  //  the VIEW's own ?rev/#hash (its tracked nav address) outrank the banners'
-  //  per-hunk `#L` anchors — those are line positions, not the subject's rev.
-  const t = this._parse(v.uri || "");
-  const frag = t.path === path ? t.fragment : undefined;
-  if (t.path === path && t.query !== undefined) query = t.query;
-  return URI.make(undefined, auth, path, query, frag) || "";
+  if (!v || !v.hunks || v.hunks.length !== 1) return "";   // multi-hunk/empty → none
+  const u = this._parse(this._splitSpell(v.hunks[0].uri || "").uri);
+  if (!u.path) return "";
+  const norm = this._fillAuth(URI.make(undefined, u.authority, u.path) || u.path,
+                              this._context());
+  if (this._ctxKind(norm) === "dir") return "";            // a dir view: no file subject
+  return norm;
+};
+
+//  DIS-061: refresh the ambient stash — `be.prev_uri` (the JAB-004 ctx→be
+//  bridge) always mirrors the CURRENT view, recomputed on every view change
+//  (push / pop-back / re-drive) so a verb reads it exactly as a typed operand.
+Pager.prototype._updatePrevUri = function () {
+  if (typeof be === "undefined" || !be) return;
+  be.prev_uri = this._prevUri();
 };
 
 //  URI-011: the `word(context_uri, …rest)` spell composer.  Split the address-
@@ -975,21 +981,15 @@ Pager.prototype._applySpell = function (cmd) {
   const g = this._globSpell(s);
   if (g === null) return;
   const c = this._composeCall(g);
-  //  BRO-024: a BARE verb call (no args typed) takes the view's SOLE subject as
-  //  its implied arg0 — the UI's "current selection", tracked so the invite
-  //  shows the implied call; the VERB still resolves it (the arg-blind law).  A
-  //  context already naming the subject (the legacy launch fallback) implies nothing.
-  let track = c.context || c.arg0;
+  //  DIS-060/BRO-024: the spell composes from EXACTLY the context, the typed verb
+  //  and the typed args — the pager NEVER welds an implied subject into it.  A
+  //  bare FILE-focused verb takes its default from the environment (be.prev_uri,
+  //  stashed at view-change time) inside the VERB's own handler; dir/context
+  //  verbs never read it and keep running at the context (the arg-blind law).
+  const track = c.context || c.arg0;
   //  BRO-024: the bar's spell text — a typed verb call shows AS ENTERED (`g`),
-  //  an implied call its implied invocation; a slot-edit keeps the derived form.
-  let disp = c.call ? g : undefined;
-  if (c.call && !c.arg0 && !c.rest.length) {
-    const subj = this._viewSubject();
-    if (subj && subj !== c.context) {
-      c.arg0 = subj; track = subj;
-      disp = c.verb + " " + this._relToCtx(subj);
-    }
-  }
+  //  a slot-edit keeps the derived form.
+  const disp = c.call ? g : undefined;
   //  BE-047: an EDITOR verb (vim/nvim, fn.tty) takes the terminal — suspend raw
   //  mode, drive it (the verb waits on the editor), resume, re-drive the view.
   if (c.verb && this.isTty && this.isTty(c.verb)) { this._editSpell(c); return; }
@@ -1017,6 +1017,7 @@ Pager.prototype._driveApply = function (spell, verb, uri, context, nav, disp) {
     //  BRO-024: a slot-edit IS navigation — REDUCE the merged address to the
     //  `//WT/dir` context (a verb word-call never moves the context).
     if (nav) this.ctx = this._ctxFrom(uri);
+    this._updatePrevUri();                       // DIS-061: mirror the new view
   } catch (e) { this.message = "err: " + String(e); }
 };
 
@@ -1080,6 +1081,7 @@ Pager.prototype._refresh = function () {
     const hunks = this.driveSpell ? this.driveSpell(spell, ctx2) : null;
     if (!hunks || hunks.length === 0) { this.message = "no hunks: " + spell; return; }
     v.hunks = hunks; v.rows = null; v.scroll = scroll;   // re-index, keep the pos
+    this._updatePrevUri();                       // DIS-061: re-drive IS a view change
     this.message = "refreshed";
   } catch (e) { this.message = "err: " + String(e); }
 };
@@ -1092,9 +1094,12 @@ Pager.prototype._actSpell = function (spell) {
   try {
     const s = this._resolveSpell(spell);
     if (!s) return;
-    //  BE-049: thread the FULL nav context (`//WT/dir`, like the typed _applySpell
-    //  path) so a row path relative to a nav'd SUB resolves IN the sub, not the parent.
-    const ctx = this._context();
+    //  BE-039/BE-041: an O-spell's row paths are ROOT-relative in the VIEW's
+    //  ANCHORED tree — thread THAT tree's root (navTree), so a nav'd sub keeps
+    //  its mount path (`//cli/vendor/sub`; `"//" + host` staged in the PARENT →
+    //  PUTNONE) and a plain sub-dir still reduces to `//cli`.  BRO-024: read the
+    //  TRACKED context, never _verbUri()'s scavenged hunk banner.
+    const ctx = discover.navTree(this._context());
     if (this.driveSpell) this.driveSpell(s, ctx || undefined);
     this._refresh();
     //  show WHAT ran instead of _refresh's "refreshed"; keep its error if any

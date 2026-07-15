@@ -169,14 +169,14 @@ function mintBe(ambient) {
 }
 
 //  URI-011/[Nav]: resolve a scheme-less `//NAME` nav authority in the spell's
-//  args to a repo, via `be.wtdir`: `//name[/sub]` → the hive cell at
+//  args to a repo, via `be.wtdir`: `//name[/sub]` → the worktree at
 //  `<srcRoot>/name/sub`, `//`/`//.` → the LAUNCH tree.  A schemed transport is
 //  left to the wire; BE-033: a scheme-less `//X` is ALWAYS a worktree (remotes
 //  always carry a scheme), so a wtdir miss is NAVNONE, never the wire.  The
 //  `//authority` is STRIPPED to the repo-relative sub-path so an UNCONVERTED verb
-//  sees a clean arg; the authority itself rides `be.authority` for CONVERTED verbs
-//  (full-URI hunks — the launch tree is "here", so its authority is "").  Returns
-//  { repo, authority } or null when no arg carries a nav authority.
+//  sees a clean arg; the CONTEXT URI of the anchored tree rides `be.context`, off
+//  which converted verbs derive their nav authority (the launch tree is "here", so
+//  it has no context).  Returns { repo, context } or null when no arg navs.
 
 //  URI-011: TRANSPORT schemes go to the wire and are NOT nav-scoped; a PROJECTOR
 //  scheme (`commit:`/`status:`/`diff:`/`log:`/…) with a `//authority` IS a local
@@ -204,23 +204,26 @@ function authorityRepo(args, limit) {
     //  BE-037: an empty-host miss (repo-less cwd) is as LOUD as any other — the
     //  raw `///path` must never reach the verb verbatim (silent whole-wt degrade).
     if (!dir) throw "NAVNONE: no worktree //" + host;
-    let repo; try { repo = be.find(dir); } catch (e) { continue; }
+    let repo; try { repo = be.treeAt(dir); } catch (e) { continue; }
     if (!repo) continue;
     //  strip the `//authority` → the repo-relative sub-path (+ ?ref#frag), but
     //  KEEP a projector scheme so the verb still dispatches (`commit://ULOG?sha`
     //  → `commit:?sha`, resolved against the now-scoped be.repo).
     const rel = dir.length > repo.wt.length ? dir.slice(repo.wt.length + 1) : "";
     args[i] = uri._make(u.scheme, undefined, rel || undefined, u.query, u.fragment) || "";
-    return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host };
+    //  URI-016: the run's CONTEXT is the anchored tree's root URI (an explicit
+    //  `//X` operand pins the tree ROOT — BE-032).  Everything else (the nav
+    //  authority, the arg-resolution dir) DERIVES off it; nothing else is stored.
+    return { repo: repo, context: be.navCwd(repo.wt) || "" };
   }
   return null;
 }
 
 //  BE-039: resolve a threaded NAV CONTEXT (`//name[/sub]`, opts2.context from the pager
-//  reentry) to its anchored repo + authority — the SAME wtdir→find scope authorityRepo
+//  reentry) to its anchored repo — the SAME wtdir→treeAt scope authorityRepo
 //  does for an explicit operand, but read from the CONTEXT (never an arg) and NON-FATAL
 //  on a miss (an ambient scope → fall back to cwd).  The context has NO arg path baked
-//  in, so find lands on the tree TOP (or nav'd sub); each RAW arg descends a mount ITSELF.
+//  in, so treeAt lands on the tree TOP (or nav'd sub); each RAW arg descends a mount ITSELF.
 function contextRepo(ctxUri) {
   let u; try { u = uri._parse(ctxUri || ""); } catch (e) { return null; }
   if (u.authority === undefined) return null;            // not a `//` nav scope
@@ -229,17 +232,16 @@ function contextRepo(ctxUri) {
   const navStr = uri._make(undefined, u.authority, u.path, undefined, undefined) || ("//" + host);
   let dir; try { dir = be.wtdir(navStr); } catch (e) { return null; }   // NAVESCAPE → miss
   if (!dir) return null;
-  let repo; try { repo = be.find(dir); } catch (e) { return null; }
+  let repo; try { repo = be.treeAt(dir); } catch (e) { return null; }
   if (!repo) return null;
-  //  BE-032: find() climbed to the anchor, but the context's PLAIN sub-dir must
-  //  survive as the arg-resolution base (be.ctxDir) — a FILE context (a cat view)
-  //  falls back to its dir, never above the anchored wt root.
+  //  BE-032: treeAt() climbed to the anchor, but the context's PLAIN sub-dir must
+  //  survive as the arg-resolution base — that is discover.ctxDir()'s job now, off
+  //  the SAME context URI; `dir` here only feeds the BE-048 no-arg fold below.
   let d = dir;
   while (d.length > repo.wt.length && _statKind(d) !== "dir") d = pathlib.dirname(d);
   //  BE-048: `path` keeps the PRE-climb addressed fs path (the context's own
   //  file when the context names one) — the no-arg view default subject below.
-  return { repo: repo, authority: (host === "" || host === ".") ? "" : "//" + host,
-           dir: d, path: dir };
+  return { repo: repo, dir: d, path: dir };
 }
 
 function _statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
@@ -282,13 +284,15 @@ function cli(argv, opts2) {
 //  the fields the re-entrant driveSpell run overwrites on the shared global.
 function _snapBe() {
   const b = globalThis.be || {};
+  //  URI-016: `context` is the ONE context field to save — ctxDir/authority derive
+  //  off it, so restoring it restores them too.
   return { repo: b.repo, sink: b.sink, format: b.format, force: b.force, flags: b.flags,
-           ctxDir: b.ctxDir, context: b.context };
+           context: b.context };
 }
 function _restoreBe(s) { Object.assign(globalThis.be || (globalThis.be = {}), s); }
 
 function _cli(argv, opts2) {
-  //  JAB-004: mint the `be` API up front so repo discovery's be.find (loop's +
+  //  JAB-004: mint the `be` API up front so repo discovery's be.treeAt (loop's +
   //  every alias file's) resolves against the global; ambient overlaid below.
   mintBe({});
   //  Split flags (a leading '-') from the positional args — flags are seed
@@ -369,24 +373,26 @@ function _cli(argv, opts2) {
   //  token via scalar(), and run() calls fn(...args) ONCE reading `be`.
   if (!(conv && conv.jab === "args"))
     throw "loop: verb '" + verb + "' has no plain-args handler";
-  //  URI-011/[Nav]: a `//name` nav authority (via `be.wtdir`, a hive cell)
-  //  scopes the WHOLE spell to that tree + exposes `be.authority` (the `//name`)
-  //  so converted verbs emit full-URI hunks; any other arg keeps the cwd repo.
+  //  URI-011/[Nav]: a `//name` nav authority (via `be.wtdir`, a worktree)
+  //  scopes the WHOLE spell to that tree + sets `be.context` (the tree's context
+  //  URI) so converted verbs emit full-URI hunks; any other arg keeps the cwd repo.
   //  A repo-less cwd is swallowed (be.repo=null).
   //  BE-032: a MUTATION verb takes the authority on arg 0 only (rest args are
   //  context-relative paths); views keep the whole-spell scan.
   let nav = authorityRepo(args, _isMutation(verb) ? 1 : args.length);
-  let authority = "", ctxDir = null;
-  //  BE-032: `be.ctxDir` is the CONTEXT DIR relative args resolve against
-  //  (discover.argRel): an explicit `//X` operand pins the tree ROOT; a pager
-  //  context pins its nav'd sub-dir; a plain CLI run pins the invocation cwd; a
-  //  context-less reentry (slot-edit/click, args pre-merged root-relative) the root.
-  if (nav) { repo = nav.repo; authority = nav.authority; ctxDir = repo.wt; }
+  //  URI-016: the context URI is the run's ONE stored coordinate — the nav
+  //  authority (shared/nav.js) and the arg-resolution dir (discover.ctxDir) both
+  //  DERIVE off it, so they can no longer disagree with it or each other.  ""
+  //  means NO nav: the launch tree is "here", args resolve against the cwd and
+  //  links stay relative.  An explicit `//X` operand pins the tree ROOT; a pager
+  //  context is threaded verbatim (it may name the view's own FILE — BE-047/048).
+  let context = "";
+  if (nav) { repo = nav.repo; context = nav.context; }
   //  BE-039: no explicit `//authority` operand — scope the run to the NAV CONTEXT
   //  threaded from the pager (opts2.context) so RAW args resolve relative to it
   //  (put/delete descend a mount per-arg); a miss / plain CLI falls to cwd — unchanged.
   else if (opts2.context && (nav = contextRepo(opts2.context))) {
-    repo = nav.repo; authority = nav.authority; ctxDir = nav.dir;
+    repo = nav.repo; context = opts2.context;
     //  BE-048: a NO-ARG VIEW verb defaults its subject to the context's own
     //  FILE (`jab cat f` + a bare `:diff`/`:why` applies to f), in the ROOTED
     //  `/sub/f` form argRel root-anchors; a dir/authority-only context and
@@ -399,17 +405,22 @@ function _cli(argv, opts2) {
     //  BE-032: a mutation's RELATIVE context (no `//` authority slot — a stale
     //  tracked path like `sub/`) must refuse LOUDLY: the silent cwd fallback
     //  posted in the WRONG repo.  An authority-formed miss keeps the fallback
-    //  (harness cells name trees the local SRC_ROOT cannot resolve).
+    //  (harness worktrees name trees the local SRC_ROOT cannot resolve).
     if (opts2.context && _isMutation(verb) && !_hasAuthority(opts2.context))
       throw "NAVNONE: context " + opts2.context + " is no worktree";
-    try { repo = be.find(); ctxDir = opts2.reentry ? repo.wt : io.cwd(); }
+    //  URI-016: a context-less REENTRY (slot-edit/click) hands args pre-merged
+    //  ROOT-relative, so its context IS the tree root — stated as the URI, which
+    //  ctxDir() maps back to repo.wt.  A plain CLI run navs nowhere: "" → cwd.
+    try { repo = be.treeAt();
+          context = opts2.reentry ? (be.navCwd(repo.wt) || "") : ""; }
     catch (e) { /* repo-less verb reads be.repo=null */ }
   }
-  //  BE-047: the nav CONTEXT URI itself rides `be.context` — a bare editor verb
-  //  (`:vim`) resolves the context's own PATH (the open file), not just its dir.
+  //  BE-047: the nav CONTEXT URI rides `be.context` — a bare editor verb (`:vim`)
+  //  resolves the context's own PATH (the open file), not just its dir.  URI-016:
+  //  it is the ONLY context field minted; `authority`/`ctxDir` are derived (the
+  //  latter is discover's fn, folded on by mintBe) and MUST NOT be overlaid here.
   mintBe({ repo: repo, sink: sink, out: out, format: mode, force: force, flags: flags,
-           verb: verb, authority: authority, ctxDir: ctxDir,
-           context: opts2.context || "" });
+           verb: verb, context: context });
   const pargs = args.map(function (t) { return argline.scalar(t); });
   res = run({
     repo: repo, require: require, out: out, sink: sink, flags: flags,
@@ -441,10 +452,10 @@ function _cli(argv, opts2) {
       hunks = hunks.concat([{ uri: SCHEME_ALLOW.has(verb) ? (URI.make(verb) || verb + ":") : verb,
                               verb: "hunk", text: colBytes,
                               toks: new Uint32Array(0), kind: "file" }]);
-    //  BE-046: the launch NAV CONTEXT (cwd AND the `//X` arg — ctxDir encodes
+    //  BE-046: the launch NAV CONTEXT (cwd AND the `//X` arg — be.context encodes
     //  both) rides into the pager, so a typed `:diff` inherits the worktree.
     //  BE-048: the launch arg's PATH folds in too — `jab cat f` + `:vim` edits f.
-    if (hunks.length) { _openPager(hunks, _launchContext(args, repo, ctxDir)); return res; }
+    if (hunks.length) { _openPager(hunks, _launchContext(args, repo)); return res; }
     //  Nothing to page (a self-paging verb already ran, or no output): done.
     return res;
   }
@@ -458,7 +469,7 @@ function _cli(argv, opts2) {
   return res;
 }
 
-//  BE-048: the INITIAL pager context = navCwd(ctxDir) PLUS the first path-
+//  BE-048: the INITIAL pager context = navCwd(be.ctxDir()) PLUS the first path-
 //  bearing launch arg: the arg resolves through the standard machinery (argRel
 //  → wtpath, context-confined) and navCwd of that fs path IS the `//name/path`
 //  context a NAVIGATION to it would set — so `jab cat f` + a bare `:vim`/
@@ -466,9 +477,10 @@ function _cli(argv, opts2) {
 //  authorityRepo (no fold — BE-046 exactly); a transport-schemed arg is a wire
 //  address, never nav; an arg whose path does not stat (a grep pattern word)
 //  keeps the dir context.  NAVESCAPE / repo-less → the dir context, unchanged.
-function _launchContext(args, repo, ctxDir) {
+function _launchContext(args, repo) {
   if (!be.navCwd) return "";
-  const dirCtx = be.navCwd(ctxDir || undefined);
+  //  URI-016: the run's context dir, DERIVED off be.context (minted above).
+  const dirCtx = be.navCwd(be.ctxDir());
   if (repo) for (const a of args) {
     let u; try { u = uri._parse(String(a == null ? "" : a)); } catch (e) { continue; }
     if (!u.path || (u.scheme && TRANSPORT[u.scheme])) continue;

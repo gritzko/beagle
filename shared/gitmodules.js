@@ -23,7 +23,7 @@ function parse(wtRoot) {
   //  Close the open block: emit it iff it declared a path not yet seen.
   //  BE-026: DROP-and-continue any block whose `path` is not a safe in-tree
   //  relative (absolute/`..`/reserved) — a path-traversal escape refused at
-  //  the source, so a poisoned `.gitmodules` entry never reaches stat/be.find.
+  //  the source, so a poisoned `.gitmodules` entry never reaches stat/be.treeAt.
   function flush() {
     if (inSub && curPath && safeRel(curPath) && !seen[curPath]) {
       seen[curPath] = true;

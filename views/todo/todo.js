@@ -5,9 +5,9 @@
 //  TOPIC-123 — the `uc ucnum* "-" dgt+` key rule), never by path resolution;
 //  a miss is ONE uniform line + throw (BE-003 spirit): `todo: <arg>: TODONONE`.
 //
-//  The ticket tree root comes from be.todoRoot() (BRO-012 order: $TODO_ROOT,
-//  current wt, launch wt, the hive's meta root) — the first root owning a
-//  `todo/` dir wins; NOTHING is hardcoded.  List rows and in-page ticket keys
+//  The ticket tree is be.todoRoot() (URI-016: `projectRoot()+"/todo"` — the
+//  project root is DETECTED by a climb, never declared by an env var, and the
+//  board is that ONE dir, not the first hit of a probe order).  List rows and in-page ticket keys
 //  carry hidden `U` word spells (`todo <KEY>`, URI-014) so a pager click
 //  re-enters the view; `todo/done/` (closed tickets) never lists.
 //
@@ -76,17 +76,18 @@ function shape(w) {
 function keyTopic(key) { return key.slice(0, key.indexOf("-")); }
 
 //  --- the board root --------------------------------------------------------
-//  First be.todoRoot() root that OWNS a `todo/` dir → { root, dir }; null when
-//  none does.  `root` is the META tree (todo/, wiki/, meta/ live under it) —
-//  page links re-anchor there.
+//  URI-016: THE board dir is be.todoRoot() — `projectRoot()+"/todo"`, one dir,
+//  no probe order.  → { root, dir } when it exists, null when it does not (no
+//  repo, or a project with no ticket tree).  `dir` is todoRoot() itself; NEVER
+//  join(root, "todo") again — todoRoot() already carries the `todo` segment.
+//  `root` is the PROJECT root, the META tree (todo/, wiki/, meta/ live under
+//  it) — page links re-anchor there.
 function boardDir() {
   if (typeof be === "undefined" || !be.todoRoot) return null;
-  for (const root of be.todoRoot()) {
-    const d = join(root, "todo");
-    try { if (io.stat(d).kind === "dir") return { root: root, dir: d }; }
-    catch (e) { /* next */ }
-  }
-  return null;
+  const dir = be.todoRoot();
+  if (!dir) return null;
+  try { if (io.stat(dir).kind !== "dir") return null; } catch (e) { return null; }
+  return { root: pathlib.dirname(dir), dir: dir };
 }
 
 //  --- fs probes -------------------------------------------------------------

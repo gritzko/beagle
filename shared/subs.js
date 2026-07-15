@@ -50,7 +50,7 @@ function isMountAt(subWt) {
   if (lstatKind(subWt) === "lnk") return false;
   const p = wtpath(subWt, ".be");
   //  SUBS-049: `.be` FILE OR a PRIMARY nested wt (`.be` DIR + wtlog), mirroring
-  //  be.find's anchor — parity with the FILE-anchored sub.
+  //  be.treeAt's anchor — parity with the FILE-anchored sub.
   return isFile(p) || (statKind(p) === "dir" && isFile(wtpath(subWt, ".be/wtlog")));
 }
 
@@ -60,7 +60,7 @@ function libDir() {
 
 //  Classify one mounted sub against its pin (R1) using REAL ancestry on
 //  the sub's OWN shard.  Returns { bucket, stale, r4, title, ts }.  Mirrors
-//  SUBSDirty: open the sibling sub shard (be.find on the sub wt resolves
+//  SUBSDirty: open the sibling sub shard (be.treeAt on the sub wt resolves
 //  store+title), read R4 (sub-wt cur tip), then compare by ancestry.
 function classifyMount(parentRepo, subPath, pin) {
   const wtlog = require(libDir() + "/wtlog.js");
@@ -70,11 +70,11 @@ function classifyMount(parentRepo, subPath, pin) {
   const res = { bucket: "ok", stale: "", r4: "", title: "", ts: 0n };
   const subWt = join(parentRepo.wt, subPath);
 
-  //  Resolve the sub mount: be.find on the sub wt dir reads the `<sub>/.be`
+  //  Resolve the sub mount: be.treeAt on the sub wt dir reads the `<sub>/.be`
   //  secondary-wt anchor's row-0 redirect → the sub's store + project
   //  (title).  A non-mount (no anchor) throws → stays `ok`.
   let subRepo;
-  try { subRepo = be.find(subWt); } catch (e) { return res; }
+  try { subRepo = be.treeAt(subWt); } catch (e) { return res; }
   res.title = subRepo.project || "";
 
   //  R4.base — the sub wt's actually-checked-out commit (its cur tip).
@@ -128,7 +128,7 @@ function classifyMount(parentRepo, subPath, pin) {
 //  160000 gitlinks, classify each, return the sub list in tree decl order
 //  (readTreeRecursive yields lex/tree order; the C KEEPSubsAt emits in
 //  decl order — close enough for the status row sort, which re-sorts by
-//  path).  `repo` is be.find()'s result (wt + storePath + project).
+//  path).  `repo` is be.treeAt()'s result (wt + storePath + project).
 function enumerate(repo, keeperReader, baselineTreeSha) {
   const subs = [];
   if (!baselineTreeSha) return subs;

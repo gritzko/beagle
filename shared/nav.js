@@ -3,12 +3,26 @@
 //  address (`//name/path`) — the pager stays scoped and answers "where am I".
 "use strict";
 
-//  The current nav authority (`//name` of the scoped tree) off the `be` global;
-//  "" for the launch tree / no nav → navUri is byte-identical to `scheme:path`.
-function authority() { return (typeof be !== "undefined" && be.authority) || ""; }
+//  URI-016: the nav authority is DERIVED from the ONE stored fact — `be.context`,
+//  the context URI — never a stored `be.authority` field.  The links composed here
+//  prefix ROW PATHS, which are relative to the run's ANCHORED tree (be.repo.wt,
+//  where treeAt stopped), so the prefix is that tree's ROOT: navTree().  The old
+//  `"//" + host` field threw the path away, so a nav INTO a mount composed
+//  `cat //cli/x/f` for a row of `//cli/vendor/sub` — a path that does not exist.
+//  Same reading, same reason as the pager's _actSpell (BE-039/BE-041).
+//  "" for the launch tree / no nav → navUri is byte-identical to `scheme:path`;
+//  a `//`/`//.` host (the project root) has no `//name` address → "" likewise.
+function authority() {
+  const c = (typeof be !== "undefined" && be.context) || "";
+  if (!c || typeof be.navTree !== "function") return "";
+  let t; try { t = be.navTree(c); } catch (e) { return ""; }
+  if (!t) return "";
+  let h; try { h = uri._parse(t).host || ""; } catch (e) { return ""; }
+  return (h === "" || h === ".") ? "" : t;      // `//name[/mount]`, the anchored root
+}
 
 //  Compose `<scheme>://<auth>/<path>?<query>#<fragment>` — `path` is repo-relative
-//  (no leading '/').  URI-013: build via URI.make with be.authority INJECTED; the
+//  (no leading '/').  URI-013: build via URI.make with the derived nav authority INJECTED; the
 //  authority slot is fed VERBATIM (abc/URI.c URIutf8Feed; `.authority`/`URI.make`
 //  carry their own `//`, cf. js/test/uri.js), and URI.make does NOT insert the `/`
 //  between authority and path — so when an authority is present, root the path
@@ -27,7 +41,7 @@ function navUri(scheme, path, query, fragment) {
 //  URI-014: compose a hunk LINK/BANNER as the `word URI` spell — `<verb> <uri>`,
 //  the URI part SCHEME-LESS + authority-scoped ([Nav] views-are-verbs; the
 //  scheme slot stays FREE for a real transport).  Addressing via URI.make with
-//  be.authority INJECTED (rooted path, exactly like navUri); the verb is
+//  the nav authority INJECTED (rooted path, exactly like navUri); the verb is
 //  prepended with a SPACE.  No authority ⇒ `<verb> path?q#f`; empty addressing ⇒
 //  the bare `<verb>`.  The pager dispatches it as a spell (spellCall→argline
 //  splits `verb arg`).  Replaces navUri("<verb>",…) at every link/banner site.
@@ -42,7 +56,7 @@ function navLink(verb, path, query, fragment) {
 
 //  URI-011: inject the current nav authority into a BAKED `scheme:<path>?…` hunk
 //  URI — the C weave/graf bakes `diff:`/`cat:` click-targets with NO authority, so
-//  a click from a `//ULOG` view loses the scope (empty output).  `be.authority`
+//  a click from a `//ULOG` view loses the scope (empty output).  A nav authority
 //  set → `diff:file?a..b` becomes `diff://ULOG/file?a..b`; no authority (launch
 //  tree) → UNCHANGED (byte-parity); an already-authoritative `scheme://…` is left.
 function navAuthorize(bakedUri) {

@@ -36,7 +36,7 @@ const ulog      = require("../../shared/ulog.js");
 const pathlib   = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-//  PATCH-010: + wtdir/find for the TREE-source address (never raw path math).
+//  PATCH-010: + wtdir/treeAt for the TREE-source address (never raw path math).
 const discover = require("../../core/discover.js");
 const wtpath = discover.wtpath;
 //  DIFF-010: the shared grow-on-"out full" WEAVE fold/merge retry (mirrors
@@ -287,10 +287,10 @@ function resolveSource(info, arg) {
   if (!shape.nav && !fetchleg.isWtPath(shape.tree))
     return fetchleg.fetchSource(info, arg);
   //  PATCH-010: `//WT` via discover.wtdir (nav-confined); `file:<path>` anchors
-  //  via discover.find (abs or cwd-relative — the GET-038 local-source idiom).
+  //  via discover.treeAt (abs or cwd-relative — the GET-038 local-source idiom).
   const dir = shape.nav ? discover.wtdir(shape.tree) : shape.tree;
   if (!dir) throw "PATCHFAIL: no worktree " + shape.tree;
-  let src; try { src = discover.find(dir); } catch (e) { src = null; }
+  let src; try { src = discover.treeAt(dir); } catch (e) { src = null; }
   if (!src) throw "PATCHFAIL: no worktree at '" + shape.tree + "'";
   //  theirs = the addressed wt's CUR TIP, read via the ONE wtlog reader.
   const cur = wtlog.open(src).curTip();
@@ -312,10 +312,10 @@ function resolveSource(info, arg) {
 //  here we open the store reader + wtlog and call patchscope.resolve ourselves
 //  (a pre-pinned ctx.triple, from the sub re-entry, is honoured as-is).
 function patchRun(ctx) {
-  //  PATCH-011: a scheme'd source arg never reaches be.find (it is a source
+  //  PATCH-011: a scheme'd source arg never reaches be.treeAt (it is a source
   //  URI, not a context path) — the repo is the ambient/cwd context.
   const schemed = !ctx.triple && fetchleg.isSchemed(ctx.arg || "");
-  const info = ctx.repo || be.find(schemed ? undefined : (ctx.arg || undefined));
+  const info = ctx.repo || be.treeAt(schemed ? undefined : (ctx.arg || undefined));
   ctx.repo = info;
   const wtl = wtlog.open(info);
   //  PATCH-010/011: resolve + (when foreign) FETCH the source FIRST — the

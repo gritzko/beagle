@@ -14,15 +14,14 @@ const EXTS = ["mkd", "md", "txt"];
 //  BE-040: ONE uniform miss line + throw (BE-003 spirit, todo.js's miss twin).
 function miss(arg, code) { io.log("done: " + arg + ": " + code + "\n"); throw code; }
 
-//  BE-040: the board root — the first be.todoRoot() root owning a `todo/` dir
-//  ($TODO_ROOT first), the same probe views/todo/todo.js boards from.
+//  BE-040/URI-016: the board dir — be.todoRoot() itself (`projectRoot()+"/todo"`),
+//  the same ONE dir views/todo/todo.js boards from.  No probe order, and no
+//  join(root, "todo"): todoRoot() already ends in `todo`.
 function boardDir() {
   if (typeof be === "undefined" || !be.todoRoot) return null;
-  for (const root of be.todoRoot()) {
-    const d = join(root, "todo");
-    try { if (io.stat(d).kind === "dir") return d; } catch (e) {}
-  }
-  return null;
+  const dir = be.todoRoot();
+  if (!dir) return null;
+  try { return io.stat(dir).kind === "dir" ? dir : null; } catch (e) { return null; }
 }
 
 function readText(full) {
