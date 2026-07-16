@@ -44,6 +44,7 @@ const ulog     = require("../../shared/ulog.js");
 const sha      = require("../../shared/util/sha.js");
 //  JAB-003: get emits a TRUE hunk (accumulated across dispatches, flushed once).
 const hunkrows = require("../../shared/hunkrows.js");
+const navlib   = require("../../shared/nav.js");   // GET-047: sub-hunk headers
 const wtlog    = require("../../shared/wtlog.js");
 const conflict = require("../../shared/conflict.js");
 //  GET-047 / GET.mkd 2.2: the untracked sweep reuses status's OWN unk set —
@@ -1071,10 +1072,19 @@ function mountGitlink(g, rel, pin, out) {
   const m = submount.mount({
     wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin, source: g.source,
   });
-  out.row(rel, "new", g.ts);                    // the mounted sub leaf row
+  subMountRow(g, rel, pin, m, out);             // the mounted sub leaf row
   //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
   //  SUBS-041: this top-level mount is depth 0; each descent increments.
   recurseSubMounts(g, rel, m, out, 0);
+}
+
+//  GET-047: a pin ADVANCE of an existing mount reads `mod` (a fresh mount: `new`)
+//  and queues the sub's own checkout delta as a separate hunk (flushGet relays it).
+function subMountRow(g, rel, pin, m, out) {
+  const adv = !!(m.oldPin && m.oldPin !== pin);
+  out.row(rel, adv ? "mod" : "new", g.ts);
+  if (adv && m.rows && m.rows.length)
+    (g.subHunks || (g.subHunks = [])).push({ path: rel, rows: m.rows, ts: g.ts });
 }
 
 //  GET-037: YES iff `<subpath>` is declared in `<wt>/.gitmodules` (the SUBS-043 gate);
@@ -1118,7 +1128,7 @@ function recurseSubMounts(g, rel, m, out, depth) {
     const cm = submount.mount({
       wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin, source: g.source,
     });
-    out.row(sp, "new", g.ts);
+    subMountRow(g, sp, l.pin, cm, out);
     recurseSubMounts(g, sp, cm, out, depth + 1);
   }
 }
@@ -1252,6 +1262,15 @@ function flushGet(ctx) {
   const out = hunkrows(ctx.sink, g.head.uri);
   out.row(g.head.uri, g.head.verb, g.head.ts);
   for (const r of sortGetRows(g.rows || [])) out.row(r.uri, r.verb, r.ts);
+  //  GET-047: relay each advanced sub's checkout delta as its own `get <sub>`
+  //  hunk after the parent hunk (status's JAB-004 relay shape, prefixed paths).
+  for (const h of g.subHunks || []) {
+    out.open(navlib.navLink("get", h.path));
+    const rows = h.rows.map(function (r) {
+      return { uri: h.path + "/" + r.path, verb: r.verb, ts: h.ts };
+    });
+    for (const r of sortGetRows(rows)) out.row(r.uri, r.verb, r.ts);
+  }
   out.done();
 }
 

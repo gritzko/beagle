@@ -16,7 +16,8 @@
 //    its own local URI `//WT/path/to/sub#<pin>` (DIS-072, [DIS-071] law #4) —
 //    recorded in the sub's tip row; no synthetic branch, no refs entry.
 //
-//  mount(opts) → { storePath, project, tip } | throws a friendly str.
+//  mount(opts) → { storePath, project, tip, oldPin, rows } | throws a friendly
+//  str.  GET-047: oldPin = prior anchor pin (""=fresh), rows = checkout delta.
 //    opts.wt        parent worktree root (absolute)
 //    opts.beDir     parent's `.be` dir (where the sibling shard lands)
 //    opts.subpath   gitlink path (wt-relative, e.g. "vendor/sub")
@@ -295,9 +296,10 @@ function mount(opts) {
         ulog.write(anchorPath, [{ verb: "get", uri: redirect },
                                 { verb: "get", uri: track }]);
         const k = store.open(ls.storeRoot, ls.proj);
-        checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
+        //  GET-047: surface the prior pin + checkout delta for the get report.
+        const co = checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
         return { storePath: ls.storeRoot, project: ls.proj, shard: k.shard,
-                 tip: pin, k: k };
+                 tip: pin, k: k, oldPin: oldPin, rows: co.rows };
       }
     }
 
@@ -345,9 +347,11 @@ function mount(opts) {
     //  EVERY submodule at every depth — decides clean-reset vs merge/leave.
     //  Open against `beDir` (the store dir), per the havePin note above.
     const k = store.open(beDir, title);
-    checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
+    //  GET-047: surface the prior pin + checkout delta for the get report.
+    const co = checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
 
-    return { storePath: beDir, project: title, shard: shard, tip: pin, k: k };
+    return { storePath: beDir, project: title, shard: shard, tip: pin, k: k,
+             oldPin: oldPin, rows: co.rows };
   } catch (e) {
     //  Roll back this mount's anchor (best-effort; never mask the failure) so a
     //  stale `<wt>/<path>/.be` redirect can't outlive a failed mount.
