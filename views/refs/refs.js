@@ -25,7 +25,11 @@ function refsOne(repo, sink) {
   //  DIS-053: trunk/no-branch is the bare `?` sigil, never a literal `?trunk`
   //  — byte-match C `be head` (graf/LOG.c trunk label is `?`).
   //  SUBS-050: format the parsed Branch to the ONE canonical label shape.
-  const branch = branchlib.format(cur.br);
+  //  DIS-075: attach/detach comes from the ONE reader (wtlog.attachedBranch),
+  //  never curTip — a DETACHED wt labels by the CURRENT tip sha (as status does).
+  const att = log.attachedBranch();
+  const branch = (cur && cur.sha && att.detached)
+        ? cur.sha : branchlib.format(att.br);
 
   //  JAB-003: each raw() line appends its own "\n"; done() flushes the hunk.
   const out = hunkrows(sink, navlib.navLink("refs", ""));   // URI-014: `refs //name` word-uri

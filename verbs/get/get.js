@@ -444,7 +444,7 @@ function fanoutWholeTree(ctx, r, wt, force) {
 
 //  --- IN-REPO seed (D1-D4): a top-level GET form over the EXISTING repo ----
 //  Forms (each the whole arg as `uri`):
-//    ?<sha>           D2 detach at a commit (full/short hex)  → wtlog `?<sha>`
+//    ?<sha>           D2 detach at a commit (full/short hex)  → wtlog `#<sha>`
 //    ?#<sha> ?br#<sha> D1 pin: checkout the EXACT commit       → wtlog `?br#<sha>`
 //    ?br ?./c ?       D3' branch/trunk switch                  → wtlog `?br#<tip>`
 //    #~N              D3 rewind cur N first-parents            → wtlog `?br#<anc>`
@@ -503,14 +503,15 @@ function inRepoSeed(uri, ctx) {
                                   branch: curBranch, bePath: info.bePath }, wt, force);
   }
 
-  //  D2 detach: `?<sha>` (bare hex query, no fragment) — checkout detached, write
-  //  the detached row (`?<40hex>`: sha in the QUERY, empty fragment).  A seed with
-  //  a scheme/host already routed to handleSeed and a path arg returned above, so
-  //  a non-empty fragment-less query here is unambiguously the leading-`?` form.
+  //  D2 detach: `?<sha>` (bare hex query, no fragment) is the ARGUMENT.  A seed
+  //  with a scheme/host already routed to handleSeed and a path arg returned
+  //  above, so a non-empty fragment-less query here is unambiguously this form.
+  //  DIS-075: the RECORD is `#<sha>` — query slot ABSENT (nothing tracked, laws
+  //  #1+#3), base in the fragment; never the argument's `?<sha>` verbatim.
   if (query && !frag && (isFullSha(query) || isShortHex(query))) {
     const tip = resolvePin(k, query);
     if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query;
-    appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, tip, undefined) }]);
+    appendWtlog(info.bePath, [{ verb: "get", uri: URI.make(undefined, undefined, undefined, undefined, tip) }]);
     return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
                                   branch: "", bePath: info.bePath }, wt, force);
   }

@@ -294,7 +294,9 @@ function emitRepo(repo, prefix, out, recurse, filter) {
   //  by the CURRENT tip, not the stale detach point, so the summary tracks HEAD
   //  as posts advance it.
   const att = log.attachedBranch();
-  const branch = (cur && cur.sha && subs.isFullSha(att.rawQuery))
+  //  DIS-075: detachment is att.detached (the ONE reader) — the canonical
+  //  `#<sha>` record has an ABSENT query, so rawQuery no longer carries the sha.
+  const branch = (cur && cur.sha && att.detached)
         ? cur.sha : branchlib.format(att.br);
 
   //  --- JS-033: classify base-only gitlinks (SUBSDirty 3-axis) ---------
@@ -469,6 +471,9 @@ function computeDivergence(k, log, cur) {
   //  a detached cur carries the full sha as its query, which resolveRef
   //  won't match → no divergence (a detached cur has no branch ref to
   //  diverge from — exactly native's behaviour).
+  //  DIS-075: the canonical `#<sha>` record has an ABSENT query — guard via the
+  //  ONE attach reader, or a detached cur.query="" would falsely diverge vs trunk.
+  if (log.attachedBranch().detached) return empty;
   const tip = k.resolveRef(cur.query || "");
   if (!tip || !subs.isFullSha(tip)) return empty;
   if (tip === cur.sha) return empty;

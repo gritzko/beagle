@@ -337,11 +337,15 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
   //  FF: append the advance row into the TARGET's OWN wtlog (a local receive);
   //  the branch it already tracks (if any) is preserved, only the tip moves.
   const targetWtl = wtlog.open(target);
-  const branch = targetWtl.attachedBranch().branch || "";
+  //  DIS-075: a DETACHED target stays detached — record `#<tip>` (query ABSENT),
+  //  never trunk-shaped `?#<tip>`; an attached target keeps its branch query.
+  const tatt = targetWtl.attachedBranch();
+  const branch = tatt.branch || "";
   const stamp = ulog.nowAfter(wtlogTail(targetWtl));
   ulog.append(target.bePath,
               [{ verb: "post",
-                 uri: URI.make(undefined, undefined, undefined, branch, curTip),
+                 uri: URI.make(undefined, undefined, undefined,
+                               tatt.detached ? undefined : branch, curTip),
                  ts: stamp }]);
   if (ctx && ctx.sink) {
     const refUri = URI.make(undefined, undefined, undefined, branch, curTip.slice(0, 8));
@@ -818,8 +822,11 @@ function postOne(info, ctx, row) {
 
   //  Append the `post` row (`?<branch>#<sha>`) at the stamp, then restamp
   //  every `add` file so it reads clean under the new baseline.
+  //  DIS-075: a DETACHED commit records the bare-hash shape `#<sha>` (query slot
+  //  ABSENT) — never trunk-shaped `?#<sha>`; an explicit `?target` still records.
+  const recQuery = (att.detached && !slots.hasQuery) ? undefined : (branchKey || "");
   ulog.append(info.bePath,
-              [{ verb: "post", uri: URI.make(undefined, undefined, undefined, branchKey || "", commit.sha),
+              [{ verb: "post", uri: URI.make(undefined, undefined, undefined, recQuery, commit.sha),
                  ts: stamp }]);
   for (const d of dres.decisions) {
     if (d.verb !== "add") continue;

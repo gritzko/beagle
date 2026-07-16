@@ -134,8 +134,11 @@ function open(be) {
   //  attachedBranch — the SINGLE source of truth for "what branch is this wt
   //  on" (DIS-057).  A wt is attached per the RECENTMOST `get` record (NOT
   //  get/post/patch): `?master`, `?` (trunk), `?branch#sha`, `?#sha` are all
-  //  ATTACHED; only a bare `?<sha>` (a full-sha in the QUERY, no branch) is
-  //  DETACHED.  Returns { branch, detached, rawQuery, sha }.  status's label,
+  //  ATTACHED; a bare-hash record `#<sha>` (DIS-075) or a legacy `?<sha>` is
+  //  DETACHED.  A legacy detached POST wrote trunk-shaped `?#<sha>` — from the
+  //  record alone that is UNRESOLVABLE, so attachment stays anchored on the
+  //  recentmost GET record (DIS-059), never a post row.
+  //  Returns { branch, detached, rawQuery, sha }.  status's label,
   //  post's detach guard + curBranch, and divergence all route through THIS so
   //  they cannot disagree (status said trunk while post said detached).
   function attachedBranch() {
@@ -145,8 +148,11 @@ function open(be) {
       const ref = refOf(r.uri, r.local);
       if (!ref.sha && !ref.branch) continue;     // store/project anchor pins nothing
       const q = stripProject(r.uri.query) || "";
+      //  DIS-075: the canonical detach record is `#<sha>` — LOCAL row, query slot
+      //  ABSENT, sha in the fragment; legacy `?<sha>` (sha in the query) reads on.
       const detached = !ref.branch &&
-            q.split("&").some(function (c) { return isFullSha(c); });
+            (q.split("&").some(function (c) { return isFullSha(c); }) ||
+             (r.local && r.uri.query === undefined && isFullSha(r.uri.fragment)));
       return { branch: ref.branch || "", detached: detached,
                rawQuery: r.uri.query || "", sha: ref.sha || "",
                br: parseBranch(r.uri.query, ref.branch) };
