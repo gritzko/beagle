@@ -351,6 +351,34 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
   }
 }
 
+//  DIS-074: the TRACK = the recentmost `get` record (worktree.mkd:50-54); the
+//  row selection mirrors wtlog.attachedBranch, which hides the row's authority.
+function trackRow(wtl) {
+  for (let i = wtl.rows.length - 1; i >= 0; i--) {
+    const r = wtl.rows[i];
+    if (r.verb !== "get") continue;
+    const ref = wtlog.refOf(r.uri, r.local);
+    if (!ref.sha && !ref.branch) continue;
+    return r;
+  }
+  return undefined;
+}
+
+//  DIS-074: bare-post ADVANCE arm — the implied target is the track: a `//X`
+//  row (DIS-063 clone) -> advanceWorktree, else the attached branch (advanceBranch).
+function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
+  const tr = trackRow(wtl);
+  if (tr && tr.uri.scheme === undefined && tr.uri.authority) {
+    //  DIS-074: shed the recorded `#rev` pin — resolve_hash step 5.5 must read
+    //  the target's CURRENT base, not the base it had at clone time.
+    const t = URI.make(undefined, tr.uri.authority, tr.uri.path || undefined,
+                       undefined, undefined);
+    return advanceWorktree(info, reader, ctx, t, parent, haveBaseline);
+  }
+  return advanceBranch(reader, wtl, info, ctx, curBranch, curBranch, parent,
+                       haveBaseline);
+}
+
 //  --- GIT-013 wire PUSH (Host slot) --------------------------------------
 //  FF-push cur's tip to a remote branch over the JS wire (shared/wire.js).
 //  `remoteUri` is the raw Host-slot arg; `branch` the be-side target (empty =
@@ -578,7 +606,9 @@ function postSubs(info, ctx) {
     //  POSTNONE (no changes in this sub) is swallowed — a clean sub needs no
     //  child commit; its pin stays put.  Any other refusal propagates (a real
     //  conflict in a child must not be silently dropped).
-    try { postTree(subInfo, ctx, { uri: subWt }); }
+    //  DIS-074: mark the fan-out call — a clean sub keeps its swallowed
+    //  POSTNONE and never bare-advances ITS OWN track as a side effect.
+    try { postTree(subInfo, Object.assign({}, ctx, { _sub: true }), { uri: subWt }); }
     catch (e) {
       const msg = "" + e;
       if (msg.indexOf("POSTNONE") < 0) throw e;     // a real refusal bubbles up
@@ -731,8 +761,15 @@ function postOne(info, ctx, row) {
   const pre = commitM.buildTree(dres.decisions);
   const rootTreeSha = pre.rootTreeSha || commitM.EMPTY_TREE_SHA;
   if (haveBaseline && dres.haveBase && dres.baseTreeSha &&
-      rootTreeSha === dres.baseTreeSha)
+      rootTreeSha === dres.baseTreeSha) {
+    //  DIS-074: a CLEAN tree + a BARE post is the ADVANCE arm — FF the TRACK
+    //  to cur's tip (worktree.mkd:50-54); a sub fan-out call keeps the refuse.
+    if ((m.msg == null || m.msg === "") && !slots.narrow && !att.detached &&
+        !(ctx && ctx._sub))
+      return advanceTrack(info, wtl, reader, ctx, curBranch, parent,
+                          haveBaseline);
     throw "POSTNONE: no changes since base";
+  }
 
   //  7. Message resolution (after empty-commit so a no-op reports POSTNONE).
   if (m.msg == null || m.msg === "")
