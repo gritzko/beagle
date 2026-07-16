@@ -32,6 +32,8 @@ const dag      = require("../../shared/dag.js");
 const changed  = require("../../shared/changedpaths.js");   // GIT-016: paths diff
 const status   = require("../../views/status/status.js");   // GIT-016: bare = status
 const uriarg   = require("../../shared/uri.js");             // URI-015: scp → ssh://
+const discover = require("../../core/discover.js");          // DIS-062: nav context
+const resolve_hash = require("../../core/resolve_hash.js").resolve_hash;   // DIS-062
 const shalib   = require("../../shared/util/sha.js");
 const hunkrows = require("../../shared/hunkrows.js");
 const isFullSha = shalib.isFullSha;
@@ -88,10 +90,15 @@ function headOne(arg, ctx) {
   if (!curSha)
     throw "HEADNONE: no cur tip to compare (commit first, then `be head ssh://origin`)";
 
-  //  BE-033: a scheme-less //authority is ALWAYS a worktree — nav scopes it or
-  //  NAVNONEs upstream; head never reads it as a cached remote.
-  if (!hasScheme && hasAuth)
-    throw "NAVNONE: no worktree //" + (u.host || "");
+  //  DIS-062: scheme-less `//X[/sub]` — X's OWN rev (its last get/post row,
+  //  resolve_hash step 5.5) is the compare target; verdict via the SAME local
+  //  relate/dag spine peekLocal uses.  NEVER the wire (BE-033/DIS-016).
+  if (!hasScheme && hasAuth) {
+    const rh = resolve_hash(discover.navCwd(discover.ctxDir()), uri);
+    const v = relate.verdict(k, curSha, rh.chash);
+    const paths = changed.changedCommits(k, curSha, k, rh.chash);
+    return report(ctx, uri, branch, v.rel, v.ahead, v.behind, rh.chash, paths);
+  }
   //  Dispatch by transport: any scheme is a wire fetch; a bare in-repo `?branch`
   //  is the LOCAL peek — cur vs a local branch tip, all objects local (no net).
   const res = hasScheme       ? peekFetch(k, uri, branch, curSha)

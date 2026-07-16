@@ -186,7 +186,11 @@ const TRANSPORT = { ssh: 1, https: 1, http: 1, git: 1, be: 1, file: 1, keeper: 1
 //  BE-032: `limit` caps the scan — a MUTATION verb takes the authority on arg 0
 //  ONLY (rest args are context-relative paths; the verb refuses a `//` rest arg),
 //  so a later `//X` operand can no longer silently rescope the whole run.
-function authorityRepo(args, limit) {
+//  DIS-062: `bare` (a mutation whose //X IS the whole spell, no rest arg to bind
+//  under it — get's shape) gates the NEW operand-vs-context split below; a
+//  mutation WITH rest args (put/delete's `//X/sub file`, BE-032's own design)
+//  and every VIEW (status/diff nav) keep //X as CONTEXT unconditionally.
+function authorityRepo(args, limit, bare) {
   const n = limit == null ? args.length : Math.min(limit, args.length);
   for (let i = 0; i < n; i++) {
     const a = String(args[i] || "");
@@ -206,6 +210,14 @@ function authorityRepo(args, limit) {
     if (!dir) throw "NAVNONE: no worktree //" + host;
     let repo; try { repo = be.treeAt(dir); } catch (e) { continue; }
     if (!repo) continue;
+    //  DIS-062: for a BARE mutation (//X is the whole spell), //X is CONTEXT
+    //  only when cwd sits inside X's tree (be.treeAt() of cwd, prefix-checked
+    //  like frame()'s own top check); else it's an OPERAND — leave args[i] intact.
+    if (bare) {
+      let cwdRepo; try { cwdRepo = be.treeAt(); } catch (e) { cwdRepo = null; }
+      if (!cwdRepo || (cwdRepo.wt !== repo.wt && cwdRepo.wt.indexOf(repo.wt + "/") !== 0))
+        continue;
+    }
     //  strip the `//authority` → the repo-relative sub-path (+ ?ref#frag), but
     //  KEEP a projector scheme so the verb still dispatches (`commit://ULOG?sha`
     //  → `commit:?sha`, resolved against the now-scoped be.repo).
@@ -379,7 +391,8 @@ function _cli(argv, opts2) {
   //  A repo-less cwd is swallowed (be.repo=null).
   //  BE-032: a MUTATION verb takes the authority on arg 0 only (rest args are
   //  context-relative paths); views keep the whole-spell scan.
-  let nav = authorityRepo(args, _isMutation(verb) ? 1 : args.length);
+  const isMut = _isMutation(verb);
+  let nav = authorityRepo(args, isMut ? 1 : args.length, isMut && args.length === 1);
   //  URI-016: the context URI is the run's ONE stored coordinate — the nav
   //  authority (shared/nav.js) and the arg-resolution dir (discover.ctxDir) both
   //  DERIVE off it, so they can no longer disagree with it or each other.  ""

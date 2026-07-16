@@ -34,7 +34,11 @@ const pathlib  = require("../../shared/util/path.js");
 const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-const wtpath = require("../../core/discover.js").wtpath;
+const discover  = require("../../core/discover.js");
+const wtpath = discover.wtpath;
+//  DIS-063: RULE ZERO — the ONE URI->hash resolver; a `//X` operand's rev/
+//  store/shard come from HERE, never a hand read of X's own wtlog.
+const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 const ulog     = require("../../shared/ulog.js");
 const sha      = require("../../shared/util/sha.js");
 //  JAB-003: get emits a TRUE hunk (accumulated across dispatches, flushed once).
@@ -277,6 +281,15 @@ function isRemoteSeed(uri) {
   return path.replace(/\/+$/, "").slice(-3) === ".be";
 }
 
+//  DIS-063: a scheme-less `//X[/sub]` OPERAND — the loop's classifier left it
+//  INTACT (cwd is not inside X), so it never reached handleSeed/inRepoSeed as
+//  the run's context.  A worktree source, not a transport/file: remote.
+function isWtOperand(uri) {
+  if (uri === DELSWEEP) return false;
+  const u = new URI(uri);
+  return u.scheme === undefined && u.authority !== undefined;
+}
+
 //  --- the per-row dispatcher (was the top-level handle) ------------------
 //  Dispatch by row provenance: a FAN-OUT child (reconcile/leaf/fold) only
 //  appears AFTER a seed pinned ctx._get, so `ctx._get` set ⇒ fan-out; unset ⇒
@@ -300,8 +313,34 @@ function dispatchRow(row, ctx) {
   //  handleSeed (io.cwd destination).  Retiring the pager pre-merge so a verb sees
   //  `(context, RAW args)` — distinguishing an EXPLICIT `//other` clone-source from
   //  the INJECTED context — is a SEPARATE follow-up.
+  if (isWtOperand(uri)) return handleWtSeed(uri, ctx);    // DIS-063: //X clone
   if (isRemoteSeed(uri)) return handleSeed(uri, ctx);     // remote/clone
   return inRepoSeed(uri, ctx);                            // D1-D4 in-repo forms
+}
+
+//  DIS-063: `jab get //X[/sub]` — clone the worktree the operand names into
+//  cwd, tracking it at the rev it is on (resolve_hash step 5.5 = "the tree's
+//  own tip").  RULE ZERO: store/shard/chash all come from resolve_hash; an
+//  explicit `?query`/`#frag` on the operand rides through it too (steps 5.1-5.4).
+function handleWtSeed(uri, ctx) {
+  const cu = discover.navCwd(discover.ctxDir());
+  const r = resolveHash(cu, uri);
+  const k = store.open(r.store, r.shard);
+  const wt = io.cwd();
+  const bePath = join(wt, ".be");
+  const fresh = !exists(bePath);
+  const oldTip = fresh ? "" : oldTipOf(bePath);
+  //  Row 0 (fresh only): the store REDIRECT, same shape seedLocal writes for a
+  //  `file:` source — r.store already carries its trailing slash (storeOf).
+  const redirect = URI.make("file", undefined, r.store, "/" + r.shard);
+  //  The TRACK row: the operand's OWN authority+path (untouched), pinned at
+  //  the resolved rev — "the //X/sub URI, authority intact, at #chash".
+  const u = new URI(uri);
+  const tipRow = { verb: "get", uri: URI.make(undefined, u.authority, u.path, undefined, r.chash) };
+  if (fresh) writeWtlog(bePath, [{ verb: "get", uri: redirect }, tipRow]);
+  else appendWtlog(bePath, [tipRow]);
+  return fanoutWholeTree(ctx, { k, tip: r.chash, oldTip, fresh, branch: "", bePath },
+                          wt, ambient.force());
 }
 
 //  SEED: resolve the remote once (resolution-at-entry), anchor the wtlog, emit

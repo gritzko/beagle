@@ -39,6 +39,8 @@ const pathlib   = require("../../shared/util/path.js");
 //  PATCH-010: + wtdir/treeAt for the TREE-source address (never raw path math).
 const discover = require("../../core/discover.js");
 const wtpath = discover.wtpath;
+//  DIS-062: THE URI->hash resolver — RULE ZERO, no verb re-derives a hash/rev.
+const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 //  DIFF-010: the shared grow-on-"out full" WEAVE fold/merge retry (mirrors
 //  loop.js:128-142) — a large per-file weave no longer throws "out full".
 const weave     = require("../../shared/weave.js");
@@ -286,22 +288,29 @@ function resolveSource(info, arg) {
   //  source — the fetch leg (tip = its trunk), incl. the dead-source refusal.
   if (!shape.nav && !fetchleg.isWtPath(shape.tree))
     return fetchleg.fetchSource(info, arg);
-  //  PATCH-010: `//WT` via discover.wtdir (nav-confined); `file:<path>` anchors
-  //  via discover.treeAt (abs or cwd-relative — the GET-038 local-source idiom).
-  const dir = shape.nav ? discover.wtdir(shape.tree) : shape.tree;
-  if (!dir) throw "PATCHFAIL: no worktree " + shape.tree;
-  let src; try { src = discover.treeAt(dir); } catch (e) { src = null; }
+  if (shape.nav) {
+    //  DIS-062: `//X[/sub]` resolves THROUGH resolve_hash (step 5.5 = that
+    //  tree's own cur tip) — never a hand-rolled wtlog.open(x).curTip().
+    const ctx = discover.navCwd(discover.ctxDir());
+    let r; try { r = resolveHash(ctx, arg); }
+    catch (e) { throw "PATCHFAIL: " + e; }
+    if (!store.open(info.storePath, info.project).getObject(r.chash))
+      throw "PATCHFAIL: source tip " + r.chash + " is not in the local store";
+    return { tip: r.chash, branch: "" };
+  }
+  //  PATCH-010: `file:<path>` anchors via discover.treeAt (abs or cwd-relative
+  //  — the GET-038 local-source idiom).
+  let src; try { src = discover.treeAt(shape.tree); } catch (e) { src = null; }
   if (!src) throw "PATCHFAIL: no worktree at '" + shape.tree + "'";
   //  theirs = the addressed wt's CUR TIP, read via the ONE wtlog reader.
   const cur = wtlog.open(src).curTip();
   if (!cur || !cur.sha)
     throw "PATCHFAIL: source tree '" + shape.tree + "' has no cur tip";
-  if (!shape.nav && src.storePath !== info.storePath) {
+  if (src.storePath !== info.storePath) {
     //  PATCH-011: the wt anchors ANOTHER store — fetch the tip's closure from
     //  THAT store first; the absorb below is then the ordinary local patch.
     fetchleg.fetchWtTip(info, src, cur.sha, arg);
   } else if (!store.open(info.storePath, info.project).getObject(cur.sha)) {
-    //  PATCH-010: `//WT` (and a same-store wt) stays local-only.
     throw "PATCHFAIL: source tip " + cur.sha + " is not in the local store";
   }
   return { tip: cur.sha, branch: cur.branch };

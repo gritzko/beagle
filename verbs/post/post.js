@@ -33,7 +33,10 @@ const uri      = require("../../shared/uri.js");   // JAB-005: total arg parse
 const pathlib  = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
 //  resolve-backed, context-confined replacement for the old wtJoin.
-const wtpath = require("../../core/discover.js").wtpath;
+const discover = require("../../core/discover.js");
+const wtpath = discover.wtpath;
+//  DIS-062: THE resolver (RULE ZERO) — a local wt-target's base is its chash.
+const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 const shalib   = require("../../shared/util/sha.js");
 const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
 const wire     = require("../../shared/wire.js");      // GIT-013: wire push
@@ -113,8 +116,8 @@ function epochSecOf(stamp) {
 //  The bare `?` (trunk target) is special: its URI has an EMPTY query AND an
 //  empty fragment, so it is detected by the raw `?`-prefixed form, not u.query.
 function parseSlots(args) {
-  const slots = { host: false, hostUri: "", hasQuery: false, query: "",
-                  narrow: "", fragment: undefined };
+  const slots = { host: false, hostUri: "", wt: false, wtUri: "",
+                  hasQuery: false, query: "", narrow: "", fragment: undefined };
   for (let a of args || []) {
     if (!a || a[0] === "#" || a[0] === "-") continue;   // #msg / -flag
     //  URI-015: a git scp-form remote recomposes to ssh:// (a Host slot below),
@@ -125,9 +128,16 @@ function parseSlots(args) {
     const u = uri.parse(a);
     if (typeof u === "string") continue;
     if (u.host) {
+      //  DIS-062: a SCHEME-LESS authority is a LOCAL WORKTREE target (an
+      //  explicit `//X[/sub]` operand, once loop.js's authorityRepo lets it
+      //  through intact) — not a wire push; only ssh/https are Host below.
+      if (!u.scheme) {
+        slots.wt = true;
+        slots.wtUri = a;
+        continue;
+      }
       //  GIT-013: a Host slot is a wire PUSH target (`ssh://host?br`,
-      //  `https://host?br`; BE-033: a scheme-less `//X` is a worktree, nav-
-      //  handled).  Capture the raw URI + its branch query for postOne.
+      //  `https://host?br`).  Capture the raw URI + its branch query for postOne.
       slots.host = true;
       slots.hostUri = a;
       //  GIT-015 defect B: a `?` marker (even empty `?` = trunk) means a branch
@@ -288,6 +298,53 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
   if (ctx && ctx.sink) {
     const stamp = ulog.nowAfter(wtlogTail(wtl));
     const refUri = URI.make(undefined, undefined, undefined, target, parent.slice(0, 8));
+    const out = hunkrows(ctx.sink, refUri);
+    out.row(refUri, "post", stamp);
+    out.done();
+  }
+}
+
+//  --- DIS-062 local worktree target (`//X[/sub]`) ------------------------
+//  worktree.mkd: "all worktrees may get/post from/to each other directly" — a
+//  scheme-less authority operand FF-advances that OTHER worktree's OWN base
+//  (a wt is a branch of its own, DIS-076) to cur's tip; cur is untouched.
+//  RULE ZERO: `resolveHash` (core/resolve_hash.js) is THE resolver — its
+//  chash (step 5.5) IS the target's current base; NEVER wtlog.open(target)
+//  by hand.  `discover.wtdir`/`discover.treeAt` (the SAME canonical routines
+//  resolve_hash's own frame() calls) locate the target's on-disk anchor, only
+//  to WRITE the advance row — not to re-derive the resolution.
+function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
+  if (!haveBaseline || !curTip)
+    throw "POSTNONE: no cur tip to advance `" + targetUri + "` to";
+  const ctxUri = discover.navCwd(discover.ctxDir());
+  const rh = resolveHash(ctxUri, targetUri);            // step 5.5: target's base
+  const dir = discover.wtdir(targetUri);
+  if (!dir) throw "WTNONE: `" + targetUri + "` anchors no local worktree";
+  const target = discover.treeAt(dir);
+  if (target.wt === info.wt)
+    throw "POSTNONE: `" + targetUri + "` is this worktree";
+  //  GIT-016 verdict spine (shared/relate.js) — the SAME local FF/ancestry
+  //  read head.js's own DIS-062 peek uses; never a hand-rolled dag walk.
+  const v = relate.verdict(reader, rh.chash, curTip);
+  if (v.rel === "eq")
+    throw "POSTNONE: `" + targetUri + "` already at cur's tip";
+  if (v.rel === "ahead")
+    throw "POSTNONE: `" + targetUri + "` already contains cur's tip";
+  if (v.rel !== "behind")
+    throw "POSTNOFF: `" + targetUri + "` is " +
+          (v.rel === "unrelated" ? "unrelated to" : "not an ancestor of") +
+          " cur — non-FF advance refused";
+  //  FF: append the advance row into the TARGET's OWN wtlog (a local receive);
+  //  the branch it already tracks (if any) is preserved, only the tip moves.
+  const targetWtl = wtlog.open(target);
+  const branch = targetWtl.attachedBranch().branch || "";
+  const stamp = ulog.nowAfter(wtlogTail(targetWtl));
+  ulog.append(target.bePath,
+              [{ verb: "post",
+                 uri: URI.make(undefined, undefined, undefined, branch, curTip),
+                 ts: stamp }]);
+  if (ctx && ctx.sink) {
+    const refUri = URI.make(undefined, undefined, undefined, branch, curTip.slice(0, 8));
     const out = hunkrows(ctx.sink, refUri);
     out.row(refUri, "post", stamp);
     out.done();
@@ -610,6 +667,13 @@ function postOne(info, ctx, row) {
         ? resolveTarget(slots.query, curBranch, (att.br && att.br.title) || "")
         : curBranch;
 
+  //  DIS-062 local worktree target (`//X[/sub]`): FF-advance that OTHER
+  //  worktree's base to cur's tip.  No local commit, cur untouched.
+  if (slots.wt) {
+    advanceWorktree(info, reader, ctx, slots.wtUri, parent, haveBaseline);
+    return;                                  // no commit, no fan-out
+  }
+
   //  GIT-013 Host slot (`ssh://host?br` / `https://host?br`):
   //  FF-push cur's existing tip to the remote branch.  No local commit — this
   //  ships what cur already points at (the descendant cascade / commit-then-
@@ -641,21 +705,9 @@ function postOne(info, ctx, row) {
   //  file is still caught by the POSTCFLCT pre-scan below.  No more POSTSCOPE.
   const dres = decideM.decide(info, wtl, reader, slots.narrow || undefined);
 
-  //  4. FF pre-flight (POSTNOFF): a REFS tip != parent must be an ancestor.
-  //  Every commit that advances a ref is FF-gated, so the gate is Query-blind.
-  //  Skipped when detached.
-  let expectedOld = "";
-  if (!att.detached && haveBaseline && parent) {
-    const tip = reader.resolveRef(branchKey || "");
-    if (tip && isFullSha(tip)) {
-      expectedOld = tip;
-      const reconciled = theirsParents.indexOf(tip) >= 0 || 
-          theirsParents.some(tp => dag.isAncestor(reader,tip, tp));
-      if (tip !== parent && !dag.isAncestor(reader, tip, parent) && !reconciled)
-        throw "POSTNOFF: branch `?" + (branchKey || "") + "` advanced — " +
-              "non-FF post refused (reconcile with native `be patch`)";
-    }
-  }
+  //  DIS-076: a commit never touches any branch REF (WT-only motion), so the
+  //  old commit-time POSTNOFF gate (checked branchKey's ref vs parent) is
+  //  gone — that FF check now lives solely in advanceBranch's explicit arm.
 
   //  5. Conflict pre-scan (POST-017): a tracked `add` carrying a complete
   //  WEAVE conflict triple aborts before any store write.  `--force` skips.
@@ -724,19 +776,8 @@ function postOne(info, ctx, row) {
   commitM.writePack(reader.shard, info.wt,
                     commit.body, tb.rootTreeSha, tb.bodies, dres.decisions);
 
-  //  URI-016: a commit advances the WORKTREE *and* its tracked branch.  DIS-061's
-  //  "uniform ruling" (a plain commit moves no ref) rode in on `jab patch
-  //  #4597076c` and is BACKED OUT here: it is unlanded WIP — DIS-061's own tests
-  //  still assert the ref advances — and it reddened 40 cases in this tree.
-  //  A pin-branch (synthetic sub) stays PARENT-owned, so the child's own commit
-  //  never touches it (postSubs refreshes it from the parent's new gitlink); a
-  //  ref that does not exist yet is BORN.  Detached posts move no ref.
-  const isPin = !!(att.br && att.br.branch && att.br.branch.length &&
-                   att.br.branch[0][0] === ".");
-  const born = !slots.hasQuery && !isPin &&
-               reader.resolveRef(branchKey || "") == null;
-  if ((slots.hasQuery || born || !isPin) && !att.detached)
-    advanceRef(reader, reader.shard, branchKey, expectedOld, commit.sha);
+  //  DIS-076 (2026-07-15 ruling): a commit is a WT-only motion — it NEVER
+  //  touches any ref, no exceptions.  A ref is born only via explicit `post ?`.
 
   //  Append the `post` row (`?<branch>#<sha>`) at the stamp, then restamp
   //  every `add` file so it reads clean under the new baseline.
