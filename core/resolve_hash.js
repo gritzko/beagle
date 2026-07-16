@@ -196,7 +196,9 @@ function frame(cu, u) {
   //  the entry as its PARENT names it.  It must be read off the RAW path: the
   //  resolve below normalises it away (argRel re-adds it for the same reason).
   const raw = u.path || "";
-  const entered = raw.length > 1 && raw[raw.length - 1] === "/";
+  //  STATUS-010: a PATH-LESS uri sits AT the context's own dir; a context is
+  //  $PWD-like (BRO-024, always INSIDE), so a mount root reads ENTERED.
+  const entered = raw === "" || (raw.length > 1 && raw[raw.length - 1] === "/");
   //  discover.resolve reads .host/.path off a plain object and throws NAVESCAPE
   //  on any climb-out; `//`/`//.` name the main tree, `//WT` the worktree.
   const abs = discover.resolve({ host: wtree, path: base }, raw);
