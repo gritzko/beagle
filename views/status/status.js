@@ -425,17 +425,16 @@ function emitRepo(repo, prefix, out, recurse, filter) {
   //  prefix so a grandchild reads `status:<sub>/<grandchild>`.  A sub whose
   //  mount shard can't be opened is skipped (native's clean-sub *NONE no-op).
   if (recurse) {
-    //  Index the tree gitlinks (subList) by path for the mount/gitlink gate;
-    //  drive the ORDER off `.gitmodules`.
-    const byPath = {};
-    for (const s of subList) byPath[s.path] = s;
+    //  STATUS-007: gate on declared + LIVE mount (isMount), NOT res.gitlinks —
+    //  a STAGED gitlink bump exits classify as put/new and never reaches subList.
     for (const subPath of gitmodulesOrder(repo.wt)) {
-      const s = byPath[subPath];
-      if (!s || !s.mounted) continue;        // declared but not a live mount
-      const subWt = subs.mountWtDir(repo, s.path);
+      //  STATUS-007: keep the STATUS-006 scope — an out-of-filter sub stays out.
+      if (narrow && !narrow(subPath)) continue;
+      if (!isMount(repo.wt, subPath)) continue;  // declared but not a live mount
+      const subWt = subs.mountWtDir(repo, subPath);
       let subRepo;
       try { subRepo = be.treeAt(subWt); } catch (e) { continue; }
-      emitRepo(subRepo, joinPrefix(prefix, s.path), out, recurse);
+      emitRepo(subRepo, joinPrefix(prefix, subPath), out, recurse);
     }
   }
 }

@@ -39,6 +39,7 @@ const wtpath = discover.wtpath;
 const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 const shalib   = require("../../shared/util/sha.js");
 const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
+const submount = require("../../shared/submount.js"); // DIS-072: pin track URI
 const wire     = require("../../shared/wire.js");      // GIT-013: wire push
 const relate   = require("../../shared/relate.js");    // GIT-016: verdict spine
 const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track saver
@@ -634,11 +635,10 @@ function postSubs(info, ctx) {
       //  second sub's bump never collides with the first's stamp.  postOne
       //  re-opens the wtlog, so it sees this just-appended bump row.
       ulog.append(info.bePath, [{ verb: "put", uri: URI.make(undefined, undefined, s.path, undefined, newTip) }]);
-      //  DIS-061: the PARENT owns the child's pin REF — the pin tip IS the gitlink
-      //  in the parent's new base, so refresh the child's synthetic-branch ref to
-      //  newTip (the child's own commit never moves it; uniform ruling).
-      const subReader = store.open(subInfo.storePath, subInfo.project);
-      store.set(subReader.shard, branchlib.key(subWtl1.attachedBranch().br), newTip);
+      //  DIS-072: the parent's post RE-ATTACHES the child at the new pin — a fresh
+      //  `get //WT/path/to/sub#<pin>` row in the CHILD's wtlog; no ref is written.
+      ulog.append(subInfo.bePath,
+                  [{ verb: "get", uri: submount.trackUri(info.wt, s.path, newTip) }]);
     }
   }
 }

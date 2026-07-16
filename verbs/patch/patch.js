@@ -477,8 +477,7 @@ function runSubPatch(info, ctx, subRepo, job) {
   //  submount.mount otherwise (same-source unavailable here → `.gitmodules` URL).
   if (!subReader.getObject(job.theirs)) {
     submount.mount({ wt: info.wt, beDir: info.storePath, subpath: job.path,
-                     pin: job.theirs, source: null,
-                     parentTitle: info.project, parentBranch: "" });
+                     pin: job.theirs, source: null });
   }
   //  The sub triple mirrors the parent's: ours/theirs/fork gitlink pins.  An
   //  empty fork (root-pinned sub) drops to the no-base degenerate merge.

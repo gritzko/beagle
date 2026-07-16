@@ -12,11 +12,11 @@
 //    WRITE the sub wtlog anchor `<wt>/<path>/.be`, and CHECK OUT the commit
 //    named by the parent's gitlink pin.  The same-source fetch falls back to
 //    the `.gitmodules` URL (nearest enclosing file) when it fails, per
-//    [Title] retrieval preference.  The child wt tracks a
-//    SYNTHETIC branch `/<title>/.<parent>[/<parent_branch>]` ([Submodules]
-//    bullet 1) — recorded in the sub's tip row.
+//    [Title] retrieval preference.  The child wt tracks the PARENT'S PIN by
+//    its own local URI `//WT/path/to/sub#<pin>` (DIS-072, [DIS-071] law #4) —
+//    recorded in the sub's tip row; no synthetic branch, no refs entry.
 //
-//  mount(opts) → { storePath, project, tip, branch } | throws a friendly str.
+//  mount(opts) → { storePath, project, tip } | throws a friendly str.
 //    opts.wt        parent worktree root (absolute)
 //    opts.beDir     parent's `.be` dir (where the sibling shard lands)
 //    opts.subpath   gitlink path (wt-relative, e.g. "vendor/sub")
@@ -24,8 +24,6 @@
 //    opts.source    the parent's parsed remote (parseRemote result) OR null
 //                   (a local/in-repo parent — then only the .gitmodules URL
 //                   fallback applies)
-//    opts.parentTitle  the parent shard title (for the synthetic branch name)
-//    opts.parentBranch the parent's current branch ("" = trunk)
 
 "use strict";
 
@@ -36,7 +34,6 @@ const checkout = require("./checkout.js");
 const ulog     = require("./ulog.js");
 const ambient  = require("./ambient.js");   // GET-040: the global force flag
 const pathlib  = require("./util/path.js");
-const branchlib = require("./branch.js");   // SUBS-050: the ONE branch codec
 const sha      = require("./util/sha.js");
 const join = pathlib.join, basename = pathlib.basename, safeRel = pathlib.safeRel;
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
@@ -111,14 +108,20 @@ function titleFromUrl(url) {
   return b;
 }
 
-//  SUBS-050: the synthetic branch the child wt tracks ([Submodules] bullet 1) —
-//  `/<title>/.<parent>/.<grandparent>[/<gp_branch>]`.  Composed through the ONE
-//  branch codec: parse the parent's branch (a plain / relative / absolute
-//  string), fold it into the child chain via branch.sub, then format the
-//  canonical absolute record shape.
-function syntheticBranch(title, parentTitle, parentBranch) {
-  const parentBr = branchlib.parse(parentBranch || "", parentTitle || "parent");
-  return branchlib.format(branchlib.sub(parentBr, title));
+//  DIS-072: the pin TRACK URI `//WT/path/to/sub#<pin>` ([DIS-071] law #4) — the
+//  child's own local URI, FLAT under the owning tree top (never a `.parent` chain).
+//  Resolution via resolve_hash.treeAt (RULE ZERO): wtree/spath/rpath name the
+//  address; an unaddressable tree (no anchor at `wt`) records a bare `#<pin>`.
+function trackUri(wt, subpath, pin) {
+  let t = null;
+  try { t = discover.treeAt(wt); } catch (e) {}
+  if (!t || t.wt !== wt)
+    return URI.make(undefined, undefined, undefined, undefined, pin);
+  const segs = pathlib.split(t.spath).concat(pathlib.split(t.rpath),
+                                             pathlib.split(subpath));
+  //  the authority slot carries its own `//` prefix (the URI binding's shape).
+  return URI.make(undefined, "//" + t.wtree, "/" + pathlib.merge(segs),
+                  undefined, pin);
 }
 
 //  SUBS-047: the SAME-SOURCE child URIs, tried IN ORDER before the official
@@ -239,7 +242,8 @@ function mount(opts) {
   const shard = join(beDir, title);
   const subWt = wtpath(wt, subpath);
   const anchorPath = wtpath(subWt, ".be");
-  const branch = syntheticBranch(title, opts.parentTitle, opts.parentBranch);
+  //  DIS-072: the child tracks the parent's pin by its own local URI.
+  const track = trackUri(wt, subpath, pin);
 
   //  GET-037: ATOMICITY — a sub-mount that fails part-way (an unreachable child,
   //  a raw io error like ENOTDIR from a worktree-source readdir) must not leave a
@@ -289,11 +293,11 @@ function mount(opts) {
         try { io.mkdir(subWt); } catch (e) {}
         const redirect = URI.make("file", undefined, ls.storeBe + "/", "/" + ls.proj);
         ulog.write(anchorPath, [{ verb: "get", uri: redirect },
-                                { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, pin) }]);
+                                { verb: "get", uri: track }]);
         const k = store.open(ls.storeRoot, ls.proj);
         checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
         return { storePath: ls.storeRoot, project: ls.proj, shard: k.shard,
-                 tip: pin, branch: branch, k: k };
+                 tip: pin, k: k };
       }
     }
 
@@ -330,11 +334,11 @@ function mount(opts) {
 
     //  D13: write the sub wtlog anchor `<wt>/<path>/.be` — row-0 redirect names
     //  the sibling shard + project (so be.treeAt resolves the mount), then the
-    //  `?<synthetic-branch>#<pin>` tip the child wt tracks ([Submodules] §1).
+    //  `//WT/path/to/sub#<pin>` track row (DIS-072 pin-URI model).
     try { io.mkdir(subWt); } catch (e) {}
     const redirect = URI.make("file", undefined, beDir + "/", "/" + title);
     ulog.write(anchorPath, [{ verb: "get", uri: redirect },
-                            { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, pin) }]);
+                            { verb: "get", uri: track }]);
 
     //  D3: check out the commit named by the parent gitlink into `<wt>/<path>/`.
     //  GET-040: the global force flag (`get!`) — uniform across the root and
@@ -343,8 +347,7 @@ function mount(opts) {
     const k = store.open(beDir, title);
     checkout.apply(k, pin, subWt, { force: ambient.force(), oldTip: oldPin });
 
-    return { storePath: beDir, project: title, shard: shard, tip: pin,
-             branch: branch, k: k };
+    return { storePath: beDir, project: title, shard: shard, tip: pin, k: k };
   } catch (e) {
     //  Roll back this mount's anchor (best-effort; never mask the failure) so a
     //  stale `<wt>/<path>/.be` redirect can't outlive a failed mount.
@@ -362,5 +365,5 @@ function mount(opts) {
 
 module.exports = { mount: mount, gitmodulesUrl: gitmodulesUrl,
                    declaredUrl: declaredUrl, titleFromUrl: titleFromUrl,
-                   syntheticBranch: syntheticBranch,
+                   trackUri: trackUri,
                    sameSourceUris: sameSourceUris };

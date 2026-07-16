@@ -111,6 +111,16 @@ function refSet(repo, k, branch, sha) {
   return { verb: "put", uri: URI.make(undefined, undefined, undefined, branch, sha.slice(0, 8)) };
 }
 
+//  DIS-077: `put #<hex>` — set the wt BASE: append the get-row pin get.js
+//  writes (D1 `?<track>#<sha>` attached / DIS-075 `#<sha>` detached); no ref moves.
+function baseSet(repo, sha) {
+  const ab = wtlog.open(repo).attachedBranch();
+  const uri = ab.detached
+        ? URI.make(undefined, undefined, undefined, undefined, sha)
+        : URI.make(undefined, undefined, undefined, ab.branch || "", sha);
+  ulog.append(repo.bePath, [{ verb: "get", uri: uri }]);
+}
+
 //  JSQUE-010: per-arg slot classification (the C is_put split) now lives at the
 //  SEED — core/resolve.js pins `?br[#sha]` / `?#sha` / `?<40hex>` to a 40-hex
 //  ref op ONCE (resolution-at-entry, JSQUE-004) and delivers it via ctx.refs;
@@ -241,6 +251,7 @@ function applyRefs(repo, k, ctx) {
   ctx._putRefsDone = true;
   for (const r of ctx.refs || []) {
     if (r.op === "create") refCreate(repo, k, r.branch);
+    else if (r.op === "base") baseSet(repo, r.sha);           // DIS-077
     else refSet(repo, k, r.branch, r.sha);
   }
 }
@@ -635,7 +646,7 @@ function put() {
 
 //  JAB-004: put's OWN terse 3-way (not classifyArg) — URI-arg ref-writes
 //  `?#<hex>`/`?<40hex>`/`?br`/`?br#<hex>`, `path#dst` move, else plain path.
-function classifyPutArg(arg, k, curQuery, repo) {
+function classifyPutArg(arg, k, repo) {
   const u = new URI(arg);
   const q = u.query || "", path = u.path || "", frag = u.fragment || "",
         auth = u.authority || "", data = u.href || "";
@@ -652,11 +663,24 @@ function classifyPutArg(arg, k, curQuery, repo) {
     if (!full) throw "RESOLVE: cannot resolve ?#" + frag;
     return { kind: "ref", op: "set", branch: "", sha: full };
   }
-  //  `?<40hex>` (no fragment) — set cur's ABSOLUTE branch to this sha.
+  //  DIS-077 (RULED 2026-07-15): bare `#<hex>` sets the wt BASE — resolved via
+  //  the get.js resolvePin idiom (store.resolveHexAny); baseSet, NO ref write.
+  if (!hasQ && !hasPath && !hasAuth && hasFrag && data[0] === "#" && resolve.isHexish(frag)) {
+    const full = isFullSha(frag) ? (k.getObject(frag) ? frag : "")
+                                 : (k.resolveHexAny(frag) || "");
+    if (!isFullSha(full)) throw "RESOLVE: cannot resolve #" + frag;
+    return { kind: "ref", op: "base", sha: full };
+  }
+  //  DIS-077: `?<40hex>` (no fragment) — the ref KEY comes from the ONE attach
+  //  reader (wtlog.attachedBranch, DIS-059), never cur's query; detached refuses.
   if (hasQ && !hasPath && !hasAuth && !hasFrag && isFullSha(q)) {
     const full = resolve.resolveHex(k, q);
     if (!full) throw "RESOLVE: cannot resolve ?" + q;
-    return { kind: "ref", op: "set", branch: curQuery || "", sha: full };
+    const ab = wtlog.open(repo).attachedBranch();
+    if (ab.detached)
+      throw "PUTDETACHED: detached worktree — `?<sha>` names no ref; " +
+            "`put #" + q.slice(0, 8) + "` sets the base";
+    return { kind: "ref", op: "set", branch: ab.branch || "", sha: full };
   }
   //  `?br` / `?br#<sha>`.
   if (hasQ && !hasPath && !hasAuth) {
@@ -691,15 +715,12 @@ function putRun(ctx, argv, firstUri) {
   const k = store.open(repo.storePath, repo.project);
   const out = putOut(ctx);
 
-  //  JAB-004: PLAIN owns the fan-out — read cur ONCE (inline seed read; seedCtx
-  //  retired), split each arg via the inline classifyPutArg.  Only curQuery is
-  //  needed — it pins `?<40hex>`'s target branch.
-  const cur = wtlog.open(repo).curTip();
-  const curQuery = (cur && cur.query) || "";
+  //  DIS-077: cur's tip query keys NOTHING here anymore — `?<40hex>`'s ref key
+  //  comes from wtlog.attachedBranch inside classifyPutArg (detached refuses).
   ctx.refs = [];
   let pathUris = [];
   for (const arg of argv) {
-    const c = classifyPutArg(arg, k, curQuery, repo);
+    const c = classifyPutArg(arg, k, repo);
     if (c.kind === "ref") ctx.refs.push({ op: c.op, branch: c.branch, sha: c.sha });
     else if (c.path || c.dst) pathUris.push(c.dst ? URI.make(undefined, undefined, c.path, undefined, c.dst) : c.path);
   }

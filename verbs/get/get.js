@@ -324,15 +324,42 @@ function dispatchRow(row, ctx) {
 //  explicit `?query`/`#frag` on the operand rides through it too (steps 5.1-5.4).
 function handleWtSeed(uri, ctx) {
   const cu = discover.navCwd(discover.ctxDir());
-  const r = resolveHash(cu, uri);
-  const k = store.open(r.store, r.shard);
+  let r = resolveHash(cu, uri);
+  let storeUri = r.store, shard = r.shard, k;
+  if (r.rpath && r.otype === "commit") {
+    //  DIS-072: non-empty rpath resolving to a COMMIT names a GITLINK — fork the
+    //  SUB's own repo pinned at ohash, never the parent's chash/shard.
+    const u0 = new URI(uri);
+    r = resolveHash(cu, URI.make(undefined, u0.authority, u0.path + "/",
+                                 undefined, r.ohash));
+    //  DIS-072: the sub's shard/store off ITS anchor — resolve_hash.treeAt via
+    //  wtdir (the advanceWorktree pattern), never a hand-built sibling path.
+    const dir = discover.wtdir(uri);
+    if (!dir) throw "WTNONE: `" + uri + "` anchors no local worktree";
+    const t = discover.treeAt(dir);
+    storeUri = t.store; shard = t.project;
+    k = store.open(t.storePath, t.project);
+  } else {
+    k = store.open(r.store, r.shard);
+  }
   const wt = io.cwd();
   const bePath = join(wt, ".be");
   const fresh = !exists(bePath);
+  //  DIS-072: an OCCUPIED cell tracking another store/shard is never a clone
+  //  target — refuse loudly instead of checking a mismatched repo over it.
+  if (!fresh) {
+    let cell = null;                 // an EMPTY `.be` shield anchors nothing
+    try { cell = discover.treeAt(wt); } catch (e) {}
+    if (cell && cell.wt === wt &&
+        (cell.store !== storeUri || cell.project !== shard))
+      throw "be get: GETCELL " + wt + " already tracks shard `" +
+            (cell.project || cell.store) + "` — refusing `" + uri + "` (" +
+            (shard || storeUri) + ")";
+  }
   const oldTip = fresh ? "" : oldTipOf(bePath);
   //  Row 0 (fresh only): the store REDIRECT, same shape seedLocal writes for a
-  //  `file:` source — r.store already carries its trailing slash (storeOf).
-  const redirect = URI.make("file", undefined, r.store, "/" + r.shard);
+  //  `file:` source — storeUri already carries its trailing slash (storeOf).
+  const redirect = URI.make("file", undefined, storeUri, "/" + shard);
   //  The TRACK row: the operand's OWN authority+path (untouched), pinned at
   //  the resolved rev — "the //X/sub URI, authority intact, at #chash".
   const u = new URI(uri);
@@ -389,8 +416,7 @@ function fanoutWholeTree(ctx, r, wt, force) {
                //  a weave leaf writes conflict markers (append-only, verb-agnostic).
                bePath: r.bePath || join(wt, ".be"),
                //  DIS-058 D2-D5: the parent's source (for the same-source child
-               //  fetch) + the store dir where sibling sub shards land + the
-               //  parent shard title (the synthetic-branch parent token).
+               //  fetch) + the store dir where sibling sub shards land.
                //  GET-037: siblings land NEXT TO the parent shard, i.e. the
                //  parent shard's OWN parent dir — `dirname(r.k.shard)`.  For a
                //  remote clone that is `<wt>/.be`; for a LOCAL-store get (`<wt>/.be`
@@ -398,8 +424,7 @@ function fanoutWholeTree(ctx, r, wt, force) {
                //  it is the SOURCE store dir — using `<wt>/.be` would `mkdir`
                //  under the redirect file and crash with ENOTDIR (GET-037 repro).
                source: r.source || null,
-               beDir: (r.k && r.k.shard) ? dirname(r.k.shard) : join(wt, ".be"),
-               parentTitle: (r.k && r.k.project) || "" };
+               beDir: (r.k && r.k.shard) ? dirname(r.k.shard) : join(wt, ".be") };
 
   //  Edge flush order (native get): pulled-commit `post` rows first (newest
   //  first, kept in push order), then file rows — new+upd interleaved lex,
@@ -861,8 +886,7 @@ function mountGitlink(g, rel, pin, out) {
     return;                                       // undeclared gitlink → skip
   }
   const m = submount.mount({
-    wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin,
-    source: g.source, parentTitle: g.parentTitle, parentBranch: g.branch,
+    wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin, source: g.source,
   });
   out.row(rel, "new", g.ts);                    // the mounted sub leaf row
   //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
@@ -881,9 +905,8 @@ function isDeclaredSub(wt, subpath) {
 
 //  Walk a just-mounted sub's pin tree for `160000` gitlinks and mount each
 //  (grandchildren).  The grandchild's subpath is parent-relative (`<rel>/<sp>`);
-//  its source is the SAME parent source (the same store serves every shard),
-//  its synthetic-branch parent token is this sub's title.  In-process (not the
-//  queue) so the parent's source coords stay in scope.
+//  its source is the SAME parent source (the same store serves every shard).
+//  In-process (not the queue) so the parent's source coords stay in scope.
 function recurseSubMounts(g, rel, m, out, depth) {
   //  SUBS-041: bound the descent — a deep/cyclic gitlink chain past the cap
   //  stops here (a friendly stderr skip, leave the mount as-is, no fan-out crash).
@@ -907,8 +930,7 @@ function recurseSubMounts(g, rel, m, out, depth) {
       continue;
     }
     const cm = submount.mount({
-      wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin,
-      source: g.source, parentTitle: m.project, parentBranch: m.branch,
+      wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin, source: g.source,
     });
     out.row(sp, "new", g.ts);
     recurseSubMounts(g, sp, cm, out, depth + 1);

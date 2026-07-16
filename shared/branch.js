@@ -58,14 +58,8 @@ function key(br) {
   return merge((br && br.branch) || []);
 }
 
-//  sub(parentBr, subTitle) → the child synthetic Branch the mounted sub tracks
-//  ([Submodules] bullet 1): the parent's own title heads the dotted chain,
-//  followed by the parent's whole branch tail.
-function sub(parentBr, subTitle) {
-  const pt = (parentBr && parentBr.title) || "parent";
-  const pb = (parentBr && parentBr.branch) || [];
-  return { title: subTitle, branch: ["." + pt].concat(pb) };
-}
+//  DIS-072: sub() (the synthetic child Branch) is DELETED — a mounted sub
+//  tracks the parent's pin URI `//WT/path/to/sub#<pin>`, never a dot-branch.
 
 //  wireRef(br) → `refs/heads/<key>` (trunk → `refs/heads/main`).  Wire refs are
 //  title-STRIPPED (the serve.js form).  GIT-015 defect A: an empty ref segment
@@ -94,6 +88,6 @@ function display(br) {
   return "?" + format(br);
 }
 
-module.exports = { parse: parse, format: format, key: key, sub: sub,
+module.exports = { parse: parse, format: format, key: key,
                    wireRef: wireRef, fromWireRef: fromWireRef,
                    isTrunk: isTrunk, display: display };
