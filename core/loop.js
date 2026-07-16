@@ -211,11 +211,24 @@ function authorityRepo(args, limit, bare) {
     let repo; try { repo = be.treeAt(dir); } catch (e) { continue; }
     if (!repo) continue;
     //  DIS-062: for a BARE mutation (//X is the whole spell), //X is CONTEXT
-    //  only when cwd sits inside X's tree (be.treeAt() of cwd, prefix-checked
-    //  like frame()'s own top check); else it's an OPERAND — leave args[i] intact.
+    //  only when cwd sits in a NESTED sub of X's tree; else it's an OPERAND —
+    //  leave args[i] intact.
+    //  RULING 2026-07-16: arg0 is the CALLER's CONTEXT slot — a user-TYPED arg
+    //  is NEVER promoted into it.  A bare mutation naming the tree the cwd is
+    //  ALREADY IN (`post //A` run from inside A — cwd's treeAt anchors on the
+    //  SAME wt) keeps `//A` as an OPERAND, so it reaches the verb intact and
+    //  post.js's `is this worktree` self-guard fires (POST.mkd row 4: a tree
+    //  cannot be its own post target); the run's context stays the cwd-DERIVED
+    //  default (the no-nav fallback below — the verb resolves it via the same
+    //  discover navCwd/ctxDir routines).  Only a cwd in a NESTED sub of X (a
+    //  DIFFERENT tree — treeAt anchors on the sub's own `.be`) still reads //X
+    //  as CONTEXT (the get/nav-submod ground: `:get //parent` from the sub
+    //  refreshes the parent, never clones it over the sub); retiring THAT
+    //  promote too is the deferred `(context, RAW args)` follow-up (get.js).
     if (bare) {
       let cwdRepo; try { cwdRepo = be.treeAt(); } catch (e) { cwdRepo = null; }
-      if (!cwdRepo || (cwdRepo.wt !== repo.wt && cwdRepo.wt.indexOf(repo.wt + "/") !== 0))
+      if (!cwdRepo || cwdRepo.wt === repo.wt ||
+          cwdRepo.wt.indexOf(repo.wt + "/") !== 0)
         continue;
     }
     //  strip the `//authority` → the repo-relative sub-path (+ ?ref#frag), but

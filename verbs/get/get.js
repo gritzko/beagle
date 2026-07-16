@@ -1113,9 +1113,33 @@ function get() {
   finalizeGet(ctx);
 }
 
+//  POST-026: materialise a LOCAL worktree from its current base to `tip` by
+//  REPLAYING the get merge fan-out — the SAME reconcile + 3-way weave `be get
+//  ?#<tip>` runs (fanoutWholeTree + the in-fn FIFO drain + finalize), so a DIRTY
+//  target is merged (never clobbered) and an un-mergeable overlay / a conflict
+//  REFUSES (GETOVRL from the pre-pass, GETCONF from finalize).  Files ONLY: the
+//  caller owns any wtlog base-advance row.  `opts`: { info (target repo), k (its
+//  store reader), tip, oldTip (current base = the merge OLD side / 3-way base),
+//  force?, bePath?, sink? }.  Reused by post's `//WT` target advance.
+function mergeWorktreeTo(opts) {
+  const ctx = { repo: opts.info, sink: opts.sink || null, T0: ron.now() };
+  const r = { k: opts.k, tip: opts.tip, oldTip: opts.oldTip || "",
+              fresh: false, branch: opts.branch || "",
+              bePath: opts.bePath || join(opts.info.wt, ".be") };
+  const seed = fanoutWholeTree(ctx, r, opts.info.wt, !!opts.force);
+  const q = (seed && seed.enqueue) ? seed.enqueue.slice() : [];
+  while (q.length) {
+    const res = dispatchRow(q.shift(), ctx);
+    if (res && res.enqueue && res.enqueue.length)
+      for (const x of res.enqueue) q.push(x);
+  }
+  finalizeGet(ctx);
+}
+
 //  jab injects module.exports for a required module; the loop requires this as
 //  the `get` verb handler.  JAB-004: opt into plain-args dispatch.
 get.jab = "args";
+get.mergeWorktreeTo = mergeWorktreeTo;   // POST-026: post's //WT target reuse
 //  PATCH-011: patch's fetch leg reuses the ONE remote classifier + the
 //  worktree→store redirect resolver (GET-038) — no second URI/store parse.
 get.parseRemote = parseRemote;

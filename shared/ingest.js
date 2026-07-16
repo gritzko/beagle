@@ -196,14 +196,28 @@ function indexAppended(shard, fileId, firstOff, pk, recLen) {
   const buf = io.buf(cnt * 16 + 256);
   const ents = pk.scan(buf);
   const n = ents.length / 2;
-  const mem = abc.ram("HEAPwh128", n + 8);
+  //  GET-046: the buildIndex JS-117 twin — pk.scan is header-count-driven,
+  //  and a keeper-served store log arrives VERBATIM (the first embedded
+  //  pack's header + EVERY appended record behind it), so the header count
+  //  undercounts and scan misses the tail objects (the update-fetch repro:
+  //  the new tip lands in the log but stays unindexed → "tip has no tree").
+  //  Walk the records past scan's coverage and index them too.
+  let maxOff = -1;
+  for (let i = 1; i < ents.length; i += 2) {
+    const o = Number(ents[i] & 0xffffffffffn);
+    if (o > maxOff) maxOff = o;
+  }
+  const tail = walkTail(pk, maxOff);
+  const mem = abc.ram("HEAPwh128", n + tail.length + 8);
   const fid = BigInt(fileId), PACK = 0xfn, delta = BigInt(firstOff) - 12n;
   mem.push((((BigInt(firstOff) << 20n) | fid) << 4n) | PACK,
-           (BigInt(n) << 32n) | BigInt(recLen));
+           (BigInt(n + tail.length) << 32n) | BigInt(recLen));
   for (let i = 0; i < n; i++) {
     const off = (ents[i * 2 + 1] & 0xffffffffffn) + delta;
     mem.push(ents[i * 2], (off << 24n) | (fid << 4n) | 1n);
   }
+  for (const t of tail)
+    mem.push(t.key, ((BigInt(t.off) + delta) << 24n) | (fid << 4n) | 1n);
   mem.sort();
   const path = join(shard, idxmaint.freshRunName(shard));   // JS-116: no clobber
   const out = abc.book("HEAPwh128", path, mem.size);

@@ -6,7 +6,8 @@
 //  dag.aheadBehind (over `keeper`, plus an OPTIONAL remote wh128 index).  NO
 //  content transfer lives here — that is a per-verb step AFTER the verdict.
 //
-//  resolveRef(branch) -> "refs/heads/X" | throws {code,msg} (POSTNOREF/POSTREF)
+//  resolveRef(branch) -> "refs/heads/X" | throws a plain-text refusal (one
+//  line, <=64 chars — RULING 2026-07-16, no C-style code prefixes)
 //  relate(keeper, remoteUri, branch, tip, hasQuery, remoteIx?) ->
 //    { wireRef, old, adv, verdict }  where
 //      wireRef  the resolved remote ref
@@ -25,31 +26,31 @@ const isFullSha = shalib.isFullSha;
 
 //  GIT-016 (was pushRemote): branch -> refs/heads/X.  GIT-015 defect A strips a
 //  leading absolute-marker `/` (`?/project` -> project); an empty path segment
-//  (`refs/heads//…`, trailing `/`) is a bad target -> POSTREF (never sent).
+//  (`refs/heads//…`, trailing `/`) is a bad target -> refused (never sent).
 //  SUBS-050: NOT routed through branch.wireRef — test/put/wire-refguard pins the
-//  RAW-string semantics (`/project` -> project; `dev/`/`a//b` -> POSTREF), which
+//  RAW-string semantics (`/project` -> project; `dev/`/`a//b` -> refused), which
 //  the codec's segment split/merge collapses away; preserved per the no-test-edit
 //  rule (see the ticket's wire-ref note; serve.js/wire.js DO use the codec, over
 //  already-clean title-stripped keys).
 function resolveRef(branch) {
   const bare = (branch && branch[0] === "/") ? branch.slice(1) : branch;
   const wireRef = "refs/heads/" + ((bare && bare !== "main") ? bare : "main");
-  if (/\/\//.test(wireRef) || wireRef[wireRef.length - 1] === "/")
-    throw { code: "POSTREF",
-            msg: "POSTREF: empty ref segment in `" + wireRef + "` — bad branch target" };
+  if (/\/\//.test(wireRef) || wireRef[wireRef.length - 1] === "/") {
+    const named = "empty ref segment in `" + wireRef + "`";
+    throw named.length <= 64 ? named : "empty ref segment in the branch target";
+  }
   return wireRef;
 }
 
 //  GIT-016: advertise -> resolve -> verdict (see header).  `hasQuery` false =>
-//  no branch selected (GIT-015 defect B) -> POSTNOREF.  The FF gate is a LOCAL
+//  no branch selected (GIT-015 defect B) -> refused.  The FF gate is a LOCAL
 //  walk from cur (tip) seeking the advertised old; a remote wh128 index, when
 //  present, lets that walk cross remote-only commits (pull side).
 //  GIT-019: `adv` is INJECTABLE (mirrors `remoteIx`) — a caller holding a live
 //  push session's advert feeds it in; when absent we advertise internally (pull).
 function relate(keeper, remoteUri, branch, tip, hasQuery, remoteIx, adv) {
   if (!hasQuery)
-    throw { code: "POSTNOREF",
-            msg: "POSTNOREF: no branch selected — use `?/PROJ` to pick a trunk" };
+    throw "no remote branch selected (`?branch`)";
   const wireRef = resolveRef(branch);
   if (!adv) adv = wire.advertRefs(remoteUri, "receive-pack");
   const cur = adv.refs.find(function (r) { return r.name === wireRef; });

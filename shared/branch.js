@@ -63,13 +63,14 @@ function key(br) {
 
 //  wireRef(br) → `refs/heads/<key>` (trunk → `refs/heads/main`).  Wire refs are
 //  title-STRIPPED (the serve.js form).  GIT-015 defect A: an empty ref segment
-//  (`refs/heads//…`, trailing `/`) is a bad target → POSTREF (never sent).
+//  (`refs/heads//…`, trailing `/`) is a bad target → refused (never sent).
 function wireRef(br) {
   const k = key(br);
   const name = "refs/heads/" + ((k && k !== "main") ? k : "main");
-  if (/\/\//.test(name) || name[name.length - 1] === "/")
-    throw { code: "POSTREF",
-            msg: "POSTREF: empty ref segment in `" + name + "` — bad branch target" };
+  if (/\/\//.test(name) || name[name.length - 1] === "/") {
+    const named = "empty ref segment in `" + name + "`";
+    throw named.length <= 64 ? named : "empty ref segment in the branch target";
+  }
   return name;
 }
 

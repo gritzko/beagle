@@ -128,10 +128,9 @@ function peekLocal(k, branch, curSha) {
 //  tracking ref.  NO pack-log write: the pack bytes are wrapped by git.pack.over
 //  (no file) and dropped at return; only the edge index (+ the ref row) persists.
 function peekFetch(k, uri, branch, curSha) {
-  //  Resolve the target ref name the SAME way the push side does (GIT-015).
-  let wireRef;
-  try { wireRef = relate.resolveRef(branch); }
-  catch (e) { throw (e && e.msg) ? e.msg.replace(/^POST/, "HEAD") : e; }
+  //  Resolve the target ref name the SAME way the push side does (GIT-015);
+  //  its refusal is verb-neutral plain text (RULING 2026-07-16), no code map.
+  const wireRef = relate.resolveRef(branch);
 
   //  want = the branch tip.  GIT-016: fetch with NO haves — the same full-branch
   //  fetch get's proven path uses (a `have`-driven thin pack trips wire.fetch's

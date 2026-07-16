@@ -405,7 +405,7 @@ function fetch(remoteUri, wantRef, haves, opts) {
   const child = io.spawn(sp.bin, sp.argv);
   const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
 
-  let result;
+  let result, wOpen = true;   // POST-027: wfd not yet EOF'd (see finally)
   try {
     //  1. drain the refs advertisement up to the first flush.
     const reader = pkt.Reader(rfd);
@@ -423,7 +423,7 @@ function fetch(remoteUri, wantRef, haves, opts) {
       reqs.push(pkt.frame("have " + h + "\n"));
     reqs.push(pkt.frame("done\n"));
     for (const r of reqs) io.writeAll(wfd, r);
-    io.close(wfd);
+    io.close(wfd); wOpen = false;
 
     //  3. read NAK pkt-line, then the raw pack to EOF.
     for (;;) {
@@ -449,6 +449,12 @@ function fetch(remoteUri, wantRef, haves, opts) {
                  branch: want.branch };
     }
   } finally {
+    //  POST-027: an early throw (e.g. refless advert) left wfd open — no EOF,
+    //  the child never exits, reap hangs.  Flush-close it (once) before reap.
+    if (wOpen) {
+      try { io.writeAll(wfd, pkt.flushPkt()); } catch (e) {}
+      try { io.close(wfd); } catch (e) {}
+    }
     try { io.close(rfd); } catch (e) {}
     try { io.reap(pid); } catch (e) {}
   }
@@ -738,16 +744,22 @@ function push(remoteUri, updates, packBytes) {
   if (sp.http) return pushHttp(sp.url, updates, packBytes);
   const child = io.spawn(sp.bin, sp.argv);
   const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
-  let result;
+  let result, wOpen = true;   // POST-027: wfd not yet EOF'd (see finally)
   try {
     const reader = pkt.Reader(rfd);
     const { refs } = drainRecvAdvert(reader, false);
     const body = buildPushBody(updates, refs, packBytes);
     io.writeAll(wfd, body);
-    io.close(wfd);
+    io.close(wfd); wOpen = false;
     parseReportStatus(reader);
     result = { refs };
   } finally {
+    //  POST-027: same wfd leak as fetch — an advert/body throw before the
+    //  close starved the child of EOF and the reap hung.  Flush-close once.
+    if (wOpen) {
+      try { io.writeAll(wfd, pkt.flushPkt()); } catch (e) {}
+      try { io.close(wfd); } catch (e) {}
+    }
     try { io.close(rfd); } catch (e) {}
     try { io.reap(pid); } catch (e) {}
   }

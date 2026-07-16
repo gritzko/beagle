@@ -80,14 +80,19 @@ function projectFromPath(path) {
   return seg === BE ? "" : seg;
 }
 
-//  Read row 0 of a secondary wt's `.be` (which IS the wtlog) and return
-//  its anchor URI string, or undefined.  A secondary anchor row 0 is a
-//  `get`/`repo` row pointing at the shared store.
-function row0Uri(bePath) {
-  let uri;
-  ulog.each(bePath, function (log) { if (uri === undefined) uri = log.uri; });
-  return uri;
+//  Read row 0 of a wtlog and return { verb, uri }, or undefined.  A store
+//  anchor row 0 is a `get`/`repo` row pointing at the shared store.
+function row0Row(bePath) {
+  let row;
+  ulog.each(bePath, function (log) {
+    if (row === undefined) row = { verb: log.verb, uri: log.uri };
+  });
+  return row;
 }
+
+//  POST-027: wtlog.anchor()'s test — ONLY a get/repo row 0 anchors a store;
+//  a fresh wt's put row 0 stages a FILE, whose path is never a store.
+function isAnchorRow(r) { return !!r && (r.verb === "get" || r.verb === "repo"); }
 
 //  Resolve the anchor at `wt` (a dir holding `.be`) into store/project.
 //  Primary (`.be` is a dir): store == wt; project from the dir's row-0
@@ -101,9 +106,9 @@ function resolveAnchor(wt) {
   if (kind === "reg") {
     //  Secondary worktree: the `.be` file is the wtlog.
     bePath = be;
-    const u = row0Uri(be);
-    if (u) {
-      const p = new URI(u);
+    const r = row0Row(be);
+    if (isAnchorRow(r)) {
+      const p = new URI(r.uri);
       storePath = repoFromBe(p.path);
       project = projectFromQuery(p.query) || projectFromPath(p.path);
     }
@@ -112,12 +117,12 @@ function resolveAnchor(wt) {
     //  Primary worktree: <wt>/.be/wtlog.
     bePath = join(be, WTLOG);
     storePath = wt;                          // colocated store == wt
-    const u = isFile(bePath) ? row0Uri(bePath) : undefined;
-    if (u) {
-      const p = new URI(u);
-      //  A store-anchor row-0 (repo/get) carries a /.be/ path; a fresh jab-posted
-      //  colocated primary opens with a post row-0 (no path) — stays store==wt.
-      if (p.path) { const sp = repoFromBe(p.path); if (sp) storePath = sp; }
+    const r = isFile(bePath) ? row0Row(bePath) : undefined;
+    if (r) {
+      const p = new URI(r.uri);
+      //  POST-027: only a get/repo row 0 is a store anchor; a fresh wt's put
+      //  row 0 (or a jab-posted primary's post row 0) stays store==wt.
+      if (isAnchorRow(r) && p.path) { const sp = repoFromBe(p.path); if (sp) storePath = sp; }
       project = projectFromQuery(p.query) || projectFromPath(p.path || "");
     }
   }

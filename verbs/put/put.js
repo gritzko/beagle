@@ -310,10 +310,9 @@ function pushWire(repo, k, ctx, arg, u) {
   else target = curSha;
   if (!target || !isFullSha(target)) throw "PUTNONE: no sha to push (commit first)";
   //  GIT-016: share relate.resolveRef (GIT-015 absolute-strip + empty-segment
-  //  guard); re-raise its {code,msg} with the POST->PUT code prefix mapped.
-  let wireRef;
-  try { wireRef = relate.resolveRef(branch); }
-  catch (e) { throw (e && e.msg) ? e.msg.replace(/^POST/, "PUT") : e; }
+  //  guard); its refusal is verb-neutral plain text (RULING 2026-07-16), so
+  //  the old POST->PUT code-prefix map is gone.
+  const wireRef = relate.resolveRef(branch);
   //  old = the remote's advertised value (force write: no ancestor check).
   const adv = wire.advertRefs(arg, "receive-pack");
   const cr = adv.refs.find(r => r.name === wireRef);

@@ -40,6 +40,7 @@ const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 const shalib   = require("../../shared/util/sha.js");
 const subs     = require("../../shared/subs.js");     // DIS-058 D6: sub enum
 const submount = require("../../shared/submount.js"); // DIS-072: pin track URI
+const getverb  = require("../get/get.js");            // POST-026: reuse get merge
 const wire     = require("../../shared/wire.js");      // GIT-013: wire push
 const relate   = require("../../shared/relate.js");    // GIT-016: verdict spine
 const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track saver
@@ -103,9 +104,8 @@ function epochSecOf(stamp) {
 //  POST.mkd's 5 URI slots ride the positional args; `new URI(arg)` splits each
 //  (CLAUDE.md: never bypass the URI parser).  parseSlots scans the args and
 //  returns the populated slots:
-//    host       a Host slot is present (push — STILL refuse-loud POSTPUSH; a
-//               correct JS receive-pack send-pack client is a separate
-//               subsystem, its own ticket — see the DIS-054 design fork).
+//    host       a Host slot is present (a wire PUSH target — GIT-013
+//               pushRemote below).
 //    hasQuery   a Query slot (`?branch`/`?..`/`?`/`?other`) is present.
 //    query      the Query slot's target-branch token (raw, may be ""/".."/name).
 //    narrow     the Path slot's narrow target (a `./path`/`dir/file`), or "".
@@ -205,7 +205,7 @@ function parseMessage(args, flags, slotFrag) {
   if (msg.length && msg[msg.length - 1] === "!") {
     msg = msg.slice(0, -1);
     if (msg.length && msg[msg.length - 1] === "!")
-      throw "POSTBANG: commit message may not end in `!`";
+      throw "commit message may not end in `!`";
   }
   return { msg: msg, sawFrag: sawFrag };
 }
@@ -231,14 +231,33 @@ function isPathSlot(path) {
          path.indexOf("../") === 0 || path.indexOf("/") >= 0;
 }
 
+//  --- refusal text (RULING 2026-07-16) ------------------------------------
+//  POSTNONE/POSTNOFF are C error codes — the JS post never emits them.  A
+//  refusal is plain text spelling the issue: 1 line, max 64 chars.  `refuse`
+//  keeps the target's name/uri when it fits the budget, drops it otherwise.
+const REFUSE_MAX = 64;
+function refuse(named, bare) {
+  return named.length <= REFUSE_MAX ? named : bare;
+}
+//  The "nothing to do" refusal texts postSubs swallows for a clean sub (the
+//  former POSTNONE class); a real conflict / non-FF refusal must bubble up.
+const NONE_MARKS = ["already at cur's tip", "already contains cur's tip",
+                    "no cur tip to", "is this worktree",
+                    "no changes since base"];
+function isNoneRefusal(msg) {
+  for (const m of NONE_MARKS) if (msg.indexOf(m) >= 0) return true;
+  return false;
+}
+
 //  --- ref advance CAS ----------------------------------------------------
 //  Resolve the branch's current REFS tip (expected-old), then conditionally
 //  append the new tip — a divergence between resolve and set is a lost race.
 function advanceRef(reader, shard, branchKey, expectedOld, newSha) {
   const cur = reader.resolveRef(branchKey || "");
   if ((cur || "") !== (expectedOld || ""))
-    throw "POSTNOFF: REFS for `?" + (branchKey || "") +
-          "` advanced concurrently — retry";
+    throw refuse("REFS for `?" + (branchKey || "") +
+                 "` advanced concurrently, retry",
+                 "REFS advanced concurrently, retry");
   store.set(shard, branchKey || "", newSha);
 }
 
@@ -246,14 +265,13 @@ function advanceRef(reader, shard, branchKey, expectedOld, newSha) {
 //  POST.mkd Query row: `?branch`/`?..`/`?`/`?.` selects the branch the post
 //  advances.  `` (`?`) is trunk; `..` is cur's PARENT (dirname of cur's
 //  branch); `.` is cur's own branch; anything else is the named branch.  A
-//  relative `..` on trunk has no parent → POSTQRY (the spec's `?..` needs a
+//  relative `..` on trunk has no parent → refused (the spec's `?..` needs a
 //  child to climb from).
 function resolveTarget(query, curBranch, title) {
   if (query === "" || query === "/") return "";        // trunk
   if (query === ".") return curBranch;                 // cur's own branch
   if (query === "..") {
-    if (!curBranch) throw "POSTQRY: `?..` (parent branch) but cur is trunk — " +
-                          "no parent to advance";
+    if (!curBranch) throw "`?..` needs a child branch, cur is trunk";
     const i = curBranch.lastIndexOf("/");
     return i < 0 ? "" : curBranch.slice(0, i);         // parent (trunk if top)
   }
@@ -266,14 +284,15 @@ function resolveTarget(query, curBranch, title) {
 //  POST.mkd: "advance ?branch / parent / trunk to the wt (cur) hash".  No new
 //  commit — just FF-move the target branch's REFS tip to cur's tip.  Cur is
 //  UNTOUCHED (its REFS row + the wtlog cur-tracking stay).  Refuses:
-//    * POSTNONE  — no cur tip to advance to (a fresh, never-committed wt);
-//    * POSTNONE  — target already AT (or ahead containing) cur's tip;
-//    * POSTNOFF  — target's tip is not an ancestor of cur (a non-FF advance).
+//    * no cur tip to advance to (a fresh, never-committed wt);
+//    * target already AT (or ahead containing) cur's tip;
+//    * target's tip is not an ancestor of cur (a non-FF advance).
 //  An ABSENT target branch is CREATED at cur's tip (the FF-from-nothing case).
 function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
                        haveBaseline) {
   if (!haveBaseline || !parent)
-    throw "POSTNONE: no cur tip to advance `?" + target + "` to";
+    throw refuse("no cur tip to advance `?" + target + "` to",
+                 "no cur tip to advance to");
   //  DIS-061: `post ?<cur's own branch>` is THE standard way to advance your
   //  branch to the wt base (uniform ruling) — FF below, no own-branch refusal.
 
@@ -281,14 +300,17 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
   const expectedOld = (tip && isFullSha(tip)) ? tip : "";
   if (expectedOld) {
     if (expectedOld === parent)
-      throw "POSTNONE: `?" + target + "` already at cur's tip";
+      throw refuse("`?" + target + "` is already at cur's tip",
+                   "the target is already at cur's tip");
+    //  POST-027: a target already PAST cur (cur ⊏ target) is the "already
+    //  at/past it" refusal — checked BEFORE the FF gate (else dead arm).
+    if (dag.isAncestor(reader, parent, expectedOld))
+      throw refuse("`?" + target + "` already contains cur's tip",
+                   "the target already contains cur's tip");
     //  FF only: cur must descend the target's tip.
     if (!dag.isAncestor(reader, expectedOld, parent))
-      throw "POSTNOFF: `?" + target + "` is not an ancestor of cur — " +
-            "non-FF advance refused";
-    //  Already contains cur (cur is an ancestor of target) → nothing to do.
-    if (dag.isAncestor(reader, parent, expectedOld))
-      throw "POSTNONE: `?" + target + "` already contains cur's tip";
+      throw refuse("`?" + target + "` can not be fast-forwarded",
+                   "the target can not be fast-forwarded");
   }
   //  Move ONLY the target branch's REFS row; cur's REFS + wtlog cur-tracking
   //  are left untouched (a bare advance makes no commit and does not retie).
@@ -316,25 +338,44 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
 //  to WRITE the advance row — not to re-derive the resolution.
 function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
   if (!haveBaseline || !curTip)
-    throw "POSTNONE: no cur tip to advance `" + targetUri + "` to";
+    throw refuse("no cur tip to advance `" + targetUri + "` to",
+                 "no cur tip to advance to");
   const ctxUri = discover.navCwd(discover.ctxDir());
   const rh = resolveHash(ctxUri, targetUri);            // step 5.5: target's base
   const dir = discover.wtdir(targetUri);
   if (!dir) throw "WTNONE: `" + targetUri + "` anchors no local worktree";
   const target = discover.treeAt(dir);
   if (target.wt === info.wt)
-    throw "POSTNONE: `" + targetUri + "` is this worktree";
+    throw refuse("`" + targetUri + "` is this worktree",
+                 "the target is this worktree");
   //  GIT-016 verdict spine (shared/relate.js) — the SAME local FF/ancestry
   //  read head.js's own DIS-062 peek uses; never a hand-rolled dag walk.
   const v = relate.verdict(reader, rh.chash, curTip);
   if (v.rel === "eq")
-    throw "POSTNONE: `" + targetUri + "` already at cur's tip";
+    throw refuse("`" + targetUri + "` is already at cur's tip",
+                 "the target is already at cur's tip");
   if (v.rel === "ahead")
-    throw "POSTNONE: `" + targetUri + "` already contains cur's tip";
-  if (v.rel !== "behind")
-    throw "POSTNOFF: `" + targetUri + "` is " +
-          (v.rel === "unrelated" ? "unrelated to" : "not an ancestor of") +
-          " cur — non-FF advance refused";
+    throw refuse("`" + targetUri + "` already contains cur's tip",
+                 "the target already contains cur's tip");
+  if (v.rel === "unrelated")
+    throw refuse("`" + targetUri + "` is unrelated to cur",
+                 "the target is unrelated to cur");
+  if (v.rel !== "behind") {
+    //  diverged: the verdict spine already carries the ahead/behind rows —
+    //  report the counts it provides (never a hand-rolled recount).
+    const ab = " (" + v.ahead.length + " ahead, " + v.behind.length + " behind)";
+    throw refuse("`" + targetUri + "` can not be fast-forwarded" + ab,
+                 "the target can not be fast-forwarded" + ab);
+  }
+  //  POST-026: a `//WT` post FIRST materialises the dirties into the target wt —
+  //  the SAME get merge fan-out `be get ?#<curTip>` runs, so a DIRTY target is
+  //  3-way weave-merged (not clobbered) and an un-mergeable overlay / a conflict
+  //  REFUSES (GETOVRL / GETCONF) BEFORE the base advances.  Reuse the get merge
+  //  path (RULE ZERO — no hand-rolled checkout/dag): rh.chash is the target's
+  //  current base = the merge OLD side / 3-way base, curTip the tree to reach.
+  const targetK = store.open(target.storePath, target.project);
+  getverb.mergeWorktreeTo({ info: target, k: targetK, tip: curTip,
+                            oldTip: rh.chash, bePath: target.bePath });
   //  FF: append the advance row into the TARGET's OWN wtlog (a local receive);
   //  the branch it already tracks (if any) is preserved, only the tip moves.
   const targetWtl = wtlog.open(target);
@@ -369,6 +410,21 @@ function trackRow(wtl) {
   return undefined;
 }
 
+//  POST-026: does `targetUri` (a `//WT[/sub]` wt-target) resolve to THIS
+//  worktree?  A MOUNTED sub's DIS-072 re-attach records its track as the
+//  parent-mount address `//<wt>/<subpath>` (submount.trackUri) — which resolves
+//  to the sub's OWN on-disk dir.  Detect the self-reference via the SAME
+//  discover anchor routines advanceWorktree itself uses (RULE ZERO — no
+//  hand-rolled path compare), so advanceTrack can fall through to the branch arm.
+function selfWorktree(info, targetUri) {
+  let dir;
+  try { dir = discover.wtdir(targetUri); } catch (e) { return false; }
+  if (!dir) return false;
+  let t;
+  try { t = discover.treeAt(dir); } catch (e) { return false; }
+  return !!t && t.wt === info.wt;
+}
+
 //  DIS-074: bare-post ADVANCE arm — the implied target is the track: a `//X`
 //  row (DIS-063 clone) -> advanceWorktree, else the attached branch (advanceBranch).
 function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
@@ -378,7 +434,12 @@ function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
     //  the target's CURRENT base, not the base it had at clone time.
     const t = URI.make(undefined, tr.uri.authority, tr.uri.path || undefined,
                        undefined, undefined);
-    return advanceWorktree(info, reader, ctx, t, parent, haveBaseline);
+    //  POST-026: a mounted sub tracks its parent-mount `//<wt>/<subpath>`, which
+    //  IS the sub's own dir — a bare post inside a clean-but-ahead sub must NOT
+    //  self-refuse (`… is this worktree`).  Fall through to the sub's
+    //  OWN branch (trunk) FF — worktree.mkd:53-54, the DIS-074 track advance.
+    if (!selfWorktree(info, t))
+      return advanceWorktree(info, reader, ctx, t, parent, haveBaseline);
   }
   return advanceBranch(reader, wtl, info, ctx, curBranch, curBranch, parent,
                        haveBaseline);
@@ -393,7 +454,7 @@ function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
 //  pack of objects the remote lacks via `keeper upload-pack`, then push.
 function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   if (!tip || !isFullSha(tip))
-    throw "POSTNONE: no cur tip to push (commit first, then `be post ssh://host`)";
+    throw "no cur tip to push (commit first, then `be post ssh://host`)";
   //  GIT-019: ssh/local push runs on ONE receive-pack session — advertise once,
   //  verdict off that advert, send on the SAME fds.  http is stateless (no
   //  session): fall back to the classic advertRefs-inside-relate + wire.push.
@@ -420,14 +481,16 @@ function pushRemote(info, reader, ctx, remoteUri, branch, tip, hasQuery) {
   if (old) {
     if (rel.verdict.eq) {
       if (session) session.close();
-      throw "POSTNONE: remote `" + wireRef + "` already at cur's tip";
+      throw refuse("remote `" + wireRef + "` is already at cur's tip",
+                   "the remote is already at cur's tip");
     }
     //  GIT-016: honest non-FF refusal — post is FF-only, so no force hint; the
-    //  remote ancestry is unknown here (no fetch) so no diverged/unrelated guess.
+    //  remote ancestry is unknown here (no fetch, verdict has no counts) so no
+    //  diverged/unrelated guess and no ahead/behind report.
     if (!rel.verdict.ff) {
       if (session) session.close();
-      throw "POSTNOFF: remote `" + wireRef + "` is not an ancestor of cur — " +
-            "non-FF push refused";
+      throw refuse("remote `" + wireRef + "` can not be fast-forwarded",
+                   "the remote can not be fast-forwarded");
     }
   }
 
@@ -526,7 +589,15 @@ function postTree(info, ctx, row) {
   //  op — it must NOT fan out over submodules (a sub's cur is not the super's
   //  tip; pushing it to the super's remote is a spurious non-FF → POSTNOFF).
   const isPush = parseSlots((ctx && ctx.args) || []).host;
-  if (!isPush && flags.indexOf("--nosub") < 0) postSubs(info, ctx);
+  if (!isPush && flags.indexOf("--nosub") < 0) {
+    //  POST-026: decide the recursion MODE ONCE over the WHOLE mounted tree
+    //  (parent + every mounted descendant): ANY active put/delete anywhere ⇒
+    //  SELECTIVE (commit only what's staged); zero ⇒ POST-ALL.  Computed at the
+    //  OUTERMOST level and threaded down via ctx (the sub fan-out Object.assigns
+    //  it), so no level recomputes its own mode (the per-repo `anyStaged` bug).
+    if (ctx._selective === undefined) ctx._selective = anyPutDeep(info);
+    postSubs(info, ctx);
+  }
   return postOne(info, ctx, row);
 }
 
@@ -538,22 +609,27 @@ function anyStaged(wtl) {
   return any;
 }
 
-//  SUBS-052: transitive selective-scope probe — is `info` (a sub) in scope
-//  because IT or any MOUNTED descendant has staged rows / is adv? (fixes the
-//  nesting-blind gate: a change staged >=2 mounts down was invisible).
-function subScopedDeep(info) {
+//  POST-026: the WHOLE-TREE put/delete probe — does `info` OR any MOUNTED
+//  descendant carry an active (in-scope, since the last get/post) put/delete
+//  row?  Two roles: (1) the GLOBAL mode decision at the top of the recursion
+//  (ANY put/delete anywhere ⇒ selective, zero ⇒ post-all); (2) the per-sub
+//  transitive selection probe (SUBS-052 nesting-blind fix: a change staged
+//  >=2 mounts down is still seen).  An out-of-band `adv` descendant DOES NOT
+//  pull a sub in — only a real put/delete does (the old `s.bucket === "adv"`
+//  shortcut was the bug: an adv-only sub was force-committed in selective mode).
+function anyPutDeep(info) {
   if (anyStaged(wtlog.open(info))) return true;
-  const reader = store.open(info.storePath, info.project);
+  let reader;
+  try { reader = store.open(info.storePath, info.project); } catch (e) { return false; }
   const baseTip = wtlog.open(info).curTip();
   const baseTree = (baseTip && baseTip.sha && isFullSha(baseTip.sha))
         ? reader.commitTree(baseTip.sha) : "";
   if (!baseTree) return false;
   for (const s of subs.enumerate(info, reader, baseTree)) {
     if (!s.mounted) continue;
-    if (s.bucket === "adv") return true;      // a descendant adv pulls it in
     let subInfo;
     try { subInfo = be.treeAt(wtpath(info.wt, s.path)); } catch (e) { continue; }
-    if (subScopedDeep(subInfo)) return true;
+    if (anyPutDeep(subInfo)) return true;
   }
   return false;
 }
@@ -579,7 +655,9 @@ function subInParentScope(wtl, subPath) {
 function postSubs(info, ctx) {
   const reader = store.open(info.storePath, info.project);
   const wtl = wtlog.open(info);
-  const parentSelective = anyStaged(wtl);           // SUBS-042 parent mode
+  //  POST-026: the GLOBAL tree-wide mode, decided once and threaded via ctx
+  //  (postTree above), NOT the old per-repo `anyStaged(wtl)`.
+  const selective = ctx._selective;
   const baseTip = wtl.curTip();
   const baseTree = (baseTip && baseTip.sha && isFullSha(baseTip.sha))
         ? reader.commitTree(baseTip.sha) : "";
@@ -592,14 +670,16 @@ function postSubs(info, ctx) {
     let subInfo;
     try { subInfo = be.treeAt(subWt); } catch (e) { continue; }
 
-    //  SUBS-042 selective gate: skip a sub not in scope (no parent bump / sub-internal
-    //  stage, no own anyPd, not already adv); commit-all falls through.
-    //  SUBS-052: the own-wtlog probe is now the TRANSITIVE subScopedDeep, so a
-    //  change staged in any mounted descendant (or a descendant adv) keeps it in.
-    if (parentSelective &&
+    //  POST-026 selective gate: in SELECTIVE mode a sub is posted IFF its
+    //  gitlink is `put` OR a file under it is put/deleted — the parent-scope
+    //  probe (gitlink/file put/delete in the parent wtlog) OR the sub's own
+    //  TRANSITIVE put/delete scan (anyPutDeep, incl. mounted descendants).  An
+    //  out-of-band `adv` sub with NO put under it is LEFT ALONE (no `bucket ===
+    //  "adv"` force-include).  POST-ALL mode (selective false) descends every
+    //  mounted sub as before.
+    if (selective &&
         !subInParentScope(wtl, s.path) &&
-        s.bucket !== "adv" &&
-        !subScopedDeep(subInfo))
+        !anyPutDeep(subInfo))
       continue;
 
     //  The sub's cur tip BEFORE the recursive post.
@@ -613,10 +693,14 @@ function postSubs(info, ctx) {
     //  conflict in a child must not be silently dropped).
     //  DIS-074: mark the fan-out call — a clean sub keeps its swallowed
     //  POSTNONE and never bare-advances ITS OWN track as a side effect.
-    try { postTree(subInfo, Object.assign({}, ctx, { _sub: true }), { uri: subWt }); }
+    //  POST-027: thread the sub's mount path down the fan-out (accumulated
+    //  across nesting: `dog`, `dog/abc`) — postOne spices the message with it.
+    const spice = (ctx._spice ? ctx._spice + "/" : "") + s.path;
+    try { postTree(subInfo, Object.assign({}, ctx, { _sub: true, _spice: spice }),
+                   { uri: subWt }); }
     catch (e) {
       const msg = "" + e;
-      if (msg.indexOf("POSTNONE") < 0) throw e;     // a real refusal bubbles up
+      if (!isNoneRefusal(msg)) throw e;             // a real refusal bubbles up
     }
 
     //  The sub's NEW cur tip AFTER the post.  If it advanced (a child commit
@@ -657,11 +741,13 @@ function postOne(info, ctx, row) {
   //  a refusal leaves the store byte-identical (POST-017 all-or-nothing).
 
   //  0. URI-slot parse (DIS-054): the POST.mkd Host/Query/Path slots ride the
-  //  args.  Host (push) still refuse-loud POSTPUSH (the JS wire push is a
-  //  separate subsystem/ticket — the DIS-054 design fork).  Query (?branch)
+  //  args.  Host (push) is the GIT-013 wire push (pushRemote).  Query (?branch)
   //  retargets the advance; Path (./path) narrows the commit — both REAL below.
-  const slots = parseSlots(args);            // throws POSTPUSH on a Host slot
+  const slots = parseSlots(args);
   const m = parseMessage(args, flags, slots.fragment);
+  //  POST-027: a recursed sub's commit SPICES the parent's message with the
+  //  sub mount path (`<msg> [dog]`, nested `[dog/abc]`) — POST.mkd row 2.
+  if (ctx && ctx._spice && m.msg) m.msg = m.msg + " [" + ctx._spice + "]";
 
   //  1. Attachment (DIS-057): the SAME wtlog.attachedBranch reader `status`
   //  uses — `?#<sha>` (trunk pinned at a sha) is ATTACHED, only a bare `?<sha>`
@@ -728,6 +814,16 @@ function postOne(info, ctx, row) {
     return;                                  // no commit, no fan-out
   }
 
+  //  POST-027: POST.mkd row 1 exception — a message-less post (bare / `#`) with
+  //  an ACTIVE absorbed patch COMMITS, reusing the theirs commit's own message.
+  if ((m.msg == null || m.msg === "") && !slots.narrow && theirsParents.length)
+    m.msg = commitMessage(reader, theirsParents[theirsParents.length - 1]);
+
+  //  POST-026: a message-less `post` is the ADVANCE op — FF the tracked branch
+  //  (append `?#<curtip>` to <project>/refs), regardless of uncommitted changes.
+  if ((m.msg == null || m.msg === "") && !slots.narrow && !att.detached)
+    return advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline);
+
   const branchKey = target;
 
   //  3. Classify the change-set into keep/unlink/add decisions.  A Path slot
@@ -746,16 +842,15 @@ function postOne(info, ctx, row) {
   //  5. Conflict pre-scan (POST-017): a tracked `add` carrying a complete
   //  WEAVE conflict triple aborts before any store write.  `--force` skips.
   if (!force) {
-    //  STATUS-005: name the durable `con` row when the marker'd file was recorded
-    //  by a get/patch merge (the refusal is otherwise unchanged — POST-017).
-    const conRows = (typeof wtl.conPaths === "function") ? wtl.conPaths() : new Set();
     for (const d of dres.decisions) {
       if (d.verb !== "add") continue;
       const bytes = commitM.readAddBytes(info.wt, d);
-      if (bytes && conflict.hasConflictMarker(bytes))
-        throw "POSTCFLCT: conflict marker in tracked file " + d.path +
-              (conRows.has(d.path) ? " (recorded `con` row)" : "") +
-              " (re-run with --force to override)";
+      if (bytes && conflict.hasConflictMarker(bytes)) {
+        const named = "conflict marker in tracked file " + d.path;
+        throw refuse(named + " (--force overrides)",
+                     refuse(named,
+                            "conflict marker in a tracked file (--force overrides)"));
+      }
     }
   }
 
@@ -764,20 +859,15 @@ function postOne(info, ctx, row) {
   //  the SAME decisions below.
   const pre = commitM.buildTree(dres.decisions);
   const rootTreeSha = pre.rootTreeSha || commitM.EMPTY_TREE_SHA;
+  //  A message-bearing post that produces baseline's tree has nothing to commit
+  //  (a message-less bare post already took the ADVANCE arm above).
   if (haveBaseline && dres.haveBase && dres.baseTreeSha &&
-      rootTreeSha === dres.baseTreeSha) {
-    //  DIS-074: a CLEAN tree + a BARE post is the ADVANCE arm — FF the TRACK
-    //  to cur's tip (worktree.mkd:50-54); a sub fan-out call keeps the refuse.
-    if ((m.msg == null || m.msg === "") && !slots.narrow && !att.detached &&
-        !(ctx && ctx._sub))
-      return advanceTrack(info, wtl, reader, ctx, curBranch, parent,
-                          haveBaseline);
-    throw "POSTNONE: no changes since base";
-  }
+      rootTreeSha === dres.baseTreeSha)
+    throw "no changes since base";
 
-  //  7. Message resolution (after empty-commit so a no-op reports POSTNONE).
+  //  7. A committing post (message / narrow / detached) requires a message.
   if (m.msg == null || m.msg === "")
-    throw "POSTNOMSG: a commit message is required (`be post '#msg'`)";
+    throw "a commit message is required (`be post '#msg'`)";
 
   //  JSQUE-020: the commit is a JOIN over the WHOLE decision set held in
   //  memory (dres.decisions); the former durable back-scan barrier only
@@ -797,7 +887,7 @@ function postOne(info, ctx, row) {
     return { verb: d.verb, uri: uri };
   });
   if (leaves.length !== dres.decisions.length)
-    throw "POSTFOLD: leaf/decision count mismatch (" + leaves.length + " != " +
+    throw "leaf/decision count mismatch (" + leaves.length + " != " +
           dres.decisions.length + ")";
 
   //  Build the tree (post-order bodies) + the commit object from the
@@ -842,6 +932,16 @@ function postOne(info, ctx, row) {
 //  The wtlog tail ts (for the monotonic stamp bump) — the last row's ts.
 function wtlogTail(wtl) {
   return wtl.rows.length ? wtl.rows[wtl.rows.length - 1].ts : 0n;
+}
+
+//  POST-027: a commit's own message — the bytes past the header's blank line,
+//  trailing newlines shed (buildCommit re-adds the one).  The reuse source.
+function commitMessage(reader, sha) {
+  const o = reader.getObject(sha);
+  if (!o || !o.bytes) return "";
+  const t = utf8.Decode(o.bytes);
+  const i = t.indexOf("\n\n");
+  return i < 0 ? "" : t.slice(i + 2).replace(/\n+$/, "");
 }
 
 //  Banner: the commit row `post ?<hashlet8>#<subject>`, then per-file
