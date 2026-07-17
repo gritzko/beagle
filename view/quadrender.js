@@ -17,13 +17,17 @@ const render = require("./render.js");
 const ESC = "\x1b[";
 const COLS = ["track", "base", "patch", "wt"];
 //  BRO-030 tty glyphs (gritzko 2026-07-17): ● created, ∅ removed, ↑ advanced.
+//  A COMMIT row's `o` means "present in this column's line", not "created" —
+//  it renders ✔ (ruling 2026-07-17), so it never reads as a file state.
 const TTY_GLYPH = { ".": ".", "x": "∅", "o": "●", "v": "↑" };
+const COMMIT_GLYPH = { ".": ".", "x": "∅", "o": "✔", "v": "↑" };
 
 //  Paint ONE quad string as colored CELLS (gritzko 2026-07-17): black glyph on
 //  a PASTEL per-column bg unstaged, white on the DARK hue staged (wt char),
 //  conflict white on dark red.  Plain mode stays the pure ASCII canon
 //  (case = staged, '!' = conflict).  Cells close with ESC[0m (bg is set).
-function paintQuad(quad, row, colored) {
+function paintQuad(quad, row, colored, glyphs) {
+  const g = glyphs || TTY_GLYPH;
   const q = Array.from(quad);
   let out = "";
   for (let i = 0; i < 4; i++) {
@@ -40,7 +44,7 @@ function paintQuad(quad, row, colored) {
       if (row && row.con) sgr = theme.QUAD_SGR.con;
       else if (row && row.staged) sgr = theme.QUAD_SGR.staged;
     }
-    out += ESC + sgr + "m" + (TTY_GLYPH[ch] || ch) + ESC + "0m";
+    out += ESC + sgr + "m" + (g[ch] || ch) + ESC + "0m";
   }
   return out;
 }
@@ -57,7 +61,7 @@ function fileRow(row, colored) {
 //  One commit row: `<date7> <quad4> ?<hashlet>#<subject>` — the same quad
 //  vocabulary one level up (presence 'o' per column whose tip reaches it).
 function commitRow(c, colored) {
-  return render.dateCol(c.ts) + " " + paintQuad(c.quad, null, colored)
+  return render.dateCol(c.ts) + " " + paintQuad(c.quad, null, colored, COMMIT_GLYPH)
        + " ?" + c.hashlet + (c.subject ? "#" + c.subject : "");
 }
 
@@ -71,6 +75,17 @@ function renderModel(model, opts) {
   return lines;
 }
 
+//  BRO-030: the pager tok tag for quad char `ch` in column `i` (0..3) — the
+//  extension codes 26..31 ('['..'`', view/bro.js THEME); '.' stays 'S'.
+function charTag(i, ch, staged, con) {
+  if (ch === ".") return "S";
+  if (i === 0) return "[";
+  if (i === 1) return "\\";
+  if (i === 2) return "]";
+  return con ? "`" : staged ? "_" : "^";
+}
+
 module.exports = { renderModel: renderModel, fileRow: fileRow,
                    commitRow: commitRow, paintQuad: paintQuad,
-                   TTY_GLYPH: TTY_GLYPH };
+                   TTY_GLYPH: TTY_GLYPH, COMMIT_GLYPH: COMMIT_GLYPH,
+                   charTag: charTag };

@@ -994,14 +994,18 @@ function emitQuadBanner(ctx, info, branchKey, message, pre, decisions) {
   const touched = {};
   for (const d of decisions)
     if (d.verb === "add" || d.verb === "unlink") touched[d.path] = 1;
+  //  BRO-030: plain bakes the ASCII canon text; any other mode emits tok-
+  //  tagged quad rows (hunkrows.quadRow) so the pager paints per-char.
+  const plain = ambient.format() === "plain";
   if (pre) for (const r of pre.rows)
-    if (touched[r.path]) out.raw(quadrender.fileRow(r, false));
+    if (touched[r.path]) plain ? out.raw(quadrender.fileRow(r, false)) : out.quadRow(r);
   //  BRO-030: fresh readers post-commit — model.commits now reads the new
-  //  local commit as ".+.." against the (unmoved) track.
+  //  local commit as ".o.." against the (unmoved) track.
   try {
     const m2 = quadlib.quadOf(info, wtlog.open(info),
                               store.open(info.storePath, info.project));
-    for (const c of m2.commits) out.raw(quadrender.commitRow(c, false));
+    for (const c of m2.commits)
+      plain ? out.raw(quadrender.commitRow(c, false)) : out.quadCommit(c);
   } catch (e) {}
   out.done();
 }

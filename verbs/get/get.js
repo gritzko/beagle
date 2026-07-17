@@ -1336,10 +1336,12 @@ function quadReport(g, out) {
     const model = quadlib.quadOf(info, wtlog.open(info), g.k);
     const touched = {};
     for (const r of g.rows || []) if (!r._post) touched[String(r.uri)] = 1;
-    const colored = ambient.format() === "color";
-    for (const c of model.commits) out.raw(qr.commitRow(c, colored));
+    //  BRO-030: plain bakes the ASCII canon; else tok-tagged rows (pager).
+    const plain = ambient.format() === "plain";
+    for (const c of model.commits)
+      plain ? out.raw(qr.commitRow(c, false)) : out.quadCommit(c);
     for (const r of model.rows)
-      if (touched[r.path]) out.raw(qr.fileRow(r, colored));
+      if (touched[r.path]) plain ? out.raw(qr.fileRow(r, false)) : out.quadRow(r);
   } catch (e) { warn("be get: BRO-030 quad report failed: " + e); }
 }
 

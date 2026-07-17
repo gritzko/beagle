@@ -18,6 +18,7 @@
 
 const render = require("../view/render.js");
 const theme  = require("../view/theme.js");
+const quadrender = require("../view/quadrender.js");   // BRO-030: quad rows
 
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 function tagCode(letter) { return letter.charCodeAt(0) - 65; }
@@ -92,6 +93,30 @@ module.exports = function hunkrows(sink, uri, scheme) {
       spans.push(["S", eSep2]);
       spans.push(["S", eNL]);
       if (nav) { feedText(utf8.Encode(nav)); spans.push(["U", off]); }
+    },
+    //  BRO-030: one quad row `<date7> <quad4> <path>\n` — TTY glyphs with
+    //  per-char column tok tags (quadrender.charTag), the pager-colored twin
+    //  of the plain-mode fileRow text.  `quadCommit` shapes a commit row.
+    quadRow: function (row, glyphs) {
+      const g = glyphs || quadrender.TTY_GLYPH;
+      const date = render.dateCol(row.ts == null ? 0n : row.ts);
+      feedText(utf8.Encode(date)); spans.push(["L", off]);
+      feedText(utf8.Encode(" ")); spans.push(["S", off]);
+      const q = Array.from(row.quad || "....");
+      for (let i = 0; i < 4; i++) {
+        const ch = q[i] == null ? "." : q[i];
+        feedText(utf8.Encode(g[ch] || ch));
+        spans.push([quadrender.charTag(i, ch, row.staged, row.con), off]);
+      }
+      const path = (row.src && row.src !== row.path)
+            ? row.src + "#" + row.path : row.path;
+      feedText(utf8.Encode(" " + path + "\n")); spans.push(["S", off]);
+    },
+    //  A commit row's `o` is "present in this line" → the ✔ glyph map.
+    quadCommit: function (c) {
+      this.quadRow({ quad: c.quad, ts: c.ts,
+                     path: "?" + c.hashlet + (c.subject ? "#" + c.subject : "") },
+                   quadrender.COMMIT_GLYPH);
     },
     done: flush,
   };

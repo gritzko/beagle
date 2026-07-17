@@ -4,7 +4,9 @@
 //    1 track  the tracked ref tip        (blue)
 //    2 base   the wt's base commit       (green)
 //    3 patch  the patched-in theirs      (yellow)
-//    4 wt     the bytes on disk          (orange)
+//    4 wt     the bytes on disk          (orange) — vs BASE, not root:
+//             the wt column is the LOCAL-dirt axis (gritzko 2026-07-17),
+//             so a cleanly committed change reads `.v..`, never `.v.v`.
 //  Each column relates to root's tree entry as ONE char — the greppable
 //  ASCII canon (gritzko's ruling; the tty render may substitute Unicode):
 //    '.' same   'x' removed   'o' created   'v' advanced (different hash)
@@ -21,8 +23,8 @@
 //  order (git tree walk order IS lex over full leaf paths), and the quad
 //  falls out of a k-way cursor merge — no JS object maps for the trees.
 //  The wt axis rides classify.classifyMerge's dirty rows (it owns the
-//  stamp-set, staging and conflict knowledge); a path with no dirty row is
-//  clean, so its wt relation EQUALS the base relation.
+//  stamp-set, staging and conflict knowledge); classify is wt-vs-base by
+//  construction, so a path with no dirty row reads wt '.' (clean).
 //
 //  quadModel(inp) → { rows, commits, root, track, base, counts }  (pure)
 //  quadOf(be, log, k) → quadModel over a live wt (ambient gather)
@@ -184,13 +186,13 @@ function quadModel(inp) {
     //  Patch column: absent-from-theirs is NOT a removal claim (a theirs tree
     //  simply not touching the path) — only a path theirs CARRIES relates.
     const rPatch = shaPatch == null ? CH.same : rel(shaRoot, shaPatch);
-    //  wt: clean ⇒ mirror base; dirty ⇒ presence vs root ('↑' presumed when
-    //  both present — the wt bytes are not hashed against root's blob).
-    let rWt = rBase, staged = false, con = false;
+    //  wt vs BASE (the local-dirt axis): clean ⇒ '.'; dirty ⇒ presence vs
+    //  base ('v' presumed when both present — bytes aren't hashed here).
+    let rWt = CH.same, staged = false, con = false;
     if (w) {
       const wb = WT_BUCKET[w.bucket] || { present: 1 };
-      rWt = wb.present ? (shaRoot == null ? CH.created : CH.advanced)
-                       : (shaRoot == null ? CH.same : CH.removed);
+      rWt = wb.present ? (shaBase == null ? CH.created : CH.advanced)
+                       : (shaBase == null ? CH.same : CH.removed);
       staged = !!wb.staged;
       con = !!wb.con;
     }

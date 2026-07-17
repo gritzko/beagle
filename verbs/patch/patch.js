@@ -500,9 +500,11 @@ function emitQuadBanner(ctx, info, sc, rc) {
   if (!(ctx && ctx.sink)) return;
   const model = quad.quadOf(info, wtlog.open(info), rc.reader);
   const touched = new Set(rc.wrote);
-  const colored = (typeof be !== "undefined") && be && be.format === "color";
+  //  BRO-030: plain bakes the ASCII canon; else tok-tagged rows for the pager.
+  const plain = ambient.format() === "plain";
   const out = hunkrows(ctx.sink, patchRowUri(sc.scope, sc.theirs));
   for (const r of model.rows)
-    if (touched.has(r.path)) out.raw(quadrender.fileRow(r, colored));
+    if (touched.has(r.path))
+      plain ? out.raw(quadrender.fileRow(r, false)) : out.quadRow(r);
   out.done();
 }

@@ -225,7 +225,8 @@ function sinkOut(sink) {
       const q = Array.from(c.quad);
       for (let i = 0; i < 4; i++) {
         const ch = q[i] == null ? "." : q[i];
-        feedText(utf8.Encode(QUAD_TTY[ch] || ch));
+        //  BRO-030: a commit row's `o` is "present in this line" → ✔ glyphs.
+        feedText(utf8.Encode(quadrender.COMMIT_GLYPH[ch] || ch));
         spans.push([quadCharTag(i, ch, false, false), off]);
       }
       feedText(utf8.Encode(" ?" + c.hashlet + (c.subject ? "#" + c.subject : "")));
