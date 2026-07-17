@@ -27,6 +27,7 @@ const branchlib = require("../../shared/branch.js"); // DIS-061: the ONE branch 
 const decideM  = require("./fold-decide.js");
 const commitM  = require("./fold-commit.js");
 const conflict = require("../../shared/conflict.js");
+const classify = require("../../shared/classify.js"); // POST-030: dirty-target probe
 const dag      = require("../../shared/dag.js");
 const ulog     = require("../../shared/ulog.js");
 const uri      = require("../../shared/uri.js");   // JAB-005: total arg parse
@@ -350,7 +351,8 @@ function advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
 //  by hand.  `discover.wtdir`/`discover.treeAt` (the SAME canonical routines
 //  resolve_hash's own frame() calls) locate the target's on-disk anchor, only
 //  to WRITE the advance row — not to re-derive the resolution.
-function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
+function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline,
+                         bareTrack) {
   if (!haveBaseline || !curTip)
     throw refuse("no cur tip to advance `" + targetUri + "` to",
                  "no cur tip to advance to");
@@ -381,15 +383,29 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
     throw refuse("`" + targetUri + "` can not be fast-forwarded" + ab,
                  "the target can not be fast-forwarded" + ab);
   }
+  //  POST-030 (gritzko 2026-07-17): a BARE-TRACK advance is a PURE FF — "not
+  //  merge-and-ff, just ff".  A CLEAN target gets cur checked out clean; a DIRTY
+  //  target REFUSES rather than weaves.  (The explicit `post //X` arg path keeps
+  //  the POST-026 weave below.)
+  const targetK = store.open(target.storePath, target.project);
+  if (bareTrack) {
+    let dirty = false;
+    try { dirty = classify.classify(target, wtlog.open(target), targetK, {})
+                          .rows.length > 0; } catch (e) {}
+    if (dirty)
+      throw refuse("`" + targetUri + "` has uncommitted changes",
+                   "the target has uncommitted changes");
+  }
   //  POST-026: a `//WT` post FIRST materialises the dirties into the target wt —
   //  the SAME get merge fan-out `be get ?#<curTip>` runs, so a DIRTY target is
   //  3-way weave-merged (not clobbered) and an un-mergeable overlay / a conflict
   //  REFUSES (GETOVRL / GETCONF) BEFORE the base advances.  Reuse the get merge
   //  path (RULE ZERO — no hand-rolled checkout/dag): rh.chash is the target's
   //  current base = the merge OLD side / 3-way base, curTip the tree to reach.
-  const targetK = store.open(target.storePath, target.project);
+  //  POST-030: bareTrack → force = a CLEAN checkout (the dirty case already refused).
   getverb.mergeWorktreeTo({ info: target, k: targetK, tip: curTip,
-                            oldTip: rh.chash, bePath: target.bePath });
+                            oldTip: rh.chash, bePath: target.bePath,
+                            force: !!bareTrack });
   //  FF: append the advance row into the TARGET's OWN wtlog (a local receive);
   //  the branch it already tracks (if any) is preserved, only the tip moves.
   const targetWtl = wtlog.open(target);
@@ -453,7 +469,7 @@ function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
     //  self-refuse (`… is this worktree`).  Fall through to the sub's
     //  OWN branch (trunk) FF — worktree.mkd:53-54, the DIS-074 track advance.
     if (!selfWorktree(info, t))
-      return advanceWorktree(info, reader, ctx, t, parent, haveBaseline);
+      return advanceWorktree(info, reader, ctx, t, parent, haveBaseline, true);
   }
   return advanceBranch(reader, wtl, info, ctx, curBranch, curBranch, parent,
                        haveBaseline);
@@ -845,6 +861,13 @@ function postOne(info, ctx, row) {
   //  an ACTIVE absorbed patch COMMITS, reusing the theirs commit's own message.
   if ((m.msg == null || m.msg === "") && !slots.narrow && theirsParents.length)
     m.msg = commitMessage(reader, theirsParents[theirsParents.length - 1]);
+
+  //  POST-030: the parent's bare post fans into each mounted sub, but a clean sub
+  //  must NOT bare-advance ITS OWN (self-ref `//WT/S`) track — that fell through
+  //  to advanceBranch on the sub's own trunk and threw `?` non-FF (the DIS-074
+  //  _sub intent, set but never enforced).  Leave the sub to postSubs' bump.
+  if (ctx && ctx._sub && (m.msg == null || m.msg === "") && !slots.narrow)
+    return;
 
   //  POST-026: a message-less `post` is the ADVANCE op — FF the tracked branch
   //  (append `?#<curtip>` to <project>/refs), regardless of uncommitted changes.
