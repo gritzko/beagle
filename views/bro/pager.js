@@ -68,6 +68,9 @@ const HIDE_CUR = ESC + "[?25l", SHOW_CUR = ESC + "[?25h";
 //  fd — enable on enter, disable on exit; NO new binding (parsed in _feed).
 const MOUSE_ON = ESC + "[?1000h" + ESC + "[?1006h";
 const MOUSE_OFF = ESC + "[?1000l" + ESC + "[?1006l";
+//  BRO-027: the ALTERNATE SCREEN buffer (terminfo smcup/rmcup, the less/vim
+//  pair) — ?1049h on enter FIRST, ?1049l on exit LAST restores the shell screen.
+const ALT_ON = ESC + "[?1049h", ALT_OFF = ESC + "[?1049l";
 //  Bracketed paste (DEC ?2004): ask the terminal to WRAP a paste in ESC[200~ …
 //  ESC[201~ so _feed can capture the payload verbatim instead of a pasted ESC
 //  cancelling / a pasted newline submitting the address bar (paste was dropped).
@@ -1317,7 +1320,8 @@ Pager.prototype.run = function () {
   //  BE-047: the saved termios rides `this` so _suspend/_resume (the editor
   //  terminal handover) can cook + re-raw mid-run; the finally still restores.
   this._saved = tty.raw(this.fd);
-  ttyWrite(this.fd, HIDE_CUR + MOUSE_ON + PASTE_ON);
+  //  BRO-027: ALT_ON first — the whole raw-mode session lives on the alt screen.
+  ttyWrite(this.fd, ALT_ON + HIDE_CUR + MOUSE_ON + PASTE_ON);
   try {
     const rb = io.buf(64);
     let pend = null;                             // a straddling mouse-seq tail
@@ -1337,7 +1341,8 @@ Pager.prototype.run = function () {
       rb.reset();
     }
   } finally {
-    ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + CLEAR);
+    //  BRO-027: ALT_OFF last restores the pre-pager screen (no CLEAR needed).
+    ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + ALT_OFF);
     tty.cook(this.fd, this._saved);
     this._saved = null;
   }
