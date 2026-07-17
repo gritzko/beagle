@@ -65,6 +65,10 @@ const fetchleg   = require("./fetchleg.js");
 //  disk (not just the commit trees) to tell a clean baseline from a dirty edit.
 const wtread     = require("../../shared/wtread.js");
 const sha        = require("../../shared/util/sha.js");
+//  BRO-030: the unified quad reporter (wiki/Status.mkd) — THE patch report:
+//  `<date7> <quad4> <path>` quad rows (legacy per-file banner retired).
+const quad       = require("../../shared/quad.js");
+const quadrender = require("../../view/quadrender.js");
 const join = pathlib.join;   // BE-011: wtJoin confines wt-opens
 
 //  BE-010: read a wt regular file's on-disk bytes via the ONE reg-file read
@@ -247,15 +251,13 @@ function deleteLeaf(rc, path) {
 function emit(rc, status, path) { rc.rows.push({ status: status, path: path }); }
 
 //  --- patch row ----------------------------------------------------------
-//  DIS-030 row URI: NAMED → `#<sha>` (fragment), NEXT → `?<sha>`, WHOLE →
-//  `?<sha>!`.  The slot/`!` encode the scope POST reads for provenance.
+//  Row URI: a cherry (NAMED) pins `#<sha>` (fragment); a line absorb pins
+//  `?<sha>` (query).  BRO-030/PATCH-014: URI bangs are RETIRED (wiki/PATCH —
+//  DIS-030 overturned), so a WHOLE row no longer spells a trailing `!`;
+//  readers tolerate the old bang rows (wtlog.refOf strips one).
 function patchRowUri(scope, theirs) {
-  //  URI-013 B10: compose the ref-only key via the URI class.  NAMED = `#<sha>`
-  //  (fragment); NEXT = `?<sha>` (query); WHOLE = `?<sha>` + a trailing `!` scope
-  //  sigil (NOT a URI slot — appended after the composed URI, byte-preserving).
   if (scope === "NAMED") return URI.make(undefined, undefined, undefined, undefined, theirs);
-  if (scope === "WHOLE") return URI.make(undefined, undefined, undefined, theirs, undefined) + "!";
-  return URI.make(undefined, undefined, undefined, theirs, undefined);   // NEXT
+  return URI.make(undefined, undefined, undefined, theirs, undefined);
 }
 
 //  JAB-004: plain-args PATCH — `patch(...args)` off global `be`, called ONCE.
@@ -381,7 +383,9 @@ function patchRun(ctx) {
   //  POST-011 noop gate: nothing absorbed → no row, no restamp.
   const absorbed = st.takeTheirs + st.merged + st.mergedConflict +
                    st.added + st.deleted + st.modDelKept + st.failed;
-  if (absorbed === 0) { emitBanner(ctx, sc, rc.rows, 0n); return; }
+  //  BRO-030: the quad report is THE report (wiki/Status.mkd — not a flag);
+  //  a legacy `--quad` flag is tolerated as a no-op.
+  if (absorbed === 0) { emitQuadBanner(ctx, info, sc, rc); return; }
 
   //  THE PROVENANCE-FOLD BARRIER: cohort-T0 — ONE ts for the single `patch`
   //  row AND every file restamp (the stamp-set invariant).  Exactly ONE row
@@ -425,7 +429,7 @@ function patchRun(ctx) {
                   return { verb: "con", uri: URI.make(undefined, undefined, p) };
                 }));
 
-  emitBanner(ctx, sc, rc.rows, ts);
+  emitQuadBanner(ctx, info, sc, rc);
 }
 
 //  DIS-058 D17 (POST-ORDER sub descent, mirrors post.js postSubs): for each
@@ -490,11 +494,15 @@ function runSubPatch(info, ctx, subRepo, job) {
              flags: (ctx && ctx.flags) || [], arg: subRepo.wt });
 }
 
-//  Banner as a TRUE hunk: a ref-only addressing uri (`#<theirs>`/`?<theirs>`) header,
-//  then per-file status rows.  DIS-060: NO phantom `patch:` — a VERB isn't a SCHEME.
-function emitBanner(ctx, sc, rows, ts) {
+//  BRO-030: THE patch banner — quad rows (quadOf over the REOPENED wtlog, so
+//  the fresh patch row feeds the patch column) filtered to the paths we wrote.
+function emitQuadBanner(ctx, info, sc, rc) {
   if (!(ctx && ctx.sink)) return;
+  const model = quad.quadOf(info, wtlog.open(info), rc.reader);
+  const touched = new Set(rc.wrote);
+  const colored = (typeof be !== "undefined") && be && be.format === "color";
   const out = hunkrows(ctx.sink, patchRowUri(sc.scope, sc.theirs));
-  for (const r of rows) out.row(r.path, r.status, 0n);
+  for (const r of model.rows)
+    if (touched.has(r.path)) out.raw(quadrender.fileRow(r, colored));
   out.done();
 }

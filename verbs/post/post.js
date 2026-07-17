@@ -48,6 +48,10 @@ const ingest   = require("../../shared/ingest.js");    // GIT-016: remote-track 
 //  JAB-003: TRUE-hunk output via the shared columnar->hunk adapter (ctx.sink),
 //  retiring the ctx.out columnar path for post.
 const hunkrows = require("../../shared/hunkrows.js");
+//  BRO-030: the unified quad reporter (wiki/Status.mkd) — THE post banner
+//  speaks quad rows (shared/quad.js model, view/quadrender.js rows).
+const quadlib    = require("../../shared/quad.js");
+const quadrender = require("../../view/quadrender.js");
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const join = pathlib.join;   // BE-011: wtJoin confines wt-opens
 const isFullSha = shalib.isFullSha;
@@ -892,6 +896,11 @@ function postOne(info, ctx, row) {
   if (m.msg == null || m.msg === "")
     throw "a commit message is required (`be post '#msg'`)";
 
+  //  BRO-030: snapshot the quad BEFORE the commit — the wt-column dirt is what
+  //  this post absorbs into base, so the PRE state is the report.
+  let preQuad = null;
+  try { preQuad = quadlib.quadOf(info, wtl, reader); } catch (e) {}
+
   //  JSQUE-020: the commit is a JOIN over the WHOLE decision set held in
   //  memory (dres.decisions); the former durable back-scan barrier only
   //  re-derived a leaf count, so assert it in-memory instead.
@@ -952,9 +961,9 @@ function postOne(info, ctx, row) {
     try { io.setMtime(wtpath(info.wt, d.path), rowTs); } catch (e) {}   // BE-011
   }
 
-  //  The `post:` banner (POST-018): a commit confirmation row, then the
-  //  per-file change rows (add/mod/del), matching native's table.
-  emitBanner(ctx, branchKey, commit.sha, m.msg, dres.decisions, rowTs);
+  //  BRO-030: the quad report is THE post banner (wiki/Status.mkd "not a
+  //  flag"); a `--quad` flag is tolerated as a no-op.
+  emitQuadBanner(ctx, info, branchKey, m.msg, preQuad, dres.decisions);
   //  Commit leaf: no further fan-out.
 }
 
@@ -973,28 +982,27 @@ function commitMessage(reader, sha) {
   return i < 0 ? "" : t.slice(i + 2).replace(/\n+$/, "");
 }
 
-//  Banner: the commit row `post ?<hashlet8>#<subject>`, then per-file
-//  `<verb> <path>` rows (ts=0n → blank-date column, like native).  add->`add`,
-//  modify->`mod`, unlink->`del`.
-//  DIS-060: the banner carries a ref-only ADDRESSING uri (`?<branch>#<subject>`),
-//  NEVER a phantom `post:` scheme ([Nav]) — same shape as get's banner.
-function emitBanner(ctx, branchKey, sha, message, decisions, stamp) {
+//  BRO-030: the quad banner — PRE-post quad rows for the committed set
+//  (post turned the wt dirt into base-'v'; the PRE state IS what got absorbed).
+function emitQuadBanner(ctx, info, branchKey, message, pre, decisions) {
   if (!(ctx && ctx.sink)) return;
   const subject = subjectOf(message);
-  //  URI-013 B10: `?<branch>#<subject>` / `?<hashlet>#<subject>` via the URI
-  //  class — an empty subject drops the `#` (undefined fragment); the subject
-  //  body feeds verbatim (no escaping), so the bytes match the old concat.
   const out = hunkrows(ctx.sink,
     URI.make(undefined, undefined, undefined, branchKey || "", subject ? subject : undefined));
-  out.row(URI.make(undefined, undefined, undefined, sha.slice(0, 8), subject ? subject : undefined),
-          "post", stamp);
-  for (const d of decisions) {
-    let v;
-    if (d.verb === "unlink") v = "del";
-    else if (d.verb === "add") v = d.oldSha ? "mod" : "add";
-    else continue;                          // keep rows are not reported
-    out.row(d.path, v, 0n);                  // ts=0n → blank-date column
-  }
+  //  BRO-030: the touched set = the banner's own add/unlink decisions (keep
+  //  rows are not reported) — the paths this commit actually carried.
+  const touched = {};
+  for (const d of decisions)
+    if (d.verb === "add" || d.verb === "unlink") touched[d.path] = 1;
+  if (pre) for (const r of pre.rows)
+    if (touched[r.path]) out.raw(quadrender.fileRow(r, false));
+  //  BRO-030: fresh readers post-commit — model.commits now reads the new
+  //  local commit as ".+.." against the (unmoved) track.
+  try {
+    const m2 = quadlib.quadOf(info, wtlog.open(info),
+                              store.open(info.storePath, info.project));
+    for (const c of m2.commits) out.raw(quadrender.commitRow(c, false));
+  } catch (e) {}
   out.done();
 }
 

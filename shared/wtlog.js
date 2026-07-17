@@ -48,7 +48,11 @@ function refOf(u, local) {
   let branch = "", sha = "";
   if (isFullSha(u.fragment)) sha = u.fragment;
   const q = stripProject(u.query);
-  if (q) for (const chunk of q.split("&")) {
+  if (q) for (let chunk of q.split("&")) {
+    if (!chunk) continue;
+    //  BRO-030/PATCH-014: a WHOLE-scope patch row spells `?<sha>!`/`?<br>!` —
+    //  strip the sigil, else the sha is missed AND `<sha>!` adopted as branch.
+    if (chunk[chunk.length - 1] === "!") chunk = chunk.slice(0, -1);
     if (!chunk) continue;
     if (isFullSha(chunk)) { if (!sha) sha = chunk; }
     else if (!branch && local) branch = chunk;

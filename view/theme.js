@@ -45,6 +45,9 @@ const SLOTS_16 = {
   M: "91",        // mis/miss/cnf/modl/conflict — bright red
   Q: "90",        // unk / dirty / dir — grey
   Z: "35",        // mrg / merged     — magenta
+  //  BRO-030: quad wt rides the EXISTING X slot (orange-94); staged wt is the
+  //  code-26 '[' tag, painted by the pager palette (view/bro.js) — I/J are
+  //  diff-side BACKGROUNDS there and must not be repurposed.
   //  'S' default + 'A' sentinel: no entry → no paint.
 };
 
@@ -92,6 +95,21 @@ const VERB_SLOT = {
   unk: "Q", dir: "Q", dirty: "Q",                        // C ULOG.c:1210/1214/1220 — grey
   mrg: "Z", merged: "Z",                                 // C ULOG.c:1211/1218 — magenta
   hunk: "B", eq: "D",                                    // C ULOG.c:1213/1212
+};
+
+//  --- quad status columns (BRO-030, wiki/Status.mkd) ----------------------
+//  The GLYPH carries the column color (truecolor fg — the 256-cube orange
+//  reads muddy on xterm, gritzko 2026-07-17); the staged wt char INVERTS
+//  (column color as bg), conflict inverts to red.  Inverted fg is RGB white,
+//  NOT the palette's 97 "bright white" (themes remap it — beige on solarized).
+//  '.' (same) is unpainted.  The pager mirrors these in view/bro.js ('['..'`').
+const QUAD_SGR = {
+  track:  "38;2;30;144;255",                   // blue glyph
+  base:   "38;2;0;180;70",                     // green glyph
+  patch:  "38;2;220;160;0",                    // amber glyph
+  wt:     "38;2;255;140;0",                    // orange glyph
+  staged: "38;2;255;255;255;48;2;255;140;0",   // staged wt — white on orange
+  con:    "38;2;255;255;255;48;2;220;40;40",   // conflicted wt — white on red
 };
 
 //  --- banner band (dog/THEME.h THEME_BANNER) ------------------------------
@@ -160,6 +178,7 @@ module.exports = {
   THEMEDARK: THEMEDARK,
   THEMELIGHT: THEMELIGHT,
   VERB_SLOT: VERB_SLOT,
+  QUAD_SGR: QUAD_SGR,
   select: select,
   makeTheme: makeTheme,
 };

@@ -44,7 +44,6 @@ const ulog     = require("../../shared/ulog.js");
 const sha      = require("../../shared/util/sha.js");
 //  JAB-003: get emits a TRUE hunk (accumulated across dispatches, flushed once).
 const hunkrows = require("../../shared/hunkrows.js");
-const navlib   = require("../../shared/nav.js");   // GET-047: sub-hunk headers
 const wtlog    = require("../../shared/wtlog.js");
 const conflict = require("../../shared/conflict.js");
 //  GET-047 / GET.mkd 2.2: the untracked sweep reuses status's OWN unk set —
@@ -566,15 +565,10 @@ function fanoutWholeTree(ctx, r, wt, force) {
   //  tree's paths, synchronously at the seed.
   if (force) sweepUntracked(ctx._get, newTree, out);
 
-  //  Pulled-commit rows (UPDATE only), newest-first; rendered above file rows.
-  //  GIT-016: via the shared spine — from cur=oldTip the fetched tip is AHEAD, so
-  //  the pulled commits are verdict.behind (pack persisted first → NO remote index).
+  //  BRO-030: commit divergence is now the quad report's `o…` commit rows
+  //  (quadReport), not legacy `post` rows; the verdict still classifies dels.
   if (!r.fresh && r.oldTip && r.oldTip !== r.tip) {
     const v = relate.verdict(r.k, r.oldTip, r.tip);
-    const pulled = v.behind;                        // rel exposed for a future FF gate (JGET-002)
-    for (const c of pulled)
-      out.row(URI.make(undefined, undefined, undefined, c.hashlet || "", c.subject ? c.subject : undefined),
-              "post", c.ts, { _post: true });
     //  GET-048: a DIVERGED target is a PLAIN RESET (spec intro+§4) — the merge-
     //  base tree only CLASSIFIES del rows (a local-only add is never a `del`).
     if (!force && v.rel === "diverged") {
@@ -1143,13 +1137,12 @@ function mountGitlink(g, rel, pin, out) {
   recurseSubMounts(g, rel, m, out, 0);
 }
 
-//  GET-047: a pin ADVANCE of an existing mount reads `mod` (a fresh mount: `new`)
-//  and queues the sub's own checkout delta as a separate hunk (flushGet relays it).
+//  GET-047: a pin ADVANCE of an existing mount reads `mod` (a fresh mount: `new`).
+//  BRO-030: the sub's own checkout delta no longer rides a separate relay hunk —
+//  an advanced gitlink surfaces as one `v` quad row on the parent report.
 function subMountRow(g, rel, pin, m, out) {
   const adv = !!(m.oldPin && m.oldPin !== pin);
   out.row(rel, adv ? "mod" : "new", g.ts);
-  if (adv && m.rows && m.rows.length)
-    (g.subHunks || (g.subHunks = [])).push({ path: rel, rows: m.rows, ts: g.ts });
 }
 
 //  GET-037: YES iff `<subpath>` is declared in `<wt>/.gitmodules` (the SUBS-043 gate);
@@ -1316,8 +1309,9 @@ function getOut(ctx) {
   };
 }
 
-//  Flush the accumulated rows as ONE get hunk (uri `get:<head>`): the header row
-//  first, then sortGetRows (post, new/upd lex, del lex).  Idempotent guard.
+//  Flush the get hunk (uri `get:<head>`): the header row, then the quad report.
+//  BRO-030: the quad report (wiki/Status.mkd) is now the ONLY get report — the
+//  legacy per-file checkout rows and the advanced-sub relay are gone.  Idempotent.
 function flushGet(ctx) {
   const g = ctx && ctx._get;
   if (!g || !g.head || !ctx.sink || g._flushed) return;
@@ -1326,17 +1320,27 @@ function flushGet(ctx) {
   //  uri (`?<branch>#<sha>`) directly — NOT a phantom `get:` scheme ([Nav]).
   const out = hunkrows(ctx.sink, g.head.uri);
   out.row(g.head.uri, g.head.verb, g.head.ts);
-  for (const r of sortGetRows(g.rows || [])) out.row(r.uri, r.verb, r.ts);
-  //  GET-047: relay each advanced sub's checkout delta as its own `get <sub>`
-  //  hunk after the parent hunk (status's JAB-004 relay shape, prefixed paths).
-  for (const h of g.subHunks || []) {
-    out.open(navlib.navLink("get", h.path));
-    const rows = h.rows.map(function (r) {
-      return { uri: h.path + "/" + r.path, verb: r.verb, ts: h.ts };
-    });
-    for (const r of sortGetRows(rows)) out.row(r.uri, r.verb, r.ts);
-  }
+  //  BRO-030: the unified quad report over the POST-get wt state — commit
+  //  divergence rows + this run's own touched file rows (`--quad` is a no-op now).
+  quadReport(g, out);
   out.done();
+}
+
+//  BRO-030: quadOf over the post-get wt → `<date7> <quad4> <path>` raw rows;
+//  ALL commit rows print, file rows filter to the paths this get wrote/removed.
+function quadReport(g, out) {
+  try {
+    const quadlib = require("../../shared/quad.js");
+    const qr = require("../../view/quadrender.js");
+    const info = be.treeAt(g.wt);
+    const model = quadlib.quadOf(info, wtlog.open(info), g.k);
+    const touched = {};
+    for (const r of g.rows || []) if (!r._post) touched[String(r.uri)] = 1;
+    const colored = ambient.format() === "color";
+    for (const c of model.commits) out.raw(qr.commitRow(c, colored));
+    for (const r of model.rows)
+      if (touched[r.path]) out.raw(qr.fileRow(r, colored));
+  } catch (e) { warn("be get: BRO-030 quad report failed: " + e); }
 }
 
 function sortGetRows(rows) {

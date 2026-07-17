@@ -25,67 +25,19 @@
 //  JSQUE-016: by-verb reorg — core/discover + shared/ kernel + view/ via ../../ .
 const wtlog    = require("../../shared/wtlog.js");
 const store    = require("../../shared/store.js");
-const classify = require("../../shared/classify.js");
-const dag      = require("../../shared/dag.js");
 const subs     = require("../../shared/subs.js");
 const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const render   = require("../../view/render.js");
-const theme    = require("../../view/theme.js");
 const navlib   = require("../../shared/nav.js");        // URI-011: full-URI nav helper
-const join     = require("../../shared/util/path.js").join;   // DIS-060: scope path
+const quadlib  = require("../../shared/quad.js");       // BRO-030: the quad model
+const quadrender = require("../../view/quadrender.js"); // BRO-030: quad row render
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const discover = require("../../core/discover.js");
 const wtpath = discover.wtpath;
-//  STATUS-009: the ONE URI→hash resolver (RULE ZERO) — the track ref resolves
-//  through resolve_hash() only, never a hand-rolled second resolver.
-const resolveHash = require("../../core/resolve_hash.js").resolve_hash;
 //  JAB-004: render.js's dateCol/verbCol/writeStdout/shQuote are no longer
 //  used here — the emit sink (core/emit.js) owns all column formatting at the
 //  flush edge, and the fork machinery (shQuote) is gone.
-
-//  Render order (status_step / status_emit_summary): ok first (count
-//  only), then staged, then unstaged, then untracked.  `adv` follows
-//  `mod` (SUBS-030: an advanced-sub gitlink-bump row, dumped/summarised
-//  immediately after the content-`mod` block — see SNIFF.exe.c
-//  status_dump_verb + STATUS_BUCKET order).
-//  DIS-057: pat/mrg/cnf (patch-derived states) slot after `mod` in the
-//  present-in-base/present-in-wt group.  A staged rename is the Dirty.mkd move
-//  PAIR — `rmv` (the absent-in-wt source) renders just BEFORE `mov` (the
-//  present-in-wt dest) so the pair reads `rmv src` then `mov dst`, two plain
-//  `<bucket> <path>` rows; the old collapse to one `mov src#dst` row is gone.
-//  STATUS-005: visible conflict bucket is `con` (durable row + live marker
-//  scan); classify translates the DIS-057 `cnf` band outcome to `con` too.
-const ROW_ORDER = ["put", "new", "rmv", "mov", "mod", "pat", "mrg", "con", "adv", "del", "mis", "unk"];
-const SUMMARY_ORDER = ["ok", "put", "new", "rmv", "mov", "mod", "pat", "mrg", "con", "adv", "del", "mis", "unk"];
-
-//  BRO-006 / DIS-057: per-bucket `U`-tag nav target — `diff:<path>` (a wt-vs-
-//  base diff) when a baseline EXISTS for the path, else `cat:<path>` (no base to
-//  diff against).  C native (sniff/SNIFF.exe.c::status_verb_wants_diff_nav,
-//  ~line 343) only flips `mod` to `diff:` because its other buckets either have
-//  no baseline (new/unk), carry the dst already (mov), or are gone-from-disk
-//  (del/mis would error a content diff).  The DIS-057 JS view instead leads
-//  EVERY base-present row to its wt-vs-base diff (the user's intent — "paths
-//  clickable → wt-vs-base diffs"):
-//    diff: — base present, content differs   (mod, put, pat, mrg, cnf)
-//    diff: — base present, gone/removed in wt (rmv, del, mis → the deletion diff,
-//            base-vs-empty)
-//    cat:  — no base / new content           (new, unk, mov, adv)
-//  `adv` (a submodule gitlink-bump row) keeps its prior `cat:` nav.
-const NAV_DIFF = {
-  mod: 1, put: 1, pat: 1, mrg: 1, con: 1,   // base present, content differs
-  rmv: 1, del: 1, mis: 1,                    // base present, gone/removed → deletion diff
-};
-
-//  BE-041: the buckets whose rows carry a pager-only action button (a visible
-//  label + a hidden `O` click spell).  `mod`/`unk` want staging → `[put]`;
-//  `mis` (gone from disk) wants unstaging → `[del]` (the delete verb).
-//  Already-staged rows (`put`, `new`) need no button — clicking [put] on them
-//  would be a no-op re-stage.
-//  BE-049: `adv` (a mounted sub whose tip DESCENDS the parent's gitlink pin)
-//  stages too — `put <sub>` records the parent's gitlink bump to the new tip.
-const ACT_PUT = { unk: 1, mod: 1, adv: 1 };
-const ACT_DEL = { mis: 1 };
 
 //  JSQUE-008: `be status` as a loop HANDLER.  Converted from a `main();`
 //  one-shot to `module.exports = handle(row, ctx)` — the wt path rides the ROW
@@ -150,6 +102,8 @@ function statusOne(row, ctx) {
   //  `--sub` is accepted but a no-op (recursion is the default).
   const flags = (_be && _be.flags) || (ctx && ctx.flags) || [];
   const recurse = flags.indexOf("--nosub") < 0;
+  //  BRO-030: the quad vocabulary (wiki/Status.mkd) is THE default now; a stray
+  //  `--quad` is tolerated as a no-op so old scripts don't error.
 
   //  BRO-006: color/tlv read `U` click-targets from the HUNK tok32 stream
   //  (be.sink), which the columnar emit sink can't carry — so those feed a real
@@ -178,7 +132,7 @@ function statusOne(row, ctx) {
   const filter = reqAbs ? relUnder(repo.wt, reqAbs) : "";
 
   //  DEPTH-FIRST walk: emit this repo's hunk, then recurse each mounted sub.
-  emitRepo(repo, prefix, out, recurse, filter);
+  emitRepo(repo, prefix, out, recurse, filter, { colored: mode !== "plain" });
 
   //  Flush sinkOut's last buffered hunk (the columnar out flushes at the edge).
   if (useSink) out.done();
@@ -188,13 +142,25 @@ function statusOne(row, ctx) {
 status.jab = "args";
 module.exports = status;
 
-//  BRO-006: a HUNK-collector with emitRepo's SAME `raw`/`row` surface, but it
-//  builds a content HUNK (text + tok32) per repo and feeds ctx.sink — `raw`
-//  "status:…" opens a hunk (the URI, not in-text, per native C), "" is dropped
-//  (the sink owns separators), else a summary line; `row` packs a hidden 'U' nav
-//  tok per file row.  Column toks mirror native `be status --tlv` (BRO-006 spec).
+//  BRO-006/BRO-030: a HUNK-collector building a content HUNK (text + tok32) per
+//  repo, fed to ctx.sink — `open` starts a hunk, "" is dropped (the sink owns
+//  separators), a non-empty `raw` is a summary line; `quadRow`/`quadCommit` pack
+//  the quad row with per-column tok spans + the hidden 'U' nav / 'O' button.
 function tok(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 function tagCode(letter) { return letter.charCodeAt(0) - 65; }
+
+//  BRO-030: the tok slot for quad char `ch` in column `i` (0..3) — the CELL
+//  tags '['..'`' (codes 26..31, past 'Z'): pastel track/base/patch/wt bgs,
+//  '_' = staged wt (white on dark), '`' = conflicted wt (white on dark red).
+//  '.' stays default 'S'.  A-Z is full; I/J/O/K are diff-side BGs — hands off.
+function quadCharTag(i, ch, staged, con) {
+  if (ch === ".") return "S";
+  if (i === 0) return "[";
+  if (i === 1) return "\\";
+  if (i === 2) return "]";
+  return con ? "`" : staged ? "_" : "^";
+}
+const QUAD_TTY = quadrender.TTY_GLYPH;   // BRO-030: x→✗ o→+ v→↑, '.' stays '.'
 
 function sinkOut(sink) {
   let uri = null;                 // current hunk URI (`status:` / `status:<sub>`)
@@ -224,36 +190,47 @@ function sinkOut(sink) {
       feedText(b);
       spans.push(["S", off]);     // the whole summary line, default tag
     },
-    //  One columnar row `<date7> <verb3> <path>\n`; per-file rows append a
-    //  hidden `U`-tag nav target (`nav`) after the "\n".
-    //  BE-041: an actionable row (`act` = {label, tag, spell}) grows a pager-
-    //  only trailing button — path, U nav (ADJACENT: the token-precise path
-    //  click), sep, the visible label (verb palette slot), the hidden `O`
-    //  click spell, then the "\n".
-    row: function (text, verb, ts, _tag, nav, act) {
-      const date = render.dateCol(ts == null ? 0n : ts);
-      const vcol = render.verbCol(verb);
-      const line = date + " " + vcol + " " + text + (act ? "" : "\n");
-      const lineB = utf8.Encode(line);
-      feedText(lineB);
-      const eDate = off - lineB.length + utf8.Encode(date).length;
-      const eSep1 = eDate + 1;
-      const eVerb = eSep1 + utf8.Encode(vcol).length;
-      const eSep2 = eVerb + 1;
-      const eNL   = off;          // path (+ "\n" on a button-less row) ends here
-      const vtag  = theme.VERB_SLOT[verb] || "S";
-      spans.push(["L", eDate]);   // date column
-      spans.push(["S", eSep1]);   // sep
-      spans.push([vtag, eVerb]);  // verb (palette slot)
-      spans.push(["S", eSep2]);   // sep
-      spans.push(["S", eNL]);     // path incl "\n" (status path tag = 'S')
+    //  BRO-030: one quad row `<date7> <quad4> <path>` — date 'L', the four quad
+    //  chars as TTY glyphs with per-column tok spans (quadCharTag), path 'S'.  A
+    //  file row appends its hidden `U` nav + BE-041 action button: path, U nav,
+    //  sep, the visible label (its palette slot), the hidden `O` click spell.
+    //  Multibyte-safe: byte ends come from utf8.Encode per fed chunk.
+    quadRow: function (row, nav, act) {
+      feedText(utf8.Encode(render.dateCol(row.ts == null ? 0n : row.ts)));
+      spans.push(["L", off]);                                    // date column
+      feedText(utf8.Encode(" ")); spans.push(["S", off]);        // sep
+      const q = Array.from(row.quad);
+      for (let i = 0; i < 4; i++) {
+        const ch = q[i] == null ? "." : q[i];
+        feedText(utf8.Encode(QUAD_TTY[ch] || ch));
+        spans.push([quadCharTag(i, ch, row.staged, row.con), off]);
+      }
+      const path = (row.src && row.src !== row.path)
+            ? row.src + "#" + row.path : row.path;
+      feedText(utf8.Encode(" " + path)); spans.push(["S", off]); // sep + path
       if (nav) { feedText(utf8.Encode(nav)); spans.push(["U", off]); }  // hidden nav
       if (act) {
         feedText(utf8.Encode(" "));         spans.push(["S", off]);       // sep
         feedText(utf8.Encode(act.label));   spans.push([act.tag, off]);   // visible label
         feedText(utf8.Encode(act.spell));   spans.push(["O", off]);       // hidden click spell
-        feedText(utf8.Encode("\n"));        spans.push(["S", off]);
       }
+      feedText(utf8.Encode("\n")); spans.push(["S", off]);
+    },
+    //  BRO-030: one quad commit row `<date7> <quad4> ?<hashlet>#<subject>` — the
+    //  same per-column spans, no nav/button (a commit row isn't clickable).
+    quadCommit: function (c) {
+      feedText(utf8.Encode(render.dateCol(c.ts == null ? 0n : c.ts)));
+      spans.push(["L", off]);
+      feedText(utf8.Encode(" ")); spans.push(["S", off]);
+      const q = Array.from(c.quad);
+      for (let i = 0; i < 4; i++) {
+        const ch = q[i] == null ? "." : q[i];
+        feedText(utf8.Encode(QUAD_TTY[ch] || ch));
+        spans.push([quadCharTag(i, ch, false, false), off]);
+      }
+      feedText(utf8.Encode(" ?" + c.hashlet + (c.subject ? "#" + c.subject : "")));
+      spans.push(["S", off]);
+      feedText(utf8.Encode("\n")); spans.push(["S", off]);
     },
     done: flush,
   };
@@ -267,147 +244,106 @@ function concatBytes(chunks, total) {
   return all;
 }
 
-//  Emit ONE repo's status hunk into `out` (header + divergence + bucket rows +
-//  summary), then — when recursing — walk its mounted subs DEPTH-FIRST, each
-//  as a blank-line-separated `status:<subpath>` hunk under `prefix`.  `prefix`
-//  is this repo's path relative to the top wt ("" for the top); a sub's own
-//  rows + header are joined under it via a URI-aware path join, while the sub's
-//  `?<branch>` summary token and the `?<sha>#<subject>` divergence rows are
-//  NOT prefixed (they are not real path columns).
-function emitRepo(repo, prefix, out, recurse, filter) {
+//  BRO-030: the summary segments — per-COLUMN change tallies (model.counts,
+//  zero segments omitted), the quad vocabulary replacing the per-bucket zoo.
+const QUAD_SUMMARY = ["track", "base", "patch", "wt", "staged", "con"];
+
+//  Emit ONE repo's status hunk into `out` (header + commit rows + file rows +
+//  summary), then — when recursing — walk its mounted subs DEPTH-FIRST, each as
+//  a blank-line-separated `status:<subpath>` hunk under `prefix` ("" for the
+//  top).  BRO-030: THE unified quad view (wiki/Status.mkd) — the shared/quad.js
+//  model, rendered as ASCII canon via quadrender for the columnar (plain) `out`
+//  or as a real HUNK with per-column tok spans + nav/buttons when `out` is a
+//  sinkOut (`out.quadRow`).  `quad.colored` only decorates the columnar render.
+function emitRepo(repo, prefix, out, recurse, filter, quad) {
   const log = wtlog.open(repo);
   const k   = store.open(repo.storePath, repo.project);
-
-  //  STATUS-006: a non-empty FILTER scopes the classifier (DIS-054 underNarrow) to
-  //  the subtree — rows, counts AND gitlinks below `<filter>/` only, so the summary
-  //  never leaks whole-wt tallies and an unmounted sub outside is not recursed.
+  //  STATUS-006: the subtree filter narrows the quad gather (DIS-054 underNarrow)
+  //  to the subtree — rows, counts AND gitlinks below `<filter>/` only.
   const narrow = filter
         ? function (p) { return p === filter || p.indexOf(filter + "/") === 0; }
         : null;
-  const res = classify.classify(repo, log, k, narrow ? { underNarrow: narrow } : undefined);
+  const model = quadlib.quadOf(repo, log, k,
+                               narrow ? { underNarrow: narrow } : {});
 
-  //  Cur tip (for the ahead/behind divergence: SNIFFAtCurTip, no patch).
-  const cur = log.curTip();
-  //  SUBS-050: Summary branch label = the recentmost attach's parsed Branch
-  //  (DIS-057: the GET record via wtlog.attachedBranch — status and post agree
-  //  on the branch), formatted to the ONE canonical shape by the branch codec:
-  //  a named branch (`master`) or a mounted sub's `/<title>/.<parent>…/<branch>`
-  //  (absolute, at EVERY depth — no more three-shape leak), or empty (trunk →
-  //  `?`).  A DETACHED checkout (attach query is a bare commit sha) is labelled
-  //  by the CURRENT tip, not the stale detach point, so the summary tracks HEAD
-  //  as posts advance it.
-  const att = log.attachedBranch();
-  //  DIS-075: detachment is att.detached (the ONE reader) — the canonical
-  //  `#<sha>` record has an ABSENT query, so rawQuery no longer carries the sha.
-  const branch = (cur && cur.sha && att.detached)
-        ? cur.sha : branchlib.format(att.br);
-
-  //  --- JS-033: classify base-only gitlinks (SUBSDirty 3-axis) ---------
-  //  Each deferred gitlink (classify.gitlinks) is pin-vs-tip compared on
-  //  the sub's own shard; ADVANCED → an `adv` row, else → ok (count only).
-  //  Folded into res.rows / res.counts so the render + summary below treat
-  //  them like any other bucket.  classify.classify doesn't pre-seed an
-  //  `adv` counter (it has no file-level adv), so seed it here.
-  if (res.counts.adv === undefined) res.counts.adv = 0;
-  const subList = [];           // [{ path, mounted, bucket, … }] for recursion
-  for (const gl of res.gitlinks || []) {
-    const mounted = isMount(repo.wt, gl.path);
-    const cls = mounted ? subs.classifyMount(repo, gl.path, gl.pin)
-                        : { bucket: "ok", stale: "", r4: "", ts: 0n };
-    subList.push({ path: gl.path, mounted: mounted, bucket: cls.bucket,
-                   stale: cls.stale, r4: cls.r4, ts: cls.ts });
-    if (cls.bucket === "adv") {
-      //  SUBS-030: an advanced sub (tip descends the gitlink pin, only a
-      //  bump pending) reads the distinct `adv` verb, NOT `mod`.  The row
-      //  carries the sub-tip commit ts (native status_push passes it).
-      res.counts.adv++;
-      res.rows.push({ bucket: "adv", path: gl.path, ts: cls.ts });
-    } else {
-      res.counts.ok++;
+  //  BRO-030: an advanced MOUNTED gitlink (subs.classifyMount `adv`) is a
+  //  file row whose wt column reads '↑' — a gitlink advance like any file.
+  for (const gl of model.gitlinks || []) {
+    if (!isMount(repo.wt, gl.path)) continue;
+    const cls = subs.classifyMount(repo, gl.path, gl.pin);
+    if (cls.bucket !== "adv") continue;
+    let row = null;
+    for (const r of model.rows) if (r.path === gl.path) { row = r; break; }
+    if (!row) {
+      row = { path: gl.path, quad: "....", staged: false, con: false, ts: cls.ts };
+      model.rows.push(row);
     }
+    //  BRO-030: '↑' is multibyte — rewrite the quad via Array, never slice.
+    const q = Array.from(row.quad);
+    if (q[3] === ".") model.counts.wt++;
+    q[3] = quadlib.CH.advanced;
+    row.quad = q.join("");
   }
+  model.rows.sort(function (a, b) {
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
 
-  //  --- JS-032: cur-vs-branch-tip commit divergence (ahead/behind) -----
-  //  Resolve cur tip + the LOCAL ref tip of cur's branch, walk ancestry.
-  //  ahead → `post` rows, behind → `miss` rows, both prepended above the
-  //  file rows.  Counts feed the trailing `(behind N, ahead M)` note.
-  //  STATUS-006: commit divergence (ahead/behind) is repo-level, not a path row —
-  //  a subtree FILTER suppresses it so the scoped hunk stays path-only.
-  const diverge = filter ? { ahead: [], behind: [] } : computeDivergence(k, log, cur, repo);
-
-  //  JSQUE-008: push every line through the emit sink (out) in final render
-  //  order — the loop does ONE flush at the edge.  The columnar rows
-  //  (divergence + buckets) go via out.row(text, verb, ts); the `status:`
-  //  banner + the `?<branch>\t<counts>` summary are pre-formatted framing,
-  //  pushed verbatim via out.raw.  JAB-004: the header carries this hunk's
-  //  subpath (`status:` at the top, `status:<prefix>` for a sub).
   out.open(navlib.navLink("status", prefix || ""));
 
-  //  Commit divergence block FIRST (ahead `post` rows, then behind `miss`
-  //  rows), each `<date7> <verb3> ?<hashlet>#<subject>`.  These are NOT real
-  //  path columns (a `?<sha>#<subject>` ref token) — NEVER path-prefixed.
-  for (const c of diverge.ahead)
-    out.row("?" + c.hashlet + (c.subject ? "#" + c.subject : ""), "post", c.ts);
-  for (const c of diverge.behind)
-    out.row("?" + c.hashlet + (c.subject ? "#" + c.subject : ""), "miss", c.ts);
-
-  //  Rows in render order; within a bucket, sort lex-by-path so a gitlink
-  //  `mod` row (appended above) interleaves with file `mod` rows at its
-  //  lex position — the SNIFFClassify heap-merge order.  classify already
-  //  emits each bucket lex-sorted, so this only re-orders the bucket that
-  //  gained a gitlink row, and is a no-op for the rest.  JAB-004: each row's
-  //  PATH column is joined under `prefix` at emit time (a URI-aware join,
-  //  replacing relaySub's column-12 slicing).
-  for (const bucket of ROW_ORDER) {
-    const inBucket = [];
-    for (const r of res.rows) if (r.bucket === bucket) inBucket.push(r);
-    inBucket.sort(function (a, b) {
-      return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-    });
-    for (const r of inBucket) {
-      //  BRO-006 / DIS-057: a hidden `U`-tag nav target per file row, routed by
-      //  NAV_DIFF above — `diff:<path>` when a baseline exists for the path (a
-      //  wt-vs-base diff, or a base-vs-empty deletion diff for rmv/del/mis),
-      //  else `cat:<path>` (no base to diff against — new/unk/mov/adv).  Mirrors
-      //  the C HUNK_NAV_DIFF/CAT mechanism (sniff/SNIFF.exe.c status_dump_verb),
-      //  widened so EVERY base-present row leads to its diff.  ctx.out ignores
-      //  the 5th arg (plain/colour unchanged); sinkOut packs it under a 'U' tok.
-      //  A rename renders as the `rmv` source + `mov` dest PAIR (two plain path
-      //  rows), each nav targeting its OWN path — the move-row nav restored.
-      const navPath = joinPrefix(prefix, r.path);
-      const nav = navlib.navLink(NAV_DIFF[r.bucket] ? "diff" : "cat", navPath);
-      //  BE-041: actionable buckets carry a button (hidden O spell): mod/unk →
-      //  [put] (stage it), mis → [del] (the delete verb, unstage the gone file);
-      //  already-staged put/new rows carry none.  The label paints in the
-      //  matching verb palette slot (Y = put blue, X = del brown).  The arg
-      //  stays RAW wt-relative — no navLink/authority (BE-039 ruling).
-      const act = ACT_PUT[bucket] ? { label: "[put]", tag: "Y", spell: "put " + navPath }
-                : ACT_DEL[bucket] ? { label: "[del]", tag: "X", spell: "delete " + navPath }
-                : null;
-      out.row(navPath, bucket, r.ts, null, nav, act);
+  //  STATUS-006: commit rows are repo-level — a subtree filter keeps the hunk
+  //  path-only.  Through sinkOut they carry per-column tok spans; the columnar
+  //  out gets the pre-formatted ASCII/ANSI line.
+  const commits = filter ? [] : model.commits;
+  for (const c of commits) {
+    if (out.quadCommit) out.quadCommit(c);
+    else out.raw(quadrender.commitRow(c, quad.colored));
+  }
+  for (const r of model.rows) {
+    //  BRO-030: a sub's rows join under `prefix` at emit time (JAB-004).
+    const navPath = joinPrefix(prefix, r.path);
+    const row = { path: navPath,
+                  src: r.src ? joinPrefix(prefix, r.src) : undefined,
+                  quad: r.quad, staged: r.staged, con: r.con, ts: r.ts };
+    //  BRO-030 (BE-006/041): the wt char routes the hidden `U` nav + button —
+    //  a baseline exists to diff for v/x/! (diff:), else cat: (created 'o');
+    //  an unstaged wt v/o → [put], x → [del] (con carries neither).  The button
+    //  arg stays RAW wt-relative (BE-039); the nav rides navLink's authority.
+    if (out.quadRow) {
+      const wt = r.con ? "!" : r.quad[3];
+      const nav = navlib.navLink(
+            (wt === "v" || wt === "x" || wt === "!") ? "diff" : "cat", navPath);
+      let act = null;
+      if (!r.staged && !r.con) {
+        if (wt === "v" || wt === "o") act = { label: "[put]", tag: "Y", spell: "put " + navPath };
+        else if (wt === "x")          act = { label: "[del]", tag: "X", spell: "delete " + navPath };
+      }
+      out.quadRow(row, nav, act);
+    } else {
+      out.raw(quadrender.fileRow(row, quad.colored));
     }
   }
 
-  //  Summary line: `<rel>?<branch>\t<counts>`.  At the top, `rel` is the
-  //  cwd-relative prefix (status run from a subdir of the wt); for a sub the
-  //  hunk header already carries the path, so the summary `rel` is empty and
-  //  the `?<branch>` token is the sub's RAW anchor query, NOT path-prefixed.
+  //  BRO-030: the emitRepo summary frame (`<rel><label>\t…  (behind/ahead)`),
+  //  bucket segments swapped for quad-column counts.
+  const cur = log.curTip();
+  const att = log.attachedBranch();
+  const branch = (cur && cur.sha && att.detached)
+        ? cur.sha : branchlib.format(att.br);
   const rel = prefix ? "" : cwdRel(repo.wt);
-  //  STATUS-009: a URI-shaped track (parent pin / worktree / remote / store)
-  //  shows AS RECORDED + `#<base8>` (the 8-hex base hashlet, when recorded).
   const label = att.uriTrack
         ? att.track + (att.base ? "#" + att.base.slice(0, 8) : "")
         : "?" + branch;
   let summary = (rel ? rel : "") + label + "\t";
   const segs = [];
-  for (const b of SUMMARY_ORDER) {
-    const n = res.counts[b] || 0;
+  for (const b of QUAD_SUMMARY) {
+    const n = model.counts[b] || 0;
     if (n > 0) segs.push(n + " " + b);
   }
   summary += segs.join(", ");
-  //  Trailing `(behind N, ahead M)` note (GET-021): behind first, then
-  //  ahead; omitted entirely when the wt is up-to-date.
-  const aN = diverge.ahead.length, bN = diverge.behind.length;
+  //  BRO-030: behind/ahead off the commit quads — a track-column 'o' (canon
+  //  created) is a behind (track-side) commit, anything else is a local ahead one.
+  let aN = 0, bN = 0;
+  for (const c of commits) { if (c.quad[0] === quadlib.CH.created) bN++; else aN++; }
   if (aN > 0 || bN > 0) {
     const parts = [];
     if (bN > 0) parts.push("behind " + bN);
@@ -415,34 +351,18 @@ function emitRepo(repo, prefix, out, recurse, filter) {
     summary += "  (" + parts.join(", ") + ")";
   }
   out.raw(summary);
-
-  //  Native terminates EACH relayed sub block with a blank line (the HUNK
-  //  inter-hunk separator) right after its summary, BEFORE that sub's own
-  //  children — so a deep tree reads header/summary/blank, then the
-  //  grandchild's header/summary/blank, depth-first.  The TOP hunk (prefix
-  //  "") carries NO trailing blank (the first sub follows it directly).
   if (prefix) out.raw("");
 
-  //  --- JAB-004 recursion (--sub): relay each MOUNTED sub's status as a
-  //  SEPARATE `status:<subpath>` hunk AFTER this hunk's separator, IN-PROCESS
-  //  (no fork) — matching bare `be --plain`'s BEDefault relay (be_relay_subs).
-  //  DEPTH-FIRST in `.gitmodules` DECLARATION order (native KEEPSubsAt parses
-  //  the `.gitmodules` blob top-to-bottom; the tree is authoritative for which
-  //  declared path is a live gitlink — see keeper/SUBS.c::keep_subs_step), NOT
-  //  the lex `res.gitlinks` order.  The recursing child carries the JOINED
-  //  prefix so a grandchild reads `status:<sub>/<grandchild>`.  A sub whose
-  //  mount shard can't be opened is skipped (native's clean-sub *NONE no-op).
+  //  JAB-004 recursion: relay each MOUNTED sub's status as a SEPARATE
+  //  `status:<subpath>` hunk, DEPTH-FIRST in `.gitmodules` declaration order.
   if (recurse) {
-    //  STATUS-007: gate on declared + LIVE mount (isMount), NOT res.gitlinks —
-    //  a STAGED gitlink bump exits classify as put/new and never reaches subList.
     for (const subPath of gitmodulesOrder(repo.wt)) {
-      //  STATUS-007: keep the STATUS-006 scope — an out-of-filter sub stays out.
       if (narrow && !narrow(subPath)) continue;
-      if (!isMount(repo.wt, subPath)) continue;  // declared but not a live mount
+      if (!isMount(repo.wt, subPath)) continue;
       const subWt = subs.mountWtDir(repo, subPath);
       let subRepo;
       try { subRepo = be.treeAt(subWt); } catch (e) { continue; }
-      emitRepo(subRepo, joinPrefix(prefix, subPath), out, recurse);
+      emitRepo(subRepo, joinPrefix(prefix, subPath), out, recurse, undefined, quad);
     }
   }
 }
@@ -465,29 +385,6 @@ function joinPrefix(prefix, col) {
   const u = uri._parse(col);
   if (u.scheme || u.authority) return col;   // not a bare path — leave as-is
   return prefix + "/" + col;
-}
-
-//  Resolve cur tip + the TRACK's tip, compute the ahead/behind commit
-//  divergence via dag.js.  Mirrors SNIFF.exe.c::status_emit_commit_diff:
-//  silent no-op (empty lists) when cur has no 40-hex tip, the track is
-//  absent/unresolvable, or cur == tip.
-//  STATUS-009: the track comes from the ONE attach reader (a detached/track-
-//  less wt has nothing to diverge from) and resolves through resolve_hash()
-//  ONLY (RULE ZERO): a `?branch` track lands on its local ref tip, a
-//  `//WT[/sub]` track on the wt base / parent gitlink pin (otype "commit").
-function computeDivergence(k, log, cur, repo) {
-  const empty = { ahead: [], behind: [] };
-  if (!cur || !cur.sha || !subs.isFullSha(cur.sha)) return empty;
-  const att = log.attachedBranch();
-  if (att.detached || !att.track) return empty;
-  let tip;
-  try {
-    const rh = resolveHash(discover.navCwd(repo.wt), att.track);
-    tip = rh.otype === "commit" ? rh.ohash : rh.chash;
-  } catch (e) { return empty; }   // an unresolvable track (remote/store) → no-op
-  if (!tip || !subs.isFullSha(tip)) return empty;
-  if (tip === cur.sha) return empty;
-  return dag.aheadBehind(k, cur.sha, tip);
 }
 
 //  YES iff `<wt>/<subpath>/.be` is a regular file (a live mount).

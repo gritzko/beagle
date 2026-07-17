@@ -72,6 +72,9 @@ function aBg256(n) { return { fm: 0, fg: 0, bm: 2, bg: n, fl: 0 }; }
 //  VIEW bakes as a `#rrggbb` O prefix; bg packs r/g/b, feedColor mode 3 spells it.
 function aBgRGB(r, g, b) { return { fm: 0, fg: 0, bm: 3,
   bg: ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff), fl: 0 }; }
+//  BRO-030: 24-bit fg twin (`38;2;r;g;b`) — feedColor mode 3, kind "3".
+function aFgRGB(r, g, b) { return { fm: 3,
+  fg: ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff), bm: 0, bg: 0, fl: 0 }; }
 function aFlag(f)  { return { fm: 0, fg: 0, bm: 0, bg: 0, fl: f }; }
 function aOr(a, b) {
   return { fm: a.fm | b.fm, fg: a.fg | b.fg, bm: a.bm | b.bm,
@@ -95,6 +98,16 @@ const THEME = {
   //  the one that shows inside diff bodies; the rest round out the table.
   U: aFgB(34), W: aFgB(32), V: aFgB(36), E: aFgB(33), X: aFg256(94),
   M: aFgB(91), Q: aFgB(90), Y: aFgB(34), Z: aFgB(35), B: aFgB(33),
+  //  BRO-030 quad chars, codes 26..31 past 'Z' (A-Z is full): the GLYPH takes
+  //  the column color (fg); staged wt INVERTS (column color bg, white fg),
+  //  conflict inverts to red.  Mirrors view/theme.js QUAD_SGR — keep in step.
+  "[":  aFgRGB(30, 144, 255),                    // track  — blue glyph
+  "\\": aFgRGB(0, 180, 70),                      // base   — green glyph
+  "]":  aFgRGB(220, 160, 0),                     // patch  — amber glyph
+  "^":  aFgRGB(255, 140, 0),                     // wt     — orange glyph
+  //  RGB white fg, not basic 97 — terminal themes remap the palette's white.
+  "_":  aOr(aFgRGB(255, 255, 255), aBgRGB(255, 140, 0)),  // staged wt — white on orange
+  "`":  aOr(aFgRGB(255, 255, 255), aBgRGB(220, 40, 40)),  // con wt — white on red
 };
 function themeAt(tag) { return THEME[tag] || A0; }
 const THEME_BANNER = { fm: 2, fg: 0, bm: 2, bg: 230, fl: 0 };
