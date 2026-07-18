@@ -118,6 +118,20 @@ function wtScan(wtRoot, ignore) {
     else continue;                                     // dirs/other skip
     out[rel] = { ts: st.mtime || 0n, kind: kind, full: full };
   }
+
+  //  PUT-011 (ruling 2026-07-18): keep the nested-repo dir ITSELF as one `s`
+  //  entry — only its contents drop; classify renders the mount as a wt row.
+  for (const p of nestedPrefixes) {
+    const dirRel = p.slice(0, -1);
+    let inner = false;
+    for (const q of nestedPrefixes)
+      if (q !== p && dirRel.indexOf(q) === 0) { inner = true; break; }
+    if (inner) continue;                              // outermost mounts only
+    const full = wtpath(wtRoot, dirRel);
+    let st;
+    try { st = io.lstat(full); } catch (e) { continue; }
+    out[dirRel] = { ts: st.mtime || 0n, kind: "s", full: full };
+  }
   return out;
 }
 
@@ -324,7 +338,19 @@ function classifyMerge(be, wtlogReader, reader, opts) {
     if (underSub(path)) continue;
     //  DIS-054 Path slot (post): an out-of-scope path keeps baseline → no row.
     if (underNarrow && !underNarrow(path)) continue;
-    const b = base[path], w = wt[path], p = puts[path], d = dels[path];
+    const b = base[path], p = puts[path], d = dels[path];
+    let w = wt[path];
+
+    //  PUT-011: a mounted sub dir with NO baseline gitlink and NO staged
+    //  intent is ONE wt-created gitlink row; any other mix reads as before.
+    if (w && w.kind === "s") {
+      if (!b && !p && !d) {
+        push({ bucket: "unk", path: path, ts: w.ts, kind: "s",
+               gitlink: true, onDisk: true });
+        continue;
+      }
+      w = undefined;
+    }
 
     //  Gitlink bump (`put <sub>#<40hex>`): the put fragment is a PIN (a full
     //  sha), winning over any on-disk file (SUBS-019).  Subsumes bump + add.

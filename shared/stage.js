@@ -221,6 +221,10 @@ function prep(be, wtlogReader, storeReader) {
       //  the join(wtRoot,raw) lstat (mirrors explicitMove's isMeta gate + put.js).
       if (isMeta(raw)) return { stage: false, reason: "is a meta path" };
       const b = base[raw], w = wt[raw];
+      //  PUT-011: the wt scan keeps a nested-repo dir as an `s` entry now —
+      //  it is not file-stageable here (put's sub delegate owns real mounts).
+      if (w && w.kind === "s")
+        return { stage: false, reason: "exists but is not stageable" };
       if (!w && b) return { stage: false, reason: "does not exist" };
       if (!w && !b) {
         //  Unseen-but-present (a special file the wt scan skipped) reads
@@ -260,6 +264,7 @@ function prep(be, wtlogReader, storeReader) {
         if (isMeta(rel)) continue;
         const b = base[rel], w = wt[rel];
         if (b && (b.kind === "s")) continue;     // gitlink subtree
+        if (w && w.kind === "s") continue;       // PUT-011: mount dir entry
         if (b) sawTracked = true;                // tracked dir
         let doStage = false;
         if (b && w) {

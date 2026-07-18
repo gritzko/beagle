@@ -159,6 +159,7 @@ function decide(be, wtlogReader, storeReader, narrow) {
         else addWt(r.path, r.kind, r.oldSha);
         break;
       case "unk":          // untracked on disk: fresh repo auto-stages; else ignore
+        if (r.kind === "s") break;   // PUT-011: a mount is never auto-added
         if (!haveBase && !anyPd) addWt(r.path, r.kind, undefined);
         break;
       default: break;

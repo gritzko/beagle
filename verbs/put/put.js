@@ -526,6 +526,17 @@ function stageInSub(repo, pfx, uri, ctx) {
     if (!deeper) break;
     seg = deeper;
   }
+  //  PUT-011 (ruling 2026-07-18): bare `put <sub>` stages ONLY the parent
+  //  gitlink bump (fresh-add included); `put <sub>/` stages ONLY inside.
+  if (rest === "" && !u.fragment && !String(u.path || "").endsWith("/")) {
+    openPutBanner(out, ctx);
+    const r = stageSubBump(parRepo, seg, subRepo, out, disp);
+    if (r === true) { ctx._putStaged = (ctx._putStaged || 0) + 1; return; }
+    ctx._putSkipped = (ctx._putSkipped || 0) + 1;
+    if (out) out.raw(skipText({ path: disp, reason: r, whole: true }));
+    ctx._putSkipMsg = r;
+    return;
+  }
   const subK = store.open(subRepo.storePath, subRepo.project);
   let subUri = rest;
   if (u.fragment) {
@@ -545,22 +556,19 @@ function stageInSub(repo, pfx, uri, ctx) {
     }
   //  JAB-004: tallies accumulate on ctx; the driver (putRun) owns the final
   //  all-skip PUTNONE decision after the whole arg batch (no per-arg throw).
+  //  PUT-011: the slash form ends here — no parent gitlink bump.
   ctx._putStaged = (ctx._putStaged || 0) + r.ops.filter(function (o) { return o.path !== null; }).length;
   ctx._putSkipped = (ctx._putSkipped || 0) + r.items.filter(function (it) { return it.type === "skip"; }).length;
-  //  BE-049: the arg names the MOUNTED sub ITSELF — also stage the parent
-  //  gitlink bump (postSubs' `put <sub>#<tip>` row) when the tip left the pin.
-  if (rest === "" && !u.fragment && stageSubBump(parRepo, seg, subRepo, out, disp))
-    ctx._putStaged = (ctx._putStaged || 0) + 1;
 }
 
-//  BE-049: stage `put <sub>#<tip>` into the PARENT wtlog for an ADVANCED sub
-//  (an `adv` status row / [put] button) — the SAME row postSubs synthesises, so
-//  the next post's fold-decide commits the new 160000 pin.  A no-pin (fresh
-//  gitlink-add) or an unchanged/already-staged pin is a silent no-op (false).
+//  BE-049: stage `put <sub>#<tip>` into the PARENT wtlog — the SAME row
+//  postSubs synthesises, so the next post commits the new 160000 pin.
+//  PUT-011: fresh-add included — a DECLARED no-pin sub stages its first pin.
+//  Returns true when staged, else a plain-words skip reason (never a code).
 function stageSubBump(parRepo, seg, subRepo, out, disp) {
   const cur = wtlog.open(subRepo).curTip();
   const tip = (cur && cur.sha && isFullSha(cur.sha)) ? cur.sha : "";
-  if (!tip) return false;
+  if (!tip) return "— the sub has no commit yet — skipped";
   //  effective pin: the last staged bump row wins over the baseline gitlink.
   let pin = "";
   const wtl = wtlog.open(parRepo);
@@ -578,11 +586,22 @@ function stageSubBump(parRepo, seg, subRepo, out, disp) {
     if (r.verb !== "put" || (r.uri.path || "") !== seg) return;
     if (isFullSha(r.uri.fragment || "")) pin = r.uri.fragment;
   });
-  if (!isFullSha(pin) || pin === tip) return false;
+  if (pin === tip) return "— the pin is already at the sub tip";
+  //  PUT-011: a FRESH pin (no baseline gitlink, no staged bump) requires the
+  //  `.gitmodules` declaration — an undeclared mount refuses in words.
+  if (!isFullSha(pin) &&
+      gitmodulesPaths(parRepo.wt).indexOf(seg) < 0)
+    return "— not declared in .gitmodules — skipped";
   ulog.append(parRepo.bePath, [{ verb: "put",
     uri: URI.make(undefined, undefined, seg, undefined, tip) }]);
   if (out) out.row(disp + "#" + tip.slice(0, 8), "put", 0n);
   return true;
+}
+
+//  PUT-011: the declared submodule paths of a wt (shared/gitmodules.js).
+function gitmodulesPaths(wtRoot) {
+  try { return require("../../shared/gitmodules.js").paths(wtRoot); }
+  catch (e) { return []; }
 }
 
 //  --- per-row STAGE (was the legacy handle body) -------------------------
@@ -775,12 +794,14 @@ function putRun(ctx, argv, firstUri) {
   }
   commitOps(repo, batchOps, ctx.T0);
 
-  //  All-skip run is PUTNONE: emit the diag + throw so the loop edge flushes the
-  //  partial banner + skips before the non-zero exit (native put_stage_named).
+  //  All-skip run refuses (native PUTNONE class): emit the diag + throw so the
+  //  loop edge flushes the partial banner + skips before the non-zero exit.
+  //  PUT-011: the refusal speaks plain words (a sub skip's own reason wins).
   if ((ctx._putStaged || 0) === 0) {
     if ((ctx._putSkipped || 0) > 0) io.log("be put: no eligible paths\n");
     if (out) out.done();                 // JAB-003: flush the partial hunk on the throw
-    throw "PUTNONE";                     // non-zero exit (native PUTNONE)
+    throw "put: nothing to stage" +
+          (ctx._putSkipMsg ? " " + ctx._putSkipMsg.replace(/ — skipped$/, "") : "");
   }
   if (out) out.done();
 }
