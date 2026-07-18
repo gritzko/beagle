@@ -251,13 +251,34 @@ function deleteLeaf(rc, path) {
 function emit(rc, status, path) { rc.rows.push({ status: status, path: path }); }
 
 //  --- patch row ----------------------------------------------------------
-//  Row URI: a cherry (NAMED) pins `#<sha>` (fragment); a line absorb pins
-//  `?<sha>` (query).  BRO-030/PATCH-014: URI bangs are RETIRED (wiki/PATCH —
-//  DIS-030 overturned), so a WHOLE row no longer spells a trailing `!`;
-//  readers tolerate the old bang rows (wtlog.refOf strips one).
-function patchRowUri(scope, theirs) {
-  if (scope === "NAMED") return URI.make(undefined, undefined, undefined, undefined, theirs);
-  return URI.make(undefined, undefined, undefined, theirs, undefined);
+//  PATCH-015: the row URI carries the ORIGIN the next POST records:
+//    "parent"  → `?<sha>`         (a plain line absorb, a non-first merge parent)
+//    "picked"  → `#<sha>`         (a `#hash` cherry, dedup-only, never a parent)
+//    "foster"  → `foster:?<sha>`  (a `patch!` line absorb, a local-only header)
+//    null      → the scoped path  (path-scoped: NO theirs slot, so POST folds it
+//                                  into base with no header and counts zero).
+//  BRO-030/PATCH-014: URI bangs are RETIRED (DIS-030 overturned); readers still
+//  tolerate a legacy trailing `!` (wtlog.refOf strips one).
+function patchRowUri(sc) {
+  if (sc.origin === null)
+    return URI.make(undefined, undefined, (sc.paths && sc.paths[0]) || "", undefined, undefined);
+  if (sc.origin === "picked")
+    return URI.make(undefined, undefined, undefined, undefined, sc.theirs);
+  if (sc.origin === "foster")
+    return URI.make("foster", undefined, undefined, sc.theirs, undefined);
+  return URI.make(undefined, undefined, undefined, sc.theirs, undefined);
+}
+
+//  PATCH-015: the origin the next POST records for this absorb.  A pre-pinned
+//  triple (the sub re-entry) carries its own; else the arg SHAPE + the verb bang
+//  decide: `#hash` → picked, a path-scoped absorb → none, `patch!` → foster, a
+//  plain line absorb → parent.
+function originOf(sc, ctx) {
+  if (sc.origin !== undefined) return sc.origin;
+  if (sc.scope === "NAMED") return "picked";
+  if (sc.paths && sc.paths.length) return null;
+  const flags = (ctx && ctx.flags) || [];
+  return (flags.indexOf("--force") >= 0) ? "foster" : "parent";
 }
 
 //  JAB-004: plain-args PATCH — `patch(...args)` off global `be`, called ONCE.
@@ -344,7 +365,18 @@ function patchRun(ctx) {
   const sc = ctx.triple ||
       (src ? patchscope.resolveTree(src.tip, src.branch, wtl, reader)
            : patchscope.resolve(ctx.arg || "", wtl, reader));
-  if (!sc) throw "PATCHFAIL: a patch URI is required (`?<br>` | `?<br>!` | `#<sha>`)";
+  if (!sc) throw "PATCHFAIL: a patch URI is required (`?<br>` | `#<sha>`)";
+  //  PATCH-015: pin the ORIGIN (parent/foster/picked/none) the row will carry.
+  sc.origin = originOf(sc, ctx);
+  sc.paths = sc.paths || [];
+
+  //  PATCH-015 §Ancestor-skip: a cherry whose commit is already reachable (or
+  //  already `picked`) from cur is a DEDUP NO-OP — no bytes, no row.
+  if (sc.origin === "picked" &&
+      patchscope.alreadyPicked(reader, sc.ours, sc.theirs)) {
+    emitQuadBanner(ctx, info, sc, { reader: reader, wrote: [] });
+    return;
+  }
 
   //  Build the three tree maps; the union of their paths is the walk set.
   const treeCache = Object.create(null);
@@ -355,7 +387,14 @@ function patchRun(ctx) {
   for (const k in fMap) paths[k] = true;
   for (const k in oMap) paths[k] = true;
   for (const k in tMap) paths[k] = true;
-  const all = Object.keys(paths).sort();
+  let all = Object.keys(paths).sort();
+  //  PATCH-015 §Path-scoped: a non-empty path slot narrows the walk to those
+  //  paths (a file or a dir prefix); out-of-scope paths keep ours' bytes.
+  if (sc.paths.length)
+    all = all.filter(function (p) {
+      for (const sp of sc.paths) if (p === sp || p.indexOf(sp + "/") === 0) return true;
+      return false;
+    });
 
   const st = { noop: 0, takeTheirs: 0, merged: 0, mergedConflict: 0,
                added: 0, deleted: 0, modDelKept: 0, failed: 0 };
@@ -376,8 +415,10 @@ function patchRun(ctx) {
   //  DIS-058 D17: descend `be patch` into MOUNTED subs whose pin advanced
   //  (post-order), then bump the parent gitlink for each — BEFORE the parent's
   //  own patch row, so a sub merge that fails refuses before any parent stamp.
+  //  PATCH-015: a path-scoped absorb never recurses subs (a partial tree is not
+  //  a faithful sub advance).
   const flags = (ctx && ctx.flags) || [];
-  if (flags.indexOf("--nosub") < 0)
+  if (flags.indexOf("--nosub") < 0 && !sc.paths.length)
     patchSubs(info, ctx, reader, rc, fMap, oMap, tMap);
 
   //  POST-011 noop gate: nothing absorbed → no row, no restamp.
@@ -406,7 +447,7 @@ function patchRun(ctx) {
   //  ron60 → FILESetMtime stamps epoch-0 → the band read misses → `mod`).
   const ts = ulog.ronStepMs(base, 2);                 // patch-row ts = band ceiling
   ulog.append(info.bePath,
-              [{ verb: "patch", uri: patchRowUri(sc.scope, sc.theirs), ts: ts }]);
+              [{ verb: "patch", uri: patchRowUri(sc), ts: ts }]);
   //  DIS-057 stamp OFFSET: the patch verb knows each file's outcome for free, so
   //  it stamps the mtime to ceil-2ms (clean apply → `pat`), ceil-1ms (merged →
   //  `mrg`), or ceil (conflict → `cnf`).  The unified classifier reads that
@@ -430,6 +471,17 @@ function patchRun(ctx) {
                 }));
 
   emitQuadBanner(ctx, info, sc, rc);
+  //  PATCH.mkd 2026-07-17: conflicts are LOUD — banner/row/stamps land, then a
+  //  NON-ZERO exit; the throw skips cli's edge, so flush the hunk banner here first.
+  if (rc.conflicts.length) {
+    const s = ctx && ctx.sink;
+    if (s && !s.empty) {
+      const bytes = require("../../view/bro.js").renderHunkLog(s.log, ambient.format());
+      if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
+    }
+    throw "be patch: PATCHCONFLICT " + rc.conflicts.length +
+          " file(s) merged with conflicts — resolve the markers";
+  }
 }
 
 //  DIS-058 D17 (POST-ORDER sub descent, mirrors post.js postSubs): for each
@@ -450,12 +502,8 @@ function patchSubs(info, ctx, reader, rc, fMap, oMap, tMap) {
     const job = jobs[sub.path];
     if (!job) return;                      // mounted but pin unchanged → skip
     runSubPatch(info, ctx, subRepo, job);
-    //  Record the advance into the PARENT gitlink (D7): a `put <sub>#<newpin>`
-    //  wtlog row — fold-decide turns it into a `160000` add on the parent tree
-    //  at the next `be post`.  `ulog.append` stamps strictly past the live tail,
-    //  so a second sub's bump never collides with the first's.
-    ulog.append(info.bePath,
-                [{ verb: "put", uri: URI.make(undefined, undefined, job.path, undefined, job.theirs) }]);
+    //  PATCH.mkd 2026-07-17: patch STAGES NOTHING — no synthesised `put <sub>#<pin>`
+    //  bump row; the parent's own `patch` row carries the advance for the next post.
   }, { gitlinks: subGitlinkMap(rc.subJobs) });
 }
 
@@ -485,8 +533,10 @@ function runSubPatch(info, ctx, subRepo, job) {
   }
   //  The sub triple mirrors the parent's: ours/theirs/fork gitlink pins.  An
   //  empty fork (root-pinned sub) drops to the no-base degenerate merge.
-  const subTriple = { scope: "NAMED", branch: "", ours: job.ours,
-                      theirs: job.theirs, fork: job.fork };
+  //  PATCH-015: a sub advance rides as a `parent` (a real DAG edge on the sub),
+  //  the pre-015 behaviour (the sub `#sha` row folded to a merge parent).
+  const subTriple = { scope: "NAMED", origin: "parent", paths: [], branch: "",
+                      ours: job.ours, theirs: job.theirs, fork: job.fork };
   //  JAB-004: re-enter the run core DIRECTLY with the pinned sub triple (a child
   //  synthetic ctx) — no global `be` swap, so the sub's rows ride the SAME sink
   //  and aggregate into the parent banner ([Submodules] §"sub reports aggregated").
@@ -502,7 +552,7 @@ function emitQuadBanner(ctx, info, sc, rc) {
   const touched = new Set(rc.wrote);
   //  BRO-030: plain bakes the ASCII canon; else tok-tagged rows for the pager.
   const plain = ambient.format() === "plain";
-  const out = hunkrows(ctx.sink, patchRowUri(sc.scope, sc.theirs));
+  const out = hunkrows(ctx.sink, patchRowUri(sc));
   for (const r of model.rows)
     if (touched.has(r.path))
       plain ? out.raw(quadrender.fileRow(r, false)) : out.quadRow(r);

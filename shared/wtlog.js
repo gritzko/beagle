@@ -284,6 +284,27 @@ function open(be) {
       return out;
     },
 
+    //  PATCH-015: patchOrigins() — every in-scope patch row's absorbed sha WITH
+    //  the ORIGIN the row spells, oldest-first, so POST routes each into the
+    //  right commit header: `?<sha>` → parent, `#<sha>` → picked, `foster:?<sha>`
+    //  → foster.  A path-scoped row (path, no theirs slot) carries no sha and is
+    //  skipped — POST folds it into base with no header.
+    patchOrigins: function () {
+      const floor = this.patchFloor();
+      const out = [];
+      for (const r of rows) {
+        if (r.verb !== PATCH) continue;
+        if (floor != null && r.ts <= floor) continue;
+        const u = r.uri;
+        let kind = "parent";
+        if (u.scheme === "foster") kind = "foster";
+        else if (isFullSha(u.fragment)) kind = "picked";
+        const ref = refOf(u, r.local);
+        if (ref.sha && isFullSha(ref.sha)) out.push({ sha: ref.sha, kind: kind });
+      }
+      return out;
+    },
+
     //  STATUS-005: paths named by durable `con <path>` rows (a merge left
     //  markers there); append-only — status re-scans wt bytes for liveness.
     conPaths: function () {

@@ -814,12 +814,18 @@ function postOne(info, ctx, row) {
   //  commit records the second parent so the absorb is a real merge in the DAG).
   //  base=ours did NOT change this — the absorb's parents are ours-tip (parent,
   //  below) + each in-scope theirs.  De-dup + drop any that equal ours-tip.
-  const theirsParents = [];
-  if (typeof wtl.patchTheirs === "function") {
+  //  PATCH-015: a patch row's ORIGIN routes its sha into the right commit
+  //  header — a plain `?<sha>` line absorb is a non-first merge `parent`; a
+  //  `#<sha>` cherry is a `picked` header (git-linear, NEVER a parent); a
+  //  `patch!` `foster:?<sha>` is a `foster` header (linear + git-invisible).
+  const theirsParents = [], fosterShas = [], pickedShas = [];
+  if (typeof wtl.patchOrigins === "function") {
     const seen = {};
-    for (const tsha of wtl.patchTheirs()) {
-      if (!isFullSha(tsha) || tsha === parent || seen[tsha]) continue;
-      seen[tsha] = 1; theirsParents.push(tsha);
+    for (const o of wtl.patchOrigins()) {
+      if (!isFullSha(o.sha) || seen[o.kind + o.sha]) continue;
+      if (o.kind === "foster") { seen[o.kind + o.sha] = 1; fosterShas.push(o.sha); }
+      else if (o.kind === "picked") { seen[o.kind + o.sha] = 1; pickedShas.push(o.sha); }
+      else if (o.sha !== parent) { seen[o.kind + o.sha] = 1; theirsParents.push(o.sha); }
     }
   }
 
@@ -859,8 +865,10 @@ function postOne(info, ctx, row) {
 
   //  POST-027: POST.mkd row 1 exception — a message-less post (bare / `#`) with
   //  an ACTIVE absorbed patch COMMITS, reusing the theirs commit's own message.
-  if ((m.msg == null || m.msg === "") && !slots.narrow && theirsParents.length)
-    m.msg = commitMessage(reader, theirsParents[theirsParents.length - 1]);
+  //  PATCH-015: reuse the last absorbed commit's message regardless of origin.
+  const absorbedShas = theirsParents.concat(fosterShas, pickedShas);
+  if ((m.msg == null || m.msg === "") && !slots.narrow && absorbedShas.length)
+    m.msg = commitMessage(reader, absorbedShas[absorbedShas.length - 1]);
 
   //  POST-030: the parent's bare post fans into each mounted sub, but a clean sub
   //  must NOT bare-advance ITS OWN (self-ref `//WT/S`) track — that fell through
@@ -955,6 +963,8 @@ function postOne(info, ctx, row) {
   const commit = commitM.buildCommit({
     treeSha: tb.rootTreeSha || commitM.EMPTY_TREE_SHA,
     parents: (parent ? [parent] : []).concat(theirsParents),
+    foster: fosterShas,             // PATCH-015: local-only `foster` headers
+    picked: pickedShas,             // PATCH-015: cherry `picked` headers
     author: author,
     epochSec: epochSecOf(stamp),
     message: m.msg

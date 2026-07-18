@@ -113,6 +113,12 @@ function buildCommit(opts) {
   for (const p of (opts.parents || [])) s += "parent " + p + "\n";
   s += "author " + author + tsLine;
   s += "committer " + author + tsLine;
+  //  PATCH-015: extra provenance headers git does not understand ride AFTER
+  //  committer (git preserves unknown headers, ignores them for DAG walks) —
+  //  `foster` (a `patch!` rebase-flavour link, local-only) and `picked` (a
+  //  `#hash` cherry, dedup-only).  Never `parent`, so history stays linear.
+  for (const p of (opts.foster || [])) s += "foster " + p + "\n";
+  for (const p of (opts.picked || [])) s += "picked " + p + "\n";
   s += "\n" + opts.message + "\n";
   const body = utf8.Encode(s);
   return { sha: frameSha("commit", body), body: body };
