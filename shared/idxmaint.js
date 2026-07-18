@@ -20,6 +20,8 @@
 
 const join = require("./util/path.js").join;   // JSQUE-016: util libs -> shared/util/
 
+//  GRAF-001: run-lifecycle helpers take an optional `ext` (run family
+//  suffix) so shared/graf.js reuses them over `*.graf.idx`; default keeper.idx.
 const EXT = "keeper.idx";      // run suffix, matching abc.index({ext}) exactly
 const SLOT = 16;               // wh128 run slot: 2 u64 per (key,val) entry
 const RUN_CAP = 64;            // the native _compact_/_seekrange_ hard cap
@@ -28,11 +30,11 @@ const OPEN_CAP = 32;           // compact-on-open threshold (half the cap)
 function warn(e) { try { io.log("idxmaint: " + e + "\n"); } catch (x) {} }
 
 //  Run file names in the shard, name-sorted (== age-sorted for ron60 names).
-function listRuns(shard) {
+function listRuns(shard, ext) {
   const out = [];
   let names = [];
   try { names = io.readdir(shard); } catch (e) { return out; }
-  for (const nm of names) if (nm.endsWith(EXT)) out.push(nm);
+  for (const nm of names) if (nm.endsWith(ext || EXT)) out.push(nm);
   out.sort();
   return out;
 }
@@ -72,10 +74,10 @@ function dropView(r) { r.buffer._map = null; }   // unpin (GC munmaps)
 //  Fresh ron60 run name, collision-safe: a pinned clock (SOURCE_DATE_EPOCH)
 //  repeats ron.now() across processes, and a clobbered/renamed-over run loses
 //  coverage — bump the stamp until the name is free (still name-sorts last).
-function freshRunName(shard) {
+function freshRunName(shard, ext) {
   let t = ron.now();
   for (;;) {
-    const name = ron.encode(t) + "." + EXT;
+    const name = ron.encode(t) + "." + (ext || EXT);
     try { io.stat(join(shard, name)); } catch (e) { return name; }
     t += 1n;
   }
@@ -86,8 +88,8 @@ function freshRunName(shard) {
 //  io.rename into place.  The caller unlinks its collapsed sources only AFTER
 //  this returns — a crash before the rename leaves just a dot-file; a crash
 //  after leaves a duplicate-covering (harmless) run.
-function landRun(shard, total, fill) {
-  const name = freshRunName(shard);
+function landRun(shard, total, fill, ext) {
+  const name = freshRunName(shard, ext);
   const tmp = join(shard, "." + name + ".tmp");
   const book = abc.book("HEAPwh128", tmp, total || 1);
   let live;
@@ -102,7 +104,7 @@ function landRun(shard, total, fill) {
 
 //  One ladder step over the <=64 YOUNGEST runs of `views` (oldest-first, live
 //  mmaps; mutated in place).  Returns m (runs collapsed); m<2 = already compact.
-function compactStep(shard, views) {
+function compactStep(shard, views, ext) {
   const tail = views.slice(-RUN_CAP);
   const slices = tail.map(sliceOf);
   let total = 0;
@@ -112,7 +114,7 @@ function compactStep(shard, views) {
     const r = abc._compact_wh128(slices, book);
     m = r[1];
     return m < 2 ? -1 : r[0];                    // -1: nothing collapsed, abort
-  });
+  }, ext);
   if (!name) return 0;
   const dead = views.splice(views.length - m, m);
   for (const old of dead) {                      // sources die AFTER the rename
@@ -125,7 +127,7 @@ function compactStep(shard, views) {
 
 //  Forced merge of the k youngest runs (abc.merge, full-element dedup) — the
 //  escape when the ladder reports compact but the stack still tops the caps.
-function forceMerge(shard, views, k) {
+function forceMerge(shard, views, k, ext) {
   if (k > views.length) k = views.length;
   if (k > RUN_CAP) k = RUN_CAP;
   if (k < 2) return 0;
@@ -135,7 +137,7 @@ function forceMerge(shard, views, k) {
   const name = landRun(shard, total, function (book) {
     abc.merge(tail, book);
     return book.buffer.watermark | 0;
-  });
+  }, ext);
   if (!name) return 0;
   views.splice(views.length - k, k);
   for (const old of tail) {
@@ -148,15 +150,15 @@ function forceMerge(shard, views, k) {
 
 //  Cascade compaction over the shard's whole run stack until the 1/8 ladder
 //  holds; batches an overfull (>64) stack through the youngest-64 window.
-function compactAll(shard, names) {
+function compactAll(shard, names, ext) {
   const views = names.map(function (nm) { return openRun(join(shard, nm)); });
   try {
     for (;;) {
-      if (compactStep(shard, views) >= 2) continue;
+      if (compactStep(shard, views, ext) >= 2) continue;
       //  ladder compact; force below the caps if still overfull (a >32-run
       //  geometric stack is practically unreachable, but the cap is hard).
       if (views.length > OPEN_CAP &&
-          forceMerge(shard, views, views.length - OPEN_CAP + 1)) continue;
+          forceMerge(shard, views, views.length - OPEN_CAP + 1, ext)) continue;
       break;
     }
   } finally {
@@ -213,11 +215,11 @@ function listLogs(shard) {
 
 //  After-add hook (ingest.land / fold-commit writePack): cheap stat probe,
 //  compact only when the 1/8 invariant is violated.  Never throws.
-function compactAfterAdd(shard) {
+function compactAfterAdd(shard, ext) {
   try {
-    const names = listRuns(shard);
+    const names = listRuns(shard, ext);
     if (names.length < 2 || isCompact(runSizes(shard, names))) return;
-    compactAll(shard, names);
+    compactAll(shard, names, ext);
   } catch (e) { warn(e); }                        // read-only store: leave as-is
 }
 
@@ -260,4 +262,5 @@ function maintain(shard) {
 module.exports = { maintain: maintain, compactAfterAdd: compactAfterAdd,
                    listRuns: listRuns, isCompact: isCompact,
                    coverage: coverage, freshRunName: freshRunName,
+                   landRun: landRun,
                    RUN_CAP: RUN_CAP, OPEN_CAP: OPEN_CAP };
