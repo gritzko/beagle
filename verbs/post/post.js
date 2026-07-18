@@ -858,6 +858,9 @@ function postOne(info, ctx, row) {
   //  commit path below).  Fires before the change-set classify (it commits
   //  nothing) and before the no-msg guard (a bare advance needs no message).
   if (slots.hasQuery && (m.msg == null || m.msg === "") && !slots.narrow) {
+    //  POST-031: a recursed sub never re-applies the parent's `?` advance to
+    //  its OWN shard's ref (POST-030's _sub rule, now on the Query form too).
+    if (ctx && ctx._sub) return;
     advanceBranch(reader, wtl, info, ctx, target, curBranch, parent,
                   haveBaseline);
     return;                                  // no commit, no fan-out

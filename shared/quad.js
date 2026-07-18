@@ -142,8 +142,14 @@ function quadModel(inp) {
   //  two real tips is a broken tree — refuse (wiki/Status.mkd ruling).
   let root = base;
   if (track && base && track !== base) {
-    root = dag.mergeBase(k, track, base);
-    if (!root) throw "broken tree: track and base share no common ancestor";
+    //  POST-031: a track pin with NO readable commit in this store (a re-
+    //  cloned sub's stale parent pin) is not a real tip — the no-track rule.
+    let tp; try { tp = k.commitParents(track); } catch (e) { tp = undefined; }
+    if (tp == null) track = base;
+    else {
+      root = dag.mergeBase(k, track, base);
+      if (!root) throw "broken tree: track and base share no common ancestor";
+    }
   } else if (!base) root = track;        // empty-history wt (pre-first-post)
 
   //  The four tree columns as buffer-backed ULOG cursors (ruling above).
