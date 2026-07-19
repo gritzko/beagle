@@ -631,8 +631,17 @@ function subMountSplit(k, parentTreeSha, repo, path, ctx) {
   let subK;
   try { subK = store.open(subRepo.storePath, subRepo.project); }
   catch (e) { return null; }
+  const rest = path.slice(best.length + 1);
+  //  DIFF-014: NESTED mount — `rest` may itself lie under a mount inside the
+  //  sub (dog/abc/FILE.h: abc is a gitlink in dog's tree too).  Re-split on the
+  //  sub's OWN baseline tree so the from-side reads from the DEEPEST sub that
+  //  directly holds the file; same routes (recurse.isMount/be.treeAt/store.open).
+  const subBase = (wtlog.open(subRepo).baselineTip() || {}).sha || "";
+  const subTree = subBase ? subK.commitTree(subBase) : null;
+  const deeper = subTree ? subMountSplit(subK, subTree, subRepo, rest, ctx) : null;
+  if (deeper) return deeper;
   return { subK: subK, subRepo: subRepo, subPath: best,
-           rest: path.slice(best.length + 1), oldPin: subs[best] };
+           rest: rest, oldPin: subs[best] };
 }
 
 //  Blob bytes for `path` inside a tree (descend by path segments) — the
