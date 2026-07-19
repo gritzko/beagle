@@ -201,6 +201,18 @@ function patchStamps(wtlogReader) {
     map[ulog.ronStepMs(t, -1).toString()] = "mrg";
     map[t.toString()]                     = "cnf";
   }
+  //  GET-050: the CURRENT base get opens the SAME band under ITS ceiling for
+  //  carried/woven files: ceil-1ms `mod` (wt `v`), ceil-2ms `con` (wt `!`).  The
+  //  ceiling itself is GET-049's clean-overwrite stamp (in the stamp-set → `ok`),
+  //  so it is NOT registered.  Only the recentmost get/post ts (the live base)
+  //  counts — an earlier get is superseded (its carried files were re-touched).
+  const pd = (typeof wtlogReader.boundaries === "function")
+        ? wtlogReader.boundaries().pd : null;
+  for (const r of wtlogReader.rows) {
+    if (r.verb !== "get" || (pd != null && r.ts < pd)) continue;
+    map[ulog.ronStepMs(r.ts, -1).toString()] = "mod";
+    map[ulog.ronStepMs(r.ts, -2).toString()] = "con";
+  }
   return map;
 }
 

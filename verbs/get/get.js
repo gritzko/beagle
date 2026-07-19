@@ -69,6 +69,15 @@ const appendWtlog = ulog.append;
 //  GET-049: best-effort restamp of a just-written file (put.js trySetMtime twin).
 function trySetMtime(full, ts) { try { io.setMtime(full, BigInt(ts)); } catch (e) {} }
 
+//  GET-050: DIS-057 band UNDER the get row ceiling (g.stampTs) for carried/woven
+//  outputs — `mrg` = ceil-1ms (status `...v`), `con` = ceil-2ms (`...!`).  The
+//  clean overwrite keeps the ceiling (GET-049); classify.patchStamps reads the
+//  offset back so a de-scoped file can't false-clean off its stale put stamp.
+function bandStamp(g, full, outcome) {
+  if (g.stampTs == null) return;
+  trySetMtime(full, ulog.ronStepMs(g.stampTs, outcome === "con" ? -2 : -1));
+}
+
 //  SUBS-041: cap the checkout sub-mount RECURSION depth.  A deep/cyclic gitlink
 //  chain (a sub of a sub of a sub…) fans out unbounded; past this many descents,
 //  stop mounting deeper (log a skip, leave the mount as-is, no crash).
@@ -545,6 +554,14 @@ function fanoutWholeTree(ctx, r, wt, force) {
                source: r.source || null,
                beDir: (r.k && r.k.shard) ? dirname(r.k.shard) : join(wt, ".be") };
 
+  //  GET-050: the pre-get STAGED (`put`) set — files this get DE-SCOPES (their
+  //  put row falls below the new floor).  A merkle-PRUNED carried file get never
+  //  rewrites keeps its stale put restamp (in the stamp-set → false-clean); the
+  //  terminal carrySweep re-stamps any that stay dirty vs the NEW base into the
+  //  band.  `seen` marks paths a leaf already stamped (so the sweep skips them).
+  ctx._get.carry = collectStaged(ctx._get.bePath);
+  ctx._get.seen = {};
+
   //  Edge flush order (native get): pulled-commit `post` rows first (newest
   //  first, kept in push order), then file rows — new+upd interleaved lex,
   //  THEN del lex.  The fan-out arrives in queue order, so SORT at the flush.
@@ -998,6 +1015,9 @@ function leaf(row, ctx) {
   const obj = g.k.getObject(newSha);
   if (!obj) return;                             // unresolved → skip
   const bytes = obj.bytes;
+  //  GET-050: a staged path this leaf VISITS is stamped here — the terminal
+  //  carrySweep restamps only the PRUNED (never-visited) carried files.
+  if (g.seen) g.seen[rel] = 1;
   const existed = exists(full);
   //  Skip if the on-disk path already matches the target (preserves dirty bytes
   //  equal to the target; emits no row — native get only reports what moved).
@@ -1024,6 +1044,7 @@ function leaf(row, ctx) {
       if (conflict.hasConflictMarker(onDisk) && conRecorded(g, rel)) {
         g.conf = (g.conf || 0) + 1;
         out.row(rel, "con", g.ts);
+        bandStamp(g, full, "con");   // GET-050: stale stamp must not false-clean
         return;
       }
       //  PATCH-012: an unweavable leaf (over-cap BLOB, or a still-overflowing
@@ -1035,6 +1056,7 @@ function leaf(row, ctx) {
         g.conf = (g.conf || 0) + 1;
         out.row(rel, "con", g.ts);
         try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
+        bandStamp(g, full, "con");   // GET-050
         return;
       }
       checkout.materialise(g.wt, rel, { kind: kind }, merged);
@@ -1044,8 +1066,13 @@ function leaf(row, ctx) {
         //  STATUS-005: durable `con <path>` row (append-only, like `put`) so
         //  the conflict survives the get's exit + mtime churn for status.
         try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
+        bandStamp(g, full, "con");   // GET-050
         return;
       }
+      //  GET-050: the weave output is dirt vs the NEW base (band `mrg` → `...v`),
+      //  UNLESS the user's edit reproduced the target exactly (clean → ceiling).
+      if (bytesEq(merged, bytes)) trySetMtime(full, g.stampTs);
+      else bandStamp(g, full, "mrg");
       out.row(rel, "mrg", g.ts);
       return;
     }
@@ -1307,8 +1334,44 @@ function sweepDelDirs(ctx) {
 //  SUBS-047: the after-drain terminal — sweep emptied dirs, then flush the one
 //  accumulated get hunk.  Both the loop (ctx._finalize) and the plain-args
 //  driver end through here.
+//  GET-050: every `put` path in the wtlog — the just-appended get row de-scopes
+//  ALL of them (they sit below its floor), so any that stay dirty vs the new
+//  base need a band restamp (else the stale put stamp reads them clean).
+function collectStaged(bePath) {
+  const out = {};
+  try {
+    const wtl = wtlog.open({ bePath: bePath });
+    for (const r of wtl.rows) {
+      if (r.verb !== "put") continue;
+      const p = (r.uri && r.uri.path) || "";
+      if (p && p[p.length - 1] !== "/") out[p] = 1;
+    }
+  } catch (e) {}
+  return out;
+}
+
+//  GET-050: restamp de-scoped, still-dirty carried files (merkle-pruned, so no
+//  leaf visited them) into the get band — `con` when live markers + a durable
+//  con row, else `mrg` — so status/diff bucket them dirty vs the NEW base.
+function carrySweep(ctx) {
+  const g = ctx && ctx._get;
+  if (!g || !g.carry || g.stampTs == null) return;
+  const newTree = g.k.commitTree(g.tip);
+  if (!newTree) return;
+  for (const rel in g.carry) {
+    if ((g.seen && g.seen[rel]) || !pathlib.safeRel(rel)) continue;
+    const ent = g.k.descendPath(newTree, split(rel));
+    if (!ent || ent.kind === "tree" || ent.kind === "s") continue;  // not a base file
+    const onDisk = readWt(wtpath(g.wt, rel));
+    if (onDisk == null || bytesEq(onDisk, blobOf(g.k, ent.sha))) continue;  // clean → leave
+    bandStamp(g, wtpath(g.wt, rel),
+              (conflict.hasConflictMarker(onDisk) && conRecorded(g, rel)) ? "con" : "mrg");
+  }
+}
+
 function finalizeGet(ctx) {
   sweepDelDirs(ctx);
+  carrySweep(ctx);   // GET-050: band-restamp de-scoped carried files
   flushGet(ctx);
   //  POST-032: a weave conflict is a NORMAL merge outcome (fences + `con` row
   //  already durable) — report the state in plain words, never hard-err.
