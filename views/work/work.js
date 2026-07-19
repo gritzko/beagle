@@ -162,7 +162,8 @@ function nodeAt(dir, name, relpath) {
     if (!isMount(dir, p)) continue;
     const c = nodeAt(join(dir, p), p, relpath ? relpath + "/" + p : p);
     //  `subpath` = the mount path within its PARENT — the de-jure pin's key.
-    if (c) { c.subpath = p; n.children.push(c); }
+    //  WORK-007: `parent` is the pin holder — a slashless pin track hangs there.
+    if (c) { c.subpath = p; c.parent = n; n.children.push(c); }
   }
   return n;
 }
@@ -208,59 +209,116 @@ function indexNodes(root) {
   return { byShard: byShard, byWt: byWt, stores: stores };
 }
 
-//  --- wt classification -------------------------------------------------------
-//  One work/ wt → its row + placement.  Track resolution rides attachedBranch
-//  (DIS-057) and discover.wtdir / be.treeAt only; an unreadable wt is skipped.
-function classify(workdir, name, ix, reg) {
-  const dir = join(workdir, name);
-  let repo; try { repo = be.treeAt(dir); } catch (e) { return null; }
-  let att, cur;
-  try { const log = wtlog.open(repo); att = log.attachedBranch(); cur = log.curTip(); }
-  catch (e) { return null; }
-  const row = { key: name, repo: repo,
-                sha: (cur && cur.sha) || "", ts: (cur && cur.ts) || 0n,
-                counts: null, node: null };
-
-  //  A URI-shaped track: a worktree pin — resolve the tracked tree, hang there.
-  if (att.uriTrack && att.track) {
-    let d = null;
-    try { d = be.wtdir(att.track); } catch (e) { d = null; }
-    if (!d) {
-      //  A `file:` track names a tree by fs path (the JS-* anchor flavor).
-      let u; try { u = uri._parse(att.track); } catch (e) { u = null; }
-      if (u && u.scheme === "file" && u.path) {
-        try { d = be.treeAt(u.path).wt; } catch (e) { d = null; }
-      }
+//  --- wt classification (WORK-007: link by the TRACKING edge) -----------------
+//  resolveTrack(track) → the PARENT slot a URI-shaped track names, via be.wtdir
+//  (+ the file: anchor fallback) — the SAME resolvers status/get use, NEVER a
+//  regex.  Pin vs base is the track path's DIR-FORM (a trailing slash, the
+//  discover.argRel idiom): `X/sub` (slashless) is X's gitlink PIN of sub, so it
+//  hangs under X (sub's parent); `X/sub/` is sub's OWN base, under sub.  wtdir
+//  COLLAPSES the slash (resolveInTree), so the pin/base bit is read off the
+//  PARSED track path, not the fs resolver.  Returns { node } (a context mount/
+//  root) | { wt } (another work wt — the recursive edge) | null (no live tree).
+function resolveTrack(track, ix, byWorkWt) {
+  let d = null;
+  try { d = be.wtdir(track); } catch (e) { d = null; }
+  if (!d) {
+    //  A `file:` track names a tree by fs path (the JS-* anchor flavor).
+    let u; try { u = uri._parse(track); } catch (e) { u = null; }
+    if (u && u.scheme === "file" && u.path) {
+      try { d = be.treeAt(u.path).wt; } catch (e) { d = null; }
     }
-    if (d) {
-      let node = ix.byWt.get(d);
-      if (!node) { try { node = ix.byWt.get(be.treeAt(d).wt); } catch (e) { node = null; } }
-      if (node) {
-        row.node = node;
-        row.counts = reg.counts(repo, row.sha, nodeTip(node));
-        return { block: 1, row: row, node: node };
-      }
-    }
-    //  Unresolvable pin: fall through, placed by the anchor, counts unknown.
   }
+  if (!d) return null;
+  let dirForm = false;
+  try { const up = uri._parse(track); const pp = (up && up.path) || "";
+        dirForm = pp.length > 1 && pp[pp.length - 1] === "/"; } catch (e) {}
+  //  A context mount/root?  A slashless PIN hangs under the mount's PARENT tree.
+  let m = ix.byWt.get(d);
+  if (!m) { try { m = ix.byWt.get(be.treeAt(d).wt); } catch (e) { m = null; } }
+  if (m) return { node: (!dirForm && m.parent) ? m.parent : m };
+  //  Another work wt (the recursive edge) — hang directly under it.
+  let w = byWorkWt.get(d);
+  if (!w) { try { w = byWorkWt.get(be.treeAt(d).wt); } catch (e) { w = null; } }
+  if (w) return { wt: w };
+  return null;
+}
 
+//  WORK-007: place ONE work-wt node under what it TRACKS.  A URI track resolves
+//  to a context tree node (block 1, pushed now) or another work wt (the edge is
+//  RECORDED in parentWt, linked after the cycle pass); everything else anchors
+//  by branch/detached/trunk/foreign.  A wt is a NODE (children[]), not a leaf,
+//  so a wt tracking it nests recursively wherever it lands.
+function placeWt(w, ix, byWorkWt, reg, branchMap, foreignMap) {
+  const att = w.att, repo = w.repo;
+  if (att.uriTrack && att.track) {
+    const tgt = resolveTrack(att.track, ix, byWorkWt);
+    if (tgt && tgt.node) {
+      w.node = tgt.node;
+      w.counts = reg.counts(repo, w.sha, nodeTip(tgt.node));
+      tgt.node.wts.push(w);
+      return;
+    }
+    if (tgt && tgt.wt && tgt.wt !== w) {
+      w.parentWt = tgt.wt;
+      w.counts = reg.counts(repo, w.sha, tgt.wt.sha);
+      return;                                   // linked after breakCycles()
+    }
+    //  WORK-007 (default c): the tracked tree is gone — fall to the anchor shard
+    //  with a plain-words mark, never silently to the store.
+    w.mark = "tracked tree not found";
+  }
+  anchorWt(w, ix, reg, branchMap, foreignMap);
+}
+
+//  WORK-007: the anchor fallback — a wt with no live tracked tree lands by its
+//  own store anchor: foreign hunk, branch tree, detached/trunk shard node.
+function anchorWt(w, ix, reg, branchMap, foreignMap) {
+  const att = w.att, repo = w.repo;
   const foreign = !ix.stores.has(normStore(repo.storePath));
   if (foreign) {
     if (!att.uriTrack && !att.detached)
-      row.counts = reg.counts(repo, row.sha, refTip(reg, repo, att));
-    return { block: 3, row: row };
+      w.counts = reg.counts(repo, w.sha, refTip(reg, repo, att));
+    groupOf(foreignMap, repo).wts.push(w);
+    return;
   }
-  if (att.detached || att.uriTrack)
-    return { block: 2, kind: "wt", row: row };            // shard node, branchless
-  if (att.branch) {                                       // a named branch
-    row.counts = reg.counts(repo, row.sha, refTip(reg, repo, att));
-    return { block: 2, kind: "branch", segs: att.br.branch.slice(), row: row };
+  if (att.detached || att.uriTrack) { groupOf(branchMap, repo).wts.push(w); return; }
+  if (att.branch) {                                       // a named branch tree
+    w.counts = reg.counts(repo, w.sha, refTip(reg, repo, att));
+    let cur = groupOf(branchMap, repo);
+    for (const seg of att.br.branch) {
+      const kids = cur.branches || cur.kids;
+      if (!kids.has(seg)) kids.set(seg, { wts: [], kids: new Map() });
+      cur = kids.get(seg);
+    }
+    cur.wts.push(w);
+    return;
   }
-  //  Trunk: under the matching tree node when mounted, else the shard node.
-  row.counts = reg.counts(repo, row.sha, refTip(reg, repo, att));
+  //  Trunk: under the matching context tree node when mounted, else the shard.
+  w.counts = reg.counts(repo, w.sha, refTip(reg, repo, att));
   const node = ix.byShard.get(shardKey(repo));
-  if (node) { row.node = node; return { block: 1, row: row, node: node }; }
-  return { block: 2, kind: "wt", row: row };
+  if (node) { w.node = node; node.wts.push(w); return; }
+  groupOf(branchMap, repo).wts.push(w);
+}
+
+//  WORK-007 (default b): break a track CYCLE (A→B→A) at the name-sorted first
+//  node — cut its edge, mark it in plain words, re-anchor it by its own store so
+//  the render graph stays a forest (no infinite descent).
+function breakCycles(wts, ix, reg, branchMap, foreignMap) {
+  for (const start of wts) {
+    const seen = new Set();
+    let n = start, hit = null;
+    while (n) { if (seen.has(n)) { hit = n; break; } seen.add(n); n = n.parentWt; }
+    if (!hit) continue;
+    const members = []; let c = hit;
+    do { members.push(c); c = c.parentWt; } while (c && c !== hit);
+    members.sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
+    const victim = members[0];
+    if (!victim.parentWt) continue;
+    victim.parentWt = null;
+    victim.counts = null;
+    victim.mark = "tracks a cycle";
+    anchorWt(victim, ix, reg, branchMap, foreignMap);
+  }
 }
 
 //  The TRACKED ref's tip sha: the shard's trunk ("" query) or named branch.
@@ -447,6 +505,8 @@ function wtSpans(parts, spans, off, rails, d, btns) {
     off = span(parts, spans, off, "[dont]", TAG_Y);
     off = span(parts, spans, off, SPELL.mintOspell(ctx, "dont ."), TAG_O);
   } else if (subj) off = span(parts, spans, off, " " + subj, TAG_S);  // plain: no pad
+  //  WORK-007 (defaults b/c): a cycle / dead-track wt carries a plain-words mark.
+  if (d.mark) off = span(parts, spans, off, " (" + d.mark + ")", TAG_S);
   return off;
 }
 
@@ -495,7 +555,18 @@ function wtRow(rails, r, reg) {
   const m = reg.meta(r.repo, r.sha);
   return { rails: rails,
            wt: { key: r.key, sha: r.sha, ts: m.ts || r.ts, subject: m.subject,
-                 counts: r.counts, node: r.node } };
+                 counts: r.counts, node: r.node, mark: r.mark || "" } };
+}
+
+//  WORK-007: emit a tracker wt row then RECURSE into its own tracker children
+//  (wts tracking THIS wt) — one deeper dotted rail run.  `prefix` is the parent's
+//  child-prefix; `isLast` positions this row among its siblings.
+function pushWt(out, prefix, isLast, w, reg) {
+  out.push(wtRow(childRails(prefix, isLast, true), w, reg));
+  const kids = w.children || [];
+  const p = deeper(prefix, isLast);
+  for (let i = 0; i < kids.length; i++)
+    pushWt(out, p, i === kids.length - 1, kids[i], reg);
 }
 
 //  Block 1: the tree — per node: the mounts first (.gitmodules order, solid
@@ -520,7 +591,7 @@ function treeRows(root, reg, out, projRoot) {
     for (let i = 0; i < kids.length; i++) {
       const last = i === kids.length - 1;
       if (kids[i].wt) {
-        out.push(wtRow(childRails(prefix, last, true), kids[i].wt, reg));
+        pushWt(out, prefix, last, kids[i].wt, reg);        // WORK-007: recurse
         continue;
       }
       const c = kids[i].node;
@@ -571,7 +642,7 @@ function emitShard(g, proj, prefix, last, reg, out) {
   for (const r of g.wts) kids.push({ wt: r });
   for (let i = 0; i < kids.length; i++) {
     const isLast = i === kids.length - 1;
-    if (kids[i].wt) { out.push(wtRow(childRails(p, isLast, true), kids[i].wt, reg)); continue; }
+    if (kids[i].wt) { pushWt(out, p, isLast, kids[i].wt, reg); continue; }
     emitBranch(kids[i].seg, kids[i].b, p, isLast, reg, out);
   }
 }
@@ -583,7 +654,7 @@ function emitBranch(seg, b, prefix, last, reg, out) {
   for (const r of b.wts) kids.push({ wt: r });
   for (let i = 0; i < kids.length; i++) {
     const isLast = i === kids.length - 1;
-    if (kids[i].wt) { out.push(wtRow(childRails(p, isLast, true), kids[i].wt, reg)); continue; }
+    if (kids[i].wt) { pushWt(out, p, isLast, kids[i].wt, reg); continue; }
     emitBranch(kids[i].seg, kids[i].b, p, isLast, reg, out);
   }
 }
@@ -598,7 +669,7 @@ function foreignRows(map, reg, out) {
                  tail: { text: "remote" } });
       const wts = shards.get(proj).wts;
       for (let i = 0; i < wts.length; i++)
-        out.push(wtRow(childRails("", i === wts.length - 1, true), wts[i], reg));
+        pushWt(out, "", i === wts.length - 1, wts[i], reg);
     }
   }
 }
@@ -612,26 +683,27 @@ function emitForest(sink, board, btns) {
   const reg = registry();
   const branchMap = new Map(), foreignMap = new Map();
 
+  //  WORK-007 pass 1: a NODE per work/ wt (work wts are forest nodes too), read
+  //  once (attach edge + cur tip), indexed by dir for the recursive track lookup.
+  const byWorkWt = new Map();
+  const wts = [];
   for (const name of listWork(board.dir)) {
-    const c = classify(board.dir, name, ix, reg);
-    if (!c) continue;                                    // an unreadable wt
-    if (c.block === 1) {
-      c.node.wts.push(c.row);
-    } else if (c.block === 2) {
-      const g = groupOf(branchMap, c.row.repo);
-      if (c.kind === "branch") {
-        let cur = g;
-        for (const seg of c.segs) {
-          const kids = cur.branches || cur.kids;
-          if (!kids.has(seg)) kids.set(seg, { wts: [], kids: new Map() });
-          cur = kids.get(seg);
-        }
-        cur.wts.push(c.row);
-      } else g.wts.push(c.row);
-    } else {
-      groupOf(foreignMap, c.row.repo).wts.push(c.row);
-    }
+    const dir = join(board.dir, name);
+    let repo; try { repo = be.treeAt(dir); } catch (e) { continue; }
+    let att, cur;
+    try { const log = wtlog.open(repo); att = log.attachedBranch(); cur = log.curTip(); }
+    catch (e) { continue; }                              // an unreadable wt
+    const w = { key: name, dir: dir, repo: repo, att: att,
+                sha: (cur && cur.sha) || "", ts: (cur && cur.ts) || 0n,
+                counts: null, node: null, children: [], parentWt: null, mark: "" };
+    byWorkWt.set(dir, w);
+    wts.push(w);
   }
+  //  Pass 2: each wt under its track edge (recursive), then cut cycles and LINK
+  //  the surviving work-wt edges — the render graph is a forest by construction.
+  for (const w of wts) placeWt(w, ix, byWorkWt, reg, branchMap, foreignMap);
+  breakCycles(wts, ix, reg, branchMap, foreignMap);
+  for (const w of wts) if (w.parentWt) w.parentWt.children.push(w);
 
   const rows1 = [];
   treeRows(root, reg, rows1, board.root);
