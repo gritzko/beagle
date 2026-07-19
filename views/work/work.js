@@ -393,10 +393,28 @@ function ahbehSpans(parts, spans, off, counts, btns, ctx) {
   return off;
 }
 
+//  WORK-005: the age fade — the row's default-fg darkens by the day.  Age =
+//  be.now - d.ts (both ron60); grey level = min(floor(age/24h), 8), channel =
+//  level*0x11 (fresh #000000 .. week+ #888888).  Baked as a row-leading bare
+//  `#rrggbb` O token; view/bro.js paintWhyRow tints the row's default cells.
+function fadeHex(ts) {
+  const now = (typeof be !== "undefined" && be.now) || 0n;
+  let days = 0;
+  if (ts && ts !== 0n && now) {
+    try { days = Math.floor((render.ronToMs(now) - render.ronToMs(ts)) / 86400000); }
+    catch (e) { days = 0; }
+  }
+  const ch = Math.max(0, Math.min(days, 8)) * 0x11;
+  const h = ch.toString(16).padStart(2, "0");
+  return "#" + h + h + h;
+}
+
 //  The wt row: `//KEY ┄┄┄  [diff] [post]  [+N][-N]  <time5> #<hashlet8>
 //  <subject≤30> [done] [dont]` — buttons pager-only, everything else content.
 function wtSpans(parts, spans, off, rails, d, btns) {
   const ctx = "//" + d.key;
+  //  WORK-005: pager-only leading fade marker; the plain path stays chrome-free.
+  if (btns) off = span(parts, spans, off, fadeHex(d.ts), TAG_O);
   off = prefixSpans(parts, spans, off, rails, ctx, TAG_S, "status " + ctx);
   off = span(parts, spans, off, " ", TAG_S);
   if (btns) {

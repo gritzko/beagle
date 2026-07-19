@@ -181,6 +181,19 @@ function whyBgAt(text, toks, ti) {
   return aBgRGB((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
 }
 
+//  WORK-005: a row-leading bare `#rrggbb` O token sets the row's DEFAULT-fg (the
+//  work-view age fade); null unless the FIRST token of the row is exactly that.
+function rowFgAt(text, toks, ti, off) {
+  if (ti >= toks.length || TOK_TAG(toks[ti]) !== "O") return null;
+  const start = ti > 0 ? TOK_END(toks[ti - 1]) : 0;
+  if (start !== off) return null;
+  const s = utf8.Decode(text.slice(start, TOK_END(toks[ti])));
+  const m = /^#([0-9a-fA-F]{6})$/.exec(s);
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  return aFgRGB((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+}
+
 //  WHY-001: paint ONE display row [off, end) of a `why:` blame hunk (the twin of
 //  paintDiffRow) — each cell's fg = themeAt(tag), OR'd with its commit pastel bg
 //  (whyBgAt); `U` click-target bytes hidden.  Same batched-raw + minimal-SGR
@@ -189,6 +202,7 @@ function paintWhyRow(text, toks, off, end, enc, raw) {
   const ntoks = toks.length;
   let ti = 0;
   while (ti < ntoks && TOK_END(toks[ti]) <= off) ti++;
+  const rowFg = rowFgAt(text, toks, ti, off);   // WORK-005: work-view age fade
   let cur = A0, runLo = -1, pos = off;
   while (pos < end) {
     while (ti < ntoks && TOK_END(toks[ti]) <= pos) ti++;
@@ -198,7 +212,9 @@ function paintWhyRow(text, toks, off, end, enc, raw) {
     if (clen === 0 || pos + clen > end) clen = 1;
     //  WHY-001: `U` (underline/click) and `O` (origin bg+click) bytes are hidden.
     if (tag === "U" || tag === "O") { if (runLo >= 0) { raw(runLo, pos); runLo = -1; } pos += clen; continue; }
-    const want = ti < ntoks ? aOr(themeAt(tag), whyBgAt(text, toks, ti)) : A0;
+    let want = ti < ntoks ? aOr(themeAt(tag), whyBgAt(text, toks, ti)) : A0;
+    //  WORK-005: the fade tints only THEME-default cells; coloured spans keep theirs.
+    if (rowFg && want.fm === 0 && want.fg === 0) want = aOr(want, rowFg);
     if (!aEq(want, cur)) {
       if (runLo >= 0) { raw(runLo, pos); runLo = -1; }
       enc(deltaSGR(want, cur)); cur = want;

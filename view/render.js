@@ -61,4 +61,5 @@ function writeStdout(str) {
 function shQuote(s) { return "'" + String(s).split("'").join("'\\''") + "'"; }
 
 module.exports = { dateCol: dateCol, verbCol: verbCol, relAge: relAge,
+                   ronToMs: ronToMs,
                    writeStdout: writeStdout, shQuote: shQuote };
