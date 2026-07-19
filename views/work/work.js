@@ -10,11 +10,11 @@
 //      (the //BLAME-001 form, official); shards resolve through the standard
 //      resolver — never guessed, never string-carved (SUBS-054 et al).
 //   3. FOREIGN — anchors outside the project's stores, wts under each.
-//  Review 2026-07-18 wt row: `//KEY  [get] [diff] [post]  <ahbeh8>  <time5>
-//  #<hashlet8> <subject≤30> [done] [dont]` — buttons named for their verbs,
-//  right after the key ([get] blue, [diff] yellow, [post] green); the ahbeh
-//  column pads to 8 (behind 'M', ahead 'G'); [done]/[dont] mint the move+mark
-//  verbs (`//KEY/: done .`, BRO-025 three-part invites — the BE-044 reshape).
+//  WORK-004 wt row: `//KEY  [diff] [post]  [+N][-N]  <time5> #<hashlet8>
+//  <subject≤30> [done] [dont]` — [diff]/[post] are fixed slots; the ahbeh
+//  counts ARE buttons: `[+N]` mints bare `post` (advance the track, salad 'G'),
+//  `[-N]` bare `get` (pull, salmon 'A'), each a `//KEY/: verb` O-invite in the
+//  row ctx; a zero side shows nothing, two-digit clamp.  [done]/[dont] as before.
 //  R2 rulings: the rails+name column pads RIGHT to KEYW with a DOTTED leader
 //  (`//BE-043 ┄┄┄`) and the button slots are FIXED-width, so buttons, ahbeh,
 //  time, hashlet and message all align at ONE column set down the whole view;
@@ -46,11 +46,11 @@ const SPELL      = require("../../shared/spell.js");       // BRO-025: O-spell c
 function tokPack(tag, end) { return ((tag & 0x1f) << 27) | (end & 0xffffff); }
 function tagCode(letter) { return letter.charCodeAt(0) - 65; }
 const TAG_U = tagCode("U"), TAG_S = tagCode("S"), TAG_O = tagCode("O");
-//  Review 2026-07-18 palette slots: repo rows BOLD ('C'); [get] blue 'Y',
-//  [diff] yellow 'E', [post] green 'W'; ahbeh ahead 'G', behind 'M' (the
-//  closest in-palette hues to salad/salmon — the 32 tok tags are all taken).
+//  WORK-004 palette slots: repo rows BOLD ('C'); [diff] yellow 'E', [post]
+//  green 'W', [done]/[dont] blue 'Y'; ahbeh ahead 'G' (green slot, now salad-256),
+//  behind 'A' (the NEW salmon slot) — proper 256-colour slots in view/bro.js.
 const TAG_C = tagCode("C"), TAG_Y = tagCode("Y"), TAG_E = tagCode("E");
-const TAG_W = tagCode("W"), TAG_G = tagCode("G"), TAG_M = tagCode("M");
+const TAG_W = tagCode("W"), TAG_G = tagCode("G"), TAG_A = tagCode("A");
 
 //  --- fs probes ---------------------------------------------------------------
 function isDir(p) { try { return io.stat(p).kind === "dir"; } catch (e) { return false; } }
@@ -339,12 +339,21 @@ function ticketTitle(key) {
 }
 
 //  R2 fixed columns: the rails+name region pads to KEYW with a dotted leader;
-//  the pager's button region is three FIXED slots ("[get] " 6, "[diff] " 7,
-//  "[post] " 7 — an absent button leaves its slot blank), so ahbeh/time/
-//  hashlet/message land at the SAME offsets on every row, repo rows included.
+//  the pager's button region is two FIXED slots ("[diff] " 7, "[post] " 7 —
+//  WORK-006: an absent button ┄-fills its slot; WORK-004 retired [get]), so
+//  ahbeh/time/hashlet/message land at the SAME offsets on every row.
 const KEYW = 32;                       // rails+name column width, test-pinned
-const SLOT_GET = 6, SLOT_DIFF = 7, SLOT_POST = 7;
-const BTNW = SLOT_GET + SLOT_DIFF + SLOT_POST;
+const SLOT_DIFF = 7, SLOT_POST = 7;
+const BTNW = SLOT_DIFF + SLOT_POST;
+//  WORK-004 ahbeh column: TEXT `+N`/`-N` right-aligns to 7 (plain + repo rows);
+//  the pager's WT buttons `[+99][-99]` (+1 lead) widen it to 11 so the shared
+//  #hashlet/message columns stay aligned across wt and repo rows.
+const AHBEHW_TXT = 7, AHBEHW_BTN = 11;
+
+//  WORK-006: a fixed-width dotted leader (the prefixSpans idiom — a breathing
+//  space then a `┄` run) that closes up an absent button slot / a short subject
+//  tail; n<2 degrades to a lone space so the grid never abuts.
+function leader(n) { return n >= 2 ? " " + "┄".repeat(n - 1) : (n > 0 ? " " : ""); }
 
 //  The rails+name column: label (+ its hidden nav), then the dotted leader
 //  (` ┄┄┄`) out to KEYW; an over-long row degrades to one space (shifts right).
@@ -357,31 +366,40 @@ function prefixSpans(parts, spans, off, rails, label, ltag, nav) {
   return off;
 }
 
-//  R3: the shared ahbeh cell — `_+99-99` right-aligned to 7, NO trailing pad
-//  (dateCol's own lead is the single right-side gap); ahead 'G', behind 'M';
-//  the RENDER clamps each side at 99 (the counts themselves stay unclamped).
-function ahbehSpans(parts, spans, off, counts) {
-  const a = counts && counts.ahead ? "+" + Math.min(counts.ahead, 99) : "";
-  const b = counts && counts.behind ? "-" + Math.min(counts.behind, 99) : "";
-  off = span(parts, spans, off,
-             " ".repeat(Math.max(1, 7 - a.length - b.length)), TAG_S);
+//  WORK-004: the shared ahbeh cell.  A pager WT row (btns+ctx): the counts
+//  BECOME buttons — `[+N]` mints bare `post` (advance the track, salad 'G'),
+//  `[-N]` bare `get` (pull, salmon 'A'), each a `//ctx/: verb` O-invite; a zero
+//  side shows nothing, two-digit clamp; padded to AHBEHW_BTN.  Otherwise TEXT
+//  `+N`/`-N` (plain + repo rows), NO trailing pad (dateCol leads the gap); the
+//  RENDER clamps each side at 99 (the counts themselves stay unclamped).
+function ahbehSpans(parts, spans, off, counts, btns, ctx) {
+  const av = counts && counts.ahead ? Math.min(counts.ahead, 99) : 0;
+  const bv = counts && counts.behind ? Math.min(counts.behind, 99) : 0;
+  if (btns && ctx) {
+    const aw = av ? 3 + String(av).length : 0, bw = bv ? 3 + String(bv).length : 0;
+    off = span(parts, spans, off, leader(Math.max(1, AHBEHW_BTN - aw - bw)), TAG_S);
+    if (av) { off = span(parts, spans, off, "[+" + av + "]", TAG_G);
+              off = span(parts, spans, off, SPELL.mintOspell(ctx, "post"), TAG_O); }
+    if (bv) { off = span(parts, spans, off, "[-" + bv + "]", TAG_A);
+              off = span(parts, spans, off, SPELL.mintOspell(ctx, "get"), TAG_O); }
+    return off;
+  }
+  const a = av ? "+" + av : "", b = bv ? "-" + bv : "";
+  const w = btns ? AHBEHW_BTN : AHBEHW_TXT;
+  const padw = Math.max(1, w - a.length - b.length);
+  off = span(parts, spans, off, btns ? leader(padw) : " ".repeat(padw), TAG_S);
   if (a) off = span(parts, spans, off, a, TAG_G);
-  if (b) off = span(parts, spans, off, b, TAG_M);
+  if (b) off = span(parts, spans, off, b, TAG_A);
   return off;
 }
 
-//  The wt row: `//KEY ┄┄┄  [get] [diff] [post]  <ahbeh8>  <time5> #<hashlet8>
+//  The wt row: `//KEY ┄┄┄  [diff] [post]  [+N][-N]  <time5> #<hashlet8>
 //  <subject≤30> [done] [dont]` — buttons pager-only, everything else content.
 function wtSpans(parts, spans, off, rails, d, btns) {
   const ctx = "//" + d.key;
   off = prefixSpans(parts, spans, off, rails, ctx, TAG_S, "status " + ctx);
   off = span(parts, spans, off, " ", TAG_S);
   if (btns) {
-    if (d.node && d.node.relpath) {
-      off = span(parts, spans, off, "[get]", TAG_Y);
-      off = span(parts, spans, off, SPELL.mintOspell(ctx, "get ///" + d.node.relpath), TAG_O);
-      off = span(parts, spans, off, " ", TAG_S);
-    } else off = span(parts, spans, off, " ".repeat(SLOT_GET), TAG_S);
     off = span(parts, spans, off, "[diff]", TAG_E);
     off = span(parts, spans, off, "diff " + ctx, TAG_U);
     off = span(parts, spans, off, " ", TAG_S);
@@ -390,21 +408,25 @@ function wtSpans(parts, spans, off, rails, d, btns) {
       off = span(parts, spans, off, "[post]", TAG_W);
       off = span(parts, spans, off, SPELL.mintOspell(ctx, "post '" + title + "'"), TAG_O);
       off = span(parts, spans, off, " ", TAG_S);
-    } else off = span(parts, spans, off, " ".repeat(SLOT_POST), TAG_S);
+    } else off = span(parts, spans, off, leader(SLOT_POST), TAG_S);
   }
-  off = ahbehSpans(parts, spans, off, d.counts);
+  off = ahbehSpans(parts, spans, off, d.counts, btns, ctx);
   off = span(parts, spans, off, render.dateCol(d.ts || 0n), TAG_S);
   off = span(parts, spans, off, "#" + (d.sha ? d.sha.slice(0, 8) : "........"), TAG_S);
   const subj = trim30(d.subject);
-  if (subj) off = span(parts, spans, off, " " + subj, TAG_S);
   if (btns) {
+    //  WORK-006: pad the subject to the 30-col trim width with a ┄ leader so
+    //  [done]/[dont] land at ONE column on every wt row (breathing-space idiom).
+    off = span(parts, spans, off, " " + subj, TAG_S);
+    const pad = 30 - chars(subj);
+    if (pad > 0) off = span(parts, spans, off, leader(pad), TAG_S);
     off = span(parts, spans, off, " ", TAG_S);
     off = span(parts, spans, off, "[done]", TAG_Y);
     off = span(parts, spans, off, SPELL.mintOspell(ctx, "done ."), TAG_O);
     off = span(parts, spans, off, " ", TAG_S);
     off = span(parts, spans, off, "[dont]", TAG_Y);
     off = span(parts, spans, off, SPELL.mintOspell(ctx, "dont ."), TAG_O);
-  }
+  } else if (subj) off = span(parts, spans, off, " " + subj, TAG_S);  // plain: no pad
   return off;
 }
 
@@ -420,7 +442,7 @@ function emitRows(sink, rows, btns) {
       off = prefixSpans(parts, spans, off, r.rails, r.label,
                         r.bold ? TAG_C : TAG_S, r.nav);
       off = span(parts, spans, off, btns ? " " + " ".repeat(BTNW) : " ", TAG_S);
-      off = ahbehSpans(parts, spans, off, r.counts);
+      off = ahbehSpans(parts, spans, off, r.counts, btns, null);
       const t = r.tail;
       let rest = render.dateCol(t.ts || 0n) +
                  "#" + (t.sha ? t.sha.slice(0, 8) : "........");

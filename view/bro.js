@@ -91,13 +91,16 @@ const A_BOLD = 0x01;
 //  the byte-exact C table the diff renderer needs).  Diff bg tags I/O/J/K are
 //  256-colour pale tints bro_cell_ansi ORs onto the fg.
 const THEME = {
-  D: aFgB(90), G: aFgB(32), L: aFgB(96), H: aFgB(35), R: aFgB(94), P: aFgB(90),
+  D: aFgB(90), G: aFg256(149), L: aFgB(96), H: aFgB(35), R: aFgB(94), P: aFgB(90),
   N: aFlag(A_BOLD), C: aFlag(A_BOLD), F: aFg256(56), T: aFg256(56),
   I: aBg256(194), O: aBg256(224), J: aBg256(157), K: aBg256(217),
   //  Status-verb / whitespace slots (THEME16TBL).  'W' (whitespace) = green is
   //  the one that shows inside diff bodies; the rest round out the table.
   U: aFgB(34), W: aFgB(32), V: aFgB(36), E: aFgB(33), X: aFg256(94),
   M: aFgB(91), Q: aFgB(90), Y: aFgB(34), Z: aFgB(35), B: aFgB(33),
+  //  WORK-004 ahbeh button slots: 'G' (the green slot) refreshed 32→salad-256
+  //  for ahead `[+N]`; 'A' the NEW dedicated salmon slot for behind `[-N]`.
+  A: aFg256(209),
   //  BRO-030 quad chars, codes 26..31 past 'Z' (A-Z is full): the GLYPH takes
   //  the column color (fg); staged wt INVERTS (column color bg, white fg),
   //  conflict inverts to red.  Mirrors view/theme.js QUAD_SGR — keep in step.
