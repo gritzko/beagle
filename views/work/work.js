@@ -257,7 +257,12 @@ function resolveTrack(track, ix, byWorkWt) {
   //  A context mount/root?  A slashless PIN hangs under the mount's PARENT tree.
   let m = ix.byWt.get(d);
   if (!m) { try { m = ix.byWt.get(be.treeAt(d).wt); } catch (e) { m = null; } }
-  if (m) return { node: (!dirForm && m.parent) ? m.parent : m };
+  //  WORK-012: a slashless PIN-form track hangs under the mount's PARENT but
+  //  reads ahbeh vs the PARENT's de-jure gitlink pin (pinNode+subpath), NOT the
+  //  parent's own tip; a dir-form track reads vs the mount's own live tip.
+  if (m && !dirForm && m.parent)
+    return { node: m.parent, pinNode: m.parent, subpath: m.subpath };
+  if (m) return { node: m };
   //  Another work wt (the recursive edge) — hang directly under it.
   let w = byWorkWt.get(d);
   if (!w) { try { w = byWorkWt.get(be.treeAt(d).wt); } catch (e) { w = null; } }
@@ -276,7 +281,12 @@ function placeWt(w, ix, byWorkWt, reg, branchMap, foreignMap) {
     const tgt = resolveTrack(att.track, ix, byWorkWt);
     if (tgt && tgt.node) {
       w.node = tgt.node;
-      w.counts = reg.counts(repo, w.sha, nodeTip(tgt.node));
+      //  WORK-012: a pin-form track reads vs the PARENT's gitlink pin of the
+      //  mount (unpinned → no counts, like a repo row's `mc = pin ? … : null`).
+      if (tgt.pinNode) {
+        const pin = nodePins(tgt.pinNode, reg)[tgt.subpath];
+        w.counts = pin ? reg.counts(repo, w.sha, pin) : null;
+      } else w.counts = reg.counts(repo, w.sha, nodeTip(tgt.node));
       tgt.node.wts.push(w);
       return;
     }
