@@ -9,6 +9,10 @@
 //  exposes:
 //    anchor()       → { ts, verb, uri:URI } | undefined   (row 0)
 //    repo()         → row-0 URI string (the store anchor) | undefined
+//    track()        → { row, uri, authority, branch, sha, ts, detached,
+//                       uriTrack }   the recentmost `get` ref-row (DIS-078)
+//    base()         → { row, branch, sha, ts, … }   latest get/post sha-tip
+//                       (DIS-078: the ONE base extractor; curTip is its alias)
 //    curTip()       → { branch, sha, ts }   latest get/post sha-tip
 //    baselineTip()  → { branch, sha, ts }   latest get/post/patch sha-row
 //    boundaries()   → { pd, patch }         both = latest get/post ts
@@ -131,8 +135,10 @@ function open(be) {
     }
     //  SUBS-050: the parsed Branch (title comes from the shard) alongside the
     //  raw fields existing callers still read during the conversion.
+    //  DIS-078: `row` = the matched sha-row (base()'s fact exposes it).
     return { branch: branch, sha: sha, ts: ts, query: query,
-             rawQuery: rawQuery, br: parseBranch(rawQuery, branch) };
+             rawQuery: rawQuery, br: parseBranch(rawQuery, branch),
+             row: shaIdx >= 0 ? rows[shaIdx] : undefined };
   }
 
   //  STATUS-009: the BASE sha — the fragment of the LAST get/post record that
@@ -146,19 +152,13 @@ function open(be) {
     return "";
   }
 
-  //  attachedBranch — the SINGLE source of truth for "what branch is this wt
-  //  on" (DIS-057).  A wt is attached per the RECENTMOST `get` record (NOT
-  //  get/post/patch): `?master`, `?` (trunk), `?branch#sha`, `?#sha` are all
-  //  ATTACHED; a bare-hash record `#<sha>` (DIS-075) or a legacy `?<sha>` is
-  //  DETACHED.  A legacy detached POST wrote trunk-shaped `?#<sha>` — from the
-  //  record alone that is UNRESOLVABLE, so attachment stays anchored on the
-  //  recentmost GET record (DIS-059), never a post row.
-  //  STATUS-009: in the record, `#fragment` = the base commit and EVERYTHING
-  //  ELSE = the TRACK ref (branch, parent pin, worktree, remote or store).
-  //  Returns { branch, detached, rawQuery, sha, br, track, uriTrack, base }.
-  //  status's label, post's detach guard + curBranch, and divergence all route
-  //  through THIS so they cannot disagree (status said trunk, post detached).
-  function attachedBranch() {
+  //  DIS-078: track() — the ONE track extractor: the recentmost `get` row that
+  //  bears a ref, as a FULL fact { row, uri, authority, branch, sha, ts,
+  //  detached, uriTrack }.  attachedBranch()'s row-selection verdict WITH the
+  //  row/authority exposed — post.js hand-rolled `trackRow()` precisely because
+  //  attachedBranch HID the row's authority.  `row` is undefined (all fields
+  //  empty) when no such get record exists.
+  function track() {
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i];
       if (r.verb !== GET) continue;
@@ -175,22 +175,46 @@ function open(be) {
       const detached = !ref.branch && !uriTrack &&
             (q.split("&").some(function (c) { return isFullSha(c); }) ||
              (r.local && u.query === undefined && isFullSha(u.fragment)));
-      //  STATUS-009: the recorded TRACK = the record minus its `#fragment` (the
-      //  ulog URI is normalized already); a query track keeps its sha-stripped KEY.
-      const track = detached ? ""
-            : uriTrack
-            ? String(URI.make(u.scheme, u.authority, u.path, u.query, undefined))
-            : String(URI.make(undefined, undefined, undefined,
-                              u.query === undefined ? undefined : ref.branch,
-                              undefined));
-      return { branch: ref.branch || "", detached: detached,
-               rawQuery: u.query || "", sha: ref.sha || "",
-               br: parseBranch(u.query, ref.branch),
-               track: track, uriTrack: uriTrack, base: baseSha() };
+      return { row: r, uri: u, authority: u.authority,
+               branch: ref.branch || "", sha: ref.sha || "", ts: r.ts,
+               detached: detached, uriTrack: uriTrack };
     }
-    return { branch: "", detached: false, rawQuery: "", sha: "",
-             br: branchlib.parse("", title),
-             track: "", uriTrack: false, base: baseSha() };
+    return { row: undefined, uri: undefined, authority: undefined,
+             branch: "", sha: "", ts: null, detached: false, uriTrack: false };
+  }
+
+  //  attachedBranch — the SINGLE source of truth for "what branch is this wt
+  //  on" (DIS-057).  A wt is attached per the RECENTMOST `get` record (NOT
+  //  get/post/patch): `?master`, `?` (trunk), `?branch#sha`, `?#sha` are all
+  //  ATTACHED; a bare-hash record `#<sha>` (DIS-075) or a legacy `?<sha>` is
+  //  DETACHED.  A legacy detached POST wrote trunk-shaped `?#<sha>` — from the
+  //  record alone that is UNRESOLVABLE, so attachment stays anchored on the
+  //  recentmost GET record (DIS-059), never a post row.
+  //  STATUS-009: in the record, `#fragment` = the base commit and EVERYTHING
+  //  ELSE = the TRACK ref (branch, parent pin, worktree, remote or store).
+  //  Returns { branch, detached, rawQuery, sha, br, track, uriTrack, base }.
+  //  status's label, post's detach guard + curBranch, and divergence all route
+  //  through THIS so they cannot disagree (status said trunk, post detached).
+  //  DIS-078: a thin decode over track() — one shared row-selection loop.
+  function attachedBranch() {
+    const t = track();
+    if (!t.row)
+      return { branch: "", detached: false, rawQuery: "", sha: "",
+               br: branchlib.parse("", title),
+               track: "", uriTrack: false, base: baseSha() };
+    const u = t.uri;
+    //  STATUS-009: the recorded TRACK = the record minus its `#fragment` (the
+    //  ulog URI is normalized already); a query track keeps its sha-stripped KEY.
+    const trk = t.detached ? ""
+          : t.uriTrack
+          ? String(URI.make(u.scheme, u.authority, u.path, u.query, undefined))
+          : String(URI.make(undefined, undefined, undefined,
+                            u.query === undefined ? undefined : t.branch,
+                            undefined));
+    return { branch: t.branch, detached: t.detached,
+             rawQuery: u.query || "", sha: t.sha,
+             br: parseBranch(u.query, t.branch),
+             track: trk, uriTrack: t.uriTrack, base: baseSha() };
   }
 
   return {
@@ -208,7 +232,17 @@ function open(be) {
       return a ? a.uri.href : undefined;
     },
 
-    //  Cur tip: latest get/post sha-row (skips patch).  SNIFFAtCurTip.
+    //  DIS-078: base() — the ONE base extractor: the recentmost get/post sha
+    //  -row's fact { row, branch, sha, ts, query, rawQuery, br }.  curTip is its
+    //  alias (the SNIFFAtCurTip selection); baselineTip is the same selection
+    //  widened to patch rows.  core/resolve_hash.js takes base through here.
+    base: function () { return tip(false); },
+
+    //  DIS-078: track() — the ONE track extractor (recentmost `get` ref-row as a
+    //  full fact incl. row/authority); attachedBranch is its decode.
+    track: track,
+
+    //  Cur tip: latest get/post sha-row (skips patch).  SNIFFAtCurTip = base().
     curTip: function () { return tip(false); },
 
     //  Baseline tip: latest get/post/patch sha-row.  SNIFFAtBaseline.

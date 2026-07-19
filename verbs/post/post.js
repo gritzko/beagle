@@ -414,19 +414,6 @@ function advanceWorktree(info, reader, ctx, targetUri, curTip, haveBaseline) {
   }
 }
 
-//  DIS-074: the TRACK = the recentmost `get` record (worktree.mkd:50-54); the
-//  row selection mirrors wtlog.attachedBranch, which hides the row's authority.
-function trackRow(wtl) {
-  for (let i = wtl.rows.length - 1; i >= 0; i--) {
-    const r = wtl.rows[i];
-    if (r.verb !== "get") continue;
-    const ref = wtlog.refOf(r.uri, r.local);
-    if (!ref.sha && !ref.branch) continue;
-    return r;
-  }
-  return undefined;
-}
-
 //  POST-026: does `targetUri` (a `//WT[/sub]` wt-target) resolve to THIS
 //  worktree?  A MOUNTED sub's DIS-072 re-attach records its track as the
 //  parent-mount address `//<wt>/<subpath>` (submount.trackUri) — which resolves
@@ -445,11 +432,13 @@ function selfWorktree(info, targetUri) {
 //  DIS-074: bare-post ADVANCE arm — the implied target is the track: a `//X`
 //  row (DIS-063 clone) -> advanceWorktree, else the attached branch (advanceBranch).
 function advanceTrack(info, wtl, reader, ctx, curBranch, parent, haveBaseline) {
-  const tr = trackRow(wtl);
-  if (tr && tr.uri.scheme === undefined && tr.uri.authority) {
+  //  DIS-078: the TRACK = the recentmost `get` record as a full fact (wtlog
+  //  .track()); `tr.authority` is the authority attachedBranch used to hide.
+  const tr = wtl.track();
+  if (tr.uri && tr.uri.scheme === undefined && tr.authority) {
     //  DIS-074: shed the recorded `#rev` pin — resolve_hash step 5.5 must read
     //  the target's CURRENT base, not the base it had at clone time.
-    const t = URI.make(undefined, tr.uri.authority, tr.uri.path || undefined,
+    const t = URI.make(undefined, tr.authority, tr.uri.path || undefined,
                        undefined, undefined);
     //  POST-026: a mounted sub tracks its parent-mount `//<wt>/<subpath>`, which
     //  IS the sub's own dir — a bare post inside a clean-but-ahead sub must NOT
