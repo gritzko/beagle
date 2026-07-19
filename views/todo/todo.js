@@ -8,8 +8,9 @@
 //  The ticket tree is be.todoRoot() (URI-016: `projectRoot()+"/todo"` — the
 //  project root is DETECTED by a climb, never declared by an env var, and the
 //  board is that ONE dir, not the first hit of a probe order).  List rows and in-page ticket keys
-//  carry hidden `U` word spells (`todo <KEY>`, URI-014) so a pager click
-//  re-enters the view; `todo/done/` (closed tickets) never lists.
+//  carry hidden context-less `O` click spells (`todo <KEY>`, BE-054 — U is now
+//  addresses only) so a pager click re-enters the view IN the unchanged
+//  context; `todo/done/` (closed tickets) never lists.
 //
 //  OPEN filter (ruling 2026-07-10, header-grep): the ticket's OWN header line
 //  is the truth — `#   KEY [MARK]: title` (or `KEY: [MARK] title`).  A state
@@ -21,15 +22,16 @@
 //  Topic READMEs are landing pages, NEVER an index (they go stale);
 //  `todo KEY` renders any page regardless — direct addressing always works.
 //  Page reflinks resolve via the page's OWN refdef footer: a ticket-file
-//  target re-enters `todo <KEY>`, any other in-tree page becomes the word
-//  spell `cat <meta-root-relative-path>` (right when the pager's context tree
-//  IS the meta root; cross-tree authority is a pending ruling).
+//  target re-enters `todo <KEY>`, any other in-tree page becomes the context-
+//  less O spell `cat <meta-root-relative-path>` (right when the pager's context
+//  tree IS the meta root; cross-tree authority is a pending ruling).
 "use strict";
 
 const pathlib = require("../../shared/util/path.js");
 const join    = pathlib.join;
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const ticket  = require("../../shared/ticket.js");    // BRO-012: shared key scan
+const SPELL   = require("../../shared/spell.js");      // BE-054: O-spell codec
 
 const EMPTY32 = new Uint32Array(0);
 const EXTS = ["mkd", "md", "txt"];        // this board is .mkd-first
@@ -226,16 +228,18 @@ function span(parts, spans, off, text, tag) {
   spans.push([tag, off + b.length]);
   return off + b.length;
 }
-//  One list row: `<indent><KEY><rest>\n` with the KEY an `F` token followed by
-//  the hidden `U` spell `todo <KEY>` (pager _uriAt: visible tok → next-U → go).
-//  BE-040 r3: `btn` grows the BE-041 button tail — ` ` sep, visible Y `[done]`,
-//  hidden O `done KEY` — AFTER the U nav so the title click still navigates.
+//  One list row: `<indent><KEY><rest>\n` with the KEY an `F` token.  BE-054:
+//  the pager row (`btn`) follows the KEY with the hidden context-less `O` nav
+//  `todo <KEY>` (verb clicks are O) — pager-ONLY chrome, so the plain path
+//  emits no click token (an O in a plain hunk would trip the why-plain cursor).
+//  BE-040 r3: `btn` also grows the BE-041 button tail — ` ` sep, visible Y
+//  `[done]`, hidden O `done KEY` — AFTER the nav O so the title click navigates.
 function titleRow(parts, spans, off, indent, key, title, btn) {
   const rest = title.indexOf(key) === 0 ? title.slice(key.length) : " " + title;
   if (indent) off = span(parts, spans, off, indent, TAG_S);
   off = span(parts, spans, off, key, TAG_F);
-  off = span(parts, spans, off, "todo " + key, TAG_U);
   if (!btn) return span(parts, spans, off, rest + "\n", TAG_S);
+  off = span(parts, spans, off, SPELL.mintOspell("", "todo " + key), TAG_O);
   off = span(parts, spans, off, rest + " ", TAG_S);
   off = span(parts, spans, off, "[done]", TAG_Y);
   off = span(parts, spans, off, "done " + key, TAG_O);
@@ -259,7 +263,8 @@ function emitList(sink, banner, groups, headers, btns) {
   for (const g of groups) {
     if (headers) {                       // topic header row, itself a target
       off = span(parts, spans, off, g.topic, TAG_N);
-      off = span(parts, spans, off, "todo " + g.topic, TAG_U);
+      //  BE-054: pager-only O nav (plain stays chrome-free — see titleRow).
+      if (btns) off = span(parts, spans, off, SPELL.mintOspell("", "todo " + g.topic), TAG_O);
       off = span(parts, spans, off, "\n", TAG_S);
     }
     for (const t of g.tickets)
@@ -289,8 +294,9 @@ function refdefs(text) {
   return map;
 }
 function isReg(p) { try { return io.stat(p).kind === "reg"; } catch (e) { return false; } }
-//  A link TARGET (refdef path, or an inline `/pocket/Page` shortcut) → its U
-//  word spell: a ticket file (`KEY.<ext>` basename) re-enters `todo KEY`; any
+//  A link TARGET (refdef path, or an inline `/pocket/Page` shortcut) → its
+//  click spell (BE-054: minted O at the splice): a ticket file (`KEY.<ext>`
+//  basename) re-enters `todo KEY`; any
 //  other page resolves against the page's dir, re-anchors META-ROOT-relative
 //  and opens as `cat <rel>` (extensionless shortcuts probe `.mkd/.md/.txt`).
 //  Scheme'd targets (http:, mailto:) and NAVESCAPE climbs stay inert.  No
@@ -314,9 +320,9 @@ function targetSpell(board, pageDirRel, target) {
 }
 
 //  A ticket page: raw .mkd bytes; non-plain modes tokenize with the mkd
-//  grammar and splice a hidden `U` after every RESOLVABLE link token (the
-//  cat.js withLinks model, board-scoped): a bare/`[KEY]` ticket key →
-//  `todo KEY`; a `[ref]`/`[/pocket/Page]` reflink → its refdef target's
+//  grammar and splice a hidden context-less `O` after every RESOLVABLE link
+//  token (BE-054, cat.js withLinks model, board-scoped): a bare/`[KEY]` ticket
+//  key → `todo KEY`; a `[ref]`/`[/pocket/Page]` reflink → its refdef target's
 //  spell (todo/cat).  The page's OWN key gets no self-link.
 function emitPage(sink, board, key, file, mode) {
   const bytes = readBytes(file);
@@ -355,7 +361,8 @@ function pageLinks(board, selfKey, pageDirRel, body, toks) {
         spell = targetSpell(board, pageDirRel, defs[word]);
       else if (tg === "G" && word[0] === "/")            // inline [/pocket/Page]
         spell = targetSpell(board, pageDirRel, word);
-      if (spell && spell !== "todo " + selfKey) us[i] = utf8.Encode(spell);
+      //  BE-054: mint the verb click as a context-less O (empty ctx = "here").
+      if (spell && spell !== "todo " + selfKey) us[i] = utf8.Encode(SPELL.mintOspell("", spell));
     }
     if (us[i]) { extra += us[i].length; nlinks++; }
     prev = end;
@@ -369,7 +376,7 @@ function pageLinks(board, selfKey, pageDirRel, body, toks) {
     const end = tokEnd(toks[i]);
     for (let p = prev; p < end; p++) out[op++] = body[p];
     ntoks[oi++] = tokPack((toks[i] >>> 27) & 0x1f, op);
-    if (us[i]) { out.set(us[i], op); op += us[i].length; ntoks[oi++] = tokPack(TAG_U, op); }
+    if (us[i]) { out.set(us[i], op); op += us[i].length; ntoks[oi++] = tokPack(TAG_O, op); }
     prev = end;
   }
   return { body: out, toks: ntoks };
