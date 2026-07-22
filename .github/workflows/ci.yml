@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# be/ (beagle-ext) builds nothing — it is pure test orchestration over a
+# prebuilt `jab` (github.com/gritzko/jab).  CI downloads the latest jab
+# release, puts it on $PATH, then runs the golden-snapshot suite (ctest).
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No passwordless ssh-to-localhost on the runner — skip the ssh:// wire
+      # cases deterministically (see test/wire/lib/wirecase.sh).
+      BE_TEST_NO_SSH: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The test cases live in the beagle-ext-tests submodule.  Its .gitmodules
+      # URL is SSH (git@github.com:) — rewrite to HTTPS so the runner can clone.
+      - name: Fetch test fixtures (beagle-ext-tests submodule)
+        run: |
+          git config url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - name: Install jab runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install \
+            libjavascriptcoregtk-4.1-0 libsodium23 liblz4-1 zlib1g libcurl3-gnutls
+
+      - name: Download latest jab
+        run: |
+          gh release download --repo gritzko/jab --pattern 'jab-linux-x86_64-*.tar.gz'
+          tar xzf jab-linux-x86_64-*.tar.gz
+          sudo install -m 0755 jab-linux-x86_64-*/jab /usr/local/bin/jab
+          # `be` is jab under another name (jab dispatches on argv[0]); the suite
+          # invokes $BIN/be, so ship the symlink beside it.
+          sudo ln -sf jab /usr/local/bin/be
+          rm -rf jab-linux-x86_64-*
+          jab --version || true
+
+      - name: Configure
+        run: cmake -S . -B build -DBEAGLE_BIN_DIR=/usr/local/bin
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure

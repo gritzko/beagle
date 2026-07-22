@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: [ "[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to test and build the tarball for"
+        required: true
+
+permissions:
+  contents: write
+
+# be/ (beagle-ext) ships no binary: the release artifact is a source tarball of
+# the JS dispatch tree (main.js + core/ + verbs/ + views/ + shared/).  We still
+# run the suite first — download the latest `jab`, put it on $PATH, run ctest —
+# and only then pack + attach the tarball.
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No passwordless ssh-to-localhost on the runner — skip the ssh:// wire
+      # cases deterministically (see test/wire/lib/wirecase.sh).
+      BE_TEST_NO_SSH: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # Test cases live in the beagle-ext-tests submodule; its .gitmodules URL is
+      # SSH — rewrite to HTTPS so the runner can clone it.
+      - name: Fetch test fixtures (beagle-ext-tests submodule)
+        run: |
+          git config url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - name: Install jab runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install \
+            libjavascriptcoregtk-4.1-0 libsodium23 liblz4-1 zlib1g libcurl3-gnutls
+
+      - name: Download latest jab
+        run: |
+          gh release download --repo gritzko/jab --pattern 'jab-linux-x86_64-*.tar.gz'
+          tar xzf jab-linux-x86_64-*.tar.gz
+          sudo install -m 0755 jab-linux-x86_64-*/jab /usr/local/bin/jab
+          # `be` is jab under another name (jab dispatches on argv[0]); the suite
+          # invokes $BIN/be, so ship the symlink beside it.
+          sudo ln -sf jab /usr/local/bin/be
+          rm -rf jab-linux-x86_64-*
+          jab --version || true
+
+      - name: Configure
+        run: cmake -S . -B build -DBEAGLE_BIN_DIR=/usr/local/bin
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Pack tarball
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="beagle-ext-${TAG}"
+          git archive --format=tar.gz --prefix="${NAME}/" -o "${NAME}.tar.gz" HEAD
+          shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            beagle-ext-*.tar.gz
+            beagle-ext-*.tar.gz.sha256
