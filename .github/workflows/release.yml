@@ -33,7 +33,10 @@ jobs:
       # SSH — rewrite to HTTPS so the runner can clone it.
       - name: Fetch test fixtures (beagle-ext-tests submodule)
         run: |
-          git config url."https://github.com/".insteadOf "git@github.com:"
+          # --global so the rewrite is inherited by the `git submodule` clone
+          # subprocess (a local-config rewrite is not); beagle-ext-tests is
+          # public, so HTTPS needs no auth.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive
 
       - name: Install jab runtime libraries
