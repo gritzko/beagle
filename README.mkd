@@ -8,7 +8,7 @@ Beagle lets you run many sessions in parallel, track hundreds of worktrees and t
 Beagle accepts the fact that LLMs are [not compilers][f] and focuses on taming their 
 non-determinism in two ways:
 
- 1. everything repeatable must be automated,
+ 1. automating everything repeatable to use it as a tool,
  2. building a selection funnel for the LLM-authored code.
 
 The next-level abstraction is not a worktree, nor a set of branches, but a *wave of evolution*.
@@ -70,7 +70,7 @@ Beagle is very experimental. All contributions and (especially) feedback are app
 <p align="center">
   <img src="blob/smith.png" alt="Agent Smith seated across from his machine twin, copies lining the walls">
   <br>
-  <em>We no longer coded, Mr. Smith. We are grown. Like them. </em>
+  <em>We are no longer coded, Mr. Smith. We are grown.</em>
   <br>
   <em>Fate, it seems, is not without a sense of irony.</em>
 </p>
