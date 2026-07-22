@@ -13,17 +13,17 @@ non-determinism in two ways:
 
 The next-level abstraction is not a worktree, nor a set of branches, but a *wave of evolution*.
 Let them evolve and speciate, then select, mix, repeat.
-<p align="right"><br/><img width="40%" src="blob/status.png" alt="be status"></p>
 
 ##  Beagle use
 
+<img align="right" width="40%" src="blob/status.png" alt="be status">
 Beagle's basic verb vocabulary is HTTP-like and all addressing is URI-based.
 
-  - `get <uri>` is clone/pull/checkout;
-  - `post <uri>` is commit/fast-forward/push;
-  - `patch <uri>` is merge/rebase/cherry-pick;
-  - `put <file>` is stage (also set ref);
-  - `delete <file>` is stage deletion (also drop ref);
+  - [get][g] is clone/pull/checkout;
+  - [post][p] is commit/fast-forward/push;
+  - [patch][c] is merge/rebase/cherry-pick;
+  - [put][t] is stage (also set ref);
+  - [delete][x] is stage deletion (also drop ref);
 
 Most of the time you would probably use the TUI.
 Start with `be status` or `be work` for an overview.
@@ -74,6 +74,12 @@ Beagle is very experimental. All contributions and (especially) feedback are app
   <br>
   <em>Fate, it seems, is not without a sense of irony.</em>
 </p>
+
+[g]: https://replicated.live/wiki/GET
+[p]: https://replicated.live/wiki/POST
+[c]: https://replicated.live/wiki/PATCH
+[t]: https://replicated.live/wiki/PUT
+[x]: https://replicated.live/wiki/DELETE
 
 [f]: https://replicated.live/blog/follow-up
 [r]: https://github.com/gritzko/jab/releases
