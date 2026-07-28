@@ -62,8 +62,12 @@ function currentSubPin(anchorPath) {
 //  Return the `.gitmodules` `url` for the [submodule] block whose `path` ==
 //  subpath (or "" when absent).
 //  PUT-004: delegates to the shared reader (was a copy-pasted git-config parser).
+//  URI-015: `.gitmodules` is a REMOTE INTAKE — an scp-form url (`git@host:o/r.git`)
+//  is no URI, so rewrite it to ssh:// HERE; the raw form fetched fine (classify
+//  rewrites too) but was recorded verbatim as ingest's `refs` origin row, which
+//  the JS-103 ULOG write gate refuses (SUBMOUNT `malformed uri`, pack-only shard).
 function gitmodulesUrl(wt, subpath) {
-  return require("./gitmodules.js").urlOf(wt, subpath);
+  return require("./uri.js").fromGit(require("./gitmodules.js").urlOf(wt, subpath));
 }
 
 //  SUBS-047: the official url for `subpath` off the NEAREST enclosing
