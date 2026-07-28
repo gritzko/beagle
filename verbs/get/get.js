@@ -197,7 +197,9 @@ function seedLocal(rem, wt, t0) {
   //  status/get can't read the baseline from.
   const src = resolveLocalSource(rem);
   const k = store.open(src.storeRoot, src.proj);
-  const tip = resolvePin(k, rem.pin) || k.resolveRef(rem.branch || "");
+  //  TEST-004: an annotated `?tags/X` resolves to the TAG object; peel it to
+  //  the commit, exactly as the remote seed does.
+  const tip = k.peel(resolvePin(k, rem.pin) || k.resolveRef(rem.branch || ""));
   if (!tip || !isFullSha(tip))
     throw "be get: cannot resolve " +
           (rem.pin ? "#" + rem.pin : (rem.branch || "trunk")) +
@@ -224,6 +226,13 @@ function resolvePin(k, hex) {
   return k.resolveHexAny(hex) || "";
 }
 
+//  KEEP-006: a kernel-scale repack runs for minutes — one line per 250k objects
+//  so the clone is not silent.  Printing only, no re-entry into git.* (JAB-020).
+function fetchProgress(s) {
+  io.log("  get: " + s.objects + "/" + s.total + " objects, " +
+         Math.round(s.inBytes / 1048576) + " MB in, " + s.logs + " log(s)\n");
+}
+
 function seedRemote(rem, wt, t0) {
   //  GET-041: an ESTABLISHED worktree is NEVER a clone destination — its `.be`
   //  anchor references the real shard (a secondary wt's `.be` is a redirect
@@ -237,30 +246,41 @@ function seedRemote(rem, wt, t0) {
   //  can STREAM the pack into a `tmp_pack_*` there (same FS → atomic land),
   //  bounded RSS.  Green-field lands in `<wt>/.be` (proj is pack-independent);
   //  an update streams into the existing shard.
-  let beDir = null, proj = null, shard = null, packDir;
+  //  KEEP-006/JAB-020: the fetch is REPACKED straight into the shard by
+  //  `git.pack`, so the shard dir must exist BEFORE it (the old tmp-pack path
+  //  only needed `.be`), and an update opens the next fresh log id.
+  let beDir = null, proj = null, shard = null, log0 = 1;
   if (!info) {
     beDir = join(wt, ".be");
     try { io.mkdir(beDir); } catch (e) {}
     //  GET-042: [Title] = the OFFICIAL URL basename (`…/jab.git` → `jab`);
     //  beagle→beagle URIs carry `?/title` (rem.proj).  "repo" only if both absent.
     proj = rem.proj || submount.titleFromUrl(rem.raw) || "repo";
-    packDir = beDir;
+    shard = join(beDir, proj);
+    try { io.mkdir(shard); } catch (e) {}
   } else {
     shard = store.shardDir(info.storePath, info.project);
-    packDir = shard;
+    log0 = ingest.repackLogId(shard);
   }
-  const f = wire.fetch(rem.raw, rem.branch || "", null, { packDir: packDir });
-  const tip = f.want;
+  const f = wire.fetch(rem.raw, rem.branch || "", null,
+                       { shard: shard, log0: log0, onStep: fetchProgress });
+  let tip = f.want;
   if (!tip || !isFullSha(tip)) throw "be get: peer gave no tip";
   const branch = rem.branch || f.branch || "";
   if (!info) {                                   // green-field: fresh clone
     ingest.clone(f, beDir, proj, tip, rem.raw);
+    //  TEST-004: `?tags/X` on an ANNOTATED tag advertises the tag object;
+    //  peel it to its commit now, so the wtlog tip row and everything read
+    //  off it (tree, ancestry) is a commit.  Peeling needs the objects, so
+    //  it happens after the pack lands.
+    const k0 = store.open(wt, proj);
+    tip = k0.peel(tip);
     const anchor = URI.make("file", undefined, beDir + "/" + proj + "/");
     //  GET-049: tip row ts = the run's start ts (be.now/T0) = the stamp value.
     writeWtlog(join(beDir, "wtlog"),
                [{ verb: "get", uri: anchor, ts: ulog.ronStepMs(t0, -1) },
                 { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip), ts: t0 }]);
-    return { k: store.open(wt, proj), tip, oldTip: "", fresh: true, branch,
+    return { k: k0, tip, oldTip: "", fresh: true, branch,
              bePath: join(beDir, "wtlog"),     // STATUS-005: con-row target
              stampTs: t0 };                    // GET-049 stamp
   }
@@ -269,9 +289,10 @@ function seedRemote(rem, wt, t0) {
   //  `shard` was resolved above (the fetch streamed the pack into it).
   const oldTip = oldTipOf(info.bePath);
   ingest.add(f, shard, rem.raw, tip);
+  const k = store.open(info.storePath, info.project);
+  tip = k.peel(tip);                 //  TEST-004: annotated `?tags/X`
   const a = appendWtlog(info.bePath,
     [{ verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip), ts: t0 }]);
-  const k = store.open(info.storePath, info.project);
   return { k, tip, oldTip, fresh: false, branch, bePath: info.bePath,
            stampTs: a[0] };   // STATUS-005; GET-049 stamp = the ASSIGNED row ts
 }

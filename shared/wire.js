@@ -239,6 +239,36 @@ function drainToFile(fd, head, destDir) {
   return { packFile: tmp, packLen: total, verified: true };
 }
 
+//  KEEP-006/JAB-020: hand the fd STRAIGHT to libdog.  `git.pack(fd, buf,
+//  shard, opts)` repacks the arriving stream into `<shard>/NNNNNNNNNN.keeper`
+//  logs, rotating at the 2 GiB cap and writing the `.keeper.idx` runs itself.
+//  No tmp pack file, no multi-GB mmap, no pack byte in the JS heap — the whole
+//  reason `drainToFile`'s 6 GB staging file then failed to map (KEEP-006).
+//  1 GiB input buffer: it must hold ONE whole record (~600x the largest seen
+//  in linux.git) and stay inside the int32 Buf cursors ([JAB-007]).
+const REPACK_BUF = 1 << 30;
+function repackToShard(fd, head, shard, opts) {
+  const buf = io.ram((opts && opts.buf) || REPACK_BUF);
+  if (head && head.length) buf.feed(head);
+  //  The index region is sized from the pack header's object count, so the
+  //  12-byte header must be in DATA before the call (the pkt-line reader's
+  //  leftover usually carries it; a short first chunk is topped up here).
+  while (buf.size < 12)
+    if (io.read(fd, buf) <= 0) throw "wire.fetch: peer closed before the pack header";
+  const h = buf.data();
+  if (utf8.Decode(h.subarray(0, 4)) !== "PACK") throw "wire.fetch: not a PACK stream";
+  const objects = ((h[8] << 24) | (h[9] << 16) | (h[10] << 8) | h[11]) >>> 0;
+  //  one entry per object + one PACK summary per log (REPACK_MAX_LOGS = 64).
+  const index = abc.ram("HEAPwh128", objects + 72);
+  const conf = { index: index.buffer._map, log0: (opts && opts.log0) || 1 };
+  if (opts && opts.cap) conf.cap = opts.cap;
+  if (opts && opts.onStep) {
+    conf.onStep = opts.onStep;
+    conf.every = opts.every || 250000;
+  }
+  return git.pack(fd, buf, shard, conf);
+}
+
 //  --- GIT-012: smart-HTTP transport over a spawned curl ------------------
 //  jab has no TLS, so https rides curl.  Both requests are stateless; curl's
 //  stdout is read NON-BLOCKING via pol.watch, pumped by pol.run(budget) until
@@ -402,17 +432,23 @@ function spillToFile(r, destDir) {
 }
 
 //  --- the fetch ----------------------------------------------------------
-//  GET-044: `opts.packDir` (the destination shard/`.be` dir, same FS as the
-//  final log) makes the fetch land the pack in a tmp file there — the result
-//  then carries { packFile, packLen } instead of { pack }, on EVERY transport
-//  (spawn STREAMS it; URI-016: http spills curl's bytes).  No packDir → the
-//  legacy in-memory { pack } (small local/test callers).
+//  KEEP-006/JAB-020: `opts.shard` REPACKS the arriving stream into that shard's
+//  keeper logs inside libdog — the result carries { repacked, stats } and no
+//  pack ever touches disk whole or the JS heap.  This is the clone/update path.
+//  GET-044 `opts.packDir` is the LEGACY tmp-pack staging kept for the callers
+//  not converted yet (http, whose curl body is buffered anyway, and subs): the
+//  result then carries { packFile, packLen }.  Neither → the in-memory { pack }.
 function fetch(remoteUri, wantRef, haves, opts) {
+  const shard = opts && opts.shard;
   const packDir = opts && opts.packDir;
   const sp = classify(remoteUri, "upload-pack");
   if (sp.http) {                                           // GIT-012
     const r = fetchHttp(sp.url, wantRef, haves);
-    return packDir ? spillToFile(r, packDir) : r;
+    //  KEEP-006 §Blockers: curl's body is buffered in the JS heap, so there is
+    //  no fd to hand over yet — http still spills to a tmp pack (into the shard
+    //  when the caller gave one) and rides the legacy landing path.
+    const dir = packDir || shard;
+    return dir ? spillToFile(r, dir) : r;
   }
   const child = io.spawn(sp.bin, sp.argv);
   const wfd = child.stdin, rfd = child.stdout, pid = child.pid;
@@ -450,7 +486,11 @@ function fetch(remoteUri, wantRef, haves, opts) {
       }
       if (ev.kind === pkt.FLUSH) continue;
     }
-    if (packDir) {                                // GET-044: stream to a tmp file
+    if (shard) {          // KEEP-006: repack the stream straight into the shard
+      const stats = repackToShard(rfd, reader.rest(), shard, opts);
+      result = { repacked: true, stats, refs,
+                 want: want.sha, refname: want.name, branch: want.branch };
+    } else if (packDir) {                         // GET-044: stream to a tmp file
       const pf = drainToFile(rfd, reader.rest(), packDir);
       result = { packFile: pf.packFile, packLen: pf.packLen,
                  verified: pf.verified, refs,

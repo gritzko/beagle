@@ -127,6 +127,29 @@ function packLogBytes(packBytes) {
 //  than an in-memory Uint8Array?  Callers pass either shape through clone/add/land.
 function isFileSrc(s) { return !!(s && s.packFile); }
 
+//  KEEP-006/JAB-020: the fetch was already repacked INTO the shard by
+//  `git.pack` — the keeper logs and their `.keeper.idx` runs are on disk and
+//  nothing is left to land.  clone/add/land then only write the refs rows.
+function isRepacked(s) { return !!(s && s.repacked); }
+
+//  KEEP-006: the `NNNNNNNNNN.keeper` id the repack should START at — the
+//  highest log still under the 2 GiB cap, which it APPENDS behind (a log holds
+//  many packs, exactly as JS-117's tail-append did), else the next fresh id.
+//  The threshold is the REPACK cap, not the 64 MiB legacy tail-append one:
+//  the repack rotates onward by itself, and 64 MiB logs would need ~100 of
+//  them for a kernel-scale fetch (REPACK_MAX_LOGS is 64).
+function repackLogId(shard) {
+  let maxN = 0, maxNm = null, maxSz = 0;
+  try {
+    for (const nm of io.readdir(shard)) {
+      const m = /^(\d{10})\.keeper$/.exec(nm);
+      if (m) { const v = parseInt(m[1], 10); if (v > maxN) { maxN = v; maxNm = nm; } }
+    }
+  } catch (e) {}
+  if (maxNm) { try { maxSz = io.stat(join(shard, maxNm)).size; } catch (e) {} }
+  return (maxNm && maxSz < MMAP_CAP) ? fileIdOf(maxNm) : maxN + 1;
+}
+
 //  GET-044: jab's mmap bindings are 31-bit — io.mmap returns a WRONG length and
 //  git.pack.mmap ABORTS the process past 2^31-1 bytes (probed 2026-07-14).
 const MMAP_CAP = 2147483647;
@@ -353,11 +376,14 @@ function clone(pack, beDir, proj, tip, remoteUri) {
   const shard = join(beDir, proj);
   try { io.mkdir(shard); } catch (e) {}
   const logPath = join(shard, "0000000001.keeper");
-  //  GET-044: a streamed tmp file is verified + renamed into place (bounded
-  //  RSS); an in-memory pack keeps the legacy write.
-  if (isFileSrc(pack)) verifyAndPlace(pack, logPath);
-  else writeBytes(logPath, packLogBytes(pack));
-  buildIndex(shard, "0000000001.keeper", 1);
+  //  KEEP-006: a repacked fetch is already logged + indexed in the shard; a
+  //  GET-044 streamed tmp file is verified + renamed into place (bounded RSS);
+  //  an in-memory pack keeps the legacy write.
+  if (!isRepacked(pack)) {
+    if (isFileSrc(pack)) verifyAndPlace(pack, logPath);
+    else writeBytes(logPath, packLogBytes(pack));
+    buildIndex(shard, "0000000001.keeper", 1);
+  }
   //  refs: the origin remote-tracking row + the local trunk tip (`post ?#`),
   //  the row keeper.resolveRef('') matches.  Remote URI query stripped to `?`.
   //  JS-073: the crash-safe native ULOG writer (temp+rename), not in-place.
@@ -383,6 +409,8 @@ function logName(n) {
 //  PATCH-011: land a pack into an EXISTING shard as the next-numbered pack-log,
 //  OBJECTS ONLY — no refs append (patch's fetch leg must not move local tips).
 function land(pack, shard) {
+  //  KEEP-006: git.pack already wrote the logs AND re-laddered the index runs.
+  if (isRepacked(pack)) return;
   let tgt = appendTarget(shard);
   const fromFile = isFileSrc(pack);
   //  GET-044: a streamed pack past MMAP_CAP cannot ride the append path (the
@@ -456,6 +484,6 @@ function saveRemoteRef(shard, remoteUri, tip) {
 }
 
 module.exports = { clone, add, land, reindexShard, buildIndex, writeBytes,
-                   packLogBytes, logName, fileIdOf, saveRemoteRef,
+                   packLogBytes, logName, fileIdOf, saveRemoteRef, repackLogId,
                    KEEP_LOG_MAX, MMAP_CAP, appendRecords, indexAppended,
                    appendTarget };

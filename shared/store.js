@@ -495,6 +495,26 @@ function open(storePath, project) {
       return out;
     },
 
+    //  TEST-004: peel an annotated tag down to the commit it names.  A
+    //  `?tags/X` ref advertises the TAG object — the peeled `X^{}` line is
+    //  dropped from the ref list (wire.js §336) — while everything
+    //  downstream (tree, ancestry, diff, post) wants the commit.  A tag may
+    //  name another tag, so loop; a non-tag sha comes back untouched.
+    peel: function (sha) {
+      for (let i = 0; i < 8; i++) {
+        const obj = this.getObject(sha);
+        if (!obj || obj.type !== "tag") return sha;
+        //  `object <40hex>\n` is the first header line of a tag object.
+        let head = "";
+        const n = obj.bytes.length < 64 ? obj.bytes.length : 64;
+        for (let j = 0; j < n; j++) head += String.fromCharCode(obj.bytes[j]);
+        const m = /^object ([0-9a-f]{40})\n/.exec(head);
+        if (!m) return sha;
+        sha = m[1];
+      }
+      return sha;
+    },
+
     commitTree: function (sha) {
       const obj = this.getObject(sha);
       if (!obj || obj.type !== "commit") return undefined;
