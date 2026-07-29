@@ -56,6 +56,7 @@ const submount = require("../../shared/submount.js");   // DIS-058 D2-D5 sub mou
 const weavelib = require("../../shared/weave.js");
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const uriarg   = require("../../shared/uri.js");       // URI-015: scp remote → ssh://
+const isBinary = require("../../views/diff/diff.js").isBinary;  // GET-056: D5 gate
 const join = pathlib.join, dirname = pathlib.dirname;
 //  BE-011: wtJoin confines a wt-open to the tree (NAVESCAPE on a `..` climb);
 //  merge/split compose in-tree paths over segments (no raw `a + "/" + b`).
@@ -1046,16 +1047,18 @@ function leaf(row, ctx) {
 
   //  D5 (DATA SAFETY): a DIRTY baselined file (on-disk differs from BOTH the old
   //  baseline blob AND the target) must be 3-WAY MERGED — re-apply the user's
-  //  uncommitted edit onto the new tree — NOT clean-overwritten.  Only regular
-  //  files merge (symlink/exec/gitlink stay clean-reset).  --force (D6) and the
+  //  uncommitted edit onto the new tree — NOT clean-overwritten.  GET-056: TEXT
+  //  "f"/"x" merges; symlink/gitlink/BINARY clean-reset.  --force (D6) and the
   //  clean (un-edited) case clean-overwrite.  An un-baselined dirty overlay with
   //  no base to merge refuses loudly (the whole-tree pre-pass also catches it).
-  if (existed && !g.force && kind === "f") {
-    const onDisk = readWt(full);
+  const regular = kind === "f" || kind === "x";
+  const onDisk = existed && regular ? readWt(full) : null;
+  const baseBytes = existed && regular && oldSha ? blobOf(g.k, oldSha) : null;
+  //  GET-056: any binary side (base, on-disk, target) → the clean reset below.
+  if (existed && !g.force && regular &&
+      !isBinary(baseBytes) && !isBinary(onDisk) && !isBinary(bytes)) {
     //  GET-048: dirtiness = checkout vs the LOCAL HEAD (cur), NEVER the merge
     //  base — a committed delta is not dirt; only UNCOMMITTED edits weave (§4).
-    const baseSha = oldSha;
-    const baseBytes = baseSha ? blobOf(g.k, baseSha) : null;
     const dirty = onDisk != null && (baseBytes == null || !bytesEq(onDisk, baseBytes));
     if (dirty && baseBytes == null)
       throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;

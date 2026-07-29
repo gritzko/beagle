@@ -673,3 +673,5 @@ module.exports.TAG_U = TAG_U;
 module.exports.treeMap = treeMap;
 module.exports.readWtLink = readWtLink;
 module.exports.readWtFile = readWtFile;
+//  GET-056: the ONE binary predicate — get's D5 merge gate reuses it.
+module.exports.isBinary = isBinary;
