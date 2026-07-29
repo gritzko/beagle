@@ -28,15 +28,13 @@ function esc(s) {
 var NWS = "^ \\t\\r\\n\\f\\v";                 // nws = not whitespace
 var INLINE_RULES = [
   { re: /`[^`\n]+`/y,                              tag: "H" },   // code
-  { re: /\\\*[^*\n]*\*/y,                          tag: "E" },   // \*..* escape
-  { re: /\\_[^_\n]*_/y,                            tag: "E" },   // \_.._ escape
-  { re: new RegExp("\\\\[" + NWS + "*_]", "y"),    tag: "E" },   // \<char> escape
-  { re: new RegExp("\\*[" + NWS + "*][^*\\n]*\\*", "y"), tag: "G" }, // strong
-  { re: new RegExp("_[" + NWS + "_][^_\\n]*_", "y"),     tag: "G" }, // emph
-  { re: new RegExp("~~[" + NWS + "~](?:[^~\\n]|~[^~\\n])*~~", "y"), tag: "G" }, // strike
-  { re: /\[[^\]\n]+\]\[[0-9A-Za-z]\]/y,           tag: "G" },   // reflink
-  { re: /!\[[^\]\n]+\]\[[0-9A-Za-z]\]/y,          tag: "G" },   // image
-  { re: /\[[^\]\n]+\]/y,                           tag: "G" },   // shortcut
+  { re: /\\[^ \t\r\n\f\v]/y,                    tag: "E" },   // \<char> escape
+  { re: new RegExp("\\*[" + NWS + "*](?:\\\\.|[^*\\n])*\\*", "y"), tag: "G" }, // strong
+  { re: new RegExp("_[" + NWS + "_](?:\\\\.|[^_\\n])*_", "y"),        tag: "G" }, // emph
+  { re: new RegExp("~[" + NWS + "~](?:\\\\.|[^~\\n])*~", "y"),        tag: "G" }, // strike
+  { re: /\[(?:\\.|[^\]\n])+\]\[[0-9A-Za-z]\]/y,     tag: "G" },   // reflink
+  { re: /!\[(?:\\.|[^\]\n])+\]\[[0-9A-Za-z]\]/y,    tag: "G" },   // image
+  { re: /\[(?:\\.|[^\]\n])+\]/y,                    tag: "G" },   // shortcut
   { re: /0[xX][0-9a-fA-F]+/y,                       tag: "L" },   // hex
   { re: /[0-9]+\.[0-9]*/y,                          tag: "L" },   // float
   { re: /\.[0-9]+/y,                                tag: "L" },   // .frac
@@ -48,10 +46,15 @@ var INLINE_RULES = [
   { re: /\n/y,                                      tag: "W" },   // newline
   { re: /[ \t\r\f\v]+/y,                            tag: "W" },   // spaces
   { re: /[\x80-\xff][\x80-\xbf]*/y,                 tag: "S" },   // utf8 (byte view)
-  { re: /[\s\S]/y,                                  tag: "P" },   // any other
 ];
 
-function scanInline(text) {
+//  DOG-024: a span is markup + text, not one blob — the delimiters come back
+//  as their own 'G' tokens and the body is re-scanned one level down, exactly
+//  as `MKDTEmitSpan` splits it in C (dog/tok/MKDT.c).  A code body is verbatim.
+var MAX_DEPTH = 16;
+
+function scanInline(text, depth) {
+  depth = depth || 0;
   var toks = [];
   var i = 0;
   while (i < text.length) {
@@ -65,7 +68,24 @@ function scanInline(text) {
       }
     }
     if (best === null) { best = { tag: "P", text: text[i] }; bestLen = 1; }
-    toks.push(best);
+    if (best.tag === "H" && best.text.length >= 3) {
+      toks.push({ tag: "G", text: best.text.slice(0, 1) });
+      toks.push({ tag: "H", text: best.text.slice(1, -1) });
+      toks.push({ tag: "G", text: best.text.slice(-1) });
+    } else if (best.tag === "G" && depth < MAX_DEPTH) {
+      var g = decompose(best.text);
+      var cut = g.kind === "M" ? 2 : (g.kind ? 1 : -1);   // "![" | one char
+      if (cut < 0) {
+        toks.push(best);
+      } else {
+        toks.push({ tag: "G", text: best.text.slice(0, cut) });
+        var inner = scanInline(g.text, depth + 1);
+        for (var k = 0; k < inner.length; k++) toks.push(inner[k]);
+        toks.push({ tag: "G", text: best.text.slice(cut + g.text.length) });
+      }
+    } else {
+      toks.push(best);
+    }
     i += bestLen;
   }
   return toks;
@@ -76,14 +96,14 @@ function scanInline(text) {
 //  A link / M image; for a shortcut, label == text.
 function decompose(tok) {
   var m;
-  if ((m = /^\*([^*\n]*)\*$/.exec(tok)))  return { kind: "B", text: m[1] };
-  if ((m = /^_([^_\n]*)_$/.exec(tok)))    return { kind: "I", text: m[1] };
-  if ((m = /^~~((?:[^~\n]|~[^~\n])*)~~$/.exec(tok))) return { kind: "D", text: m[1] };
-  if ((m = /^!\[([^\]\n]*)\]\[([0-9A-Za-z])\]$/.exec(tok)))
+  if ((m = /^\*((?:\\.|[^*\n])*)\*$/.exec(tok)))  return { kind: "B", text: m[1] };
+  if ((m = /^_((?:\\.|[^_\n])*)_$/.exec(tok)))    return { kind: "I", text: m[1] };
+  if ((m = /^~((?:\\.|[^~\n])*)~$/.exec(tok)))    return { kind: "D", text: m[1] };
+  if ((m = /^!\[((?:\\.|[^\]\n])*)\]\[([0-9A-Za-z])\]$/.exec(tok)))
     return { kind: "M", text: m[1], label: m[2] };
-  if ((m = /^\[([^\]\n]*)\]\[([0-9A-Za-z])\]$/.exec(tok)))
+  if ((m = /^\[((?:\\.|[^\]\n])*)\]\[([0-9A-Za-z])\]$/.exec(tok)))
     return { kind: "A", text: m[1], label: m[2] };
-  if ((m = /^\[([^\]\n]*)\]$/.exec(tok)))
+  if ((m = /^\[((?:\\.|[^\]\n])*)\]$/.exec(tok)))
     return { kind: "A", text: m[1], label: m[1] };
   return { kind: 0 };
 }
@@ -211,26 +231,58 @@ Renderer.prototype.emitFigure = function (text, label) {
 };
 
 //  inline render (mark_inline + mark_inline_cb): tokenize `text`, emit HTML.
+//  inline render: the scanner hands over markup and text separately (DOG-024),
+//  so pair the delimiters with a stack instead of recursing.  The opener names
+//  the kind; a link's closer carries its label.  Emphasis wraps whatever HTML
+//  was emitted in between; a link's body is raw text (its markup is literal,
+//  as it always was), so a link frame buffers instead of emitting.
+var SPAN_OPEN = { "*": "B", "_": "I", "~": "D", "[": "A", "![": "M", "`": "C" };
+var SPAN_TAG = { B: "strong", I: "em", D: "del" };
+
+function spanCloses(frame, tok) {
+  if (frame.kind === "A" || frame.kind === "M")
+    return /^\](\[[0-9A-Za-z]\])?$/.test(tok);
+  if (frame.kind === "C") return tok === "`";
+  return tok === frame.open;
+}
+
 Renderer.prototype.inline = function (text) {
   var toks = scanInline(text);
+  var stack = [];
   for (var i = 0; i < toks.length; i++) {
     var t = toks[i];
-    if (t.tag === "H") {                       // `code`
-      var inner = t.text.length >= 2 ? t.text.slice(1, -1) : t.text;
-      this.lit("<code>"); this.escf(inner); this.lit("</code>");
-    } else if (t.tag === "E") {                // escape: drop leading backslash
-      this.escf(t.text.slice(1));
-    } else if (t.tag === "G") {
-      var g = decompose(t.text);
-      if (g.kind === "B") { this.lit("<strong>"); this.inline(g.text); this.lit("</strong>"); }
-      else if (g.kind === "I") { this.lit("<em>"); this.inline(g.text); this.lit("</em>"); }
-      else if (g.kind === "D") { this.lit("<del>"); this.inline(g.text); this.lit("</del>"); }
-      else if (g.kind === "A") { this.emitLink(g, false); }
-      else if (g.kind === "M") { this.emitLink(g, true); }
-      else this.escf(t.text);
-    } else {                                    // S / P / L / W / F: literal
-      this.escf(t.text);
+    var top = stack.length ? stack[stack.length - 1] : null;
+    if (t.tag === "G") {
+      if (top && spanCloses(top, t.text)) {
+        stack.pop();
+        if (top.kind === "C") { this.lit("</code>"); continue; }
+        if (top.kind === "A" || top.kind === "M") {
+          var m = /^\]\[([0-9A-Za-z])\]$/.exec(t.text);
+          var g = { kind: top.kind, text: top.raw,
+                    label: m ? m[1] : top.raw };
+          this.emitLink(g, top.kind === "M");
+          continue;
+        }
+        this.out.splice(top.mark, 0, "<" + SPAN_TAG[top.kind] + ">");
+        this.lit("</" + SPAN_TAG[top.kind] + ">");
+        continue;
+      }
+      var kind = SPAN_OPEN[t.text];
+      if (kind === undefined) { this.escf(t.text); continue; }
+      if (top && (top.kind === "A" || top.kind === "M")) { top.raw += t.text; continue; }
+      if (kind === "C") this.lit("<code>");
+      stack.push({ kind: kind, open: t.text, mark: this.out.length, raw: "" });
+      continue;
     }
+    var body = t.tag === "E" ? t.text.slice(1) : t.text;   // escape: drop the \
+    if (top && (top.kind === "A" || top.kind === "M")) { top.raw += body; continue; }
+    this.escf(body);
+  }
+  while (stack.length) {                       // unmatched: emit what is buffered
+    var f = stack.pop();
+    if (f.kind === "C") this.lit("</code>");
+    else if (f.kind === "A" || f.kind === "M") this.escf(f.open + f.raw);
+    else this.out.splice(f.mark, 0, f.open);
   }
 };
 
@@ -338,18 +390,14 @@ function classify(line) {
   if (hm) { b.hrule = true; return b; }
   //  reference definition: [key]: ...
   if (/^\[[^\]]+\]:/.test(rest)) { b.refdef = true; return b; }
-  //  heading: 1-4 '#' then a gap space (or EOL).
-  var head = /^(#{1,4})(?= |$)/.exec(rest);
-  if (head) {
-    b.heading = head[1].length;
-    var j = i + head[1].length;
-    while (j < line.length && line[j] === " ") j++;
-    b.content = j;
-    return b;
-  }
   //  4-char markers in the group after the indents (padded, any column):
-  //  quote `>`, todo `-[x]`, ulist `-`, olist `N.`.
+  //  heading `#`, quote `>`, todo `-[x]`, ulist `-`, olist `N.`.
   var slot = line.substr(i, 4);
+  //  heading (DOG-024): a run of 1-4 '#' padded with spaces to fill the quad,
+  //  in any column, exactly like quote/bullet; the level is the count of '#'.
+  //  A full quad self-delimits, so `####` needs no gap space and `  # ` is h1.
+  var head = slot.length === 4 ? /^ *(#{1,4}) *$/.exec(slot) : null;
+  if (head) { b.heading = head[1].length; b.content = i + 4; return b; }
   if (/^-\[[ vVxX-]\]/.test(rest)) {
     b.marker = "todo"; b.todo = rest[2]; b.content = i + 4; return b;
   }
@@ -473,18 +521,20 @@ function renderBlocks(rd, src) {
     if (b.refdef) continue;                    // collected in pass 1
     if (b.heading > 0) {
       paraFlush(); enterLeaf(b.depth);
-      var hc = linec.slice(b.content);
+      //  DOG-024: a full marker quad self-delimits, so a following gap
+      //  space belongs to the content — trim it before rendering.
+      var hc = linec.slice(b.content).replace(/^ +/, "");
       if (b.heading === 1) { st.h1Seen = true; st.opener = true; }
       var tag = "h" + b.heading;
       rd.lit("<" + tag + ">"); rd.inline(hc); rd.lit("</" + tag + ">\n");
       continue;
     }
     if (b.marker === "ulist" || b.marker === "olist") {
-      enterList(b.depth, b.marker === "olist", linec.slice(b.content));
+      enterList(b.depth, b.marker === "olist", linec.slice(b.content).replace(/^ +/, ""));
       st.opener = false; continue;
     }
-    if (b.marker === "quote") { enterQuote(b.depth, linec.slice(b.content)); st.opener = false; continue; }
-    if (b.marker === "todo") { enterTodo(b.depth, b.todo, linec.slice(b.content)); st.opener = false; continue; }
+    if (b.marker === "quote") { enterQuote(b.depth, linec.slice(b.content).replace(/^ +/, "")); st.opener = false; continue; }
+    if (b.marker === "todo") { enterTodo(b.depth, b.todo, linec.slice(b.content).replace(/^ +/, "")); st.opener = false; continue; }
 
     //  paragraph / summary
     var pc = linec.slice(b.content);

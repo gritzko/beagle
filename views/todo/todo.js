@@ -358,30 +358,36 @@ function emitPage(sink, board, key, file, mode) {
 function pageLinks(board, selfKey, pageDirRel, body, toks) {
   const defs = refdefs(utf8.Decode(body));
   const us = new Array(toks.length);
+  const sta = new Array(toks.length);
   let extra = 0, nlinks = 0, prev = 0;
+  for (let i = 0; i < toks.length; i++) { us[i] = null; sta[i] = prev; prev = tokEnd(toks[i]); }
+  const word = (i) => utf8.Decode(body.slice(sta[i], tokEnd(toks[i])));
+  //  BE-054: the verb click is a context-less O (empty ctx = "here").
+  const mint = (spell) => (spell && spell !== "todo " + selfKey)
+      ? utf8.Encode(SPELL.mintOspell("", spell)) : null;
+  const keySpell = (w) => (shape(w) === "key" && w !== selfKey && pageFile(board.dir, w))
+      ? "todo " + w : null;
+  //  A bare ticket key is an `F` token — it links on its own.
+  for (let i = 0; i < toks.length; i++)
+    if (tokTagL(toks[i]) === "F" && tokEnd(toks[i]) > sta[i]) us[i] = mint(keySpell(word(i)));
+  //  DOG-024: a span is markup + text, so a reflink is the token RUN `[` … `]`,
+  //  not one `G` token — read the label from between the brackets and give every
+  //  token of the run the spell (a click anywhere on the link re-enters).
   for (let i = 0; i < toks.length; i++) {
-    const end = tokEnd(toks[i]);
-    us[i] = null;
-    const tg = tokTagL(toks[i]);
-    //  A bare key is an `F` token; a reflink `[X]` is one `G` token,
-    //  brackets included — strip them before the shape/refdef lookup.
-    if ((tg === "F" || tg === "G") && end > prev) {
-      let word = utf8.Decode(body.slice(prev, end));
-      if (tg === "G" && word.length > 2 && word[0] === "[" && word[word.length - 1] === "]")
-        word = word.slice(1, -1);
-      let spell = null;
-      if (shape(word) === "key" && word !== selfKey && pageFile(board.dir, word))
-        spell = "todo " + word;
-      else if (tg === "G" && defs[word] !== undefined)
-        spell = targetSpell(board, pageDirRel, defs[word]);
-      else if (tg === "G" && word[0] === "/")            // inline [/pocket/Page]
-        spell = targetSpell(board, pageDirRel, word);
-      //  BE-054: mint the verb click as a context-less O (empty ctx = "here").
-      if (spell && spell !== "todo " + selfKey) us[i] = utf8.Encode(SPELL.mintOspell("", spell));
-    }
-    if (us[i]) { extra += us[i].length; nlinks++; }
-    prev = end;
+    if (tokTagL(toks[i]) !== "G" || word(i) !== "[") continue;
+    let j = i + 1;
+    while (j < toks.length && !(tokTagL(toks[j]) === "G" && word(j) === "]")
+           && word(j).indexOf("\n") < 0) j++;
+    if (j >= toks.length || tokTagL(toks[j]) !== "G") continue;   // unclosed
+    const label = utf8.Decode(body.slice(tokEnd(toks[i]), sta[j]));
+    let spell = keySpell(label);
+    if (!spell && defs[label] !== undefined) spell = targetSpell(board, pageDirRel, defs[label]);
+    else if (!spell && label[0] === "/") spell = targetSpell(board, pageDirRel, label);
+    const u = mint(spell);
+    if (u) for (let k = i; k <= j; k++) if (!us[k]) us[k] = u;
+    i = j;
   }
+  for (let i = 0; i < toks.length; i++) if (us[i]) { extra += us[i].length; nlinks++; }
   if (!nlinks) return { body: body, toks: toks };
   const out = new Uint8Array(body.length + extra);
   const ntoks = new Uint32Array(toks.length + nlinks);
