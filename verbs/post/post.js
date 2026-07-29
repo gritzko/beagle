@@ -870,7 +870,10 @@ function postOne(info, ctx, row) {
   //  subsumed).  The unified classifier reads a patch-derived file as pat/mrg/
   //  cnf and the consumer commits its merged content; a `cnf` (conflict-marked)
   //  file is still caught by the POSTCFLCT pre-scan below.  No more POSTSCOPE.
-  const dres = decideM.decide(info, wtl, reader, slots.narrow || undefined);
+  //  POST-034: the mode is the tree-wide one decided once by postTree, never
+  //  re-derived here from a wtlog this very run appended a sub bump row to.
+  const dres = decideM.decide(info, wtl, reader, slots.narrow || undefined,
+                              ctx ? ctx._selective : undefined);
 
   //  DIS-076: a commit never touches any branch REF (WT-only motion), so the
   //  old commit-time POSTNOFF gate (checked branchKey's ref vs parent) is

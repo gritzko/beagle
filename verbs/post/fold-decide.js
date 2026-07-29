@@ -93,7 +93,9 @@ function makeNarrow(narrow) {
   return function underNarrow(p) { return p === n || p.indexOf(pfx) === 0; };
 }
 
-function decide(be, wtlogReader, storeReader, narrow) {
+//  POST-034: `selective` (postTree's tree-wide ctx._selective) overrides the
+//  wtlog-derived anyPd, which this run's own gitlink-bump row would flip true.
+function decide(be, wtlogReader, storeReader, narrow, selective) {
   const wtRoot = be.wt;
   const underNarrow = makeNarrow(narrow);
 
@@ -104,7 +106,8 @@ function decide(be, wtlogReader, storeReader, narrow) {
   const m = classify.classifyMerge(be, wtlogReader, storeReader,
                                    { underNarrow: underNarrow, skipMeta: true,
                                      wantClean: true });
-  const base = m.base, anyPd = m.anyPd, haveBase = m.haveBase;
+  const base = m.base, haveBase = m.haveBase;
+  const anyPd = (selective === undefined) ? m.anyPd : !!selective;
   const baseTreeSha = m.baseTreeSha;
 
   const decisions = [];
