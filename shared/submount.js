@@ -16,8 +16,9 @@
 //    its own local URI `//WT/path/to/sub#<pin>` (DIS-072, [DIS-071] law #4) —
 //    recorded in the sub's tip row; no synthetic branch, no refs entry.
 //
-//  mount(opts) → { storePath, project, tip, oldPin, rows } | throws a friendly
-//  str.  GET-047: oldPin = prior anchor pin (""=fresh), rows = checkout delta.
+//  mount(opts) → { storePath, project, tip, oldPin, rows, stampTs } | throws a
+//  friendly str.  GET-047: oldPin = prior anchor pin (""=fresh), rows = checkout
+//  delta; SUBS-056: stampTs = the track row's assigned ts (the caller's sweep).
 //    opts.wt        parent worktree root (absolute)
 //    opts.beDir     parent's `.be` dir (where the sibling shard lands)
 //    opts.subpath   gitlink path (wt-relative, e.g. "vendor/sub")
@@ -57,6 +58,26 @@ function currentSubPin(anchorPath) {
     });
   } catch (e) {}
   return pin;
+}
+
+//  SUBS-056: does `path` already hold a wtlog with rows?  A mount over an
+//  EXISTING sub log APPENDS; only a fresh (absent/empty) one is minted.
+function hasRows(path) {
+  let n = 0;
+  try { ulog.each(path, function () { n++; }); } catch (e) {}
+  return n > 0;
+}
+
+//  SUBS-056: the mount anchor — a FRESH sub gets the two-row anchor, an existing
+//  one is APPENDED (the root's `fresh` gate, get.js:446; [Worktree] append-only).
+//  Returns the TRACK row's assigned ts (the PUT-012 checkout restamp) + `minted`.
+function writeAnchor(anchorPath, redirect, track) {
+  const fresh = !hasRows(anchorPath);
+  const asg = fresh
+        ? ulog.write(anchorPath, [{ verb: "get", uri: redirect },
+                                  { verb: "get", uri: track }])
+        : ulog.append(anchorPath, [{ verb: "get", uri: track }]);
+  return { ts: asg[asg.length - 1], minted: fresh };
 }
 
 //  Return the `.gitmodules` `url` for the [submodule] block whose `path` ==
@@ -284,6 +305,9 @@ function mount(opts) {
   //  throws pass through, a raw io error is wrapped — never a raw uncaught
   //  exception to the user (cf. [GET-018] atomicity).  (io has no rmdir, so an
   //  emptied sub dir may remain; it is inert without the anchor.)
+  //  SUBS-056: only a log THIS mount MINTED may be rolled back — unlinking a
+  //  pre-existing sub wtlog would destroy the very rows the append preserves.
+  let minted = false;
   try {
     //  Already-local pin?  An idempotent re-mount (a re-get over an existing
     //  mount, or an in-repo FF `be get` with no remote) must NOT re-fetch: if the
@@ -332,16 +356,18 @@ function mount(opts) {
         const oldPin = currentSubPin(anchorPath);
         try { io.mkdir(subWt); } catch (e) {}
         const redirect = URI.make("file", undefined, ls.storeBe + "/", "/" + ls.proj);
-        //  PUT-012: capture the track row's ASSIGNED ts (row 1) to restamp the
-        //  checked-out files, GET-049 parity — else the sub mis-stamps dirty.
-        const asg = ulog.write(anchorPath, [{ verb: "get", uri: redirect },
-                                            { verb: "get", uri: track }]);
+        //  PUT-012: capture the track row's ASSIGNED ts to restamp the checked-out
+        //  files, GET-049 parity — else the sub mis-stamps dirty.
+        const asg = writeAnchor(anchorPath, redirect, track);
+        minted = asg.minted;
         const k = store.open(ls.storeRoot, ls.proj);
         //  GET-047: surface the prior pin + checkout delta for the get report.
         const co = checkout.apply(k, pin, subWt,
-                     { force: ambient.force(), oldTip: oldPin, stampTs: asg[1] });
+                     { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts });
+        //  SUBS-056: hand the track stamp out so the caller can sweep the sub's
+        //  OWN carried `put` files (GET-050) — the new row de-scopes them.
         return { storePath: ls.storeRoot, project: ls.proj, shard: k.shard,
-                 tip: pin, k: k, oldPin: oldPin, rows: co.rows };
+                 tip: pin, k: k, oldPin: oldPin, rows: co.rows, stampTs: asg.ts };
       }
     }
 
@@ -381,10 +407,10 @@ function mount(opts) {
     //  `//WT/path/to/sub#<pin>` track row (DIS-072 pin-URI model).
     try { io.mkdir(subWt); } catch (e) {}
     const redirect = URI.make("file", undefined, beDir + "/", "/" + title);
-    //  PUT-012: capture the track row's ASSIGNED ts (row 1) to restamp the
-    //  checked-out files, GET-049 parity — else the sub mis-stamps dirty.
-    const asg = ulog.write(anchorPath, [{ verb: "get", uri: redirect },
-                                        { verb: "get", uri: track }]);
+    //  PUT-012: capture the track row's ASSIGNED ts to restamp the checked-out
+    //  files, GET-049 parity — else the sub mis-stamps dirty.
+    const asg = writeAnchor(anchorPath, redirect, track);
+    minted = asg.minted;
 
     //  D3: check out the commit named by the parent gitlink into `<wt>/<path>/`.
     //  GET-040: the global force flag (`get!`) — uniform across the root and
@@ -393,14 +419,14 @@ function mount(opts) {
     const k = store.open(beDir, title);
     //  GET-047: surface the prior pin + checkout delta for the get report.
     const co = checkout.apply(k, pin, subWt,
-                 { force: ambient.force(), oldTip: oldPin, stampTs: asg[1] });
+                 { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts });
 
     return { storePath: beDir, project: title, shard: shard, tip: pin, k: k,
-             oldPin: oldPin, rows: co.rows };
+             oldPin: oldPin, rows: co.rows, stampTs: asg.ts };
   } catch (e) {
     //  Roll back this mount's anchor (best-effort; never mask the failure) so a
     //  stale `<wt>/<path>/.be` redirect can't outlive a failed mount.
-    try { io.unlink(anchorPath); } catch (e2) {}
+    if (minted) try { io.unlink(anchorPath); } catch (e2) {}
     //  Friendly surface: our own throws are already strings; a raw io error
     //  (e.g. ENOTDIR — a worktree-source `.be` wtlog FILE read as a store dir)
     //  becomes a friendly SUBMOUNT string so `get` never leaks an uncaught io

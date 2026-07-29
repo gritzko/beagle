@@ -1196,9 +1196,20 @@ function mountGitlink(g, rel, pin, out) {
     wt: g.wt, beDir: g.beDir, subpath: rel, pin: pin, source: g.source,
   });
   subMountRow(g, rel, pin, m, out);             // the mounted sub leaf row
+  carrySubStaged(g, rel, m);                    // SUBS-056
   //  Pre-order recurse: descend the mounted sub's pin tree for nested gitlinks.
   //  SUBS-041: this top-level mount is depth 0; each descent increments.
   recurseSubMounts(g, rel, m, out, 0);
+}
+
+//  SUBS-056: the MOUNTED sub's own carried `put` files — its new track row
+//  de-scopes them exactly as the root's get row does, so run GET-050's sweep
+//  sub-scoped (a surviving put row whose file reads clean hides its own work).
+function carrySubStaged(g, rel, m) {
+  if (!m || m.stampTs == null) return;
+  const subWt = wtpath(g.wt, rel), bePath = join(subWt, ".be");
+  carrySweep({ _get: { k: m.k, wt: subWt, tip: m.tip, bePath: bePath,
+                       stampTs: m.stampTs, carry: collectStaged(bePath) } });
 }
 
 //  GET-047: a pin ADVANCE of an existing mount reads `mod` (a fresh mount: `new`).
@@ -1251,6 +1262,7 @@ function recurseSubMounts(g, rel, m, out, depth) {
       wt: g.wt, beDir: g.beDir, subpath: sp, pin: l.pin, source: g.source,
     });
     subMountRow(g, sp, l.pin, cm, out);
+    carrySubStaged(g, sp, cm);                  // SUBS-056
     recurseSubMounts(g, sp, cm, out, depth + 1);
   }
 }
