@@ -89,7 +89,9 @@ function prep(be, wtlogReader, storeReader) {
   //  baseline tree leaves: rel → { sha, kind } (kind f/x/l/s).
   const base = {};
   let haveBase = false, baseTreeSha;
-  const baseTip = wtlogReader.baselineTip();
+  //  PATCH-024: the base is the last get/post (curTip); a patch row as baseline
+  //  hid base-tracked files from the bare walk and mis-set the restamp ts below.
+  const baseTip = wtlogReader.curTip();
   if (baseTip && baseTip.sha && isFullSha(baseTip.sha)) {
     const treeSha = storeReader.commitTree(baseTip.sha);
     if (treeSha) {

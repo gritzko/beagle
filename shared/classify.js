@@ -550,7 +550,9 @@ function classifyDir(be, wtlogReader, keeperReader, scopePfx) {
   //  readTree per path segment, then read ONE level.  A missing / non-dir
   //  segment leaves the scope baseline-less (e.g. an untracked or absent dir).
   const baseFile = {};          // name → { sha, kind }
-  const baseTip = wtlogReader.baselineTip();
+  //  PATCH-024: curTip, NOT baselineTip — a patch row in the baseline hid every
+  //  base-tracked file the absorbed tree lacks (they listed `unk`); see :249.
+  const baseTip = wtlogReader.curTip();
   if (baseTip && baseTip.sha && isFullSha(baseTip.sha)) {
     let treeSha = keeperReader.commitTree(baseTip.sha);
     if (treeSha && scopePfx) {

@@ -304,7 +304,7 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
     if (!recurse.isMount(repo.wt, sp)) continue;
     let subRepo; try { subRepo = be.treeAt(wtpath(repo.wt, sp)); } catch (e) { continue; }
     const subK = store.open(subRepo.storePath, subRepo.project);
-    const subBase = (wtlog.open(subRepo).baselineTip() || {}).sha || "";
+    const subBase = (wtlog.open(subRepo).curTip() || {}).sha || "";   // PATCH-024
     const subTree = subBase ? subK.commitTree(subBase) : null;
     diffWtTree(subK, subTree, subRepo, color, ctx, subScope, prefixingSink(out, sp));
   }
@@ -464,7 +464,9 @@ function parseDiffArg(k, repo, raw) {
              baselineSha: "", navver: navver, path: path };
   }
 
-  const baseSha = (wtlog.open(repo).baselineTip() || {}).sha || "";
+  //  PATCH-024: the base tree is curTip (recentmost get/post), NEVER baselineTip
+  //  — a patch row there made the from-side the wt bytes, so diff printed NOTHING.
+  const baseSha = (wtlog.open(repo).curTip() || {}).sha || "";
   if (query) {
     //  `?branch` (no range): commit-show when no path AND a hashlet that is NOT
     //  a branch name (rev vs first parent, `git show`); else branch-vs-base.
@@ -553,7 +555,7 @@ function diffOne(arg) {
       const m = subMountSplit(k, baseTree, repo, spec.path, fctx);
       let fB;
       if (m) {
-        const subBase = (wtlog.open(m.subRepo).baselineTip() || {}).sha || "";
+        const subBase = (wtlog.open(m.subRepo).curTip() || {}).sha || "";  // PATCH-024
         const subTree = subBase ? m.subK.commitTree(subBase) : null;
         fB = blobAtTree(m.subK, subTree, m.rest);
       } else {
@@ -636,7 +638,7 @@ function subMountSplit(k, parentTreeSha, repo, path, ctx) {
   //  sub (dog/abc/FILE.h: abc is a gitlink in dog's tree too).  Re-split on the
   //  sub's OWN baseline tree so the from-side reads from the DEEPEST sub that
   //  directly holds the file; same routes (recurse.isMount/be.treeAt/store.open).
-  const subBase = (wtlog.open(subRepo).baselineTip() || {}).sha || "";
+  const subBase = (wtlog.open(subRepo).curTip() || {}).sha || "";   // PATCH-024
   const subTree = subBase ? subK.commitTree(subBase) : null;
   const deeper = subTree ? subMountSplit(subK, subTree, subRepo, rest, ctx) : null;
   if (deeper) return deeper;

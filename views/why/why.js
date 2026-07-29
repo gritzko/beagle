@@ -95,8 +95,9 @@ function parseArg(k, repo, raw) {
     return { path: path, tip: tip, from: undefined, to: undefined };
   }
   //  WHY-001: no query → blame the WORKING TREE (diff:'s wt-vs-base twin): the
-  //  committed base is the BASELINE tip, then whyOne folds the wt content on top.
-  const base = (wtlog.open(repo).baselineTip() || {}).sha || "";
+  //  committed base, then whyOne folds the wt content on top.
+  //  PATCH-024: that base is curTip (get/post) — a patch row never moves it.
+  const base = (wtlog.open(repo).curTip() || {}).sha || "";
   return { path: path, tip: base, from: undefined, to: undefined, wt: true };
 }
 
