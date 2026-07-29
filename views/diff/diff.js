@@ -102,11 +102,9 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
   //  Over the source cap → a BLOB: not tokenised, not diffed (weave.js policy).
   if (f.length > weave.MAX_SOURCE_SIZE || t.length > weave.MAX_SOURCE_SIZE) return;
 
-  const ext = extOf(name);
-  //  The fold/emit/render buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap,
-  //  no dynamic growth).  If a (sub-cap but token-dense) source overflows even
-  //  that, there is no point diffing it — err out and treat it as a BLOB (skip).
-  try {
+  //  Fold both sides under one lexer `ext` and emit this pair's hunks into a
+  //  fresh HUNK container (the caller renders it).
+  function fold2(ext) {
     let wA, wB, from, to;
     if (f.length === 0) {
       //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
@@ -123,11 +121,23 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
     const hd = abc.ram("HUNK", weave.MAX_SOURCE_MARKED_UP);
     if (full) wB.emitFull(from, to, name, "diff:", navver, hd);
     else      wB.emitDiff(from, to, name, navver, hd);
-    emitHunks(hd, color, out);
-  } catch (e) {
-    if (("" + e).includes("full")) return;                     // over cap → blob
-    throw e;
+    return hd;
   }
+
+  //  The fold/emit/render buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap,
+  //  no dynamic growth).  If a (sub-cap but token-dense) source overflows even
+  //  that, there is no point diffing it — err out and treat it as a BLOB (skip).
+  let hd;
+  try {
+    hd = fold2(extOf(name));
+  } catch (e) {
+    if (!("" + e).includes("full")) throw e;
+    //  DIFF-015: the binding masks EVERY fold failure (a lexer defect too) as
+    //  "out full", so a changed file VANISHED — refold under the plain lexer.
+    try { hd = fold2(""); } catch (e2) { return; }             // over cap → blob
+    io.log("diff: cannot tokenize " + name + " — diffing as plain text\n");
+  }
+  emitHunks(hd, color, out);
 }
 
 //  Render every record in a HUNK container through the diff:-scheme cursor.
@@ -675,3 +685,5 @@ module.exports.readWtLink = readWtLink;
 module.exports.readWtFile = readWtFile;
 //  GET-056: the ONE binary predicate — get's D5 merge gate reuses it.
 module.exports.isBinary = isBinary;
+//  DIFF-015: repro hook — the plain-lexer refold on a masked fold failure.
+module.exports.diffFile = diffFile;
