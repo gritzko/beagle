@@ -340,7 +340,9 @@ function classifyLines(text, toks) {
 //  Line kind (bro_classify) + the helper predicates.
 const K_EQ = 0, K_PURE_IN = 1, K_PURE_RM = 2, K_MOD_INLINE = 3, K_MOD_SPLIT = 4;
 function lineKind(li) {
-  const changed = li.inB + li.rmB;
+  //  BRO-041: weigh an edit by max(in,rm), not in+rm — a symmetric token
+  //  swap must not be charged twice against the inline gate.
+  const changed = Math.max(li.inB, li.rmB);
   if (changed === 0) return K_EQ;
   if (li.eqB === 0) {
     if (li.inB > 0 && li.rmB > 0) return K_MOD_SPLIT;
