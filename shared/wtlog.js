@@ -328,6 +328,30 @@ function open(be) {
       return out;
     },
 
+    //  ULOG-004: con paths since the last BARRIER = a get/post row with a sha
+    //  and no wt-relative path; patch/put/delete + scoped gets amnesty nothing.
+    //  DIS-080: row-scoped liveness (resolved==posted), oldest-first, deduped.
+    conflicts: function () {
+      const out = [], seen = new Set();
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (r.verb === CON) {
+          const p = (r.uri && r.uri.path) || "";
+          if (p && !seen.has(p)) { seen.add(p); out.push(p); }
+          continue;
+        }
+        if (r.verb !== GET && r.verb !== POST) continue;
+        if (!isFullSha(refOf(r.uri, r.local).sha)) continue;   // pins nothing
+        const u = r.uri;
+        //  A path is a SCOPE only when wt-relative; under a scheme/authority
+        //  it is part of the address of a whole-tree get (a sub re-attach).
+        if (u.scheme === undefined && u.authority === undefined && u.path)
+          continue;
+        break;
+      }
+      return out.reverse();
+    },
+
     //  STATUS-005: paths named by durable `con <path>` rows (a merge left
     //  markers there); append-only — status re-scans wt bytes for liveness.
     conPaths: function () {
