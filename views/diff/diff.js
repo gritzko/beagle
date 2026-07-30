@@ -121,7 +121,7 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out, exp) {
 
   //  Fold both sides under one lexer `ext` and emit this pair's hunks into a
   //  fresh HUNK container (the caller renders it).
-  function fold2(ext) {
+  function fold2(ext, whole) {
     let wA, wB, from, to, layered = false;
     if (f.length === 0) {
       //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
@@ -141,25 +141,35 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out, exp) {
       from = wB.scope([ID_FROM]); to = wB.scope(ids);
     }
     const hd = abc.ram("HUNK", weave.MAX_SOURCE_MARKED_UP);
-    if (full) wB.emitFull(from, to, name, "diff:", navver, hd);
-    else      wB.emitDiff(from, to, name, navver, hd);
+    if (whole) wB.emitFull(from, to, name, "diff:", navver, hd);
+    else       wB.emitDiff(from, to, name, navver, hd);
     return { hd: hd, prov: layered ? provList(wB) : null };
   }
 
-  //  The fold/emit/render buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap,
-  //  no dynamic growth).  If a (sub-cap but token-dense) source overflows even
+  //  The fold/emit buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap, no
+  //  dynamic growth).  If a (sub-cap but token-dense) source overflows even
   //  that, there is no point diffing it — err out and treat it as a BLOB (skip).
-  let r;
+  let r, ext = extOf(name);
   try {
-    r = fold2(extOf(name));
+    r = fold2(ext, full);
   } catch (err) {
     if (!("" + err).includes("full")) throw err;
     //  DIFF-015: the binding masks EVERY fold failure (a lexer defect too) as
     //  "out full", so a changed file VANISHED — refold under the plain lexer.
-    try { r = fold2(""); } catch (e2) { return; }              // over cap → blob
+    ext = "";
+    try { r = fold2(ext, full); } catch (e2) { return; }        // over cap → blob
     io.log("diff: cannot tokenize " + name + " — diffing as plain text\n");
   }
-  emitHunks(r.hd, color, out, r.prov);
+  //  DIFF-019: the whole-file render grows-and-replays, but over the hard cap it
+  //  degrades LOUDLY to the windowed hunks — never exit 1, never truncate.
+  try {
+    emitHunks(r.hd, color, out, r.prov);
+  } catch (err) {
+    if (!full || !("" + err).includes("full")) throw err;
+    io.log("diff: " + name + " too big to render whole-file"
+           + " — showing changed hunks only\n");
+    emitHunks(fold2(ext, false).hd, color, out, null);
+  }
 }
 
 //  DIFF-016: the weave's EMITTED token sequence — every token visible in
@@ -216,20 +226,43 @@ function markRecord(prov, from, text, toks) {
 function emitHunks(hd, color, out, prov) {
   hd.rewind();
   let at = 0;
+  const rows = [], texts = [];
   while (hd.next()) {
     //  BRO-006: feed the raw record to the toks sink (it appends the U target);
     //  the rendered text still goes to out.chunk for the plain/color channel.
+    let row = null;
     if (out.feed) {
       //  DIFF-016: stamp the patched-in bit before the record leaves the view.
       const text = hd.text.slice(), toks = hd.toks.slice();
       if (prov) at = markRecord(prov, at, text, toks);
-      out.feed(utf8.Decode(hd.uri), text, toks);
+      row = [utf8.Decode(hd.uri), text, toks];
     }
-    //  The per-record render buffer is the fixed markup size (lazy mmap) — one
-    //  hunk's plain/color bytes can't exceed it, so no dynamic growth.
-    const o = io.ram(weave.MAX_SOURCE_MARKED_UP);
-    if (color) hd.color(o); else hd.plain(o);
-    out.chunk(utf8.Decode(o.data()));
+    //  DIFF-019: render EVERY record before emitting any, so an over-cap record
+    //  degrades to the windowed render instead of appending to a partial body.
+    rows.push(row);
+    texts.push(utf8.Decode(renderRecord(hd, color).data()));
+  }
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i]) out.feed(rows[i][0], rows[i][1], rows[i][2]);
+    out.chunk(texts[i]);
+  }
+}
+
+//  DIFF-019: the whole-file render scales with the FILE, so no fixed buffer
+//  holds — seed off the record (4x: color markup) and double on "out full".
+const RENDER_MIN = 1 << 16;                    // 64 KB (a small hunk's floor)
+const RENDER_MAX = weave.MAX_SOURCE_MARKED_UP * 16;   // 256 MB hard cap
+function renderRecord(hd, color) {
+  let n = RENDER_MIN;
+  const want = 4 * (hd.text.length + 64);
+  while (n < want && n < RENDER_MAX) n *= 2;
+  for (;;) {
+    const o = io.ram(n);
+    try { if (color) hd.color(o); else hd.plain(o); return o; }
+    catch (err) {
+      if (n >= RENDER_MAX || !("" + err).includes("full")) throw err;
+      n = 2 * n > RENDER_MAX ? RENDER_MAX : 2 * n;
+    }
   }
 }
 
