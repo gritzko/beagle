@@ -45,7 +45,6 @@ const sha      = require("../../shared/util/sha.js");
 //  JAB-003: get emits a TRUE hunk (accumulated across dispatches, flushed once).
 const hunkrows = require("../../shared/hunkrows.js");
 const wtlog    = require("../../shared/wtlog.js");
-const conflict = require("../../shared/conflict.js");
 //  GET-047 / GET.mkd 2.2: the untracked sweep reuses status's OWN unk set —
 //  classify.wtScan over the hierarchical .gitignore matcher (never a re-scan).
 const classify = require("../../shared/classify.js");
@@ -563,7 +562,7 @@ function fanoutWholeTree(ctx, r, wt, force) {
                //  flag rides be.flags (loop.js split it); the gitlink leaves gate on it.
                nosub: ((globalThis.be && be.flags) || []).indexOf("--nosub") >= 0,
                //  STATUS-005: the wtlog to append durable `con <path>` rows to when
-               //  a weave leaf writes conflict markers (append-only, verb-agnostic).
+               //  a weave leaf hits a conflict (append-only, verb-agnostic).
                bePath: r.bePath || join(wt, ".be"),
                //  DIS-058 D2-D5: the parent's source (for the same-source child
                //  fetch) + the store dir where sibling sub shards land.
@@ -1071,28 +1070,23 @@ function leaf(row, ctx) {
     if (dirty && baseBytes == null)
       throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;
     if (dirty) {                                 // real local edit → weave-merge
-      //  POST-032: a still-UNRESOLVED prior conflict (live fences + a durable
-      //  `con` row) stays as-is — no re-weave (nested fences), no dup row.
-      if (conflict.hasConflictMarker(onDisk) && conRecorded(g, rel)) {
-        g.conf = (g.conf || 0) + 1;
-        out.row(rel, "con", g.ts);
-        bandStamp(g, full, "con");   // GET-050: stale stamp must not false-clean
-        return;
-      }
+      //  PATCH-025 (DIS-080): a prior conflict carries NO fences any more, so the
+      //  old marker skip is gone — the markerless bytes re-weave like any edit.
       //  PATCH-012: an unweavable leaf (over-cap BLOB, or a still-overflowing
       //  `out full`) refuses like a real conflict — never silent-ours + exit 0.
-      let merged;
-      try { merged = weave3(baseBytes, onDisk, bytes, extOf(rel)); }
-      catch (e) { if (!("" + e).includes("full")) throw e; merged = null; }
-      if (merged == null) {
+      let mg;
+      try { mg = weave3(baseBytes, onDisk, bytes, extOf(rel)); }
+      catch (e) { if (!("" + e).includes("full")) throw e; mg = null; }
+      if (mg == null) {
         g.conf = (g.conf || 0) + 1;
         out.row(rel, "con", g.ts);
         try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
         bandStamp(g, full, "con");   // GET-050
         return;
       }
+      const merged = mg.bytes;
       checkout.materialise(g.wt, rel, { kind: kind }, merged);
-      if (conflict.hasConflictMarker(merged)) {
+      if (mg.spans.length) {
         g.conf = (g.conf || 0) + 1;
         out.row(rel, "con", g.ts);   // STATUS-005: con (was DIS-057 cnf)
         //  STATUS-005: durable `con <path>` row (append-only, like `put`) so
@@ -1382,8 +1376,8 @@ function carrySweep(ctx) {
     if (!ent || ent.kind === "tree" || ent.kind === "s") continue;  // not a base file
     const onDisk = readWt(wtpath(g.wt, rel));
     if (onDisk == null || bytesEq(onDisk, blobOf(g.k, ent.sha))) continue;  // clean → leave
-    bandStamp(g, wtpath(g.wt, rel),
-              (conflict.hasConflictMarker(onDisk) && conRecorded(g, rel)) ? "con" : "mrg");
+    //  PATCH-025: liveness is the durable `con` row, no marker scan.
+    bandStamp(g, wtpath(g.wt, rel), conRecorded(g, rel) ? "con" : "mrg");
   }
 }
 
@@ -1391,12 +1385,12 @@ function finalizeGet(ctx) {
   sweepDelDirs(ctx);
   carrySweep(ctx);   // GET-050: band-restamp de-scoped carried files
   flushGet(ctx);
-  //  POST-032: a weave conflict is a NORMAL merge outcome (fences + `con` row
+  //  POST-032: a weave conflict is a NORMAL merge outcome (the `con` row is
   //  already durable) — report the state in plain words, never hard-err.
   const g = ctx && ctx._get;
   if (g && g.conf)
     warn("be get: " + g.conf +
-         " file(s) merged with conflicts — resolve the markers");
+         " file(s) merged with conflicts — resolve the conflicting lines");
   return g ? (g.conf || 0) : 0;
 }
 

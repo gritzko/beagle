@@ -14,6 +14,10 @@
 
 "use strict";
 
+//  DIFF-016: the diff wash palette lives in view/theme.js (the ONE place an SGR
+//  is spelled); this module only turns those slots into ansi64.
+const DIFF_WASH = require("./theme.js").DIFF_WASH;
+
 //  tok32 bit layout (dog/tok/TOK.h, mirrored by tok.TokStream):
 //    [31..27] tag (A+n)  [26] custom  [25..24] side  [23..0] end offset
 //  token i's start = token i-1's end (0 for i==0).
@@ -94,6 +98,13 @@ const THEME = {
   D: aFgB(90), G: aFg256(149), L: aFgB(96), H: aFgB(35), R: aFgB(94), P: aFgB(90),
   N: aFlag(A_BOLD), C: aFlag(A_BOLD), F: aFg256(56), T: aFg256(56),
   I: aBg256(194), O: aBg256(224), J: aBg256(157), K: aBg256(217),
+  //  DIFF-016 (DIS-080): the PATCHED-IN (pale blue/orange) and CONFLICT (yellow)
+  //  twins of the I/O/J/K local salad/salmon pair — multi-char keys, so they can
+  //  never collide with a real 1-char tok tag.  Codes: view/theme.js DIFF_WASH.
+  Ib: aBg256(DIFF_WASH.pinPale), Jb: aBg256(DIFF_WASH.pinWash),
+  Ob: aBg256(DIFF_WASH.prmPale), Kb: aBg256(DIFF_WASH.prmWash),
+  Iy: aBg256(DIFF_WASH.conPale), Jy: aBg256(DIFF_WASH.conWash),
+  Oy: aBg256(DIFF_WASH.conPale), Ky: aBg256(DIFF_WASH.conWash),
   //  Status-verb / whitespace slots (THEME16TBL).  'W' (whitespace) = green is
   //  the one that shows inside diff bodies; the rest round out the table.
   U: aFgB(34), W: aFgB(32), V: aFgB(36), E: aFgB(33), X: aFg256(94),
@@ -147,6 +158,39 @@ function resetSGR(cur) { return aEq(cur, A0) ? "" : ESC + "[0m"; }
 const TOK_SIDE = (w) => (w >>> 24) & 0x3;                   // 0=eq 1=in 2=rm
 const SIDE_EQ = 0, SIDE_IN = 1, SIDE_RM = 2;
 const PASS_NORMAL = 0, PASS_RM = 1, PASS_IN = 2;
+
+//  DIFF-016 (DIS-080) — the diff PROVENANCE class of a changed token.  tok32
+//  bit 26 (`custom`), stamped by views/diff/diff.js off the EXPECTED weave
+//  layer, says "this token is patched in (theirs)"; a LOCAL edit leaves it 0.
+//  CONFLICT needs no third bit: it IS an overlap, i.e. a run of consecutive
+//  changed tokens carrying BOTH provenances — the same membership test
+//  `weave.mergedLive` uses to call a run conflicting (PATCH-025).
+const TOK_CUST = (w) => (w >>> 26) & 0x1;
+const CLS_LOCAL = 0, CLS_PATCHED = 1, CLS_CON = 2;
+//  per-class wash slots: {NORMAL/other-pass in, rm} + {own-pass in, rm}.
+const WASH = [{ I: "I", O: "O", J: "J", K: "K" },
+              { I: "Ib", O: "Ob", J: "Jb", K: "Kb" },
+              { I: "Iy", O: "Oy", J: "Jy", K: "Ky" }];
+
+//  DIFF-016: per-token class over one hunk's toks — walk maximal runs of
+//  consecutive CHANGED tokens; a run carrying both bit-26 values is a conflict
+//  and paints yellow whole, else it takes its own provenance.  EQ tokens (and
+//  the hidden `U` target) break runs, so two independent edits on neighbouring
+//  lines never merge into a false conflict.
+function tokClasses(toks) {
+  const n = toks.length, cls = new Uint8Array(n);
+  let i = 0;
+  while (i < n) {
+    if (TOK_TAG(toks[i]) === "U" || TOK_SIDE(toks[i]) === SIDE_EQ) { i++; continue; }
+    let j = i, seen = 0;
+    while (j < n && TOK_TAG(toks[j]) !== "U" && TOK_SIDE(toks[j]) !== SIDE_EQ)
+      { seen |= 1 << TOK_CUST(toks[j]); j++; }
+    const c = seen === 0x3 ? CLS_CON : (seen === 0x2 ? CLS_PATCHED : CLS_LOCAL);
+    for (let m = i; m < j; m++) cls[m] = c;
+    i = j;
+  }
+  return cls;
+}
 
 //  A hunk is a diff hunk iff any non-'U' tok carries a side != EQ (the C
 //  hunk_has_diff twin).  Drives the renderHunkLog/pager routing.
@@ -274,16 +318,19 @@ function whyPlain(text, toks) {
   return b.data().slice();
 }
 
-//  --- bro_cell_ansi: (fg tag, pass, side) -> ansi64 -----------------------
-function cellAnsi(tag, pass, side) {
+//  --- bro_cell_ansi: (fg tag, pass, side, class) -> ansi64 ----------------
+//  DIFF-016: `cls` picks the wash FAMILY (local salad/salmon, patched-in pale
+//  blue/orange, conflict yellow); the pass/side logic is untouched.
+function cellAnsi(tag, pass, side, cls) {
+  const w = WASH[cls || CLS_LOCAL];
   let want = themeAt(tag);
   if (pass === PASS_NORMAL) {
-    if (side === SIDE_IN) want = aOr(want, themeAt("I"));
-    else if (side === SIDE_RM) want = aOr(want, themeAt("O"));
+    if (side === SIDE_IN) want = aOr(want, themeAt(w.I));
+    else if (side === SIDE_RM) want = aOr(want, themeAt(w.O));
   } else if (pass === PASS_RM) {
-    want = aOr(want, side === SIDE_RM ? themeAt("K") : themeAt("O"));
+    want = aOr(want, side === SIDE_RM ? themeAt(w.K) : themeAt(w.O));
   } else {  // PASS_IN
-    want = aOr(want, side === SIDE_IN ? themeAt("J") : themeAt("I"));
+    want = aOr(want, side === SIDE_IN ? themeAt(w.J) : themeAt(w.I));
   }
   return want;
 }
@@ -316,24 +363,31 @@ function rowEndPass(text, toks, tlen, off, cols, pass) {
 //  --- bro_classify_lines: per-segment {lo,hi,in_b,rm_b,eq_b,bndSide} ------
 //  A "segment" runs from after the previous '\n' to (incl.) the next '\n'.
 //  The boundary '\n' carries a side determining which pass(es) see the break.
+//  DIFF-016 (DIS-080): a PATCHED-IN (bit-26) token is an EDIT like any other —
+//  its bytes go to inB/rmB, NEVER to eqB, so the max(in,rm)+eq row weight below
+//  charges a patched row exactly like a local one.  `pIn`/`pRm` break the
+//  patched share out for the render/metric tests.  C twin: HUNK.c (see ticket).
 function classifyLines(text, toks) {
   const tlen = text.length, ntoks = toks.length;
   const out = [];
-  let lineLo = 0, ti = 0, inB = 0, rmB = 0, eqB = 0;
+  let lineLo = 0, ti = 0, inB = 0, rmB = 0, eqB = 0, pIn = 0, pRm = 0;
   for (let off = 0; off < tlen; off++) {
     while (ti < ntoks && TOK_END(toks[ti]) <= off) ti++;
     const side = ti < ntoks ? TOK_SIDE(toks[ti]) : SIDE_EQ;
     const tag  = ti < ntoks ? TOK_TAG(toks[ti]) : "S";
     if (tag === "U" || tag === "O") continue;
+    const patched = ti < ntoks && TOK_CUST(toks[ti]) === 1;
     if (text[off] === 0x0a) {
-      out.push({ lo: lineLo, hi: off, inB: inB, rmB: rmB, eqB: eqB, bnd: side });
-      lineLo = off + 1; inB = rmB = eqB = 0;
-    } else if (side === SIDE_IN) inB++;
-    else if (side === SIDE_RM) rmB++;
+      out.push({ lo: lineLo, hi: off, inB: inB, rmB: rmB, eqB: eqB,
+                 pIn: pIn, pRm: pRm, bnd: side });
+      lineLo = off + 1; inB = rmB = eqB = pIn = pRm = 0;
+    } else if (side === SIDE_IN) { inB++; if (patched) pIn++; }
+    else if (side === SIDE_RM) { rmB++; if (patched) pRm++; }
     else eqB++;
   }
   if (lineLo < tlen)
-    out.push({ lo: lineLo, hi: tlen, inB: inB, rmB: rmB, eqB: eqB, bnd: SIDE_EQ });
+    out.push({ lo: lineLo, hi: tlen, inB: inB, rmB: rmB, eqB: eqB,
+               pIn: pIn, pRm: pRm, bnd: SIDE_EQ });
   return out;
 }
 
@@ -341,7 +395,9 @@ function classifyLines(text, toks) {
 const K_EQ = 0, K_PURE_IN = 1, K_PURE_RM = 2, K_MOD_INLINE = 3, K_MOD_SPLIT = 4;
 function lineKind(li) {
   //  BRO-041: weigh an edit by max(in,rm), not in+rm — a symmetric token
-  //  swap must not be charged twice against the inline gate.
+  //  swap must not be charged twice against the inline gate.  DIFF-016 extends
+  //  it: inB/rmB already carry the patched-in (li.pIn/li.pRm) bytes, so a
+  //  patch-in weighs as an edit and total stays max+eq.
   const changed = Math.max(li.inB, li.rmB);
   if (changed === 0) return K_EQ;
   if (li.eqB === 0) {
@@ -417,8 +473,9 @@ function walkHunk(text, toks, emit) {
 //  `raw(lo,hi)` appends the verbatim text byte slice (NEVER re-encoded — the
 //  text is already utf8, so re-encoding would double-encode multibyte chars).
 //  Contiguous same-SGR visible cells batch into one `raw` run.
-function paintDiffRow(text, toks, off, lineEnd, pass, enc, raw) {
+function paintDiffRow(text, toks, off, lineEnd, pass, enc, raw, cls) {
   const ntoks = toks.length;
+  cls = cls || tokClasses(toks);              // DIFF-016: provenance per token
   let ti = 0;
   while (ti < ntoks && TOK_END(toks[ti]) <= off) ti++;
   let cur = A0, runLo = -1;
@@ -434,7 +491,7 @@ function paintDiffRow(text, toks, off, lineEnd, pass, enc, raw) {
                    (pass === PASS_RM && side === SIDE_IN) ||
                    (pass === PASS_IN && side === SIDE_RM);
     if (hidden) { if (runLo >= 0) { raw(runLo, pos); runLo = -1; } pos += clen; continue; }
-    const want = cellAnsi(tag, pass, side);
+    const want = cellAnsi(tag, pass, side, ti < ntoks ? cls[ti] : CLS_LOCAL);
     if (!aEq(want, cur)) {
       if (runLo >= 0) { raw(runLo, pos); runLo = -1; }
       enc(deltaSGR(want, cur)); cur = want;
@@ -450,8 +507,9 @@ function paintDiffRow(text, toks, off, lineEnd, pass, enc, raw) {
 //  JS string written via ttyWrite/utf8.Encode).  Same two-pass cell logic as
 //  paintDiffRow; text bytes go through String.fromCharCode like the pager's own
 //  syntax paintRow (the pager's one-byte-per-char frame convention).
-function paintDiffRowStr(text, toks, off, lineEnd, pass) {
+function paintDiffRowStr(text, toks, off, lineEnd, pass, cls) {
   const ntoks = toks.length;
+  cls = cls || tokClasses(toks);              // DIFF-016: provenance per token
   let ti = 0;
   while (ti < ntoks && TOK_END(toks[ti]) <= off) ti++;
   let out = "", cur = A0, pos = off;
@@ -465,7 +523,7 @@ function paintDiffRowStr(text, toks, off, lineEnd, pass) {
     if (tag === "U" ||
         (pass === PASS_RM && side === SIDE_IN) ||
         (pass === PASS_IN && side === SIDE_RM)) { pos += clen; continue; }
-    const want = cellAnsi(tag, pass, side);
+    const want = cellAnsi(tag, pass, side, ti < ntoks ? cls[ti] : CLS_LOCAL);
     if (!aEq(want, cur)) { out += deltaSGR(want, cur); cur = want; }
     for (let b = 0; b < clen; b++) out += String.fromCharCode(text[pos + b]);
     pos += clen;
@@ -497,6 +555,7 @@ function colorDiffHunk(uriStr, text, toks, cols) {
   const raw = function (lo, hi) { if (hi > lo) chunks.push(text.subarray(lo, hi)); };
   if (uriStr && uriStr.length) bannerColor(uriStr, cols, enc);
   const tlen = text.length;
+  const cls = tokClasses(toks);               // DIFF-016: once per hunk
   walkHunk(text, toks, function (lo, endNl, pass) {
     //  Soft-wrap [lo, endNl] into display rows (bro_append_rows); cols 200
     //  rarely wraps, but keep parity for long lines.
@@ -504,7 +563,7 @@ function colorDiffHunk(uriStr, text, toks, cols) {
     while (off <= endNl) {
       const end = rowEndPass(text, toks, tlen, off, cols, pass);
       const rowEndByte = end < endNl ? end : endNl;
-      paintDiffRow(text, toks, off, rowEndByte, pass, enc, raw);
+      paintDiffRow(text, toks, off, rowEndByte, pass, enc, raw, cls);
       enc("\n");
       if (end >= endNl) break;
       off = end;
@@ -825,6 +884,12 @@ module.exports = {
   //  exported for the pager (indexRows/paintRow pass-awareness) and tests.
   colorDiffHunk: colorDiffHunk,
   hasDiffSides: hasDiffSides,
+  //  DIFF-016: the provenance classifier (local / patched-in / conflict) + the
+  //  per-line byte tally the inline-vs-split metric reads — repro hooks.
+  tokClasses: tokClasses,
+  classifyLines: classifyLines,
+  lineKind: lineKind,
+  CLS_LOCAL: CLS_LOCAL, CLS_PATCHED: CLS_PATCHED, CLS_CON: CLS_CON,
   //  WHY-001: the blame-colour renderer.  The palette lives in the VIEW (why.js
   //  bakes each O token's `#rrggbb`); the renderer just applies whatever it reads.
   colorWhyHunk: colorWhyHunk,

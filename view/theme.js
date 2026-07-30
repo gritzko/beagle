@@ -112,6 +112,21 @@ const QUAD_SGR = {
   con:    "38;2;255;255;255;48;2;220;40;40",   // conflicted wt — white on red
 };
 
+//  --- diff word-wash slots (DIFF-016, DIS-080) ----------------------------
+//  The diff render washes a changed token with a 256-colour BACKGROUND; each
+//  provenance gets a PALE tint (the token seen from the other pass) and a WASH
+//  (the token on its own pass).  `local` is the historical I/O/J/K salad/salmon
+//  pair (dog/THEME.h); `patched` (a patch-in's theirs token) and `con` (an
+//  overlap both sides touched) are the DIS-080 additions.  view/bro.js THEME
+//  mirrors these into ansi64 slots — keep in lockstep.
+const DIFF_WASH = {
+  inPale: 194, inWash: 157,      // local insert   — salad green
+  rmPale: 224, rmWash: 217,      // local remove   — salmon
+  pinPale: 153, pinWash: 117,    // patched-in insert — pale blue
+  prmPale: 223, prmWash: 215,    // patched-in remove — pale orange
+  conPale: 229, conWash: 227,    // conflict (both sides touched) — yellow
+};
+
 //  --- banner band (dog/THEME.h THEME_BANNER) ------------------------------
 //  Status/header band: black fg (256:0) on pale-yellow bg (256:230); native
 //  space-fills to the terminal width.  Closes with ESC[0m (it sets a bg, so a
@@ -179,6 +194,7 @@ module.exports = {
   THEMELIGHT: THEMELIGHT,
   VERB_SLOT: VERB_SLOT,
   QUAD_SGR: QUAD_SGR,
+  DIFF_WASH: DIFF_WASH,
   select: select,
   makeTheme: makeTheme,
 };

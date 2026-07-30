@@ -2,7 +2,7 @@
 //  HANDLER).  patch(...args) resolves its OWN (ours, theirs, fork) triple via
 //  patchscope.resolve (the central seed no longer pins ctx.triple); the run core
 //  walks the three trees in tandem,
-//  merges each diverged file into the worktree (conflict fences), restamps
+//  merges each diverged file into the worktree (PATCH-025 markerless), restamps
 //  every touched file, appends ONE `patch` provenance ULOG row (a BARRIER — one
 //  row for the WHOLE absorbed set, never per-file), and pushes the per-file
 //  status rows via ctx.out.  No commit — the next `be post` squashes the work.
@@ -12,7 +12,7 @@
 //  way native `be patch`'s mainline GRAFMergeWtFileTunable works: build each
 //  tip's weave from its commit-history closure (`weave.fold`=WEAVENext linear,
 //  `weave.merge`=WEAVEMerge at merge commits), union ours⊕theirs, then
-//  `weave.merged` to fence divergent regions.  Shared-history tokens coincide
+//  `weave.mergedLive` to read it markerless.  Shared-history tokens coincide
 //  by real commit id, so the union dedups automatically — NOT a 3-blob merge.
 //
 //  SCOPE (JS-052 scope a): landing the row still needs native `be post`
@@ -31,7 +31,6 @@
 const wtlog     = require("../../shared/wtlog.js");
 const store     = require("../../shared/store.js");
 const checkout  = require("../../shared/checkout.js");
-const conflict  = require("../../shared/conflict.js");
 const ulog      = require("../../shared/ulog.js");
 const pathlib   = require("../../shared/util/path.js");
 //  BE-030: worktree fs paths go THROUGH resolve() — wtpath is the
@@ -121,7 +120,7 @@ function classifyAndApply(rc, path, f, o, t) {
     //  carry uncommitted edits (spec PATCH.mkd §"Weave merge": the ours side is
     //  the wt's current bytes).  A clean baseline clean-takes theirs; a DIRTY
     //  file routes into the 3-way weave (wt bytes folded onto ours), so disjoint
-    //  regions merge and a true overlap fences — never a silent clobber.
+    //  regions merge and a true overlap reports `con` — never a silent clobber.
     if (wtDirty(rc.wtRoot, path, oSha)) return mergeApply(rc, path, o);
     writeLeaf(rc, path, t, weave.blobBytes(reader, tSha));
     st.takeTheirs++; emit(rc, "applied", path); return;
@@ -157,9 +156,8 @@ function classifyAndApply(rc, path, f, o, t) {
 }
 
 //  Full-history merge of one diverged file: reconstruct ours/theirs weaves
-//  from their commit DAGs, union them, render with conflict fences over the
-//  per-side scopes.  Mirrors GRAFMergeWtFileTunable.  A residual conflict
-//  marker reports `cnf` (markers left in the wt; DIS-057 conf→cnf).
+//  from their commit DAGs, union them, read the union MARKERLESS (PATCH-025).
+//  Mirrors GRAFMergeWtFileTunable; a reported conflict span spells `con`.
 function mergeApply(rc, path, oLeaf) {
   //  ONE shared ctx (rc.treeCache + a fresh weaveCache) so a shared ancestor of
   //  ours/theirs folds once — weave.build replays the file's commit closure.
@@ -168,7 +166,7 @@ function mergeApply(rc, path, oLeaf) {
   //  Reconstruct + union + render through the fixed markup buffers (lazy mmap,
   //  no growth).  If a token-dense file overflows the cap, it is not a text file
   //  we can weave-merge — err out, treat it as a BLOB (failed), don't crash.
-  let merged;
+  let merged, clashed = false;
   try {
     const ours = weave.build(rc.reader, path, rc.ours, ctx);
     const theirs = weave.build(rc.reader, path, rc.theirs, ctx);
@@ -194,14 +192,12 @@ function mergeApply(rc, path, oLeaf) {
     if (!ourWeave)   merged = aliveOf(rc, theirs.weave);
     else if (!theirs.weave) merged = aliveOf(rc, ourWeave);
     else {
-      //  Union ours⊕theirs (shared tokens dedup by identity), then render the
-      //  two sides' scopes with fences into the fixed markup buffer (lazy mmap).
+      //  PATCH-025 (DIS-080): union ours⊕theirs (shared tokens dedup by
+      //  identity), then read it MARKERLESS — RGA live bytes + conflict spans.
       const wm = weave.merge(ourWeave, theirs.weave, "0000000000000000");
-      const oScope = wm.scope(setArr(ourIds));
-      const tScope = wm.scope(setArr(theirs.ids));
-      const out = io.ram(weave.MAX_SOURCE_MARKED_UP);
-      wm.merged([oScope, tScope], out);
-      merged = out.data();
+      const live = weave.mergedLive(wm, [setArr(ourIds), setArr(theirs.ids)]);
+      merged = live.bytes;
+      clashed = live.spans.length > 0;
     }
   } catch (e) {
     if (("" + e).includes("full")) { rc.st.failed++; emit(rc, "failed", path); return; }
@@ -210,7 +206,7 @@ function mergeApply(rc, path, oLeaf) {
 
   const leaf = oLeaf || { kind: "f" };
   writeBytes(rc, path, leaf, merged);
-  if (conflict.hasConflictMarker(merged)) {
+  if (clashed) {
     rc.st.mergedConflict++; emit(rc, "con", path);   // STATUS-005: con (was DIS-057 cnf)
     rc.conflicts.push(path);                         // STATUS-005: durable con row target
   } else { rc.st.merged++; emit(rc, "merged", path); }
@@ -480,7 +476,7 @@ function patchRun(ctx) {
       if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
     }
     throw "be patch: PATCHCONFLICT " + rc.conflicts.length +
-          " file(s) merged with conflicts — resolve the markers";
+          " file(s) merged with conflicts — resolve the conflicting lines";
   }
 }
 

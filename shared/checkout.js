@@ -239,18 +239,19 @@ function apply(keeper, tipSha, wtRoot, opts) {
           rows.push({ verb: "con", path: rel }); return;
         }
         //  dirty TEXT → 3-way weave, the same weave3 as get.js's flat D5 leaf.
-        let merged;
-        try { merged = weavelib.weave3(oldBytes, onDisk, bytes, weavelib.extOf(rel)); }
-        catch (e) { if (!("" + e).includes("full")) throw e; merged = null; }
-        if (merged == null) {                    // unweavable → keep ours, conflict
+        let mg;
+        try { mg = weavelib.weave3(oldBytes, onDisk, bytes, weavelib.extOf(rel)); }
+        catch (e) { if (!("" + e).includes("full")) throw e; mg = null; }
+        if (mg == null) {                        // unweavable → keep ours, conflict
           rows.push({ verb: "con", path: rel }); conRow(rel); return;
         }
-        materialise(wtRoot, rel, leaf, merged);
-        if (conflict.hasConflictMarker(merged)) {
+        materialise(wtRoot, rel, leaf, mg.bytes);
+        //  PATCH-025 (DIS-080): conflict = live spans, not marker bytes.
+        if (mg.spans.length) {
           rows.push({ verb: "con", path: rel }); conRow(rel); return;
         }
         //  the edit reproduced the target exactly → clean, stamp to the row ts.
-        if (bytesEq(merged, bytes) && stampTs != null) trySetMtime(full, stampTs);
+        if (bytesEq(mg.bytes, bytes) && stampTs != null) trySetMtime(full, stampTs);
         rows.push({ verb: "mrg", path: rel }); return;
       }
       //  clean → fall through, (re)materialise theirs.

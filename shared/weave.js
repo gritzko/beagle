@@ -32,6 +32,77 @@ function merge(a, b, hash) {
   return w;
 }
 
+//  PATCH-025 (DIS-080): the MARKERLESS merged render — the RGA live reading of
+//  a merged weave (every alive token in weave order, NO `<<<<`/`||||`/`>>>>`).
+//  `groupIds` is one hashlet-id array per side (the same arrays `scope` takes);
+//  returns { bytes, spans } — spans are the [from,to) byte ranges that conflict.
+//  Mirrors the C WEAVEEmitMerged run walk, fences replaced by weave order: a run
+//  of non-shared tokens CONFLICTS iff two of its membership masks are disjoint;
+//  a conflicting run whose groups spell EQUAL bytes collapses to one copy
+//  (content re-absorbed under another birth id — never a conflict).
+function mergedLive(wm, groupIds) {
+  const commits = wm.commits, ng = groupIds.length;
+  //  A token reachable in EVERY group is shared (the spine bit rides all
+  //  scopes, so commit index 0 is shared by construction — WEAVEScope).
+  const spine = ng >= 32 ? 0xFFFFFFFF : ((1 << ng) - 1);
+  const sets = groupIds.map(function (g) { return new Set(g); });
+  const text = [], mask = [], live = [];
+  wm.rewind();
+  while (wm.next()) {
+    const ins = wm.inserter;
+    let m = 0;
+    for (let g = 0; g < ng; g++)
+      if (ins === 0 || sets[g].has(commits[ins])) m |= (1 << g);
+    text.push(wm.tokText); mask.push(m); live.push(wm.rms.length === 0);
+  }
+
+  const n = text.length, parts = [], spans = [];
+  let at = 0;
+  function put(b) { parts.push(b); at += b.length; }
+  //  the alive bytes of one membership mask within [lo,hi), concatenated.
+  function gather(lo, hi, m) {
+    let len = 0;
+    for (let j = lo; j < hi; j++) if (live[j] && mask[j] === m) len += text[j].length;
+    const b = new Uint8Array(len);
+    let o = 0;
+    for (let j = lo; j < hi; j++)
+      if (live[j] && mask[j] === m) { b.set(text[j], o); o += text[j].length; }
+    return b;
+  }
+
+  let i = 0;
+  while (i < n) {
+    if (!live[i]) { i++; continue; }
+    if (mask[i] === spine) { put(text[i]); i++; continue; }
+    //  Divergent run: spans until the next shared token (dead tokens ride along).
+    let hi = i;
+    while (hi < n && !(live[hi] && mask[hi] === spine)) hi++;
+    const seen = [];
+    for (let j = i; j < hi; j++)
+      if (live[j] && seen.indexOf(mask[j]) < 0) seen.push(mask[j]);
+    let clash = false;
+    for (let a = 0; a < seen.length && !clash; a++)
+      for (let b = a + 1; b < seen.length; b++)
+        if ((seen[a] & seen[b]) === 0) { clash = true; break; }
+    if (clash && seen.length >= 2) {
+      const g0 = gather(i, hi, seen[0]);
+      let allEq = true;
+      for (let g = 1; g < seen.length && allEq; g++)
+        if (!bytesEq(g0, gather(i, hi, seen[g]))) allEq = false;
+      if (allEq) { put(g0); i = hi; continue; }   // re-absorbed, not a conflict
+    }
+    const from = at;
+    for (let j = i; j < hi; j++) if (live[j]) put(text[j]);
+    if (clash) spans.push({ from: from, to: at });
+    i = hi;
+  }
+
+  const bytes = new Uint8Array(at);
+  let o = 0;
+  for (const p of parts) { bytes.set(p, o); o += p.length; }
+  return { bytes: bytes, spans: spans };
+}
+
 //  BE-010: the synthetic revision id for the wt's on-disk edit, folded onto the
 //  OURS side of a per-file weave (mirrors native WEAVE_WT_SRC in graf/GET.c).  A
 //  reserved 16-hex hashlet that never collides with a real commit id (the hi64
@@ -95,9 +166,11 @@ function _w3eq(a, b) {
 }
 function weave3(base, ours, theirs, ext) {
   base = base || new Uint8Array(0);
-  if (_w3eq(ours, theirs)) return ours;          // same edit both sides
-  if (_w3eq(ours, base)) return theirs;          // only theirs changed
-  if (_w3eq(theirs, base)) return ours;          // only ours changed
+  //  PATCH-025 (DIS-080): trivial resolutions carry no conflict spans.
+  const clean = function (b) { return { bytes: b, spans: [] }; };
+  if (_w3eq(ours, theirs)) return clean(ours);   // same edit both sides
+  if (_w3eq(ours, base)) return clean(theirs);   // only theirs changed
+  if (_w3eq(theirs, base)) return clean(ours);   // only ours changed
   //  PATCH-012: over the shared source cap is a BLOB — not weavable.
   if (base.length > MAX_SOURCE_SIZE ||
       ours.length > MAX_SOURCE_SIZE ||
@@ -105,12 +178,8 @@ function weave3(base, ours, theirs, ext) {
   const wo = fold(fold(null, base, ext, _W3_BASE), ours,   ext, _W3_OURS);
   const wt = fold(fold(null, base, ext, _W3_BASE), theirs, ext, _W3_THRS);
   const wm = merge(wo, wt, _W3_MRG);
-  const oScope = wm.scope([_W3_BASE, _W3_OURS]);
-  const tScope = wm.scope([_W3_BASE, _W3_THRS]);
-  //  PATCH-012: render into the shared fixed markup buffer (lazy mmap).
-  const out = io.ram(MAX_SOURCE_MARKED_UP);
-  wm.merged([oScope, tScope], out);
-  return out.data().slice();
+  //  PATCH-025 (DIS-080): markerless render — RGA live bytes + conflict spans.
+  return mergedLive(wm, [[_W3_BASE, _W3_OURS], [_W3_BASE, _W3_THRS]]);
 }
 
 //  A commit's tree flattened to { path -> { sha, mode, kind } } over every leaf.
@@ -240,6 +309,8 @@ function build(reader, path, tip, ctx) {
 module.exports = { fold: fold, merge: merge,
   //  GET-056b: the one 3-blob weave merge (get.js + checkout.js share it).
   weave3: weave3,
+  //  PATCH-025: the markerless (RGA live bytes + conflict spans) merged render.
+  mergedLive: mergedLive,
   MAX_SOURCE_SIZE: MAX_SOURCE_SIZE, MAX_SOURCE_MARKED_UP: MAX_SOURCE_MARKED_UP,
   //  DIFF-010: file-weave reconstruction (was patch.js buildSideWeave + fileweave.js).
   build: build, makeCtx: makeCtx, weaveId: weaveId, extOf: extOf,

@@ -29,6 +29,8 @@ const classify = require("../../shared/classify.js");
 //  DIFF-010: the shared grow-on-"out full" WEAVE/HUNK fold retry (mirrors
 //  loop.js:128-142) — a large diff fold no longer throws "out full".
 const weave   = require("../../shared/weave.js");
+//  DIFF-016: the EXPECTED reading (base ⊕ the in-scope patch-ins, no WT layer).
+const expected = require("../../shared/expected.js");
 const ambient = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const navlib  = require("../../shared/nav.js");        // URI-014: word-form re-bake of baked diff: URIs
 const pathlib = require("../../shared/util/path.js");  // BE-011: join + wtJoin confinement
@@ -82,6 +84,14 @@ function isBinary(bytes) {
 //  Two distinct 16-hex hashlet ids for the from/to weave layers (any two
 //  distinct values; the predicates only care about !=).
 const ID_FROM = "0000000000000001", ID_TO = "0000000000000002";
+//  DIFF-016 (DIS-080): a THIRD layer, EXPECTED (base ⊕ the in-scope patch-ins),
+//  folded BETWEEN base and wt — so every emitted token's inserter/remover spells
+//  its provenance and the from/to sides stay the SAME base-vs-wt axis as before.
+const ID_EXP = "0000000000000003";
+//  DIFF-016: tok32 bit 26 (`custom`) = PATCHED-IN provenance.  The C HUNK render
+//  IGNORES that bit, so `--plain` output stays byte-identical; view/bro.js paints
+//  it (pale blue/orange, and yellow where a run carries both provenances).
+const TOK_PATCHED = 1 << 26;
 
 //  Build the 2-layer weave for one file pair and render its hunks into `out`
 //  via the HUNK `.plain`/`.color` cursor (the EXACT weave.js:75-99 path).
@@ -94,18 +104,25 @@ const ID_FROM = "0000000000000001", ID_TO = "0000000000000002";
 //  faithful workaround is to fold the layers in the OTHER order (content as the
 //  base, empty as the diff) and INVERT the from/to scopes — the SAME 'H'
 //  records the C path produces (the +/- sides come from the scope roles).
-function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
+//  DIFF-016: `exp` (optional) = the EXPECTED bytes for `name` — base ⊕ the
+//  in-scope patch-ins.  When it differs from the base side it rides as a middle
+//  weave layer and every emitted token gets its provenance bit.
+function diffFile(name, fromBytes, toBytes, full, navver, color, out, exp) {
   const f = fromBytes || new Uint8Array(0);
   const t = toBytes || new Uint8Array(0);
   if (f.length === t.length && bytesEq(f, t)) return;          // from==to skip
   if (isBinary(f) || isBinary(t)) return;                      // binary skip
   //  Over the source cap → a BLOB: not tokenised, not diffed (weave.js policy).
   if (f.length > weave.MAX_SOURCE_SIZE || t.length > weave.MAX_SOURCE_SIZE) return;
+  //  DIFF-016: an EXPECTED equal to the base side (or over the cap) adds no
+  //  layer — the weave, the emit and the render stay exactly what they were.
+  const e = (exp && exp.length !== undefined && exp.length <= weave.MAX_SOURCE_SIZE
+             && !bytesEq(exp, f)) ? exp : null;
 
   //  Fold both sides under one lexer `ext` and emit this pair's hunks into a
   //  fresh HUNK container (the caller renders it).
   function fold2(ext) {
-    let wA, wB, from, to;
+    let wA, wB, from, to, layered = false;
     if (f.length === 0) {
       //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
       //  (ID_TO); invert the scope roles so `from` is the empty side.
@@ -115,29 +132,76 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
     } else {
       //  Normal / deletion: base layer = from-content, diff layer = to.
       wA = weave.fold(null, f, ext, ID_FROM);
-      wB = weave.fold(wA, t, ext, ID_TO);
-      from = wB.scope([ID_FROM]); to = wB.scope([ID_FROM, ID_TO]);
+      const ids = [ID_FROM];
+      if (e) { wA = weave.fold(wA, e, ext, ID_EXP); ids.push(ID_EXP); layered = true; }
+      //  adjacent-equal skip (weave.foldWt's rule): wt identical to EXPECTED =>
+      //  no wt layer, so a purely patched-in file reads as all-theirs.
+      wB = (layered && bytesEq(e, t)) ? wA : weave.fold(wA, t, ext, ID_TO);
+      if (wB !== wA) ids.push(ID_TO);
+      from = wB.scope([ID_FROM]); to = wB.scope(ids);
     }
     const hd = abc.ram("HUNK", weave.MAX_SOURCE_MARKED_UP);
     if (full) wB.emitFull(from, to, name, "diff:", navver, hd);
     else      wB.emitDiff(from, to, name, navver, hd);
-    return hd;
+    return { hd: hd, prov: layered ? provList(wB) : null };
   }
 
   //  The fold/emit/render buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap,
   //  no dynamic growth).  If a (sub-cap but token-dense) source overflows even
   //  that, there is no point diffing it — err out and treat it as a BLOB (skip).
-  let hd;
+  let r;
   try {
-    hd = fold2(extOf(name));
-  } catch (e) {
-    if (!("" + e).includes("full")) throw e;
+    r = fold2(extOf(name));
+  } catch (err) {
+    if (!("" + err).includes("full")) throw err;
     //  DIFF-015: the binding masks EVERY fold failure (a lexer defect too) as
     //  "out full", so a changed file VANISHED — refold under the plain lexer.
-    try { hd = fold2(""); } catch (e2) { return; }             // over cap → blob
+    try { r = fold2(""); } catch (e2) { return; }              // over cap → blob
     io.log("diff: cannot tokenize " + name + " — diffing as plain text\n");
   }
-  emitHunks(hd, color, out);
+  emitHunks(r.hd, color, out, r.prov);
+}
+
+//  DIFF-016: the weave's EMITTED token sequence — every token visible in
+//  from ∪ to, in weave order — each flagged PATCHED-IN when the EXPECTED layer
+//  inserted it (an in-token theirs added) or removed it (an rm-token theirs
+//  dropped).  `emitDiff`/`emitFull` emit exactly this sequence in contiguous
+//  windows, so a hunk record aligns against it by token text — the provenance
+//  falls out of the ONE fold, with no second diff pass (DIS-080 constraint).
+function provList(w) {
+  const commits = w.commits, out = [];
+  w.rewind();
+  while (w.next()) {
+    const ins = w.inserter, rms = w.rms || [];
+    if (ins !== 0 && rms.length) continue;      // born AND died here → not emitted
+    let theirs = false;
+    if (rms.length === 0) theirs = commits[ins] === ID_EXP;
+    else for (let i = 0; i < rms.length; i++)
+      if (commits[rms[i]] === ID_EXP) { theirs = true; break; }
+    out.push({ txt: w.tokText.slice(), p: theirs });
+  }
+  return out;
+}
+
+//  DIFF-016: mark ONE hunk record's toks against `prov` (of which the record is
+//  a contiguous window at or after `from`) — set bit 26 on every CHANGED token
+//  the EXPECTED layer owns.  Returns the cursor past the matched window; an
+//  unalignable record is left unmarked (renders as today, never wrong-coloured).
+function markRecord(prov, from, text, toks) {
+  const n = toks.length;
+  if (!n) return from;
+  const lo = new Uint32Array(n);
+  for (let j = 0, p = 0; j < n; j++) { lo[j] = p; p = toks[j] & 0xffffff; }
+  for (let s = from; s + n <= prov.length; s++) {
+    let hit = true;
+    for (let j = 0; j < n && hit; j++)
+      if (!bytesEq(prov[s + j].txt, text.subarray(lo[j], toks[j] & 0xffffff))) hit = false;
+    if (!hit) continue;
+    for (let j = 0; j < n; j++)
+      if (prov[s + j].p && ((toks[j] >>> 24) & 3)) toks[j] |= TOK_PATCHED;
+    return s + n;
+  }
+  return from;
 }
 
 //  Render every record in a HUNK container through the diff:-scheme cursor.
@@ -149,12 +213,18 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out) {
 //  uri) re-fed to ctx.sink, so a pager left-click opens the file at the line
 //  (mirrors C graf/GRAF.c:522/535).  The U bytes are hidden in plain/color
 //  (HUNK.c skips 'U' spans), so out.chunk's rendered text stays byte-identical.
-function emitHunks(hd, color, out) {
+function emitHunks(hd, color, out, prov) {
   hd.rewind();
+  let at = 0;
   while (hd.next()) {
     //  BRO-006: feed the raw record to the toks sink (it appends the U target);
     //  the rendered text still goes to out.chunk for the plain/color channel.
-    if (out.feed) out.feed(utf8.Decode(hd.uri), hd.text.slice(), hd.toks.slice());
+    if (out.feed) {
+      //  DIFF-016: stamp the patched-in bit before the record leaves the view.
+      const text = hd.text.slice(), toks = hd.toks.slice();
+      if (prov) at = markRecord(prov, at, text, toks);
+      out.feed(utf8.Decode(hd.uri), text, toks);
+    }
     //  The per-record render buffer is the fixed markup size (lazy mmap) — one
     //  hunk's plain/color bytes can't exceed it, so no dynamic growth.
     const o = io.ram(weave.MAX_SOURCE_MARKED_UP);
@@ -261,6 +331,26 @@ function uniqSorted(a, b) {
 //  --- wt-vs-base whole-tree diff (GRAFDiffWtTree) -----------------------
 //  DIFF-012: enumerate the classifier's dirty paths (optionally under `prefix`)
 //  and render each base-present one through the per-file wt-vs-base diff (lex order).
+//  DIFF-016: the run's EXPECTED context for ONE repo — the in-scope patch-ins'
+//  theirs shas + the base they fold onto + a shared tree cache.  null when no
+//  patch row is in scope, which is the overwhelming case: zero extra work then.
+//  `cons` = [/todo/ULOG/ULOG-004] conflicts(), the path-granular cross-check of
+//  the per-token overlap the render derives from the weave.
+function expectedCtx(k, repo, log) {
+  const shas = expected.theirsShas(log);
+  if (!shas.length) return null;
+  return { k: k, shas: shas, cache: Object.create(null),
+           base: (log.curTip() || {}).sha || "",
+           cons: (typeof log.conflicts === "function") ? log.conflicts() : [] };
+}
+//  DIFF-016: the EXPECTED bytes for one path, or undefined (no patch axis / the
+//  path is untouched by every patch-in / unweavable).
+function expectedFor(ec, path) {
+  if (!ec) return undefined;
+  const r = expected.expectedOf(ec.k, path, ec.base, ec.shas, ec.cache);
+  return r.patched ? r.bytes : undefined;
+}
+
 function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
   const F = treeMap(k, baseTreeSha);          // base tree: from-side blob shas
   const subPrefixes = Object.keys(F.subs).map(function (p) { return p + "/"; });
@@ -271,6 +361,7 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
 
   //  Dirty set from the classifier — one source of truth for "what changed".
   const log = wtlog.open(repo);
+  const ec = expectedCtx(k, repo, log);       // DIFF-016: the patch-in axis
   const res = classify.classify(repo, log, k);
   const paths = [];
   for (const r of res.rows) {
@@ -297,7 +388,7 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
     //  BOTH: sha-skip on the wt blob sha vs the base entry sha (a no-op edit
     //  that the classifier still bucketed leaves no diff).
     if (frameSha("blob", wt) === fsha) continue;
-    diffFile(p, blobBytes(k, fsha), wt, false, "", color, out);
+    diffFile(p, blobBytes(k, fsha), wt, false, "", color, out, expectedFor(ec, p));
   }
 
   //  DIFF-012/[Submodules]: recurse mounted subs — each sub's own wt-vs-base
@@ -581,7 +672,12 @@ function diffOne(arg) {
       let onLink = false;
       try { onLink = io.lstat(wtAbs).kind === "lnk"; } catch (e) {}
       const tB = onLink ? readWtLink(wtAbs) : readWtFile(wtAbs);
-      diffFile(spec.path, fB, tB, true, "", color, out);
+      //  DIFF-016: the same EXPECTED axis as the tree walk — a file under a
+      //  mount takes its OWN repo's patch rows (and base), never the parent's.
+      const eRepo = m ? m.subRepo : repo, eK = m ? m.subK : k;
+      const ePath = m ? m.rest : spec.path;
+      const ec = expectedCtx(eK, eRepo, wtlog.open(eRepo));
+      diffFile(spec.path, fB, tB, true, "", color, out, expectedFor(ec, ePath));
     } else {
       diffWtTree(k, baseTree, repo, color, fctx, "", out);
     }
