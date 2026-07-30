@@ -46,21 +46,11 @@ const pathlib = require("./util/path.js");   // JSQUE-016: util libs -> shared/u
 const wtpath = require("../core/discover.js").wtpath;
 const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");           // DIS-057: ronStepMs (ms-correct band)
-const conflict = require("./conflict.js");   // STATUS-005: hasConflictMarker (POST-017 scan)
-const wtread = require("./wtread.js");        // STATUS-005: the ONE reg-file wt read
+//  STATUS-017 (DIS-080): the EXPECTED reading is a weave reading — base ⊕ the
+//  in-scope patch-ins, the same builder `patch` uses; never a parallel reader.
+const weave = require("./weave.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
-
-//  STATUS-005: live marker-triple scan; a con row + this = the `con` bucket,
-//  markers gone → plain mod (resolution is detected, never recorded).
-function wtHasMarker(wtRoot, rel) {
-  const full = wtpath(wtRoot, rel);
-  let st;
-  try { st = io.lstat(full); } catch (e) { return false; }
-  if (st.kind !== "reg" || !st.size) return false;
-  const bytes = wtread.readFileBytes(full, st.size);
-  return bytes != null && conflict.hasConflictMarker(bytes);
-}
 
 //  --- wt scan ----------------------------------------------------------
 //  Walk the worktree depth-first via io.readdir({recursive}), lstat each
@@ -142,9 +132,15 @@ function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefi
 //  Mirrors CLASS.c::CLASSWtEqBase (symlink → hash of the link target).
 function wtEqBase(wtRoot, rel, baseSha) {
   if (!isFullSha(baseSha)) return false;
+  return wtBlobSha(wtRoot, rel) === baseSha;
+}
+
+//  STATUS-017: the wt bytes at `rel` framed as a git blob sha (undefined when
+//  absent/irregular) — the ONE wt read both the base and EXPECTED compares use.
+function wtBlobSha(wtRoot, rel) {
   const full = wtpath(wtRoot, rel);
   let st;
-  try { st = io.lstat(full); } catch (e) { return false; }
+  try { st = io.lstat(full); } catch (e) { return undefined; }
   let content;
   if (st.kind === "lnk") {
     //  A symlink's git blob is its TARGET path verbatim (CLASS.c
@@ -152,7 +148,7 @@ function wtEqBase(wtRoot, rel, baseSha) {
     //  link target (no follow) and hash it as a blob — a re-pointed link
     //  reads `mod`, an unchanged one reads `ok`.
     let tgt;
-    try { tgt = io.readlink(full); } catch (e) { return false; }
+    try { tgt = io.readlink(full); } catch (e) { return undefined; }
     content = utf8.Encode(tgt);
   } else if (st.kind === "reg") {
     if (st.size === 0) content = new Uint8Array(0);
@@ -164,27 +160,27 @@ function wtEqBase(wtRoot, rel, baseSha) {
       //  `mod` (the 279-file real-repo regression).  A pooled fd read has
       //  no such ceiling — the fd is closed each call.
       let fd;
-      try { fd = io.open(full, "r"); } catch (e) { return false; }
+      try { fd = io.open(full, "r"); } catch (e) { return undefined; }
       try {
         const b = io.buf(st.size + 16);
         io.readAll(fd, b, st.size);
         content = b.data();
-      } catch (e) { try { io.close(fd); } catch (e2) {} return false; }
+      } catch (e) { try { io.close(fd); } catch (e2) {} return undefined; }
       try { io.close(fd); } catch (e) {}
     }
-  } else return false;
-  return shalib.frameSha("blob", content) === baseSha;
+  } else return undefined;
+  return shalib.frameSha("blob", content);
 }
 
 //  --- patch-stamp axis (DIS-057) ---------------------------------------
 //  Each in-scope `patch` row sits at the TOP of a reserved 3-stamp band: the
 //  patch verb stamps every merged file's mtime to the row ceil-2ms (clean apply
-//  → `pat`), ceil-1ms (`mrg`), or ceil (`cnf`), so the OUTCOME rides the stamp
-//  offset — no per-file row, no merge recompute at read time.  The row ts is the
+//  → `pat`) or ceil-1ms (`mrg`), so the OUTCOME rides the stamp offset.  It is a
+//  FAST PATH only (STATUS-017): the EXPECTED consult decides.  The row ts is the
 //  band CEILING (not the floor) so the wtlog monotonic tail already sits past
 //  every stamp it produced (DIS-057 Task 2): a later nowAfter(tail) lands above
 //  the whole band.  patchStamps(wtl) → a mtime(BigInt)→bucket map over every
-//  in-scope patch row's {ceil-2ms:pat, ceil-1ms:mrg, ceil:cnf}.  Empty when no
+//  in-scope patch row's {ceil-2ms:pat, ceil-1ms:mrg}.  Empty when no
 //  patch row is in scope, so the whole axis is a no-op for the common case.
 //  DIS-057 REOPEN 2026-06-29: step in MILLISECONDS (ulog.ronStepMs), the SAME
 //  ms-correct step the patch verb uses — a raw t-2n corrupts the packed ms field
@@ -197,12 +193,13 @@ function patchStamps(wtlogReader) {
     if (r.verb !== "patch") continue;
     if (floor != null && r.ts <= floor) continue;
     const t = r.ts;
+    //  STATUS-017 (DIS-080): the `cnf` ceiling slot is RETIRED — conflict
+    //  liveness is the wtlog `con` row, never an mtime.
     map[ulog.ronStepMs(t, -2).toString()] = "pat";
     map[ulog.ronStepMs(t, -1).toString()] = "mrg";
-    map[t.toString()]                     = "cnf";
   }
   //  GET-050: the CURRENT base get opens the SAME band under ITS ceiling for
-  //  carried/woven files: ceil-1ms `mod` (wt `v`), ceil-2ms `con` (wt `!`).  The
+  //  carried/woven files (both slots `mod`, wt `v` — STATUS-017 retired `con`).  The
   //  ceiling itself is GET-049's clean-overwrite stamp (in the stamp-set → `ok`),
   //  so it is NOT registered.  Only the recentmost get/post ts (the live base)
   //  counts — an earlier get is superseded (its carried files were re-touched).
@@ -210,10 +207,47 @@ function patchStamps(wtlogReader) {
         ? wtlogReader.boundaries().pd : null;
   for (const r of wtlogReader.rows) {
     if (r.verb !== "get" || (pd != null && r.ts < pd)) continue;
+    //  STATUS-017: the ceil-2ms `con` slot is RETIRED with `cnf` — a woven
+    //  get leaf reads `mod` here and earns `con` from its wtlog row instead.
     map[ulog.ronStepMs(r.ts, -1).toString()] = "mod";
-    map[ulog.ronStepMs(r.ts, -2).toString()] = "con";
+    map[ulog.ronStepMs(r.ts, -2).toString()] = "mod";
   }
   return map;
+}
+
+//  --- the EXPECTED reading (STATUS-017 / DIS-080 §2) --------------------
+//  EXPECTED at `path` = the weave reading of the OURS base tip ⊕ every in-scope
+//  patch-in (theirs) layer — NO wt layer, so it is what a re-run of the absorb
+//  would put on disk.  Returned as its git-blob sha (the wt compare is sha-vs-sha);
+//  undefined when the file is unweavable (a BLOB / unreadable) — the caller then
+//  falls back to the DIS-057 stamp band, which is a fast path, never the truth.
+//  The kind then falls out: wt == EXPECTED == theirs → `pat` (clean take-theirs),
+//  wt == EXPECTED != theirs → `mrg` (a real weave), wt != EXPECTED → a local edit.
+function expectedSha(reader, path, baseTipSha, theirsShas) {
+  const ctx = weave.makeCtx(reader, path);
+  const sides = [];
+  try {
+    for (const tip of [baseTipSha].concat(theirsShas)) {
+      if (!isFullSha(tip)) continue;
+      const s = weave.build(reader, path, tip, ctx);
+      if (s.weave) sides.push(s);
+    }
+    if (!sides.length) return undefined;
+    let bytes;
+    if (sides.length === 1) {
+      const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
+      sides[0].weave.alive(b);
+      bytes = b.data();
+    } else {
+      let wm = sides[0].weave;
+      for (let i = 1; i < sides.length; i++)
+        wm = weave.merge(wm, sides[i].weave, "0000000000000000");
+      bytes = weave.mergedLive(wm, sides.map(function (s) {
+        const a = []; for (const x of s.ids) a.push(x); return a;
+      })).bytes;
+    }
+    return shalib.frameSha("blob", bytes);
+  } catch (e) { return undefined; }
 }
 
 //  --- the unified N-way merge (DIS-057) --------------------------------
@@ -282,29 +316,41 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   });
   const anyPd = Object.keys(puts).length > 0 || Object.keys(dels).length > 0;
 
-  //  4. patched-in (theirs) stamps: mtime → pat/mrg/cnf bucket — the cheap
-  //  per-file OUTCOME tag the patch verb wrote.  And the theirs TREE ulog itself
-  //  (rel → {sha,kind,mode}), the merge's SEPARATE 4th input: a patch-stamped,
-  //  ours-modified file is `pat` when wt == theirs (a clean take-theirs), else
-  //  `mrg`/`cnf` (a merge of ours+theirs).  Read each in-scope patch row's
-  //  theirs tree (later rows win on a path collision — newest absorb).  Empty
-  //  when no patch row is in scope, so the whole axis is a no-op otherwise.
+  //  4. patched-in (theirs) stamps: mtime → pat/mrg, the cheap per-file OUTCOME
+  //  tag the patch verb wrote — a FAST PATH ONLY (STATUS-017), consulted when the
+  //  EXPECTED reading is unavailable.  And the theirs TREE ulog itself
+  //  (rel → {sha,kind,mode}), the merge's SEPARATE 4th input: a path theirs
+  //  carries DIFFERENTLY from ours base is a patch-touched path, whose wt bytes
+  //  are compared against EXPECTED (base ⊕ theirs, weave) to name the dirt kind.
+  //  Read each in-scope patch row's theirs tree (later rows win on a path
+  //  collision — newest absorb).  Empty when no patch row is in scope.
   const pstamps = patchStamps(wtlogReader);
-  //  STATUS-005: durable con rows; a named path with LIVE markers is `con` —
-  //  verb-agnostic, mtime-proof, unlike the DIS-057 band a get never earns.
-  const conSet = (wtlogReader && typeof wtlogReader.conPaths === "function")
-        ? wtlogReader.conPaths() : new Set();
+  //  STATUS-017 (DIS-080 §4): con liveness is the ULOG-004 row scan alone —
+  //  no byte scan; a con path stays `con` until the next get/post barrier.
+  const conSet = new Set((wtlogReader && typeof wtlogReader.conflicts === "function")
+        ? wtlogReader.conflicts() : []);
+  const theirsShas = [];
   const theirs = {};
   if (typeof wtlogReader.patchTheirs === "function") {
     for (const tsha of wtlogReader.patchTheirs()) {
       if (!isFullSha(tsha)) continue;
       const ttree = reader.commitTree(tsha);
       if (!ttree) continue;
+      theirsShas.push(tsha);
       reader.readTreeRecursive(ttree, function (leaf) {
         if (dropMeta && isMeta(leaf.path)) return;
         theirs[leaf.path] = { sha: leaf.sha, kind: leaf.kind, mode: leaf.mode };
       });
     }
+  }
+  //  STATUS-017: the EXPECTED reading for ONE patch-touched path, memoised per
+  //  run (the weave rebuild is the expensive leg; dirty patched paths are few).
+  const expCache = {};
+  function expectedAt(path) {
+    if (!(path in expCache))
+      expCache[path] = expectedSha(reader, path,
+                                   baseTip && baseTip.sha, theirsShas);
+    return expCache[path];
   }
 
   //  merge keys: union of all FOUR input ulogs (base ⊕ wt ⊕ put/del ⊕ theirs),
@@ -331,8 +377,8 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   const subPrefixes = [];
   function underSub(p) { for (const s of subPrefixes) if (p.indexOf(s) === 0) return true; return false; }
 
-  //  STATUS-005: ONE visible conflict name — the DIS-057 `cnf` band outcome
-  //  is translated to `con` at the push sites (patchStamps keeps `cnf`).
+  //  STATUS-005/STATUS-017: ONE visible conflict name `con`, and it comes from
+  //  the wtlog rows alone — the DIS-057 `cnf` band slot is retired.
   const counts = { ok: 0, put: 0, new: 0, mov: 0, rmv: 0, pat: 0, mrg: 0,
                    con: 0, mod: 0, del: 0, mis: 0, unk: 0 };
   const rows = [];
@@ -411,34 +457,36 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       continue;
     }
 
-    //  No staged intent — classify by presence + content (+ patch stamp).  The
-    //  patch axis (DIS-057 RULING 2026-06-29) refines a patch-STAMPED file's
-    //  outcome against the THEIRS input, NOT the (ours) baseline: the stamp band
-    //  carries pat/mrg/cnf coarsely, and theirs corroborates `pat` = wt == theirs.
+    //  No staged intent — classify by presence + content.  STATUS-017 (DIS-080
+    //  §6): dirty is STILL wt != base; EXPECTED only SPLITS the dirt into kinds.
     const inBase = !!b, onDisk = !!w;
     const t = theirs[path];
     const pStamp = w ? pstamps[(w.ts || 0n).toString()] : undefined;
-    //  STATUS-005: con row + live markers → `con`, winning over mod/pat/mrg;
-    //  markers gone → fall through, resolution degrades to mod.
-    if (onDisk && conSet.has(path) && wtHasMarker(wtRoot, path)) {
+    //  STATUS-017: a `con` row since the last barrier IS the conflict — no byte
+    //  scan, and local edits on top do NOT resolve it (resolution == posted).
+    if (onDisk && conSet.has(path)) {
       push({ bucket: "con", path: path, ts: w.ts, kind: w.kind,
              oldSha: b ? b.sha : undefined, onDisk: true, inBase: inBase });
       continue;
     }
-    //  DIS-057's stamp band spells a conflict `cnf`; STATUS-005 folds it into the
-    //  single visible `con` name (patchStamps still returns `cnf` internally).
-    const pStampCon = pStamp === "cnf" ? "con" : pStamp;
+    //  Patch-TOUCHED: theirs carries the path with content ours base lacks —
+    //  the only paths whose dirt EXPECTED can re-kind (all others are plain).
+    const patched = !!t && (!inBase || t.sha !== b.sha);
     if (onDisk && !inBase) {
       //  wt-only.  A move destination already has its `mov` row (emitted from
       //  the source's put), so SUPPRESS its standalone wt-only row here.
       if (movDsts[path]) continue;
-      //  A patch-stamped take-theirs ADD (theirs added a path ours lacked):
-      //  pat/mrg/cnf from the stamp band, carrying theirs' sha/mode as the
-      //  resolved content (post commits it; ours-base has no oldSha here).
-      if (pStamp && t) {
-        push({ bucket: pStampCon, path: path, ts: w.ts, kind: w.kind,
-               onDisk: true, inBase: false });
-        continue;
+      //  A take-theirs ADD (theirs added a path ours lacked): `pat`/`mrg` while
+      //  the wt still reads EXPECTED, carrying theirs as the resolved content.
+      if (patched) {
+        const eSha = expectedAt(path), wSha = wtBlobSha(wtRoot, path);
+        const kind = (eSha && wSha === eSha) ? (eSha === t.sha ? "pat" : "mrg")
+                                             : (eSha ? undefined : pStamp);
+        if (kind) {
+          push({ bucket: kind, path: path, ts: w.ts, kind: w.kind,
+                 onDisk: true, inBase: false });
+          continue;
+        }
       }
       push({ bucket: "unk", path: path, ts: w.ts, kind: w.kind, onDisk: true });
       continue;
@@ -449,20 +497,35 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       continue;
     }
     if (inBase && onDisk) {
-      //  Patch axis FIRST: a content-modified (vs OURS), patch-STAMPED file reads
-      //  its stamp-offset bucket (pat/mrg/cnf).  The "modified?" test is against
-      //  OURS (b.sha) now — so a clean take-theirs (wt == theirs != ours) is
-      //  modified-vs-ours and surfaces `pat`, no longer collapsing to `ok`.
-      //  PATCH-013: a band stamp IS the outcome (patch wrote both) — route
-      //  pat/mrg/con with NO content read, the same trust as the stamp-set.
-      const pb = pStampCon;
-      if (pb) {
-        push({ bucket: pb, path: path, ts: w.ts, kind: w.kind,
+      //  Patch axis (STATUS-017): a patch-touched path never takes the mtime
+      //  stamp-set shortcut — its dirt is decided on bytes, then kinded by
+      //  EXPECTED (base ⊕ patch-ins, weave): wt == EXPECTED == theirs → `pat`,
+      //  wt == EXPECTED != theirs → `mrg`, wt != EXPECTED → a local edit `mod`.
+      if (patched) {
+        const wSha = wtBlobSha(wtRoot, path);
+        if (wSha === b.sha) {
+          push({ bucket: "ok", path: path, ts: w.ts, oldSha: b.sha,
+                 mode: b.mode, eq: true, clean: true });
+          continue;
+        }
+        const eSha = expectedAt(path);
+        //  EXPECTED unavailable (a BLOB / unreadable) → the DIS-057 stamp band
+        //  is the fast-path fallback, never the truth; else a plain `mod`.
+        const kind = (eSha && wSha === eSha) ? (eSha === t.sha ? "pat" : "mrg")
+                                             : (eSha ? "mod" : (pStamp || "mod"));
+        push({ bucket: kind, path: path, ts: w.ts, kind: w.kind,
+               oldSha: b.sha, onDisk: true, inBase: true });
+        continue;
+      }
+      //  Unpatched: the plain base comparison.  GET-050's band stamp routes a
+      //  carried/woven get leaf to `mod` before the stamp-set can false-clean it.
+      if (pStamp) {
+        push({ bucket: pStamp, path: path, ts: w.ts, kind: w.kind,
                oldSha: b.sha, onDisk: true, inBase: true });
         continue;
       }
       //  STATUS-011: mtime ∈ wtlog stamp-set → clean, NO content read (read-only
-      //  membership, never a re-stamp); pb routed above, never swallowed to ok.
+      //  membership, never a re-stamp).
       const stamped = !!w.ts && typeof wtlogReader.has === "function"
             && wtlogReader.has(w.ts);
       const eqBase = stamped || wtEqBase(wtRoot, path, b.sha);
