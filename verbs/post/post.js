@@ -26,7 +26,6 @@ const store    = require("../../shared/store.js");
 const branchlib = require("../../shared/branch.js"); // DIS-061: the ONE branch codec
 const decideM  = require("./fold-decide.js");
 const commitM  = require("./fold-commit.js");
-const conflict = require("../../shared/conflict.js");
 const dag      = require("../../shared/dag.js");
 const ulog     = require("../../shared/ulog.js");
 const uri      = require("../../shared/uri.js");   // JAB-005: total arg parse
@@ -868,8 +867,8 @@ function postOne(info, ctx, row) {
   //  baseline, so only the named path's change lands in the commit.
   //  DIS-057: post CONSUMES an in-scope `patch` row's theirs tree (POST-005
   //  subsumed).  The unified classifier reads a patch-derived file as pat/mrg/
-  //  cnf and the consumer commits its merged content; a `cnf` (conflict-marked)
-  //  file is still caught by the POSTCFLCT pre-scan below.  No more POSTSCOPE.
+  //  cnf and the consumer commits its merged content; a conflicted path is
+  //  still caught by the row-based pre-flight below.  No more POSTSCOPE.
   //  POST-034: the mode is the tree-wide one decided once by postTree, never
   //  re-derived here from a wtlog this very run appended a sub bump row to.
   const dres = decideM.decide(info, wtl, reader, slots.narrow || undefined,
@@ -879,18 +878,17 @@ function postOne(info, ctx, row) {
   //  old commit-time POSTNOFF gate (checked branchKey's ref vs parent) is
   //  gone — that FF check now lives solely in advanceBranch's explicit arm.
 
-  //  5. Conflict pre-scan (POST-017): a tracked `add` carrying a complete
-  //  WEAVE conflict triple aborts before any store write.  `--force` skips.
+  //  5. Conflict pre-flight (POST-035/DIS-080): a tracked `add` whose path is a
+  //  LIVE conflict — `con` rows since the last get/post barrier (ULOG-004) —
+  //  aborts before any store write.  `--force` skips; the post row is itself
+  //  the barrier, so a landed commit IS the resolution.  No byte scan.
   if (!force) {
+    const live = new Set(wtl.conflicts());
     for (const d of dres.decisions) {
-      if (d.verb !== "add") continue;
-      const bytes = commitM.readAddBytes(info.wt, d);
-      if (bytes && conflict.hasConflictMarker(bytes)) {
-        const named = "conflict marker in tracked file " + d.path;
-        throw refuse(named + " (--force overrides)",
-                     refuse(named,
-                            "conflict marker in a tracked file (--force overrides)"));
-      }
+      if (d.verb !== "add" || !live.has(d.path)) continue;
+      const named = "conflict in tracked file " + d.path;
+      throw refuse(named + " (--force overrides)",
+                   refuse(named, "conflict in a tracked file (--force overrides)"));
     }
   }
 

@@ -329,15 +329,21 @@ function open(be) {
     },
 
     //  ULOG-004: con paths since the last BARRIER = a get/post row with a sha
-    //  and no wt-relative path; patch/put/delete + scoped gets amnesty nothing.
-    //  DIS-080: row-scoped liveness (resolved==posted), oldest-first, deduped.
+    //  and no wt-relative path; patch + scoped gets amnesty nothing.
+    //  DIS-080 §4 (amended): a `put`/`delete <path>` row LATER than a con row
+    //  for that path ACKS it (row order decides); a later con re-registers.
     conflicts: function () {
-      const out = [], seen = new Set();
+      const out = [], seen = new Set(), acked = new Set();
       for (let i = rows.length - 1; i >= 0; i--) {
         const r = rows[i];
         if (r.verb === CON) {
           const p = (r.uri && r.uri.path) || "";
-          if (p && !seen.has(p)) { seen.add(p); out.push(p); }
+          if (p && !seen.has(p) && !acked.has(p)) { seen.add(p); out.push(p); }
+          continue;
+        }
+        if (r.verb === PUT || r.verb === DEL) {
+          const p = (r.uri && r.uri.path) || "";
+          if (p && !seen.has(p)) acked.add(p);   // shadows OLDER con rows only
           continue;
         }
         if (r.verb !== GET && r.verb !== POST) continue;
