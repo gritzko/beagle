@@ -363,7 +363,8 @@ function mount(opts) {
         const k = store.open(ls.storeRoot, ls.proj);
         //  GET-047: surface the prior pin + checkout delta for the get report.
         const co = checkout.apply(k, pin, subWt,
-                     { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts });
+                     { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts,
+                       bePath: anchorPath });   // GET-056b: durable sub con rows
         //  SUBS-056: hand the track stamp out so the caller can sweep the sub's
         //  OWN carried `put` files (GET-050) — the new row de-scopes them.
         return { storePath: ls.storeRoot, project: ls.proj, shard: k.shard,
@@ -419,7 +420,8 @@ function mount(opts) {
     const k = store.open(beDir, title);
     //  GET-047: surface the prior pin + checkout delta for the get report.
     const co = checkout.apply(k, pin, subWt,
-                 { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts });
+                 { force: ambient.force(), oldTip: oldPin, stampTs: asg.ts,
+                   bePath: anchorPath });       // GET-056b: durable sub con rows
 
     return { storePath: beDir, project: title, shard: shard, tip: pin, k: k,
              oldPin: oldPin, rows: co.rows, stampTs: asg.ts };

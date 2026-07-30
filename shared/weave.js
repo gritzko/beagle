@@ -78,6 +78,41 @@ function extOf(path) {
   return dot <= 0 ? "" : base.slice(dot + 1);
 }
 
+//  GET-056b (moved from verbs/get/get.js): D5 3-blob weave merge
+//  (GRAFMerge3Bytes twin) — build the OURS and THEIRS weaves INDEPENDENTLY off
+//  a shared base (each base→side), then WEAVEMerge them; the shared base tokens
+//  carry the SAME base commit-id so they coincide and dedup, and each side's
+//  edit diffs against the base (NOT sequentially).  Disjoint edits coexist
+//  cleanly; a divergent region gets the standard conflict markers.  Returns
+//  null for an unweavable input (over the source cap) — the caller refuses
+//  LOUDLY, never silent-ours.
+const _W3_BASE = "0000000000000001", _W3_OURS = "0000000000000002",
+      _W3_THRS = "0000000000000003", _W3_MRG = "0000000000000004";
+function _w3eq(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function weave3(base, ours, theirs, ext) {
+  base = base || new Uint8Array(0);
+  if (_w3eq(ours, theirs)) return ours;          // same edit both sides
+  if (_w3eq(ours, base)) return theirs;          // only theirs changed
+  if (_w3eq(theirs, base)) return ours;          // only ours changed
+  //  PATCH-012: over the shared source cap is a BLOB — not weavable.
+  if (base.length > MAX_SOURCE_SIZE ||
+      ours.length > MAX_SOURCE_SIZE ||
+      theirs.length > MAX_SOURCE_SIZE) return null;
+  const wo = fold(fold(null, base, ext, _W3_BASE), ours,   ext, _W3_OURS);
+  const wt = fold(fold(null, base, ext, _W3_BASE), theirs, ext, _W3_THRS);
+  const wm = merge(wo, wt, _W3_MRG);
+  const oScope = wm.scope([_W3_BASE, _W3_OURS]);
+  const tScope = wm.scope([_W3_BASE, _W3_THRS]);
+  //  PATCH-012: render into the shared fixed markup buffer (lazy mmap).
+  const out = io.ram(MAX_SOURCE_MARKED_UP);
+  wm.merged([oScope, tScope], out);
+  return out.data().slice();
+}
+
 //  A commit's tree flattened to { path -> { sha, mode, kind } } over every leaf.
 function treeMap(reader, commitSha) {
   const map = Object.create(null);
@@ -203,6 +238,8 @@ function build(reader, path, tip, ctx) {
 }
 
 module.exports = { fold: fold, merge: merge,
+  //  GET-056b: the one 3-blob weave merge (get.js + checkout.js share it).
+  weave3: weave3,
   MAX_SOURCE_SIZE: MAX_SOURCE_SIZE, MAX_SOURCE_MARKED_UP: MAX_SOURCE_MARKED_UP,
   //  DIFF-010: file-weave reconstruction (was patch.js buildSideWeave + fileweave.js).
   build: build, makeCtx: makeCtx, weaveId: weaveId, extOf: extOf,

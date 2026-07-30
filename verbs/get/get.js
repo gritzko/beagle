@@ -1054,6 +1054,14 @@ function leaf(row, ctx) {
   const regular = kind === "f" || kind === "x";
   const onDisk = existed && regular ? readWt(full) : null;
   const baseBytes = existed && regular && oldSha ? blobOf(g.k, oldSha) : null;
+  //  GET-056b RULING: dirty BINARY keeps OURS — an uncommitted edit is never
+  //  silently dropped; a CLEAN binary still fast-forwards to theirs below.
+  if (existed && !g.force && regular &&
+      (isBinary(baseBytes) || isBinary(onDisk) || isBinary(bytes))) {
+    const dirtyBin = onDisk != null &&
+                     (baseBytes == null || !bytesEq(onDisk, baseBytes));
+    if (dirtyBin) { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
+  }
   //  GET-056: any binary side (base, on-disk, target) → the clean reset below.
   if (existed && !g.force && regular &&
       !isBinary(baseBytes) && !isBinary(onDisk) && !isBinary(bytes)) {
@@ -1270,35 +1278,9 @@ function recurseSubMounts(g, rel, m, out, depth) {
   }
 }
 
-//  D5 3-blob weave merge (GRAFMerge3Bytes twin): build the OURS and THEIRS
-//  weaves INDEPENDENTLY off a shared base (each base→side), then WEAVEMerge them
-//  — the shared base tokens carry the SAME base commit-id so they coincide and
-//  dedup, and each side's edit diffs against the base (NOT sequentially).  Render
-//  the ours/theirs scopes with conflict fences: disjoint edits coexist cleanly,
-//  a divergent region gets the standard conflict markers.
-const _W3_BASE = "0000000000000001", _W3_OURS = "0000000000000002",
-      _W3_THRS = "0000000000000003", _W3_MRG = "0000000000000004";
-function weave3(base, ours, theirs, ext) {
-  base = base || new Uint8Array(0);
-  if (bytesEq(ours, theirs)) return ours;        // same edit both sides
-  if (bytesEq(ours, base)) return theirs;        // only theirs changed
-  if (bytesEq(theirs, base)) return ours;        // only ours changed
-  //  PATCH-012: over the shared source cap is a BLOB (shared/weave.js policy) —
-  //  not weavable; return null so the leaf refuses LOUDLY, never silent-ours.
-  if (base.length > weavelib.MAX_SOURCE_SIZE ||
-      ours.length > weavelib.MAX_SOURCE_SIZE ||
-      theirs.length > weavelib.MAX_SOURCE_SIZE) return null;
-  const wo = weavelib.fold(weavelib.fold(null, base, ext, _W3_BASE), ours,   ext, _W3_OURS);
-  const wt = weavelib.fold(weavelib.fold(null, base, ext, _W3_BASE), theirs, ext, _W3_THRS);
-  const wm = weavelib.merge(wo, wt, _W3_MRG);
-  const oScope = wm.scope([_W3_BASE, _W3_OURS]);
-  const tScope = wm.scope([_W3_BASE, _W3_THRS]);
-  //  PATCH-012: render into the shared fixed markup buffer (lazy mmap), the
-  //  same sink patch.js:198 uses — the 1<<20 io.buf was the same cap bug.
-  const out = io.ram(weavelib.MAX_SOURCE_MARKED_UP);
-  wm.merged([oScope, tScope], out);
-  return out.data().slice();
-}
+//  GET-056b: the D5 3-blob weave merge moved to shared/weave.js so the sub
+//  checkout path (shared/checkout.js) weaves through the SAME code.
+const weave3 = weavelib.weave3;
 
 //  CODE-020: shared reg-file wt read (open/readAll/close-safe).
 const { readFileBytes } = require("../../shared/wtread.js");

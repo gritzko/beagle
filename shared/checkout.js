@@ -50,6 +50,14 @@ function scanWt(wtRoot) {
 const { readFileBytes } = require("./wtread.js");
 function readFile(full, size) { return readFileBytes(full, size); }  // CODE-020: shared wt read
 
+//  GET-056b: the one binary predicate (git's NUL-in-first-8000 heuristic),
+//  the shared 3-blob weave merge, and the conflict-marker probe — the sub
+//  checkout merges dirty text through the SAME code as the flat D5 path.
+const isBinary = require("../views/diff/diff.js").isBinary;
+const weavelib = require("./weave.js");
+const conflict = require("./conflict.js");
+const ulog = require("./ulog.js");
+
 function bytesEq(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -162,6 +170,23 @@ function trySetMtime(full, ts) { try { io.setMtime(full, BigInt(ts)); } catch (e
 function apply(keeper, tipSha, wtRoot, opts) {
   const force = !!(opts && opts.force);
   const oldTip = (opts && opts.oldTip) || "";
+  //  GET-056b: the wt's OWN wtlog path (the sub anchor) — durable `con` rows +
+  //  the POST-032 unresolved-conflict probe; absent → conflicts report-only.
+  const bePath = (opts && opts.bePath) || "";
+  let _cons = null;
+  function conSet(rel) {
+    if (!bePath) return false;
+    if (!_cons) {
+      try { _cons = require("./wtlog.js").open({ bePath: bePath }).conPaths(); }
+      catch (e) { _cons = new Set(); }
+    }
+    return _cons.has(rel);
+  }
+  function conRow(rel) {
+    if (!bePath) return;
+    try { ulog.append(bePath, [{ verb: "con",
+      uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
+  }
   //  PUT-012: sub-mount hands the track-row ASSIGNED ts; restamp every file we
   //  materialise to it so status/put/diff agree (symlinks: setMtime follows link).
   const stampTs = (opts && opts.stampTs != null) ? opts.stampTs : null;
@@ -196,15 +221,39 @@ function apply(keeper, tipSha, wtRoot, opts) {
     const full = wtpath(wtRoot, rel);
     const existed = !!before[rel];
     if (existed && leafUnchanged(full, leaf, bytes)) return;  // no row
-    //  GET-040: NON-force never clobbers a DIRTY tracked file (on-disk differs
-    //  from BOTH the old baseline AND the target); only a CLEAN file (== old
-    //  blob) or a MISSING one is (re)materialised.  Fresh checkout (no oldTip)
-    //  materialises all.  Regular files only; symlink/exec clean-reset.
-    if (!force && oldTip && existed && leaf.kind === "f") {
+    //  GET-040: NON-force never clobbers a DIRTY tracked file; only a CLEAN
+    //  file (== old blob) or a MISSING one is (re)materialised.  Fresh checkout
+    //  (no oldTip) materialises all.  GET-056b RULING (the flat D5 matrix, per
+    //  mode-blind bytes): clean → theirs; dirty TEXT → weave3; dirty BINARY → ours.
+    if (!force && oldTip && existed && (leaf.kind === "f" || leaf.kind === "x")) {
       const onDisk = readOnDisk(full);
       const oldBytes = blobOf(keeper, oldMap[rel]);
-      const cleanVsOld = oldBytes != null && bytesEq(onDisk, oldBytes);
-      if (!cleanVsOld) { rows.push({ verb: "mrg", path: rel }); return; }  // dirty → keep
+      const dirty = !(oldBytes != null && bytesEq(onDisk, oldBytes));
+      if (dirty) {
+        if (onDisk == null || oldBytes == null ||
+            isBinary(oldBytes) || isBinary(onDisk) || isBinary(bytes)) {
+          rows.push({ verb: "mrg", path: rel }); return;   // dirty binary/unreadable → ours
+        }
+        //  POST-032 twin: a still-unresolved prior conflict stays as-is.
+        if (conflict.hasConflictMarker(onDisk) && conSet(rel)) {
+          rows.push({ verb: "con", path: rel }); return;
+        }
+        //  dirty TEXT → 3-way weave, the same weave3 as get.js's flat D5 leaf.
+        let merged;
+        try { merged = weavelib.weave3(oldBytes, onDisk, bytes, weavelib.extOf(rel)); }
+        catch (e) { if (!("" + e).includes("full")) throw e; merged = null; }
+        if (merged == null) {                    // unweavable → keep ours, conflict
+          rows.push({ verb: "con", path: rel }); conRow(rel); return;
+        }
+        materialise(wtRoot, rel, leaf, merged);
+        if (conflict.hasConflictMarker(merged)) {
+          rows.push({ verb: "con", path: rel }); conRow(rel); return;
+        }
+        //  the edit reproduced the target exactly → clean, stamp to the row ts.
+        if (bytesEq(merged, bytes) && stampTs != null) trySetMtime(full, stampTs);
+        rows.push({ verb: "mrg", path: rel }); return;
+      }
+      //  clean → fall through, (re)materialise theirs.
     }
     materialise(wtRoot, rel, leaf, bytes);
     //  PUT-012: stamp the materialised file to the track-row ts (get.js:1085
