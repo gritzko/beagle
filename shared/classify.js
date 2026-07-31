@@ -48,15 +48,11 @@ const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");           // DIS-057: ronStepMs (ms-correct band)
 //  STATUS-017 (DIS-080): the EXPECTED reading is a weave reading — base ⊕ the
 //  in-scope patch-ins, the same builder `patch` uses; never a parallel reader.
-const weave = require("./weave.js");
+//  CFOLD-001: ONE core (expected.js, over the condensed pathdag) — status and
+//  diff read the SAME bytes through the SAME per-run cache.
+const expected = require("./expected.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
-
-//  DIS-082: the JOIN commit — the contentless merge id the stacked views are
-//  read under (the old sentinel hashlet); patch.js/expected.js twin.
-const JOIN_ID = weave.JOIN_ID;
-//  A Set of hashlet strings → an Array (the merge ancestor + mergedLive groups).
-function setArr(s) { const a = []; for (const x of s) a.push(x); return a; }
 
 //  --- wt scan ----------------------------------------------------------
 //  Walk the worktree depth-first via io.readdir({recursive}), lstat each
@@ -229,37 +225,15 @@ function patchStamps(wtlogReader) {
 //  falls back to the DIS-057 stamp band, which is a fast path, never the truth.
 //  The kind then falls out: wt == EXPECTED == theirs → `pat` (clean take-theirs),
 //  wt == EXPECTED != theirs → `mrg` (a real weave), wt != EXPECTED → a local edit.
-function expectedSha(reader, path, baseTipSha, theirsShas) {
-  //  DIS-082: ONE ctx, so every tip folds into the SAME weave — shared history
-  //  is shared by construction and the sides join with ONE contentless merge.
-  const ctx = weave.makeCtx(reader, path);
-  const sides = [];
+//  CFOLD-001: the reading itself is expected.js's (the ONE copy `diff` reads
+//  too, over the condensed pathdag); `cache` is the run's shared pathdag memo.
+//  An unweavable path (a BLOB, an unreadable object) yields undefined — the
+//  caller falls back to the band.
+function expectedSha(reader, path, baseTipSha, theirsShas, cache) {
   try {
-    for (const tip of [baseTipSha].concat(theirsShas)) {
-      if (!isFullSha(tip)) continue;
-      const s = weave.build(reader, path, tip, ctx);
-      if (s.weave) sides.push(s);
-    }
-    if (!sides.length) return undefined;
-    //  ctx.w is the LATEST container; a side's own `.weave` is the snapshot
-    //  taken before the later builds folded on top of it.
-    const w = ctx.w;
-    let bytes;
-    if (sides.length === 1) {
-      //  produce(rev), NEVER alive() — alive renders the last folded commit,
-      //  which after a multi-tip build need not be this side's view.
-      const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
-      w.produce(sides[0].rev, b);
-      bytes = b.data();
-    } else {
-      const union = new Set();
-      for (const s of sides) for (const id of s.ids) union.add(id);
-      const wm = weave.merge(w, JOIN_ID, setArr(union));
-      bytes = weave.mergedLive(wm, JOIN_ID, sides.map(function (s) {
-        return setArr(s.ids);
-      })).bytes;
-    }
-    return shalib.frameSha("blob", bytes);
+    const r = expected.expectedOf(reader, path, baseTipSha, theirsShas, cache);
+    if (r.bytes === undefined) return undefined;
+    return shalib.frameSha("blob", r.bytes);
   } catch (e) { return undefined; }
 }
 
@@ -358,11 +332,13 @@ function classifyMerge(be, wtlogReader, reader, opts) {
   }
   //  STATUS-017: the EXPECTED reading for ONE patch-touched path, memoised per
   //  run (the weave rebuild is the expensive leg; dirty patched paths are few).
-  const expCache = {};
+  //  CFOLD-001: ONE per-RUN pathdag memo (tree-keyed path steps + the LCA
+  //  floor) threaded through every path — the walk is paid once, not per path.
+  const expCache = {}, pdCache = expected.cache();
   function expectedAt(path) {
     if (!(path in expCache))
       expCache[path] = expectedSha(reader, path,
-                                   baseTip && baseTip.sha, theirsShas);
+                                   baseTip && baseTip.sha, theirsShas, pdCache);
     return expCache[path];
   }
 

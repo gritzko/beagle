@@ -295,6 +295,7 @@ module.exports = {
   ancestors: ancestors,
   topoSort: topoSort,
   mergeBase: mergeBase,   // GET-047: the diverged-get weave base
+  WALK_CAP: WALK_CAP,     // CFOLD-001: the ONE walk cap pathdag.js shares
 
   identEpoch: identEpoch,
   subjectOf: subjectOf,

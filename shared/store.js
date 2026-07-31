@@ -46,6 +46,7 @@ const shalib = require("./util/sha.js");
 const ulog = require("./ulog.js");
 const branchlib = require("./branch.js");    // SUBS-050: the ONE branch codec
 const idxmaint = require("./idxmaint.js");   // JS-116: keeper.idx run lifecycle
+const stats = require("./util/stats.js");    // CFOLD-001: env-gated read counters
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 const isZeroSha = shalib.isZeroSha;
@@ -403,6 +404,7 @@ function open(storePath, project) {
       //  object; for a delta the pack reports the base's type via the
       //  index key (loc.type).  Prefer the index type (canonical).
       const tname = TYPE_NAME[loc.type] || rec.type;
+      stats.bump("obj"); stats.bump(tname);   // CFOLD-001 repro counters
       return { type: tname, bytes: rec.bytes };
     },
 

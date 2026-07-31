@@ -392,7 +392,8 @@ function uniqSorted(a, b) {
 function expectedCtx(k, repo, log) {
   const shas = expected.theirsShas(log);
   if (!shas.length) return null;
-  return { k: k, shas: shas, cache: Object.create(null),
+  //  CFOLD-001: the run's ONE pathdag memo (was a bare per-commit treeMap map).
+  return { k: k, shas: shas, cache: expected.cache(),
            base: (log.curTip() || {}).sha || "",
            cons: (typeof log.conflicts === "function") ? log.conflicts() : [] };
 }

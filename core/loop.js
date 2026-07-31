@@ -513,6 +513,11 @@ function _cli(argv, opts2) {
     const bytes = bro.renderHunkLog(sink.log, mode);
     if (bytes.length) { const b = io.buf(bytes.length + 8); b.feed(bytes); io.writeAll(1, b); }
   }
+  //  CFOLD-001: `JAB_STATS=1` prints the object-read/fold counters on fd 2
+  //  (never fd 1 — stdout byte-parity is untouched); OFF by default.
+  const _st = require(_here + "/shared/util/stats.js");
+  if (_st.ON) { try { const u = utf8.Encode(_st.line());
+    const b = io.buf(u.length + 8); b.feed(u); io.write(2, b); } catch (e) {} }
   return res;
 }
 

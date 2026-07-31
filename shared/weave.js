@@ -12,6 +12,8 @@
 
 "use strict";
 
+const stats = require("./util/stats.js");   // CFOLD-001: env-gated fold counters
+
 //  A source larger than this is a BLOB: not tokenised, not diffed (callers gate
 //  on it like the binary check).  One place sets it; everyone imports it.
 const MAX_SOURCE_SIZE = 4 << 20;                  // 4 MB
@@ -25,6 +27,7 @@ const MAX_SOURCE_MARKED_UP = MAX_SOURCE_SIZE * 4; // 16 MB
 //  folded and NOT named lands in the new commit's ignore-set.  `blob` is a
 //  source ≤ MAX_SOURCE_SIZE (the caller gates blobs out first).
 function fold(base, blob, ext, hash, ancestors) {
+  stats.bump("fold");
   const w = abc.ram("CFOLD", MAX_SOURCE_MARKED_UP);
   w.fold(base, blob, ext, hash, ancestors || []);
   return w;
@@ -33,6 +36,7 @@ function fold(base, blob, ext, hash, ancestors) {
 //  merge(base, hash, ancestors): a CONTENTLESS merge commit — appends nothing,
 //  records the union view of `ancestors` (the intersected ignore-set).
 function merge(base, hash, ancestors) {
+  stats.bump("merge");
   const w = abc.ram("CFOLD", MAX_SOURCE_MARKED_UP);
   w.merge(base, hash, ancestors || []);
   return w;
@@ -229,12 +233,20 @@ function blobShaAt(reader, treeCache, commitSha, path) {
 //  view (content fold, delete fold) or joins two differing views (contentless
 //  merge); everything else CARRIES the parent — long untouched stretches cost
 //  no commit records at all.  Stamps ctx.idToSha[weaveId(sha)] = sha (blame).
-function foldCommit(ctx, sha) {
+//  CFOLD-001: `opt` lets a CONDENSED walk (pathdag) supply what it already
+//  knows — `opt.parents` the retained parents, `opt.node.blob` the path's blob
+//  sha there (undefined = absent/delete, null = carries its parents' bytes) —
+//  so no tree is read here, and `opt.known` drops the adjacent-equal produce a
+//  retained node can never hit (by construction it differs from its parents).
+function foldCommit(ctx, sha, opt) {
   const reader = ctx.reader, path = ctx.path, ext = ctx.ext;
   ctx.idToSha[weaveId(sha)] = sha;
 
   let parents;
-  try { parents = reader.commitParents(sha); } catch (e) { parents = undefined; }
+  if (opt && opt.parents) parents = opt.parents;
+  else {
+    try { parents = reader.commitParents(sha); } catch (e) { parents = undefined; }
+  }
   parents = (parents || []).filter(function (p) { return ctx.done[p]; });
 
   //  the union closure this commit descends from, and the distinct parent views
@@ -264,8 +276,13 @@ function foldCommit(ctx, sha) {
     ctx.revOf[sha] = rev;
   };
 
-  const blobSha = blobShaAt(reader, ctx.treeCache, sha, path);
-  if (blobSha === undefined) {
+  const blobSha = (opt && opt.node) ? opt.node.blob
+                                    : blobShaAt(reader, ctx.treeCache, sha, path);
+  if (blobSha === null) {
+    //  CFOLD-001: a PRUNED commit (a tip whose retained parents carry its
+    //  bytes): no content of its own — carry one view, join several (the tail).
+    carry();
+  } else if (blobSha === undefined) {
     if (prevs.length === 0 || !hasBytes) { carry(); }       // never/no longer there
     else {
       //  DELETE relative to the (possibly multi-parent) view: fold empty.
@@ -283,7 +300,7 @@ function foldCommit(ctx, sha) {
     } else {
       //  adjacent-equal skip: identical to the single inherited view => carry.
       let same = false;
-      if (prevs.length === 1) {
+      if (prevs.length === 1 && !(opt && opt.known)) {
         const prev = io.ram(MAX_SOURCE_MARKED_UP);
         ctx.w.produce(rev, prev);
         same = bytesEq(prev.data(), bytes);
@@ -359,6 +376,48 @@ function build(reader, path, tip, ctx) {
            idToSha: ctx.idToSha, ctx: ctx };
 }
 
+//  CFOLD-001: the view a PRUNED tip stands on — its retained representatives
+//  (`pd.tips[tip]`), or the floor when it has none.  Several differing reps
+//  join under the tip's own id (foldCommit's contentless-merge tail).
+function viewAt(ctx, pd, tip) {
+  const reps = pd.tips[tip] || [];
+  const src = reps.length ? reps
+            : (pd.floor && ctx.done[pd.floor] ? [pd.floor] : []);
+  let rev = null;
+  if (src.length === 1) rev = ctx.revOf[src[0]];
+  else if (src.length > 1) {
+    if (!ctx.done[tip])
+      foldCommit(ctx, tip, { parents: src, node: { blob: null }, known: true });
+    rev = ctx.revOf[tip];
+  }
+  const home = src.length === 1 ? src[0] : tip;
+  return { weave: rev == null ? undefined : ctx.w,
+           rev: rev == null ? undefined : rev,
+           ids: new Set(rev == null ? [] : ctx.closure[home]),
+           idToSha: ctx.idToSha, ctx: ctx };
+}
+
+//  CFOLD-001: fold ONE condensed path-DAG (pathdag.of) into THE one weave.
+//  Every RETAINED node folds exactly once — shared history is folded once for
+//  all tips — over a seed: the path's blob at the LCA floor, folded as the
+//  floor commit itself.  `blobShaAt`/`treeMap` never run on this path: a node
+//  hands its blob sha straight to blobBytes.  Returns { ctx, at(tip) }, `at`
+//  shaped exactly like build()'s result.
+function buildDag(reader, path, pd, ctx) {
+  ctx = ctx || makeCtx(reader, path);
+  if (pd.floor && pd.seed && pd.seed.sha && !ctx.done[pd.floor])
+    foldCommit(ctx, pd.floor,
+               { parents: [], node: { blob: pd.seed.sha }, known: true });
+  for (const sha of pd.order) {
+    if (ctx.done[sha]) continue;
+    const n = pd.nodes[sha];
+    let ps = n.parents || [];
+    if (!ps.length && pd.floor && ctx.done[pd.floor]) ps = [pd.floor];
+    foldCommit(ctx, sha, { parents: ps, node: n, known: true });
+  }
+  return { ctx: ctx, at: function (tip) { return viewAt(ctx, pd, tip); } };
+}
+
 module.exports = { fold: fold, merge: merge,
   //  GET-056b: the one 3-blob weave merge (get.js + checkout.js share it).
   weave3: weave3,
@@ -367,6 +426,8 @@ module.exports = { fold: fold, merge: merge,
   MAX_SOURCE_SIZE: MAX_SOURCE_SIZE, MAX_SOURCE_MARKED_UP: MAX_SOURCE_MARKED_UP,
   //  DIFF-010: file-weave reconstruction, now ONE weave per file.
   build: build, makeCtx: makeCtx, weaveId: weaveId, extOf: extOf,
+  //  CFOLD-001: the condensed-DAG fold (the EXPECTED reading's hot path).
+  buildDag: buildDag,
   treeMap: treeMap, blobBytes: blobBytes, blobShaAt: blobShaAt,
   //  BE-010: the wt-on-disk edit fold-layer (mirrors native WEAVE_WT_SRC).
   foldWt: foldWt, WT_SRC: WT_SRC, JOIN_ID: JOIN_ID };
