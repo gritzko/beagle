@@ -145,6 +145,9 @@ function warn(s) {
 function oldTipOf(bePath) {
   let tip = "";
   ulog.each(bePath, function (log) {
+    //  GET-040: only get/post rows move the base (wtlog.curTip) — a staged sub
+    //  pin (`put <sub>#<sha>`) or a patch row must never read back as old tip.
+    if (log.verb !== "get" && log.verb !== "post") return;
     const u = new URI(log.uri);
     const f = u.fragment || "";          // URI-009: a clean sha, never `?`-prefixed
     if (isFullSha(f)) tip = f;
@@ -446,7 +449,8 @@ function handleWtSeed(uri, ctx) {
         ? (writeWtlog(bePath, [{ verb: "get", uri: redirect, ts: ulog.ronStepMs(ctx.T0, -1) }, tipRow]), ctx.T0)
         : appendWtlog(bePath, [tipRow])[0];
   return fanoutWholeTree(ctx, { k, tip: r.chash, oldTip, fresh, branch: "", bePath,
-                                source: wtsrc, stampTs: stampTs },   // GET-049
+                                source: wtsrc, stampTs: stampTs,   // GET-049
+                                trackUpdate: !fresh },   // GET-040: update, not switch
                          wt, ambient.force());
 }
 
@@ -467,7 +471,8 @@ function crossUpdate(ctx, uri, tip, cell, srcStore, srcProj, wtsrc) {
     uri: URI.make(undefined, u.authority, u.path, undefined, tip), ts: ctx.T0 }]);
   return fanoutWholeTree(ctx, { k, tip, oldTip, fresh: false, branch: "",
                                 bePath: cell.bePath, source: wtsrc || null,
-                                stampTs: a[0] },   // GET-049: the ASSIGNED row ts
+                                stampTs: a[0],     // GET-049: the ASSIGNED row ts
+                                trackUpdate: true },   // GET-040: update, not switch
                          cell.wt, ambient.force());
 }
 
@@ -528,6 +533,7 @@ function fetchTrack(ctx, remoteUri, branch, wt, force) {
   if (branch && !rem.branch) rem.branch = branch;
   const r = rem.local ? seedLocal(rem, wt, ctx.T0) : seedRemote(rem, wt, ctx.T0);
   r.source = rem;
+  r.trackUpdate = true;   // GET-040: a bare-get track re-fetch is an UPDATE
   return fanoutWholeTree(ctx, r, wt, force);
 }
 
@@ -625,6 +631,9 @@ function fanoutWholeTree(ctx, r, wt, force) {
         const bp = {};
         r.k.readTreeRecursive(bt, function (l) { if (l.kind !== "s") bp[l.path] = l.sha; });
         ctx._get.basePaths = bp;
+        //  GET-040: a diverged TRACK UPDATE (bare get / wt-operand track) 3-way
+        //  merges vs the MERGE BASE; an explicit switch keeps the GET-048 reset.
+        ctx._get.divMerge = !!r.trackUpdate;
       }
     }
   }
@@ -779,7 +788,10 @@ function inRepoSeed(uri, ctx) {
     uri: URI.make(undefined, undefined, undefined, wantBranch, tip) }]);
   return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
                                 branch: wantBranch, bePath: info.bePath,
-                                stampTs: a[0] }, wt, force);   // GET-049
+                                stampTs: a[0],   // GET-049
+                                //  GET-040: a BARE get (query absent) folds to
+                                //  the tracked branch — an UPDATE, not a switch.
+                                trackUpdate: !queryPresent }, wt, force);
 }
 
 //  D4 single-file / subtree restore (GET.mkd pt 1, CLI `file.c` / `file.c?feat`).
@@ -1016,6 +1028,15 @@ function leaf(row, ctx) {
     //  GET-048: diverged + absent from the MERGE BASE = a locally-COMMITTED add
     //  the target never had — the reset unlinks it, but a `del` row would lie (ABC-016).
     const localAdd = !!(g.basePaths && g.basePaths[rel] === undefined);
+    //  GET-040: on a diverged track UPDATE a local-only add STAYS on disk, and
+    //  a file theirs deleted but ours edited keeps ours; only a clean one goes.
+    if (g.divMerge) {
+      if (localAdd) return;
+      const disk = readWt(full);
+      if (disk != null && !bytesEq(disk, blobOf(g.k, g.basePaths[rel]))) {
+        bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return;
+      }
+    }
     try { io.unlink(full);
           if (!localAdd) { out.row(rel, "del", g.ts); g.dels++; }
           markDelDir(g, rel); } catch (e) {}
@@ -1044,15 +1065,26 @@ function leaf(row, ctx) {
   //  equal to the target; emits no row — native get only reports what moved).
   if (existed && checkout.leafUnchanged(full, { kind: kind }, bytes)) return;
 
+  //  GET-040: diverged track update — ours DELETED a file theirs left at the
+  //  merge base (mb sha == theirs') → the deletion survives, no resurrection.
+  const mbSha = g.divMerge ? g.basePaths[rel] : undefined;
+  if (g.divMerge && !existed && mbSha === newSha) return;
+
   //  D5 (DATA SAFETY): a DIRTY baselined file (on-disk differs from BOTH the old
   //  baseline blob AND the target) must be 3-WAY MERGED — re-apply the user's
   //  uncommitted edit onto the new tree — NOT clean-overwritten.  GET-056: TEXT
   //  "f"/"x" merges; symlink/gitlink/BINARY clean-reset.  --force (D6) and the
   //  clean (un-edited) case clean-overwrite.  An un-baselined dirty overlay with
   //  no base to merge refuses loudly (the whole-tree pre-pass also catches it).
+  //  GET-040: on a diverged track UPDATE the 3-way base is the MERGE BASE blob
+  //  (a committed local delta is not dirt to discard); a switch keeps CUR.
   const regular = kind === "f" || kind === "x";
   const onDisk = existed && regular ? readWt(full) : null;
-  const baseBytes = existed && regular && oldSha ? blobOf(g.k, oldSha) : null;
+  const baseSha = g.divMerge ? (mbSha || "") : oldSha;
+  const baseBytes = existed && regular
+        ? (baseSha ? blobOf(g.k, baseSha)
+                   : (g.divMerge ? new Uint8Array(0) : null))
+        : null;
   //  GET-056b RULING: dirty BINARY keeps OURS — an uncommitted edit is never
   //  silently dropped; a CLEAN binary still fast-forwards to theirs below.
   if (existed && !g.force && regular &&
