@@ -8,12 +8,12 @@
 //  status rows via ctx.out.  No commit — the next `be post` squashes the work.
 //
 //  Pure JS over JABC + lib/* (libabc+libdog ONLY; NO keeper/graf/sniff
-//  binding).  The per-file merge is FULL-HISTORY WEAVE RECONSTRUCTION, the
-//  way native `be patch`'s mainline GRAFMergeWtFileTunable works: build each
-//  tip's weave from its commit-history closure (`weave.fold`=WEAVENext linear,
-//  `weave.merge`=WEAVEMerge at merge commits), union ours⊕theirs, then
-//  `weave.mergedLive` to read it markerless.  Shared-history tokens coincide
-//  by real commit id, so the union dedups automatically — NOT a 3-blob merge.
+//  binding).  The per-file merge is FULL-HISTORY WEAVE RECONSTRUCTION over the
+//  DIS-082 CFOLD weave: ONE append-only weave per file holds the WHOLE commit
+//  DAG, so ours and theirs are two BUILDS OF THE SAME weave (the theirs build
+//  reuses the ours ctx) — shared history folds exactly once and cross-weave
+//  merging no longer exists.  A contentless `weave.merge` under the JOIN id
+//  joins the two views, and `weave.mergedLive` reads it markerless.
 //
 //  SCOPE (JS-052 scope a): landing the row still needs native `be post`
 //  (post.js POSTSCOPE refuses an in-scope patch row).
@@ -155,47 +155,63 @@ function classifyAndApply(rc, path, f, o, t) {
   st.noop++;
 }
 
-//  Full-history merge of one diverged file: reconstruct ours/theirs weaves
-//  from their commit DAGs, union them, read the union MARKERLESS (PATCH-025).
-//  Mirrors GRAFMergeWtFileTunable; a reported conflict span spells `con`.
+//  Full-history merge of one diverged file: build the ours and theirs views of
+//  ONE weave, join them under the JOIN id, read the join MARKERLESS
+//  (PATCH-025).  A reported conflict span spells `con`.
 function mergeApply(rc, path, oLeaf) {
-  //  ONE shared ctx (rc.treeCache + a fresh weaveCache) so a shared ancestor of
-  //  ours/theirs folds once — weave.build replays the file's commit closure.
+  //  ONE shared ctx (rc.treeCache + one growing weave) — the theirs build below
+  //  REUSES it, so both tips live in the SAME weave and their shared ancestors
+  //  fold exactly once.  weave.build replays the file's commit closure.
   const ctx = weave.makeCtx(rc.reader, path, rc.treeCache);
 
-  //  Reconstruct + union + render through the fixed markup buffers (lazy mmap,
+  //  Reconstruct + join + render through the fixed markup buffers (lazy mmap,
   //  no growth).  If a token-dense file overflows the cap, it is not a text file
   //  we can weave-merge — err out, treat it as a BLOB (failed), don't crash.
   let merged, clashed = false;
   try {
     const ours = weave.build(rc.reader, path, rc.ours, ctx);
+    //  SAME ctx: two independent builds would make two unrelated weaves, and a
+    //  cross-weave merge does not exist any more.
     const theirs = weave.build(rc.reader, path, rc.theirs, ctx);
+    //  ctx.w is the LATEST container — fold/merge rewrite into a fresh buffer,
+    //  so `ours.weave` is the snapshot taken BEFORE the theirs commits landed;
+    //  only ctx.w holds both views.
+    let w = ctx.w;
 
-    //  BE-010 (the DEEP part): build() reconstructs the ours weave from the ours
-    //  COMMIT's history ONLY — it never reads disk, so a naive re-route would
-    //  still drop the wt's uncommitted bytes.  Fold the wt's on-disk bytes onto
-    //  the ours side as a final synthetic WT_SRC layer (mirrors native
-    //  graf_fold_wt_layer), and add WT_SRC to the ours scope so the folded edit
-    //  reads as an ours-side contribution when the merge renders.
-    let ourWeave = ours.weave, ourIds = ours.ids;
-    if (ourWeave) {
-      const fl = weave.foldWt(ourWeave, wtBytesAt(rc.wtRoot, path), weave.extOf(path));
+    //  BE-010 (the DEEP part): build() reconstructs from the COMMIT DAG ONLY —
+    //  it never reads disk, so a naive re-route would still drop the wt's
+    //  uncommitted bytes.  Fold the wt's on-disk bytes onto the OURS view as a
+    //  final synthetic WT_SRC layer (ancestors = the ours ids, so the layer is
+    //  CONCURRENT with theirs), and carry WT_SRC as the ours rev + id so the
+    //  folded edit reads as an ours-side contribution when the join renders.
+    let ourRev = ours.rev, ourIds = ours.ids;
+    if (ours.weave) {
+      const fl = weave.foldWt(w, ourRev, ourIds,
+                              wtBytesAt(rc.wtRoot, path), weave.extOf(path));
+      w = fl.weave;
       if (fl.layered) {
-        ourWeave = fl.weave;
+        ourRev = weave.WT_SRC;
         ourIds = new Set(ourIds); ourIds.add(weave.WT_SRC);
       }
     }
 
     //  Empty-side degeneracy (native's emit_alive_bytes short-circuits): if one
-    //  side has no weave, emit the other's tip bytes.
-    if (!ourWeave && !theirs.weave) { rc.st.failed++; emit(rc, "failed", path); return; }
-    if (!ourWeave)   merged = aliveOf(rc, theirs.weave);
-    else if (!theirs.weave) merged = aliveOf(rc, ourWeave);
+    //  side has no view, produce the other's tip bytes.  NEVER `alive()` — that
+    //  renders the LAST folded commit, which after a multi-tip build is not
+    //  necessarily the side we want.
+    if (!ours.weave && !theirs.weave) { rc.st.failed++; emit(rc, "failed", path); return; }
+    if (!ours.weave)        merged = produceOf(w, theirs.rev);
+    else if (!theirs.weave) merged = produceOf(w, ourRev);
     else {
-      //  PATCH-025 (DIS-080): union ours⊕theirs (shared tokens dedup by
-      //  identity), then read it MARKERLESS — RGA live bytes + conflict spans.
-      const wm = weave.merge(ourWeave, theirs.weave, "0000000000000000");
-      const live = weave.mergedLive(wm, [setArr(ourIds), setArr(theirs.ids)]);
+      //  PATCH-025 (DIS-080): a CONTENTLESS merge commit over the UNION of both
+      //  views' ids joins ours⊕theirs inside the one weave (shared tokens are
+      //  shared by construction), then read it MARKERLESS at that join rev —
+      //  RGA live bytes + conflict spans.
+      const union = new Set(ourIds);
+      for (const id of theirs.ids) union.add(id);
+      const wm = weave.merge(w, JOIN_ID, setArr(union));
+      const live = weave.mergedLive(wm, JOIN_ID,
+                                    [setArr(ourIds), setArr(theirs.ids)]);
       merged = live.bytes;
       clashed = live.spans.length > 0;
     }
@@ -212,16 +228,23 @@ function mergeApply(rc, path, oLeaf) {
   } else { rc.st.merged++; emit(rc, "merged", path); }
 }
 
-//  alive (tip) bytes of a weave, as a fresh Uint8Array (copied off the shared
-//  scratch buffer so the caller can hold it past the next merge).
-function aliveOf(rc, w) {
-  //  The alive (tip) render fits the fixed markup buffer (lazy mmap) — no growth.
+//  DIS-082: the JOIN commit — the contentless merge id under which the ours and
+//  theirs views of the ONE weave are read together (the old sentinel hashlet).
+const JOIN_ID = weave.JOIN_ID;
+
+//  The bytes of a weave AT `rev`, as a fresh Uint8Array (copied off the shared
+//  scratch buffer so the caller can hold it past the next fold).  produce(rev),
+//  never alive(): one weave now holds several tips, and alive() would render
+//  whichever commit happened to be folded last.
+function produceOf(w, rev) {
+  //  The render fits the fixed markup buffer (lazy mmap) — no growth.
   const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
-  w.alive(b);
+  w.produce(rev, b);
   return b.data().slice();
 }
 
-//  A Set of hashlet strings → a plain Array (weave.scope wants an array).
+//  A Set of hashlet strings → a plain Array (the fold/merge ancestor + the
+//  mergedLive group args are arrays).
 function setArr(s) { const a = []; for (const x of s) a.push(x); return a; }
 
 //  Materialise a leaf (symlink/exec/regular) from its committed blob bytes,
@@ -395,12 +418,12 @@ function patchRun(ctx) {
   const st = { noop: 0, takeTheirs: 0, merged: 0, mergedConflict: 0,
                added: 0, deleted: 0, modDelKept: 0, failed: 0 };
   //  rc: the run context shared across paths.  treeCache memoises trees across
-  //  the whole walk (a file's history shares ancestor trees); out/alive bufs
-  //  are reused scratch.  weaveCap sizes each per-revision weave buffer.
+  //  the whole walk (a file's history shares ancestor trees).  DIS-082: the old
+  //  weaveCap/outBuf/aliveBuf scratch is gone — every weave/render buffer is the
+  //  fixed MAX_SOURCE_MARKED_UP mmap allocated at the call site.
   const rc = { reader: reader, wtRoot: info.wt, st: st,
                ours: sc.ours, theirs: sc.theirs,
-               treeCache: treeCache, weaveCap: 1 << 16,
-               outBuf: io.buf(1 << 20), aliveBuf: io.buf(1 << 20),
+               treeCache: treeCache,
                wrote: [], rows: [], subJobs: [], conflicts: [] };  // STATUS-005: con paths
 
   //  FAN-OUT: each path is an independent per-file weave LEAF (classifyAndApply)

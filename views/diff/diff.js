@@ -1,6 +1,6 @@
 //  diff.js — the `diff:` read-only VIEW as a resident-loop handler (JAB-014).
-//  Pure JS over the libabc/libdog bindings: the `weave` 2-layer diff
-//  (fold/scope/emitDiff/emitFull) single-sourced with C, store.js object/tree
+//  Pure JS over the libabc/libdog bindings: the CFOLD 2-layer diff
+//  (fold/emitDiff/emitFull over commit hashlets) single-sourced with C, store.js object/tree
 //  reads, wtlog baseline, sha-skip + binary-probe in plain JS, core/recurse.js
 //  for in-process sub recursion.  NO dog binary spawn, NO /proc.  Mirrors
 //  graf/DIFFREF.c (GRAFDiff2Layer / GRAFDiffWtTree / GRAFDiffTreeRefs) +
@@ -26,7 +26,7 @@ const recurse = require("../../core/recurse.js");
 //  DIFF-012: the no-arg / dir-scoped wt diff sources its dirty list from the
 //  classifier (as `status`/bare `put` do), not a bespoke wt walk.
 const classify = require("../../shared/classify.js");
-//  DIFF-010: the shared grow-on-"out full" WEAVE/HUNK fold retry (mirrors
+//  DIFF-010: the shared grow-on-"out full" CFOLD/HUNK fold retry (mirrors
 //  loop.js:128-142) — a large diff fold no longer throws "out full".
 const weave   = require("../../shared/weave.js");
 //  DIFF-016: the EXPECTED reading (base ⊕ the in-scope patch-ins, no WT layer).
@@ -98,12 +98,12 @@ const TOK_PATCHED = 1 << 26;
 //  from==to → skip (byte-identical); binary either side → skip.  `full` picks
 //  emitFull (file scope, whole file) vs emitDiff (tree scope, windowed).
 //
-//  JAB-014 empty-from ADDITION: `fold(null,"")` makes a WEAVEEmpty layer, so a
-//  second fold COLLAPSES it (WEAVENext discards an empty base) — no diff.  The
-//  C builds two from-blobs + WEAVEDiff, which the binding doesn't expose; the
-//  faithful workaround is to fold the layers in the OTHER order (content as the
-//  base, empty as the diff) and INVERT the from/to scopes — the SAME 'H'
-//  records the C path produces (the +/- sides come from the scope roles).
+//  JAB-014 empty-from ADDITION: an empty FIRST layer carries no tokens for the
+//  second fold to anchor on, so the pair collapses — no diff.  The C builds two
+//  from-blobs + a native diff, which the binding doesn't expose; the faithful
+//  workaround is to fold the layers in the OTHER order (content as the base,
+//  empty as the diff) and INVERT the from/to REVS — the SAME 'H' records the C
+//  path produces (the +/- sides come from which rev is `from`).
 //  DIFF-016: `exp` (optional) = the EXPECTED bytes for `name` — base ⊕ the
 //  in-scope patch-ins.  When it differs from the base side it rides as a middle
 //  weave layer and every emitted token gets its provenance bit.
@@ -121,29 +121,40 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out, exp) {
 
   //  Fold both sides under one lexer `ext` and emit this pair's hunks into a
   //  fresh HUNK container (the caller renders it).
+  //  DIS-082: the layers are one CFOLD weave folded in a LINEAR chain — each
+  //  fold's `ancestors` list is every id folded before it, so the later layer
+  //  sees the earlier one and nothing lands in an ignore-set.  `from`/`to` are
+  //  the two commit HASHLETS the emit reads (visibility is stored per commit;
+  //  the old scope bitmaps are gone).
   function fold2(ext, whole) {
     let wA, wB, from, to, layered = false;
     if (f.length === 0) {
       //  Addition: base layer = the to-content (ID_FROM), diff layer = empty
-      //  (ID_TO); invert the scope roles so `from` is the empty side.
-      wA = weave.fold(null, t, ext, ID_FROM);
-      wB = weave.fold(wA, f, ext, ID_TO);
-      from = wB.scope([ID_FROM, ID_TO]); to = wB.scope([ID_FROM]);
+      //  (ID_TO); invert the rev roles so `from` is the empty side.
+      wA = weave.fold(null, t, ext, ID_FROM, []);
+      wB = weave.fold(wA, f, ext, ID_TO, [ID_FROM]);
+      from = ID_TO; to = ID_FROM;
     } else {
       //  Normal / deletion: base layer = from-content, diff layer = to.
-      wA = weave.fold(null, f, ext, ID_FROM);
+      wA = weave.fold(null, f, ext, ID_FROM, []);
       const ids = [ID_FROM];
-      if (e) { wA = weave.fold(wA, e, ext, ID_EXP); ids.push(ID_EXP); layered = true; }
+      if (e) {
+        wA = weave.fold(wA, e, ext, ID_EXP, ids.slice()); ids.push(ID_EXP);
+        layered = true;
+      }
       //  adjacent-equal skip (weave.foldWt's rule): wt identical to EXPECTED =>
       //  no wt layer, so a purely patched-in file reads as all-theirs.
-      wB = (layered && bytesEq(e, t)) ? wA : weave.fold(wA, t, ext, ID_TO);
+      wB = (layered && bytesEq(e, t)) ? wA
+                                      : weave.fold(wA, t, ext, ID_TO, ids.slice());
       if (wB !== wA) ids.push(ID_TO);
-      from = wB.scope([ID_FROM]); to = wB.scope(ids);
+      //  from = the base rev, to = the LAST layer folded (its view is the union
+      //  of every layer, exactly what the old `scope(ids)` bitmap spelled).
+      from = ID_FROM; to = ids[ids.length - 1];
     }
     const hd = abc.ram("HUNK", weave.MAX_SOURCE_MARKED_UP);
     if (whole) wB.emitFull(from, to, name, "diff:", navver, hd);
     else       wB.emitDiff(from, to, name, navver, hd);
-    return { hd: hd, prov: layered ? provList(wB) : null };
+    return { hd: hd, prov: layered ? provList(wB, to) : null };
   }
 
   //  The fold/emit buffers are fixed at MAX_SOURCE_MARKED_UP (lazy mmap, no
@@ -178,17 +189,26 @@ function diffFile(name, fromBytes, toBytes, full, navver, color, out, exp) {
 //  dropped).  `emitDiff`/`emitFull` emit exactly this sequence in contiguous
 //  windows, so a hunk record aligns against it by token text — the provenance
 //  falls out of the ONE fold, with no second diff pass (DIS-080 constraint).
-function provList(w) {
-  const commits = w.commits, out = [];
-  w.rewind();
+//
+//  DIS-082: the cursor is `rewind(rev)`/`next()`/`tok`, so identity is the BODY
+//  OFFSET and attribution is `blame(off)` (the INSERTING commit).  There is no
+//  remover list any more — `tok.alive` only says whether SOME visible tomb hit
+//  the token — so the "removed by EXPECTED" leg reads the weave AT ID_EXP: the
+//  ID_TO layer is not in that rev's scope, so a token dead there was killed by
+//  EXPECTED and by nothing else.  Same two facts as the old inserter/rms pair.
+function provList(w, toRev) {
+  //  pass 1 (the EXPECTED view): which body offsets the EXPECTED layer KILLED.
+  const killedByExp = Object.create(null);
+  w.rewind(ID_EXP);
+  while (w.next()) { const t = w.tok; if (!t.alive) killedByExp[t.off] = 1; }
+  //  pass 2 (the emitted view): every token visible in from ∪ to, weave order.
+  const out = [];
+  w.rewind(toRev);
   while (w.next()) {
-    const ins = w.inserter, rms = w.rms || [];
-    if (ins !== 0 && rms.length) continue;      // born AND died here → not emitted
-    let theirs = false;
-    if (rms.length === 0) theirs = commits[ins] === ID_EXP;
-    else for (let i = 0; i < rms.length; i++)
-      if (commits[rms[i]] === ID_EXP) { theirs = true; break; }
-    out.push({ txt: w.tokText.slice(), p: theirs });
+    const t = w.tok, ins = w.blame(t.off);
+    if (ins !== ID_FROM && !t.alive) continue;  // born AND died here → not emitted
+    const theirs = t.alive ? (ins === ID_EXP) : (killedByExp[t.off] === 1);
+    out.push({ txt: t.text.slice(), p: theirs });
   }
   return out;
 }

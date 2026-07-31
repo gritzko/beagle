@@ -1,7 +1,8 @@
 //  expected.js — DIFF-016 (DIS-080): the EXPECTED reading of ONE path.
 //  EXPECTED = base ⊕ every in-scope patch-in's THEIRS layer, with NO WT layer —
 //  literally patch.js's mergeApply minus `weave.foldWt`: `weave.build` each side
-//  from its commit DAG, `weave.merge` the union, read it MARKERLESS through
+//  from its commit DAG INTO ONE weave (DIS-082 — one shared ctx), `weave.merge`
+//  the union, read it MARKERLESS through
 //  `weave.mergedLive` (PATCH-025).  So EXPECTED is the same object `post` folds
 //  as the merge commit, and `diff` can split wt dirt into "patched in" (wt ==
 //  EXPECTED) vs "local edit on top" (wt != EXPECTED) — DIS-080 §6.
@@ -23,10 +24,16 @@ function theirsShas(log) {
 //  A Set of hashlet strings → an Array (mergedLive's group arg) — patch.js twin.
 function setArr(s) { const a = []; for (const x of s) a.push(x); return a; }
 
-//  The alive (tip) bytes of a weave, copied off the shared scratch buffer.
-function aliveOf(w) {
+//  DIS-082: the JOIN commit — the contentless merge id the stacked views are
+//  read under (the old sentinel hashlet), patch.js twin.
+const JOIN_ID = weave.JOIN_ID;
+
+//  The bytes of a weave AT `rev`, copied off the shared scratch buffer.  ONE
+//  weave now carries every side, so alive() (the LAST folded commit) is the
+//  wrong reading — always produce(rev).
+function produceOf(w, rev) {
   const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
-  w.alive(b);
+  w.produce(rev, b);
   return b.data().slice();
 }
 
@@ -39,24 +46,34 @@ function aliveOf(w) {
 function expectedOf(reader, path, baseSha, shas, treeCache) {
   const out = { bytes: undefined, patched: false };
   if (!shas || !shas.length) return out;
+  //  DIS-082: ONE ctx for every side — each build folds into the SAME weave, so
+  //  the base and the theirs tips share their common history by construction and
+  //  the old pairwise merge cascade is a single contentless JOIN over the union.
   const ctx = weave.makeCtx(reader, path, treeCache);
-  let w = null;
-  const groups = [];
+  const sides = [];                       // one { rev, ids } per contributing tip
   try {
     if (baseSha) {
       const b = weave.build(reader, path, baseSha, ctx);
-      if (b.weave) { w = b.weave; groups.push(setArr(b.ids)); }
+      if (b.weave) sides.push(b);
     }
     for (const sha of shas) {
       const t = weave.build(reader, path, sha, ctx);
       if (!t.weave) continue;                     // path absent in that theirs
       out.patched = true;
-      if (!w) { w = t.weave; groups.push(setArr(t.ids)); continue; }
-      w = weave.merge(w, t.weave, "0000000000000000");
-      groups.push(setArr(t.ids));
+      sides.push(t);
     }
-    if (!w) { out.patched = false; return out; }
-    out.bytes = (groups.length < 2) ? aliveOf(w) : weave.mergedLive(w, groups).bytes;
+    if (!sides.length) { out.patched = false; return out; }
+    //  ctx.w is the LATEST container (fold/merge rewrite into a fresh buffer);
+    //  the per-side `.weave` snapshots predate the later builds.
+    const w = ctx.w;
+    if (sides.length < 2) out.bytes = produceOf(w, sides[0].rev);
+    else {
+      const union = new Set();
+      for (const s of sides) for (const id of s.ids) union.add(id);
+      const wm = weave.merge(w, JOIN_ID, setArr(union));
+      out.bytes = weave.mergedLive(wm, JOIN_ID,
+                                   sides.map(function (s) { return setArr(s.ids); })).bytes;
+    }
   } catch (e) {
     //  Over the fixed markup cap (or an unweavable source) → no EXPECTED; the
     //  caller falls back to the plain base-vs-wt axis, exactly as before.

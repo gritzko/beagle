@@ -52,6 +52,12 @@ const weave = require("./weave.js");
 const join = pathlib.join;
 const isFullSha = shalib.isFullSha;
 
+//  DIS-082: the JOIN commit — the contentless merge id the stacked views are
+//  read under (the old sentinel hashlet); patch.js/expected.js twin.
+const JOIN_ID = weave.JOIN_ID;
+//  A Set of hashlet strings → an Array (the merge ancestor + mergedLive groups).
+function setArr(s) { const a = []; for (const x of s) a.push(x); return a; }
+
 //  --- wt scan ----------------------------------------------------------
 //  Walk the worktree depth-first via io.readdir({recursive}), lstat each
 //  file, and build a map relPath → { ts(mtime ron60), kind }.  Skips
@@ -224,6 +230,8 @@ function patchStamps(wtlogReader) {
 //  The kind then falls out: wt == EXPECTED == theirs → `pat` (clean take-theirs),
 //  wt == EXPECTED != theirs → `mrg` (a real weave), wt != EXPECTED → a local edit.
 function expectedSha(reader, path, baseTipSha, theirsShas) {
+  //  DIS-082: ONE ctx, so every tip folds into the SAME weave — shared history
+  //  is shared by construction and the sides join with ONE contentless merge.
   const ctx = weave.makeCtx(reader, path);
   const sides = [];
   try {
@@ -233,17 +241,22 @@ function expectedSha(reader, path, baseTipSha, theirsShas) {
       if (s.weave) sides.push(s);
     }
     if (!sides.length) return undefined;
+    //  ctx.w is the LATEST container; a side's own `.weave` is the snapshot
+    //  taken before the later builds folded on top of it.
+    const w = ctx.w;
     let bytes;
     if (sides.length === 1) {
+      //  produce(rev), NEVER alive() — alive renders the last folded commit,
+      //  which after a multi-tip build need not be this side's view.
       const b = io.ram(weave.MAX_SOURCE_MARKED_UP);
-      sides[0].weave.alive(b);
+      w.produce(sides[0].rev, b);
       bytes = b.data();
     } else {
-      let wm = sides[0].weave;
-      for (let i = 1; i < sides.length; i++)
-        wm = weave.merge(wm, sides[i].weave, "0000000000000000");
-      bytes = weave.mergedLive(wm, sides.map(function (s) {
-        const a = []; for (const x of s.ids) a.push(x); return a;
+      const union = new Set();
+      for (const s of sides) for (const id of s.ids) union.add(id);
+      const wm = weave.merge(w, JOIN_ID, setArr(union));
+      bytes = weave.mergedLive(wm, JOIN_ID, sides.map(function (s) {
+        return setArr(s.ids);
       })).bytes;
     }
     return shalib.frameSha("blob", bytes);
