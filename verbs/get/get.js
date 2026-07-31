@@ -56,6 +56,10 @@ const weavelib = require("../../shared/weave.js");
 const ambient  = require("../../shared/ambient.js");   // JAB-004: ctx→be bridge
 const uriarg   = require("../../shared/uri.js");       // URI-015: scp remote → ssh://
 const isBinary = require("../../views/diff/diff.js").isBinary;  // GET-056: D5 gate
+//  GET-058: the ONE decision table (rows = track vs root, cols = wt vs base) —
+//  the flat D5 leaf and shared/checkout.js apply() index the SAME 13 cells.
+const quadlib = require("../../shared/quad.js");
+const CH = quadlib.CH;
 const join = pathlib.join, dirname = pathlib.dirname;
 //  BE-011: wtJoin confines a wt-open to the tree (NAVESCAPE on a `..` climb);
 //  merge/split compose in-tree paths over segments (no raw `a + "/" + b`).
@@ -560,6 +564,9 @@ function fanoutWholeTree(ctx, r, wt, force) {
   ctx._get = { k: r.k, wt: wt, tip: r.tip, oldTip: r.oldTip, fresh: r.fresh,
                branch: r.branch, ts: ctx.T0, kinds: {}, dels: 0, rows: [], head: null,
                force: !!force, noPrune: noPrune,
+               //  GET-058: a same-tip RECOVERY get (GET-047's ruled corner) targets
+               //  BASE for every path — the table's `Tv` row, not the inert `T.`.
+               recover: !force && sameTip && !r.fresh,
                //  GET-049: the appended get row's ts — every CLEAN-OVERWRITE leaf
                //  stamps its mtime to this so status's stamp-set fast path hits.
                //  null (no row appended: restore/pick/mergeWorktreeTo) = no stamp.
@@ -602,13 +609,8 @@ function fanoutWholeTree(ctx, r, wt, force) {
   if (!newTree) throw "be get: tip " + r.tip + " has no tree";
   const oldTree = (r.fresh || force) ? "" : r.k.commitTree(r.oldTip || "") || "";
 
-  //  JSQUE-014: the dirty-overlap PRE-PASS barrier (SNIFFOVRL, GET.c:585-591)
-  //  refuses BEFORE HUNKTableOpen — native emits NO banner on GETOVRL, so run
-  //  the check ahead of any out.* push (the loop edge then flushes nothing).
-  //  Refuse if a dirty wt file overlays a NEW target path with NO baseline to
-  //  merge; a fresh clone has no baseline so it is a no-op (guards no-base only).
-  //  D6 --force skips the refuse (it will clean-reset everything).
-  if (!force) dirtyOverlapCheck(r.k, newTree, oldTree, wt, r.fresh);
+  //  GET-058: the JSQUE-014 dirty-overlap PRE-PASS (GETOVRL) is GONE — `To Wo`
+  //  (theirs adds, ours created) is a WEAVE3 cell of the table, not a refusal.
 
   out.banner("get", URI.make(undefined, undefined, undefined, r.branch || "", r.tip.slice(0, 8)), ctx.T0);
 
@@ -877,41 +879,6 @@ function isShortHex(s) { return /^[0-9a-f]{6,39}$/.test(s); }
 //  any 6..40 hex — the pin / detach acceptance.
 function isShortOrFullHex(s) { return /^[0-9a-f]{6,40}$/.test(s); }
 
-//  Dirty-overlap PRE-PASS (SNIFFOVRL): on an UPDATE, a wt file present on disk
-//  that the NEW tree introduces but the OLD baseline never carried, AND whose
-//  bytes differ from the target, is an un-mergeable overlay → refuse.  A whole-
-//  tree set difference (new \ old) intersected with dirty wt files — a barrier,
-//  not a per-file job.  Fresh clone → no baseline → no overlap (no-op).
-function dirtyOverlapCheck(k, newTree, oldTree, wt, fresh) {
-  if (fresh || !oldTree) return;
-  const oldPaths = {};
-  k.readTreeRecursive(oldTree, function (l) {
-    oldPaths[l.path] = l.sha;
-    //  GET-039: a dir->leaf type-change (old `a/b` -> new `a`) IS baselined —
-    //  mark every ancestor dir so the new leaf at `a` is treated as tracked
-    //  content (reconcile + checkout drop the dir), not a dirty user overlay.
-    for (let i = l.path.indexOf("/"); i >= 0; i = l.path.indexOf("/", i + 1))
-      if (oldPaths[l.path.slice(0, i)] === undefined)
-        oldPaths[l.path.slice(0, i)] = "";          // dir-prefix sentinel
-  });
-  const conflicts = [];
-  k.readTreeRecursive(newTree, function (l) {
-    if (oldPaths[l.path] !== undefined) return;     // had a baseline → mergeable
-    //  BE-030/JS-065: an UNTRUSTED remote-tree leaf — skip a `..`/reserved name
-    //  (the write leaf refuses it with "unsafe path"), then read via resolve.
-    if (!pathlib.safeRel(l.path)) return;
-    const full = wtpath(wt, l.path);
-    if (!exists(full)) return;                       // no on-disk overlay
-    const obj = k.getObject(l.sha);
-    const bytes = obj ? obj.bytes : new Uint8Array(0);
-    if (!checkout.leafUnchanged(full, { kind: kindOf(l.mode) }, bytes))
-      conflicts.push(l.path);
-  });
-  if (conflicts.length)
-    throw "be get: GETOVRL dirty wt overlays un-baselined target: " +
-          conflicts.slice(0, 5).join(", ");
-}
-
 //  RECONCILE or LEAF fallback (legacy URI-form child).  JS-075: fan-out now
 //  enqueues STRUCTURED rows, so this only fires for a bare `uri`-only child;
 //  translate it to the structured shape (safe for `/`-terminated dir prefixes).
@@ -971,8 +938,11 @@ function reconcileDir(row, ctx) {
       //  SYNCHRONOUSLY by the mount leaf (oldDirTree) — queued delete leaves
       //  would dispatch AFTER the mount and clobber the fresh sub checkout.
       const subOverDir = kindOf(ne.mode) === "s" && oe && oe.isDir;
+      //  GET-058: the BASE entry's kind rides the row — the wt column is measured
+      //  vs BASE, and a TYPE CHANGE is tracked content, never user dirt (GET-039).
       enqueue.push({ verb: "get", _leaf: true, rel: rel, newSha: ne.sha,
                      oldSha: (oe && !oe.isDir ? oe.sha : ""),
+                     oldKind: oe ? (oe.isDir ? "d" : kindOf(oe.mode)) : "",
                      oldDirTree: subOverDir ? oe.sha : "" });
       if (oe && oe.isDir && !subOverDir)         // old dir → recurse to delete
         enqueue.push({ verb: "get", _dir: rel + "/", newTree: "", oldTree: oe.sha });
@@ -1022,23 +992,29 @@ function leaf(row, ctx) {
         try { io.rmdir(full, true); out.row(rel, "del", g.ts); g.dels++; } catch (e) {}
       return;
     }
-    //  GET-047 3.4: the DIVERGED delete leaf stays TREE-DRIVEN (unlink) — a
-    //  branch switch to a diverged sibling drops ours-only files from the wt
-    //  (they live on in ours' branch; test/get/branch-relative pins this).
-    //  GET-048: diverged + absent from the MERGE BASE = a locally-COMMITTED add
-    //  the target never had — the reset unlinks it, but a `del` row would lie (ABC-016).
-    const localAdd = !!(g.basePaths && g.basePaths[rel] === undefined);
-    //  GET-040: on a diverged track UPDATE a local-only add STAYS on disk, and
-    //  a file theirs deleted but ours edited keeps ours; only a clean one goes.
-    if (g.divMerge) {
-      if (localAdd) return;
-      const disk = readWt(full);
-      if (disk != null && !bytesEq(disk, blobOf(g.k, g.basePaths[rel]))) {
-        bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return;
+    //  GET-058: the DIVERGED leg (basePaths/divMerge) keeps its GET-047 3.4 /
+    //  GET-048 / GET-040 behaviour verbatim — its FF-only retirement is T3+T4.
+    if (g.basePaths) {
+      const localAdd = g.basePaths[rel] === undefined;
+      if (g.divMerge) {
+        if (localAdd) return;
+        const disk = readWt(full);
+        if (disk != null && !bytesEq(disk, blobOf(g.k, g.basePaths[rel]))) {
+          bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return;
+        }
       }
+      try { io.unlink(full);
+            if (!localAdd) { out.row(rel, "del", g.ts); g.dels++; }
+            markDelDir(g, rel); } catch (e) {}
+      return;
     }
-    try { io.unlink(full);
-          if (!localAdd) { out.row(rel, "del", g.ts); g.dels++; }
+    //  GET-058: the `Tx` row of the table — `Tx W.` DELETE, `Tx Wv` OURS keep
+    //  the file (a dirty edit is never destroyed), `Tx Wx` no-op.
+    const v = quadlib.verdict(CH.removed, CH.same,
+                              checkout.wtChar(g.k, full, kind, oldSha), false);
+    if (v === "ours") { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
+    if (v !== "del") return;
+    try { io.unlink(full); out.row(rel, "del", g.ts); g.dels++;
           markDelDir(g, rel); } catch (e) {}
     return;
   }
@@ -1065,73 +1041,54 @@ function leaf(row, ctx) {
   //  equal to the target; emits no row — native get only reports what moved).
   if (existed && checkout.leafUnchanged(full, { kind: kind }, bytes)) return;
 
-  //  GET-040: diverged track update — ours DELETED a file theirs left at the
-  //  merge base (mb sha == theirs') → the deletion survives, no resurrection.
-  const mbSha = g.divMerge ? g.basePaths[rel] : undefined;
-  if (g.divMerge && !existed && mbSha === newSha) return;
-
-  //  D5 (DATA SAFETY): a DIRTY baselined file (on-disk differs from BOTH the old
-  //  baseline blob AND the target) must be 3-WAY MERGED — re-apply the user's
-  //  uncommitted edit onto the new tree — NOT clean-overwritten.  GET-056: TEXT
-  //  "f"/"x" merges; symlink/gitlink/BINARY clean-reset.  --force (D6) and the
-  //  clean (un-edited) case clean-overwrite.  An un-baselined dirty overlay with
-  //  no base to merge refuses loudly (the whole-tree pre-pass also catches it).
-  //  GET-040: on a diverged track UPDATE the 3-way base is the MERGE BASE blob
-  //  (a committed local delta is not dirt to discard); a switch keeps CUR.
   const regular = kind === "f" || kind === "x";
   const onDisk = existed && regular ? readWt(full) : null;
-  const baseSha = g.divMerge ? (mbSha || "") : oldSha;
-  const baseBytes = existed && regular
-        ? (baseSha ? blobOf(g.k, baseSha)
-                   : (g.divMerge ? new Uint8Array(0) : null))
-        : null;
-  //  GET-056b RULING: dirty BINARY keeps OURS — an uncommitted edit is never
-  //  silently dropped; a CLEAN binary still fast-forwards to theirs below.
-  if (existed && !g.force && regular &&
-      (isBinary(baseBytes) || isBinary(onDisk) || isBinary(bytes))) {
-    const dirtyBin = onDisk != null &&
-                     (baseBytes == null || !bytesEq(onDisk, baseBytes));
-    if (dirtyBin) { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
-  }
-  //  GET-056: any binary side (base, on-disk, target) → the clean reset below.
-  if (existed && !g.force && regular &&
-      !isBinary(baseBytes) && !isBinary(onDisk) && !isBinary(bytes)) {
-    //  GET-048: dirtiness = checkout vs the LOCAL HEAD (cur), NEVER the merge
-    //  base — a committed delta is not dirt; only UNCOMMITTED edits weave (§4).
-    const dirty = onDisk != null && (baseBytes == null || !bytesEq(onDisk, baseBytes));
-    if (dirty && baseBytes == null)
-      throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;
-    if (dirty) {                                 // real local edit → weave-merge
-      //  PATCH-025 (DIS-080): a prior conflict carries NO fences any more, so the
-      //  old marker skip is gone — the markerless bytes re-weave like any edit.
-      //  PATCH-012: an unweavable leaf (over-cap BLOB, or a still-overflowing
-      //  `out full`) refuses like a real conflict — never silent-ours + exit 0.
-      let mg;
-      try { mg = weave3(baseBytes, onDisk, bytes, extOf(rel)); }
-      catch (e) { if (!("" + e).includes("full")) throw e; mg = null; }
-      if (mg == null) {
-        g.conf = (g.conf || 0) + 1;
-        out.row(rel, "con", g.ts);
-        try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
-        bandStamp(g, full, "con");   // GET-050
-        return;
-      }
-      const merged = mg.bytes;
-      checkout.materialise(g.wt, rel, { kind: kind }, merged);
-      if (mg.spans.length) {
-        g.conf = (g.conf || 0) + 1;
-        out.row(rel, "con", g.ts);   // STATUS-005: con (was DIS-057 cnf)
-        //  STATUS-005: durable `con <path>` row (append-only, like `put`) so
-        //  the conflict survives the get's exit + mtime churn for status.
-        try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
-        bandStamp(g, full, "con");   // GET-050
-        return;
-      }
-      //  GET-050: the weave output is dirt vs the NEW base (band `mrg` → `...v`),
-      //  UNLESS the user's edit reproduced the target exactly (clean → ceiling).
-      if (bytesEq(merged, bytes)) trySetMtime(full, g.stampTs);
-      else bandStamp(g, full, "mrg");
-      out.row(rel, "mrg", g.ts);
+
+  //  GET-058: the DIVERGED leg (basePaths/divMerge, GET-040/GET-048) keeps its
+  //  merge-base 3-way base verbatim — its FF-only retirement is T3+T4.
+  if (g.basePaths) {
+    const mbSha = g.divMerge ? g.basePaths[rel] : undefined;
+    if (g.divMerge && !existed && mbSha === newSha) return;
+    const baseSha = g.divMerge ? (mbSha || "") : oldSha;
+    const baseBytes = existed && regular
+          ? (baseSha ? blobOf(g.k, baseSha)
+                     : (g.divMerge ? new Uint8Array(0) : null))
+          : null;
+    if (existed && !g.force && regular &&
+        (isBinary(baseBytes) || isBinary(onDisk) || isBinary(bytes))) {
+      const dirtyBin = onDisk != null &&
+                       (baseBytes == null || !bytesEq(onDisk, baseBytes));
+      if (dirtyBin) { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
+    }
+    if (existed && !g.force && regular &&
+        !isBinary(baseBytes) && !isBinary(onDisk) && !isBinary(bytes)) {
+      const dirty = onDisk != null && (baseBytes == null || !bytesEq(onDisk, baseBytes));
+      if (dirty && baseBytes == null)
+        throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;
+      if (dirty) { weaveLeaf(g, rel, full, kind, baseBytes, onDisk, bytes, out); return; }
+    }
+  } else if (!g.force && !g.fresh) {
+    //  GET-058: THE decision — one quad cell per path (shared/quad.js verdict),
+    //  the SAME table shared/checkout.js apply() indexes.  A CLONE/bootstrap
+    //  (g.fresh, no base at all) and `get!` bypass the table, never a degenerate root.
+    const baseBytes = oldSha ? blobOf(g.k, oldSha) : null;
+    //  GET-058: BINARY (or an unweavable leaf — wrong kind, unreadable bytes)
+    //  rides the both-edited cells to OURS + conflict; mode-blind per GET-056b.
+    const bin = !regular || (existed && onDisk == null) ||
+                isBinary(baseBytes) || isBinary(onDisk) || isBinary(bytes);
+    //  GET-058: a same-tip RECOVERY get declares BASE the target for every path
+    //  (GET-047's ruled corner) — the `Tv` row (restore/weave), not the inert `T.`.
+    const tch = g.recover ? CH.advanced : checkout.trackChar(oldSha, newSha);
+    //  GET-058: a base DIR being replaced by a leaf is TRACKED content, so its wt
+    //  column reads clean `.` — the GET-039 dir-prefix sentinel, per-path.
+    const wch = row.oldKind === "d" ? CH.same
+              : checkout.wtChar(g.k, full, row.oldKind || kind, oldSha);
+    const v = quadlib.verdict(tch, CH.same, wch, bin);
+    if (v === "noop") return;
+    if (v === "ours") { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
+    if (v === "ourscon") { conRowOut(g, rel, full, out); return; }
+    if (v === "weave") {
+      weaveLeaf(g, rel, full, kind, baseBytes || new Uint8Array(0), onDisk, bytes, out);
       return;
     }
   }
@@ -1142,6 +1099,33 @@ function leaf(row, ctx) {
   //  (setMtime follows the link) stay unstamped.
   if (g.stampTs != null && kind !== "l") trySetMtime(full, g.stampTs);
   out.row(rel, existed ? "upd" : "new", g.ts);
+}
+
+//  GET-058: a CONFLICT outcome in one place — the report row, the durable
+//  `con` wtlog row (STATUS-005, DIS-080 glyphs) and the GET-050 band stamp.
+function conRowOut(g, rel, full, out) {
+  g.conf = (g.conf || 0) + 1;
+  out.row(rel, "con", g.ts);
+  try { appendWtlog(g.bePath, [{ verb: "con", uri: URI.make(undefined, undefined, rel) }]); } catch (e) {}
+  bandStamp(g, full, "con");
+}
+
+//  GET-058: the WEAVE3 cell (`Tv Wv` / `To Wo`, text) — re-apply the user's
+//  uncommitted edit onto theirs; live spans or an unweavable leaf = conflict.
+//  PATCH-025 (DIS-080): markerless bytes re-weave like any edit; PATCH-012: an
+//  over-cap/overflowing weave refuses like a real conflict, never silent-ours.
+function weaveLeaf(g, rel, full, kind, baseBytes, onDisk, bytes, out) {
+  let mg;
+  try { mg = weave3(baseBytes, onDisk, bytes, extOf(rel)); }
+  catch (e) { if (!("" + e).includes("full")) throw e; mg = null; }
+  if (mg == null) { conRowOut(g, rel, full, out); return; }
+  checkout.materialise(g.wt, rel, { kind: kind }, mg.bytes);
+  if (mg.spans.length) { conRowOut(g, rel, full, out); return; }
+  //  GET-050: the weave output is dirt vs the NEW base (band `mrg` → `...v`),
+  //  UNLESS the user's edit reproduced the target exactly (clean → ceiling).
+  if (bytesEq(mg.bytes, bytes)) trySetMtime(full, g.stampTs);
+  else bandStamp(g, full, "mrg");
+  out.row(rel, "mrg", g.ts);
 }
 
 //  SUBS-047: remove a replaced dir's TRACKED files before its gitlink mounts —

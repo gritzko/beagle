@@ -57,6 +57,10 @@ const isBinary = require("../views/diff/diff.js").isBinary;
 const weavelib = require("./weave.js");
 const conflict = require("./conflict.js");
 const ulog = require("./ulog.js");
+//  GET-058: the ONE decision table (rows = track vs root, cols = wt vs base);
+//  the sub checkout and get.js's flat D5 leaf index the SAME 13 cells.
+const quad = require("./quad.js");
+const CH = quad.CH;
 
 function bytesEq(a, b) {
   if (!a || !b || a.length !== b.length) return false;
@@ -156,6 +160,24 @@ function readOnDisk(full) {
   return readFile(full, ls.size);
 }
 
+//  GET-058: the TRACK column char — the BASE tree entry vs theirs, in the quad
+//  canon ('.' same, 'v' advanced, 'o' created, 'x' removed).
+function trackChar(baseSha, theirSha) {
+  if (!baseSha) return theirSha ? CH.created : CH.same;
+  if (!theirSha) return CH.removed;
+  return baseSha === theirSha ? CH.same : CH.advanced;
+}
+
+//  GET-058: the WT column char — the path on disk vs its BASE blob (the local-
+//  dirt axis, gritzko 2026-07-17); absent-and-unbaselined collapses to '.'.
+function wtChar(keeper, full, kind, baseSha) {
+  let ls; try { ls = io.lstat(full); } catch (e) { ls = null; }
+  if (!ls) return baseSha ? CH.removed : CH.same;
+  if (!baseSha) return CH.created;
+  const b = blobOf(keeper, baseSha) || new Uint8Array(0);
+  return leafUnchanged(full, { kind: kind }, b) ? CH.same : CH.advanced;
+}
+
 //  apply(keeper, tipSha, wtRoot, opts?): materialise `tipSha`'s tree into wtRoot.
 //  GET-040: FORCE (`get!`) clean-resets — every not-in-tree path (untracked
 //  included) is swept.  NON-force merges/leaves: it (re)writes only MISSING or
@@ -200,11 +222,11 @@ function apply(keeper, tipSha, wtRoot, opts) {
   //  GET-040: the OLD baseline tree (path -> sha) so a non-force pass can tell a
   //  CLEAN file (== old blob → safe to update) from a DIRTY edit (preserve) and
   //  unlink only a TRACKED deletion.  Force clean-resets, so it needs no baseline.
-  const oldMap = {};
+  const oldMap = {}, oldKind = {};
   if (!force && oldTip) {
     const ot = keeper.commitTree(oldTip);
     if (ot) keeper.readTreeRecursive(ot, function (l) {
-      if (l.kind !== "s") oldMap[l.path] = l.sha; });
+      if (l.kind !== "s") { oldMap[l.path] = l.sha; oldKind[l.path] = l.kind; } });
   }
 
   //  Walk the new tree's leaves; create/overwrite, classify new vs mod.
@@ -221,26 +243,32 @@ function apply(keeper, tipSha, wtRoot, opts) {
     const full = wtpath(wtRoot, rel);
     const existed = !!before[rel];
     if (existed && leafUnchanged(full, leaf, bytes)) return;  // no row
-    //  GET-040: NON-force never clobbers a DIRTY tracked file; only a CLEAN
-    //  file (== old blob) or a MISSING one is (re)materialised.  Fresh checkout
-    //  (no oldTip) materialises all.  GET-056b RULING (the flat D5 matrix, per
-    //  mode-blind bytes): clean → theirs; dirty TEXT → weave3; dirty BINARY → ours.
-    if (!force && oldTip && existed && (leaf.kind === "f" || leaf.kind === "x")) {
+    //  GET-058: THE decision — one quad cell per path, the SAME table get.js's
+    //  flat D5 leaf indexes.  `get!` and a FRESH mount (no base) BYPASS it.
+    if (!force && oldTip) {
+      const baseSha = oldMap[rel];
       const onDisk = readOnDisk(full);
-      const oldBytes = blobOf(keeper, oldMap[rel]);
-      const dirty = !(oldBytes != null && bytesEq(onDisk, oldBytes));
-      if (dirty) {
-        if (onDisk == null || oldBytes == null ||
-            isBinary(oldBytes) || isBinary(onDisk) || isBinary(bytes)) {
-          rows.push({ verb: "mrg", path: rel }); return;   // dirty binary/unreadable → ours
-        }
+      const oldBytes = blobOf(keeper, baseSha);
+      const regular = leaf.kind === "f" || leaf.kind === "x";
+      //  GET-058: BINARY (or an unweavable kind) rides the both-edited cells to
+      //  OURS + conflict — mode-blind, per GET-056b: the bytes decide, not the mode.
+      const bin = !regular || (existed && onDisk == null) ||
+                  isBinary(oldBytes) || isBinary(onDisk) || isBinary(bytes);
+      //  GET-058: the wt column is measured vs BASE — against the BASE entry's
+      //  kind, so a TYPE CHANGE reads clean rather than as user dirt (GET-039).
+      const v = quad.verdict(trackChar(baseSha, leaf.sha), CH.same,
+                             wtChar(keeper, full, oldKind[rel] || leaf.kind, baseSha), bin);
+      if (v === "noop") return;
+      if (v === "ours") { rows.push({ verb: "mrg", path: rel }); return; }
+      if (v === "ourscon") { rows.push({ verb: "con", path: rel }); conRow(rel); return; }
+      if (v === "weave") {
         //  POST-032 twin: a still-unresolved prior conflict stays as-is.
         if (conflict.hasConflictMarker(onDisk) && conSet(rel)) {
           rows.push({ verb: "con", path: rel }); return;
         }
-        //  dirty TEXT → 3-way weave, the same weave3 as get.js's flat D5 leaf.
         let mg;
-        try { mg = weavelib.weave3(oldBytes, onDisk, bytes, weavelib.extOf(rel)); }
+        try { mg = weavelib.weave3(oldBytes || new Uint8Array(0), onDisk, bytes,
+                                   weavelib.extOf(rel)); }
         catch (e) { if (!("" + e).includes("full")) throw e; mg = null; }
         if (mg == null) {                        // unweavable → keep ours, conflict
           rows.push({ verb: "con", path: rel }); conRow(rel); return;
@@ -254,7 +282,7 @@ function apply(keeper, tipSha, wtRoot, opts) {
         if (bytesEq(mg.bytes, bytes) && stampTs != null) trySetMtime(full, stampTs);
         rows.push({ verb: "mrg", path: rel }); return;
       }
-      //  clean → fall through, (re)materialise theirs.
+      //  "theirs" → fall through and (re)materialise.
     }
     materialise(wtRoot, rel, leaf, bytes);
     //  PUT-012: stamp the materialised file to the track-row ts (get.js:1085
@@ -267,10 +295,17 @@ function apply(keeper, tipSha, wtRoot, opts) {
   //  dirs is best-effort (io has no rmdir leaf; leave empty dirs).
   for (const rel in before) {
     if (inTree[rel]) continue;
-    //  GET-040: a NON-force checkout unlinks ONLY a TRACKED deletion (present in
-    //  the OLD tree, gone from the new); an UNTRACKED path (in neither) is LEFT.
-    //  `get!` (force) is the sole clean-reset that may remove untracked/dirty.
-    if (!force && !oldMap[rel]) continue;
+    //  GET-058: the `Tx` row — `Tx W.` DELETE, `Tx Wv` OURS keep the file,
+    //  `Tx Wx` no-op; an UNTRACKED path (`T- Wo`) is never touched.  `get!`
+    //  (force) stays the SOLE cleaning path (GET-040's invariant).
+    if (!force) {
+      if (!oldMap[rel]) continue;
+      const v = quad.verdict(CH.removed, CH.same,
+                             wtChar(keeper, wtpath(wtRoot, rel), oldKind[rel], oldMap[rel]),
+                             false);
+      if (v === "ours") { rows.push({ verb: "mrg", path: rel }); continue; }
+      if (v !== "del") continue;
+    }
     try { io.unlink(wtpath(wtRoot, rel)); rows.push({ verb: "del", path: rel }); }
     catch (e) {}
   }
@@ -284,5 +319,7 @@ function apply(keeper, tipSha, wtRoot, opts) {
 //  so the patch verb writes merged blobs through the SAME write_blob path.
 //  leafUnchanged is exported for get.js (JSQUE-009): the loop-handler leaf
 //  reuses the SAME skip-if-already-matches predicate as the one-shot checkout.
+//  GET-058: the two column-char derivations get.js's flat leaf reuses, so a
+//  cell cannot drift between the two checkout paths (GET-056/GET-057).
 module.exports = { apply, scanWt, materialise, writeFile, writeSymlink,
-                   leafUnchanged };
+                   leafUnchanged, trackChar, wtChar };

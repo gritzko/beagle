@@ -113,6 +113,31 @@ const WT_BUCKET = {
   mis: { present: 0 },
 };
 
+//  --- the DECISION table (GET-058) ---------------------------------------
+//  RULED (gritzko 2026-07-31): a get's per-file verdict is ONE 13-cell table,
+//  rows = track vs root, cols = wt vs base — the same vocabulary the quad
+//  RENDERS, now on the deciding side.  Presence lives inside `o`/`x`, so the
+//  illegal presence combinations cannot be written down and edited-vs-locally-
+//  deleted never share a "dirty" bit.  Cells the table does not name (`Tv Wo`,
+//  `Tx Wo`, `To Wx`) are unreachable: the wt char is measured vs BASE, so
+//  in-base and created-locally exclude each other.
+const VERDICT = {
+  "..": "noop",   ".v": "ours",   ".x": "noop",   ".o": "ours",
+  "v.": "theirs", "vv": "weave",  "vx": "theirs", "vo": "weave",
+  "x.": "del",    "xv": "ours",   "xx": "noop",   "xo": "ours",
+  "o.": "theirs", "ov": "weave",  "ox": "theirs", "oo": "weave",
+};
+
+//  GET-058: verdict(track, base, wt, binary) → noop|theirs|ours|weave|del|
+//  ourscon.  BINARY modifies ONLY the both-sides-edited cells (`Tv Wv`, `To
+//  Wo`) → OURS + conflict: binary is never woven, a dirty binary never reset;
+//  the six clean cells are byte-agnostic.  The BASE column is inert here — FF
+//  keeps it `.`, and AHEAD lights it while every row still reads `T.` = no-op.
+function verdict(track, base, wt, binary) {
+  const v = VERDICT[(track || CH.same) + (wt || CH.same)] || "noop";
+  return (v === "weave" && binary) ? "ourscon" : v;
+}
+
 //  --- relations ----------------------------------------------------------
 function rel(rootSha, colSha) {
   if (rootSha == null && colSha == null) return CH.same;     // absent in both
@@ -284,4 +309,6 @@ function quadOf(be, log, k, opts) {
 
 module.exports = { quadModel: quadModel, quadOf: quadOf,
                    treeUlog: treeUlog, patchUlog: patchUlog,
+                   //  GET-058: the ONE per-file decision both checkout paths index.
+                   verdict: verdict,
                    CH: CH, WT_BUCKET: WT_BUCKET };
