@@ -18,6 +18,13 @@ function parse(wtRoot) {
   const p = wtpath(wtRoot, ".gitmodules");
   let text;
   try { text = utf8.Decode(io.mmap(p, "r").data()); } catch (e) { return []; }
+  return parseText(text);
+}
+
+//  parseText(text) → the same records from an ALREADY-read `.gitmodules` body.
+//  STATUS-018: `util/ignore.js` reads the file itself (it stays free of core/
+//  discover.js) and needs the one parser, not a second copy.
+function parseText(text) {
   const out = [], seen = {};
   let inSub = false, name = "", curPath = "", curUrl = "";
   //  Close the open block: emit it iff it declared a path not yet seen.
@@ -67,4 +74,4 @@ function urlOf(wtRoot, path) {
   return "";
 }
 
-module.exports = { parse: parse, paths: paths, urlOf: urlOf };
+module.exports = { parse: parse, parseText: parseText, paths: paths, urlOf: urlOf };

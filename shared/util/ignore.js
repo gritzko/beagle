@@ -4,10 +4,12 @@
 //  wt-scan skips exactly the paths native `be status` skips.
 //
 //  load(wtRoot) → matcher with match(relPath, isDir) → bool.
-//    Anchors at wtRoot, walks UP to $HOME (or `/`), stacking every
-//    `.gitignore` found (set[0] deepest).  A nearer/deeper file
-//    overrides a shallower one; `!` negation honored.  `.git` and `.be`
-//    path segments are ALWAYS ignored, with or without a `.gitignore`.
+//    Anchors at wtRoot, walks UP stacking every `.gitignore` found
+//    (set[0] deepest).  A nearer/deeper file overrides a shallower one;
+//    `!` negation honored.  `.git` and `.be` path segments are ALWAYS
+//    ignored, with or without a `.gitignore`.  The walk stops at the repo
+//    boundary, crossing it only into a parent that DECLARES this path a
+//    sub (STATUS-018), and never above $HOME (or `/`).
 //
 //  Gitignore rules implemented:
 //    - blank / `#` lines skipped
@@ -150,6 +152,35 @@ function isMeta(rel) {
 
 function statKind(p) { try { return io.stat(p).kind; } catch (e) { return undefined; } }
 
+//  A repo root: carries a `.be` (wt store anchor) or a `.git`.
+function isRepo(dir) {
+  return statKind(join(dir, ".be")) !== undefined ||
+         statKind(join(dir, ".git")) !== undefined;
+}
+
+//  STATUS-018 (the JS twin of STATUS-002): at a repo boundary the chain
+//  crosses ONE way only — up into an enclosing repo that DECLARES this path
+//  in its `.gitmodules` (a real sub, SUBS-045), so a parent's `.gitignore`
+//  governs the sub's paths.  An enclosing repo that merely CONTAINS the wt
+//  (journal's `work/` hive, BE-031) must never swallow it — test/status/hive.
+function declaredSubOf(dir, home) {
+  let rel = basename(dir), cur = dir, up = dirname(dir);
+  for (let guard = 0; guard < 64 && up !== cur; guard++) {
+    if (isRepo(up)) {
+      const text = readFileText(join(up, ".gitmodules"));
+      if (text == null) return false;
+      const subs = require("../gitmodules.js").parseText(text);
+      for (const s of subs) if (s.path === rel) return true;
+      return false;
+    }
+    if (home && up === home) return false;
+    if (up.length <= 1) return false;             // "/" reached
+    rel = basename(up) + "/" + rel;
+    cur = up; up = dirname(up);
+  }
+  return false;
+}
+
 function readFileText(path) {
   try {
     //  io.mmap RO maps the whole file as DATA (FILEMapRO); .data() is
@@ -178,10 +209,10 @@ function load(wtRoot) {
     const text = readFileText(join(cur, ".gitignore"));
     sets.push({ pats: text == null ? [] : parseSet(text), prefix: prefix });
 
-    //  a .gitignore has effect only INSIDE its own repo: stop at the first
-    //  `.git`/`.be` boundary, or an enclosing repo swallows the wt (worktrees).
-    if (statKind(join(cur, ".be")) !== undefined ||
-        statKind(join(cur, ".git")) !== undefined) break;
+    //  a .gitignore has effect only INSIDE its own repo — EXCEPT that a sub
+    //  is inside its parent: at a `.git`/`.be` boundary keep walking only
+    //  when an enclosing repo declares this path a sub (STATUS-018).
+    if (isRepo(cur) && !declaredSubOf(cur, home)) break;
     if (home && cur === home) break;
     if (cur.length <= 1) break;     // "/" reached
     const up = dirname(cur);

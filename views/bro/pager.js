@@ -106,7 +106,8 @@ function indexAll(hunks, cols, wrap) {
   for (const h of hunks) {
     rows.push({ hunk: h, banner: true });      // the hunk header line
     const sub = bro.indexRows(h, cols, wrap);  // BRO-014: wrap boolean (soft|no-wrap)
-    for (const r of sub) rows.push({ hunk: h, off: r.off, end: r.end, pass: r.pass });
+    //  BRO-036: `els` (the elastic-span …-cut / pad insert) rides the row.
+    for (const r of sub) rows.push({ hunk: h, off: r.off, end: r.end, pass: r.pass, els: r.els });
   }
   return rows;
 }
@@ -125,18 +126,24 @@ function indexAll(hunks, cols, wrap) {
 //  utf8.Encode double-encoded it, — → â…).  A diff row rides the shared two-pass
 //  view/bro.js paintDiffRow; a non-diff row is one PASS_NORMAL/side-EQ THEME-fg
 //  pass, batching same-SGR cells into one raw run (the C speller).  'U' hidden.
-function emitBody(hunk, off, end, color, pass, enc, raw) {
+function emitBody(hunk, off, end, color, pass, enc, raw, els) {
   if (color && hunk.toks && bro.hasDiffSides(hunk.toks))
     return bro.paintDiffRow(hunk.text, hunk.toks, off, end, pass | 0, enc, raw);
   //  WHY-001: a `why:` blame row (custom-bit runs, no diff sides) rides the same
   //  wash the pipe --color uses, else it fell to the plain fg-only pass (blank bg).
   if (color && hunk.toks && bro.hasWhyRuns(hunk.toks))
-    return bro.paintWhyRow(hunk.text, hunk.toks, off, end, enc, raw);
+    return bro.paintWhyRow(hunk.text, hunk.toks, off, end, enc, raw, els);
   const text = hunk.text, toks = hunk.toks;
   let ti = 0;
   while (ti < toks.length && (toks[ti] & 0xffffff) <= off) ti++;
-  let cur = bro.A0, pos = off, runLo = -1;
+  let cur = bro.A0, pos = off, runLo = -1, elsDone = false;
   while (pos < end) {
+    //  BRO-036: the elastic insert/skip — emit `ins` at els.lo, resume at els.hi.
+    if (els && !elsDone && pos >= els.lo) {
+      if (runLo >= 0) { raw(runLo, pos); runLo = -1; }
+      enc(els.ins); elsDone = true;
+      if (els.hi > pos) { pos = els.hi; continue; }
+    }
     while (ti < toks.length && (toks[ti] & 0xffffff) <= pos) ti++;
     const w = ti < toks.length ? toks[ti] : 0;
     const tag = ti < toks.length ? String.fromCharCode(65 + ((w >>> 27) & 0x1f)) : "S";
@@ -154,17 +161,20 @@ function emitBody(hunk, off, end, color, pass, enc, raw) {
     pos += clen;
   }
   if (runLo >= 0) raw(runLo, pos);
+  //  BRO-036: a pad/cut landing exactly at the row end applies after the walk.
+  if (els && !elsDone && els.lo <= end) enc(els.ins);
   if (color) enc(bro.resetSGR(cur));
 }
 
 //  STRING form of a painted row (driver/pty tests + any string consumer): the
 //  SAME cell walk as the byte render, text DECODED to real codepoints so it is
 //  mojibake-free even if a caller re-encodes it (BRO-011).
-function paintRow(hunk, off, end, color, pass) {
+function paintRow(hunk, off, end, color, pass, els) {
   let out = "";
   emitBody(hunk, off, end, color, pass,
            function (s) { out += s; },
-           function (lo, hi) { if (hi > lo) out += utf8.Decode(hunk.text.subarray(lo, hi)); });
+           function (lo, hi) { if (hi > lo) out += utf8.Decode(hunk.text.subarray(lo, hi)); },
+           els);
   return out;
 }
 
@@ -426,7 +436,8 @@ Pager.prototype.render = function () {
       else {
         const text = r.hunk.text;
         emitBody(r.hunk, r.off, r.end, this.color, r.pass, enc,
-                 function (lo, hi) { if (hi > lo) chunks.push(text.subarray(lo, hi)); });
+                 function (lo, hi) { if (hi > lo) chunks.push(text.subarray(lo, hi)); },
+                 r.els);                       // BRO-036: the elastic insert
       }
     }
     enc("\r\n");
@@ -1255,8 +1266,16 @@ Pager.prototype._screenToByte = function (row, col) {
   const hunk = r.hunk, text = hunk.text, toks = hunk.toks;
   let ti = 0;
   while (ti < toks.length && (toks[ti] & 0xffffff) <= r.off) ti++;
-  let cp = 1, pos = r.off;
+  let cp = 1, pos = r.off, elsDone = false;
   while (pos < r.end) {
+    //  BRO-036: the elastic …/pad occupies columns but maps to NO byte — a
+    //  click there is dead; the columns after it keep their true bytes.
+    if (r.els && !elsDone && pos >= r.els.lo) {
+      const w = Array.from(r.els.ins).length;
+      if (col < cp + w) return null;
+      cp += w; elsDone = true;
+      if (r.els.hi > pos) { pos = r.els.hi; continue; }
+    }
     while (ti < toks.length && (toks[ti] & 0xffffff) <= pos) ti++;
     const tag = ti < toks.length ? String.fromCharCode(65 + ((toks[ti] >>> 27) & 0x1f)) : "S";
     let clen = [1,1,1,1,1,1,1,1,0,0,0,0,2,2,3,4][text[pos] >> 4];

@@ -11,7 +11,7 @@
 //      resolver — never guessed, never string-carved (SUBS-054 et al).
 //   3. FOREIGN — anchors outside the project's stores, wts under each.
 //  WORK-004 wt row: `//KEY  [diff] [post]  [+N][-N]  <time5> #<hashlet8>
-//  <subject≤30> [done] [dont]` — [diff]/[post] are fixed slots; the ahbeh
+//  <subject> [done] [dont]` — [diff]/[post] are fixed slots; the ahbeh
 //  counts ARE buttons: `[+N]` mints bare `post` (advance the track, salad 'G'),
 //  `[-N]` bare `get` (pull, salmon 'A'), each a `//KEY/: verb` O-invite in the
 //  row ctx; a zero side shows nothing, two-digit clamp.  [done]/[dont] as before.
@@ -54,6 +54,7 @@ const TAG_C = tagCode("C"), TAG_Y = tagCode("Y"), TAG_E = tagCode("E");
 const TAG_W = tagCode("W"), TAG_G = tagCode("G"), TAG_A = tagCode("A");
 //  WORK-010: the ticket-link `[?]` rides the cyan 'V' slot (view/bro.js THEME).
 const TAG_V = tagCode("V");
+const TAG_B = tagCode("B");   // BRO-036: the elastic (pager-resizable) span
 
 //  --- fs probes ---------------------------------------------------------------
 function isDir(p) { try { return io.stat(p).kind === "dir"; } catch (e) { return false; } }
@@ -392,12 +393,6 @@ function mountAnnot(root, node) {
 }
 
 function chars(s) { return Array.from(s).length; }
-//  Review 2026-07-18: the wt-row subject clips at ~30 chars.
-function trim30(s) {
-  const a = Array.from(s || "");
-  return a.length > 30 ? a.slice(0, 30).join("") : (s || "");
-}
-
 //  --- row assembly ------------------------------------------------------------
 //  A hunk is a flat row list: a REPO row { rails, label, nav, bold, tail:{ts,
 //  sha,subject,annot} }, a HEADER/BRANCH row { rails, label, tail:null|{text} },
@@ -525,7 +520,7 @@ function fadeHex(ts) {
 }
 
 //  The wt row: `//KEY ┄┄┄  [?] [±] [post]  [+N][-N]  <time5> #<hashlet8>
-//  <subject≤30> [done] [dont]` — buttons pager-only, everything else content.
+//  <subject> [done] [dont]` — buttons pager-only, everything else content.
 //  WORK-010: [?] (`//: todo TKT` invite) + [±] (compact diff) lead the buttons.
 function wtSpans(parts, spans, off, rails, d, btns) {
   const ctx = "//" + d.key;
@@ -558,17 +553,13 @@ function wtSpans(parts, spans, off, rails, d, btns) {
   off = ahbehSpans(parts, spans, off, d.counts, btns, ctx);
   off = span(parts, spans, off, render.dateCol(d.ts || 0n), TAG_S);
   off = span(parts, spans, off, "#" + (d.sha ? d.sha.slice(0, 8) : "........"), TAG_S);
-  const subj = trim30(d.subject);
+  const subj = d.subject || "";
   if (btns) {
-    //  WORK-006: pad the subject to the 30-col trim width with a ┄ leader so
-    //  [done]/[dont] land at ONE column on every wt row (breathing-space idiom).
-    off = span(parts, spans, off, " " + subj, TAG_S);
-    const pad = 30 - chars(subj);
-    //  WORK-016: one space only where the subject TEXT abuts; a subject-less
-    //  row fills the whole tail so the #hashlet's leader stays one run.
-    if (pad > 0)
-      off = span(parts, spans, off, (subj ? " " : "┄") + leader(pad - 1), TAG_S);
+    //  BRO-036 (gritzko: "bad trim"): the FULL subject IS the one elastic `B`
+    //  span — no producer trim/pad; the pager alone …-cuts/pads it in no-wrap.
     off = span(parts, spans, off, " ", TAG_S);
+    off = span(parts, spans, off, subj, TAG_B);
+    if (subj) off = span(parts, spans, off, " ", TAG_S);
     off = span(parts, spans, off, "[done]", TAG_Y);
     off = span(parts, spans, off, SPELL.mintOspell(ctx, "done ."), TAG_O);
     off = span(parts, spans, off, " ", TAG_S);
@@ -822,3 +813,5 @@ module.exports.workDir = workDir;
 module.exports.listWork = listWork;
 //  WORK-011: expose the shard registry for the graf-parity test.
 module.exports.registry = registry;
+//  BRO-036: expose the row emitter for the elastic-field repro test.
+module.exports.emitRows = emitRows;

@@ -48,6 +48,7 @@ const TAG_N = tagCode("N");
 //  'O' click spell (`_uriAt` follows the O verbatim; plain never emits them).
 const TAG_Y = tagCode("Y");
 const TAG_O = tagCode("O");
+const TAG_B = tagCode("B");   // BRO-036: the elastic (pager-resizable) span
 
 //  --- arg SHAPE routing (BRO-023: a pure shape test, no fs probe) -----------
 function ucnumRun(w, i) {
@@ -255,7 +256,10 @@ function titleRow(parts, spans, off, indent, key, title, btn) {
   off = span(parts, spans, off, key, TAG_F);
   if (!btn) return span(parts, spans, off, rest + "\n", TAG_S);
   off = span(parts, spans, off, SPELL.mintOspell("", "todo " + key), TAG_O);
-  off = span(parts, spans, off, rest + " ", TAG_S);
+  //  BRO-036: the title is the ONE elastic `B` span — the pager …-cuts / pads
+  //  it to the live width in no-wrap mode; bytes stay verbatim.
+  off = span(parts, spans, off, rest, TAG_B);
+  off = span(parts, spans, off, " ", TAG_S);
   off = span(parts, spans, off, "[done]", TAG_Y);
   off = span(parts, spans, off, "done " + key, TAG_O);
   off = span(parts, spans, off, "\n", TAG_S);

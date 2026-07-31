@@ -33,8 +33,9 @@ const ESC = "\x1b[";
 //  exercises; the tok-syntax tags (D/G/H/R/P/N/C/F/T) ride along for bro.
 const SLOTS_16 = {
   //  tok-syntax (bro TODO#3) — kept for completeness / pluggability.
+  //  BRO-036: 'B' is the ELASTIC-field tag — neutral, no entry (like 'S').
   D: "90", G: "32", L: "96", H: "35", R: "94", P: "90",
-  N: "1",  C: "1",  F: "38;5;56", T: "38;5;56", B: "33",
+  N: "1",  C: "1",  F: "38;5;56", T: "38;5;56",
   //  status verbs (the row render).  dog/THEME.c THEME16TBL IDX('…').
   U: "34",        // put-tok slot (unused for status; status `put` uses Y)
   Y: "34",        // put / upd / adv  — blue
@@ -54,7 +55,6 @@ const SLOTS_16 = {
 const SLOTS_DARK = {
   D: "38;5;240", G: "38;5;37", L: "38;5;33", H: "38;5;166", R: "38;5;64",
   P: "38;5;240", N: "38;5;33;1", C: "38;5;33;1", F: "38;5;61", T: "38;5;61",
-  B: "38;5;180",
   U: "38;5;33", Y: "38;5;33", V: "38;5;37", W: "38;5;64", E: "38;5;136",
   X: "38;5;166", M: "38;5;196", Q: "38;5;240", Z: "38;5;125",
 };
@@ -62,7 +62,6 @@ const SLOTS_DARK = {
 const SLOTS_LIGHT = {
   D: "38;5;245", G: "38;5;37", L: "38;5;33", H: "38;5;166", R: "38;5;64",
   P: "38;5;245", N: "38;5;33;1", C: "38;5;33;1", F: "38;5;61", T: "38;5;61",
-  B: "38;5;186",
   U: "38;5;33", Y: "38;5;33", V: "38;5;37", W: "38;5;64", E: "38;5;136",
   X: "38;5;166", M: "38;5;196", Q: "38;5;245", Z: "38;5;125",
 };
@@ -94,7 +93,9 @@ const VERB_SLOT = {
   mis: "M", miss: "M", cnf: "M", con: "M", modl: "M", conflict: "M",  // C ULOG.c:1207-1231 — bright red (STATUS-005 con / DIS-057 cnf ≡ conf)
   unk: "Q", dir: "Q", dirty: "Q",                        // C ULOG.c:1210/1214/1220 — grey
   mrg: "Z", merged: "Z",                                 // C ULOG.c:1211/1218 — magenta
-  hunk: "B", eq: "D",                                    // C ULOG.c:1213/1212
+  //  BRO-036: `hunk` vacates 'B' (now the elastic-field tag, gritzko's ruling:
+  //  the ONE free letter) → 'E' (the same "33" in the 16 palette).
+  hunk: "E", eq: "D",                                    // C ULOG.c:1213/1212
 };
 
 //  --- quad status columns (BRO-030, wiki/Status.mkd) ----------------------
