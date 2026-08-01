@@ -29,7 +29,6 @@ const store    = require("../../shared/store.js");
 const wire     = require("../../shared/wire.js");
 const checkout = require("../../shared/checkout.js");
 const relate   = require("../../shared/relate.js");
-const dag      = require("../../shared/dag.js");        // GET-047: merge-base (3.4)
 const ingest   = require("../../shared/ingest.js");
 const pathlib  = require("../../shared/util/path.js");
 const branchlib = require("../../shared/branch.js");   // SUBS-050: the ONE branch codec
@@ -159,6 +158,43 @@ function oldTipOf(bePath) {
   return tip;
 }
 
+//  GET-053: a regular `get` moves the wt only ALONG cur's line — fast-forward
+//  or fast-backward (/wiki/GET "Forceful execution"); off-line needs `get!`.
+function lineGate(k, base, tip, force) {
+  if (force || !isFullSha(base) || !isFullSha(tip) || base === tip) return;
+  const rel = relate.verdict(k, base, tip).rel;
+  if (rel === "ahead" || rel === "behind" || rel === "eq") return;
+  throw "be get: " + tip.slice(0, 8) + " is not on this line — " +
+        "`patch` to merge, `get!` to reset";
+}
+
+//  GET-053: is `tip` BEHIND our base (base descends it)?  A stale peer's older
+//  tip on the bare re-fetch leg is a NO-OP — fast-backward is a LOCAL motion.
+function isBehind(k, base, tip) {
+  return isFullSha(base) && isFullSha(tip) && base !== tip &&
+         relate.verdict(k, base, tip).rel === "ahead";
+}
+
+//  GET-053: the in-scope `put`/`delete` rows (RULING gritzko 2026-07-29) — a
+//  regular get RE-APPENDS them over its own row, so staging survives FF and FB.
+function stagedRows(bePath, force) {
+  const out = [];
+  if (force) return out;
+  try {
+    const wtl = wtlog.open({ bePath: bePath });
+    wtl.eachPutDelete(wtl.boundaries().pd, function (r) {
+      out.push({ verb: r.verb, uri: r.uri });
+    });
+  } catch (e) {}
+  return out;
+}
+
+//  GET-053: append the get tip row, then the carried staged rows; returns the
+//  tip row's ASSIGNED ts (the GET-049 stamp / GET-050 band ceiling).
+function appendGetRow(bePath, tipRow, force) {
+  return appendWtlog(bePath, [tipRow].concat(stagedRows(bePath, force)))[0];
+}
+
 //  GET-038: a local `file:` source may name a STORE (`<store>/.be`) OR a
 //  WORKTREE (`<wt>` whose `.be` is a wtlog FILE redirecting to the real store).
 //  A worktree is NOT a store: recording its path as the new wt's row-0 anchor
@@ -198,7 +234,8 @@ function resolveLocalSource(rem) {
 //  --- the GET SEED: resolve the remote ONCE, anchor, return pinned coords --
 //  D1: a Fragment pin (`?branch#<sha>`) resolves the EXACT commit, not the
 //  branch tip — `rem.pin` (full or short hex) wins over resolveRef.
-function seedLocal(rem, wt, t0) {
+function seedLocal(rem, wt, t0, opts) {
+  opts = opts || {};
   //  GET-038: resolve a worktree source down to its REAL store (the redirect
   //  target) before anchoring — anything else records a non-store path that
   //  status/get can't read the baseline from.
@@ -214,13 +251,17 @@ function seedLocal(rem, wt, t0) {
   const bePath = join(wt, ".be");
   const fresh = !exists(bePath);
   const oldTip = fresh ? "" : oldTipOf(bePath);
+  //  GET-053: the line gate fires BEFORE any wtlog append; a BEHIND tip on the
+  //  bare re-fetch leg is a silent no-op (the objects already landed).
+  lineGate(k, oldTip, tip, opts.force);
+  if (opts.bare && !opts.force && isBehind(k, oldTip, tip)) return { noop: true };
   const redirect = URI.make("file", undefined, src.storeBe + "/", "/" + src.proj);
   const tipRow = { verb: "get", uri: URI.make(undefined, undefined, undefined, rem.branch || "", tip), ts: t0 };
   //  GET-049: the tip row's ts = the run's start ts (be.now/T0); the checkout
   //  stamps carry the ASSIGNED ts (append bumps a same-ms collision honestly).
   const stampTs = fresh
         ? (writeWtlog(bePath, [{ verb: "get", uri: redirect, ts: ulog.ronStepMs(t0, -1) }, tipRow]), t0)
-        : appendWtlog(bePath, [tipRow])[0];
+        : appendGetRow(bePath, tipRow, opts.force);
   return { k, tip, oldTip, fresh, branch: rem.branch || "", bePath,
            stampTs: stampTs };   // STATUS-005 con-row target; GET-049 stamp
 }
@@ -240,7 +281,8 @@ function fetchProgress(s) {
          Math.round(s.inBytes / 1048576) + " MB in, " + s.logs + " log(s)\n");
 }
 
-function seedRemote(rem, wt, t0) {
+function seedRemote(rem, wt, t0, opts) {
+  opts = opts || {};
   //  GET-041: an ESTABLISHED worktree is NEVER a clone destination — its `.be`
   //  anchor references the real shard (a secondary wt's `.be` is a redirect
   //  FILE; minting `<wt>/.be/<proj>` under it ENOTDIR-crashed the ingest).
@@ -298,10 +340,15 @@ function seedRemote(rem, wt, t0) {
   ingest.add(f, shard, rem.raw, tip);
   const k = store.open(info.storePath, info.project);
   tip = k.peel(tip);                 //  TEST-004: annotated `?tags/X`
-  const a = appendWtlog(info.bePath,
-    [{ verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip), ts: t0 }]);
+  //  GET-053: gate the line BEFORE the append; a BEHIND peer tip on the bare
+  //  re-fetch leg does nothing at all (the fetched objects stay inert bytes).
+  lineGate(k, oldTip, tip, opts.force);
+  if (opts.bare && !opts.force && isBehind(k, oldTip, tip)) return { noop: true };
+  const a = appendGetRow(info.bePath,
+    { verb: "get", uri: URI.make(undefined, undefined, undefined, branch, tip), ts: t0 },
+    opts.force);
   return { k, tip, oldTip, fresh: false, branch, bePath: info.bePath,
-           stampTs: a[0] };   // STATUS-005; GET-049 stamp = the ASSIGNED row ts
+           stampTs: a };   // STATUS-005; GET-049 stamp = the ASSIGNED row ts
 }
 
 //  --- per-level tree map: name → { sha, mode, isDir } --------------------
@@ -449,13 +496,14 @@ function handleWtSeed(uri, ctx) {
   //  the resolved rev — "the //X/sub URI, authority intact, at #chash".
   //  GET-049: row ts = the run's start ts (be.now/T0); stamp = the ASSIGNED ts.
   const tipRow = { verb: "get", uri: URI.make(undefined, u.authority, u.path, undefined, r.chash), ts: ctx.T0 };
+  const force = ambient.force();
+  lineGate(k, oldTip, r.chash, force);   // GET-053: pre-append line gate
   const stampTs = fresh
         ? (writeWtlog(bePath, [{ verb: "get", uri: redirect, ts: ulog.ronStepMs(ctx.T0, -1) }, tipRow]), ctx.T0)
-        : appendWtlog(bePath, [tipRow])[0];
+        : appendGetRow(bePath, tipRow, force);
   return fanoutWholeTree(ctx, { k, tip: r.chash, oldTip, fresh, branch: "", bePath,
-                                source: wtsrc, stampTs: stampTs,   // GET-049
-                                trackUpdate: !fresh },   // GET-040: update, not switch
-                         wt, ambient.force());
+                                source: wtsrc, stampTs: stampTs },   // GET-049
+                         wt, force);
 }
 
 //  GET-047 / GET.mkd 1.3+2.1: cross-source update — fetch the target closure
@@ -467,17 +515,19 @@ function crossUpdate(ctx, uri, tip, cell, srcStore, srcProj, wtsrc) {
   const oldTip = oldTipOf(cell.bePath);
   //  GET-047: no common ancestor = ANOTHER project in the cell's clothes —
   //  refuse before any wt/wtlog motion (the fetched objects are inert bytes).
-  if (relate.verdict(k, oldTip, tip).rel === "unrelated")
+  const force = ambient.force();
+  if (!force && relate.verdict(k, oldTip, tip).rel === "unrelated")
     throw "be get: GETCELL " + cell.wt + " is at " + oldTip + " — `" + uri +
           "` (" + tip + ") shares no ancestor, refusing the cross-source update";
+  //  GET-053: and a DIVERGED cross-source target is off cur's line too.
+  lineGate(k, oldTip, tip, force);
   const u = new URI(uri);
-  const a = appendWtlog(cell.bePath, [{ verb: "get",
-    uri: URI.make(undefined, u.authority, u.path, undefined, tip), ts: ctx.T0 }]);
+  const a = appendGetRow(cell.bePath, { verb: "get",
+    uri: URI.make(undefined, u.authority, u.path, undefined, tip), ts: ctx.T0 }, force);
   return fanoutWholeTree(ctx, { k, tip, oldTip, fresh: false, branch: "",
                                 bePath: cell.bePath, source: wtsrc || null,
-                                stampTs: a[0],     // GET-049: the ASSIGNED row ts
-                                trackUpdate: true },   // GET-040: update, not switch
-                         cell.wt, ambient.force());
+                                stampTs: a },     // GET-049: the ASSIGNED row ts
+                         cell.wt, force);
 }
 
 //  GET-047 / GET.mkd 2.5: `get //WT/path/file.c` — cherry-pick ONE blob from
@@ -523,11 +573,13 @@ function handleSeed(uri, ctx) {
   //  auto-placement nobody asked for, which silently cloned BESIDE the worktree
   //  you were standing in instead of updating it.  Deleted, not fixed.
   const wt = io.cwd();
-  const r = rem.local ? seedLocal(rem, wt, ctx.T0) : seedRemote(rem, wt, ctx.T0);
+  const force = ambient.force();               // GET-053: the line gate's bypass
+  const o = { force: force };
+  const r = rem.local ? seedLocal(rem, wt, ctx.T0, o) : seedRemote(rem, wt, ctx.T0, o);
   //  DIS-058 D4: the parent's SOURCE (this remote) so a gitlink leaf can fetch
   //  its child shard from the SAME source (project swapped to the sub title).
   r.source = rem;
-  return fanoutWholeTree(ctx, r, wt, ambient.force());   // JAB-004: force off be
+  return fanoutWholeTree(ctx, r, wt, force);   // JAB-004: force off be
 }
 
 //  GET-047: the bare-get wire leg — re-resolve a recorded remote track (or the
@@ -535,9 +587,11 @@ function handleSeed(uri, ctx) {
 function fetchTrack(ctx, remoteUri, branch, wt, force) {
   const rem = parseRemote(remoteUri);
   if (branch && !rem.branch) rem.branch = branch;
-  const r = rem.local ? seedLocal(rem, wt, ctx.T0) : seedRemote(rem, wt, ctx.T0);
+  //  GET-053: `bare` marks the implied re-fetch — a BEHIND peer tip is a no-op.
+  const o = { force: force, bare: true };
+  const r = rem.local ? seedLocal(rem, wt, ctx.T0, o) : seedRemote(rem, wt, ctx.T0, o);
+  if (r.noop) return { enqueue: [] };
   r.source = rem;
-  r.trackUpdate = true;   // GET-040: a bare-get track re-fetch is an UPDATE
   return fanoutWholeTree(ctx, r, wt, force);
 }
 
@@ -620,25 +674,8 @@ function fanoutWholeTree(ctx, r, wt, force) {
   //  tree's paths, synchronously at the seed.
   if (force) sweepUntracked(ctx._get, newTree, out);
 
-  //  BRO-030: commit divergence is now the quad report's `o…` commit rows
-  //  (quadReport), not legacy `post` rows; the verdict still classifies dels.
-  if (!r.fresh && r.oldTip && r.oldTip !== r.tip) {
-    const v = relate.verdict(r.k, r.oldTip, r.tip);
-    //  GET-048: a DIVERGED target is a PLAIN RESET (spec intro+§4) — the merge-
-    //  base tree only CLASSIFIES del rows (a local-only add is never a `del`).
-    if (!force && v.rel === "diverged") {
-      const mb = dag.mergeBase(r.k, r.oldTip, r.tip);
-      const bt = isFullSha(mb) ? r.k.commitTree(mb) : "";
-      if (bt) {
-        const bp = {};
-        r.k.readTreeRecursive(bt, function (l) { if (l.kind !== "s") bp[l.path] = l.sha; });
-        ctx._get.basePaths = bp;
-        //  GET-040: a diverged TRACK UPDATE (bare get / wt-operand track) 3-way
-        //  merges vs the MERGE BASE; an explicit switch keeps the GET-048 reset.
-        ctx._get.divMerge = !!r.trackUpdate;
-      }
-    }
-  }
+  //  GET-053: the GET-048 diverged machinery (basePaths / merge-base del
+  //  classification / divMerge / trackUpdate) is GONE — the line gate replaces it.
 
   //  ENQUEUE the root reconcile then the del-sweep fold row LAST (post-order:
   //  the fold sits after every delete leaf the reconcile fans out).
@@ -702,11 +739,12 @@ function inRepoSeed(uri, ctx) {
     const anc = firstParentBack(k, curSha, n);
     if (!isFullSha(anc))
       throw "be get: cannot rewind " + n + " from " + (curSha || "(none)");
-    const a = appendWtlog(info.bePath, [{ verb: "get", ts: ctx.T0,
-                               uri: URI.make(undefined, undefined, undefined, curBranch, anc) }]);
+    lineGate(k, curSha, anc, force);   // GET-053: pre-append line gate
+    const a = appendGetRow(info.bePath, { verb: "get", ts: ctx.T0,
+                               uri: URI.make(undefined, undefined, undefined, curBranch, anc) }, force);
     return fanoutWholeTree(ctx, { k, tip: anc, oldTip: curSha, fresh: false,
                                   branch: curBranch, bePath: info.bePath,
-                                  stampTs: a[0] }, wt, force);   // GET-049
+                                  stampTs: a }, wt, force);   // GET-049
   }
 
   //  D2 detach: `?<sha>` (bare hex query, no fragment) is the ARGUMENT.  A seed
@@ -721,11 +759,12 @@ function inRepoSeed(uri, ctx) {
     const tip = resolvePin(k, query || frag);
     if (!isFullSha(tip))
       throw "be get: cannot resolve " + (query ? "?" + query : "#" + frag);
-    const a = appendWtlog(info.bePath, [{ verb: "get", ts: ctx.T0,
-      uri: URI.make(undefined, undefined, undefined, undefined, tip) }]);
+    lineGate(k, curSha, tip, force);   // GET-053: pre-append line gate
+    const a = appendGetRow(info.bePath, { verb: "get", ts: ctx.T0,
+      uri: URI.make(undefined, undefined, undefined, undefined, tip) }, force);
     return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
                                   branch: "", bePath: info.bePath,
-                                  stampTs: a[0] }, wt, force);   // GET-049
+                                  stampTs: a }, wt, force);   // GET-049
   }
 
   //  D1 pin: `?#<sha>` / `?br#<sha>` — checkout the EXACT commit, attached to
@@ -733,11 +772,12 @@ function inRepoSeed(uri, ctx) {
   if (frag && isShortOrFullHex(frag)) {
     const tip = resolvePin(k, frag);
     if (!isFullSha(tip)) throw "be get: cannot resolve ?" + query + "#" + frag;
-    const a = appendWtlog(info.bePath, [{ verb: "get", ts: ctx.T0,
-      uri: URI.make(undefined, undefined, undefined, query, tip) }]);
+    lineGate(k, curSha, tip, force);   // GET-053: pre-append line gate
+    const a = appendGetRow(info.bePath, { verb: "get", ts: ctx.T0,
+      uri: URI.make(undefined, undefined, undefined, query, tip) }, force);
     return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
                                   branch: query, bePath: info.bePath,
-                                  stampTs: a[0] }, wt, force);   // GET-049
+                                  stampTs: a }, wt, force);   // GET-049
   }
 
   //  GET-047: a BARE `get`/`!` follows the TRACKED ref off the ONE attach
@@ -749,11 +789,11 @@ function inRepoSeed(uri, ctx) {
     if (att.detached) {
       const base = isFullSha(att.base) ? att.base : curSha;
       if (!isFullSha(base)) throw "be get: detached with no base to recover";
-      const a = appendWtlog(info.bePath, [{ verb: "get", ts: ctx.T0,
-        uri: URI.make(undefined, undefined, undefined, undefined, base) }]);
+      const a = appendGetRow(info.bePath, { verb: "get", ts: ctx.T0,
+        uri: URI.make(undefined, undefined, undefined, undefined, base) }, force);
       return fanoutWholeTree(ctx, { k, tip: base, oldTip: curSha, fresh: false,
                                     branch: "", bePath: info.bePath,
-                                    stampTs: a[0] }, wt, force);   // GET-049
+                                    stampTs: a }, wt, force);   // GET-049
     }
     //  GET-047: a URI-shaped track re-resolves to the track's CURRENT rev —
     //  a schemed remote implies the fetch leg, `//X` re-reads via resolve_hash.
@@ -786,14 +826,12 @@ function inRepoSeed(uri, ctx) {
   if (!isFullSha(tip)) tip = (wantBranch === curBranch ? curSha : "");
   if (!isFullSha(tip))
     throw "be get: cannot resolve " + (wantBranch ? "?" + wantBranch : "current branch");
-  const a = appendWtlog(info.bePath, [{ verb: "get", ts: ctx.T0,
-    uri: URI.make(undefined, undefined, undefined, wantBranch, tip) }]);
+  lineGate(k, curSha, tip, force);   // GET-053: pre-append line gate
+  const a = appendGetRow(info.bePath, { verb: "get", ts: ctx.T0,
+    uri: URI.make(undefined, undefined, undefined, wantBranch, tip) }, force);
   return fanoutWholeTree(ctx, { k, tip, oldTip: curSha, fresh: false,
                                 branch: wantBranch, bePath: info.bePath,
-                                stampTs: a[0],   // GET-049
-                                //  GET-040: a BARE get (query absent) folds to
-                                //  the tracked branch — an UPDATE, not a switch.
-                                trackUpdate: !queryPresent }, wt, force);
+                                stampTs: a }, wt, force);   // GET-049
 }
 
 //  D4 single-file / subtree restore (GET.mkd pt 1, CLI `file.c` / `file.c?feat`).
@@ -992,22 +1030,6 @@ function leaf(row, ctx) {
         try { io.rmdir(full, true); out.row(rel, "del", g.ts); g.dels++; } catch (e) {}
       return;
     }
-    //  GET-058: the DIVERGED leg (basePaths/divMerge) keeps its GET-047 3.4 /
-    //  GET-048 / GET-040 behaviour verbatim — its FF-only retirement is T3+T4.
-    if (g.basePaths) {
-      const localAdd = g.basePaths[rel] === undefined;
-      if (g.divMerge) {
-        if (localAdd) return;
-        const disk = readWt(full);
-        if (disk != null && !bytesEq(disk, blobOf(g.k, g.basePaths[rel]))) {
-          bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return;
-        }
-      }
-      try { io.unlink(full);
-            if (!localAdd) { out.row(rel, "del", g.ts); g.dels++; }
-            markDelDir(g, rel); } catch (e) {}
-      return;
-    }
     //  GET-058: the `Tx` row of the table — `Tx W.` DELETE, `Tx Wv` OURS keep
     //  the file (a dirty edit is never destroyed), `Tx Wx` no-op.
     const v = quadlib.verdict(CH.removed, CH.same,
@@ -1044,30 +1066,7 @@ function leaf(row, ctx) {
   const regular = kind === "f" || kind === "x";
   const onDisk = existed && regular ? readWt(full) : null;
 
-  //  GET-058: the DIVERGED leg (basePaths/divMerge, GET-040/GET-048) keeps its
-  //  merge-base 3-way base verbatim — its FF-only retirement is T3+T4.
-  if (g.basePaths) {
-    const mbSha = g.divMerge ? g.basePaths[rel] : undefined;
-    if (g.divMerge && !existed && mbSha === newSha) return;
-    const baseSha = g.divMerge ? (mbSha || "") : oldSha;
-    const baseBytes = existed && regular
-          ? (baseSha ? blobOf(g.k, baseSha)
-                     : (g.divMerge ? new Uint8Array(0) : null))
-          : null;
-    if (existed && !g.force && regular &&
-        (isBinary(baseBytes) || isBinary(onDisk) || isBinary(bytes))) {
-      const dirtyBin = onDisk != null &&
-                       (baseBytes == null || !bytesEq(onDisk, baseBytes));
-      if (dirtyBin) { bandStamp(g, full, "mrg"); out.row(rel, "mrg", g.ts); return; }
-    }
-    if (existed && !g.force && regular &&
-        !isBinary(baseBytes) && !isBinary(onDisk) && !isBinary(bytes)) {
-      const dirty = onDisk != null && (baseBytes == null || !bytesEq(onDisk, baseBytes));
-      if (dirty && baseBytes == null)
-        throw "be get: GETOVRL dirty wt overlays un-baselined target: " + rel;
-      if (dirty) { weaveLeaf(g, rel, full, kind, baseBytes, onDisk, bytes, out); return; }
-    }
-  } else if (!g.force && !g.fresh) {
+  if (!g.force && !g.fresh) {
     //  GET-058: THE decision — one quad cell per path (shared/quad.js verdict),
     //  the SAME table shared/checkout.js apply() indexes.  A CLONE/bootstrap
     //  (g.fresh, no base at all) and `get!` bypass the table, never a degenerate root.
