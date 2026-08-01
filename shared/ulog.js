@@ -77,22 +77,15 @@ function ronToMs(r) {
   return Date.UTC(2000 + yy, mon - 1, day, hh, mm, ss, ms);
 }
 
-//  DIS-057: step a ron60 by `k` MILLISECONDS, carrying/borrowing through the
-//  PACKED calendar fields so the result is always a VALID ron60 (ms 0-999).
-//  A raw BigInt `r + k` corrupts the low 12-bit ms field (ms>=1000 → RONToTime
-//  rejects → FILESetMtime stamps epoch-0), so the patch stamp band MUST step
-//  in ms, not in raw BigInt.  Pure inverse of the RON packing — no tz, no Date.
+//  DIS-057: step a ron60 by `k` MILLISECONDS.  A raw BigInt `r + k` corrupts the
+//  low 12-bit ms field (ms>=1000 → RONToTime rejects → FILESetMtime stamps
+//  epoch-0), so the patch stamp band MUST step in ms.  The date does the
+//  calendar: decode to absolute UTC ms, add k, read the fields off the Date.
 function ronStepMs(r, k) {
-  r = BigInt(r);
-  const d = (i) => Number((r >> BigInt(i * 6)) & 63n);
-  const yy = d(9) * 10 + d(8), mon = d(7);
-  let day = d(6) * 10 + d(5), hh = d(4), mm = d(3), ss = d(2), ms = d(1) * 64 + d(0);
-  let t = ((((day * 24 + hh) * 60 + mm) * 60 + ss) * 1000) + ms + (k | 0);
-  ms = ((t % 1000) + 1000) % 1000; t = (t - ms) / 1000;
-  ss = ((t % 60) + 60) % 60; t = (t - ss) / 60;
-  mm = ((t % 60) + 60) % 60; t = (t - mm) / 60;
-  hh = ((t % 24) + 24) % 24; t = (t - hh) / 24;
-  day = t;                                            // remaining whole days
+  const t = new Date(ronToMs(r) + (k | 0));
+  const yy = t.getUTCFullYear() - 2000, mon = t.getUTCMonth() + 1;
+  const day = t.getUTCDate(), hh = t.getUTCHours(), mm = t.getUTCMinutes();
+  const ss = t.getUTCSeconds(), ms = t.getUTCMilliseconds();
   let o = 0n; const set = (i, v) => { o |= (BigInt(v) & 63n) << BigInt(i * 6); };
   set(9, Math.floor(yy / 10)); set(8, yy % 10); set(7, mon);
   set(6, Math.floor(day / 10)); set(5, day % 10);
