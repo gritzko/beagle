@@ -47,6 +47,49 @@ function changedCommits(fromReader, fromCommit, toReader, toCommit) {
   return changedTrees(fromReader, ft || "", toReader, tt || "");
 }
 
+//  BRO-044: the OBJECT-level twin of changedTrees.  changedTrees answers "which
+//  PATHS differ" and must therefore read BOTH trees WHOLE; the mtime lane needs
+//  "which OBJECTS does `to` carry that `from` does not", which is answered by a
+//  PRUNING descent: an entry whose sha is unchanged is skipped, so an unchanged
+//  subtree is never opened at all.  Emits blobs AND the tree objects of the dirs
+//  that changed (the dir rows are what let a `list:` answer a whole directory
+//  entry from one row).  `type` is the git pack type number — 2 tree, 3 blob,
+//  1 a gitlink (a commit sha pinned in the tree).  Root-relative `path`; the
+//  ROOT tree itself is emitted with path "" when the two roots differ.
+function changedObjects(fromReader, fromTree, toReader, toTree, cb) {
+  if (!toTree || !isFullSha(toTree)) return;
+  if (fromTree === toTree) return;
+  cb({ path: "", sha: toTree, type: 2 });
+  (function walk(fSha, tSha, prefix) {
+    const F = {};
+    if (fSha && isFullSha(fSha)) {
+      let fents;
+      try { fents = fromReader.readTree(fSha); } catch (e) { fents = undefined; }
+      for (const e of (fents || [])) F[e.name] = e;
+    }
+    let tents;
+    try { tents = toReader.readTree(tSha); } catch (e) { tents = undefined; }
+    for (const e of (tents || [])) {
+      const prev = F[e.name];
+      if (prev && prev.sha === e.sha) continue;          // unchanged: PRUNE
+      const path = prefix ? (prefix + "/" + e.name) : e.name;
+      if (e.mode === 0o40000) {
+        cb({ path: path, sha: e.sha, type: 2 });
+        walk(prev && prev.mode === 0o40000 ? prev.sha : "", e.sha, path);
+        continue;
+      }
+      cb({ path: path, sha: e.sha, type: e.mode === 0o160000 ? 1 : 3 });
+    }
+  })(fromTree || "", toTree, "");
+}
+
+//  BRO-044: the changedObjects twin over COMMIT shas (changedCommits mirror).
+function changedObjectsCommits(fromReader, fromCommit, toReader, toCommit, cb) {
+  const ft = (fromReader && isFullSha(fromCommit)) ? fromReader.commitTree(fromCommit) : "";
+  const tt = (toReader   && isFullSha(toCommit))   ? toReader.commitTree(toCommit)     : "";
+  changedObjects(fromReader, ft || "", toReader, tt || "", cb);
+}
+
 //  GIT-016: a TRANSIENT read-only object reader over an in-memory git pack — the
 //  remote tip's trees/blobs the head fetch pulled but does NOT persist.  Reuses
 //  git.pack.over + git.tree + git.parseCommit + frameSha (the SAME primitives
@@ -112,4 +155,6 @@ function packReader(packBytes) {
 }
 
 module.exports = { changedTrees: changedTrees, changedCommits: changedCommits,
+                   changedObjects: changedObjects,
+                   changedObjectsCommits: changedObjectsCommits,
                    packReader: packReader };
