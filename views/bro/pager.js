@@ -30,6 +30,10 @@ const argline = require("shared/argline.js");
 //  BRO-012: the shared ticket-code resolver — an `F` issue-key token with no
 //  adjacent `U` derives its target (todo/<TOPIC>/<KEY>.{md,txt,mkd}) from here.
 const TICKET = require("shared/ticket.js");
+//  BRO-043: the per-repo view cache.  THIS loop is the one process that is BOTH
+//  resident and verb-running (driveSpell re-enters cli() in-process), so the
+//  watcher opens here and dies here — a one-shot CLI never starts one.
+const CACHE = require("shared/cache.js");
 
 //  BRO-007: the ONE source of truth for the scroll-mode key bindings — the
 //  `help:` view (views/help/help.js) imports this so its SHORTCUTS section can
@@ -558,7 +562,10 @@ Pager.prototype._keyScroll = function (b) {
     case 0x2d: case 0x7f: case 0x08: if (this.popView()) this._refresh(); break;  // - / BS
     //  DIS-060: `R`/`r` REFRESH — re-run the current view's spell IN PLACE (no
     //  push), keeping the scroll pos, so a changed store/wt re-renders live.
-    case 0x52: case 0x72: this._refresh(); break;                    // R/r refresh
+    //  BRO-043: refresh is the "I do not trust this screen" gesture, so it drops
+    //  the WHOLE view cache — hooked on the KEY, not `_refresh()` (back and
+    //  editor-exit call that too and need no drop; an edit fires its own event).
+    case 0x52: case 0x72: CACHE.dropAll(); this._refresh(); break;   // R/r refresh
     //  BRO-014: `w` flips THIS view soft-wrap ↔ no-wrap (rows() re-indexes on the
     //  new key, scroll kept); `W` writes it as the per-TYPE default (be.wrap) a
     //  later same-type view inherits.  SHORTCUTS (above) mirrors to the help: view.
@@ -1378,6 +1385,10 @@ Pager.prototype.run = function () {
   this._saved = tty.raw(this.fd);
   //  BRO-027: ALT_ON first — the whole raw-mode session lives on the alt screen.
   ttyWrite(this.fd, ALT_ON + HIDE_CUR + MOUSE_ON + PASTE_ON);
+  //  BRO-043: the cache lives exactly as long as this loop.  A failed start
+  //  leaves it null and every view recomputes — the safety property.  It never
+  //  registers with `pol`, so a `get` spell's pol.init() cannot strand it.
+  try { CACHE.start(io.cwd()); } catch (e) {}
   try {
     const rb = io.buf(64);
     let pend = null;                             // a straddling mouse-seq tail
@@ -1401,6 +1412,17 @@ Pager.prototype.run = function () {
     ttyWrite(this.fd, MOUSE_OFF + PASTE_OFF + ESC + "[0m" + SHOW_CUR + ALT_OFF);
     tty.cook(this.fd, this._saved);
     this._saved = null;
+    //  BRO-043: under the CFOLD-001 `JAB_STATS` hook the session reports its
+    //  cache behaviour on fd 2 (never fd 1) — what the pty repro asserts.
+    try {
+      if (require("shared/util/stats.js").ON) {
+        const s = CACHE.stats();
+        const u = utf8.Encode("cache: hits=" + s.hits + " misses=" + s.misses +
+                              " drops=" + s.drops + " dirs=" + s.dirs + "\n");
+        const b = io.buf(u.length + 8); b.feed(u); io.write(2, b);
+      }
+    } catch (e) {}
+    try { CACHE.stop(); } catch (e) {}       // BRO-043: no cache past the loop
   }
 };
 

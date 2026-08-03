@@ -32,6 +32,7 @@ const render   = require("../../view/render.js");
 const navlib   = require("../../shared/nav.js");        // URI-011: full-URI nav helper
 const quadlib  = require("../../shared/quad.js");       // BRO-030: the quad model
 const quadrender = require("../../view/quadrender.js"); // BRO-030: quad row render
+const cache    = require("../../shared/cache.js");      // BRO-043: per-repo view cache
 //  BE-030: worktree fs paths go THROUGH resolve() (context-confined wtpath).
 const discover = require("../../core/discover.js");
 const wtpath = discover.wtpath;
@@ -259,6 +260,114 @@ const QUAD_SUMMARY = ["track", "base", "patch", "wt", "staged", "con"];
 //  or as a real HUNK with per-column tok spans + nav/buttons when `out` is a
 //  sinkOut (`out.quadRow`).  `quad.colored` only decorates the columnar render.
 function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
+  paint(gatherRepo(repo, recurse, filter, pins), out, prefix, quad);
+}
+
+//  BRO-043: ONE record per repo of this view's WHOLE output — the abstract ROW
+//  list (`{k:…}` entries), never painted bytes: theme, terminal width and the
+//  date column all render at PAINT time, so a hit re-renders for the geometry
+//  it is served under.  A SCOPED read (`status src/`) and a `--nosub` read
+//  carry an argument, so they cache NOTHING and recompute (per-arg keys are
+//  banned).  Off the pager (no live watcher) `take` is a straight call-through.
+function gatherRepo(repo, recurse, filter, pins) {
+  if (filter || !recurse) return gatherAll(repo, recurse, filter, pins);
+  const st = stateOf(repo, pins);
+  const fresh = function () {
+    return { rows: gatherAll(repo, recurse, filter, pins), state: st };
+  };
+  //  A track tip / base / mount pin that moved with NO fs event under the repo
+  //  (a post or fetch from a second wt on the same store): the `state`
+  //  fingerprint is the only witness, so a record whose state moved is DROPPED
+  //  before the read — a stale record is a miss, never a hit.
+  const had = cache.peek(repo, "status");
+  if (had && had.state !== st) cache.drop(repo);
+  return cache.take(repo, "status", fresh).rows;
+}
+
+//  BRO-043: the validity fingerprint — every `status` input the WATCHER cannot
+//  observe: the resolved track tip, the base sha, the absorbed patch refs and
+//  the parent's mount pin.  RECURSIVE over the mounted subs, because a parent's
+//  record embeds its subs' rows, so a sub's moved tip must miss the parent too
+//  (the parent's own base/track shas fingerprint every sub's gitlink pin, so no
+//  tree is read here).
+function stateOf(repo, pins) {
+  let log;
+  try { log = wtlog.open(repo); } catch (e) { return repo.wt + "?!"; }
+  const t = quadlib.tips(repo, log, { trackPin: pins && pins.track });
+  let s = repo.wt + "?" + t.track + "#" + t.base +
+        "+" + (t.patches || []).join(",") +
+        "|" + ((pins && pins.track) || "") + "," + ((pins && pins.label) || "");
+  for (const sp of gitmodulesOrder(repo.wt)) {
+    if (!isMount(repo.wt, sp)) continue;
+    let sub;
+    try { sub = be.treeAt(subs.mountWtDir(repo, sp)); } catch (e) { continue; }
+    s += "\n" + sp + " " + stateOf(sub, null);
+  }
+  return s;
+}
+
+//  Gather ONE repo's whole hunk stream (its own rows + every recursed sub's,
+//  depth-first) as abstract entries.  `pfx` on each entry is the EMITTING
+//  repo's path relative to THIS repo ("" for its own rows), so the record is
+//  position-independent: paint composes it with the run's actual prefix.
+function gatherAll(repo, recurse, filter, pins) {
+  const list = [];
+  gatherInto(list, repo, recurse, filter, pins);
+  return list;
+}
+
+//  Re-base one sub entry under the sub's path in the parent.
+function rebase(r, sp) {
+  const o = Object.assign({}, r);
+  o.pfx = r.pfx ? sp + "/" + r.pfx : sp;
+  return o;
+}
+
+//  Paint the abstract row list into `out` — the ONE edge that knows the sink
+//  kind (sinkOut HUNK vs columnar emit), the theme and the date column.
+function paint(list, out, prefix, quad) {
+  for (const r of list) {
+    const pfx = r.pfx ? joinPrefix(prefix, r.pfx) : (prefix || "");
+    if (r.k === "open") { out.open(navlib.navLink("status", pfx || "")); continue; }
+    if (r.k === "commit") {
+      if (out.quadCommit) out.quadCommit(r.c);
+      else out.raw(quadrender.commitRow(r.c, quad.colored));
+      continue;
+    }
+    if (r.k === "summary") {
+      let s = (pfx ? "" : cwdRel(r.wt)) + r.label + "\t" + r.segs.join(", ");
+      if (r.ahead > 0 || r.behind > 0) {
+        const parts = [];
+        if (r.behind > 0) parts.push("behind " + r.behind);
+        if (r.ahead > 0) parts.push("ahead " + r.ahead);
+        s += "  (" + parts.join(", ") + ")";
+      }
+      out.raw(s);
+      if (pfx) out.raw("");                 // sub hunks are blank-line separated
+      continue;
+    }
+    //  a file row: the nav/button spells are POSITION-dependent, so they are
+    //  composed here from the stored repo-relative path, never stored.
+    const g = r.row;
+    const navPath = joinPrefix(pfx, g.path);
+    const row = { path: navPath, src: g.src ? joinPrefix(pfx, g.src) : undefined,
+                  quad: g.quad, staged: g.staged, con: g.con, ts: g.ts,
+                  gitlink: g.gitlink };
+    if (out.quadRow) {
+      const wt = g.con ? "!" : g.quad[3];
+      const nav = navlib.navLink(
+            (wt === "v" || wt === "x" || wt === "!") ? "diff" : "cat", navPath);
+      let act = null;
+      if (!g.staged && !g.con) {
+        if (wt === "v" || wt === "o") act = { label: "[put]", tag: "Y", spell: "put " + navPath };
+        else if (wt === "x")          act = { label: "[del]", tag: "X", spell: "delete " + navPath };
+      }
+      out.quadRow(row, nav, act);
+    } else out.raw(quadrender.fileRow(row, quad.colored));
+  }
+}
+
+function gatherInto(list, repo, recurse, filter, pins) {
   const log = wtlog.open(repo);
   const k   = store.open(repo.storePath, repo.project);
   //  STATUS-006: the subtree filter narrows the quad gather (DIS-054 underNarrow)
@@ -295,46 +404,25 @@ function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
     return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   });
 
-  out.open(navlib.navLink("status", prefix || ""));
+  list.push({ k: "open", pfx: "" });
 
   //  STATUS-006: commit rows are repo-level — a subtree filter keeps the hunk
   //  path-only.  Through sinkOut they carry per-column tok spans; the columnar
-  //  out gets the pre-formatted ASCII/ANSI line.
+  //  out gets the pre-formatted ASCII/ANSI line (both at PAINT time).
   const commits = filter ? [] : model.commits;
-  for (const c of commits) {
-    if (out.quadCommit) out.quadCommit(c);
-    else out.raw(quadrender.commitRow(c, quad.colored));
-  }
+  for (const c of commits) list.push({ k: "commit", pfx: "", c: c });
   //  BRO-030: declared submodules (gitlink paths, `.gitmodules` — the same
   //  source classify uses) render their path column BOLD; keyed by the sub-
   //  relative path (r.path, before the prefix join).
   const subSet = {};
   for (const sp of gitmodulesOrder(repo.wt)) subSet[sp] = true;
-  for (const r of model.rows) {
-    //  BRO-030: a sub's rows join under `prefix` at emit time (JAB-004).
-    const navPath = joinPrefix(prefix, r.path);
-    const row = { path: navPath,
-                  src: r.src ? joinPrefix(prefix, r.src) : undefined,
-                  quad: r.quad, staged: r.staged, con: r.con, ts: r.ts,
-                  gitlink: !!subSet[r.path] };
-    //  BRO-030 (BE-006/041): the wt char routes the hidden `U` nav + button —
-    //  a baseline exists to diff for v/x/! (diff:), else cat: (created 'o');
-    //  an unstaged wt v/o → [put], x → [del] (con carries neither).  The button
-    //  arg stays RAW wt-relative (BE-039); the nav rides navLink's authority.
-    if (out.quadRow) {
-      const wt = r.con ? "!" : r.quad[3];
-      const nav = navlib.navLink(
-            (wt === "v" || wt === "x" || wt === "!") ? "diff" : "cat", navPath);
-      let act = null;
-      if (!r.staged && !r.con) {
-        if (wt === "v" || wt === "o") act = { label: "[put]", tag: "Y", spell: "put " + navPath };
-        else if (wt === "x")          act = { label: "[del]", tag: "X", spell: "delete " + navPath };
-      }
-      out.quadRow(row, nav, act);
-    } else {
-      out.raw(quadrender.fileRow(row, quad.colored));
-    }
-  }
+  //  BRO-043: the row keeps the REPO-RELATIVE path; the prefix join, the hidden
+  //  `U` nav and the BE-006/041 button are composed in `paint`, so one record
+  //  serves the repo wherever it is mounted.
+  for (const r of model.rows)
+    list.push({ k: "file", pfx: "",
+                row: { path: r.path, src: r.src, quad: r.quad, staged: r.staged,
+                       con: r.con, ts: r.ts, gitlink: !!subSet[r.path] } });
 
   //  BRO-030: the emitRepo summary frame (`<rel><label>\t…  (behind/ahead)`),
   //  bucket segments swapped for quad-column counts.
@@ -342,7 +430,6 @@ function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
   const att = log.attachedBranch();
   const branch = (cur && cur.sha && att.detached)
         ? cur.sha : branchlib.format(att.br);
-  const rel = prefix ? "" : cwdRel(repo.wt);
   //  STATUS-014: a recursed sub spells the parent-mount PIN form (`//WT/sub` +
   //  the base-pin hashlet), not its self-ref track row; a top-level sub status
   //  (no pins) keeps today's attachedBranch label.
@@ -350,25 +437,17 @@ function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
         : att.uriTrack
         ? att.track + (att.base ? "#" + att.base.slice(0, 8) : "")
         : "?" + branch;
-  let summary = (rel ? rel : "") + label + "\t";
   const segs = [];
   for (const b of QUAD_SUMMARY) {
     const n = model.counts[b] || 0;
     if (n > 0) segs.push(n + " " + b);
   }
-  summary += segs.join(", ");
   //  BRO-030: behind/ahead off the commit quads — a track-column 'o' (canon
   //  created) is a behind (track-side) commit, anything else is a local ahead one.
   let aN = 0, bN = 0;
   for (const c of commits) { if (c.quad[0] === quadlib.CH.created) bN++; else aN++; }
-  if (aN > 0 || bN > 0) {
-    const parts = [];
-    if (bN > 0) parts.push("behind " + bN);
-    if (aN > 0) parts.push("ahead " + aN);
-    summary += "  (" + parts.join(", ") + ")";
-  }
-  out.raw(summary);
-  if (prefix) out.raw("");
+  list.push({ k: "summary", pfx: "", wt: repo.wt, label: label, segs: segs,
+              ahead: aN, behind: bN });
 
   //  JAB-004 recursion: relay each MOUNTED sub's status as a SEPARATE
   //  `status:<subpath>` hunk, DEPTH-FIRST in `.gitmodules` declaration order.
@@ -387,7 +466,12 @@ function emitRepo(repo, prefix, out, recurse, filter, quad, pins) {
       const bp = basePins[subPath];
       const subPins = { track: trackPins[subPath], base: bp,
                         label: bp ? mountLabel(repo.wt, subPath, bp) : null };
-      emitRepo(subRepo, joinPrefix(prefix, subPath), out, recurse, undefined, quad, subPins);
+      //  BRO-043: the sub is its OWN record — that is what ARMS the sub's dirs,
+      //  so a write inside it drops this parent through the ancestor rule.  Its
+      //  rows are re-based under `subPath` and embedded here, which is why a
+      //  parent HIT recurses into nothing.
+      for (const r of gatherRepo(subRepo, recurse, undefined, subPins))
+        list.push(rebase(r, subPath));
     }
   }
 }

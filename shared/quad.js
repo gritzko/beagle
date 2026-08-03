@@ -280,6 +280,22 @@ function quadModel(inp) {
 //  track-tree gitlink pin, not the sub's self-ref row (base stays the sub's cur).
 function quadOf(be, log, k, opts) {
   opts = opts || {};
+  const t = tips(be, log, opts);
+  const m = classify.classifyMerge(be, log, k,
+                                   opts.underNarrow ? { underNarrow: opts.underNarrow } : {});
+  const model = quadModel({ k: k, base: t.base, track: t.track, patches: t.patches,
+                            wtRows: m.rows });
+  //  BRO-030: base-only gitlinks ride along for the status view's adv mapping
+  //  (classifyMount is a view concern — the pure model stays sub-blind).
+  model.gitlinks = m.gitlinks;
+  return model;
+}
+
+//  BRO-043: the wt's TIP inputs — base, the resolved track tip and the absorbed
+//  patch refs — lifted verbatim out of quadOf so the status cache's `state`
+//  fingerprint reads them through THIS resolver and never a second copy.
+function tips(be, log, opts) {
+  opts = opts || {};
   const cur = log.curTip();
   const base = (cur && isFullSha(cur.sha)) ? cur.sha : "";
   const att = log.attachedBranch();
@@ -299,17 +315,10 @@ function quadOf(be, log, k, opts) {
     } catch (e) { track = ""; }          // unresolvable track ⇒ all-'.' column
   }
   const patches = (typeof log.patchTheirs === "function") ? log.patchTheirs() : [];
-  const m = classify.classifyMerge(be, log, k,
-                                   opts.underNarrow ? { underNarrow: opts.underNarrow } : {});
-  const model = quadModel({ k: k, base: base, track: track, patches: patches,
-                            wtRows: m.rows });
-  //  BRO-030: base-only gitlinks ride along for the status view's adv mapping
-  //  (classifyMount is a view concern — the pure model stays sub-blind).
-  model.gitlinks = m.gitlinks;
-  return model;
+  return { base: base, track: track, patches: patches, att: att };
 }
 
-module.exports = { quadModel: quadModel, quadOf: quadOf,
+module.exports = { quadModel: quadModel, quadOf: quadOf, tips: tips,
                    treeUlog: treeUlog, patchUlog: patchUlog,
                    //  GET-058: the ONE per-file decision both checkout paths index.
                    verdict: verdict,

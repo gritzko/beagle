@@ -61,8 +61,12 @@ const isFullSha = shalib.isFullSha;
 //  (a subdir holding its own `.git`/`.be` file — a separate repo).
 //  mtime comes straight off io.lstat (JS-042 surfaced it as a ron60
 //  BigInt) — no `/usr/bin/stat` subprocess anymore (JS-044).
-function wtScan(wtRoot, ignore) {
-  const out = {};            // rel → { ts, kind: 'f'|'x'|'l' }
+//  BRO-043: THE wt walk, extracted verbatim out of wtScan — the flat recursive
+//  readdir plus the nested-repo boundary detection.  wtScan (which wants the
+//  FILE half) and shared/cache.js (which wants the DIR half, to arm a watch on
+//  each) are its two callers; no second implementation of either leg.
+//  → { names, nestedPrefixes, underNested }
+function wtWalk(wtRoot, ignore) {
   //  io.readdir recursive returns the flat subtree, dirs marked with a
   //  trailing '/'.  We can't easily prune nested-repo subtrees with the
   //  flat form, so detect a nested-repo prefix and drop paths under it.
@@ -70,7 +74,7 @@ function wtScan(wtRoot, ignore) {
   //  only `.git`/`.be` are meta, filtered by the ignore matcher below.
   let names;
   try { names = io.readdir(wtRoot, { recursive: true, hidden: true }); }
-  catch (e) { return out; }
+  catch (e) { names = []; }
 
   //  First pass: find nested-repo dir prefixes (a dir D with D/.git or a
   //  D/.be FILE).  We approximate by checking, per directory entry,
@@ -92,6 +96,13 @@ function wtScan(wtRoot, ignore) {
     for (const p of nestedPrefixes) if (rel === p.slice(0, -1) || rel.indexOf(p) === 0) return true;
     return false;
   }
+  return { names: names, nestedPrefixes: nestedPrefixes, underNested: underNested };
+}
+
+function wtScan(wtRoot, ignore) {
+  const out = {};            // rel → { ts, kind: 'f'|'x'|'l' }
+  const w = wtWalk(wtRoot, ignore);
+  const names = w.names, nestedPrefixes = w.nestedPrefixes, underNested = w.underNested;
 
   for (const nm of names) {
     if (nm[nm.length - 1] === "/") continue;          // skip dir entries
@@ -721,5 +732,5 @@ function libDir() {
 
 module.exports = { classify: classify, classifyDir: classifyDir,
                    classifyMerge: classifyMerge, isMeta: isMeta,
-                   wtScan: wtScan, wtEqBase: wtEqBase,
+                   wtScan: wtScan, wtWalk: wtWalk, wtEqBase: wtEqBase,
                    patchStamps: patchStamps };
