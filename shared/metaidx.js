@@ -195,37 +195,127 @@ function scan(todo, hash) {
   return out;
 }
 
-//  --- the meta-pair extractor ----------------------------------------------
-//  Until [/todo/DOG/DOG-026] emits leaf kinds the meta pair is line-local, so
-//  the regex IS the grammar ([/wiki/StrictMark] §"Meta pairs").  `Due\: …`
-//  escapes a literal key and falls out of the shape by itself.  Each key at
-//  most once ([/meta/todo]): the FIRST occurrence wins.
-const PAIR = /^([A-Z][a-z][a-z]): (.*)$/;
+//  --- the meta-pair extractor (ONE grammar, ONE matcher) --------------------
+//  TODO-004 fix 2026-08-03: the pair is read off the TOKENIZER, not a line
+//  regex.  `tok.parse(bytes,"mkd")` already isolates a pair — `T` is the
+//  line-opening `Key:` and the next token is the value to end of line — so the
+//  house grammar decides, and the view that RENDERS a pair and the index that
+//  MATCHES one can no longer disagree.  This is [/todo/DOG/DOG-026] (leaf kinds
+//  off the tokenizer) arriving early for this one shape.
+//
+//  The regex it replaces was anchored at column 0, so an INDENTED header —
+//  `todo/TODO/TODO-003.mkd` lines 3-4 — rendered and clicked but indexed as
+//  nothing, and its own `Sev: HIGH` click answered "no ticket matches".
+//
+//  Two rulings shape the reading, and BOTH are needed — indent-tolerance alone
+//  is wrong:
+//    1. INDENT (ruling 2026-08-03): a meta header is PLAINLY indented — column
+//       0 or exactly four spaces, nothing else.  The tokenizer fires `T` at any
+//       indent, so the leading `R` run is checked here.
+//    2. SCOPE ([/meta/todo]: "ticket meta goes in `Key: value` meta pairs
+//       directly under the header"): the ticket's OWN meta is the pair block
+//       standing directly under the header — one leading non-pair line (the
+//       header itself) is skipped, blank lines pass, and the FIRST other
+//       construct ends the block.  Without this the four-space `Fix:`/`Msg:`
+//       pairs buried in a WIP bullet (POST-023, CODE-019, POST-031, BLAME-006,
+//       PATCH-004, BRO-005) would answer `Fix:*` as if they were ticket meta.
+//  Each key at most once ([/meta/todo]): the FIRST occurrence wins.  `Due\: …`
+//  escapes a literal key and falls out of the `T` shape by itself.
+const KEYRE = /^([A-Z][a-z][a-z]):$/;
+const INDENT = "    ";                       // the ONE legal indent (or none)
 
-function readText(file) {
+function tokTag(w) { return String.fromCharCode(65 + ((w >>> 27) & 0x1f)); }
+function tokEnd(w) { return w & 0xffffff; }
+
+//  metaBlock(bytes, toks) -> [{ key, value, ki, vi }] — the ticket's own meta
+//  pairs in file order.  `ki`/`vi` are the TOKEN INDICES of the `Key:` half and
+//  of the value half, so views/todo/todo.js can hang a click spell on each
+//  without re-deriving the grammar.  Pure: it reads, it never opens a file.
+//  The walk reads BYTES and decodes only the two tokens of a pair it keeps: a
+//  ticket is a whole page of tokens and the block ends within a few lines of
+//  the top, so decoding every token up front cost the sweep more than the parse.
+function metaBlock(bytes, toks) {
+  const out = [];
+  if (!toks || !toks.length) return out;
+  const sta = (i) => (i ? tokEnd(toks[i - 1]) : 0);
+  const txt = (i) => utf8.Decode(bytes.slice(sta(i), tokEnd(toks[i])));
+  const hasNl = (i) => {
+    for (let p = sta(i), e = tokEnd(toks[i]); p < e; p++) if (bytes[p] === 10) return true;
+    return false;
+  };
+  const isIndent = (i) => {                       // the ONE legal indent run
+    const s = sta(i), e = tokEnd(toks[i]);
+    if (e - s !== INDENT.length) return false;
+    for (let p = s; p < e; p++) if (bytes[p] !== 32) return false;
+    return true;
+  };
+  const inked = (i) => {                          // any non-whitespace byte?
+    for (let p = sta(i), e = tokEnd(toks[i]); p < e; p++) if (bytes[p] > 32) return true;
+    return false;
+  };
+  let i = 0, header = false;
+  while (i < toks.length) {
+    //  one LINE = the tokens up to and including the one carrying the newline.
+    let end = i;
+    while (end < toks.length - 1 && !hasNl(end)) end++;
+    //  the legal indents: nothing, or the ONE four-space `R` run.
+    const k = (tokTag(toks[i]) === "R" && isIndent(i)) ? i + 1 : i;
+    const m = k <= end && tokTag(toks[k]) === "T" ? KEYRE.exec(txt(k)) : null;
+    if (m && k < end) {
+      let v = "";
+      for (let t = k + 1; t <= end; t++) v += txt(t);
+      out.push({ key: m[1], value: v.replace(/\n+$/, "").trim(), ki: k, vi: k + 1 });
+    } else {
+      let blank = true;
+      for (let t = i; t <= end; t++) if (inked(t)) { blank = false; break; }
+      if (!blank) {
+        //  the ticket's `#   KEY: title` header — skipped ONCE, and only while
+        //  no pair has been read; anything else ENDS the block.
+        if (header || out.length) break;
+        header = true;
+      }
+    }
+    i = end + 1;
+  }
+  return out;
+}
+
+function readBytes(file) {
   let st;
   try { st = io.lstat(file); } catch (e) { return null; }
   if (st.kind !== "reg") return null;
-  if (st.size === 0n || Number(st.size) === 0) return "";
+  if (st.size === 0n || Number(st.size) === 0) return new Uint8Array(0);
   const size = Math.min(Number(st.size), PAGE_CAP);
   let fd;
   try { fd = io.open(file, "r"); } catch (e) { return null; }
-  try { const b = io.buf(size + 16); io.readAll(fd, b, size); return utf8.Decode(b.data()); }
+  try { const b = io.buf(size + 16); io.readAll(fd, b, size); return b.data().slice(); }
   catch (e) { return null; }
   finally { try { io.close(fd); } catch (e) {} }
 }
 
+//  TODO-004: one file -> { <Key>: "<raw value>" } in file order — the DISPLAY
+//  reading.  The row payload is a MATCH TOKEN (despaced, decased, maybe a
+//  hash), so a view that RENDERS a pair must read it off the file; this is
+//  that read, and `lex` packs THIS, so the pair grammar lives in ONE place.
+function pairs(file) {
+  const bytes = readBytes(file);
+  const out = {};
+  if (bytes === null || !bytes.length) return out;
+  let toks;
+  try { toks = tok.parse(bytes, "mkd"); } catch (e) { return out; }
+  for (const p of metaBlock(bytes, toks))
+    if (out[p.key] === undefined) out[p.key] = p.value;
+  return out;
+}
+
 //  One file -> { <code>: <row val> } for every meta pair it carries.
 function lex(file) {
-  const text = readText(file);
+  const raw = pairs(file);
   const out = {};
-  if (text === null) return out;
-  for (const line of text.split("\n")) {
-    const m = PAIR.exec(line);
-    if (!m) continue;
-    const code = codeOf(m[1]);
+  for (const key in raw) {
+    const code = codeOf(key);
     if (code === null || out[code] !== undefined) continue;
-    out[code] = packValue(m[1], m[2]);
+    out[code] = packValue(key, raw[key]);
   }
   return out;
 }
@@ -503,5 +593,10 @@ module.exports = {
   keyPhl: keyPhl, keyCode: keyCode, keyKind: keyKind,
   pathHl: pathHl, wtCode: wtCode, codeOf: codeOf, keyOf: keyOf,
   normalize: normalize, packValue: packValue,
-  classify: classify, scan: scan, lex: lex, openIndex: openIndex
+  classify: classify, scan: scan, lex: lex, openIndex: openIndex,
+  //  TODO-004: the raw `Key: value` read for RENDER (the row payload is a match
+  //  token, never a render source), and the ONE token-level matcher underneath
+  //  it — views/todo/todo.js hangs its click spells off THIS, so the rendered
+  //  pair and the indexed pair are the same pair by construction.
+  pairs: pairs, metaBlock: metaBlock
 };

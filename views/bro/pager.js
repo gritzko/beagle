@@ -743,7 +743,13 @@ Pager.prototype._runSpell = function (spell, ctxOverride) {
     if (sp.uri && !this._isNavAddr(sp.uri)) {
       this.view.uri  = sp.uri;                   // the arg, verbatim (for display)
       this.ctx       = ctx0;                     // BRO-024: context UNCHANGED
-      this.view.call = { verb: sp.verb, spell: s, context: ctx0 };
+      //  BRO-024: a CLICKED word-spell records its `disp` exactly as the typed
+      //  path does (_applySpell's `c.call ? g`), so the bar shows the verb call
+      //  AS DRIVEN.  Without it the bar fell back to verb + relative ADDRESS,
+      //  and a verb ARG is not an address — `todo TODO Sev:HIGH` painted a bare
+      //  `todo`.  Only THIS branch: a follow/nav target (below) is an address,
+      //  and BRO-024 wants it derived + context-relative (`//WT/dog/: cat DOG.h`).
+      this.view.call = { verb: sp.verb, spell: s, context: ctx0, disp: s };
     } else {
       //  BE-032: a click IS navigation — a root-relative target (launch-tree banners
       //  omit the `//`) inherits the previous //authority, keeping the tracked
