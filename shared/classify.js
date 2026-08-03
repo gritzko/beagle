@@ -426,6 +426,14 @@ function classifyMerge(be, wtlogReader, reader, opts) {
       push({ bucket: "del", path: path, ts: d.ts, inBase: !!b, onDisk: !!w });
       continue;
     }
+    //  STATUS-018: a LIVE con row outranks staged PUT intent — a merge-get
+    //  re-stages the path it conflicted on, and a put is not an ack (DIS-080 §4).
+    if (w && conSet.has(path)) {
+      push({ bucket: "con", path: path, ts: w.ts, kind: w.kind,
+             oldSha: b ? b.sha : undefined, onDisk: true, inBase: !!b,
+             staged: !!p });
+      continue;
+    }
     if (p) {
       const frag = p.dst || "";
       if (frag && !isFullSha(frag)) {
@@ -451,13 +459,7 @@ function classifyMerge(be, wtlogReader, reader, opts) {
     const inBase = !!b, onDisk = !!w;
     const t = theirs[path];
     const pStamp = w ? pstamps[(w.ts || 0n).toString()] : undefined;
-    //  STATUS-017: a `con` row since the last barrier IS the conflict — no byte
-    //  scan, and local edits on top do NOT resolve it (resolution == posted).
-    if (onDisk && conSet.has(path)) {
-      push({ bucket: "con", path: path, ts: w.ts, kind: w.kind,
-             oldSha: b ? b.sha : undefined, onDisk: true, inBase: inBase });
-      continue;
-    }
+    //  STATUS-017's con test moved ABOVE the staged-intent branch (STATUS-018).
     //  Patch-TOUCHED: theirs carries the path with content ours base lacks —
     //  the only paths whose dirt EXPECTED can re-kind (all others are plain).
     const patched = !!t && (!inBase || t.sha !== b.sha);

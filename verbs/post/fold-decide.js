@@ -158,7 +158,9 @@ function decide(be, wtlogReader, storeReader, narrow, selective) {
       case "mod": case "pat": case "mrg": case "con":
         //  Tracked + content-modified (incl. a patch-derived merge): selective
         //  keeps baseline, implicit (commit-all) rewrites the wt content.
-        if (anyPd) keep(r.path, r.mode || baseMode(base, r.path), r.oldSha);
+        //  STATUS-018: a `con` row may carry staged intent (the merge-get re-put
+        //  the path) — an explicit put is IN a selective commit, like `put`.
+        if (anyPd && !r.staged) keep(r.path, r.mode || baseMode(base, r.path), r.oldSha);
         else addWt(r.path, r.kind, r.oldSha);
         break;
       case "unk":          // untracked on disk: fresh repo auto-stages; else ignore

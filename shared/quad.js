@@ -224,7 +224,9 @@ function quadModel(inp) {
       const wb = WT_BUCKET[w.bucket] || { present: 1 };
       rWt = wb.present ? (shaBase == null ? CH.created : CH.advanced)
                        : (shaBase == null ? CH.same : CH.removed);
-      staged = !!wb.staged;
+      //  STATUS-018: a con row keeps its own staged fact — the bucket says `!`,
+      //  the row's flag still tallies it under `N staged`.
+      staged = !!wb.staged || !!w.staged;
       con = !!wb.con;
     }
 
