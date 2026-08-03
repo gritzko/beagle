@@ -419,16 +419,30 @@ function feed(sink, banner, parts, spans, off) {
   sink.feed(banner, body, toks, "", 0n);
 }
 
+//  TODO-001: every wt row asks the board twice ([?] link, then [post] title), so
+//  ONE lookup per render run — reset by emitForest, never cached across runs.
+let _board, _page = new Map(), _title = new Map(), _link = new Map();
+function memoReset() { _board = undefined; _page = new Map(); _title = new Map(); _link = new Map(); }
+function memoBoard() { if (_board === undefined) _board = todo.boardDir(); return _board; }
+function memoPage(key) {
+  if (_page.has(key)) return _page.get(key);
+  const b = memoBoard();
+  const f = b ? todo.pageFile(b.dir, key) : null;
+  _page.set(key, f);
+  return f;
+}
+
 //  BE-043 (merge ruling): the one-line post message IS the ticket page's own
 //  title, via the todo board's pageFile/pageTitle; "" when no board/page.
 function ticketTitle(key) {
   if (todo.shape(key) !== "key") return "";
-  const board = todo.boardDir();
-  if (!board) return "";
-  const file = todo.pageFile(board.dir, key);
+  if (_title.has(key)) return _title.get(key);
+  const file = memoPage(key);
   //  WORK-008: strip the [OPEN]/[HIGH]/… status mark so the minted post message
   //  is the bare `KEY: title` commit convention (the board keeps it via headerMark).
-  return file ? todo.stripMark(key, todo.pageTitle(file)) : "";
+  const t = file ? todo.stripMark(key, todo.pageTitle(file)) : "";
+  _title.set(key, t);
+  return t;
 }
 
 //  WORK-010: the `[?]` click-spell for a wt named after a ticket.  RULING
@@ -438,14 +452,15 @@ function ticketTitle(key) {
 //  its BASE ticket key (suffix-tolerant, `PIN-1b`→`PIN-1`, a page must exist), or
 //  a bare TOPIC (the topic dir exists → `//: todo TOPIC`); "" for any other name.
 function ticketLink(name) {
-  const board = todo.boardDir();
-  if (!board) return "";
-  const key = todo.ticketKey(name);
-  if (key)
-    return todo.pageFile(board.dir, key) ? SPELL.mintOspell("//", "todo " + key) : "";
-  if (todo.shape(name) === "topic")
-    return isDir(join(board.dir, name)) ? SPELL.mintOspell("//", "todo " + name) : "";
-  return "";
+  if (_link.has(name)) return _link.get(name);          // TODO-001: once per name
+  const board = memoBoard();
+  let s = "";
+  const key = board ? todo.ticketKey(name) : "";
+  if (key) s = memoPage(key) ? SPELL.mintOspell("//", "todo " + key) : "";
+  else if (board && todo.shape(name) === "topic")
+    s = isDir(join(board.dir, name)) ? SPELL.mintOspell("//", "todo " + name) : "";
+  _link.set(name, s);
+  return s;
 }
 
 //  R2 fixed columns: the rails+name region pads to KEYW with a dotted leader;
@@ -743,6 +758,7 @@ function foreignRows(map, reg, out) {
 
 //  --- the forest --------------------------------------------------------------
 function emitForest(sink, board, btns) {
+  memoReset();                                // TODO-001: per-render-run lookups
   let root = null;
   if (board.root) root = nodeAt(board.root, pathlib.basename(board.root), "");
   if (!root) miss("work/", "WORKNONE");

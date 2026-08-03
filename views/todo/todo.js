@@ -179,28 +179,42 @@ const PRIO = { CRIT: 0, HIGH: 1, MED: 2, LOW: 3 };   // unmarked / unknown = 2
 //  List one topic dir's tickets: `KEY.<ext>` files + fat `KEY/` dirs whose key
 //  matches the topic, priority- then numeric-sorted.  Returns
 //  [{ key, title, mark }] — ALL tickets, open and closed alike.
+//  TODO-001: the readdir entry ALREADY names the page — a thin `KEY.<ext>` is
+//  taken verbatim (no probe), only a fat `KEY/` with no thin twin stats README.
 function listTopic(dir, topic) {
   const tdir = join(dir, topic);
   let names; try { names = io.readdir(tdir); } catch (e) { return []; }
-  const out = [];
+  const seen = new Map(), keys = [];
   for (let nm of names) {
     //  io.readdir marks a dir entry with a trailing "/" (a fat `KEY/` ticket).
     const dirEnt = nm.length && nm[nm.length - 1] === "/";
     if (dirEnt) nm = nm.slice(0, -1);
-    let key = nm;
+    let key = nm, ext = "";
     const dot = nm.indexOf(".");
     if (dot > 0) {
       if (dirEnt || EXTS.indexOf(nm.slice(dot + 1)) < 0) continue;
       key = nm.slice(0, dot);
+      ext = nm.slice(dot + 1);
     }
     if (shape(key) !== "key" || keyTopic(key) !== topic) continue;   // README etc
-    if (dot < 0 && !dirEnt && !isDir(join(tdir, key))) continue;
-    const file = pageFile(dir, key);
+    if (!ext && !dirEnt && !isDir(join(tdir, key))) continue;
+    let e = seen.get(key);
+    if (!e) { e = { exts: {}, fat: false }; seen.set(key, e); keys.push(key); }
+    if (ext) e.exts[ext] = true; else e.fat = true;
+  }
+  const out = [];
+  for (const key of keys) {
+    //  pageFile's precedence verbatim: thin `KEY.<ext>` in EXTS order, then the
+    //  fat `KEY/README.<ext>` — the ONE probe ladder left, and only for a fat key.
+    const e = seen.get(key), base = join(tdir, key);
+    let file = null;
+    for (const x of EXTS) if (e.exts[x]) { file = base + "." + x; break; }
+    if (!file && e.fat)
+      for (const x of EXTS) { const p = join(base, "README." + x);
+                              try { io.stat(p); file = p; break; } catch (er) {} }
     if (!file) continue;
-    if (!out.some(function (e) { return e.key === key; })) {
-      const title = pageTitle(file);
-      out.push({ key: key, title: title, mark: headerMark(key, title) });
-    }
+    const title = pageTitle(file);
+    out.push({ key: key, title: title, mark: headerMark(key, title) });
   }
   out.sort(function (a, b) {
     const ap = PRIO[a.mark] !== undefined ? PRIO[a.mark] : 2;
