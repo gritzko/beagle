@@ -129,6 +129,76 @@ const DIFF_WASH = {
   prmPale: 222, prmWash: 215,    // patched-in remove — orange   (255,215/175,135/95)
 };
 
+//  --- the BUTTON palette (TODO-005, gritzko's ruling) ---------------------
+//  A clickable view BUTTON is TWO CELLS carrying its tone as FOREGROUND over a
+//  VERY PALE wash of that same tone — enough background to read as a button,
+//  never an inversion (ruled 2026-08-03).  Both colours are TRUECOLOR, so they
+//  ride the WHY-001 mechanism rather than a tok tag: the view bakes
+//  `#<pale><tone> ` (the bg slot then the fg slot; view/bro.js whyBgAt) onto the
+//  button's own hidden `O`, and the 32-code tag space — which is full — needs no
+//  new slot.  A DISABLED button is plain grey fg with NO background at all.
+//  ONE block, one place to retune; every view button reads it.
+const BTN = {
+  //  the three NAMED brand tones for the GLYPH buttons (gritzko).
+  status: "#0085ca",   // Pantone Process Blue  — `status //<wt>`, face " i"
+  ci:     "#00a95c",   // Hexachrome Green      — `post '<msg>'`, face " ✓"
+  log:    "#ffd02e",   // Pantone Dandelion     — `log //<wt>`,   face " ≡"
+                       // (13-0758 TCX; replaces 437, which was near-invisible
+                       //  as a foreground on a dark terminal)
+  //  The COUNT buttons are two PANELS, each a blue/green/red triad (gritzko's
+  //  ruling 2026-08-03 — explicit hexes, superseding the earlier rotated trios).
+  //  Position still says which slot; the colour says which KIND of change.
+  chg:    "#3647c9",   // blue   — changed,  bare `put`
+  add:    "#47c936",   // green  — new,      `put +`
+  del:    "#c7384d",   // red    — deleted,  bare `delete`
+  patch:  "#8420df",   // violet — diverged, `patch`
+  post:   "#1fe084",   // green  — ahead,    bare `post`
+  get:    "#ef8310",   // orange — behind,   bare `get`
+  //  TODO-005 [go]: MINT this ticket's worktree from its `Rep:` repo.  Pantone
+  //  Shocking Orange — the one CREATE action on the board, so it owns a tone
+  //  outside both trios.
+  go:     "#ff6d2b",
+  //  TODO-005: the trailing DONE/DONT panel (hexes ruled 2026-08-03).
+  done:   "#3bc43d",   // green — ` ✓` closes
+  dont:   "#c2803d",   // ochre — ` ✗` shelves
+};
+//  The pale wash is DERIVED, never hand-picked: mix the tone toward white by
+//  BTN_PALE, once, for every button in every view.  Retune the factor here and
+//  all nine washes move together.  Memoized — a board asks per button per row.
+const BTN_PALE = 0.88;
+const _pale = Object.create(null);
+function pale(hex) {
+  const key = String(hex);
+  if (_pale[key] !== undefined) return _pale[key];
+  const v = parseInt(key.slice(1), 16);
+  let out = "#";
+  for (let sh = 16; sh >= 0; sh -= 8) {
+    const c = (v >> sh) & 0xff;
+    out += Math.round(c + (255 - c) * BTN_PALE).toString(16).padStart(2, "0");
+  }
+  return (_pale[key] = out);
+}
+
+//  The FALLBACK tok tag per button — the nearest LEGACY 16-palette slot to each
+//  tone (view/bro.js THEME).  A button face is emitted on this tag and its `O`
+//  OVERRIDES it with the truecolor pair, so a reader that never gets the O (an
+//  old renderer, a stale require cache, a --plain-ish path) still shows the
+//  button in its class colour — it can never degrade to grey, which is the
+//  DISABLED signal and must stay unambiguous.
+const BTN_TAG = { status: "V", ci: "W", log: "E", chg: "V", add: "W",
+                  del: "M", patch: "V", post: "G", get: "A", go: "A",
+                  done: "W", dont: "M" };
+
+//  The button FACES.  A face is exactly two cells: a two-digit count, or a
+//  space + an icon.  `ASCII` is the plain-terminal twin of each icon, kept
+//  beside it so a future ascii mode is a table swap, not a code change.
+//  `done` wears the HEAVY check (U+2714), not the light one the ci button
+//  carries — the panel's closing act is the emphatic one (gritzko 2026-08-03).
+const BTN_FACE = { status: " i", ci: " ✓", log: " ≡", go: "go",
+                   done: " ✔", dont: " ✗" };
+const BTN_FACE_ASCII = { status: " i", ci: " v", log: " =", go: "go",
+                         done: " v", dont: " x" };
+
 //  --- banner band (dog/THEME.h THEME_BANNER) ------------------------------
 //  Status/header band: black fg (256:0) on pale-yellow bg (256:230); native
 //  space-fills to the terminal width.  Closes with ESC[0m (it sets a bg, so a
@@ -197,6 +267,12 @@ module.exports = {
   VERB_SLOT: VERB_SLOT,
   QUAD_SGR: QUAD_SGR,
   DIFF_WASH: DIFF_WASH,
+  BTN: BTN,
+  BTN_PALE: BTN_PALE,
+  BTN_TAG: BTN_TAG,
+  pale: pale,
+  BTN_FACE: BTN_FACE,
+  BTN_FACE_ASCII: BTN_FACE_ASCII,
   select: select,
   makeTheme: makeTheme,
 };

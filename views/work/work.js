@@ -360,6 +360,24 @@ function breakCycles(wts, ix, reg, branchMap, foreignMap) {
   }
 }
 
+//  TODO-005: the tip a wt's ahbeh reads AGAINST, in one call — the WORK-007
+//  edge without the forest: a URI track names a live tree (be.wtdir / the file:
+//  anchor, the SAME resolvers placeWt uses) and its wtlog cur tip is the tip;
+//  a branch/trunk track falls to the shard's ref tip.  "" when unresolvable.
+function trackTip(reg, repo, att) {
+  if (!att || att.detached) return "";
+  if (!att.uriTrack || !att.track) return refTip(reg, repo, att);
+  let d = null;
+  try { d = be.wtdir(att.track); } catch (e) { d = null; }
+  if (!d) {
+    let u; try { u = uri._parse(att.track); } catch (e) { u = null; }
+    if (u && u.scheme === "file" && u.path) { try { d = be.treeAt(u.path).wt; } catch (e) { d = null; } }
+  }
+  if (!d) return "";
+  try { const cur = wtlog.open(be.treeAt(d)).curTip(); return (cur && cur.sha) || ""; }
+  catch (e) { return ""; }
+}
+
 //  The TRACKED ref's tip sha: the shard's trunk ("" query) or named branch.
 function refTip(reg, repo, att) {
   const k = reg.keeperFor(repo);
@@ -842,3 +860,8 @@ module.exports.listWork = listWork;
 module.exports.registry = registry;
 //  BRO-036: expose the row emitter for the elastic-field repro test.
 module.exports.emitRows = emitRows;
+//  TODO-005: the `:todo` rows reuse the ahbeh cell + the dotted leader VERBATIM
+//  (one impl of the button/fill conventions, never a second).
+module.exports.ahbehSpans = ahbehSpans;
+module.exports.leader = leader;
+module.exports.trackTip = trackTip;

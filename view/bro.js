@@ -84,6 +84,20 @@ function aOr(a, b) {
   return { fm: a.fm | b.fm, fg: a.fg | b.fg, bm: a.bm | b.bm,
            bg: a.bg | b.bg, fl: a.fl | b.fl };
 }
+//  TODO-005: OVERRIDE, not OR — a slot the `over` state NAMES replaces the
+//  base's; an unnamed slot keeps the base.  Colour codes are values, not bit
+//  fields, so OR-ing a basic fg (33) with a truecolor one (0x0085ca) yields a
+//  third, wrong colour.  A token's own `O` therefore WINS over its tok tag,
+//  which lets a view give a button a legacy-palette tag as its FALLBACK and
+//  still paint truecolor when the O is read.  (why.js is unaffected: its tag
+//  carries only fg and its O only bg, so override == or for that pair.)
+function aOver(base, over) {
+  return { fm: over.fm !== 0 ? over.fm : base.fm,
+           fg: over.fm !== 0 ? over.fg : base.fg,
+           bm: over.bm !== 0 ? over.bm : base.bm,
+           bg: over.bm !== 0 ? over.bg : base.bg,
+           fl: base.fl | over.fl };
+}
 function aEq(a, b) {
   return a.fm === b.fm && a.fg === b.fg && a.bm === b.bm &&
          a.bg === b.bg && a.fl === b.fl;
@@ -202,17 +216,28 @@ function hasWhyRuns(toks) {
   return false;
 }
 
-//  WHY-001: the bg for a visible token — PEEK the next token; if it's `O`, read the
-//  LEADING `#rrggbb` the view baked and apply it as a truecolor wash.  Else A0 (white);
-//  a wash with no leading `#rrggbb` (an unattributed token) also renders white.
+//  WHY-001: the colour a visible token's own hidden `O` carries — PEEK the next
+//  token; if it's `O`, read the LEADING colour prefix the view baked and apply
+//  it.  Else A0 (default); an O with no prefix (a plain click spell) is A0 too.
+//  The prefix is TWO ordered slots, each opened by `#`, each optional:
+//      `#rrggbb`    BACKGROUND  — why.js's blame wash (WHY-001, unchanged)
+//      `##rrggbb`   FOREGROUND  — the bg slot left empty (TODO-005 buttons)
+//  A truecolor fg with no tag of its own is what lets a VIEW paint a button
+//  (view/theme.js BTN) while the 32-code tok-tag space stays full.  The
+//  producer's own tag still ORs in, so a button is emitted on a THEME-neutral
+//  tag and its O owns the colour.
 function whyBgAt(text, toks, ti) {
   const nx = ti + 1;
   if (nx >= toks.length || TOK_TAG(toks[nx]) !== "O") return A0;
   const s = utf8.Decode(text.slice(toks[nx - 1] & 0xffffff, toks[nx] & 0xffffff));
-  const m = /^#([0-9a-fA-F]{6})/.exec(s);
+  const m = /^#([0-9a-fA-F]{6})?(?:#([0-9a-fA-F]{6}))?/.exec(s);
   if (!m) return A0;
-  const v = parseInt(m[1], 16);
-  return aBgRGB((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+  let want = A0;
+  if (m[1]) { const b = parseInt(m[1], 16);
+              want = aOr(want, aBgRGB((b >> 16) & 0xff, (b >> 8) & 0xff, b & 0xff)); }
+  if (m[2]) { const f = parseInt(m[2], 16);
+              want = aOr(want, aFgRGB((f >> 16) & 0xff, (f >> 8) & 0xff, f & 0xff)); }
+  return want;
 }
 
 //  WORK-005: a row-leading bare `#rrggbb` O token sets the row's DEFAULT-fg (the
@@ -252,7 +277,7 @@ function paintWhyRow(text, toks, off, end, enc, raw, els) {
     if (clen === 0 || pos + clen > end) clen = 1;
     //  WHY-001: `U` (underline/click) and `O` (origin bg+click) bytes are hidden.
     if (tag === "U" || tag === "O") { if (runLo >= 0) { raw(runLo, pos); runLo = -1; } pos += clen; continue; }
-    let want = ti < ntoks ? aOr(themeAt(tag), whyBgAt(text, toks, ti)) : A0;
+    let want = ti < ntoks ? aOver(themeAt(tag), whyBgAt(text, toks, ti)) : A0;
     //  WORK-005: the fade tints only THEME-default cells; coloured spans keep theirs.
     if (rowFg && want.fm === 0 && want.fg === 0) want = aOr(want, rowFg);
     if (!aEq(want, cur)) {

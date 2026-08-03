@@ -1,5 +1,9 @@
-//  verbs/done/done.js — BE-040: `done KEY…` closes a ticket: flip the page
-//  header [DONE] (the 3 mark-done.sh forms) + delist its READMEs bullets.
+//  verbs/done/done.js — BE-040: `done KEY…` closes a ticket.  TODO-005 (ruling
+//  2026-08-03) makes that TWO acts, both of them: (1) the head's `Now:` PAIR
+//  becomes DONE — added when absent, changed in place when present, since the
+//  pair is the state TODO-004 boards from (the legacy [DONE] mark still flips
+//  alongside it) + delist its READMEs bullets; and (2) the ticket's WORKTREE,
+//  if it owns one, moves to the `work/done/` discard root.
 //  WORK-001 (the BE-044 reshape): `done .` / `done //KEY` is the WORKTREE form —
 //  mv the work/ wt into `work/done/` (the r2 discard root: same device, no
 //  EXDEV, and the work view ignores it; a name collision bumps `.2`, `.3`, … —
@@ -104,6 +108,24 @@ function readmeFile(dir) {
   return null;
 }
 
+//  TODO-005 (ruling 2026-08-03): the `Now:` PAIR is the ticket's STATE — the
+//  [/meta/todo] pair TODO-004 boards from — so closing ADDS it, or CHANGES it in
+//  place when the head already carries one.  The pair block is the run of
+//  `Key: value` lines DIRECTLY under the header (todo.js pageHead's rule), so a
+//  fresh pair is inserted as the FIRST line of that run.  Returns the new text.
+const NOWRE = /^Now:(?: |$)/;
+const PAIRRE = /^[A-Z][a-z][a-z]: /;
+function setNow(text, mark) {
+  const lines = text.split("\n");
+  let i = 1;
+  while (i < lines.length && (PAIRRE.test(lines[i]) || NOWRE.test(lines[i]))) {
+    if (NOWRE.test(lines[i])) { lines[i] = "Now: " + mark; return lines.join("\n"); }
+    i++;
+  }
+  lines.splice(1, 0, "Now: " + mark);
+  return lines.join("\n");
+}
+
 //  A header line → its title (the `#` markers + padding stripped, todo.js style).
 function titleOf(h) {
   let i = 0;
@@ -119,20 +141,28 @@ function flipOne(w, file, mark, vname, row) {
   if (text == null) missV(vname, w, "TODONONE");
   const nl = text.indexOf("\n");
   const head = nl < 0 ? text : text.slice(0, nl);
-  if (head.indexOf("[DONE]") >= 0 || head.indexOf("[WONTFIX]") >= 0 ||
-      head.indexOf("[DONT]") >= 0) {
-    row(titleOf(head) + " (already closed)");
-    return;
-  }
+  //  TODO-005: the PAIR is the state, so it is set first and UNCONDITIONALLY —
+  //  that is what makes DONE↔DONT a real change and closes a mark-less page.
+  //  The legacy [MARK] flip rides along when the header is one of the three
+  //  shapes it knows; an odd header still gets its pair, and says so.
   const flipped = flipHeader(w, head, mark);
   if (flipped === null) {
     //  BE-040 r2: the skip must be a VISIBLE row — a rowless run answered the
     //  pager's `:done KEY` with "no hunks" (io.log never reaches the pager).
+    //  A header this verb cannot parse is left ENTIRELY alone, pair included:
+    //  no ruling overturns that guarantee, so an odd page is never rewritten.
     io.log(vname + ": " + w + ": odd header, skipped: " + head + "\n");
     row(w + " odd header, skipped: " + head);
     return;
   }
-  writeText(file, nl < 0 ? flipped : flipped + text.slice(nl));
+  //  TODO-005: the PAIR is the state, so it is set alongside the legacy mark —
+  //  added when the head carries none, changed in place when it does.  That is
+  //  what makes DONE↔DONT a real change and closes a pair-less page.
+  let out = setNow(text, mark);
+  const n2 = out.indexOf("\n");
+  out = n2 < 0 ? flipped : flipped + out.slice(n2);
+  if (out === text) { row(titleOf(head) + " (already closed)"); return; }
+  writeText(file, out);
   //  BE-038 curated-open: closing must ALSO delist the key's bullet from the
   //  topic README and the board README (meta/todo "delist from parents").
   const dir = boardDir();
@@ -145,14 +175,51 @@ function flipOne(w, file, mark, vname, row) {
 
 //  BE-040: close ONE key — flip the header, delist the bullet from the topic
 //  README AND the board README, emit one confirmation row (key + title).
+//  TODO-005: …and DISCARD the worktree it owns, when it owns one (no wt → the
+//  page edit alone).  Both halves of the closing contract, one spell.
 function doneOne(w, dir, row, mark, vname) {
   if (todoView.shape(w) !== "key") missV(vname, w, "TODONONE");
   const file = todoView.pageFile(dir, w);
   if (!file) missV(vname, w, "TODONONE");
   flipOne(w, file, mark, vname, row);
+  const wt = wtForKey(w);
+  if (wt) moveWt(wt.dir, wt.root, vname, row);
 }
 
 function exists(p) { try { io.lstat(p); return true; } catch (e) { return false; } }
+
+//  TODO-005: MOVE one work/ worktree into the `work/done/` discard root (made on
+//  demand; a name collision bumps `.2`, `.3`, … — never clobbers).  Same device,
+//  so no EXDEV, and the work view ignores `done/` entirely.
+function moveWt(wt, workR, vname, row) {
+  const name = pathlib.basename(wt);
+  const root = join(workR, "done");
+  try { io.mkdir(root); } catch (e) {}          // FILEMakeDirP: idempotent
+  let target = join(root, name);
+  for (let n = 2; exists(target); n++) target = join(root, name + "." + n);
+  try { io.rename(wt, target); }
+  catch (e) {
+    io.log(vname + ": cannot move " + wt + " to " + target + ": " + String(e) + "\n");
+    throw vname + ": move failed";
+  }
+  row("mov " + name + " -> " + target, "mov");
+  return name;
+}
+
+//  TODO-005: the worktree a ticket KEY owns — WORK-010's match run BACKWARDS
+//  (the base key a `work/` name carries, suffix-tolerant), through work.js's own
+//  gated listing; null when the ticket has none.  Closing a ticket discards its
+//  wt, so `done KEY` and `done .` end in the same place.
+function wtForKey(key) {
+  const workR = (typeof be !== "undefined" && be.workRoot) ? be.workRoot() : null;
+  if (!workR) return null;
+  let names;
+  try { names = require("../../views/work/work.js").listWork(workR); }
+  catch (e) { return null; }
+  for (const nm of names)
+    if (todoView.ticketKey(nm) === key) return { dir: join(workR, nm), root: workR };
+  return null;
+}
 
 //  WORK-001: the WORKTREE form — `done .` (the O invite runs in the row's own
 //  `//KEY` context) or an explicit `//KEY`.  ONLY a direct work/ child ever
@@ -175,16 +242,7 @@ function wtOne(w, mark, vname, row) {
     io.log(vname + ": " + (wt || w || ".") + " is not a work/ worktree — nothing moved\n");
     throw vname + ": not a work/ worktree";
   }
-  const root = join(workR, "done");
-  try { io.mkdir(root); } catch (e) {}          // FILEMakeDirP: idempotent
-  let target = join(root, name);
-  for (let n = 2; exists(target); n++) target = join(root, name + "." + n);
-  try { io.rename(wt, target); }
-  catch (e) {
-    io.log(vname + ": cannot move " + wt + " to " + target + ": " + String(e) + "\n");
-    throw vname + ": move failed";
-  }
-  row("mov " + name + " -> " + target, "mov");
+  moveWt(wt, workR, vname, row);
   //  A TICKET-named wt also flips its page; a page-less / non-ticket wt just moves.
   if (todoView.shape(name) === "key") {
     const dir = boardDir();

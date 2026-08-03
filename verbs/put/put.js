@@ -14,13 +14,15 @@
 //    ?br[#sha] etc. → ref-write, applied once from ctx.refs (no banner)
 //    (bare, no arg) → auto-pair moves + tracked walk (PUT-004: bareStage,
 //                     classifier+wtlog-sourced whole-tree fold).
+//    +              → stage every UNTRACKED file in scope (TODO-005: addStage,
+//                     the same fold over the `unk` bucket; `./+` names the file).
 //
 //  Each staged file: one `put` row + an io.setMtime restamp to that row's ts
 //  (so a later `be put` / POST fast-paths it via the stamp-set).  The `put:`
 //  banner + per-row lines go through the emit sink (ctx.out); ONE flush at the
 //  loop edge.
 //
-//  Usage:  be put [<path>... | <dir>/ | <old>#<new> | ?<branch>[#<sha>]]
+//  Usage:  be put [+ | <path>... | <dir>/ | <old>#<new> | ?<branch>[#<sha>]]
 //          jab be/loop.js put [args]        (JSQUE-010 resident-loop handler)
 
 "use strict";
@@ -440,6 +442,24 @@ function bareStage(repo, wtl, k, scope) {
   return { ops: ops };
 }
 
+//  --- `put +` (TODO-005) --------------------------------------------------
+//  PUT-009 leaves untracked files to a MANUAL put; `+` is that manual put said
+//  once — stage every `unk` file in scope.  Same classifier buckets, same ops
+//  and the same `put:` banner rows as bare put; only the bucket differs (and no
+//  base is required — a repo with no commit is all-unk).
+function addStage(repo, wtl, k, scope) {
+  const inScope = scope ? function (p) { return p === scope || p.indexOf(scope + "/") === 0; } : null;
+  const cls = classify.classifyMerge(repo, wtl, k, { skipMeta: true });
+  const ops = [];
+  for (const r of cls.rows) {
+    if (r.bucket !== "unk" || stage.isMeta(r.path)) continue;
+    if (inScope && !inScope(r.path)) continue;
+    ops.push({ path: r.path, kind: "put", restamp: r.path });
+  }
+  ops.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+  return { ops: ops };
+}
+
 //  SUBS-044: bare `be put` descends each MOUNTED sub PRE-ORDER ([Submodules]:
 //  stage the sub's interior first), running the sub's OWN bareStage over its
 //  baseline⊕wt and writing those rows to the SUB's wtlog; rows emit under a
@@ -456,7 +476,8 @@ function subScope(subPrefix, scope) {
   return null;
 }
 
-function bareStageSubs(repo, prefix, ctx, scope) {
+//  TODO-005: `addAll` runs the `+` fold (untracked only) in each sub instead.
+function bareStageSubs(repo, prefix, ctx, scope, addAll) {
   const out = putOut(ctx);
   recurse.walk(repo, prefix, function (subRepo, subPrefix) {
     //  PUT-008: skip a sub disjoint from the scope dir; else pass its residual
@@ -466,7 +487,8 @@ function bareStageSubs(repo, prefix, ctx, scope) {
     //  SUBS-044: this sub FIRST (banner + own rows + relay-frame blanks), THEN
     //  its grandchildren — native's pre-order, banner-on-entry, then descend.
     const subK = store.open(subRepo.storePath, subRepo.project);
-    const r = bareStage(subRepo, wtlog.open(subRepo), subK, ss);  // may throw PUTAMBIG
+    const fold = addAll ? addStage : bareStage;
+    const r = fold(subRepo, wtlog.open(subRepo), subK, ss);       // may throw PUTAMBIG
     commitOps(subRepo, r.ops, ctx && ctx.T0);
     if (out) {
       out.open(subPrefix);                                          // DIS-060: sub banner = sub path (no put: scheme)
@@ -480,7 +502,7 @@ function bareStageSubs(repo, prefix, ctx, scope) {
       //  (native skips them for an empty banner that exists only to descend).
       if (staged) { out.raw(""); out.raw(""); }
     }
-    bareStageSubs(subRepo, subPrefix, ctx, scope);   // then descend grandchildren
+    bareStageSubs(subRepo, subPrefix, ctx, scope, addAll);  // then descend grandchildren
   });
 }
 
@@ -666,6 +688,10 @@ function put() {
 //  JAB-004: put's OWN terse 3-way (not classifyArg) — URI-arg ref-writes
 //  `?#<hex>`/`?<40hex>`/`?br`/`?br#<hex>`, `path#dst` move, else plain path.
 function classifyPutArg(arg, k, repo) {
+  //  TODO-005: the explicit `+` form — stage every UNTRACKED file in scope (the
+  //  PUT-009 bucket bare put leaves alone).  A literal file named `+` stays
+  //  reachable as `./+` (normRel sheds the `./`), so nothing becomes unstageable.
+  if (arg === "+") return { kind: "add" };
   const u = new URI(arg);
   const q = u.query || "", path = u.path || "", frag = u.fragment || "",
         auth = u.authority || "", data = u.href || "";
@@ -741,6 +767,7 @@ function putRun(ctx, argv, firstUri) {
   for (const arg of argv) {
     const c = classifyPutArg(arg, k, repo);
     if (c.kind === "ref") ctx.refs.push({ op: c.op, branch: c.branch, sha: c.sha });
+    else if (c.kind === "add") ctx._putAddAll = true;      // TODO-005: `put +`
     else if (c.path || c.dst) pathUris.push(c.dst ? URI.make(undefined, undefined, c.path, undefined, c.dst) : c.path);
   }
   ctx.seededRowCount = pathUris.length;
@@ -760,8 +787,10 @@ function putRun(ctx, argv, firstUri) {
 
   //  No real path arg (a ref-only / wire-only run, or a bare `be put`).
   if (pathUris.length === 0) {
-    if ((ctx.refs || []).length || ctx._putWireRan) { if (out) out.done(); return; }
+    if (!ctx._putAddAll && ((ctx.refs || []).length || ctx._putWireRan))
+      { if (out) out.done(); return; }
     //  PUT-004: bare `be put` — auto-pair moves + tracked-dirty walk (bareStage),
+    //  or TODO-005's `put +` fold (untracked only) — same scope, rows and banner.
     //  one whole-tree fold; open the `put:` header BEFORE the walk (native
     //  PUTStage opens its table before move detection) so a PUTAMBIG refusal
     //  carries the same partial banner (the edge-catch flushes it on the throw).
@@ -770,14 +799,15 @@ function putRun(ctx, argv, firstUri) {
     //  discover.ctxSub, wt-relative; "" at the wt root = whole-wt, unchanged) so a
     //  subdir cwd / pager nav stages only that subtree, never the whole tree.
     const ctxSub = discover.ctxSub(repo);
-    const r = bareStage(repo, wtlog.open(repo), k, ctxSub);  // may throw PUTAMBIG
+    const fold = ctx._putAddAll ? addStage : bareStage;
+    const r = fold(repo, wtlog.open(repo), k, ctxSub);       // may throw PUTAMBIG
     commitOps(repo, r.ops, ctx.T0);
     if (out)
       for (const op of r.ops)
         if (op.path !== null && !op.silent)
           out.row(op.dst ? URI.make(undefined, undefined, op.path, undefined, op.dst) : op.path, "put", 0n);
     //  SUBS-044: then recurse mounted subs (pre-order), staging their interior.
-    bareStageSubs(repo, "", ctx, ctxSub);
+    bareStageSubs(repo, "", ctx, ctxSub, ctx._putAddAll);
     if (out) out.done();
     return;
   }

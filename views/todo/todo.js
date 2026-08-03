@@ -58,6 +58,41 @@
 //  spells, so the pager stays arg-blind and the VERB resolves the arg.
 //  TIME-SORT (TODO-004): a FLAT filter result is freshest-first, dirty by mtime
 //  above committed by commit ts; the board and topic lists keep `Sev:` order.
+//
+//  TODO-005 grows the pager ROW to `<●> KEY ┄ [FILE] [COMMIT] <title> [done]`:
+//  the `Sev:` bullet leads (CRIT red, HIGH orange, MED plain, LOW dim; a closed
+//  ticket a filter still shows reads hollow `○`) and a matching `work/<KEY>*`
+//  worktree (WORK-010's match run backwards) hangs TWO fixed-width BUTTON
+//  FRAMES off the key column — the wt's whole verb surface, one click each:
+//    `[ i nn nn nn  ✓]`  16 cols — the ` i` button opens `status //<wt>`, then
+//        the three staging counts (changed → bare `put`, gone → bare `delete`,
+//        untracked → `put +`) and the ` ✓` commit (`post 'KEY: <title>'`).
+//        Each count slot is THREE-STATE: unstaged rows light the button, a
+//        class with nothing left unstaged greys its STAGED count (no spell),
+//        an empty class blanks.  The counts are the WHOLE tree's — bare
+//        put/delete descend every mounted sub (SUBS-044), so a sub's buckets
+//        fold into the same tally or the button would lie about its reach.
+//    `[ ≡ nn nn]`        10 cols — the ` ≡` button opens `log //<wt>`, then TWO
+//        FIXED sub-slots, POST position then GET position (a behind count must
+//        never drift into the post column): ahead mints `post`, behind mints
+//        `get`, and a DIVERGED `A⇄B` is ONE `patch` button over both slots.  The
+//        commit frame stays TOP-repo — ahbeh is the wt's own line, not its subs'.
+//  Every button is 2 CELLS carrying its tone as FOREGROUND over a VERY PALE
+//  wash of that same tone — never an inversion — with a face of a count (sigil
+//  + digit under ten, bare two digits above) or space+icon.  Both colours ride
+//  the button's own hidden `O`, whose bytes open `#<pale><tone> ` (view/bro.js
+//  whyBgAt: the WHY-001 prefix's bg then fg slots), so a button needs NO tok tag
+//  of its own — the 32-code tag space is full — and the pager sheds the prefix
+//  at the first space before firing.  Tones, faces and the ONE pale() the wash
+//  is derived by live in view/theme.js, the ONE place an SGR value lives.  A
+//  DISABLED button is plain grey fg with no wash.  The face IS the whole button:
+//  every cell of it is painted and every cell of it clicks, no dead padding.
+//  A frame DELIMITS its own columns, so nothing inside the brackets is
+//  ┄-filled; dotted leaders live OUTSIDE them, and a wt-LESS row simply ┄-fills
+//  the whole frames region so every title in the hunk lands at one column.
+//  A ticket whose `Sub:` names a listed OPEN parent nests under it on work's
+//  dotted rails.  Plain stays chrome-free (rails are structure, they stay);
+//  the `Sev:` ORDER applies to both.
 //  Topic READMEs are landing pages, NEVER an index (they go stale);
 //  `todo KEY` renders any page regardless — direct addressing always works.
 //  Page reflinks resolve via the page's OWN refdef footer: a ticket-file
@@ -84,11 +119,16 @@ const TAG_U = tagCode("U");
 const TAG_F = tagCode("F");
 const TAG_S = tagCode("S");
 const TAG_N = tagCode("N");
-//  BE-040 r3: the BE-041 house button pair — a visible 'Y' label + a hidden
-//  'O' click spell (`_uriAt` follows the O verbatim; plain never emits them).
-const TAG_Y = tagCode("Y");
+//  BE-040 r3: a button is a visible face + a hidden 'O' click spell (`_uriAt`
+//  follows the O verbatim; plain never emits them).  TODO-005 retired the 'Y'
+//  label slot — every button now rides its class tag + its O's truecolor pair.
 const TAG_O = tagCode("O");
 const TAG_B = tagCode("B");   // BRO-036: the elastic (pager-resizable) span
+//  TODO-005 palette slots (view/bro.js THEME): the sev bullet is red 'M' (CRIT),
+//  salmon 'A' (HIGH), default 'S' (MED), gray 'D' (LOW + the hollow closed ○).
+//  The frames need NO tag slot: a button's colour rides its own `O`
+//  (view/theme.js BTN), and 'D' greys a disabled button and the brackets.
+const TAG_M = tagCode("M"), TAG_A = tagCode("A"), TAG_D = tagCode("D");
 
 //  --- arg SHAPE routing (BRO-023: a pure shape test, no fs probe) -----------
 function ucnumRun(w, i) {
@@ -171,16 +211,36 @@ function pageFile(dir, key) {
   for (const ext of EXTS) { const p = join(base, "README." + ext); try { io.stat(p); return p; } catch (e) {} }
   return null;
 }
-//  A page's TITLE = its first line, `#` markers + padding stripped.
-function pageTitle(file) {
+//  TODO-005: ONE read per ticket yields BOTH halves of its head (the TODO-001
+//  budget): the TITLE (first line, `#` markers + padding stripped) and the
+//  `Key: value` META pairs DIRECTLY under it — the run ends at the first line
+//  that is not a pair, so no body line can ever forge one.  The pairs the INDEX
+//  answers (`Now:`/`Sev:`) come off metaOf, not this scan; the scan is for what
+//  a packed row cannot give back — `Sub:`, a ticket CODE the render must read.
+const META_PAIR = /^([A-Z][a-z][a-z]): (.*)$/;
+function pageHead(file) {
+  const out = { title: "", meta: {} };
   const b = readBytes(file);
-  if (!b || !b.length) return "";
-  let nl = 0; while (nl < b.length && b[nl] !== 10) nl++;
-  let s = utf8.Decode(b.slice(0, nl));
-  let i = 0; while (i < s.length && s[i] === "#") i++;
-  while (i < s.length && s[i] === " ") i++;
-  return s.slice(i);
+  if (!b || !b.length) return out;
+  let p = 0, n = 0;
+  while (p < b.length) {
+    let nl = p; while (nl < b.length && b[nl] !== 10) nl++;
+    const line = utf8.Decode(b.slice(p, nl));
+    if (n === 0) {
+      let i = 0; while (i < line.length && line[i] === "#") i++;
+      while (i < line.length && line[i] === " ") i++;
+      out.title = line.slice(i);
+    } else {
+      const m = META_PAIR.exec(line);
+      if (!m) break;
+      if (out.meta[m[1]] === undefined) out.meta[m[1]] = m[2];
+    }
+    p = nl + 1; n++;
+  }
+  return out;
 }
+//  A page's TITLE alone (the work view's post-message read).
+function pageTitle(file) { return pageHead(file).title; }
 
 //  The header MARK's [ … ] span (the `[` and `]` char indices) — an UPPERCASE
 //  `[…]` word right after the key, either side of the colon (`KEY [MARK]:` or
@@ -222,6 +282,8 @@ const CLOSED = { DONE: true, DONT: true, STALE: true };   // header marks only
 //  as a pair-less ticket does — a default filter fails OPEN.
 const HIDDEN = { DONE: true, DONT: true };           // the `Now:` pair default
 const PRIO = { CRIT: 0, HIGH: 1, MED: 2, LOW: 3 };   // unmarked / unknown = 2
+//  TODO-005: the sev BULLET's colour slot, indexed by that same PRIO number.
+const PRIO_TAG = [TAG_M, TAG_A, TAG_S, TAG_D];       // red, orange, plain, dim
 const STATES = ["OPEN", "DONE", "DONT", "STALE"];    // [/meta/todo] `Now:`
 const PRIOS = ["CRIT", "HIGH", "MED", "LOW"];        // [/meta/todo] `Sev:`
 const NOW = "Now", SEV = "Sev";
@@ -437,8 +499,12 @@ function listTopic(dir, topic) {
       for (const x of EXTS) { const p = join(base, "README." + x);
                               try { io.stat(p); file = p; break; } catch (er) {} }
     if (!file) continue;
-    const title = pageTitle(file);
-    out.push({ key: key, title: title, mark: headerMark(key, title),
+    //  TODO-005: the ONE read hands back the title AND the head's raw pairs —
+    //  `Sub:` is a ticket CODE the family nesting must read, and the index's
+    //  packed payload is a match token, never a render source.
+    const head = pageHead(file);
+    const title = head.title;
+    out.push({ key: key, title: title, mark: headerMark(key, title), meta: head.meta,
                  prio: prioOf(file, key, title), closed: isClosed(file, key, title) });
   }
   out.sort(function (a, b) {
@@ -474,6 +540,165 @@ function listTopics(dir) {
   return out;
 }
 
+//  --- the wt side (TODO-005) --------------------------------------------------
+//  views/work/work.js requires THIS module (WORK-010 ticket titles), so the
+//  reverse edge is a LAZY require — a top-level one would hand work.js a
+//  half-built todo.js.  Everything below rides work's own machinery verbatim.
+function worklib() { return require("../work/work.js"); }
+
+//  Per-render-run state (the TODO-001 memo discipline, reset by every run):
+//  the wt index, work's shard registry (keeper+graf opened ONCE per shard), the
+//  per-wt status read and the per-TRACK tip (a hundred wts track the same
+//  `///be/` — resolving it once is the difference between 2 s and 40 s).
+//  A board with NO wt-having ticket opens nothing.
+let _wtix, _reg = null, _wtc = new Map(), _tips = new Map();
+function runReset() { _wtix = undefined; _reg = null; _wtc = new Map(); _tips = new Map(); }
+function runClose() { if (_reg) { try { _reg.close(); } catch (e) {} } _reg = null; }
+
+//  TODO-005: the exact reverse of WORK-010's `[?]` — every `work/` wt name maps
+//  to the BASE ticket key it carries (suffix-tolerant: `work/PIN-1b` → `PIN-1`),
+//  and the name-sorted FIRST wt of a key wins the slot (listWork arrives sorted).
+function wtIndex() {
+  if (_wtix !== undefined) return _wtix;
+  _wtix = new Map();
+  const work = worklib();
+  let wd = null; try { wd = work.workDir(); } catch (e) { wd = null; }
+  if (wd) for (const nm of work.listWork(wd.dir)) {
+    const k = ticketKey(nm);
+    if (k && !_wtix.has(k)) _wtix.set(k, { name: nm, dir: join(wd.dir, nm) });
+  }
+  return _wtix;
+}
+
+//  TODO-005: a classify.js BUCKET → the frame slot it feeds, split by AXIS.
+//  UNSTAGED (still on the wt side: dirty/patched/merged/conflicted content,
+//  untracked adds, on-disk deletions) is what a staging button would ACT on, so
+//  it lights the slot; STAGED (a row the wtlog already carries) only greys the
+//  count — there is nothing left to stage.  `ok` is clean, it tallies nowhere.
+const UN_COL = { mod: "chg", pat: "chg", mrg: "chg", con: "chg",
+                 unk: "add", mis: "del" };
+const ST_COL = { put: "chg", "new": "add", mov: "add", del: "del", rmv: "del" };
+
+//  TODO-005 r2: fold ONE repo's classify counts into the frame's tallies.
+function foldCounts(r, repo, log, k) {
+  const classify = require("../../shared/classify.js");
+  const c = classify.classifyMerge(repo, log, k, {}).counts;
+  for (const b in UN_COL) r.un[UN_COL[b]] += c[b] || 0;
+  for (const b in ST_COL) { const n = c[b] || 0; r.st[ST_COL[b]] += n; r.staged += n; }
+}
+//  TODO-005 r2 (BUG): the FILE counts are the WHOLE TREE's.  Bare `put` and bare
+//  `delete` both descend every mounted sub (SUBS-044, put's bareStageSubs and
+//  delete's bareSweepSubs), so a button that stages `//WT` acts on the subs too
+//  and its count must say so — a top-repo-only tally under-reported every mount.
+//  ONE classifyMerge per live mount, `.gitmodules` order, depth-first over the
+//  SAME recurse.walk spine those folds use (never a second mount scanner).  The
+//  COMMIT frame stays top-repo: ahbeh is the wt's own line, not its subs'.
+function foldSubs(r, repo) {
+  const recurse = require("../../core/recurse.js");
+  const wtlog = require("../../shared/wtlog.js");
+  recurse.walk(repo, "", function (subRepo) {
+    try {
+      const sk = _reg.keeperFor(subRepo);
+      if (sk) foldCounts(r, subRepo, wtlog.open(subRepo), sk);
+    } catch (e) { /* an unreadable sub simply tallies nothing */ }
+    foldSubs(r, subRepo);                       // then its grandchildren
+  });
+}
+
+//  TODO-005: ONE status read per wt-having ticket (plus one per mounted sub) —
+//  classify.classifyMerge, THE wt differ status itself reads through (no
+//  parallel differ, [reuse-libdog]); the quad's four TREE columns are never
+//  asked for, each is a full tree walk and this cell only needs the wt axis.
+//  Ahbeh is work's registry (the WORK-011 graf cache) against work's own track
+//  edge, memoized per track.  An unreadable wt yields null and the row's slots
+//  blank out — never an error row.
+function wtStat(w) {
+  if (_wtc.has(w.dir)) return _wtc.get(w.dir);
+  let r = null;
+  try {
+    const work = worklib();
+    if (!_reg) _reg = work.registry();
+    const wtlog = require("../../shared/wtlog.js");
+    const repo = be.treeAt(w.dir);
+    const k = _reg.keeperFor(repo);
+    if (k) {
+      const log = wtlog.open(repo);
+      r = { un: { chg: 0, add: 0, del: 0 }, st: { chg: 0, add: 0, del: 0 },
+            staged: 0, dirty: false, counts: null, patch: null };
+      foldCounts(r, repo, log, k);
+      foldSubs(r, repo);
+      r.dirty = (r.un.chg + r.un.add + r.un.del) > 0;
+      const cur = log.curTip(), att = log.attachedBranch();
+      //  TODO-005 r2: the diverged button's patch ARG must name the SAME tip the
+      //  ahbeh counts measured, and absorb the whole missing LINE (not one
+      //  commit).  `#<sha>` does NOT: patchscope reads a fragment as the NAMED
+      //  scope — a CHERRY-PICK with fork = parent(named).  The LINE forms are
+      //  `?<branch>` (a named-branch wt), the TRACK ADDRESS itself (PATCH-010
+      //  TREE source: theirs = the addressed wt's cur tip, fork = LCA — exactly
+      //  what work.trackTip measured), and BARE `patch` (PATCH-015: the whole
+      //  missing line of the tracked ref, which is what refTip measured).
+      //  null = no form names that tip, so the pair greys.
+      r.patch = att.detached ? null
+              : att.uriTrack ? ((att.track && att.track.slice(0, 2) === "//") ? att.track : null)
+              : att.branch ? "?" + att.branch : "";
+      const tk = (att.uriTrack && att.track) || "";
+      let tip;
+      if (tk && _tips.has(tk)) tip = _tips.get(tk);
+      else { tip = work.trackTip(_reg, repo, att); if (tk) _tips.set(tk, tip); }
+      r.counts = _reg.counts(repo, (cur && cur.sha) || "", tip);
+    }
+  } catch (e) { r = null; }
+  _wtc.set(w.dir, r);
+  return r;
+}
+
+//  --- family nesting (TODO-005) -----------------------------------------------
+//  work.js's dotted tracker rails: a `Sub:` child is NOT a subdir, so it hangs
+//  on `├┄┄`, never the solid mount rails.
+const RAIL = { mid: "├┄┄ ", last: "└┄┄ ", bar: "│   ", gap: "    " };
+//  One list's tickets → the same list re-ordered as a FOREST: a ticket whose
+//  `Sub:` names a LISTED OPEN parent follows it on dotted rails (`t.rails`),
+//  a parent-less / closed-parent / cross-list `Sub:` renders flat.  A `Sub:`
+//  CYCLE is cut at the name-sorted first member (work.js breakCycles), so the
+//  walk below can never descend forever.  A row with no head scan (the TODO-004
+//  filter listing, whose rows are index hits) simply has no parent.
+function nest(tickets) {
+  const by = new Map();
+  for (const t of tickets) by.set(t.key, t);
+  for (const t of tickets) {
+    const p = (t.meta && t.meta.Sub) ? String(t.meta.Sub).trim() : "";
+    const par = (p && p !== t.key) ? by.get(p) : undefined;
+    t.parent = (par && !par.closed) ? par : null;
+  }
+  for (const t of tickets) {
+    const seen = new Set();
+    let n = t, hit = null;
+    while (n) { if (seen.has(n)) { hit = n; break; } seen.add(n); n = n.parent; }
+    if (!hit) continue;
+    const mem = []; let c = hit;
+    do { mem.push(c); c = c.parent; } while (c && c !== hit);
+    mem.sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
+    mem[0].parent = null;
+  }
+  const kids = new Map(), roots = [];
+  for (const t of tickets) {
+    if (!t.parent) { roots.push(t); continue; }
+    if (!kids.has(t.parent.key)) kids.set(t.parent.key, []);
+    kids.get(t.parent.key).push(t);
+  }
+  const out = [];
+  (function walk(list, prefix, top) {
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i], last = i === list.length - 1;
+      t.rails = top ? "" : prefix + (last ? RAIL.last : RAIL.mid);
+      out.push(t);
+      const ks = kids.get(t.key);
+      if (ks) walk(ks, top ? "" : prefix + (last ? RAIL.gap : RAIL.bar), false);
+    }
+  })(roots, "", true);
+  return out;
+}
+
 //  --- hunk building (the ls.js emitHunk model) -------------------------------
 //  Append one text span + tag; returns the new offset.
 function span(parts, spans, off, text, tag) {
@@ -493,15 +718,217 @@ function span(parts, spans, off, text, tag) {
 //  each bracket is its OWN click — the whole arg line with THAT key's filter
 //  replaced.  A ticket missing the key shows no bracket, and a bare board
 //  (no filter in the line) shows none at all.
-function titleRow(parts, spans, off, indent, key, title, btn, vals) {
+//  TODO-005 fixed columns (the work.js R2 discipline): the rails+bullet+key
+//  region pads to KEYW with a dotted leader, so every KEY — board row or nested
+//  one — lands at ONE column and the two button frames behind it line up down
+//  the wt-having rows.  An over-long region (a wide `[value]` run) degrades to
+//  one space, like work's.
+const KEYW = 18;
+//  TODO-005 the two BUTTON FRAMES.  Every button is 2 cells and every slot is
+//  exactly one button wide, buttons parted by a 1-cell gap; a frame DELIMITS
+//  its own columns, so nothing inside the brackets is ┄-filled (an absent slot
+//  is plain SPACES) and `┄` leaders live only OUTSIDE.
+//    FILE   `[ i nn nn nn  ✓]`  16 = 1 + 2 + (1+2)*4 + 1   (status ~ - + ci)
+//    COMMIT `[ ≡ nn nn]`        10 = 1 + 2 + (1+2)*2 + 1   (log, post, get)
+const FRAMEW_FILE = 16, FRAMEW_COMMIT = 10, BTNW = 2;
+//  a DIVERGED `A⇄B` is ONE button over both ahbeh sub-slots and the gap between
+//  them — 5 cells, which `12⇄34` fills exactly (each side clamps to 2 digits).
+const PAIRW = BTNW * 2 + 1;
+//  the WHOLE frames region incl. the space that leads each frame — the width a
+//  wt-LESS row ┄-fills so its title lands at the hunk's one title column.
+const FRAMESW = 1 + FRAMEW_FILE + 1 + FRAMEW_COMMIT;
+//  TODO-005 r2: button colours + faces are THEME data (view/theme.js is the ONE
+//  place an SGR value lives — the DIFF_WASH precedent), never local literals.
+const THEME = require("../../view/theme.js");
+const BTN = THEME.BTN, FACE = THEME.BTN_FACE;
+//  the legacy 16-palette FALLBACK slot per button (view/theme.js BTN_TAG) — the
+//  face rides it and its O overrides with truecolor, so a lost prefix degrades
+//  to the class colour, never to grey (grey is the DISABLED signal).
+function btnTag(name) { return tagCode(THEME.BTN_TAG[name]); }
+function chars(s) { return Array.from(s).length; }
+
+//  TODO-005: the pager row's mark, key and title are separate COLUMNS now — the
+//  elastic `B` field is the BARE title (the [MARK] became the bullet, the key
+//  its own column); plain keeps the verbatim header line.
+function bareTitle(key, title) {
+  const s = stripMark(key, title);
+  if (s.indexOf(key) !== 0) return s;
+  let i = key.length;
+  if (s[i] === ":") i++;
+  while (s[i] === " ") i++;
+  return s.slice(i);
+}
+
+//  TODO-005 r2: a button's hidden `O`.  The bytes are the BRO-025 three-part
+//  invite behind a LEADING `#<pale><tone> ` — BOTH slots of the WHY-001 colour
+//  prefix (view/bro.js whyBgAt: bg then fg), the wash derived from the tone by
+//  the ONE theme.pale().  So a single token spells the button's whole look AND
+//  its click, and the button needs no tok tag of its own (the 32-code tag space
+//  is full).  The pager's _uriAt sheds the prefix at the first space.
+function btnSpell(ctx, spell, fg) {
+  return THEME.pale(fg) + fg + " " + SPELL.mintOspell(ctx, spell);
+}
+
+//  TODO-005 r2: emit ONE button — the face on its legacy FALLBACK tag, then the
+//  O that overrides it with the truecolor pair.  The face IS the whole button: every cell of
+//  it is washed and coloured and every cell of it clicks, so there is no dead
+//  padding to mis-hit.  A face is always BTNW cells (2 digits, or space+icon).
+function btnCell(parts, spans, off, face, name, ctx, spell) {
+  off = span(parts, spans, off, face, btnTag(name));
+  return span(parts, spans, off, btnSpell(ctx, spell, BTN[name]), TAG_O);
+}
+//  A DISABLED button is plain grey fg — no wash, no spell.
+function greyCell(parts, spans, off, face) { return span(parts, spans, off, face, TAG_D); }
+//  TODO-005: INFO, not a button — the class colour with NO wash and NO spell
+//  (fg-only `##rrggbb ` O; the empty spell makes a click fall through to the row).
+function infoCell(parts, spans, off, face, name) {
+  off = span(parts, spans, off, face, btnTag(name));
+  return span(parts, spans, off, "#" + BTN[name] + " ", TAG_O);
+}
+//  An empty slot: plain spaces, no fill character (frames delimit their columns).
+function blankCell(parts, spans, off, w) { return span(parts, spans, off, " ".repeat(w), TAG_S); }
+//  A count FACE is ALWAYS exactly 2 cells (BTNW): the class SIGIL + the digit
+//  under ten (`~3`, `+2`, `-9`), the bare two digits from ten up (`10`, `47`),
+//  the count clamped at 99.  Colour carries the class; the sigil is what keeps
+//  a single-digit count from reading as a bare number.
+function countFace(sigil, n) {
+  const v = Math.min(n, 99);
+  return v < 10 ? sigil + v : String(v);
+}
+
+//  TODO-005: ONE count slot, the THREE-STATE rule (grey overruled 2026-08-03:
+//  a nonzero count ALWAYS wears its class colour) — `un` rows left to stage
+//  light the BUTTON (wash + O spell, count = unstaged), a wholly STAGED class
+//  keeps the colour but sheds the wash and the spell (info, not a button),
+//  an empty class blanks.  Only the wash says "clickable".
+function countSlot(parts, spans, off, sigil, un, st, name, ctx, spell) {
+  if (un > 0) return btnCell(parts, spans, off, countFace(sigil, un), name, ctx, spell);
+  if (st > 0) return infoCell(parts, spans, off, countFace(sigil, st), name);
+  return blankCell(parts, spans, off, BTNW);
+}
+const ZERO3 = { chg: 0, add: 0, del: 0 };
+//  TODO-005: the FILE frame — the wt's staging surface, `[ i nn nn nn  ✓]`.
+//  The ` i` status button always lights (the wt exists); an unreadable wt (`stat`
+//  null) leaves the four action slots blank rather than making an error row.
+//  The counts are the WHOLE tree's, mounted subs folded in (foldSubs) — bare
+//  put/delete stage those too, so the button that runs them must say so.
+function fileFrame(parts, spans, off, t) {
+  const s = t.stat, ctx = "//" + t.wt.name;
+  const un = (s && s.un) || ZERO3, st = (s && s.st) || ZERO3;
+  off = span(parts, spans, off, "[", TAG_D);
+  //  The status link — EMPTY ctx (the wt is the ARG; status's own arg0
+  //  authority re-anchors the pager to `//<wt>/` on the click).
+  off = btnCell(parts, spans, off, FACE.status, "status", "", "status //" + t.wt.name);
+  off = span(parts, spans, off, " ", TAG_S);
+  off = countSlot(parts, spans, off, "~", un.chg, st.chg, "chg", ctx, "put");
+  off = span(parts, spans, off, " ", TAG_S);
+  off = countSlot(parts, spans, off, "-", un.del, st.del, "del", ctx, "delete");
+  off = span(parts, spans, off, " ", TAG_S);
+  off = countSlot(parts, spans, off, "+", un.add, st.add, "add", ctx, "put +");
+  off = span(parts, spans, off, " ", TAG_S);
+  //  The commit button: lit + spelled while ANY row is staged (WORK-008's
+  //  minted `KEY: <title>` message), blank otherwise (no grey ✓ — 2026-08-03).
+  if (s && s.staged > 0)
+    off = btnCell(parts, spans, off, FACE.ci, "ci", ctx,
+               "post '" + t.key + ": " + bareTitle(t.key, t.title) + "'");
+  else off = blankCell(parts, spans, off, BTNW);
+  return span(parts, spans, off, "]", TAG_D);
+}
+//  TODO-005 r2: the COMMIT frame — `[ ≡ nn nn]`.  The ahbeh sub-slots are
+//  POSITIONAL and fixed: the POST position first, the GET position second, so a
+//  behind count never drifts into the post column (position, sigil and colour
+//  all say the class).  Ahead-only fills the left and
+//  blanks the right, behind-only the reverse; a DIVERGED pair is ONE patch
+//  button over both slots and their gap, right-aligned in its 5 cells (grey and
+//  dead when no patch form names the tracked tip — wtStat's `patch`); in sync,
+//  blank.
+function commitFrame(parts, spans, off, t) {
+  const s = t.stat, ctx = "//" + t.wt.name, c = s && s.counts;
+  const a = c && c.ahead ? Math.min(c.ahead, 99) : 0;
+  const b = c && c.behind ? Math.min(c.behind, 99) : 0;
+  off = span(parts, spans, off, "[", TAG_D);
+  off = btnCell(parts, spans, off, FACE.log, "log", "", "log //" + t.wt.name);
+  off = span(parts, spans, off, " ", TAG_S);
+  if (a && b) {
+    const face = (a + "⇄" + b).padStart(PAIRW, " ");
+    const arg = s.patch;                       // null = no form names that tip
+    off = arg === null ? greyCell(parts, spans, off, face)
+        : btnCell(parts, spans, off, face, "patch", ctx,
+               "patch" + (arg ? " '" + arg + "'" : ""));
+    return span(parts, spans, off, "]", TAG_D);
+  }
+  if (a) off = btnCell(parts, spans, off, countFace("+", a), "post", ctx, "post");
+  else off = blankCell(parts, spans, off, BTNW);
+  off = span(parts, spans, off, " ", TAG_S);
+  if (b) off = btnCell(parts, spans, off, countFace("-", b), "get", ctx, "get");
+  else off = blankCell(parts, spans, off, BTNW);
+  return span(parts, spans, off, "]", TAG_D);
+}
+
+//  TODO-005: the trailing DONE/DONT panel — ONE frame, TWO live buttons.  ` ✓`
+//  closes the ticket (its head's `Now:` pair becomes DONE and its worktree, if
+//  it has one, moves to the work/done/ discard root); ` ✗` shelves it the same
+//  way as DONT.  Frame conventions throughout: dim brackets, a dim gap, and
+//  each 2-cell face its OWN click zone.  Both mint the ROW's spell form
+//  (`done KEY` / `dont KEY`), context-less — the KEY is the argument, and the
+//  verb resolves the page and the worktree itself.  7 cols: 1 + 2 + 1 + 2 + 1.
+const PANELW = 1 + BTNW + 1 + BTNW + 1;
+function donePanel(parts, spans, off, key) {
+  off = span(parts, spans, off, "[", TAG_D);
+  off = btnCell(parts, spans, off, FACE.done, "done", "", "done " + key);
+  off = span(parts, spans, off, " ", TAG_S);
+  off = btnCell(parts, spans, off, FACE.dont, "dont", "", "dont " + key);
+  return span(parts, spans, off, "]", TAG_D);
+}
+
+//  TODO-005 [go]: a wt-LESS row's frames region.  A ticket whose head carries
+//  `Rep:` — the repo it relates to, a (usually relative) repo URI — offers the
+//  ONE creating action on the board: MINT `work/<KEY>` from that repo.  The
+//  button sits at the LEFT EDGE of the region in its own frame — dim brackets,
+//  the 2-cell face the only live part — and the rest keeps its ┄ leader,
+//  so titles stay at the hunk's one column either way; no `Rep:` and the region
+//  is pure leader.  The spell is context-LESS: the wt does not exist yet, so
+//  there is no `//<wt>/` to run in — the verb resolves the destination itself.
+function goSlot(parts, spans, off, t) {
+  const rep = (t.meta && t.meta.Rep) ? String(t.meta.Rep).trim() : "";
+  if (!rep) return span(parts, spans, off, "┄".repeat(FRAMESW), TAG_S);
+  //  WORK-016: the ROW owns the button's breathing space, exactly as the space
+  //  that leads the file frame does — so the region is the same width either way.
+  //  The BRACKETS are frame chrome like every other frame's: dim, and OUTSIDE
+  //  the click zone.  Only the 2-cell face is the button.
+  off = span(parts, spans, off, " ", TAG_S);
+  off = span(parts, spans, off, "[", TAG_D);
+  off = btnCell(parts, spans, off, FACE.go, "go", "", "work " + t.key + " " + rep);
+  off = span(parts, spans, off, "]", TAG_D);
+  return span(parts, spans, off, "┄".repeat(FRAMESW - 3 - BTNW), TAG_S);
+}
+
+//  `t` is one listTopic / todoFilter row: { key, title, prio, closed, vals?,
+//  rails?, wt?, stat? }.  TODO-005: the pager row leads with the sev BULLET and
+//  hangs the two button frames off a wt (a wt-less row ┄-fills that region);
+//  plain stays the bare header line on its rails.  `cols` is the HUNK's verdict
+//  — fixed columns exist to ALIGN something, so a listing where NO ticket owns a
+//  worktree drops the leader and the whole region, and the row is bullet + key
+//  + title (33 dead ┄ cells would eat a narrow terminal and starve the title).
+function titleRow(parts, spans, off, indent, t, btn, cols) {
+  const key = t.key, title = t.title, vals = t.vals;
+  const lead = indent + (t.rails || "");
   const rest = title.indexOf(key) === 0 ? title.slice(key.length) : " " + title;
-  if (indent) off = span(parts, spans, off, indent, TAG_S);
-  off = span(parts, spans, off, key, TAG_F);
+  if (lead) off = span(parts, spans, off, lead, TAG_S);
   if (!btn) {
+    off = span(parts, spans, off, key, TAG_F);
     for (const v of vals || []) off = span(parts, spans, off, " [" + v.text + "]", TAG_S);
     return span(parts, spans, off, rest + "\n", TAG_S);
   }
+  //  TODO-005: the sev bullet leads — solid `●` in the `Sev:` colour, hollow
+  //  `○` (dim) for a closed ticket a `Now:` filter still shows.
+  const prio = t.prio !== undefined ? t.prio : 2;
+  off = span(parts, spans, off, t.closed ? "○" : "●",
+             t.closed ? TAG_D : PRIO_TAG[prio]);
+  off = span(parts, spans, off, " ", TAG_S);
+  off = span(parts, spans, off, key, TAG_F);
   off = span(parts, spans, off, SPELL.mintOspell("", "todo " + key), TAG_O);
+  let vw = 0;
   for (const v of vals || []) {
     off = span(parts, spans, off, " [", TAG_S);
     off = span(parts, spans, off, v.text, TAG_N);
@@ -509,13 +936,30 @@ function titleRow(parts, spans, off, indent, key, title, btn, vals) {
     //  bracket simply does not click (its key half still offers `Key:*`).
     if (v.spell) off = span(parts, spans, off, SPELL.mintOspell("", v.spell), TAG_O);
     off = span(parts, spans, off, "]", TAG_S);
+    vw += chars(v.text) + 3;
+  }
+  if (cols) {
+    const fill = KEYW - chars(lead) - 2 - chars(key) - vw;
+    off = span(parts, spans, off, fill >= 2 ? " " + "┄".repeat(fill - 1) : " ", TAG_S);
+    //  TODO-005 r2 (RULING): the two BUTTON FRAMES on a wt-having row, and the
+    //  DOTTED LEADER STRAIGHT THROUGH the frames region on a wt-less one — the
+    //  region is a fixed column set again, so every title in the hunk aligns
+    //  (r1's "the frames vanish and the title moves left" is reversed).  The
+    //  leader is `┄` FILL ONLY (WORK-016): the row owns the breathing space, so
+    //  a wt-less row's fill joins the KEYW leader into ONE uninterrupted run.
+    if (t.wt) {
+      off = span(parts, spans, off, " ", TAG_S);
+      off = fileFrame(parts, spans, off, t);
+      off = span(parts, spans, off, " ", TAG_S);
+      off = commitFrame(parts, spans, off, t);
+    } else off = goSlot(parts, spans, off, t);
   }
   //  BRO-036: the title is the ONE elastic `B` span — the pager …-cuts / pads
   //  it to the live width in no-wrap mode; bytes stay verbatim.
-  off = span(parts, spans, off, rest, TAG_B);
   off = span(parts, spans, off, " ", TAG_S);
-  off = span(parts, spans, off, "[done]", TAG_Y);
-  off = span(parts, spans, off, "done " + key, TAG_O);
+  off = span(parts, spans, off, bareTitle(key, title), TAG_B);
+  off = span(parts, spans, off, " ", TAG_S);
+  off = donePanel(parts, spans, off, key);
   off = span(parts, spans, off, "\n", TAG_S);
   return off;
 }
@@ -533,15 +977,34 @@ function feed(sink, banner, parts, spans, off) {
 function emitList(sink, banner, groups, headers, btns) {
   const parts = [], spans = [];
   let off = 0;
+  //  TODO-005 pass 1: `Sub:` families nest in BOTH modes (rails are structure,
+  //  the work.js rule); the wt LOOKUP is pager-only and runs over the WHOLE
+  //  hunk first, because its verdict decides whether the fixed column set
+  //  exists at all (titleRow's `cols`) and the columns align hunk-wide.
+  const lists = [];
+  let cols = false;
   for (const g of groups) {
+    const rows = nest(g.tickets);
+    if (btns) for (const t of rows) {
+      t.wt = wtIndex().get(t.key) || null;
+      //  TODO-005: the region exists when ANY row has something to put in it —
+      //  a worktree's two frames, or a `Rep:` row's [go] mint button.
+      if (t.wt || (t.meta && t.meta.Rep)) cols = true;
+    }
+    lists.push(rows);
+  }
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
     if (headers) {                       // topic header row, itself a target
       off = span(parts, spans, off, g.topic, TAG_N);
       //  BE-054: pager-only O nav (plain stays chrome-free — see titleRow).
       if (btns) off = span(parts, spans, off, SPELL.mintOspell("", "todo " + g.topic), TAG_O);
       off = span(parts, spans, off, "\n", TAG_S);
     }
-    for (const t of g.tickets)
-      off = titleRow(parts, spans, off, headers ? "  " : "", t.key, t.title, btns, t.vals);
+    for (const t of lists[gi]) {
+      if (t.wt) t.stat = wtStat(t.wt);
+      off = titleRow(parts, spans, off, headers ? "  " : "", t, btns, cols);
+    }
     if (!g.tickets.length)               // an explicit `todo TOPIC`, all closed
       off = span(parts, spans, off, (headers ? "  " : "") +
         (g.note || "(no open tickets in todo/" + g.topic + "/)") + "\n", TAG_S);
@@ -841,8 +1304,13 @@ function todoFilter(board, a, mode, sink) {
       const fv = filterVal(t);
       vals.push({ text: t, spell: fv === null ? null : spellWith(a, k, fv) });
     }
+    //  TODO-005: a filter row wears the same bullet — its `Sev:` colour, hollow
+    //  when the line's own `Now:` reached a closed ticket.  No head scan here
+    //  (these rows are index hits), so `Sub:` nesting stays a board concern.
     rows.push({ key: e.code, title: title, vals: vals,
-                file: e.file, mtime: e.mtime });
+                file: e.file, mtime: e.mtime,
+                prio: prioOf(e.file, e.code, title),
+                closed: hiddenByDefault(e.meta, e.code, title) });
   }
   //  TODO-004 time-sort: freshest first — dirty (fs mtime) above committed
   //  (introducing-commit time, off BRO-044's lane), byCode breaking every tie.
@@ -899,20 +1367,25 @@ function todo() {
   //  a TOPIC that is no dir keeps the historic uniform miss line, filter or not.
   if (a.subject && a.subject.kind === "topic" && !isDir(join(board.dir, a.subject.w)))
     miss(a.subject.w, "TODONONE");
-  if (a.filters.length) { todoFilter(board, a, mode, sink); return; }
-  if (!a.subject) {
-    emitList(sink, "todo", listTopics(board.dir), true, mode !== "plain");
-    return;
-  }
-  if (a.subject.kind === "topic") {
-    emitList(sink, "todo " + a.subject.w, [openTickets(board.dir, a.subject.w)],
-             false, mode !== "plain");
-    return;
-  }
-  //  Direct addressing ALWAYS works — open or closed, the page renders.
-  const file = pageFile(board.dir, a.subject.w);
-  if (!file || !emitPage(sink, board, a.subject.w, file, mode, a))
-    miss(a.subject.w, "TODONONE");
+  //  TODO-005: the wt memos live for ONE run; DOG-027 — release every keeper +
+  //  graf slot the count cells opened, even on a thrown miss.
+  runReset();
+  try {
+    if (a.filters.length) { todoFilter(board, a, mode, sink); return; }
+    if (!a.subject) {
+      emitList(sink, "todo", listTopics(board.dir), true, mode !== "plain");
+      return;
+    }
+    if (a.subject.kind === "topic") {
+      emitList(sink, "todo " + a.subject.w, [openTickets(board.dir, a.subject.w)],
+               false, mode !== "plain");
+      return;
+    }
+    //  Direct addressing ALWAYS works — open or closed, the page renders.
+    const file = pageFile(board.dir, a.subject.w);
+    if (!file || !emitPage(sink, board, a.subject.w, file, mode, a))
+      miss(a.subject.w, "TODONONE");
+  } finally { runClose(); }
 }
 todo.jab = "args";
 module.exports = todo;
@@ -931,3 +1404,14 @@ module.exports.stripMark = stripMark;
 module.exports.dateRows = dateRows;
 module.exports.byFresh = byFresh;
 module.exports.byCode = byCode;
+//  TODO-005: expose the row layer for the repro test (head scan, wt match,
+//  family nesting, the two button frames, the emitted row itself).
+module.exports.pageHead = pageHead;
+module.exports.nest = nest;
+module.exports.emitList = emitList;
+module.exports.wtIndex = wtIndex;
+module.exports.runReset = runReset;
+module.exports.runClose = runClose;
+module.exports.fileFrame = fileFrame;
+module.exports.commitFrame = commitFrame;
+module.exports.FRAMEW = { file: FRAMEW_FILE, commit: FRAMEW_COMMIT, region: FRAMESW };
