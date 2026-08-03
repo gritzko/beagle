@@ -189,6 +189,33 @@ function cachedCommits(k, tip, scopePfx, entries) {
   return summarize(k, tip, hit, tsOf, LIST_MAX_WALK);
 }
 
+//  TODO-004: `keys` (mtimeidx row keys) -> Map(key -> ron60), straight off the
+//  lane; unattributed keys are ABSENT, and the caller sorts those last.
+//    - cachedCommits MINUS summarize(): a sort needs no commit message.
+//    - pass ONLY committed blobs: a dirty one has no carrier to find.
+function objTimes(k, tip, keys) {
+  const out = new Map();
+  if (!k || !keys || !keys.size || !isFullSha(tip) || !mtimeidx.hasShard(k.shard))
+    return out;
+  const ix = mtimeidx.openIndex(k.shard);
+  try {
+    const need = new Set();
+    for (const key of keys) {
+      const v = ix.get(key);
+      if (v === undefined || v === null) need.add(key);
+      else out.set(key, v);
+    }
+    if (need.size) {
+      const f = mtimeidx.fill(ix, k, tip, need, { parentOf: mainlineParent });
+      for (const key of need) {
+        const v = f.rows.get(key);
+        if (v !== undefined) out.set(key, v);
+      }
+    }
+  } finally { try { ix.close(); } catch (e) {} }
+  return out;
+}
+
 //  LIST-001: attribute each name in `entries` (immediate file/dir names, RELATIVE
 //  to `scopePfx`) its last-touch commit, walking from `tip`.  Returns a plain map
 //  name → { summary, ts, sha }; unattributed names are simply absent (blank age).
@@ -241,7 +268,8 @@ function walkCommits(k, tip, scopePfx, entries, cap) {
 }
 
 module.exports = { lastCommits: lastCommits, walkCommits: walkCommits,
-                   cachedCommits: cachedCommits, summaryOf: summaryOf,
+                   cachedCommits: cachedCommits, objTimes: objTimes,
+                   summaryOf: summaryOf,
                    mainlineParent: mainlineParent, entryOf: entryOf,
                    scopeTree: scopeTree, scopeKeys: scopeKeys,
                    LIST_MAX_WALK: LIST_MAX_WALK };

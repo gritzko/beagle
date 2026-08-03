@@ -56,8 +56,8 @@
 //  grammar's own `T` (`Key:`) + `S` (value) token pair and each half carries
 //  its own spell — key → `Key:*`, value → `Key:value` — as context-less `O`
 //  spells, so the pager stays arg-blind and the VERB resolves the arg.
-//  Time-sort is POSTPONED (ruling 2026-08-03): flat filter results order by
-//  topic+number, and the board keeps its `Sev:` order.
+//  TIME-SORT (TODO-004): a FLAT filter result is freshest-first, dirty by mtime
+//  above committed by commit ts; the board and topic lists keep `Sev:` order.
 //  Topic READMEs are landing pages, NEVER an index (they go stale);
 //  `todo KEY` renders any page regardless — direct addressing always works.
 //  Page reflinks resolve via the page's OWN refdef footer: a ticket-file
@@ -301,14 +301,103 @@ function prioOf(file, key, title) {
   const m = headerMark(key, title);
   return PRIO[m] !== undefined ? PRIO[m] : 2;
 }
-//  Time-sort is POSTPONED (ruling 2026-08-03), so a FLAT filter result orders
-//  by topic then ticket NUMBER — the one order a page can reproduce without a
-//  log walk.  The board keeps its own `Sev:` order (listTopic).
+//  Topic then ticket NUMBER — the time sort's tie-break, and the whole order
+//  when there is no repo to date the tickets against.
 function byCode(a, b) {
   const at = keyTopic(a.key), bt = keyTopic(b.key);
   if (at !== bt) return at < bt ? -1 : 1;
   return parseInt(a.key.slice(a.key.indexOf("-") + 1), 10) -
          parseInt(b.key.slice(b.key.indexOf("-") + 1), 10);
+}
+
+//  TODO-004 time sort: a flat listing is FRESHEST FIRST — dirty by fs mtime,
+//  else by the blob's introducing commit (BRO-044's lane; mtime ties on clone):
+//    1. resolve the repo owning the ticket tree + its tip; none -> byCode;
+//    2. descend the tip's tree per path (memoized) to the blob it carries;
+//    3. absent blob = untracked = dirty, no read;
+//    4. wtlog-stamped mtime = clean (STATUS-011), else hash (classify.wtEqBase);
+//    5. batch the clean rows' blobs to the lane, dirty rows never touch it;
+//    6. order: dirty by mtime, committed by ts, unattributed last, byCode ties.
+let _fresh = null;                                   // the per-run repo handle
+function freshRepo(board) {
+  if (_fresh !== null) return _fresh;
+  _fresh = false;
+  let t;
+  try { t = require("../../core/resolve_hash.js").treeAt(board.dir); }
+  catch (e) { return _fresh; }
+  if (!t || !t.wt) return _fresh;
+  let k, wtl, tip;
+  try {
+    k = require("../../shared/store.js").open(t.storePath, t.project);
+    wtl = require("../../shared/wtlog.js").open(t);
+    tip = (wtl.curTip() || {}).sha || "";
+  } catch (e) { return _fresh; }
+  if (!/^[0-9a-f]{40}$/.test(tip)) return _fresh;
+  let rootTree;
+  try { rootTree = k.commitTree(tip); } catch (e) { rootTree = undefined; }
+  if (!rootTree) return _fresh;
+  return (_fresh = { t: t, k: k, wtl: wtl, tip: tip, rootTree: rootTree,
+                     trees: Object.create(null) });
+}
+//  The blob sha the TIP carries at a wt-relative path, "" when it carries none
+//  (untracked).  Dir trees memoize: a topic of 40 tickets costs ONE readTree.
+function tipBlob(f, rel) {
+  const segs = pathlib.split(rel);
+  if (!segs.length) return "";
+  const name = segs[segs.length - 1], dir = segs.slice(0, -1).join("/");
+  let tree = f.trees[dir];
+  if (tree === undefined) {
+    let d;
+    try { d = f.k.descendPath(f.rootTree, segs.slice(0, -1)); } catch (e) { d = undefined; }
+    tree = f.trees[dir] = (d && d.kind === "tree") ? d.sha : "";
+  }
+  if (!tree) return "";
+  let ents;
+  try { ents = f.k.readTree(tree); } catch (e) { ents = undefined; }
+  if (!ents) return "";
+  for (const e of ents)
+    if (e.name === name && e.mode !== 0o40000) return e.sha;
+  return "";
+}
+//  Date every row of a flat listing: `dirty` + `mtime`, or `ts` (the commit).
+//  `rows` carry { file, mtime } off the index; the answer is the SAME array.
+function dateRows(board, rows) {
+  const f = freshRepo(board);
+  if (!f || !rows.length) return rows;
+  const mtimeidx = require("../../shared/mtimeidx.js");
+  const lastcommit = require("../../shared/lastcommit.js");
+  const classify = require("../../shared/classify.js");
+  const pfx = f.t.wt + "/";
+  const keys = new Set();
+  for (const r of rows) {
+    if (r.file.indexOf(pfx) !== 0) { r.dirty = true; continue; }   // outside the wt
+    const rel = r.file.slice(pfx.length);
+    const sha = tipBlob(f, rel);
+    if (!sha) { r.dirty = true; continue; }        // untracked: dirty, no read
+    //  STATUS-011: an mtime the wtlog itself stamped is verb-written, so the
+    //  file is clean with NO content read; anything else is hashed.
+    const stamped = !!r.mtime && typeof f.wtl.has === "function" && f.wtl.has(r.mtime);
+    if (!stamped && !classify.wtEqBase(f.t.wt, rel, sha)) { r.dirty = true; continue; }
+    r.dirty = false;
+    r.key60 = mtimeidx.objKey(sha, mtimeidx.T_BLOB);
+    keys.add(r.key60);
+  }
+  const ts = lastcommit.objTimes(f.k, f.tip, keys);
+  for (const r of rows) if (!r.dirty) r.ts = ts.get(r.key60);
+  return rows;
+}
+//  The order itself; every tie falls back to byCode, so a listing is stable.
+function byFresh(a, b) {
+  if (!a.dirty !== !b.dirty) return a.dirty ? -1 : 1;
+  if (a.dirty) {
+    const am = a.mtime, bm = b.mtime;
+    if (am === undefined || bm === undefined) return byCode(a, b);
+    return am > bm ? -1 : am < bm ? 1 : byCode(a, b);
+  }
+  const at = a.ts, bt = b.ts;
+  if (at === undefined || bt === undefined)
+    return at === bt ? byCode(a, b) : (at === undefined ? 1 : -1);
+  return at > bt ? -1 : at < bt ? 1 : byCode(a, b);
 }
 
 //  List one topic dir's tickets: `KEY.<ext>` files + fat `KEY/` dirs whose key
@@ -715,7 +804,8 @@ function anyHolds(meta, key, clauses) {
 //       mentions `Now:` at all;
 //    4. read each surviving ticket's RAW pairs for the inline values (the row
 //       payload is a match token, never a render source);
-//    5. order by topic+number (time-sort is postponed) and emit ONE hunk.
+//    5. DATE every surviving row (dirty -> fs mtime, clean -> the lane's commit
+//       time) and order FRESHEST FIRST, byCode breaking ties; emit ONE hunk.
 function todoFilter(board, a, mode, sink) {
   const byKey = Object.create(null), order = [];
   for (const f of a.filters) {
@@ -751,9 +841,14 @@ function todoFilter(board, a, mode, sink) {
       const fv = filterVal(t);
       vals.push({ text: t, spell: fv === null ? null : spellWith(a, k, fv) });
     }
-    rows.push({ key: e.code, title: title, vals: vals });
+    rows.push({ key: e.code, title: title, vals: vals,
+                file: e.file, mtime: e.mtime });
   }
-  rows.sort(byCode);
+  //  TODO-004 time-sort: freshest first — dirty (fs mtime) above committed
+  //  (introducing-commit time, off BRO-044's lane), byCode breaking every tie.
+  //  With no repo to date against, NOTHING is dated and byFresh IS byCode.
+  dateRows(board, rows);
+  rows.sort(byFresh);
   const line = a.toks.join(" ");
   emitList(sink, "todo " + line, [{ topic: topic || line, tickets: rows,
     note: "(no ticket matches " + line + ")" }], false, mode !== "plain");
@@ -796,6 +891,7 @@ function todo() {
   if (!board) miss("todo/", "TODONONE");
   const mode = ambient.format();
   _snap = null; _snapErr = "";        // ONE index snapshot per verb invocation
+  _fresh = null;                      // ...and ONE repo handle for the time sort
   const argv = [];
   for (let i = 0; i < arguments.length; i++) argv.push(String(arguments[i]));
   const a = parseArgs(argv);
@@ -831,3 +927,7 @@ module.exports.boardDir = boardDir;
 module.exports.pageTitle = pageTitle;
 //  WORK-008: the work view strips the status mark from the minted post title.
 module.exports.stripMark = stripMark;
+//  TODO-004 time-sort: the dating pass and its comparator, for the golden.
+module.exports.dateRows = dateRows;
+module.exports.byFresh = byFresh;
+module.exports.byCode = byCode;
