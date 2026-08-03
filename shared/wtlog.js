@@ -64,6 +64,45 @@ function refOf(u, local) {
   return { branch: branch, sha: sha };
 }
 
+//  ULOG-004/DIFF-020: THE con scan — backward to the last BARRIER (a get/post
+//  row with a sha and no wt-relative path), collecting the live con paths and
+//  the merge's two pointers: `theirs` = the barrier's own sha (after a merge-get
+//  curTip IS theirs), `base` = the tip pinned by the get/post row before it.
+//  Both accessors below read this ONE scan.
+function conScan(rows) {
+  const out = [], seen = new Set(), acked = new Set();
+  let i = rows.length - 1, theirs = "", base = "";
+  //  A get/post row PINS a tip iff it carries a full sha and addresses a whole
+  //  tree — a wt-relative path makes it a SCOPED get, which is no barrier.
+  function pins(r) {
+    if (r.verb !== GET && r.verb !== POST) return "";
+    const u = r.uri;
+    if (u.scheme === undefined && u.authority === undefined && u.path) return "";
+    const sha = refOf(u, r.local).sha;
+    return isFullSha(sha) ? sha : "";
+  }
+  for (; i >= 0; i--) {
+    const r = rows[i];
+    if (r.verb === CON) {
+      const p = (r.uri && r.uri.path) || "";
+      if (p && !seen.has(p) && !acked.has(p)) { seen.add(p); out.push(p); }
+      continue;
+    }
+    if (r.verb === PUT || r.verb === DEL) {
+      const p = (r.uri && r.uri.path) || "";
+      if (p && !seen.has(p)) acked.add(p);   // shadows OLDER con rows only
+      continue;
+    }
+    if (r.verb !== GET && r.verb !== POST) continue;
+    if (!isFullSha(refOf(r.uri, r.local).sha)) continue;   // pins nothing
+    if (!pins(r)) continue;                                // scoped get: no barrier
+    theirs = pins(r);
+    break;
+  }
+  for (let j = i - 1; j >= 0 && theirs && !base; j--) base = pins(rows[j]);
+  return { paths: out.reverse(), theirs: theirs, base: base };
+}
+
 function open(be) {
   //  SUBS-050: the shard [Title] the caller knows (repo.project) — re-heads a
   //  title-stripped relative-dotted row when parsing it back to a Branch.
@@ -332,30 +371,17 @@ function open(be) {
     //  and no wt-relative path; patch + scoped gets amnesty nothing.
     //  DIS-080 §4 (amended): a `put`/`delete <path>` row LATER than a con row
     //  for that path ACKS it (row order decides); a later con re-registers.
-    conflicts: function () {
-      const out = [], seen = new Set(), acked = new Set();
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const r = rows[i];
-        if (r.verb === CON) {
-          const p = (r.uri && r.uri.path) || "";
-          if (p && !seen.has(p) && !acked.has(p)) { seen.add(p); out.push(p); }
-          continue;
-        }
-        if (r.verb === PUT || r.verb === DEL) {
-          const p = (r.uri && r.uri.path) || "";
-          if (p && !seen.has(p)) acked.add(p);   // shadows OLDER con rows only
-          continue;
-        }
-        if (r.verb !== GET && r.verb !== POST) continue;
-        if (!isFullSha(refOf(r.uri, r.local).sha)) continue;   // pins nothing
-        const u = r.uri;
-        //  A path is a SCOPE only when wt-relative; under a scheme/authority
-        //  it is part of the address of a whole-tree get (a sub re-attach).
-        if (u.scheme === undefined && u.authority === undefined && u.path)
-          continue;
-        break;
-      }
-      return out.reverse();
+    conflicts: function () { return conScan(rows).paths; },
+
+    //  DIFF-020: the SAME scan, with the merge pointers each con path is read
+    //  against — [{path, base, theirs}], empty when either is missing.
+    //  conflicts() keeps its bare-path shape (post.js/classify.js string-test it).
+    conflictOrigins: function () {
+      const s = conScan(rows);
+      if (!s.theirs || !s.base || s.theirs === s.base) return [];
+      return s.paths.map(function (p) {
+        return { path: p, base: s.base, theirs: s.theirs };
+      });
     },
 
     //  STATUS-005: paths named by durable `con <path>` rows (a merge left

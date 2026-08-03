@@ -117,15 +117,16 @@ const QUAD_SGR = {
 //  The diff render washes a changed token with a 256-colour BACKGROUND; each
 //  provenance gets a PALE tint (the token seen from the other pass) and a WASH
 //  (the token on its own pass).  `local` is the historical I/O/J/K salad/salmon
-//  pair (dog/THEME.h); `patched` (a patch-in's theirs token) and `con` (an
-//  overlap both sides touched) are the DIS-080 additions.  view/bro.js THEME
-//  mirrors these into ansi64 slots — keep in lockstep.
+//  pair (dog/THEME.h); `patched` (a patch-in's theirs token) is the DIS-080
+//  addition.  DIFF-020: 4 washes, no conflict colour — an overlap is the two
+//  families meeting.  view/bro.js THEME mirrors these — keep in lockstep.
+//  Palette rule (gritzko 2026-08-03): the MAXED channel is the axis (G=insert,
+//  R=remove), the BLUE channel is the provenance — ours 175, theirs 95.
 const DIFF_WASH = {
-  inPale: 194, inWash: 157,      // local insert   — salad green
-  rmPale: 224, rmWash: 217,      // local remove   — salmon
-  pinPale: 153, pinWash: 117,    // patched-in insert — pale blue
-  prmPale: 223, prmWash: 215,    // patched-in remove — pale orange
-  conPale: 229, conWash: 227,    // conflict (both sides touched) — yellow
+  inPale: 194, inWash: 157,      // local insert   — salad green (215/175,255,215/175)
+  rmPale: 224, rmWash: 217,      // local remove   — salmon      (255,215/175,215/175)
+  pinPale: 192, pinWash: 155,    // patched-in insert — lime     (215/175,255,135/95)
+  prmPale: 222, prmWash: 215,    // patched-in remove — orange   (255,215/175,135/95)
 };
 
 //  --- banner band (dog/THEME.h THEME_BANNER) ------------------------------

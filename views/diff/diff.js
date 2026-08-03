@@ -391,18 +391,41 @@ function uniqSorted(a, b) {
 //  the per-token overlap the render derives from the weave.
 function expectedCtx(k, repo, log) {
   const shas = expected.theirsShas(log);
-  if (!shas.length) return null;
+  if (!shas.length) return conCtx(k, log);            // DIFF-020: the merge arm
   //  CFOLD-001: the run's ONE pathdag memo (was a bare per-commit treeMap map).
   return { k: k, shas: shas, cache: expected.cache(),
            base: (log.curTip() || {}).sha || "",
            cons: (typeof log.conflicts === "function") ? log.conflicts() : [] };
 }
+//  DIFF-020: no patch row, so a live con path takes its theirs/base off the con
+//  rows themselves — ONE scan, path-granular (the `cons` cross-check DIFF-016
+//  specified); no con row → null, so a clean tree still pays nothing.
+function conCtx(k, log) {
+  if (typeof log.conflictOrigins !== "function") return null;
+  const origins = log.conflictOrigins();
+  if (!origins.length) return null;
+  const byPath = Object.create(null), cons = [];
+  for (const o of origins) { byPath[o.path] = o; cons.push(o.path); }
+  return { k: k, shas: [], cache: expected.cache(), base: "",
+           cons: cons, byPath: byPath };
+}
 //  DIFF-016: the EXPECTED bytes for one path, or undefined (no patch axis / the
 //  path is untouched by every patch-in / unweavable).
+//  DIFF-020: a con path folds ITS OWN pair — base = the pre-merge tip, theirs = [the merge's sha].
 function expectedFor(ec, path) {
   if (!ec) return undefined;
-  const r = expected.expectedOf(ec.k, path, ec.base, ec.shas, ec.cache);
+  const o = ec.byPath && ec.byPath[path];
+  const shas = o ? [o.theirs] : ec.shas;
+  if (!shas.length) return undefined;
+  const r = expected.expectedOf(ec.k, path, o ? o.base : ec.base, shas, ec.cache);
   return r.patched ? r.bytes : undefined;
+}
+//  DIFF-020 (ruling gritzko 2026-08-03): a con path's FROM is the PRE-merge base
+//  — after a merge-get curTip IS theirs, so base-relativity would hide that axis.
+function conFrom(ec, k, path) {
+  const o = ec && ec.byPath && ec.byPath[path];
+  if (!o) return undefined;
+  try { return blobAtTree(k, k.commitTree(o.base), path); } catch (e) { return undefined; }
 }
 
 function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
@@ -442,7 +465,9 @@ function diffWtTree(k, baseTreeSha, repo, color, ctx, prefix, out) {
     //  BOTH: sha-skip on the wt blob sha vs the base entry sha (a no-op edit
     //  that the classifier still bucketed leaves no diff).
     if (frameSha("blob", wt) === fsha) continue;
-    diffFile(p, blobBytes(k, fsha), wt, false, "", color, out, expectedFor(ec, p));
+    const cf = conFrom(ec, k, p);          // DIFF-020: con path → pre-merge base
+    diffFile(p, cf !== undefined ? cf : blobBytes(k, fsha), wt, false, "", color,
+             out, expectedFor(ec, p));
   }
 
   //  DIFF-012/[Submodules]: recurse mounted subs — each sub's own wt-vs-base
@@ -731,7 +756,9 @@ function diffOne(arg) {
       const eRepo = m ? m.subRepo : repo, eK = m ? m.subK : k;
       const ePath = m ? m.rest : spec.path;
       const ec = expectedCtx(eK, eRepo, wtlog.open(eRepo));
-      diffFile(spec.path, fB, tB, true, "", color, out, expectedFor(ec, ePath));
+      const cfB = conFrom(ec, eK, ePath);  // DIFF-020: con path → pre-merge base
+      diffFile(spec.path, cfB !== undefined ? cfB : fB, tB, true, "", color, out,
+               expectedFor(ec, ePath));
     } else {
       diffWtTree(k, baseTree, repo, color, fctx, "", out);
     }

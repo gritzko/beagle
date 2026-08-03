@@ -98,13 +98,11 @@ const THEME = {
   D: aFgB(90), G: aFg256(149), L: aFgB(96), H: aFgB(35), R: aFgB(94), P: aFgB(90),
   N: aFlag(A_BOLD), C: aFlag(A_BOLD), F: aFg256(56), T: aFg256(56),
   I: aBg256(194), O: aBg256(224), J: aBg256(157), K: aBg256(217),
-  //  DIFF-016 (DIS-080): the PATCHED-IN (pale blue/orange) and CONFLICT (yellow)
-  //  twins of the I/O/J/K local salad/salmon pair — multi-char keys, so they can
-  //  never collide with a real 1-char tok tag.  Codes: view/theme.js DIFF_WASH.
+  //  DIFF-016 (DIS-080): the PATCHED-IN (pale blue/orange) twins of the I/O/J/K
+  //  local salad/salmon pair — multi-char keys, so they can never collide with a
+  //  real 1-char tok tag.  Codes: view/theme.js DIFF_WASH.
   Ib: aBg256(DIFF_WASH.pinPale), Jb: aBg256(DIFF_WASH.pinWash),
   Ob: aBg256(DIFF_WASH.prmPale), Kb: aBg256(DIFF_WASH.prmWash),
-  Iy: aBg256(DIFF_WASH.conPale), Jy: aBg256(DIFF_WASH.conWash),
-  Oy: aBg256(DIFF_WASH.conPale), Ky: aBg256(DIFF_WASH.conWash),
   //  Status-verb / whitespace slots (THEME16TBL).  'W' (whitespace) = green is
   //  the one that shows inside diff bodies; the rest round out the table.
   //  BRO-036: 'B' is the ELASTIC-field tag — renders neutral like 'S' (no
@@ -164,32 +162,22 @@ const PASS_NORMAL = 0, PASS_RM = 1, PASS_IN = 2;
 //  DIFF-016 (DIS-080) — the diff PROVENANCE class of a changed token.  tok32
 //  bit 26 (`custom`), stamped by views/diff/diff.js off the EXPECTED weave
 //  layer, says "this token is patched in (theirs)"; a LOCAL edit leaves it 0.
-//  CONFLICT needs no third bit: it IS an overlap, i.e. a run of consecutive
-//  changed tokens carrying BOTH provenances — the same membership test
-//  `weave.mergedLive` uses to call a run conflicting (PATCH-025).
+//  DIFF-020 (ruling gritzko 2026-08-03): ONE patch/conflict mode, 4 provenance
+//  washes — a conflict is the two families MEETING, not a fifth colour.
 const TOK_CUST = (w) => (w >>> 26) & 0x1;
-const CLS_LOCAL = 0, CLS_PATCHED = 1, CLS_CON = 2;
+const CLS_LOCAL = 0, CLS_PATCHED = 1;
 //  per-class wash slots: {NORMAL/other-pass in, rm} + {own-pass in, rm}.
 const WASH = [{ I: "I", O: "O", J: "J", K: "K" },
-              { I: "Ib", O: "Ob", J: "Jb", K: "Kb" },
-              { I: "Iy", O: "Oy", J: "Jy", K: "Ky" }];
+              { I: "Ib", O: "Ob", J: "Jb", K: "Kb" }];
 
-//  DIFF-016: per-token class over one hunk's toks — walk maximal runs of
-//  consecutive CHANGED tokens; a run carrying both bit-26 values is a conflict
-//  and paints yellow whole, else it takes its own provenance.  EQ tokens (and
-//  the hidden `U` target) break runs, so two independent edits on neighbouring
-//  lines never merge into a false conflict.
+//  DIFF-016/DIFF-020: per-token class over one hunk's toks — each CHANGED token
+//  takes its OWN provenance, so an overlap interleaves the two families at the
+//  one anchor the weave gives it ([/wiki/Dirty] shapes).
 function tokClasses(toks) {
   const n = toks.length, cls = new Uint8Array(n);
-  let i = 0;
-  while (i < n) {
-    if (TOK_TAG(toks[i]) === "U" || TOK_SIDE(toks[i]) === SIDE_EQ) { i++; continue; }
-    let j = i, seen = 0;
-    while (j < n && TOK_TAG(toks[j]) !== "U" && TOK_SIDE(toks[j]) !== SIDE_EQ)
-      { seen |= 1 << TOK_CUST(toks[j]); j++; }
-    const c = seen === 0x3 ? CLS_CON : (seen === 0x2 ? CLS_PATCHED : CLS_LOCAL);
-    for (let m = i; m < j; m++) cls[m] = c;
-    i = j;
+  for (let i = 0; i < n; i++) {
+    if (TOK_TAG(toks[i]) === "U" || TOK_SIDE(toks[i]) === SIDE_EQ) continue;
+    cls[i] = TOK_CUST(toks[i]) ? CLS_PATCHED : CLS_LOCAL;
   }
   return cls;
 }
@@ -989,7 +977,7 @@ module.exports = {
   tokClasses: tokClasses,
   classifyLines: classifyLines,
   lineKind: lineKind,
-  CLS_LOCAL: CLS_LOCAL, CLS_PATCHED: CLS_PATCHED, CLS_CON: CLS_CON,
+  CLS_LOCAL: CLS_LOCAL, CLS_PATCHED: CLS_PATCHED,
   //  WHY-001: the blame-colour renderer.  The palette lives in the VIEW (why.js
   //  bakes each O token's `#rrggbb`); the renderer just applies whatever it reads.
   colorWhyHunk: colorWhyHunk,
